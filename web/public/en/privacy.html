@@ -13,7 +13,7 @@
 <nav><a class="home" href="/">still.fail</a><a href="/en/terms">Terms</a><a href="/en/trademark">Trademarks</a><a href="/privacy" lang="zh-CN">中文</a></nav>
 
 <h1>Privacy policy</h1>
-<p class="meta">Effective: November 19, 2026</p>
+<p class="meta">Effective: November 22, 2026</p>
 <p data-product="still.fail" class="note">This is a translation for convenience. If it differs from the <a href="/privacy">Chinese version</a>, the Chinese version governs.</p><template data-product="monoid"></template>
 
 <p>This policy explains what personal information the still.fail hosted service collects, how it's used, who it's shared with, how long it's kept, and what rights you have. Please read it carefully, especially the parts in bold.</p>
@@ -56,7 +56,7 @@
 
 <h2>4. What we collect</h2>
 <ul>
-<li><strong>Account information</strong>: if you sign in with Google, your Google account ID, email address, name and avatar URL; if you sign in with an email code, your email address. We also keep when your account was created and last active, and its plan, eligibility and ban status;</li>
+<li><strong>Account information</strong>: if you sign in with Google, your Google account ID, email address, name and avatar URL; if you sign in with Apple, your Apple account ID, email address (including an Apple Private Relay address if you hide your email), the name you share on first sign-in, and an encrypted Apple refresh token kept solely to revoke Sign in with Apple authorization when you delete your account; if you sign in with an email code, your email address. We also keep when your account was created and last active, and its plan, eligibility and ban status;</li>
 <li><strong>Sign-in sessions and devices</strong>: device or client names (such as a computer's name, or a phone's as set in its settings), when sessions were created and when they expire, and when devices were first and last online;</li>
 <li><strong>Workspace information</strong>: workspace names, members and roles, invitations (including invitees' email addresses), invite codes, and the names, icons, versions, online times and mode (full or tasks only) of stations that have joined, with the owner of each tasks-only station;</li>
 <li><strong>Push tokens</strong>: the tokens or push endpoints your devices or browsers register to receive notifications, with that device's notification settings (its language, which kinds of notifications it shows, whether it shows their content);</li>
@@ -91,7 +91,7 @@
 <tr><th>Provider</th><th>Location</th><th>Purpose</th><th>Information involved</th></tr>
 <tr><td>Cloudflare, Inc.</td><td>United States; global network</td><td>Hosting the website, servers and data storage; request logs; sending verification code emails and emails about being added to a workspace; relay servers</td><td>All information stored on our servers listed in section 4, request logs, connection metadata</td></tr>
 <tr><td>Google LLC</td><td>United States</td><td>Google sign-in; Android push (Firebase Cloud Messaging)</td><td>Google account information, push tokens and notification text</td></tr>
-<tr><td>Apple Inc.</td><td>United States</td><td>iOS push (Apple Push Notification service)</td><td>Push tokens and notification text</td></tr>
+<tr><td>Apple Inc.</td><td>United States</td><td>Sign in with Apple; iOS push (Apple Push Notification service)</td><td>Apple account information, push tokens and notification text</td></tr>
 <tr><td>Your browser's push service (e.g. Google, Mozilla, Apple)</td><td>Varies by browser</td><td>Web push notifications</td><td>Push endpoints and encrypted notification content</td></tr>
 <tr><td>PostHog, Inc.</td><td>United States</td><td>Usage statistics, error tracking, session replay</td><td>Account ID, usage events, error information, masked session replays</td></tr>
 <tr><td>Google LLC (Google Cloud)</td><td>United States</td><td>Request tracing, station run logs</td><td>Account ID, session ID, request paths and durations; station ID and its scrubbed run logs</td></tr>
@@ -109,7 +109,7 @@
 <li>Invitations: 7 days;</li>
 <li>Whom an email about being added to a workspace went to (the workspace, the email address and the time): used for a 24-hour sending limit. Expired records are cleared the next time members are added, and records are also cleared when their workspace is deleted. If sending fails, we separately keep the workspace and email address as pending retry state, so adding the recipient again resends it; this record contains neither the mail text nor the reason for failure. This state is removed when a retry succeeds, the membership or pending membership is removed, the workspace is deleted, or the recipient deletes their account. Otherwise it is kept only while that membership or pending membership exists;</li>
 <li>Push tokens: deleted when you sign out or the device stops receiving notifications;</li>
-<li>Account, workspace and station information: kept while you use the Service, and deleted as soon as you delete your account or the workspace;</li>
+<li>Account, workspace and station information (including any linked Sign in with Apple record and encrypted Apple refresh token): kept while you use the Service, and deleted (with Sign in with Apple authorization revoked) as soon as you delete your account or the workspace;</li>
 <li>Issue reports and their replies: kept as needed after the issue is resolved, deleted along with your account, and you can ask us to delete them at any time;</li>
 <li>Admin action records: only the latest 1,000 are kept, older ones deleted automatically; deleting your account or a workspace does not rewrite records made before, and you can ask us to delete the ones about you at any time;</li>
 <li>Request logs, usage statistics, traces and station run logs: kept for the retention periods of Cloudflare, PostHog and Google Cloud respectively, then deleted automatically.</li>
@@ -120,7 +120,7 @@
 <p>You have the right to access, copy, correct, supplement and delete your personal information, to ask us to explain our rules for processing personal information, and to withdraw consent and delete your account.</p>
 <ul>
 <li>Workspace owners can delete a workspace in the app;</li>
-<li><strong>Deleting your account</strong>: choose “Delete account” in the app's account settings. Your account information, sign-in sessions, push tokens and issue reports are deleted at once; workspaces with only you in them are deleted too; you're removed from the other workspaces you're in. If you're the only owner of a workspace that has other members, first make someone else an owner or delete that workspace. Deletion can't be undone;</li>
+<li><strong>Deleting your account</strong>: choose “Delete account” in the app's account settings. Your account information, sign-in sessions, push tokens and issue reports are deleted at once, and any linked Sign in with Apple authorization is revoked with Apple; workspaces with only you in them are deleted too; you're removed from the other workspaces you're in. If you're the only owner of a workspace that has other members, first make someone else an owner or delete that workspace. Deletion can't be undone;</li>
 <li>Turning off usage statistics: turn off “Send usage and error reports” in the app's settings;</li>
 <li>For other requests, also email hi@still.fail. We'll reply within 15 working days.</li>
 </ul>

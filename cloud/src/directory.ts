@@ -203,6 +203,14 @@ export class Directory extends DurableObject<Env> {
     return this.#workspaces.accountFor(sub, email);
   }
 
+  appleAccount(appleSub: string, email: string): { status: "linked" | "conflict"; account: { sub: string; email: string; name: string; picture: string } } | { status: "new" } {
+    return this.#workspaces.appleAccount(appleSub, email);
+  }
+
+  linkApple(appleSub: string, userSub: string, email: string, refreshToken: string | null): void {
+    this.#workspaces.linkApple(appleSub, userSub, email, refreshToken);
+  }
+
   upsertUser(identity: Identity): void {
     this.#workspaces.upsertUser(identity);
   }
@@ -301,7 +309,7 @@ export class Directory extends DurableObject<Env> {
     return this.#members.removeMember(sub, workspace, target);
   }
 
-  deleteAccount(sub: string): Promise<void> {
+  deleteAccount(sub: string): Promise<{ appleTokens: string[] }> {
     return this.#members.deleteAccount(sub);
   }
 

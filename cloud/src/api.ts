@@ -5,6 +5,7 @@
 // admin's console has its own, `adminApi`, which only the console's host
 // routes to (index.ts).
 import { consoleAdmin, isAdmin } from "./admin";
+import { revokeAppleToken, unsealAppleToken } from "./apple";
 import { bearerToken, clock, denied, digest, limited, readJson, reply, verifyToken, type Claims } from "./auth";
 import { adminOrigins, betaOrigin, header, publicOrigins, signedMessages } from "./compat";
 import { guestOf, guests } from "./guests";
@@ -341,7 +342,7 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     // 2026-11-15). `console`: asked on the console's host, which serves no workspace's calls (index.ts CONSOLE_CALLS).
     // An operator is noted, to be told when the console's lists change (directory.ts `noteOperator`).
     const onConsole = adminOrigins(env).includes(new URL(request.url).origin);
-    const operator = onConsole && (await consoleAdmin(request, env, claims.email));
+    const operator = onConsole && (await consoleAdmin(request, env, claims.email, sub));
     if (operator) await dir.noteOperator(sub, claims.email);
     return directory(async () => ({ ...(await dir.me(sub)), invitations: await dir.invitationsFor(claims.email), operator, ...(onConsole ? { console: true as const } : {}) }));
   }
@@ -360,11 +361,20 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     if (method === "PUT") return directory(async () => dir.setOwnPicture(sub, typeof input.picture === "string" && input.picture.startsWith("data:") ? await keptIcon(env, input.picture) : input.picture));
     if (method === "DELETE") return directory(() => dir.setOwnPicture(sub, null));
   }
-  // Deleting the account: the Directory first (it may refuse: 409 sole_owner), then its sessions and all of it.
+  // Deleting the account: the Directory first (it may refuse: 409 sole_owner), then its sessions, and revoke any linked Sign in with Apple tokens.
   if (path === "/v1/me" && method === "DELETE") {
     return directory(async () => {
-      await dir.deleteAccount(sub);
+      const { appleTokens } = await dir.deleteAccount(sub);
       await env.ACCOUNTS.getByName(sub).erase();
+      for (const sealed of appleTokens) {
+        const token = await unsealAppleToken(env, sealed);
+        if (!token) continue;
+        try {
+          await revokeAppleToken(env, token);
+        } catch (error) {
+          console.error("deleteAccount: failed to revoke Apple token", error);
+        }
+      }
       return { deleted: true };
     });
   }
@@ -373,7 +383,7 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     if (byId[2] === "accept") return directory(() => dir.acceptById(sub, claims.email, byId[1]!));
     return directory(() => dir.declineById(claims.email, byId[1]!));
   }
-  if (path === "/v1/workspaces" && method === "POST") return directory(() => dir.createWorkspace(sub, text("name"), isAdmin(env, claims.email), input.invite_code));
+  if (path === "/v1/workspaces" && method === "POST") return directory(() => dir.createWorkspace(sub, text("name"), isAdmin(env, claims.email, sub), input.invite_code));
   if (path === "/v1/invitations/preview" && method === "POST") return directory(() => dir.previewInvitation(text("token")));
   if (path === "/v1/invitations/accept" && method === "POST") return directory(() => dir.acceptInvitation(sub, claims.email, text("token")));
 
@@ -608,7 +618,7 @@ type AdminActor = {
 export async function adminApi(request: Request, env: Env, path: string): Promise<Response> {
   const method = request.method;
   const claims = await account(bearerToken(request), env, request);
-  if (claims instanceof Response || !(await consoleAdmin(request, env, claims.email))) return notFound();
+  if (claims instanceof Response || !(await consoleAdmin(request, env, claims.email, claims.sub))) return notFound();
   const dir = env.DIRECTORY.getByName("primary");
   await dir.noteOperator(claims.sub, claims.email);
   if (path === "/v1/admin/keys" && method === "GET") {

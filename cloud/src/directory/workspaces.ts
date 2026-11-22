@@ -131,24 +131,90 @@ export class DirectoryWorkspaces {
    * The account a sign-in that proved it holds `email` (Google's, or a code sent to it: login.ts) is, with the name and
    * picture it has: the one `sub` already is, else the first signed in with that email, so whoever signed up one way and
    * signs in the other is the same account, with its workspaces; null for a new one. App Store review's (`pw-`,
-   * password.ts) is nobody's but its own.
+   * password.ts) is nobody's but its own, and an unlinked Apple account (`apple_`) never shadows ADMIN_EMAIL's Google account.
    */
   accountFor(sub: string, email: string): { sub: string; name: string; picture: string } | null {
-    const row = this.#db.one("SELECT sub, name, picture FROM users WHERE sub = ?", sub) ?? this.#db.one("SELECT sub, name, picture FROM users WHERE lower(email) = lower(?) AND sub NOT LIKE 'pw-%' ORDER BY created_at, rowid LIMIT 1", email);
+    const adminEmail = isAdmin(this.#db.env, email);
+    const row =
+      this.#db.one("SELECT sub, name, picture FROM users WHERE sub = ?", sub) ??
+      this.#db.one(
+        `SELECT sub, name, picture FROM users WHERE lower(email) = lower(?) AND sub NOT LIKE 'pw-%'${adminEmail ? " AND sub NOT LIKE 'apple_%'" : ""} ORDER BY created_at, rowid LIMIT 1`,
+        email,
+      );
     return row ? { sub: row.sub as string, name: row.name as string, picture: row.picture as string } : null;
+  }
+
+  /**
+   * Resolves a verified Sign in with Apple identity:
+   * - `linked`: `appleSub` is already linked to a live user row in `apple_identities`.
+   * - `conflict`: `appleSub` is new, but an existing non-`pw-` user already holds `email` (caller must require email OTP before linking).
+   * - `new`: no existing link or matching email; safe to create a new `apple_` account.
+   */
+  appleAccount(
+    appleSub: string,
+    email: string,
+  ): { status: "linked" | "conflict"; account: { sub: string; email: string; name: string; picture: string } } | { status: "new" } {
+    const linked = this.#db.one("SELECT user_sub FROM apple_identities WHERE apple_sub = ?", appleSub);
+    if (linked) {
+      const user = this.#db.one("SELECT sub, email, name, picture FROM users WHERE sub = ?", linked.user_sub as string);
+      if (user) {
+        return {
+          status: "linked",
+          account: { sub: user.sub as string, email: user.email as string, name: user.name as string, picture: user.picture as string },
+        };
+      }
+      // Stale link after user deletion: clean up and fall through.
+      this.#db.run("DELETE FROM apple_identities WHERE apple_sub = ?", appleSub);
+    }
+    const existing = this.#db.one(
+      "SELECT sub, email, name, picture FROM users WHERE lower(email) = lower(?) AND sub NOT LIKE 'pw-%' ORDER BY created_at, rowid LIMIT 1",
+      email,
+    );
+    if (existing) {
+      return {
+        status: "conflict",
+        account: { sub: existing.sub as string, email: existing.email as string, name: existing.name as string, picture: existing.picture as string },
+      };
+    }
+    return { status: "new" };
+  }
+
+  /** Records or updates the link from an Apple `sub` to an account `sub`, keeping any previously stored refresh token when a new one is absent. */
+  linkApple(appleSub: string, userSub: string, email: string, refreshToken: string | null): void {
+    const now = nowSeconds();
+    this.#db.run(
+      `INSERT INTO apple_identities (apple_sub, user_sub, email, refresh_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (apple_sub) DO UPDATE SET
+         user_sub = excluded.user_sub,
+         email = excluded.email,
+         refresh_token = COALESCE(excluded.refresh_token, apple_identities.refresh_token),
+         updated_at = excluded.updated_at`,
+      appleSub,
+      userSub,
+      email.toLowerCase(),
+      refreshToken,
+      now,
+      now,
+    );
   }
 
   upsertUser(identity: Identity): void {
     const old = this.#db.one("SELECT email, name, picture FROM users WHERE sub = ?", identity.sub);
+    const nextName = identity.name || ((old?.name as string | undefined) ?? "");
+    const nextPicture = identity.picture || ((old?.picture as string | undefined) ?? "");
     this.#db.run(
       `INSERT INTO users (sub, email, name, picture, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT (sub) DO UPDATE SET email = excluded.email, name = excluded.name, picture = excluded.picture, last_seen = excluded.last_seen`,
+       ON CONFLICT (sub) DO UPDATE SET
+         email = excluded.email,
+         name = CASE WHEN excluded.name != '' THEN excluded.name ELSE users.name END,
+         picture = CASE WHEN excluded.picture != '' THEN excluded.picture ELSE users.picture END,
+         last_seen = excluded.last_seen`,
       identity.sub, identity.email, identity.name, identity.picture, nowSeconds(), nowSeconds(),
     );
     this.#joinAdded(identity.sub, identity.email);
     this.#takePending(identity.sub, identity.email);
-    if (!old || old.email !== identity.email || old.name !== identity.name || old.picture !== identity.picture) this.#host.adminChanged("users");
-    if (!old || (old.email === identity.email && old.name === identity.name && old.picture === identity.picture)) return;
+    if (!old || old.email !== identity.email || old.name !== nextName || old.picture !== nextPicture) this.#host.adminChanged("users");
+    if (!old || (old.email === identity.email && old.name === nextName && old.picture === nextPicture)) return;
     // Members lists show them; invitations they sent show their name; a new email has other invitations.
     for (const row of this.#db.rows("SELECT workspace FROM members WHERE sub = ?", identity.sub)) {
       if (old.email !== identity.email) this.#host.forgetMailRetry(row.workspace as string, old.email as string);
@@ -322,7 +388,7 @@ export class DirectoryWorkspaces {
   #plan(workspace: string): Plan {
     const creator = this.#db.one("SELECT u.sub, u.email FROM workspaces w JOIN users u ON u.sub = w.created_by WHERE w.id = ?", workspace);
     if (!creator) return "free";
-    return isAdmin(this.#db.env, creator.email as string) ? "admin" : this.standard(creator.sub as string) ? "standard" : "free";
+    return isAdmin(this.#db.env, creator.email as string, creator.sub as string) ? "admin" : this.standard(creator.sub as string) ? "standard" : "free";
   }
 
   /** How many people a workspace may hold: its own limit, or its creator's plan's. */

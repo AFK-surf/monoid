@@ -58,13 +58,13 @@ export class DirectoryAdmin {
 
   /** Who is told what the console shows: ADMIN_EMAIL's accounts and those that opened it (with Access, its team). */
   adminSubs(): string[] {
-    return [...new Set([...this.#db.byEmail(this.#db.env.ADMIN_EMAIL ?? null), ...this.#operators()])];
+    return [...new Set([...this.#db.byEmail(this.#db.env.ADMIN_EMAIL ?? null).filter((sub) => !sub.startsWith("apple_")), ...this.#operators()])];
   }
 
   /** Whether an account is ADMIN_EMAIL's, which no operator of the console blocks. */
   isAdminAccount(sub: string): boolean {
     const row = this.#db.one("SELECT email FROM users WHERE sub = ?", sub);
-    return !!row && isAdmin(this.#db.env, row.email as string);
+    return !!row && isAdmin(this.#db.env, row.email as string, sub);
   }
 
   /**
@@ -159,7 +159,7 @@ export class DirectoryAdmin {
     return this.#db.rows(`SELECT sub, email, name, ${SHOWN_PICTURE} AS picture, created_at, last_seen, admitted, beta, blocked FROM users ORDER BY created_at DESC`).map((row) => {
       const sub = row.sub as string;
       const workspaces = memberships.get(sub) ?? [];
-      const admin = isAdmin(this.#db.env, row.email as string);
+      const admin = isAdmin(this.#db.env, row.email as string, sub);
       const admission: Admission | null = admin ? "admin" : (row.admitted as Admission | null) ?? (workspaces.length ? "early" : null);
       // As #standard has it, without a query per account.
       const mayCreate = admin || row.admitted === "code" || row.admitted === "granted" || (row.admitted === null && workspaces.length > 0);
@@ -187,7 +187,7 @@ export class DirectoryAdmin {
       this.#db.run("UPDATE users SET admitted = ? WHERE sub = ?", creator ? "free" : member ? "invitation" : null, sub);
     }
     this.adminChanged("users", "workspaces");
-    return { sub, may_create: isAdmin(this.#db.env, row!.email as string) || this.#host.standard(sub) };
+    return { sub, may_create: isAdmin(this.#db.env, row!.email as string, sub) || this.#host.standard(sub) };
   }
 
   /** The emails the admin gave rights to that nobody has signed in with yet, the latest first. */
@@ -377,7 +377,7 @@ export class DirectoryAdmin {
       COALESCE(NULLIF(u.name, ''), u.email, '') AS inviter FROM invitations i LEFT JOIN users u ON u.sub = i.created_by WHERE i.expires_at > ? ORDER BY i.expires_at`, now));
     const added = group<AddedView>(this.#db.rows("SELECT workspace, email, role, added_by, added_at FROM added ORDER BY added_at"));
     // As #plan has it, in the same read.
-    const plan = (w: Row): Plan => w.sub === null ? "free" : isAdmin(this.#db.env, w.email as string) ? "admin"
+    const plan = (w: Row): Plan => w.sub === null ? "free" : isAdmin(this.#db.env, w.email as string, w.sub as string) ? "admin"
       : w.admitted === "code" || w.admitted === "granted" || (w.admitted === null && w.member) ? "standard" : "free";
     return this.#db.rows(`SELECT w.id, w.name, w.created_at, w.max_members, w.max_stations, u.sub, u.email, u.name AS user_name, ${SHOWN_PICTURE} AS picture, u.admitted,
       EXISTS (SELECT 1 FROM members m WHERE m.sub = u.sub) AS member FROM workspaces w
