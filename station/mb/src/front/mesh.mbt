@@ -87,11 +87,12 @@ pub async fn mesh(host : @host.Host, path : String) -> Unit {
     bind_lock: @effect.Semaphore::new(1),
     on_accept_end: () => @host.exit(1),
   }
-  // `streams`: how it hands Node the streams the other end opens and what it does (front.rs `STREAMS`): 6, each with
+  // `streams`: how it hands Node the streams the other end opens and what it does (front.rs `STREAMS`): 7, each with
   // its index, a route Node gave it (`route`, a segment `*` any one) to what answers it, the mesh's scopes and
-  // leaves (`meshConfigure`, `meshRemove`, `meshAttachLeaf`, `meshDetachLeaf`), `iroh.probeRelay`, and the shell's
-  // stream and noq path fixes (a front of 5 is replaced so it takes them up).
-  host.say(({ "listening": Json::string(path), "streams": 6 } : Json).stringify())
+  // leaves (`meshConfigure`, `meshRemove`, `meshAttachLeaf`, `meshDetachLeaf`), `iroh.probeRelay`, the shell's
+  // stream and noq path fixes, and the noq-proto BBRv3 (#852/#802) and 4 MiB stream_receive_window (#8093) fixes
+  // (a front of 6 is replaced so it takes them up).
+  host.say(({ "listening": Json::string(path), "streams": 7 } : Json).stringify())
   // Its stdin is the launcher's: ended (the launcher gone, or stopping the station), the endpoint goes with it.
   ignore(
     host.rt.fork_daemon("mesh parent", on_error=e => @host.note("mesh parent failed: \{e}"), () => {
