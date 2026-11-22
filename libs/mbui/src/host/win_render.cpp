@@ -64,13 +64,27 @@ static int flip_chain;
 // capture yet, the glass and the blur's margin round it, not of the target: a composer's strip, not the window; [4] a
 // Gaussian's first half), the glass's own constants, the blurred copy in view
 static ID3D11VertexShader *pvs;
-static ID3D11PixelShader *pps, *edge_ps, *prog_ps;
-static ID3D11Buffer *pbuf, *gbuf;
+static ID3D11PixelShader *pps, *edge_ps, *prog_ps, *ad_ps;
+static ID3D11Buffer *pbuf, *gbuf, *ad_cb;
 struct level { ID3D11Texture2D *t; ID3D11RenderTargetView *rt; ID3D11ShaderResourceView *srv; int w, h; };
 static level lv[5];
 static MBContained post_edge;
 static int lv_w, lv_h;
-struct GU { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[8][4]; float misc[4]; };
+#define MB_ADAPTIVE_MAX 16
+#define MB_AD_TAU 0.070
+#define MB_AD_SETTLE_SEC 0.42
+#define MB_AD_MATCH_DIST 64.0
+struct MBAdSlot {
+  int active;
+  float cx, cy, hx, hy;
+  int is_dark;
+  double settle_left;
+  uint64_t updated_serial;
+  uint64_t seen_serial;
+  uint64_t under_hash;
+  int under_valid;
+};
+struct GU { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[8][4]; float misc[4]; float ad_box[MB_ADAPTIVE_MAX][4]; float ad_meta[4]; };
 static GU gu;
 static ID3D11ShaderResourceView *gsrv;
 // What is a window's own (win_app.c: the windows of one run): its swap chain and its buffer's view, its composition's
@@ -97,6 +111,12 @@ struct RenderWin {
   int dirty_n, dirty_whole, dirty_told;
   // a picture the frame drawn last had none of yet (drawn without it): the next drawn whole
   int pictures_missing;
+  level ad_tex[2];
+  int ad_cur;
+  MBAdSlot ad_slots[MB_ADAPTIVE_MAX];
+  double ad_last_time;
+  uint64_t ad_frame_serial;
+  int ad_settling;
 };
 static RenderWin render_wins[MB_WINS];
 static RenderWin *rw = &render_wins[0];
@@ -151,12 +171,13 @@ static const char *shader_src =
     "cbuffer U : register(b0) { float2 vp; float scale; float pad; };\n"
     "// glass (src/ui/glass.mbt): where a point is in the blurred copy under it (uv = p * gmap.xy + gmap.zw, kept in guvc),\n"
     "// a liquid group's bounds, shapes, corners (x of each), how many\n"
-    "cbuffer G : register(b1) { float4 gmap; float4 guvc; float4 ggb; float4 gshape[8]; float4 grad[8]; float4 gmisc; };\n"
+    "cbuffer G : register(b1) { float4 gmap; float4 guvc; float4 ggb; float4 gshape[8]; float4 grad[8]; float4 gmisc; float4 gad_box[16]; float4 gad_meta; };\n"
     "Texture2D atlas : register(t0);\n"
     "Texture2D img : register(t1);\n"
     "Texture2D bd : register(t2);\n"
     "// the pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), 15 fours each\n"
     "Buffer<float4> segs : register(t3);\n"
+    "Texture2D ad_tex : register(t5);\n"
     "SamplerState samp : register(s0);\n"
     "struct VIn { float4 rect : INST0; float4 p : INST1; float4 color : INST2; float4 c2 : INST3;\n"
     "  float4 clip : INST4; float4 pd : INST5; float4 rc : INST6; float4 rs : INST7; float4 rot : INST8;\n"
@@ -230,18 +251,63 @@ static const char *shader_src =
     "  return bd.SampleLevel(samp, clamp(p * gmap.xy + gmap.zw, guvc.xy, guvc.zw), 0).rgb;\n"
     "}\n"
     "float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }\n"
-    "float mb_backdrop_luma(float2 c, float r) {\n"
-    "  return (luma(backdrop(c)) + luma(backdrop(c + float2(r, 0.0))) + luma(backdrop(c - float2(r, 0.0))) +\n"
-    "          luma(backdrop(c + float2(0.0, r))) + luma(backdrop(c - float2(0.0, r)))) / 5.0;\n"
+    "float mb_backdrop_luma_rect(float2 c, float2 h) {\n"
+    "  float sum = 0.0;\n"
+    "  float mx1 = -1.0, mx2 = -1.0;\n"
+    "  float mn1 = 2.0, mn2 = 2.0;\n"
+    "  [unroll] for (int iy = -1; iy <= 1; iy++) {\n"
+    "    float py = c.y + float(iy) * (h.y * 0.60);\n"
+    "    [unroll] for (int ix = -2; ix <= 2; ix++) {\n"
+    "      float px = c.x + float(ix) * (h.x * 0.38);\n"
+    "      float y = luma(backdrop(float2(px, py)));\n"
+    "      sum += y;\n"
+    "      if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }\n"
+    "      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
+    "    }\n"
+    "  }\n"
+    "  return (sum - mx1 - mx2 - mn1 - mn2) / 11.0;\n"
     "}\n"
-    "float3 mb_adaptive_ink(float3 rgb, float bgL) {\n"
+    "float mb_unpack16(float2 rg) {\n"
+    "  float hi = floor(saturate(rg.x) * 255.0 + 0.5);\n"
+    "  float lo = floor(saturate(rg.y) * 255.0 + 0.5);\n"
+    "  return (hi * 256.0 + lo) / 65535.0;\n"
+    "}\n"
+    "float ad_sample(float2 ac, float fallback_r, bool is_dark_glass) {\n"
+    "  int ad_n = int(gad_meta.x + 0.5);\n"
+    "  [branch] if (ad_n > 0) {\n"
+    "    int best = -1;\n"
+    "    float best_d = 1e9;\n"
+    "    [loop] for (int i = 0; i < 16; i++) {\n"
+    "      if (i >= ad_n) break;\n"
+    "      float d = length(ac - gad_box[i].xy);\n"
+    "      if (d <= 2.0 && d < best_d) { best = i; best_d = d; }\n"
+    "    }\n"
+    "    if (best < 0) {\n"
+    "      best_d = 1e9;\n"
+    "      [loop] for (int i = 0; i < 16; i++) {\n"
+    "        if (i >= ad_n) break;\n"
+    "        float2 diff = abs(ac - gad_box[i].xy);\n"
+    "        if (diff.x <= gad_box[i].z + 2.0 && diff.y <= gad_box[i].w + 2.0) {\n"
+    "          float d = length(diff);\n"
+    "          if (d < best_d) { best = i; best_d = d; }\n"
+    "        }\n"
+    "      }\n"
+    "    }\n"
+    "    if (best >= 0) {\n"
+    "      return mb_unpack16(ad_tex.Load(int3(best, 0, 0)).rg);\n"
+    "    }\n"
+    "  }\n"
+    "  float bgL = mb_backdrop_luma_rect(ac, float2(max(fallback_r, 1.0), max(fallback_r, 1.0)));\n"
+    "  return is_dark_glass ? smoothstep(0.35, 0.85, bgL) : (1.0 - smoothstep(0.30, 0.42, bgL));\n"
+    "}\n"
+    "float3 mb_adaptive_ink(float3 rgb, float darkT) {\n"
     "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
     "  if (ch <= 0.08) {\n"
     "    float origL = luma(rgb);\n"
     "    if (origL < 0.5) {\n"
-    "      float lightT = smoothstep(0.29, 0.31, bgL);\n"
+    "      float inkT = smoothstep(0.0, 1.0, darkT);\n"
     "      float lightL = clamp(1.06 - origL, 0.68, 0.98);\n"
-    "      rgb = lerp(float3(lightL, lightL, lightL), rgb, lightT);\n"
+    "      rgb = lerp(rgb, float3(lightL, lightL, lightL), inkT);\n"
     "    }\n"
     "  }\n"
     "  return rgb;\n"
@@ -309,7 +375,7 @@ static const char *shader_src =
     "      for (int i = first; i < first + n; i++) w += mb_path_rows(segs.Load((i / 6) * 15 + mb_seg_slot(i)), I.rect, p, scale);\n"
     "      a = mb_path_cover(w, I.c2.z);\n"
     "    }\n"
-    "    [branch] if (I.pd.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, mb_backdrop_luma(I.pd.yz, I.pd.w * 0.5));\n"
+    "    [branch] if (I.pd.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, ad_sample(I.pd.yz, I.pd.w * 0.5, false));\n"
     "    return (float4(col.rgb, 1.0) * col.a * a) * cover;\n"
     "  }\n"
     "  if (kind == 10) {\n"
@@ -317,7 +383,7 @@ static const char *shader_src =
     "    float2 a = I.rect.xy + I.c2.xy * I.rect.zw, ab = I.rect.xy + I.c2.zw * I.rect.zw - a;\n"
     "    float h = saturate(dot(p - a, ab) / max(dot(ab, ab), 1e-8));\n"
     "    float d = length(p - a - ab * h) - I.prm.x;\n"
-    "    [branch] if (I.pd.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, mb_backdrop_luma(I.pd.yz, I.pd.w * 0.5));\n"
+    "    [branch] if (I.pd.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, ad_sample(I.pd.yz, I.pd.w * 0.5, false));\n"
     "    return (float4(col.rgb, 1.0) * col.a * saturate(0.5 - d * scale)) * cover;\n"
     "  }\n"
     "  if (kind == 1 || kind == 3 || kind == 7) {\n"
@@ -344,8 +410,8 @@ static const char *shader_src =
     "    }\n"
     "    if (kind == 7) {\n"
     "      // inked by how light what is under its glass is, looked at round the glass's middle\n"
-    "      float l = mb_backdrop_luma(I.pd.yz, I.pd.w * 0.5);\n"
-    "      float3 ink = mb_adaptive_ink(col.rgb, l);\n"
+    "      float darkT = ad_sample(I.pd.yz, I.pd.w * 0.5, false);\n"
+    "      float3 ink = mb_adaptive_ink(col.rgb, darkT);\n"
     "      return (float4(ink, 1.0) * (t.a * col.a)) * cover;\n"
     "    }\n"
     "    return (t * col.a) * cover;\n"
@@ -500,10 +566,10 @@ static const char *shader_src =
     "        float2 ac = (k <= 0.0) ? (I.rect.xy + I.rect.zw * 0.5) : ((ggb.xy + ggb.zw) * 0.5);\n"
     "        float ar = ((k <= 0.0) ? max(min(I.rect.z, I.rect.w) * 0.5, 1.0) : max(min(ggb.z - ggb.x, ggb.w - ggb.y) * 0.5, 1.0)) * 0.5;\n"
     "#endif\n"
-    "        float bgL = mb_backdrop_luma(ac, ar);\n"
+    "        float val = ad_sample(ac, ar, is_dark);\n"
     "        float baseDens = (col.a > 0.41) ? col.a : 0.30;\n"
     "        if (is_dark) {\n"
-    "          float brightT = smoothstep(0.35, 0.85, bgL);\n"
+    "          float brightT = val;\n"
     "          fogT = brightT;\n"
     "          float dens = max(baseDens, lerp(baseDens, 0.64, brightT));\n"
     "          float extra = saturate((dens - 0.30) / (1.0 - 0.30));\n"
@@ -514,7 +580,7 @@ static const char *shader_src =
     "          contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;\n"
     "          glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
     "        } else {\n"
-    "          float darkMix = 1.0 - smoothstep(0.24, 0.36, bgL);\n"
+    "          float darkMix = val;\n"
     "          fogT = darkMix;\n"
     "          float extra = saturate((baseDens - 0.30) / (1.0 - 0.30));\n"
     "          float darkDens = max(baseDens, lerp(baseDens, 0.52, darkMix));\n"
@@ -747,6 +813,62 @@ static const char *post_src =
     "}\n";
 
 // The corner extension is a pass of its own, before the ordinary blur.
+static const char *ad_src =
+    "cbuffer AdU : register(b0) { float4 u_map; float4 u_uvc; float4 u_box; float4 u_param; };\n"
+    "Texture2D bd : register(t0);\n"
+    "Texture2D prev_ad : register(t1);\n"
+    "SamplerState samp : register(s0);\n"
+    "float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }\n"
+    "float mb_unpack16(float2 rg) {\n"
+    "  float hi = floor(saturate(rg.x) * 255.0 + 0.5);\n"
+    "  float lo = floor(saturate(rg.y) * 255.0 + 0.5);\n"
+    "  return (hi * 256.0 + lo) / 65535.0;\n"
+    "}\n"
+    "float2 mb_pack16(float v) {\n"
+    "  float q = floor(saturate(v) * 65535.0 + 0.5);\n"
+    "  float hi = floor(q / 256.0);\n"
+    "  float lo = q - hi * 256.0;\n"
+    "  return float2(hi / 255.0, lo / 255.0);\n"
+    "}\n"
+    "float4 fad(float4 pos : SV_Position) : SV_Target {\n"
+    "  float2 c = u_box.xy, h = u_box.zw;\n"
+    "  float sum = 0.0, mx1 = -1.0, mx2 = -1.0, mn1 = 2.0, mn2 = 2.0;\n"
+    "  [unroll] for (int iy = -1; iy <= 1; iy++) {\n"
+    "    float py = c.y + float(iy) * (h.y * 0.60);\n"
+    "    [unroll] for (int ix = -2; ix <= 2; ix++) {\n"
+    "      float px = c.x + float(ix) * (h.x * 0.38);\n"
+    "      float2 uv = clamp(float2(px, py) * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw);\n"
+    "      float y = luma(bd.SampleLevel(samp, uv, 0).rgb);\n"
+    "      sum += y;\n"
+    "      if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }\n"
+    "      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
+    "    }\n"
+    "  }\n"
+    "  float bgL = (sum - mx1 - mx2 - mn1 - mn2) / 11.0;\n"
+    "  int sid = int(u_param.w + 0.5);\n"
+    "  float4 prev = prev_ad.Load(int3(sid, 0, 0));\n"
+    "  float prevT = mb_unpack16(prev.rg);\n"
+    "  float is_dark = u_param.x, is_new = u_param.y, dt = u_param.z;\n"
+    "  float latch, target;\n"
+    "  if (is_dark > 0.5) {\n"
+    "    target = smoothstep(0.35, 0.85, bgL);\n"
+    "    latch = target;\n"
+    "  } else {\n"
+    "    if (is_new > 0.5) latch = (bgL < 0.36) ? 1.0 : 0.0;\n"
+    "    else if (prev.b > 0.5) latch = (bgL > 0.46) ? 0.0 : 1.0;\n"
+    "    else latch = (bgL < 0.36) ? 1.0 : 0.0;\n"
+    "    target = latch;\n"
+    "  }\n"
+    "  float nextT;\n"
+    "  if (is_new > 0.5 || dt >= 1.0) nextT = target;\n"
+    "  else if (dt <= 0.0) nextT = prevT;\n"
+    "  else {\n"
+    "    nextT = lerp(prevT, target, 1.0 - exp(-dt / 0.070));\n"
+    "    if (abs(nextT - target) < 0.003) nextT = target;\n"
+    "  }\n"
+    "  return float4(mb_pack16(nextT), latch, saturate(bgL));\n"
+    "}\n";
+
 static const char *edge_src =
     "#define MB_CONTAINED_LOOP [loop]\n"
     MB_CORNER_SL
@@ -1086,6 +1208,11 @@ void mb_render_forget(int wid) {
   rw = &render_wins[wid];
   if (canvas_rtv) canvas_rtv->Release();
   if (canvas) canvas->Release();
+  for (int i = 0; i < 2; i++) {
+    if (rw->ad_tex[i].srv) rw->ad_tex[i].srv->Release();
+    if (rw->ad_tex[i].rt) rw->ad_tex[i].rt->Release();
+    if (rw->ad_tex[i].t) rw->ad_tex[i].t->Release();
+  }
   if (rtv) rtv->Release();
   if (dtarget) dtarget->SetRoot(NULL);
   if (dcanvas) dcanvas->SetContent(NULL);
@@ -1186,14 +1313,17 @@ static void make_pipeline(void) {
   ID3DBlob *pv = compile("vpost", "vs_4_0", post_src), *pp = compile("fpost", "ps_4_0", post_src);
   ID3DBlob *ep = compile("fedge", "ps_4_0", edge_src);
   ID3DBlob *gp = compile("fprog", "ps_4_0", prog_src);
+  ID3DBlob *ap = compile("fad", "ps_4_0", ad_src);
   dev->CreateVertexShader(pv->GetBufferPointer(), pv->GetBufferSize(), NULL, &pvs);
   dev->CreatePixelShader(pp->GetBufferPointer(), pp->GetBufferSize(), NULL, &pps);
   dev->CreatePixelShader(ep->GetBufferPointer(), ep->GetBufferSize(), NULL, &edge_ps);
   dev->CreatePixelShader(gp->GetBufferPointer(), gp->GetBufferSize(), NULL, &prog_ps);
+  dev->CreatePixelShader(ap->GetBufferPointer(), ap->GetBufferSize(), NULL, &ad_ps);
   pv->Release();
   pp->Release();
   ep->Release();
   gp->Release();
+  ap->Release();
 
   D3D11_BUFFER_DESC ud = {16, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0};
   dev->CreateBuffer(&ud, NULL, &ubuf);
@@ -1201,6 +1331,8 @@ static void make_pipeline(void) {
   dev->CreateBuffer(&pd, NULL, &pbuf);
   D3D11_BUFFER_DESC gd = {(UINT)sizeof(GU), D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0};
   dev->CreateBuffer(&gd, NULL, &gbuf);
+  D3D11_BUFFER_DESC adbd = {64, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0};
+  dev->CreateBuffer(&adbd, NULL, &ad_cb);
 
   D3D11_TEXTURE2D_DESC td = {};
   td.Width = td.Height = (UINT)mb_atlas_size;
@@ -1355,16 +1487,273 @@ static int ensure_levels(int w, int h) {
 // Glass's own textures let go of: the levels (made again at the size the next capture needs, ensure_levels, its blur
 // the same to the byte). Unbound first where a pass or the glass's draw left them (t0-t2): the context holds what is
 // bound till it is bound again.
+static int ad_mode = 1;  // 1 = update, 0 = read-only, -1 = stateless
+static int ad_backdrop_changed = 1;
+static double ad_cur_dt = 0.0;
+
+static void ad_forget(RenderWin *w) {
+  if (!w) return;
+  memset(w->ad_slots, 0, sizeof w->ad_slots);
+  w->ad_last_time = 0.0;
+  w->ad_settling = 0;
+}
+
+static int ensure_ad_tex(RenderWin *w) {
+  if (!w || !dev) return 0;
+  if (w->ad_tex[0].t) return 1;
+  for (int i = 0; i < 2; i++) {
+    w->ad_tex[i] = level_tex(DXGI_FORMAT_R8G8B8A8_UNORM, MB_ADAPTIVE_MAX, 1);
+    if (!w->ad_tex[i].t) return 0;
+  }
+  w->ad_cur = 0;
+  return 1;
+}
+
+static void ad_fill_gu(RenderWin *w) {
+  if (!w || ad_mode < 0) {
+    gu.ad_meta[0] = 0.0f;
+    return;
+  }
+  int max_active = 0;
+  for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+    if (w->ad_slots[i].active) {
+      gu.ad_box[i][0] = w->ad_slots[i].cx;
+      gu.ad_box[i][1] = w->ad_slots[i].cy;
+      gu.ad_box[i][2] = w->ad_slots[i].hx;
+      gu.ad_box[i][3] = w->ad_slots[i].hy;
+      max_active = i + 1;
+    } else {
+      gu.ad_box[i][0] = -1e9f;
+      gu.ad_box[i][1] = -1e9f;
+      gu.ad_box[i][2] = -1e9f;
+      gu.ad_box[i][3] = -1e9f;
+    }
+  }
+  gu.ad_meta[0] = (float)max_active;
+}
+
+struct WinAdPend {
+  int sid, is_new, is_dark;
+  float cx, cy, hx, hy;
+};
+
+static inline uint64_t fnv1a_bytes(uint64_t h, const void *p, size_t n) {
+  const uint8_t *b = (const uint8_t *)p;
+  for (size_t i = 0; i < n; i++) {
+    h ^= (uint64_t)b[i];
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
+
+static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int32_t count, int backdrop_changed,
+                                int under_missing, double dt, uint64_t serial, WinAdPend out[MB_ADAPTIVE_MAX]) {
+  if (!w || ad_mode <= 0 || dt < 0.0) return 0;
+  const float *a = f + (size_t)start * MB_INST;
+  int kind = (int)(a[5] + 0.5f);
+  if (kind != 6) return 0;
+  int merged_liquid = a[23] > 0.0f;
+  struct { float cx, cy, hx, hy; int is_dark; } items[MB_ADAPTIVE_MAX];
+  int ni = 0;
+  if (merged_liquid) {
+    int is_clear = (a[7] <= 0.1f && a[11] < 0.12f);
+    int is_adaptive = a[14] < -0.5f;
+    if (is_adaptive && !is_clear) {
+      float lum = 0.2126f * a[8] + 0.7152f * a[9] + 0.0722f * a[10];
+      items[ni].cx = (gu.gb[0] + gu.gb[2]) * 0.5f;
+      items[ni].cy = (gu.gb[1] + gu.gb[3]) * 0.5f;
+      items[ni].hx = fmaxf((gu.gb[2] - gu.gb[0]) * 0.5f, 1.0f);
+      items[ni].hy = fmaxf((gu.gb[3] - gu.gb[1]) * 0.5f, 1.0f);
+      items[ni].is_dark = (a[11] >= 0.05f && lum < 0.35f) ? 1 : 0;
+      ni++;
+    }
+  } else {
+    float tid = a[20];
+    for (int32_t i = start; i < count && ni < MB_ADAPTIVE_MAX; i++) {
+      const float *b = f + (size_t)i * MB_INST;
+      if (b[20] != tid) continue;
+      if ((int)(b[5] + 0.5f) != 6 || b[23] > 0.0f) continue;
+      int is_clear = (b[7] <= 0.1f && b[11] < 0.12f);
+      int is_adaptive = b[14] < -0.5f;
+      if (!is_adaptive || is_clear) continue;
+      float lum = 0.2126f * b[8] + 0.7152f * b[9] + 0.0722f * b[10];
+      items[ni].cx = b[0] + b[2] * 0.5f;
+      items[ni].cy = b[1] + b[3] * 0.5f;
+      items[ni].hx = fmaxf(b[2] * 0.5f, 1.0f);
+      items[ni].hy = fmaxf(b[3] * 0.5f, 1.0f);
+      items[ni].is_dark = (b[11] >= 0.05f && lum < 0.35f) ? 1 : 0;
+      ni++;
+    }
+  }
+  int n_upd = 0;
+  for (int k = 0; k < ni; k++) {
+    int sid = -1, is_new = 0;
+    for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+      MBAdSlot *s = &w->ad_slots[i];
+      if (s->active && s->seen_serial == serial && s->is_dark == items[k].is_dark &&
+          hypotf(items[k].cx - s->cx, items[k].cy - s->cy) <= 2.0f) {
+        sid = i;
+        break;
+      }
+    }
+    if (sid < 0) {
+      float best_d = (float)MB_AD_MATCH_DIST + 1e-3f;
+      for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+        MBAdSlot *s = &w->ad_slots[i];
+        if (!s->active || s->seen_serial == serial || s->is_dark != items[k].is_dark) continue;
+        float d = hypotf(items[k].cx - s->cx, items[k].cy - s->cy);
+        if (d <= best_d) { best_d = d; sid = i; }
+      }
+      if (sid < 0) {
+        for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+          if (!w->ad_slots[i].active) { sid = i; break; }
+        }
+        if (sid < 0) {
+          uint64_t oldest = UINT64_MAX;
+          for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+            if (w->ad_slots[i].seen_serial != serial && w->ad_slots[i].seen_serial < oldest) {
+              oldest = w->ad_slots[i].seen_serial;
+              sid = i;
+            }
+          }
+          if (sid < 0) sid = 0;
+        }
+        is_new = 1;
+        memset(&w->ad_slots[sid], 0, sizeof w->ad_slots[sid]);
+        w->ad_slots[sid].active = 1;
+        w->ad_slots[sid].is_dark = items[k].is_dark;
+      }
+      w->ad_slots[sid].cx = items[k].cx;
+      w->ad_slots[sid].cy = items[k].cy;
+      w->ad_slots[sid].hx = items[k].hx;
+      w->ad_slots[sid].hy = items[k].hy;
+      w->ad_slots[sid].seen_serial = serial;
+    }
+    MBAdSlot *s = &w->ad_slots[sid];
+    if (s->updated_serial == serial) continue;
+    int item_changed = 0;
+    if (backdrop_changed) {
+      float gx0 = s->cx - s->hx, gy0 = s->cy - s->hy, gx1 = s->cx + s->hx, gy1 = s->cy + s->hy;
+      uint64_t h = 14695981039346656037ULL;
+      h = fnv1a_bytes(h, last_bg, sizeof last_bg);
+      h = fnv1a_bytes(h, &fb_w, sizeof fb_w);
+      h = fnv1a_bytes(h, &fb_h, sizeof fb_h);
+      h = fnv1a_bytes(h, &vscale, sizeof vscale);
+      int has_stream = under_missing ? 1 : 0;
+      for (int32_t i = 0; i < start; i++) {
+        const float *b = f + (size_t)i * MB_INST;
+        if (b[32] == 0.0f) {
+          float x0 = b[0], y0 = b[1], x1 = x0 + b[2], y1 = y0 + b[3];
+          if (!(x1 > gx0 && x0 < gx1 && y1 > gy0 && y0 < gy1)) continue;
+        }
+        if (b[20] > (float)MB_STREAM_TEX) has_stream = 1;
+        h = fnv1a_bytes(h, b, (size_t)MB_INST * sizeof(float));
+      }
+      if (is_new || !s->under_valid || has_stream || h != s->under_hash) item_changed = 1;
+      s->under_hash = h;
+      s->under_valid = !has_stream;
+    }
+    int need = is_new || item_changed || s->settle_left > 0.0;
+    if (need) {
+      if (is_new) {
+        s->settle_left = 0.0;
+      } else if (item_changed) {
+        s->settle_left = MB_AD_SETTLE_SEC;
+      } else {
+        s->settle_left -= dt;
+        if (s->settle_left <= 0.0) s->settle_left = 0.0;
+      }
+      s->updated_serial = serial;
+      out[n_upd++] = {sid, is_new, s->is_dark, s->cx, s->cy, s->hx, s->hy};
+    }
+  }
+  return n_upd;
+}
+
+static void ad_run_updates(RenderWin *w, const WinAdPend *pend, int n_upd, double dt) {
+  if (!w || n_upd <= 0 || !gsrv || !ad_ps || !ad_cb) return;
+  if (!ensure_ad_tex(w)) return;
+  int cur = w->ad_cur, nxt = 1 - cur;
+  ID3D11ShaderResourceView *none6[6] = {NULL, NULL, NULL, NULL, NULL, NULL};
+  ctx->PSSetShaderResources(0, 6, none6);
+  ctx->CopyResource(w->ad_tex[nxt].t, w->ad_tex[cur].t);
+  ctx->OMSetRenderTargets(1, &w->ad_tex[nxt].rt, NULL);
+  D3D11_VIEWPORT vp = {0, 0, (float)MB_ADAPTIVE_MAX, 1.0f, 0, 1};
+  ctx->RSSetViewports(1, &vp);
+  ctx->RSSetState(raster_cut);
+  ctx->VSSetShader(pvs, NULL, 0);
+  ctx->PSSetShader(ad_ps, NULL, 0);
+  ctx->IASetInputLayout(NULL);
+  ctx->OMSetBlendState(NULL, NULL, 0xffffffff);
+  ctx->PSSetConstantBuffers(0, 1, &ad_cb);
+  ID3D11ShaderResourceView *srvs[2] = {gsrv, w->ad_tex[cur].srv};
+  ctx->PSSetShaderResources(0, 2, srvs);
+  ctx->PSSetSamplers(0, 1, &sampler);
+  for (int i = 0; i < n_upd; i++) {
+    D3D11_RECT sc = {pend[i].sid, 0, pend[i].sid + 1, 1};
+    ctx->RSSetScissorRects(1, &sc);
+    struct { float map[4]; float uvc[4]; float box[4]; float param[4]; } u;
+    memcpy(u.map, gu.map, sizeof u.map);
+    memcpy(u.uvc, gu.uvc, sizeof u.uvc);
+    u.box[0] = pend[i].cx; u.box[1] = pend[i].cy; u.box[2] = pend[i].hx; u.box[3] = pend[i].hy;
+    u.param[0] = (float)pend[i].is_dark;
+    u.param[1] = (float)pend[i].is_new;
+    u.param[2] = (float)dt;
+    u.param[3] = (float)pend[i].sid;
+    ctx->UpdateSubresource(ad_cb, 0, NULL, &u, 0, 0);
+    ctx->Draw(3, 0);
+  }
+  ctx->PSSetShaderResources(0, 2, none6);
+  w->ad_cur = nxt;
+}
+
+static double ad_next_dt(RenderWin *w) {
+  LARGE_INTEGER freq, now;
+  QueryPerformanceFrequency(&freq);
+  QueryPerformanceCounter(&now);
+  double t = freq.QuadPart ? (double)now.QuadPart / (double)freq.QuadPart : 0.0;
+  double dt = (w && w->ad_last_time > 0.0) ? (t - w->ad_last_time) : (1.0 / 60.0);
+  if (w) w->ad_last_time = t;
+  if (dt < 0.0) dt = 0.0;
+  if (dt > 0.1) dt = 0.1;
+  return dt;
+}
+
+static void ad_finalize_frame(RenderWin *w, int whole_frame, uint64_t serial) {
+  if (!w) return;
+  int settling = 0;
+  for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+    MBAdSlot *s = &w->ad_slots[i];
+    if (!s->active) continue;
+    if (whole_frame && s->seen_serial != serial) {
+      s->active = 0;
+      s->settle_left = 0.0;
+      continue;
+    }
+    if (s->settle_left > 0.0) settling = 1;
+  }
+  w->ad_settling = settling;
+}
+
 static void glass_free(void) {
   if (!ctx) return;
-  ID3D11ShaderResourceView *none[3] = {NULL, NULL, NULL};
-  ctx->PSSetShaderResources(0, 3, none);
+  ID3D11ShaderResourceView *none[6] = {NULL, NULL, NULL, NULL, NULL, NULL};
+  ctx->PSSetShaderResources(0, 6, none);
   gsrv = NULL;
   for (int j = 0; j < 5; j++) {
     if (lv[j].srv) lv[j].srv->Release();
     if (lv[j].rt) lv[j].rt->Release();
     if (lv[j].t) lv[j].t->Release();
     lv[j] = level{};
+  }
+  for (int k = 0; k < MB_WINS; k++) {
+    for (int i = 0; i < 2; i++) {
+      if (render_wins[k].ad_tex[i].srv) render_wins[k].ad_tex[i].srv->Release();
+      if (render_wins[k].ad_tex[i].rt) render_wins[k].ad_tex[i].rt->Release();
+      if (render_wins[k].ad_tex[i].t) render_wins[k].ad_tex[i].t->Release();
+      render_wins[k].ad_tex[i] = level{};
+    }
+    ad_forget(&render_wins[k]);
   }
   lv_w = lv_h = 0;
 }
@@ -1658,6 +2047,11 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
   gu.map[0] = sc / d / L->w; gu.map[1] = sc / d / L->h;
   gu.map[2] = -(float)px0 / d / L->w; gu.map[3] = -(float)py0 / d / L->h;
   gu.uvc[0] = 0.5f / L->w; gu.uvc[1] = 0.5f / L->h; gu.uvc[2] = (lw[sk] - 0.5f) / L->w; gu.uvc[3] = (lh[sk] - 0.5f) / L->h;
+  WinAdPend ad_pend[MB_ADAPTIVE_MAX];
+  int ad_n_upd = ad_collect_and_match(rw, f, start, count, ad_backdrop_changed, encode_missing, ad_cur_dt,
+                                      rw ? rw->ad_frame_serial : 0, ad_pend);
+  if (ad_n_upd > 0) ad_run_updates(rw, ad_pend, ad_n_upd, ad_cur_dt);
+  ad_fill_gu(rw);
   return 1;
 }
 
@@ -1740,6 +2134,8 @@ static void main_state(ID3D11RenderTargetView *target, int pw, int ph) {
   ctx->PSSetShaderResources(0, 1, &atlas_srv);
   ctx->PSSetShaderResources(2, 1, gsrv ? &gsrv : &atlas_srv);
   ctx->PSSetShaderResources(3, 1, &segs_srv);
+  ID3D11ShaderResourceView *ad_srv = (rw && rw->ad_tex[rw->ad_cur].srv) ? rw->ad_tex[rw->ad_cur].srv : atlas_srv;
+  ctx->PSSetShaderResources(5, 1, &ad_srv);
   ctx->PSSetSamplers(0, 1, &sampler);
   ctx->OMSetBlendState(blend, NULL, 0xffffffff);
 }
@@ -1784,6 +2180,7 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
   struct { float vp[2]; float scale; float pad; } u = {{(float)vw, (float)vh}, (float)vscale, 0};
   ctx->UpdateSubresource(ubuf, 0, NULL, &u, 0, 0);
   memset(&gu, 0, sizeof gu);
+  ad_fill_gu(rw);
   gsrv = NULL;
   segs_upload(f, count);
   main_state(target, pw, ph);
@@ -2001,7 +2398,20 @@ int mb_render_present(const double *inst, int32_t count, double r, double g, dou
   int n = -1;
   D3D11_RECT parts[MB_PARTS];
   glass_drawn = 0;
+  ad_mode = 1;
+  ad_backdrop_changed = 1;
+  ad_cur_dt = ad_next_dt(rw);
+  rw->ad_frame_serial++;
+  if (dirty_told && !dirty_whole && rw->ad_settling) {
+    for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+      if (rw->ad_slots[i].active && rw->ad_slots[i].settle_left > 0.0)
+        mb_host_render_dirty(rw->ad_slots[i].cx - rw->ad_slots[i].hx - 4.0,
+                             rw->ad_slots[i].cy - rw->ad_slots[i].hy - 4.0,
+                             rw->ad_slots[i].hx * 2.0 + 8.0, rw->ad_slots[i].hy * 2.0 + 8.0);
+    }
+  }
   int drawn = submit(inst, count, r, g, b, &n, parts);
+  if (drawn) ad_finalize_frame(rw, n < 0, rw->ad_frame_serial);
   glass_idle_tick();
   if (!drawn || !chain) {
     commit_presented();
@@ -2023,6 +2433,61 @@ int mb_render_present(const double *inst, int32_t count, double r, double g, dou
   }
   commit_presented();
   pace_owed = hr != DXGI_STATUS_OCCLUDED ? 1 : pace_owed ? pace_owed : 2;
+  return SUCCEEDED(hr);
+}
+
+int mb_render_adaptive_settling(int wid) {
+  if (wid < 0 || wid >= MB_WINS) return 0;
+  return render_wins[wid].ad_settling;
+}
+
+int mb_render_adaptive_step(int wid) {
+  if (wid < 0 || wid >= MB_WINS) return 0;
+  RenderWin *back = rw;
+  rw = &render_wins[wid];
+  if (!rw->ad_settling || !last_inst || !rtv || !dev || !ctx || !chain) {
+    rw = back;
+    return 0;
+  }
+  dirty_told = dirty_whole = dirty_n = 0;
+  for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+    if (rw->ad_slots[i].active && rw->ad_slots[i].settle_left > 0.0)
+      mb_host_render_dirty(rw->ad_slots[i].cx - rw->ad_slots[i].hx - 4.0,
+                           rw->ad_slots[i].cy - rw->ad_slots[i].hy - 4.0,
+                           rw->ad_slots[i].hx * 2.0 + 8.0, rw->ad_slots[i].hy * 2.0 + 8.0);
+  }
+  ad_mode = 1;
+  ad_backdrop_changed = 0;
+  ad_cur_dt = ad_next_dt(rw);
+  rw->ad_frame_serial++;
+  ensure_canvas(fb_w, fb_h);
+  ID3D11RenderTargetView *target = canvas_rtv ? canvas_rtv : rtv;
+  D3D11_RECT parts[MB_PARTS];
+  int np = canvas_rtv ? take_parts(fb_w, fb_h, canvas_ok, parts) : -1;
+  if (np < 0) encode(target, fb_w, fb_h, last_count, last_bg, last_inst);
+  else for (int i = 0; i < np; i++) encode(target, fb_w, fb_h, last_count, last_bg, last_inst, &parts[i]);
+  if (canvas_rtv) {
+    canvas_ok = 1;
+    ID3D11Resource *back_res = NULL;
+    rtv->GetResource(&back_res);
+    ctx->CopyResource(back_res, canvas);
+    back_res->Release();
+  }
+  ad_finalize_frame(rw, np < 0, rw->ad_frame_serial);
+  HRESULT hr;
+  if (flip_chain && np >= 0) {
+    RECT dr[MB_PARTS];
+    for (int i = 0; i < np; i++) dr[i] = {parts[i].left, parts[i].top, parts[i].right, parts[i].bottom};
+    if (np == 0) dr[np++] = {0, 0, 1, 1};
+    DXGI_PRESENT_PARAMETERS pp = {};
+    pp.DirtyRectsCount = (UINT)np;
+    pp.pDirtyRects = dr;
+    hr = chain->Present1(1, 0, &pp);
+  } else {
+    hr = chain->Present(1, 0);
+  }
+  pace_owed = hr != DXGI_STATUS_OCCLUDED ? 1 : pace_owed ? pace_owed : 2;
+  rw = back;
   return SUCCEEDED(hr);
 }
 
@@ -2160,7 +2625,10 @@ static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg,
     tex->Release();
     return NULL;
   }
+  int prev_ad_mode = ad_mode;
+  if (ad_mode > 0) ad_mode = 0;
   encode(view, w, h, count, bg, f);
+  ad_mode = prev_ad_mode;
   td.Usage = D3D11_USAGE_STAGING;
   td.BindFlags = 0;
   td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
@@ -2210,7 +2678,10 @@ extern "C" int32_t mb_render_pixels_of(const double *inst, int32_t count, double
   vscale = scale;
   vw = w / scale;
   vh = h / scale;
+  int prev_ad_mode = ad_mode;
+  ad_mode = -1;
   ID3D11Texture2D *staging = fill_vbuf(f, count) ? redrawn_of(w, h, count, bg, f) : NULL;
+  ad_mode = prev_ad_mode;
   vw = kw;
   vh = kh;
   vscale = ks;

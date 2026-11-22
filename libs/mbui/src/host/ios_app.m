@@ -281,6 +281,7 @@ static double drawn_for;
     self.wantFrame = YES;
   }
   if (!self.wantFrame) {
+    if (mb_render_adaptive_step(0)) return;
     l.paused = YES;
     last_target = -1;
     return;
@@ -290,7 +291,7 @@ static double drawn_for;
   frame_late = last_target >= 0 ? MAX(0, l.timestamp * 1000.0 - last_target) : 0;
   [self drawFor:l.targetTimestamp * 1000.0];
   last_target = l.targetTimestamp * 1000.0;
-  if (!self.wantFrame) {
+  if (!self.wantFrame && !mb_render_adaptive_settling_of(0)) {
     l.paused = YES;
     last_target = -1;
   }

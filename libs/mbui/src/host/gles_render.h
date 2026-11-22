@@ -17,6 +17,7 @@
 // What is drawn where is the host's to say: the frame's size in points and its scale (cur_w, cur_h, cur_scale), the
 // surface's in pixels (fb_w, fb_h), the framebuffer drawn into (target_fb); gl_setup once its context is current.
 #define MB_GLES_RENDER 1  // (frame_mail.h, included after it, keeps its frames in it: fm_keep)
+#include <time.h>
 #include "contained.h"
 #include "bands.h"
 // the groups of instances the host keeps, drawn out as gl_present takes a frame
@@ -106,6 +107,9 @@ static const char *FS =
     "uniform vec4 u_rad[8];\n"
     "uniform int u_n;\n"
     "uniform vec2 u_glight;\n"
+    "uniform highp sampler2D u_ad;\n"
+    "uniform vec4 u_ad_box[16];\n"
+    "uniform int u_ad_n;\n"
     "// the pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), 2040 fours\n"
     "// (136 instances) a row\n"
     "uniform highp sampler2D u_segs;\n"
@@ -148,18 +152,62 @@ static const char *FS =
     "  return texture(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw)).rgb;\n"
     "}\n"
     "float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }\n"
-    "float mb_backdrop_luma(vec2 c, float r) {\n"
-    "  return (luma(backdrop(c)) + luma(backdrop(c + vec2(r, 0.0))) + luma(backdrop(c - vec2(r, 0.0))) +\n"
-    "          luma(backdrop(c + vec2(0.0, r))) + luma(backdrop(c - vec2(0.0, r)))) / 5.0;\n"
+    "float mb_backdrop_luma_rect(vec2 c, vec2 h) {\n"
+    "  float sum = 0.0;\n"
+    "  float mx1 = -1.0, mx2 = -1.0;\n"
+    "  float mn1 = 2.0, mn2 = 2.0;\n"
+    "  for (int iy = -1; iy <= 1; iy++) {\n"
+    "    float py = c.y + float(iy) * (h.y * 0.60);\n"
+    "    for (int ix = -2; ix <= 2; ix++) {\n"
+    "      float px = c.x + float(ix) * (h.x * 0.38);\n"
+    "      float y = luma(backdrop(vec2(px, py)));\n"
+    "      sum += y;\n"
+    "      if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }\n"
+    "      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
+    "    }\n"
+    "  }\n"
+    "  return (sum - mx1 - mx2 - mn1 - mn2) / 11.0;\n"
     "}\n"
-    "vec3 mb_adaptive_ink(vec3 rgb, float bgL) {\n"
+    "float mb_unpack16(vec2 rg) {\n"
+    "  float hi = floor(clamp(rg.x, 0.0, 1.0) * 255.0 + 0.5);\n"
+    "  float lo = floor(clamp(rg.y, 0.0, 1.0) * 255.0 + 0.5);\n"
+    "  return (hi * 256.0 + lo) / 65535.0;\n"
+    "}\n"
+    "float ad_sample(vec2 ac, float fallback_r, bool is_dark_glass) {\n"
+    "  if (u_ad_n > 0) {\n"
+    "    int best = -1;\n"
+    "    float best_d = 1e9;\n"
+    "    for (int i = 0; i < 16; i++) {\n"
+    "      if (i >= u_ad_n) break;\n"
+    "      float d = length(ac - u_ad_box[i].xy);\n"
+    "      if (d <= 2.0 && d < best_d) { best = i; best_d = d; }\n"
+    "    }\n"
+    "    if (best < 0) {\n"
+    "      best_d = 1e9;\n"
+    "      for (int i = 0; i < 16; i++) {\n"
+    "        if (i >= u_ad_n) break;\n"
+    "        vec2 diff = abs(ac - u_ad_box[i].xy);\n"
+    "        if (diff.x <= u_ad_box[i].z + 2.0 && diff.y <= u_ad_box[i].w + 2.0) {\n"
+    "          float d = length(diff);\n"
+    "          if (d < best_d) { best = i; best_d = d; }\n"
+    "        }\n"
+    "      }\n"
+    "    }\n"
+    "    if (best >= 0) {\n"
+    "      return mb_unpack16(texelFetch(u_ad, ivec2(best, 0), 0).rg);\n"
+    "    }\n"
+    "  }\n"
+    "  float bgL = mb_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));\n"
+    "  return is_dark_glass ? smoothstep(0.35, 0.85, bgL) : (1.0 - smoothstep(0.30, 0.42, bgL));\n"
+    "}\n"
+    "vec3 mb_adaptive_ink(vec3 rgb, float darkT) {\n"
     "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
     "  if (ch <= 0.08) {\n"
     "    float origL = luma(rgb);\n"
     "    if (origL < 0.5) {\n"
-    "      float lightT = smoothstep(0.29, 0.31, bgL);\n"
+    "      float inkT = smoothstep(0.0, 1.0, darkT);\n"
     "      float lightL = clamp(1.06 - origL, 0.68, 0.98);\n"
-    "      rgb = mix(vec3(lightL), rgb, lightT);\n"
+    "      rgb = mix(rgb, vec3(lightL), inkT);\n"
     "    }\n"
     "  }\n"
     "  return rgb;\n"
@@ -190,7 +238,7 @@ static const char *FS =
     "      for (int i = first; i < first + n; i++) { int t = (i / 6) * 15 + mb_seg_slot(i); w += mb_path_rows(texelFetch(u_segs, ivec2(t % 2040, t / 2040), 0), v_rect, p, u_scale); }\n"
     "      a = mb_path_cover(w, v_c2.z);\n"
     "    }\n"
-    "    if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, mb_backdrop_luma(v_pad.yz, v_pad.w * 0.5));\n"
+    "    if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, ad_sample(v_pad.yz, v_pad.w * 0.5, false));\n"
     "    o = vec4(col.rgb, 1.0) * col.a * a;\n"
     "    return;\n"
     "  }\n"
@@ -199,7 +247,7 @@ static const char *FS =
     "    vec2 a = v_rect.xy + v_c2.xy * v_rect.zw, ab = v_rect.xy + v_c2.zw * v_rect.zw - a;\n"
     "    float h = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-8), 0.0, 1.0);\n"
     "    float d = length(p - a - ab * h) - v_p.x;\n"
-    "    if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, mb_backdrop_luma(v_pad.yz, v_pad.w * 0.5));\n"
+    "    if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, ad_sample(v_pad.yz, v_pad.w * 0.5, false));\n"
     "    o = vec4(col.rgb, 1.0) * col.a * clamp(0.5 - d * u_scale, 0.0, 1.0);\n"
     "    return;\n"
     "  }\n"
@@ -222,8 +270,8 @@ static const char *FS =
     "                    : vec4(textureLod(u_atlas, uv / vec2(textureSize(u_atlas, 0)), 0.0).r);\n"
     "    if (kind == 7) {\n"
     "      // inked by how light what is under its glass is, looked at round the glass's middle\n"
-    "      float l = mb_backdrop_luma(v_pad.yz, v_pad.w * 0.5);\n"
-    "      vec3 ink = mb_adaptive_ink(col.rgb, l);\n"
+    "      float darkT = ad_sample(v_pad.yz, v_pad.w * 0.5, false);\n"
+    "      vec3 ink = mb_adaptive_ink(col.rgb, darkT);\n"
     "      o = vec4(ink, 1.0) * (t.a * col.a);\n"
     "      return;\n"
     "    }\n"
@@ -375,10 +423,10 @@ static const char *FS =
     "      vec2 ac = (k <= 0.0) ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);\n"
     "      float ar = ((k <= 0.0) ? max(min(v_rect.z, v_rect.w) * 0.5, 1.0) : max(min(u_gb.z - u_gb.x, u_gb.w - u_gb.y) * 0.5, 1.0)) * 0.5;\n"
     "#endif\n"
-    "      float bgL = mb_backdrop_luma(ac, ar);\n"
+    "      float val = ad_sample(ac, ar, is_dark);\n"
     "      float baseDens = (col.a > 0.41) ? col.a : 0.30;\n"
     "      if (is_dark) {\n"
-    "        float brightT = smoothstep(0.35, 0.85, bgL);\n"
+    "        float brightT = val;\n"
     "        fogT = brightT;\n"
     "        float dens = max(baseDens, mix(baseDens, 0.64, brightT));\n"
     "        float extra = clamp((dens - 0.30) / (1.0 - 0.30), 0.0, 1.0);\n"
@@ -389,7 +437,7 @@ static const char *FS =
     "        contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;\n"
     "        glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
     "      } else {\n"
-    "        float darkMix = 1.0 - smoothstep(0.24, 0.36, bgL);\n"
+    "        float darkMix = val;\n"
     "        fogT = darkMix;\n"
     "        float extra = clamp((baseDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);\n"
     "        float darkDens = max(baseDens, mix(baseDens, 0.52, darkMix));\n"
@@ -732,11 +780,74 @@ static const char *PFS =
     "  o = s / wsum;\n"
     "}\n";
 
-static GLuint vao, vbo, atlas, catlas, post;
+static const char *AD_FS =
+    "#version 300 es\n"
+    "precision highp float;\n"
+    "precision highp int;\n"
+    "uniform highp sampler2D u_bd;\n"
+    "uniform highp sampler2D u_prev;\n"
+    "uniform vec4 u_map;\n"
+    "uniform vec4 u_uvc;\n"
+    "uniform vec4 u_box;\n"
+    "uniform vec4 u_param;\n"
+    "out vec4 o;\n"
+    "float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }\n"
+    "float mb_unpack16(vec2 rg) {\n"
+    "  float hi = floor(clamp(rg.x, 0.0, 1.0) * 255.0 + 0.5);\n"
+    "  float lo = floor(clamp(rg.y, 0.0, 1.0) * 255.0 + 0.5);\n"
+    "  return (hi * 256.0 + lo) / 65535.0;\n"
+    "}\n"
+    "vec2 mb_pack16(float v) {\n"
+    "  float q = floor(clamp(v, 0.0, 1.0) * 65535.0 + 0.5);\n"
+    "  float hi = floor(q / 256.0);\n"
+    "  float lo = q - hi * 256.0;\n"
+    "  return vec2(hi / 255.0, lo / 255.0);\n"
+    "}\n"
+    "void main() {\n"
+    "  vec2 c = u_box.xy, h = u_box.zw;\n"
+    "  float sum = 0.0, mx1 = -1.0, mx2 = -1.0, mn1 = 2.0, mn2 = 2.0;\n"
+    "  for (int iy = -1; iy <= 1; iy++) {\n"
+    "    float py = c.y + float(iy) * (h.y * 0.60);\n"
+    "    for (int ix = -2; ix <= 2; ix++) {\n"
+    "      float px = c.x + float(ix) * (h.x * 0.38);\n"
+    "      vec2 uv = clamp(vec2(px, py) * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw);\n"
+    "      float y = luma(texture(u_bd, uv).rgb);\n"
+    "      sum += y;\n"
+    "      if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }\n"
+    "      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
+    "    }\n"
+    "  }\n"
+    "  float bgL = (sum - mx1 - mx2 - mn1 - mn2) / 11.0;\n"
+    "  int sid = int(u_param.w + 0.5);\n"
+    "  vec4 prev = texelFetch(u_prev, ivec2(sid, 0), 0);\n"
+    "  float prevT = mb_unpack16(prev.rg);\n"
+    "  float is_dark = u_param.x, is_new = u_param.y, dt = u_param.z;\n"
+    "  float latch, target;\n"
+    "  if (is_dark > 0.5) {\n"
+    "    target = smoothstep(0.35, 0.85, bgL);\n"
+    "    latch = target;\n"
+    "  } else {\n"
+    "    if (is_new > 0.5) latch = (bgL < 0.36) ? 1.0 : 0.0;\n"
+    "    else if (prev.b > 0.5) latch = (bgL > 0.46) ? 0.0 : 1.0;\n"
+    "    else latch = (bgL < 0.36) ? 1.0 : 0.0;\n"
+    "    target = latch;\n"
+    "  }\n"
+    "  float nextT;\n"
+    "  if (is_new > 0.5 || dt >= 1.0) nextT = target;\n"
+    "  else if (dt <= 0.0) nextT = prevT;\n"
+    "  else {\n"
+    "    nextT = mix(prevT, target, 1.0 - exp(-dt / 0.070));\n"
+    "    if (abs(nextT - target) < 0.003) nextT = target;\n"
+    "  }\n"
+    "  o = vec4(mb_pack16(nextT), latch, clamp(bgL, 0.0, 1.0));\n"
+    "}\n";
+
+static GLuint vao, vbo, atlas, catlas, post, ad_prog;
 // a ground's flat middle (bands.h mb_pieces), and where its window's size goes
 static GLuint prog_flat;
 static GLint uf_vp;
 static GLint pu_src, pu_lv1, pu_lv2, pu_lv3, pu_a, pu_b, pu_c;
+static GLint adu_bd, adu_prev, adu_map, adu_uvc, adu_box, adu_param;
 
 // The kinds drawn by a program of their own: the shader with its kind fixed (ONE_KIND), so each is compiled to its
 // kind's branch alone and a pixel of it is shaded with the registers that branch needs, not the most any kind's does
@@ -751,7 +862,7 @@ static int has_own_prog(int kind) {
 }
 typedef struct {
   GLuint p;
-  GLint vp, scale, map, uvc, gb, shape, rad, n, glight;
+  GLint vp, scale, map, uvc, gb, shape, rad, n, glight, ad_box, ad_n;
   unsigned gen;
 } kprog;
 static kprog progs[MB_KINDS + 1];
@@ -823,6 +934,8 @@ static kprog make_prog(GLuint vs, int kind) {
   k.rad = glGetUniformLocation(k.p, "u_rad");
   k.n = glGetUniformLocation(k.p, "u_n");
   k.glight = glGetUniformLocation(k.p, "u_glight");
+  k.ad_box = glGetUniformLocation(k.p, "u_ad_box");
+  k.ad_n = glGetUniformLocation(k.p, "u_ad_n");
   glUseProgram(k.p);
   GLint loc;
   if ((loc = glGetUniformLocation(k.p, "u_atlas")) >= 0) glUniform1i(loc, 0);
@@ -830,6 +943,7 @@ static kprog make_prog(GLuint vs, int kind) {
   if ((loc = glGetUniformLocation(k.p, "u_bd")) >= 0) glUniform1i(loc, 2);
   if ((loc = glGetUniformLocation(k.p, "u_segs")) >= 0) glUniform1i(loc, 3);
   if ((loc = glGetUniformLocation(k.p, "u_catlas")) >= 0) glUniform1i(loc, 4);
+  if ((loc = glGetUniformLocation(k.p, "u_ad")) >= 0) glUniform1i(loc, 5);
   return k;
 }
 
@@ -849,8 +963,9 @@ static void gl_setup(void) {
   segs_tex = 0;
   segs_rows = 0;
   segs_had_n = 0;
+  GLuint pvs = compile(GL_VERTEX_SHADER, PVS);
   post = glCreateProgram();
-  glAttachShader(post, compile(GL_VERTEX_SHADER, PVS));
+  glAttachShader(post, pvs);
   glAttachShader(post, compile(GL_FRAGMENT_SHADER, PFS));
   glLinkProgram(post);
   pu_src = glGetUniformLocation(post, "u_src");
@@ -860,6 +975,17 @@ static void gl_setup(void) {
   pu_a = glGetUniformLocation(post, "u_a");
   pu_b = glGetUniformLocation(post, "u_b");
   pu_c = glGetUniformLocation(post, "u_c");
+  ad_prog = glCreateProgram();
+  glAttachShader(ad_prog, pvs);
+  glAttachShader(ad_prog, compile(GL_FRAGMENT_SHADER, AD_FS));
+  glLinkProgram(ad_prog);
+  glDeleteShader(pvs);
+  adu_bd = glGetUniformLocation(ad_prog, "u_bd");
+  adu_prev = glGetUniformLocation(ad_prog, "u_prev");
+  adu_map = glGetUniformLocation(ad_prog, "u_map");
+  adu_uvc = glGetUniformLocation(ad_prog, "u_uvc");
+  adu_box = glGetUniformLocation(ad_prog, "u_box");
+  adu_param = glGetUniformLocation(ad_prog, "u_param");
   glass_lost();
   canvas_lost();
   glGenVertexArrays(1, &vao);
@@ -909,6 +1035,7 @@ static int vy0, vhp;
 
 // the last capture's blur is kept to be shown again (capture, below)
 static int kept_ok;
+static void slots_invalidate(void);
 static void glass_forget(void);
 
 static level level_tex(GLenum format, int w, int h) {
@@ -943,7 +1070,7 @@ static void ensure_levels(int w, int h) {
   lv_h = nh > lv_h ? nh : lv_h;
   levels_rebuilt++;
   // (the blurs kept were shown by where they lie in levels of the old size: one made now would be shown by the new)
-  glass_forget();
+  slots_invalidate();
   for (int j = 0; j < 4; j++)
     lv[j] = level_tex(j == 0 ? GL_RGBA8 : GL_RGB10_A2, (lv_w + (1 << j) - 1) >> j, (lv_h + (1 << j) - 1) >> j);
   lv[4] = level_tex(GL_RGB10_A2, lv_w, lv_h);
@@ -1337,9 +1464,256 @@ static float *under_now;
 static size_t under_now_cap, under_now_n;
 static int32_t under_whole, under_picked;
 
-static void glass_forget(void) {
+#define MB_ADAPTIVE_MAX 16
+#define MB_AD_TAU 0.070
+#define MB_AD_SETTLE_SEC 0.42
+#define MB_AD_MATCH_DIST 64.0
+
+typedef struct {
+  int active;
+  float cx, cy, hx, hy;
+  int is_dark;
+  double settle_left;
+  uint64_t updated_serial;
+  uint64_t seen_serial;
+} mb_ad_slot;
+
+static GLuint ad_tex[2], ad_fb[2];
+static int ad_cur;
+static mb_ad_slot ad_slots[MB_ADAPTIVE_MAX];
+static double ad_last_time, ad_fixed_dt;
+static uint64_t ad_frame_serial;
+static int ad_settling;
+// 1 = update adaptive state, 0 = read-only, -1 = stateless
+static int ad_mode = 1;
+static double ad_cur_dt = 0.0;
+static float gad_box[MB_ADAPTIVE_MAX * 4];
+static int gad_n;
+
+static void ad_forget(void) {
+  memset(ad_slots, 0, sizeof ad_slots);
+  ad_last_time = 0.0;
+  ad_settling = 0;
+  gad_n = 0;
+}
+
+static void ensure_ad_tex(void) {
+  if (ad_tex[0]) return;
+  for (int i = 0; i < 2; i++) {
+    glGenTextures(1, &ad_tex[i]);
+    glBindTexture(GL_TEXTURE_2D, ad_tex[i]);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, MB_ADAPTIVE_MAX, 1);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenFramebuffers(1, &ad_fb[i]);
+    glBindFramebuffer(GL_FRAMEBUFFER, ad_fb[i]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ad_tex[i], 0);
+  }
+  ad_cur = 0;
+}
+
+static void ad_fill_uniforms(void) {
+  if (ad_mode < 0) {
+    gad_n = 0;
+    return;
+  }
+  int max_active = 0;
+  for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+    if (ad_slots[i].active) {
+      gad_box[i * 4 + 0] = ad_slots[i].cx;
+      gad_box[i * 4 + 1] = ad_slots[i].cy;
+      gad_box[i * 4 + 2] = ad_slots[i].hx;
+      gad_box[i * 4 + 3] = ad_slots[i].hy;
+      max_active = i + 1;
+    } else {
+      gad_box[i * 4 + 0] = -1e9f;
+      gad_box[i * 4 + 1] = -1e9f;
+      gad_box[i * 4 + 2] = -1e9f;
+      gad_box[i * 4 + 3] = -1e9f;
+    }
+  }
+  gad_n = max_active;
+}
+
+typedef struct {
+  int sid, is_new, is_dark;
+  float cx, cy, hx, hy;
+} gl_ad_pend;
+
+static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int32_t count, const Grab *m,
+                                int backdrop_changed, double dt, uint64_t serial, gl_ad_pend out[MB_ADAPTIVE_MAX]) {
+  (void)end;
+  if (ad_mode <= 0 || dt < 0.0) return 0;
+  const float *a = f + (size_t)start * MB_INST;
+  int kind = (int)(a[5] + 0.5f);
+  if (kind != 6) return 0;
+  int merged_liquid = a[23] > 0.0f;
+  struct { float cx, cy, hx, hy; int is_dark; } items[MB_ADAPTIVE_MAX];
+  int ni = 0;
+  if (merged_liquid) {
+    int is_clear = (a[7] <= 0.1f && a[11] < 0.12f);
+    int is_adaptive = a[14] < -0.5f;
+    if (is_adaptive && !is_clear) {
+      float lum = 0.2126f * a[8] + 0.7152f * a[9] + 0.0722f * a[10];
+      items[ni].cx = (m->gb[0] + m->gb[2]) * 0.5f;
+      items[ni].cy = (m->gb[1] + m->gb[3]) * 0.5f;
+      items[ni].hx = fmaxf((m->gb[2] - m->gb[0]) * 0.5f, 1.0f);
+      items[ni].hy = fmaxf((m->gb[3] - m->gb[1]) * 0.5f, 1.0f);
+      items[ni].is_dark = (a[11] >= 0.05f && lum < 0.35f) ? 1 : 0;
+      ni++;
+    }
+  } else {
+    float tid = a[20];
+    for (int32_t i = start; i < count && ni < MB_ADAPTIVE_MAX; i++) {
+      const float *b = f + (size_t)i * MB_INST;
+      if (b[20] != tid) continue;
+      if ((int)(b[5] + 0.5f) != 6 || b[23] > 0.0f) continue;
+      int is_clear = (b[7] <= 0.1f && b[11] < 0.12f);
+      int is_adaptive = b[14] < -0.5f;
+      if (!is_adaptive || is_clear) continue;
+      float lum = 0.2126f * b[8] + 0.7152f * b[9] + 0.0722f * b[10];
+      items[ni].cx = b[0] + b[2] * 0.5f;
+      items[ni].cy = b[1] + b[3] * 0.5f;
+      items[ni].hx = fmaxf(b[2] * 0.5f, 1.0f);
+      items[ni].hy = fmaxf(b[3] * 0.5f, 1.0f);
+      items[ni].is_dark = (b[11] >= 0.05f && lum < 0.35f) ? 1 : 0;
+      ni++;
+    }
+  }
+  int n_upd = 0;
+  for (int k = 0; k < ni; k++) {
+    int sid = -1, is_new = 0;
+    for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+      mb_ad_slot *s = &ad_slots[i];
+      if (s->active && s->seen_serial == serial && s->is_dark == items[k].is_dark &&
+          hypotf(items[k].cx - s->cx, items[k].cy - s->cy) <= 2.0f) {
+        sid = i;
+        break;
+      }
+    }
+    if (sid < 0) {
+      float best_d = (float)MB_AD_MATCH_DIST + 1e-3f;
+      for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+        mb_ad_slot *s = &ad_slots[i];
+        if (!s->active || s->seen_serial == serial || s->is_dark != items[k].is_dark) continue;
+        float d = hypotf(items[k].cx - s->cx, items[k].cy - s->cy);
+        if (d <= best_d) { best_d = d; sid = i; }
+      }
+      if (sid < 0) {
+        for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+          if (!ad_slots[i].active) { sid = i; break; }
+        }
+        if (sid < 0) {
+          uint64_t oldest = UINT64_MAX;
+          for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+            if (ad_slots[i].seen_serial != serial && ad_slots[i].seen_serial < oldest) {
+              oldest = ad_slots[i].seen_serial;
+              sid = i;
+            }
+          }
+          if (sid < 0) sid = 0;
+        }
+        is_new = 1;
+        memset(&ad_slots[sid], 0, sizeof ad_slots[sid]);
+        ad_slots[sid].active = 1;
+        ad_slots[sid].is_dark = items[k].is_dark;
+      }
+      ad_slots[sid].cx = items[k].cx;
+      ad_slots[sid].cy = items[k].cy;
+      ad_slots[sid].hx = items[k].hx;
+      ad_slots[sid].hy = items[k].hy;
+      ad_slots[sid].seen_serial = serial;
+    }
+    mb_ad_slot *s = &ad_slots[sid];
+    if (s->updated_serial == serial) continue;
+    int need = is_new || backdrop_changed || s->settle_left > 0.0;
+    if (need) {
+      if (is_new) {
+        s->settle_left = 0.0;
+      } else if (backdrop_changed) {
+        s->settle_left = MB_AD_SETTLE_SEC;
+      } else {
+        s->settle_left -= dt;
+        if (s->settle_left <= 0.0) s->settle_left = 0.0;
+      }
+      s->updated_serial = serial;
+      out[n_upd++] = (gl_ad_pend){sid, is_new, s->is_dark, s->cx, s->cy, s->hx, s->hy};
+    }
+  }
+  return n_upd;
+}
+
+static void ad_run_updates(const gl_ad_pend *pend, int n_upd, double dt) {
+  if (n_upd <= 0 || !bd_tex || !ad_prog) return;
+  ensure_ad_tex();
+  int cur = ad_cur, nxt = 1 - cur;
+  glDisable(GL_BLEND);
+  glDisable(GL_SCISSOR_TEST);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, ad_fb[cur]);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ad_fb[nxt]);
+  glBlitFramebuffer(0, 0, MB_ADAPTIVE_MAX, 1, 0, 0, MB_ADAPTIVE_MAX, 1, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+  glBindFramebuffer(GL_FRAMEBUFFER, ad_fb[nxt]);
+  glViewport(0, 0, MB_ADAPTIVE_MAX, 1);
+  glEnable(GL_SCISSOR_TEST);
+  glUseProgram(ad_prog);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, bd_tex);
+  glUniform1i(adu_bd, 0);
+  glActiveTexture(GL_TEXTURE1);
+  glBindTexture(GL_TEXTURE_2D, ad_tex[cur]);
+  glUniform1i(adu_prev, 1);
+  glUniform4fv(adu_map, 1, gmap);
+  glUniform4fv(adu_uvc, 1, guvc);
+  for (int i = 0; i < n_upd; i++) {
+    glScissor(pend[i].sid, 0, 1, 1);
+    glUniform4f(adu_box, pend[i].cx, pend[i].cy, pend[i].hx, pend[i].hy);
+    glUniform4f(adu_param, (float)pend[i].is_dark, (float)pend[i].is_new, (float)dt, (float)pend[i].sid);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+  }
+  ad_cur = nxt;
+}
+
+static double ad_next_dt(void) {
+  if (ad_fixed_dt > 0.0) return ad_fixed_dt;
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  double now = (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+  double dt = ad_last_time > 0.0 ? (now - ad_last_time) : (1.0 / 60.0);
+  ad_last_time = now;
+  if (dt < 0.0) dt = 0.0;
+  if (dt > 0.1) dt = 0.1;
+  return dt;
+}
+
+static void ad_finalize_frame(int whole_frame, uint64_t serial) {
+  int settling = 0;
+  for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+    mb_ad_slot *s = &ad_slots[i];
+    if (!s->active) continue;
+    if (whole_frame && s->seen_serial != serial) {
+      s->active = 0;
+      s->settle_left = 0.0;
+      continue;
+    }
+    if (s->settle_left > 0.0) settling = 1;
+  }
+  ad_settling = settling;
+}
+
+static void gl_set_fixed_dt(double dt) { ad_fixed_dt = dt > 0.0 ? dt : 0.0; }
+static void gl_adaptive_reset(void) { ad_forget(); }
+static int gl_adaptive_settling(void) { return ad_settling; }
+
+static void slots_invalidate(void) {
   for (int i = 0; i < MB_GLASS_SLOTS; i++) slots[i].valid = 0;
   kept_ok = 0;
+}
+
+static void glass_forget(void) {
+  slots_invalidate();
+  ad_forget();
 }
 
 // a new context has none of the old textures
@@ -1351,6 +1725,9 @@ static void glass_lost(void) {
     s->bt = s->bfb = 0;
     s->bw = s->bh = 0;
   }
+  ad_tex[0] = ad_tex[1] = 0;
+  ad_fb[0] = ad_fb[1] = 0;
+  ad_cur = 0;
   glass_forget();
 }
 
@@ -1372,6 +1749,10 @@ static void glass_free(void) {
     free(s->under);
     s->under = NULL;
     s->under_cap = s->under_n = 0;
+  }
+  for (int i = 0; i < 2; i++) {
+    if (ad_fb[i]) glDeleteFramebuffers(1, &ad_fb[i]);
+    if (ad_tex[i]) glDeleteTextures(1, &ad_tex[i]);
   }
   bd_tex = 0;
   glass_lost();
@@ -1539,7 +1920,9 @@ static int capture(const float *f, int32_t start, int32_t end, int32_t count, in
   if (shows) {
     int known = under_take(f, start, count, pieces, &m);
     glass_slot *s = known ? slot_same(&m, key) : NULL;
+    int reblurred = 0;
     if (!s) {
+      reblurred = 1;
       blur(&m);
       s = slot_fill(&m, frame_clock);
       // (an image drawn under it that had no texture yet: it comes under the same instances, so this blur is not kept
@@ -1548,6 +1931,10 @@ static int capture(const float *f, int32_t start, int32_t end, int32_t count, in
     }
     kept_ok = s->valid;
     slot_show(&m, s);
+    gl_ad_pend ad_pend[MB_ADAPTIVE_MAX];
+    int ad_n_upd = ad_collect_and_match(f, start, end, count, &m, reblurred, ad_cur_dt, ad_frame_serial, ad_pend);
+    if (ad_n_upd > 0) ad_run_updates(ad_pend, ad_n_upd, ad_cur_dt);
+    ad_fill_uniforms();
   }
   main_state();
   return shows;
@@ -1572,6 +1959,8 @@ static void use_prog(int kind) {
     float a = g_light_angle;
     glUniform2f(k->glight, cosf(a), sinf(a));
   }
+  if (k->ad_box >= 0) glUniform4fv(k->ad_box, MB_ADAPTIVE_MAX, gad_box);
+  if (k->ad_n >= 0) glUniform1i(k->ad_n, gad_n);
 }
 
 // the main programs' state (after the passes)
@@ -1587,6 +1976,8 @@ static void main_state(void) {
   glEnable(GL_BLEND);
   glBindVertexArray(vao);
   glBindBuffer(GL_ARRAY_BUFFER, vbo);
+  glActiveTexture(GL_TEXTURE5);
+  glBindTexture(GL_TEXTURE_2D, ad_tex[ad_cur] ? ad_tex[ad_cur] : atlas);
   glActiveTexture(GL_TEXTURE4);
   glBindTexture(GL_TEXTURE_2D, catlas);
   glActiveTexture(GL_TEXTURE0);
@@ -1686,8 +2077,32 @@ static void gl_present(const double *buf, int32_t count, double r, double g, dou
 static void gl_present_drawn(int32_t count, double r, double g, double b);
 static void gl_present_kept(int32_t count, double r, double g, double b) {
   glass_drawn = 0;
+  ad_mode = 1;
+  ad_cur_dt = ad_next_dt();
+  ad_frame_serial++;
+  int whole = !dirty_told || dirty_whole || pictures_missing || views_drawn_in();
+  if (!whole && ad_settling) {
+    for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+      if (ad_slots[i].active && ad_slots[i].settle_left > 0.0)
+        gl_dirty_add(ad_slots[i].cx - ad_slots[i].hx - 4.0, ad_slots[i].cy - ad_slots[i].hy - 4.0,
+                     ad_slots[i].hx * 2.0 + 8.0, ad_slots[i].hy * 2.0 + 8.0);
+    }
+  }
   gl_present_drawn(count, r, g, b);
+  ad_finalize_frame(whole, ad_frame_serial);
   glass_idle_tick();
+}
+
+static int gl_adaptive_step(void) {
+  if (!ad_settling || kept_count <= 0 || !fbuf) return 0;
+  dirty_told = dirty_whole = dirty_n = 0;
+  for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+    if (ad_slots[i].active && ad_slots[i].settle_left > 0.0)
+      gl_dirty_add(ad_slots[i].cx - ad_slots[i].hx - 4.0, ad_slots[i].cy - ad_slots[i].hy - 4.0,
+                   ad_slots[i].hx * 2.0 + 8.0, ad_slots[i].hy * 2.0 + 8.0);
+  }
+  gl_present_kept(kept_count, kept_r, kept_g, kept_b);
+  return 1;
 }
 
 static void gl_present_drawn(int32_t count, double r, double g, double b) {
@@ -1748,7 +2163,10 @@ static void draw_kept_read(void) {
     read_w = fb_w;
     read_h = fb_h;
   }
+  int prev_ad_mode = ad_mode;
+  if (ad_mode > 0) ad_mode = 0;
   draw_into(read_fb, 0);
+  ad_mode = prev_ad_mode;
   glBindFramebuffer(GL_FRAMEBUFFER, read_fb);
 }
 
@@ -1813,7 +2231,10 @@ static int32_t gles_pixels_of(const double *inst, int32_t count, double r, doubl
   cur_scale = scale;
   cur_w = w / scale;
   cur_h = h / scale;
+  int prev_ad_mode = ad_mode;
+  ad_mode = -1;
   int32_t ok = gles_drawn_pixels(0, 0, w, h, out);
+  ad_mode = prev_ad_mode;
   free(fbuf);
   fbuf = kf;
   fcap = kc;
@@ -1930,6 +2351,7 @@ static void draw_into(GLuint fb, int part) {
   memset(guvc, 0, sizeof guvc);
   memset(ggb, 0, sizeof ggb);
   gn = 0;
+  ad_fill_uniforms();
   glBindVertexArray(vao);
   glBindBuffer(GL_ARRAY_BUFFER, vbo);
   glBufferData(GL_ARRAY_BUFFER, (n + MB_INST) * sizeof(float), fbuf, GL_STREAM_DRAW);

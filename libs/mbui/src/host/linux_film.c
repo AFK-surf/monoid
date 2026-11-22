@@ -77,7 +77,7 @@ static char *film_destination, *film_temporary;
 static int32_t film_w, film_h, film_fps, film_written;
 // the picture drawn last (what the next frame put is) and the one put last (what the frames before it are)
 static uint8_t *film_shown, *film_put;
-static int film_has_shown, film_has_put;
+static int film_has_shown, film_has_put, film_fresh;
 
 static char *quoted(const char *s) {
   GString *q = g_string_new("'");
@@ -93,11 +93,12 @@ static void film_forget(void) {
   free(film_shown);
   free(film_put);
   film_shown = film_put = NULL;
-  film_has_shown = film_has_put = 0;
+  film_has_shown = film_has_put = film_fresh = 0;
   film_written = 0;
 }
 
 static void film_discard_open(void) {
+  mb_render_set_fixed_dt(0.0);
   if (film_pipe) pclose(film_pipe);
   film_pipe = NULL;
   if (film_temporary) unlink(film_temporary);
@@ -149,7 +150,24 @@ int32_t mbf_open(moonbit_string_t path, int32_t w, int32_t h, int32_t fps) {
   size_t n = (size_t)film_w * film_h * 4;
   film_shown = calloc(1, n);
   film_put = calloc(1, n);
+  mb_render_set_fixed_dt(1.0 / (double)fps);
+  mb_render_adaptive_reset();
+  film_fresh = 0;
   return 1;
+}
+
+static int film_read_into(uint8_t *dst) {
+  int fw = size_fb ? size_pw : film_w, fh = size_fb ? size_ph : film_h;
+  int cols = fw < film_w ? fw : film_w, rows = fh < film_h ? fh : film_h;
+  moonbit_bytes_t px = moonbit_make_bytes((int32_t)((size_t)cols * rows * 4), 0);
+  int ok = mb_render_drawn_pixels(0, 0, cols, rows, px);
+  if (ok) {
+    if (cols < film_w || rows < film_h) memset(dst, 0, (size_t)film_w * film_h * 4);
+    for (int y = 0; y < rows; y++)
+      memcpy(dst + (size_t)y * film_w * 4, px + (size_t)y * cols * 4, (size_t)cols * 4);
+  }
+  moonbit_decref(px);
+  return ok;
 }
 
 // The instances drawn offscreen and read back drawn whole into a picture of the film's (the picture the next frames
@@ -157,18 +175,11 @@ int32_t mbf_open(moonbit_string_t path, int32_t w, int32_t h, int32_t fps) {
 int32_t mbf_draw(const double *inst, int32_t count, double r, double g, double b) {
   if (!film_pipe) return 0;
   mb_host_present((double *)inst, count, r, g, b);
-  // (the frame as drawn at the size set, its part the film holds: its top left)
-  int fw = size_fb ? size_pw : film_w, fh = size_fb ? size_ph : film_h;
-  int cols = fw < film_w ? fw : film_w, rows = fh < film_h ? fh : film_h;
-  moonbit_bytes_t px = moonbit_make_bytes((int32_t)((size_t)cols * rows * 4), 0);
-  int ok = mb_render_drawn_pixels(0, 0, cols, rows, px);
+  int ok = film_read_into(film_shown);
   if (ok) {
-    if (cols < film_w || rows < film_h) memset(film_shown, 0, (size_t)film_w * film_h * 4);
-    for (int y = 0; y < rows; y++)
-      memcpy(film_shown + (size_t)y * film_w * 4, px + (size_t)y * cols * 4, (size_t)cols * 4);
     film_has_shown = 1;
+    film_fresh = 1;
   }
-  moonbit_decref(px);
   return ok;
 }
 
@@ -190,8 +201,18 @@ int32_t mbf_put(int32_t k) {
     fprintf(stderr, "film: frame %d put after frame %d\n", k, film_written - 1);
     return 0;
   }
-  while (film_written < k)
+  while (film_written < k) {
+    if (mb_render_adaptive_settling()) {
+      mb_render_adaptive_step();
+      if (!film_read_into(film_has_put ? film_put : film_shown)) return 0;
+    }
     if (!film_write(film_has_put ? film_put : film_shown)) return 0;
+  }
+  if (!film_fresh && mb_render_adaptive_settling()) {
+    mb_render_adaptive_step();
+    if (!film_read_into(film_shown)) return 0;
+  }
+  film_fresh = 0;
   if (!film_write(film_shown)) return 0;
   memcpy(film_put, film_shown, (size_t)film_w * film_h * 4);
   film_has_put = 1;
@@ -201,9 +222,22 @@ int32_t mbf_put(int32_t k) {
 // The film ended after `frames` frames (the picture put last held to its end) and written out whole: 1, or 0 with
 // what went wrong said.
 int32_t mbf_close(int32_t frames) {
-  if (!film_pipe) return 0;
+  if (!film_pipe) {
+    mb_render_set_fixed_dt(0.0);
+    return 0;
+  }
   int ok = 1;
-  while (ok && film_has_put && film_written < frames) ok = film_write(film_put);
+  while (ok && film_has_put && film_written < frames) {
+    if (mb_render_adaptive_settling()) {
+      mb_render_adaptive_step();
+      if (!film_read_into(film_put)) {
+        ok = 0;
+        break;
+      }
+    }
+    ok = film_write(film_put);
+  }
+  mb_render_set_fixed_dt(0.0);
   int status = pclose(film_pipe);
   film_pipe = NULL;
   if (status == -1 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {

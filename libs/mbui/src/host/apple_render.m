@@ -64,6 +64,20 @@ typedef struct {
 // are drawn into, whether it holds the last drawn; the frame waiting to be drawn (`pending`, under present_mu) and
 // whether a drawing of it is queued; whether a frame found no drawable (`missed`: the next is not skipped as shown). Put
 // in place for a window by mb_render_use.
+#define MB_ADAPTIVE_MAX 16
+#define MB_AD_TAU 0.070
+#define MB_AD_SETTLE_SEC 0.42
+#define MB_AD_MATCH_DIST 64.0
+
+typedef struct {
+  int active;
+  float cx, cy, hx, hy;
+  int is_dark;
+  double settle_left;
+  uint64_t updated_serial;
+  uint64_t seen_serial;
+} MBAdSlot;
+
 typedef struct {
   CAMetalLayer *layer;
   double w, h, scale;
@@ -79,6 +93,15 @@ typedef struct {
   MBFrame *pending;
   int queued;
   atomic_int missed;
+  id<MTLTexture> ad_tex[2];
+  int ad_cur;
+  MBAdSlot ad_slots[MB_ADAPTIVE_MAX];
+  double ad_last_time;
+  uint64_t ad_frame_serial;
+  atomic_int ad_settling;
+  atomic_int ad_drawing;
+  atomic_int ad_has_adaptive;
+  MBDirty ad_settle_dirty;
 } MBRenderWin;
 static MBRenderWin render_wins[MB_WINS] = {[0 ... MB_WINS - 1] = {.w = 800, .h = 600, .scale = 2}};
 static MBRenderWin *rw = &render_wins[0];
@@ -234,10 +257,11 @@ static uint64_t atlas_seq;
 // half floats), the copies they work in (level j is 1/2^j of the largest capture yet, the glass and the blur's margin
 // round it, not of the target: a composer's strip, not the window; tmp for a Gaussian's first half), the GPU's time of
 // the last frame done
-static id<MTLRenderPipelineState> ppipe, ppipe_deep, cpipe;
+static id<MTLRenderPipelineState> ppipe, ppipe_deep, cpipe, adpipe;
 static id<MTLTexture> lv[4], ltmp;
 static int lv_w, lv_h;
 static double last_gpu = -1;
+static double ad_fixed_dt = 0.0;
 // The size, in points, and the pixels a point of the frame being drawn (encode and what it draws by): its MBFrame's on
 // present_q, the window's or a picture's own (read_of) on the main thread.
 static double at_w = 800, at_h = 600, at_scale = 2;
@@ -261,7 +285,7 @@ static NSString *shader_src = @
 "// glass: where a point's backdrop is in the blurred copy (uv = p * map.xy + map.zw, kept in uvc), a liquid group's\n"
 "// bounds, shapes and corners, how many (misc.x); misc.y 1 where what it copied of a native view's hole is let through\n"
 "// (glass_through)\n"
-"struct G { float4 map; float4 uvc; float4 gb; float4 shape[8]; float4 rad[8]; float4 misc; };\n"
+"struct G { float4 map; float4 uvc; float4 gb; float4 shape[8]; float4 rad[8]; float4 misc; float4 ad_box[16]; float4 ad_meta; };\n"
 "struct VOut { float4 pos [[position]]; float2 p; float2 cp; uint iid [[flat]]; };\n"
 "vertex VOut vmain(uint vid [[vertex_id]], uint iid [[instance_id]],\n"
 "    const device Inst* inst [[buffer(0)]], constant U& u [[buffer(1)]], constant G& g [[buffer(2)]]) {\n"
@@ -324,19 +348,69 @@ MB_CORNER_SL
 "}\n"
 "static float3 backdrop(texture2d<float> bd, constant G& g, float2 p) { return backdrop4(bd, g, p).rgb; }\n"
 "static float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }\n"
-"static float mb_backdrop_luma(texture2d<float> bd, constant G& g, float2 c, float r) {\n"
-"  return (luma(backdrop(bd, g, c)) + luma(backdrop(bd, g, c + float2(r, 0.0))) +\n"
-"          luma(backdrop(bd, g, c - float2(r, 0.0))) + luma(backdrop(bd, g, c + float2(0.0, r))) +\n"
-"          luma(backdrop(bd, g, c - float2(0.0, r)))) / 5.0;\n"
+"static float mb_backdrop_luma_rect(texture2d<float> bd, constant G& g, float2 c, float2 h) {\n"
+"  float sum = 0.0;\n"
+"  float mx1 = -1.0, mx2 = -1.0;\n"
+"  float mn1 = 2.0, mn2 = 2.0;\n"
+"  for (int iy = -1; iy <= 1; iy++) {\n"
+"    float py = c.y + float(iy) * (h.y * 0.60);\n"
+"    for (int ix = -2; ix <= 2; ix++) {\n"
+"      float px = c.x + float(ix) * (h.x * 0.38);\n"
+"      float y = luma(backdrop(bd, g, float2(px, py)));\n"
+"      sum += y;\n"
+"      if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }\n"
+"      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
+"    }\n"
+"  }\n"
+"  return (sum - mx1 - mx2 - mn1 - mn2) / 11.0;\n"
 "}\n"
-"static float3 mb_adaptive_ink(float3 rgb, float bgL) {\n"
+"static float mb_unpack16(float2 rg) {\n"
+"  float hi = floor(clamp(rg.x, 0.0, 1.0) * 255.0 + 0.5);\n"
+"  float lo = floor(clamp(rg.y, 0.0, 1.0) * 255.0 + 0.5);\n"
+"  return (hi * 256.0 + lo) / 65535.0;\n"
+"}\n"
+"static float2 mb_pack16(float v) {\n"
+"  float q = floor(clamp(v, 0.0, 1.0) * 65535.0 + 0.5);\n"
+"  float hi = floor(q / 256.0);\n"
+"  float lo = q - hi * 256.0;\n"
+"  return float2(hi / 255.0, lo / 255.0);\n"
+"}\n"
+"static float ad_sample(texture2d<float> bd, texture2d<float> ad_tex, constant G& g, float2 ac, float fallback_r, bool is_dark_glass) {\n"
+"  int ad_n = int(g.ad_meta.x + 0.5);\n"
+"  if (ad_n > 0) {\n"
+"    int best = -1;\n"
+"    float best_d = 1e9;\n"
+"    for (int i = 0; i < 16; i++) {\n"
+"      if (i >= ad_n) break;\n"
+"      float d = length(ac - g.ad_box[i].xy);\n"
+"      if (d <= 2.0 && d < best_d) { best = i; best_d = d; }\n"
+"    }\n"
+"    if (best < 0) {\n"
+"      best_d = 1e9;\n"
+"      for (int i = 0; i < 16; i++) {\n"
+"        if (i >= ad_n) break;\n"
+"        float2 diff = abs(ac - g.ad_box[i].xy);\n"
+"        if (diff.x <= g.ad_box[i].z + 2.0 && diff.y <= g.ad_box[i].w + 2.0) {\n"
+"          float d = length(diff);\n"
+"          if (d < best_d) { best = i; best_d = d; }\n"
+"        }\n"
+"      }\n"
+"    }\n"
+"    if (best >= 0) {\n"
+"      return mb_unpack16(ad_tex.read(uint2(uint(best), 0)).rg);\n"
+"    }\n"
+"  }\n"
+"  float bgL = mb_backdrop_luma_rect(bd, g, ac, float2(max(fallback_r, 1.0)));\n"
+"  return is_dark_glass ? smoothstep(0.35, 0.85, bgL) : (1.0 - smoothstep(0.30, 0.42, bgL));\n"
+"}\n"
+"static float3 mb_adaptive_ink(float3 rgb, float darkT) {\n"
 "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
 "  if (ch <= 0.08) {\n"
 "    float origL = luma(rgb);\n"
 "    if (origL < 0.5) {\n"
-"      float lightT = smoothstep(0.29, 0.31, bgL);\n"
+"      float inkT = smoothstep(0.0, 1.0, darkT);\n"
 "      float lightL = clamp(1.06 - origL, 0.68, 0.98);\n"
-"      rgb = mix(float3(lightL), rgb, lightT);\n"
+"      rgb = mix(rgb, float3(lightL), inkT);\n"
 "    }\n"
 "  }\n"
 "  return rgb;\n"
@@ -349,7 +423,8 @@ MB_CORNER_SL
 "}\n"
 "fragment float4 fmain(VOut in [[stage_in]], const device Inst* inst [[buffer(0)]],\n"
 "    constant U& u [[buffer(1)]], constant G& g [[buffer(2)]], texture2d<float> atlas [[texture(0)]],\n"
-"    texture2d<float> img [[texture(1)]], texture2d<float> bd [[texture(2)]], texture2d<float> catlas [[texture(3)]]) {\n"
+"    texture2d<float> img [[texture(1)]], texture2d<float> bd [[texture(2)]], texture2d<float> catlas [[texture(3)]],\n"
+"    texture2d<float> ad_tex [[texture(4)]]) {\n"
 "  Inst I = inst[in.iid];\n"
 "  float2 p = in.p, cp = in.cp;\n"
 "  // cut to its clip: a rect's, hard; a rounded one's, covered as edges are\n"
@@ -397,8 +472,8 @@ MB_CORNER_SL
 "    if (kind == 1) return (float4(col.rgb, 1.0) * (t.a * col.a)) * cover;\n"
 "    if (kind == 7) {\n"
 "      // inked by how light what is under its glass is, looked at round the glass's middle\n"
-"      float l = mb_backdrop_luma(bd, g, I.pad.yz, I.pad.w * 0.5);\n"
-"      float3 ink = mb_adaptive_ink(col.rgb, l);\n"
+"      float darkT = ad_sample(bd, ad_tex, g, I.pad.yz, I.pad.w * 0.5, false);\n"
+"      float3 ink = mb_adaptive_ink(col.rgb, darkT);\n"
 "      return (float4(ink, 1.0) * (t.a * col.a)) * cover;\n"
 "    }\n"
 "    return (t * col.a) * cover;\n"
@@ -529,10 +604,10 @@ MB_CORNER_SL
 "    } else if (is_adaptive) {\n"
 "      float2 ac = single_liquid ? (I.rect.xy + I.rect.zw * 0.5) : ((g.gb.xy + g.gb.zw) * 0.5);\n"
 "      float ar = (single_liquid ? max(min(I.rect.z, I.rect.w) * 0.5, 1.0) : max(min(g.gb.z - g.gb.x, g.gb.w - g.gb.y) * 0.5, 1.0)) * 0.5;\n"
-"      float bgL = mb_backdrop_luma(bd, g, ac, ar);\n"
+"      float val = ad_sample(bd, ad_tex, g, ac, ar, is_dark);\n"
 "      float baseDens = (col.a > 0.41) ? col.a : 0.30;\n"
 "      if (is_dark) {\n"
-"        float brightT = smoothstep(0.35, 0.85, bgL);\n"
+"        float brightT = val;\n"
 "        fogT = brightT;\n"
 "        float dens = max(baseDens, mix(baseDens, 0.64, brightT));\n"
 "        float extra = clamp((dens - 0.30) / (1.0 - 0.30), 0.0, 1.0);\n"
@@ -543,7 +618,7 @@ MB_CORNER_SL
 "        contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;\n"
 "        glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
 "      } else {\n"
-"        float darkMix = 1.0 - smoothstep(0.24, 0.36, bgL);\n"
+"        float darkMix = val;\n"
 "        fogT = darkMix;\n"
 "        float extra = clamp((baseDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);\n"
 "        float darkDens = max(baseDens, mix(baseDens, 0.52, darkMix));\n"
@@ -653,7 +728,7 @@ MB_CORNER_SL
 "    float2 a = I.rect.xy + I.c2.xy * I.rect.zw, ab = I.rect.xy + I.c2.zw * I.rect.zw - a;\n"
 "    float h = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-8), 0.0, 1.0);\n"
 "    float d = length(p - a - ab * h) - I.p.x;\n"
-"    if (I.pad.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, mb_backdrop_luma(bd, g, I.pad.yz, I.pad.w * 0.5));\n"
+"    if (I.pad.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, ad_sample(bd, ad_tex, g, I.pad.yz, I.pad.w * 0.5, false));\n"
 "    return (float4(col.rgb, 1.0) * col.a * clamp(0.5 - d * u.scale, 0.0, 1.0)) * cover;\n"
 "  }\n"
 "  if (kind == 11) {\n"
@@ -671,7 +746,7 @@ MB_CORNER_SL
 "      for (int i = first; i < first + n; i++) w += mb_path_rows(sg[(base + i / 6) * 15 + mb_seg_slot(i)], I.rect, p, u.scale);\n"
 "      a = mb_path_cover(w, I.c2.z);\n"
 "    }\n"
-"    if (I.pad.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, mb_backdrop_luma(bd, g, I.pad.yz, I.pad.w * 0.5));\n"
+"    if (I.pad.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, ad_sample(bd, ad_tex, g, I.pad.yz, I.pad.w * 0.5, false));\n"
 "    return (float4(col.rgb, 1.0) * col.a * a) * cover;\n"
 "  }\n"
 "  float2 hs = I.rect.zw * 0.5;\n"
@@ -865,6 +940,47 @@ MB_CORNER_SL
 "    wsum += 2.0 * w;\n"
 "  }\n"
 "  return o / wsum;\n"
+"}\n"
+"struct AdU { float4 map; float4 uvc; float4 box; float4 param; };\n"
+"fragment float4 fad(float4 pos [[position]], texture2d<float> bd [[texture(0)]],\n"
+"    texture2d<float> prev_ad [[texture(1)]], constant AdU& u [[buffer(0)]]) {\n"
+"  constexpr sampler s(filter::linear, address::clamp_to_edge);\n"
+"  float2 c = u.box.xy, h = u.box.zw;\n"
+"  float sum = 0.0, mx1 = -1.0, mx2 = -1.0, mn1 = 2.0, mn2 = 2.0;\n"
+"  for (int iy = -1; iy <= 1; iy++) {\n"
+"    float py = c.y + float(iy) * (h.y * 0.60);\n"
+"    for (int ix = -2; ix <= 2; ix++) {\n"
+"      float px = c.x + float(ix) * (h.x * 0.38);\n"
+"      float2 uv = clamp(float2(px, py) * u.map.xy + u.map.zw, u.uvc.xy, u.uvc.zw);\n"
+"      float y = luma(bd.sample(s, uv).rgb);\n"
+"      sum += y;\n"
+"      if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }\n"
+"      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
+"    }\n"
+"  }\n"
+"  float bgL = (sum - mx1 - mx2 - mn1 - mn2) / 11.0;\n"
+"  uint sid = uint(u.param.w + 0.5);\n"
+"  float4 prev = prev_ad.read(uint2(sid, 0));\n"
+"  float prevT = mb_unpack16(prev.rg);\n"
+"  float is_dark = u.param.x, is_new = u.param.y, dt = u.param.z;\n"
+"  float latch, target;\n"
+"  if (is_dark > 0.5) {\n"
+"    target = smoothstep(0.35, 0.85, bgL);\n"
+"    latch = target;\n"
+"  } else {\n"
+"    if (is_new > 0.5) latch = (bgL < 0.36) ? 1.0 : 0.0;\n"
+"    else if (prev.b > 0.5) latch = (bgL > 0.46) ? 0.0 : 1.0;\n"
+"    else latch = (bgL < 0.36) ? 1.0 : 0.0;\n"
+"    target = latch;\n"
+"  }\n"
+"  float nextT;\n"
+"  if (is_new > 0.5 || dt >= 1.0) nextT = target;\n"
+"  else if (dt <= 0.0) nextT = prevT;\n"
+"  else {\n"
+"    nextT = mix(prevT, target, 1.0 - exp(-dt / 0.070));\n"
+"    if (abs(nextT - target) < 0.003) nextT = target;\n"
+"  }\n"
+"  return float4(mb_pack16(nextT), latch, clamp(bgL, 0.0, 1.0));\n"
 "}\n";
 
 // What draws by `frag` only instances of one kind (`kind`; -1 any).
@@ -956,6 +1072,12 @@ static void prepare_gpu(void) {
   cd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
   cpipe = [dev newRenderPipelineStateWithDescriptor:cd error:&err];
   if (!cpipe) NSLog(@"copy pipeline: %@", err);
+  MTLRenderPipelineDescriptor *ad = [MTLRenderPipelineDescriptor new];
+  ad.vertexFunction = [lib newFunctionWithName:@"vpost"];
+  ad.fragmentFunction = [lib newFunctionWithName:@"fad"];
+  ad.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+  adpipe = [dev newRenderPipelineStateWithDescriptor:ad error:&err];
+  if (!adpipe) NSLog(@"adaptive pipeline: %@", err);
   atlas = atlas_texture(0, MB_ATLAS_SIDE);
   catlas = atlas_texture(1, MB_ATLAS_COLOR_SIDE);
   inflight = dispatch_semaphore_create(3);
@@ -1050,7 +1172,7 @@ static void atlas_flush(uint64_t upto) {
 // slopes into flat steps, a texel of the last level 8 pixels wide on the screen (a blur under 4 pixels, too narrow to
 // halve, is written back into the copy: it leaves no slope that wide).
 
-typedef struct { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[8][4]; float misc[4]; } GU;
+typedef struct { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[8][4]; float misc[4]; float ad_box[MB_ADAPTIVE_MAX][4]; float ad_meta[4]; } GU;
 static GU gu;
 static id<MTLTexture> gtex;  // the blurred copy the glass in view shows
 
@@ -1065,6 +1187,7 @@ static id<MTLTexture> level_tex(MTLPixelFormat format, int w, int h) {
 
 // the last capture's blur is kept to be shown again (encode, below)
 static int kept_ok;
+static void slots_invalidate(void);
 static void glass_forget(void);
 
 static void ensure_levels(int w, int h) {
@@ -1076,7 +1199,7 @@ static void ensure_levels(int w, int h) {
                       (lv_h + (1 << j) - 1) >> j);
   ltmp = level_tex(MTLPixelFormatRGBA16Float, lv_w, lv_h);
   // (the blurs kept were shown by where they lie in levels of the old size: one made now would be shown by the new)
-  glass_forget();
+  slots_invalidate();
 }
 
 // one pass of the blur: src into dst's top left (w × h); mode 1 halving, 2 a Gaussian of deviation sg along (dx, dy)
@@ -1405,11 +1528,244 @@ static float *under_now;
 static size_t under_now_cap, under_now_n;
 static int32_t under_whole, under_picked;
 
-static void glass_forget(void);
-// Glass's own textures let go of (on present_q, or the main thread with present_q drained: whoever draws now): the
-// levels, the slots' copies and what each was of. A command buffer still in flight keeps what it encoded (it retains
-// its textures till it completes), and the next capture makes what it needs again at its size (ensure_levels,
-// slot_copy), its blur the same to the byte.
+static MBRenderWin *at_win;
+
+static void ad_forget(MBRenderWin *w) {
+  if (!w) return;
+  memset(w->ad_slots, 0, sizeof w->ad_slots);
+  w->ad_last_time = 0.0;
+  atomic_store(&w->ad_settling, 0);
+  atomic_store(&w->ad_drawing, 0);
+  atomic_store(&w->ad_has_adaptive, 0);
+  os_unfair_lock_lock(&present_mu);
+  w->ad_settle_dirty = (MBDirty){0};
+  os_unfair_lock_unlock(&present_mu);
+}
+
+static void ensure_ad_tex(MBRenderWin *w) {
+  if (!w || w->ad_tex[0]) return;
+  for (int i = 0; i < 2; i++) {
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                                  width:MB_ADAPTIVE_MAX
+                                                                                 height:1
+                                                                              mipmapped:NO];
+    td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    td.storageMode = MTLStorageModePrivate;
+    w->ad_tex[i] = [dev newTextureWithDescriptor:td];
+  }
+  w->ad_cur = 0;
+}
+
+static void ad_fill_gu(MBRenderWin *w) {
+  if (!w) {
+    gu.ad_meta[0] = 0.0f;
+    return;
+  }
+  int max_active = 0;
+  for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+    if (w->ad_slots[i].active) {
+      gu.ad_box[i][0] = w->ad_slots[i].cx;
+      gu.ad_box[i][1] = w->ad_slots[i].cy;
+      gu.ad_box[i][2] = w->ad_slots[i].hx;
+      gu.ad_box[i][3] = w->ad_slots[i].hy;
+      max_active = i + 1;
+    } else {
+      gu.ad_box[i][0] = -1e9f;
+      gu.ad_box[i][1] = -1e9f;
+      gu.ad_box[i][2] = -1e9f;
+      gu.ad_box[i][3] = -1e9f;
+    }
+  }
+  gu.ad_meta[0] = (float)max_active;
+}
+
+typedef struct {
+  int sid;
+  int is_new;
+  int is_dark;
+  float cx, cy, hx, hy;
+} AdPending;
+
+static int ad_collect_and_match(MBRenderWin *w, const float *f, int32_t start, int32_t end, int32_t count,
+                                const Grab *m, int backdrop_changed, double dt, uint64_t serial,
+                                AdPending out[MB_ADAPTIVE_MAX]) {
+  if (!w || dt < 0.0) return 0;
+  const float *a = f + (size_t)start * MB_INST;
+  int kind = (int)(a[5] + 0.5f);
+  if (kind != 6) return 0;
+  int merged_liquid = a[23] > 0.0f;
+  struct { float cx, cy, hx, hy; int is_dark; } items[MB_ADAPTIVE_MAX];
+  int ni = 0;
+  if (merged_liquid) {
+    int is_clear = (a[7] <= 0.1f && a[11] < 0.12f);
+    int is_adaptive = a[14] < -0.5f;
+    if (is_adaptive && !is_clear) {
+      float lum = 0.2126f * a[8] + 0.7152f * a[9] + 0.0722f * a[10];
+      items[ni].cx = (m->g.gb[0] + m->g.gb[2]) * 0.5f;
+      items[ni].cy = (m->g.gb[1] + m->g.gb[3]) * 0.5f;
+      items[ni].hx = fmaxf((m->g.gb[2] - m->g.gb[0]) * 0.5f, 1.0f);
+      items[ni].hy = fmaxf((m->g.gb[3] - m->g.gb[1]) * 0.5f, 1.0f);
+      items[ni].is_dark = (a[11] >= 0.05f && lum < 0.35f) ? 1 : 0;
+      ni++;
+    }
+  } else {
+    float tid = a[20];
+    for (int32_t i = start; i < count && ni < MB_ADAPTIVE_MAX; i++) {
+      const float *b = f + (size_t)i * MB_INST;
+      if (b[20] != tid) continue;
+      if ((int)(b[5] + 0.5f) != 6 || b[23] > 0.0f) continue;
+      int is_clear = (b[7] <= 0.1f && b[11] < 0.12f);
+      int is_adaptive = b[14] < -0.5f;
+      if (!is_adaptive || is_clear) continue;
+      float lum = 0.2126f * b[8] + 0.7152f * b[9] + 0.0722f * b[10];
+      items[ni].cx = b[0] + b[2] * 0.5f;
+      items[ni].cy = b[1] + b[3] * 0.5f;
+      items[ni].hx = fmaxf(b[2] * 0.5f, 1.0f);
+      items[ni].hy = fmaxf(b[3] * 0.5f, 1.0f);
+      items[ni].is_dark = (b[11] >= 0.05f && lum < 0.35f) ? 1 : 0;
+      ni++;
+    }
+  }
+  int n_upd = 0;
+  for (int k = 0; k < ni; k++) {
+    int sid = -1;
+    int is_new = 0;
+    // Check if already seen in an earlier dirty part of this same frame
+    for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+      MBAdSlot *s = &w->ad_slots[i];
+      if (s->active && s->seen_serial == serial && s->is_dark == items[k].is_dark &&
+          hypotf(items[k].cx - s->cx, items[k].cy - s->cy) <= 2.0f) {
+        sid = i;
+        break;
+      }
+    }
+    if (sid < 0) {
+      float best_d = (float)MB_AD_MATCH_DIST + 1e-3f;
+      for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+        MBAdSlot *s = &w->ad_slots[i];
+        if (!s->active || s->seen_serial == serial || s->is_dark != items[k].is_dark) continue;
+        float d = hypotf(items[k].cx - s->cx, items[k].cy - s->cy);
+        if (d <= best_d) { best_d = d; sid = i; }
+      }
+      if (sid < 0) {
+        for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+          if (!w->ad_slots[i].active) { sid = i; break; }
+        }
+        if (sid < 0) {
+          uint64_t oldest = UINT64_MAX;
+          for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+            if (w->ad_slots[i].seen_serial != serial && w->ad_slots[i].seen_serial < oldest) {
+              oldest = w->ad_slots[i].seen_serial;
+              sid = i;
+            }
+          }
+          if (sid < 0) sid = 0;
+        }
+        is_new = 1;
+        w->ad_slots[sid] = (MBAdSlot){0};
+        w->ad_slots[sid].active = 1;
+        w->ad_slots[sid].is_dark = items[k].is_dark;
+      }
+      w->ad_slots[sid].cx = items[k].cx;
+      w->ad_slots[sid].cy = items[k].cy;
+      w->ad_slots[sid].hx = items[k].hx;
+      w->ad_slots[sid].hy = items[k].hy;
+      w->ad_slots[sid].seen_serial = serial;
+    }
+    MBAdSlot *s = &w->ad_slots[sid];
+    if (s->updated_serial == serial) continue;
+    int need = is_new || backdrop_changed || s->settle_left > 0.0;
+    if (need) {
+      if (is_new) {
+        s->settle_left = 0.0;
+      } else if (backdrop_changed) {
+        s->settle_left = MB_AD_SETTLE_SEC;
+      } else {
+        s->settle_left -= dt;
+        if (s->settle_left <= 0.0) s->settle_left = 0.0;
+      }
+      s->updated_serial = serial;
+      out[n_upd++] = (AdPending){sid, is_new, s->is_dark, s->cx, s->cy, s->hx, s->hy};
+    }
+  }
+  return n_upd;
+}
+
+static void ad_run_updates(id<MTLCommandBuffer> cb, MBRenderWin *w, const AdPending *pend, int n_upd, double dt) {
+  if (!w || n_upd <= 0 || !gtex) return;
+  ensure_ad_tex(w);
+  int cur = w->ad_cur, nxt = 1 - cur;
+  id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
+  [bl copyFromTexture:w->ad_tex[cur] sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+           sourceSize:MTLSizeMake(MB_ADAPTIVE_MAX, 1, 1) toTexture:w->ad_tex[nxt] destinationSlice:0 destinationLevel:0
+    destinationOrigin:MTLOriginMake(0, 0, 0)];
+  [bl endEncoding];
+  MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+  rp.colorAttachments[0].texture = w->ad_tex[nxt];
+  rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+  rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+  id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:rp];
+  [e setRenderPipelineState:adpipe];
+  [e setViewport:(MTLViewport){0, 0, (double)MB_ADAPTIVE_MAX, 1.0, 0, 1}];
+  [e setFragmentTexture:gtex atIndex:0];
+  [e setFragmentTexture:w->ad_tex[cur] atIndex:1];
+  for (int i = 0; i < n_upd; i++) {
+    [e setScissorRect:(MTLScissorRect){(NSUInteger)pend[i].sid, 0, 1, 1}];
+    struct { float map[4]; float uvc[4]; float box[4]; float param[4]; } u;
+    memcpy(u.map, gu.map, sizeof u.map);
+    memcpy(u.uvc, gu.uvc, sizeof u.uvc);
+    u.box[0] = pend[i].cx; u.box[1] = pend[i].cy; u.box[2] = pend[i].hx; u.box[3] = pend[i].hy;
+    u.param[0] = (float)pend[i].is_dark;
+    u.param[1] = (float)pend[i].is_new;
+    u.param[2] = (float)dt;
+    u.param[3] = (float)pend[i].sid;
+    [e setFragmentBytes:&u length:sizeof u atIndex:0];
+    [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  }
+  [e endEncoding];
+  w->ad_cur = nxt;
+}
+
+static double ad_next_dt(MBRenderWin *w) {
+  if (ad_fixed_dt > 0.0) return ad_fixed_dt;
+  double now = CACurrentMediaTime();
+  double dt = (w && w->ad_last_time > 0.0) ? (now - w->ad_last_time) : (1.0 / 60.0);
+  if (w) w->ad_last_time = now;
+  if (dt < 0.0) dt = 0.0;
+  if (dt > 0.1) dt = 0.1;
+  return dt;
+}
+
+static void ad_finalize_frame(MBRenderWin *w, int whole_frame, uint64_t serial) {
+  if (!w) return;
+  int settling = 0, has_ad = 0;
+  MBDirty sd = {0};
+  for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+    MBAdSlot *s = &w->ad_slots[i];
+    if (!s->active) continue;
+    if (whole_frame && s->seen_serial != serial) {
+      s->active = 0;
+      s->settle_left = 0.0;
+      continue;
+    }
+    has_ad = 1;
+    if (s->settle_left > 0.0) {
+      settling = 1;
+      dirty_add(&sd, s->cx - s->hx - 4.0, s->cy - s->hy - 4.0, s->hx * 2.0 + 8.0, s->hy * 2.0 + 8.0);
+    }
+  }
+  os_unfair_lock_lock(&present_mu);
+  w->ad_settle_dirty = sd;
+  os_unfair_lock_unlock(&present_mu);
+  atomic_store(&w->ad_settling, settling);
+  atomic_store(&w->ad_has_adaptive, has_ad);
+}
+
+static void slots_invalidate(void) {
+  for (int i = 0; i < MB_GLASS_SLOTS; i++) slots[i].valid = 0;
+  kept_ok = 0;
+}
+
 static void glass_free(void) {
   for (int j = 0; j < 4; j++) lv[j] = nil;
   ltmp = nil;
@@ -1421,6 +1777,11 @@ static void glass_free(void) {
     slots[i].under_cap = slots[i].under_n = 0;
   }
   lv_w = lv_h = 0;
+  for (int i = 0; i < MB_WINS; i++) {
+    render_wins[i].ad_tex[0] = nil;
+    render_wins[i].ad_tex[1] = nil;
+    ad_forget(&render_wins[i]);
+  }
   glass_forget();
 }
 
@@ -1435,8 +1796,9 @@ static void glass_idle_tick(int glass) {
 }
 
 static void glass_forget(void) {
-  for (int i = 0; i < MB_GLASS_SLOTS; i++) slots[i].valid = 0;
-  kept_ok = 0;
+  slots_invalidate();
+  ad_forget(rw);
+  if (at_win && at_win != rw) ad_forget(at_win);
 }
 
 // Whether instance i (its run of glass starting at `run`) draws anything in g (x0, y0, x1, y1, points): its quad as
@@ -1632,6 +1994,8 @@ static id<MTLRenderCommandEncoder> begin_pass(id<MTLCommandBuffer> cb, id<MTLTex
   [enc setFragmentTexture:atlas atIndex:0];
   [enc setFragmentTexture:catlas atIndex:3];
   [enc setFragmentTexture:(gtex ?: atlas) atIndex:2];
+  id<MTLTexture> adt = (at_win && at_win->ad_tex[at_win->ad_cur]) ? at_win->ad_tex[at_win->ad_cur] : atlas;
+  [enc setFragmentTexture:adt atIndex:4];
   if (sc_on) [enc setScissorRect:sc];
   return enc;
 }
@@ -1691,9 +2055,11 @@ static NSMutableDictionary<NSNumber *, id> *frame_texs(const float *f, int32_t c
 // `part`: only that part of the target drawn again, over what it holds (the frame's ground first: the instance after
 // the frame's, ring_put's); NULL, all of it, cleared to the ground.
 static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderPipelineState> p,
-                   id<MTLBuffer> buf, int32_t count, double r, double g, double b, double alpha, const MTLScissorRect *part) {
+                   id<MTLBuffer> buf, int32_t count, double r, double g, double b, double alpha,
+                   const MTLScissorRect *part, double ad_dt, uint64_t ad_serial) {
   gtex = nil;
   memset(&gu, 0, sizeof gu);
+  ad_fill_gu(at_win);
   encode_missing = 0;
   const float *f = (const float *)buf.contents;
   seg_base = count;
@@ -1754,13 +2120,26 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
         double key[7] = {target.width, target.height, at_scale, r, g, b, alpha};
         int known = shows && under_take(f, start, count, seg_base, &m);
         int slot = known ? slot_same(&m, key) : -1;
+        AdPending ad_pend[MB_ADAPTIVE_MAX];
+        int ad_n_upd = 0;
         if (slot >= 0) {
-          // what it sees is what a slot holds: shown on in this pass
+          // what it sees is what a slot holds: shown on in this pass unless an adaptive slot needs a settle step
           kept_ok = 1;
           slot_show(&m, slot);
-          [enc setVertexBytes:&gu length:sizeof gu atIndex:2];
-          [enc setFragmentBytes:&gu length:sizeof gu atIndex:2];
-          [enc setFragmentTexture:gtex atIndex:2];
+          ad_n_upd = ad_collect_and_match(at_win, f, start, end, count, &m, 0, ad_dt, ad_serial, ad_pend);
+          if (ad_n_upd > 0) {
+            [enc endEncoding];
+            ad_run_updates(cb, at_win, ad_pend, ad_n_upd, ad_dt);
+            ad_fill_gu(at_win);
+            enc = begin_pass(cb, target, p, buf, 0, r, g, b, alpha);
+          } else {
+            ad_fill_gu(at_win);
+            [enc setVertexBytes:&gu length:sizeof gu atIndex:2];
+            [enc setFragmentBytes:&gu length:sizeof gu atIndex:2];
+            [enc setFragmentTexture:gtex atIndex:2];
+            id<MTLTexture> adt = (at_win && at_win->ad_tex[at_win->ad_cur]) ? at_win->ad_tex[at_win->ad_cur] : atlas;
+            [enc setFragmentTexture:adt atIndex:4];
+          }
         } else if (shows) {
           [enc endEncoding];
           blur(cb, target, &m);
@@ -1770,6 +2149,9 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
           if (known && !encode_missing) slot_keep(slot, &m, key);
           kept_ok = slots[slot].valid;
           slot_show(&m, slot);
+          ad_n_upd = ad_collect_and_match(at_win, f, start, end, count, &m, 1, ad_dt, ad_serial, ad_pend);
+          if (ad_n_upd > 0) ad_run_updates(cb, at_win, ad_pend, ad_n_upd, ad_dt);
+          ad_fill_gu(at_win);
           enc = begin_pass(cb, target, p, buf, 0, r, g, b, alpha);
         }
         bound = tid;
@@ -1808,16 +2190,16 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
 // The frame in `buf` drawn into `target`, only its parts said to differ (`d`, take_parts) where it holds the frame
 // before (`kept`), a pass each, else whole: how many parts (-1 whole, 0 none).
 static int draw_parts(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLBuffer> buf, int32_t count, double r,
-                      double g, double b, int kept, const MBDirty *d) {
+                      double g, double b, int kept, const MBDirty *d, double ad_dt, uint64_t ad_serial) {
   MTLScissorRect parts[MB_PARTS];
   int n = take_parts(d, (int)target.width, (int)target.height, kept, parts);
   int missing = 0;
   if (n < 0) {
-    encode(cb, target, mpipe, buf, count, r, g, b, 1, NULL);
+    encode(cb, target, mpipe, buf, count, r, g, b, 1, NULL, ad_dt, ad_serial);
     missing = encode_missing;
   }
   for (int i = 0; i < n; i++) {
-    encode(cb, target, mpipe, buf, count, r, g, b, 1, &parts[i]);
+    encode(cb, target, mpipe, buf, count, r, g, b, 1, &parts[i], ad_dt, ad_serial);
     missing |= encode_missing;
   }
   if (n != 0) pictures_missing = missing;
@@ -1886,6 +2268,7 @@ static id<MTLBuffer> ring_put(const float *f, int32_t count, double r, double g,
 // (the app builds a frame for what it waits on, as a clock's next second, that may show nothing new). Not one a layer
 // presents with its transaction (a resize's: mac_app.m drawWithWindow), which the window's change waits for.
 static int same_as_shown(const float *f, int32_t count, double r, double g, double b) {
+  if (atomic_load(&rw->ad_settling)) return 0;
   if (!shown_ok || shown_streams || mlayer.presentsWithTransaction || count != last_count) return 0;
   if (vw != shown_w || vh != shown_h || vscale != shown_scale || r != last_bg[0] || g != last_bg[1] || b != last_bg[2]) return 0;
   size_t n = (size_t)(count > 0 ? count : 0) * MB_INST;
@@ -2057,7 +2440,10 @@ static int draw_frame(MBRenderWin *w, MBFrame *fr, int tx, int check) {
   at_scale = fr->scale;
   at_texs = fr->texs;
   at_through_n = fr->through_n;
+  at_win = w;
   memcpy(at_through_tid, fr->through_tid, sizeof at_through_tid);
+  double ad_dt = ad_next_dt(w);
+  uint64_t ad_serial = ++w->ad_frame_serial;
   int32_t count = fr->count;
   double r = fr->bg[0], g = fr->bg[1], b = fr->bg[2];
   id<MTLBuffer> buf = ring_put(fr->inst, count, r, g, b);
@@ -2081,7 +2467,7 @@ static int draw_frame(MBRenderWin *w, MBFrame *fr, int tx, int check) {
   } else if (tw > 0 && th > 0) {
     ensure_canvas(w, tw, th);
     cb = [queue commandBuffer];
-    checked = draw_parts(cb, w->cv, buf, count, r, g, b, w->cv_ok, &fr->parts);
+    checked = draw_parts(cb, w->cv, buf, count, r, g, b, w->cv_ok, &fr->parts, ad_dt, ad_serial);
     w->cv_ok = 1;
     if (checked != 0) [cb commit];
   }
@@ -2090,18 +2476,20 @@ static int draw_frame(MBRenderWin *w, MBFrame *fr, int tx, int check) {
   double p3 = CACurrentMediaTime();
   id<MTLCommandBuffer> pcb = [queue commandBuffer];
   if (drawable && direct) {
-    encode(pcb, drawable.texture, mpipe, buf, count, r, g, b, 1, NULL);
+    encode(pcb, drawable.texture, mpipe, buf, count, r, g, b, 1, NULL, ad_dt, ad_serial);
     pictures_missing = encode_missing;
   } else if (drawable) {
     int dw = (int)drawable.texture.width, dh = (int)drawable.texture.height;
     if (dw != tw || dh != th) {
       ensure_canvas(w, dw, dh);
-      encode(pcb, w->cv, mpipe, buf, count, r, g, b, 1, NULL);
+      encode(pcb, w->cv, mpipe, buf, count, r, g, b, 1, NULL, ad_dt, ad_serial);
       w->cv_ok = 0;
       checked = 0;
     }
     copy_to_drawable(pcb, w->cv, drawable.texture);
   }
+  ad_finalize_frame(w, direct || checked < 0, ad_serial);
+  at_win = nil;
   __block dispatch_semaphore_t sem = inflight;
   id<MTLCommandBuffer> ccb = checked != 0 ? cb : nil;
   [pcb addCompletedHandler:^(id<MTLCommandBuffer> done) {
@@ -2135,10 +2523,12 @@ static void present_job(MBRenderWin *w) {
     MBFrame *fr = w->pending;
     w->pending = nil;
     w->queued = 0;
+    if (fr && w->layer) atomic_store(&w->ad_drawing, 1);
     os_unfair_lock_unlock(&present_mu);
     // (none had: the window let go of first)
     if (!fr || !w->layer) return;
     if (!draw_frame(w, fr, 0, 0)) atomic_store(&w->missed, 1);
+    atomic_store(&w->ad_drawing, 0);
   }
 }
 
@@ -2171,7 +2561,19 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
   fr->tw = (int)mlayer.drawableSize.width;
   fr->th = (int)mlayer.drawableSize.height;
   // (whether it has glass, which copies what is drawn under it out of what it is drawn into: slot 20 negative)
-  for (int32_t i = 0; i < count && !fr->glass; i++) fr->glass = f[i * MB_INST + 20] < 0.0f;
+  int has_ad = 0;
+  for (int32_t i = 0; i < count; i++) {
+    const float *b = f + (size_t)i * MB_INST;
+    if (b[20] < 0.0f) fr->glass = 1;
+    if (!has_ad && (int)(b[5] + 0.5f) == 6 && b[14] < -0.5f && !(b[7] <= 0.1f && b[11] < 0.12f)) has_ad = 1;
+  }
+  if (has_ad) atomic_store(&rw->ad_has_adaptive, 1);
+  if (atomic_load(&rw->ad_settling) && rw->said.told && !rw->said.whole) {
+    os_unfair_lock_lock(&present_mu);
+    MBDirty sd = rw->ad_settle_dirty;
+    os_unfair_lock_unlock(&present_mu);
+    dirty_join(&rw->said, &sd);
+  }
   fr->parts = rw->said;
   rw->said = (MBDirty){0};
   fr->through_n = through_n;
@@ -2228,6 +2630,78 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
   shown_streams = streams;
 }
 
+void mb_render_set_fixed_dt(double dt) {
+  present_drain();
+  ad_fixed_dt = dt > 0.0 ? dt : 0.0;
+}
+
+void mb_render_adaptive_reset(void) {
+  present_drain();
+  ad_forget(rw);
+}
+
+int mb_render_adaptive_settling(void) {
+  return rw ? atomic_load(&rw->ad_settling) : 0;
+}
+
+int mb_render_adaptive_settling_of(int wid) {
+  if (wid < 0 || wid >= MB_WINS) return 0;
+  MBRenderWin *w = &render_wins[wid];
+  if (atomic_load(&w->ad_settling)) return 1;
+  if (atomic_load(&w->ad_has_adaptive)) {
+    os_unfair_lock_lock(&present_mu);
+    int q = w->queued;
+    os_unfair_lock_unlock(&present_mu);
+    if (q || atomic_load(&w->ad_drawing)) return 1;
+  }
+  return 0;
+}
+
+int mb_render_adaptive_step(int wid) {
+  if (wid < 0 || wid >= MB_WINS) return 0;
+  MBRenderWin *w = &render_wins[wid];
+  if (!w->inst || !w->layer) return 0;
+  if (!atomic_load(&w->ad_settling)) {
+    if (atomic_load(&w->ad_has_adaptive)) {
+      os_unfair_lock_lock(&present_mu);
+      int q = w->queued;
+      os_unfair_lock_unlock(&present_mu);
+      if (q || atomic_load(&w->ad_drawing)) return 1;
+    }
+    return 0;
+  }
+  os_unfair_lock_lock(&present_mu);
+  MBDirty sd = w->ad_settle_dirty;
+  os_unfair_lock_unlock(&present_mu);
+  if (!sd.told) return 0;
+  MBFrame *fr = [MBFrame new];
+  fr->count = w->count;
+  fr->bg[0] = w->bg[0]; fr->bg[1] = w->bg[1]; fr->bg[2] = w->bg[2];
+  fr->w = w->w; fr->h = w->h; fr->scale = w->scale;
+  fr->tw = (int)w->layer.drawableSize.width;
+  fr->th = (int)w->layer.drawableSize.height;
+  fr->glass = 1;
+  fr->parts = sd;
+  fr->through_n = 0;
+  fr->atlas_seq = atlas_seq;
+  fr->lat = -1;
+  size_t n = (size_t)(w->count > 0 ? w->count : 0) * MB_INST * sizeof(float);
+  fr->inst = pool_take(n > 0 ? n : sizeof(float), &fr->cap);
+  if (n > 0) memcpy(fr->inst, w->inst, n);
+  fr->texs = frame_texs(w->inst, w->count);
+  os_unfair_lock_lock(&present_mu);
+  MBFrame *was = w->pending;
+  if (was) dirty_join(&fr->parts, &was->parts);
+  w->pending = fr;
+  int go = !w->queued;
+  w->queued = 1;
+  os_unfair_lock_unlock(&present_mu);
+  if (go) dispatch_async(present_q, ^{
+    present_job(w);
+  });
+  return 1;
+}
+
 // MBUI_SAFE's bands (mac_app.m), in points, and their ground
 static double band_top, band_bottom;
 static uint32_t band_ground;
@@ -2242,8 +2716,9 @@ void mb_render_set_bands(double top, double bottom, uint32_t ground) {
 // `sw` × `sh` points, `scale` pixels a point, and its pixels: BGRA, premultiplied, rows from the top, *pw × *ph; the
 // caller frees them. On the main thread, what present_q holds drawn first (its state is then the main thread's), every
 // glyph kept put in, no native view's frost through it, the pictures' textures as they are now.
+// ad_mode: 1 = update adaptive state (film/read), 0 = read-only (snapshot/drawn_pixels), -1 = stateless (pixels_of)
 static uint8_t *read_of(const float *f, int32_t count, const double bg[3], double alpha, double sw, double sh,
-                        double scale, int *pw, int *ph) {
+                        double scale, int ad_mode, int *pw, int *ph) {
   present_drain();
   atlas_flush(UINT64_MAX);
   at_w = sw;
@@ -2251,6 +2726,9 @@ static uint8_t *read_of(const float *f, int32_t count, const double bg[3], doubl
   at_scale = scale;
   at_texs = nil;
   at_through_n = 0;
+  at_win = ad_mode < 0 ? NULL : rw;
+  double ad_dt = ad_mode > 0 ? ad_next_dt(at_win) : -1.0;
+  uint64_t ad_serial = (ad_mode > 0 && at_win) ? ++at_win->ad_frame_serial : 0;
   int w = (int)round(sw * scale), h = (int)round(sh * scale);
   if (!read_tex || (int)read_tex.width != w || (int)read_tex.height != h) {
     MTLTextureDescriptor *td = [MTLTextureDescriptor
@@ -2266,7 +2744,9 @@ static uint8_t *read_of(const float *f, int32_t count, const double bg[3], doubl
   id<MTLTexture> tex = read_tex;
   id<MTLBuffer> buf = [dev newBufferWithBytes:f length:(count > 0 ? count : 1) * MB_INST * sizeof(float) options:MTLResourceStorageModeShared];
   id<MTLCommandBuffer> cb = [queue commandBuffer];
-  encode(cb, tex, rpipe_off, buf, count, bg[0], bg[1], bg[2], alpha, NULL);
+  encode(cb, tex, rpipe_off, buf, count, bg[0], bg[1], bg[2], alpha, NULL, ad_dt, ad_serial);
+  if (ad_mode > 0 && at_win) ad_finalize_frame(at_win, 1, ad_serial);
+  at_win = NULL;
 #if TARGET_OS_OSX
   id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
   [bl synchronizeResource:tex];
@@ -2317,17 +2797,24 @@ static uint8_t *read_texture(id<MTLTexture> src, int *pw, int *ph) {
 
 // The window's last frame (keep_last's) drawn again at the size set (mb_render_set_size), read back as read_of reads.
 static uint8_t *read_last(int *pw, int *ph) {
-  return read_of(last_inst, last_count, last_bg, 1, vw, vh, vscale, pw, ph);
+  return read_of(last_inst, last_count, last_bg, 1, vw, vh, vscale, 0, pw, ph);
 }
 
 // A frame drawn offscreen and read back (a film's, mbui/src/film): `inst` as mb_render_present takes them, kept as
-// the last frame, and its pixels as read_last gives them.
+// the last frame, and its pixels as read_of (updating adaptive state) gives them.
 uint8_t *mb_render_read(const double *inst, int32_t count, double r, double g, double b, int *pw, int *ph) {
   @autoreleasepool {
     present_drain();
     next_as_is(inst, count);
     keep_last(count, r, g, b);
-    return read_last(pw, ph);
+    return read_of(last_inst, last_count, last_bg, 1, vw, vh, vscale, 1, pw, ph);
+  }
+}
+
+uint8_t *mb_render_read_step(int *pw, int *ph) {
+  @autoreleasepool {
+    if (!last_inst) return NULL;
+    return read_of(last_inst, last_count, last_bg, 1, vw, vh, vscale, 1, pw, ph);
   }
 }
 
@@ -2375,7 +2862,7 @@ int32_t mb_render_pixels_of(const double *inst, int32_t count, double r, double 
     double bg[3] = {r, g, b};
     // (drawn as a frame of that size is)
     int fw, fh;
-    uint8_t *px = read_of(f, count, bg, 1, w / scale, h / scale, scale, &fw, &fh);
+    uint8_t *px = read_of(f, count, bg, 1, w / scale, h / scale, scale, -1, &fw, &fh);
     free(f);
     if (fw == w && fh == h) {
       for (int k = 0; k < h; k++) {
@@ -2456,7 +2943,7 @@ int mb_render_snapshot(const char *path) {
 int mb_render_snapshot_transparent(const char *path) {
   int w, h;
   const double clear[3] = {0, 0, 0};
-  uint8_t *px = read_of(last_inst, last_count, clear, 0, vw, vh, vscale, &w, &h);
+  uint8_t *px = read_of(last_inst, last_count, clear, 0, vw, vh, vscale, 0, &w, &h);
   return snapshot_of(px, w, h, path);
 }
 
@@ -2510,12 +2997,17 @@ void mb_render_draw_timed(const double *inst, int32_t count, double r, double g,
     at_scale = vscale;
     at_texs = nil;
     at_through_n = 0;
+    at_win = rw;
+    double ad_dt = ad_next_dt(rw);
+    uint64_t ad_serial = ++rw->ad_frame_serial;
     id<MTLBuffer> buf = ring_put(last_inst, count, r, g, b);
     id<MTLCommandBuffer> cb = [queue commandBuffer];
     // (only the parts said to differ, as a window's canvas is drawn: the target is kept across frames too)
     MBDirty said = rw->said;
     rw->said = (MBDirty){0};
-    draw_parts(cb, off_target, buf, count, r, g, b, off_ok, &said);
+    int parts_n = draw_parts(cb, off_target, buf, count, r, g, b, off_ok, &said, ad_dt, ad_serial);
+    ad_finalize_frame(rw, parts_n < 0, ad_serial);
+    at_win = NULL;
     off_ok = 1;
     [cb commit];
     double t1 = CACurrentMediaTime();

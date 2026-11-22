@@ -18,6 +18,10 @@ void mb_render_set_size(double w, double h, double scale);
 void mb_text_set_scale(double scale);
 void mb_host_render_dirty(double x, double y, double w, double h);
 uint8_t *mb_render_read(const double *inst, int32_t count, double r, double g, double b, int *w, int *h);
+uint8_t *mb_render_read_step(int *w, int *h);
+void mb_render_set_fixed_dt(double dt);
+void mb_render_adaptive_reset(void);
+int mb_render_adaptive_settling(void);
 int mb_render_snapshot(const char *path);
 int mb_render_snapshot_transparent(const char *path);
 
@@ -42,12 +46,15 @@ static NSURL *film_temporary;
 // the picture drawn last, what the next frames written are
 static CVPixelBufferRef shown;
 static int32_t film_w, film_h, film_fps;
+static int film_fresh;
+static int32_t film_last_k = -1;
 
 // How long the writer may take to want the next frame, or to finish (s): what it has not done by then failed.
 static const double writer_most = 60;
 
 // A writer that could not be opened must not leave its temporary file or state behind.
 static void mbf_discard_open(void) {
+  mb_render_set_fixed_dt(0.0);
   if (writer.status == AVAssetWriterStatusWriting) [writer cancelWriting];
   if (film_temporary) [[NSFileManager defaultManager] removeItemAtURL:film_temporary error:nil];
   writer = nil;
@@ -55,6 +62,8 @@ static void mbf_discard_open(void) {
   adaptor = nil;
   film_temporary = nil;
   film_destination = nil;
+  film_fresh = 0;
+  film_last_k = -1;
 }
 
 // A film begun for `path`, `w` × `h` pixels (to even numbers, as H.264's 4:2:0 has them),
@@ -115,6 +124,10 @@ int32_t mbf_open_path(NSString *path, int32_t w, int32_t h, int32_t fps) {
       return 0;
     }
     [writer startSessionAtSourceTime:kCMTimeZero];
+    mb_render_set_fixed_dt(fps > 0 ? 1.0 / (double)fps : 0.0);
+    mb_render_adaptive_reset();
+    film_fresh = 0;
+    film_last_k = -1;
     return 1;
   }
 }
@@ -140,6 +153,46 @@ int32_t mbf_finish(int32_t publish) {
   }
 }
 
+static int film_set_shown_px(uint8_t *px, int w, int h) {
+  if (!px) return 0;
+  CVPixelBufferRef pb = NULL;
+  if (adaptor.pixelBufferPool) CVPixelBufferPoolCreatePixelBuffer(NULL, adaptor.pixelBufferPool, &pb);
+  if (!pb) CVPixelBufferCreate(NULL, film_w, film_h, kCVPixelFormatType_32BGRA, NULL, &pb);
+  if (!pb) {
+    free(px);
+    return 0;
+  }
+  CVPixelBufferLockBaseAddress(pb, 0);
+  uint8_t *dst = CVPixelBufferGetBaseAddress(pb);
+  size_t bpr = CVPixelBufferGetBytesPerRow(pb);
+  int rows = film_h < h ? film_h : h, cols = film_w < w ? film_w : w;
+  for (int y = 0; y < rows; y++) memcpy(dst + (size_t)y * bpr, px + (size_t)y * w * 4, (size_t)cols * 4);
+  CVPixelBufferUnlockBaseAddress(pb, 0);
+  free(px);
+  if (shown) CVPixelBufferRelease(shown);
+  shown = pb;
+  return 1;
+}
+
+static int film_append_at(int32_t k) {
+  // (the writer takes frames as its encoder has room: told on its own queue)
+  double waited = 0;
+  while (!input.readyForMoreMediaData && writer.status == AVAssetWriterStatusWriting && waited < writer_most) {
+    usleep(1000);
+    waited += 0.001;
+  }
+  if (!input.readyForMoreMediaData) {
+    fprintf(stderr, "film: frame %d: the writer took no more (%s)\n", k,
+            writer.error ? writer.error.localizedDescription.UTF8String : "no word why");
+    return 0;
+  }
+  if (![adaptor appendPixelBuffer:shown withPresentationTime:CMTimeMake(k, film_fps)]) {
+    fprintf(stderr, "film: frame %d: %s\n", k, writer.error.localizedDescription.UTF8String);
+    return 0;
+  }
+  return 1;
+}
+
 // The instances drawn offscreen and read back into a picture of the film's (the picture the next frames written
 // are): 1, or 0 when nothing could be drawn or kept.
 int32_t mbf_draw(const double *inst, int32_t count, double r, double g, double b) {
@@ -147,23 +200,8 @@ int32_t mbf_draw(const double *inst, int32_t count, double r, double g, double b
     if (!writer) return 0;
     int w = 0, h = 0;
     uint8_t *px = mb_render_read(inst, count, r, g, b, &w, &h);
-    if (!px) return 0;
-    CVPixelBufferRef pb = NULL;
-    if (adaptor.pixelBufferPool) CVPixelBufferPoolCreatePixelBuffer(NULL, adaptor.pixelBufferPool, &pb);
-    if (!pb) CVPixelBufferCreate(NULL, film_w, film_h, kCVPixelFormatType_32BGRA, NULL, &pb);
-    if (!pb) {
-      free(px);
-      return 0;
-    }
-    CVPixelBufferLockBaseAddress(pb, 0);
-    uint8_t *dst = CVPixelBufferGetBaseAddress(pb);
-    size_t bpr = CVPixelBufferGetBytesPerRow(pb);
-    int rows = film_h < h ? film_h : h, cols = film_w < w ? film_w : w;
-    for (int y = 0; y < rows; y++) memcpy(dst + (size_t)y * bpr, px + (size_t)y * w * 4, (size_t)cols * 4);
-    CVPixelBufferUnlockBaseAddress(pb, 0);
-    free(px);
-    if (shown) CVPixelBufferRelease(shown);
-    shown = pb;
+    if (!film_set_shown_px(px, w, h)) return 0;
+    film_fresh = 1;
     return 1;
   }
 }
@@ -172,21 +210,22 @@ int32_t mbf_draw(const double *inst, int32_t count, double r, double g, double b
 int32_t mbf_put(int32_t k) {
   @autoreleasepool {
     if (!writer || !shown) return 0;
-    // (the writer takes frames as its encoder has room: told on its own queue)
-    double waited = 0;
-    while (!input.readyForMoreMediaData && writer.status == AVAssetWriterStatusWriting && waited < writer_most) {
-      usleep(1000);
-      waited += 0.001;
+    if (film_last_k >= 0 && k > film_last_k + 1 && mb_render_adaptive_settling()) {
+      for (int32_t j = film_last_k + 1; j < k && mb_render_adaptive_settling(); j++) {
+        int w = 0, h = 0;
+        uint8_t *px = mb_render_read_step(&w, &h);
+        if (!film_set_shown_px(px, w, h)) return 0;
+        if (!film_append_at(j)) return 0;
+      }
     }
-    if (!input.readyForMoreMediaData) {
-      fprintf(stderr, "film: frame %d: the writer took no more (%s)\n", k,
-              writer.error ? writer.error.localizedDescription.UTF8String : "no word why");
-      return 0;
+    if (!film_fresh && mb_render_adaptive_settling()) {
+      int w = 0, h = 0;
+      uint8_t *px = mb_render_read_step(&w, &h);
+      if (!film_set_shown_px(px, w, h)) return 0;
     }
-    if (![adaptor appendPixelBuffer:shown withPresentationTime:CMTimeMake(k, film_fps)]) {
-      fprintf(stderr, "film: frame %d: %s\n", k, writer.error.localizedDescription.UTF8String);
-      return 0;
-    }
+    film_fresh = 0;
+    if (!film_append_at(k)) return 0;
+    film_last_k = k;
     return 1;
   }
 }
@@ -194,6 +233,19 @@ int32_t mbf_put(int32_t k) {
 // The film ended after `frames` frames and written out whole: 1, or 0 with what went wrong said.
 int32_t mbf_close(int32_t frames) {
   @autoreleasepool {
+    int ok_tail = 1;
+    if (writer && shown && film_last_k >= 0 && film_last_k + 1 < frames && mb_render_adaptive_settling()) {
+      for (int32_t j = film_last_k + 1; j < frames && mb_render_adaptive_settling(); j++) {
+        int w = 0, h = 0;
+        uint8_t *px = mb_render_read_step(&w, &h);
+        if (!film_set_shown_px(px, w, h) || !film_append_at(j)) {
+          ok_tail = 0;
+          break;
+        }
+        film_last_k = j;
+      }
+    }
+    mb_render_set_fixed_dt(0.0);
     if (!writer) return 0;
     [input markAsFinished];
     [writer endSessionAtSourceTime:CMTimeMake(frames, film_fps)];
@@ -202,7 +254,7 @@ int32_t mbf_close(int32_t frames) {
       dispatch_semaphore_signal(done);
     }];
     long late = dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(writer_most * NSEC_PER_SEC)));
-    int ok = !late && writer.status == AVAssetWriterStatusCompleted;
+    int ok = ok_tail && !late && writer.status == AVAssetWriterStatusCompleted;
     if (!ok)
       fprintf(stderr, "film: not written out (%s)\n",
               writer.error ? writer.error.localizedDescription.UTF8String : "the writer took too long");
@@ -211,6 +263,8 @@ int32_t mbf_close(int32_t frames) {
     writer = nil;
     input = nil;
     adaptor = nil;
+    film_fresh = 0;
+    film_last_k = -1;
     return ok;
   }
 }

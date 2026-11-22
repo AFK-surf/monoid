@@ -369,7 +369,7 @@ static void frames_paced(void) {
 
 static int any_want_frame(void) {
   for (int k = 0; k < MB_WINS; k++)
-    if (win_slots[k].h && win_slots[k].want_frame) return 1;
+    if (win_slots[k].h && (win_slots[k].want_frame || mb_render_adaptive_settling(k))) return 1;
   return 0;
 }
 
@@ -378,12 +378,16 @@ static int any_want_frame(void) {
 static int frames_round(void) {
   int any = 0;
   for (int k = 0; k < MB_WINS; k++) {
-    if (!win_slots[k].h || !win_slots[k].want_frame) continue;
-    any = 1;
-    int back = win_active;
-    win_use(k);
-    draw_frame();
-    win_put_back(back);
+    if (!win_slots[k].h) continue;
+    if (win_slots[k].want_frame) {
+      any = 1;
+      int back = win_active;
+      win_use(k);
+      draw_frame();
+      win_put_back(back);
+    } else if (mb_render_adaptive_settling(k)) {
+      if (mb_render_adaptive_step(k)) any = 1;
+    }
   }
   if (any) frames_paced();
   return any;

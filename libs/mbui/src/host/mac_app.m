@@ -696,6 +696,7 @@ static void pump(void) {
     }
   }
   if (!self.wantFrame) {
+    if (mb_render_adaptive_step(self.wid)) return;
     l.paused = YES;
     self.linkAskedAt = 0;
     last_tick = -1;
@@ -709,7 +710,7 @@ static void pump(void) {
   [self drawFrame];
   frames_drawn++;
   if (script) run_script_step(frames_drawn);
-  if (!self.wantFrame) {
+  if (!self.wantFrame && !mb_render_adaptive_settling_of(self.wid)) {
     l.paused = YES;
     self.linkAskedAt = 0;
     last_tick = -1;

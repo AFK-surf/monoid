@@ -894,6 +894,143 @@ int main(void) {
     printf("gles_render: wave7 fog stripe peak plain_dark=%.3f adaptive_fog=%.3f\n",
            fog_peaks[0], fog_peaks[1]);
     CHECK(fog_peaks[1] < fog_peaks[0] - 0.15);
+
+    // Test A: wide 84x16pt adaptive capsule over deep navy #173255 with centered 16x10pt pure white "{less}" block
+    // must resist ping-pong flipping (trimmed mean stays dark -> dark glass + white ink).
+    double ta[4 * MB_INST];
+    rect_at(ta, 0, 0, W, H, 0, 23.0 / 255.0, 50.0 / 255.0, 85.0 / 255.0, 0);
+    rect_at(ta + MB_INST, 42, 31, 16, 10, 0, 1.0, 1.0, 1.0, 0);
+    rect_at(ta + 2 * MB_INST, 8, 28, 84, 16, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -21);
+    ta[2 * MB_INST + 4] = 8.0;
+    ta[2 * MB_INST + 6] = 1.0;
+    ta[2 * MB_INST + 7] = 2.0;
+    ta[2 * MB_INST + 11] = 0x67 / 255.0;
+    ta[2 * MB_INST + 12] = 0.0;
+    ta[2 * MB_INST + 13] = 8.0;
+    ta[2 * MB_INST + 14] = -1.0;
+    ta[2 * MB_INST + 15] = 1.0;
+    ta[2 * MB_INST + 21] = 0.0;
+    ta[2 * MB_INST + 22] = 0.0;
+    ta[2 * MB_INST + 23] = 0.0;
+    rect_at(ta + 3 * MB_INST, 16, 30, 20, 12, 10, 0.11, 0.11, 0.11, 0);
+    ta[3 * MB_INST + 4] = 3.0;
+    ta[3 * MB_INST + 12] = 0.1;
+    ta[3 * MB_INST + 13] = 0.5;
+    ta[3 * MB_INST + 14] = 0.9;
+    ta[3 * MB_INST + 15] = 0.5;
+    ta[3 * MB_INST + 21] = 50.0;
+    ta[3 * MB_INST + 22] = 36.0;
+    ta[3 * MB_INST + 23] = 16.0;
+    glass_forget();
+    gl_present(ta, 4, 23.0 / 255.0, 50.0 / 255.0, 85.0 / 255.0);
+    unsigned char *px_ta = pixels_of_fb(surface);
+    unsigned char *ta_gp = px_ta + ((fb_h - 1 - 72) * fb_w + 148) * 4;  // (74, 36) glass over navy
+    unsigned char *ta_np = px_ta + ((fb_h - 1 - 72) * fb_w + 52) * 4;   // (26, 36) neutral ink inside capsule
+    double ta_g = (0.2126 * ta_gp[0] + 0.7152 * ta_gp[1] + 0.0722 * ta_gp[2]) / 255.0;
+    double ta_n = (0.2126 * ta_np[0] + 0.7152 * ta_np[1] + 0.0722 * ta_np[2]) / 255.0;
+    printf("gles_render: wave7 testA wide_less glass=%.3f ink=%.3f\n", ta_g, ta_n);
+    CHECK(ta_g < 0.28);
+    CHECK(ta_n > 0.80);
+    free(px_ta);
+
+    // Test B: cross-frame temporal smoothing + synchronized glass/ink + Schmitt hysteresis + auto-settle stop
+    gl_set_fixed_dt(1.0 / 60.0);
+    double tb[3 * MB_INST];
+    rect_at(tb, 0, 0, W, H, 0, 1.0, 1.0, 1.0, 0);
+    rect_at(tb + MB_INST, 8, 28, 84, 16, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -22);
+    tb[MB_INST + 4] = 8.0;
+    tb[MB_INST + 6] = 1.0;
+    tb[MB_INST + 7] = 2.0;
+    tb[MB_INST + 11] = 0x67 / 255.0;
+    tb[MB_INST + 12] = 0.0;
+    tb[MB_INST + 13] = 8.0;
+    tb[MB_INST + 14] = -1.0;
+    tb[MB_INST + 15] = 1.0;
+    tb[MB_INST + 21] = 0.0;
+    tb[MB_INST + 22] = 0.0;
+    tb[MB_INST + 23] = 0.0;
+    rect_at(tb + 2 * MB_INST, 16, 30, 20, 12, 10, 0.11, 0.11, 0.11, 0);
+    tb[2 * MB_INST + 4] = 3.0;
+    tb[2 * MB_INST + 12] = 0.1;
+    tb[2 * MB_INST + 13] = 0.5;
+    tb[2 * MB_INST + 14] = 0.9;
+    tb[2 * MB_INST + 15] = 0.5;
+    tb[2 * MB_INST + 21] = 50.0;
+    tb[2 * MB_INST + 22] = 36.0;
+    tb[2 * MB_INST + 23] = 16.0;
+
+    // Frame 0: pure white -> instant light state
+    glass_forget();
+    gl_present(tb, 3, 1.0, 1.0, 1.0);
+    unsigned char *px_tb = pixels_of_fb(surface);
+    double f0_g = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 2]) / 255.0;
+    double f0_n = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 2]) / 255.0;
+    free(px_tb);
+    printf("gles_render: wave7 testB f0_white glass=%.3f ink=%.3f\n", f0_g, f0_n);
+    CHECK(f0_g > 0.75);
+    CHECK(f0_n < 0.25);
+
+    // Frame 1: switch to deep navy #173255 -> smooth intermediate state
+    tb[8] = 23.0 / 255.0; tb[9] = 50.0 / 255.0; tb[10] = 85.0 / 255.0;
+    gl_present(tb, 3, tb[8], tb[9], tb[10]);
+    px_tb = pixels_of_fb(surface);
+    double f1_g = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 2]) / 255.0;
+    double f1_n = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 2]) / 255.0;
+    free(px_tb);
+    printf("gles_render: wave7 testB f1_navy glass=%.3f ink=%.3f settling=%d\n", f1_g, f1_n, gl_adaptive_settling());
+    CHECK(f1_g > 0.28 && f1_g < 0.72);
+    CHECK(f1_n > 0.15 && f1_n < 0.75);
+    CHECK(gl_adaptive_settling() == 1);
+
+    // Step 25 more frames (~420ms): monotonic convergence to dark state
+    double prev_g = f1_g, prev_n = f1_n;
+    for (int s = 0; s < 25; s++) {
+      gl_present(tb, 3, tb[8], tb[9], tb[10]);
+      px_tb = pixels_of_fb(surface);
+      double cg = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 2]) / 255.0;
+      double cn = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 2]) / 255.0;
+      free(px_tb);
+      CHECK(cg <= prev_g + 0.015);
+      CHECK(cn >= prev_n - 0.015);
+      prev_g = cg;
+      prev_n = cn;
+    }
+    printf("gles_render: wave7 testB f26_dark glass=%.3f ink=%.3f settling=%d\n", prev_g, prev_n, gl_adaptive_settling());
+    CHECK(prev_g < 0.28);
+    CHECK(prev_n > 0.85);
+
+    // Schmitt hysteresis: bg=0.40 (in [0.36, 0.46]) for 25 frames stays dark
+    tb[8] = 0.40; tb[9] = 0.40; tb[10] = 0.40;
+    for (int s = 0; s < 25; s++) gl_present(tb, 3, 0.40, 0.40, 0.40);
+    px_tb = pixels_of_fb(surface);
+    double hyst_g = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 2]) / 255.0;
+    double hyst_n = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 2]) / 255.0;
+    free(px_tb);
+    printf("gles_render: wave7 testB hyst_0.40 glass=%.3f ink=%.3f\n", hyst_g, hyst_n);
+    CHECK(hyst_g < 0.40);
+    CHECK(hyst_n > 0.80);
+
+    // Return to bright bg=0.95: frame 1 intermediate, +26 frames settles back to light and stops settling
+    tb[8] = 0.95; tb[9] = 0.95; tb[10] = 0.95;
+    gl_present(tb, 3, 0.95, 0.95, 0.95);
+    px_tb = pixels_of_fb(surface);
+    double r1_g = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 2]) / 255.0;
+    double r1_n = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 2]) / 255.0;
+    free(px_tb);
+    printf("gles_render: wave7 testB return_f1 glass=%.3f ink=%.3f\n", r1_g, r1_n);
+    CHECK(r1_g > 0.30 && r1_g < 0.82);
+    CHECK(r1_n > 0.20 && r1_n < 0.88);
+    for (int s = 0; s < 26; s++) gl_present(tb, 3, 0.95, 0.95, 0.95);
+    px_tb = pixels_of_fb(surface);
+    double r_end_g = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 148) * 4 + 2]) / 255.0;
+    double r_end_n = (0.2126 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 0] + 0.7152 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 1] + 0.0722 * px_tb[((fb_h - 1 - 72) * fb_w + 52) * 4 + 2]) / 255.0;
+    free(px_tb);
+    printf("gles_render: wave7 testB return_end glass=%.3f ink=%.3f settling=%d\n", r_end_g, r_end_n, gl_adaptive_settling());
+    CHECK(r_end_g > 0.75);
+    CHECK(r_end_n < 0.25);
+    CHECK(gl_adaptive_settling() == 0);
+    gl_set_fixed_dt(0.0);
+    glass_forget();
   }
 
   // A group the host keeps drawn out by its header straight into the floats: each instance moved in doubles, then

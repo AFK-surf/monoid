@@ -812,6 +812,9 @@
   uniform vec4 u_rad[8];
   uniform int u_n;
   uniform vec2 u_glight;
+  uniform highp sampler2D u_ad;
+  uniform vec4 u_ad_box[16];
+  uniform int u_ad_n;
   // the pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), 2040 fours
   // (136 instances) a row
   uniform highp sampler2D u_segs;
@@ -852,18 +855,62 @@
     return texture(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw)).rgb;
   }
   float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
-  float mb_backdrop_luma(vec2 c, float r) {
-    return (luma(backdrop(c)) + luma(backdrop(c + vec2(r, 0.0))) + luma(backdrop(c - vec2(r, 0.0))) +
-            luma(backdrop(c + vec2(0.0, r))) + luma(backdrop(c - vec2(0.0, r)))) / 5.0;
+  float mb_backdrop_luma_rect(vec2 c, vec2 h) {
+    float sum = 0.0;
+    float mx1 = -1.0, mx2 = -1.0;
+    float mn1 = 2.0, mn2 = 2.0;
+    for (int iy = -1; iy <= 1; iy++) {
+      float py = c.y + float(iy) * (h.y * 0.60);
+      for (int ix = -2; ix <= 2; ix++) {
+        float px = c.x + float(ix) * (h.x * 0.38);
+        float y = luma(backdrop(vec2(px, py)));
+        sum += y;
+        if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }
+        if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }
+      }
+    }
+    return (sum - mx1 - mx2 - mn1 - mn2) / 11.0;
   }
-  vec3 mb_adaptive_ink(vec3 rgb, float bgL) {
+  float mb_unpack16(vec2 rg) {
+    float hi = floor(clamp(rg.x, 0.0, 1.0) * 255.0 + 0.5);
+    float lo = floor(clamp(rg.y, 0.0, 1.0) * 255.0 + 0.5);
+    return (hi * 256.0 + lo) / 65535.0;
+  }
+  float ad_sample(vec2 ac, float fallback_r, bool is_dark_glass) {
+    if (u_ad_n > 0) {
+      int best = -1;
+      float best_d = 1e9;
+      for (int i = 0; i < 16; i++) {
+        if (i >= u_ad_n) break;
+        float d = length(ac - u_ad_box[i].xy);
+        if (d <= 2.0 && d < best_d) { best = i; best_d = d; }
+      }
+      if (best < 0) {
+        best_d = 1e9;
+        for (int i = 0; i < 16; i++) {
+          if (i >= u_ad_n) break;
+          vec2 diff = abs(ac - u_ad_box[i].xy);
+          if (diff.x <= u_ad_box[i].z + 2.0 && diff.y <= u_ad_box[i].w + 2.0) {
+            float d = length(diff);
+            if (d < best_d) { best = i; best_d = d; }
+          }
+        }
+      }
+      if (best >= 0) {
+        return mb_unpack16(texelFetch(u_ad, ivec2(best, 0), 0).rg);
+      }
+    }
+    float bgL = mb_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));
+    return is_dark_glass ? smoothstep(0.35, 0.85, bgL) : (1.0 - smoothstep(0.30, 0.42, bgL));
+  }
+  vec3 mb_adaptive_ink(vec3 rgb, float darkT) {
     float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);
     if (ch <= 0.08) {
       float origL = luma(rgb);
       if (origL < 0.5) {
-        float lightT = smoothstep(0.29, 0.31, bgL);
+        float inkT = smoothstep(0.0, 1.0, darkT);
         float lightL = clamp(1.06 - origL, 0.68, 0.98);
-        rgb = mix(vec3(lightL), rgb, lightT);
+        rgb = mix(rgb, vec3(lightL), inkT);
       }
     }
     return rgb;
@@ -899,7 +946,7 @@
         for (int i = first; i < first + n; i++) { int t = (i / 6) * 15 + mb_seg_slot(i); w += mb_path_rows(texelFetch(u_segs, ivec2(t % 2040, t / 2040), 0), v_rect, p, u_scale); }
         a = mb_path_cover(w, v_c2.z);
       }
-      if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, mb_backdrop_luma(v_pad.yz, v_pad.w * 0.5));
+      if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, ad_sample(v_pad.yz, v_pad.w * 0.5, false));
       o = vec4(col.rgb, 1.0) * col.a * a;
       return;
     }
@@ -910,7 +957,7 @@
       vec2 a = v_rect.xy + v_c2.xy * v_rect.zw, ab = v_rect.xy + v_c2.zw * v_rect.zw - a;
       float h = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-8), 0.0, 1.0);
       float d = length(p - a - ab * h) - v_p.x;
-      if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, mb_backdrop_luma(v_pad.yz, v_pad.w * 0.5));
+      if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink(col.rgb, ad_sample(v_pad.yz, v_pad.w * 0.5, false));
       o = vec4(col.rgb, 1.0) * col.a * clamp(0.5 - d * u_scale, 0.0, 1.0);
       return;
     }
@@ -931,8 +978,8 @@
       #if ONE_KIND < 0
       if (kind == 7) {
         // inked by how light what is under its glass is, looked at round the glass's middle
-        float l = mb_backdrop_luma(v_pad.yz, v_pad.w * 0.5);
-        vec3 ink = mb_adaptive_ink(col.rgb, l);
+        float darkT = ad_sample(v_pad.yz, v_pad.w * 0.5, false);
+        vec3 ink = mb_adaptive_ink(col.rgb, darkT);
         o = vec4(ink, 1.0) * (t.a * col.a);
         return;
       }
@@ -1087,10 +1134,10 @@
         vec2 ac = (k <= 0.0) ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);
         float ar = ((k <= 0.0) ? max(min(v_rect.z, v_rect.w) * 0.5, 1.0) : max(min(u_gb.z - u_gb.x, u_gb.w - u_gb.y) * 0.5, 1.0)) * 0.5;
         #endif
-        float bgL = mb_backdrop_luma(ac, ar);
+        float val = ad_sample(ac, ar, is_dark);
         float baseDens = (col.a > 0.41) ? col.a : 0.30;
         if (is_dark) {
-          float brightT = smoothstep(0.35, 0.85, bgL);
+          float brightT = val;
           fogT = brightT;
           float dens = max(baseDens, mix(baseDens, 0.64, brightT));
           float extra = clamp((dens - 0.30) / (1.0 - 0.30), 0.0, 1.0);
@@ -1101,7 +1148,7 @@
           contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;
           glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
         } else {
-          float darkMix = 1.0 - smoothstep(0.24, 0.36, bgL);
+          float darkMix = val;
           fogT = darkMix;
           float extra = clamp((baseDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);
           float darkDens = max(baseDens, mix(baseDens, 0.52, darkMix));
@@ -1450,6 +1497,67 @@
     o = s / wsum;
   }`;
 
+  const AD_FS = `#version 300 es
+  precision highp float;
+  precision highp int;
+  uniform highp sampler2D u_bd;
+  uniform highp sampler2D u_prev;
+  uniform vec4 u_map;
+  uniform vec4 u_uvc;
+  uniform vec4 u_box;
+  uniform vec4 u_param;
+  out vec4 o;
+  float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+  float mb_unpack16(vec2 rg) {
+    float hi = floor(clamp(rg.x, 0.0, 1.0) * 255.0 + 0.5);
+    float lo = floor(clamp(rg.y, 0.0, 1.0) * 255.0 + 0.5);
+    return (hi * 256.0 + lo) / 65535.0;
+  }
+  vec2 mb_pack16(float v) {
+    float q = floor(clamp(v, 0.0, 1.0) * 65535.0 + 0.5);
+    float hi = floor(q / 256.0);
+    float lo = q - hi * 256.0;
+    return vec2(hi / 255.0, lo / 255.0);
+  }
+  void main() {
+    vec2 c = u_box.xy, h = u_box.zw;
+    float sum = 0.0, mx1 = -1.0, mx2 = -1.0, mn1 = 2.0, mn2 = 2.0;
+    for (int iy = -1; iy <= 1; iy++) {
+      float py = c.y + float(iy) * (h.y * 0.60);
+      for (int ix = -2; ix <= 2; ix++) {
+        float px = c.x + float(ix) * (h.x * 0.38);
+        vec2 uv = clamp(vec2(px, py) * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw);
+        float y = luma(texture(u_bd, uv).rgb);
+        sum += y;
+        if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }
+        if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }
+      }
+    }
+    float bgL = (sum - mx1 - mx2 - mn1 - mn2) / 11.0;
+    int sid = int(u_param.w + 0.5);
+    vec4 prev = texelFetch(u_prev, ivec2(sid, 0), 0);
+    float prevT = mb_unpack16(prev.rg);
+    float is_dark = u_param.x, is_new = u_param.y, dt = u_param.z;
+    float latch, target;
+    if (is_dark > 0.5) {
+      target = smoothstep(0.35, 0.85, bgL);
+      latch = target;
+    } else {
+      if (is_new > 0.5) latch = (bgL < 0.36) ? 1.0 : 0.0;
+      else if (prev.b > 0.5) latch = (bgL > 0.46) ? 0.0 : 1.0;
+      else latch = (bgL < 0.36) ? 1.0 : 0.0;
+      target = latch;
+    }
+    float nextT;
+    if (is_new > 0.5 || dt >= 1.0) nextT = target;
+    else if (dt <= 0.0) nextT = prevT;
+    else {
+      nextT = mix(prevT, target, 1.0 - exp(-dt / 0.070));
+      if (abs(nextT - target) < 0.003) nextT = target;
+    }
+    o = vec4(mb_pack16(nextT), latch, clamp(bgL, 0.0, 1.0));
+  }`;
+
   function compile(type, src) {
     const s = gl.createShader(type);
     gl.shaderSource(s, src);
@@ -1470,7 +1578,7 @@
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
     gl.deleteShader(fs);
     const u = {};
-    for (const n of ['u_vp', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_glight', 'u_segs']) {
+    for (const n of ['u_vp', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_glight', 'u_segs', 'u_ad', 'u_ad_box', 'u_ad_n']) {
       u[n] = gl.getUniformLocation(p, n);
     }
     gl.useProgram(p);
@@ -1478,6 +1586,7 @@
     if (u.u_img) gl.uniform1i(u.u_img, 1);
     if (u.u_bd) gl.uniform1i(u.u_bd, 2);
     if (u.u_segs) gl.uniform1i(u.u_segs, 3);
+    if (u.u_ad) gl.uniform1i(u.u_ad, 4);
     return { p, u, gen: 0 };
   }
 
@@ -1506,6 +1615,8 @@
     if (u.u_rad) gl.uniform4fv(u.u_rad, grad);
     if (u.u_n) gl.uniform1i(u.u_n, gn);
     if (u.u_glight) gl.uniform2f(u.u_glight, Math.cos(glassLightAngle), Math.sin(glassLightAngle));
+    if (u.u_ad_box) gl.uniform4fv(u.u_ad_box, gadBox);
+    if (u.u_ad_n) gl.uniform1i(u.u_ad_n, gadN);
   }
 
   function setupGL() {
@@ -1528,12 +1639,20 @@
     ufVp = gl.getUniformLocation(progFlat, 'u_vp');
     progGen++;
     progNow = null;
+    const pvs = compile(gl.VERTEX_SHADER, PVS);
     post = gl.createProgram();
-    gl.attachShader(post, compile(gl.VERTEX_SHADER, PVS));
+    gl.attachShader(post, pvs);
     gl.attachShader(post, compile(gl.FRAGMENT_SHADER, PFS));
     gl.linkProgram(post);
     if (!gl.getProgramParameter(post, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(post));
     for (const n of ['u_src', 'u_lv1', 'u_lv2', 'u_lv3', 'u_a', 'u_b', 'u_c']) PU[n] = gl.getUniformLocation(post, n);
+    adProg = gl.createProgram();
+    gl.attachShader(adProg, pvs);
+    gl.attachShader(adProg, compile(gl.FRAGMENT_SHADER, AD_FS));
+    gl.linkProgram(adProg);
+    if (!gl.getProgramParameter(adProg, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(adProg));
+    ADU = {};
+    for (const n of ['u_bd', 'u_prev', 'u_map', 'u_uvc', 'u_box', 'u_param']) ADU[n] = gl.getUniformLocation(adProg, n);
     glassLost();
     vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
@@ -1583,9 +1702,215 @@
     return { t, fb, w: Math.max(1, w), h: Math.max(1, h), format };
   }
   const GLASS_IDLE = 180;
+  const AD_MAX = 16, AD_SETTLE_SEC = 0.42, AD_MATCH_DIST = 64.0;
+  function makeAdSlots() {
+    const arr = [];
+    for (let i = 0; i < AD_MAX; i++) arr.push({ active: false, cx: 0, cy: 0, hx: 0, hy: 0, isDark: 0, settleLeft: 0, updatedSerial: 0, seenSerial: 0 });
+    return arr;
+  }
+  let adProg = null, ADU = {};
+  let adTex = [null, null], adFb = [null, null], adCur = 0;
+  let adSlots = makeAdSlots(), adLastTime = 0, adFrameSerial = 0, adSettling = false, adRaf = 0;
+  let adCurDt = 0, adMode = 1;
+  let lastN = 0, lastR = 0, lastG = 0, lastB = 0, lastF32 = null;
+  const gadBox = new Float32Array(AD_MAX * 4);
+  let gadN = 0;
   let glassIdle = 0, glassDrawn = false;
-  function glassForget() {
+  function adForget() {
+    for (let i = 0; i < AD_MAX; i++) {
+      const s = adSlots[i];
+      s.active = false; s.settleLeft = 0; s.updatedSerial = 0; s.seenSerial = 0;
+    }
+    adLastTime = 0; adSettling = false; gadN = 0;
+  }
+  function ensureAdTex() {
+    if (adTex[0]) return;
+    for (let i = 0; i < 2; i++) {
+      const t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, AD_MAX, 1);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      const fb = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+      adTex[i] = t; adFb[i] = fb;
+    }
+    adCur = 0;
+  }
+  function adFillUniforms() {
+    if (adMode < 0) { gadN = 0; return; }
+    let maxA = 0;
+    for (let i = 0; i < AD_MAX; i++) {
+      const s = adSlots[i];
+      if (s.active) {
+        gadBox[i * 4] = s.cx; gadBox[i * 4 + 1] = s.cy; gadBox[i * 4 + 2] = s.hx; gadBox[i * 4 + 3] = s.hy;
+        maxA = i + 1;
+      } else {
+        gadBox[i * 4] = -1e9; gadBox[i * 4 + 1] = -1e9; gadBox[i * 4 + 2] = -1e9; gadBox[i * 4 + 3] = -1e9;
+      }
+    }
+    gadN = maxA;
+  }
+  function adCollectAndMatch(start, count, m, backdropChanged, dt, serial) {
+    if (adMode <= 0 || dt < 0) return [];
+    const a = start * INST;
+    const kind = Math.round(f32[a + 5]);
+    if (kind !== 6) return [];
+    const mergedLiquid = f32[a + 23] > 0;
+    const items = [];
+    if (mergedLiquid) {
+      const isClear = f32[a + 7] <= 0.1 && f32[a + 11] < 0.12;
+      const isAdaptive = f32[a + 14] < -0.5;
+      if (isAdaptive && !isClear) {
+        const lum = 0.2126 * f32[a + 8] + 0.7152 * f32[a + 9] + 0.0722 * f32[a + 10];
+        items.push({
+          cx: (m.gb[0] + m.gb[2]) * 0.5, cy: (m.gb[1] + m.gb[3]) * 0.5,
+          hx: Math.max((m.gb[2] - m.gb[0]) * 0.5, 1.0), hy: Math.max((m.gb[3] - m.gb[1]) * 0.5, 1.0),
+          isDark: (f32[a + 11] >= 0.05 && lum < 0.35) ? 1 : 0,
+        });
+      }
+    } else {
+      const tid = f32[a + 20];
+      for (let i = start; i < count && items.length < AD_MAX; i++) {
+        const b = i * INST;
+        if (f32[b + 20] !== tid) continue;
+        if (Math.round(f32[b + 5]) !== 6 || f32[b + 23] > 0) continue;
+        const isClear = f32[b + 7] <= 0.1 && f32[b + 11] < 0.12;
+        const isAdaptive = f32[b + 14] < -0.5;
+        if (!isAdaptive || isClear) continue;
+        const lum = 0.2126 * f32[b + 8] + 0.7152 * f32[b + 9] + 0.0722 * f32[b + 10];
+        items.push({
+          cx: f32[b] + f32[b + 2] * 0.5, cy: f32[b + 1] + f32[b + 3] * 0.5,
+          hx: Math.max(f32[b + 2] * 0.5, 1.0), hy: Math.max(f32[b + 3] * 0.5, 1.0),
+          isDark: (f32[b + 11] >= 0.05 && lum < 0.35) ? 1 : 0,
+        });
+      }
+    }
+    const pend = [];
+    for (const it of items) {
+      let sid = -1, isNew = 0;
+      for (let i = 0; i < AD_MAX; i++) {
+        const s = adSlots[i];
+        if (s.active && s.seenSerial === serial && s.isDark === it.isDark && Math.hypot(it.cx - s.cx, it.cy - s.cy) <= 2.0) {
+          sid = i; break;
+        }
+      }
+      if (sid < 0) {
+        let bestD = AD_MATCH_DIST + 1e-3;
+        for (let i = 0; i < AD_MAX; i++) {
+          const s = adSlots[i];
+          if (!s.active || s.seenSerial === serial || s.isDark !== it.isDark) continue;
+          const d = Math.hypot(it.cx - s.cx, it.cy - s.cy);
+          if (d <= bestD) { bestD = d; sid = i; }
+        }
+        if (sid < 0) {
+          for (let i = 0; i < AD_MAX; i++) if (!adSlots[i].active) { sid = i; break; }
+          if (sid < 0) {
+            let oldest = Infinity;
+            for (let i = 0; i < AD_MAX; i++) {
+              if (adSlots[i].seenSerial !== serial && adSlots[i].seenSerial < oldest) {
+                oldest = adSlots[i].seenSerial; sid = i;
+              }
+            }
+            if (sid < 0) sid = 0;
+          }
+          isNew = 1;
+          const s = adSlots[sid];
+          s.active = true; s.isDark = it.isDark; s.settleLeft = 0; s.updatedSerial = 0;
+        }
+        const s = adSlots[sid];
+        s.cx = it.cx; s.cy = it.cy; s.hx = it.hx; s.hy = it.hy; s.seenSerial = serial;
+      }
+      const s = adSlots[sid];
+      if (s.updatedSerial === serial) continue;
+      if (isNew || backdropChanged || s.settleLeft > 0) {
+        if (isNew) s.settleLeft = 0;
+        else if (backdropChanged) s.settleLeft = AD_SETTLE_SEC;
+        else s.settleLeft = Math.max(0, s.settleLeft - dt);
+        s.updatedSerial = serial;
+        pend.push({ sid, isNew, isDark: s.isDark, cx: s.cx, cy: s.cy, hx: s.hx, hy: s.hy });
+      }
+    }
+    return pend;
+  }
+  function adRunUpdates(pend, dt) {
+    if (!pend.length || !bdTex || !adProg) return;
+    ensureAdTex();
+    const cur = adCur, nxt = 1 - cur;
+    gl.disable(gl.BLEND);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, adFb[cur]);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, adFb[nxt]);
+    gl.blitFramebuffer(0, 0, AD_MAX, 1, 0, 0, AD_MAX, 1, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, adFb[nxt]);
+    gl.viewport(0, 0, AD_MAX, 1);
+    gl.enable(gl.SCISSOR_TEST);
+    gl.useProgram(adProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, bdTex);
+    gl.uniform1i(ADU.u_bd, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, adTex[cur]);
+    gl.uniform1i(ADU.u_prev, 1);
+    gl.uniform4fv(ADU.u_map, gmap);
+    gl.uniform4fv(ADU.u_uvc, guvc);
+    for (const p of pend) {
+      gl.scissor(p.sid, 0, 1, 1);
+      gl.uniform4f(ADU.u_box, p.cx, p.cy, p.hx, p.hy);
+      gl.uniform4f(ADU.u_param, p.isDark, p.isNew, dt, p.sid);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    adCur = nxt;
+  }
+  function adNextDt() {
+    if (shotAt >= 0) return 1 / 60;
+    const now = performance.now() / 1000;
+    const dt = adLastTime > 0 ? Math.min(Math.max(now - adLastTime, 0), 0.1) : (1 / 60);
+    adLastTime = now;
+    return dt;
+  }
+  function scheduleAdRaf(wid) {
+    if (adRaf || shotAt >= 0) return;
+    const raf = wid === 0 ? requestAnimationFrame : (f) => { if (wins[wid] && !wins[wid].closed) wins[wid].win.requestAnimationFrame(f); };
+    adRaf = raf(() => {
+      inWin(wid, () => {
+        adRaf = 0;
+        if (!adSettling || lastN <= 0) return;
+        if (wid === 0 ? pending : wins[wid]?.pending) {
+          scheduleAdRaf(wid);
+          return;
+        }
+        dirtyTold = true; dirtyWhole = false; dirty = [];
+        for (let i = 0; i < AD_MAX; i++) {
+          const s = adSlots[i];
+          if (s.active && s.settleLeft > 0) dirty.push([s.cx - s.hx - 4, s.cy - s.hy - 4, s.hx * 2 + 8, s.hy * 2 + 8]);
+        }
+        presentCached(true);
+      });
+    });
+  }
+  function adFinalizeFrame(wholeFrame, serial) {
+    let settling = false;
+    for (let i = 0; i < AD_MAX; i++) {
+      const s = adSlots[i];
+      if (!s.active) continue;
+      if (wholeFrame && s.seenSerial !== serial) {
+        s.active = false; s.settleLeft = 0; continue;
+      }
+      if (s.settleLeft > 0) settling = true;
+    }
+    adSettling = settling;
+    if (settling) scheduleAdRaf(winActive);
+  }
+  function slotsInvalidate() {
     for (let i = 0; i < GLASS_SLOTS; i++) glassSlots[i].valid = false;
+  }
+  function glassForget() {
+    slotsInvalidate();
+    adForget();
   }
   function glassLost() {
     lv = null; lvW = 0; lvH = 0; bdTex = null;
@@ -1593,6 +1918,8 @@
       const s = glassSlots[i];
       s.bt = null; s.bfb = null; s.bw = 0; s.bh = 0; s.bf = 0; s.valid = false;
     }
+    adTex = [null, null]; adFb = [null, null]; adCur = 0;
+    glassForget();
   }
   function glassFree() {
     if (lv && gl) for (const l of lv) { gl.deleteTexture(l.t); gl.deleteFramebuffer(l.fb); }
@@ -1601,6 +1928,10 @@
         const s = glassSlots[i];
         if (s.bt) { gl.deleteFramebuffer(s.bfb); gl.deleteTexture(s.bt); }
         s.under = null; s.underN = 0;
+      }
+      for (let i = 0; i < 2; i++) {
+        if (adFb[i]) gl.deleteFramebuffer(adFb[i]);
+        if (adTex[i]) gl.deleteTexture(adTex[i]);
       }
     }
     glassLost();
@@ -1628,7 +1959,7 @@
     if (lv && lvW >= w && lvH >= h) return;
     if (lv) for (const l of lv) { gl.deleteTexture(l.t); gl.deleteFramebuffer(l.fb); }
     lvW = Math.max(w, lvW); lvH = Math.max(h, lvH);
-    glassForget();
+    slotsInvalidate();
     lv = [];
     for (let j = 0; j < 4; j++) lv.push(levelTex(j === 0 ? gl.RGBA8 : gl.RGB10_A2, (lvW + (1 << j) - 1) >> j, (lvH + (1 << j) - 1) >> j));
     lv.push(levelTex(gl.RGB10_A2, lvW, lvH));
@@ -2018,13 +2349,18 @@
     const key = [canvas.width, canvas.height, dpr, r, g, b];
     const known = underTake(start, count, pieces, m);
     let s = known ? slotSame(m, key) : null;
+    let reblurred = false;
     if (!s) {
+      reblurred = true;
       blurGlass(m);
       s = slotFill(m, frameClock);
       const canKeep = !cutOn || (m.px0 >= cut[0] && m.px0 + m.w <= cut[0] + cut[2] && m.pb0 >= cut[1] && m.pb0 + m.h <= cut[1] + cut[3]);
       if (known && !drewMissing && canKeep) slotKeep(s, m, key);
     }
     slotShow(m, s);
+    const adPend = adCollectAndMatch(start, count, m, reblurred, adCurDt, adFrameSerial);
+    if (adPend.length) adRunUpdates(adPend, adCurDt);
+    adFillUniforms();
     mainState();
     return true;
   }
@@ -2047,6 +2383,8 @@
     gl.bindTexture(gl.TEXTURE_2D, bdTex || atlasTex);
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, segsTex || atlasTex);
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, adTex[adCur] || atlasTex);
     progGen++;
     useProg(-1);
   }
@@ -2385,19 +2723,24 @@
     if (end > s) drawRun(s, end - s);
   }
 
-  // A frame presented: whole-screen frames straight onto the default framebuffer (null); once the app reports partial
-  // dirty rects, into cv (building a baseline if !cvOk, then scissor-updating dirty rects) and blitted onto null.
-  H.present = (buf, n, r, g, b) => {
-    const len = n * INST;
-    // (and the frame's ground after it: a rect over all the window, opaque, a part drawn again first)
-    if (f32.length < len + INST) f32 = new Float32Array(len * 2 + INST);
-    if (typeof buf.subarray === 'function') f32.set(buf.subarray(0, len), 0);
-    else for (let i = 0; i < len; i++) f32[i] = buf[i];
-    f32.fill(0, len, len + INST);
-    f32[len] = -16; f32[len + 1] = -16; f32[len + 2] = cssW + 32; f32[len + 3] = cssH + 32;
-    f32[len + 8] = r; f32[len + 9] = g; f32[len + 10] = b; f32[len + 11] = 1;
-    f32[len + 16] = -1e9; f32[len + 17] = -1e9; f32[len + 18] = 1e9; f32[len + 19] = 1e9;
+  function presentCached(fromCache = false) {
+    const n = lastN, r = lastR, g = lastG, b = lastB;
+    if (fromCache) {
+      const need = n * INST + INST;
+      if (!lastF32 || lastF32.length < need) return;
+      if (f32.length < need) f32 = new Float32Array(need);
+      f32.set(lastF32.subarray(0, need), 0);
+    }
+    adMode = 1;
+    adCurDt = adNextDt();
+    adFrameSerial++;
     const whole = !dirtyTold || dirtyWhole || missing;
+    if (!whole && adSettling) {
+      for (let i = 0; i < AD_MAX; i++) {
+        const s = adSlots[i];
+        if (s.active && s.settleLeft > 0) dirty.push([s.cx - s.hx - 4, s.cy - s.hy - 4, s.hx * 2 + 8, s.hy * 2 + 8]);
+      }
+    }
     if (whole) {
       dirtyTold = false;
       dirtyWhole = false;
@@ -2408,6 +2751,7 @@
       glassDrawn = false;
       drawFrame(n, r, g, b, false);
       missing = drewMissing;
+      adFinalizeFrame(true, adFrameSerial);
       glassIdleTick();
       return;
     }
@@ -2422,6 +2766,7 @@
       glassDrawn = false;
       drawFrame(n, r, g, b, false);
       missing = drewMissing;
+      adFinalizeFrame(true, adFrameSerial);
       glassIdleTick();
       return;
     }
@@ -2443,6 +2788,7 @@
       }
       missing = any;
     }
+    adFinalizeFrame(!parts, adFrameSerial);
     glassIdleTick();
     cvOk = !missing;
     target = null;
@@ -2455,6 +2801,25 @@
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.blitFramebuffer(0, 0, cv.w, cv.h, 0, 0, cv.w, cv.h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  // A frame presented: whole-screen frames straight onto the default framebuffer (null); once the app reports partial
+  // dirty rects, into cv (building a baseline if !cvOk, then scissor-updating dirty rects) and blitted onto null.
+  H.present = (buf, n, r, g, b) => {
+    const len = n * INST;
+    // (and the frame's ground after it: a rect over all the window, opaque, a part drawn again first)
+    if (f32.length < len + INST) f32 = new Float32Array(len * 2 + INST);
+    if (typeof buf.subarray === 'function') f32.set(buf.subarray(0, len), 0);
+    else for (let i = 0; i < len; i++) f32[i] = buf[i];
+    f32.fill(0, len, len + INST);
+    f32[len] = -16; f32[len + 1] = -16; f32[len + 2] = cssW + 32; f32[len + 3] = cssH + 32;
+    f32[len + 8] = r; f32[len + 9] = g; f32[len + 10] = b; f32[len + 11] = 1;
+    f32[len + 16] = -1e9; f32[len + 17] = -1e9; f32[len + 18] = 1e9; f32[len + 19] = 1e9;
+    lastN = n; lastR = r; lastG = g; lastB = b;
+    const need = len + INST;
+    if (!lastF32 || lastF32.length < need) lastF32 = new Float32Array(need);
+    lastF32.set(f32.subarray(0, need), 0);
+    presentCached(false);
   };
 
   // The frame's `n` instances (in f32, its ground after them) and its shapes' pieces into the GPU's buffer and texture:
@@ -2483,6 +2848,7 @@
     }
     bdTex = null;
     gmap.fill(0); guvc.fill(0); ggb.fill(0); gn = 0;
+    adFillUniforms();
     gl.bindVertexArray(vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
     if (uploadedFor !== n) frameUpload(n);
@@ -5011,18 +5377,20 @@
   const rolesKept = new Map();
   function winSave(s) {
     Object.assign(s, {
-      canvas, gl, vs, prog, progs, progFlat, ufVp, progGen, progNow, post, vao, instBuf, atlasTex, ta, U, PU,
+      canvas, gl, vs, prog, progs, progFlat, ufVp, progGen, progNow, post, adProg, vao, instBuf, atlasTex, ta, U, PU, ADU,
       cssW, cssH, dpr, rectLeft, rectTop, rectValid, sizeDirty, sizeObserver,
-      lv, lvW, lvH, bdTex, glassSlots, glassSlotsClock, cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
+      lv, lvW, lvH, bdTex, glassSlots, glassSlotsClock, adTex, adFb, adCur, adSlots, adLastTime, adFrameSerial, adSettling, adRaf, lastN, lastR, lastG, lastB, lastF32,
+      cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
       segsTex, segsRows, segsHad, segsHadRows, uploadedFor, imeActive, composing, taHad, imeKind, viewLayer,
       under, coverBoxes, takePresses, doc, hostWin, glassIdle,
     });
   }
   function winLoad(s) {
     ({
-      canvas, gl, vs, prog, progs, progFlat, ufVp, progGen, progNow, post, vao, instBuf, atlasTex, ta, U, PU,
+      canvas, gl, vs, prog, progs, progFlat, ufVp, progGen, progNow, post, adProg, vao, instBuf, atlasTex, ta, U, PU, ADU,
       cssW, cssH, dpr, rectLeft, rectTop, rectValid, sizeDirty, sizeObserver,
-      lv, lvW, lvH, bdTex, glassSlots, glassSlotsClock, cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
+      lv, lvW, lvH, bdTex, glassSlots, glassSlotsClock, adTex, adFb, adCur, adSlots, adLastTime, adFrameSerial, adSettling, adRaf, lastN, lastR, lastG, lastB, lastF32,
+      cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
       segsTex, segsRows, segsHad, segsHadRows, uploadedFor, imeActive, composing, taHad, imeKind, viewLayer,
       under, coverBoxes, takePresses, doc, hostWin, glassIdle,
     } = s);
@@ -5164,6 +5532,8 @@
       gl: null, vs: null, prog: null, progs: new Array(MB_KINDS + 1).fill(null), progFlat: null, ufVp: null,
       progGen: 0, progNow: null, post: null, vao: null, instBuf: null, atlasTex: null, segsTex: null, segsHad: null,
       lv: null, lvW: 0, lvH: 0, bdTex: null, glassSlots: makeGlassSlots(), glassSlotsClock: 0,
+      adProg: null, ADU: {}, adTex: [null, null], adFb: [null, null], adCur: 0, adSlots: makeAdSlots(),
+      adLastTime: 0, adFrameSerial: 0, adSettling: false, adRaf: 0, lastN: 0, lastR: 0, lastG: 0, lastB: 0, lastF32: null,
       cv: null, cvOk: false, target: null,
     });
     // (the views it showed, the app's still where it keeps them: out of its document, placed again where it next shows
@@ -5281,6 +5651,8 @@
       U: {}, PU: {}, cssW: 0, cssH: 0, dpr: child.devicePixelRatio || 1, rectLeft: 0, rectTop: 0, rectValid: false,
       sizeDirty: true, sizeObserver: null,
       lv: null, lvW: 0, lvH: 0, bdTex: null, glassSlots: makeGlassSlots(), glassSlotsClock: 0,
+      adProg: null, ADU: {}, adTex: [null, null], adFb: [null, null], adCur: 0, adSlots: makeAdSlots(),
+      adLastTime: 0, adFrameSerial: 0, adSettling: false, adRaf: 0, lastN: 0, lastR: 0, lastG: 0, lastB: 0, lastF32: null,
       cv: null, cvOk: false, target: null, dirty: [],
       dirtyWhole: false, dirtyTold: false, missing: false, drewMissing: false, cutOn: false, segsTex: null,
       segsRows: 0, segsHad: null, segsHadRows: 0, uploadedFor: -1, imeActive: false, composing: false, taHad: '',

@@ -619,6 +619,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         } else {
             Native.redraw();
         }
+        if (Native.adaptiveSettling()) requestRender();
         // what the frames it took the place of on the screen used, and this one does not: let go now
         mail.runAll(t.retire);
         showAt(t.shows);
