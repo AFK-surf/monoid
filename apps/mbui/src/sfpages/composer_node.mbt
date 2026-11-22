@@ -523,10 +523,9 @@ let composer_seam_fade : Double = 18.0
 ///|
 /// While the soft keyboard is up (someone writing in it on a phone), what the chat holds fades out behind the composer
 /// too, so a picture or a busy message passing under its glass does not drown what is being written: the page's own
-/// ground over all of the composer's foot (its notices, its box, what stands over its top: however tall writing in it
-/// has made it), clear at its top and as good as solid `composer_backdrop_fade` below it, never over what stands above
-/// it. It comes and goes with the keyboard (`composer_backdrop_in_ms`, `composer_backdrop_out_ms`), and is not there with
-/// keyboard and mouse, where the glass stays open as it was made to be.
+/// ground, as good as solid at the foot and clear `composer_backdrop_fade` above the seam under the composer. It comes
+/// and goes with the keyboard (`composer_backdrop_in_ms`, `composer_backdrop_out_ms`), and is not there with keyboard
+/// and mouse, where the glass stays open as it was made to be.
 let composer_backdrop_fade : Double = 220.0
 
 ///|
@@ -595,17 +594,26 @@ fn composer_foot_scrim_node(
       .over(Is(true))
       .width_share(Is(1.0))
       .height_share(Is(1.0))
-      .fades(Is((0.0, composer_backdrop_fade, 0.0, 0.0)))
+      .lies_along(Is(End))
       .points(Is(false))
       .alpha(By(fn() { typing.shown(lift) }))
       |> ignore
-      lift.box(fn(fill) {
-        fill
+      lift.box(fn(band) {
+        band
         .width_share(Is(1.0))
-        .height_share(Is(1.0))
+        .height(By(fn() { Some(seam_h() + 6.0 + composer_backdrop_fade) }))
+        .fades(Is((0.0, composer_backdrop_fade, 0.0, 0.0)))
         .points(Is(false))
-        .ground(By(fn() { @sf.theme().p.bg }))
-        .alpha(Is(254.0 / 255.0))
+        |> ignore
+        band.box(fn(fill) {
+          fill
+          .width_share(Is(1.0))
+          .height_share(Is(1.0))
+          .points(Is(false))
+          .ground(By(fn() { @sf.theme().p.bg }))
+          .alpha(Is(254.0 / 255.0))
+          |> ignore
+        })
         |> ignore
       })
       |> ignore
