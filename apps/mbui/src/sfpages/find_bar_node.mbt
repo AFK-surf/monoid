@@ -146,14 +146,8 @@ pub fn find_bar_node(
       },
       frame=fn(f) {
         @sf.style_node(f, fn() { find_field_style }, in_row=true)
-        f
-        .shrink(Is(1.0))
-        .ground(Is(0L))
-        .glass(By(fn() { Some(@sf.find_panel_glass()) }))
-        .edge(By(fn() { if f.glass_solid() { @sf.overlay_solid_edge() } else { (0.0, 0L) } }))
-        .shadow(By(@sf.glass_overlay_shadow))
-        .shadow_outside(Is(true))
-        |> ignore
+        f.shrink(Is(1.0)).ground(Is(0L)) |> ignore
+        @sf.panel_surface_decorate(f) |> ignore
       },
       said_look=fn() { find_meta },
       tips~,

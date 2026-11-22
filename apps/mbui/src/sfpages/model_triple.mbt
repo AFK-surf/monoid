@@ -429,7 +429,7 @@ pub fn model_triple_node(
       )
       // (over the page, not in a row: on the composer's glass, as the page's other choices)
       if floating {
-        b.glass(By(fn() { Some(@sf.glass_floating()) })) |> ignore
+        @sf.floating_capsule_decorate(b, with_edge=false, with_shadow=false, clips=false) |> ignore
       }
       // (no wider than its row leaves it: what it says given way within it, its parts left out, its name cut last)
       b

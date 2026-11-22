@@ -309,25 +309,7 @@ fn wide_bar_scrim_node(
   fade_h : (@view.View) -> Double,
   ground : (@view.View) -> Int64,
 ) -> Unit {
-  parent.box(fn(scrim) {
-    scrim
-    .over(Is(true), from_top=true)
-    .width_share(Is(1.0))
-    .height(By(fn() { Some(base_h(scrim)) }))
-    .fades(By(fn() { (0.0, 0.0, 0.0, fade_h(scrim)) }))
-    |> ignore
-    scrim.box(fn(fill) {
-      fill
-      .width_share(Is(1.0))
-      .height_share(Is(1.0))
-      .glass(By(fn() { if base_h(fill) > 0.0 { Some(@sf.glass_scroll_edge(ground=ground(fill))) } else { None } }))
-      .points(Is(false))
-      |> ignore
-      fill.pointed() |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
+  @sf.top_scroll_edge_by_node(parent, base_h, fade_h, ground, from_top=true, shield=true) |> ignore
 }
 
 ///|

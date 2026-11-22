@@ -98,11 +98,16 @@ pub fn viewer_frame_act_node(
             .gap(Is(@ui.Space::px(S2)))
             .padding(Is((pill_pad, pill_pad, pill_pad, pill_pad)))
             .radius(By(outer_r))
-            .glass(By(fn() { Some(@lg.liquid_bar_pill_glass(solid=panel_ground(), sharing=true)) }))
-            .edge(By(fn() { if row.glass_solid() { @lg.liquid_solid_edge() } else { (0.0, 0L) } }))
-            .shadow(By(fn() { glass_control_shadow() }))
-            .shadow_outside(Is(true))
-            .clips(Is(true))
+            |> ignore
+            @lg.liquid_capsule_decorate(
+              row,
+              tone=BarPill,
+              sharing=true,
+              solid=panel_ground,
+              shadow=glass_control_shadow,
+              solid_edge=@lg.liquid_solid_edge,
+              clips=true,
+            )
             .lends(ends_give_lent, true)
             |> ignore
             corner_card_node(row, outer_r, inset=fn() { pill_pad })

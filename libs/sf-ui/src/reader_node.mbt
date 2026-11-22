@@ -858,12 +858,15 @@ fn reader_found_node(parent : @view.View, r : Reading, paper : () -> ReaderPaper
     frame=fn(b) {
       // (a capsule now its keys are round: they stand in its ends concentric with them, 5 in)
       style_node(b, fn() { desk_found_box.then(desk_found_round) })
-      b
-      .glass(By(fn() { Some(narrow_pill_glass(paper())) }))
-      .edge(By(fn() { if b.glass_solid() { @lg.liquid_solid_edge() } else { (0.0, 0L) } }))
-      .shadow(By(fn() { glass_control_shadow() }))
-      .shadow_outside(Is(true))
-      .clips(Is(true))
+      @lg.liquid_capsule_decorate(
+        b,
+        tone=BarPill,
+        sharing=true,
+        glass=fn(_) { narrow_pill_glass(paper()) },
+        shadow=glass_control_shadow,
+        solid_edge=@lg.liquid_solid_edge,
+        clips=true,
+      )
       .presses(Is(true))
       .on_press(fn() {  })
       .as_ground()
@@ -1333,13 +1336,16 @@ fn reader_narrow_chrome(
       style_node(row, fn() { narrow_bar_row })
       row.box(fn(bar) {
         style_node(bar, fn() { narrow_top_box })
-        bar
-        .width(By(fn() { Some(dmin(width() - narrow_bar_side, narrow_top_most)) }))
-        .glass(By(fn() { Some(narrow_pill_glass(paper())) }))
-        .edge(By(fn() { if bar.glass_solid() { @lg.liquid_solid_edge() } else { (0.0, 0L) } }))
-        .shadow(By(fn() { glass_control_shadow() }))
-        .shadow_outside(Is(true))
-        .clips(Is(true))
+        bar.width(By(fn() { Some(dmin(width() - narrow_bar_side, narrow_top_most)) })) |> ignore
+        @lg.liquid_capsule_decorate(
+          bar,
+          tone=BarPill,
+          sharing=true,
+          glass=fn(_) { narrow_pill_glass(paper()) },
+          shadow=glass_control_shadow,
+          solid_edge=@lg.liquid_solid_edge,
+          clips=true,
+        )
         .alpha(By(fn() { shown(bar) }))
         .offset(By(fn() { (0.0, -narrow_bars_step * (desk_whole - shown(bar))) }))
         // (gone or going, it takes no press: what is under it does)
@@ -1432,13 +1438,16 @@ fn reader_narrow_chrome(
       row.box(fn(card) {
         let w = fn() { dmin(width() - narrow_bar_side, narrow_foot_most) }
         style_node(card, fn() { narrow_foot_box })
-        card
-        .width(By(fn() { Some(w()) }))
-        .glass(By(fn() { Some(narrow_panel_glass(paper())) }))
-        .edge(By(fn() { if card.glass_solid() { @lg.liquid_overlay_solid_edge() } else { (0.0, 0L) } }))
-        .shadow(By(fn() { glass_overlay_shadow() }))
-        .shadow_outside(Is(true))
-        .clips(Is(true))
+        card.width(By(fn() { Some(w()) })) |> ignore
+        @lg.liquid_capsule_decorate(
+          card,
+          tone=Panel,
+          sharing=false,
+          glass=fn(_) { narrow_panel_glass(paper()) },
+          shadow=glass_overlay_shadow,
+          solid_edge=@lg.liquid_overlay_solid_edge,
+          clips=true,
+        )
         .alpha(By(fn() { shown(card) }))
         .offset(By(fn() { (0.0, narrow_bars_step * (desk_whole - shown(card))) }))
         .presses(By(fn() { r.chrome.get() }))

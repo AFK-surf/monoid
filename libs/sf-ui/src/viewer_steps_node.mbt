@@ -83,18 +83,17 @@ fn step_disc(
     .height(By(fn() { Some(disc()) }))
     .radius(By(fn() { disc() / 2.0 }))
     .lines_up(Is(Some(Middle)))
-    .glass(By(fn() {
-      let spot = if b.pressed() && !b.glass_solid() {
-        let (_, _, w, h) = b.placed_window_now()
-        if w > 0.0 && h > 0.0 { Some((w / 2.0, h / 2.0)) } else { None }
-      } else {
-        None
-      }
-      Some(@lg.liquid_viewer_clear_glass(spot~, solid=theme().p.canvas))
-    }))
-    .edge(By(fn() { if b.glass_solid() { @lg.liquid_solid_edge() } else { (0.0, 0L) } }))
-    .shadow(By(fn() { glass_control_shadow() }))
-    .shadow_outside(Is(true))
+    |> ignore
+    @lg.liquid_capsule_decorate(
+      b,
+      tone=ViewerClear,
+      sharing=false,
+      interactive=true,
+      solid=fn() { theme().p.canvas },
+      shadow=glass_control_shadow,
+      solid_edge=@lg.liquid_solid_edge,
+      clips=false,
+    )
     .ground(By(fn() { if hot() { @ui.tree_theme().color(Hover) } else { 0L } }))
     .alpha(By(fn() { seen.shown(b) * shown(b) }))
     |> ignore

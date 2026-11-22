@@ -71,10 +71,13 @@ pub fn liquid_capsule_decorate(
   interactive? : Bool = false,
   solid? : () -> Int64,
   tint? : () -> Int64?,
+  glass? : ((Double, Double)?) -> @paint.Glass,
   extra_blur? : () -> Double,
   active? : () -> Bool,
   shadow? : () -> (Double, Double, Int64),
   solid_edge? : () -> (Double, Int64),
+  with_edge? : Bool = true,
+  with_shadow? : Bool = true,
   clips? : Bool = true,
 ) -> @view.View {
   if min_height is Some(h) {
@@ -89,66 +92,79 @@ pub fn liquid_capsule_decorate(
       None => true
     }
   }
+  if with_shadow {
+    v.shadow_outside(Is(true)) |> ignore
+  }
   v
-  .glass(By(fn() {
-    if !is_active() {
-      return None
-    }
-    let spot = if interactive && v.pressed() && !v.glass_solid() {
-      let (_, _, w, h) = v.placed_window_now()
-      if w > 0.0 && h > 0.0 {
-        Some((w / 2.0, h / 2.0))
+  .sets_together(
+    fn() {
+      if !is_active() {
+        return (None, (0.0, clear), shadow_none)
+      }
+      let spot = if interactive && v.pressed() && !v.glass_solid() {
+        let (_, _, w, h) = v.placed_window_now()
+        if w > 0.0 && h > 0.0 {
+          Some((w / 2.0, h / 2.0))
+        } else {
+          None
+        }
       } else {
         None
       }
-    } else {
-      None
-    }
-    let sol = match solid {
-      Some(f) => f()
-      None => clear
-    }
-    let custom_tint = match tint {
-      Some(f) => f()
-      None => None
-    }
-    let base = capsule_tone_glass(tone, spot, sol, custom_tint, sharing)
-    let glass = match extra_blur {
-      Some(bf) => {
-        let db = bf()
-        if db > 0.0 {
-          { ..base, blur: base.blur + db }
-        } else {
-          base
+      let base = match glass {
+        Some(gf) => gf(spot)
+        None => {
+          let sol = match solid {
+            Some(f) => f()
+            None => clear
+          }
+          let custom_tint = match tint {
+            Some(f) => f()
+            None => None
+          }
+          capsule_tone_glass(tone, spot, sol, custom_tint, sharing)
         }
       }
-      None => base
-    }
-    Some(glass)
-  }))
-  .edge(By(fn() {
-    if !is_active() {
-      (0.0, clear)
-    } else if v.glass_solid() {
-      match solid_edge {
-        Some(f) => f()
-        None => liquid_solid_edge()
+      let resolved = match extra_blur {
+        Some(bf) => {
+          let db = bf()
+          if db > 0.0 {
+            { ..base, blur: base.blur + db }
+          } else {
+            base
+          }
+        }
+        None => base
       }
-    } else {
-      (0.0, clear)
-    }
-  }))
-  .shadow(By(fn() {
-    if !is_active() {
-      shadow_none
-    } else {
-      match shadow {
-        Some(f) => f()
-        None => shadow_default
+      let edge_val = if with_edge && v.glass_solid() {
+        match solid_edge {
+          Some(f) => f()
+          None => liquid_solid_edge()
+        }
+      } else {
+        (0.0, clear)
       }
-    }
-  }))
-  .shadow_outside(Is(true))
+      let shadow_val = if with_shadow {
+        match shadow {
+          Some(f) => f()
+          None => shadow_default
+        }
+      } else {
+        shadow_none
+      }
+      (Some(resolved), edge_val, shadow_val)
+    },
+    fn(look) {
+      let (g, e, s) = look
+      v.glass(Is(g)) |> ignore
+      if with_edge {
+        v.edge(Is(e)) |> ignore
+      }
+      if with_shadow {
+        v.shadow(Is(s)) |> ignore
+      }
+    },
+  )
   |> ignore
   if clips {
     v.clips(Is(true)) |> ignore

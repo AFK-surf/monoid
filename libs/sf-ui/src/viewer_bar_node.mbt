@@ -308,19 +308,15 @@ fn back_node(
     .radius(By(bar_back_corner))
     .shrink(Is(1.0))
     .min_width(Is(Some(0.0)))
-    .glass(By(fn() {
-      let spot = if b.pressed() && !v.glass_solid() {
-        let (_, _, w, h) = v.placed_window_now()
-        if w > 0.0 && h > 0.0 { Some((w / 2.0, h / 2.0)) } else { None }
-      } else {
-        None
-      }
-      Some(viewer_bar_pill_glass(ink(), spot~))
-    }))
-    .edge(By(fn() { if v.glass_solid() { @lg.liquid_solid_edge() } else { (0.0, 0L) } }))
-    .shadow(By(fn() { glass_control_shadow() }))
-    .shadow_outside(Is(true))
-    .clips(Is(true))
+    |> ignore
+    @lg.liquid_capsule_decorate(
+      v,
+      interactive=true,
+      glass=fn(spot) { viewer_bar_pill_glass(ink(), spot~) },
+      shadow=glass_control_shadow,
+      solid_edge=@lg.liquid_solid_edge,
+      clips=true,
+    )
     .ground(By(fn() { if lit() { ink().hover } else { 0L } }))
     |> ignore
     v.box(fn(i) {

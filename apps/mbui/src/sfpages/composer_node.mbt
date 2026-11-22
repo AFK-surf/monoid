@@ -1431,10 +1431,11 @@ fn composer_box_node(
     |> @ui.words_into(w.field)
     |> ignore
     // (its ground the floating glass, the accent's over it while a file is dragged over: a 文件 tab's row, files from
-    // the computer the page takes)
-    box
-    .glass(
-      By(fn() {
+    // the computer the page takes; persistent liquid glass control shadow outside its outline only)
+    @sf.floating_capsule_decorate(
+      box,
+      sharing=true,
+      tint=fn() {
         // (a row carried from a 文件 tab in the app's own hand, the pointer taken by what carries it, so not lit: where
         // it would land were it let go now, as chat_drop_node finds it; files from outside the app as the hand lights it)
         let over = box.pointer_piece(fn(_, _) {
@@ -1447,24 +1448,26 @@ fn composer_box_node(
         }) ==
           1
         let dragging = !no_files() && (@sfbase.drag_carried.val)() is Some(_) && (over || @sf.lit_node(box))
-        let base = @sf.glass_floating(
-          tint?=if dragging { Some(@sf.alpha(@sf.theme().p.accent, drag_tint)) } else { None },
-        )
+        if dragging {
+          Some(@sf.alpha(@sf.theme().p.accent, drag_tint))
+        } else {
+          None
+        }
+      },
+      extra_blur=fn() {
         // (frosted more as it opens, on its shape's way: words written over it read clear of what lies behind; as a
         // capsule the bottom bar's 2.1, shared with the capsule over it)
         let open = shape.shown(box)
-        let glass = if open > 0.0 {
-          { ..base, blur: base.blur + (composer_open_blur - base.blur) * open }
+        if open > 0.0 {
+          (composer_open_blur - 2.1) * open
         } else {
-          base
+          0.0
         }
-        Some(glass.sharing())
-      }),
+      },
+      with_edge=false,
+      with_shadow=true,
+      clips=false,
     )
-    // (persistent liquid glass control shadow (@sf.glass_control_shadow), outside its outline only: the glass bends
-    // nothing of it)
-    .shadow(By(fn() { @sf.glass_control_shadow() }))
-    .shadow_outside(Is(true))
     // (round as a capsule is, or as its box's corner; from one to the other as its height goes its way: drawn, as a
     // control answering, never laid out again for it)
     .radius(
