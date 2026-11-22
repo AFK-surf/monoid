@@ -1436,6 +1436,131 @@ int main(void) {
       glass_forget();
     }
 
+    // Progressive blur small-radius anti-ghosting regression: 1pt and 1px dark vertical/horizontal strokes over
+    // a light background under blur=8.5, fade_h=68 progressive blur at both 2x and 1x scale must produce strictly
+    // unimodal profiles (no 9-tap comb ghosting / secondary dark peaks) and monotonically attenuate center contrast.
+    {
+      static const double scales[2] = {2.0, 1.0};
+      static const double v_ramps[6] = {0.06, 0.10, 0.14, 0.18, 0.24, 0.35};
+      static const double h_ramps[3] = {0.10, 0.18, 0.24};
+      for (int si = 0; si < 2; si++) {
+        double sc = scales[si];
+        mb_render_set_size(400, 300, sc);
+        double widths[2] = {1.0, 1.0 / sc};
+        int n_widths = (sc > 1.5) ? 2 : 1;
+        for (int wi = 0; wi < n_widths; wi++) {
+          double lw = widths[wi];
+          // 1) Vertical stroke across the entire fade band (y=0..80)
+          double pb[3 * MB_INST];
+          rect_at(pb, 0, 0, 400, 300, 0, 0.96, 0.96, 0.96, 0);
+          rect_at(pb + MB_INST, 50.0, 0.0, lw, 80.0, 0, 0.05, 0.05, 0.05, 0);
+          rect_at(pb + 2 * MB_INST, 0, 0, 400, 68.0, 5, 0.96, 0.96, 0.96, -40);
+          pb[2 * MB_INST + 6] = 1.0;
+          pb[2 * MB_INST + 7] = 8.5;
+          pb[2 * MB_INST + 11] = 0.15;
+          pb[2 * MB_INST + 15] = 1.0;
+          pb[2 * MB_INST + 22] = -1.0;
+          pb[2 * MB_INST + 54] = 68.0;
+          pb[2 * MB_INST + 55] = 68.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(pb, 3, 0.96, 0.96, 0.96);
+          present_drain();
+          int cw = 0, ch = 0;
+          uint8_t *px = read_texture(canvas, &cw, &ch);
+          int prev_center = -1;
+          int first_center = -1;
+          int last_center = -1;
+          int mono_ok = 1;
+          int max_dip = 0;
+          for (int ri = 0; ri < 6; ri++) {
+            int py = (int)llround(68.0 * (1.0 - v_ramps[ri]) * sc);
+            if (py < 0) py = 0;
+            if (py >= ch) py = ch - 1;
+            int x0 = (int)floor(50.0 * sc) - 2;
+            int x1 = (int)ceil((50.0 + lw) * sc) + 2;
+            int xc = x0, min_l = 256;
+            for (int x = x0; x <= x1; x++) {
+              int l = px[(py * cw + x) * 4 + 1];
+              if (l < min_l) { min_l = l; xc = x; }
+            }
+            if (ri == 0) first_center = min_l;
+            last_center = min_l;
+            if (prev_center >= 0 && min_l < prev_center - 2) {
+              fprintf(stderr, "apple_render: prog-blur v-stroke center non-mono sc=%.0f lw=%.2f ramp=%.2f prev=%d cur=%d\n",
+                      sc, lw, v_ramps[ri], prev_center, min_l);
+              mono_ok = 0;
+            }
+            prev_center = min_l;
+            for (int dir = -1; dir <= 1; dir += 2) {
+              int max_seen = min_l;
+              for (int dx = 1; dx <= 12; dx++) {
+                int x = xc + dir * dx;
+                if (x < 0 || x >= cw) break;
+                int l = px[(py * cw + x) * 4 + 1];
+                if (max_seen - l > max_dip) max_dip = max_seen - l;
+                if (l < max_seen - 2) mono_ok = 0;
+                if (l > max_seen) max_seen = l;
+              }
+            }
+          }
+          printf("apple_render: prog-blur v-stroke sc=%.0f lw=%.2f first=%d last=%d max_dip=%d\n",
+                 sc, lw, first_center, last_center, max_dip);
+          CHECK(mono_ok);
+          CHECK(last_center > first_center + 15);
+          free(px);
+
+          // 2) Horizontal strokes at representative small-radius ramps
+          int h_mono_ok = 1;
+          int h_max_dip = 0;
+          for (int ri = 0; ri < 3; ri++) {
+            double y_pt = 68.0 * (1.0 - h_ramps[ri]);
+            double hp[3 * MB_INST];
+            rect_at(hp, 0, 0, 400, 300, 0, 0.96, 0.96, 0.96, 0);
+            rect_at(hp + MB_INST, 20.0, y_pt, 160.0, lw, 0, 0.05, 0.05, 0.05, 0);
+            rect_at(hp + 2 * MB_INST, 0, 0, 400, 68.0, 5, 0.96, 0.96, 0.96, -41);
+            hp[2 * MB_INST + 6] = 1.0;
+            hp[2 * MB_INST + 7] = 8.5;
+            hp[2 * MB_INST + 11] = 0.15;
+            hp[2 * MB_INST + 15] = 1.0;
+            hp[2 * MB_INST + 22] = -1.0;
+            hp[2 * MB_INST + 54] = 68.0;
+            hp[2 * MB_INST + 55] = 68.0;
+            glass_forget();
+            mb_host_render_dirty(0, 0, 400, 300);
+            mb_render_present(hp, 3, 0.96, 0.96, 0.96);
+            present_drain();
+            int hcw = 0, hch = 0;
+            uint8_t *hpx = read_texture(canvas, &hcw, &hch);
+            int px_x = (int)llround(100.0 * sc);
+            int y0 = (int)floor(y_pt * sc) - 2;
+            int y1 = (int)ceil((y_pt + lw) * sc) + 2;
+            int yc = y0, min_l = 256;
+            for (int y = y0; y <= y1; y++) {
+              int l = hpx[(y * hcw + px_x) * 4 + 1];
+              if (l < min_l) { min_l = l; yc = y; }
+            }
+            for (int dir = -1; dir <= 1; dir += 2) {
+              int max_seen = min_l;
+              for (int dy = 1; dy <= 10; dy++) {
+                int y = yc + dir * dy;
+                if (y < 0 || y >= hch) break;
+                int l = hpx[(y * hcw + px_x) * 4 + 1];
+                if (max_seen - l > h_max_dip) h_max_dip = max_seen - l;
+                if (l < max_seen - 2) h_mono_ok = 0;
+                if (l > max_seen) max_seen = l;
+              }
+            }
+            free(hpx);
+          }
+          printf("apple_render: prog-blur h-stroke sc=%.0f lw=%.2f max_dip=%d\n", sc, lw, h_max_dip);
+          CHECK(h_mono_ok);
+        }
+      }
+      mb_render_set_size(400, 300, 2);
+      glass_forget();
+    }
+
     // A group kept by the host (groups.h) drawn out by a header, straight into the floats: each instance moved in
     // doubles, then made a float, as the app's own instance moved there would be.
     double kept[MB_INST];

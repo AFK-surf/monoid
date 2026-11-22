@@ -1412,31 +1412,63 @@
       float kf = u_c[3].y;
       vec4 m0 = u_c[4], m1 = u_c[5], m2 = u_c[6], m3 = u_c[7];
       if (kf < 0.5) { o = texture(u_src, clamp(gl_FragCoord.xy * m0.xy, m0.xy * 0.5, m0.zw)); return; }
-      float sig1 = pow(sp, 1.0 / kf);
       float r = clamp(ramp, 0.0, 1.0);
-      float target_px = r <= 0.0 ? 0.0 : sp * pow(r, 1.15);
+      if (r <= 0.0) { o = texture(u_src, clamp(gl_FragCoord.xy * m0.xy, m0.xy * 0.5, m0.zw)); return; }
+      if (r >= 1.0) {
+        int ki = int(kf + 0.5);
+        if (ki <= 1) o = texture(u_lv1, clamp(gl_FragCoord.xy * m1.xy, m1.xy * 1.0, m1.zw));
+        else if (ki == 2) o = texture(u_lv2, clamp(gl_FragCoord.xy * m2.xy, m2.xy * 2.0, m2.zw));
+        else o = texture(u_lv3, clamp(gl_FragCoord.xy * m3.xy, m3.xy * 4.0, m3.zw));
+        return;
+      }
+      float sig1 = pow(sp, 1.0 / kf);
+      float target_px = sp * pow(r, 1.15);
       if (target_px <= sig1 || kf <= 1.05) {
         vec2 uv0_min = m0.xy * 0.5, uv0_max = m0.zw;
         vec2 c_uv = gl_FragCoord.xy * m0.xy;
         vec4 g_small;
         if (target_px <= 0.01) {
           g_small = texture(u_src, clamp(c_uv, uv0_min, uv0_max));
+        } else if (target_px <= 0.55) {
+          // Exact separable 3x3 Gaussian via 2x2 bilinear taps (center weight 0.5 split across +-o1)
+          float inv2 = -0.5 / (target_px * target_px);
+          float w1 = exp(inv2);
+          float o1 = w1 / (0.5 + w1);
+          vec2 ox = vec2(o1, 0.0) * m0.xy;
+          vec2 oy = vec2(0.0, o1) * m0.xy;
+          g_small = (texture(u_src, clamp(c_uv - ox - oy, uv0_min, uv0_max)) +
+                     texture(u_src, clamp(c_uv + ox - oy, uv0_min, uv0_max)) +
+                     texture(u_src, clamp(c_uv - ox + oy, uv0_min, uv0_max)) +
+                     texture(u_src, clamp(c_uv + ox + oy, uv0_min, uv0_max))) * 0.25;
         } else {
-          float r_tap = target_px * 1.5;
-          vec2 d0 = vec2(r_tap, 0.0) * m0.xy;
-          vec2 d1 = vec2(0.0, r_tap) * m0.xy;
-          vec2 dd = vec2(r_tap * 0.70710678, r_tap * 0.70710678) * m0.xy;
-          g_small  = texture(u_src, clamp(c_uv, uv0_min, uv0_max)) * 0.25;
-          g_small += (texture(u_src, clamp(c_uv + d0, uv0_min, uv0_max)) +
-                      texture(u_src, clamp(c_uv - d0, uv0_min, uv0_max)) +
-                      texture(u_src, clamp(c_uv + d1, uv0_min, uv0_max)) +
-                      texture(u_src, clamp(c_uv - d1, uv0_min, uv0_max))) * 0.125;
-          g_small += (texture(u_src, clamp(c_uv + dd, uv0_min, uv0_max)) +
-                      texture(u_src, clamp(c_uv - dd, uv0_min, uv0_max)) +
-                      texture(u_src, clamp(c_uv + vec2(dd.x, -dd.y), uv0_min, uv0_max)) +
-                      texture(u_src, clamp(c_uv + vec2(-dd.x, dd.y), uv0_min, uv0_max))) * 0.0625;
+          // Exact separable 7x7 Gaussian via 4x4 bilinear taps (zero gaps, zero comb ghosting)
+          float inv2 = -0.5 / (target_px * target_px);
+          float w1 = exp(inv2);
+          float w2 = exp(4.0 * inv2);
+          float w3 = exp(9.0 * inv2);
+          float W1 = 0.5 + w1;
+          float W2 = w2 + w3;
+          float o1 = w1 / W1;
+          float o2 = (2.0 * w2 + 3.0 * w3) / max(W2, 1e-6);
+          float inv_sum = 0.5 / (W1 + W2);
+          float p1 = W1 * inv_sum;
+          float p2 = W2 * inv_sum;
+          float ox[4] = float[4](-o2, -o1, o1, o2);
+          float pw[4] = float[4](p2, p1, p1, p2);
+          g_small = vec4(0.0);
+          for (int iy = 0; iy < 4; iy++) {
+            vec4 row = vec4(0.0);
+            float uy = clamp(c_uv.y + ox[iy] * m0.y, uv0_min.y, uv0_max.y);
+            for (int ix = 0; ix < 4; ix++) {
+              float ux = clamp(c_uv.x + ox[ix] * m0.x, uv0_min.x, uv0_max.x);
+              row += texture(u_src, vec2(ux, uy)) * pw[ix];
+            }
+            g_small += row * pw[iy];
+          }
         }
-        float blend1 = smoothstep(sig1 * 0.65, sig1, target_px);
+        float blend_lo = min(1.1, sig1 * 0.45);
+        float bt = clamp((target_px - blend_lo) / max(sig1 - blend_lo, 1e-4), 0.0, 1.0);
+        float blend1 = bt > 0.0 ? pow(bt, 1.8) : 0.0;
         if (blend1 > 0.0) {
           vec4 c_lv1 = texture(u_lv1, clamp(gl_FragCoord.xy * m1.xy, m1.xy * 1.0, m1.zw));
           o = mix(g_small, c_lv1, blend1);
