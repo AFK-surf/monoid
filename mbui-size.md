@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [05e4455a8](https://github.com/AFK-surf/monoid/commit/05e4455a883e2eec552185a7647e3a0603539908) perf(mbui): fix rotated glass cache invalidation a | 2.7 | 3.63 | 14.7 | 36.8 | 56.05 | 32.24 | 65.34 | 99.11 | 124.3 |
 | [54143d819](https://github.com/AFK-surf/monoid/commit/54143d8197007801c1b85fa22acfe3cb341e1f00) fix(mbui): keep frequent model names readable (#81 | 2.7 | 3.63 | 14.7 | 36.8 | 56.04 | 32.24 | 65.34 | 99.21 | 118.59 |
 | [005f1d100](https://github.com/AFK-surf/monoid/commit/005f1d100a6a15a0a4e86c7e96eb271e251570e2) fix(mbui): let two fingers take turns scrolling a  | 2.7 | 3.63 | 14.7 | 36.79 | 56.04 | 32.24 | 65.34 | 99.16 | 126.07 |
 | [e414d0eca](https://github.com/AFK-surf/monoid/commit/e414d0eca0b572035ccbd302232fb58e0555b445) perf(station): start the runtime when an app makes | 2.7 | 3.63 | 14.69 | 36.78 | 56.01 | 32.23 | 65.33 | 99.44 | 124.13 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [77b54e068](https://github.com/AFK-surf/monoid/commit/77b54e068e822ba2f99ea47fa0e30694a51e1995) feat(mbui): group composer-top agents by station w | 2.67 | 3.59 | 14.56 | 36.64 | 55.63 | 32.09 | 64.95 | 98.76 | 129.99 |
 | [e26266e53](https://github.com/AFK-surf/monoid/commit/e26266e53c18d05a7df86f83486618fac28911a7) feat(mbui): polish text field selection handles, l | 2.66 | 3.59 | 14.56 | 36.64 | 55.61 | 32.09 | 64.93 | 98.85 | 121.55 |
 | [e56b27877](https://github.com/AFK-surf/monoid/commit/e56b2787738fe24ae8fa03b529759bca3c476eba) fix(mbui): preserve outer hugs cap in scroll measu | 2.66 | 3.58 | 14.55 | 36.63 | 55.58 | 32.08 | 64.9 | 98.63 | 111.9 |
-| [1aaa170ed](https://github.com/AFK-surf/monoid/commit/1aaa170ed270f11c2ab1318ad2c578b8576d61b5) fix(core-ts): fix zero-speed video routing, stall  | 2.66 | 3.58 | 14.55 | 36.63 | 55.58 | 32.08 | 64.91 | 98.96 | 127.28 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [05e4455a8](https://github.com/AFK-surf/monoid/commit/05e4455a883e2eec552185a7647e3a0603539908) perf(mbui): fix rotated glass cache invalidation a | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
 | [54143d819](https://github.com/AFK-surf/monoid/commit/54143d8197007801c1b85fa22acfe3cb341e1f00) fix(mbui): keep frequent model names readable (#81 | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.56 |
 | [005f1d100](https://github.com/AFK-surf/monoid/commit/005f1d100a6a15a0a4e86c7e96eb271e251570e2) fix(mbui): let two fingers take turns scrolling a  | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.56 |
 | [e414d0eca](https://github.com/AFK-surf/monoid/commit/e414d0eca0b572035ccbd302232fb58e0555b445) perf(station): start the runtime when an app makes | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.56 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [77b54e068](https://github.com/AFK-surf/monoid/commit/77b54e068e822ba2f99ea47fa0e30694a51e1995) feat(mbui): group composer-top agents by station w | 0.47 | 0.62 | 2.39 | 3.44 | 5.65 | 1.73 | 4.68 | 54.48 |
 | [e26266e53](https://github.com/AFK-surf/monoid/commit/e26266e53c18d05a7df86f83486618fac28911a7) feat(mbui): polish text field selection handles, l | 0.47 | 0.62 | 2.39 | 3.44 | 5.65 | 1.73 | 4.68 | 54.48 |
 | [e56b27877](https://github.com/AFK-surf/monoid/commit/e56b2787738fe24ae8fa03b529759bca3c476eba) fix(mbui): preserve outer hugs cap in scroll measu | 0.47 | 0.62 | 2.38 | 3.44 | 5.64 | 1.73 | 4.67 | 54.38 |
-| [1aaa170ed](https://github.com/AFK-surf/monoid/commit/1aaa170ed270f11c2ab1318ad2c578b8576d61b5) fix(core-ts): fix zero-speed video routing, stall  | 0.47 | 0.62 | 2.38 | 3.44 | 5.64 | 1.73 | 4.67 | 54.4 |
