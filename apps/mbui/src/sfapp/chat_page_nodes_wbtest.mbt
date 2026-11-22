@@ -2714,6 +2714,10 @@ test "a chat's page while waiting: shows skeleton bones under the bar, then swit
     }
     open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+    // Before @sf.later_ms (400ms), fast local loads show no skeleton bones.
+    t.run_for(@sf.later_ms / 2.0)
+    assert_eq(waiting_bone_bars(t, left, 45.0, h - 80.0), 0, msg="\{name}: no skeleton bones before later_ms")
+    // Once waiting passes @sf.later_ms, skeleton bones appear.
     t.run_for(@ui.move_most_ms * 4.0)
     // Composer is present at the bottom while waiting.
     let mut fields : Array[(Double, Double, Double, Double)] = []

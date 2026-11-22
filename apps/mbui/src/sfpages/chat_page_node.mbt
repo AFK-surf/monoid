@@ -176,7 +176,7 @@ pub fn chat_page_body_node(
     // it had, or was to take, taken by the one after it)
     b.pick(at_once=true, fn() { read.get() is Some(_) }, fn(o, loaded) {
       guard loaded else {
-        o.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+        o.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).lies_along(Is(End)) |> ignore
         let error_text = fn() {
           match src.topic("chat", @sfbase.chat_params(r)).get().error {
             Some(e) => {
@@ -195,7 +195,14 @@ pub fn chat_page_body_node(
           @sfbase.fresh.became.get() == Some(r) ||
           (@sfbase.fresh.sending.get() && @sfbase.fresh.made.get() == r.session)
         }
-        o.box(fn(s) {
+        let since = o.cause_at()
+        let waited = @sf.waited_past_node(
+          o,
+          fn() { since },
+          @sf.later_ms,
+          going=fn() { !from_fresh() && error_text() == "" },
+        )
+        o.show(at_once=true, fn() { error_text() != "" || (!from_fresh() && waited()) }, fn(s) {
           s
           .grow(Is(1.0))
           .shrink(Is(1.0))
@@ -204,17 +211,13 @@ pub fn chat_page_body_node(
           .clip()
           .padding(By(fn() { (0.0, cover(), 0.0, 0.0) }))
           |> ignore
-          s.show(at_once=true, fn() { error_text() != "" || !from_fresh() }, fn(w) {
-            w.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-            @sf.waiting_node(
-              w,
-              fn(bones) { chat_messages_sample_node(bones, width, tips, stint, top=room) },
-              error=error_text,
-              fill=true,
-            )
-          })
+          @sf.waiting_node(
+            s,
+            fn(bones) { chat_messages_sample_node(bones, width, tips, stint, top=room) },
+            error=error_text,
+            fill=true,
+          )
         })
-        |> ignore
         match composer {
           Some(build) => {
             // (whether its field had the cursor, as it last said: what its field's going tells first is not the person's)
