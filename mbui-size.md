@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [13cfd02f3](https://github.com/AFK-surf/monoid/commit/13cfd02f3d105d402dd4ff4bd2a8d9ab6fd4f5c2) feat(sf-ui): upgrade floating player controls and  | 2.71 | 3.65 | 14.82 | 36.93 | 56.44 | 32.35 | 65.66 | 99.57 | 157.03 |
 | [4dcdd2a40](https://github.com/AFK-surf/monoid/commit/4dcdd2a40e05ee58cf7453db5422eeac18879dda) fix(mbui): track composed text for composer line r | 2.71 | 3.65 | 14.82 | 36.93 | 56.43 | 32.35 | 65.66 | 99.63 | 125.17 |
 | [1809b2751](https://github.com/AFK-surf/monoid/commit/1809b2751552f70b75a8dae34dcb50288db4591f) fix(station): drop O(N²) scans from MoonBit replic | 2.71 | 3.65 | 14.81 | 36.93 | 56.43 | 32.35 | 65.66 | 99.4 | 127.26 |
 | [063ac567f](https://github.com/AFK-surf/monoid/commit/063ac567f454ce7f1828c157a6bdd6fad8145610) feat(mbui,sf-ui): polish iOS 26/27 liquid glass pr | 2.71 | 3.65 | 14.81 | 36.93 | 56.43 | 32.35 | 65.66 | 99.71 | 127.72 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0f1800b12](https://github.com/AFK-surf/monoid/commit/0f1800b122c3d86a2fefe2ca7adb25b4181defdf) fix(mbui): replace 9-tap progressive blur small-ra | 2.69 | 3.63 | 14.69 | 36.79 | 56 | 32.23 | 65.31 | 99.27 | 127.74 |
 | [1953aa4af](https://github.com/AFK-surf/monoid/commit/1953aa4af5ba6cc481dcf18bf8070ece6c628bd5) fix(notice): fix profile push routing, notice.brin | 2.69 | 3.63 | 14.69 | 36.79 | 56 | 32.2 | 65.24 | 99.85 | 89.85 |
 | [8b62854f0](https://github.com/AFK-surf/monoid/commit/8b62854f03592bd74c4e3427f2eae920b434a8c5) feat(mbui): replace legacy frosted bars with liqui | 2.69 | 3.62 | 14.66 | 36.76 | 55.92 | 32.2 | 65.24 | 99.85 | 103.82 |
-| [3e01fcab0](https://github.com/AFK-surf/monoid/commit/3e01fcab0066b6975b928daf9c03abc4f0fb1dba) feat(lg,sf-ui,mbui): port iOS 27.0 LiquidMorphPhys | 2.69 | 3.62 | 14.66 | 36.76 | 55.91 | 32.2 | 65.24 | 100.12 | 125.32 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [13cfd02f3](https://github.com/AFK-surf/monoid/commit/13cfd02f3d105d402dd4ff4bd2a8d9ab6fd4f5c2) feat(sf-ui): upgrade floating player controls and  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.84 |
 | [4dcdd2a40](https://github.com/AFK-surf/monoid/commit/4dcdd2a40e05ee58cf7453db5422eeac18879dda) fix(mbui): track composed text for composer line r | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.74 |
 | [1809b2751](https://github.com/AFK-surf/monoid/commit/1809b2751552f70b75a8dae34dcb50288db4591f) fix(station): drop O(N²) scans from MoonBit replic | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.53 |
 | [063ac567f](https://github.com/AFK-surf/monoid/commit/063ac567f454ce7f1828c157a6bdd6fad8145610) feat(mbui,sf-ui): polish iOS 26/27 liquid glass pr | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.81 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0f1800b12](https://github.com/AFK-surf/monoid/commit/0f1800b122c3d86a2fefe2ca7adb25b4181defdf) fix(mbui): replace 9-tap progressive blur small-ra | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.48 |
 | [1953aa4af](https://github.com/AFK-surf/monoid/commit/1953aa4af5ba6cc481dcf18bf8070ece6c628bd5) fix(notice): fix profile push routing, notice.brin | 0.48 | 0.63 | 2.43 | 3.48 | 5.77 | 1.78 | 4.8 | 54.58 |
 | [8b62854f0](https://github.com/AFK-surf/monoid/commit/8b62854f03592bd74c4e3427f2eae920b434a8c5) feat(mbui): replace legacy frosted bars with liqui | 0.48 | 0.63 | 2.43 | 3.48 | 5.77 | 1.78 | 4.8 | 54.58 |
-| [3e01fcab0](https://github.com/AFK-surf/monoid/commit/3e01fcab0066b6975b928daf9c03abc4f0fb1dba) feat(lg,sf-ui,mbui): port iOS 27.0 LiquidMorphPhys | 0.48 | 0.63 | 2.43 | 3.48 | 5.77 | 1.78 | 4.8 | 54.58 |
