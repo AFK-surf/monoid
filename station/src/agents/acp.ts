@@ -251,6 +251,11 @@ export abstract class AcpSession extends OwnProcessSession<AcpTurn> {
     this.transcript?.keep(this.sessionId, { type: "session", id: this.sessionId, cwd });
   }
 
+  /// Its opening given up (`OpenOptions.signal`): every request waiting fails with `error` now.
+  gaveUp(error: Error) {
+    this.waiting.failAll(error);
+  }
+
   /// A request whose answer is waited for: an error answer rejects.
   request(id: string, method: string, params: Json, timeoutMs?: number): Promise<Json> {
     const answer = this.waiting.wait(id, (m) => (m?.error !== undefined ? new Error(`${this.kind} ${method}: ${errorText(m.error)}`) : null), undefined, timeoutMs);
@@ -461,6 +466,11 @@ export type AcpStart = {
   opening?: Json;
 };
 
+/// An opening given up (`OpenOptions.signal`): failed here, so that nothing more of it is started.
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new Error("open aborted");
+}
+
 export abstract class AcpDriver<S extends AcpSession> extends OwnProcessDriver<S> {
   /// Whether the station keeps its transcript (KeptTranscript).
   protected readonly keepsTranscript: boolean = false;
@@ -485,11 +495,22 @@ export abstract class AcpDriver<S extends AcpSession> extends OwnProcessDriver<S
   }
 
   protected async begin(options: OpenOptions, events: Events, probe: boolean): Promise<S> {
+    throwIfAborted(options.signal);
     const start = await this.starting(options, probe);
+    // (given up while it was made ready: no process started)
+    throwIfAborted(options.signal);
     const session = this.session(options, events);
     session.toolsUrl = options.mcpUrl;
     await this.start(session, options, start.command, start.args, start.env);
+    const signal = options.signal;
+    // Given up while it opens: what it waits on fails at once, and its process is ended below.
+    const onAbort = () => session.gaveUp(new Error("open aborted"));
     try {
+      if (signal !== undefined) {
+        signal.addEventListener("abort", onAbort, { once: true });
+        // (given up as it started)
+        if (signal.aborted) throw new Error("open aborted");
+      }
       const meta = start.meta === undefined ? {} : { _meta: start.meta };
       const answer = await session.request(INIT, "initialize", { protocolVersion: 1, clientCapabilities: {}, clientInfo: CLIENT, ...meta }, start.initializeTimeoutMs);
       await this.initialized(session, answer, options);
@@ -509,9 +530,12 @@ export abstract class AcpDriver<S extends AcpSession> extends OwnProcessDriver<S
       await this.ready(session, options, probe);
       // (what it keeps of its opening written before it is anyone's)
       await session.adopted();
+      throwIfAborted(signal);
     } catch (error) {
       await session.dispose();
       throw error;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
     }
     return session;
   }

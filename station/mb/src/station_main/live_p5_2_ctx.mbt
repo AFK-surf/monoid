@@ -478,7 +478,7 @@ async fn P52::open_agent_on(
   }
   let agent = match (afresh, prev_id) {
     (Some(note), Some(_)) => {
-      let a = (driver.open)(base, events)
+      let a = (driver.open)(base, events, cancelled)
       told["afresh"] = jstr(note)
       a
     }
@@ -491,7 +491,7 @@ async fn P52::open_agent_on(
         }
         other => other
       }
-      match (try { Ok((driver.open)(resumed, events)) } catch { e => Err(e) }) {
+      match (try { Ok((driver.open)(resumed, events, cancelled)) } catch { e => Err(e) }) {
         Ok(a) => {
           resumable = subagents
           a
@@ -503,12 +503,12 @@ async fn P52::open_agent_on(
           }
           slice_log("warn", "session", "resume failed; starting a new runtime session", { "session": jstr(key), "id": jstr(id), "error": jstr(said_of(e)) })
           told["resumeLost"] = jb(true)
-          (driver.open)(base, events)
+          (driver.open)(base, events, cancelled)
         }
       }
     }
     _ => {
-      let a = (driver.open)(base, events)
+      let a = (driver.open)(base, events, cancelled)
       if cleared {
         told["afresh"] = jstr(hub.told_cleared(key, read_back~) catch { _ => @agent_runtimes.cleared(key, []) })
       }

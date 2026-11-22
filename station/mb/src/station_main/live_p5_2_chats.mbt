@@ -424,10 +424,14 @@ async fn P52::side_open(self : P52, runtime : String, options : Json, events : J
   let callback = jv_num(events, "$fn").unwrap_or(-1.0).to_int()
   let told : Array[J] = []
   let wake : Ref[@effect.Deferred[Unit]] = Ref(@effect.Deferred::new())
-  let agent = (driver.open)(options, event => {
-    told.push(event)
-    ignore(wake.val.succeed(()))
-  })
+  let agent = (driver.open)(
+    options,
+    event => {
+      told.push(event)
+      ignore(wake.val.succeed(()))
+    },
+    () => false,
+  )
   chat_state.next_side += 1
   let n = chat_state.next_side
   chat_state.sides[n] = { agent, told, wake, events: callback, until: wall_ms().to_double() + @session_chats.title_timeout_ms }

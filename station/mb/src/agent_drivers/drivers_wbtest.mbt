@@ -389,3 +389,67 @@ test "codex #7503: ensure_ready refuses dead ready host, ended skips left_runner
   assert_eq(found_ids.val, ["codex-p1.2"])
   assert_true(!driver.ended.contains("codex-p1:101"))
 }
+
+///|
+/// `AgyDriver::begin`'s openings as `agy_opened_again` runs them, each a process that offers no models
+/// (`AgyNoCatalog`): how many were opened (`spawned`), how many waits begun (`slept`), and how it ended.
+fn agy_offline_openings(
+  cancel_at_open? : Int = -1,
+  cancel_in_sleep? : Int = -1,
+) -> (Int, Int, String) {
+  let lp = Loop::new()
+  let cancelled = Ref(false)
+  let spawned = Ref(0)
+  let slept = Ref(0)
+  let once = () => {
+    spawned.val += 1
+    // (given up while its process opened, before it said it offers no models)
+    if spawned.val == cancel_at_open {
+      cancelled.val = true
+    }
+    let out : Later[Int] = Later::new(lp)
+    lp.soon(() => out.reject(Failed("Antigravity CLI could not load its model catalog: connection failed")))
+    out
+  }
+  let sleep = (ms : Double) => {
+    slept.val += 1
+    let out : Later[Unit] = Later::new(lp)
+    lp.after(ms, () => out.resolve(())) |> ignore
+    // (given up during that wait)
+    if slept.val == cancel_in_sleep {
+      lp.after(ms / 2.0, () => cancelled.val = true) |> ignore
+    }
+    out
+  }
+  let ended = Ref("pending")
+  agy_opened_again(lp, once, sleep, () => cancelled.val, (_, _) => ()).on(r => ended.val = match r {
+    Ok(_) => "opened"
+    Err(Failed(msg)) => msg
+    Err(e) => e.to_string()
+  })
+  lp.run()
+  lp.advance(60_000.0)
+  lp.run()
+  (spawned.val, slept.val, ended.val)
+}
+
+///|
+test "an Antigravity opening given up before its process said it offers no models never waits nor opens again" {
+  inspect(agy_offline_openings(cancel_at_open=1), content=(
+    #|(1, 0, open aborted)
+  ))
+}
+
+///|
+test "an Antigravity opening given up during its wait to open again opens nothing after it" {
+  inspect(agy_offline_openings(cancel_in_sleep=1), content=(
+    #|(1, 1, open aborted)
+  ))
+}
+
+///|
+test "an Antigravity opening not given up opens again after each wait, then fails as the network" {
+  inspect(agy_offline_openings(), content=(
+    #|(4, 3, Antigravity CLI could not load its model catalog: connection failed)
+  ))
+}

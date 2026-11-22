@@ -6,7 +6,9 @@
 /// A runtime's driver as the station holds it (runtime.ts `AgentDriver`).
 priv struct Driver {
   kind : String
-  open : async (Json, (@jsjson.JValue) -> Unit) -> Agent
+  /// (its last argument: whether the opening was given up since, mb-actor.ts `cancelOpen`, for a driver that opens again
+  /// after a failure to stop there)
+  open : async (Json, (@jsjson.JValue) -> Unit, () -> Bool) -> Agent
   adopt : async (Json, Json?, (@jsjson.JValue) -> Unit) -> Agent
   shutdown : async (Bool) -> Unit
   detach : () -> Unit
@@ -283,7 +285,7 @@ fn claude_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers
   )
   {
     kind: "claude",
-    open: async fn(options, events) { agent_of(pump.wait(d.open(to_jv(options), events))) },
+    open: async fn(options, events, _cancelled) { agent_of(pump.wait(d.open(to_jv(options), events))) },
     adopt: async fn(options, snap, events) { agent_of(pump.wait(d.adopt(to_jv(options), snap.map(to_jv), events))) },
     shutdown: async fn(again) {
       // (own-process.ts `shutdown`: each session disposed either way; used again, its program is kept)
@@ -475,7 +477,7 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
   } : Agent)
   {
     kind: "codex",
-    open: async fn(options, events) { agent_of(pump.wait(d.open(to_jv(options), events))) },
+    open: async fn(options, events, _cancelled) { agent_of(pump.wait(d.open(to_jv(options), events))) },
     adopt: async fn(options, snap, events) {
       // (its thread's events taken by its actor in the program from the first: codex.ts `addThread`'s router)
       let key = jtext(options, "key").unwrap_or("")
@@ -601,7 +603,7 @@ fn agy_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.Wo
   )
   {
     kind: "agy",
-    open: async fn(options, events) { agent_of(pump.wait(d.open(to_jv(options), events))) },
+    open: async fn(options, events, cancelled) { agent_of(pump.wait(d.open(to_jv(options), events, cancelled~))) },
     adopt: async fn(options, snap, events) { agent_of(pump.wait(d.adopt(to_jv(options), snap.map(to_jv), events))) },
     shutdown: async fn(again) {
       for s in d.sessions.copy() {
