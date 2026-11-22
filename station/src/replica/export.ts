@@ -9,6 +9,7 @@ export type Told = {
   removedSessions: { key: string; ws: string | null }[];
   removedThreads: { id: number; ws: string | null }[];
   marks: { table: string; key: Row }[];
+  transcripts?: boolean;
 };
 export const nothingTold = (): Told => ({ sessions: [], threads: [], removedSessions: [], removedThreads: [], marks: [] });
 

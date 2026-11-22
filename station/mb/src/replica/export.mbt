@@ -16,6 +16,9 @@ let fold_small : Double = 1048576.0
 let runs_kept : Int = 512
 
 ///|
+pub let chunk_plain_bytes : Int = 4194304
+
+///|
 let state_schema : String =
   #|CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL) WITHOUT ROWID;
   #|CREATE TABLE IF NOT EXISTS digests (ws TEXT NOT NULL, k TEXT NOT NULL, d TEXT NOT NULL, PRIMARY KEY (ws, k)) WITHOUT ROWID;
@@ -24,6 +27,9 @@ let state_schema : String =
   #|CREATE INDEX IF NOT EXISTS files_hash ON files (hash);
   #|CREATE TABLE IF NOT EXISTS sent (ws TEXT NOT NULL, path TEXT NOT NULL, PRIMARY KEY (ws, path)) WITHOUT ROWID;
   #|CREATE TABLE IF NOT EXISTS entering (ws TEXT NOT NULL, thread INTEGER NOT NULL, tbl TEXT NOT NULL, after INTEGER NOT NULL, upto INTEGER NOT NULL, PRIMARY KEY (ws, thread, tbl)) WITHOUT ROWID;
+  #|CREATE TABLE IF NOT EXISTS transcript_files (ws TEXT NOT NULL, path TEXT NOT NULL, room TEXT, size INTEGER NOT NULL, mtime INTEGER NOT NULL, mode INTEGER NOT NULL, chunks_json TEXT NOT NULL, PRIMARY KEY (ws, path)) WITHOUT ROWID;
+  #|CREATE TABLE IF NOT EXISTS transcript_chunks (plain_hash TEXT PRIMARY KEY, chunk_hash TEXT NOT NULL, comp_size INTEGER NOT NULL) WITHOUT ROWID;
+  #|CREATE INDEX IF NOT EXISTS transcript_chunks_hash ON transcript_chunks (chunk_hash);
 
 ///|
 let small_tables : Array[String] = [
@@ -88,6 +94,7 @@ pub struct Exporter {
   priv data_dir : String
   priv origin : String
   priv most : Int
+  priv chunk_bytes : Int
   priv fold : Bool
   priv now : () -> Double
   priv mut places : Places
@@ -107,6 +114,7 @@ pub fn Exporter::new(
   origin : String,
   now : () -> Double,
   batch_bytes? : Int = batch_bytes,
+  chunk_bytes? : Int = chunk_plain_bytes,
   fold? : Bool = true,
 ) -> Exporter raise {
   let files = { host, sep }
@@ -124,6 +132,7 @@ pub fn Exporter::new(
     data_dir,
     origin,
     most: batch_bytes,
+    chunk_bytes: if chunk_bytes > 0 { chunk_bytes } else { chunk_plain_bytes },
     fold,
     now,
     places: { home: None, workspaces: [] },
@@ -170,7 +179,7 @@ fn Exporter::set_meta(self : Exporter, k : String, v : String) -> Unit raise {
 ///|
 /// Everything exported is forgotten: the next pass writes it all again, in new generations.
 fn Exporter::forget(self : Exporter) -> Unit raise {
-  self.state.exec("DELETE FROM meta WHERE k <> 'after'; DELETE FROM digests; DELETE FROM threads; DELETE FROM sent; DELETE FROM entering;")
+  self.state.exec("DELETE FROM meta WHERE k <> 'after'; DELETE FROM digests; DELETE FROM threads; DELETE FROM sent; DELETE FROM entering; DELETE FROM transcript_files;")
   self.known = false
 }
 
@@ -247,7 +256,7 @@ fn Exporter::gen_of(self : Exporter, ws : String) -> String raise {
   let now = (self.now)()
   let gen = gen_name(if now > after + 1.0 { now } else { after + 1.0 }, self.files.random(4))
   self.set_meta("gen:\{ws}", gen)
-  for t in ["digests", "threads", "sent", "entering"] {
+  for t in ["digests", "threads", "sent", "entering", "transcript_files"] {
     ignore(self.state.run("DELETE FROM \{t} WHERE ws = ?", [s(ws)]))
   }
   gen
@@ -273,7 +282,7 @@ pub fn Exporter::heads(self : Exporter) -> JValue raise {
 ///|
 /// One pass (`pass`): what changed, as told and as found, written as batches. Its answer as the TypeScript one's
 /// (`Passed` and whether the station has no chat of its own).
-pub fn Exporter::pass(self : Exporter, told : JValue) -> JValue raise {
+pub async fn Exporter::pass(self : Exporter, told : JValue) -> JValue {
   guard self.places.home is Some(home) && self.places.workspaces.length() > 0 else {
     return Obj([
       ("heads", Obj([])),
@@ -305,7 +314,7 @@ fn list_of(v : JValue?) -> Array[JValue] {
 }
 
 ///|
-fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JValue raise {
+async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JValue {
   let names = self.places.workspaces
   let ws_of_session = (ws : JValue?) => match ws {
     Some(Str(u)) if u.length() > 0 => @jsjson.sanitize_str(u)
@@ -533,6 +542,10 @@ fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JValue ra
     }
   }
   let mut more = false
+  let want_transcripts = get(told, "transcripts") is Some(Bool(true))
+  let scan_transcripts = !self.known || want_transcripts
+  let sess_rows : Array[JValue] = []
+  let run_rows : Map[String, Array[JValue]] = Map([])
   self.db.exec("BEGIN")
   let body = () => {
     // What was deleted, as told.
@@ -565,6 +578,16 @@ fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JValue ra
         while true {
           let rows = all(page_of(table), [Json::number(after), ni(page)])
           for r in rows {
+            if table == "sessions" {
+              sess_rows.push(r)
+            } else if table == "runtime_sessions" {
+              if text_of(get(r, "session_key")) is Some(sk) {
+                match run_rows.get(sk) {
+                  Some(xs) => xs.push(r)
+                  None => run_rows[sk] = [r]
+                }
+              }
+            }
             let wss = if table == "sessions" || table == "runtime_sessions" || table == "pins" || table == "opened_chats" {
               session_ws(table, r)
             } else {
@@ -624,6 +647,27 @@ fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JValue ra
         }
       }
       self.known = true
+    } else if want_transcripts {
+      for table in ["sessions", "runtime_sessions"] {
+        let mut after = 0.0
+        while true {
+          let rows = all(page_of(table), [Json::number(after), ni(page)])
+          for r in rows {
+            if table == "sessions" {
+              sess_rows.push(r)
+            } else if text_of(get(r, "session_key")) is Some(sk) {
+              match run_rows.get(sk) {
+                Some(xs) => xs.push(r)
+                None => run_rows[sk] = [r]
+              }
+            }
+          }
+          if rows.length() < page {
+            break
+          }
+          after = num(get(rows[rows.length() - 1], "_rowid"))
+        }
+      }
     }
     // What changed in place, as told.
     for k in list_of(get(told, "sessions")) {
@@ -745,6 +789,9 @@ fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JValue ra
       say(ws, Obj([("file", str(hash)), ("size", Num(size)), ("path", str(path))]))
     }
   }
+  if scan_transcripts {
+    self.export_transcripts(outs, sess_rows, run_rows, ws_of_session, say)
+  }
   let mut wrote = 0
   let heads : Array[(String, JValue)] = []
   for w in names {
@@ -754,6 +801,9 @@ fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JValue ra
       wrote += 1
     }
     heads.push((w.0, out.head))
+  }
+  if scan_transcripts {
+    self.gc_transcript_chunks()
   }
   Obj([
     ("heads", Obj(heads)),
@@ -866,6 +916,12 @@ fn Exporter::write(self : Exporter, ws : String, out : Out) -> Unit raise {
   next = set(next, "batches", strs(strings_of(get(head, "batches")) + names))
   next = set(next, "runs", Arr(kept))
   next = set(next, "files", files)
+  let tf_entries = self.transcript_files_map(ws)
+  if tf_entries.length() > 0 {
+    next = set(next, "transcriptFiles", Obj(tf_entries))
+  } else {
+    next = without(next, "transcriptFiles")
+  }
   next = set(next, "chats", Num(chats))
   next = set(next, "messages", Num(num(get(head, "messages")) + out.messages))
   out.head = self.fold_gen(dir, next, out.gone)
@@ -998,8 +1054,23 @@ fn Exporter::bytes(self : Exporter, dir : String, h : JValue) -> Double {
       None => ()
     }
   }
+  let seen : Set[String] = Set([])
   match get(h, "files") {
-    Some(Obj(entries)) => for e in entries { n += num(Some(e.1)) }
+    Some(Obj(entries)) =>
+      for e in entries {
+        seen.add(e.0)
+        n += num(Some(e.1))
+      }
+    _ => ()
+  }
+  match get(h, "transcriptFiles") {
+    Some(Obj(entries)) =>
+      for e in entries {
+        if !seen.contains(e.0) {
+          seen.add(e.0)
+          n += num(Some(e.1))
+        }
+      }
     _ => ()
   }
   n
@@ -1016,6 +1087,7 @@ pub fn Exporter::empty(self : Exporter) -> Bool raise {
 pub fn Exporter::sources(self : Exporter, hashes : Array[String]) -> JValue raise {
   let out : Array[(String, JValue)] = []
   for h in hashes {
+    let mut found = false
     for r in self.state.all("SELECT path FROM files WHERE hash = ?", [s(h)]) {
       let path = field_text(r, "path")
       if self.files.kind(path) is Some("file") {
@@ -1024,9 +1096,302 @@ pub fn Exporter::sources(self : Exporter, hashes : Array[String]) -> JValue rais
           Some(i) => out[i] = (key, str(path))
           None => out.push((key, str(path)))
         }
+        found = true
         break
+      }
+    }
+    if !found {
+      let chunk = self.files.join([self.replica, "chunks", h])
+      if self.files.kind(chunk) is Some("file") {
+        let key = h
+        match out.search_by(e => e.0 == key) {
+          Some(i) => out[i] = (key, str(chunk))
+          None => out.push((key, str(chunk)))
+        }
       }
     }
   }
   Obj(out)
+}
+
+///|
+/// Strict whitelist for transcript backup/restore paths: only under `<dataDir>/transcripts*` or AGY `cli_kept`
+/// (`homes/<profile>/agy/.gemini/antigravity-cli/{conversations,brain,annotations}`). Never `sessions/*/workspace`.
+fn Files::is_transcript_path(self : Files, data : String, path : String) -> Bool {
+  guard self.under_of(data, path) is Some(rel) && rel != "" else { return false }
+  let parts : Array[String] = rel.split(self.sep).map(x => x.to_string()).collect()
+  for p in parts {
+    if p == "" || p == "." || p == ".." {
+      return false
+    }
+  }
+  parts.length() > 1 && (parts[0].has_prefix("transcripts") || cli_kept(parts))
+}
+
+///|
+fn Exporter::walk_transcript_dir(
+  self : Exporter,
+  dir : String,
+  add : (String) -> Unit,
+) -> Unit {
+  guard self.files.listing(dir) is Some(entries) else { return }
+  for e in entries {
+    let (name, kind) = e
+    let path = self.files.join([dir, name])
+    if kind == "dir" {
+      self.walk_transcript_dir(path, add)
+    } else if kind == "file" {
+      add(path)
+    }
+  }
+}
+
+///|
+/// Discovers all session transcripts for active workspaces, chunks changed files into 4 MiB zstd CAS blobs under
+/// `<replica>/chunks/<chunk_hash>`, emits `tr` and `tr_del` records, and updates `transcript_files` / `transcript_chunks`.
+async fn Exporter::export_transcripts(
+  self : Exporter,
+  outs : Map[String, Out],
+  sess_rows : Array[JValue],
+  run_rows : Map[String, Array[JValue]],
+  ws_of_session : (JValue?) -> String,
+  say : (String, JValue) -> Unit,
+) -> Unit {
+  let finder = @locate.Finder::new(self.host, self.files.sep)
+  let by_ws : Map[String, Map[String, String?]] = Map([])
+  for ws, _ in outs {
+    by_ws[ws] = Map([])
+  }
+  for sess in sess_rows {
+    let ws = ws_of_session(get(sess, "ws"))
+    guard by_ws.get(ws) is Some(found_map) else { continue }
+    let key = text_of(get(sess, "key")).unwrap_or("")
+    let s_runtime = text_of(get(sess, "runtime")).unwrap_or("")
+    let orig_runtime = text_of(get(sess, "original_runtime")).unwrap_or(s_runtime)
+    let s_profile = text_of(get(sess, "profile"))
+    let s_workspace = text_of(get(sess, "workspace")).unwrap_or("")
+    let s_cwd = text_of(get(sess, "cwd"))
+    let room : String? = match s_cwd {
+      Some(c) if c != "" => Some(c)
+      _ => if s_workspace != "" { Some(s_workspace) } else { None }
+    }
+    let places : Array[String] = []
+    if s_cwd is Some(c) && c != "" && c != s_workspace {
+      places.push(c)
+    }
+    if s_workspace != "" {
+      places.push(s_workspace)
+    }
+    let sources : Array[@locate.Source] = []
+    let seen_ids : Set[String] = Set([])
+    for r in run_rows.get(key).unwrap_or([]) {
+      let id = text_of(get(r, "id")).unwrap_or("")
+      if id == "" {
+        continue
+      }
+      let rt = text_of(get(r, "runtime")).unwrap_or(orig_runtime)
+      let prof = match text_of(get(r, "profile")) {
+        Some(p) => Some(p)
+        None => s_profile
+      }
+      sources.push({ id, runtime: rt, profile: prof })
+      seen_ids.add(id)
+    }
+    if text_of(get(sess, "runtime_session_id")) is Some(cid) && cid != "" && !seen_ids.contains(cid) {
+      sources.push({ id: cid, runtime: s_runtime, profile: s_profile })
+    }
+    if sources.length() == 0 {
+      continue
+    }
+    let add_path = (p : String) => {
+      if self.files.is_transcript_path(self.data_dir, p) && !found_map.contains(p) {
+        found_map[p] = room
+      }
+    }
+    let valid_sources = sources.filter(r => @locate.runtime_kind(r.runtime))
+    if valid_sources.length() > 0 {
+      let (located, _) = finder.sources(self.data_dir, [], valid_sources, places, anywhere=true)
+      for t in located {
+        let (path, kind) = t
+        let actual = if self.files.exists(path) { path } else { path + ".zst" }
+        add_path(actual)
+        if kind == "claude" {
+          let name = path.view(start_offset=path.rev_find(self.files.sep).unwrap_or(-1) + 1).to_string()
+          let id = if name.has_suffix(".jsonl") { name.view(end_offset=name.length() - 6).to_string() } else { name }
+          let sub = self.files.join([self.files.dir_of(path), id])
+          if self.files.kind(sub) is Some("dir") {
+            self.walk_transcript_dir(sub, add_path)
+          }
+        }
+      }
+    }
+    // AGY cli_kept: homes/<profile>/agy/.gemini/antigravity-cli/{conversations,annotations,brain}
+    for r in sources {
+      guard r.runtime == "agy" && r.profile is Some(profile) && one_segment(profile) && one_segment(r.id) else { continue }
+      let cli = self.files.join([self.data_dir, "homes", profile, "agy", ".gemini", "antigravity-cli"])
+      add_path(self.files.join([cli, "conversations", r.id + ".db"]))
+      add_path(self.files.join([cli, "conversations", r.id + ".db-wal"]))
+      add_path(self.files.join([cli, "annotations", r.id + ".pbtxt"]))
+      let brain = self.files.join([cli, "brain", r.id])
+      if self.files.kind(brain) is Some("dir") {
+        self.walk_transcript_dir(brain, add_path)
+      }
+    }
+  }
+  for ws, found_map in by_ws {
+    let paths = found_map.keys().collect()
+    paths.sort_by(compare_units)
+    let active : Set[String] = Set([])
+    for path in paths {
+      guard self.files.lstat(path) is Some(("file", size, mode, mtime)) else { continue }
+      active.add(path)
+      let room = found_map.get(path).unwrap_or(None)
+      let m = mode & 0o777
+      let mtime_ms = @math.floor(mtime)
+      let existing = self.state.all("SELECT room, size, mtime FROM transcript_files WHERE ws = ? AND path = ?", [s(ws), s(path)])
+      let unchanged = match existing {
+        [row, ..] => {
+          let prev_room = match row.get("room") {
+            Some(String(r)) => Some(r)
+            _ => None
+          }
+          field_num(row, "size") == size && field_num(row, "mtime") == mtime_ms && prev_room == room
+        }
+        _ => false
+      }
+      if unchanged {
+        continue
+      }
+      let chunks : Array[String] = []
+      let total = size.to_int()
+      let mut offset = 0
+      while offset < total {
+        let want = if total - offset < self.chunk_bytes { total - offset } else { self.chunk_bytes }
+        guard self.host.read_bytes(path, from=offset, length=want) is Some(plain) && plain.length() > 0 else { break }
+        let plain_hash = @hash.sha256_hex(plain[:])
+        let chunk_hash = match self.state.all("SELECT chunk_hash FROM transcript_chunks WHERE plain_hash = ?", [s(plain_hash)]) {
+          [row, ..] => {
+            let ch = field_text(row, "chunk_hash")
+            if self.files.kind(self.files.join([self.replica, "chunks", ch])) is Some("file") {
+              Some(ch)
+            } else {
+              None
+            }
+          }
+          _ => None
+        }
+        let ch = match chunk_hash {
+          Some(c) => c
+          None => {
+            let (_, zst_opt) = self.host.shell("zstd.compress", { "level": Json::number(3.0), "window": Json::number(20.0) }, bytes=plain)
+            guard zst_opt is Some(zst) else { fail("zstd.compress returned no bytes") }
+            let h = @hash.sha256_hex(zst[:])
+            let comp_size = zst.length().to_double()
+            let chunk_path = self.files.join([self.replica, "chunks", h])
+            if !(self.files.kind(chunk_path) is Some("file")) {
+              self.host.write_atomic(chunk_path, zst, mode=0o644, sync=true, mkdir=true, sep=self.files.sep)
+            }
+            ignore(
+              self.state.run("INSERT OR REPLACE INTO transcript_chunks (plain_hash, chunk_hash, comp_size) VALUES (?, ?, ?)", [
+                s(plain_hash),
+                s(h),
+                Json::number(comp_size),
+              ]),
+            )
+            h
+          }
+        }
+        chunks.push(ch)
+        offset += plain.length()
+      }
+      let chunks_json = stringify(strs(chunks))
+      let room_param = match room {
+        Some(r) => s(r)
+        None => Json::null()
+      }
+      ignore(
+        self.state.run("INSERT OR REPLACE INTO transcript_files (ws, path, room, size, mtime, mode, chunks_json) VALUES (?, ?, ?, ?, ?, ?, ?)", [
+          s(ws),
+          s(path),
+          room_param,
+          Json::number(size),
+          Json::number(mtime_ms),
+          ni(m),
+          s(chunks_json),
+        ]),
+      )
+      say(
+        ws,
+        Obj([
+          ("tr", str(path)),
+          ("room", match room { Some(r) => str(r); None => Null }),
+          ("size", Num(size)),
+          ("mtime", Num(mtime_ms)),
+          ("mode", Num(m.to_double())),
+          ("chunks", strs(chunks)),
+        ]),
+      )
+    }
+    for row in self.state.all("SELECT path FROM transcript_files WHERE ws = ? ORDER BY path", [s(ws)]) {
+      let old_path = field_text(row, "path")
+      if !active.contains(old_path) {
+        ignore(self.state.run("DELETE FROM transcript_files WHERE ws = ? AND path = ?", [s(ws), s(old_path)]))
+        say(ws, Obj([("tr_del", str(old_path))]))
+      }
+    }
+  }
+}
+
+///|
+fn Exporter::transcript_files_map(self : Exporter, ws : String) -> Array[(String, JValue)] raise {
+  let sizes : Map[String, Double] = Map([])
+  for row in self.state.all("SELECT chunks_json FROM transcript_files WHERE ws = ?", [s(ws)]) {
+    let parsed = @jsjson.parse(field_text(row, "chunks_json")) catch { _ => Arr([]) }
+    for ch in strings_of(Some(parsed)) {
+      if sizes.contains(ch) {
+        continue
+      }
+      let sz = match self.state.all("SELECT comp_size FROM transcript_chunks WHERE chunk_hash = ? LIMIT 1", [s(ch)]) {
+        [r, ..] => field_num(r, "comp_size")
+        _ =>
+          match self.files.meta(self.files.join([self.replica, "chunks", ch])) {
+            Some((size, _)) => size
+            None => 0.0
+          }
+      }
+      sizes[ch] = sz
+    }
+  }
+  let keys = sizes.keys().collect()
+  keys.sort_by(compare_units)
+  keys.map(k => (k, Num(sizes.get(k).unwrap_or(0.0))))
+}
+
+///|
+fn Exporter::gc_transcript_chunks(self : Exporter) -> Unit raise {
+  let chunks_dir = self.files.join([self.replica, "chunks"])
+  let live : Set[String] = Set([])
+  for row in self.state.all("SELECT chunks_json FROM transcript_files", []) {
+    let parsed = @jsjson.parse(field_text(row, "chunks_json")) catch { _ => Arr([]) }
+    for ch in strings_of(Some(parsed)) {
+      live.add(ch)
+    }
+  }
+  match self.files.names(chunks_dir) {
+    Some(names) =>
+      for name in names {
+        if !live.contains(name) {
+          self.files.remove(self.files.join([chunks_dir, name])) catch {
+            _ => ()
+          }
+        }
+      }
+    None => ()
+  }
+  for row in self.state.all("SELECT plain_hash, chunk_hash FROM transcript_chunks", []) {
+    let ch = field_text(row, "chunk_hash")
+    if !live.contains(ch) {
+      ignore(self.state.run("DELETE FROM transcript_chunks WHERE plain_hash = ?", [s(field_text(row, "plain_hash"))]))
+    }
+  }
 }

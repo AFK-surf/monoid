@@ -473,6 +473,9 @@ export class S3Place implements Place {
         for (const h of Object.keys(head.files)) {
           if (fileTags.has(this.fileTag(h))) presentHashes.add(h);
         }
+        for (const h of Object.keys(head.transcriptFiles ?? {})) {
+          if (fileTags.has(this.fileTag(h))) presentHashes.add(h);
+        }
       }
     }
     gens.sort((a, b) => genMade(a.gen) - genMade(b.gen) || (a.gen < b.gen ? -1 : 1));

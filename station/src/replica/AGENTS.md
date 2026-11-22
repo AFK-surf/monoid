@@ -1,6 +1,6 @@
 # The copies of a station's conversations (for agents)
 
-Losing one machine does not lose a workspace's conversations (the user, 2026-11-09). A station's chats (threads, entries, letters, sessions, turns, viewers' marks, attached files) are copied per workspace to keeper stations; a new station takes them back for a lost one. Transcripts, usage, accounts and working directories stay the machine's: a chat taken back goes on afresh, as after an account change.
+Losing one machine does not lose a workspace's conversations (the user, 2026-11-09). A station's chats (threads, entries, letters, sessions, turns, viewers' marks, attached files) and runtime session transcripts (`transcripts*/` and Antigravity CLI `homes/<profile>/agy/.gemini/antigravity-cli/{conversations,brain,annotations}`, chunked at 4 MiB with zstd CAS and `carriedTo` project remapping on restore; optional per S3 target via `includeTranscripts`) are copied per workspace to keeper stations and S3/R2 targets; a new station takes them back for a lost one. Usage, accounts, browser sign-ins and working directories (`sessions/*/workspace`) stay the machine's and are never backed up.
 
 ## The copies
 

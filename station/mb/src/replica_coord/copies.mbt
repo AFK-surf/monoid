@@ -6,6 +6,9 @@
 pub let gather_ms : Double = 1000.0
 
 ///|
+pub let transcript_gather_ms : Double = 30000.0
+
+///|
 pub let copies_retry_ms : Double = 5000.0
 
 ///|
@@ -261,6 +264,8 @@ pub struct Copies {
   kept : FolderPlace
   mut told : Told
   mut gathering : (() -> Unit)?
+  mut transcript_gathering : (() -> Unit)?
+  mut want_transcripts : Bool
   mut passing : Run?
   mut again : Bool
   mut closed : Bool
@@ -299,6 +304,8 @@ pub async fn Copies::new(w : World, d : CopiesDeps) -> Copies {
     kept: FolderPlace::new(w.fs, kept_dir(w.fs, d.data)),
     told: Told::nothing(),
     gathering: None,
+    transcript_gathering: None,
+    want_transcripts: false,
     passing: None,
     again: false,
     closed: false,
@@ -346,6 +353,7 @@ pub async fn Copies::start(self : Copies) -> Unit {
 pub async fn Copies::close(self : Copies) -> Unit {
   self.closed = true
   call_opt(self.gathering)
+  call_opt(self.transcript_gathering)
   call_opt(self.telling)
   for _, k in self.keeping {
     call_opt(k.again)
@@ -399,6 +407,10 @@ pub fn Copies::told(self : Copies, change : J) -> Unit {
   if tell(self.told, change) {
     self.gather()
   }
+  match str_at(change, "type") {
+    Some("session") | Some("conversation") | Some("sessionRemoved") => self.gather_transcripts()
+    _ => ()
+  }
 }
 
 ///|
@@ -410,6 +422,23 @@ fn Copies::gather(self : Copies) -> Unit {
   self.gathering = Some(
     self.w.after(gather_ms, () => {
       self.gathering = None
+      self.w.go(async fn() { self.pass() })
+    }),
+  )
+}
+
+///|
+fn Copies::gather_transcripts(self : Copies) -> Unit {
+  self.want_transcripts = true
+  if self.transcript_gathering is Some(_) || self.closed {
+    return
+  }
+  // timer: a debounce of a burst of transcript writes
+  self.transcript_gathering = Some(
+    self.w.after(transcript_gather_ms, () => {
+      self.transcript_gathering = None
+      self.want_transcripts = false
+      self.told.transcripts = true
       self.w.go(async fn() { self.pass() })
     }),
   )
@@ -477,6 +506,9 @@ fn Copies::merge(self : Copies, told : Told) -> Unit {
   t.removed_sessions.push_iter(told.removed_sessions.iter())
   t.removed_threads.push_iter(told.removed_threads.iter())
   t.marks.push_iter(told.marks.iter())
+  if told.transcripts {
+    t.transcripts = true
+  }
 }
 
 ///|
@@ -484,6 +516,12 @@ fn Copies::merge(self : Copies, told : Told) -> Unit {
 pub async fn Copies::settle(self : Copies) -> Unit {
   call_opt(self.gathering)
   self.gathering = None
+  call_opt(self.transcript_gathering)
+  self.transcript_gathering = None
+  if self.want_transcripts {
+    self.want_transcripts = false
+    self.told.transcripts = true
+  }
   self.settle_export()
   while true {
     let busy = self.keeping.values().any(k => k.busy)
@@ -578,7 +616,7 @@ fn Copies::backup_config(self : Copies) -> BackupConfig {
 
 ///|
 fn s3_sig(t : S3TargetConfig) -> String {
-  "\{t.endpoint}\n\{t.region}\n\{t.bucket}\n\{t.prefix}\n\{t.force_path_style}\n\{t.access_key_id}\n\{t.secret_access_key}\n\{t.encryption_key}"
+  "\{t.endpoint}\n\{t.region}\n\{t.bucket}\n\{t.prefix}\n\{t.force_path_style}\n\{t.access_key_id}\n\{t.secret_access_key}\n\{t.encryption_key}\n\{t.include_transcripts}"
 }
 
 ///|
@@ -1127,8 +1165,9 @@ fn Copies::level_s3(self : Copies, ws : String, target : S3TargetConfig, now : B
     try {
       let s3 = self.s3_place(target)
       let place = s3.place()
+      let include_transcripts = target.include_transcripts
       let (head, first) = level_newest(head, () => self.head_of_ws(ws), async fn(h) {
-        level(place, ws, self.own(h), known=k.known)
+        level(place, ws, self.own(h), known=k.known, include_transcripts~)
       })
       let mut synced_head = head
       let said = head_said(head)
@@ -1156,7 +1195,7 @@ fn Copies::level_s3(self : Copies, ws : String, target : S3TargetConfig, now : B
         begun.wait()
         guard self.head_of_ws(ws) is Some(next) else { raise failed("no copy of this workspace's") }
         synced_head = next
-        done = level(place, ws, self.own(next))
+        done = level(place, ws, self.own(next), include_transcripts~)
         if done is Behind {
           raise failed("that S3 target keeps more of this station's than it has")
         }
@@ -1967,7 +2006,12 @@ async fn Copies::bring(self : Copies, r : Restoring, from : String, from_s3 : Bo
   guard holding is Some({ head: Some(head), .. }) else {
     raise Thrown("CopyGone", jo([("message", js("that copy is not kept there"))]))
   }
-  let names = head_files(head)
+  let names = head_files(head).copy()
+  for h in head_transcript_files(head) {
+    if held.files.contains(h) && !names.contains(h) {
+      names.push(h)
+    }
+  }
   r.name = text_at(head, "name")
   r.total = head_batches(head).length() + names.length()
   self.changed(0.0)

@@ -59,6 +59,16 @@ pub fn as_head(v : J) -> J? {
       return None
     }
   }
+  match at(v, "transcriptFiles") {
+    None => ()
+    Some(Obj(tfs)) =>
+      for f in tfs {
+        if !is_hash(@jsjson.sanitize_str(f.0)) {
+          return None
+        }
+      }
+    Some(_) => return None
+  }
   guard at(v, "runs") is Some(Arr(_)) else { return None }
   Some(v)
 }
@@ -87,6 +97,40 @@ pub fn head_batches(h : J) -> Array[String] {
 /// `Object.keys(head.files)`.
 pub fn head_files(h : J) -> Array[String] {
   entries(at(h, "files")).map(e => e.0)
+}
+
+///|
+/// `Object.keys(head.transcriptFiles ?? {})`.
+pub fn head_transcript_files(h : J) -> Array[String] {
+  entries(at(h, "transcriptFiles")).map(e => e.0)
+}
+
+///|
+/// `head.files` union `head.transcriptFiles` (when `include_transcripts` is true).
+pub fn head_all_files(h : J, include_transcripts? : Bool = true) -> Array[String] {
+  let base = head_files(h)
+  if !include_transcripts {
+    return base
+  }
+  let extra = head_transcript_files(h)
+  if extra.length() == 0 {
+    return base
+  }
+  let seen : Map[String, Bool] = {}
+  let out : Array[String] = []
+  for f in base {
+    if !seen.contains(f) {
+      seen[f] = true
+      out.push(f)
+    }
+  }
+  for f in extra {
+    if !seen.contains(f) {
+      seen[f] = true
+      out.push(f)
+    }
+  }
+  out
 }
 
 ///|

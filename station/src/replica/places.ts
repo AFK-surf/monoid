@@ -155,7 +155,10 @@ export class FolderPlace implements Place {
     if (files.length === 0) return;
     // (a file stays while any generation held names it)
     const named = new Set<string>();
-    for (const g of (await this.held(ws, origin)).gens) for (const h of Object.keys(g.head?.files ?? {})) named.add(h);
+    for (const g of (await this.held(ws, origin)).gens) {
+      for (const h of Object.keys(g.head?.files ?? {})) named.add(h);
+      for (const h of Object.keys(g.head?.transcriptFiles ?? {})) named.add(h);
+    }
     for (const f of files) if (HASH.test(f) && !named.has(f)) await this.fs.unlink(join(dir, "files", f)).catch(() => {});
   }
 
@@ -243,9 +246,17 @@ export function behind(own: Head, held: Held): boolean {
   return false;
 }
 
+function headFileHashes(head: Head, includeTranscripts: boolean): string[] {
+  if (!includeTranscripts || head.transcriptFiles === undefined) return Object.keys(head.files);
+  const out = new Set(Object.keys(head.files));
+  for (const h of Object.keys(head.transcriptFiles)) out.add(h);
+  return [...out];
+}
+
 /// Brings `place` level with this station's own copy of `ws`: its batches and files first, its head, then what is not
 /// named any more goes. `known`: what the place held after it was levelled last (null: asked of it now).
-export async function level(place: Place, ws: string, own: Own, known: Known | null = null): Promise<Levelled> {
+export async function level(place: Place, ws: string, own: Own, known: Known | null = null, opts: { includeTranscripts?: boolean } = {}): Promise<Levelled> {
+  const includeTranscripts = opts.includeTranscripts !== false;
   const origin = own.head.origin;
   let k = known;
   if (k === null || k.gen !== own.head.gen) {
@@ -253,7 +264,7 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
     if (behind(own.head, held)) return { behind: true };
     const holding = held.gens.find((g) => g.gen === own.head.gen);
     const others = new Set<string>();
-    for (const g of held.gens) if (g.gen !== own.head.gen) for (const h of Object.keys(g.head?.files ?? {})) others.add(h);
+    for (const g of held.gens) if (g.gen !== own.head.gen && g.head !== null) for (const h of headFileHashes(g.head, includeTranscripts)) others.add(h);
     k = { gen: own.head.gen, batches: new Set(holding?.batches ?? []), files: new Set(held.files), others, to: holding?.head?.to ?? -1, made: holding?.head?.made ?? -1 };
   }
   for (const b of own.head.batches) {
@@ -261,7 +272,8 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
     await place.put(ws, origin, own.head.gen, "batch", b, await own.batch(b));
     k.batches.add(b);
   }
-  const lacking = Object.keys(own.head.files).filter((h) => !k.files.has(h));
+  const wanted = headFileHashes(own.head, includeTranscripts);
+  const lacking = wanted.filter((h) => !k.files.has(h));
   const sources = lacking.length === 0 ? new Map<string, string>() : await own.sources(lacking);
   let missing = 0;
   for (const hash of lacking) {
@@ -278,7 +290,7 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
     k.to = own.head.to;
     k.made = own.head.made;
   }
-  const named = new Set(Object.keys(own.head.files));
+  const named = new Set(wanted);
   const oldBatches = [...k.batches].filter((b) => !own.head.batches.includes(b));
   const oldFiles = [...k.files].filter((f) => !named.has(f) && !k.others.has(f));
   if (oldBatches.length > 0 || oldFiles.length > 0) {

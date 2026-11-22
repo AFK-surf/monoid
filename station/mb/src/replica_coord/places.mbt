@@ -236,7 +236,10 @@ pub async fn FolderPlace::drop(self : FolderPlace, ws : String, origin : String,
   let kept : Map[String, Bool] = {}
   for g in self.held(ws, origin).gens {
     match g.head {
-      Some(h) => for f in head_files(h) { kept[f] = true }
+      Some(h) => {
+        for f in head_files(h) { kept[f] = true }
+        for f in head_transcript_files(h) { kept[f] = true }
+      }
       None => ()
     }
   }
@@ -407,7 +410,7 @@ pub fn behind(own : J, held : Held) -> Bool {
 ///|
 /// Brings `place` level with this station's own copy of `ws`: its batches and files first, its head, then what is not
 /// named any more goes. `known`: what the place held after it was levelled last (None: asked of it now).
-pub async fn level(place : Place, ws : String, own : Own, known? : Known? = None) -> Levelled {
+pub async fn level(place : Place, ws : String, own : Own, known? : Known? = None, include_transcripts? : Bool = true) -> Levelled {
   let origin = text_at(own.head, "origin")
   let gen = head_gen(own.head)
   let k = match known {
@@ -422,7 +425,7 @@ pub async fn level(place : Place, ws : String, own : Own, known? : Known? = None
       for g in held.gens {
         if g.gen != gen {
           match g.head {
-            Some(h) => for f in head_files(h) { others[f] = true }
+            Some(h) => for f in head_all_files(h, include_transcripts~) { others[f] = true }
             None => ()
           }
         }
@@ -455,7 +458,8 @@ pub async fn level(place : Place, ws : String, own : Own, known? : Known? = None
     (place.put)(ws, origin, gen, "batch", b, (own.batch)(b))
     k.batches.push(b)
   }
-  let lacking = head_files(own.head).filter(h => !k.files.contains(h))
+  let wanted = head_all_files(own.head, include_transcripts~)
+  let lacking = wanted.filter(h => !k.files.contains(h))
   let sources = if lacking.length() == 0 { [] } else { (own.sources)(lacking) }
   let mut missing = 0
   for hash in lacking {
@@ -472,7 +476,7 @@ pub async fn level(place : Place, ws : String, own : Own, known? : Known? = None
     k.to = head_to(own.head)
     k.made = head_made(own.head)
   }
-  let named = head_files(own.head)
+  let named = wanted
   let batches = head_batches(own.head)
   let old_batches = k.batches.filter(b => !batches.contains(b))
   let old_files = []

@@ -63,22 +63,27 @@ pub struct Told {
   removed_sessions : Array[J]
   removed_threads : Array[J]
   marks : Array[J]
+  mut transcripts : Bool
 }
 
 ///|
 pub fn Told::nothing() -> Told {
-  { sessions: [], threads: [], removed_sessions: [], removed_threads: [], marks: [] }
+  { sessions: [], threads: [], removed_sessions: [], removed_threads: [], marks: [], transcripts: false }
 }
 
 ///|
 pub fn Told::to_json(self : Told) -> J {
-  jo([
+  let fields : Array[(String, J)] = [
     ("sessions", jstrs(self.sessions)),
     ("threads", ja(self.threads.map(jn))),
     ("removedSessions", ja(self.removed_sessions)),
     ("removedThreads", ja(self.removed_threads)),
     ("marks", ja(self.marks)),
-  ])
+  ]
+  if self.transcripts {
+    fields.push(("transcripts", jb(true)))
+  }
+  jo(fields)
 }
 
 ///|

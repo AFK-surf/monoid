@@ -573,8 +573,12 @@ async fn replica_export(host : @host.Host, db : String, replica : String, data_d
     Some(n) => @string.parse_int(n) catch { _ => @replica.batch_bytes }
     None => @replica.batch_bytes
   }
+  let chunk_bytes = match flag("--chunk-bytes") {
+    Some(n) => @string.parse_int(n) catch { _ => @replica.chunk_plain_bytes }
+    None => @replica.chunk_plain_bytes
+  }
   let fold = !@host.args().contains("--no-fold")
-  let exporter = @replica.Exporter::new(host, sep, db, replica, data_dir, origin, () => clock.val, batch_bytes~, fold~) catch {
+  let exporter = @replica.Exporter::new(host, sep, db, replica, data_dir, origin, () => clock.val, batch_bytes~, chunk_bytes~, fold~) catch {
     e => {
       let failed : Json = { "failed": Json::string(message(e)) }
       host.say(failed.stringify())

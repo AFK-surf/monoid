@@ -24,7 +24,7 @@ export interface Runner {
   close(): Promise<void>;
 }
 
-export type RunnerOptions = { db: string; replica: string; dataDir: string; origin: string };
+export type RunnerOptions = { db: string; replica: string; dataDir: string; origin: string; chunkBytes?: number };
 
 /// What the work runs in: the MoonBit program's process, or a test's own, asked and answering a message each,
 /// `{id, answer}` or `{id, error}`.
@@ -37,7 +37,9 @@ type Thread = {
 
 /// The work in the MoonBit program (`--builder replica-export`).
 export function exportThread(o: RunnerOptions): Thread {
-  return new MbProcess(readerBinary(), ["--builder", "replica-export", "--db", o.db, "--replica", o.replica, "--data-dir", o.dataDir, "--origin", o.origin, "--sep", sep]);
+  const args = ["--builder", "replica-export", "--db", o.db, "--replica", o.replica, "--data-dir", o.dataDir, "--origin", o.origin, "--sep", sep];
+  if (o.chunkBytes !== undefined) args.push("--chunk-bytes", String(o.chunkBytes));
+  return new MbProcess(readerBinary(), args);
 }
 
 /// The work in a process of its own, started again (told the workspaces again) at the next thing asked once

@@ -41,6 +41,14 @@ fn as_head(v : JValue) -> JValue? {
     return None
   }
   guard get(v, "files") is Some(Obj(fs)) && fs.iter().all(e => hash_ok(@jsjson.sanitize_str(e.0))) else { return None }
+  match get(v, "transcriptFiles") {
+    None => ()
+    Some(Obj(tfs)) =>
+      if !tfs.iter().all(e => hash_ok(@jsjson.sanitize_str(e.0))) {
+        return None
+      }
+    Some(_) => return None
+  }
   guard get(v, "runs") is Some(Arr(_)) else { return None }
   Some(v)
 }
@@ -129,7 +137,7 @@ fn read_json(files : Files, path : String) -> JValue raise {
 /// What the generation in `dir` says put into the database at `db` (`build`): (rows by table, files placed, missing).
 /// `merge`: beside this station's own chats (a station retired into it).
 /// `connects`: how the ids of that station's connects go here; `ws`: what its sessions' `ws` is here, where said.
-fn build(host : @host.Host, files : Files, db_path : String, dir : String, from_files : String, data_dir : String, now : Double, merge : Bool, connects : JValue, ws : JValue?) -> (JValue, Int, Int) raise {
+async fn build(host : @host.Host, files : Files, db_path : String, dir : String, from_files : String, data_dir : String, now : Double, merge : Bool, connects : JValue, ws : JValue?) -> (JValue, Int, Int) {
   guard as_head(read_json(files, files.join([dir, "head.json"]))) is Some(head) else {
     fail("no copy here, or one of a newer station's")
   }
@@ -138,7 +146,7 @@ fn build(host : @host.Host, files : Files, db_path : String, dir : String, from_
   let head_dir = text_of(get(head, "dataDir")).unwrap_or("")
   let d = @sql.Db::attach(host, db_path, wait=30000)
   let mut rows : JValue = Obj([])
-  let body = () => {
+  let body = async fn() {
     d.exec("CREATE TABLE IF NOT EXISTS replica_restored (origin TEXT NOT NULL, gen TEXT NOT NULL, at INTEGER NOT NULL, rows TEXT NOT NULL, PRIMARY KEY (origin, gen))")
     match d.all("SELECT rows FROM replica_restored WHERE origin = ? AND gen = ?", [s(origin), s(gen)]) {
       [done, ..] => rows = @jsjson.parse(field_text(done, "rows"))
@@ -167,6 +175,7 @@ fn build(host : @host.Host, files : Files, db_path : String, dir : String, from_
             }
           }
           d.exec("CREATE TEMP TABLE restore_files (path TEXT PRIMARY KEY, hash TEXT NOT NULL) WITHOUT ROWID")
+          d.exec("CREATE TEMP TABLE restore_transcripts (path TEXT PRIMARY KEY, room TEXT, mode INTEGER NOT NULL, chunks_json TEXT NOT NULL) WITHOUT ROWID")
           let work = "\{db_path}.restore-fold"
           files.remove(work)
           let folded = Folded::new(host, work)
@@ -258,6 +267,19 @@ fn build(host : @host.Host, files : Files, db_path : String, dir : String, from_
               } else if get(rec, "file") is Some(f) {
                 let path = text_of(get(rec, "path")).unwrap_or("")
                 ignore(d.run("INSERT OR REPLACE INTO restore_files (path, hash) VALUES (?, ?)", [s(moved(files, path, head_dir, data_dir)), param(Some(f))]))
+              } else if get(rec, "tr") is Some(tr_path) {
+                let path = text_of(Some(tr_path)).unwrap_or("")
+                let room = param(get(rec, "room"))
+                let mode = num(get(rec, "mode"))
+                let chunks_json = stringify(get(rec, "chunks").unwrap_or(Arr([])))
+                ignore(
+                  d.run("INSERT OR REPLACE INTO restore_transcripts (path, room, mode, chunks_json) VALUES (?, ?, ?, ?)", [
+                    s(path),
+                    room,
+                    Json::number(mode),
+                    s(chunks_json),
+                  ]),
+                )
               }
             })
           }
@@ -298,6 +320,7 @@ fn build(host : @host.Host, files : Files, db_path : String, dir : String, from_
           rows = Obj(counted)
           ignore(d.run("INSERT INTO replica_restored (origin, gen, at, rows) VALUES (?, ?, ?, ?)", [s(origin), s(gen), Json::number(now), s(stringify(rows))]))
           d.exec("CREATE TABLE IF NOT EXISTS replica_restore_files (path TEXT PRIMARY KEY, hash TEXT NOT NULL) WITHOUT ROWID; INSERT OR REPLACE INTO replica_restore_files SELECT path, hash FROM temp.restore_files;")
+          d.exec("CREATE TABLE IF NOT EXISTS replica_restore_transcripts (path TEXT PRIMARY KEY, room TEXT, mode INTEGER NOT NULL, chunks_json TEXT NOT NULL) WITHOUT ROWID; INSERT OR REPLACE INTO replica_restore_transcripts SELECT path, room, mode, chunks_json FROM temp.restore_transcripts;")
           d.exec("COMMIT")
         }
         put() catch {
@@ -311,13 +334,19 @@ fn build(host : @host.Host, files : Files, db_path : String, dir : String, from_
       }
     }
     // The files the rows still name, where they say, a page of rows at a time.
+    d.exec("CREATE TABLE IF NOT EXISTS replica_restore_transcripts (path TEXT PRIMARY KEY, room TEXT, mode INTEGER NOT NULL, chunks_json TEXT NOT NULL) WITHOUT ROWID")
     let mut placed = 0
     let mut missing = 0
-    let named = match d.all("SELECT COUNT(*) AS n FROM replica_restore_files", []) {
+    let named_files = match d.all("SELECT COUNT(*) AS n FROM replica_restore_files", []) {
       [r, ..] => field_num(r, "n").to_int()
       _ => 0
     }
-    let place = () => {
+    let named_tr = match d.all("SELECT COUNT(*) AS n FROM replica_restore_transcripts", []) {
+      [r, ..] => field_num(r, "n").to_int()
+      _ => 0
+    }
+    let named = named_files + named_tr
+    let place = async fn() {
       for table in ["entries", "letters"] {
         let mut after = 0.0
         while true {
@@ -346,6 +375,71 @@ fn build(host : @host.Host, files : Files, db_path : String, dir : String, from_
           after = field_num(page_rows[page_rows.length() - 1], "r")
         }
       }
+      // Transcript files: remap path via carried_to, enforce whitelist, stream-decompress chunks into place.
+      let mut after_path = ""
+      while true {
+        let tr_rows = d.all("SELECT path, room, mode, chunks_json FROM replica_restore_transcripts WHERE path > ? ORDER BY path LIMIT 500", [s(after_path)])
+        for row in tr_rows {
+          let orig_path = field_text(row, "path")
+          after_path = orig_path
+          let room_here : String? = match row.get("room") {
+            Some(String(r)) if r != "" => Some(moved(files, r, head_dir, data_dir))
+            _ => None
+          }
+          let dest = carried_to(files, orig_path, head_dir, data_dir, room_here)
+          if !files.is_transcript_path(data_dir, dest) {
+            continue
+          }
+          if files.exists(dest) {
+            placed += 1
+            continue
+          }
+          let chunks = strings_of(Some(@jsjson.parse(field_text(row, "chunks_json")) catch { _ => Arr([]) }))
+          let mut all_present = true
+          for ch in chunks {
+            if !hash_ok(ch) || !files.exists(files.join([from_files, ch])) {
+              all_present = false
+              break
+            }
+          }
+          if !all_present {
+            missing += 1
+            continue
+          }
+          files.mkdir(files.dirname(dest))
+          let tmp = "\{dest}.restoring"
+          let mut offset = 0.0
+          try {
+            if chunks.length() == 0 {
+              ignore(host.shell("fs.put", { "path": Json::string(tmp), "offset": Json::number(0.0), "truncate": Json::boolean(true), "sync": Json::boolean(true) }, bytes=b""))
+            } else {
+              for ch in chunks {
+                let chunk_path = files.join([from_files, ch])
+                let (_, plain_opt) = host.shell("zstd.unpack", { "path": Json::string(chunk_path), "most": Json::number(67108864.0) })
+                guard plain_opt is Some(plain) else { fail("zstd.unpack returned no bytes") }
+                ignore(host.shell("fs.put", { "path": Json::string(tmp), "offset": Json::number(offset) }, bytes=plain))
+                offset += plain.length().to_double()
+              }
+              ignore(host.shell("fs.put", { "path": Json::string(tmp), "offset": Json::number(offset), "truncate": Json::boolean(true), "sync": Json::boolean(true) }, bytes=b""))
+            }
+            let raw_mode = field_num(row, "mode").to_int()
+            let safe_mode = if raw_mode > 0 { (raw_mode & 0o644) | 0o600 } else { 0o644 }
+            ignore(files.call("fs.chmod", { "path": Json::string(tmp), "mode": Json::number(safe_mode.to_double()) }))
+            files.rename(tmp, dest)
+            placed += 1
+          } catch {
+            e => {
+              files.remove(tmp) catch {
+                _ => ()
+              }
+              raise e
+            }
+          }
+        }
+        if tr_rows.length() < 500 {
+          break
+        }
+      }
     }
     place() catch {
       e => {
@@ -354,6 +448,7 @@ fn build(host : @host.Host, files : Files, db_path : String, dir : String, from_
       }
     }
     d.exec("DELETE FROM replica_restore_files")
+    d.exec("DELETE FROM replica_restore_transcripts")
     (rows, placed, missing)
   }
   let result = body() catch {
@@ -404,7 +499,7 @@ fn add_formerly(files : Files, data : String, origin : String) -> Unit raise {
 ///|
 /// The restore brought to this station before, put in as its store is about to open (`takeBack`): what it was, or none
 /// where none waited.
-pub fn take_back(host : @host.Host, sep : String, data : String, db : String, now : Double) -> JValue? raise {
+pub async fn take_back(host : @host.Host, sep : String, data : String, db : String, now : Double) -> JValue? {
   let files = { host, sep }
   let restore = files.join([data, "restore"])
   let ready = match (try { Some(read_json(files, files.join([restore, "ready.json"]))) } catch { _ => None }) {
@@ -428,7 +523,7 @@ pub fn take_back(host : @host.Host, sep : String, data : String, db : String, no
     ("left", Num(0.0)),
   ])
   let gen = text_of(get(ready, "gen")).unwrap_or("")
-  let attempt = () => {
+  let attempt = async fn() {
     let merge = get(ready, "merge") is Some(Bool(true))
     let connects = get(ready, "connects").unwrap_or(Obj([]))
     let (rows, placed, missing) = build(host, files, db, files.join([dir, gen]), files.join([dir, "files"]), data, now, merge, connects, get(ready, "ws"))

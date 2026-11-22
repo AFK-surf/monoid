@@ -1,15 +1,32 @@
 // A copy taken back as the station did it in TypeScript before it was the MoonBit program's (station/mb src/replica
 // restore.mbt, src/replica/restore.ts `takeBackSoon`): the tests' only, what mb-replica.test.ts holds the program to,
 // and how the tests' own stations take a copy back.
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { type Head, type Rec, type Row, Folded, OWN_LOG, RESTORE_ORDER, THREAD_COLUMNS, asHead, attachedPaths, bumpedTs, decodeBatch } from "./replica-format.ts";
+import { zstdDecompressSync } from "node:zlib";
+import { HASH, type Head, type Rec, type Row, Folded, OWN_LOG, RESTORE_ORDER, THREAD_COLUMNS, asHead, attachedPaths, bumpedTs, decodeBatch } from "./replica-format.ts";
 import { headFile } from "./replica-export.ts";
 import { FORMER_OWN_NAMES, STILLFAIL_CONNECT, STILLFAIL_SURFACE } from "../../src/store/rows.ts";
-import { NotEmpty, type Outcome, type Ready, copyDir, moved, outcomeFile, readyFile, restoreDir } from "../../src/replica/restore.ts";
+import { NotEmpty, type Outcome, type Ready, carriedTo, copyDir, moved, outcomeFile, readyFile, restoreDir } from "../../src/replica/restore.ts";
 import { settleConversationInTx } from "../../src/store/conversations.ts";
 export * from "../../src/replica/restore.ts";
+
+function isTranscriptPath(dataDir: string, path: string): boolean {
+  const rel = relative(dataDir, path);
+  if (rel === "" || rel.startsWith("..")) return false;
+  const parts = rel.split(/[\\/]/);
+  if (parts.some((p) => p === "" || p === "." || p === "..")) return false;
+  if (parts.length > 1 && parts[0]!.startsWith("transcripts")) return true;
+  return (
+    parts.length >= 7 &&
+    parts[0] === "homes" &&
+    parts[2] === "agy" &&
+    parts[3] === ".gemini" &&
+    parts[4] === "antigravity-cli" &&
+    (parts[5] === "conversations" || parts[5] === "brain" || parts[5] === "annotations")
+  );
+}
 
 /// A generation folded: its head, and what its batches say now. Throws where a batch the head names is not there.
 export function readCopy(dir: string): { head: Head; folded: Folded } {
@@ -85,6 +102,7 @@ export function build(db: string, dir: string, files: string, dataDir: string, n
           return x;
         };
         d.exec("CREATE TEMP TABLE restore_files (path TEXT PRIMARY KEY, hash TEXT NOT NULL) WITHOUT ROWID");
+        d.exec("CREATE TEMP TABLE restore_transcripts (path TEXT PRIMARY KEY, room TEXT, mode INTEGER NOT NULL, chunks_json TEXT NOT NULL) WITHOUT ROWID");
         // Folded first, on disk (what was said again, deleted after, or a pass said twice: each key's last row, nothing
         // of what went), then each row put in once, table by table in RESTORE_ORDER, in the order it was last said: the
         // store's triggers see what a station that made them saw, whichever batches the copy is.
@@ -149,6 +167,13 @@ export function build(db: string, dir: string, files: string, dataDir: string, n
               }
             } else if ("file" in rec) {
               st("INSERT OR REPLACE INTO restore_files (path, hash) VALUES (?, ?)").run(moved(rec.path, head.dataDir, dataDir), rec.file);
+            } else if ("tr" in rec) {
+              st("INSERT OR REPLACE INTO restore_transcripts (path, room, mode, chunks_json) VALUES (?, ?, ?, ?)").run(
+                rec.tr,
+                rec.room ?? null,
+                rec.mode ?? 0o644,
+                JSON.stringify(rec.chunks ?? []),
+              );
             }
           }
         } finally {
@@ -162,6 +187,7 @@ export function build(db: string, dir: string, files: string, dataDir: string, n
         d.prepare("INSERT INTO replica_restored (origin, gen, at, rows) VALUES (?, ?, ?, ?)").run(head.origin, head.gen, now, JSON.stringify(rows));
         // (where the files go stays beside the rows until they are placed)
         d.exec("CREATE TABLE IF NOT EXISTS replica_restore_files (path TEXT PRIMARY KEY, hash TEXT NOT NULL) WITHOUT ROWID; INSERT OR REPLACE INTO replica_restore_files SELECT path, hash FROM temp.restore_files;");
+        d.exec("CREATE TABLE IF NOT EXISTS replica_restore_transcripts (path TEXT PRIMARY KEY, room TEXT, mode INTEGER NOT NULL, chunks_json TEXT NOT NULL) WITHOUT ROWID; INSERT OR REPLACE INTO replica_restore_transcripts SELECT path, room, mode, chunks_json FROM temp.restore_transcripts;");
         d.exec("COMMIT");
       } catch (e) {
         d.exec("ROLLBACK");
@@ -171,9 +197,12 @@ export function build(db: string, dir: string, files: string, dataDir: string, n
     // The files the rows still name, where they say, a page of rows at a time (placed already: left as they are). One
     // that cannot be placed (the disk full, a folder that cannot be made) leaves what was brought, and where the files
     // go, for the next start to place the rest (`FilesPending`).
+    d.exec("CREATE TABLE IF NOT EXISTS replica_restore_transcripts (path TEXT PRIMARY KEY, room TEXT, mode INTEGER NOT NULL, chunks_json TEXT NOT NULL) WITHOUT ROWID");
     let placed = 0;
     let missing = 0;
-    const named = (d.prepare("SELECT COUNT(*) AS n FROM replica_restore_files").get() as { n: number }).n;
+    const named =
+      (d.prepare("SELECT COUNT(*) AS n FROM replica_restore_files").get() as { n: number }).n +
+      (d.prepare("SELECT COUNT(*) AS n FROM replica_restore_transcripts").get() as { n: number }).n;
     try {
       const where = d.prepare("SELECT hash FROM replica_restore_files WHERE path = ?");
       for (const table of ["entries", "letters"]) {
@@ -203,10 +232,49 @@ export function build(db: string, dir: string, files: string, dataDir: string, n
           after = page[page.length - 1]!.r;
         }
       }
+      for (let afterPath = ""; ; ) {
+        const trRows = d.prepare("SELECT path, room, mode, chunks_json FROM replica_restore_transcripts WHERE path > ? ORDER BY path LIMIT 500").all(afterPath) as { path: string; room: string | null; mode: number; chunks_json: string }[];
+        for (const row of trRows) {
+          afterPath = row.path;
+          const roomHere = row.room !== null && row.room !== "" ? moved(row.room, head.dataDir, dataDir) : null;
+          const dest = carriedTo(row.path, head.dataDir, dataDir, roomHere);
+          if (!isTranscriptPath(dataDir, dest)) continue;
+          if (existsSync(dest)) { // sync: the tests' reference only
+            placed++;
+            continue;
+          }
+          const chunks = JSON.parse(row.chunks_json) as string[];
+          if (!Array.isArray(chunks) || chunks.some((ch) => typeof ch !== "string" || !HASH.test(ch) || !existsSync(join(files, ch)))) {
+            missing++;
+            continue;
+          }
+          mkdirSync(dirname(dest), { recursive: true }); // sync: the tests' reference only
+          const tmp = `${dest}.restoring`;
+          const fd = openSync(tmp, "w"); // sync: the tests' reference only
+          try {
+            for (const ch of chunks) {
+              const plain = zstdDecompressSync(readFileSync(join(files, ch))); // sync: the tests' reference only
+              if (plain.length > 0) writeSync(fd, plain); // sync: the tests' reference only
+            }
+            fsyncSync(fd); // sync: the tests' reference only
+          } catch (e) {
+            closeSync(fd); // sync: the tests' reference only
+            rmSync(tmp, { force: true }); // sync: the tests' reference only
+            throw e;
+          }
+          closeSync(fd); // sync: the tests' reference only
+          const safeMode = row.mode > 0 ? (row.mode & 0o644) | 0o600 : 0o644;
+          chmodSync(tmp, safeMode); // sync: the tests' reference only
+          renameSync(tmp, dest); // sync: the tests' reference only
+          placed++;
+        }
+        if (trRows.length < 500) break;
+      }
     } catch (e) {
       throw new FilesPending(e as Error, Math.max(0, named - placed - missing));
     }
     d.exec("DELETE FROM replica_restore_files");
+    d.exec("DELETE FROM replica_restore_transcripts");
     return { rows, files: placed, missing };
   } finally {
     d.close();

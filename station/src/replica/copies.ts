@@ -24,6 +24,8 @@ export type RestoreFrom = { station: string } | { s3: string };
 
 /// What the store says is gathered this long before the export's thread is told (a burst of changes, one pass).
 export const GATHER_MS = 1_000;
+/// Transcript scans are debounced separately so chat sync stays sub-second while active turns write transcripts.
+export const TRANSCRIPT_GATHER_MS = 30_000;
 /// A place that could not be brought level is tried again after this, twice as long each time, up to RETRY_MOST_MS.
 export const RETRY_MS = 5_000;
 export const RETRY_MOST_MS = 10 * 60_000;
@@ -210,6 +212,8 @@ export class Copies {
   readonly kept: FolderPlace;
   #told: Told = nothingTold();
   #gathering: (() => void) | null = null;
+  #transcriptGathering: (() => void) | null = null;
+  #wantTranscripts = false;
   #passing: Promise<void> | null = null;
   #again = false;
   #closed = false;
@@ -271,6 +275,7 @@ export class Copies {
   async close(): Promise<void> {
     this.#closed = true;
     this.#gathering?.();
+    this.#transcriptGathering?.();
     this.#telling?.();
     for (const k of this.#keeping.values()) k.again?.();
     this.#handAgain?.();
@@ -299,6 +304,9 @@ export class Copies {
   /// The store's change, put with what is to be exported: a few keys, nothing read.
   told(change: StoreChange): void {
     if (tell(this.#told, change)) this.#gather();
+    if (change.type === "session" || change.type === "conversation" || change.type === "sessionRemoved") {
+      this.#gatherTranscripts();
+    }
   }
 
   /// A pass a moment from now (what else changes meanwhile goes with it).
@@ -306,6 +314,18 @@ export class Copies {
     if (this.#gathering !== null || this.#closed) return;
     this.#gathering = this.#d.fibers.after(GATHER_MS, () => { // timer: a debounce of a burst of the store's changes
       this.#gathering = null;
+      void this.#pass();
+    });
+  }
+
+  /// An independently debounced transcript scan (never blocks the 1s chat export pass).
+  #gatherTranscripts(): void {
+    this.#wantTranscripts = true;
+    if (this.#transcriptGathering !== null || this.#closed) return;
+    this.#transcriptGathering = this.#d.fibers.after(TRANSCRIPT_GATHER_MS, () => { // timer: a debounce of a burst of transcript writes
+      this.#transcriptGathering = null;
+      this.#wantTranscripts = false;
+      this.#told.transcripts = true;
       void this.#pass();
     });
   }
@@ -353,12 +373,19 @@ export class Copies {
     t.removedSessions.push(...told.removedSessions);
     t.removedThreads.push(...told.removedThreads);
     t.marks.push(...told.marks);
+    if (told.transcripts === true) t.transcripts = true;
   }
 
   /// The export done now, and the places levelled: what a test waits for (it does not wait on a timer).
   async settle(): Promise<void> {
     this.#gathering?.();
     this.#gathering = null;
+    this.#transcriptGathering?.();
+    this.#transcriptGathering = null;
+    if (this.#wantTranscripts) {
+      this.#wantTranscripts = false;
+      this.#told.transcripts = true;
+    }
     do {
       await this.#pass();
       while (this.#passing !== null) await this.#passing;
@@ -408,7 +435,7 @@ export class Copies {
   }
 
   #s3Sig(t: NormalizedS3Target): string {
-    return JSON.stringify([t.endpoint, t.region, t.bucket, t.prefix, t.forcePathStyle, t.accessKeyId, t.secretAccessKey, t.encryptionKey]);
+    return JSON.stringify([t.endpoint, t.region, t.bucket, t.prefix, t.forcePathStyle, t.accessKeyId, t.secretAccessKey, t.encryptionKey, t.includeTranscripts]);
   }
 
   #s3Place(t: NormalizedS3Target): S3Place {
@@ -742,7 +769,8 @@ export class Copies {
       try {
         const place = this.#s3Place(target);
         let syncedHead = head;
-        let done = await level(place, ws, this.#own(head), keeping.known);
+        const opts = { includeTranscripts: target.includeTranscripts };
+        let done = await level(place, ws, this.#own(head), keeping.known, opts);
         if (done.behind) {
           let begun = this.#begun.get(ws);
           if (begun === undefined || begun.from !== head.gen) {
@@ -760,7 +788,7 @@ export class Copies {
           const next = this.#passed?.heads[ws];
           if (next === undefined) throw new Error("no copy of this workspace's");
           syncedHead = next;
-          done = await level(place, ws, this.#own(next));
+          done = await level(place, ws, this.#own(next), null, opts);
           if (done.behind) throw new Error("that S3 target keeps more of this station's than it has");
         }
         keeping.known = done.known;
@@ -1219,7 +1247,10 @@ export class Copies {
     const holding = held.gens.find((g) => g.gen === gen);
     if (holding?.head == null) throw new Gone("that copy is not kept there");
     const head = holding.head;
-    const names = Object.keys(head.files);
+    const heldFiles = new Set(held.files);
+    const wanted = new Set(Object.keys(head.files));
+    for (const h of Object.keys(head.transcriptFiles ?? {})) if (heldFiles.has(h)) wanted.add(h);
+    const names = [...wanted];
     r.name = head.name;
     r.total = head.batches.length + names.length;
     this.#changed(0);

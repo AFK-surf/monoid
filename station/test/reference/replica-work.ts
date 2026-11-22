@@ -43,7 +43,7 @@ export class InlineRunner implements Runner {
   readonly work: ExportWork;
   #queue: Promise<unknown> = Promise.resolve();
 
-  constructor(o: RunnerOptions & { now: () => number }) {
+  constructor(o: RunnerOptions & { now: () => number; chunkBytes?: number }) {
     this.work = new ExportWork(o);
   }
 

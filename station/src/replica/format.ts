@@ -34,6 +34,7 @@ export type Head = {
   to: number;
   batches: string[];
   files: Record<string, number>;
+  transcriptFiles?: Record<string, number>;
   chats: number;
   messages: number;
   bytes: number;
@@ -56,6 +57,7 @@ export function asHead(v: unknown): Head | null {
   if (typeof h.origin !== "string" || typeof h.workspace !== "string" || typeof h.gen !== "string" || !GEN.test(h.gen)) return null;
   if (!Number.isSafeInteger(h.to) || !Array.isArray(h.batches) || h.batches.some((b) => typeof b !== "string" || !BATCH.test(b))) return null;
   if (h.files === null || typeof h.files !== "object" || Object.keys(h.files).some((k) => !HASH.test(k))) return null;
+  if (h.transcriptFiles !== undefined && (h.transcriptFiles === null || typeof h.transcriptFiles !== "object" || Array.isArray(h.transcriptFiles) || Object.keys(h.transcriptFiles).some((k) => !HASH.test(k)))) return null;
   if (!Array.isArray(h.runs)) return null;
   return h;
 }

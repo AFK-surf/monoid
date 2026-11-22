@@ -19,12 +19,35 @@
 //   and there no more): a `gone` record.
 // A batch is read inside one read transaction: what it says is the database at one moment.
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { zstdCompressSync } from "node:zlib";
+import { runtimeKind } from "../../src/agents/runtime.ts";
 import { type Places, type Passed, type Told, nothingTold } from "../../src/replica/export.ts";
 import { type Head, type Rec, type Row, BATCH, BATCH_BYTES, Folded, TABLES, VERSION, attachedPaths, batchName, batchSpan, decodeBatch, encodeBatch, genName, keyOf, runsOf } from "./replica-format.ts";
+import { storage, transcriptSources } from "./transcript-paths.ts";
 export * from "../../src/replica/export.ts";
+
+export const CHUNK_PLAIN_BYTES = 4 * 1024 * 1024;
+
+const ONE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.@+-]*$/;
+
+function isTranscriptPath(dataDir: string, path: string): boolean {
+  const rel = relative(dataDir, path);
+  if (rel === "" || rel.startsWith("..")) return false;
+  const parts = rel.split(/[\\/]/);
+  if (parts.some((p) => p === "" || p === "." || p === "..")) return false;
+  if (parts.length > 1 && parts[0]!.startsWith("transcripts")) return true;
+  return (
+    parts.length >= 7 &&
+    parts[0] === "homes" &&
+    parts[2] === "agy" &&
+    parts[3] === ".gemini" &&
+    parts[4] === "antigravity-cli" &&
+    (parts[5] === "conversations" || parts[5] === "brain" || parts[5] === "annotations")
+  );
+}
 
 /// Rows read by one statement at most, and by one pass at most before it writes what it has and goes on in the next.
 export const PAGE = 500;
@@ -69,6 +92,9 @@ CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, size INTEGER NOT NULL, 
 CREATE INDEX IF NOT EXISTS files_hash ON files (hash);
 CREATE TABLE IF NOT EXISTS sent (ws TEXT NOT NULL, path TEXT NOT NULL, PRIMARY KEY (ws, path)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS entering (ws TEXT NOT NULL, thread INTEGER NOT NULL, tbl TEXT NOT NULL, after INTEGER NOT NULL, upto INTEGER NOT NULL, PRIMARY KEY (ws, thread, tbl)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS transcript_files (ws TEXT NOT NULL, path TEXT NOT NULL, room TEXT, size INTEGER NOT NULL, mtime INTEGER NOT NULL, mode INTEGER NOT NULL, chunks_json TEXT NOT NULL, PRIMARY KEY (ws, path)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS transcript_chunks (plain_hash TEXT PRIMARY KEY, chunk_hash TEXT NOT NULL, comp_size INTEGER NOT NULL) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS transcript_chunks_hash ON transcript_chunks (chunk_hash);
 `;
 
 /// The reads the export makes of stillfail.db, each by an index (or the rowid) and a limit, or by a key
@@ -131,6 +157,8 @@ export type ExporterOptions = {
   open?: (path: string) => DatabaseSync;
   /// How much a batch holds at most (BATCH_BYTES; a test's smaller, its memory with it).
   batchBytes?: number;
+  /// Plaintext chunk size for transcript CAS (default 4 MiB; smaller in tests to verify multi-chunk dedup).
+  chunkBytes?: number;
   /// False: batches left as they were written, never folded (a test's, to restore a generation from them as written).
   fold?: boolean;
 };
@@ -150,6 +178,9 @@ export class Exporter {
   #read = 0;
   get #most(): number {
     return this.#o.batchBytes ?? BATCH_BYTES;
+  }
+  get #chunkBytes(): number {
+    return this.#o.chunkBytes !== undefined && this.#o.chunkBytes > 0 ? this.#o.chunkBytes : CHUNK_PLAIN_BYTES;
   }
 
   constructor(o: ExporterOptions) {
@@ -185,7 +216,7 @@ export class Exporter {
 
   /// Everything exported is forgotten: the next pass writes it all again, in new generations.
   #forget(): void {
-    this.#state.exec("DELETE FROM meta WHERE k <> 'after'; DELETE FROM digests; DELETE FROM threads; DELETE FROM sent; DELETE FROM entering;");
+    this.#state.exec("DELETE FROM meta WHERE k <> 'after'; DELETE FROM digests; DELETE FROM threads; DELETE FROM sent; DELETE FROM entering; DELETE FROM transcript_files;");
     this.#known = false;
   }
 
@@ -216,6 +247,7 @@ export class Exporter {
     this.#state.prepare("DELETE FROM threads WHERE ws = ?").run(ws);
     this.#state.prepare("DELETE FROM sent WHERE ws = ?").run(ws);
     this.#state.prepare("DELETE FROM entering WHERE ws = ?").run(ws);
+    this.#state.prepare("DELETE FROM transcript_files WHERE ws = ?").run(ws);
     return gen;
   }
 
@@ -381,6 +413,10 @@ export class Exporter {
       for (const r of all(marksOf("pins", "session"), key)) changed(ws, "pins", r);
     };
     let more = false;
+    const wantTranscripts = told.transcripts === true;
+    const scanTranscripts = !this.#known || wantTranscripts;
+    const sessRows: Row[] = [];
+    const runRows = new Map<string, Row[]>();
     this.#db.exec("BEGIN");
     try {
       // What was deleted, as told.
@@ -403,6 +439,12 @@ export class Exporter {
           for (let after = 0; ; ) {
             const rows = all(pageOf(table), after, PAGE);
             for (const r of rows) {
+              if (table === "sessions") sessRows.push(r);
+              else if (table === "runtime_sessions" && typeof r.session_key === "string") {
+                let xs = runRows.get(r.session_key);
+                if (xs === undefined) runRows.set(r.session_key, (xs = []));
+                xs.push(r);
+              }
               const wss = table === "sessions" || table === "runtime_sessions" || table === "pins" || table === "opened_chats"
                 ? this.#sessionWs(table, r, wsOfSession)
                 : wsOfThread(num(table === "threads" ? r.id : r.thread));
@@ -440,6 +482,22 @@ export class Exporter {
           }
         }
         this.#known = true;
+      } else if (wantTranscripts) {
+        for (const table of ["sessions", "runtime_sessions"] as const) {
+          for (let after = 0; ; ) {
+            const rows = all(pageOf(table), after, PAGE);
+            for (const r of rows) {
+              if (table === "sessions") sessRows.push(r);
+              else if (typeof r.session_key === "string") {
+                let xs = runRows.get(r.session_key);
+                if (xs === undefined) runRows.set(r.session_key, (xs = []));
+                xs.push(r);
+              }
+            }
+            if (rows.length < PAGE) break;
+            after = num(rows[rows.length - 1]!._rowid);
+          }
+        }
       }
       // What changed in place, as told.
       for (const key of told.sessions) sessionRows(key);
@@ -516,6 +574,9 @@ export class Exporter {
         say(ws, { file: f.hash, size: f.size, path });
       }
     }
+    if (scanTranscripts) {
+      this.#exportTranscripts(outs, sessRows, runRows, wsOfSession, say);
+    }
     let wrote = 0;
     const heads: Record<string, Head> = {};
     for (const [ws, out] of outs) {
@@ -524,6 +585,9 @@ export class Exporter {
         wrote++;
       }
       heads[ws] = out.head;
+    }
+    if (scanTranscripts) {
+      this.#gcTranscriptChunks();
     }
     return { heads, more, wrote, read: this.#read };
   }
@@ -581,11 +645,14 @@ export class Exporter {
     }
     const runs = [...head.runs];
     if (runs.length === 0 || runs[runs.length - 1]!.run !== this.run) runs.push({ run: this.run, from: first });
+    const tf = this.#transcriptFilesMap(ws);
     const next: Head = {
       ...head, made, to: n, batches: [...head.batches, ...names], runs: runs.slice(-RUNS_KEPT), files: { ...head.files, ...out.files },
       chats: (this.#state.prepare("SELECT COUNT(*) AS n FROM threads WHERE ws = ?").get(ws) as { n: number }).n,
       messages: head.messages + out.messages,
     };
+    if (Object.keys(tf).length > 0) next.transcriptFiles = tf;
+    else delete next.transcriptFiles;
     out.head = this.#fold(dir, next, out.gone);
   }
 
@@ -655,7 +722,17 @@ export class Exporter {
         n += statSync(join(dir, "log", b)).size; // sync: in the export's own thread (worker.ts)
       } catch {}
     }
-    for (const size of Object.values(h.files)) n += size;
+    const seen = new Set<string>();
+    for (const [k, size] of Object.entries(h.files)) {
+      seen.add(k);
+      n += size;
+    }
+    for (const [k, size] of Object.entries(h.transcriptFiles ?? {})) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        n += size;
+      }
+    }
     return n;
   }
 
@@ -671,7 +748,189 @@ export class Exporter {
         if (statSync(path).isFile()) return path; // sync: in the export's own thread (worker.ts)
       } catch {}
     }
+    const chunk = join(this.#o.replica, "chunks", hash);
+    try {
+      if (statSync(chunk).isFile()) return chunk; // sync: in the export's own thread (worker.ts)
+    } catch {}
     return null;
+  }
+
+  #walkTranscriptDir(dir: string, add: (path: string) => void): void {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)); // sync: in the export's own thread (worker.ts)
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) this.#walkTranscriptDir(p, add);
+      else if (e.isFile()) add(p);
+    }
+  }
+
+  #exportTranscripts(
+    outs: Map<string, Out>,
+    sessRows: Row[],
+    runRows: Map<string, Row[]>,
+    wsOfSession: (ws: unknown) => string,
+    say: (ws: string, rec: Rec) => void,
+  ): void {
+    const byWs = new Map<string, Map<string, string | null>>();
+    for (const ws of outs.keys()) byWs.set(ws, new Map());
+    for (const sess of sessRows) {
+      const ws = wsOfSession(sess.ws);
+      const foundMap = byWs.get(ws);
+      if (foundMap === undefined) continue;
+      const key = typeof sess.key === "string" ? sess.key : "";
+      const sRuntime = typeof sess.runtime === "string" ? sess.runtime : "";
+      const origRuntime = typeof sess.original_runtime === "string" ? sess.original_runtime : sRuntime;
+      const sProfile = typeof sess.profile === "string" ? sess.profile : null;
+      const sWorkspace = typeof sess.workspace === "string" ? sess.workspace : "";
+      const sCwd = typeof sess.cwd === "string" && sess.cwd !== "" ? sess.cwd : null;
+      const room = sCwd ?? (sWorkspace !== "" ? sWorkspace : null);
+      const places: string[] = [];
+      if (sCwd !== null && sCwd !== sWorkspace) places.push(sCwd);
+      if (sWorkspace !== "") places.push(sWorkspace);
+      const sources: { id: string; runtime: string; profile: string | null }[] = [];
+      const seenIds = new Set<string>();
+      for (const r of runRows.get(key) ?? []) {
+        const id = typeof r.id === "string" ? r.id : "";
+        if (id === "") continue;
+        const rt = typeof r.runtime === "string" ? r.runtime : origRuntime;
+        const prof = typeof r.profile === "string" ? r.profile : sProfile;
+        sources.push({ id, runtime: rt, profile: prof });
+        seenIds.add(id);
+      }
+      if (typeof sess.runtime_session_id === "string" && sess.runtime_session_id !== "" && !seenIds.has(sess.runtime_session_id)) {
+        sources.push({ id: sess.runtime_session_id, runtime: sRuntime, profile: sProfile });
+      }
+      if (sources.length === 0) continue;
+      const addPath = (p: string) => {
+        if (isTranscriptPath(this.#o.dataDir, p) && !foundMap.has(p)) foundMap.set(p, room);
+      };
+      const validSources = sources
+        .filter((r) => runtimeKind(r.runtime) !== null)
+        .map((r) => ({ id: r.id, runtime: runtimeKind(r.runtime)!, profile: r.profile }));
+      if (validSources.length > 0) {
+        const found = transcriptSources(this.#o.dataDir, [], validSources, places, { anywhere: true });
+        for (const t of found.paths) {
+          addPath(storage(t.path));
+          if (t.runtime === "claude") {
+            const id = t.path.slice(t.path.lastIndexOf(sep) + 1).replace(/\.jsonl$/, "");
+            const sub = join(dirname(t.path), id);
+            try {
+              if (statSync(sub).isDirectory()) this.#walkTranscriptDir(sub, addPath); // sync: in the export's own thread (worker.ts)
+            } catch {}
+          }
+        }
+      }
+      for (const r of sources) {
+        if (r.runtime !== "agy" || r.profile === null || !ONE_SEGMENT.test(r.profile) || !ONE_SEGMENT.test(r.id)) continue;
+        const cli = join(this.#o.dataDir, "homes", r.profile, "agy", ".gemini", "antigravity-cli");
+        addPath(join(cli, "conversations", `${r.id}.db`));
+        addPath(join(cli, "conversations", `${r.id}.db-wal`));
+        addPath(join(cli, "annotations", `${r.id}.pbtxt`));
+        const brain = join(cli, "brain", r.id);
+        try {
+          if (statSync(brain).isDirectory()) this.#walkTranscriptDir(brain, addPath); // sync: in the export's own thread (worker.ts)
+        } catch {}
+      }
+    }
+    const chunkBytes = this.#chunkBytes;
+    const chunksDir = join(this.#o.replica, "chunks");
+    for (const [ws, foundMap] of byWs) {
+      const paths = [...foundMap.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      const active = new Set<string>();
+      for (const path of paths) {
+        let st;
+        try {
+          st = lstatSync(path, { bigint: true }); // sync: in the export's own thread (worker.ts)
+        } catch {
+          continue;
+        }
+        if (!st.isFile()) continue;
+        active.add(path);
+        const room = foundMap.get(path) ?? null;
+        const size = Number(st.size);
+        const mtime = Number(st.mtimeNs / 1_000_000n);
+        const mode = Number(st.mode) & 0o777;
+        const existing = this.#state.prepare("SELECT room, size, mtime FROM transcript_files WHERE ws = ? AND path = ?").get(ws, path) as { room: string | null; size: number; mtime: number } | undefined;
+        if (existing !== undefined && existing.size === size && existing.mtime === mtime && existing.room === room) continue;
+        const chunks: string[] = [];
+        const fd = openSync(path, "r"); // sync: in the export's own thread (worker.ts)
+        try {
+          const buf = Buffer.allocUnsafe(Math.min(chunkBytes, Math.max(size, 1)));
+          for (let offset = 0; offset < size; ) {
+            const want = Math.min(chunkBytes, size - offset);
+            const n = readSync(fd, buf, 0, want, offset); // sync: in the export's own thread (worker.ts)
+            if (n <= 0) break;
+            const plain = buf.subarray(0, n);
+            const plainHash = createHash("sha256").update(plain).digest("hex");
+            const known = this.#state.prepare("SELECT chunk_hash FROM transcript_chunks WHERE plain_hash = ?").get(plainHash) as { chunk_hash: string } | undefined;
+            let ch: string;
+            if (known !== undefined && existsSync(join(chunksDir, known.chunk_hash))) { // sync: in the export's own thread (worker.ts)
+              ch = known.chunk_hash;
+            } else {
+              const zst = zstdCompressSync(plain); // sync: in the export's own thread (worker.ts)
+              ch = createHash("sha256").update(zst).digest("hex");
+              const chunkPath = join(chunksDir, ch);
+              if (!existsSync(chunkPath)) writeWhole(chunkPath, zst); // sync: in the export's own thread (worker.ts)
+              this.#state.prepare("INSERT OR REPLACE INTO transcript_chunks (plain_hash, chunk_hash, comp_size) VALUES (?, ?, ?)").run(plainHash, ch, zst.length);
+            }
+            chunks.push(ch);
+            offset += n;
+          }
+        } finally {
+          closeSync(fd); // sync: in the export's own thread (worker.ts)
+        }
+        this.#state.prepare("INSERT OR REPLACE INTO transcript_files (ws, path, room, size, mtime, mode, chunks_json) VALUES (?, ?, ?, ?, ?, ?, ?)").run(ws, path, room, size, mtime, mode, JSON.stringify(chunks));
+        say(ws, { tr: path, room, size, mtime, mode, chunks });
+      }
+      for (const row of this.#state.prepare("SELECT path FROM transcript_files WHERE ws = ? ORDER BY path").all(ws) as { path: string }[]) {
+        if (!active.has(row.path)) {
+          this.#state.prepare("DELETE FROM transcript_files WHERE ws = ? AND path = ?").run(ws, row.path);
+          say(ws, { tr_del: row.path });
+        }
+      }
+    }
+  }
+
+  #transcriptFilesMap(ws: string): Record<string, number> {
+    const sizes = new Map<string, number>();
+    for (const row of this.#state.prepare("SELECT chunks_json FROM transcript_files WHERE ws = ?").all(ws) as { chunks_json: string }[]) {
+      const chunks = JSON.parse(row.chunks_json) as string[];
+      for (const ch of chunks) {
+        if (sizes.has(ch)) continue;
+        const r = this.#state.prepare("SELECT comp_size FROM transcript_chunks WHERE chunk_hash = ? LIMIT 1").get(ch) as { comp_size: number } | undefined;
+        let sz = r?.comp_size ?? 0;
+        if (r === undefined) {
+          try {
+            sz = statSync(join(this.#o.replica, "chunks", ch)).size; // sync: in the export's own thread (worker.ts)
+          } catch {}
+        }
+        sizes.set(ch, sz);
+      }
+    }
+    const out: Record<string, number> = {};
+    for (const k of [...sizes.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) out[k] = sizes.get(k)!;
+    return out;
+  }
+
+  #gcTranscriptChunks(): void {
+    const chunksDir = join(this.#o.replica, "chunks");
+    const live = new Set<string>();
+    for (const row of this.#state.prepare("SELECT chunks_json FROM transcript_files").all() as { chunks_json: string }[]) {
+      for (const ch of JSON.parse(row.chunks_json) as string[]) live.add(ch);
+    }
+    try {
+      for (const name of readdirSync(chunksDir)) { // sync: in the export's own thread (worker.ts)
+        if (!live.has(name)) rmSync(join(chunksDir, name), { force: true }); // sync: in the export's own thread (worker.ts)
+      }
+    } catch {}
+    for (const row of this.#state.prepare("SELECT plain_hash, chunk_hash FROM transcript_chunks").all() as { plain_hash: string; chunk_hash: string }[]) {
+      if (!live.has(row.chunk_hash)) this.#state.prepare("DELETE FROM transcript_chunks WHERE plain_hash = ?").run(row.plain_hash);
+    }
   }
 
   /// The batches of a generation of this station's, by name (what is in its log directory).

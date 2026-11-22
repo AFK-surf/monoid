@@ -649,12 +649,18 @@ pub async fn S3Place::held(self : S3Place, ws : String, origin : String) -> Held
     batches.sort_by(js_cmp)
     gens.push({ gen, head, batches })
     match head {
-      Some(h) =>
+      Some(h) => {
         for f in head_files(h) {
           if file_tags.contains(self.file_tag(f)) {
             present_hashes[f] = true
           }
         }
+        for f in head_transcript_files(h) {
+          if file_tags.contains(self.file_tag(f)) {
+            present_hashes[f] = true
+          }
+        }
+      }
       None => ()
     }
   }

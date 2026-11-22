@@ -315,6 +315,9 @@ let fold_schema : String =
   #|CREATE INDEX IF NOT EXISTS attached_path ON attached (path);
   #|CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, seq INTEGER NOT NULL, hash TEXT NOT NULL, size INTEGER NOT NULL) WITHOUT ROWID;
   #|CREATE INDEX IF NOT EXISTS files_order ON files (seq);
+  #|CREATE TABLE IF NOT EXISTS transcripts (path TEXT PRIMARY KEY, seq INTEGER NOT NULL, line TEXT NOT NULL) WITHOUT ROWID;
+  #|CREATE INDEX IF NOT EXISTS transcripts_order ON transcripts (seq);
+  #|CREATE TABLE IF NOT EXISTS tr_dels (path TEXT PRIMARY KEY, seq INTEGER NOT NULL, line TEXT NOT NULL) WITHOUT ROWID;
   #|CREATE TABLE IF NOT EXISTS dels (tk TEXT PRIMARY KEY, seq INTEGER NOT NULL, line TEXT NOT NULL) WITHOUT ROWID;
   #|CREATE TABLE IF NOT EXISTS gone (line TEXT PRIMARY KEY, seq INTEGER NOT NULL) WITHOUT ROWID;
 
@@ -442,6 +445,26 @@ pub fn Folded::apply(self : Folded, line : String) -> Unit raise {
         param(get(rec, "size")),
       ]),
     )
+  } else if get(rec, "tr") is Some(tr_path) {
+    let p = param(Some(tr_path))
+    ignore(
+      db.run("INSERT INTO transcripts (path, seq, line) VALUES (?, ?, ?) ON CONFLICT (path) DO UPDATE SET seq = excluded.seq, line = excluded.line", [
+        p,
+        n(seq),
+        s(line),
+      ]),
+    )
+    ignore(db.run("DELETE FROM tr_dels WHERE path = ?", [p]))
+  } else if get(rec, "tr_del") is Some(tr_path) {
+    let p = param(Some(tr_path))
+    ignore(db.run("DELETE FROM transcripts WHERE path = ?", [p]))
+    ignore(
+      db.run("INSERT INTO tr_dels (path, seq, line) VALUES (?, ?, ?) ON CONFLICT (path) DO UPDATE SET seq = excluded.seq, line = excluded.line", [
+        p,
+        n(seq),
+        s(line),
+      ]),
+    )
   }
 }
 
@@ -511,17 +534,34 @@ fn file_line(path : String, hash : String, size : Double) -> String {
 }
 
 ///|
-/// What it says now, as record lines: every row, then the files still named (`records`).
-pub fn Folded::records(self : Folded, f : (String) -> Unit raise) -> Unit raise {
-  self.each_row(f)
-  self.each_named_file((path, hash, size) => f(file_line(path, hash, size)))
+/// Every transcript's line, in the order they were said, a page at a time.
+fn Folded::each_transcript(self : Folded, f : (String) -> Unit raise) -> Unit raise {
+  let mut seq = 0.0
+  while true {
+    let rows = self.db.all("SELECT seq, line FROM transcripts WHERE seq > ? ORDER BY seq LIMIT ?", [Json::number(seq), ni(page)])
+    for r in rows {
+      f(field_text(r, "line"))
+      seq = field_num(r, "seq")
+    }
+    if rows.length() < page {
+      break
+    }
+  }
 }
 
 ///|
-/// What it says where batches before it are not folded with it (`partial`): what was deleted first, then every row and
-/// every file.
+/// What it says now, as record lines: every row, then the files still named, then transcripts (`records`).
+pub fn Folded::records(self : Folded, f : (String) -> Unit raise) -> Unit raise {
+  self.each_row(f)
+  self.each_named_file((path, hash, size) => f(file_line(path, hash, size)))
+  self.each_transcript(f)
+}
+
+///|
+/// What it says where batches before it are not folded with it (`partial`): what was deleted first, then every row,
+/// every file, and every transcript.
 fn Folded::partial(self : Folded, f : (String) -> Unit raise) -> Unit raise {
-  for table in ["gone", "dels"] {
+  for table in ["gone", "dels", "tr_dels"] {
     let mut seq = 0.0
     while true {
       let rows = self.db.all("SELECT seq, line FROM \{table} WHERE seq > ? ORDER BY seq LIMIT ?", [Json::number(seq), ni(page)])
@@ -546,6 +586,7 @@ fn Folded::partial(self : Folded, f : (String) -> Unit raise) -> Unit raise {
       break
     }
   }
+  self.each_transcript(f)
 }
 
 ///|

@@ -12,7 +12,9 @@ export type Rec =
   | { del: string; key: Row }
   | { gone: "session"; key: string }
   | { gone: "thread"; id: number }
-  | { file: string; size: number; path: string };
+  | { file: string; size: number; path: string }
+  | { tr: string; room: string | null; size: number; mtime: number; mode: number; chunks: string[] }
+  | { tr_del: string };
 
 export type Header = { v: number; gen: string; from: number; to: number; made: number };
 
@@ -158,6 +160,9 @@ CREATE TABLE IF NOT EXISTS attached (tbl INTEGER NOT NULL, k TEXT NOT NULL, path
 CREATE INDEX IF NOT EXISTS attached_path ON attached (path);
 CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, seq INTEGER NOT NULL, hash TEXT NOT NULL, size INTEGER NOT NULL) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS files_order ON files (seq);
+CREATE TABLE IF NOT EXISTS transcripts (path TEXT PRIMARY KEY, seq INTEGER NOT NULL, line TEXT NOT NULL) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS transcripts_order ON transcripts (seq);
+CREATE TABLE IF NOT EXISTS tr_dels (path TEXT PRIMARY KEY, seq INTEGER NOT NULL, line TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS dels (tk TEXT PRIMARY KEY, seq INTEGER NOT NULL, line TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS gone (line TEXT PRIMARY KEY, seq INTEGER NOT NULL) WITHOUT ROWID;
 `;
@@ -225,6 +230,12 @@ export class Folded {
       this.#s("INSERT INTO gone (line, seq) VALUES (?, ?) ON CONFLICT (line) DO UPDATE SET seq = excluded.seq").run(text, seq);
     } else if ("file" in rec) {
       this.#s("INSERT INTO files (path, seq, hash, size) VALUES (?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET seq = excluded.seq, hash = excluded.hash, size = excluded.size").run(rec.path, seq, rec.file, rec.size);
+    } else if ("tr" in rec) {
+      this.#s("INSERT INTO transcripts (path, seq, line) VALUES (?, ?, ?) ON CONFLICT (path) DO UPDATE SET seq = excluded.seq, line = excluded.line").run(rec.tr, seq, text);
+      this.#s("DELETE FROM tr_dels WHERE path = ?").run(rec.tr);
+    } else if ("tr_del" in rec) {
+      this.#s("DELETE FROM transcripts WHERE path = ?").run(rec.tr_del);
+      this.#s("INSERT INTO tr_dels (path, seq, line) VALUES (?, ?, ?) ON CONFLICT (path) DO UPDATE SET seq = excluded.seq, line = excluded.line").run(rec.tr_del, seq, text);
     }
   }
 
@@ -252,21 +263,24 @@ export class Folded {
     return new Map([...this.namedFiles()].map((f) => [f.path, { hash: f.hash, size: f.size }]));
   }
 
-  /// What it says now, as record lines, one at a time: every row, then the files still named.
+  /// What it says now, as record lines, one at a time: every row, then the files still named, then transcripts.
   *records(): Iterable<string> {
     for (const r of this.#s("SELECT line FROM rows ORDER BY tbl, seq").iterate() as Iterable<{ line: string }>) yield r.line;
     for (const f of this.namedFiles()) yield JSON.stringify({ file: f.hash, size: f.size, path: f.path });
+    for (const t of this.#s("SELECT line FROM transcripts ORDER BY seq").iterate() as Iterable<{ line: string }>) yield t.line;
   }
 
   /// What it says, as record lines, where batches before it are not folded with it: what was deleted first (sessions
-  /// and threads, then rows), so that it still deletes what they said, then every row and every file.
+  /// and threads, then rows), so that it still deletes what they said, then every row, every file, and every transcript.
   *partial(): Iterable<string> {
     for (const g of this.#s("SELECT line FROM gone ORDER BY seq").iterate() as Iterable<{ line: string }>) yield g.line;
     for (const d of this.#s("SELECT line FROM dels ORDER BY seq").iterate() as Iterable<{ line: string }>) yield d.line;
+    for (const td of this.#s("SELECT line FROM tr_dels ORDER BY seq").iterate() as Iterable<{ line: string }>) yield td.line;
     for (const r of this.#s("SELECT line FROM rows ORDER BY tbl, seq").iterate() as Iterable<{ line: string }>) yield r.line;
     for (const f of this.#s("SELECT path, hash, size FROM files ORDER BY seq").iterate() as Iterable<{ path: string; hash: string; size: number }>) {
       yield JSON.stringify({ file: f.hash, size: f.size, path: f.path });
     }
+    for (const t of this.#s("SELECT line FROM transcripts ORDER BY seq").iterate() as Iterable<{ line: string }>) yield t.line;
   }
 
   /// How many chats and messages it holds.
