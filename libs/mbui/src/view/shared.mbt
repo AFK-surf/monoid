@@ -2737,28 +2737,90 @@ fn Tree::lift_marked(self : Tree, at : Int) -> Unit {
 /// shape scaled to the way's width, a 3:2 picture flying from a square tile drawn 56 by 37 in a 56 by 56 frame, its
 /// foot cut flat (2026-11-15).
 fn Tree::fills_lifted(self : Tree, at : Int) -> (Double, Double)? {
-  let n = self.nodes[at]
-  let p = n.parent
-  guard p >= 0 && p < self.nodes.length() else { return None }
-  let h = self.nodes[p]
-  guard h.lift is Some(l) && h.lw > 0.0 && h.lh > 0.0 else { return None }
-  guard n.lx.abs() < 0.5 && n.ly.abs() < 0.5 && (n.lw - h.lw).abs() < 0.5 && (n.lh - h.lh).abs() < 0.5 else {
+  if self.flights.is_empty() {
     return None
   }
-  let (_, _, w, hh) = self.lift_rect(l)
-  let s = lift_scale(h, l, w)
-  guard s > 0.0 else { return None }
-  Some((w / s, hh / s))
+  if self.nodes[at].slot {
+    return None
+  }
+  let mut cur = at
+  while cur >= 0 && cur < self.nodes.length() {
+    let n = self.nodes[cur]
+    guard n.lx.abs() < 0.5 && n.ly.abs() < 0.5 else { return None }
+    let mut p = n.parent
+    while p >= 0 && p < self.nodes.length() && self.nodes[p].slot {
+      p = self.nodes[p].parent
+    }
+    guard p >= 0 && p < self.nodes.length() else { return None }
+    let h = self.nodes[p]
+    guard h.live && h.lw > 0.0 && h.lh > 0.0 && (n.lw - h.lw).abs() < 0.5 && (n.lh - h.lh).abs() < 0.5 else {
+      return None
+    }
+    match h.lift {
+      Some(l) => {
+        if l.box {
+          return None
+        }
+        let (_, _, w, hh) = self.lift_rect(l)
+        let s = lift_scale(h, l, w)
+        guard s > 0.0 else { return None }
+        return Some((w / s, hh / s))
+      }
+      None => cur = p
+    }
+  }
+  None
+}
+
+///|
+/// Content of a node that fills a flying ancestor (Tree::fills_lifted), adapted to `(fw, fh)` along with its `image_in`
+/// matte/letterbox sub-rect.
+fn lifted_filler_content(n : Node, c : Content, fw : Double, fh : Double) -> Content {
+  let image_in = match c.image_in {
+    Some(((ix, iy, iw, ih), matte)) =>
+      if ix.abs() < 0.5 && iy.abs() < 0.5 && (iw - n.lw).abs() < 0.5 && (ih - n.lh).abs() < 0.5 {
+        Some(((0.0, 0.0, fw, fh), matte))
+      } else if iw > 0.0 && ih > 0.0 {
+        let k = dmin(fw / iw, fh / ih)
+        let nw = iw * k
+        let nh = ih * k
+        Some((((fw - nw) / 2.0, (fh - nh) / 2.0, nw, nh), matte))
+      } else {
+        c.image_in
+      }
+    None => None
+  }
+  { ..c, w: fw, h: fh, image_in }
 }
 
 ///|
 /// What fills node `at` (Tree::fills_lifted) made again as `at` is drawn otherwise on its way, or comes to its rest.
 fn Tree::fillers_marked(self : Tree, at : Int) -> Unit {
   let n = self.nodes[at]
-  for k in n.kids {
+  if n.lw <= 0.0 || n.lh <= 0.0 {
+    return
+  }
+  match n.lift {
+    Some(l) if l.box => return
+    _ => ()
+  }
+  self.fillers_marked_in(at, n.lw, n.lh)
+}
+
+///|
+fn Tree::fillers_marked_in(self : Tree, at : Int, lw : Double, lh : Double) -> Unit {
+  for k in self.nodes[at].kids {
     let c = self.nodes[k]
-    if c.live && c.lx.abs() < 0.5 && c.ly.abs() < 0.5 && (c.lw - n.lw).abs() < 0.5 && (c.lh - n.lh).abs() < 0.5 {
+    if c.slot {
+      self.fillers_marked_in(k, lw, lh)
+    } else if c.live &&
+      c.lift is None &&
+      c.lx.abs() < 0.5 &&
+      c.ly.abs() < 0.5 &&
+      (c.lw - lw).abs() < 0.5 &&
+      (c.lh - lh).abs() < 0.5 {
       self.look_marked_at(k)
+      self.fillers_marked_in(k, lw, lh)
     }
   }
 }
@@ -2773,11 +2835,17 @@ fn Tree::flight_over(self : Tree, f : Flying) -> Unit {
   f.stop = fn() {  }
   stop()
   if self.alive_id(f.node) {
+    let was_box = match self.nodes[f.node.at].lift {
+      Some(l) => l.box
+      None => false
+    }
     self.flight_told(f.node.at)
     self.nodes[f.node.at].lift = None
     self.places_rev = self.places_rev + 1
     self.look_marked_at(f.node.at)
-    self.fillers_marked(f.node.at)
+    if !was_box {
+      self.fillers_marked(f.node.at)
+    }
     self.place_marked_at(f.node.at)
   }
   match f.ghost {

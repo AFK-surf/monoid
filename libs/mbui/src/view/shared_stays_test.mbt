@@ -414,3 +414,189 @@ test "a container said By an id that says none as it goes: what holds it let go 
   assert_eq(gone.val, 1)
   assert_false(made.val.unwrap().alive())
 }
+
+///|
+test "a stays thumbnail with nested filling children (through pick slot and boxes, with full-box and letterbox image_in): closing from a differently shaped big view fits lift_rect on first and mid frames and restores on landing" {
+  let open = @signals.signal("", same=fn(a, b) { a == b })
+  let pic_full : Ref[@view.View?] = Ref(None)
+  let pic_lb : Ref[@view.View?] = Ref(None)
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(p) {
+      p.grow(Is(1.0)) |> ignore
+      p.box(fn(list) {
+        list.height(Is(Some(300.0))).padding(Is((10.0, 10.0, 10.0, 10.0))) |> ignore
+        list.box(fn(f) {
+          f.width(Is(Some(360.0))).height(Is(Some(160.0))).shared(Is("full"), straight, stays=true) |> ignore
+          f.pick(at_once=true, fn() { 0 }, fn(slot, _) {
+            slot.width_share(Is(1.0)).height_share(Is(1.0)) |> ignore
+            slot.box(fn(wrap) {
+              wrap.width_share(Is(1.0)).height_share(Is(1.0)) |> ignore
+              wrap.box(fn(pic) {
+                pic_full.val = Some(pic)
+                pic
+                .width(Is(Some(360.0)))
+                .height(Is(Some(160.0)))
+                .image(Is(Some(("mem:full", "", 360))))
+                .image_in(Is(Some(((0.0, 0.0, 360.0, 160.0), 0x000000FFL))))
+                |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
+          })
+        })
+        |> ignore
+        list.box(fn(f) {
+          f.width(Is(Some(360.0))).height(Is(Some(96.0))).shared(Is("lb"), straight, stays=true) |> ignore
+          f.pick(at_once=true, fn() { 0 }, fn(slot, _) {
+            slot.width_share(Is(1.0)).height_share(Is(1.0)) |> ignore
+            slot.box(fn(wrap) {
+              wrap.width_share(Is(1.0)).height_share(Is(1.0)) |> ignore
+              wrap.box(fn(pic) {
+                pic_lb.val = Some(pic)
+                pic
+                .width(Is(Some(360.0)))
+                .height(Is(Some(96.0)))
+                .image(Is(Some(("mem:lb", "", 360))))
+                .image_in(Is(Some(((0.0, 28.0, 360.0, 40.0), 0x000000FFL))))
+                |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
+          })
+        })
+        |> ignore
+      })
+      |> ignore
+      p.show(fn() { open.get() != "" }, fn(o) {
+        o.over(Is(true)) |> ignore
+        o.box(fn(b) {
+          b
+          .offset(By(fn() { if open.get() == "full" { (40.0, 267.0) } else { (40.0, 333.0) } }))
+          .width(By(fn() { Some(1200.0) }))
+          .height(By(fn() { Some(if open.get() == "full" { 266.0 } else { 133.0 }) }))
+          .ground(Is(blue))
+          .shared(By(fn() { open.get() }), straight)
+          |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  let drawn_of = fn(v : @view.View) { tree.drawn().iter().find_first(fn(d) { d.id == v.id() }) }
+  tree.frame(1280.0, 800.0, now=0.0) |> ignore
+  let pf = pic_full.val.unwrap()
+  let pl = pic_lb.val.unwrap()
+
+  // Full-box nested filler: open, land, then close and check frame 0, mid frame, and landed frame.
+  tree.event(1000.0, fn() { open.set("full") })
+  tree.frame(1280.0, 800.0, now=1500.0) |> ignore
+  tree.event(2000.0, fn() { open.set("") })
+  tree.frame(1280.0, 800.0, now=2000.0) |> ignore
+  let fl0 = tree.flight_drawn("full").unwrap().0
+  let d0 = drawn_of(pf).unwrap()
+  assert_true((d0.w - fl0.2).abs() < 0.5 && (d0.h - fl0.3).abs() < 0.5, msg="full frame0: \{d0.w}x\{d0.h} vs \{fl0.2}x\{fl0.3}")
+  let s0 = fl0.2 / 360.0
+  guard d0.image_in is Some(((ix0, iy0, iw0, ih0), _)) else { fail("full frame0 image_in missing") }
+  assert_true(
+    ix0.abs() < 0.5 && iy0.abs() < 0.5 && (iw0 - fl0.2 / s0).abs() < 0.5 && (ih0 - fl0.3 / s0).abs() < 0.5,
+    msg="full frame0 image_in: \{ix0},\{iy0},\{iw0},\{ih0}",
+  )
+
+  tree.frame(1280.0, 800.0, now=2100.0) |> ignore
+  let fl1 = tree.flight_drawn("full").unwrap().0
+  let d1 = drawn_of(pf).unwrap()
+  assert_true((d1.w - fl1.2).abs() < 0.5 && (d1.h - fl1.3).abs() < 0.5, msg="full mid: \{d1.w}x\{d1.h} vs \{fl1.2}x\{fl1.3}")
+  let s1 = fl1.2 / 360.0
+  guard d1.image_in is Some(((ix1, iy1, iw1, ih1), _)) else { fail("full mid image_in missing") }
+  assert_true(
+    ix1.abs() < 0.5 && iy1.abs() < 0.5 && (iw1 - fl1.2 / s1).abs() < 0.5 && (ih1 - fl1.3 / s1).abs() < 0.5,
+    msg="full mid image_in: \{ix1},\{iy1},\{iw1},\{ih1}",
+  )
+
+  tree.frame(1280.0, 800.0, now=2200.0) |> ignore
+  let d2 = drawn_of(pf).unwrap()
+  assert_true((d2.w - 360.0).abs() < 0.5 && (d2.h - 160.0).abs() < 0.5, msg="full landed: \{d2.w}x\{d2.h}")
+  guard d2.image_in is Some(((ix2, iy2, iw2, ih2), _)) else { fail("full landed image_in missing") }
+  assert_true(
+    ix2.abs() < 0.5 && iy2.abs() < 0.5 && (iw2 - 360.0).abs() < 0.5 && (ih2 - 160.0).abs() < 0.5,
+    msg="full landed image_in: \{ix2},\{iy2},\{iw2},\{ih2}",
+  )
+
+  // Letterbox nested filler: open, land, then close and check frame 0, mid frame, and landed frame.
+  tree.event(3000.0, fn() { open.set("lb") })
+  tree.frame(1280.0, 800.0, now=3500.0) |> ignore
+  tree.event(4000.0, fn() { open.set("") })
+  tree.frame(1280.0, 800.0, now=4000.0) |> ignore
+  let lfl0 = tree.flight_drawn("lb").unwrap().0
+  let ld0 = drawn_of(pl).unwrap()
+  assert_true((ld0.w - lfl0.2).abs() < 0.5 && (ld0.h - lfl0.3).abs() < 0.5, msg="lb frame0: \{ld0.w}x\{ld0.h} vs \{lfl0.2}x\{lfl0.3}")
+  let ls0 = lfl0.2 / 360.0
+  let lfw0 = lfl0.2 / ls0
+  let lfh0 = lfl0.3 / ls0
+  guard ld0.image_in is Some(((lix0, liy0, liw0, lih0), _)) else { fail("lb frame0 image_in missing") }
+  let lk0 = if lfw0 / 360.0 < lfh0 / 40.0 { lfw0 / 360.0 } else { lfh0 / 40.0 }
+  assert_true(
+    (liw0 - 360.0 * lk0).abs() < 0.5 &&
+    (lih0 - 40.0 * lk0).abs() < 0.5 &&
+    (lix0 - (lfw0 - liw0) / 2.0).abs() < 0.5 &&
+    (liy0 - (lfh0 - lih0) / 2.0).abs() < 0.5,
+    msg="lb frame0 image_in: \{lix0},\{liy0},\{liw0},\{lih0} in \{lfw0}x\{lfh0}",
+  )
+
+  tree.frame(1280.0, 800.0, now=4100.0) |> ignore
+  let lfl1 = tree.flight_drawn("lb").unwrap().0
+  let ld1 = drawn_of(pl).unwrap()
+  assert_true((ld1.w - lfl1.2).abs() < 0.5 && (ld1.h - lfl1.3).abs() < 0.5, msg="lb mid: \{ld1.w}x\{ld1.h} vs \{lfl1.2}x\{lfl1.3}")
+  let ls1 = lfl1.2 / 360.0
+  let lfw1 = lfl1.2 / ls1
+  let lfh1 = lfl1.3 / ls1
+  guard ld1.image_in is Some(((lix1, liy1, liw1, lih1), _)) else { fail("lb mid image_in missing") }
+  assert_true(
+    (liw1 / lih1 - 9.0).abs() < 0.05 &&
+    (lix1 - (lfw1 - liw1) / 2.0).abs() < 0.5 &&
+    (liy1 - (lfh1 - lih1) / 2.0).abs() < 0.5,
+    msg="lb mid image_in: \{lix1},\{liy1},\{liw1},\{lih1} in \{lfw1}x\{lfh1}",
+  )
+
+  tree.frame(1280.0, 800.0, now=4200.0) |> ignore
+  let ld2 = drawn_of(pl).unwrap()
+  assert_true((ld2.w - 360.0).abs() < 0.5 && (ld2.h - 96.0).abs() < 0.5, msg="lb landed: \{ld2.w}x\{ld2.h}")
+  guard ld2.image_in is Some(((lix2, liy2, liw2, lih2), _)) else { fail("lb landed image_in missing") }
+  assert_true(
+    lix2.abs() < 0.5 && (liy2 - 28.0).abs() < 0.5 && (liw2 - 360.0).abs() < 0.5 && (lih2 - 40.0).abs() < 0.5,
+    msg="lb landed image_in: \{lix2},\{liy2},\{liw2},\{lih2}",
+  )
+}
+
+///|
+test "a container=true flight does not resize a filling child" {
+  let show = @signals.signal(false, same=fn(a, b) { a == b })
+  let child : Ref[@view.View?] = Ref(None)
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(p) {
+      p.grow(Is(1.0)).padding(Is((100.0, 500.0, 0.0, 0.0))) |> ignore
+      p.show(fn() { show.get() }, at_once=true, fn(box) {
+        box
+        .width(Is(Some(400.0)))
+        .height(Is(Some(60.0)))
+        .ground(Is(red))
+        .flies_in(straight, fn(_) { Some((100.0, 200.0, 400.0, 140.0)) }, container=true)
+        |> ignore
+        box.box(fn(kid) {
+          child.val = Some(kid)
+          kid.width(Is(Some(400.0))).height(Is(Some(60.0))).ground(Is(blue)) |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  tree.frame(600.0, 700.0, now=0.0) |> ignore
+  tree.event(10.0, fn() { show.set(true) })
+  tree.frame(600.0, 700.0, now=50.0) |> ignore
+  let kd = tree.drawn().iter().find_first(fn(d) { d.id == child.val.unwrap().id() }).unwrap()
+  assert_true((kd.w - 400.0).abs() < 0.5 && (kd.h - 60.0).abs() < 0.5, msg="container filling child resized: \{kd.w}x\{kd.h}")
+}

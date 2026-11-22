@@ -2667,6 +2667,7 @@ fn composer_file_node(
           // viewer shows it, its picture flown from here and back here, View::shared's `stays`, as a message's
           // thumbnail is (message_media_node))
           tile
+          .image_covers(Is(true))
           .shared(
             By(fn() {
               // (one the viewer cannot open yet, a video whose first frame is still being made: the id it will open by

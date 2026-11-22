@@ -28,14 +28,22 @@
 ///|
 /// The files of a message `list()` says, `top` down a column 390 wide, the viewer over them, a window `w` × `h` on
 /// `platform`; their pictures decoded (a picture's its station's, a video's its station's still).
-fn pv_chat(list : () -> Array[Attachment], w? : Double = 390.0, h? : Double = 844.0, platform? : Int = 1, top? : Double = 200.0) -> @ui.Tester {
+fn pv_chat(
+  list : () -> Array[Attachment],
+  w? : Double = 390.0,
+  h? : Double = 844.0,
+  platform? : Int = 1,
+  top? : Double = 200.0,
+  prefix? : String = "mem:pv/",
+  images? : Array[(String, Int, Int)] = [("mem:pv/pic.png", 800, 600), ("mem:pv/clip.mp4.still", 1280, 720)],
+) -> @ui.Tester {
   @sfbase.file_viewer_reset()
   // (its files shown once their pictures are said to decode a while after they are asked: video_tester's)
   let shown = @signals.signal(false)
   let src : Source = {
     ..files_src(),
-    file: fn(_, _, name) { "mem:pv/" + name },
-    poster: fn(_, _, name) { "mem:pv/" + name + ".still" },
+    file: fn(_, _, name) { prefix + name },
+    poster: fn(_, _, name) { prefix + name + ".still" },
   }
   let t = @ui.Tester::new(
     fn(c) {
@@ -62,13 +70,15 @@ fn pv_chat(list : () -> Array[Attachment], w? : Double = 390.0, h? : Double = 84
     h~,
     platform~,
     finish=true,
-    images=[("mem:pv/pic.png", 800, 600), ("mem:pv/clip.mp4.still", 1280, 720)],
+    images~,
   )
   // (their bytes here, each decoded a moment after it is asked: video_tester's)
-  @ui.add_image("mem:pv/pic.png", pv_png())
-  @ui.add_image("mem:pv/clip.mp4.still", pv_png())
-  t.decode_after("mem:pv/pic.png", video_test_decode)
-  t.decode_after("mem:pv/clip.mp4.still", video_test_decode)
+  for img in images {
+    if img.0.has_prefix("mem:") {
+      @ui.add_image(img.0, pv_png())
+    }
+    t.decode_after(img.0, video_test_decode)
+  }
   shown.set(true)
   t.run_for(@ui.move_most_ms)
   t
@@ -373,4 +383,164 @@ test "a tall picture of a chat made as nodes, cut from its top in its box: the v
   assert_true(seen.length() == 1 && (seen[0].1 - 200.0).abs() < 2.0 && seen[0].3 > seen[0].2, msg="back to its top: \{Repr(seen)}")
   // (closed whole: nothing of it left to a test after this one)
   t.run_for(@ui.move_most_ms)
+}
+
+///|
+fn pv_seen_full(t : @ui.Tester) -> Array[Array[Double]] {
+  t.drawn_images().filter(fn(i) { i[8] > 0.5 && i[2] > 1.0 })
+}
+
+///|
+test "a wide picture (2888x640, start_crop) closing on large and small screens: drawn image matches lift_rect across frames and frame 0 shows full image without zoom crop" {
+  let screens : Array[(Double, Double, Int)] = [(1280.0, 800.0, 0), (390.0, 844.0, 2)]
+  for scr in screens {
+    let (sw, sh, platform) = scr
+    let wide = files_one("wide.png", width=2888.0, height=640.0)
+    let t = pv_chat(fn() { [wide] }, w=sw, h=sh, platform~, prefix="pv/", images=[("pv/wide.png", 2888, 640)])
+    t.tap(180.0, 280.0)
+    guard @sfbase.viewer.get() is Some(v) else { fail("wide not opened on \{sw}x\{sh}") }
+    t.run_for(@ui.move_most_ms)
+    let frames : Array[((Double, Double, Double, Double), Array[Array[Double]])] = []
+    t.each_frame(
+      Some(fn() {
+        match t.flight_of(v.thumb_id()) {
+          Some((fl, _)) => frames.push((fl, pv_seen_full(t)))
+          None => ()
+        }
+      }),
+    )
+    t.back()
+    t.run_shown(@ui.move_most_ms)
+    t.each_frame(None)
+    let n = frames.length()
+    assert_true(n > 0, msg="no closing flight frames on \{sw}x\{sh}")
+    let picks = [0, n / 4, n / 2, n * 3 / 4, n - 1]
+    for idx in picks {
+      let (fl, imgs) = frames[idx]
+      assert_eq(imgs.length(), 1, msg="screen \{sw}x\{sh} idx=\{idx}: \{Repr(imgs)}")
+      let img = imgs[0]
+      assert_true(
+        (img[2] - fl.2).abs() < 1.5 && (img[3] - fl.3).abs() < 1.5,
+        msg="screen \{sw}x\{sh} idx=\{idx}: img=\{img[2]}x\{img[3]} vs flight=\{fl.2}x\{fl.3}",
+      )
+    }
+    let img0 = frames[0].1[0]
+    assert_true(
+      img0[4].abs() < 0.02 && img0[5].abs() < 0.02 && img0[6] > 0.98 && img0[7] > 0.98,
+      msg="screen \{sw}x\{sh} frame0 uv cropped: u0=\{img0[4]} v0=\{img0[5]} uw=\{img0[6]} vh=\{img0[7]}",
+    )
+    t.run_for(@ui.move_most_ms)
+  }
+}
+
+///|
+test "a tall picture (200x4000, start_crop) closing: image fills lift_rect height on first and mid frames" {
+  let tall = files_one("tall.png", width=200.0, height=4000.0)
+  let t = pv_chat(fn() { [tall] }, w=1280.0, h=800.0, platform=0, prefix="pv/", images=[("pv/tall.png", 200, 4000)])
+  t.tap(80.0, 350.0)
+  guard @sfbase.viewer.get() is Some(v) else { fail("tall not opened") }
+  t.run_for(@ui.move_most_ms)
+  let frames : Array[((Double, Double, Double, Double), Array[Array[Double]])] = []
+  t.each_frame(
+    Some(fn() {
+      match t.flight_of(v.thumb_id()) {
+        Some((fl, _)) => frames.push((fl, pv_seen_full(t)))
+        None => ()
+      }
+    }),
+  )
+  t.back()
+  t.run_shown(@ui.move_most_ms)
+  t.each_frame(None)
+  let n = frames.length()
+  assert_true(n > 0, msg="no closing flight frames for tall picture")
+  for idx in [0, n / 2] {
+    let (fl, imgs) = frames[idx]
+    assert_eq(imgs.length(), 1, msg="tall idx=\{idx}: \{Repr(imgs)}")
+    let img = imgs[0]
+    assert_true(
+      (img[2] - fl.2).abs() < 1.5 && (img[3] - fl.3).abs() < 1.5,
+      msg="tall idx=\{idx}: img=\{img[2]}x\{img[3]} vs flight=\{fl.2}x\{fl.3}",
+    )
+  }
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
+test "an unknown-size upright video (295x640 in 240x160) and a wide letterboxed video (360x40 in 360x96) closing: frame 0 image matches lift_rect without extra matte offset" {
+  // Unknown-size upright video
+  let upright = attachment_of({ "name": "rec.mp4", "path": "/w/uploads/rec.mp4", "size": 4200000.0, "owner": "ag", "duration": 9000.0 })
+  let t1 = pv_chat(fn() { [upright] }, w=1280.0, h=800.0, platform=0, prefix="pv/", images=[("pv/rec.mp4.still", 295, 640)])
+  t1.tap(120.0, 280.0)
+  guard @sfbase.viewer.get() is Some(v1) else { fail("upright video not opened") }
+  t1.run_for(@ui.move_most_ms)
+  let first1 : Ref[((Double, Double, Double, Double), Array[Array[Double]])?] = Ref(None)
+  t1.each_frame(
+    Some(fn() {
+      if first1.val is None {
+        match t1.flight_of(v1.thumb_id()) {
+          Some((fl, _)) => first1.val = Some((fl, pv_seen_full(t1)))
+          None => ()
+        }
+      }
+    }),
+  )
+  let n1 = pv_player(t1)
+  t1.back()
+  t1.view_said("{\"still\":{\"view\":\{n1}},\"b\":\"\{pv_hex(pv_png())}\"}") |> ignore
+  t1.run_shown(@ui.move_most_ms)
+  t1.each_frame(None)
+  guard first1.val is Some((fl1, imgs1)) else { fail("upright video no close flight") }
+  assert_eq(imgs1.length(), 1, msg="upright video frame0: \{Repr(imgs1)}")
+  let i1 = imgs1[0]
+  assert_true(
+    (i1[0] - fl1.0).abs() < 1.5 &&
+    (i1[1] - fl1.1).abs() < 1.5 &&
+    (i1[2] - fl1.2).abs() < 1.5 &&
+    (i1[3] - fl1.3).abs() < 1.5,
+    msg="upright video frame0: img=(\{i1[0]},\{i1[1]},\{i1[2]},\{i1[3]}) vs flight=\{Repr(fl1)}",
+  )
+  t1.run_for(@ui.move_most_ms)
+
+  // Wide letterboxed video (360x40 in 360x96)
+  let wide_vid = attachment_of({
+    "name": "wide.mp4",
+    "path": "/w/uploads/wide.mp4",
+    "size": 4200000.0,
+    "owner": "ag",
+    "width": 360.0,
+    "height": 40.0,
+    "duration": 9000.0,
+  })
+  let t2 = pv_chat(fn() { [wide_vid] }, w=1280.0, h=800.0, platform=0, prefix="pv/", images=[("pv/wide.mp4.still", 360, 40)])
+  t2.tap(180.0, 248.0)
+  guard @sfbase.viewer.get() is Some(v2) else { fail("wide video not opened") }
+  t2.run_for(@ui.move_most_ms)
+  let first2 : Ref[((Double, Double, Double, Double), Array[Array[Double]])?] = Ref(None)
+  t2.each_frame(
+    Some(fn() {
+      if first2.val is None {
+        match t2.flight_of(v2.thumb_id()) {
+          Some((fl, _)) => first2.val = Some((fl, pv_seen_full(t2)))
+          None => ()
+        }
+      }
+    }),
+  )
+  let n2 = pv_player(t2)
+  t2.back()
+  t2.view_said("{\"still\":{\"view\":\{n2}},\"b\":\"\{pv_hex(pv_png())}\"}") |> ignore
+  t2.run_shown(@ui.move_most_ms)
+  t2.each_frame(None)
+  guard first2.val is Some((fl2, imgs2)) else { fail("wide video no close flight") }
+  assert_eq(imgs2.length(), 1, msg="wide video frame0: \{Repr(imgs2)}")
+  let i2 = imgs2[0]
+  assert_true(
+    (i2[0] - fl2.0).abs() < 1.5 &&
+    (i2[1] - fl2.1).abs() < 1.5 &&
+    (i2[2] - fl2.2).abs() < 1.5 &&
+    (i2[3] - fl2.3).abs() < 1.5,
+    msg="wide video frame0: img=(\{i2[0]},\{i2[1]},\{i2[2]},\{i2[3]}) vs flight=\{Repr(fl2)}",
+  )
+  t2.run_for(@ui.move_most_ms)
 }

@@ -14027,7 +14027,7 @@ fn Tree::made_again(self : Tree, at : Int) -> Unit {
     (Some(l), Some(c)) => n.content = Some(self.lifted_content(n, l, c))
     (None, Some(c)) =>
       match self.fills_lifted(at) {
-        Some((fw, fh)) => n.content = Some({ ..c, w: fw, h: fh })
+        Some((fw, fh)) => n.content = Some(lifted_filler_content(n, c, fw, fh))
         None => ()
       }
     _ => ()
