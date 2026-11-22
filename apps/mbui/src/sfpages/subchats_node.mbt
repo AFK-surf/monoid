@@ -59,9 +59,12 @@ pub fn subchats_need_count(subchats : Array[@sfbase.OpenedChat]) -> Int {
 }
 
 ///|
-/// Whether a led sub-chat belongs in the collapsible "Done" group (finished and not running, failed, blocked, or archived).
+/// Whether a led sub-chat belongs in the collapsible "Done" group: ended, whether it said done or stopped without a state
+/// (idle, aborted). Running, waiting on its own work (`wait`/`watch`), failed, blocked or asking stay in the main list.
 pub fn subchat_is_done(o : @sfbase.OpenedChat) -> Bool {
-  !o.archived && o.state_lead == "done" && o.mark != "run" && o.mark != "failed" && o.mark != "block"
+  !o.archived &&
+  !(o.mark is ("run" | "failed" | "block")) &&
+  !(o.state_lead is ("need" | "decision" | "wait" | "watch"))
 }
 
 ///|
@@ -147,8 +150,10 @@ pub fn subchats_list_node(
   let active = fn() { subchats().filter(fn(o) { !o.archived && !subchat_is_done(o) }) }
   let done = fn() { subchats().filter(fn(o) { subchat_is_done(o) }) }
   let archived = fn() { subchats().filter(fn(o) { o.archived }) }
-  let done_open = @signals.signal(@signals.untracked(fn() { active().length() == 0 }))
-  let archived_open = @signals.signal(@signals.untracked(fn() { active().length() == 0 && done().length() == 0 }))
+  // None until pressed: the group follows the list (folded while anything above it shows), so a list made before its
+  // data came does not stay open; a press keeps the person's choice.
+  let done_open : @signals.Signal[Bool?] = @signals.signal(None)
+  let archived_open : @signals.Signal[Bool?] = @signals.signal(None)
   let scroll : @view.Scroll? = match scroll_most {
     Some(_) => Some(@view.Scroll::new())
     None => None
@@ -253,12 +258,18 @@ fn subchats_collapsible_group_node(
   list : @view.View,
   label : () -> String,
   items : () -> Array[@sfbase.OpenedChat],
-  open : @signals.Signal[Bool],
+  chosen : @signals.Signal[Bool?],
   has_above : () -> Bool,
   key_of : (@sfbase.OpenedChat) -> String,
   by_key : @signals.KeyedList[String, @sfbase.OpenedChat],
   close? : () -> Unit,
 ) -> Unit {
+  let open = fn() {
+    match chosen.get() {
+      Some(b) => b
+      None => !has_above()
+    }
+  }
   list.show(at_once=true, fn() { items().length() > 0 }, fn(g) {
     @sf.style_node(g, fn() {
       if has_above() {
@@ -270,8 +281,8 @@ fn subchats_collapsible_group_node(
     @sf.action_box_node(
       g,
       label,
-      fn(_) { open.set(!open.untracked()) },
-      expanded=fn() { open.get() },
+      fn(_) { chosen.set(Some(!@signals.untracked(open))) },
+      expanded=open,
       fn(h) {
         @sf.style_node(h, fn() { subchats_section_head.then(subchats_round) })
         h.min_height(Is(Some(44.0))) |> ignore
@@ -287,13 +298,13 @@ fn subchats_collapsible_group_node(
           "",
           14.0,
           By(fn() { @sf.theme().p.subtle }),
-          name_now=fn() { if open.get() { "chevron-down" } else { "chevron-right" } },
+          name_now=fn() { if open() { "chevron-down" } else { "chevron-right" } },
         )
         |> ignore
       },
     )
     |> ignore
-    g.show(fn() { open.get() }, fn(ag) {
+    g.show(open, fn(ag) {
       @sf.style_node(ag, fn() { subchats_group })
       ag.each(fn() { items().map(key_of) }, fn(k) { k }, fn(row, k) {
         let id = k.untracked()

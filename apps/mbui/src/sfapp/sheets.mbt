@@ -1730,22 +1730,43 @@ fn open_subchats(src : Source, r : ChatRef) -> Unit {
 ///|
 fn subchats_sheet_node(v : @view.View, opened : () -> Array[@sfbase.OpenedChat], close : () -> Unit) -> Unit {
   let subchats = @signals.computed(fn(_) { @sfpages.led_subchats(opened()) })
-  let done_open = @signals.signal(
-    @signals.untracked(fn() { !subchats.get().iter().any(fn(o) { !o.archived && !@sfpages.subchat_is_done(o) }) }),
-  )
-  let archived_open = @signals.signal(@signals.untracked(fn() { !subchats.get().iter().any(fn(o) { !o.archived }) }))
+  // None until pressed: a group follows the list (folded while anything above it shows, as `subchats_list_node`), so a
+  // sheet opened before its data came does not stay open; a press keeps the person's choice.
+  let done_chosen : @signals.Signal[Bool?] = @signals.signal(None)
+  let archived_chosen : @signals.Signal[Bool?] = @signals.signal(None)
+  let done_open = @signals.computed(fn(_) {
+    match done_chosen.get() {
+      Some(b) => b
+      None => !subchats.get().iter().any(fn(o) { !o.archived && !@sfpages.subchat_is_done(o) })
+    }
+  })
+  let archived_open = @signals.computed(fn(_) {
+    match archived_chosen.get() {
+      Some(b) => b
+      None => !subchats.get().iter().any(fn(o) { !o.archived })
+    }
+  })
+  let done_group = SubchatsGroupOpen::{ open: fn() { done_open.get() }, chosen: done_chosen }
+  let archived_group = SubchatsGroupOpen::{ open: fn() { archived_open.get() }, chosen: archived_chosen }
   let rows = @signals.computed(fn(_) { subchats_sheet_rows(subchats.get(), done_open.get(), archived_open.get()) })
   v.reacts(at_start=false, fn() { rows.get().length() }, fn(_) { @sf.panel_reshaped_node(v) }) |> ignore
   @sf.panel_list_node(
     v,
     fn() { rows.get() },
-    fn(b, row) { subchats_sheet_row_node(b, row, fn() { subchats.get() }, done_open, archived_open, close) },
+    fn(b, row) { subchats_sheet_row_node(b, row, fn() { subchats.get() }, done_group, archived_group, close) },
     est=subchats_row_est,
   )
   |> ignore
   v.show(at_once=true, fn() { rows.get().last() is Some(SubchatsOne(_, _)) }, fn(f) {
     @sf.style_node(f, fn() { @sf.panel_card_last_node(f) })
   })
+}
+
+///|
+/// A folding group of the sheet: whether it is open now, and the person's press (None until pressed).
+priv struct SubchatsGroupOpen {
+  open : () -> Bool
+  chosen : @signals.Signal[Bool?]
 }
 
 ///|
@@ -1756,7 +1777,7 @@ fn subchats_sheet_group_head_node(
   b : @view.View,
   label : () -> String,
   count : () -> Int,
-  open : @signals.Signal[Bool],
+  group : SubchatsGroupOpen,
   has_above : Bool,
 ) -> Unit {
   b.box(fn(slot) {
@@ -1764,8 +1785,8 @@ fn subchats_sheet_group_head_node(
     @sf.action_box_node(
       slot,
       label,
-      fn(_) { open.set(!open.untracked()) },
-      expanded=fn() { open.get() },
+      fn(_) { group.chosen.set(Some(!@signals.untracked(group.open))) },
+      expanded=group.open,
       fn(h) {
         @sf.style_node(h, fn() {
           (if has_above { subchats_archived_head } else { subchats_archived_head_top })
@@ -1784,7 +1805,7 @@ fn subchats_sheet_group_head_node(
           "",
           14.0,
           By(fn() { @sf.theme().p.subtle }),
-          name_now=fn() { if open.get() { "chevron-down" } else { "chevron-right" } },
+          name_now=fn() { if (group.open)() { "chevron-down" } else { "chevron-right" } },
         )
         |> ignore
       },
@@ -1799,8 +1820,8 @@ fn subchats_sheet_row_node(
   b : @view.View,
   row : SubchatSheetRow,
   subchats : () -> Array[@sfbase.OpenedChat],
-  done_open : @signals.Signal[Bool],
-  archived_open : @signals.Signal[Bool],
+  done_group : SubchatsGroupOpen,
+  archived_group : SubchatsGroupOpen,
   close : () -> Unit,
 ) -> Unit {
   match row {
@@ -1823,7 +1844,7 @@ fn subchats_sheet_row_node(
           }
           n
         },
-        done_open,
+        done_group,
         has_above,
       )
     SubchatsArchivedHead(has_above) =>
@@ -1839,7 +1860,7 @@ fn subchats_sheet_row_node(
           }
           n
         },
-        archived_open,
+        archived_group,
         has_above,
       )
     SubchatsOne(group_kind, key) => {
