@@ -929,6 +929,8 @@ test "an Android device's volume: one button, a slider at the level it reads, as
   let ins = r.inputs()
   assert_eq(text(Some(ins[ins.length() - 1]), "t"), "volume")
   assert_eq(number(Some(ins[ins.length() - 1]), "level"), 15.0)
+  // wait for the unified liquid slider's DampedDrag release spring to settle
+  r.t.run_for(@ui.move_most_ms)
   screen_done(r.t)
 }
 
