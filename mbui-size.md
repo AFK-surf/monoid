@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3d647af49](https://github.com/AFK-surf/monoid/commit/3d647af499311b74fc9137284ff22e31cf120963) fix(screen): place a new zoomed part in the frame  | 2.64 | 3.56 | 14.44 | 36.5 | 55.14 | 31.98 | 64.53 | 98.47 | 120.76 |
 | [9ba38e043](https://github.com/AFK-surf/monoid/commit/9ba38e043278c3767859436ce5e1b365983c8d60) fix(sf-ui,sfapp,sfpages): polish topbar liquid gla | 2.64 | 3.56 | 14.44 | 36.49 | 55.13 | 31.98 | 64.53 | 98.29 | 123.6 |
 | [f6d8ac9fb](https://github.com/AFK-surf/monoid/commit/f6d8ac9fb0c35fa926680db12d67ef3c080fcc83) fix(mbui): eliminate clipping during composer atta | 2.64 | 3.56 | 14.44 | 36.49 | 55.13 | 31.97 | 64.53 | 98.52 | 123.6 |
 | [f6d8ac9fb](https://github.com/AFK-surf/monoid/commit/f6d8ac9fb0c35fa926680db12d67ef3c080fcc83) fix(mbui): eliminate clipping during composer atta | 2.64 | 3.56 | 14.44 | 36.49 | 55.13 | 31.97 | 64.5 | 98.52 | 123.6 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [93da13657](https://github.com/AFK-surf/monoid/commit/93da13657406defb55e681d22c1d82aadca6491f) fix(station): propagate owner activity across work | 2.65 | 3.56 | 14.47 | 36.48 | 55.13 | 31.95 | 64.51 | 98.31 | 122.09 |
 | [5f9a5797a](https://github.com/AFK-surf/monoid/commit/5f9a5797a01fd0f4c5317139bf5892c0ed0714b6) fix(comma-ui): clamp narrow-screen overlays and sl | 2.65 | 3.56 | 14.47 | 36.48 | 55.13 | 31.95 | 64.51 | 98.19 | 125.07 |
 | [4a7cac438](https://github.com/AFK-surf/monoid/commit/4a7cac43804dd872d4f2e14c66ba7c02b1461719) fix(core,mbui): recognize Windows file paths and c | 2.65 | 3.56 | 14.47 | 36.48 | 55.13 | 31.95 | 64.51 | 98.34 | 121.31 |
-| [060d4db7d](https://github.com/AFK-surf/monoid/commit/060d4db7dab3e7fe8e96d9905d0ea70deaeab8ed) refactor(mbui): migrate sfgraphic, sffigure, and s | 2.65 | 3.56 | 14.47 | 36.48 | 55.13 | 31.95 | 64.51 | 98.4 | 128.56 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3d647af49](https://github.com/AFK-surf/monoid/commit/3d647af499311b74fc9137284ff22e31cf120963) fix(screen): place a new zoomed part in the frame  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.26 |
 | [9ba38e043](https://github.com/AFK-surf/monoid/commit/9ba38e043278c3767859436ce5e1b365983c8d60) fix(sf-ui,sfapp,sfpages): polish topbar liquid gla | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.12 |
 | [f6d8ac9fb](https://github.com/AFK-surf/monoid/commit/f6d8ac9fb0c35fa926680db12d67ef3c080fcc83) fix(mbui): eliminate clipping during composer atta | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.12 |
 | [f6d8ac9fb](https://github.com/AFK-surf/monoid/commit/f6d8ac9fb0c35fa926680db12d67ef3c080fcc83) fix(mbui): eliminate clipping during composer atta | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.12 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [93da13657](https://github.com/AFK-surf/monoid/commit/93da13657406defb55e681d22c1d82aadca6491f) fix(station): propagate owner activity across work | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.02 |
 | [5f9a5797a](https://github.com/AFK-surf/monoid/commit/5f9a5797a01fd0f4c5317139bf5892c0ed0714b6) fix(comma-ui): clamp narrow-screen overlays and sl | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.02 |
 | [4a7cac438](https://github.com/AFK-surf/monoid/commit/4a7cac43804dd872d4f2e14c66ba7c02b1461719) fix(core,mbui): recognize Windows file paths and c | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.02 |
-| [060d4db7d](https://github.com/AFK-surf/monoid/commit/060d4db7dab3e7fe8e96d9905d0ea70deaeab8ed) refactor(mbui): migrate sfgraphic, sffigure, and s | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.02 |
