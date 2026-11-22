@@ -27,8 +27,8 @@ fn stories_display(tips : @sf.TipLayer) -> Array[Story] {
             let at = kept(0)
             card.box(fn(col) {
               col.gap(Is(12.0)) |> ignore
-              @sf.quota_chips_node(col, fn() { Some(story_quota(at.get())) }, tips~)
-              @sf.quota_worded_node(col, fn() { Some(story_quota(at.get())) }, tips~)
+              @sfbase.quota_chips_node(col, fn() { Some(story_quota(at.get())) }, tips~)
+              @sfbase.quota_worded_node(col, fn() { Some(story_quota(at.get())) }, tips~)
             })
             |> ignore
             side_by_side(card, fn(r) {
@@ -40,7 +40,7 @@ fn stories_display(tips : @sf.TipLayer) -> Array[Story] {
         (
           "多行（账号的与各模型的）",
           fn(card) {
-            @sf.quota_lines_node(card, fn() { Some(story_quota_models) })
+            @sfbase.quota_lines_node(card, fn() { Some(story_quota_models) })
           },
         ),
         (

@@ -707,7 +707,7 @@ pub let station_files_asked : Ref[(Source, String) -> Unit] = Ref(fn(_, _) {  })
 pub(all) struct FolderPick {
   title : String
   note : String
-  stations : Array[@sf.StationChoice]
+  stations : Array[StationChoice]
   station : String
   at : String
   action : (String) -> String

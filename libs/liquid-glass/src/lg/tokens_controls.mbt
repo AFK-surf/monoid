@@ -452,6 +452,7 @@ pub fn liquid_bar_pill_glass(
   spot? : (Double, Double)? = None,
   solid? : Int64 = clear,
   sharing? : Bool = true,
+  adaptive? : Bool = false,
 ) -> @paint.Glass {
   let d = is_dark()
   let tint = if d { 0x20202067L } else { 0xFDFCFD67L }
@@ -473,7 +474,7 @@ pub fn liquid_bar_pill_glass(
       refraction=20.0,
       chroma=0.0,
       merge=0.0,
-      adaptive=false,
+      adaptive~,
       spot~,
     ),
     sharing,
@@ -610,6 +611,25 @@ pub fn liquid_viewer_dark_glass(
       spot~,
     ),
     sharing,
+  )
+}
+
+///|
+/// Clear refractive liquid glass lens recipe for knobs and text loupes (`blur=0`, `tint=clear`,
+/// `bezel=7`, `refraction=5`, `chroma=-0.06`).
+pub fn liquid_knob_glass(solid? : Int64 = clear) -> @paint.Glass {
+  let sol = if solid != clear { solid } else { colors().paper }
+  @paint.Glass::liquid(
+    blur=0.0,
+    tint=0xFFFFFF00L,
+    solid=sol,
+    saturation=1.0,
+    rim=0.6,
+    bezel=7.0,
+    refraction=5.0,
+    chroma=-0.06,
+    merge=0.0,
+    adaptive=false,
   )
 }
 

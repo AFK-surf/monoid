@@ -8,7 +8,7 @@
 /// Single-layer iOS 26/27 liquid glass for floating find bars (`find_bar_node`), degrading cleanly to `panel_ground()`
 /// under `MBUI_GLASS=solid`.
 pub fn find_panel_glass() -> @ui.Glass {
-  @lg.liquid_panel_glass(solid=panel_ground())
+  @glass.liquid_panel_glass(solid=panel_ground())
 }
 
 ///|
@@ -20,11 +20,11 @@ pub fn search_capsule_glass(solid? : Int64) -> @ui.Glass {
     Some(c) => c
     None => over(t.p.bg, alpha(t.p.text, 0.06))
   }
-  @lg.liquid_floating_glass(solid=fallback)
+  @glass.liquid_floating_glass(solid=fallback)
 }
 
 ///|
-/// Top-edge progressive blur soft scroll-edge backdrop backed by `@lg.liquid_scroll_edge_node`.
+/// Top-edge progressive blur soft scroll-edge backdrop backed by `@glass.liquid_scroll_edge_node`.
 #callsite(autofill(loc))
 pub fn top_scroll_edge_node(
   parent : @view.View,
@@ -34,7 +34,7 @@ pub fn top_scroll_edge_node(
   shield? : Bool = true,
   loc~ : SourceLoc,
 ) -> @view.View {
-  @lg.liquid_scroll_edge_node(parent, base_h, fade_h, side=Top, bg~, shield~, loc~)
+  @glass.liquid_scroll_edge_node(parent, base_h, fade_h, side=Top, bg~, shield~, loc~)
 }
 
 ///|

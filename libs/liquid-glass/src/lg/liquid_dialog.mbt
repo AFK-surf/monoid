@@ -15,7 +15,47 @@ fn dialog_glass() -> @paint.Glass {
 }
 
 ///|
-/// Composable single-layer dense Liquid Glass dialog shell (`r=24pt` by default) with symmetric 80%
+/// Decorates an existing dialog container node `shell` in place (zero wrapper nodes) with symmetric dense
+/// `liquid_dialog_glass`, optional light-mode veil override (`tint_light`, e.g. `0xFDFCFDD1L` 82% so muted secondary
+/// text maintains WCAG >= 4.5:1 contrast), `shadow_outside(Is(true))`, `MBUI_GLASS=solid` 1pt hairline fallback, and
+/// optional `radius` / `clips`. Returns `shell` for chaining.
+pub fn liquid_dialog_surface_decorate(
+  shell : @view.View,
+  radius? : Double,
+  solid? : () -> Int64,
+  tint_light? : Int64,
+  shadow? : () -> (Double, Double, Int64) = fn() { shadow_default },
+  solid_edge? : () -> (Double, Int64) = liquid_overlay_solid_edge,
+  clips? : Bool = true,
+) -> @view.View {
+  match radius {
+    Some(r) => shell.radius(Is(r)) |> ignore
+    None => ()
+  }
+  if clips {
+    shell.clips(Is(true)) |> ignore
+  }
+  shell
+  .glass(
+    By(fn() {
+      let s = match solid {
+        Some(f) => f()
+        None => clear
+      }
+      let g = liquid_dialog_glass(solid=s)
+      match tint_light {
+        Some(tl) if !is_dark() => Some({ ..g, tint: tl })
+        _ => Some(g)
+      }
+    }),
+  )
+  .edge(By(fn() { if shell.glass_solid() { solid_edge() } else { (0.0, clear) } }))
+  .shadow(By(shadow))
+  .shadow_outside(Is(true))
+}
+
+///|
+/// Composable single-layer dense Liquid Glass dialog shell (`r=24pt` by default) with symmetric
 /// `liquid_dialog_glass`, `shadow_outside(Is(true))`, `MBUI_GLASS=solid` 1pt hairline fallback, and `clips(Is(true))`.
 /// Lets callers such as centered panels, confirm dialogs, and command switchers own their routing, scroll body,
 /// and footer layout while reusing `@lg`'s calibrated dialog surface.
@@ -24,26 +64,15 @@ pub fn liquid_dialog_shell_node(
   parent : @view.View,
   radius? : Double = 24.0,
   solid? : () -> Int64,
+  tint_light? : Int64,
+  shadow? : () -> (Double, Double, Int64) = fn() { shadow_default },
+  solid_edge? : () -> (Double, Int64) = liquid_overlay_solid_edge,
+  clips? : Bool = true,
   body : (@view.View) -> Unit,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(shell) {
-    shell
-    .radius(Is(radius))
-    .shadow(Is(shadow_default))
-    .shadow_outside(Is(true))
-    .glass(
-      By(fn() {
-        let s = match solid {
-          Some(f) => f()
-          None => clear
-        }
-        Some(liquid_dialog_glass(solid=s))
-      }),
-    )
-    .edge(By(fn() { if shell.glass_solid() { liquid_overlay_solid_edge() } else { (0.0, clear) } }))
-    .clips(Is(true))
-    |> ignore
+    liquid_dialog_surface_decorate(shell, radius~, solid?, tint_light?, shadow~, solid_edge~, clips~) |> ignore
     body(shell)
   })
 }

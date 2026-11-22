@@ -594,6 +594,10 @@ function unseenIn(hub: Hub, key: string, thread: number, n: number): string[] {
   return [...new Set([...pending, ...unread])];
 }
 
+/// Whether a call that ends the turn may also stop its model: a message steered into the turn and not read yet needs one
+/// more request, in this turn, for the model to read it.
+export const nothingUnread = (hub: Hub, key: string) => actorOf(hub, key)?.hasUnread() !== true;
+
 /// Messages said in the thread before the agent's post (entry `n`) that it had not read when it wrote it, as the post's
 /// result says them: they come to it next, written without seeing the post. Empty when none.
 function unreadBefore(hub: Hub, key: string, thread: number, n: number): string {

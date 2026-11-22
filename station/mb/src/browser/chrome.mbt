@@ -161,11 +161,13 @@ pub fn chrome_args(profile : String, port : Int, headless : Bool, user_agent? : 
   // Headful (when asked), no window of its own as it starts: one would make it the machine's front app.
   // Headless, drawn at twice its CSS pixels, as on a Retina screen: Chrome casts a tab at its one screen's scale,
   // so a phone's or a Retina window's view of it came as a picture of half its pixels (a captcha could not be read:
-  // Peng Xiao, 2026-11-17). A viewer's bounds still cap what is cast.
+  // Peng Xiao, 2026-11-17). A viewer's bounds still cap what is cast. Without --screen-info, headless Chrome's default
+  // 800x600 physical screen divides by DPR 2 to 400x300 CSS pixels; {2880x1800} yields a 1440x900 @2x screen.
   if headless {
     out.push("--headless=new")
     out.push("--window-size=1280,900")
     out.push("--force-device-scale-factor=2")
+    out.push("--screen-info={2880x1800}")
   } else {
     out.push("--no-startup-window")
   }

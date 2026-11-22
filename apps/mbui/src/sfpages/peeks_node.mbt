@@ -4,8 +4,8 @@
 // elsewhere; a finger shows none, nothing of the hand put on the row) beside its row on its `side`, over all of the
 // window (over a sheet's modal layer too: a layer of its own, View::over_all). What it holds as link_card's: a pull
 // request's or an issue's card (320 wide), a page's tile (content-sized, or 320 wide if pictured), the bones of the
-// one it will be while it is read, its address to copy at its foot's end, drawn by the library's (@sf.peek_page_tile_node,
-// @sf.peek_change_node); this is what is read for it and what that says. Read as peek_read reads it: as the pointer
+// one it will be while it is read, its address to copy at its foot's end, drawn by the library's (@sfbase.peek_page_tile_node,
+// @sfbase.peek_change_node); this is what is read for it and what that says. Read as peek_read reads it: as the pointer
 // comes onto the row and while the card is there, let go of once neither, so the next time it shows it is read again;
 // the pictures its value names asked as it is read (@sfbase.link_pictures_ask), the card showing as it does while it
 // is read till they are here.
@@ -183,7 +183,7 @@ fn link_card_node(
     }
   }
   parent.pick(shows, fn(b, s) {
-    @sf.style_node(b, fn() { @sf.peek_card_part })
+    @sf.style_node(b, fn() { @sfbase.peek_card_part })
     match s {
       Run => run_card_node(b, value, href, copy)
       RunSample => @sf.waiting_node(b, fn(bones) { run_card_node(bones, peek_sample, href, fn(_) {  }) })
@@ -210,7 +210,7 @@ fn link_card_node(
             None
           }
         }
-        @sf.peek_page_tile_node(
+        @sfbase.peek_page_tile_node(
           b,
           fn() {
             match text(page(), "title") {
@@ -251,7 +251,7 @@ fn peek_sample() -> Json? {
 }
 
 ///|
-/// A pull request's (`pr`) or an issue's card (change_card's, @sf.peek_change_node) in `parent`, of `v` as it is read:
+/// A pull request's (`pr`) or an issue's card (change_card's, @sfbase.peek_change_node) in `parent`, of `v` as it is read:
 /// its state, where it is and when it last changed; its title; who opened it (`avatar`: their picture's image's key, ""
 /// none) and its facts, `copy` at their line's end.
 fn change_card_node(
@@ -262,7 +262,7 @@ fn change_card_node(
   avatar : () -> String,
 ) -> Unit {
   let state = fn() { text(v(), "state") }
-  @sf.peek_change_node(
+  @sfbase.peek_change_node(
     parent,
     pr,
     state,
@@ -279,8 +279,8 @@ fn change_card_node(
 /// What facts `v` has (change_card's, in its order): who opened it; a pull request's (`pr`) size where it says one,
 /// its files and how its checks stand; an issue's labels and how many comments it has. `avatar`: who opened it's
 /// picture's image's key ("" none).
-fn peek_facts_of(v : Json?, pr : Bool, avatar : () -> String) -> Array[@sf.PeekFact] {
-  let out : Array[@sf.PeekFact] = []
+fn peek_facts_of(v : Json?, pr : Bool, avatar : () -> String) -> Array[@sfbase.PeekFact] {
+  let out : Array[@sfbase.PeekFact] = []
   match field(v, "author") {
     Some(Object(_)) as a => out.push(Person(text(a, "login"), avatar()))
     _ => ()
@@ -320,7 +320,7 @@ fn peek_facts_of(v : Json?, pr : Bool, avatar : () -> String) -> Array[@sf.PeekF
 }
 
 ///|
-/// A state in a tinted pill (state_pill's, @sf.peek_state_pill_node) in `parent`, or (`own`) drawn in `parent` itself:
+/// A state in a tinted pill (state_pill's, @sfbase.peek_state_pill_node) in `parent`, or (`own`) drawn in `parent` itself:
 /// its glyph where `glyph` says one and its name (`words`), in the state's colours, each as it changes.
 fn state_pill_node(
   parent : @view.View,
@@ -328,9 +328,9 @@ fn state_pill_node(
   glyph : () -> String?,
   words : () -> String,
   own? : Bool = false,
-  style? : @ui.Style = @sf.peek_state,
+  style? : @ui.Style = @sfbase.peek_state,
 ) -> Unit {
-  @sf.peek_state_pill_node(parent, state, glyph, words, own~, style~)
+  @sfbase.peek_state_pill_node(parent, state, glyph, words, own~, style~)
 }
 
 ///|
@@ -338,7 +338,7 @@ fn state_pill_node(
 /// copied. By the link, as link_copy's mark is: a card of it made again while that lasts (gone and pointed at again)
 /// says 已复制 till its end (its words: the user, 2026-10-29: 图标改成文字复制链接吧).
 fn link_copy_node(parent : @view.View, href : () -> String) -> Unit {
-  @sf.peek_copy_node(parent, href, "common.link.copy", peek_copied_at)
+  @sfbase.peek_copy_node(parent, href, "common.link.copy", peek_copied_at)
 }
 
 ///|

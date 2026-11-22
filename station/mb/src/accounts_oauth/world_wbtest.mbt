@@ -428,12 +428,13 @@ fn oauth_case(c : Json) -> Json raise {
     _ => None
   }
   let margin = int_of(get(Some(c), "margin"), margin_ms)
+  let claude_version = str_of(get(Some(c), "claudeVersion"))
   let result = outcome(() => w.drive(async fn() {
     let (token, expires) = match bound {
       Some(b) =>
-        auth.token(env, home, str_of(get(Some(c), "rejected")), str_of(get(Some(c), "endpoint")).unwrap_or(""), str_of(get(Some(c), "lang")).unwrap_or("zh"), margin~, bound=b)
+        auth.token(env, home, str_of(get(Some(c), "rejected")), str_of(get(Some(c), "endpoint")).unwrap_or(""), str_of(get(Some(c), "lang")).unwrap_or("zh"), margin~, bound=b, claude_version?)
       None =>
-        auth.token(env, home, str_of(get(Some(c), "rejected")), str_of(get(Some(c), "endpoint")).unwrap_or(""), str_of(get(Some(c), "lang")).unwrap_or("zh"), margin~)
+        auth.token(env, home, str_of(get(Some(c), "rejected")), str_of(get(Some(c), "endpoint")).unwrap_or(""), str_of(get(Some(c), "lang")).unwrap_or("zh"), margin~, claude_version?)
     }
     Json::array([Json::string(token), jnum(expires)])
   }))
@@ -511,6 +512,7 @@ fn check_case(c : Json) -> Json raise {
     machine: get(o, "machine") is Some(True),
     login: get(o, "login") is Some(True),
     recheck: get(o, "recheck") is Some(True),
+    claude_version: str_of(get(o, "claudeVersion")),
     machine_token: match get(o, "machineToken") {
       Some(String(t)) => Some(async fn(_) { t })
       _ => None

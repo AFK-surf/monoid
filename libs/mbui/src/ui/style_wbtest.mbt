@@ -1062,3 +1062,27 @@ test "corners: a linked corner too large for its box is checked as it is drawn" 
   t.draw()
   assert_true(!t.corner_faults().is_empty(), msg="the drawn circle is not concentric with the window")
 }
+
+///|
+test "corners: an even long capsule in a squarer window corner passes, while uneven placements still fault" {
+  let capsule_at = fn(top : Double, right : Double) {
+    fn(c : Ctx) {
+      c.with_theme({ ..Theme::light(), corner_ladder: [34.0, 26.0, 18.0, 10.0], corner_fit: Some(fit_ranges) }, fn() {
+        c.box(w=Fill(1.0), h=Fill(1.0), pt=top, pr=right, align=AEnd, fn() {
+          c.box(w=Px(104.0), h=Px(36.0), radius=18.0, bg=0x333333FFL, fn() {  }) |> ignore
+        })
+        |> ignore
+      })
+    }
+  }
+  for corner in [8.0, 12.0, 16.0] {
+    let t = Tester::new(capsule_at(4.0, 4.0), w=600.0, h=400.0, window_corner=corner, corners_held=false)
+    t.draw()
+    assert_eq(t.corner_faults(), [], msg="even (4, 4) capsule at window_corner=\{corner}")
+  }
+  for pair in [(4.0, 8.0), (6.0, 16.0)] {
+    let t = Tester::new(capsule_at(pair.0, pair.1), w=600.0, h=400.0, window_corner=16.0, corners_held=false)
+    t.draw()
+    assert_eq(t.corner_faults().length(), 1, msg="uneven (\{pair.0}, \{pair.1}) capsule should fault")
+  }
+}

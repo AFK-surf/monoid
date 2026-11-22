@@ -179,25 +179,35 @@ export function shown(input: J, c: Clock): J {
 /// A chat's services and jobs as its pages show them (`ChatJobsView`), and in how many ms what it says changes.
 export function chatJobs(chat: J, c: Clock, summary = false): [J, number] {
   if (summary) {
-    // The chat's bar needs only whether the button exists (a job that matters now) and its alarm. Preparing and
-    // copying every job is left for the jobs page. A recent failure can cease to be news even when the station sends
-    // no change.
+    // The chat's bar needs only whether the button exists (current web services), its service alarm, and how many
+    // current background jobs exist for the chat info sheet. Preparing and copying every job is left for the jobs page.
+    // A recent failure can cease to be news even when the station sends no change.
     let hasJobs = false;
+    let hasServices = false;
+    let backgroundCount = 0;
     let alarm: string | null = null;
+    let serviceAlarm: string | null = null;
     let next = Infinity;
     for (const agent of arr(get(chat, "agents"))) for (const job of arr(get(agent, "jobs"))) {
       const tn = tone(job);
       if (!isCurrent(job, c.now)) continue;
       hasJobs = true;
+      const svc = isService(job);
+      if (svc) hasServices = true;
+      else backgroundCount += 1;
       if (tn === "fail") {
         const until = (msOf(job, "endedAt") ?? msOf(job, "startedAt") ?? 0) + NEWS - c.now;
         if (until > 0) {
           alarm = "fail";
+          if (svc) serviceAlarm = "fail";
           next = Math.min(next, until);
         }
-      } else if (tn === "restart" && alarm === null) alarm = "restart";
+      } else if (tn === "restart") {
+        if (alarm === null) alarm = "restart";
+        if (svc && serviceAlarm === null) serviceAlarm = "restart";
+      }
     }
-    return [{ jobs: [], hasJobs, alarm, servicesNote: "", jobsNote: "", allText: "" }, next];
+    return [{ jobs: [], hasJobs, hasServices, backgroundCount, alarm, serviceAlarm, servicesNote: "", jobsNote: "", allText: "" }, next];
   }
   // Only what matters now (`isCurrent`): a job that is over is not shown at all.
   const all: J[] = arr(get(chat, "agents")).flatMap((a) => arr(get(a, "jobs")));

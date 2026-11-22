@@ -25,6 +25,10 @@ All of them live in `src/lg` (`@lg`) and are showcased live in the self-hosted `
 | `liquid_toggle_node` | A switch whose thumb turns to glass while held and can be dragged across. |
 | `liquid_slider_node` | A track and a glass thumb, moved by a drag, a tap on the track or the arrow keys. |
 | `liquid_stepper_node` | Compact decrement/increment glass capsule with live formatted numeric readout. |
+| `liquid_pill_group_node`, `bind_pill_press`, `bind_pill_press_by`, `liquid_pill_trigger_lent` | Generic single-layer floating glass pill (horizontal or vertical) holding a group of bar controls, each child wired to the pill's touch spotlight and press spring (or a host-driven `down` predicate), with a lent trigger list for SDF fusion and in-place popover morphing. |
+| `liquid_capsule_decorate`, `liquid_capsule_node` | Decorates an existing view (or a new child box) as a single-layer glass capsule or card, emitting no glass and no shadow while `active` is `false`. |
+| `liquid_press_glass_decorate` | Decorates an interactive control with an `InteractiveHighlight` elastic scale, touch-tracked glass spotlight, outside-only shadow and `MBUI_GLASS=solid` hairline; returns the highlight for the caller's gesture to drive. |
+| `liquid_lift_shell_decorate` | Decorates a container shell to move continuously from an optional flat surface to lifted glass as `lift()` goes from 0 to 1, with no glass at rest. |
 
 ### Inputs & Selection
 | Part | What it is |
@@ -62,6 +66,10 @@ All of them live in `src/lg` (`@lg`) and are showcased live in the self-hosted `
 | `liquid_dialog_node`, `liquid_dialog_shell_node` | Modal refractive glass dialog (iOS 26/27 symmetric 70% luminous glass, `320pt` compact alert) and composable dialog shell for custom centered panels and switchers. |
 | `liquid_toast_node`, `liquid_toast_shell_node`, `LiquidStatus` | Floating status capsule (`Info`, `Success`, `Warning`, `Error`) with swipe-to-dismiss, optional action pill, and composable toast shell. |
 | `liquid_progress_bar_node`, `liquid_progress_ring_node` | Determinate (`Some(0..1)`) and closed-form indeterminate (`None`) linear and circular progress indicators. |
+| `liquid_panel_surface_decorate`, `liquid_panel_shell_node` | In-place single-layer panel glass (optional capillary `merge`, `active` gating, `radius`/`clips`) and a composable `r=22pt` panel shell for floating panels, menus, candidate lists and find bars. |
+| `liquid_popover_surface_decorate` | In-place popover glass: calibrated panel glass with shadow and solid hairline, or the iOS 27 liquid-bridge morph from its trigger (`morph`), with zero hidden glass while inactive. |
+| `liquid_tooltip_surface_decorate` | In-place click-through tooltip glass (capsule, or panel with `panel=true`) gated by `active`. |
+| `liquid_drawer_surface_decorate`, `liquid_sheet_surface_decorate`, `liquid_dialog_surface_decorate`, `liquid_toast_surface_decorate` | In-place surface decorators giving an app's own drawer, sheet, dialog (optional light-mode veil `tint_light`) or toast container the same single-layer glass, `active` gating, outside shadow and solid hairline as the parts above, with no wrapper node. |
 
 ### Optics & Physics
 | Part | What it is |
@@ -70,8 +78,11 @@ All of them live in `src/lg` (`@lg`) and are showcased live in the self-hosted `
 | `liquid_progressive_blur_node`, `liquid_scroll_edge_node`, `ScrollEdgeSide` | Native `progressive=true` variable-blur scroll-edge backdrop (`Top`/`Bottom`, zero hidden glass at `base_h=0`, click-through shield) and alpha-masked progressive blur band. |
 | `liquid_adaptive_surface_node`, `adaptive_glass` | Luminance-aware glass that continuously adapts to the brightness of the backdrop underneath. |
 | `liquid_magnifier_node` | Draggable 1.5× glyph-snapped optical loupe over text and source code. |
+| `liquid_lens_overlay_node` | Lazy-mounted clear refractive lens over a segmented control, tab strip or slider knob: no node until first press, no glass once settled, no relayout on release. |
+| `liquid_loupe_node` | Window-wide floating text/drag loupe (`View::over_all`, `View::magnifies`) in a velocity-stretched capsule of `liquid_knob_glass`, drawing nothing while inactive and settled. |
 | `DampedDrag`, `InteractiveHighlight` | Closed-form spring controllers (`DampedDragAnimation` and `InteractiveHighlight`) for caller-driven motion. |
 | `liquid_panel_glass`, `liquid_dialog_glass`, `liquid_sheet_glass`, `liquid_drawer_glass`, `liquid_toast_glass`, `liquid_capsule_glass`, `liquid_scroll_edge_glass`, `liquid_overlay_solid_edge` | Calibrated overlay, capsule, and scroll-edge glass recipes with optional `solid`/`bg` overrides and `MBUI_GLASS=solid` 1pt edge token. |
+| `liquid_knob_glass` | Clear refractive lens recipe for knobs and text loupes (`blur=0`, clear tint, `bezel=7`, `refraction=5`). |
 
 `set_dark` chooses the light or dark look, `colors()` gives the catalog's colours in it, and `ui_theme` is mbui's
 theme in the catalog's look.

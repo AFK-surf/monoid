@@ -93,66 +93,6 @@ pub fn swatch_field_node(
 }
 
 ///|
-/// The avatars to start from in `parent` (`all()` as they are now): 15 to a line in the room `width()` says, fewer
-/// where it is less, 6 apart, 16 over them, 10 under; each square on its own colour, edged in the line (the one
-/// `picked()` names ringed in the ink, the field's hover edge under the pointer), its maker's mark (55% of it, white
-/// where it is one colour) or its picture (1.18 times it); named by its tip in `tips`, `pick` given it as it is pressed.
-#callsite(autofill(loc))
-pub fn avatar_tiles_node(
-  parent : @view.View,
-  all : () -> Array[AppAvatar],
-  picked : () -> String,
-  width : () -> Double,
-  pick : (AppAvatar) -> Unit,
-  tips : TipLayer,
-  loc~ : SourceLoc,
-) -> @view.View {
-  let side = fn() { (width() - avatar_tile_gap * (avatar_tile_columns - 1).to_double()) / avatar_tile_columns.to_double() }
-  parent.box(made_for=loc, fn(p) {
-    style_node(loc~, p, fn() { avatar_tiles })
-    p.box(fn(r) {
-      style_node(loc~, r, fn() { avatar_tiles_row })
-      r.wraps(Is(Some(avatar_tile_gap))) |> ignore
-      // (the one picked, by member: a change of it tells the two tiles it concerns)
-      let picked_is = r.selected(fn() { Some(picked()) })
-      // (each tile its own avatar, given it by the list as it is made)
-      r.each(all, fn(a) { a.id }, fn(cell, item) {
-        let a = item.untracked()
-        let label = if a.label.has_prefix("android-") { t(a.label) } else { a.label }
-        let on = fn() { picked_is(a.id) }
-        let tile = action_box_node(loc~, cell, fn() { label }, selected=on, fn(_) { pick(a) }, fn(b) {
-          // (its edge: picked, avatar_tile_on's; under the pointer, avatar_tile_lit's, its hovered{border_color=Border})
-          style_node(loc~, b, fn() { if on() { avatar_tile_on } else if b.pointed() { avatar_tile_lit } else { avatar_tile } })
-          b
-          .width(By(fn() { Some(side()) }))
-          .height(By(fn() { Some(side()) }))
-          .ground(Is(hex_color(a.bg).unwrap_or(icon_fallback)))
-          .clips(Is(true))
-          |> ignore
-          if a.mark != "" {
-            b.pick(side, fn(m, w) {
-              drawable_node(m, a.mark, w * avatar_mark_share, tint?=if a.mono { Some(fn() { Some(avatar_white) }) } else { None }) |> ignore
-            })
-          } else {
-            b.box(fn(img) {
-              img
-              .over(Is(true))
-              .scale(Is(avatar_thumb_scale))
-              .image(Is(Some((avatars_base() + "/avatars/" + a.id + ".thumb.webp", "", 256))))
-              .image_covers(Is(true))
-              |> ignore
-            })
-            |> ignore
-          }
-        })
-        tip_node(tips, tile, fn() { label }) |> ignore
-      })
-    })
-    |> ignore
-  })
-}
-
-///|
 /// A group of permissions to tick (check_groups_node's): its id, its name, what it allows (its tip), whether it is
 /// always on (`fixed`: a tick without a box) and whether only admins allow it (`admin`).
 #derive(Eq, Debug)
@@ -506,43 +446,6 @@ let swatch : @ui.Style = @ui.css("w=S7 h=S7 radius=Lg border=B0_5 border_color=L
 ///|
 // kept across runs: a value (no field of it changes)
 let swatch_hex : @ui.Style = @ui.css("w=S24")
-
-///|
-/// The avatars: 15 to a line, 6 apart (a mark 55% of its tile, a picture 1.18 times it).
-let avatar_tile_columns : Int = 15
-
-///|
-let avatar_tile_gap : Double = 6.0
-
-///|
-let avatar_mark_share : Double = 0.55
-
-///|
-let avatar_thumb_scale : Double = 1.18
-
-///|
-let avatar_white : Int64 = 0xFFFFFFFFL
-
-///|
-// kept across runs: a value (no field of it changes)
-let avatar_tiles : @ui.Style = @ui.css("w=Full pt=S4 pb=S2_5 gap=S1_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let avatar_tiles_row : @ui.Style = @ui.css("row w=Full gap=S1_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let avatar_tile : @ui.Style = @ui.css("radius=Lg clip border=B0_5 border_color=Line align=ACenter justify=JCenter hovered{border_color=Border}")
-
-///|
-/// A tile under the pointer (avatar_tile's hovered, as a node takes it).
-// kept across runs: a value (no field of it changes)
-let avatar_tile_lit : @ui.Style = avatar_tile.then(@ui.css("border_color=Border"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let avatar_tile_on : @ui.Style = avatar_tile.then(@ui.css("border=B2 border_color=Fg"))
 
 ///|
 /// The permissions (appPerms: the ui's 13; its line muted, 6 down; the sections 4 apart, 8 under it; a section's head

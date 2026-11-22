@@ -155,7 +155,7 @@ fn slack_app_reset() -> Unit {
   sa_approve.clear()
   sa_token_errors.clear()
   sa_icons_made.val = 0
-  @sf.app_icons_reset()
+  @sfbase.app_icons_reset()
 }
 
 ///|
@@ -538,26 +538,26 @@ fn app_fields_node(
   tips : @sf.TipLayer,
   fresh? : Bool = false,
 ) -> Unit {
-  @sf.app_buddies_ask(fn(done) { (core.call)("buddies", obj([]), done) })
-  let all = fn() { @sf.app_buddies_now() + @sf.app_makers }
+  @sfbase.app_buddies_ask(fn(done) { (core.call)("buddies", obj([]), done) })
+  let all = fn() { @sfbase.app_buddies_now() + @sfbase.app_makers }
   let find = fn(id : String) { @signals.untracked(all).iter().find_first(fn(a) { a.id == id }) }
   let colour = fn(bg : String) {
     d.color.set(bg)
     d.hex_field.set(bg)
   }
   // an avatar drawn on `bg`: a mark at once, a buddy once its picture is read
-  let draw = fn(a : @sf.AppAvatar, bg : String) {
+  let draw = fn(a : @sfbase.AppAvatar, bg : String) {
     if a.mark != "" {
       d.reading.set(("", 0, ""))
-      match @sf.app_avatar_icon(a, bg, 0, 0, FixedArray::make(0, b'\x00')) {
+      match @sfbase.app_avatar_icon(a, bg, 0, 0, FixedArray::make(0, b'\x00')) {
         Some(icon) => sa_icon_made(d, icon)
         None => sa_icon_failed(d, @sf.t("web-pages.slackApp.drawFailed"))
       }
     } else {
-      d.reading.set((@sf.avatars_base() + "/avatars/" + a.id + ".webp", @sf.app_icon_px, bg))
+      d.reading.set((@sfbase.avatars_base() + "/avatars/" + a.id + ".webp", @sfbase.app_icon_px, bg))
     }
   }
-  let pick = fn(a : @sf.AppAvatar) {
+  let pick = fn(a : @sfbase.AppAvatar) {
     d.picked.set(a.id)
     d.upload.set("")
     let bg = if d.colour_set.untracked() { d.color.untracked() } else { a.bg }
@@ -567,7 +567,7 @@ fn app_fields_node(
   // a new app starts as the general helper (else the first avatar), on its colour, once the avatars are read
   if fresh {
     let started = Ref(false)
-    k.reacts(fn() { all().length() > @sf.app_makers.length() }, fn(read) {
+    k.reacts(fn() { all().length() > @sfbase.app_makers.length() }, fn(read) {
       if read && !started.val {
         started.val = true
         let avatars = @signals.untracked(all)
@@ -593,8 +593,8 @@ fn app_fields_node(
           let own = d.upload.untracked() != ""
           d.reading.set(("", 0, ""))
           if own {
-            let icon = @sf.app_own_icon(w, h, pixels)
-            let edge = @pixels.edge_colour(@sf.app_icon_px, @sf.app_icon_px, icon.pixels())
+            let icon = @sfbase.app_own_icon(w, h, pixels)
+            let edge = @pixels.edge_colour(@sfbase.app_icon_px, @sfbase.app_icon_px, icon.pixels())
             d.upload_bg.set(edge)
             sa_icon_made(d, icon)
             if !d.colour_set.untracked() {
@@ -603,7 +603,7 @@ fn app_fields_node(
           } else {
             match find(d.picked.untracked()) {
               Some(a) =>
-                match @sf.app_avatar_icon(a, bg, w, h, pixels) {
+                match @sfbase.app_avatar_icon(a, bg, w, h, pixels) {
                   Some(icon) => sa_icon_made(d, icon)
                   None => sa_icon_failed(d, @sf.t("web-pages.slackApp.drawFailed"))
                 }
@@ -634,7 +634,7 @@ fn app_fields_node(
           @ui.add_image(own, b)
           d.upload.set(own)
           d.picked.set("")
-          d.reading.set((own, @sf.app_own_px, ""))
+          d.reading.set((own, @sfbase.app_own_px, ""))
           if prev_upload != "" && prev_upload != own {
             @ui.forget_image(prev_upload)
           }
@@ -652,7 +652,7 @@ fn app_fields_node(
     if typed != d.color.untracked() {
       d.color.set(typed)
       d.colour_set.set(true)
-      if @sf.hex_color(typed) is Some(_) {
+      if @sfbase.hex_color(typed) is Some(_) {
         match find(d.picked.untracked()) {
           Some(a) => draw(a, typed)
           None => ()
@@ -660,10 +660,10 @@ fn app_fields_node(
       }
     }
   })
-  let ground = fn() { @sf.hex_color(d.color.get()).unwrap_or(@sf.theme().p.neutral_bg) }
+  let ground = fn() { @sfbase.hex_color(d.color.get()).unwrap_or(@sf.theme().p.neutral_bg) }
   // (what it says on the colour chosen: a near black or white, whichever reads on it; the muted grey on none)
   let ink = fn() {
-    match @sf.hex_color(d.color.get()) {
+    match @sfbase.hex_color(d.color.get()) {
       Some(v) => @ui.ink_on(v, [0x24272BFFL, 0xFFFFFFFFL])
       None => @sf.theme().p.muted
     }
@@ -675,7 +675,7 @@ fn app_fields_node(
     // its avatar (appAvatar: 136, the settings' corner, on the neutral ground behind its colour): pressed, a picture
     let ab = @sf.icon_well_node(l, fn() { @sf.t("web-pages.slackApp.upload") }, upload, ground, ink, fn() { d.shown.get() }, fn() {
       @sf.t(if fresh { "web-pages.slackApp.uploadShort" } else { "web-pages.slackApp.keep" })
-    }, @sf.app_icon_px)
+    }, @sfbase.app_icon_px)
     @sf.tip_node(tips, ab, fn() { @sf.t("web-pages.slackApp.upload") }) |> ignore
     l.box(fn(m) {
       @sf.style_node(m, fn() { sa_look_main }, in_row=true)
@@ -711,7 +711,7 @@ fn app_fields_node(
     |> ignore
   })
   |> ignore
-  @sf.avatar_tiles_node(k, all, fn() { d.picked.get() }, width, pick, tips) |> ignore
+  @sfbase.avatar_tiles_node(k, all, fn() { d.picked.get() }, width, pick, tips) |> ignore
   sa_permissions_node(k, d, sections, tips)
 }
 
@@ -758,7 +758,7 @@ fn sa_column(w : Double) -> Double {
 /// An icon made: shown in the look, and kept as it goes to Slack.
 fn sa_icon_made(d : SaDraft, icon : @pixels.Canvas) -> Unit {
   let prev = d.shown.untracked()
-  let (jpeg, url) = @sf.app_icon_jpeg(icon)
+  let (jpeg, url) = @sfbase.app_icon_jpeg(icon)
   sa_icons_made.val += 1
   let shown = "mem:desk-slack-icon/\{sa_icons_made.val}"
   @ui.add_image(shown, jpeg)

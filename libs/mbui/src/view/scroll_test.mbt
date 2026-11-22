@@ -1179,7 +1179,8 @@ test "scrolls: two fingers on it by turns: the last down leads it, the other's m
 }
 
 ///|
-test "scrolls: two fingers on it, the leader let go, the other let go at once without moving: not flung by how the other went before" {
+test "scrolls: two fingers on it, the leader let go, the other held past tracker_gap_ms or moved in place before lift: not flung; reversed leader then other lifted: never flung the old way" {
+  // (held still past tracker_gap_ms after leader lifts: stopped, no fling)
   let k = scroll_case()
   let id = scroll_case_id(k)
   k.tree.drag_at(id, Down, 150.0, 190.0, 100.0, finger=0) |> ignore
@@ -1188,31 +1189,213 @@ test "scrolls: two fingers on it, the leader let go, the other let go at once wi
   k.tree.drag_at(id, Down, 150.0, 150.0, 120.0, finger=1) |> ignore
   k.tree.drag_at(id, Moved, 150.0, 140.0, 124.0, finger=1) |> ignore
   k.tree.drag_at(id, Up, 150.0, 140.0, 128.0, finger=1) |> ignore
-  k.tree.drag_at(id, Up, 150.0, 150.0, 132.0, finger=0) |> ignore
-  let up = k.at()
+  // (60 ms pause > tracker_gap_ms before the resting finger lifts)
+  k.tree.drag_at(id, Up, 150.0, 150.0, 188.0, finger=0) |> ignore
+  let up_pause = k.at()
   k.tree.advance(long_after_at)
-  assert_eq((up, k.at(), k.scroll.glides_till(), k.scroll.in_hand()), (50.0, 50.0, None, false))
+  assert_eq((up_pause, k.at(), k.scroll.glides_till(), k.scroll.in_hand()), (50.0, 50.0, None, false))
+
+  // (finger 0 moves up, finger 1 takes over and moves back down, then lifts and finger 0 lifts at once: never flung up)
+  let k2 = scroll_case()
+  let id2 = scroll_case_id(k2)
+  k2.tree.drag_at(id2, Down, 150.0, 190.0, 100.0, finger=0) |> ignore
+  k2.tree.drag_at(id2, Moved, 150.0, 150.0, 108.0, finger=0) |> ignore
+  k2.tree.drag_at(id2, Moved, 150.0, 110.0, 116.0, finger=0) |> ignore
+  k2.tree.drag_at(id2, Down, 150.0, 110.0, 120.0, finger=1) |> ignore
+  k2.tree.drag_at(id2, Moved, 150.0, 130.0, 128.0, finger=1) |> ignore
+  k2.tree.drag_at(id2, Moved, 150.0, 150.0, 136.0, finger=1) |> ignore
+  k2.tree.drag_at(id2, Up, 150.0, 150.0, 136.0, finger=1) |> ignore
+  k2.tree.drag_at(id2, Up, 150.0, 110.0, 140.0, finger=0) |> ignore
+  let up_rev = k2.at()
+  k2.tree.advance(long_after_at)
+  assert_true(k2.at() <= up_rev, msg="reversed handoff flung upward: up=\{up_rev} rest=\{k2.at()}")
 }
 
 ///|
-test "scrolls: two fingers on it, a third down: called off once, each finger told Off, at rest where it was; a hold after it its own as ever" {
+test "scrolls: two fingers fast handoff with only one 8ms frame on the second finger carries continuous velocity" {
+  // (single-finger reference fast flick: 100 -> 132 over 4 steps of 24 pt each = 3.0 pt/ms)
+  let ref_k = scroll_case()
+  ref_k.rows.set(200)
+  ref_k.tree.frame(390.0, 844.0) |> ignore
+  let ref_id = scroll_case_id(ref_k)
+  ref_k.tree.drag_at(ref_id, Down, 150.0, 260.0, 100.0, finger=0) |> ignore
+  ref_k.tree.drag_at(ref_id, Moved, 150.0, 236.0, 108.0, finger=0) |> ignore
+  ref_k.tree.drag_at(ref_id, Moved, 150.0, 212.0, 116.0, finger=0) |> ignore
+  ref_k.tree.drag_at(ref_id, Moved, 150.0, 188.0, 124.0, finger=0) |> ignore
+  ref_k.tree.drag_at(ref_id, Moved, 150.0, 164.0, 132.0, finger=0) |> ignore
+  let ref_up = ref_k.at()
+  ref_k.tree.drag_at(ref_id, Up, 150.0, 164.0, 132.0, finger=0) |> ignore
+  ref_k.tree.advance(long_after_at)
+  let ref_glide = ref_k.at() - ref_up
+
+  // (two-finger handoff: finger 0 does the first 3 steps, finger 1 lands and moves only 1 frame (8ms) before both lift)
+  let k = scroll_case()
+  k.rows.set(200)
+  k.tree.frame(390.0, 844.0) |> ignore
+  let id = scroll_case_id(k)
+  k.tree.drag_at(id, Down, 150.0, 260.0, 100.0, finger=0) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 236.0, 108.0, finger=0) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 212.0, 116.0, finger=0) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 188.0, 124.0, finger=0) |> ignore
+  k.tree.drag_at(id, Down, 150.0, 240.0, 124.0, finger=1) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 216.0, 132.0, finger=1) |> ignore
+  k.tree.drag_at(id, Up, 150.0, 188.0, 132.0, finger=0) |> ignore
+  let up = k.at()
+  k.tree.drag_at(id, Up, 150.0, 216.0, 132.0, finger=1) |> ignore
+  k.tree.advance(long_after_at)
+  let handoff_glide = k.at() - up
+  // (two-finger handoff: finger 0 does the first 3 fast steps, finger 1 lands, moves 1 frame and lifts, then finger 0
+  // lifts 4ms later without moving: continuous cumulative tracker preserves velocity instead of zeroing it)
+  let k_quick = scroll_case()
+  k_quick.rows.set(200)
+  k_quick.tree.frame(390.0, 844.0) |> ignore
+  let id_quick = scroll_case_id(k_quick)
+  k_quick.tree.drag_at(id_quick, Down, 150.0, 260.0, 100.0, finger=0) |> ignore
+  k_quick.tree.drag_at(id_quick, Moved, 150.0, 236.0, 108.0, finger=0) |> ignore
+  k_quick.tree.drag_at(id_quick, Moved, 150.0, 212.0, 116.0, finger=0) |> ignore
+  k_quick.tree.drag_at(id_quick, Moved, 150.0, 188.0, 124.0, finger=0) |> ignore
+  k_quick.tree.drag_at(id_quick, Down, 150.0, 240.0, 124.0, finger=1) |> ignore
+  k_quick.tree.drag_at(id_quick, Moved, 150.0, 216.0, 132.0, finger=1) |> ignore
+  k_quick.tree.drag_at(id_quick, Up, 150.0, 216.0, 132.0, finger=1) |> ignore
+  let up_quick = k_quick.at()
+  k_quick.tree.drag_at(id_quick, Up, 150.0, 188.0, 136.0, finger=0) |> ignore
+  k_quick.tree.advance(long_after_at)
+  let quick_glide = k_quick.at() - up_quick
+  assert_true(
+    ref_glide > 200.0 && (handoff_glide - ref_glide).abs() < 1.0 && (quick_glide - ref_glide).abs() < 1.0,
+    msg="handoff_glide=\{handoff_glide} quick_glide=\{quick_glide} ref_glide=\{ref_glide}",
+  )
+}
+
+///|
+test "scrolls: three fingers taking turns scroll without cancel, and explicit Off cancels all fingers idempotently" {
   let k = scroll_case()
   let id = scroll_case_id(k)
   k.tree.drag_at(id, Down, 150.0, 190.0, 100.0, finger=0) |> ignore
   k.tree.drag_at(id, Moved, 150.0, 170.0, 110.0, finger=0) |> ignore
   k.tree.drag_at(id, Down, 150.0, 150.0, 120.0, finger=1) |> ignore
   k.tree.drag_at(id, Moved, 150.0, 140.0, 130.0, finger=1) |> ignore
-  let held = (k.at(), k.scroll.in_hand())
+  // (a third finger down: takes the lead instead of cancelling)
   k.tree.drag_at(id, Down, 150.0, 120.0, 140.0, finger=2) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 105.0, 150.0, finger=2) |> ignore
+  let three_at = (k.at(), k.scroll.in_hand())
+  // (explicit Off cancels all active fingers once; subsequent moves ignored; next drag works)
+  k.tree.drag_at(id, Off, 150.0, 105.0, 155.0, finger=2) |> ignore
   let off = (k.at(), k.scroll.in_hand(), k.scroll.glides_till())
-  // (its fingers' moves after it told nothing)
-  k.tree.drag_at(id, Moved, 150.0, 100.0, 150.0, finger=1) |> ignore
+  k.tree.drag_at(id, Moved, 150.0, 80.0, 160.0, finger=1) |> ignore
   k.tree.advance(long_after_at)
   let rest = k.at()
   k.tree.drag_at(id, Down, 150.0, 190.0, 20000.0, finger=0) |> ignore
   k.tree.drag_at(id, Moved, 150.0, 180.0, 20010.0, finger=0) |> ignore
   k.tree.drag_at(id, Up, 150.0, 180.0, 20200.0, finger=0) |> ignore
-  assert_eq((held, off, rest, k.at()), ((30.0, true), (30.0, false, None), 30.0, 40.0))
+  assert_eq((three_at, off, rest, k.at()), ((45.0, true), (45.0, false, None), 45.0, 55.0))
+}
+
+///|
+test "scrolls: repeated same-direction flicks chain momentum; opposite, slow, delayed, or tap catch does not" {
+  let run_flick = fn(k : ScrollCase, id : @view.NodeId, t0 : Double, dy : Double) {
+    k.tree.drag_at(id, Down, 150.0, 260.0, t0, finger=0) |> ignore
+    k.tree.drag_at(id, Moved, 150.0, 260.0 + dy, t0 + 10.0, finger=0) |> ignore
+    k.tree.drag_at(id, Moved, 150.0, 260.0 + dy * 2.0, t0 + 20.0, finger=0) |> ignore
+    k.tree.drag_at(id, Moved, 150.0, 260.0 + dy * 3.0, t0 + 30.0, finger=0) |> ignore
+    k.tree.drag_at(id, Up, 150.0, 260.0 + dy * 3.0, t0 + 30.0, finger=0) |> ignore
+  }
+  // (single flick baseline from rest: dy=-25 per 10ms = 2.5 pt/ms)
+  let k_base = scroll_case()
+  k_base.rows.set(400)
+  k_base.tree.frame(390.0, 844.0) |> ignore
+  let id_base = scroll_case_id(k_base)
+  run_flick(k_base, id_base, 100.0, -25.0)
+  let base_up = k_base.at()
+  k_base.tree.advance(long_after_at)
+  let base_glide = k_base.at() - base_up
+
+  // (chained same-direction flick caught 80ms after first release)
+  let k_chain = scroll_case()
+  k_chain.rows.set(400)
+  k_chain.tree.frame(390.0, 844.0) |> ignore
+  let id_chain = scroll_case_id(k_chain)
+  run_flick(k_chain, id_chain, 100.0, -25.0)
+  run_flick(k_chain, id_chain, 210.0, -25.0)
+  let chain_up = k_chain.at()
+  k_chain.tree.advance(long_after_at)
+  let chain_glide = k_chain.at() - chain_up
+  assert_true(
+    chain_glide > base_glide * 1.25,
+    msg="same-direction chain did not boost: chain_glide=\{chain_glide} base_glide=\{base_glide}",
+  )
+
+  // (opposite direction catch: no boost)
+  let k_opp = scroll_case()
+  k_opp.rows.set(400)
+  k_opp.tree.frame(390.0, 844.0) |> ignore
+  let id_opp = scroll_case_id(k_opp)
+  k_opp.scroll.put(4000.0)
+  run_flick(k_opp, id_opp, 100.0, -25.0)
+  run_flick(k_opp, id_opp, 210.0, 25.0)
+  let opp_up = k_opp.at()
+  k_opp.tree.advance(long_after_at)
+  let opp_glide = (k_opp.at() - opp_up).abs()
+  assert_true(
+    (opp_glide - base_glide).abs() < 1.0,
+    msg="opposite direction should not boost: opp_glide=\{opp_glide} base_glide=\{base_glide}",
+  )
+
+  // (slow drag < 0.5 pt/ms after catch: no boost)
+  let k_slow_ref = scroll_case()
+  k_slow_ref.rows.set(400)
+  k_slow_ref.tree.frame(390.0, 844.0) |> ignore
+  let id_slow_ref = scroll_case_id(k_slow_ref)
+  run_flick(k_slow_ref, id_slow_ref, 100.0, -3.0)
+  let slow_ref_up = k_slow_ref.at()
+  k_slow_ref.tree.advance(long_after_at)
+  let slow_ref_glide = k_slow_ref.at() - slow_ref_up
+
+  let k_slow = scroll_case()
+  k_slow.rows.set(400)
+  k_slow.tree.frame(390.0, 844.0) |> ignore
+  let id_slow = scroll_case_id(k_slow)
+  run_flick(k_slow, id_slow, 100.0, -25.0)
+  run_flick(k_slow, id_slow, 210.0, -3.0)
+  let slow_up = k_slow.at()
+  k_slow.tree.advance(long_after_at)
+  let slow_glide = k_slow.at() - slow_up
+  assert_true(
+    (slow_glide - slow_ref_glide).abs() < 1.0,
+    msg="slow release should not boost: slow_glide=\{slow_glide} slow_ref_glide=\{slow_ref_glide}",
+  )
+
+  // (held > 400ms after catch before release: no boost)
+  let k_late = scroll_case()
+  k_late.rows.set(400)
+  k_late.tree.frame(390.0, 844.0) |> ignore
+  let id_late = scroll_case_id(k_late)
+  run_flick(k_late, id_late, 100.0, -25.0)
+  k_late.tree.drag_at(id_late, Down, 150.0, 260.0, 210.0, finger=0) |> ignore
+  k_late.tree.drag_at(id_late, Moved, 150.0, 260.0, 620.0, finger=0) |> ignore
+  k_late.tree.drag_at(id_late, Moved, 150.0, 235.0, 630.0, finger=0) |> ignore
+  k_late.tree.drag_at(id_late, Moved, 150.0, 210.0, 640.0, finger=0) |> ignore
+  k_late.tree.drag_at(id_late, Moved, 150.0, 185.0, 650.0, finger=0) |> ignore
+  let late_up = k_late.at()
+  k_late.tree.drag_at(id_late, Up, 150.0, 185.0, 650.0, finger=0) |> ignore
+  k_late.tree.advance(long_after_at)
+  let late_glide = k_late.at() - late_up
+  assert_true(
+    (late_glide - base_glide).abs() < 1.0,
+    msg="delayed release > 400ms should not boost: late_glide=\{late_glide} base_glide=\{base_glide}",
+  )
+
+  // (tap catch: stops where it is, no glide)
+  let k_tap = scroll_case()
+  k_tap.rows.set(400)
+  k_tap.tree.frame(390.0, 844.0) |> ignore
+  let id_tap = scroll_case_id(k_tap)
+  run_flick(k_tap, id_tap, 100.0, -25.0)
+  k_tap.tree.drag_at(id_tap, Down, 150.0, 200.0, 210.0, finger=0) |> ignore
+  k_tap.tree.drag_at(id_tap, Up, 150.0, 200.0, 230.0, finger=0) |> ignore
+  let tap_up = k_tap.at()
+  k_tap.tree.advance(long_after_at)
+  assert_eq((k_tap.at(), k_tap.scroll.glides_till()), (tap_up, None))
 }
 
 ///|
@@ -1236,4 +1419,37 @@ test "scrolls across: two fingers on it by turns: the last down leads it along t
   k.tree.drag_at(id, Up, 80.0, 60.0, 400.0, finger=1) |> ignore
   k.tree.advance(long_after_at)
   assert_eq((at, k.across.at(k.tree), k.column.at(k.tree)), ([20.0, 20.0, 30.0, 40.0], 40.0, 100.0))
+}
+
+///|
+test "scrolls: View::reacts on in_hand || goes_on transitions strictly [false, true, false] and wakes when fling settles" {
+  let seen : Array[Bool] = []
+  let scroll = @view.Scroll::plain()
+  let tree = @view.Tree::new(
+    fn(root) {
+      root.box(fn(v) {
+        v.width(Is(Some(300.0))).height(Is(Some(100.0))).scrolls(scroll, fn(held) {
+          for _ in 0..<20 {
+            held.box(fn(r) { r.width(Is(Some(300.0))).height(Is(Some(40.0))) |> ignore }) |> ignore
+          }
+        })
+        |> ignore
+        v.reacts(fn() { scroll.in_hand() || scroll.goes_on() }, fn(on) { seen.push(on) })
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  tree.frame(390.0, 844.0) |> ignore
+  let id = match tree.claimers_at(150.0, 50.0) {
+    [(id, _), ..] => id
+    _ => @halt.saying("no scroll column")
+  }
+  tree.drag_at(id, Down, 150.0, 90.0, 100.0, finger=0) |> ignore
+  tree.drag_at(id, Moved, 150.0, 70.0, 110.0, finger=0) |> ignore
+  tree.drag_at(id, Moved, 150.0, 50.0, 120.0, finger=0) |> ignore
+  tree.drag_at(id, Up, 150.0, 50.0, 120.0, finger=0) |> ignore
+  let mid = seen.copy()
+  tree.advance(long_after_at)
+  assert_eq((mid, seen, scroll.in_hand(), scroll.goes_on()), ([false, true], [false, true, false], false, false))
 }

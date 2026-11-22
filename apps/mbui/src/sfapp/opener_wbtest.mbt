@@ -274,7 +274,7 @@ test "small: composer-top capsules give way inside the window" {
     t.resize(w, 844.0)
     t.run_for(@ui.move_most_ms)
     guard t.query(Button, label="子会话") is Some(sub) else { fail("expected subchats capsule at \{w}") }
-    guard t.query(Button, label="服务和后台任务") is Some(jobs) else { fail("expected jobs capsule at \{w}") }
+    guard t.query(Button, label="服务") is Some(jobs) else { fail("expected services capsule at \{w}") }
     let strip = t.all(Button).filter(fn(b) { b.rect.1 == sub.rect.1 })
     assert_true(strip.length() >= 3, msg="expected agent, jobs and subchats capsules at \{w}: \{strip.length()}")
     // (the strip as wide as the composer under it, 2 in from its sides)

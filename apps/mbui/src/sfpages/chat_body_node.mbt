@@ -126,7 +126,7 @@ fn chat_body_rows(kept : ChatBodyKept, v : ChatView, all : Array[Entry], sending
     // (where it stood, the turn before's, gone in the very frame words are sent from here and not offline: it goes as
     // what was sent comes, one way of the list's, not a row closing under the words on their way a moment later as
     // the core says so; offline it stays, what was sent waiting)
-    if e is Foot || e is Top || (!still.is_empty() && !v.offline && (e is State(_, _, _) || e is CacheCold(_, _, _, _))) {
+    if e is Foot || e is Top || (!still.is_empty() && !v.offline && (e is State(_, _, _) || e is CacheCold(_, _, _, _) || e is Archived)) {
       continue
     }
     list.push(e)
@@ -137,7 +137,7 @@ fn chat_body_rows(kept : ChatBodyKept, v : ChatView, all : Array[Entry], sending
   if still.length() > 0 {
     let mut at = list.length()
     for i, e in list {
-      if e is (State(_, _, _) | Working(_) | CacheCold(_, _, _, _)) {
+      if e is (State(_, _, _) | Working(_) | CacheCold(_, _, _, _) | Archived | Feedback) {
         at = i
         break
       }
@@ -353,7 +353,7 @@ fn chat_body_rows_tail(kept : ChatBodyKept, w : ChatBodyMade, v : ChatView, all 
 /// from here or an agent's line the same one, read again only as it changed; the rest by what they say).
 fn chat_entry_same(a : Entry, b : Entry) -> Bool {
   match (a, b) {
-    (Top, Top) | (Empty, Empty) | (Line, Line) | (Newer, Newer) | (Foot, Foot) => true
+    (Top, Top) | (Empty, Empty) | (Line, Line) | (Newer, Newer) | (Archived, Archived) | (Feedback, Feedback) | (Foot, Foot) => true
     (Older(x), Older(y)) => x == y
     (Said(x), Said(y)) => physical_equal(x, y)
     (Sent(x), Sent(y)) => physical_equal(x, y)
@@ -374,7 +374,7 @@ fn chat_entry_in_place(a : Entry, b : Entry) -> Bool {
     (Said(x), Said(y)) => x.ts == y.ts && x.seq == y.seq && x.outgoing == y.outgoing && x.joined == y.joined
     (Sent(x), Sent(y)) => x.key == y.key
     (Working(x), Working(y)) => x.key == y.key
-    (State(_, _, _), State(_, _, _)) | (CacheCold(_, _, _, _), CacheCold(_, _, _, _)) | (Older(_), Older(_)) => true
+    (State(_, _, _), State(_, _, _)) | (CacheCold(_, _, _, _), CacheCold(_, _, _, _)) | (Archived, Archived) | (Feedback, Feedback) | (Older(_), Older(_)) => true
     _ => false
   }
 }
@@ -423,7 +423,7 @@ fn chat_body_comes(e : Entry) -> Bool {
     Out(_) => true
     Working(a) => a.started
     State(_, _, _) => true
-    CacheCold(_, _, _, _) => true
+    CacheCold(_, _, _, _) | Archived | Feedback => true
     _ => false
   }
 }
@@ -544,6 +544,8 @@ priv enum ChatBodyKind {
   KState
   KWorking
   KCacheCold
+  KArchived
+  KFeedback
 }
 
 ///|
@@ -572,6 +574,8 @@ fn chat_body_kind(e : Entry) -> ChatBodyKind {
     State(_, _, _) => KState
     Working(_) => KWorking
     CacheCold(_, _, _, _) => KCacheCold
+    Archived => KArchived
+    Feedback => KFeedback
   }
 }
 
@@ -815,6 +819,7 @@ fn chat_body_node(
   to? : ChatRef,
   shows? : () -> Bool = fn() { true },
   msgs? : () -> @sfbase.ChatMessages? = fn() { None },
+  feedback_held? : @signals.Computed[Json?],
 ) -> @view.View {
   // (its rows move only for a cause said: chat_page_body_node's, @view.transition)
   v.transitions_only() |> ignore
@@ -1276,7 +1281,7 @@ fn chat_body_node(
           }
         // (where the chat stands: in as the words sent land, and as what is held before it sets out: never in under
         // what flies)
-        Some({ entry: State(_, _, _) | CacheCold(_, _, _, _), .. }) if @signals.untracked(fn() { chat_follows_foot(scroll) }) &&
+        Some({ entry: State(_, _, _) | CacheCold(_, _, _, _) | Archived | Feedback, .. }) if @signals.untracked(fn() { chat_follows_foot(scroll) }) &&
           !@ui.reduced_motion() => {
           let mut until = sent_lands.val
           for _, p in held {
@@ -1326,6 +1331,18 @@ fn chat_body_node(
       held_told.set(held_told.untracked() + 1)
     })
   })
+  // (the still.fail team's replies on a bug report sent from this chat: shown as an inline card at the foot of the list)
+  let feedback_held = match feedback_held {
+    Some(h) => Some(h)
+    None => to.map(fn(r) { @sfbase.topic_value_held(src, "chatFeedback", @sfbase.chat_params(r)) })
+  }
+  let feedback_report = fn() -> Json? {
+    match feedback_held {
+      Some(held) => items(held.get(), "reports").iter().find_first(fn(f) { !report_dismissed(f) })
+      None => None
+    }
+  }
+  let has_feedback = fn() -> Bool { !(here.view)().newer && feedback_report() is Some(_) }
   // (what the list worked out that nothing follows let go of: below, once all of it is made)
   let rest_body : Ref[() -> Unit] = Ref(fn() {  })
   let list : ChatBodyList = {
@@ -1344,6 +1361,7 @@ fn chat_body_node(
       }
       let visible = chat_keys_held(ks, held, lingering)
       recompute_bridged(ks, visible)
+      let mut out = visible
       match visible.search_by(fn(k) { k == "state" }) {
         Some(si) => {
           let prev_k = if si > 0 { Some(visible[si - 1]) } else { None }
@@ -1354,16 +1372,28 @@ fn chat_body_node(
           let named = state_alias()
           if named != "state" {
             // (a copy: what the core said, the same object as what was listed, is never written)
-            let out = visible.copy()
-            out[si] = named
-            return out
+            let copied = visible.copy()
+            copied[si] = named
+            out = copied
           }
         }
         None => state_before_was.val = None
       }
-      visible
+      if has_feedback() && !out.contains("feedback") {
+        let copied = if physical_equal(out, visible) { visible.copy() } else { out }
+        copied.push("feedback")
+        out = copied
+      }
+      out
     },
     row: fn(k) {
+      if k == "feedback" {
+        return if has_feedback() {
+          Some({ entry: Entry::Feedback, gap: if listed_was.val.is_empty() { NoGap } else { Apart }, slices: 1 })
+        } else {
+          None
+        }
+      }
       let lk = state_unalias(k)
       let r = match row_of_listed(lk) {
         Some(r) => Some(r)
@@ -1386,6 +1416,9 @@ fn chat_body_node(
       }
     },
     slices: fn(k) {
+      if k == "feedback" {
+        return 1
+      }
       let lk = state_unalias(k)
       if lingering.contains(lk) {
         1
@@ -1623,7 +1656,7 @@ fn chat_body_node(
       }
     }, fn(e) { sent_lands.val = @sf.dmax(sent_lands.val, e) }, stick_top~, working_shows=fn(k) {
       working_shows_at.get(k).unwrap_or(-1.0)
-    })
+    }, to?, feedback_report~)
   }
   // (the list's head, a block of what it holds: what tells it its rows are laid out anew, at
   // another width, as the page sets off to another (column_laid))
@@ -1974,7 +2007,7 @@ fn chat_body_node(
         }
       }
       match (list.row)(k).map(fn(r) { r.entry }) {
-        Some(State(_, _, _) | Working(_) | CacheCold(_, _, _, _) | Newer) | None => ()
+        Some(State(_, _, _) | Working(_) | CacheCold(_, _, _, _) | Archived | Feedback | Newer) | None => ()
         Some(Out(_)) => return Some((k, true, came))
         Some(Said(m)) => return Some((k, m.mine, came))
         Some(_) => return Some((k, false, came))
@@ -2144,6 +2177,8 @@ fn chat_body_row(
   lands : (Double) -> Unit,
   stick_top? : () -> Double,
   working_shows? : (String) -> Double = fn(_) { -1.0 },
+  to? : ChatRef,
+  feedback_report? : () -> Json? = fn() { None },
 ) -> Unit {
   let first = @signals.untracked(fn() { (rows.row)(key()) })
   guard first is Some(first) else { return }
@@ -2366,6 +2401,8 @@ fn chat_body_row(
         }
         frame(fn(b) { chat_cache_cold_node(b, src, here, cold) })
       }
+      KArchived => frame(fn(b) { chat_archived_node(b, src, here) })
+      KFeedback => frame(fn(b) { chat_feedback_node(b, src, here, to, feedback_report) })
     }
   })
 }
@@ -2443,7 +2480,7 @@ fn chat_live_causes(
           Some(Said(m)) => if m.said { 1 } else { 0 }
           Some(Out(_)) => 2
           Some(Working(a)) => if a.started { 3 } else { 4 }
-          Some(State(_, _, _) | CacheCold(_, _, _, _)) => 5
+          Some(State(_, _, _) | CacheCold(_, _, _, _) | Archived | Feedback) => 5
           _ => -1
         }
         kinds[k] = e

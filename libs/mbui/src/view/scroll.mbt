@@ -63,13 +63,15 @@ pub struct Scroll {
   /// (Scroll::beside), whose fling is one, so the hand stopping it on any of them calls off the end said on another
   priv settle_off : Ref[() -> Unit]
   /// the fingers held on it, in the order they went down, each where it was last (its own terms and the window's, down):
-  /// the last down leads it, the others' moves kept, moving nothing (on_drag's `fingers`: two at once); and how fast it
-  /// went (points a ms, down the column)
+  /// the last down leads it, the others' moves kept, moving nothing (on_drag's `fingers`); cumulative driven delta along
+  /// the scroll axis and its velocity tracker, and how fast it went (points a ms, down the column)
   priv hand_fingers : Array[(Int, Double, Double)]
-  /// whether the finger leading it has moved since it came to lead: the one leading let go, another still down that has
-  /// not moved since, let go, flings nothing by how it went before
-  priv mut hand_moved : Bool
+  priv mut hand_cum : Double
+  priv hand_track : Tracker
   priv mut hand_v : Double
+  /// signed fling velocity (points a ms) caught when the hand stopped an active glide, and the moment it was caught
+  priv mut caught_v : Double
+  priv mut caught_at : Double
   /// the hand on it now: from its press to its let go (Scroll::in_hand)
   priv hand_on : @signals.Signal[Bool]
   /// taken over from what it went down on (View::claims): its first move from where it went down counted past the slop
@@ -292,8 +294,11 @@ fn Scroll::made(as_list : Bool, across? : Bool = false, rows_list? : Bool = fals
     whole: None,
     settle_off: Ref(fn() {  }),
     hand_fingers: [],
-    hand_moved: true,
+    hand_cum: 0.0,
+    hand_track: Tracker::new(),
     hand_v: 0.0,
+    caught_v: 0.0,
+    caught_at: -1.0e9,
     hand_on: @signals.signal(false, same=fn(a, b) { a == b }),
     claimed: false,
     peers_scrolled: Map([]),
@@ -401,6 +406,26 @@ let scroll_friction : Double = 0.996
 ///|
 /// The fastest fling (the window's points a ms): as an old view's list's (ui's max_fling, Android's 8000 dp/s).
 let scroll_most_v : Double = 8.0
+
+///|
+/// Fastest chained fling speed (points a ms, 12000 dp/s) when repeated same-direction flicks carry momentum.
+let scroll_chain_most_v : Double = 12.0
+
+///|
+/// Maximum interval (ms) from catching an active glide to releasing the next flick to carry momentum.
+let flick_chain_ms : Double = 400.0
+
+///|
+/// Grace window (ms) bridging `view_caught` (`k > 0`) `Down -> Off` to `view_claimed`'s `Down`.
+let flick_chain_down_ms : Double = 150.0
+
+///|
+/// Minimum residual and new release speed (points a ms, 500 dp/s) required to chain momentum.
+let flick_chain_min_v : Double = 0.5
+
+///|
+/// Fraction of residual glide speed carried into a chained same-direction flick.
+let flick_chain_carry : Double = 0.6
 
 ///|
 /// How far before its top and its foot what it holds fades out, at most, where it goes on past them: as an old view's
@@ -635,6 +660,19 @@ fn Scroll::at_held_top(self : Scroll, t : Double) -> Bool {
 }
 
 ///|
+/// Signed velocity (points a ms) of an active fling at moment `t`, or 0.0 if none is under way.
+fn Scroll::fling_speed_at(self : Scroll, t : Double) -> Double {
+  match self.fling.untracked() {
+    Some(f) if t < f.end_t =>
+      match f.way {
+        Some(w) => (if f.v0 < 0.0 { -1.0 } else { 1.0 }) * w.speed(f.v0, t - f.t0)
+        None => f.v0 * @dmath.pow(scroll_friction, t - f.t0)
+      }
+    _ => 0.0
+  }
+}
+
+///|
 /// Stopped where it is at `t` (a fling under way stopped there): where that is.
 fn Scroll::stopped(self : Scroll, t : Double) -> Double {
   let x = @signals.untracked(fn() { self.where_at(t) })
@@ -675,6 +713,8 @@ fn Scroll::stopped(self : Scroll, t : Double) -> Double {
 /// laid out (a list's first place, past what is tucked over its rows; its top again): what it was on by itself stopped
 /// there, no scroll of the hand's (nothing told as scrolled: its bar). Not scrolling in a node yet, there as it comes to.
 pub fn Scroll::put(self : Scroll, to : Double) -> Unit {
+  self.caught_v = 0.0
+  self.caught_at = -1.0e9
   match self.host {
     Some(v) if v.alive() => {
       let t = v.tree.logic_said()
@@ -742,7 +782,7 @@ pub fn Scroll::tucks(self : Scroll, v : View, cover : () -> Double, kept? : () -
     }
   })
   // (the hand on it, or it gliding: put there no more)
-  host.reacts(fn() { host.pointed_in() || self.glides_till() is Some(_) }, fn(on) {
+  host.reacts(fn() { host.pointed_in() || self.in_hand() || self.goes_on() }, fn(on) {
     if on {
       self.tuck_owed = false
     }
@@ -1512,7 +1552,10 @@ pub fn View::scrolls(
     guard s.host is Some(h) && h.same(self) else { return }
     // (no finger on it after it)
     s.hand_fingers.clear()
-    s.hand_moved = true
+    s.hand_cum = 0.0
+    s.hand_track.reset()
+    s.caught_v = 0.0
+    s.caught_at = -1.0e9
     // (the hand past its edge: at rest where it had it then, as far as it could go as it was said: how far it can go is
     // gone with what it was laid out in, as a fling's below)
     match s.edge.untracked() {
@@ -1594,7 +1637,12 @@ pub fn View::scrolls(
     // goes that way: sideways_wheel_moves)
     if across {
       guard w.dx != 0.0 && w.dx.abs() >= w.dy.abs() else { return false }
-      return s.moved(w.at, w.dx)
+      let ok = s.moved(w.at, w.dx)
+      if ok {
+        s.caught_v = 0.0
+        s.caught_at = -1.0e9
+      }
+      return ok
     }
     guard w.dy != 0.0 && w.dy.abs() >= w.dx.abs() else { return false }
     // (the hand on it: what it kept in sight for the focus kept no more, Tree::holds_now)
@@ -1621,6 +1669,8 @@ pub fn View::scrolls(
       if (w.mods & wheel_notch) != 0 {
         let ok = s.notched(self, w.at, w.dy)
         if ok {
+          s.caught_v = 0.0
+          s.caught_at = -1.0e9
           s.wheel_at = w.at
         }
         return ok
@@ -1628,6 +1678,8 @@ pub fn View::scrolls(
     }
     let ok = s.moved(w.at, w.dy)
     if ok {
+      s.caught_v = 0.0
+      s.caught_at = -1.0e9
       s.wheel_at = w.at
     }
     ok
@@ -1650,8 +1702,8 @@ pub fn View::scrolls(
     s.claimed = takes
     takes
   }, scrolls=true, for_in?)
-  // (held, its own terms: what it holds moved as far as the hand, as big as it is drawn; two fingers at once, the last
-  // down leading it, either let go the other leading on from where it is, as Android's lists take them)
+  // (held, its own terms: what it holds moved as far as the hand, as big as it is drawn; multiple fingers at once, the
+  // last down leading it, others' moves kept without moving it, velocity tracked over cumulative driven deltas)
   .on_drag(fn(d) {
     // (where the hand is along it, in its own terms and the window's, and how fast: across, along the row)
     let (hy, hwy) = if across { (d.x, d.wx) } else { (d.y, d.wy) }
@@ -1659,10 +1711,19 @@ pub fn View::scrolls(
       Down => {
         // (the hold's first finger (Tree::drag_at's downs: this one alone): it set going anew, what was kept of a hold
         // ended untold (its on_drag let go) let go of; another down beside it leads it from here, nothing else anew)
-        if self.tree.downs.length() <= 1 {
+        let first_finger = self.tree.downs.length() <= 1
+        if first_finger {
           s.hand_fingers.clear()
           // (the hand on it: what it kept in sight for the focus kept no more, Tree::holds_now)
           self.tree.focus_holds.remove(self.at) |> ignore
+          let gv = s.fling_speed_at(d.at)
+          if gv != 0.0 {
+            s.caught_v = gv
+            s.caught_at = d.at
+          } else if d.at - s.caught_at > flick_chain_down_ms {
+            s.caught_v = 0.0
+            s.caught_at = -1.0e9
+          }
           // (what shows past an end of a page's list caught where it shows: held by the finger from there)
           if s.as_list {
             s.past_held(d.at)
@@ -1672,9 +1733,17 @@ pub fn View::scrolls(
           s.hand_v = 0.0
           s.hand_on.set(true)
         }
+        if first_finger || s.hand_track.count() <= 1 {
+          s.hand_cum = 0.0
+          s.hand_track.reset()
+          let said = if across { d.speed.across } else { d.speed.down }
+          match said {
+            Some(tr) => tr.seed_deltas(s.hand_track, hwy)
+            None => s.hand_track.add(d.at, 0.0)
+          }
+        }
         s.hand_fingers.retain(fn(f) { f.0 != d.finger })
         s.hand_fingers.push((d.finger, hy, hwy))
-        s.hand_moved = true
       }
       Moved => {
         guard s.hand_fingers.search_by(fn(f) { f.0 == d.finger }) is Some(i) else { return }
@@ -1682,13 +1751,14 @@ pub fn View::scrolls(
         // (where it is kept, leading or not: what leads it again goes on from there)
         s.hand_fingers[i] = (d.finger, hy, hwy)
         guard i == s.hand_fingers.length() - 1 else { return }
-        s.hand_moved = true
+        let dw = hwy - prev_wy
+        s.hand_cum = s.hand_cum + dw
+        s.hand_track.add(d.at, s.hand_cum)
         // (taken over by a move: held from there, though its press went down on what it holds)
         s.hand_on.set(true)
         // (taken over: the first move from where it went down past the slop alone, in the window's points, as big
         // in its own terms as it is drawn)
         let mut dy = hy - prev_y
-        let dw = hwy - prev_wy
         if s.claimed && dw != 0.0 {
           s.claimed = false
           let past = if dw > 0.0 { dmax(dw - slop(), 0.0) } else { dmin(dw + slop(), 0.0) }
@@ -1707,35 +1777,44 @@ pub fn View::scrolls(
           s.moved(d.at, -dy) |> ignore
         }
       }
-      // (let go: flung at the finger's speed as of then, by its own events (Drag's `vy`: a pause before it let go, none),
-      // no faster than a fling goes in the window's points, then in its own terms; another finger still on it, it goes
-      // on by that one, nothing flung)
+      // (let go: flung at the cumulative driven speed as of then, chained with caught glide momentum when repeated
+      // quickly in the same direction; another finger still on it, it goes on by that one, nothing flung)
       Up => {
-        let n = s.hand_fingers.length()
-        let led = n > 0 && s.hand_fingers[n - 1].0 == d.finger
+        let prev_wy = match s.hand_fingers.search_by(fn(f) { f.0 == d.finger }) {
+          Some(i) => s.hand_fingers[i].2
+          None => hwy
+        }
         s.hand_fingers.retain(fn(f) { f.0 != d.finger })
         if !s.hand_fingers.is_empty() {
-          // (the one leading let go: the one leading now flings nothing till it moves)
-          if led {
-            s.hand_moved = false
-          }
           return
         }
         s.hand_on.set(false)
         s.pull_free = false
         s.claimed = false
-        let (_, _, sc) = self.tree.placed(self.at)
-        // (how fast it went, worked out as it is let go: none of its moves asked it; none where the finger let go last
-        // came to lead it and never moved)
-        let hvy = if !s.hand_moved {
-          0.0
-        } else if across {
-          d.vx()
-        } else {
-          d.vy()
+        let up_dw = hwy - prev_wy
+        if up_dw != 0.0 {
+          s.hand_cum = s.hand_cum + up_dw
+          s.hand_track.up(d.at, s.hand_cum)
         }
-        s.hand_moved = true
-        s.hand_v = dclamp(-hvy, -scroll_most_v, scroll_most_v) / (if sc > 0.0 { sc } else { 1.0 })
+        let hvy = s.hand_track.velocity_at(d.at)
+        let (_, _, sc) = self.tree.placed(self.at)
+        let scale = if sc > 0.0 { sc } else { 1.0 }
+        let base_v = dclamp(-hvy, -scroll_most_v, scroll_most_v) / scale
+        s.hand_v = if s.caught_v * base_v > 0.0 &&
+          d.at - s.caught_at <= flick_chain_ms &&
+          base_v.abs() >= flick_chain_min_v &&
+          s.caught_v.abs() >= flick_chain_min_v &&
+          s.past.untracked() is None {
+          dclamp(
+            base_v + s.caught_v * flick_chain_carry,
+            -scroll_chain_most_v / scale,
+            scroll_chain_most_v / scale,
+          )
+        } else {
+          base_v
+        }
+        s.caught_v = 0.0
+        s.caught_at = -1.0e9
         if s.as_list {
           s.let_go(self, d.at)
         } else {
@@ -1748,7 +1827,8 @@ pub fn View::scrolls(
           return
         }
         s.hand_fingers.clear()
-        s.hand_moved = true
+        s.hand_cum = 0.0
+        s.hand_track.reset()
         s.claimed = false
         s.hand_on.set(false)
         s.pull_free = false
@@ -1760,7 +1840,7 @@ pub fn View::scrolls(
         }
       }
     }
-  }, fingers=2)
+  }, fingers=10)
   // (a part of what it holds brought into sight: its top or its foot to its own, as little as that takes)
   .shows(fn(top, foot) {
     let t = self.tree.logic_said()

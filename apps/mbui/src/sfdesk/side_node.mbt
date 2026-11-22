@@ -343,7 +343,7 @@ fn lists_band_node(
       line.show(at_once=true, fn() { view().map(fn(v) { v.syncing is Some(_) }).unwrap_or(false) }, fn(k) {
         native_floating_schedule()
         k.owns(native_floating_schedule) |> ignore
-        @sf.sync_key_node(k, tips, update_key_side, update_key_mark, fn() {
+        @sfbase.sync_key_node(k, tips, update_key_side, update_key_mark, fn() {
           match view() {
             Some({ syncing: Some(y), .. }) => Some(y)
             _ => None

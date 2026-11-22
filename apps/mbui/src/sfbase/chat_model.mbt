@@ -1442,6 +1442,76 @@ pub fn chat_jobs_summary_params(r : ChatRef) -> Map[String, Json] {
 }
 
 ///|
+/// Whether a chat has current web services, reading `hasServices` from a summary `chatJobs` payload, falling back to
+/// checking `service: true` items in a full payload, or `hasJobs` for legacy summary payloads before `hasServices`
+/// existed.
+pub fn chat_jobs_has_services(j : Json?) -> Bool {
+  match field(j, "hasServices") {
+    Some(True) => true
+    Some(False) => false
+    _ => {
+      let list = items(j, "jobs")
+      if list.length() > 0 {
+        list.iter().any(fn(x) { flag(Some(x), "service") })
+      } else {
+        // Legacy summary payload from an older core / replay trace before `hasServices` existed
+        flag(j, "hasJobs")
+      }
+    }
+  }
+}
+
+///|
+/// Service-only alarm ("fail", "restart", or "") from a summary or full `chatJobs` payload.
+pub fn chat_jobs_service_alarm(j : Json?) -> String {
+  match field(j, "serviceAlarm") {
+    Some(String(s)) => s
+    _ => {
+      let list = items(j, "jobs")
+      if list.length() == 0 {
+        // Legacy summary payload (no `hasServices` and no `jobs` list): fall back to `alarm`
+        if field(j, "hasServices") is None {
+          return text(j, "alarm")
+        }
+        return ""
+      }
+      let mut restart = false
+      for x in list {
+        if !flag(Some(x), "service") {
+          continue
+        }
+        let tn = text(Some(x), "tone")
+        if tn == "fail" {
+          return "fail"
+        }
+        if tn == "restart" {
+          restart = true
+        }
+      }
+      if restart { "restart" } else { "" }
+    }
+  }
+}
+
+///|
+/// Count of current non-service background jobs (including watches and scheduled tasks) from a summary or full
+/// `chatJobs` payload.
+pub fn chat_jobs_background_count(j : Json?) -> Int {
+  match field(j, "backgroundCount") {
+    Some(Number(n, ..)) => n.to_int()
+    _ => {
+      let mut n = 0
+      for x in items(j, "jobs") {
+        if !flag(Some(x), "service") {
+          n += 1
+        }
+      }
+      n
+    }
+  }
+}
+
+///|
 /// The last part of a station's path, whether it came from Windows or Unix.
 pub fn base_name(path : String) -> String {
   dv_name(path)

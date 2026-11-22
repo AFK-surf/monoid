@@ -19,12 +19,16 @@ const TIMEOUT_MS = 25_000;
 /// The usage read that includes limit resets and extra_usage (skip_spend=1 omits extra_usage, which gates Claude Code fast mode).
 export const USAGE_PATH = "/api/oauth/usage?at_wall=1";
 
+/// Claude Code's CLI User-Agent header when its installed version is known.
+export const claudeUserAgent = (version: string | null | undefined): Record<string, string> =>
+  typeof version === "string" && version !== "" ? { "user-agent": `claude-cli/${version} (external, cli)` } : {};
+
 /// Claude Code's own headers for its OAuth endpoints: the resets are offered only to it, by its version.
 export function claudeHeaders(token: string, version: string | null): Record<string, string> {
   return {
     authorization: `Bearer ${token}`,
     "anthropic-beta": "oauth-2025-04-20",
-    ...(version !== null ? { "user-agent": `claude-cli/${version} (external, cli)` } : {}),
+    ...claudeUserAgent(version),
   };
 }
 

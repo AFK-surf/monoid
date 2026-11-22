@@ -4,7 +4,7 @@
 // as those change: the chat's mark, title and when it was last active; where it is when another station, and that the
 // link is its agent's execution history; the one message the link names (`messagePeek`), else where it stands or the
 // last thing said in it. One archived as its message says; one gone; its bones while the link or its row is read.
-// Drawn by the library's (@sf.peek_chat_head_node, where it is, the message it names); this is what is read for it and
+// Drawn by the library's (@sfbase.peek_chat_head_node, where it is, the message it names); this is what is read for it and
 // what that says.
 
 ///|
@@ -66,15 +66,15 @@ fn chat_card_node(
     }
   }
   parent.pick(shows, fn(b, s) {
-    @sf.style_node(b, fn() { @sf.peek_card_part })
+    @sf.style_node(b, fn() { @sfbase.peek_card_part })
     match s {
       Archived => {
         let l = fn() {
           linked().unwrap_or({ href: "", title: "", archived: true, note: "", thread: None })
         }
-        @sf.peek_rich_node(b, fn(rich) {
-          @sf.peek_chat_head_node(rich, fn() { l().title })
-          rich.show(fn() { l().note != "" }, fn(n) { @sf.peek_excerpt_node(n, fn() { l().note }) })
+        @sfbase.peek_rich_node(b, fn(rich) {
+          @sfbase.peek_chat_head_node(rich, fn() { l().title })
+          rich.show(fn() { l().note != "" }, fn(n) { @sfbase.peek_excerpt_node(n, fn() { l().note }) })
           // (the message its link names, by the thread its message says it has)
           let message = fn() {
             match (named(), l().thread) {
@@ -90,7 +90,7 @@ fn chat_card_node(
         @sf.waiting_node(b, fn(bones) {
           chat_card_of_node(bones, fn() { sample_chat(0) }, fn() { false }, fn() { false }, fn() { None }, src, scope)
         })
-      Gone => @sf.peek_note_node(b, fn() { @sf.t("web-main.chatRef.previewGone") })
+      Gone => @sfbase.peek_note_node(b, fn() { @sf.t("web-main.chatRef.previewGone") })
       Found => {
         let it = fn() {
           match found() {
@@ -136,17 +136,17 @@ fn chat_card_of_node(
   src : Source,
   scope : String,
 ) -> Unit {
-  @sf.peek_rich_node(parent, fn(rich) {
+  @sfbase.peek_rich_node(parent, fn(rich) {
     // (none: nothing in its place, not even the room between, as chat_mark's 0)
     let tone = fn() { @sfbase.row_tone(item()) }
-    @sf.peek_chat_head_node(
+    @sfbase.peek_chat_head_node(
       rich,
       fn() { item().title },
       marked=fn() { tone() is ("busy" | "done" | "alert" | "wait") },
       mark=fn(m) { chat_mark_node(m, tone) },
       ago=fn() { item().ago },
     )
-    @sf.peek_chat_where_node(
+    @sfbase.peek_chat_where_node(
       rich,
       fn() { elsewhere() || history() },
       elsewhere,
@@ -172,7 +172,7 @@ fn chat_card_of_node(
         _ => ""
       }
     }
-    rich.show(fn() { message() is None && said() != "" }, fn(e) { @sf.peek_excerpt_node(e, said) })
+    rich.show(fn() { message() is None && said() != "" }, fn(e) { @sfbase.peek_excerpt_node(e, said) })
   })
 }
 
@@ -189,7 +189,7 @@ fn message_said_node(
   // (none named: nothing in its place, not even the room between)
   parent.show(fn() { message() is Some(_) }, fn(s) {
     s.pick(message, fn(b, m) {
-      @sf.style_node(b, fn() { @sf.peek_card_part })
+      @sf.style_node(b, fn() { @sfbase.peek_card_part })
       guard m is Some((station, thread, seq)) else { return }
       let params : Map[String, Json] = {
         "station": Json::string(station),
@@ -213,10 +213,10 @@ fn message_said_node(
         }
       }
       b.pick(shows, fn(q, k) {
-        @sf.style_node(q, fn() { @sf.peek_card_part })
+        @sf.style_node(q, fn() { @sfbase.peek_card_part })
         match k {
           2 =>
-            @sf.peek_message_node(
+            @sfbase.peek_message_node(
               q,
               fn() {
                 let v = value()
@@ -224,8 +224,8 @@ fn message_said_node(
               },
               fn() { text(value(), "text") },
             )
-          1 => @sf.peek_message_bones_node(q)
-          _ => @sf.peek_note_node(q, fn() { @sf.t("web-main.chatRef.previewMessageGone") })
+          1 => @sfbase.peek_message_bones_node(q)
+          _ => @sfbase.peek_note_node(q, fn() { @sf.t("web-main.chatRef.previewMessageGone") })
         }
       })
     })

@@ -25,6 +25,7 @@ fn chat_body_nodes(
   stint : () -> Int,
   composer : (@view.View) -> Unit,
   shows : () -> Bool,
+  visible? : () -> Bool,
   in_pane? : Bool = false,
   on_stack? : () -> Bool = fn() { true },
 ) -> Unit {
@@ -38,6 +39,7 @@ fn chat_body_nodes(
     tips~,
     stint~,
     shows~,
+    visible?,
     on_stack~,
     cover=fn() { chat_bar_room(in_pane~) },
     room=list_head_gap,

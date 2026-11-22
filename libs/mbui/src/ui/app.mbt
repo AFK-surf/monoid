@@ -1165,11 +1165,11 @@ fn pointer_in(
   // takes it (the tree's nodes, what they take presses by bound to it, or the old view) this one: view_host.mbt)
   // (a move of a batch after its first finds the tree as the batch's first did: brought to its moment by none of them
   // but the last, after it is taken, view_pointed; nor as what takes it is found, view_pointer)
-  let moved = kind == 1 || kind == 5
+  let moved = kind == 1 || kind == 5 || kind == 16
   if kind == 0 {
     frame_at_press()
   }
-  if kind == 0 || kind == 2 || kind == 3 {
+  if kind == 0 || kind == 2 || kind == 3 || kind == 18 {
     press_moment.val = h_event_time()
   }
   let batched = moves_batched.val && moved
@@ -1284,7 +1284,7 @@ fn pointer_event_now(
   }
   // (a finger or button down, wherever it went (a node of the tree's, the old view): a press of its own from here, a
   // hold handed before it none's, view_handed)
-  if kind == 0 || kind == 4 {
+  if kind == 0 || kind == 4 || kind == 15 {
     downs_made.val = downs_made.val + 1
   }
 }

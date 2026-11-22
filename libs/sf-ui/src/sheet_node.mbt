@@ -134,6 +134,7 @@ fn sheet_node(
   stood? : () -> Double = fn() { 0.0 },
   stands_by? : (() -> Double) -> Unit = fn(_) {  },
   taken? : () -> Bool = fn() { false },
+  chosen? : () -> Bool = fn() { false },
   dims? : () -> Bool = fn() { true },
 ) -> Unit {
   parent.show(
@@ -626,13 +627,21 @@ fn sheet_node(
       // is in its place)
       let place = fn() -> (Double, Double)? {
         let (_, own, _) = drawn.val
-        guard own > 0.0 && !vanished() else { return None }
+        guard own > 0.0 && !@signals.untracked(vanished) else { return None }
+        if !@signals.untracked(live) {
+          if !had_ime.val && @signals.untracked(fn() { layer.keyboard_inset() }) > 0.0 {
+            return None
+          }
+          if @signals.untracked(chosen) && !had_ime.val && @signals.untracked(@ui.field_has_focus) {
+            return None
+          }
+        }
         let t = layer.drawn_at()
         let off = match placed.untracked() {
           Some((stood, at, least, v)) => placed_path(own, stood, v, t - at, least).0
           None => 0.0
         }
-        Some((layer.window_h() - own + below.shown(own, t) + off, own))
+        Some((@signals.untracked(win_h) - own + below.shown(own, t) + off, own))
       }
       tree_sheet_place.val = Some(place)
       layer.owns(fn() {
@@ -854,16 +863,15 @@ fn sheet_node(
           |> ignore
         }
         ground(fn(g) {
-          g
-          .glass(By(fn() {
-            if vanished() {
-              return None
-            }
-            let t = theme()
-            Some({ ..glass_sheet(), solid: over(over(t.p.bg, alpha(0x000000FFL, 0.28 * live_dim())), alpha(t.p.card, 0.8)) })
-          }))
-          .shadow(By(glass_overlay_shadow))
-          .shadow_outside(Is(true))
+          @glass.liquid_sheet_surface_decorate(
+            g,
+            active=fn() { !vanished() },
+            solid=fn() {
+              let t = theme()
+              over(over(t.p.bg, alpha(0x000000FFL, 0.28 * live_dim())), alpha(t.p.card, 0.8))
+            },
+            shadow=glass_overlay_shadow,
+          )
           |> ignore
         })
         // its top (sheet_drag_h: the grabber and the head) drags it, a node of its own over its glass and under what it

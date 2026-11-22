@@ -164,15 +164,25 @@ fn cn_steps(ys : Array[Double?]) -> (Double, Double) raise {
 }
 
 ///|
-test "made as nodes, on a touch screen under what is said over it: opened and let go, the messages over it go up and back with it on its way, never at once" {
+test "made as nodes, on a touch screen with an error under the composer: opened and let go, the messages over it go up and back with it on its way, never at once" {
   // (judged frame to frame on the display's frames: the default run's alone)
   if @ui.test_at_a_rate() {
     return
   }
   new_run()
-  // (its prompt cache over and its station down: two lines said over it, the foot taller than its least)
-  let src = fixture("chat-cold-offline")
-  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let base = fixture("chat")
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let now = base.topic(name, params).get().snapshot()
+      if name != "composer" { return now }
+      let m = match now.value { Some(Object(v)) => v.copy(); _ => {} }
+      m["error"] = Json::string("无法发送消息：当前网络连接不稳定，请检查网络状态后重新尝试发送")
+      { value: Some(Json::object(m)), error: now.error, version: now.version + 1 }
+    },
+  }
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  open_chat(r)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
   t.run_for(@ui.move_most_ms)
   assert_true(composed_field_made(t))

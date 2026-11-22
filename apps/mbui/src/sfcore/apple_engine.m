@@ -52,6 +52,93 @@ __attribute__((constructor)) static void use_hermes_engine(void) {
 }
 
 #if TARGET_OS_IPHONE
+#include <fcntl.h>
+#include <time.h>
+#include <unistd.h>
+
+int mb_core_start_alone(const char *data_dir, const char *cloud_origin, int beta);
+void mb_core_stop_alone(void);
+void mb_core_ask(const char *call, const char *params, void (^done)(int));
+void mb_perf_note(const char *text);
+
+// How long a push's work may take: iOS gives a woken app about 30 s, and suspends or ends one that has not said it is done.
+static const int64_t PUSH_BRING_NS = 25 * NSEC_PER_SEC;
+// Pushes being brought (main thread): the core started for them goes once the last is done.
+static int pushes_bringing;
+
+// Whether the core's files can be read: not before the device's first unlock, when a core started would find its
+// database and Keychain closed and take them for empty. An empty directory has no account to bring anything for.
+static BOOL core_files_open(const char *dir) {
+  NSString *root = @(dir);
+  NSDirectoryEnumerator<NSString *> *files = [NSFileManager.defaultManager enumeratorAtPath:root];
+  for (NSString *name in files) {
+    if (![files.fileAttributes.fileType isEqualToString:NSFileTypeRegular] || files.fileAttributes.fileSize == 0) continue;
+    int fd = open([root stringByAppendingPathComponent:name].fileSystemRepresentation, O_RDONLY);
+    if (fd < 0) return NO;
+    char byte;
+    ssize_t got = read(fd, &byte, 1);
+    close(fd);
+    return got == 1;
+  }
+  return NO;
+}
+
+static NSString *json_of(NSDictionary *value) {
+  NSData *data = [NSJSONSerialization dataWithJSONObject:value options:0 error:nil];
+  return data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : @"{}";
+}
+
+// What a push is about, onto the device (`notice.bring`, as Android's Push.java): the core told how long the app was
+// away first, since its connections likely went while it was frozen. Replaces ios_app.m's weak one.
+void mb_core_pushed(NSString *workspace, NSString *station, NSString *session, NSString *seq, double away, void (^finish)(BOOL)) {
+  const char *dir = core_data_dir();
+  if (!core_files_open(dir)) {
+    mb_perf_note("push: bring skipped, files closed");
+    finish(NO);
+    return;
+  }
+  const char *cloud = getenv("MBUI_CLOUD");
+  const char *beta = getenv("MBUI_BETA");
+  if (!mb_core_start_alone(dir, cloud && *cloud ? cloud : "https://app.still.fail", beta && !strcmp(beta, "1"))) {
+    finish(NO);
+    return;
+  }
+  pushes_bringing++;
+  uint64_t began = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+  __block BOOL ended = NO;
+  void (^end)(BOOL, const char *) = ^(BOOL brought, const char *how) {
+    if (ended) return;
+    ended = YES;
+    char line[80];
+    snprintf(line, sizeof line, "push: bring %s %.0f ms", how, (clock_gettime_nsec_np(CLOCK_MONOTONIC) - began) / 1e6);
+    mb_perf_note(line);
+    BOOL last = --pushes_bringing == 0;
+    // (stopping waits for the core's thread: off the main thread, the handler called once its files are let go)
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+      if (last) mb_core_stop_alone();
+      dispatch_async(dispatch_get_main_queue(), ^{ finish(brought); });
+    });
+  };
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, PUSH_BRING_NS), dispatch_get_main_queue(), ^{ end(NO, "timed out"); });
+  NSMutableDictionary *bring = [@{@"station" : [NSString stringWithFormat:@"%@/%@", workspace, station], @"session" : session} mutableCopy];
+  NSCharacterSet *notDigits = NSCharacterSet.decimalDigitCharacterSet.invertedSet;
+  if (seq.length && [seq rangeOfCharacterFromSet:notDigits].location == NSNotFound) bring[@"seq"] = @(seq.longLongValue);
+  NSString *params = json_of(bring);
+  void (^ask_bring)(void) = ^{
+    mb_core_ask("notice.bring", params.UTF8String, ^(int ok) {
+      dispatch_async(dispatch_get_main_queue(), ^{ end(ok != 0, ok ? "done" : "failed"); });
+    });
+  };
+  if (away < 0) {
+    ask_bring();
+    return;
+  }
+  mb_core_ask("client.wake", json_of(@{@"away" : @(away)}).UTF8String, ^(int ok) {
+    (void)ok;
+    dispatch_async(dispatch_get_main_queue(), ask_bring);
+  });
+}
+
 #include <sys/utsname.h>
 // The phone's model, as Android's CoreHost.java puts its maker's and model in MBUI_DEVICE_MODEL (the device's name the
 // core makes: signin.mbt tell_device): its machine identifier (iPhone17,1; the simulator's the device it plays).

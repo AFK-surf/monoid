@@ -435,7 +435,7 @@ test("iOS devices get an APNs alert signed with the team's key, a chat's replaci
     const tag = `${id}/${station.id}/chat:c-1/x y`;
     assert.match(toAlice.headers["apns-collapse-id"]!, /^[0-9a-f]{48}$/, "the chat's, within APNs' 64 bytes");
     const body = JSON.parse(new TextDecoder().decode(toAlice.body));
-    assert.deepEqual(body.aps, { alert: { title: "部署挂了", body: "出错 · token runs out" }, sound: "default", "thread-id": tag });
+    assert.deepEqual(body.aps, { alert: { title: "部署挂了", body: "出错 · token runs out" }, sound: "default", "content-available": 1, "thread-id": tag });
     assert.equal(body.url, `/o/${id}/${station.id}/${encodeURIComponent("chat:c-1/x y")}?message=12`, "what a tap opens");
     assert.equal(body.seq, "12");
 

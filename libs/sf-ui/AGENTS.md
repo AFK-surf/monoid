@@ -1,12 +1,13 @@
 # still.fail's parts in mbui (for agents)
 
-still.fail's design system as a component library beside mbui (`libs/mbui`) and `libs/liquid-glass`, which it imports: `src`, the parts
-still.fail's app (`apps/mbui`) is made of, imported as `stillfail/sf` (`@sf`). It lived inside `apps/mbui` till it
-was made a module of its own (`name = "stillfail/sf"`), so that a program outside still.fail's app (a workspace of
-another repository: `moon.work` naming `libs/sf-ui`, `libs/liquid-glass` and `libs/mbui`, `moon.mod` importing `"stillfail/sf@0.1.0"`) uses
+still.fail's design system as a component library beside mbui (`libs/mbui`): `src` (`stillfail/sf`, `@sf`) holds the parts
+still.fail's app (`apps/mbui`) is made of, and `src/glass` (`stillfail/sf/glass`, `@glass`) holds its liquid glass
+material recipes, physics, surface decorators, and glass controls. It lived inside `apps/mbui` till it was made a
+module of its own (`name = "stillfail/sf"`), so that a program outside still.fail's app (a workspace of another
+repository: `moon.work` naming `libs/sf-ui` and `libs/mbui`, `moon.mod` importing `"stillfail/sf@0.1.0"`) uses
 the parts still.fail itself ships and tests (左子健, 2026-11-17: 「感觉最好用有项目用的 UI 吧，不然都没人测」).
 
-- It knows no app: it imports only mbui, `libs/liquid-glass` and MoonBit's core (detlint's `library-import`), and what it needs of an app
+- It knows no app: it imports only mbui and MoonBit's core (detlint's `library-import`), and what it needs of an app
   (its words, the core's answers, its pictures) is given to it as the app starts. The rules of how its parts are made,
   look and move are the app's (`apps/mbui/AGENTS.md`: The component library, Made once as nodes, Motion) and mbui's
   (`libs/mbui/AGENTS.md`): they hold here as there.
@@ -17,8 +18,8 @@ the parts still.fail itself ships and tests (左子健, 2026-11-17: 「感觉最
   (those lines saved to a file, `node client/core-ts/scripts/kept-answers.ts <file>`), and its line is copied here.
 - Some of its files are made, never edited: `src/palette_data.mbt` (`scripts/palette.ts`), `src/font_assets.mbt`
   (`apps/mbui/scripts/fontassets.py`), `src/math_glyphs.mbt` and `src/math.json` (`client/core-ts/scripts`'
-  `math-font.ts`, `math-fixture.ts`), `src/icon_data.mbt` and `src/drawable_data.mbt` (`apps/mbui/scripts`'
-  `icons.py`, `drawables`).
+  `math-font.ts`, `math-fixture.ts`), and `src/icon_data.mbt` (`apps/mbui/scripts/icons.py`). App-specific brand
+  drawables live in `apps/mbui/src/sfbase/drawable_data.mbt` and register via `register_drawables` / `register_station_glyphs`.
 - `scripts/check.sh` is its check, CI's `check-sf-ui`: the determinism lint with this module's `detlint.json` (its
   counts, as the app's, only fall), its packages type-checked on native and js, its tests on native.
 - A `SourceLoc` of a part made here reads `stillfail/sf/src/<file>`: a test that names one (an audit's fault, what a node

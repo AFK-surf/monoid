@@ -1744,7 +1744,7 @@ fn preset_add_node(
 
 ///|
 /// The stations a folder is browsed or cloned on (the workspace's up now), as the library's station control has them.
-fn preset_station_choices(stations : Array[Json]) -> Array[@sf.StationChoice] {
+fn preset_station_choices(stations : Array[Json]) -> Array[@sfbase.StationChoice] {
   stations.map(fn(s) {
     let one = Some(s)
     { station: text(one, "station"), name: preset_station_name(text(one, "station"), "", stations), emoji: text(one, "emoji"), icon: text(one, "icon") }
@@ -1860,7 +1860,7 @@ fn preset_clone_open(src : Source, address : String, stations : Array[Json], e :
     },
     foot=fn(v, _) {
       // (the station it is cloned onto at its start: another where there are others; round as the buttons beside it)
-      @sf.station_choice_node(
+      @sfbase.station_choice_node(
         v,
         fn() { preset_station_choices(stations) },
         fn() { e.clone_station.get() },

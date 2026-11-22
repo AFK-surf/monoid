@@ -163,18 +163,18 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // The narrow station settings use the wider glass switch in both themes.
   // Whole-pixel View::shift lets ride_kept_for hit across the narrow page slide, moving cached segment coordinates by 1 ULP (2e-14 px).
   inspect(out.to_string(), content=(
-    #|settings narrow 83598:94c6ba60
-    #|station narrow 77683:aa3b5247
-    #|me-reading narrow 24224:398ba9e0
-    #|settings wide 204457:ab771352
-    #|station wide 269656:2fb77e6a
-    #|me-reading wide 199176:3c1c9ea
-    #|settings-dark narrow 83857:6505a639
-    #|station-dark narrow 77610:bd046711
-    #|me-reading-dark narrow 24352:ae47b7ec
-    #|settings-dark wide 204349:32841efe
-    #|station-dark wide 269331:845723c6
-    #|me-reading-dark wide 199134:f5de9219
+    #|settings narrow 96344:30ac25c7
+    #|station narrow 96680:81b09671
+    #|me-reading narrow 31603:5db644e2
+    #|settings wide 199887:446f485e
+    #|station wide 270218:91777a1e
+    #|me-reading wide 194606:cbcf23e0
+    #|settings-dark narrow 96617:e7e5fe15
+    #|station-dark narrow 96577:d7ef8e6b
+    #|me-reading-dark narrow 31736:2f1ccf3
+    #|settings-dark wide 199786:fcca465e
+    #|station-dark wide 269863:e53bd5a2
+    #|me-reading-dark wide 194571:5173aeef
     #|
 
 

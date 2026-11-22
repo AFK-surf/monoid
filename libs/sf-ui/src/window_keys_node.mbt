@@ -78,6 +78,7 @@ fn window_keys_made(root : @view.View, whole : () -> Bool, made : (@view.View) -
       pad=window_keys_pill_pad,
       gap=window_keys_gap,
       tint=Some(window_keys_glass_tint),
+      adaptive=true,
       fn(r) {
         icon_button_by(
           loc~,

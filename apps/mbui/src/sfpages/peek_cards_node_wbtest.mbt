@@ -163,7 +163,7 @@ fn peek_faded_apart(faults : Array[String], name : String) -> (Array[String], Ar
     name == "coming back" &&
     f.has_prefix("words ") &&
     f.contains(":1, under 4.5") &&
-    (f.contains("stillfail/sf/src/quota_node.mbt:") || f.contains("stillfail/sf/src/station_net_node.mbt:"))
+    (f.contains("stillfail/sf/src/meter_atoms_node.mbt:") || f.contains("stillfail/src/sfapp/settings/station_net_node.mbt:"))
   })
   (faded, faults.filter(fn(f) { !faded.contains(f) }))
 }

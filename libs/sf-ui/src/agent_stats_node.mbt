@@ -63,15 +63,19 @@ pub fn quiet_card_node(
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(k) {
-    style_node(k, fn() {
-      let card = quiet_card_style.then(panel_card_out_node(k))
-      if last() {
-        card.then(panel_card_last_node(k))
-      } else {
-        card
-      }
-    })
-    k.radius(Is(quiet_card_corner)) |> ignore
+    if in_small_panel_node(k) {
+      style_node(k, fn() { @ui.css("w=Full") })
+    } else {
+      style_node(k, fn() {
+        let card = quiet_card_style.then(panel_card_out_node(k))
+        if last() {
+          card.then(panel_card_last_node(k))
+        } else {
+          card
+        }
+      })
+      k.radius(Is(quiet_card_corner)) |> ignore
+    }
     rows(k)
   })
   |> ignore
@@ -91,10 +95,11 @@ pub fn quiet_row_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(b) {
+    let corner = if in_small_panel_node(b) { small_panel_inner(r_menu) } else { quiet_row_corner }
     style_node(b, fn() { look })
-    b.radius(Is(quiet_row_corner)) |> ignore
+    b.radius(Is(corner)) |> ignore
     match press {
-      Some(f) => rippled_node(loc~, b, f, quiet_row_corner, label)
+      Some(f) => rippled_node(loc~, b, f, corner, label)
       None => ()
     }
     body(b)

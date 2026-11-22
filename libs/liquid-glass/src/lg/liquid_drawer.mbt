@@ -13,6 +13,60 @@ pub(all) enum DrawerSide {
 }
 
 ///|
+/// Decorates an existing side-drawer container node `v` in place (zero wrapper nodes) with single-layer
+/// `liquid_drawer_glass`, `active` gating (zero hidden glass when inactive), `shadow_outside(Is(true))`,
+/// `MBUI_GLASS=solid` hairline fallback, and optional `radius` / `clips`. Returns `v` for chaining.
+pub fn liquid_drawer_surface_decorate(
+  v : @view.View,
+  radius? : Double,
+  active? : () -> Bool = fn() { true },
+  solid? : () -> Int64,
+  shadow? : () -> (Double, Double, Int64) = fn() { shadow_default },
+  solid_edge? : () -> (Double, Int64) = liquid_overlay_solid_edge,
+  clips? : Bool = true,
+) -> @view.View {
+  match radius {
+    Some(r) => v.radius(Is(r)) |> ignore
+    None => ()
+  }
+  if clips {
+    v.clips(Is(true)) |> ignore
+  }
+  v
+  .glass(
+    By(fn() {
+      if !active() {
+        return None
+      }
+      let s = match solid {
+        Some(f) => f()
+        None => clear
+      }
+      Some(liquid_drawer_glass(solid=s))
+    }),
+  )
+  .edge(
+    By(fn() {
+      if active() && v.glass_solid() {
+        solid_edge()
+      } else {
+        (0.0, clear)
+      }
+    }),
+  )
+  .shadow(
+    By(fn() {
+      if active() {
+        shadow()
+      } else {
+        shadow_none
+      }
+    }),
+  )
+  .shadow_outside(Is(true))
+}
+
+///|
 /// A Liquid Glass floating island side drawer in `parent`, open while `open()` holds.
 /// Supports `Leading` and `Trailing` placement, optional headless free-body mode (`show_header=false`),
 /// optional scrim (`scrim=false`), custom `solid` fallback, customizable `inset`/`radius`/`body_pad`,
@@ -112,24 +166,8 @@ pub fn liquid_drawer_node(
           fn(card, dlg) {
             let drag_start_wx = Ref(0.0)
             let drag_start_x = Ref(0.0)
-            card
-            .grow(Is(1.0))
-            .radius(Is(radius))
-            .shadow(Is(shadow_default))
-            .shadow_outside(Is(true))
-            .glass(
-              By(fn() {
-                let c = match solid {
-                  Some(f) => f()
-                  None => clear
-                }
-                Some(liquid_drawer_glass(solid=c))
-              }),
-            )
-            .edge(By(fn() { if card.glass_solid() { liquid_overlay_solid_edge() } else { (0.0, clear) } }))
-            .clips(Is(true))
-            .offset(By(fn() { (slide.shown(card), 0.0) }))
-            |> ignore
+            card.grow(Is(1.0)).offset(By(fn() { (slide.shown(card), 0.0) })) |> ignore
+            liquid_drawer_surface_decorate(card, radius~, solid?) |> ignore
             // Full-card gesture container inside `@headless.dialog` (avoids `@headless.dialog`'s outer no-op `on_drag`).
             card.box(fn(pan) {
               pan

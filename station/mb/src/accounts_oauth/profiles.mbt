@@ -141,6 +141,8 @@ pub(all) struct CheckOptions {
   /// Asked again because a runtime on it was refused (Accounts `recheck_profile`): a Claude subscription's login is
   /// renewed even when not due, so a refresh token revoked with its access token still listing models is found over.
   recheck : Bool
+  /// The installed Claude Code version, sent as the User-Agent on direct Anthropic OAuth calls when known.
+  claude_version : String?
 }
 
 ///|
@@ -295,12 +297,12 @@ async fn check_inner(
     }
     let (first_models, models_status) = match token {
       None => (None, None)
-      Some(tk) => claude_models(io, at, tk)
+      Some(tk) => claude_models(io, at, tk, o.claude_version)
     }
     let mut models = first_models
     // (its login renewed against the token just refused: a refresh token refused too is a login over)
     let renew = async fn(tk : String) -> String raise {
-      auth.token(o.env, if o.machine { None } else { Some(o.home) }, Some(tk), at.claude_token, lang).0
+      auth.token(o.env, if o.machine { None } else { Some(o.home) }, Some(tk), at.claude_token, lang, claude_version?=o.claude_version).0
     }
     let mut renewed_here = false
     match renew_error {
@@ -316,7 +318,7 @@ async fn check_inner(
               e => return check("failed", message_of(e), None)
             }
             renewed_here = true
-            let (retry_models, retry_status) = claude_models(io, at, renewed)
+            let (retry_models, retry_status) = claude_models(io, at, renewed, o.claude_version)
             if claude_auth_status(retry_status) {
               return check("login", t("station.quota.signInExpired", []), None)
             }
@@ -346,7 +348,7 @@ async fn check_inner(
           }
       }
       if renewed is Some(r) && models is None {
-        let (retry_models, retry_status) = claude_models(io, at, r)
+        let (retry_models, retry_status) = claude_models(io, at, r, o.claude_version)
         if claude_auth_status(retry_status) {
           return check("login", t("station.quota.signInExpired", []), None)
         }
@@ -645,7 +647,7 @@ pub fn grok_email_in(text : String) -> String? raise JsonError {
 /// A Claude profile's token as it signs in now, renewed first when due: a login that can no longer be renewed fails
 /// (to sign in again); one not renewed now for another reason is the one kept.
 async fn profile_token(io : Io, auth : ClaudeAuth, o : CheckOptions, at : Urls, lang : String) -> (String?, String?) {
-  let got = auth.token(o.env, Some(o.home), None, at.claude_token, lang) catch {
+  let got = auth.token(o.env, Some(o.home), None, at.claude_token, lang, claude_version?=o.claude_version) catch {
     RenewRefused(_, _) as e => raise e
     e => return (claude_token(io, o.home), Some(message_of(e)))
   }
@@ -654,13 +656,18 @@ async fn profile_token(io : Io, auth : ClaudeAuth, o : CheckOptions, at : Urls, 
 
 ///|
 /// The models a Claude subscription's OAuth token may use; none when Anthropic does not say.
-async fn claude_models(io : Io, at : Urls, token : String) -> (Array[String]?, Int?) {
+async fn claude_models(io : Io, at : Urls, token : String, claude_version : String?) -> (Array[String]?, Int?) {
   try {
-    let response = profile_get(io, "\{at.anthropic}/v1/models?limit=100", [
+    let headers = [
       ("authorization", "Bearer \{token}"),
       ("anthropic-version", "2023-06-01"),
       ("anthropic-beta", "oauth-2025-04-20"),
-    ])
+    ]
+    match claude_version {
+      Some(v) if v != "" => headers.push(("user-agent", "claude-cli/\{v} (external, cli)"))
+      _ => ()
+    }
+    let response = profile_get(io, "\{at.anthropic}/v1/models?limit=100", headers)
     if response.ok() {
       (Some(model_ids(response)), Some(response.status))
     } else {

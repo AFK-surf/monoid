@@ -1315,14 +1315,128 @@ test "a column of the tree's that scrolls, a finger's (Android's): a finger down
 }
 
 ///|
-test "a column of the tree's that scrolls, a finger's (Android's): the second finger leading let go, the first goes on from where it is; let go at once without moving instead, not flung by how it went before" {
+/// A pause longer than `@view.tracker_gap_ms` (40 ms) so a resting finger stops velocity before lifting.
+let pause_past_tracker_gap_ms : Double = 60.0
+
+///|
+/// Delay between a first fast flick's release and the second catch-and-flick in momentum-chaining tests.
+let chain_catch_after_ms : Double = 80.0
+
+///|
+test "a column of the tree's that scrolls, a finger's (Android's): the second finger leading let go, the first goes on from where it is; held past tracker_gap_ms without moving instead, not flung" {
   let (t, s, _) = two_finger_rows(0)
   let on = two_fingers_on(t, s, [(0, 7, 250.0), (1, 7, 230.0), (1, 7, 210.0), (0, 9, 100.0), (1, 9, 90.0), (2, 9, 90.0), (1, 7, 200.0), (1, 7, 190.0)], step=hand_half_step_ms)
   assert_eq(on, [0.0, 12.0, 32.0, 32.0, 42.0, 42.0, 52.0, 62.0])
   let (t, s, _) = two_finger_rows(0)
-  let still = two_fingers_on(t, s, [(0, 7, 250.0), (1, 7, 230.0), (1, 7, 210.0), (0, 9, 100.0), (1, 9, 90.0), (2, 9, 90.0), (2, 7, 210.0)], step=hand_half_step_ms)
+  let still = two_fingers_on(t, s, [(0, 7, 250.0), (1, 7, 230.0), (1, 7, 210.0), (0, 9, 100.0), (1, 9, 90.0), (2, 9, 90.0)], step=hand_half_step_ms)
+  t.run_for(pause_past_tracker_gap_ms)
+  t.touch_raw(2, 7, 200.0, 210.0, t.time())
   t.run_for(turn_done_ms)
-  assert_eq((still, s.at(view_tree().unwrap()), s.glides_till()), ([0.0, 12.0, 32.0, 32.0, 42.0, 42.0, 42.0], 42.0, None))
+  assert_eq((still, s.at(view_tree().unwrap()), s.glides_till()), ([0.0, 12.0, 32.0, 32.0, 42.0, 42.0], 42.0, None))
+}
+
+///|
+test "a column of the tree's that scrolls, a finger's (Android's): palm resting on screen (slot 0) while two thumbs take turns scrolling, and third finger claiming past slop while first two stay still" {
+  // (palm id=7 stays down; thumb1 id=9 starts scroll; thumb2 id=11 takes over; thumb1 lifts and re-lands; thumb2 lifts; palm lifts; thumb1 lifts and flings)
+  let (t, s, _) = two_finger_rows(1)
+  let stands = two_fingers_on(t, s, [
+    (0, 7, 290.0),
+    (0, 9, 250.0),
+    (1, 9, 230.0),
+    (1, 9, 210.0),
+    (0, 11, 240.0),
+    (1, 11, 220.0),
+    (2, 9, 210.0),
+    (1, 11, 200.0),
+    (0, 9, 250.0),
+    (1, 9, 230.0),
+    (2, 11, 200.0),
+    (2, 7, 290.0),
+    (1, 9, 210.0),
+    (1, 9, 190.0),
+  ])
+  t.run_for(hand_half_step_ms)
+  t.touch_raw(2, 9, 200.0, 190.0, t.time())
+  let up = s.at(view_tree().unwrap())
+  t.run_for(turn_done_ms)
+  assert_eq(
+    stands,
+    [0.0, 0.0, 12.0, 32.0, 32.0, 52.0, 52.0, 72.0, 72.0, 92.0, 92.0, 92.0, 112.0, 132.0],
+  )
+  assert_true(s.at(view_tree().unwrap()) > up, msg="palm + two thumbs did not fling from \{up}")
+
+  // (palm id=7 and thumb1 id=9 both stay within slop; thumb2 id=11 moves past slop and claims the scroll)
+  let (t2, s2, pressed2) = two_finger_rows(1)
+  let stands2 = two_fingers_on(t2, s2, [
+    (0, 7, 290.0),
+    (0, 9, 250.0),
+    (0, 11, 240.0),
+    (1, 11, 220.0),
+    (1, 11, 200.0),
+    (2, 7, 290.0),
+    (2, 9, 250.0),
+    (1, 11, 190.0),
+  ])
+  two_lift(t2, 11, 190.0)
+  assert_eq((stands2, pressed2.val), ([0.0, 0.0, 0.0, 12.0, 32.0, 32.0, 32.0, 42.0], 0))
+}
+
+///|
+test "a column of the tree's with swipeable rows (view_caught k > 0): repeated same-direction flicks chain momentum" {
+  let make_case = fn() {
+    let s = @view.Scroll::list()
+    let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=2)
+    t.check_looks(false)
+    set_view_app(fn(root) {
+      root
+      .width(Is(Some(400.0)))
+      .height(Is(Some(300.0)))
+      .scrolls(s, slop=touch_slop(), fn(held) {
+        for i in 0..<250 {
+          held.box(fn(r) {
+            r
+            .width(Is(Some(400.0)))
+            .height(Is(Some(40.0)))
+            .claims(fn(dx, dy) { dx.abs() > touch_slop() && dx.abs() > dy.abs() })
+            .on_drag(fn(_) {  })
+            .words(Is("第\{i}行"))
+            |> ignore
+          })
+          |> ignore
+        }
+      })
+      |> ignore
+    })
+    t.draw()
+    (t, s)
+  }
+  let do_flick = fn(t : Tester, dy : Double) {
+    t.touch_raw(0, 7, 200.0, 260.0, t.time())
+    for i in 1..=3 {
+      t.run_for(hand_half_step_ms)
+      t.touch_raw(1, 7, 200.0, 260.0 + dy * i.to_double(), t.time())
+    }
+    t.touch_raw(2, 7, 200.0, 260.0 + dy * 3.0, t.time())
+  }
+
+  let (t_base, s_base) = make_case()
+  do_flick(t_base, -24.0)
+  let base_up = s_base.at(view_tree().unwrap())
+  t_base.run_for(turn_done_ms)
+  let base_glide = s_base.at(view_tree().unwrap()) - base_up
+
+  let (t_chain, s_chain) = make_case()
+  do_flick(t_chain, -24.0)
+  t_chain.run_for(chain_catch_after_ms)
+  do_flick(t_chain, -24.0)
+  let chain_up = s_chain.at(view_tree().unwrap())
+  t_chain.run_for(turn_done_ms)
+  let chain_glide = s_chain.at(view_tree().unwrap()) - chain_up
+
+  assert_true(
+    base_glide > 200.0 && chain_glide > base_glide * 1.2,
+    msg="view_caught k > 0 chain failed: chain_glide=\{chain_glide} base_glide=\{base_glide}",
+  )
 }
 
 ///|

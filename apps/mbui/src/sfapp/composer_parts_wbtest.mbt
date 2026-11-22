@@ -296,10 +296,22 @@ test "an archived chat says sending restores it and accepts a message without fi
     })
     assert_true(t.find("已归档，发送消息将还原") is Some(_))
     assert_true(t.find("还原对话") is Some(_))
-    t.tap_text("发消息")
+    assert_true(t.find(@sf.t("web-main.composer.placeholderArchived")) is Some(_))
+    // Inline card at bottom of message list (below last message, non-glass, zero audit faults)
+    let (_, my, _, mh) = t.rect_of("截图也换了").unwrap()
+    let (ax, ay, _, ah) = t.rect_of("已归档，发送消息将还原").unwrap()
+    assert_true(ay >= my + mh, msg="archived card sits below last message: my+mh=\{my + mh}, ay=\{ay}")
+    let glass = t
+      .drawn_glass_corners()
+      .filter(fn(g) { g.0 < ax && g.0 + g.2 > ax && g.1 < ay && g.1 + g.3 > ay + ah })
+    assert_eq(glass.length(), 0, msg="archived card is quiet inline surface, not floating glass")
+    assert_eq(t.audit(), [], msg="archived chat has zero audit faults")
+    t.tap_text(@sf.t("web-main.composer.placeholderArchived"))
     t.type_text("再看一下")
     assert_eq(named(calls, "session.warm").length(), 0)
     tap_send(t)
+    t.draw()
+    assert_true(t.find("已归档，发送消息将还原") is None, msg="archived card hides immediately on online send frame")
     let sent = named(calls, "chat.send")
     assert_eq(sent.length(), 1)
     assert_eq(text(Some(sent[0].params), "text"), "再看一下")
@@ -745,7 +757,7 @@ test "sending online hides cache cold on the send frame while offline keeps it v
       }
     })
     assert_true(t_off.find("缓存已过期") is Some(_), msg="cache cold shown before offline send")
-    t_off.tap_text("发消息")
+    t_off.tap_text(@sf.t("web-main.composer.placeholderOffline"))
     t_off.type_text("签名")
     t_off.click(Button, label=@sf.t("web-main.composer.send"))
     t_off.draw()
@@ -755,92 +767,135 @@ test "sending online hides cache cold on the send frame while offline keeps it v
 }
 
 ///|
-test "a notice over the composer wrapped to lines: round as one line is, its mark on its first line" {
+test "offline and updating chats show status in station capsule and composer placeholder with full note in peek" {
   both_pages(fn() raise {
-    let calls : Array[Made] = []
-    let said = "「Birch」正在更新：当前显示的是之前读取的内容，更新完成后会自动重新连接，发出的消息届时送达"
-    let t = fake_core(calls, over=fn(name, tp) {
-      if name != "chat" {
-        return tp
-      }
+    let said_updating = "「Birch」正在更新：当前显示的是之前读取的内容，更新完成后会自动重新连接，发出的消息届时送达"
+    let calls_upd : Array[Made] = []
+    let t_upd = fake_core(calls_upd, over=fn(name, tp) {
+      if name != "chat" { return tp }
       match tp.value {
         Some(Object(o)) => {
           let o2 = o.copy()
           o2["offline"] = Json::boolean(true)
           o2["updating"] = Json::boolean(true)
-          o2["offlineNote"] = Json::string(said)
+          o2["offlineNote"] = Json::string(said_updating)
           { ..tp, value: Some(Json::object(o2)) }
         }
         _ => tp
       }
     })
-    t.run_for(@ui.move_most_ms)
-    let (wx, wy, _, wh) = t.rect_of(said).unwrap()
-    let line = @sf.theme().t.meta_line
-    assert_true(wh > 1.5 * line, msg="wrapped (\{wh} high)")
-    let notice = t
-      .drawn_glass_corners()
-      .filter(fn(g) { g.0 < wx && g.0 + g.2 > wx && g.1 < wy && g.1 + g.3 > wy + wh })
-    assert_eq(notice.length(), 1)
-    let (gx, gy, _, _, corner) = notice[0]
-    // as round as it is high on one line: its words' line and 8 over and under it
-    assert_eq(corner, line / 2.0 + 8.0)
-    // its mark in the middle of its round start, on its words' first line: its ring's (its lines each a piece of their
-    // own; its leftmost pieces, about its middle, the ring's: the arrows in it, one hidden under it, are narrower)
-    let marks = t
-      .drawn_order()
-      .filter(fn(d) { d.0 != 5 && d.0 != 6 && d.1 >= gx && d.1 + d.3 <= wx && d.2 >= gy && d.2 + d.4 <= wy + wh })
-    assert_true(marks.length() > 0, msg="its mark drawn")
-    let left = marks.fold(init=@double.infinity, fn(a, m) { if m.1 < a { m.1 } else { a } })
-    let ring = marks.filter(fn(m) { m.1 < left + 0.5 })
-    let mid = ring.fold(init=0.0, fn(a, m) { a + m.2 + m.4 / 2.0 }) / ring.length().to_double()
-    assert_true((mid - (wy + line / 2.0)).abs() < 1.0, msg="its mark at \{mid}, its first line's middle \{wy + line / 2.0}")
-    assert_true((mid - (gy + corner)).abs() < 1.0, msg="its mark at \{mid}, its round start's middle \{gy + corner}")
-  })
-}
+    t_upd.run_for(@ui.move_most_ms)
+    // No floating notice above composer; status lives in station capsule + composer placeholder
+    assert_true(t_upd.find(said_updating) is None, msg="no floating updating banner above composer")
+    assert_true(t_upd.find(@sf.t("web-main.stationUpdate.updating")) is Some(_), msg="station capsule shows updating")
+    assert_true(t_upd.find(@sf.t("web-main.composer.placeholderUpdating")) is Some(_), msg="placeholder shows updating")
+    assert_eq(t_upd.audit(), [], msg="updating chat has zero audit faults at 390x844: \{Repr(t_upd.audit())}")
+    // Tapping the station/agent capsule reveals the full offlineNote
+    let cap_upd = t_upd
+      .all(Button)
+      .iter()
+      .find_first(fn(s) { s.label.contains("Willow") && s.rect.1 > 400.0 })
+      .unwrap()
+    t_upd.tap(cap_upd.rect.0 + cap_upd.rect.2 / 2.0, cap_upd.rect.1 + cap_upd.rect.3 / 2.0)
+    t_upd.run_for(@ui.move_most_ms)
+    assert_true(t_upd.find(said_updating) is Some(_), msg="full offlineNote reachable from station capsule")
 
-///|
-/// The notice drawn over the composer's ground and that ground, as drawn now (their glass, the lowest two on the page):
-/// how far the notice's bottom is over the ground's top, and where that top is.
-fn notice_over_ground(t : @ui.Tester) -> (Double, Double) {
-  let glass = t.drawn_glass_corners().copy()
-  glass.sort_by(fn(a, b) { a.1.compare(b.1) })
-  let n = glass.length()
-  let ground = glass[n - 1]
-  let notice = glass[n - 2]
-  (ground.1 - (notice.1 + notice.3), ground.1)
-}
-
-///|
-test "a notice over a phone's composer goes with its ground as it opens, as far over it in every frame" {
-  both_pages(fn() raise {
-    let calls : Array[Made] = []
-    let t = fake_core(calls, over=fn(name, tp) {
-      if name != "chat" {
-        return tp
-      }
+    // Offline chat across mobile widths, 1.3x font scale, wide screen, and English locale
+    let said_offline = "暂时连不上「Willow」：当前显示的是之前读取的内容，发出的消息会在连上后送达"
+    let calls_off : Array[Made] = []
+    let t_off = fake_core(calls_off, over=fn(name, tp) {
+      if name != "chat" { return tp }
       match tp.value {
         Some(Object(o)) => {
           let o2 = o.copy()
           o2["offline"] = Json::boolean(true)
-          o2["offlineNote"] = Json::string("「Birch」离线")
+          o2["offlineNote"] = Json::string(said_offline)
           { ..tp, value: Some(Json::object(o2)) }
         }
         _ => tp
       }
     })
-    t.run_for(@ui.move_most_ms)
-    let (apart, top) = notice_over_ground(t)
-    t.tap_text("发消息")
-    let until = t.time() + @ui.move_most_ms
-    while t.time() < until {
-      let (now, _) = notice_over_ground(t)
-      assert_true((now - apart).abs() < 0.5, msg="\{now} over the ground at \{t.time()}, \{apart} at rest")
-      t.frame()
-    }
-    let (now, opened) = notice_over_ground(t)
-    assert_true((now - apart).abs() < 0.5, msg="\{now} over the ground opened, \{apart} at rest")
-    assert_true(top - opened > 4.0, msg="the composer opened taller: its top at \{opened}, \{top} at rest")
+    t_off.resize(390.0, 844.0)
+    t_off.draw()
+    t_off.run_for(@ui.move_most_ms)
+    assert_true(t_off.find(said_offline) is None, msg="no floating offline banner above composer")
+    assert_true(t_off.find(@sf.t("web-pages.stations.offline")) is Some(_), msg="station capsule shows offline")
+    assert_true(t_off.find(@sf.t("web-main.composer.placeholderOffline")) is Some(_), msg="placeholder shows offline")
+    assert_eq(t_off.audit(), [], msg="offline chat zero audit faults at 390x844: \{Repr(t_off.audit())}")
+    t_off.resize(360.0, 844.0)
+    t_off.set_font_scale(1.3)
+    t_off.draw()
+    t_off.run_for(@ui.move_most_ms)
+    assert_eq(t_off.audit(), [], msg="offline chat zero audit faults at 360x844 (1.3x): \{Repr(t_off.audit())}")
+    t_off.set_font_scale(1.0)
+    t_off.resize(320.0, 568.0)
+    t_off.draw()
+    t_off.run_for(@ui.move_most_ms)
+    assert_eq(t_off.audit(), [], msg="offline chat zero audit faults at 320x568: \{Repr(t_off.audit())}")
+
+    // Wide desktop screen (1280x800, platform=0)
+    let calls_wide : Array[Made] = []
+    let t_wide = fake_core(calls_wide, platform=0, over=fn(name, tp) {
+      if name != "chat" { return tp }
+      match tp.value {
+        Some(Object(o)) => {
+          let o2 = o.copy()
+          o2["offline"] = Json::boolean(true)
+          o2["offlineNote"] = Json::string(said_offline)
+          { ..tp, value: Some(Json::object(o2)) }
+        }
+        _ => tp
+      }
+    })
+    t_wide.resize(1280.0, 800.0)
+    t_wide.draw()
+    t_wide.run_for(@ui.move_most_ms)
+    assert_true(t_wide.find(said_offline) is None, msg="wide: no floating offline banner above composer")
+    assert_true(t_wide.find(@sf.t("web-pages.stations.offline")) is Some(_), msg="wide: station capsule shows offline")
+    let off_ph = @sf.t("web-main.composer.placeholderOffline")
+    assert_true(t_wide.find(off_ph) is Some(_), msg="wide: placeholder shows offline")
+    assert_true(hint_shown_at(t_wide, off_ph) is Some(_), msg="wide: offline placeholder is visibly drawn while focused and empty")
+    let faults_wide = t_wide
+      .audit()
+      .filter(fn(f) { !(f.contains("stillfail/sf/src/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
+    assert_eq(faults_wide, [], msg="wide offline chat zero audit faults: \{Repr(faults_wide)}")
+    t_wide.type_text("签名")
+    t_wide.draw()
+    assert_true(hint_shown_at(t_wide, off_ph) is None, msg="wide: offline placeholder hides once typing starts")
+    let cap_wide = t_wide
+      .all(Group)
+      .iter()
+      .find_first(fn(g) { g.label == "Willow" && g.rect.1 > 400.0 })
+      .unwrap()
+    t_wide.tap(cap_wide.rect.0 + cap_wide.rect.2 / 2.0, cap_wide.rect.1 + cap_wide.rect.3 / 2.0)
+    t_wide.run_for(@ui.move_most_ms)
+    assert_true(t_wide.find(said_offline) is Some(_), msg="wide: full offlineNote reachable from station capsule")
+
+    // English locale
+    @sf.set_language(Some("en"))
+    let calls_en : Array[Made] = []
+    let t_en = fake_core(calls_en, over=fn(name, tp) {
+      if name == "prefs" {
+        return { ..tp, value: Some({ "lang": "en" }) }
+      }
+      if name != "chat" { return tp }
+      match tp.value {
+        Some(Object(o)) => {
+          let o2 = o.copy()
+          o2["offline"] = Json::boolean(true)
+          o2["offlineNote"] = Json::string(said_offline)
+          { ..tp, value: Some(Json::object(o2)) }
+        }
+        _ => tp
+      }
+    })
+    t_en.resize(390.0, 844.0)
+    t_en.draw()
+    t_en.run_for(@ui.move_most_ms)
+    assert_true(t_en.find("Offline") is Some(_), msg="English offline status in capsule")
+    assert_true(t_en.find("Offline · Sends when back") is Some(_), msg="English offline placeholder")
+    assert_eq(t_en.audit(), [], msg="English offline chat zero audit faults at 390x844")
+    @sf.set_language(None)
   })
 }
 

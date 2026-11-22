@@ -29,19 +29,6 @@ let corners_everywhere_known : Map[String, Int] = {
   // 安全 made its person's only trusted device (lock-rebound-security) in the 600 wide window touch is in, in Chinese: the rail's
   // one (its workspace's mark in the panel's top left corner).
   known["touch-zh lock-rebound-security"] = 1
-  // The board in a Windows window's 大屏, its sidebar closed (sfdesk's place_bare_now): the rail alone at the window's
-  // corners, round as it is wide (21) 6 in where the window's are 8 round, its top and foot ends and its dock's: the
-  // frame's for every place without a sidebar (place-connects and place-usage have the same 4 there, not swept), not
-  // the board's.
-  known["wide-win-zh board"] = 4
-  known["wide-win-en board"] = 4
-  // The board's same rail with the new draft composer open.
-  known["wide-win-zh board-add"] = 4
-  known["wide-win-en board-add"] = 4
-  // The same with a card's chat open beside the board (board-side, its first sweep 2026-11-17): the rail's four as the
-  // board's, each said against two nodes of the whole window (170 and 174 then).
-  known["wide-win-zh board-side"] = 8
-  known["wide-win-en board-side"] = 8
   // An account on three stations' page in a 中屏 window (desk, desk-win; the rail's one besides it on the tape): its
   // stations' card's foot corners (Birch's row, 16 in from the panel's sides, 26 round; one on the Mac's, both on
   // Windows'): the page is shorter than its panel, so it does not scroll and its last card stands

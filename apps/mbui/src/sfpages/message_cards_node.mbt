@@ -314,7 +314,7 @@ fn phone_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?
         // (the phone asked of its host as this is made: read by the line above and the card here, as it is said)
         @settings.adb_phone_node(s) |> ignore
         s.show(fn() { step() is Some(_) }, fn(k) {
-          @sf.step_card_node(
+          @sfbase.step_card_node(
             k,
             fn() { step().map(fn(a) { a.title }).unwrap_or("") },
             fn() { step().map(fn(a) { a.sub }).unwrap_or("") },

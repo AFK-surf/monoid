@@ -536,6 +536,8 @@ fn window_kept_ui_6() -> Array[WindowKept] {
     kept_map(dues),
     kept_fixed(touch_slots, fn() { FixedArray::make(2, 0) }),
     kept_fixed(touch_down, fn() { FixedArray::make(2, false) }),
+    kept_array(touch_extra, fn() { [] }),
+    kept_ref(touch_extra_next, fn() { 2 }),
     kept_ref(moves_batched, fn() { false }),
     kept_ref(last_touch_x, fn() { 0.0 }),
     kept_ref(last_touch_y, fn() { 0.0 }),
@@ -586,7 +588,9 @@ fn window_kept_ui_7() -> Array[WindowKept] {
     kept_ref(view_held, fn() { None }),
     kept_ref(view_nothing_down, fn() { None }),
     kept_ref(view_down, fn() { None }),
+    kept_ref(view_down_slot0, fn() { false }),
     kept_ref(view_down2, fn() { None }),
+    kept_map(view_down_extra),
     kept_ref(view_handed, fn() { None }),
     kept_ref(downs_made, fn() { 0 }),
   ]
@@ -596,6 +600,7 @@ fn window_kept_ui_7() -> Array[WindowKept] {
 fn window_kept_ui_8() -> Array[WindowKept] {
   [
     kept_fixed(view_fingers, fn() { FixedArray::make(3, -1) }),
+    kept_map(view_fingers_extra),
     kept_ref(view_due, fn() { @signals.signal(0) }),
     kept_ref(view_hits_seen, fn() { 0 }),
     kept_ref(view_due_at, fn() { "" }),

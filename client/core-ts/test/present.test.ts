@@ -760,7 +760,8 @@ test("what_the_clients_show_is_put_in_here", () => {
   assert.deepEqual([h.meters[2].level, h.meters[2].value, h.stationText], ["red", "剩余 50.0 GB / 1000 GB", "still.fail 100 MB"]);
   assert.match(h.usage, /^内存 .+ · 磁盘 剩余 50\.0 GB \/ 1000 GB$/);
   assert.equal(h.identity, "Apple M1 Pro · 32 GB · macOS 26");
-  assert.deepEqual(h.details.map((d: J) => `${d.label} ${d.value}`), ["主机名 willow", "芯片 Apple M1 Pro · 8 核 · arm64", "已运行 1 天 1 小时", "still.fail 进程占用 100 MB"]);
+  assert.equal(h.madeOf, "Apple M1 Pro · 8 核 · arm64 · macOS 26 · willow");
+  assert.equal(h.uptimeText, "已运行 1 天 1 小时");
   assert.deepEqual([cpu.left, cpu.remaining, cpu.big, cpu.unit, cpu.title, cpu.total], [7, "空闲 7%", "7", "%", "CPU 空闲率", "负载 4.0"]);
   const left = h.meters[2];
   assert.deepEqual([left.left, left.big, left.unit, left.title, left.total], [5, "50.0", "GB", "可用磁盘", "总磁盘 1000 GB"]);

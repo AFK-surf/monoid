@@ -1802,6 +1802,8 @@ pub fn presented_nodes(@view.View) -> Unit
 
 pub fn presented_open_now(Int32) -> Bool
 
+pub fn presented_open_chain_of(Int32) -> Bool
+
 pub fn presented_open_of(Int32) -> Bool
 
 pub fn presented_rest() -> Double

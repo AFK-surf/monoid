@@ -1297,7 +1297,7 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
                 .ground(By(fn() { @sf.theme().p.canvas }))
                 .edge(By(fn() { (1.0, @sf.theme().p.line) }))
                 |> ignore
-                @sf.sync_key_node(slot, tips, 32.0, 18.0, fn() { syncing.get() }, delay_ms=0.0)
+                @sfbase.sync_key_node(slot, tips, 32.0, 18.0, fn() { syncing.get() }, delay_ms=0.0)
               })
               |> ignore
               @sf.button_node(r, fn() { "模拟同步" }, fn() { syncing.set(Some("正在同步最新消息")) }, icon="refresh")

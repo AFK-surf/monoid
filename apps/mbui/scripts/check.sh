@@ -12,6 +12,14 @@ cc -Wall -I "$A/src/host" -I "$MBUI_DIR/src/host" "$D/station_install_test.c" -o
 # what Windows' host and the app's uninstaller run to take it away: bin/stillfail.ps1's (src/host/station_uninstall.h)
 cc -Wall -I "$A/src/host" "$D/station_uninstall_test.c" -o "$A/out/station_uninstall_test" && (cd "$A" && out/station_uninstall_test) || exit 1
 "$MBUI_DIR/scripts/detlint" "$A" || exit 1
+# Enforce zero raw .glass( / Glass::liquid( / Glass::frosted( in apps/mbui non-test sources (delegate to @sf/@lg;
+# sfapp/bar_node.mbt is temporarily excluded while the bottom-bar track migrates independently).
+raw_glass=$(grep -rnE '\.glass\(|Glass::liquid\(|Glass::frosted\(' "$A/src" --include='*.mbt' | grep -vE '_(wb)?test\.mbt:' | grep -v '/sfapp/bar_node\.mbt:' || true)
+if [ -n "$raw_glass" ]; then
+  echo "apps/mbui: raw .glass(/Glass::liquid(/Glass::frosted( outside @sf/@lg:" >&2
+  echo "$raw_glass" >&2
+  exit 1
+fi
 # the web's files the app carries, as they are now (scripts/webassets.py)
 python3 "$D/webassets.py" --check || exit 1
 # the fonts the app carries, as the Android app's are (scripts/fontassets.py)

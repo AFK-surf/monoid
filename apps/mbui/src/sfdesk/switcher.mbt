@@ -104,12 +104,7 @@ pub fn switcher_node(v : @view.View, src : Source) -> Unit {
       let room = fn() { dmin(switcher_w, @sf.over_room(layer).0 - switcher_side - switcher_side) }
       across.box(fn(p) {
         @sf.style_node(p, fn() { switcher_panel.then(@ui.style(w=Fixed(room()))) }, in_row=true)
-        p
-        .glass(By(fn() { Some(@sf.dialog_glass()) }))
-        .edge(By(fn() { if p.glass_solid() { (1.0, @sf.panel_edge()) } else { (0.0, 0L) } }))
-        .shadow(By(@sf.glass_overlay_shadow))
-        .shadow_outside(Is(true))
-        .clips(Is(true))
+        @sf.dialog_surface_decorate(p)
         .alpha(By(fn() { look().alpha }))
         .scale(By(fn() { look().sx }))
         .offset(By(fn() { (look().dx, look().dy) }))
@@ -265,7 +260,15 @@ fn switcher_offered(src : Source, w : Workspace, wide_frame : Bool) -> Array[@sf
           _ => ()
         }
       }
-      offer(action_offered("chat.jobs", "web", fn() { open_jobs_pop() }))
+      offer(
+        action_offered("chat.jobs", "boxes", fn() {
+          if @sfbase.chat_jobs_has_services(src.topic("chatJobs", chat_jobs_summary_params(r)).get().value) {
+            open_jobs_pop()
+          } else {
+            side_tab_open(src, r, "jobs")
+          }
+        }),
+      )
       match view {
         Some(v) => {
           if chat_has_remote(v) {

@@ -25,6 +25,8 @@ pub fn liquid_scroll_edge_node(
   fade_h : (@view.View) -> Double,
   side? : ScrollEdgeSide = Top,
   bg? : () -> Int64,
+  bg_by? : (@view.View) -> Int64,
+  from_top? : Bool = false,
   shield? : Bool = true,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -50,9 +52,13 @@ pub fn liquid_scroll_edge_node(
       .glass(
         By(fn() {
           if base_h(fill) > 0.0 {
-            let color = match bg {
-              Some(f) => f()
-              None => clear
+            let color = match bg_by {
+              Some(f) => f(fill)
+              None =>
+                match bg {
+                  Some(f) => f()
+                  None => clear
+                }
             }
             Some(liquid_scroll_edge_glass(bg=color))
           } else {
@@ -71,7 +77,7 @@ pub fn liquid_scroll_edge_node(
   match side {
     Top =>
       parent.box(made_for=loc, fn(scrim) {
-        scrim.over(Is(true)) |> ignore
+        scrim.over(Is(true), from_top~) |> ignore
         build_scrim(scrim)
       })
     Bottom =>

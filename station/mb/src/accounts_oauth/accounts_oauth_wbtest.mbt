@@ -577,3 +577,71 @@ test "FB-44: a Claude subscription's OAuth token answered 403 is renewed, and ov
   }, true)
   assert_eq(get(get(Some(away), "result"), "state"), Some(Json::string("ok")))
 }
+
+///|
+test "Claude OAuth token refresh and /v1/models send claude-cli User-Agent only when claude_version is set" {
+  let ua = "claude-cli/2.1.100 (external, cli)"
+  let with_v = oauth_case({
+    "now": Json::number(t0),
+    "files": { "/h/.credentials.json": Json::string(creds("t1", 1.0)) },
+    "routes": { "/token": [{ "body": { "access_token": "t2", "expires_in": 100 } }] },
+    "home": "/h",
+    "endpoint": "http://x/token",
+    "claudeVersion": "2.1.100",
+    "root": "/h",
+  })
+  assert_eq(ok_of(with_v), Json::array([Json::string("t2"), Json::number(t0 + 100_000.0)]))
+  guard get(Some(with_v), "requests") is Some(Array([req_v])) else { fail("expected one refresh request") }
+  assert_eq(get(get(Some(req_v), "headers"), "user-agent"), Some(Json::string(ua)))
+
+  let without_v = oauth_case({
+    "now": Json::number(t0),
+    "files": { "/h/.credentials.json": Json::string(creds("t1", 1.0)) },
+    "routes": { "/token": [{ "body": { "access_token": "t2", "expires_in": 100 } }] },
+    "home": "/h",
+    "endpoint": "http://x/token",
+    "root": "/h",
+  })
+  guard get(Some(without_v), "requests") is Some(Array([req_no_v])) else { fail("expected one refresh request") }
+  assert_eq(get(get(Some(req_no_v), "headers"), "user-agent"), None)
+
+  let claude_cmd : Json = { "code": 0, "stdout": "{\"loggedIn\":true,\"email\":\"a@x.com\",\"subscriptionType\":\"max\"}" }
+  let urls : Json = { "anthropic": "http://api.test", "claudeToken": "http://auth.test/token" }
+  let checked = check_case({
+    "now": Json::number(t0),
+    "files": { "/p/.credentials.json": Json::string(creds("old", t0 + 3_600_000.0)) },
+    "commands": { "claude auth status": claude_cmd },
+    "routes": {
+      "/token": [{ "status": 200, "body": { "access_token": "new", "refresh_token": "r2", "expires_in": 3600 } }],
+      "/v1/models": [
+        { "status": 401, "body": {} },
+        { "status": 200, "body": { "data": [{ "id": "claude-opus-5-5" }] } },
+      ],
+    },
+    "options": { "runtime": "claude", "kind": "subscription", "home": "/p", "urls": urls, "lang": "zh", "claudeVersion": "2.1.100" },
+    "root": "/p",
+  })
+  assert_eq(get(get(Some(checked), "result"), "state"), Some(Json::string("ok")))
+  guard get(Some(checked), "requests") is Some(Array(reqs)) else { fail("expected requests") }
+  assert_eq(reqs.length(), 3)
+  for r in reqs {
+    assert_eq(get(get(Some(r), "headers"), "user-agent"), Some(Json::string(ua)))
+  }
+
+  let checked_no_v = check_case({
+    "now": Json::number(t0),
+    "files": { "/p/.credentials.json": Json::string(creds("old", 1.0)) },
+    "commands": { "claude auth status": claude_cmd },
+    "routes": {
+      "/token": [{ "status": 200, "body": { "access_token": "new", "refresh_token": "r2", "expires_in": 3600 } }],
+      "/v1/models": [{ "status": 200, "body": { "data": [{ "id": "claude-opus-5-5" }] } }],
+    },
+    "options": { "runtime": "claude", "kind": "subscription", "home": "/p", "urls": urls, "lang": "zh" },
+    "root": "/p",
+  })
+  guard get(Some(checked_no_v), "requests") is Some(Array(reqs_no_v)) else { fail("expected requests") }
+  assert_eq(reqs_no_v.length(), 2)
+  for r in reqs_no_v {
+    assert_eq(get(get(Some(r), "headers"), "user-agent"), None)
+  }
+}

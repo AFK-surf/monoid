@@ -152,10 +152,20 @@ static void ahead_forget(void);
 
 // What was shaped and drawn before a face changed: forgotten (MoonBit drops its glyphs as the generation moves on).
 static int keys_stale;  // the keys made before forgotten as the next frame starts (keys_sweep)
+static CTFontRef last_attrs_font;
+static int last_attrs_style = -1;
+static CFDictionaryRef last_attrs;
+
 static void faces_changed(void) {
   [fonts removeAllObjects];
   ahead_forget();
   last_size = -1;
+  last_attrs_font = NULL;
+  last_attrs_style = -1;
+  if (last_attrs) {
+    CFRelease(last_attrs);
+    last_attrs = NULL;
+  }
   generation++;
   keys_stale = 1;
 }
@@ -374,42 +384,48 @@ static int intern(NSString *cluster, double size, int weight, int style) {
   return intern_at(cluster, size, weight, style, 0);
 }
 
-// The keys of ASCII clusters, per font, found without building a string
-// for the cluster and its key.
+// The keys of single-unit BMP clusters (dx == 0), per font, in a 2-level paged table (256 pages of 256 ints,
+// allocated on demand), found without building a string for the cluster and its key.
 typedef struct {
   double size;
   int weight, style;
-  int ids[128];
-} ascii_keys;
-static ascii_keys *ascii;
-static int n_ascii, last_ascii = -1;
+  int *pages[256];
+} bmp_keys;
+static bmp_keys *bmp_cache;
+static int n_bmp, last_bmp = -1;
 
-static int *ascii_for(double size, int weight, int style) {
-  if (last_ascii >= 0) {
-    ascii_keys *a = &ascii[last_ascii];
-    if (a->size == size && a->weight == weight && a->style == style) return a->ids;
+static bmp_keys *bmp_for(double size, int weight, int style) {
+  if (last_bmp >= 0) {
+    bmp_keys *b = &bmp_cache[last_bmp];
+    if (b->size == size && b->weight == weight && b->style == style) return b;
   }
-  for (int i = 0; i < n_ascii; i++) {
-    if (ascii[i].size == size && ascii[i].weight == weight && ascii[i].style == style) {
-      last_ascii = i;
-      return ascii[i].ids;
+  for (int i = 0; i < n_bmp; i++) {
+    if (bmp_cache[i].size == size && bmp_cache[i].weight == weight && bmp_cache[i].style == style) {
+      last_bmp = i;
+      return &bmp_cache[i];
     }
   }
-  ascii = realloc(ascii, sizeof(ascii_keys) * (n_ascii + 1));
-  ascii_keys *a = &ascii[n_ascii];
-  a->size = size;
-  a->weight = weight;
-  a->style = style;
-  for (int i = 0; i < 128; i++) a->ids[i] = -1;
-  last_ascii = n_ascii++;
-  return a->ids;
+  bmp_cache = realloc(bmp_cache, sizeof(bmp_keys) * (size_t)(n_bmp + 1));
+  bmp_keys *b = &bmp_cache[n_bmp];
+  b->size = size;
+  b->weight = weight;
+  b->style = style;
+  memset(b->pages, 0, sizeof(b->pages));
+  last_bmp = n_bmp++;
+  return b;
 }
 
-// The key of an ASCII cluster (not a space) in this font.
-static int ascii_key(unichar c, double size, int weight, int style) {
-  int *ids = ascii_for(size, weight, style);
-  if (ids[c] < 0) ids[c] = intern([NSString stringWithCharacters:&c length:1], size, weight, style);
-  return ids[c];
+// The key of a single-unit BMP cluster (dx == 0) in this font.
+static int bmp_key(bmp_keys *bk, unichar c, double size, int weight, int style) {
+  int hi = c >> 8, lo = c & 0xFF;
+  int *page = bk->pages[hi];
+  if (!page) {
+    page = malloc(sizeof(int) * 256);
+    for (int i = 0; i < 256; i++) page[i] = -1;
+    bk->pages[hi] = page;
+  }
+  if (page[lo] < 0) page[lo] = intern([NSString stringWithCharacters:&c length:1], size, weight, style);
+  return page[lo];
 }
 
 // Whether `c` takes no room and draws nothing (zero width space, joiners, word joiner, the byte order mark). Where one
@@ -421,10 +437,69 @@ static int takes_no_room(unichar c) {
   return c == 0x200B || c == 0x200C || c == 0x200D || c == 0x2060 || c == 0xFEFF;
 }
 
-// Where a caret before character `i` of `s` stands in `line` (takes_no_room: those skipped).
-static double offset_at(CTLineRef line, NSString *s, NSUInteger len, NSUInteger i) {
-  while (i < len && takes_no_room([s characterAtIndex:i])) i++;
+static int is_han(unichar c) { return c >= 0x3400 && c <= 0x9FFF; }
+
+// Whether every UTF-16 unit in `u[0..len)` is an extended grapheme cluster of its own (same safe BMP ranges as
+// text.mbt's unit_clusters and Android MBText.unitClusters): none of surrogates, CR, combining marks, variation
+// selectors, ZWJ, or takes_no_room characters are included.
+static int is_unit_clusters(const unichar *u, int32_t len) {
+  for (int32_t i = 0; i < len; i++) {
+    unichar c = u[i];
+    if (c >= 0x20 && c <= 0x7E) continue;
+    if (c < 0x3000) {
+      if (c == '\n' || c == '\t'
+          || c == 0x00A5 || c == 0x00A7 || c == 0x00B0 || c == 0x00B1
+          || c == 0x00B7 || c == 0x00D7 || c == 0x00F7
+          || c == 0x2013 || c == 0x2014 || (c >= 0x2018 && c <= 0x201D)
+          || c == 0x2022 || c == 0x2026 || c == 0x2030
+          || c == 0x2032 || c == 0x2033 || c == 0x20AC || c == 0x2103) {
+        continue;
+      }
+      return 0;
+    }
+    if (c <= 0x3029 || (c >= 0x3041 && c <= 0x3096) || (c >= 0x30A1 && c <= 0x30FF)
+        || is_han(c) || (c >= 0xAC00 && c <= 0xD7A3) || (c >= 0xFF01 && c <= 0xFF60)) {
+      continue;
+    }
+    return 0;
+  }
+  return 1;
+}
+
+// Where a caret before character `i` of `u` stands in `line` (takes_no_room: those skipped).
+static double offset_at(CTLineRef line, const unichar *u, NSUInteger len, NSUInteger i) {
+  while (i < len && takes_no_room(u[i])) i++;
   return CTLineGetOffsetForStringIndex(line, (CFIndex)i, NULL);
+}
+
+// Frames'-thread scratch buffers for shape_line (never shared with the background rasterizer queues).
+static uint8_t *shape_from;
+static uint8_t *shape_simple;
+static double *shape_glyph_adv;
+static double *shape_glyph_x;
+static size_t shape_char_cap;
+static CFIndex *shape_idx;
+static CGPoint *shape_pos;
+static size_t shape_glyph_cap;
+
+static CTLineRef make_line_cached(CFStringRef s, CTFontRef f, int style) {
+  int flags = style & 8;
+  if (f != last_attrs_font || flags != last_attrs_style || !last_attrs) {
+    if (last_attrs) CFRelease(last_attrs);
+    NSMutableDictionary *attrs = [@{
+      (__bridge id)kCTFontAttributeName : (__bridge id)f,
+      (__bridge id)kCTForegroundColorFromContextAttributeName : @YES,
+    } mutableCopy];
+    if (flags) attrs[(__bridge id)kCTLigatureAttributeName] = @0;
+    if (unspaced()) attrs[(__bridge id)kCTLanguageAttributeName] = @"en";
+    last_attrs = (__bridge_retained CFDictionaryRef)[attrs copy];
+    last_attrs_font = f;
+    last_attrs_style = flags;
+  }
+  CFAttributedStringRef as = CFAttributedStringCreate(NULL, s, last_attrs);
+  CTLineRef line = CTLineCreateWithAttributedString(as);
+  CFRelease(as);
+  return line;
 }
 
 // Every string is shaped by Core Text as a whole line. A fast path for printable ASCII (each character's advance and
@@ -434,55 +509,118 @@ static double offset_at(CTLineRef line, NSString *s, NSUInteger len, NSUInteger 
 // ellipsis (no longer ASCII) were laid out the other way: their letters shifted the moment they were cut.
 static int32_t shape_line(moonbit_string_t text, int32_t len, double size, int32_t weight, int32_t style,
                           double *out, int32_t cap) {
-  NSString *s = [[NSString alloc] initWithCharacters:(const unichar *)text length:len];
+  if (len <= 0 || cap <= 0) return 0;
+  const unichar *u = (const unichar *)text;
+  int units = is_unit_clusters(u, len);
+  CFStringRef cf_s = CFStringCreateWithCharactersNoCopy(NULL, u, len, kCFAllocatorNull);
+  NSString *s = (__bridge NSString *)cf_s;
   CTFontRef f = font_for(size, weight, style);
-  CTLineRef line = make_line(s, f, style);
-  // where Core Text's glyphs come from in the text: a cluster none comes from is part of the glyph before it (a
-  // ligature), drawn by that cluster (-2 tells MoonBit, which gives the ligature to the first of them)
-  uint8_t *from = calloc((size_t)len + 1, 1);
-  // In a line with right-to-left text, a caret offset is where a character is from the line's start in a reading
-  // order of its own, not what it advances: there each cluster advances as far as its glyphs do, each glyph to
-  // where the next one in the run starts (the run's glyphs are in visual order), counted to where it comes from
-  int any_rtl = 0;
-  double *glyph_adv = calloc((size_t)len + 1, sizeof(double));
-  // where the first glyph from each character is in the line (NAN: none), left to right
-  double *glyph_x = malloc(sizeof(double) * ((size_t)len + 1));
+  CTLineRef line = make_line_cached(cf_s, f, style);
+  // Reusable frames'-thread scratch buffers:
+  // - from[j]: whether any glyph came from character j (0 = part of a preceding ligature -> key -2)
+  // - simple[j]: whether character j is in a 1-to-1 monotonic LTR run
+  // - glyph_adv[j]: visual glyph advance sum (used for RTL lines)
+  // - glyph_x[j]: leftmost glyph x position for character j (NAN: none)
+  size_t need_chars = (size_t)len + 1;
+  if (need_chars > shape_char_cap) {
+    size_t nc = shape_char_cap ? shape_char_cap : 256;
+    while (nc < need_chars) nc *= 2;
+    shape_from = realloc(shape_from, nc);
+    shape_simple = realloc(shape_simple, nc);
+    shape_glyph_adv = realloc(shape_glyph_adv, sizeof(double) * nc);
+    shape_glyph_x = realloc(shape_glyph_x, sizeof(double) * nc);
+    shape_char_cap = nc;
+  }
+  uint8_t *from = shape_from;
+  uint8_t *simple = shape_simple;
+  double *glyph_adv = shape_glyph_adv;
+  double *glyph_x = shape_glyph_x;
+  memset(from, 0, need_chars);
+  memset(simple, 0, need_chars);
+  memset(glyph_adv, 0, sizeof(double) * need_chars);
   for (int32_t j = 0; j <= len; j++) glyph_x[j] = NAN;
+  int any_rtl = 0;
   CFArrayRef runs = CTLineGetGlyphRuns(line);
-  for (CFIndex r = 0; r < CFArrayGetCount(runs); r++) {
+  CFIndex n_runs = CFArrayGetCount(runs);
+  for (CFIndex r = 0; r < n_runs; r++) {
     CTRunRef run = CFArrayGetValueAtIndex(runs, r);
     CFIndex gc = CTRunGetGlyphCount(run);
-    CFIndex *idx = malloc(sizeof(CFIndex) * (gc > 0 ? gc : 1));
-    CGPoint *pos = malloc(sizeof(CGPoint) * (gc > 0 ? gc : 1));
-    CTRunGetStringIndices(run, CFRangeMake(0, 0), idx);
-    CTRunGetPositions(run, CFRangeMake(0, 0), pos);
-    double w = CTRunGetTypographicBounds(run, CFRangeMake(0, 0), NULL, NULL, NULL);
-    if (CTRunGetStatus(run) & kCTRunStatusRightToLeft) any_rtl = 1;
-    for (CFIndex g = 0; g < gc; g++) {
-      if (idx[g] < 0 || idx[g] >= len) continue;
-      from[idx[g]] = 1;
-      if (isnan(glyph_x[idx[g]]) || pos[g].x < glyph_x[idx[g]]) glyph_x[idx[g]] = pos[g].x;
-      double next = g + 1 < gc ? pos[g + 1].x : pos[0].x + w;
-      glyph_adv[idx[g]] += next - pos[g].x;
+    if (gc <= 0) continue;
+    const CFIndex *idx = CTRunGetStringIndicesPtr(run);
+    const CGPoint *pos = CTRunGetPositionsPtr(run);
+    if (!idx || !pos) {
+      size_t need = (size_t)gc;
+      if (need > shape_glyph_cap) {
+        size_t nc = shape_glyph_cap ? shape_glyph_cap : 256;
+        while (nc < need) nc *= 2;
+        shape_idx = realloc(shape_idx, sizeof(CFIndex) * nc);
+        shape_pos = realloc(shape_pos, sizeof(CGPoint) * nc);
+        shape_glyph_cap = nc;
+      }
+      if (!idx) {
+        CTRunGetStringIndices(run, CFRangeMake(0, 0), shape_idx);
+        idx = shape_idx;
+      }
+      if (!pos) {
+        CTRunGetPositions(run, CFRangeMake(0, 0), shape_pos);
+        pos = shape_pos;
+      }
     }
-    free(idx);
-    free(pos);
+    CTRunStatus status = CTRunGetStatus(run);
+    int rtl = (status & kCTRunStatusRightToLeft) != 0;
+    if (rtl) any_rtl = 1;
+    double w = CTRunGetTypographicBounds(run, CFRangeMake(0, 0), NULL, NULL, NULL);
+    CFRange rr = CTRunGetStringRange(run);
+    int run_1to1 = !rtl && !(status & kCTRunStatusNonMonotonic) && gc == rr.length;
+    for (CFIndex g = 0; g < gc; g++) {
+      CFIndex ci = idx[g];
+      if (run_1to1 && ci != rr.location + g) run_1to1 = 0;
+      if (ci < 0 || ci >= len) continue;
+      from[ci] = 1;
+      if (isnan(glyph_x[ci]) || pos[g].x < glyph_x[ci]) glyph_x[ci] = pos[g].x;
+      double next = g + 1 < gc ? pos[g + 1].x : pos[0].x + w;
+      glyph_adv[ci] += next - pos[g].x;
+    }
+    if (run_1to1 && rr.location >= 0 && rr.location + rr.length <= len) {
+      memset(simple + rr.location, 1, (size_t)rr.length);
+    }
   }
+  bmp_keys *bk = bmp_for(size, weight, style);
   int32_t k = 0;
   NSUInteger i = 0;
   // a cluster starts where the one before it ended
-  double x0 = offset_at(line, s, (NSUInteger)len, 0);
+  double x0 = (units && !any_rtl) ? 0.0 : offset_at(line, u, (NSUInteger)len, 0);
+  int mono = (style & 2) != 0;
   while (i < (NSUInteger)len && k < cap) {
-    NSRange r = [s rangeOfComposedCharacterSequenceAtIndex:i];
-    unichar c = [s characterAtIndex:r.location];
-    if (r.location != i) x0 = offset_at(line, s, (NSUInteger)len, r.location);
+    NSRange r;
+    if (units) {
+      r = NSMakeRange(i, 1);
+    } else {
+      r = [s rangeOfComposedCharacterSequenceAtIndex:i];
+      if (r.location != i) x0 = offset_at(line, u, (NSUInteger)len, r.location);
+    }
+    unichar c = u[r.location];
     double start_x = x0;
-    double x1 = offset_at(line, s, (NSUInteger)len, r.location + r.length);
+    NSUInteger next_i = r.location + r.length;
+    double x1;
+    // In a simple 1-to-1 monotonic LTR run without takes_no_room, the caret offset between two Han ideographs
+    // (or between two printable ASCII characters in a monospaced face) has no kerning, punctuation squeezing, or
+    // CJK-Latin auto-spacing, so it equals glyph_x[next_i] directly without a CTLineGetOffsetForStringIndex call.
+    if (units && !any_rtl && next_i < (NSUInteger)len && simple[r.location] && simple[next_i]
+        && !isnan(glyph_x[next_i])
+        && ((is_han(c) && is_han(u[next_i]))
+            || (mono && c >= 0x20 && c <= 0x7E && u[next_i] >= 0x20 && u[next_i] <= 0x7E))) {
+      x1 = glyph_x[next_i];
+    } else if (units && !any_rtl) {
+      x1 = CTLineGetOffsetForStringIndex(line, (CFIndex)next_i, NULL);
+    } else {
+      x1 = offset_at(line, u, (NSUInteger)len, next_i);
+    }
     double adv = x1 - x0;
     x0 = x1;
     if (any_rtl) {
       adv = 0;
-      for (NSUInteger j = r.location; j < r.location + r.length; j++) adv += glyph_adv[j];
+      for (NSUInteger j = r.location; j < next_i; j++) adv += glyph_adv[j];
     }
     int key;
     if (c == '\n') {
@@ -492,38 +630,42 @@ static int32_t shape_line(moonbit_string_t text, int32_t len, double size, int32
       key = -1;
     } else {
       int drawn = 0;
-      for (NSUInteger j = r.location; j < r.location + r.length; j++) drawn |= from[j];
+      double gx = NAN;
+      if (r.length == 1) {
+        drawn = from[r.location];
+        gx = glyph_x[r.location];
+      } else {
+        for (NSUInteger j = r.location; j < next_i; j++) {
+          drawn |= from[j];
+          if (!isnan(glyph_x[j]) && (isnan(gx) || glyph_x[j] < gx)) gx = glyph_x[j];
+        }
+      }
       // a glyph the shaper moved within its cluster's advance (contextual spacing of CJK punctuation): drawn
       // there, not where it sits on its own
       // (the leftmost of its glyphs: a vowel sign the shaper put before its consonant is where it starts)
-      double gx = NAN;
-      for (NSUInteger j = r.location; j < r.location + r.length; j++)
-        if (!isnan(glyph_x[j]) && (isnan(gx) || glyph_x[j] < gx)) gx = glyph_x[j];
       double dx = any_rtl || isnan(gx) ? 0 : gx - start_x;
       if (fabs(dx) < 0.01) dx = 0;
       // A Latin letter right after Han (or kana, a full-width sign): the room Core Text puts between them since iOS 26
       // and macOS 27 is the letter's cluster's, before it, so it is drawn where its glyph is (else the room shows
       // after it: 你是O wner); elsewhere a letter is drawn where its cluster starts (a kerned pair's glyphs a hair
       // off it, as they always were)
-      BOOL after_wide = r.location > 0 && [s characterAtIndex:r.location - 1] >= 0x2E80;
+      BOOL after_wide = r.location > 0 && u[r.location - 1] >= 0x2E80;
       if (!drawn && k > 0)
         key = -2;
-      else if (r.length == 1 && c < 128 && (dx == 0 || !after_wide))
-        key = ascii_key(c, size, weight, style);
+      else if (r.length == 1 && (dx == 0 || (c < 128 && !after_wide)))
+        key = bmp_key(bk, c, size, weight, style);
       else
-        key = intern_at([s substringWithRange:r], size, weight, style, dx);
+        key = intern_at([NSString stringWithCharacters:u + r.location length:r.length], size, weight, style, dx);
     }
     out[k * 4] = r.location;
     out[k * 4 + 1] = r.length;
     out[k * 4 + 2] = adv < 0 ? 0 : adv;
     out[k * 4 + 3] = key;
     k++;
-    i = r.location + r.length;
+    i = next_i;
   }
-  free(from);
-  free(glyph_adv);
-  free(glyph_x);
   CFRelease(line);
+  CFRelease(cf_s);
   return k;
 }
 
@@ -833,10 +975,13 @@ static void keys_sweep(void) {
     entries = NULL;
     cap_entries = 0;
   }
-  free(ascii);
-  ascii = NULL;
-  n_ascii = 0;
-  last_ascii = -1;
+  for (int i = 0; i < n_bmp; i++) {
+    for (int p = 0; p < 256; p++) free(bmp_cache[i].pages[p]);
+  }
+  free(bmp_cache);
+  bmp_cache = NULL;
+  n_bmp = 0;
+  last_bmp = -1;
   held = nil;
   held_key = -1;
   generation++;

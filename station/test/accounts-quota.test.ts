@@ -803,4 +803,51 @@ fi
     assert.equal(readFileSync(file, "utf8"), "stale file must not be read or replaced");
     await p.close();
   });
+
+  test("claudeOAuthToken, claudeWithRefresh, and machineUsage send claude-cli User-Agent only when claudeVersion is given", async () => {
+    const ua = "claude-cli/2.1.100 (external, cli)";
+    const home = temp("claude-ua");
+    writeFileSync(join(home, ".credentials.json"), JSON.stringify(credentials(1)));
+    const p = await oauthProvider(200);
+    const urls = { ...URLS, anthropic: p.base, claudeToken: p.base };
+    try {
+      // 1. claudeOAuthToken with version sends claude-cli UA on POST refresh.
+      const [tok] = await claudeOAuthToken({}, home, null, p.base, "zh", undefined, undefined, "2.1.100");
+      assert.equal(tok, "new");
+      assert.equal(p.asked.at(-1)!.method, "POST");
+      assert.equal(p.asked.at(-1)!.headers["user-agent"], ua);
+
+      // 2. claudeOAuthToken without version does not fabricate claude-cli UA.
+      writeFileSync(join(home, ".credentials.json"), JSON.stringify(credentials(1)));
+      await claudeOAuthToken({}, home, null, p.base, "zh");
+      assert.equal(p.asked.at(-1)!.method, "POST");
+      assert.ok(!String(p.asked.at(-1)!.headers["user-agent"] ?? "").startsWith("claude-cli/"));
+
+      // 3. claudeWithRefresh forwards version to both refresh POST and usage GET.
+      p.asked.length = 0;
+      writeFileSync(join(home, ".credentials.json"), JSON.stringify(credentials(Date.now() + 3_600_000)));
+      const refreshed = await claudeWithRefresh({}, home, urls, "zh", "2.1.100");
+      assert.equal(refreshed.state, "ok");
+      assert.deepEqual(p.asked.map((r) => [r.method, r.headers["user-agent"]]), [
+        ["GET", ua],
+        ["POST", ua],
+        ["GET", ua],
+      ]);
+
+      // 4. machineUsage forwards claudeVersion to refresh POST and usage GET while keeping scoped stripped.
+      const m = machine();
+      mkdirSync(join(m.home, ".claude"));
+      writeFileSync(join(m.home, ".claude", ".credentials.json"), JSON.stringify(credentials(1)));
+      p.asked.length = 0;
+      const offered = await machineUsage("claude", m.env, urls, "zh", "2.1.100");
+      assert.equal(offered!.state, "ok");
+      assert.equal("scoped" in offered!, false);
+      assert.deepEqual(p.asked.map((r) => [r.method, r.headers["user-agent"]]), [
+        ["POST", ua],
+        ["GET", ua],
+      ]);
+    } finally {
+      await p.close();
+    }
+  });
 });

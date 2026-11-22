@@ -934,3 +934,57 @@ test "corner_row_node: 1.0x/1.3x keep button_height; 2.0x grows with trailing bu
   assert_eq(t.fixed_outgrown(), [], msg="2.0x fixed_outgrown")
   assert_eq(t.squeeze_faults(), [], msg="2.0x squeeze_faults")
 }
+
+///|
+test "narrow page_node with back renders floating liquid glass back pill and progressive top scroll edge, stays pinned on scroll, triggers on_back, and emits zero glass without back" {
+  let back_sig = @signals.signal((Some("对话") : String?))
+  let backs = Ref(0)
+  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0, platform=2)
+  @ui.set_view_app(
+    fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(b) {
+        b.width(Is(Some(390.0))).height(Is(Some(844.0))) |> ignore
+        page_node(
+          b,
+          fn() { "设置" },
+          fn() { Array::makei(30, fn(i) { "b\{i}" }) },
+          fn(v, k) {
+            v.box(fn(w) { w.height(Is(Some(60.0))).words(Is("block " + k)) |> ignore }) |> ignore
+          },
+          on_back=fn() { backs.val += 1 },
+          frame=fn() { { ..no_frame, back: back_sig.get() } },
+        )
+      })
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t.run_for(@ui.move_most_ms)
+  let liquid = t.drawn_glass().filter(fn(g) { g.4 == 6 })
+  let edge = t.drawn_glass().filter(fn(g) { g.4 == 5 })
+  assert_eq(liquid.length(), 1, msg="1 floating liquid glass back pill: \{Repr(liquid)}")
+  assert_eq(edge.length(), 1, msg="1 progressive top scroll edge: \{Repr(edge)}")
+  let links = t.semantics().filter(fn(s) { s.role == Link && !s.hidden && s.label == "对话" })
+  assert_eq(links.length(), 1, msg="back Link semantics: \{Repr(links)}")
+  let pill_y0 = liquid[0].1
+  assert_eq(t.audit(), [], msg="audit with back")
+  // Scroll down multiple screens: back pill stays pinned at top
+  for _ in 0..<3 {
+    t.drag(195.0, 700.0, 195.0, 150.0)
+    t.run_for(@ui.move_most_ms)
+  }
+  let liquid_after = t.drawn_glass().filter(fn(g) { g.4 == 6 })
+  assert_eq(liquid_after.length(), 1, msg="pill still present after scroll")
+  assert_true((liquid_after[0].1 - pill_y0).abs() < 0.01, msg="pill stays pinned: \{pill_y0} vs \{liquid_after[0].1}")
+  // Tap back pill triggers on_back
+  let (px, py, pw, ph) = links[0].rect
+  t.tap(px + pw / 2.0, py + ph / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(backs.val, 1, msg="on_back triggered once")
+  // Without back: zero floating pill and zero top scroll edge
+  back_sig.set(None)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.drawn_glass().length(), 0, msg="zero glass when back is None: \{Repr(t.drawn_glass())}")
+  assert_eq(t.audit(), [], msg="audit without back")
+}

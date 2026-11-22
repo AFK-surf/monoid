@@ -253,9 +253,9 @@ fn skeleton_page_head(
   match look {
     Narrow => {
       parent.show(fn() { frame().back is Some(_) }, at_once=true, fn(b) {
-        b.row(Is(true)).padding(Is((pg_back_x, pg_back_top, pg_back_end, pg_back_foot))).lines_up(Is(Some(Middle)))
+        b.row(Is(true)).padding(Is((pg_back_pill_x, pg_back_top, pg_back_pill_x, pg_back_foot))).lines_up(Is(Some(Middle)))
         |> ignore
-        nav_back_node(b, fn() { frame().back.unwrap_or("") }, on_back)
+        nav_back_pill_node(b, fn() { frame().back.unwrap_or("") }, on_back)
       })
       parent.show(fn() { !frame().named }, at_once=true, fn(s) {
         s

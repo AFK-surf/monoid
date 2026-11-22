@@ -904,3 +904,19 @@ test "choose_run_on_profile throws AccountCapError when only capped subscription
   })
   assert_eq(forced, "capped")
 }
+
+///|
+test "a profile's home joined as paths.ts joinPath joins it" {
+  assert_eq(join_under("/", "/data", "homes/p1"), "/data/homes/p1")
+  assert_eq(join_under("/", "/data/", "homes/p1"), "/data/homes/p1")
+  assert_eq(join_under("/", "", "homes/p1"), "homes/p1")
+  assert_eq(join_under("/", "/data", "/data/homes/p1"), "/data/homes/p1")
+  assert_eq(join_under("/", "/data", ""), "/data/")
+  assert_eq(join_under("\\", "C:\\data", "homes\\p1"), "C:\\data\\homes\\p1")
+  assert_eq(join_under("\\", "C:\\data\\", "homes\\p1"), "C:\\data\\homes\\p1")
+  assert_eq(join_under("\\", "C:\\data/", "homes\\p1"), "C:\\data/homes\\p1")
+  assert_eq(join_under("\\", "", "homes\\p1"), "homes\\p1")
+  assert_eq(join_under("\\", "C:\\data", "C:\\data\\homes\\p1"), "C:\\data\\homes\\p1")
+  assert_eq(join_under("\\", "C:\\data", "\\\\srv\\share\\h"), "\\\\srv\\share\\h")
+  assert_eq(join_under("\\", "C:\\data", "/abs"), "/abs")
+}

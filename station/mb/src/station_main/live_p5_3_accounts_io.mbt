@@ -205,15 +205,16 @@ async fn P53Accounts::machine_answer(self : P53Accounts, name : String, args : A
   let opt = (i : Int) => as_text(j(i))
   match name {
     "oauth.claudeOAuthToken" => {
-      // [home, rejected, endpoint, lang, margin, lent]
+      // [home, rejected, endpoint, lang, margin, lent, claudeVersion]
       let margin = match j(4) {
         Number(n, ..) => n.to_int64()
         _ => 300_000L
       }
+      let claude_version = opt(6)
       let (token, expires) = if j(5) is True {
-        self.claude_auth.token(p53_station_env(), opt(0), opt(1), p53_arg_s(args, 2), p53_arg_s(args, 3), margin~, bound=p53_lend_bound(host))
+        self.claude_auth.token(p53_station_env(), opt(0), opt(1), p53_arg_s(args, 2), p53_arg_s(args, 3), margin~, bound=p53_lend_bound(host), claude_version?)
       } else {
-        self.claude_auth.token(p53_station_env(), opt(0), opt(1), p53_arg_s(args, 2), p53_arg_s(args, 3), margin~)
+        self.claude_auth.token(p53_station_env(), opt(0), opt(1), p53_arg_s(args, 2), p53_arg_s(args, 3), margin~, claude_version?)
       }
       Some(to_jv(Json::array([Json::string(token), Json::number(expires.to_double())])))
     }
@@ -444,6 +445,10 @@ async fn P53Accounts::check_profile(self : P53Accounts, request : Json, lang : S
     machine: jfield(request, "machine") is True,
     login: jfield(request, "login") is True,
     recheck: jfield(request, "recheck") is True,
+    claude_version: match jtext(request, "claudeVersion") {
+      Some(_) as v => v
+      None => as_text(self.bus.coord_updates_version("claude"))
+    },
     machine_token: Some(async fn(e) {
       let fields = @agent_runtimes.Fields::new()
       for k, v in e {
@@ -731,7 +736,8 @@ fn p53_machine_logins(
     },
     codex_home: env => @agent_runtimes.codex_home(p53_fields(env), windows=is_windows()),
     usage: Some(async fn(runtime, _env) {
-      match @accounts_pool.machine_usage(ctx, runtime, (bus.lang.val)()) {
+      let claude_version = as_text(bus.coord_updates_version("claude"))
+      match @accounts_pool.machine_usage(ctx, runtime, (bus.lang.val)(), claude_version?) {
         Some(q) => p53_json(q)
         None => Json::null()
       }

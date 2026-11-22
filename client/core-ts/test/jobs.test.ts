@@ -74,7 +74,60 @@ test("a_chat_jobs_summary_keeps_the_button_and_alarm_without_preparing_the_jobs_
   const [over] = chatJobs({ agents: [{ jobs: [job("old", { state: "stopped" }), job("done", { state: "exited", exitCode: 0 }), job("died", { state: "exited", exitCode: 1, endedAt: NOW - 1_000 })] }] }, c(), true);
   assert.equal(over.hasJobs, false, "no button for jobs that are all over");
   const [empty, never] = chatJobs({ agents: [] }, c(), true);
-  assert.deepEqual([empty.hasJobs, empty.alarm, never], [false, null, Infinity]);
+  assert.deepEqual([empty.hasJobs, empty.hasServices, empty.backgroundCount, empty.alarm, empty.serviceAlarm, never], [false, false, 0, null, null, Infinity]);
+});
+
+test("a_chat_jobs_summary_splits_web_services_and_background_jobs", () => {
+  // 1. Web service only
+  const [svcOnly] = chatJobs({ agents: [{ jobs: [job("web", { port: 3000 })] }] }, c(), true);
+  assert.deepEqual(
+    [svcOnly.hasJobs, svcOnly.hasServices, svcOnly.backgroundCount, svcOnly.alarm, svcOnly.serviceAlarm],
+    [true, true, 0, null, null],
+  );
+  assert.ok("ok" in conform("ChatJobsView", svcOnly), JSON.stringify(conform("ChatJobsView", svcOnly)));
+
+  // 2. Background / watch job only (no web service)
+  const [bgOnly] = chatJobs({ agents: [{ jobs: [job("ci", { watch: true })] }] }, c(), true);
+  assert.deepEqual(
+    [bgOnly.hasJobs, bgOnly.hasServices, bgOnly.backgroundCount, bgOnly.alarm, bgOnly.serviceAlarm],
+    [true, false, 1, null, null],
+  );
+  assert.ok("ok" in conform("ChatJobsView", bgOnly), JSON.stringify(conform("ChatJobsView", bgOnly)));
+
+  // 3. Mixed: restarting + recently failed service alongside running background jobs
+  const mixedChat = {
+    agents: [
+      {
+        jobs: [
+          job("failed-svc", { port: 8080, state: "failed", endedAt: NOW - NEWS + 5_000 }),
+          job("restart-svc", { port: 8081, state: "exited" }),
+          job("watch-ci", { watch: true }),
+          job("bg-build"),
+        ],
+      },
+    ],
+  };
+  const [mixed, next] = chatJobs(mixedChat, c(), true);
+  assert.deepEqual(
+    [mixed.hasJobs, mixed.hasServices, mixed.backgroundCount, mixed.alarm, mixed.serviceAlarm, next],
+    [true, true, 2, "fail", "fail", 5_000],
+  );
+  assert.ok("ok" in conform("ChatJobsView", mixed), JSON.stringify(conform("ChatJobsView", mixed)));
+
+  // 4. Expiry cleanup: once the failed service ages past NEWS, serviceAlarm falls back to restart while backgroundCount stays 2
+  const [afterExpiry] = chatJobs(mixedChat, { ...c(), now: NOW + 5_000 }, true);
+  assert.deepEqual(
+    [afterExpiry.hasJobs, afterExpiry.hasServices, afterExpiry.backgroundCount, afterExpiry.alarm, afterExpiry.serviceAlarm],
+    [true, true, 2, "restart", "restart"],
+  );
+  // And when the only service was the failed one, expiry clears hasServices and serviceAlarm while keeping backgroundCount
+  const expiringOnlySvc = {
+    agents: [{ jobs: [job("failed-svc", { port: 8080, state: "failed", endedAt: NOW - NEWS + 5_000 }), job("bg-only")] }],
+  };
+  const [beforeExp] = chatJobs(expiringOnlySvc, c(), true);
+  assert.deepEqual([beforeExp.hasServices, beforeExp.serviceAlarm, beforeExp.backgroundCount], [true, "fail", 1]);
+  const [afterExp] = chatJobs(expiringOnlySvc, { ...c(), now: NOW + 5_000 }, true);
+  assert.deepEqual([afterExp.hasJobs, afterExp.hasServices, afterExp.serviceAlarm, afterExp.backgroundCount], [true, false, null, 1]);
 });
 
 test("those_up_long_are_grouped_oldest_first_with_where_they_are", () => {

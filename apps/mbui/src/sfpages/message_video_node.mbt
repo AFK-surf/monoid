@@ -134,7 +134,7 @@ fn message_video_node(
       fn() { false },
       fn() {
         match held_menu.get() {
-          Some(s) => @sf.presented_drawn_of(s)
+          Some(s) => @sf.presented_open_chain_of(s)
           None => false
         }
       },

@@ -1,13 +1,36 @@
-// Pictures as still.fail's Android app has them (drawable_data.mbt: its vector drawables, the station glyphs): mbui's
+// App-registered vector drawables and station glyphs (register_drawables / register_station_glyphs): mbui's
 // @pixels.Vector, drawn by the GPU as shapes (@ui.vector_shapes) at the size they show at, or made into pixels on the
 // CPU (@pixels.Vector::rgba) for a picture to hand on.
+
+///|
+/// App-registered vector drawables (registered once by the host app via `register_drawables`).
+// kept across runs: registered once by the host app, immutable lookup table
+let drawables : Ref[Map[String, @pixels.Vector]] = Ref(Map([]))
+
+///|
+/// App-registered station glyph path specs (registered once by the host app via `register_station_glyphs`).
+// kept across runs: registered once by the host app, immutable lookup table
+let station_glyphs : Ref[Map[String, String]] = Ref(Map([]))
+
+///|
+/// Register the host app's vector drawables (brand marks, illustrations, etc.) for `drawable_node` / `drawable_vector`.
+pub fn register_drawables(items : Map[String, @pixels.Vector]) -> Unit {
+  drawables.val = items
+}
+
+///|
+/// Register the host app's station glyph definitions (`"emoji|line;line|dot;dot"`) for `station_mark_node`.
+pub fn register_station_glyphs(items : Map[String, String]) -> Unit {
+  station_glyphs.val = items
+  glyphs_read.clear()
+}
 
 ///|
 /// The picture `name` drawn `px` pixels wide (as tall as it is for that), in its own colours or all in `tint`: its
 /// width, height and pixels (RGBA, straight, rows from the top), to make another picture with; None when there is no
 /// such picture.
-fn drawable_pixels(name : String, px : Int, tint? : Int64) -> (Int, Int, FixedArray[Byte])? {
-  match drawables.get(name) {
+pub fn drawable_pixels(name : String, px : Int, tint? : Int64) -> (Int, Int, FixedArray[Byte])? {
+  match drawables.val.get(name) {
     Some(d) => {
       let ph = (px.to_double() * d.h / d.w).round().to_int()
       let ph = if ph < 1 { 1 } else { ph }
@@ -21,7 +44,7 @@ fn drawable_pixels(name : String, px : Int, tint? : Int64) -> (Int, Int, FixedAr
 /// Whether the app has the picture `name` (its drawable's name: maker_openai,
 /// illus_sign_in…).
 pub fn has_drawable(name : String) -> Bool {
-  drawables.contains(name)
+  drawables.val.contains(name)
 }
 
 ///|
@@ -30,7 +53,7 @@ pub fn has_drawable(name : String) -> Bool {
 /// @ui's own_colours) or all in `tint`.
 /// How tall drawable `name` is drawn `w` wide (`drawable`'s; as wide as tall when there is none so named).
 pub fn drawable_height(name : String, w : Double) -> Double {
-  match drawables.get(name) {
+  match drawables.val.get(name) {
     Some(d) => w * d.h / d.w
     None => w
   }
@@ -39,7 +62,7 @@ pub fn drawable_height(name : String, w : Double) -> Double {
 ///|
 /// Drawable `name`'s picture (None: there is none so named), for a node of the window's tree to draw (View::picture).
 pub fn drawable_vector(name : String) -> @pixels.Vector? {
-  drawables.get(name)
+  drawables.val.get(name)
 }
 
 ///|
@@ -166,13 +189,13 @@ fn imin(a : Int, b : Int) -> Int {
 }
 
 ///|
-/// Station glyph `name`'s lines and dots, from its text in drawable_data.mbt ("emoji|line;line|dot;dot"), read the
-/// first time it is asked for.
+/// Station glyph `name`'s lines and dots, from its text registered via `register_station_glyphs`
+/// ("emoji|line;line|dot;dot"), read the first time it is asked for.
 fn glyph_paths(name : String) -> (Array[String], Array[String])? {
   if glyphs_read.get(name) is Some(g) {
     return Some(g)
   }
-  guard station_glyphs.get(name) is Some(text) else { return None }
+  guard station_glyphs.val.get(name) is Some(text) else { return None }
   let parts = text.split("|").map(fn(p) { p.to_owned() }).to_array()
   let paths = fn(i : Int) -> Array[String] {
     if i < parts.length() && parts[i] != "" {

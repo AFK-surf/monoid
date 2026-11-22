@@ -445,6 +445,11 @@ export class MbActor {
     return this.#mirror.unread.filter(([t, n]) => t === thread && n < before).map(([t, n, ts]) => ({ message: { thread: t, n, ts } }) as unknown as PendingMessage);
   }
 
+  /// Whether a message was given to its running turn and its model has not read it yet.
+  hasUnread(): boolean {
+    return this.#mirror.unread.length > 0;
+  }
+
   currentTurnId(): string | null {
     return this.#mirror.turn;
   }

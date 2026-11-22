@@ -1,6 +1,246 @@
 // Liquid Glass Popover and Tooltip components over `@headless.Popover` and `@headless.tooltip_bubble`.
 
 ///|
+/// Helper forwarding `alpha` so `liquid_popover_surface_decorate` can accept an `alpha?` parameter without shadowing.
+fn popover_fade_ink(c : Int64, share : Double) -> Int64 {
+  alpha(c, share)
+}
+
+///|
+/// Decorates an existing anchored popover container node `p` in place (zero wrapper nodes) in either:
+/// 1. Standard anchored overlay mode (when `morph` is `None` or `p.glass_solid()` is true):
+///    binds `liquid_panel_glass(solid=...)`, `shadow`, `shadow_outside(Is(true))`, `MBUI_GLASS=solid` hairline
+///    fallback, and optional `alpha` / `scale`.
+/// 2. iOS 27.0 liquid-bridge morph mode (when `morph` is `Some(eval)` and `!p.glass_solid()`):
+///    encapsulates three-anchor `liquid_menu_morph_glass` optical interpolation, capillary `merge`/`layer`/`break_gap`,
+///    `content_lens` blur/refraction, `ground_drawn` animated silhouette, `alpha` gating (zero hidden glass when
+///    inactive), and smooth shadow ramp. Returns `p` for chaining.
+pub fn liquid_popover_surface_decorate(
+  p : @view.View,
+  radius? : Double,
+  solid? : () -> Int64,
+  shadow? : () -> (Double, Double, Int64) = fn() { shadow_default },
+  solid_edge? : () -> (Double, Int64) = liquid_overlay_solid_edge,
+  clips? : Bool = true,
+  alpha? : () -> Double,
+  scale? : () -> Double,
+  scale_about? : @view.Pivot = FromBeside,
+  max_shift? : Double = 0.0,
+  morph? : () -> (Double, Bool, Double, Double, LiquidMorphFrame)?,
+  layer? : Int = 0,
+  break_gap? : Double = 32.0,
+  close_break_gap? : Double = 48.0,
+) -> @view.View {
+  let resolve_solid = fn() -> Int64 {
+    match solid {
+      Some(f) => f()
+      None => clear
+    }
+  }
+  match radius {
+    Some(r) => p.radius(Is(r)) |> ignore
+    None => ()
+  }
+  if clips {
+    p.clips(Is(true)) |> ignore
+  }
+  p
+  .edge(By(fn() { if p.glass_solid() { solid_edge() } else { (0.0, clear) } }))
+  .shadow_outside(Is(true))
+  |> ignore
+  match morph {
+    Some(eval_morph) if !p.glass_solid() =>
+      p
+      .alpha(
+        By(fn() {
+          match eval_morph() {
+            Some((_, closing, _, _, f)) =>
+              if !closing {
+                if f.raw_value <= 0.001 { 0.0 } else { 1.0 }
+              } else if !f.platter_active {
+                0.0
+              } else {
+                1.0
+              }
+            None =>
+              match alpha {
+                Some(af) => af()
+                None => 1.0
+              }
+          }
+        }),
+      )
+      .glass(
+        By(fn() {
+          let s = resolve_solid()
+          match eval_morph() {
+            Some((t, closing, _, _, f)) =>
+              if !closing {
+                if f.raw_value <= 0.001 {
+                  None
+                } else {
+                  let stage = 0.5 + 0.5 * lm_smoothstep(0.08, 0.20, t)
+                  if f.open_anchor_scale > 0.15 {
+                    Some(
+                      liquid_menu_morph_glass(
+                        stage,
+                        solid=s,
+                        merge=14.0 * f.open_anchor_scale,
+                        layer~,
+                        break_gap~,
+                      ),
+                    )
+                  } else {
+                    Some(liquid_menu_morph_glass(stage, solid=s))
+                  }
+                }
+              } else if !f.platter_active {
+                None
+              } else {
+                let stage = 0.5 * lm_smoothstep(0.0, 0.12, f.raw_value) +
+                  0.5 * lm_smoothstep(0.35, 0.95, f.raw_value)
+                if f.blob_a_emerge > 0.001 {
+                  Some(
+                    liquid_menu_morph_glass(
+                      stage,
+                      solid=s,
+                      merge=lm_close_blend(f.raw_value),
+                      layer~,
+                      break_gap=close_break_gap,
+                    ),
+                  )
+                } else {
+                  Some(liquid_menu_morph_glass(stage, solid=s))
+                }
+              }
+            None => Some(liquid_panel_glass(solid=s))
+          }
+        }),
+      )
+      .content_lens(
+        By(fn() {
+          match eval_morph() {
+            Some((_, _, _, _, f)) =>
+              if f.content_opacity > 0.01 && f.content_blur > 0.05 {
+                {
+                  blur: f.content_blur,
+                  refraction: 6.0 * clamp(f.content_blur / 8.0, 0.0, 1.0),
+                  bezel: 24.0,
+                  alpha: f.content_opacity,
+                }
+              } else {
+                @paint.ContentLens::none()
+              }
+            None => @paint.ContentLens::none()
+          }
+        }),
+      )
+      .shadow(
+        By(fn() {
+          match eval_morph() {
+            Some((_, closing, _, _, f)) =>
+              if closing && !f.platter_active {
+                shadow_none
+              } else {
+                let ga = lm_smoothstep(0.25, 0.78, clamp(f.raw_value, 0.0, 1.0))
+                if ga <= 0.001 {
+                  shadow_none
+                } else {
+                  let (s, dy, ink) = shadow()
+                  (s, dy, popover_fade_ink(ink, ga))
+                }
+              }
+            None => shadow()
+          }
+        }),
+      )
+      .ground_drawn(
+        By(fn() {
+          match eval_morph() {
+            Some((t, closing, w, h, f)) =>
+              if w <= 0.0 || h <= 0.0 || (!closing && t >= lm_open_duration_ms / 1000.0 - 0.001) {
+                @view.ground_as_laid
+              } else {
+                let r = f.radius
+                { dx: f.mx, dy: f.my, dw: f.cur_w - w, dh: f.cur_h - h, corners: Some((r, r, r, r)) }
+              }
+            None => @view.ground_as_laid
+          }
+        }),
+      )
+    _ => {
+      p.glass(By(fn() { Some(liquid_panel_glass(solid=resolve_solid())) })).shadow(By(shadow)) |> ignore
+      match alpha {
+        Some(af) => p.alpha(By(af)) |> ignore
+        None => ()
+      }
+      match scale {
+        Some(sf) => p.scale(By(sf), about=scale_about, max_shift~) |> ignore
+        None => ()
+      }
+      p
+    }
+  }
+}
+
+///|
+/// Decorates an existing tooltip node `v` in place (zero wrapper nodes) with `points(Is(false))` click-through,
+/// `active` gating (submits `None` glass, zero edge, and zero shadow when inactive), `shadow_outside(Is(true))`,
+/// `MBUI_GLASS=solid` hairline fallback, and single-layer liquid glass (`liquid_capsule_glass` by default, or
+/// `liquid_panel_glass` when `panel=true`). Returns `v` for chaining.
+pub fn liquid_tooltip_surface_decorate(
+  v : @view.View,
+  radius? : Double,
+  active? : () -> Bool = fn() { true },
+  solid? : () -> Int64,
+  shadow? : () -> (Double, Double, Int64) = fn() { shadow_default },
+  solid_edge? : () -> (Double, Int64) = liquid_overlay_solid_edge,
+  panel? : Bool = false,
+) -> @view.View {
+  match radius {
+    Some(r) => v.radius(Is(r)) |> ignore
+    None => ()
+  }
+  v
+  .points(Is(false))
+  .glass(
+    By(fn() {
+      if !active() {
+        return None
+      }
+      let s = match solid {
+        Some(f) => f()
+        None => clear
+      }
+      if panel {
+        Some(liquid_panel_glass(solid=s))
+      } else {
+        Some(liquid_capsule_glass(solid=s))
+      }
+    }),
+  )
+  .edge(
+    By(fn() {
+      if active() && v.glass_solid() {
+        solid_edge()
+      } else {
+        (0.0, clear)
+      }
+    }),
+  )
+  .shadow(
+    By(fn() {
+      if active() {
+        shadow()
+      } else {
+        shadow_none
+      }
+    }),
+  )
+  .shadow_outside(Is(true))
+}
+
+///|
 /// A Liquid Glass popover: trigger in `parent`, floating glass card mounted in `host` beside
 /// the trigger according to `placement`. Closes on Escape or outside press via `@headless.Popover`.
 #callsite(autofill(loc))
@@ -65,23 +305,10 @@ pub fn liquid_tooltip_bubble_node(
     .row(Is(true))
     .lines_up(Is(Some(Middle)))
     .gap(Is(8.0))
-    .points(Is(false))
     .max_width(Is(Some(ovl_tooltip_max_w)))
     .padding(Is((ovl_tooltip_px, ovl_tooltip_py, ovl_tooltip_px, ovl_tooltip_py)))
-    .radius(Is(ovl_tooltip_radius))
-    .shadow(Is(shadow_default))
-    .shadow_outside(Is(true))
-    .glass(
-      By(fn() {
-        let s = match solid {
-          Some(f) => f()
-          None => clear
-        }
-        Some(liquid_capsule_glass(solid=s))
-      }),
-    )
-    .edge(By(fn() { if b.glass_solid() { liquid_overlay_solid_edge() } else { (0.0, clear) } }))
     |> ignore
+    liquid_tooltip_surface_decorate(b, radius=ovl_tooltip_radius, solid?) |> ignore
     b.box(fn(w) {
       w.shrink(Is(1.0)).words(By(text), look=words_at(ovl_type_sub, wrap=true)).ink(By(fn() { colors().content }))
       |> ignore

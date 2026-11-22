@@ -28,6 +28,63 @@ static GLuint picture_one;
 static GLuint image_tex(int id) { return id == 1 ? picture_one : 0; }
 static void view_parts_in(int tid, int32_t start, int32_t end) { (void)tid, (void)start, (void)end; }
 
+// A draw that samples the texture it draws into (a sampler of the program's, active, on a unit that holds the
+// framebuffer's colour attachment): a feedback loop. WebGL2 and strict GLES 3 drivers refuse it
+// (GL_INVALID_OPERATION, the draw dropped); llvmpipe draws it all the same, so the test looks for it itself.
+static int feedback_loops;
+static void feedback_seen(void) {
+  GLint fb = 0, type = 0, tex = 0, p = 0, n = 0, unit_was = 0;
+  glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fb);
+  if (!fb) return;
+  glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                        GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &type);
+  if (type != GL_TEXTURE) return;
+  glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                        GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &tex);
+  glGetIntegerv(GL_CURRENT_PROGRAM, &p);
+  if (!p || !tex) return;
+  glGetProgramiv(p, GL_ACTIVE_UNIFORMS, &n);
+  glGetIntegerv(GL_ACTIVE_TEXTURE, &unit_was);
+  for (GLint i = 0; i < n; i++) {
+    char name[64];
+    GLint size = 0, unit = 0, bound = 0;
+    GLenum utype = 0;
+    glGetActiveUniform(p, (GLuint)i, sizeof name, NULL, &size, &utype, name);
+    if (utype != GL_SAMPLER_2D) continue;
+    glGetUniformiv(p, glGetUniformLocation(p, name), &unit);
+    glActiveTexture(GL_TEXTURE0 + unit);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+    if (bound == tex) {
+      if (!feedback_loops) fprintf(stderr, "gles_render_test: feedback loop: %s on unit %d samples texture %d drawn into\n", name, unit, tex);
+      feedback_loops++;
+    }
+  }
+  glActiveTexture((GLenum)unit_was);
+}
+static int vbo_uploads;
+static int instanced_draws;
+static int instanced_total;
+static void checked_buffer_data(GLenum target, GLsizeiptr size, const void *data, GLenum usage) {
+  if (target == GL_ARRAY_BUFFER) vbo_uploads++;
+  epoxy_glBufferData(target, size, data, usage);
+}
+static void checked_draw_arrays(GLenum mode, GLint first, GLsizei count) {
+  feedback_seen();
+  epoxy_glDrawArrays(mode, first, count);
+}
+static void checked_draw_arrays_instanced(GLenum mode, GLint first, GLsizei count, GLsizei n) {
+  feedback_seen();
+  instanced_draws++;
+  instanced_total += n;
+  epoxy_glDrawArraysInstanced(mode, first, count, n);
+}
+#undef glBufferData
+#define glBufferData checked_buffer_data
+#undef glDrawArrays
+#define glDrawArrays checked_draw_arrays
+#undef glDrawArraysInstanced
+#define glDrawArraysInstanced checked_draw_arrays_instanced
+
 #include "gles_render.h"
 #include "frame_mail.h"
 
@@ -108,6 +165,72 @@ static void take(int shown) {
   CHECK(fm_take(&got));
   fm_keep(&got, shown);
   if (shown) gl_present_kept(kept_count, kept_r, kept_g, kept_b);
+}
+
+// A progressive frosted glass (kind 5) across the window from y0 to y1, faded out over 8 points towards its foot
+// (`to_foot`) or its top, its capture `tid`.
+static void progressive_at(double *d, double y0, double y1, int to_foot, double tid) {
+  rect_at(d, 0, y0, W, y1 - y0, 5, 0.96, 0.96, 0.96, tid);
+  d[6] = 1.1;
+  d[7] = 4.0;
+  d[11] = 0.35;
+  d[15] = 1.0;
+  d[22] = -1.0;
+  if (to_foot) {
+    d[54] = y1;
+    d[55] = 8.0;
+  } else {
+    d[52] = y0;
+    d[53] = 8.0;
+  }
+}
+
+// A foreground lens (kind 8) 40 points square at x, y over one child, a 16-point square of (r, g, b) at its middle.
+static void lens_at(double *d, double x, double y, double r, double g, double b) {
+  rect_at(d, x, y, 40, 40, 8, 1.0, 1.0, 1.0, 0);
+  d[4] = 10;
+  d[7] = 2.0;
+  d[11] = 1.0;
+  d[12] = 1.0;
+  d[13] = 8.0;
+  d[14] = 6.0;
+  d[15] = 1.0;
+  d[36] = d[37] = d[38] = d[39] = 10;
+  rect_at(d + MB_INST, x + 12, y + 12, 16, 16, 0, r, g, b, 0);
+}
+
+// The texture unit `unit` holds (2D).
+static GLuint bound_on(GLenum unit) {
+  GLint was = 0, t = 0;
+  glGetIntegerv(GL_ACTIVE_TEXTURE, &was);
+  glActiveTexture(unit);
+  glGetIntegerv(GL_TEXTURE_BINDING_2D, &t);
+  glActiveTexture((GLenum)was);
+  return (GLuint)t;
+}
+
+// A level the blurs or the lenses draw into left on a unit of the post program's after a frame.
+static int level_left_bound(void) {
+  for (int u = 1; u <= 3; u++) {
+    GLuint t = bound_on(GL_TEXTURE0 + u);
+    if (!t) continue;
+    if (t == lens_lv[0].t || t == lens_lv[1].t) return 1;
+    if (u != 2)
+      for (int j = 0; j < 5; j++)
+        if (t == lv[j].t) return 1;
+  }
+  return 0;
+}
+
+// Pixel rows from `py` (pixels from the window's top) to its foot the same to the byte in two readings.
+static int foot_same(const unsigned char *a, const unsigned char *b, int py) {
+  return memcmp(a, b, (size_t)(fb_h - py) * fb_w * 4) == 0;
+}
+
+// The luminance (0..1) at x, y points in a reading.
+static double luma_at(const unsigned char *px, double x, double y) {
+  const unsigned char *p = px + ((fb_h - 1 - (int)(y * S)) * fb_w + (int)(x * S)) * 4;
+  return (0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]) / 255.0;
 }
 
 int main(void) {
@@ -1380,6 +1503,117 @@ int main(void) {
     glass_forget();
   }
 
+  // Glass after glass in one frame and the next: no pass samples a level it draws into. A progressive blur binds
+  // lv[1..3] for its composite and a lens its level as the backdrop; left bound, the next blur's passes (into those
+  // levels) or the next lens's (into its own) are feedback loops, dropped by WebGL2 and strict GLES 3 drivers and the
+  // glass left black. Each picture is the same to the byte as the same glass drawn alone.
+  {
+    double base[3 * MB_INST];
+    rect_at(base, 0, 0, W, H, 0, 0.94, 0.94, 0.92, 0);
+    rect_at(base + MB_INST, 10, 4, 40, 10, 0, 0.85, 0.20, 0.20, 0);
+    rect_at(base + 2 * MB_INST, 10, 60, 60, 10, 0, 0.20, 0.45, 0.90, 0);
+    double fl[9 * MB_INST];
+    while (glGetError() != GL_NO_ERROR) {
+    }
+
+    // (1) Two progressive blurs, the top's and the foot's, against the foot's alone.
+    memcpy(fl, base, sizeof base);
+    progressive_at(fl + 3 * MB_INST, 0, 22, 1, -50);
+    progressive_at(fl + 4 * MB_INST, 53, H, 0, -51);
+    glass_forget();
+    feedback_loops = 0;
+    gl_present(fl, 5, 0.94, 0.94, 0.92);
+    CHECK(glGetError() == GL_NO_ERROR);
+    CHECK(feedback_loops == 0);
+    CHECK(!level_left_bound());
+    unsigned char *both = pixels_of_fb(surface);
+    // (the next frame, from blurs kept, and drawn anew)
+    gl_present(fl, 5, 0.94, 0.94, 0.92);
+    CHECK(feedback_loops == 0);
+    CHECK(surface_as_fresh(surface));
+    CHECK(feedback_loops == 0);
+    memcpy(fl + 3 * MB_INST, fl + 4 * MB_INST, MB_INST * sizeof(double));
+    glass_forget();
+    gl_present(fl, 4, 0.94, 0.94, 0.92);
+    unsigned char *alone = pixels_of_fb(surface);
+    printf("gles_render: two progressive foot=%.3f alone=%.3f loops=%d\n", luma_at(both, 50, 66), luma_at(alone, 50, 66),
+           feedback_loops);
+    CHECK(luma_at(both, 50, 66) > 0.5);
+    CHECK(foot_same(both, alone, 46 * S));
+    free(both);
+    free(alone);
+
+    // (2) A progressive blur, then a liquid glass capsule (kind 6) and a frosted glass (kind 5), against those alone.
+    double later[2 * MB_INST];
+    rect_at(later, 12, 30, 44, 12, 6, 0.99, 0.99, 0.99, -53);
+    later[4] = 6.0;
+    later[6] = 1.0;
+    later[7] = 2.0;
+    later[11] = 0x67 / 255.0;
+    later[13] = 8.0;
+    later[14] = -1.0;
+    later[15] = 1.0;
+    later[21] = 4.0;
+    rect_at(later + MB_INST, 0, 53, W, 22, 5, 0.96, 0.96, 0.96, -52);
+    later[MB_INST + 6] = 1.1;
+    later[MB_INST + 7] = 4.0;
+    later[MB_INST + 11] = 0.35;
+    later[MB_INST + 15] = 1.0;
+    memcpy(fl, base, sizeof base);
+    progressive_at(fl + 3 * MB_INST, 0, 22, 1, -50);
+    memcpy(fl + 4 * MB_INST, later, sizeof later);
+    glass_forget();
+    feedback_loops = 0;
+    gl_present(fl, 6, 0.94, 0.94, 0.92);
+    CHECK(glGetError() == GL_NO_ERROR);
+    CHECK(feedback_loops == 0);
+    CHECK(!level_left_bound());
+    both = pixels_of_fb(surface);
+    gl_present(fl, 6, 0.94, 0.94, 0.92);
+    CHECK(feedback_loops == 0);
+    CHECK(surface_as_fresh(surface));
+    memcpy(fl + 3 * MB_INST, later, sizeof later);
+    glass_forget();
+    gl_present(fl, 5, 0.94, 0.94, 0.92);
+    alone = pixels_of_fb(surface);
+    printf("gles_render: progressive then glass capsule=%.3f frost=%.3f loops=%d\n", luma_at(both, 34, 36),
+           luma_at(both, 50, 66), feedback_loops);
+    CHECK(luma_at(both, 34, 36) > 0.5);
+    CHECK(luma_at(both, 50, 66) > 0.5);
+    CHECK(foot_same(both, alone, 26 * S));
+    free(both);
+    free(alone);
+
+    // (3) A progressive blur, then two lenses (kind 8), red and blue under them; the frame again, and anew.
+    memcpy(fl, base, sizeof base);
+    progressive_at(fl + 3 * MB_INST, 0, 22, 1, -50);
+    lens_at(fl + 4 * MB_INST, 5, 30, 1.0, 0.0, 0.0);
+    lens_at(fl + 6 * MB_INST, 55, 30, 0.0, 0.0, 1.0);
+    glass_forget();
+    feedback_loops = 0;
+    gl_present(fl, 8, 0.94, 0.94, 0.92);
+    CHECK(glGetError() == GL_NO_ERROR);
+    CHECK(feedback_loops == 0);
+    CHECK(!level_left_bound());
+    both = pixels_of_fb(surface);
+    gl_present(fl, 8, 0.94, 0.94, 0.92);
+    CHECK(glGetError() == GL_NO_ERROR);
+    CHECK(feedback_loops == 0);
+    alone = pixels_of_fb(surface);
+    CHECK(memcmp(both, alone, (size_t)fb_w * fb_h * 4) == 0);
+    free(alone);
+    CHECK(surface_as_fresh(surface));
+    CHECK(feedback_loops == 0);
+    const unsigned char *red = both + ((fb_h - 1 - 50 * S) * fb_w + 25 * S) * 4;
+    const unsigned char *blue = both + ((fb_h - 1 - 50 * S) * fb_w + 75 * S) * 4;
+    printf("gles_render: two lenses red=%d,%d,%d blue=%d,%d,%d loops=%d\n", red[0], red[1], red[2], blue[0], blue[1],
+           blue[2], feedback_loops);
+    CHECK((int)red[0] - (int)red[2] > 100);
+    CHECK((int)blue[2] - (int)blue[0] > 100);
+    free(both);
+    glass_forget();
+  }
+
   // Progressive blur small-radius anti-ghosting regression: 1pt and 1px dark vertical/horizontal strokes over
   // a light background under blur=8.5, fade_h=68 progressive blur at both 2x and 1x scale must produce strictly
   // unimodal profiles (no 9-tap comb ghosting / secondary dark peaks) and monotonically attenuate center contrast.
@@ -1833,6 +2067,134 @@ int main(void) {
 
       glDeleteFramebuffers(1, &big_fb);
       glDeleteTextures(1, &big_tex);
+    }
+
+    // (5) Perf-31: multi-dirty-rect partial redraw de-amplification (single VBO upload, grab_in_cut skip,
+    //     kind 8 lens skip, conservative CPU scissor culling for non-glass runs, byte-for-byte parity).
+    {
+      int pw_pt = 400, ph_pt = 600, psc = 2;
+      fb_w = pw_pt * psc;
+      fb_h = ph_pt * psc;
+      cur_w = pw_pt;
+      cur_h = ph_pt;
+      cur_scale = psc;
+      target_fb = p30_fb;
+      glBindFramebuffer(GL_FRAMEBUFFER, p30_fb);
+      canvas_ok = 0;
+      glass_free();
+
+      // Build a rich scene: 400 grid rects + 1 shadow + 1 clipped/oclipped rect + 1 rotated rect +
+      // 2 frosted glass groups (top y=10..50, bottom y=540..580) + 1 foreground lens (kind 8 + 2 children at y=280..320).
+      const int GRID_N = 400;
+      const int TOTAL = GRID_N + 8;
+      double *sc = (double *)calloc((size_t)TOTAL * MB_INST, sizeof(double));
+      for (int i = 0; i < GRID_N; i++) {
+        int col = i % 20, row = i / 20;
+        double x = 8.0 + col * 19.0;
+        double y = 60.0 + row * 23.0;
+        rect_at(sc + (size_t)i * MB_INST, x, y, 14.0, 16.0, 0,
+                0.2 + 0.03 * col, 0.25 + 0.03 * row, 0.55, 0);
+        sc[(size_t)i * MB_INST + 18] = pw_pt;
+        sc[(size_t)i * MB_INST + 19] = ph_pt;
+      }
+      int idx = GRID_N;
+      // Shadow (kind 2) near (26, 100)
+      rect_at(sc + (size_t)idx * MB_INST, 26, 100, 24, 20, 2, 0.0, 0.0, 0.0, 0);
+      sc[(size_t)idx * MB_INST + 7] = 6.0;
+      sc[(size_t)idx * MB_INST + 11] = 0.45;
+      sc[(size_t)idx * MB_INST + 18] = pw_pt; sc[(size_t)idx * MB_INST + 19] = ph_pt;
+      idx++;
+      // Clipped + outer-clipped rect (active a_orc -> a_oclip clips it inside [300, 440] x [340, 470])
+      rect_at(sc + (size_t)idx * MB_INST, 290, 430, 60, 50, 0, 0.85, 0.25, 0.15, 0);
+      sc[(size_t)idx * MB_INST + 16] = 295; sc[(size_t)idx * MB_INST + 17] = 435;
+      sc[(size_t)idx * MB_INST + 18] = 345; sc[(size_t)idx * MB_INST + 19] = 475;
+      sc[(size_t)idx * MB_INST + 40] = 300; sc[(size_t)idx * MB_INST + 41] = 440;
+      sc[(size_t)idx * MB_INST + 42] = 340; sc[(size_t)idx * MB_INST + 43] = 470;
+      sc[(size_t)idx * MB_INST + 44] = 6.0; sc[(size_t)idx * MB_INST + 45] = 6.0;
+      sc[(size_t)idx * MB_INST + 46] = 6.0; sc[(size_t)idx * MB_INST + 47] = 6.0;
+      idx++;
+      // Rotated rect near (190, 150)
+      rect_at(sc + (size_t)idx * MB_INST, 180, 140, 26, 26, 0, 0.15, 0.80, 0.35, 0);
+      sc[(size_t)idx * MB_INST + 18] = pw_pt; sc[(size_t)idx * MB_INST + 19] = ph_pt;
+      sc[(size_t)idx * MB_INST + 32] = 0.6;
+      sc[(size_t)idx * MB_INST + 33] = 193.0;
+      sc[(size_t)idx * MB_INST + 34] = 153.0;
+      idx++;
+      // Glass group 1 at top (y=10..50)
+      rect_at(sc + (size_t)idx * MB_INST, 20, 10, 360, 40, 5, 0.96, 0.96, 0.96, -71);
+      sc[(size_t)idx * MB_INST + 7] = 6.0;
+      sc[(size_t)idx * MB_INST + 11] = 0.45;
+      sc[(size_t)idx * MB_INST + 18] = pw_pt; sc[(size_t)idx * MB_INST + 19] = ph_pt;
+      idx++;
+      // Glass group 2 at bottom (y=540..580)
+      rect_at(sc + (size_t)idx * MB_INST, 20, 540, 360, 40, 5, 0.96, 0.96, 0.96, -72);
+      sc[(size_t)idx * MB_INST + 7] = 6.0;
+      sc[(size_t)idx * MB_INST + 11] = 0.45;
+      sc[(size_t)idx * MB_INST + 18] = pw_pt; sc[(size_t)idx * MB_INST + 19] = ph_pt;
+      idx++;
+      // Foreground lens (kind 8) with 2 children at (140, 280, 120, 40)
+      rect_at(sc + (size_t)idx * MB_INST, 140, 280, 120, 40, 8, 1.0, 1.0, 1.0, 0);
+      sc[(size_t)idx * MB_INST + 4] = 12.0;
+      sc[(size_t)idx * MB_INST + 7] = 2.0;
+      sc[(size_t)idx * MB_INST + 11] = 1.0;
+      sc[(size_t)idx * MB_INST + 12] = 2.0; // child_n = 2
+      sc[(size_t)idx * MB_INST + 14] = 4.0;
+      sc[(size_t)idx * MB_INST + 18] = pw_pt; sc[(size_t)idx * MB_INST + 19] = ph_pt;
+      idx++;
+      rect_at(sc + (size_t)idx * MB_INST, 150, 288, 40, 24, 0, 0.90, 0.30, 0.20, 0);
+      sc[(size_t)idx * MB_INST + 18] = pw_pt; sc[(size_t)idx * MB_INST + 19] = ph_pt;
+      idx++;
+      rect_at(sc + (size_t)idx * MB_INST, 200, 288, 45, 24, 0, 0.20, 0.45, 0.90, 0);
+      sc[(size_t)idx * MB_INST + 18] = pw_pt; sc[(size_t)idx * MB_INST + 19] = ph_pt;
+      idx++;
+      CHECK(idx == TOTAL);
+
+      // Whole frame first (primes canvas_ok = 1 via dirty whole).
+      mb_host_render_dirty(0, 0, pw_pt, ph_pt);
+      gl_present(sc, TOTAL, 0.92, 0.93, 0.95);
+      CHECK(surface_as_whole(p30_fb));
+      CHECK(surface_as_fresh(p30_fb));
+
+      // Case A: 4 small disjoint dirty rects away from both glass groups and the lens.
+      // Invalidate glass slots to prove neither off-rect glass group triggers capture()/blur().
+      slots_invalidate();
+      sc[21 * MB_INST + 8] = 0.95; // near (27, 83)
+      sc[88 * MB_INST + 9] = 0.90; // near (160, 152)
+      sc[310 * MB_INST + 10] = 0.10; // near (198, 405)
+      sc[(GRID_N + 1) * MB_INST + 9] = 0.85; // oclipped rect at (300..340, 440..470)
+      int vbo0 = vbo_uploads, blurs0 = blurs_made, draws0 = instanced_draws, inst0 = instanced_total;
+      mb_host_render_dirty(8, 78, 56, 52);      // covers shadow + rect 21 (clear of top glass y<=70)
+      mb_host_render_dirty(155, 130, 60, 50);   // covers rotated rect + rect 88
+      mb_host_render_dirty(190, 398, 30, 30);   // covers rect 310
+      mb_host_render_dirty(292, 432, 56, 46);   // covers oclipped rect
+      gl_present(sc, TOTAL, 0.92, 0.93, 0.95);
+      int vbo_d = vbo_uploads - vbo0;
+      int blurs_d = blurs_made - blurs0;
+      int draws_d = instanced_draws - draws0;
+      int inst_d = instanced_total - inst0;
+      printf("gles_render: Perf-31 4-rect partial: vbo_uploads=%d blurs=%d draws=%d inst_submitted=%d (unculled=%d)\n",
+             vbo_d, blurs_d, draws_d, inst_d, 4 * TOTAL);
+      CHECK(vbo_d == 1);
+      CHECK(blurs_d == 0);
+      CHECK(inst_d < TOTAL); // <25% of 4*TOTAL
+      CHECK(surface_as_whole(p30_fb));
+      CHECK(surface_as_fresh(p30_fb));
+
+      // Case B: 2 dirty rects, one covering top glass + one covering the kind 8 lens; bottom glass remains untouched.
+      slots_invalidate();
+      sc[(GRID_N + 6) * MB_INST + 8] = 0.15; // lens child 1 color change
+      sc[0 * MB_INST + 8] = 0.95;            // rect near top glass
+      vbo0 = vbo_uploads;
+      blurs0 = blurs_made;
+      mb_host_render_dirty(0, 0, 400, 80);    // covers top glass
+      mb_host_render_dirty(120, 260, 160, 80); // covers kind 8 lens
+      gl_present(sc, TOTAL, 0.92, 0.93, 0.95);
+      CHECK(vbo_uploads - vbo0 == 1);
+      CHECK(blurs_made - blurs0 == 1); // only top glass blurred, bottom glass skipped!
+      CHECK(surface_as_whole(p30_fb));
+      CHECK(surface_as_fresh(p30_fb));
+
+      free(sc);
     }
 
     glDeleteFramebuffers(1, &p30_fb);

@@ -105,7 +105,9 @@ test("Chrome is started as a person's browser: no automation switches, headless 
   const headless = chromeArgs({ profile: "/p", port: 9333, headless: true, userAgent: "UA" });
   assert.ok(headless.includes("--headless=new") && headless.includes("--remote-debugging-port=9333") && headless.includes("--user-agent=UA"));
   assert.ok(headless.includes("--force-device-scale-factor=2"), "drawn at twice its CSS pixels: a phone's view of it is cast sharp");
+  assert.ok(headless.includes("--screen-info={2880x1800}"), "headless virtual screen matches 1440x900 @2x instead of 400x300");
   assert.ok(!headful.some((a) => a.startsWith("--force-device-scale-factor")), "a headful one is drawn at its screen's own scale");
+  assert.ok(!headful.some((a) => a.startsWith("--screen-info")), "a headful one uses its real display screen");
   assert.ok(!headless.includes("--no-startup-window"));
   assert.equal(
     headfulAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36"),

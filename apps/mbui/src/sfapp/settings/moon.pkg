@@ -11,3 +11,7 @@ import {
   "mbui/signals",
   "mbui/view",
 }
+
+import {
+  "mbui/halt",
+} for "wbtest"

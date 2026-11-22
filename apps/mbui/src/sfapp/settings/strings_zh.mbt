@@ -1666,8 +1666,6 @@ let zh : Map[String, String] = {
   "web-pages.stations.agentEnvLine": "第 {line} 行：{problem}",
   "web-pages.stations.agentEnvRead": "读取环境变量",
   "web-pages.stations.agentEnvSave": "保存环境变量",
-  "web-pages.stations.device": "设备信息",
-  "web-pages.stations.deviceOffline": "离线，暂无设备信息",
   "web-pages.stations.joinedElsewhere": "来自其他 workspace",
   "web-pages.stations.joinedFrom": "来自 {name}",
   "web-pages.stations.thisMachine": "本机",

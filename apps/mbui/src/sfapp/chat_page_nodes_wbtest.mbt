@@ -2681,3 +2681,149 @@ test "小屏, a chat's capsule over the composer: the composer opened under it, 
   assert_true((gap - 8.0).abs() < 0.5, msg="opened: capsule to 子会话 \{gap}")
   assert_eq(t.audit(), [])
 }
+
+///|
+/// Count rounded skeleton bars drawn inside the chat message area (`top` .. `foot`, right of `left`).
+fn waiting_bone_bars(t : @ui.Tester, left : Double, top : Double, foot : Double) -> Int {
+  let mut count = 0
+  for r in t.drawn_rects() {
+    let (x, y, w, h, _) = r
+    if x >= left && y >= top && y + h <= foot && w >= 20.0 && h >= 8.0 && h <= 60.0 {
+      count += 1
+    }
+  }
+  count
+}
+
+///|
+test "a chat's page while waiting: shows skeleton bones under the bar, then switches cleanly to real messages keeping composer focus" {
+  for screen in [("小屏", 390.0, 844.0, 2, 0.0), ("大屏", 1280.0, 800.0, 0, 296.0)] {
+    let (name, w, h, platform, left) = screen
+    new_run()
+    let ready = @signals.signal(false)
+    let base = fixture("chat")
+    let src : Source = {
+      ..base,
+      topic_read: fn(topic, params) {
+        if topic == "chat" && !ready.get() {
+          { value: None, error: None, version: -1 }
+        } else {
+          base.topic(topic, params).get().snapshot()
+        }
+      },
+    }
+    open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+    // Before @sf.later_ms (400ms), fast local loads show no skeleton bones.
+    t.run_for(@sf.later_ms / 2.0)
+    assert_eq(waiting_bone_bars(t, left, 45.0, h - 80.0), 0, msg="\{name}: no skeleton bones before later_ms")
+    // Once waiting passes @sf.later_ms, skeleton bones appear.
+    t.run_for(@ui.move_most_ms * 4.0)
+    // Composer is present at the bottom while waiting.
+    let mut fields : Array[(Double, Double, Double, Double)] = []
+    for s in t.semantics() {
+      if s.role == @ui.Role::TextField && s.rect.0 >= left {
+        fields.push(s.rect)
+      }
+    }
+    assert_eq(fields.length(), 1, msg="\{name}: exactly one composer field while waiting")
+    let (fx, fy, fw, fh) = fields[0]
+    let bars = waiting_bone_bars(t, left, 45.0, fy)
+    assert_true(bars >= 6, msg="\{name}: expected skeleton bars while waiting, got \{bars}")
+    let faults = t
+      .audit()
+      .filter(fn(f) { !(f.contains("stillfail/sf/src/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
+    assert_eq((name, faults), (name, []))
+    // Focus composer and type while waiting, then let data arrive.
+    t.tap(fx + fw / 2.0, fy + fh / 2.0)
+    t.run_for(@ui.move_most_ms)
+    t.type_text("先看第三项")
+    t.run_for(@ui.move_most_ms)
+    let w = @sfbase.writing(src, "ws1/st1:s-c1")
+    let focused_before = focus_said(t)
+    assert_true(t.focused().map_or(false, fn(s) { s.role == @ui.Role::TextField }), msg="\{name}: focused before load: \{focused_before}")
+    assert_eq(w.text.get(), "先看第三项", msg=name)
+    ready.set(true)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.rect_of("做完了：列表、跳到最新的按钮") is Some(_), msg="\{name}: real messages shown after load")
+    assert_eq(w.text.get(), "先看第三项", msg="\{name}: draft preserved after load")
+    // Still only one composer field and focus stays in it.
+    fields = []
+    for s in t.semantics() {
+      if s.role == @ui.Role::TextField && s.rect.0 >= left {
+        fields.push(s.rect)
+      }
+    }
+    assert_eq(fields.length(), 1, msg="\{name}: no duplicate composer after load")
+    assert_true(
+      t.focused().map_or(false, fn(s) { s.role == @ui.Role::TextField }),
+      msg="\{name}: composer field stayed focused across load (before=\{focused_before}, after=\{focus_said(t)})",
+    )
+  }
+}
+
+///|
+test "a chat's page when unreadable: shows localized error pill below top bar over still skeleton bones" {
+  for screen in [("小屏", 390.0, 844.0, 2, 0.0, 56.0), ("大屏", 1280.0, 800.0, 0, 296.0, 45.0)] {
+    let (name, w, h, platform, left, min_top) = screen
+    new_run()
+    let src = @sffixture.failed_topics(fixture("chat"), ["chat"], "没有这个对话")
+    open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+    t.run_for(@ui.move_most_ms * 4.0)
+    let want = "无法读取此对话：没有这个对话"
+    guard t.rect_of(want) is Some((ex, ey, ew, eh)) else {
+      fail("\{name}: error text \{want} not drawn")
+    }
+    assert_true(ex >= left && ey >= min_top, msg="\{name}: error pill obscured by bar: \{Repr((ex, ey, ew, eh))}")
+    let mut composer_y = h
+    for s in t.semantics() {
+      if s.role == @ui.Role::TextField && s.rect.0 >= left && s.rect.1 < composer_y {
+        composer_y = s.rect.1
+      }
+    }
+    assert_true(ey + eh < composer_y, msg="\{name}: error pill over composer")
+    let bars = waiting_bone_bars(t, left, ey + eh, composer_y)
+    assert_true(bars >= 6, msg="\{name}: expected still skeleton bars under error pill, got \{bars}")
+    // Skeleton stops breathing on error: no animation frames requested at rest.
+    t.assert_idle()
+    let faults = t
+      .audit()
+      .filter(fn(f) { !(f.contains("stillfail/sf/src/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
+    assert_eq((name, faults), (name, []))
+  }
+}
+
+///|
+test "a chat just created from NewChat: shows no skeleton bones while its first message is in flight" {
+  new_run()
+  let base = fixture("home")
+  let src : Source = {
+    ..base,
+    topic_read: fn(topic, params) {
+      if topic == "chat" {
+        { value: None, error: None, version: -1 }
+      } else {
+        base.topic(topic, params).get().snapshot()
+      }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  let (_, y) = bar_places_at()
+  t.tap(bar_action_x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() is NewChat)
+  t.tap_text("做任何事")
+  t.type_text("看下进度")
+  t.draw()
+  tap_send(t)
+  t.draw()
+  assert_true(app.nav.top() is Chat(_))
+  // Even with the chat topic held, fresh_view / from_fresh suppresses the waiting skeleton while sending.
+  for _ in [0, 1, 2, 3] {
+    t.run_for(@sfbase.new_leave_ms / 3.0)
+    assert_true(t.rect_of("无法读取此对话：") is None)
+    assert_true(t.rect_of("看下进度") is Some(_), msg="sent first message stays visible without skeleton flash")
+  }
+}

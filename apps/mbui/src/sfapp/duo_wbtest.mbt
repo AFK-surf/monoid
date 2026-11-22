@@ -1461,7 +1461,7 @@ test "an iPhone Duo: the chat's station's screens a button of the system's bars,
 test "Duo chat's services go in the system's column, opening beside it" {
   let t = native_chat(951.0, 669.0, true, side=84.0, mode="chat-jobs")
   assert_eq(nav_icon_of(t, "page/chat/jobs"), Some(@sf.icon_path("web")))
-  let services = @sf.t("web-pages.chat.services")
+  let services = @sf.t("web-main.jobs.services")
   assert_false(t.semantics().iter().any(fn(s) { s.label == services }), msg="the page's own button left in the title bar")
   t.post(@hostapi.system_channel, "{\"nav\":\"page/chat/jobs\",\"at\":[867,120,84,44]}")
   t.frames_owed()
@@ -1479,13 +1479,34 @@ test "Duo's short column has the chat's services in its …, none in the page" {
   t.frame()
   t.run_for(@ui.move_most_ms)
   assert_true(nav_icon_of(t, "page/chat/jobs") is None)
-  let services = @sf.t("web-pages.chat.services")
+  let services = @sf.t("web-main.jobs.services")
   assert_false(t.semantics().iter().any(fn(s) { s.label == services }), msg="the page's own button left in the title bar")
   assert_eq(nav_icon_of(t, "page/chat/more/0", field="title"), Some(services), msg=t.nav_said())
   // chosen: its popover
   t.post(@hostapi.system_channel, "{\"nav\":\"page/chat/more/0\"}")
   t.frames_owed()
   assert_true(@sfdesk.chat_pops_open().1)
+}
+
+///|
+test "Duo background-only chat hides page/chat/jobs in the system's column" {
+  new_run()
+  let base = fixture("chat-jobs")
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let got = base.topic(name, params).get().snapshot()
+      if name == "chatJobs" {
+        return { ..got, value: Some({ "hasJobs": true, "hasServices": false, "backgroundCount": 1, "jobs": [], "alarm": Json::null(), "serviceAlarm": Json::null() }) }
+      }
+      got
+    },
+  }
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=951.0, h=669.0, platform=1, nav_able=true)
+  t.post(@hostapi.system_channel, "{\"bars\":{\"top\":0,\"bottom\":20,\"left\":0,\"right\":84}}")
+  t.run_for(@ui.move_most_ms)
+  assert_true(nav_icon_of(t, "page/chat/jobs") is None, msg=t.nav_said())
 }
 
 ///|

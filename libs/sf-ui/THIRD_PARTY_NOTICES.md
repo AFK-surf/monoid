@@ -47,3 +47,22 @@ The following embedded or generated assets in `libs/sf-ui/src/` originate from t
   - **First-party still.fail brand marks & illustrations**: `stillfail_mark*`, `launcher_icon*`, `illus_sign_in*`, `illus_new_chat*`, `illus_no_station*`, `illus_no_profile*`, `illus_station_offline*` (MIT License; brand trademarks belong to still.fail).
   - **Third-party AI provider, developer tool, and IM platform logos** (`maker_*`, `tool_*`, `slack`, `feishu`, `comma`, `group`): e.g. Anthropic, OpenAI, DeepSeek, Qwen, Zhipu, Gemini, Kimi, MiniMax, xAI, Mistral, Xiaomi, OpenRouter, Vercel, Cloudflare, Azure, Groq, Together, Fireworks, Cerebras, Hugging Face, NVIDIA, Baseten, Cursor, Devin, Meta, Tencent, Docker, Firebase, GitHub, Google Cloud, Kubernetes, Netlify, npm, Python, Stripe, Supabase, Terraform, Slack, Feishu.
 - **Trademark & Compliance Notice**: All third-party logos remain the trademarks and intellectual property of their respective owners and are NOT covered by the MIT License. Before publishing `ui.monoid` as a standalone public package, `drawable_data.mbt` should be moved back to `apps/mbui` or split into an optional app-level asset pack (see `docs/STANDALONE_AUDIT.md` §1 & §3).
+
+---
+
+## 6. Liquid Glass Interaction & Optical Model (`src/glass/`)
+
+### AndroidLiquidGlass
+
+- **Ported files**: `libs/sf-ui/src/glass/tokens.mbt`, `damped_drag.mbt`, `interactive_highlight.mbt`, `liquid_toggle.mbt`, `liquid_slider.mbt`
+- **Upstream project**: AndroidLiquidGlass (`catalog/components`, `catalog/utils`) — <https://github.com/Kyant0/AndroidLiquidGlass> (ported from revision `eb4a0ea2e17542ea28c2e71088f7dd9acf77aad5`)
+- **Copyright**: Copyright 2025 Kyant
+- **License**: Apache License 2.0 — <https://www.apache.org/licenses/LICENSE-2.0>
+- **Notes**: Rewritten in MoonBit over mbui's window tree, `@headless` components, `@motion` closed-form ways, and `@paint.Glass::liquid`. Each ported file retains its Apache-2.0 header noting the upstream Kotlin file.
+
+### flutter_liquid_glass
+
+- **Referenced files**: `libs/sf-ui/src/glass/tokens_controls.mbt`, `tokens_overlays.mbt` (iOS 27 optical parameters for `@paint.Glass::liquid`)
+- **Upstream project**: `whynotmake-it/flutter_liquid_glass` — <https://github.com/whynotmake-it/flutter_liquid_glass>
+- **License**: MIT License
+- **Notes**: Optical material calibration (uniform blur, quarter-circle bevel refraction, adaptive light/dark color transfer, inner bevel shadow, glint, and external contour) for mbui's `@paint.Glass::liquid` recipes.

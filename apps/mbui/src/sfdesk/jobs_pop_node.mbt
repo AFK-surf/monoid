@@ -17,17 +17,23 @@ fn jobs_pop_node(
   summary : () -> Json?,
   service : (String) -> Unit,
   tab : (String) -> Unit,
+  services_only? : Bool = false,
 ) -> Unit {
   let tips = match @sf.panel_tips_of(v) {
     Some(t) => t
     None => @sf.TipLayer::new(fn() { None })
   }
   let jobs = fn() { items(view(), "jobs") }
+  let shown_jobs = fn() { if services_only { jobs().filter(fn(j) { flag(Some(j), "service") }) } else { jobs() } }
   // (0 nothing said yet, 1 none, 2 its jobs)
   let shows = fn() {
     match (view(), summary()) {
-      (Some(_), _) => if jobs().length() == 0 { 1 } else { 2 }
-      (None, Some(Object(s))) if s.get("hasJobs") is Some(False) => 1
+      (Some(_), _) => if shown_jobs().length() == 0 { 1 } else { 2 }
+      (None, Some(Object(s)) as sum) if (if services_only {
+        !@sfbase.chat_jobs_has_services(sum)
+      } else {
+        s.get("hasJobs") is Some(False)
+      }) => 1
       (None, _) => 0
     }
   }
@@ -92,12 +98,20 @@ fn jobs_pop_node(
         })
       }
       group(true)
-      group(false)
+      if !services_only {
+        group(false)
+      }
     })
     |> ignore
     p.box(fn(foot) {
       @sf.style_node(foot, fn() { jobs_foot })
-      let words = fn() { text(view(), "allText") + " · " + @sf.t("web-main.jobs.inPanel") }
+      let words = fn() {
+        if services_only {
+          @sf.t("web-main.jobs.inPanel")
+        } else {
+          text(view(), "allText") + " · " + @sf.t("web-main.jobs.inPanel")
+        }
+      }
       @sf.action_box_node(foot, words, fn(_) { tab("") }, fn(b) {
         @sf.style_node(b, fn() { jobs_all.then(jobs_pop_round) }, in_row=true)
         @sf.hover_ground_node(b)

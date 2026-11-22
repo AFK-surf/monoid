@@ -309,25 +309,7 @@ fn wide_bar_scrim_node(
   fade_h : (@view.View) -> Double,
   ground : (@view.View) -> Int64,
 ) -> Unit {
-  parent.box(fn(scrim) {
-    scrim
-    .over(Is(true), from_top=true)
-    .width_share(Is(1.0))
-    .height(By(fn() { Some(base_h(scrim)) }))
-    .fades(By(fn() { (0.0, 0.0, 0.0, fade_h(scrim)) }))
-    |> ignore
-    scrim.box(fn(fill) {
-      fill
-      .width_share(Is(1.0))
-      .height_share(Is(1.0))
-      .glass(By(fn() { if base_h(fill) > 0.0 { Some(@sf.glass_scroll_edge(ground=ground(fill))) } else { None } }))
-      .points(Is(false))
-      |> ignore
-      fill.pointed() |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
+  @sf.top_scroll_edge_by_node(parent, base_h, fade_h, ground, from_top=true, shield=true) |> ignore
 }
 
 ///|
@@ -588,6 +570,37 @@ fn wide_glass_capsule(b : @view.View) -> Unit {
 }
 
 ///|
+/// Compact station offline / updating status inline inside a composer-top station capsule on Medium/Large screens.
+fn wide_station_status_node(
+  parent : @view.View,
+  is_offline : () -> Bool,
+  is_updating : () -> Bool,
+) -> Unit {
+  parent.show(fn() { is_updating() || is_offline() }, at_once=true, fn(st) {
+    st.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::S1.px())).shrink(Is(0.0)) |> ignore
+    st.pick(at_once=true, is_updating, fn(x, updating) {
+      if updating {
+        x.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::S1.px())).shrink(Is(0.0)) |> ignore
+        @sf.updating_mark_node(x, 12.0, fn() { @sf.theme().p.muted })
+        @sf.words_node(x, fn() { @sf.t("web-main.stationUpdate.updating") }, fn() { wide_station_status_muted })
+        |> ignore
+      } else {
+        @sf.words_node(x, fn() { @sf.t("web-pages.stations.offline") }, fn() { wide_station_status_offline })
+        |> ignore
+      }
+    })
+  })
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let wide_station_status_muted : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
+let wide_station_status_offline : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger, wrap=false)
+
+///|
 /// The machine the chat runs on above the composer while it has no agent to share a capsule with:
 /// single-layer 30pt liquid glass capsule with the station's mark and its via dot (@sfpages.station_via_mark_node) and name.
 fn wide_station_tag(
@@ -595,6 +608,9 @@ fn wide_station_tag(
   address : String,
   s : Station,
   via : () -> String,
+  is_offline : () -> Bool,
+  is_updating : () -> Bool,
+  offline_note : () -> String,
   tips : @sf.TipLayer,
   stint : () -> Int,
 ) -> Unit {
@@ -604,8 +620,8 @@ fn wide_station_tag(
     k.padding(Is((10.0, 0.0, 10.0, 0.0))).gap(Is(6.0)) |> ignore
     @sf.hover_ground_node(k, lit=Some(hot))
     k.says(Is(Some(@view.said(Group, label=s.name)))) |> ignore
-    @sf.hover_card_node(tips, k, fn(c) { @settings.station_peek_card_node(c, address, stint) }, tile=true, padded=false, side=Top, tapped=fn() {
-      @settings.open_station_peek(address, from=Node(k))
+    @sf.hover_card_node(tips, k, fn(c) { @settings.station_peek_card_node(c, address, stint, offline_note~) }, tile=true, padded=false, side=Top, tapped=fn() {
+      @settings.open_station_peek(address, from=Node(k), offline_note~)
     })
     |> ignore
     @sfpages.station_via_mark_node(k, fn() { s.emoji }, fn() { s.icon }, via, fn() { @sf.theme().p.text }, stint)
@@ -621,6 +637,7 @@ fn wide_station_tag(
       |> ignore
     })
     |> ignore
+    wide_station_status_node(k, is_offline, is_updating)
   })
   |> ignore
 }
@@ -683,6 +700,9 @@ fn wide_station_group_tile(
   marked_of : (String) -> () -> Bool,
   station_now : () -> Station?,
   via : () -> String,
+  is_offline : () -> Bool,
+  is_updating : () -> Bool,
+  offline_note : () -> String,
   tips : @sf.TipLayer,
   stint : () -> Int,
 ) -> Unit {
@@ -718,7 +738,7 @@ fn wide_station_group_tile(
             })
             |> ignore
             if @signals.untracked(station_now) is Some(_) {
-              @settings.station_peek_part_node(c, r.station, stint)
+              @settings.station_peek_part_node(c, r.station, stint, offline_note~)
             }
           },
           tile=true,
@@ -741,7 +761,7 @@ fn wide_station_group_tile(
           .gap(Is(6.0))
           .lines_up(Is(Some(Middle)))
           |> ignore
-          wide_station_inline(sp, station_now, via, stint)
+          wide_station_inline(sp, station_now, via, is_offline, is_updating, stint)
         })
         |> ignore
         p.box(fn(sep) {
@@ -787,22 +807,22 @@ fn wide_station_group_tile(
         |> ignore
         sp.says(By(fn() { station_now().map(fn(s) { @view.said(Group, label=s.name) }) })) |> ignore
         if touch_multi {
-          wide_station_inline(sp, station_now, via, stint)
+          wide_station_inline(sp, station_now, via, is_offline, is_updating, stint)
         } else {
           let hot = fn() { @sf.lit_within_node(sp) }
           @sf.hover_ground_node(sp, lit=Some(hot))
           @sf.hover_card_node(
             tips,
             sp,
-            fn(c) { @settings.station_peek_card_node(c, r.station, stint) },
+            fn(c) { @settings.station_peek_card_node(c, r.station, stint, offline_note~) },
             tile=true,
             padded=false,
             side=Top,
-            press=fn() { @settings.open_station_peek(r.station, from=Node(sp)) },
-            tapped=fn() { @settings.open_station_peek(r.station, from=Node(sp)) },
+            press=fn() { @settings.open_station_peek(r.station, from=Node(sp), offline_note~) },
+            tapped=fn() { @settings.open_station_peek(r.station, from=Node(sp), offline_note~) },
           )
           |> ignore
-          wide_station_inline(sp, station_now, via, stint)
+          wide_station_inline(sp, station_now, via, is_offline, is_updating, stint)
         }
       })
       |> ignore
@@ -871,7 +891,7 @@ fn wide_station_group_tile(
                   })
                   |> ignore
                   if @signals.untracked(station_now) is Some(_) {
-                    @settings.station_peek_part_node(c, r.station, stint)
+                    @settings.station_peek_part_node(c, r.station, stint, offline_note~)
                   }
                 } else {
                   held.val = @sfpages.agent_card_node(c, src, r, a.key, tips, card)
@@ -951,7 +971,14 @@ fn wide_agent_inline(
 ///|
 /// Station half inside the first agent's liquid glass capsule: station mark (15pt) with its via dot on its corner, or
 /// the dot alone before the name for a station with no mark (@sfpages.station_via_mark_node), + station name.
-fn wide_station_inline(p : @view.View, station_now : () -> Station?, via : () -> String, stint : () -> Int) -> Unit {
+fn wide_station_inline(
+  p : @view.View,
+  station_now : () -> Station?,
+  via : () -> String,
+  is_offline : () -> Bool,
+  is_updating : () -> Bool,
+  stint : () -> Int,
+) -> Unit {
   @sfpages.station_via_mark_node(
     p,
     fn() { station_now().map(fn(s) { s.emoji }).unwrap_or("") },
@@ -971,6 +998,7 @@ fn wide_station_inline(p : @view.View, station_now : () -> Station?, via : () ->
   .allow_ellipsis(Is(true))
   .fit_whole(Is(true))
   |> ignore
+  wide_station_status_node(p, is_offline, is_updating)
 }
 
 ///|
@@ -1122,6 +1150,31 @@ fn wide_composer_bar_node(
       None => ""
     }
   }
+  let is_offline = fn() {
+    match view() {
+      Some(v) => v.offline
+      None => false
+    }
+  }
+  let is_updating = fn() {
+    match view() {
+      Some(v) => v.updating
+      None => false
+    }
+  }
+  let offline_note = fn() {
+    match view() {
+      Some(v) => v.offline_note.unwrap_or("")
+      None => ""
+    }
+  }
+  let via_now = fn() {
+    if is_offline() && !is_updating() {
+      "offline"
+    } else {
+      via()
+    }
+  }
   let agents = fn() {
     match view() {
       Some(v) => v.agents
@@ -1130,8 +1183,8 @@ fn wide_composer_bar_node(
   }
   let jobs_held = @sfbase.topic_value_held(src, "chatJobs", chat_jobs_summary_params(r))
   let jobs = fn() { jobs_held.get() }
-  let has_jobs = fn() { flag(jobs(), "hasJobs") || items(jobs(), "jobs").length() > 0 }
-  let alarm = fn() { if has_jobs() { text(jobs(), "alarm") } else { "" } }
+  let has_services = fn() { @sfbase.chat_jobs_has_services(jobs()) }
+  let alarm = fn() { if has_services() { @sfbase.chat_jobs_service_alarm(jobs()) } else { "" } }
   let driven = fn() {
     match view() {
       Some(v) => chat_screens_driven(v.screens)
@@ -1152,7 +1205,7 @@ fn wide_composer_bar_node(
     }
   }
   let own = fn() { !@sf.native_on() }
-  let has_right = fn() { (own() && (has_jobs() || driven())) || has_subchats() }
+  let has_right = fn() { (own() && (has_services() || driven())) || has_subchats() }
   o
   .row(Is(true))
   .fits(Is(true))
@@ -1193,7 +1246,7 @@ fn wide_composer_bar_node(
       match group_opt {
         None =>
           match @signals.untracked(station) {
-            Some(s) => wide_station_tag(k, r.station, s, via, tips, stint)
+            Some(s) => wide_station_tag(k, r.station, s, via_now, is_offline, is_updating, offline_note, tips, stint)
             None => ()
           }
         Some(group) => {
@@ -1214,7 +1267,7 @@ fn wide_composer_bar_node(
               agents().length() > 1 && front == key
             }
           }
-          wide_station_group_tile(k, src, r, group, badge_of, marked_of, station, via, tips, stint)
+          wide_station_group_tile(k, src, r, group, badge_of, marked_of, station, via_now, is_offline, is_updating, offline_note, tips, stint)
         }
       }
     },
@@ -1222,9 +1275,9 @@ fn wide_composer_bar_node(
   // Right group: live/active controls under a single `show`
   o.show(has_right, at_once=true, fn(right) {
     right.row(Is(true)).grow(Is(1.0)).lies_along(Is(End)).gap(Is(6.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
-    // Active Jobs pill
-    right.show(fn() { own() && has_jobs() }, at_once=true, fn(b) {
-      let button = @sf.action_box_node(b, fn() { @sf.t("web-pages.chat.services") }, fn(_) { jobs_pressed(src, r) }, fn(btn) {
+    // Active Web Services pill
+    right.show(fn() { own() && has_services() }, at_once=true, fn(b) {
+      let button = @sf.action_box_node(b, fn() { @sf.t("web-main.jobs.services") }, fn(_) { jobs_pressed(src, r) }, fn(btn) {
         wide_glass_capsule(btn)
         btn.padding(Is((10.0, 0.0, 10.0, 0.0))).gap(Is(5.0)) |> ignore
         @sf.hover_ground_node(btn, extra=fn() { chat_own.jobs_open.get() })
@@ -1239,7 +1292,7 @@ fn wide_composer_bar_node(
           .ground(By(fn() { if alarm() == "fail" { @sf.theme().p.red } else { @ui.tree_theme().color(Warn) } }))
           |> ignore
         })
-        @sf.tip_node(tips, btn, fn() { @sf.t("web-pages.chat.services") }, shortcut="chat.jobs") |> ignore
+        @sf.tip_node(tips, btn, fn() { @sf.t("web-main.jobs.services") }, shortcut="chat.jobs") |> ignore
       })
       if @signals.untracked(own) {
         chat_jobs_pop_node(b, src, r, Some(button))

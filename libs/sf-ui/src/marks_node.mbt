@@ -105,7 +105,7 @@ pub fn drawable_node(
   let made : Ref[@view.View?] = Ref(None)
   parent.box(made_for=loc, fn(v) {
     made.val = Some(v)
-    match drawables.get(name) {
+    match drawables.val.get(name) {
       Some(d) => {
         let tinted = match tint {
           Some(f) => @signals.untracked(f) is Some(_)
@@ -160,7 +160,7 @@ pub fn maker_mark_node(
 ///|
 /// Which maker's mark `maker` (the core's) and `runtime` (its maker's where there is none for it) come to (maker_mark's).
 fn maker_of(maker : String, runtime : String) -> String {
-  if maker != "" && drawables.contains("maker_" + maker.replace_all(old="-", new="_")) {
+  if maker != "" && drawables.val.contains("maker_" + maker.replace_all(old="-", new="_")) {
     maker
   } else {
     match runtime {
@@ -187,12 +187,12 @@ pub fn origin_mark_node(parent : @view.View, kind : () -> String, size : Double,
     d
     .width(Is(Some(size)))
     .height(By(fn() {
-      match drawables.get(name()) {
+      match drawables.val.get(name()) {
         Some(v) => Some(size * v.h / v.w)
         None => Some(size)
       }
     }))
-    .picture(By(fn() { drawables.get(name()) }))
+    .picture(By(fn() { drawables.val.get(name()) }))
     |> ignore
   })
 }
@@ -345,7 +345,7 @@ pub fn provider_logo_node(
 #callsite(autofill(loc))
 pub fn tool_mark_node(parent : @view.View, mark : String, size : Double, loc~ : SourceLoc) -> Unit {
   let name = "tool_" + mark.replace_all(old="-", new="_")
-  if mark == "" || !drawables.contains(name) {
+  if mark == "" || !drawables.val.contains(name) {
     station_mark_node(loc~, parent, fn() { "" }, fn() { "glyph:terminal" }, size, fn() { theme().p.muted }, fn() { 0 })
     return
   }

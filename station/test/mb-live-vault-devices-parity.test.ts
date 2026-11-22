@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createPublicKey, generateKeyPairSync, randomBytes, sign as nodeSign } from "node:crypto";
 import { createSocket } from "node:dgram";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
@@ -617,6 +617,11 @@ test("Vault MCP full lifecycle: secret_save, secret_list, secret_use, secret_run
   assert.equal(readFileSync(outFile, "utf8"), SECRET_VALUE, "subprocess must receive real secret value in env");
   assert.ok(!runRes.text.includes(SECRET_VALUE), `secret_run output must redact secret value, got: ${runRes.text}`);
   assert.match(runRes.text, /stdout-echo:/);
+  // A cwd given whole runs there, as paths.ts `joinPath` keeps it, never joined under the session's workspace.
+  const absDir = fresh("cwd");
+  const absRun = await tool(door, "t1", "secret_run", { grant: useReqId, cwd: absDir, command: "pwd -P" });
+  assert.equal(absRun.error, false, absRun.text);
+  assert.ok(absRun.text.includes(realpathSync(absDir)), `secret_run must run in ${absDir}, got: ${absRun.text}`);
 
   // 3) secret_describe -> approve via Admin API -> secret_list reflects updated name & about.
   const descRes = await tool(door, "t1", "secret_describe", {

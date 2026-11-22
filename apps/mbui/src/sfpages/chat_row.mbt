@@ -71,6 +71,12 @@ fn row_menu_open(item : ChatItem) -> Bool {
 }
 
 ///|
+/// Whether `item`'s row should stay lifted for its finger menu (open, or replaced in place by another open sheet).
+fn row_menu_lifting(item : ChatItem) -> Bool {
+  rows.menu_for == @sfbase.row_name(item) && @sf.presented_open_chain_of(rows.menu_serial)
+}
+
+///|
 /// What its station has not answered yet of a chat's pin, rename or archive (the core's `doing`, Sidebar.tsx
 /// useDoingState, mobile/Home.tsx useDoing): under way, or why it failed a moment ago.
 fn row_busy(src : Source, item : ChatItem) -> Bool {

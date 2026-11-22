@@ -715,11 +715,8 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
                 "total": "共 1 TB",
               },
             ],
-            "details": [
-              { "label": "主机名", "value": "willow.local" },
-              { "label": "系统", "value": "macOS 26.1 · arm64" },
-              { "label": "已运行", "value": "12 天" },
-            ],
+            "uptimeText": "已运行 12 天",
+            "madeOf": "Apple M1 Pro · 10 核 · arm64 · macOS 26.1 · willow.local",
           },
           "net": {
             "via": "direct",

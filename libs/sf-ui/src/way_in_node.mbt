@@ -68,7 +68,7 @@ pub fn way_in_page_node(
 ///|
 /// How wide drawable `name` is for how tall (1: none so named, drawn square).
 fn way_in_art_aspect(name : String) -> Double {
-  match drawables.get(name) {
+  match drawables.val.get(name) {
     Some(d) if d.h > 0.0 => d.w / d.h
     _ => 1.0
   }

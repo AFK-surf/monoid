@@ -11,7 +11,7 @@ import { fileCredentialsSoon, takeBack } from "../agents/no-keychain.ts";
 import { type AccessKind, OPENCODE, profileRuntimes, type Runtime, type Via } from "../agents/profiles.ts";
 import { type Endpoints, endpoints, find, type Source } from "../agents/providers.ts";
 import type { Capability } from "../sessions/decision.ts";
-import type { QuotaReset } from "./claude-reset.ts";
+import { claudeUserAgent, type QuotaReset } from "./claude-reset.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { claudeOAuthToken, claudeToken as tokenOf } from "./oauth.ts";
 import { CONSOLE, RenewRefused } from "./console.ts";
@@ -197,6 +197,8 @@ export type CheckOptions = {
   /// Asked again because a runtime on it was refused (Accounts.recheckProfile): a Claude subscription's login is renewed
   /// even when not due, so a refresh token revoked with its access token still cached as good is found over now.
   recheck?: boolean;
+  /// The installed Claude Code version, sent as the User-Agent on direct Anthropic OAuth calls when known.
+  claudeVersion?: string | null;
 };
 
 /// Whether Anthropic's answer refuses a Claude subscription's OAuth token: a revoked one is answered 401 or 403.
@@ -308,11 +310,12 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
     const status: Json = JSON.parse(output.stdout);
     if (status?.loggedIn !== true) return check("login", t("station.profile.signedOut"), null);
     // What the subscription runs, as Anthropic lists it for the account's own token.
+    const claudeVersion = o.claudeVersion ?? null;
     const { token, renewError } = machineToken !== undefined ? { token: machineToken, renewError: null } : await profileToken(o, urls, lang);
-    let { models, status: modelsStatus } = token === undefined ? { models: null, status: null } : await claudeModels(urls, token);
+    let { models, status: modelsStatus } = token === undefined ? { models: null, status: null } : await claudeModels(urls, token, claudeVersion);
     // Its login renewed against the token just refused (`rejected`): a refresh token refused too is a login over.
     const renew = (rejected: string) =>
-      o.machine ? o.machineToken!(o.env, rejected).then((got) => got.token) : claudeOAuthToken(o.env, o.home, rejected, urls.claudeToken, lang).then((got) => got[0]);
+      o.machine ? o.machineToken!(o.env, rejected).then((got) => got.token) : claudeOAuthToken(o.env, o.home, rejected, urls.claudeToken, lang, undefined, undefined, claudeVersion).then((got) => got[0]);
     let renewedHere = false;
     if (renewError !== null) {
       if (models === null) return check("failed", renewError.message, null);
@@ -325,7 +328,7 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
         return check("failed", e instanceof Error ? e.message : String(e), null);
       }
       renewedHere = true;
-      const retry = await claudeModels(urls, renewed);
+      const retry = await claudeModels(urls, renewed, claudeVersion);
       if (claudeAuthStatus(retry.status)) return check("login", t("station.quota.signInExpired"), null);
       models = retry.models;
     }
@@ -342,7 +345,7 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
         if (modelsStatus !== 200) return check("failed", e instanceof Error ? e.message : String(e), null);
       }
       if (renewed !== null && models === null) {
-        const retry = await claudeModels(urls, renewed);
+        const retry = await claudeModels(urls, renewed, claudeVersion);
         if (claudeAuthStatus(retry.status)) return check("login", t("station.quota.signInExpired"), null);
         models = retry.models;
       }
@@ -497,16 +500,21 @@ export function grokEmailIn(text: string): string | null {
 /// another reason (the provider, the network) is the one kept.
 async function profileToken(o: CheckOptions, urls: Urls, lang: Lang): Promise<{ token: string | undefined; renewError: Error | null }> {
   try {
-    return { token: (await claudeOAuthToken(o.env, o.home, null, urls.claudeToken, lang))[0], renewError: null };
+    return { token: (await claudeOAuthToken(o.env, o.home, null, urls.claudeToken, lang, undefined, undefined, o.claudeVersion ?? null))[0], renewError: null };
   } catch (e) {
     if (e instanceof RenewRefused) throw e;
     return { token: await tokenOf(o.home), renewError: e instanceof Error ? e : new Error(String(e)) };
   }
 }
 
-async function claudeModels(urls: Urls, token: string): Promise<{ models: string[] | null; status: number | null }> {
+async function claudeModels(urls: Urls, token: string, version: string | null = null): Promise<{ models: string[] | null; status: number | null }> {
   try {
-    const response = await get(`${urls.anthropic}/v1/models?limit=100`, { authorization: `Bearer ${token}`, "anthropic-version": "2023-06-01", "anthropic-beta": "oauth-2025-04-20" });
+    const response = await get(`${urls.anthropic}/v1/models?limit=100`, {
+      authorization: `Bearer ${token}`,
+      "anthropic-version": "2023-06-01",
+      "anthropic-beta": "oauth-2025-04-20",
+      ...claudeUserAgent(version),
+    });
     return { models: response.ok ? await modelIds(response) : null, status: response.status };
   } catch {
     return { models: null, status: null };

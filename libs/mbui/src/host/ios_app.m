@@ -125,7 +125,7 @@ static void say(NSString *s);
 static int frames_drawn;
 // how much later than its time the frame before reached the screen (mb_host_frame_late), and that frame's time (the
 // display link's target it was drawn for; -1: none drawn since the link was paused)
-static double frame_late, last_target = -1;
+static double frame_late, last_target = -1, last_settle_ms = -1;
 // The frame the app waits for (@hostapi.wake_after: a resident cycle's next step), by the time it is for (ms, the
 // display link's targets' clock), or -1; the time of the frame being built (what wake_after counts from), and the
 // display's frame (ms).
@@ -259,6 +259,7 @@ static double drawn_for;
     [self drawFor:MAX(CACurrentMediaTime() * 1000.0, drawn_for)];
     l.presentsWithTransaction = NO;
     last_target = -1;
+    last_settle_ms = -1;
   }
   [self requestFrame];
 }
@@ -281,9 +282,22 @@ static double drawn_for;
     self.wantFrame = YES;
   }
   if (!self.wantFrame) {
-    if (mb_render_adaptive_step(0)) return;
+    // Cap idle adaptive glass settle steps to <= 60 Hz on 120 Hz ProMotion displays (matches Android MBView).
+    double now_ms = l.targetTimestamp * 1000.0;
+    if (last_settle_ms >= 0 && now_ms - last_settle_ms < 15.0) {
+      if (mb_render_adaptive_settling_of(0)) return;
+      l.paused = YES;
+      last_target = -1;
+      last_settle_ms = -1;
+      return;
+    }
+    if (mb_render_adaptive_step(0)) {
+      last_settle_ms = now_ms;
+      return;
+    }
     l.paused = YES;
     last_target = -1;
+    last_settle_ms = -1;
     return;
   }
   // the frame before on the screen since the display's last refresh (the link's timestamp): past the time it was drawn
@@ -291,6 +305,7 @@ static double drawn_for;
   frame_late = last_target >= 0 ? MAX(0, l.timestamp * 1000.0 - last_target) : 0;
   [self drawFor:l.targetTimestamp * 1000.0];
   last_target = l.targetTimestamp * 1000.0;
+  last_settle_ms = -1;
   if (!self.wantFrame && !mb_render_adaptive_settling_of(0)) {
     l.paused = YES;
     last_target = -1;
@@ -1588,6 +1603,18 @@ static void watch_heat(void) {
     heat_timer_set();
 }
 
+// A push's chat brought onto the device while the app is behind (the app's core: apps/mbui's apple_engine.m; none in an
+// app without one). `away`: ms since it went behind or a push last woke it, -1 when it has not been in front. `finish`
+// on the main thread, once.
+__attribute__((weak)) void mb_core_pushed(NSString *workspace, NSString *station, NSString *session, NSString *seq, double away,
+                                          void (^finish)(BOOL brought)) {
+  (void)workspace, (void)station, (void)session, (void)seq, (void)away;
+  finish(NO);
+}
+
+static uint64_t hidden_at;
+static uint64_t push_woke_at;
+
 @implementation MBAppDelegate
 - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
   watch_heat();
@@ -1603,6 +1630,27 @@ static void watch_heat(void) {
 }
 - (void)application:(UIApplication *)app didFailToRegisterForRemoteNotificationsWithError:(NSError *)e {
   say([NSString stringWithFormat:@"push: no token: %@", e.localizedDescription]);
+}
+// A push while the app is behind: what it is about, onto the device, so a tap opens on it. In front the core's stream
+// already has it.
+- (void)application:(UIApplication *)app
+    didReceiveRemoteNotification:(NSDictionary *)info
+          fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))done {
+  NSString *(^text)(NSString *) = ^NSString *(NSString *key) {
+    return [info[key] isKindOfClass:NSString.class] ? info[key] : nil;
+  };
+  NSString *workspace = text(@"workspace"), *station = text(@"station"), *session = text(@"session");
+  if (app.applicationState != UIApplicationStateBackground || ![text(@"type") isEqualToString:@"notice"] || !workspace.length ||
+      !station.length || !session.length) {
+    done(UIBackgroundFetchResultNoData);
+    return;
+  }
+  uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+  double away = hidden_at ? (now - MAX(hidden_at, push_woke_at)) / 1e6 : -1;
+  push_woke_at = now;
+  mb_core_pushed(workspace, station, session, text(@"seq"), away, ^(BOOL brought) {
+    done(brought ? UIBackgroundFetchResultNewData : UIBackgroundFetchResultFailed);
+  });
 }
 - (UISceneConfiguration *)application:(UIApplication *)app
     configurationForConnectingSceneSession:(UISceneSession *)session
@@ -1954,7 +2002,6 @@ static void tell_state(void) {
 }
 // Off the screen (in the background) and back: how long it was away said to the app (the system's `shown`, as
 // Android's after onStop: a clock that counts the device's sleep), not as it first starts.
-static uint64_t hidden_at;
 static void watch_shown(void) {
   NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
   [nc addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:NSOperationQueue.mainQueue

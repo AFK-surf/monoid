@@ -25,20 +25,20 @@ fn stories_u17() -> Array[Story] {
           fn(card) {
             let in_use = kept("Acme")
             let row = fn(parent : @view.View, name : String, emoji : String, sub : String) {
-              @sf.workspace_row_node(
+              @sfbase.workspace_row_node(
                 parent,
                 fn() { name },
                 fn() { sub },
                 fn() { in_use.set(name) },
                 checked=fn() { in_use.get() == name },
-                lead=fn(l) { @sf.workspace_mark_node(l, fn() { emoji }, fn() { "" }, fn() { name }) },
+                lead=fn(l) { @sfbase.workspace_mark_node(l, fn() { emoji }, fn() { "" }, fn() { name }) },
               )
             }
             row(card, "Acme", "", "zuozijian@cue.surf")
             row(card, "Globex", "🚀", "")
             row(card, "Initech Research Lab", "", "admin@initech.example")
-            @sf.workspace_row_node(card, fn() { "登录其他账号" }, fn() { "用另一个账号的工作区" }, icon="log-in", fn() {  })
-            @sf.workspace_row_node(card, fn() { "新建 workspace" }, fn() { "" }, icon="plus", fn() {  })
+            @sfbase.workspace_row_node(card, fn() { "登录其他账号" }, fn() { "用另一个账号的工作区" }, icon="log-in", fn() {  })
+            @sfbase.workspace_row_node(card, fn() { "新建 workspace" }, fn() { "" }, icon="plus", fn() {  })
           },
         ),
         (
@@ -46,8 +46,8 @@ fn stories_u17() -> Array[Story] {
           fn(card) {
             let joining = kept(false)
             let answered = kept("")
-            @sf.workspace_label_node(card, fn() { "邀请" })
-            @sf.invitation_line_node(
+            @sfbase.workspace_label_node(card, fn() { "邀请" })
+            @sfbase.invitation_line_node(
               card,
               fn() { "左子健 邀请你加入 Acme" },
               fn() { "zuozijian@cue.surf" },
@@ -62,8 +62,8 @@ fn stories_u17() -> Array[Story] {
         (
           "邀请（文案多行：按钮对齐首行，放不下折到下面）",
           fn(card) {
-            @sf.workspace_label_node(card, fn() { "邀请" })
-            @sf.invitation_line_node(
+            @sfbase.workspace_label_node(card, fn() { "邀请" })
+            @sfbase.invitation_line_node(
               card,
               fn() { "左子健 邀请你加入 Initech Research Lab 的工作区，一起处理还没合并的修复和本周的发布计划" },
               fn() { "zuozijian@cue.surf" },
@@ -92,7 +92,7 @@ fn stories_u17() -> Array[Story] {
             let all = [("claude", "subscription", ""), ("codex", "subscription", ""), ("claude", "api-provider", "kimi"), ("claude", "opencode-go", "")]
             side_by_side(card, fn(r) {
               for size in [16.0, 18.0, 24.0] {
-                @sf.provider_mark_node(r, fn() { all[at.get() % all.length()] }, size)
+                @sfbase.provider_mark_node(r, fn() { all[at.get() % all.length()] }, size)
               }
               @sf.button_node(r, fn() { "换一个" }, fn() { at.set(at.get() + 1) }) |> ignore
             })
@@ -107,7 +107,7 @@ fn stories_u17() -> Array[Story] {
                 @sf.style_node(c, fn() { story_offer_card })
                 c.box(fn(h) {
                   @sf.style_node(h, fn() { story_offer_head })
-                  @sf.provider_badge_node(h, rt.0, "subscription", 18.0)
+                  @sfbase.provider_badge_node(h, rt.0, "subscription", 18.0)
                   @sf.words_node(h, fn() { rt.1 }, fn() { story_fact_words }) |> ignore
                 })
                 |> ignore

@@ -21,7 +21,10 @@
   ],
   "style": {
     "tokens": [
-      "src/tokens.mbt"
+      "src/tokens.mbt",
+      "src/glass/tokens.mbt",
+      "src/glass/tokens_controls.mbt",
+      "src/glass/tokens_overlays.mbt"
     ],
     "outside": []
   },
@@ -31,7 +34,6 @@
     ],
     "imports": [
       "mbui/",
-      "liquid-glass/",
       "moonbitlang/",
       "stillfail/sf"
     ]
@@ -205,7 +207,10 @@
     "cursor-hand": {},
     "tier-outside-shell": {},
     "fixture-import": {},
-    "motion-spring": {},
+    "motion-spring": {
+      "src/glass/damped_drag.mbt": 2,
+      "src/glass/interactive_highlight.mbt": 1
+    },
     "built-by-hand": {},
     "layout-read-back": {},
     "motion-length": {},

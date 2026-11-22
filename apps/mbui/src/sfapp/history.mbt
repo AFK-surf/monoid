@@ -310,9 +310,9 @@ fn run_row_node(v : @view.View, a : () -> Json?, press : (@sf.Anchor) -> Unit) -
           })
         })
         |> ignore
-        w.show(at_once=true, fn() { @sf.has_quota(quota()) }, fn(q) {
+        w.show(at_once=true, fn() { @sfbase.has_quota(quota()) }, fn(q) {
           q.row(Is(true)).padding(Is((0.0, 4.0, 0.0, 0.0))) |> ignore
-          @sf.quota_chips_node(q, quota)
+          @sfbase.quota_chips_node(q, quota)
         })
       })
       |> ignore

@@ -37,13 +37,27 @@ fn feedback_core(calls : Array[Made], replied? : Bool = true, value? : Json = fe
 }
 
 ///|
-test "a chat whose report the team replied on says so over its composer; one with none says nothing" {
+test "a chat whose report the team replied on says so at the bottom of its list; one with none says nothing" {
   let calls : Array[Made] = []
   let t = feedback_core(calls)
-  // (its heading and the latest reply on two lines of their own, composer_notice_node's)
   assert_true(t.find("still.fail 团队回复了 FB-12") is Some(_))
   assert_true(t.find("能再说一下出错时在跑什么吗？") is Some(_))
   assert_true(t.find("查看") is Some(_))
+  // Inline card at the bottom of the message list: below last message, non-glass, zero audit faults
+  let (_, my, _, mh) = t.rect_of("截图也换了").unwrap()
+  let (fx, fy, _, fh) = t.rect_of("still.fail 团队回复了 FB-12").unwrap()
+  assert_true(fy >= my + mh, msg="feedback card sits below last message: my+mh=\{my + mh}, fy=\{fy}")
+  let glass = t
+    .drawn_glass_corners()
+    .filter(fn(g) { g.0 < fx && g.0 + g.2 > fx && g.1 < fy && g.1 + g.3 > fy + fh })
+  assert_eq(glass.length(), 0, msg="feedback card is quiet inline surface, not floating glass")
+  assert_eq(t.audit(), [], msg="feedback card has zero audit faults")
+  // Scrolling up moves the feedback card out of the viewport with the messages
+  for _ in 0..<8 {
+    t.wheel(195.0, 400.0, -300.0)
+  }
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("still.fail 团队回复了 FB-12") is None, msg="feedback card scrolled out of viewport")
   // nothing of it is sent anywhere by being shown: no call names it
   assert_eq(calls.filter(fn(m) { m.name.contains("feedback") || m.name == "chat.send" }).length(), 0)
   let none = feedback_core([], replied=false)

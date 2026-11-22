@@ -140,7 +140,7 @@ fn viz_tone_color(tone : String, idx : Int) -> Int64 {
     "muted" | "neutral" | "gray" | "grey" | "secondary" => p.muted
     "ink" | "text" => p.text
     s =>
-      match @sf.hex_color(s) {
+      match hex_color(s) {
         Some(c) => c
         None => @sf.usage_series(idx)
       }

@@ -70,13 +70,20 @@ pub fn jobs_pressed(src : Source, r : ChatRef) -> Unit {
     }
     _ => chat_jobs_wait.val = None
   }
+  if !chat_own.jobs_open.untracked() {
+    let summary = @signals.untracked(fn() { src.topic("chatJobs", chat_jobs_summary_params(r)).get().value })
+    if summary is Some(_) && !@sfbase.chat_jobs_has_services(summary) {
+      side_tab_open(src, r, "jobs")
+      return
+    }
+  }
   if !(src.swr_views)() || src.read_only || chat_own.jobs_open.untracked() {
     toggle_jobs_pop()
     return
   }
   // (none said in so many words: a summary saying nothing of it is no word that it has none)
   let none = match @signals.untracked(fn() { jobs_summary(src, r) }) {
-    Some(Object(m)) => m.get("hasJobs") is Some(False)
+    Some(Object(_)) as s => !@sfbase.chat_jobs_has_services(s)
     _ => false
   }
   let asks = if none { [] } else { [("chatJobs", chat_params(r))] }
@@ -322,8 +329,8 @@ fn chat_bar_hand(
         None
       }
       let jobs_view = src.topic("chatJobs", chat_jobs_summary_params(r)).get().value
-      let jobs = if flag(jobs_view, "hasJobs") || items(jobs_view, "jobs").length() > 0 {
-        Some((jobs_toggle, text(jobs_view, "alarm") != ""))
+      let jobs = if @sfbase.chat_jobs_has_services(jobs_view) {
+        Some((jobs_toggle, @sfbase.chat_jobs_service_alarm(jobs_view) != ""))
       } else {
         None
       }
@@ -345,7 +352,7 @@ fn chat_bar_hand(
           None => ()
         }
         match jobs {
-          Some((act, _)) => firsts.push(Some(@sf.menu_item_of(@sf.t("web-pages.chat.services"), icon="web", act)))
+          Some((act, _)) => firsts.push(Some(@sf.menu_item_of(@sf.t("web-main.jobs.services"), icon="web", act)))
           None => ()
         }
         if firsts.length() > 0 {

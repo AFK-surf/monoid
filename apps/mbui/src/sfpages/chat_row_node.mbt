@@ -136,7 +136,7 @@ pub fn chat_row_node(
     if finger {
       slot.reacts(
         fn() {
-          if menu_on() {
+          if row_menu_lifting(item()) {
             1.0
           } else if held.get() {
             @sf.lift_held

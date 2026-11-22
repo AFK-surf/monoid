@@ -25,7 +25,7 @@ pub fn pick_bar_node(
   compact? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
-  let bar = @lg.liquid_pill_group_node(
+  let bar = @glass.liquid_pill_group_node(
     parent,
     height=40.0,
     pad=4.0,
@@ -81,7 +81,7 @@ fn pick_bar_button(
       words_node(v, fn() { it.label }, fn() { pick_bar_words }) |> ignore
     }
     // (its ripple: MessagePick.kt's clip(Smooth(16)).clickable, plus outer liquid glass pill GPU spot)
-    @lg.bind_pill_press(v)
+    @glass.bind_pill_press(v)
     let rippled = press_look(v, Is(pick_bar_round), fn() { false })
     v.gesture(
       @ui.touch_slop(),

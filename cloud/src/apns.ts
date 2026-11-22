@@ -73,7 +73,8 @@ async function collapseId(tag: string): Promise<string> {
 
 /**
  * An alert to a device's token (`sandbox`: one of a development build's), its `data` (the notice, every value a
- * string) beside `aps`, where the app reads what a tap opens. The token is gone when APNs says so (410, or a token it
+ * string) beside `aps`, where the app reads what a tap opens. `content-available` lets iOS wake the app behind to bring
+ * the message onto the device (ios_app.m); an app without that background mode shows the alert alone. The token is gone when APNs says so (410, or a token it
  * does not know); "other" when it is another app's (DeviceTokenNotForTopic).
  */
 export async function apnsPush(key: ApnsKey, token: string, sandbox: boolean, data: Record<string, string>, told?: PushFailed): Promise<Outcome | "other"> {
@@ -90,7 +91,7 @@ export async function apnsPush(key: ApnsKey, token: string, sandbox: boolean, da
       ...(tag ? { "apns-collapse-id": await collapseId(tag) } : {}),
       "content-type": "application/json",
     },
-    body: JSON.stringify({ aps: { alert: { title: data.title ?? "", body: data.body ?? "" }, sound: "default", ...(tag ? { "thread-id": tag } : {}) }, ...data }),
+    body: JSON.stringify({ aps: { alert: { title: data.title ?? "", body: data.body ?? "" }, sound: "default", "content-available": 1, ...(tag ? { "thread-id": tag } : {}) }, ...data }),
   });
   if (response.ok) {
     await response.body?.cancel();

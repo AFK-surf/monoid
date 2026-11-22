@@ -9,7 +9,11 @@ async fn Accounts::check_fn(self : Accounts, request : JV, lang : String) -> JV 
   if self.given.check == "given" {
     self.ask("check", [request, js(lang)])
   } else {
-    self.ask("profiles.checkProfile", [request, js(lang)])
+    let req = match self.claude_version() {
+      Some(v) => jset(request, "claudeVersion", js(v))
+      None => request
+    }
+    self.ask("profiles.checkProfile", [req, js(lang)])
   }
 }
 

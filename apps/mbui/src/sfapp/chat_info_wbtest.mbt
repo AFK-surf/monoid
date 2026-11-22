@@ -116,19 +116,25 @@ test "iOS: a PR in chat info opens its GitHub URL through the system" {
 }
 
 ///|
-test "大屏: a service chosen in the chat's services' popover opens 任务 beside the chat; a job there opens and closes in place" {
+test "大屏: a service chosen in the chat's services' popover opens 任务 beside the chat; background jobs live in 对话信息" {
   let calls : Array[Made] = []
   let t = bar_chat(calls, mode="chat-jobs-pop")
-  // (the job the fixture opened: its last notice in place)
-  assert_true(t.find("第 3 步通过：单元测试全部通过") is Some(_), msg="\{Repr(t.words().map(fn(w) { w.0 }))}")
-  t.tap_text("盯 CI")
-  t.run_for(@ui.move_most_ms)
-  assert_true(t.find("第 3 步通过：单元测试全部通过") is None)
-  assert_eq(named(calls, "chat.tabs.open").length(), 0)
+  // (the services popover lists only web services, not background jobs)
+  assert_true(t.find("web") is Some(_), msg="\{Repr(t.words().map(fn(w) { w.0 }))}")
+  assert_true(t.find("盯 CI") is None)
   t.tap_text("web")
   t.draw()
   let opened = named(calls, "chat.tabs.open")
   assert_true(opened.iter().any(fn(m) { text(Some(m.params), "tab") == "jobs" }), msg="\{Repr(calls.map(fn(m) { m.name }))}")
+  // (opening 对话信息 shows the background jobs row with count and opens the jobs side tab)
+  let calls2 : Array[Made] = []
+  let t2 = bar_chat(calls2, mode="chat-jobs-bar")
+  t2.click(Button, label="对话信息")
+  t2.run_for(@ui.move_most_ms)
+  assert_true(t2.find(@sf.t("web-main.jobs.jobs")) is Some(_), msg="\{Repr(t2.words().map(fn(w) { w.0 }))}")
+  t2.tap_text(@sf.t("web-main.jobs.jobs"))
+  t2.draw()
+  assert_true(named(calls2, "chat.tabs.open").iter().any(fn(m) { text(Some(m.params), "tab") == "jobs" }))
 }
 
 ///|

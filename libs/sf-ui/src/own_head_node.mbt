@@ -226,7 +226,14 @@ fn icon_action_by(
   tips : TipLayer?,
   loc~ : SourceLoc,
 ) -> @view.View {
-  if native_input() is Finger {
+  if parent.lent(back_bar_lent).unwrap_or(false) {
+    let btn_v : Ref[@view.View?] = Ref(None)
+    bar_pill_group_node(loc~, parent, height=pg_back_pill_h, pad=3.0, gap=0.0, fn(pill) {
+      btn_v.val = Some(icon_button_by(loc~, pill, icon, label, press, tips, 34.0, 18.0, None, disabled))
+    })
+    |> ignore
+    btn_v.val.unwrap()
+  } else if native_input() is Finger {
     icon_button_by(loc~, parent, icon, label, press, tips, touch_target, touch_glyph, None, disabled)
   } else {
     icon_button_by(parent, icon, label, press, tips, icon_button_side, 16.0, None, disabled)

@@ -23,11 +23,7 @@ let station_part_names : Array[String] = ["overview", "processes", "settings"]
 ///|
 fn station_head_facts(s : Json?) -> String {
   let host = field(s, "host")
-  let details = items(host, "details")
-  let uptime = match details.iter().find_first(fn(d) { text(Some(d), "label") == "已运行" }) {
-    Some(d) if text(Some(d), "value") != "" => "已运行 " + text(Some(d), "value")
-    _ => ""
-  }
+  let uptime = text(host, "uptimeText")
   let facts = [text(host, "identity")]
   if uptime != "" {
     facts.push(uptime)
@@ -350,7 +346,7 @@ fn station_profile_row_node(
       })
       |> ignore
     }),
-    below=fn(q) { @sf.quota_lines_node(q, fn() { field(p(), "quota") }, small=true, in_row=true) },
+    below=fn(q) { @sfbase.quota_lines_node(q, fn() { field(p(), "quota") }, small=true, in_row=true) },
     below_open=fn() { if text(field(p(), "quota"), "state") == "ok" { 1.0 } else { 0.0 } },
     tail=fn(e) {
       e.pick(check, fn(k, c) {

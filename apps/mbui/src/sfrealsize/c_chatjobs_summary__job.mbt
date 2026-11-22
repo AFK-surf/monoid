@@ -5,6 +5,6 @@ fn init {
   let asked =
     #|{"topic":"chatJobs","station":"ws/maple","session":"k-maple-0","compact":true,"summary":true}
   let messages =
-    #|[[{"path":["alarm"],"set":"fail"}]]
+    #|[[{"path":["alarm"],"set":"fail"},{"path":["backgroundCount"],"set":0},{"path":["serviceAlarm"],"set":"fail"}]]
   put_changes(asked, "job", messages)
 }

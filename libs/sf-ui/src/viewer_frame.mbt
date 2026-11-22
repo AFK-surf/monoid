@@ -74,7 +74,7 @@ pub fn viewer_frame_act_node(
         // (the window's whole, floating liquid glass action pill over a soft bottom scroll-edge)
         p.over(Is(true)).lies_along(Is(End)) |> ignore
         let foot_h = fn(_ : @view.View) { vfr_act_in * 2.0 + button_height() + (viewer_host().room)().1 + 12.0 }
-        @lg.liquid_scroll_edge_node(p, foot_h, foot_h, side=Bottom, bg=fn() { ink().ground }, shield=false) |> ignore
+        @glass.liquid_scroll_edge_node(p, foot_h, foot_h, side=Bottom, bg=fn() { ink().ground }, shield=false) |> ignore
         p.box(fn(band) {
           let pill_pad = 4.0
           band
@@ -98,11 +98,16 @@ pub fn viewer_frame_act_node(
             .gap(Is(@ui.Space::px(S2)))
             .padding(Is((pill_pad, pill_pad, pill_pad, pill_pad)))
             .radius(By(outer_r))
-            .glass(By(fn() { Some(@lg.liquid_bar_pill_glass(solid=panel_ground(), sharing=true)) }))
-            .edge(By(fn() { if row.glass_solid() { @lg.liquid_solid_edge() } else { (0.0, 0L) } }))
-            .shadow(By(fn() { glass_control_shadow() }))
-            .shadow_outside(Is(true))
-            .clips(Is(true))
+            |> ignore
+            @glass.liquid_capsule_decorate(
+              row,
+              tone=BarPill,
+              sharing=true,
+              solid=panel_ground,
+              shadow=glass_control_shadow,
+              solid_edge=@glass.liquid_solid_edge,
+              clips=true,
+            )
             .lends(ends_give_lent, true)
             |> ignore
             corner_card_node(row, outer_r, inset=fn() { pill_pad })
@@ -208,7 +213,7 @@ fn vfr_act_side_at(corner : Double, bottom : Double) -> Double {
 /// Liquid glass for floating viewer capsules (`viewer_head_node`, `viz_page`): neutral single-layer iOS 27 liquid
 /// glass over the viewer's canvas.
 pub fn viewer_page_glass() -> @ui.Glass {
-  @lg.liquid_viewer_clear_glass(solid=theme().p.canvas)
+  @glass.liquid_viewer_clear_glass(solid=theme().p.canvas)
 }
 
 ///|

@@ -195,7 +195,7 @@ fn chats_pane_node(
   let read = fn() { @sfbase.chats_of(src, id, filter) }
   let scroll = list_scroll(key)
   // (while the hand is on the list or it glides, its rows keep their places; a row the viewer moved goes at once)
-  let held = fn() { v.pointed_in() || scroll.glides_till() is Some(_) }
+  let held = fn() { v.pointed_in() || scroll.in_hand() || scroll.goes_on() }
   // its days in the order shown, and its rows by their names: worked out once as what is read, or the hand on it,
   // changes (held_order), what its lines and rows read
   let ordered : @signals.Signal[Array[ChatDay]] = @signals.signal([])

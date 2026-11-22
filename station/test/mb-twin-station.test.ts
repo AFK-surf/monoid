@@ -491,6 +491,10 @@ function judged(results: Results) {
   return wrong;
 }
 
+/// What only Node says of a call that ends the turn: the MoonBit station keeps the closing model call (its commit's
+/// `Station-parity`), so the mark Claude Code stops on is Node's alone.
+const NODE_ENDS_TURN = /^\.result\._meta: only Node has it \(\{"claude\/endTurn":true\}\)$/;
+
 /// Where two values made alike differ: each path, with what Node and the MoonBit station have there.
 function differences(a: any, b: any, at = ""): string[] {
   if (Array.isArray(a) && Array.isArray(b)) {
@@ -724,7 +728,7 @@ async function sideBySide(twins: Twins) {
   ]);
   for (const id of ["title", "card", "history", "list", "session"]) {
     await check(`mcp chat_* ${id}`, () => {
-      const d = differences(normalize(chat[0][id], roots), normalize(chat[1][id], roots));
+      const d = differences(normalize(chat[0][id], roots), normalize(chat[1][id], roots)).filter((x) => !NODE_ENDS_TURN.test(x));
       assert.deepEqual(d, [], d.join("\n"));
     });
   }
@@ -735,7 +739,7 @@ async function sideBySide(twins: Twins) {
   ]);
   for (const id of ["read", "done"]) {
     await check(`mcp after the answer ${id}`, () => {
-      const d = differences(normalize(answered[0][id], roots), normalize(answered[1][id], roots));
+      const d = differences(normalize(answered[0][id], roots), normalize(answered[1][id], roots)).filter((x) => !NODE_ENDS_TURN.test(x));
       assert.deepEqual(d, [], d.join("\n"));
     });
   }

@@ -259,7 +259,7 @@ fn ListWay::at(self : ListWay, f : Fling, t : Double) -> Double {
 ///|
 /// Whether it moves by itself now (a fling, a wheel's notches easing in, what shows past an end going back, the hand
 /// past its edge), followed: whatever it is on by itself has its end said (Scroll::rest_now).
-fn Scroll::goes_on(self : Scroll) -> Bool {
+pub fn Scroll::goes_on(self : Scroll) -> Bool {
   self.rest_now() is Some(_)
 }
 
