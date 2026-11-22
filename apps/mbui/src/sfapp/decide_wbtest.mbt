@@ -193,8 +193,8 @@ test "the history: a group opens to its steps, a step to its call and what came 
   t.tap_text("详情")
   assert_true(t.find("Claude Code 2.1.3") is Some(_))
   assert_true(t.find("MacBook Pro · macOS 26 · M1 Pro") is Some(_))
-  // the last tap's ripple shown whole, its way in and out
-  t.run_for(@motion.ripple_tap_ms)
+  // the last tap's segmented DampedDrag lens slide and settle (within 2 * move_most_ms)
+  t.run_for(@ui.move_most_ms * 2.0)
   t.assert_idle()
 }
 
