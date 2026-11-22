@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e56b27877](https://github.com/AFK-surf/monoid/commit/e56b2787738fe24ae8fa03b529759bca3c476eba) fix(mbui): preserve outer hugs cap in scroll measu | 2.66 | 3.58 | 14.55 | 36.63 | 55.58 | 32.08 | 64.9 | 98.63 | 111.9 |
 | [1aaa170ed](https://github.com/AFK-surf/monoid/commit/1aaa170ed270f11c2ab1318ad2c578b8576d61b5) fix(core-ts): fix zero-speed video routing, stall  | 2.66 | 3.58 | 14.55 | 36.63 | 55.58 | 32.08 | 64.91 | 98.96 | 127.28 |
 | [e9f727949](https://github.com/AFK-surf/monoid/commit/e9f727949dd1f1e19c91206c5e6893d47926864e) docs: remove misleading chat-message streaming wor | 2.66 | 3.58 | 14.55 | 36.6 | 55.52 | 32.08 | 64.91 | 99.09 | 116.7 |
 | [fd4464ef0](https://github.com/AFK-surf/monoid/commit/fd4464ef07d130b1b398ee3e875df369ed89fb3c) fix(ci): include libs/liquid-glass in beta mirror, | 2.66 | 3.58 | 14.55 | 36.6 | 55.52 | 32.08 | 64.91 | 98.9 | 116.7 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cb0becd11](https://github.com/AFK-surf/monoid/commit/cb0becd11ca4fca8f82357c1ae9b660ed94e9fcf) feat(sf-ui,sfapp,sfdesk): add bar_pill_group_node  | 2.64 | 3.56 | 14.43 | 36.47 | 55.09 | 31.97 | 64.5 | 98.67 | 121.65 |
 | [efc9285ad](https://github.com/AFK-surf/monoid/commit/efc9285ad725615312d1077870b4554b6feee666) feat(sf-ui): upgrade sheet to iOS 26 floating liqu | 2.64 | 3.55 | 14.43 | 36.47 | 55.08 | 31.96 | 64.48 | 98.75 | 118.22 |
 | [fb2f2c703](https://github.com/AFK-surf/monoid/commit/fb2f2c7033a956484fc6060aedce9caf9e2f896b) feat(mbui): report Windows UI hangs and handled er | 2.64 | 3.55 | 14.43 | 36.47 | 55.07 | 31.96 | 64.48 | 98.47 | 125.58 |
-| [dbbb80feb](https://github.com/AFK-surf/monoid/commit/dbbb80feb70e77476b5486c4a4f6a68937ab897a) perf(mbui): pass room_w to profiles sidebar and li | 2.64 | 3.55 | 14.43 | 36.47 | 55.07 | 31.96 | 64.48 | 98.52 | 115.44 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e56b27877](https://github.com/AFK-surf/monoid/commit/e56b2787738fe24ae8fa03b529759bca3c476eba) fix(mbui): preserve outer hugs cap in scroll measu | 0.47 | 0.62 | 2.38 | 3.44 | 5.64 | 1.73 | 4.67 | 54.38 |
 | [1aaa170ed](https://github.com/AFK-surf/monoid/commit/1aaa170ed270f11c2ab1318ad2c578b8576d61b5) fix(core-ts): fix zero-speed video routing, stall  | 0.47 | 0.62 | 2.38 | 3.44 | 5.64 | 1.73 | 4.67 | 54.4 |
 | [e9f727949](https://github.com/AFK-surf/monoid/commit/e9f727949dd1f1e19c91206c5e6893d47926864e) docs: remove misleading chat-message streaming wor | 0.47 | 0.62 | 2.38 | 3.44 | 5.64 | 1.73 | 4.67 | 54.4 |
 | [fd4464ef0](https://github.com/AFK-surf/monoid/commit/fd4464ef07d130b1b398ee3e875df369ed89fb3c) fix(ci): include libs/liquid-glass in beta mirror, | 0.47 | 0.62 | 2.38 | 3.44 | 5.64 | 1.73 | 4.67 | 54.4 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cb0becd11](https://github.com/AFK-surf/monoid/commit/cb0becd11ca4fca8f82357c1ae9b660ed94e9fcf) feat(sf-ui,sfapp,sfdesk): add bar_pill_group_node  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
 | [efc9285ad](https://github.com/AFK-surf/monoid/commit/efc9285ad725615312d1077870b4554b6feee666) feat(sf-ui): upgrade sheet to iOS 26 floating liqu | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
 | [fb2f2c703](https://github.com/AFK-surf/monoid/commit/fb2f2c7033a956484fc6060aedce9caf9e2f896b) feat(mbui): report Windows UI hangs and handled er | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
-| [dbbb80feb](https://github.com/AFK-surf/monoid/commit/dbbb80feb70e77476b5486c4a4f6a68937ab897a) perf(mbui): pass room_w to profiles sidebar and li | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
