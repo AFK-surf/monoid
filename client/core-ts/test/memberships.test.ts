@@ -257,7 +257,7 @@ test("a_new_chat_runs_on_the_profiles_the_station_says_serve_this_workspace_on_i
     core.close();
     return v(values, 1).blocked ?? null;
   };
-  assert.equal(await blocked({ ...copy, serves: false }), "profile");
+  assert.equal(await blocked({ ...copy, serves: false }), "shared", "an unavailable profile reports its workspace sharing scope");
   assert.equal(await blocked({ ...copy, serves: true }), null);
   assert.equal(await blocked({ ...copy, serves: true, enabled: false }), "disabled", "a disabled profile can be enabled again");
   assert.equal(await blocked({ ...copy, serves: false, enabled: false }), "profile", "one not shared here cannot be enabled here");

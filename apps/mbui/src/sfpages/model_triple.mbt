@@ -3023,7 +3023,8 @@ fn borrow_ask(src : Source, station : String, of : String, borrow : Json?, gone?
       _ => ""
     }
   })
-  let action = text(borrow, "action")
+  let confirm_action = text(borrow, "confirmAction")
+  let action = if confirm_action == "" { text(borrow, "action") } else { confirm_action }
   let allowed = flag(borrow, "allowed")
   let ended = Ref(false)
   let finish = fn() {

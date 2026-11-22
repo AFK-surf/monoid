@@ -36,16 +36,16 @@ test "a new chat asks before borrowing and sends the request only on confirmatio
     }))
     t.click(Button, has="Opus 5.5")
     t.run_for(squeeze_opening)
-    t.click(Button, label="借用")
+    t.click(Button, label="去分享")
     t.run_for(squeeze_opening)
-    assert_true(t.find("借用 Maple 的 Fable 5.1？") is Some(_), msg="\{win.0}: no confirmation")
-    assert_true(t.find("借用后，这个连接的会话也用它的额度。") is Some(_))
+    assert_true(t.find("将 Maple 的 Fable 5.1 分享至此 station？") is Some(_), msg="\{win.0}: no confirmation")
+    assert_true(t.find("分享后，这个连接的会话也用它的额度。") is Some(_))
     assert_eq(calls.length(), 0)
     assert_eq(released.length(), 0, msg="the selection stays held while the confirmation is open")
     t.click(Button, label="取消")
     t.run_for(squeeze_opening)
     assert_eq(calls.length(), 0, msg="cancel does not borrow")
-    assert_true(t.find("借用 Maple 的 Fable 5.1？") is None, msg="cancel closes confirmation: \{t.dump()}")
+    assert_true(t.find("将 Maple 的 Fable 5.1 分享至此 station？") is None, msg="cancel closes confirmation: \{t.dump()}")
     assert_eq(released.length(), 1, msg="\{win.0}: cancel releases the selection, saw \{released.length()}")
     if t.query(Button, has="Opus 5.5") is None {
       t.click(Button, label=@sf.t("web-main.sidebar.close"))
@@ -53,15 +53,15 @@ test "a new chat asks before borrowing and sends the request only on confirmatio
     }
     t.click(Button, has="Opus 5.5")
     t.run_for(squeeze_opening)
-    t.click(Button, label="借用")
+    t.click(Button, label="去分享")
     t.run_for(squeeze_opening)
     assert_eq(released.length(), 1, msg="the selection stays held for the second confirmation")
-    t.click(Button, label="借用")
+    t.click(Button, label="确认分享")
     t.run_for(squeeze_opening)
     assert_eq(calls.length(), 1)
     assert_eq(text(Some(calls[0]), "of"), "new")
     assert_true(text(Some(calls[0]), "station") != "")
-    assert_true(t.find("借用 Maple 的 Fable 5.1？") is None)
+    assert_true(t.find("将 Maple 的 Fable 5.1 分享至此 station？") is None)
     assert_eq(released.length(), 2, msg="a completed borrowing releases the selection")
   }
 }
@@ -70,8 +70,8 @@ test "a new chat asks before borrowing and sends the request only on confirmatio
 test "the borrowing note is visible at phone and desktop sizes" {
   for win in [corner_windows[0], corner_windows[5]] {
     let t = screen_in("newchat-borrow-model", win, "zh")
-    assert_true(t.find("此 Profile 尚未分享给此 station，可向 Maple 借用。") is Some(_), msg="\{win.0}: sharing reason missing")
-    assert_true(t.query(Button, label="借用") is Some(_), msg="\{win.0}: borrowing action missing")
+    assert_true(t.find("此 Profile 位于 Maple，尚未分享给此 station。") is Some(_), msg="\{win.0}: sharing reason missing")
+    assert_true(t.query(Button, label="去分享") is Some(_), msg="\{win.0}: sharing action missing")
   }
 }
 

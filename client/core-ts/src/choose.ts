@@ -1445,13 +1445,14 @@ export class Choose implements Owner {
     const sharedHere = arr(b.allow).includes(stationId(station));
     return {
       note: t(sharedHere ? "core-logic.choose.borrow.sharedHere" : "core-logic.choose.borrow.note", vars),
-      title: t("core-logic.choose.borrow.title", vars),
+      title: t(sharedHere ? "core-logic.choose.borrow.retryTitle" : "core-logic.choose.borrow.title", vars),
       lines: [
         t(sharedHere ? "core-logic.choose.borrow.retryBody" : "core-logic.choose.borrow.body", vars),
         t(b.subscription ? "core-logic.choose.borrow.subscription" : "core-logic.choose.borrow.key", vars),
         t("core-logic.choose.borrow.environment"),
       ],
-      action: t("core-logic.choose.borrow.action"),
+      action: t(sharedHere ? "core-logic.choose.borrow.retryAction" : "core-logic.choose.borrow.action"),
+      confirmAction: t(sharedHere ? "core-logic.choose.borrow.retryAction" : "core-logic.choose.borrow.confirmAction"),
       allowed: allowed && b.pending !== true,
       why: b.pending === true ? t("core-logic.choose.borrow.pending", vars) : allowed ? null : t(sharedHere ? "core-logic.choose.borrow.managersShared" : "core-logic.choose.borrow.managers", vars),
     };
@@ -2192,7 +2193,14 @@ export class Choose implements Owner {
     if (!isObject(b) || v.borrow === null) throw CoreError.invalid(t("core-logic.choose.borrow.nothing"));
     if (v.borrow.allowed !== true) throw CoreError.invalid(v.borrow.why ?? t("core-logic.choose.borrow.managers"));
     const allow = [...new Set([...arr(b.allow), stationId(station)])];
-    const op = ops.request("profile.share", { station: b.station, id: b.profile, on: true, allow });
+    // The overview only names stations visible in this workspace. When the profile is already shared, ask the host to
+    // change this station alone so it retains the allowances hidden from this workspace. For a new share, send the
+    // explicit allow list: `among` on an unshared profile could otherwise turn on sharing for every station.
+    const sourceStation = text(b.station);
+    if (sourceStation === null) throw CoreError.invalid(t("core-logic.choose.borrow.nothing"));
+    const source = arr(this.#profilesShown(sourceStation)).find((p) => get(p, "id") === b.profile);
+    const shared = typeof get(get(source, "share"), "id") === "string";
+    const op = ops.request("profile.share", { station: b.station, id: b.profile, on: true, allow, ...(shared ? { among: [stationId(station)] } : {}) });
     if (op === null) throw CoreError.invalid("profile.share");
     // (its account not named: the copy that comes here is its own profile, run by what the model runs on here)
     const d = v.draft;

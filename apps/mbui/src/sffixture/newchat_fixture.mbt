@@ -882,11 +882,12 @@ pub fn fix_pick() -> Json {
     // (the model drafted another station's: borrowed first, asked, from the panel's foot)
     "borrow": if n.borrow {
       {
-        "title": "借用 Maple 的 Fable 5.1？",
-        "lines": ["Fable 5.1 由 Maple 上的 Claude 订阅运行。", "借用后，这个连接的会话也用它的额度。"],
-        "action": "借用",
+        "title": "将 Maple 的 Fable 5.1 分享至此 station？",
+        "lines": ["Fable 5.1 由 Maple 上的 Claude 订阅运行。", "分享后，这个连接的会话也用它的额度。"],
+        "action": "去分享",
+        "confirmAction": "确认分享",
         "allowed": true,
-        "note": "此 Profile 尚未分享给此 station，可向 Maple 借用。",
+        "note": "此 Profile 位于 Maple，尚未分享给此 station。",
       }
     } else {
       Json::null()
