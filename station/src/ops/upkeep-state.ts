@@ -6,8 +6,10 @@ import { join } from "node:path";
 
 export const UPKEEP_STATE_FILE = "upkeep-state.json";
 export const IDLE_MEASURED_MAX = 4096;
+export const IDLE_MEASURED_VERSION = 2;
 
 export type UpkeepState = {
+  idleMeasuredVersion: number;
   idleMeasured: Record<string, number>;
   lastRepoBranchesAt: number | null;
   lastOrphanRoomsAt: number | null;
@@ -19,6 +21,7 @@ export type UpkeepStatePatch = Partial<UpkeepState>;
 
 export function emptyUpkeepState(): UpkeepState {
   return {
+    idleMeasuredVersion: IDLE_MEASURED_VERSION,
     idleMeasured: {},
     lastRepoBranchesAt: null,
     lastOrphanRoomsAt: null,
@@ -48,8 +51,10 @@ export function parseUpkeepState(text: string): UpkeepState {
     const parsed = JSON.parse(text);
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return emptyUpkeepState();
     const obj = parsed as Record<string, unknown>;
+    const currentVersion = obj.idleMeasuredVersion === IDLE_MEASURED_VERSION;
     return {
-      idleMeasured: normalizeIdleMeasured(obj.idleMeasured),
+      idleMeasuredVersion: currentVersion ? IDLE_MEASURED_VERSION : 1,
+      idleMeasured: currentVersion ? normalizeIdleMeasured(obj.idleMeasured) : {},
       lastRepoBranchesAt: finiteNumberOrNull(obj.lastRepoBranchesAt),
       lastOrphanRoomsAt: finiteNumberOrNull(obj.lastOrphanRoomsAt),
       lastFullRelieveAt: finiteNumberOrNull(obj.lastFullRelieveAt),
@@ -82,6 +87,7 @@ function sameIdleMeasured(a: Record<string, number>, b: Record<string, number>):
 
 function sameUpkeepState(a: UpkeepState, b: UpkeepState): boolean {
   return (
+    a.idleMeasuredVersion === b.idleMeasuredVersion &&
     a.lastRepoBranchesAt === b.lastRepoBranchesAt &&
     a.lastOrphanRoomsAt === b.lastOrphanRoomsAt &&
     a.lastFullRelieveAt === b.lastFullRelieveAt &&
@@ -109,6 +115,7 @@ export function patchUpkeepState(dataDir: string, patch: UpkeepStatePatch): Prom
   return serialize(path, async () => {
     const current = await readUpkeepState(dataDir);
     const next: UpkeepState = {
+      idleMeasuredVersion: IDLE_MEASURED_VERSION,
       idleMeasured: patch.idleMeasured !== undefined ? normalizeIdleMeasured(patch.idleMeasured) : current.idleMeasured,
       lastRepoBranchesAt: patch.lastRepoBranchesAt !== undefined ? finiteNumberOrNull(patch.lastRepoBranchesAt) : current.lastRepoBranchesAt,
       lastOrphanRoomsAt: patch.lastOrphanRoomsAt !== undefined ? finiteNumberOrNull(patch.lastOrphanRoomsAt) : current.lastOrphanRoomsAt,

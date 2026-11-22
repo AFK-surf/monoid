@@ -82,9 +82,11 @@ const there = (path: string): Promise<boolean> => access(path).then(() => true, 
 export class ColdRooms implements ColdStorage {
   /// The hub it works for (made after it).
   private readonly hub: () => Hub;
+  private readonly measure: typeof measureRoom;
 
-  constructor(hub: () => Hub) {
+  constructor(hub: () => Hub, opts?: { measureRoom?: typeof measureRoom }) {
     this.hub = hub;
+    this.measure = opts?.measureRoom ?? measureRoom;
   }
 
   private dataDir() {
@@ -144,6 +146,22 @@ export class ColdRooms implements ColdStorage {
     return dir !== null && !(await there(join(dir, "cold")));
   }
 
+  private async followActiveJobs(): Promise<void> {
+    let jobs;
+    try {
+      jobs = this.hub().store.jobsUp();
+    } catch {
+      return;
+    }
+    const now = wall.now();
+    const paths = new Set<string>();
+    for (const job of jobs) {
+      const kept = followed.get(job.cwd);
+      if (kept === undefined || now - kept.at >= FOLLOWED_MS) paths.add(job.cwd);
+    }
+    if (paths.size > 0) await Promise.all([...paths].map(canonical));
+  }
+
   private hasJobs(key: string, dir: string): boolean {
     let jobs;
     try {
@@ -155,17 +173,23 @@ export class ColdRooms implements ColdStorage {
     return jobs.some((job) => job.sessionKey === key || inRoom(job.cwd, dir));
   }
 
-  private async cleanRebuildableIn(key: string, requireArchived: boolean): Promise<number | null> {
+  private async cleanRebuildableIn(key: string, requireArchived: boolean): Promise<{ freed: number; complete: boolean } | null> {
     await this.findRoom(key);
     const dir = this.cleanableRoom(key, requireArchived);
     if (dir === null) return null;
+    const room = await this.measure(dir);
     let freed = 0;
-    for (const [path, bytes] of (await measureRoom(dir)).rebuild) {
+    let interrupted = false;
+    for (const [path, bytes] of room.rebuild) {
+      await this.followActiveJobs();
       // Restoring/activating a chat updates the store before its next message reaches the actor queue.
       const row = this.hub().store.getSession(key);
       const stillOk = row !== null && (requireArchived ? row.archivedAt !== null : row.archivedAt === null)
         && !row.running && this.hub().processState(key) !== "running";
-      if (!stillOk || this.hasJobs(key, dir)) break;
+      if (!stillOk || this.hasJobs(key, dir)) {
+        interrupted = true;
+        break;
+      }
       if (!(await safeToRemove(path))) continue;
       try {
         await archive.removeTree(path);
@@ -181,21 +205,24 @@ export class ColdRooms implements ColdStorage {
         { session: key, freed },
       );
     }
-    return freed;
+    const incompleteWalk = room.complete === false && (room.reason === "duration" || (room.reason === "entries" && freed > 0));
+    return { freed, complete: !interrupted && !incompleteWalk };
   }
 
   /// Removes what a build or an install makes again (node_modules, a Cargo target, …; footprint.ts `rebuildableSoon`) from
   /// an archived session's own directory: it may come back, and is built again then. Left as it is while the session is
   /// back in the lists or at work, or a session/job still uses its directory. Returns removed allocated file bytes.
   async cleanRebuildable(key: string): Promise<number> {
-    return (await this.cleanRebuildableIn(key, true)) ?? 0;
+    return (await this.cleanRebuildableIn(key, true))?.freed ?? 0;
   }
 
   /// Removes rebuildable build/install directories from an idle unarchived session's own directory without packing,
-  /// marking cold, or touching transcripts. Returns removed bytes (>= 0) when measured, or null when skipped before
-  /// measuring (running / shared / active job).
-  cleanIdleRebuildable(key: string): Promise<number | null> {
-    return this.cleanRebuildableIn(key, false);
+  /// marking cold, or touching transcripts. Returns removed bytes (>= 0) when the scan and cleanup completed, or null
+  /// when skipped before measuring (running / shared / active job), interrupted mid-cleanup, or cut short by an
+  /// incomplete walk.
+  async cleanIdleRebuildable(key: string): Promise<number | null> {
+    const res = await this.cleanRebuildableIn(key, false);
+    return res !== null && res.complete ? res.freed : null;
   }
 
   /// The files of an archived session's transcripts that cold storage puts away, nothing of it on the station's thread.

@@ -358,6 +358,179 @@ describe("Item 2: clean rebuildable directories of idle unarchived sessions", ()
 
     await r.close();
   });
+
+  test("unrelated active job appearing mid-cleanup with an unfollowed cwd does not abort cleanup or drop remaining rebuildables", async () => {
+    let coldRooms!: ColdRooms;
+    const r = new Rig({
+      cold: {
+        isCold: (key) => coldRooms.isCold(key),
+        restore: (key) => coldRooms.restore(key),
+        pack: (key) => coldRooms.pack(key),
+        cleanIdleRebuildable: (key) => coldRooms.cleanIdleRebuildable(key),
+      },
+    });
+    coldRooms = new ColdRooms(() => r.hub);
+    const data = r.hub.config().dataDir;
+    const now = r.hub.now();
+    const HOUR = 3_600_000;
+
+    const wsA = join(data, "sessions", "cl", "s-a-unrel", "workspace");
+    mkdirSync(join(wsA, "a", "node_modules", "pkg"), { recursive: true });
+    writeFileSync(join(wsA, "a", "node_modules", "pkg", "index.js"), "1\n".repeat(50));
+    mkdirSync(join(wsA, "b", "node_modules", "pkg"), { recursive: true });
+    writeFileSync(join(wsA, "b", "node_modules", "pkg", "index.js"), "2\n".repeat(50));
+    const at = now - 30 * HOUR;
+    r.store.insertSession({
+      key: "s-a-unrel", connect: "cl", runtime: "claude", profile: "cc",
+      workspace: wsA, runtimeSessionId: null, token: "tok-a-unrel", createdAt: at, lastActiveAt: at,
+    });
+
+    const unrelatedCwd = fresh("unrelated-job-cwd");
+    const origJobsUp = r.store.jobsUp.bind(r.store);
+    let jobsUpCalls = 0;
+    let injected = false;
+    r.store.jobsUp = () => {
+      jobsUpCalls++;
+      // Call 1 is followInUse, call 2 is cleanableRoom.hasJobs; call 3 is the first loop iteration inside cleanRebuildableIn.
+      if (!injected && jobsUpCalls === 3) {
+        injected = true;
+        r.store.insertJob({
+          id: "j-unrel-new", sessionKey: "s-other", name: "other", command: "sleep 60", cwd: unrelatedCwd,
+          port: null, token: "jtok-unrel-new", state: "running", pgid: 99991, exitCode: null,
+          startedAt: now, endedAt: null, restarts: 0, log: join(data, "jobs", "j-unrel-new.log"), watch: false,
+        });
+      }
+      return origJobsUp();
+    };
+
+    const measured = await cleanIdleRebuildable(r.hub, now, { idleMs: IDLE_REBUILD_MS, limit: 16 });
+    assert.equal(measured, 1, "unrelated job must not abort cleanup");
+    assert.ok(!existsSync(join(wsA, "a", "node_modules")), "first rebuildable cleaned");
+    assert.ok(!existsSync(join(wsA, "b", "node_modules")), "second rebuildable cleaned despite unrelated job");
+    assert.equal(r.hub.idleMeasured.get("s-a-unrel"), at, "completed session recorded in idleMeasured");
+
+    await r.close();
+  });
+
+  test("mid-cleanup interruption by a job on the target session does not poison idleMeasured, and next round finishes cleanup", async () => {
+    let coldRooms!: ColdRooms;
+    const r = new Rig({
+      cold: {
+        isCold: (key) => coldRooms.isCold(key),
+        restore: (key) => coldRooms.restore(key),
+        pack: (key) => coldRooms.pack(key),
+        cleanIdleRebuildable: (key) => coldRooms.cleanIdleRebuildable(key),
+      },
+    });
+    coldRooms = new ColdRooms(() => r.hub);
+    const data = r.hub.config().dataDir;
+    const now = r.hub.now();
+    const HOUR = 3_600_000;
+
+    const ws = join(data, "sessions", "cl", "s-interrupt", "workspace");
+    const firstDir = join(ws, "a", "node_modules");
+    const secondDir = join(ws, "b", "node_modules");
+    mkdirSync(join(firstDir, "pkg"), { recursive: true });
+    writeFileSync(join(firstDir, "pkg", "index.js"), "1\n".repeat(50));
+    mkdirSync(join(secondDir, "pkg"), { recursive: true });
+    writeFileSync(join(secondDir, "pkg", "index.js"), "2\n".repeat(50));
+    const at = now - 30 * HOUR;
+    r.store.insertSession({
+      key: "s-interrupt", connect: "cl", runtime: "claude", profile: "cc",
+      workspace: ws, runtimeSessionId: null, token: "tok-interrupt", createdAt: at, lastActiveAt: at,
+    });
+
+    const origJobsUp = r.store.jobsUp.bind(r.store);
+    let injected = false;
+    r.store.jobsUp = () => {
+      // Once one of the two rebuildable directories is gone, start a job belonging to s-interrupt before the second is removed.
+      if (!injected && (!existsSync(firstDir) || !existsSync(secondDir))) {
+        injected = true;
+        r.store.insertJob({
+          id: "j-int", sessionKey: "s-interrupt", name: "build", command: "sleep 60", cwd: ws,
+          port: null, token: "jtok-int", state: "running", pgid: 99992, exitCode: null,
+          startedAt: now, endedAt: null, restarts: 0, log: join(data, "jobs", "j-int.log"), watch: false,
+        });
+      }
+      return origJobsUp();
+    };
+
+    const m1 = await cleanIdleRebuildable(r.hub, now, { idleMs: IDLE_REBUILD_MS, limit: 16 });
+    assert.equal(m1, 0, "interrupted cleanup must return null and not count as measured");
+    assert.equal(injected, true, "job was injected between the two rebuildable directories");
+    const remaining1 = [firstDir, secondDir].filter((d) => existsSync(d));
+    assert.equal(remaining1.length, 1, "first directory removed, second preserved when interrupted");
+    assert.equal(r.hub.idleMeasured.has("s-interrupt"), false, "interrupted session must not be recorded in idleMeasured");
+
+    // End the job and run another round: the remaining directory is cleaned and the session is now memoized.
+    r.store.jobsUp = origJobsUp;
+    r.store.db.prepare("UPDATE jobs SET state = 'exited', ended_at = ? WHERE id = ?").run(now + 1000, "j-int");
+    const m2 = await cleanIdleRebuildable(r.hub, now + 2000, { idleMs: IDLE_REBUILD_MS, limit: 16 });
+    assert.equal(m2, 1, "second round completes cleanup after job ends");
+    assert.ok(!existsSync(firstDir) && !existsSync(secondDir), "both rebuildable directories removed");
+    assert.equal(r.hub.idleMeasured.get("s-interrupt"), at, "completed session recorded in idleMeasured");
+
+    await r.close();
+  });
+
+  test("incomplete walk (duration, or entries with freed > 0) returns null without poisoning idleMeasured; depth cut still completes", async () => {
+    const roomReply = new Map<string, { bytes: number; rebuild: [string, number][]; complete: boolean; reason?: string }>();
+    let coldRooms!: ColdRooms;
+    const r = new Rig({
+      cold: {
+        isCold: (key) => coldRooms.isCold(key),
+        restore: (key) => coldRooms.restore(key),
+        pack: (key) => coldRooms.pack(key),
+        cleanIdleRebuildable: (key) => coldRooms.cleanIdleRebuildable(key),
+      },
+    });
+    coldRooms = new ColdRooms(() => r.hub, {
+      measureRoom: async (dir) => roomReply.get(dir) ?? { bytes: 0, rebuild: [], complete: true },
+    });
+    const data = r.hub.config().dataDir;
+    const now = r.hub.now();
+    const HOUR = 3_600_000;
+    const at = now - 30 * HOUR;
+
+    const add = (key: string, opts: { withRebuild?: boolean; reason: string }) => {
+      const ws = join(data, "sessions", "cl", key, "workspace");
+      const nm = join(ws, "node_modules");
+      if (opts.withRebuild) {
+        mkdirSync(join(nm, "pkg"), { recursive: true });
+        writeFileSync(join(nm, "pkg", "index.js"), "1\n".repeat(20));
+      } else {
+        mkdirSync(ws, { recursive: true });
+      }
+      r.store.insertSession({
+        key, connect: "cl", runtime: "claude", profile: "cc",
+        workspace: ws, runtimeSessionId: null, token: `tok-${key}`, createdAt: at, lastActiveAt: at,
+      });
+      roomReply.set(dirname(ws), {
+        bytes: opts.withRebuild ? 4096 : 0,
+        rebuild: opts.withRebuild ? [[nm, 4096]] : [],
+        complete: false,
+        reason: opts.reason,
+      });
+      return { ws, nm };
+    };
+
+    const dur = add("s-cut-dur", { withRebuild: true, reason: "duration" });
+    const entFreed = add("s-cut-ent-freed", { withRebuild: true, reason: "entries" });
+    const entNone = add("s-cut-ent-none", { withRebuild: false, reason: "entries" });
+    const dep = add("s-cut-depth", { withRebuild: true, reason: "depth" });
+
+    const measured = await cleanIdleRebuildable(r.hub, now, { idleMs: IDLE_REBUILD_MS, limit: 16 });
+    assert.equal(measured, 2, "only entries-with-0-freed and depth-cut count as completed");
+    assert.ok(!existsSync(dur.nm), "duration-cut still removed what it found");
+    assert.ok(!existsSync(entFreed.nm), "entries-cut still removed what it found");
+    assert.ok(!existsSync(dep.nm), "depth-cut removed what it found");
+    assert.equal(r.hub.idleMeasured.has("s-cut-dur"), false, "duration-cut must not poison idleMeasured");
+    assert.equal(r.hub.idleMeasured.has("s-cut-ent-freed"), false, "entries-cut with freed > 0 must not poison idleMeasured");
+    assert.equal(r.hub.idleMeasured.get("s-cut-ent-none"), at, "entries-cut with freed === 0 completes to avoid infinite loop");
+    assert.equal(r.hub.idleMeasured.get("s-cut-depth"), at, "depth-cut completes to avoid infinite loop");
+
+    await r.close();
+  });
 });
 
 describe("Item 3: orphan session rooms in Upkeep", () => {

@@ -313,6 +313,37 @@ pub async fn Storage::needs_pack(self : Storage, key : String) -> Bool {
 }
 
 ///|
+fn collect_due_paths(
+  followed : Map[String, (Double, String?)],
+  failed : Map[String, Double],
+  paths : Array[String],
+  now : Double,
+) -> Array[String] {
+  let due : Set[String] = Set([])
+  let out : Array[String] = []
+  for p in paths {
+    if !due.contains(p) && follow_due(followed, failed, p, now) {
+      due.add(p)
+      out.push(p)
+    }
+  }
+  out
+}
+
+///|
+async fn Storage::follow_active_jobs(self : Storage) -> Unit {
+  let jobs = try {
+    self.st.store.jobs_up_places()
+  } catch {
+    _ => return
+  }
+  let due = collect_due_paths(self.followed, self.follow_failed, jobs.map(j => j.1), self.now())
+  for p in due {
+    ignore(self.canonical_followed(p))
+  }
+}
+
+///|
 async fn Storage::has_jobs(self : Storage, key : String, dir : String) -> Bool {
   let jobs = try {
     self.st.store.jobs_up_places()
@@ -348,7 +379,7 @@ async fn Files::rebuildable(self : Files, dir : String) -> String? {
     "build" => if beside(["build.gradle", "build.gradle.kts"]) { return Some("named") }
     "_build" => if beside(["mix.exs"]) || self.moon_above(parent) { return Some("found") }
     "deps" => if beside(["mix.exs"]) { return Some("found") }
-    ".mooncakes" => if beside(["moon.mod.json", "moon.work"]) { return Some("found") }
+    ".mooncakes" => if beside(["moon.mod.json", "moon.mod", "moon.work"]) { return Some("found") }
     _ => ()
   }
   if self.is_dir(self.join([dir, "Build", "Products"])) && self.is_dir(self.join([dir, "Build", "Intermediates.noindex"])) {
@@ -385,7 +416,7 @@ async fn Files::moon_above(self : Files, from : String) -> Bool {
   let mut found = false
   let mut p = from
   for _ in 0..<8 {
-    for m in ["moon.mod.json", "moon.work", "moon.pkg.json"] {
+    for m in ["moon.mod.json", "moon.mod", "moon.work", "moon.pkg.json", "moon.pkg"] {
       if !self.there(self.join([p, m])) {
         continue
       }
@@ -442,8 +473,27 @@ async fn Files::safe_to_remove(self : Files, path : String) -> Bool {
 }
 
 ///|
-/// footprint.ts `measureRoom`: what can be made again in a chat's directory, each with its size.
-async fn Files::rebuild_of(self : Files, dir : String) -> Array[(String, Double)] {
+fn parse_rebuild_result(said : Json) -> (Array[(String, Double)], Bool, String?) {
+  let rebuild = items(get(said, "rebuild")).filter_map(p => match p {
+    Array([String(path), Number(b, ..)]) => Some((path, b))
+    _ => None
+  })
+  let complete = match get(said, "complete") {
+    Some(False) => false
+    _ => true
+  }
+  let reason = str(said, "reason")
+  (rebuild, complete, reason)
+}
+
+///|
+fn is_incomplete_walk(walk_complete : Bool, walk_reason : String?, freed : Double) -> Bool {
+  !walk_complete && (walk_reason == Some("duration") || (walk_reason == Some("entries") && freed > 0.0))
+}
+
+///|
+/// footprint.ts `measureRoom`: what can be made again in a chat's directory, each with its size, plus walk completion.
+async fn Files::rebuild_of(self : Files, dir : String) -> (Array[(String, Double)], Bool, String?) {
   let ask = jo([
     ("path", js(dir)),
     ("base", js(self.join([dir]))),
@@ -459,10 +509,7 @@ async fn Files::rebuild_of(self : Files, dir : String) -> Array[(String, Double)
   if str(said, "error") is Some(e) {
     raise Thrown("Error", jo([("message", js(e)), ("code", get(said, "code").unwrap_or(Json::null()))]))
   }
-  items(get(said, "rebuild")).filter_map(p => match p {
-    Array([String(path), Number(b, ..)]) => Some((path, b))
-    _ => None
-  })
+  parse_rebuild_result(said)
 }
 
 ///|
@@ -477,13 +524,17 @@ async fn Storage::still_cleanable(self : Storage, key : String, require_archived
 }
 
 ///|
-async fn Storage::clean_rebuildable_in(self : Storage, key : String, require_archived~ : Bool) -> Double? {
+async fn Storage::clean_rebuildable_in(self : Storage, key : String, require_archived~ : Bool) -> (Double, Bool)? {
   self.find_room(key)
   guard self.cleanable_room(key, require_archived~) is Some(dir) else { return None }
+  let (rebuild, walk_complete, walk_reason) = self.fs.rebuild_of(dir)
   let mut freed = 0.0
-  for pair in self.fs.rebuild_of(dir) {
+  let mut interrupted = false
+  for pair in rebuild {
     let (path, bytes) = pair
+    self.follow_active_jobs()
     if !self.still_cleanable(key, require_archived~) || self.has_jobs(key, dir) {
+      interrupted = true
       break
     }
     if !self.fs.safe_to_remove(path) {
@@ -503,20 +554,27 @@ async fn Storage::clean_rebuildable_in(self : Storage, key : String, require_arc
     }
     self.log("info", "hub", msg, jo([("session", js(key)), ("freed", jn(freed))]))
   }
-  Some(freed)
+  let incomplete_walk = is_incomplete_walk(walk_complete, walk_reason, freed)
+  Some((freed, !interrupted && !incomplete_walk))
 }
 
 ///|
 /// Removes what a build or an install makes again from an archived session's own directory: the bytes removed.
 pub async fn Storage::clean_rebuildable(self : Storage, key : String) -> Double {
-  self.clean_rebuildable_in(key, require_archived=true).unwrap_or(0.0)
+  match self.clean_rebuildable_in(key, require_archived=true) {
+    Some((freed, _)) => freed
+    None => 0.0
+  }
 }
 
 ///|
 /// Removes rebuildable build/install directories from an idle unarchived session's own directory without packing,
-/// marking cold, or touching transcripts: Some(bytes) when measured, None when skipped before measuring.
+/// marking cold, or touching transcripts: Some(bytes) when completed, None when skipped, interrupted, or incomplete.
 pub async fn Storage::clean_idle_rebuildable(self : Storage, key : String) -> Double? {
-  self.clean_rebuildable_in(key, require_archived=false)
+  match self.clean_rebuildable_in(key, require_archived=false) {
+    Some((freed, true)) => Some(freed)
+    _ => None
+  }
 }
 
 ///|

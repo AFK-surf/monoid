@@ -174,7 +174,7 @@ test("MoonBit station backfills unfinished archives, cleans idle unarchived rebu
   store.setArchived("s-arch2", true, MANUAL);
   store.db.prepare("UPDATE sessions SET archived_at = ? WHERE key = ?").run(now - DAY, "s-arch2");
 
-  // ── Item 2: idle unarchived sessions (25h, 23h, 2h, 30m) ──
+  // ── Item 2: idle unarchived sessions (25h, 23h, 2h, 30m) + unrelated active job ──
   const makeIdle = (key: string, idleHours: number) => {
     const ws = join(data, "sessions", "cl", key, "workspace");
     mkdirSync(join(ws, "node_modules", "dep"), { recursive: true });
@@ -191,6 +191,12 @@ test("MoonBit station backfills unfinished archives, cleans idle unarchived rebu
   const ws23h = makeIdle("s-23h", 23);
   const ws2h = makeIdle("s-2h", 2);
   const ws30m = makeIdle("s-30m", 0.5);
+  const unrelatedJobCwd = fresh("unrelated-job");
+  store.insertJob({
+    id: "j-mb-unrelated", sessionKey: "s-other-live", name: "bg", command: "sleep 60", cwd: unrelatedJobCwd,
+    port: null, token: "jtok-mb-unrel", state: "running", pgid: 99995, exitCode: null,
+    startedAt: now, endedAt: null, restarts: 0, log: join(data, "jobs", "j-mb-unrelated.log"), watch: false,
+  });
 
   // ── Item 3: orphan rooms (25h old with worktree, 23h fresh) ──
   const repo = join(data, "repos", "demo");
@@ -365,6 +371,9 @@ test("MoonBit station backfills unfinished archives, cleans idle unarchived rebu
     const u4 = await httpJson(port, "POST", "/parts/ask/hub.runArchiveUpkeepIfDue", [base + 20 * MIN]);
     assert.equal(u4.status, 200, JSON.stringify(u4));
     assert.equal(u4.body, true, "archive upkeep runs a 2nd time at +20m");
+
+    // Stop the unrelated background job adopted on startup so no child process outlives this test.
+    await httpJson(port, "POST", "/parts/ask/jobs.stop", ["j-mb-unrelated"]);
 
     // told to stop (`op`, the launcher's control channel), it winds down with its processes (`--builder replica-export`)
     launched.tell({ op: "stop" });

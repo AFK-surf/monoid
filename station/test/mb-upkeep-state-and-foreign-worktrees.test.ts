@@ -343,10 +343,56 @@ test("MoonBit station persists idle_measured & daily branch cleanup timestamps a
     assert.equal(c3.status, 200, JSON.stringify(c3));
     assert.equal(c3.body, 16, "corrupted state file treated as empty without failing");
     const repaired = JSON.parse(readFileSync(join(data, UPKEEP_STATE_FILE), "utf8"));
+    assert.equal(repaired.idleMeasuredVersion, 2);
     assert.equal(Object.keys(repaired.idleMeasured).length, 16);
     await l3.stop();
   } finally {
     await l3.stop();
+  }
+
+  // ── Launch #4: legacy upkeep-state.json without idleMeasuredVersion resets idleMeasured while keeping timestamps ──
+  // Re-create node_modules in s-00 (which was previously poisoned in legacy idleMeasured) and a fresh merged branch b3.
+  mkdirSync(join(workspaces[0]!, "node_modules", "dep"), { recursive: true });
+  writeFileSync(join(workspaces[0]!, "node_modules", "dep", "index.js"), "re-seeded\n");
+  git(repo, ["branch", "b3", "main"]);
+  rmSync(join(repo, ".git", "logs", "refs", "heads", "b3"), { force: true });
+  execFileSync("touch", ["-t", "202001010000", join(repo, ".git", "refs", "heads", "b3")]);
+  const legacyIdle: Record<string, number> = {};
+  for (let i = 0; i < 40; i++) {
+    legacyIdle[`s-${String(i).padStart(2, "0")}`] = t0 - 48 * HOUR + i * 1_000;
+  }
+  writeFileSync(
+    join(data, UPKEEP_STATE_FILE),
+    JSON.stringify({
+      idleMeasured: legacyIdle,
+      lastRepoBranchesAt: t0 + DAY,
+      lastOrphanRoomsAt: t0 + DAY,
+      lastFullRelieveAt: t0 + DAY,
+      lastArchiveUpkeepAt: t0 + DAY,
+    }),
+  );
+  const l4 = await launch(data, app);
+  try {
+    const port4 = (await l4.next("mcp serving", (m) => m.serving === "mcp")).port as number;
+    const c4 = await httpJson(port4, "POST", "/parts/ask/hub.cleanIdleRebuildable", [t0, 24 * HOUR, 16]);
+    assert.equal(c4.status, 200, JSON.stringify(c4));
+    assert.equal(c4.body, 16, "legacy state file reset idleMeasured so s-00..s-15 are re-measured");
+    assert.ok(!existsSync(join(workspaces[0]!, "node_modules")), "s-00 node_modules cleaned after legacy reset");
+
+    // Branch cleanup within 24h of preserved lastRepoBranchesAt (t0 + DAY) is still skipped.
+    const u4 = await httpJson(port4, "POST", "/parts/ask/upkeep", [t0 + DAY + HOUR]);
+    assert.equal(u4.status, 200, JSON.stringify(u4));
+    assert.ok(branchExists(repo, "b3"), "legacy upgrade preserved lastRepoBranchesAt");
+
+    const upgraded = JSON.parse(readFileSync(join(data, UPKEEP_STATE_FILE), "utf8"));
+    assert.equal(upgraded.idleMeasuredVersion, 2);
+    assert.equal(Object.keys(upgraded.idleMeasured).length, 16);
+    assert.equal(upgraded.lastRepoBranchesAt, t0 + DAY);
+    assert.equal(upgraded.lastOrphanRoomsAt, t0 + DAY);
+    assert.equal(upgraded.lastFullRelieveAt, t0 + DAY);
+    await l4.stop();
+  } finally {
+    await l4.stop();
   }
 });
 
@@ -429,6 +475,7 @@ test("MoonBit station single-flight upkeep state load prevents concurrent startu
   writeFileSync(
     stateFile,
     JSON.stringify({
+      idleMeasuredVersion: 2,
       idleMeasured,
       lastRepoBranchesAt: t0,
       lastOrphanRoomsAt: t0,

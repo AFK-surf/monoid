@@ -22,7 +22,7 @@ import {
   pruneRepoWorktrees,
   storageEntry,
 } from "../src/ops/storage.ts";
-import { UPKEEP_STATE_FILE, readUpkeepState } from "../src/ops/upkeep-state.ts";
+import { UPKEEP_STATE_FILE, patchUpkeepState, readUpkeepState } from "../src/ops/upkeep-state.ts";
 import { Store } from "../src/store/store.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 
@@ -268,6 +268,7 @@ describe("Item 1: persistent idleMeasured & lastArchiveUpkeepAt in <data>/upkeep
     writeFileSync(
       stateFile,
       JSON.stringify({
+        idleMeasuredVersion: 2,
         idleMeasured,
         lastRepoBranchesAt: null,
         lastOrphanRoomsAt: null,
@@ -345,6 +346,38 @@ describe("Item 1: persistent idleMeasured & lastArchiveUpkeepAt in <data>/upkeep
 
     await hub.shutdown();
     store.close();
+  });
+
+  test("legacy upkeep-state.json without idleMeasuredVersion resets idleMeasured while preserving timestamps and upgrades on patch", async () => {
+    const data = fresh("legacy-state-upgrade");
+    const stateFile = join(data, UPKEEP_STATE_FILE);
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        idleMeasured: { "s-poisoned-1": 1000, "s-poisoned-2": 2000 },
+        lastRepoBranchesAt: 111,
+        lastOrphanRoomsAt: 222,
+        lastFullRelieveAt: 333,
+        lastArchiveUpkeepAt: 444,
+      }),
+    );
+
+    const state = await readUpkeepState(data);
+    assert.deepEqual(state.idleMeasured, {}, "legacy idleMeasured cleared on upgrade");
+    assert.equal(state.lastRepoBranchesAt, 111);
+    assert.equal(state.lastOrphanRoomsAt, 222);
+    assert.equal(state.lastFullRelieveAt, 333);
+    assert.equal(state.lastArchiveUpkeepAt, 444);
+
+    const wrote = await patchUpkeepState(data, { lastArchiveUpkeepAt: 444 });
+    assert.equal(wrote, true, "legacy state file atomically rewritten with version 2");
+    const upgraded = JSON.parse(readFileSync(stateFile, "utf8"));
+    assert.equal(upgraded.idleMeasuredVersion, 2);
+    assert.deepEqual(upgraded.idleMeasured, {});
+    assert.equal(upgraded.lastRepoBranchesAt, 111);
+    assert.equal(upgraded.lastOrphanRoomsAt, 222);
+    assert.equal(upgraded.lastFullRelieveAt, 333);
+    assert.equal(upgraded.lastArchiveUpkeepAt, 444);
   });
 });
 
