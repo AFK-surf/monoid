@@ -1,0 +1,783 @@
+// Comprehensive tests for backup targets configuration, SFB1 streaming encryption, zero-dep AWS SigV4 S3/R2 client,
+// S3Place, Copies policy & S3 sync/restore, and /copies/settings + /copies/s3/test + /copies/restore HTTP routes.
+import assert from "node:assert/strict";
+import { createHash, createHmac } from "node:crypto";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { afterEach, test } from "node:test";
+import { Effect, Exit, Scope, type Clock } from "effect";
+import { TestClock } from "effect/testing";
+import { PeerBus, Refused, bytesOf, withBytes } from "../src/mesh/bus.ts";
+import { Fibers } from "../src/ops/fibers.ts";
+import { ConfigFile } from "../src/ops/config.ts";
+import { checkConfig } from "../src/accounts/check.ts";
+import { Copies, keptDir } from "../src/replica/copies.ts";
+import {
+  type NormalizedBackupConfig,
+  type NormalizedS3Target,
+  applyBackupUpdate,
+  checkBackupConfig,
+  keyFingerprint,
+  readBackupConfig,
+} from "../src/replica/backup-config.ts";
+import { parseEncryptionKey, sfb1Open, sfb1OpenStream, sfb1Seal, sfb1SealStream } from "../src/replica/crypto.ts";
+import { S3Client, S3Place, encodeS3Path, extractAllXmlTags, extractXmlTag, formatAmzDate, rfc3986Encode, unescapeXml } from "../src/replica/s3.ts";
+import { routes as copiesRoutes } from "../src/api/routes/copies.ts";
+import { takeBack } from "./reference/replica-restore.ts";
+import { InlineRunner } from "./reference/replica-work.ts";
+import { Store } from "../src/store/store.ts";
+import { HOME, dataDir, rowsOf, station } from "./replica-fakes.ts";
+
+type Json = any;
+const scopes: Scope.Closeable[] = [];
+const closing: (() => Promise<void>)[] = [];
+
+afterEach(async () => {
+  for (const c of closing.splice(0).reverse()) await c().catch(() => {});
+  for (const s of scopes.splice(0)) await Effect.runPromise(Scope.close(s, Exit.void));
+});
+
+function testClock(): Clock.Clock & { move: (ms: number) => Promise<void> } {
+  const scope = Effect.runSync(Scope.make());
+  scopes.push(scope);
+  const clock = Effect.runSync(Scope.provide(TestClock.make(), scope));
+  return Object.assign(clock, { move: (ms: number) => Effect.runPromise(clock.adjust(`${ms} millis`)) });
+}
+
+const sid = (c: string) => c.repeat(64);
+const TEST_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+function escapeXml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+
+/// Deterministic in-memory mock S3 HTTP server on 127.0.0.1 supporting ListObjectsV2 pagination, GET, PUT, DELETE,
+/// and Multipart Upload (Create / UploadPart / Complete / Abort) with optional SigV4 auth checking and failure injection.
+class MockS3Server {
+  readonly objects = new Map<string, Buffer>();
+  readonly uploads = new Map<string, { key: string; parts: Map<number, { etag: string; data: Buffer }> }>();
+  readonly abortedUploads: string[] = [];
+  readonly completedUploads: string[] = [];
+  readonly puts: string[] = [];
+  maxListKeys = 1000;
+  failPartNumber: number | null = null;
+  requireAuth = true;
+  accessKeyId = "AKIA_TEST_KEY_12345";
+  secretAccessKey = "SECRET_TEST_VALUE_67890";
+  region = "auto";
+  bucket = "test-bucket";
+  #nextUpload = 1;
+  #server = createServer((req, res) => void this.#handle(req, res));
+  endpoint = "";
+
+  async start(): Promise<void> {
+    await new Promise<void>((resolve) => {
+      this.#server.listen(0, "127.0.0.1", () => {
+        const addr = this.#server.address();
+        assert.ok(addr !== null && typeof addr === "object");
+        this.endpoint = `http://127.0.0.1:${addr.port}`;
+        resolve();
+      });
+    });
+    closing.push(() => new Promise<void>((resolve) => this.#server.close(() => resolve())));
+  }
+
+  target(overrides: Partial<NormalizedS3Target> = {}): NormalizedS3Target {
+    return {
+      id: "r2main",
+      name: "Cloudflare R2",
+      endpoint: this.endpoint,
+      region: this.region,
+      bucket: this.bucket,
+      prefix: "stillfail-backup",
+      forcePathStyle: true,
+      accessKeyId: this.accessKeyId,
+      secretAccessKey: this.secretAccessKey,
+      encryptionKey: TEST_KEY,
+      includeTranscripts: true,
+      ...overrides,
+    };
+  }
+
+  async #readBody(req: IncomingMessage): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
+    return Buffer.concat(chunks);
+  }
+
+  #verifySigV4(req: IncomingMessage, url: URL, body: Buffer): boolean {
+    const auth = req.headers.authorization;
+    const amzDate = req.headers["x-amz-date"];
+    const payloadHash = req.headers["x-amz-content-sha256"];
+    if (typeof auth !== "string" || typeof amzDate !== "string" || typeof payloadHash !== "string") return false;
+    const m = /^AWS4-HMAC-SHA256 Credential=([^/]+)\/(\d{8})\/([^/]+)\/s3\/aws4_request, SignedHeaders=([^,]+), Signature=([0-9a-f]{64})$/.exec(auth);
+    if (m === null) return false;
+    const [, ak, dateStamp, region, signedHeaders, sig] = m;
+    if (ak !== this.accessKeyId || region !== this.region) return false;
+    if (createHash("sha256").update(body).digest("hex") !== payloadHash) return false;
+
+    const queryPairs: [string, string][] = [];
+    for (const [k, v] of url.searchParams.entries()) queryPairs.push([rfc3986Encode(k), rfc3986Encode(v)]);
+    queryPairs.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+    const canonicalQuery = queryPairs.map(([k, v]) => `${k}=${v}`).join("&");
+
+    const hdrNames = signedHeaders!.split(";");
+    const canonicalHeaders = hdrNames.map((h) => `${h}:${String(req.headers[h] ?? "").trim()}\n`).join("");
+    const canonicalRequest = `${req.method}\n${url.pathname}\n${canonicalQuery}\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+    const scope = `${dateStamp}/${region}/s3/aws4_request`;
+    const stringToSign = `AWS4-HMAC-SHA256\n${amzDate}\n${scope}\n${createHash("sha256").update(canonicalRequest).digest("hex")}`;
+    const kDate = createHmac("sha256", `AWS4${this.secretAccessKey}`).update(dateStamp!).digest();
+    const kRegion = createHmac("sha256", kDate).update(region!).digest();
+    const kService = createHmac("sha256", kRegion).update("s3").digest();
+    const kSigning = createHmac("sha256", kService).update("aws4_request").digest();
+    const expected = createHmac("sha256", kSigning).update(stringToSign).digest("hex");
+    return expected === sig;
+  }
+
+  async #handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = await this.#readBody(req);
+    const url = new URL(req.url ?? "/", this.endpoint);
+    if (this.requireAuth && !this.#verifySigV4(req, url, body)) {
+      res.writeHead(403, { "content-type": "application/xml" });
+      res.end(`<Error><Code>SignatureDoesNotMatch</Code><Message>Invalid SigV4</Message></Error>`);
+      return;
+    }
+
+    const prefixBucket = `/${this.bucket}`;
+    if (url.pathname !== prefixBucket && !url.pathname.startsWith(`${prefixBucket}/`)) {
+      res.writeHead(404, { "content-type": "application/xml" });
+      res.end(`<Error><Code>NoSuchBucket</Code><Message>Bucket not found</Message></Error>`);
+      return;
+    }
+    const rawKey = url.pathname.length > prefixBucket.length + 1 ? decodeURIComponent(url.pathname.slice(prefixBucket.length + 1)) : "";
+
+    // ListObjectsV2
+    if (req.method === "GET" && url.searchParams.get("list-type") === "2") {
+      const prefix = url.searchParams.get("prefix") ?? "";
+      const maxKeys = Math.min(this.maxListKeys, parseInt(url.searchParams.get("max-keys") ?? "1000", 10) || 1000);
+      const token = url.searchParams.get("continuation-token");
+      const all = [...this.objects.keys()].filter((k) => k.startsWith(prefix)).sort();
+      const start = token !== null ? parseInt(token, 10) : 0;
+      const page = all.slice(start, start + maxKeys);
+      const truncated = start + page.length < all.length;
+      const nextToken = truncated ? String(start + page.length) : "";
+      const contents = page.map((k) => `<Contents><Key>${escapeXml(k)}</Key><Size>${this.objects.get(k)!.length}</Size></Contents>`).join("");
+      res.writeHead(200, { "content-type": "application/xml" });
+      res.end(
+        `<ListBucketResult><IsTruncated>${truncated ? "true" : "false"}</IsTruncated>${truncated ? `<NextContinuationToken>${nextToken}</NextContinuationToken>` : ""}${contents}</ListBucketResult>`,
+      );
+      return;
+    }
+
+    // CreateMultipartUpload
+    if (req.method === "POST" && url.searchParams.has("uploads")) {
+      const uid = `up-${this.#nextUpload++}`;
+      this.uploads.set(uid, { key: rawKey, parts: new Map() });
+      res.writeHead(200, { "content-type": "application/xml" });
+      res.end(`<InitiateMultipartUploadResult><UploadId>${uid}</UploadId></InitiateMultipartUploadResult>`);
+      return;
+    }
+
+    // UploadPart
+    if (req.method === "PUT" && url.searchParams.has("uploadId") && url.searchParams.has("partNumber")) {
+      const uid = url.searchParams.get("uploadId")!;
+      const pn = parseInt(url.searchParams.get("partNumber")!, 10);
+      const up = this.uploads.get(uid);
+      if (up === undefined) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      if (this.failPartNumber === pn) {
+        res.writeHead(500, { "content-type": "application/xml" });
+        res.end(`<Error><Code>InternalError</Code><Message>injected part failure</Message></Error>`);
+        return;
+      }
+      const etag = `"${createHash("md5").update(body).digest("hex")}"`;
+      up.parts.set(pn, { etag, data: body });
+      res.writeHead(200, { etag });
+      res.end();
+      return;
+    }
+
+    // CompleteMultipartUpload
+    if (req.method === "POST" && url.searchParams.has("uploadId")) {
+      const uid = url.searchParams.get("uploadId")!;
+      const up = this.uploads.get(uid);
+      if (up === undefined) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      const partNums = extractAllXmlTags(body.toString("utf8"), "PartNumber").map((s) => parseInt(s, 10));
+      const assembled = Buffer.concat(partNums.map((n) => up.parts.get(n)!.data));
+      this.objects.set(up.key, assembled);
+      this.puts.push(up.key);
+      this.uploads.delete(uid);
+      this.completedUploads.push(uid);
+      res.writeHead(200, { "content-type": "application/xml" });
+      res.end(`<CompleteMultipartUploadResult><Key>${escapeXml(up.key)}</Key></CompleteMultipartUploadResult>`);
+      return;
+    }
+
+    // AbortMultipartUpload
+    if (req.method === "DELETE" && url.searchParams.has("uploadId")) {
+      const uid = url.searchParams.get("uploadId")!;
+      this.uploads.delete(uid);
+      this.abortedUploads.push(uid);
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    // Standard object GET / PUT / DELETE
+    if (req.method === "PUT") {
+      this.objects.set(rawKey, body);
+      this.puts.push(rawKey);
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+    if (req.method === "GET") {
+      const data = this.objects.get(rawKey);
+      if (data === undefined) {
+        res.writeHead(404, { "content-type": "application/xml" });
+        res.end(`<Error><Code>NoSuchKey</Code><Message>Not found</Message></Error>`);
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/octet-stream" });
+      res.end(data);
+      return;
+    }
+    if (req.method === "DELETE") {
+      this.objects.delete(rawKey);
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    res.writeHead(405);
+    res.end();
+  }
+}
+
+// ── 1. SFB1 Crypto tests (including cross-engine test vectors shared with MoonBit) ──
+
+test("SFB1 encryption: empty, small, multi-frame, cross-engine vectors, and tamper/replay/truncation rejection", async () => {
+  const key = parseEncryptionKey(TEST_KEY);
+  const salt = Buffer.from("00112233445566778899aabbccddeeff", "hex");
+  const ctx = { ws: "W1", origin: sid("a"), logicalPath: "head/lz5x0-0123abcd" };
+
+  // Exact cross-engine vectors verified by station/mb/src/replica_coord/replica_coord_s3_wbtest.mbt
+  const emptySealed = sfb1Seal(key, ctx, Buffer.alloc(0), { salt });
+  assert.equal(
+    emptySealed.toString("hex"),
+    "5346423100112233445566778899aabbccddeeff000000000140a2e9bf1bf2949ec5fae9ca903efa96",
+  );
+  assert.deepEqual(sfb1Open(key, ctx, emptySealed), Buffer.alloc(0));
+
+  const multiSealed = sfb1Seal(key, ctx, Buffer.from("hello world!", "utf8"), { salt, frameMax: 6 });
+  assert.equal(
+    multiSealed.toString("hex"),
+    "5346423100112233445566778899aabbccddeeff00000006002e63aae6fe5b61738dcd97164d941d7f8367508a978800000006015b8d9be61e0c9263c0e4ff3a687527e0dd690945bb93",
+  );
+  assert.equal(sfb1Open(key, ctx, multiSealed).toString("utf8"), "hello world!");
+
+  // Streaming seal + open across multiple frames & irregular chunk sizes
+  const big = Buffer.alloc(50_000);
+  for (let i = 0; i < big.length; i++) big[i] = (i * 31 + 7) & 0xff;
+  async function* irregular(buf: Buffer) {
+    for (let i = 0; i < buf.length; i += 1337) yield buf.subarray(i, Math.min(i + 1337, buf.length));
+  }
+  const encChunks: Buffer[] = [];
+  for await (const c of sfb1SealStream(key, ctx, irregular(big), { frameMax: 4096 })) encChunks.push(c);
+  const encWhole = Buffer.concat(encChunks);
+  assert.deepEqual(sfb1Open(key, ctx, encWhole), big);
+
+  const decChunks: Buffer[] = [];
+  for await (const c of sfb1OpenStream(key, ctx, irregular(encWhole))) decChunks.push(c);
+  assert.deepEqual(Buffer.concat(decChunks), big);
+
+  // Tampering ciphertext or tag -> rejected
+  const tampered = Buffer.from(multiSealed);
+  tampered[tampered.length - 1]! ^= 0x01;
+  assert.throws(() => sfb1Open(key, ctx, tampered));
+
+  // Truncation -> rejected
+  assert.throws(() => sfb1Open(key, ctx, multiSealed.subarray(0, multiSealed.length - 1)));
+  // Truncated after first non-final frame -> rejected
+  const firstFrameEnd = 20 + 5 + 6 + 16;
+  assert.throws(() => sfb1Open(key, ctx, multiSealed.subarray(0, firstFrameEnd)));
+
+  // Trailing bytes after final frame -> rejected
+  assert.throws(() => sfb1Open(key, ctx, Buffer.concat([multiSealed, Buffer.from([0x00])])));
+
+  // Reordering frames -> rejected (index & final flag bound in nonce + AAD)
+  const f0 = multiSealed.subarray(20, firstFrameEnd);
+  const f1 = multiSealed.subarray(firstFrameEnd);
+  assert.throws(() => sfb1Open(key, ctx, Buffer.concat([multiSealed.subarray(0, 20), f1, f0])));
+
+  // Cross-ws / cross-origin / cross-logicalPath replay -> rejected
+  assert.throws(() => sfb1Open(key, { ...ctx, ws: "W2" }, multiSealed));
+  assert.throws(() => sfb1Open(key, { ...ctx, origin: sid("b") }, multiSealed));
+  assert.throws(() => sfb1Open(key, { ...ctx, logicalPath: "head/other" }, multiSealed));
+});
+
+// ── 2. AWS SigV4, XML escaping, pagination, and Multipart Upload tests ──
+
+test("S3Client: SigV4 path/virtual-hosted URLs, pagination, XML escaping, multipart upload & abort on failure", async () => {
+  assert.deepEqual(formatAmzDate(Date.UTC(2026, 10, 22, 13, 11, 6)), {
+    dateStamp: "20261122",
+    amzDate: "20261122T131106Z",
+  });
+  assert.equal(rfc3986Encode("a b/c~d!e'f(g)h*i"), "a%20b%2Fc~d%21e%27f%28g%29h%2Ai");
+  assert.equal(encodeS3Path("dir/a b/file+1.enc"), "dir/a%20b/file%2B1.enc");
+  assert.equal(unescapeXml("a&amp;b&lt;c&gt;&quot;d&quot;&apos;e&#33;&#x21;"), "a&b<c>\"d\"'e!!");
+  assert.equal(extractXmlTag("<Root><Key>p/a&amp;b</Key></Root>", "Key"), "p/a&b");
+
+  const s3 = new MockS3Server();
+  await s3.start();
+
+  // Virtual-hosted URL signing shape check
+  const vhostClient = new S3Client(
+    s3.target({ endpoint: "https://s3.us-east-1.amazonaws.com", forcePathStyle: false, bucket: "my-bkt" }),
+    { now: () => Date.UTC(2026, 10, 22, 12, 0, 0) },
+  );
+  const signedVhost = vhostClient.signRequest("GET", "a/b c.enc", { "z": "1", "a": "2" }, Buffer.alloc(0));
+  assert.equal(signedVhost.url, "https://my-bkt.s3.us-east-1.amazonaws.com/a/b%20c.enc?a=2&z=1");
+  assert.match(signedVhost.headers.authorization!, /^AWS4-HMAC-SHA256 Credential=AKIA_TEST_KEY_12345\/20261122\/auto\/s3\/aws4_request/);
+
+  // Connection test & pagination with XML special chars
+  const client = new S3Client(s3.target(), { multipartThreshold: 1024, multipartPartSize: 512 });
+  await client.testConnection();
+  s3.maxListKeys = 2;
+  for (const k of ["stillfail-backup/k1", "stillfail-backup/k2&x", "stillfail-backup/k3", "stillfail-backup/k4", "stillfail-backup/k5"]) {
+    await client.putObject(k, Buffer.from(`val:${k}`));
+  }
+  const listed = await client.listPrefix("stillfail-backup/");
+  assert.deepEqual(listed, ["stillfail-backup/k1", "stillfail-backup/k2&x", "stillfail-backup/k3", "stillfail-backup/k4", "stillfail-backup/k5"]);
+  assert.equal((await client.getObject("stillfail-backup/k2&x")).toString("utf8"), "val:stillfail-backup/k2&x");
+
+  // Multipart upload above threshold
+  const payload = Buffer.alloc(2300, 0x42);
+  async function* chunked(b: Buffer) {
+    for (let i = 0; i < b.length; i += 400) yield b.subarray(i, Math.min(i + 400, b.length));
+  }
+  await client.putStream("stillfail-backup/big.bin", chunked(payload));
+  assert.equal(s3.completedUploads.length, 1);
+  assert.deepEqual(s3.objects.get("stillfail-backup/big.bin"), payload);
+
+  // Multipart upload failure triggers AbortMultipartUpload
+  s3.failPartNumber = 2;
+  await assert.rejects(() => client.putStream("stillfail-backup/fail.bin", chunked(payload)));
+  assert.equal(s3.abortedUploads.length, 1);
+  assert.equal(s3.objects.has("stillfail-backup/fail.bin"), false);
+  s3.failPartNumber = null;
+});
+
+// ── 3. End-to-end Copies with Mock S3: sync, dedup, rollback new gen, prune, zero-peer restore ──
+
+function across(v: Json): Json {
+  const bytes = bytesOf(v);
+  const copy = JSON.parse(JSON.stringify(v));
+  return bytes === null ? copy : withBytes(copy, bytes);
+}
+
+type Node = {
+  id: string;
+  data: string;
+  store: Store;
+  copies: Copies;
+  up: boolean;
+  workspaces: string[];
+  bus: PeerBus;
+  backup: NormalizedBackupConfig;
+};
+
+class Mesh {
+  readonly nodes = new Map<string, Node>();
+  readonly rosters = new Map<string, string[]>();
+  readonly clock = testClock();
+
+  add(
+    id: string,
+    workspaces: string[],
+    opts: { made?: { data: string; store: Store }; backup?: NormalizedBackupConfig } = {},
+  ): Node {
+    const data = opts.made?.data ?? dataDir(id.slice(0, 4));
+    const store = opts.made?.store ?? Store.open(join(data, "stillfail.db"), join(data, "archive"));
+    const bus = new PeerBus({ sleep: async () => {} });
+    const fibers = new Fibers("copies", this.clock);
+    const node = {
+      id,
+      data,
+      store,
+      up: true,
+      workspaces,
+      bus,
+      backup: opts.backup ?? { mode: "auto", stations: [], acceptOthers: true, s3: [] },
+    } as Node;
+    bus.attach(async (to, ws, request) => {
+      const there = this.nodes.get(to);
+      if (there === undefined || !there.up || !node.up) throw new Error("station unreachable");
+      if (ws !== null && (!there.workspaces.includes(ws) || !(this.rosters.get(ws) ?? []).includes(id))) {
+        throw new Error("peer is not another station in this workspace");
+      }
+      return across(await there.bus.handle(ws ?? "", id, across(request)));
+    });
+    const runner = new InlineRunner({
+      db: join(data, "stillfail.db"),
+      replica: join(data, "replica"),
+      dataDir: data,
+      origin: id,
+      now: () => this.clock.currentTimeMillisUnsafe(),
+    });
+    node.copies = new Copies({
+      data,
+      here: () => id,
+      places: () => ({ home: node.workspaces[0] ?? null, workspaces: node.workspaces.map((w) => ({ workspace: w, name: `${id.slice(0, 4)} in ${w}` })) }),
+      roster: (ws) => (this.rosters.get(ws) ?? []).map((s) => ({ id: s, name: s.slice(0, 4) })),
+      ask: (s, r) => bus.ask(s, r),
+      runner,
+      fibers,
+      changed: () => {},
+      restart: async () => null,
+      backup: () => node.backup,
+    });
+    bus.on("replica.", node.copies.answers());
+    store.subscribe((c) => node.copies.told(c));
+    this.nodes.set(id, node);
+    closing.push(async () => {
+      await node.copies.close();
+      await runner.close();
+      await fibers.close();
+      try { store.close(); } catch {}
+    });
+    return node;
+  }
+
+  async settle(): Promise<void> {
+    for (let i = 0; i < 3; i++) for (const n of this.nodes.values()) if (n.up) await n.copies.settle();
+  }
+}
+
+function holders(mesh: Mesh, ws: string, origin: string): string[] {
+  return [...mesh.nodes.values()]
+    .filter(
+      (n) =>
+        existsSync(join(keptDir(n.data), ws, origin)) &&
+        readdirSync(join(keptDir(n.data), ws, origin)).some((g) => existsSync(join(keptDir(n.data), ws, origin, g, "head.json"))),
+    )
+    .map((n) => n.id);
+}
+
+test("Copies S3 end-to-end: sync, file dedup, prune, rollback new gen, and zero-peer S3 discovery + restore", async () => {
+  const s3 = new MockS3Server();
+  await s3.start();
+  const s3Target = s3.target();
+
+  const mesh = new Mesh();
+  const [A, D] = [sid("a"), sid("d")];
+  mesh.rosters.set(HOME, [A]);
+  const made = station();
+  const a = mesh.add(A, [HOME], {
+    made,
+    backup: { mode: "manual", stations: [], acceptOthers: true, s3: [s3Target] },
+  });
+  await a.copies.start();
+  await mesh.settle();
+
+  // Verify S3 objects exist and contain no plaintext ws or origin IDs in keys
+  assert.ok(s3.objects.size > 0);
+  for (const key of s3.objects.keys()) {
+    assert.ok(!key.includes(HOME), `key should not contain plaintext ws: ${key}`);
+    assert.ok(!key.includes(A), `key should not contain plaintext origin: ${key}`);
+  }
+  const ov = a.copies.overview(HOME, true) as Json;
+  assert.equal(ov.backup.s3.length, 1);
+  assert.equal(ov.backup.s3[0].error, null);
+  assert.ok(ov.backup.s3[0].to > 0);
+
+  // Incremental pass: file is NOT re-uploaded (deduped)
+  const filePutsBefore = s3.puts.filter((k) => k.includes("/files/")).length;
+  assert.ok(filePutsBefore > 0);
+  made.store.deleteSession(made.deleted);
+  await mesh.settle();
+  const filePutsAfter = s3.puts.filter((k) => k.includes("/files/")).length;
+  assert.equal(filePutsAfter, filePutsBefore, "existing files must not be re-uploaded");
+
+  // Station A dies; brand new empty station D joins with ZERO peers and ONLY the same S3 target!
+  a.up = false;
+  mesh.rosters.set(HOME, [D]);
+  const d = mesh.add(D, [HOME], {
+    backup: { mode: "manual", stations: [], acceptOthers: true, s3: [s3Target] },
+  });
+  await d.copies.start();
+  await d.copies.settle();
+
+  const list = (await d.copies.restorable(HOME)) as Json[];
+  assert.equal(list.length, 1);
+  assert.equal(list[0].station, A);
+  assert.deepEqual(list[0].from, [{ s3: s3Target.id, name: s3Target.name }]);
+
+  // Restore directly from S3 and verify identical DB rows
+  await d.copies.restore(HOME, A, list[0].gen, { s3: s3Target.id });
+  d.store.close();
+  const ready = takeBack(d.data, join(d.data, "stillfail.db"), 0);
+  assert.ok(ready !== null);
+  const restoredDb = new DatabaseSync(join(d.data, "stillfail.db"));
+  closing.push(async () => restoredDb.close());
+  const origDb = new DatabaseSync(join(a.data, "stillfail.db"));
+  closing.push(async () => origDb.close());
+
+  const want = rowsOf(origDb, null, a.data, d.data);
+  const got = rowsOf(restoredDb, null);
+  for (const table of Object.keys(want)) {
+    assert.deepEqual([...got[table]!.entries()].sort(), [...want[table]!.entries()].sort(), `${table} restored from S3`);
+  }
+  assert.ok(want.entries!.size > 30);
+
+  // Verify S3 rollback detection (`behind` -> new generation on S3Place)
+  const place = new S3Place(s3Target);
+  const heldBefore = await place.held(HOME, A);
+  assert.equal(heldBefore.gens.length, 1);
+  // Simulate a future generation already on S3: `behind()` triggers new generation on next pass
+  const fakeFutureGen = "zzzzzz-12345678";
+  const futureHead = { ...heldBefore.gens[0]!.head!, gen: fakeFutureGen };
+  await place.put(HOME, A, fakeFutureGen, "head", "head.json", Buffer.from(JSON.stringify(futureHead)));
+  a.up = true;
+  mesh.rosters.set(HOME, [A]);
+  await a.copies.start();
+  await a.copies.settle();
+  const heldAfter = await place.held(HOME, A);
+  assert.ok(heldAfter.gens.length >= 3, "rollback should create a new generation beside the existing ones");
+});
+
+// ── 4. Policy controls: manual stations, stations: [], acceptOthers: false ──
+
+test("Backup policies: manual station list, stations: [] (S3-only), and acceptOthers: false refusal + auto skip", async () => {
+  const s3 = new MockS3Server();
+  await s3.start();
+  const mesh = new Mesh();
+  const [A, B, C, D] = [sid("a"), sid("b"), sid("c"), sid("d")];
+  mesh.rosters.set(HOME, [A, B, C, D]);
+  const made = station();
+  // Manual mode: A only backs up to C (not B or D)
+  const a = mesh.add(A, [HOME], {
+    made,
+    backup: { mode: "manual", stations: [C], acceptOthers: true, s3: [s3.target()] },
+  });
+  const b = mesh.add(B, [HOME]);
+  const c = mesh.add(C, [HOME]);
+  const d = mesh.add(D, [HOME]);
+  for (const n of mesh.nodes.values()) await n.copies.start();
+  await mesh.settle();
+
+  assert.deepEqual(holders(mesh, HOME, A), [C]);
+  assert.ok(s3.objects.size > 0);
+
+  // Switch A to stations: [] (S3 only)
+  a.backup = { mode: "manual", stations: [], acceptOthers: true, s3: [s3.target()] };
+  a.copies.configChanged();
+  await mesh.settle();
+  assert.deepEqual((a.copies.overview(HOME, true) as Json).keepers, []);
+
+  // Switch B to acceptOthers: false -> rejects inbound replica.put and auto mode skips B
+  b.backup = { mode: "auto", stations: [], acceptOthers: false, s3: [] };
+  b.copies.configChanged();
+  await mesh.settle();
+
+  // Direct replica.put to B is refused with "not accepting copies"
+  await assert.rejects(
+    () =>
+      a.bus.ask(
+        B,
+        withBytes(
+          { method: "replica.put", workspace: HOME, origin: A, gen: "lz5x0-0123abcd", kind: "head", name: "head.json" },
+          (async function* () {
+            yield Buffer.from("{}");
+          })(),
+        ),
+      ),
+    (e: unknown) => e instanceof Refused && e.message.includes("not accepting copies"),
+  );
+
+  // Switch A back to auto mode: should pick C and D (skipping B which has acceptOthers: false)
+  a.backup = { mode: "auto", stations: [], acceptOthers: true, s3: [] };
+  a.copies.configChanged();
+  await mesh.settle();
+  const autoHolders = holders(mesh, HOME, A).sort();
+  assert.ok(!autoHolders.includes(B), "auto mode must skip peer with acceptOthers === false");
+  assert.deepEqual(autoHolders, [C, D].sort());
+});
+
+// ── 5. HTTP routes: GET/PUT /copies/settings, POST /copies/s3/test, POST /copies/restore ──
+
+test("HTTP routes: /copies/settings secret redaction, key generation, secret preservation, validation, RBAC, and /copies/s3/test", async () => {
+  const s3 = new MockS3Server();
+  await s3.start();
+
+  const dir = dataDir("routes");
+  mkdirSync(dir, { recursive: true });
+  const config = new ConfigFile(dir);
+  config.check = (raw, d) => checkConfig(raw, d);
+
+  const mesh = new Mesh();
+  const A = sid("a");
+  const B = sid("b");
+  mesh.rosters.set(HOME, [A, B]);
+  const a = mesh.add(A, [HOME]);
+  // Bind copies backup config to live ConfigFile
+  const runner = new InlineRunner({
+    db: join(a.data, "stillfail.db"),
+    replica: join(a.data, "replica"),
+    dataDir: a.data,
+    origin: A,
+    now: () => mesh.clock.currentTimeMillisUnsafe(),
+  });
+  closing.push(async () => await runner.close());
+  const fibers = new Fibers("routes", mesh.clock);
+  closing.push(async () => await fibers.close());
+  const copies = new Copies({
+    data: a.data,
+    here: () => A,
+    places: () => ({ home: HOME, workspaces: [{ workspace: HOME, name: "test" }] }),
+    roster: () => [{ id: A, name: "A" }, { id: B, name: "B" }],
+    ask: (s, r) => a.bus.ask(s, r),
+    runner,
+    fibers,
+    changed: () => {},
+    restart: async () => null,
+    backup: () => readBackupConfig(config.raw()),
+  });
+  closing.push(async () => await copies.close());
+  await copies.start();
+
+  const routeList = copiesRoutes({ copies, retire: {} as any, starts: false, config, changed: () => {} });
+  const call = async (method: string, path: string, bodyObj: unknown, role: "owner" | "member" = "owner") => {
+    const r = routeList.find((x) => x.method === method && x.pattern.test(path));
+    assert.ok(r, `route ${method} ${path} should exist`);
+    const m = path.match(r.pattern)!;
+    return r.handle({
+      method,
+      path,
+      query: new URLSearchParams(),
+      headers: {},
+      body: Buffer.from(bodyObj === undefined ? "" : JSON.stringify(bodyObj), "utf8"),
+      viewer: { workspace: HOME, email: "u@example.com", role, device: "dev1" } as any,
+      lang: "en",
+    } as any, m);
+  };
+
+  // Non-manager gets 403 on all settings / test routes
+  assert.equal((await call("GET", "/copies/settings", undefined, "member")).status, 403);
+  assert.equal((await call("PUT", "/copies/settings", { mode: "auto" }, "member")).status, 403);
+  assert.equal((await call("POST", "/copies/s3/test", {}, "member")).status, 403);
+
+  // PUT /copies/settings: create new S3 target without encryptionKey -> auto-generated & returned once
+  const put1 = await call("PUT", "/copies/settings", {
+    mode: "manual",
+    stations: [B],
+    acceptOthers: false,
+    s3: [
+      {
+        name: "My R2",
+        endpoint: s3.endpoint,
+        bucket: s3.bucket,
+        prefix: "/custom-prefix/",
+        accessKeyId: s3.accessKeyId,
+        secretAccessKey: s3.secretAccessKey,
+      },
+    ],
+  });
+  assert.equal(put1.status, 200);
+  const put1Body = JSON.parse(put1.body.toString("utf8"));
+  assert.equal(put1Body.mode, "manual");
+  assert.deepEqual(put1Body.stations, [B]);
+  assert.equal(put1Body.acceptOthers, false);
+  assert.equal(put1Body.s3.length, 1);
+  const targetId = put1Body.s3[0].id as string;
+  assert.match(targetId, /^[a-z0-9_-]{1,32}$/);
+  assert.equal(put1Body.s3[0].prefix, "custom-prefix");
+  const genKey = put1Body.generatedKeys[targetId] as string;
+  assert.match(genKey, /^[0-9a-f]{64}$/);
+  assert.equal(put1Body.s3[0].keyFingerprint, keyFingerprint(genKey));
+  // Never leaks plaintext secrets!
+  assert.equal("secretAccessKey" in put1Body.s3[0], false);
+  assert.equal("encryptionKey" in put1Body.s3[0], false);
+  assert.ok(!put1.body.toString("utf8").includes(s3.secretAccessKey));
+
+  // GET /copies/settings never returns plaintext secrets or generatedKeys
+  const get1 = await call("GET", "/copies/settings", undefined);
+  assert.equal(get1.status, 200);
+  const get1Text = get1.body.toString("utf8");
+  assert.ok(!get1Text.includes(s3.secretAccessKey));
+  assert.ok(!get1Text.includes(genKey));
+
+  // PUT /copies/settings: update name & prefix while omitting secretAccessKey & encryptionKey -> preserves old secrets!
+  const put2 = await call("PUT", "/copies/settings", {
+    s3: [
+      {
+        id: targetId,
+        name: "Renamed R2",
+        endpoint: s3.endpoint,
+        bucket: s3.bucket,
+        prefix: "renamed-prefix",
+        accessKeyId: s3.accessKeyId,
+        secretAccessKey: "",
+        encryptionKey: "",
+      },
+    ],
+  });
+  assert.equal(put2.status, 200);
+  const put2Body = JSON.parse(put2.body.toString("utf8"));
+  assert.deepEqual(put2Body.generatedKeys, {});
+  assert.equal(put2Body.s3[0].name, "Renamed R2");
+  assert.equal(put2Body.s3[0].keyFingerprint, keyFingerprint(genKey));
+  const persisted = readBackupConfig(config.raw());
+  assert.equal(persisted.s3[0]!.secretAccessKey, s3.secretAccessKey);
+  assert.equal(persisted.s3[0]!.encryptionKey, genKey);
+
+  // Validation errors -> 400
+  assert.equal((await call("PUT", "/copies/settings", { mode: "bogus" })).status, 400);
+  assert.equal((await call("PUT", "/copies/settings", { stations: ["not-a-station"] })).status, 400);
+  assert.equal(
+    (
+      await call("PUT", "/copies/settings", {
+        s3: [{ name: "Bad", endpoint: "http://example.com", bucket: "bkt", accessKeyId: "ak", secretAccessKey: "sk" }],
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await call("PUT", "/copies/settings", {
+        s3: [{ name: "BadKey", endpoint: s3.endpoint, bucket: "bkt", accessKeyId: "ak", secretAccessKey: "sk", encryptionKey: "zz" }],
+      })
+    ).status,
+    400,
+  );
+  assert.throws(() => checkBackupConfig({ s3: [{ id: "a", name: "x", endpoint: s3.endpoint, bucket: "bkt", accessKeyId: "ak", secretAccessKey: "sk", encryptionKey: TEST_KEY }, { id: "a", name: "y", endpoint: s3.endpoint, bucket: "bkt", accessKeyId: "ak", secretAccessKey: "sk", encryptionKey: TEST_KEY }] }));
+  assert.throws(() => applyBackupUpdate({}, "not-an-object"));
+
+  // POST /copies/s3/test: success with saved id, failure with bad secret
+  const testOk = await call("POST", "/copies/s3/test", { id: targetId });
+  assert.equal(testOk.status, 200);
+  assert.deepEqual(JSON.parse(testOk.body.toString("utf8")), { ok: true });
+
+  const testBad = await call("POST", "/copies/s3/test", {
+    endpoint: s3.endpoint,
+    bucket: s3.bucket,
+    accessKeyId: s3.accessKeyId,
+    secretAccessKey: "WRONG_SECRET",
+  });
+  assert.equal(testBad.status, 200);
+  const testBadBody = JSON.parse(testBad.body.toString("utf8"));
+  assert.equal(testBadBody.ok, false);
+  assert.match(testBadBody.error, /403|SignatureDoesNotMatch/);
+
+  // Verify config.json was written cleanly with backup field
+  const rawOnDisk = JSON.parse(readFileSync(config.path, "utf8"));
+  assert.equal(rawOnDisk.backup.s3[0].name, "Renamed R2");
+});

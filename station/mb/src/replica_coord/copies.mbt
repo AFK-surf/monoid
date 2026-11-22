@@ -94,6 +94,7 @@ pub(all) struct CopiesDeps {
   /// Asks the station's launcher to start it again; None where there is none to ask.
   restart : async () -> (async () -> Unit)?
   taking : (() -> Array[String])?
+  backup : (() -> BackupConfig)?
 }
 
 ///|
@@ -161,6 +162,9 @@ pub struct Copies {
   mut export_error : String?
   mut export_tries : Int
   old : Map[String, Bool]
+  peer_accepts : Map[String, Bool]
+  online : Map[String, Bool]
+  s3_places : Map[String, (String, S3Place)]
   mut telling : (() -> Unit)?
   restored : J?
   was : Array[String]
@@ -191,6 +195,9 @@ pub async fn Copies::new(w : World, d : CopiesDeps) -> Copies {
     export_error: None,
     export_tries: 0,
     old: {},
+    peer_accepts: {},
+    online: {},
+    s3_places: {},
     telling: None,
     restored,
     was: formerly_of(w.fs, d.data),
@@ -402,10 +409,19 @@ pub async fn Copies::places_changed(self : Copies) -> Unit {
       self.keeping.remove(k)
     }
   }
+  let s3_keys : Map[String, Bool] = {}
+  for t in self.backup_config().s3 {
+    s3_keys["s3:\{t.id}"] = true
+  }
   for ws in ins {
+    let peer_targets = self.targets(ws)
     for k in self.keeping.keys().collect() {
-      let (kw, station) = split_key(k)
-      if kw == ws && !self.targets(ws).contains(station) {
+      let (kw, dest) = split_key(k)
+      if kw == ws && !peer_targets.contains(dest) && !s3_keys.contains(dest) {
+        match self.keeping.get(k) {
+          Some(v) => call_opt(v.again)
+          None => ()
+        }
         self.keeping.remove(k)
       }
     }
@@ -422,6 +438,85 @@ pub async fn Copies::places_changed(self : Copies) -> Unit {
   })
   self.hello()
   self.hand_over_soon()
+}
+
+///|
+fn Copies::backup_config(self : Copies) -> BackupConfig {
+  match self.d.backup {
+    Some(f) => f()
+    None => BackupConfig::default()
+  }
+}
+
+///|
+fn s3_sig(t : S3TargetConfig) -> String {
+  "\{t.endpoint}\n\{t.region}\n\{t.bucket}\n\{t.prefix}\n\{t.force_path_style}\n\{t.access_key_id}\n\{t.secret_access_key}\n\{t.encryption_key}"
+}
+
+///|
+fn Copies::s3_place(self : Copies, t : S3TargetConfig) -> S3Place raise {
+  let sig = s3_sig(t)
+  match self.s3_places.get(t.id) {
+    Some((s, p)) if s == sig => return p
+    _ => ()
+  }
+  let p = S3Place::new(t, self.w)
+  self.s3_places[t.id] = (sig, p)
+  p
+}
+
+///|
+/// Called after `config.json`'s `backup` section changes.
+pub fn Copies::config_changed(self : Copies) -> Unit {
+  let cfg = self.backup_config()
+  let s3_by_id : Map[String, S3TargetConfig] = {}
+  for t in cfg.s3 {
+    s3_by_id[t.id] = t
+  }
+  for id in self.s3_places.keys().collect() {
+    let keep = match (self.s3_places.get(id), s3_by_id.get(id)) {
+      (Some((sig, _)), Some(next)) => s3_sig(next) == sig
+      _ => false
+    }
+    if !keep {
+      self.s3_places.remove(id)
+      let suffix = "\ns3:\{id}"
+      for k, v in self.keeping {
+        if k.has_suffix(suffix) {
+          v.known = None
+          v.head = None
+          call_opt(v.again)
+          v.again = None
+        }
+      }
+    }
+  }
+  let ins = places_workspaces((self.d.places)()).map(p => p.0)
+  let s3_keys : Map[String, Bool] = {}
+  for t in cfg.s3 {
+    s3_keys["s3:\{t.id}"] = true
+  }
+  for ws in ins {
+    let peer_targets = self.targets(ws)
+    for k in self.keeping.keys().collect() {
+      let (kw, dest) = split_key(k)
+      if kw == ws && !peer_targets.contains(dest) && !s3_keys.contains(dest) {
+        match self.keeping.get(k) {
+          Some(v) => call_opt(v.again)
+          None => ()
+        }
+        self.keeping.remove(k)
+      }
+    }
+    self.level_all(ws)
+    match self.passed {
+      Some(p) if yes_at(p, "empty") => self.w.go(async fn() { self.look(ws) })
+      _ => ()
+    }
+  }
+  self.hello()
+  self.hand_over_soon()
+  self.changed(0.0)
 }
 
 ///|
@@ -450,6 +545,7 @@ fn Copies::keepers_of(self : Copies, ws : String) -> Array[String] {
 fn Copies::hello(self : Copies) -> Unit {
   guard (self.d.here)() is Some(here) else { return }
   let formerly = self.was
+  let accept_copies = self.backup_config().accept_others
   for p in places_workspaces((self.d.places)()) {
     let ws = p.0
     for s in (self.d.roster)(ws).unwrap_or([]) {
@@ -458,17 +554,40 @@ fn Copies::hello(self : Copies) -> Unit {
       }
       let id = s.id
       self.w.go(async fn() {
-        let answer = self.w.ask(id, jo([("method", js("replica.hello")), ("workspace", js(ws)), ("formerly", jstrs(formerly))])) catch {
+        let answer = self.w.ask(
+          id,
+          jo([
+            ("method", js("replica.hello")),
+            ("workspace", js(ws)),
+            ("formerly", jstrs(formerly)),
+            ("acceptCopies", jb(accept_copies)),
+          ]),
+        ) catch {
           e => {
             // (one that answers with a refusal is up but knows no `replica.*`: from before copies)
             if is_refused(e) {
               self.old[id] = true
+            } else {
+              self.online.remove(id)
             }
             return
           }
         }
         self.old.remove(id)
+        self.online[id] = true
+        let accepts = match at(answer, "acceptCopies") {
+          Some(Bool(false)) => false
+          _ => true
+        }
+        let prev = self.peer_accepts.get(id)
+        self.peer_accepts[id] = accepts
         self.heard_formerly(ws, id, strings_of(at(answer, "formerly")))
+        if prev != Some(accepts) {
+          self.changed(0.0)
+          if !accepts && self.backup_config().mode == "auto" {
+            self.level_all(ws)
+          }
+        }
       })
     }
   }
@@ -510,15 +629,23 @@ pub fn Copies::now(self : Copies, ws : String?, station : String) -> String {
 
 ///|
 /// Another station is up (`replica.hello`).
-pub fn Copies::heard(self : Copies, peer : String, ws : String, formerly : Array[String]) -> Array[String] {
+pub fn Copies::heard(self : Copies, peer : String, ws : String, formerly : Array[String], accept_copies? : Bool = true) -> Array[String] {
   self.heard_formerly(ws, peer, formerly)
   self.old.remove(peer)
+  self.online[peer] = true
+  let prev = self.peer_accepts.get(peer)
+  self.peer_accepts[peer] = accept_copies
+  if prev != Some(accept_copies) {
+    self.changed(0.0)
+  }
   match self.keeping.get("\{ws}\n\{peer}") {
     Some(k) => k.known = None
     None => ()
   }
-  if self.targets(ws).contains(peer) || self.keepers_of(ws).contains(peer) {
+  if accept_copies && (self.targets(ws).contains(peer) || (self.backup_config().mode == "auto" && self.keepers_of(ws).contains(peer))) {
     self.level(ws, peer, true, true)
+  } else if !accept_copies && self.backup_config().mode == "auto" {
+    self.level_all(ws)
   }
   self.hand_over_soon()
   self.was
@@ -537,7 +664,8 @@ pub async fn Copies::answer(self : Copies, peer : String, request : J, body : Bo
     {
       place: self.kept,
       in_workspace: (p, ws) => self.in_workspace(p, ws),
-      hello: (p, ws, formerly) => self.heard(p, ws, formerly),
+      hello: (p, ws, formerly, accepts) => self.heard(p, ws, formerly, accept_copies=accepts),
+      accept_others: Some(() => self.backup_config().accept_others),
     },
     peer,
     request,
@@ -551,25 +679,19 @@ fn Copies::level_all(self : Copies, ws : String) -> Unit {
   for peer in self.targets(ws) {
     self.level(ws, peer, false, false)
   }
+  for t in self.backup_config().s3 {
+    self.level_s3(ws, t, false, false)
+  }
 }
 
 ///|
 /// The stations that should hold this station's copies in `ws` now.
-fn Copies::targets(self : Copies, ws : String) -> Array[String] {
+pub fn Copies::targets(self : Copies, ws : String) -> Array[String] {
   guard (self.d.here)() is Some(here) && self.roster_ids(ws) is Some(ids) else { return [] }
-  let out = []
-  let mut reached = 0
-  for s in ranked(ws, here, ids) {
-    out.push(s)
-    match self.keeping.get("\{ws}\n\{s}") {
-      Some({ error: Some(_), .. }) => ()
-      _ => reached += 1
-    }
-    if reached >= copies_kept {
-      break
-    }
-  }
-  out
+  select_backup_targets(ws, here, ids, self.backup_config(), self.peer_accepts, s => match self.keeping.get("\{ws}\n\{s}") {
+    Some({ error: Some(_), .. }) => true
+    _ => false
+  })
 }
 
 ///|
@@ -774,7 +896,7 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
           }
         }
         // (one not reached: the next station after those this one's copies fall to holds them meanwhile)
-        if was_error is None {
+        if was_error is None && self.backup_config().mode == "auto" {
           self.level_all(ws)
         }
       }
@@ -785,6 +907,139 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
     if k.asked && !self.closed {
       k.asked = false
       self.level(ws, peer, k.error is None, false)
+    }
+  })
+  if !run.is_done() && k.busy {
+    self.levelling[key] = run
+  }
+}
+
+///|
+fn Copies::level_s3(self : Copies, ws : String, target : S3TargetConfig, now : Bool, fresh : Bool) -> Unit {
+  let key = "\{ws}\ns3:\{target.id}"
+  let k = match self.keeping.get(key) {
+    Some(k) => k
+    None => {
+      let k : Keeping = {
+        to: 0.0,
+        at: None,
+        error: None,
+        reason: None,
+        missing: 0,
+        busy: false,
+        again: None,
+        tries: 0,
+        asked: false,
+        known: None,
+        head: None,
+      }
+      self.keeping[key] = k
+      k
+    }
+  }
+  if k.busy {
+    k.asked = true
+    return
+  }
+  if k.again is Some(_) && !now {
+    return
+  }
+  call_opt(k.again)
+  k.again = None
+  guard self.head_of_ws(ws) is Some(head) && head_batches(head).length() > 0 else { return }
+  if fresh {
+    k.known = None
+  }
+  let said = head_said(head)
+  if k.known is Some(_) && k.head == Some(said) && k.error is None {
+    return
+  }
+  k.busy = true
+  let was_error = k.error
+  let target_id = target.id
+  let run = self.w.run(async fn() {
+    try {
+      let s3 = self.s3_place(target)
+      let place = s3.place()
+      let (head, first) = level_newest(head, () => self.head_of_ws(ws), async fn(h) {
+        level(place, ws, self.own(h), known=k.known)
+      })
+      let said = head_said(head)
+      let mut done = first
+      if done is Behind {
+        let begun = match self.begun.get(ws) {
+          Some((from, r)) if from == head_gen(head) => r
+          _ => {
+            let r = self.w.run(async fn() {
+              let held = (place.held)(ws, text_at(head, "origin"))
+              let mut most = 0.0
+              for g in held.gens {
+                let m = gen_made(g.gen)
+                if m > most {
+                  most = m
+                }
+              }
+              (self.d.runner.new_generations)(most)
+              self.settle_export()
+            })
+            self.begun[ws] = (head_gen(head), r)
+            r
+          }
+        }
+        begun.wait()
+        guard self.head_of_ws(ws) is Some(next) else { raise failed("no copy of this workspace's") }
+        done = level(place, ws, self.own(next))
+        if done is Behind {
+          raise failed("that S3 target keeps more of this station's than it has")
+        }
+      }
+      match done {
+        Level(to, missing, known) => {
+          k.known = Some(known)
+          k.head = Some(said)
+          k.reason = None
+          k.to = to
+          k.missing = missing
+          k.at = Some(self.w.now())
+          k.error = None
+          k.tries = 0
+        }
+        Behind => ()
+      }
+    } catch {
+      e => {
+        let reason = if kind_of(e) == "S3HttpError" { "error" } else { "offline" }
+        if k.error is None {
+          self.w.warn("copies", "an S3 place not brought level", jo([("ws", js(ws)), ("s3", js(target_id)), ("error", js(message_of(e)))]))
+        }
+        k.error = Some(message_of(e))
+        k.reason = Some(reason)
+        k.known = None
+        let wait = backoff(copies_retry_ms, k.tries, copies_retry_most_ms)
+        k.tries += 1
+        if !self.closed {
+          // timer: a retry after a failure
+          k.again = Some(
+            self.w.after(wait, () => {
+              k.again = None
+              match self.backup_config().s3.search_by(t => t.id == target_id) {
+                Some(i) => self.level_s3(ws, self.backup_config().s3[i], true, true)
+                None => ()
+              }
+            }),
+          )
+        }
+      }
+    }
+    k.busy = false
+    self.changed(if k.error == was_error { copies_tell_ms } else { 0.0 })
+    self.levelling.remove(key)
+    if k.asked && !self.closed {
+      k.asked = false
+      match self.backup_config().s3.search_by(t => t.id == target_id) {
+        Some(i) => self.level_s3(ws, self.backup_config().s3[i], k.error is None, false)
+        None => ()
+      }
     }
   })
   if !run.is_done() && k.busy {
@@ -847,7 +1102,12 @@ async fn Copies::hand_over(self : Copies) -> Bool {
       if !is_station(origin) || origin == here || taking.contains(origin) {
         continue
       }
-      let should = keepers(ws, origin, ids)
+      let eligible = if self.backup_config().accept_others {
+        ids
+      } else {
+        ids.filter(s => s != here && self.peer_accepts.get(s) != Some(false))
+      }
+      let should = keepers(ws, origin, eligible)
       if should.contains(here) {
         continue
       }
@@ -881,6 +1141,31 @@ async fn Copies::hand_over(self : Copies) -> Bool {
 }
 
 // ── what the station's settings show ──
+
+///|
+/// Sanitized backup configuration & status view for `overview.copies.backup` and `GET /copies/settings`.
+pub fn Copies::backup_view(self : Copies, ws : String) -> J {
+  let here = (self.d.here)()
+  let roster = (self.d.roster)(ws).unwrap_or([])
+  let peers : Array[BackupPeerView] = []
+  for s in roster {
+    if Some(s.id) == here {
+      continue
+    }
+    peers.push({
+      station: s.id,
+      name: s.name,
+      accept_others: self.peer_accepts.get(s.id) != Some(false),
+      online: self.online.contains(s.id),
+    })
+  }
+  backup_view_json(self.backup_config(), peers, id => {
+    match self.keeping.get("\{ws}\ns3:\{id}") {
+      Some(k) => { to: k.to, at: k.at, error: k.error, reason: k.reason }
+      None => { to: 0.0, at: None, error: None, reason: None }
+    }
+  })
+}
 
 ///|
 /// The copies of this station's chats in `ws`, as its settings show them.
@@ -924,6 +1209,7 @@ pub fn Copies::overview(self : Copies, ws : String, manage? : Bool = false) -> J
     ("to", match head { Some(h) => at(h, "to").unwrap_or(ji(0)); None => ji(0) }),
     ("chats", match head { Some(h) => at(h, "chats").unwrap_or(ji(0)); None => ji(0) }),
     ("keepers", ja(keepers)),
+    ("backup", self.backup_view(ws)),
     ("stopped", stopped),
     ("restored", self.restored.unwrap_or(Null)),
     ("empty", jb(empty)),
@@ -984,31 +1270,36 @@ pub async fn Copies::look(self : Copies, ws : String) -> Unit {
 /// The copies of stations of `ws` no longer there that could be brought back here.
 pub async fn Copies::restorable(self : Copies, ws : String) -> Array[J] {
   let here = (self.d.here)()
-  let found : Map[String, (J, Array[String])] = {}
-  let add = (head : J, from : String) => {
+  let found : Map[String, (J, Array[(String, J)])] = {}
+  let add = (head : J, key : String, item : J) => {
     let origin = text_at(head, "origin")
     if Some(origin) == here {
       return
     }
     match found.get(origin) {
-      None => found[origin] = (head, [from])
+      None => found[origin] = (head, [(key, item)])
       Some((was, froms)) => {
         let newer = gen_made(head_gen(head)) > gen_made(head_gen(was)) ||
           (head_gen(head) == head_gen(was) && head_to(head) > head_to(was))
         if newer {
-          found[origin] = (head, [from])
-        } else if head_gen(head) == head_gen(was) && head_to(head) == head_to(was) && !froms.contains(from) {
-          froms.push(from)
+          found[origin] = (head, [(key, item)])
+        } else if head_gen(head) == head_gen(was) && head_to(head) == head_to(was) && !froms.iter().any(p => p.0 == key) {
+          froms.push((key, item))
         }
       }
     }
   }
   let roster = (self.d.roster)(ws).unwrap_or([])
+  let name_of = (id : String) => match roster.search_by(m => m.id == id) {
+    Some(i) => roster[i].name
+    None => ""
+  }
   let taken : Map[String, Bool] = {}
   for s in self.was {
     taken[s] = true
   }
   let there : Map[String, Bool] = {}
+  let accept_copies = self.backup_config().accept_others
   let asks : Array[async () -> Unit] = []
   for s in roster {
     if Some(s.id) == here {
@@ -1017,8 +1308,21 @@ pub async fn Copies::restorable(self : Copies, ws : String) -> Array[J] {
     let id = s.id
     asks.push(async fn() {
       try {
-        let answer = self.w.ask(id, jo([("method", js("replica.hello")), ("workspace", js(ws)), ("formerly", jstrs(self.was))]))
+        let answer = self.w.ask(
+          id,
+          jo([
+            ("method", js("replica.hello")),
+            ("workspace", js(ws)),
+            ("formerly", jstrs(self.was)),
+            ("acceptCopies", jb(accept_copies)),
+          ]),
+        )
         there[id] = true
+        self.online[id] = true
+        self.peer_accepts[id] = match at(answer, "acceptCopies") {
+          Some(Bool(false)) => false
+          _ => true
+        }
         let said = strings_of(at(answer, "formerly"))
         self.heard_formerly(ws, id, said)
         for f in said {
@@ -1026,7 +1330,22 @@ pub async fn Copies::restorable(self : Copies, ws : String) -> Array[J] {
         }
         for o in peer_origins(self.w, id, ws) {
           for h in o.1 {
-            add(h, id)
+            add(h, "station:\{id}", jo([("station", js(id)), ("name", js(name_of(id)))]))
+          }
+        }
+      } catch {
+        _ => ()
+      }
+    })
+  }
+  for target in self.backup_config().s3 {
+    let t = target
+    asks.push(async fn() {
+      try {
+        let place = self.s3_place(t)
+        for o in place.origins(ws) {
+          for h in o.1 {
+            add(h, "s3:\{t.id}", jo([("s3", js(t.id)), ("name", js(t.name))]))
           }
         }
       } catch {
@@ -1047,7 +1366,7 @@ pub async fn Copies::restorable(self : Copies, ws : String) -> Array[J] {
     Some(h) =>
       for o in self.kept.origins(ws) {
         for x in o.1 {
-          add(x, h)
+          add(x, "station:\{h}", jo([("station", js(h)), ("name", js(name_of(h)))]))
         }
       }
     None => ()
@@ -1057,10 +1376,6 @@ pub async fn Copies::restorable(self : Copies, ws : String) -> Array[J] {
   }
   for f, _ in there {
     found.remove(f)
-  }
-  let name_of = (id : String) => match roster.search_by(m => m.id == id) {
-    Some(i) => roster[i].name
-    None => ""
   }
   found
   .values()
@@ -1077,7 +1392,7 @@ pub async fn Copies::restorable(self : Copies, ws : String) -> Array[J] {
       ("chats", at(head, "chats").unwrap_or(Null)),
       ("messages", at(head, "messages").unwrap_or(Null)),
       ("bytes", at(head, "bytes").unwrap_or(Null)),
-      ("from", ja(from.map(f => jo([("station", js(f)), ("name", js(name_of(f)))])))),
+      ("from", ja(from.map(f => f.1))),
     ])
   })
   .collect()
@@ -1102,8 +1417,17 @@ pub async fn Copies::take_over(self : Copies, ws : String, origin : String, gen 
 }
 
 ///|
-/// Brings `origin`'s copy (`gen`) here from `from`, then has the station start again to put it in.
-pub async fn Copies::restore(self : Copies, ws : String, origin : String, gen : String, from : String, merge? : (Array[(String, String)], String?)? = None) -> Unit {
+/// Brings `origin`'s copy (`gen`) here from `from` (a station id, or an S3 target id when `from_s3` is true), then has
+/// the station start again to put it in.
+pub async fn Copies::restore(
+  self : Copies,
+  ws : String,
+  origin : String,
+  gen : String,
+  from : String,
+  from_s3? : Bool = false,
+  merge? : (Array[(String, String)], String?)? = None,
+) -> Unit {
   if !is_station(origin) || !is_gen(gen) || !is_workspace(ws) {
     raise failed("not a copy's name")
   }
@@ -1114,12 +1438,13 @@ pub async fn Copies::restore(self : Copies, ws : String, origin : String, gen : 
     Some(r) if r.error is None => raise failed("a restore is under way")
     _ => ()
   }
+  let from_label = if from_s3 { "s3:\{from}" } else { from }
   let r : Restoring = {
     origin,
     name: "",
     workspace: ws,
     gen,
-    from,
+    from: from_label,
     done: 0,
     total: 0,
     error: None,
@@ -1128,7 +1453,7 @@ pub async fn Copies::restore(self : Copies, ws : String, origin : String, gen : 
   }
   self.restoring = Some(r)
   self.changed(0.0)
-  self.bring(r, merge) catch {
+  self.bring(r, from, from_s3, merge) catch {
     e => {
       r.error = Some(message_of(e))
       r.reason = Some(
@@ -1136,6 +1461,8 @@ pub async fn Copies::restore(self : Copies, ws : String, origin : String, gen : 
           "notEmpty"
         } else if kind_of(e) == "CopyGone" {
           "gone"
+        } else if from_s3 {
+          if kind_of(e) == "S3HttpError" { "error" } else { "offline" }
         } else {
           self.reason(from, e)
         },
@@ -1153,17 +1480,23 @@ pub fn not_empty() -> Thrown {
 }
 
 ///|
-async fn Copies::bring(self : Copies, r : Restoring, merge : (Array[(String, String)], String?)?) -> Unit {
+async fn Copies::bring(self : Copies, r : Restoring, from : String, from_s3 : Bool, merge : (Array[(String, String)], String?)?) -> Unit {
   let fs = self.w.fs
   let ws = r.workspace
   let origin = r.origin
   let gen = r.gen
   let here = (self.d.here)()
-  let (held, stream) : (Held, async (String?, String) -> Body) = if Some(r.from) == here {
+  let (held, stream) : (Held, async (String?, String) -> Body) = if from_s3 {
+    let cfg = self.backup_config()
+    guard cfg.s3.search_by(t => t.id == from) is Some(i) else {
+      raise Thrown("CopyGone", jo([("message", js("S3 target \{from} is not configured"))]))
+    }
+    let place = self.s3_place(cfg.s3[i])
+    (place.held(ws, origin), async fn(g, name) { place.read(ws, origin, g, name) })
+  } else if Some(from) == here {
     let place = self.kept
     (place.held(ws, origin), async fn(g, name) { place.stream(ws, origin, g, name) })
   } else {
-    let from = r.from
     ((peer_place(self.w, from).held)(ws, origin), async fn(g, name) { peer_read(self.w, from, ws, origin, g, name) })
   }
   let save = async fn(path : String, g : String?, name : String) {

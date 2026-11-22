@@ -278,7 +278,12 @@ fn P55::copies_ops(self : P55, copies : @replica_coord.Copies, retire : @replica
   })
   self.op("copies.restore", async fn(arg) {
     let a = jitems(arg)
-    copies.restore(arg_str(a, 0), arg_str(a, 1), arg_str(a, 2), jtext_or_empty(arg_at(a, 3), "station"))
+    let from = arg_at(a, 3)
+    match (jtext(from, "station"), jtext(from, "s3")) {
+      (Some(st), _) if st != "" => copies.restore(arg_str(a, 0), arg_str(a, 1), arg_str(a, 2), st)
+      (_, Some(s3)) if s3 != "" => copies.restore(arg_str(a, 0), arg_str(a, 1), arg_str(a, 2), s3, from_s3=true)
+      _ => raise BusError("from: {station} or {s3} is required")
+    }
     Json::null()
   })
 }

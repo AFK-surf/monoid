@@ -86,7 +86,8 @@ export class PeerPlace implements Place {
 export type Serving = {
   place: FolderPlace;
   inWorkspace: (peer: string, ws: string) => boolean;
-  hello: (peer: string, ws: string, formerly: string[]) => string[];
+  hello: (peer: string, ws: string, formerly: string[], acceptCopies: boolean) => string[];
+  acceptOthers?: () => boolean;
 };
 
 export function serve(s: Serving) {
@@ -97,8 +98,16 @@ export function serve(s: Serving) {
     const bytes = bytesOf(request);
     try {
       switch (request?.method) {
-        case "replica.hello":
-          return { formerly: s.hello(peer, ws, Array.isArray(request.formerly) ? request.formerly.filter((f: unknown) => typeof f === "string" && STATION.test(f)) : []) };
+        case "replica.hello": {
+          const acceptCopies = request.acceptCopies !== false;
+          const formerly = s.hello(
+            peer,
+            ws,
+            Array.isArray(request.formerly) ? request.formerly.filter((f: unknown) => typeof f === "string" && STATION.test(f)) : [],
+            acceptCopies,
+          );
+          return { formerly, acceptCopies: s.acceptOthers ? s.acceptOthers() : true };
+        }
         case "replica.list": {
           const text = Buffer.from(JSON.stringify(await s.place.origins(ws)));
           return withBytes({ size: text.length }, oneBytes(text));
@@ -118,6 +127,7 @@ export function serve(s: Serving) {
           return withBytes({ size }, fileBytes(path, 0, size));
         }
         case "replica.put": {
+          if (s.acceptOthers !== undefined && !s.acceptOthers()) throw new Refused("not accepting copies");
           if (bytes === null) throw new Refused("nothing sent");
           const name = String(request.name ?? "");
           if (request.kind === "file") {

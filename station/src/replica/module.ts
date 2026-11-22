@@ -13,6 +13,7 @@ import { ControlPlane, Events, Key, Parts, Paths, Peers, Store } from "../servic
 import { Agents } from "../sessions/agents.ts";
 import { retiredWs } from "../sessions/hub.ts";
 import { Copies } from "./copies.ts";
+import { readBackupConfig } from "./backup-config.ts";
 import { Retire } from "./retire.ts";
 import { RetireAsks, chatCards } from "./retire-asks.ts";
 import { retireTools } from "../tools/retire.ts";
@@ -58,6 +59,7 @@ export const CopiesLive = Layer.effectDiscard(
       changed: () => events.overviewChanged(),
       restart: () => restarter(data),
       taking: () => retire.takingNow(),
+      backup: () => readBackupConfig(agents.config.raw()),
     });
     // The jobs and services of a workspace's chats up now (what a retirement stops and the preview lists), and this
     // station's own accounts (no copy borrowed, not the machine's login: what may move, share/index.ts moveProfile).
@@ -186,6 +188,6 @@ export const CopiesLive = Layer.effectDiscard(
       void retire.start().catch((e) => log.warn("retire", "the retirement did not go on", { error: (e as Error).message }));
     });
     parts.overview("copies", (viewer) => ({ ...(copies.overview(viewer.workspace, managesStation(viewer)) as object), ...(retire.overview(viewer.workspace) as object) }));
-    parts.routes(routes({ copies, retire, starts: RETIRE_STARTS }));
+    parts.routes(routes({ copies, retire, starts: RETIRE_STARTS, config: agents.config, changed: () => events.overviewChanged() }));
   }),
 );

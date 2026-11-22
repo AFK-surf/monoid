@@ -638,10 +638,15 @@ fn Admin::copies_routes(self : Admin) -> Array[Route] {
       }
       let b = copies_body(r)
       let from = field_of(b, "from")
+      let from_val = match (field_of(from, "station"), field_of(from, "s3")) {
+        (Some(Str(st)), _) if st != "" => Some(jobj([("station", js(st))]))
+        (_, Some(Str(s3))) if s3 != "" => Some(jobj([("s3", js(s3))]))
+        _ => None
+      }
       guard field_of(b, "station") is Some(Str(station)) &&
         field_of(b, "gen") is Some(Str(gen)) &&
-        field_of(from, "station") is Some(Str(from_station)) else {
-        return error(400, "station, gen and from: {station} are needed")
+        from_val is Some(fv) else {
+        return error(400, "station, gen and from: {station} or {s3} are needed")
       }
       // (it goes on as the copy is brought; how far it is, the station's settings show)
       self.later(async fn() {
@@ -649,7 +654,7 @@ fn Admin::copies_routes(self : Admin) -> Array[Route] {
           ws(r),
           js(station),
           js(gen),
-          jobj([("station", js(from_station))]),
+          fv,
         ])
       })
       ok(jobj([("restoring", jbool(true))]), status=202)

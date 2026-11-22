@@ -143,6 +143,7 @@ async fn P55::start_copies(self : P55) -> Unit {
       Some(r) => r.taking_now()
       None => []
     }),
+    backup: Some(() => @replica_coord.read_backup_config(to_jv((bus.config_raw.val)()))),
   })
   // The jobs and services of a workspace's chats up now (what a retirement stops and the preview lists).
   let jobs_in = async fn(ws : String) -> Array[@jsjson.JValue] {
@@ -328,7 +329,7 @@ async fn P55::start_copies(self : P55) -> Unit {
       _ => o
     }
   })
-  bus.parts.routes(copies_routes(copies, retire))
+  bus.parts.routes(copies_routes(bus, copies, retire))
   self.copies_ops(copies, retire)
   self.op("copies.overview", async fn(arg) { of_jv(copies.overview(jtext_or_empty(arg, "workspace"), manage=jtrue(arg, "manage"))) })
   self.op("copies.now", async fn(arg) { Json::string(copies.now(jtext(arg, "workspace"), jtext_or_empty(arg, "station"))) })
@@ -357,8 +358,8 @@ fn own_profiles(raw : Json) -> Array[Json] {
 }
 
 ///|
-/// api/routes/copies.ts: a retirement started, previewed, called off and tried again; a lost station's copy taken back.
-fn copies_routes(copies : @replica_coord.Copies, retire : @replica_coord.Retire) -> Array[PartRoute] {
+/// api/routes/copies.ts: a retirement started, previewed, called off and tried again; backup settings & S3 test; a lost station's copy taken back.
+fn copies_routes(bus : LiveBus, copies : @replica_coord.Copies, retire : @replica_coord.Retire) -> Array[PartRoute] {
   let managers = "only the workspace's owners and admins retire a station"
   let refusal = (e : Error) => match e {
     @replica_coord.Thrown(_) => refused(409, message_text_any(e))
@@ -411,19 +412,122 @@ fn copies_routes(copies : @replica_coord.Copies, retire : @replica_coord.Retire)
         Err(e) => refusal(e)
       }
     }),
+    p55_route("GET", "^/copies/settings$", async fn(r) {
+      let viewer = jfield(r, "viewer")
+      if !manages(viewer) {
+        return refused(403, "only the workspace's owners and admins manage backup settings")
+      }
+      answered(200, of_jv(copies.backup_view(jtext_or_empty(viewer, "workspace"))))
+    }),
+    p55_route("PUT", "^/copies/settings$", async fn(r) {
+      let viewer = jfield(r, "viewer")
+      if !manages(viewer) {
+        return refused(403, "only the workspace's owners and admins manage backup settings")
+      }
+      let b = jfield(r, "body")
+      let crypto = @vault_crypto.Crypto::of_host(bus.host)
+      let rand_hex = (n : Int) => {
+        let bytes = crypto.random(n) catch { _ => b"" }
+        @hash.hex_encode(bytes[:])
+      }
+      let (backup_jv, gen_keys) = @replica_coord.apply_backup_update(to_jv((bus.config_raw.val)()), to_jv(b), rand_hex) catch {
+        e => return refused(400, message_text_any(e))
+      }
+      let backup_json = of_jv(backup_jv)
+      try {
+        ignore(
+          (bus.config_update.val)(raw => match raw {
+            Object(m) => {
+              let next : Map[String, Json] = {}
+              for k, v in m {
+                next[k] = v
+              }
+              next["backup"] = backup_json
+              Json::object(next)
+            }
+            _ => { "backup": backup_json }
+          }),
+        )
+      } catch {
+        e => return refused(400, message_text_any(e))
+      }
+      copies.config_changed()
+      (bus.overview_changed.val)()
+      let view = of_jv(copies.backup_view(jtext_or_empty(viewer, "workspace")))
+      let gk : Map[String, Json] = {}
+      for p in gen_keys {
+        gk[p.0] = Json::string(p.1)
+      }
+      match view {
+        Object(m) => {
+          m["generatedKeys"] = Json::object(gk)
+          answered(200, Json::object(m))
+        }
+        _ => answered(200, view)
+      }
+    }),
+    p55_route("POST", "^/copies/s3/test$", async fn(r) {
+      let viewer = jfield(r, "viewer")
+      if !manages(viewer) {
+        return refused(403, "only the workspace's owners and admins test backup targets")
+      }
+      let b = jfield(r, "body")
+      let saved = @replica_coord.read_backup_config(to_jv((bus.config_raw.val)())).s3
+      let id = jtext(b, "id").unwrap_or("")
+      let prev = if id != "" {
+        saved.search_by(t => t.id == id).map(i => saved[i])
+      } else {
+        None
+      }
+      let pick_str = (k : String, fallback : String) => match jtext(b, k) {
+        Some(s) if s != "" => s
+        _ => fallback
+      }
+      let pick_bool = (k : String, fallback : Bool) => match jfield(b, k) {
+        True => true
+        False => false
+        _ => fallback
+      }
+      let raw_target = @replica_coord.jo([
+        ("id", @replica_coord.js(if id != "" { id } else { "test" })),
+        ("name", @replica_coord.js(pick_str("name", match prev { Some(p) => p.name; None => "test" }))),
+        ("endpoint", @replica_coord.js(pick_str("endpoint", match prev { Some(p) => p.endpoint; None => "" }))),
+        ("region", @replica_coord.js(pick_str("region", match prev { Some(p) => p.region; None => "auto" }))),
+        ("bucket", @replica_coord.js(pick_str("bucket", match prev { Some(p) => p.bucket; None => "" }))),
+        ("prefix", @replica_coord.js(pick_str("prefix", match prev { Some(p) => p.prefix; None => @replica_coord.default_backup_prefix }))),
+        ("forcePathStyle", @replica_coord.jb(pick_bool("forcePathStyle", match prev { Some(p) => p.force_path_style; None => true }))),
+        ("accessKeyId", @replica_coord.js(pick_str("accessKeyId", match prev { Some(p) => p.access_key_id; None => "" }))),
+        ("secretAccessKey", @replica_coord.js(pick_str("secretAccessKey", match prev { Some(p) => p.secret_access_key; None => "" }))),
+        ("encryptionKey", @replica_coord.js(pick_str("encryptionKey", match prev { Some(p) => p.encryption_key; None => "0".repeat(64) }))),
+        ("includeTranscripts", @replica_coord.jb(pick_bool("includeTranscripts", match prev { Some(p) => p.include_transcripts; None => true }))),
+      ])
+      let target = @replica_coord.normalize_s3_target(raw_target, 0) catch {
+        e => return refused(400, message_text_any(e))
+      }
+      let client = @replica_coord.S3Client::new(target, bus.host, () => wall_ms().to_double())
+      match (try { Ok(client.test_connection()) } catch { e => Err(e) }) {
+        Ok(_) => answered(200, { "ok": Json::boolean(true) })
+        Err(e) => answered(200, { "ok": Json::boolean(false), "error": Json::string(message_text_any(e)) })
+      }
+    }),
     p55_route("POST", "^/copies/restore$", async fn(r) {
       let viewer = jfield(r, "viewer")
       if !manages(viewer) {
         return refused(403, "only the workspace's owners and admins restore a lost station's chats")
       }
       let b = jfield(r, "body")
-      match (jtext(b, "station"), jtext(b, "gen"), jtext(jfield(b, "from"), "station")) {
-        (Some(station), Some(gen), Some(from)) => {
+      let from = jfield(b, "from")
+      match (jtext(b, "station"), jtext(b, "gen"), jtext(from, "station"), jtext(from, "s3")) {
+        (Some(station), Some(gen), Some(from_st), _) if from_st != "" => {
           // (it goes on as the copy is brought; how far it is, the station's settings show)
-          copies.w.go(async fn() { copies.restore(jtext_or_empty(viewer, "workspace"), station, gen, from) })
+          copies.w.go(async fn() { copies.restore(jtext_or_empty(viewer, "workspace"), station, gen, from_st) })
           answered(202, { "restoring": Json::boolean(true) })
         }
-        _ => refused(400, "station, gen and from: {station} are needed")
+        (Some(station), Some(gen), _, Some(from_s3)) if from_s3 != "" => {
+          copies.w.go(async fn() { copies.restore(jtext_or_empty(viewer, "workspace"), station, gen, from_s3, from_s3=true) })
+          answered(202, { "restoring": Json::boolean(true) })
+        }
+        _ => refused(400, "station, gen and from: {station} or {s3} are needed")
       }
     }),
   ]

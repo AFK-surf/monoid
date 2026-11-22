@@ -16,6 +16,11 @@ import { type Ask, COPIES, PeerPlace, keepers, ranked, serve } from "./peers.ts"
 import { Refused } from "../mesh/bus.ts";
 import { NotEmpty, type Outcome, type Ready, copyDir, outcomeFile, readyFile } from "./restore.ts";
 import type { Runner, WorkPassed } from "./runner.ts";
+import { type BackupView, type NormalizedBackupConfig, type NormalizedS3Target, buildBackupView } from "./backup-config.ts";
+import { type S3ClientOptions, S3HttpError, S3Place } from "./s3.ts";
+
+const DEFAULT_BACKUP: NormalizedBackupConfig = { mode: "auto", stations: [], acceptOthers: true, s3: [] };
+export type RestoreFrom = { station: string } | { s3: string };
 
 /// What the store says is gathered this long before the export's thread is told (a burst of changes, one pass).
 export const GATHER_MS = 1_000;
@@ -59,6 +64,10 @@ export type CopiesDeps = {
   restart: () => Promise<(() => Promise<void>) | null>;
   /// The stations whose chats this one is taking (retire.ts): what it keeps of them is not handed over meanwhile.
   taking?: () => Set<string>;
+  /// Current backup target configuration (`config.json` `backup`).
+  backup?: () => NormalizedBackupConfig;
+  /// Optional S3 client overrides (deterministic clock / multipart thresholds in tests).
+  s3ClientOptions?: S3ClientOptions;
 };
 
 /// How a place for this station's copies stands: how far it goes, when it was brought level last, what went wrong.
@@ -148,6 +157,12 @@ export class Copies {
   #exportTries = 0;
   /// The stations found to be from before copies: they answered `replica.hello` with a refusal.
   readonly #old = new Set<string>();
+  /// Whether each peer accepts copies of other stations (from `replica.hello`; absent means true).
+  readonly #peerAccepts = new Map<string, boolean>();
+  /// Peers recently heard from (online).
+  readonly #online = new Set<string>();
+  /// Cached S3Place instances keyed by target id + config signature.
+  readonly #s3Places = new Map<string, { sig: string; place: S3Place }>();
   #telling: (() => void) | null = null;
 
   /// What came of the restore this station was started again for (null: none): written before its store opened and
@@ -290,10 +305,15 @@ export class Copies {
       }
     }
     for (const k of [...this.#keeping.keys()]) if (!ins.has(k.split("\n")[0]!)) this.#keeping.delete(k);
+    const s3Ids = new Set(this.#backup().s3.map((t) => `s3:${t.id}`));
     for (const ws of ins) {
+      const peerTargets = this.#targets(ws);
       for (const k of [...this.#keeping.keys()]) {
-        const [w, station] = k.split("\n");
-        if (w === ws && !this.#targets(ws).includes(station!)) this.#keeping.delete(k);
+        const [w, dest] = k.split("\n");
+        if (w === ws && !peerTargets.includes(dest!) && !s3Ids.has(dest!)) {
+          this.#keeping.get(k)?.again?.();
+          this.#keeping.delete(k);
+        }
       }
     }
     void this.#pass().then(() => {
@@ -301,6 +321,62 @@ export class Copies {
     });
     this.#hello();
     this.#handOverSoon();
+  }
+
+  #backup(): NormalizedBackupConfig {
+    return this.#d.backup?.() ?? DEFAULT_BACKUP;
+  }
+
+  #s3Sig(t: NormalizedS3Target): string {
+    return JSON.stringify([t.endpoint, t.region, t.bucket, t.prefix, t.forcePathStyle, t.accessKeyId, t.secretAccessKey, t.encryptionKey]);
+  }
+
+  #s3Place(t: NormalizedS3Target): S3Place {
+    const sig = this.#s3Sig(t);
+    const cur = this.#s3Places.get(t.id);
+    if (cur !== undefined && cur.sig === sig) return cur.place;
+    const place = new S3Place(t, this.#d.s3ClientOptions);
+    this.#s3Places.set(t.id, { sig, place });
+    return place;
+  }
+
+  /// Called after `config.json`'s `backup` section changes: prunes removed targets, refreshes S3 places, levels active
+  /// targets, re-announces `acceptCopies` to peers, hands over kept copies if `acceptOthers` turned false, and scans
+  /// S3 for restorable backups if this station is empty.
+  configChanged(): void {
+    const cfg = this.#backup();
+    const s3ById = new Map(cfg.s3.map((t) => [t.id, t]));
+    for (const [id, entry] of [...this.#s3Places.entries()]) {
+      const next = s3ById.get(id);
+      if (next === undefined || this.#s3Sig(next) !== entry.sig) {
+        this.#s3Places.delete(id);
+        for (const [k, v] of this.#keeping) {
+          if (k.endsWith(`\ns3:${id}`)) {
+            v.known = null;
+            v.head = null;
+            v.again?.();
+            v.again = null;
+          }
+        }
+      }
+    }
+    const ins = this.#d.places().workspaces.map((w) => w.workspace);
+    const s3Keys = new Set(cfg.s3.map((t) => `s3:${t.id}`));
+    for (const ws of ins) {
+      const peerTargets = this.#targets(ws);
+      for (const k of [...this.#keeping.keys()]) {
+        const [w, dest] = k.split("\n");
+        if (w === ws && !peerTargets.includes(dest!) && !s3Keys.has(dest!)) {
+          this.#keeping.get(k)?.again?.();
+          this.#keeping.delete(k);
+        }
+      }
+      this.#levelAll(ws);
+      if (this.#passed?.empty === true) void this.look(ws).catch(() => {});
+    }
+    this.#hello();
+    this.#handOverSoon();
+    this.#changed(0);
   }
 
   #keepersOf(ws: string): string[] {
@@ -315,17 +391,27 @@ export class Copies {
     const here = this.#d.here();
     if (here === null) return;
     const formerly = this.#was;
+    const acceptCopies = this.#backup().acceptOthers;
     for (const { workspace: ws } of this.#d.places().workspaces) {
       for (const s of this.#d.roster(ws) ?? []) {
         if (s.id === here) continue;
-        void this.#d.ask(s.id, { method: "replica.hello", workspace: ws, formerly }).then(
+        void this.#d.ask(s.id, { method: "replica.hello", workspace: ws, formerly, acceptCopies }).then(
           (answer) => {
             this.#old.delete(s.id);
+            this.#online.add(s.id);
+            const accepts = answer?.acceptCopies !== false;
+            const prev = this.#peerAccepts.get(s.id);
+            this.#peerAccepts.set(s.id, accepts);
             this.#heardFormerly(ws, s.id, Array.isArray(answer?.formerly) ? answer.formerly : []);
+            if (prev !== accepts) {
+              this.#changed(0);
+              if (!accepts && this.#backup().mode === "auto") this.#levelAll(ws);
+            }
           },
           (e) => {
             // (one that answers with a refusal is up but knows no `replica.*`: from before copies)
             if (e instanceof Refused) this.#old.add(s.id);
+            else this.#online.delete(s.id);
           },
         );
       }
@@ -350,13 +436,21 @@ export class Copies {
 
   /// Another station is up (`replica.hello`): it is brought what it keeps of this one; what this station keeps and
   /// should hand over may go to it now. What this station once was, said back.
-  heard(peer: string, ws: string, formerly: string[]): string[] {
+  heard(peer: string, ws: string, formerly: string[], acceptCopies = true): string[] {
     this.#heardFormerly(ws, peer, formerly);
     this.#old.delete(peer);
+    this.#online.add(peer);
+    const prev = this.#peerAccepts.get(peer);
+    this.#peerAccepts.set(peer, acceptCopies);
+    if (prev !== acceptCopies) this.#changed(0);
     // (it is up: what it holds asked of it again, and brought level where it is one of those that keep this one's)
     const k = this.#keeping.get(`${ws}\n${peer}`);
     if (k !== undefined) k.known = null;
-    if (this.#targets(ws).includes(peer) || this.#keepersOf(ws).includes(peer)) this.#level(ws, peer, { now: true, fresh: true });
+    if (acceptCopies && (this.#targets(ws).includes(peer) || (this.#backup().mode === "auto" && this.#keepersOf(ws).includes(peer)))) {
+      this.#level(ws, peer, { now: true, fresh: true });
+    } else if (!acceptCopies && this.#backup().mode === "auto") {
+      this.#levelAll(ws);
+    }
     this.#handOverSoon();
     return this.#was;
   }
@@ -367,7 +461,12 @@ export class Copies {
 
   /// What this station answers of the copies it keeps (`replica.*`).
   answers() {
-    return serve({ place: this.kept, inWorkspace: (peer, ws) => this.inWorkspace(peer, ws), hello: (peer, ws, formerly) => this.heard(peer, ws, formerly) });
+    return serve({
+      place: this.kept,
+      inWorkspace: (peer, ws) => this.inWorkspace(peer, ws),
+      hello: (peer, ws, formerly, acceptCopies) => this.heard(peer, ws, formerly, acceptCopies),
+      acceptOthers: () => this.#backup().acceptOthers,
+    });
   }
 
   // ── this station's copies, at the stations that keep them ──
@@ -378,18 +477,25 @@ export class Copies {
 
   #levelAll(ws: string): void {
     for (const peer of this.#targets(ws)) this.#level(ws, peer, {});
+    for (const target of this.#backup().s3) this.#levelS3(ws, target, {});
   }
 
-  /// The stations that should hold this station's copies in `ws` now: those it falls to (`keepers`) and, while one of
-  /// them is not reached, the next in the same order (`ranked`), so that COPIES reached ones hold it. One that holds it
-  /// only meanwhile hands it to the one it is for once that one is back, and lets it go (`#handOver`).
+  /// The stations that should hold this station's copies in `ws` now: in manual mode, the configured station ids in
+  /// the roster; in auto mode, those it falls to (`keepers`, skipping peers with `acceptOthers === false`) and, while
+  /// one of them is not reached, the next in the same order (`ranked`), so that COPIES reached ones hold it.
   #targets(ws: string): string[] {
     const here = this.#d.here();
     const roster = this.#d.roster(ws);
     if (here === null || roster === null) return [];
+    const cfg = this.#backup();
+    const rosterIds = new Set(roster.map((r) => r.id));
+    if (cfg.mode === "manual") {
+      return cfg.stations.filter((s) => s !== here && rosterIds.has(s));
+    }
     const out: string[] = [];
     let reached = 0;
     for (const s of ranked(ws, here, roster.map((r) => r.id))) {
+      if (this.#peerAccepts.get(s) === false) continue;
       out.push(s);
       if (this.#keeping.get(`${ws}\n${s}`)?.error == null) reached++;
       if (reached >= COPIES) break;
@@ -477,7 +583,7 @@ export class Copies {
           });
         }
         // (one not reached: the next station after those this one's copies fall to holds them meanwhile)
-        if (wasError === null) this.#levelAll(ws);
+        if (wasError === null && this.#backup().mode === "auto") this.#levelAll(ws);
       } finally {
         keeping.busy = false;
         this.#changed(keeping.error === wasError ? TELL_MS : 0);
@@ -489,6 +595,93 @@ export class Copies {
       if (keeping.asked && !this.#closed) {
         keeping.asked = false;
         this.#level(ws, peer, { now: keeping.error === null });
+      }
+    });
+  }
+
+  #levelS3(ws: string, target: NormalizedS3Target, o: { now?: boolean; fresh?: boolean }): void {
+    const now = o.now === true;
+    const key = `${ws}\ns3:${target.id}`;
+    let k = this.#keeping.get(key);
+    if (k === undefined) {
+      this.#keeping.set(
+        key,
+        (k = { to: 0, at: null, error: null, reason: null, missing: 0, busy: false, again: null, tries: 0, asked: false, known: null, head: null }),
+      );
+    }
+    if (k.busy) {
+      k.asked = true;
+      return;
+    }
+    if (k.again !== null && !now) return;
+    k.again?.();
+    k.again = null;
+    const head = this.#passed?.heads[ws];
+    if (head === undefined || head.batches.length === 0) return;
+    if (o.fresh === true) k.known = null;
+    const said = `${head.gen}:${head.to}:${head.made}`;
+    if (k.known !== null && k.head === said && k.error === null) return;
+    k.busy = true;
+    const keeping = k;
+    const wasError = k.error;
+    const run = (async () => {
+      try {
+        const place = this.#s3Place(target);
+        let done = await level(place, ws, this.#own(head), keeping.known);
+        if (done.behind) {
+          let begun = this.#begun.get(ws);
+          if (begun === undefined || begun.from !== head.gen) {
+            begun = {
+              from: head.gen,
+              done: (async () => {
+                const held = await place.held(ws, head.origin);
+                await this.#d.runner.newGenerations(Math.max(0, ...held.gens.map((g) => genMade(g.gen))));
+                await this.settleExport();
+              })(),
+            };
+            this.#begun.set(ws, begun);
+          }
+          await begun.done;
+          const next = this.#passed?.heads[ws];
+          if (next === undefined) throw new Error("no copy of this workspace's");
+          done = await level(place, ws, this.#own(next));
+          if (done.behind) throw new Error("that S3 target keeps more of this station's than it has");
+        }
+        keeping.known = done.known;
+        keeping.head = said;
+        keeping.reason = null;
+        keeping.to = done.to;
+        keeping.missing = done.missing;
+        keeping.at = this.#d.fibers.now();
+        keeping.error = null;
+        keeping.tries = 0;
+      } catch (e) {
+        const reason: Reason = e instanceof S3HttpError ? "error" : "offline";
+        if (keeping.error === null) log.warn("copies", "an S3 place not brought level", { ws, s3: target.id, error: (e as Error).message });
+        keeping.error = (e as Error).message;
+        keeping.reason = reason;
+        keeping.known = null;
+        const wait = Math.min(RETRY_MS * 2 ** keeping.tries, RETRY_MOST_MS);
+        keeping.tries++;
+        if (!this.#closed) {
+          keeping.again = this.#d.fibers.after(wait, () => { // timer: a retry after a failure
+            keeping.again = null;
+            const latest = this.#backup().s3.find((t) => t.id === target.id);
+            if (latest !== undefined) this.#levelS3(ws, latest, { now: true, fresh: true });
+          });
+        }
+      } finally {
+        keeping.busy = false;
+        this.#changed(keeping.error === wasError ? TELL_MS : 0);
+      }
+    })();
+    this.#levelling.set(key, run);
+    void run.then(() => {
+      if (this.#levelling.get(key) === run) this.#levelling.delete(key);
+      if (keeping.asked && !this.#closed) {
+        keeping.asked = false;
+        const latest = this.#backup().s3.find((t) => t.id === target.id);
+        if (latest !== undefined) this.#levelS3(ws, latest, { now: keeping.error === null });
       }
     });
   }
@@ -546,7 +739,10 @@ export class Copies {
       const taking = this.#d.taking?.() ?? new Set<string>();
       for (const origin of await readdir(join(keptDir(this.#d.data), ws)).catch(() => [] as string[])) {
         if (!STATION.test(origin) || origin === here || taking.has(origin)) continue;
-        const should = keepers(ws, origin, roster.map((s) => s.id));
+        const eligible = this.#backup().acceptOthers
+          ? roster.map((s) => s.id)
+          : roster.filter((s) => s.id !== here && this.#peerAccepts.get(s.id) !== false).map((s) => s.id);
+        const should = keepers(ws, origin, eligible);
         if (should.includes(here)) continue;
         const mine = await this.kept.held(ws, origin);
         let all = should.length > 0;
@@ -574,6 +770,24 @@ export class Copies {
 
   // ── what the station's settings show ──
 
+  /// Sanitized backup configuration & status view for `overview.copies.backup` and `GET /copies/settings`.
+  backupView(ws: string): BackupView {
+    const here = this.#d.here();
+    const roster = this.#d.roster(ws) ?? [];
+    const peers = roster
+      .filter((s) => s.id !== here)
+      .map((s) => ({
+        station: s.id,
+        name: s.name,
+        acceptOthers: this.#peerAccepts.get(s.id) !== false,
+        online: this.#online.has(s.id),
+      }));
+    return buildBackupView(this.#backup(), peers, (id) => {
+      const k = this.#keeping.get(`${ws}\ns3:${id}`);
+      return { to: k?.to ?? 0, at: k?.at ?? null, error: k?.error ?? null, reason: k?.reason ?? null };
+    });
+  }
+
   /// The copies of this station's chats in `ws`, as its settings show them: the stations that keep them and how far
   /// each goes; on a station with no chat of its own, the backups of stations no longer there it could restore.
   overview(ws: string, manage = false): unknown {
@@ -587,6 +801,7 @@ export class Copies {
         const k = this.#keeping.get(`${ws}\n${station}`);
         return { station, name: names.get(station) ?? "", to: k?.to ?? 0, at: k?.at ?? null, error: k?.error ?? null, reason: k?.reason ?? null };
       }),
+      backup: this.backupView(ws),
       // (the export not going: why, and since how many tries)
       stopped: this.#exportError === null ? null : { error: this.#exportError, tries: this.#exportTries, reason: /ENOSPC|disk is full|database or disk is full/i.test(this.#exportError) ? "full" : "error" },
       // (what came of the restore this station started again for: kept after the restart)
@@ -621,41 +836,60 @@ export class Copies {
   // ── a lost station's copy, brought back into this one ──
 
   /// The copies of stations of `ws` no longer there (none answers for it) that could be brought back here: each one's
-  /// latest generation, as far as the furthest of the stations that keep it.
+  /// latest generation, as far as the furthest of the stations or S3 targets that keep it.
   async restorable(ws: string): Promise<unknown[]> {
     const here = this.#d.here();
-    const found = new Map<string, { head: Head; from: string[] }>();
-    const add = (head: Head, from: string) => {
+    type FromEntry = { key: string; item: { station: string; name: string } | { s3: string; name: string } };
+    const found = new Map<string, { head: Head; from: FromEntry[] }>();
+    const add = (head: Head, entry: FromEntry) => {
       if (head.origin === here) return;
       const was = found.get(head.origin);
       const newer = was === undefined || genMade(head.gen) > genMade(was.head.gen) || (head.gen === was.head.gen && head.to > was.head.to);
-      if (newer) found.set(head.origin, { head, from: [from] });
-      else if (head.gen === was!.head.gen && head.to === was!.head.to && !was!.from.includes(from)) was!.from.push(from);
+      if (newer) found.set(head.origin, { head, from: [entry] });
+      else if (head.gen === was!.head.gen && head.to === was!.head.to && !was!.from.some((f) => f.key === entry.key)) was!.from.push(entry);
     };
     const roster = this.#d.roster(ws) ?? [];
+    const names = new Map(roster.map((s) => [s.id, s.name]));
     // (a lost station another already took the place of is not offered: two machines would both take it)
     const taken = new Set(this.#was);
     // (nor a station that is there: it answers, and its chats are its own to keep)
     const there = new Set<string>();
-    await Promise.all(roster.filter((s) => s.id !== here).map(async (s) => {
-      try {
-        const answer = await this.#d.ask(s.id, { method: "replica.hello", workspace: ws, formerly: this.#was });
-        there.add(s.id);
-        const said = Array.isArray(answer?.formerly) ? answer.formerly.filter((f: unknown): f is string => typeof f === "string") : [];
-        this.#heardFormerly(ws, s.id, said);
-        for (const f of said) taken.add(f);
-        for (const o of await new PeerPlace(s.id, this.#d.ask).origins(ws)) for (const h of o.heads as Head[]) add(h, s.id);
-      } catch {}
-    }));
+    const acceptCopies = this.#backup().acceptOthers;
+    await Promise.all([
+      ...roster.filter((s) => s.id !== here).map(async (s) => {
+        try {
+          const answer = await this.#d.ask(s.id, { method: "replica.hello", workspace: ws, formerly: this.#was, acceptCopies });
+          there.add(s.id);
+          this.#online.add(s.id);
+          this.#peerAccepts.set(s.id, answer?.acceptCopies !== false);
+          const said = Array.isArray(answer?.formerly) ? answer.formerly.filter((f: unknown): f is string => typeof f === "string") : [];
+          this.#heardFormerly(ws, s.id, said);
+          for (const f of said) taken.add(f);
+          for (const o of await new PeerPlace(s.id, this.#d.ask).origins(ws)) {
+            for (const h of o.heads as Head[]) add(h, { key: `station:${s.id}`, item: { station: s.id, name: names.get(s.id) ?? "" } });
+          }
+        } catch {}
+      }),
+      ...this.#backup().s3.map(async (target) => {
+        try {
+          for (const o of await this.#s3Place(target).origins(ws)) {
+            for (const h of o.heads) add(h, { key: `s3:${target.id}`, item: { s3: target.id, name: target.name } });
+          }
+        } catch {}
+      }),
+    ]);
     for (const m of this.#formerly.values()) for (const f of m.keys()) taken.add(f);
     for (const f of taken) found.delete(f);
-    if (here !== null) for (const o of await this.kept.origins(ws)) for (const h of o.heads) add(h, here);
+    if (here !== null) {
+      for (const o of await this.kept.origins(ws)) {
+        for (const h of o.heads) add(h, { key: `station:${here}`, item: { station: here, name: names.get(here) ?? "" } });
+      }
+    }
     for (const f of taken) found.delete(f);
     for (const f of there) found.delete(f);
-    const names = new Map(roster.map((s) => [s.id, s.name]));
     return [...found.values()].map(({ head, from }) => ({
       station: head.origin, name: head.name || names.get(head.origin) || "", gen: head.gen, made: head.made, to: head.to,
-      chats: head.chats, messages: head.messages, bytes: head.bytes, from: from.map((f) => ({ station: f, name: names.get(f) ?? "" })),
+      chats: head.chats, messages: head.messages, bytes: head.bytes, from: from.map((f) => f.item),
     }));
   }
 
@@ -686,30 +920,37 @@ export class Copies {
     return this.restore(ws, origin, gen, { station: this.#d.here() ?? "" }, { merge: true, connects: extra.connects, ws: extra.ws });
   }
 
-  /// Brings `origin`'s copy (`gen`) here from `from`, a station that keeps it, then has the station start again to put
-  /// it in before its store opens. Only into a station with no chat of its own, unless `merge` (takeOver).
-  restore(ws: string, origin: string, gen: string, from: { station: string }, merge: Merge | null = null): Promise<void> {
+  /// Brings `origin`'s copy (`gen`) here from `from` (a station or an S3 target that keeps it), then has the station
+  /// start again to put it in before its store opens. Only into a station with no chat of its own, unless `merge` (takeOver).
+  restore(ws: string, origin: string, gen: string, from: RestoreFrom, merge: Merge | null = null): Promise<void> {
     if (!STATION.test(origin) || !GEN.test(gen) || !WORKSPACE.test(ws)) throw new Error("not a copy's name");
     if (merge === null && this.#passed?.empty !== true) throw new NotEmpty();
     if (this.#restoring !== null && this.#restoring.error === null) throw new Error("a restore is under way");
-    const r: Restoring = { origin, name: "", workspace: ws, gen, from: from.station, done: 0, total: 0, error: null, reason: null, restart: false };
+    const fromLabel = "s3" in from ? `s3:${from.s3}` : from.station;
+    const r: Restoring = { origin, name: "", workspace: ws, gen, from: fromLabel, done: 0, total: 0, error: null, reason: null, restart: false };
     this.#restoring = r;
     this.#changed(0);
     return this.#bring(r, from, merge).catch((e) => {
       r.error = (e as Error).message;
-      r.reason = e instanceof NotEmpty ? "notEmpty" : e instanceof Gone ? "gone" : this.#reason(from.station, e);
+      r.reason = e instanceof NotEmpty ? "notEmpty" : e instanceof Gone ? "gone" : "s3" in from ? (e instanceof S3HttpError ? "error" : "offline") : this.#reason(from.station, e);
       log.warn("copies", "a copy not brought", { origin, from: r.from, error: r.error });
       this.#changed(0);
       throw e;
     });
   }
 
-  async #bring(r: Restoring, from: { station: string }, merge: Merge | null): Promise<void> {
+  async #bring(r: Restoring, from: RestoreFrom, merge: Merge | null): Promise<void> {
     const { workspace: ws, origin, gen } = r;
     // (each batch and file written to disk as it comes, a piece at a time)
     let stream: (gen: string | null, name: string) => Promise<AsyncIterable<Buffer>>;
     let held: Held;
-    if (from.station === this.#d.here()) {
+    if ("s3" in from) {
+      const target = this.#backup().s3.find((t) => t.id === from.s3);
+      if (target === undefined) throw new Gone(`S3 target ${from.s3} is not configured`);
+      const place = this.#s3Place(target);
+      held = await place.held(ws, origin);
+      stream = (g, name) => place.read(ws, origin, g, name);
+    } else if (from.station === this.#d.here()) {
       const place = this.kept;
       held = await place.held(ws, origin);
       stream = async (g, name) => place.stream(ws, origin, g, name);

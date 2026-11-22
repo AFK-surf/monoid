@@ -114,7 +114,8 @@ pub async fn peer_read(w : World, station : String, ws : String, origin : String
 pub struct Serving {
   place : FolderPlace
   in_workspace : (String, String) -> Bool
-  hello : (String, String, Array[String]) -> Array[String]
+  hello : (String, String, Array[String], Bool) -> Array[String]
+  accept_others : (() -> Bool)?
 }
 
 ///|
@@ -132,7 +133,15 @@ pub async fn serve(s : Serving, peer : String, request : J, body : Body?, worksp
   match str_at(request, "method") {
     Some("replica.hello") => {
       let formerly = strings_of(at(request, "formerly")).filter(is_station)
-      { value: jo([("formerly", jstrs((s.hello)(peer, ws, formerly)))]), body: None }
+      let peer_accepts = match at(request, "acceptCopies") {
+        Some(Bool(false)) => false
+        _ => true
+      }
+      let my_accepts = match s.accept_others {
+        Some(f) => f()
+        None => true
+      }
+      { value: jo([("formerly", jstrs((s.hello)(peer, ws, formerly, peer_accepts))), ("acceptCopies", jb(my_accepts))]), body: None }
     }
     Some("replica.list") => text(origins_json(s.place.origins(ws)))
     Some("replica.held") => {
@@ -160,6 +169,10 @@ pub async fn serve(s : Serving, peer : String, request : J, body : Body?, worksp
       { value: jo([("size", jn(size))]), body: Some(File(path, 0.0, size)) }
     }
     Some("replica.put") => {
+      match s.accept_others {
+        Some(f) if !f() => raise refused("not accepting copies")
+        _ => ()
+      }
       guard body is Some(b) else { raise refused("nothing sent") }
       let name = str_at(request, "name").unwrap_or("")
       let kind = text_at(request, "kind")

@@ -9,6 +9,7 @@ import { fallbackEfforts } from "../sessions/pool.ts";
 import { RUNTIME_KINDS } from "../agents/runtime.ts";
 import { checkNetwork } from "../mesh/settings.ts";
 import { checkAgentEnv } from "../ops/agent-env.ts";
+import { checkBackupConfig } from "../replica/backup-config.ts";
 import { DEFAULT_SERVICES, type ServiceRegistry } from "./services.ts";
 
 const ACCESS_KINDS = ["subscription", "opencode-go", "anthropic-api", "env", "api-provider", "service"];
@@ -56,6 +57,7 @@ export function checkConfig(raw: any, _data: string, services: ServiceRegistry =
   }
   // The variables for what it starts for its agents (src/ops/agent-env.ts).
   checkAgentEnv(raw.agentEnv);
+  checkBackupConfig(raw.backup);
   checkNetwork(raw.network);
   // Its sandboxes, targets of station_task (src/agents/sandbox.ts).
   checkSandboxes(raw);
