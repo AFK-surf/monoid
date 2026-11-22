@@ -136,8 +136,9 @@ const GROWS: Record<string, Partial<Record<Knob, number>>> = {
   // step, 2026-11-16)
   "start 小屏/waited": { chats: 1136, stations: 1256 },
   "start 小屏/idle": { chats: 1136, stations: 1256 },
-  "start 大屏/waited": { chats: 1136, stations: 1192 },
-  "start 大屏/idle": { chats: 1136, stations: 1192 },
+  // (copies.backup on station 0 crossed 1136.0 KB to 1136.3 KB, 2026-11-22)
+  "start 大屏/waited": { chats: 1144, stations: 1192 },
+  "start 大屏/idle": { chats: 1144, stations: 1192 },
   "stationPart archiving": { people: 16 },
   "stationPart automaticDecisions": { people: 16 },
   "stationPart machineLogins": { profiles: 64 },
