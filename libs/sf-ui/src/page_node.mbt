@@ -2464,7 +2464,10 @@ pub fn round_key_node(
     hover_ground_node(k)
     rippled_look(loc~, k, Is(side / 2.0), go, ink=bar_pill_press_ink, pointer=true)
     bind_pill_press(k)
-    icon_node(k, icon, icon_size, By(ink), name_now?=icon_now) |> ignore
+    let named = icon_now.unwrap_or(fn() { icon })
+    icon_node(k, icon, icon_size, By(ink), name_now=named)
+    .offset(By(fn() { icon_weight_nudge(named(), icon_size) }))
+    |> ignore
   }
   match opener {
     Some(o) =>

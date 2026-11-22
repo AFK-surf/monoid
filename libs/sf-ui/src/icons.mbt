@@ -44,6 +44,21 @@ pub fn icon_path(name : String) -> String {
 }
 
 ///|
+/// How far icon `name`, `size` across, is drawn off its box's middle where it stands alone in a round key, so its weight
+/// sits in the middle (play_mark's triangle is, as a disc's): a chevron's open side reads as a triangle's base, its
+/// weight a sixth of its width (1 of the 24 grid's 6) off toward that side, so it is drawn as far toward its point.
+fn icon_weight_nudge(name : String, size : Double) -> (Double, Double) {
+  let u = size / 24.0
+  match name {
+    "chevron-left" => (-u, 0.0)
+    "chevron-right" => (u, 0.0)
+    "chevron-up" => (0.0, -u)
+    "chevron-down" => (0.0, u)
+    _ => (0.0, 0.0)
+  }
+}
+
+///|
 /// How big the play mark is in its disc: its triangle (15 of play-mark's 24) two fifths of the disc across.
 let play_mark_share : Double = 0.64
 
