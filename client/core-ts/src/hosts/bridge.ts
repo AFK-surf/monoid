@@ -95,6 +95,7 @@ export class Bridge {
   readonly native: Native;
   #next = 1;
   readonly #waiting = new Map<number, Waiting>();
+  readonly #orphanedBinds = new Set<number>();
 
   constructor(native: Native) {
     this.native = native;
@@ -102,8 +103,10 @@ export class Bridge {
 
   /// Operation `op`; interrupted, its answer is let go. A fetch and a dial (iroh.connect) are also cancelled in the
   /// shell: dropping only this waiter would leave its HTTP exchange alive through every subsequent retry on a weak
-  /// network, and a dial retransmitting for ten minutes. `givenUp`: once it succeeds, the call is cancelled in the
-  /// shell (`fetch.cancel`) and its answer still waited for, the cancellation's error or what came first.
+  /// network, and a dial retransmitting for ten minutes. An interrupted `iroh.bind` cannot be cancelled mid-flight,
+  /// so its late handle is closed and forgotten as soon as the shell completes it. `givenUp`: once it succeeds, the
+  /// call is cancelled in the shell (`fetch.cancel`) and its answer still waited for, the cancellation's error or what
+  /// came first.
   call(op: string, json: unknown, bytes: Uint8Array | null = null, givenUp?: Effect.Effect<void>): Effect.Effect<Answer, HostError> {
     return Effect.suspend(() => {
       const id = this.#next++;
@@ -113,7 +116,10 @@ export class Bridge {
         this.#waiting.set(id, { resolve: (a) => resume(Effect.succeed(a)), reject: (e) => resume(Effect.fail(e)) });
         this.native.call(id, op, JSON.stringify(json ?? {}), bytes);
         return Effect.sync(() => {
-          if (this.#waiting.delete(id) && (op === "fetch" || op === "iroh.connect")) cancel();
+          if (this.#waiting.delete(id)) {
+            if (op === "fetch" || op === "iroh.connect") cancel();
+            else if (op === "iroh.bind") this.#orphanedBinds.add(id);
+          }
         });
       });
       if (givenUp === undefined) return answer;
@@ -134,7 +140,19 @@ export class Bridge {
   /// The shell's answer to `id`: `error` set when it failed.
   complete(id: number, json: string | null, error: string | null, bytes: Uint8Array | null): void {
     const w = this.#waiting.get(id);
-    if (!w) return;
+    if (!w) {
+      if (this.#orphanedBinds.delete(id) && error === null && json !== null && json !== "") {
+        try {
+          const parsed = JSON.parse(json) as { id?: unknown };
+          if (typeof parsed?.id === "number") {
+            this.native.call(this.#next++, "iroh.close", JSON.stringify({ id: parsed.id, forget: true }), null);
+          }
+        } catch {
+          // Ignore malformed JSON from a late orphaned bind answer.
+        }
+      }
+      return;
+    }
     this.#waiting.delete(id);
     if (error !== null) w.reject(new HostError(error));
     else w.resolve({ json: json === null || json === "" ? null : JSON.parse(json), bytes });

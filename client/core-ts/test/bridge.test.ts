@@ -75,6 +75,38 @@ test("interrupting_a_fetch_cancels_that_native_request", async () => {
   }
 });
 
+test("interrupting_an_in_flight_iroh_bind_closes_its_handle_when_it_completes_later", async () => {
+  const { dir, native, bridge } = shell();
+  const sent: { id: number; op: string; json: J }[] = [];
+  native.call = (id, op, json) => {
+    sent.push({ id, op, json: JSON.parse(json) });
+  };
+  try {
+    const orphaned = Effect.runFork(bridge.call("iroh.bind", { relayUrls: [] }));
+    const orphanedErr = Effect.runFork(bridge.call("iroh.bind", { relayUrls: [] }));
+    const normal = Effect.runFork(bridge.call("iroh.bind", { relayUrls: [] }));
+    assert.equal(sent.length, 3);
+    const [bind1, bind2, bind3] = sent;
+
+    await run(Fiber.interrupt(orphaned));
+    await run(Fiber.interrupt(orphanedErr));
+
+    // Late success for an interrupted iroh.bind must immediately close and forget its handle.
+    bridge.complete(bind1!.id, JSON.stringify({ id: 42 }), null, null);
+    // Late failure for an interrupted iroh.bind has no handle to close.
+    bridge.complete(bind2!.id, null, "bind failed", null);
+    // Normal completion must not trigger an automatic close.
+    bridge.complete(bind3!.id, JSON.stringify({ id: 43 }), null, null);
+
+    assert.deepEqual((await run(Fiber.join(normal))).json, { id: 43 });
+    const closes = sent.filter((c) => c.op === "iroh.close");
+    assert.deepEqual(closes.map((c) => c.json), [{ id: 42, forget: true }]);
+  } finally {
+    native.host.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("secureGetMany_unpacks_sizes_and_bytes_and_falls_back_on_unsupported", async () => {
   const { dir, native, bridge, host } = shell();
   const a = new Uint8Array(32).fill(0x11);

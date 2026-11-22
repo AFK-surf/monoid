@@ -33,8 +33,10 @@
 #include <map>
 #include <memory>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -1017,8 +1019,13 @@ static void run(void) {
     if (!C.dead) {
       auto config = ::hermes::vm::RuntimeConfig::Builder().withMicrotaskQueue(true).withEnableBlockScoping(true).withIntl(true).build();
       rt = facebook::hermes::makeHermesRuntime(config);
-      // (MBUI_PROBE_JS: the core sampled, probe_js; a runtime is sampled only once registered, on its own thread)
+      // (on macOS always registered so MemoryWatch can sample on demand with zero idle overhead;
+      // on iOS only when MBUI_PROBE_JS is set)
+#if !TARGET_OS_IPHONE
+      rt->registerForProfiling();
+#else
       if (probe_js_seconds() > 0) rt->registerForProfiling();
+#endif
       double t1 = clock_ms(CLOCK_MONOTONIC), t2 = t1;
       try {
         install(*rt);
@@ -1074,7 +1081,11 @@ static void run(void) {
 
   @autoreleasepool {
     core_listen_close_all();
+#if !TARGET_OS_IPHONE
+    if (rt) rt->unregisterForProfiling();
+#else
     if (rt && probe_js_seconds() > 0) rt->unregisterForProfiling();
+#endif
     rt.reset();
   }
 }
@@ -1088,6 +1099,8 @@ static void stop_at_exit(void) {
 }
 
 static void probe_taps(void);
+
+static std::atomic<bool> js_sampling{false};
 
 // MBUI_PROBE_JS=<seconds>: the core's JS sampled for that long, from MBUI_PROBE_JS_AFTER seconds (10) after it starts
 // (what it spends its time on, in the app as shipped: Android's CoreProfile, engine.cpp sf_engine_profile), written as
@@ -1106,15 +1119,53 @@ static void probe_js(void) {
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, wait * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
     auto *root = jsi::castInterface<facebook::hermes::IHermesRootAPI>(facebook::hermes::makeHermesRootAPI());
     if (!root) return;
+    bool expected = false;
+    if (!js_sampling.compare_exchange_strong(expected, true)) return;
     root->enableSamplingProfiler();
     fprintf(stderr, "PROBE core js sampled for %d s\n", seconds);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)seconds * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
       root->dumpSampledTraceToFile(out);
       root->disableSamplingProfiler();
+      js_sampling.store(false);
       fprintf(stderr, "PROBE core js profile: %s\n", out.c_str());
     });
   });
 }
+
+#if !TARGET_OS_IPHONE
+// Returns a malloc'd NUL-terminated JSON snapshot of sf_shell_stats (caller frees), or NULL when unavailable.
+extern "C" char *mb_core_shell_stats(size_t *out_len) {
+  if (out_len) *out_len = 0;
+  if (!C.running || C.dead) return nullptr;
+  size_t n = 0;
+  uint8_t *out = sf_shell_stats(&n);
+  if (!out) return nullptr;
+  char *copy = static_cast<char *>(malloc(n + 1));
+  if (copy) {
+    if (n) std::memcpy(copy, out, n);
+    copy[n] = '\0';
+  }
+  sf_free(out, n);
+  if (out_len) *out_len = copy ? n : 0;
+  return copy;
+}
+
+// Synchronously samples Hermes JS on the caller's background thread for `seconds` and writes a .cpuprofile to `path`.
+// Returns 1 if sampled, 0 if core is not running or another sampling session is already active.
+extern "C" int mb_core_sample_js(int seconds, const char *path) {
+  if (!C.running || C.dead || !path || !*path || seconds <= 0) return 0;
+  auto *root = jsi::castInterface<facebook::hermes::IHermesRootAPI>(facebook::hermes::makeHermesRootAPI());
+  if (!root) return 0;
+  bool expected = false;
+  if (!js_sampling.compare_exchange_strong(expected, true)) return 0;
+  root->enableSamplingProfiler();
+  std::this_thread::sleep_for(std::chrono::seconds(seconds));
+  root->dumpSampledTraceToFile(std::string(path));
+  root->disableSamplingProfiler();
+  js_sampling.store(false);
+  return 1;
+}
+#endif
 
 
 // ---- A screen's virtual microphone fed from this Mac's (sfpages' screen.mbt 麦克风, the core's `screen.mic`)

@@ -1265,6 +1265,121 @@ int main(void) {
       glass_forget();
     }
 
+    // 5K progressive blur + mixed aspect-ratio 40-frame scroll stress:
+    // A wide top progressive bar + tall sidebar stretch lv_w/lv_h to near-5K, then 40 frames of moving backdrop
+    // under small progressive + regular frosted glass must stay within MB_GLASS_CACHE_MAX_BYTES (64 MiB), keep
+    // compact slot textures far smaller than lv_w * lv_h, and match canvas_as_whole() byte-for-byte on every frame.
+    {
+      glass_free();
+      mb_render_set_size(2560, 1440, 2);
+      double big[3 * MB_INST];
+      rect_at(big, 0, 0, 2560, 1440, 0, 0.12, 0.16, 0.22, 0);
+      big[18] = 2560; big[19] = 1440;
+      // Wide top bar progressive frosted glass
+      rect_at(big + MB_INST, 0, 0, 2500, 60, 5, 1, 1, 1, -30);
+      big[MB_INST + 7] = 12.0;
+      big[MB_INST + 11] = 0.4;
+      big[MB_INST + 18] = 2560; big[MB_INST + 19] = 1440;
+      big[MB_INST + 22] = -1.0;  // progressive
+      big[MB_INST + 55] = 60.0;
+      big[MB_INST + 56] = 1.0;
+      // Tall sidebar frosted glass
+      rect_at(big + 2 * MB_INST, 0, 80, 120, 1340, 5, 1, 1, 1, -31);
+      big[2 * MB_INST + 7] = 12.0;
+      big[2 * MB_INST + 11] = 0.4;
+      big[2 * MB_INST + 18] = 2560; big[2 * MB_INST + 19] = 1440;
+      mb_host_render_dirty(0, 0, 2560, 1440);
+      mb_render_present(big, 3, 0.12, 0.16, 0.22);
+      present_drain();
+      CHECK(lv_w >= 4800 && lv_h >= 2600);
+      CHECK(slots_total_bytes() <= MB_GLASS_CACHE_MAX_BYTES);
+      CHECK(canvas_as_whole());
+
+      double small[4 * MB_INST];
+      rect_at(small, 0, 0, 2560, 1440, 0, 0.14, 0.18, 0.24, 0);
+      small[18] = 2560; small[19] = 1440;
+      // Moving backdrop stripe under both small glasses
+      rect_at(small + MB_INST, 20, 30, 420, 60, 0, 0.90, 0.35, 0.20, 0);
+      small[MB_INST + 18] = 2560; small[MB_INST + 19] = 1440;
+      // Small progressive glass capsule
+      rect_at(small + 2 * MB_INST, 40, 40, 160, 44, 5, 1, 1, 1, -32);
+      small[2 * MB_INST + 7] = 12.0;
+      small[2 * MB_INST + 11] = 0.45;
+      small[2 * MB_INST + 18] = 2560; small[2 * MB_INST + 19] = 1440;
+      small[2 * MB_INST + 22] = -1.0;  // progressive
+      small[2 * MB_INST + 55] = 44.0;
+      small[2 * MB_INST + 56] = 1.0;
+      // Small regular frosted pill
+      rect_at(small + 3 * MB_INST, 300, 40, 120, 40, 5, 1, 1, 1, -33);
+      small[3 * MB_INST + 7] = 3.0;
+      small[3 * MB_INST + 11] = 0.45;
+      small[3 * MB_INST + 18] = 2560; small[3 * MB_INST + 19] = 1440;
+
+      size_t peak_slot_bytes = slots_total_bytes();
+      size_t max_small_tex_area = 0;
+      for (int step = 0; step < 40; step++) {
+        small[MB_INST + 0] = 20 + (step * 7) % 120;
+        mb_host_render_dirty(0, 0, 2560, 1440);
+        mb_render_present(small, 4, 0.14, 0.18, 0.24);
+        present_drain();
+        size_t cur_bytes = slots_total_bytes();
+        if (cur_bytes > peak_slot_bytes) peak_slot_bytes = cur_bytes;
+        CHECK(cur_bytes <= MB_GLASS_CACHE_MAX_BYTES);
+        for (int j = 0; j < MB_GLASS_SLOTS; j++) {
+          if (slots[j].valid && slot_bt[j] && slots[j].grab.w < 1000) {
+            size_t area = (size_t)slot_bt[j].width * (size_t)slot_bt[j].height;
+            if (area > max_small_tex_area) max_small_tex_area = area;
+          }
+        }
+        CHECK(canvas_as_whole());
+      }
+      printf("apple_render: 5K glass stress peak_slot_bytes=%zu (limit=%zu) max_small_area=%zu lv_area=%zu\n",
+             peak_slot_bytes, (size_t)MB_GLASS_CACHE_MAX_BYTES, max_small_tex_area, (size_t)lv_w * (size_t)lv_h);
+      CHECK(peak_slot_bytes <= MB_GLASS_CACHE_MAX_BYTES);
+      CHECK(max_small_tex_area > 0 && max_small_tex_area * 16 < (size_t)lv_w * (size_t)lv_h);
+      glass_free();
+      mb_render_set_size(400, 300, 2);
+    }
+
+    // High-water mark shrink: after a large glass stretches lv_w * lv_h, MB_GLASS_IDLE consecutive frames with only
+    // small glass must shrink lv_w * lv_h back down and preserve byte-for-byte parity with canvas_as_whole().
+    {
+      glass_free();
+      mb_render_set_size(400, 300, 2);
+      double lg[2 * MB_INST];
+      rect_at(lg, 0, 0, 400, 300, 0, 0.15, 0.25, 0.40, 0);
+      rect_at(lg + MB_INST, 0, 0, 400, 300, 5, 1, 1, 1, -40);
+      lg[MB_INST + 7] = 8.0;
+      lg[MB_INST + 11] = 0.45;
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(lg, 2, 0.15, 0.25, 0.40);
+      present_drain();
+      size_t big_lv_area = (size_t)lv_w * (size_t)lv_h;
+      CHECK(lv_w == 800 && lv_h == 600);
+      CHECK(canvas_as_whole());
+
+      double sm[3 * MB_INST];
+      rect_at(sm, 0, 0, 400, 300, 0, 0.15, 0.25, 0.40, 0);
+      rect_at(sm + MB_INST, 24, 24, 52, 32, 0, 0.90, 0.20, 0.20, 0);
+      rect_at(sm + 2 * MB_INST, 20, 20, 60, 40, 5, 1, 1, 1, -41);
+      sm[2 * MB_INST + 7] = 4.0;
+      sm[2 * MB_INST + 11] = 0.45;
+      for (int i = 0; i < MB_GLASS_IDLE; i++) {
+        sm[MB_INST + 0] = 24 + (i % 20);
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(sm, 3, 0.15, 0.25, 0.40);
+        present_drain();
+      }
+      size_t shrunk_lv_area = (size_t)lv_w * (size_t)lv_h;
+      printf("apple_render: lv shrink big_area=%zu -> shrunk_area=%zu (%dx%d)\n",
+             big_lv_area, shrunk_lv_area, lv_w, lv_h);
+      CHECK(shrunk_lv_area * 4 < big_lv_area);
+      CHECK(canvas_as_whole());
+      glass_forget();
+      CHECK(canvas_as_whole());
+      glass_free();
+    }
+
     // A group kept by the host (groups.h) drawn out by a header, straight into the floats: each instance moved in
     // doubles, then made a float, as the app's own instance moved there would be.
     double kept[MB_INST];

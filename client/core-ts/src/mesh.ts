@@ -904,6 +904,8 @@ export class Mesh {
   /// What each link had sent and taken as the record last said it (#recordWays).
   readonly #recorded = new WeakMap<Link, { rx: number; tx: number; paths: Map<string, [number, number]> }>();
   #reboundAt = -Infinity;
+  #rebinding: Deferred.Deferred<IrohEndpoint> | null = null;
+  #rebindAgain = false;
   readonly #known: import("./iroh.ts").IrohAddr[] = [];
   readonly #hedges = new Map<string, Hedge>();
   /// Stations whose link is being asked whether it still answers, the UI just back (`#checkWoken`).
@@ -1499,30 +1501,63 @@ export class Mesh {
   /// The endpoint bound anew with the same key, the old one closed: at most once in REBIND_MS (`always`: whenever).
   #rebind(always = false): Effect.Effect<IrohEndpoint> {
     return Effect.gen({ self: this }, function* () {
+      if (this.#closed) return this.#endpoint;
+      if (this.#rebinding !== null) {
+        if (always) this.#rebindAgain = true;
+        return yield* Deferred.await(this.#rebinding);
+      }
       const now = this.#env.host.nowMs();
       if (!always && now - this.#reboundAt < REBIND_MS) {
         record(this.#env.host, "conn rebind", () => `skipped: ${Math.round(now - this.#reboundAt)}ms since the last (REBIND_MS)`);
         return this.#endpoint;
       }
       this.#reboundAt = now;
-      const routes = entryRoutes(this.relays, this.entries, this.entryTargets);
-      const allowlist = this.#mainAllowlist(this.relays, routes);
-      const bound = yield* Effect.result(Mesh.#bindMain(this.#env, this.#secret, this.relays, routes, allowlist));
-      record(this.#env.host, "conn rebind", () => `${always ? "relays retold" : "a dial unanswered, nothing open"} -> ${bound._tag === "Failure" ? `failed: ${said(bound.failure.message)}` : "bound"}`);
-      if (bound._tag === "Failure") return this.#endpoint;
-      const endpoint = bound.success;
-      this.#env.runner.fork(this.#accepting(endpoint));
-      for (const addr of this.#known) endpoint.addAddr(addr);
-      const old = this.#endpoint;
-      this.#endpoint = endpoint;
-      this.#endpointRemoved.clear();
-      this.#appliedDisabled.clear();
-      this.#hot.clear();
-      this.#relaxedAt.clear();
-      this.#syncDirty = false;
-      this.#stuck = false;
-      this.#closeOld(old);
-      return endpoint;
+      const d = Deferred.makeUnsafe<IrohEndpoint>();
+      this.#rebinding = d;
+      const self = this;
+      this.#env.runner.fork(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            const routes = entryRoutes(self.relays, self.entries, self.entryTargets);
+            const allowlist = self.#mainAllowlist(self.relays, routes);
+            const bound = yield* Effect.result(Mesh.#bindMain(self.#env, self.#secret, self.relays, routes, allowlist));
+            record(self.#env.host, "conn rebind", () => `${always ? "relays retold" : "a dial unanswered, nothing open"} -> ${bound._tag === "Failure" ? `failed: ${said(bound.failure.message)}` : "bound"}`);
+            if (bound._tag === "Failure") {
+              Deferred.doneUnsafe(d, Effect.succeed(self.#endpoint));
+              return;
+            }
+            const endpoint = bound.success;
+            if (self.#closed) {
+              self.#env.runner.fork(endpoint.close());
+              Deferred.doneUnsafe(d, Effect.succeed(self.#endpoint));
+              return;
+            }
+            self.#env.runner.fork(self.#accepting(endpoint));
+            for (const addr of self.#known) endpoint.addAddr(addr);
+            const old = self.#endpoint;
+            self.#endpoint = endpoint;
+            self.#endpointRemoved.clear();
+            self.#appliedDisabled.clear();
+            self.#hot.clear();
+            self.#relaxedAt.clear();
+            self.#syncDirty = false;
+            self.#stuck = false;
+            self.#closeOld(old);
+            Deferred.doneUnsafe(d, Effect.succeed(endpoint));
+          }),
+          Effect.sync(() => {
+            Deferred.doneUnsafe(d, Effect.succeed(self.#endpoint));
+            if (self.#rebinding === d) self.#rebinding = null;
+            if (self.#rebindAgain && !self.#closed) {
+              self.#rebindAgain = false;
+              self.#env.runner.fork(Effect.asVoid(self.#rebind(true)));
+            } else if (self.#closed) {
+              self.#rebindAgain = false;
+            }
+          }),
+        ),
+      );
+      return yield* Deferred.await(d);
     });
   }
 
@@ -3168,6 +3203,7 @@ export class Mesh {
   /// (2026-10-08); with IP transports, a way said to go through a relay went direct.
   #pinnedEndpoint(relay: string): Effect.Effect<IrohEndpoint | null> {
     return Effect.gen({ self: this }, function* () {
+      if (this.#closed) return null;
       const existing = this.#pinned.get(relay);
       if (existing) return yield* Deferred.await(existing);
       const d = Deferred.makeUnsafe<IrohEndpoint | null>();
@@ -3176,17 +3212,43 @@ export class Mesh {
       // addresses alone.
       // A fence's: at home on its relays alone, with IP transports (paths punched through them), looking nothing up.
       const fence = this.#fences.get(relay);
-      const bound = yield* Effect.result(
-        relay === LAN || relay === TAILNET
-          ? Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), [], false, false, [], [], [], false)
-          : fence !== undefined
-            ? Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), fence, false, false, [], [], fence, false)
-            : Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), [relay], true, false, [], [], [relay], false),
+      const self = this;
+      let settled = false;
+      this.#env.runner.fork(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            const bound = yield* Effect.result(
+              relay === LAN || relay === TAILNET
+                ? Mesh.#bind(self.#env.iroh, pinnedKey(self.#secret, relay), [], false, false, [], [], [], false)
+                : fence !== undefined
+                  ? Mesh.#bind(self.#env.iroh, pinnedKey(self.#secret, relay), fence, false, false, [], [], fence, false)
+                  : Mesh.#bind(self.#env.iroh, pinnedKey(self.#secret, relay), [relay], true, false, [], [], [relay], false),
+            );
+            const endpoint = bound._tag === "Success" ? bound.success : null;
+            if (endpoint === null) {
+              if (self.#pinned.get(relay) === d) self.#pinned.delete(relay);
+              settled = true;
+              Deferred.doneUnsafe(d, Effect.succeed(null));
+              return;
+            }
+            if (self.#closed || self.#pinned.get(relay) !== d) {
+              self.#env.runner.fork(endpoint.close());
+              settled = true;
+              Deferred.doneUnsafe(d, Effect.succeed(null));
+              return;
+            }
+            settled = true;
+            Deferred.doneUnsafe(d, Effect.succeed(endpoint));
+          }),
+          Effect.sync(() => {
+            if (!settled) {
+              if (self.#pinned.get(relay) === d) self.#pinned.delete(relay);
+              Deferred.doneUnsafe(d, Effect.succeed(null));
+            }
+          }),
+        ),
       );
-      const endpoint = bound._tag === "Success" ? bound.success : null;
-      Deferred.doneUnsafe(d, Effect.succeed(endpoint));
-      if (endpoint === null) this.#pinned.delete(relay);
-      return endpoint;
+      return yield* Deferred.await(d);
     });
   }
 
@@ -3437,14 +3499,100 @@ function relayStatus(endpoint: IrohEndpoint): string {
 /// gone off that network, or a web page that dials no address, carries them all the same: counted at once, every dial
 /// ran out before the endpoint was on a relay, and bound it anew, again and again (2026-11-18: the web and Android with
 /// all twelve relays down for up to 25 minutes, each dial `rebound`).
+type SharedRelayWaiter = {
+  readonly connected: Deferred.Deferred<void>;
+  readonly waiters: Set<symbol>;
+  hasLeader: boolean;
+  leaderDone: Deferred.Deferred<void>;
+  nextDelay: number;
+  settled: boolean;
+};
+
+const sharedRelayWaiters = new WeakMap<Pick<IrohEndpoint, "relayStatus">, SharedRelayWaiter>();
+
+function endpointOnARelay(endpoint: Pick<IrohEndpoint, "relayStatus">): boolean {
+  const status = endpoint.relayStatus();
+  return status.length === 0 || status.some((s) => s.connected);
+}
+
 export function onARelay(endpoint: Pick<IrohEndpoint, "relayStatus">, noRelays: boolean): Effect.Effect<void> {
-  const on = () => {
-    const status = endpoint.relayStatus();
-    return noRelays || status.length === 0 || status.some((s) => s.connected);
-  };
+  if (noRelays) return Effect.void;
   return Effect.gen(function* () {
-    let next = ONTO_FIRST_RECHECK_MS;
-    for (let waited = 0; waited < ONTO_MAX_MS && !on(); waited += next, next = Math.min(next * 2, ONTO_RECHECK_MS)) yield* Effect.sleep(next);
+    let shared = sharedRelayWaiters.get(endpoint);
+    if (shared === undefined) {
+      if (endpointOnARelay(endpoint)) return;
+      shared = {
+        connected: Deferred.makeUnsafe<void>(),
+        waiters: new Set(),
+        hasLeader: false,
+        leaderDone: Deferred.makeUnsafe<void>(),
+        nextDelay: ONTO_FIRST_RECHECK_MS,
+        settled: false,
+      };
+      sharedRelayWaiters.set(endpoint, shared);
+    }
+    const token = Symbol();
+    shared.waiters.add(token);
+    const started = yield* Clock.currentTimeMillis;
+    const deadline = started + ONTO_MAX_MS;
+    const s = shared;
+    return yield* Effect.ensuring(
+      Effect.gen(function* () {
+        for (;;) {
+          if (s.settled) return;
+          const now = yield* Clock.currentTimeMillis;
+          const remaining = deadline - now;
+          if (remaining <= 0) return;
+
+          if (!s.hasLeader) {
+            s.hasLeader = true;
+            const myTurn = s.leaderDone;
+            yield* Effect.ensuring(
+              Effect.gen(function* () {
+                for (;;) {
+                  if (s.settled) return;
+                  const tNow = yield* Clock.currentTimeMillis;
+                  const rem = deadline - tNow;
+                  if (rem <= 0) return;
+                  const delay = s.nextDelay;
+                  if (delay > rem) {
+                    yield* Effect.sleep(rem);
+                    return;
+                  }
+                  s.nextDelay = Math.min(delay * 2, ONTO_RECHECK_MS);
+                  yield* Effect.sleep(delay);
+                  if (s.settled) return;
+                  if (endpointOnARelay(endpoint)) {
+                    s.settled = true;
+                    if (sharedRelayWaiters.get(endpoint) === s) sharedRelayWaiters.delete(endpoint);
+                    Deferred.doneUnsafe(s.connected, Effect.void);
+                    return;
+                  }
+                }
+              }),
+              Effect.sync(() => {
+                s.hasLeader = false;
+                s.leaderDone = Deferred.makeUnsafe<void>();
+                Deferred.doneUnsafe(myTurn, Effect.void);
+              }),
+            );
+            return;
+          }
+
+          const turn = s.leaderDone;
+          yield* Effect.raceFirst(
+            Effect.raceFirst(Deferred.await(s.connected), Deferred.await(turn)),
+            Effect.sleep(remaining),
+          );
+        }
+      }),
+      Effect.sync(() => {
+        s.waiters.delete(token);
+        if (s.waiters.size === 0 && sharedRelayWaiters.get(endpoint) === s) {
+          sharedRelayWaiters.delete(endpoint);
+        }
+      }),
+    );
   });
 }
 

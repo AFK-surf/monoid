@@ -268,6 +268,7 @@ static uint64_t atlas_seq;
 static id<MTLRenderPipelineState> ppipe, ppipe_deep, cpipe, adpipe;
 static id<MTLTexture> lv[4], ltmp;
 static int lv_w, lv_h;
+static int lv_shrink_frames, lv_win_max_w, lv_win_max_h, lv_frame_max_w, lv_frame_max_h;
 static double last_gpu = -1;
 static double ad_fixed_dt = 0.0;
 // The size, in points, and the pixels a point of the frame being drawn (encode and what it draws by): its MBFrame's on
@@ -1196,6 +1197,7 @@ static id<MTLTexture> level_tex(MTLPixelFormat format, int w, int h) {
 // the last capture's blur is kept to be shown again (encode, below)
 static int kept_ok;
 static void slots_invalidate(void);
+static void slots_drop_textures(void);
 static void glass_forget(void);
 
 static void ensure_levels(int w, int h) {
@@ -1206,8 +1208,12 @@ static void ensure_levels(int w, int h) {
     lv[j] = level_tex(j == 0 ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA16Float, (lv_w + (1 << j) - 1) >> j,
                       (lv_h + (1 << j) - 1) >> j);
   ltmp = level_tex(MTLPixelFormatRGBA16Float, lv_w, lv_h);
+  lv_shrink_frames = 0;
+  lv_win_max_w = lv_win_max_h = 0;
+  lv_frame_max_w = lv_frame_max_h = 0;
   // (the blurs kept were shown by where they lie in levels of the old size: one made now would be shown by the new)
   slots_invalidate();
+  slots_drop_textures();
 }
 
 // one pass of the blur: src into dst's top left (w × h); mode 1 halving, 2 a Gaussian of deviation sg along (dx, dy)
@@ -1523,6 +1529,7 @@ static void blur(id<MTLCommandBuffer> cb, id<MTLTexture> target, const Grab *m) 
 // into it (its pictures change under the same instances) is blurred anew each frame, as is a frame an image under it
 // had no texture for yet.
 #define MB_GLASS_SLOTS 32
+#define MB_GLASS_CACHE_MAX_BYTES ((size_t)64 * 1024 * 1024)
 typedef struct {
   float *under;
   size_t under_cap, under_n;
@@ -1535,6 +1542,18 @@ typedef struct {
 static GlassSlot slots[MB_GLASS_SLOTS];
 static id<MTLTexture> slot_bt[MB_GLASS_SLOTS];
 static unsigned slots_clock;
+
+static size_t glass_tex_bytes(id<MTLTexture> t) {
+  if (!t) return 0;
+  size_t bpp = t.pixelFormat == MTLPixelFormatRGBA16Float ? 8 : 4;
+  return (size_t)t.width * (size_t)t.height * bpp;
+}
+
+static size_t slots_total_bytes(void) {
+  size_t total = 0;
+  for (int i = 0; i < MB_GLASS_SLOTS; i++) total += glass_tex_bytes(slot_bt[i]);
+  return total;
+}
 // what the capture now is of (under_take), as a slot keeps it
 static float *under_now;
 static size_t under_now_cap, under_now_n;
@@ -1851,6 +1870,29 @@ static void slots_invalidate(void) {
   kept_ok = 0;
 }
 
+static void slots_drop_textures(void) {
+  for (int i = 0; i < MB_GLASS_SLOTS; i++) slot_bt[i] = nil;
+}
+
+static void shrink_levels(int w, int h) {
+  lv_w = w;
+  lv_h = h;
+  for (int j = 0; j < 4; j++)
+    lv[j] = level_tex(j == 0 ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA16Float, (lv_w + (1 << j) - 1) >> j,
+                      (lv_h + (1 << j) - 1) >> j);
+  ltmp = level_tex(MTLPixelFormatRGBA16Float, lv_w, lv_h);
+  for (int i = 0; i < MB_GLASS_SLOTS; i++) {
+    if (!slot_bt[i]) continue;
+    int sk = slots[i].grab.progressive ? 0 : slots[i].grab.k;
+    int max_sw = (lv_w + (1 << sk) - 1) >> sk;
+    int max_sh = (lv_h + (1 << sk) - 1) >> sk;
+    if (!slots[i].valid || (int)slot_bt[i].width > max_sw || (int)slot_bt[i].height > max_sh) {
+      slot_bt[i] = nil;
+      slots[i].valid = 0;
+    }
+  }
+}
+
 static void glass_free(void) {
   for (int j = 0; j < 4; j++) lv[j] = nil;
   ltmp = nil;
@@ -1862,6 +1904,8 @@ static void glass_free(void) {
     slots[i].under_cap = slots[i].under_n = 0;
   }
   lv_w = lv_h = 0;
+  lv_shrink_frames = lv_win_max_w = lv_win_max_h = 0;
+  lv_frame_max_w = lv_frame_max_h = 0;
   for (int i = 0; i < MB_WINS; i++) {
     render_wins[i].ad_tex[0] = nil;
     render_wins[i].ad_tex[1] = nil;
@@ -1877,8 +1921,24 @@ static void glass_free(void) {
 static int glass_idle_frames;
 
 static void glass_idle_tick(int glass) {
-  if (glass) glass_idle_frames = 0;
-  else if (glass_idle_frames < MB_GLASS_IDLE && ++glass_idle_frames == MB_GLASS_IDLE && lv_w > 0) glass_free();
+  if (glass) {
+    glass_idle_frames = 0;
+    if (lv_w > 0 && lv_h > 0 && lv_frame_max_w > 0 && lv_frame_max_h > 0) {
+      if (lv_frame_max_w > lv_win_max_w) lv_win_max_w = lv_frame_max_w;
+      if (lv_frame_max_h > lv_win_max_h) lv_win_max_h = lv_frame_max_h;
+      if (++lv_shrink_frames >= MB_GLASS_IDLE) {
+        if ((size_t)lv_win_max_w * (size_t)lv_win_max_h * 2 < (size_t)lv_w * (size_t)lv_h) {
+          shrink_levels(lv_win_max_w, lv_win_max_h);
+        }
+        lv_shrink_frames = 0;
+        lv_win_max_w = lv_win_max_h = 0;
+      }
+    }
+    lv_frame_max_w = lv_frame_max_h = 0;
+  } else {
+    lv_frame_max_w = lv_frame_max_h = 0;
+    if (glass_idle_frames < MB_GLASS_IDLE && ++glass_idle_frames == MB_GLASS_IDLE && lv_w > 0) glass_free();
+  }
 }
 
 static void glass_forget(void) {
@@ -1956,42 +2016,95 @@ static int slot_same(const Grab *m, const double key[7]) {
   return -1;
 }
 
-// The blur just made (blur) kept in the slot least lately shown by swapping texture handles with the level
-// (zero GPU blit). Not yet said to be of anything (valid).
-static int slot_fill(const Grab *m, unsigned frame_clock) {
+static void slots_evict_budget(int keep_idx, unsigned frame_clock, int allow_frame_slots) {
+  while (slots_total_bytes() > MB_GLASS_CACHE_MAX_BYTES) {
+    int victim = -1;
+    for (int j = 0; j < MB_GLASS_SLOTS; j++) {
+      if (j == keep_idx || !slot_bt[j]) continue;
+      if (!allow_frame_slots && slots[j].used > frame_clock) continue;
+      if (victim < 0 || (!slots[j].valid && slots[victim].valid) ||
+          (slots[j].valid == slots[victim].valid && slots[j].used < slots[victim].used)) {
+        victim = j;
+      }
+    }
+    if (victim < 0) break;
+    slot_bt[victim] = nil;
+    slots[victim].valid = 0;
+  }
+}
+
+// The blur just made (blur) kept in the slot least lately shown: by swapping texture handles with the level
+// (zero GPU blit) when the level is close to the grab's size, or copying only the grab's active top-left region
+// into a compact 64-px-aligned slot texture when the shared level is much larger than the grab.
+static int slot_fill(id<MTLCommandBuffer> cb, const Grab *m, unsigned frame_clock) {
   id<MTLTexture> __strong *Lp = (m->progressive || (m->contained && m->k == 0)) ? &ltmp : &lv[m->k];
   id<MTLTexture> L = *Lp;
+  int lw[4], lh[4];
+  grab_levels(m, lw, lh);
+  int sk = m->progressive ? 0 : m->k;
+  int gw = lw[sk] > 0 ? lw[sk] : 1;
+  int gh = lh[sk] > 0 ? lh[sk] : 1;
+  int Lw = (int)L.width, Lh = (int)L.height;
+  int bw = (gw + 63) & ~63;
+  int bh = (gh + 63) & ~63;
+  if (bw > Lw) bw = Lw;
+  if (bh > Lh) bh = Lh;
+  if (bw < 1) bw = 1;
+  if (bh < 1) bh = 1;
+  size_t L_area = (size_t)Lw * (size_t)Lh;
+  size_t b_area = (size_t)bw * (size_t)bh;
+  int full_size = (bw >= Lw && bh >= Lh);
+  int use_swap = full_size || (L_area <= 2 * b_area && glass_tex_bytes(L) <= MB_GLASS_CACHE_MAX_BYTES);
   int t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = 0;
   for (int j = 0; j < MB_GLASS_SLOTS; j++) {
     if (slots[j].used < slots[fallback].used) fallback = j;
     if (slots[j].used > frame_clock) continue;
     int has_bt = slot_bt[j] != nil;
-    int same_tex = has_bt && (int)slot_bt[j].width == (int)L.width && (int)slot_bt[j].height == (int)L.height &&
-                   slot_bt[j].pixelFormat == L.pixelFormat;
+    int reuse_tex = 0;
+    if (use_swap) {
+      reuse_tex = has_bt && (int)slot_bt[j].width == Lw && (int)slot_bt[j].height == Lh &&
+                  slot_bt[j].pixelFormat == L.pixelFormat;
+    } else {
+      reuse_tex = has_bt && slot_bt[j].pixelFormat == L.pixelFormat && (int)slot_bt[j].width >= gw &&
+                  (int)slot_bt[j].height >= gh && (size_t)slot_bt[j].width * (size_t)slot_bt[j].height <= 2 * b_area;
+    }
     if (!slots[j].valid) {
-      if (same_tex) {
+      if (reuse_tex) {
         if (t0 < 0) t0 = j;
       } else if (!has_bt) {
         if (t1 < 0) t1 = j;
       } else {
         if (t3 < 0) t3 = j;
       }
-    } else if (same_tex) {
+    } else if (reuse_tex) {
       if (t2 < 0 || slots[j].used < slots[t2].used) t2 = j;
     }
     if (t4 < 0 || slots[j].used < slots[t4].used) t4 = j;
   }
   int i = t0 >= 0 ? t0 : t1 >= 0 ? t1 : t2 >= 0 ? t2 : t3 >= 0 ? t3 : t4 >= 0 ? t4 : fallback;
   slots[i].valid = 0;
-  if (slot_bt[i] != nil && slot_bt[i].width == L.width && slot_bt[i].height == L.height &&
-      slot_bt[i].pixelFormat == L.pixelFormat) {
-    id<MTLTexture> old = slot_bt[i];
-    slot_bt[i] = L;
-    *Lp = old;
+  if (use_swap) {
+    if (slot_bt[i] != nil && (int)slot_bt[i].width == Lw && (int)slot_bt[i].height == Lh &&
+        slot_bt[i].pixelFormat == L.pixelFormat) {
+      id<MTLTexture> old = slot_bt[i];
+      slot_bt[i] = L;
+      *Lp = old;
+    } else {
+      slot_bt[i] = L;
+      *Lp = level_tex(L.pixelFormat, Lw, Lh);
+    }
   } else {
-    slot_bt[i] = L;
-    *Lp = level_tex(L.pixelFormat, (int)L.width, (int)L.height);
+    if (!(slot_bt[i] != nil && slot_bt[i].pixelFormat == L.pixelFormat && (int)slot_bt[i].width >= gw &&
+          (int)slot_bt[i].height >= gh && (size_t)slot_bt[i].width * (size_t)slot_bt[i].height <= 2 * b_area)) {
+      slot_bt[i] = level_tex(L.pixelFormat, bw, bh);
+    }
+    id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
+    [bl copyFromTexture:L sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+             sourceSize:MTLSizeMake((NSUInteger)gw, (NSUInteger)gh, 1) toTexture:slot_bt[i] destinationSlice:0
+       destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+    [bl endEncoding];
   }
+  slots_evict_budget(i, frame_clock, 0);
   return i;
 }
 
@@ -2245,7 +2358,7 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
     if (tid < 0) {
       if (!levels_sized) {
         levels_sized = 1;
-        int max_w = 0, max_h = 0, scan_bound = 0;
+        int max_w = 0, max_h = 0, all_max_w = 0, all_max_h = 0, scan_bound = 0;
         for (int32_t s0 = start; s0 < count;) {
           int stid = (int)f[s0 * MB_INST + 20];
           int32_t e0 = s0 + 1;
@@ -2254,15 +2367,24 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
             if (stid != scan_bound) {
               scan_bound = stid;
               Grab gm;
-              if (grab_of(&gm, f, s0, e0, count, (int)target.width, (int)target.height) && grab_in_part(&gm)) {
-                if (gm.w > max_w) max_w = gm.w;
-                if (gm.h > max_h) max_h = gm.h;
+              if (grab_of(&gm, f, s0, e0, count, (int)target.width, (int)target.height)) {
+                if (gm.w > all_max_w) all_max_w = gm.w;
+                if (gm.h > all_max_h) all_max_h = gm.h;
+                if (grab_in_part(&gm)) {
+                  if (gm.w > max_w) max_w = gm.w;
+                  if (gm.h > max_h) max_h = gm.h;
+                }
               }
             }
           }
           s0 = e0;
         }
-        if (max_w > lv_w || max_h > lv_h) ensure_levels(max_w, max_h);
+        if (max_w > lv_w || max_h > lv_h) {
+          ensure_levels(max_w, max_h);
+        } else if (ad_dt >= 0.0 && lv[0] && all_max_w > 0 && all_max_h > 0) {
+          if (all_max_w > lv_frame_max_w) lv_frame_max_w = all_max_w;
+          if (all_max_h > lv_frame_max_h) lv_frame_max_h = all_max_h;
+        }
       }
       if (tid != bound) {
         Grab m;
@@ -2296,7 +2418,7 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
         } else if (shows) {
           [enc endEncoding];
           blur(cb, target, &m);
-          slot = slot_fill(&m, frame_clock);
+          slot = slot_fill(cb, &m, frame_clock);
           // (an image drawn under it that had no texture yet: it comes under the same instances, so this blur is not
           // kept to be shown again as theirs)
           if (known && !encode_missing) slot_keep(slot, &m, key);
@@ -2337,6 +2459,8 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
     start = end;
   }
   [enc endEncoding];
+  gtex = nil;
+  if (levels_sized && slots_total_bytes() > MB_GLASS_CACHE_MAX_BYTES) slots_evict_budget(-1, frame_clock, 1);
   sc_on = 0;
 }
 
