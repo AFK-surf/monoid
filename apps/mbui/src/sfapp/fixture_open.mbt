@@ -654,7 +654,7 @@ pub fn open_mode(mode : String) -> Unit {
       n.d_runtime = n.runtime
     }
     if mode == "newchat-tui-model" { @sffixture.new_fix.claude_mode = true }
-    if mode == "newchat-ultrafast-model" {
+    if mode == "newchat-ultrafast-model" || mode.has_prefix("newchat-speed-") {
       let n = @sffixture.new_fix
       n.crowded = true
       n.ultrafast = true
@@ -662,6 +662,8 @@ pub fn open_mode(mode : String) -> Unit {
       n.runtime = "codex"
       n.d_model = n.model
       n.d_runtime = n.runtime
+      if mode == "newchat-speed-fast" { n.speed = "fast" }
+      if mode == "newchat-speed-ultrafast" { n.speed = "ultrafast" }
     }
     // (with models starred: under 喜欢 in its model's panel)
     if mode.has_suffix("-liked") {
@@ -986,7 +988,7 @@ pub fn fixture_corner_modes() -> Array[String] {
     "history", "history-details", "drive", "drive-roots", "drive-download", "drive-empty", "drive-loading", "drive-sub", "drive-upload",
     "files", "files-add-folder", "files-clash", "files-columns", "files-list", "files-preview", "files-split", "files-transfers",
     "files-tree", "place-stations", "place-profiles", "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents", "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
-    "newchat-model", "newchat-profiles", "newchat-reading", "newchat-station",
+    "newchat-model", "newchat-speed-fast", "newchat-speed-ultrafast", "newchat-profiles", "newchat-reading", "newchat-station",
     "newchat-station-models", "newchat-station-empty",
     // (a preset's dialog and its steps further in: 添加目录, the folder picker at a station's home and in a folder of
     // repositories, 从 Git 克隆, a clone under way and one failed among its folders)

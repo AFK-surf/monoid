@@ -908,6 +908,11 @@ pub fn fix_pick() -> Json {
     "claudeModeAvailable": n.claude_mode && n.d_runtime == "claude",
     "fastAvailable": n.tall || n.ultrafast,
     "ultrafastAvailable": n.ultrafast && n.d_runtime == "codex" && n.d_model == "gpt-6.2-sol",
+    "fastText": match n.speed {
+      "fast" => Json::string("Fast")
+      "ultrafast" => Json::string("Ultrafast")
+      _ => Json::null()
+    },
     // (how much context Claude Code can be kept to under the model's 1M)
     "contexts": if n.d_runtime == "claude" {
       [("", "完整 · 1M"), ("500000", "500K"), ("300000", "300K"), ("200000", "200K")].map(fn(c) {
