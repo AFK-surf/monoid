@@ -359,8 +359,8 @@ fn profile_block_node(
 
 ///|
 /// Its head (AccountView's identity) in node `h`: its provider's mark, its name (renamed here, but for the machine's own
-/// and a copy) and the runtimes it serves, what it is (its station's name where it is on several), its last check and
-/// when, checking again (its allowance read again with it); its ⋯.
+/// and a copy) and the runtimes it serves, what it is and the station that holds its login, its last check and when,
+/// checking again (its allowance read again with it); its ⋯.
 fn profile_head_node(
   h : @view.View,
   core : Core,
@@ -373,7 +373,7 @@ fn profile_head_node(
   tips : @sf.TipLayer?,
 ) -> Unit {
   let on = [("station", address), ("id", id)]
-  // what it is, in a line: its kind, its plan, the address signed in (when not its name), where it is
+  // what it is, in a line: its kind, its plan and the address signed in (when not its name)
   let facts = fn() {
     let pv = p()
     let ak = text(field(pv, "access"), "kind")
@@ -385,14 +385,29 @@ fn profile_head_node(
       text(pv, "kindText")
     }
     let email = text(pv, "email")
-    // of an account on several stations, this station's (each's own part is under Station), not all of them
-    let several = items(entry(), "members").filter(fn(m) { text(Some(m), "role") != "user" }).length() > 1
-    let place = if several {
-      @sf.t("web-pages.profiles.onStation", args=[("station", text(s(), "name"))])
+    join([kind_word, text(pv, "planText"), if email != text(pv, "name") { email } else { "" }], " · ")
+  }
+  // A borrowed profile's login stays with its host, not on the station that has the copy.
+  let source = fn() {
+    let pv = p()
+    let station = if profile_copy(pv) {
+      let host = text(field(pv, "share"), "host")
+      let stations = items(entry(), "stations")
+      match stations.search_by(fn(x) { text(Some(x), "id") == host }) {
+        Some(i) if text(Some(stations[i]), "name") != "" => text(Some(stations[i]), "name")
+        _ => host.clamped_view(end=@cmp.minimum(8, host.length())).to_owned()
+      }
+    } else if text(s(), "name") != "" {
+      text(s(), "name")
     } else {
-      ""
+      let sid = text(s(), "id")
+      sid.clamped_view(end=@cmp.minimum(8, sid.length())).to_owned()
     }
-    join([kind_word, text(pv, "planText"), if email != text(pv, "name") { email } else { "" }, place], " · ")
+    if station == "" {
+      @sf.t("web-pages.profiles.sourceStationUnknown")
+    } else {
+      @sf.t("web-pages.profiles.sourceStation", args=[("station", station)])
+    }
   }
   @sf.own_head_node(
     h,
@@ -409,7 +424,7 @@ fn profile_head_node(
     // its new name shows while it is saved
     busy=fn() { is_doing(core, ["profile.put"], on) },
     tags=fn(t) { runtime_tags_node(t, p) },
-    lines=fn() { [facts()] },
+    lines=fn() { [facts(), source()] },
     state=fn(st) { profile_state_node(st, core, address, id, p, tips) },
     actions=fn(a) { profile_more_node(a, core, here, address, p) },
   )

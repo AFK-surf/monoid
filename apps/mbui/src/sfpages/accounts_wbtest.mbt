@@ -20,6 +20,60 @@ test "a profile's page, wide: who it is and whether it works, then its allowance
 }
 
 ///|
+test "a profile's head names the station that holds its login or key" {
+  for (w, platform) in page_cases {
+    let at = "width \{w}, platform \{platform}"
+    let own = setting_tester(Profile("ws1/st1", "cc"), w, platform~, over=unshared_claude)
+    assert_true(own.find("来源 station：Willow") is Some(_), msg=at)
+    assert_eq(own.audit(), [], msg=at)
+    let key = setting_tester(Profile("ws1/st1", "k2"), w, platform~)
+    assert_true(key.find("来源 station：Willow") is Some(_), msg=at)
+    assert_eq(key.audit(), [], msg=at)
+    let copy = setting_tester(Profile("ws1/st1", "bx"), w, platform~, mode="settings-profile-copy")
+    assert_true(copy.find("来源 station：Maple") is Some(_), msg=at)
+    assert_true(copy.find("来源 station：Willow") is None, msg=at)
+    assert_eq(copy.audit(), [], msg=at)
+  }
+}
+
+///|
+test "a borrowed profile uses the host's id when its name is not known" {
+  let t = setting_tester(Profile("ws1/st1", "bx"), 390.0, platform=2, mode="settings-profile-copy", over=fn(s) {
+    with_share_stations(s, [])
+  })
+  assert_true(t.find("来源 station：st2") is Some(_))
+  assert_true(t.find("来源 station：Willow") is None)
+  assert_eq(t.audit(), [])
+}
+
+///|
+test "a borrowed profile with no host does not name the borrowing station as its source" {
+  let t = setting_tester(Profile("ws1/st1", "bx"), 390.0, platform=2, mode="settings-profile-copy", over=fn(s) {
+    fn without_host(v : Json) -> Json {
+      match v {
+        Object(o) => {
+          let copy = o.copy()
+          for k, x in o { copy[k] = without_host(x) }
+          if text(Some(v), "role") == "user" && has(Some(v), "host") {
+            copy["host"] = str("")
+          }
+          Json::object(copy)
+        }
+        Array(a) => Json::array(a.map(without_host))
+        _ => v
+      }
+    }
+    { ..s, topic_read: fn(name, params) {
+        let r = s.topic(name, params).get().snapshot()
+        { ..r, value: r.value.map(without_host) }
+      } }
+  })
+  assert_true(t.find("来源 station 未知") is Some(_))
+  assert_true(t.find("来源 station：Willow") is None)
+  assert_eq(t.audit(), [])
+}
+
+///|
 test "checking a Claude account does not ask for confirmation" {
   for (w, platform) in page_cases {
     let calls : Array[String] = []

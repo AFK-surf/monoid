@@ -806,6 +806,8 @@
   "web-pages.profiles.useThis": "Use this account",
   "web-pages.profiles.usedBy": "Used by",
   "web-pages.profiles.onStation": "On {station}",
+  "web-pages.profiles.sourceStation": "Source station: {station}",
+  "web-pages.profiles.sourceStationUnknown": "Source station unknown",
   "web-pages.profiles.usage": "Last 7 days",
   "web-pages.profiles.usageHere": "Last 7 days · on {station}",
   "web-pages.profiles.usageAll": "All usage",

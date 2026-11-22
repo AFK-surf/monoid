@@ -776,6 +776,8 @@
   "web-pages.profiles.useThis": "使用此账号",
   "web-pages.profiles.usedBy": "使用它的连接",
   "web-pages.profiles.onStation": "在 {station}",
+  "web-pages.profiles.sourceStation": "来源 station：{station}",
+  "web-pages.profiles.sourceStationUnknown": "来源 station 未知",
   "web-pages.profiles.usage": "近 7 天",
   "web-pages.profiles.usageHere": "近 7 天 · 在 {station}",
   "web-pages.profiles.usageAll": "全部用量",

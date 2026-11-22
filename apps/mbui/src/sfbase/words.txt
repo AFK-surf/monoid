@@ -2500,6 +2500,8 @@ web-pages.profiles.signedInAdded
 web-pages.profiles.signedInSwitch
 web-pages.profiles.signingIn
 web-pages.profiles.signingInNote
+web-pages.profiles.sourceStation
+web-pages.profiles.sourceStationUnknown
 web-pages.profiles.step1Colab
 web-pages.profiles.step1Devin
 web-pages.profiles.step1Google
