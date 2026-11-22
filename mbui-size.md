@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0f1800b12](https://github.com/AFK-surf/monoid/commit/0f1800b122c3d86a2fefe2ca7adb25b4181defdf) fix(mbui): replace 9-tap progressive blur small-ra | 2.69 | 3.63 | 14.69 | 36.79 | 56 | 32.23 | 65.31 | 99.27 | 127.74 |
 | [1953aa4af](https://github.com/AFK-surf/monoid/commit/1953aa4af5ba6cc481dcf18bf8070ece6c628bd5) fix(notice): fix profile push routing, notice.brin | 2.69 | 3.63 | 14.69 | 36.79 | 56 | 32.2 | 65.24 | 99.85 | 89.85 |
 | [8b62854f0](https://github.com/AFK-surf/monoid/commit/8b62854f03592bd74c4e3427f2eae920b434a8c5) feat(mbui): replace legacy frosted bars with liqui | 2.69 | 3.62 | 14.66 | 36.76 | 55.92 | 32.2 | 65.24 | 99.85 | 103.82 |
 | [3e01fcab0](https://github.com/AFK-surf/monoid/commit/3e01fcab0066b6975b928daf9c03abc4f0fb1dba) feat(lg,sf-ui,mbui): port iOS 27.0 LiquidMorphPhys | 2.69 | 3.62 | 14.66 | 36.76 | 55.91 | 32.2 | 65.24 | 100.12 | 125.32 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fd4464ef0](https://github.com/AFK-surf/monoid/commit/fd4464ef07d130b1b398ee3e875df369ed89fb3c) fix(ci): include libs/liquid-glass in beta mirror, | 2.66 | 3.58 | 14.55 | 36.6 | 55.52 | 32.08 | 64.91 | 98.9 | 116.7 |
 | [aca188733](https://github.com/AFK-surf/monoid/commit/aca18873379823b32ca2853c7c6d8d9289f86df2) fix(mbui,sf-ui,sfapp): smooth small-sigma progress | 2.66 | 3.58 | 14.55 | 36.6 | 55.52 | 32.08 | 64.91 | 98.9 | 116.7 |
 | [1312352b4](https://github.com/AFK-surf/monoid/commit/1312352b4df793ffc578868bd5019c7405ae0bbc) fix(mbui): tighten liquid glass outer shadows into | 2.66 | 3.58 | 14.55 | 36.6 | 55.52 | 32.08 | 64.9 | 98.88 | 116.7 |
-| [cfeaf85ae](https://github.com/AFK-surf/monoid/commit/cfeaf85ae8abdc54bad8353cbd0d7fa2f26ec90f) feat(mbui): use liquid_segmented_node in sf-ui and | 2.66 | 3.59 | 14.55 | 36.6 | 55.52 | 32.08 | 64.91 | 98.76 | 116.7 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0f1800b12](https://github.com/AFK-surf/monoid/commit/0f1800b122c3d86a2fefe2ca7adb25b4181defdf) fix(mbui): replace 9-tap progressive blur small-ra | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.48 |
 | [1953aa4af](https://github.com/AFK-surf/monoid/commit/1953aa4af5ba6cc481dcf18bf8070ece6c628bd5) fix(notice): fix profile push routing, notice.brin | 0.48 | 0.63 | 2.43 | 3.48 | 5.77 | 1.78 | 4.8 | 54.58 |
 | [8b62854f0](https://github.com/AFK-surf/monoid/commit/8b62854f03592bd74c4e3427f2eae920b434a8c5) feat(mbui): replace legacy frosted bars with liqui | 0.48 | 0.63 | 2.43 | 3.48 | 5.77 | 1.78 | 4.8 | 54.58 |
 | [3e01fcab0](https://github.com/AFK-surf/monoid/commit/3e01fcab0066b6975b928daf9c03abc4f0fb1dba) feat(lg,sf-ui,mbui): port iOS 27.0 LiquidMorphPhys | 0.48 | 0.63 | 2.43 | 3.48 | 5.77 | 1.78 | 4.8 | 54.58 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fd4464ef0](https://github.com/AFK-surf/monoid/commit/fd4464ef07d130b1b398ee3e875df369ed89fb3c) fix(ci): include libs/liquid-glass in beta mirror, | 0.47 | 0.62 | 2.38 | 3.44 | 5.64 | 1.73 | 4.67 | 54.4 |
 | [aca188733](https://github.com/AFK-surf/monoid/commit/aca18873379823b32ca2853c7c6d8d9289f86df2) fix(mbui,sf-ui,sfapp): smooth small-sigma progress | 0.47 | 0.62 | 2.38 | 3.44 | 5.64 | 1.73 | 4.67 | 54.66 |
 | [1312352b4](https://github.com/AFK-surf/monoid/commit/1312352b4df793ffc578868bd5019c7405ae0bbc) fix(mbui): tighten liquid glass outer shadows into | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.67 | 54.23 |
-| [cfeaf85ae](https://github.com/AFK-surf/monoid/commit/cfeaf85ae8abdc54bad8353cbd0d7fa2f26ec90f) feat(mbui): use liquid_segmented_node in sf-ui and | 0.47 | 0.62 | 2.38 | 3.43 | 5.64 | 1.73 | 4.67 | 54.23 |
