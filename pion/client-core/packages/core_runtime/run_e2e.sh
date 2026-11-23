@@ -41,6 +41,11 @@ cc -O2 -Wall -Wextra -Werror \
   -c "$ROOT/pion/client-core/packages/core_runtime/native/core_runtime_e2e.c" \
   -o "$OUT_DIR/core_runtime_e2e.o"
 
+cc -O2 -Wall -Wextra -Werror \
+  -I"$ROOT/apps/mbui/src/host" \
+  -c "$ROOT/pion/client-core/packages/core_runtime/native/core_runtime_live_net_e2e.c" \
+  -o "$OUT_DIR/core_runtime_live_net_e2e.o"
+
 cc -O2 \
   "$OUT_DIR/core_runtime_e2e.o" \
   "$OUT_DIR/core_runtime_bridge.o" \
@@ -52,4 +57,16 @@ cc -O2 \
   -lpthread -lm -ldl \
   -o "$OUT_DIR/core_runtime_e2e"
 
+cc -O2 \
+  "$OUT_DIR/core_runtime_live_net_e2e.o" \
+  "$OUT_DIR/core_runtime_bridge.o" \
+  "$OUT_DIR/core_pion.o" \
+  "$OUT_DIR/shell_pion.o" \
+  "$OUT_DIR/libpion_core_runtime.a" \
+  "$OUT_DIR/pion_rt.o" \
+  "$LIB_DIR/libstillfail_shell.so" \
+  -lpthread -lm -ldl \
+  -o "$OUT_DIR/core_runtime_live_net_e2e"
+
 LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$OUT_DIR/core_runtime_e2e"
+LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$OUT_DIR/core_runtime_live_net_e2e"

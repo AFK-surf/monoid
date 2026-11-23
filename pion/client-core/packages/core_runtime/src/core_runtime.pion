@@ -1,6 +1,7 @@
 // Real `core_api.h` runtime engine wiring `packages/core_abi/native/core_pion.c`
-// directly to `sync::ClientCore` + `shell_native::open` (real Rust `libstillfail_shell`
-// SQLite WAL + Tokio async IO) on the dedicated core worker thread.
+// directly to `sync::ClientCore` + `sync::CloudSync` + `shell_native::open`
+// (real Rust `libstillfail_shell` SQLite WAL + Tokio async IO + HTTP/SSE/WS)
+// on the dedicated core worker thread.
 
 import "base_codec"
 import "core_abi"
@@ -18,6 +19,9 @@ struct RuntimeSession {
   sh : shell::Shell
   db : sql::Sql
   core : sync::ClientCore
+  mut cloud : Option[sync::CloudSync]
+  mut origin : String
+  mut live_sync_enabled : Bool
   mut last_ack_call : Double
   mut last_ack_ts : Double
   mut screen_inputs : Int
@@ -87,6 +91,93 @@ fn offline_transport() -> sync::StationTransport {
   }
 }
 
+fn opt_str_param(params : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(params, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn effect_err_msg(e : effect::EffectError) -> String {
+  match e {
+    effect::EffectError::Custom(m) => m
+    _ => "effect error"
+  }
+}
+
+fn emit_core_event(ev : sync::CoreEvent) -> Unit {
+  match ev {
+    sync::CoreEvent::ConnectionChanged(st, state) => {
+      let state_str = match state {
+        sync::ConnectionState::Disconnected(_) => "disconnected"
+        sync::ConnectionState::Connecting => "connecting"
+        sync::ConnectionState::Connected => "connected"
+        sync::ConnectionState::Reconnecting(_) => "reconnecting"
+      }
+      emit_wire(base_codec::json_stringify(base_codec::json_obj([
+        ("event", base_codec::json_str("connection")),
+        ("station", base_codec::json_str(st)),
+        ("state", base_codec::json_str(state_str)),
+      ])))
+    }
+    sync::CoreEvent::OutboxResolved(st, th, ck, server_n) => {
+      emit_wire(base_codec::json_stringify(base_codec::json_obj([
+        ("event", base_codec::json_str("outbox.resolved")),
+        ("station", base_codec::json_str(st)),
+        ("thread", base_codec::json_int(th)),
+        ("clientKey", base_codec::json_str(ck)),
+        ("n", base_codec::json_int(server_n)),
+      ])))
+    }
+    sync::CoreEvent::EntryAdded(st, th, entry, ck) => {
+      let ck_j = match ck {
+        Some(k) => base_codec::json_str(k)
+        None => base_codec::json_null()
+      }
+      emit_wire(base_codec::json_stringify(base_codec::json_obj([
+        ("event", base_codec::json_str("entry")),
+        ("station", base_codec::json_str(st)),
+        ("thread", base_codec::json_int(th)),
+        ("n", base_codec::json_int(entry.n)),
+        ("text", base_codec::json_str(entry.text)),
+        ("clientKey", ck_j),
+      ])))
+    }
+    sync::CoreEvent::ChatsChanged(st, ids) => {
+      let arr : Array[base_codec::Json] = []
+      for i in 0..<ids.length() {
+        arr.push(base_codec::json_str(ids[i]))
+      }
+      emit_wire(base_codec::json_stringify(base_codec::json_obj([
+        ("event", base_codec::json_str("chats.changed")),
+        ("station", base_codec::json_str(st)),
+        ("chats", base_codec::json_arr(arr)),
+      ])))
+    }
+    sync::CoreEvent::OverlayRolledBack(st, target, kind, code, recovery) => {
+      emit_wire(base_codec::json_stringify(base_codec::json_obj([
+        ("event", base_codec::json_str("overlay.rolledBack")),
+        ("station", base_codec::json_str(st)),
+        ("target", base_codec::json_str(target)),
+        ("kind", base_codec::json_str(kind)),
+        ("code", base_codec::json_str(code)),
+        ("recovery", base_codec::json_str(recovery)),
+      ])))
+    }
+    _ => ()
+  }
+}
+
+fn drain_and_emit(sess : RuntimeSession) -> Unit {
+  let _ = sess.sh.turn()
+  if sess.live_sync_enabled {
+    let evs = sess.core.drain_frame()
+    for i in 0..<evs.length() {
+      emit_core_event(evs[i])
+    }
+  }
+}
+
 /// Start the Pion `ClientCore` + real Rust `stillfail-shell` on `data_dir` (called on core thread).
 pub extern "C" fn pion_core_runtime_start(
   data_dir : Ptr,
@@ -96,13 +187,13 @@ pub extern "C" fn pion_core_runtime_start(
   beta : Int,
 ) -> Int {
   let dir = ptr_to_string(data_dir, data_dir_len)
-  let _origin = ptr_to_string(cloud_origin, cloud_origin_len)
+  let origin = ptr_to_string(cloud_origin, cloud_origin_len)
   let _beta_flag = beta != 0
   if dir.length() == 0 {
     emit_fatal("missing data_dir")
     return 0
   }
-  let rt = effect::Runtime::new()
+  let rt = effect::Runtime::live(fn() -> Int64 { shell_native::now_ms() })
   let sh = match shell_native::open(rt, dir) {
     Ok(s) => s
     Err(e) => {
@@ -124,11 +215,24 @@ pub extern "C" fn pion_core_runtime_start(
       return 0
     }
   }
-  let core = sync::ClientCore::new("ws-default", "st-local", rt, acct.db, offline_transport(), fn() -> Unit {})
+  let transport = if origin.length() > 0 {
+    sync::shell_http_transport(sh, origin)
+  } else {
+    offline_transport()
+  }
+  let cloud_opt : Option[sync::CloudSync] = if origin.length() > 0 {
+    Some(sync::CloudSync::new(sh, acct.db, origin))
+  } else {
+    None
+  }
+  let core = sync::ClientCore::new("ws-default", "st-local", rt, acct.db, transport, fn() -> Unit {})
   g_session[0] = Some(RuntimeSession::{
     sh: sh,
     db: acct.db,
     core: core,
+    cloud: cloud_opt,
+    origin: origin,
+    live_sync_enabled: false,
     last_ack_call: 0.0,
     last_ack_ts: 0.0,
     screen_inputs: 0,
@@ -153,6 +257,93 @@ fn affected_topic_for_call(call_name : String) -> Option[String] {
     return Some("chats")
   }
   None
+}
+
+fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec::Json) -> Unit {
+  let req_origin = match opt_str_param(params, "origin") {
+    Some(o) => o
+    None => sess.origin
+  }
+  let token = match opt_str_param(params, "token") {
+    Some(t) => t
+    None => ""
+  }
+  let want_ws = opt_str_param(params, "workspace")
+  if req_origin.length() == 0 {
+    let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing cloud_origin" })
+    let (out_j, out_b) = protocol::encode_core_event(ev)
+    emit_wire(out_j, payload=out_b)
+    return
+  }
+  let cs = match sess.cloud {
+    Some(existing) => {
+      existing.set_origin_and_token(req_origin, token)
+      existing
+    }
+    None => {
+      let created = sync::CloudSync::new(sess.sh, sess.db, req_origin, token=token)
+      sess.cloud = Some(created)
+      created
+    }
+  }
+  let _ = sess.core.rt.fork_quiet_named("runtime:cloud.sync", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_me_k(fn(ex : effect::Exit[sync::CloudMe]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => {
+          let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: effect_err_msg(e) })
+          let (out_j, out_b) = protocol::encode_core_event(ev)
+          emit_wire(out_j, payload=out_b)
+          fk(effect::Exit::Succeeded(()))
+        }
+        effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(me) => {
+          let ws_target : Option[String] = match want_ws {
+            Some(w) => Some(w)
+            None => if me.workspaces.length() > 0 { Some(me.workspaces[0].id) } else { None }
+          }
+          match ws_target {
+            None => {
+              let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
+                ("sub", base_codec::json_str(me.sub)),
+                ("email", base_codec::json_str(me.email)),
+                ("workspaces", base_codec::json_int(me.workspaces.length())),
+                ("relays", base_codec::json_int(me.relays.length())),
+              ]), None)
+              let (out_j, out_b) = protocol::encode_core_event(ok_ev)
+              emit_wire(out_j, payload=out_b)
+              fk(effect::Exit::Succeeded(()))
+            }
+            Some(wid) => {
+              cs.fetch_workspace_k(wid, fn(wex : effect::Exit[sync::CloudWorkspace]) -> Unit {
+                match wex {
+                  effect::Exit::Failed(e) => {
+                    let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: effect_err_msg(e) })
+                    let (out_j, out_b) = protocol::encode_core_event(ev)
+                    emit_wire(out_j, payload=out_b)
+                  }
+                  effect::Exit::Interrupted => ()
+                  effect::Exit::Succeeded(ws) => {
+                    let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
+                      ("sub", base_codec::json_str(me.sub)),
+                      ("email", base_codec::json_str(me.email)),
+                      ("workspaces", base_codec::json_int(me.workspaces.length())),
+                      ("relays", base_codec::json_int(me.relays.length())),
+                      ("workspace", base_codec::json_str(ws.id)),
+                      ("members", base_codec::json_int(ws.members.length())),
+                      ("stations", base_codec::json_int(ws.stations.length())),
+                    ]), None)
+                    let (out_j, out_b) = protocol::encode_core_event(ok_ev)
+                    emit_wire(out_j, payload=out_b)
+                  }
+                }
+                fk(effect::Exit::Succeeded(()))
+              })
+            }
+          }
+        }
+      }
+    })
+  })
 }
 
 /// Dispatch one JSON + optional binary message from `mb_core_send` on the core thread.
@@ -183,6 +374,33 @@ pub extern "C" fn pion_core_runtime_send(
       emit_wire(out_j, payload=out_b)
     }
     protocol::ParseRequestResult::Ok(req) => {
+      match req {
+        protocol::CoreRequest::Call(id, call_name, params, _) => {
+          if call_name == "__shell.pump" {
+            drain_and_emit(sess)
+            return
+          }
+          if call_name == "cloud.sync" {
+            handle_cloud_sync_call(sess, id, params)
+            drain_and_emit(sess)
+            return
+          }
+          if call_name == "station.connect" {
+            sess.live_sync_enabled = true
+            sess.core.start()
+            let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
+              ("connecting", base_codec::json_bool(true)),
+              ("station", base_codec::json_str(sess.core.station)),
+              ("origin", base_codec::json_str(sess.origin)),
+            ]), None)
+            let (out_j, out_b) = protocol::encode_core_event(ok_ev)
+            emit_wire(out_j, payload=out_b)
+            drain_and_emit(sess)
+            return
+          }
+        }
+        _ => ()
+      }
       let refresh_topic = match req {
         protocol::CoreRequest::Call(_, call_name, _, _) => affected_topic_for_call(call_name)
         _ => None
@@ -194,8 +412,7 @@ pub extern "C" fn pion_core_runtime_send(
         }
         None => ()
       }
-      let _ = sess.sh.pump(0.to_int64())
-      sess.core.rt.tick()
+      drain_and_emit(sess)
       match refresh_topic {
         Some(tname) => {
           let deltas = sess.core.refresh_topic(tname)
@@ -210,10 +427,15 @@ pub extern "C" fn pion_core_runtime_send(
   }
 }
 
-/// Stop the Pion `ClientCore` and close its SQLite database handle cleanly.
+/// Stop the Pion `ClientCore`, `CloudSync`, and close its SQLite database handle cleanly.
 pub extern "C" fn pion_core_runtime_stop() -> Unit {
   match g_session[0] {
     Some(sess) => {
+      sess.live_sync_enabled = false
+      match sess.cloud {
+        Some(cs) => cs.stop()
+        None => ()
+      }
       sess.core.stop()
       sess.db.close()
       g_session[0] = None

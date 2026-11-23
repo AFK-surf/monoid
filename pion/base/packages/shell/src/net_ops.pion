@@ -1,0 +1,729 @@
+// Program-agnostic async network, WebSocket, and peer-mesh operations over `Shell::call_k`.
+// Wire field names match `client/shell/src/{lib.rs,net.rs,iroh_ops.rs,istream.rs}` exactly.
+// Stays 100% pure Pion (zero `extern "C"`) so `wasm32` builds remain clean.
+
+import "base_codec"
+import "effect"
+
+pub struct FetchResponse {
+  pub status : Int
+  pub headers : Array[(String, String)]
+  pub body : Bytes
+  pub redirected : Bool
+}
+
+pub struct StreamHead {
+  pub id : Int64
+  pub status : Int
+  pub headers : Array[(String, String)]
+  pub redirected : Bool
+}
+
+pub enum WsMessage {
+  Text(String)
+  Binary(Bytes)
+  Ping
+  Pong
+  Close(Option[Int], String)
+}
+
+fn headers_to_json(headers : Array[(String, String)]) -> base_codec::Json {
+  let items : Array[base_codec::Json] = []
+  for i in 0..<headers.length() {
+    let (k, v) = headers[i]
+    items.push(base_codec::json_arr([base_codec::json_str(k), base_codec::json_str(v)]))
+  }
+  base_codec::json_arr(items)
+}
+
+fn parse_headers_json(j : base_codec::Json) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  match base_codec::json_get(j, "headers") {
+    Some(base_codec::Json::Arr(rows)) => {
+      for i in 0..<rows.length() {
+        match rows[i] {
+          base_codec::Json::Arr(pair) => {
+            if pair.length() >= 2 {
+              match (pair[0], pair[1]) {
+                (base_codec::Json::Str(k), base_codec::Json::Str(v)) => out.push((k, v))
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn str_array_to_json(xs : Array[String]) -> base_codec::Json {
+  let items : Array[base_codec::Json] = []
+  for i in 0..<xs.length() {
+    items.push(base_codec::json_str(xs[i]))
+  }
+  base_codec::json_arr(items)
+}
+
+fn relay_entries_to_json(entries : Array[(String, String)]) -> base_codec::Json {
+  let items : Array[base_codec::Json] = []
+  for i in 0..<entries.length() {
+    let (entry_url, relay_url) = entries[i]
+    items.push(base_codec::json_obj([
+      ("entry", base_codec::json_str(entry_url)),
+      ("relay", base_codec::json_str(relay_url)),
+    ]))
+  }
+  base_codec::json_arr(items)
+}
+
+fn field_int64(j : base_codec::Json, k : String, fallback : Int64 = 0.to_int64()) -> Int64 {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, repr)) => {
+      if repr.length() > 0 {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => v
+          None => n.to_int64()
+        }
+      } else {
+        n.to_int64()
+      }
+    }
+    _ => fallback
+  }
+}
+
+fn field_opt_int64(j : base_codec::Json, k : String) -> Option[Int64] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, repr)) => {
+      if repr.length() > 0 {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => Some(v)
+          None => Some(n.to_int64())
+        }
+      } else {
+        Some(n.to_int64())
+      }
+    }
+    _ => None
+  }
+}
+
+fn field_bool(j : base_codec::Json, k : String, fallback : Bool = false) -> Bool {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => fallback
+  }
+}
+
+fn field_opt_str(j : base_codec::Json, k : String) -> Option[String] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+// ── HTTP (`fetch`, `stream.open`, `stream.read`, `stream.close`) ──
+
+/// Perform an HTTP request (`fetch`) and receive `(status, headers, body, redirected)`.
+pub fn Shell::fetch_k(
+  self : Shell,
+  method_name : String,
+  url : String,
+  headers : Array[(String, String)],
+  body : Option[Bytes],
+  k : (effect::Exit[FetchResponse]) -> Unit,
+  timeout_ms : Option[Int64] = None,
+  stall_ms : Option[Int64] = None,
+  redirect : Option[String] = None,
+  called : (Int64) -> Unit = fn(_ : Int64) -> Unit {},
+) -> Unit {
+  let pairs : Array[(String, base_codec::Json)] = [
+    ("method", base_codec::json_str(method_name)),
+    ("url", base_codec::json_str(url)),
+    ("headers", headers_to_json(headers)),
+  ]
+  match timeout_ms {
+    Some(ms) => pairs.push(("timeoutMs", base_codec::json_int64(ms)))
+    None => ()
+  }
+  match stall_ms {
+    Some(ms) => pairs.push(("stallMs", base_codec::json_int64(ms)))
+    None => ()
+  }
+  match redirect {
+    Some(r) => pairs.push(("redirect", base_codec::json_str(r)))
+    None => ()
+  }
+  self.call_k(
+    "fetch",
+    base_codec::json_obj(pairs),
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(ans) => {
+          let status = field_int64(ans.json, "status").to_int()
+          let resp_headers = parse_headers_json(ans.json)
+          let redirected = field_bool(ans.json, "redirected")
+          let resp_body = match ans.bytes {
+            Some(b) => b
+            None => Bytes::new(0)
+          }
+          k(effect::Exit::Succeeded(FetchResponse::{
+            status: status,
+            headers: resp_headers,
+            body: resp_body,
+            redirected: redirected,
+          }))
+        }
+      }
+    },
+    bytes=body,
+    called=called,
+  )
+}
+
+/// Open a streaming HTTP response (`stream.open`), returning its handle id, status, and headers.
+pub fn Shell::stream_open_k(
+  self : Shell,
+  method_name : String,
+  url : String,
+  headers : Array[(String, String)],
+  body : Option[Bytes],
+  k : (effect::Exit[StreamHead]) -> Unit,
+  timeout_ms : Option[Int64] = None,
+  redirect : Option[String] = None,
+  called : (Int64) -> Unit = fn(_ : Int64) -> Unit {},
+) -> Unit {
+  let pairs : Array[(String, base_codec::Json)] = [
+    ("method", base_codec::json_str(method_name)),
+    ("url", base_codec::json_str(url)),
+    ("headers", headers_to_json(headers)),
+  ]
+  match timeout_ms {
+    Some(ms) => pairs.push(("timeoutMs", base_codec::json_int64(ms)))
+    None => ()
+  }
+  match redirect {
+    Some(r) => pairs.push(("redirect", base_codec::json_str(r)))
+    None => ()
+  }
+  self.call_k(
+    "stream.open",
+    base_codec::json_obj(pairs),
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(ans) => {
+          match field_opt_int64(ans.json, "id") {
+            None => k(effect::Exit::Failed(effect::EffectError::Custom("stream.open missing id")))
+            Some(sid) => {
+              let status = field_int64(ans.json, "status").to_int()
+              let resp_headers = parse_headers_json(ans.json)
+              let redirected = field_bool(ans.json, "redirected")
+              k(effect::Exit::Succeeded(StreamHead::{
+                id: sid,
+                status: status,
+                headers: resp_headers,
+                redirected: redirected,
+              }))
+            }
+          }
+        }
+      }
+    },
+    bytes=body,
+    called=called,
+  )
+}
+
+/// Read the next body chunk from an open HTTP stream (`stream.read`). Returns `None` at EOF.
+pub fn Shell::stream_read_k(
+  self : Shell,
+  id : Int64,
+  k : (effect::Exit[Option[Bytes]]) -> Unit,
+  stall_ms : Option[Int64] = None,
+  called : (Int64) -> Unit = fn(_ : Int64) -> Unit {},
+) -> Unit {
+  let pairs : Array[(String, base_codec::Json)] = [("id", base_codec::json_int64(id))]
+  match stall_ms {
+    Some(ms) => pairs.push(("stallMs", base_codec::json_int64(ms)))
+    None => ()
+  }
+  self.call_k(
+    "stream.read",
+    base_codec::json_obj(pairs),
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(ans) => {
+          if field_bool(ans.json, "end") {
+            k(effect::Exit::Succeeded(None))
+          } else {
+            let chunk = match ans.bytes {
+              Some(b) => b
+              None => Bytes::new(0)
+            }
+            k(effect::Exit::Succeeded(Some(chunk)))
+          }
+        }
+      }
+    },
+    called=called,
+  )
+}
+
+/// Close an open HTTP stream (`stream.close`).
+pub fn Shell::stream_close(self : Shell, id : Int64) -> Unit {
+  self.tell("stream.close", base_codec::json_obj([("id", base_codec::json_int64(id))]))
+}
+
+pub fn Shell::stream_close_k(self : Shell, id : Int64, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  self.call_k(
+    "stream.close",
+    base_codec::json_obj([("id", base_codec::json_int64(id))]),
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      }
+    },
+  )
+}
+
+// ── WebSocket (`ws.open`, `ws.next`, `ws.send`, `ws.close`) ──
+
+/// Open a WebSocket connection (`ws.open`), returning its handle id.
+pub fn Shell::ws_open_k(
+  self : Shell,
+  url : String,
+  headers : Array[(String, String)],
+  protocols : Array[String],
+  k : (effect::Exit[Int64]) -> Unit,
+  binary : Bool = false,
+  control : Bool = false,
+  timeout_ms : Option[Int64] = None,
+  called : (Int64) -> Unit = fn(_ : Int64) -> Unit {},
+) -> Unit {
+  let pairs : Array[(String, base_codec::Json)] = [
+    ("url", base_codec::json_str(url)),
+    ("headers", headers_to_json(headers)),
+    ("protocols", str_array_to_json(protocols)),
+    ("binary", base_codec::json_bool(binary)),
+    ("control", base_codec::json_bool(control)),
+  ]
+  match timeout_ms {
+    Some(ms) => pairs.push(("timeoutMs", base_codec::json_int64(ms)))
+    None => ()
+  }
+  self.call_k(
+    "ws.open",
+    base_codec::json_obj(pairs),
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(ans) =>
+        match field_opt_int64(ans.json, "id") {
+          Some(wid) => k(effect::Exit::Succeeded(wid))
+          None => k(effect::Exit::Failed(effect::EffectError::Custom("ws.open missing id")))
+        }
+      }
+    },
+    called=called,
+  )
+}
+
+/// Receive the next WebSocket frame (`ws.next`).
+pub fn Shell::ws_next_k(
+  self : Shell,
+  id : Int64,
+  k : (effect::Exit[WsMessage]) -> Unit,
+  called : (Int64) -> Unit = fn(_ : Int64) -> Unit {},
+) -> Unit {
+  self.call_k(
+    "ws.next",
+    base_codec::json_obj([("id", base_codec::json_int64(id))]),
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(ans) => {
+          if field_bool(ans.json, "end") {
+            let code = match field_opt_int64(ans.json, "code") {
+              Some(c) => Some(c.to_int())
+              None => None
+            }
+            let reason = match field_opt_str(ans.json, "reason") {
+              Some(r) => r
+              None => ""
+            }
+            k(effect::Exit::Succeeded(WsMessage::Close(code, reason)))
+          } else if field_bool(ans.json, "binary") {
+            let payload = match ans.bytes {
+              Some(b) => b
+              None => Bytes::new(0)
+            }
+            k(effect::Exit::Succeeded(WsMessage::Binary(payload)))
+          } else if field_bool(ans.json, "ping") {
+            k(effect::Exit::Succeeded(WsMessage::Ping))
+          } else if field_bool(ans.json, "pong") {
+            k(effect::Exit::Succeeded(WsMessage::Pong))
+          } else {
+            match field_opt_str(ans.json, "text") {
+              Some(txt) => k(effect::Exit::Succeeded(WsMessage::Text(txt)))
+              None => k(effect::Exit::Succeeded(WsMessage::Close(None, "")))
+            }
+          }
+        }
+      }
+    },
+    called=called,
+  )
+}
+
+/// Send a text frame on a WebSocket (`ws.send`).
+pub fn Shell::ws_send_text_k(
+  self : Shell,
+  id : Int64,
+  text : String,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  self.call_k(
+    "ws.send",
+    base_codec::json_obj([
+      ("id", base_codec::json_int64(id)),
+      ("text", base_codec::json_str(text)),
+    ]),
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      }
+    },
+  )
+}
+
+/// Send a binary frame on a WebSocket (`ws.send` with binary payload).
+pub fn Shell::ws_send_bytes_k(
+  self : Shell,
+  id : Int64,
+  data : Bytes,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  self.call_k(
+    "ws.send",
+    base_codec::json_obj([("id", base_codec::json_int64(id))]),
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      }
+    },
+    bytes=Some(data),
+  )
+}
+
+/// Close a WebSocket handle (`ws.close`).
+pub fn Shell::ws_close(self : Shell, id : Int64) -> Unit {
+  self.tell("ws.close", base_codec::json_obj([("id", base_codec::json_int64(id))]))
+}
+
+pub fn Shell::ws_close_k(self : Shell, id : Int64, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  self.call_k(
+    "ws.close",
+    base_codec::json_obj([("id", base_codec::json_int64(id))]),
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      }
+    },
+  )
+}
+
+// ── Peer Mesh (`iroh.*`, `conn.*`, `istream.*`) ──
+
+/// Bind a mesh endpoint (`iroh.bind`) with a 32-byte secret key, relay URLs, and hex-encoded ALPNs.
+pub fn Shell::iroh_bind_k(
+  self : Shell,
+  secret_key : Bytes,
+  relay_urls : Array[String],
+  alpns_hex : Array[String],
+  k : (effect::Exit[Int64]) -> Unit,
+  relay_entries : Array[(String, String)] = [],
+  lookup : Bool = false,
+  discovery : Bool = false,
+  relay_only : Bool = false,
+  dht : Bool = true,
+  congestion : String = "cubic",
+) -> Unit {
+  let args = base_codec::json_obj([
+    ("relayUrls", str_array_to_json(relay_urls)),
+    ("relayEntries", relay_entries_to_json(relay_entries)),
+    ("alpns", str_array_to_json(alpns_hex)),
+    ("lookup", base_codec::json_bool(lookup)),
+    ("discovery", base_codec::json_bool(discovery)),
+    ("relayOnly", base_codec::json_bool(relay_only)),
+    ("dht", base_codec::json_bool(dht)),
+    ("congestion", base_codec::json_str(congestion)),
+  ])
+  self.call_k(
+    "iroh.bind",
+    args,
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(ans) =>
+        match field_opt_int64(ans.json, "id") {
+          Some(eid) => k(effect::Exit::Succeeded(eid))
+          None => k(effect::Exit::Failed(effect::EffectError::Custom("iroh.bind missing id")))
+        }
+      }
+    },
+    bytes=Some(secret_key),
+  )
+}
+
+/// Update relay entrance mappings on a bound endpoint (`iroh.setRelayEntries`).
+pub fn Shell::iroh_set_relay_entries_k(
+  self : Shell,
+  endpoint_id : Int64,
+  entries : Array[(String, String)],
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let args = base_codec::json_obj([
+    ("id", base_codec::json_int64(endpoint_id)),
+    ("entries", relay_entries_to_json(entries)),
+  ])
+  self.call_k(
+    "iroh.setRelayEntries",
+    args,
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      }
+    },
+  )
+}
+
+/// Dial a remote peer endpoint (`iroh.connect`), returning a connection handle id.
+pub fn Shell::iroh_connect_k(
+  self : Shell,
+  endpoint_id : Int64,
+  peer_id_hex : String,
+  relays : Array[String],
+  ips : Array[String],
+  alpn : Bytes,
+  k : (effect::Exit[Int64]) -> Unit,
+  additional_alpns_hex : Array[String] = [],
+  disabled_relays : Array[String] = [],
+  called : (Int64) -> Unit = fn(_ : Int64) -> Unit {},
+) -> Unit {
+  let addr_fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(peer_id_hex)),
+    ("relays", str_array_to_json(relays)),
+    ("ips", str_array_to_json(ips)),
+  ]
+  if disabled_relays.length() > 0 {
+    addr_fields.push(("disabledRelays", str_array_to_json(disabled_relays)))
+  }
+  let args = base_codec::json_obj([
+    ("id", base_codec::json_int64(endpoint_id)),
+    ("addr", base_codec::json_obj(addr_fields)),
+    ("additional", str_array_to_json(additional_alpns_hex)),
+  ])
+  self.call_k(
+    "iroh.connect",
+    args,
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(ans) =>
+        match field_opt_int64(ans.json, "id") {
+          Some(cid) => k(effect::Exit::Succeeded(cid))
+          None => k(effect::Exit::Failed(effect::EffectError::Custom("iroh.connect missing id")))
+        }
+      }
+    },
+    bytes=Some(alpn),
+    called=called,
+  )
+}
+
+/// Open a bidirectional QUIC stream on a connection (`conn.openBi`).
+pub fn Shell::conn_open_bi_k(
+  self : Shell,
+  conn_id : Int64,
+  k : (effect::Exit[Int64]) -> Unit,
+) -> Unit {
+  self.call_k(
+    "conn.openBi",
+    base_codec::json_obj([("id", base_codec::json_int64(conn_id))]),
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(ans) =>
+        match field_opt_int64(ans.json, "id") {
+          Some(sid) => k(effect::Exit::Succeeded(sid))
+          None => k(effect::Exit::Failed(effect::EffectError::Custom("conn.openBi missing id")))
+        }
+      }
+    },
+  )
+}
+
+/// Close a mesh connection (`conn.close`).
+pub fn Shell::conn_close(
+  self : Shell,
+  conn_id : Int64,
+  code : Int = 0,
+  reason : String = "",
+  forget : Bool = true,
+) -> Unit {
+  self.tell("conn.close", base_codec::json_obj([
+    ("id", base_codec::json_int64(conn_id)),
+    ("code", base_codec::json_int(code)),
+    ("reason", base_codec::json_str(reason)),
+    ("forget", base_codec::json_bool(forget)),
+  ]))
+}
+
+pub fn Shell::conn_close_k(
+  self : Shell,
+  conn_id : Int64,
+  k : (effect::Exit[Unit]) -> Unit,
+  code : Int = 0,
+  reason : String = "",
+  forget : Bool = true,
+) -> Unit {
+  self.call_k(
+    "conn.close",
+    base_codec::json_obj([
+      ("id", base_codec::json_int64(conn_id)),
+      ("code", base_codec::json_int(code)),
+      ("reason", base_codec::json_str(reason)),
+      ("forget", base_codec::json_bool(forget)),
+    ]),
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      }
+    },
+  )
+}
+
+/// Read the next chunk from an open mesh stream (`istream.read`). Returns `None` at EOF.
+pub fn Shell::istream_read_k(
+  self : Shell,
+  stream_id : Int64,
+  k : (effect::Exit[Option[Bytes]]) -> Unit,
+) -> Unit {
+  self.call_k(
+    "istream.read",
+    base_codec::json_obj([("id", base_codec::json_int64(stream_id))]),
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(ans) => {
+          if field_bool(ans.json, "end") {
+            k(effect::Exit::Succeeded(None))
+          } else {
+            let chunk = match ans.bytes {
+              Some(b) => b
+              None => Bytes::new(0)
+            }
+            k(effect::Exit::Succeeded(Some(chunk)))
+          }
+        }
+      }
+    },
+  )
+}
+
+/// Write bytes onto an open mesh stream (`istream.write`).
+pub fn Shell::istream_write_k(
+  self : Shell,
+  stream_id : Int64,
+  data : Bytes,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  self.call_k(
+    "istream.write",
+    base_codec::json_obj([("id", base_codec::json_int64(stream_id))]),
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      }
+    },
+    bytes=Some(data),
+  )
+}
+
+/// Finish the sending half of a mesh stream (`istream.finish`).
+pub fn Shell::istream_finish_k(
+  self : Shell,
+  stream_id : Int64,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  self.call_k(
+    "istream.finish",
+    base_codec::json_obj([("id", base_codec::json_int64(stream_id))]),
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      }
+    },
+  )
+}
+
+/// Close a bound mesh endpoint (`iroh.close`).
+pub fn Shell::iroh_close(self : Shell, endpoint_id : Int64, forget : Bool = true) -> Unit {
+  self.tell("iroh.close", base_codec::json_obj([
+    ("id", base_codec::json_int64(endpoint_id)),
+    ("forget", base_codec::json_bool(forget)),
+  ]))
+}
+
+pub fn Shell::iroh_close_k(
+  self : Shell,
+  endpoint_id : Int64,
+  k : (effect::Exit[Unit]) -> Unit,
+  forget : Bool = true,
+) -> Unit {
+  self.call_k(
+    "iroh.close",
+    base_codec::json_obj([
+      ("id", base_codec::json_int64(endpoint_id)),
+      ("forget", base_codec::json_bool(forget)),
+    ]),
+    fn(ex : effect::Exit[Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      }
+    },
+  )
+}

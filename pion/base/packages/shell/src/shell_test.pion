@@ -215,3 +215,229 @@ test "framed C ABI answer unpacking (Shell::answered) and TabClaim and ShellErro
   debug_assert(told.length() == 1, "no further events")
   debug_assert(ShellError::{ message: "no such endpoint" }.to_string() == "no such endpoint", "error str")
 }
+
+test "net_ops fetch, stream, ws, and iroh/conn/istream op envelopes" {
+  let rt = effect::Runtime::new()
+  let seen_ops : Array[String] = []
+  let seen_args : Array[base_codec::Json] = []
+  let seen_ids : Array[Int64] = []
+  let seen_payloads : Array[Option[Bytes]] = []
+  let sh = Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, bytes : Option[Bytes]) -> Unit {
+      seen_ids.push(id)
+      seen_ops.push(op)
+      seen_args.push(args)
+      seen_payloads.push(bytes)
+    },
+    fn(_ : String, _ : base_codec::Json) -> AskResult { AskResult::Ok(base_codec::json_null()) },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+
+  // 1. fetch_k
+  let mut got_status = 0
+  let mut got_body_len = 0
+  let mut got_hdr = ""
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sh.fetch_k(
+      "POST",
+      "http://127.0.0.1:9000/hello",
+      [("content-type", "application/json")],
+      Some("{}".to_bytes()),
+      fn(ex : effect::Exit[FetchResponse]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(r) => {
+            got_status = r.status
+            got_body_len = r.body.length()
+            if r.headers.length() > 0 {
+              let (hk, hv) = r.headers[0]
+              got_hdr = hk + ":" + hv
+            }
+          }
+          _ => ()
+        }
+        k(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  let _ = rt.run_ready()
+  debug_assert(seen_ops[0] == "fetch", "fetch op")
+  sh.answer(
+    seen_ids[0],
+    base_codec::json_obj([
+      ("status", base_codec::json_int(201)),
+      ("headers", base_codec::json_arr([base_codec::json_arr([base_codec::json_str("x-id"), base_codec::json_str("7")])])),
+      ("redirected", base_codec::json_bool(false)),
+    ]),
+    bytes=Some("created".to_bytes()),
+  )
+  let _ = rt.run_ready()
+  debug_assert(got_status == 201 && got_body_len == 7 && got_hdr == "x-id:7", "fetch decoded")
+
+  // 2. stream_open_k -> stream_read_k (chunk + EOF) -> stream_close
+  let mut stream_id = 0.to_int64()
+  let mut chunk_len = 0
+  let mut saw_eof = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sh.stream_open_k("GET", "http://127.0.0.1:9000/events", [("accept", "text/event-stream")], None, fn(ex : effect::Exit[StreamHead]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(h) => {
+          stream_id = h.id
+          sh.stream_read_k(h.id, fn(r1 : effect::Exit[Option[Bytes]]) -> Unit {
+            match r1 {
+              effect::Exit::Succeeded(Some(b)) => {
+                chunk_len = b.length()
+                sh.stream_read_k(h.id, fn(r2 : effect::Exit[Option[Bytes]]) -> Unit {
+                  match r2 {
+                    effect::Exit::Succeeded(None) => {
+                      saw_eof = true
+                      sh.stream_close(h.id)
+                    }
+                    _ => ()
+                  }
+                  k(effect::Exit::Succeeded(()))
+                })
+              }
+              _ => k(effect::Exit::Succeeded(()))
+            }
+          })
+        }
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(seen_ops[1] == "stream.open", "stream.open op")
+  sh.answer(
+    seen_ids[1],
+    base_codec::json_obj([
+      ("id", base_codec::json_int(11)),
+      ("status", base_codec::json_int(200)),
+      ("headers", base_codec::json_arr([])),
+      ("redirected", base_codec::json_bool(false)),
+    ]),
+  )
+  let _ = rt.run_ready()
+  debug_assert(seen_ops[2] == "stream.read", "stream.read #1")
+  sh.answer(seen_ids[2], base_codec::json_obj([]), bytes=Some("data: ok\n\n".to_bytes()))
+  let _ = rt.run_ready()
+  debug_assert(seen_ops[3] == "stream.read", "stream.read #2")
+  sh.answer(seen_ids[3], base_codec::json_obj([("end", base_codec::json_bool(true))]))
+  let _ = rt.run_ready()
+  debug_assert(stream_id == 11.to_int64() && chunk_len == 10 && saw_eof && seen_ops[4] == "stream.close", "stream lifecycle")
+
+  // 3. ws_open_k -> ws_send_text_k -> ws_next_k (Text + Close) -> ws_close
+  let mut ws_txt = ""
+  let mut ws_closed_code = 0
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sh.ws_open_k("ws://127.0.0.1:9000/v1/events", [], ["proto-a"], fn(ex : effect::Exit[Int64]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(wid) => {
+          sh.ws_send_text_k(wid, "ping", fn(_ : effect::Exit[Unit]) -> Unit {
+            sh.ws_next_k(wid, fn(m1 : effect::Exit[WsMessage]) -> Unit {
+              match m1 {
+                effect::Exit::Succeeded(WsMessage::Text(t)) => {
+                  ws_txt = t
+                  sh.ws_next_k(wid, fn(m2 : effect::Exit[WsMessage]) -> Unit {
+                    match m2 {
+                      effect::Exit::Succeeded(WsMessage::Close(Some(c), _)) => {
+                        ws_closed_code = c
+                        sh.ws_close(wid)
+                      }
+                      _ => ()
+                    }
+                    k(effect::Exit::Succeeded(()))
+                  })
+                }
+                _ => k(effect::Exit::Succeeded(()))
+              }
+            })
+          })
+        }
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(seen_ops[5] == "ws.open", "ws.open op")
+  sh.answer(seen_ids[5], base_codec::json_obj([("id", base_codec::json_int(21))]))
+  let _ = rt.run_ready()
+  debug_assert(seen_ops[6] == "ws.send", "ws.send op")
+  sh.answer(seen_ids[6], base_codec::json_obj([]))
+  let _ = rt.run_ready()
+  debug_assert(seen_ops[7] == "ws.next", "ws.next #1")
+  sh.answer(seen_ids[7], base_codec::json_obj([("text", base_codec::json_str("pong"))]))
+  let _ = rt.run_ready()
+  debug_assert(seen_ops[8] == "ws.next", "ws.next #2")
+  sh.answer(seen_ids[8], base_codec::json_obj([("end", base_codec::json_bool(true)), ("code", base_codec::json_int(1000))]))
+  let _ = rt.run_ready()
+  debug_assert(ws_txt == "pong" && ws_closed_code == 1000 && seen_ops[9] == "ws.close", "ws lifecycle")
+
+  // 4. iroh_bind_k -> iroh_set_relay_entries_k -> iroh_connect_k -> conn_open_bi_k -> istream_write/finish/read -> conn_close -> iroh_close
+  let mut mesh_done = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sh.iroh_bind_k(Bytes::new(32), ["https://relay.example"], ["74657374"], fn(bex : effect::Exit[Int64]) -> Unit {
+      match bex {
+        effect::Exit::Succeeded(ep) => {
+          sh.iroh_set_relay_entries_k(ep, [("https://entry.example", "https://relay.example")], fn(_ : effect::Exit[Unit]) -> Unit {
+            sh.iroh_connect_k(ep, "aa", ["https://relay.example"], [], "test".to_bytes(), fn(cex : effect::Exit[Int64]) -> Unit {
+              match cex {
+                effect::Exit::Succeeded(cid) => {
+                  sh.conn_open_bi_k(cid, fn(sex : effect::Exit[Int64]) -> Unit {
+                    match sex {
+                      effect::Exit::Succeeded(sid) => {
+                        sh.istream_write_k(sid, "hi".to_bytes(), fn(_ : effect::Exit[Unit]) -> Unit {
+                          sh.istream_finish_k(sid, fn(_ : effect::Exit[Unit]) -> Unit {
+                            sh.istream_read_k(sid, fn(rex : effect::Exit[Option[Bytes]]) -> Unit {
+                              match rex {
+                                effect::Exit::Succeeded(Some(b)) => {
+                                  if b.length() == 2 {
+                                    mesh_done = true
+                                  }
+                                }
+                                _ => ()
+                              }
+                              sh.conn_close(cid)
+                              sh.iroh_close(ep)
+                              k(effect::Exit::Succeeded(()))
+                            })
+                          })
+                        })
+                      }
+                      _ => k(effect::Exit::Succeeded(()))
+                    }
+                  })
+                }
+                _ => k(effect::Exit::Succeeded(()))
+              }
+            })
+          })
+        }
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(seen_ops[10] == "iroh.bind", "iroh.bind")
+  sh.answer(seen_ids[10], base_codec::json_obj([("id", base_codec::json_int(31))]))
+  let _ = rt.run_ready()
+  debug_assert(seen_ops[11] == "iroh.setRelayEntries", "iroh.setRelayEntries")
+  sh.answer(seen_ids[11], base_codec::json_obj([]))
+  let _ = rt.run_ready()
+  debug_assert(seen_ops[12] == "iroh.connect", "iroh.connect")
+  sh.answer(seen_ids[12], base_codec::json_obj([("id", base_codec::json_int(32))]))
+  let _ = rt.run_ready()
+  debug_assert(seen_ops[13] == "conn.openBi", "conn.openBi")
+  sh.answer(seen_ids[13], base_codec::json_obj([("id", base_codec::json_int(33))]))
+  let _ = rt.run_ready()
+  debug_assert(seen_ops[14] == "istream.write", "istream.write")
+  sh.answer(seen_ids[14], base_codec::json_obj([]))
+  let _ = rt.run_ready()
+  debug_assert(seen_ops[15] == "istream.finish", "istream.finish")
+  sh.answer(seen_ids[15], base_codec::json_obj([]))
+  let _ = rt.run_ready()
+  debug_assert(seen_ops[16] == "istream.read", "istream.read")
+  sh.answer(seen_ids[16], base_codec::json_obj([]), bytes=Some("ok".to_bytes()))
+  let _ = rt.run_ready()
+  debug_assert(mesh_done && seen_ops[17] == "conn.close" && seen_ops[18] == "iroh.close", "iroh lifecycle")
+}

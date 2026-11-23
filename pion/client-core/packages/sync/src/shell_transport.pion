@@ -1,0 +1,176 @@
+// Real `StationTransport` backed by `shell::Shell` (`fetch` + `stream.open`/`stream.read`/`stream.close`).
+// Consumes station `/events` as a true streaming SSE response with zero polling and cleans up
+// the stream handle on EOF, error, or fiber interruption.
+
+import "effect"
+import "shell"
+
+fn strip_trailing_slash(s : String) -> String {
+  if s.length() > 0 && s.ends_with("/") {
+    s.slice(0, s.length() - 1)
+  } else {
+    s
+  }
+}
+
+fn join_base_url(base_url : String, path : String) -> String {
+  let base = strip_trailing_slash(base_url)
+  if path.length() == 0 {
+    base
+  } else if path.starts_with("/") {
+    base + path
+  } else {
+    base + "/" + path
+  }
+}
+
+fn with_auth_headers(headers : Array[(String, String)], auth_header : Option[String]) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  let mut has_auth = false
+  for i in 0..<headers.length() {
+    let (k, v) = headers[i]
+    if k == "authorization" || k == "Authorization" {
+      has_auth = true
+    }
+    out.push((k, v))
+  }
+  if !has_auth {
+    match auth_header {
+      Some(auth) => {
+        if auth.length() > 0 {
+          out.push(("authorization", auth))
+        }
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+fn pump_stream_reads_k(
+  sh : shell::Shell,
+  stream_id : Int64,
+  on_chunk : (Bytes) -> Unit,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if effect::is_interrupted() {
+    sh.stream_close(stream_id)
+    k(effect::Exit::Interrupted)
+    return
+  }
+  let mut call_id = 0.to_int64()
+  sh.stream_read_k(
+    stream_id,
+    fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          if call_id > 0.to_int64() {
+            sh.give_up(call_id)
+          }
+          sh.stream_close(stream_id)
+          k(effect::Exit::Interrupted)
+        }
+        effect::Exit::Failed(e) => {
+          sh.stream_close(stream_id)
+          k(effect::Exit::Failed(e))
+        }
+        effect::Exit::Succeeded(opt) =>
+        match opt {
+          None => {
+            sh.stream_close(stream_id)
+            k(effect::Exit::Succeeded(()))
+          }
+          Some(chunk) => {
+            if chunk.length() > 0 {
+              on_chunk(chunk)
+            }
+            pump_stream_reads_k(sh, stream_id, on_chunk, k)
+          }
+        }
+      }
+    },
+    called=fn(id : Int64) -> Unit { call_id = id },
+  )
+}
+
+/// Build a live HTTP/SSE `StationTransport` on top of `shell::Shell`.
+pub fn shell_http_transport(
+  sh : shell::Shell,
+  base_url : String,
+  auth_header : Option[String] = None,
+) -> StationTransport {
+  StationTransport::{
+    request_k: fn(
+      method_name : String,
+      path : String,
+      headers : Array[(String, String)],
+      body : Bytes,
+      k : (effect::Exit[HttpReply]) -> Unit,
+    ) -> Unit {
+      let url = join_base_url(base_url, path)
+      let req_headers = with_auth_headers(headers, auth_header)
+      let body_opt : Option[Bytes] = if body.length() > 0 { Some(body) } else { None }
+      let mut call_id = 0.to_int64()
+      sh.fetch_k(
+        method_name,
+        url,
+        req_headers,
+        body_opt,
+        fn(ex : effect::Exit[shell::FetchResponse]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => {
+              if call_id > 0.to_int64() {
+                sh.give_up(call_id)
+              }
+              k(effect::Exit::Interrupted)
+            }
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(resp) =>
+            k(effect::Exit::Succeeded(HttpReply::{
+              status: resp.status,
+              headers: resp.headers,
+              body: resp.body,
+            }))
+          }
+        },
+        called=fn(id : Int64) -> Unit { call_id = id },
+      )
+    },
+    stream_k: fn(
+      path : String,
+      headers : Array[(String, String)],
+      on_chunk : (Bytes) -> Unit,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      let url = join_base_url(base_url, path)
+      let req_headers = with_auth_headers(headers, auth_header)
+      let mut open_call_id = 0.to_int64()
+      sh.stream_open_k(
+        "GET",
+        url,
+        req_headers,
+        None,
+        fn(ex : effect::Exit[shell::StreamHead]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => {
+              if open_call_id > 0.to_int64() {
+                sh.give_up(open_call_id)
+              }
+              k(effect::Exit::Interrupted)
+            }
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(head) => {
+              if head.status < 200 || head.status >= 300 {
+                sh.stream_close(head.id)
+                k(effect::Exit::Failed(effect::EffectError::Custom("events stream status " + head.status.to_string())))
+                return
+              }
+              pump_stream_reads_k(sh, head.id, on_chunk, k)
+            }
+          }
+        },
+        called=fn(id : Int64) -> Unit { open_call_id = id },
+      )
+    },
+  }
+}

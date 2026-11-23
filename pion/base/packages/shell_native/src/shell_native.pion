@@ -95,6 +95,7 @@ fn native_calls(id : Int64, op : String, args : base_codec::Json, payload : Opti
       let _ = empty.length()
     }
   }
+  let _ = op.length()
   let _ = json_bytes.length()
 }
 
@@ -103,6 +104,7 @@ fn native_asks(op : String, args : base_codec::Json) -> shell::AskResult {
   let out_len_buf = ptr_alloc(8.to_int64())
   ptr_write_i64(out_len_buf, 0.to_int64(), 0.to_int64())
   let p = bsh_ask(op.as_cstr(), bytes_data_ptr(json_bytes), json_bytes.length().to_int64(), out_len_buf)
+  let _ = op.length()
   let _ = json_bytes.length()
   let n = ptr_read_i64(out_len_buf, 0.to_int64())
   bsh_free(out_len_buf)

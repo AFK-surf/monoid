@@ -1,0 +1,656 @@
+// Real Cloud Sync engine mirroring `client/core-ts/src/sync/cloud.ts` & `src/cloud.ts`.
+// Fetches `/v1/me`, `/v1/workspaces/<ws>`, `/v1/workspaces/<ws>/credential` over `shell::Shell`,
+// persists into local SQLite (`account_doc`, `workspace`) in `sql::Burst` transactions,
+// and consumes `/v1/events` WebSocket with exponential backoff (1000ms..60000ms, zero polling).
+
+import "base_codec"
+import "effect"
+import "shell"
+import "sql"
+
+pub fn sql_account_doc_put() -> String {
+  "INSERT OR REPLACE INTO account_doc (name, json, confirmed) VALUES (?, ?, ?)"
+}
+
+pub fn sql_workspace_put() -> String {
+  "INSERT OR REPLACE INTO workspace (id, json, confirmed) VALUES (?, ?, ?)"
+}
+
+/// Exponential reconnect backoff for cloud `/v1/events` WebSocket (1000ms..60000ms).
+pub fn cloud_ws_backoff_ms(attempt : Int) -> Int {
+  let clamped = if attempt < 0 { 0 } else if attempt > 6 { 6 } else { attempt }
+  let ms = 1000 << clamped
+  if ms > 60000 { 60000 } else { ms }
+}
+
+pub fn cloud_events_ws_url(origin : String) -> String {
+  let clean = strip_trailing_slash(origin)
+  if clean.starts_with("https://") {
+    "wss://" + clean.slice(8, clean.length()) + "/v1/events"
+  } else if clean.starts_with("http://") {
+    "ws://" + clean.slice(7, clean.length()) + "/v1/events"
+  } else if clean.starts_with("wss://") || clean.starts_with("ws://") {
+    clean + "/v1/events"
+  } else {
+    "ws://" + clean + "/v1/events"
+  }
+}
+
+pub struct CloudWorkspaceRef {
+  pub id : String
+  pub name : String
+  pub role : String
+}
+
+pub struct CloudMe {
+  pub sub : String
+  pub email : String
+  pub name : String
+  pub workspaces : Array[CloudWorkspaceRef]
+  pub relays : Array[String]
+  pub raw : base_codec::Json
+}
+
+pub struct CloudMember {
+  pub sub : String
+  pub email : String
+  pub role : String
+}
+
+pub struct CloudStation {
+  pub id : String
+  pub name : String
+  pub online : Bool
+  pub url : Option[String]
+}
+
+pub struct CloudWorkspace {
+  pub id : String
+  pub name : String
+  pub rev : Int
+  pub members : Array[CloudMember]
+  pub stations : Array[CloudStation]
+  pub raw : base_codec::Json
+}
+
+pub struct MemberCredential {
+  pub credential : String
+  pub issued_at : Int64
+  pub expires_at : Int64
+  pub relay_url : String
+}
+
+pub enum CloudEvent {
+  WorkspacesChanged(base_codec::Json)
+  WorkspaceChanged(String, base_codec::Json)
+  StationStatusChanged(String, String, Bool)
+  Release
+  Other(String, base_codec::Json)
+}
+
+fn cloud_auth_headers(token : String, json_body : Bool = false) -> Array[(String, String)] {
+  let headers : Array[(String, String)] = []
+  if token.length() > 0 {
+    headers.push(("authorization", "Bearer " + token))
+  }
+  if json_body {
+    headers.push(("content-type", "application/json"))
+  }
+  headers
+}
+
+fn parse_cloud_error(status : Int, body : Bytes) -> String {
+  let text = bytes_to_str(body)
+  match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(j) =>
+    match j_opt_str(j, "error") {
+      Some(code) => code + " (" + status.to_string() + ")"
+      None => "http_" + status.to_string()
+    }
+    base_codec::JsonParseResult::Err(_) => "http_" + status.to_string()
+  }
+}
+
+fn parse_cloud_me(j : base_codec::Json) -> CloudMe {
+  let user = match base_codec::json_get(j, "user") {
+    Some(u) => u
+    None => j
+  }
+  let sub = j_str(user, "sub")
+  let email = j_str(user, "email")
+  let name = j_str(user, "name")
+  let workspaces : Array[CloudWorkspaceRef] = []
+  match base_codec::json_get(j, "workspaces") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        let w = xs[i]
+        let wid = j_str(w, "id")
+        if wid.length() > 0 {
+          workspaces.push(CloudWorkspaceRef::{
+            id: wid,
+            name: j_str(w, "name"),
+            role: j_str(w, "role"),
+          })
+        }
+      }
+    }
+    _ => ()
+  }
+  let relays : Array[String] = []
+  match base_codec::json_get(j, "relay_urls") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(u) => if u.length() > 0 { relays.push(u) }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  if relays.length() == 0 {
+    match base_codec::json_get(j, "relays") {
+      Some(base_codec::Json::Arr(xs)) => {
+        for i in 0..<xs.length() {
+          match xs[i] {
+            base_codec::Json::Str(u) => if u.length() > 0 { relays.push(u) }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  if relays.length() == 0 {
+    match j_opt_str(j, "relay_url") {
+      Some(u) => if u.length() > 0 { relays.push(u) }
+      None => ()
+    }
+  }
+  CloudMe::{
+    sub: sub,
+    email: email,
+    name: name,
+    workspaces: workspaces,
+    relays: relays,
+    raw: j,
+  }
+}
+
+fn parse_cloud_workspace(ws_id : String, j : base_codec::Json) -> CloudWorkspace {
+  let id = {
+    let parsed_id = j_str(j, "id")
+    if parsed_id.length() > 0 { parsed_id } else { ws_id }
+  }
+  let name = j_str(j, "name")
+  let rev = j_int(j, "rev")
+  let members : Array[CloudMember] = []
+  match base_codec::json_get(j, "members") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        let m = xs[i]
+        members.push(CloudMember::{
+          sub: j_str(m, "sub"),
+          email: j_str(m, "email"),
+          role: j_str(m, "role"),
+        })
+      }
+    }
+    _ => ()
+  }
+  let stations : Array[CloudStation] = []
+  match base_codec::json_get(j, "stations") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        let s = xs[i]
+        let sid = j_str(s, "id")
+        if sid.length() > 0 {
+          stations.push(CloudStation::{
+            id: sid,
+            name: j_str(s, "name"),
+            online: j_bool(s, "online"),
+            url: j_opt_str(s, "url"),
+          })
+        }
+      }
+    }
+    _ => ()
+  }
+  CloudWorkspace::{
+    id: id,
+    name: name,
+    rev: rev,
+    members: members,
+    stations: stations,
+    raw: j,
+  }
+}
+
+fn parse_member_credential(j : base_codec::Json) -> Result[MemberCredential, String] {
+  let cred = match j_opt_str(j, "credential") {
+    Some(s) => s
+    None => return Err("missing field credential")
+  }
+  let issued_at = match j_opt_int64(j, "issued_at") {
+    Some(v) => v
+    None => return Err("missing field issued_at")
+  }
+  let expires_at = match j_opt_int64(j, "expires_at") {
+    Some(v) => v
+    None => return Err("missing field expires_at")
+  }
+  let relay_url = match j_opt_str(j, "relay_url") {
+    Some(s) => s
+    None => ""
+  }
+  Ok(MemberCredential::{
+    credential: cred,
+    issued_at: issued_at,
+    expires_at: expires_at,
+    relay_url: relay_url,
+  })
+}
+
+fn parse_cloud_event(text : String) -> Option[CloudEvent] {
+  if text == "pong" || text.length() == 0 {
+    return None
+  }
+  let j = match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => return None
+  }
+  let ev_type = j_str(j, "type")
+  if ev_type == "workspaces" {
+    Some(CloudEvent::WorkspacesChanged(j))
+  } else if ev_type == "workspace" {
+    let wid = j_str(j, "id")
+    if wid.length() > 0 {
+      Some(CloudEvent::WorkspaceChanged(wid, j))
+    } else {
+      None
+    }
+  } else if ev_type == "station" {
+    let wid = j_str(j, "workspace")
+    let sid = j_str(j, "id")
+    if wid.length() > 0 && sid.length() > 0 {
+      Some(CloudEvent::StationStatusChanged(wid, sid, j_bool(j, "online")))
+    } else {
+      None
+    }
+  } else if ev_type == "release" {
+    Some(CloudEvent::Release)
+  } else if ev_type.length() > 0 {
+    Some(CloudEvent::Other(ev_type, j))
+  } else {
+    None
+  }
+}
+
+/// Fetch `GET <origin>/v1/me`, parse account/workspaces/relays, and persist to SQLite `account_doc`.
+pub fn fetch_me_k(
+  sh : shell::Shell,
+  origin : String,
+  token : String,
+  db : sql::Sql,
+  k : (effect::Exit[CloudMe]) -> Unit,
+) -> Unit {
+  let url = join_base_url(origin, "/v1/me")
+  sh.fetch_k("GET", url, cloud_auth_headers(token), None, fn(ex : effect::Exit[shell::FetchResponse]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(resp) => {
+        if resp.status < 200 || resp.status >= 300 {
+          k(effect::Exit::Failed(effect::EffectError::Custom(parse_cloud_error(resp.status, resp.body))))
+          return
+        }
+        let body_str = bytes_to_str(resp.body)
+        let j = match base_codec::json_parse(body_str) {
+          base_codec::JsonParseResult::Ok(v) => v
+          base_codec::JsonParseResult::Err(e) => {
+            k(effect::Exit::Failed(effect::EffectError::Custom("malformed /v1/me json: " + e)))
+            return
+          }
+        }
+        let me = parse_cloud_me(j)
+        let raw_json = base_codec::json_stringify(j)
+        let now_ms = sh.rt.now()
+        let burst = sql::Burst::new(db)
+        match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+          match b.run(sql_account_doc_put(), params=[
+            base_codec::json_str("me"),
+            base_codec::json_str(raw_json),
+            base_codec::json_int64(now_ms),
+          ]) {
+            sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+          }
+        }) {
+          sql::SqlResult::Err(e) => k(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
+          sql::SqlResult::Ok(_) => k(effect::Exit::Succeeded(me))
+        }
+      }
+    }
+  })
+}
+
+/// Fetch `GET <origin>/v1/workspaces/<ws_id>`, parse members & stations, and persist to SQLite `workspace`.
+pub fn fetch_workspace_k(
+  sh : shell::Shell,
+  origin : String,
+  token : String,
+  ws_id : String,
+  db : sql::Sql,
+  k : (effect::Exit[CloudWorkspace]) -> Unit,
+) -> Unit {
+  let url = join_base_url(origin, "/v1/workspaces/" + ws_id)
+  sh.fetch_k("GET", url, cloud_auth_headers(token), None, fn(ex : effect::Exit[shell::FetchResponse]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(resp) => {
+        if resp.status < 200 || resp.status >= 300 {
+          k(effect::Exit::Failed(effect::EffectError::Custom(parse_cloud_error(resp.status, resp.body))))
+          return
+        }
+        let body_str = bytes_to_str(resp.body)
+        let j = match base_codec::json_parse(body_str) {
+          base_codec::JsonParseResult::Ok(v) => v
+          base_codec::JsonParseResult::Err(e) => {
+            k(effect::Exit::Failed(effect::EffectError::Custom("malformed workspace json: " + e)))
+            return
+          }
+        }
+        let ws = parse_cloud_workspace(ws_id, j)
+        let raw_json = base_codec::json_stringify(j)
+        let now_ms = sh.rt.now()
+        let burst = sql::Burst::new(db)
+        match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+          match b.run(sql_workspace_put(), params=[
+            base_codec::json_str(ws.id),
+            base_codec::json_str(raw_json),
+            base_codec::json_int64(now_ms),
+          ]) {
+            sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+          }
+        }) {
+          sql::SqlResult::Err(e) => k(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
+          sql::SqlResult::Ok(_) => k(effect::Exit::Succeeded(ws))
+        }
+      }
+    }
+  })
+}
+
+/// Request a signed member credential (`POST <origin>/v1/workspaces/<ws_id>/credential`).
+pub fn fetch_member_credential_k(
+  sh : shell::Shell,
+  origin : String,
+  token : String,
+  ws_id : String,
+  device : String,
+  k : (effect::Exit[MemberCredential]) -> Unit,
+) -> Unit {
+  let url = join_base_url(origin, "/v1/workspaces/" + ws_id + "/credential")
+  let body = base_codec::json_stringify(base_codec::json_obj([("device", base_codec::json_str(device))])).to_bytes()
+  sh.fetch_k("POST", url, cloud_auth_headers(token, json_body=true), Some(body), fn(ex : effect::Exit[shell::FetchResponse]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(resp) => {
+        if resp.status < 200 || resp.status >= 300 {
+          k(effect::Exit::Failed(effect::EffectError::Custom(parse_cloud_error(resp.status, resp.body))))
+          return
+        }
+        let body_str = bytes_to_str(resp.body)
+        let j = match base_codec::json_parse(body_str) {
+          base_codec::JsonParseResult::Ok(v) => v
+          base_codec::JsonParseResult::Err(e) => {
+            k(effect::Exit::Failed(effect::EffectError::Custom("malformed credential json: " + e)))
+            return
+          }
+        }
+        match parse_member_credential(j) {
+          Ok(c) => k(effect::Exit::Succeeded(c))
+          Err(e) => k(effect::Exit::Failed(effect::EffectError::Custom(e)))
+        }
+      }
+    }
+  })
+}
+
+fn ws_read_loop_k(
+  sh : shell::Shell,
+  ws_id : Int64,
+  on_event : (CloudEvent) -> Unit,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if effect::is_interrupted() {
+    sh.ws_close(ws_id)
+    k(effect::Exit::Interrupted)
+    return
+  }
+  sh.ws_next_k(ws_id, fn(ex : effect::Exit[shell::WsMessage]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => {
+        sh.ws_close(ws_id)
+        k(effect::Exit::Interrupted)
+      }
+      effect::Exit::Failed(e) => {
+        sh.ws_close(ws_id)
+        k(effect::Exit::Failed(e))
+      }
+      effect::Exit::Succeeded(msg) =>
+      match msg {
+        shell::WsMessage::Text(txt) => {
+          match parse_cloud_event(txt) {
+            Some(ev) => on_event(ev)
+            None => ()
+          }
+          ws_read_loop_k(sh, ws_id, on_event, k)
+        }
+        shell::WsMessage::Ping | shell::WsMessage::Pong | shell::WsMessage::Binary(_) => {
+          ws_read_loop_k(sh, ws_id, on_event, k)
+        }
+        shell::WsMessage::Close(_, _) => {
+          sh.ws_close(ws_id)
+          k(effect::Exit::Succeeded(()))
+        }
+      }
+    }
+  })
+}
+
+fn events_ws_loop_k(
+  sh : shell::Shell,
+  origin : String,
+  token : String,
+  on_event : (CloudEvent) -> Unit,
+  attempt : Int,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if effect::is_interrupted() {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  let url = cloud_events_ws_url(origin)
+  let protocols : Array[String] = if token.length() > 0 {
+    ["stillfail-events", "stillfail-token." + token]
+  } else {
+    ["stillfail-events"]
+  }
+  let mut open_call_id = 0.to_int64()
+  sh.ws_open_k(
+    url,
+    [],
+    protocols,
+    fn(ex : effect::Exit[Int64]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          if open_call_id > 0.to_int64() {
+            sh.give_up(open_call_id)
+          }
+          k(effect::Exit::Interrupted)
+        }
+        effect::Exit::Failed(_) => {
+          // timer: exponential backoff on failed cloud `/v1/events` WebSocket connect (1000ms..60000ms).
+          let delay = cloud_ws_backoff_ms(attempt)
+          effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
+            match sex {
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              _ => events_ws_loop_k(sh, origin, token, on_event, attempt + 1, k)
+            }
+          })
+        }
+        effect::Exit::Succeeded(ws_id) => {
+          let opened_at = sh.rt.now()
+          ws_read_loop_k(sh, ws_id, on_event, fn(rex : effect::Exit[Unit]) -> Unit {
+            match rex {
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              _ => {
+                let held_ms = sh.rt.now() - opened_at
+                let next_attempt = if held_ms >= 60000.to_int64() { 0 } else { attempt }
+                // timer: exponential backoff on closed cloud `/v1/events` WebSocket (1000ms..60000ms).
+                let delay = cloud_ws_backoff_ms(next_attempt)
+                effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
+                  match sex {
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    _ => events_ws_loop_k(sh, origin, token, on_event, next_attempt + 1, k)
+                  }
+                })
+              }
+            }
+          })
+        }
+      }
+    },
+    called=fn(id : Int64) -> Unit { open_call_id = id },
+  )
+}
+
+/// Start consuming `/v1/events` WebSocket on a scoped fiber of `sh.rt` with exponential backoff (`1000ms..60000ms`).
+pub fn start_events_ws(
+  sh : shell::Shell,
+  origin : String,
+  token : String,
+  on_event : (CloudEvent) -> Unit,
+) -> effect::Fiber[Unit] {
+  sh.rt.fork_quiet_named("cloud-events-ws", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    events_ws_loop_k(sh, origin, token, on_event, 0, k)
+  })
+}
+
+/// Stateful Cloud Sync coordinator holding credential cache and `/v1/events` WebSocket fiber.
+pub struct CloudSync {
+  pub sh : shell::Shell
+  pub db : sql::Sql
+  mut origin : String
+  mut token : String
+  cred_cache : Map[String, MemberCredential]
+  mut ws_fiber : Option[effect::Fiber[Unit]]
+}
+
+pub fn CloudSync::new(sh : shell::Shell, db : sql::Sql, origin : String, token : String = "") -> CloudSync {
+  CloudSync::{
+    sh: sh,
+    db: db,
+    origin: origin,
+    token: token,
+    cred_cache: Map::new(),
+    ws_fiber: None,
+  }
+}
+
+pub fn CloudSync::set_origin_and_token(self : CloudSync, origin : String, token : String) -> Unit {
+  if origin.length() > 0 {
+    self.origin = origin
+  }
+  if token.length() > 0 {
+    self.token = token
+  }
+}
+
+pub fn CloudSync::origin(self : CloudSync) -> String {
+  self.origin
+}
+
+pub fn CloudSync::fetch_me_k(self : CloudSync, k : (effect::Exit[CloudMe]) -> Unit) -> Unit {
+  fetch_me_k(self.sh, self.origin, self.token, self.db, k)
+}
+
+pub fn CloudSync::fetch_workspace_k(
+  self : CloudSync,
+  ws_id : String,
+  k : (effect::Exit[CloudWorkspace]) -> Unit,
+) -> Unit {
+  fetch_workspace_k(self.sh, self.origin, self.token, ws_id, self.db, k)
+}
+
+/// Get a cached member credential or fetch & cache a fresh one when missing/expired (`expires_at <= now_sec + 60`).
+pub fn CloudSync::fetch_member_credential_k(
+  self : CloudSync,
+  ws_id : String,
+  device : String,
+  now_sec : Int64,
+  k : (effect::Exit[MemberCredential]) -> Unit,
+  fresh : Bool = false,
+) -> Unit {
+  let cache_key = ws_id + "/" + device
+  if !fresh {
+    match self.cred_cache.get(cache_key) {
+      Some(c) => {
+        if c.expires_at > now_sec + 60.to_int64() {
+          k(effect::Exit::Succeeded(c))
+          return
+        }
+      }
+      None => ()
+    }
+  }
+  fetch_member_credential_k(self.sh, self.origin, self.token, ws_id, device, fn(ex : effect::Exit[MemberCredential]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(c) => {
+        self.cred_cache.set(cache_key, c)
+        k(effect::Exit::Succeeded(c))
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+/// Start `/v1/events` WebSocket; automatically refreshes `/v1/me` or `/v1/workspaces/<ws>` on change events.
+pub fn CloudSync::start_events_ws(self : CloudSync, on_event : (CloudEvent) -> Unit) -> Unit {
+  match self.ws_fiber {
+    Some(_) => return
+    None => ()
+  }
+  let fiber = start_events_ws(self.sh, self.origin, self.token, fn(ev : CloudEvent) -> Unit {
+    match ev {
+      CloudEvent::WorkspacesChanged(_) => {
+        let _ = self.sh.rt.fork_quiet_named("cloud-refresh-me", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          self.fetch_me_k(fn(_ : effect::Exit[CloudMe]) -> Unit { fk(effect::Exit::Succeeded(())) })
+        })
+      }
+      CloudEvent::WorkspaceChanged(wid, _) => {
+        let _ = self.sh.rt.fork_quiet_named("cloud-refresh-ws:" + wid, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          self.fetch_workspace_k(wid, fn(_ : effect::Exit[CloudWorkspace]) -> Unit { fk(effect::Exit::Succeeded(())) })
+        })
+      }
+      _ => ()
+    }
+    on_event(ev)
+  })
+  self.ws_fiber = Some(fiber)
+}
+
+pub fn CloudSync::stop(self : CloudSync) -> Unit {
+  match self.ws_fiber {
+    Some(f) => {
+      self.ws_fiber = None
+      f.interrupt()
+    }
+    None => ()
+  }
+}

@@ -1,0 +1,347 @@
+// Deterministic unit tests for `shell_http_transport` and `CloudSync` using mock `shell::Shell`
+// and `effect::Runtime` virtual clock (zero real sockets, zero real sleeps).
+
+import "base_codec"
+import "effect"
+import "outbox"
+import "shell"
+import "sql"
+import "store"
+
+struct MockCloudDb {
+  account_docs : Map[String, String]
+  workspaces : Map[String, String]
+  entries : Map[String, String]
+}
+
+fn MockCloudDb::new() -> MockCloudDb {
+  MockCloudDb::{
+    account_docs: Map::new(),
+    workspaces: Map::new(),
+    entries: Map::new(),
+  }
+}
+
+fn MockCloudDb::handle_sql(self : MockCloudDb, op : String, args : base_codec::Json) -> shell::AskResult {
+  if op == "sql.open" {
+    return shell::AskResult::Ok(base_codec::json_obj([("id", base_codec::json_int(1))]))
+  }
+  if op == "sql.close" || op == "sql.exec" {
+    return shell::AskResult::Ok(base_codec::json_obj([]))
+  }
+  if op == "sql.inTransaction" {
+    return shell::AskResult::Ok(base_codec::json_bool(false))
+  }
+  if op == "sql.run" {
+    let sql_text = match base_codec::json_get(args, "sql") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let params = match base_codec::json_get(args, "params") {
+      Some(base_codec::Json::Arr(xs)) => xs
+      _ => []
+    }
+    if sql_text.contains("INTO account_doc") && params.length() >= 2 {
+      match (params[0], params[1]) {
+        (base_codec::Json::Str(name), base_codec::Json::Str(raw)) => self.account_docs.set(name, raw)
+        _ => ()
+      }
+    } else if sql_text.contains("INTO workspace") && params.length() >= 2 {
+      match (params[0], params[1]) {
+        (base_codec::Json::Str(wid), base_codec::Json::Str(raw)) => self.workspaces.set(wid, raw)
+        _ => ()
+      }
+    } else if sql_text.contains("INTO entry") && params.length() >= 4 {
+      match (params[0], params[3]) {
+        (base_codec::Json::Str(st), base_codec::Json::Str(raw)) => self.entries.set(st + ":" + base_codec::json_stringify(params[1]) + ":" + base_codec::json_stringify(params[2]), raw)
+        _ => ()
+      }
+    }
+    return shell::AskResult::Ok(base_codec::json_obj([("changes", base_codec::json_int(1))]))
+  }
+  shell::AskResult::Ok(base_codec::json_arr([]))
+}
+
+test "CloudSync fetch_me, fetch_workspace, and credential caching/refresh" {
+  let rt = effect::Runtime::new()
+  let mock_db = MockCloudDb::new()
+  let pending : Array[(Int64, String, base_codec::Json)] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {
+      pending.push((id, op, args))
+    },
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      mock_db.handle_sql(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "cloud-test") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.to_string())
+  }
+  let cs = CloudSync::new(sh, db, "https://cloud.example", token="tok-123")
+
+  // 1. fetch_me_k
+  let mut got_me_email = ""
+  let mut got_ws_count = 0
+  let mut got_relay_count = 0
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_me_k(fn(ex : effect::Exit[CloudMe]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(me) => {
+          got_me_email = me.email
+          got_ws_count = me.workspaces.length()
+          got_relay_count = me.relays.length()
+        }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(pending.length() == 1, "1 fetch pending")
+  let (id0, op0, args0) = pending[0]
+  debug_assert(op0 == "fetch" && j_str(args0, "url") == "https://cloud.example/v1/me", "GET /v1/me")
+  sh.answer(
+    id0,
+    base_codec::json_obj([("status", base_codec::json_int(200)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
+    bytes=Some("{\"user\":{\"sub\":\"u1\",\"email\":\"alice@still.fail\",\"name\":\"Alice\"},\"workspaces\":[{\"id\":\"ws-1\",\"name\":\"Core\",\"role\":\"owner\"}],\"relay_urls\":[\"https://r1.example\"]}".to_bytes()),
+  )
+  let _ = rt.run_ready()
+  debug_assert(got_me_email == "alice@still.fail" && got_ws_count == 1 && got_relay_count == 1, "parsed /v1/me")
+  debug_assert(mock_db.account_docs.get("me").is_some(), "persisted account_doc me")
+
+  // 2. fetch_workspace_k
+  let mut got_station_name = ""
+  let mut got_member_count = 0
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_workspace_k("ws-1", fn(ex : effect::Exit[CloudWorkspace]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(ws) => {
+          got_member_count = ws.members.length()
+          if ws.stations.length() > 0 {
+            got_station_name = ws.stations[0].name
+          }
+        }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  let (id1, op1, args1) = pending[1]
+  debug_assert(op1 == "fetch" && j_str(args1, "url") == "https://cloud.example/v1/workspaces/ws-1", "GET /v1/workspaces/ws-1")
+  sh.answer(
+    id1,
+    base_codec::json_obj([("status", base_codec::json_int(200)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
+    bytes=Some("{\"id\":\"ws-1\",\"name\":\"Core\",\"rev\":3,\"members\":[{\"sub\":\"u1\",\"email\":\"alice@still.fail\",\"role\":\"owner\"}],\"stations\":[{\"id\":\"st-1\",\"name\":\"Tokyo\",\"online\":true}]}".to_bytes()),
+  )
+  let _ = rt.run_ready()
+  debug_assert(got_member_count == 1 && got_station_name == "Tokyo", "parsed workspace")
+  debug_assert(mock_db.workspaces.get("ws-1").is_some(), "persisted workspace ws-1")
+
+  // 3. fetch_member_credential_k caching and expiry refresh
+  let mut c1 = ""
+  let mut c2 = ""
+  let mut c3 = ""
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_member_credential_k("ws-1", "dev-1", 1000.to_int64(), fn(ex : effect::Exit[MemberCredential]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(c) => c1 = c.credential
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  let (id2, _, args2) = pending[2]
+  debug_assert(j_str(args2, "url") == "https://cloud.example/v1/workspaces/ws-1/credential", "POST credential")
+  sh.answer(
+    id2,
+    base_codec::json_obj([("status", base_codec::json_int(200)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
+    bytes=Some("{\"credential\":\"cred-v1\",\"issued_at\":1000,\"expires_at\":2000,\"relay_url\":\"https://r1.example\"}".to_bytes()),
+  )
+  let _ = rt.run_ready()
+  debug_assert(c1 == "cred-v1", "cred v1")
+
+  // Still valid at now=1500 -> served from cache without network call
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_member_credential_k("ws-1", "dev-1", 1500.to_int64(), fn(ex : effect::Exit[MemberCredential]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(c) => c2 = c.credential
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(c2 == "cred-v1" && pending.length() == 3, "cache hit with 0 new fetches")
+
+  // Near expiry at now=1950 (> 2000 - 60) -> refreshes from cloud
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_member_credential_k("ws-1", "dev-1", 1950.to_int64(), fn(ex : effect::Exit[MemberCredential]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(c) => c3 = c.credential
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(pending.length() == 4, "triggered refresh fetch")
+  let (id3, _, _) = pending[3]
+  sh.answer(
+    id3,
+    base_codec::json_obj([("status", base_codec::json_int(200)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
+    bytes=Some("{\"credential\":\"cred-v2\",\"issued_at\":1950,\"expires_at\":3000,\"relay_url\":\"https://r1.example\"}".to_bytes()),
+  )
+  let _ = rt.run_ready()
+  debug_assert(c3 == "cred-v2", "refreshed cred v2")
+}
+
+test "CloudSync /v1/events WebSocket event refresh and virtual-clock exponential backoff" {
+  let rt = effect::Runtime::new()
+  let mock_db = MockCloudDb::new()
+  let calls : Array[(Int64, String, base_codec::Json)] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {
+      calls.push((id, op, args))
+    },
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      mock_db.handle_sql(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "ws-test") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.to_string())
+  }
+  let cs = CloudSync::new(sh, db, "http://127.0.0.1:8080", token="tok-ws")
+  let seen_events : Array[String] = []
+  cs.start_events_ws(fn(ev : CloudEvent) -> Unit {
+    match ev {
+      CloudEvent::WorkspaceChanged(wid, _) => seen_events.push("ws:" + wid)
+      CloudEvent::StationStatusChanged(wid, sid, on) => seen_events.push("st:" + wid + "/" + sid + ":" + on.to_string())
+      CloudEvent::WorkspacesChanged(_) => seen_events.push("workspaces")
+      CloudEvent::Release => seen_events.push("release")
+      CloudEvent::Other(t, _) => seen_events.push("other:" + t)
+    }
+  })
+  let _ = rt.run_ready()
+  debug_assert(calls.length() == 1, "ws.open called")
+  let (open_id1, open_op1, open_args1) = calls[0]
+  debug_assert(open_op1 == "ws.open" && j_str(open_args1, "url") == "ws://127.0.0.1:8080/v1/events", "ws url")
+
+  // First connect fails -> sleeps 1000ms before retry
+  sh.refuse(open_id1, "connection refused")
+  let _ = rt.run_ready()
+  debug_assert(calls.length() == 1, "waiting for 1000ms backoff")
+  rt.advance(999)
+  debug_assert(calls.length() == 1, "not yet at 999ms")
+  rt.advance(1)
+  debug_assert(calls.length() == 2, "retried ws.open at 1000ms")
+
+  // Second connect succeeds -> enters ws.next loop
+  let (open_id2, _, _) = calls[1]
+  sh.answer(open_id2, base_codec::json_obj([("id", base_codec::json_int(55))]))
+  let _ = rt.run_ready()
+  debug_assert(calls.length() == 3, "ws.next #1 issued")
+  let (next_id1, next_op1, _) = calls[2]
+  debug_assert(next_op1 == "ws.next", "ws.next")
+
+  // Deliver workspace event -> triggers automatic GET /v1/workspaces/ws-live refresh
+  sh.answer(next_id1, base_codec::json_obj([("text", base_codec::json_str("{\"type\":\"workspace\",\"id\":\"ws-live\"}"))]))
+  let _ = rt.run_ready()
+  debug_assert(seen_events.length() == 1 && seen_events[0] == "ws:ws-live", "received workspace event")
+  let mut saw_ws_fetch = false
+  let mut next_id2 = 0.to_int64()
+  for i in 3..<calls.length() {
+    let (cid, cop, cargs) = calls[i]
+    if cop == "fetch" && j_str(cargs, "url") == "http://127.0.0.1:8080/v1/workspaces/ws-live" {
+      saw_ws_fetch = true
+    }
+    if cop == "ws.next" {
+      next_id2 = cid
+    }
+  }
+  debug_assert(saw_ws_fetch && next_id2 > 0.to_int64(), "auto-refreshed workspace and continued ws.next")
+
+  // Close socket -> backoff doubles to 2000ms (attempt=1)
+  sh.answer(next_id2, base_codec::json_obj([("end", base_codec::json_bool(true))]))
+  let _ = rt.run_ready()
+  let count_before_backoff = calls.length()
+  rt.advance(1999)
+  debug_assert(calls.length() == count_before_backoff, "waiting 2000ms backoff")
+  rt.advance(1)
+  debug_assert(calls.length() == count_before_backoff + 1, "reconnected after 2000ms")
+  cs.stop()
+  let _ = rt.run_ready()
+  debug_assert(cloud_ws_backoff_ms(0) == 1000 && cloud_ws_backoff_ms(6) == 60000 && cloud_ws_backoff_ms(10) == 60000, "backoff bounds")
+}
+
+test "shell_http_transport streams real SSE chunks into StationEvents and closes stream cleanly" {
+  let rt = effect::Runtime::new()
+  let mock_db = MockCloudDb::new()
+  let calls : Array[(Int64, String, base_codec::Json)] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {
+      calls.push((id, op, args))
+    },
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      mock_db.handle_sql(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "sse-test") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.to_string())
+  }
+  let transport = shell_http_transport(sh, "http://127.0.0.1:9999", auth_header=Some("Bearer test"))
+  let fb : outbox::FrameOutbox[CoreEvent] = outbox::FrameOutbox::new(fn() -> Unit {})
+  let evs = StationEvents::new("ws-1", "st-1", db, fb, transport)
+  evs.start(rt)
+  let _ = rt.run_ready()
+
+  debug_assert(calls.length() == 1, "stream.open issued")
+  let (open_id, open_op, open_args) = calls[0]
+  debug_assert(open_op == "stream.open" && j_str(open_args, "url") == "http://127.0.0.1:9999/events", "SSE stream.open url")
+
+  // Answer stream.open -> stream.read #1
+  sh.answer(
+    open_id,
+    base_codec::json_obj([
+      ("id", base_codec::json_int(77)),
+      ("status", base_codec::json_int(200)),
+      ("headers", base_codec::json_arr([])),
+      ("redirected", base_codec::json_bool(false)),
+    ]),
+  )
+  let _ = rt.run_ready()
+  let (r1_id, r1_op, _) = calls[1]
+  debug_assert(r1_op == "stream.read", "stream.read #1")
+
+  // Deliver SSE entry event in chunk
+  let sse_chunk = "id: 1\nevent: entry\ndata: {\"thread\":9,\"n\":1,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice\",\"text\":\"via shell sse\",\"clientKey\":\"ck-sse-1\"}\n\n"
+  sh.answer(r1_id, base_codec::json_obj([]), bytes=Some(sse_chunk.to_bytes()))
+  let _ = rt.run_ready()
+  debug_assert(mock_db.entries.get("st-1:9:1").is_some(), "SSE entry ingested into SQLite")
+
+  // End stream -> stream.close must be sent
+  let (r2_id, r2_op, _) = calls[2]
+  debug_assert(r2_op == "stream.read", "stream.read #2")
+  sh.answer(r2_id, base_codec::json_obj([("end", base_codec::json_bool(true))]))
+  let _ = rt.run_ready()
+  let mut saw_close = false
+  for i in 0..<calls.length() {
+    let (_, op, _) = calls[i]
+    if op == "stream.close" {
+      saw_close = true
+    }
+  }
+  debug_assert(saw_close, "stream.close called on EOF")
+  evs.stop()
+  let _ = rt.run_ready()
+}
