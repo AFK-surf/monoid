@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9f7c26cf2](https://github.com/AFK-surf/monoid/commit/9f7c26cf2fd53ab5693f92a2967fa59430ea493e) fix(ci): recalibrate multi-worker anchor weights i | 2.72 | 3.66 | 14.83 | 36.98 | 56.52 | 32.4 | 65.72 | 100.21 | 127.78 |
 | [77d6110de](https://github.com/AFK-surf/monoid/commit/77d6110deb1a373c8df80b1d665541e632731aa7) fix(ui): tell the host when a field drops an open  | 2.72 | 3.66 | 14.83 | 36.98 | 56.52 | 32.4 | 65.72 | 100.21 | 127.78 |
 | [330a4d5ac](https://github.com/AFK-surf/monoid/commit/330a4d5ac3c92923931750bbbd083f195bc0f3f2) feat(mbui): add generic ListStage scheduler and ex | 2.72 | 3.66 | 14.83 | 36.98 | 56.52 | 32.4 | 65.72 | 100.21 | 127.78 |
 | [e6372be5e](https://github.com/AFK-surf/monoid/commit/e6372be5ea8638fbc6ad17be67cc7a6eee4c36ac) fix(station): batch job state lookups and yield in | 2.72 | 3.66 | 14.82 | 36.96 | 56.49 | 32.39 | 65.71 | 100.3 | 122.52 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3a99f35e7](https://github.com/AFK-surf/monoid/commit/3a99f35e7d0e81f7a35027e8af34dd51c34e3f90) fix(station): leave Unix domain sockets out of arc | 2.7 | 3.64 | 14.75 | 36.85 | 56.19 | 32.28 | 65.46 | 99.19 | 121.69 |
 | [219e4eeb0](https://github.com/AFK-surf/monoid/commit/219e4eeb0f336f78ce342038ab6ef2795238f2d5) perf(mbui): optimize Apple and Android text shapin | 2.7 | 3.64 | 14.75 | 36.85 | 56.19 | 32.27 | 65.46 | 99.35 | 140.9 |
 | [0e13725c6](https://github.com/AFK-surf/monoid/commit/0e13725c60fa22a216a72f725dc0259ab0d467f3) perf(mbui): make one page block per station in Pla | 2.7 | 3.64 | 14.75 | 36.84 | 56.19 | 32.27 | 65.46 | 99.01 | 119.94 |
-| [4daac21ad](https://github.com/AFK-surf/monoid/commit/4daac21adb61ca310f25a8e92d6fbb2634ed3a10) perf(mbui): de-amplify GLES and Metal partial redr | 2.7 | 3.64 | 14.75 | 36.84 | 56.19 | 32.27 | 65.46 | 99.01 | 119.94 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9f7c26cf2](https://github.com/AFK-surf/monoid/commit/9f7c26cf2fd53ab5693f92a2967fa59430ea493e) fix(ci): recalibrate multi-worker anchor weights i | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.2 |
 | [77d6110de](https://github.com/AFK-surf/monoid/commit/77d6110deb1a373c8df80b1d665541e632731aa7) fix(ui): tell the host when a field drops an open  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.18 |
 | [330a4d5ac](https://github.com/AFK-surf/monoid/commit/330a4d5ac3c92923931750bbbd083f195bc0f3f2) feat(mbui): add generic ListStage scheduler and ex | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.12 |
 | [e6372be5e](https://github.com/AFK-surf/monoid/commit/e6372be5ea8638fbc6ad17be67cc7a6eee4c36ac) fix(station): batch job state lookups and yield in | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.05 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3a99f35e7](https://github.com/AFK-surf/monoid/commit/3a99f35e7d0e81f7a35027e8af34dd51c34e3f90) fix(station): leave Unix domain sockets out of arc | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.59 |
 | [219e4eeb0](https://github.com/AFK-surf/monoid/commit/219e4eeb0f336f78ce342038ab6ef2795238f2d5) perf(mbui): optimize Apple and Android text shapin | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.59 |
 | [0e13725c6](https://github.com/AFK-surf/monoid/commit/0e13725c60fa22a216a72f725dc0259ab0d467f3) perf(mbui): make one page block per station in Pla | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.59 |
-| [4daac21ad](https://github.com/AFK-surf/monoid/commit/4daac21adb61ca310f25a8e92d6fbb2634ed3a10) perf(mbui): de-amplify GLES and Metal partial redr | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.67 |
