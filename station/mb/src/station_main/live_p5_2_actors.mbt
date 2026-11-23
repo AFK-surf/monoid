@@ -164,7 +164,7 @@ fn ActorsProgram::lost(self : ActorsProgram, code : Int32) -> Unit {
     "the program running the sessions ended; the station ends with it, as in a crash",
     { "code": ji(code) },
   )
-  (self.ctx.bus.stop_station)("the sessions' program ended")
+  (self.ctx.bus.stop_station)(sessions_program_ended)
 }
 
 ///|

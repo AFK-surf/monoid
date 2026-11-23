@@ -500,6 +500,65 @@ test("a runtime missing, or ending as it starts: said in its chat as such, the s
   await stopped(a);
 });
 
+// ── its sessions' program lost (mb-actor.ts `#lost`) ──
+
+/// A Claude Code that starts its turn and works on: what a station's crash finds mid-turn.
+const busyClaude = `#!/bin/sh
+case " $* " in *" -p "*) ;; *) exit 9 ;; esac
+sid=""
+while [ $# -gt 0 ]; do
+  case "$1" in --session-id|--resume) sid="$2"; shift ;; esac
+  shift
+done
+while IFS= read -r line; do
+  case "$line" in *'"type":"user"'*) ;; *) continue ;; esac
+  printf '%s\\n' '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"default","tools":[],"mcp_servers":[]}'
+  /bin/sleep 600
+done
+`;
+
+test("its sessions' program lost: the station ends as in a crash (70), its agents' processes left running for the next to take up", { skip, timeout: 60_000 }, async () => {
+  const data = fresh("lost");
+  const bin = fresh("bin");
+  enrolled(data);
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+  writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }], maxNudges: 0 }));
+  writeFileSync(join(bin, "claude"), busyClaude);
+  chmodSync(join(bin, "claude"), 0o755);
+  const a = await launch(data, bin);
+  const store = openStore(data);
+  const runners = join(data, "run", "runners");
+  let agent: { runner: number; pgid: number };
+  try {
+    for (const [key, token, ts] of [["chat:c-from", "t0", "1790000000.000001"], ["chat:c-to", "t1", "1790000000.000002"]] as const) {
+      const workspace = join(data, "sessions", "chat", key.slice(5), "workspace");
+      mkdirSync(workspace, { recursive: true });
+      store.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace, token, createdAt: Date.now(), lastActiveAt: Date.now(), title: key } as never);
+      store.joinThread(store.openThread("ember", "CHAT", ts, key, "ada@x.com").id, key, "ember");
+    }
+    const sent = await tool(a.door, "t0", "session_send", { to: "chat:c-to", text: "work on this" });
+    assert.equal(sent.error, false, sent.text);
+    // (its turn under way: its process started under a runner, the session running)
+    agent = await within("the agent's process at work", 20_000, () => {
+      const file = existsSync(runners) ? readdirSync(runners).find((f) => f.startsWith("claude-chat_c-to") && f.endsWith(".json")) : undefined;
+      if (file === undefined || store.getSession("chat:c-to")?.running !== true) return null;
+      const info = JSON.parse(readFileSync(join(runners, file), "utf8"));
+      return alive(info.pgid, true) ? { runner: info.runner as number, pgid: info.pgid as number } : null;
+    }, () => a.err().slice(-3000));
+    groups.push(agent.pgid);
+  } finally {
+    store.close();
+  }
+  const program = spawnSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" }).stdout.split("\n")
+    .map((l) => l.trim().match(/^(\d+)\s+(.*)$/)).find((m) => m !== null && m[2]!.includes("--sessions") && m[2]!.includes(data));
+  assert.ok(program, "the sessions' program runs");
+  process.kill(Number(program![1]), "SIGKILL");
+  // Ended as in a crash, not stopped: no session's process ended on its way out.
+  assert.equal(await a.ended, 70, a.err().slice(-4000));
+  assert.ok(alive(agent!.runner) && alive(agent!.pgid, true), "the agent's runner and process go on for the next station to take up");
+});
+
 // ── a handover under the real launcher (jobs.test.ts, active-jobs-upgrade-integration.test.ts, vault-*-handover.test.ts) ──
 
 test("a handover (SIGUSR2): a service and a job go on, their port reached throughout, the store written from another connection meanwhile; the process before ends and nothing is left", { skip: skipLauncher !== false ? skipLauncher : python === null ? "no python3 with http.server for the service" : false, timeout: 120_000 }, async () => {

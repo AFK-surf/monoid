@@ -80,6 +80,9 @@
     chat surfaces told the agents' side, `surfaces`, and called by name, `chat.*`); the copies, their export a
     backgrounded process of its own, and a retirement; the moves; the updates and the `beta` features, on
     `coord_ask`: station/test/mb-live-p5-5.test.ts.
+- A stop because its sessions' program ended unasked (`sessions_program_ended`) is a crash, as mb-actor.ts `#lost`:
+  `run` skips `hub_shutdown` and exits 70, leaving every agent's process to its runner for the next station to take
+  up; a stop's `hub_shutdown` would end them and cut their turns off (`mb-fault-lifecycle.test.ts`).
 - `@host.now()` (and the runtime's `now`) is a monotonic clock counting from the machine's start: it times waits and
   durations only. A time a part keeps or compares as the world's (a record's `at`, an expiry) is `@host.epoch_ms()`
   (sys.mbt `p5_epoch_ms`: the wall's time once, then the monotonic clock, never going back), and what is shared with

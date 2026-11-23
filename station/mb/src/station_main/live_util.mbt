@@ -332,3 +332,14 @@ fn told_threads(bus : LiveBus, threads : @store_threads.Store) -> Unit {
   // (what it found not prepared yet, asked of the builders: agents.ts `requestSessionChat`, `followLatestThreadRequests`)
   bus.drain_thread_requests(threads)
 }
+
+///|
+/// Why the station stops when its sessions' program ended without being asked to: a crash, not a stop. Its sessions'
+/// processes are left to their runners for the next station to take up (hub.ts `takeUp`), as mb-actor.ts `#lost`'s
+/// `process.exit(70)` leaves them: never ended as a stop ends them (`hub_shutdown`).
+let sessions_program_ended : String = "the sessions' program ended"
+
+///|
+/// The exit code of a station ended as in a crash (mb-actor.ts `#lost`): the launcher starts it again.
+let crashed_exit_code : Int = 70
+

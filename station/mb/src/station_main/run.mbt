@@ -1053,7 +1053,8 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   // A heap request left while no station ran.
   ignore(answer_heap_request(data, () => s.heap()))
   let why = s.stopped.wait()
-  ignore(why)
+  // (its sessions' program gone: ended as in a crash, its sessions' processes left running for the next to take up)
+  let crashed = why == sessions_program_ended
   // (the log's last lines sent first, 5 s at most: why it stopped, what it handed over)
   flush_live_p5_1_log()
   // (what the live parts started let go of before the process ends: their processes, what they hand over)
@@ -1061,14 +1062,18 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   live_p5_1_handed()
   // (what the agents' side ends as the station stops, not handing over: its sessions' processes)
   match s.bus {
-    Some(b) => ignore(@effect.timeout(10_000, async fn() { b.hub_shutdown() }))
-    None => ()
+    Some(b) if !crashed => ignore(@effect.timeout(10_000, async fn() { b.hub_shutdown() }))
+    _ => ()
   }
   // (the P5-5 parts closed on their own as it stopped: their processes ended before this one, not after)
   wait_live_p5_5_closed()
   // (only now the next station may take the sessions up)
   release_hub(data)
-  0
+  if crashed {
+    crashed_exit_code
+  } else {
+    0
+  }
 }
 
 ///|

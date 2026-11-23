@@ -280,7 +280,7 @@ fn P53Program::ended(self : P53Program, code : Int?, signal : String?) -> Unit {
   self.timers.clear()
   if !asked && !self.bus.stopped.is_done() {
     slice_log("error", "session", "the program running the sessions ended; the station ends with it, as in a crash", jobj_of([("code", match code { Some(c) => ji(c); None => Json::null() }), ("signal", jopt(signal))]))
-    (self.bus.stop_station)("the sessions' program ended")
+    (self.bus.stop_station)(sessions_program_ended)
   }
 }
 
