@@ -515,6 +515,9 @@ test("the agents' side: a turn under the runner posts through /mcp; agy's tools 
   const opened = (await mcp(door.port, { jsonrpc: "2.0", id: 13, method: "tools/call", params: { name: "chat_create", arguments: { for: "me", key: "lead-1", text: "do the led work", runtime: "claude" } } }, "t0")).json.result;
   assert.notEqual(opened.isError, true, `${JSON.stringify(opened)}\n${a.err()}`);
   await until("the opener woken as the chat it leads ended its turn", () => store.listTurns("chat:c-from").some((t) => t.summary.endedAt != null), () => `${JSON.stringify(store.listTurns("chat:c-from").map((t) => t.summary))}\n${a.err()}`);
+  // A session this station made has today's instructions: it is told no change notes (hub.test.ts "a new one never").
+  const ledPrompt = readFileSync(join(out, "prompts"), "utf8").split("\n").find((l) => l.includes("do the led work"));
+  assert.ok(ledPrompt !== undefined && !ledPrompt.includes("still.fail changed how you work"), ledPrompt);
   // The status socket says the agents.
   // A handover: the next process takes the sessions up and serves the door; the one before ends.
   const b = await launch(data, app, bin, out);

@@ -67,7 +67,7 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
       let db_path = path([data, "stillfail.db"])
       let db = @sql.Db::create(host, db_path, wait=5000)
       @store_schema.open(db, host, db_path, wall_ms())
-      let st = @store_sessions.Store::open(db, () => wall_ms(), 0L)
+      let st = @store_sessions.Store::open(db, () => wall_ms(), @agent_runtimes.latest().to_int64())
       let parts = StationParts::new()
       let stopped : @effect.Deferred[String] = @effect.Deferred::new()
       let bus = LiveBus::new(host, "", [], data, app, "0.1.0", key, db, st, parts, stopped, false, "", None, _ => (), why => ignore(stopped.succeed(why)))

@@ -808,7 +808,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     // (its statements timed, the slow said: store/timed.ts)
     db.timed(Some(main_query_said))
     @store_schema.open(db, host, db_path, wall_ms())
-    Ok((db, @store_sessions.Store::open(db, () => wall_ms(), 0L)))
+    Ok((db, @store_sessions.Store::open(db, () => wall_ms(), @agent_runtimes.latest().to_int64())))
   } catch {
     e => Err(e)
   }
