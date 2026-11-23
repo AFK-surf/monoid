@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [77d6110de](https://github.com/AFK-surf/monoid/commit/77d6110deb1a373c8df80b1d665541e632731aa7) fix(ui): tell the host when a field drops an open  | 2.72 | 3.66 | 14.83 | 36.98 | 56.52 | 32.4 | 65.72 | 100.21 | 127.78 |
 | [330a4d5ac](https://github.com/AFK-surf/monoid/commit/330a4d5ac3c92923931750bbbd083f195bc0f3f2) feat(mbui): add generic ListStage scheduler and ex | 2.72 | 3.66 | 14.83 | 36.98 | 56.52 | 32.4 | 65.72 | 100.21 | 127.78 |
 | [e6372be5e](https://github.com/AFK-surf/monoid/commit/e6372be5ea8638fbc6ad17be67cc7a6eee4c36ac) fix(station): batch job state lookups and yield in | 2.72 | 3.66 | 14.82 | 36.96 | 56.49 | 32.39 | 65.71 | 100.3 | 122.52 |
 | [463324907](https://github.com/AFK-surf/monoid/commit/4633249077fbc26f13bcfde86d32c22b83ce40fb) fix(core): name and mark Comma Tasks and Group con | 2.72 | 3.66 | 14.82 | 36.96 | 56.49 | 32.39 | 65.71 | 100.3 | 122.52 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [219e4eeb0](https://github.com/AFK-surf/monoid/commit/219e4eeb0f336f78ce342038ab6ef2795238f2d5) perf(mbui): optimize Apple and Android text shapin | 2.7 | 3.64 | 14.75 | 36.85 | 56.19 | 32.27 | 65.46 | 99.35 | 140.9 |
 | [0e13725c6](https://github.com/AFK-surf/monoid/commit/0e13725c60fa22a216a72f725dc0259ab0d467f3) perf(mbui): make one page block per station in Pla | 2.7 | 3.64 | 14.75 | 36.84 | 56.19 | 32.27 | 65.46 | 99.01 | 119.94 |
 | [4daac21ad](https://github.com/AFK-surf/monoid/commit/4daac21adb61ca310f25a8e92d6fbb2634ed3a10) perf(mbui): de-amplify GLES and Metal partial redr | 2.7 | 3.64 | 14.75 | 36.84 | 56.19 | 32.27 | 65.46 | 99.01 | 119.94 |
-| [f5b905dd9](https://github.com/AFK-surf/monoid/commit/f5b905dd908240a93b88d6f5ab5236a946722e40) feat(app): a station's 资源 says what the machine is | 2.7 | 3.64 | 14.75 | 36.84 | 56.19 | 32.27 | 65.46 | 98.96 | 120.06 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [77d6110de](https://github.com/AFK-surf/monoid/commit/77d6110deb1a373c8df80b1d665541e632731aa7) fix(ui): tell the host when a field drops an open  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.18 |
 | [330a4d5ac](https://github.com/AFK-surf/monoid/commit/330a4d5ac3c92923931750bbbd083f195bc0f3f2) feat(mbui): add generic ListStage scheduler and ex | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.12 |
 | [e6372be5e](https://github.com/AFK-surf/monoid/commit/e6372be5ea8638fbc6ad17be67cc7a6eee4c36ac) fix(station): batch job state lookups and yield in | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.05 |
 | [463324907](https://github.com/AFK-surf/monoid/commit/4633249077fbc26f13bcfde86d32c22b83ce40fb) fix(core): name and mark Comma Tasks and Group con | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.05 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [219e4eeb0](https://github.com/AFK-surf/monoid/commit/219e4eeb0f336f78ce342038ab6ef2795238f2d5) perf(mbui): optimize Apple and Android text shapin | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.59 |
 | [0e13725c6](https://github.com/AFK-surf/monoid/commit/0e13725c60fa22a216a72f725dc0259ab0d467f3) perf(mbui): make one page block per station in Pla | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.59 |
 | [4daac21ad](https://github.com/AFK-surf/monoid/commit/4daac21adb61ca310f25a8e92d6fbb2634ed3a10) perf(mbui): de-amplify GLES and Metal partial redr | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.67 |
-| [f5b905dd9](https://github.com/AFK-surf/monoid/commit/f5b905dd908240a93b88d6f5ab5236a946722e40) feat(app): a station's 资源 says what the machine is | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.61 |
