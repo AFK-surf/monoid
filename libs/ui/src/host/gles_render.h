@@ -3654,6 +3654,7 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
       levels_sized = 1;
       if (max_w > lv_w || max_h > lv_h) {
         ensure_levels(max_w, max_h);
+        main_state();
       } else if (ad_mode > 0 && lv[0].t && all_max_w > 0 && all_max_h > 0) {
         if (all_max_w > lv_frame_max_w) lv_frame_max_w = all_max_w;
         if (all_max_h > lv_frame_max_h) lv_frame_max_h = all_max_h;
@@ -3908,7 +3909,10 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
             }
             s0 = e0;
           }
-          if (max_w > lv_w || max_h > lv_h) ensure_levels(max_w, max_h);
+          if (max_w > lv_w || max_h > lv_h) {
+            ensure_levels(max_w, max_h);
+            main_state();
+          }
         }
         if (tid != bound) {
           int in_cut = 1;
