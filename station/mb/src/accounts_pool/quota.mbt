@@ -898,6 +898,12 @@ async fn check_quota_inner(
       v => js_string(v)
     },
   )
+  if kind == "service" {
+    return match jget(p.get("access"), "service") {
+      Some(Str("colab")) => colab_quota(ctx, profile.home, lang, @host.epoch_ms().to_double())
+      _ => quota("unsupported", [], None)
+    }
+  }
   if kind == "opencode-go" {
     return opencode(ctx, key_of(), lang)
   }

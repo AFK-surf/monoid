@@ -15,6 +15,9 @@ pub let copies_retry_ms : Double = 5000.0
 pub let copies_retry_most_ms : Double = 600000.0
 
 ///|
+pub let handover_quiet_ms : Double = 15000.0
+
+///|
 pub let copies_tell_ms : Double = 30000.0
 
 ///|
@@ -462,6 +465,124 @@ async fn ExportLoop::close(self : ExportLoop, close_runner : async () -> Unit) -
 }
 
 ///|
+/// Per `(ws, origin)` write tracking and atomic rename gate for safe handover removal, kept free of `Host`/`Fs` so
+/// native whitebox tests exercise the exact state machine on `@effect.Runtime`.
+priv struct WriteGuard {
+  active_writes : Map[String, Int]
+  write_seq : Map[String, Int]
+  last_write_at : Map[String, Double]
+  removing : Map[String, @effect.Deferred[Unit]]
+}
+
+///|
+fn WriteGuard::new() -> WriteGuard {
+  { active_writes: {}, write_seq: {}, last_write_at: {}, removing: {} }
+}
+
+///|
+async fn WriteGuard::guard_write(self : WriteGuard, now : () -> Double, ws : String, origin : String, f : async () -> Unit) -> Unit {
+  let key = "\{ws}\n\{origin}"
+  while self.removing.get(key) is Some(d) {
+    d.wait()
+  }
+  self.active_writes[key] = self.active_writes.get(key).unwrap_or(0) + 1
+  self.write_seq[key] = self.write_seq.get(key).unwrap_or(0) + 1
+  self.last_write_at[key] = now()
+  let res : Result[Unit, Error] = try Ok(f()) catch { e => Err(e) }
+  let left = self.active_writes.get(key).unwrap_or(1) - 1
+  if left <= 0 {
+    self.active_writes.remove(key)
+  } else {
+    self.active_writes[key] = left
+  }
+  self.last_write_at[key] = now()
+  match res {
+    Ok(_) => ()
+    Err(e) => raise e
+  }
+}
+
+///|
+/// Returns `Some(seq_before)` when `(ws, origin)` has no active writes and is past the quiet window (or `accept_others`
+/// is false); returns `None` when handover should be deferred.
+fn WriteGuard::begin_handover(self : WriteGuard, now : Double, accept_others : Bool, ws : String, origin : String) -> Int? {
+  let key = "\{ws}\n\{origin}"
+  if self.active_writes.get(key).unwrap_or(0) > 0 {
+    return None
+  }
+  if accept_others && self.last_write_at.get(key) is Some(last_at) && now - last_at < handover_quiet_ms {
+    return None
+  }
+  Some(self.write_seq.get(key).unwrap_or(0))
+}
+
+///|
+/// Synchronously verifies no write started or completed since `seq_before`, atomically renames the directory under the
+/// `removing` gate, then removes the renamed `.dropping-*` directory outside the gate. Returns `false` if aborted due
+/// to a concurrent write.
+async fn WriteGuard::atomic_remove(
+  self : WriteGuard,
+  ws : String,
+  origin : String,
+  seq_before : Int,
+  dropping_name : String,
+  rename_dir : async (String) -> Unit,
+  rm_dropping : async (String) -> Unit,
+) -> Bool {
+  let key = "\{ws}\n\{origin}"
+  if self.active_writes.get(key).unwrap_or(0) > 0 || self.write_seq.get(key).unwrap_or(0) != seq_before {
+    return false
+  }
+  let gate : @effect.Deferred[Unit] = @effect.Deferred::new()
+  self.removing[key] = gate
+  let mut renamed = false
+  let rename_err : Error? = try {
+    rename_dir(dropping_name)
+    renamed = true
+    self.last_write_at.remove(key)
+    None
+  } catch {
+    e => Some(e)
+  }
+  self.removing.remove(key)
+  ignore(gate.succeed(()))
+  match rename_err {
+    Some(e) =>
+      if code_of(e) != "ENOENT" && !message_of(e).has_prefix("ENOENT:") && !message_of(e).to_lower().contains("no such file") {
+        raise e
+      }
+    None => ()
+  }
+  if renamed {
+    rm_dropping(dropping_name)
+  }
+  true
+}
+
+///|
+/// Cancels pending retries and drops idle keeping state for peers no longer targeted in `ws`.
+fn prune_non_targets_map(keeping : Map[String, Keeping], ws : String, active_targets : Array[String]) -> Unit {
+  let active = set_of(active_targets)
+  for k in keeping.keys().collect() {
+    let (kw, dest) = split_key(k)
+    if kw != ws || dest.has_prefix("s3:") || active.contains(dest) {
+      continue
+    }
+    match keeping.get(k) {
+      Some(v) => {
+        call_opt(v.again)
+        v.again = None
+        v.asked = false
+        if !v.busy {
+          keeping.remove(k)
+        }
+      }
+      None => ()
+    }
+  }
+}
+
+///|
 pub struct Copies {
   w : World
   d : CopiesDeps
@@ -474,6 +595,7 @@ pub struct Copies {
   mut handing : Run?
   mut hand_again : (() -> Unit)?
   mut hand_tries : Int
+  priv writes : WriteGuard
   mut restoring : Restoring?
   old : Map[String, Bool]
   peer_accepts : Map[String, Bool]
@@ -631,6 +753,7 @@ pub async fn Copies::new(w : World, d : CopiesDeps) -> Copies {
     handing: None,
     hand_again: None,
     hand_tries: 0,
+    writes: WriteGuard::new(),
     restoring: None,
     old: {},
     peer_accepts: {},
@@ -1047,6 +1170,11 @@ pub fn Copies::in_workspace(self : Copies, peer : String, ws : String) -> Bool {
 }
 
 ///|
+async fn Copies::guard_write(self : Copies, ws : String, origin : String, f : async () -> Unit) -> Unit {
+  self.writes.guard_write(() => self.w.now(), ws, origin, f)
+}
+
+///|
 /// What this station answers of the copies it keeps (`replica.*`).
 pub async fn Copies::answer(self : Copies, peer : String, request : J, body : Body?, workspace : String?) -> Answer {
   serve(
@@ -1055,6 +1183,7 @@ pub async fn Copies::answer(self : Copies, peer : String, request : J, body : Bo
       in_workspace: (p, ws) => self.in_workspace(p, ws),
       hello: (p, ws, formerly, accepts) => self.heard(p, ws, formerly, accept_copies=accepts),
       accept_others: Some(() => self.backup_config().accept_others),
+      guard_write: Some(async fn(ws, origin, f) { self.guard_write(ws, origin, f) }),
     },
     peer,
     request,
@@ -1291,6 +1420,7 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
           k.tries = 0
           k.partial = false
           k.lacking = 0
+          self.prune_non_targets(ws)
           self.record(
             ws,
             at,
@@ -1356,7 +1486,7 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
             k.error,
           )
         }
-        if reason != "old" {
+        if reason != "old" && self.targets(ws).contains(peer) {
           let wait = backoff(copies_retry_ms, k.tries, copies_retry_most_ms)
           k.tries += 1
           if !self.closed {
@@ -1364,6 +1494,9 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
             k.again = Some(
               self.w.after(wait, () => {
                 k.again = None
+                if !self.targets(ws).contains(peer) {
+                  return
+                }
                 self.level(ws, peer, true, true)
               }),
             )
@@ -1380,12 +1513,23 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
     self.levelling.remove(key)
     if k.asked && !self.closed {
       k.asked = false
-      self.level(ws, peer, k.error is None, false)
+      if self.targets(ws).contains(peer) {
+        self.level(ws, peer, k.error is None, false)
+      }
+    }
+    if !k.busy && k.again is None && !self.targets(ws).contains(peer) {
+      self.keeping.remove(key)
     }
   })
   if !run.is_done() && k.busy {
     self.levelling[key] = run
   }
+}
+
+///|
+/// Cancels pending retries and drops idle keeping state for peers no longer targeted in `ws`.
+fn Copies::prune_non_targets(self : Copies, ws : String) -> Unit {
+  prune_non_targets_map(self.keeping, ws, self.targets(ws))
 }
 
 ///|
@@ -1630,17 +1774,29 @@ async fn Copies::hand_over(self : Copies) -> Bool {
       Some(f) => f()
       None => []
     }
-    for origin in fs.names(fs.join([kept_dir(fs, self.d.data), ws])) {
+    let ws_dir = fs.join([kept_dir(fs, self.d.data), ws])
+    for origin in fs.names(ws_dir) {
+      if origin.has_prefix(".dropping-") {
+        fs.rm_rf(fs.join([ws_dir, origin])) catch {
+          _ => ()
+        }
+        continue
+      }
       if !is_station(origin) || origin == here || taking.contains(origin) {
         continue
       }
-      let eligible = if self.backup_config().accept_others {
+      let accept_others = self.backup_config().accept_others
+      let eligible = if accept_others {
         ids
       } else {
         ids.filter(s => s != here && self.peer_accepts.get(s) != Some(false))
       }
       let should = keepers(ws, origin, eligible)
       if should.contains(here) {
+        continue
+      }
+      guard self.writes.begin_handover(self.w.now(), accept_others, ws, origin) is Some(seq_before) else {
+        left = true
         continue
       }
       let mine = self.kept.held(ws, origin)
@@ -1661,7 +1817,24 @@ async fn Copies::hand_over(self : Copies) -> Bool {
           }
         }
         if still {
-          fs.rm_rf(fs.join([kept_dir(fs, self.d.data), ws, origin]))
+          let suffix = fs.random_hex(4)
+          let dropping_name = ".dropping-\{origin}-\{suffix}"
+          let removed = self.writes.atomic_remove(
+            ws,
+            origin,
+            seq_before,
+            dropping_name,
+            async fn(name) { fs.rename(fs.join([ws_dir, origin]), fs.join([ws_dir, name])) },
+            async fn(name) {
+              fs.rm_rf(fs.join([ws_dir, name])) catch {
+                e => self.w.warn("copies", "dropping directory not removed", jo([("ws", js(ws)), ("origin", js(origin)), ("error", js(message_of(e)))]))
+              }
+            },
+          )
+          if !removed {
+            left = true
+            continue
+          }
           self.w.info("copies", "a station's copies handed over", jo([("ws", js(ws)), ("origin", js(origin)), ("to", jstrs(should))]))
           continue
         }

@@ -183,11 +183,11 @@ let reads_moved : Array[String] = [
   "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf",
   "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread",
   "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage",
-  "outflowUsage", "sessionPlace", "changed", "tailRead", "internalCardEditPage", "internalCardMessagePage",
+  "outflowUsage", "sessionPlace", "changed", "internalCardEditPage", "internalCardMessagePage",
 ]
 
 ///|
-let reads_history : Array[String] = ["timeline", "transcriptState"]
+let reads_history : Array[String] = ["timeline", "transcriptState", "tailRead"]
 
 ///|
 /// The reads given their words and the time (pool.ts WORDED), and those whose words the station says itself (SAID).
@@ -199,7 +199,7 @@ let reads_worded : Array[String] = [
 ///|
 let reads_interactive : Array[String] = [
   "thread", "chats", "sharedChats", "chatMarks", "session", "summary", "latestMessages", "openedChatSaid", "chatHistoryMessages",
-  "historyPendingCard", "stateQuestion", "statePendingCard", "deliveryCardState", "job",
+  "historyPendingCard", "stateQuestion", "statePendingCard", "deliveryCardState", "pendingDeliveries", "job",
 ]
 
 ///|

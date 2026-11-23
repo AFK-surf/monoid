@@ -20,7 +20,7 @@ let running_sessions : String =
 
 ///|
 let waiting_for_people : String =
-  #|SELECT t.session_key AS key, s.title, t.need, t.ended_at FROM turns t INDEXED BY turns_ended
+  #|SELECT t.session_key AS key, s.title, t.need, t.ended_at FROM turns t INDEXED BY turns_waiting
   #|  JOIN sessions s ON s.key = t.session_key
   #|  WHERE t.ended_at >= ?1 AND t.declared IN ('block', 'need_help', 'need_human', 'need_decision') AND s.archived_at IS NULL
   #|    AND t.id = (SELECT u.id FROM turns u WHERE u.session_key = t.session_key ORDER BY u.started_at DESC, u.rowid DESC LIMIT 1)

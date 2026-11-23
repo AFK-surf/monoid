@@ -77,11 +77,11 @@ test("the sessions waiting for a person: their latest turn asked, nobody answere
   }
 });
 
-test("the waiting sessions' read goes by the turns that ended lately", () => {
+test("the waiting sessions' read goes by the turns that ended lately asking for a person", () => {
   const store = Store.open(":memory:");
   try {
     const plan = store.db.prepare(`EXPLAIN QUERY PLAN ${WAITING_FOR_PEOPLE}`).all(0, 10).map((r: any) => String(r.detail));
-    assert.ok(plan.some((d) => /SEARCH t USING INDEX turns_ended/.test(d)), plan.join("\n"));
+    assert.ok(plan.some((d) => /SEARCH t USING INDEX turns_waiting/.test(d)), plan.join("\n"));
     assert.ok(!plan.some((d) => /^SCAN (t|u|d|s)\b/.test(d)), plan.join("\n"));
   } finally {
     store.close();
