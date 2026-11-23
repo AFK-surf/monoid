@@ -29,7 +29,7 @@ class AlreadySaid extends Error {
 export function routerSaysAfter(hub: Hub, stats: CommaStats, previousExited: Promise<void>) {
   let ready = false;
   void previousExited.then(() => { ready = true; }, () => {});
-  return (workspace: string | null, w: { thread: number; text: string; key: string; requester: string; connect: string }): number => {
+  return (workspace: string | null, w: { thread: number; text: string; key: string; requester: string; connect: string; closeCard?: boolean }): number => {
     if (!ready) throw new Error("the previous station is still handing over; retry the write");
     return routerSays(hub, stats, workspace, w);
   };
@@ -89,7 +89,7 @@ export async function routerReads(stats: CommaStats, reads: Pick<WorkspaceReads,
 /// The Router's message in chat `thread` of this station, as `requester` of the Comma connect `connect` (named so in
 /// the chat, as a person of that connect is), once per `key`: its `n`. Only a chat of workspace `home` (one of the
 /// station's, the connect's) on the station's pages; a Slack or Feishu chat is answered where it is.
-export function routerSays(hub: Hub, stats: CommaStats, home: string | null, w: { thread: number; text: string; key: string; requester: string; connect: string }): number {
+export function routerSays(hub: Hub, stats: CommaStats, home: string | null, w: { thread: number; text: string; key: string; requester: string; connect: string; closeCard?: boolean }): number {
   try { return routerSaysOnce(hub, stats, home, w); }
   catch (error) {
     if (error instanceof MessageWriteBusy) throw new Error(w.key === "" ? "the station is busy; retry the write" : "the station is busy; retry the Router request with the same key");
@@ -97,7 +97,7 @@ export function routerSays(hub: Hub, stats: CommaStats, home: string | null, w: 
   }
 }
 
-function routerSaysOnce(hub: Hub, stats: CommaStats, home: string | null, w: { thread: number; text: string; key: string; requester: string; connect: string }): number {
+function routerSaysOnce(hub: Hub, stats: CommaStats, home: string | null, w: { thread: number; text: string; key: string; requester: string; connect: string; closeCard?: boolean }): number {
   const db = hub.store.db;
   const find = () => (db.prepare("SELECT CAST(id AS TEXT) AS id, thread, n, pending FROM comma_router_once WHERE key = ?").get(w.key) as RouterWrite | undefined) ?? null;
   const mirror = (written: RouterWrite) => {
@@ -136,6 +136,28 @@ function routerSaysOnce(hub: Hub, stats: CommaStats, home: string | null, w: { t
   // The Task index tells a chat the Router wrote in by this form of its author (read/outflow.ts routerWrote): durable
   // where comma_router_once is not, and for the writes without a key, which leave none.
   const author = `slack:${w.connect}:${w.requester}`;
+  // If the text matches an `action: "close"` choice on the thread's pending options card (or `closeCard` was
+  // explicitly requested for a silent-close option), close that card silently without appending a message or waking
+  // the agent.
+  const trimmed = w.text.trim();
+  const pending = typeof hub.store.pendingCardHeader === "function" ? hub.store.pendingCardHeader(w.thread) : null;
+  const closeOption = pending !== null && pending[1]?.type === "options" && Array.isArray(pending[1].options)
+    ? (pending[1].options as Json[]).find((o) => o !== null && typeof o === "object" && typeof o.label === "string" && o.label.trim() === trimmed && o.action === "close")
+    : undefined;
+  if (closeOption !== undefined || w.closeCard === true) {
+    const members = hub.store.threadSessions(w.thread);
+    if (members.length === 0 || members.some((m) => {
+      const session = hub.store.getSession(m.session);
+      return session === null || (hub.wsOf(session) ?? null) !== home;
+    })) throw new Error("no such chat of the workspace");
+    if (pending !== null && closeOption !== undefined) {
+      hub.store.closeCard(author, w.thread, pending[0].n, String(closeOption.label).trim());
+      if (w.key !== "") stats.remember(w.key, pending[0].n);
+      return pending[0].n;
+    }
+    if (w.key !== "") stats.remember(w.key, 0);
+    return 0;
+  }
   if (w.key === "") {
     const members = hub.store.threadSessions(w.thread);
     if (members.length === 0 || members.some((m) => (hub.wsOf(m.session) ?? null) !== home)) throw new Error("no such chat of the workspace");

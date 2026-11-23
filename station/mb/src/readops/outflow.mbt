@@ -317,7 +317,37 @@ pub fn outflow_messages(db : @sql.Db, host : @host.Host, data : String, sep : St
     }
     if field(e, "kind") != Json::string("edit") &&
       outflow_card(card_of(field(e, "card"), field(e, "options"))) is Some(card) {
-      m["card"] = card
+      let n = field(e, "n")
+      let enriched = match card {
+        Object(card_map) => {
+          let choice = match one(db, "SELECT option FROM card_choices WHERE thread = ? AND n = ?", [thread, n]) {
+            Some(r) =>
+              match field(r, "option") {
+                String(opt) if !js_blank(opt) => Some(opt)
+                _ => None
+              }
+            None => None
+          }
+          let is_closed = choice is Some(_) ||
+            one(db, "SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?", [thread, n]) is Some(_)
+          if is_closed {
+            let out_card : Map[String, Json] = {}
+            for k, v in card_map {
+              out_card[k] = v
+            }
+            out_card["closed"] = true
+            match choice {
+              Some(opt) => out_card["choice"] = Json::string(opt)
+              None => ()
+            }
+            Json::object(out_card)
+          } else {
+            card
+          }
+        }
+        other => other
+      }
+      m["card"] = enriched
     }
     messages.push(Json::object(m))
   }

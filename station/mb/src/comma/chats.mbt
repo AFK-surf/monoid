@@ -152,6 +152,7 @@ pub(all) struct RouterSay {
   key : String
   requester : String
   connect : String
+  close_card : Bool
 }
 
 ///|
@@ -182,6 +183,10 @@ pub(all) struct RouterHub {
   deliver : async (Double, Double, Array[String], String, String?) -> Unit
   /// `store.completeRouterWrite(id)`.
   complete_router_write : async (String) -> Bool
+  /// `store.pendingCardHeader(thread)`: `[ {n, ts}, card ]` or Null.
+  pending_card_header : async (Double) -> J
+  /// `store.closeCard(viewer, thread, n, option)`: whether the card closed.
+  close_card : async (String, Double, Double, String) -> Bool
   /// lifecycle.ts `say(hub, thread, author, text, [], [], null, once)`: the message's n.
   say : async (Double, String, String, SayHooks?) -> Double
 }
@@ -368,6 +373,62 @@ async fn router_says_once(hub : RouterHub, stats : CommaStats, home : String?, w
   // The Task index tells a chat the Router wrote in by this form of its author (read/outflow.ts routerWrote): durable
   // where comma_router_once is not, and for the writes without a key, which leave none.
   let author = "slack:\{w.connect}:\{w.requester}"
+  // If the text matches an `action: "close"` choice on the thread's pending options card (or `close_card` was
+  // explicitly requested for a silent-close option), close that card silently without appending a message or waking
+  // the agent.
+  let trimmed = js_trim(w.text)
+  let pending = (hub.pending_card_header)(w.thread)
+  let matched_close : (Double, String)? = match pending {
+    Arr([header, card]) =>
+      match (num_of(prop(Some(header), "n")), str_of(prop(Some(card), "type")), arr_of(prop(Some(card), "options"))) {
+        (Some(n), Some("options"), Some(opts)) => {
+          let mut found : (Double, String)? = None
+          for o in opts {
+            match (str_of(prop(Some(o), "label")), str_of(prop(Some(o), "action"))) {
+              (Some(lbl), Some("close")) if js_trim(lbl) == trimmed => {
+                found = Some((n, js_trim(lbl)))
+                break
+              }
+              _ => ()
+            }
+          }
+          found
+        }
+        _ => None
+      }
+    _ => None
+  }
+  if matched_close is Some(_) || w.close_card {
+    let members = (hub.thread_sessions)(w.thread)
+    let mut foreign = members.length() == 0
+    for m in members {
+      if foreign {
+        break
+      }
+      let session = (hub.get_session)(str_of(prop(Some(m), "session")).unwrap_or(""))
+      if session is Null || (hub.ws_of)(session) != home {
+        foreign = true
+      }
+    }
+    if foreign {
+      raise fail_("no such chat of the workspace")
+    }
+    match matched_close {
+      Some((n, lbl)) => {
+        ignore((hub.close_card)(author, w.thread, n, lbl))
+        if w.key != "" {
+          stats.remember(w.key, n)
+        }
+        return n
+      }
+      None => {
+        if w.key != "" {
+          stats.remember(w.key, 0.0)
+        }
+        return 0.0
+      }
+    }
+  }
   if w.key == "" {
     let members = (hub.thread_sessions)(w.thread)
     let mut foreign = members.length() == 0

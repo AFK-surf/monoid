@@ -255,6 +255,7 @@ pub async fn CommaLive::say_handler(self : CommaLive, _peer : String, request : 
     key: field("key", ""),
     requester: field("requester", "Router"),
     connect: field("connect", "comma"),
+    close_card: prop(w, "closeCard") is Some(Bool(true)),
   })
   jobj([("seq", Num(seq))])
 }
@@ -310,7 +311,7 @@ pub fn CommaLive::scope(self : CommaLive, workspace : String) -> (CommaIndexes, 
   )
   let chats : CommaChats = {
     read: async fn(ref_, after, limit) { router_reads(stats, reads, ref_, after, limit) },
-    say: async fn(ref_, text, key, requester, connect) {
+    say: async fn(ref_, text, key, requester, connect, close_card) {
       if !self.within(workspace) {
         raise fail_("the workspace changed while writing")
       }
@@ -324,6 +325,7 @@ pub fn CommaLive::scope(self : CommaLive, workspace : String) -> (CommaIndexes, 
         key: if key == "" { "" } else { "\{connect}:\{key}" },
         requester,
         connect,
+        close_card,
       }
       match station {
         None => jobj([("seq", Num((self.said)(Some(workspace), w)))])
@@ -335,12 +337,13 @@ pub fn CommaLive::scope(self : CommaLive, workspace : String) -> (CommaIndexes, 
               ("workspace", jstr(workspace)),
               (
                 "say",
-                jobj([
-                  ("thread", Num(w.thread)),
-                  ("text", jstr(w.text)),
-                  ("key", jstr(w.key)),
-                  ("requester", jstr(w.requester)),
-                  ("connect", jstr(w.connect)),
+                jo([
+                  ("thread", Some(Num(w.thread))),
+                  ("text", Some(jstr(w.text))),
+                  ("key", Some(jstr(w.key))),
+                  ("requester", Some(jstr(w.requester))),
+                  ("connect", Some(jstr(w.connect))),
+                  ("closeCard", if w.close_card { Some(Bool(true)) } else { None }),
                 ]),
               ),
             ]),

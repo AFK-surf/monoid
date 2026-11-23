@@ -57,6 +57,9 @@ fn outflow_card(card : Json?) -> Json? {
       if o.get("recommended") == Some(Json::boolean(true)) {
         m["recommended"] = true
       }
+      if o.get("action") == Some(Json::string("close")) {
+        m["action"] = Json::string("close")
+      }
       options.push(Json::object(m))
     }
     return Some({ "type": "options", "options": Json::array(options) })

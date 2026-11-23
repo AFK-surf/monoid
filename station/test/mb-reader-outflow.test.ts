@@ -46,7 +46,7 @@ test("the MoonBit reader reads a chat's messages for the Router as the worker do
   };
   for (let i = 0; i < 120; i++) {
     const cardExtra = i === 4
-      ? { card: { type: "options", assignee: "ann@x", options: [{ label: " Ship ", detail: " deploy now ", recommended: true }, { label: "" }, ...Array.from({ length: 6 }, (_, k) => ({ label: `opt-${k}` }))] } }
+      ? { card: { type: "options", assignee: "ann@x", options: [{ label: " Ship ", detail: " deploy now ", recommended: true }, { label: "Skip", action: "close" }, { label: "" }, ...Array.from({ length: 6 }, (_, k) => ({ label: `opt-${k}` }))] } }
       : i === 8
         ? { card: { type: "login", login: "secret-login-id", assignee: "ann@x" } }
         : i === 12
@@ -56,6 +56,10 @@ test("the MoonBit reader reads a chat's messages for the Router as the worker do
             : {};
     const at = say(thread, i % 4 === 0 ? "agent" : "person", i % 4 === 0 ? "mine" : authors[i % authors.length]!, `message ${i}`,
       { ...(i % 13 === 0 ? { letter: { way: "out", title: "To Y", link: null } } : {}), ...cardExtra });
+    if (i === 4) {
+      const cardRow = store.messageAt(thread, at)!;
+      assert.equal(store.closeCard("ann@x", thread, cardRow.n, "Skip", "en"), true);
+    }
     if (i % 9 === 0) store.editMessage("ember", "CHAT", "long", at, `message ${i}, edited`);
   }
   say(homeChat, "person", "local", "at home");
@@ -83,7 +87,7 @@ test("the MoonBit reader reads a chat's messages for the Router as the worker do
     const prepared = await all(program);
     assert.deepEqual(prepared, await all(worker));
     assert.ok(JSON.stringify(prepared).includes("message 125"));
-    for (const sign of ["\"name\":\"Ann\"", "\"email\":\"ann@x\"", "\"name\":\"Fei\"", "\"via\":\"feishu\"", "\"via\":\"local\"", "\"via\":\"cloud\"", "edited", "\"kind\":\"edit\"", "\"messagesOnly\":true", "\"more\":true", "at home", "\"type\":\"options\"", "\"label\":\"Ship\"", "\"type\":\"login\"", "\"type\":\"secret\"", "\"placeholder\":\"sk_test_...\""])
+    for (const sign of ["\"name\":\"Ann\"", "\"email\":\"ann@x\"", "\"name\":\"Fei\"", "\"via\":\"feishu\"", "\"via\":\"local\"", "\"via\":\"cloud\"", "edited", "\"kind\":\"edit\"", "\"messagesOnly\":true", "\"more\":true", "at home", "\"type\":\"options\"", "\"label\":\"Ship\"", "\"action\":\"close\"", "\"closed\":true", "\"choice\":\"Skip\"", "\"type\":\"login\"", "\"type\":\"secret\"", "\"placeholder\":\"sk_test_...\""])
       assert.ok(said.includes(sign), sign);
     assert.equal(said.includes("secret-login-id"), false);
     assert.equal(said.includes("secret-vault-id"), false);

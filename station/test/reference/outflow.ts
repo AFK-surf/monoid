@@ -81,6 +81,7 @@ export function outflowCard(card: Json): Json | null {
         label: takeChars(o.label.trim(), 100),
         ...(typeof o.detail === "string" && o.detail.trim() !== "" ? { detail: takeChars(o.detail.trim(), 300) } : {}),
         ...(o.recommended === true ? { recommended: true } : {}),
+        ...(o.action === "close" ? { action: "close" } : {}),
       }));
     return { type: "options", options };
   }
@@ -255,7 +256,13 @@ export function outflowMessages(s: Store, thread: number, after: number, limit: 
   return {
     thread,
     messages: page.map((e) => {
-      const card = e.kind === "message" ? outflowCard(cardOfEntry(e)) : null;
+      let card = e.kind === "message" ? outflowCard(cardOfEntry(e)) : null;
+      if (card !== null) {
+        const chosen = s.db.prepare("SELECT option FROM card_choices WHERE thread = ? AND n = ?").get(thread, e.n) as { option?: unknown } | undefined;
+        const choice = typeof chosen?.option === "string" && chosen.option.trim() !== "" ? chosen.option : null;
+        const closed = choice !== null || s.db.prepare("SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?").get(thread, e.n) !== undefined;
+        if (closed) card = { ...card, closed: true, ...(choice !== null ? { choice } : {}) };
+      }
       return {
         n: e.n, kind: e.kind, target: e.target, authorKind: e.authorKind, author: e.author, text: e.text, at: e.at,
         ...(e.authorKind === "person" && typeof e.author === "string" ? { person: named(e.author) } : {}),

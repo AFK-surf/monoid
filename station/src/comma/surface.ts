@@ -361,7 +361,7 @@ export type CommaIndexes = Pick<CommaStats, "stats" | "tasks" | "start">;
 /// itself (`task.say`, once per key).
 export type CommaChats = {
   read(ref: string, after: number, limit: number): Promise<Json>;
-  say(ref: string, text: string, key: string, requester: string, connect: string): Promise<Json>;
+  say(ref: string, text: string, key: string, requester: string, connect: string, closeCard?: boolean): Promise<Json>;
 };
 
 export class CommaSurface extends ConnectedSurface {
@@ -725,7 +725,7 @@ export class CommaSurface extends ConnectedSurface {
         if (said.trim() === "") throw new Error("text is required");
         // As people see who writes: its Group (several Comma workspaces and Agent Swarms may write here).
         const who = text(params, "requester_name") || text(params, "requester") || "Router";
-        const result = await this.chats.say(text(params, "task"), said, text(params, "key"), who, this.id);
+        const result = await this.chats.say(text(params, "task"), said, text(params, "key"), who, this.id, params?.close_card === true);
         if (!this.inScope()) throw new Error("the workspace changed while writing");
         return result;
       }

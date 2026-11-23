@@ -229,7 +229,7 @@ pub fn Attachment::of_j(@jsjson.JValue) -> Self
 
 pub(all) struct CommaChats {
   read : async (String, Double, Double) -> @jsjson.JValue
-  say : async (String, String, String, String, String) -> @jsjson.JValue
+  say : async (String, String, String, String, String, Bool) -> @jsjson.JValue
 }
 
 pub(all) struct CommaConnect {
@@ -492,6 +492,8 @@ pub(all) struct RouterHub {
   ws_of : async (@jsjson.JValue) -> String?
   deliver : async (Double, Double, Array[String], String, String?) -> Unit
   complete_router_write : async (String) -> Bool
+  pending_card_header : async (Double) -> @jsjson.JValue
+  close_card : async (String, Double, Double, String) -> Bool
   say : async (Double, String, String, SayHooks?) -> Double
 }
 
@@ -501,6 +503,7 @@ pub(all) struct RouterSay {
   key : String
   requester : String
   connect : String
+  close_card : Bool
 }
 
 type RouterWrite

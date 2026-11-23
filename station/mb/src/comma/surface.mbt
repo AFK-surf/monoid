@@ -447,7 +447,7 @@ pub(all) struct CommaIndexes {
 /// (`task.say`, once per key).
 pub(all) struct CommaChats {
   read : async (String, Double, Double) -> J
-  say : async (String, String, String, String, String) -> J
+  say : async (String, String, String, String, String, Bool) -> J
 }
 
 ///|
@@ -1158,7 +1158,7 @@ async fn CommaSurface::handle(self : CommaSurface, method : String, params : J) 
           }
         n => n
       }
-      let result = (chats.say)(text(p, "task"), said, text(p, "key"), who, self.id)
+      let result = (chats.say)(text(p, "task"), said, text(p, "key"), who, self.id, prop(p, "close_card") is Some(Bool(true)))
       if !(self.in_scope)() {
         raise fail_("the workspace changed while writing")
       }
