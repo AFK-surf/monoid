@@ -319,7 +319,7 @@ fn level_by_newest(
   ignore(
     rt.fork(async fn() {
       try {
-        let (h, done) = level_newest(head, newest, async fn(h) {
+        let (h, done) = level_newest(head, async fn(_) { newest() }, async fn(h) {
           went.val += 1
           level(place, "W1", { head: h, batch: b => batch(b), sources: _ => [] })
         })
@@ -844,4 +844,129 @@ test "the export's process: a long line in many pieces, several lines in one pie
   )
   rt.advance(1)
   assert_eq(got, ["1:\{big.length()}:true", "2", "3", "4", "5", "6"])
+}
+
+///|
+test "level_newest awaits an in-flight passing export on ENOENT and retries with the new head" {
+  let rt = @effect.Runtime::new()
+  let b1 = "0000000001-0000000004-00000000.ndjson.zst"
+  let b2 = "0000000001-0000000009-00000000.ndjson.zst"
+  let old = head_at(4, [b1])
+  let next = head_at(9, [b2])
+  let cur_head = Ref(old)
+  let passing_done : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let passing : Ref[@effect.Deferred[Unit]?] = Ref(Some(passing_done))
+  let put = []
+  let place : Place = {
+    held: fn(_, _) { Held::nothing() },
+    put: fn(_, _, _, kind, name, _) { put.push("\{kind}:\{name}") },
+    put_file: fn(_, _, _, _) { () },
+    drop: fn(_, _, _, _, _) { () },
+  }
+  let went = Ref(0)
+  let got = Ref("")
+  let newest = async fn(cur : J) -> J? {
+    let mut h = Some(cur_head.val)
+    if h is Some(x) && head_said(x) == head_said(cur) {
+      match passing.val {
+        Some(d) => {
+          d.wait()
+          h = Some(cur_head.val)
+        }
+        None => ()
+      }
+    }
+    h
+  }
+  ignore(
+    rt.fork(async fn() {
+      try {
+        let (h, done) = level_newest(old, newest, async fn(h) {
+          went.val += 1
+          level(place, "W1", { head: h, batch: b => batches_but([b1])(b), sources: _ => [] })
+        })
+        got.val = match done {
+          Level(to, _, _) => "\{head_said(h)} level to \{num_text(to)}"
+          Behind => "behind"
+        }
+      } catch {
+        e => got.val = "failed: \{code_of(e)} \{message_of(e)}"
+      }
+    }),
+  )
+  // First attempt hits ENOENT on b1 and suspends waiting on the in-flight passing Deferred.
+  rt.advance(1)
+  assert_eq(went.val, 1)
+  assert_eq(got.val, "")
+  // In-flight pass finishes with the new head -> level_newest wakes up and retries with next.
+  cur_head.val = next
+  passing.val = None
+  ignore(passing_done.succeed(()))
+  rt.advance(1)
+  assert_eq(went.val, 2)
+  assert_eq(got.val, "lz5x0-0123abcd:9:90 level to 9")
+  assert_eq(put, ["batch:" + b2, "head:head.json"])
+}
+
+///|
+test "level treats put_file ENOENT for non-transcript files as missing, while re-raising ENOENT for transcriptFiles chunks" {
+  let rt = @effect.Runtime::new()
+  let gen = "lz5x0-0123abcd"
+  let b1 = "0000000001-0000000004-00000000.ndjson.zst"
+  let sent = []
+  let put = []
+  let place : Place = {
+    held: fn(_, _) { Held::nothing() },
+    put: fn(_, _, _, kind, name, _) { put.push("\{kind}:\{name}") },
+    put_file: fn(_, _, hash, source) {
+      if hash == "f1" || hash == "t1" {
+        raise Thrown("Error", jo([("message", js("ENOENT: no such file or directory, open '\{source}'")), ("code", js("ENOENT"))]))
+      }
+      sent.push(hash)
+    },
+    drop: fn(_, _, _, _, _) { () },
+  }
+  // Case 1: ordinary attachment f1 vanishes before put_file -> missing += 1, f2 and head still succeed.
+  let head1 = head_naming(gen, 4, [b1], ["f1", "f2"], [])
+  let got1 : Ref[Levelled?] = Ref(None)
+  ignore(
+    rt.fork(async fn() {
+      got1.val = Some(
+        level(place, "W1", {
+          head: head1,
+          batch: b => @utf8.encode(b),
+          sources: async fn(hs) { hs.map(h => (h, "/src/\{h}")) },
+        }),
+      )
+    }),
+  )
+  rt.advance(1)
+  guard got1.val is Some(Level(to, missing, k)) else { fail("expected Level") }
+  assert_eq(to, 4.0)
+  assert_eq(missing, 1)
+  assert_eq(sent, ["f2"])
+  assert_eq(put, ["batch:" + b1, "head:head.json"])
+  assert_false(k.files.contains("f1"))
+  assert_true(k.files.contains("f2"))
+
+  // Case 2: transcriptFiles chunk t1 hits ENOENT -> still raises ENOENT for outer level_newest retry.
+  let head2 = head_naming(gen, 4, [b1], [], ["t1"])
+  let err2 = Ref("")
+  ignore(
+    rt.fork(async fn() {
+      try {
+        ignore(
+          level(place, "W1", {
+            head: head2,
+            batch: b => @utf8.encode(b),
+            sources: async fn(hs) { hs.map(h => (h, "/src/\{h}")) },
+          }),
+        )
+      } catch {
+        e => err2.val = code_of(e)
+      }
+    }),
+  )
+  rt.advance(1)
+  assert_eq(err2.val, "ENOENT")
 }

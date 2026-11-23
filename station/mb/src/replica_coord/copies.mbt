@@ -1026,6 +1026,25 @@ fn Copies::head_of_ws(self : Copies, ws : String) -> J? {
 }
 
 ///|
+async fn Copies::newest_head(self : Copies, ws : String, current : J) -> J? {
+  let mut next = self.head_of_ws(ws)
+  let same = match next {
+    None => true
+    Some(h) => head_said(h) == head_said(current)
+  }
+  if same {
+    match self.eloop().passing {
+      Some(d) => {
+        d.wait()
+        next = self.head_of_ws(ws)
+      }
+      None => ()
+    }
+  }
+  next
+}
+
+///|
 /// What a place brought level with `head` is said to hold.
 fn head_said(head : J) -> String {
   "\{head_gen(head)}:\{num_text(head_to(head))}:\{num_text(head_made(head))}"
@@ -1039,7 +1058,7 @@ let stale_heads_most : Int = 2
 /// `go` with `head`; where a file it named is gone (ENOENT: the export compacted its batches into new ones while it
 /// went) and a newer head is out, `go` again with that one, at most `stale_heads_most` times, rather than a failure of
 /// the place's. The head it went with, and what it found.
-async fn level_newest(head : J, newest : () -> J?, go : async (J) -> Levelled) -> (J, Levelled) {
+async fn level_newest(head : J, newest : async (J) -> J?, go : async (J) -> Levelled) -> (J, Levelled) {
   let mut head = head
   let mut again = 0
   while true {
@@ -1047,9 +1066,9 @@ async fn level_newest(head : J, newest : () -> J?, go : async (J) -> Levelled) -
     match tried {
       Ok(done) => return (head, done)
       Err(e) => {
-        guard code_of(e) == "ENOENT" &&
+        guard (code_of(e) == "ENOENT" || message_of(e).has_prefix("ENOENT:")) &&
           again < stale_heads_most &&
-          newest() is Some(next) &&
+          newest(head) is Some(next) &&
           head_batches(next).length() > 0 &&
           head_said(next) != head_said(head) else {
           raise e
@@ -1113,11 +1132,10 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
   let run = self.w.run(async fn() {
     try {
       let place = peer_place(self.w, peer)
-      let (head, first) = level_newest(head, () => self.head_of_ws(ws), async fn(h) {
+      let (head, first) = level_newest(head, async fn(cur) { self.newest_head(ws, cur) }, async fn(h) {
         level(place, ws, self.own(h), known=k.known)
       })
       let mut synced_head = head
-      let said = head_said(head)
       let mut done = first
       if done is Behind {
         // This station's own copy is behind what that station keeps of it: a new generation, written beside it.
@@ -1152,7 +1170,7 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
         Level(to, missing, known) => {
           let at = self.w.now()
           k.known = Some(known)
-          k.head = Some(said)
+          k.head = Some(head_said(synced_head))
           k.reason = None
           k.to = to
           k.missing = missing
@@ -1288,11 +1306,10 @@ fn Copies::level_s3(self : Copies, ws : String, target : S3TargetConfig, now : B
       let s3 = self.s3_place(target)
       let place = s3.place()
       let include_transcripts = target.include_transcripts
-      let (head, first) = level_newest(head, () => self.head_of_ws(ws), async fn(h) {
+      let (head, first) = level_newest(head, async fn(cur) { self.newest_head(ws, cur) }, async fn(h) {
         level(place, ws, self.own(h), known=k.known, include_transcripts~)
       })
       let mut synced_head = head
-      let said = head_said(head)
       let mut done = first
       if done is Behind {
         let begun = match self.begun.get(ws) {
@@ -1326,7 +1343,7 @@ fn Copies::level_s3(self : Copies, ws : String, target : S3TargetConfig, now : B
         Level(to, missing, known) => {
           let at = self.w.now()
           k.known = Some(known)
-          k.head = Some(said)
+          k.head = Some(head_said(synced_head))
           k.reason = None
           k.to = to
           k.missing = missing

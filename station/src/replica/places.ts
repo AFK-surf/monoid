@@ -275,6 +275,9 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
   const wanted = headFileHashes(own.head, includeTranscripts);
   const lacking = wanted.filter((h) => !k.files.has(h));
   const sources = lacking.length === 0 ? new Map<string, string>() : await own.sources(lacking);
+  const transcriptSet = includeTranscripts && own.head.transcriptFiles !== undefined
+    ? new Set(Object.keys(own.head.transcriptFiles))
+    : new Set<string>();
   let missing = 0;
   for (const hash of lacking) {
     const source = sources.get(hash);
@@ -282,7 +285,16 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
       missing++;
       continue;
     }
-    await place.putFile(ws, origin, hash, source);
+    try {
+      await place.putFile(ws, origin, hash, source);
+    } catch (e) {
+      const enoent = (e as { code?: unknown } | null)?.code === "ENOENT" || (e instanceof Error && e.message.startsWith("ENOENT:"));
+      if (enoent && !transcriptSet.has(hash)) {
+        missing++;
+        continue;
+      }
+      throw e;
+    }
     k.files.add(hash);
   }
   if (k.to !== own.head.to || k.made !== own.head.made) {

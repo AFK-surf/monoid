@@ -482,13 +482,26 @@ pub async fn level(place : Place, ws : String, own : Own, known? : Known? = None
       source_map[p.0] = p.1
     }
   }
+  let transcript_set : Map[String, Bool] = if include_transcripts {
+    set_of(head_transcript_files(own.head))
+  } else {
+    {}
+  }
   let mut missing = 0
   for hash in lacking {
     match source_map.get(hash) {
       None => missing += 1
       Some(source) => {
-        (place.put_file)(ws, origin, hash, source)
-        k.files[hash] = true
+        let tried : Result[Unit, Error] = try Ok((place.put_file)(ws, origin, hash, source)) catch { e => Err(e) }
+        match tried {
+          Ok(_) => k.files[hash] = true
+          Err(e) =>
+            if (code_of(e) == "ENOENT" || message_of(e).has_prefix("ENOENT:")) && !transcript_set.contains(hash) {
+              missing += 1
+            } else {
+              raise e
+            }
+        }
       }
     }
   }

@@ -5,6 +5,7 @@
 // workspace's copies stay with its stations; a station rolled back loses nothing they hold.
 import assert from "node:assert/strict";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "node:test";
@@ -14,8 +15,9 @@ import { PeerBus, Refused, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { type Line, hearLines } from "../src/ops/log.ts";
 import { Fibers } from "../src/ops/fibers.ts";
 import { Copies, keptDir } from "../src/replica/copies.ts";
+import type { Head } from "../src/replica/format.ts";
 import { keepers } from "../src/replica/peers.ts";
-import { FolderPlace } from "../src/replica/places.ts";
+import { FolderPlace, type Place, level, nothingHeld } from "../src/replica/places.ts";
 import { readCopy, takeBack } from "./reference/replica-restore.ts";
 import { InlineRunner } from "./reference/replica-work.ts";
 import { Store } from "../src/store/store.ts";
@@ -482,4 +484,160 @@ test("the export failing is said in the settings, and tried again with a backoff
   await mesh.clock.move(60_000);
   await a.copies.settle();
   assert.equal(((await a.copies.overview(HOME)) as Json).stopped, null);
+});
+
+function deferred<T = void>() {
+  let resolve!: (v: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+test("a batch compacted away while an export pass is in flight: Copies waits for #passing and retries with the newer head without warning", async () => {
+  const mesh = new Mesh();
+  const [A, B] = [id("a"), id("b")];
+  mesh.rosters.set(HOME, [A, B]);
+  const made = station();
+  const a = mesh.add(A, [HOME], made);
+  const b = mesh.add(B, [HOME]);
+
+  // Intercept B's first replica.held so A's initial #level pauses while holding head1 (keeping.error is null).
+  const heldReached = deferred<void>();
+  const heldGate = deferred<void>();
+  const origHandle = b.bus.handle.bind(b.bus);
+  let interceptHeld = true;
+  b.bus.handle = async (ws, peer, req) => {
+    if (interceptHeld && req?.method === "replica.held") {
+      interceptHeld = false;
+      heldReached.resolve();
+      await heldGate.promise;
+    }
+    return origHandle(ws, peer, req);
+  };
+
+  // Wrap A's runner.pass: on the second pass, simulate compaction replacing b1 with b1New before #passing finishes.
+  const real = (a as Json).runner as InlineRunner;
+  const realPass = real.pass.bind(real);
+  const passStarted = deferred<void>();
+  const passGate = deferred<void>();
+  let passCount = 0;
+  let replacedFrom: string | null = null;
+  let replacedTo: string | null = null;
+  let replacedLogDir: string | null = null;
+  real.pass = async (told) => {
+    passCount++;
+    const res = await realPass(told);
+    const h = res.heads[HOME];
+    if (passCount === 2 && h !== undefined && h.batches.length > 0) {
+      const b1 = h.batches[0]!;
+      const logDir = join(a.data, "replica", "own", HOME, h.gen, "log");
+      const b1Path = join(logDir, b1);
+      const b1New = b1.replace(/-([0-9a-f]{8})\.ndjson\.zst$/, "-deadbeef.ndjson.zst");
+      cpSync(b1Path, join(logDir, b1New));
+      rmSync(b1Path);
+      replacedFrom = b1;
+      replacedTo = b1New;
+      replacedLogDir = logDir;
+      h.batches = h.batches.map((x) => (x === b1 ? b1New : x));
+      passStarted.resolve();
+      await passGate.promise;
+    } else if (replacedFrom !== null && replacedTo !== null && h !== undefined) {
+      h.batches = h.batches.map((x) => (x === replacedFrom ? replacedTo! : x));
+    }
+    return res;
+  };
+
+  const lines: Line[] = [];
+  hearLines((l) => lines.push(l));
+  try {
+    await b.copies.start();
+    const aStart = a.copies.start();
+    await heldReached.promise;
+
+    // Trigger an in-flight #pass() on A that deletes b1 and holds #passing open on passGate.
+    const thread = made.store.sessionThreads("chat:a")[0]!.thread.id;
+    made.store.insertMessage({ thread, ts: "race.2", authorKind: "person", author: "p@x", text: "during compact" });
+    await mesh.clock.move(1_000);
+    await passStarted.promise;
+
+    // Release replica.held: A's #level tries own.batch(b1) -> ENOENT -> awaits in-flight #passing.
+    heldGate.resolve();
+    await readFile(join(replacedLogDir!, replacedFrom!)).catch(() => {});
+    passGate.resolve();
+
+    await aStart;
+    await mesh.settle();
+
+    assert.deepEqual(
+      lines.filter((l) => l.message === "a place not brought level"),
+      [],
+      "no warning emitted when ENOENT recovers via in-flight #passing",
+    );
+    const o = (await a.copies.overview(HOME)) as Json;
+    assert.equal(o.keepers.find((k: Json) => k.station === B).error, null);
+    const keptB = new FolderPlace(keptDir(b.data));
+    const heldAfter = await keptB.held(HOME, A);
+    const { folded } = readCopy(join(keptDir(b.data), HOME, A, heldAfter.gens.at(-1)!.gen));
+    assert.ok(folded.table("entries").some((r) => r.text === "during compact"));
+  } finally {
+    hearLines(null);
+  }
+});
+
+test("level treats putFile ENOENT for an ordinary attachment as missing, while rethrowing ENOENT for transcriptFiles chunks", async () => {
+  const origin = id("a");
+  const fileHash = "1".repeat(64);
+  const chunkHash = "2".repeat(64);
+  const batch = "0000000001-0000000004-00000000.ndjson.zst";
+  const enoent = (path: string) => Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: "ENOENT" });
+
+  // Case 1: ordinary attachment disappears between sources() and putFile() -> missing += 1, head still written.
+  const putKinds: string[] = [];
+  const place1: Place = {
+    held: async () => nothingHeld(),
+    put: async (_ws, _origin, _gen, kind, name) => { putKinds.push(`${kind}:${name}`); },
+    putFile: async (_ws, _origin, _hash, source) => { throw enoent(String(source)); },
+    drop: async () => {},
+  };
+  const head1: Head = {
+    v: 1,
+    origin,
+    workspace: HOME,
+    name: "a",
+    dataDir: "",
+    gen: "lz5x0-0123abcd",
+    to: 4,
+    made: 40,
+    chats: 1,
+    messages: 1,
+    bytes: 10,
+    batches: [batch],
+    files: { [fileHash]: 10 },
+    runs: [{ run: "r1", from: 1 }],
+  };
+  const done1 = await level(place1, HOME, {
+    head: head1,
+    batch: async () => Buffer.from("b"),
+    sources: async () => new Map([[fileHash, "/gone/attachment"]]),
+  });
+  assert.equal(done1.behind, false);
+  if (!done1.behind) {
+    assert.equal(done1.missing, 1);
+    assert.equal(done1.known.files.has(fileHash), false);
+  }
+  assert.deepEqual(putKinds, [`batch:${batch}`, "head:head.json"]);
+
+  // Case 2: transcriptFiles chunk disappears -> ENOENT still throws so outer levelNewest can retry with a newer head.
+  const head2: Head = {
+    ...head1,
+    files: {},
+    transcriptFiles: { [chunkHash]: 10 },
+  };
+  await assert.rejects(
+    level(place1, HOME, {
+      head: head2,
+      batch: async () => Buffer.from("b"),
+      sources: async () => new Map([[chunkHash, "/gone/chunk"]]),
+    }),
+    (e: unknown) => (e as { code?: unknown } | null)?.code === "ENOENT",
+  );
 });

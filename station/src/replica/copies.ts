@@ -11,7 +11,7 @@ import type { Fibers } from "../ops/fibers.ts";
 import type { StoreChange } from "../store/rows.ts";
 import { type Places, type Told, nothingTold } from "./export.ts";
 import { GEN, type Head, STATION, WORKSPACE, genMade } from "./format.ts";
-import { FolderPlace, type Held, type Known, type Place, handOver, holdsAll, level } from "./places.ts";
+import { FolderPlace, type Held, type Known, type Levelled, type Place, handOver, holdsAll, level } from "./places.ts";
 import { type Ask, COPIES, PeerPlace, keepers, ranked, serve } from "./peers.ts";
 import { Refused } from "../mesh/bus.ts";
 import { NotEmpty, type Outcome, type Ready, copyDir, outcomeFile, readyFile } from "./restore.ts";
@@ -204,6 +204,41 @@ export function tell(t: Told, change: StoreChange): boolean {
       return true;
     default:
       return false;
+  }
+}
+
+/// Times a place is brought level again with a newer head where a batch or chunk the last named went meanwhile.
+const STALE_HEADS_MOST = 2;
+
+function isEnoent(e: unknown): boolean {
+  return (e as { code?: unknown } | null)?.code === "ENOENT" || (e instanceof Error && e.message.startsWith("ENOENT:"));
+}
+
+function headSaid(head: Head): string {
+  return `${head.gen}:${head.to}:${head.made}`;
+}
+
+async function levelNewest(
+  head: Head,
+  newest: (cur: Head) => Promise<Head | undefined>,
+  go: (head: Head) => Promise<Levelled>,
+): Promise<{ head: Head; done: Levelled }> {
+  let cur = head;
+  let again = 0;
+  for (;;) {
+    try {
+      return { head: cur, done: await go(cur) };
+    } catch (e) {
+      if (isEnoent(e) && again < STALE_HEADS_MOST) {
+        const next = await newest(cur);
+        if (next !== undefined && next.batches.length > 0 && headSaid(next) !== headSaid(cur)) {
+          again++;
+          cur = next;
+          continue;
+        }
+      }
+      throw e;
+    }
   }
 }
 
@@ -641,6 +676,15 @@ export class Copies {
     return "offline";
   }
 
+  async #newestHead(ws: string, current: Head): Promise<Head | undefined> {
+    let next = this.#passed?.heads[ws];
+    if ((next === undefined || headSaid(next) === headSaid(current)) && this.#passing !== null) {
+      await this.#passing.catch(() => {});
+      next = this.#passed?.heads[ws];
+    }
+    return next;
+  }
+
   /// `now`: not waiting for a retry already set; `fresh`: what the place holds asked of it, not taken as known.
   #level(ws: string, peer: string, o: { now?: boolean; fresh?: boolean }): void {
     const now = o.now === true;
@@ -660,7 +704,7 @@ export class Copies {
     if (head === undefined || head.batches.length === 0) return;
     if (o.fresh === true) k.known = null;
     // (a place level with this head already: nothing to send)
-    const said = `${head.gen}:${head.to}:${head.made}`;
+    const said = headSaid(head);
     if (k.known !== null && k.head === said && k.error === null) return;
     k.busy = true;
     const keeping = k;
@@ -669,15 +713,20 @@ export class Copies {
     const run = (async () => {
       try {
         const place = new PeerPlace(peer, this.#d.ask);
-        let syncedHead = head;
-        let done = await level(place, ws, this.#own(head), keeping.known);
+        let { head: syncedHead, done } = await levelNewest(
+          head,
+          (cur) => this.#newestHead(ws, cur),
+          (h) => level(place, ws, this.#own(h), keeping.known),
+        );
         if (done.behind) {
           // This station's own copy is behind what that station keeps of it: its data was rolled back. A new
           // generation (one for all the places that find it so), written there beside what it keeps.
           let begun = this.#begun.get(ws);
-          if (begun === undefined || begun.from !== head.gen) {
-            begun = { from: head.gen, done: (async () => {
-              const held = await place.held(ws, head.origin);
+          if (begun === undefined || begun.from !== syncedHead.gen) {
+            const fromGen = syncedHead.gen;
+            const origin = syncedHead.origin;
+            begun = { from: fromGen, done: (async () => {
+              const held = await place.held(ws, origin);
               await this.#d.runner.newGenerations(Math.max(0, ...held.gens.map((g) => genMade(g.gen))));
               await this.settleExport();
             })() };
@@ -691,7 +740,7 @@ export class Copies {
           if (done.behind) throw new Error("that station keeps more of this station's than it has");
         }
         keeping.known = done.known;
-        keeping.head = said;
+        keeping.head = headSaid(syncedHead);
         keeping.reason = null;
         keeping.to = done.to;
         keeping.missing = done.missing;
@@ -782,7 +831,7 @@ export class Copies {
     const head = this.#passed?.heads[ws];
     if (head === undefined || head.batches.length === 0) return;
     if (o.fresh === true) k.known = null;
-    const said = `${head.gen}:${head.to}:${head.made}`;
+    const said = headSaid(head);
     if (k.known !== null && k.head === said && k.error === null) return;
     k.busy = true;
     const keeping = k;
@@ -791,16 +840,21 @@ export class Copies {
     const run = (async () => {
       try {
         const place = this.#s3Place(target);
-        let syncedHead = head;
         const opts = { includeTranscripts: target.includeTranscripts };
-        let done = await level(place, ws, this.#own(head), keeping.known, opts);
+        let { head: syncedHead, done } = await levelNewest(
+          head,
+          (cur) => this.#newestHead(ws, cur),
+          (h) => level(place, ws, this.#own(h), keeping.known, opts),
+        );
         if (done.behind) {
           let begun = this.#begun.get(ws);
-          if (begun === undefined || begun.from !== head.gen) {
+          if (begun === undefined || begun.from !== syncedHead.gen) {
+            const fromGen = syncedHead.gen;
+            const origin = syncedHead.origin;
             begun = {
-              from: head.gen,
+              from: fromGen,
               done: (async () => {
-                const held = await place.held(ws, head.origin);
+                const held = await place.held(ws, origin);
                 await this.#d.runner.newGenerations(Math.max(0, ...held.gens.map((g) => genMade(g.gen))));
                 await this.settleExport();
               })(),
@@ -815,7 +869,7 @@ export class Copies {
           if (done.behind) throw new Error("that S3 target keeps more of this station's than it has");
         }
         keeping.known = done.known;
-        keeping.head = said;
+        keeping.head = headSaid(syncedHead);
         keeping.reason = null;
         keeping.to = done.to;
         keeping.missing = done.missing;
