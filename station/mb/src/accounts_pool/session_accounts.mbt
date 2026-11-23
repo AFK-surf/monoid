@@ -899,7 +899,11 @@ pub async fn SessionAccounts::run_on(
   let allows = self.allowed(key, cfg)
   let all = cfg.profiles.filter(p => p.runtimes.contains(runtime))
   let workspace_candidates = all.filter(allows)
-  let elsewhere = async fn(kept : Array[String]?, only_paid : Bool) -> Profile? {
+  let elsewhere = async fn(
+    kept : Array[String]?,
+    only_paid : Bool,
+    avoid_crowded_capped : Bool,
+  ) -> Profile? {
     if !across || row.pinned || kept is Some(_) || row.model is None {
       return None
     }
@@ -913,10 +917,11 @@ pub async fn SessionAccounts::run_on(
       allows,
       only_paid~,
       force_cap~,
+      avoid_crowded_capped~,
     )
   }
   if workspace_candidates.length() == 0 {
-    match elsewhere(None, false) {
+    match elsewhere(None, false, false) {
       Some(p) => return p
       None => ()
     }
@@ -954,8 +959,9 @@ pub async fn SessionAccounts::run_on(
       can=id => self.can(cfg, id, row.model),
       health_of=id => self.health_of(cfg, id),
       cheap_to_leave=async fn() { self.cheap_to_leave(key) },
-      elsewhere=async fn() { elsewhere(kept_profiles, false) },
-      elsewhere_paid=Some(async fn() { elsewhere(kept_profiles, true) }),
+      elsewhere=async fn() { elsewhere(kept_profiles, false, false) },
+      elsewhere_paid=Some(async fn() { elsewhere(kept_profiles, true, false) }),
+      upgrade_elsewhere_paid=Some(async fn() { elsewhere(kept_profiles, true, true) }),
       pick=async fn(among) { self.pick(cfg, among, row.model, false, except=key) },
     ) {
     Stay(p) => return p
@@ -1000,7 +1006,8 @@ priv enum RunOnChoice {
 ///|
 /// The choice `SessionAccounts::run_on` makes among `candidates`, apart from the store and the host: `crowded`, `can`
 /// and `health_of` tell how each profile is doing for the session's model, `cheap_to_leave` whether the session loses
-/// little by going on afresh, `elsewhere` a profile of another runtime it may be taken on by, `pick` the pool's pick.
+/// little by going on afresh, `elsewhere` a profile of another runtime it may be taken on by, `upgrade_elsewhere_paid`
+/// another runtime's paid-for profile one billed per use goes back to, `pick` the pool's pick.
 async fn choose_run_on_profile(
   key : String,
   row : Row,
@@ -1016,6 +1023,7 @@ async fn choose_run_on_profile(
   cheap_to_leave~ : async () -> Bool,
   elsewhere~ : async () -> Profile?,
   elsewhere_paid? : (async () -> Profile?)? = None,
+  upgrade_elsewhere_paid? : (async () -> Profile?)? = None,
   pick~ : async (Array[Profile]) -> Profile,
 ) -> RunOnChoice {
   let current = candidates.iter().find_first(p => p.id == row.profile)
@@ -1078,6 +1086,14 @@ async fn choose_run_on_profile(
             paid(p) && (cap_of(p) is None || (!capped(p) && !crowded(p)))
           })
         among = candidates.filter(better)
+        // Billed per use, none of its runtime's paid for able to take it: back to another runtime's paid for that can
+        // (one `spend` or `take_across` left when its allowance ran out, refilled, or one added since).
+        if among.length() == 0 && !paid(c) && !holding {
+          match (match upgrade_elsewhere_paid { Some(f) => f(); None => None }) {
+            Some(p) => return Stay(p)
+            None => ()
+          }
+        }
         // Leaving a billed-per-use profile for a paid subscription or leaving a quota-unavailable profile for a healthy
         // one happens on the next turn without waiting for `cheap_to_leave`; moving off a crowded profile to an uncrowded
         // one of the same tier still waits for `cheap_to_leave`.
@@ -1404,6 +1420,7 @@ async fn SessionAccounts::take_across(
   allows : (Profile) -> Bool,
   only_paid? : Bool = false,
   force_cap? : Bool = false,
+  avoid_crowded_capped? : Bool = false,
 ) -> Profile? {
   guard runtime_kind(Some(Str(row.runtime))) is Some(runtime) else { return None }
   if row.ultrafast() { return None }
@@ -1418,12 +1435,19 @@ async fn SessionAccounts::take_across(
       )
     None => false
   }
+  // (`avoid_crowded_capped`: none with a concurrency cap whose windows for the model are crowded, as `run_on` leaves
+  // for one paid for only then)
+  let now = (self.now)()
+  let crowded_capped = (p : Profile) => avoid_crowded_capped &&
+    self.account_max_sessions(cfg, p.id) is Some(_) &&
+    urgency(self.health_for(cfg, p.id, Some(model)).quota, now).crowded
   let candidates = cfg.profiles.filter(p => !p.runtimes.contains(runtime) &&
     allows(p) &&
     runs(p, model) &&
     self.can(cfg, p.id, Some(model)) &&
     (!only_paid || !billed_per_use(p.raw)) &&
-    !capped(p))
+    !capped(p) &&
+    !crowded_capped(p))
   if candidates.length() == 0 {
     return None
   }

@@ -4920,3 +4920,88 @@ test("the auto-archive leaves the latest conversations of each workspace in the 
   assert.deepEqual(archived(), ["second", "third"]);
   await r.close();
 });
+
+test("an Antigravity session falls back to Google Vertex AI only once its subscription is spent, and goes back to a subscription refilled or added", async () => {
+  const r = new Rig();
+  try {
+    r.edit((raw) => {
+      raw.profiles = [
+        { id: "ag", name: "Antigravity", runtime: "agy", home: "homes/ag", access: { kind: "subscription" }, models: ["gemini-4-neon"] },
+        { id: "vx", name: "Google Vertex AI", runtime: "agy", home: "homes/vx", access: { kind: "api-provider", provider: "google-vertex", key: "{}" }, models: ["gemini-4-neon"] },
+      ];
+    });
+    const [key] = await newSession(r.hub, { runtime: "agy", model: "gemini-4-neon", createdBy: "local" });
+    assert.equal(r.session(key).profile, "ag", "the subscription first");
+
+    // Its allowance spent: Vertex, billed per use.
+    assert.ok(r.hub.accounts.spend(key, "ag") !== null);
+    assert.equal(r.session(key).profile, "vx");
+    assert.equal(r.hub.accounts.runOn(key).id, "vx", "stays while no subscription can");
+
+    // Refilled: back on the next turn, without waiting for `cheapToLeave`.
+    r.hub.accounts.resetAllowance("ag");
+    assert.equal(r.hub.accounts.runOn(key).id, "ag");
+    assert.equal(r.session(key).profile, "ag");
+
+    // Spent again, then another subscription added while the first is still spent: it goes there.
+    assert.ok(r.hub.accounts.spend(key, "ag") !== null);
+    assert.equal(r.session(key).profile, "vx");
+    r.edit((raw) => {
+      raw.profiles.push({ id: "ag2", name: "Antigravity 2", runtime: "agy", home: "homes/ag2", access: { kind: "subscription" }, models: ["gemini-4-neon"] });
+    });
+    assert.equal(r.hub.accounts.runOn(key).id, "ag2");
+    assert.equal(r.session(key).profile, "ag2");
+  } finally {
+    await r.close();
+  }
+});
+
+test("a session another runtime's API provider took on when its subscriptions ran out goes back to a subscription refilled or added, not to a crowded capped one", async () => {
+  const r = new Rig();
+  try {
+    r.edit((raw) => {
+      raw.profiles = [
+        { id: "cc", name: "Claude", runtime: "claude", home: "homes/cc", access: { kind: "subscription" }, models: ["gemini-4-argon"] },
+        { id: "vx", name: "Google Vertex AI", runtime: "agy", home: "homes/vx", access: { kind: "api-provider", provider: "google-vertex", key: "{}" }, models: ["gemini-4-argon"] },
+      ];
+    });
+    // Health set once: its account keys stay those a spent mark is kept under (accounts.ts `healthOf`).
+    const now = r.hub.now();
+    let fiveHours = 95;
+    r.hub.accounts.setHealth((id) => ({
+      account: id,
+      check: { state: "ok" },
+      quota: id === "cc2"
+        ? { state: "ok", checkedAt: now, windows: [{ label: "5 小时", usedPercent: fiveHours, resetsAt: now + 3_600_000, minutes: 300 }, { label: "每周", usedPercent: 10, resetsAt: now + 3 * 86_400_000, minutes: 10_080 }] }
+        : null,
+    }));
+    const [key] = await newSession(r.hub, { runtime: "claude", model: "gemini-4-argon", createdBy: "local" });
+    assert.equal(r.session(key).profile, "cc");
+
+    // Claude Code's only subscription spent: Vertex on Antigravity takes it on.
+    assert.ok(r.hub.accounts.spend(key, "cc") !== null);
+    assert.deepEqual([r.session(key).runtime, r.session(key).profile], ["agy", "vx"]);
+    assert.equal(r.hub.accounts.runOn(key, false, false, true).id, "vx", "stays while no subscription can");
+
+    // Refilled: back to Claude Code before the next turn.
+    r.hub.accounts.resetAllowance("cc");
+    assert.equal(r.hub.accounts.runOn(key, false, false, true).id, "cc");
+    assert.deepEqual([r.session(key).runtime, r.session(key).profile, r.session(key).model], ["claude", "cc", "gemini-4-argon"]);
+
+    // Spent again, then a capped subscription added whose five hours are crowded: it stays on Vertex.
+    assert.ok(r.hub.accounts.spend(key, "cc") !== null);
+    assert.deepEqual([r.session(key).runtime, r.session(key).profile], ["agy", "vx"]);
+    r.edit((raw) => {
+      raw.profiles.push({ id: "cc2", name: "Claude 2", runtime: "claude", home: "homes/cc2", access: { kind: "subscription" }, models: ["gemini-4-argon"], maxConcurrentSessions: 2 });
+    });
+    assert.equal(r.hub.accounts.runOn(key, false, false, true).id, "vx", "a crowded capped subscription does not take it");
+    assert.equal(r.session(key).runtime, "agy");
+
+    // Its five hours no longer crowded: back to Claude Code on it.
+    fiveHours = 10;
+    assert.equal(r.hub.accounts.runOn(key, false, false, true).id, "cc2");
+    assert.deepEqual([r.session(key).runtime, r.session(key).profile], ["claude", "cc2"]);
+  } finally {
+    await r.close();
+  }
+});

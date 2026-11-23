@@ -264,16 +264,19 @@ test("the accounts' failures reach the drivers by their kind and their words; Cl
     assert.doesNotMatch(`${e.words} ${e.shown}`, /Error: |station\/accounts_oauth/, JSON.stringify(e));
   }
   const own = { id: "sub", home: "homes/sub" };
-  const lent = { id: "lent", share: { host: "st-b" } };
+  const lent = { id: "lent", access: { kind: "subscription" }, share: { borrowed: true, host: "st-b" } };
+  const lentApi = { id: "lent-api", access: { kind: "api-provider", provider: "google-vertex" }, share: { borrowed: true, host: "st-b" } };
   assert.deepEqual(await ok("claudeLogins"), {
     asked: [
       { op: "accounts.machineToken", arg: { rejected: "tok-old" } },
       { op: "accounts.claudeToken", arg: { profile: own, rejected: "tok-old" } },
       { op: "sharing.lendClaude", arg: { profile: lent, rejected: "tok-old" } },
+      { op: "accounts.claudeToken", arg: { profile: lentApi, rejected: "tok-old" } },
       { op: "accounts.claudeToken", arg: { profile: own, rejected: "tok-old" } },
       { op: "accounts.machineToken", arg: { rejected: null } },
     ],
-    given: ["tok-new-1", "tok-new-2", "tok-new-3", "tok-new-4", "tok-new-5"],
+    given: ["tok-new-1", "tok-new-2", "tok-new-3", "tok-new-4", "tok-new-5", "tok-new-6"],
+    borrowed: { lent: true, lentApi: false, own: false },
   });
 });
 

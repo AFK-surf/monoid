@@ -731,15 +731,30 @@ async fn claude_logins_asked(host : @host.Host) -> Json {
     { "token": Json::string("tok-new-\{asked.length()}"), "expiresAt": 5.0 }
   })
   let own = to_jv({ "id": "sub", "home": "homes/sub" })
-  let lent = to_jv({ "id": "lent", "share": { "host": "st-b" } })
+  let lent = to_jv({ "id": "lent", "access": { "kind": "subscription" }, "share": { "borrowed": true, "host": "st-b" } })
+  let lent_api = to_jv({
+    "id": "lent-api",
+    "access": { "kind": "api-provider", "provider": "google-vertex" },
+    "share": { "borrowed": true, "host": "st-b" },
+  })
   let given = []
   let took = (t : (String, Double)) => given.push(Json::string(t.0))
   took(pump.wait((logins.machine_token)(Some("tok-old"))))
   took(pump.wait((logins.subscription_token.unwrap())(own)(Some("tok-old"))))
   took(pump.wait((logins.lent_token.unwrap())(lent)(Some("tok-old"))))
+  took(pump.wait((logins.lent_token.unwrap())(lent_api)(Some("tok-old"))))
   took(pump.wait((logins.lent_token.unwrap())(own)(Some("tok-old"))))
   took(pump.wait((logins.machine_token)(None)))
-  { "asked": Json::array(asked), "given": Json::array(given) }
+  let is_borrowed = logins.lent_borrowed.unwrap()
+  {
+    "asked": Json::array(asked),
+    "given": Json::array(given),
+    "borrowed": {
+      "lent": Json::boolean(is_borrowed(lent)),
+      "lentApi": Json::boolean(is_borrowed(lent_api)),
+      "own": Json::boolean(is_borrowed(own)),
+    },
+  }
 }
 
 ///|

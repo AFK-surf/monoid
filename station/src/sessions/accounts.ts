@@ -410,9 +410,9 @@ export class Accounts {
     const all = this.deps.config().profiles.filter((p) => p.runtimes.includes(runtime));
     const workspaceCandidates = all.filter((p) => this.allows(key, p));
     // Left to the station, none of its runtime's able to run its model now: one of another runtime's that can.
-    const elsewhere = (kept: string[] | null, onlyPaid = false): RunOn | null => {
+    const elsewhere = (kept: string[] | null, onlyPaid = false, avoidCrowdedCapped = false): RunOn | null => {
       if (!across || row.profilePinned || kept !== null || row.model === null) return null;
-      const next = this.takeAcross(key, row, null, "session taken on by another runtime's profile", quiet, onlyPaid, forceCap);
+      const next = this.takeAcross(key, row, null, "session taken on by another runtime's profile", quiet, onlyPaid, forceCap, avoidCrowdedCapped);
       return next ? withSpelling(next) : null;
     };
     if (workspaceCandidates.length === 0) {
@@ -466,6 +466,12 @@ export class Accounts {
             ? ((unavailable(current) && !unavailable(p)) || (!unavailable(p) && crowded(current) && !crowded(p))) && (forceCap || !capped(p))
             : paid(p) && (capOf(p) === undefined || (!capped(p) && !crowded(p))));
         among = candidates.filter(better);
+        // Billed per use, none of its runtime's paid for able to take it: back to another runtime's paid for that can
+        // (one `spend` or `takeAcross` left when its allowance ran out, refilled, or one added since), as above.
+        if (among.length === 0 && !paid(current) && !holding) {
+          const moved = elsewhere(keptProfiles, true, true);
+          if (moved) return moved;
+        }
         const upgrading = (!paid(current) && among.some(paid)) || (unavailable(current) && among.some((p) => !unavailable(p)));
         if (among.length === 0 || holding || (!upgrading && !this.cheapToLeave(key))) return withSpelling(current);
       }
@@ -624,15 +630,19 @@ export class Accounts {
   /// (lifecycle.ts `configure`): its runtime session kept as one it ran in, the new one started afresh (afresh.ts). Its
   /// effort, speed and most context go along only where the new runtime takes them. Told (`moved`) unless `quiet`. The
   /// profile taken; null when none can.
-  private takeAcross(key: string, row: SessionRow, left: string | null, said: string, quiet: boolean, onlyPaid = false, forceCap = false): Profile | null {
+  /// `avoidCrowdedCapped`: none with a concurrency cap whose windows for the model are crowded, as `runOn` leaves for
+  /// one paid for only then.
+  private takeAcross(key: string, row: SessionRow, left: string | null, said: string, quiet: boolean, onlyPaid = false, forceCap = false, avoidCrowdedCapped = false): Profile | null {
     const runtime = runtimeNamed(row.runtime);
     const model = row.model;
     if (!runtime || model === null || row.speed === "ultrafast") return null;
     const config = this.deps.config();
     const active = forceCap ? null : this.activeMap(key);
     const capped = (p: Profile) => active !== null && isSessionCapped(p, this.accountMaxSessions(p.id), active.get(this.accountKey(p.id)) ?? 0);
+    const now = this.deps.clock.currentTimeMillisUnsafe();
+    const crowdedCapped = (p: Profile) => avoidCrowdedCapped && this.accountMaxSessions(p.id) !== undefined && urgency(this.healthFor(p.id, model).quota, now).crowded;
     const candidates = config.profiles.filter(
-      (p) => !p.runtimes.includes(runtime) && this.allows(key, p) && runs(p, model) && this.can(p.id, model) && (!onlyPaid || !billedPerUse(p)) && !capped(p),
+      (p) => !p.runtimes.includes(runtime) && this.allows(key, p) && runs(p, model) && this.can(p.id, model) && (!onlyPaid || !billedPerUse(p)) && !capped(p) && !crowdedCapped(p),
     );
     if (candidates.length === 0) return null;
     const next = this.pick(candidates, model, true, key);

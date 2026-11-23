@@ -1876,6 +1876,13 @@ export class Accounts {
     }
   }
 
+  /// A shared profile newly copied onto this station: check it once so its models and status appear without a restart.
+  sharedAdded(id: string): void {
+    const profile = this.profile(id);
+    if (!profile || !borrowed(profile) || profile.enabled === false) return;
+    this.background.spawn(() => this.check(id, stationLang(), false, true).catch(() => undefined));
+  }
+
   /// A shared profile changed on its host. Get the new login even when the old access token has not expired yet, and
   /// retire app-servers that cached it after their current turns. A reset also wakes sessions once its allowance is read.
   async sharedChanged(id: string, reset: boolean): Promise<void> {
@@ -1883,7 +1890,12 @@ export class Accounts {
     this.authRevoked.delete(id);
     const profile = this.profile(id);
     if (profile?.enabled === false) await this.deps.hub?.profileGone?.(id);
-    if (!profile || !borrowed(profile) || accessKind(profile) !== "subscription" || !this.deps.shared) return;
+    if (!profile || !borrowed(profile)) return;
+    if (accessKind(profile) !== "subscription") {
+      if (profile.enabled !== false) await this.check(id, stationLang()).catch(() => undefined);
+      return;
+    }
+    if (!this.deps.shared) return;
     // A host that signed out may have no login to lend; its status must still reach the copy.
     await this.checkBorrowed(profile, stationLang(), true);
     if (profile.runtime === "codex" && this.deps.shared.lendCodex) {

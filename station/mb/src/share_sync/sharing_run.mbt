@@ -363,6 +363,7 @@ async fn Sharing::reconcile_once(self : Sharing) -> Unit {
             }
         }
       }
+      let mut first_profile = false
       if truthy(had.get("stale")) || !truthy(had.get("profileUpdate")) {
         let host = js_string(had.get("host"))
         let got = self.ask(host, self.ask_in(had), jobj([("method", jstr("share.get")), ("id", jstr(id))]))
@@ -383,6 +384,8 @@ async fn Sharing::reconcile_once(self : Sharing) -> Unit {
             }
             let reset = revision > before || gets(had.get("profileUpdate"), ["reset"]) is Some(True)
             had["profileUpdate"] = jobj([("reset", jbool(reset))])
+          } else {
+            first_profile = true
           }
           had["quotaRevision"] = jnum_js(revision)
         } else {
@@ -393,6 +396,14 @@ async fn Sharing::reconcile_once(self : Sharing) -> Unit {
         had["allow"] = allow_of(get(Some(got), "allow"))
         had["stale"] = jbool(false)
         self.write_state()
+      }
+      if first_profile {
+        let profile = self.profiles().search_by(p => gets(Some(p), ["share", "id"]) is Some(String(x)) &&
+          x == id &&
+          gets(Some(p), ["share", "borrowed"]) is Some(True))
+        if profile is Some(at) && self.deps.profile_added is Some(added) {
+          added(js_string(get(Some(self.profiles()[at]), "id")))
+        }
       }
       if truthy(had.get("profileUpdate")) {
         let profile = self.profiles().search_by(p => gets(Some(p), ["share", "id"]) is Some(String(x)) &&

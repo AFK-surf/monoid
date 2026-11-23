@@ -1073,3 +1073,94 @@ test "MiniMax Token Plan and GLM Coding Plan windows, as quota.ts reads them" {
   ])
   assert_true(glm_coding_windows(glm(401.0), when).is_empty())
 }
+
+///|
+test "choose_run_on_profile takes a Google Vertex AI session back to a subscription refilled, added, or another runtime's" {
+  let now = 1_800_000_000_000.0
+  let model = "gemini-4-neon"
+  let p_vx = test_access_profile(
+    "vx",
+    [model],
+    jobj([("kind", js("api-provider")), ("provider", js("google-vertex")), ("key", js("{}"))]),
+  )
+  let p_ag = test_access_profile("ag", [model], jobj([("kind", js("subscription"))]))
+  let p_ag2 = test_access_profile("ag2", [model], jobj([("kind", js("subscription"))]))
+  let p_cc = test_access_profile("cc", [model], jobj([("kind", js("subscription"))]))
+  let ok = Some(jobj([("state", js("ok"))]))
+  let healths : Map[String, Health] = {
+    "vx": { check: ok, quota: None, account: None, spent: false },
+    "ag": { check: ok, quota: None, account: None, spent: true },
+    "ag2": { check: ok, quota: None, account: None, spent: false },
+  }
+  let mut cur_profile = "vx"
+  let mut cur_profiles : Array[Profile] = [p_ag, p_vx]
+  let mut other_runtime : Profile? = None
+  let mut asked_elsewhere = 0
+  let run_on = (holding : Bool) => accounts_ran(async fn() {
+    let row = Row::of_jv(
+      jobj([
+        ("key", js("s1")),
+        ("runtime", js("agy")),
+        ("profile", js(cur_profile)),
+        ("profilePinned", jbool(false)),
+        ("model", js(model)),
+      ]),
+    )
+    let health = (id : String) => healths.get(id).unwrap_or(Health::empty())
+    let choice = choose_run_on_profile(
+      "s1",
+      row,
+      cur_profiles,
+      holding,
+      crowded=p => urgency(health(p.id).quota, now).crowded,
+      can=id => usable(health(id), now~),
+      health_of=health,
+      cheap_to_leave=() => false,
+      elsewhere=() => None,
+      upgrade_elsewhere_paid=Some(async fn() {
+        asked_elsewhere += 1
+        other_runtime
+      }),
+      pick=among => pick_profile(
+        among,
+        row.model,
+        { health, load: _ => 0, active: None, max_sessions: None, last_picked: _ => 0.0, now: () => now },
+        false,
+      ),
+    )
+    match choice {
+      Stay(p) => {
+        cur_profile = p.id
+        p
+      }
+      Move(p) => {
+        cur_profile = p.id
+        p
+      }
+    }
+  })
+  // 1. Its subscription spent and none elsewhere: it stays on Vertex.
+  assert_eq(run_on(false).id, "vx")
+  assert_eq(asked_elsewhere, 1)
+  // 2. Holding work in the background, another runtime's subscription is not asked for.
+  other_runtime = Some(p_cc)
+  assert_eq(run_on(true).id, "vx")
+  assert_eq(asked_elsewhere, 1)
+  // 3. Not holding: back to another runtime's subscription at once (no cheap_to_leave).
+  assert_eq(run_on(false).id, "cc")
+  assert_eq(asked_elsewhere, 2)
+  // 4. Its own runtime's subscription refilled: there, another runtime's not asked for.
+  cur_profile = "vx"
+  healths["ag"] = { check: ok, quota: None, account: None, spent: false }
+  assert_eq(run_on(false).id, "ag")
+  assert_eq(asked_elsewhere, 2)
+  // 5. Its subscription spent again, another of its runtime's added: there.
+  cur_profile = "vx"
+  healths["ag"] = { check: ok, quota: None, account: None, spent: true }
+  cur_profiles = [p_ag, p_vx, p_ag2]
+  assert_eq(run_on(false).id, "ag2")
+  assert_eq(asked_elsewhere, 2)
+  // 6. On a subscription, another runtime's is never asked for.
+  assert_eq(run_on(false).id, "ag2")
+  assert_eq(asked_elsewhere, 2)
+}

@@ -128,6 +128,8 @@ pub(all) struct SharingDeps {
   changed : () -> Unit
   /// A host that had not answered answers again.
   recheck : (() -> Unit)?
+  /// A shared profile was newly copied onto this station.
+  profile_added : ((String) -> Unit)?
   /// A copied profile changed on its host.
   profile_changed : (async (String, Bool) -> Unit)?
   /// A borrower redeemed a reset.

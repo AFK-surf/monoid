@@ -1181,6 +1181,20 @@ pub fn Accounts::recheck_borrowed(self : Accounts) -> Unit {
 }
 
 ///|
+/// `sharedAdded`: a shared profile newly copied onto this station. Check it once so its models and status appear without a restart.
+pub fn Accounts::shared_added(self : Accounts, id : String) -> Unit {
+  guard self.profile(id) is Some(profile) else { return }
+  if !borrowed(profile.raw) || !profile.enabled {
+    return
+  }
+  self.background.spawn(async fn() {
+    ignore(self.check(id, self.ctx.station_lang, stands=true)) catch {
+      _ => ()
+    }
+  })
+}
+
+///|
 /// `lentLoginVersion`: which login a borrowed Codex process will read.
 async fn Accounts::lent_login_version(self : Accounts, home : String) -> String? {
   guard self.ctx.io.read_file_or_none(join_path([home, "auth.json"])) is Some(text) else {
@@ -1207,9 +1221,18 @@ pub async fn Accounts::shared_changed(self : Accounts, id : String, reset : Bool
     _ => ()
   }
   guard profile is Some(profile) else { return }
-  if !borrowed(profile.raw) ||
-    access_kind(profile.raw) != "subscription" ||
-    !self.given.shared {
+  if !borrowed(profile.raw) {
+    return
+  }
+  if access_kind(profile.raw) != "subscription" {
+    if profile.enabled {
+      ignore(self.check(id, self.ctx.station_lang)) catch {
+        _ => ()
+      }
+    }
+    return
+  }
+  if !self.given.shared {
     return
   }
   ignore(self.check_borrowed(profile, self.ctx.station_lang, stands=true))

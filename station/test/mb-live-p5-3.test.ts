@@ -1141,3 +1141,113 @@ test("hub config includes models found by profile checks (kept on start and disc
     api.close();
   }
 });
+
+test("borrowed google-vertex api-provider profile checks locally, writes vertex-credentials.json, and opens a session without contacting host", { skip }, async () => {
+  const data = fresh("p53-borrowed-vertex");
+  const app = fresh("app");
+  const fakeBin = fresh("fake-agy");
+  const logFile = join(data, "fake-agy.log");
+  writeFileSync(join(app, "BUILD"), "9501\n");
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(
+    join(data, "mesh", "cloud.json"),
+    JSON.stringify({
+      origin: "http://127.0.0.1:9",
+      station: "st-here",
+      workspace: "w1",
+      workspace_name: "W",
+      name: "here",
+      relay_url: "",
+      relay_urls: [],
+      grant_keys: null,
+      peers: [{ id: "st-here", name: "here" }],
+      revocations: [],
+    }),
+  );
+  const serviceKey = JSON.stringify({
+    type: "service_account",
+    project_id: "proj-vx",
+    private_key: "k",
+    client_email: "a@b",
+  });
+  writeFileSync(
+    join(data, "config.json"),
+    JSON.stringify({
+      profiles: [
+        {
+          id: "sh-vx",
+          name: "Google Vertex AI",
+          home: "homes/sh-vx",
+          runtime: "agy",
+          access: { kind: "api-provider", provider: "google-vertex", key: serviceKey },
+          share: { id: "sh-vx", borrowed: true, host: "st-absent" },
+        },
+      ],
+    }),
+  );
+  const fakeAgy = join(fakeBin, "agy");
+  writeFileSync(
+    fakeAgy,
+    [
+      "#!/bin/sh",
+      'printf \'ARGS=%s\\nAGY_ADC_AUTH=%s\\nGOOGLE_CLOUD_PROJECT=%s\\nGOOGLE_APPLICATION_CREDENTIALS=%s\\n\' "$*" "$AGY_ADC_AUTH" "$GOOGLE_CLOUD_PROJECT" "$GOOGLE_APPLICATION_CREDENTIALS" >> "$FAKE_AGY_LOG"',
+      "while IFS= read -r line; do",
+      '  printf \'REQ=%s\\n\' "$line" >> "$FAKE_AGY_LOG"',
+      '  id=$(printf \'%s\' "$line" | sed -E \'s/.*"id":[[:space:]]*("[^"]*"|[0-9]+).*/\\1/\')',
+      '  case "$line" in',
+      '    *\'"method":"initialize"\'*)',
+      '      printf \'{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"authMethods":[{"id":"agent-platform"}]}}\\n\' "$id"',
+      "      ;;",
+      '    *\'"method":"authenticate"\'*)',
+      '      printf \'{"jsonrpc":"2.0","id":%s,"result":{}}\\n\' "$id"',
+      "      ;;",
+      '    *\'"method":"session/new"\'*)',
+      '      printf \'{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1","models":{"currentModelId":"gemini-4-neon","availableModels":[{"modelId":"gemini-4-neon"}]}}}\\n\' "$id"',
+      "      ;;",
+      "  esac",
+      "done",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(fakeAgy, 0o755);
+
+  const a = await launch(data, app, {
+    PATH: `${fakeBin}:${toolsPath()}`,
+    FAKE_AGY_LOG: logFile,
+    STILLFAIL_PARTS_DOOR: "1",
+    // (the runner the native parts built: `scripts/native.ts run` tells it the test's own process alone)
+    ...(process.env.STILLFAIL_RUNNER ? { STILLFAIL_RUNNER: process.env.STILLFAIL_RUNNER } : {}),
+  });
+  await a.next("ready", (m) => m.ready === true);
+  const door = (await a.next("mcp", (m) => m.serving === "mcp")).port as number;
+
+  await within("accounts ready", 15_000, async () => {
+    const r = await parts(door, "GET", "/route/profiles");
+    return r.status === 200 ? r.body : null;
+  });
+
+  const checked = await parts(door, "POST", "/route/profiles/sh-vx/check");
+  assert.equal(checked.status, 200, JSON.stringify(checked));
+  assert.equal(checked.body?.state, "ok", JSON.stringify(checked.body));
+  assert.deepEqual(checked.body?.models, ["gemini-4-neon"]);
+
+  const credsPath = join(data, "homes", "sh-vx", "agy", "vertex-credentials.json");
+  assert.equal(existsSync(credsPath), true, `expected ${credsPath} to be written`);
+  assert.equal(readFileSync(credsPath, "utf8"), serviceKey);
+
+  const log = readFileSync(logFile, "utf8");
+  assert.match(log, /AGY_ADC_AUTH=1/);
+  assert.match(log, /GOOGLE_CLOUD_PROJECT=proj-vx/);
+  assert.ok(log.includes(`GOOGLE_APPLICATION_CREDENTIALS=${credsPath}`), log);
+  assert.match(log, /"method":"authenticate".*"methodId":"agent-platform"/);
+
+  const opened = await parts(door, "POST", "/hub/newSession", [
+    { runtime: "agy", profile: "sh-vx", model: "gemini-4-neon", createdBy: "u1" },
+    "zh",
+  ]);
+  assert.equal(opened.status, 200, `expected sh-vx + gemini-4-neon to be accepted, got ${JSON.stringify(opened)}`);
+  assert.ok(Array.isArray(opened.body) && typeof opened.body[0] === "string", JSON.stringify(opened.body));
+
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0);
+});

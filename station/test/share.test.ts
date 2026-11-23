@@ -61,7 +61,7 @@ type Station = { data: string; config: ConfigFile; sharing: Sharing; lent: strin
 const made: Sharing[] = [];
 after(() => Promise.all(made.map((s) => s.close())));
 
-function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void>; itself?: (station: string) => boolean; agyRenew?: (home: string) => Promise<void>; clock?: any; recheck?: () => void } = {}): Station {
+function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { profileAdded?: (id: string) => void; profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void>; itself?: (station: string) => boolean; agyRenew?: (home: string) => Promise<void>; clock?: any; recheck?: () => void } = {}): Station {
   const data = mkdtempSync(join(tmpdir(), "share-"));
   writeFileSync(join(data, "config.json"), JSON.stringify({ profiles }));
   const config = new ConfigFile(data);
@@ -1295,4 +1295,61 @@ test("Sharing.status waits for rosterSaid and schedules retry when host is unrea
 
   await a.sharing.close();
   await b.sharing.close();
+});
+
+test("Sharing calls profileAdded on first reconcile and first borrow, and profileChanged only on subsequent updates", async () => {
+  const C = "c".repeat(64);
+  const cloud = new FakeCloud();
+  cloud.peers = [...cloud.peers, { id: C, name: "third" }];
+  const all = new Map<string, Station>();
+  const VERTEX = {
+    id: "vx",
+    name: "Google Vertex AI",
+    runtime: "agy",
+    access: { kind: "api-provider", provider: "google-vertex", key: "k1" },
+    home: "homes/vx",
+    env: {},
+  };
+  const a = station(cloud, A, () => all, [VERTEX]);
+  const addedB: string[] = [];
+  const changedB: string[] = [];
+  const b = station(cloud, B, () => all, [], undefined, {
+    profileAdded: (id) => { addedB.push(id); },
+    profileChanged: async (id) => { changedB.push(id); },
+  });
+  const addedC: string[] = [];
+  const changedC: string[] = [];
+  const c = station(cloud, C, () => all, [], undefined, {
+    profileAdded: (id) => { addedC.push(id); },
+    profileChanged: async (id) => { changedC.push(id); },
+  });
+  all.set(A, a).set(B, b).set(C, c);
+
+  // 1. First shareProfile (reconcile with had.version < 0) fires profileAdded on B, not profileChanged.
+  await a.sharing.shareProfile("vx", true, [B]);
+  await settle(a, b);
+  assert.equal(b.config.raw().profiles.length, 1);
+  const copyB = b.config.raw().profiles[0].id;
+  assert.deepEqual(addedB, [copyB]);
+  assert.deepEqual(changedB, []);
+
+  // 2. Subsequent host update (had.version >= 0) fires profileChanged on B, not profileAdded again.
+  a.config.update((raw) => {
+    raw.profiles[0].access.key = "k2";
+  });
+  await settle(a, b);
+  assert.deepEqual(addedB, [copyB]);
+  assert.deepEqual(changedB, [copyB]);
+
+  // 3. First lendTo (borrow on C) fires profileAdded on C once, not profileChanged.
+  await a.sharing.lendTo("vx", C);
+  await settle(a, c);
+  assert.equal(c.config.raw().profiles.length, 1);
+  const copyC = c.config.raw().profiles[0].id;
+  assert.deepEqual(addedC, [copyC]);
+  assert.deepEqual(changedC, []);
+
+  await a.sharing.close();
+  await b.sharing.close();
+  await c.sharing.close();
 });

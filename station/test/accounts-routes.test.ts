@@ -1879,3 +1879,81 @@ test("non-Codex local subscription (agy) recovers from failed check when askQuot
     await t.close();
   }
 });
+
+test("sharedAdded checks newly borrowed keyed and subscription profiles without lending subscription logins; sharedChanged re-checks borrowed non-subscription profiles", async () => {
+  const data = temp("shared-added-changed");
+  writeFileSync(join(data, "config.json"), JSON.stringify({
+    profiles: [
+      {
+        id: "bv",
+        runtime: "agy",
+        home: "homes/bv",
+        access: { kind: "api-provider", provider: "google-vertex", key: "k1" },
+        share: { id: "sh-v", borrowed: true, host: "H" },
+      },
+      {
+        id: "bs",
+        runtime: "codex",
+        home: "homes/bs",
+        access: { kind: "subscription" },
+        share: { id: "sh-s", borrowed: true, host: "H" },
+      },
+    ],
+    connects: [],
+  }));
+  const checkedKeys: string[] = [];
+  let statusCalls = 0;
+  let lendCalls = 0;
+  const shared = {
+    status: async () => {
+      statusCalls++;
+      return { check: { state: "ok", detail: "host", models: ["gpt-6.2-sol"], checkedAt: 1 }, quota: null };
+    },
+    lendCodex: async () => {
+      lendCalls++;
+      return Date.now() + 86400_000;
+    },
+    lendAgy: async () => {
+      lendCalls++;
+      return Date.now() + 86400_000;
+    },
+    view: () => null,
+  };
+  const t = await rig({
+    data,
+    shared,
+    check: async (p) => {
+      const key = String(p.key ?? "");
+      checkedKeys.push(key);
+      return {
+        state: "ok",
+        detail: `key=${key}`,
+        models: key === "k2" ? ["gemini-4-neon", "gemini-4-pro"] : ["gemini-4-neon"],
+        checkedAt: 0,
+      };
+    },
+  });
+  try {
+    t.accounts.sharedAdded("bv");
+    t.accounts.sharedAdded("bs");
+    await until(() => t.accounts.health("bv").check?.state === "ok" && t.accounts.health("bs").check?.state === "ok", "sharedAdded checks both profiles");
+    await settle();
+    assert.deepEqual(checkedKeys, ["k1"]);
+    assert.deepEqual(t.accounts.health("bv").check?.models, ["gemini-4-neon"]);
+    assert.equal(statusCalls, 1);
+    assert.deepEqual(t.accounts.health("bs").check?.models, ["gpt-6.2-sol"]);
+    assert.equal(lendCalls, 0, "sharedAdded must not pre-write borrowed subscription logins");
+
+    // Host updates the borrowed non-subscription profile's key: sharedChanged re-runs check and discovers updated models.
+    t.config.update((raw) => {
+      const p = raw.profiles.find((x: any) => x.id === "bv");
+      if (p) p.access.key = "k2";
+    });
+    await t.accounts.sharedChanged("bv", false);
+    assert.deepEqual(checkedKeys, ["k1", "k2"]);
+    assert.deepEqual(t.accounts.health("bv").check?.models, ["gemini-4-neon", "gemini-4-pro"]);
+    assert.equal(lendCalls, 0);
+  } finally {
+    await t.close();
+  }
+});

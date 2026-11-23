@@ -322,7 +322,8 @@ fn borrowed_profile(_ctx : P52, p : Json) -> Bool {
 
 ///|
 fn p52_borrowed(p : Json) -> Bool {
-  jfield(p, "share") != Json::null() && jtext(jfield(p, "share"), "host") is Some(_)
+  jtrue(jfield(p, "share"), "borrowed") &&
+  jtext(jfield(p, "access"), "kind") == Some("subscription")
 }
 
 ///|

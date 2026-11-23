@@ -553,7 +553,13 @@ async fn Sharing::borrow(self : Sharing, peer : String, id : String, request : J
   let borrowed_all = self.borrowed()
   // (a copy put in the place of what was had, never that one changed where it is: a pass of `reconcile` waiting on its
   // host holds it, and finds by that it was taken over, as `heard` does)
-  let had = match entry_of(borrowed_all, id) {
+  let before = entry_of(borrowed_all, id)
+  // (`heard` may have put a placeholder here first, never placed: still a first copy)
+  let first = match before {
+    Some(b) => js_num(b.get("version")) < 0.0
+    None => true
+  }
+  let had = match before {
     Some(h) => {
       let c : Map[String, Json] = Map([])
       for k, v in h {
@@ -588,6 +594,14 @@ async fn Sharing::borrow(self : Sharing, peer : String, id : String, request : J
   self.write_state()
   self.checked.add(id)
   self.placed_home(home)
+  if first {
+    let profile = self.profiles().search_by(p => gets(Some(p), ["share", "id"]) is Some(String(x)) &&
+      x == id &&
+      gets(Some(p), ["share", "borrowed"]) is Some(True))
+    if profile is Some(at) && self.deps.profile_added is Some(added) {
+      added(js_string(get(Some(self.profiles()[at]), "id")))
+    }
+  }
   self.reconcile_soon()
   jobj([("borrowed", jbool(true))])
 }

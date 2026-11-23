@@ -685,6 +685,7 @@ export const AgentsLive = (control: Control) =>
         loginExpired: (id) => accounts.markLoginExpired(id),
         changed: () => events.overviewChanged(),
         recheck: () => accounts.recheckBorrowed(),
+        profileAdded: (id) => accounts.sharedAdded(id),
         profileChanged: (id, reset) => accounts.sharedChanged(id, reset),
         quotaReset: (id) => accounts.sharedQuotaReset(id),
         profileGone: (id) => hub.profileGone(id),

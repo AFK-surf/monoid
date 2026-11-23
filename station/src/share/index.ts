@@ -138,6 +138,8 @@ export type SharingDeps = {
   changed: () => void;
   /// A host that had not answered answers again: what is borrowed from it is checked again.
   recheck?: () => void;
+  /// A shared profile was newly copied onto this station.
+  profileAdded?: (id: string) => void;
   /// A copied profile changed on its host; refresh its login and, for a reset, its allowance.
   profileChanged?: (id: string, reset: boolean) => Promise<void>;
   /// A borrower redeemed a reset: read the host's allowance and wake its waiting sessions.
@@ -855,6 +857,7 @@ export class Sharing {
             continue;
           }
         }
+        let firstProfile = false;
         if (had.stale || !had.profileUpdate) {
           const got = await this.deps.ask(had.host, this.askIn(had), { method: "share.get", id });
           this.unreachable.delete(had.host);
@@ -868,6 +871,7 @@ export class Sharing {
             if (state.borrowed[id] !== had) continue;
             const revision = Number(got?.quotaRevision ?? 0);
             if (had.version >= 0) had.profileUpdate = { reset: revision > (had.quotaRevision ?? 0) || had.profileUpdate?.reset === true };
+            else firstProfile = true;
             had.quotaRevision = revision;
           } else {
             await this.placeSkill(id, had, got);
@@ -877,6 +881,10 @@ export class Sharing {
           had.allow = Array.isArray(got?.allow) ? got.allow : null;
           had.stale = false;
           this.writeState(state);
+        }
+        if (firstProfile) {
+          const profile = this.profiles().find((p) => p.share?.id === id && p.share?.borrowed === true);
+          if (profile) this.deps.profileAdded?.(String(profile.id));
         }
         if (had.profileUpdate) {
           const profile = this.profiles().find((p) => p.share?.id === id && p.share?.borrowed === true);
@@ -1951,6 +1959,8 @@ export class Sharing {
     // (a copy put in the place of what was had, never that one changed where it is: a pass of `reconcile` waiting on its
     // host holds it, and finds by that it was taken over, as `heard` does)
     const before = state.borrowed[id];
+    // (`heard` may have put a placeholder here first, never placed: still a first copy)
+    const first = before === undefined || before.version < 0;
     const had: Borrowed = before
       ? { ...before, host: peer, allow }
       : { version: -1, hash: "", kind: "profile", name: String(request?.profile?.name ?? id), host: peer, allow, stale: true };
@@ -1962,6 +1972,10 @@ export class Sharing {
     this.writeState(state);
     this.checked.add(id);
     await this.placedHome(home);
+    if (first) {
+      const profile = this.profiles().find((p) => p.share?.id === id && p.share?.borrowed === true);
+      if (profile) this.deps.profileAdded?.(String(profile.id));
+    }
     void this.reconcile();
     return { borrowed: true };
   }

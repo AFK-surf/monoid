@@ -359,6 +359,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
       login_expired: Some(id => match self.accounts.accounts { Some(a) => a.mark_login_expired(id); None => () }),
       changed: () => (bus.overview_changed.val)(),
       recheck: Some(() => match self.accounts.accounts { Some(a) => a.recheck_borrowed(); None => () }),
+      profile_added: Some(id => match self.accounts.accounts { Some(a) => a.shared_added(id); None => () }),
       profile_changed: Some(async fn(id, login) {
         if self.accounts.accounts is Some(a) { a.shared_changed(id, login) }
       }),
