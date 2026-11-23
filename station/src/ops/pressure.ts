@@ -4,6 +4,7 @@
 // waited for a CPU 43% of the time, and the kernel had stalled allocations to compact memory 225,906 times. Linux's
 // pressure stall information (/proc/pressure) and its vmstat counters say so; elsewhere nothing is said.
 import { readFile } from "node:fs/promises";
+import { platform } from "../platform/index.ts";
 
 /// The machine's counters at one time: the µs some task (`some`) or every task (`full`) waited, and the stalls.
 export type Pressure = { cpuSome: number; memorySome: number; memoryFull: number; compactStalls: number; allocStalls: number };
@@ -29,7 +30,7 @@ export function vmStalls(text: string): { compactStalls: number; allocStalls: nu
 
 /// The counters now; none where the system keeps none (not Linux, or a kernel without pressure stall information).
 export async function pressureNow(): Promise<Pressure | null> {
-  if (process.platform !== "linux") return null;
+  if (platform.os !== "linux") return null;
   try {
     const [cpu, memory, vmstat] = await Promise.all(["/proc/pressure/cpu", "/proc/pressure/memory", "/proc/vmstat"].map((p) => readFile(p, "utf8")));
     const cpuSome = stallTotal(cpu!, "some");
