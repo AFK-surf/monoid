@@ -110,3 +110,43 @@ test "what lives with a node, over all of its layer (a tip's holder), what it sh
   t.frame(390.0, 844.0, now=1000.0) |> ignore
   assert_true(owner_drawn(t, "旁"), msg="shown again")
 }
+
+///|
+test "what lives with a node on a kept page: out of sight as that page is put by, what it follows told as it comes back" {
+  let page = @signals.signal(0, same=fn(a, b) { a == b })
+  let picked = @signals.signal(0, same=fn(a, b) { a == b })
+  let t = @view.Tree::new(fn(root) {
+    let layer = root.box(fn(l) { l.over(Is(true)) |> ignore })
+    root.pick(fn() { page.get() }, keeps=true, at_once=true, fn(p, k) {
+      p.box(fn(owner) {
+        owner.height(Is(Some(40.0))).words(Is("页\{k}")) |> ignore
+        let made = Ref(false)
+        owner.reacts(fn() { picked.get() == k + 1 }, fn(on) {
+          guard on && !made.val else { return }
+          made.val = true
+          layer
+          .box(fn(h) { h.over(Is(true)) |> ignore })
+          .lives_with(owner)
+          .show(fn() { picked.get() == k + 1 }, fn(b) { b.height(Is(Some(20.0))).words(Is("钮\{k}")) |> ignore })
+        })
+      })
+      |> ignore
+    })
+  })
+  t.frame(390.0, 844.0, now=0.0) |> ignore
+  picked.set(1)
+  t.frame(390.0, 844.0, now=16.0) |> ignore
+  assert_true(owner_drawn(t, "钮0"), msg="shown over its page")
+  page.set(1)
+  t.frame(390.0, 844.0, now=32.0) |> ignore
+  assert_false(owner_drawn(t, "钮0"), msg="left over the next page")
+  picked.set(2)
+  t.frame(390.0, 844.0, now=48.0) |> ignore
+  assert_eq((owner_drawn(t, "钮0"), owner_drawn(t, "钮1")), (false, true), msg="one button for what is picked")
+  page.set(0)
+  t.frame(390.0, 844.0, now=64.0) |> ignore
+  assert_eq((owner_drawn(t, "钮0"), owner_drawn(t, "钮1")), (false, false), msg="neither over the first page")
+  page.set(1)
+  t.frame(390.0, 844.0, now=80.0) |> ignore
+  assert_eq((owner_drawn(t, "钮0"), owner_drawn(t, "钮1")), (false, true), msg="its button back with its page")
+}

@@ -688,6 +688,8 @@ pub fn View::lives_with(self : View, owner : View) -> View {
   self.owning(fn() { self.laid_nowhere(By(fn() { hidden.get() })) |> ignore })
   owner.on_leaving(fn() { hidden.set(true) }) |> ignore
   owner.on_back(fn() { hidden.set(false) }) |> ignore
+  // (its owner put by on a kept page: what it holds elsewhere is no part of that page's place, and would stay drawn)
+  owner.on_rest(fn() { hidden.set(true) }, wake=fn() { hidden.set(false) }) |> ignore
   owner.owns(fn() {
     guard self.live() is Some(_) else { return }
     match self.parent() {
