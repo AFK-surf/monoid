@@ -204,6 +204,21 @@ fn P53Accounts::attach(self : P53Accounts) -> Unit {
         return
       }
     }
+    bus.accounts_found.val = id => made.found(id)
+    if !bus.as_rig() {
+      made.set_on_checks_changed(() => {
+        ignore(
+          rt.fork_quiet(name="hub config", async fn() {
+            bus.hub_refresh_config() catch {
+              e => slice_log("warn", "accounts", "hub config refresh failed", jobj_of([("error", jstr(p53_words(e)))]))
+            }
+          }),
+        )
+      })
+      bus.hub_refresh_config() catch {
+        e => slice_log("warn", "accounts", "hub config refresh failed", jobj_of([("error", jstr(p53_words(e)))]))
+      }
+    }
     self.accounts = Some(made)
     let sa = @accounts_pool.SessionAccounts::new(
       self.backend,
@@ -265,7 +280,19 @@ fn P53Accounts::attach(self : P53Accounts) -> Unit {
         jobj_of([("ok", jb(true))])
       },
     },
-    { meth: "POST", path: "/profiles/:id/check", answer: async fn(r) { p53_json(a(r).0.check(id_of(r), lang_of(r))) } },
+    {
+      meth: "POST",
+      path: "/profiles/:id/check",
+      answer: async fn(r) {
+        let res = a(r).0.check(id_of(r), lang_of(r))
+        if !bus.as_rig() {
+          bus.hub_refresh_config() catch {
+            _ => ()
+          }
+        }
+        p53_json(res)
+      },
+    },
     {
       meth: "POST",
       path: "/profiles/:id/quota",
@@ -623,7 +650,15 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
         self.made().drop_login(text(0, "id"))
         done
       }
-      "check" => p53_json(self.made().check(text(0, "id"), lang(1)))
+      "check" => {
+        let res = self.made().check(text(0, "id"), lang(1))
+        if !self.bus.as_rig() {
+          self.bus.hub_refresh_config() catch {
+            _ => ()
+          }
+        }
+        p53_json(res)
+      }
       "askedQuota" =>
         match self.made().asked_quota(text(0, "id")) {
           Some(q) => p53_json(q)

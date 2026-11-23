@@ -224,7 +224,7 @@ async fn P52::refresh_config(self : P52) -> Unit {
     self.chats_world(),
     to_jv(raw),
     self.data,
-    _ => None,
+    id => (self.bus.accounts_found.val)(id),
   ) catch {
     e => {
       slice_log("warn", "agents", "config.json's hub config not worked out", {
@@ -1432,6 +1432,10 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
     "clones.active" => jb(clones_running.length() > 0)
     "profileGone" => {
       hub.profile_gone(jtext(arg, "profile").unwrap_or(""))
+      Json::null()
+    }
+    "refreshConfig" => {
+      self.refresh_config()
       Json::null()
     }
     // (a message another workspace's station sent a chat shared with it: xshare's inbox, messages.ts `fromPeer`)

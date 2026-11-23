@@ -129,8 +129,14 @@ fn Accounts::keep_check(self : Accounts, id : String, check : JV, forced? : Bool
   } else if now_state == Some("ok") && before_state != Some("ok") && self.given.login_notices {
     self.background.track(async fn() { ignore(self.ask("accounts.profileLoginCleared", [js(id)])) catch { _ => () } })
   }
+  let before_found = self.found(id)
   self.checks[id] = check
   self.hub_cache = None
+  if self.found(id) != before_found {
+    if self.on_checks_changed is Some(f) {
+      f()
+    }
+  }
   self.background.track(async fn() {
     self.b.with_store(s => s.set_profile_check(Json::string(id), jv_to_json(check)))
   })

@@ -99,6 +99,8 @@ pub(all) struct LiveBus {
   // ── Cross-slice service bridges (P5-3, P5-4, P5-5) ──
   /// P5-3: Jobs, Remote, WorkspaceWatch, Accounts, Sharing, MemorySync, ChatShares, Resources, Search, Models, Links.
   jobs_ask : Ref[async (String, Json) -> Json]
+  /// P5-3: The models a profile's last check found (`Accounts::found`), read by P5-2's `refresh_config`.
+  accounts_found : Ref[(String) -> Array[String]?]
   /// P5-4: Vault, StationDrive, Helper, Grants, HelperFolders, ScreenRegistry, Browser, Adb, Devices, Terminals, Logins.
   ui_ask : Ref[async (String, Json) -> Json]
   /// P5-4: Direct typed screen-view handler receiving the raw `@door.Stream` (preserving QUIC `media_datagrams`).
@@ -271,6 +273,7 @@ pub fn LiveBus::new(
     drain_wait: Ref(async fn() { "idle" }),
     status_agents: Ref(() => None),
     jobs_ask: Ref(async fn(_op, _arg) { Json::null() }),
+    accounts_found: Ref(_ => None),
     ui_ask: Ref(async fn(_op, _arg) { Json::null() }),
     ui_screen_view: Ref(None),
     ui_helper_search: Ref(None),
@@ -762,6 +765,12 @@ async fn LiveBus::hub_link(self : LiveBus, session : Json) -> Json {
 /// A profile removed: the sessions on it told.
 async fn LiveBus::hub_profile_gone(self : LiveBus, profile : String) -> Unit {
   ignore((self.hub_ask.val)("profileGone", { "profile": Json::string(profile) }))
+}
+
+///|
+/// The accounts' kept checks loaded or changed: the hub's config worked out again with their found models.
+async fn LiveBus::hub_refresh_config(self : LiveBus) -> Unit {
+  ignore((self.hub_ask.val)("refreshConfig", Json::null()))
 }
 
 ///|

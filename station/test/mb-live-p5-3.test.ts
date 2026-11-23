@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { request } from "node:http";
+import { createServer as createHttpServer, request } from "node:http";
 import { type AddressInfo, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1008,5 +1008,136 @@ test("search: GET /search & search.query keep options/asker isolation, prepare s
     );
     s.tell({ op: "stop" });
     assert.equal(await s.ended, 0);
+  }
+});
+
+test("hub config includes models found by profile checks (kept on start and discovered later without config.json changes)", { skip }, async () => {
+  const data = fresh("p53-found-models");
+  const app = fresh("app");
+  writeFileSync(join(app, "BUILD"), "9501\n");
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(
+    join(data, "mesh", "cloud.json"),
+    JSON.stringify({
+      origin: "http://127.0.0.1:9",
+      station: "st-here",
+      workspace: "w1",
+      workspace_name: "W",
+      name: "here",
+      relay_url: "",
+      relay_urls: [],
+      grant_keys: null,
+      peers: [{ id: "st-here", name: "here" }],
+      revocations: [],
+    }),
+  );
+  // Both profiles omit `models` in config.json: their runnable models come solely from profile_status checks.
+  writeFileSync(
+    join(data, "config.json"),
+    JSON.stringify({
+      profiles: [
+        {
+          id: "vertex",
+          name: "Google Vertex AI",
+          home: "homes/vertex",
+          runtime: "agy",
+          access: { kind: "api-provider", provider: "google-vertex", key: "{\"type\":\"service_account\",\"project_id\":\"p\",\"private_key\":\"k\",\"client_email\":\"a@b\"}" },
+        },
+        {
+          id: "late",
+          name: "Late Anthropic",
+          home: "homes/late",
+          runtime: "claude",
+          access: { kind: "anthropic-api", key: "sk-ant-test" },
+        },
+      ],
+    }),
+  );
+  // Seed kept check for `vertex` before the station starts; `late` starts with no check at all.
+  const seed = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  seed.setProfileCheck("vertex", { state: "ok", models: ["gemini-4-neon"], checkedAt: Date.now() });
+  seed.close();
+
+  // Local stand-in for Anthropic `/v1/models` so `late`'s check only succeeds once we enable it.
+  let serveLateModels = false;
+  const api = createHttpServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      if (serveLateModels && (req.url ?? "").startsWith("/v1/models")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ data: [{ id: "claude-opus-4-6" }] }));
+      } else {
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "not ready" }));
+      }
+    });
+  });
+  await new Promise<void>((resolve) => api.listen(0, "127.0.0.1", () => resolve()));
+  const apiPort = (api.address() as AddressInfo).port;
+
+  try {
+    const a = await launch(data, app, {
+      STILLFAIL_PARTS_DOOR: "1",
+      STILLFAIL_ANTHROPIC_API: `http://127.0.0.1:${apiPort}`,
+    });
+    await a.next("ready", (m) => m.ready === true);
+    const door = (await a.next("mcp", (m) => m.serving === "mcp")).port as number;
+
+    // Wait until P5-3 accounts are initialized.
+    await within("accounts ready", 15_000, async () => {
+      const r = await parts(door, "GET", "/route/profiles");
+      return r.status === 200 ? r.body : null;
+    });
+
+    // 1. Hand-picked `vertex` with a model from its kept check is accepted.
+    const okVertex = await parts(door, "POST", "/hub/newSession", [
+      { runtime: "agy", profile: "vertex", model: "gemini-4-neon", createdBy: "u1" },
+      "zh",
+    ]);
+    assert.equal(okVertex.status, 200, `expected vertex + gemini-4-neon to be accepted, got ${JSON.stringify(okVertex)}`);
+    assert.ok(Array.isArray(okVertex.body) && typeof okVertex.body[0] === "string", JSON.stringify(okVertex.body));
+
+    // 2. Hand-picked `vertex` with a model NOT in its kept check is still refused with station.profile.modelOff.
+    const badVertex = await parts(door, "POST", "/hub/newSession", [
+      { runtime: "agy", profile: "vertex", model: "gemini-4-other", createdBy: "u1" },
+      "zh",
+    ]);
+    assert.notEqual(badVertex.status, 200, `expected vertex + gemini-4-other to be refused, got ${JSON.stringify(badVertex)}`);
+    assert.match(String(badVertex.body?.error ?? ""), /「Google Vertex AI」无法运行 gemini-4-other/);
+
+    // 3. `late` has no models yet: hand-picked with `claude-opus-4-6` is refused before its check finishes.
+    const beforeCheck = await parts(door, "POST", "/hub/newSession", [
+      { runtime: "claude", profile: "late", model: "claude-opus-4-6", createdBy: "u1" },
+      "zh",
+    ]);
+    assert.notEqual(beforeCheck.status, 200, `expected late before check to be refused, got ${JSON.stringify(beforeCheck)}`);
+    assert.match(String(beforeCheck.body?.error ?? ""), /「Late Anthropic」无法运行 claude-opus-4-6/);
+
+    // 4. Check `late` without changing config.json: once check completes, hand-picked chat is accepted.
+    serveLateModels = true;
+    const checked = await parts(door, "POST", "/route/profiles/late/check");
+    assert.equal(checked.status, 200, JSON.stringify(checked));
+    assert.equal(checked.body?.state, "ok", JSON.stringify(checked.body));
+    assert.deepEqual(checked.body?.models, ["claude-opus-4-6"]);
+
+    const afterCheck = await parts(door, "POST", "/hub/newSession", [
+      { runtime: "claude", profile: "late", model: "claude-opus-4-6", createdBy: "u1" },
+      "zh",
+    ]);
+    assert.equal(afterCheck.status, 200, `expected late + claude-opus-4-6 after check to be accepted, got ${JSON.stringify(afterCheck)}`);
+    assert.ok(Array.isArray(afterCheck.body) && typeof afterCheck.body[0] === "string", JSON.stringify(afterCheck.body));
+
+    // 5. `late` with a model not returned by its check is still refused with station.profile.modelOff.
+    const badLate = await parts(door, "POST", "/hub/newSession", [
+      { runtime: "claude", profile: "late", model: "claude-nonexistent", createdBy: "u1" },
+      "zh",
+    ]);
+    assert.notEqual(badLate.status, 200, `expected late + claude-nonexistent to be refused, got ${JSON.stringify(badLate)}`);
+    assert.match(String(badLate.body?.error ?? ""), /「Late Anthropic」无法运行 claude-nonexistent/);
+
+    a.tell({ op: "stop" });
+    assert.equal(await a.ended, 0);
+  } finally {
+    api.close();
   }
 });

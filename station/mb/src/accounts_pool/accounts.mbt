@@ -322,6 +322,7 @@ pub struct Accounts {
   mut homes_changed : Int
   emails : Map[String, (String, String?)]
   mut hub_accounts : SessionAccounts?
+  mut on_checks_changed : (() -> Unit)?
   mut pace_read : (Double, Int, Double, JV)?
   mut pace_rev : Int
   mut unchecking : @effect.Deferred[Unit]?
@@ -410,6 +411,7 @@ pub async fn Accounts::new(
     homes_changed: 0,
     emails: Map::new(),
     hub_accounts: None,
+    on_checks_changed: None,
     pace_read: None,
     pace_rev: 0,
     unchecking: None,
@@ -436,6 +438,12 @@ pub async fn Accounts::new(
 /// The hub's account pool, when the accounts are given one (in the same program).
 pub fn Accounts::set_hub_accounts(self : Accounts, s : SessionAccounts) -> Unit {
   self.hub_accounts = Some(s)
+}
+
+///|
+/// Told whenever a kept profile check's discovered models change (`keep_check`).
+pub fn Accounts::set_on_checks_changed(self : Accounts, f : () -> Unit) -> Unit {
+  self.on_checks_changed = Some(f)
 }
 
 ///|
