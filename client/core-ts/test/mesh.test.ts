@@ -609,7 +609,8 @@ sim("a_refusal_the_mesh_is_given_a_name_for_is_said_so_and_asks_no_new_credentia
 /// the cloud for another credential at each try.
 sim("the_mesh_the_core_makes_names_a_locks_refusals_and_asks_no_new_credential_after_them", async (s) => {
   const station = await s.station();
-  const inner = { host: s.host, runner: s.runner, tracer: new Tracer(s.host, s.runner, 1, TRACES), wakes: s.wakes } as unknown as Inner;
+  // (`data`: no prefs kept, so the DHT is looked in as by default)
+  const inner = { host: s.host, runner: s.runner, tracer: new Tracer(s.host, s.runner, 1, TRACES), wakes: s.wakes, data: { get: () => undefined } } as unknown as Inner;
   const mesh = await s.run(Mesh.make(meshEnv(inner, s.iroh), []));
   mesh.addAddr(station.addr());
   const fresh: boolean[] = [];
