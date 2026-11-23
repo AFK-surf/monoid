@@ -576,8 +576,7 @@ test("a handover (SIGUSR2): a service and a job go on, their port reached throug
   writeFileSync(join(data, "config.json"), JSON.stringify({ language: "en", http: { port: mcpPort } }));
   const path = toolsPath();
   symlinkSync(python!, join(path, "python3"));
-  const loopPort = await freePort();
-  const station = spawn(launcher, ["run", "--app", app, "--data", data, "--port", String(loopPort)], {
+  const station = spawn(launcher, ["run", "--app", app, "--data", data], {
     stdio: ["ignore", "pipe", "pipe"],
     env: { PATH: path, HOME: data, TMPDIR: tmpdir(), STILLFAIL_HELD_EVERY_MS: "300", STILLFAIL_AGENT_NICE: "0", STILLFAIL_NO_DISCOVERY: "1" },
   });

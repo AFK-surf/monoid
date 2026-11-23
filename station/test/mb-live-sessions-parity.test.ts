@@ -16,6 +16,7 @@ import { type Server, createServer } from "node:net";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
@@ -136,6 +137,9 @@ while IFS= read -r line; do
 
   case "$line" in
     *SCENARIO-HOLD*)
+      # (a step after the requesting above on the same stdout: once the live stream shows it, the station read that
+      # requesting, which would otherwise clear an unread message that came in before it was read)
+      say '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"hold-init","name":"HOLD-INIT-ACK"}},"session_id":"'"$sid"'"}'
       : > "$FAKE_OUT/hold-ready"
       while [ ! -f "$FAKE_OUT/hold-go" ]; do sleep 0.05; done
       first=$(mcp_call '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"chat_post","arguments":{"to":"'"$to"'","text":"held body original","kind":"all_done","done":"sent held post"}}}')
@@ -555,9 +559,20 @@ test("2. chat_post heldPost, options cards + withdraw + Admin API close-card (<c
       assert.equal(await live.opened, 200);
       const holdStart = await httpJson(s.door, `/admin-api/threads/${tHold.id}/messages`, "POST", { text: "SCENARIO-HOLD" });
       assert.equal(holdStart.status, 200, holdStart.raw);
-      await until("fake claude ready for unread message", () => existsSync(join(s.out, "hold-ready")), () => s.proc.err());
+      await until("fake claude ready for unread message", () => existsSync(join(s.out, "hold-ready")) && live.text().includes("HOLD-INIT-ACK"), () => `${s.proc.err()}\nlive=${live.text().slice(-400)}`);
       const unreadMsg = await httpJson(s.door, `/admin-api/threads/${tHold.id}/messages`, "POST", { text: "UNREAD-TRIGGER" });
       assert.equal(unreadMsg.status, 200, unreadMsg.raw);
+      // (`--serve` answers 200 before the station's `handle_said` enqueues the delivery and steers it into the actor's
+      // unread: the held post's check would see nothing yet. Its row is there either way, pending or delivered.)
+      const unreadN = unreadMsg.json.n as number;
+      const db = new DatabaseSync(join(s.data, "stillfail.db"), { readOnly: true });
+      try {
+        await until("the unread message delivered to the hold session", () =>
+          db.prepare("SELECT 1 FROM deliveries WHERE thread = ? AND n = ? AND session = ?").get(tHold.id, unreadN, "chat:c-hold") !== undefined,
+        () => s.proc.err());
+      } finally {
+        db.close();
+      }
       writeFileSync(join(s.out, "hold-go"), "1");
       await until("the station read the requesting after the steer", () => live.text().includes("HOLD-READ-ACK"), () => `${s.proc.err()}\nlive=${live.text().slice(-400)}`);
       writeFileSync(join(s.out, "hold-read-done"), "1");

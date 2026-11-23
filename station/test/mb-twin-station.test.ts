@@ -408,9 +408,8 @@ class Twins {
       STILLFAIL_NODE: process.execPath, STILLFAIL_MESH_NATIVE: meshNative,
       STILLFAIL_MB_READER: join(s.app, "station", "stillfail-reader"), STILLFAIL_RUNNER: join(s.app, "station", "stillfail-runner"),
     };
-    const loopPort = await freeTcpPort();
     s.said = "";
-    s.child = spawn(launcher, ["run", "--app", s.app, "--data", s.data, "--port", String(loopPort)], { stdio: ["ignore", "pipe", "pipe"], env });
+    s.child = spawn(launcher, ["run", "--app", s.app, "--data", s.data], { stdio: ["ignore", "pipe", "pipe"], env });
     children.push(s.child);
     s.child.stdout!.on("data", (d) => (s.said += d));
     s.child.stderr!.on("data", (d) => (s.said += d));
