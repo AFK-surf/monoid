@@ -78,8 +78,8 @@ test "主题色 自定义: a hue of one's own, its slider under the dots; a step
     app.nav.push(Setting(@settings.Route::Appearance))
     t.draw()
     t.run_for(@ui.move_most_ms)
-    // no slider till 自定义 is chosen
-    assert_true(t.semantics().filter(fn(s) { s.role == Slider }).is_empty(), msg="\{w}")
+    // no hue slider till 自定义 is chosen
+    assert_true(t.query(Slider, label="色相") is None, msg="\{w}")
     t.click(Radio, label="自定义")
     // (the slider comes in under the dots on its way: looked at once that is over)
     t.run_for(@ui.move_most_ms)
@@ -108,7 +108,7 @@ test "主题色 自定义: a hue of one's own, its slider under the dots; a step
     assert_eq(@sf.accent_key(), "purple")
     // (the slider closes its way under the dots: gone once it has)
     t.run_for(@ui.move_most_ms)
-    assert_true(t.semantics().filter(fn(s) { s.role == Slider }).is_empty(), msg="\{w}")
+    assert_true(t.query(Slider, label="色相") is None, msg="\{w}")
     t.click(Radio, label="自定义")
     t.frame()
     t.frame()

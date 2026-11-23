@@ -102,11 +102,13 @@ test "styles: how many values of each kind the app's screens use" {
   // Two more once a page's room under its last block is its list's end_room (padding under what it scrolls) in place of
   // a block that tall (a block's height is not counted): pg_foot's 30 and desk_foot_h's 80, no new spacing token:
   // space 20 to 22.
+  // One more once Appearance renders the Liquid Glass `@sf.value_slider_node` (6pt track / 24pt capsule thumb):
+  // radius 22 to 23.
   inspect(counts.to_string(), content=(
     #|text 31
     #|weight 4
     #|space 22
-    #|radius 22
+    #|radius 23
     #|color 83
     #|
 

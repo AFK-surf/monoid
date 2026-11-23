@@ -104,7 +104,16 @@ test "window zoom: the window menu changes the size" {
 ///|
 test "window zoom: the appearance picker changes and restores the window" {
   let t = settings_tester("appearance")
-  let width = t.ctx().window_size().0
+  let (w0, h0) = t.ctx().window_size()
+  let width = w0
+  t.move_to(w0 / 2.0, h0 / 2.0)
+  for _ in 0..<10 {
+    match t.find("100%") {
+      Some((_, y)) if y > 90.0 && y < h0 - 80.0 => break
+      Some((_, y)) if y <= 90.0 => t.wheel(w0 / 2.0, h0 / 2.0, -300.0)
+      _ => t.wheel(w0 / 2.0, h0 / 2.0, 300.0)
+    }
+  }
   t.tap_text("100%")
   t.tap_text("125%")
   t.frame()
