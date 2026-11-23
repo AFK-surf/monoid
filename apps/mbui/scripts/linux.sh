@@ -16,25 +16,47 @@ export APP=${APP:-stillfail}
 if [ -n "${MBUI_IN_LINUX_SH:-}" ]; then
   if [ "$APP" = stillfail ]; then
     t=linux-$(uname -m | sed 's/x86_64/x64/; s/aarch64/arm64/')
-    engine=$(cd "$SF_SRC" && node scripts/native.ts path engine $t) || exit 1
     shell=$(cd "$SF_SRC" && node scripts/native.ts path shell $t) || exit 1
     ghostty_vt=$(cd "$SF_SRC" && node scripts/native.ts path ghostty-vt $t) || exit 1
-    export MBUI_LINUX_CFLAGS="-I$A/engine -I$MBUI_DIR/src/host -I$ghostty_vt/include $(pkg-config --cflags libsecret-1)"
-    export MBUI_LINUX_LDFLAGS="-L$engine -L$shell -L$ghostty_vt/lib -lstillfail_engine -lstillfail_shell -lghostty-vt $(pkg-config --libs libsecret-1) -Wl,-rpath,\$ORIGIN"
+    if [ "${STILLFAIL_CORE:-}" = pion ]; then
+      pion_core_dir="$A/out/pion-core/$t"
+      export MBUI_LINUX_CFLAGS="-DSTILLFAIL_CORE_PION -I$MBUI_DIR/src/host -I$ghostty_vt/include"
+      export MBUI_LINUX_LDFLAGS="$pion_core_dir/libpion_core.a -L$shell -L$ghostty_vt/lib -lstillfail_shell -lghostty-vt -lpthread -lm -ldl -Wl,-rpath,\$ORIGIN"
+    else
+      engine=$(cd "$SF_SRC" && node scripts/native.ts path engine $t) || exit 1
+      export MBUI_LINUX_CFLAGS="-I$A/engine -I$MBUI_DIR/src/host -I$ghostty_vt/include $(pkg-config --cflags libsecret-1)"
+      export MBUI_LINUX_LDFLAGS="-L$engine -L$shell -L$ghostty_vt/lib -lstillfail_engine -lstillfail_shell -lghostty-vt $(pkg-config --libs libsecret-1) -Wl,-rpath,\$ORIGIN"
+    fi
   fi
-  core() { HERMESC="$engine/hermesc" bash "$AD/core.sh" hermes; }
+  core() {
+    if [ "${STILLFAIL_CORE:-}" = pion ]; then
+      sh "$AD/pion-core.sh" build "$t"
+    else
+      HERMESC="$engine/hermesc" bash "$AD/core.sh" hermes
+    fi
+  }
   # put [core]: the engine, the shell and libghostty-vt beside the app's executable, the core's bytecode too when asked
   put() {
     . "$MBUI_DIR/scripts/env.sh"
     # (mbui's linux.sh builds this module in its copy, out/linux/app beside mbui's own)
     dir=$MBUI_DIR/out/linux/app/$(cd "$MBUI_DIR/out/linux/app" && pkg_build $APP native ${MODE:-release})
-    # (the engine's libraries: its own, and ICU's it carries; libghostty-vt by its SONAME)
-    cp "$engine"/lib*.so* "$shell/libstillfail_shell.so" "$ghostty_vt/lib/libghostty-vt.so.1" "$dir/" || return 1
-    [ "${1:-}" != core ] || cp "$A/out/core/core.hbc" "$dir/" || return 1
+    if [ "${STILLFAIL_CORE:-}" = pion ]; then
+      cp "$shell/libstillfail_shell.so" "$ghostty_vt/lib/libghostty-vt.so.1" "$dir/" || return 1
+    else
+      # (the engine's libraries: its own, and ICU's it carries; libghostty-vt by its SONAME)
+      cp "$engine"/lib*.so* "$shell/libstillfail_shell.so" "$ghostty_vt/lib/libghostty-vt.so.1" "$dir/" || return 1
+      [ "${1:-}" != core ] || cp "$A/out/core/core.hbc" "$dir/" || return 1
+    fi
     ls -la "$dir"
   }
   app_prebuild() {
-    if [ "$APP" = stillfail ] && [ "${MBUI_LINUX_CORE:-1}" != 0 ]; then core || exit 1; fi
+    if [ "$APP" = stillfail ]; then
+      if [ "${STILLFAIL_CORE:-}" = pion ]; then
+        if [ "${MBUI_LINUX_CORE:-1}" != 0 ] || [ ! -f "$pion_core_dir/libpion_core.a" ]; then core || exit 1; fi
+      elif [ "${MBUI_LINUX_CORE:-1}" != 0 ]; then
+        core || exit 1
+      fi
+    fi
   }
   app_postbuild() {
     if [ "$APP" = stillfail ]; then

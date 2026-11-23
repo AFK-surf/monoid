@@ -40,7 +40,14 @@ static const mbc_engine hermes_engine = {mb_core_start, mb_core_send, mb_core_st
 static const mbc_engine hermes_engine = {mb_core_start, mb_core_send, mb_core_stop, core_data_dir, NULL, mb_post, mb_post_drop, mb_core_screen_ack, NULL, mb_core_screen_input};
 #endif
 
+#ifdef STILLFAIL_CORE_PION
+extern void mb_core_attach_pion_runtime(void);
+#endif
+
 __attribute__((constructor)) static void use_hermes_engine(void) {
+#ifdef STILLFAIL_CORE_PION
+  mb_core_attach_pion_runtime();
+#endif
 #if TARGET_OS_IPHONE
   sf_product_environment(NSBundle.mainBundle.infoDictionary[@"MBUIEnvironment"]);
 #endif
@@ -51,7 +58,7 @@ __attribute__((constructor)) static void use_hermes_engine(void) {
   mb_stream_route_acks(mb_core_screen_ack);
 }
 
-#if TARGET_OS_IPHONE
+#if TARGET_OS_IPHONE && !defined(STILLFAIL_CORE_PION)
 #include <fcntl.h>
 #include <time.h>
 #include <unistd.h>
@@ -138,7 +145,9 @@ void mb_core_pushed(NSString *workspace, NSString *station, NSString *session, N
     dispatch_async(dispatch_get_main_queue(), ask_bring);
   });
 }
+#endif
 
+#if TARGET_OS_IPHONE
 #include <sys/utsname.h>
 // The phone's model, as Android's CoreHost.java puts its maker's and model in MBUI_DEVICE_MODEL (the device's name the
 // core makes: signin.mbt tell_device): its machine identifier (iPhone17,1; the simulator's the device it plays).

@@ -6,6 +6,73 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef STILLFAIL_CORE_PION
+#include <errno.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#include "../host/core_api.h"
+#include "../core/core_client.h"
+
+extern void mb_core_attach_pion_runtime(void);
+
+static void pion_mkdir_p(const char *path) {
+  if (!path || !*path) return;
+  size_t len = strlen(path);
+  char *buf = malloc(len + 1);
+  if (!buf) return;
+  memcpy(buf, path, len + 1);
+  for (char *p = buf + 1; *p; p++) {
+    if (*p == '/') {
+      *p = '\0';
+      (void)mkdir(buf, 0700);
+      *p = '/';
+    }
+  }
+  (void)mkdir(buf, 0700);
+  free(buf);
+}
+
+static const char *pion_core_data_dir(void) {
+  static char *dir;
+  if (dir) return dir;
+  const char *env = getenv("MBUI_CORE_DATA");
+  if (env && *env) {
+    dir = strdup(env);
+  } else {
+    const char *xdg = getenv("XDG_DATA_HOME");
+    const char *home = getenv("HOME");
+    char buf[4096];
+    if (xdg && *xdg) {
+      snprintf(buf, sizeof buf, "%s/stillfail/core", xdg);
+    } else if (home && *home) {
+      snprintf(buf, sizeof buf, "%s/.local/share/stillfail/core", home);
+    } else {
+      snprintf(buf, sizeof buf, "/tmp/stillfail-core");
+    }
+    dir = strdup(buf);
+  }
+  if (dir) pion_mkdir_p(dir);
+  return dir;
+}
+
+static const mbc_engine pion_engine = {
+    mb_core_start,
+    mb_core_send,
+    mb_core_stop,
+    pion_core_data_dir,
+    NULL,
+    mb_post,
+    mb_post_drop,
+    mb_core_screen_ack,
+    NULL,
+    mb_core_screen_input,
+};
+
+__attribute__((constructor)) static void use_pion_engine(void) {
+  mb_core_attach_pion_runtime();
+  mbc_use(&pion_engine);
+}
+#else
 #include "moonbit.h"
 #include "../host/linux_core.c"
 #include "../core/core_client.h"
@@ -13,6 +80,7 @@
 static const mbc_engine hermes_engine = {mb_core_start, mb_core_send, mb_core_stop, mb_core_data_dir, NULL, mb_post, mb_post_drop};
 
 __attribute__((constructor)) static void use_hermes_engine(void) { mbc_use(&hermes_engine); }
+#endif
 
 // The device's language for the app's words until the core says (src/sf/lang.mbt), and the core's when none is chosen
 // (signin.mbt tell_device): MBUI_LOCALE, as Android's CoreHost.java puts it, from the session's locale (LC_ALL,
