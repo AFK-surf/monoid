@@ -1231,6 +1231,122 @@ int main(void) {
     CHECK(gl_adaptive_settling() == 0);
     gl_set_fixed_dt(0.0);
     glass_forget();
+
+    // Test C: wide adaptive light capsule spanning left 45% dark (#141418) + right 55% white (#FFFFFF).
+    // Verifies: whole capsule stays light, left-half neutral ink (kind 10 & kind 7) inverts bright locally,
+    // right-half neutral ink stays dark, left chromatic accent preserves hue, out-of-bd elements stay dark,
+    // and expanding to full dark converges the whole capsule and all ink to dark glass with light ink.
+    {
+      unsigned char solid_glyph[16 * 16];
+      memset(solid_glyph, 255, sizeof(solid_glyph));
+      glBindTexture(GL_TEXTURE_2D, atlas);
+      glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 16, 16, 16, 16, GL_RED, GL_UNSIGNED_BYTE, solid_glyph);
+      double tc[9 * MB_INST];
+      rect_at(tc, 0, 0, W, H, 0, 1.0, 1.0, 1.0, 0);
+      rect_at(tc + MB_INST, 0, 0, 46, H, 0, 20.0 / 255.0, 20.0 / 255.0, 24.0 / 255.0, 0);
+      rect_at(tc + 2 * MB_INST, 8, 28, 84, 16, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -23);
+      tc[2 * MB_INST + 4] = 8.0;
+      tc[2 * MB_INST + 6] = 1.0;
+      tc[2 * MB_INST + 7] = 2.0;
+      tc[2 * MB_INST + 11] = 0x67 / 255.0;
+      tc[2 * MB_INST + 12] = 0.0;
+      tc[2 * MB_INST + 13] = 8.0;
+      tc[2 * MB_INST + 14] = -1.0;
+      tc[2 * MB_INST + 15] = 1.0;
+      tc[2 * MB_INST + 21] = 0.0;
+      tc[2 * MB_INST + 22] = 0.0;
+      tc[2 * MB_INST + 23] = 0.0;
+      // 3: Left subtle ink (kind 10) at center (16, 36) -> px (32, 72)
+      rect_at(tc + 3 * MB_INST, 12, 30, 8, 12, 10, 0.34, 0.36, 0.38, 0);
+      tc[3 * MB_INST + 4] = 3.0;
+      tc[3 * MB_INST + 12] = 0.1; tc[3 * MB_INST + 13] = 0.5;
+      tc[3 * MB_INST + 14] = 0.9; tc[3 * MB_INST + 15] = 0.5;
+      tc[3 * MB_INST + 21] = 50.0; tc[3 * MB_INST + 22] = 36.0; tc[3 * MB_INST + 23] = 16.0;
+      // 4: Left text glyph (kind 7) at center (26, 36) -> px (52, 72)
+      rect_at(tc + 4 * MB_INST, 22, 32, 8, 8, 7, 0.14, 0.15, 0.17, 0);
+      tc[4 * MB_INST + 12] = 16.0; tc[4 * MB_INST + 13] = 16.0;
+      tc[4 * MB_INST + 14] = 16.0; tc[4 * MB_INST + 15] = 16.0;
+      tc[4 * MB_INST + 21] = 50.0; tc[4 * MB_INST + 22] = 36.0; tc[4 * MB_INST + 23] = 16.0;
+      // 5: Left chromatic accent (kind 10) at center (36, 36) -> px (72, 72)
+      rect_at(tc + 5 * MB_INST, 32, 30, 8, 12, 10, 0.90, 0.30, 0.15, 0);
+      tc[5 * MB_INST + 4] = 3.0;
+      tc[5 * MB_INST + 12] = 0.1; tc[5 * MB_INST + 13] = 0.5;
+      tc[5 * MB_INST + 14] = 0.9; tc[5 * MB_INST + 15] = 0.5;
+      tc[5 * MB_INST + 21] = 50.0; tc[5 * MB_INST + 22] = 36.0; tc[5 * MB_INST + 23] = 16.0;
+      // 6: Right subtle ink (kind 10) at center (65, 36) -> px (130, 72)
+      rect_at(tc + 6 * MB_INST, 60, 30, 10, 12, 10, 0.34, 0.36, 0.38, 0);
+      tc[6 * MB_INST + 4] = 3.0;
+      tc[6 * MB_INST + 12] = 0.1; tc[6 * MB_INST + 13] = 0.5;
+      tc[6 * MB_INST + 14] = 0.9; tc[6 * MB_INST + 15] = 0.5;
+      tc[6 * MB_INST + 21] = 50.0; tc[6 * MB_INST + 22] = 36.0; tc[6 * MB_INST + 23] = 16.0;
+      // 7: Right text glyph (kind 7) at center (76, 36) -> px (152, 72)
+      rect_at(tc + 7 * MB_INST, 72, 32, 8, 8, 7, 0.14, 0.15, 0.17, 0);
+      tc[7 * MB_INST + 12] = 16.0; tc[7 * MB_INST + 13] = 16.0;
+      tc[7 * MB_INST + 14] = 16.0; tc[7 * MB_INST + 15] = 16.0;
+      tc[7 * MB_INST + 21] = 50.0; tc[7 * MB_INST + 22] = 36.0; tc[7 * MB_INST + 23] = 16.0;
+      // 8: Out-of-bd guard (kind 10) at (6, 4) -> px (12, 8), outside capsule bd capture rect
+      rect_at(tc + 8 * MB_INST, 2, 1, 8, 6, 10, 0.34, 0.36, 0.38, 0);
+      tc[8 * MB_INST + 4] = 2.0;
+      tc[8 * MB_INST + 12] = 0.1; tc[8 * MB_INST + 13] = 0.5;
+      tc[8 * MB_INST + 14] = 0.9; tc[8 * MB_INST + 15] = 0.5;
+      tc[8 * MB_INST + 21] = 50.0; tc[8 * MB_INST + 22] = 36.0; tc[8 * MB_INST + 23] = 16.0;
+
+      gl_set_fixed_dt(1.0 / 60.0);
+      glass_forget();
+      gl_present(tc, 9, 1.0, 1.0, 1.0);
+      unsigned char *px_tc = pixels_of_fb(surface);
+      unsigned char *p_ls = px_tc + ((fb_h - 1 - 72) * fb_w + 32) * 4;
+      unsigned char *p_lt = px_tc + ((fb_h - 1 - 72) * fb_w + 52) * 4;
+      unsigned char *p_lc = px_tc + ((fb_h - 1 - 72) * fb_w + 72) * 4;
+      unsigned char *p_rs = px_tc + ((fb_h - 1 - 72) * fb_w + 130) * 4;
+      unsigned char *p_rt = px_tc + ((fb_h - 1 - 72) * fb_w + 152) * 4;
+      unsigned char *p_rg = px_tc + ((fb_h - 1 - 72) * fb_w + 170) * 4;
+      unsigned char *p_ob = px_tc + ((fb_h - 1 - 8) * fb_w + 12) * 4;
+      double l_sub = (0.2126 * p_ls[0] + 0.7152 * p_ls[1] + 0.0722 * p_ls[2]) / 255.0;
+      double l_txt = (0.2126 * p_lt[0] + 0.7152 * p_lt[1] + 0.0722 * p_lt[2]) / 255.0;
+      double r_sub = (0.2126 * p_rs[0] + 0.7152 * p_rs[1] + 0.0722 * p_rs[2]) / 255.0;
+      double r_txt = (0.2126 * p_rt[0] + 0.7152 * p_rt[1] + 0.0722 * p_rt[2]) / 255.0;
+      double g_right = (0.2126 * p_rg[0] + 0.7152 * p_rg[1] + 0.0722 * p_rg[2]) / 255.0;
+      double oob_sub = (0.2126 * p_ob[0] + 0.7152 * p_ob[1] + 0.0722 * p_ob[2]) / 255.0;
+      printf("gles_render: wave7 testC half_dark l_sub=%.3f l_txt=%.3f r_sub=%.3f r_txt=%.3f g_right=%.3f oob=%.3f chroma=%d,%d,%d\n",
+             l_sub, l_txt, r_sub, r_txt, g_right, oob_sub, p_lc[0], p_lc[1], p_lc[2]);
+      CHECK(l_sub > 0.82);
+      CHECK(l_txt > 0.82);
+      CHECK(r_sub < 0.45);
+      CHECK(r_txt < 0.45);
+      CHECK(g_right > 0.75);
+      CHECK(oob_sub < 0.45);
+      CHECK((int)p_lc[0] > (int)p_lc[2] + 120);
+      free(px_tc);
+
+      // Expand dark backdrop from 45% to 100% across 20 frames + 10 settle frames:
+      // whole capsule and all ink converge to dark glass with light ink.
+      double min_l_sub = 1.0, min_l_txt = 1.0, end_r_sub = 0.0, end_g_right = 1.0;
+      for (int s = 0; s < 30; s++) {
+        double t = s < 20 ? (double)(s + 1) / 20.0 : 1.0;
+        tc[MB_INST + 2] = 46.0 + ((double)W - 46.0) * t;
+        gl_present(tc, 9, 1.0, 1.0, 1.0);
+        px_tc = pixels_of_fb(surface);
+        p_ls = px_tc + ((fb_h - 1 - 72) * fb_w + 32) * 4;
+        p_lt = px_tc + ((fb_h - 1 - 72) * fb_w + 52) * 4;
+        p_rs = px_tc + ((fb_h - 1 - 72) * fb_w + 130) * 4;
+        p_rg = px_tc + ((fb_h - 1 - 72) * fb_w + 170) * 4;
+        double cs = (0.2126 * p_ls[0] + 0.7152 * p_ls[1] + 0.0722 * p_ls[2]) / 255.0;
+        double ct = (0.2126 * p_lt[0] + 0.7152 * p_lt[1] + 0.0722 * p_lt[2]) / 255.0;
+        end_r_sub = (0.2126 * p_rs[0] + 0.7152 * p_rs[1] + 0.0722 * p_rs[2]) / 255.0;
+        end_g_right = (0.2126 * p_rg[0] + 0.7152 * p_rg[1] + 0.0722 * p_rg[2]) / 255.0;
+        if (cs < min_l_sub) min_l_sub = cs;
+        if (ct < min_l_txt) min_l_txt = ct;
+        free(px_tc);
+      }
+      printf("gles_render: wave7 testC scroll_to_full min_l_sub=%.3f min_l_txt=%.3f end_r_sub=%.3f end_g_right=%.3f\n",
+             min_l_sub, min_l_txt, end_r_sub, end_g_right);
+      CHECK(end_r_sub > 0.68);
+      CHECK(end_g_right < 0.35);
+      gl_set_fixed_dt(0.0);
+      glass_forget();
+    }
     // Wave 4B v17: foreground optical lens (kind == 8): offscreen Gaussian defocus + spherical bevel refraction + SDF clip
     double k8[3 * MB_INST];
     rect_at(k8, 0, 0, W, H, 0, 1.0, 1.0, 1.0, 0);

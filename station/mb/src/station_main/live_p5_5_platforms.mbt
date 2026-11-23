@@ -820,6 +820,12 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
           ignore(db.all("DELETE FROM comma_router_once_targets WHERE id = ?", [Json::string(id)]))
           db.all("SELECT 1 FROM comma_router_once WHERE id = ? AND pending = 0", [Json::string(id)]).length() > 0
         },
+        pending_card_header: async fn(thread) {
+          to_jv(self.hub("store.pendingCardHeader", [Json::number(thread)]))
+        },
+        close_card: async fn(viewer, thread, n, option) {
+          self.hub("store.closeCard", [Json::string(viewer), Json::number(thread), Json::number(n), Json::string(option), Json::string((io.lang)())]) == Json::boolean(true)
+        },
         say: async fn(thread, author, text, hooks) {
           match hooks {
             Some(h) => {

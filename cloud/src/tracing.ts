@@ -1,7 +1,9 @@
 // Traces. Clients and stations send their spans here, to
 // POST /v1/telemetry/traces, and still.fail cloud passes them on to Google Cloud (Cloud Trace; logs to Cloud Logging)
 // through its Telemetry API, as its own service account (GCP_TELEMETRY), whose key never leaves the Worker. It records
-// spans of its own for the /v1/* calls that carry a recorded W3C traceparent, sent straight there once the answer is out.
+// spans of its own for the /v1/* calls that carry a recorded W3C traceparent, sent straight there once the answer is out,
+// and, as traces of their own (`recordRootSpan`), its scheduled tasks and the calls nobody traced that were slow, refused
+// for their rate or failed, and the sockets' openings refused or slow (index.ts).
 import { DurableObject } from "cloudflare:workers";
 import { clock, nowSeconds, readText, reply } from "./auth";
 import { header, publicOrigins, signedMessages } from "./compat";
@@ -296,14 +298,22 @@ export async function cloudLogToTelemetry(env: Env, level: keyof typeof SEVERITY
 /** An error's text for a log line: its message (no stack), short. */
 export const errorMessage = (error: unknown) => (error instanceof Error ? `${error.name}: ${error.message}` : String(error)).slice(0, 300);
 
+type AttributeValue = string | number | boolean;
+const otlpAttribute = (key: string, value: AttributeValue) => ({ key, value: typeof value === "number" && Number.isSafeInteger(value) ? { intValue: String(value) } : typeof value === "number" ? { doubleValue: value } : typeof value === "boolean" ? { boolValue: value } : { stringValue: value } });
+const nanos = (ms: number) => (BigInt(Math.round(ms)) * 1_000_000n).toString();
+
+/** A span of still.fail cloud's own sent to Google Cloud, named after the Worker (stillfail-cloud) as the queries know it; dropped if that fails. */
+async function sendSpan(env: Env, span: object): Promise<void> {
+  const value = { resourceSpans: [{ resource: { attributes: [otlpAttribute("service.name", "stillfail-cloud")] }, scopeSpans: [{ scope: { name: "stillfail-cloud" }, spans: [span] }] }] };
+  await toGoogle(env, "traces", value).catch(() => false);
+}
+
 /** The span of a /v1/* call made in a recorded trace, sent to Google Cloud (dropped if that fails). */
 export async function recordCall(env: Env, parent: TraceParent, request: Request, response: Response, startMs: number, endMs: number, notes: SpanNotes = {}): Promise<void> {
   if (!env.GCP_TELEMETRY) return;
   const path = route(new URL(request.url).pathname);
-  const nanos = (ms: number) => (BigInt(Math.round(ms)) * 1_000_000n).toString();
-  const attribute = (key: string, value: string | number) => ({ key, value: typeof value === "number" ? { intValue: String(value) } : { stringValue: value } });
   const size = Number(response.headers.get("content-length") ?? NaN);
-  const span = {
+  await sendSpan(env, {
     traceId: parent.trace,
     spanId: hex(crypto.getRandomValues(new Uint8Array(8))),
     parentSpanId: parent.span,
@@ -312,15 +322,31 @@ export async function recordCall(env: Env, parent: TraceParent, request: Request
     startTimeUnixNano: nanos(startMs),
     endTimeUnixNano: nanos(endMs),
     attributes: [
-      attribute("http.request.method", request.method),
-      attribute("url.path", path),
-      attribute("http.response.status_code", response.status),
-      ...(Number.isFinite(size) ? [attribute("http.response.body.size", size)] : []),
-      ...Object.entries(notes).map(([key, value]) => attribute(key, value)),
+      otlpAttribute("http.request.method", request.method),
+      otlpAttribute("url.path", path),
+      otlpAttribute("http.response.status_code", response.status),
+      ...(Number.isFinite(size) ? [otlpAttribute("http.response.body.size", size)] : []),
+      ...Object.entries(notes).map(([key, value]) => otlpAttribute(key, value)),
     ],
     status: { code: response.status >= 500 ? 2 : 1 },
-  };
-  // Named after the Worker (stillfail-cloud), as the queries know it.
-  const value = { resourceSpans: [{ resource: { attributes: [attribute("service.name", "stillfail-cloud")] }, scopeSpans: [{ scope: { name: "stillfail-cloud" }, spans: [span] }] }] };
-  await toGoogle(env, "traces", value).catch(() => false);
+  });
+}
+
+/**
+ * A span of still.fail cloud's that starts a trace of its own (no parent: Cloud Trace lists it as `root:<name>`): a
+ * scheduled task, or a call nobody traced that was slow, refused for its rate or failed (index.ts). `kind` is OTLP's
+ * (1 internal, 2 server). Only what is about the Worker goes in `attributes`, as in its log lines.
+ */
+export async function recordRootSpan(env: Env, name: string, startMs: number, endMs: number, attributes: Record<string, AttributeValue>, failed: boolean, kind: 1 | 2 = 1): Promise<void> {
+  if (!env.GCP_TELEMETRY) return;
+  await sendSpan(env, {
+    traceId: hex(crypto.getRandomValues(new Uint8Array(16))),
+    spanId: hex(crypto.getRandomValues(new Uint8Array(8))),
+    name,
+    kind,
+    startTimeUnixNano: nanos(startMs),
+    endTimeUnixNano: nanos(endMs),
+    attributes: Object.entries(attributes).map(([key, value]) => otlpAttribute(key, value)),
+    status: { code: failed ? 2 : 1 },
+  });
 }

@@ -499,6 +499,12 @@ async fn dispatch_threads_card(
       told_threads(bus, threads)
       Some(got)
     }
+    "store.closeCard" => {
+      errdefer told_threads(bus, threads)
+      let got = threads.close_card(a(0), a(1), a(2), a(3), a(4))
+      told_threads(bus, threads)
+      Some(got)
+    }
     "store.restateCard" => {
       let was = threads.card_at(a(1), a(2))
       let next = run_cb(a(3), [was]).unwrap_or(was)

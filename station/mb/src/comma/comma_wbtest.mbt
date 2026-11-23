@@ -577,3 +577,69 @@ test "OwnerActivity merges cross-station peer reads monotonically without re-gos
   )
   assert_eq(host.get(Some("peng@example.com")), Some(1_795_200_060_000.0))
 }
+
+///|
+test "CommaSurface forwards close_card flag from task.say to CommaChats.say" {
+  let rt = @effect.Runtime::new()
+  let io = test_io()
+  let tasks = CommaTasks::new("/tmp/comma-tasks-closecard-wbtest.json", io, rt)
+  let calls : Array[(String, String, Bool)] = []
+  let sent : Array[J] = []
+  let sock : Socket = { id: 1, send: text => sent.push(parse_json(text)), on_close: _ => () => () }
+  let surface = CommaSurface::new(
+    {
+      connect: "cm-close",
+      server: "http://127.0.0.1",
+      token: "salix_conn_test123",
+      name: "Alpha · mac-1",
+      workspace: Some("ws_1"),
+      owner_email: None,
+      tasks,
+      store: test_store(),
+      models: () => [],
+      lang: Some("en"),
+      stats: None,
+      chats: Some({
+        read: async fn(_, _, _) { Null },
+        say: async fn(ref_, text, _, _, _, close_card) {
+          calls.push((ref_, text, close_card))
+          jobj([("seq", ji(0))])
+        },
+      }),
+      previous_exited: async fn() { () },
+      in_scope: () => true,
+      workspace_meta: None,
+      on_workspace_meta_change: None,
+      owner_active_at: None,
+      on_owner_active_change: None,
+    },
+    io,
+    rt,
+  )
+  let fiber = rt.fork(async fn() {
+    surface.socket_ = Some(sock)
+    ignore(
+      surface.handle(
+        "task.say",
+        @jsjson.parse(
+          "{\"task\":\"5\",\"text\":\"Skip deploy\",\"key\":\"k1\",\"requester\":\"Router\",\"close_card\":true}",
+        ),
+      ),
+    )
+    ignore(
+      surface.handle(
+        "task.say",
+        @jsjson.parse(
+          "{\"task\":\"5\",\"text\":\"Proceed\",\"key\":\"k2\",\"requester\":\"Router\"}",
+        ),
+      ),
+    )
+  })
+  ignore(rt.run_ready())
+  match fiber.poll() {
+    Some(Succeeded(_)) => ()
+    Some(Failed(e)) => fail("task.say failed: \{e}")
+    _ => fail("task.say did not finish")
+  }
+  assert_eq(calls, [("5", "Skip deploy", true), ("5", "Proceed", false)])
+}

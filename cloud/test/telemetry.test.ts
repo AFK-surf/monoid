@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { harness } from "./harness.ts";
+import { digest, randomSecret } from "../src/auth.ts";
 import { TELEMETRY_BATCHES_PER_MINUTE as BATCHES_PER_MINUTE } from "../src/limits.ts";
 
 type Harness = Awaited<ReturnType<typeof harness>>;
@@ -368,6 +369,203 @@ test("an answer of still.fail cloud's own failing (5xx) is a log line of stillfa
       "log.status": "503",
     });
     assert.ok(!JSON.stringify(line.body).includes("secret-subscription"));
+  } finally {
+    await h.close();
+  }
+});
+
+/** Every span of still.fail cloud's own Google got so far, and every log line, each with its attributes read out. */
+const read = (a: any[]) => Object.fromEntries(a.map((x: any) => [x.key, x.value.stringValue ?? x.value.boolValue ?? (x.value.intValue !== undefined ? Number(x.value.intValue) : x.value.doubleValue)]));
+const ownSpans = (got: { url: string; body: any }[], name: string) => got.filter((g) => g.url.endsWith("/v1/traces")).flatMap((g) => g.body.resourceSpans[0].scopeSpans[0].spans).filter((s: any) => s.name === name).map((s: any) => ({ ...s, at: read(s.attributes) }));
+const ownLines = (got: { url: string; body: any }[], message: string) => got.filter((g) => g.url.endsWith("/v1/logs")).flatMap((g) => g.body.resourceLogs[0].scopeLogs[0].logRecords).filter((r: any) => r.body.stringValue === message).map((r: any) => ({ ...r, at: read(r.attributes) }));
+const later = (h: Harness, seconds: number) => h.fetch("/__test/later", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ seconds }) });
+
+// The hourly models' catalog (src/models.ts) is the task made slow or failing here: models.dev is outside, answered by `push`.
+test("each scheduled task is a trace of its own: done, slow (a WARN line too) or failed (an ERROR line)", async () => {
+  const google = fakeGoogle();
+  let models: "ok" | "slow" | "fail" = "ok";
+  let h: Harness;
+  h = await harness({
+    telemetry: google.answer,
+    push: async (request) => {
+      if (!request.url.startsWith("https://models.dev/")) return { status: 200 };
+      if (models === "fail") return { status: 500 };
+      // (the task takes 11 s of the cloud's clock: it is put forward while the task waits for models.dev)
+      if (models === "slow" && request.url.endsWith("/models.json")) await later(h, 11);
+      return { status: 200, body: "{}" };
+    },
+  });
+  try {
+    const api = (await h.mf.getWorker("api")) as unknown as { scheduled(options: { cron: string; scheduledTime: Date }): Promise<{ outcome: string }> };
+    const cron = async () => assert.equal((await api.scheduled({ cron: "* * * * *", scheduledTime: new Date(Date.UTC(2026, 0, 1, 0, 7)) })).outcome, "ok");
+    const ofModels = (n: number) => google.until((got) => {
+      const spans = ownSpans(got, "cloud.cron").filter((s) => s.at["stillfail.cron.task"] === "checkModels");
+      return spans.length >= n ? spans : undefined;
+    });
+
+    await cron();
+    const [done] = await ofModels(1);
+    assert.equal(done.kind, 1);
+    assert.equal(done.parentSpanId, undefined);
+    assert.match(done.traceId, /^[0-9a-f]{32}$/);
+    assert.match(done.spanId, /^[0-9a-f]{16}$/);
+    assert.deepEqual(done.at, { "stillfail.cron.task": "checkModels", "stillfail.cron.ok": true });
+    assert.deepEqual(done.status, { code: 1 });
+    // Every task of the minute is one.
+    await google.until((got) => (["sampleOwnRelay", "checkServices"].every((t) => ownSpans(got, "cloud.cron").some((s) => s.at["stillfail.cron.task"] === t)) ? true : undefined));
+    assert.deepEqual(ownLines(google.got, "slow cron task"), []);
+
+    models = "slow";
+    await cron();
+    const slow = (await ofModels(2))[1]!;
+    assert.ok(BigInt(slow.endTimeUnixNano) - BigInt(slow.startTimeUnixNano) >= 11_000_000_000n);
+    assert.equal(slow.at["stillfail.cron.ok"], true);
+    const warned = await google.until((got) => ownLines(got, "slow cron task").find((l) => l.at["log.task"] === "checkModels"));
+    assert.equal(warned.severityText, "WARN");
+    assert.ok(warned.at["log.ms"] >= 11_000);
+
+    models = "fail";
+    await cron();
+    const failed = (await ofModels(3))[2]!;
+    assert.equal(failed.at["stillfail.cron.ok"], false);
+    assert.deepEqual(failed.status, { code: 2 });
+    const line = await google.until((got) => ownLines(got, "checkModels failed")[0]);
+    assert.equal(line.severityText, "ERROR");
+    assert.equal(line.at["log.target"], "cron");
+    assert.equal(line.at["log.task"], "checkModels");
+    assert.match(line.at["log.error"], /models\.dev/);
+    assert.equal(typeof line.at["log.ms"], "number");
+  } finally {
+    await h.close();
+  }
+});
+
+test("a call nobody traced is a trace of its own when slow, refused for its rate or failing, its route without ids or query", async () => {
+  const google = fakeGoogle();
+  let models: "fail" | "slow" = "fail";
+  let h: Harness;
+  h = await harness({
+    telemetry: google.answer,
+    push: async (request) => {
+      if (!request.url.startsWith("https://models.dev/")) return { status: 200 };
+      if (models === "fail") return { status: 500 };
+      if (request.url.endsWith("/models.json")) await later(h, 2);
+      return { status: 200, body: "{}" };
+    },
+  });
+  try {
+    const alice = h.as(await h.login("alice"));
+    // Quick and answered: nothing.
+    assert.equal((await alice("GET", "/v1/me")).status, 200);
+
+    // Failing: models.dev down is a 502 of the cloud's.
+    assert.equal((await h.fetch("/v1/models")).status, 502);
+    const [failed] = await google.until((got) => (ownSpans(got, "cloud.http").length >= 1 ? ownSpans(got, "cloud.http") : undefined));
+    assert.equal(failed.kind, 2);
+    assert.equal(failed.parentSpanId, undefined);
+    assert.deepEqual(failed.status, { code: 2 });
+    assert.deepEqual(failed.at, { "http.request.method": "GET", "http.route": "/v1/models", "http.response.status_code": 502, "stillfail.sampled_reason": "5xx" });
+
+    // Slow: 2 s of the cloud's clock waiting for models.dev.
+    models = "slow";
+    assert.equal((await h.fetch("/v1/models")).status, 200);
+    const slow = (await google.until((got) => (ownSpans(got, "cloud.http").length >= 2 ? ownSpans(got, "cloud.http") : undefined)))[1]!;
+    assert.deepEqual(slow.at, { "http.request.method": "GET", "http.route": "/v1/models", "http.response.status_code": 200, "stillfail.sampled_reason": "slow" });
+    assert.deepEqual(slow.status, { code: 1 });
+    assert.ok(BigInt(slow.endTimeUnixNano) - BigInt(slow.startTimeUnixNano) >= 2_000_000_000n);
+
+    // Refused for its rate: the eleventh sign-in from an address in a minute.
+    const start = async () => {
+      const query = new URLSearchParams({ state: randomSecret(), redirect_uri: "http://127.0.0.1:32145/oauth/callback", code_challenge: await digest(randomSecret()), code_challenge_method: "S256" });
+      return (await h.fetch("/v1/auth/google/start?" + query, { redirect: "manual", headers: { "cf-connecting-ip": "10.9.0.1" } })).status;
+    };
+    for (let i = 0; i < 10; i++) assert.notEqual(await start(), 429);
+    assert.equal(await start(), 429);
+    const limited = (await google.until((got) => (ownSpans(got, "cloud.http").length >= 3 ? ownSpans(got, "cloud.http") : undefined)))[2]!;
+    assert.deepEqual(limited.at, { "http.request.method": "GET", "http.route": "/v1/auth/google/start", "http.response.status_code": 429, "stillfail.sampled_reason": "429" });
+    assert.deepEqual(limited.status, { code: 1 });
+    const line = await google.until((got) => ownLines(got, "rate limited")[0]);
+    assert.equal(line.severityText, "WARN");
+    assert.deepEqual(line.at, { "log.target": "http", "log.method": "GET", "log.path": "/v1/auth/google/start", "log.status": 429, "log.ms": 0 });
+    // The quick 200 and the sign-ins let through were none of them; nothing of a query, an address or a token.
+    assert.equal(ownSpans(google.got, "cloud.http").length, 3);
+    const all = JSON.stringify(google.got.map((g) => g.body));
+    assert.ok(!all.includes("10.9.0.1") && !all.includes("code_challenge") && !all.includes("127.0.0.1"));
+  } finally {
+    await h.close();
+  }
+});
+
+test("a socket's opening refused or slow is a trace of its own (a refusal a WARN line too), never with its token, key or signature", async () => {
+  const google = fakeGoogle();
+  const h = await harness({ telemetry: google.answer });
+  try {
+    const tokens = await h.login("alice");
+    const upgrades = (n: number) => google.until((got) => (ownSpans(got, "cloud.ws.upgrade").length >= n ? ownSpans(got, "cloud.ws.upgrade") : undefined));
+    const events = () => h.fetch("/v1/events", { headers: { upgrade: "websocket", "sec-websocket-protocol": `stillfail-events, stillfail-token.${tokens.access_token}` } });
+
+    // Opened at once: nothing.
+    const quick = await events();
+    assert.equal(quick.status, 101);
+    quick.webSocket!.accept();
+    quick.webSocket!.close();
+
+    // Not a socket's opening at all: 426.
+    assert.equal((await h.fetch("/v1/events")).status, 426);
+    const [plain] = await upgrades(1);
+    assert.equal(plain.kind, 2);
+    assert.equal(plain.parentSpanId, undefined);
+    assert.deepEqual(plain.at, { "http.route": "/v1/events", "http.response.status_code": 426, "stillfail.ws.ok": false, "stillfail.sampled_reason": "rejected" });
+
+    // A station's opening signed wrong: 401.
+    const station = await key();
+    const ts = h.now();
+    const forged = await station.sign(`stillfail-station-connect-v1:${h.origin}:${station.id}:${ts - 1}`);
+    assert.equal((await h.fetch("/v1/stations/connect", { headers: { upgrade: "websocket", "x-stillfail-station": station.id, "x-stillfail-ts": String(ts), "x-stillfail-signature": forged } })).status, 401);
+    const refused = (await upgrades(2))[1]!;
+    assert.deepEqual(refused.at, { "http.route": "/v1/stations/connect", "http.response.status_code": 401, "stillfail.ws.ok": false, "stillfail.sampled_reason": "rejected" });
+    const lines = await google.until((got) => (ownLines(got, "websocket upgrade rejected").length >= 2 ? ownLines(got, "websocket upgrade rejected") : undefined));
+    assert.deepEqual(lines.map((l) => [l.severityText, l.at["log.target"], l.at["log.path"], l.at["log.status"]]).sort(), [["WARN", "ws", "/v1/events", 426], ["WARN", "ws", "/v1/stations/connect", 401]]);
+
+    // Opened, but only after 2 s of the cloud's clock: its account's object answers late.
+    const account = await h.object("ACCOUNTS", tokens.subject);
+    await account.holdOpening();
+    const opening = events();
+    await account.openingHeld();
+    await later(h, 2);
+    await account.letOpen();
+    const late = await opening;
+    assert.equal(late.status, 101);
+    late.webSocket!.accept();
+    late.webSocket!.close();
+    const slow = (await upgrades(3))[2]!;
+    assert.deepEqual(slow.at, { "http.route": "/v1/events", "http.response.status_code": 101, "stillfail.ws.ok": true, "stillfail.sampled_reason": "slow" });
+    assert.deepEqual(slow.status, { code: 1 });
+    assert.ok(BigInt(slow.endTimeUnixNano) - BigInt(slow.startTimeUnixNano) >= 2_000_000_000n);
+
+    assert.equal(ownSpans(google.got, "cloud.ws.upgrade").length, 3, "the quick opening was none");
+    const all = JSON.stringify(google.got.map((g) => g.body));
+    for (const secret of [tokens.access_token, station.id, forged, tokens.subject]) assert.ok(!all.includes(secret));
+  } finally {
+    await h.close();
+  }
+});
+
+test("telemetry's own calls refused, failing or slow are never a trace or a line through it", async () => {
+  const google = fakeGoogle(500);
+  const h = await harness({ telemetry: google.answer });
+  try {
+    const tokens = await h.login("alice");
+    // Google refusing: 502; then the sender's budget spent: 429.
+    assert.equal((await post(h, batch(), { authorization: `Bearer ${tokens.access_token}` })).status, 502);
+    for (let i = 1; i < BATCHES_PER_MINUTE; i++) await post(h, batch(), { authorization: `Bearer ${tokens.access_token}` });
+    assert.equal((await post(h, batch(), { authorization: `Bearer ${tokens.access_token}` })).status, 429);
+    // One more call that is a trace of its own, after them: its span is the first of the cloud's.
+    assert.equal((await h.fetch("/v1/events")).status, 426);
+    await google.until((got) => ownSpans(got, "cloud.ws.upgrade")[0]);
+    assert.deepEqual(ownSpans(google.got, "cloud.http"), []);
+    assert.deepEqual(ownLines(google.got, "rate limited"), []);
+    assert.deepEqual(ownLines(google.got, "worker returned 5xx"), []);
   } finally {
     await h.close();
   }

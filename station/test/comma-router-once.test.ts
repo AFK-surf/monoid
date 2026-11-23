@@ -521,3 +521,109 @@ test("a retry finishing an expired write cannot complete a newer write that reus
     assert.equal(rig.store.pendingMessages("a").some((m) => m.message.n === n && m.message.text === "new write"), true);
   } finally { stats.close(); await rig.close(); }
 });
+
+test("routerSays closes a pending close-action options card silently without waking the agent", async () => {
+  const rig = new Rig();
+  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  try {
+    rig.hub.hold("drain");
+    member(rig, "a");
+    const thread = rig.store.openThreadOf("ember", "CHAT", "chat", "A chat", "ann@x", "a");
+    rig.store.joinThread(thread.id, "a", "ember");
+    const home = rig.hub.wsOf("a");
+    const card = {
+      type: "options",
+      assignee: "ann@x",
+      options: [
+        { label: "Proceed", action: "reply" },
+        { label: "Skip deploy", action: "close" },
+      ],
+    };
+    const [cardN] = rig.store.insertMessage({
+      thread: thread.id,
+      ts: "1.1",
+      at: 1000,
+      authorKind: "agent",
+      author: "a",
+      text: "Deploy now?",
+      card,
+    } as never);
+    assert.ok(rig.store.pendingCardHeader(thread.id) !== null);
+
+    // Selecting the close-action option closes the card without appending a message or waking the agent.
+    const closedN = routerSays(rig.hub, stats, home, {
+      thread: thread.id,
+      text: "Skip deploy",
+      key: "cm:close-1",
+      requester: "Router",
+      connect: "cm",
+      closeCard: true,
+    });
+    assert.equal(closedN, cardN);
+    assert.equal(rig.store.pendingCardHeader(thread.id), null);
+    assert.deepEqual(rig.store.entriesAfter(thread.id, cardN), []);
+    assert.deepEqual(rig.store.pendingMessages("a"), []);
+    const chosen = rig.store.db.prepare("SELECT option FROM card_choices WHERE thread = ? AND n = ?").get(thread.id, cardN) as { option: string } | undefined;
+    assert.equal(chosen?.option, "Skip deploy");
+    // Same key returns the same closed card sequence idempotently.
+    assert.equal(routerSays(rig.hub, stats, home, {
+      thread: thread.id,
+      text: "Skip deploy",
+      key: "cm:close-1",
+      requester: "Router",
+      connect: "cm",
+      closeCard: true,
+    }), cardN);
+
+    // Explicit closeCard on an already-closed card is a clean no-op (no stray message appended).
+    const noopN = routerSays(rig.hub, stats, home, {
+      thread: thread.id,
+      text: "Skip deploy",
+      key: "cm:close-2",
+      requester: "Router",
+      connect: "cm",
+      closeCard: true,
+    });
+    assert.equal(noopN, 0);
+    assert.deepEqual(rig.store.entriesAfter(thread.id, cardN), []);
+    assert.deepEqual(rig.store.pendingMessages("a"), []);
+  } finally { stats.close(); await rig.close(); }
+});
+
+test("routerSays delivers a reply-action option normally to wake the agent", async () => {
+  const rig = new Rig();
+  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  try {
+    rig.hub.hold("drain");
+    member(rig, "a");
+    const thread = rig.store.openThreadOf("ember", "CHAT", "chat", "A chat", "ann@x", "a");
+    rig.store.joinThread(thread.id, "a", "ember");
+    const home = rig.hub.wsOf("a");
+    const card = {
+      type: "options",
+      assignee: "ann@x",
+      options: [
+        { label: "Proceed", action: "reply" },
+        { label: "Skip deploy", action: "close" },
+      ],
+    };
+    rig.store.insertMessage({
+      thread: thread.id,
+      ts: "1.1",
+      at: 1000,
+      authorKind: "agent",
+      author: "a",
+      text: "Deploy now?",
+      card,
+    } as never);
+    const n = routerSays(rig.hub, stats, home, {
+      thread: thread.id,
+      text: "Proceed",
+      key: "cm:reply-1",
+      requester: "Router",
+      connect: "cm",
+    });
+    assert.ok(n > 1);
+    assert.deepEqual(rig.store.pendingMessages("a").map((m) => [m.message.n, m.message.text]), [[n, "Proceed"]]);
+  } finally { stats.close(); await rig.close(); }
+});
