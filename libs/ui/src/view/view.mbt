@@ -738,7 +738,7 @@ struct Node {
   /// something of it changed (`drawn_stale`: what draws, where, how big), kept while nothing did
   mut drawn_box : (Double, Double, Double, Double)
   /// the side what does not fill across in it, else its widest words, say it is laid from, as that box was worked out
-  /// (Pivot's DrawnSide: 0 neither, 1 its start, 2 its middle, 3 its end: Tree::drawn_box_of's `words`, pivot_side)
+  /// (Pivot's DrawnSide: 0 neither, 1 its start, 2 its middle, 3 its end: Tree::drawn_box_of's `words`, Tree::drawn_side_of_box)
   mut drawn_words : Int
   mut drawn_stale : Bool
   /// whether it draws, and where it is drawn off (its offset and shift), as last told: what the box round what draws in
@@ -6129,7 +6129,8 @@ pub fn Tree::fades_of(self : Tree, id : NodeId) -> (Double, Double, Double, Doub
 ///|
 /// Where node `at` is drawn bigger or smaller about, laid out `w` by `h` (View::scale's pivot): the middle of what it
 /// and what it holds draw where it says `Drawn`; where `DrawnSide`, across the side of it what they draw is laid from, as
-/// laid out now (pivot_side; where it shows none, the side it is laid at in what holds it: Tree::pivot_held_side).
+/// laid out now (Tree::drawn_side_of_box; where it shows none, the side it is laid at in what holds it:
+/// Tree::pivot_held_side).
 fn Tree::pivot_of(self : Tree, at : Int, w : Double, h : Double) -> (Double, Double) {
   let n = self.nodes[at]
   guard n.look.pivot.drawn() else { return n.pivot_at(w, h) }
@@ -6142,63 +6143,76 @@ fn Tree::pivot_of(self : Tree, at : Int, w : Double, h : Double) -> (Double, Dou
   let (x0, y0, x1, y1) = n.drawn_box
   match n.look.pivot {
     // (DrawnSide: down, its share of its height, whatever is drawn)
-    DrawnSide(fy) =>
-      if x1 < x0 {
-        (w / 2.0, fy * h)
-      } else if (x0 - (w - x1)).abs() <= 1.0 && n.drawn_words == 0 {
-        // (it shows no side of its own, as wide as what it draws (a fader round a short line, 刚刚): the side it is laid
-        // at in what holds it, Tree::pivot_held_side)
-        (self.pivot_held_side(at, x0, x1), fy * h)
-      } else {
-        (pivot_side(x0, x1, w, n.drawn_words), fy * h)
-      }
+    DrawnSide(fy) => (self.drawn_side_of_box(at, w, x0, x1, n.drawn_words), fy * h)
     _ => if x1 < x0 { (w / 2.0, h / 2.0) } else { ((x0 + x1) / 2.0, (y0 + y1) / 2.0) }
   }
 }
 
 ///|
+/// Across node `at`, `w` wide, the side what it and what it holds draw (from `x0` to `x1`, in its own terms) is laid
+/// from (Pivot's DrawnSide), as Tree::drawn_box_of tells it in `words`: 1 its start (`x0`), 2 its middle, 3 its end (`x1`:
+/// a reply, one's own bubble); told none, where the rooms either side of all it draws are the same within a point (one
+/// short line of words filling it, nothing else drawn: a fader round it), the side it is laid at in what holds it
+/// (Tree::pivot_held_side), else its middle (a line across with a label in its middle; a thing centred by what holds
+/// it). The pivot is always all it draws' `x0`, `x1` or their middle; nothing drawn, its own middle. A line laid from an
+/// edge belongs to that edge (the coordinator of the migration, 2026-11-14).
+fn Tree::drawn_side_of_box(self : Tree, at : Int, w : Double, x0 : Double, x1 : Double, words : Int) -> Double {
+  if x1 < x0 {
+    w / 2.0
+  } else if words == 1 {
+    x0
+  } else if words == 2 {
+    (x0 + x1) / 2.0
+  } else if words == 3 {
+    x1
+  } else if (x0 - (w - x1)).abs() <= 1.0 {
+    self.pivot_held_side(at, x0, x1)
+  } else {
+    (x0 + x1) / 2.0
+  }
+}
+
+///|
 /// The side of node `at` (drawing from `x0` to `x1` across, in its own terms) that it is laid at in what holds it,
-/// where it shows none of its own (Tree::pivot_of: as wide as what it draws, its words on one line): from it out to
-/// the first that holds it wider than it by more than a point, as laid out now (what lays out nothing of its own, a
-/// slot, passed), its start where the room before it there is less by more than a point (a column's start), its end
-/// where the room after it is (a column laid at its end: a reply's time under one's own bubble), else its middle. Only
-/// across a column (what lays it out down its height): not past a row, whatever its structure says (its place along
-/// the row is what is beside it, not a side), nor past a node that scrolls (where it is in what is scrolled is no side
-/// of what shows).
+/// where it shows none of its own (Tree::drawn_side_of_box: as wide as what it draws, its words on one line): from it
+/// out to the first column that holds it, its margin and that column's padding and border aside, with room to spare
+/// across by more than a point (what lays out nothing of its own, a slot, passed), its start where the room before it
+/// there is less by more than a point (a column's start), its end where the room after it is (a column laid at its end:
+/// a reply's time under one's own bubble), else its middle. Room it is set in from a side by (its margin, a column's
+/// padding hugging it: an indented step, a capsule round a short line) is no room to spare: the side is taken further
+/// out, and where none further out shows one, its start where it is set in more from one side than the other by more
+/// than a point (an indent at its start; a gutter kept at its end: what fills the rest stays at the start), else its
+/// middle. Only across a column (what lays it out down its height): not past a row, whatever its structure says (its
+/// place along the row is what is beside it, not a side: its middle), nor past a node that scrolls (where it is in what
+/// is scrolled is no side of what shows).
 /// Grown or shrunk about that side, it stays laid at it as it changes (the user, 2026-11-17: what is laid out is where
 /// things rest; a short line at the end of its column shrinking about its middle drifted off that end each frame).
 fn Tree::pivot_held_side(self : Tree, at : Int, x0 : Double, x1 : Double) -> Double {
   let mid = (x0 + x1) / 2.0
-  let aw = self.nodes[at].flex.width
-  // (where `at` is in the box of `cur`'s holder, as laid out: each layout's place summed, a slot's none)
-  let mut off = 0.0
+  // (how far it is set in from each side by margins and paddings hugging it, out to where it is now)
+  let mut indent_l = 0.0
+  let mut indent_r = 0.0
   let mut cur = at
-  while self.nodes[cur].parent >= 0 {
-    let c = self.nodes[cur]
-    let p = c.parent
-    guard self.nodes[p].live else { return mid }
-    if !c.slot {
-      off = off + c.flex.left
-    }
-    let h = self.nodes[p]
-    // (a slot lays out nothing of its own: what it holds is placed in what holds it)
-    if h.slot {
-      cur = p
-      continue
-    }
+  while true {
+    let hi = self.box_holder(cur)
+    guard hi >= 0 else { break }
+    let h = self.nodes[hi]
+    guard h.live else { return mid }
     // (a row: where along it is what is beside it, no side)
     guard h.flex.style.direction is (Column | ColumnReverse) else { return mid }
     // (what scrolls: what it holds is laid where it is scrolled, no side of what shows)
-    guard h.scroll_held < 0 else { return mid }
-    // (the room it lays out across inside its padding and border: one hugging it within them (a capsule round a short
-    // line) has none to spare, the side taken further out)
-    let st = h.flex.style
-    let outer = if h.parent >= 0 { self.nodes[h.parent].flex.width } else { h.flex.width }
-    let inset_l = inset_across(st.get_padding_left(), outer) + inset_across(st.get_border_left(), outer)
-    let inset_r = inset_across(st.get_padding_right(), outer) + inset_across(st.get_border_right(), outer)
-    if h.flex.width - inset_l - inset_r > aw + 1.0 {
-      let before = off - inset_l
-      let after = h.flex.width - inset_r - (off + aw)
+    guard h.scroll_held < 0 else { break }
+    let c = self.nodes[cur]
+    let (inset_l, inset_r) = self.insets_across(hi)
+    let in_w = h.flex.width - inset_l - inset_r
+    let cs = c.flex.style
+    let ml = inset_across(cs.get_margin_left(), in_w)
+    let mr = inset_across(cs.get_margin_right(), in_w)
+    let cw = c.flex.width
+    // (room to spare across past it and its margin: it is laid at a side of it, or its middle)
+    if in_w - (cw + ml + mr) > 1.0 {
+      let before = c.flex.left - inset_l - ml
+      let after = h.flex.width - inset_r - mr - (c.flex.left + cw)
       return if before < after - 1.0 {
         x0
       } else if after < before - 1.0 {
@@ -6207,9 +6221,15 @@ fn Tree::pivot_held_side(self : Tree, at : Int, x0 : Double, x1 : Double) -> Dou
         mid
       }
     }
-    cur = p
+    indent_l = indent_l + inset_l + ml
+    indent_r = indent_r + inset_r + mr
+    cur = hi
   }
-  mid
+  if (indent_l - indent_r).abs() > 1.0 {
+    x0
+  } else {
+    mid
+  }
 }
 
 ///|
@@ -6224,29 +6244,143 @@ fn inset_across(d : @flex.Dim, outer : Double) -> Double {
 }
 
 ///|
-/// The side across a box `w` wide that what lies from `x0` to `x1` in it is laid from (Pivot's DrawnSide), in this
-/// order: 1. where the rooms before and after all it draws differ by more than a point, the side with less (its start,
-/// `x0`; its end, `x1`: a reply, one's own bubble); 2. else the side with less room of what it draws that does not
-/// itself fill across (a ground as wide as the column with short words at its start: its start; a reply whose paragraph
-/// fills, its avatar and name at its start: its start); 3. else as its widest words drawn alone are laid where that
-/// shows (several lines, or one shorter than its node by more than a point): from their start, its start; centred, its
-/// middle; 4. else its middle (a line across with a label in its middle; a thing centred by what holds it). 2 and 3 come
-/// as `words` (Tree::drawn_box_of's: 1 its start, 2 its middle, 3 its end, 0 neither); the pivot is always all it
-/// draws' `x0`, `x1` or their middle. A line laid from an edge belongs to that edge (the coordinator of the migration,
-/// 2026-11-14). One line of words drawn alone that fills its node within a point, nothing else drawn with it, shows no
-/// laying and gets the middle here; Tree::pivot_of takes that one's side from what holds it (Tree::pivot_held_side).
-fn pivot_side(x0 : Double, x1 : Double, w : Double, words : Int) -> Double {
-  let (before, after) = (x0, w - x1)
-  if before < after - 1.0 {
-    x0
-  } else if after < before - 1.0 {
-    x1
-  } else if words == 1 {
-    x0
-  } else if words == 3 {
-    x1
+/// How far in from its left and its right node `at` lays out what it holds: its padding and border there, as laid out
+/// now (a share, of what holds it: the first holding it that is no slot).
+fn Tree::insets_across(self : Tree, at : Int) -> (Double, Double) {
+  let n = self.nodes[at]
+  let st = n.flex.style
+  let hh = self.box_holder(at)
+  let outer = if hh >= 0 { self.nodes[hh].flex.width } else { n.flex.width }
+  (
+    inset_across(st.get_padding_left(), outer) + inset_across(st.get_border_left(), outer),
+    inset_across(st.get_padding_right(), outer) + inset_across(st.get_border_right(), outer),
+  )
+}
+
+///|
+/// The one node `at` lays out in its flow (live, not left out of its row; a slot passed, what it holds laid out in
+/// `at`), or -1 where it lays out none or several, or holds one laid out apart from its flow (Absolute: drawn where it
+/// says, not where `at`'s room is).
+fn Tree::only_laid(self : Tree, at : Int) -> Int {
+  let one = Ref(-1)
+  let many = Ref(false)
+  fn see(i : Int) -> Unit {
+    for k in self.nodes[i].kids {
+      let c = self.nodes[k]
+      if !c.live {
+        continue
+      }
+      if c.slot {
+        see(k)
+      } else if c.flex.style.position is Absolute {
+        many.val = true
+      } else if !c.flex.left_out() {
+        if one.val >= 0 {
+          many.val = true
+        }
+        one.val = k
+      }
+    }
+  }
+  see(at)
+  if many.val {
+    -1
   } else {
-    (x0 + x1) / 2.0
+    one.val
+  }
+}
+
+///|
+/// The room across node `at` (in its own terms) that what it draws is laid out in: down the one each holds that fills
+/// its room across within a point (its margin with it), each drawing nothing of its own, inside the paddings and
+/// borders of those, to the first that draws (its box) or lays out none or several (inside its own). An indent of what
+/// holds what it draws (a column set in at its start, a step under its title) is no room of what it draws.
+fn Tree::drawn_room_of(self : Tree, at : Int) -> (Double, Double) {
+  let mut cur = at
+  let mut x = 0.0
+  let mut cw = self.nodes[at].flex.width
+  while true {
+    let n = self.nodes[cur]
+    if !n.live || n.slot || draws_of(n) {
+      break
+    }
+    let (il, ir) = self.insets_across(cur)
+    let (l, r) = (x + il, x + cw - ir)
+    let k = self.only_laid(cur)
+    guard k >= 0 else { return (l, r) }
+    let c = self.nodes[k]
+    let cs = c.flex.style
+    let ml = inset_across(cs.get_margin_left(), r - l)
+    let mr = inset_across(cs.get_margin_right(), r - l)
+    guard c.flex.width + ml + mr >= r - l - 1.0 else { return (l, r) }
+    x = x + c.flex.left + off_x(c)
+    cw = c.flex.width
+    cur = k
+  }
+  (x, x + cw)
+}
+
+///|
+/// How node `c` is laid across in `p`, the first holding it that is no slot (Tree::drawn_box_of's sides): 0 filling
+/// its room there (its margin with it), told by what it holds; in a column, 1 at its start, 2 in its middle, 3 at its
+/// end, by the room either side of it (a bubble laid at a column's end: its end); laid apart (Absolute), the side its
+/// insets hold it to, else as in a column; in a row, 3 laid at its end (the row's lies_along End, its margin before it
+/// taking all room left), 2 in its middle, else 4 one of a row laid from its start (its first, and what is beside that),
+/// or 5 at its end past room left before it (beside an empty spacer growing: at its end only where nothing of the row
+/// laid from its start draws).
+fn Tree::laid_side(self : Tree, p : Int, c : Int) -> Int {
+  let pn = self.nodes[p]
+  let cn = self.nodes[c]
+  let ps = pn.flex.style
+  let cs = cn.flex.style
+  let (il, ir) = self.insets_across(p)
+  let (l, r) = (il, pn.flex.width - ir)
+  let ml = inset_across(cs.get_margin_left(), r - l)
+  let mr = inset_across(cs.get_margin_right(), r - l)
+  let before = cn.flex.left - l - ml
+  let after = r - mr - (cn.flex.left + cn.flex.width)
+  let by_room = fn() {
+    if cn.flex.width + ml + mr >= r - l - 1.0 {
+      0
+    } else if before < after - 1.0 {
+      1
+    } else if after < before - 1.0 {
+      3
+    } else {
+      2
+    }
+  }
+  let auto_l = cs.get_margin_left() is Auto
+  let auto_r = cs.get_margin_right() is Auto
+  if cs.position is Absolute {
+    let held_l = !(cs.get_inset_left() is Auto)
+    let held_r = !(cs.get_inset_right() is Auto)
+    if held_r && !held_l {
+      3
+    } else if held_l && !held_r {
+      1
+    } else {
+      by_room()
+    }
+  } else if ps.direction is (Column | ColumnReverse) {
+    by_room()
+  } else if ps.direction is RowReverse {
+    // (laid from its right: its start is its end across)
+    if ps.justify is FlexEnd {
+      4
+    } else if ps.justify is Center {
+      2
+    } else {
+      3
+    }
+  } else if (ps.justify is FlexEnd && before > 1.0) || (auto_l && !auto_r) {
+    3
+  } else if ps.justify is Center || (auto_l && auto_r) {
+    2
+  } else if after <= 1.0 && before > 1.0 {
+    5
+  } else {
+    4
   }
 }
 
@@ -6289,9 +6423,19 @@ fn words_alone(n : Node) -> Bool {
 /// edge, words, shapes, lines, a picture or an old view of their own, each where it is laid out and drawn off
 /// (View::offset, View::shift); none (its left past its right) where nothing does. `lines` (Pivot's DrawnSide): one
 /// that draws words alone across as its lines are laid out, not as its box is (a reply's words in a node as wide as its
-/// column); and told `words` the side it is laid from where the rooms of all it draws are the same (pivot_side's): the
-/// side with less room of what it draws that does not fill across, else as its widest words are laid where that shows,
-/// else none. Each thing drawn kept across as it is walked (`lines` only), looked over once at the end.
+/// column); and told `words` the side it is laid from (Tree::drawn_side_of_box's: 1 its start, 2 its middle, 3 its end,
+/// 0 none shown), in this order, the rooms taken inside the room what it draws is laid out in (Tree::drawn_room_of: an
+/// indent of what holds it is no room of its): 1. where the rooms before and after all it draws differ by more than a
+/// point, the side with less: its start; its end only where something drawn is laid at an end (a bubble at a column's
+/// end, at a row's end), else its start where it is laid from a row's start or set in at its start (a row's icon with
+/// room round it in its box, its time at the row's end; an indented step); 2. else the side with less room of what it
+/// draws that does not itself fill across (a ground as wide as the column with short words at its start: its start;
+/// a reply whose paragraph fills, its avatar and name at its start: its start), its end again only so laid; 3. else as
+/// its widest words drawn alone are laid where that shows (several lines, or one shorter than its node by more than a
+/// point): from their start, its start; centred, its middle; 4. else its start where it is set in at its start or laid
+/// from a row's start with nothing at an end; else none. How each is laid (Tree::laid_side) is taken where it is first
+/// laid in less than its holder's room, or along a row, down from `at`, what it holds laid as it is. Each thing drawn
+/// kept across as it is walked (`lines` only), looked over once at the end.
 fn Tree::drawn_box_of(
   self : Tree,
   at : Int,
@@ -6305,11 +6449,18 @@ fn Tree::drawn_box_of(
   let widest = Ref((0.0, 0.0, 0.0, false, false))
   // (where each thing it draws lies across, for the side what does not fill across lies nearer: `lines` only)
   let spans : Array[(Double, Double)] = []
-  fn take(i : Int, ox : Double, oy : Double) -> Unit {
+  // (something drawn laid at an end; something drawn laid from a row's start; something drawn at a row's end past room
+  // left before it: `lines` only, Tree::laid_side's)
+  let end_laid = Ref(false)
+  let row_start = Ref(false)
+  let row_end = Ref(false)
+  // (`p`: the first holding `i` that is no slot, -1 none; `side`: how what holds it is laid, 0 none yet)
+  fn take(i : Int, ox : Double, oy : Double, p : Int, side : Int) -> Unit {
     let m = self.nodes[i]
     if !m.live {
       return
     }
+    let side = if lines && side == 0 && p >= 0 && !m.slot { self.laid_side(p, i) } else { side }
     let draws = draws_of(m)
     m.drew = draws
     m.drawn_off = (m.look.dx + m.moved.0 + m.flip_across.0, m.look.dy + m.moved.1 + m.flip_in.0, m.look.sx, m.look.sy)
@@ -6333,29 +6484,40 @@ fn Tree::drawn_box_of(
       }
       if lines {
         spans.push((x0, x1))
+        match side {
+          3 => end_laid.val = true
+          4 => row_start.val = true
+          5 => row_end.val = true
+          _ => ()
+        }
       }
       box[0] = if x0 < box[0] { x0 } else { box[0] }
       box[1] = if oy < box[1] { oy } else { box[1] }
       box[2] = if x1 > box[2] { x1 } else { box[2] }
       box[3] = if oy + m.flex.height > box[3] { oy + m.flex.height } else { box[3] }
     }
+    let q = if m.slot { p } else { i }
     for k in m.kids {
       let c = self.nodes[k]
       // (a slot lays out nothing of its own: what it holds is placed in this one, as Tree::place places it)
       if c.slot {
-        take(k, ox, oy)
+        take(k, ox, oy, q, side)
       } else {
-        take(k, ox + c.flex.left + off_x(c), oy + c.flex.top + off_y(c))
+        take(k, ox + c.flex.left + off_x(c), oy + c.flex.top + off_y(c), q, side)
       }
     }
   }
-  take(at, 0.0, 0.0)
-  // (where the rooms of all it draws are the same within a point, the side told `words` (pivot_side's): the side
-  // with less room of what it draws that does not itself fill across (reaching within a point of both ends of all it
-  // draws), by more than a point; else as its widest words are laid, where that shows (several lines, or one shorter
-  // than its node by more than a point): from their start, or centred; else its middle)
+  take(at, 0.0, 0.0, if self.nodes[at].slot { self.box_holder(at) } else { -1 }, 0)
+  words.val = 0
+  guard lines && box[2] >= box[0] else { return (box[0], box[1], box[2], box[3]) }
   let w = self.nodes[at].flex.width
+  let (in_l, in_r) = self.drawn_room_of(at)
+  // (set in at its start: an indent of what holds what it draws)
+  let set_in = in_l > w - in_r + 1.0
+  let has_end = end_laid.val || (row_end.val && !row_start.val)
+  let from_start = row_start.val || set_in
   let (lo, hi) = (box[0], box[2])
+  let (before, after) = (lo - in_l, in_r - hi)
   let mut a = 1.0e30
   let mut b = -1.0e30
   for sp in spans {
@@ -6365,9 +6527,15 @@ fn Tree::drawn_box_of(
     }
   }
   let (lw, _, _, shows, centred) = widest.val
-  words.val = if b >= a && a < w - b - 1.0 {
+  words.val = if before < after - 1.0 {
     1
-  } else if b >= a && w - b < a - 1.0 {
+  } else if after < before - 1.0 && has_end {
+    3
+  } else if after < before - 1.0 && from_start {
+    1
+  } else if b >= a && a - lo < hi - b - 1.0 {
+    1
+  } else if b >= a && hi - b < a - lo - 1.0 && has_end {
     3
   } else if lw > 0.0 && shows {
     if centred {
@@ -6375,6 +6543,8 @@ fn Tree::drawn_box_of(
     } else {
       1
     }
+  } else if set_in || (row_start.val && !has_end) {
+    1
   } else {
     0
   }
@@ -14043,7 +14213,7 @@ fn Tree::place(self : Tree, at : Int) -> Unit {
     // draws is laid from, as a block of it coming is, Pivot's DrawnSide)
     let words = Ref(0)
     let (x0, _, x1, _) = self.drawn_box_of(at, lines=true, words~)
-    px = if x1 < x0 { w / 2.0 } else { pivot_side(x0, x1, w, words.val) }
+    px = self.drawn_side_of_box(at, w, x0, x1, words.val)
   } else {
     match n.look.pivot {
       At(fx, fy) => {
