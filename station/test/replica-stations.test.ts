@@ -12,9 +12,10 @@ import { afterEach, test } from "node:test";
 import { Effect, Exit, Scope, type Clock } from "effect";
 import { TestClock } from "effect/testing";
 import { PeerBus, Refused, bytesOf, withBytes } from "../src/mesh/bus.ts";
+import { oneBytes } from "../src/mesh/files.ts";
 import { type Line, hearLines } from "../src/ops/log.ts";
 import { Fibers } from "../src/ops/fibers.ts";
-import { Copies, keptDir } from "../src/replica/copies.ts";
+import { Copies, HANDOVER_QUIET_MS, keptDir } from "../src/replica/copies.ts";
 import type { Head } from "../src/replica/format.ts";
 import { keepers } from "../src/replica/peers.ts";
 import { FolderPlace, type Place, level, nothingHeld } from "../src/replica/places.ts";
@@ -149,6 +150,8 @@ test("a lost station's chats come back complete in a new station, from the stati
   mesh.rosters.set(HOME, [A, B, C, D]);
   const d = mesh.add(D, [HOME]);
   await d.copies.start();
+  await mesh.settle();
+  await mesh.clock.move(60_000);
   await mesh.settle();
   assert.equal(((await d.copies.restorable(HOME)) as Json[]).some((o) => o.station === A), false, "a station that is there is not offered");
   // A is lost
@@ -699,4 +702,202 @@ test("level puts the chats' head before the transcripts it lacks, partial, and t
   if (!done.behind) assert.equal(done.missing, 0);
   assert.deepEqual(puts, ["head:head.json"]);
   assert.deepEqual(heads[1], head);
+});
+
+test("concurrent replica.put during handover aborts deletion without ENOENT/ENOTEMPTY and hands over cleanly after quiet window", async () => {
+  const mesh = new Mesh();
+  const A = id("a");
+  const others = ["b", "c", "d"].map(id);
+  mesh.rosters.set(HOME, [A, ...others]);
+  const a = mesh.add(A, [HOME], station());
+  for (const s of others) mesh.add(s, [HOME]);
+  const [first, second] = keepers(HOME, A, [A, ...others]);
+  const third = others.find((s) => s !== first && s !== second)!;
+  const firstNode = mesh.nodes.get(first!)!;
+  const thirdNode = mesh.nodes.get(third)!;
+
+  // Start with first offline so A overflows to third.
+  firstNode.up = false;
+  for (const n of mesh.nodes.values()) if (n.up) await n.copies.start();
+  await mesh.settle();
+  assert.deepEqual(holders(mesh, HOME, A).sort(), [second!, third].sort());
+
+  // Advance past HANDOVER_QUIET_MS so third is eligible to start handover once first returns.
+  await mesh.clock.move(HANDOVER_QUIET_MS + 5_000);
+  await mesh.settle();
+
+  // Pause third's handover between `this.kept.held(HOME, A)` and directory removal by intercepting third's
+  // `replica.held` call to first during handover.
+  const handoverPaused = deferred<void>();
+  const handoverRelease = deferred<void>();
+  let pausedOnce = false;
+  const origFirstHandle = firstNode.bus.handle.bind(firstNode.bus);
+  firstNode.bus.handle = async (ws, peer, req) => {
+    if (!pausedOnce && peer === third && req?.method === "replica.held" && req?.origin === A) {
+      pausedOnce = true;
+      handoverPaused.resolve();
+      await handoverRelease.promise;
+    }
+    return origFirstHandle(ws, peer, req);
+  };
+
+  const lines: Line[] = [];
+  hearLines((l) => lines.push(l));
+  try {
+    // Bring first back up: first announces itself, A syncs to first, and third begins handing over A's copy.
+    firstNode.up = true;
+    const startFirst = firstNode.copies.start();
+    await handoverPaused.promise;
+
+    // While third's handover is in flight, a new replica.put arrives on third for A.
+    const freshHash = "f".repeat(64);
+    const freshBody = Buffer.from("written-during-handover");
+    await a.bus.ask(third, withBytes({ method: "replica.put", workspace: HOME, origin: A, kind: "file", name: freshHash }, oneBytes(freshBody)));
+
+    // Resume third's handover and let it finish its current pass.
+    handoverRelease.resolve();
+    await startFirst;
+    await mesh.settle();
+
+    // Third MUST NOT have deleted A's directory or the newly written file because writeSeq changed during handover.
+    const thirdOriginDir = join(keptDir(thirdNode.data), HOME, A);
+    assert.ok(existsSync(thirdOriginDir), "handover aborts deletion when a concurrent write arrives");
+    assert.equal(readFileSync(join(thirdOriginDir, "files", freshHash), "utf8"), "written-during-handover");
+
+    // Still within HANDOVER_QUIET_MS: triggering handover again keeps the directory intact.
+    await mesh.clock.move(5_000);
+    await mesh.settle();
+    assert.ok(existsSync(thirdOriginDir), "handover respects HANDOVER_QUIET_MS quiet window");
+
+    // Once writes stop and clock advances past HANDOVER_QUIET_MS, handover completes cleanly and copies freshHash.
+    await mesh.clock.move(HANDOVER_QUIET_MS + 10_000);
+    await mesh.settle();
+
+    assert.equal(existsSync(thirdOriginDir), false, "source directory removed after quiet window");
+    const wsEntries = existsSync(join(keptDir(thirdNode.data), HOME)) ? readdirSync(join(keptDir(thirdNode.data), HOME)) : [];
+    assert.deepEqual(wsEntries.filter((e) => e.startsWith(".dropping-")), [], "no leftover .dropping-* directories");
+    assert.deepEqual(holders(mesh, HOME, A).sort(), [first!, second!].sort());
+    assert.equal(readFileSync(join(keptDir(firstNode.data), HOME, A, "files", freshHash), "utf8"), "written-during-handover");
+    assert.equal(readFileSync(join(keptDir(mesh.nodes.get(second!)!.data), HOME, A, "files", freshHash), "utf8"), "written-during-handover");
+    assert.deepEqual(
+      lines.filter((l) => l.message === "copies not handed over" || /ENOENT|ENOTEMPTY/i.test(String(l.fields?.error ?? ""))),
+      [],
+      "zero ENOENT/ENOTEMPTY or handover failures",
+    );
+  } finally {
+    hearLines(null);
+  }
+});
+
+test("primary keeper recovery cancels overflow keeper retry timer and stops zombie replica requests", async () => {
+  const mesh = new Mesh();
+  const A = id("a");
+  const others = ["b", "c", "d"].map(id);
+  mesh.rosters.set(HOME, [A, ...others]);
+  const a = mesh.add(A, [HOME], station());
+  for (const s of others) mesh.add(s, [HOME]);
+  const [first, second] = keepers(HOME, A, [A, ...others]);
+  const third = others.find((s) => s !== first && s !== second)!;
+  const firstNode = mesh.nodes.get(first!)!;
+  const thirdNode = mesh.nodes.get(third)!;
+
+  // Start with first offline so A overflows to third.
+  firstNode.up = false;
+  for (const n of mesh.nodes.values()) if (n.up) await n.copies.start();
+  await mesh.settle();
+  assert.deepEqual(holders(mesh, HOME, A).sort(), [second!, third].sort());
+
+  // Make third fail once so A arms `keeping.again` retry timer on third.
+  thirdNode.up = false;
+  const thread = a.store.sessionThreads("chat:a")[0]!.thread.id;
+  a.store.insertMessage({ thread, ts: "overflow.fail", authorKind: "person", author: "p@x", text: "triggers third retry" });
+  await a.copies.settle();
+  const oBefore = (await a.copies.overview(HOME)) as Json;
+  assert.notEqual(oBefore.keepers.find((k: Json) => k.station === third)?.error, null, "third failed and armed retry");
+
+  // Bring both first and third back online; first syncs successfully and prunes third's retry timer.
+  thirdNode.up = true;
+  firstNode.up = true;
+  await firstNode.copies.start();
+  await mesh.settle();
+
+  const askedThird = () => {
+    const m = mesh.asked.get(third) ?? new Map<string, number>();
+    return (m.get("replica.held") ?? 0) + (m.get("put:batch") ?? 0) + (m.get("put:head") ?? 0) + (m.get("put:file") ?? 0);
+  };
+  const afterRecovery = askedThird();
+
+  // Advance clock 60s and settle: third's old retry timer must NOT fire zombie replica.held/replica.put requests,
+  // and third cleanly hands over its stale copy of A.
+  await mesh.clock.move(60_000);
+  await mesh.settle();
+  assert.equal(askedThird(), afterRecovery, "no zombie replica.held/replica.put sent to overflow keeper after primary recovery");
+  assert.deepEqual(holders(mesh, HOME, A).sort(), [first!, second!].sort());
+});
+
+test("in-flight busy overflow keeper fails after primary recovery without arming retry or leaving stale error state", async () => {
+  const mesh = new Mesh();
+  const A = id("a");
+  const others = ["b", "c", "d"].map(id);
+  mesh.rosters.set(HOME, [A, ...others]);
+  const a = mesh.add(A, [HOME], station());
+  for (const s of others) mesh.add(s, [HOME]);
+  const [first, second] = keepers(HOME, A, [A, ...others]);
+  const third = others.find((s) => s !== first && s !== second)!;
+  const firstNode = mesh.nodes.get(first!)!;
+  const thirdNode = mesh.nodes.get(third)!;
+
+  // Start with first offline so A overflows to third.
+  firstNode.up = false;
+  for (const n of mesh.nodes.values()) if (n.up) await n.copies.start();
+  await mesh.settle();
+  assert.deepEqual(holders(mesh, HOME, A).sort(), [second!, third].sort());
+
+  // Intercept A's next replica.put to third so third stays `busy` in-flight while first recovers, then fails.
+  const putStarted = deferred<void>();
+  const failPut = deferred<void>();
+  let interceptOnce = true;
+  const origThirdHandle = thirdNode.bus.handle.bind(thirdNode.bus);
+  thirdNode.bus.handle = async (ws, peer, req) => {
+    if (interceptOnce && peer === A && req?.method === "replica.put") {
+      interceptOnce = false;
+      putStarted.resolve();
+      await failPut.promise;
+      throw new Error("station unreachable");
+    }
+    return origThirdHandle(ws, peer, req);
+  };
+
+  const thread = a.store.sessionThreads("chat:a")[0]!.thread.id;
+  a.store.insertMessage({ thread, ts: "busy.overflow", authorKind: "person", author: "p@x", text: "in-flight to third" });
+  await mesh.clock.move(1_000);
+  await putStarted.promise;
+
+  // Primary keeper `first` recovers and syncs successfully while `third` is still `busy`.
+  firstNode.up = true;
+  await firstNode.copies.start();
+  // Wait for first to receive the new copy from A.
+  await mesh.clock.move(1_000);
+
+  // Release the in-flight `third` write as a failure: must NOT arm a retry timer or leave stale error state.
+  failPut.resolve();
+  await mesh.settle();
+
+  const askedThird = () => {
+    const m = mesh.asked.get(third) ?? new Map<string, number>();
+    return (m.get("replica.held") ?? 0) + (m.get("put:batch") ?? 0) + (m.get("put:head") ?? 0) + (m.get("put:file") ?? 0);
+  };
+  const afterFailure = askedThird();
+
+  await mesh.clock.move(60_000);
+  await mesh.settle();
+  assert.equal(askedThird(), afterFailure, "no zombie retry after busy overflow keeper failed post-recovery");
+  assert.deepEqual(holders(mesh, HOME, A).sort(), [first!, second!].sort());
+
+  // If primary goes down again later, third has no leftover error/backoff state and syncs immediately.
+  firstNode.up = false;
+  a.store.insertMessage({ thread, ts: "overflow.again", authorKind: "person", author: "p@x", text: "clean re-overflow" });
+  await a.copies.settle();
+  const oAfter = (await a.copies.overview(HOME)) as Json;
+  assert.equal(oAfter.keepers.find((k: Json) => k.station === third)?.error, null, "re-overflow to third succeeds immediately with no stale retry state");
 });
