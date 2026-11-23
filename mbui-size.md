@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1bf564378](https://github.com/AFK-surf/monoid/commit/1bf56437819de805cda39e0c38e189ece698ab19) fix(station): keep agents running when the MoonBit | 2.72 | 3.66 | 14.84 | 36.98 | 56.53 | 32.4 | 65.72 | 100.37 | 133.56 |
 | [f3b71325f](https://github.com/AFK-surf/monoid/commit/f3b71325fba232cdf905c5f5bd291f53433d44fc) fix(station): see swapping on macOS, queue agents' | 2.72 | 3.66 | 14.84 | 36.98 | 56.53 | 32.4 | 65.72 | 100.37 | 133.56 |
 | [173adaba9](https://github.com/AFK-surf/monoid/commit/173adaba94fd90ee090d487867c2ace8bd4fe610) fix(core): keep every endpoint's credential and as | 2.72 | 3.66 | 14.84 | 36.98 | 56.53 | 32.4 | 65.72 | 100.37 | 133.56 |
 | [9c09bdb1e](https://github.com/AFK-surf/monoid/commit/9c09bdb1ee983a252d2068ec0dcc4e0fe3a0c274) feat(core): open Comma Tasks by link across platfo | 2.72 | 3.66 | 14.84 | 36.98 | 56.53 | 32.4 | 65.72 | 100.03 | 112.45 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f43ce757d](https://github.com/AFK-surf/monoid/commit/f43ce757d63053878134d6c1218711955822c7da) refactor(sf-ui): move the bottom bar's glass onto  | 2.7 | 3.64 | 14.76 | 36.86 | 56.21 | 32.3 | 65.46 | 99.53 | 117.37 |
 | [3e63fed71](https://github.com/AFK-surf/monoid/commit/3e63fed71c7e6870293138e275744584ccdbdbb4) fix(mbui): run switches tests through a core-sized | 2.7 | 3.64 | 14.76 | 36.86 | 56.21 | 32.3 | 65.46 | 99.45 | 122.56 |
 | [c442e4689](https://github.com/AFK-surf/monoid/commit/c442e468983462b7c71ed8eaee0ddf14fe76a0c6) fix(app): stop raising lifted media above composer | 2.7 | 3.64 | 14.76 | 36.86 | 56.21 | 32.28 | 65.46 | 99.55 | 115.86 |
-| [2787f032a](https://github.com/AFK-surf/monoid/commit/2787f032ab7824c096d7cc4222b5a4244a8378ff) refactor(sf-ui): merge production liquid glass lay | 2.7 | 3.64 | 14.75 | 36.85 | 56.2 | 32.28 | 65.46 | 99.55 | 126.47 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1bf564378](https://github.com/AFK-surf/monoid/commit/1bf56437819de805cda39e0c38e189ece698ab19) fix(station): keep agents running when the MoonBit | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.07 |
 | [f3b71325f](https://github.com/AFK-surf/monoid/commit/f3b71325fba232cdf905c5f5bd291f53433d44fc) fix(station): see swapping on macOS, queue agents' | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.18 |
 | [173adaba9](https://github.com/AFK-surf/monoid/commit/173adaba94fd90ee090d487867c2ace8bd4fe610) fix(core): keep every endpoint's credential and as | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.12 |
 | [9c09bdb1e](https://github.com/AFK-surf/monoid/commit/9c09bdb1ee983a252d2068ec0dcc4e0fe3a0c274) feat(core): open Comma Tasks by link across platfo | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.2 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f43ce757d](https://github.com/AFK-surf/monoid/commit/f43ce757d63053878134d6c1218711955822c7da) refactor(sf-ui): move the bottom bar's glass onto  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
 | [3e63fed71](https://github.com/AFK-surf/monoid/commit/3e63fed71c7e6870293138e275744584ccdbdbb4) fix(mbui): run switches tests through a core-sized | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
 | [c442e4689](https://github.com/AFK-surf/monoid/commit/c442e468983462b7c71ed8eaee0ddf14fe76a0c6) fix(app): stop raising lifted media above composer | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
-| [2787f032a](https://github.com/AFK-surf/monoid/commit/2787f032ab7824c096d7cc4222b5a4244a8378ff) refactor(sf-ui): merge production liquid glass lay | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.59 |
