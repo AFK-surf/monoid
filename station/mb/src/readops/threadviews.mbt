@@ -211,6 +211,10 @@ fn listed_thread_json(t : Map[String, Json]) -> Map[String, Json] {
       v[pair.0] = field(t, pair.1)
     }
   }
+  match parsed_thread_links(field(t, "links")) {
+    Some(l) => v["links"] = l
+    None => ()
+  }
   v
 }
 

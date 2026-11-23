@@ -106,11 +106,14 @@ export type NewSession = {
   createdAt: number; lastActiveAt: number; ws?: string | null;
 };
 
+/// External links stored on a thread (e.g. a Comma Task's web page and app deep link).
+export type ThreadLinks = { web?: string; app?: string };
+
 /// A place people talk: a Slack thread, or a chat on the station's page.
 export type ThreadRow = {
   id: number; surface: string; channel: string; threadTs: string; title: string | null; autoTitle: string | null;
   createdBy: string | null; createdAt: number; home: string | null; hiddenAt: number | null; hiddenBy: string | null;
-  shownAt: number | null;
+  shownAt: number | null; links?: ThreadLinks | null;
 };
 
 /// The name a chat's agent gave it (Store::autoTitle).
@@ -523,11 +526,26 @@ export function liveShare(share: ChatShare, now: number): ChatShare | null {
   return to.length === 0 ? null : { ...share, to };
 }
 
+function parseThreadLinks(raw: unknown): ThreadLinks | null {
+  if (typeof raw !== "string" || raw === "") return null;
+  try {
+    const v = JSON.parse(raw);
+    if (v === null || typeof v !== "object" || Array.isArray(v)) return null;
+    const out: ThreadLinks = {};
+    if (typeof v.web === "string" && v.web !== "") out.web = v.web;
+    if (typeof v.app === "string" && v.app !== "") out.app = v.app;
+    return out.web !== undefined || out.app !== undefined ? out : null;
+  } catch {
+    return null;
+  }
+}
+
 export function toThread(r: Json): ThreadRow {
+  const links = parseThreadLinks(r.links);
   return {
     id: r.id, surface: r.surface, channel: r.channel, threadTs: r.thread_ts, title: r.title, autoTitle: r.auto_title,
     createdBy: r.created_by, createdAt: r.created_at, home: r.home, hiddenAt: r.hidden_at, hiddenBy: r.hidden_by,
-    shownAt: r.shown_at,
+    shownAt: r.shown_at, ...(links !== null ? { links } : {}),
   };
 }
 

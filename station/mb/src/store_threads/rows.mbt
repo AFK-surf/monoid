@@ -31,6 +31,28 @@ fn put_col(out : Map[String, Json], key : String, r : Map[String, Json], name : 
   }
 }
 
+fn parse_thread_links(v : Json) -> Json? {
+  match v {
+    String(s) if s != "" =>
+      match (try { Some(@json.parse(s)) } catch { _ => None }) {
+        Some(Object(m)) => {
+          let out : Map[String, Json] = Map([])
+          match m.get("web") {
+            Some(String(w)) if w != "" => out["web"] = Json::string(w)
+            _ => ()
+          }
+          match m.get("app") {
+            Some(String(a)) if a != "" => out["app"] = Json::string(a)
+            _ => ()
+          }
+          if out.is_empty() { None } else { Some(Json::object(out)) }
+        }
+        _ => None
+      }
+    _ => None
+  }
+}
+
 ///|
 /// rows.ts `toThread`.
 fn thread_of(r : Map[String, Json]) -> Json {
@@ -50,6 +72,14 @@ fn thread_of(r : Map[String, Json]) -> Json {
     ("shownAt", "shown_at"),
   ] {
     put_col(out, pair.0, r, pair.1)
+  }
+  match r.get("links") {
+    Some(v) =>
+      match parse_thread_links(v) {
+        Some(l) => out["links"] = l
+        None => ()
+      }
+    None => ()
   }
   Json::object(out)
 }

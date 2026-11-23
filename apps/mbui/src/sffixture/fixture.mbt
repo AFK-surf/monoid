@@ -1603,8 +1603,8 @@ pub fn whole_row_in(chats : Json?, station : String, session : String) -> Json? 
 /// the list's shape, ListedChat, has not: its time in words, its kept and muted, whom it is shared with): read of the
 /// chat's whole row (`chatRow`) as a press, a hold, a swipe or a pointer begins.
 let whole_only : Array[String] = [
-  "time", "swipeAsk", "watch", "decision", "xshare", "mayShare", "mayPublish", "slackUrl", "slackApp", "feishuUrl", "kept",
-  "muted",
+  "time", "swipeAsk", "watch", "decision", "xshare", "mayShare", "mayPublish", "slackUrl", "slackApp", "feishuUrl",
+  "commaUrl", "commaApp", "kept", "muted",
 ]
 
 ///|

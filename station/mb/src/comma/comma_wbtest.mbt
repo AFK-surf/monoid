@@ -306,6 +306,7 @@ fn test_store() -> SurfaceStore {
     pending_count: async fn(_) { 0.0 },
     thread_at: async fn(_, _, _) { Null },
     leave_thread: async fn(_, _) { () },
+    set_thread_links: None,
     handler: async fn(_) { () },
     book_person: None,
     book_known: None,
@@ -642,4 +643,33 @@ test "CommaSurface forwards close_card flag from task.say to CommaChats.say" {
     _ => fail("task.say did not finish")
   }
   assert_eq(calls, [("5", "Skip deploy", true), ("5", "Proceed", false)])
+}
+
+///|
+test "valid_task_links validates Comma web and app URLs and rejects untrusted schemes" {
+  let ok = valid_task_links(
+    Some(
+      @jsjson.parse(
+        "{\"web\":\"https://app.comma.surf/#/tasks/wsp_1/grp1_2/cnv_3\",\"app\":\"comma://task?workspace=wsp_1&group=grp1_2&task=cnv_3\"}",
+      ),
+    ),
+  )
+  assert_eq(str_of(prop(ok, "web")), Some("https://app.comma.surf/#/tasks/wsp_1/grp1_2/cnv_3"))
+  assert_eq(str_of(prop(ok, "app")), Some("comma://task?workspace=wsp_1&group=grp1_2&task=cnv_3"))
+  let staging = valid_task_links(
+    Some(
+      @jsjson.parse(
+        "{\"web\":\"https://app-staging.comma.surf/#/tasks/w1/g1/t1\",\"app\":\"comma-staging://task?workspace=w1&group=g1&task=t1\"}",
+      ),
+    ),
+  )
+  assert_eq(str_of(prop(staging, "app")), Some("comma-staging://task?workspace=w1&group=g1&task=t1"))
+  assert_true(
+    valid_task_links(Some(@jsjson.parse("{\"web\":\"http://app.comma.surf/x\",\"app\":\"file:///etc/passwd\"}"))) is None,
+  )
+  assert_true(
+    valid_task_links(Some(@jsjson.parse("{\"web\":\"javascript:alert(1)\",\"app\":\"comma://evil?x=1\"}"))) is None,
+  )
+  assert_true(valid_task_links(Some(@jsjson.parse("{\"app\":\"comma://task\"}"))) is None)
+  assert_true(valid_task_links(Some(@jsjson.parse("{\"app\":\"comma://task?x=1#frag\"}"))) is None)
 }

@@ -48,6 +48,12 @@
   <key>NSFaceIDUsageDescription</key><string>查看密钥库里的密钥、批准 agent 使用前确认是你本人。</string>
   <key>PHPhotoLibraryPreventAutomaticLimitedAccessAlert</key><true/>
   <key>ITSAppUsesNonExemptEncryption</key><false/>
+  <key>LSApplicationQueriesSchemes</key><array>
+    <string>comma</string>
+    <string>comma-staging</string>
+    <string>comma-dev</string>
+    <string>slack</string>
+  </array>
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>
 </plist>

@@ -53,6 +53,7 @@ pub fn open(db : @sql.Db, host : @host.Host, path : String, now : Int64, archive
   add_letter_column(db)
   add_client_column(db)
   add_auto_title_columns(db)
+  add_thread_links_column(db)
   add_watch_column(db)
   install_active_watches(db)
   install_other_active_jobs(db)

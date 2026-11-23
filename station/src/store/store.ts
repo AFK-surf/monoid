@@ -27,7 +27,7 @@ import {
   byBytes, cardOf, entryColumns, jsonList, letterEntry, letterMessage, mergeEntries, optionsCard, parsed, stored, takeChars, toEntry, toJob, toMembership,
   LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, LAST_JOBS_OF, LIVE_ON_PROFILE, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
 } from "./rows.ts";
-import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addConvColumn, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addPendingSystemCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn, renameOwnChats } from "./schema.ts";
+import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addConvColumn, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addPendingSystemCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addThreadLinksColumn, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn, renameOwnChats } from "./schema.ts";
 import { OWNED_WS_SQL, activeConversationMembers, birthThreadsOf, conversationOf, membersOf, reanchorOnDeleteInTx, repairConversations, settleConversationInTx } from "./conversations.ts";
 import { installUsageCompactions, usageCompactionsReady } from "./usage-compactions.ts";
 import { installPeopleSinceIndex } from "./legacy-people-since.ts";
@@ -784,6 +784,7 @@ export class Store {
       addLetterColumn(db);
       addClientColumn(db);
       addAutoTitleColumns(db);
+      addThreadLinksColumn(db);
       addWatchColumn(db);
       installActiveWatches(db);
       installOtherActiveJobs(db);
@@ -1783,6 +1784,17 @@ export class Store {
   autoTitle(thread: number): AutoTitle {
     const r = this.#one("SELECT auto_title, auto_title_n, auto_title_changes FROM threads WHERE id = ?", thread);
     return r ? { title: r.auto_title, n: r.auto_title_n ?? 0, changes: r.auto_title_changes } : { title: null, n: 0, changes: 0 };
+  }
+
+  /// Stores validated external links (e.g. Comma Task web/app links) on a thread; no-op when unchanged.
+  setThreadLinks(thread: number, links: { web?: string; app?: string } | null): void {
+    const raw = links !== null && (links.web !== undefined || links.app !== undefined) ? JSON.stringify(links) : null;
+    const prev = this.#one("SELECT links FROM threads WHERE id = ?", thread);
+    if (!prev || (prev.links ?? null) === raw) return;
+    this.#with((changes) => {
+      this.#run("UPDATE threads SET links = ?1 WHERE id = ?2", raw, thread);
+      changes.push({ type: "thread", id: thread, entries: [] });
+    });
   }
 
   /// Names a chat as its agent did: the first name, or (`changed`) another one, counted.

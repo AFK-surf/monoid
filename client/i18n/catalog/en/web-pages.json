@@ -456,6 +456,7 @@
   "web-pages.chat.stopTurn": "Stop turn",
   "web-pages.chat.thisMachine": "This device",
   "web-pages.chat.openInFeishu": "Open in Feishu",
+  "web-pages.chat.openInComma": "Open in Comma",
   "web-pages.cloud.backTo": "Back to {name}",
   "web-pages.cloud.inviteCode": "Invite code",
   "web-pages.cloud.join": "Join",

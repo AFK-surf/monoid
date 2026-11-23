@@ -1987,6 +1987,7 @@ let en : Map[String, String] = {
   "web-pages.chat.info.unknown": "Unknown",
   "web-pages.chat.jobs": "Jobs",
   "web-pages.chat.lastActive": "Active {time}",
+  "web-pages.chat.openInComma": "Open in Comma",
   "web-pages.chat.openInFeishu": "Open in Feishu",
   "web-pages.chat.openInSlack": "Open in Slack",
   "web-pages.chat.openPanel": "Show panel",

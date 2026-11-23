@@ -116,6 +116,8 @@ pub(all) struct ChatItem {
   slack_url : String
   slack_app : String
   feishu_url : String
+  comma_url : String
+  comma_app : String
   /// its column on the board for the viewer, as the core works it out (client/core-ts chat-stage.ts): wait, watch, run;
   /// "" ended (待收口)
   stage : String
@@ -351,6 +353,8 @@ pub fn chat_item(v : Json) -> ChatItem {
     slack_url: text(s, "slackUrl"),
     slack_app: text(s, "slackApp"),
     feishu_url: text(s, "feishuUrl"),
+    comma_url: text(s, "commaUrl"),
+    comma_app: text(s, "commaApp"),
     stage: text(s, "stage"),
     subchats: text(s, "subchats"),
     opener_led: flag(field(s, "opener"), "led"),

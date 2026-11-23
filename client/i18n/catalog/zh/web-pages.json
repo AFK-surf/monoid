@@ -444,6 +444,7 @@
   "web-pages.chat.stopTurn": "停止当前任务",
   "web-pages.chat.thisMachine": "本机",
   "web-pages.chat.openInFeishu": "在飞书中打开",
+  "web-pages.chat.openInComma": "在 Comma 中打开",
   "web-pages.cloud.backTo": "回到 {name}",
   "web-pages.cloud.inviteCode": "邀请码",
   "web-pages.cloud.join": "加入",

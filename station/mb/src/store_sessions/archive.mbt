@@ -306,6 +306,29 @@ pub fn Store::auto_title(self : Store, thread : Json) -> Json raise {
 }
 
 ///|
+/// Stores validated external links (JSON object with `web`/`app`) on a thread; no-op when unchanged.
+pub fn Store::set_thread_links(
+  self : Store,
+  thread : Json,
+  links : Json,
+) -> Unit raise {
+  let raw = match links {
+    Object(m) if !m.is_empty() => Json::string(links.stringify())
+    _ => Json::null()
+  }
+  match self.one("SELECT links FROM threads WHERE id = ?", [thread]) {
+    None => return
+    Some(r) => if col(r, "links") == raw { return }
+  }
+  self.with_changes(changes => {
+    ignore(
+      self.run("UPDATE threads SET links = ?1 WHERE id = ?2", [raw, thread]),
+    )
+    changes.push(thread_change(thread))
+  })
+}
+
+///|
 pub fn Store::set_auto_title(
   self : Store,
   thread : Json,

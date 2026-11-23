@@ -1966,6 +1966,7 @@ let zh : Map[String, String] = {
   "web-pages.chat.info.unknown": "未记录",
   "web-pages.chat.jobs": "任务",
   "web-pages.chat.lastActive": "最近活动 {time}",
+  "web-pages.chat.openInComma": "在 Comma 中打开",
   "web-pages.chat.openInFeishu": "在飞书中打开",
   "web-pages.chat.openInSlack": "在 Slack 中打开",
   "web-pages.chat.openPanel": "打开侧栏",

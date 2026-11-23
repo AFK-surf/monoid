@@ -1900,11 +1900,16 @@ int32_t mb_host_open_tab(moonbit_string_t s) {
 void mb_host_hold_words(moonbit_string_t channel, moonbit_string_t title, moonbit_string_t body) {}
 
 // A URL handed to the system (@hostapi.open_url): UIApplication, Safari or the app that takes it.
+// Custom schemes are checked with canOpenURL so callers can fall back to a web URL when no app handles them.
 int32_t mb_host_open_url(moonbit_string_t s) {
   NSString *u = mb_ns_from_string(s);
   NSURL *url = [NSURL URLWithString:u];
   NSLog(@"open-url: %@", u);
   if (!url || !url.scheme) return 0;
+  NSString *scheme = url.scheme.lowercaseString;
+  if (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"] && ![scheme isEqualToString:@"mailto"]) {
+    if (![UIApplication.sharedApplication canOpenURL:url]) return 0;
+  }
   [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
   return 1;
 }

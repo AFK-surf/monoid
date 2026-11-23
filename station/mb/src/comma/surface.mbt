@@ -461,6 +461,8 @@ pub(all) struct SurfaceStore {
   thread_at : async (String, String, String) -> J
   /// `store.leaveThread(thread, session)`.
   leave_thread : async (Double, String) -> Unit
+  /// `store.setThreadLinks(thread, links)`: records validated external links on the thread.
+  set_thread_links : (async (Double, J) -> Unit)?
   /// What the hub is handed (`Handler`): a message heard.
   handler : async (J) -> Unit
   /// `book.person(key, async () => person, changed)`: a person told; `book.person(key, async () => null)`: one known.
@@ -1226,6 +1228,10 @@ fn CommaSurface::invited(self : CommaSurface, params : J) -> J raise {
     Some(h) if !h.left => h
     _ => Task::of_j(self.tasks.invited(self.id, task, start, count(prop(p, "answered")).unwrap_or(0.0)))
   }
+  match valid_task_links(prop(p, "links")) {
+    Some(links) => self.tasks.set_links(self.id, task, links)
+    None => ()
+  }
   self.io.info("a Comma Task for an agent here", [
     ("connect", Some(jstr(self.id))),
     ("task", Some(jstr(task))),
@@ -1277,6 +1283,11 @@ async fn CommaSurface::put(self : CommaSurface, params : J) -> J {
   }
   if t.left {
     return jobj([("gone", Bool(true))])
+  }
+  let links = valid_task_links(prop(p, "links"))
+  match links {
+    Some(l) => self.tasks.set_links(self.id, task, l)
+    None => ()
   }
   let given = count(prop(p, "answered")).unwrap_or(0.0)
   let answered = js_max(t.answered, given)
@@ -1334,6 +1345,20 @@ async fn CommaSurface::put(self : CommaSurface, params : J) -> J {
     for f in files {
       self.shared.remove(str_of(prop(Some(f), "id")).unwrap_or(""))
     }
+  }
+  let effective = match links {
+    Some(l) => Some(l)
+    None => self.tasks.links_of(self.id, task)
+  }
+  match (effective, self.store.set_thread_links) {
+    (Some(l), Some(save_links)) => {
+      let thread = (self.store.thread_at)(self.surface(), task_channel, t.thread_ts)
+      match num_of(prop(Some(thread), "id")) {
+        Some(id) => save_links(id, l)
+        None => ()
+      }
+    }
+    _ => ()
   }
   self.tasks.given(self.id, task, count(prop(p, "through")), count(prop(p, "answered")))
   jobj([("through", count(prop(p, "through")).map(jn).unwrap_or(Null))])

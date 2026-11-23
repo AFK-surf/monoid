@@ -9,6 +9,108 @@
 /// Where Comma Tasks are, as threads here.
 pub let task_channel : String = "TASK"
 
+fn is_ascii_host_char(c : Int) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-'
+}
+
+fn is_valid_comma_web_url(s : String) -> Bool {
+  let n = s.length()
+  if n <= 8 || n > 2048 || !s.has_prefix("https://") {
+    return false
+  }
+  let mut i = 8
+  while i < n && is_ascii_host_char(s.unsafe_charcode_at(i)) {
+    i += 1
+  }
+  if i == 8 {
+    return false
+  }
+  if i < n && s.unsafe_charcode_at(i) == ':' {
+    i += 1
+    let start = i
+    while i < n && s.unsafe_charcode_at(i) >= '0' && s.unsafe_charcode_at(i) <= '9' {
+      i += 1
+    }
+    if i == start || i - start > 5 {
+      return false
+    }
+  }
+  if i < n {
+    let c = s.unsafe_charcode_at(i)
+    if c != '/' && c != '?' && c != '#' {
+      return false
+    }
+    while i < n {
+      let ch = s.unsafe_charcode_at(i)
+      if ch <= 0x20 || ch == 0x7f {
+        return false
+      }
+      i += 1
+    }
+  }
+  true
+}
+
+fn is_valid_comma_app_url(s : String) -> Bool {
+  let n = s.length()
+  if n <= 14 || n > 2048 || !s.has_prefix("comma") {
+    return false
+  }
+  let mut i = 5
+  if i < n && s.unsafe_charcode_at(i) == '-' {
+    i += 1
+    let start = i
+    while i < n {
+      let c = s.unsafe_charcode_at(i)
+      if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
+        i += 1
+      } else {
+        break
+      }
+    }
+    if i == start {
+      return false
+    }
+  }
+  let rest = s.unsafe_substring(start=i, end=n)
+  let q = if rest.has_prefix("://task?") {
+    i + 8
+  } else if rest.has_prefix("://task/?") {
+    i + 9
+  } else {
+    return false
+  }
+  if q >= n {
+    return false
+  }
+  let mut j = q
+  while j < n {
+    let ch = s.unsafe_charcode_at(j)
+    if ch <= 0x20 || ch == '#' || ch == 0x7f {
+      return false
+    }
+    j += 1
+  }
+  true
+}
+
+///|
+/// Validates `links` given by Comma on `task.invite` / `task.put`: `web` must be `https://…`, `app` must be
+/// `comma*://task?…`.
+pub fn valid_task_links(raw : J?) -> J? {
+  guard raw is Some(Obj(_)) else { return None }
+  let entries : Array[(String, J)] = []
+  match str_of(prop(raw, "web")) {
+    Some(w) if is_valid_comma_web_url(w) => entries.push(("web", jstr(w)))
+    _ => ()
+  }
+  match str_of(prop(raw, "app")) {
+    Some(a) if is_valid_comma_app_url(a) => entries.push(("app", jstr(a)))
+    _ => ()
+  }
+  if entries.is_empty() { None } else { Some(jobj(entries)) }
+}
+
 ///|
 /// How a Task was started, as task.invite said: who asked (a Comma user's id), and what it asked to run.
 pub(all) struct Start {
@@ -302,16 +404,43 @@ pub fn CommaTasks::invited(self : CommaTasks, connect : String, task : String, s
     Some(Num(n)) => n
     Some(_) => @double.not_a_number
   }
-  let t = jobj([
+  let entries : Array[(String, J)] = [
     ("task", jstr(task)),
     ("threadTs", thread_ts),
     ("start", start.to_j()),
     ("fetched", fetched),
     ("answered", Num(js_max(had_answered, answered))),
-  ])
+  ]
+  match prop(had, "links") {
+    Some(Obj(_) as l) => entries.push(("links", l))
+    _ => ()
+  }
+  let t = jobj(entries)
   put_field(at, task, t)
   self.save()
   t
+}
+
+///|
+/// Records validated links on a Task; no-op when unchanged.
+pub fn CommaTasks::set_links(self : CommaTasks, connect : String, task : String, links : J) -> Unit {
+  guard self.get_j(connect, task) is Some(Obj(t)) else { return }
+  let prev = prop(Some(Obj(t)), "links")
+  if str_of(prop(prev, "web")) == str_of(prop(Some(links), "web")) &&
+    str_of(prop(prev, "app")) == str_of(prop(Some(links), "app")) {
+    return
+  }
+  put_field(t, "links", links)
+  self.save()
+}
+
+///|
+/// Stored links on a Task, when any.
+pub fn CommaTasks::links_of(self : CommaTasks, connect : String, task : String) -> J? {
+  match self.get_j(connect, task) {
+    Some(t) => valid_task_links(prop(Some(t), "links"))
+    None => None
+  }
 }
 
 ///|

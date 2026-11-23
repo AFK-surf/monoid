@@ -420,3 +420,31 @@ test("OwnerActivity merges cross-station peer reads monotonically without re-gos
   assert.equal(host.mergePeer({ at: 1_795_200_065_000 }, 1_795_200_070_000), true);
   assert.equal(host.get("peng@example.com"), 1_795_200_060_000);
 });
+
+test("validTaskLinks accepts https web and comma*://task app links and rejects untrusted schemes", async () => {
+  const { validTaskLinks } = await import("../src/comma/tasks.ts");
+  assert.deepEqual(
+    validTaskLinks({
+      web: "https://app.comma.surf/#/tasks/wsp_1/grp1_2/cnv_3",
+      app: "comma://task?workspace=wsp_1&group=grp1_2&task=cnv_3",
+    }),
+    {
+      web: "https://app.comma.surf/#/tasks/wsp_1/grp1_2/cnv_3",
+      app: "comma://task?workspace=wsp_1&group=grp1_2&task=cnv_3",
+    },
+  );
+  assert.deepEqual(
+    validTaskLinks({
+      web: "https://app-staging.comma.surf/#/tasks/wsp_1/grp1_2/cnv_3",
+      app: "comma-staging://task?workspace=wsp_1&group=grp1_2&task=cnv_3",
+    }),
+    {
+      web: "https://app-staging.comma.surf/#/tasks/wsp_1/grp1_2/cnv_3",
+      app: "comma-staging://task?workspace=wsp_1&group=grp1_2&task=cnv_3",
+    },
+  );
+  assert.equal(validTaskLinks({ web: "http://app.comma.surf/x", app: "file:///etc/passwd" }), null);
+  assert.equal(validTaskLinks({ web: "javascript:alert(1)", app: "comma://evil?x=1" }), null);
+  assert.equal(validTaskLinks({ app: "comma://task" }), null);
+  assert.equal(validTaskLinks({ app: "comma://task?x=1#frag" }), null);
+});

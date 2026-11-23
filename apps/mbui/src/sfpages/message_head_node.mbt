@@ -253,7 +253,10 @@ fn elsewhere_route_node(v : @view.View, s : () -> Elsewhere) -> Unit {
         let (_, _, url, app) = @signals.untracked(place)
         @sfbase.open_slack(app, url) |> ignore
       }),
-      on=fn() { place().2 != "" },
+      on=fn() {
+        let (_, _, url, app) = place()
+        url != "" || app != ""
+      },
     )
     |> ignore
     r.show(fn() { s().failed }, fn(f) {

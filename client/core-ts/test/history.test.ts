@@ -100,6 +100,37 @@ test("a_comma_task_or_group_place_is_named_and_marked_as_its_own_never_as_a_slac
   assert.deepEqual([format.placeName("comma:cm1", "TASK", ""), format.placeKind("comma:cm1", "TASK")], ["Comma", "comma"]);
   assert.deepEqual([format.placeName("group:g1", "G1", "发布小组"), format.placeKind("group:g1", "G1")], ["发布小组", "group"]);
   assert.deepEqual([format.placeKind("feishu:bot", "oc_a1"), format.placeKind("slack:T1", "C1"), format.placeKind("", "oc_a1")], ["feishu", "slack", "feishu"]);
+
+  // Validated Comma Task links flow into Place `url` and `app`; untrusted schemes are rejected.
+  const linked = [
+    {
+      surface: "comma:cm1",
+      channel: "TASK",
+      threadTs: "699841874.641753",
+      sessions: [{ session: "s2" }],
+      links: {
+        web: "https://app.comma.surf/#/tasks/wsp_1/grp1_2/cnv_3",
+        app: "comma://task?workspace=wsp_1&group=grp1_2&task=cnv_3",
+      },
+    },
+    {
+      surface: "comma:cm1",
+      channel: "TASK",
+      threadTs: "699841874.641754",
+      sessions: [{ session: "s3" }],
+      links: {
+        web: "javascript:alert(1)",
+        app: "file:///etc/passwd",
+      },
+    },
+  ];
+  const good = format.place(linked, "TASK/699841874.641753", 480, new Map()) as J;
+  assert.deepEqual(
+    [good.name, good.surface, good.url, good.app],
+    ["Comma", "comma", "https://app.comma.surf/#/tasks/wsp_1/grp1_2/cnv_3", "comma://task?workspace=wsp_1&group=grp1_2&task=cnv_3"],
+  );
+  const bad = format.place(linked, "TASK/699841874.641754", 480, new Map()) as J;
+  assert.deepEqual([bad.name, bad.surface, bad.url, bad.app], ["Comma", "comma", undefined, undefined]);
 });
 
 test("a_stillfail_place_is_its_title_or_the_agents_or_new_chat_never_its_first_message", () => {
