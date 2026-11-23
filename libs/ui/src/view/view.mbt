@@ -1038,6 +1038,9 @@ pub struct Tree {
   /// how far in from the window's top, right, foot and left the system's bars reach (Tree::clear_of): what goes beside
   /// another (View::beside) and what is laid out over the window (View::clear) keeps clear of it
   clear : @signals.Signal[(Double, Double, Double, Double)]
+  /// a box of the window's own over all else of it (x, y, w, h: its own buttons, Tree::keeps_away): what goes beside
+  /// another (View::beside) goes round it rather than under it
+  mut away : (Double, Double, Double, Double)?
   /// Each window press, with its number and window coordinates (Tree::went_down).
   pressed_anywhere : @signals.Signal[(Int, Double, Double)]
   /// Whether a finger or a button is down anywhere in the window now (Tree::went_down, Tree::went_up).
@@ -1610,6 +1613,7 @@ pub fn Tree::new(
     room_w: @signals.signal(0.0, same=fn(a, b) { a == b }),
     room_h: @signals.signal(0.0, same=fn(a, b) { a == b }),
     clear: @signals.signal((0.0, 0.0, 0.0, 0.0), same=fn(a, b) { a == b }),
+    away: None,
     pressed_anywhere: @signals.signal((0, -1.0, -1.0), same=fn(a, b) { a == b }),
     held_anywhere: @signals.signal(false, same=fn(a, b) { a == b }),
     tapped_anywhere: @signals.signal(0, same=fn(a, b) { a == b }),
@@ -4900,6 +4904,20 @@ pub fn Tree::clear_of(self : Tree, top : Double, right : Double, foot : Double, 
     return
   }
   self.clear.set(now)
+  if self.nodes.length() > 0 && self.nodes[0].live {
+    self.layout_marked_at(0)
+  }
+}
+
+///|
+/// A box of the window's own drawn over all else of it (x, y, w, h in the window; its own buttons where they are the
+/// app's to draw), `None` none: what goes beside another (View::beside, a menu by its trigger) is placed round it as
+/// round the window's edges, never under it.
+pub fn Tree::keeps_away(self : Tree, box : (Double, Double, Double, Double)?) -> Unit {
+  if self.away == box {
+    return
+  }
+  self.away = box
   if self.nodes.length() > 0 && self.nodes[0].live {
     self.layout_marked_at(0)
   }

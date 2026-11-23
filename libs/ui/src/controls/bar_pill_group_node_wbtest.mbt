@@ -395,3 +395,59 @@ test "bar_pill_group_node defaults adaptive off; adaptive=true and window_keys_n
   assert_eq((wk_adaptive_glass, wk_adaptive_icons), (true, true))
   set_dark(None)
 }
+
+///|
+test "window_keys_node: what goes beside a bar's key left of them (a menu morphing out over its pill) goes round their pill, never under it; their own tips by them" {
+  for shape in window_keys_shapes {
+    let (name, w, whole) = shape
+    presenters_reset()
+    set_words(fn(key, _) { key })
+    let t = @ui.Tester::new(fn(_c) {  }, w~, h=700.0, platform=3, window_corner=8.0, window_inset=true)
+    let pop : Ref[@view.View?] = Ref(None)
+    let key : Ref[@view.View?] = Ref(None)
+    @ui.set_view_app(fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      let (top, side) = window_keys_at_roots(w, whole, @ui.tree_corner_roots_now())
+      root.box(fn(page) {
+        page.grow(Is(1.0)).ground(By(fn() { theme().p.bg })) |> ignore
+        // (a bar's key just before their pill, on its line)
+        key.val = Some(
+          page.box(fn(k) {
+            k
+            .over_at(Is((Some(w - side - window_keys_w() - 8.0 - 36.0), Some(top), None, None)))
+            .width(Is(Some(36.0)))
+            .height(Is(Some(36.0)))
+            |> ignore
+          }),
+        )
+      })
+      |> ignore
+      // (opened over the key as a pill's menu is, lined up with its start: past the pill's end where nothing goes round it)
+      root.box(fn(l) {
+        l.over(Is(true)) |> ignore
+        pop.val = Some(
+          l.box(fn(p) {
+            p
+            .beside(key.val.unwrap().id(), side=Bottom, along=Start, offset=-36.0, padding=floating_viewport_pad)
+            .width(Is(Some(220.0)))
+            .height(Is(Some(300.0)))
+            .ground(Is(0xFF0000FFL))
+            |> ignore
+          }),
+        )
+      })
+      |> ignore
+      window_keys_made(root, fn() { whole }, fn(_) {  })
+    })
+    t.draw()
+    let (top, side) = window_keys_at_roots(w, whole, @ui.tree_corner_roots_now())
+    let (gx, gy, gw, gh) = (w - side - window_keys_w(), top, window_keys_w(), 36.0)
+    let (px, py, pw, ph) = pop.val.unwrap().placed_window_now()
+    let (kx, ky, _, _) = key.val.unwrap().placed_window_now()
+    let meets = px < gx + gw && gx < px + pw && py < gy + gh && gy < py + ph
+    assert_false(meets, msg="\{name}: \{px},\{py} \{pw}x\{ph} under the pill at \{gx},\{gy}")
+    // (moved along to end 8 before their pill, still over the key it came out of)
+    assert_eq((px + pw, py), (gx - floating_viewport_pad, ky), msg=name)
+    assert_true(px < kx, msg=name)
+  }
+}

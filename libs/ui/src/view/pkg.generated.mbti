@@ -87,7 +87,7 @@ pub let letters_own : Spacing
 
 pub let long_hold_ms : Double
 
-pub fn place_beside((Double, Double, Double, Double), Double, Double, Double, Double, side? : Side, along? : Along, offset? : Double, along_offset? : Double, padding? : Double, flip? : Bool, on? : Side, rtl? : Bool, clear? : (Double, Double, Double, Double)) -> (Double, Double, Side)
+pub fn place_beside((Double, Double, Double, Double), Double, Double, Double, Double, side? : Side, along? : Along, offset? : Double, along_offset? : Double, padding? : Double, flip? : Bool, on? : Side, rtl? : Bool, clear? : (Double, Double, Double, Double), away? : (Double, Double, Double, Double)) -> (Double, Double, Side)
 
 pub fn press_reaches(Double, Double, Double, Double, (Double, Double, Double, Double), (Double, Double, Double, Double), Double, Double, Double) -> Double?
 
@@ -1329,6 +1329,7 @@ pub fn Tree::input_bounds(Self, NodeId) -> (Double, Double, Double, Double)
 pub fn Tree::is_scroll_held(Self, NodeId) -> Bool
 pub fn Tree::is_scroller(Self, NodeId) -> Bool
 pub fn Tree::is_thumb(Self, NodeId) -> Bool
+pub fn Tree::keeps_away(Self, (Double, Double, Double, Double)?) -> Unit
 pub fn Tree::kept_drawn_said(Self) -> String?
 pub fn Tree::kept_inputs_said(Self) -> String?
 pub fn Tree::kept_said(Self) -> String?

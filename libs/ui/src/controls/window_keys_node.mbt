@@ -35,7 +35,9 @@ pub fn window_keys_node(
 /// window_keys_node's buttons, `made` given their pill as it is made (a test's hold on it).
 #callsite(autofill(loc))
 fn window_keys_made(root : @view.View, whole : () -> Bool, made : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
-  // (report the maximize button's rect to the host for Windows' Snap Layouts, updating as own/width/whole/corners change)
+  // (report the maximize button's rect to the host for Windows' Snap Layouts, and the pill's to the tree for what goes
+  // beside another to go round it (a menu morphing out of a bar's pill beside them: Tree::keeps_away), updating as
+  // own/width/whole/corners change)
   root.reacts(
     fn() {
       if !@ui.window_keys_own_now() {
@@ -43,14 +45,20 @@ fn window_keys_made(root : @view.View, whole : () -> Bool, made : (@view.View) -
       }
       let width = root.window().0
       let (pill_top, pill_side) = window_keys_at_roots(width, whole(), @ui.tree_corner_roots_now())
-      // (the maximize button is second from the right: past the pill's pad, close and the gap between them)
-      let x = width - pill_side - window_keys_pill_pad - bar_key_side - window_keys_gap - bar_key_side
-      Some((x, pill_top + window_keys_pill_pad))
+      Some((width - pill_side, pill_top))
     },
     fn(pos) {
       match pos {
-        Some((x, top)) => @ui.window_snap(x, top, bar_key_side, bar_key_side)
-        None => @ui.window_snap(0.0, 0.0, 0.0, 0.0)
+        Some((right, top)) => {
+          // (the maximize button is second from the right: past the pill's pad, close and the gap between them)
+          let x = right - window_keys_pill_pad - bar_key_side - window_keys_gap - bar_key_side
+          @ui.window_snap(x, top + window_keys_pill_pad, bar_key_side, bar_key_side)
+          root.tree.keeps_away(Some((right - window_keys_w(), top, window_keys_w(), window_keys_pill_h)))
+        }
+        None => {
+          @ui.window_snap(0.0, 0.0, 0.0, 0.0)
+          root.tree.keeps_away(None)
+        }
       }
     },
   )
