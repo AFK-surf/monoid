@@ -528,13 +528,13 @@ test "an account on several stations shows its subscription tier" {
 test "a Google subscription's page has the switch for filling in its quota from Google; a Claude one's does not" {
   let said = fn(t : @ui.Tester) { t.words().map(fn(w) { w.0 }).join("") }
   let on = settings_tester("profile:ws1/st1#gp", shows="settings-profile-google", h=1600.0)
-  assert_true(on.find("显示完整额度") is Some(_))
+  assert_true(on.find("直接调用 Google 接口查额度") is Some(_))
   assert_true(said(on).contains("关闭后将只用"), msg=said(on))
   let off = settings_tester("profile:ws1/st1#gp", shows="settings-profile-google-off", h=1600.0)
-  assert_true(off.find("显示完整额度") is Some(_))
+  assert_true(off.find("直接调用 Google 接口查额度") is Some(_))
   assert_true(said(off).contains("开启后将直接调用"), msg=said(off))
   let claude = settings_tester("profile:ws1/st1#cc", shows="settings-profile", h=1600.0)
-  assert_true(claude.find("显示完整额度") is None)
+  assert_true(claude.find("直接调用 Google 接口查额度") is None)
 }
 
 ///|

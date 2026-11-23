@@ -2452,7 +2452,7 @@ let en : Map[String, String] = {
   "web-pages.profiles.background": "Background running commands on new messages",
   "web-pages.profiles.backgroundOff": "New messages wait until the running command or subagent finishes",
   "web-pages.profiles.backgroundOn": "While Claude Code waits on a command or subagent, a new message moves it to the background (like Ctrl+B). The agent reads the message immediately and handles the results when they finish.",
-  "web-pages.profiles.directQuota": "Show full quota",
+  "web-pages.profiles.directQuota": "Read quota from Google's API directly",
   "web-pages.profiles.directQuotaOff": "Turning it on reads quota by calling Google's API directly: every limit shows, but Google may flag the account",
   "web-pages.profiles.directQuotaOn": "Turning it off reads quota only through the official Antigravity CLI: safer, but some limits may not show",
   "web-pages.profiles.maxConcurrentSessions": "Concurrency limit",
