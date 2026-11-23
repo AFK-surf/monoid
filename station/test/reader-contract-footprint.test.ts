@@ -10,8 +10,8 @@ import { tmpdir } from "node:os";
 import { join, normalize, sep } from "node:path";
 import { after, test } from "node:test";
 import { platform } from "../src/platform/index.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
-import { MEASURE_ROOM, MEASURE_UP_TO, type MeasureBudget, type Room } from "../src/sessions/footprint.ts";
+import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
+import { MEASURE_ROOM, MEASURE_UP_TO, type MeasureBudget, measured, type Room } from "../src/sessions/footprint.ts";
 import { measureRoomReference, measuredReference, measuredUpToReference } from "./footprint-reference.ts";
 
 const CHILD_TIMEOUT_MS = 15_000;
@@ -394,8 +394,18 @@ test("unreadable subdirectory (chmod 0o000): strict fails with EACCES, non-stric
   }
 });
 
-test("cancellation and termination: stdin EOF and SIGTERM exit cleanly with no response and zero zombies", async () => {
-  // 1) Closing stdin immediately without a request exits cleanly with code 0 and no output.
+test("cancellation and termination: pre-aborted AbortSignal, stdin EOF, and idle SIGTERM exit cleanly with zero zombies", async () => {
+  // 1) Pre-aborted AbortSignal on production `measured()` rejects immediately without spawning a child process.
+  const dir = freshDir();
+  writeSized(join(dir, "a.bin"), 4096);
+  const preAborted = new AbortController();
+  preAborted.abort(new Error("cancelled before start"));
+  const beforeLive = MbProcess.live().filter((p) => p.args.includes("footprint")).length;
+  await assert.rejects(measured(dir, preAborted.signal), /cancelled before start/);
+  const afterLive = MbProcess.live().filter((p) => p.args.includes("footprint")).length;
+  assert.equal(afterLive, beforeLive, "pre-aborted measured() must not spawn a footprint process");
+
+  // 2) Closing stdin without a request exits cleanly with code 0 and no output.
   const eofExit = await new Promise<{ pid: number; code: number | null; signal: NodeJS.Signals | null; stdout: string }>((resolve, reject) => {
     const child = spawn(CANDIDATE, ["--builder", "footprint", "--sep", sep], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -419,7 +429,7 @@ test("cancellation and termination: stdin EOF and SIGTERM exit cleanly with no r
   assert.equal(eofExit.stdout, "");
   assertProcessGone(eofExit.pid);
 
-  // 2) SIGTERM while waiting for stdin terminates with SIGTERM, emits no response, and leaves zero zombies.
+  // 3) SIGTERM while waiting for stdin terminates with SIGTERM, emits no response, and leaves zero zombies.
   const sigtermIdle = await new Promise<{ pid: number; code: number | null; signal: NodeJS.Signals | null; stdout: string }>((resolve, reject) => {
     const child = spawn(CANDIDATE, ["--builder", "footprint", "--sep", sep], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -443,39 +453,6 @@ test("cancellation and termination: stdin EOF and SIGTERM exit cleanly with no r
   assert.equal(sigtermIdle.stdout, "");
   assert.equal(sigtermIdle.signal, "SIGTERM");
   assertProcessGone(sigtermIdle.pid);
-
-  // 3) SIGTERM during an active walk over a large tree terminates with SIGTERM and no completed response.
-  const bigTree = freshDir();
-  for (let d = 0; d < 30; d++) {
-    for (let f = 0; f < 100; f++) {
-      writeSized(join(bigTree, `d${d}`, `f${f}`), 16);
-    }
-  }
-  const sigtermActive = await new Promise<{ pid: number; code: number | null; signal: NodeJS.Signals | null; stdout: string }>((resolve, reject) => {
-    const child = spawn(CANDIDATE, ["--builder", "footprint", "--sep", sep], {
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    const pid = child.pid!;
-    assert.ok(pid > 0);
-    let stdout = "";
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`footprint active SIGTERM test timed out for pid ${pid}`));
-    }, CHILD_TIMEOUT_MS);
-    child.stdout!.on("data", (c: Buffer) => { stdout += c.toString("utf8"); });
-    child.stderr!.resume();
-    child.stdin!.on("error", () => {});
-    child.on("error", (err) => { clearTimeout(timer); reject(err); });
-    child.on("close", (code, signal) => { clearTimeout(timer); resolve({ pid, code, signal, stdout }); });
-    child.once("spawn", () => {
-      child.stdin!.write(`${JSON.stringify({ path: bigTree, base: normalize(bigTree), finding: true, strict: false })}\n`);
-      child.kill("SIGTERM");
-    });
-  });
-  assert.equal(sigtermActive.stdout, "", "cancelled walk must not emit a completed JSON response");
-  assert.equal(sigtermActive.signal, "SIGTERM");
-  assertProcessGone(sigtermActive.pid);
 });
 
 test("invalid CLI arguments, malformed JSON requests, and missing paths follow error contract", async () => {

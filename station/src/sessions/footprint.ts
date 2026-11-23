@@ -192,6 +192,8 @@ export const MEASURE_ROOM: Required<MeasureBudget> = { maxEntries: 500_000, maxD
 type Measured = { bytes: number; complete: boolean; reason?: string; rebuild?: [string, number][]; enough?: true };
 type Ask = { finding: boolean; strict: boolean; stopAfter?: number };
 
+const warnedReaderFallbacks = new Set<string>();
+
 /// The size of `path` and everything under it, on its file system, by the MoonBit program (`--builder footprint`,
 /// station/mb src/footprint), one process a measure under the system's background priority, so none of the walk's
 /// entries are the station's thread's or its heap's: links not followed (a link counted as itself), another file
@@ -201,8 +203,6 @@ type Ask = { finding: boolean; strict: boolean; stopAfter?: number };
 /// system but a path gone fails it (else what cannot be read is passed over). `signal` ends the process at once and
 /// fails the measure with its reason. There is no walk in TypeScript to fall back to: the one it replaced is
 /// station/test/footprint-reference.ts, which station/test/mb-footprint.test.ts holds the program to.
-const warnedReaderFallbacks = new Set<string>();
-
 function measure(path: string, ask: Ask, budget: MeasureBudget, signal?: AbortSignal): Promise<Measured> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(signal.reason);

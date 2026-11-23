@@ -12,7 +12,7 @@
 
 export type ReaderEngine = "mb" | "pion" | "shadow";
 
-export type ReaderSideEffect = "read-only" | "write-db" | "write-fs" | "network";
+export type ReaderSideEffect = "read-only" | "read-with-side-effects" | "write-db" | "write-fs" | "network";
 
 export type ReaderModeMeta = {
   readonly allowShadow: boolean;
@@ -45,18 +45,18 @@ export const READER_MODES = {
   },
   search: {
     allowShadow: false,
-    sideEffect: "write-db",
-    note: "Transcript and history search with SQLite attach and shared hints (--builder search)",
+    sideEffect: "read-with-side-effects",
+    note: "Transcript and history search: attaches SQLite/shell_dir and shares transcript hints (--builder search)",
   },
   "live-locator": {
     allowShadow: false,
-    sideEffect: "write-db",
-    note: "Live transcript locator with SQLite attach (--builder live-locator)",
+    sideEffect: "read-with-side-effects",
+    note: "Live transcript locator: attaches SQLite/shell_dir (--builder live-locator)",
   },
   "usage-check": {
     allowShadow: false,
-    sideEffect: "write-db",
-    note: "Historical usage coverage checker with SQLite attach (--builder usage-check)",
+    sideEffect: "read-with-side-effects",
+    note: "Historical usage coverage checker: attaches SQLite/shell_dir (--builder usage-check)",
   },
   serve: {
     allowShadow: false,

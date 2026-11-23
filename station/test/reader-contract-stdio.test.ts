@@ -143,15 +143,28 @@ function spawnDataReader(dataDir: string): FramedClient {
   const waiters: ((msg: Record<string, unknown>) => void)[] = [];
   const rejecters: ((err: Error) => void)[] = [];
   let closed = false;
-  let parseError: Error | null = null;
+  let fatalError: Error | null = null;
   let stderr = "";
   let closeResult: { code: number | null; signal: NodeJS.Signals | null } | null = null;
   const closeWaiters: { resolve: (res: { code: number | null; signal: NodeJS.Signals | null }) => void; reject: (err: Error) => void }[] = [];
 
   const failAll = (err: Error) => {
-    for (const reject of rejecters.splice(0)) reject(err);
+    fatalError ??= err;
+    for (const reject of rejecters.splice(0)) reject(fatalError);
     waiters.splice(0);
-    for (const w of closeWaiters.splice(0)) w.reject(err);
+    for (const w of closeWaiters.splice(0)) w.reject(fatalError);
+  };
+
+  const assertNoUnsolicited = () => {
+    if (queue.length > 0) {
+      const err = new assert.AssertionError({
+        message: `unexpected unsolicited frame(s) received before close: ${JSON.stringify(queue)}`,
+        actual: queue.length,
+        expected: 0,
+      });
+      fatalError ??= err;
+      throw err;
+    }
   };
 
   const parser = new StrictFrameParser((record) => {
@@ -162,13 +175,12 @@ function spawnDataReader(dataDir: string): FramedClient {
   });
 
   child.stdout!.on("data", (chunk: Buffer) => {
-    if (parseError !== null) return;
+    if (fatalError !== null) return;
     try {
       parser.push(chunk);
     } catch (err) {
-      parseError = err as Error;
       child.kill("SIGKILL");
-      failAll(parseError);
+      failAll(err as Error);
     }
   });
   child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
@@ -176,7 +188,7 @@ function spawnDataReader(dataDir: string): FramedClient {
   child.on("close", (code, signal) => {
     closed = true;
     closeResult = { code, signal };
-    if (parseError !== null) return;
+    if (fatalError !== null) return;
     try {
       parser.assertCleanEof();
     } catch (err) {
@@ -187,7 +199,14 @@ function spawnDataReader(dataDir: string): FramedClient {
       reject(new Error(`reader exited unexpectedly (code=${code}, signal=${signal}, stderr=${stderr})`));
     }
     waiters.splice(0);
-    for (const w of closeWaiters.splice(0)) w.resolve(closeResult);
+    for (const w of closeWaiters.splice(0)) {
+      try {
+        assertNoUnsolicited();
+        w.resolve(closeResult);
+      } catch (err) {
+        w.reject(err as Error);
+      }
+    }
   });
 
   const withTimeout = <T>(p: Promise<T>, label: string): Promise<T> =>
@@ -206,7 +225,7 @@ function spawnDataReader(dataDir: string): FramedClient {
     child,
     pid,
     nextMessage() {
-      if (parseError !== null) return Promise.reject(parseError);
+      if (fatalError !== null) return Promise.reject(fatalError);
       if (queue.length > 0) return Promise.resolve(queue.shift()!);
       if (closed) return Promise.reject(new Error("reader already exited"));
       return withTimeout(
@@ -221,8 +240,15 @@ function spawnDataReader(dataDir: string): FramedClient {
       child.stdin!.write(chunk);
     },
     endAndWait() {
-      if (parseError !== null) return Promise.reject(parseError);
-      if (closed && closeResult) return Promise.resolve(closeResult);
+      if (fatalError !== null) return Promise.reject(fatalError);
+      if (closed && closeResult) {
+        try {
+          assertNoUnsolicited();
+          return Promise.resolve(closeResult);
+        } catch (err) {
+          return Promise.reject(err);
+        }
+      }
       return withTimeout(
         new Promise((resolve, reject) => {
           closeWaiters.push({ resolve, reject });
@@ -232,7 +258,15 @@ function spawnDataReader(dataDir: string): FramedClient {
       );
     },
     terminateAndWait(sig: NodeJS.Signals) {
-      if (closed && closeResult) return Promise.resolve(closeResult);
+      if (fatalError !== null) return Promise.reject(fatalError);
+      if (closed && closeResult) {
+        try {
+          assertNoUnsolicited();
+          return Promise.resolve(closeResult);
+        } catch (err) {
+          return Promise.reject(err);
+        }
+      }
       return withTimeout(
         new Promise((resolve, reject) => {
           closeWaiters.push({ resolve, reject });
@@ -476,4 +510,33 @@ test("footprint builder: fragmented stdin line reassembly without stdin EOF exit
   assert.equal(typeof msg.size, "number");
   assert.equal(msg.complete, true);
   assertProcessGone(result.pid);
+});
+
+test("strict frame parser and client reject unsolicited complete frames, non-JSON lines, and truncated EOF bytes", async () => {
+  // 1) Parser rejects non-JSON lines and truncated/trailing bytes at EOF.
+  const badLineParser = new StrictFrameParser(() => {});
+  assert.throws(() => badLineParser.push(Buffer.from("not-json\n", "utf8")), /non-JSON line/);
+
+  const trailingParser = new StrictFrameParser(() => {});
+  trailingParser.push(Buffer.from('{"partial":true', "utf8"));
+  assert.throws(() => trailingParser.assertCleanEof(), /trailing non-terminated bytes/);
+
+  const truncatedBodyParser = new StrictFrameParser(() => {});
+  truncatedBodyParser.push(Buffer.from('{"id":1,"bytes":10}\nabc', "utf8"));
+  assert.throws(() => truncatedBodyParser.assertCleanEof(), /truncated framed body/);
+
+  // 2) Client endAndWait() rejects when an unsolicited/unconsumed complete frame arrives before EOF,
+  // and persists that error on subsequent endAndWait() calls.
+  const dataDir = freshDataDir();
+  const client = spawnDataReader(dataDir);
+  try {
+    assertReadyMessage(await client.nextMessage());
+    // Trigger a complete response frame without consuming it via nextMessage().
+    client.writeRaw(`${JSON.stringify({ id: 999, op: "unsolicitedTrigger", args: {} })}\n`);
+    await assert.rejects(client.endAndWait(), /unexpected unsolicited frame.*999/);
+    await assert.rejects(client.endAndWait(), /unexpected unsolicited frame.*999/);
+    assertProcessGone(client.pid);
+  } finally {
+    client.kill();
+  }
 });
