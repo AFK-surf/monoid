@@ -1755,6 +1755,7 @@ test "an iPhone Duo: 下方栏 in the settings sets the places of the system's t
   }
   t.post(@hostapi.system_channel, "{\"nav\":\"settings\"}")
   t.run_for(@ui.move_most_ms)
+  assert_true(t.nav_said().contains("\"selected\":\"settings\""), msg="设置 not lit: \{t.nav_said()}")
   // (此设备's 下方栏 in the sidebar; what the bar holds, the row's value, left out where the sidebar has not the room)
   assert_true(t.find("下方栏") is Some(_), msg="no 下方栏 in the settings")
   // (外观 with no 侧边条: the places are the tabs')

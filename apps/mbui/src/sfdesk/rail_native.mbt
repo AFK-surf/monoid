@@ -710,11 +710,10 @@ fn native_places(src : Source, ws : String) -> Array[String] {
 
 ///|
 /// The tab the place shown is in (rail_nav's `selected`), of the tabs of `places`: 已归档 its own where it has one, else
-/// the chats'; none where the place has no tab.
+/// the chats'; 设置 its own tab; none where the place has no tab.
 fn tab_of_place(places : Array[String], lit : String) -> String {
-  // (the settings, opened from the workspace's button: no tab of theirs)
   if lit == "settings" {
-    return ""
+    return "settings"
   }
   if lit == "chats" && places.contains("archive") && app.nav.pages().contains(Archived) {
     return "place/archive"
@@ -776,8 +775,10 @@ fn rail_native_taps(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
     // (a tab left keeps what it showed, given back as it is chosen again; the one shown chosen again changes nothing,
     // as the system's tab apps have it: the user, 2026-10-26)
     let now = tab_of_place(native_places(src, w.id), lit_place())
-    if id.has_prefix("place/") && id != now {
-      tabs_kept[tab_kept_key(w.id, now)] = app.nav.pages()
+    if (id.has_prefix("place/") || id == "settings") && id != now {
+      if now.has_prefix("place/") {
+        tabs_kept[tab_kept_key(w.id, now)] = app.nav.pages()
+      }
       // (what was open over the tab left closed with it: a chat's ⋯, a menu)
       chat_own.info_open.set(false)
       chat_own.jobs_open.set(false)

@@ -288,8 +288,117 @@ static UIImage *nav_letter(NSString *title, CGFloat size) {
 }
 @end
 
+static NSString *const nav_more_id = @"__mbui_more__";
+
+// Popover listing tabs that did not fit in the system tab bar, anchored to our own overflow tab so UIKit's
+// full-screen moreNavigationController never replaces the app's canvas.
 API_AVAILABLE(ios(18.0))
-@interface MBTabs : UITabBarController <UITabBarControllerDelegate>
+@interface MBMorePopoverController : UITableViewController
+@property(nonatomic, copy) NSArray<NSDictionary *> *items;
+@property(nonatomic, copy) NSString *selectedId;
+@property(nonatomic, strong) UIColor *ink;
+@property(nonatomic, strong) UIColor *accent;
+@property(nonatomic, copy) void (^onPick)(NSString *ident);
+- (void)reloadItems:(NSArray<NSDictionary *> *)items selectedId:(NSString *)selectedId ink:(UIColor *)ink accent:(UIColor *)accent;
+@end
+
+@implementation MBMorePopoverController
+- (void)viewDidLoad {
+  [super viewDidLoad];
+  self.tableView.backgroundColor = UIColor.clearColor;
+  self.tableView.separatorStyle = UITableViewCellSeparatorStyleSingleLine;
+  self.tableView.separatorInset = UIEdgeInsetsMake(0, 16, 0, 16);
+  self.tableView.tableHeaderView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, CGFLOAT_MIN)];
+  self.tableView.tableFooterView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, CGFLOAT_MIN)];
+  [self updatePreferredSize];
+}
+- (void)reloadItems:(NSArray<NSDictionary *> *)items selectedId:(NSString *)selectedId ink:(UIColor *)ink accent:(UIColor *)accent {
+  self.items = items;
+  self.selectedId = selectedId;
+  self.ink = ink;
+  self.accent = accent;
+  [self updatePreferredSize];
+  if (self.isViewLoaded) [self.tableView reloadData];
+}
+- (void)updatePreferredSize {
+  UIFont *font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+  CGFloat maxW = 0;
+  for (NSDictionary *d in self.items) {
+    NSString *title = [d[@"title"] isKindOfClass:NSString.class] ? d[@"title"] : @"";
+    CGFloat w = [title sizeWithAttributes:@{NSFontAttributeName : font}].width;
+    if (w > maxW) maxW = w;
+  }
+  CGFloat width = MIN(MAX(ceil(maxW) + 16 + 24 + 12 + 36 + 16, 184), 260);
+  NSUInteger rows = MIN(self.items.count, (NSUInteger)6);
+  if (self.isViewLoaded) self.tableView.scrollEnabled = self.items.count > 6;
+  self.preferredContentSize = CGSizeMake(width, MAX(rows, (NSUInteger)1) * 48);
+}
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section { return self.items.count; }
+- (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip { return 48; }
+- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
+  UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:@"mbmore"];
+  if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"mbmore"];
+  NSDictionary *d = self.items[ip.row];
+  NSString *ident = [d[@"id"] isKindOfClass:NSString.class] ? d[@"id"] : @"";
+  NSString *title = [d[@"title"] isKindOfClass:NSString.class] ? d[@"title"] : @"";
+  NSString *iconSpec = [d[@"icon"] isKindOfClass:NSString.class] ? d[@"icon"] : @"";
+  BOOL isSelected = self.selectedId.length && [ident isEqualToString:self.selectedId];
+  BOOL dot = [d[@"dot"] boolValue];
+  UIColor *rowInk = isSelected ? (self.accent ?: UIColor.tintColor) : (self.ink ?: UIColor.labelColor);
+  UIListContentConfiguration *cfg = [UIListContentConfiguration cellConfiguration];
+  cfg.text = title;
+  cfg.textProperties.font = [UIFont systemFontOfSize:16 weight:(isSelected ? UIFontWeightSemibold : UIFontWeightRegular)];
+  cfg.textProperties.color = rowInk;
+  cfg.image = iconSpec.length ? nav_any(iconSpec, 22) : nav_letter(title, 22);
+  cfg.imageProperties.tintColor = rowInk;
+  cfg.imageProperties.maximumSize = CGSizeMake(22, 22);
+  cfg.imageProperties.reservedLayoutSize = CGSizeMake(22, 22);
+  cfg.imageToTextPadding = 12;
+  cfg.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(0, 16, 0, 16);
+  cell.contentConfiguration = cfg;
+  cell.backgroundColor = UIColor.clearColor;
+  if (isSelected || dot) {
+    UIStackView *acc = [UIStackView new];
+    acc.axis = UILayoutConstraintAxisHorizontal;
+    acc.alignment = UIStackViewAlignmentCenter;
+    acc.spacing = 8;
+    if (dot) {
+      UIView *dview = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 8, 8)];
+      dview.backgroundColor = UIColor.systemRedColor;
+      dview.layer.cornerRadius = 4;
+      [dview.widthAnchor constraintEqualToConstant:8].active = YES;
+      [dview.heightAnchor constraintEqualToConstant:8].active = YES;
+      [acc addArrangedSubview:dview];
+    }
+    if (isSelected) {
+      UIImageSymbolConfiguration *sc = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightSemibold];
+      UIImageView *chk = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"checkmark" withConfiguration:sc]];
+      chk.tintColor = self.accent ?: UIColor.tintColor;
+      [acc addArrangedSubview:chk];
+    }
+    CGSize fit = [acc systemLayoutSizeFittingSize:UILayoutFittingCompressedSize];
+    acc.frame = CGRectMake(0, 0, fit.width, fit.height);
+    cell.accessoryView = acc;
+  } else {
+    cell.accessoryView = nil;
+  }
+  cell.separatorInset = (ip.row + 1 == (NSInteger)self.items.count)
+                            ? UIEdgeInsetsMake(0, 0, 0, 10000)
+                            : UIEdgeInsetsMake(0, 16, 0, 16);
+  return cell;
+}
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+  [tv deselectRowAtIndexPath:ip animated:YES];
+  NSDictionary *d = ip.row < (NSInteger)self.items.count ? self.items[ip.row] : nil;
+  NSString *ident = [d[@"id"] isKindOfClass:NSString.class] ? d[@"id"] : @"";
+  void (^cb)(NSString *) = self.onPick;
+  [self dismissViewControllerAnimated:YES completion:nil];
+  if (cb && ident.length) cb(ident);
+}
+@end
+
+API_AVAILABLE(ios(18.0))
+@interface MBTabs : UITabBarController <UITabBarControllerDelegate, UIPopoverPresentationControllerDelegate>
 @property(nonatomic, copy) NSString *spec;
 @property(nonatomic, copy) NSString *tabsKey;
 @property(nonatomic, copy) NSString *action;
@@ -301,6 +410,8 @@ API_AVAILABLE(ios(18.0))
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *floatingKeys;
 @property(nonatomic) BOOL shown;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, UINavigationController *> *navs;
+// Direct map from tab id to its slot so nav_put and barItems never lose the slot if UIKit rearranges a nav stack.
+@property(nonatomic, strong) NSMutableDictionary<NSString *, MBSlot *> *slotsById;
 // each id's one tab over its controller, kept as tabs come and go: a tab made again over a controller the one before
 // still had stopped the app (UIKit's assertion in -[UITab viewController], an iPhone Duo back from hours away,
 // 2026-10-30..11-01), even with the tabs before let go of first
@@ -312,6 +423,24 @@ API_AVAILABLE(ios(18.0))
 @property(nonatomic, copy) NSString *actsKey;
 // the icon each tab was drawn with, by its id (drawn again only as it changes)
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *icons;
+// Full list of regular place tabs handed by the app, and any overflow folded into our own `nav_more_id` tab.
+@property(nonatomic, copy) NSArray<NSDictionary *> *allPlaces;
+@property(nonatomic, copy) NSDictionary *actSpec;
+@property(nonatomic, copy) NSString *selectedPlaceId;
+@property(nonatomic, copy) NSString *moreIconData;
+@property(nonatomic, strong) NSNumber *chosenInkNum;
+@property(nonatomic, strong) UIColor *barInk;
+@property(nonatomic, strong) UIColor *barAccent;
+@property(nonatomic, copy) NSArray<NSDictionary *> *lastBarItems;
+@property(nonatomic) BOOL lastBare;
+@property(nonatomic, copy) NSString *lastBarTitle;
+@property(nonatomic, copy) NSArray<NSDictionary *> *overflowPlaces;
+// Number of regular tabs shown directly alongside our own `nav_more_id` tab (0 = not collapsed, showing allPlaces).
+@property(nonatomic) NSUInteger visibleRegularCap;
+@property(nonatomic, copy) NSString *overflowLayoutKey;
+@property(nonatomic) BOOL reconcilingOverflow;
+@property(nonatomic) BOOL overflowCheckPending;
+@property(nonatomic, weak) MBMorePopoverController *morePopover;
 @end
 
 
@@ -417,23 +546,34 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   [super viewDidLoad];
   self.delegate = self;
   self.navs = [NSMutableDictionary dictionary];
+  self.slotsById = [NSMutableDictionary dictionary];
   self.tabsById = [NSMutableDictionary dictionary];
+  self.customizableViewControllers = @[];
   __weak MBTabs *weakSelf = self;
-  [self registerForTraitChanges:@[UITraitHorizontalSizeClass.class, UITraitVerticalSizeClass.class, UITraitUserInterfaceStyle.class]
+  NSMutableArray<UITrait> *traits = [NSMutableArray arrayWithObjects:
+      UITraitHorizontalSizeClass.class, UITraitVerticalSizeClass.class,
+      UITraitUserInterfaceStyle.class, UITraitPreferredContentSizeCategory.class, nil];
+#ifdef __IPHONE_27_1
+  if (@available(iOS 27.1, *)) [traits addObjectsFromArray:UITraitCollection.systemTraitsAffectingVerticalBarEdge];
+#endif
+  [self registerForTraitChanges:traits
                     withHandler:^(id<UITraitEnvironment> env, UITraitCollection *prev) {
     MBTabs *s = weakSelf;
     if (!s) return;
     [s washAction];
+    [s scheduleOverflowReconcile];
     dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf washAction]; });
   }];
   [self applyNone];
 }
 - (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
   [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+  [self dismissMorePopover];
   __weak MBTabs *weakSelf = self;
   [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> ctx) {
     [weakSelf washAction];
   } completion:^(id<UIViewControllerTransitionCoordinatorContext> ctx) {
+    [weakSelf reconcileOverflow];
     [weakSelf washAction];
     dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf washAction]; });
   }];
@@ -443,6 +583,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
 // composer at the foot of the card beside it).
 - (void)viewDidLayoutSubviews {
   [super viewDidLayoutSubviews];
+  [self checkOverflowAfterLayout];
   [self washAction];
   UIView *v = the_view;
   CGRect r = CGRectZero;
@@ -545,7 +686,8 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   }
   for (NSString *k in self.navs) {
     UINavigationController *nav = self.navs[k];
-    MBSlot *slot = (MBSlot *)nav.viewControllers.firstObject;
+    MBSlot *slot = self.slotsById[k] ?: (MBSlot *)nav.viewControllers.firstObject;
+    if (!slot) continue;
     NSMutableDictionary *keptItems = [NSMutableDictionary dictionary];
     NSMutableDictionary *keptSpecs = [NSMutableDictionary dictionary];
     NSMutableArray<UIBarButtonItem *> *made = [NSMutableArray array];
@@ -722,11 +864,19 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
 - (UINavigationController *)navFor:(NSString *)ident {
   UINavigationController *nav = self.navs[ident];
   if (!nav) {
-    nav = [[UINavigationController alloc] initWithRootViewController:[MBSlot new]];
+    MBSlot *slot = [MBSlot new];
+    self.slotsById[ident] = slot;
+    nav = [[UINavigationController alloc] initWithRootViewController:slot];
     [nav setNavigationBarHidden:YES animated:NO];
     self.navs[ident] = nav;
   }
   return nav;
+}
+- (MBSlot *)slotFor:(NSString *)ident {
+  MBSlot *slot = self.slotsById[ident ?: @""];
+  if (slot) return slot;
+  UINavigationController *nav = self.navs[ident ?: @""];
+  return (MBSlot *)nav.viewControllers.firstObject;
 }
 // The tab of `ident` (made once, over its controller), its words and picture as given.
 - (UITab *)tabFor:(NSString *)ident title:(NSString *)title image:(UIImage *)image {
@@ -834,9 +984,284 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     [self.floatingKeys removeObjectForKey:ident];
   }
 }
+- (NSString *)currentLayoutKey {
+  CGSize sz = self.view.bounds.size;
+  NSInteger vEdge = 0;
+#ifdef __IPHONE_27_1
+  if (@available(iOS 27.1, *)) vEdge = self.traitCollection.verticalBarEdge;
+#endif
+  return [NSString stringWithFormat:@"%.0fx%.0f/%ld/%ld/%ld/%@/%lu/%d",
+          sz.width, sz.height, (long)vEdge,
+          (long)self.traitCollection.horizontalSizeClass,
+          (long)self.traitCollection.verticalSizeClass,
+          self.traitCollection.preferredContentSizeCategory ?: @"",
+          (unsigned long)self.allPlaces.count,
+          self.actSpec != nil ? 1 : 0];
+}
+- (BOOL)isOverflowPlaceId:(NSString *)ident {
+  if (!ident.length) return NO;
+  for (NSDictionary *d in self.overflowPlaces)
+    if ([d[@"id"] isEqualToString:ident]) return YES;
+  return NO;
+}
+- (void)dismissMorePopover {
+  MBMorePopoverController *pop = self.morePopover;
+  if (pop && pop.presentingViewController) [pop dismissViewControllerAnimated:NO completion:nil];
+  self.morePopover = nil;
+}
+- (void)toggleMorePopover:(UITab *)tab {
+  MBMorePopoverController *existing = self.morePopover;
+  if (existing && existing.presentingViewController) {
+    [existing dismissViewControllerAnimated:YES completion:nil];
+    self.morePopover = nil;
+    return;
+  }
+  if (!self.overflowPlaces.count || !tab) return;
+  MBMorePopoverController *pop = [[MBMorePopoverController alloc] initWithStyle:UITableViewStylePlain];
+  pop.items = self.overflowPlaces;
+  pop.selectedId = self.selectedPlaceId;
+  pop.ink = self.barInk ?: UIColor.labelColor;
+  pop.accent = self.barAccent ?: UIColor.tintColor;
+  pop.onPick = ^(NSString *ident) {
+    say_system(@{@"nav" : ident});
+  };
+  pop.modalPresentationStyle = UIModalPresentationPopover;
+  UIPopoverPresentationController *ppc = pop.popoverPresentationController;
+  ppc.delegate = self;
+  ppc.sourceItem = tab;
+  UIPopoverArrowDirection dirs = UIPopoverArrowDirectionDown;
+#ifdef __IPHONE_27_1
+  if (@available(iOS 27.1, *)) {
+    if (self.traitCollection.verticalBarEdge == UIVerticalBarEdgeTrailing) dirs = UIPopoverArrowDirectionRight;
+    else if (self.traitCollection.verticalBarEdge == UIVerticalBarEdgeLeading) dirs = UIPopoverArrowDirectionLeft;
+  }
+#endif
+  ppc.permittedArrowDirections = dirs;
+  self.morePopover = pop;
+  [self presentViewController:pop animated:YES completion:nil];
+}
+- (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController *)controller
+                                                               traitCollection:(UITraitCollection *)traitCollection {
+  return UIModalPresentationNone;
+}
+- (void)syncNavToolbars {
+  UINavigationController *active = self.navs[self.selectedTab.identifier ?: @""];
+  for (NSString *k in self.navs) {
+    UINavigationController *n = self.navs[k];
+    MBSlot *slot = [self slotFor:k];
+    [n setToolbarHidden:(n != active || !slot.toolbarItems.count) animated:NO];
+  }
+}
+- (void)selectWantedTab {
+  UITab *want = nil;
+  if (self.selectedPlaceId.length) {
+    if ([self isOverflowPlaceId:self.selectedPlaceId]) {
+      for (UITab *tab in self.tabs)
+        if ([tab.identifier isEqualToString:nav_more_id]) want = tab;
+    } else {
+      for (UITab *tab in self.tabs)
+        if ([tab.identifier isEqualToString:self.selectedPlaceId]) want = tab;
+    }
+  }
+  // (none said: keep the tab it was opened over, unless that tab is gone)
+  if (!want && !self.selectedPlaceId.length && self.selectedTab && [self.tabs containsObject:self.selectedTab])
+    want = self.selectedTab;
+  if (!want || (self.action.length && [want.identifier isEqualToString:self.action]))
+    want = self.tabs.firstObject;
+  if (want && self.selectedTab != want) {
+    self.choosing = YES;
+    self.selectedTab = want;
+    self.choosing = NO;
+  }
+  MBSlot *slot = [self slotFor:self.selectedTab.identifier];
+  if (slot) nav_put(slot);
+  [self syncNavToolbars];
+}
+- (BOOL)rebuildDisplayedTabs {
+  NSArray<NSDictionary *> *places = self.allPlaces ?: @[];
+  NSArray<NSDictionary *> *visible = places;
+  NSArray<NSDictionary *> *overflow = @[];
+  if (self.visibleRegularCap > 0 && self.visibleRegularCap < places.count) {
+    visible = [places subarrayWithRange:NSMakeRange(0, self.visibleRegularCap)];
+    overflow = [places subarrayWithRange:NSMakeRange(self.visibleRegularCap, places.count - self.visibleRegularCap)];
+  }
+  NSDictionary *act = self.actSpec;
+  UIColor *accent = self.barAccent ?: UIColor.tintColor;
+  NSMutableString *key = [NSMutableString string];
+  for (NSDictionary *t in visible) [key appendFormat:@"%@\x1e", t[@"id"]];
+  if (overflow.count) [key appendFormat:@"%@\x1e", nav_more_id];
+  if (act) [key appendFormat:@"!%@\x1f%@\x1f%@\x1f%@", act[@"id"], act[@"title"], act[@"icon"], self.chosenInkNum ?: @0];
+  BOOL tabsChanged = ![key isEqualToString:self.tabsKey];
+  self.overflowPlaces = overflow;
+  if (tabsChanged) {
+    self.tabsKey = key;
+    NSMutableArray<UITab *> *made = [NSMutableArray array];
+    // (an id twice one tab: one controller is never two tabs')
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    for (NSDictionary *t in visible) {
+      if ([seen containsObject:t[@"id"]]) continue;
+      [seen addObject:t[@"id"]];
+      UITab *tab = [self tabFor:t[@"id"] title:t[@"title"] image:nav_any(t[@"icon"], 26)];
+      // (the action's tab before, a place now: pinned no more)
+      tab.preferredPlacement = UITabPlacementDefault;
+      [made addObject:tab];
+    }
+    if (overflow.count) {
+      NSString *moreTitle = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"] ? @"更多" : @"More";
+      UIImage *moreImage = [UIImage systemImageNamed:@"ellipsis"] ?: (self.moreIconData.length ? nav_icon(self.moreIconData, 26) : nil);
+      UITab *moreTab = [self tabFor:nav_more_id title:moreTitle image:moreImage];
+      moreTab.preferredPlacement = UITabPlacementDefault;
+      [made addObject:moreTab];
+      [seen addObject:nav_more_id];
+    }
+    // (the action a tab of its own the system sets apart at the bar's end, on the system's glass, with an accent
+    // glyph (iOS 27: white on its glass washed with the accent, washAction): never chosen, shouldSelectTab says it)
+    self.action = act[@"id"];
+    self.actionInk = nil;
+    if (act && ![seen containsObject:act[@"id"]]) {
+      UIImage *image = [nav_icon(act[@"icon"], 26) imageWithTintColor:accent renderingMode:UIImageRenderingModeAlwaysOriginal];
+#ifdef __IPHONE_27_0
+      if (@available(iOS 27.0, *)) {
+        image = [nav_icon(act[@"icon"], 26) imageWithTintColor:UIColor.whiteColor renderingMode:UIImageRenderingModeAlwaysOriginal];
+        self.actionInk = accent;
+      }
+#endif
+      UITab *x = [self tabFor:act[@"id"] title:act[@"title"] image:image];
+      x.preferredPlacement = UITabPlacementPinned;
+      [made addObject:x];
+    }
+    [self.icons removeAllObjects];
+    self.choosing = YES;
+    // (the tabs before let go of their controllers first: one controller is never two tabs' at once)
+    if (self.tabs.count) self.tabs = @[];
+    self.tabs = made;
+    // (apart, under the tabs' glass in the column, on its own: iOS 27's prominent tab)
+#ifdef __IPHONE_27_0
+    if (@available(iOS 27.0, *)) self.prominentTabIdentifier = act[@"id"];
+#endif
+    self.customizableViewControllers = @[];
+    self.choosing = NO;
+  }
+  if (!self.icons) self.icons = [NSMutableDictionary dictionary];
+  for (UITab *tab in self.tabs) {
+    if ([tab.identifier isEqualToString:nav_more_id]) {
+      BOOL anyDot = NO;
+      for (NSDictionary *d in overflow)
+        if ([d[@"dot"] boolValue]) anyDot = YES;
+      tab.badgeValue = anyDot ? @"" : nil;
+      continue;
+    }
+    for (NSDictionary *t in visible)
+      if ([t[@"id"] isEqualToString:tab.identifier]) {
+        tab.badgeValue = [t[@"dot"] boolValue] ? @"" : nil;
+        if (![tab.title isEqualToString:t[@"title"]]) tab.title = t[@"title"];
+        if (![self.icons[tab.identifier] isEqualToString:t[@"icon"]]) {
+          NSString *icon = t[@"icon"];
+          self.icons[tab.identifier] = icon;
+          __weak UITab *weak = tab;
+          __weak MBTabs *me = self;
+          tab.image = nav_any_then(icon, 26, ^{
+            // (its picture come: drawn in place of its mark, while the tab still shows it)
+            if ([me.icons[weak.identifier] isEqualToString:icon]) weak.image = nav_any(icon, 26);
+          });
+        }
+      }
+  }
+  if (!overflow.count) {
+    [self dismissMorePopover];
+  } else if (self.morePopover && self.morePopover.presentingViewController) {
+    [self.morePopover reloadItems:overflow selectedId:self.selectedPlaceId ink:self.barInk accent:self.barAccent];
+  }
+  return tabsChanged;
+}
+- (void)scheduleOverflowReconcile {
+  if (self.overflowCheckPending) return;
+  self.overflowCheckPending = YES;
+  __weak MBTabs *weakSelf = self;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    MBTabs *s = weakSelf;
+    if (!s) return;
+    s.overflowCheckPending = NO;
+    [s reconcileOverflow];
+  });
+}
+- (void)collapseIfUIKitOverflowed:(NSString *)lkey {
+  if (self.visibleRegularCap != 0) return;
+  if (self.tabBar.items.count == 0 || self.tabBar.items.count >= self.tabs.count) {
+    self.overflowLayoutKey = lkey;
+    return;
+  }
+  NSUInteger vis = 0;
+  for (NSDictionary *p in self.allPlaces) {
+    UITab *t = self.tabsById[p[@"id"]];
+    CGRect r = t ? [t frameInView:self.view] : CGRectZero;
+    if (!CGRectIsNull(r) && !CGRectIsInfinite(r) && r.size.width > 0 && r.size.height > 0) vis++;
+  }
+  if (vis == 0 || vis >= self.allPlaces.count) return;
+  self.visibleRegularCap = vis;
+  self.overflowLayoutKey = lkey;
+  [self rebuildDisplayedTabs];
+  if (self.lastBarItems) {
+    self.actsKey = nil;
+    [self barItems:self.lastBarItems ink:self.barInk ?: UIColor.labelColor accent:self.barAccent ?: UIColor.tintColor
+              bare:self.lastBare title:self.lastBarTitle ?: @""];
+  }
+  [self selectWantedTab];
+  [self washAction];
+}
+- (void)checkOverflowAfterLayout {
+  if (self.reconcilingOverflow || !self.shown || self.tabBarHidden || !self.view.window) return;
+  if (self.allPlaces.count <= 1) return;
+  CGSize sz = self.view.bounds.size;
+  if (sz.width <= 0 || sz.height <= 0) return;
+  NSString *lkey = [self currentLayoutKey];
+  if (self.visibleRegularCap > 0) {
+    if (![lkey isEqualToString:self.overflowLayoutKey]) [self scheduleOverflowReconcile];
+    return;
+  }
+  if (self.tabBar.items.count > 0 && self.tabBar.items.count < self.tabs.count) {
+    self.reconcilingOverflow = YES;
+    [self collapseIfUIKitOverflowed:lkey];
+    self.reconcilingOverflow = NO;
+  } else if (self.tabBar.items.count > 0) {
+    self.overflowLayoutKey = lkey;
+  }
+}
+- (void)reconcileOverflow {
+  if (self.reconcilingOverflow || !self.shown || self.tabBarHidden || !self.view.window) return;
+  if (self.allPlaces.count <= 1) return;
+  CGSize sz = self.view.bounds.size;
+  if (sz.width <= 0 || sz.height <= 0) return;
+  NSString *lkey = [self currentLayoutKey];
+  self.reconcilingOverflow = YES;
+  if (self.visibleRegularCap > 0 && ![lkey isEqualToString:self.overflowLayoutKey]) {
+    self.visibleRegularCap = 0;
+    [self rebuildDisplayedTabs];
+    // Keep selection on the first tab during the probe so UIKit never pushes a trailing tab onto moreNavigationController.
+    if (self.tabs.firstObject && self.selectedTab != self.tabs.firstObject) {
+      self.choosing = YES;
+      self.selectedTab = self.tabs.firstObject;
+      self.choosing = NO;
+    }
+    [self.view layoutIfNeeded];
+  }
+  [self collapseIfUIKitOverflowed:lkey];
+  if (self.visibleRegularCap == 0) {
+    [self selectWantedTab];
+    [self washAction];
+  }
+  self.reconcilingOverflow = NO;
+}
 // No tabs: one tab, the bar hidden, the app's controller in it.
 - (void)applyNone {
+  [self dismissMorePopover];
   [self floatingItems:@[] ink:UIColor.labelColor];
+  self.allPlaces = nil;
+  self.actSpec = nil;
+  self.selectedPlaceId = nil;
+  self.overflowPlaces = @[];
+  self.visibleRegularCap = 0;
+  self.overflowLayoutKey = nil;
   UINavigationController *nav = [self navFor:@""];
   if (self.tabsKey.length || !self.tabs.count) {
     self.tabsKey = @"";
@@ -848,10 +1273,10 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   self.shown = NO;
   self.actsKey = nil;
   // (nor the navigation bar's items: the app's own frame has them)
-  UIViewController *slot = nav.viewControllers.firstObject;
+  MBSlot *slot = [self slotFor:@""];
   slot.navigationItem.rightBarButtonItems = nil;
   [nav setNavigationBarHidden:YES animated:NO];
-  nav_put(slot);
+  if (slot) nav_put(slot);
 }
 - (void)apply:(NSDictionary *)b {
   // the places: the items of the groups not folded (the card's own are its page's); the one most wanted apart
@@ -884,75 +1309,46 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   self.tabBar.tintColor = accent;
   self.view.tintColor = accent;
   self.tabBar.unselectedItemTintColor = ink;
-  [self floatingItems:bare ? @[] : b[@"floating"] ink:ink];
-  // the tabs again only as they change (their ids, words and icons)
-  NSMutableString *key = [NSMutableString string];
-  // (an icon that changes, the stations' at a glance, drawn again in place: below)
-  // (and words that change, the workspace's name on 我的: set in place too. A tab made again over its controller, while
-  // the one before still has it, is refused: UIKit's "cannot be shared between multiple UITab", the app stopped)
-  for (NSDictionary *t in places) [key appendFormat:@"%@\x1e", t[@"id"]];
-  if (act) [key appendFormat:@"!%@\x1f%@\x1f%@\x1f%@", act[@"id"], act[@"title"], act[@"icon"], b[@"chosen_ink"]];
-  BOOL tabsChanged = ![key isEqualToString:self.tabsKey];
-  if (tabsChanged) {
-    self.tabsKey = key;
-    NSMutableArray<UITab *> *made = [NSMutableArray array];
-    // (an id twice one tab: one controller is never two tabs')
-    NSMutableSet<NSString *> *seen = [NSMutableSet set];
-    for (NSDictionary *t in places) {
-      if ([seen containsObject:t[@"id"]]) continue;
-      [seen addObject:t[@"id"]];
-      UITab *tab = [self tabFor:t[@"id"] title:t[@"title"] image:nav_any(t[@"icon"], 26)];
-      // (the action's tab before, a place now: pinned no more)
-      tab.preferredPlacement = UITabPlacementDefault;
-      [made addObject:tab];
-    }
-    // (the action a tab of its own the system sets apart at the bar's end, as Xiaohongshu's 发布 is, on the system's
-    // glass, with an accent glyph (iOS 27: white on its glass washed with the accent, washAction): never chosen,
-    // shouldSelectTab says it)
-    self.action = act[@"id"];
-    self.actionInk = nil;
-    if (act && ![seen containsObject:act[@"id"]]) {
-      UIImage *image = [nav_icon(act[@"icon"], 26) imageWithTintColor:accent renderingMode:UIImageRenderingModeAlwaysOriginal];
-#ifdef __IPHONE_27_0
-      if (@available(iOS 27.0, *)) {
-        image = [nav_icon(act[@"icon"], 26) imageWithTintColor:UIColor.whiteColor renderingMode:UIImageRenderingModeAlwaysOriginal];
-        self.actionInk = accent;
-      }
-#endif
-      UITab *x = [self tabFor:act[@"id"] title:act[@"title"] image:image];
-      x.preferredPlacement = UITabPlacementPinned;
-      [made addObject:x];
-    }
-    [self.icons removeAllObjects];
-    self.choosing = YES;
-    // (the tabs before let go of their controllers first: one controller is never two tabs' at once)
-    if (self.tabs.count) self.tabs = @[];
-    self.tabs = made;
-    // (apart, under the tabs' glass in the column, on its own: iOS 27's prominent tab)
-#ifdef __IPHONE_27_0
-    if (@available(iOS 27.0, *)) self.prominentTabIdentifier = act[@"id"];
-#endif
-    self.choosing = NO;
+  self.barInk = ink;
+  self.barAccent = accent;
+  self.chosenInkNum = [b[@"chosen_ink"] isKindOfClass:NSNumber.class] ? b[@"chosen_ink"] : @0;
+  self.moreIconData = [b[@"more_icon"] isKindOfClass:NSString.class] ? b[@"more_icon"] : @"";
+  self.selectedPlaceId = [b[@"selected"] isKindOfClass:NSString.class] ? b[@"selected"] : @"";
+  NSUInteger prevPlacesCount = self.allPlaces.count;
+  BOOL prevHadAct = self.actSpec != nil;
+  self.allPlaces = places;
+  self.actSpec = act;
+  if (bare) [self dismissMorePopover];
+  // Re-probe overflow whenever the tab count or layout signature changes.
+  NSString *lkey = [self currentLayoutKey];
+  if (self.visibleRegularCap > 0 &&
+      (prevPlacesCount != places.count || prevHadAct != (act != nil) || ![lkey isEqualToString:self.overflowLayoutKey])) {
+    self.visibleRegularCap = 0;
   }
-  if (!self.icons) self.icons = [NSMutableDictionary dictionary];
-  for (UITab *tab in self.tabs)
-    for (NSDictionary *t in places)
-      if ([t[@"id"] isEqualToString:tab.identifier]) {
-        tab.badgeValue = [t[@"dot"] boolValue] ? @"" : nil;
-        if (![tab.title isEqualToString:t[@"title"]]) tab.title = t[@"title"];
-        if (![self.icons[tab.identifier] isEqualToString:t[@"icon"]]) {
-          NSString *icon = t[@"icon"];
-          self.icons[tab.identifier] = icon;
-          __weak UITab *weak = tab;
-          __weak MBTabs *me = self;
-          tab.image = nav_any_then(icon, 26, ^{
-            // (its picture come: drawn in place of its mark, while the tab still shows it)
-            if ([me.icons[weak.identifier] isEqualToString:icon]) weak.image = nav_any(icon, 26);
-          });
-        }
-      }
+  [self floatingItems:bare ? @[] : b[@"floating"] ink:ink];
+  BOOL tabsChanged = [self rebuildDisplayedTabs];
   BOOL hiddenChanged = self.tabBarHidden != bare;
   if (hiddenChanged) [self setTabBarHidden:bare animated:YES];
+  self.shown = YES;
+  if (bare) [buttons removeAllObjects];
+  [buttons insertObjects:own atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, own.count)]];
+  NSString *title = [b[@"title"] isKindOfClass:NSString.class] ? b[@"title"] : @"";
+  self.lastBarItems = buttons;
+  self.lastBare = bare;
+  self.lastBarTitle = title;
+  [self barItems:buttons ink:ink accent:accent bare:bare title:title];
+  if (!bare && self.view.window && self.visibleRegularCap == 0 && places.count > 1 &&
+      (tabsChanged || hiddenChanged || ![lkey isEqualToString:self.overflowLayoutKey])) {
+    self.reconcilingOverflow = YES;
+    if (self.tabs.firstObject && self.selectedTab != self.tabs.firstObject) {
+      self.choosing = YES;
+      self.selectedTab = self.tabs.firstObject;
+      self.choosing = NO;
+    }
+    [self.view layoutIfNeeded];
+    [self collapseIfUIKitOverflowed:lkey];
+    self.reconcilingOverflow = NO;
+  }
   if (tabsChanged || hiddenChanged) {
     [self washAction];
     if (self.actionInk && !bare) {
@@ -960,26 +1356,14 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
       dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf washAction]; });
     }
   }
-  self.shown = YES;
-  if (bare) [buttons removeAllObjects];
-  [buttons insertObjects:own atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, own.count)]];
-  NSString *title = [b[@"title"] isKindOfClass:NSString.class] ? b[@"title"] : @"";
-  [self barItems:buttons ink:ink accent:accent bare:bare title:title];
-  UITab *want = nil;
-  for (UITab *tab in self.tabs)
-    if ([tab.identifier isEqualToString:b[@"selected"]]) want = tab;
-  // (none said, a page of no tab's (the settings): in the tab it was opened over)
-  if (!want && ![b[@"selected"] length]) want = self.selectedTab;
-  if (!want) want = self.tabs.firstObject;
-  if (want && self.selectedTab != want) {
-    self.choosing = YES;
-    self.selectedTab = want;
-    self.choosing = NO;
-  }
-  UINavigationController *nav = self.navs[self.selectedTab.identifier ?: @""];
-  if (nav) nav_put(nav.viewControllers.firstObject);
+  [self selectWantedTab];
 }
 - (BOOL)tabBarController:(UITabBarController *)c shouldSelectTab:(UITab *)tab {
+  // Our own overflow tab opens a native popover listing the hidden places instead of UIKit's full-screen More table.
+  if ([tab.identifier isEqualToString:nav_more_id]) {
+    if (!self.choosing) [self toggleMorePopover:tab];
+    return NO;
+  }
   // the action, and a tab that opens something over the page (`act/`): done, not chosen
   if (self.action && [tab.identifier isEqualToString:self.action]) {
     if (!self.choosing) say_system(@{@"nav" : self.action});
@@ -1000,14 +1384,23 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   }
   return YES;
 }
-- (void)tabBarController:(UITabBarController *)c didSelectTab:(UITab *)tab previousTab:(UITab *)was {
-  UINavigationController *nav = self.navs[tab.identifier ?: @""];
-  if (nav) nav_put(nav.viewControllers.firstObject);
-  // (the toolbar the chosen tab's alone: shown on two, the column shows its items twice)
-  for (NSString *k in self.navs) {
-    UINavigationController *n = self.navs[k];
-    [n setToolbarHidden:(n != nav || !n.viewControllers.firstObject.toolbarItems.count) animated:NO];
+- (BOOL)tabBarController:(UITabBarController *)c shouldSelectViewController:(UIViewController *)vc {
+  if (vc == self.moreNavigationController) {
+    [self reconcileOverflow];
+    UITab *moreTab = self.tabsById[nav_more_id];
+    if (moreTab && !self.choosing) [self toggleMorePopover:moreTab];
+    return NO;
   }
+  return YES;
+}
+- (void)tabBarController:(UITabBarController *)c didSelectTab:(UITab *)tab previousTab:(UITab *)was {
+  if ([tab.identifier isEqualToString:nav_more_id]) {
+    if (!self.choosing) [self toggleMorePopover:tab];
+    return;
+  }
+  MBSlot *slot = [self slotFor:tab.identifier];
+  if (slot) nav_put(slot);
+  [self syncNavToolbars];
   if (!self.choosing && tab.identifier.length) say_system(@{@"nav" : tab.identifier});
 }
 @end
