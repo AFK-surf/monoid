@@ -372,7 +372,7 @@ fn bar_node(
     |> ignore
   })
   |> ignore
-  main.box(fn(rule) { rule.height(Is(Some(1.0))).ground(By(fn() { @sf.theme().p.line })) |> ignore }) |> ignore
+  main.box(fn(rule) { @sf.style_node(rule, fn() { @sf.rule_line }) }) |> ignore
 }
 
 ///|
@@ -484,7 +484,7 @@ fn overview_node(page : @view.View, all : Array[Story], chosen : @signals.Signal
           }
         })
         |> ignore
-        card.box(fn(r) { r.height(Is(Some(1.0))).ground(By(fn() { @sf.theme().p.line })) |> ignore }) |> ignore
+        card.box(fn(r) { @sf.style_node(r, fn() { @sf.rule_line }) }) |> ignore
         card.box(fn(foot) {
           foot.padding(Is((16.0, 10.0, 16.0, 12.0))).gap(Is(2.0)) |> ignore
           @sf.words_node(foot, fn() { s.name }, fn() { @sf.desk_strong }) |> ignore
@@ -559,7 +559,7 @@ fn story_node(page : @view.View, s : Story, width : () -> Double?) -> Unit {
             (play.preview)(shown)
           })
           |> ignore
-          card.box(fn(r) { r.height(Is(Some(1.0))).ground(By(fn() { @sf.theme().p.line })) |> ignore }) |> ignore
+          card.box(fn(r) { @sf.style_node(r, fn() { @sf.rule_line }) }) |> ignore
           (play.controls)(card)
         })
         code_node(at, play.code)

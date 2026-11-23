@@ -641,7 +641,7 @@ fn table_frame_node(
       line.box(fn(rule) {
         rule
         .fills_across(Is(true))
-        .sets_together(fn() { (r < all() - 1, scale(), theme().p.line) }, fn(s) {
+        .sets_together(fn() { (r < all() - 1, rule_w * scale(), rule_color()) }, fn(s) {
           let (ruled, k, ink) = s
           rule.height(Is(Some(if ruled { k } else { 0.0 }))).ground(Is(if ruled { ink } else { 0L })) |> ignore
         })

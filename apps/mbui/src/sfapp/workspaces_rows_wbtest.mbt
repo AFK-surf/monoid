@@ -398,13 +398,13 @@ fn ws_softs(t : @ui.Tester) -> (Double, Double) {
 }
 
 ///|
-/// The lines 1 high drawn across the workspaces' panel: their tops.
+/// The lines (rule_w high) drawn across the workspaces' panel: their tops.
 fn ws_rules(t : @ui.Tester) -> Array[Double] {
   guard ws_panel(t) is Some(p) else { return [] }
   let (sx, sy, sw, sh) = p.rect
   t
   .drawn_rects()
-  .filter(fn(r) { r.3 == 1.0 && r.2 > sw / 2.0 && r.0 >= sx && r.0 < sx + sw && r.1 >= sy && r.1 < sy + sh })
+  .filter(fn(r) { r.3 == @sf.rule_w && r.2 > sw / 2.0 && r.0 >= sx && r.0 < sx + sw && r.1 >= sy && r.1 < sy + sh })
   .map(fn(r) { r.1 })
 }
 

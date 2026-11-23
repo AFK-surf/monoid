@@ -1759,7 +1759,7 @@ let sheet_row_sides : Double = panel_card_in
 ///|
 /// A line between a sheet's rows (a menu's None): the line's colour, 8 in from the rows' ground, 4 over and under.
 // kept across runs: a value (no field of it changes)
-let sheet_rule : @ui.Style = @ui.style(w=Full, h=hairline, mx=S2, my=S1, bg=Line)
+let sheet_rule : @ui.Style = rule_line.then(@ui.css("mx=S2 my=S1"))
 
 ///|
 /// Between a sheet's row's mark and its words (sheet_row_box's S3).
@@ -1843,12 +1843,12 @@ let sheet_ruled_foot_at : @ui.Style = @ui.css("row w=Full px=S5 pt=S3 pb=S4 gap=
 ///|
 /// The line over a ruled panel's foot (`panel`'s `ruled`), across the panel: a hairline, the line's colour faded.
 // kept across runs: a value (no field of it changes)
-let foot_rule : @ui.Style = @ui.style(w=Full, h=hairline, bg=A(Line, O60))
+let foot_rule : @ui.Style = rule_line
 
 ///|
 /// The same in a sheet: as far under what it holds as its rows are in from its sides (sheet_held_sides: 12).
 // kept across runs: a value (no field of it changes)
-let sheet_foot_rule : @ui.Style = @ui.style(w=Full, h=hairline, mt=room(sheet_rule_over), bg=A(Line, O60))
+let sheet_foot_rule : @ui.Style = rule_line.then(@ui.style(mt=room(sheet_rule_over)))
 
 ///|
 let sheet_rule_over : Double = 12.0

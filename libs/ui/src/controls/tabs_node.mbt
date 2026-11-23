@@ -395,7 +395,7 @@ let tabs_list_line : @ui.Style = @ui.css("w=Full")
 ///|
 /// The hairline under underlined tabs, across their list.
 // kept across runs: a value (no field of it changes)
-let tabs_rule : @ui.Style = @ui.css("w=Full h=SPx bg=Line")
+let tabs_rule : @ui.Style = rule_line
 
 ///|
 /// The pill's track: a quiet capsule round its tabs, 4 in (so the capsule in it stands concentric with it).

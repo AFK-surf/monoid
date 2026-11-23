@@ -236,7 +236,7 @@ let viz_table_box : @ui.Style = @ui.css("w=Full py=S1 gap=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let viz_divider_line : @ui.Style = @ui.css("w=Full h=SPx bg=Line")
+let viz_divider_line : @ui.Style = @sf.rule_line
 
 ///|
 // kept across runs: a value (no field of it changes)

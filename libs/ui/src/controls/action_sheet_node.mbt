@@ -245,7 +245,7 @@ pub fn action_sheet_node(
               body.show(fn() { has_head() && actions().length() > 0 }, at_once=true, fn(sep) {
                 sep.padding(Is((6.0, 0.0, 6.0, 4.0))) |> ignore
                 sep.box(fn(ln) {
-                  ln.height(Is(Some(0.5))).ground(By(fn() { theme().p.line })) |> ignore
+                  style_node(ln, fn() { rule_line })
                 })
                 |> ignore
               })

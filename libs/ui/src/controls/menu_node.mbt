@@ -969,13 +969,13 @@ fn menu_heading_node(
 }
 
 ///|
-/// A line between parts of a menu (menu_rule): the words' ink faintly, 1 high, 6 over and under it, as wide as its rows'
+/// A line between parts of a menu (menu_rule): rule_line, 6 over and under it, as wide as its rows'
 /// grounds.
 #callsite(autofill(loc))
 fn menu_rule_node(b : @view.View, reach : Double, loc~ : SourceLoc) -> Unit {
   b.box(made_for=loc, fn(r) {
     r.padding(Is((reach, 6.0, reach, 6.0))) |> ignore
-    r.box(fn(l) { l.height(Is(Some(1.0))).ground(By(fn() { @ui.alpha(@ui.tree_theme().fg, 0.12) })) |> ignore }) |> ignore
+    r.box(fn(l) { style_node(l, fn() { rule_line }) }) |> ignore
   })
   |> ignore
 }

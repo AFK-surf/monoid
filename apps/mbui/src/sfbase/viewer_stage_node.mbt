@@ -719,7 +719,7 @@ fn csv_stage_node(parent : @view.View, vw : Viewer, tab : Bool, width : () -> Do
         line_of(row, across, "", head, 600, true)
       })
       |> ignore
-      h.box(fn(line) { line.height(Is(Some(1.0))).ground(By(fn() { @sf.theme().p.line })) |> ignore }) |> ignore
+      h.box(fn(line) { @sf.style_node(line, fn() { @sf.rule_line }) }) |> ignore
     },
     foot=fn(f) {
       if more || cut {

@@ -638,7 +638,7 @@ fn usage_chart_node(parent : @view.View, v : () -> Json?, filtered : () -> Json?
         })
       })
       |> ignore
-      col.box(fn(b) { b.height(Is(Some(1.0))).ground(By(fn() { @ui.tree_theme().color(Line) })) |> ignore }) |> ignore
+      col.box(fn(b) { @sf.style_node(b, fn() { @sf.rule_line }) }) |> ignore
       col.box(fn(labels) {
         labels.row(Is(true)).padding(Is((0.0, 6.0, 0.0, 0.0))).gap(By(gap)) |> ignore
         labels.each(daily, fn(d) { text(Some(d), "day") }, fn(cell, d) {

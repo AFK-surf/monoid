@@ -536,7 +536,7 @@ let subchats_head : @ui.Style = @ui.css("row w=Full pt=S1_5 px=S2_5 pb=S1_5 gap=
 
 ///|
 // kept across runs: a value (no field of it changes)
-let subchats_head_divider : @ui.Style = @ui.css("w=Full h=SPx bg=Line")
+let subchats_head_divider : @ui.Style = @sf.rule_line
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -588,7 +588,7 @@ let subchats_section_end : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let subchats_sec_line : @ui.Style = @ui.css("w=Full h=SPx bg=Line my=S1_5")
+let subchats_sec_line : @ui.Style = @sf.rule_line.then(@ui.css("my=S1_5"))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -644,7 +644,7 @@ let subchats_foot : @ui.Style = @ui.css("w=Full pt=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let subchats_divider : @ui.Style = @ui.css("w=Full h=SPx bg=Line mb=S1_5")
+let subchats_divider : @ui.Style = @sf.rule_line.then(@ui.css("mb=S1_5"))
 
 ///|
 // kept across runs: a value (no field of it changes)

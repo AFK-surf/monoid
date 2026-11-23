@@ -3203,7 +3203,7 @@ let triple_find_icon : Double = 14.0
 /// A line across (a history's under its figures; the model panel's own are triple_panel_rule_h, over its foot the
 /// presenters', `ruled`: kept, 2026-10-25 用户「这两个的分割线可以保留」).
 // kept across runs: a value (no field of it changes)
-pub let triple_rule_h : @ui.Style = @ui.css("w=Full h=SPx bg=Line")
+pub let triple_rule_h : @ui.Style = @sf.rule_line
 
 ///|
 pub let triple_models_least : Double = 200.0
@@ -3280,17 +3280,17 @@ let triple_models_column : @ui.Style = @ui.style(w=@sf.grow)
 
 ///|
 /// How thick the panel's lines are: a hairline (用户「分割线细一点淡一点」), as its foot's (sf's foot_rule).
-let triple_rule_thick : Double = 0.5
+let triple_rule_thick : Double = @sf.rule_w
 
 ///|
-/// A line across the panel: a hairline, the line's colour faded, as its foot's.
+/// A line across the panel: rule_line, as its foot's.
 // kept across runs: a value (no field of it changes)
-let triple_panel_rule_h : @ui.Style = @ui.style(w=Full, h=@sf.hairline, bg=A(Line, O60))
+let triple_panel_rule_h : @ui.Style = @sf.rule_line
 
 ///|
 /// The line between them (the panel's columns', 2026-10-25 用户 kept them), as thin and faint as those across.
 // kept across runs: a value (no field of it changes)
-let triple_rule_v : @ui.Style = @ui.style(w=@sf.hairline, bg=A(Line, O60))
+let triple_rule_v : @ui.Style = @sf.rule_down
 
 ///|
 /// The models and how hard it thinks side by side, 8 apart, the line between them in the middle of that.

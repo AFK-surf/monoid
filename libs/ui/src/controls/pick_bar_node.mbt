@@ -127,7 +127,7 @@ let pick_bar_mark_look : @ui.Style = @ui.css("h=S8 w=S8 radius=Full align=ACente
 ///|
 /// The line before the marks (pick_bar_rule's): 1 wide, 16 high, 4 off what is beside it.
 // kept across runs: a value (no field of it changes)
-let pick_bar_rule : @ui.Style = @ui.css("w=SPx h=S4 mx=S1 bg=Line")
+let pick_bar_rule : @ui.Style = rule_down.then(@ui.css("h=S4 mx=S1"))
 
 ///|
 // kept across runs: a value (no field of it changes)

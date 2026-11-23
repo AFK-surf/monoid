@@ -764,11 +764,10 @@ fn wide_station_group_tile(
           wide_station_inline(sp, station_now, via, is_offline, is_updating, stint)
         })
         |> ignore
-        p.box(fn(sep) {
-          sep.width(Is(Some(1.0))).height(Is(Some(12.0))).shrink(Is(0.0)).ground(By(fn() { @sf.alpha(@sf.theme().p.line, 0.7) }))
-          |> ignore
-        })
-        |> ignore
+        // (within the one button: gone while it is lit)
+        let one = @sf.Segments::new()
+        one.made(0, t)
+        @sf.segment_rule_node(p, one, fn() { (0, 0) }) |> ignore
       })
       t.box(fn(g) {
         g
@@ -792,6 +791,8 @@ fn wide_station_group_tile(
     wide_glass_capsule(t)
     t.fits(Is(true)) |> ignore
     let touch_multi = @sf.tile_whole()
+    // (the segments by their places: the station 0, each agent after it; a line gone while one beside it is lit)
+    let segs = @sf.Segments::new()
     t.show(at_once=true, fn() { station_now() is Some(_) }, fn(p) {
       p.row(Is(true)).fits(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(Is(Some(30.0))).lines_up(Is(Some(Middle))) |> ignore
       p.box(fn(sp) {
@@ -806,6 +807,7 @@ fn wide_station_group_tile(
         .lines_up(Is(Some(Middle)))
         |> ignore
         sp.says(By(fn() { station_now().map(fn(s) { @view.said(Group, label=s.name) }) })) |> ignore
+        segs.made(0, sp)
         if touch_multi {
           wide_station_inline(sp, station_now, via, is_offline, is_updating, stint)
         } else {
@@ -826,24 +828,11 @@ fn wide_station_group_tile(
         }
       })
       |> ignore
-      p.box(fn(sep) {
-        sep.width(Is(Some(1.0))).height(Is(Some(12.0))).shrink(Is(0.0)).ground(By(fn() { @sf.alpha(@sf.theme().p.line, 0.7) }))
-        |> ignore
-      })
-      |> ignore
+      @sf.segment_rule_node(p, segs, fn() { (0, 1) }) |> ignore
     })
     for i, a in group.agents {
       if i > 0 {
-        t.box(fn(sep) {
-          sep
-          .width(Is(Some(1.0)))
-          .height(Is(Some(10.0)))
-          .margin(Is((1.0, 0.0, 1.0, 0.0)))
-          .shrink(Is(0.0))
-          .ground(By(fn() { @sf.alpha(@sf.theme().p.line, 0.35) }))
-          |> ignore
-        })
-        |> ignore
+        @sf.segment_rule_node(t, segs, fn() { (i, i + 1) }, tall=10.0).margin(Is((1.0, 0.0, 1.0, 0.0))) |> ignore
       }
       let said = fn() { @sf.t("web-pages.chat.historyOf", args=[("agent", a.who)]) }
       let badge = badge_of(i, a.key)
@@ -869,6 +858,7 @@ fn wide_station_group_tile(
         .lines_up(Is(Some(Middle)))
         .gap(Is(6.0))
         |> ignore
+        segs.made(i + 1, g)
         if i == 0 {
           let pr = if is_last { 10.0 } else { 8.0 }
           g.padding(By(fn() { if station_now() is Some(_) { (8.0, 0.0, pr, 0.0) } else { (10.0, 0.0, pr, 0.0) } })) |> ignore
@@ -1279,9 +1269,11 @@ fn wide_composer_bar_node(
     right.row(Is(true)).grow(Is(1.0)).lies_along(Is(End)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
     let show_services = fn() { own() && has_services() }
     let show_driven = fn() { own() && driven() }
-    let seg_sep = fn(sep : @view.View) {
-      sep.width(Is(Some(1.0))).height(Is(Some(12.0))).shrink(Is(0.0)).ground(By(fn() { @sf.alpha(@sf.theme().p.line, 0.7) }))
-      |> ignore
+    // (the segments by their places: services 0, the driven screen 1, sub-chats 2; a line gone while one beside it is
+    // lit)
+    let segs = @sf.Segments::new()
+    let seg_sep = fn(before : () -> Int, after : Int) {
+      fn(sep : @view.View) { @sf.segment_rule_node(sep, segs, fn() { (before(), after) }) |> ignore }
     }
     right.box(fn(pill) {
       wide_glass_capsule(pill)
@@ -1298,6 +1290,7 @@ fn wide_composer_bar_node(
           .gap(Is(5.0))
           .padding(By(fn() { (10.0, 0.0, if show_driven() || has_subchats() { 8.0 } else { 10.0 }, 0.0) }))
           |> ignore
+          segs.made(0, btn)
           @sf.hover_ground_node(btn, extra=fn() { chat_own.jobs_open.get() })
           let hot = fn() { @sf.lit_node(btn) || chat_own.jobs_open.get() }
           @sf.icon_node(btn, "web", 14.0, By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } })) |> ignore
@@ -1318,7 +1311,7 @@ fn wide_composer_bar_node(
       // Driven Screen segment
       pill.show(show_driven, at_once=true, fn(b) {
         b.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
-        b.show(show_services, at_once=true, seg_sep)
+        b.show(show_services, at_once=true, seg_sep(fn() { 0 }, 1))
         @sf.action_box_node(b, fn() { @sf.t("web-pages.chat.screen") }, fn(at) {
           match @signals.untracked(view) {
             Some(v) => chat_remote_open(src, r, v, from=Node(at), along=End)
@@ -1333,6 +1326,7 @@ fn wide_composer_bar_node(
           .gap(Is(5.0))
           .padding(By(fn() { (if show_services() { 8.0 } else { 10.0 }, 0.0, if has_subchats() { 8.0 } else { 10.0 }, 0.0) }))
           |> ignore
+          segs.made(1, btn)
           @sf.hover_ground_node(btn)
           let hot = fn() { @sf.lit_node(btn) }
           @sf.icon_node(btn, "monitor", 14.0, By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } })) |> ignore
@@ -1352,7 +1346,7 @@ fn wide_composer_bar_node(
       // Led Sub-chats segment: its mark and count only (said as 子会话)
       pill.show(has_subchats, at_once=true, fn(b) {
         b.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
-        b.show(fn() { show_services() || show_driven() }, at_once=true, seg_sep)
+        b.show(fn() { show_services() || show_driven() }, at_once=true, seg_sep(fn() { if show_driven() { 1 } else { 0 } }, 2))
         let label = fn() { @sf.t("web-pages.chat.subchats") }
         let button = @sf.action_box_node(b, label, fn(_) { toggle_subchats_pop() }, fn(btn) {
           btn
@@ -1363,6 +1357,7 @@ fn wide_composer_bar_node(
           .gap(Is(5.0))
           .padding(By(fn() { (if show_services() || show_driven() { 8.0 } else { 10.0 }, 0.0, 10.0, 0.0) }))
           |> ignore
+          segs.made(2, btn)
           @sf.hover_ground_node(btn, extra=fn() { chat_own.subchats_open.get() })
           let hot = fn() { @sf.lit_node(btn) || chat_own.subchats_open.get() }
           @sf.icon_node(btn, "spawned", 14.0, By(fn() { if hot() { @sf.theme().p.text } else { @sf.theme().p.muted } })) |> ignore

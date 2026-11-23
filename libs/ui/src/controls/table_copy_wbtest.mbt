@@ -114,7 +114,7 @@ test "a table in the message, no card round it: its words in line with the messa
     t.draw()
     t.frame()
     let rects = t.drawn_rects()
-    let rules = rects.filter(fn(r) { r.3 == 1.0 })
+    let rules = rects.filter(fn(r) { r.3 == rule_w })
     assert_eq(rules.length(), 3)
     // the head's first words where the message's are (its column `margin` in, 16 at the least)
     let (words, _) = t.drawn_of("人想按什么看").unwrap()
@@ -127,7 +127,7 @@ test "a table in the message, no card round it: its words in line with the messa
         Some((lx, _, lw, _)) if lx + lw < w => assert_true(rule.0 + rule.2 >= lx + lw, msg="\{Repr((w, rule, lx, lw))}")
         _ => ()
       }
-      let under = rects.filter(fn(r) { r.2 < w && r.3 > 1.0 && r.0 <= rule.0 && r.0 + r.2 >= rule.0 + rule.2 && r.1 < rule.1 && r.1 + r.3 > rule.1 })
+      let under = rects.filter(fn(r) { r.2 < w && r.3 > rule_w && r.0 <= rule.0 && r.0 + r.2 >= rule.0 + rule.2 && r.1 < rule.1 && r.1 + r.3 > rule.1 })
       assert_eq(under.length(), 0, msg="\{Repr((w, under))}")
     }
   }

@@ -937,7 +937,7 @@ fn board_display(own : BoardOwn, btn : @view.View) -> Unit {
       |> ignore
       // a line, then whether its empty columns show
       col.box(fn(l) {
-        l.height(Is(Some(1.0))).margin(Is((board_display_in, 2.0, board_display_in, 0.0))).ground(By(fn() { @sf.theme().p.line })) |> ignore
+        l.height(Is(Some(@sf.rule_w))).margin(Is((board_display_in, 2.0, board_display_in, 0.0))).ground(By(@sf.rule_color)) |> ignore
       })
       |> ignore
       // (its words where 分组方式's are, its switch as far in from the panel's end as from its foot: concentric with its

@@ -1705,7 +1705,7 @@ pub let phone_max : @ui.Len = Fixed(420.0)
 
 ///|
 /// A hairline across (0.5: a panel's rule over its foot).
-pub let hairline : @ui.Len = Fixed(0.5)
+pub let hairline : @ui.Len = Fixed(rule_w)
 
 ///|
 /// The theme as mbui's (its Theme's roles over this frame's palette: the paper's, light or dark), with still.fail's
@@ -1748,6 +1748,8 @@ fn ui_theme_of(t : Theme) -> @ui.Theme {
     raised: t.p.raised,
     card: t.p.card,
     list: t.p.list,
+    // the lines the palette's too (more contrast seen twice as much: contrasted), what a style's Line says
+    line: t.p.line,
     faint: match (if t.dark { accent_now().dark_grounds } else { accent_now().light_grounds }) {
       Some(g) => g.faint
       None => base.faint
@@ -2614,9 +2616,28 @@ pub let menu_row_end : @ui.Style = @ui.style(
 )
 
 ///|
-/// A line between a small panel's parts: 1 high, as wide as where it is, the words' ink faintly (in
-/// dark the panel is lighter than the page: its line a groove; kit's menu_rule_look).
-pub let rule_line : @ui.Style = @ui.css("w=Full h=SPx")
+/// How thick every line that only parts things is (a menu's groups, a panel's foot, a list's sections, a tab bar's
+/// foot, the segments of a bar's capsule): a hairline, one thickness and one colour (rule_ink) wherever it is drawn
+/// (the user: 「分割线细一点淡一点」, 「统一淡细线」). Outlines are control_edge's, not this.
+pub let rule_w : Double = 0.5
+
+///|
+/// The colour of every such line: the theme's line, faded.
+pub let rule_ink : @ui.Color = A(Line, O60)
+
+///|
+/// rule_ink as an ink, for a node's ground bound to the theme.
+pub fn rule_color() -> Int64 {
+  alpha(theme().p.line, 0.6)
+}
+
+///|
+/// A line across between parts: rule_w high, as wide as where it is, in rule_ink.
+pub let rule_line : @ui.Style = @ui.style(w=Full, h=Fixed(rule_w), bg=rule_ink)
+
+///|
+/// A line down between parts (in a row): rule_w wide, in rule_ink; how tall, where it is said.
+pub let rule_down : @ui.Style = @ui.style(w=Fixed(rule_w), bg=rule_ink)
 
 ///|
 /// Nothing under it, no ring round it.

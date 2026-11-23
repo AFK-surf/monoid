@@ -109,7 +109,7 @@ let accordion_card : @ui.Style = @ui.css("w=Full bg=Surface border=B0_5 border_c
 ///|
 /// The hairline between one section and the next, across the card.
 // kept across runs: a value (no field of it changes)
-let accordion_rule : @ui.Style = @ui.css("w=Full h=SPx bg=Line")
+let accordion_rule : @ui.Style = rule_line
 
 ///|
 /// A header: a row, 14 in from the card's sides, 12 over and under, its title and chevron 12 apart, lined up at their

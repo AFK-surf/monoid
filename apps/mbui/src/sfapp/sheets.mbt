@@ -539,11 +539,11 @@ let info_rule_box : @ui.Style = @ui.css("w=Full py=S1_5")
 
 ///|
 /// Conditional subtle hairline divider between `chat_info_node` sections, shown only when `over` is true:
-/// 0.5pt (`@sf.hairline`) aligned to the `20pt` content axis at quiet `Tint` (6% ink) opacity.
+/// `@sf.rule_line` aligned to the `20pt` content axis.
 fn info_rule_node(p : @view.View, over : () -> Bool) -> Unit {
   p.show(over, fn(r) {
     @sf.style_node(r, fn() { info_rule_box })
-    r.box(fn(l) { @sf.style_node(l, fn() { @ui.style(w=Full, h=@sf.hairline, bg=Tint) }) }) |> ignore
+    r.box(fn(l) { @sf.style_node(l, fn() { @sf.rule_line }) }) |> ignore
   })
 }
 
@@ -564,7 +564,7 @@ fn info_gap_node(p : @view.View, over : () -> Bool) -> Unit {
   p.show(over, fn(g) {
     if @sf.in_small_panel_node(g) {
       @sf.style_node(g, fn() { @ui.css("w=Full py=S1_5").then(@ui.style(px=@sf.room_of(@sf.text_in))) })
-      g.box(fn(l) { @sf.style_node(l, fn() { @ui.style(w=Full, h=@sf.hairline, bg=Line) }) }) |> ignore
+      g.box(fn(l) { @sf.style_node(l, fn() { @sf.rule_line }) }) |> ignore
     } else {
       @sf.style_node(g, fn() { info_lists_gap })
     }
@@ -2240,11 +2240,11 @@ let subchats_sheet_state : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted
 
 ///|
 // kept across runs: a value (no field of it changes)
-let subchats_more_line : @ui.Style = @ui.css("h=SPx mx=S2_5 mb=S1 bg=Line")
+let subchats_more_line : @ui.Style = @sf.rule_line.then(@ui.css("mx=S2_5 mb=S1"))
 
 ///|
 // kept across runs: a value (no field of it changes)
-let subchats_head_rule : @ui.Style = @ui.css("h=SPx mx=S2_5 bg=Line")
+let subchats_head_rule : @ui.Style = @sf.rule_line.then(@ui.css("mx=S2_5"))
 
 ///|
 // kept across runs: a value (no field of it changes)
