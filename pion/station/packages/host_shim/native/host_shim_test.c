@@ -222,8 +222,8 @@ static void test_stdin_backpressure_strict_cap(void) {
     pthread_t prod;
     assert(pthread_create(&prod, NULL, stdin_producer, &args) == 0);
 
-    // Deterministic condvar wait: guarantees producer is actually blocked on backpressure.
-    sth_wait_for_stdin_blocked_for_test();
+    // Deterministic condvar wait with bounded timeout: guarantees producer is blocked on backpressure.
+    assert(sth_wait_for_stdin_blocked_for_test(5000) == 1);
     assert(atomic_load(&args.finished) == 0);
     assert(atomic_load(&args.pushed_chunks) < args.chunks);
     assert(sth_stdin_queued_peak_for_test() <= limit);
@@ -274,7 +274,7 @@ static void test_sth_stop_preserves_stdin_and_eof(void) {
 
 static void *stop_after_waiter_blocks(void *arg) {
     (void)arg;
-    sth_wait_for_queue_waiter_for_test();
+    assert(sth_wait_for_queue_waiter_for_test(5000) == 1);
     sth_stop();
     return NULL;
 }
@@ -390,6 +390,7 @@ static void test_process_utils(void) {
     assert(sth_wall_ms() > 1700000000000LL);
     assert(sth_rss_bytes() > 0);
     assert(sth_open_fd_count() >= 3);
+    assert(sth_open_thread_count() >= 1);
 
     int64_t alen = 0;
     void *args = sth_args(&alen);

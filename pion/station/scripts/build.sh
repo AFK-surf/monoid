@@ -27,8 +27,9 @@ default_ext=""
 [ "$target" = "win32-x64" ] && default_ext=".exe"
 out="${2:-$STATION_DIR/_build/stillfail-pion-$target$default_ext}"
 
-# Ensure pinned pionc toolchain (or validated PIONC override).
-eval "$(sh "$SCRIPT_DIR/ensure-pionc.sh" --print-env)"
+# Ensure pinned pionc toolchain (or validated PIONC/PION_QBE/PION_RT_DIR override).
+ENV_OUT="$(sh "$SCRIPT_DIR/ensure-pionc.sh" --print-env)" || exit $?
+eval "$ENV_OUT"
 PION_SHA="$PION_BUILD_SHA"
 
 ensure_zig() {

@@ -25,6 +25,7 @@ extern "C" fn sth_now_ms() -> Int64
 extern "C" fn sth_wall_ms() -> Int64
 extern "C" fn sth_rss_bytes() -> Int64
 extern "C" fn sth_open_fd_count() -> Int
+extern "C" fn sth_open_thread_count() -> Int
 extern "C" fn sth_build_info(out_len : Ptr) -> Ptr
 extern "C" fn sth_free(ptr : Ptr) -> Unit
 
@@ -301,6 +302,10 @@ pub fn rss_bytes() -> Int64 {
 
 pub fn open_fd_count() -> Int {
   sth_open_fd_count()
+}
+
+pub fn open_thread_count() -> Int {
+  sth_open_thread_count()
 }
 
 pub fn build_info() -> String {

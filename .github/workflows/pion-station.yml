@@ -22,18 +22,21 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: ./.github/actions/node
+
       - name: Cache Zig 0.16.0
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-station-zig/0.16.0
           key: pion-station-zig-linux-x64-0.16.0
 
-      - name: Validate toolchain pin and scripts
+      - name: Validate toolchain pin, scripts, and stdio smoke harness self-test
         run: |
           sha="$(sed -n 's/[[:space:]]*#.*$//; /^[[:space:]]*$/d; p; q' pion/station/TOOLCHAIN | tr -d '[:space:]')"
           test "${#sha}" -eq 40
           sh -n pion/station/scripts/ensure-pionc.sh
           bash -n pion/station/scripts/build.sh
+          node pion/station/scripts/smoke-stdio-test.mjs
 
       - name: C shims strict compile, ASan/UBSan, TSan, and win32-x64 cross-compile
         run: |
@@ -133,19 +136,20 @@ jobs:
         env:
           PION_TOKEN: ${{ secrets.PION_TOKEN }}
         run: |
-          sh pion/station/scripts/ensure-pionc.sh --print-env > "$RUNNER_TEMP/pion.env"
-          eval "$(cat "$RUNNER_TEMP/pion.env")"
+          ENV_OUT="$(sh pion/station/scripts/ensure-pionc.sh --print-env)" || exit $?
+          eval "$ENV_OUT"
           echo "$(dirname "$PIONC")" >> "$GITHUB_PATH"
           echo "PIONC=$PIONC" >> "$GITHUB_ENV"
+          echo "PION_QBE=$PION_QBE" >> "$GITHUB_ENV"
           echo "PION_TOOLCHAIN_DIR=$PION_TOOLCHAIN_DIR" >> "$GITHUB_ENV"
           echo "PION_RT_DIR=$PION_RT_DIR" >> "$GITHUB_ENV"
           "$PIONC" --version
 
       - name: Pion fmt, check, and unit tests
         run: |
-          pionc fmt --check pion/station
-          pionc check --json pion/station
-          pionc test --json pion/station
+          "$PIONC" fmt --check pion/station
+          "$PIONC" check --json pion/station
+          "$PIONC" test --json pion/station
 
       - name: Build linux-x64 with real libstillfail_shell.a and run smoke suite
         env:
@@ -170,71 +174,7 @@ jobs:
           fi
 
           "$BIN" --version
-
-          # Streaming chunk-by-chunk stdio test: pure EOF exit, binary tail with \0 and \n followed by next frame.
-          node -e '
-            const { spawn } = require("node:child_process");
-            const child = spawn(process.argv[1], ["--smoke-stdio"], { stdio: ["pipe", "pipe", "pipe"] });
-            let buf = Buffer.alloc(0);
-            let pendingHead = null;
-            const frames = [];
-            const waiters = [];
-            let stderr = "";
-            const nextFrame = () => frames.length ? Promise.resolve(frames.shift()) : new Promise((r) => waiters.push(r));
-            const emit = (f) => { const w = waiters.shift(); if (w) w(f); else frames.push(f); };
-            child.stdout.on("data", (d) => {
-              buf = Buffer.concat([buf, d]);
-              while (buf.length > 0) {
-                if (pendingHead !== null) {
-                  if (buf.length < pendingHead.bytes) break;
-                  const body = buf.subarray(0, pendingHead.bytes);
-                  buf = buf.subarray(pendingHead.bytes);
-                  const h = pendingHead;
-                  pendingHead = null;
-                  emit({ ...h, body });
-                  continue;
-                }
-                const nl = buf.indexOf(10);
-                if (nl < 0) break;
-                const obj = JSON.parse(buf.subarray(0, nl).toString("utf8"));
-                buf = buf.subarray(nl + 1);
-                if (typeof obj.bytes === "number") {
-                  pendingHead = obj;
-                } else {
-                  emit(obj);
-                }
-              }
-            });
-            child.stderr.on("data", (d) => { stderr += d.toString("utf8"); });
-            const closed = new Promise((resolve) => child.on("close", resolve));
-            (async () => {
-              child.stdin.write(JSON.stringify({ id: 1, op: "echo", text: "hello-pion" }) + "\n");
-              const f1 = await nextFrame();
-              if (f1.text !== "hello-pion") throw new Error("echo mismatch");
-
-              child.stdin.write(JSON.stringify({ id: 2, op: "binary", size: 32, byte: 0 }) + "\n");
-              const f2 = await nextFrame();
-              if (f2.body.length !== 32 || f2.body[0] !== 0 || f2.body[10] !== 10 || f2.body[31] !== 31) {
-                throw new Error("binary tail with NUL and LF mismatch");
-              }
-
-              child.stdin.write(JSON.stringify({ id: 3, op: "cancel", target: 4 }) + "\n");
-              const f3 = await nextFrame();
-              if (f3.cancelled !== 4) throw new Error("cancel ack mismatch");
-
-              child.stdin.write(JSON.stringify({ id: 4, op: "echo", text: "should-cancel" }) + "\n");
-              const f4 = await nextFrame();
-              if (f4.cancelled !== true) throw new Error("cancelled req mismatch");
-
-              child.stdin.end();
-              const code = await closed;
-              if (code !== 0 || buf.length !== 0 || pendingHead !== null) {
-                throw new Error("bad EOF exit: code=" + code + " rem=" + buf.length + " stderr=" + stderr);
-              }
-              console.log("smoke-stdio ok (streaming + pure EOF): 4 frames");
-            })().catch((e) => { console.error(e); child.kill(); process.exit(1); });
-          ' "$BIN"
-
+          node pion/station/scripts/smoke-stdio.mjs "$BIN"
           "$BIN" --smoke-sqlite "$RUNNER_TEMP/smoke.db"
           "$BIN" --smoke-shell "$RUNNER_TEMP/shell-dir"
           "$BIN" --smoke-rc-soak 50000

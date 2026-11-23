@@ -23,6 +23,7 @@
 #include <windows.h>
 #include <psapi.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
 typedef SRWLOCK sth_lock_t;
 typedef CONDITION_VARIABLE sth_cond_t;
 #define STH_LOCK_INIT SRWLOCK_INIT
@@ -106,23 +107,25 @@ static sth_lock_t g_lock = STH_LOCK_INIT;
 static sth_cond_t g_stdin_cond = STH_COND_INIT;
 static sth_cond_t g_sys_cond = STH_COND_INIT;
 static sth_cond_t g_inflight_cond = STH_COND_INIT;
-static sth_cond_t g_test_waiter_cond = STH_COND_INIT;
 
-// On non-Apple POSIX, initialize `g_queue_cond` strictly once with CLOCK_MONOTONIC
-// (never double-initialized with PTHREAD_COND_INITIALIZER + pthread_cond_init).
+// On non-Apple POSIX, initialize `g_queue_cond` and `g_test_waiter_cond` strictly once
+// with CLOCK_MONOTONIC (never double-initialized with PTHREAD_COND_INITIALIZER + pthread_cond_init).
 #if !defined(_WIN32) && !defined(__APPLE__)
 static pthread_cond_t g_queue_cond;
+static pthread_cond_t g_test_waiter_cond;
 static pthread_once_t g_cond_once = PTHREAD_ONCE_INIT;
 static void init_queue_cond(void) {
     pthread_condattr_t attr;
     pthread_condattr_init(&attr);
     pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
     pthread_cond_init(&g_queue_cond, &attr);
+    pthread_cond_init(&g_test_waiter_cond, &attr);
     pthread_condattr_destroy(&attr);
 }
 static void ensure_queue_init(void) { pthread_once(&g_cond_once, init_queue_cond); }
 #else
 static sth_cond_t g_queue_cond = STH_COND_INIT;
+static sth_cond_t g_test_waiter_cond = STH_COND_INIT;
 static void ensure_queue_init(void) {}
 #endif
 
@@ -266,22 +269,93 @@ size_t sth_stdin_queued_peak_for_test(void) {
     return p;
 }
 
-void sth_wait_for_stdin_blocked_for_test(void) {
-    ensure_queue_init();
-    sth_lock(&g_lock);
-    while (g_stdin_waiters == 0) {
-        sth_cond_wait(&g_test_waiter_cond, &g_lock);
+static int32_t wait_for_counter_nonzero_locked(const size_t *counter, int64_t timeout_ms) {
+    if (*counter > 0) {
+        return 1;
     }
-    sth_unlock(&g_lock);
+    if (timeout_ms == 0) {
+        return 0;
+    }
+#if defined(_WIN32)
+    if (timeout_ms < 0) {
+        while (*counter == 0) {
+            SleepConditionVariableSRW(&g_test_waiter_cond, &g_lock, INFINITE, 0);
+        }
+        return 1;
+    }
+    int64_t capped = timeout_ms > 86400000LL ? 86400000LL : timeout_ms;
+    int64_t deadline = sth_now_ms() + capped;
+    while (*counter == 0) {
+        int64_t left = deadline - sth_now_ms();
+        if (left <= 0) {
+            break;
+        }
+        if (!SleepConditionVariableSRW(&g_test_waiter_cond, &g_lock, (DWORD)left, 0)) {
+            if (GetLastError() == ERROR_TIMEOUT) {
+                break;
+            }
+        }
+    }
+#elif defined(__APPLE__)
+    if (timeout_ms < 0) {
+        while (*counter == 0) {
+            pthread_cond_wait(&g_test_waiter_cond, &g_lock);
+        }
+        return 1;
+    }
+    int64_t capped = timeout_ms > 86400000LL ? 86400000LL : timeout_ms;
+    int64_t deadline = sth_now_ms() + capped;
+    while (*counter == 0) {
+        int64_t left = deadline - sth_now_ms();
+        if (left <= 0) {
+            break;
+        }
+        struct timespec rel;
+        rel.tv_sec = (time_t)(left / 1000);
+        rel.tv_nsec = (long)((left % 1000) * 1000000);
+        if (pthread_cond_timedwait_relative_np(&g_test_waiter_cond, &g_lock, &rel) != 0) {
+            break;
+        }
+    }
+#else
+    if (timeout_ms < 0) {
+        while (*counter == 0) {
+            pthread_cond_wait(&g_test_waiter_cond, &g_lock);
+        }
+        return 1;
+    }
+    int64_t capped = timeout_ms > 86400000LL ? 86400000LL : timeout_ms;
+    struct timespec at;
+    clock_gettime(CLOCK_MONOTONIC, &at);
+    at.tv_sec += (time_t)(capped / 1000);
+    at.tv_nsec += (long)((capped % 1000) * 1000000);
+    if (at.tv_nsec >= 1000000000L) {
+        at.tv_sec += 1;
+        at.tv_nsec -= 1000000000L;
+    }
+    while (*counter == 0) {
+        if (pthread_cond_timedwait(&g_test_waiter_cond, &g_lock, &at) != 0) {
+            break;
+        }
+    }
+#endif
+    return *counter > 0 ? 1 : 0;
 }
 
-void sth_wait_for_queue_waiter_for_test(void) {
+int32_t sth_wait_for_stdin_blocked_for_test(int64_t timeout_ms) {
     ensure_queue_init();
     sth_lock(&g_lock);
-    while (g_queue_waiters == 0) {
-        sth_cond_wait(&g_test_waiter_cond, &g_lock);
-    }
+    int32_t ok = wait_for_counter_nonzero_locked(&g_stdin_waiters, timeout_ms);
     sth_unlock(&g_lock);
+    return ok;
+}
+
+int32_t sth_wait_for_queue_waiter_for_test(int64_t timeout_ms) {
+    ensure_queue_init();
+    sth_lock(&g_lock);
+    int32_t ok = wait_for_counter_nonzero_locked(&g_queue_waiters, timeout_ms);
+    sth_unlock(&g_lock);
+    return ok;
 }
 
 // Enqueues `data[0..len)` in slices so `g_stdin_queued` strictly never exceeds `g_stdin_limit`.
@@ -921,6 +995,58 @@ int32_t sth_open_fd_count(void) {
     closedir(d);
     // Subtract 1 for the directory stream fd opened above.
     return count > 0 ? count - 1 : 0;
+#endif
+}
+
+int32_t sth_open_thread_count(void) {
+#if defined(_WIN32)
+    DWORD pid = GetCurrentProcessId();
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    THREADENTRY32 te;
+    memset(&te, 0, sizeof(te));
+    te.dwSize = sizeof(te);
+    int32_t count = 0;
+    if (Thread32First(snap, &te)) {
+        do {
+            if (te.th32OwnerProcessID == pid) {
+                count += 1;
+            }
+        } while (Thread32Next(snap, &te));
+    }
+    CloseHandle(snap);
+    return count > 0 ? count : -1;
+#elif defined(__APPLE__)
+    thread_act_array_t list = NULL;
+    mach_msg_type_number_t count = 0;
+    if (task_threads(mach_task_self(), &list, &count) != KERN_SUCCESS) {
+        return -1;
+    }
+    for (mach_msg_type_number_t i = 0; i < count; i++) {
+        mach_port_deallocate(mach_task_self(), list[i]);
+    }
+    vm_deallocate(mach_task_self(), (vm_address_t)list, (vm_size_t)count * sizeof(thread_act_t));
+    return (int32_t)count;
+#else
+    FILE *f = fopen("/proc/self/status", "r");
+    if (f == NULL) {
+        return -1;
+    }
+    char line[256];
+    int32_t threads = -1;
+    while (fgets(line, sizeof(line), f) != NULL) {
+        if (strncmp(line, "Threads:", 8) == 0) {
+            int parsed = 0;
+            if (sscanf(line + 8, "%d", &parsed) == 1 && parsed > 0) {
+                threads = (int32_t)parsed;
+            }
+            break;
+        }
+    }
+    fclose(f);
+    return threads;
 #endif
 }
 

@@ -41,11 +41,11 @@ void *sth_wait(int64_t ms, int64_t *out_len);
 void sth_push_sys(uint64_t id, const uint8_t *data, size_t len);
 void sth_push_sys_bounded(uint64_t id, const uint8_t *data, size_t len);
 
-// Deterministic synchronization hooks for unit/concurrency tests (zero sleeps).
+// Deterministic synchronization hooks for unit/concurrency tests (zero sleeps; bounded deadline).
 void sth_set_stdin_limit_for_test(size_t limit_bytes);
 size_t sth_stdin_queued_peak_for_test(void);
-void sth_wait_for_stdin_blocked_for_test(void);
-void sth_wait_for_queue_waiter_for_test(void);
+int32_t sth_wait_for_stdin_blocked_for_test(int64_t timeout_ms);
+int32_t sth_wait_for_queue_waiter_for_test(int64_t timeout_ms);
 void sth_push_stdin_chunk(const uint8_t *data, size_t len);
 void sth_push_stdin_eof(void);
 
@@ -75,6 +75,7 @@ int64_t sth_now_ms(void);
 int64_t sth_wall_ms(void);
 int64_t sth_rss_bytes(void);
 int32_t sth_open_fd_count(void);
+int32_t sth_open_thread_count(void);
 void *sth_build_info(int64_t *out_len);
 void sth_free(void *ptr);
 

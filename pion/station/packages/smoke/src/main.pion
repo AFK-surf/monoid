@@ -460,7 +460,15 @@ fn run_smoke_sqlite(world : World, db_path : String) -> Unit {
   }
 
   let fd_after = host_shim::open_fd_count()
-  if fd_before >= 0 && fd_after > fd_before {
+  if fd_before < 0 || fd_after < 0 {
+    panic(
+      "sqlite fd count unavailable: before=" +
+      fd_before.to_string() +
+      " after=" +
+      fd_after.to_string(),
+    )
+  }
+  if fd_after > fd_before {
     panic(
       "sqlite fd leak detected: before=" +
       fd_before.to_string() +
@@ -606,49 +614,97 @@ fn run_smoke_shell_round(dir : String, round : Int) -> (Int, Int) {
   (rand_bytes.length(), want_payload.length())
 }
 
-fn wait_fd_settle(target : Int, max_wait_ms : Int) -> Int {
-  let mut cur = host_shim::open_fd_count()
-  if cur < 0 || target < 0 {
-    return cur
+fn require_fd_count(label : String) -> Int {
+  let n = host_shim::open_fd_count()
+  if n < 0 {
+    panic("open_fd_count unavailable at " + label + ": " + n.to_string())
   }
+  n
+}
+
+fn require_thread_count(label : String) -> Int {
+  let n = host_shim::open_thread_count()
+  if n < 1 {
+    panic("open_thread_count unavailable at " + label + ": " + n.to_string())
+  }
+  n
+}
+
+fn wait_resources_settle(
+  label : String,
+  target_fd : Int,
+  target_thr : Int,
+  max_wait_ms : Int,
+) -> (Int, Int) {
+  let mut cur_fd = require_fd_count(label)
+  let mut cur_thr = require_thread_count(label)
   let mut waited = 0
-  while cur > target && waited < max_wait_ms {
+  while (cur_fd > target_fd || cur_thr > target_thr) && waited < max_wait_ms {
     let _ = host_shim::wait(10.to_int64())
     waited = waited + 10
-    cur = host_shim::open_fd_count()
+    cur_fd = require_fd_count(label)
+    cur_thr = require_thread_count(label)
   }
-  cur
+  (cur_fd, cur_thr)
 }
 
 fn run_smoke_shell(world : World, dir : String) -> Unit {
   // sf_shell_stop() calls tokio::runtime::Runtime::shutdown_background(), so
-  // worker threads tear down kqueue/epoll/pipe fds asynchronously. Wait briefly
-  // for background runtime teardown to settle before checking for per-round leaks.
-  let fd_before = host_shim::open_fd_count()
+  // worker threads tear down kqueue/epoll/pipe fds and threads asynchronously.
+  // Run 1 warmup round to absorb one-time process-level initialization (e.g.
+  // rustls/OS crypto/global pools), record (fd_base, thr_base), then verify
+  // 2 full start/stop rounds strictly return to <= base for both fds and threads.
+  let fd_before = require_fd_count("before")
+  let thr_before = require_thread_count("before")
+
+  let _ = run_smoke_shell_round(dir, 0)
+  let (fd_base, thr_base) = wait_resources_settle("base", fd_before, thr_before, 1000)
+
   let (rlen1, blen1) = run_smoke_shell_round(dir, 1)
-  let fd_after_r1 = wait_fd_settle(fd_before, 500)
-  let (rlen2, blen2) = run_smoke_shell_round(dir, 2)
-  let fd_after_r2 = wait_fd_settle(fd_after_r1, 500)
-  if fd_after_r1 >= 0 && fd_after_r2 > fd_after_r1 {
+  let (fd_after_r1, thr_after_r1) = wait_resources_settle("r1", fd_base, thr_base, 1000)
+  if fd_after_r1 > fd_base || thr_after_r1 > thr_base {
     panic(
-      "shell start/stop fd leak detected across rounds: before=" +
-      fd_before.to_string() +
+      "shell start/stop resource leak after round 1: fd base=" +
+      fd_base.to_string() +
       " r1=" +
       fd_after_r1.to_string() +
+      " thr base=" +
+      thr_base.to_string() +
+      " r1=" +
+      thr_after_r1.to_string(),
+    )
+  }
+
+  let (rlen2, blen2) = run_smoke_shell_round(dir, 2)
+  let (fd_after_r2, thr_after_r2) = wait_resources_settle("r2", fd_base, thr_base, 1000)
+  if fd_after_r2 > fd_base || thr_after_r2 > thr_base {
+    panic(
+      "shell start/stop resource leak after round 2: fd base=" +
+      fd_base.to_string() +
       " r2=" +
-      fd_after_r2.to_string(),
+      fd_after_r2.to_string() +
+      " thr base=" +
+      thr_base.to_string() +
+      " r2=" +
+      thr_after_r2.to_string(),
     )
   }
 
   let summary = base_codec::json_stringify(
     base_codec::json_obj([
       ("ok", base_codec::json_bool(true)),
+      ("warmup_rounds", base_codec::json_int(1)),
       ("rounds", base_codec::json_int(2)),
       ("random_hex_len", base_codec::json_int(if rlen1 == rlen2 { rlen2 } else { 0 })),
       ("storage_bytes_verified", base_codec::json_int(if blen1 == blen2 { blen2 } else { 0 })),
       ("fd_before", base_codec::json_int(fd_before)),
+      ("fd_base", base_codec::json_int(fd_base)),
       ("fd_after_r1", base_codec::json_int(fd_after_r1)),
       ("fd_after_r2", base_codec::json_int(fd_after_r2)),
+      ("thr_before", base_codec::json_int(thr_before)),
+      ("thr_base", base_codec::json_int(thr_base)),
+      ("thr_after_r1", base_codec::json_int(thr_after_r1)),
+      ("thr_after_r2", base_codec::json_int(thr_after_r2)),
     ]),
   )
   io_println(world, summary)
