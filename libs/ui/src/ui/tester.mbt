@@ -663,6 +663,7 @@ fn tester_make(
     mods: 0,
     clipboard_secret: -1.0,
     clipboard_image: -1,
+    clipboard_html: "",
     back_on: false,
     wheel_kept: false,
     window_shows: 0,
@@ -1881,6 +1882,12 @@ pub fn Tester::ime_rect(self : Tester) -> (Double, Double, Double, Double) {
 ///|
 pub fn Tester::clipboard(self : Tester) -> String {
   self.fake.clipboard
+}
+
+///|
+/// The HTML put on the clipboard with its words (picked_html: what is copied of shaped words); "" where none was.
+pub fn Tester::clipboard_html(self : Tester) -> String {
+  self.fake.clipboard_html
 }
 
 ///|

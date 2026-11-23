@@ -413,6 +413,11 @@ impl @hostapi.Host for Native with clipboard_set(_, s) {
 }
 
 ///|
+impl @hostapi.Host for Native with clipboard_set_html(_, text, html) {
+  clipboard_set_html(text, html)
+}
+
+///|
 impl @hostapi.Host for Native with clipboard_set_image(_, data) {
   clipboard_set_image(data)
 }

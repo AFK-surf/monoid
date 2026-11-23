@@ -794,6 +794,15 @@ impl @hostapi.Host for FakeHost with edit_can(self, can) {
 impl @hostapi.Host for FakeHost with clipboard_set(self, s) {
   self.clipboard = s
   self.clipboard_secret = -1.0
+  self.clipboard_html = ""
+}
+
+///|
+/// Words on the clipboard with their HTML (Tester::clipboard, Tester::clipboard_html).
+impl @hostapi.Host for FakeHost with clipboard_set_html(self, text, html) {
+  self.clipboard = text
+  self.clipboard_secret = -1.0
+  self.clipboard_html = html
 }
 
 ///|
@@ -1921,6 +1930,7 @@ impl @hostapi.Host for FakeHost with app_version(self) {
 /// A secret on the clipboard: kept as any words (Tester::clipboard), said to be a secret (Tester::clipboard_secret).
 impl @hostapi.Host for FakeHost with clipboard_set_secret(self, s, clear_ms) {
   self.clipboard = s
+  self.clipboard_html = ""
   self.clipboard_secret = clear_ms
 }
 

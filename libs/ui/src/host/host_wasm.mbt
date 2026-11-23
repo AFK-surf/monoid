@@ -189,6 +189,14 @@ fn ffi_clipboard_image(data : Bytes) -> Unit {
 }
 
 ///|
+fn mbw_mb_host_clipboard_set_html(text : Int, html : Int) = "mbhost" "mb_host_clipboard_set_html"
+
+///|
+fn ffi_clipboard_set_html(text : String, html : String) -> Unit {
+  mbw_mb_host_clipboard_set_html(@wasmrt.string_addr(text), @wasmrt.string_addr(html))
+}
+
+///|
 fn mbw_mb_host_clipboard_secret(s : Int, clear_ms : Double) = "mbhost" "mb_host_clipboard_secret"
 
 ///|
@@ -969,6 +977,13 @@ fn set_ime(
 ///|
 fn clipboard_set(s : String) -> Unit {
   ffi_clipboard_set(s)
+}
+
+///|
+/// Words put on the system's clipboard with their HTML (@hostapi.clipboard_set_html): a host's C that puts none there
+/// puts the words alone.
+fn clipboard_set_html(text : String, html : String) -> Unit {
+  ffi_clipboard_set_html(text, html)
 }
 
 ///|

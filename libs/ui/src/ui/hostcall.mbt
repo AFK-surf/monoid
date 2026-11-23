@@ -47,6 +47,8 @@ struct FakeHost {
   mut clipboard_secret : Double
   /// the picture last put on the clipboard (its bytes' length; -1 none)
   mut clipboard_image : Int
+  /// the HTML put on the clipboard with its words (clipboard_set_html; "" none)
+  mut clipboard_html : String
   // whether the app takes back (a page to go back to), as last told
   mut back_on : Bool
   // whether the last wheel handed in zoomed something of the app's, as told (@hostapi.wheel_kept)
@@ -898,6 +900,11 @@ fn h_text_menu_own(words : String) -> Unit {
 ///|
 fn h_clipboard_set(s : String) -> Unit {
   @hostapi.clipboard_set(s)
+}
+
+///|
+fn h_clipboard_set_html(text : String, html : String) -> Unit {
+  @hostapi.clipboard_set_html(text, html)
 }
 
 ///|

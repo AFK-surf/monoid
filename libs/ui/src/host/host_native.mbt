@@ -140,6 +140,10 @@ extern "C" fn ffi_clipboard_set(s : String) -> Unit = "mb_host_clipboard_set"
 extern "C" fn ffi_clipboard_image(data : Bytes) -> Unit = "mb_host_clipboard_image"
 
 ///|
+#borrow(text, html)
+extern "C" fn ffi_clipboard_set_html(text : String, html : String) -> Unit = "mb_host_clipboard_set_html"
+
+///|
 #borrow(s)
 extern "C" fn ffi_clipboard_secret(s : String, clear_ms : Double) -> Unit = "mb_host_clipboard_secret"
 
@@ -797,6 +801,13 @@ fn set_ime(
 ///|
 fn clipboard_set(s : String) -> Unit {
   ffi_clipboard_set(s)
+}
+
+///|
+/// Words put on the system's clipboard with their HTML (@hostapi.clipboard_set_html): a host's C that puts none there
+/// puts the words alone.
+fn clipboard_set_html(text : String, html : String) -> Unit {
+  ffi_clipboard_set_html(text, html)
 }
 
 ///|

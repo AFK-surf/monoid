@@ -3014,6 +3014,16 @@ void mb_host_clipboard_set(moonbit_string_t s) {
   [pb setString:mb_ns_from_string(s) forType:NSPasteboardTypeString];
 }
 
+// Words on the clipboard with their HTML (@hostapi.clipboard_set_html): as a string, and as public.html for what
+// pastes them with their shape (Pages, Mail, a browser's editors).
+void mb_host_clipboard_set_html(moonbit_string_t text, moonbit_string_t html) {
+  NSPasteboard *pb = [NSPasteboard generalPasteboard];
+  [pb clearContents];
+  [pb setString:mb_ns_from_string(text) forType:NSPasteboardTypeString];
+  NSString *page = [NSString stringWithFormat:@"<meta charset=\"utf-8\">%@", mb_ns_from_string(html)];
+  [pb setString:page forType:NSPasteboardTypeHTML];
+}
+
 // The pasteboard's change count once a secret was put there, to be taken off (another copy since changes it), -1 none
 static NSInteger secret_count = -1;
 

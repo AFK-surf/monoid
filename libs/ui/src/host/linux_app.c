@@ -1552,6 +1552,12 @@ void mb_host_clipboard_set(moonbit_string_t s) {
   secret_on = 0;
 }
 
+// Words on the clipboard with their HTML (@hostapi.clipboard_set_html): the words alone here.
+void mb_host_clipboard_set_html(moonbit_string_t text, moonbit_string_t html) {
+  (void)html;
+  mb_host_clipboard_set(text);
+}
+
 // A secret on the clipboard (@hostapi.clipboard_set_secret): as any words here (no sensitive mark).
 void mb_host_clipboard_secret(moonbit_string_t s, double clear_ms) {
   mb_host_clipboard_set(s);

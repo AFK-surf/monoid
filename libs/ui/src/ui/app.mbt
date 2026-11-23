@@ -2452,7 +2452,13 @@ fn key_in(code : Int, mods : Int) -> Unit {
   // ⌘C: the words picked with the pointer, unless the focused field has words of its own picked (a field keeps the
   // focus through a press on the page's words, which lets go of what it had picked: the press above)
   if code == key_copy && selected_words() != "" && !field_picks(c) {
-    h_clipboard_set(selected_words())
+    // (with their shape where they have one: lists, headings, code, as HTML beside them, tree_copied.mbt)
+    let html = picked_html()
+    if html == "" {
+      h_clipboard_set(selected_words())
+    } else {
+      h_clipboard_set_html(selected_words(), html)
+    }
     // (a finger's, from the system's menu: let go of once copied, as a phone's text is)
     if picked.finger {
       select_none()

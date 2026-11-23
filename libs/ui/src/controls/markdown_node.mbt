@@ -685,6 +685,8 @@ fn md_block_node(
       }, s, 0)
     level if level >= 11 && level <= 16 => {
       let level = level - 10
+      // (copied as a heading of its level: @ui.picked_html)
+      @ui.words_shaped(p, fn() { @ui.WordsShape::Heading(level) }) |> ignore
       let em = if md.document && level <= 3 {
         if level == 1 { 1.5 } else if level == 2 { 1.3 } else { 1.12 }
       } else if level == 5 {
@@ -710,6 +712,8 @@ fn md_block_node(
       |> ignore
       p.box(fn(inner) {
         inner.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).padding(Is((md_quote_in, 0.0, 0.0, 0.0))) |> ignore
+        // (its paragraphs copied as one quote: @ui.picked_html)
+        @ui.words_shaped(inner, fn() { @ui.WordsShape::Quote(inner.id()) }) |> ignore
         let quoted = { ..md, ink: fn() { web().muted }, bleed: fn() { 0.0 } }
         md_blocks_node(inner, quoted, fn() {
           match block() {
@@ -1165,6 +1169,19 @@ fn md_list_node(
     let item = fn() { list().bind(fn(l) { l.items.get(i) }) }
     // (as far under the item before as the larger of their margins: stack's; the first right at the top)
     row.row(Is(true)).lines_up(Is(Some(Start))) |> ignore
+    // (copied as an item of its list, at its depth, numbered as the list is then: @ui.picked_html)
+    @ui.words_shaped(row, fn() {
+      // (read as it is copied, a press's: not followed)
+      let number = @signals.untracked(fn() {
+        if ordered() {
+          list().map(fn(l) { l.start }).unwrap_or(1) + i
+        } else {
+          0
+        }
+      })
+      @ui.WordsShape::Item(depth, number, row.id())
+    })
+    |> ignore
     if i == 0 {
       row.padding(Is((0.0, 0.0, 0.0, 0.0))) |> ignore
     } else {
@@ -1410,6 +1427,8 @@ pub fn code_block_node(
     }
     // (each of its lines a line of its own, scrolled across or wrapped: code_block's `breaks`)
     w.words_runs(By(runs), look~).words_breaks(Is(true)).ink(By(fn() { theme().p.text })) |> ignore
+    // (copied as the block of code it is: @ui.picked_html)
+    @ui.words_shaped(w, fn() { @ui.WordsShape::Code(p.id()) }) |> ignore
   }
   // (its copy key: copies the code and says so copied_ms)
   let copy_key = fn(b : @view.View) {

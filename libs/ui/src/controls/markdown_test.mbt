@@ -71,6 +71,27 @@ test "a message's Markdown: its blocks, their margins collapsed, links and copy"
 }
 
 ///|
+test "a message's Markdown dragged over and copied: beside its words, HTML keeping its heading, its list's items and their code, its block of code" {
+  let t = md_node_tester(390.0, 844.0, platform=0, fn(col) {
+    @ui.words_picked(col)
+    @controls.markdown_node(col, fn() { sample }) |> ignore
+  })
+  let at = fn(s : String) { t.words().iter().find_first(fn(w) { w.0.contains(s) }) }
+  guard at("今天的进度") is Some(first) && at("moon test") is Some(last) else {
+    fail("not drawn: \{Repr(t.words())}")
+  }
+  t.drag(first.1 + 1.0, first.2 + first.4 / 2.0, last.1 + last.3 - 1.0, last.2 + last.4 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_code_copy)
+  let html = t.clipboard_html()
+  assert_true(t.clipboard().contains("第一项，inline code"), msg=t.clipboard())
+  assert_true(html.has_prefix("<h2>今天的进度</h2>"), msg=html)
+  assert_true(html.contains("<li>第一项，<code>inline code</code></li><li>第二项<ol><li>nested one</li></ol></li>"), msg=html)
+  assert_true(html.contains("<blockquote><p>引用里的一句话</p></blockquote>"), msg=html)
+  assert_true(html.has_suffix("<pre><code>moon test</code></pre>"), msg=html)
+}
+
+///|
 test "a table's cell of only the message's images: them side by side, 160 wide at most, not their names" {
   let drawn : Array[(String, Double)] = []
   let t = md_node_tester(390.0, 844.0, fn(col) {

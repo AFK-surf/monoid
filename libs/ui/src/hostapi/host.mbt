@@ -80,6 +80,7 @@ pub(open) trait Host {
   text_menu_own(Self, String) -> Unit = _
   edit_can(Self, Int) -> Unit = _
   clipboard_set(Self, String) -> Unit = _
+  clipboard_set_html(Self, String, String) -> Unit = _
   clipboard_set_secret(Self, String, Double) -> Unit = _
   clipboard_secret_off(Self) -> Unit = _
   clipboard_set_image(Self, Bytes) -> Unit = _
@@ -690,6 +691,12 @@ impl Host with edit_can(_, _) {
 ///|
 impl Host with clipboard_set(_, _) {
   ()
+}
+
+///|
+/// (a host that puts no HTML on its clipboard: the words alone)
+impl Host with clipboard_set_html(self, text, _) {
+  self.clipboard_set(text)
 }
 
 ///|
@@ -2283,6 +2290,14 @@ pub fn edit_can(can : Int) -> Unit {
 ///|
 pub fn clipboard_set(s : String) -> Unit {
   current.val.clipboard_set(s)
+}
+
+///|
+/// Words on the system's clipboard as `text` and, for what pastes them with their shape (a document, a mail, a
+/// page), as `html` (a fragment: lists, headings, code): Windows' "HTML Format", a Mac's public.html. A host that puts
+/// no HTML there puts the words alone, as clipboard_set.
+pub fn clipboard_set_html(text : String, html : String) -> Unit {
+  current.val.clipboard_set_html(text, html)
 }
 
 ///|

@@ -386,6 +386,13 @@ fn clipboard_set(s : String) -> Unit {
 }
 
 ///|
+/// Words on the clipboard with their HTML (@hostapi.clipboard_set_html): a page's runs put the words alone.
+fn clipboard_set_html(text : String, html : String) -> Unit {
+  ignore(html)
+  js_clipboard_set(text)
+}
+
+///|
 /// A picture on the clipboard (@hostapi.clipboard_set_image): a page's runs put none.
 fn clipboard_set_image(data : Bytes) -> Unit {
   ignore(data)

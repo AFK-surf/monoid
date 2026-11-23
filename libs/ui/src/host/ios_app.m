@@ -1849,6 +1849,15 @@ void mb_host_clipboard_set(moonbit_string_t s) {
   UIPasteboard.generalPasteboard.string = mb_ns_from_string(s);
 }
 
+// Words on the clipboard with their HTML (@hostapi.clipboard_set_html): one item, as plain text and as public.html
+// for what pastes them with their shape (Notes, Mail).
+void mb_host_clipboard_set_html(moonbit_string_t text, moonbit_string_t html) {
+  UIPasteboard.generalPasteboard.items = @[ @{
+    @"public.utf8-plain-text" : mb_ns_from_string(text),
+    @"public.html" : [NSString stringWithFormat:@"<meta charset=\"utf-8\">%@", mb_ns_from_string(html)],
+  } ];
+}
+
 // A picture on the clipboard (@hostapi.clipboard_set_image): the image the bytes are, as other apps paste one.
 void mb_host_clipboard_image(moonbit_bytes_t data) {
   UIImage *img = [UIImage imageWithData:[NSData dataWithBytes:data length:Moonbit_array_length(data)]];

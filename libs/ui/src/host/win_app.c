@@ -1693,9 +1693,34 @@ static void clipboard_dword(const WCHAR *format, DWORD v) {
   if (!SetClipboardData(f, h)) GlobalFree(h);
 }
 
-// words on the clipboard; a secret's kept out of the clipboard's history and of the cloud's (Win+V, its sync to the
-// person's other devices: the formats Windows reads for that, which other programs' secrets carry too). 1: put there
-static int clipboard_words(moonbit_string_t s, int secret) {
+// `html` (UTF-8, a fragment) on the open clipboard as "HTML Format" (CF_HTML): a header of byte offsets, then the
+// fragment between its marks in a page of its own, as browsers put what is copied of a page
+static void clipboard_html(const char *html) {
+  static const char pre[] = "<html><head><meta charset=\"utf-8\"></head><body>\r\n<!--StartFragment-->";
+  static const char post[] = "<!--EndFragment-->\r\n</body></html>";
+  static const char head[] = "Version:0.9\r\nStartHTML:%010d\r\nEndHTML:%010d\r\nStartFragment:%010d\r\nEndFragment:%010d\r\n";
+  // (the header as long whatever its numbers: ten digits each)
+  int head_len = (int)strlen(head) - 4 * (int)strlen("%010d") + 4 * 10;
+  int frag_from = head_len + (int)(sizeof pre - 1);
+  int frag_to = frag_from + (int)strlen(html);
+  int end = frag_to + (int)(sizeof post - 1);
+  UINT f = RegisterClipboardFormatW(L"HTML Format");
+  HGLOBAL h = f ? GlobalAlloc(GMEM_MOVEABLE, (size_t)end + 1) : NULL;
+  if (!h) return;
+  char *p = (char *)GlobalLock(h);
+  snprintf(p, (size_t)head_len + 1, head, head_len, end, frag_from, frag_to);
+  memcpy(p + head_len, pre, sizeof pre - 1);
+  memcpy(p + frag_from, html, (size_t)(frag_to - frag_from));
+  memcpy(p + frag_to, post, sizeof post - 1);
+  p[end] = 0;
+  GlobalUnlock(h);
+  if (!SetClipboardData(f, h)) GlobalFree(h);
+}
+
+// words on the clipboard (and their HTML, where `html` is given: clipboard_html); a secret's kept out of the
+// clipboard's history and of the cloud's (Win+V, its sync to the person's other devices: the formats Windows reads
+// for that, which other programs' secrets carry too). 1: put there
+static int clipboard_words_html(moonbit_string_t s, int secret, const char *html) {
   int n = Moonbit_array_length(s), k = 0;
   // other Windows programs expect CR LF
   HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, ((size_t)n * 2 + 1) * sizeof(WCHAR));
@@ -1719,11 +1744,22 @@ static int clipboard_words(moonbit_string_t s, int secret) {
     clipboard_dword(L"CanIncludeInClipboardHistory", 0);
     clipboard_dword(L"CanUploadToCloudClipboard", 0);
   }
+  if (put && html) clipboard_html(html);
   CloseClipboard();
   return put;
 }
 
+static int clipboard_words(moonbit_string_t s, int secret) { return clipboard_words_html(s, secret, NULL); }
+
 void mb_host_clipboard_set(moonbit_string_t s) { clipboard_words(s, 0); }
+
+// Words on the clipboard with their HTML (@hostapi.clipboard_set_html): as text, and as "HTML Format" for what pastes
+// them with their shape (Word, Outlook, a browser's editors).
+void mb_host_clipboard_set_html(moonbit_string_t text, moonbit_string_t html) {
+  char *u = utf8_of((const WCHAR *)html, Moonbit_array_length(html));
+  clipboard_words_html(text, 0, u);
+  free(u);
+}
 
 // The secret this app put on the clipboard, to be taken off: the clipboard's sequence number just after (another
 // copy since, the app's or another program's, changes it), 0 for none
