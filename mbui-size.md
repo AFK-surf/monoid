@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a7554d680](https://github.com/AFK-surf/monoid/commit/a7554d6800128293eae5b055843e068716aa51cf) docs(releases): 0.1.11070 stable notes (#8347) | 2.74 | 3.68 | 14.93 | 37.1 | 56.86 | 32.5 | 65.99 | 100.8 | 114.91 |
 | [d0956dae2](https://github.com/AFK-surf/monoid/commit/d0956dae2dbd48b6604fa2b3fa8bba0f475254d9) fix(station): name the leading chat by its title i | 2.74 | 3.68 | 14.93 | 37.1 | 56.86 | 32.5 | 65.99 | 100.8 | 114.91 |
 | [c1073d009](https://github.com/AFK-surf/monoid/commit/c1073d0090201275e1e6767f3c16507e201a962e) perf(ui,mbui): eliminate O(N^2) FLIP diff, full-tr | 2.74 | 3.68 | 14.93 | 37.1 | 56.85 | 32.5 | 65.99 | 100.93 | 118.87 |
 | [589f169b6](https://github.com/AFK-surf/monoid/commit/589f169b6531ea5217dcf19380b123bd393c7ccc) fix(mbui,ui,core): keep replied bubble and working | 2.74 | 3.68 | 14.92 | 37.1 | 56.85 | 32.5 | 65.99 | 101.24 | 119.54 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ac5672f84](https://github.com/AFK-surf/monoid/commit/ac5672f843714a2096df49c0980cf525fd100980) feat(station): add Google Vertex AI account for An | 2.73 | 3.67 | 14.88 | 37.06 | 56.72 | 32.45 | 65.87 | 100.42 | 127.1 |
 | [a8a14a344](https://github.com/AFK-surf/monoid/commit/a8a14a344e856480c9715f797eb82215bc57c77d) feat(client-core): add pure-Pion views package and | 2.73 | 3.67 | 14.88 | 37.06 | 56.72 | 32.45 | 65.87 | 100.42 | 127.1 |
 | [0cf13ac28](https://github.com/AFK-surf/monoid/commit/0cf13ac287d0fbbfef92ced562f04efb36ce4596) feat(core,mbui): support multi-workspace tasks-onl | 2.73 | 3.67 | 14.88 | 37.04 | 56.71 | 32.45 | 65.87 | 100.3 | 127.89 |
-| [8126680e5](https://github.com/AFK-surf/monoid/commit/8126680e52043bc4a5e191b5b5fc756224a9266f) fix(mbui): phase 3a chat motion fixes for composer | 2.73 | 3.67 | 14.88 | 37.04 | 56.71 | 32.45 | 65.87 | 100.3 | 127.89 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a7554d680](https://github.com/AFK-surf/monoid/commit/a7554d6800128293eae5b055843e068716aa51cf) docs(releases): 0.1.11070 stable notes (#8347) | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 58.23 |
 | [d0956dae2](https://github.com/AFK-surf/monoid/commit/d0956dae2dbd48b6604fa2b3fa8bba0f475254d9) fix(station): name the leading chat by its title i | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 57.8 |
 | [c1073d009](https://github.com/AFK-surf/monoid/commit/c1073d0090201275e1e6767f3c16507e201a962e) perf(ui,mbui): eliminate O(N^2) FLIP diff, full-tr | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 57.84 |
 | [589f169b6](https://github.com/AFK-surf/monoid/commit/589f169b6531ea5217dcf19380b123bd393c7ccc) fix(mbui,ui,core): keep replied bubble and working | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 58.03 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ac5672f84](https://github.com/AFK-surf/monoid/commit/ac5672f843714a2096df49c0980cf525fd100980) feat(station): add Google Vertex AI account for An | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.48 |
 | [a8a14a344](https://github.com/AFK-surf/monoid/commit/a8a14a344e856480c9715f797eb82215bc57c77d) feat(client-core): add pure-Pion views package and | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 54.92 |
 | [0cf13ac28](https://github.com/AFK-surf/monoid/commit/0cf13ac287d0fbbfef92ced562f04efb36ce4596) feat(core,mbui): support multi-workspace tasks-onl | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 54.99 |
-| [8126680e5](https://github.com/AFK-surf/monoid/commit/8126680e52043bc4a5e191b5b5fc756224a9266f) fix(mbui): phase 3a chat motion fixes for composer | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.25 |
