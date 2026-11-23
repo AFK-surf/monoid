@@ -20,7 +20,8 @@ const TIMEOUT_MS = 30_000;
 const AGY_CLOUD_CODE_URL = "https://daily-cloudcode-pa.googleapis.com";
 const AGY_PRODUCTION_URL = "https://cloudcode-pa.googleapis.com";
 const AGY_QUOTA_SUMMARY = "/v1internal:retrieveUserQuotaSummary";
-const AGY_USER_AGENT = "antigravity/1.5.12";
+// Google's retrieveUserQuotaSummary omits the Gemini Models group unless User-Agent has the CLI product segment.
+const AGY_USER_AGENT = "antigravity/cli/1.5.15";
 const DAY_MINUTES = 24 * 60;
 const WEEK_MINUTES = 7 * DAY_MINUTES;
 const SCRUBBED = [
@@ -235,6 +236,10 @@ function agyBase(urls: Urls, fallback: string): string {
   return (urls.agyQuota?.trim() || fallback).replace(/\/+$/, "");
 }
 
+function agyProductionBase(urls: Urls): string {
+  return (urls.agyQuotaProduction?.trim() || urls.agyQuota?.trim() || AGY_PRODUCTION_URL).replace(/\/+$/, "");
+}
+
 async function agyQuotaProject(home: string, base: string) {
   let token: string;
   try {
@@ -257,7 +262,7 @@ function isGeminiWeekly(window: QuotaWindow): boolean {
   return window.scope === "gemini" && window.minutes === WEEK_MINUTES;
 }
 
-// The CLI and the daily endpoint can omit Gemini's week. Read the explicit shared window from production.
+// Read the shared Gemini weekly window from `base` (daily first, then production when omitted).
 async function agyGeminiWeekly(base: string, token: string, payload: Json): Promise<QuotaWindow | undefined> {
   return agyWindows(await agyPost(base, AGY_QUOTA_SUMMARY, token, payload)).find(isGeminiWeekly);
 }
@@ -274,7 +279,7 @@ async function agyDirectQuota(home: string, urls: Urls, lang: Lang): Promise<Pro
   ]);
   const { windows, scoped } = summary !== null ? agyAllowance(summary) : { windows: [], scoped: [] };
   const extra = agyModelWindows(models).filter((w) => !windows.some((reported) => reported.scope === w.scope && reported.minutes === w.minutes));
-  const production = agyBase(urls, AGY_PRODUCTION_URL);
+  const production = agyProductionBase(urls);
   if (base !== production && !windows.some(isGeminiWeekly)) {
     const weekly = await agyGeminiWeekly(production, token, payload);
     if (weekly !== undefined) windows.unshift(weekly);
@@ -397,10 +402,13 @@ export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: L
   if (parsed !== null && parsed.status === "SUCCESS") {
     const { windows, scoped } = agyAllowance(parsed);
     if (direct && windows.length > 0 && !windows.some(isGeminiWeekly)) {
-      const production = agyBase(urls, AGY_PRODUCTION_URL);
-      const project = await agyQuotaProject(home, agyBase(urls, AGY_CLOUD_CODE_URL));
+      const daily = agyBase(urls, AGY_CLOUD_CODE_URL);
+      const production = agyProductionBase(urls);
+      const project = await agyQuotaProject(home, daily);
       if (project !== null) {
-        const weekly = await agyGeminiWeekly(production, project.token, project.payload);
+        const weekly =
+          (await agyGeminiWeekly(daily, project.token, project.payload)) ??
+          (daily !== production ? await agyGeminiWeekly(production, project.token, project.payload) : undefined);
         if (weekly !== undefined) windows.unshift(weekly);
       }
     }

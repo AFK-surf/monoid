@@ -987,3 +987,8 @@ test "quota_ok_should_recheck covers all non-codex subscriptions (agy, claude, c
   assert_false(quota_ok_should_recheck(Some("agy"), false, "api-provider", Some(Str("ok")), Some(Str("failed"))))
   assert_false(quota_ok_should_recheck(Some("agy"), false, "subscription", Some(Str("ok")), Some(Str("ok"))))
 }
+
+///|
+test "agy direct quota User-Agent carries the CLI product segment" {
+  assert_eq(agy_user_agent, "antigravity/cli/1.5.15")
+}

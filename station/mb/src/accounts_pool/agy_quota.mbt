@@ -401,7 +401,7 @@ let agy_production_url : String = "https://cloudcode-pa.googleapis.com"
 let agy_quota_summary : String = "/v1internal:retrieveUserQuotaSummary"
 
 ///|
-let agy_user_agent : String = "antigravity/1.5.12"
+let agy_user_agent : String = "antigravity/cli/1.5.15"
 
 ///|
 let agy_timeout_ms : Int = 30_000
@@ -568,6 +568,19 @@ fn agy_base(ctx : Ctx, fallback : String) -> String {
 }
 
 ///|
+fn agy_production_base(ctx : Ctx) -> String {
+  let raw_base = match ctx.url("agyQuotaProduction") {
+    Some(u) if trim_js(u) != "" => trim_js(u)
+    _ =>
+      match ctx.url("agyQuota") {
+        Some(u) if trim_js(u) != "" => trim_js(u)
+        _ => agy_production_url
+      }
+  }
+  strip_trailing_slashes(raw_base)
+}
+
+///|
 priv struct AgyQuotaProject {
   token : String
   tier : JV
@@ -639,7 +652,7 @@ async fn agy_direct_quota(ctx : Ctx, home : String, lang : String) -> JV? {
   let extra = agy_model_windows(ctx, models).filter(w => !windows.iter().any(reported =>
     reported.get("scope") == w.get("scope") && reported.get("minutes") == w.get("minutes")
   ))
-  let production = agy_base(ctx, agy_production_url)
+  let production = agy_production_base(ctx)
   if base != production && !windows.iter().any(is_gemini_weekly) {
     match agy_gemini_weekly(ctx, production, project) {
       Some(weekly) => windows.insert(0, weekly)
@@ -844,10 +857,20 @@ pub async fn agy_quota(
   if jget(parsed, "status") == Some(Str("SUCCESS")) {
     let (windows, scoped) = agy_allowance(ctx, parsed)
     if direct && windows.length() > 0 && !windows.iter().any(is_gemini_weekly) {
-      let base = agy_base(ctx, agy_cloud_code_url)
-      if agy_quota_project(ctx, home, base) is Some(project) {
-        match agy_gemini_weekly(ctx, agy_base(ctx, agy_production_url), project) {
-          Some(weekly) => windows.insert(0, weekly)
+      let daily = agy_base(ctx, agy_cloud_code_url)
+      let production = agy_production_base(ctx)
+      if agy_quota_project(ctx, home, daily) is Some(project) {
+        let weekly = match agy_gemini_weekly(ctx, daily, project) {
+          Some(w) => Some(w)
+          None =>
+            if daily != production {
+              agy_gemini_weekly(ctx, production, project)
+            } else {
+              None
+            }
+        }
+        match weekly {
+          Some(w) => windows.insert(0, w)
           None => ()
         }
       }

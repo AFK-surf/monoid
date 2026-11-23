@@ -106,23 +106,30 @@ describe("allowances and renewing", { concurrency: true }, () => {
 
     let hasGeminiWeekly = true;
     const weeklyReset = "2030-01-20T08:00:00Z";
+    const cliUserAgent = /^antigravity\/cli\/\d+\.\d+\.\d+/;
     const quotaApi = await provider((req) => {
       if (req.url.endsWith(":loadCodeAssist")) {
         return { status: 200, body: { paidTier: { id: "g1-pro-tier" }, cloudaicompanionProject: "aicode-consumers" } };
       }
       if (req.url.endsWith(":retrieveUserQuotaSummary")) {
+        // Google omits the Gemini Models group when User-Agent lacks the CLI product segment.
+        const includeGemini = cliUserAgent.test(String(req.headers["user-agent"] ?? ""));
         return {
           status: 200,
           body: {
             quotaSummary: {
               groups: [
-                {
-                  displayName: "Gemini Models",
-                  buckets: [
-                    { bucketId: "gemini-5h", remainingFraction: 0.5 },
-                    ...(hasGeminiWeekly ? [{ bucketId: "gemini-weekly", remainingFraction: 0.68, resetTime: weeklyReset }] : []),
-                  ],
-                },
+                ...(includeGemini
+                  ? [
+                      {
+                        displayName: "Gemini Models",
+                        buckets: [
+                          { bucketId: "gemini-5h", remainingFraction: 0.5 },
+                          ...(hasGeminiWeekly ? [{ bucketId: "gemini-weekly", remainingFraction: 0.68, resetTime: weeklyReset }] : []),
+                        ],
+                      },
+                    ]
+                  : []),
                 { displayName: "Gemini 4 Argon", buckets: [{ bucketId: "gemini-argon-wtu-weekly", remainingFraction: 0.8 }] },
               ],
             },
@@ -143,10 +150,13 @@ describe("allowances and renewing", { concurrency: true }, () => {
         { label: "每周 · Gemini", usedPercent: 32, resetsAt: Date.parse(weeklyReset), minutes: 10080, scope: "gemini" },
         ...q.windows.slice(1),
       ]);
-      assert.deepEqual(quotaApi.asked.map(({ url, body }) => [url, body]), [
-        ["/v1internal:loadCodeAssist", { metadata: { ideType: "ANTIGRAVITY" } }],
-        ["/v1internal:retrieveUserQuotaSummary", { project: "aicode-consumers" }],
-      ]);
+      assert.deepEqual(
+        quotaApi.asked.map(({ url, body, headers }) => [url, body, headers["user-agent"]]),
+        [
+          ["/v1internal:loadCodeAssist", { metadata: { ideType: "ANTIGRAVITY" } }, "antigravity/cli/1.5.15"],
+          ["/v1internal:retrieveUserQuotaSummary", { project: "aicode-consumers" }, "antigravity/cli/1.5.15"],
+        ],
+      );
 
       // Turned off on the profile (`directQuota: false`), only the CLI is asked: Gemini's week stays missing.
       const cliOnly = { ...profile, directQuota: false };
@@ -160,6 +170,66 @@ describe("allowances and renewing", { concurrency: true }, () => {
       assert.deepEqual(unavailable.windows, q.windows.slice(1));
     } finally {
       await quotaApi.close();
+    }
+
+    // Supplementing a missing Gemini weekly window queries daily before production so the active daily pool's real
+    // usage wins over production's separate pool, falling back to production only when daily also omits the window.
+    let dailyWeekly = true;
+    const prodReset = "2030-01-21T08:00:00Z";
+    const dailyApi = await provider((req) => {
+      if (req.url.endsWith(":loadCodeAssist")) {
+        return { status: 200, body: { paidTier: { id: "g1-ultra-tier" }, cloudaicompanionProject: "aicode-consumers" } };
+      }
+      if (req.url.endsWith(":retrieveUserQuotaSummary")) {
+        const includeGemini = cliUserAgent.test(String(req.headers["user-agent"] ?? ""));
+        return {
+          status: 200,
+          body: {
+            groups: [
+              ...(includeGemini && dailyWeekly
+                ? [{ displayName: "Gemini Models", buckets: [{ bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0.68, resetTime: weeklyReset }] }]
+                : []),
+              { displayName: "Claude and GPT models", buckets: [{ bucketId: "3p-weekly", window: "weekly", remainingFraction: 0.6 }] },
+            ],
+          },
+        };
+      }
+      return { status: 404, body: {} };
+    });
+    const prodApi = await provider((req) => {
+      if (req.url.endsWith(":retrieveUserQuotaSummary")) {
+        const includeGemini = cliUserAgent.test(String(req.headers["user-agent"] ?? ""));
+        return {
+          status: 200,
+          body: {
+            groups: [
+              ...(includeGemini
+                ? [{ displayName: "Gemini Models", buckets: [{ bucketId: "gemini-weekly", window: "weekly", remainingFraction: 1, resetTime: prodReset }] }]
+                : []),
+            ],
+          },
+        };
+      }
+      return { status: 404, body: {} };
+    });
+    try {
+      const splitUrls = { ...URLS, agyQuota: dailyApi.base, agyQuotaProduction: prodApi.base };
+      const partialEnv = { PATH: fakePath, FAKE_AGY_USAGE_NO_GEMINI_WEEKLY: "1" };
+
+      const fromDaily = await checkQuota(profile, partialEnv, undefined, splitUrls, "zh");
+      assert.deepEqual(fromDaily.windows[0], { label: "每周 · Gemini", usedPercent: 32, resetsAt: Date.parse(weeklyReset), minutes: 10080, scope: "gemini" });
+      assert.equal(prodApi.asked.length, 0, "production is not queried when daily returns Gemini weekly");
+
+      dailyWeekly = false;
+      const fromProd = await checkQuota(profile, partialEnv, undefined, splitUrls, "zh");
+      assert.deepEqual(fromProd.windows[0], { label: "每周 · Gemini", usedPercent: 0, resetsAt: Date.parse(prodReset), minutes: 10080, scope: "gemini" });
+      assert.deepEqual(
+        prodApi.asked.map(({ url, body, headers }) => [url, body, headers["user-agent"]]),
+        [["/v1internal:retrieveUserQuotaSummary", { project: "aicode-consumers" }, "antigravity/cli/1.5.15"]],
+      );
+    } finally {
+      await dailyApi.close();
+      await prodApi.close();
     }
 
     // macOS: `agy` is kept to the profile's file (`AGY_FILE_TOKENS`, HOME its agy/), never the login keychain's one
@@ -242,6 +312,7 @@ describe("allowances and renewing", { concurrency: true }, () => {
     let paidTier = true;
     let geminiSpent = false;
     let dailyHasGeminiWeekly = false;
+    let dailyHasGeminiFiveHour = false;
     const geminiReset = "2030-01-15T08:00:00Z";
     const thirdPartyReset = "2030-01-15T08:15:00Z";
     const agyApi = await provider((req) => {
@@ -259,14 +330,16 @@ describe("allowances and renewing", { concurrency: true }, () => {
         };
       }
       if (req.url.endsWith(":retrieveUserQuotaSummary")) {
+        const includeGemini = cliUserAgent.test(String(req.headers["user-agent"] ?? ""));
+        const geminiBuckets = [
+          ...(dailyHasGeminiWeekly ? [{ bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0.68, resetTime: weeklyReset }] : []),
+          ...(dailyHasGeminiFiveHour ? [{ bucketId: "gemini-5h", window: "5h", remainingFraction: 0.96, resetTime: geminiReset }] : []),
+        ];
         return {
           status: 200,
           body: {
             groups: [
-              ...(dailyHasGeminiWeekly ? [{
-                displayName: "Gemini Models",
-                buckets: [{ bucketId: "gemini-weekly", remainingFraction: 0.68, resetTime: weeklyReset }],
-              }] : []),
+              ...(includeGemini && geminiBuckets.length > 0 ? [{ displayName: "Gemini Models", buckets: geminiBuckets }] : []),
               {
                 displayName: "Claude and GPT models",
                 buckets: [
@@ -298,7 +371,7 @@ describe("allowances and renewing", { concurrency: true }, () => {
       const refused = await checkQuota({ ...profile, directQuota: false }, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
       assert.equal(refused.state, "unavailable");
       assert.ok(refused.detail?.includes("not currently available in your location"));
-      assert.deepEqual(agyApi.asked, []);
+      assert.equal(agyApi.asked.length, 0);
 
       const fallbackQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
       assert.equal(fallbackQ.state, "ok");
@@ -319,12 +392,26 @@ describe("allowances and renewing", { concurrency: true }, () => {
       ]);
 
       dailyHasGeminiWeekly = true;
+      const beforeWeekly = agyApi.asked.length;
       const weeklyQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
       assert.deepEqual(weeklyQ.windows, [
         spentQ.windows[0],
         { label: "每周 · Gemini", usedPercent: 32, resetsAt: Date.parse(weeklyReset), minutes: 10080, scope: "gemini" },
         ...spentQ.windows.slice(1),
       ]);
+      const weeklyAsked = agyApi.asked.slice(beforeWeekly);
+      assert.ok(weeklyAsked.length > 0 && weeklyAsked.every((r) => r.headers["user-agent"] === "antigravity/cli/1.5.15"));
+
+      // When daily retrieveUserQuotaSummary returns both Gemini buckets (weekly + 5h), the direct fallback keeps
+      // all four windows without duplicating the 5-hour Gemini pool from fetchAvailableModels.
+      dailyHasGeminiFiveHour = true;
+      const fullDirectQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      assert.deepEqual(fullDirectQ.windows, [
+        { label: "每周 · Gemini", usedPercent: 32, resetsAt: Date.parse(weeklyReset), minutes: 10080, scope: "gemini" },
+        { label: "5 小时 · Gemini", usedPercent: 4, resetsAt: Date.parse(geminiReset), minutes: 300, scope: "gemini" },
+        ...spentQ.windows.slice(1),
+      ]);
+      dailyHasGeminiFiveHour = false;
 
       // Account with no active tier at all in this location: falls through to report the location error, never a
       // verification hold.
