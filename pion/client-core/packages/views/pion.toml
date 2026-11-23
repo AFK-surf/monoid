@@ -11,6 +11,7 @@ sql = { workspace = true }
 mesh = { workspace = true }
 form = { workspace = true }
 fork = { workspace = true }
+history = { workspace = true }
 role = { workspace = true }
 lock = { workspace = true }
 vault = { workspace = true }
