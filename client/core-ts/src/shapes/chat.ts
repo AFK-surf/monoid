@@ -290,7 +290,7 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["slackUrl", opt("String")],
     ["slackApp", opt("String"), { doc: "The same thread's link into Slack's app (slack://), which opens without a browser's page first." }],
     ["feishuUrl", opt("String"), { doc: "A Feishu (Lark) chat's link in Feishu." }],
-    ["cc", vec("ChatCcTo"), { default: true, doc: "Its agents' Slack and Feishu threads, the one said in last first: what is sent from here can be copied to\nthose ticked (`chat.cc`). Empty in a chat whose agents are in none, and from a core before it." }],
+    ["cc", vec("ChatCcTo"), { default: true, doc: "Its agents' Slack, Feishu, Comma and group threads, the one said in last first: what is sent from here can be copied to\nthose ticked (`chat.cc`). Empty in a chat whose agents are in none, and from a core before it." }],
     ["people", vec("Person")],
     ["agents", vec("ChatAgent")],
     ["messages", vec("ChatMessage")],
@@ -358,7 +358,7 @@ export const CHAT_SHAPES: Record<string, Shape> = {
   ChatCcTo: struct([
     ["thread", "i64", { client: "I54", doc: "The thread's id: `chat.cc`'s `to`." }],
     ["place", "String", { said: true, doc: "Where it is: #channel, 私信, the Feishu group." }],
-    ["via", "String", { doc: "Its platform, for its mark: \"slack\" or \"feishu\"." }],
+    ["via", "String", { doc: "Its platform, for its mark: \"slack\", \"feishu\", \"comma\" or \"group\"." }],
     ["on", "bool", { doc: "Ticked: what is sent from here is copied there too, the station's bot saying there who wrote it on still.fail,\nand what. Off until ticked, for as long as the app runs." }],
   ], { doc: "A thread a chat's messages can be copied to ( \"抄送\")." }),
   ChatTabs: struct([

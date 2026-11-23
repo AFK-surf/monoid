@@ -66,10 +66,11 @@ export function givenTitle(t: Titled | null | undefined): string | null {
   return text(t, "title") || text(t, "autoTitle") || null;
 }
 
-/// Where a Slack, Feishu or group thread is, in words: #channel, 私信, the Feishu group, the group conversation (a group's
-/// name, a private chat's other member); null for a still.fail chat.
+/// Where a Slack, Feishu, Comma or group thread is, in words: #channel, 私信, the Feishu group, Comma (a Task is in no
+/// channel), the group conversation (a group's name, a private chat's other member); null for a still.fail chat.
 export function placeName(surface: string, channel: string, channelName: string, words: { directMessage: string; feishu: string }): string | null {
   if (surface.startsWith("feishu:") || isFeishuChat(channel)) return channelName || words.feishu;
+  if (surface.startsWith("comma:")) return "Comma";
   if (surface.startsWith("group:")) return channelName || null;
   if (isOwnSurface(surface) || surface === "") return null;
   return channel.startsWith("D") ? words.directMessage : `#${channelName || channel}`;

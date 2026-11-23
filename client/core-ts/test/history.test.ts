@@ -96,6 +96,10 @@ test("a_comma_task_or_group_place_is_named_and_marked_as_its_own_never_as_a_slac
   const group = format.place(threads, "G1/1700000001.000100", 480, new Map()) as J;
   assert.deepEqual([group.name, group.surface, group.url], ["发布小组", "group", undefined]);
   assert.equal((format.place(threads, "G2/1700000002.000100", 480, new Map()) as J).name, "Group");
+  // The same name and mark where a chat's message can be copied to (its composer's 抄送) and before a post's ts is known.
+  assert.deepEqual([format.placeName("comma:cm1", "TASK", ""), format.placeKind("comma:cm1", "TASK")], ["Comma", "comma"]);
+  assert.deepEqual([format.placeName("group:g1", "G1", "发布小组"), format.placeKind("group:g1", "G1")], ["发布小组", "group"]);
+  assert.deepEqual([format.placeKind("feishu:bot", "oc_a1"), format.placeKind("slack:T1", "C1"), format.placeKind("", "oc_a1")], ["feishu", "slack", "feishu"]);
 });
 
 test("a_stillfail_place_is_its_title_or_the_agents_or_new_chat_never_its_first_message", () => {

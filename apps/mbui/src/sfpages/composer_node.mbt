@@ -2517,7 +2517,7 @@ fn cc_chooser_node(parent : @view.View, src : Source, r : ChatRef, head : () -> 
     check_end=true,
     extras=fn(i) {
       match to().0.get(i) {
-        Some(o) => { note: "", value: "", mark: Some(Drawn(if o.via == "feishu" { "feishu" } else { "slack" })), end: None }
+        Some(o) => { note: "", value: "", mark: Some(Drawn(@sf.place_mark_name(o.via, false))), end: None }
         None => { note: "", value: "", mark: None, end: None }
       }
     },
@@ -2525,9 +2525,9 @@ fn cc_chooser_node(parent : @view.View, src : Source, r : ChatRef, head : () -> 
 }
 
 ///|
-/// The mark of the platform what is sent is copied to (cc_mark's, a node's): Feishu's for Feishu, else Slack's, 14.
+/// The mark of the platform what is sent is copied to (cc_mark's, a node's): its place's (`@sf.place_mark_name`'s), 14.
 fn cc_mark_node(parent : @view.View, via : String) -> Unit {
-  @sf.origin_mark_node(parent, fn() { via }, 14.0) |> ignore
+  @sf.place_mark_node(parent, @sf.place_mark_name(via, false), 14.0) |> ignore
 }
 
 ///|
