@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [551800b38](https://github.com/AFK-surf/monoid/commit/551800b3882f2df7d3ba12ede9e9ebd23890bf3a) feat(station): add STILLFAIL_RULES_MODE shadow/pio | 2.73 | 3.67 | 14.88 | 37.04 | 56.71 | 32.45 | 65.87 | 100.44 | 120.31 |
 | [41d65bb04](https://github.com/AFK-surf/monoid/commit/41d65bb04308fa74537c8f669305f48353bf3b9b) feat(cloud,station): support multi-workspace and m | 2.73 | 3.67 | 14.88 | 37.03 | 56.71 | 32.44 | 65.86 | 100.19 | 125.63 |
 | [23141833b](https://github.com/AFK-surf/monoid/commit/23141833bf54ccf314abe6579cf3289eab5f91e2) fix(cloud,core): give member credentials their own | 2.72 | 3.66 | 14.85 | 37.01 | 56.58 | 32.42 | 65.77 | 100.21 | 120.4 |
 | [8587041df](https://github.com/AFK-surf/monoid/commit/8587041df4a6bf24fc8f3ebe00155420a48c6a8c) feat(ui): extract list_flip helpers, remap QuietDe | 2.72 | 3.66 | 14.85 | 37.01 | 56.58 | 32.42 | 65.77 | 100.21 | 120.4 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bc2520fb4](https://github.com/AFK-surf/monoid/commit/bc2520fb4e4851f33a4130b42ab2c773a2f0f316) feat(sf-ui,mbui): upgrade remote screen/terminal f | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.55 | 124.51 |
 | [769720911](https://github.com/AFK-surf/monoid/commit/76972091188326e83c3391d3e92ec7f71b97a51e) feat(sf-ui,mbui): adopt liquid glass on dialogs, m | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.6 | 123.22 |
 | [3d846babe](https://github.com/AFK-surf/monoid/commit/3d846babecb0760781dc2021dea320eee0a4d78c) fix(sf-ui,mbui): keep Small-screen panels as botto | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.58 | 121.83 |
-| [67422c4f0](https://github.com/AFK-surf/monoid/commit/67422c4f02d6ea87761e22f360c3ea8cfd4a8cda) fix(station): count a timed-out warm as a failed s | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.53 | 126.63 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [551800b38](https://github.com/AFK-surf/monoid/commit/551800b3882f2df7d3ba12ede9e9ebd23890bf3a) feat(station): add STILLFAIL_RULES_MODE shadow/pio | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.02 |
 | [41d65bb04](https://github.com/AFK-surf/monoid/commit/41d65bb04308fa74537c8f669305f48353bf3b9b) feat(cloud,station): support multi-workspace and m | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.35 |
 | [23141833b](https://github.com/AFK-surf/monoid/commit/23141833bf54ccf314abe6579cf3289eab5f91e2) fix(cloud,core): give member credentials their own | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.12 |
 | [8587041df](https://github.com/AFK-surf/monoid/commit/8587041df4a6bf24fc8f3ebe00155420a48c6a8c) feat(ui): extract list_flip helpers, remap QuietDe | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.22 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bc2520fb4](https://github.com/AFK-surf/monoid/commit/bc2520fb4e4851f33a4130b42ab2c773a2f0f316) feat(sf-ui,mbui): upgrade remote screen/terminal f | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.49 |
 | [769720911](https://github.com/AFK-surf/monoid/commit/76972091188326e83c3391d3e92ec7f71b97a51e) feat(sf-ui,mbui): adopt liquid glass on dialogs, m | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.61 |
 | [3d846babe](https://github.com/AFK-surf/monoid/commit/3d846babecb0760781dc2021dea320eee0a4d78c) fix(sf-ui,mbui): keep Small-screen panels as botto | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.63 |
-| [67422c4f0](https://github.com/AFK-surf/monoid/commit/67422c4f02d6ea87761e22f360c3ea8cfd4a8cda) fix(station): count a timed-out warm as a failed s | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.72 |
