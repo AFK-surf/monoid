@@ -1073,3 +1073,23 @@ test("a host sample that fails is no rejection, as a stream joins or on the beat
   }
   assert.deepEqual(unhandled, []);
 });
+
+test("a stream that comes back has its own viewer's overview made again, not every viewer's", async () => {
+  const { events, change } = setup(testClock().clock);
+  const made: string[] = [];
+  events.follow({ overview: async (v) => (made.push(v.email), { running: 0 }) });
+  const other = await events.open(viewer("b@x"), "zh", false, [], [], null);
+  const otherStream = reader(other.body as AsyncIterable<Buffer>);
+  const first = await opened(events);
+  change({ type: "session", key: "1" });
+  await settle();
+  const heard = first.got.findLast((e) => e.id)!.id!;
+  await first.close();
+  made.length = 0;
+  const back = await opened(events, heard);
+  await settle();
+  assert.equal(back.resumed, true);
+  assert.deepEqual(made, ["a@x"]);
+  await back.close();
+  await otherStream.close();
+});

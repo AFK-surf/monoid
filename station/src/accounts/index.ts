@@ -342,7 +342,10 @@ export class Accounts {
     this.discoverFn = deps.discover ?? ((profile, check) => discoverDecisions(profile, check, this.background.clock));
     // What the last run learned about profiles shows until they are checked again.
     for (const [id, status] of deps.store.profileStatus()) {
-      if (isObject(status.check)) this.checks.set(id, status.check as ProfileCheck);
+      if (isObject(status.check)) {
+        this.checks.set(id, status.check as ProfileCheck);
+        this.checksChanged++;
+      }
       if (isObject(status.quota)) this.quotas.set(id, status.quota as ProfileQuota);
     }
   }
@@ -446,9 +449,20 @@ export class Accounts {
   }
 
   /// The profiles as the config has them now (parse_config's derivations), each running the models its check found.
+  /// Made again only when the config or a check changed: health, decisionModels and the overview ask it for every
+  /// profile of every viewer, and parsing the config each time held the main thread for seconds on a station of many
+  /// profiles and devices.
   profiles(): Profile[] {
-    return hubConfig(this.deps.config.raw(), this.deps.data, this.found).profiles;
+    const raw = this.deps.config.raw();
+    const made = this.profilesMade;
+    if (made !== null && made.raw === raw && made.checks === this.checksChanged) return made.profiles;
+    const profiles = hubConfig(raw, this.deps.data, this.found).profiles;
+    this.profilesMade = { raw, checks: this.checksChanged, profiles };
+    return profiles;
   }
+  private profilesMade: { raw: unknown; checks: number; profiles: Profile[] } | null = null;
+  /// Counts the changes of `checks` (what `found` reads), for `profiles`.
+  private checksChanged = 0;
 
   /// The models profile `id`'s last check found (null: none listed), which it runs besides those config.json names.
   readonly found = (id: string): readonly string[] | null => this.checks.get(id)?.models ?? null;
@@ -1365,6 +1379,7 @@ export class Accounts {
     if (check.state === "login" && before?.state !== "login") this.lost(id, before, forced);
     else if (check.state === "ok" && before?.state !== "ok") this.deps.loginBack?.(id);
     this.checks.set(id, check);
+    this.checksChanged++;
     this.deps.store.setProfileCheck(id, check);
     // Other models found: one may now replace one the profile names.
     if (
