@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c9ce75bdc](https://github.com/AFK-surf/monoid/commit/c9ce75bdcb0c5c3c0204c5f42ee4b2ec033e45d3) perf(station): project each event once for all old | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 116.63 |
 | [803c9e8ea](https://github.com/AFK-surf/monoid/commit/803c9e8ea2bb8e41487ff46c1f3afa81d7597bab) fix(station): report MiniMax and GLM plan quotas ( | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.62 | 118.2 |
 | [68fb3c249](https://github.com/AFK-surf/monoid/commit/68fb3c2497c138f1f8790687be24c2387b487cf3) test(mbui): hold a history group's steps at their  | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.39 | 121.54 |
 | [6eb1558df](https://github.com/AFK-surf/monoid/commit/6eb1558df72482940a2d8e16fe6292a29b78c145) fix(ui): grow start-indented content from its star | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.39 | 121.54 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [dfcde34c0](https://github.com/AFK-surf/monoid/commit/dfcde34c089d4df139ef20f962ff5fa96f34e632) test(pion): add L1/L2 TS-vs-Pion differential pari | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 100.44 | 132.06 |
 | [7ba6b7030](https://github.com/AFK-surf/monoid/commit/7ba6b7030c6551a6974b32fe1dc1796955ec35d2) feat(ui): add runtime Agent Bridge protocol on vie | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 100.44 | 132.06 |
 | [62801b760](https://github.com/AFK-surf/monoid/commit/62801b76096c861e6fe7b463fc0463b5a43079af) feat(headless): add reorder/transfer, tree, and me | 2.73 | 3.68 | 14.91 | 37.09 | 56.8 | 32.48 | 65.96 | 100.44 | 128.5 |
-| [a09f1aec1](https://github.com/AFK-surf/monoid/commit/a09f1aec17d98631174f16e4fa75a21cf6256adc) feat(mbui): apply Liquid Glass surface to narrow o | 2.73 | 3.68 | 14.91 | 37.08 | 56.8 | 32.48 | 65.96 | 100.42 | 137.83 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c9ce75bdc](https://github.com/AFK-surf/monoid/commit/c9ce75bdcb0c5c3c0204c5f42ee4b2ec033e45d3) perf(station): project each event once for all old | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.16 |
 | [803c9e8ea](https://github.com/AFK-surf/monoid/commit/803c9e8ea2bb8e41487ff46c1f3afa81d7597bab) fix(station): report MiniMax and GLM plan quotas ( | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.16 |
 | [68fb3c249](https://github.com/AFK-surf/monoid/commit/68fb3c2497c138f1f8790687be24c2387b487cf3) test(mbui): hold a history group's steps at their  | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.23 |
 | [6eb1558df](https://github.com/AFK-surf/monoid/commit/6eb1558df72482940a2d8e16fe6292a29b78c145) fix(ui): grow start-indented content from its star | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.07 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [dfcde34c0](https://github.com/AFK-surf/monoid/commit/dfcde34c089d4df139ef20f962ff5fa96f34e632) test(pion): add L1/L2 TS-vs-Pion differential pari | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.85 | 55.07 |
 | [7ba6b7030](https://github.com/AFK-surf/monoid/commit/7ba6b7030c6551a6974b32fe1dc1796955ec35d2) feat(ui): add runtime Agent Bridge protocol on vie | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.85 | 55.26 |
 | [62801b760](https://github.com/AFK-surf/monoid/commit/62801b76096c861e6fe7b463fc0463b5a43079af) feat(headless): add reorder/transfer, tree, and me | 0.49 | 0.64 | 2.45 | 3.52 | 5.84 | 1.8 | 4.85 | 55.28 |
-| [a09f1aec1](https://github.com/AFK-surf/monoid/commit/a09f1aec17d98631174f16e4fa75a21cf6256adc) feat(mbui): apply Liquid Glass surface to narrow o | 0.49 | 0.64 | 2.45 | 3.52 | 5.84 | 1.8 | 4.85 | 55.31 |
