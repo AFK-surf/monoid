@@ -3,6 +3,7 @@ import {
   "ui/motion",
   "ui/ui",
   "ui/view",
+  "ui/headless",
   "ui/signals",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/string",

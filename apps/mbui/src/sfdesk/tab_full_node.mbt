@@ -173,27 +173,13 @@ fn tab_full_node(n : @view.View, src : Source, f : @sfbase.TabFull) -> Unit {
   // (while it is open: the pages under it take no press, key or wheel; back and Escape put it back in its panel; the
   // keyboard's focus its own ground's as it opens, never a field of the page under it or of its own, given back as it
   // goes)
-  n
-  .over(Is(true))
-  .modal(Is(true))
-  .focus_opens_first(takes=fn(_) { false })
-  |> ignore
-  // (a field of the page under it, the composer's, let go of: its keys, Escape too, no longer its)
-  n.focus_let_go()
-  n
+  @sf.fullscreen_overlay_node(n, back, auto_focus=true, first_takes=fn(_) { false })
   // (on the page's ground, as the tab is beside the chat; its bar on it too, as a file read over the whole window has
   // its bar on its paper: full_ink)
   .ground(By(fn() { @sf.theme().p.bg }))
-  .on_key(fn(k) {
-    if k.code == @ui.key_escape {
-      back()
-      true
-    } else {
-      false
-    }
-  })
-  .takes_back(back)
   |> ignore
+  // (a field of the page under it, the composer's, let go of: its keys, Escape too, no longer its)
+  n.focus_let_go()
   let tips_at : Ref[@view.View?] = Ref(None)
   let tips = @sf.TipLayer::new(fn() { tips_at.val })
   let room = fn() { (@sf.viewer_host().room)() }

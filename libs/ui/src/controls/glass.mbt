@@ -164,17 +164,6 @@ pub fn glass_sheet() -> @ui.Glass {
 }
 
 ///|
-/// Progressive blur soft scroll-edge backdrop (iOS 26 UIScrollEdgeEffect.soft): blurs and veils scrolled content
-/// progressively across the host node's `View::fades` band (blur sigma 0 -> 8.5pt, `p.bg` veil 0 -> 50% with
-/// adaptive contrast boost over opposing-luminance content, vibrancy saturation 1.25), degrading to a solid
-/// `p.bg` alpha fade under `MBUI_GLASS=solid`. `ground`: the ground it veils into where that is not `p.bg` (a page's
-/// panel a step darker behind the one in use); none (0) is `p.bg`.
-pub fn glass_scroll_edge(ground? : Int64 = 0L) -> @ui.Glass {
-  let bg = if ground != 0L { ground } else { theme().p.bg }
-  @glass.liquid_scroll_edge_glass(bg~)
-}
-
-///|
 /// Thin `@sf` floating capsule surface decorator delegating to `@glass.liquid_capsule_decorate` with `glass_floating`
 /// optics (supports dynamic `tint`, `extra_blur`, `sharing`, and opt-in `with_edge`/`with_shadow`/`clips`).
 pub fn floating_capsule_decorate(

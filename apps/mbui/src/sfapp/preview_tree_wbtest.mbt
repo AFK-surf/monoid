@@ -4417,3 +4417,43 @@ test "a film flying into the viewer from a quote's video carries its length in a
   let marks = d.locate("icon:play").filter(fn(p) { p.0 >= fx && p.0 <= fx + fw && p.1 >= fy && p.1 <= fy + fh })
   assert_eq(marks, [])
 }
+
+///|
+test "W5-M: viewer_tree registers on @headless.overlays_open and dismisses on Escape and Back" {
+  new_run()
+  let src = fixture("chat-viz")
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  let base = w5_overlays_open()
+  let a : @sfbase.Attachment = {
+    name: "shot.png",
+    path: "work/s-c1/shot.png",
+    size: 1024.0,
+    width: 100.0,
+    height: 100.0,
+    thumbhash: "",
+    owner: "",
+    upload: "",
+    duration: 0.0,
+    frames: 0,
+    held: false,
+  }
+  // Escape dismiss
+  open_preview("ws1/st1", "s-c1", a)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.viewer.get() is Some(_))
+  assert_eq(w5_overlays_open(), base + 1)
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.viewer.get() is None)
+  assert_eq(w5_overlays_open(), base)
+  // Back dismiss
+  open_preview("ws1/st1", "s-c1", a)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(w5_overlays_open(), base + 1)
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.viewer.get() is None)
+  assert_eq(w5_overlays_open(), base)
+}

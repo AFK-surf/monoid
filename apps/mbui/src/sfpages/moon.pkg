@@ -7,7 +7,6 @@ import {
   "moonbitlang/core/string",
   "ui/ui",
   "ui/dmath",
-  "ui/kit",
   "ui/hostapi",
   "ui/pixels",
   "ui/controls" @sf,

@@ -329,13 +329,6 @@ pub(all) struct Tool {
 }
 
 ///|
-/// A tool drawn by `draw`, offering `instead` in the ⋯ when it goes (the `drop`-th).
-pub fn tool_of(key : String, draw : () -> Unit, drop? : Int = 0, instead? : Array[MenuItem] = []) -> Tool {
-  { key, drop, draw, instead }
-}
-
-
-///|
 /// A row of tools (tools_row): 6 apart, more where a press's room needs it (keys_gap), on a line.
 pub fn tools_line() -> @ui.Style {
   tools_line_look.then(@ui.style(gap=keys_gap(least=tools_apart)))

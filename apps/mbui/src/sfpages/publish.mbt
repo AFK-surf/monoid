@@ -472,12 +472,14 @@ pub fn publish_layer_node(v : @view.View, src : Source) -> Unit {
         enter=@motion.trans(fade=0.0, spec=@motion.tween(publish_in_ms, ease=Out), ground_first=true),
         exit=@motion.dialog_out,
       )
-      n
-      .over(Is(true))
       // (the pages under it theirs again as it begins to go;
       // leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
-      .modal(By(live))
-      .presses(By(live))
+      @sf.fullscreen_overlay_node(
+        n,
+        publish_close,
+        inert=fn() { !live() },
+        before_dismiss=fn() { publishing.busy.untracked() },
+      )
       .ground(By(fn() { @sf.theme().p.bg }))
       .alpha(By(fn() { look().alpha }))
       .scale(By(fn() { look().sx }))
@@ -506,24 +508,7 @@ fn publish_node(n : @view.View, src : Source, look : () -> @ui.Look) -> Unit {
   guard @signals.untracked(fn() { publishing.of.get() }) is Some((r, _)) else { return }
   publishing_src.val = Some(src)
   let busy = fn() { publishing.busy.untracked() }
-  n
-  .over(Is(true))
-  .on_key(fn(k) {
-    if k.code == @ui.key_escape {
-      if !busy() {
-        publish_close()
-      }
-      true
-    } else {
-      false
-    }
-  })
-  .takes_back(fn() {
-    if !busy() {
-      publish_close()
-    }
-  })
-  |> ignore
+  n.over(Is(true)) |> ignore
   // (what was drawn live on it let go as it has gone, where no other has opened since)
   n.owns(fn() {
     if publishing.of.untracked() is None {

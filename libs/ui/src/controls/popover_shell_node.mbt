@@ -179,51 +179,6 @@ fn popover_content_motion(p : @view.View, node : @view.View, fallback : () -> Do
 }
 
 ///|
-/// Smooth capillary liquid-bridge merge radius (pt) during popover entrance/exit scale motion (`look.sx < 0.9999`):
-/// aligned to `glass_pop_in`'s `0.97..1.0` span (`0.03`) with a root-shaped curve (`s * 0.6 + s.sqrt() * 0.4`).
-pub fn popover_bridge_merge(look : @ui.Look) -> Double {
-  if look.alpha > 0.001 && look.sx < 0.9999 {
-    let rem = dclamp((1.0 - look.sx) / 0.03, 0.0, 1.0)
-    if rem > 0.003 {
-      let s = rem.sqrt()
-      let k = s * 0.6 + s.sqrt() * 0.4
-      40.0 * k
-    } else {
-      0.0
-    }
-  } else {
-    0.0
-  }
-}
-
-///|
-/// Full-body liquid-glass scale factor (`0.28 <-> 1.00`) for a non-pill button-anchored popover so it emerges from
-/// and retracts back into its anchor button across the standard `pop_ms` / `pop_out_ms` transition.
-pub fn popover_bridge_scale(look : @ui.Look) -> Double {
-  if look.sx >= 0.9999 {
-    1.0
-  } else {
-    let rem = dclamp((1.0 - look.sx) / 0.03, 0.0, 1.0)
-    let f = 0.45 * rem + 0.55 * rem.sqrt()
-    1.0 - 0.72 * f
-  }
-}
-
-///|
-/// High-presence opacity curve for a non-pill button-anchored liquid-glass popover.
-pub fn popover_bridge_alpha(look : @ui.Look) -> Double {
-  if look.alpha <= 0.001 {
-    0.0
-  } else if look.sx >= 0.9999 {
-    look.alpha
-  } else {
-    let rem = dclamp((1.0 - look.sx) / 0.03, 0.0, 1.0)
-    let a = 1.0 - rem * rem.sqrt()
-    dmin(a, dmin(look.alpha * 3.0, 1.0))
-  }
-}
-
-///|
 /// Configures anchored popover liquid morphing on `layer` immediately before the popover shell (`menu_node`):
 /// - Branch A (liquid glass `bar_pill_group_node` trigger): lends `pill_morph_lent` driving 1:1 iOS 27.0
 ///   `LiquidMorphPhysics` (trigger pill recoil, impact compression, horizontal splash, Blob A/B SDF fusion, and
