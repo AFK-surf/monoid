@@ -98,3 +98,35 @@ test("that its main thread runs is said only to a launcher that asks for it", as
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a launcher that closes its end first stops the process once, and what is said after is dropped, not thrown", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "launcher-closed-"));
+  const thrown: unknown[] = [];
+  const heard = (error: unknown) => void thrown.push(error);
+  process.on("uncaughtException", heard);
+  try {
+    const end = await channel(dir);
+    const control = launcher(["run", "--launcher-pipe", end.path, "--launcher-ports", "1,2", "--launcher-carries", "--launcher-heartbeat"]);
+    let stopped = 0;
+    control.on("stop", () => void stopped++);
+    const socket = await end.connected;
+    socket.destroy();
+    // Said before the close is heard (the write that fails with EPIPE), and after it.
+    control.heartbeat();
+    control.drained("idle");
+    await Promise.resolve();
+    control.ready("0.1.0");
+    await until(() => stopped > 0);
+    control.heartbeat();
+    control.drained("idle");
+    control.carry({ vault: { held: [] } });
+    // A turn of the loop for an error the writes would give to be told.
+    await new Promise((r) => setImmediate(r));
+    assert.equal(stopped, 1);
+    assert.deepEqual(thrown, []);
+  } finally {
+    process.off("uncaughtException", heard);
+    stops.splice(0).forEach((stop) => stop());
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
