@@ -217,3 +217,111 @@ test "flips: a pick changed as a flight's way in the list is nearly over comes i
   }
   assert_eq(was, 1.0, msg="选择了 at \{was} once its way is over")
 }
+
+///|
+fn flip_pick_rect(t : Tree, w : String) -> (Double, Double, Double)? {
+  match t.drawn().filter(fn(d) { d.words == w && d.alpha > 0.0 }) {
+    [d, ..] => Some((d.x, d.x + d.w, d.alpha))
+    _ => None
+  }
+}
+
+///|
+test "flips: right-aligned pick(leave=200) keeps leaving and entering items anchored on both shrink and grow" {
+  let cases : Array[(String, Double, String, Double, String)] = [
+    ("shrink", 160.0, "未发送 重试 删除", 70.0, "正在发送"),
+    ("grow", 30.0, "刚刚", 160.0, "未发送 重试 删除"),
+  ]
+  for fps in [60.0, 120.0] {
+    let step = 1000.0 / fps
+    for c in cases {
+      let (label, w0, s0, w1, s1) = c
+      let keys = @signals.signal(Array::makei(10, fn(i) { i }), same=fn(a, b) { a == b })
+      let next = @signals.signal(false, same=fn(a, b) { a == b })
+      let scroll = Scroll::list()
+      let tree = Tree::new(fn(root) {
+        root.box(fn(o) {
+          o.width(Is(Some(300.0))).height(Is(Some(400.0))) |> ignore
+          o.scrolls_window(scroll, fn() { keys.get() }, est=40.0, follows=fn() { true }, flips=true, fn(b, k) {
+            if k != 9 {
+              b.box(fn(w) { w.height(Is(Some(40.0))).shrink(Is(0.0)).words(Is("行\{k}")) |> ignore }) |> ignore
+              return
+            }
+            b.box(fn(row) {
+              row.width(Is(Some(300.0))).lines_up(Is(Some(End))) |> ignore
+              row.box(fn(col) {
+                col.lines_up(Is(Some(End))) |> ignore
+                col.box(fn(bubble) {
+                  bubble.width(Is(Some(100.0))).height(Is(Some(32.0))).shrink(Is(0.0)).words(Is("气泡")) |> ignore
+                })
+                |> ignore
+                col.pick(leave=200.0, fn() { next.get() }, fn(v, is_next) {
+                  v
+                  .width(Is(Some(if is_next { w1 } else { w0 })))
+                  .height(Is(Some(if is_next { 18.0 } else { 26.0 })))
+                  .shrink(Is(0.0))
+                  .words(Is(if is_next { s1 } else { s0 }))
+                  |> ignore
+                })
+              })
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      tree.frame(390.0, 844.0, now=0.0) |> ignore
+      let (old_x, old_r, _) = match flip_pick_rect(tree, s0) {
+        Some(r) => r
+        None => fail("\{label} @\{fps}fps: initial \{s0} not drawn")
+      }
+      let at = flip_pick_at
+      tree.advance(at)
+      next.set(true)
+      let leaving_samples : Array[(Double, Double, Double, Double)] = []
+      let entering_samples : Array[(Double, Double, Double, Double)] = []
+      let mut ms = at
+      while ms <= at + 500.0 {
+        tree.frame(390.0, 844.0, now=ms) |> ignore
+        match flip_pick_rect(tree, s0) {
+          Some((x, r, a)) => leaving_samples.push((ms - at, x, r, a))
+          None => ()
+        }
+        match flip_pick_rect(tree, s1) {
+          Some((x, r, a)) => entering_samples.push((ms - at, x, r, a))
+          None => ()
+        }
+        ms = ms + step
+      }
+      let (new_x, new_r, end_a) = match flip_pick_rect(tree, s1) {
+        Some(r) => r
+        None => fail("\{label} @\{fps}fps: final \{s1} not drawn")
+      }
+      assert_eq(end_a, 1.0, msg="\{label} @\{fps}fps: final \{s1} alpha=\{end_a}")
+      assert_true(
+        leaving_samples.iter().any(fn(s) { s.3 > 0.0 && s.3 < 1.0 }),
+        msg="\{label} @\{fps}fps: leaving \{s0} never faded mid-way",
+      )
+      assert_true(
+        entering_samples.iter().any(fn(s) { s.3 > 0.0 && s.3 < 1.0 }),
+        msg="\{label} @\{fps}fps: entering \{s1} never faded in mid-way",
+      )
+      for s in leaving_samples {
+        let (dt, x, r, a) = s
+        assert_true(
+          (x - old_x).abs() <= 0.5 && (r - old_r).abs() <= 0.5,
+          msg="\{label} @\{fps}fps +\{dt}ms: leaving \{s0} (a=\{a}) drifted from [\{old_x}, \{old_r}] to [\{x}, \{r}]",
+        )
+      }
+      for s in entering_samples {
+        let (dt, x, r, a) = s
+        assert_true(
+          (x - new_x).abs() <= 0.5 && (r - new_r).abs() <= 0.5,
+          msg="\{label} @\{fps}fps +\{dt}ms: entering \{s1} (a=\{a}) drifted from [\{new_x}, \{new_r}] to [\{x}, \{r}]",
+        )
+      }
+    }
+  }
+}

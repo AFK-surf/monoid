@@ -2634,7 +2634,7 @@ fn composer_extras_node(
             if s < 0.999 {
               @sf.seen_at(s)
             } else {
-              1.0
+              1.0 - leave_ease(item.going())
             }
           } else {
             match from_room.get() {

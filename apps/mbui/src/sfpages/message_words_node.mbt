@@ -439,6 +439,19 @@ fn mine_said_node(
         } else {
           0.0
         }
+        if under_leave > 0.0 {
+          let was_under = Ref(@signals.untracked(under))
+          n.reacts(under, at_start=false, fn(now) {
+            let before = was_under.val
+            was_under.val = now
+            if (now == MineUnsent || before == MineUnsent) &&
+              now != before &&
+              !@view.answering_now() &&
+              @signals.untracked(@ui.app_visible) {
+              @view.transition(within=n.transitions_root(), fn() {  })
+            }
+          })
+        }
         n.pick(under, leave=under_leave, fn(u, now) {
           match now {
             MineBlocked =>

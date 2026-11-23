@@ -5,7 +5,5 @@
 
 ///|
 fn init {
-  @ui.rows_steady_known([
-    ("src/sfapp/wide_wbtest.mbt", 1),
-  ])
+  @ui.rows_steady_known([])
 }
