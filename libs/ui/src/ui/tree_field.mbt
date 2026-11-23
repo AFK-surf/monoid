@@ -1218,7 +1218,7 @@ fn tree_field_asked(id : @view.NodeId, action : Action) -> Bool {
   match action {
     SetText(t) => {
       let st = tf.st
-      st.marked = ""
+      st.ime_let_go_owed()
       st.anchor = 0
       st.caret = st.text.length()
       st.text_input(0, t, 0, 0, view_moment())

@@ -2978,6 +2978,15 @@ void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
   mb_render_present(buf, count, r, g, b);
 }
 
+// What the input method was composing let go by the field itself (@hostapi.ime_let_go: its words sent or set): the
+// system's composition discarded, so that it does not go on in words that are gone.
+void mb_host_ime_let_go(void) {
+  MBView *v = the_view;
+  if (!v.markedLen) return;
+  v.markedLen = 0;
+  [v.inputContext discardMarkedText];
+}
+
 void mb_host_set_ime(int32_t active, double x, double y, double w, double h, moonbit_string_t text,
                      int32_t a, int32_t b) {
   MBView *v = the_view;

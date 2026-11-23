@@ -1,4 +1,5 @@
-// src/host/ios_ime.h tests: iOS IME responder gating, marked-text teardown on blur, and idle resign guards.
+// src/host/ios_ime.h tests: iOS IME responder gating, marked-text teardown on blur and on the field's let go, and idle
+// resign guards.
 //   cc -Wall -Werror -fobjc-arc -I src/host scripts/ios_ime_test.m -framework Foundation -framework CoreGraphics -o out/ios_ime_test && out/ios_ime_test
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
@@ -124,7 +125,28 @@ int main(void) {
     CHECK(!v.isFirstResponder && v.marked.location == NSNotFound);
     CHECK(([v.delegate.events isEqualToArray:@[@"textWillChange", @"textDidChange", @"resignClean"]]));
 
-    // 7. Out-of-bounds selection indices clamp cleanly.
+    // 7. A dictation into an empty field sent while its live result is still marked: the field's words (what is
+    // composed left out) are "" before and after, so set_ime alone keeps the composition and the dictation puts its
+    // settled result back in; the field's ime_let_go before it drops it and tells the keyboard the text changed.
+    mb_ime_set(v, YES, CGRectMake(0, 0, 2, 18), @"", 0, 0);
+    v.doc = @"能做到吗";
+    v.marked = NSMakeRange(0, 4);
+    v.sel = NSMakeRange(4, 0);
+    [v.delegate.events removeAllObjects];
+    mb_ime_set(v, YES, CGRectMake(0, 0, 2, 18), @"", 0, 0);
+    CHECK(NSEqualRanges(v.marked, NSMakeRange(0, 4)) && v.delegate.events.count == 0);
+    mb_ime_let_go(v);
+    mb_ime_set(v, YES, CGRectMake(0, 0, 2, 18), @"", 0, 0);
+    CHECK(v.marked.location == NSNotFound && v.isFirstResponder);
+    CHECK([v.doc isEqualToString:@""] && NSEqualRanges(v.sel, NSMakeRange(0, 0)));
+    CHECK(([v.delegate.events isEqualToArray:@[@"textWillChange", @"textDidChange", @"textWillChange", @"textDidChange"]]));
+    // with nothing composed it does nothing
+    [v.delegate.events removeAllObjects];
+    mb_ime_let_go(v);
+    CHECK(v.delegate.events.count == 0);
+    mb_ime_set(v, NO, CGRectZero, @"", 0, 0);
+
+    // 8. Out-of-bounds selection indices clamp cleanly.
     mb_ime_set(v, NO, CGRectZero, @"xy", -3, 999);
     CHECK(NSEqualRanges(v.sel, NSMakeRange(0, 2)));
   }

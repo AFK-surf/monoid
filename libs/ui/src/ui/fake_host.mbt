@@ -2204,6 +2204,11 @@ impl @hostapi.Host for FakeHost with dv_ime_action(self, kind) {
 }
 
 ///|
+impl @hostapi.Host for FakeHost with dv_ime_let_go(self) {
+  self.dev.ime_let_go += 1
+}
+
+///|
 /// Words or a picture put on the clipboard (@hostapi.clip_set_text, clip_set_png), held with their label
 /// (Tester::clipboard, clipboard_png, clipboard_label).
 impl @hostapi.Host for FakeHost with cl_set(self, text, png, label) {

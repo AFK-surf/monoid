@@ -155,6 +155,17 @@ pub fn ime_action(kind : Int) -> Unit {
 }
 
 ///|
+/// What the input method was composing in the field let go by the field itself (its words sent or set while a word
+/// or a dictation was being composed): the host's composition dropped and its input method told the words changed,
+/// as a native field's set text does, so it neither keeps composing into words that are gone nor puts its result in
+/// after them. Said just before the set_ime that tells the field's words as they are now; set_ime alone cannot say it
+/// where the composition was all the field held (the field's words, what is composed left out, are the same before
+/// and after).
+pub fn ime_let_go() -> Unit {
+  dv_ime_let_go()
+}
+
+///|
 /// No action of the input method's own: its Enter a key the field decides on (a new line, or what sends).
 pub let ime_action_none : Int = 0
 

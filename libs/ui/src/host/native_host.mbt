@@ -1303,6 +1303,11 @@ impl @hostapi.Host for Native with dv_ime_action(_, kind) {
 }
 
 ///|
+impl @hostapi.Host for Native with dv_ime_let_go(_) {
+  dv_ime_let_go()
+}
+
+///|
 impl @hostapi.Host for Native with ncall_call(_, name, params) {
   ncall_call(name, params)
 }

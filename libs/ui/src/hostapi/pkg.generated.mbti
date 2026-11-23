@@ -245,6 +245,8 @@ pub let ime_action_secret : Int32
 
 pub fn ime_inset() -> Double
 
+pub fn ime_let_go() -> Unit
+
 pub fn increase_contrast() -> Bool
 
 pub fn install_package(String, Bytes) -> Unit
@@ -1228,6 +1230,7 @@ pub(open) trait Host {
   fn dv_keep_awake(Self, Int32) -> Unit = _
   fn dv_haptic(Self, Int32) -> Unit = _
   fn dv_ime_action(Self, Int32) -> Unit = _
+  fn dv_ime_let_go(Self) -> Unit = _
   fn ncall_call(Self, String, String) -> Int32 = _
   fn ncall_state(Self, Int32) -> Int32 = _
   fn ncall_result(Self, Int32) -> String = _

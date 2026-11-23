@@ -35,6 +35,16 @@ static inline void mb_ime_clear_marked(id<MBImeView> v, NSString *text, NSRange 
   [d textDidChange:v];
 }
 
+// The field let go of what the input method was composing in it (@hostapi.ime_let_go: its words sent or set while a
+// word or a dictation was composed): the composition dropped and the input method told the text changed, as a
+// UITextView's setText tells it, so that it stops composing there (a dictation's live result is marked text: kept, it
+// is put in again as it settles, after the words were sent). The set_ime after it brings the field's words.
+static inline void mb_ime_let_go(id<MBImeView> v) {
+  if (!v || v.marked.location == NSNotFound) return;
+  NSString *doc = v.doc ?: @"";
+  mb_ime_clear_marked(v, doc, mb_ime_clamp_sel(doc, (NSInteger)v.sel.location, (NSInteger)(v.sel.location + v.sel.length)));
+}
+
 static inline BOOL mb_ime_can_become_first_responder(id<MBImeView> v) {
   return v && v.imeActive;
 }

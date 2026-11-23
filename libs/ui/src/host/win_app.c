@@ -427,6 +427,17 @@ void mb_host_ime_action(int32_t kind) {
   ime_sync();
 }
 
+// What the input method was composing let go by the field itself (@hostapi.ime_let_go: its words sent or set): the
+// system's composition cancelled, so that it does not go on in words that are gone.
+void mb_host_ime_let_go(void) {
+  if (!ws->marked_len) return;
+  ws->marked_len = 0;
+  HIMC imc = ImmGetContext(ws->h);
+  if (!imc) return;
+  ImmNotifyIME(imc, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
+  ImmReleaseContext(ws->h, imc);
+}
+
 static void ime_place(void) {
   if (!ws->ime_active) return;
   int x = (int)lround(ws->caret[0] * ws->scale), y = (int)lround(ws->caret[1] * ws->scale);

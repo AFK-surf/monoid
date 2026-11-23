@@ -1586,9 +1586,10 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         /**
          * MoonBit's own change to the field (Host.setIme, on the main thread): its words `text` (without what is
          * composed) and selection, once it has taken every edit sent it. Put in here when they are not what it was
-         * told; true then (the input method to be told).
+         * told; true then (the input method to be told). Where the field let go of what was composed ({@code letGo}),
+         * put in even where they read the same: a composition that was all it held is none now.
          */
-        boolean took(String text, int a, int b) {
+        boolean took(String text, int a, int b, boolean letGo) {
             int cs = saidCs, ce = saidCe;
             // what it was told, as MoonBit keeps it: a composition holding the caret apart from its words (editor.mbt)
             String has = saidText;
@@ -1599,7 +1600,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
                 ha = cs;
                 hb = cs;
             }
-            if (text.equals(has) && Math.min(a, b) == Math.min(ha, hb) && Math.max(a, b) == Math.max(ha, hb)) return false;
+            if (!letGo && text.equals(has) && Math.min(a, b) == Math.min(ha, hb) && Math.max(a, b) == Math.max(ha, hb)) return false;
             removeComposingSpans(ed);
             ed.replace(0, ed.length(), text);
             int n = text.length();

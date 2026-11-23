@@ -1808,6 +1808,8 @@ void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
 
 static void ime_resign_if_idle(void) { mb_ime_resign_if_idle(the_view); }
 
+void mb_host_ime_let_go(void) { mb_ime_let_go(the_view); }
+
 void mb_host_set_ime(int32_t active, double x, double y, double w, double h, moonbit_string_t text,
                      int32_t a, int32_t b) {
   mb_ime_set(the_view, active != 0, CGRectMake(x, y, w, h), mb_ns_from_string(text), a, b);

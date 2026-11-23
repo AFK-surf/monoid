@@ -365,6 +365,16 @@ final class Device {
         });
     }
 
+    /**
+     * What the input method was composing let go by the field itself (hostapi ime_let_go: its words sent or set while
+     * a word or a voice input was composed; MoonBit's thread): the next Host.setIme puts the field's words in and starts
+     * the input method over even where they read as before (a composition that was all the field held), or it goes on
+     * composing and puts its result back in the field the words were sent from.
+     */
+    static void imeLetGo() {
+        Host.imeLetGo = true;
+    }
+
     /** device.mbt's haptic_* as the constants Compose's AndroidHapticFeedback performs for them. */
     static void haptic(int kind) {
         int constant;

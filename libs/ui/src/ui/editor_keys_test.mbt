@@ -311,3 +311,30 @@ test "Enter sends by default, ⇧Enter a new line; a composition's Enter sends n
   t.key(@ui.key_code_enter)
   assert_eq(sent, ["hi\nni"])
 }
+
+///|
+test "words sent or set while the input method composes in them: its host told the composition is let go" {
+  let (f, t) = keys_field("", 0)
+  // a dictation's live result in the empty field: its words without it are "" before it is sent and after
+  t.compose("能做到吗")
+  assert_eq(t.ime_let_go(), 0)
+  assert_eq(f.take(), "能做到吗")
+  t.draw()
+  assert_eq(t.ime_let_go(), 1)
+  assert_eq(t.ime(), (true, "", 0, 0))
+  assert_eq(f.text(), "")
+  // what is typed after it is told as before, with nothing let go
+  t.type_text("ok")
+  assert_eq(f.text(), "ok")
+  assert_eq(t.ime_let_go(), 1)
+  // the app's own words in place of a composition, the same
+  t.compose("ni")
+  f.set("put back")
+  t.draw()
+  assert_eq(t.ime_let_go(), 2)
+  assert_eq(t.ime(), (true, "put back", 8, 8))
+  // sent with nothing composed: nothing to let go
+  assert_eq(f.take(), "put back")
+  t.draw()
+  assert_eq(t.ime_let_go(), 2)
+}

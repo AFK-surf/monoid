@@ -3,7 +3,7 @@
 
 static jclass device_cls;
 static jmethodID m_dv_catch, m_dv_inset, m_dv_copy_shown, m_dv_read, m_dv_state, m_dv_picture, m_dv_text, m_dv_png,
-    m_dv_end, m_dv_set, m_dv_awake, m_dv_haptic, m_dv_ime_action;
+    m_dv_end, m_dv_set, m_dv_awake, m_dv_haptic, m_dv_ime_action, m_dv_ime_let_go;
 static jclass natives_cls;
 // (m_na_: android_host.c has m_nt_ for Notices; one file, a name of both was one variable, Natives' state called on Notices)
 static jmethodID m_na_call, m_na_state, m_na_result, m_na_end;
@@ -23,6 +23,7 @@ static void device_init(JNIEnv *env) {
   m_dv_awake = (*env)->GetStaticMethodID(env, device_cls, "keepAwake", "(Z)V");
   m_dv_haptic = (*env)->GetStaticMethodID(env, device_cls, "haptic", "(I)V");
   m_dv_ime_action = (*env)->GetStaticMethodID(env, device_cls, "imeAction", "(I)V");
+  m_dv_ime_let_go = (*env)->GetStaticMethodID(env, device_cls, "imeLetGo", "()V");
   natives_cls = (*env)->NewGlobalRef(env, (*env)->FindClass(env, "dev/mbui/Natives"));
   m_na_call = (*env)->GetStaticMethodID(env, natives_cls, "call", "(Ljava/lang/String;Ljava/lang/String;)I");
   m_na_state = (*env)->GetStaticMethodID(env, natives_cls, "state", "(I)I");
@@ -123,6 +124,12 @@ void mb_host_haptic(int32_t kind) {
 void mb_host_ime_action(int32_t kind) {
   JNIEnv *env = env_();
   (*env)->CallStaticVoidMethod(env, device_cls, m_dv_ime_action, kind);
+}
+
+// what the input method was composing let go by the field itself (hostapi ime_let_go): Device.imeLetGo
+void mb_host_ime_let_go(void) {
+  JNIEnv *env = env_();
+  (*env)->CallStaticVoidMethod(env, device_cls, m_dv_ime_let_go);
 }
 
 // ---- an app's own native calls (src/hostapi/native.mbt): dev.mbui.Natives answers them ----
