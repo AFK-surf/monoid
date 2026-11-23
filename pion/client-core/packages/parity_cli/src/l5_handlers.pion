@@ -8,11 +8,595 @@ import "base_codec"
 import "effect"
 import "outbox"
 import "protocol"
+import "shell"
 import "sql"
 import "store"
 import "sync"
+import "wire"
 
-pub fn handle_l5_op(op : String, args : base_codec::Json, _sess : ParityCoreSession) -> Option[String] {
+fn make_real_sqlite_shell(rt : effect::Runtime, world : World) -> shell::Shell {
+  shell::Shell::stood_in(
+    rt,
+    fn(_ : Int64, _ : String, _ : base_codec::Json, _ : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      let req_line = base_codec::json_stringify(base_codec::json_obj([
+        ("sqlReq", base_codec::json_obj([
+          ("op", base_codec::json_str(op)),
+          ("args", args),
+        ])),
+      ]))
+      io_println(world, req_line)
+      match io_read_line(world) {
+        None => shell::AskResult::Err(shell::ShellError::{ message: "sqlite bridge eof" })
+        Some(reply_line) =>
+        match base_codec::json_parse(reply_line) {
+          base_codec::JsonParseResult::Err(e) =>
+          shell::AskResult::Err(shell::ShellError::{ message: "sqlite bridge bad json: " + e })
+          base_codec::JsonParseResult::Ok(j) =>
+          match base_codec::json_get(j, "err") {
+            Some(base_codec::Json::Str(emsg)) =>
+            shell::AskResult::Err(shell::ShellError::{ message: emsg })
+            _ =>
+            match base_codec::json_get(j, "ok") {
+              Some(v) => shell::AskResult::Ok(v)
+              None => shell::AskResult::Ok(base_codec::json_null())
+            }
+          }
+        }
+      }
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+}
+
+fn handle_l5_real_op(op : String, args : base_codec::Json, world : World) -> Option[String] {
+  // ── Gate #3: Real ops.ts route mapping ──
+  if op == "l5real.opsRequest" {
+    let name = j_s(args, "name")
+    let params = get_json(args, "params")
+    match sync::ops_request(name, params) {
+      sync::OpResult::Ok(req) =>
+      return Some(ok_resp(base_codec::json_obj([
+        ("status", base_codec::json_str("ok")),
+        ("request", req.to_json()),
+      ])))
+      sync::OpResult::Unknown =>
+      return Some(ok_resp(base_codec::json_obj([
+        ("status", base_codec::json_str("unknown")),
+      ])))
+      sync::OpResult::Invalid(msg) =>
+      return Some(ok_resp(base_codec::json_obj([
+        ("status", base_codec::json_str("invalid")),
+        ("message", base_codec::json_str(msg)),
+      ])))
+    }
+  }
+
+  if op == "l5real.chatReadRequest" {
+    let req = sync::chat_read_request(j_s(args, "station"), j_i(args, "thread"), j_i(args, "n"))
+    return Some(ok_resp(req.to_json()))
+  }
+
+  // ── Gate #5: Real SQLite SSE batch ingestion & last_event_id commit guard ──
+  if op == "l5real.sseApply" {
+    let rt = effect::Runtime::new()
+    let sh = make_real_sqlite_shell(rt, world)
+    let db = match sql::Sql::open(sh, "real") {
+      sql::SqlResult::Ok(d) => d
+      sql::SqlResult::Err(e) => return Some(err_resp("open failed: " + e.to_string()))
+    }
+    let frame_ob : outbox::FrameOutbox[sync::CoreEvent] = outbox::FrameOutbox::new(fn() -> Unit {})
+    let evs = sync::StationEvents::new(
+      j_s(args, "workspace"),
+      j_s(args, "station"),
+      db,
+      frame_ob,
+      make_noop_transport(),
+    )
+    let email = j_s(args, "viewerEmail")
+    if email.length() > 0 {
+      evs.set_viewer_email(email)
+    }
+    let batches = j_arr_l3(args, "batches")
+    let results : Array[base_codec::Json] = []
+    for bi in 0..<batches.length() {
+      let raw_sse = match batches[bi] {
+        base_codec::Json::Str(s) => s
+        _ => ""
+      }
+      let parser = wire::Sse::new()
+      let parsed = match parser.feed(raw_sse.to_bytes()) {
+        wire::FeedResult::Ok(xs) => xs
+        wire::FeedResult::Err(_) => []
+      }
+      match evs.apply_sse_batch(parsed) {
+        sql::SqlResult::Ok(n) => {
+          let lid = match evs.last_id() { Some(s) => base_codec::json_str(s); None => base_codec::json_null() }
+          results.push(base_codec::json_obj([
+            ("ok", base_codec::json_bool(true)),
+            ("applied", base_codec::json_int(n)),
+            ("lastEventId", lid),
+          ]))
+        }
+        sql::SqlResult::Err(e) => {
+          let lid = match evs.last_id() { Some(s) => base_codec::json_str(s); None => base_codec::json_null() }
+          results.push(base_codec::json_obj([
+            ("ok", base_codec::json_bool(false)),
+            ("error", base_codec::json_str(e.to_string())),
+            ("lastEventId", lid),
+          ]))
+        }
+      }
+    }
+    let final_lid = match evs.last_id() { Some(s) => base_codec::json_str(s); None => base_codec::json_null() }
+    let dirty_ids = evs.dirty_thread_ids()
+    let dirty_j : Array[base_codec::Json] = []
+    for di in 0..<dirty_ids.length() {
+      dirty_j.push(base_codec::json_int(dirty_ids[di]))
+    }
+    return Some(ok_resp(base_codec::json_obj([
+      ("results", base_codec::json_arr(results)),
+      ("lastEventId", final_lid),
+      ("resyncCount", base_codec::json_int(evs.resync_count())),
+      ("marksDirtyCount", base_codec::json_int(evs.marks_dirty_count())),
+      ("dirtyThreads", base_codec::json_arr(dirty_j)),
+    ])))
+  }
+
+  // ── Gate #7 Phase 1: Queue offline messages into real SQLite file (then drop LocalOutbox) ──
+  if op == "l5real.outboxQueueOffline" {
+    let rt = effect::Runtime::new()
+    let sh = make_real_sqlite_shell(rt, world)
+    let db = match sql::Sql::open(sh, "real") {
+      sql::SqlResult::Ok(d) => d
+      sql::SqlResult::Err(e) => return Some(err_resp("open failed: " + e.to_string()))
+    }
+    let frame_ob : outbox::FrameOutbox[sync::CoreEvent] = outbox::FrameOutbox::new(fn() -> Unit {})
+    let ob = sync::LocalOutbox::new(j_s(args, "station"), db, frame_ob, make_noop_transport())
+    let msgs = j_arr_l3(args, "messages")
+    for i in 0..<msgs.length() {
+      let m = msgs[i]
+      match ob.send_message(
+        rt,
+        j_i(m, "thread"),
+        j_s(m, "clientKey"),
+        j_s(m, "author"),
+        j_s(m, "text"),
+        j_i64(m, "at"),
+      ) {
+        sql::SqlResult::Ok(_) => ()
+        sql::SqlResult::Err(e) => return Some(err_resp("send_message failed: " + e.to_string()))
+      }
+    }
+    return Some(ok_resp(base_codec::json_obj([
+      ("pendingCount", base_codec::json_int(ob.pending_message_count())),
+    ])))
+  }
+
+  // ── Gate #7 Phase 2: Reconstruct LocalOutbox from real SQLite file, queue more, concurrent flush_offline ──
+  if op == "l5real.outboxRestartAndFlush" {
+    let rt = effect::Runtime::new()
+    let sh = make_real_sqlite_shell(rt, world)
+    let db = match sql::Sql::open(sh, "real") {
+      sql::SqlResult::Ok(d) => d
+      sql::SqlResult::Err(e) => return Some(err_resp("open failed: " + e.to_string()))
+    }
+    let frame_ob : outbox::FrameOutbox[sync::CoreEvent] = outbox::FrameOutbox::new(fn() -> Unit {})
+    let requests : Array[base_codec::Json] = []
+    let active_count : Array[Int] = [0]
+    let max_active : Array[Int] = [0]
+    let next_n : Array[Int] = [100]
+    let transport = sync::StationTransport::{
+      request_k: fn(
+        method_name : String,
+        path : String,
+        headers : Array[(String, String)],
+        body : Bytes,
+        k : (effect::Exit[sync::HttpReply]) -> Unit,
+      ) -> Unit {
+        active_count[0] = active_count[0] + 1
+        if active_count[0] > max_active[0] {
+          max_active[0] = active_count[0]
+        }
+        let mut idem = ""
+        for hi in 0..<headers.length() {
+          if headers[hi].0 == "idempotency-key" {
+            idem = headers[hi].1
+          }
+        }
+        let sb = StringBuilder::new()
+        for bi in 0..<body.length() {
+          sb.write_byte(body[bi])
+        }
+        let body_str = sb.to_string()
+        let text = match base_codec::json_parse(body_str) {
+          base_codec::JsonParseResult::Ok(bj) => j_s(bj, "text")
+          base_codec::JsonParseResult::Err(_) => ""
+        }
+        requests.push(base_codec::json_obj([
+          ("method", base_codec::json_str(method_name)),
+          ("path", base_codec::json_str(path)),
+          ("idem", base_codec::json_str(idem)),
+          ("text", base_codec::json_str(text)),
+          ("atMs", base_codec::json_int64(rt.now())),
+        ]))
+        effect::sleep_k(50, fn(sex : effect::Exit[Unit]) -> Unit {
+          active_count[0] = active_count[0] - 1
+          match sex {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            _ => {
+              next_n[0] = next_n[0] + 1
+              let reply_body = base_codec::json_stringify(base_codec::json_obj([
+                ("n", base_codec::json_int(next_n[0])),
+                ("clientKey", base_codec::json_str(idem)),
+              ])).to_bytes()
+              k(effect::Exit::Succeeded(sync::HttpReply::{ status: 200, headers: [], body: reply_body }))
+            }
+          }
+        })
+      },
+      stream_k: fn(_p : String, _h : Array[(String, String)], _on : (Bytes) -> Unit, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+        k(effect::Exit::Succeeded(()))
+      },
+    }
+    // Reconstruct LocalOutbox from SQLite (simulating process restart!)
+    let ob = sync::LocalOutbox::new(j_s(args, "station"), db, frame_ob, transport)
+    let restored_count = ob.pending_message_count()
+    let extra = j_arr_l3(args, "extraMessages")
+    for i in 0..<extra.length() {
+      let m = extra[i]
+      match ob.send_message(
+        rt,
+        j_i(m, "thread"),
+        j_s(m, "clientKey"),
+        j_s(m, "author"),
+        j_s(m, "text"),
+        j_i64(m, "at"),
+      ) {
+        sql::SqlResult::Ok(_) => ()
+        sql::SqlResult::Err(e) => return Some(err_resp("extra send_message failed: " + e.to_string()))
+      }
+    }
+    let pending_after_extra = ob.pending_message_count()
+    // Reconnect and fire 5 concurrent flush_offline() calls + advance mid-flight and fire again!
+    ob.set_online(true)
+    ob.flush_offline(rt)
+    ob.flush_offline(rt)
+    ob.flush_offline(rt)
+    rt.advance(20)
+    ob.flush_offline(rt)
+    ob.flush_offline(rt)
+    rt.advance(500)
+    return Some(ok_resp(base_codec::json_obj([
+      ("restoredCount", base_codec::json_int(restored_count)),
+      ("pendingAfterExtra", base_codec::json_int(pending_after_extra)),
+      ("pendingAfterFlush", base_codec::json_int(ob.pending_message_count())),
+      ("maxConcurrentInFlight", base_codec::json_int(max_active[0])),
+      ("requests", base_codec::json_arr(requests)),
+    ])))
+  }
+
+  // ── Gate #7 Multi-Station Isolation & decision.answer / chat.send payload forwarding ──
+  if op == "l5real.multiStationRoute" {
+    let rt = effect::Runtime::new()
+    let sh = make_real_sqlite_shell(rt, world)
+    let db = match sql::Sql::open(sh, "real") {
+      sql::SqlResult::Ok(d) => d
+      sql::SqlResult::Err(e) => return Some(err_resp("open failed: " + e.to_string()))
+    }
+    let st_a = j_s(args, "stationA")
+    let st_b = j_s(args, "stationB")
+    let reqs_a : Array[base_codec::Json] = []
+    let reqs_b : Array[base_codec::Json] = []
+    let make_rec_transport = fn(bag : Array[base_codec::Json]) -> sync::StationTransport {
+      sync::StationTransport::{
+        request_k: fn(
+          method_name : String,
+          path : String,
+          headers : Array[(String, String)],
+          body : Bytes,
+          k : (effect::Exit[sync::HttpReply]) -> Unit,
+        ) -> Unit {
+          let sb = StringBuilder::new()
+          for bi in 0..<body.length() {
+            sb.write_byte(body[bi])
+          }
+          let body_j = match base_codec::json_parse(sb.to_string()) {
+            base_codec::JsonParseResult::Ok(j) => j
+            base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+          }
+          let mut idem = ""
+          for hi in 0..<headers.length() {
+            if headers[hi].0 == "idempotency-key" {
+              idem = headers[hi].1
+            }
+          }
+          bag.push(base_codec::json_obj([
+            ("method", base_codec::json_str(method_name)),
+            ("path", base_codec::json_str(path)),
+            ("idem", base_codec::json_str(idem)),
+            ("body", body_j),
+          ]))
+          let reply_body = base_codec::json_stringify(base_codec::json_obj([
+            ("n", base_codec::json_int(77)),
+            ("clientKey", base_codec::json_str(idem)),
+          ])).to_bytes()
+          k(effect::Exit::Succeeded(sync::HttpReply::{ status: 200, headers: [], body: reply_body }))
+        },
+        stream_k: fn(_p : String, _h : Array[(String, String)], _on : (Bytes) -> Unit, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+          k(effect::Exit::Succeeded(()))
+        },
+      }
+    }
+    let core = sync::ClientCore::new("ws-1", st_a, rt, db, make_rec_transport(reqs_a), fn() -> Unit {})
+    core.register_station_transport(st_b, make_rec_transport(reqs_b))
+    core.set_online(true)
+    let calls = j_arr_l3(args, "calls")
+    let replies : Array[base_codec::Json] = []
+    for ci in 0..<calls.length() {
+      let wire_s = base_codec::json_stringify(calls[ci])
+      match core.handle_wire(wire_s) {
+        Some((rjson, _)) =>
+        match base_codec::json_parse(rjson) {
+          base_codec::JsonParseResult::Ok(rj) => replies.push(rj)
+          base_codec::JsonParseResult::Err(_) => replies.push(base_codec::json_str(rjson))
+        }
+        None => replies.push(base_codec::json_null())
+      }
+      rt.advance(20)
+    }
+    rt.advance(100)
+    return Some(ok_resp(base_codec::json_obj([
+      ("replies", base_codec::json_arr(replies)),
+      ("requestsA", base_codec::json_arr(reqs_a)),
+      ("requestsB", base_codec::json_arr(reqs_b)),
+    ])))
+  }
+
+  // ── Gate #7 TS -> Pion Reverse Interop + HTTP 503 Non-Freeze + Zero Fake Entry ──
+  if op == "l5real.outboxTsToPionAnd5xx" {
+    let rt = effect::Runtime::new()
+    let sh = make_real_sqlite_shell(rt, world)
+    let db = match sql::Sql::open(sh, "real") {
+      sql::SqlResult::Ok(d) => d
+      sql::SqlResult::Err(e) => return Some(err_resp("open failed: " + e.to_string()))
+    }
+    let frame_ob : outbox::FrameOutbox[sync::CoreEvent] = outbox::FrameOutbox::new(fn() -> Unit {})
+    let requests : Array[base_codec::Json] = []
+    let attempt : Array[Int] = [0]
+    let transport = sync::StationTransport::{
+      request_k: fn(
+        method_name : String,
+        path : String,
+        headers : Array[(String, String)],
+        body : Bytes,
+        k : (effect::Exit[sync::HttpReply]) -> Unit,
+      ) -> Unit {
+        attempt[0] = attempt[0] + 1
+        let sb = StringBuilder::new()
+        for bi in 0..<body.length() {
+          sb.write_byte(body[bi])
+        }
+        let body_j = match base_codec::json_parse(sb.to_string()) {
+          base_codec::JsonParseResult::Ok(j) => j
+          base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+        }
+        let mut idem = ""
+        for hi in 0..<headers.length() {
+          if headers[hi].0 == "idempotency-key" {
+            idem = headers[hi].1
+          }
+        }
+        requests.push(base_codec::json_obj([
+          ("attempt", base_codec::json_int(attempt[0])),
+          ("method", base_codec::json_str(method_name)),
+          ("path", base_codec::json_str(path)),
+          ("idem", base_codec::json_str(idem)),
+          ("body", body_j),
+        ]))
+        if attempt[0] == 1 {
+          let err_b = "{\"code\":\"unavailable\",\"error\":\"station restarting\"}".to_bytes()
+          k(effect::Exit::Succeeded(sync::HttpReply::{ status: 503, headers: [], body: err_b }))
+        } else {
+          let ok_b = base_codec::json_stringify(base_codec::json_obj([
+            ("n", base_codec::json_int(202)),
+            ("clientKey", base_codec::json_str(idem)),
+          ])).to_bytes()
+          k(effect::Exit::Succeeded(sync::HttpReply::{ status: 200, headers: [], body: ok_b }))
+        }
+      },
+      stream_k: fn(_p : String, _h : Array[(String, String)], _on : (Bytes) -> Unit, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+        k(effect::Exit::Succeeded(()))
+      },
+    }
+    let ob = sync::LocalOutbox::new(j_s(args, "station"), db, frame_ob, transport)
+    let restored_total = ob.total_outbox_count()
+    let restored_pending = ob.pending_message_count()
+    ob.set_online(true)
+    // First flush: sends ONLY the sending item (never the failed/final item!) and receives HTTP 503.
+    ob.flush_offline(rt)
+    rt.advance(50)
+    let pending_after_503 = ob.pending_message_count()
+    let total_after_503 = ob.total_outbox_count()
+    // Reconnect flush: retries the transient 503 unreached item -> receives HTTP 200 and reconciles!
+    ob.flush_offline(rt)
+    rt.advance(50)
+    let pending_after_retry = ob.pending_message_count()
+    let total_after_retry = ob.total_outbox_count()
+    return Some(ok_resp(base_codec::json_obj([
+      ("restoredTotal", base_codec::json_int(restored_total)),
+      ("restoredPending", base_codec::json_int(restored_pending)),
+      ("pendingAfter503", base_codec::json_int(pending_after_503)),
+      ("totalAfter503", base_codec::json_int(total_after_503)),
+      ("pendingAfterRetry", base_codec::json_int(pending_after_retry)),
+      ("totalAfterRetry", base_codec::json_int(total_after_retry)),
+      ("requests", base_codec::json_arr(requests)),
+    ])))
+  }
+
+  // ── P0-1 Dual-order DB open: Pion creates/migrates DB + ensures shared_sidecar/shared_mark/shared_meta ──
+  if op == "l5real.initPionDb" {
+    let rt = effect::Runtime::new()
+    let sh = make_real_sqlite_shell(rt, world)
+    match store::open_account_db(sh, "real") {
+      sql::SqlResult::Err(e) => return Some(err_resp("open_account_db failed: " + e.to_string()))
+      sql::SqlResult::Ok(h) =>
+      return Some(ok_resp(base_codec::json_obj([
+        ("readOnly", base_codec::json_bool(h.read_only)),
+        ("foundVersion", base_codec::json_int(h.found_version)),
+      ])))
+    }
+  }
+
+  // ── P0-2 Unregistered Station B guard: zero HTTP leak to default Station A, then flush on Station B register ──
+  if op == "l5real.unregisteredStationGuard" {
+    let rt = effect::Runtime::new()
+    let sh = make_real_sqlite_shell(rt, world)
+    let db = match sql::Sql::open(sh, "real") {
+      sql::SqlResult::Ok(d) => d
+      sql::SqlResult::Err(e) => return Some(err_resp("open failed: " + e.to_string()))
+    }
+    let st_a = j_s(args, "stationA")
+    let st_b = j_s(args, "stationB")
+    let reqs_a : Array[base_codec::Json] = []
+    let reqs_b : Array[base_codec::Json] = []
+    let make_rec = fn(bag : Array[base_codec::Json]) -> sync::StationTransport {
+      sync::StationTransport::{
+        request_k: fn(
+          method_name : String,
+          path : String,
+          headers : Array[(String, String)],
+          body : Bytes,
+          k : (effect::Exit[sync::HttpReply]) -> Unit,
+        ) -> Unit {
+          let sb = StringBuilder::new()
+          for bi in 0..<body.length() { sb.write_byte(body[bi]) }
+          let body_j = match base_codec::json_parse(sb.to_string()) {
+            base_codec::JsonParseResult::Ok(j) => j
+            base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+          }
+          let mut idem = ""
+          for hi in 0..<headers.length() {
+            if headers[hi].0 == "idempotency-key" { idem = headers[hi].1 }
+          }
+          bag.push(base_codec::json_obj([
+            ("method", base_codec::json_str(method_name)),
+            ("path", base_codec::json_str(path)),
+            ("idem", base_codec::json_str(idem)),
+            ("body", body_j),
+          ]))
+          let ok_b = base_codec::json_stringify(base_codec::json_obj([
+            ("n", base_codec::json_int(88)),
+            ("clientKey", base_codec::json_str(idem)),
+          ])).to_bytes()
+          k(effect::Exit::Succeeded(sync::HttpReply::{ status: 200, headers: [], body: ok_b }))
+        },
+        stream_k: fn(_p : String, _h : Array[(String, String)], _on : (Bytes) -> Unit, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+          k(effect::Exit::Succeeded(()))
+        },
+      }
+    }
+    // Only Station A is connected; Station B is NOT registered!
+    let core = sync::ClientCore::new("ws-1", st_a, rt, db, make_rec(reqs_a), fn() -> Unit {})
+    core.set_online(true)
+    let _ = core.handle_wire("{\"id\":1,\"call\":\"chat.send\",\"params\":{\"station\":\"" + st_b + "\",\"thread\":1,\"idem\":\"idem-b-unreg\",\"text\":\"for B only\"}}")
+    let _ = core.handle_wire("{\"id\":2,\"call\":\"chat.read\",\"params\":{\"station\":\"" + st_b + "\",\"thread\":1,\"seq\":3,\"unread\":0}}")
+    let _ = core.handle_wire("{\"id\":3,\"call\":\"chat.rename\",\"params\":{\"station\":\"" + st_b + "\",\"thread\":1,\"session\":\"s-b\",\"title\":\"New B Title\"}}")
+    rt.advance(50)
+    let reqs_a_before = reqs_a.length()
+    let reqs_b_before = reqs_b.length()
+    let pending_before = core.local_outbox.pending_message_count()
+    // Now register Station B and flush_offline -> message & overlay deliver to Station B ONLY!
+    core.register_station_transport(st_b, make_rec(reqs_b))
+    core.local_outbox.flush_offline(rt)
+    rt.advance(50)
+    return Some(ok_resp(base_codec::json_obj([
+      ("reqsABefore", base_codec::json_int(reqs_a_before)),
+      ("reqsBBefore", base_codec::json_int(reqs_b_before)),
+      ("pendingBefore", base_codec::json_int(pending_before)),
+      ("pendingAfter", base_codec::json_int(core.local_outbox.pending_message_count())),
+      ("requestsA", base_codec::json_arr(reqs_a)),
+      ("requestsB", base_codec::json_arr(reqs_b)),
+    ])))
+  }
+
+  // ── P1-3 Strict FIFO Head-of-Line Blocking on 503 & Exit::Failed ──
+  if op == "l5real.outboxFifoHeadOfLineBlock" {
+    let rt = effect::Runtime::new()
+    let sh = make_real_sqlite_shell(rt, world)
+    let db = match sql::Sql::open(sh, "real") {
+      sql::SqlResult::Ok(d) => d
+      sql::SqlResult::Err(e) => return Some(err_resp("open failed: " + e.to_string()))
+    }
+    let fail_mode = j_s(args, "failMode")
+    let frame_ob : outbox::FrameOutbox[sync::CoreEvent] = outbox::FrameOutbox::new(fn() -> Unit {})
+    let requests : Array[base_codec::Json] = []
+    let fail_first : Array[Bool] = [true]
+    let next_n : Array[Int] = [300]
+    let transport = sync::StationTransport::{
+      request_k: fn(
+        method_name : String,
+        path : String,
+        headers : Array[(String, String)],
+        _body : Bytes,
+        k : (effect::Exit[sync::HttpReply]) -> Unit,
+      ) -> Unit {
+        let mut idem = ""
+        for hi in 0..<headers.length() {
+          if headers[hi].0 == "idempotency-key" { idem = headers[hi].1 }
+        }
+        requests.push(base_codec::json_obj([
+          ("method", base_codec::json_str(method_name)),
+          ("path", base_codec::json_str(path)),
+          ("idem", base_codec::json_str(idem)),
+        ]))
+        if fail_first[0] {
+          fail_first[0] = false
+          if fail_mode == "network" {
+            k(effect::Exit::Failed(effect::EffectError::Custom("connection reset")))
+          } else {
+            k(effect::Exit::Succeeded(sync::HttpReply::{ status: 503, headers: [], body: "{\"code\":\"unavailable\"}".to_bytes() }))
+          }
+        } else {
+          next_n[0] = next_n[0] + 1
+          let ok_b = base_codec::json_stringify(base_codec::json_obj([
+            ("n", base_codec::json_int(next_n[0])),
+            ("clientKey", base_codec::json_str(idem)),
+          ])).to_bytes()
+          k(effect::Exit::Succeeded(sync::HttpReply::{ status: 200, headers: [], body: ok_b }))
+        }
+      },
+      stream_k: fn(_p : String, _h : Array[(String, String)], _on : (Bytes) -> Unit, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+        k(effect::Exit::Succeeded(()))
+      },
+    }
+    let station = j_s(args, "station")
+    let ob = sync::LocalOutbox::new(station, db, frame_ob, transport)
+    // Enqueue msg-1 and msg-2 offline, then go online and flush -> msg-1 fails, msg-2 MUST NOT jump ahead!
+    let _ = ob.send_message(rt, 55, "msg-1", "alice", "first", 1000.to_int64())
+    let _ = ob.send_message(rt, 55, "msg-2", "alice", "second", 1001.to_int64())
+    ob.set_online(true)
+    ob.flush_offline(rt)
+    rt.advance(50)
+    let after_fail_count = requests.length()
+    // Now station is healthy (200) -> reconnect flush_offline MUST send msg-1 then msg-2 strictly in FIFO order!
+    ob.flush_offline(rt)
+    rt.advance(100)
+    return Some(ok_resp(base_codec::json_obj([
+      ("requestsAfterFail", base_codec::json_int(after_fail_count)),
+      ("pendingAfterRecovery", base_codec::json_int(ob.pending_message_count())),
+      ("requests", base_codec::json_arr(requests)),
+    ])))
+  }
+
+  None
+}
+
+pub fn handle_l5_op(op : String, args : base_codec::Json, _sess : ParityCoreSession, world : World) -> Option[String] {
+  match handle_l5_real_op(op, args, world) {
+    Some(r) => return Some(r)
+    None => ()
+  }
   // ── Suite 1a: `doing.ts` parity ──
   if op == "l5.doingConstants" {
     let heavy_names = j_arr_l3(args, "names")

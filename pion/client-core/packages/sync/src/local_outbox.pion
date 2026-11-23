@@ -1,8 +1,8 @@
-// Optimistic local mutations & rollback (Rule 5: actions never wait for the network).
-// Writes immediately to SQLite (`outbox`, `pending`, `changing`) in a single `sql::Burst`,
-// pushes typed `CoreEvent`s to `FrameOutbox[CoreEvent]`, reconciles by exact `client_key`
-// on station confirmation, auto-flushes on reconnect, and rolls back with explicit error
-// + recovery hint on station rejection.
+// Optimistic local mutations, multi-station routing, SQLite restart persistence,
+// lossless TS<->Pion outbox interop, strict FIFO single-flight delivery, and rollback
+// (Rule 5: actions never wait for the network).
+// All station HTTP routes strictly follow `ops.pion` (1:1 with `client/core-ts/src/ops.ts` & `station/sync.ts`).
+// Zero fabricated endpoints, zero synthetic `entry` rows on HTTP 2xx.
 
 import "base_codec"
 import "effect"
@@ -35,26 +35,38 @@ pub fn sql_changing_delete() -> String {
 }
 
 pub struct OutboxMessage {
+  pub station : String
+  pub id : String
   pub client_key : String
   pub thread : Int
   pub author : String
   pub text : String
   pub created_at : Int64
+  pub mut state : String
+  pub mut seq : Option[Int]
+  pub mut final_failed : Bool
+  pub mut unreached : Bool
+  pub mut error : Option[String]
+  pub raw_json : base_codec::Json
 }
 
 pub struct PendingChatOp {
+  pub station : String
   pub client_key : String
   pub title : String
   pub created_at : Int64
 }
 
 pub struct ChangingOverlay {
+  pub station : String
   pub op_id : Int
   pub chat_id : String
   pub op_kind : String
   pub http_method : String
   pub http_path : String
-  pub value_json : base_codec::Json
+  pub body_json : Option[base_codec::Json]
+  pub fallback_method : Option[String]
+  pub fallback_path : Option[String]
   pub previous_chat_json : Option[String]
 }
 
@@ -63,11 +75,53 @@ pub struct LocalOutbox {
   pub db : sql::Sql
   pub outbox : outbox::FrameOutbox[CoreEvent]
   pub transport : StationTransport
+  station_transports : Map[String, StationTransport]
   mut online : Bool
+  mut next_msg_seq : Int
   mut next_change_id : Int
   queued_messages : Array[OutboxMessage]
   queued_pending : Array[PendingChatOp]
   queued_overlays : Array[ChangingOverlay]
+  in_flight_threads : Map[String, String]
+  in_flight_pending : Map[String, Bool]
+  in_flight_overlays : Map[String, Bool]
+}
+
+fn thread_flight_key(station : String, thread : Int) -> String {
+  station + "\u{01}" + thread.to_string()
+}
+
+fn station_item_key(station : String, item : String) -> String {
+  station + "\u{01}" + item
+}
+
+fn resolve_station(default_station : String, target : Option[String]) -> String {
+  match target {
+    Some(s) => if s.length() > 0 { s } else { default_station }
+    None => default_station
+  }
+}
+
+fn parse_trailing_int(s : String) -> Int {
+  let bytes = s.to_bytes()
+  let mut idx = bytes.length() - 1
+  while idx >= 0 {
+    let b = bytes[idx].to_int()
+    if b >= 48 && b <= 57 {
+      idx -= 1
+    } else {
+      break
+    }
+  }
+  let start = idx + 1
+  if start >= bytes.length() {
+    return 0
+  }
+  let tail = s.slice(start, bytes.length())
+  match base_codec::parse_int64_str(tail) {
+    Some(v) => v.to_int()
+    None => 0
+  }
 }
 
 pub fn LocalOutbox::new(
@@ -76,24 +130,250 @@ pub fn LocalOutbox::new(
   frame_outbox : outbox::FrameOutbox[CoreEvent],
   transport : StationTransport,
 ) -> LocalOutbox {
-  LocalOutbox::{
+  let ob = LocalOutbox::{
     station: station,
     db: db,
     outbox: frame_outbox,
     transport: transport,
+    station_transports: Map::new(),
     online: false,
+    next_msg_seq: 1,
     next_change_id: 1,
     queued_messages: [],
     queued_pending: [],
     queued_overlays: [],
+    in_flight_threads: Map::new(),
+    in_flight_pending: Map::new(),
+    in_flight_overlays: Map::new(),
   }
+  let _ = ob.load_from_db()
+  ob
+}
+
+/// Register a station-specific `StationTransport` so multi-station operations route to the exact target station.
+pub fn LocalOutbox::register_station_transport(
+  self : LocalOutbox,
+  station : String,
+  transport : StationTransport,
+) -> Unit {
+  if station.length() > 0 {
+    self.station_transports.set(station, transport)
+  }
+}
+
+/// Remove a station-specific `StationTransport` when that station disconnects or goes offline.
+pub fn LocalOutbox::unregister_station_transport(self : LocalOutbox, station : String) -> Unit {
+  if station.length() > 0 {
+    self.station_transports.remove(station)
+  }
+}
+
+/// Resolve transport for `station`: NEVER silently fall back to `self.transport` for a different station!
+fn LocalOutbox::transport_for(self : LocalOutbox, station : String) -> Option[StationTransport] {
+  match self.station_transports.get(station) {
+    Some(t) => Some(t)
+    None => if station == self.station { Some(self.transport) } else { None }
+  }
+}
+
+fn LocalOutbox::load_outbox_rows(self : LocalOutbox, rows : Array[store::OutboxRow]) -> Int {
+  let mut restored = 0
+  for i in 0..<rows.length() {
+    let row = rows[i]
+    let parsed = match base_codec::json_parse(row.json) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(_) => continue
+    }
+    let items : Array[base_codec::Json] = match parsed {
+      base_codec::Json::Arr(xs) => xs
+      base_codec::Json::Obj(_) => [parsed]
+      _ => []
+    }
+    for j in 0..<items.length() {
+      let item = items[j]
+      let id_str = match j_opt_str(item, "id") {
+        Some(s) => s
+        None => {
+          let gen = "out-" + self.next_msg_seq.to_string()
+          self.next_msg_seq += 1
+          gen
+        }
+      }
+      let tail_n = parse_trailing_int(id_str)
+      if tail_n >= self.next_msg_seq {
+        self.next_msg_seq = tail_n + 1
+      }
+      let ck = match j_opt_str(item, "idem") {
+        Some(s) => if s.length() > 0 { s } else { j_str(item, "clientKey", fallback=id_str) }
+        None => j_str(item, "clientKey", fallback=id_str)
+      }
+      let author = j_str(item, "author", fallback="me")
+      let text = j_str(item, "text")
+      let created_at = match j_opt_int64(item, "createdAt") {
+        Some(ts) => ts
+        None => j_int64(item, "at")
+      }
+      let state = j_str(item, "state", fallback="sending")
+      let seq_opt = match base_codec::json_get(item, "seq") {
+        Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+        _ => None
+      }
+      let final_failed = j_bool(item, "final")
+      let unreached = j_bool(item, "unreached")
+      let err_opt = j_opt_str(item, "error")
+      let mut dup = false
+      for k in 0..<self.queued_messages.length() {
+        let existing = self.queued_messages[k]
+        if existing.station == row.station && existing.client_key == ck && existing.thread == row.thread {
+          dup = true
+          break
+        }
+      }
+      if !dup {
+        self.queued_messages.push(OutboxMessage::{
+          station: row.station,
+          id: id_str,
+          client_key: ck,
+          thread: row.thread,
+          author: author,
+          text: text,
+          created_at: created_at,
+          state: state,
+          seq: seq_opt,
+          final_failed: final_failed,
+          unreached: unreached,
+          error: err_opt,
+          raw_json: item,
+        })
+        restored += 1
+      }
+    }
+  }
+  restored
+}
+
+fn LocalOutbox::load_pending_and_changing(self : LocalOutbox) -> Unit {
+  let prows = match store::list_all_pending(self.db) {
+    sql::SqlResult::Ok(rs) => rs
+    sql::SqlResult::Err(_) =>
+    match store::list_pending_for_station(self.db, self.station) {
+      sql::SqlResult::Ok(rs) => rs
+      sql::SqlResult::Err(_) => []
+    }
+  }
+  for i in 0..<prows.length() {
+    let pr = prows[i]
+    let mut dup = false
+    for k in 0..<self.queued_pending.length() {
+      if self.queued_pending[k].station == pr.station && self.queued_pending[k].client_key == pr.key {
+        dup = true
+        break
+      }
+    }
+    if !dup {
+      match base_codec::json_parse(pr.json) {
+        base_codec::JsonParseResult::Ok(pj) => {
+          let title = j_str(pj, "title")
+          let at = match j_opt_int64(pj, "createdAt") {
+            Some(ts) => ts
+            None => j_int64(pj, "at")
+          }
+          self.queued_pending.push(PendingChatOp::{
+            station: pr.station,
+            client_key: pr.key,
+            title: title,
+            created_at: at,
+          })
+        }
+        base_codec::JsonParseResult::Err(_) => ()
+      }
+    }
+  }
+  let crows = match store::list_all_changing(self.db) {
+    sql::SqlResult::Ok(rs) => rs
+    sql::SqlResult::Err(_) =>
+    match store::list_changing_for_station(self.db, self.station) {
+      sql::SqlResult::Ok(rs) => rs
+      sql::SqlResult::Err(_) => []
+    }
+  }
+  for i in 0..<crows.length() {
+    let cr = crows[i]
+    if cr.id >= self.next_change_id {
+      self.next_change_id = cr.id + 1
+    }
+    let mut dup = false
+    for k in 0..<self.queued_overlays.length() {
+      if self.queued_overlays[k].station == cr.station && self.queued_overlays[k].op_id == cr.id {
+        dup = true
+        break
+      }
+    }
+    if !dup {
+      match base_codec::json_parse(cr.json) {
+        base_codec::JsonParseResult::Ok(cj) => {
+          let method_s = j_str(cj, "method")
+          let path_s = j_str(cj, "path")
+          if method_s.length() > 0 && path_s.length() > 0 {
+            let body_opt = match base_codec::json_get(cj, "body") {
+              Some(base_codec::Json::Null) | None => None
+              Some(v) => Some(v)
+            }
+            self.queued_overlays.push(ChangingOverlay::{
+              station: cr.station,
+              op_id: cr.id,
+              chat_id: j_str(cj, "chat"),
+              op_kind: j_str(cj, "kind"),
+              http_method: method_s,
+              http_path: path_s,
+              body_json: body_opt,
+              fallback_method: j_opt_str(cj, "fallbackMethod"),
+              fallback_path: j_opt_str(cj, "fallbackPath"),
+              previous_chat_json: None,
+            })
+          }
+        }
+        base_codec::JsonParseResult::Err(_) => ()
+      }
+    }
+  }
+}
+
+/// Recover persisted `outbox`, `pending`, and `changing` rows across all stations in FIFO order,
+/// preserving every TS `views/local.ts` field losslessly and advancing local sequence counters.
+pub fn LocalOutbox::load_from_db(self : LocalOutbox) -> sql::SqlResult[Int] {
+  let rows = match store::list_all_outbox(self.db) {
+    sql::SqlResult::Ok(rs) => rs
+    sql::SqlResult::Err(_) =>
+    match store::list_outbox_for_station(self.db, self.station) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(rs) => rs
+    }
+  }
+  let restored = self.load_outbox_rows(rows)
+  self.load_pending_and_changing()
+  sql::SqlResult::Ok(restored)
 }
 
 pub fn LocalOutbox::set_online(self : LocalOutbox, online : Bool) -> Unit {
   self.online = online
 }
 
+/// Count of messages still awaiting delivery (`state == "sending"` or transient `unreached` retryable).
+/// Permanently failed (`final: true` or non-unreached `state == "failed"`) and `seq != None` items are excluded.
 pub fn LocalOutbox::pending_message_count(self : LocalOutbox) -> Int {
+  let mut count = 0
+  for i in 0..<self.queued_messages.length() {
+    let m = self.queued_messages[i]
+    if m.seq.is_none() && !m.final_failed && (m.state == "sending" || (m.state == "failed" && m.unreached)) {
+      count += 1
+    }
+  }
+  count
+}
+
+/// Total outbox items held in memory / SQLite (including permanently failed items preserved losslessly).
+pub fn LocalOutbox::total_outbox_count(self : LocalOutbox) -> Int {
   self.queued_messages.length()
 }
 
@@ -105,49 +385,97 @@ pub fn LocalOutbox::pending_overlay_count(self : LocalOutbox) -> Int {
   self.queued_overlays.length()
 }
 
-fn encode_thread_outbox(msgs : Array[OutboxMessage], thread : Int) -> String {
+pub fn LocalOutbox::in_flight_thread_count(self : LocalOutbox) -> Int {
+  self.in_flight_threads.keys().length()
+}
+
+/// Encode an `OutboxMessage` preserving every original TS `views/local.ts` JSON field losslessly
+/// (`attachments`, `quotes`, `cc`, `client`, `uploads`, `queued`, `after`, `restore`, `error`, `unreached`, `final`, etc.).
+fn encode_outbox_item(m : OutboxMessage) -> base_codec::Json {
+  let mut obj = match m.raw_json {
+    base_codec::Json::Obj(_) => m.raw_json
+    _ =>
+    base_codec::json_obj([
+      ("id", base_codec::json_str(m.id)),
+      ("idem", base_codec::json_str(m.client_key)),
+      ("clientKey", base_codec::json_str(m.client_key)),
+      ("author", base_codec::json_str(m.author)),
+      ("text", base_codec::json_str(m.text)),
+      ("attachments", base_codec::json_arr([])),
+      ("quotes", base_codec::json_arr([])),
+      ("queued", base_codec::json_bool(true)),
+      ("after", base_codec::json_int(0)),
+      ("createdAt", base_codec::json_int64(m.created_at)),
+      ("at", base_codec::json_int64(m.created_at)),
+    ])
+  }
+  obj = j_set_field(obj, "state", base_codec::json_str(m.state))
+  match m.seq {
+    Some(s) => { obj = j_set_field(obj, "seq", base_codec::json_int(s)) }
+    None => ()
+  }
+  if m.final_failed {
+    obj = j_set_field(obj, "final", base_codec::json_bool(true))
+  }
+  if m.unreached {
+    obj = j_set_field(obj, "unreached", base_codec::json_bool(true))
+  } else {
+    obj = j_without_keys(obj, ["unreached"])
+  }
+  match m.error {
+    Some(err_s) => { obj = j_set_field(obj, "error", base_codec::json_str(err_s)) }
+    None => { obj = j_without_keys(obj, ["error"]) }
+  }
+  obj
+}
+
+fn encode_thread_outbox(msgs : Array[OutboxMessage], station : String, thread : Int) -> String {
   let items : Array[base_codec::Json] = []
   for i in 0..<msgs.length() {
     let m = msgs[i]
-    if m.thread == thread {
-      items.push(base_codec::json_obj([
-        ("clientKey", base_codec::json_str(m.client_key)),
-        ("author", base_codec::json_str(m.author)),
-        ("text", base_codec::json_str(m.text)),
-        ("at", base_codec::json_int64(m.created_at)),
-      ]))
+    if m.station == station && m.thread == thread {
+      items.push(encode_outbox_item(m))
     }
   }
   base_codec::json_stringify(base_codec::json_arr(items))
 }
 
-fn LocalOutbox::write_thread_outbox_in_burst(self : LocalOutbox, b : sql::Burst, thread : Int) -> sql::SqlResult[Unit] {
+fn LocalOutbox::write_thread_outbox_in_burst(
+  self : LocalOutbox,
+  b : sql::Burst,
+  station : String,
+  thread : Int,
+) -> sql::SqlResult[Unit] {
   let mut count = 0
   for i in 0..<self.queued_messages.length() {
-    if self.queued_messages[i].thread == thread {
+    if self.queued_messages[i].station == station && self.queued_messages[i].thread == thread {
       count += 1
     }
   }
   if count == 0 {
-    match b.run(sql_outbox_delete(), params=[base_codec::json_str(self.station), base_codec::json_int(thread)]) {
+    match b.run(sql_outbox_delete(), params=[base_codec::json_str(station), base_codec::json_int(thread)]) {
       sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
       sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
     }
   } else {
-    let raw = encode_thread_outbox(self.queued_messages, thread)
-    match b.run(sql_outbox_put(), params=[base_codec::json_str(self.station), base_codec::json_int(thread), base_codec::json_str(raw)]) {
+    let raw = encode_thread_outbox(self.queued_messages, station, thread)
+    match b.run(sql_outbox_put(), params=[base_codec::json_str(station), base_codec::json_int(thread), base_codec::json_str(raw)]) {
       sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
       sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
     }
   }
 }
 
-fn LocalOutbox::remove_queued_message(self : LocalOutbox, client_key : String) -> Option[OutboxMessage] {
+fn LocalOutbox::remove_queued_message(
+  self : LocalOutbox,
+  station : String,
+  client_key : String,
+) -> Option[OutboxMessage] {
   let mut found : Option[OutboxMessage] = None
   let kept : Array[OutboxMessage] = []
   for i in 0..<self.queued_messages.length() {
     let m = self.queued_messages[i]
-    if m.client_key == client_key && found.is_none() {
+    if m.station == station && m.client_key == client_key && found.is_none() {
       found = Some(m)
     } else {
       kept.push(m)
@@ -160,12 +488,16 @@ fn LocalOutbox::remove_queued_message(self : LocalOutbox, client_key : String) -
   found
 }
 
-fn LocalOutbox::remove_queued_pending(self : LocalOutbox, client_key : String) -> Option[PendingChatOp] {
+fn LocalOutbox::remove_queued_pending(
+  self : LocalOutbox,
+  station : String,
+  client_key : String,
+) -> Option[PendingChatOp] {
   let mut found : Option[PendingChatOp] = None
   let kept : Array[PendingChatOp] = []
   for i in 0..<self.queued_pending.length() {
     let p = self.queued_pending[i]
-    if p.client_key == client_key && found.is_none() {
+    if p.station == station && p.client_key == client_key && found.is_none() {
       found = Some(p)
     } else {
       kept.push(p)
@@ -178,12 +510,16 @@ fn LocalOutbox::remove_queued_pending(self : LocalOutbox, client_key : String) -
   found
 }
 
-fn LocalOutbox::remove_queued_overlay(self : LocalOutbox, op_id : Int) -> Option[ChangingOverlay] {
+fn LocalOutbox::remove_queued_overlay(
+  self : LocalOutbox,
+  station : String,
+  op_id : Int,
+) -> Option[ChangingOverlay] {
   let mut found : Option[ChangingOverlay] = None
   let kept : Array[ChangingOverlay] = []
   for i in 0..<self.queued_overlays.length() {
     let ov = self.queued_overlays[i]
-    if ov.op_id == op_id && found.is_none() {
+    if ov.station == station && ov.op_id == op_id && found.is_none() {
       found = Some(ov)
     } else {
       kept.push(ov)
@@ -203,20 +539,14 @@ fn parse_station_error(body : Bytes, status : Int) -> (String, String) {
   match base_codec::json_parse(text) {
     base_codec::JsonParseResult::Ok(j) => {
       match base_codec::json_get(j, "code") {
-        Some(base_codec::Json::Str(c)) => {
-          code = c
-        }
+        Some(base_codec::Json::Str(c)) => { code = c }
         _ => ()
       }
       match base_codec::json_get(j, "recovery") {
-        Some(base_codec::Json::Str(r)) => {
-          recovery = r
-        }
+        Some(base_codec::Json::Str(r)) => { recovery = r }
         _ =>
         match base_codec::json_get(j, "error") {
-          Some(base_codec::Json::Str(msg)) => {
-            recovery = msg
-          }
+          Some(base_codec::Json::Str(msg)) => { recovery = msg }
           _ => ()
         }
       }
@@ -226,18 +556,20 @@ fn parse_station_error(body : Bytes, status : Int) -> (String, String) {
   (code, recovery)
 }
 
-/// Reconcile an incoming server entry carrying an exact `client_key` inside the caller's `Burst`.
+/// Reconcile an incoming server entry carrying an exact `client_key` / `idem` inside the caller's `Burst`.
 pub fn LocalOutbox::reconcile_entry_in_burst(
   self : LocalOutbox,
   b : sql::Burst,
   thread : Int,
   server_n : Int,
   client_key : String,
+  station : Option[String] = None,
 ) -> Unit {
-  match self.remove_queued_message(client_key) {
+  let st = resolve_station(self.station, station)
+  match self.remove_queued_message(st, client_key) {
     Some(_) => {
-      let _ = self.write_thread_outbox_in_burst(b, thread)
-      self.outbox.tell(CoreEvent::OutboxResolved(self.station, thread, client_key, server_n))
+      let _ = self.write_thread_outbox_in_burst(b, st, thread)
+      self.outbox.tell(CoreEvent::OutboxResolved(st, thread, client_key, server_n))
     }
     None => ()
   }
@@ -249,18 +581,20 @@ pub fn LocalOutbox::reconcile_pending_chat_in_burst(
   b : sql::Burst,
   chat_id : String,
   client_key : String,
+  station : Option[String] = None,
 ) -> Unit {
-  match self.remove_queued_pending(client_key) {
+  let st = resolve_station(self.station, station)
+  match self.remove_queued_pending(st, client_key) {
     Some(_) => {
-      let _ = b.run(sql_pending_delete(), params=[base_codec::json_str(client_key), base_codec::json_str(self.station)])
-      self.outbox.tell(CoreEvent::OverlayApplied(self.station, chat_id, "pending_resolved"))
+      let _ = b.run(sql_pending_delete(), params=[base_codec::json_str(client_key), base_codec::json_str(st)])
+      self.outbox.tell(CoreEvent::OverlayApplied(st, chat_id, "pending_resolved"))
     }
     None => ()
   }
 }
 
 /// Optimistically queue a message in local SQLite `outbox` and push to `FrameOutbox` immediately.
-/// Dispatches to station when online, or waits for `flush_offline` on reconnect.
+/// Dispatches strictly FIFO single-flight per `(station, thread)` when online, or waits for `flush_offline` on reconnect.
 pub fn LocalOutbox::send_message(
   self : LocalOutbox,
   rt : effect::Runtime,
@@ -269,57 +603,191 @@ pub fn LocalOutbox::send_message(
   author : String,
   text : String,
   now : Int64,
+  station : Option[String] = None,
+  attachments : Option[base_codec::Json] = None,
+  quotes : Option[base_codec::Json] = None,
+  client : Option[base_codec::Json] = None,
+  cc : Option[base_codec::Json] = None,
 ) -> sql::SqlResult[Unit] {
+  let st = resolve_station(self.station, station)
+  let msg_id = if client_key.length() > 0 {
+    client_key
+  } else {
+    let gen = "out-" + self.next_msg_seq.to_string()
+    self.next_msg_seq += 1
+    gen
+  }
+  let att_j = match attachments { Some(v) => v; None => base_codec::json_arr([]) }
+  let q_j = match quotes { Some(v) => v; None => base_codec::json_arr([]) }
+  let raw_fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(msg_id)),
+    ("idem", base_codec::json_str(client_key)),
+    ("clientKey", base_codec::json_str(client_key)),
+    ("author", base_codec::json_str(author)),
+    ("text", base_codec::json_str(text)),
+    ("attachments", att_j),
+    ("quotes", q_j),
+    ("queued", base_codec::json_bool(true)),
+    ("after", base_codec::json_int(0)),
+    ("createdAt", base_codec::json_int64(now)),
+    ("at", base_codec::json_int64(now)),
+    ("state", base_codec::json_str("sending")),
+  ]
+  match client { Some(v) => raw_fields.push(("client", v)); None => () }
+  match cc { Some(v) => raw_fields.push(("cc", v)); None => () }
   let msg = OutboxMessage::{
+    station: st,
+    id: msg_id,
     client_key: client_key,
     thread: thread,
     author: author,
     text: text,
     created_at: now,
+    state: "sending",
+    seq: None,
+    final_failed: false,
+    unreached: false,
+    error: None,
+    raw_json: base_codec::json_obj(raw_fields),
   }
   self.queued_messages.push(msg)
   let burst = sql::Burst::new(self.db)
   match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-    self.write_thread_outbox_in_burst(b, thread)
+    self.write_thread_outbox_in_burst(b, st, thread)
   }) {
     sql::SqlResult::Err(e) => {
-      let _ = self.remove_queued_message(client_key)
+      let _ = self.remove_queued_message(st, client_key)
       return sql::SqlResult::Err(e)
     }
     sql::SqlResult::Ok(_) => ()
   }
-  self.outbox.tell(CoreEvent::OutboxQueued(self.station, thread, client_key, text))
+  self.outbox.tell(CoreEvent::OutboxQueued(st, thread, client_key, text))
   if self.online {
-    self.dispatch_message(rt, msg)
+    self.pump_thread(rt, st, thread)
   }
   sql::SqlResult::Ok(())
 }
 
-fn LocalOutbox::dispatch_message(self : LocalOutbox, rt : effect::Runtime, msg : OutboxMessage) -> Unit {
-  let req_fn = self.transport.request_k
-  let body = base_codec::json_stringify(base_codec::json_obj([
+/// Find the oldest active message for `(station, thread)` and dispatch it strictly FIFO single-flight.
+/// If the head-of-line message is transiently failed (`state == "failed" && unreached`), BLOCK this thread
+/// so later messages NEVER jump ahead of `msg-1`.
+fn LocalOutbox::pump_thread(self : LocalOutbox, rt : effect::Runtime, station : String, thread : Int) -> Unit {
+  if !self.online {
+    return
+  }
+  let fk = thread_flight_key(station, thread)
+  if self.in_flight_threads.get(fk).is_some() {
+    return
+  }
+  let mut next_msg : Option[OutboxMessage] = None
+  for i in 0..<self.queued_messages.length() {
+    let m = self.queued_messages[i]
+    if m.station == station && m.thread == thread && !m.final_failed && m.seq.is_none() {
+      if m.state == "failed" && m.unreached {
+        // Head-of-line is transiently failed/unreached: block thread until reconnect `flush_offline` retries it first!
+        return
+      }
+      if m.state == "sending" {
+        next_msg = Some(m)
+        break
+      }
+    }
+  }
+  match next_msg {
+    None => ()
+    Some(msg) => {
+      self.in_flight_threads.set(fk, msg.client_key)
+      self.dispatch_message(rt, msg)
+    }
+  }
+}
+
+fn build_send_http_body(msg : OutboxMessage) -> Bytes {
+  let att_j = match base_codec::json_get(msg.raw_json, "attachments") {
+    Some(v) => v
+    None => base_codec::json_arr([])
+  }
+  let q_j = match base_codec::json_get(msg.raw_json, "quotes") {
+    Some(v) => v
+    None => base_codec::json_arr([])
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("text", base_codec::json_str(msg.text)),
+    ("attachments", att_j),
+    ("quotes", q_j),
+    ("idem", base_codec::json_str(msg.client_key)),
     ("clientKey", base_codec::json_str(msg.client_key)),
     ("author", base_codec::json_str(msg.author)),
-    ("text", base_codec::json_str(msg.text)),
     ("at", base_codec::json_int64(msg.created_at)),
-  ])).to_bytes()
+  ]
+  match base_codec::json_get(msg.raw_json, "client") {
+    Some(base_codec::Json::Null) | None => ()
+    Some(v) => fields.push(("client", v))
+  }
+  match base_codec::json_get(msg.raw_json, "cc") {
+    Some(base_codec::Json::Null) | None => ()
+    Some(v) => fields.push(("cc", v))
+  }
+  base_codec::json_stringify(base_codec::json_obj(fields)).to_bytes()
+}
+
+fn LocalOutbox::mark_message_transient_failed(
+  self : LocalOutbox,
+  msg : OutboxMessage,
+  code : String,
+  recovery : String,
+) -> Unit {
+  msg.state = "failed"
+  msg.unreached = true
+  msg.error = Some(code)
+  let burst = sql::Burst::new(self.db)
+  let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+    self.write_thread_outbox_in_burst(b, msg.station, msg.thread)
+  })
+  self.outbox.tell(CoreEvent::OverlayRolledBack(
+    msg.station,
+    msg.client_key,
+    "chat.send",
+    code,
+    recovery,
+  ))
+}
+
+fn LocalOutbox::dispatch_message(self : LocalOutbox, rt : effect::Runtime, msg : OutboxMessage) -> Unit {
+  let fk = thread_flight_key(msg.station, msg.thread)
+  let transport = match self.transport_for(msg.station) {
+    Some(t) => t
+    None => {
+      self.in_flight_threads.remove(fk)
+      self.mark_message_transient_failed(
+        msg,
+        "station_unregistered",
+        "Target station not connected; queued until station connects.",
+      )
+      return
+    }
+  }
+  let req_fn = transport.request_k
+  let body = build_send_http_body(msg)
   let path = "/threads/" + msg.thread.to_string() + "/messages"
   let headers = [
     ("content-type", "application/json"),
     ("idempotency-key", msg.client_key),
   ]
-  let _ = rt.fork_quiet_named("outbox-send:" + msg.client_key, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  let _ = rt.fork_quiet_named("outbox-send:" + msg.station + ":" + msg.client_key, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     req_fn("POST", path, headers, body, fn(ex : effect::Exit[HttpReply]) -> Unit {
+      self.in_flight_threads.remove(fk)
       match ex {
         effect::Exit::Interrupted => k(effect::Exit::Interrupted)
         effect::Exit::Failed(_) => {
-          // Transient network drop: keep in local `outbox` for automatic retry on reconnect.
+          // Transient network drop: mark `failed` + `unreached` and STOP pumping this thread (strict FIFO!).
+          self.mark_message_transient_failed(msg, "network_error", "Station unreachable; will retry on reconnect.")
           k(effect::Exit::Succeeded(()))
         }
         effect::Exit::Succeeded(reply) => {
           if reply.status >= 200 && reply.status < 300 {
-            let parsed = base_codec::json_parse(bytes_to_str(reply.body))
-            match parsed {
+            let mut reconciled = false
+            match base_codec::json_parse(bytes_to_str(reply.body)) {
               base_codec::JsonParseResult::Ok(j) => {
                 let server_n_opt = match base_codec::json_get(j, "n") {
                   Some(base_codec::Json::Num(n, _)) => {
@@ -330,33 +798,20 @@ fn LocalOutbox::dispatch_message(self : LocalOutbox, rt : effect::Runtime, msg :
                 }
                 let ack_key = match base_codec::json_get(j, "clientKey") {
                   Some(base_codec::Json::Str(ck)) => ck
-                  _ => msg.client_key
+                  _ =>
+                  match base_codec::json_get(j, "idem") {
+                    Some(base_codec::Json::Str(ik)) => ik
+                    _ => msg.client_key
+                  }
                 }
                 match server_n_opt {
                   Some(server_n) => {
                     if ack_key == msg.client_key {
+                      // NEVER insert a synthetic half-baked `entry` row here; real entries arrive via SSE `thread` or fetch.
                       let burst = sql::Burst::new(self.db)
                       let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-                        let entry_raw = base_codec::json_stringify(base_codec::json_obj([
-                          ("n", base_codec::json_int(server_n)),
-                          ("thread", base_codec::json_int(msg.thread)),
-                          ("kind", base_codec::json_str("message")),
-                          ("authorKind", base_codec::json_str("person")),
-                          ("author", base_codec::json_str(msg.author)),
-                          ("text", base_codec::json_str(msg.text)),
-                          ("at", base_codec::json_int64(msg.created_at)),
-                          ("clientKey", base_codec::json_str(msg.client_key)),
-                        ]))
-                        match b.run(sql_entry_put(), params=[
-                          base_codec::json_str(self.station),
-                          base_codec::json_int(msg.thread),
-                          base_codec::json_int(server_n),
-                          base_codec::json_str(entry_raw),
-                        ]) {
-                          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                          sql::SqlResult::Ok(_) => ()
-                        }
-                        self.reconcile_entry_in_burst(b, msg.thread, server_n, msg.client_key)
+                        self.reconcile_entry_in_burst(b, msg.thread, server_n, msg.client_key, station=Some(msg.station))
+                        reconciled = true
                         sql::SqlResult::Ok(())
                       })
                     }
@@ -366,21 +821,30 @@ fn LocalOutbox::dispatch_message(self : LocalOutbox, rt : effect::Runtime, msg :
               }
               base_codec::JsonParseResult::Err(_) => ()
             }
+            if reconciled {
+              self.pump_thread(rt, msg.station, msg.thread)
+            }
           } else if reply.status >= 400 && reply.status < 500 {
-            // Permanent station rejection: roll back local `outbox` and notify UI with recovery hint.
+            // Permanent station refusal: roll back local `outbox` and notify UI with recovery hint.
             let (code, recovery) = parse_station_error(reply.body, reply.status)
-            let _ = self.remove_queued_message(msg.client_key)
+            let _ = self.remove_queued_message(msg.station, msg.client_key)
             let burst = sql::Burst::new(self.db)
             let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-              self.write_thread_outbox_in_burst(b, msg.thread)
+              self.write_thread_outbox_in_burst(b, msg.station, msg.thread)
             })
             self.outbox.tell(CoreEvent::OverlayRolledBack(
-              self.station,
+              msg.station,
               msg.client_key,
-              "send_message",
+              "chat.send",
               code,
               recovery,
             ))
+            self.pump_thread(rt, msg.station, msg.thread)
+          } else {
+            // 5xx / transient server error: mark `failed` + `unreached` and STOP pumping this thread
+            // so later messages NEVER jump ahead of the failed head-of-line message; reconnect `flush_offline` retries in order.
+            let (code, recovery) = parse_station_error(reply.body, reply.status)
+            self.mark_message_transient_failed(msg, code, recovery)
           }
           k(effect::Exit::Succeeded(()))
         }
@@ -389,15 +853,17 @@ fn LocalOutbox::dispatch_message(self : LocalOutbox, rt : effect::Runtime, msg :
   })
 }
 
-/// Optimistically create a pending chat in local SQLite `pending` table.
+/// Optimistically create a pending chat in local SQLite `pending` table (`POST /sessions`).
 pub fn LocalOutbox::create_pending_chat(
   self : LocalOutbox,
   rt : effect::Runtime,
   client_key : String,
   title : String,
   now : Int64,
+  station : Option[String] = None,
 ) -> sql::SqlResult[Unit] {
-  let op = PendingChatOp::{ client_key: client_key, title: title, created_at: now }
+  let st = resolve_station(self.station, station)
+  let op = PendingChatOp::{ station: st, client_key: client_key, title: title, created_at: now }
   self.queued_pending.push(op)
   let raw = base_codec::json_stringify(base_codec::json_obj([
     ("clientKey", base_codec::json_str(client_key)),
@@ -406,18 +872,18 @@ pub fn LocalOutbox::create_pending_chat(
   ]))
   let burst = sql::Burst::new(self.db)
   match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-    match b.run(sql_pending_put(), params=[base_codec::json_str(client_key), base_codec::json_str(self.station), base_codec::json_str(raw)]) {
+    match b.run(sql_pending_put(), params=[base_codec::json_str(client_key), base_codec::json_str(st), base_codec::json_str(raw)]) {
       sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
       sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
     }
   }) {
     sql::SqlResult::Err(e) => {
-      let _ = self.remove_queued_pending(client_key)
+      let _ = self.remove_queued_pending(st, client_key)
       return sql::SqlResult::Err(e)
     }
     sql::SqlResult::Ok(_) => ()
   }
-  self.outbox.tell(CoreEvent::OverlayApplied(self.station, client_key, "pending_chat"))
+  self.outbox.tell(CoreEvent::OverlayApplied(st, client_key, "pending_chat"))
   if self.online {
     self.dispatch_pending_chat(rt, op)
   }
@@ -425,18 +891,36 @@ pub fn LocalOutbox::create_pending_chat(
 }
 
 fn LocalOutbox::dispatch_pending_chat(self : LocalOutbox, rt : effect::Runtime, op : PendingChatOp) -> Unit {
-  let req_fn = self.transport.request_k
+  let pk = station_item_key(op.station, op.client_key)
+  if self.in_flight_pending.get(pk).is_some() {
+    return
+  }
+  let transport = match self.transport_for(op.station) {
+    Some(t) => t
+    None => {
+      self.outbox.tell(CoreEvent::OverlayRolledBack(
+        op.station,
+        op.client_key,
+        "session.new",
+        "station_unregistered",
+        "Target station not connected; queued until station connects.",
+      ))
+      return
+    }
+  }
+  self.in_flight_pending.set(pk, true)
+  let req_fn = transport.request_k
   let body = base_codec::json_stringify(base_codec::json_obj([
     ("clientKey", base_codec::json_str(op.client_key)),
     ("title", base_codec::json_str(op.title)),
-    ("at", base_codec::json_int64(op.created_at)),
   ])).to_bytes()
   let headers = [
     ("content-type", "application/json"),
     ("idempotency-key", op.client_key),
   ]
-  let _ = rt.fork_quiet_named("pending-chat:" + op.client_key, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    req_fn("POST", "/chats", headers, body, fn(ex : effect::Exit[HttpReply]) -> Unit {
+  let _ = rt.fork_quiet_named("pending-chat:" + op.station + ":" + op.client_key, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    req_fn("POST", "/sessions", headers, body, fn(ex : effect::Exit[HttpReply]) -> Unit {
+      self.in_flight_pending.remove(pk)
       match ex {
         effect::Exit::Interrupted => k(effect::Exit::Interrupted)
         effect::Exit::Failed(_) => k(effect::Exit::Succeeded(()))
@@ -444,33 +928,29 @@ fn LocalOutbox::dispatch_pending_chat(self : LocalOutbox, rt : effect::Runtime, 
           if reply.status >= 200 && reply.status < 300 {
             match base_codec::json_parse(bytes_to_str(reply.body)) {
               base_codec::JsonParseResult::Ok(j) => {
+                let cid = j_str(j, "key", fallback=j_str(j, "id", fallback=op.client_key))
                 let burst = sql::Burst::new(self.db)
                 let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-                  match upsert_chat_in_burst(b, self.station, j) {
-                    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                    sql::SqlResult::Ok(cid) => {
-                      self.reconcile_pending_chat_in_burst(b, cid, op.client_key)
-                      sql::SqlResult::Ok(())
-                    }
-                  }
+                  self.reconcile_pending_chat_in_burst(b, cid, op.client_key, station=Some(op.station))
+                  sql::SqlResult::Ok(())
                 })
               }
               base_codec::JsonParseResult::Err(_) => ()
             }
           } else if reply.status >= 400 && reply.status < 500 {
             let (code, recovery) = parse_station_error(reply.body, reply.status)
-            let _ = self.remove_queued_pending(op.client_key)
+            let _ = self.remove_queued_pending(op.station, op.client_key)
             let burst = sql::Burst::new(self.db)
             let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-              match b.run(sql_pending_delete(), params=[base_codec::json_str(op.client_key), base_codec::json_str(self.station)]) {
+              match b.run(sql_pending_delete(), params=[base_codec::json_str(op.client_key), base_codec::json_str(op.station)]) {
                 sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
                 sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
               }
             })
             self.outbox.tell(CoreEvent::OverlayRolledBack(
-              self.station,
+              op.station,
               op.client_key,
-              "create_chat",
+              "session.new",
               code,
               recovery,
             ))
@@ -482,111 +962,193 @@ fn LocalOutbox::dispatch_pending_chat(self : LocalOutbox, rt : effect::Runtime, 
   })
 }
 
-/// Apply an optimistic chat overlay (`rename`, `pin`, `archive`) into `changing`,
-/// saving the prior chat record for atomic rollback on station rejection.
-pub fn LocalOutbox::apply_chat_overlay(
+/// Execute any real `ops.ts` station operation optimistically: records overlay in `changing`
+/// for the exact target station (`station` param or `req.station` or `self.station`),
+/// saves prior chat JSON for rollback on 4xx refusal, emits `OverlayApplied`, and dispatches
+/// `req.method` + `req.path` (falling back to `req.fallback` on 404).
+pub fn LocalOutbox::apply_op(
   self : LocalOutbox,
   rt : effect::Runtime,
+  req : OpRequest,
   chat_id : String,
   op_kind : String,
-  value : base_codec::Json,
+  station : Option[String] = None,
 ) -> sql::SqlResult[Int] {
-  let prev = match store::get_chat_by_key(self.db, self.station, 0, chat_id) {
-    sql::SqlResult::Ok(Some(rec)) => Some(rec.json)
+  let req_st = match req.target {
+    OpTarget::Station(s) => if s.length() > 0 { Some(s) } else { None }
     _ => None
+  }
+  let st = match station {
+    Some(s) => if s.length() > 0 { s } else { resolve_station(self.station, req_st) }
+    None => resolve_station(self.station, req_st)
+  }
+  let prev = if chat_id.length() > 0 {
+    match store::get_chat_by_key(self.db, st, 0, chat_id) {
+      sql::SqlResult::Ok(Some(rec)) => Some(rec.json)
+      _ => None
+    }
+  } else {
+    None
   }
   let op_id = self.next_change_id
   self.next_change_id += 1
+  let (fb_method, fb_path) = match req.fallback {
+    Some(fb) => (Some(fb.method), Some(fb.path))
+    None => (None, None)
+  }
   let ov = ChangingOverlay::{
+    station: st,
     op_id: op_id,
     chat_id: chat_id,
     op_kind: op_kind,
-    http_method: "POST",
-    http_path: "/chats/" + chat_id + "/" + op_kind,
-    value_json: value,
+    http_method: req.method,
+    http_path: req.path,
+    body_json: req.body,
+    fallback_method: fb_method,
+    fallback_path: fb_path,
     previous_chat_json: prev,
   }
   self.queued_overlays.push(ov)
-  let raw = base_codec::json_stringify(base_codec::json_obj([
+  let body_j = match req.body {
+    Some(b) => b
+    None => base_codec::json_null()
+  }
+  let fields : Array[(String, base_codec::Json)] = [
     ("id", base_codec::json_int(op_id)),
+    ("station", base_codec::json_str(st)),
     ("chat", base_codec::json_str(chat_id)),
     ("kind", base_codec::json_str(op_kind)),
-    ("value", value),
-  ]))
+    ("method", base_codec::json_str(req.method)),
+    ("path", base_codec::json_str(req.path)),
+    ("body", body_j),
+  ]
+  match (fb_method, fb_path) {
+    (Some(fm), Some(fp)) => {
+      fields.push(("fallbackMethod", base_codec::json_str(fm)))
+      fields.push(("fallbackPath", base_codec::json_str(fp)))
+    }
+    _ => ()
+  }
+  let raw = base_codec::json_stringify(base_codec::json_obj(fields))
   let burst = sql::Burst::new(self.db)
   match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-    match b.run(sql_changing_put(), params=[base_codec::json_str(self.station), base_codec::json_int(op_id), base_codec::json_str(raw)]) {
+    match b.run(sql_changing_put(), params=[base_codec::json_str(st), base_codec::json_int(op_id), base_codec::json_str(raw)]) {
       sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
       sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
     }
   }) {
     sql::SqlResult::Err(e) => {
-      let _ = self.remove_queued_overlay(op_id)
+      let _ = self.remove_queued_overlay(st, op_id)
       return sql::SqlResult::Err(e)
     }
     sql::SqlResult::Ok(_) => ()
   }
-  self.outbox.tell(CoreEvent::OverlayApplied(self.station, chat_id, op_kind))
+  self.outbox.tell(CoreEvent::OverlayApplied(st, chat_id, op_kind))
   if self.online {
     self.dispatch_overlay(rt, ov)
   }
   sql::SqlResult::Ok(op_id)
 }
 
-fn LocalOutbox::dispatch_overlay(self : LocalOutbox, rt : effect::Runtime, ov : ChangingOverlay) -> Unit {
-  let req_fn = self.transport.request_k
-  let path = "/chats/" + ov.chat_id + "/" + ov.op_kind
-  let body = base_codec::json_stringify(base_codec::json_obj([
-    ("opId", base_codec::json_int(ov.op_id)),
-    ("kind", base_codec::json_str(ov.op_kind)),
-    ("value", ov.value_json),
-  ])).to_bytes()
-  let headers = [("content-type", "application/json")]
-  let _ = rt.fork_quiet_named("overlay:" + ov.chat_id + ":" + ov.op_kind, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    req_fn("POST", path, headers, body, fn(ex : effect::Exit[HttpReply]) -> Unit {
-      match ex {
-        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-        effect::Exit::Failed(_) => k(effect::Exit::Succeeded(()))
-        effect::Exit::Succeeded(reply) => {
-          if reply.status >= 200 && reply.status < 300 {
-            let _ = self.remove_queued_overlay(ov.op_id)
-            let burst = sql::Burst::new(self.db)
-            let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-              match b.run(sql_changing_delete(), params=[base_codec::json_str(self.station), base_codec::json_int(ov.op_id)]) {
-                sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
-              }
-            })
-            self.outbox.tell(CoreEvent::ChatsChanged(self.station, [ov.chat_id]))
-          } else if reply.status >= 400 && reply.status < 500 {
-            let (code, recovery) = parse_station_error(reply.body, reply.status)
-            let _ = self.remove_queued_overlay(ov.op_id)
-            let burst = sql::Burst::new(self.db)
-            let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-              match b.run(sql_changing_delete(), params=[base_codec::json_str(self.station), base_codec::json_int(ov.op_id)]) {
-                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => ()
-              }
-              match ov.previous_chat_json {
-                Some(prev_raw) =>
-                match base_codec::json_parse(prev_raw) {
-                  base_codec::JsonParseResult::Ok(prev_j) => {
-                    let _ = upsert_chat_in_burst(b, self.station, prev_j)
-                  }
-                  base_codec::JsonParseResult::Err(_) => ()
-                }
-                None => ()
-              }
-              sql::SqlResult::Ok(())
-            })
-            self.outbox.tell(CoreEvent::OverlayRolledBack(
-              self.station,
-              ov.chat_id,
-              ov.op_kind,
-              code,
-              recovery,
-            ))
+fn LocalOutbox::settle_overlay_reply(self : LocalOutbox, ov : ChangingOverlay, reply : HttpReply) -> Unit {
+  if reply.status >= 200 && reply.status < 300 {
+    let _ = self.remove_queued_overlay(ov.station, ov.op_id)
+    let burst = sql::Burst::new(self.db)
+    let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+      match b.run(sql_changing_delete(), params=[base_codec::json_str(ov.station), base_codec::json_int(ov.op_id)]) {
+        sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+      }
+    })
+    self.outbox.tell(CoreEvent::ChatsChanged(ov.station, [ov.chat_id]))
+  } else if reply.status >= 400 && reply.status < 500 {
+    let (code, recovery) = parse_station_error(reply.body, reply.status)
+    let _ = self.remove_queued_overlay(ov.station, ov.op_id)
+    let burst = sql::Burst::new(self.db)
+    let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+      match b.run(sql_changing_delete(), params=[base_codec::json_str(ov.station), base_codec::json_int(ov.op_id)]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+      match ov.previous_chat_json {
+        Some(prev_raw) =>
+        match base_codec::json_parse(prev_raw) {
+          base_codec::JsonParseResult::Ok(prev_j) => {
+            let _ = upsert_chat_in_burst(b, ov.station, prev_j)
           }
+          base_codec::JsonParseResult::Err(_) => ()
+        }
+        None => ()
+      }
+      sql::SqlResult::Ok(())
+    })
+    self.outbox.tell(CoreEvent::OverlayRolledBack(
+      ov.station,
+      ov.chat_id,
+      ov.op_kind,
+      code,
+      recovery,
+    ))
+  }
+}
+
+fn LocalOutbox::dispatch_overlay(self : LocalOutbox, rt : effect::Runtime, ov : ChangingOverlay) -> Unit {
+  let ok_key = station_item_key(ov.station, ov.op_id.to_string())
+  if self.in_flight_overlays.get(ok_key).is_some() {
+    return
+  }
+  let transport = match self.transport_for(ov.station) {
+    Some(t) => t
+    None => {
+      self.outbox.tell(CoreEvent::OverlayRolledBack(
+        ov.station,
+        ov.chat_id,
+        ov.op_kind,
+        "station_unregistered",
+        "Target station not connected; queued until station connects.",
+      ))
+      return
+    }
+  }
+  self.in_flight_overlays.set(ok_key, true)
+  let req_fn = transport.request_k
+  let (headers, body) = match ov.body_json {
+    Some(bj) => ([("content-type", "application/json")], base_codec::json_stringify(bj).to_bytes())
+    None => ([], Bytes::new(0))
+  }
+  let _ = rt.fork_quiet_named("op:" + ov.station + ":" + ov.op_kind + ":" + ov.op_id.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    req_fn(ov.http_method, ov.http_path, headers, body, fn(ex : effect::Exit[HttpReply]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          self.in_flight_overlays.remove(ok_key)
+          k(effect::Exit::Interrupted)
+        }
+        effect::Exit::Failed(_) => {
+          self.in_flight_overlays.remove(ok_key)
+          k(effect::Exit::Succeeded(()))
+        }
+        effect::Exit::Succeeded(reply) => {
+          if reply.status == 404 {
+            match (ov.fallback_method, ov.fallback_path) {
+              (Some(fm), Some(fp)) => {
+                req_fn(fm, fp, headers, body, fn(fex : effect::Exit[HttpReply]) -> Unit {
+                  self.in_flight_overlays.remove(ok_key)
+                  match fex {
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Failed(_) => k(effect::Exit::Succeeded(()))
+                    effect::Exit::Succeeded(freply) => {
+                      self.settle_overlay_reply(ov, freply)
+                      k(effect::Exit::Succeeded(()))
+                    }
+                  }
+                })
+                return
+              }
+              _ => ()
+            }
+          }
+          self.in_flight_overlays.remove(ok_key)
+          self.settle_overlay_reply(ov, reply)
           k(effect::Exit::Succeeded(()))
         }
       }
@@ -594,17 +1156,55 @@ fn LocalOutbox::dispatch_overlay(self : LocalOutbox, rt : effect::Runtime, ov : 
   })
 }
 
-/// Flush all queued offline messages, pending chats, and overlays upon reconnect.
+/// Flush all queued offline messages (strictly FIFO single-flight per `(station, thread)`),
+/// pending chats, and overlays upon reconnect. Also retries transient `unreached` failed messages
+/// (matching `views/calls.ts:360-367` `stationBack`) while NEVER auto-resending `final: true` items.
 pub fn LocalOutbox::flush_offline(self : LocalOutbox, rt : effect::Runtime) -> Unit {
   if !self.online {
     return
   }
-  let msgs : Array[OutboxMessage] = []
+  // Re-arm transient `unreached` failed messages (never `final_failed` or non-unreached failed!).
+  let rearmed : Array[(String, Int)] = []
+  let rearmed_seen : Map[String, Bool] = Map::new()
   for i in 0..<self.queued_messages.length() {
-    msgs.push(self.queued_messages[i])
+    let m = self.queued_messages[i]
+    if m.state == "failed" && m.unreached && !m.final_failed && m.seq.is_none() {
+      m.state = "sending"
+      m.unreached = false
+      m.error = None
+      let fk = thread_flight_key(m.station, m.thread)
+      if rearmed_seen.get(fk).is_none() {
+        rearmed_seen.set(fk, true)
+        rearmed.push((m.station, m.thread))
+      }
+    }
   }
-  for i in 0..<msgs.length() {
-    self.dispatch_message(rt, msgs[i])
+  if rearmed.length() > 0 {
+    let burst = sql::Burst::new(self.db)
+    let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+      for i in 0..<rearmed.length() {
+        match self.write_thread_outbox_in_burst(b, rearmed[i].0, rearmed[i].1) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => ()
+        }
+      }
+      sql::SqlResult::Ok(())
+    })
+  }
+  let seen_threads : Map[String, Bool] = Map::new()
+  let targets : Array[(String, Int)] = []
+  for i in 0..<self.queued_messages.length() {
+    let m = self.queued_messages[i]
+    if m.state == "sending" && !m.final_failed && m.seq.is_none() {
+      let fk = thread_flight_key(m.station, m.thread)
+      if seen_threads.get(fk).is_none() {
+        seen_threads.set(fk, true)
+        targets.push((m.station, m.thread))
+      }
+    }
+  }
+  for i in 0..<targets.length() {
+    self.pump_thread(rt, targets[i].0, targets[i].1)
   }
   let pends : Array[PendingChatOp] = []
   for i in 0..<self.queued_pending.length() {
@@ -618,253 +1218,43 @@ pub fn LocalOutbox::flush_offline(self : LocalOutbox, rt : effect::Runtime) -> U
     ovs.push(self.queued_overlays[i])
   }
   for i in 0..<ovs.length() {
-    let ov = ovs[i]
-    if ov.op_kind == "message_edit" || ov.op_kind == "message_delete" || ov.op_kind == "card_answer" {
-      self.dispatch_thread_mutation(rt, ov, ov.http_method, ov.http_path)
-    } else {
-      self.dispatch_overlay(rt, ov)
-    }
+    self.dispatch_overlay(rt, ovs[i])
   }
 }
 
-/// Optimistically edit a message in `thread` at `target_seq`: records overlay in `changing`,
-/// emits `OverlayApplied`, and dispatches `POST /threads/<thread>/messages/<target>/edit` when online.
-pub fn LocalOutbox::edit_message(
-  self : LocalOutbox,
-  rt : effect::Runtime,
-  thread : Int,
-  target_seq : Int,
-  text : String,
-  now : Int64,
-) -> sql::SqlResult[Int] {
-  let op_id = self.next_change_id
-  self.next_change_id += 1
-  let jval = base_codec::json_obj([
-    ("thread", base_codec::json_int(thread)),
-    ("target", base_codec::json_int(target_seq)),
-    ("text", base_codec::json_str(text)),
-    ("at", base_codec::json_int64(now)),
-  ])
-  let path = "/threads/" + thread.to_string() + "/messages/" + target_seq.to_string() + "/edit"
-  let ov = ChangingOverlay::{
-    op_id: op_id,
-    chat_id: "thread:" + thread.to_string(),
-    op_kind: "message_edit",
-    http_method: "POST",
-    http_path: path,
-    value_json: jval,
-    previous_chat_json: None,
-  }
-  self.queued_overlays.push(ov)
-  let raw = base_codec::json_stringify(base_codec::json_obj([
-    ("id", base_codec::json_int(op_id)),
-    ("kind", base_codec::json_str("message_edit")),
-    ("value", jval),
-  ]))
-  let burst = sql::Burst::new(self.db)
-  match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-    match b.run(sql_changing_put(), params=[base_codec::json_str(self.station), base_codec::json_int(op_id), base_codec::json_str(raw)]) {
-      sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
-      sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
-    }
-  }) {
-    sql::SqlResult::Err(e) => {
-      let _ = self.remove_queued_overlay(op_id)
-      return sql::SqlResult::Err(e)
-    }
-    sql::SqlResult::Ok(_) => ()
-  }
-  self.outbox.tell(CoreEvent::OverlayApplied(self.station, ov.chat_id, "message_edit"))
-  if self.online {
-    self.dispatch_thread_mutation(rt, ov, ov.http_method, ov.http_path)
-  }
-  sql::SqlResult::Ok(op_id)
-}
-
-/// Optimistically delete a message in `thread` at `target_seq`: records overlay in `changing`,
-/// emits `OverlayApplied`, and dispatches `DELETE /threads/<thread>/messages/<target>` when online.
-pub fn LocalOutbox::delete_message(
-  self : LocalOutbox,
-  rt : effect::Runtime,
-  thread : Int,
-  target_seq : Int,
-  now : Int64,
-) -> sql::SqlResult[Int] {
-  let op_id = self.next_change_id
-  self.next_change_id += 1
-  let jval = base_codec::json_obj([
-    ("thread", base_codec::json_int(thread)),
-    ("target", base_codec::json_int(target_seq)),
-    ("at", base_codec::json_int64(now)),
-  ])
-  let path = "/threads/" + thread.to_string() + "/messages/" + target_seq.to_string()
-  let ov = ChangingOverlay::{
-    op_id: op_id,
-    chat_id: "thread:" + thread.to_string(),
-    op_kind: "message_delete",
-    http_method: "DELETE",
-    http_path: path,
-    value_json: jval,
-    previous_chat_json: None,
-  }
-  self.queued_overlays.push(ov)
-  let raw = base_codec::json_stringify(base_codec::json_obj([
-    ("id", base_codec::json_int(op_id)),
-    ("kind", base_codec::json_str("message_delete")),
-    ("value", jval),
-  ]))
-  let burst = sql::Burst::new(self.db)
-  match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-    match b.run(sql_changing_put(), params=[base_codec::json_str(self.station), base_codec::json_int(op_id), base_codec::json_str(raw)]) {
-      sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
-      sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
-    }
-  }) {
-    sql::SqlResult::Err(e) => {
-      let _ = self.remove_queued_overlay(op_id)
-      return sql::SqlResult::Err(e)
-    }
-    sql::SqlResult::Ok(_) => ()
-  }
-  self.outbox.tell(CoreEvent::OverlayApplied(self.station, ov.chat_id, "message_delete"))
-  if self.online {
-    self.dispatch_thread_mutation(rt, ov, ov.http_method, ov.http_path)
-  }
-  sql::SqlResult::Ok(op_id)
-}
-
-/// Optimistically answer a decision card at `(thread, seq)`: records overlay in `changing`,
-/// emits `OverlayApplied`, and dispatches `POST /threads/<thread>/cards/<seq>/answer` when online.
-pub fn LocalOutbox::answer_card(
-  self : LocalOutbox,
-  rt : effect::Runtime,
-  thread : Int,
-  seq : Int,
-  option : String,
-  action : String,
-  now : Int64,
-) -> sql::SqlResult[Int] {
-  let op_id = self.next_change_id
-  self.next_change_id += 1
-  let jval = base_codec::json_obj([
-    ("thread", base_codec::json_int(thread)),
-    ("seq", base_codec::json_int(seq)),
-    ("option", base_codec::json_str(option)),
-    ("action", base_codec::json_str(action)),
-    ("at", base_codec::json_int64(now)),
-  ])
-  let path = "/threads/" + thread.to_string() + "/cards/" + seq.to_string() + "/answer"
-  let ov = ChangingOverlay::{
-    op_id: op_id,
-    chat_id: "thread:" + thread.to_string(),
-    op_kind: "card_answer",
-    http_method: "POST",
-    http_path: path,
-    value_json: jval,
-    previous_chat_json: None,
-  }
-  self.queued_overlays.push(ov)
-  let raw = base_codec::json_stringify(base_codec::json_obj([
-    ("id", base_codec::json_int(op_id)),
-    ("kind", base_codec::json_str("card_answer")),
-    ("value", jval),
-  ]))
-  let burst = sql::Burst::new(self.db)
-  match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-    match b.run(sql_changing_put(), params=[base_codec::json_str(self.station), base_codec::json_int(op_id), base_codec::json_str(raw)]) {
-      sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
-      sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
-    }
-  }) {
-    sql::SqlResult::Err(e) => {
-      let _ = self.remove_queued_overlay(op_id)
-      return sql::SqlResult::Err(e)
-    }
-    sql::SqlResult::Ok(_) => ()
-  }
-  self.outbox.tell(CoreEvent::OverlayApplied(self.station, ov.chat_id, "card_answer"))
-  if self.online {
-    self.dispatch_thread_mutation(rt, ov, ov.http_method, ov.http_path)
-  }
-  sql::SqlResult::Ok(op_id)
-}
-
-fn LocalOutbox::dispatch_thread_mutation(
-  self : LocalOutbox,
-  rt : effect::Runtime,
-  ov : ChangingOverlay,
-  method_name : String,
-  path : String,
-) -> Unit {
-  let req_fn = self.transport.request_k
-  let body = base_codec::json_stringify(ov.value_json).to_bytes()
-  let headers = [("content-type", "application/json")]
-  let _ = rt.fork_quiet_named("mut:" + ov.op_kind + ":" + ov.op_id.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    req_fn(method_name, path, headers, body, fn(ex : effect::Exit[HttpReply]) -> Unit {
-      match ex {
-        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-        effect::Exit::Failed(_) => k(effect::Exit::Succeeded(()))
-        effect::Exit::Succeeded(reply) => {
-          if reply.status >= 200 && reply.status < 300 {
-            let _ = self.remove_queued_overlay(ov.op_id)
-            let burst = sql::Burst::new(self.db)
-            let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-              match b.run(sql_changing_delete(), params=[base_codec::json_str(self.station), base_codec::json_int(ov.op_id)]) {
-                sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
-              }
-            })
-            self.outbox.tell(CoreEvent::ChatsChanged(self.station, [ov.chat_id]))
-          } else if reply.status >= 400 && reply.status < 500 {
-            let (code, recovery) = parse_station_error(reply.body, reply.status)
-            let _ = self.remove_queued_overlay(ov.op_id)
-            let burst = sql::Burst::new(self.db)
-            let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-              match b.run(sql_changing_delete(), params=[base_codec::json_str(self.station), base_codec::json_int(ov.op_id)]) {
-                sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
-                sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
-              }
-            })
-            self.outbox.tell(CoreEvent::OverlayRolledBack(
-              self.station,
-              ov.chat_id,
-              ov.op_kind,
-              code,
-              recovery,
-            ))
-          }
-          k(effect::Exit::Succeeded(()))
-        }
-      }
-    })
-  })
-}
-
-/// Update read cursor locally in SQLite and notify station when online.
+/// Update read cursor locally in SQLite and notify the exact target station via `PUT /threads/<thread>/read` `{ n }`
+/// (1:1 with `client/core-ts/src/station/sync.ts` `read`).
 pub fn LocalOutbox::mark_read(
   self : LocalOutbox,
   rt : effect::Runtime,
   thread : Int,
   read_seq : Int,
   unread_count : Int,
+  station : Option[String] = None,
 ) -> sql::SqlResult[Unit] {
-  match store::update_thread_read(self.db, self.station, thread, read_seq, unread_count) {
+  let st = resolve_station(self.station, station)
+  match store::update_thread_read(self.db, st, thread, read_seq, unread_count) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
     sql::SqlResult::Ok(_) => ()
   }
-  self.outbox.tell(CoreEvent::ThreadReadChanged(self.station, thread, read_seq, unread_count))
+  self.outbox.tell(CoreEvent::ThreadReadChanged(st, thread, read_seq, unread_count))
   if self.online {
-    let req_fn = self.transport.request_k
-    let body = base_codec::json_stringify(base_codec::json_obj([
-      ("read", base_codec::json_int(read_seq)),
-      ("unread", base_codec::json_int(unread_count)),
-    ])).to_bytes()
-    let path = "/threads/" + thread.to_string() + "/read"
-    let _ = rt.fork_quiet_named("chat-read:" + thread.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-      req_fn("POST", path, [("content-type", "application/json")], body, fn(_ex : effect::Exit[HttpReply]) -> Unit {
-        k(effect::Exit::Succeeded(()))
-      })
-    })
+    match self.transport_for(st) {
+      Some(t) => {
+        let req = chat_read_request(st, thread, read_seq)
+        let req_fn = t.request_k
+        let body = match req.body {
+          Some(b) => base_codec::json_stringify(b).to_bytes()
+          None => Bytes::new(0)
+        }
+        let _ = rt.fork_quiet_named("chat-read:" + st + ":" + thread.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+          req_fn(req.method, req.path, [("content-type", "application/json")], body, fn(_ex : effect::Exit[HttpReply]) -> Unit {
+            k(effect::Exit::Succeeded(()))
+          })
+        })
+      }
+      None => ()
+    }
   }
   sql::SqlResult::Ok(())
 }

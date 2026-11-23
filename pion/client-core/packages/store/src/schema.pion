@@ -157,6 +157,36 @@ pub fn sql_ensure_moved() -> String {
   "CREATE TABLE IF NOT EXISTS moved (station TEXT NOT NULL, session TEXT NOT NULL, there_station TEXT NOT NULL, thread INTEGER, there INTEGER, at INTEGER, came INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (station, session)) WITHOUT ROWID"
 }
 
+/// DDL for `shared_sidecar`, `shared_mark`, and `shared_meta` tables (1:1 with `schema.ts:570-596` `ensureSharedSidecar`).
+pub fn sql_ensure_shared_sidecar() -> String {
+  "CREATE TABLE IF NOT EXISTS shared_sidecar (\n" +
+  "  station TEXT NOT NULL,\n" +
+  "  id TEXT NOT NULL,\n" +
+  "  digest TEXT NOT NULL,\n" +
+  "  said TEXT,\n" +
+  "  named TEXT,\n" +
+  "  quoted_only INTEGER NOT NULL DEFAULT 0,\n" +
+  "  local_admin INTEGER NOT NULL DEFAULT 0,\n" +
+  "  PRIMARY KEY (station, id)\n" +
+  ") WITHOUT ROWID;\n" +
+  "CREATE TABLE IF NOT EXISTS shared_mark (\n" +
+  "  station TEXT NOT NULL,\n" +
+  "  kind TEXT NOT NULL,\n" +
+  "  k TEXT NOT NULL,\n" +
+  "  v TEXT NOT NULL,\n" +
+  "  PRIMARY KEY (station, kind, k)\n" +
+  ") WITHOUT ROWID;\n" +
+  "CREATE TABLE IF NOT EXISTS shared_meta (\n" +
+  "  station TEXT PRIMARY KEY,\n" +
+  "  me TEXT NOT NULL,\n" +
+  "  selves TEXT NOT NULL,\n" +
+  "  lang TEXT NOT NULL,\n" +
+  "  hidden_known INTEGER NOT NULL DEFAULT 0,\n" +
+  "  muted_known INTEGER NOT NULL DEFAULT 0,\n" +
+  "  no_route_build TEXT\n" +
+  ") WITHOUT ROWID;"
+}
+
 /// DDL adding derived `chat` columns and covering partial `chat_recent` index (schema.ts `ensureChatColumns`).
 pub fn sql_ensure_chat_window_indexes() -> String {
   "DROP INDEX IF EXISTS chat_recent;\n" +
@@ -174,6 +204,10 @@ pub fn ensure_md_kept(db : sql::Sql) -> sql::SqlResult[Unit] {
 
 pub fn ensure_moved(db : sql::Sql) -> sql::SqlResult[Unit] {
   db.exec(sql_ensure_moved())
+}
+
+pub fn ensure_shared_sidecar(db : sql::Sql) -> sql::SqlResult[Unit] {
+  db.exec(sql_ensure_shared_sidecar())
 }
 
 fn drop_said_index(db : sql::Sql) -> Unit {
@@ -306,6 +340,10 @@ pub fn open_account_db(sh : shell::Shell, name : String) -> sql::SqlResult[Accou
       sql::SqlResult::Ok(_) => ()
     }
     match ensure_moved(db) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => ()
+    }
+    match ensure_shared_sidecar(db) {
       sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
       sql::SqlResult::Ok(_) => ()
     }

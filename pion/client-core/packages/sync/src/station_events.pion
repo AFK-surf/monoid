@@ -1,7 +1,8 @@
 // Real-time station `/events` SSE consumer & single-transaction `sql::Burst` ingestion.
-// Never polls on a timer: consumes pushed SSE streams over `mesh::Link` (or injected transport),
-// commits each batch atomically in one `sql::Burst` transaction, and emits strongly typed
-// `CoreEvent` notifications to `outbox::FrameOutbox[CoreEvent]` (coalesced into 1 wake per frame).
+// Strictly 1:1 aligned with `client/core-ts/src/station/sync.ts:1848-2164`,
+// `client/core-ts/src/station/thread-after.ts`, and `client/core-ts/src/db/{sessions-threads,jobs,docs,chats}.ts`.
+// Never polls on a timer, never fabricates event names, never clobbers existing SQLite columns,
+// and advances `last_event_id` ONLY after `sql::Burst` commits successfully.
 
 import "base_codec"
 import "effect"
@@ -61,6 +62,11 @@ fn read_reply_chunks_k(
   on_chunk : (Bytes) -> Unit,
   k : (effect::Exit[Unit]) -> Unit,
 ) -> Unit {
+  if effect::is_interrupted() {
+    reply.cancel()
+    k(effect::Exit::Interrupted)
+    return
+  }
   reply.take_k(fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
     match ex {
       effect::Exit::Interrupted => {
@@ -76,6 +82,11 @@ fn read_reply_chunks_k(
         None => k(effect::Exit::Succeeded(()))
         Some(chunk) => {
           on_chunk(chunk)
+          if effect::is_interrupted() {
+            reply.cancel()
+            k(effect::Exit::Interrupted)
+            return
+          }
           read_reply_chunks_k(reply, on_chunk, k)
         }
       }
@@ -147,7 +158,7 @@ pub fn StationTransport::from_link(link : mesh::Link) -> StationTransport {
   }
 }
 
-// SQL statements used by single-transaction `Burst` ingestion.
+// SQL statements used by single-transaction `Burst` ingestion (matching `client/core-ts/src/db/*.ts`).
 pub fn sql_entry_put() -> String {
   "INSERT OR REPLACE INTO entry (station, thread, n, json) VALUES (?, ?, ?, ?)"
 }
@@ -161,11 +172,15 @@ pub fn sql_thread_upsert() -> String {
 }
 
 pub fn sql_session_upsert() -> String {
-  "INSERT OR REPLACE INTO session (station, key, listed, ord, last_active, process, connect, archived_at, turns, summary, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  "INSERT INTO session (station, key, listed, ord, last_active, process, connect, archived_at, turns, summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (station, key) DO UPDATE SET listed = excluded.listed, ord = excluded.ord, last_active = excluded.last_active, process = excluded.process, connect = excluded.connect, archived_at = excluded.archived_at, turns = excluded.turns, summary = excluded.summary"
 }
 
 pub fn sql_job_upsert() -> String {
   "INSERT OR REPLACE INTO job (station, id, session, open, ord, chat, json) VALUES (?, ?, ?, ?, ?, ?, ?)"
+}
+
+pub fn sql_station_overview_upsert() -> String {
+  "INSERT INTO station (address, kind, json, confirmed) VALUES (?, 'overview', ?, NULL) ON CONFLICT (address, kind) DO UPDATE SET json = excluded.json, confirmed = coalesce(excluded.confirmed, confirmed)"
 }
 
 fn j_str(j : base_codec::Json, k : String, fallback : String = "") -> String {
@@ -182,10 +197,20 @@ fn j_opt_str(j : base_codec::Json, k : String) -> Option[String] {
   }
 }
 
+fn j_id_text(j : base_codec::Json, k : String) -> Option[String] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+    Some(base_codec::Json::Num(n, repr)) => {
+      if repr.length() > 0 { Some(repr) } else { Some(n.to_int64().to_string()) }
+    }
+    _ => None
+  }
+}
+
 fn j_int64(j : base_codec::Json, k : String, fallback : Int64 = 0.to_int64()) -> Int64 {
   match base_codec::json_get(j, k) {
     Some(base_codec::Json::Num(n, repr)) => {
-      if repr.length() > 0 {
+      if repr.length() > 0 && !repr.contains(".") && !repr.contains("e") && !repr.contains("E") {
         match base_codec::parse_int64_str(repr) {
           Some(v) => v
           None => n.to_int64()
@@ -201,9 +226,28 @@ fn j_int64(j : base_codec::Json, k : String, fallback : Int64 = 0.to_int64()) ->
 fn j_opt_int64(j : base_codec::Json, k : String) -> Option[Int64] {
   match base_codec::json_get(j, k) {
     Some(base_codec::Json::Num(n, repr)) => {
-      if repr.length() > 0 {
+      if repr.length() > 0 && !repr.contains(".") && !repr.contains("e") && !repr.contains("E") {
         match base_codec::parse_int64_str(repr) {
           Some(v) => Some(v)
+          None => Some(n.to_int64())
+        }
+      } else {
+        Some(n.to_int64())
+      }
+    }
+    _ => None
+  }
+}
+
+fn j_opt_u64(j : base_codec::Json, k : String) -> Option[Int64] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, repr)) => {
+      if n < 0.0 || n != n.floor() {
+        return None
+      }
+      if repr.length() > 0 && !repr.contains(".") && !repr.contains("e") && !repr.contains("E") {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => if v >= 0.to_int64() { Some(v) } else { None }
           None => Some(n.to_int64())
         }
       } else {
@@ -225,10 +269,84 @@ fn j_bool(j : base_codec::Json, k : String, fallback : Bool = false) -> Bool {
   }
 }
 
+fn j_opt_bool(j : base_codec::Json, k : String) -> Option[Bool] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+}
+
 fn j_double(j : base_codec::Json, k : String, fallback : Double = 0.0) -> Double {
   match base_codec::json_get(j, k) {
     Some(base_codec::Json::Num(n, _)) => n
     _ => fallback
+  }
+}
+
+fn j_has(j : base_codec::Json, k : String) -> Bool {
+  match j {
+    base_codec::Json::Obj(fs) => {
+      for i in 0..<fs.length() {
+        if fs[i].0 == k {
+          return true
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+fn j_is_null_or_absent(j : base_codec::Json, k : String) -> Bool {
+  match base_codec::json_get(j, k) {
+    None => true
+    Some(base_codec::Json::Null) => true
+    _ => false
+  }
+}
+
+fn j_set_field(j : base_codec::Json, k : String, v : base_codec::Json) -> base_codec::Json {
+  match j {
+    base_codec::Json::Obj(fs) => {
+      let out : Array[(String, base_codec::Json)] = []
+      let mut replaced = false
+      for i in 0..<fs.length() {
+        if fs[i].0 == k {
+          out.push((k, v))
+          replaced = true
+        } else {
+          out.push(fs[i])
+        }
+      }
+      if !replaced {
+        out.push((k, v))
+      }
+      base_codec::json_obj(out)
+    }
+    _ => j
+  }
+}
+
+fn j_without_keys(j : base_codec::Json, drop : Array[String]) -> base_codec::Json {
+  match j {
+    base_codec::Json::Obj(fs) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fs.length() {
+        let k = fs[i].0
+        let mut skip = false
+        for di in 0..<drop.length() {
+          if drop[di] == k {
+            skip = true
+            break
+          }
+        }
+        if !skip {
+          out.push(fs[i])
+        }
+      }
+      base_codec::json_obj(out)
+    }
+    _ => j
   }
 }
 
@@ -244,6 +362,271 @@ fn opt_i64_json(v : Option[Int64]) -> base_codec::Json {
     Some(n) => base_codec::json_int64(n)
     None => base_codec::json_null()
   }
+}
+
+fn ascii_lower(s : String) -> String {
+  let bytes = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<bytes.length() {
+    let b = bytes[i].to_int()
+    if b >= 65 && b <= 90 {
+      sb.write_byte((b + 32) as Byte)
+    } else {
+      sb.write_byte(bytes[i])
+    }
+  }
+  sb.to_string()
+}
+
+fn is_own_surface(surface : Option[String]) -> Bool {
+  match surface {
+    Some(s) => s == "chat" || s == "ember" || s == "stillfail"
+    None => false
+  }
+}
+
+fn members_of(view : base_codec::Json) -> Array[String] {
+  let out : Array[String] = []
+  match base_codec::json_get(view, "sessions") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match j_opt_str(xs[i], "session") {
+          Some(s) => if s.length() > 0 { out.push(s) }
+          None => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+/// Truncate UTF-8 string to at most `max_chars` Unicode scalar values (matching JS `[...text].slice(0, 300).join("")`).
+fn take_utf8_chars(s : String, max_chars : Int) -> String {
+  let bytes = s.to_bytes()
+  let mut count = 0
+  let mut i = 0
+  while i < bytes.length() && count < max_chars {
+    let b = bytes[i].to_int()
+    let step = if b < 128 { 1 } else if b < 224 { 2 } else if b < 240 { 3 } else { 4 }
+    if i + step > bytes.length() {
+      break
+    }
+    i += step
+    count += 1
+  }
+  s.slice(0, i)
+}
+
+fn message_of_entry(e : base_codec::Json) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("agentIdentity", match base_codec::json_get(e, "agentIdentity") { Some(v) => v; None => base_codec::json_null() }),
+    ("seq", match base_codec::json_get(e, "n") { Some(v) => v; None => base_codec::json_null() }),
+    ("thread", match base_codec::json_get(e, "thread") { Some(v) => v; None => base_codec::json_null() }),
+    ("ts", match base_codec::json_get(e, "ts") { Some(v) => v; None => base_codec::json_null() }),
+    ("authorKind", match base_codec::json_get(e, "authorKind") { Some(v) => v; None => base_codec::json_null() }),
+    ("author", match base_codec::json_get(e, "author") { Some(v) => v; None => base_codec::json_null() }),
+    ("authorName", match base_codec::json_get(e, "authorName") { Some(v) => v; None => base_codec::json_null() }),
+    ("text", match base_codec::json_get(e, "text") { Some(v) => v; None => base_codec::json_null() }),
+    ("attachments", match base_codec::json_get(e, "attachments") { Some(v) => v; None => base_codec::json_arr([]) }),
+    ("quotes", match base_codec::json_get(e, "quotes") { Some(v) => v; None => base_codec::json_arr([]) }),
+    ("declared", match base_codec::json_get(e, "declared") { Some(v) => v; None => base_codec::json_null() }),
+    ("createdAt", match base_codec::json_get(e, "at") { Some(v) => v; None => base_codec::json_null() }),
+    ("editedAt", base_codec::json_null()),
+  ]
+  match base_codec::json_get(e, "authorPicture") { Some(v) => fields.push(("authorPicture", v)); None => () }
+  match base_codec::json_get(e, "authorModel") { Some(v) => fields.push(("authorModel", v)); None => () }
+  match base_codec::json_get(e, "authorRuntime") { Some(v) => fields.push(("authorRuntime", v)); None => () }
+  match base_codec::json_get(e, "ending") { Some(v) => fields.push(("ending", v)); None => () }
+  base_codec::json_obj(fields)
+}
+
+/// 1:1 port of `client/core-ts/src/station/thread-after.ts` `threadAfter(held, entries, me)`.
+pub fn thread_after(
+  held : base_codec::Json,
+  entries : Array[base_codec::Json],
+  me : String,
+) -> Option[base_codec::Json] {
+  match held {
+    base_codec::Json::Obj(_) => ()
+    _ => return None
+  }
+  if !is_own_surface(j_opt_str(held, "surface")) {
+    return None
+  }
+  let said : Array[(Int64, base_codec::Json)] = []
+  for i in 0..<entries.length() {
+    match entries[i] {
+      base_codec::Json::Obj(_) => {
+        match j_opt_u64(entries[i], "n") {
+          Some(en) => said.push((en, entries[i]))
+          None => return None
+        }
+      }
+      _ => ()
+    }
+  }
+  if said.length() == 0 {
+    return None
+  }
+  let mut last = match j_opt_u64(held, "last") {
+    Some(v) => v
+    None => return None
+  }
+  let read = match j_opt_u64(held, "read") {
+    Some(v) => v
+    None => return None
+  }
+  // Sort ascending by `n` (insertion sort — deterministic & stable)
+  for i in 1..<said.length() {
+    let cur = said[i]
+    let mut j = i - 1
+    while j >= 0 && said[j].0 > cur.0 {
+      said[j + 1] = said[j]
+      j -= 1
+    }
+    said[j + 1] = cur
+  }
+  let mut unread = match j_opt_u64(held, "unread") {
+    Some(v) => v
+    None => 0.to_int64()
+  }
+  let mut last_message = match base_codec::json_get(held, "lastMessage") {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+  let people : Array[base_codec::Json] = []
+  match base_codec::json_get(held, "people") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        people.push(xs[i])
+      }
+    }
+    _ => ()
+  }
+  let mut first_text = match base_codec::json_get(held, "firstText") {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+  let mine = ascii_lower(me)
+  for i in 0..<said.length() {
+    let (at, e) = said[i]
+    if at <= last {
+      continue
+    }
+    if at != last + 1.to_int64() {
+      return None
+    }
+    let kind = j_str(e, "kind")
+    if kind == "message" {
+      if !j_has(e, "letter") {
+        let ak = j_str(e, "authorKind")
+        let author = j_opt_str(e, "author")
+        if ak == "person" {
+          match author {
+            Some(a) => {
+              if a == "local" || !a.contains("@") {
+                return None
+              }
+            }
+            None => return None
+          }
+        }
+        last_message = message_of_entry(e)
+        let own = match author {
+          Some(a) => ak == "person" && ascii_lower(a) == mine
+          None => false
+        }
+        if at > read && !own {
+          unread += 1.to_int64()
+        }
+        if ak == "person" {
+          match author {
+            Some(a) => {
+              let mut has_person = false
+              for pi in 0..<people.length() {
+                match j_opt_str(people[pi], "id") {
+                  Some(pid) => if pid == a {
+                    has_person = true
+                    break
+                  }
+                  None => ()
+                }
+              }
+              if !has_person {
+                let pname = match j_opt_str(e, "authorName") {
+                  Some(nm) => nm
+                  None => a
+                }
+                people.push(base_codec::json_obj([
+                  ("id", base_codec::json_str(a)),
+                  ("name", base_codec::json_str(pname)),
+                  ("email", base_codec::json_str(a)),
+                  ("via", base_codec::json_str("cloud")),
+                ]))
+              }
+              match first_text {
+                base_codec::Json::Null => {
+                  match j_opt_str(e, "text") {
+                    Some(t) => {
+                      first_text = base_codec::json_str(take_utf8_chars(t, 300))
+                    }
+                    None => ()
+                  }
+                }
+                _ => ()
+              }
+            }
+            None => ()
+          }
+        }
+      }
+    } else if kind == "edit" {
+      match last_message {
+        base_codec::Json::Obj(_) => {
+          let lm_seq = j_opt_u64(last_message, "seq")
+          let target = j_opt_u64(e, "target")
+          let seq_match = match (lm_seq, target) {
+            (Some(a), Some(b)) => a == b
+            _ => false
+          }
+          if seq_match {
+            let mut updated = j_set_field(
+              last_message,
+              "text",
+              match base_codec::json_get(e, "text") { Some(v) => v; None => base_codec::json_null() },
+            )
+            updated = j_set_field(
+              updated,
+              "attachments",
+              match base_codec::json_get(e, "attachments") { Some(v) => v; None => base_codec::json_arr([]) },
+            )
+            updated = j_set_field(
+              updated,
+              "quotes",
+              match base_codec::json_get(e, "quotes") { Some(v) => v; None => base_codec::json_arr([]) },
+            )
+            updated = j_set_field(
+              updated,
+              "editedAt",
+              match base_codec::json_get(e, "at") { Some(v) => v; None => base_codec::json_null() },
+            )
+            last_message = updated
+          }
+        }
+        _ => ()
+      }
+    } else {
+      return None
+    }
+    last = at
+  }
+  let mut out = j_set_field(held, "last", base_codec::json_int64(last))
+  out = j_set_field(out, "lastMessage", last_message)
+  out = j_set_field(out, "unread", base_codec::json_int64(unread))
+  out = j_set_field(out, "people", base_codec::json_arr(people))
+  out = j_set_field(out, "firstText", first_text)
+  Some(out)
 }
 
 /// Base reconnect delay in ms (matches `client/core-ts/src/station/link.ts RECONNECT_MS`).
@@ -297,18 +680,28 @@ pub struct StationEvents {
   pub db : sql::Sql
   pub outbox : outbox::FrameOutbox[CoreEvent]
   pub transport : StationTransport
+  pub mut viewer_email : String
   mut last_event_id : Option[String]
   mut state : ConnectionState
   mut attempts : Int
+  mut stopped : Bool
   sessions : Map[String, SessionStatus]
   session_order : Array[String]
   jobs : Map[String, JobStatus]
   job_order : Array[String]
+  dirty_threads : Map[Int, Bool]
+  mut resync_needed : Int
+  mut marks_dirty_count : Int
   mut on_entry_client_key : (sql::Burst, Int, Int, String) -> Unit
   mut on_chat_client_key : (sql::Burst, String, String) -> Unit
   mut on_connected : () -> Unit
   mut on_lock_payload : (base_codec::Json) -> Unit
+  mut on_missed : () -> Unit
+  mut on_marks_dirty : (String, base_codec::Json) -> Unit
+  mut on_thread_dirty : (Int) -> Unit
   mut stream_fiber : Option[effect::Fiber[Unit]]
+  mut active_stream_fiber : Option[effect::Fiber[Unit]]
+  mut active_cancel : Option[() -> Unit]
 }
 
 pub fn StationEvents::new(
@@ -324,19 +717,85 @@ pub fn StationEvents::new(
     db: db,
     outbox: frame_outbox,
     transport: transport,
+    viewer_email: "",
     last_event_id: None,
     state: ConnectionState::Disconnected("initial"),
     attempts: 0,
+    stopped: false,
     sessions: Map::new(),
     session_order: [],
     jobs: Map::new(),
     job_order: [],
+    dirty_threads: Map::new(),
+    resync_needed: 0,
+    marks_dirty_count: 0,
     on_entry_client_key: fn(_b : sql::Burst, _th : Int, _n : Int, _ck : String) -> Unit {},
     on_chat_client_key: fn(_b : sql::Burst, _cid : String, _ck : String) -> Unit {},
     on_connected: fn() -> Unit {},
     on_lock_payload: fn(_j : base_codec::Json) -> Unit {},
+    on_missed: fn() -> Unit {},
+    on_marks_dirty: fn(_ev : String, _j : base_codec::Json) -> Unit {},
+    on_thread_dirty: fn(_th : Int) -> Unit {},
     stream_fiber: None,
+    active_stream_fiber: None,
+    active_cancel: None,
   }
+}
+
+pub fn StationEvents::set_missed_hook(self : StationEvents, cb : () -> Unit) -> Unit {
+  self.on_missed = cb
+}
+
+pub fn StationEvents::set_marks_dirty_hook(self : StationEvents, cb : (String, base_codec::Json) -> Unit) -> Unit {
+  self.on_marks_dirty = cb
+}
+
+pub fn StationEvents::set_thread_dirty_hook(self : StationEvents, cb : (Int) -> Unit) -> Unit {
+  self.on_thread_dirty = cb
+}
+
+pub fn StationEvents::set_active_cancel(self : StationEvents, cb : () -> Unit) -> Unit {
+  self.active_cancel = Some(cb)
+}
+
+fn StationEvents::cancel_active_stream(self : StationEvents) -> Unit {
+  match self.active_cancel {
+    Some(cb) => {
+      self.active_cancel = None
+      cb()
+    }
+    None => ()
+  }
+  match self.active_stream_fiber {
+    Some(cf) => {
+      self.active_stream_fiber = None
+      cf.interrupt()
+    }
+    None => ()
+  }
+}
+
+pub fn StationEvents::resync_count(self : StationEvents) -> Int {
+  self.resync_needed
+}
+
+pub fn StationEvents::marks_dirty_count(self : StationEvents) -> Int {
+  self.marks_dirty_count
+}
+
+pub fn StationEvents::is_thread_dirty(self : StationEvents, id : Int) -> Bool {
+  match self.dirty_threads.get(id) {
+    Some(true) => true
+    _ => false
+  }
+}
+
+pub fn StationEvents::dirty_thread_ids(self : StationEvents) -> Array[Int] {
+  self.dirty_threads.keys()
+}
+
+pub fn StationEvents::set_viewer_email(self : StationEvents, email : String) -> Unit {
+  self.viewer_email = email
 }
 
 pub fn StationEvents::session_status(self : StationEvents, key : String) -> Option[SessionStatus] {
@@ -431,22 +890,246 @@ fn StationEvents::set_state(self : StationEvents, next : ConnectionState) -> Uni
   self.outbox.tell(CoreEvent::ConnectionChanged(self.station, next))
 }
 
+fn upsert_shared_mark_in_burst(
+  b : sql::Burst,
+  station : String,
+  kind : String,
+  k : String,
+  v : Option[String],
+) -> sql::SqlResult[Unit] {
+  match v {
+    Some(val_s) =>
+    match b.run(
+      "INSERT OR REPLACE INTO shared_mark (station, kind, k, v) VALUES (?, ?, ?, ?)",
+      params=[
+        base_codec::json_str(station),
+        base_codec::json_str(kind),
+        base_codec::json_str(k),
+        base_codec::json_str(val_s),
+      ],
+    ) {
+      sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+    }
+    None =>
+    match b.run(
+      "DELETE FROM shared_mark WHERE station = ? AND kind = ? AND k = ?",
+      params=[
+        base_codec::json_str(station),
+        base_codec::json_str(kind),
+        base_codec::json_str(k),
+      ],
+    ) {
+      sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+    }
+  }
+}
+
+fn read_shared_mark_in_burst(
+  b : sql::Burst,
+  station : String,
+  kind : String,
+  k : String,
+) -> Option[String] {
+  match b.all(
+    "SELECT v FROM shared_mark WHERE station = ? AND kind = ? AND k = ?",
+    params=[
+      base_codec::json_str(station),
+      base_codec::json_str(kind),
+      base_codec::json_str(k),
+    ],
+  ) {
+    sql::SqlResult::Ok(rows) => if rows.length() > 0 { Some(sql::col_text(rows[0], 0)) } else { None }
+    sql::SqlResult::Err(_) => None
+  }
+}
+
+fn agents_has_running(payload : base_codec::Json) -> Bool {
+  match base_codec::json_get(payload, "agents") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match j_opt_str(xs[i], "process") {
+          Some(p) => if p == "running" { return true }
+          None => ()
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+fn opt_json_str_col(payload : base_codec::Json, key : String) -> base_codec::Json {
+  match base_codec::json_get(payload, key) {
+    None | Some(base_codec::Json::Null) => base_codec::json_null()
+    Some(base_codec::Json::Str(s)) => base_codec::json_str(s)
+    Some(v) => base_codec::json_str(base_codec::json_stringify(v))
+  }
+}
+
+/// Upsert a `chat-shared` row without clobbering existing viewer marks (`unread`, `mine`, `pinned_at`,
+/// `hidden`, `muted`, `kept`) or derived columns (`ord`, `running`, `tone`, `asks`, `desk`).
+/// Writes `shared_sidecar` strictly with `schema.ts:570-578` columns ONLY when `digest` is provided;
+/// never swallows any SQL error.
+fn upsert_chat_shared_in_burst(
+  b : sql::Burst,
+  station : String,
+  payload : base_codec::Json,
+) -> sql::SqlResult[String] {
+  let cid = j_str(payload, "id")
+  match j_opt_str(payload, "digest") {
+    Some(digest) => {
+      if digest.length() > 0 {
+        let quoted_only = if j_bool(payload, "quotedOnly") { 1 } else { j_int(payload, "quoted_only") }
+        let local_admin = if j_bool(payload, "localAdmin") { 1 } else { j_int(payload, "local_admin") }
+        match b.run(
+          "INSERT OR REPLACE INTO shared_sidecar (station, id, digest, said, named, quoted_only, local_admin) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          params=[
+            base_codec::json_str(station),
+            base_codec::json_str(cid),
+            base_codec::json_str(digest),
+            opt_json_str_col(payload, "said"),
+            opt_json_str_col(payload, "named"),
+            base_codec::json_int(quoted_only),
+            base_codec::json_int(local_admin),
+          ],
+        ) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => ()
+        }
+      }
+    }
+    None => ()
+  }
+  let mut merged = payload
+  // Overlay persisted viewer `shared_mark` values (`pin`, `hidden`, `muted`, `kept`).
+  let pin_key = match j_opt_str(merged, "session") { Some(s) => s; None => cid }
+  match read_shared_mark_in_burst(b, station, "pin", pin_key) {
+    Some(ps) =>
+    match base_codec::parse_int64_str(ps) {
+      Some(pv) => { merged = j_set_field(merged, "pinned", base_codec::json_int64(pv)) }
+      None => ()
+    }
+    None => ()
+  }
+  match j_opt_int64(merged, "thread") {
+    Some(th) => {
+      let th_k = th.to_string()
+      match read_shared_mark_in_burst(b, station, "hidden", th_k) {
+        Some(v) => if v == "1" { merged = j_set_field(merged, "hidden", base_codec::json_bool(true)) }
+        None => ()
+      }
+      match read_shared_mark_in_burst(b, station, "muted", th_k) {
+        Some(v) => if v == "1" { merged = j_set_field(merged, "muted", base_codec::json_bool(true)) }
+        None => ()
+      }
+      match read_shared_mark_in_burst(b, station, "kept", th_k) {
+        Some(v) => if v == "1" { merged = j_set_field(merged, "kept", base_codec::json_bool(true)) }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  upsert_chat_in_burst(b, station, merged)
+}
+
+/// Upsert a `chat` row aligned 1:1 with `client/core-ts/src/db/chats.ts:125-149`:
+/// - `unread` is stored ONLY in the `unread` SQL column and stripped from `chat.json`;
+/// - Updating an existing row preserves any omitted columns (`ord`, `unread`, `mine`, `pinned_at`,
+///   `running`, `tone`, `asks`, `desk`) and viewer JSON marks (`hidden`, `muted`, `kept`, `pinned`);
+/// - Derives `running = 1` from `agents` (`process == "running"`) when `running` is omitted.
 fn upsert_chat_in_burst(b : sql::Burst, station : String, payload : base_codec::Json) -> sql::SqlResult[String] {
   let cid = j_str(payload, "id")
   let archived = if j_bool(payload, "archived") { 1 } else { j_int(payload, "archived") }
-  let ord = j_double(payload, "ord")
-  let thread = j_opt_int64(payload, "thread")
-  let session = j_opt_str(payload, "session")
-  let client_key = j_opt_str(payload, "clientKey")
-  let last_active = j_int64(payload, "lastActive")
-  let pinned_at = j_opt_int64(payload, "pinnedAt")
-  let unread = j_opt_int64(payload, "unread")
-  let mine = if j_bool(payload, "mine") { 1 } else { j_int(payload, "mine") }
-  let running = if j_bool(payload, "running") { 1 } else { j_int(payload, "running") }
-  let tone = j_opt_str(payload, "tone")
-  let asks = if j_bool(payload, "asks") { 1 } else { j_int(payload, "asks") }
-  let desk = if j_bool(payload, "desk") { 1 } else { j_int(payload, "desk") }
-  let raw = base_codec::json_stringify(payload)
+  let existing = match b.all(
+    "SELECT ord, unread, mine, pinned_at, running, tone, asks, desk, json FROM chat WHERE station = ? AND archived = ? AND id = ?",
+    params=[base_codec::json_str(station), base_codec::json_int(archived), base_codec::json_str(cid)],
+  ) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => if rows.length() > 0 { Some(rows[0]) } else { None }
+  }
+  let mut merged = payload
+  match existing {
+    Some(r) => {
+      match base_codec::json_parse(sql::col_text(r, 8)) {
+        base_codec::JsonParseResult::Ok(prev_j) => {
+          if base_codec::json_get(merged, "hidden").is_none() {
+            match base_codec::json_get(prev_j, "hidden") { Some(v) => { merged = j_set_field(merged, "hidden", v) }; None => () }
+          }
+          if base_codec::json_get(merged, "muted").is_none() {
+            match base_codec::json_get(prev_j, "muted") { Some(v) => { merged = j_set_field(merged, "muted", v) }; None => () }
+          }
+          if base_codec::json_get(merged, "kept").is_none() {
+            match base_codec::json_get(prev_j, "kept") { Some(v) => { merged = j_set_field(merged, "kept", v) }; None => () }
+          }
+          if base_codec::json_get(merged, "pinned").is_none() && base_codec::json_get(merged, "pinnedAt").is_none() {
+            match sql::col_opt_int64(r, 3) { Some(p) => { merged = j_set_field(merged, "pinned", base_codec::json_int64(p)) }; None => () }
+          }
+        }
+        base_codec::JsonParseResult::Err(_) => ()
+      }
+    }
+    None => ()
+  }
+  let ord = match base_codec::json_get(merged, "ord") {
+    Some(base_codec::Json::Num(v, _)) => v
+    _ => match existing { Some(r) => sql::col_double(r, 0); None => 0.0 }
+  }
+  let thread = j_opt_int64(merged, "thread")
+  let session = j_opt_str(merged, "session")
+  let client_key = j_opt_str(merged, "clientKey")
+  let last_active = match j_opt_int64(merged, "lastActiveAt") {
+    Some(v) => v
+    None => j_int64(merged, "lastActive")
+  }
+  let pinned_at = match j_opt_int64(merged, "pinned") {
+    Some(v) => Some(v)
+    None =>
+    match j_opt_int64(merged, "pinnedAt") {
+      Some(v) => Some(v)
+      None => match existing { Some(r) => sql::col_opt_int64(r, 3); None => None }
+    }
+  }
+  let unread = match base_codec::json_get(merged, "unread") {
+    Some(base_codec::Json::Bool(true)) => Some(1.to_int64())
+    Some(base_codec::Json::Bool(false)) => Some(0.to_int64())
+    Some(base_codec::Json::Num(v, _)) => Some(v.to_int64())
+    Some(base_codec::Json::Null) => None
+    _ => match existing { Some(r) => sql::col_opt_int64(r, 1); None => None }
+  }
+  let mine = match base_codec::json_get(merged, "mine") {
+    Some(base_codec::Json::Bool(b)) => if b { 1 } else { 0 }
+    Some(base_codec::Json::Num(v, _)) => v.to_int()
+    _ => match existing { Some(r) => sql::col_int(r, 2); None => 0 }
+  }
+  let running = match base_codec::json_get(merged, "running") {
+    Some(base_codec::Json::Bool(b)) => if b { 1 } else { 0 }
+    Some(base_codec::Json::Num(v, _)) => v.to_int()
+    _ =>
+    if base_codec::json_get(merged, "agents").is_some() {
+      if agents_has_running(merged) { 1 } else { 0 }
+    } else {
+      match existing { Some(r) => sql::col_int(r, 4); None => 0 }
+    }
+  }
+  let tone = match base_codec::json_get(merged, "tone") {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    Some(base_codec::Json::Null) => None
+    _ => match existing { Some(r) => sql::col_opt_text(r, 5); None => None }
+  }
+  let asks = match base_codec::json_get(merged, "asks") {
+    Some(base_codec::Json::Bool(b)) => if b { 1 } else { 0 }
+    Some(base_codec::Json::Num(v, _)) => v.to_int()
+    _ => match existing { Some(r) => sql::col_int(r, 6); None => 0 }
+  }
+  let desk = match base_codec::json_get(merged, "desk") {
+    Some(base_codec::Json::Bool(b)) => if b { 1 } else { 0 }
+    Some(base_codec::Json::Num(v, _)) => v.to_int()
+    _ => match existing { Some(r) => sql::col_int(r, 7); None => 0 }
+  }
+  // Strictly strip `"unread"` from `chat.json` (1:1 with `client/core-ts/src/db/chats.ts:128-129`).
+  let raw = base_codec::json_stringify(j_without_keys(merged, ["unread"]))
   match b.run(sql_chat_upsert(), params=[
     base_codec::json_str(station),
     base_codec::json_str(cid),
@@ -470,7 +1153,332 @@ fn upsert_chat_in_burst(b : sql::Burst, station : String, payload : base_codec::
   }
 }
 
-/// Ingest an initial snapshot (`chats`, `threads`, `entries`) in a single `sql::Burst` transaction
+/// Write a thread row 1:1 with `SessionsThreadsStore.#putThreadRow` (`sessions-threads.ts:395-439`).
+fn put_thread_in_burst(
+  b : sql::Burst,
+  station : String,
+  view : base_codec::Json,
+  listed_override : Option[Int],
+) -> sql::SqlResult[Unit] {
+  let id = match j_opt_u64(view, "id") {
+    Some(v) => v.to_int()
+    None => return sql::SqlResult::Ok(())
+  }
+  let existing_listed = match b.all("SELECT listed FROM thread WHERE station = ? AND id = ?", params=[
+    base_codec::json_str(station),
+    base_codec::json_int(id),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => if rows.length() > 0 { Some(sql::col_int(rows[0], 0)) } else { None }
+  }
+  let is_listed = match listed_override {
+    Some(l) => l
+    None => match existing_listed { Some(l) => l; None => 0 }
+  }
+  let last_col = j_opt_u64(view, "last")
+  let read_col = j_opt_u64(view, "read")
+  let unread_col = j_opt_u64(view, "unread")
+  let sort_at = match base_codec::json_get(view, "lastMessage") {
+    Some(lm) => j_int64(lm, "createdAt")
+    None => 0.to_int64()
+  }
+  let created_at = j_int64(view, "createdAt")
+  let surface = j_opt_str(view, "surface")
+  let members = members_of(view)
+  let first_member = if members.length() > 0 { Some(members[0]) } else { None }
+  let rest = j_without_keys(view, ["last", "read", "unread"])
+  let raw_json = base_codec::json_stringify(rest)
+  match b.run(sql_thread_upsert(), params=[
+    base_codec::json_str(station),
+    base_codec::json_int(id),
+    base_codec::json_int(is_listed),
+    opt_i64_json(last_col),
+    opt_i64_json(read_col),
+    opt_i64_json(unread_col),
+    base_codec::json_int64(sort_at),
+    base_codec::json_int64(created_at),
+    opt_str_json(surface),
+    opt_str_json(first_member),
+    base_codec::json_str(raw_json),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => ()
+  }
+  match b.run("DELETE FROM thread_member WHERE station = ? AND thread = ?", params=[
+    base_codec::json_str(station),
+    base_codec::json_int(id),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => ()
+  }
+  let seen_m : Map[String, Bool] = Map::new()
+  for i in 0..<members.length() {
+    let m = members[i]
+    if seen_m.get(m).is_none() {
+      seen_m.set(m, true)
+      match b.run("INSERT OR IGNORE INTO thread_member (station, session, thread) VALUES (?, ?, ?)", params=[
+        base_codec::json_str(station),
+        base_codec::json_str(m),
+        base_codec::json_int(id),
+      ]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+    }
+  }
+  sql::SqlResult::Ok(())
+}
+
+/// Read an existing thread row and reconstruct its full JSON (merging `last`/`read`/`unread` columns).
+fn read_thread_view_in_burst(b : sql::Burst, station : String, id : Int) -> sql::SqlResult[Option[(Int, base_codec::Json)]] {
+  match b.all("SELECT listed, json, last, read, unread FROM thread WHERE station = ? AND id = ?", params=[
+    base_codec::json_str(station),
+    base_codec::json_int(id),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() == 0 {
+        return sql::SqlResult::Ok(None)
+      }
+      let r = rows[0]
+      let listed = sql::col_int(r, 0)
+      let parsed = match base_codec::json_parse(sql::col_text(r, 1)) {
+        base_codec::JsonParseResult::Ok(j) => j
+        base_codec::JsonParseResult::Err(_) => return sql::SqlResult::Ok(None)
+      }
+      let mut merged = parsed
+      match sql::col_opt_int64(r, 2) { Some(v) => { merged = j_set_field(merged, "last", base_codec::json_int64(v)) }; None => () }
+      match sql::col_opt_int64(r, 3) { Some(v) => { merged = j_set_field(merged, "read", base_codec::json_int64(v)) }; None => () }
+      match sql::col_opt_int64(r, 4) { Some(v) => { merged = j_set_field(merged, "unread", base_codec::json_int64(v)) }; None => () }
+      sql::SqlResult::Ok(Some((listed, merged)))
+    }
+  }
+}
+
+/// 1:1 with `SessionsThreadsStore.putSummary` (`sessions-threads.ts:154-196`).
+fn StationEvents::put_summary_in_burst(
+  self : StationEvents,
+  b : sql::Burst,
+  summary : base_codec::Json,
+) -> sql::SqlResult[Option[(String, Bool)]] {
+  let key = match j_opt_str(summary, "key") {
+    Some(k) => if k.length() > 0 { k } else { return sql::SqlResult::Ok(None) }
+    None => return sql::SqlResult::Ok(None)
+  }
+  let existing = match b.all("SELECT ord, summary, listed FROM session WHERE station = ? AND key = ?", params=[
+    base_codec::json_str(self.station),
+    base_codec::json_str(key),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => if rows.length() > 0 { Some(rows[0]) } else { None }
+  }
+  let list_known = match b.all("SELECT 1 FROM list WHERE station = ? AND list = 'sessions'", params=[
+    base_codec::json_str(self.station),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => rows.length() > 0
+  }
+  let shown = j_is_null_or_absent(summary, "archivedAt")
+  let old_listed = match existing { Some(r) => sql::col_int(r, 2); None => 0 }
+  let listed = if shown && list_known {
+    1
+  } else if existing.is_some() && !shown {
+    0
+  } else {
+    old_listed
+  }
+  let mut ord = match existing { Some(r) => sql::col_double(r, 0); None => 0.0 }
+  if listed == 1 && (existing.is_none() || old_listed != 1) {
+    match b.all("SELECT min(ord) FROM session WHERE station = ? AND listed = 1", params=[base_codec::json_str(self.station)]) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(mrows) => {
+        let min_ord = if mrows.length() > 0 {
+          match mrows[0][0] {
+            base_codec::Json::Num(v, _) => v
+            _ => 1.0
+          }
+        } else {
+          1.0
+        }
+        ord = min_ord - 1.0
+      }
+    }
+  }
+  let raw_json = base_codec::json_stringify(summary)
+  let unchanged = match existing {
+    Some(r) => sql::col_text(r, 1) == raw_json && old_listed == listed
+    None => false
+  }
+  let last_active = match j_opt_int64(summary, "lastActiveAt") {
+    Some(v) => Some(v)
+    None => j_opt_int64(summary, "lastActive")
+  }
+  let process = j_opt_str(summary, "process")
+  let connect = j_opt_str(summary, "connect")
+  let archived_at = j_opt_int64(summary, "archivedAt")
+  let turns = j_opt_u64(summary, "turns")
+  let running = match process { Some(p) => p == "running"; None => j_bool(summary, "running") }
+  if !unchanged {
+    match b.run(sql_session_upsert(), params=[
+      base_codec::json_str(self.station),
+      base_codec::json_str(key),
+      base_codec::json_int(listed),
+      base_codec::json_num(ord),
+      opt_i64_json(last_active),
+      opt_str_json(process),
+      opt_str_json(connect),
+      opt_i64_json(archived_at),
+      opt_i64_json(turns),
+      base_codec::json_str(raw_json),
+    ]) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => ()
+    }
+  }
+  self.track_session(SessionStatus::{
+    key: key,
+    running: running,
+    listed: listed == 1,
+    last_active: last_active,
+    process: process,
+    connect: connect,
+    turns: turns,
+  })
+  sql::SqlResult::Ok(Some((key, running)))
+}
+
+/// 1:1 with `SessionsThreadsStore.setRead` + `ChatsStore.readRows` (`sessions-threads.ts:524-540`, `chats.ts:581-591`).
+/// Never inserts a synthetic/zeroed `thread` row if none exists.
+fn set_read_in_burst(
+  b : sql::Burst,
+  station : String,
+  thread : Int,
+  n : Int,
+) -> sql::SqlResult[Option[(Int, Int)]] {
+  let mut result_pos : Option[(Int, Int)] = None
+  match b.all("SELECT read, last FROM thread WHERE station = ? AND id = ?", params=[
+    base_codec::json_str(station),
+    base_codec::json_int(thread),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        let cur_read = sql::col_opt_int64(rows[0], 0)
+        let cur_last = sql::col_opt_int64(rows[0], 1)
+        let already_past = match cur_read {
+          Some(r) => r >= n.to_int64()
+          None => false
+        }
+        if !already_past {
+          let covers_last = match cur_last {
+            None => true
+            Some(l) => n.to_int64() >= l
+          }
+          if covers_last {
+            match b.run("UPDATE thread SET read = ?, unread = 0 WHERE station = ? AND id = ?", params=[
+              base_codec::json_int(n),
+              base_codec::json_str(station),
+              base_codec::json_int(thread),
+            ]) {
+              sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+              sql::SqlResult::Ok(_) => ()
+            }
+            result_pos = Some((n, 0))
+          } else {
+            match b.run("UPDATE thread SET read = ? WHERE station = ? AND id = ?", params=[
+              base_codec::json_int(n),
+              base_codec::json_str(station),
+              base_codec::json_int(thread),
+            ]) {
+              sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+              sql::SqlResult::Ok(_) => ()
+            }
+            result_pos = Some((n, -1))
+          }
+        }
+      }
+    }
+  }
+  // Mirror `ChatsStore.readRows`: clear unread on matching active `chat` rows when `n >= last.seq`.
+  match b.all("SELECT id, json FROM chat WHERE station = ? AND archived = 0 AND thread = ? AND unread = 1", params=[
+    base_codec::json_str(station),
+    base_codec::json_int(thread),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(crows) => {
+      for i in 0..<crows.length() {
+        let cid = sql::col_text(crows[i], 0)
+        let cjson = sql::col_text(crows[i], 1)
+        match base_codec::json_parse(cjson) {
+          base_codec::JsonParseResult::Ok(cj) => {
+            let last_seq = match base_codec::json_get(cj, "last") {
+              Some(lm) => j_opt_u64(lm, "seq")
+              None => None
+            }
+            let skip = match last_seq {
+              Some(ls) => n.to_int64() < ls
+              None => false
+            }
+            if !skip {
+              let updated = j_without_keys(cj, ["unread"])
+              match b.run("UPDATE chat SET unread = 0, json = ? WHERE station = ? AND archived = 0 AND id = ?", params=[
+                base_codec::json_str(base_codec::json_stringify(updated)),
+                base_codec::json_str(station),
+                base_codec::json_str(cid),
+              ]) {
+                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+                sql::SqlResult::Ok(_) => ()
+              }
+            }
+          }
+          base_codec::JsonParseResult::Err(_) => ()
+        }
+      }
+    }
+  }
+  sql::SqlResult::Ok(result_pos)
+}
+
+/// Update a boolean field (`hidden` or `muted`) on all `chat` rows of `(station, thread)`.
+fn patch_chats_for_thread_bool_in_burst(
+  b : sql::Burst,
+  station : String,
+  thread : Int,
+  field : String,
+  flag_val : Bool,
+) -> sql::SqlResult[Array[String]] {
+  let changed : Array[String] = []
+  match b.all("SELECT archived, id, json FROM chat WHERE station = ? AND thread = ?", params=[
+    base_codec::json_str(station),
+    base_codec::json_int(thread),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      for i in 0..<rows.length() {
+        let arch = sql::col_int(rows[i], 0)
+        let cid = sql::col_text(rows[i], 1)
+        match base_codec::json_parse(sql::col_text(rows[i], 2)) {
+          base_codec::JsonParseResult::Ok(cj) => {
+            let updated = j_set_field(cj, field, base_codec::json_bool(flag_val))
+            match b.run("UPDATE chat SET json = ? WHERE station = ? AND archived = ? AND id = ?", params=[
+              base_codec::json_str(base_codec::json_stringify(updated)),
+              base_codec::json_str(station),
+              base_codec::json_int(arch),
+              base_codec::json_str(cid),
+            ]) {
+              sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+              sql::SqlResult::Ok(_) => changed.push(cid)
+            }
+          }
+          base_codec::JsonParseResult::Err(_) => ()
+        }
+      }
+    }
+  }
+  sql::SqlResult::Ok(changed)
+}
+
+/// Ingest an initial snapshot (`chats`, `threads`, `entries`, `sessions`, `jobs`) in a single `sql::Burst` transaction
 /// and emit coalesced `CoreEvent` notifications to `FrameOutbox`.
 pub fn StationEvents::apply_snapshot(self : StationEvents, snapshot : base_codec::Json) -> sql::SqlResult[Int] {
   let changed_chats : Array[String] = []
@@ -500,6 +1508,17 @@ pub fn StationEvents::apply_snapshot(self : StationEvents, snapshot : base_codec
       }
       _ => ()
     }
+    match base_codec::json_get(snapshot, "threads") {
+      Some(base_codec::Json::Arr(threads)) => {
+        for i in 0..<threads.length() {
+          match put_thread_in_burst(b, self.station, threads[i], Some(1)) {
+            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(_) => count += 1
+          }
+        }
+      }
+      _ => ()
+    }
     match base_codec::json_get(snapshot, "entries") {
       Some(base_codec::Json::Arr(entries)) => {
         for i in 0..<entries.length() {
@@ -515,7 +1534,10 @@ pub fn StationEvents::apply_snapshot(self : StationEvents, snapshot : base_codec
           ]) {
             sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
             sql::SqlResult::Ok(_) => {
-              let ck = j_opt_str(item, "clientKey")
+              let ck = match j_opt_str(item, "clientKey") {
+                Some(k) => Some(k)
+                None => j_opt_str(item, "idem")
+              }
               match ck {
                 Some(key) => {
                   let cb = self.on_entry_client_key
@@ -534,46 +1556,13 @@ pub fn StationEvents::apply_snapshot(self : StationEvents, snapshot : base_codec
     match base_codec::json_get(snapshot, "sessions") {
       Some(base_codec::Json::Arr(sessions)) => {
         for i in 0..<sessions.length() {
-          let payload = sessions[i]
-          let skey = j_str(payload, "key")
-          let listed_b = j_bool(payload, "listed", fallback=true)
-          let listed = if listed_b { 1 } else { 0 }
-          let ord = j_double(payload, "ord")
-          let last_active = j_opt_int64(payload, "lastActive")
-          let process = j_opt_str(payload, "process")
-          let connect = j_opt_str(payload, "connect")
-          let archived_at = j_opt_int64(payload, "archivedAt")
-          let turns = j_opt_int64(payload, "turns")
-          let summary = j_opt_str(payload, "summary")
-          let detail = j_opt_str(payload, "detail")
-          let running = j_bool(payload, "running")
-          match b.run(sql_session_upsert(), params=[
-            base_codec::json_str(self.station),
-            base_codec::json_str(skey),
-            base_codec::json_int(listed),
-            base_codec::json_num(ord),
-            opt_i64_json(last_active),
-            opt_str_json(process),
-            opt_str_json(connect),
-            opt_i64_json(archived_at),
-            opt_i64_json(turns),
-            opt_str_json(summary),
-            opt_str_json(detail),
-          ]) {
+          match self.put_summary_in_burst(b, sessions[i]) {
             sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-            sql::SqlResult::Ok(_) => {
-              self.track_session(SessionStatus::{
-                key: skey,
-                running: running,
-                listed: listed_b,
-                last_active: last_active,
-                process: process,
-                connect: connect,
-                turns: turns,
-              })
+            sql::SqlResult::Ok(Some((skey, running))) => {
               snap_events.push(CoreEvent::SessionChanged(self.station, skey, running))
               count += 1
             }
+            sql::SqlResult::Ok(None) => ()
           }
         }
       }
@@ -583,12 +1572,18 @@ pub fn StationEvents::apply_snapshot(self : StationEvents, snapshot : base_codec
       Some(base_codec::Json::Arr(jobs)) => {
         for i in 0..<jobs.length() {
           let payload = jobs[i]
-          let jid = j_str(payload, "id")
+          let jid = match j_id_text(payload, "id") { Some(s) => s; None => continue }
           let sess = j_opt_str(payload, "session")
-          let open = j_bool(payload, "open")
+          let st = j_str(payload, "state")
+          let open = st == "running" || (st == "exited" && !j_is_null_or_absent(payload, "port")) || j_bool(payload, "open")
           let ord = j_double(payload, "ord")
-          let chat = j_opt_str(payload, "chat")
-          let raw = base_codec::json_stringify(payload)
+          let chat = match base_codec::json_get(payload, "chat") {
+            Some(base_codec::Json::Null) | None => None
+            Some(base_codec::Json::Str(s)) => Some(s)
+            Some(v) => Some(base_codec::json_stringify(v))
+          }
+          let job_only = j_without_keys(payload, ["chat"])
+          let raw = base_codec::json_stringify(job_only)
           match b.run(sql_job_upsert(), params=[
             base_codec::json_str(self.station),
             base_codec::json_str(jid),
@@ -629,15 +1624,582 @@ pub fn StationEvents::apply_snapshot(self : StationEvents, snapshot : base_codec
   }
 }
 
-/// Apply a batch of parsed SSE events in a SINGLE `sql::Burst` transaction,
-/// emitting all resulting `CoreEvent` notifications afterward (coalesced into 1 frame wake).
+fn StationEvents::apply_sse_thread(
+  self : StationEvents,
+  b : sql::Burst,
+  payload : base_codec::Json,
+  pending_events : Array[CoreEvent],
+  newly_dirty : Array[Int],
+) -> sql::SqlResult[Int] {
+  let id = match j_opt_u64(payload, "id") {
+    Some(v) => v.to_int()
+    None => return sql::SqlResult::Ok(0)
+  }
+  let entries : Array[base_codec::Json] = match base_codec::json_get(payload, "entries") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
+  let existing_thread = match read_thread_view_in_burst(b, self.station, id) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(v) => v
+  }
+  let mut newest : Int = -1
+  for ei in 0..<entries.length() {
+    let item = entries[ei]
+    let n = match j_opt_u64(item, "n") {
+      Some(v) => v.to_int()
+      None => continue
+    }
+    if n > newest {
+      newest = n
+    }
+    let raw = base_codec::json_stringify(item)
+    match b.run(sql_entry_put(), params=[
+      base_codec::json_str(self.station),
+      base_codec::json_int(id),
+      base_codec::json_int(n),
+      base_codec::json_str(raw),
+    ]) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => {
+        let ck = match j_opt_str(item, "clientKey") {
+          Some(k) => Some(k)
+          None => j_opt_str(item, "idem")
+        }
+        match ck {
+          Some(key) => {
+            let cb = self.on_entry_client_key
+            cb(b, id, n, key)
+          }
+          None => ()
+        }
+        pending_events.push(CoreEvent::EntryAdded(self.station, id, store::Entry::of_json(n, item), ck))
+      }
+    }
+  }
+  match existing_thread {
+    Some((listed, before_view)) => {
+      let mut updated_via_after = false
+      if self.viewer_email.length() > 0 {
+        match thread_after(before_view, entries, self.viewer_email) {
+          Some(next_view) => {
+            match put_thread_in_burst(b, self.station, next_view, Some(listed)) {
+              sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+              sql::SqlResult::Ok(_) => {
+                updated_via_after = true
+                self.dirty_threads.remove(id)
+              }
+            }
+          }
+          None => ()
+        }
+      }
+      // Strictly match `sync.ts:1888-1890`: when `thread_after` returns `None` (gap, card, delete, etc.),
+      // NEVER blindly advance `thread.last`; only mark the thread dirty so its summary is refetched.
+      if !updated_via_after && newest >= 0 {
+        let cur_last = match j_opt_u64(before_view, "last") { Some(v) => v.to_int(); None => -1 }
+        if newest > cur_last || cur_last < 0 {
+          self.dirty_threads.set(id, true)
+          newly_dirty.push(id)
+        }
+      }
+    }
+    None => {
+      if newest >= 0 {
+        self.dirty_threads.set(id, true)
+        newly_dirty.push(id)
+      }
+    }
+  }
+  sql::SqlResult::Ok(1)
+}
+
+fn StationEvents::apply_sse_pin(
+  self : StationEvents,
+  b : sql::Burst,
+  payload : base_codec::Json,
+  changed_chats : Array[String],
+) -> sql::SqlResult[Int] {
+  let sess = match j_opt_str(payload, "session") { Some(s) => s; None => return sql::SqlResult::Ok(0) }
+  let at_val = j_opt_u64(payload, "at")
+  let mark_v = match at_val { Some(v) => Some(v.to_string()); None => None }
+  match upsert_shared_mark_in_burst(b, self.station, "pin", sess, mark_v) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => ()
+  }
+  match b.all("SELECT archived, id, json FROM chat WHERE station = ? AND (id = ? OR session = ?)", params=[
+    base_codec::json_str(self.station),
+    base_codec::json_str(sess),
+    base_codec::json_str(sess),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      for ri in 0..<rows.length() {
+        let arch = sql::col_int(rows[ri], 0)
+        let cid = sql::col_text(rows[ri], 1)
+        match base_codec::json_parse(sql::col_text(rows[ri], 2)) {
+          base_codec::JsonParseResult::Ok(cj) => {
+            let updated = j_set_field(cj, "pinned", opt_i64_json(at_val))
+            match b.run("UPDATE chat SET pinned_at = ?, json = ? WHERE station = ? AND archived = ? AND id = ?", params=[
+              opt_i64_json(at_val),
+              base_codec::json_str(base_codec::json_stringify(updated)),
+              base_codec::json_str(self.station),
+              base_codec::json_int(arch),
+              base_codec::json_str(cid),
+            ]) {
+              sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+              sql::SqlResult::Ok(_) => changed_chats.push(cid)
+            }
+          }
+          base_codec::JsonParseResult::Err(_) => ()
+        }
+      }
+    }
+  }
+  sql::SqlResult::Ok(1)
+}
+
+fn StationEvents::apply_sse_session_pending(
+  self : StationEvents,
+  b : sql::Burst,
+  payload : base_codec::Json,
+  pending_events : Array[CoreEvent],
+) -> sql::SqlResult[Int] {
+  let key = match j_opt_str(payload, "key") { Some(s) => s; None => return sql::SqlResult::Ok(0) }
+  let pending = match j_opt_u64(payload, "pending") { Some(v) => v; None => return sql::SqlResult::Ok(0) }
+  match b.all("SELECT summary FROM session WHERE station = ? AND key = ?", params=[
+    base_codec::json_str(self.station),
+    base_codec::json_str(key),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        match base_codec::json_parse(sql::col_text(rows[0], 0)) {
+          base_codec::JsonParseResult::Ok(held) => {
+            let prev_pending = j_opt_u64(held, "pending")
+            let same_pending = match prev_pending {
+              Some(v) => v == pending
+              None => false
+            }
+            if !same_pending {
+              let prev_n = match prev_pending { Some(v) => v; None => 0.to_int64() }
+              let taken = pending < prev_n
+              let mut now_j = j_set_field(held, "pending", base_codec::json_int64(pending))
+              if taken {
+                now_j = j_set_field(now_j, "process", base_codec::json_str("running"))
+              }
+              now_j = j_set_field(now_j, "startFailed", base_codec::json_bool(false))
+              match self.put_summary_in_burst(b, now_j) {
+                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+                sql::SqlResult::Ok(Some((skey, running))) => {
+                  pending_events.push(CoreEvent::SessionChanged(self.station, skey, running))
+                }
+                sql::SqlResult::Ok(None) => ()
+              }
+            }
+          }
+          base_codec::JsonParseResult::Err(_) => ()
+        }
+      }
+    }
+  }
+  sql::SqlResult::Ok(1)
+}
+
+fn StationEvents::apply_sse_session_removed(
+  self : StationEvents,
+  b : sql::Burst,
+  payload : base_codec::Json,
+  pending_events : Array[CoreEvent],
+) -> sql::SqlResult[Int] {
+  let key = match j_opt_str(payload, "key") { Some(s) => s; None => return sql::SqlResult::Ok(0) }
+  if key.length() == 0 {
+    return sql::SqlResult::Ok(0)
+  }
+  match b.run("DELETE FROM session WHERE station = ? AND key = ?", params=[
+    base_codec::json_str(self.station),
+    base_codec::json_str(key),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => ()
+  }
+  match b.all("SELECT thread FROM thread_member WHERE station = ? AND session = ?", params=[
+    base_codec::json_str(self.station),
+    base_codec::json_str(key),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(trows) => {
+      for ti in 0..<trows.length() {
+        let tid = sql::col_int(trows[ti], 0)
+        match read_thread_view_in_burst(b, self.station, tid) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(Some((listed, tview))) => {
+            let kept_sessions : Array[base_codec::Json] = []
+            match base_codec::json_get(tview, "sessions") {
+              Some(base_codec::Json::Arr(xs)) => {
+                for si in 0..<xs.length() {
+                  let is_removed = match j_opt_str(xs[si], "session") {
+                    Some(s) => s == key
+                    None => false
+                  }
+                  if !is_removed {
+                    kept_sessions.push(xs[si])
+                  }
+                }
+              }
+              _ => ()
+            }
+            if kept_sessions.length() == 0 {
+              match b.run("DELETE FROM thread WHERE station = ? AND id = ?", params=[
+                base_codec::json_str(self.station),
+                base_codec::json_int(tid),
+              ]) {
+                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+                sql::SqlResult::Ok(_) => ()
+              }
+              match b.run("DELETE FROM thread_member WHERE station = ? AND thread = ?", params=[
+                base_codec::json_str(self.station),
+                base_codec::json_int(tid),
+              ]) {
+                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+                sql::SqlResult::Ok(_) => ()
+              }
+            } else {
+              let next_t = j_set_field(tview, "sessions", base_codec::json_arr(kept_sessions))
+              match put_thread_in_burst(b, self.station, next_t, Some(listed)) {
+                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+                sql::SqlResult::Ok(_) => ()
+              }
+            }
+          }
+          sql::SqlResult::Ok(None) => ()
+        }
+      }
+    }
+  }
+  match b.run("DELETE FROM thread_member WHERE station = ? AND session = ?", params=[
+    base_codec::json_str(self.station),
+    base_codec::json_str(key),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => ()
+  }
+  match b.run("DELETE FROM transcript WHERE station = ? AND session = ?", params=[
+    base_codec::json_str(self.station),
+    base_codec::json_str(key),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => ()
+  }
+  match b.run("UPDATE job SET open = 0 WHERE station = ? AND open = 1 AND session = ?", params=[
+    base_codec::json_str(self.station),
+    base_codec::json_str(key),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => ()
+  }
+  self.sessions.remove(key)
+  pending_events.push(CoreEvent::SessionChanged(self.station, key, false))
+  sql::SqlResult::Ok(1)
+}
+
+fn StationEvents::apply_sse_thread_removed(
+  self : StationEvents,
+  b : sql::Burst,
+  payload : base_codec::Json,
+  changed_chats : Array[String],
+) -> sql::SqlResult[Int] {
+  let id = match j_opt_u64(payload, "id") { Some(v) => v.to_int(); None => return sql::SqlResult::Ok(0) }
+  match b.run("DELETE FROM thread WHERE station = ? AND id = ?", params=[
+    base_codec::json_str(self.station),
+    base_codec::json_int(id),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => ()
+  }
+  match b.run("DELETE FROM thread_member WHERE station = ? AND thread = ?", params=[
+    base_codec::json_str(self.station),
+    base_codec::json_int(id),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => ()
+  }
+  match b.run("DELETE FROM entry WHERE station = ? AND thread = ?", params=[
+    base_codec::json_str(self.station),
+    base_codec::json_int(id),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => ()
+  }
+  match b.all("SELECT id FROM chat WHERE station = ? AND thread = ?", params=[
+    base_codec::json_str(self.station),
+    base_codec::json_int(id),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(crows) => {
+      for ci in 0..<crows.length() {
+        changed_chats.push(sql::col_text(crows[ci], 0))
+      }
+    }
+  }
+  match b.run("DELETE FROM chat WHERE station = ? AND thread = ?", params=[
+    base_codec::json_str(self.station),
+    base_codec::json_int(id),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => ()
+  }
+  sql::SqlResult::Ok(1)
+}
+
+fn StationEvents::apply_sse_job(
+  self : StationEvents,
+  b : sql::Burst,
+  payload : base_codec::Json,
+  pending_events : Array[CoreEvent],
+) -> sql::SqlResult[Int] {
+  let jid = match j_id_text(payload, "id") { Some(s) => s; None => return sql::SqlResult::Ok(0) }
+  let sess = match j_opt_str(payload, "session") { Some(s) => s; None => return sql::SqlResult::Ok(0) }
+  let st = j_str(payload, "state")
+  let open = st == "running" || (st == "exited" && !j_is_null_or_absent(payload, "port"))
+  let existing = match b.all("SELECT ord, json, chat, open FROM job WHERE station = ? AND id = ?", params=[
+    base_codec::json_str(self.station),
+    base_codec::json_str(jid),
+  ]) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => if rows.length() > 0 { Some(rows[0]) } else { None }
+  }
+  let was_open = match existing { Some(r) => sql::col_int(r, 3) == 1; None => false }
+  let now_open = if open && was_open { 1 } else { 0 }
+  let ord = match existing { Some(r) => sql::col_double(r, 0); None => 0.0 }
+  let chat = match existing { Some(r) => sql::col_opt_text(r, 2); None => None }
+  let raw = base_codec::json_stringify(payload)
+  let unchanged = match existing {
+    Some(r) => sql::col_text(r, 1) == raw && sql::col_int(r, 3) == now_open
+    None => false
+  }
+  if !unchanged {
+    match b.run(sql_job_upsert(), params=[
+      base_codec::json_str(self.station),
+      base_codec::json_str(jid),
+      base_codec::json_str(sess),
+      base_codec::json_int(now_open),
+      base_codec::json_num(ord),
+      opt_str_json(chat),
+      base_codec::json_str(raw),
+    ]) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => ()
+    }
+  }
+  self.track_job(JobStatus::{ id: jid, session: Some(sess), open: now_open == 1, chat: chat })
+  pending_events.push(CoreEvent::JobChanged(self.station, jid, now_open == 1))
+  sql::SqlResult::Ok(1)
+}
+
+fn StationEvents::apply_one_sse_event(
+  self : StationEvents,
+  b : sql::Burst,
+  ev_name : String,
+  payload : base_codec::Json,
+  changed_chats : Array[String],
+  pending_events : Array[CoreEvent],
+  missed_flag : Array[Bool],
+  marks_dirty : Array[(String, base_codec::Json)],
+  newly_dirty : Array[Int],
+) -> sql::SqlResult[Int] {
+  if ev_name == "thread" {
+    return self.apply_sse_thread(b, payload, pending_events, newly_dirty)
+  }
+  if ev_name == "read" {
+    let th = match j_opt_u64(payload, "thread") { Some(v) => v.to_int(); None => return sql::SqlResult::Ok(0) }
+    let n = match j_opt_u64(payload, "n") { Some(v) => v.to_int(); None => return sql::SqlResult::Ok(0) }
+    match set_read_in_burst(b, self.station, th, n) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(pos_opt) => {
+        match pos_opt {
+          Some((rn, un)) => {
+            let unread_ev = if un < 0 { 0 } else { un }
+            pending_events.push(CoreEvent::ThreadReadChanged(self.station, th, rn, unread_ev))
+          }
+          None => ()
+        }
+        return sql::SqlResult::Ok(1)
+      }
+    }
+  }
+  if ev_name == "hidden" || ev_name == "muted" {
+    let th = match j_opt_u64(payload, "thread") { Some(v) => v.to_int(); None => return sql::SqlResult::Ok(0) }
+    let flag_v = match j_opt_bool(payload, ev_name) { Some(v) => v; None => return sql::SqlResult::Ok(0) }
+    let mark_v = if flag_v { Some("1") } else { None }
+    match upsert_shared_mark_in_burst(b, self.station, ev_name, th.to_string(), mark_v) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => ()
+    }
+    match patch_chats_for_thread_bool_in_burst(b, self.station, th, ev_name, flag_v) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(ids) => {
+        for ci in 0..<ids.length() { changed_chats.push(ids[ci]) }
+        return sql::SqlResult::Ok(1)
+      }
+    }
+  }
+  if ev_name == "kept" {
+    let th = match j_opt_u64(payload, "thread") { Some(v) => v.to_int(); None => return sql::SqlResult::Ok(0) }
+    let flag_v = match j_opt_bool(payload, "kept") { Some(v) => v; None => return sql::SqlResult::Ok(0) }
+    let mark_v = if flag_v { Some("1") } else { None }
+    match upsert_shared_mark_in_burst(b, self.station, "kept", th.to_string(), mark_v) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => ()
+    }
+    changed_chats.push("thread:" + th.to_string())
+    return sql::SqlResult::Ok(1)
+  }
+  if ev_name == "pin" {
+    return self.apply_sse_pin(b, payload, changed_chats)
+  }
+  if ev_name == "dismiss" {
+    let th = match j_opt_u64(payload, "thread") { Some(v) => v.to_int(); None => return sql::SqlResult::Ok(0) }
+    let n = match j_opt_u64(payload, "n") { Some(v) => v.to_int(); None => return sql::SqlResult::Ok(0) }
+    let dk = th.to_string() + ":" + n.to_string()
+    match upsert_shared_mark_in_burst(b, self.station, "dismissed", dk, Some("1")) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => ()
+    }
+    changed_chats.push("thread:" + th.to_string())
+    return sql::SqlResult::Ok(1)
+  }
+  if ev_name == "session" {
+    match self.put_summary_in_burst(b, payload) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(Some((skey, running))) => {
+        pending_events.push(CoreEvent::SessionChanged(self.station, skey, running))
+        return sql::SqlResult::Ok(1)
+      }
+      sql::SqlResult::Ok(None) => return sql::SqlResult::Ok(0)
+    }
+  }
+  if ev_name == "session-pending" {
+    return self.apply_sse_session_pending(b, payload, pending_events)
+  }
+  if ev_name == "session-removed" {
+    return self.apply_sse_session_removed(b, payload, pending_events)
+  }
+  if ev_name == "thread-removed" {
+    return self.apply_sse_thread_removed(b, payload, changed_chats)
+  }
+  if ev_name == "chat-shared" {
+    let cid = match j_opt_str(payload, "id") { Some(s) => s; None => return sql::SqlResult::Ok(0) }
+    match upsert_chat_shared_in_burst(b, self.station, payload) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => {
+        changed_chats.push(cid)
+        match j_opt_str(payload, "clientKey") {
+          Some(ck) => {
+            let cb = self.on_chat_client_key
+            cb(b, cid, ck)
+          }
+          None => ()
+        }
+        return sql::SqlResult::Ok(1)
+      }
+    }
+  }
+  if ev_name == "chat-shared-removed" {
+    let cid = match j_opt_str(payload, "id") { Some(s) => s; None => return sql::SqlResult::Ok(0) }
+    match b.run("DELETE FROM shared_sidecar WHERE station = ? AND id = ?", params=[
+      base_codec::json_str(self.station),
+      base_codec::json_str(cid),
+    ]) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => ()
+    }
+    // NEVER delete archived=1 rows on `chat-shared-removed`!
+    match b.run("DELETE FROM chat WHERE station = ? AND archived = 0 AND id = ?", params=[
+      base_codec::json_str(self.station),
+      base_codec::json_str(cid),
+    ]) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => {
+        changed_chats.push(cid)
+        return sql::SqlResult::Ok(1)
+      }
+    }
+  }
+  if ev_name == "missed" {
+    missed_flag[0] = true
+    return sql::SqlResult::Ok(1)
+  }
+  if ev_name == "chat-changed" || ev_name == "chat-mark" || ev_name == "said" || ev_name == "made" {
+    if ev_name == "chat-changed" {
+      match j_opt_u64(payload, "thread") {
+        Some(th) => {
+          let tid = th.to_int()
+          self.dirty_threads.set(tid, true)
+          newly_dirty.push(tid)
+        }
+        None => ()
+      }
+    }
+    marks_dirty.push((ev_name, payload))
+    let tag = match j_opt_str(payload, "session") {
+      Some(s) => s
+      None =>
+      match j_opt_u64(payload, "thread") {
+        Some(th) => "thread:" + th.to_string()
+        None =>
+        match j_opt_u64(payload, "id") {
+          Some(th) => "thread:" + th.to_string()
+          None => ev_name
+        }
+      }
+    }
+    changed_chats.push(tag)
+    return sql::SqlResult::Ok(1)
+  }
+  if ev_name == "job" {
+    return self.apply_sse_job(b, payload, pending_events)
+  }
+  if ev_name == "job-removed" {
+    let jid = match j_id_text(payload, "id") { Some(s) => s; None => return sql::SqlResult::Ok(0) }
+    match b.run("DELETE FROM job WHERE station = ? AND id = ?", params=[
+      base_codec::json_str(self.station),
+      base_codec::json_str(jid),
+    ]) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => {
+        self.jobs.remove(jid)
+        pending_events.push(CoreEvent::JobChanged(self.station, jid, false))
+        return sql::SqlResult::Ok(1)
+      }
+    }
+  }
+  if ev_name == "overview" {
+    let raw = base_codec::json_stringify(payload)
+    match b.run(sql_station_overview_upsert(), params=[
+      base_codec::json_str(self.station),
+      base_codec::json_str(raw),
+    ]) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => return sql::SqlResult::Ok(1)
+    }
+  }
+  sql::SqlResult::Ok(0)
+}
+
+/// Apply a batch of parsed real Station SSE events in a SINGLE `sql::Burst` transaction,
+/// matching `client/core-ts/src/station/sync.ts:1848-2164`.
+/// Advances `self.last_event_id` ONLY after the SQLite transaction commits successfully.
 pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire::Event]) -> sql::SqlResult[Int] {
   if events.length() == 0 {
     return sql::SqlResult::Ok(0)
   }
   let changed_chats : Array[String] = []
   let pending_events : Array[CoreEvent] = []
-  let lock_payloads : Array[base_codec::Json] = []
+  let missed_flag : Array[Bool] = [false]
+  let marks_dirty : Array[(String, base_codec::Json)] = []
+  let newly_dirty : Array[Int] = []
+  let mut pending_last_event_id : Option[String] = None
   let burst = sql::Burst::new(self.db)
   let res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Int] {
     let mut applied = 0
@@ -646,7 +2208,7 @@ pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire:
       match ev.id {
         Some(eid) => {
           if eid.length() > 0 {
-            self.last_event_id = Some(eid)
+            pending_last_event_id = Some(eid)
           }
         }
         None => ()
@@ -658,7 +2220,6 @@ pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire:
         base_codec::JsonParseResult::Ok(j) => j
         base_codec::JsonParseResult::Err(_) => continue
       }
-      // Strict workspace isolation: ignore events tagged for another workspace.
       match j_opt_str(payload, "workspace") {
         Some(ws) => {
           if ws.length() > 0 && ws != self.workspace {
@@ -667,142 +2228,9 @@ pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire:
         }
         None => ()
       }
-      if ev.name == "entry" {
-        let th = j_int(payload, "thread")
-        let n = j_int(payload, "n")
-        let raw = base_codec::json_stringify(payload)
-        match b.run(sql_entry_put(), params=[
-          base_codec::json_str(self.station),
-          base_codec::json_int(th),
-          base_codec::json_int(n),
-          base_codec::json_str(raw),
-        ]) {
-          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-          sql::SqlResult::Ok(_) => {
-            let ck = j_opt_str(payload, "clientKey")
-            match ck {
-              Some(key) => {
-                let cb = self.on_entry_client_key
-                cb(b, th, n, key)
-              }
-              None => ()
-            }
-            pending_events.push(CoreEvent::EntryAdded(self.station, th, store::Entry::of_json(n, payload), ck))
-            applied += 1
-          }
-        }
-      } else if ev.name == "chat" {
-        match upsert_chat_in_burst(b, self.station, payload) {
-          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-          sql::SqlResult::Ok(cid) => {
-            changed_chats.push(cid)
-            match j_opt_str(payload, "clientKey") {
-              Some(ck) => {
-                let cb = self.on_chat_client_key
-                cb(b, cid, ck)
-              }
-              None => ()
-            }
-            applied += 1
-          }
-        }
-      } else if ev.name == "thread" || ev.name == "read" {
-        let th = j_int(payload, "id", fallback=j_int(payload, "thread"))
-        let listed = if j_bool(payload, "listed", fallback=true) { 1 } else { 0 }
-        let last = j_opt_int64(payload, "last")
-        let read_n = j_int(payload, "read")
-        let unread_n = j_int(payload, "unread")
-        let sort_at = j_int64(payload, "sortAt")
-        let created_at = j_int64(payload, "createdAt")
-        let surface = j_opt_str(payload, "surface")
-        let first_member = j_opt_str(payload, "firstMember")
-        let raw = base_codec::json_stringify(payload)
-        match b.run(sql_thread_upsert(), params=[
-          base_codec::json_str(self.station),
-          base_codec::json_int(th),
-          base_codec::json_int(listed),
-          opt_i64_json(last),
-          base_codec::json_int(read_n),
-          base_codec::json_int(unread_n),
-          base_codec::json_int64(sort_at),
-          base_codec::json_int64(created_at),
-          opt_str_json(surface),
-          opt_str_json(first_member),
-          base_codec::json_str(raw),
-        ]) {
-          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-          sql::SqlResult::Ok(_) => {
-            pending_events.push(CoreEvent::ThreadReadChanged(self.station, th, read_n, unread_n))
-            applied += 1
-          }
-        }
-      } else if ev.name == "session" {
-        let skey = j_str(payload, "key")
-        let listed_b = j_bool(payload, "listed", fallback=true)
-        let listed = if listed_b { 1 } else { 0 }
-        let ord = j_double(payload, "ord")
-        let last_active = j_opt_int64(payload, "lastActive")
-        let process = j_opt_str(payload, "process")
-        let connect = j_opt_str(payload, "connect")
-        let archived_at = j_opt_int64(payload, "archivedAt")
-        let turns = j_opt_int64(payload, "turns")
-        let summary = j_opt_str(payload, "summary")
-        let detail = j_opt_str(payload, "detail")
-        let running = j_bool(payload, "running")
-        match b.run(sql_session_upsert(), params=[
-          base_codec::json_str(self.station),
-          base_codec::json_str(skey),
-          base_codec::json_int(listed),
-          base_codec::json_num(ord),
-          opt_i64_json(last_active),
-          opt_str_json(process),
-          opt_str_json(connect),
-          opt_i64_json(archived_at),
-          opt_i64_json(turns),
-          opt_str_json(summary),
-          opt_str_json(detail),
-        ]) {
-          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-          sql::SqlResult::Ok(_) => {
-            self.track_session(SessionStatus::{
-              key: skey,
-              running: running,
-              listed: listed_b,
-              last_active: last_active,
-              process: process,
-              connect: connect,
-              turns: turns,
-            })
-            pending_events.push(CoreEvent::SessionChanged(self.station, skey, running))
-            applied += 1
-          }
-        }
-      } else if ev.name == "job" {
-        let jid = j_str(payload, "id")
-        let sess = j_opt_str(payload, "session")
-        let open = j_bool(payload, "open")
-        let ord = j_double(payload, "ord")
-        let chat = j_opt_str(payload, "chat")
-        let raw = base_codec::json_stringify(payload)
-        match b.run(sql_job_upsert(), params=[
-          base_codec::json_str(self.station),
-          base_codec::json_str(jid),
-          opt_str_json(sess),
-          base_codec::json_int(if open { 1 } else { 0 }),
-          base_codec::json_num(ord),
-          opt_str_json(chat),
-          base_codec::json_str(raw),
-        ]) {
-          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-          sql::SqlResult::Ok(_) => {
-            self.track_job(JobStatus::{ id: jid, session: sess, open: open, chat: chat })
-            pending_events.push(CoreEvent::JobChanged(self.station, jid, open))
-            applied += 1
-          }
-        }
-      } else if ev.name == "lock" {
-        lock_payloads.push(payload)
-        applied += 1
+      match self.apply_one_sse_event(b, ev.name, payload, changed_chats, pending_events, missed_flag, marks_dirty, newly_dirty) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(n) => { applied += n }
       }
     }
     sql::SqlResult::Ok(applied)
@@ -810,80 +2238,155 @@ pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire:
   match res {
     sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
     sql::SqlResult::Ok(applied) => {
+      match pending_last_event_id {
+        Some(eid) => self.last_event_id = Some(eid)
+        None => ()
+      }
       if changed_chats.length() > 0 {
         self.outbox.tell(CoreEvent::ChatsChanged(self.station, changed_chats))
       }
       for i in 0..<pending_events.length() {
         self.outbox.tell(pending_events[i])
       }
-      for i in 0..<lock_payloads.length() {
-        let cb = self.on_lock_payload
-        cb(lock_payloads[i])
+      for i in 0..<marks_dirty.length() {
+        self.marks_dirty_count += 1
+        let cb = self.on_marks_dirty
+        cb(marks_dirty[i].0, marks_dirty[i].1)
+      }
+      for i in 0..<newly_dirty.length() {
+        let cb = self.on_thread_dirty
+        cb(newly_dirty[i])
+      }
+      if missed_flag[0] {
+        self.resync_needed += 1
+        let cb = self.on_missed
+        cb()
       }
       sql::SqlResult::Ok(applied)
     }
   }
 }
 
-fn StationEvents::stream_loop_k(self : StationEvents, k : (effect::Exit[Unit]) -> Unit) -> Unit {
-  if effect::is_interrupted() {
+/// Runs directly inside `self.stream_fiber` (NEVER spawns an orphan reconnect fiber!).
+/// Double-checks `self.stopped || effect::is_interrupted()` before and after backoff sleep.
+fn StationEvents::schedule_reconnect_k(self : StationEvents, rt : effect::Runtime, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  if self.stopped || effect::is_interrupted() {
+    self.set_state(ConnectionState::Disconnected("stopped"))
+    k(effect::Exit::Interrupted)
+    return
+  }
+  // timer: failure retry backoff on dropped or failed SSE stream (never periodic polling).
+  let delay = reconnect_backoff_ms(self.attempts)
+  self.attempts += 1
+  self.set_state(ConnectionState::Reconnecting(delay))
+  effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
+    if self.stopped || effect::is_interrupted() {
+      self.set_state(ConnectionState::Disconnected("stopped"))
+      k(effect::Exit::Interrupted)
+      return
+    }
+    match sex {
+      effect::Exit::Interrupted => {
+        self.set_state(ConnectionState::Disconnected("stopped"))
+        k(effect::Exit::Interrupted)
+      }
+      _ => self.stream_loop_k(rt, k)
+    }
+  })
+}
+
+fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  if self.stopped || effect::is_interrupted() {
+    self.set_state(ConnectionState::Disconnected("stopped"))
     k(effect::Exit::Interrupted)
     return
   }
   self.set_state(ConnectionState::Connecting)
   let headers : Array[(String, String)] = [("accept", "text/event-stream")]
+  // Strictly match `station/src/api/routes/events.ts:37,51`: station ONLY reads `?since=<eid>`.
   let path = match self.last_event_id {
-    Some(eid) => {
-      headers.push(("last-event-id", eid))
-      "/events?after=" + eid
-    }
+    Some(eid) => "/events?since=" + encode_uri_component(eid)
     None => "/events"
   }
   let parser = wire::Sse::new()
   let mut marked_connected = false
+  let aborted : Array[Bool] = [false]
+  let done_sig : effect::Deferred[Bool] = effect::Deferred::new()
   let stream_fn = self.transport.stream_k
-  stream_fn(
-    path,
-    headers,
-    fn(chunk : Bytes) -> Unit {
-      if !marked_connected {
-        marked_connected = true
-        self.attempts = 0
-        self.set_state(ConnectionState::Connected)
-        let on_conn = self.on_connected
-        on_conn()
-      }
-      match parser.feed(chunk) {
-        wire::FeedResult::Ok(evs) => {
-          let _ = self.apply_sse_batch(evs)
+  let child = rt.fork_quiet_named("sse-stream:" + self.station, fn(ck : (effect::Exit[Unit]) -> Unit) -> Unit {
+    stream_fn(
+      path,
+      headers,
+      fn(chunk : Bytes) -> Unit {
+        if aborted[0] || self.stopped {
+          return
         }
-        wire::FeedResult::Err(_) => ()
+        if !marked_connected {
+          marked_connected = true
+          self.attempts = 0
+          self.set_state(ConnectionState::Connected)
+          let on_conn = self.on_connected
+          on_conn()
+        }
+        match parser.feed(chunk) {
+          wire::FeedResult::Ok(evs) => {
+            match self.apply_sse_batch(evs) {
+              sql::SqlResult::Ok(_) => ()
+              sql::SqlResult::Err(_) => {
+                // Immediately cancel the underlying old stream so no further chunks arrive or advance
+                // `last_event_id`, and wake the outer `stream_fiber` to reconnect via `?since=`.
+                aborted[0] = true
+                self.cancel_active_stream()
+                let _ = done_sig.succeed(true)
+              }
+            }
+          }
+          wire::FeedResult::Err(_) => ()
+        }
+      },
+      fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => {
+            let _ = done_sig.succeed(aborted[0])
+            ck(effect::Exit::Interrupted)
+          }
+          effect::Exit::Succeeded(_) | effect::Exit::Failed(_) => {
+            let _ = done_sig.succeed(true)
+            ck(effect::Exit::Succeeded(()))
+          }
+        }
+      },
+    )
+  })
+  if aborted[0] || self.stopped {
+    child.interrupt()
+  } else {
+    self.active_stream_fiber = Some(child)
+  }
+  done_sig.wait_k(fn(wex : effect::Exit[Bool]) -> Unit {
+    self.active_stream_fiber = None
+    self.active_cancel = None
+    if self.stopped || effect::is_interrupted() {
+      self.set_state(ConnectionState::Disconnected("stopped"))
+      k(effect::Exit::Interrupted)
+      return
+    }
+    match wex {
+      effect::Exit::Interrupted => {
+        self.set_state(ConnectionState::Disconnected("stopped"))
+        k(effect::Exit::Interrupted)
       }
-    },
-    fn(ex : effect::Exit[Unit]) -> Unit {
-      match ex {
-        effect::Exit::Interrupted => {
+      effect::Exit::Succeeded(should_reconnect) => {
+        if should_reconnect {
+          self.schedule_reconnect_k(rt, k)
+        } else {
           self.set_state(ConnectionState::Disconnected("stopped"))
           k(effect::Exit::Interrupted)
         }
-        effect::Exit::Succeeded(_) | effect::Exit::Failed(_) => {
-          // timer: failure retry backoff on dropped SSE stream (never periodic polling).
-          let delay = reconnect_backoff_ms(self.attempts)
-          self.attempts += 1
-          self.set_state(ConnectionState::Reconnecting(delay))
-          effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
-            match sex {
-              effect::Exit::Interrupted => {
-                self.set_state(ConnectionState::Disconnected("stopped"))
-                k(effect::Exit::Interrupted)
-              }
-              _ => self.stream_loop_k(k)
-            }
-          })
-        }
       }
-    },
-  )
+      effect::Exit::Failed(_) => self.schedule_reconnect_k(rt, k)
+    }
+  })
 }
 
 /// Start consuming `GET /events` on a scoped fiber of `rt`.
@@ -892,14 +2395,17 @@ pub fn StationEvents::start(self : StationEvents, rt : effect::Runtime) -> Unit 
     Some(_) => return
     None => ()
   }
+  self.stopped = false
   let f = rt.fork_quiet_named("station-events:" + self.station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    self.stream_loop_k(k)
+    self.stream_loop_k(rt, k)
   })
   self.stream_fiber = Some(f)
 }
 
-/// Stop the `/events` stream fiber.
+/// Stop the `/events` stream fiber and immediately cancel any active underlying stream & backoff sleep.
 pub fn StationEvents::stop(self : StationEvents) -> Unit {
+  self.stopped = true
+  self.cancel_active_stream()
   match self.stream_fiber {
     Some(f) => {
       self.stream_fiber = None
@@ -907,4 +2413,5 @@ pub fn StationEvents::stop(self : StationEvents) -> Unit {
     }
     None => ()
   }
+  self.set_state(ConnectionState::Disconnected("stopped"))
 }

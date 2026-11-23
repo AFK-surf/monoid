@@ -74,8 +74,20 @@ pub fn sql_outbox_one() -> String {
   "SELECT station, thread, json FROM outbox WHERE station = ? AND thread = ?"
 }
 
+pub fn sql_outbox_by_station() -> String {
+  "SELECT station, thread, json FROM outbox WHERE station = ? ORDER BY thread"
+}
+
+pub fn sql_outbox_all() -> String {
+  "SELECT station, thread, json FROM outbox ORDER BY station, thread"
+}
+
 pub fn sql_pending_by_station() -> String {
   "SELECT key, station, json FROM pending WHERE station = ? ORDER BY key"
+}
+
+pub fn sql_pending_all() -> String {
+  "SELECT key, station, json FROM pending ORDER BY station, key"
 }
 
 pub fn sql_draft_one() -> String {
@@ -88,6 +100,14 @@ pub fn sql_draft_by_station() -> String {
 
 pub fn sql_changing_by_station() -> String {
   "SELECT station, id, json FROM changing WHERE station = ? ORDER BY id"
+}
+
+pub fn sql_changing_all() -> String {
+  "SELECT station, id, json FROM changing ORDER BY station, id"
+}
+
+pub fn sql_entry_by_seq() -> String {
+  "SELECT json FROM entry WHERE station = ? AND thread = ? AND n = ?"
 }
 
 pub fn sql_thread_one() -> String {
@@ -307,6 +327,100 @@ pub fn get_outbox(db : sql::Sql, station : String, thread : Int) -> sql::SqlResu
           thread: sql::col_int(r, 1),
           json: sql::col_text(r, 2),
         }))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}
+
+/// List all local unsent outbox rows for `station`, ordered by `thread` (for startup recovery).
+pub fn list_outbox_for_station(db : sql::Sql, station : String) -> sql::SqlResult[Array[OutboxRow]] {
+  match db.all(sql_outbox_by_station(), params=[base_codec::json_str(station)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[OutboxRow] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        out.push(OutboxRow::{
+          station: sql::col_text(r, 0),
+          thread: sql::col_int(r, 1),
+          json: sql::col_text(r, 2),
+        })
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
+}
+
+/// List all local unsent outbox rows across all stations, ordered by `(station, thread)`.
+pub fn list_all_outbox(db : sql::Sql) -> sql::SqlResult[Array[OutboxRow]] {
+  match db.all(sql_outbox_all()) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[OutboxRow] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        out.push(OutboxRow::{
+          station: sql::col_text(r, 0),
+          thread: sql::col_int(r, 1),
+          json: sql::col_text(r, 2),
+        })
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
+}
+
+/// List all local pending-chat overlays across all stations.
+pub fn list_all_pending(db : sql::Sql) -> sql::SqlResult[Array[PendingRow]] {
+  match db.all(sql_pending_all()) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[PendingRow] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        out.push(PendingRow::{
+          key: sql::col_text(r, 0),
+          station: sql::col_text(r, 1),
+          json: sql::col_text(r, 2),
+        })
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
+}
+
+/// List all local optimistic `changing` overlays across all stations.
+pub fn list_all_changing(db : sql::Sql) -> sql::SqlResult[Array[ChangingRow]] {
+  match db.all(sql_changing_all()) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[ChangingRow] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        out.push(ChangingRow::{
+          station: sql::col_text(r, 0),
+          id: sql::col_int(r, 1),
+          json: sql::col_text(r, 2),
+        })
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
+}
+
+/// Fetch one entry's raw JSON by `(station, thread, n)`.
+pub fn get_entry_json(db : sql::Sql, station : String, thread : Int, n : Int) -> sql::SqlResult[Option[String]] {
+  match db.all(sql_entry_by_seq(), params=[
+    base_codec::json_str(station),
+    base_codec::json_int(thread),
+    base_codec::json_int(n),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        sql::SqlResult::Ok(Some(sql::col_text(rows[0], 0)))
       } else {
         sql::SqlResult::Ok(None)
       }

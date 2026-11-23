@@ -323,8 +323,8 @@ test "shell_http_transport streams real SSE chunks into StationEvents and closes
   let (r1_id, r1_op, _) = calls[1]
   debug_assert(r1_op == "stream.read", "stream.read #1")
 
-  // Deliver SSE entry event in chunk
-  let sse_chunk = "id: 1\nevent: entry\ndata: {\"thread\":9,\"n\":1,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice\",\"text\":\"via shell sse\",\"clientKey\":\"ck-sse-1\"}\n\n"
+  // Deliver real SSE thread event in chunk
+  let sse_chunk = "id: 1\nevent: thread\ndata: {\"id\":9,\"entries\":[{\"thread\":9,\"n\":1,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice@still.fail\",\"text\":\"via shell sse\",\"clientKey\":\"ck-sse-1\",\"at\":1000}]}\n\n"
   sh.answer(r1_id, base_codec::json_obj([]), bytes=Some(sse_chunk.to_bytes()))
   let _ = rt.run_ready()
   debug_assert(mock_db.entries.get("st-1:9:1").is_some(), "SSE entry ingested into SQLite")
@@ -476,7 +476,7 @@ test "shell_iroh_transport: bind, setRelayEntries, connect, framed HTTP request/
   // Deliver reply head + SSE entry in one chunk
   let c_rd1 = calls[calls.length() - 1]
   debug_assert(c_rd1.1 == "istream.read", "SSE read head")
-  let sse_payload = "{\"status\":200,\"headers\":{\"content-type\":\"text/event-stream\"}}\nid: m-1\nevent: entry\ndata: {\"thread\":5,\"n\":1,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice\",\"text\":\"via iroh mesh\"}\n\n"
+  let sse_payload = "{\"status\":200,\"headers\":{\"content-type\":\"text/event-stream\"}}\nid: m-1\nevent: thread\ndata: {\"id\":5,\"entries\":[{\"thread\":5,\"n\":1,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice@still.fail\",\"text\":\"via iroh mesh\",\"at\":1000}]}\n\n"
   sh.answer(c_rd1.0, base_codec::json_obj([]), bytes=Some(sse_payload.to_bytes()))
   let _ = rt.run_ready()
   debug_assert(mock_db.entries.get("st-mesh:5:1").is_some(), "SSE entry over iroh ingested into SQLite")

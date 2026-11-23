@@ -338,6 +338,60 @@ fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Jso
       Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(st), base_codec::json_int(th), base_codec::json_str(j)]))
       None => ()
     }
+  } else if stmt == store::sql_outbox_by_station() {
+    let st = p_str(p, 0)
+    let prefix = st + ":"
+    let ks = self.outbox_rows.keys()
+    for i in 0..<ks.length() {
+      let k = ks[i]
+      if k.starts_with(prefix) {
+        let th_s = k.slice(prefix.length(), k.length())
+        let th = match base_codec::parse_int64_str(th_s) { Some(v) => v.to_int(); None => 0 }
+        match self.outbox_rows.get(k) {
+          Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(st), base_codec::json_int(th), base_codec::json_str(j)]))
+          None => ()
+        }
+      }
+    }
+  } else if stmt == "SELECT read, last FROM thread WHERE station = ? AND id = ?" {
+    let st = p_str(p, 0)
+    let th = p_int(p, 1)
+    let tk = st + ":" + th.to_string()
+    if self.threads.get(tk).is_some() {
+      let (rd, _un) = match self.thread_reads.get(tk) { Some(v) => v; None => (0, 0) }
+      rows.push(base_codec::json_arr([base_codec::json_int(rd), base_codec::json_int(rd)]))
+    }
+  } else if stmt == "UPDATE thread SET read = ?, unread = 0 WHERE station = ? AND id = ?" {
+    self.thread_reads.set(p_str(p, 1) + ":" + p_int(p, 2).to_string(), (p_int(p, 0), 0))
+    changed = 1
+  } else if stmt == "SELECT ord, json, chat, open FROM job WHERE station = ? AND id = ?" {
+    let k = p_str(p, 0) + ":" + p_str(p, 1)
+    match self.jobs.get(k) {
+      Some(j) => rows.push(base_codec::json_arr([base_codec::json_num(0.0), base_codec::json_str(j), base_codec::json_null(), base_codec::json_int(1)]))
+      None => ()
+    }
+  } else if stmt == "SELECT listed, json, last, read, unread FROM thread WHERE station = ? AND id = ?" {
+    let tk = p_str(p, 0) + ":" + p_int(p, 1).to_string()
+    match self.threads.get(tk) {
+      Some(tj) => {
+        let (rd, un) = match self.thread_reads.get(tk) { Some(v) => v; None => (0, 0) }
+        rows.push(base_codec::json_arr([
+          base_codec::json_int(1),
+          base_codec::json_str(tj),
+          base_codec::json_int(rd),
+          base_codec::json_int(rd),
+          base_codec::json_int(un),
+        ]))
+      }
+      None => ()
+    }
+  } else if stmt == "UPDATE thread SET last = ? WHERE station = ? AND id = ?" ||
+  stmt == "UPDATE thread SET read = ? WHERE station = ? AND id = ?" ||
+  stmt == "SELECT id, json FROM chat WHERE station = ? AND archived = 0 AND thread = ? AND unread = 1" ||
+  stmt == "SELECT ord, summary, listed FROM session WHERE station = ? AND key = ?" ||
+  stmt == "SELECT 1 FROM list WHERE station = ? AND list = 'sessions'" ||
+  stmt == "SELECT min(ord) FROM session WHERE station = ? AND listed = 1" {
+    changed = 1
   } else if stmt == sql_pending_put() {
     self.pending_rows.set(p_str(p, 1) + ":" + p_str(p, 0), p_str(p, 2))
     changed = 1
@@ -588,6 +642,10 @@ fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Jso
       }
       None => ()
     }
+  } else if stmt == store::sql_outbox_all() || stmt == store::sql_pending_all() || stmt == store::sql_changing_all() || stmt == store::sql_entry_by_seq() {
+    ()
+  } else if stmt.starts_with("INSERT OR REPLACE INTO shared_mark") || stmt.starts_with("DELETE FROM shared_mark") || stmt.starts_with("INSERT OR REPLACE INTO shared_sidecar") || stmt.starts_with("DELETE FROM shared_sidecar") || stmt.starts_with("SELECT v FROM shared_mark") || stmt.starts_with("SELECT ord, unread, mine, pinned_at, running, tone, asks, desk, json FROM chat") || stmt.starts_with("DELETE FROM chat WHERE station = ? AND archived = 0 AND id = ?") {
+    ()
   } else if stmt == store::sql_workspace_one() {
     let wid = p_str(p, 0)
     match self.workspaces.get(wid) {
@@ -644,6 +702,7 @@ struct SimStation {
   seen_client_keys : Map[String, Int]
   mut active_sse_chunk : Option[(Bytes) -> Unit]
   mut active_sse_done : Option[effect::Deferred[Unit]]
+  mut cancel_count : Int
   requests_seen : Array[String]
 }
 
@@ -661,6 +720,7 @@ fn SimStation::new(rt : effect::Runtime) -> SimStation {
     seen_client_keys: Map::new(),
     active_sse_chunk: None,
     active_sse_done: None,
+    cancel_count: 0,
     requests_seen: [],
   }
 }
@@ -792,11 +852,22 @@ fn SimStation::transport(self : SimStation) -> StationTransport {
       // Deliver SSE hello comment on virtual clock, then stay open until dropped or interrupted.
       effect::sleep_k(5, fn(sex : effect::Exit[Unit]) -> Unit {
         match sex {
-          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Interrupted => {
+            self.cancel_count += 1
+            k(effect::Exit::Interrupted)
+          }
           effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
           effect::Exit::Succeeded(_) => {
             on_chunk(": connected\n\n".to_bytes())
-            done.wait_k(k)
+            done.wait_k(fn(dex : effect::Exit[Unit]) -> Unit {
+              match dex {
+                effect::Exit::Interrupted => {
+                  self.cancel_count += 1
+                  k(effect::Exit::Interrupted)
+                }
+                _ => k(dex)
+              }
+            })
           }
         }
       })
@@ -892,14 +963,14 @@ test "E2E 1: cold open writes nothing (3 stmts), then SimStation snapshot + SSE 
     _ => debug_assert(false, "chat c-7 missing after snapshot")
   }
 
-  // Step 3: Push a multi-event SSE batch (2 entries + 1 read state) in one chunk ->
+  // Step 3: Push a multi-event SSE batch (real `thread` with 2 entries + `read`) in one chunk ->
   // must commit in 1 Burst transaction and trigger exactly 1 coalesced FrameOutbox wake!
+  sim_db.threads.set("st1:7", "{\"id\":7,\"surface\":\"chat\"}")
   let wakes_before = wakes[0]
   let sql_before = sim_db.ran.length()
   let batch_sse =
-  "id: ev-10\nevent: entry\ndata: {\"workspace\":\"ws-1\",\"thread\":7,\"n\":2,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"live 1\"}\n\n" +
-  "id: ev-11\nevent: entry\ndata: {\"workspace\":\"ws-1\",\"thread\":7,\"n\":3,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"live 2\"}\n\n" +
-  "id: ev-12\nevent: read\ndata: {\"workspace\":\"ws-1\",\"id\":7,\"read\":3,\"unread\":0}\n\n"
+  "id: ev-10\nevent: thread\ndata: {\"workspace\":\"ws-1\",\"id\":7,\"entries\":[{\"n\":2,\"thread\":7,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"live 1\",\"at\":1001},{\"n\":3,\"thread\":7,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"live 2\",\"at\":1002}]}\n\n" +
+  "id: ev-12\nevent: read\ndata: {\"workspace\":\"ws-1\",\"thread\":7,\"n\":3}\n\n"
   station.push_sse(batch_sse)
   let (_s2, _w2, tx_count) = sim_db.counts_since(sql_before)
   debug_assert(tx_count == 1, "multi-event SSE batch must commit in 1 Burst transaction")
@@ -949,17 +1020,21 @@ test "E2E 2: offline optimistic send_message -> auto-flush on reconnect -> exact
   // Advance past first reconnect backoff (2000ms, matching link.ts RECONNECT_MS) + connect + POST flush.
   rt.advance(2200)
 
-  // Verify auto-flush succeeded, outbox cleared, and entry stored once with exact client_key.
+  // Verify auto-flush succeeded, outbox cleared, and NO synthetic entry row was fabricated on HTTP 2xx.
   debug_assert(core.local_outbox.pending_message_count() == 0, "outbox reconciled after reconnect")
   match store::get_outbox(db, "st1", 42) {
     sql::SqlResult::Ok(None) => ()
     _ => debug_assert(false, "SQLite outbox row must be deleted after exact client_key confirmation")
   }
-  debug_assert(sim_db.entry_count("st1", 42) == 1, "confirmed entry stored once")
+  debug_assert(sim_db.entry_count("st1", 42) == 0, "HTTP 2xx must NOT fabricate a synthetic entry row")
 
-  // Even if the station also replays the same entry over SSE with the same `n` & `clientKey`, no duplicate!
+  // Real entry arrives via SSE `thread` with exact `n` & `clientKey` -> stored once, 0 duplicates even on replay.
   station.push_sse(
-    "id: ev-99\nevent: entry\ndata: {\"workspace\":\"ws-1\",\"thread\":42,\"n\":101,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice\",\"text\":\"hello while offline\",\"clientKey\":\"ck-offline-1\"}\n\n",
+    "id: ev-99\nevent: thread\ndata: {\"workspace\":\"ws-1\",\"id\":42,\"entries\":[{\"thread\":42,\"n\":101,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice@still.fail\",\"text\":\"hello while offline\",\"clientKey\":\"ck-offline-1\",\"at\":10000}]}\n\n",
+  )
+  debug_assert(sim_db.entry_count("st1", 42) == 1, "SSE thread event stores real entry once")
+  station.push_sse(
+    "id: ev-99\nevent: thread\ndata: {\"workspace\":\"ws-1\",\"id\":42,\"entries\":[{\"thread\":42,\"n\":101,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice@still.fail\",\"text\":\"hello while offline\",\"clientKey\":\"ck-offline-1\",\"at\":10000}]}\n\n",
   )
   debug_assert(sim_db.entry_count("st1", 42) == 1, "replayed SSE entry with same n & clientKey produces 0 duplicates")
   core.stop()
@@ -1000,8 +1075,8 @@ test "E2E 3: station rejects send_message and rename_chat -> automatic rollback 
   rt.advance(30)
   let _ = core.drain_frame()
 
-  // Configure station to reject chat rename with 403 + explicit recovery hint.
-  station.reject_path_prefix = Some("/chats/c-9/rename")
+  // Configure station to reject chat rename with 403 + explicit recovery hint (real route POST /sessions/c-9/title).
+  station.reject_path_prefix = Some("/sessions/c-9/title")
   station.reject_code = "read_only_member"
   station.reject_recovery = "Ask an owner to upgrade your role before renaming."
 
@@ -1021,7 +1096,7 @@ test "E2E 3: station rejects send_message and rename_chat -> automatic rollback 
   for i in 0..<evs.length() {
     match evs[i] {
       CoreEvent::OverlayRolledBack(_st, target, kind, code, recovery) => {
-        if target == "c-9" && kind == "rename" && code == "read_only_member" && recovery.contains("upgrade") {
+        if target == "c-9" && kind == "chat.rename" && code == "read_only_member" && recovery.contains("upgrade") {
           saw_rollback = true
         }
       }
@@ -1349,18 +1424,19 @@ test "E2E 6: ClientCore::handle_wire serves core_api.h JSON protocol and isolate
   core.start()
   rt.advance(20)
   station.push_sse(
-    "id: ev-other\nevent: entry\ndata: {\"workspace\":\"ws-beta\",\"thread\":1,\"n\":1,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"leak\"}\n\n",
+    "id: ev-other\nevent: thread\ndata: {\"workspace\":\"ws-beta\",\"id\":1,\"entries\":[{\"thread\":1,\"n\":1,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"leak\",\"at\":1}]}\n\n",
   )
   debug_assert(sim_db.entry_count("st1", 1) == 0, "workspace isolation drops cross-workspace events")
 
-  // Send a message through the thin JSON `core_api.h` wire protocol (`message.send`).
-  let res = core.handle_wire("{\"id\":1,\"call\":\"message.send\",\"params\":{\"thread\":1,\"clientKey\":\"ck-wire-1\",\"author\":\"bob\",\"text\":\"via wire\"}}")
+  // Send a message through the thin JSON `core_api.h` wire protocol (`chat.send`).
+  let res = core.handle_wire("{\"id\":1,\"call\":\"chat.send\",\"params\":{\"thread\":1,\"idem\":\"ck-wire-1\",\"author\":\"bob\",\"text\":\"via wire\"}}")
   match res {
-    Some((reply_json, _)) => debug_assert(reply_json.contains("\"queued\":true"), "wire message.send queued optimistically")
+    Some((reply_json, _)) => debug_assert(reply_json.contains("\"queued\":true"), "wire chat.send queued optimistically")
     None => debug_assert(false, "expected wire response")
   }
   rt.advance(30)
-  debug_assert(sim_db.entry_count("st1", 1) == 1, "wire message.send confirmed and persisted")
+  debug_assert(core.local_outbox.pending_message_count() == 0, "wire chat.send reconciled on 200")
+  debug_assert(sim_db.entry_count("st1", 1) == 0, "HTTP 200 must not fabricate synthetic entry row")
   core.stop()
 }
 
@@ -1608,12 +1684,13 @@ test "E2E 8: SessionChanged/JobChanged live sync, account.doc & workspace/statio
   }
 
   // 3. Real-time SessionChanged & JobChanged via SSE -> FrameOutbox + sessions.list / jobs.open
+  sim_db.jobs.set("st1:job-1", "{\"id\":\"job-1\",\"session\":\"sess-a\",\"state\":\"running\"}")
   core.start()
   rt.advance(20)
   let _ = core.drain_frame()
   station.push_sse(
-    "id: s-1\nevent: session\ndata: {\"key\":\"sess-a\",\"running\":true,\"listed\":true,\"turns\":3}\n\n" +
-    "id: j-1\nevent: job\ndata: {\"id\":\"job-1\",\"session\":\"sess-a\",\"open\":true,\"chat\":\"c-1\"}\n\n",
+    "id: s-1\nevent: session\ndata: {\"key\":\"sess-a\",\"process\":\"running\",\"turns\":3}\n\n" +
+    "id: j-1\nevent: job\ndata: {\"id\":\"job-1\",\"session\":\"sess-a\",\"state\":\"running\"}\n\n",
   )
   debug_assert(core.running_session_count() == 1, "1 running session")
   debug_assert(core.open_job_count() == 1, "1 open job")
@@ -1640,8 +1717,8 @@ test "E2E 8: SessionChanged/JobChanged live sync, account.doc & workspace/statio
 
   // Transition session to idle and job to closed
   station.push_sse(
-    "id: s-2\nevent: session\ndata: {\"key\":\"sess-a\",\"running\":false,\"listed\":true,\"turns\":4}\n\n" +
-    "id: j-2\nevent: job\ndata: {\"id\":\"job-1\",\"session\":\"sess-a\",\"open\":false,\"chat\":\"c-1\"}\n\n",
+    "id: s-2\nevent: session\ndata: {\"key\":\"sess-a\",\"process\":\"idle\",\"turns\":4}\n\n" +
+    "id: j-2\nevent: job\ndata: {\"id\":\"job-1\",\"session\":\"sess-a\",\"state\":\"exited\"}\n\n",
   )
   debug_assert(core.running_session_count() == 0, "0 running sessions after idle")
   debug_assert(core.open_job_count() == 0, "0 open jobs after close")
@@ -1670,7 +1747,7 @@ test "E2E 8: SessionChanged/JobChanged live sync, account.doc & workspace/statio
   core.stop()
 }
 
-test "E2E 9: message.edit, message.delete, card.answer, chat.read, chat.draft with optimistic dispatch & rollback" {
+test "E2E 9: real ops (chat.hide, decision.dismiss, decision.answer, chat.read, chat.draft) with optimistic dispatch & rollback" {
   let rt = effect::Runtime::new()
   let sim_db = SimAccountDb::new(rt)
   let db = match sql::Sql::open(sim_db.sh, "acct-interact") {
@@ -1687,39 +1764,39 @@ test "E2E 9: message.edit, message.delete, card.answer, chat.read, chat.draft wi
   rt.advance(20)
   let _ = core.drain_frame()
 
-  // 1. message.edit + message.delete + card.answer succeed online
-  match core.handle_wire("{\"id\":1,\"call\":\"message.edit\",\"params\":{\"thread\":42,\"target\":1,\"text\":\"updated text\"}}") {
-    Some((txt, _)) => debug_assert(txt.contains("\"opId\"") && txt.contains("\"target\":1"), "message.edit ok")
-    None => debug_assert(false, "expected message.edit")
+  // 1. chat.hide + decision.dismiss + decision.answer(close) succeed online via real ops.ts routes
+  match core.handle_wire("{\"id\":1,\"call\":\"chat.hide\",\"params\":{\"thread\":42,\"hidden\":true}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"opId\""), "chat.hide ok")
+    None => debug_assert(false, "expected chat.hide")
   }
-  match core.handle_wire("{\"id\":2,\"call\":\"message.delete\",\"params\":{\"thread\":42,\"target\":2}}") {
-    Some((txt, _)) => debug_assert(txt.contains("\"opId\"") && txt.contains("\"target\":2"), "message.delete ok")
-    None => debug_assert(false, "expected message.delete")
+  match core.handle_wire("{\"id\":2,\"call\":\"decision.dismiss\",\"params\":{\"thread\":42,\"seq\":2}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"opId\""), "decision.dismiss ok")
+    None => debug_assert(false, "expected decision.dismiss")
   }
-  match core.handle_wire("{\"id\":3,\"call\":\"card.answer\",\"params\":{\"thread\":42,\"seq\":3,\"option\":\"Ship it\",\"action\":\"reply\"}}") {
-    Some((txt, _)) => debug_assert(txt.contains("\"option\":\"Ship it\""), "card.answer ok")
-    None => debug_assert(false, "expected card.answer")
+  match core.handle_wire("{\"id\":3,\"call\":\"decision.answer\",\"params\":{\"thread\":42,\"seq\":3,\"option\":\"Skip deploy\",\"action\":\"close\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"option\":\"Skip deploy\""), "decision.answer close ok")
+    None => debug_assert(false, "expected decision.answer")
   }
   rt.advance(30)
   debug_assert(core.local_outbox.pending_overlay_count() == 0, "all 3 overlays confirmed and cleared")
-  let mut saw_edit_req = false
-  let mut saw_del_req = false
-  let mut saw_card_req = false
+  let mut saw_hide_req = false
+  let mut saw_dismiss_req = false
+  let mut saw_close_req = false
   for i in 0..<station.requests_seen.length() {
     let r = station.requests_seen[i]
-    if r == "POST /threads/42/messages/1/edit" { saw_edit_req = true }
-    if r == "DELETE /threads/42/messages/2" { saw_del_req = true }
-    if r == "POST /threads/42/cards/3/answer" { saw_card_req = true }
+    if r == "PUT /threads/42/hidden" { saw_hide_req = true }
+    if r == "PUT /threads/42/dismissed" { saw_dismiss_req = true }
+    if r == "PUT /threads/42/closed-card" { saw_close_req = true }
   }
-  debug_assert(saw_edit_req && saw_del_req && saw_card_req, "station received edit, delete, card.answer")
+  debug_assert(saw_hide_req && saw_dismiss_req && saw_close_req, "station received real ops.ts routes")
 
-  // 2. Station 403 rejection on card.answer rolls back cleanly with recovery hint
-  station.reject_path_prefix = Some("/threads/42/cards/")
+  // 2. Station 403 rejection on decision.close rolls back cleanly with recovery hint
+  station.reject_path_prefix = Some("/threads/42/closed-card")
   station.reject_code = "card_closed"
   station.reject_recovery = "Card was already answered by another member."
   let _ = core.drain_frame()
-  match core.handle_wire("{\"id\":4,\"call\":\"card.answer\",\"params\":{\"thread\":42,\"seq\":9,\"option\":\"Yes\"}}") {
-    Some((txt, _)) => debug_assert(txt.contains("\"opId\""), "optimistic card.answer accepted locally")
+  match core.handle_wire("{\"id\":4,\"call\":\"decision.close\",\"params\":{\"thread\":42,\"seq\":9,\"option\":\"Yes\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"opId\""), "optimistic decision.close accepted locally")
     None => debug_assert(false, "expected optimistic ok")
   }
   rt.advance(30)
@@ -1728,21 +1805,27 @@ test "E2E 9: message.edit, message.delete, card.answer, chat.read, chat.draft wi
   for i in 0..<evs.length() {
     match evs[i] {
       CoreEvent::OverlayRolledBack(_, _, kind, code, rec) => {
-        if kind == "card_answer" && code == "card_closed" && rec.contains("already answered") {
+        if kind == "decision.close" && code == "card_closed" && rec.contains("already answered") {
           saw_rollback = true
         }
       }
       _ => ()
     }
   }
-  debug_assert(saw_rollback && core.local_outbox.pending_overlay_count() == 0, "card.answer rolled back cleanly")
+  debug_assert(saw_rollback && core.local_outbox.pending_overlay_count() == 0, "decision.close rolled back cleanly")
 
-  // 3. chat.read updates local SQLite thread read cursor and emits ThreadReadChanged
+  // 3. chat.read updates local SQLite thread read cursor and sends PUT /threads/42/read
   station.reject_path_prefix = None
-  match core.handle_wire("{\"id\":5,\"call\":\"chat.read\",\"params\":{\"thread\":42,\"read\":12,\"unread\":0}}") {
+  match core.handle_wire("{\"id\":5,\"call\":\"chat.read\",\"params\":{\"thread\":42,\"seq\":12,\"unread\":0}}") {
     Some((txt, _)) => debug_assert(txt.contains("\"read\":12") && txt.contains("\"unread\":0"), "chat.read ok")
     None => debug_assert(false, "expected chat.read")
   }
+  rt.advance(20)
+  let mut saw_put_read = false
+  for i in 0..<station.requests_seen.length() {
+    if station.requests_seen[i] == "PUT /threads/42/read" { saw_put_read = true }
+  }
+  debug_assert(saw_put_read, "chat.read dispatched PUT /threads/42/read")
   match sim_db.thread_reads.get("st1:42") {
     Some((r, u)) => debug_assert(r == 12 && u == 0, "thread read cursor persisted")
     None => debug_assert(false, "expected thread read cursor in DB")
@@ -1798,9 +1881,9 @@ test "E2E 10: accounts, vault, said search, settings, and chats/chat keyed delta
 
   core.start()
   rt.advance(30)
-  // Push an SSE message so `said` trigger populates searchable text
+  // Push a real `thread` SSE message so `said` trigger populates searchable text
   station.push_sse(
-    "id: e-1\nevent: entry\ndata: {\"thread\":10,\"n\":1,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"Pion Stage 2 core parity ready\",\"at\":1050}\n\n",
+    "id: e-1\nevent: thread\ndata: {\"id\":10,\"entries\":[{\"thread\":10,\"n\":1,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"Pion Stage 2 core parity ready\",\"at\":1050}]}\n\n",
   )
 
   // 1. accounts + account.switch
@@ -1848,9 +1931,9 @@ test "E2E 10: accounts, vault, said search, settings, and chats/chat keyed delta
     Some((txt, _)) => debug_assert(txt.contains("\"value\"") && txt.contains("c-alpha"), "initial chats value")
     None => debug_assert(false, "expected chats subscribe")
   }
-  // Push a second chat over SSE -> refresh_topic("chats") emits keyed `put` delta containing ONLY c-beta
+  // Push a second chat over SSE (`chat-shared`) -> refresh_topic("chats") emits keyed `put` delta containing ONLY c-beta
   station.push_sse(
-    "id: c-2\nevent: chat\ndata: {\"id\":\"c-beta\",\"title\":\"Beta Review\",\"thread\":11,\"lastActive\":2000}\n\n",
+    "id: c-2\nevent: chat-shared\ndata: {\"id\":\"c-beta\",\"title\":\"Beta Review\",\"thread\":11,\"lastActive\":2000}\n\n",
   )
   let deltas = core.refresh_topic("chats")
   debug_assert(deltas.length() == 1, "one chats delta emitted")
@@ -1878,7 +1961,7 @@ test "E2E 10: accounts, vault, said search, settings, and chats/chat keyed delta
   core.stop()
 }
 
-test "E2E 11: offline edit_message, delete_message, card.answer flush_offline dispatches exact thread routes" {
+test "E2E 11: offline real ops (chat.rename, chat.mute, decision.close) flush_offline dispatches exact ops.ts routes" {
   let rt = effect::Runtime::new()
   let sim_db = SimAccountDb::new(rt)
   let db = match sql::Sql::open(sim_db.sh, "acct-offline-mut") {
@@ -1892,39 +1975,39 @@ test "E2E 11: offline edit_message, delete_message, card.answer flush_offline di
   station.offline = true
   let core = ClientCore::new("ws-off", "st1", rt, db, station.transport(), fn() -> Unit {})
 
-  // Queue edit_message, delete_message, and card.answer while offline
-  match core.edit_message(42, 1, "offline edit", 1000.to_int64()) {
+  // Queue real ops while offline
+  match core.rename_chat("c-42", "Offline Title", thread=Some(42)) {
     sql::SqlResult::Ok(_) => ()
-    sql::SqlResult::Err(_) => debug_assert(false, "offline edit_message failed")
+    sql::SqlResult::Err(_) => debug_assert(false, "offline chat.rename failed")
   }
-  match core.delete_message(42, 2, 1001.to_int64()) {
-    sql::SqlResult::Ok(_) => ()
-    sql::SqlResult::Err(_) => debug_assert(false, "offline delete_message failed")
+  match core.perform_op("chat.mute", base_codec::json_obj([("thread", base_codec::json_int(42)), ("muted", base_codec::json_bool(true))])) {
+    Ok(_) => ()
+    Err(_) => debug_assert(false, "offline chat.mute failed")
   }
-  match core.answer_card(42, 3, "Approve", "reply", 1002.to_int64()) {
-    sql::SqlResult::Ok(_) => ()
-    sql::SqlResult::Err(_) => debug_assert(false, "offline answer_card failed")
+  match core.perform_op("decision.close", base_codec::json_obj([("thread", base_codec::json_int(42)), ("seq", base_codec::json_int(3)), ("option", base_codec::json_str("Skip"))])) {
+    Ok(_) => ()
+    Err(_) => debug_assert(false, "offline decision.close failed")
   }
   debug_assert(core.local_outbox.pending_overlay_count() == 3, "3 overlays queued offline")
   debug_assert(station.requests_seen.length() == 0, "0 requests while offline")
 
-  // Come back online -> flush_offline must route to exact /threads/... endpoints, never /chats/thread:...
+  // Come back online -> flush_offline must route to exact ops.ts endpoints
   station.offline = false
   core.set_online(true)
   rt.advance(40)
 
-  let mut saw_edit = false
-  let mut saw_del = false
-  let mut saw_card = false
+  let mut saw_title = false
+  let mut saw_muted = false
+  let mut saw_closed = false
   let mut saw_bad_chats_route = false
   for i in 0..<station.requests_seen.length() {
     let r = station.requests_seen[i]
-    if r == "POST /threads/42/messages/1/edit" { saw_edit = true }
-    if r == "DELETE /threads/42/messages/2" { saw_del = true }
-    if r == "POST /threads/42/cards/3/answer" { saw_card = true }
+    if r == "PUT /threads/42/title" { saw_title = true }
+    if r == "PUT /threads/42/muted" { saw_muted = true }
+    if r == "PUT /threads/42/closed-card" { saw_closed = true }
     if r.contains("/chats/thread:") { saw_bad_chats_route = true }
   }
-  debug_assert(saw_edit && saw_del && saw_card, "exact thread mutation routes dispatched on reconnect")
+  debug_assert(saw_title && saw_muted && saw_closed, "exact ops.ts thread routes dispatched on reconnect")
   debug_assert(!saw_bad_chats_route, "never misrouted to /chats/thread:...")
   debug_assert(core.local_outbox.pending_overlay_count() == 0, "all 3 overlays cleared from changing after confirmation")
 }
@@ -1998,7 +2081,7 @@ test "E2E 12: ClientCore wired to packages/views projects chats, chat, workspace
   }
   let reused_before = core.rows_memo.rows_reused
   station.push_sse(
-    "id: c-v2\nevent: chat\ndata: {\"id\":\"c-v2\",\"title\":\"Views Chat 2\",\"thread\":8,\"lastActive\":2000}\n\n",
+    "id: c-v2\nevent: chat-shared\ndata: {\"id\":\"c-v2\",\"title\":\"Views Chat 2\",\"thread\":8,\"lastActive\":2000}\n\n",
   )
   let chats_deltas = core.refresh_topic("chats")
   debug_assert(chats_deltas.length() == 1, "chats delta emitted")
@@ -2015,7 +2098,7 @@ test "E2E 12: ClientCore wired to packages/views projects chats, chat, workspace
   let (_, writes_on_open, _) = sim_db.counts_since(ran_before)
   debug_assert(writes_on_open == 0, "0 SQL writes on cold chat subscribe")
 
-  // Optimistic message.send -> outbox entry appears in delta -> SSE confirms -> outbox cleared & message added (0 duplicates)
+  // Optimistic chat.send -> outbox entry appears in delta -> SSE confirms -> outbox cleared & message added (0 duplicates)
   let _ = core.send_message(7, "ck-views-1", "alice@still.fail", "hello views", rt.now())
   let d_outbox = core.refresh_topic("chat")
   debug_assert(d_outbox.length() == 1, "chat delta for optimistic outbox")
@@ -2023,7 +2106,7 @@ test "E2E 12: ClientCore wired to packages/views projects chats, chat, workspace
   debug_assert(d_ob_json.length() <= 4096 && d_ob_json.contains("ck-views-1"), "optimistic outbox delta <= 4KB")
 
   station.push_sse(
-    "id: e-v1\nevent: entry\ndata: {\"thread\":7,\"n\":1,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice@still.fail\",\"text\":\"hello views\",\"clientKey\":\"ck-views-1\",\"at\":3000}\n\n",
+    "id: e-v1\nevent: thread\ndata: {\"id\":7,\"entries\":[{\"thread\":7,\"n\":1,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice@still.fail\",\"text\":\"hello views\",\"clientKey\":\"ck-views-1\",\"at\":3000}]}\n\n",
   )
   let d_confirmed = core.refresh_topic("chat")
   debug_assert(d_confirmed.length() == 1, "chat delta for SSE confirmation")
@@ -2207,5 +2290,160 @@ test "E2E 13: Batch 2 & Batch 3 wiring in ClientCore (auth.begin, accounts, pres
     Some((txt, _)) => debug_assert(txt.contains("$4.25") && txt.contains("\"empty\":false"), "usage topic")
     None => debug_assert(false, "expected usage")
   }
+  core.stop()
+}
+
+test "E2E 14: SSE reconnect uses ?since=<eid> (never ?after=) and aborts stream on Burst failure" {
+  let rt = effect::Runtime::new()
+  let fail_next : Array[Bool] = [false]
+  let sim_db = SimAccountDb::new(rt)
+  let guarded_sh = shell::Shell::stood_in(
+    rt,
+    fn(_ : Int64, _ : String, _ : base_codec::Json, _ : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if fail_next[0] && op == "sql.run" {
+        return shell::AskResult::Err(shell::ShellError::{ message: "injected burst failure" })
+      }
+      sim_db.answer(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(guarded_sh, "acct-sse-since") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  let core = ClientCore::new("ws-1", "st1", rt, db, station.transport(), fn() -> Unit {})
+  core.start()
+  rt.advance(20)
+  // First batch commits -> last_event_id becomes "ev/42"
+  station.push_sse(
+    "id: ev/42\nevent: thread\ndata: {\"workspace\":\"ws-1\",\"id\":7,\"entries\":[{\"n\":1,\"thread\":7,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"ok\",\"at\":1000}]}\n\n",
+  )
+  match core.events.last_id() {
+    Some(eid) => debug_assert(eid == "ev/42", "committed event id must be ev/42")
+    None => debug_assert(false, "expected last_event_id ev/42")
+  }
+  // Inject SQL failure on next batch ("ev/43"), then push a third chunk ("ev/44") on the same dead stream.
+  // The stream MUST abort on ev/43, ignore ev/44, keep last_event_id == "ev/42", and reconnect with /events?since=ev%2F42!
+  fail_next[0] = true
+  station.push_sse(
+    "id: ev/43\nevent: thread\ndata: {\"workspace\":\"ws-1\",\"id\":7,\"entries\":[{\"n\":2,\"thread\":7,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"fail\",\"at\":1001}]}\n\n",
+  )
+  fail_next[0] = false
+  station.push_sse(
+    "id: ev/44\nevent: thread\ndata: {\"workspace\":\"ws-1\",\"id\":7,\"entries\":[{\"n\":3,\"thread\":7,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"must-ignore\",\"at\":1002}]}\n\n",
+  )
+  match core.events.last_id() {
+    Some(eid) => debug_assert(eid == "ev/42", "failed batch must abort stream and NOT advance to ev/43 or ev/44")
+    None => debug_assert(false, "expected last_event_id ev/42")
+  }
+  rt.advance(1)
+  debug_assert(station.cancel_count == 1, "Burst failure MUST cancel the underlying old stream (cancel_count == 1)")
+  // Advance past reconnect backoff (2000ms) -> verify reconnect URL is strictly `/events?since=ev%2F42`
+  rt.advance(2200)
+  let mut saw_since = false
+  let mut saw_after = false
+  for i in 0..<station.requests_seen.length() {
+    let r = station.requests_seen[i]
+    if r == "SSE /events?since=ev%2F42" {
+      saw_since = true
+    }
+    if r.contains("after=") {
+      saw_after = true
+    }
+  }
+  debug_assert(saw_since, "reconnect MUST use /events?since=ev%2F42")
+  debug_assert(!saw_after, "reconnect MUST NEVER use ?after=")
+  // Now drop stream into backoff and call stop() during backoff -> advance 120_000ms -> 0 new SSE connections!
+  station.drop_stream()
+  rt.advance(100)
+  let reqs_at_stop = station.requests_seen.length()
+  core.stop()
+  rt.advance(120000)
+  debug_assert(station.requests_seen.length() == reqs_at_stop, "stop() during backoff MUST produce 0 reconnects over 120s")
+}
+
+test "E2E 15: ClientCore wires missed -> fetch_snapshot_k, chat-mark -> viewer_marks/rows_memo, dirty thread -> fetch_thread_k" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-p15") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  station.thread_entries.set(
+    7,
+    base_codec::json_obj([
+      (
+        "entries",
+        base_codec::json_arr([
+          base_codec::json_obj([
+            ("n", base_codec::json_int(5)),
+            ("thread", base_codec::json_int(7)),
+            ("kind", base_codec::json_str("message")),
+            ("authorKind", base_codec::json_str("agent")),
+            ("author", base_codec::json_str("bot")),
+            ("text", base_codec::json_str("fetched after dirty")),
+            ("at", base_codec::json_int64(5000.to_int64())),
+          ]),
+        ]),
+      ),
+    ]),
+  )
+  let core = ClientCore::new("ws-1", "st1", rt, db, station.transport(), fn() -> Unit {})
+  core.set_viewer("alice@still.fail")
+  core.start()
+  rt.advance(30)
+  // 1. Update snapshot on station and push `missed` SSE -> ClientCore MUST run fetch_snapshot_k and persist missed chat!
+  station.snapshot_json = base_codec::json_obj([
+    (
+      "chats",
+      base_codec::json_arr([
+        base_codec::json_obj([
+          ("id", base_codec::json_str("c-missed")),
+          ("archived", base_codec::json_int(0)),
+          ("ord", base_codec::json_num(1.0)),
+          ("thread", base_codec::json_int(7)),
+          ("lastActive", base_codec::json_int64(3000.to_int64())),
+          ("title", base_codec::json_str("Recovered After Missed")),
+        ]),
+      ]),
+    ),
+    ("entries", base_codec::json_arr([])),
+  ])
+  station.push_sse("id: ev-m1\nevent: missed\ndata: {\"workspace\":\"ws-1\"}\n\n")
+  rt.advance(50)
+  match store::get_chat_by_key(db, "st1", 0, "c-missed") {
+    sql::SqlResult::Ok(Some(rec)) => debug_assert(rec.json.contains("Recovered After Missed"), "missed triggered fetch_snapshot_k and persisted chat")
+    _ => debug_assert(false, "expected c-missed persisted after missed SSE")
+  }
+  // 2. Push `chat-mark` SSE -> updates viewer_marks & invalidates rows_memo!
+  station.push_sse("id: ev-m2\nevent: chat-mark\ndata: {\"workspace\":\"ws-1\",\"session\":\"sess-7\",\"thread\":7,\"read\":4,\"pinned\":8888}\n\n")
+  match core.viewer_marks.reads.get("st1:7") {
+    Some(r) => debug_assert(r == 4, "chat-mark updated viewer_marks.reads")
+    None => debug_assert(false, "expected viewer_marks read updated")
+  }
+  match core.viewer_marks.pins.get("st1:sess-7") {
+    Some(p) => debug_assert(p == 8888.to_int64(), "chat-mark updated viewer_marks.pins")
+    None => debug_assert(false, "expected viewer_marks pin updated")
+  }
+  // 3. Push non-append `thread` SSE (gap -> thread_after returns None -> marks thread 7 dirty) -> ClientCore MUST trigger GET /threads/7/entries!
+  let reqs_before = station.requests_seen.length()
+  station.push_sse("id: ev-m3\nevent: thread\ndata: {\"workspace\":\"ws-1\",\"id\":7,\"entries\":[{\"n\":5,\"thread\":7,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"gap\",\"at\":5000}]}\n\n")
+  rt.advance(50)
+  let mut saw_thread_fetch = false
+  for i in reqs_before..<station.requests_seen.length() {
+    if station.requests_seen[i] == "GET /threads/7/entries" {
+      saw_thread_fetch = true
+    }
+  }
+  debug_assert(saw_thread_fetch, "dirty thread MUST trigger ClientCore fetch_thread_k (GET /threads/7/entries)")
   core.stop()
 }

@@ -1,0 +1,613 @@
+// Real station HTTP operation route mapper, strictly 1:1 aligned with `client/core-ts/src/ops.ts`
+// (`request(name, params)`) and `client/core-ts/src/station/sync.ts` (`post`, `read`).
+// Zero fabricated endpoints.
+
+import "base_codec"
+
+pub enum OpTarget {
+  Station(String)
+  Cloud(String)
+}
+
+pub enum OpEffect {
+  None
+  Session(Option[String])
+  Process(String)
+  Thread(Bool)
+  Connect(Option[String])
+  Overview
+  Slack
+  Job
+  Memory
+  Presets
+  Move
+  Identity
+}
+
+pub struct OpRequest {
+  pub target : OpTarget
+  pub method : String
+  pub path : String
+  pub body : Option[base_codec::Json]
+  pub fallback : Option[OpRequest]
+  pub effect : OpEffect
+}
+
+pub enum OpResult {
+  Ok(OpRequest)
+  Unknown
+  Invalid(String)
+}
+
+/// Percent-encode a path segment identically to `client/core-ts/src/ops.ts` `encode(text)`.
+pub fn encode_uri_component(text : String) -> String {
+  let bytes = text.to_bytes()
+  let hex_chars = "0123456789ABCDEF".to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<bytes.length() {
+    let b = bytes[i].to_int()
+    let safe =
+    (b >= 65 && b <= 90) ||
+    (b >= 97 && b <= 122) ||
+    (b >= 48 && b <= 57) ||
+    b == 45 || b == 95 || b == 46 || b == 33 || b == 126 || b == 42 || b == 39 || b == 40 || b == 41
+    if safe {
+      sb.write_byte(bytes[i])
+    } else {
+      sb.write_byte(37 as Byte) // '%'
+      sb.write_byte(hex_chars[(b >> 4) & 15])
+      sb.write_byte(hex_chars[b & 15])
+    }
+  }
+  sb.to_string()
+}
+
+pub fn OpEffect::to_json(self : OpEffect) -> base_codec::Json {
+  match self {
+    OpEffect::None => base_codec::json_obj([("kind", base_codec::json_str("none"))])
+    OpEffect::Session(key) => {
+      let kj = match key {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      }
+      base_codec::json_obj([("kind", base_codec::json_str("session")), ("key", kj)])
+    }
+    OpEffect::Process(key) =>
+    base_codec::json_obj([("kind", base_codec::json_str("process")), ("key", base_codec::json_str(key))])
+    OpEffect::Thread(archived) =>
+    base_codec::json_obj([("kind", base_codec::json_str("thread")), ("archived", base_codec::json_bool(archived))])
+    OpEffect::Connect(id) => {
+      let ij = match id {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      }
+      base_codec::json_obj([("kind", base_codec::json_str("connect")), ("id", ij)])
+    }
+    OpEffect::Overview => base_codec::json_obj([("kind", base_codec::json_str("overview"))])
+    OpEffect::Slack => base_codec::json_obj([("kind", base_codec::json_str("slack"))])
+    OpEffect::Job => base_codec::json_obj([("kind", base_codec::json_str("job"))])
+    OpEffect::Memory => base_codec::json_obj([("kind", base_codec::json_str("memory"))])
+    OpEffect::Presets => base_codec::json_obj([("kind", base_codec::json_str("presets"))])
+    OpEffect::Move => base_codec::json_obj([("kind", base_codec::json_str("move"))])
+    OpEffect::Identity => base_codec::json_obj([("kind", base_codec::json_str("identity"))])
+  }
+}
+
+pub fn OpRequest::to_json(self : OpRequest) -> base_codec::Json {
+  let target_j = match self.target {
+    OpTarget::Station(s) => base_codec::json_obj([("station", base_codec::json_str(s))])
+    OpTarget::Cloud(c) => base_codec::json_obj([("cloud", base_codec::json_str(c))])
+  }
+  let body_j = match self.body {
+    Some(b) => b
+    None => base_codec::json_null()
+  }
+  let fb_j = match self.fallback {
+    Some(f) => f.to_json()
+    None => base_codec::json_null()
+  }
+  base_codec::json_obj([
+    ("target", target_j),
+    ("method", base_codec::json_str(self.method)),
+    ("path", base_codec::json_str(self.path)),
+    ("body", body_j),
+    ("fallback", fb_j),
+    ("effect", self.effect.to_json()),
+  ])
+}
+
+// ── Parameter readers matching `client/core-ts/src/ops.ts` `class P` ──
+
+fn p_has(params : base_codec::Json, name : String) -> Bool {
+  match params {
+    base_codec::Json::Obj(fs) => {
+      for i in 0..<fs.length() {
+        if fs[i].0 == name {
+          return true
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+fn p_get(params : base_codec::Json, name : String) -> Option[base_codec::Json] {
+  base_codec::json_get(params, name)
+}
+
+fn op_str(params : base_codec::Json, name : String) -> Result[String, String] {
+  match p_get(params, name) {
+    Some(base_codec::Json::Str(s)) => Ok(s)
+    _ => Err("missing " + name)
+  }
+}
+
+fn p_word(params : base_codec::Json, name : String) -> Option[String] {
+  match p_get(params, name) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn p_at(params : base_codec::Json, name : String) -> Result[String, String] {
+  match op_str(params, name) {
+    Ok(s) => Ok(encode_uri_component(s))
+    Err(e) => Err(e)
+  }
+}
+
+fn p_opt_u64(params : base_codec::Json, name : String) -> Option[Int64] {
+  match p_get(params, name) {
+    Some(base_codec::Json::Num(n, repr)) => {
+      if n < 0.0 || n != n.floor() {
+        return None
+      }
+      if repr.length() > 0 && !repr.contains(".") && !repr.contains("e") && !repr.contains("E") {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => if v >= 0.to_int64() { Some(v) } else { None }
+          None => Some(n.to_int64())
+        }
+      } else {
+        Some(n.to_int64())
+      }
+    }
+    _ => None
+  }
+}
+
+fn p_u64(params : base_codec::Json, name : String) -> Result[Int64, String] {
+  match p_opt_u64(params, name) {
+    Some(v) => Ok(v)
+    None => Err("missing " + name)
+  }
+}
+
+fn p_bool(params : base_codec::Json, name : String) -> Bool {
+  match p_get(params, name) {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+}
+
+fn p_pick(params : base_codec::Json, names : Array[String]) -> base_codec::Json {
+  let out : Array[(String, base_codec::Json)] = []
+  for i in 0..<names.length() {
+    let k = names[i]
+    match p_get(params, k) {
+      Some(v) => out.push((k, v))
+      None => ()
+    }
+  }
+  base_codec::json_obj(out)
+}
+
+fn make_station_op(
+  params : base_codec::Json,
+  method_name : String,
+  path : String,
+  body : Option[base_codec::Json],
+  effect : OpEffect,
+  fallback : Option[OpRequest] = None,
+) -> OpResult {
+  match op_str(params, "station") {
+    Err(e) => OpResult::Invalid(e)
+    Ok(station) =>
+    OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: method_name,
+      path: path,
+      body: body,
+      fallback: fallback,
+      effect: effect,
+    })
+  }
+}
+
+fn ops_session_request(name : String, params : base_codec::Json) -> OpResult {
+  if name == "session.stop" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_raw = match p_word(params, "key") { Some(s) => s; None => "" }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/sessions/" + key_enc + "/stop",
+      body: None,
+      fallback: None,
+      effect: OpEffect::Process(key_raw),
+    })
+  }
+  if name == "session.cancelRetry" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_raw = match p_word(params, "key") { Some(s) => s; None => "" }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/sessions/" + key_enc + "/cancel-retry",
+      body: Some(p_pick(params, ["thread", "seq"])),
+      fallback: None,
+      effect: OpEffect::Process(key_raw),
+    })
+  }
+  if name == "session.retry" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_raw = match p_word(params, "key") { Some(s) => s; None => "" }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/sessions/" + key_enc + "/retry",
+      body: Some(p_pick(params, ["thread", "seq"])),
+      fallback: None,
+      effect: OpEffect::Process(key_raw),
+    })
+  }
+  if name == "session.reassign" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_raw = match p_word(params, "key") { Some(s) => s; None => "" }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/sessions/" + key_enc + "/reassign",
+      body: Some(p_pick(params, ["thread", "seq"])),
+      fallback: None,
+      effect: OpEffect::Process(key_raw),
+    })
+  }
+  if name == "session.warm" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/sessions/" + key_enc + "/warm",
+      body: None,
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  if name == "session.evict" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_raw = match p_word(params, "key") { Some(s) => s; None => "" }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/sessions/" + key_enc + "/evict",
+      body: None,
+      fallback: None,
+      effect: OpEffect::Process(key_raw),
+    })
+  }
+  if name == "session.compact" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/sessions/" + key_enc + "/compact",
+      body: None,
+      fallback: None,
+      effect: OpEffect::Session(p_word(params, "key")),
+    })
+  }
+  if name == "session.clear" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let body = if p_has(params, "readBack") { Some(p_pick(params, ["readBack"])) } else { None }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/sessions/" + key_enc + "/clear",
+      body: body,
+      fallback: None,
+      effect: OpEffect::Session(p_word(params, "key")),
+    })
+  }
+  if name == "session.delete" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "DELETE",
+      path: "/sessions/" + key_enc,
+      body: None,
+      fallback: None,
+      effect: OpEffect::Session(p_word(params, "key")),
+    })
+  }
+  if name == "session.settings" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let body = p_pick(params, [
+      "runtime", "profile", "profiles", "model", "effort", "fast", "speed", "tui", "context", "repick", "afresh",
+    ])
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/sessions/" + key_enc + "/settings",
+      body: Some(body),
+      fallback: None,
+      effect: OpEffect::Session(p_word(params, "key")),
+    })
+  }
+  if name == "session.new" {
+    let body = p_pick(params, [
+      "runtime", "profile", "profiles", "model", "effort", "fast", "speed", "tui", "context", "preset",
+    ])
+    return make_station_op(params, "POST", "/sessions", Some(body), OpEffect::Session(None))
+  }
+  if name == "session.transcript" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "GET",
+      path: "/sessions/" + key_enc + "/transcript",
+      body: None,
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  OpResult::Unknown
+}
+
+fn ops_chat_request(name : String, params : base_codec::Json) -> OpResult {
+  if name == "chat.archive" {
+    let method_name = if p_bool(params, "archived") { "POST" } else { "DELETE" }
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let sess_enc = match p_at(params, "session") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let fb = OpRequest::{
+      target: OpTarget::Station(station),
+      method: method_name,
+      path: "/sessions/" + sess_enc + "/archive",
+      body: None,
+      fallback: None,
+      effect: OpEffect::Session(p_word(params, "session")),
+    }
+    match p_opt_u64(params, "thread") {
+      None => return OpResult::Ok(fb)
+      Some(th) =>
+      return OpResult::Ok(OpRequest::{
+        target: OpTarget::Station(station),
+        method: method_name,
+        path: "/threads/" + th.to_string() + "/archive",
+        body: None,
+        fallback: Some(fb),
+        effect: OpEffect::Thread(true),
+      })
+    }
+  }
+  if name == "chat.keep" {
+    let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let is_drop = match p_get(params, "kept") {
+      Some(base_codec::Json::Bool(false)) => true
+      _ => false
+    }
+    let method_name = if is_drop { "DELETE" } else { "PUT" }
+    return make_station_op(params, method_name, "/threads/" + th.to_string() + "/keep", None, OpEffect::Thread(false))
+  }
+  if name == "chat.hide" {
+    let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    return make_station_op(
+      params,
+      "PUT",
+      "/threads/" + th.to_string() + "/hidden",
+      Some(p_pick(params, ["hidden"])),
+      OpEffect::Thread(false),
+    )
+  }
+  if name == "chat.mute" {
+    let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    return make_station_op(
+      params,
+      "PUT",
+      "/threads/" + th.to_string() + "/muted",
+      Some(p_pick(params, ["muted"])),
+      OpEffect::Thread(false),
+    )
+  }
+  if name == "chat.rename" {
+    match p_opt_u64(params, "thread") {
+      Some(th) =>
+      return make_station_op(
+        params,
+        "PUT",
+        "/threads/" + th.to_string() + "/title",
+        Some(p_pick(params, ["title"])),
+        OpEffect::Thread(false),
+      )
+      None => {
+        let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+        let sess_enc = match p_at(params, "session") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+        return OpResult::Ok(OpRequest::{
+          target: OpTarget::Station(station),
+          method: "POST",
+          path: "/sessions/" + sess_enc + "/title",
+          body: Some(p_pick(params, ["title"])),
+          fallback: None,
+          effect: OpEffect::Session(p_word(params, "session")),
+        })
+      }
+    }
+  }
+  if name == "chat.regenerateTitle" {
+    let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    return make_station_op(params, "POST", "/threads/" + th.to_string() + "/regenerate-title", None, OpEffect::Thread(false))
+  }
+  if name == "chat.pin" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let sess_enc = match p_at(params, "session") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let method_name = if p_bool(params, "pinned") { "PUT" } else { "DELETE" }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: method_name,
+      path: "/sessions/" + sess_enc + "/pin",
+      body: None,
+      fallback: None,
+      effect: OpEffect::Session(p_word(params, "session")),
+    })
+  }
+  if name == "chat.relayPlaces" {
+    let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    return make_station_op(params, "GET", "/threads/" + th.to_string() + "/relay", None, OpEffect::None)
+  }
+  if name == "chat.relay" {
+    let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    return make_station_op(
+      params,
+      "POST",
+      "/threads/" + th.to_string() + "/relay",
+      Some(p_pick(params, ["connect", "channel", "link", "note", "join"])),
+      OpEffect::Thread(false),
+    )
+  }
+  if name == "chat.relayPeople" {
+    let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let qs : Array[String] = []
+    let keys = ["connect", "channel", "link"]
+    for i in 0..<keys.length() {
+      match p_word(params, keys[i]) {
+        Some(v) => qs.push(keys[i] + "=" + encode_uri_component(v))
+        None => ()
+      }
+    }
+    let qstr = StringBuilder::new()
+    for i in 0..<qs.length() {
+      if i > 0 { qstr.write_string("&") }
+      qstr.write_string(qs[i])
+    }
+    return make_station_op(params, "GET", "/threads/" + th.to_string() + "/relay/people?" + qstr.to_string(), None, OpEffect::None)
+  }
+  if name == "chat.report" {
+    let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let seq = match p_u64(params, "seq") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let body = base_codec::json_obj([("n", base_codec::json_int64(seq))])
+    return make_station_op(params, "POST", "/threads/" + th.to_string() + "/report", Some(body), OpEffect::None)
+  }
+  if name == "chats.archived" {
+    return make_station_op(params, "GET", "/chats?archived=1", None, OpEffect::None)
+  }
+  if name == "chat.forSession" {
+    return make_station_op(params, "POST", "/threads", Some(p_pick(params, ["session"])), OpEffect::Thread(false))
+  }
+  OpResult::Unknown
+}
+
+fn ops_decision_job_request(name : String, params : base_codec::Json) -> OpResult {
+  if name == "decision.dismiss" {
+    let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let seq = match p_u64(params, "seq") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let body = base_codec::json_obj([("n", base_codec::json_int64(seq))])
+    return make_station_op(params, "PUT", "/threads/" + th.to_string() + "/dismissed", Some(body), OpEffect::Thread(false))
+  }
+  if name == "decision.close" {
+    let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let seq = match p_u64(params, "seq") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let opt = match op_str(params, "option") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let body = base_codec::json_obj([
+      ("n", base_codec::json_int64(seq)),
+      ("option", base_codec::json_str(opt)),
+    ])
+    return make_station_op(params, "PUT", "/threads/" + th.to_string() + "/closed-card", Some(body), OpEffect::Session(None))
+  }
+  if name == "job.get" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "GET",
+      path: "/jobs/" + id_enc,
+      body: None,
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  if name == "job.log" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let lines = match p_u64(params, "lines") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "GET",
+      path: "/jobs/" + id_enc + "/log?lines=" + lines.to_string(),
+      body: None,
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  if name == "job.stop" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/jobs/" + id_enc + "/stop",
+      body: None,
+      fallback: None,
+      effect: OpEffect::Job,
+    })
+  }
+  OpResult::Unknown
+}
+
+/// Build the exact station HTTP request for `name` and `params`, matching `client/core-ts/src/ops.ts` `request()`.
+pub fn ops_request(name : String, params : base_codec::Json) -> OpResult {
+  if !name.contains(".") {
+    return OpResult::Unknown
+  }
+  if name.starts_with("session.") {
+    return ops_session_request(name, params)
+  }
+  if name.starts_with("chat.") || name.starts_with("chats.") {
+    return ops_chat_request(name, params)
+  }
+  ops_decision_job_request(name, params)
+}
+
+/// Real station HTTP request for `chat.send` (`POST /threads/<thread>/messages`, `station/sync.ts` `post`).
+pub fn chat_send_request(station : String, thread : Int, body : base_codec::Json) -> OpRequest {
+  OpRequest::{
+    target: OpTarget::Station(station),
+    method: "POST",
+    path: "/threads/" + thread.to_string() + "/messages",
+    body: Some(body),
+    fallback: None,
+    effect: OpEffect::Thread(false),
+  }
+}
+
+/// Real station HTTP request for `markRead` (`PUT /threads/<thread>/read`, `{ n }`, `station/sync.ts` `read`).
+pub fn chat_read_request(station : String, thread : Int, n : Int) -> OpRequest {
+  OpRequest::{
+    target: OpTarget::Station(station),
+    method: "PUT",
+    path: "/threads/" + thread.to_string() + "/read",
+    body: Some(base_codec::json_obj([("n", base_codec::json_int(n))])),
+    fallback: None,
+    effect: OpEffect::Thread(false),
+  }
+}

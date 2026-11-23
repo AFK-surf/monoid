@@ -159,7 +159,7 @@ fn FakeDb::answer(self : FakeDb, op : String, args : base_codec::Json) -> shell:
   self.ran.push(stmt)
 
   if op == "sql.exec" {
-    if stmt == "BEGIN IMMEDIATE" || stmt == "COMMIT" || stmt == "ROLLBACK" || stmt == sql_md_make() || stmt == sql_ensure_kept() || stmt == sql_ensure_moved() {
+    if stmt == "BEGIN IMMEDIATE" || stmt == "COMMIT" || stmt == "ROLLBACK" || stmt == sql_md_make() || stmt == sql_ensure_kept() || stmt == sql_ensure_moved() || stmt == sql_ensure_shared_sidecar() {
       return shell::AskResult::Ok(base_codec::json_null())
     }
     if stmt == migrations()[0] {
