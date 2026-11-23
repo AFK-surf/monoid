@@ -83,12 +83,12 @@ const FRAMES_KEPT = 64;
 const FRAME_BYTES_KEPT = 4 * 1024 * 1024;
 const framed = new Map<string, string>();
 let framedBytes = 0;
-function frameOnce(vocabulary: string, text: string, ending: string, supported: Set<string>, supportsServices: boolean): string {
-  if (!projected(text)) return text + ending;
+function frameOnce(vocabulary: string, text: string, supported: Set<string>, supportsServices: boolean): string {
+  if (!projected(text)) return text + "\n\n";
   const key = `${vocabulary}\0${text}`;
   const had = framed.get(key);
   if (had !== undefined) return had;
-  const made = frame(text, supported, supportsServices) + ending;
+  const made = frame(text, supported, supportsServices) + "\n\n";
   framed.set(key, made);
   framedBytes += key.length + made.length;
   while (framed.size > FRAMES_KEPT || (framedBytes > FRAME_BYTES_KEPT && framed.size > 1)) {
@@ -100,14 +100,15 @@ function frameOnce(vocabulary: string, text: string, ending: string, supported: 
 }
 
 /// A piece of the stream, whole events each ending with a blank line (events.ts `raw`), as an older client is told it:
-/// one event (nearly every piece) is the kept string itself, one `frame` leaves as it is the piece itself.
+/// one event (nearly every piece) is the kept string itself, one `frame` leaves as it is the piece itself; a last
+/// event with no blank line after it (none told so) is made apart, not kept.
 function piece(vocabulary: string, text: string, supported: Set<string>, supportsServices: boolean): string {
   const first = text.indexOf("\n\n");
-  if (first === text.length - 2) return projected(text) ? frameOnce(vocabulary, text.slice(0, first), "\n\n", supported, supportsServices) : text;
+  if (first >= 0 && first === text.length - 2) return projected(text) ? frameOnce(vocabulary, text.slice(0, first), supported, supportsServices) : text;
   let out = "";
   let at = 0;
-  for (let end; (end = text.indexOf("\n\n", at)) >= 0; at = end + 2) out += frameOnce(vocabulary, text.slice(at, end), "\n\n", supported, supportsServices);
-  return at < text.length ? out + frameOnce(vocabulary, text.slice(at), "", supported, supportsServices) : out;
+  for (let end; (end = text.indexOf("\n\n", at)) >= 0; at = end + 2) out += frameOnce(vocabulary, text.slice(at, end), supported, supportsServices);
+  return at < text.length ? out + frame(text.slice(at), supported, supportsServices) : out;
 }
 
 async function* events(body: AsyncIterable<Buffer>, vocabulary: string, supported: Set<string>, supportsServices: boolean) {
@@ -117,12 +118,12 @@ async function* events(body: AsyncIterable<Buffer>, vocabulary: string, supporte
     pending += decoder.write(chunk);
     let end;
     while ((end = pending.indexOf("\n\n")) >= 0) {
-      yield Buffer.from(frameOnce(vocabulary, pending.slice(0,end), "\n\n", supported, supportsServices));
+      yield Buffer.from(frameOnce(vocabulary, pending.slice(0,end), supported, supportsServices));
       pending = pending.slice(end+2);
     }
   }
   pending += decoder.end();
-  if (pending) yield Buffer.from(frameOnce(vocabulary, pending, "", supported, supportsServices));
+  if (pending) yield Buffer.from(frame(pending, supported, supportsServices));
 }
 
 type Relayed = AsyncIterableIterator<Buffer> & { relay?: (send: (text: string) => void, ended: () => void) => void };
