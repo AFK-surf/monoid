@@ -344,13 +344,8 @@ async fn LockKeeperParts::ask(self : LockKeeperParts, name : String, a : Json) -
       "forceWord" => Json::string(cloud.force_word(ws))
       "peersCurrent" => Json::boolean(cloud.peers_current)
       "hasState" => Json::boolean(cloud.state is Some(_))
-      "isRig" =>
-        Json::boolean(
-          match cloud.state {
-            Some(s) => s.get("rig") is Some(_)
-            None => false
-          },
-        )
+      "isRig" => Json::boolean(cloud.is_rig_only())
+      "isRigIn" => Json::boolean(cloud.rig_in(ws.unwrap_or("")) is Some(_))
       "joined" =>
         Json::array(
           match cloud.state {

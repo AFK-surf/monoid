@@ -26,6 +26,7 @@ import { makeStore } from "./read/store.ts";
 import { apiOf, entryViews, spokenIn } from "./read/views.ts";
 import { KnownNames } from "./read/slack-known.ts";
 import type { AgentsParts } from "./sessions/agents.ts";
+import type { Rig } from "./rig/module.ts";
 import { platform } from "./platform/index.ts";
 import { ScreenHub } from "./screens/hub.ts";
 import { Desktop } from "./screens/desktop.ts";
@@ -452,6 +453,11 @@ export class StationDrive extends Context.Service<StationDrive, Drive>()("stillf
 /// request comes; nothing of the platform waits on it.
 export class AgentsSide extends Context.Service<AgentsSide, { current: AgentsParts | null }>()("stillfail/AgentsSide") {
   static readonly layer = Layer.sync(AgentsSide, () => ({ current: null }));
+}
+
+/// The rig, once made: what the mesh asks of it (pure rig or mixed-mode station).
+export class RigSide extends Context.Service<RigSide, { current: Rig | null }>()("stillfail/RigSide") {
+  static readonly layer = Layer.sync(RigSide, () => ({ current: null }));
 }
 
 /// The admin API: the platform's routes, the agents' side's as a request comes (AgentsSide), the parts' (parts.ts).

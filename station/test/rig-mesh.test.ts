@@ -9,8 +9,8 @@ import { test, type TestContext } from "node:test";
 import { Clock, Effect, Fiber, Layer, Stream } from "effect";
 import { Net } from "../src/jobs/load.ts";
 import type { Mesh } from "../src/mesh/native.ts";
-import { RigMeshLive, RigSide } from "../src/rig/main.ts";
-import { ControlPlane, Key, MeshNative, MeshSide, Paths, Peers, Previous, StationConfig } from "../src/services.ts";
+import { RigMeshLive } from "../src/rig/main.ts";
+import { ControlPlane, Key, MeshNative, MeshSide, Paths, Peers, Previous, RigSide, StationConfig } from "../src/services.ts";
 import { memoryMesh } from "./memory-mesh.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 

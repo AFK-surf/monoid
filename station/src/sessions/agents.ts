@@ -35,14 +35,12 @@ import { sweepRunners } from "../agents/runner.ts";
 import type { Control } from "../ops/launcher.ts";
 import { log } from "../ops/log.ts";
 import { mcpPortFile, ownData, portsToTry, rememberedMcpPort } from "../ops/files.ts";
-import { AdminHost, ControlPlane, Events, Grants, HelperFolders, Key, Own, Parts, Paths, Peers, Previous, Readers, ScreenRegistry, StationConfig, Store, Up, AgentsSide, MeshSide } from "../services.ts";
+import { AdminHost, ControlPlane, Events, Grants, HelperFolders, Key, Own, Parts, Paths, Peers, Previous, Readers, RigSide, ScreenRegistry, StationConfig, Store, Up, AgentsSide, MeshSide } from "../services.ts";
 import { claudeCredentialsFile, codexAuthFile } from "../agents/machine-logins.ts";
 import { permissionsView } from "../api/routes/permissions.ts";
 import { Net, measure } from "../jobs/load.ts";
 import { BilledCooldown, Notifier, ProfileLoginCooldown } from "../cloud/notify.ts";
 import { type Cloud as CloudState } from "../cloud/state.ts";
-import { RigSide } from "../rig/main.ts";
-import { Rig } from "../rig/module.ts";
 import { screenTools } from "../tools/screen.ts";
 import { permissionTools } from "../tools/permissions.ts";
 import { HelperFiles } from "../helper/files.ts";
@@ -388,23 +386,6 @@ export const AgentsLive = (control: Control) =>
       const meshBus = yield* Peers;
       const rigSide = yield* RigSide;
       const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus, acceptAutoChats: () => config.raw()?.acceptAutoChats === true, traces: () => meshSide.traces ?? null });
-      const rigOwnerOf = (workspace: string, station: string, session: string) => `remote:${workspace}:${station}:${session}`;
-      const rigOwned = (sessionKey: string): { workspace: string; station: string; session: string } | null => {
-        const m = /^remote:([^:]*):([^:]*):(.*)$/s.exec(sessionKey);
-        return m === null ? null : { workspace: m[1]!, station: m[2]!, session: m[3]! };
-      };
-      const rig = new Rig({
-        data, cloud, bus: meshBus, fibers: new Fibers("rig", hub.clock),
-        busy: (workspace, station, session) => store.runningJobsAtLeast(rigOwnerOf(workspace, station, session), 1),
-        stop: async (workspace, station, session) => {
-          for (const id of store.upJobIds(rigOwnerOf(workspace, station, session))) {
-            await jobs.stop(id).catch((error) => log.warn("rig", "a task of a chat that lost this rig was not stopped", { job: id, error: (error as Error).message }));
-          }
-        },
-        running: () => store.jobsRunning().flatMap((j) => rigOwned(j.sessionKey) ?? []),
-      });
-      rigSide.current = rig;
-      remote.setDescribed((_peer, ws) => rig.described(ws));
       // Its sandboxes (config.json's `sandboxes` + default Colab sandboxes when Colab profiles exist): wired once `accounts` is created below.
       // Measure only working chats, and only station-owned workspaces. A chat's remote workspaces are measured on the
       // machines that hold them; an offline or older station supplies no reading until it can answer.
@@ -865,7 +846,7 @@ export const AgentsLive = (control: Control) =>
               if (ws === homeNow) store.setSessionsWs(null, ws);
               await hub.leftWorkspace(ws);
             }
-            rig.grants.clearWorkspace(ws);
+            rigSide.current?.grants.clearWorkspace(ws);
             cloud.update((st) => {
               const rigSelf = { owner: due.owner, owner_email: due.owner_email, owner_name: due.owner_name, person: due.person };
               if (ws === st.workspace) {
@@ -1155,8 +1136,6 @@ export const AgentsLive = (control: Control) =>
           await sessionCounts.close();
           await time.close();
           await upkeep.close();
-          rigSide.current = null;
-          await rig.close();
           await sharing?.close();
           await xshare.close();
           unlistenRule();
