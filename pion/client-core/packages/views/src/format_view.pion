@@ -1,0 +1,1555 @@
+// 1:1 formatting helpers aligned with `client/core-ts/src/{util,format,plain,titles,present,shapes/model}.ts`:
+// - Local calendar date/time (`local_day`, `local_parts`, `format_day_label`, `format_relative_time`, `format_absolute_time`)
+// - Plain-text single-line message preview (`plain_text_preview`)
+// - Model maker & display label (`maker_of_model`, `lab_maker`, `model_display_name`, `format_agent_label`, `present_listed_agent`)
+
+import "base_codec"
+import "markdown"
+import "regex"
+
+let fv_day_ms : Int64 = 86400000.to_int64()
+let fv_min_ms : Int64 = 60000.to_int64()
+
+pub fn rem_euclid(a : Int64, b : Int64) -> Int64 {
+  ((a % b) + b) % b
+}
+
+pub fn floor_div(a : Int64, b : Int64) -> Int64 {
+  if a >= 0.to_int64() {
+    a / b
+  } else {
+    (a - b + 1.to_int64()) / b
+  }
+}
+
+/// Exact port of `client/core-ts/src/util.ts` `localDay(ms, offsetMin)`.
+pub fn local_day(ms : Int64, utc_offset_min : Int) -> Int64 {
+  let at = ms + utc_offset_min.to_int64() * fv_min_ms
+  floor_div(at, fv_day_ms)
+}
+
+/// Exact port of `client/core-ts/src/util.ts` `local(ms, offsetMin)`:
+/// returns `(year, month 1..12, day 1..31, weekday 0=Sunday..6=Saturday, hour, minute)`.
+pub fn local_parts(ms : Int64, utc_offset_min : Int) -> (Int, Int, Int, Int, Int, Int) {
+  let at = ms + utc_offset_min.to_int64() * fv_min_ms
+  let days = floor_div(at, fv_day_ms)
+  let in_day = ((at - days * fv_day_ms) / fv_min_ms).to_int()
+  let z = days + 719468.to_int64()
+  let era = floor_div(z, 146097.to_int64())
+  let doe = z - era * 146097.to_int64()
+  let yoe = (doe - doe / 1460.to_int64() + doe / 36524.to_int64() - doe / 146096.to_int64()) / 365.to_int64()
+  let doy = doe - (365.to_int64() * yoe + yoe / 4.to_int64() - yoe / 100.to_int64())
+  let mp = (5.to_int64() * doy + 2.to_int64()) / 153.to_int64()
+  let d = (doy - (153.to_int64() * mp + 2.to_int64()) / 5.to_int64() + 1.to_int64()).to_int()
+  let m = (if mp < 10.to_int64() { mp + 3.to_int64() } else { mp - 9.to_int64() }).to_int()
+  let y = (yoe + era * 400.to_int64() + (if m <= 2 { 1.to_int64() } else { 0.to_int64() })).to_int()
+  let weekday = rem_euclid(days + 4.to_int64(), 7.to_int64()).to_int()
+  (y, m, d, weekday, in_day / 60, in_day % 60)
+}
+
+fn pad2(n : Int) -> String {
+  if n < 10 {
+    "0" + n.to_string()
+  } else {
+    n.to_string()
+  }
+}
+
+pub fn format_month_day(month : Int, day : Int, lang : String) -> String {
+  if lang == "en" {
+    let abbr = if month == 1 {
+      "Jan"
+    } else if month == 2 {
+      "Feb"
+    } else if month == 3 {
+      "Mar"
+    } else if month == 4 {
+      "Apr"
+    } else if month == 5 {
+      "May"
+    } else if month == 6 {
+      "Jun"
+    } else if month == 7 {
+      "Jul"
+    } else if month == 8 {
+      "Aug"
+    } else if month == 9 {
+      "Sep"
+    } else if month == 10 {
+      "Oct"
+    } else if month == 11 {
+      "Nov"
+    } else {
+      "Dec"
+    }
+    abbr + " " + day.to_string()
+  } else {
+    month.to_string() + "月" + day.to_string() + "日"
+  }
+}
+
+/// Exact port of `client/core-ts/src/format.ts` `dayLabelIn(lang, ms, now, offsetMin)`.
+pub fn format_day_label(ms : Int64, now_ms : Int64, utc_offset_min : Int, lang : String) -> String {
+  let d_now = local_day(now_ms, utc_offset_min)
+  let d_ms = local_day(ms, utc_offset_min)
+  let diff = d_now - d_ms
+  if diff == 0L {
+    if lang == "en" {
+      return "Today"
+    }
+    return "今天"
+  }
+  if diff == 1L {
+    if lang == "en" {
+      return "Yesterday"
+    }
+    return "昨天"
+  }
+  let (_, month, day, weekday, _, _) = local_parts(ms, utc_offset_min)
+  if diff < 7L {
+    if lang == "en" {
+      if weekday == 0 {
+        return "Sunday"
+      } else if weekday == 1 {
+        return "Monday"
+      } else if weekday == 2 {
+        return "Tuesday"
+      } else if weekday == 3 {
+        return "Wednesday"
+      } else if weekday == 4 {
+        return "Thursday"
+      } else if weekday == 5 {
+        return "Friday"
+      } else {
+        return "Saturday"
+      }
+    } else {
+      if weekday == 0 {
+        return "星期日"
+      } else if weekday == 1 {
+        return "星期一"
+      } else if weekday == 2 {
+        return "星期二"
+      } else if weekday == 3 {
+        return "星期三"
+      } else if weekday == 4 {
+        return "星期四"
+      } else if weekday == 5 {
+        return "星期五"
+      } else {
+        return "星期六"
+      }
+    }
+  }
+  format_month_day(month, day, lang)
+}
+
+pub fn format_clock(ms : Int64, utc_offset_min : Int) -> String {
+  let (_, _, _, _, h, m) = local_parts(ms, utc_offset_min)
+  pad2(h) + ":" + pad2(m)
+}
+
+pub fn format_absolute_time(ms : Int64, utc_offset_min : Int) -> String {
+  let (_, month, day, _, h, m) = local_parts(ms, utc_offset_min)
+  let s = rem_euclid(floor_div(ms, 1000.to_int64()), 60.to_int64()).to_int()
+  month.to_string() + "/" + day.to_string() + " " + pad2(h) + ":" + pad2(m) + ":" + pad2(s)
+}
+
+fn round_half_away(v : Double) -> Int64 {
+  if v < 0.0 {
+    -((-v + 0.5).floor().to_int64())
+  } else {
+    (v + 0.5).floor().to_int64()
+  }
+}
+
+/// Exact port of `client/core-ts/src/format.ts` `relativeTimeIn(lang, ms, now, offsetMin)`.
+pub fn format_relative_time(ms : Int64, now_ms : Int64, utc_offset_min : Int, lang : String) -> String {
+  let seconds = round_half_away((now_ms - ms).to_double() / 1000.0)
+  if seconds < 45.to_int64() {
+    return if lang == "en" { "Just now" } else { "刚刚" }
+  }
+  let minutes = round_half_away(seconds.to_double() / 60.0)
+  if minutes < 60.to_int64() {
+    return if lang == "en" { minutes.to_string() + "m ago" } else { minutes.to_string() + " 分钟前" }
+  }
+  let hours = round_half_away(minutes.to_double() / 60.0)
+  if hours < 24.to_int64() {
+    return if lang == "en" { hours.to_string() + "h ago" } else { hours.to_string() + " 小时前" }
+  }
+  let (_, month, day, _, _, _) = local_parts(ms, utc_offset_min)
+  let time_s = format_clock(ms, utc_offset_min)
+  if local_day(now_ms, utc_offset_min) - local_day(ms, utc_offset_min) == 1.to_int64() {
+    return if lang == "en" { "Yesterday " + time_s } else { "昨天 " + time_s }
+  }
+  format_month_day(month, day, lang) + " " + time_s
+}
+
+// ---------------------------------------------------------------------------
+// Plain-text single-line preview (`plain.ts` + `titles.ts` `cleanText`)
+// Powered by `AFK-surf/pion-packages` `regex-v0.1.0` (linear-time Unicode NFA/DFA).
+// ---------------------------------------------------------------------------
+
+fn fv_compile_re(pat : String) -> regex::Regex {
+  match regex::compile(pat) {
+    Ok(r) => r
+    Err(_) => panic("invalid static regex: " + pat)
+  }
+}
+
+fn fv_re_replace_cb(re : regex::Regex, text : String, f : (regex::Captures) -> String) -> String {
+  let caps = re.captures_iter(text)
+  if caps.length() == 0 {
+    return text
+  }
+  let sb = StringBuilder::new()
+  let mut last = 0
+  for i in 0..<caps.length() {
+    let c = caps[i]
+    match c.get(0) {
+      Some(m0) => {
+        if m0.start > last {
+          sb.write_string(text.slice(last, m0.start))
+        }
+        sb.write_string(f(c))
+        last = m0.end
+      }
+      None => ()
+    }
+  }
+  if last < text.length() {
+    sb.write_string(text.slice(last, text.length()))
+  }
+  sb.to_string()
+}
+
+fn fv_is_digit(c : Int) -> Bool {
+  c >= 48 && c <= 57
+}
+
+fn fv_is_word_byte(c : Int) -> Bool {
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95
+}
+
+fn fv_index_of(s : String, needle : String) -> Int {
+  let n = s.length()
+  let m = needle.length()
+  if m == 0 {
+    return 0
+  }
+  if m > n {
+    return -1
+  }
+  for i in 0..<(n - m + 1) {
+    if s.slice(i, i + m) == needle {
+      return i
+    }
+  }
+  -1
+}
+
+fn fv_is_image_url(url : String) -> Bool {
+  let low = ascii_lower(url)
+  let qi = fv_index_of(low, "?")
+  let q = if qi >= 0 { low.slice(0, qi) } else { low }
+  q.ends_with(".png") ||
+  q.ends_with(".jpg") ||
+  q.ends_with(".jpeg") ||
+  q.ends_with(".gif") ||
+  q.ends_with(".webp") ||
+  q.ends_with(".svg") ||
+  q.ends_with(".heic") ||
+  q.ends_with(".avif")
+}
+
+fn fv_starts_with_scheme(url : String) -> Bool {
+  let low = ascii_lower(url)
+  low.starts_with("http://") || low.starts_with("https://") || low.starts_with("mailto:") || low.starts_with("www.")
+}
+
+fn fv_starts_with_http_or_mailto(url : String) -> Bool {
+  let low = ascii_lower(url)
+  low.starts_with("http://") || low.starts_with("https://") || low.starts_with("mailto:")
+}
+
+fn s_code(s : String, idx : Int) -> Int {
+  s.code_unit_at(idx)
+}
+
+fn fv_strip_italic_delim(part : String, delim_re : regex::Regex) -> String {
+  // Apply `/(^|[^\w*])([*_])(?=[^\s*_])([^\n]*?[^\s*_])\2(?![\w*])/gm` safely with Unicode regex
+  let caps = delim_re.captures_iter(part)
+  if caps.length() == 0 {
+    return part
+  }
+  let n = part.length()
+  let sb = StringBuilder::new()
+  let mut last = 0
+  for i in 0..<caps.length() {
+    let c = caps[i]
+    match (c.get(0), c.get(1)) {
+      (Some(m0), Some(inner)) => {
+        let prev_ok = if m0.start == 0 {
+          true
+        } else {
+          let pc = s_code(part, m0.start - 1)
+          pc == 10 || (!fv_is_word_byte(pc) && pc != 42)
+        }
+        let after_ok = if m0.end >= n {
+          true
+        } else {
+          let ac = s_code(part, m0.end)
+          !fv_is_word_byte(ac) && ac != 42
+        }
+        if prev_ok && after_ok && m0.start >= last {
+          if m0.start > last {
+            sb.write_string(part.slice(last, m0.start))
+          }
+          sb.write_string(inner.as_str())
+          last = m0.end
+        }
+      }
+      _ => ()
+    }
+  }
+  if last < n {
+    sb.write_string(part.slice(last, n))
+  }
+  sb.to_string()
+}
+
+// Module-level compiled regular expressions (compiled once per process, zero per-call compilation).
+let g_re_img : regex::Regex = fv_compile_re("!\\[[^\\]\\n]*\\]\\(\\s*<?([^)\\s>]*)>?[^)]*\\)")
+let g_re_link : regex::Regex = fv_compile_re("\\[([^\\]\\n]*)\\]\\(\\s*<?([^)\\s>]*)>?[^)]*\\)")
+let g_re_slack_link_label : regex::Regex = fv_compile_re("<(?:https?|mailto):[^>\\|\\s]+\\|([^>]+)>")
+let g_re_slack_link_bare : regex::Regex = fv_compile_re("<(?:https?|mailto):[^>\\|\\s]+>")
+let g_re_slack_chan : regex::Regex = fv_compile_re("<#[A-Z0-9]+\\|([^>]+)>")
+let g_re_slack_user : regex::Regex = fv_compile_re("<@[A-Z0-9]+\\|([^>]+)>")
+let g_re_slack_special : regex::Regex = fv_compile_re("<!(here|channel|everyone)(?:\\|[^>]*)?>")
+let g_re_bare_url : regex::Regex = fv_compile_re("(?i)https?://[^\\s<>()]+")
+let g_re_bold_star : regex::Regex = fv_compile_re("\\*\\*(\\S[^\\n]*?\\S|\\S)\\*\\*")
+let g_re_bold_under : regex::Regex = fv_compile_re("__(\\S[^\\n]*?\\S|\\S)__")
+let g_re_strike : regex::Regex = fv_compile_re("~~(\\S[^\\n]*?\\S|\\S)~~")
+let g_re_italic_star : regex::Regex = fv_compile_re("\\*([^\\s*_][^\\n]*?[^\\s*_]|[^\\s*_])\\*")
+let g_re_italic_under : regex::Regex = fv_compile_re("_([^\\s*_][^\\n]*?[^\\s*_]|[^\\s*_])_")
+let g_re_escape : regex::Regex = fv_compile_re("\\\\([\\\\`*_{}\\[\\]()#+\\-.!|~>])")
+let g_re_fence : regex::Regex = fv_compile_re("^ {0,3}(?:```|~~~)")
+let g_re_table_sep : regex::Regex = fv_compile_re("^\\s*\\|?\\s*:?-{3,}:?\\s*(?:\\|\\s*:?-{3,}:?\\s*)*\\|?\\s*$")
+let g_re_heading_quote : regex::Regex = fv_compile_re("^ {0,3}(?:#{1,6}\\s+|>\\s?)+")
+let g_re_list : regex::Regex = fv_compile_re("^\\s*(?:[-*+•]|\\d+[.)])\\s+(?:\\[[ xX]\\]\\s+)?")
+let g_re_table_row : regex::Regex = fv_compile_re("^\\s*\\|(.*?)\\|?\\s*$")
+let g_re_hr : regex::Regex = fv_compile_re("^ {0,3}(?:[-*_]\\s*){3,}$")
+let g_re_mentions : regex::Regex = fv_compile_re("<@[A-Z0-9]+>")
+let g_re_ws : regex::Regex = fv_compile_re("\\s+")
+
+// Module-level compiled regexes for `markdown.ts` + `paths.ts` + `bareLinks.ts`
+let g_re_md_bare_url : regex::Regex = fv_compile_re("(?i)https?://[A-Za-z0-9\\-._~:/?#\\[\\]@!$&'()*+,;=%]+")
+let g_re_md_bare_host : regex::Regex = fv_compile_re("(?i)^https?://[A-Za-z0-9]")
+let g_re_md_scheme : regex::Regex = fv_compile_re("(?i)^[a-z][\\w+.-]*:")
+let g_re_md_win_drive : regex::Regex = fv_compile_re("(?i)^[a-z]:[\\\\/]")
+let g_re_path_bad : regex::Regex = fv_compile_re("\\s|://|[*?<>|$`'\"{}()\\[\\]=,;]")
+let g_re_path_line : regex::Regex = fv_compile_re("^(.*?)(?::(\\d+)(?::\\d+)?|#L(\\d+)(?:-L?\\d+)?)?$")
+let g_re_path_code_ext : regex::Regex = fv_compile_re("(?i)\\.(?:[cm]?[jt]sx?|json[c5l]?|ndjson|md|mdx|markdown|rs|py|ipynb|go|kt|kts|swift|java|dart|rb|php|c|cc|cpp|cxx|h|hh|hpp|m|mm|cs|mbt|mbti|mbui|css|scss|less|html?|vue|svelte|astro|ya?ml|toml|ini|cfg|conf|sh|zsh|fish|ps1|psm1|psd1|bat|cmd|cmake|sql|prisma|graphql|proto|lua|groovy|scala|ex|exs|erl|hs|clj|zig|nim|tex|vim|nix|tf|hcl|asm|wasm|sol|patch|diff|txt|log|csv|tsv|xml|svg|png|jpe?g|gif|webp|avif|bmp|ico|mp4|m4v|webm|mov|mp3|m4a|aac|wav|ogg|flac|pdf|xlsx|xls|docx|pptx|bin|hex|tar|gz|tgz|xz|zst|7z|parquet|sqlite3?|lock|gradle|plist|env)$")
+let g_re_path_roots : regex::Regex = fv_compile_re("^/(?:Users|Volumes|home|tmp|private|opt|var|etc|srv|mnt|workspace|root)/")
+let g_re_path_ext : regex::Regex = fv_compile_re("\\.[A-Za-z0-9]{1,10}$")
+let g_re_path_all_dots : regex::Regex = fv_compile_re("^\\.+$")
+let g_re_path_ellipsis_end : regex::Regex = fv_compile_re("(?:^|/)(?:\\.{3,}|…)$")
+let g_re_path_rel_start : regex::Regex = fv_compile_re("^[\\w@.-]")
+let g_re_path_ver_slash : regex::Regex = fv_compile_re("^\\d+(?:\\.\\d+)*/")
+let g_re_path_digit_start : regex::Regex = fv_compile_re("^\\d")
+let g_re_path_lib_js : regex::Regex = fv_compile_re("^[A-Za-z]+\\.js$")
+let g_re_path_home : regex::Regex = fv_compile_re("^/(?:Users|home)/[^/]+")
+
+fn fv_replace_literal(s : String, needle : String, repl : String) -> String {
+  let nlen = needle.length()
+  if nlen == 0 || !s.contains(needle) {
+    return s
+  }
+  let sb = StringBuilder::new()
+  let slen = s.length()
+  let mut pos = 0
+  while pos < slen {
+    let sub = s.slice(pos, slen)
+    let idx = fv_index_of(sub, needle)
+    if idx < 0 {
+      sb.write_string(sub)
+      break
+    }
+    if idx > 0 {
+      sb.write_string(sub.slice(0, idx))
+    }
+    sb.write_string(repl)
+    pos += idx + nlen
+  }
+  sb.to_string()
+}
+
+fn fv_strip_inline_marks(part : String, w_link : String, w_image : String, w_file : String) -> String {
+  let mut s = fv_re_replace_cb(g_re_img, part, fn(c : regex::Captures) -> String {
+    let url = match c.get(1) { Some(m) => m.as_str(); None => "" }
+    if fv_starts_with_http_or_mailto(url) || fv_is_image_url(url) { w_image } else { w_file }
+  })
+  s = fv_re_replace_cb(g_re_link, s, fn(c : regex::Captures) -> String {
+    let label = match c.get(1) { Some(m) => m.as_str(); None => "" }
+    let url = match c.get(2) { Some(m) => m.as_str(); None => "" }
+    if label.trim().length() > 0 {
+      label
+    } else if fv_starts_with_scheme(url) {
+      w_link
+    } else if fv_is_image_url(url) {
+      w_image
+    } else {
+      w_file
+    }
+  })
+  s = g_re_slack_link_label.replace_all(s, "$1")
+  s = g_re_slack_link_bare.replace_all(s, w_link)
+  s = g_re_slack_chan.replace_all(s, "#$1")
+  s = g_re_slack_user.replace_all(s, "@$1")
+  s = g_re_slack_special.replace_all(s, "@$1")
+  s = g_re_bare_url.replace_all(s, w_link)
+  s = g_re_bold_star.replace_all(s, "$1")
+  s = g_re_bold_under.replace_all(s, "$1")
+  s = g_re_strike.replace_all(s, "$1")
+  s = fv_strip_italic_delim(s, g_re_italic_star)
+  s = fv_strip_italic_delim(s, g_re_italic_under)
+  s = g_re_escape.replace_all(s, "$1")
+  s = fv_replace_literal(s, "&lt;", "<")
+  s = fv_replace_literal(s, "&gt;", ">")
+  s = fv_replace_literal(s, "&amp;", "&")
+  s
+}
+
+/// Convert raw message Markdown text into single-line plain preview text
+/// (1:1 port of `format.cleanText(format.plainText(text))` using cached `regex-v0.1.0`).
+pub fn plain_text_preview(text : String, lang : String = "zh") -> String {
+  let w_link = if lang == "en" { "[link]" } else { "[链接]" }
+  let w_image = if lang == "en" { "[image]" } else { "[图片]" }
+  let w_file = if lang == "en" { "[file]" } else { "[文件]" }
+
+  // Split by lines, drop fence lines & table separator lines, strip line prefixes.
+  let cleaned_lines = StringBuilder::new()
+  let n = text.length()
+  let mut start = 0
+  let mut line_idx = 0
+  while start <= n {
+    let mut end = start
+    while end < n && s_code(text, end) != 10 {
+      end += 1
+    }
+    let line = if end > start && s_code(text, end - 1) == 13 {
+      text.slice(start, end - 1)
+    } else {
+      text.slice(start, end)
+    }
+    if !g_re_fence.is_match(line) && !g_re_table_sep.is_match(line) {
+      let mut stripped = g_re_heading_quote.replace(line, "")
+      stripped = g_re_list.replace(stripped, "")
+      stripped = fv_re_replace_cb(g_re_table_row, stripped, fn(c : regex::Captures) -> String {
+        let inner = match c.get(1) { Some(m) => m.as_str(); None => "" }
+        let csb = StringBuilder::new()
+        let mut cs = 0
+        let mut ci_idx = 0
+        for ci in 0..<(inner.length() + 1) {
+          if ci == inner.length() || s_code(inner, ci) == 124 {
+            if ci_idx > 0 {
+              csb.write_string(" ")
+            }
+            csb.write_string(inner.slice(cs, ci).trim())
+            ci_idx += 1
+            cs = ci + 1
+          }
+        }
+        csb.to_string()
+      })
+      if g_re_hr.is_match(stripped) {
+        stripped = ""
+      }
+      if line_idx > 0 {
+        cleaned_lines.write_string("\n")
+      }
+      cleaned_lines.write_string(stripped)
+      line_idx += 1
+    }
+    if end >= n {
+      break
+    }
+    start = end + 1
+  }
+  let joined = cleaned_lines.to_string()
+
+  // Preserve inline code spans (`...` / ``...``) while stripping marks outside backticks.
+  let out_sb = StringBuilder::new()
+  let jn = joined.length()
+  let mut pos = 0
+  let mut seg_start = 0
+  while pos < jn {
+    if s_code(joined, pos) == 96 {
+      let mut max_ticks = 0
+      while pos + max_ticks < jn && s_code(joined, pos + max_ticks) == 96 {
+        max_ticks += 1
+      }
+      // Match JS `/(`+)([^`]*?)\1/` with greedy-then-backtrack tick count.
+      let mut ticks = max_ticks
+      let mut close_at = -1
+      while ticks >= 1 && close_at < 0 {
+        let mut p = pos + ticks
+        while p + ticks <= jn {
+          if s_code(joined, p) == 96 {
+            let mut t2 = 0
+            while p + t2 < jn && s_code(joined, p + t2) == 96 {
+              t2 += 1
+            }
+            if t2 >= ticks {
+              close_at = p
+            }
+            break
+          } else {
+            p += 1
+          }
+        }
+        if close_at < 0 {
+          ticks -= 1
+        }
+      }
+      if close_at >= 0 {
+        if pos > seg_start {
+          out_sb.write_string(fv_strip_inline_marks(joined.slice(seg_start, pos), w_link, w_image, w_file))
+        }
+        out_sb.write_string(joined.slice(pos + ticks, close_at))
+        pos = close_at + ticks
+        seg_start = pos
+        continue
+      }
+      pos += max_ticks
+    } else {
+      pos += 1
+    }
+  }
+  if seg_start < jn {
+    out_sb.write_string(fv_strip_inline_marks(joined.slice(seg_start, jn), w_link, w_image, w_file))
+  }
+
+  let no_mentions = g_re_mentions.replace_all(out_sb.to_string(), "")
+  g_re_ws.replace_all(no_mentions, " ").trim()
+}
+
+// ---------------------------------------------------------------------------
+// Compact Markdown AST (`client/core-ts/src/markdown.ts` `Md` format)
+// Powered by `AFK-surf/pion-packages` `markdown-v0.2.1` (full CommonMark + GFM).
+// ---------------------------------------------------------------------------
+
+fn md_is_ascii_alnum(code : Int) -> Bool {
+  (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122)
+}
+
+fn md_count_char(s : String, ch : Int) -> Int {
+  let mut c = 0
+  for i in 0..<s.length() {
+    if s_code(s, i) == ch {
+      c += 1
+    }
+  }
+  c
+}
+
+/// 1:1 port of `client/core-ts/src/bareLinks.ts` `trimmed()`.
+fn md_trim_bare_url(address : String) -> String {
+  let mut url = address
+  while url.length() > 0 {
+    let last = s_code(url, url.length() - 1)
+    if last == 46 || last == 44 || last == 58 || last == 59 || last == 33 || last == 63 || last == 39 || last == 42 || last == 95 || last == 126 {
+      url = url.slice(0, url.length() - 1)
+    } else if last == 41 && md_count_char(url, 40) < md_count_char(url, 41) {
+      url = url.slice(0, url.length() - 1)
+    } else if last == 93 && md_count_char(url, 91) < md_count_char(url, 93) {
+      url = url.slice(0, url.length() - 1)
+    } else {
+      break
+    }
+  }
+  url
+}
+
+/// 1:1 port of `client/core-ts/src/paths.ts` `pathIn()`.
+fn md_path_in(code : String) -> Option[(String, Option[Int])] {
+  let text = code.trim()
+  if text.length() == 0 || text.length() > 400 || g_re_path_bad.is_match(text) {
+    return None
+  }
+  let (path, line_opt) = match g_re_path_line.captures(text) {
+    Some(caps) => {
+      let p = match caps.get(1) { Some(m) => m.as_str(); None => text }
+      let l_str = match caps.get(2) {
+        Some(m) => m.as_str()
+        None => match caps.get(3) { Some(m) => m.as_str(); None => "" }
+      }
+      let l_opt = if l_str.length() > 0 {
+        match base_codec::parse_int64_str(l_str) { Some(v) => Some(v.to_int()); None => None }
+      } else {
+        None
+      }
+      (p, l_opt)
+    }
+    None => (text, None)
+  }
+  let drive = g_re_md_win_drive.is_match(path)
+  let win_dot = path.starts_with(".\\") || path.starts_with("..\\")
+  let win_rel = !drive && !win_dot && !path.contains("/") && path.contains("\\")
+  let place = if drive {
+    fv_replace_literal(path.slice(2, path.length()), "\\", "/")
+  } else if win_dot || win_rel {
+    fv_replace_literal(path, "\\", "/")
+  } else {
+    path
+  }
+  if place.length() == 0 || place.contains(":") || g_re_path_ellipsis_end.is_match(place) || place.contains("…") {
+    return None
+  }
+  let trimmed_place = if place.ends_with("/") { place.slice(0, place.length() - 1) } else { place }
+  let parts : Array[String] = []
+  let mut ps = 0
+  for i in 0..<(trimmed_place.length() + 1) {
+    if i == trimmed_place.length() || s_code(trimmed_place, i) == 47 {
+      let seg = trimmed_place.slice(ps, i)
+      if seg.length() > 0 {
+        parts.push(seg)
+      }
+      ps = i + 1
+    }
+  }
+  let last = if parts.length() > 0 { parts[parts.length() - 1] } else { "" }
+  let ext = g_re_path_ext.is_match(last) && !g_re_path_all_dots.is_match(last)
+  let ok = if drive {
+    place.length() > 1
+  } else if win_dot {
+    path.length() > 2 && (last == ".env" || !last.starts_with(".") || last.slice(1, last.length()).contains("."))
+  } else if win_rel {
+    path.ends_with("\\") || (g_re_path_code_ext.is_match(last) && (last == ".env" || (!last.starts_with(".") && last.contains("."))))
+  } else if path.starts_with("~/") || path.starts_with("./") || path.starts_with("../") {
+    path.length() > 2
+  } else if path.starts_with("/") {
+    parts.length() >= 2 && (ext || g_re_path_roots.is_match(path))
+  } else if path.contains("/") {
+    g_re_path_rel_start.is_match(path) && (ext || path.ends_with("/")) && !g_re_path_ver_slash.is_match(path)
+  } else {
+    g_re_path_code_ext.is_match(last) && !g_re_path_digit_start.is_match(last) && !g_re_path_lib_js.is_match(last)
+  }
+  if ok { Some((path, line_opt)) } else { None }
+}
+
+fn md_chip_path(path : String) -> String {
+  let short = g_re_path_home.replace(path, "~")
+  let slash = if short.ends_with("/") { "/" } else { "" }
+  let body = if short.ends_with("/") { short.slice(0, short.length() - 1) } else { short }
+  let parts : Array[String] = []
+  let mut ps = 0
+  for i in 0..<(body.length() + 1) {
+    if i == body.length() || s_code(body, i) == 47 {
+      parts.push(body.slice(ps, i))
+      ps = i + 1
+    }
+  }
+  if short.length() <= 48 || parts.length() <= 5 {
+    short
+  } else {
+    parts[0] + "/" + parts[1] + "/…/" + parts[parts.length() - 2] + "/" + parts[parts.length() - 1] + slash
+  }
+}
+
+fn md_push_path_attrs(fields : Array[(String, base_codec::Json)], code : String) -> Unit {
+  match md_path_in(code) {
+    Some((path, line_opt)) => {
+      fields.push(("path", base_codec::json_str(path)))
+      match line_opt {
+        Some(ln) => fields.push(("line", base_codec::json_int(ln)))
+        None => ()
+      }
+      let shown = md_chip_path(path)
+      if shown != path {
+        fields.push(("shown", base_codec::json_str(shown)))
+      }
+    }
+    None => ()
+  }
+}
+
+fn md_hex_val(c : Int) -> Int {
+  if c >= 48 && c <= 57 { c - 48 }
+  else if c >= 65 && c <= 70 { c - 55 }
+  else if c >= 97 && c <= 102 { c - 87 }
+  else { -1 }
+}
+
+fn md_decode_uri_component(s : String) -> String {
+  if !s.contains("%") {
+    return s
+  }
+  let bs = s.to_bytes()
+  let out : Array[Byte] = []
+  let mut i = 0
+  while i < bs.length() {
+    if bs[i].to_int() == 37 && i + 2 < bs.length() {
+      let hi = md_hex_val(bs[i + 1].to_int())
+      let lo = md_hex_val(bs[i + 2].to_int())
+      if hi >= 0 && lo >= 0 {
+        out.push((hi * 16 + lo) as Byte)
+        i += 3
+        continue
+      }
+    }
+    out.push(bs[i])
+    i += 1
+  }
+  let sb = StringBuilder::new()
+  for k in 0..<out.length() {
+    sb.write_byte(out[k])
+  }
+  sb.to_string()
+}
+
+fn md_words_in_json(node : base_codec::Json) -> String {
+  match node {
+    base_codec::Json::Str(s) => s
+    base_codec::Json::Arr(xs) => {
+      if xs.length() == 0 { return "" }
+      let kind = match xs[0] { base_codec::Json::Str(s) => s; _ => "" }
+      if kind == "br" { return "\n" }
+      if kind == "code" {
+        return if xs.length() > 1 { j_str(xs[1], "content") } else { "" }
+      }
+      if kind == "img" {
+        if xs.length() > 1 {
+          let alt = j_str(xs[1], "alt")
+          return if alt.length() > 0 { alt } else { j_str(xs[1], "src") }
+        }
+        return ""
+      }
+      if xs.length() > 1 {
+        match xs[1] {
+          base_codec::Json::Arr(kids) => {
+            let sb = StringBuilder::new()
+            for i in 0..<kids.length() {
+              sb.write_string(md_words_in_json(kids[i]))
+            }
+            return sb.to_string()
+          }
+          _ => ()
+        }
+      }
+      ""
+    }
+    _ => ""
+  }
+}
+
+fn md_table_markdown(rows : Array[Array[String]], align : Array[Option[String]]) -> String {
+  let sb = StringBuilder::new()
+  let write_row = fn(cells : Array[String]) -> Unit {
+    sb.write_string("| ")
+    for i in 0..<cells.length() {
+      if i > 0 { sb.write_string(" | ") }
+      sb.write_string(fv_replace_literal(cells[i], "|", "\\|"))
+    }
+    sb.write_string(" |")
+  }
+  if rows.length() > 0 {
+    write_row(rows[0])
+  } else {
+    sb.write_string("|  |")
+  }
+  sb.write_string("\n| ")
+  for i in 0..<align.length() {
+    if i > 0 { sb.write_string(" | ") }
+    let r = match align[i] {
+      Some("left") => ":--"
+      Some("right") => "--:"
+      Some("center") => ":-:"
+      _ => "---"
+    }
+    sb.write_string(r)
+  }
+  sb.write_string(" |")
+  for ri in 1..<rows.length() {
+    sb.write_string("\n")
+    write_row(rows[ri])
+  }
+  sb.to_string()
+}
+
+fn md_table_csv(rows : Array[Array[String]]) -> String {
+  let sb = StringBuilder::new()
+  for ri in 0..<rows.length() {
+    if ri > 0 { sb.write_string("\n") }
+    let row = rows[ri]
+    for ci in 0..<row.length() {
+      if ci > 0 { sb.write_string(",") }
+      let c = row[ci]
+      if c.contains("\"") || c.contains(",") || c.contains("\r") || c.contains("\n") {
+        sb.write_string("\"")
+        sb.write_string(fv_replace_literal(c, "\"", "\"\""))
+        sb.write_string("\"")
+      } else {
+        sb.write_string(c)
+      }
+    }
+  }
+  sb.to_string()
+}
+
+struct MdFrame {
+  tag : String
+  attrs : Option[base_codec::Json]
+  children : Array[base_codec::Json]
+  is_code_block : Bool
+  mut code_buf : String
+  is_image : Bool
+  image_src : String
+  image_title : String
+  mut image_alt : String
+  is_link : Bool
+  link_href : String
+  link_title : String
+  mut link_plain : String
+  mut task_checked : Option[Bool]
+  table_align : Array[Option[String]]
+  table_rows : Array[Array[String]]
+  row_cells : Array[String]
+}
+
+fn md_new_frame(
+  tag : String,
+  attrs : Option[base_codec::Json] = None,
+  is_code_block : Bool = false,
+  is_image : Bool = false,
+  image_src : String = "",
+  image_title : String = "",
+  is_link : Bool = false,
+  link_href : String = "",
+  link_title : String = "",
+  table_align : Array[Option[String]] = [],
+) -> MdFrame {
+  MdFrame::{
+    tag: tag,
+    attrs: attrs,
+    children: [],
+    is_code_block: is_code_block,
+    code_buf: "",
+    is_image: is_image,
+    image_src: image_src,
+    image_title: image_title,
+    image_alt: "",
+    is_link: is_link,
+    link_href: link_href,
+    link_title: link_title,
+    link_plain: "",
+    task_checked: None,
+    table_align: table_align,
+    table_rows: [],
+    row_cells: [],
+  }
+}
+
+fn md_push_inline_merged(arr : Array[base_codec::Json], node : base_codec::Json) -> Unit {
+  match node {
+    base_codec::Json::Str(s) => {
+      if s.length() == 0 { return }
+      if arr.length() > 0 {
+        match arr[arr.length() - 1] {
+          base_codec::Json::Str(prev) => {
+            arr[arr.length() - 1] = base_codec::json_str(prev + s)
+            return
+          }
+          _ => ()
+        }
+      }
+      arr.push(node)
+    }
+    _ => arr.push(node)
+  }
+}
+
+fn md_push_child(stack : Array[MdFrame], root : Array[base_codec::Json], node : base_codec::Json) -> Unit {
+  if stack.length() > 0 {
+    md_push_inline_merged(stack[stack.length() - 1].children, node)
+  } else {
+    root.push(node)
+  }
+}
+
+fn md_push_text_with_bare_links(stack : Array[MdFrame], root : Array[base_codec::Json], t : String, in_link : Bool) -> Unit {
+  if in_link || !t.contains("://") {
+    md_push_child(stack, root, base_codec::json_str(t))
+    return
+  }
+  let ms = g_re_md_bare_url.captures_iter(t)
+  if ms.length() == 0 {
+    md_push_child(stack, root, base_codec::json_str(t))
+    return
+  }
+  let mut at = 0
+  let tlen = t.length()
+  for mi in 0..<ms.length() {
+    let m = match ms[mi].get(0) { Some(mm) => mm; None => continue }
+    let m_start = m.start
+    let m_end = m.end
+    if m_start < at { continue }
+    // Lookbehind `(?<![A-Za-z0-9])`: skip if preceded by ASCII alnum.
+    if m_start > 0 && md_is_ascii_alnum(s_code(t, m_start - 1)) {
+      continue
+    }
+    let url = md_trim_bare_url(m.as_str())
+    let end_pos = m_start + url.length()
+    // Skip if missing host alnum or cut short by `…` (U+2026 = E2 80 A6).
+    let cut_ellipsis = m_end < tlen && t.slice(m_end, tlen).starts_with("…")
+    if !g_re_md_bare_host.is_match(url) || cut_ellipsis {
+      continue
+    }
+    if m_start > at {
+      md_push_child(stack, root, base_codec::json_str(t.slice(at, m_start)))
+    }
+    md_push_child(
+      stack,
+      root,
+      base_codec::json_arr([
+        base_codec::json_str("a"),
+        base_codec::json_arr([base_codec::json_str(url)]),
+        base_codec::json_obj([
+          ("href", base_codec::json_str(url)),
+          ("bare", base_codec::json_bool(true)),
+        ]),
+      ]),
+    )
+    at = end_pos
+  }
+  if at < tlen {
+    md_push_child(stack, root, base_codec::json_str(t.slice(at, tlen)))
+  }
+}
+
+/// Parse Markdown into the compact `Md` JSON tree (`client/core-ts/src/markdown.ts`)
+/// backed by official `markdown-v0.2.1` with explicit `TagEnd` whitelist, task lists,
+/// GFM table align/md/csv, file path attrs (`paths.ts`), and bare links (`bareLinks.ts`).
+pub fn parse_md_ast(text : String) -> base_codec::Json {
+  // Disable GFM autolinks so bare URLs follow `bareLinks.ts` (CJK punctuation boundary safe).
+  let opts = markdown::Options::{
+    tables: true,
+    strikethrough: true,
+    tasklists: true,
+    autolinks: false,
+    smart_punctuation: false,
+    cjk_friendly: false,
+  }
+  let events = markdown::parse(text, opts)
+  let root : Array[base_codec::Json] = []
+  let stack : Array[MdFrame] = []
+  let mut in_table_head = false
+  let mut link_depth = 0
+
+  for i in 0..<events.length() {
+    match events[i] {
+      markdown::Event::Start(tag) => {
+        match tag {
+          markdown::Tag::Paragraph => stack.push(md_new_frame("p"))
+          markdown::Tag::Heading(depth) => stack.push(md_new_frame("h", attrs=Some(base_codec::json_obj([("depth", base_codec::json_int(depth))]))))
+          markdown::Tag::BlockQuote => stack.push(md_new_frame("quote"))
+          markdown::Tag::CodeBlock(kind) => {
+            let lang_s = match kind {
+              markdown::CodeBlockKind::Fenced(info) => {
+                let t = info.trim()
+                let sp = fv_index_of(t, " ")
+                if sp >= 0 { t.slice(0, sp) } else { t }
+              }
+              markdown::CodeBlockKind::Indented => ""
+            }
+            let attrs = if lang_s.length() > 0 { Some(base_codec::json_obj([("lang", base_codec::json_str(lang_s))])) } else { None }
+            stack.push(md_new_frame("pre", attrs=attrs, is_code_block=true))
+          }
+          markdown::Tag::List(start_opt) => {
+            let attrs = match start_opt {
+              Some(st) => {
+                let lf : Array[(String, base_codec::Json)] = [("ordered", base_codec::json_bool(true))]
+                if st != 1 {
+                  lf.push(("start", base_codec::json_int(st)))
+                }
+                Some(base_codec::json_obj(lf))
+              }
+              None => None
+            }
+            stack.push(md_new_frame("list", attrs=attrs))
+          }
+          markdown::Tag::Item => stack.push(md_new_frame("li"))
+          markdown::Tag::Table(aligns) => {
+            let mapped : Array[Option[String]] = []
+            for ai in 0..<aligns.length() {
+              match aligns[ai] {
+                markdown::Alignment::Left => mapped.push(Some("left"))
+                markdown::Alignment::Center => mapped.push(Some("center"))
+                markdown::Alignment::Right => mapped.push(Some("right"))
+                markdown::Alignment::None => mapped.push(None)
+              }
+            }
+            stack.push(md_new_frame("table", table_align=mapped))
+          }
+          markdown::Tag::TableHead => {
+            in_table_head = true
+            stack.push(md_new_frame("tr"))
+          }
+          markdown::Tag::TableRow => stack.push(md_new_frame("tr"))
+          markdown::Tag::TableCell => {
+            let cell_tag = if in_table_head { "th" } else { "td" }
+            stack.push(md_new_frame(cell_tag))
+          }
+          markdown::Tag::Emphasis => stack.push(md_new_frame("i"))
+          markdown::Tag::Strong => stack.push(md_new_frame("b"))
+          markdown::Tag::Strikethrough => stack.push(md_new_frame("s"))
+          markdown::Tag::Link(_, dest, title, _) => {
+            link_depth += 1
+            stack.push(md_new_frame("a", is_link=true, link_href=dest, link_title=title))
+          }
+          markdown::Tag::Image(_, dest, title, _) => stack.push(md_new_frame("img", is_image=true, image_src=dest, image_title=title))
+          _ => ()
+        }
+      }
+      markdown::Event::End(tag_end) => {
+        match tag_end {
+          markdown::TagEnd::TableHead => {
+            in_table_head = false
+          }
+          markdown::TagEnd::Link => {
+            if link_depth > 0 { link_depth -= 1 }
+          }
+          _ => ()
+        }
+        // Explicit whitelist: ONLY pop for the exact TagEnd variants that pushed a frame in Start.
+        let should_pop = match tag_end {
+          markdown::TagEnd::Paragraph
+          | markdown::TagEnd::Heading(_)
+          | markdown::TagEnd::BlockQuote
+          | markdown::TagEnd::CodeBlock
+          | markdown::TagEnd::List(_)
+          | markdown::TagEnd::Item
+          | markdown::TagEnd::Table
+          | markdown::TagEnd::TableHead
+          | markdown::TagEnd::TableRow
+          | markdown::TagEnd::TableCell
+          | markdown::TagEnd::Emphasis
+          | markdown::TagEnd::Strong
+          | markdown::TagEnd::Strikethrough
+          | markdown::TagEnd::Link
+          | markdown::TagEnd::Image => true
+          _ => false
+        }
+        if should_pop {
+          match stack.pop() {
+            Some(frame) => {
+              let node = if frame.is_code_block {
+                let mut code_str = frame.code_buf
+                if code_str.ends_with("\n") {
+                  code_str = code_str.slice(0, code_str.length() - 1)
+                }
+                let pf : Array[(String, base_codec::Json)] = [("code", base_codec::json_str(code_str))]
+                match frame.attrs {
+                  Some(a) => match j_opt_str(a, "lang") {
+                    Some(l) => pf.push(("lang", base_codec::json_str(l)))
+                    None => ()
+                  }
+                  None => ()
+                }
+                base_codec::json_arr([base_codec::json_str("pre"), base_codec::json_obj(pf)])
+              } else if frame.is_image {
+                let imf : Array[(String, base_codec::Json)] = [("src", base_codec::json_str(frame.image_src))]
+                if frame.image_alt.length() > 0 {
+                  imf.push(("alt", base_codec::json_str(frame.image_alt)))
+                }
+                if frame.image_title.length() > 0 {
+                  imf.push(("title", base_codec::json_str(frame.image_title)))
+                }
+                base_codec::json_arr([base_codec::json_str("img"), base_codec::json_obj(imf)])
+              } else if frame.is_link {
+                let af : Array[(String, base_codec::Json)] = [("href", base_codec::json_str(frame.link_href))]
+                if frame.link_title.length() > 0 {
+                  af.push(("title", base_codec::json_str(frame.link_title)))
+                }
+                let dec_href = md_decode_uri_component(frame.link_href)
+                if !g_re_md_scheme.is_match(frame.link_href) || g_re_md_win_drive.is_match(frame.link_href) {
+                  md_push_path_attrs(af, dec_href)
+                }
+                let plain_trimmed = frame.link_plain.trim()
+                if plain_trimmed == frame.link_href || plain_trimmed == dec_href {
+                  af.push(("bare", base_codec::json_bool(true)))
+                }
+                base_codec::json_arr([base_codec::json_str("a"), base_codec::json_arr(frame.children), base_codec::json_obj(af)])
+              } else if frame.tag == "li" {
+                match frame.task_checked {
+                  Some(chk) => base_codec::json_arr([
+                    base_codec::json_str("li"),
+                    base_codec::json_arr(frame.children),
+                    base_codec::json_obj([("checked", base_codec::json_bool(chk))]),
+                  ])
+                  None => base_codec::json_arr([base_codec::json_str("li"), base_codec::json_arr(frame.children)])
+                }
+              } else if frame.tag == "th" || frame.tag == "td" {
+                let cell_sb = StringBuilder::new()
+                for ci in 0..<frame.children.length() {
+                  cell_sb.write_string(md_words_in_json(frame.children[ci]))
+                }
+                if stack.length() > 0 && stack[stack.length() - 1].tag == "tr" {
+                  stack[stack.length() - 1].row_cells.push(cell_sb.to_string())
+                }
+                base_codec::json_arr([base_codec::json_str(frame.tag), base_codec::json_arr(frame.children)])
+              } else if frame.tag == "tr" {
+                if stack.length() > 0 && stack[stack.length() - 1].tag == "table" {
+                  stack[stack.length() - 1].table_rows.push(frame.row_cells)
+                }
+                base_codec::json_arr([base_codec::json_str("tr"), base_codec::json_arr(frame.children)])
+              } else if frame.tag == "table" {
+                let align_j : Array[base_codec::Json] = []
+                for ai in 0..<frame.table_align.length() {
+                  match frame.table_align[ai] {
+                    Some(a) => align_j.push(base_codec::json_str(a))
+                    None => align_j.push(base_codec::json_null())
+                  }
+                }
+                let md_s = md_table_markdown(frame.table_rows, frame.table_align)
+                let csv_s = md_table_csv(frame.table_rows)
+                base_codec::json_arr([
+                  base_codec::json_str("table"),
+                  base_codec::json_arr(frame.children),
+                  base_codec::json_obj([
+                    ("align", base_codec::json_arr(align_j)),
+                    ("md", base_codec::json_str(md_s)),
+                    ("csv", base_codec::json_str(csv_s)),
+                  ]),
+                ])
+              } else {
+                match frame.attrs {
+                  Some(a) => base_codec::json_arr([base_codec::json_str(frame.tag), base_codec::json_arr(frame.children), a])
+                  None => base_codec::json_arr([base_codec::json_str(frame.tag), base_codec::json_arr(frame.children)])
+                }
+              }
+              md_push_child(stack, root, node)
+            }
+            None => ()
+          }
+        }
+      }
+      markdown::Event::Text(t) => {
+        if stack.length() > 0 {
+          let top = stack[stack.length() - 1]
+          if top.is_code_block {
+            top.code_buf = top.code_buf + t
+          } else if top.is_image {
+            top.image_alt = top.image_alt + t
+          } else {
+            if link_depth > 0 {
+              for si in 0..<stack.length() {
+                if stack[si].is_link {
+                  stack[si].link_plain = stack[si].link_plain + t
+                }
+              }
+            }
+            md_push_text_with_bare_links(stack, root, t, link_depth > 0)
+          }
+        } else {
+          md_push_text_with_bare_links(stack, root, t, false)
+        }
+      }
+      markdown::Event::Code(c) => {
+        if stack.length() > 0 && stack[stack.length() - 1].is_image {
+          stack[stack.length() - 1].image_alt = stack[stack.length() - 1].image_alt + c
+        } else {
+          if link_depth > 0 {
+            for si in 0..<stack.length() {
+              if stack[si].is_link {
+                stack[si].link_plain = stack[si].link_plain + c
+              }
+            }
+          }
+          let cf : Array[(String, base_codec::Json)] = [("content", base_codec::json_str(c))]
+          md_push_path_attrs(cf, c)
+          md_push_child(
+            stack,
+            root,
+            base_codec::json_arr([
+              base_codec::json_str("code"),
+              base_codec::json_obj(cf),
+            ]),
+          )
+        }
+      }
+      markdown::Event::SoftBreak => {
+        if stack.length() > 0 && stack[stack.length() - 1].is_code_block {
+          stack[stack.length() - 1].code_buf = stack[stack.length() - 1].code_buf + "\n"
+        } else {
+          md_push_child(stack, root, base_codec::json_str("\n"))
+        }
+      }
+      markdown::Event::HardBreak => {
+        md_push_child(stack, root, base_codec::json_arr([base_codec::json_str("br")]))
+      }
+      markdown::Event::Rule => {
+        md_push_child(stack, root, base_codec::json_arr([base_codec::json_str("hr")]))
+      }
+      markdown::Event::TaskListMarker(checked) => {
+        let mut idx = stack.length() - 1
+        while idx >= 0 {
+          if stack[idx].tag == "li" {
+            stack[idx].task_checked = Some(checked)
+            break
+          }
+          idx -= 1
+        }
+      }
+      _ => ()
+    }
+  }
+  base_codec::json_arr(root)
+}
+
+// ---------------------------------------------------------------------------
+// Model maker & display name (`format.ts` + `shapes/model.ts` + `present.ts`)
+// ---------------------------------------------------------------------------
+
+pub fn maker_name(id : String, lang : String = "zh") -> Option[String] {
+  let en = lang == "en"
+  if id == "anthropic" {
+    Some("Anthropic")
+  } else if id == "openai" {
+    Some("OpenAI")
+  } else if id == "deepseek" {
+    Some("DeepSeek")
+  } else if id == "qwen" {
+    Some("Qwen")
+  } else if id == "zhipu" {
+    Some(if en { "Zhipu" } else { "智谱" })
+  } else if id == "gemini" {
+    Some("Google")
+  } else if id == "kimi" {
+    Some("Kimi")
+  } else if id == "minimax" {
+    Some("MiniMax")
+  } else if id == "xai" {
+    Some("xAI")
+  } else if id == "cursor" {
+    Some("Cursor")
+  } else if id == "devin" {
+    Some("Cognition")
+  } else if id == "ant-ling" {
+    Some("Ant Ling")
+  } else if id == "xiaomi" {
+    Some(if en { "Xiaomi" } else { "小米" })
+  } else if id == "meta" {
+    Some("Meta")
+  } else if id == "stepfun" {
+    Some(if en { "StepFun" } else { "阶跃星辰" })
+  } else if id == "tencent" {
+    Some(if en { "Tencent" } else { "腾讯" })
+  } else if id == "meituan" {
+    Some(if en { "Meituan" } else { "美团" })
+  } else {
+    None
+  }
+}
+
+/// Exact port of `client/core-ts/src/format.ts` `makerOf(modelName)`.
+pub fn maker_of_model(model_name : String, lang : String = "zh") -> Option[(String, String)] {
+  let lower = ascii_lower(model_name)
+  let m = if lower.starts_with("fusion-") {
+    let idx = fv_index_of(lower, "-sidekick-")
+    if idx > 7 { lower.slice(7, idx) } else { lower }
+  } else {
+    lower
+  }
+  let is_o = m.length() >= 2 && m.starts_with("o") && fv_is_digit(s_code(m, 1))
+  let id_opt : Option[String] = if m.contains("claude") || m.contains("opus") || m.contains("sonnet") || m.contains("haiku") || m.contains("fable") {
+    Some("anthropic")
+  } else if m.contains("gpt") || m.contains("codex") || m.contains("openai") || is_o {
+    Some("openai")
+  } else if m.contains("deepseek") {
+    Some("deepseek")
+  } else if m.contains("qwen") || m.contains("qwq") {
+    Some("qwen")
+  } else if m.contains("glm") || m.contains("zhipu") {
+    Some("zhipu")
+  } else if m.contains("gemini") || m.contains("gemma") {
+    Some("gemini")
+  } else if m.contains("kimi") || m.contains("moonshot") {
+    Some("kimi")
+  } else if m.contains("minimax") || m.contains("abab") {
+    Some("minimax")
+  } else if m.contains("grok") {
+    Some("xai")
+  } else if m.contains("composer") {
+    Some("cursor")
+  } else if m.starts_with("swe-") {
+    Some("devin")
+  } else {
+    None
+  }
+  match id_opt {
+    Some(id) => match maker_name(id, lang=lang) {
+      Some(nm) => Some((id, nm))
+      None => None
+    }
+    None => None
+  }
+}
+
+/// Exact port of `client/core-ts/src/format.ts` `labMaker(lab, labName)`.
+pub fn lab_maker(lab : String, lab_name : Option[String], lang : String = "zh") -> (String, String) {
+  let id = if lab == "google" {
+    "gemini"
+  } else if lab == "moonshotai" {
+    "kimi"
+  } else if lab == "zhipuai" {
+    "zhipu"
+  } else if lab == "alibaba" {
+    "qwen"
+  } else if lab == "inclusionai" {
+    "ant-ling"
+  } else {
+    lab
+  }
+  let nm = match maker_name(id, lang=lang) {
+    Some(s) => s
+    None => match lab_name {
+      Some(s) => s
+      None => id
+    }
+  }
+  (id, nm)
+}
+
+fn fv_is_all_digits(s : String) -> Bool {
+  if s.length() == 0 {
+    return false
+  }
+  for i in 0..<s.length() {
+    if !fv_is_digit(s_code(s, i)) {
+      return false
+    }
+  }
+  true
+}
+
+fn fv_cap_word(w : String) -> String {
+  if w == "deepseek" { return "DeepSeek" }
+  if w == "minimax" { return "MiniMax" }
+  if w == "qwq" { return "QwQ" }
+  if w == "glm" { return "GLM" }
+  if w == "gpt" { return "GPT" }
+  if w == "swe" { return "SWE" }
+  if w == "oss" { return "OSS" }
+  if w == "moonshot" { return "Moonshot" }
+  if w == "devstral" { return "Devstral" }
+  if w == "codestral" { return "Codestral" }
+  if w == "llama" { return "Llama" }
+  if w == "ernie" { return "ERNIE" }
+  if w == "vl" { return "VL" }
+  if w == "r1" { return "R1" }
+  if w == "it" { return "IT" }
+  if w.length() == 0 {
+    return ""
+  }
+  let c0 = s_code(w, 0)
+  if c0 >= 97 && c0 <= 122 {
+    let sb = StringBuilder::new()
+    sb.write_char((c0 - 32).unsafe_to_char())
+    sb.write_string(w.slice(1, w.length()))
+    sb.to_string()
+  } else {
+    w
+  }
+}
+
+fn fv_split_dash(s : String) -> Array[String] {
+  let out : Array[String] = []
+  let mut start = 0
+  let n = s.length()
+  for i in 0..<n {
+    if s_code(s, i) == 45 {
+      if i > start {
+        out.push(s.slice(start, i))
+      }
+      start = i + 1
+    }
+  }
+  if start < n {
+    out.push(s.slice(start, n))
+  }
+  out
+}
+
+fn fv_join_space(xs : Array[String]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<xs.length() {
+    if i > 0 {
+      sb.write_string(" ")
+    }
+    sb.write_string(xs[i])
+  }
+  sb.to_string()
+}
+
+/// Port of `client/core-ts/src/shapes/model.ts` `name(id)`.
+pub fn model_display_name(id : String) -> String {
+  let trimmed = id.trim()
+  if trimmed.length() == 0 {
+    return ""
+  }
+  let mut m = ascii_lower(trimmed)
+  // Strip provider prefix (e.g. anthropic/claude-opus-5-5)
+  let mut last_slash = -1
+  for i in 0..<m.length() {
+    if s_code(m, i) == 47 {
+      last_slash = i
+    }
+  }
+  if last_slash >= 0 && last_slash + 1 < m.length() {
+    m = m.slice(last_slash + 1, m.length())
+  }
+  let at_idx = fv_index_of(m, "@")
+  if at_idx >= 0 {
+    m = m.slice(0, at_idx)
+  }
+  let words = fv_split_dash(m)
+  if words.length() == 0 {
+    return trimmed
+  }
+  // Drop trailing 8-digit date stamp
+  let mut wlen = words.length()
+  if wlen > 1 && words[wlen - 1].length() == 8 && fv_is_all_digits(words[wlen - 1]) {
+    wlen -= 1
+  }
+  let first = words[0]
+  if first == "claude" || first == "opus" || first == "sonnet" || first == "haiku" || first == "fable" {
+    let mut fam = ""
+    for i in 0..<wlen {
+      let w = words[i]
+      if w == "opus" || w == "sonnet" || w == "haiku" || w == "fable" {
+        fam = w
+        break
+      }
+    }
+    if fam.length() == 0 {
+      return trimmed
+    }
+    let ver : Array[String] = []
+    let rest : Array[String] = []
+    for i in 0..<wlen {
+      let w = words[i]
+      if w == "claude" || w == fam {
+        continue
+      }
+      if fv_is_all_digits(w) {
+        ver.push(w)
+      } else {
+        rest.push(fv_cap_word(w))
+      }
+    }
+    let out : Array[String] = [fv_cap_word(fam)]
+    if ver.length() > 0 {
+      let vsb = StringBuilder::new()
+      for i in 0..<ver.length() {
+        if i > 0 {
+          vsb.write_string(".")
+        }
+        vsb.write_string(ver[i])
+      }
+      out.push(vsb.to_string())
+    }
+    for i in 0..<rest.length() {
+      out.push(rest[i])
+    }
+    return fv_join_space(out)
+  }
+  // Join adjacent version numbers (gpt-5-6 -> gpt, 5.6)
+  let parts : Array[String] = []
+  for i in 0..<wlen {
+    let w = words[i]
+    if parts.length() > 0 && w.length() <= 2 && fv_is_all_digits(w) {
+      let prev = parts[parts.length() - 1]
+      if prev.length() > 0 && fv_is_digit(s_code(prev, prev.length() - 1)) {
+        parts[parts.length() - 1] = prev + "." + w
+        continue
+      }
+    }
+    parts.push(w)
+  }
+  if (first == "gpt" || first == "glm" || first == "swe") && parts.length() >= 2 {
+    let out : Array[String] = [fv_cap_word(first) + "-" + parts[1]]
+    for i in 2..<parts.length() {
+      out.push(fv_cap_word(parts[i]))
+    }
+    return fv_join_space(out)
+  }
+  let is_o = first.length() > 1 && first.starts_with("o") && fv_is_all_digits(first.slice(1, first.length()))
+  let known = is_o || first == "gemini" || first == "gemma" || first == "deepseek" || first == "kimi" || first == "moonshot" || first == "minimax" || first == "grok" || first == "qwen" || first == "qwq" || first == "codex" || first == "llama" || first == "mistral" || first == "composer"
+  if !known {
+    return trimmed
+  }
+  let out : Array[String] = []
+  for i in 0..<parts.length() {
+    if i == 0 && is_o {
+      out.push(parts[i])
+    } else {
+      out.push(fv_cap_word(parts[i]))
+    }
+  }
+  fv_join_space(out)
+}
+
+/// Port of `client/core-ts/src/format.ts` `agentLabel(modelId, effort)`.
+pub fn format_agent_label(model_id : Option[String], effort : Option[String], lang : String = "zh") -> String {
+  let m = match model_id {
+    Some(id) => {
+      let d = model_display_name(id)
+      if d.length() > 0 { d } else if lang == "en" { "Default model" } else { "默认模型" }
+    }
+    None => if lang == "en" { "Default model" } else { "默认模型" }
+  }
+  match effort {
+    Some(e) => if e.length() > 0 { m + " · " + e } else { m }
+    None => m
+  }
+}
+
+/// Port of `client/core-ts/src/present.ts` `listedAgent(s)` conforming to `RowAgent` (`shapes/chat.ts`).
+pub fn present_listed_agent(raw : base_codec::Json, lang : String = "zh") -> base_codec::Json {
+  let rt = match j_opt_str(raw, "runtime") {
+    Some(r) => r
+    None => "claude"
+  }
+  let model_opt = j_opt_str(raw, "model")
+  let effort_opt = j_opt_str(raw, "effort")
+  let agent_text = match j_opt_str(raw, "agentText") {
+    Some(t) => t
+    None => format_agent_label(model_opt, effort_opt, lang=lang)
+  }
+  let out : Array[(String, base_codec::Json)] = [
+    ("runtime", base_codec::json_str(rt)),
+    ("agentText", base_codec::json_str(agent_text)),
+  ]
+  // Preserve existing `maker` if present, else derive from `model`
+  match base_codec::json_get(raw, "maker") {
+    Some(m_obj) => {
+      match j_opt_str(m_obj, "id") {
+        Some(mid) => out.push(("maker", base_codec::json_obj([("id", base_codec::json_str(mid))])))
+        None => ()
+      }
+    }
+    None => {
+      match model_opt {
+        Some(m) => {
+          match maker_of_model(m, lang=lang) {
+            Some((mid, _)) => out.push(("maker", base_codec::json_obj([("id", base_codec::json_str(mid))])))
+            None => ()
+          }
+        }
+        None => ()
+      }
+    }
+  }
+  base_codec::json_obj(out)
+}

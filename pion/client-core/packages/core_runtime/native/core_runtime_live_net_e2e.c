@@ -253,9 +253,9 @@ static void *handle_client_thread(void *arg) {
         snprintf(
             g_srv.pending_sse_event,
             sizeof(g_srv.pending_sse_event),
-            "id: 101\nevent: entry\ndata: {\"thread\":42,\"n\":7,\"kind\":\"message\","
+            "id: 101\nevent: thread\ndata: {\"workspace\":\"ws-default\",\"id\":42,\"entries\":[{\"n\":7,\"kind\":\"message\","
             "\"authorKind\":\"person\",\"author\":\"alice\","
-            "\"text\":\"hello over real rust shell\",\"clientKey\":\"ck-live-net-1\"}\n\n");
+            "\"text\":\"hello over real rust shell\",\"clientKey\":\"ck-live-net-1\"}]}\n\n");
         g_srv.sse_push_ready = 1;
         pthread_cond_broadcast(&g_srv.cv);
         pthread_mutex_unlock(&g_srv.mu);
@@ -393,10 +393,10 @@ int main(void) {
     printf("[live_net_e2e] #2 station.connect SSE -> %s\n", m_conn);
     assert(atomic_load(&g_srv.got_events) >= 1);
 
-    // 4. Real online `message.send` -> HTTP POST -> live SSE push -> `OutboxResolved` + real ChatView keyed `delta`
-    send_json("{\"id\":3,\"call\":\"message.send\",\"params\":{\"thread\":42,\"clientKey\":\"ck-live-net-1\",\"author\":\"alice\",\"text\":\"hello over real rust shell\"}}");
+    // 4. Real online `chat.send` -> HTTP POST -> live SSE `event: thread` -> `OutboxResolved` + real ChatView keyed `delta`
+    send_json("{\"id\":3,\"call\":\"chat.send\",\"params\":{\"thread\":42,\"clientKey\":\"ck-live-net-1\",\"author\":\"alice\",\"text\":\"hello over real rust shell\"}}");
     char *m_send = wait_for_matching_msg(&g_host, "\"id\":3", "\"queued\":true", 10);
-    printf("[live_net_e2e] #3 message.send -> %s\n", m_send);
+    printf("[live_net_e2e] #3 chat.send -> %s\n", m_send);
 
     char *m_resolved = wait_for_matching_msg(&g_host, "\"event\":\"outbox.resolved\"", "\"clientKey\":\"ck-live-net-1\"", 10);
     printf("[live_net_e2e] #4 SSE OutboxResolved -> %s\n", m_resolved);

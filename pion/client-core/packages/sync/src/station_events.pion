@@ -10,6 +10,7 @@ import "mesh"
 import "outbox"
 import "sql"
 import "store"
+import "views"
 import "wire"
 
 pub enum ConnectionState {
@@ -681,6 +682,7 @@ pub struct StationEvents {
   pub outbox : outbox::FrameOutbox[CoreEvent]
   pub transport : StationTransport
   pub mut viewer_email : String
+  pub mut viewer_selves : Array[String]
   mut last_event_id : Option[String]
   mut state : ConnectionState
   mut attempts : Int
@@ -719,6 +721,7 @@ pub fn StationEvents::new(
     outbox: frame_outbox,
     transport: transport,
     viewer_email: "",
+    viewer_selves: [],
     last_event_id: None,
     state: ConnectionState::Disconnected("initial"),
     attempts: 0,
@@ -810,6 +813,10 @@ pub fn StationEvents::dirty_thread_ids(self : StationEvents) -> Array[Int] {
 
 pub fn StationEvents::set_viewer_email(self : StationEvents, email : String) -> Unit {
   self.viewer_email = email
+}
+
+pub fn StationEvents::set_viewer_selves(self : StationEvents, selves : Array[String]) -> Unit {
+  self.viewer_selves = selves
 }
 
 pub fn StationEvents::session_status(self : StationEvents, key : String) -> Option[SessionStatus] {
@@ -982,13 +989,88 @@ fn opt_json_str_col(payload : base_codec::Json, key : String) -> base_codec::Jso
   }
 }
 
-/// Upsert a `chat-shared` row without clobbering existing viewer marks (`unread`, `mine`, `pinned_at`,
-/// `hidden`, `muted`, `kept`) or derived columns (`ord`, `running`, `tone`, `asks`, `desk`).
-/// Writes `shared_sidecar` strictly with `schema.ts:570-578` columns ONLY when `digest` is provided;
-/// never swallows any SQL error.
+fn se_ascii_lower(s : String) -> String {
+  let bs = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<bs.length() {
+    let b = bs[i].to_int()
+    if b >= 65 && b <= 90 {
+      sb.write_byte((b + 32) as Byte)
+    } else {
+      sb.write_byte(bs[i])
+    }
+  }
+  sb.to_string()
+}
+
+fn viewer_matches_str(viewer_email : String, viewer_selves : Array[String], cand : String) -> Bool {
+  if cand.length() == 0 {
+    return false
+  }
+  let lc = se_ascii_lower(cand)
+  if viewer_email.length() > 0 && se_ascii_lower(viewer_email) == lc {
+    return true
+  }
+  for i in 0..<viewer_selves.length() {
+    if viewer_selves[i].length() > 0 && se_ascii_lower(viewer_selves[i]) == lc {
+      return true
+    }
+  }
+  false
+}
+
+fn viewer_matches_person(viewer_email : String, viewer_selves : Array[String], p : base_codec::Json) -> Bool {
+  if viewer_email.length() == 0 && viewer_selves.length() == 0 {
+    return false
+  }
+  match p {
+    base_codec::Json::Str(s) => viewer_matches_str(viewer_email, viewer_selves, s)
+    base_codec::Json::Obj(_) =>
+    viewer_matches_str(viewer_email, viewer_selves, j_str(p, "email")) ||
+    viewer_matches_str(viewer_email, viewer_selves, j_str(p, "id")) ||
+    viewer_matches_str(viewer_email, viewer_selves, j_str(p, "via"))
+    _ => false
+  }
+}
+
+/// Read local read cursor for `(station, thread)` from `thread.read` and `shared_mark('read', thread)`.
+fn read_cursor_in_burst(b : sql::Burst, station : String, thread : Int) -> Int64 {
+  let mut best = 0.to_int64()
+  match b.all(
+    "SELECT read FROM thread WHERE station = ? AND id = ?",
+    params=[base_codec::json_str(station), base_codec::json_int(thread)],
+  ) {
+    sql::SqlResult::Ok(rows) =>
+    if rows.length() > 0 {
+      match sql::col_opt_int64(rows[0], 0) {
+        Some(v) => if v > best { best = v }
+        None => ()
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+  match read_shared_mark_in_burst(b, station, "read", thread.to_string()) {
+    Some(s) =>
+    match base_codec::parse_int64_str(s) {
+      Some(v) => if v > best { best = v }
+      None => ()
+    }
+    None => ()
+  }
+  best
+}
+
+/// Upsert a `chat-shared` row 1:1 with `client/core-ts/src/chat-row.ts` (`rowFor`):
+/// - Projects viewer-specific `mine` (from `mineOf`), `unread` (from `said` vs local read cursor),
+///   `dismissed` on `card`/`need`/`decision` (from `shared_mark('dismissed', '<th:seq>')`),
+///   and `pin`/`hidden`/`muted`/`kept` from `shared_mark`;
+/// - Writes `shared_sidecar` strictly with `schema.ts:570-578` columns ONLY when `digest` is provided;
+/// - Never swallows any SQL error.
 fn upsert_chat_shared_in_burst(
   b : sql::Burst,
   station : String,
+  viewer_email : String,
+  viewer_selves : Array[String],
   payload : base_codec::Json,
 ) -> sql::SqlResult[String] {
   let cid = j_str(payload, "id")
@@ -1017,7 +1099,38 @@ fn upsert_chat_shared_in_burst(
     None => ()
   }
   let mut merged = payload
-  // Overlay persisted viewer `shared_mark` values (`pin`, `hidden`, `muted`, `kept`).
+  // 1:1 `chat-row.ts:133`: project `mine` from `mineOf` array when present (never blindly trust shared `"mine": false`).
+  match base_codec::json_get(payload, "mineOf") {
+    Some(base_codec::Json::Arr(xs)) => {
+      let mut is_mine = false
+      for i in 0..<xs.length() {
+        if viewer_matches_person(viewer_email, viewer_selves, xs[i]) {
+          is_mine = true
+          break
+        }
+      }
+      merged = j_set_field(merged, "mine", base_codec::json_bool(is_mine))
+    }
+    _ => ()
+  }
+  // 1:1 `chat-row.ts:32-37, 132`: project `unread` from `said` vs local read cursor when present.
+  let thread_opt = j_opt_int64(merged, "thread")
+  match (base_codec::json_get(payload, "said"), thread_opt) {
+    (Some(base_codec::Json::Obj(said_fields)), Some(th)) => {
+      let said_obj = base_codec::json_obj(said_fields)
+      let read_pos = read_cursor_in_burst(b, station, th.to_int())
+      let by_viewer = j_str(said_obj, "authorKind") == "person" &&
+      viewer_matches_str(viewer_email, viewer_selves, j_str(said_obj, "author"))
+      let n_opt = if by_viewer { j_opt_int64(said_obj, "other") } else { j_opt_int64(said_obj, "n") }
+      let is_unread = match n_opt {
+        Some(n) => n > read_pos
+        None => false
+      }
+      merged = j_set_field(merged, "unread", base_codec::json_bool(is_unread))
+    }
+    _ => ()
+  }
+  // Overlay persisted viewer `shared_mark` values (`pin`, `hidden`, `muted`, `kept`, `dismissed`).
   let pin_key = match j_opt_str(merged, "session") { Some(s) => s; None => cid }
   match read_shared_mark_in_burst(b, station, "pin", pin_key) {
     Some(ps) =>
@@ -1027,7 +1140,7 @@ fn upsert_chat_shared_in_burst(
     }
     None => ()
   }
-  match j_opt_int64(merged, "thread") {
+  match thread_opt {
     Some(th) => {
       let th_k = th.to_string()
       match read_shared_mark_in_burst(b, station, "hidden", th_k) {
@@ -1042,6 +1155,29 @@ fn upsert_chat_shared_in_burst(
         Some(v) => if v == "1" { merged = j_set_field(merged, "kept", base_codec::json_bool(true)) }
         None => ()
       }
+      // 1:1 `chat-row.ts:138-142`: overlay `dismissed: true` on `card`, `need`, `decision`.
+      let ask_keys = ["card", "need", "decision"]
+      for ki in 0..<ask_keys.length() {
+        let ak = ask_keys[ki]
+        match base_codec::json_get(merged, ak) {
+          Some(base_codec::Json::Obj(sub_fs)) => {
+            let sub = base_codec::json_obj(sub_fs)
+            match j_opt_u64(sub, "seq") {
+              Some(seq_v) => {
+                let dk = th_k + ":" + seq_v.to_string()
+                match read_shared_mark_in_burst(b, station, "dismissed", dk) {
+                  Some("1") => {
+                    merged = j_set_field(merged, ak, j_set_field(sub, "dismissed", base_codec::json_bool(true)))
+                  }
+                  _ => ()
+                }
+              }
+              None => ()
+            }
+          }
+          _ => ()
+        }
+      }
     }
     None => ()
   }
@@ -1052,7 +1188,7 @@ fn upsert_chat_shared_in_burst(
 /// - `unread` is stored ONLY in the `unread` SQL column and stripped from `chat.json`;
 /// - Updating an existing row preserves any omitted columns (`ord`, `unread`, `mine`, `pinned_at`,
 ///   `running`, `tone`, `asks`, `desk`) and viewer JSON marks (`hidden`, `muted`, `kept`, `pinned`);
-/// - Derives `running = 1` from `agents` (`process == "running"`) when `running` is omitted.
+/// - Derives `running`, `tone`, and `asks` when omitted so `chat_marks` index stays accurate.
 fn upsert_chat_in_burst(b : sql::Burst, station : String, payload : base_codec::Json) -> sql::SqlResult[String] {
   let cid = j_str(payload, "id")
   let archived = if j_bool(payload, "archived") { 1 } else { j_int(payload, "archived") }
@@ -1127,15 +1263,63 @@ fn upsert_chat_in_burst(b : sql::Burst, station : String, payload : base_codec::
       match existing { Some(r) => sql::col_int(r, 4); None => 0 }
     }
   }
-  let tone = match base_codec::json_get(merged, "tone") {
-    Some(base_codec::Json::Str(s)) => Some(s)
-    Some(base_codec::Json::Null) => None
-    _ => match existing { Some(r) => sql::col_opt_text(r, 5); None => None }
+  // Single source of truth: reuse `views::{is_led_subchat, undecided_of_row, row_state}` directly
+  // so write-path index columns (`tone`, `asks`) match read-path projections 100% (`chats.ts:144-145`).
+  let is_led = views::is_led_subchat(merged)
+  let unread_explicit = base_codec::json_get(merged, "unread").is_some()
+  let agents_opt : Option[Array[base_codec::Json]] = match base_codec::json_get(merged, "agents") {
+    Some(base_codec::Json::Arr(xs)) => Some(xs)
+    _ => None
   }
-  let asks = match base_codec::json_get(merged, "asks") {
-    Some(base_codec::Json::Bool(b)) => if b { 1 } else { 0 }
-    Some(base_codec::Json::Num(v, _)) => v.to_int()
-    _ => match existing { Some(r) => sql::col_int(r, 6); None => 0 }
+  let has_agents = agents_opt.is_some()
+  let has_ask_fields = base_codec::json_get(merged, "card").is_some() ||
+  base_codec::json_get(merged, "decision").is_some() ||
+  base_codec::json_get(merged, "need").is_some()
+  let asks : Int = if archived != 0 || is_led {
+    0
+  } else {
+    match base_codec::json_get(merged, "asks") {
+      Some(base_codec::Json::Bool(b)) => if b { 1 } else { 0 }
+      Some(base_codec::Json::Num(v, _)) => v.to_int()
+      _ => {
+        if views::undecided_of_row(merged).length() > 0 {
+          1
+        } else if has_ask_fields || has_agents {
+          0
+        } else {
+          match existing { Some(r) => sql::col_int(r, 6); None => 0 }
+        }
+      }
+    }
+  }
+  let tone : Option[String] = if archived != 0 || is_led {
+    None
+  } else {
+    match base_codec::json_get(merged, "tone") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+      Some(base_codec::Json::Null) => None
+      _ => {
+        let prev_tone : Option[String] = match existing { Some(r) => sql::col_opt_text(r, 5); None => None }
+        let is_unread_one = match unread { Some(u) => u != 0.to_int64(); None => false }
+        let st_opt = match agents_opt {
+          Some(ags) => views::row_state(ags)
+          None => None
+        }
+        let is_failed = match st_opt { Some("failed") => true; _ => false }
+        let is_run_or_block = running != 0 || (match st_opt { Some("run") | Some("block") => true; _ => false })
+        if mine != 1 {
+          None
+        } else if is_failed {
+          Some("alert")
+        } else if is_unread_one && !is_run_or_block {
+          Some("done")
+        } else if has_agents || unread_explicit || has_ask_fields {
+          None
+        } else {
+          prev_tone
+        }
+      }
+    }
   }
   let desk = match base_codec::json_get(merged, "desk") {
     Some(base_codec::Json::Bool(b)) => if b { 1 } else { 0 }
@@ -2081,6 +2265,54 @@ fn StationEvents::apply_one_sse_event(
       sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
       sql::SqlResult::Ok(_) => ()
     }
+    // Synchronously mark matching `card`/`decision`/`need` (`seq == n`) dismissed in `chat.json`
+    // and recompute `chat.asks` in the same transaction (1:1 `decisions.ts:339-345` `withLetGo`).
+    let chat_rows = match b.all(
+      "SELECT id, json FROM chat WHERE station = ? AND archived = 0 AND thread = ?",
+      params=[base_codec::json_str(self.station), base_codec::json_int(th)],
+    ) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(rs) => rs
+    }
+    for ci in 0..<chat_rows.length() {
+      let cid = sql::col_text(chat_rows[ci], 0)
+      match base_codec::json_parse(sql::col_text(chat_rows[ci], 1)) {
+        base_codec::JsonParseResult::Ok(cj) => {
+          let mut updated = cj
+          let ask_keys = ["card", "decision", "need"]
+          for ki in 0..<ask_keys.length() {
+            let ak = ask_keys[ki]
+            match base_codec::json_get(updated, ak) {
+              Some(base_codec::Json::Obj(sub_fs)) => {
+                let sub = base_codec::json_obj(sub_fs)
+                match j_opt_u64(sub, "seq") {
+                  Some(sv) =>
+                  if sv.to_int() == n {
+                    updated = j_set_field(updated, ak, j_set_field(sub, "dismissed", base_codec::json_bool(true)))
+                  }
+                  None => ()
+                }
+              }
+              _ => ()
+            }
+          }
+          let new_asks = if views::is_led_subchat(updated) { 0 } else if views::undecided_of_row(updated).length() > 0 { 1 } else { 0 }
+          match b.run(
+            "UPDATE chat SET json = ?, asks = ? WHERE station = ? AND archived = 0 AND id = ?",
+            params=[
+              base_codec::json_str(base_codec::json_stringify(updated)),
+              base_codec::json_int(new_asks),
+              base_codec::json_str(self.station),
+              base_codec::json_str(cid),
+            ],
+          ) {
+            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(_) => changed_chats.push(cid)
+          }
+        }
+        base_codec::JsonParseResult::Err(_) => ()
+      }
+    }
     changed_chats.push("thread:" + th.to_string())
     return sql::SqlResult::Ok(1)
   }
@@ -2105,7 +2337,7 @@ fn StationEvents::apply_one_sse_event(
   }
   if ev_name == "chat-shared" {
     let cid = match j_opt_str(payload, "id") { Some(s) => s; None => return sql::SqlResult::Ok(0) }
-    match upsert_chat_shared_in_burst(b, self.station, payload) {
+    match upsert_chat_shared_in_burst(b, self.station, self.viewer_email, self.viewer_selves, payload) {
       sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
       sql::SqlResult::Ok(_) => {
         changed_chats.push(cid)

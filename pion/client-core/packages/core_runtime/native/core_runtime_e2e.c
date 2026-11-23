@@ -174,20 +174,20 @@ int main(void) {
     printf("[core_runtime_e2e] #8 vault.secrets -> %s\n", m->json);
     assert(strstr(m->json, "\"secrets\":[]") != NULL);
 
-    // 4. message.send + message.edit + message.delete + card.answer + chat.read
-    send_json("{\"id\":9,\"call\":\"message.send\",\"params\":{\"thread\":42,\"clientKey\":\"ck-e2e-1\",\"author\":\"alice\",\"text\":\"hi from C host\"}}");
+    // 4. Real ops.ts calls: chat.send + chat.rename + decision.answer + chat.read
+    send_json("{\"id\":9,\"call\":\"chat.send\",\"params\":{\"thread\":42,\"clientKey\":\"ck-e2e-1\",\"author\":\"alice\",\"text\":\"hi from C host\"}}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
-    printf("[core_runtime_e2e] #9 message.send -> %s\n", m->json);
+    printf("[core_runtime_e2e] #9 chat.send -> %s\n", m->json);
     assert(strstr(m->json, "\"queued\":true") != NULL && strstr(m->json, "ck-e2e-1") != NULL);
 
-    send_json("{\"id\":10,\"call\":\"message.edit\",\"params\":{\"thread\":42,\"target\":1,\"text\":\"edited from C host\"}}");
+    send_json("{\"id\":10,\"call\":\"chat.rename\",\"params\":{\"thread\":42,\"title\":\"Renamed from C host\"}}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
-    printf("[core_runtime_e2e] #10 message.edit -> %s\n", m->json);
-    assert(strstr(m->json, "\"id\":10") != NULL && strstr(m->json, "\"target\":1") != NULL);
+    printf("[core_runtime_e2e] #10 chat.rename -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":10") != NULL && strstr(m->json, "\"opId\"") != NULL);
 
-    send_json("{\"id\":11,\"call\":\"card.answer\",\"params\":{\"thread\":42,\"seq\":2,\"option\":\"Approve\",\"action\":\"reply\"}}");
+    send_json("{\"id\":11,\"call\":\"decision.answer\",\"params\":{\"thread\":42,\"seq\":2,\"option\":\"Approve\",\"action\":\"reply\"}}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
-    printf("[core_runtime_e2e] #11 card.answer -> %s\n", m->json);
+    printf("[core_runtime_e2e] #11 decision.answer -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":11") != NULL && strstr(m->json, "\"option\":\"Approve\"") != NULL);
 
     send_json("{\"id\":12,\"call\":\"chat.read\",\"params\":{\"thread\":42,\"read\":5,\"unread\":0}}");
@@ -196,18 +196,18 @@ int main(void) {
     assert(strstr(m->json, "\"id\":12") != NULL && strstr(m->json, "\"read\":5") != NULL);
 
     // 5. Subscription keyed delta + keep/have token (`v` -> `same: true` -> `delta + kept: true`)
-    send_json("{\"id\":20,\"subscribe\":{\"topic\":\"settings\",\"scope\":\"ws-default\"},\"keyed\":true}");
+    send_json("{\"id\":20,\"subscribe\":{\"topic\":\"prefs\"},\"keyed\":true}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
-    printf("[core_runtime_e2e] #20 subscribe settings -> %s\n", m->json);
+    printf("[core_runtime_e2e] #20 subscribe prefs -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":20") != NULL && strstr(m->json, "\"value\"") != NULL);
 
     // Mutate while subscribed -> expect Call OK + live pushed Delta on sub 20!
-    send_json("{\"id\":21,\"call\":\"settings.set\",\"params\":{\"key\":\"fontSize\",\"value\":16}}");
+    send_json("{\"id\":21,\"call\":\"prefs.set\",\"params\":{\"reader\":{\"size\":18}}}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
-    assert(strstr(m->json, "\"id\":21") != NULL && strstr(m->json, "\"saved\":true") != NULL);
+    assert(strstr(m->json, "\"id\":21") != NULL && strstr(m->json, "\"error\"") == NULL);
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #20 live delta -> %s\n", m->json);
-    assert(strstr(m->json, "\"id\":20") != NULL && strstr(m->json, "\"delta\"") != NULL && strstr(m->json, "fontSize") != NULL);
+    assert(strstr(m->json, "\"id\":20") != NULL && strstr(m->json, "\"delta\"") != NULL && strstr(m->json, "18") != NULL);
 
     // Unsubscribe with keep: true -> receive `v` token
     send_json("{\"id\":20,\"unsubscribe\":true,\"keep\":true}");
@@ -218,7 +218,7 @@ int main(void) {
 
     // Re-subscribe with `have: token` when unchanged -> expect `same: true`
     char resub_same[256];
-    snprintf(resub_same, sizeof(resub_same), "{\"id\":22,\"subscribe\":{\"topic\":\"settings\",\"scope\":\"ws-default\"},\"keyed\":true,\"have\":\"%s\"}", token);
+    snprintf(resub_same, sizeof(resub_same), "{\"id\":22,\"subscribe\":{\"topic\":\"prefs\"},\"keyed\":true,\"have\":\"%s\"}", token);
     send_json(resub_same);
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #22 resubscribe have (unchanged) -> %s\n", m->json);
@@ -226,16 +226,49 @@ int main(void) {
 
     // Unsubscribe 22 without keep, mutate, then re-subscribe with old `have: token` -> expect `delta` + `kept: true`
     send_json("{\"id\":22,\"unsubscribe\":true}");
-    send_json("{\"id\":23,\"call\":\"settings.set\",\"params\":{\"key\":\"theme\",\"value\":\"light\"}}");
+    send_json("{\"id\":23,\"call\":\"prefs.set\",\"params\":{\"appearance\":\"light\"}}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
-    assert(strstr(m->json, "\"id\":23") != NULL && strstr(m->json, "\"saved\":true") != NULL);
+    printf("[core_runtime_e2e] #23 prefs.set -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":23") != NULL && strstr(m->json, "\"error\"") == NULL);
+    send_json("{\"id\":231,\"call\":\"settings.set\",\"params\":{\"key\":\"theme\",\"value\":\"light\"}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    assert(strstr(m->json, "\"id\":231") != NULL && strstr(m->json, "\"saved\":true") != NULL);
 
     char resub_diff[256];
-    snprintf(resub_diff, sizeof(resub_diff), "{\"id\":24,\"subscribe\":{\"topic\":\"settings\",\"scope\":\"ws-default\"},\"keyed\":true,\"have\":\"%s\"}", token);
+    snprintf(resub_diff, sizeof(resub_diff), "{\"id\":24,\"subscribe\":{\"topic\":\"prefs\"},\"keyed\":true,\"have\":\"%s\"}", token);
     send_json(resub_diff);
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #24 resubscribe have (changed) -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":24") != NULL && strstr(m->json, "\"delta\"") != NULL && strstr(m->json, "\"kept\":true") != NULL && strstr(m->json, "light") != NULL);
+    send_json("{\"id\":24,\"unsubscribe\":true}");
+
+    // 5b. Runtime-evaluated topic (`workspaceMarks`) live subscription + keep/have -> same + live delta on prefs.set
+    send_json("{\"id\":25,\"subscribe\":{\"topic\":\"workspaceMarks\"},\"keyed\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #25 subscribe workspaceMarks -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":25") != NULL && strstr(m->json, "\"value\"") != NULL && strstr(m->json, "\"badgeKinds\"") != NULL);
+
+    send_json("{\"id\":25,\"unsubscribe\":true,\"keep\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #25 unsubscribe workspaceMarks keep -> %s\n", m->json);
+    char wm_token[128];
+    assert(extract_v_token(m->json, wm_token, sizeof(wm_token)));
+
+    char wm_resub[256];
+    snprintf(wm_resub, sizeof(wm_resub), "{\"id\":26,\"subscribe\":{\"topic\":\"workspaceMarks\"},\"keyed\":true,\"have\":\"%s\"}", wm_token);
+    send_json(wm_resub);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #26 resubscribe workspaceMarks have (unchanged) -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":26") != NULL && strstr(m->json, "\"same\":true") != NULL);
+
+    // Mutate prefs (`badgeKinds.on = false`) while subscribed to workspaceMarks -> expect Call OK + live delta on id 26!
+    send_json("{\"id\":27,\"call\":\"prefs.set\",\"params\":{\"badgeKinds\":{\"on\":false}}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    assert(strstr(m->json, "\"id\":27") != NULL && strstr(m->json, "\"error\"") == NULL);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #26 workspaceMarks live delta -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":26") != NULL && strstr(m->json, "\"delta\"") != NULL && strstr(m->json, "\"badgeKinds\"") != NULL && strstr(m->json, "\"set\":false") != NULL);
+    send_json("{\"id\":26,\"unsubscribe\":true}");
 
     // 6. Binary payload round-trip + screen_ack / screen_input / route_media
     static const uint8_t bin[4] = {'P', 'I', 'O', 'N'};
@@ -263,6 +296,11 @@ int main(void) {
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #40 settings.get after restart -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":40") != NULL && strstr(m->json, "\"value\":\"light\"") != NULL);
+
+    send_json("{\"id\":41,\"call\":\"prefs.get\",\"params\":{}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #41 prefs.get after restart -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":41") != NULL && strstr(m->json, "\"appearance\":\"light\"") != NULL && strstr(m->json, "\"size\":18") != NULL);
 
     mb_core_stop();
     printf("[core_runtime_e2e] ALL REAL core_api.h + libstillfail_shell.so E2E CHECKS PASSED (msgs=%d, post_stop=%d)\n",

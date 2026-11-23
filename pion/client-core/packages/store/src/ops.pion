@@ -19,7 +19,7 @@ pub fn sql_thread_set_read() -> String {
 }
 
 pub fn sql_chat_set_unread() -> String {
-  "UPDATE chat SET unread = ? WHERE station = ? AND archived = 0 AND thread = ?"
+  "UPDATE chat SET unread = ?1, tone = CASE WHEN ?1 = 0 AND tone = 'done' THEN NULL WHEN ?1 != 0 AND mine = 1 AND running = 0 AND tone IS NULL THEN 'done' ELSE tone END WHERE station = ?2 AND archived = 0 AND thread = ?3"
 }
 
 pub fn sql_pref_get() -> String {

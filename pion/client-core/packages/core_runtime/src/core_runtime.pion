@@ -16,6 +16,7 @@ import "views"
 
 extern "C" fn mb_core_emit(json : Ptr, len : Int64, bytes : Ptr, blen : Int64) -> Int
 extern "C" fn pion_core_wall_now_ms() -> Int64
+extern "C" fn pion_core_utc_offset_min(ms : Int64) -> Int
 
 struct AccountInfo {
   sub : String
@@ -24,12 +25,24 @@ struct AccountInfo {
   picture : String
 }
 
+struct RuntimeSub {
+  id : Int64
+  topic : protocol::Topic
+  keyed : Bool
+  mut last_val : Option[base_codec::Json]
+}
+
 struct RuntimeSession {
   sh : shell::Shell
   db : sql::Sql
   core : sync::ClientCore
   accounts : Array[AccountInfo]
   prefs : Map[String, base_codec::Json]
+  station_online : Map[String, Bool]
+  runtime_subs : Array[RuntimeSub]
+  kept_vals : Map[String, base_codec::Json]
+  kept_order : Array[String]
+  md_stores : Map[String, store::MdStore]
   mut cloud : Option[sync::CloudSync]
   mut origin : String
   mut live_sync_enabled : Bool
@@ -184,11 +197,48 @@ fn emit_core_event(ev : sync::CoreEvent) -> Unit {
   }
 }
 
-fn emit_topic_refresh(sess : RuntimeSession, topic_name : String) -> Unit {
+fn emit_topic_refresh(
+  sess : RuntimeSession,
+  topic_name : String,
+  changed_keys : Option[Array[(String, String)]] = None,
+) -> Unit {
   let deltas = sess.core.refresh_topic(topic_name)
   for i in 0..<deltas.length() {
     let (dj, db) = protocol::encode_core_event(deltas[i])
     emit_wire(dj, payload=db)
+  }
+  for i in 0..<sess.runtime_subs.length() {
+    let sub = sess.runtime_subs[i]
+    if sub.topic.name != topic_name {
+      continue
+    }
+    match evaluate_runtime_topic(sess, sub.id, sub.topic, changed_keys=changed_keys) {
+      Some(protocol::CoreEvent::Value(_, new_val, _)) => {
+        match sub.last_val {
+          Some(prev_val) => {
+            if !protocol::json_equal(prev_val, new_val) {
+              sub.last_val = Some(new_val)
+              if sub.keyed {
+                let ops = protocol::diff_keyed(prev_val, new_val, protocol::spec_for_topic(topic_name))
+                if ops.length() > 0 {
+                  let (dj, db) = protocol::encode_core_event(protocol::CoreEvent::Delta(sub.id, ops, None, false))
+                  emit_wire(dj, payload=db)
+                }
+              } else {
+                let (vj, vb) = protocol::encode_core_event(protocol::CoreEvent::Value(sub.id, new_val, None))
+                emit_wire(vj, payload=vb)
+              }
+            }
+          }
+          None => {
+            sub.last_val = Some(new_val)
+            let (vj, vb) = protocol::encode_core_event(protocol::CoreEvent::Value(sub.id, new_val, None))
+            emit_wire(vj, payload=vb)
+          }
+        }
+      }
+      _ => ()
+    }
   }
 }
 
@@ -198,14 +248,52 @@ fn drain_and_emit(sess : RuntimeSession) -> Unit {
     let evs = sess.core.drain_frame()
     let mut refresh_chat = false
     let mut refresh_chats = false
+    let mut refresh_stations = false
+    let mut refresh_marks = false
     let mut refresh_lock = false
+    let changed_chat_keys : Array[(String, String)] = []
+    let mut all_chats_dirty = false
     for i in 0..<evs.length() {
       match evs[i] {
-        sync::CoreEvent::EntryAdded(_, _, _, _) | sync::CoreEvent::OutboxResolved(_, _, _, _) => {
-          refresh_chat = true
-        }
-        sync::CoreEvent::ChatsChanged(_, _) | sync::CoreEvent::ThreadReadChanged(_, _, _, _) => {
+        sync::CoreEvent::ConnectionChanged(st, state) => {
+          let connected = match state {
+            sync::ConnectionState::Connected => true
+            _ => false
+          }
+          sess.station_online.set(st, connected)
+          all_chats_dirty = true
           refresh_chats = true
+          refresh_chat = true
+          refresh_stations = true
+          refresh_marks = true
+        }
+        sync::CoreEvent::EntryAdded(st, th, _, _) | sync::CoreEvent::OutboxResolved(st, th, _, _) => {
+          refresh_chat = true
+          refresh_chats = true
+          refresh_marks = true
+          match store::get_chat_by_thread(sess.db, st, th) {
+            sql::SqlResult::Ok(Some(rec)) => changed_chat_keys.push((st, rec.id))
+            _ => { all_chats_dirty = true }
+          }
+        }
+        sync::CoreEvent::ChatsChanged(st, ids) => {
+          refresh_chats = true
+          refresh_marks = true
+          if ids.length() == 0 {
+            all_chats_dirty = true
+          } else {
+            for k in 0..<ids.length() {
+              changed_chat_keys.push((st, ids[k]))
+            }
+          }
+        }
+        sync::CoreEvent::ThreadReadChanged(st, th, _, _) => {
+          refresh_chats = true
+          refresh_marks = true
+          match store::get_chat_by_thread(sess.db, st, th) {
+            sql::SqlResult::Ok(Some(rec)) => changed_chat_keys.push((st, rec.id))
+            _ => { all_chats_dirty = true }
+          }
         }
         sync::CoreEvent::LockUpdated(_, _, _, _) => {
           refresh_lock = true
@@ -216,15 +304,85 @@ fn drain_and_emit(sess : RuntimeSession) -> Unit {
     }
     if refresh_chat {
       emit_topic_refresh(sess, "chat")
+      emit_topic_refresh(sess, "chatOutline")
     }
     if refresh_chats {
-      emit_topic_refresh(sess, "chats")
+      let ck_opt : Option[Array[(String, String)]] = if all_chats_dirty || changed_chat_keys.length() == 0 {
+        None
+      } else {
+        Some(changed_chat_keys)
+      }
+      emit_topic_refresh(sess, "chats", changed_keys=ck_opt)
+    }
+    if refresh_stations {
+      emit_topic_refresh(sess, "stations")
+      emit_topic_refresh(sess, "settings")
+    }
+    if refresh_marks {
+      emit_topic_refresh(sess, "workspaceMarks")
     }
     if refresh_lock {
       emit_topic_refresh(sess, "lock")
       emit_topic_refresh(sess, "vaults")
     }
+    flush_session_md_stores(sess)
   }
+}
+
+fn flush_session_md_stores(sess : RuntimeSession) -> Unit {
+  let _ = sess.core.md_store.flush_turn()
+  let ks = sess.md_stores.keys()
+  for i in 0..<ks.length() {
+    match sess.md_stores.get(ks[i]) {
+      Some(ms) => { let _ = ms.flush_turn() }
+      None => ()
+    }
+  }
+}
+
+fn kept_put(sess : RuntimeSession, tok : String, v : base_codec::Json) -> Unit {
+  let existed = sess.kept_vals.get(tok).is_some()
+  sess.kept_vals.set(tok, v)
+  if !existed {
+    sess.kept_order.push(tok)
+    while sess.kept_vals.length() > 64 && sess.kept_order.length() > 0 {
+      let oldest = sess.kept_order[0]
+      let next_ord : Array[String] = []
+      for i in 1..<sess.kept_order.length() {
+        next_ord.push(sess.kept_order[i])
+      }
+      sess.kept_order.clear()
+      for i in 0..<next_ord.length() {
+        sess.kept_order.push(next_ord[i])
+      }
+      sess.kept_vals.remove(oldest)
+    }
+  }
+}
+
+fn remove_runtime_sub(sess : RuntimeSession, id : Int64) -> Option[RuntimeSub] {
+  let mut found_idx = -1
+  for i in 0..<sess.runtime_subs.length() {
+    if sess.runtime_subs[i].id == id {
+      found_idx = i
+      break
+    }
+  }
+  if found_idx < 0 {
+    return None
+  }
+  let removed = sess.runtime_subs[found_idx]
+  let next_subs : Array[RuntimeSub] = []
+  for i in 0..<sess.runtime_subs.length() {
+    if i != found_idx {
+      next_subs.push(sess.runtime_subs[i])
+    }
+  }
+  sess.runtime_subs.clear()
+  for i in 0..<next_subs.length() {
+    sess.runtime_subs.push(next_subs[i])
+  }
+  Some(removed)
 }
 
 fn hex_digit(n : Int) -> String {
@@ -284,6 +442,37 @@ fn read_storage_json(sh : shell::Shell, key : String) -> Option[base_codec::Json
       }
     }
     None => None
+  }
+}
+
+/// Write one JSON document to host storage (`storage.set`) synchronously, propagating errors.
+fn write_storage_json(sh : shell::Shell, key : String, doc : base_codec::Json) -> Result[Unit, String] {
+  let done_flag : Array[Bool] = [false]
+  let err_out : Array[Option[String]] = [None]
+  let payload = base_codec::json_stringify(doc).to_bytes()
+  let _ = sh.rt.fork_quiet_named("prefs:storage.set", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sh.call_k(
+      "storage.set",
+      base_codec::json_obj([("key", base_codec::json_str(key))]),
+      bytes=Some(payload),
+      fn(ex : effect::Exit[shell::Answer]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => ()
+          effect::Exit::Failed(_) => { err_out[0] = Some("storage.set failed for key: " + key) }
+          effect::Exit::Interrupted => { err_out[0] = Some("storage.set interrupted") }
+        }
+        done_flag[0] = true
+        fk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  let _ = shell_native::drain_until(sh, fn() -> Bool { done_flag[0] }, timeout_ms=2000.to_int64())
+  if !done_flag[0] {
+    return Err("storage.set timed out for key: " + key)
+  }
+  match err_out[0] {
+    Some(msg) => Err(msg)
+    None => Ok(())
   }
 }
 
@@ -375,10 +564,28 @@ fn list_workspaces_briefs(db : sql::Sql) -> Array[base_codec::Json] {
 }
 
 fn build_workspaces_topic_json(sess : RuntimeSession) -> base_codec::Json {
-  if sess.accounts.length() == 0 {
-    return base_codec::json_arr([])
-  }
   let ws_list = list_workspaces_briefs(sess.db)
+  if sess.accounts.length() == 0 {
+    if ws_list.length() == 0 {
+      return base_codec::json_arr([])
+    }
+    let email = sess_viewer_email(sess)
+    let sub = sess_viewer_sub(sess)
+    let acct_j = base_codec::json_obj([
+      ("sub", base_codec::json_str(sub)),
+      ("email", base_codec::json_str(email)),
+      ("name", base_codec::json_str(email)),
+      ("picture", base_codec::json_str("")),
+    ])
+    return base_codec::json_arr([
+      base_codec::json_obj([
+        ("account", acct_j),
+        ("workspaces", base_codec::json_arr(ws_list)),
+        ("invitations", base_codec::json_arr([])),
+        ("loaded", base_codec::json_bool(true)),
+      ]),
+    ])
+  }
   let out : Array[base_codec::Json] = []
   for i in 0..<sess.accounts.length() {
     let a = sess.accounts[i]
@@ -487,6 +694,10 @@ fn build_prefs_view(sess : RuntimeSession) -> base_codec::Json {
       ("bytes", base_codec::json_int(0)),
     ])
   }
+  let appearance_val = match sess.prefs.get("appearance") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => "system"
+  }
   let fields : Array[(String, base_codec::Json)] = [
     ("onlyMine", base_codec::json_bool(false)),
     ("onlyWatching", base_codec::json_bool(false)),
@@ -495,7 +706,7 @@ fn build_prefs_view(sess : RuntimeSession) -> base_codec::Json {
     ("boardShowEmpty", base_codec::json_obj([])),
     ("boardDrafts", base_codec::json_obj([])),
     ("listFilter", base_codec::json_obj([])),
-    ("appearance", base_codec::json_str("system")),
+    ("appearance", base_codec::json_str(appearance_val)),
     ("rowPicture", base_codec::json_str("auto")),
     ("absoluteTime", base_codec::json_bool(false)),
     ("lang", base_codec::json_str(lang_val)),
@@ -514,7 +725,7 @@ fn build_prefs_view(sess : RuntimeSession) -> base_codec::Json {
     ("sidebars", base_codec::json_obj([])),
     ("trouble", base_codec::json_obj([])),
     ("jobsSeen", base_codec::json_obj([])),
-    ("failsGone", base_codec::json_obj([])),
+    ("failsGone", match sess.prefs.get("failsGone") { Some(v) => v; None => base_codec::json_obj([]) }),
     ("resume", base_codec::json_obj([])),
     ("stationUpdatesDismissed", base_codec::json_obj([])),
     ("device", base_codec::json_obj(dev_fields)),
@@ -565,13 +776,51 @@ fn build_prefs_view(sess : RuntimeSession) -> base_codec::Json {
     ("features", base_codec::json_obj([])),
     ("experimentalItems", base_codec::json_arr([])),
   ]
+  // Overlay validated `sess.prefs` entries on top of default prefs fields (replacing matching keys).
+  let merged : Map[String, base_codec::Json] = Map::new()
+  let order : Array[String] = []
+  for i in 0..<fields.length() {
+    let (k, v) = fields[i]
+    if merged.get(k).is_none() {
+      order.push(k)
+    }
+    merged.set(k, v)
+  }
   match sess.prefs.get("workspace") {
-    Some(base_codec::Json::Str(ws)) => if ws.length() > 0 { fields.push(("workspace", base_codec::json_str(ws))) }
+    Some(base_codec::Json::Str(ws)) => if ws.length() > 0 {
+      if merged.get("workspace").is_none() { order.push("workspace") }
+      merged.set("workspace", base_codec::json_str(ws))
+    }
     _ => if sess.core.workspace.length() > 0 && sess.core.workspace != "ws-default" {
-      fields.push(("workspace", base_codec::json_str(sess.core.workspace)))
+      if merged.get("workspace").is_none() { order.push("workspace") }
+      merged.set("workspace", base_codec::json_str(sess.core.workspace))
     }
   }
-  base_codec::json_obj(fields)
+  let pkeys = sess.prefs.keys()
+  for i in 0..<pkeys.length() {
+    let k = pkeys[i]
+    if k == "workspace" {
+      continue
+    }
+    match sess.prefs.get(k) {
+      Some(v) => {
+        if merged.get(k).is_none() {
+          order.push(k)
+        }
+        merged.set(k, v)
+      }
+      None => ()
+    }
+  }
+  let out_fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<order.length() {
+    let k = order[i]
+    match merged.get(k) {
+      Some(v) => out_fields.push((k, v))
+      None => ()
+    }
+  }
+  base_codec::json_obj(out_fields)
 }
 
 fn build_notify_view(sess : RuntimeSession) -> base_codec::Json {
@@ -609,41 +858,251 @@ fn build_notify_view(sess : RuntimeSession) -> base_codec::Json {
   ])
 }
 
-fn build_workspace_marks_view(sess : RuntimeSession) -> base_codec::Json {
-  let ws_briefs = list_workspaces_briefs(sess.db)
-  let ws_map : Array[(String, base_codec::Json)] = []
-  for i in 0..<ws_briefs.length() {
-    let w = ws_briefs[i]
-    let id = match opt_str_param(w, "id") { Some(s) => s; None => "" }
-    let name = match opt_str_param(w, "name") { Some(s) => s; None => id }
-    if id.length() > 0 {
-      ws_map.push((
-        id,
-        base_codec::json_obj([
-          ("alert", base_codec::json_int(0)),
-          ("unread", base_codec::json_int(0)),
-          ("badge", base_codec::json_int(0)),
-          ("workspaceName", base_codec::json_str(name)),
-          ("items", base_codec::json_arr([])),
-        ]),
-      ))
+fn sess_lang(sess : RuntimeSession) -> String {
+  match sess.prefs.get("lang") {
+    Some(base_codec::Json::Str(s)) => if s == "en" { "en" } else { "zh" }
+    _ => "zh"
+  }
+}
+
+fn sess_viewer_email(sess : RuntimeSession) -> String {
+  if sess.accounts.length() > 0 && sess.accounts[0].email.length() > 0 {
+    sess.accounts[0].email
+  } else {
+    sess.core.viewer_marks.me
+  }
+}
+
+fn sess_viewer_sub(sess : RuntimeSession) -> String {
+  if sess.accounts.length() > 0 {
+    sess.accounts[0].sub
+  } else {
+    ""
+  }
+}
+
+fn is_station_online(sess : RuntimeSession, addr : String) -> Bool {
+  match sess.station_online.get(addr) {
+    Some(b) => b
+    None => false
+  }
+}
+
+fn station_briefs_live(sess : RuntimeSession, ws_scope : String) -> Array[views::StationBrief] {
+  let out : Array[views::StationBrief] = []
+  let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
+  let lang = sess_lang(sess)
+  let overview_by_addr : Map[String, base_codec::Json] = Map::new()
+  let overview_addrs : Array[String] = []
+  match store::list_stations(sess.db, kind="overview") {
+    sql::SqlResult::Ok(rows) => {
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        // Strict workspace isolation: never leak stations from another workspace (Red-Team Gate #9).
+        if prefix.length() > 0 && !r.address.starts_with(prefix) {
+          continue
+        }
+        let doc = match base_codec::json_parse(r.json) {
+          base_codec::JsonParseResult::Ok(j) => j
+          base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+        }
+        overview_by_addr.set(r.address, doc)
+        overview_addrs.push(r.address)
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+  let seen : Map[String, Bool] = Map::new()
+  // Base roster from `workspace.json` (`sync::list_workspace_stations`), merged with live `station(addr, "overview")` (#8369).
+  if ws_scope.length() > 0 {
+    let cloud_sts = sync::list_workspace_stations(sess.db, ws_scope)
+    for i in 0..<cloud_sts.length() {
+      let cs = cloud_sts[i]
+      let addr = ws_scope + "/" + cs.id
+      seen.set(addr, true)
+      let doc = match overview_by_addr.get(addr) {
+        Some(d) => d
+        None => base_codec::json_null()
+      }
+      let sname = match opt_str_param(doc, "name") {
+        Some(s) => s
+        None => if cs.name.length() > 0 { cs.name } else { cs.id }
+      }
+      let is_online = is_station_online(sess, addr)
+      let off_txt = if is_online {
+        None
+      } else {
+        Some(if lang == "en" { sname + " offline" } else { sname + " 离线" })
+      }
+      out.push(views::StationBrief::{
+        address: addr,
+        id: cs.id,
+        name: sname,
+        emoji: opt_str_param(doc, "emoji"),
+        icon: opt_str_param(doc, "icon"),
+        online: is_online,
+        updating: false,
+        offline_text: off_txt,
+        reconnecting_text: None,
+        running: 0,
+      })
     }
   }
-  base_codec::json_obj([
-    ("workspaces", base_codec::json_obj(ws_map)),
-    ("badge", base_codec::json_int(0)),
-    (
-      "badgeKinds",
-      base_codec::json_obj([
-        ("on", base_codec::json_bool(true)),
-        ("wait", base_codec::json_bool(true)),
-        ("failed", base_codec::json_bool(true)),
-        ("done", base_codec::json_bool(true)),
-        ("message", base_codec::json_bool(true)),
-        ("services", base_codec::json_bool(true)),
-      ]),
-    ),
-  ])
+  for i in 0..<overview_addrs.length() {
+    let addr = overview_addrs[i]
+    if seen.get(addr).is_some() {
+      continue
+    }
+    let doc = match overview_by_addr.get(addr) {
+      Some(d) => d
+      None => base_codec::json_null()
+    }
+    let sid = match opt_str_param(doc, "id") {
+      Some(s) => s
+      None => if prefix.length() > 0 && addr.starts_with(prefix) {
+        addr.slice(prefix.length(), addr.length())
+      } else {
+        addr
+      }
+    }
+    let sname = match opt_str_param(doc, "name") {
+      Some(s) => s
+      None => sid
+    }
+    let is_online = is_station_online(sess, addr)
+    let off_txt = if is_online {
+      None
+    } else {
+      Some(if lang == "en" { sname + " offline" } else { sname + " 离线" })
+    }
+    out.push(views::StationBrief::{
+      address: addr,
+      id: sid,
+      name: sname,
+      emoji: opt_str_param(doc, "emoji"),
+      icon: opt_str_param(doc, "icon"),
+      online: is_online,
+      updating: false,
+      offline_text: off_txt,
+      reconnecting_text: None,
+      running: 0,
+    })
+  }
+  out
+}
+
+fn resolve_thread_and_chat_meta(
+  sess : RuntimeSession,
+  st : String,
+  thread_opt : Option[Int],
+  session_opt : Option[String],
+) -> (String, Option[Int], Option[base_codec::Json]) {
+  let mut cur_st = st
+  let mut cur_th = thread_opt
+  // Resolve moved chats via `store::resolve_chat_now` before looking up thread/meta.
+  match session_opt {
+    Some(sk) => {
+      if sk.length() > 0 {
+        match store::resolve_chat_now(sess.db, cur_st, sk) {
+          sql::SqlResult::Ok(Some(loc)) => {
+            cur_st = loc.station
+            match loc.thread {
+              Some(mt) => {
+                cur_th = Some(mt)
+              }
+              None => ()
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    None => match cur_th {
+      Some(th) => match store::resolve_chat_now_by_thread(sess.db, cur_st, th) {
+        sql::SqlResult::Ok(Some(loc)) => {
+          cur_st = loc.station
+          match loc.thread {
+            Some(mt) => {
+              cur_th = Some(mt)
+            }
+            None => ()
+          }
+        }
+        _ => ()
+      }
+      None => ()
+    }
+  }
+  match cur_th {
+    Some(th) => {
+      let meta = match store::get_chat_by_thread(sess.db, cur_st, th) {
+        sql::SqlResult::Ok(Some(rec)) => match base_codec::json_parse(rec.json) {
+          base_codec::JsonParseResult::Ok(j) => Some(j)
+          base_codec::JsonParseResult::Err(_) => None
+        }
+        _ => None
+      }
+      return (cur_st, Some(th), meta)
+    }
+    None => ()
+  }
+  match session_opt {
+    Some(sk) => {
+      if sk.length() == 0 {
+        return (cur_st, None, None)
+      }
+      let rec_opt = match store::get_chat_by_session(sess.db, cur_st, sk) {
+        sql::SqlResult::Ok(Some(r)) => Some(r)
+        _ => match store::get_chat_by_key(sess.db, cur_st, 0, sk) {
+          sql::SqlResult::Ok(Some(r)) => Some(r)
+          _ => None
+        }
+      }
+      match rec_opt {
+        Some(rec) => match base_codec::json_parse(rec.json) {
+          base_codec::JsonParseResult::Ok(j) => {
+            let th_opt = match base_codec::json_get(j, "thread") {
+              Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+              _ => None
+            }
+            (cur_st, th_opt, Some(j))
+          }
+          base_codec::JsonParseResult::Err(_) => (cur_st, None, None)
+        }
+        None => (cur_st, None, None)
+      }
+    }
+    None => (cur_st, None, None)
+  }
+}
+
+fn build_workspace_marks_view(sess : RuntimeSession) -> base_codec::Json {
+  let lang = sess_lang(sess)
+  let prefs_json = build_prefs_view(sess)
+  match views::project_workspace_marks(
+    sess.db,
+    sess_viewer_email(sess),
+    viewer_id=sess_viewer_sub(sess),
+    lang=lang,
+    prefs=Some(prefs_json),
+  ) {
+    sql::SqlResult::Ok(j) => j
+    sql::SqlResult::Err(_) => base_codec::json_obj([
+      ("workspaces", base_codec::json_obj([])),
+      ("badge", base_codec::json_int(0)),
+      (
+        "badgeKinds",
+        base_codec::json_obj([
+          ("on", base_codec::json_bool(true)),
+          ("wait", base_codec::json_bool(true)),
+          ("failed", base_codec::json_bool(true)),
+          ("done", base_codec::json_bool(true)),
+          ("message", base_codec::json_bool(true)),
+          ("services", base_codec::json_bool(true)),
+        ]),
+      ),
+    ])
+  }
 }
 
 fn build_new_chat_view() -> base_codec::Json {
@@ -771,7 +1230,25 @@ pub extern "C" fn pion_core_runtime_start(
       if !has_watched {
         let _ = acct.db.exec("ALTER TABLE chat ADD COLUMN watched INTEGER NOT NULL DEFAULT 0")
       }
-      let _ = acct.db.exec(store::sql_ensure_chat_window_indexes())
+      // Align with `client/core-ts/src/db/schema.ts:482-496`: only rebuild `chat_recent` if it lacks `WHERE archived = 0`,
+      // and ensure covering partial `chat_marks` replaces legacy `chat_marked`.
+      match acct.db.all("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'chat_recent'") {
+        sql::SqlResult::Ok(idx_rows) => {
+          if idx_rows.length() > 0 {
+            let idx_sql = sql::col_text(idx_rows[0], 0)
+            if !idx_sql.contains("WHERE archived = 0") {
+              let _ = acct.db.exec("DROP INDEX chat_recent")
+            }
+          }
+        }
+        sql::SqlResult::Err(_) => ()
+      }
+      let _ = acct.db.exec(
+        "CREATE INDEX IF NOT EXISTS chat_recent ON chat (archived, pinned_at DESC, last_active DESC, station, ord, id, mine, hidden, led, watched, thread, session) WHERE archived = 0;\n" +
+        "CREATE INDEX IF NOT EXISTS chat_client ON chat (station, client_key) WHERE client_key IS NOT NULL;\n" +
+        "CREATE INDEX IF NOT EXISTS chat_marks ON chat (station, archived, id, tone, asks) WHERE archived = 0 AND (tone IS NOT NULL OR asks = 1);\n" +
+        "DROP INDEX IF EXISTS chat_marked;"
+      )
     }
     sql::SqlResult::Err(_) => ()
   }
@@ -793,17 +1270,22 @@ pub extern "C" fn pion_core_runtime_start(
     default_ws = "ws-default"
   }
   let mut default_st = "st-local"
-  match store::list_stations(acct.db, kind="overview") {
-    sql::SqlResult::Ok(st_rows) => {
-      let prefix = default_ws + "/"
-      for i in 0..<st_rows.length() {
-        if st_rows[i].address.starts_with(prefix) {
-          default_st = st_rows[i].address
-          break
+  let cloud_default_sts = sync::list_workspace_stations(acct.db, default_ws)
+  if cloud_default_sts.length() > 0 {
+    default_st = default_ws + "/" + cloud_default_sts[0].id
+  } else {
+    match store::list_stations(acct.db, kind="overview") {
+      sql::SqlResult::Ok(st_rows) => {
+        let prefix = default_ws + "/"
+        for i in 0..<st_rows.length() {
+          if st_rows[i].address.starts_with(prefix) {
+            default_st = st_rows[i].address
+            break
+          }
         }
       }
+      sql::SqlResult::Err(_) => ()
     }
-    sql::SqlResult::Err(_) => ()
   }
   let transport = if origin.length() > 0 {
     sync::shell_http_transport(sh, origin)
@@ -835,12 +1317,17 @@ pub extern "C" fn pion_core_runtime_start(
       })
     }
   }
-  g_session[0] = Some(RuntimeSession::{
+  let sess = RuntimeSession::{
     sh: sh,
     db: acct.db,
     core: core,
     accounts: accounts,
     prefs: prefs_map,
+    station_online: Map::new(),
+    runtime_subs: [],
+    kept_vals: Map::new(),
+    kept_order: [],
+    md_stores: Map::new(),
     cloud: cloud_opt,
     origin: origin,
     live_sync_enabled: false,
@@ -852,13 +1339,17 @@ pub extern "C" fn pion_core_runtime_start(
     last_ack_call: 0.0,
     last_ack_ts: 0.0,
     screen_inputs: 0,
-  })
+  }
+  g_session[0] = Some(sess)
   1
 }
 
 fn affected_topic_for_call(call_name : String) -> Option[String] {
   if call_name == "settings.set" {
     return Some("settings")
+  }
+  if call_name == "prefs.set" {
+    return Some("prefs")
   }
   if call_name == "chat.draft" {
     return Some("draft")
@@ -875,10 +1366,12 @@ fn affected_topic_for_call(call_name : String) -> Option[String] {
   if call_name == "download.join" || call_name == "download.leave" {
     return Some("downloads")
   }
-  if call_name == "message.send" || call_name == "message.edit" || call_name == "message.delete" || call_name == "card.answer" {
+  if call_name == "chat.send" || call_name == "decision.answer" {
     return Some("chat")
   }
-  if call_name == "chat.read" || call_name == "chat.rename" {
+  if call_name == "chat.read" || call_name == "chat.rename" || call_name == "chat.pin" ||
+  call_name == "chat.archive" || call_name == "chat.hide" || call_name == "chat.mute" ||
+  call_name == "chat.keep" || call_name == "chat.delete" {
     return Some("chats")
   }
   None
@@ -981,7 +1474,209 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
   })
 }
 
-fn handle_runtime_subscribe(sess : RuntimeSession, id : Int64, topic : protocol::Topic) -> Bool {
+fn evaluate_runtime_topic(
+  sess : RuntimeSession,
+  id : Int64,
+  topic : protocol::Topic,
+  changed_keys : Option[Array[(String, String)]] = None,
+) -> Option[protocol::CoreEvent] {
+  let tname = topic.name
+  let lang = sess_lang(sess)
+  let now_ms = pion_core_wall_now_ms()
+  let utc_offset_min = pion_core_utc_offset_min(now_ms)
+
+  if tname == "chats" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => sess.core.workspace
+    }
+    let mine_only = match topic.param("mine") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    let watching_only = match topic.param("watching") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    let hidden_mode = match topic.param("hidden") {
+      Some(base_codec::Json::Bool(true)) => 1
+      _ => 0
+    }
+    let briefs = station_briefs_live(sess, ws_scope)
+    match views::project_chats(
+      sess.db,
+      ws_scope,
+      briefs,
+      now_ms,
+      sess.core.rows_memo,
+      sess.core.viewer_marks,
+      mine_only=mine_only,
+      watching_only=watching_only,
+      hidden_mode=hidden_mode,
+      tz_offset_ms=utc_offset_min.to_int64() * 60000L,
+      changed_keys=changed_keys,
+      lang=lang,
+    ) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if tname == "chat" {
+    let st = match topic.param("station") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { sess.core.station }
+      _ => sess.core.station
+    }
+    let th_param : Option[Int] = match topic.param("thread") {
+      Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+      _ => None
+    }
+    let sess_param : Option[String] = match topic.param("session") {
+      Some(base_codec::Json::Str(s)) => Some(s)
+      _ => match topic.param("key") {
+        Some(base_codec::Json::Str(s)) => Some(s)
+        _ => None
+      }
+    }
+    let (resolved_st, th_opt, chat_meta) = resolve_thread_and_chat_meta(sess, st, th_param, sess_param)
+    let th = match th_opt {
+      Some(t) => t
+      None => return Some(protocol::CoreEvent::Waiting(id))
+    }
+    let md = if resolved_st == sess.core.md_store.station {
+      sess.core.md_store
+    } else {
+      match sess.md_stores.get(resolved_st) {
+        Some(ms) => ms
+        None => {
+          let ms = store::MdStore::new(sess.db, resolved_st)
+          sess.md_stores.set(resolved_st, ms)
+          ms
+        }
+      }
+    }
+    let online = is_station_online(sess, resolved_st)
+    let ws_of_st = match resolved_st.index_of("/") {
+      idx if idx > 0 => resolved_st.slice(0, idx)
+      _ => sess.core.workspace
+    }
+    let briefs = station_briefs_live(sess, ws_of_st)
+    let mut sname = resolved_st
+    for i in 0..<briefs.length() {
+      if briefs[i].address == resolved_st {
+        sname = briefs[i].name
+        break
+      }
+    }
+    match views::project_chat(
+      sess.db,
+      md,
+      resolved_st,
+      th,
+      sess_viewer_email(sess),
+      now_ms,
+      utc_offset_min=utc_offset_min,
+      lang=lang,
+      online=online,
+      station_name=sname,
+      chat_meta=chat_meta,
+    ) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if tname == "stations" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => sess.core.workspace
+    }
+    let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
+    let overview_by_addr : Map[String, base_codec::Json] = Map::new()
+    let overview_addrs : Array[String] = []
+    match store::list_stations(sess.db, kind="overview") {
+      sql::SqlResult::Ok(rows) => {
+        for i in 0..<rows.length() {
+          let r = rows[i]
+          if prefix.length() > 0 && !r.address.starts_with(prefix) {
+            continue
+          }
+          let doc = match base_codec::json_parse(r.json) {
+            base_codec::JsonParseResult::Ok(j) => j
+            base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+          }
+          overview_by_addr.set(r.address, doc)
+          overview_addrs.push(r.address)
+        }
+      }
+      sql::SqlResult::Err(_) => ()
+    }
+    let out : Array[base_codec::Json] = []
+    let seen : Map[String, Bool] = Map::new()
+    let push_station_item = fn(addr : String, sid : String, fallback_name : String, doc : base_codec::Json) -> Unit {
+      let sname = match opt_str_param(doc, "name") {
+        Some(s) => s
+        None => if fallback_name.length() > 0 { fallback_name } else { sid }
+      }
+      let online = is_station_online(sess, addr)
+      let st_txt = if online {
+        if lang == "en" { "Online" } else { "在线" }
+      } else {
+        if lang == "en" { "Offline" } else { "离线" }
+      }
+      let joined = match base_codec::json_get(doc, "joined") { Some(base_codec::Json::Bool(b)) => b; _ => false }
+      let mine = match base_codec::json_get(doc, "mine") { Some(base_codec::Json::Bool(b)) => b; _ => false }
+      let accept_auto = match base_codec::json_get(doc, "acceptAutoChats") { Some(base_codec::Json::Bool(b)) => b; _ => false }
+      let problems = match base_codec::json_get(doc, "problems") { Some(base_codec::Json::Arr(xs)) => base_codec::json_arr(xs); _ => base_codec::json_arr([]) }
+      let sf : Array[(String, base_codec::Json)] = [
+        ("station", base_codec::json_str(addr)),
+        ("id", base_codec::json_str(sid)),
+        ("name", base_codec::json_str(sname)),
+        ("summary", base_codec::json_str(st_txt)),
+        ("online", base_codec::json_bool(online)),
+        ("reconnecting", base_codec::json_bool(false)),
+        ("stateText", base_codec::json_str(st_txt)),
+        ("stateBusy", base_codec::json_bool(false)),
+        ("problems", problems),
+        ("joined", base_codec::json_bool(joined)),
+        ("mine", base_codec::json_bool(mine)),
+        ("acceptAutoChats", base_codec::json_bool(accept_auto)),
+      ]
+      match opt_str_param(doc, "emoji") { Some(e) => sf.push(("emoji", base_codec::json_str(e))); None => () }
+      match opt_str_param(doc, "icon") { Some(ic) => sf.push(("icon", base_codec::json_str(ic))); None => () }
+      match opt_str_param(doc, "version") { Some(v) => sf.push(("version", base_codec::json_str(v))); None => () }
+      match base_codec::json_get(doc, "counts") { Some(c) => sf.push(("counts", c)); None => () }
+      out.push(base_codec::json_obj(sf))
+    }
+    if ws_scope.length() > 0 {
+      let cloud_sts = sync::list_workspace_stations(sess.db, ws_scope)
+      for i in 0..<cloud_sts.length() {
+        let cs = cloud_sts[i]
+        let addr = ws_scope + "/" + cs.id
+        seen.set(addr, true)
+        let doc = match overview_by_addr.get(addr) { Some(d) => d; None => base_codec::json_null() }
+        push_station_item(addr, cs.id, cs.name, doc)
+      }
+    }
+    for i in 0..<overview_addrs.length() {
+      let addr = overview_addrs[i]
+      if seen.get(addr).is_some() {
+        continue
+      }
+      let doc = match overview_by_addr.get(addr) { Some(d) => d; None => base_codec::json_null() }
+      let sid = match opt_str_param(doc, "id") {
+        Some(s) => s
+        None => if prefix.length() > 0 && addr.starts_with(prefix) { addr.slice(prefix.length(), addr.length()) } else { addr }
+      }
+      push_station_item(addr, sid, sid, doc)
+    }
+    return Some(protocol::CoreEvent::Value(id, base_codec::json_arr(out), None))
+  }
+  if tname == "workspaceMarks" {
+    return Some(protocol::CoreEvent::Value(id, build_workspace_marks_view(sess), None))
+  }
+  handle_runtime_subscribe(sess, id, topic)
+}
+
+fn handle_runtime_subscribe(sess : RuntimeSession, id : Int64, topic : protocol::Topic) -> Option[protocol::CoreEvent] {
   let tname = topic.name
   let val_opt : Option[base_codec::Json] = if tname == "accounts" {
     Some(build_accounts_topic_json(sess))
@@ -996,8 +1691,6 @@ fn handle_runtime_subscribe(sess : RuntimeSession, id : Int64, topic : protocol:
       ("pairing", base_codec::json_arr([])),
       ("asks", base_codec::json_arr([])),
     ]))
-  } else if tname == "workspaceMarks" {
-    Some(build_workspace_marks_view(sess))
   } else if tname == "status" {
     Some(base_codec::json_obj([
       ("items", base_codec::json_arr([])),
@@ -1048,13 +1741,8 @@ fn handle_runtime_subscribe(sess : RuntimeSession, id : Int64, topic : protocol:
     None
   }
   match val_opt {
-    Some(v) => {
-      let ev = protocol::CoreEvent::Value(id, v, None)
-      let (out_j, out_b) = protocol::encode_core_event(ev)
-      emit_wire(out_j, payload=out_b)
-      true
-    }
-    None => false
+    Some(v) => Some(protocol::CoreEvent::Value(id, v, None))
+    None => None
   }
 }
 
@@ -1096,10 +1784,71 @@ pub extern "C" fn pion_core_runtime_send(
     }
     protocol::ParseRequestResult::Ok(req) => {
       match req {
-        protocol::CoreRequest::Subscribe(id, topic, _, _, _) => {
-          if handle_runtime_subscribe(sess, id, topic) {
-            drain_and_emit(sess)
-            return
+        protocol::CoreRequest::Subscribe(id, topic, keyed, _from_id, have) => {
+          match evaluate_runtime_topic(sess, id, topic) {
+            Some(ev) => {
+              let val_opt : Option[base_codec::Json] = match ev {
+                protocol::CoreEvent::Value(_, v, _) => Some(v)
+                _ => None
+              }
+              // Register live subscription in `sess.runtime_subs` (replacing any prior entry with same `id`).
+              let mut replaced = false
+              for i in 0..<sess.runtime_subs.length() {
+                if sess.runtime_subs[i].id == id {
+                  sess.runtime_subs[i] = RuntimeSub::{ id: id, topic: topic, keyed: keyed, last_val: val_opt }
+                  replaced = true
+                  break
+                }
+              }
+              if !replaced {
+                sess.runtime_subs.push(RuntimeSub::{ id: id, topic: topic, keyed: keyed, last_val: val_opt })
+              }
+              let out_ev = match (have, val_opt) {
+                (Some(tok), Some(cur_val)) => match sess.kept_vals.get(tok) {
+                  Some(prev_val) => {
+                    if protocol::json_equal(prev_val, cur_val) {
+                      protocol::CoreEvent::Same(id)
+                    } else if keyed {
+                      let ops = protocol::diff_keyed(prev_val, cur_val, protocol::spec_for_topic(topic.name))
+                      protocol::CoreEvent::Delta(id, ops, None, true)
+                    } else {
+                      ev
+                    }
+                  }
+                  None => ev
+                }
+                _ => ev
+              }
+              let (out_j, out_b) = protocol::encode_core_event(out_ev)
+              emit_wire(out_j, payload=out_b)
+              drain_and_emit(sess)
+              flush_session_md_stores(sess)
+              return
+            }
+            None => {
+              // Falling back to `sess.core`: drop any stale runtime subscription with the same `id`.
+              let _ = remove_runtime_sub(sess, id)
+            }
+          }
+        }
+        protocol::CoreRequest::Unsubscribe(id, _, keep) => {
+          match remove_runtime_sub(sess, id) {
+            Some(removed) => {
+              if keep {
+                match removed.last_val {
+                  Some(v) => {
+                    let tok = protocol::value_token(v)
+                    kept_put(sess, tok, v)
+                    let (uj, ub) = protocol::encode_core_event(protocol::CoreEvent::Unsubscribed(id, Some(tok)))
+                    emit_wire(uj, payload=ub)
+                  }
+                  None => ()
+                }
+              }
+              drain_and_emit(sess)
+              return
+            }
+            None => ()
           }
         }
         protocol::CoreRequest::Call(id, call_name, params, _) => {
@@ -1152,19 +1901,71 @@ pub extern "C" fn pion_core_runtime_send(
             return
           }
           if call_name == "prefs.set" {
+            let cur_pairs : Array[(String, base_codec::Json)] = []
+            let cks = sess.prefs.keys()
+            for i in 0..<cks.length() {
+              match sess.prefs.get(cks[i]) {
+                Some(v) => cur_pairs.push((cks[i], v))
+                None => ()
+              }
+            }
+            let current_json = base_codec::json_obj(cur_pairs)
+            let mut fill_flag = false
+            let patch_pairs : Array[(String, base_codec::Json)] = []
             match params {
               base_codec::Json::Obj(pairs) => {
                 for i in 0..<pairs.length() {
                   let (k, v) = pairs[i]
-                  sess.prefs.set(k, v)
+                  if k == "fill" {
+                    match v {
+                      base_codec::Json::Bool(b) => { fill_flag = b }
+                      _ => ()
+                    }
+                  } else {
+                    patch_pairs.push((k, v))
+                  }
                 }
               }
               _ => ()
             }
-            let (out_j, out_b) = protocol::encode_core_event(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
-            emit_wire(out_j, payload=out_b)
-            drain_and_emit(sess)
-            return
+            match store::apply_prefs_patch(current_json, base_codec::json_obj(patch_pairs), fill_flag, pion_core_wall_now_ms()) {
+              Err(msg) => {
+                let err_ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: msg })
+                let (out_j, out_b) = protocol::encode_core_event(err_ev)
+                emit_wire(out_j, payload=out_b)
+                drain_and_emit(sess)
+                return
+              }
+              Ok(next_prefs) => {
+                match write_storage_json(sess.sh, "device/prefs", base_codec::json_obj([("device", next_prefs)])) {
+                  Err(msg) => {
+                    let err_ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "storage_error", message: msg })
+                    let (out_j, out_b) = protocol::encode_core_event(err_ev)
+                    emit_wire(out_j, payload=out_b)
+                    drain_and_emit(sess)
+                    return
+                  }
+                  Ok(_) => ()
+                }
+                sess.prefs.clear()
+                match next_prefs {
+                  base_codec::Json::Obj(npairs) => {
+                    for i in 0..<npairs.length() {
+                      let (k, v) = npairs[i]
+                      sess.prefs.set(k, v)
+                    }
+                  }
+                  _ => ()
+                }
+                let (out_j, out_b) = protocol::encode_core_event(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
+                emit_wire(out_j, payload=out_b)
+                emit_topic_refresh(sess, "prefs")
+                emit_topic_refresh(sess, "chats")
+                emit_topic_refresh(sess, "workspaceMarks")
+                drain_and_emit(sess)
+                return
+              }
+            }
           }
           if call_name == "cloud.sync" {
             handle_cloud_sync_call(sess, id, params)
@@ -1172,8 +1973,10 @@ pub extern "C" fn pion_core_runtime_send(
             return
           }
           if call_name == "station.connect" {
-            sess.live_sync_enabled = true
-            sess.core.start()
+            if !sess.live_sync_enabled {
+              sess.live_sync_enabled = true
+              sess.core.start()
+            }
             let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
               ("connecting", base_codec::json_bool(true)),
               ("station", base_codec::json_str(sess.core.station)),
@@ -1187,8 +1990,37 @@ pub extern "C" fn pion_core_runtime_send(
         }
         _ => ()
       }
-      let refresh_topic = match req {
-        protocol::CoreRequest::Call(_, call_name, _, _) => affected_topic_for_call(call_name)
+      let refresh_info : Option[(String, Option[Array[(String, String)]])] = match req {
+        protocol::CoreRequest::Call(_, call_name, params, _) => match affected_topic_for_call(call_name) {
+          Some(tn) => {
+            let ck : Option[Array[(String, String)]] = if tn == "chats" {
+              match (opt_str_param(params, "station"), opt_str_param(params, "id")) {
+                (Some(s), Some(cid)) => Some([(s, cid)])
+                _ => match (opt_str_param(params, "station"), opt_str_param(params, "session")) {
+                  (Some(s), Some(cid)) => Some([(s, cid)])
+                  _ => match base_codec::json_get(params, "thread") {
+                    Some(base_codec::Json::Num(n, _)) => {
+                      let th = n.to_int()
+                      let st_addr = match opt_str_param(params, "station") {
+                        Some(s) => if s.length() > 0 { s } else { sess.core.station }
+                        None => sess.core.station
+                      }
+                      match store::get_chat_by_thread(sess.db, st_addr, th) {
+                        sql::SqlResult::Ok(Some(rec)) => Some([(st_addr, rec.id)])
+                        _ => None
+                      }
+                    }
+                    _ => None
+                  }
+                }
+              }
+            } else {
+              None
+            }
+            Some((tn, ck))
+          }
+          None => None
+        }
         _ => None
       }
       match sess.core.handle_request(req) {
@@ -1199,12 +2031,11 @@ pub extern "C" fn pion_core_runtime_send(
         None => ()
       }
       drain_and_emit(sess)
-      match refresh_topic {
-        Some(tname) => {
-          let deltas = sess.core.refresh_topic(tname)
-          for i in 0..<deltas.length() {
-            let (dj, db) = protocol::encode_core_event(deltas[i])
-            emit_wire(dj, payload=db)
+      match refresh_info {
+        Some((tname, ck)) => {
+          emit_topic_refresh(sess, tname, changed_keys=ck)
+          if tname == "chats" || tname == "chat" {
+            emit_topic_refresh(sess, "workspaceMarks")
           }
         }
         None => ()

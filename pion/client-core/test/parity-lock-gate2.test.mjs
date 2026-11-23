@@ -622,6 +622,8 @@ url = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "url-v0.1.0
 time = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "time-v0.1.0", subdir = "packages/time" }
 http1 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "http1-v0.1.0", subdir = "packages/http1" }
 json5 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "json5-v0.1.0", subdir = "packages/json5" }
+markdown = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "markdown-v0.2.1", subdir = "packages/markdown" }
+regex = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "regex-v0.1.0", subdir = "packages/regex" }
 base_codec = { path = "${baseDir}/base_codec" }
 wire = { path = "${baseDir}/wire" }
 shell = { path = "${baseDir}/shell" }

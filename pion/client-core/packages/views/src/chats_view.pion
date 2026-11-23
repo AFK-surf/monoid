@@ -125,12 +125,8 @@ fn parse_json_or_null(raw : String) -> base_codec::Json {
 }
 
 fn local_day_index(ms : Int64, tz_offset_ms : Int64) -> Int64 {
-  let shifted = ms + tz_offset_ms
-  if shifted >= 0.to_int64() {
-    shifted / day_ms_i64
-  } else {
-    (shifted - day_ms_i64 + 1.to_int64()) / day_ms_i64
-  }
+  let offset_min = (tz_offset_ms / 60000.to_int64()).to_int()
+  local_day(ms, offset_min)
 }
 
 fn day_bucket_label(days_ago : Int64) -> String {
@@ -142,6 +138,18 @@ fn day_bucket_label(days_ago : Int64) -> String {
     "昨天"
   } else {
     days_ago.to_string() + " 天前"
+  }
+}
+
+fn day_bucket_label_at(days_ago : Int64, bucket_at : Int64, now_ms : Int64, utc_offset_min : Int, lang : String) -> String {
+  if days_ago == -1L {
+    if lang == "en" { "Pinned" } else { "已固定" }
+  } else if days_ago <= 0L {
+    if lang == "en" { "Today" } else { "今天" }
+  } else if days_ago == 1L {
+    if lang == "en" { "Yesterday" } else { "昨天" }
+  } else {
+    format_day_label(bucket_at, now_ms, utc_offset_min, lang)
   }
 }
 
@@ -228,6 +236,7 @@ struct MemoEntry {
   index_fp : String
   row_fp : String
   raw_json : String
+  db_unread : Option[Int]
   row : base_codec::Json
   pinned_at : Option[Int64]
   last_active : Int64
@@ -235,21 +244,28 @@ struct MemoEntry {
   client_key : Option[String]
 }
 
-/// Incremental row memoization keyed by `(station, id)` (`rows-made.ts RowsMemo`).
+/// Incremental row memoization keyed by `(scope, station, id)` with bounded LRU eviction (`rows-made.ts RowsMemo`).
 /// Unchanged rows reuse their immutable projected `ListedChat` JSON without re-reading
-/// or re-projecting, keeping single-chat updates at 1–2 rows regardless of total chats.
+/// or re-projecting, keeping single-chat updates at 1–2 rows regardless of total chats
+/// and preserving independent workspace slots across workspace switches.
 pub struct RowsMemo {
   pub mut whole : String
+  scope_wholes : Map[String, String]
   rows : Map[String, MemoEntry]
+  lru_keys : Array[String]
   pub mut rows_made : Int
   pub mut rows_reused : Int
   pub mut json_reads : Int
 }
 
+let memo_max_entries : Int = 512
+
 pub fn RowsMemo::new() -> RowsMemo {
   RowsMemo::{
     whole: "",
+    scope_wholes: Map::new(),
     rows: Map::new(),
+    lru_keys: [],
     rows_made: 0,
     rows_reused: 0,
     json_reads: 0,
@@ -266,8 +282,33 @@ pub fn RowsMemo::cached_count(self : RowsMemo) -> Int {
   self.rows.length()
 }
 
+fn memo_put(memo : RowsMemo, key : String, entry : MemoEntry) -> Unit {
+  let existed = memo.rows.get(key).is_some()
+  memo.rows.set(key, entry)
+  if !existed {
+    memo.lru_keys.push(key)
+    while memo.rows.length() > memo_max_entries && memo.lru_keys.length() > 0 {
+      let oldest = memo.lru_keys[0]
+      // Compact front slice (bounded by memo_max_entries)
+      let next_keys : Array[String] = []
+      for i in 1..<memo.lru_keys.length() {
+        next_keys.push(memo.lru_keys[i])
+      }
+      memo.lru_keys.clear()
+      for i in 0..<next_keys.length() {
+        memo.lru_keys.push(next_keys[i])
+      }
+      memo.rows.remove(oldest)
+    }
+  }
+}
+
 fn memo_key(station : String, id : String) -> String {
   station + "\u{01}" + id
+}
+
+fn scoped_memo_key(ws_scope : String, station : String, id : String) -> String {
+  ws_scope + "\u{01}" + station + "\u{01}" + id
 }
 
 struct ChatChangeOverlay {
@@ -448,6 +489,40 @@ fn marks_fingerprint(
   }
 }
 
+/// Read `json` and SQL `unread` column for `(station, archived, id)` (matches `client/core-ts/src/db/chats.ts`).
+/// Falls back to `store::get_chat_by_key` when a minimal in-memory test double only implements `sql_chat_by_key`.
+fn get_chat_json_and_unread(
+  db : sql::Sql,
+  station : String,
+  archived : Int,
+  id : String,
+) -> sql::SqlResult[Option[(String, Option[Int])]] {
+  match db.all(
+    "SELECT json, unread FROM chat WHERE station = ? AND archived = ? AND id = ?",
+    params=[
+      base_codec::json_str(station),
+      base_codec::json_int(archived),
+      base_codec::json_str(id),
+    ],
+  ) {
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        let u = match sql::col_opt_int64(rows[0], 1) {
+          Some(v) => Some(v.to_int())
+          None => None
+        }
+        return sql::SqlResult::Ok(Some((sql::col_text(rows[0], 0), u)))
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+  match store::get_chat_by_key(db, station, archived, id) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(Some(rec)) => sql::SqlResult::Ok(Some((rec.json, None)))
+    sql::SqlResult::Ok(None) => sql::SqlResult::Ok(None)
+  }
+}
+
 /// Project one raw chat record JSON + overlays + viewer marks into a conformed `ListedChat`.
 /// Strips detail-only fields (such as `watch`, `swipeAsk`, `decision`, `slackUrl`, etc.).
 fn build_listed_chat(
@@ -460,6 +535,9 @@ fn build_listed_chat(
   overlay : ChatChangeOverlay,
   has_draft : Bool,
   marks : ViewerMarks,
+  db_unread : Option[Int] = None,
+  now_ms : Int64 = 0L,
+  lang : String = "zh",
 ) -> (base_codec::Json, Option[Int64], Int64, Bool, Option[String]) {
   let session = match j_opt_str(raw, "session") {
     Some(s) => s
@@ -470,13 +548,44 @@ fn build_listed_chat(
   let title = match overlay.rename_title {
     Some(t) => t
     None => match j_opt_str_any(raw, "title") {
-      Some(t) => t
-      None => "新对话"
+      Some(t) => if t.length() > 0 { t } else if lang == "en" { "New chat" } else { "新对话" }
+      None => if lang == "en" { "New chat" } else { "新对话" }
     }
   }
 
-  // Pinned state: changing overlay -> viewer marks -> DB column -> raw JSON
-  let mut pinned_at : Option[Int64] = db_pinned_at
+  // Pinned state: strictly aligned with `views.ts` (`typeof raw.pinned === "number"`).
+  // If `raw` explicitly has `"pinned"`, obey it; only fall back to `db_pinned_at` (> 0) when `raw.pinned` is absent.
+  let raw_pinned_opt = base_codec::json_get(raw, "pinned")
+  let raw_has_pinned = raw_pinned_opt.is_some()
+  let mut pinned_at : Option[Int64] = None
+  match raw_pinned_opt {
+    Some(pv) => match pv {
+      base_codec::Json::Num(n, repr) => {
+        let v = if repr.length() > 0 {
+          match base_codec::parse_int64_str(repr) {
+            Some(iv) => iv
+            None => n.to_int64()
+          }
+        } else {
+          n.to_int64()
+        }
+        if v != 0L {
+          pinned_at = Some(v)
+        }
+      }
+      base_codec::Json::Bool(b) => if b {
+        match db_pinned_at {
+          Some(v) => if v != 0L { pinned_at = Some(v) } else { pinned_at = Some(db_last_active) }
+          None => { pinned_at = Some(db_last_active) }
+        }
+      }
+      _ => ()
+    }
+    None => match db_pinned_at {
+      Some(v) => if v != 0L { pinned_at = Some(v) }
+      None => ()
+    }
+  }
   match marks.pins.get(station_brief.address + ":" + row_id) {
     Some(at) => {
       pinned_at = Some(at)
@@ -504,7 +613,11 @@ fn build_listed_chat(
   }
 
   // Viewer-only marks: unread, mine, quoted, hidden
-  let mut unread = j_bool(raw, "unread")
+  // Prefer SQL `chat.unread` column over stripped `chat.json` (matches `client/core-ts/src/db/chats.ts`).
+  let mut unread = match db_unread {
+    Some(u) => u != 0
+    None => j_bool(raw, "unread")
+  }
   let mut quoted = false
   let mut hidden = j_opt_bool(raw, "hidden")
   match thread {
@@ -541,16 +654,191 @@ fn build_listed_chat(
     }
   }
 
-  // Compute tone (most urgent first: alert -> wait -> busy -> done)
-  let state_opt = j_opt_str(raw, "state")
+  let raw_agents = j_arr(raw, "agents")
+  let listed_agents : Array[base_codec::Json] = []
+  for ai in 0..<raw_agents.length() {
+    listed_agents.push(present_listed_agent(raw_agents[ai], lang=lang))
+  }
+
+  // Compute state & tone (most urgent first: alert -> wait -> busy -> done)
+  let state_opt = match j_opt_str(raw, "state") {
+    Some(s) => Some(s)
+    None => row_state(raw_agents)
+  }
+  let me_json = base_codec::json_obj([("email", base_codec::json_str(marks.me))])
   let tone_opt = match j_opt_str(raw, "tone") {
     Some(t) => Some(t)
     None => {
-      match state_opt {
-        Some("failed") => Some("alert")
-        Some("block") => Some("wait")
-        Some("run") => Some("busy")
-        _ => if unread { Some("done") } else { None }
+      if decision_for_viewer(raw, me_json).is_some() {
+        Some("wait")
+      } else {
+        match state_opt {
+          Some("failed") => Some("alert")
+          Some("block") => Some("wait")
+          Some("run") => Some("busy")
+          _ => if unread { Some("done") } else { None }
+        }
+      }
+    }
+  }
+
+  // Project `last` into conformed `RowMessage` (`seq`, `by: { mine }`, `preview`)
+  let last_out : Option[base_codec::Json] = match base_codec::json_get(raw, "last") {
+    Some(last_obj) => match last_obj {
+      base_codec::Json::Obj(_) => {
+        let raw_text = match j_opt_str_any(last_obj, "text") {
+          Some(t) => t
+          None => j_str(last_obj, "preview")
+        }
+        let cleaned = plain_text_preview(raw_text, lang=lang)
+        let preview = if cleaned.length() == 0 {
+          if lang == "en" { "(File)" } else { "（文件）" }
+        } else {
+          cleaned
+        }
+        let last_seq = match j_opt_int(last_obj, "seq") {
+          Some(s) => s
+          None => 0
+        }
+        let ak = match j_opt_str(last_obj, "authorKind") {
+          Some(k) => k
+          None => "person"
+        }
+        let mut last_mine = false
+        if ak != "agent" && ak != "station" && ak != "ember" && ak != "stillfail" {
+          let au = j_str(last_obj, "author")
+          if au.length() > 0 && marks.me.length() > 0 && ascii_lower(au) == ascii_lower(marks.me) {
+            last_mine = true
+          } else {
+            for si in 0..<marks.selves.length() {
+              if au.length() > 0 && ascii_lower(au) == ascii_lower(marks.selves[si]) {
+                last_mine = true
+                break
+              }
+            }
+          }
+        }
+        Some(base_codec::json_obj([
+          ("seq", base_codec::json_int(last_seq)),
+          ("by", base_codec::json_obj([("mine", base_codec::json_bool(last_mine))])),
+          ("preview", base_codec::json_str(preview)),
+        ]))
+      }
+      _ => None
+    }
+    None => None
+  }
+
+  // Conform `people` (`RowPerson[]`) and `creator` (`RowCreator`)
+  let people_out : Option[base_codec::Json] = match base_codec::json_get(raw, "people") {
+    Some(base_codec::Json::Arr(ps)) => {
+      let arr_out : Array[base_codec::Json] = []
+      for pi in 0..<ps.length() {
+        let p = ps[pi]
+        let pid = j_str(p, "id")
+        let pemail = j_opt_str(p, "email")
+        let shown_obj = match base_codec::json_get(p, "shown") {
+          Some(so) => match so {
+            base_codec::Json::Obj(_) => {
+              let sf : Array[(String, base_codec::Json)] = [
+                ("name", base_codec::json_str(j_str(so, "name"))),
+                ("mine", base_codec::json_bool(j_bool(so, "mine"))),
+              ]
+              push_opt_str(sf, "picture", j_opt_str(so, "picture"))
+              base_codec::json_obj(sf)
+            }
+            _ => {
+              let nm = match j_opt_str(p, "name") {
+                Some(n) => n
+                None => match pemail {
+                  Some(e) => e
+                  None => pid
+                }
+              }
+              let sf : Array[(String, base_codec::Json)] = [
+                ("name", base_codec::json_str(nm)),
+                ("mine", base_codec::json_bool(is_viewer_person(p, marks))),
+              ]
+              push_opt_str(sf, "picture", j_opt_str(p, "picture"))
+              base_codec::json_obj(sf)
+            }
+          }
+          None => {
+            let nm = match j_opt_str(p, "name") {
+              Some(n) => n
+              None => match pemail {
+                Some(e) => e
+                None => pid
+              }
+            }
+            let sf : Array[(String, base_codec::Json)] = [
+              ("name", base_codec::json_str(nm)),
+              ("mine", base_codec::json_bool(is_viewer_person(p, marks))),
+            ]
+            push_opt_str(sf, "picture", j_opt_str(p, "picture"))
+            base_codec::json_obj(sf)
+          }
+        }
+        let pf : Array[(String, base_codec::Json)] = [
+          ("id", base_codec::json_str(pid)),
+          ("shown", shown_obj),
+        ]
+        push_opt_str(pf, "email", pemail)
+        arr_out.push(base_codec::json_obj(pf))
+      }
+      Some(base_codec::json_arr(arr_out))
+    }
+    _ => None
+  }
+  let creator_out : Option[base_codec::Json] = match base_codec::json_get(raw, "creator") {
+    Some(c) => match j_opt_str(c, "id") {
+      Some(cid) => Some(base_codec::json_obj([("id", base_codec::json_str(cid))]))
+      None => match j_opt_str(c, "email") {
+        Some(em) => Some(base_codec::json_obj([("id", base_codec::json_str(em))]))
+        None => None
+      }
+    }
+    None => None
+  }
+
+  let last_active = match j_opt_int64(raw, "lastActiveAt") {
+    Some(v) => if v > db_last_active { v } else { db_last_active }
+    None => db_last_active
+  }
+
+  // Compute state line & archive hint (`present.rowStateLine` + `views.ts archivingOf`)
+  let mut state_text_out = j_opt_str(raw, "stateText")
+  let mut state_lead_out = j_opt_str(raw, "stateLead")
+  let mut state_lead_text_out = j_opt_str(raw, "stateLeadText")
+  let mut state_rest_out = j_opt_str(raw, "stateRest")
+  let mut settled_out = j_opt_bool(raw, "settled")
+  if state_text_out.is_none() && state_lead_out.is_none() {
+    let has_pending_card = decision_for_viewer(raw, me_json).is_some()
+    let mut all_done_ending = raw_agents.length() > 0
+    for ai in 0..<raw_agents.length() {
+      let ending = match base_codec::json_get(raw_agents[ai], "lastTurn") {
+        Some(lt) => j_str(lt, "ending")
+        None => ""
+      }
+      if ending != "all_done" {
+        all_done_ending = false
+      }
+    }
+    if has_pending_card {
+      let word = if lang == "en" { "Needs input" } else { "待处理" }
+      state_text_out = Some(word)
+      state_lead_out = Some("decision")
+      state_lead_text_out = Some(word)
+      state_rest_out = Some("")
+    } else if all_done_ending && state_opt.is_none() {
+      let done_word = if lang == "en" { "Done" } else { "已完成" }
+      state_text_out = Some(done_word)
+      state_lead_out = Some("done")
+      state_rest_out = Some("")
+      if settled_out.is_none() && !is_pinned && last_active > 0L {
+        if j_bool(raw, "archiveRecommended") || (now_ms > 0L && now_ms - last_active >= 86400000L) {
+          settled_out = Some(true)
+        }
       }
     }
   }
@@ -563,7 +851,7 @@ fn build_listed_chat(
     ("stationName", base_codec::json_str(station_brief.name)),
     ("title", base_codec::json_str(title)),
     ("unread", base_codec::json_bool(unread)),
-    ("agents", base_codec::json_arr(j_arr(raw, "agents"))),
+    ("agents", base_codec::json_arr(listed_agents)),
   ]
   let _ = mine
   push_opt_int(out, "thread", thread)
@@ -573,25 +861,27 @@ fn build_listed_chat(
     push_opt_str(out, "stationIcon", station_brief.icon)
   }
   push_opt_bool(out, "hidden", hidden)
-  push_opt_bool(out, "settled", j_opt_bool(raw, "settled"))
+  push_opt_bool(out, "settled", settled_out)
   push_opt_str(out, "tone", tone_opt)
   push_opt_str(out, "state", state_opt)
   push_opt_str(out, "connect", j_opt_str(raw, "connect"))
   push_opt_str(out, "originKind", j_opt_str(raw, "originKind"))
   push_opt_str(out, "originText", j_opt_str(raw, "originText"))
   push_opt_json(out, "opener", base_codec::json_get(raw, "opener"))
-  push_opt_str(out, "stateText", j_opt_str(raw, "stateText"))
-  push_opt_str(out, "stateLead", j_opt_str(raw, "stateLead"))
-  push_opt_str(out, "stateLeadText", j_opt_str(raw, "stateLeadText"))
-  push_opt_str(out, "stateRest", j_opt_str(raw, "stateRest"))
+  push_opt_str(out, "stateText", state_text_out)
+  push_opt_str(out, "stateLead", state_lead_out)
+  push_opt_str(out, "stateLeadText", state_lead_text_out)
+  push_opt_str(out, "stateRest", state_rest_out)
   push_opt_int(out, "stateAbout", j_opt_int(raw, "stateAbout"))
   push_opt_bool(out, "unsent", j_opt_bool(raw, "unsent"))
-  push_opt_json(out, "last", base_codec::json_get(raw, "last"))
-  push_opt_json(out, "people", base_codec::json_get(raw, "people"))
-  push_opt_json(out, "creator", base_codec::json_get(raw, "creator"))
+  push_opt_json(out, "last", last_out)
+  push_opt_json(out, "people", people_out)
+  push_opt_json(out, "creator", creator_out)
   push_opt_str(out, "peopleText", j_opt_str(raw, "peopleText"))
   if is_pinned {
     out.push(("pinned", base_codec::json_bool(true)))
+  } else if raw_has_pinned {
+    out.push(("pinned", base_codec::json_bool(false)))
   }
   let _ = has_draft
   let _ = quoted
@@ -602,10 +892,6 @@ fn build_listed_chat(
   push_opt_str(out, "subchats", j_opt_str(raw, "subchats"))
   push_opt_bool(out, "archiveRead", j_opt_bool(raw, "archiveRead"))
 
-  let last_active = match j_opt_int64(raw, "lastActiveAt") {
-    Some(v) => if v > db_last_active { v } else { db_last_active }
-    None => db_last_active
-  }
   (base_codec::json_obj(out), pinned_at, last_active, is_archived, client_key)
 }
 
@@ -665,7 +951,9 @@ pub fn project_chats(
   hidden_mode : Int = 0,
   tz_offset_ms : Int64 = 0.to_int64(),
   changed_keys : Option[Array[(String, String)]] = None,
+  lang : String = "zh",
 ) -> sql::SqlResult[base_codec::Json] {
+  let utc_offset_min = (tz_offset_ms / 60000.to_int64()).to_int()
   let multi_station = stations.length() > 1
   let station_addrs : Array[String] = []
   let station_map : Map[String, StationBrief] = Map::new()
@@ -675,13 +963,12 @@ pub fn project_chats(
     station_map.set(st.address, st)
   }
 
-  let whole_sig = workspace + "|" + marks.me + "|" + multi_station.to_string() + "|" + stations.length().to_string()
-  if memo.whole != whole_sig {
-    let ks : Array[String] = []
-    // Clear stale memo entries when whole-view context changes.
-    memo.whole = whole_sig
-    let _ = ks
+  let whole_sig = workspace + "|" + marks.me + "|" + multi_station.to_string() + "|" + stations.length().to_string() + "|" + lang + "|" + utc_offset_min.to_string()
+  let prev_scope_whole = match memo.scope_wholes.get(workspace) {
+    Some(w) => w
+    None => ""
   }
+  let whole_changed = prev_scope_whole != whole_sig
 
   // Collect moved-away sessions so origin stations never list duplicate rows.
   let apart_sessions : Array[String] = []
@@ -727,6 +1014,7 @@ pub fn project_chats(
     changing_th_map.set(st.address, cth_m)
   }
 
+  let use_explicit_dirty = changed_keys.is_some()
   let dirty_set : Map[String, Bool] = Map::new()
   match changed_keys {
     Some(cks) => {
@@ -764,33 +1052,37 @@ pub fn project_chats(
       Some(b) => b
       None => continue
     }
-    let mk = memo_key(wr.station, wr.id)
+    let dk = memo_key(wr.station, wr.id)
+    let mk = scoped_memo_key(workspace, wr.station, wr.id)
     let pin_str = match wr.pinned_at {
       Some(p) => p.to_string()
       None => "-"
     }
     let idx_fp = wr.archived.to_string() + "|" + pin_str + "|" + wr.last_active.to_string() + "|" + wr.ord.to_string()
-    let is_dirty = dirty_set.get(mk).is_some()
+    let is_dirty = dirty_set.get(dk).is_some()
 
-    // Reuse cached raw_json when index metadata did not change and key is not marked dirty.
-    let raw_json_str = match memo.rows.get(mk) {
+    // Reuse cached raw_json only when caller supplied explicit dirty keys, key is not dirty,
+    // index metadata did not change, and whole-view context did not change. When `changed_keys`
+    // is `None`, always read current row JSON + SQL `unread` so in-place title/state/unread edits
+    // without a `last_active` bump are never missed (Red-Team Gate #8).
+    let (raw_json_str, db_unread) = match memo.rows.get(mk) {
       Some(prev) => {
-        if !is_dirty && prev.index_fp == idx_fp && memo.whole == whole_sig {
-          prev.raw_json
+        if use_explicit_dirty && !is_dirty && prev.index_fp == idx_fp && !whole_changed {
+          (prev.raw_json, prev.db_unread)
         } else {
           memo.json_reads += 1
-          match store::get_chat_by_key(db, wr.station, wr.archived, wr.id) {
+          match get_chat_json_and_unread(db, wr.station, wr.archived, wr.id) {
             sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-            sql::SqlResult::Ok(Some(rec)) => rec.json
+            sql::SqlResult::Ok(Some(pair)) => pair
             sql::SqlResult::Ok(None) => continue
           }
         }
       }
       None => {
         memo.json_reads += 1
-        match store::get_chat_by_key(db, wr.station, wr.archived, wr.id) {
+        match get_chat_json_and_unread(db, wr.station, wr.archived, wr.id) {
           sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-          sql::SqlResult::Ok(Some(rec)) => rec.json
+          sql::SqlResult::Ok(Some(pair)) => pair
           sql::SqlResult::Ok(None) => continue
         }
       }
@@ -837,12 +1129,21 @@ pub fn project_chats(
     let has_draft = draft_set.get(wr.station + "\u{01}" + wr.id).is_some() ||
     draft_set.get(wr.station + "\u{01}" + session).is_some()
 
-    let rfp = raw_json_str + "\u{02}" + overlay_fingerprint(ov, has_draft) + "\u{02}" +
-    marks_fingerprint(wr.station, wr.id, thread_opt, marks) + "\u{02}" + st_brief.online.to_string()
+    let st_emoji_s = match st_brief.emoji { Some(e) => e; None => "" }
+    let st_icon_s = match st_brief.icon { Some(ic) => ic; None => "" }
+    let eff_last_for_fp = match j_opt_int64(raw, "lastActiveAt") {
+      Some(v) => if v > wr.last_active { v } else { wr.last_active }
+      None => wr.last_active
+    }
+    let settled_24h = if now_ms > 0L && eff_last_for_fp > 0L && now_ms - eff_last_for_fp >= 86400000L { "1" } else { "0" }
+    let db_unread_s = match db_unread { Some(u) => u.to_string(); None => "-" }
+    let rfp = raw_json_str + "\u{02}" + db_unread_s + "\u{02}" + overlay_fingerprint(ov, has_draft) + "\u{02}" +
+    marks_fingerprint(wr.station, wr.id, thread_opt, marks) + "\u{02}" + st_brief.online.to_string() +
+    "\u{02}" + st_brief.name + "\u{02}" + st_emoji_s + "\u{02}" + st_icon_s + "\u{02}" + settled_24h
 
     let entry = match memo.rows.get(mk) {
       Some(prev) => {
-        if prev.row_fp == rfp && memo.whole == whole_sig {
+        if prev.row_fp == rfp && !whole_changed {
           memo.rows_reused += 1
           prev
         } else {
@@ -857,18 +1158,22 @@ pub fn project_chats(
             ov,
             has_draft,
             marks,
+            db_unread=db_unread,
+            now_ms=now_ms,
+            lang=lang,
           )
           let e = MemoEntry::{
             index_fp: idx_fp,
             row_fp: rfp,
             raw_json: raw_json_str,
+            db_unread: db_unread,
             row: row_json,
             pinned_at: eff_pin,
             last_active: eff_last,
             archived: eff_arch,
             client_key: ck,
           }
-          memo.rows.set(mk, e)
+          memo_put(memo, mk, e)
           e
         }
       }
@@ -884,18 +1189,22 @@ pub fn project_chats(
           ov,
           has_draft,
           marks,
+          db_unread=db_unread,
+          now_ms=now_ms,
+          lang=lang,
         )
         let e = MemoEntry::{
           index_fp: idx_fp,
           row_fp: rfp,
           raw_json: raw_json_str,
+          db_unread: db_unread,
           row: row_json,
           pinned_at: eff_pin,
           last_active: eff_last,
           archived: eff_arch,
           client_key: ck,
         }
-        memo.rows.set(mk, e)
+        memo_put(memo, mk, e)
         e
       }
     }
@@ -914,6 +1223,8 @@ pub fn project_chats(
       })
     }
   }
+  memo.whole = whole_sig
+  memo.scope_wholes.set(workspace, whole_sig)
 
   // Merge pending local new-chat placeholders (deduplicated against confirmed station rows by clientKey).
   for i in 0..<pending_by_station.length() {
@@ -963,6 +1274,7 @@ pub fn project_chats(
   let today = local_day_index(now_ms, tz_offset_ms)
   let bucket_keys : Array[Int64] = []
   let bucket_items : Map[Int64, Array[base_codec::Json]] = Map::new()
+  let bucket_at : Map[Int64, Int64] = Map::new()
   for i in 0..<projected.length() {
     let it = projected[i]
     let d_ago = match it.pinned_at {
@@ -977,6 +1289,7 @@ pub fn project_chats(
       None => {
         bucket_keys.push(d_ago)
         bucket_items.set(d_ago, [it.row])
+        bucket_at.set(d_ago, it.last_active)
       }
     }
   }
@@ -997,9 +1310,13 @@ pub fn project_chats(
       Some(a) => a
       None => []
     }
+    let b_at = match bucket_at.get(k) {
+      Some(t) => t
+      None => now_ms
+    }
     days_json.push(base_codec::json_obj([
       ("daysAgo", base_codec::json_int64(k)),
-      ("label", base_codec::json_str(day_bucket_label(k))),
+      ("label", base_codec::json_str(day_bucket_label_at(k, b_at, now_ms, utc_offset_min, lang))),
       ("items", base_codec::json_arr(xs)),
     ]))
   }
@@ -1107,9 +1424,9 @@ fn ascii_lower(s : String) -> String {
   for i in 0..<s.length() {
     let c = s.code_unit_at(i)
     if c >= 65 && c <= 90 {
-      sb.write_char((c + 32).unsafe_to_char())
+      sb.write_byte((c + 32) as Byte)
     } else {
-      sb.write_char(c.unsafe_to_char())
+      sb.write_byte(c as Byte)
     }
   }
   sb.to_string()

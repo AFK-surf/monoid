@@ -1,0 +1,492 @@
+// Unit tests for 1:1 formatting helpers (`format_view.pion`) and `workspaceMarks` (`marks_view.pion`).
+
+import "base_codec"
+import "sql"
+
+test "format_day_label: today, yesterday, weekday (<7d), and month-day (>=7d) in zh and en with timezone" {
+  // 2026-11-23 15:00:00 UTC = 2026-11-24 00:00:00 +09:00 (Tuesday in JST, Monday in UTC)
+  let now_ms = 1795446000000L
+  let day = 86400000L
+  // JST (+540 min): 2026-11-24 (Tuesday)
+  assert_eq(format_day_label(now_ms, now_ms, 540, "zh"), "今天")
+  assert_eq(format_day_label(now_ms, now_ms, 540, "en"), "Today")
+  assert_eq(format_day_label(now_ms - day, now_ms, 540, "zh"), "昨天")
+  assert_eq(format_day_label(now_ms - day, now_ms, 540, "en"), "Yesterday")
+  // 3 days ago in JST: 2026-11-21 (Saturday)
+  assert_eq(format_day_label(now_ms - 3L * day, now_ms, 540, "zh"), "星期六")
+  assert_eq(format_day_label(now_ms - 3L * day, now_ms, 540, "en"), "Saturday")
+  // 14 days ago in JST: 2026-11-10
+  assert_eq(format_day_label(now_ms - 14L * day, now_ms, 540, "zh"), "11月10日")
+  assert_eq(format_day_label(now_ms - 14L * day, now_ms, 540, "en"), "Nov 10")
+  // UTC (0 min): 2026-11-23 (Monday) -> 3 days ago is 2026-11-20 (Friday)
+  assert_eq(format_day_label(now_ms - 3L * day, now_ms, 0, "zh"), "星期五")
+  assert_eq(format_day_label(now_ms - 3L * day, now_ms, 0, "en"), "Friday")
+}
+
+test "plain_text_preview: strips markdown, links, images, mentions, fences and collapses whitespace" {
+  assert_eq(
+    plain_text_preview("已完成 **Invar 渲染管线** 对齐，请审阅 [方案说明](https://still.fail/spec)", lang="zh"),
+    "已完成 Invar 渲染管线 对齐，请审阅 方案说明",
+  )
+  assert_eq(
+    plain_text_preview("### 标题\n- 第一项\n- `code_fn()`\n```pion\nlet x = 1\n```", lang="zh"),
+    "标题 第一项 code_fn() let x = 1",
+  )
+  assert_eq(
+    plain_text_preview("<@U12345> 请看 ![shot](https://example.com/a.png) 和 https://still.fail", lang="zh"),
+    "请看 [图片] 和 [链接]",
+  )
+  assert_eq(
+    plain_text_preview("See ![shot](a.png) and [doc](spec.pdf)", lang="en"),
+    "See [image] and doc",
+  )
+}
+
+test "maker_of_model and present_listed_agent: 1:1 model makers and labels" {
+  let check_maker = fn(m : String, expected : String) -> Unit {
+    match maker_of_model(m) {
+      Some((id, _)) => assert_eq(id, expected)
+      None => panic("expected maker " + expected + " for " + m)
+    }
+  }
+  check_maker("gemini-4-neon", "gemini")
+  check_maker("claude-opus-5-5", "anthropic")
+  check_maker("gpt-6-astra", "openai")
+  check_maker("o3-mini", "openai")
+  check_maker("deepseek-v4", "deepseek")
+  check_maker("qwen-3-max", "qwen")
+  check_maker("glm-5", "zhipu")
+  check_maker("kimi-k2", "kimi")
+  check_maker("grok-4", "xai")
+  check_maker("swe-2", "devin")
+
+  let raw_agent = base_codec::json_obj([
+    ("key", base_codec::json_str("s-1")),
+    ("runtime", base_codec::json_str("agy")),
+    ("model", base_codec::json_str("gemini-4-neon")),
+    ("effort", base_codec::json_str("high")),
+  ])
+  let listed = present_listed_agent(raw_agent)
+  assert_eq(j_str(listed, "runtime"), "agy")
+  assert_eq(j_str(listed, "agentText"), "Gemini 4 Neon · high")
+  match base_codec::json_get(listed, "maker") {
+    Some(m) => assert_eq(j_str(m, "id"), "gemini")
+    None => panic("missing maker on listed agent")
+  }
+}
+
+test "project_chats: pinned=false in raw JSON is never bucketed into 已固定" {
+  let fake = ViewsFakeDb::new()
+  let db = match sql::Sql::open(fake.shell, "acct") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let now = 1795460000000L
+  let doc = base_codec::json_obj([
+    ("id", base_codec::json_str("c-unpinned")),
+    ("session", base_codec::json_str("c-unpinned")),
+    ("thread", base_codec::json_int(1)),
+    ("title", base_codec::json_str("Unpinned Today")),
+    ("unread", base_codec::json_bool(true)),
+    ("mine", base_codec::json_bool(true)),
+    ("pinned", base_codec::json_bool(false)),
+    ("lastActiveAt", base_codec::json_int64(now - 60000L)),
+    ("agents", base_codec::json_arr([
+      base_codec::json_obj([
+        ("key", base_codec::json_str("s-1")),
+        ("runtime", base_codec::json_str("agy")),
+        ("model", base_codec::json_str("gemini-4-neon")),
+      ]),
+    ])),
+    ("last", base_codec::json_obj([
+      ("seq", base_codec::json_int(2)),
+      ("authorKind", base_codec::json_str("agent")),
+      ("text", base_codec::json_str("已完成 **预览** 测试")),
+    ])),
+  ])
+  // Even if DB column has stale pinned_at, raw JSON `pinned: false` wins (matches views.ts).
+  fake.chats.push(FakeChatEntry::{
+    station: "ws/st-1",
+    archived: 0,
+    id: "c-unpinned",
+    ord: 0.0,
+    thread: Some(1),
+    session: Some("c-unpinned"),
+    pinned_at: Some(now),
+    last_active: now - 60000L,
+    unread: Some(1),
+    mine: 1,
+    hidden: 0,
+    led: 0,
+    watched: 0,
+    json: base_codec::json_stringify(doc),
+  })
+  let marks = ViewerMarks::new("alice@still.fail")
+  let memo = RowsMemo::new()
+  let st = StationBrief::{
+    address: "ws/st-1",
+    id: "st-1",
+    name: "Tokyo Studio",
+    emoji: None,
+    icon: None,
+    online: false,
+    updating: false,
+    offline_text: Some("Tokyo Studio 离线"),
+    reconnecting_text: None,
+    running: 0,
+  }
+  let view = match project_chats(db, "ws", [st], now, memo, marks, tz_offset_ms=540L * 60000L, lang="zh") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let days = j_arr(view, "days")
+  assert_eq(days.length(), 1)
+  assert_opt_eq(j_opt_int64(days[0], "daysAgo"), Some(0L))
+  assert_eq(j_str(days[0], "label"), "今天")
+  let item = j_arr(days[0], "items")[0]
+  assert_eq(j_bool(item, "pinned"), false)
+  assert(base_codec::json_get(item, "swipeArchive").is_none())
+  match base_codec::json_get(item, "last") {
+    Some(lo) => assert_eq(j_str(lo, "preview"), "已完成 预览 测试")
+    None => panic("missing last")
+  }
+  let ag = j_arr(item, "agents")[0]
+  match base_codec::json_get(ag, "maker") {
+    Some(mk) => assert_eq(j_str(mk, "id"), "gemini")
+    None => panic("missing maker")
+  }
+}
+
+test "project_workspace_marks: counts unread and waiting decision cards per workspace" {
+  let fake = ViewsFakeDb::new()
+  let db = match sql::Sql::open(fake.shell, "acct") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  fake.workspaces.push(("ws-demo", "{\"id\":\"ws-demo\",\"name\":\"Monoid Lab\"}"))
+  fake.stations.push(("ws-demo/st-1", "overview", "{\"id\":\"st-1\",\"name\":\"Tokyo Studio\"}"))
+  let now = 1795460000000L
+  // Chat 1: unread agent done
+  add_fake_chat(fake, "ws-demo/st-1", "c-1", 1, "Unread Done", now - 1000L, None, true)
+  // Chat 2: waiting decision card for viewer
+  let dec_doc = base_codec::json_obj([
+    ("id", base_codec::json_str("c-2")),
+    ("session", base_codec::json_str("c-2")),
+    ("thread", base_codec::json_int(2)),
+    ("title", base_codec::json_str("Needs Decision")),
+    ("unread", base_codec::json_bool(false)),
+    ("mine", base_codec::json_bool(true)),
+    ("lastActiveAt", base_codec::json_int64(now - 500L)),
+    ("agents", base_codec::json_arr([])),
+    ("card", base_codec::json_obj([
+      ("seq", base_codec::json_int(4)),
+      ("card", base_codec::json_obj([
+        ("type", base_codec::json_str("options")),
+        ("assignee", base_codec::json_str("alice@still.fail")),
+        ("options", base_codec::json_arr([base_codec::json_obj([("label", base_codec::json_str("OK"))])])),
+      ])),
+    ])),
+  ])
+  fake.chats.push(FakeChatEntry::{
+    station: "ws-demo/st-1",
+    archived: 0,
+    id: "c-2",
+    ord: 1.0,
+    thread: Some(2),
+    session: Some("c-2"),
+    pinned_at: None,
+    last_active: now - 500L,
+    unread: Some(0),
+    mine: 1,
+    hidden: 0,
+    led: 0,
+    watched: 0,
+    json: base_codec::json_stringify(dec_doc),
+  })
+
+  let marks = match project_workspace_marks(db, "alice@still.fail", viewer_id="u-alice", lang="zh") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  assert_opt_eq(j_opt_int(marks, "badge"), Some(2))
+  match base_codec::json_get(marks, "workspaces") {
+    Some(ws_map) => match base_codec::json_get(ws_map, "ws-demo") {
+      Some(w) => {
+        assert_opt_eq(j_opt_int(w, "unread"), Some(1))
+        assert_opt_eq(j_opt_int(w, "wait"), Some(1))
+        assert_opt_eq(j_opt_int(w, "badge"), Some(2))
+        assert_eq(j_str(w, "tone"), "wait")
+        assert_eq(j_arr(w, "items").length(), 2)
+      }
+      None => panic("missing ws-demo in workspaceMarks")
+    }
+    None => panic("missing workspaces in workspaceMarks")
+  }
+}
+
+test "Red-Team Gate #8: RowsMemo refreshes title-only chat JSON update without last_active change and emits keyed delta" {
+  let fake = ViewsFakeDb::new()
+  let db = match sql::Sql::open(fake.shell, "acct") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let now = 1795460000000L
+  add_fake_chat(fake, "ws/st-1", "c-1", 1, "旧标题", now - 60000L, None, false)
+  add_fake_chat(fake, "ws/st-1", "c-2", 2, "未改动对话", now - 120000L, None, false)
+  let marks = ViewerMarks::new("alice@still.fail")
+  let memo = RowsMemo::new()
+  let st = StationBrief::{
+    address: "ws/st-1",
+    id: "st-1",
+    name: "Tokyo Studio",
+    emoji: None,
+    icon: None,
+    online: true,
+    updating: false,
+    offline_text: None,
+    reconnecting_text: None,
+    running: 0,
+  }
+  let prev = match project_chats(db, "ws", [st], now, memo, marks, tz_offset_ms=540L * 60000L, lang="zh") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let prev_items = j_arr(j_arr(prev, "days")[0], "items")
+  assert_eq(j_str(prev_items[0], "title"), "旧标题")
+
+  // Mutate ONLY `title` inside chat JSON while keeping `last_active`, `pinned_at`, `archived`, `ord` identical.
+  for i in 0..<fake.chats.length() {
+    if fake.chats[i].id == "c-1" {
+      let c = fake.chats[i]
+      let updated = base_codec::json_obj([
+        ("id", base_codec::json_str("c-1")),
+        ("session", base_codec::json_str("c-1")),
+        ("thread", base_codec::json_int(1)),
+        ("title", base_codec::json_str("新标题已刷新")),
+        ("unread", base_codec::json_bool(false)),
+        ("mine", base_codec::json_bool(true)),
+        ("lastActiveAt", base_codec::json_int64(c.last_active)),
+        ("agents", base_codec::json_arr([])),
+      ])
+      fake.chats[i] = FakeChatEntry::{
+        station: c.station,
+        archived: c.archived,
+        id: c.id,
+        ord: c.ord,
+        thread: c.thread,
+        session: c.session,
+        pinned_at: c.pinned_at,
+        last_active: c.last_active,
+        unread: c.unread,
+        mine: c.mine,
+        hidden: c.hidden,
+        led: c.led,
+        watched: c.watched,
+        json: base_codec::json_stringify(updated),
+      }
+    }
+  }
+
+  memo.reset_counters()
+  let next = match project_chats(db, "ws", [st], now, memo, marks, tz_offset_ms=540L * 60000L, lang="zh") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let next_items = j_arr(j_arr(next, "days")[0], "items")
+  assert_eq(j_str(next_items[0], "title"), "新标题已刷新")
+  assert_eq(j_str(next_items[1], "title"), "未改动对话")
+  // Only the modified row is re-projected; unchanged row is still reused.
+  assert_eq(memo.rows_made, 1)
+  assert_eq(memo.rows_reused, 1)
+
+  let ops = protocol::diff_keyed(prev, next, protocol::spec_for_topic("chats"))
+  assert(ops.length() > 0)
+  let ops_str = base_codec::json_stringify(base_codec::json_arr(ops))
+  assert(ops_str.contains("新标题已刷新"))
+  let applied = protocol::apply_keyed(prev, ops)
+  assert(protocol::json_equal(applied, next))
+
+  // Also verify whole-view context change (`lang`) invalidates memo rather than comparing `memo.whole` after mutating it.
+  memo.reset_counters()
+  let en_view = match project_chats(db, "ws", [st], now, memo, marks, tz_offset_ms=540L * 60000L, lang="en") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  assert_eq(j_str(j_arr(en_view, "days")[0], "label"), "Today")
+  assert_eq(memo.rows_made, 2)
+  assert_eq(memo.rows_reused, 0)
+}
+
+test "Red-Team Gate #9: dual-workspace isolation in RowsMemo and project_workspace_marks" {
+  let fake = ViewsFakeDb::new()
+  let db = match sql::Sql::open(fake.shell, "acct") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let now = 1795460000000L
+  fake.workspaces.push(("ws-a", "{\"id\":\"ws-a\",\"name\":\"Alpha\"}"))
+  fake.workspaces.push(("ws-b", "{\"id\":\"ws-b\",\"name\":\"Beta\"}"))
+  fake.stations.push(("ws-a/st-a", "overview", "{\"id\":\"st-a\",\"name\":\"Station A\"}"))
+  fake.stations.push(("ws-b/st-b", "overview", "{\"id\":\"st-b\",\"name\":\"Station B\"}"))
+  add_fake_chat(fake, "ws-a/st-a", "ca-1", 1, "Alpha Chat", now - 1000L, None, true)
+  add_fake_chat(fake, "ws-b/st-b", "cb-1", 2, "Beta Chat", now - 2000L, None, true)
+
+  let memo = RowsMemo::new()
+  let marks = ViewerMarks::new("alice@still.fail")
+  let st_a = StationBrief::{
+    address: "ws-a/st-a", id: "st-a", name: "Station A", emoji: None, icon: None,
+    online: true, updating: false, offline_text: None, reconnecting_text: None, running: 0,
+  }
+  let st_b = StationBrief::{
+    address: "ws-b/st-b", id: "st-b", name: "Station B", emoji: None, icon: None,
+    online: true, updating: false, offline_text: None, reconnecting_text: None, running: 0,
+  }
+  let va = match project_chats(db, "ws-a", [st_a], now, memo, marks, lang="zh") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let vb = match project_chats(db, "ws-b", [st_b], now, memo, marks, lang="zh") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  assert_eq(j_str(j_arr(j_arr(va, "days")[0], "items")[0], "title"), "Alpha Chat")
+  assert_eq(j_str(j_arr(j_arr(vb, "days")[0], "items")[0], "title"), "Beta Chat")
+  // Switching back to ws-a reuses ws-a's per-scope memo slot without rebuilding!
+  memo.reset_counters()
+  let _ = match project_chats(db, "ws-a", [st_a], now, memo, marks, changed_keys=Some([]), lang="zh") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  assert_eq(memo.rows_reused, 1)
+  assert_eq(memo.rows_made, 0)
+
+  let wm = match project_workspace_marks(db, "alice@still.fail", lang="zh") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  assert_opt_eq(j_opt_int(wm, "badge"), Some(2))
+  match base_codec::json_get(wm, "workspaces") {
+    Some(ws_map) => {
+      match base_codec::json_get(ws_map, "ws-a") {
+        Some(wa) => assert_opt_eq(j_opt_int(wa, "unread"), Some(1))
+        None => panic("missing ws-a")
+      }
+      match base_codec::json_get(ws_map, "ws-b") {
+        Some(wb) => assert_opt_eq(j_opt_int(wb, "unread"), Some(1))
+        None => panic("missing ws-b")
+      }
+    }
+    None => panic("missing workspaces")
+  }
+}
+
+test "Hermes SQL unread=1 column wins when chat.json omits unread (chats + workspaceMarks + RowsMemo rfp)" {
+  let fake = ViewsFakeDb::new()
+  let db = match sql::Sql::open(fake.shell, "acct") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let now = 1795460000000L
+  fake.workspaces.push(("ws-hermes", "{\"id\":\"ws-hermes\",\"name\":\"Hermes WS\"}"))
+  fake.stations.push(("ws-hermes/st-1", "overview", "{\"id\":\"st-1\",\"name\":\"Station 1\"}"))
+  // Real Hermes TS DB strips `unread` from `chat.json` and stores it only in SQL column `chat.unread`.
+  let stripped_doc = base_codec::json_obj([
+    ("id", base_codec::json_str("c-sql-unread")),
+    ("session", base_codec::json_str("c-sql-unread")),
+    ("thread", base_codec::json_int(7)),
+    ("title", base_codec::json_str("Hermes Stripped Unread")),
+    ("mine", base_codec::json_bool(true)),
+    ("lastActiveAt", base_codec::json_int64(now - 2000L)),
+    ("agents", base_codec::json_arr([])),
+  ])
+  fake.chats.push(FakeChatEntry::{
+    station: "ws-hermes/st-1",
+    archived: 0,
+    id: "c-sql-unread",
+    ord: 0.0,
+    thread: Some(7),
+    session: Some("c-sql-unread"),
+    pinned_at: None,
+    last_active: now - 2000L,
+    unread: Some(1),
+    mine: 1,
+    hidden: 0,
+    led: 0,
+    watched: 0,
+    json: base_codec::json_stringify(stripped_doc),
+  })
+
+  let memo = RowsMemo::new()
+  let marks = ViewerMarks::new("alice@still.fail")
+  let st = StationBrief::{
+    address: "ws-hermes/st-1",
+    id: "st-1",
+    name: "Station 1",
+    emoji: None,
+    icon: None,
+    online: true,
+    updating: false,
+    offline_text: None,
+    reconnecting_text: None,
+    running: 0,
+  }
+
+  let v1 = match project_chats(db, "ws-hermes", [st], now, memo, marks, lang="zh") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let item1 = j_arr(j_arr(v1, "days")[0], "items")[0]
+  assert_eq(j_bool(item1, "unread"), true)
+
+  let wm1 = match project_workspace_marks(db, "alice@still.fail", lang="zh") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  assert_opt_eq(j_opt_int(wm1, "badge"), Some(1))
+  match base_codec::json_get(wm1, "workspaces") {
+    Some(ws_map) => match base_codec::json_get(ws_map, "ws-hermes") {
+      Some(w) => {
+        assert_opt_eq(j_opt_int(w, "unread"), Some(1))
+        assert_opt_eq(j_opt_int(w, "badge"), Some(1))
+        assert_eq(j_str(w, "tone"), "done")
+      }
+      None => panic("missing ws-hermes")
+    }
+    None => panic("missing workspaces")
+  }
+
+  // Flip ONLY SQL column `unread` from 1 -> 0 while keeping `chat.json` and `last_active` untouched:
+  // RowsMemo `rfp` must detect the SQL `unread` change and re-project `unread: false`.
+  let c0 = fake.chats[0]
+  fake.chats[0] = FakeChatEntry::{
+    station: c0.station,
+    archived: c0.archived,
+    id: c0.id,
+    ord: c0.ord,
+    thread: c0.thread,
+    session: c0.session,
+    pinned_at: c0.pinned_at,
+    last_active: c0.last_active,
+    unread: Some(0),
+    mine: c0.mine,
+    hidden: c0.hidden,
+    led: c0.led,
+    watched: c0.watched,
+    json: c0.json,
+  }
+  memo.reset_counters()
+  let v2 = match project_chats(db, "ws-hermes", [st], now, memo, marks, lang="zh") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let item2 = j_arr(j_arr(v2, "days")[0], "items")[0]
+  assert_eq(j_bool(item2, "unread"), false)
+  assert_eq(memo.rows_made, 1)
+  // Verify targeted changed_keys update reads at most 1 row JSON (no 50-row read amplification)
+  memo.reset_counters()
+  let _ = match project_chats(db, "ws-hermes", [st], now, memo, marks, changed_keys=Some([("ws-hermes/st-1", "c-sql-unread")]), lang="zh") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  assert(memo.json_reads <= 2)
+}

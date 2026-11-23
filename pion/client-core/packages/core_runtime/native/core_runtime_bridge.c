@@ -19,6 +19,15 @@ int64_t pion_core_wall_now_ms(void) {
     return (int64_t)ts.tv_sec * 1000LL + (int64_t)(ts.tv_nsec / 1000000L);
 }
 
+int32_t pion_core_utc_offset_min(int64_t ms) {
+    time_t sec = (time_t)(ms / 1000LL);
+    struct tm lt;
+    if (localtime_r(&sec, &lt) == NULL) {
+        return 0;
+    }
+    return (int32_t)(lt.tm_gmtoff / 60L);
+}
+
 // Exported by `packages/core_runtime/src/core_runtime.pion` (`pub extern "C" fn`; Pion `Int` is `int32_t`)
 extern void pion_pkg_core_runtime_init_consts(void);
 extern int32_t pion_core_runtime_start(

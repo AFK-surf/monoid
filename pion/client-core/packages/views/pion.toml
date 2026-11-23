@@ -17,3 +17,5 @@ lock = { workspace = true }
 vault = { workspace = true }
 store = { workspace = true }
 protocol = { workspace = true }
+markdown = { workspace = true }
+regex = { workspace = true }

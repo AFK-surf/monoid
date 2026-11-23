@@ -100,17 +100,75 @@ fn project_card(card : base_codec::Json) -> (base_codec::Json, Option[Array[base
   (base_codec::json_obj(out), opts)
 }
 
-fn build_message_by(raw : base_codec::Json, author_kind : String, author : String) -> base_codec::Json {
+fn build_message_by(raw : base_codec::Json, author_kind : String, author : String, lang : String = "zh") -> base_codec::Json {
   let name = match j_opt_str(raw, "authorName") {
     Some(n) => n
     None => if author.length() > 0 { author } else { author_kind }
   }
   let out : Array[(String, base_codec::Json)] = [("name", base_codec::json_str(name))]
   if author_kind == "agent" {
-    push_opt_str(out, "agent", j_opt_str(raw, "authorModel"))
+    let model_opt = j_opt_str(raw, "authorModel")
+    let agent_label = match model_opt {
+      Some(m) => Some(model_display_name(m))
+      None => None
+    }
+    push_opt_str(out, "agent", agent_label)
     push_opt_str(out, "runtime", j_opt_str(raw, "authorRuntime"))
+    match model_opt {
+      Some(m) => match maker_of_model(m, lang=lang) {
+        Some((mid, _)) => out.push(("maker", base_codec::json_obj([("id", base_codec::json_str(mid))])))
+        None => ()
+      }
+      None => ()
+    }
   }
   push_opt_str(out, "picture", j_opt_str(raw, "authorPicture"))
+  base_codec::json_obj(out)
+}
+
+fn build_chat_agent(raw : base_codec::Json, lang : String = "zh") -> base_codec::Json {
+  let key = match j_opt_str(raw, "key") {
+    Some(k) => k
+    None => match j_opt_str(raw, "session") {
+      Some(s) => s
+      None => ""
+    }
+  }
+  let rt = match j_opt_str(raw, "runtime") {
+    Some(r) => r
+    None => "claude"
+  }
+  let model_opt = j_opt_str(raw, "model")
+  let effort_opt = j_opt_str(raw, "effort")
+  let agent_text = match j_opt_str(raw, "agentText") {
+    Some(t) => t
+    None => format_agent_label(model_opt, effort_opt, lang=lang)
+  }
+  let status = shown_status(raw)
+  let badge_opt = badge_of_status(status)
+  let sf : Array[(String, base_codec::Json)] = [
+    ("key", base_codec::json_str(key)),
+    ("runtime", base_codec::json_str(rt)),
+    ("agentText", base_codec::json_str(agent_text)),
+  ]
+  match model_opt {
+    Some(m) => {
+      sf.push(("model", base_codec::json_str(m)))
+      sf.push(("modelName", base_codec::json_str(model_display_name(m))))
+      match maker_of_model(m, lang=lang) {
+        Some((mid, _)) => sf.push(("maker", base_codec::json_obj([("id", base_codec::json_str(mid))])))
+        None => ()
+      }
+    }
+    None => ()
+  }
+  push_opt_str(sf, "effort", effort_opt)
+  push_opt_json(sf, "lastTurn", base_codec::json_get(raw, "lastTurn"))
+  let out : Array[(String, base_codec::Json)] = [
+    ("session", base_codec::json_obj(sf)),
+    ("status", base_codec::json_str(status)),
+  ]
+  push_opt_str(out, "badge", badge_opt)
   base_codec::json_obj(out)
 }
 
@@ -136,6 +194,11 @@ pub fn project_chat(
   now_ms : Int64,
   rows : Int = 30,
   at : Option[Int] = None,
+  utc_offset_min : Int = 0,
+  lang : String = "zh",
+  online : Bool = true,
+  station_name : String = "",
+  chat_meta : Option[base_codec::Json] = None,
 ) -> sql::SqlResult[base_codec::Json] {
   // 1. Cold open entries + 1-statement md_kept preload (0 SQL writes!).
   let opened = match store::open_chat(md_store, thread, now_ms, rows=rows, at=at) {
@@ -493,9 +556,42 @@ pub fn project_chat(
       ("createdAt", base_codec::json_int64(created_at)),
       ("mine", base_codec::json_bool(mine)),
       ("system", base_codec::json_bool(system_flag)),
-      ("by", build_message_by(raw, author_kind, author)),
+      ("by", build_message_by(raw, author_kind, author, lang=lang)),
       ("waiting", base_codec::json_bool(j_bool(raw, "waiting"))),
     ]
+    if author_kind == "agent" && text.length() > 0 {
+      let md_k = store::md_key(text)
+      let md_val = match md_store.get(md_k) {
+        Some(cached_json) => match base_codec::json_parse(cached_json) {
+          base_codec::JsonParseResult::Ok(j) => j
+          base_codec::JsonParseResult::Err(_) => {
+            let parsed_md = parse_md_ast(text)
+            md_store.put_prepared(md_k, base_codec::json_stringify(parsed_md), "t:" + thread.to_string(), now_ms)
+            parsed_md
+          }
+        }
+        None => {
+          let parsed_md = parse_md_ast(text)
+          md_store.put_prepared(md_k, base_codec::json_stringify(parsed_md), "t:" + thread.to_string(), now_ms)
+          parsed_md
+        }
+      }
+      mf.push(("md", md_val))
+    }
+    if created_at > 0.to_int64() {
+      mf.push((
+        "time",
+        base_codec::json_obj([
+          (
+            "createdAt",
+            base_codec::json_obj([
+              ("ago", base_codec::json_str(format_relative_time(created_at, now_ms, utc_offset_min, lang))),
+              ("full", base_codec::json_str(format_absolute_time(created_at, utc_offset_min))),
+            ]),
+          ),
+        ]),
+      ))
+    }
     push_opt_str(mf, "outgoing", outgoing_ck)
     push_opt_str(mf, "ending", j_opt_str(raw, "ending"))
 
@@ -565,37 +661,63 @@ pub fn project_chat(
       Some(s) => s
       None => ck
     }
+    let ob_at = match j_opt_int64(item, "createdAt") { Some(v) => v; None => now_ms }
     let ob_fields : Array[(String, base_codec::Json)] = [
       ("id", base_codec::json_str(ob_id)),
       ("text", base_codec::json_str(j_str(item, "text"))),
       ("attachments", base_codec::json_arr(sanitize_attachments(item))),
       ("quotes", base_codec::json_arr(j_arr(item, "quotes"))),
-      ("createdAt", base_codec::json_int64(match j_opt_int64(item, "createdAt") { Some(v) => v; None => now_ms })),
+      ("createdAt", base_codec::json_int64(ob_at)),
       ("state", base_codec::json_str(match j_opt_str(item, "state") { Some(s) => s; None => "sending" })),
+      (
+        "time",
+        base_codec::json_obj([
+          (
+            "createdAt",
+            base_codec::json_obj([
+              ("ago", base_codec::json_str(format_relative_time(ob_at, now_ms, utc_offset_min, lang))),
+              ("full", base_codec::json_str(format_absolute_time(ob_at, utc_offset_min))),
+            ]),
+          ),
+        ]),
+      ),
     ]
     push_opt_str(ob_fields, "error", j_opt_str(item, "error"))
     outbox_out.push(base_codec::json_obj(ob_fields))
   }
 
-  let title = match thread_rec {
-    Some(tr) => {
-      let tj = parse_json_or_null(tr.json)
-      match j_opt_str(tj, "title") {
-        Some(t) => t
-        None => "新对话"
+  let chat_doc = match chat_meta {
+    Some(cm) => cm
+    None => base_codec::json_null()
+  }
+  let chat_agents_raw = j_arr(chat_doc, "agents")
+  let chat_agents_out : Array[base_codec::Json] = []
+  for ai in 0..<chat_agents_raw.length() {
+    chat_agents_out.push(build_chat_agent(chat_agents_raw[ai], lang=lang))
+  }
+  let chat_people_out = j_arr(chat_doc, "people")
+  let title = match j_opt_str(chat_doc, "title") {
+    Some(t) => t
+    None => match thread_rec {
+      Some(tr) => {
+        let tj = parse_json_or_null(tr.json)
+        match j_opt_str(tj, "title") {
+          Some(t) => t
+          None => if lang == "en" { "New chat" } else { "新对话" }
+        }
       }
+      None => if lang == "en" { "New chat" } else { "新对话" }
     }
-    None => "新对话"
   }
 
   let _ = tool_groups
   let out : Array[(String, base_codec::Json)] = [
-    ("archived", base_codec::json_bool(false)),
+    ("archived", base_codec::json_bool(j_bool(chat_doc, "archived"))),
     ("me", base_codec::json_obj([("email", base_codec::json_str(viewer_email))])),
     ("title", base_codec::json_str(title)),
     ("cc", base_codec::json_arr([])),
-    ("people", base_codec::json_arr([])),
-    ("agents", base_codec::json_arr([])),
+    ("people", base_codec::json_arr(chat_people_out)),
+    ("agents", base_codec::json_arr(chat_agents_out)),
     ("messages", base_codec::json_arr(messages)),
     ("elsewhere", base_codec::json_arr([])),
     ("outbox", base_codec::json_arr(outbox_out)),
@@ -605,10 +727,20 @@ pub fn project_chat(
     ("opened", base_codec::json_arr([])),
     ("more", base_codec::json_bool(has_more)),
     ("newer", base_codec::json_bool(false)),
-    ("offline", base_codec::json_bool(false)),
+    ("offline", base_codec::json_bool(!online)),
     ("pending", base_codec::json_bool(false)),
-    ("link", base_codec::json_obj([("state", base_codec::json_str("online"))])),
+    ("link", base_codec::json_obj([("state", base_codec::json_str(if online { "online" } else { "offline" }))])),
   ]
+  if !online {
+    let sname = if station_name.length() > 0 { station_name } else { station }
+    let note = if lang == "en" { sname + " offline" } else { sname + " 离线" }
+    out.push(("offlineNote", base_codec::json_str(note)))
+  }
+  match base_codec::json_get(chat_doc, "pinned") {
+    Some(base_codec::Json::Num(_, _)) | Some(base_codec::Json::Bool(true)) => out.push(("pinned", base_codec::json_bool(true)))
+    Some(base_codec::Json::Bool(false)) => out.push(("pinned", base_codec::json_bool(false)))
+    _ => ()
+  }
   push_opt_int(out, "firstEntry", oldest_opt)
   push_opt_int(out, "lastEntry", newest_opt)
   push_opt_int(out, "unreadLine", unread_line)
@@ -631,4 +763,79 @@ pub fn project_chat(
     None => ()
   }
   sql::SqlResult::Ok(base_codec::json_obj(out))
+}
+
+/// Project `chatOutline` topic (`ChatOutlineView`) for a thread from local SQLite entries.
+pub fn project_chat_outline(
+  db : sql::Sql,
+  station : String,
+  thread : Int,
+  viewer_email : String,
+  now_ms : Int64,
+  utc_offset_min : Int = 0,
+  lang : String = "zh",
+) -> sql::SqlResult[base_codec::Json] {
+  let md = store::MdStore::new(db, station)
+  let opened = match store::open_chat(md, thread, now_ms, rows=200, at=None) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(v) => v
+  }
+  let day_keys : Array[String] = []
+  let day_labels : Map[String, String] = Map::new()
+  let day_seqs : Map[String, Array[base_codec::Json]] = Map::new()
+  let mut count = 0
+  let mut others = false
+  for i in 0..<opened.raw_entries.length() {
+    let (n, raw) = opened.raw_entries[i]
+    if j_str(raw, "kind") != "message" || j_str(raw, "authorKind") != "person" {
+      continue
+    }
+    count += 1
+    let author = j_str(raw, "author")
+    if viewer_email.length() > 0 && author != viewer_email {
+      others = true
+    }
+    let at_ms = match j_opt_int64(raw, "at") {
+      Some(v) => v
+      None => match j_opt_int64(raw, "createdAt") {
+        Some(v) => v
+        None => 0.to_int64()
+      }
+    }
+    let (dk, dl) = if at_ms > 0.to_int64() {
+      let (y, m, d, _, _, _) = local_parts(at_ms, utc_offset_min)
+      let date_s = y.to_string() + "-" + pad2(m) + "-" + pad2(d)
+      (date_s, format_day_label(at_ms, now_ms, utc_offset_min, lang))
+    } else {
+      ("", "")
+    }
+    match day_seqs.get(dk) {
+      Some(xs) => xs.push(base_codec::json_int(n))
+      None => {
+        day_keys.push(dk)
+        day_labels.set(dk, dl)
+        day_seqs.set(dk, [base_codec::json_int(n)])
+      }
+    }
+  }
+  let days_out : Array[base_codec::Json] = []
+  for i in 0..<day_keys.length() {
+    let dk = day_keys[i]
+    let dl = match day_labels.get(dk) { Some(s) => s; None => "" }
+    let seqs = match day_seqs.get(dk) { Some(xs) => xs; None => [] }
+    days_out.push(base_codec::json_obj([
+      ("date", base_codec::json_str(dk)),
+      ("day", base_codec::json_str(dl)),
+      ("seqs", base_codec::json_arr(seqs)),
+    ]))
+  }
+  let held = opened.raw_entries.length()
+  sql::SqlResult::Ok(base_codec::json_obj([
+    ("days", base_codec::json_arr(days_out)),
+    ("count", base_codec::json_int(count)),
+    ("others", base_codec::json_bool(others)),
+    ("held", base_codec::json_int(held)),
+    ("of", base_codec::json_int(held)),
+    ("whole", base_codec::json_bool(true)),
+  ]))
 }

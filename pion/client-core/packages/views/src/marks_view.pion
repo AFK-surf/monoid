@@ -1,0 +1,599 @@
+// Workspace marks projection (`workspaceMarks` topic) aligned with `client/core-ts/src/views/marks.ts`.
+// Computes per-workspace `alert`, `wait`, `unread`, `badge`, `tone`, `label`, `items`, and top-level `badge`
+// using the SQLite partial index `chat_marked` (zero N+1 reads, zero 200-row cap) + `prefs` (`badgeKinds`, `failsGone`) + failed `outbox`.
+
+import "base_codec"
+import "sql"
+import "store"
+
+struct MarksBadgeKinds {
+  on : Bool
+  wait : Bool
+  failed : Bool
+  done : Bool
+  message : Bool
+  services : Bool
+}
+
+fn parse_badge_kinds(prefs_opt : Option[base_codec::Json]) -> MarksBadgeKinds {
+  match prefs_opt {
+    None => MarksBadgeKinds::{ on: true, wait: true, failed: true, done: true, message: true, services: true }
+    Some(p) => {
+      let legacy_on = match j_opt_bool(p, "badge") {
+        Some(b) => b
+        None => true
+      }
+      match base_codec::json_get(p, "badgeKinds") {
+        Some(bk) => MarksBadgeKinds::{
+          on: match j_opt_bool(bk, "on") { Some(b) => b; None => legacy_on },
+          wait: match j_opt_bool(bk, "wait") { Some(b) => b; None => true },
+          failed: match j_opt_bool(bk, "failed") { Some(b) => b; None => true },
+          done: match j_opt_bool(bk, "done") { Some(b) => b; None => true },
+          message: match j_opt_bool(bk, "message") { Some(b) => b; None => true },
+          services: match j_opt_bool(bk, "services") { Some(b) => b; None => true },
+        }
+        None => MarksBadgeKinds::{ on: legacy_on, wait: true, failed: true, done: true, message: true, services: true }
+      }
+    }
+  }
+}
+
+fn parse_fails_gone(prefs_opt : Option[base_codec::Json], ws_id : String) -> Map[String, Bool] {
+  let out : Map[String, Bool] = Map::new()
+  match prefs_opt {
+    Some(p) => match base_codec::json_get(p, "failsGone") {
+      Some(fg) => match base_codec::json_get(fg, ws_id) {
+        Some(base_codec::Json::Arr(xs)) => {
+          for i in 0..<xs.length() {
+            match xs[i] {
+              base_codec::Json::Str(s) => out.set(s, true)
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+      None => ()
+    }
+    None => ()
+  }
+  out
+}
+
+/// Match `client/core-ts/src/views/marks.ts` `failureOf(station, row)`.
+pub fn failure_key_of(station : String, row : base_codec::Json) -> String {
+  let mut at : Int64 = 0L
+  let agents = j_arr(row, "agents")
+  for i in 0..<agents.length() {
+    let a = agents[i]
+    let status = shown_status(a)
+    if status != "failed" && status != "unexpected" && status != "aborted" {
+      continue
+    }
+    let when_opt : Option[Int64] = match base_codec::json_get(a, "lastTurn") {
+      Some(lt) => match j_opt_int64(lt, "endedAt") {
+        Some(v) => Some(v)
+        None => match j_opt_int64(lt, "startedAt") {
+          Some(v) => Some(v)
+          None => j_opt_int64(a, "lastActiveAt")
+        }
+      }
+      None => j_opt_int64(a, "lastActiveAt")
+    }
+    match when_opt {
+      Some(v) => if v > at { at = v }
+      None => ()
+    }
+  }
+  let id_part = match j_opt_str(row, "id") {
+    Some(s) => s
+    None => match j_opt_int(row, "thread") {
+      Some(th) => "thread:" + th.to_string()
+      None => "thread:"
+    }
+  }
+  station + "/" + id_part + "@" + at.to_string()
+}
+
+fn marks_said_by_person(row : base_codec::Json) -> Bool {
+  match base_codec::json_get(row, "last") {
+    Some(base_codec::Json::Obj(_)) => {
+      let lo = match base_codec::json_get(row, "last") {
+        Some(x) => x
+        None => base_codec::json_null()
+      }
+      let ak = match j_opt_str(lo, "authorKind") {
+        Some(k) => k
+        None => "person"
+      }
+      ak == "person"
+    }
+    _ => false
+  }
+}
+
+fn marks_badge_of(bk : MarksBadgeKinds, alert_n : Int, wait_n : Int, unread_n : Int, said_n : Int) -> Int {
+  if !bk.on {
+    return 0
+  }
+  let w = if bk.wait { wait_n } else { 0 }
+  let f = if bk.failed { alert_n } else { 0 }
+  let d = if bk.done { unread_n - said_n } else { 0 }
+  let m = if bk.message { said_n } else { 0 }
+  w + f + d + m
+}
+
+fn marks_counts_tone(alert : Int, wait : Int, unread : Int) -> Option[String] {
+  if alert > 0 {
+    Some("alert")
+  } else if wait > 0 {
+    Some("wait")
+  } else if unread > 0 {
+    Some("done")
+  } else {
+    None
+  }
+}
+
+fn marks_counts_label(alert : Int, wait : Int, unread : Int, lang : String) -> String {
+  let parts : Array[String] = []
+  let en = lang == "en"
+  if alert > 0 {
+    parts.push(if en { alert.to_string() + " failed" } else { alert.to_string() + " 个出错" })
+  }
+  if wait > 0 {
+    parts.push(if en { wait.to_string() + " waiting for you" } else { wait.to_string() + " 个待你处理" })
+  }
+  if unread > 0 {
+    parts.push(if en { unread.to_string() + " unread" } else { unread.to_string() + " 个有新消息" })
+  }
+  let sb = StringBuilder::new()
+  for i in 0..<parts.length() {
+    if i > 0 {
+      sb.write_string(" · ")
+    }
+    sb.write_string(parts[i])
+  }
+  sb.to_string()
+}
+
+fn marks_item_urgency(kind : String) -> Int {
+  if kind == "alert" {
+    0
+  } else if kind == "wait" {
+    1
+  } else {
+    2
+  }
+}
+
+/// Project `workspaceMarks` topic across all workspaces in `db`.
+/// Uses the `chat_marked` SQLite partial index (`archived = 0 AND (tone IS NOT NULL OR asks = 1 OR unread = 1)`)
+/// so there is zero N+1 `get_chat_by_key` read amplification and no 200-row truncation.
+pub fn project_workspace_marks(
+  db : sql::Sql,
+  viewer_email : String,
+  viewer_id : String = "",
+  lang : String = "zh",
+  prefs : Option[base_codec::Json] = None,
+) -> sql::SqlResult[base_codec::Json] {
+  let ws_rows = match store::list_workspaces(db) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rs) => rs
+  }
+  let st_rows = match store::list_stations(db, kind="overview") {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rs) => rs
+  }
+  let bk = parse_badge_kinds(prefs)
+  let me_fields : Array[(String, base_codec::Json)] = []
+  if viewer_id.length() > 0 {
+    me_fields.push(("id", base_codec::json_str(viewer_id)))
+  }
+  if viewer_email.length() > 0 {
+    me_fields.push(("email", base_codec::json_str(viewer_email)))
+  }
+  let me_json = base_codec::json_obj(me_fields)
+  let marks_helper = ViewerMarks::new(viewer_email)
+
+  let ws_built : Array[(String, Int, Int, Int, Array[(String, base_codec::Json)])] = []
+  let mut total_badge = 0
+
+  for wi in 0..<ws_rows.length() {
+    let wr = ws_rows[wi]
+    let wj = parse_json_or_null(wr.json)
+    let ws_id = wr.id
+    let ws_name = match j_opt_str(wj, "name") {
+      Some(nm) => nm
+      None => ws_id
+    }
+    let fails_gone = parse_fails_gone(prefs, ws_id)
+    let prefix = ws_id + "/"
+    let st_addrs : Array[String] = []
+    let st_names : Map[String, String] = Map::new()
+    for si in 0..<st_rows.length() {
+      let sr = st_rows[si]
+      if sr.address.starts_with(prefix) {
+        st_addrs.push(sr.address)
+        let sj = parse_json_or_null(sr.json)
+        let sname = match j_opt_str(sj, "name") {
+          Some(nm) => nm
+          None => sr.address
+        }
+        st_names.set(sr.address, sname)
+      }
+    }
+    // Merge stations listed in already-parsed `workspace.json` (`wj`, zero extra SQL) so fresh devices with empty `station` table still count all workspace stations (#8369).
+    let ws_stations = j_arr(wj, "stations")
+    for si in 0..<ws_stations.length() {
+      let ws_st = ws_stations[si]
+      match j_opt_str(ws_st, "id") {
+        Some(sid) => {
+          if sid.length() > 0 {
+            let addr = ws_id + "/" + sid
+            if st_names.get(addr).is_none() {
+              st_addrs.push(addr)
+              let sname = match j_opt_str(ws_st, "name") {
+                Some(nm) => if nm.length() > 0 { nm } else { sid }
+                None => sid
+              }
+              st_names.set(addr, sname)
+            }
+          }
+        }
+        None => ()
+      }
+    }
+
+    let mut alert_n = 0
+    let mut wait_n = 0
+    let mut unread_n = 0
+    let mut said_n = 0
+    let mut mine_alert = 0
+    let mut mine_wait = 0
+    let mut mine_unread = 0
+    let mut watch_alert = 0
+    let mut watch_wait = 0
+    let mut watch_unread = 0
+    let items_list : Array[(Int, Int64, base_codec::Json)] = []
+    let seen_unsent_threads : Map[String, Bool] = Map::new()
+    let unsent_in : Map[String, base_codec::Json] = Map::new()
+    let unsent_list : Array[(String, String, Int, base_codec::Json)] = []
+
+    // 0. Pre-read failed local outbox messages (`unsentIn`, marks.ts:244) — never swallow SQL errors.
+    for si in 0..<st_addrs.length() {
+      let st_addr = st_addrs[si]
+      let sname = match st_names.get(st_addr) {
+        Some(nm) => nm
+        None => st_addr
+      }
+      let ob_rows = match db.all("SELECT thread, json FROM outbox WHERE station = ?", params=[base_codec::json_str(st_addr)]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(rs) => rs
+      }
+      for oi in 0..<ob_rows.length() {
+        let ob_th = sql::col_int(ob_rows[oi], 0)
+        let ob_key = st_addr + ":" + ob_th.to_string()
+        if unsent_in.get(ob_key).is_some() {
+          continue
+        }
+        let ob_json = parse_json_or_null(sql::col_text(ob_rows[oi], 1))
+        let ob_items : Array[base_codec::Json] = match ob_json {
+          base_codec::Json::Arr(xs) => xs
+          base_codec::Json::Obj(_) => [ob_json]
+          _ => []
+        }
+        for mi in 0..<ob_items.length() {
+          let m = ob_items[mi]
+          let failed_msg = j_str(m, "state") == "failed" || j_str(m, "status") == "failed" || j_str(m, "error").length() > 0
+          if failed_msg {
+            unsent_in.set(ob_key, m)
+            unsent_list.push((st_addr, sname, ob_th, m))
+            break
+          }
+        }
+      }
+    }
+
+    for si in 0..<st_addrs.length() {
+      let st_addr = st_addrs[si]
+      let sname = match st_names.get(st_addr) {
+        Some(nm) => nm
+        None => st_addr
+      }
+      // 1. Indexed read of marked chats (uses `chat_marks` covering partial index: archived = 0 AND (tone IS NOT NULL OR asks = 1)).
+      let marked_rows = match db.all(
+        "SELECT id, last_active, json, unread FROM chat WHERE station = ? AND archived = 0 AND (tone IS NOT NULL OR asks = 1)",
+        params=[base_codec::json_str(st_addr)],
+      ) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(rs) => rs
+      }
+      for ci in 0..<marked_rows.length() {
+        let row_id = sql::col_text(marked_rows[ci], 0)
+        let row_last_active = sql::col_int64(marked_rows[ci], 1)
+        let raw = parse_json_or_null(sql::col_text(marked_rows[ci], 2))
+        if j_bool(raw, "archived") || is_led_subchat(raw) {
+          continue
+        }
+        let agents = j_arr(raw, "agents")
+        let mut is_mine = j_bool(raw, "mine")
+        if !is_mine {
+          match base_codec::json_get(raw, "creator") {
+            Some(c) => if is_viewer_person(c, marks_helper) { is_mine = true }
+            None => ()
+          }
+        }
+        let is_unread = match sql::col_opt_int64(marked_rows[ci], 3) {
+          Some(u) => u != 0L
+          None => j_bool(raw, "unread")
+        }
+        let thread_opt = j_opt_int(raw, "thread")
+        let unsent_opt : Option[base_codec::Json] = match thread_opt {
+          Some(th) => {
+            let ob_key = st_addr + ":" + th.to_string()
+            match unsent_in.get(ob_key) {
+              Some(um) => {
+                seen_unsent_threads.set(ob_key, true)
+                Some(um)
+              }
+              None => None
+            }
+          }
+          None => None
+        }
+        let is_watch = has_active_watch(agents)
+        let st_badge = row_state(agents)
+        let dec_opt = decision_for_viewer(raw, me_json)
+        let waits = dec_opt.is_some()
+        let raw_failed = is_mine && (match st_badge { Some("failed") => true; _ => false }) && started_by(raw, me_json)
+        let fail_key = if raw_failed { failure_key_of(st_addr, raw) } else { "" }
+        let is_done_unread = is_mine && is_unread && (match st_badge { Some("run") | Some("block") => false; _ => true })
+
+        let asked_opt : Option[String] = if unsent_opt.is_some() {
+          Some("alert")
+        } else if waits {
+          Some("wait")
+        } else if raw_failed {
+          Some("alert")
+        } else if is_done_unread {
+          Some("done")
+        } else {
+          None
+        }
+        let failure_opt : Option[String] = match (asked_opt, unsent_opt) {
+          (Some("alert"), None) => Some(fail_key)
+          _ => None
+        }
+        let tone_opt : Option[String] = match failure_opt {
+          Some(fk) => if fails_gone.get(fk).is_some() { None } else { asked_opt }
+          None => asked_opt
+        }
+
+        match tone_opt {
+          None => continue
+          Some(tone) => {
+            let by_person = is_unread && tone == "done" && marks_said_by_person(raw)
+            if tone == "alert" {
+              alert_n += 1
+              if is_mine { mine_alert += 1 }
+              if is_watch { watch_alert += 1 }
+            } else if tone == "wait" {
+              wait_n += 1
+              if is_mine { mine_wait += 1 }
+              if is_watch { watch_wait += 1 }
+            } else if tone == "done" {
+              unread_n += 1
+              if by_person {
+                said_n += 1
+              }
+              if is_mine { mine_unread += 1 }
+              if is_watch { watch_unread += 1 }
+            }
+            // Filter `items` strictly by `badgeKinds` (marks.ts:277).
+            let include_item = (tone == "alert" && bk.failed) ||
+            (tone == "wait" && bk.wait) ||
+            (is_unread && tone == "done" && (if by_person { bk.message } else { bk.done }))
+            if !include_item {
+              continue
+            }
+            let title = match j_opt_str_any(raw, "title") {
+              Some(t) => t
+              None => ""
+            }
+            let (text_out, what_out) = match unsent_opt {
+              Some(um) => {
+                let preview = plain_text_preview(j_str(um, "text"), lang=lang)
+                let what = if preview.length() > 0 { preview } else if lang == "en" { "(File)" } else { "（文件）" }
+                let label_txt = if lang == "en" { "Not sent: " + what } else { "未发送：" + what }
+                (label_txt, what)
+              }
+              None => {
+                let last_preview = match base_codec::json_get(raw, "last") {
+                  Some(lo) => match j_opt_str_any(lo, "text") {
+                    Some(t) => plain_text_preview(t, lang=lang)
+                    None => j_str(lo, "preview")
+                  }
+                  None => ""
+                }
+                let state_text = match j_opt_str(raw, "stateText") {
+                  Some(st) => st
+                  None => last_preview
+                }
+                (state_text, state_text)
+              }
+            }
+            let at_ms = match j_opt_int64(raw, "lastActiveAt") {
+              Some(v) => v
+              None => row_last_active
+            }
+            let item_fields : Array[(String, base_codec::Json)] = [
+              ("kind", base_codec::json_str(tone)),
+              ("workspace", base_codec::json_str(ws_id)),
+              ("station", base_codec::json_str(st_addr)),
+              ("stationName", base_codec::json_str(sname)),
+              ("session", base_codec::json_str(row_id)),
+              ("title", base_codec::json_str(title)),
+              ("text", base_codec::json_str(text_out)),
+              ("what", base_codec::json_str(what_out)),
+              ("at", base_codec::json_int64(at_ms)),
+            ]
+            match thread_opt {
+              Some(th) => item_fields.push(("thread", base_codec::json_int(th)))
+              None => item_fields.push(("thread", base_codec::json_null()))
+            }
+            match dec_opt {
+              Some(d) => match j_opt_int(d, "seq") {
+                Some(sq) => item_fields.push(("seq", base_codec::json_int(sq)))
+                None => ()
+              }
+              None => if tone == "done" {
+                match base_codec::json_get(raw, "last") {
+                  Some(lo) => match j_opt_int(lo, "seq") {
+                    Some(sq) => item_fields.push(("seq", base_codec::json_int(sq)))
+                    None => ()
+                  }
+                  None => ()
+                }
+              }
+            }
+            match failure_opt {
+              Some(fk) => if tone == "alert" {
+                item_fields.push(("failure", base_codec::json_str(fk)))
+              }
+              None => ()
+            }
+            items_list.push((marks_item_urgency(tone), at_ms, base_codec::json_obj(item_fields)))
+          }
+        }
+      }
+    }
+
+    // 2. Remaining failed local outbox messages not already counted in Loop 1 (`unsentSaid`, marks.ts:304-321).
+    for ui in 0..<unsent_list.length() {
+      let (st_addr, sname, ob_th, m) = unsent_list[ui]
+      let ob_key = st_addr + ":" + ob_th.to_string()
+      if seen_unsent_threads.get(ob_key).is_some() {
+        continue
+      }
+      seen_unsent_threads.set(ob_key, true)
+      alert_n += 1
+      mine_alert += 1
+      if !bk.failed {
+        continue
+      }
+      let preview = plain_text_preview(j_str(m, "text"), lang=lang)
+      let what = if preview.length() > 0 { preview } else if lang == "en" { "(File)" } else { "（文件）" }
+      let label_txt = if lang == "en" { "Not sent: " + what } else { "未发送：" + what }
+      let at_ms = match j_opt_int64(m, "at") {
+        Some(v) => v
+        None => 0L
+      }
+      items_list.push((
+        0,
+        at_ms,
+        base_codec::json_obj([
+          ("kind", base_codec::json_str("alert")),
+          ("workspace", base_codec::json_str(ws_id)),
+          ("station", base_codec::json_str(st_addr)),
+          ("stationName", base_codec::json_str(sname)),
+          ("session", base_codec::json_str("thread:" + ob_th.to_string())),
+          ("thread", base_codec::json_int(ob_th)),
+          ("title", base_codec::json_str("")),
+          ("text", base_codec::json_str(label_txt)),
+          ("what", base_codec::json_str(what)),
+          ("at", base_codec::json_int64(at_ms)),
+        ]),
+      ))
+    }
+
+    // Sort items: urgency ascending, then `at` descending
+    for i in 1..<items_list.length() {
+      let cur = items_list[i]
+      let mut j = i - 1
+      while j >= 0 && (cur.0 < items_list[j].0 || (cur.0 == items_list[j].0 && cur.1 > items_list[j].1)) {
+        items_list[j + 1] = items_list[j]
+        j -= 1
+      }
+      items_list[j + 1] = cur
+    }
+    let items_json : Array[base_codec::Json] = []
+    for i in 0..<items_list.length() {
+      items_json.push(items_list[i].2)
+    }
+
+    let badge = marks_badge_of(bk, alert_n, wait_n, unread_n, said_n)
+    total_badge += badge
+    let mf : Array[(String, base_codec::Json)] = [
+      ("alert", base_codec::json_int(alert_n)),
+      ("unread", base_codec::json_int(unread_n)),
+      ("badge", base_codec::json_int(badge)),
+      ("workspaceName", base_codec::json_str(ws_name)),
+      ("items", base_codec::json_arr(items_json)),
+    ]
+    if wait_n > 0 {
+      mf.push(("wait", base_codec::json_int(wait_n)))
+    }
+    match marks_counts_tone(alert_n, wait_n, unread_n) {
+      Some(t) => {
+        mf.push(("tone", base_codec::json_str(t)))
+        mf.push(("label", base_codec::json_str(marks_counts_label(alert_n, wait_n, unread_n, lang))))
+      }
+      None => ()
+    }
+    match marks_counts_tone(mine_alert, mine_wait, mine_unread) {
+      Some(t) => mf.push(("mineTone", base_codec::json_str(t)))
+      None => ()
+    }
+    match marks_counts_tone(watch_alert, watch_wait, watch_unread) {
+      Some(t) => mf.push(("watchingTone", base_codec::json_str(t)))
+      None => ()
+    }
+    push_opt_str(mf, "workspaceEmoji", j_opt_str(wj, "emoji"))
+    push_opt_str(mf, "workspaceIcon", j_opt_str(wj, "icon"))
+    ws_built.push((ws_id, alert_n, wait_n, unread_n, mf))
+  }
+
+  // Compute cross-workspace `others` & `othersLabel` (`marks.ts:359-375`).
+  let ws_entries : Array[(String, base_codec::Json)] = []
+  for i in 0..<ws_built.length() {
+    let (ws_id, _, _, _, mf) = ws_built[i]
+    let mut o_alert = 0
+    let mut o_wait = 0
+    let mut o_unread = 0
+    for j in 0..<ws_built.length() {
+      if j == i {
+        continue
+      }
+      o_alert += ws_built[j].1
+      o_wait += ws_built[j].2
+      o_unread += ws_built[j].3
+    }
+    match marks_counts_tone(o_alert, o_wait, o_unread) {
+      Some(ot) => {
+        let ol = marks_counts_label(o_alert, o_wait, o_unread, lang)
+        let full_ol = if lang == "en" { "Other workspaces: " + ol } else { "其他 workspace：" + ol }
+        mf.push(("others", base_codec::json_str(ot)))
+        mf.push(("othersLabel", base_codec::json_str(full_ol)))
+      }
+      None => ()
+    }
+    ws_entries.push((ws_id, base_codec::json_obj(mf)))
+  }
+
+  sql::SqlResult::Ok(base_codec::json_obj([
+    ("workspaces", base_codec::json_obj(ws_entries)),
+    ("badge", base_codec::json_int(total_badge)),
+    (
+      "badgeKinds",
+      base_codec::json_obj([
+        ("on", base_codec::json_bool(bk.on)),
+        ("wait", base_codec::json_bool(bk.wait)),
+        ("failed", base_codec::json_bool(bk.failed)),
+        ("done", base_codec::json_bool(bk.done)),
+        ("message", base_codec::json_bool(bk.message)),
+        ("services", base_codec::json_bool(bk.services)),
+      ]),
+    ),
+  ]))
+}

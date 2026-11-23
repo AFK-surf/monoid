@@ -660,6 +660,9 @@ pub fn ClientCore::set_viewer(
 ) -> Unit {
   if email.length() > 0 && self.viewer_marks.me != email {
     self.events.set_viewer_email(email)
+    if sub.length() > 0 {
+      self.events.set_viewer_selves([sub])
+    }
     let prev = self.viewer_marks
     self.viewer_marks = views::ViewerMarks::{
       me: email,

@@ -50,6 +50,7 @@ struct FakeChatEntry {
   session : Option[String]
   pinned_at : Option[Int64]
   last_active : Int64
+  unread : Option[Int]
   mine : Int
   hidden : Int
   led : Int
@@ -201,6 +202,40 @@ fn ViewsFakeDb::answer(self : ViewsFakeDb, op : String, args : base_codec::Json)
   let rows : Array[base_codec::Json] = []
   let mut changed = 0
 
+  if stmt == "SELECT id, last_active, json, unread FROM chat WHERE station = ? AND archived = 0 AND (tone IS NOT NULL OR asks = 1)" {
+    let st = vt_param_str(p, 0)
+    for i in 0..<self.chats.length() {
+      let c = self.chats[i]
+      if c.station == st && c.archived == 0 {
+        let u_j = match c.unread { Some(u) => base_codec::json_int(u); None => base_codec::json_null() }
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(c.id),
+          base_codec::json_int64(c.last_active),
+          base_codec::json_str(c.json),
+          u_j,
+        ]))
+      }
+    }
+    return shell::AskResult::Ok(base_codec::json_arr(rows))
+  }
+  if stmt == "SELECT thread, json FROM outbox WHERE station = ?" {
+    let st = vt_param_str(p, 0)
+    let prefix = st + ":"
+    let ks = self.outbox.keys()
+    for i in 0..<ks.length() {
+      let k = ks[i]
+      if k.starts_with(prefix) {
+        let v = match self.outbox.get(k) { Some(s) => s; None => "" }
+        let th_str = k.slice(prefix.length(), k.length())
+        let th_num = match base_codec::parse_int64_str(th_str) { Some(n) => n.to_int(); None => 0 }
+        rows.push(base_codec::json_arr([
+          base_codec::json_int(th_num),
+          base_codec::json_str(v),
+        ]))
+      }
+    }
+    return shell::AskResult::Ok(base_codec::json_arr(rows))
+  }
   if stmt == store::sql_chat_window() {
     let in_ord = vt_param_str(p, 0)
     let mine = vt_param_int(p, 1)
@@ -250,6 +285,21 @@ fn ViewsFakeDb::answer(self : ViewsFakeDb, op : String, args : base_codec::Json)
         base_codec::json_int64(c.last_active),
         base_codec::json_num(c.ord),
       ]))
+    }
+  } else if stmt == "SELECT json, unread FROM chat WHERE station = ? AND archived = ? AND id = ?" {
+    let st = vt_param_str(p, 0)
+    let arch = vt_param_int(p, 1)
+    let cid = vt_param_str(p, 2)
+    for i in 0..<self.chats.length() {
+      let c = self.chats[i]
+      if c.station == st && c.archived == arch && c.id == cid {
+        let u_j = match c.unread { Some(u) => base_codec::json_int(u); None => base_codec::json_null() }
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(c.json),
+          u_j,
+        ]))
+        break
+      }
     }
   } else if stmt == store::sql_chat_by_key() {
     let st = vt_param_str(p, 0)
@@ -541,6 +591,7 @@ fn add_fake_chat(
     session: Some(id),
     pinned_at: pinned_at,
     last_active: last_active,
+    unread: Some(if unread { 1 } else { 0 }),
     mine: 1,
     hidden: 0,
     led: 0,
@@ -680,6 +731,7 @@ test "RowsMemo 3x scale constant-read budget and <= 4 KB keyed delta on single-c
           session: Some("chat-3"),
           pinned_at: None,
           last_active: now + 5000.to_int64(),
+          unread: Some(1),
           mine: 1,
           hidden: 0,
           led: 0,
