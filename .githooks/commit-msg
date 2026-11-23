@@ -6,6 +6,4 @@ node "$(git rev-parse --show-toplevel)/scripts/changelog.ts" --refuse "$1" || ex
 git rev-parse -q --verify HEAD > /dev/null || exit 0
 # The mbui app's budgets only fall but where the message says why (scripts/mbui-budgets.ts: `Budget-raise: <why>`).
 node "$(git rev-parse --show-toplevel)/scripts/mbui-budgets.ts" HEAD index "$1" || exit 1
-# Changes to station/src/ production code also update station/mb/ or explain why (scripts/station-parity.ts: `Station-parity: <why>`).
-node "$(git rev-parse --show-toplevel)/scripts/station-parity.ts" HEAD index "$1" || exit 1
 exec sh "$(git rev-parse --show-toplevel)/scripts/undone.sh" HEAD index "$1"

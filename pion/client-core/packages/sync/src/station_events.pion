@@ -1019,16 +1019,57 @@ fn viewer_matches_str(viewer_email : String, viewer_selves : Array[String], cand
   false
 }
 
-fn viewer_matches_person(viewer_email : String, viewer_selves : Array[String], p : base_codec::Json) -> Bool {
+fn se_slack_tail(pid : String) -> String {
+  let mut last_colon = -1
+  for i in 0..<pid.length() {
+    if pid.code_unit_at(i) == 58 {
+      last_colon = i
+    }
+  }
+  if last_colon >= 0 {
+    pid.slice(last_colon + 1, pid.length())
+  } else {
+    pid
+  }
+}
+
+/// 1:1 parity with `client/core-ts/src/station/rows-made.ts mineFor(me, selves)` & `chat-row.ts`:
+/// matches `id === me`, case-insensitive `email === me`, `via === "slack"` with `id` tail in `selves`,
+/// and direct `id`/`email` membership in `selves`.
+pub fn viewer_matches_person(viewer_email : String, viewer_selves : Array[String], p : base_codec::Json) -> Bool {
   if viewer_email.length() == 0 && viewer_selves.length() == 0 {
     return false
   }
   match p {
     base_codec::Json::Str(s) => viewer_matches_str(viewer_email, viewer_selves, s)
-    base_codec::Json::Obj(_) =>
-    viewer_matches_str(viewer_email, viewer_selves, j_str(p, "email")) ||
-    viewer_matches_str(viewer_email, viewer_selves, j_str(p, "id")) ||
-    viewer_matches_str(viewer_email, viewer_selves, j_str(p, "via"))
+    base_codec::Json::Obj(_) => {
+      let pid = j_str(p, "id")
+      let pe = j_str(p, "email")
+      let via = j_str(p, "via")
+      if viewer_email.length() > 0 {
+        if pid == viewer_email {
+          return true
+        }
+        if pe.length() > 0 && se_ascii_lower(pe) == se_ascii_lower(viewer_email) {
+          return true
+        }
+      }
+      if via == "slack" && pid.length() > 0 {
+        let tail = se_slack_tail(pid)
+        for i in 0..<viewer_selves.length() {
+          if viewer_selves[i].length() > 0 && viewer_selves[i] == tail {
+            return true
+          }
+        }
+      }
+      for i in 0..<viewer_selves.length() {
+        let sv = viewer_selves[i]
+        if sv.length() > 0 && (pid == sv || (pe.length() > 0 && se_ascii_lower(pe) == se_ascii_lower(sv))) {
+          return true
+        }
+      }
+      false
+    }
     _ => false
   }
 }
@@ -2422,8 +2463,16 @@ fn StationEvents::apply_one_sse_event(
     }
   }
   if ev_name == "lock" {
-    lock_payloads.push(payload)
-    return sql::SqlResult::Ok(1)
+    match base_codec::json_get(payload, "entries") {
+      Some(base_codec::Json::Arr(xs)) => {
+        if xs.length() == 0 {
+          return sql::SqlResult::Ok(0)
+        }
+        lock_payloads.push(payload)
+        return sql::SqlResult::Ok(1)
+      }
+      _ => return sql::SqlResult::Ok(0)
+    }
   }
   if ev_name == "overview" {
     let raw = base_codec::json_stringify(payload)

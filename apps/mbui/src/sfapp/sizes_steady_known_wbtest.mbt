@@ -10,6 +10,5 @@ fn init {
     ("src/sfapp/menu_node_wbtest.mbt", 1),
     ("src/sfapp/settings_wbtest.mbt", 1),
     ("src/sfapp/tape.mbt", 1),
-    ("src/sfapp/wide_wbtest.mbt", 1),
   ])
 }

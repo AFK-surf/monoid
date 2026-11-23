@@ -5223,10 +5223,25 @@ fn View::scrolls_window_ids(
                   _ => None
                 }
                 if self.tree.is_pick_fader(c) && was_c is None {
+                  if !self.tree.along_row_at(i) && !laid_anew && held_x.abs() > 0.01 {
+                    put(c, { ..flip_in_down(0.0, 0.0, 0.0, false), dx: -held_x })
+                  }
                   continue
                 }
-                // (one leaving out of the flow (pop_leave.mbt): drawn where it stood as it fades, nothing of the way's)
+                // (one leaving out of the flow (pick_leave.mbt / pop_leave.mbt): drawn where it stood as it fades,
+                // cancelling any ancestor flip_across/flip_in drift already compensated by its layout inset so it is
+                // neither double-shifted nor dragged away from its pre-change frame; for holder-relative pop_leave
+                // (b.x - x == held_x), dx == 0 so it still rides with its shrinking holder)
                 if self.tree.handle(c).leaving_now() && n.flex.style.position == @flex.PositionType::Absolute {
+                  if was_c is Some(b) {
+                    let dx = if laid_anew { 0.0 } else { (b.x - x) - held_x }
+                    let dy = (b.y - y) - held
+                    if dx.abs() > 0.01 || dy.abs() > 0.01 {
+                      put(c, { ..flip_in_down(dy, 0.0, 0.0, false), dx })
+                    }
+                  } else if !self.tree.along_row_at(i) && !laid_anew && held_x.abs() > 0.01 {
+                    put(c, { ..flip_in_down(0.0, 0.0, 0.0, false), dx: -held_x })
+                  }
                   continue
                 }
                 match was_c {

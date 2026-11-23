@@ -57,9 +57,9 @@ let unsent_icon : Double = 12.0
 let stop_icon : Double = 12.0
 
 ///|
-/// Under it (msgUnsent): 4 under, at the column's end, 2 apart; its note 6 before the buttons.
+/// Under it (msgUnsent): at the column's end, 2 apart, matching MineTime/MineSending/MineWaiting 18pt line height (mine_column already gives gap=S1); its note 6 before the buttons.
 // kept across runs: a value (no field of it changes)
-let unsent_row : @ui.Style = @ui.css("row pt=S1 gap=SPx align=ACenter")
+let unsent_row : @ui.Style = @ui.css("row gap=SPx align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -72,13 +72,13 @@ let held_buttons : @ui.Style = @ui.css("row gap=SPx align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let unsent_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Danger, wrap=false)
+let unsent_words : @ui.TextStyle = @ui.text_style(size=Caption, leading=L5, color=Danger, wrap=false)
 
 ///|
-/// Its buttons (msgUnsentBtn): 2 by 6 in, 4 apart, 7 round; the hover ground under the pointer; at 55% when they may
-/// not be pressed.
+/// Its buttons (msgUnsentBtn): 6 in across, 18pt line height matching the other under-message lines, 4 apart, 7 round;
+/// the hover ground under the pointer; at 55% when they may not be pressed.
 // kept across runs: a value (no field of it changes)
-let unsent_button_box : @ui.Style = @ui.css("row px=S1_5 py=S0_5 gap=S1 radius=Md align=ACenter")
+let unsent_button_box : @ui.Style = @ui.css("row px=S1_5 gap=S1 radius=Md align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -86,11 +86,11 @@ let unsent_button_hot : @ui.Style = unsent_button_box.then(@ui.css("bg=Hover"))
 
 ///|
 // kept across runs: a value (no field of it changes)
-let unsent_label : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
+let unsent_label : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let unsent_label_hot : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false)
+let unsent_label_hot : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Fg, wrap=false)
 
 ///|
 /// An activity's row (activityRow): its line and its stop 4 apart.

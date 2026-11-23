@@ -800,6 +800,7 @@ test "quoting a held image on Small never draws the original image above compose
   for step in exit_steps {
     let (dt, kb) = step
     t.set_ime_inset(kb)
+    t.resize_next(390.0, 844.0 - kb)
     t.run_for(tap_at + dt - t.time())
     let insts = t.drawn_instances()
     let pics = picture_instances(t, "mem:fixture/插画参考.png")

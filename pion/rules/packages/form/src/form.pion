@@ -17,7 +17,7 @@ fn write_canonical(sb : StringBuilder, v : Json) -> Result[Unit, String] {
       Ok(())
     }
     Json::Num(n) => {
-      if !(n == n.floor() && n.abs() <= max_safe) {
+      if !(n >= -max_safe && n <= max_safe && n.to_int64().to_double() == n) {
         return Err("lock entries hold integers only")
       }
       sb.write_string(n.to_int64().to_string())
@@ -45,33 +45,109 @@ fn write_canonical(sb : StringBuilder, v : Json) -> Result[Unit, String] {
       Ok(())
     }
     Json::Obj(entries) => {
-      let keys : Array[String] = []
       let n = entries.length()
-      let mut i = 0
-      while i < n {
-        keys.push(entries[i].0)
-        i = i + 1
+      let mut sorted_already = true
+      let mut ci = 1
+      while ci < n {
+        if utf16_cmp(entries[ci - 1].0, entries[ci].0) > 0 {
+          sorted_already = false
+          break
+        }
+        ci = ci + 1
       }
-      sort_strings_utf16(keys)
       sb.write_byte(123.to_byte())
-      let mut j = 0
-      while j < n {
-        if j > 0 {
-          sb.write_byte(44.to_byte())
-        }
-        let k = keys[j]
-        write_quoted(sb, k)
-        sb.write_byte(58.to_byte())
-        match json_obj_get(entries, k) {
-          Some(v2) => {
-            match write_canonical(sb, v2) {
-              Ok(_) => ()
-              Err(e) => return Err(e)
-            }
+      if sorted_already {
+        let mut j = 0
+        while j < n {
+          if j > 0 {
+            sb.write_byte(44.to_byte())
           }
-          None => ()
+          write_quoted(sb, entries[j].0)
+          sb.write_byte(58.to_byte())
+          match write_canonical(sb, entries[j].1) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+          j = j + 1
         }
-        j = j + 1
+      } else {
+        let pairs : Array[(String, Json)] = []
+        let mut i = 0
+        while i < n {
+          pairs.push(entries[i])
+          i = i + 1
+        }
+        if n <= 16 {
+          let mut si = 1
+          while si < n {
+            let cur = pairs[si]
+            let mut sj = si - 1
+            while sj >= 0 && utf16_cmp(pairs[sj].0, cur.0) > 0 {
+              pairs[sj + 1] = pairs[sj]
+              sj = sj - 1
+            }
+            pairs[sj + 1] = cur
+            si = si + 1
+          }
+        } else {
+          let tmp : Array[(String, Json)] = []
+          let mut k = 0
+          while k < n {
+            tmp.push(pairs[k])
+            k = k + 1
+          }
+          let mut width = 1
+          while width < n {
+            let mut left = 0
+            while left < n {
+              let mid = if left + width < n { left + width } else { n }
+              let right = if left + width * 2 < n { left + width * 2 } else { n }
+              let mut li = left
+              let mut ri = mid
+              let mut out = left
+              while li < mid && ri < right {
+                if utf16_cmp(pairs[li].0, pairs[ri].0) <= 0 {
+                  tmp[out] = pairs[li]
+                  li = li + 1
+                } else {
+                  tmp[out] = pairs[ri]
+                  ri = ri + 1
+                }
+                out = out + 1
+              }
+              while li < mid {
+                tmp[out] = pairs[li]
+                li = li + 1
+                out = out + 1
+              }
+              while ri < right {
+                tmp[out] = pairs[ri]
+                ri = ri + 1
+                out = out + 1
+              }
+              let mut p = left
+              while p < right {
+                pairs[p] = tmp[p]
+                p = p + 1
+              }
+              left = left + width * 2
+            }
+            width = width * 2
+          }
+        }
+        let mut j = 0
+        while j < n {
+          if j > 0 {
+            sb.write_byte(44.to_byte())
+          }
+          write_quoted(sb, pairs[j].0)
+          sb.write_byte(58.to_byte())
+          match write_canonical(sb, pairs[j].1) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+          j = j + 1
+        }
       }
       sb.write_byte(125.to_byte())
       Ok(())
@@ -95,7 +171,7 @@ pub fn entry_text(e : Json) -> Result[String, String] {
     _ => return Err("an entry is an object")
   }
   let hashed : Array[(String, Json)] = []
-  let fields = ["v", "ws", "seq", "prev", "at", "kind", "body"]
+  let fields = ["at", "body", "kind", "prev", "seq", "v", "ws"]
   let mut i = 0
   while i < fields.length() {
     let k = fields[i]
@@ -105,8 +181,10 @@ pub fn entry_text(e : Json) -> Result[String, String] {
     }
     i = i + 1
   }
-  match canonical(Json::Obj(hashed)) {
-    Ok(s) => Ok("stillfail-lock/1\n" + s)
+  let sb = StringBuilder::new()
+  sb.write_string("stillfail-lock/1\n")
+  match write_canonical(sb, Json::Obj(hashed)) {
+    Ok(_) => Ok(sb.to_string())
     Err(why) => Err(why)
   }
 }

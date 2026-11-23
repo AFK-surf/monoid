@@ -449,14 +449,56 @@ fn merge_overlays(a : ChatChangeOverlay, b : ChatChangeOverlay) -> ChatChangeOve
   }
 }
 
+fn cv_ascii_lower(s : String) -> String {
+  let bs = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<bs.length() {
+    let b = bs[i].to_int()
+    if b >= 65 && b <= 90 {
+      sb.write_byte((b + 32) as Byte)
+    } else {
+      sb.write_byte(bs[i])
+    }
+  }
+  sb.to_string()
+}
+
+fn cv_slack_tail(pid : String) -> String {
+  let mut last_colon = -1
+  for i in 0..<pid.length() {
+    if pid.code_unit_at(i) == 58 {
+      last_colon = i
+    }
+  }
+  if last_colon >= 0 {
+    pid.slice(last_colon + 1, pid.length())
+  } else {
+    pid
+  }
+}
+
 fn is_viewer_person(p : base_codec::Json, marks : ViewerMarks) -> Bool {
   let pid = j_str(p, "id")
   let email = j_str(p, "email")
-  if marks.me.length() > 0 && (pid == marks.me || email == marks.me) {
-    return true
+  let via = j_str(p, "via")
+  if marks.me.length() > 0 {
+    if pid == marks.me {
+      return true
+    }
+    if email.length() > 0 && cv_ascii_lower(email) == cv_ascii_lower(marks.me) {
+      return true
+    }
+  }
+  if via == "slack" && pid.length() > 0 {
+    let tail = cv_slack_tail(pid)
+    for i in 0..<marks.selves.length() {
+      if marks.selves[i].length() > 0 && tail == marks.selves[i] {
+        return true
+      }
+    }
   }
   for i in 0..<marks.selves.length() {
-    if pid == marks.selves[i] || email == marks.selves[i] {
+    if marks.selves[i].length() > 0 && (pid == marks.selves[i] || email == marks.selves[i]) {
       return true
     }
   }

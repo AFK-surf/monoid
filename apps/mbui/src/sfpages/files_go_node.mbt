@@ -150,7 +150,15 @@ fn go_body(v : @view.View, src : Source, ws : String, here : DriveAt, to : (Driv
     let asked_for = typed + "\n" + here.station + "\n" + from
     if go.asking.get() != Some(asked_for) {
       go.asking.set(Some(asked_for))
-      go_resolve(src, ws, typed, here, fn(r) { if go.asking.get() == Some(asked_for) { go.resolved.set(Some((typed, r))) } })
+      go_resolve(src, ws, typed, here, fn(r) {
+        if go.asking.get() == Some(asked_for) {
+          if v.alive() {
+            @view.transition(within=v.transitions_root(), fn() { go.resolved.set(Some((typed, r))) })
+          } else {
+            go.resolved.set(Some((typed, r)))
+          }
+        }
+      })
     }
   })
   let resolved = fn() {
@@ -180,10 +188,17 @@ fn go_body(v : @view.View, src : Source, ws : String, here : DriveAt, to : (Driv
         go.asked.set(key)
         (src.call)("drive.folders", { "station": Json::string(station), "path": Json::string(parent) }, fn(a) {
           if go.asked.get() == key {
-            go.folders.set(Some((station, parent, match a {
-              Ok(v) => items(Some(v), "entries").map(fn(e) { text(Some(e), "name") })
-              Err(_) => []
-            })))
+            let set_folders = fn() {
+              go.folders.set(Some((station, parent, match a {
+                Ok(v) => items(Some(v), "entries").map(fn(e) { text(Some(e), "name") })
+                Err(_) => []
+              })))
+            }
+            if v.alive() {
+              @view.transition(within=v.transitions_root(), set_folders)
+            } else {
+              set_folders()
+            }
           }
         })
       }

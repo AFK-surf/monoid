@@ -11,8 +11,8 @@ subdir = "packages/base64"
 [[package]]
 name = "crypto"
 git = "https://github.com/AFK-surf/pion-packages.git"
-ref = "tag:crypto-v0.2.0"
-rev = "b14e5abe6451c18c887e6b65574b327e88655ebb"
+ref = "tag:crypto-v0.4.1"
+rev = "2ecdcb749583446735af60504930bf1f63649f70"
 subdir = "packages/crypto"
 
 [[package]]
@@ -46,8 +46,8 @@ subdir = "packages/json5"
 [[package]]
 name = "markdown"
 git = "https://github.com/AFK-surf/pion-packages.git"
-ref = "tag:markdown-v0.2.1"
-rev = "f6c35c646a2a8115792a5c55966c2c198098f633"
+ref = "tag:markdown-v0.3.0"
+rev = "d6aae63cdf1ee91d45f5317c37218eab21bd0076"
 subdir = "packages/markdown"
 
 [[package]]

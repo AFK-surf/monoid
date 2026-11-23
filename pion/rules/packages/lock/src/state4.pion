@@ -157,7 +157,7 @@ fn state4_of(
   carried : Option[Carried],
   c : Crypto,
 ) -> State4 {
-  let (r, logs, offs) = roster_of(ws, root, chains, bodies, [], carried, c)
+  let (r, logs, offs, bodies_by) = roster_of(ws, root, chains, bodies, [], carried, c)
   let base = LockState::{
     ws: ws,
     seq: 0.0,
@@ -269,15 +269,6 @@ fn state4_of(
   while fi < r.in_force.length() {
     forced.set(r.in_force[fi].0, r.in_force[fi].1)
     fi = fi + 1
-  }
-  let bodies_by : Map[String, form::Json] = Map::new()
-  let mut bi = 0
-  while bi < bodies.length() {
-    match body_hash(bodies[bi], c) {
-      Ok(h) => bodies_by.set(h, bodies[bi])
-      Err(_) => ()
-    }
-    bi = bi + 1
   }
   let mut mi = 0
   while mi < r.members.length() {

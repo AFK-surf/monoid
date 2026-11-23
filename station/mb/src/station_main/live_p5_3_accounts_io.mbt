@@ -358,6 +358,20 @@ fn p53_source_of(j : Json) -> @agent_runtimes.Source {
 /// profiles.ts `checkProfile`: whether a profile works (its models, what it can decide with), as accounts/index.ts asks
 /// it of a request (`{runtime, kind, key, via, home, machine, login}`).
 async fn P53Accounts::check_profile(self : P53Accounts, request : Json, lang : String) -> Json {
+  // (a service profile's adapter: colab.ts's `check`)
+  if jtext(request, "kind") == Some("service") {
+    return match jtext(request, "service") {
+      Some("colab") =>
+        p53_json(@accounts_pool.colab_check(self.ctx, jtext_or_empty(request, "home"), lang, p5_epoch_ms().to_double()))
+      _ =>
+        Json::object({
+          "state": Json::string("failed"),
+          "detail": Json::string(self.ctx.tr(lang, "station.profile.unknownProvider")),
+          "models": Json::null(),
+          "checkedAt": Json::number(0.0),
+        })
+    }
+  }
   let host = self.bus.host
   let mac = platform() == "darwin"
   let cursor : @accounts_pool.CursorUrls = { website: "https://cursor.com", backend: "https://api2.cursor.sh", api: "https://api.cursor.com" }
@@ -772,7 +786,7 @@ async fn P53Accounts::sign_in_answer(self : P53Accounts, name : String, args : A
     "logins.startConsole" => Some(logins.start_console(jtext_or_empty(at(0), "id"), jtext_or_empty(at(0), "home"), lang(1)).to_json())
     "logins.startKimi" => Some(logins.start_kimi(jtext_or_empty(at(0), "id"), jtext_or_empty(at(0), "home"), lang(1)).to_json())
     "logins.startCursor" => Some(logins.start_cursor(jtext_or_empty(at(0), "id"), jtext_or_empty(at(0), "home"), lang(1)).to_json())
-    "logins.startService" => raise P53Error("service sign-in is not yet supported in native station: " + jtext_or_empty(at(0), "service"))
+    "logins.startService" => Some(self.start_service(at(0), lang(1)).to_json())
     "logins.get" => Some(p53_job(logins.get(s(0))))
     "logins.cancel" => {
       logins.cancel(s(0))
@@ -828,4 +842,31 @@ async fn P53Accounts::sign_in_answer(self : P53Accounts, name : String, args : A
     }
     _ => None
   }
+}
+
+///|
+/// A service profile's sign-in (services.ts's adapters' `login`): Google Colab's OAuth code, with PKCE.
+async fn P53Accounts::start_service(self : P53Accounts, p : Json, lang : String) -> @accounts_oauth.LoginJob {
+  let service = jtext_or_empty(p, "service")
+  guard service == "colab" else { raise P53Error("unknown service \{service}") }
+  let ctx = self.ctx
+  let home = jtext_or_empty(p, "home")
+  let pkce = @accounts_pool.colab_pkce(n => @drive.random_bytes(n))
+  let flow : @accounts_oauth.OAuthCode = {
+    url: @accounts_pool.colab_authorize_url(@accounts_pool.colab_urls(ctx), pkce, jtext(p, "email")),
+    validate: (raw, l) => match @accounts_pool.colab_code_of(ctx.words, raw, pkce.state, l) {
+      Ok(code) => code
+      Err(why) => raise @accounts_oauth.Failed(why)
+    },
+    exchange: async fn(code, l) {
+      let auth = @accounts_pool.exchange_colab_code(ctx, code, pkce.verifier, l, p5_epoch_ms().to_double()) catch {
+        e => raise @accounts_oauth.Failed(@accounts_pool.message_of(e))
+      }
+      @accounts_pool.write_colab_auth(ctx.io, home, auth) catch {
+        e => raise @accounts_oauth.Failed(@accounts_pool.message_of(e))
+      }
+    },
+    callback_code: url => @accounts_pool.colab_callback_code(url, pkce.state),
+  }
+  self.logins.start_oauth_code(jtext_or_empty(p, "id"), home, service, flow, lang)
 }

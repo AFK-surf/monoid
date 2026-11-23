@@ -1378,12 +1378,15 @@ export function addPendingSystemCards(db: DatabaseSync): void {
 ///   it had was read.
 /// - turns_by_end: a session's turns by when they ended (`TOLD_BLOCKED`, whether a blocked ask was told already): by
 ///   when they started, every turn the session had was read.
+/// - turns_waiting: the turns that ended asking for a person, by when (store.ts WAITING_FOR_PEOPLE): by turns_ended,
+///   every turn of the week was looked at, 0.4-1.1 s at a time on a busy station (mm2, 2026-11-23).
 /// - sessions_models: the chats someone started by when, with their runtime and model (store.ts MODELS_USED_BY).
 /// - sessions_efforts: the efforts someone's chats on a runtime and model ran at, by when (store.ts EFFORTS_USED_BY).
 export function addTellIndexes(db: DatabaseSync): void {
   addSaidIndex(db);
   addAgentIndex(db);
   db.exec("CREATE INDEX IF NOT EXISTS turns_by_end ON turns (session_key, ended_at)");
+  db.exec("CREATE INDEX IF NOT EXISTS turns_waiting ON turns (ended_at) WHERE declared IN ('block', 'need_help', 'need_human', 'need_decision')");
   // The archive's, a page at a time by
   // when each was archived (ARCHIVED_PAGE): its whole list was made at once, 60 s on a station (2026-11-03).
   db.exec("CREATE INDEX IF NOT EXISTS sessions_put_away ON sessions (archived_at, key) WHERE archived_at IS NOT NULL");

@@ -2634,7 +2634,7 @@ fn composer_extras_node(
             if s < 0.999 {
               @sf.seen_at(s)
             } else {
-              1.0
+              1.0 - leave_ease(item.going())
             }
           } else {
             match from_room.get() {
@@ -3517,6 +3517,7 @@ pub fn send_in_chat_node(src : Source, r : ChatRef, v : ChatView, w : Writing) -
   ignore(marks)
   let runs = @sfbase.refs_sent_runs(w.key, words)
   let from = composer_sent_from_node(src, w)
+  @signals.start_batch()
   let row = sent_local(
     rk,
     Some(chat_whole(src, r, v)),
@@ -3533,6 +3534,7 @@ pub fn send_in_chat_node(src : Source, r : ChatRef, v : ChatView, w : Writing) -
   // foot giving back its room as that key comes, in the one way of its column; what the core answers a change of its
   // own)
   sent_from_node(src, r, v, w, rk, row)
+  @signals.end_batch()
 }
 
 ///|

@@ -1035,3 +1035,278 @@ test "level treats put_file ENOENT for non-transcript files as missing, while re
   rt.advance(1)
   assert_eq(err2.val, "ENOENT")
 }
+
+///|
+test "WriteGuard coordinates concurrent replica.put and hand_over: quiet window, write_seq abort, and atomic rename gate" {
+  let rt = @effect.Runtime::new()
+  let now = Ref(1000.0)
+  let g = WriteGuard::new()
+  let ws = "W1"
+  let origin = "a".repeat(64)
+
+  // 1. Active write blocks handover start.
+  let put_gate : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let put_done = Ref(false)
+  ignore(
+    rt.fork(async fn() {
+      g.guard_write(() => now.val, ws, origin, async fn() {
+        put_gate.wait()
+        put_done.val = true
+      })
+    }),
+  )
+  rt.advance(1)
+  assert_true(g.begin_handover(now.val, true, ws, origin) is None)
+  assert_true(g.begin_handover(now.val, false, ws, origin) is None)
+
+  // Finish the write at t=1000 -> quiet window blocks handover when accept_others=true, but allows when accept_others=false.
+  ignore(put_gate.succeed(()))
+  rt.advance(1)
+  assert_true(put_done.val)
+  assert_true(g.begin_handover(now.val + 5000.0, true, ws, origin) is None)
+  assert_eq(g.begin_handover(now.val + 5000.0, false, ws, origin), Some(1))
+
+  // 2. After handover_quiet_ms, begin_handover succeeds with seq_before=1.
+  //    If a new replica.put arrives before atomic_remove, write_seq advances -> atomic_remove aborts without renaming/removing!
+  now.val = 1000.0 + handover_quiet_ms
+  guard g.begin_handover(now.val, true, ws, origin) is Some(seq_before) else { fail("expected handover allowed") }
+  assert_eq(seq_before, 1)
+
+  ignore(rt.fork(async fn() { g.guard_write(() => now.val, ws, origin, async fn() { () }) }))
+  rt.advance(1)
+
+  let events : Array[String] = []
+  let aborted = Ref(true)
+  ignore(
+    rt.fork(async fn() {
+      aborted.val = !g.atomic_remove(
+        ws,
+        origin,
+        seq_before,
+        ".dropping-test-0001",
+        async fn(name) { events.push("rename:" + name) },
+        async fn(name) { events.push("rm:" + name) },
+      )
+    }),
+  )
+  rt.advance(1)
+  assert_true(aborted.val)
+  assert_eq(events, [])
+
+  // 3. Advance past quiet window again -> atomic_remove renames under removing gate, blocking a concurrent put until rename finishes,
+  //    then releases the gate BEFORE slow rm_dropping runs so the put proceeds without waiting on rm -rf.
+  now.val = now.val + handover_quiet_ms
+  guard g.begin_handover(now.val, true, ws, origin) is Some(seq2) else { fail("expected handover allowed after quiet") }
+  assert_eq(seq2, 2)
+
+  let rename_gate : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let rm_gate : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let removed = Ref(false)
+  ignore(
+    rt.fork(async fn() {
+      removed.val = g.atomic_remove(
+        ws,
+        origin,
+        seq2,
+        ".dropping-test-0002",
+        async fn(name) {
+          events.push("rename-start:" + name)
+          rename_gate.wait()
+          events.push("rename-end:" + name)
+        },
+        async fn(name) {
+          events.push("rm-start:" + name)
+          rm_gate.wait()
+          events.push("rm-end:" + name)
+        },
+      )
+    }),
+  )
+  rt.advance(1)
+  assert_eq(events, ["rename-start:.dropping-test-0002"])
+
+  // A concurrent put arrives during rename -> must wait on removing gate!
+  ignore(
+    rt.fork(async fn() {
+      g.guard_write(() => now.val, ws, origin, async fn() { events.push("put-after-rename") })
+    }),
+  )
+  rt.advance(1)
+  assert_eq(events, ["rename-start:.dropping-test-0002"])
+
+  // Finish rename while rm is still pending -> removing gate releases and put runs immediately without waiting on rm!
+  ignore(rename_gate.succeed(()))
+  rt.advance(1)
+  assert_true(events.contains("rename-end:.dropping-test-0002"))
+  assert_true(events.contains("rm-start:.dropping-test-0002"))
+  assert_true(events.contains("put-after-rename"))
+  assert_false(events.contains("rm-end:.dropping-test-0002"))
+
+  ignore(rm_gate.succeed(()))
+  rt.advance(1)
+  assert_true(removed.val)
+  assert_true(events.contains("rm-end:.dropping-test-0002"))
+
+  // 4. Clean atomic_remove with no concurrent write clears last_write_at while preserving monotonic write_seq.
+  let key = "\{ws}\n\{origin}"
+  assert_eq(g.write_seq.get(key), Some(3))
+  assert_true(g.last_write_at.get(key) is Some(_))
+  now.val = now.val + handover_quiet_ms
+  guard g.begin_handover(now.val, true, ws, origin) is Some(seq3) else { fail("expected handover allowed") }
+  assert_eq(seq3, 3)
+  let removed4 = Ref(false)
+  ignore(
+    rt.fork(async fn() {
+      removed4.val = g.atomic_remove(
+        ws,
+        origin,
+        seq3,
+        ".dropping-test-0003",
+        async fn(_) { () },
+        async fn(_) { () },
+      )
+    }),
+  )
+  rt.advance(1)
+  assert_true(removed4.val)
+  assert_true(g.last_write_at.get(key) is None)
+  assert_eq(g.write_seq.get(key), Some(3))
+}
+
+///|
+test "serve_place invokes guard_write for replica.put (file/batch/head) and replica.drop, not for replica.held or replica.list" {
+  let rt = @effect.Runtime::new()
+  let ws = "W1"
+  let origin = "a".repeat(64)
+  let hash = "1".repeat(64)
+  let gen = "lz5x0-0123abcd"
+  let batch = "0000000001-0000000004-00000000.ndjson.zst"
+  let guarded : Array[String] = []
+  let ops : Array[String] = []
+  let place : ServePlace = {
+    origins: async fn(_) {
+      ops.push("origins")
+      []
+    },
+    held: async fn(_, _) {
+      ops.push("held")
+      Held::nothing()
+    },
+    path_of: async fn(_, _, _, _) { None },
+    stat_size: async fn(_) { 0.0 },
+    put_file: async fn(_, _, name, _) { ops.push("put_file:" + name) },
+    put: async fn(_, _, _, kind, name, _) { ops.push("put:" + kind + ":" + name) },
+    drop: async fn(_, _, _, _, _) { ops.push("drop") },
+  }
+  let guard_fn : async (String, String, async () -> Unit) -> Unit = async fn(w, o, f) {
+    guarded.push("\{w}:\{o}")
+    f()
+  }
+  let call = async fn(req : J, body : Body?) {
+    ignore(
+      serve_place(
+        place,
+        (_, _) => true,
+        (_, _, _, _) => [],
+        Some(() => true),
+        Some(guard_fn),
+        origin,
+        req,
+        body,
+        Some(ws),
+      ),
+    )
+  }
+  let err = Ref("")
+  ignore(
+    rt.fork(async fn() {
+      try {
+        call(jo([("method", js("replica.list")), ("workspace", js(ws))]), None)
+        call(jo([("method", js("replica.held")), ("workspace", js(ws)), ("origin", js(origin))]), None)
+        call(
+          jo([("method", js("replica.put")), ("workspace", js(ws)), ("origin", js(origin)), ("kind", js("file")), ("name", js(hash))]),
+          Some(Whole(b"filedata")),
+        )
+        call(
+          jo([("method", js("replica.put")), ("workspace", js(ws)), ("origin", js(origin)), ("gen", js(gen)), ("kind", js("batch")), ("name", js(batch))]),
+          Some(Whole(b"batchdata")),
+        )
+        call(
+          jo([("method", js("replica.put")), ("workspace", js(ws)), ("origin", js(origin)), ("gen", js(gen)), ("kind", js("head")), ("name", js("head.json"))]),
+          Some(Whole(b"{}")),
+        )
+        call(
+          jo([("method", js("replica.drop")), ("workspace", js(ws)), ("origin", js(origin)), ("gen", js(gen)), ("batches", ja([])), ("files", ja([]))]),
+          None,
+        )
+      } catch {
+        e => err.val = message_of(e)
+      }
+    }),
+  )
+  rt.advance(1)
+  assert_eq(err.val, "")
+  assert_eq(ops, ["origins", "held", "put_file:" + hash, "put:batch:" + batch, "put:head:head.json", "drop"])
+  // Exactly 4 guarded writes: put(file), put(batch), put(head), drop; 0 for list/held.
+  assert_eq(guarded.length(), 4)
+  assert_eq(guarded, ["\{ws}:\{origin}", "\{ws}:\{origin}", "\{ws}:\{origin}", "\{ws}:\{origin}"])
+}
+
+///|
+test "prune_non_targets_map cancels overflow keeper retry timer and asked flag while preserving active, s3, and other workspaces" {
+  let make_keeping = (busy : Bool, asked : Bool, cancelled : Ref[Int]) => {
+    let k : Keeping = {
+      to: 0.0,
+      at: None,
+      error: Some("offline"),
+      reason: Some("offline"),
+      missing: 0,
+      busy,
+      again: Some(() => { cancelled.val += 1 }),
+      tries: 2,
+      asked,
+      known: None,
+      head: None,
+      partial: false,
+      lacking: 0,
+    }
+    k
+  }
+  let c_first = Ref(0)
+  let c_third_idle = Ref(0)
+  let c_fourth_busy = Ref(0)
+  let c_s3 = Ref(0)
+  let c_other_ws = Ref(0)
+
+  let keeping : Map[String, Keeping] = {}
+  keeping["W1\nfirst"] = make_keeping(false, true, c_first)
+  keeping["W1\nthird"] = make_keeping(false, true, c_third_idle)
+  keeping["W1\nfourth"] = make_keeping(true, true, c_fourth_busy)
+  keeping["W1\ns3:bucket1"] = make_keeping(false, true, c_s3)
+  keeping["W2\nthird"] = make_keeping(false, true, c_other_ws)
+
+  prune_non_targets_map(keeping, "W1", ["first", "second"])
+
+  // Active target untouched.
+  assert_eq(c_first.val, 0)
+  assert_true(keeping.contains("W1\nfirst"))
+  assert_true(keeping.get("W1\nfirst").unwrap().again is Some(_))
+  assert_true(keeping.get("W1\nfirst").unwrap().asked)
+
+  // Idle non-target overflow keeper: timer cancelled, entry removed.
+  assert_eq(c_third_idle.val, 1)
+  assert_false(keeping.contains("W1\nthird"))
+
+  // Busy non-target overflow keeper: timer cancelled, asked cleared, entry kept until busy finishes.
+  assert_eq(c_fourth_busy.val, 1)
+  assert_true(keeping.contains("W1\nfourth"))
+  let fourth = keeping.get("W1\nfourth").unwrap()
+  assert_true(fourth.again is None)
+  assert_false(fourth.asked)
+
+  // S3 target and other workspace untouched.
+  assert_eq(c_s3.val, 0)
+  assert_true(keeping.contains("W1\ns3:bucket1"))
+  assert_eq(c_other_ws.val, 0)
+  assert_true(keeping.contains("W2\nthird"))
+}

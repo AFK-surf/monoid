@@ -11,8 +11,8 @@ subdir = "packages/base64"
 [[package]]
 name = "crypto"
 git = "https://github.com/AFK-surf/pion-packages.git"
-ref = "tag:crypto-v0.2.0"
-rev = "b14e5abe6451c18c887e6b65574b327e88655ebb"
+ref = "tag:crypto-v0.4.1"
+rev = "2ecdcb749583446735af60504930bf1f63649f70"
 subdir = "packages/crypto"
 
 [[package]]

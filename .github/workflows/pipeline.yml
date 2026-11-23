@@ -851,6 +851,8 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
     steps:
       # the keys are git's blobs: the checkout as git has it
       - run: git config --global core.autocrlf false
@@ -912,6 +914,8 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
     steps:
       # (the natives' keys are git's blobs: the checkout as git has it)
       - run: git config --global core.autocrlf false
@@ -936,6 +940,9 @@ jobs:
         run: cd station && node ../scripts/native.ts run runner reader -- node --import ./test/setup-env.mjs --test --test-name-pattern='Windows|stays in its task' test/remote.test.ts
       - name: Windows installer handover diagnostics
         run: node --test --test-name-pattern='the Windows installer reports the new process' cloud/test/install-windows.test.ts
+      # `stillfail admin` under Windows PowerShell 5.1 and PowerShell 7 (bin/stillfail.ps1).
+      - name: stillfail admin on Windows
+        run: node --test test/stillfail-admin-wrapper.test.ts
       # What the job started that is still running as it ends: the runner's clean-up of them took 52-237 s after the
       # last step of some runs (the rest 2-9 s), the release's job at 282 of its 300 (main 08c83003, 41537791777).
       - name: What it left running
@@ -989,6 +996,7 @@ jobs:
     # (2026-10-16, station/test/mesh-handover.test.ts on branches whose mesh needed a service it did not give).
     timeout-minutes: 5
     env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
       STILLFAIL_CHECK_PART: station core
       STILLFAIL_SKIP_RUST_TESTS: ${{ needs.plan.outputs.check_rust != 'true' && '1' || '' }}
     steps:
@@ -1063,6 +1071,8 @@ jobs:
     if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) && vars.CI_1 != 'off' && needs.plan.result == 'success' && needs.plan.outputs.check_mac == 'true' }}
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.MINI1 != 'off' && '["self-hosted", "macos-ci"]' || '"macos-26"') }}
     timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "${{ (github.ref != 'refs/heads/main' || vars.MINI1 == 'off') && 'blob:none' || '' }}" }
@@ -1124,6 +1134,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
       STILLFAIL_CHECK_PART: ts
     steps:
       # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again)
@@ -1157,19 +1168,21 @@ jobs:
   # files doubled in five days (271 to 581). Measured on these runners (2026-11-10): six slices, 57 to 99 s of tests
   # each, the same whatever else runs; every test passes here as on a Mac (including the Rust station's archive command,
   # archive-rs:linux-x64). More files: more slices (here, in `shard` and in
-  # STILLFAIL_STATION_SHARD), not a longer job.
+  # STILLFAIL_STATION_SHARD), not a longer job. Seven since 2026-11-23: six slices of some 260 s of tests each left a
+  # job's setting up no room in its five minutes (check-station (4) cut at 5m0s after its tests passed).
   check-station:
     needs: [plan, natives, natives-harness]
     if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-harness.result) && needs.plan.outputs.station_tests == 'true' }}
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5]
+        shard: [0, 1, 2, 3, 4, 5, 6]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
       STILLFAIL_CHECK_PART: station-tests
-      STILLFAIL_STATION_SHARD: ${{ matrix.shard }}/6
+      STILLFAIL_STATION_SHARD: ${{ matrix.shard }}/7
       # (four files at a time on its four vCPUs, not Node's three (availableParallelism - 1): much of a slice's time is
       # its files waiting on the MoonBit reader's processes and the model runners' workers, a slot held idle)
       STILLFAIL_NODE_TEST_JOBS: 4
@@ -1202,6 +1215,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
       STILLFAIL_CHECK_PART: core-tests
       STILLFAIL_CORE_SHARD: ${{ matrix.shard }}/3
     steps:
@@ -1238,6 +1252,7 @@ jobs:
     timeout-minutes: 5
     permissions: { contents: read }
     env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
       MBC_STORE: ${{ github.workspace }}/libs/comma-ui/_build/native/release/mbc-store
     steps:
       # (the runner's compiler, reckoned as mbui-check.yml's IMG, whose app-pkgs store it takes when it has none of its own)
@@ -1338,6 +1353,8 @@ jobs:
     # On GitHub's runners, not macos-ci: a dry run of half a minute that queued there behind the builds (2026-10-16).
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
@@ -1490,6 +1507,8 @@ jobs:
     runs-on: ubuntu-24.04
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || '' }}
     timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 } # the web app's build number (__BUILD__, build.json) is the commits in the history
@@ -1562,6 +1581,8 @@ jobs:
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
     steps:
       - id: parts
         run: |
@@ -1700,6 +1721,8 @@ jobs:
       monoid: ${{ steps.hand.outputs.packed }}
     environment: production
     timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
     steps:
       # (when the job began, for monoid's deadline below)
       - run: echo "JOB_BEGAN=$(date +%s)" >> "$GITHUB_ENV"
@@ -1842,6 +1865,7 @@ jobs:
     # 2026-11-13, none of the store's were theirs, 441 of 831 units, cut at 5 on a push)
     timeout-minutes: ${{ github.event_name == 'push' && 5 || 10 }}
     env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
       MBUI_FRESH: 1
       MBUI_CACHE: ${{ github.workspace }}/.ci/release
     steps:

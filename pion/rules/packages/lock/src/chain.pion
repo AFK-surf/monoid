@@ -21,9 +21,9 @@ pub enum Votes {
 }
 
 struct LogOps[S] {
-  start : (form::Json) -> Result[S, LockError]
-  next : (S, form::Json) -> Result[S, LockError]
-  next_in : (S, form::Json) -> Result[S, LockError]
+  start : (form::Json, String) -> Result[S, LockError]
+  next : (S, form::Json, String) -> Result[S, LockError]
+  next_in : (S, form::Json, String) -> Result[S, LockError]
   weight : (S, form::Json) -> Int
   removal : (S, form::Json) -> Bool
 }
@@ -159,16 +159,6 @@ fn active[S](entries : Array[form::Json], genesis_hash : String, log : LogOps[S]
     hashes.push(h)
     i = i + 1
   }
-  let sig_texts : Array[String] = []
-  let mut si = 0
-  while si < n_entries {
-    let st = match form::canonical(sig_of(entries[si])) {
-      Ok(s) => s
-      Err(_) => ""
-    }
-    sig_texts.push(st)
-    si = si + 1
-  }
   let by_hash : form::OrderedMap[Array[Int]] = form::OrderedMap::new()
   let kids : Map[String, Array[String]] = Map::new()
   let mut hi = 0
@@ -196,10 +186,34 @@ fn active[S](entries : Array[form::Json], genesis_hash : String, log : LogOps[S]
   let bh_vals = by_hash.values()
   let mut bi = 0
   while bi < bh_vals.length() {
-    sort_ints_by(bh_vals[bi], fn(a : Int, b : Int) -> Int { form::mbt_str_cmp(sig_texts[a], sig_texts[b]) })
+    let bucket = bh_vals[bi]
+    if bucket.length() > 1 {
+      let sig_map : Map[Int, String] = Map::new()
+      let mut sbi = 0
+      while sbi < bucket.length() {
+        let idx = bucket[sbi]
+        let st = match form::canonical(sig_of(entries[idx])) {
+          Ok(s) => s
+          Err(_) => ""
+        }
+        sig_map.set(idx, st)
+        sbi = sbi + 1
+      }
+      sort_ints_by(bucket, fn(a : Int, b : Int) -> Int {
+        let sa = match sig_map.get(a) {
+          Some(x) => x
+          None => ""
+        }
+        let sb = match sig_map.get(b) {
+          Some(x) => x
+          None => ""
+        }
+        form::mbt_str_cmp(sa, sb)
+      })
+    }
     bi = bi + 1
   }
-  let first = fn(h : String, take : (form::Json) -> Result[S, LockError]) -> Option[Node[S]] {
+  let first = fn(h : String, take : (form::Json, String) -> Result[S, LockError]) -> Option[Node[S]] {
     let mut got : Option[Node[S]] = None
     let idxs = match by_hash.get(h) {
       Some(xs) => xs
@@ -215,7 +229,7 @@ fn active[S](entries : Array[form::Json], genesis_hash : String, log : LogOps[S]
       if already {
         off.set(idx, Off::Again)
       } else {
-        match take(entries[idx]) {
+        match take(entries[idx], h) {
           Ok(st) => {
             got = Some(Node::{ at: idx, hash: h, state: st })
           }
@@ -266,11 +280,11 @@ fn active[S](entries : Array[form::Json], genesis_hash : String, log : LogOps[S]
     let mut ki = 0
     while ki < hs.length() {
       let h = hs[ki]
-      let take_fn = fn(e : form::Json) -> Result[S, LockError] {
+      let take_fn = fn(e : form::Json, eh : String) -> Result[S, LockError] {
         if alone {
-          (log.next_in)(p.state, e)
+          (log.next_in)(p.state, e, eh)
         } else {
-          (log.next)(p.state, e)
+          (log.next)(p.state, e, eh)
         }
       }
       match first(h, take_fn) {
@@ -299,6 +313,10 @@ fn active[S](entries : Array[form::Json], genesis_hash : String, log : LogOps[S]
       None => break
     }
     let klen = ks.length()
+    if klen == 1 {
+      chain.push(ks[0])
+      continue
+    }
     let ws : Array[Int] = []
     let rs : Array[Bool] = []
     let ties : Array[String] = []
@@ -409,9 +427,9 @@ fn active[S](entries : Array[form::Json], genesis_hash : String, log : LogOps[S]
 
 pub fn lock_chain(entries : Array[form::Json], root : String, votes : Votes, now : Option[Double], c : Crypto) -> Result[Chain, LockError] {
   let ops : LogOps[LockState] = LogOps::{
-    start: fn(e : form::Json) -> Result[LockState, LockError] { genesis(e, c) },
-    next: fn(s : LockState, e : form::Json) -> Result[LockState, LockError] { apply(s, e, now, c) },
-    next_in: fn(s : LockState, e : form::Json) -> Result[LockState, LockError] { step(s, e, now, c, true) },
+    start: fn(e : form::Json, h : String) -> Result[LockState, LockError] { genesis_hashed(e, Some(h), c) },
+    next: fn(s : LockState, e : form::Json, h : String) -> Result[LockState, LockError] { step_hashed(s, e, now, c, false, Some(h)) },
+    next_in: fn(s : LockState, e : form::Json, h : String) -> Result[LockState, LockError] { step_hashed(s, e, now, c, true, Some(h)) },
     weight: fn(s : LockState, e : form::Json) -> Int {
       match votes {
         Votes::Flat => 1
@@ -448,15 +466,28 @@ pub fn lock_chain(entries : Array[form::Json], root : String, votes : Votes, now
 
 pub fn person_chain(entries : Array[form::Json], root : String, c : Crypto) -> Result[Chain, LockError] {
   let ops : LogOps[Person] = LogOps::{
-    start: fn(e : form::Json) -> Result[Person, LockError] {
+    start: fn(e : form::Json, h : String) -> Result[Person, LockError] {
       let sub = match text_of(field(field(Some(e), "body"), "sub")) {
         Some(s) => s
         None => ""
       }
-      person_step(None, e, sub, c)
+      match person_step_hashed(None, e, sub, c, Some(h), false) {
+        Ok((p, _)) => Ok(p)
+        Err(err) => Err(err)
+      }
     },
-    next: fn(p : Person, e : form::Json) -> Result[Person, LockError] { person_step(Some(p), e, p.sub, c) },
-    next_in: fn(p : Person, e : form::Json) -> Result[Person, LockError] { person_step(Some(p), e, p.sub, c) },
+    next: fn(p : Person, e : form::Json, h : String) -> Result[Person, LockError] {
+      match person_step_hashed(Some(p), e, p.sub, c, Some(h), false) {
+        Ok((np, _)) => Ok(np)
+        Err(err) => Err(err)
+      }
+    },
+    next_in: fn(p : Person, e : form::Json, h : String) -> Result[Person, LockError] {
+      match person_step_hashed(Some(p), e, p.sub, c, Some(h), false) {
+        Ok((np, _)) => Ok(np)
+        Err(err) => Err(err)
+      }
+    },
     weight: fn(_p : Person, _e : form::Json) -> Int { 1 },
     removal: fn(_p : Person, e : form::Json) -> Bool { opt_str_eq(text_of(field(Some(e), "kind")), "device.remove") },
   }

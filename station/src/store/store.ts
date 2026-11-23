@@ -92,9 +92,9 @@ export const LIVE_SESSIONS = "SELECT * FROM sessions WHERE archived_at IS NULL O
 export { SESSION_COUNTS, SESSION_COUNTS_VISIBLE, SESSION_COUNTS_HOME };
 export const ANY_RUNNING = "SELECT 1 AS r FROM sessions WHERE running = 1 LIMIT 1";
 export const RUNNING_SESSIONS = "SELECT * FROM sessions WHERE running = 1";
-/// The sessions whose latest turn ended asking for a person (Store.waitingForPeople): the turns ended since ?1 by
-/// turns_ended, each the latest of its session (turns_by_session), with nothing undelivered (deliveries_pending).
-export const WAITING_FOR_PEOPLE = `SELECT t.session_key AS key, s.title, t.need, t.ended_at FROM turns t INDEXED BY turns_ended
+/// The sessions whose latest turn ended asking for a person (Store.waitingForPeople): the turns ended since ?1 asking
+/// for one (turns_waiting), each the latest of its session (turns_by_session), with nothing undelivered (deliveries_pending).
+export const WAITING_FOR_PEOPLE = `SELECT t.session_key AS key, s.title, t.need, t.ended_at FROM turns t INDEXED BY turns_waiting
   JOIN sessions s ON s.key = t.session_key
   WHERE t.ended_at >= ?1 AND t.declared IN ('block', 'need_help', 'need_human', 'need_decision') AND s.archived_at IS NULL
     AND t.id = (SELECT u.id FROM turns u WHERE u.session_key = t.session_key ORDER BY u.started_at DESC, u.rowid DESC LIMIT 1)
