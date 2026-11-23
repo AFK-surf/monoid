@@ -1425,6 +1425,15 @@ async fn SessionAccounts::take_across(
   guard runtime_kind(Some(Str(row.runtime))) is Some(runtime) else { return None }
   if row.ultrafast() { return None }
   guard row.model is Some(model) else { return None }
+  // (what the config says first, the workspace's allowance and the sessions' counts, which read the store, after)
+  let matching = cfg.profiles.filter(p => !p.runtimes.contains(runtime) &&
+    (!only_paid || !billed_per_use(p.raw)) &&
+    runs(p, model) &&
+    allows(p) &&
+    self.can(cfg, p.id, Some(model)))
+  if matching.length() == 0 {
+    return None
+  }
   let active = if force_cap { None } else { Some(self.active_map(except=key)) }
   let capped = (p : Profile) => match active {
     Some(m) =>
@@ -1441,13 +1450,7 @@ async fn SessionAccounts::take_across(
   let crowded_capped = (p : Profile) => avoid_crowded_capped &&
     self.account_max_sessions(cfg, p.id) is Some(_) &&
     urgency(self.health_for(cfg, p.id, Some(model)).quota, now).crowded
-  let candidates = cfg.profiles.filter(p => !p.runtimes.contains(runtime) &&
-    allows(p) &&
-    runs(p, model) &&
-    self.can(cfg, p.id, Some(model)) &&
-    (!only_paid || !billed_per_use(p.raw)) &&
-    !capped(p) &&
-    !crowded_capped(p))
+  let candidates = matching.filter(p => !capped(p) && !crowded_capped(p))
   if candidates.length() == 0 {
     return None
   }

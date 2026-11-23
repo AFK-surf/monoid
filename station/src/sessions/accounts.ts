@@ -637,13 +637,17 @@ export class Accounts {
     const model = row.model;
     if (!runtime || model === null || row.speed === "ultrafast") return null;
     const config = this.deps.config();
+    // (what the config says first, the workspace's allowance and the sessions' counts, which read the store, after: asked
+    // before each turn, this reads nothing where no profile of another runtime runs the model)
+    const matching = config.profiles.filter(
+      (p) => !p.runtimes.includes(runtime) && (!onlyPaid || !billedPerUse(p)) && runs(p, model) && this.allows(key, p) && this.can(p.id, model),
+    );
+    if (matching.length === 0) return null;
     const active = forceCap ? null : this.activeMap(key);
     const capped = (p: Profile) => active !== null && isSessionCapped(p, this.accountMaxSessions(p.id), active.get(this.accountKey(p.id)) ?? 0);
     const now = this.deps.clock.currentTimeMillisUnsafe();
     const crowdedCapped = (p: Profile) => avoidCrowdedCapped && this.accountMaxSessions(p.id) !== undefined && urgency(this.healthFor(p.id, model).quota, now).crowded;
-    const candidates = config.profiles.filter(
-      (p) => !p.runtimes.includes(runtime) && this.allows(key, p) && runs(p, model) && this.can(p.id, model) && (!onlyPaid || !billedPerUse(p)) && !capped(p) && !crowdedCapped(p),
-    );
+    const candidates = matching.filter((p) => !capped(p) && !crowdedCapped(p));
     if (candidates.length === 0) return null;
     const next = this.pick(candidates, model, true, key);
     const target = next.runtimes.find((r) => r !== runtime && runs(next, model));
