@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [19c48cfb4](https://github.com/AFK-surf/monoid/commit/19c48cfb4574abbb4f542c5f4d8f516df90bf2b5) feat(ui): absorb control-layer behaviors into head | 2.74 | 3.68 | 14.92 | 37.1 | 56.85 | 32.5 | 65.99 | 101.24 | 119.54 |
 | [47e246545](https://github.com/AFK-surf/monoid/commit/47e2465454d6bed53eec810e2b2add228b2364fe) fix(helper): ignore typing cursor obscure in macOS | 2.74 | 3.68 | 14.92 | 37.1 | 56.85 | 32.5 | 65.99 | 101.24 | 119.54 |
 | [dd3b6ec54](https://github.com/AFK-surf/monoid/commit/dd3b6ec5435eb7dfba2807386e185eb8d8d8123c) feat(station,mbui): show each backup keeper's prog | 2.74 | 3.68 | 14.92 | 37.1 | 56.85 | 32.5 | 65.99 | 101.24 | 119.54 |
 | [65b57cfa2](https://github.com/AFK-surf/monoid/commit/65b57cfa229678239b35658828e33fcec0fd2fcf) test(pion): add L4 TS-vs-Pion deep domain behavior | 2.74 | 3.68 | 14.92 | 37.1 | 56.84 | 32.49 | 65.97 | 101.12 | 127.44 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [23141833b](https://github.com/AFK-surf/monoid/commit/23141833bf54ccf314abe6579cf3289eab5f91e2) fix(cloud,core): give member credentials their own | 2.72 | 3.66 | 14.85 | 37.01 | 56.58 | 32.42 | 65.77 | 100.21 | 120.4 |
 | [8587041df](https://github.com/AFK-surf/monoid/commit/8587041df4a6bf24fc8f3ebe00155420a48c6a8c) feat(ui): extract list_flip helpers, remap QuietDe | 2.72 | 3.66 | 14.85 | 37.01 | 56.58 | 32.42 | 65.77 | 100.21 | 120.4 |
 | [a1d43e42e](https://github.com/AFK-surf/monoid/commit/a1d43e42e0ca2d45b906edc8695fe33f2b0d738f) perf(station): parse the config once for the hub a | 2.72 | 3.66 | 14.85 | 37.01 | 56.58 | 32.42 | 65.77 | 100.21 | 120.4 |
-| [325eea565](https://github.com/AFK-surf/monoid/commit/325eea565468095b067c87ce37a38a628efb2db7) feat(mbui): redesign new-chat station picker with  | 2.72 | 3.66 | 14.85 | 37.01 | 56.58 | 32.42 | 65.77 | 100.21 | 120.4 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [19c48cfb4](https://github.com/AFK-surf/monoid/commit/19c48cfb4574abbb4f542c5f4d8f516df90bf2b5) feat(ui): absorb control-layer behaviors into head | 0.55 | 0.71 | 2.79 | 3.8 | 6.87 | 2.04 | 5.64 | 58.07 |
 | [47e246545](https://github.com/AFK-surf/monoid/commit/47e2465454d6bed53eec810e2b2add228b2364fe) fix(helper): ignore typing cursor obscure in macOS | 0.55 | 0.71 | 2.79 | 3.8 | 6.87 | 2.04 | 5.64 | 57.56 |
 | [dd3b6ec54](https://github.com/AFK-surf/monoid/commit/dd3b6ec5435eb7dfba2807386e185eb8d8d8123c) feat(station,mbui): show each backup keeper's prog | 0.55 | 0.71 | 2.79 | 3.8 | 6.87 | 2.04 | 5.64 | 57.74 |
 | [65b57cfa2](https://github.com/AFK-surf/monoid/commit/65b57cfa229678239b35658828e33fcec0fd2fcf) test(pion): add L4 TS-vs-Pion deep domain behavior | 0.55 | 0.71 | 2.79 | 3.8 | 6.87 | 2.04 | 5.64 | 57.87 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [23141833b](https://github.com/AFK-surf/monoid/commit/23141833bf54ccf314abe6579cf3289eab5f91e2) fix(cloud,core): give member credentials their own | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.12 |
 | [8587041df](https://github.com/AFK-surf/monoid/commit/8587041df4a6bf24fc8f3ebe00155420a48c6a8c) feat(ui): extract list_flip helpers, remap QuietDe | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.22 |
 | [a1d43e42e](https://github.com/AFK-surf/monoid/commit/a1d43e42e0ca2d45b906edc8695fe33f2b0d738f) perf(station): parse the config once for the hub a | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.41 |
-| [325eea565](https://github.com/AFK-surf/monoid/commit/325eea565468095b067c87ce37a38a628efb2db7) feat(mbui): redesign new-chat station picker with  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.12 |
