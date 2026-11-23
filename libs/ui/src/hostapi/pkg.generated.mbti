@@ -181,6 +181,8 @@ pub fn glyph_put(Int32, Int32, Int32) -> Unit
 
 pub fn glyphs_ahead(FixedArray[Int32], Int32) -> Unit
 
+pub fn glyphs_ahead_able() -> Bool
+
 pub fn gpu_ms() -> Double
 
 pub fn group_drop(Int32) -> Unit
@@ -1245,4 +1247,5 @@ pub(open) trait Host {
   fn pointer_locked(Self) -> Bool = _
   fn pointer_delta(Self, FixedArray[Double]) -> Unit = _
   fn gamepads(Self, FixedArray[Double]) -> Int32 = _
+  fn glyphs_ahead_able(Self) -> Bool = _
 }

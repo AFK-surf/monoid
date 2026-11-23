@@ -299,6 +299,7 @@ pub(open) trait Host {
   pointer_locked(Self) -> Bool = _
   pointer_delta(Self, FixedArray[Double]) -> Unit = _
   gamepads(Self, FixedArray[Double]) -> Int = _
+  glyphs_ahead_able(Self) -> Bool = _
 }
 
 ///|
@@ -606,6 +607,11 @@ impl Host with atlas_size(_, _) {
 ///|
 impl Host with glyphs_ahead(_, _, _) {
   ()
+}
+
+///|
+impl Host with glyphs_ahead_able(_) {
+  false
 }
 
 ///|
@@ -2117,6 +2123,12 @@ pub let colour_atlas_u : Int = 16384
 /// view. What `glyph` answers is the same either way: only when the work is done changes. A host may do nothing.
 pub fn glyphs_ahead(keys : FixedArray[Int], n : Int) -> Unit {
   current.val.glyphs_ahead(keys, n)
+}
+
+///|
+/// Whether the current host supports drawing glyphs ahead off the frames' thread (`glyphs_ahead`).
+pub fn glyphs_ahead_able() -> Bool {
+  current.val.glyphs_ahead_able()
 }
 
 ///|
