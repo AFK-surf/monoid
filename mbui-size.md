@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a09f1aec1](https://github.com/AFK-surf/monoid/commit/a09f1aec17d98631174f16e4fa75a21cf6256adc) feat(mbui): apply Liquid Glass surface to narrow o | 2.73 | 3.68 | 14.91 | 37.08 | 56.8 | 32.48 | 65.96 | 100.42 | 137.83 |
 | [3c0c201f1](https://github.com/AFK-surf/monoid/commit/3c0c201f15d8d3d3b95f40c342a78df488e34932) revert(pion-app): revert #8307 off-track sf_ui imp | 2.73 | 3.68 | 14.91 | 37.08 | 56.8 | 32.48 | 65.96 | 100.42 | 137.83 |
 | [21a57831d](https://github.com/AFK-surf/monoid/commit/21a57831d4729563cfc2cc9930d433fdb581e2a4) perf(ui,mbui): reduce side-panel slide frame cost  | 2.73 | 3.68 | 14.91 | 37.08 | 56.8 | 32.48 | 65.96 | 100.42 | 137.83 |
 | [84566e834](https://github.com/AFK-surf/monoid/commit/84566e834def6737fddc28b5d8ea9b85e2a00fe8) fix(station): include check-discovered models in M | 2.73 | 3.68 | 14.91 | 37.08 | 56.79 | 32.48 | 65.96 | 100.19 | 110.17 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f40ab04c2](https://github.com/AFK-surf/monoid/commit/f40ab04c2a1041e1fabf8b6d60ae6cacc1d3dfb3) fix(mbui,ui): open ⌘K, place sidebars and named pa | 2.72 | 3.66 | 14.83 | 36.99 | 56.52 | 32.4 | 65.72 | 100.19 | 124.7 |
 | [fa4a7932a](https://github.com/AFK-surf/monoid/commit/fa4a7932a21a20eed0491f0ac22d7aefdc87cb97) fix(ui): anchor incoming list blocks at viewport t | 2.72 | 3.66 | 14.83 | 36.98 | 56.52 | 32.4 | 65.72 | 100.35 | 125.34 |
 | [7d9e74f86](https://github.com/AFK-surf/monoid/commit/7d9e74f862354a8966b26d7e03319dca6adbf84a) fix(ui): draw every divider as one faint hairline  | 2.72 | 3.66 | 14.83 | 36.98 | 56.52 | 32.4 | 65.72 | 100.32 | 122.22 |
-| [1bf564378](https://github.com/AFK-surf/monoid/commit/1bf56437819de805cda39e0c38e189ece698ab19) fix(station): keep agents running when the MoonBit | 2.72 | 3.66 | 14.84 | 36.98 | 56.53 | 32.4 | 65.72 | 100.37 | 133.56 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a09f1aec1](https://github.com/AFK-surf/monoid/commit/a09f1aec17d98631174f16e4fa75a21cf6256adc) feat(mbui): apply Liquid Glass surface to narrow o | 0.49 | 0.64 | 2.45 | 3.52 | 5.84 | 1.8 | 4.85 | 55.31 |
 | [3c0c201f1](https://github.com/AFK-surf/monoid/commit/3c0c201f15d8d3d3b95f40c342a78df488e34932) revert(pion-app): revert #8307 off-track sf_ui imp | 0.49 | 0.64 | 2.45 | 3.51 | 5.83 | 1.8 | 4.85 | 55.23 |
 | [21a57831d](https://github.com/AFK-surf/monoid/commit/21a57831d4729563cfc2cc9930d433fdb581e2a4) perf(ui,mbui): reduce side-panel slide frame cost  | 0.49 | 0.64 | 2.45 | 3.51 | 5.83 | 1.8 | 4.85 | 55.2 |
 | [84566e834](https://github.com/AFK-surf/monoid/commit/84566e834def6737fddc28b5d8ea9b85e2a00fe8) fix(station): include check-discovered models in M | 0.49 | 0.64 | 2.45 | 3.51 | 5.83 | 1.8 | 4.85 | 55.58 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f40ab04c2](https://github.com/AFK-surf/monoid/commit/f40ab04c2a1041e1fabf8b6d60ae6cacc1d3dfb3) fix(mbui,ui): open ⌘K, place sidebars and named pa | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.1 |
 | [fa4a7932a](https://github.com/AFK-surf/monoid/commit/fa4a7932a21a20eed0491f0ac22d7aefdc87cb97) fix(ui): anchor incoming list blocks at viewport t | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.18 |
 | [7d9e74f86](https://github.com/AFK-surf/monoid/commit/7d9e74f862354a8966b26d7e03319dca6adbf84a) fix(ui): draw every divider as one faint hairline  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.17 |
-| [1bf564378](https://github.com/AFK-surf/monoid/commit/1bf56437819de805cda39e0c38e189ece698ab19) fix(station): keep agents running when the MoonBit | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.07 |
