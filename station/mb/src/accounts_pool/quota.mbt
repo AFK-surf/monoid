@@ -5,6 +5,7 @@
 // - Claude subscription: Claude Code's OAuth usage endpoint, with the token Claude Code keeps in the profile's home
 //   (renewed by station/src/accounts/oauth.ts, asked of it), a model's own week apart in `scoped`, the limit resets;
 // - Antigravity CLI: agy_quota.mbt; Grok Build: its `x.ai/billing`, asked of a `grok agent stdio` started for it;
+// - MiniMax Token Plan and GLM Coding Plan (China): their usage endpoints, asked with the profile's key;
 // - Anthropic API keys and other providers bill per use and have no allowance to show.
 
 ///|
@@ -912,6 +913,28 @@ async fn check_quota_inner(
     }
     return kimi_quota(ctx, key, lang)
   }
+  if kind == "api-provider" {
+    let provider = jget(p.get("access"), "provider")
+    let key = key_of()
+    if provider == Some(Str("minimax-cn")) && key.has_prefix("sk-cp") {
+      return plan_quota(
+        ctx,
+        ctx.url("minimaxCnQuota").unwrap_or(minimax_cn_quota),
+        key,
+        body => minimax_windows(body, v => at(ctx, v)),
+        lang,
+      )
+    }
+    if provider == Some(Str("zai-coding-cn")) {
+      return plan_quota(
+        ctx,
+        ctx.url("glmCodingCnQuota").unwrap_or(glm_coding_cn_quota),
+        key,
+        body => glm_coding_windows(body, v => at(ctx, v)),
+        lang,
+      )
+    }
+  }
   if kind == "anthropic-api" || kind == "api-provider" {
     return quota("unsupported", [], Some(ctx.tr(lang, "station.quota.payAsYouGo")))
   }
@@ -1019,6 +1042,132 @@ pub async fn codex_auth_file(ctx : Ctx) -> String {
 /// The station's environment (what the agents' CLIs are started in: ops/agent-env.ts `startEnv`), asked of it.
 pub async fn station_env(ctx : Ctx) -> JV {
   ctx.io.b.ask("station.env", [])
+}
+
+///|
+let minimax_cn_quota : String = "https://www.minimaxi.com/v1/token_plan/remains"
+
+///|
+let glm_coding_cn_quota : String = "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
+
+///|
+/// `planQuota`: a plan's windows as its provider's usage endpoint gives them (both answer 200 with their error in the
+/// body, so an answer with no window in it is unavailable).
+async fn plan_quota(
+  ctx : Ctx,
+  url : String,
+  key : String,
+  windows_of : (JV?) -> Array[JV],
+  lang : String,
+) -> JV {
+  let response = ctx.io.get(
+    url,
+    [("authorization", "Bearer \{key}"), ("accept", "application/json")],
+    quota_timeout_ms,
+  )
+  let body = if response.ok() { try_parse(response.text) } else { None }
+  ok_or_unavailable(windows_of(body), ctx.tr(lang, "station.quota.planUnavailable"))
+}
+
+///|
+fn plan_percentage(v : JV?) -> Double? {
+  match v {
+    Some(Num(n)) if n >= 0.0 && n <= 100.0 => Some(n)
+    _ => None
+  }
+}
+
+///|
+/// `miniMaxWindows`: the shared text allowance (its `general` model) of a Token Plan, its 5 hours and its week.
+fn minimax_windows(body : JV?, when : (JV?) -> Double?) -> Array[JV] {
+  let out = []
+  guard body is Some(Obj(_)) &&
+    jget(jget(body, "base_resp"), "status_code") == Some(Num(0.0)) &&
+    jget(body, "model_remains") is Some(Arr(remains)) else {
+    return out
+  }
+  let mut g : JV? = None
+  for entry in remains {
+    if entry is Obj(_) && entry.get("model_name") == Some(Str("general")) {
+      g = Some(entry)
+      break
+    }
+  }
+  guard g is Some(_) else { return out }
+  for window in [
+    ("current_interval_remaining_percent", "start_time", "end_time"),
+    ("current_weekly_remaining_percent", "weekly_start_time", "weekly_end_time"),
+  ] {
+    let (remaining, start, end) = window
+    guard plan_percentage(jget(g, remaining)) is Some(remaining) &&
+      when(jget(g, start)) is Some(start) &&
+      when(jget(g, end)) is Some(end) &&
+      end > start else {
+      continue
+    }
+    let minutes = (end - start) / 60_000.0
+    out.push(
+      quota_window(
+        window_label(Some(minutes), "限额"),
+        percent(Some(Num(100.0 - remaining))),
+        Some(end),
+        Some(minutes),
+      ),
+    )
+  }
+  out
+}
+
+///|
+/// `glmCodingWindows`: a Coding Plan's token limits (unit 3 hours of `number`, unit 6 weeks), shortest first.
+fn glm_coding_windows(body : JV?, when : (JV?) -> Double?) -> Array[JV] {
+  guard body is Some(Obj(_)) && jget(body, "code") == Some(Num(200.0)) &&
+    jget(jget(body, "data"), "limits") is Some(Arr(limits)) else {
+    return []
+  }
+  let found : Array[(Double, JV)] = []
+  for entry in limits {
+    guard entry is Obj(_) && entry.get("type") == Some(Str("TOKENS_LIMIT")) else {
+      continue
+    }
+    let e = Some(entry)
+    guard plan_percentage(jget(e, "percentage")) is Some(used) &&
+      jget(e, "number") is Some(Num(number)) &&
+      !number.is_nan() &&
+      !number.is_inf() &&
+      number > 0.0 else {
+      continue
+    }
+    let unit_minutes = match jget(e, "unit") {
+      Some(Num(3.0)) => 60.0
+      Some(Num(6.0)) => week_minutes
+      _ => continue
+    }
+    let minutes = number * unit_minutes
+    found.push(
+      (
+        minutes,
+        quota_window(
+          window_label(Some(minutes), "限额"),
+          percent(Some(Num(used))),
+          when(jget(e, "nextResetTime")),
+          Some(minutes),
+        ),
+      ),
+    )
+  }
+  // Shortest first, those as long kept in the order given (Array.prototype.sort is stable).
+  let out : Array[JV] = []
+  let kept : Array[Double] = []
+  for f in found {
+    let mut i = kept.length()
+    while i > 0 && kept[i - 1] > f.0 {
+      i -= 1
+    }
+    kept.insert(i, f.0)
+    out.insert(i, f.1)
+  }
+  out
 }
 
 ///|

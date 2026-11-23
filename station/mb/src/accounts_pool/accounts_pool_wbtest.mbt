@@ -1000,3 +1000,76 @@ test "agy direct quota User-Agent carries the CLI product segment and skips prod
   assert_false(should_fallback_gemini_weekly(Some(jobj([])), [weekly], daily, prod))
   assert_false(should_fallback_gemini_weekly(Some(jobj([])), [], daily, daily))
 }
+
+///|
+test "MiniMax Token Plan and GLM Coding Plan windows, as quota.ts reads them" {
+  let start = 1_800_000_000_000.0
+  let end = start + 5.0 * 60.0 * 60_000.0
+  let weekly_end = start + 7.0 * 24.0 * 60.0 * 60_000.0
+  let when = (v : JV?) => match v {
+    Some(Num(n)) => Some(n)
+    _ => None
+  }
+  let general = jobj([
+    ("model_name", js("general")),
+    ("start_time", jnum(start)),
+    ("end_time", jnum(end)),
+    ("current_interval_remaining_percent", jnum(75.0)),
+    ("weekly_start_time", jnum(start)),
+    ("weekly_end_time", jnum(weekly_end)),
+    ("current_weekly_remaining_percent", jnum(95.0)),
+  ])
+  let video = jobj([
+    ("model_name", js("video")),
+    ("current_interval_remaining_percent", jnum(10.0)),
+    ("start_time", jnum(start)),
+    ("end_time", jnum(end)),
+  ])
+  let minimax = (code : Double) => Some(
+    jobj([
+      ("base_resp", jobj([("status_code", jnum(code))])),
+      ("model_remains", jarr([video, general])),
+    ]),
+  )
+  assert_true(minimax_windows(minimax(0.0), when) == [
+    quota_window("5 小时", 25.0, Some(end), Some(300.0)),
+    quota_window("每周", 5.0, Some(weekly_end), Some(10080.0)),
+  ])
+  assert_true(minimax_windows(minimax(1004.0), when).is_empty())
+  assert_true(minimax_windows(None, when).is_empty())
+  let limit = (kind : String, unit : Double, number : Double, used : Double, reset : Double?) => {
+    let fields = [
+      ("type", js(kind)),
+      ("unit", jnum(unit)),
+      ("number", jnum(number)),
+      ("percentage", jnum(used)),
+    ]
+    if reset is Some(r) {
+      fields.push(("nextResetTime", jnum(r)))
+    }
+    jobj(fields)
+  }
+  let glm = (code : Double) => Some(
+    jobj([
+      ("code", jnum(code)),
+      (
+        "data",
+        jobj([
+          (
+            "limits",
+            jarr([
+              limit("TOKENS_LIMIT", 6.0, 1.0, 11.0, Some(start)),
+              limit("TOKENS_LIMIT", 3.0, 5.0, 0.0, None),
+              limit("TIME_LIMIT", 5.0, 1.0, 37.0, Some(start)),
+            ]),
+          ),
+        ]),
+      ),
+    ]),
+  )
+  assert_true(glm_coding_windows(glm(200.0), when) == [
+    quota_window("5 小时", 0.0, None, Some(300.0)),
+    quota_window("每周", 11.0, Some(start), Some(10080.0)),
+  ])
+  assert_true(glm_coding_windows(glm(401.0), when).is_empty())
+}
