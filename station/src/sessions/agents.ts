@@ -78,7 +78,7 @@ import type { Viewer } from "../mesh/credential.ts";
 import { stationLang, tr, type Lang } from "../ops/i18n.ts";
 import { type Updates, makeUpdates } from "../updates/updates.ts";
 import { channelOf } from "../updates/versions.ts";
-import { allowedIn, type Connect, hubConfig, runtimeTitle } from "./config.ts";
+import { allowedIn, type Connect, type HubConfig, hubConfig, runtimeTitle } from "./config.ts";
 import type { TailState } from "../read/transcript.ts";
 import { followLatestThreadRequests } from "../read/latest-thread-requests.ts";
 import { ColdRooms } from "./cold.ts";
@@ -250,14 +250,15 @@ export const AgentsLive = (control: Control) =>
         return s && (ws === s.workspace || cloud.membership(ws!) !== null) ? sessionPage(s, ws!, key) : undefined;
       };
 
-      // Each profile running the models its last check found besides those config.json names (the accounts, once made).
-      let found = (_: string): readonly string[] | null => null;
+      // config.json as the hub reads it: the accounts' (each profile running the models its last check found besides
+      // those config.json names, made again only as either changes), once they are made.
+      let read = (): HubConfig => hubConfig(config.raw(), data);
       // config.json's connects and those of other stations whose chats run here (connects/remote.ts), said by the parts.
       const moreConnects: (() => Connect[])[] = [];
       const settings = () => {
-        const read = hubConfig(config.raw(), data, (id) => found(id));
-        for (const more of moreConnects) read.connects.push(...more());
-        return read;
+        const made = read();
+        const more = moreConnects.flatMap((m) => m());
+        return more.length === 0 ? made : { ...made, connects: [...made.connects, ...more] };
       };
       // The folders macOS protects (Documents, Desktop, Downloads, disks) through still.fail Helper: the drive's and
       // the directories people and agents name (ops/places.ts), never touched on the station's thread.
@@ -655,7 +656,7 @@ export const AgentsLive = (control: Control) =>
         loginBack: (id) => loginBack?.(id),
         shared: { status: (p, recheck) => sharing!.status(p, recheck === true), lendCodex: (p, rejected) => sharing!.lendCodex(p, rejected), lendAgy: (p, rejected) => sharing!.lendAgy(p, rejected), lendClaude: (p, rejected) => sharing!.lendClaude(p, rejected), quotaReset: (p, key) => sharing!.quotaReset(p.id, key), loginUpdated: (id) => { sharing?.loginUpdated(id); }, view: (p, ws) => sharing?.profileView(p, ws) ?? null, hostName },
       });
-      found = accounts.found;
+      read = () => accounts.settings();
       accounts.start();
       const homeWorkspace = () => cloud.state?.workspace ?? null;
       const colabFor = (workspace?: string) => colabAccountsFor(accounts.profiles(), workspace ?? null, homeWorkspace());

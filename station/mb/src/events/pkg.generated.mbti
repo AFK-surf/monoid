@@ -82,6 +82,8 @@ pub let runtimes_header : String
 
 pub fn seen_of(SeenStore, Viewer, Of) -> Bool
 
+pub fn seer_of(SeenStore, Of) -> (Viewer) -> Bool
+
 pub fn sees(Viewer, @jsjson.JValue) -> Bool
 
 pub fn sees_ws(Viewer, String?) -> Bool
@@ -170,6 +172,7 @@ pub(all) struct Deps {
   mut process_state : ((String) -> String?)?
   mut followed : (() -> Unit)?
   seen : ((Viewer, Of) -> Bool)?
+  seer : ((Of) -> (Viewer) -> Bool)?
   mut login_screen : ((String, (Screen) -> Unit) -> (() -> Unit)?)?
   mut in_vault : ((Viewer, String) -> Bool)?
   now : () -> Double

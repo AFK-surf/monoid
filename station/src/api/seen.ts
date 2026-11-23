@@ -23,6 +23,23 @@ export const jobSeen = (store: Store, viewer: InWorkspace, id: string) => {
   return job === null || sessionSeen(store, viewer, job.sessionKey);
 };
 
+/// Whether each viewer sees a session, a thread or a job (as `sessionSeen`, `threadSeen`, `jobSeen`), its workspaces
+/// looked up once: an event is asked of every stream (events.ts `seer`), one lookup each held a busy station's thread.
+export function seerOf(store: Store, of: { session: string } | { thread: number } | { job: string }): (viewer: InWorkspace) => boolean {
+  if ("session" in of) {
+    const ws = store.sessionWs(of.session);
+    return ws === undefined ? (viewer) => seesMissing(viewer, of.session) : (viewer) => sees(viewer, ws);
+  }
+  if ("thread" in of) {
+    const members = store.threadSessions(of.thread);
+    if (members.length === 0) return (viewer) => sees(viewer, null);
+    const each = members.map((m) => seerOf(store, { session: m.session }));
+    return (viewer) => each.some((seen) => seen(viewer));
+  }
+  const job = store.getJob(of.job);
+  return job === null ? () => true : seerOf(store, { session: job.sessionKey });
+}
+
 /// What names one of them: `/sessions/:key…`, `/threads/:id…`, `/jobs/:id…`.
 const NAMED = /^\/*(sessions|threads|jobs)\/+([^/]+)/;
 /// admin/mod.rs `segment_decode`, as the routes read a key.

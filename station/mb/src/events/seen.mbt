@@ -62,6 +62,38 @@ pub fn seen_of(store : SeenStore, viewer : Viewer, of : Of) -> Bool {
 }
 
 ///|
+/// seen.ts `seerOf`: what `seen_of` answers of each viewer, the workspaces looked up once.
+pub fn seer_of(store : SeenStore, of : Of) -> (Viewer) -> Bool {
+  match of {
+    Session(key) =>
+      match (store.session_ws)(key) {
+        Some(ws) => viewer => sees(viewer, ws)
+        None =>
+          match @readops.remote_ws(key) {
+            Some(w) => viewer => w == viewer.workspace
+            None => viewer => sees(viewer, Null)
+          }
+      }
+    Thread(Num(id)) => {
+      let members = (store.thread_sessions)(id)
+      if members.length() == 0 {
+        viewer => sees(viewer, Null)
+      } else {
+        let each = members.map(m => seer_of(store, Session(m)))
+        viewer => each.iter().any(seen => seen(viewer))
+      }
+    }
+    Thread(_) => viewer => sees(viewer, Null)
+    Job(id) =>
+      match (store.job_session)(id) {
+        None => _ => true
+        Some(s) => seer_of(store, Session(s))
+      }
+    Ws(ws) => viewer => sees(viewer, ws)
+  }
+}
+
+///|
 /// request.ts `percentDecode` (a `+` is a space).
 pub fn percent_decode(s : String) -> String {
   @url.percent_decode_lossy(s, plus_space=true)

@@ -115,6 +115,8 @@ export type EventsDeps = {
   /// Whether `viewer` sees a session, a thread or a job: those of their workspace's chats.
   /// None: every one.
   seen?(viewer: Viewer, of: { session: string } | { thread: number } | { job: string }): boolean;
+  /// `seen` of every viewer, what it names looked up once (seen.ts `seerOf`): asked once for what is told to every stream.
+  seer?(of: { session: string } | { thread: number } | { job: string }): (viewer: Viewer) => boolean;
   /// A login's terminal: `send` given its screen now and as it changes, until the returned
   /// function is called.
   loginScreen?(id: string, send: (screen: { rows: string[]; cursor: { x: number; y: number }; echo: boolean; live: boolean }) => void): () => void;
@@ -389,7 +391,8 @@ export class Events {
   /// Sends an ephemeral event to currently connected matching streams without appending to the resume log.
   sendLive(event: string, data: unknown, to: To = {}) {
     if (this.handed) return;
-    for (const c of this.clients) if (this.reaches(c, to)) c.send(event, data);
+    const whose = this.whose();
+    for (const c of this.clients) if (isFor(to, c, whose)) c.send(event, data);
   }
 
   /// A login changed: told to everyone as `machine-logins`, a read-only member given `limited`
@@ -419,12 +422,15 @@ export class Events {
   /// sessions at work and whose viewer sees it. Not of the log: one that comes back is told each as it is now, and reads
   /// what it lacks.
   heldTold(key: string, message: unknown) {
+    const whose = this.whose();
+    // Made once for every stream it is told to (each stream's `send` made it again).
+    let text: string | undefined;
     for (const c of this.clients) {
-      if (!c.running || !this.sees(c, { session: key })) continue;
+      if (!c.running || !(whose.seen?.(c.viewer, { session: key }) ?? true)) continue;
       if (c.spare !== null && !c.spare.has(key)) continue;
       const waits = c.heldWaits?.get(key);
       if (waits !== undefined) waits.push(message);
-      else c.send("live", { ...(message as object), key });
+      else c.raw((text ??= `event: live\ndata: ${JSON.stringify({ ...(message as object), key })}\n\n`));
     }
   }
 
@@ -726,7 +732,17 @@ export class Events {
     if (this.taking !== null) return void this.early.push(() => this.emit(event, data, to, of));
     if (!this.listening()) return;
     const { text } = this.log.append(event, data, to, this.time.now(), of);
-    for (const c of this.clients) if (this.reaches(c, to)) c.raw(text);
+    const whose = this.whose();
+    for (const c of this.clients) if (isFor(to, c, whose)) c.raw(text);
+  }
+
+  /// `seen` and `inVault` for one event told to every stream: the session, thread or job it names looked up once
+  /// (`seer`), when a stream first asks, not once a stream.
+  private whose(): Pick<EventsDeps, "seen" | "inVault"> {
+    const seer = this.deps.seer;
+    if (seer === undefined) return this.deps;
+    let seen: ((viewer: Viewer) => boolean) | undefined;
+    return { inVault: this.deps.inVault, seen: (viewer, of) => (seen ??= seer(of))(viewer) };
   }
 
   /// Whether a stream is one `to` says (`isFor`).

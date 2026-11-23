@@ -35,7 +35,7 @@ import { maskValue, startEnv } from "../ops/agent-env.ts";
 import type { ConfigFile } from "../ops/config.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
-import { allowedIn, hubConfig, type Profile } from "../sessions/config.ts";
+import { allowedIn, hubConfig, type HubConfig, type Profile } from "../sessions/config.ts";
 import { type Capability, discover as discoverDecisions, fingerprint, resolvedModel } from "../sessions/decision.ts";
 import { type ProfileHealth, serves, usable } from "../sessions/pool.ts";
 import type { Store } from "../store/store.ts";
@@ -448,19 +448,24 @@ export class Accounts {
     }
   }
 
-  /// The profiles as the config has them now (parse_config's derivations), each running the models its check found.
-  /// Made again only when the config or a check changed: health, decisionModels and the overview ask it for every
+  /// config.json as the hub reads it (parse_config), each profile running the models its check found. Made again only
+  /// when the config or a check changed: health, decisionModels, the hub's settings and the overview ask it for every
   /// profile of every viewer, and parsing the config each time held the main thread for seconds on a station of many
   /// profiles and devices.
-  profiles(): Profile[] {
+  settings(): HubConfig {
     const raw = this.deps.config.raw();
-    const made = this.profilesMade;
-    if (made !== null && made.raw === raw && made.checks === this.checksChanged) return made.profiles;
-    const profiles = hubConfig(raw, this.deps.data, this.found).profiles;
-    this.profilesMade = { raw, checks: this.checksChanged, profiles };
-    return profiles;
+    const made = this.settingsMade;
+    if (made !== null && made.raw === raw && made.checks === this.checksChanged) return made.settings;
+    const settings = hubConfig(raw, this.deps.data, this.found);
+    this.settingsMade = { raw, checks: this.checksChanged, settings };
+    return settings;
   }
-  private profilesMade: { raw: unknown; checks: number; profiles: Profile[] } | null = null;
+  private settingsMade: { raw: unknown; checks: number; settings: HubConfig } | null = null;
+
+  /// The profiles as the config has them now (`settings`).
+  profiles(): Profile[] {
+    return this.settings().profiles;
+  }
   /// Counts the changes of `checks` (what `found` reads), for `profiles`.
   private checksChanged = 0;
 
@@ -1961,9 +1966,9 @@ export class Accounts {
     if (!manages(viewer)) throw new Refusal(403, tr(lang, "station.decisions.managersOnlyReview"));
     const review = this.deps.reviewUndecided;
     if (!review) throw new Refusal(503, tr(lang, "station.decisions.reviewUnsupported"));
-    if (!hubConfig(this.deps.config.raw(), this.deps.data).automaticDecisions.completion.enabled) throw new Refusal(409, tr(lang, "station.decisions.enableFirst"));
+    if (!this.settings().automaticDecisions.completion.enabled) throw new Refusal(409, tr(lang, "station.decisions.enableFirst"));
     const queued = await review();
-    if (!hubConfig(this.deps.config.raw(), this.deps.data).automaticDecisions.completion.enabled) throw new Refusal(409, tr(lang, "station.decisions.enableFirst"));
+    if (!this.settings().automaticDecisions.completion.enabled) throw new Refusal(409, tr(lang, "station.decisions.enableFirst"));
     if (queued === null) throw new Refusal(409, tr(lang, "station.decisions.modelUnavailable"));
     return queued;
   }
@@ -2071,8 +2076,7 @@ export class Accounts {
   /// station's only to the workspaces that station lends it in: its account is not theirs to see elsewhere.
   /// `workspaces` says which joined ones' chats run on each. With no viewer, all of them.
   profilesView(viewer?: Viewer): Json[] {
-    const raw = this.deps.config.raw();
-    const config = hubConfig(raw, this.deps.data, this.found);
+    const config = this.settings();
     const joined = viewer !== undefined && viewer.home === false ? viewer.workspace : null;
     const home = this.deps.workspaces?.()[0] ?? null;
     const others = this.joined();
@@ -2150,7 +2154,7 @@ export class Accounts {
     }
     const joined = viewer !== undefined && viewer.home === false ? viewer.workspace : null;
     const home = this.deps.workspaces?.()[0] ?? null;
-    const config = hubConfig(this.deps.config.raw(), this.deps.data, this.found);
+    const config = this.settings();
     const serves = new Set(config.profiles.filter((p) => allowedIn(p, joined, home)).map((p) => p.id as string));
     return paceView(this.#paceRead.now, this.#paceRead.read, (id) => serves.has(id));
   }

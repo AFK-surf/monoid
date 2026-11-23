@@ -9,7 +9,7 @@ import { Admin } from "./api/admin.ts";
 import { Events as EventStreams, eventsHandoverFile } from "./api/events.ts";
 import { Host } from "./api/host.ts";
 import { EgressLook } from "./api/egress.ts";
-import { jobSeen, sessionSeen, threadSeen } from "./api/seen.ts";
+import { jobSeen, seerOf, sessionSeen, threadSeen } from "./api/seen.ts";
 import { Store as StationStore } from "./store/store.ts";
 import { sees } from "./store/rows.ts";
 import { buildLegacyEntryLookups } from "./store/legacy-said-builder.ts";
@@ -285,6 +285,7 @@ export class Events extends Context.Service<Events, EventStreams>()("stillfail/E
         sessionExists: (key) => store.getSession(key) !== null,
         liveSeen: (viewer, key) => { const ws = store.sessionWs(key); return ws !== undefined && sees(viewer, ws); },
         seen: (viewer, of) => ("session" in of ? sessionSeen(store, viewer, of.session) : "thread" in of ? threadSeen(store, viewer, of.thread) : jobSeen(store, viewer, of.job)),
+        seer: (of) => seerOf(store, of),
         handover: { file: eventsHandoverFile(data), previous },
       });
       // Handed over as the station stops, after the parts made on it (the agents' side has handed over its sessions,
