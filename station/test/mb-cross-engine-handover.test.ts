@@ -9,8 +9,9 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import type { AddressInfo } from "node:net";
-import { createServer as httpServer } from "node:http";
+import { createServer as netServer, type AddressInfo, type Server } from "node:net";
+import { createServer as httpServer, request as httpRequest } from "node:http";
+import { createInterface } from "node:readline";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,11 +20,13 @@ import { after, test } from "node:test";
 import { WebSocketServer, type WebSocket } from "ws";
 import { DatabaseSync } from "node:sqlite";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbStationBinary } from "./mb-harness.ts";
 import { loadMesh, type Connection, type Stream as MeshStream } from "../src/mesh/native.ts";
 import { Reader } from "../src/mesh/wire.ts";
 import { GrantKey } from "./fake-control-plane.ts";
 
 const binary = mbReaderBinary();
+const stationBinary = mbStationBinary();
 const launcher = process.env.STILLFAIL_LAUNCHER ?? "";
 const runner = process.env.STILLFAIL_RUNNER ?? "";
 const meshNative = process.env.STILLFAIL_MESH_NATIVE ?? "";
@@ -35,6 +38,7 @@ const addon = (() => {
   }
 })();
 const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here"
+  : stationBinary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here"
   : process.platform === "win32" ? "the launcher's signals are Unix's"
   : launcher === "" || !existsSync(launcher) ? "no stillfail-station launcher (run under scripts/native.ts run launcher)"
   : runner === "" || !existsSync(runner) ? "no stillfail-runner (run under scripts/native.ts run runner)"
@@ -357,13 +361,16 @@ class Twins {
   }
 
   /// A release laid out as station-bundle.sh lays one: the program, the runner and, for Node, main.js (src/main.ts).
+  /// For the legacy MoonBit whole-station side ("mb"), `stillfail-reader` is populated with `stationBinary` (harness),
+  /// while the Node side ("node") uses the slimmed shipped `stillfail-reader`.
   static layOut(app: string, kind: "node" | "mb") {
     mkdirSync(join(app, "station"), { recursive: true });
-    for (const [from, to] of [[binary!, "stillfail-reader"], [runner, "stillfail-runner"]] as const) {
-      if (!existsSync(join(app, "station", to))) {
-        copyFileSync(from, join(app, "station", to));
-        chmodSync(join(app, "station", to), 0o755);
-      }
+    const readerSrc = kind === "mb" ? stationBinary! : binary!;
+    copyFileSync(readerSrc, join(app, "station", "stillfail-reader"));
+    chmodSync(join(app, "station", "stillfail-reader"), 0o755);
+    if (!existsSync(join(app, "station", "stillfail-runner"))) {
+      copyFileSync(runner, join(app, "station", "stillfail-runner"));
+      chmodSync(join(app, "station", "stillfail-runner"), 0o755);
     }
     writeFileSync(join(app, "BUILD"), "9700\n");
     if (kind === "node") writeFileSync(join(app, "station", "main.js"), `import ${JSON.stringify(pathToFileURL(mainTs).href)};\n`);
@@ -377,7 +384,7 @@ class Twins {
     fakeClaude(bin);
     const out = fresh(`out-${kind}`);
     const data = fresh(`data-${kind}`);
-    const made = spawnSync(binary!, ["id", "--data", data], { env: { PATH: "/usr/bin:/bin", HOME: data }, encoding: "utf8" });
+    const made = spawnSync(stationBinary!, ["id", "--data", data], { env: { PATH: "/usr/bin:/bin", HOME: data }, encoding: "utf8" });
     const id = made.stdout.trim();
     assert.match(id, /^[0-9a-f]{64}$/, made.stderr);
     writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({
@@ -403,7 +410,7 @@ class Twins {
       STILLFAIL_AGENT_NICE: "0", STILLFAIL_HELD_EVERY_MS: "300",
       // (Node's, for main.js: its addon, the program and the runner as the release would have them beside it)
       STILLFAIL_NODE: process.execPath, STILLFAIL_MESH_NATIVE: meshNative,
-      STILLFAIL_MB_READER: join(s.app, "station", "stillfail-reader"), STILLFAIL_RUNNER: join(s.app, "station", "stillfail-runner"),
+      STILLFAIL_MB_READER: binary!, STILLFAIL_RUNNER: join(s.app, "station", "stillfail-runner"),
     };
     s.said = "";
     s.child = spawn(launcher, ["run", "--app", s.app, "--data", s.data], { stdio: ["ignore", "pipe", "pipe"], env });
@@ -623,6 +630,220 @@ test("a handover by the launcher: Node → MoonBit → MoonBit → Node, the ses
     const said = twins.stations.map((x) => `\n--- ${x.kind} ---\n${x.said.slice(-1500)}`).join("");
     throw new Error(`[at ${at}] ${(e as Error).message}${said}`, { cause: e });
   } finally {
+    await twins.stop();
+  }
+});
+
+/// Simple HTTP GET helper for verifying admin/MCP loopback ports bound on inherited launcher fds 3 & 4.
+function httpGet(port: number, path: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path, method: "GET" }, (res) => {
+      let body = "";
+      res.on("data", (d) => (body += d));
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+test("old launcher hot-upgrade: config.json engine=moonbit + slimmed stillfail-reader execs Node in place keeping PID, fds 3/4/5, events, job PGID, and clean SIGTERM exit", { skip, timeout: 180_000 }, async () => {
+  const twins = new Twins();
+  let at = "setup";
+  let oldChild: ChildProcess | null = null;
+  let newChild: ChildProcess | null = null;
+  const openServers: Server[] = [];
+  try {
+    twins.plane = await controlPlane();
+    twins.client = await addon!.bind({ secretKey: randomBytes(32), alpns: [Buffer.from("client/1")], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" });
+    closers.push(() => void twins.client.close().catch(() => undefined));
+    twins.scripts = fresh("scripts-shim");
+    writeFileSync(join(twins.scripts, "nudge.sh"), script([["nudge", mcp(1, "chat_post", { to: "$TO", text: "named it", title: "Shim chat", kind: "all_done", done: "named the chat" })]]));
+
+    // Release layout with the slimmed `stillfail-reader` + `station/main.js` + `station/stillfail-runner`
+    const app = fresh("app-shim");
+    Twins.layOut(app, "node");
+    const bin = fresh("bin-shim");
+    fakeClaude(bin);
+    const out = fresh("out-shim");
+    const data = fresh("data-shim");
+    const madeId = spawnSync(stationBinary!, ["id", "--data", data], { env: { PATH: "/usr/bin:/bin", HOME: data }, encoding: "utf8" });
+    const id = madeId.stdout.trim();
+    assert.match(id, /^[0-9a-f]{64}$/, madeId.stderr);
+    writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({
+      origin: twins.plane.origin, station: id, workspace: "w1", workspace_name: "团队", name: "mac", relay_url: "", relay_urls: [], grant_keys: { keys: [twins.grant.jwk] }, peers: [], revocations: [],
+    }));
+    mkdirSync(join(data, "homes", "cc"), { recursive: true });
+    writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+    // Online station whose config.json still sets `"engine": "moonbit"`
+    writeFileSync(join(data, "config.json"), JSON.stringify({
+      engine: "moonbit",
+      language: "en",
+      profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }],
+      maxNudges: 1,
+    }));
+
+    const bindLoopback = () => new Promise<Server>((resolve) => {
+      const srv = netServer();
+      srv.listen(0, "127.0.0.1", () => {
+        openServers.push(srv);
+        resolve(srv);
+      });
+    });
+    const fdOf = (srv: Server) => (srv as any)._handle.fd as number;
+
+    const env: Record<string, string> = {
+      PATH: bin, HOME: data, TMPDIR: tmpdir(), FAKE_OUT: out, FAKE_SCRIPTS: twins.scripts,
+      STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_MESH_BIND_ADDR: "127.0.0.1:0",
+      STILLFAIL_AGENT_NICE: "0", STILLFAIL_HELD_EVERY_MS: "300",
+      STILLFAIL_NODE: process.execPath, STILLFAIL_MESH_NATIVE: meshNative,
+      STILLFAIL_MB_READER: join(app, "station", "stillfail-reader"),
+      STILLFAIL_RUNNER: join(app, "station", "stillfail-runner"),
+    };
+
+    const spawnOldLauncherStyle = async () => {
+      const [mcpSrv, adminSrv] = [await bindLoopback(), await bindLoopback()];
+      const mcpPort = (mcpSrv.address() as AddressInfo).port;
+      const adminPort = (adminSrv.address() as AddressInfo).port;
+      const child = spawn(
+        join(app, "station", "stillfail-reader"),
+        ["run", "--app", app, "--data", data, "--launcher-fds", "3,4,5", "--launcher-carries", "--launcher-heartbeat"],
+        { stdio: ["ignore", "pipe", "pipe", fdOf(mcpSrv), fdOf(adminSrv), "pipe"], env },
+      );
+      // Close the parent's handles immediately once inherited by the child so parent libuv never steals accept().
+      mcpSrv.close();
+      adminSrv.close();
+      children.push(child);
+      const said: any[] = [];
+      let logs = "";
+      child.stdout!.on("data", (d) => (logs += d));
+      child.stderr!.on("data", (d) => (logs += d));
+      const ctrl = (child.stdio as readonly unknown[])[5] as import("node:net").Socket;
+      createInterface({ input: ctrl }).on("line", (l) => {
+        try { said.push(JSON.parse(l)); } catch {}
+      });
+      const ended = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+      return {
+        child,
+        mcpPort,
+        adminPort,
+        said,
+        logs: () => logs,
+        tell: (m: unknown) => ctrl.write(`${JSON.stringify(m)}\n`),
+        ended,
+      };
+    };
+
+    at = "first execv start";
+    const first = await spawnOldLauncherStyle();
+    oldChild = first.child;
+    const firstPid = first.child.pid!;
+
+    // Verify fd 5 control handshake (`ready`, `serving: admin`, `serving: mcp`, `heartbeat`)
+    await until("first ready over fd 5", () => first.said.find((m) => m.ready === true), first.logs, 30_000);
+    await until("first admin serving over fd 4", () => first.said.find((m) => m.serving === "admin"), first.logs, 30_000);
+    await until("first mcp serving over fd 3", () => first.said.find((m) => m.serving === "mcp"), first.logs, 30_000);
+    await until("first heartbeat over fd 5", () => first.said.find((m) => m.heartbeat === true), first.logs, 15_000);
+
+    // Verify execv replaced the process in place: same PID, command line is now Node main.js
+    const firstCmd = commandOf(firstPid);
+    assert.ok(firstCmd.includes("main.js") && !firstCmd.includes("stillfail-reader"), `expected execv into Node main.js: ${firstCmd}`);
+    assert.match(first.logs(), /"engine": "moonbit" is retired/);
+    assert.equal(readJson(join(data, "run", "hub.json"))?.pid, firstPid, "hub.json records the exact same PID");
+    await until("health.json records same PID", () => readJson(join(data, "run", "health.json"))?.pid === firstPid, first.logs, 15_000);
+
+    // Verify HTTP on inherited fd 4 (admin) & fd 3 (mcp)
+    assert.equal((await httpGet(first.adminPort, "/healthz")).status, 200);
+    assert.equal((await httpGet(first.mcpPort, "/health")).status, 200);
+
+    // Connect on mesh, start a session + lasting job + event stream
+    at = "session and job";
+    const s = new Station({ kind: "node", app, data, out, id, bin });
+    s.child = first.child;
+    s.ended = first.ended;
+    const syncLogs = () => { s.said = first.logs(); };
+    twins.stations = [s];
+    s.meshPort = await until("first mesh listening", () => { syncLogs(); return s.meshPorts()[0]; }, first.logs, 30_000);
+    await twins.connect(s);
+
+    const created = await s.ask("POST", "/sessions", { runtime: "claude", profile: "cc" });
+    assert.equal(created.status, 200, created.text);
+    const made: Made = { key: created.json.key, thread: created.json.thread?.id ?? created.json.thread?.thread?.id };
+    await turn(twins, [made], "shim-start", [
+      ["start", mcp(1, "job_start", { name: "shim-lasting", command: "echo started; exec sleep 600" })],
+      ["post", mcp(2, "chat_post", { to: "$TO", text: "started via shim", title: "Shim", kind: "all_done", done: "started lasting job" })],
+    ]);
+    const jobRow = () => {
+      const db = s.db();
+      try { return db.prepare("SELECT id, state, pgid FROM jobs").get() as { id: string; state: string; pgid: number | null }; } finally { db.close(); }
+    };
+    const job = await until("job running with pgid", () => {
+      const j = jobRow();
+      return j?.state === "running" && j.pgid !== null ? j : null;
+    }, first.logs);
+    const streamBefore = await events(s);
+    await until("event stream first id", () => streamBefore.ids().length > 0, () => streamBefore.text().slice(0, 400));
+    const lastId = streamBefore.ids().at(-1)!;
+
+    // Simulate handover to a second process also started by the old launcher via slimmed `stillfail-reader`
+    at = "handover";
+    const second = await spawnOldLauncherStyle();
+    newChild = second.child;
+    const secondPid = second.child.pid!;
+    assert.notEqual(secondPid, firstPid);
+    await until("second ready", () => second.said.find((m) => m.ready === true), second.logs, 30_000);
+    first.tell({ op: "handover" });
+    const carry = await until("first carry", () => first.said.find((m) => m.carry !== undefined), first.logs, 30_000);
+    assert.equal(await first.ended, 0, first.logs());
+    second.tell({ op: "carried", carried: carry.carry });
+    await until("second mcp serving", () => second.said.find((m) => m.serving === "mcp"), second.logs, 30_000);
+
+    const secondCmd = commandOf(secondPid);
+    assert.ok(secondCmd.includes("main.js") && !secondCmd.includes("stillfail-reader"), `second process execv into Node main.js: ${secondCmd}`);
+    assert.equal(readJson(join(data, "run", "hub.json"))?.pid, secondPid);
+
+    // Reconnect on mesh to second process, verify event stream resumes without `missed` and job PGID survives
+    s.child = second.child;
+    s.ended = second.ended;
+    s.meshPort = await until("second mesh listening", () => { s.said = second.logs(); return s.meshPorts()[0]; }, second.logs, 30_000);
+    await twins.connect(s);
+    const streamAfter = await events(s, lastId);
+    await until("resumed event stream first id", () => streamAfter.ids().length > 0, () => streamAfter.text().slice(0, 400), 10_000);
+    assert.ok(!streamAfter.names().includes("missed"), `event stream missed events: ${streamAfter.text().slice(0, 600)}`);
+    const jAfter = jobRow();
+    assert.equal(jAfter.state, "running");
+    assert.equal(jAfter.pgid, job.pgid);
+    assert.ok(alive(job.pgid!), `job pgid ${job.pgid} survived handover`);
+
+    // Managed stop via fd 5 control channel (as launcher forwards SIGTERM) exits cleanly with code 0
+    at = "stop";
+    second.tell({ op: "stop" });
+    assert.equal(await withTimeout(second.ended, 30_000, "second stop exit"), 0, second.logs());
+
+    // Standalone `stillfail-reader run` (no --launcher-fds) execs Node and exits 0 on SIGTERM
+    at = "standalone SIGTERM";
+    const ownData = fresh("data-shim-own");
+    const own = spawn(join(app, "station", "stillfail-reader"), ["run", "--app", app, "--data", ownData], {
+      stdio: ["ignore", "ignore", "pipe"],
+      env,
+    });
+    children.push(own);
+    let ownErr = "";
+    own.stderr!.on("data", (d) => (ownErr += d));
+    const ownEnded = new Promise<number | null>((resolve) => own.on("exit", (code) => resolve(code)));
+    await until("standalone mcp.json ready", () => existsSync(join(ownData, "run", "mcp.json")), () => ownErr, 30_000);
+    assert.ok(commandOf(own.pid!).includes("main.js"), `standalone execv into Node: ${commandOf(own.pid!)}`);
+    own.kill("SIGTERM");
+    assert.equal(await withTimeout(ownEnded, 30_000, "standalone SIGTERM exit"), 0, ownErr);
+  } catch (e) {
+    throw new Error(`[at ${at}] ${(e as Error).message}`, { cause: e });
+  } finally {
+    for (const c of [oldChild, newChild]) {
+      if (c && c.exitCode === null && c.signalCode === null) c.kill("SIGKILL");
+    }
+    for (const srv of openServers) {
+      try { srv.close(); } catch {}
+    }
     await twins.stop();
   }
 });

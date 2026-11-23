@@ -871,10 +871,10 @@ async fn search_program(host : @host.Host, db_path : String, data : String, sep 
 
 ///|
 fn main {
-  // The station itself (its commands, `run`, a hook's command): station_main's.
+  // Retired whole-station commands (`run`, `status`, `admin`, ...) and hook/bridge scripts: hand off to Node.
   let argv = @host.args()
-  if @station_main.is_station(argv) {
-    @host.exit(@station_main.station_main(argv))
+  if is_station_shim(argv) {
+    @host.exit(run_station_shim(argv))
     return
   }
   let code = match (flag("--builder"), flag("--db"), flag("--data")) {

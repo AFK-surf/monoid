@@ -149,11 +149,34 @@ const HERMES_CMAKE = ["-G", "Ninja", "-DCMAKE_C_COMPILER=clang-cl", "-DCMAKE_CXX
 /// The bsdtar Windows has (Git Bash's GNU tar takes C:\… for a remote host).
 const TAR = osPlatform() === "win32" ? join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe") : "tar";
 
-/// What the reader and its tests' program (reader-harness) are made of and how: one source, two programs.
-const READER_INPUTS = ["station/mb/src", "station/mb/moon.mod", "station/mb/moon.work", "station/mb/build.sh",
-  "rules/src", "rules/moon.mod", "libs/base/src", "libs/base/moon.mod",
+/// Packages transitively imported by `station/mb/src/reader` (kept in sync with `station/mb/build.sh`
+/// and guarded by `station/test/mb-reader-deps-guard.test.ts`). Frozen whole-station packages such as
+/// `station_main`, `drive`, `cloud_lock`, `api_routes`, `session_hub` are excluded so edits there
+/// never invalidate `stillfail-reader`'s native cache key.
+const READER_PKGS = [
+  "acp", "activity", "admit", "archivelast", "bindings", "cards", "cc", "claude", "codex", "counts",
+  "cursor", "dsh", "footprint", "front", "history", "host", "jobs", "jscase", "jsjson", "legacy",
+  "letters", "live_wire", "locate", "lookups", "marks", "memory", "nodepath", "outflow", "packed", "pi",
+  "pieces", "posts", "reader", "readops", "recent", "replica", "said", "search", "searchscope", "sessions",
+  "signin", "sql", "turns", "upjobs", "usage", "usagecount", "usagefill", "vaultuses", "widgets", "wire",
+];
+const READER_COMMON_INPUTS = [
+  "station/mb/moon.mod", "station/mb/moon.work", "station/mb/build.sh",
+  "libs/base/src", "libs/base/moon.mod",
   "libs/ui/src/effect", "libs/ui/src/halt", "libs/ui/moon.mod", "libs/ui/scripts/mbc-stub.sh",
-  ":(exclude,glob)**/*_test.mbt", ":(exclude,glob)**/*_wbtest.mbt", ":(exclude,glob)**/pkg.generated.mbti"];
+  ":(exclude,glob)**/*_test.mbt", ":(exclude,glob)**/*_wbtest.mbt", ":(exclude,glob)**/pkg.generated.mbti",
+];
+/// Shipped `stillfail-reader`: only its transitive packages, `cprep`, and common MoonBit workspace files.
+const READER_INPUTS = [
+  ...READER_PKGS.map((p) => `station/mb/src/${p}`),
+  "station/mb/src/cprep",
+  ...READER_COMMON_INPUTS,
+];
+/// Tests' `stillfail-reader-harness`: full `station/mb/src` (including frozen `station_main` & harnesses) and `rules/`.
+const HARNESS_INPUTS = [
+  "station/mb/src", "rules/src", "rules/moon.mod",
+  ...READER_COMMON_INPUTS,
+];
 const readerRecipe = (t: Target) => ({ moon: "native release", shell: t === "darwin-arm64" ? key("shell-apple", t) : key("shell-station", t) });
 type Target = "darwin-arm64" | "linux-x64" | "linux-arm64" | "win32-x64" | "wasm32" | "android-arm64" | "ios-arm64" | "ios-sim-arm64";
 type Part = {
@@ -515,7 +538,7 @@ const PARTS: Record<string, Part> = {
     publish: ["linux-x64"],
     env: "STILLFAIL_MB_HARNESS",
     rust: false,
-    inputs: READER_INPUTS,
+    inputs: HARNESS_INPUTS,
     recipe: (t) => ({ ...readerRecipe(t), harness: true }),
     build(t, out) {
       const mac = osPlatform() === "darwin" && osArch() === "arm64";

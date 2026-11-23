@@ -28,10 +28,10 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { type Entry, bodyHash, endpointBytes, entryHash, signedBytes, wsTag } from "../../shared/lock.ts";
 import { loadMesh, type Connection, type Endpoint, type Stream as MeshStream } from "../src/mesh/native.ts";
 import { Reader } from "../src/mesh/wire.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbStationBinary } from "./mb-harness.ts";
 import { GrantKey } from "./fake-control-plane.ts";
 
-const binary = mbReaderBinary();
+const binary = mbStationBinary();
 const addon = (() => {
   try {
     return loadMesh();

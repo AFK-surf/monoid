@@ -24,10 +24,9 @@ import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import zhStation from "../../client/i18n/catalog/zh/station.json" with { type: "json" };
 import enStation from "../../client/i18n/catalog/en/station.json" with { type: "json" };
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
-import { mbHarnessBinary } from "./mb-harness.ts";
+import { mbHarnessBinary, mbStationBinary } from "./mb-harness.ts";
 
-const binary = mbReaderBinary();
+const binary = mbStationBinary();
 /// (the tests' program, its harness: the station's own commands are the reader's)
 const harnessProgram = mbHarnessBinary();
 const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : harnessProgram === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : process.platform === "win32" ? "still.fail Helper's socket is a Unix socket" : false;

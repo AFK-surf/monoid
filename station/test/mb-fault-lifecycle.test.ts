@@ -18,10 +18,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbStationBinary } from "./mb-harness.ts";
 import { Store } from "../src/store/store.ts";
 
-const binary = mbReaderBinary();
+const binary = mbStationBinary();
 const launcher = process.env.STILLFAIL_LAUNCHER ?? "";
 const runner = process.env.STILLFAIL_RUNNER ?? "";
 const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here"

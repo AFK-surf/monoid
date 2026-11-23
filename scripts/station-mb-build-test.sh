@@ -54,7 +54,7 @@ cat > "$t/root/libs/ui/scripts/mbc" <<'EOF'
 [ "$1" = key ] && { echo made-up-mbc; exit 0; }
 obj= j=none prev=
 for a in "$@"; do
-  case "$a" in --obj=*) obj=${a#--obj=} ;; -j=*) j=${a#-j=} ;; --cflags=*) echo "${a#--cflags=}" > "$LOG/cflags" ;; esac
+  case "$a" in --obj=*) obj=${a#--obj=} ;; -j=*) j=${a#-j=} ;; --cflags=*) echo "${a#--cflags=}" > "$LOG/cflags" ;; --extra=*) echo "${a#--extra=}" >> "$LOG/extras" ;; esac
   [ "$prev" = -j ] && j=$a
   prev=$a
 done
@@ -209,6 +209,25 @@ fresh; bash "$t/root/station/mb/build.sh" --harness darwin-arm64 "$t/out/harness
 [ ! -e "$t/log/moon-builds" ] || fail "--harness again, nothing changed: moon built $(cat "$t/log/moon-builds") again"
 grep -q 'reader_harness' "$t/log/c" || fail "--harness again: mbc given $(cat "$t/log/c"), not the harness's kept C"
 grep -q 'unit.o' "$t/out/harness2" || fail "--harness into OUT: not linked there"
+
+# 5b. Changing frozen station_main never invalidates reader's gen_key, and reader only compiles its own C stubs.
+mkdir -p "$t/root/station/mb/src/station_main" "$t/root/station/mb/src/drive" "$t/root/station/mb/src/host"
+echo 'int sm_stub;' > "$t/root/station/mb/src/station_main/sys.c"
+echo 'int drv_stub;' > "$t/root/station/mb/src/drive/drive.c"
+echo 'int host_stub;' > "$t/root/station/mb/src/host/host.c"
+echo 'pub fn v() -> Int { 1 }' > "$t/root/station/mb/src/station_main/a.mbt"
+fresh; run cache1 || fail "reader before station_main edit: $(cat "$t/log/build-cache1.out")"
+grep -q 'host/host.c' "$t/log/extras" || fail "reader extras missing host/host.c: $(cat "$t/log/extras" 2>/dev/null)"
+if grep -qE 'station_main/|drive/drive\.c' "$t/log/extras"; then
+  fail "reader extras unexpectedly included frozen C stubs: $(cat "$t/log/extras")"
+fi
+echo 'pub fn v() -> Int { 2 }' > "$t/root/station/mb/src/station_main/a.mbt"
+fresh; run cache2 || fail "reader after station_main edit: $(cat "$t/log/build-cache2.out")"
+[ ! -e "$t/log/moon-builds" ] || fail "editing station_main invalidated reader gen_key (rebuilt $(cat "$t/log/moon-builds"))"
+fresh; bash "$t/root/station/mb/build.sh" --harness darwin-arm64 "$t/out/harness3" > "$t/log/build-harness3.out" 2>&1 || fail "--harness after station_main edit: $(cat "$t/log/build-harness3.out")"
+[ "$(cat "$t/log/moon-builds")" = reader_harness ] || fail "--harness did not rebuild after station_main edit"
+grep -q 'station_main/sys.c' "$t/log/extras" || fail "--harness extras missing station_main/sys.c"
+grep -q 'drive/drive.c' "$t/log/extras" || fail "--harness extras missing drive/drive.c"
 
 # 6. ~/stillfail-ci/reader-mbc-prepped self-pruning: stale locks/tmps (>30m), old prepared C (>180m), and cap at newest 16.
 prepped_ci="$t/ci-home/stillfail-ci/reader-mbc-prepped"

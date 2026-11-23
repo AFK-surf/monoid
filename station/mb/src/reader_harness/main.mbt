@@ -1,8 +1,14 @@
 ///|
 /// The tests' program (station/test/mb-*.test.ts): each package's harness (`harness*.mbt`), which holds it to the
-/// TypeScript it ports, asked by `--builder harness-<package>`. Kept out of the station's reader (src/reader), which ships
-/// to every station: built only for the tests (station/mb/build.sh --harness, scripts/native.ts `reader-harness`).
+/// TypeScript it ports, asked by `--builder harness-<package>`, plus the frozen whole-station `station_main` commands
+/// (`run`, `id`, `enroll`, `channel`, ...) kept out of the shipped `stillfail-reader`. When `station_main` spawns
+/// reader/builder/sessions subprocesses via its own `argv[0]`, non-harness reader invocations exec `stillfail-reader`.
 fn main {
+  let argv = @host.args()
+  if @station_main.is_station(argv) {
+    @host.exit(@station_main.station_main(argv))
+    return
+  }
   let code = match (flag("--builder"), flag("--db")) {
     (Some("harness-station-main"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @station_main.harness(host))
@@ -23,11 +29,58 @@ fn main {
     (Some("harness-leaf"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => harness_leaf(host))
     _ => {
-      @host.note("usage: stillfail-reader-harness --builder harness-<package> [--shell-dir <dir> | --db <file>]")
-      2
+      let args = argv[1:].to_array()
+      if args.contains("--builder") || args.contains("--sessions") || args.contains("--serve") || args.contains("--data") {
+        if find_shipped_reader(argv) is Some(reader_bin) {
+          let child_argv : Array[String] = [reader_bin]
+          for a in args {
+            child_argv.push(a)
+          }
+          @host.exit(@host.exec_replace(reader_bin, child_argv))
+          return
+        }
+        @host.note("stillfail-reader-harness: cannot delegate reader/builder invocation; set STILLFAIL_MB_READER or place stillfail-reader beside stillfail-reader-harness")
+        1
+      } else {
+        @host.note("usage: stillfail-reader-harness --builder harness-<package> [--shell-dir <dir> | --db <file>]")
+        2
+      }
     }
   }
   @host.exit(code)
+}
+
+///|
+fn find_shipped_reader(argv : Array[String]) -> String? {
+  if @host.env_get("STILLFAIL_MB_READER") is Some(p) && @host.is_executable_file(p) {
+    return Some(p)
+  }
+  let self_path = @host.exe_path().unwrap_or(if argv.length() > 0 { argv[0] } else { "" })
+  if self_path == "" {
+    return None
+  }
+  let slash = self_path.rev_find("/").unwrap_or(-1)
+  let back = self_path.rev_find("\\").unwrap_or(-1)
+  let cut = if slash > back { slash } else { back }
+  let (dir, sep, base) = if cut < 0 {
+    (".", "/", self_path)
+  } else {
+    let s = if back > slash { "\\" } else { "/" }
+    (self_path.exact_view(end=cut).to_owned(), s, self_path.exact_view(start=cut + 1).to_owned())
+  }
+  if base.contains("-harness") {
+    let sibling = dir + sep + base.replace(old="-harness", new="")
+    if @host.is_executable_file(sibling) {
+      return Some(sibling)
+    }
+  }
+  for name in ["stillfail-reader", "stillfail-reader.exe"] {
+    let cand = dir + sep + name
+    if cand != self_path && @host.is_executable_file(cand) {
+      return Some(cand)
+    }
+  }
+  None
 }
 
 ///|

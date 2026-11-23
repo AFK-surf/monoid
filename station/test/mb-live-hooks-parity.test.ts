@@ -26,11 +26,11 @@ import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { WebSocketServer, type WebSocket } from "ws";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbStationBinary } from "./mb-harness.ts";
 import { Store } from "../src/store/store.ts";
 import { keepUsage } from "../src/usage/module.ts";
 
-const binary = mbReaderBinary();
+const binary = mbStationBinary();
 const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : process.platform === "win32" ? "the launcher's descriptors are Unix's" : false;
 
 const dirs: string[] = [];

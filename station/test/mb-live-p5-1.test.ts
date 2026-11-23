@@ -19,14 +19,13 @@ import { after, test } from "node:test";
 import { WebSocketServer, type WebSocket } from "ws";
 import { randomBytes } from "node:crypto";
 import { createSocket } from "node:dgram";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
-import { mbHarnessBinary } from "./mb-harness.ts";
+import { mbHarnessBinary, mbStationBinary } from "./mb-harness.ts";
 import { loadMesh, type Connection, type Stream as MeshStream } from "../src/mesh/native.ts";
 import { Reader } from "../src/mesh/wire.ts";
 import { GrantKey } from "./fake-control-plane.ts";
 import { Store } from "../src/store/store.ts";
 
-const binary = mbReaderBinary();
+const binary = mbStationBinary();
 /// (the tests' program, its harness: the station's own commands are the reader's)
 const harnessProgram = mbHarnessBinary();
 const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : harnessProgram === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : process.platform === "win32" ? "the launcher's descriptors are Unix's" : false;

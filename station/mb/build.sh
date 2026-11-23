@@ -93,12 +93,32 @@ echo "$$" > "$lock/pid"
   # was made (prepped-$pkg.key, by content, not by git), not making it again (moon build and cprep, ~40 s each).
   # moon version --all ends each line with the tool's path, which differs between ci-1's runners (each its own
   # MOON_HOME): without it, the runners share reader-mbc-prepped and cprep.
+  # Keep READER_SRC_PKGS in sync with scripts/native.ts READER_PKGS (guarded by mb-reader-deps-guard.test.ts).
+  READER_SRC_PKGS=(
+    acp activity admit archivelast bindings cards cc claude codex counts
+    cursor dsh footprint front history host jobs jscase jsjson legacy
+    letters live_wire locate lookups marks memory nodepath outflow packed pi
+    pieces posts reader readops recent replica said search searchscope sessions
+    signin sql turns upjobs usage usagecount usagefill vaultuses widgets wire
+  )
+  gen_inputs=(
+    "$D/moon.mod" "$D/moon.work" "$D/build.sh"
+    "$ROOT/libs/ui/moon.mod" "$ROOT/libs/ui/scripts/mbc-stub.sh"
+    "$ROOT/libs/base/moon.mod" "$ROOT/libs/base/src"
+    "$ROOT/libs/ui/src/effect" "$ROOT/libs/ui/src/halt"
+  )
+  if [ "$pkg" = reader ]; then
+    for p in "${READER_SRC_PKGS[@]}" cprep; do
+      [ -d "$D/src/$p" ] && gen_inputs+=("$D/src/$p")
+    done
+  else
+    gen_inputs+=("$ROOT/rules/moon.mod" "$ROOT/rules/src" "$D/src")
+  fi
   gen_key=$( {
+    echo "pkg=$pkg"
     moon version --all | sed 's|)[[:space:]].*$|)|'
     "$ROOT/libs/ui/scripts/mbc" key
-    find "$D/moon.mod" "$D/moon.work" "$D/build.sh" "$ROOT/rules/moon.mod" "$ROOT/libs/ui/moon.mod" \
-      "$ROOT/libs/ui/scripts/mbc-stub.sh" "$ROOT/libs/base/moon.mod" "$D/src" "$ROOT/rules/src" "$ROOT/libs/base/src" "$ROOT/libs/ui/src/effect" \
-      "$ROOT/libs/ui/src/halt" -type f ! -name '*_test.mbt' ! -name '*_wbtest.mbt' ! -name pkg.generated.mbti \
+    find "${gen_inputs[@]}" -type f ! -name '*_test.mbt' ! -name '*_wbtest.mbt' ! -name pkg.generated.mbti \
       | LC_ALL=C sort | xargs shasum | sed "s|  $ROOT/|  |"
   } | shasum | awk '{print $1}')
   prepped="$D/_build/prepped-$pkg.c"
@@ -235,11 +255,26 @@ else
   [ "$npar" -le 1 ] || [ "$mbc_jobs" -ge 2 ] || mbc_jobs=2
 fi
 
+# Keep READER_C_STUBS in sync with C files under reader's transitive deps (guarded by mb-reader-deps-guard.test.ts).
+READER_C_STUBS=(
+  footprint/footprint.c
+  host/host.c
+  host/exec.c
+  replica/carry.c
+  sql/sql.c
+)
 extras=()
-for c in "$D"/src/*/*.c; do
-  [ "$c" = "$D/src/cprep/io.c" ] && continue # (cprep's own, no part of the reader)
-  extras+=("--extra=$c")
-done
+if [ "$pkg" = reader ]; then
+  for rel in "${READER_C_STUBS[@]}"; do
+    c="$D/src/$rel"
+    [ -f "$c" ] && extras+=("--extra=$c")
+  done
+else
+  for c in "$D"/src/*/*.c; do
+    [ "$c" = "$D/src/cprep/io.c" ] && continue # (cprep's own, no part of the harness)
+    extras+=("--extra=$c")
+  done
+fi
 
 "$ROOT/libs/ui/scripts/mbc" compile \
   "--cc=${cc[*]}" \
@@ -248,7 +283,7 @@ done
   -j "$mbc_jobs" \
   "--obj=$work/obj" \
   "--link-flags=$work/link-flags.txt" \
-  "${extras[@]}" \
+  ${extras[@]+"${extras[@]}"} \
   "$work/reader.c" > "$work/objs.txt"
 
 objs=()

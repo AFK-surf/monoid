@@ -12,13 +12,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
-import { mbHarnessBinary } from "./mb-harness.ts";
+import { mbHarnessBinary, mbStationBinary } from "./mb-harness.ts";
 import { ARCHIVE_WORKTREE_LOCK_PREFIX } from "../src/sessions/archive.ts";
 import { UPKEEP_STATE_FILE } from "../src/ops/upkeep-state.ts";
 import { Store } from "../src/store/store.ts";
 
-const binary = mbReaderBinary();
+const binary = mbStationBinary();
 const harness = mbHarnessBinary();
 const skip =
   binary === null

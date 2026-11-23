@@ -38,10 +38,10 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import { type WebSocket, WebSocketServer } from "ws";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbStationBinary } from "./mb-harness.ts";
 import { Store } from "../src/store/store.ts";
 
-const binary = mbReaderBinary();
+const binary = mbStationBinary();
 const runner = process.env.STILLFAIL_RUNNER ?? "";
 const skip =
   binary === null

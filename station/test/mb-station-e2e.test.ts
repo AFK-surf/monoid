@@ -18,11 +18,10 @@ import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { deflateSync } from "node:zlib";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
-import { mbHarnessBinary } from "./mb-harness.ts";
+import { mbHarnessBinary, mbStationBinary } from "./mb-harness.ts";
 import { Store } from "../src/store/store.ts";
 
-const binary = mbReaderBinary();
+const binary = mbStationBinary();
 /// (the tests' program, its harness: the station's own commands are the reader's)
 const harnessProgram = mbHarnessBinary();
 const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : harnessProgram === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : process.platform === "win32" ? "the launcher's descriptors are Unix's" : false;

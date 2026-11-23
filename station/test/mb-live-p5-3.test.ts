@@ -15,11 +15,10 @@ import { fileURLToPath } from "node:url";
 import { createSocket } from "node:dgram";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
-import { mbHarnessBinary } from "./mb-harness.ts";
+import { mbHarnessBinary, mbStationBinary } from "./mb-harness.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 
-const binary = mbReaderBinary();
+const binary = mbStationBinary();
 const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : process.platform === "win32" ? "the launcher's descriptors are Unix's" : false;
 
 const dirs: string[] = [];

@@ -17,11 +17,11 @@ import { dirname, join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbStationBinary } from "./mb-harness.ts";
 import { Store } from "../src/store/store.ts";
 import { exif, film, jpeg } from "../../client/core-ts/test/media-bytes.ts";
 
-const binary = mbReaderBinary();
+const binary = mbStationBinary();
 const runner = process.env.STILLFAIL_RUNNER ?? "";
 const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here"
   : process.platform === "win32" ? "the launcher's descriptors are Unix's"

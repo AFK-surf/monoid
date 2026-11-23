@@ -55,7 +55,6 @@ import {
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/buffer",
   "ui/effect",
-  "station/station_main",
 }
 
 pkgtype(kind: "executable")

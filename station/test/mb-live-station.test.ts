@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { WebSocketServer, type WebSocket } from "ws";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbStationBinary } from "./mb-harness.ts";
 import { loadMesh, type Connection, type Stream as MeshStream } from "../src/mesh/native.ts";
 import { Reader } from "../src/mesh/wire.ts";
 import { GrantKey } from "./fake-control-plane.ts";
@@ -27,7 +27,7 @@ import { Store } from "../src/store/store.ts";
 import { RUNTIME_KINDS } from "../src/agents/runtime.ts";
 import { DatabaseSync } from "node:sqlite";
 
-const binary = mbReaderBinary();
+const binary = mbStationBinary();
 const launcher = process.env.STILLFAIL_LAUNCHER ?? "";
 const runner = process.env.STILLFAIL_RUNNER ?? "";
 const addon = (() => {

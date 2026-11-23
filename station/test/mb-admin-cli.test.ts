@@ -6,13 +6,13 @@ import { createServer as httpsServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbStationBinary } from "./mb-harness.ts";
 import type { Held } from "../src/vault/keeper.ts";
 import { Proxy } from "../src/vault/proxy.ts";
 import { runWith } from "../src/vault/run.ts";
 import { makeCa, makeLeaf, pem } from "../src/vault/x509.ts";
 
-const binary = mbReaderBinary();
+const binary = mbStationBinary();
 const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
 
 function readBody(req: IncomingMessage): Promise<any> {

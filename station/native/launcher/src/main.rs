@@ -73,13 +73,20 @@ impl Station {
     }
 }
 
-/// What runs the station of the data directory `data` from the release at `app`: the MoonBit station where its
-/// config.json says `"engine": "moonbit"` and the release has the program (a switch of one station's, read at each
-/// start of its process: the next handover or restart takes it), else as `station` says.
+/// What runs the station of the data directory `data` from the release at `app`: `"engine": "moonbit"` is retired,
+/// so when the release has `station/main.js` we log and start Node directly (while `stillfail-reader`'s `station_shim`
+/// handles older launchers that have not yet renewed). Releases without `station/main.js` still run `stillfail-reader`.
 pub fn station_of(app: &Path, data: &Path) -> Station {
-    let reader = app.join(READER_IN_APP);
-    if reader.is_file() && data::Config::read(data).is_ok_and(|c| c.moonbit) {
-        return Station { program: reader, script: None };
+    let script = main_js(app);
+    if data::Config::read(data).is_ok_and(|c| c.moonbit) {
+        if script.is_file() {
+            log::info(r#"config.json sets "engine": "moonbit", which is retired; starting Node instead"#);
+            return Station { program: node(app), script: Some(script) };
+        }
+        let reader = app.join(READER_IN_APP);
+        if reader.is_file() {
+            return Station { program: reader, script: None };
+        }
     }
     station(app)
 }
@@ -203,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn a_station_switched_to_moonbit_runs_it_where_the_release_has_node_too() {
+    fn a_station_with_retired_moonbit_engine_starts_node_when_main_js_exists() {
         let dir = std::env::temp_dir().join(format!("launcher-app-switch-{}", std::process::id()));
         let data = dir.join("data");
         std::fs::create_dir_all(dir.join("station")).unwrap();
@@ -212,13 +219,13 @@ mod tests {
         std::fs::write(dir.join(super::READER_IN_APP), "").unwrap();
         // not switched: Node, as the release says
         assert_eq!(super::station_of(&dir, &data).script, Some(dir.join("station/main.js")));
-        // switched in its config.json: the MoonBit station alone
+        // retired "engine": "moonbit" with main.js present: starts Node directly
         std::fs::write(data.join("config.json"), r#"{"engine":"moonbit"}"#).unwrap();
+        assert_eq!(super::station_of(&dir, &data).script, Some(dir.join("station/main.js")));
+        // without main.js (moonbit-only test layout): falls back to stillfail-reader
+        std::fs::remove_file(dir.join("station/main.js")).unwrap();
         let station = super::station_of(&dir, &data);
         assert_eq!((station.program, station.script), (dir.join(super::READER_IN_APP), None));
-        // switched, but a release with no MoonBit station: Node
-        std::fs::remove_file(dir.join(super::READER_IN_APP)).unwrap();
-        assert_eq!(super::station_of(&dir, &data).script, Some(dir.join("station/main.js")));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -16,14 +16,14 @@ import { after, test } from "node:test";
 import { type Entry, entryHash, signedBytes as lockBytes } from "../../shared/lock.ts";
 import { loadMesh, type Connection, type Stream as MeshStream } from "../src/mesh/native.ts";
 import { Reader } from "../src/mesh/wire.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbStationBinary } from "./mb-harness.ts";
 import { Store } from "../src/store/store.ts";
 import {
   type BoxCert, type Deny, type Grant, type Item, type Sig, type Vault, TAG, encryptWith, grantContext, itemContext, keyContext, newBoxPair, seal, signedBytes,
 } from "../src/vault/crypto.ts";
 import { GrantKey } from "./fake-control-plane.ts";
 
-const binary = mbReaderBinary();
+const binary = mbStationBinary();
 const runner = process.env.STILLFAIL_RUNNER ?? "";
 const addon = (() => {
   try {

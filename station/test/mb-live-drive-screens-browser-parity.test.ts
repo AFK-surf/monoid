@@ -14,10 +14,10 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbStationBinary } from "./mb-harness.ts";
 import { Store } from "../src/store/store.ts";
 
-const binary = mbReaderBinary();
+const binary = mbStationBinary();
 const skip = binary === null
   ? "the MoonBit program (stillfail-reader) is not built here"
   : process.platform === "win32"

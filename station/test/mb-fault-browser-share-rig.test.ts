@@ -31,10 +31,10 @@ import { type DeviceBody, type GrantBody, type Kind, type RevokeBody, type Timeo
 import { type Entry, entryHash } from "../../shared/lock.ts";
 import { loadMesh, type Stream as MeshStream } from "../src/mesh/native.ts";
 import { Reader } from "../src/mesh/wire.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbStationBinary } from "./mb-harness.ts";
 import { Store } from "../src/store/store.ts";
 
-const binary = mbReaderBinary();
+const binary = mbStationBinary();
 const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here"
   : process.platform === "win32" ? "the launcher's descriptors and signals are Unix's"
   : false;
