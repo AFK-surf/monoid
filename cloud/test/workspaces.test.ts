@@ -280,6 +280,37 @@ test("members' credentials have a minute of their own: asking them uses up none 
   }
 });
 
+test("the minutes' counts are kept in memory, never stored, and start again the next minute", async () => {
+  // (2026-11-24: storing them on every request held each answer of the account's object behind its output gate, a burst
+  // of a person's devices asking for credentials together answered seconds late)
+  const h = await harness();
+  try {
+    const tokens = await h.login("alice");
+    const alice = h.as(tokens);
+    const ws = (await (await alice("POST", "/v1/workspaces", { name: "Home" })).json() as any).id as string;
+    const device = await key();
+    const account = await h.object("ACCOUNTS", tokens.subject);
+    const later = (seconds: number) => h.fetch("/__test/later", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ seconds }) });
+    const until429 = async (ask: () => Promise<{ status: number }>, most: number) => {
+      let n = 0;
+      while (n <= most && (await ask()).status === 200) n++;
+      return n;
+    };
+    const me = () => alice("GET", "/v1/me");
+    const credential = () => alice("POST", `/v1/workspaces/${ws}/credential`, { device: device.id });
+    // (the workspace made took one of the account's 120)
+    assert.deepEqual([await until429(me, 130), await until429(credential, 370)], [119, 360]);
+    const used = await account.statistics();
+    assert.deepEqual([used.quota?.requests, used.credentialQuota?.requests, used.stored], [120, 360, { quota: undefined, lock: undefined, credential: undefined }]);
+
+    assert.equal((await later(60)).status, 200);
+    assert.deepEqual([await until429(me, 130), await until429(credential, 370)], [120, 360], "a new minute");
+    assert.deepEqual((await account.statistics()).stored, { quota: undefined, lock: undefined, credential: undefined });
+  } finally {
+    await h.close();
+  }
+});
+
 test("an account over its requests a minute still signs in a new device: its other devices' asking keeps no one out", async () => {
   // (the locks' end to end, 2026-11-10: a person's devices reading their workspaces again as they changed used up the
   // minute, and the next device's sign-in was refused, 429)

@@ -137,6 +137,68 @@ test("a chain kept before the cloud checked entries is cut back to where the sta
   }
 });
 
+test("a device asking again within the hour, saying nothing new, is not written again; something new, or an hour on, is", async () => {
+  // (2026-11-24: every credential wrote its device's last_seen, and a burst of a person's devices asking together waited
+  // seconds on each other's writes behind the Directory's output gate)
+  const h = await harness();
+  try {
+    const tokens = await h.login("alice");
+    let alice = h.as(tokens);
+    const ws = (await (await alice("POST", "/v1/workspaces", { name: "Home" })).json() as any).id as string;
+    const device = (await key()).id;
+    const post = async (path: string, value: unknown) => (await h.fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(value) })).json() as Promise<any>;
+    /** The clock put forward, alice's access credential made again for it; the time now. */
+    const later = async (seconds: number) => {
+      const { now } = await post("/__test/later", { seconds });
+      alice = h.as({ ...tokens, access_token: (await post("/__test/access", { sub: tokens.subject, sid: tokens.session_id, seconds: 300 })).token });
+      return now as number;
+    };
+    const devices = async () => ((await (await alice("GET", `/v1/workspaces/${ws}/devices`)).json()) as any).devices as any[];
+
+    // An account deleted takes its devices with it, and what was remembered of them: signed up again and back in the
+    // workspace in the same second, the same device is kept again.
+    const join = async () => {
+      const bob = h.as(await h.login("bob"));
+      await alice("POST", `/v1/workspaces/${ws}/invitations`, { role: "member", email: "bob@example.test" });
+      const invitation = ((await (await bob("GET", "/v1/me")).json()) as any).invitations[0];
+      assert.equal((await bob("POST", `/v1/invitations/${invitation.id}/accept`)).status, 200);
+      assert.equal((await bob("POST", `/v1/workspaces/${ws}/credential`, { device })).status, 200);
+      return bob;
+    };
+    const bobs = async () => (await devices()).filter((d) => d.email === "bob@example.test").map((d) => d.device);
+    const bob = await join();
+    assert.deepEqual(await bobs(), [device]);
+    assert.equal((await bob("DELETE", "/v1/me")).status, 200);
+    assert.deepEqual(await bobs(), []);
+    await join();
+    assert.deepEqual(await bobs(), [device], "kept again, not taken as remembered");
+
+    const ask = async (said: Record<string, string> = {}) => assert.equal((await alice("POST", `/v1/workspaces/${ws}/credential`, { device, ...said })).status, 200);
+    const seen = async () => (await devices()).filter((d) => d.email === "alice@example.test").map((d) => [d.label, d.last_seen]);
+    const first = await later(0);
+    await ask({ label: "Mac" });
+    assert.deepEqual(await seen(), [["Mac", first]]);
+    await later(600);
+    await ask();
+    await later(600);
+    await ask({ label: "Mac" });
+    assert.deepEqual(await seen(), [["Mac", first]], "the same within the hour: not written");
+
+    const renamed = await later(600);
+    await ask({ label: "MacBook" });
+    assert.deepEqual(await seen(), [["MacBook", renamed]], "a new label: written at once");
+
+    await later(3599);
+    await ask();
+    assert.deepEqual(await seen(), [["MacBook", renamed]], "still within the hour");
+    const hour = await later(1);
+    await ask();
+    assert.deepEqual(await seen(), [["MacBook", hour]], "an hour on: written again");
+  } finally {
+    await h.close();
+  }
+});
+
 test("devices that asked for credentials, for the owner to check; devices waiting to be confirmed", async () => {
   const h = await harness();
   try {

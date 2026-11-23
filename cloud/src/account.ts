@@ -9,6 +9,8 @@ import { ACCESS_TTL_SEC, REFRESH_RETRY_SEC, SESSION_IDLE_SEC, SESSION_TTL_SEC, b
 const LIMITS = { sessions: 16, requestsPerMinute: 120, credentialsPerMinute: 360 };
 /** What of an account moves into another cloud (moveExport). */
 const MOVED_KEYS = ["account", "personal-lock", "personal-lock-aside", "beta"];
+/** The minutes requests are counted in (`charge`). */
+type Quota = "quota" | "quota-lock" | "quota-credential";
 type Retry = { hash: string; request: string; until: number; response: string };
 /** Why a session ended, kept a while (the last 32) for the span of a refresh that finds it gone. */
 type Ended = { id: string; at: number; why: "reused" | "logout" | "logout_all" | "removed" | "blocked" };
@@ -38,6 +40,13 @@ export class Account extends DurableObject<Env> {
   /** Events sockets opening now (the Directory counts them already: `events`), and what it was told for them meanwhile. */
   #opening = 0;
   #toldMeanwhile: string[] = [];
+  /**
+   * This minute's requests of each quota (`charge`), counted in memory and never stored: a write on every request held
+   * each answer of this object behind the storage's output gate, and a burst of a person's devices asking for
+   * credentials together waited on each other's writes for seconds (2026-11-24: 24 to 30 of them answered in the same
+   * millisecond, 2 to 7 s late). An object evicted forgets its counts, and the minute starts again.
+   */
+  #quotas = new Map<Quota, { minute: number; requests: number }>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -75,15 +84,19 @@ export class Account extends DurableObject<Env> {
    * one for every endpoint of every workspace's stations, which used up the account system's minute (2026-11-23: 379
    * refused in 4 minutes, starving `GET /v1/workspaces/:id`).
    */
-  private charge(of: "quota" | "quota-lock" | "quota-credential" = "quota"): boolean {
+  private charge(of: Quota = "quota"): boolean {
     const minute = Math.floor(nowSeconds() / 60);
     const limit = of === "quota-credential" ? LIMITS.credentialsPerMinute : LIMITS.requestsPerMinute;
-    const old = this.ctx.storage.kv.get<{ minute: number; requests: number }>(of);
+    const old = this.#quotas.get(of);
     const quota = old?.minute === minute ? old : { minute, requests: 0 };
     if (quota.requests >= limit) return false;
     quota.requests++;
-    this.ctx.storage.kv.put(of, quota);
+    this.#quotas.set(of, quota);
     return true;
+  }
+  /** This minute's count of a quota (`charge`), as this object counts it. */
+  protected quotaOf(of: Quota = "quota"): { minute: number; requests: number } | undefined {
+    return this.#quotas.get(of);
   }
 
   /** What moves into another cloud (move.ts): the account and its sessions, its own lock, whether it is let into the

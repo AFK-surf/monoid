@@ -5,12 +5,25 @@ import type { DeviceView, LockHead, LockRequestView, Role } from "../types";
 import type { DirectoryDb, DirectoryHost } from "./db";
 import { LOCK_REQUEST_TTL_SEC, MANAGERS, fail } from "./types";
 
+/** How long a device's `last_seen` may lag behind its last credential (`recordDevice`), in seconds. */
+const DEVICE_SEEN_WINDOW = 3600;
+/** How many devices `recordDevice` remembers before it forgets them all. */
+const DEVICES_SEEN_CAP = 10_000;
+type DeviceSeen = { base: string | null; kind: string | null; label: string | null; seen: number };
+
 // ── the workspace lock (lock.ts): kept and carried, not trusted ─────────────────────────
 
 export class DirectoryLocks {
   #db: DirectoryDb;
   #host: DirectoryHost;
   #lockSeen: Set<string>;
+  /**
+   * What `devices` says of each device that asked for a credential while this object lives (by workspace, sub and
+   * device), so that one asking again within DEVICE_SEEN_WINDOW, saying nothing new, is not written: `last_seen` is
+   * only read by the day (`devices`, the last 31 days), and a write on every credential held each answer of this
+   * object behind the storage's output gate, a burst of them waiting seconds on each other's (2026-11-24).
+   */
+  #devicesSeen = new Map<string, DeviceSeen>();
 
   constructor(db: DirectoryDb, host: DirectoryHost, lockSeen: Set<string>) {
     this.#db = db;
@@ -183,12 +196,40 @@ export class DirectoryLocks {
    * with the credential. */
   recordDevice(sub: string, workspace: string, device: string, said: { base?: string; kind?: string; label?: string }): ReturnType<typeof relays> {
     const now = nowSeconds();
-    this.#db.run(
-      `INSERT INTO devices (workspace, sub, device, base, kind, label, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (workspace, sub, device) DO UPDATE SET base = COALESCE(excluded.base, base), kind = COALESCE(excluded.kind, kind), label = COALESCE(excluded.label, label), last_seen = excluded.last_seen`,
-      workspace, sub, device, said.base ?? null, said.kind ?? null, said.label ?? null, now, now,
-    );
+    const key = `${workspace}\n${sub}\n${device}`;
+    const prev = this.#devicesSeen.get(key) ?? this.#deviceKept(workspace, sub, device);
+    const next = { base: said.base ?? prev?.base ?? null, kind: said.kind ?? prev?.kind ?? null, label: said.label ?? prev?.label ?? null };
+    const same = prev !== undefined && prev.base === next.base && prev.kind === next.kind && prev.label === next.label;
+    if (same && now >= prev.seen && now - prev.seen < DEVICE_SEEN_WINDOW) {
+      this.#noteDeviceSeen(key, prev);
+    } else {
+      this.#db.run(
+        `INSERT INTO devices (workspace, sub, device, base, kind, label, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (workspace, sub, device) DO UPDATE SET base = COALESCE(excluded.base, base), kind = COALESCE(excluded.kind, kind), label = COALESCE(excluded.label, label), last_seen = excluded.last_seen`,
+        workspace, sub, device, said.base ?? null, said.kind ?? null, said.label ?? null, now, now,
+      );
+      this.#noteDeviceSeen(key, { ...next, seen: now });
+    }
     return relays(this.#db.relays(this.#host.meshRelays()), true);
+  }
+
+  /** What `devices` keeps of a device, as `recordDevice` remembers it. */
+  #deviceKept(workspace: string, sub: string, device: string): DeviceSeen | undefined {
+    const row = this.#db.one("SELECT base, kind, label, last_seen FROM devices WHERE workspace = ? AND sub = ? AND device = ?", workspace, sub, device);
+    if (!row) return undefined;
+    return { base: (row.base as string | null) ?? null, kind: (row.kind as string | null) ?? null, label: (row.label as string | null) ?? null, seen: row.last_seen as number };
+  }
+
+  #noteDeviceSeen(key: string, seen: DeviceSeen): void {
+    if (!this.#devicesSeen.has(key) && this.#devicesSeen.size >= DEVICES_SEEN_CAP) this.#devicesSeen.clear();
+    this.#devicesSeen.set(key, seen);
+  }
+
+  /** What `recordDevice` remembers forgotten, of one workspace (gone) or all (`devices` replaced by a move). */
+  resetDevicesSeen(workspace?: string): void {
+    if (workspace === undefined) return this.#devicesSeen.clear();
+    const prefix = `${workspace}\n`;
+    for (const key of this.#devicesSeen.keys()) if (key.startsWith(prefix)) this.#devicesSeen.delete(key);
   }
 
   /** The devices that asked for credentials in the workspace in the last 31 days: its owners and admins see everyone's

@@ -415,7 +415,10 @@ export class Account extends ProductionAccount {
   }
   statistics() {
     return {
-      quota: this.ctx.storage.kv.get("quota"),
+      quota: this.quotaOf("quota"),
+      credentialQuota: this.quotaOf("quota-credential"),
+      /** What of the minutes' counts is stored (nothing: `charge` counts in memory). */
+      stored: { quota: this.ctx.storage.kv.get("quota"), lock: this.ctx.storage.kv.get("quota-lock"), credential: this.ctx.storage.kv.get("quota-credential") },
       account: this.ctx.storage.kv.get<any>("account")?.sessions.map((s: any) => ({
         id: s.id,
         generation: s.generation,

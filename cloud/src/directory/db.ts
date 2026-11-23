@@ -141,4 +141,5 @@ export interface DirectoryHost {
   lockAfter(workspace: string, after: number): unknown[];
   appendLockInternal(workspace: string, raw: unknown, fork?: boolean): Promise<LockHead | null>;
   resetFixesMarked(): void;
+  resetDevicesSeen(workspace?: string): void;
 }

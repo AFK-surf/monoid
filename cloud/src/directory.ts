@@ -106,6 +106,7 @@ export class Directory extends DurableObject<Env> {
       lockAfter: (workspace, after) => this.#locks.lockAfter(workspace, after),
       appendLockInternal: (workspace, raw, fork) => this.#locks.appendLockInternal(workspace, raw, fork),
       resetFixesMarked: () => this.#feedback.resetFixesMarked(),
+      resetDevicesSeen: (workspace) => this.#locks.resetDevicesSeen(workspace),
     };
     this.#locks = new DirectoryLocks(this.#db, host, this.lockSeen);
     this.#relays = new DirectoryRelays(this.#db, host, this.#meshEvents);

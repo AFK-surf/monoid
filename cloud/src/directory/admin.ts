@@ -95,6 +95,7 @@ export class DirectoryAdmin {
    * a table here does not have of a row's columns refuses the whole. How many rows each now has. */
   moveImport(tables: Record<string, Row[]>): Record<string, number> {
     this.#host.resetFixesMarked();
+    this.#host.resetDevicesSeen();
     const here = new Set(this.#db.rows("SELECT name FROM sqlite_master WHERE type = 'table'").map((r) => r.name as string));
     return this.#db.ctx.storage.transactionSync(() => {
       const counts: Record<string, number> = {};
