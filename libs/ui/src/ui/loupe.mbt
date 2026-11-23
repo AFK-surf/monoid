@@ -41,6 +41,17 @@ fn handle_read(st : EditorState?, x : Double, y : Double, dy : Double) -> (Doubl
 }
 
 ///|
+/// Whether instance `k` is among what was painted over everything and is not yet raised (DrawState's `tops`).
+fn in_tops(k : Int) -> Bool {
+  for r in dr.tops {
+    if k >= r.0 && k < r.1 {
+      return true
+    }
+  }
+  false
+}
+
+///|
 /// How far over a finger dragging a field's handle what it moves is (its caret: editor.mbt's handle, hanging under it).
 pub let loupe_reach : Double = 26.0
 
@@ -82,8 +93,10 @@ fn Ctx::view_magnified(
     let b = k * inst_size
     let ia = self.inst
     let kind = ia[b + 5]
-    // (what punches through: left out)
-    if kind == 9.0 {
+    // (what punches through: left out; so too what is over everything as a window of its own over the app's is (a
+    // field's handles, Ctx::paint_top: Android's are popups, which its Magnifier does not see): cut by the loupe's
+    // edge, half a handle's drop came in it)
+    if kind == 9.0 || in_tops(k) {
       continue
     }
     if ia[b] > qx1 || ia[b + 1] > qy1 || ia[b] + ia[b + 2] < qx0 || ia[b + 1] + ia[b + 3] < qy0 {

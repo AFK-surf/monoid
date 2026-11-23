@@ -135,3 +135,58 @@ test "a finger low on a field's handle reads the middle of the line its tip is u
   t.draw()
   assert_eq(finger_reads(), None)
 }
+
+///|
+test "a node magnifying leaves out a field's handles, over everything as a window of their own" {
+  let f = Field::new(text="注意有必要的生态库 hello world")
+  let t = Tester::new(fn(_c) {  }, w=390.0, h=400.0, platform=2, pointing=Finger, native=Finger)
+  set_view_app(fn(root) {
+    root.box(fn(box) {
+      box.over(Is(true)).offset(Is((20.0, 300.0))).width(Is(Some(340.0))) |> ignore
+      field(box, f, label="字", font_size=17.0, max_lines=4) |> ignore
+    })
+    |> ignore
+    root.box(fn(l) {
+      l
+      .over(Is(true))
+      .offset(Is((20.0, 150.0)))
+      .width(Is(Some(124.0)))
+      .height(Is(Some(48.0)))
+      .radius(Is(24.0))
+      .ground(Is(0xFFFFFFFFL))
+      .magnifies(By(fn() { finger_reads().map(fn(p) { (p.0, p.1 + 12.0, 1.35) }) }))
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.press_at(80.0, 312.0)
+  t.run_for(long_press_ms + 20.0)
+  t.release(80.0, 312.0)
+  t.draw()
+  let st = f.st
+  let (hx, hy) = (st.sel_ax - handle_r, st.sel_ay + handle_r)
+  t.press_at(hx, hy)
+  t.draw()
+  let c = g()
+  let mut glyphs = 0
+  let mut drops = 0
+  for k in 0..<c.ninst {
+    let q = k * inst_size
+    let a = c.inst
+    if a[q + 1] >= 150.0 && a[q + 1] <= 198.0 {
+      if a[q + 5] == 1.0 {
+        glyphs = glyphs + 1
+      }
+      // (a drop's circle or its corner, its 18 or 9 across larger by the zoom)
+      if a[q + 5] == 0.0 && ((a[q + 2] - 2.0 * handle_r * 1.35).abs() < 0.5 || (a[q + 2] - handle_r * 1.35).abs() < 0.5) {
+        drops = drops + 1
+      }
+    }
+  }
+  // (read a little lower, the drops' tops in it if they were copied)
+  assert_true(glyphs > 0, msg="the field's words magnified")
+  assert_eq(drops, 0, msg="no handle's drop in the loupe")
+  t.release(hx, hy)
+  t.draw()
+}
