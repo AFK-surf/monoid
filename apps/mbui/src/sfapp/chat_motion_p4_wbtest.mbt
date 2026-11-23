@@ -159,7 +159,7 @@ test "Phase 4 Anti-Silent-Snap: failed message retry keeps bubble stationary (eq
   )
   // 3) MineSending -> MineTime (retry delivered): fixture also starts agent activity below, sliding the list up;
   // verify under-line vertical geometry (y_under - y_bubble) matches across MineUnsent / MineSending / MineTime.
-  let unsent_dy = match (p4_word_y(t, "正在发送"), p4_word_y(t, "这条会失败")) {
+  let sending_dy = match (p4_word_y(t, "正在发送"), p4_word_y(t, "这条会失败")) {
     (Some(sy), Some(by)) => sy - by
     _ => fail("正在发送 or 这条会失败 missing before delivery")
   }
@@ -172,8 +172,8 @@ test "Phase 4 Anti-Silent-Snap: failed message retry keeps bubble stationary (eq
     (Some(ty), Some(by)) => {
       let time_dy = ty - by
       assert_true(
-        (time_dy - unsent_dy).abs() <= 1.0,
-        msg="MineSending->MineTime: under-line vertical offset changed from \{unsent_dy} to \{time_dy}",
+        (time_dy - sending_dy).abs() <= 1.0,
+        msg="MineSending->MineTime: under-line vertical offset changed from \{sending_dy} to \{time_dy}",
       )
     }
     _ => fail("刚刚 or 这条会失败 missing after delivery")
