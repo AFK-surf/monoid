@@ -85,7 +85,16 @@ pub fn run_legacy_ctx(
       }
       set_view_app(made, around=view, theme?)
     }
-    None => set_view_app(fn(root) { old(root, view).grow(Is(1.0)) |> ignore }, theme?)
+    None => {
+      match theme {
+        Some(f) => {
+          g().theme_wide = @signals.untracked(f)
+          g().pick_theme()
+        }
+        None => ()
+      }
+      set_view_app(fn(root) { old(root, view).grow(Is(1.0)) |> ignore }, theme?)
+    }
   }
   start_host_window(title)
 }

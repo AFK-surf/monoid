@@ -851,14 +851,18 @@ test "popover: a wheel turned over it scrolls nothing under it; beside it, what 
       if tr.clicked {
         open.val = !open.val
       }
-      @kit.scroll_area(c, "s", 400.0, label="Log", fn() {
-        c.column(fn() {
-          for i in 0..<80 {
-            c.text("line \{i}") |> ignore
-          }
-        })
+      let si = c.box(h=Px(400.0), clip=true, fn() {
+        c.list("s", 1, 400.0, fn(_) {
+          c.column(fn() {
+            for i in 0..<80 {
+              c.text("line \{i}") |> ignore
+            }
+          })
+          |> ignore
+        }, h=Fill(1.0))
         |> ignore
       })
+      c.semantics(si, ScrollArea, label="Log")
       open.val = @kit.popover(c, "pop", open.val, tr.id, label="Filters", focus=false, fn() { c.text("Unread only") |> ignore }).value
     })
     |> ignore

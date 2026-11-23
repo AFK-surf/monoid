@@ -50,6 +50,28 @@ pub fn look_for(w : Double) -> Look {
 }
 
 ///|
+/// Whether a page of `width` (none: narrow) is laid out wide (look_for).
+pub fn width_is_wide(width : (() -> Double)?) -> Bool {
+  match width {
+    Some(w) => look_for(w()) is Wide
+    None => false
+  }
+}
+
+///|
+/// Build `wide` or `narrow` into `parent` according to its enclosing page arrangement (look_node).
+pub fn by_page_look(
+  parent : @view.View,
+  wide~ : (@view.View) -> Unit,
+  narrow~ : (@view.View) -> Unit,
+) -> Unit {
+  match look_node(parent) {
+    Wide => wide(parent)
+    Narrow => narrow(parent)
+  }
+}
+
+///|
 /// A page that takes no frame's arrangement (a remote screen's, whole in what it is given), drawn as a page `w` wide is
 /// arranged.
 pub fn arranged(w : Double, wide~ : () -> Unit, narrow~ : () -> Unit) -> Unit {

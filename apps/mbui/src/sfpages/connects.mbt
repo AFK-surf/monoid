@@ -148,7 +148,7 @@ pub fn connects_node(
   // (its primary action named as what it adds; narrow, the title's ＋)
   let actions = fn(l : @view.View) {
     l.show(fn() { targets().length() > 0 && !first() }, fn(a) {
-      cn_add_node(a, src, core, here, targets, fn() { @sf.t("android-misc.bar.action.connects") }, false, round=@sf.look_node(a) is Narrow)
+      cn_add_node(a, src, core, here, targets, fn() { @sf.t("android-misc.bar.action.connects") }, false)
     })
   }
   match bar_actions {
@@ -187,18 +187,16 @@ pub fn connects_node(
     fn() { @sf.t("android-settings.connects.title") },
     fn() { blocks.get() },
     fn(b, key) {
-      let look = @sf.look_node(b)
-      let wide = look == Wide
       match key {
         "first-profile" =>
-          cn_gutter_node(b, look, fn(g) {
+          @sf.page_gutter_node(b, fn(g) {
             @sf.first_one_node(g, fn() { @sf.t("web-pages.connects.profileFirst") }, lead=fn() { @sf.t("web-pages.connects.profileFirstLead") }, fn(a) {
               @sf.button_node(a, fn() { @sf.t("web-pages.connects.goAddProfile") }, fn() { (core.push)(Profiles("")) }, tone=Primary)
               |> ignore
             })
           })
         "first" =>
-          cn_gutter_node(b, look, fn(g) {
+          @sf.page_gutter_node(b, fn(g) {
             @sf.first_one_node(g, fn() { @sf.t("web-pages.connects.addFirst") }, lead=fn() { @sf.t("web-pages.connects.addFirstLead") }, fn(a) {
               a.pick(fn() { targets().length() > 0 }, fn(p, some) {
                 if some {
@@ -213,39 +211,27 @@ pub fn connects_node(
             })
           })
         "filter" =>
-          b.box(fn(f) {
-            @sf.style_node(f, fn() { if wide { cn_filter_room } else { cn_filter_room_narrow } })
+          @sf.page_filter_room_node(b, fn(f) {
             mine_filter_node(f, "connects-filter", "connects", fn() { pressed.get().unwrap_or(mine.get()) }, set_mine)
           })
-          |> ignore
         "waiting" => {
           let rows = fn(g : @view.View) {
             g.each(waiting, fn(w) { text(Some(w.1), "station") + "/" + text(Some(w.0), "appId") }, fn(r, w) {
-              cn_waiting_app_node(r, src, core, here, look, fn() { w.get().0 }, fn() { w.get().1 }, tips, stint)
+              cn_waiting_app_node(r, src, core, here, fn() { w.get().0 }, fn() { w.get().1 }, tips, stint)
             })
           }
-          if wide {
-            b.box(fn(t) {
-              @sf.style_node(t, fn() { cn_quiet_room })
-              @sf.words_node(t, fn() { @sf.t("web-pages.connects.waiting") }, fn() { cn_quiet }) |> ignore
-            })
-            |> ignore
-            @sf.group_node(b, rows)
-          } else {
-            @sf.heading_node(b, fn() { @sf.t("web-pages.connects.waiting") })
-            @sf.group_node(b, rows)
-          }
+          @sf.quiet_heading_node(b, fn() { @sf.t("web-pages.connects.waiting") })
+          @sf.group_node(b, rows)
         }
         "reading" =>
-          cn_gutter_node(b, look, fn(g) {
-            @sf.waiting_node(g, fn(s) { connects_sample_node(s, core, look, only, 3, tips, stint) }, note=fn() {
+          @sf.page_gutter_node(b, fn(g) {
+            @sf.waiting_node(g, fn(s) { connects_sample_node(s, core, only, 3, tips, stint) }, note=fn() {
               let failing = failing_of(wait())
               { reading: failing.length() == 0, text: "", failing }
             })
           })
         "none" =>
-          b.box(fn(n) {
-            @sf.style_node(n, fn() { if wide { cn_none_room } else { cn_filter_room_narrow } })
+          @sf.page_empty_room_node(b, fn(n) {
             @sf.words_node(n, fn() {
               match topic().error {
                 Some(e) => error_text(e)
@@ -254,12 +240,11 @@ pub fn connects_node(
             }, fn() { if topic().error is Some(_) { cn_error } else { cn_note } })
             |> ignore
           })
-          |> ignore
-        k if k.has_prefix("c/") || k.has_prefix("s/") => connects_row_block(b, core, look, placed, station_of, tips, stint, k)
+        k if k.has_prefix("c/") || k.has_prefix("s/") => connects_row_block(b, core, placed, station_of, tips, stint, k)
         _ =>
-          cn_gutter_node(b, look, fn(g) {
+          @sf.page_gutter_node(b, fn(g) {
             @sf.wait_more_node(g, fn() { { reading: flag(wait(), "reading"), text: "", failing: failing_of(wait()) } }, fn(s) {
-              connects_sample_node(s, core, look, only, 1, tips, stint)
+              connects_sample_node(s, core, only, 1, tips, stint)
             })
           })
       }
@@ -295,7 +280,6 @@ fn connects_shown_at(only : String) -> String {
 fn connects_list_node(
   b : @view.View,
   core : Core,
-  look : Look,
   shown : () -> Array[Json],
   only : String,
   station_of : (String) -> Json?,
@@ -303,17 +287,19 @@ fn connects_list_node(
   stint : () -> Int,
 ) -> Unit {
   let key_of = fn(x : Json) { text(Some(x), "station") + "/" + text(field(Some(x), "connect"), "id") }
-  match look {
-    Wide =>
+  @sf.by_page_look(
+    b,
+    wide=fn(b) {
       @sf.list_card_node(b, fn(k) {
         k.each(shown, key_of, fn(r, x) {
           let address = @signals.untracked(fn() { text(Some(x.get()), "station") })
-          cn_row_node(r, core, look, address, fn() { text(Some(x.get()), "stationName") }, fn() { station_of(address) }, fn() {
+          cn_row_node(r, core, address, fn() { text(Some(x.get()), "stationName") }, fn() { station_of(address) }, fn() {
             field(Some(x.get()), "connect")
           }, tips, stint)
         })
       })
-    Narrow => {
+    },
+    narrow=fn(b) {
       // (the stations in the order their connects come, each once)
       let addresses = fn() {
         let out : Array[String] = []
@@ -355,13 +341,13 @@ fn connects_list_node(
             },
             fn(x) { x.0 },
             fn(r, x) {
-              cn_row_node(r, core, look, address, name, fn() { station_of(address) }, fn() { field(Some(x.get().1), "connect") }, tips, stint)
+              cn_row_node(r, core, address, name, fn() { station_of(address) }, fn() { field(Some(x.get().1), "connect") }, tips, stint)
             },
           )
         })
       })
-    }
-  }
+    },
+  )
 }
 
 ///|
@@ -463,7 +449,6 @@ fn connects_placed(shown : Array[Json]) -> (Map[String, ConnectPlace], Map[Strin
 fn connects_row_block(
   b : @view.View,
   core : Core,
-  look : Look,
   placed : @signals.Computed[(Map[String, ConnectPlace], Map[String, String])],
   station_of : (String) -> Json?,
   tips : @sf.TipLayer,
@@ -510,7 +495,7 @@ fn connects_row_block(
     wide_group_foot=false,
     wide_piece=fn() { wide_piece.get() },
     fn(card) {
-      cn_row_node(card, core, look, address, fn() { name.get() }, fn() { station_of(address) }, fn() { cv.get() }, tips, stint)
+      cn_row_node(card, core, address, fn() { name.get() }, fn() { station_of(address) }, fn() { cv.get() }, tips, stint)
     },
   )
 }
@@ -518,7 +503,7 @@ fn connects_row_block(
 ///|
 /// The connects to come while they are read (the library's Waiting, in its bones): `count` made-up ones on a station,
 /// as connects_list_node makes them, through a core that answers nothing.
-fn connects_sample_node(v : @view.View, core : Core, look : Look, only : String, count : Int, tips : @sf.TipLayer, stint : () -> Int) -> Unit {
+fn connects_sample_node(v : @view.View, core : Core, only : String, count : Int, tips : @sf.TipLayer, stint : () -> Int) -> Unit {
   let name = @sf.sample_words(4)
   let shown = [8, 6, 10][:count].to_owned().map(fn(n) {
     Json::object({
@@ -532,7 +517,7 @@ fn connects_sample_node(v : @view.View, core : Core, look : Look, only : String,
       },
     })
   })
-  connects_list_node(v, core.quiet(), look, fn() { shown }, only, fn(_) { None }, tips, stint)
+  connects_list_node(v, core.quiet(), fn() { shown }, only, fn(_) { None }, tips, stint)
 }
 
 ///|
@@ -560,24 +545,9 @@ pub fn connects_add(src : Source, core : Core, here : Here) -> ((@sf.Beside) -> 
 }
 
 ///|
-/// What sits on the page's ground as wide as its column, narrow 12 from its sides (as its cards are), `body` made in
-/// it.
-fn cn_gutter_node(b : @view.View, look : Look, body : (@view.View) -> Unit) -> Unit {
-  match look {
-    Wide => body(b)
-    Narrow =>
-      b.box(fn(g) {
-        @sf.style_node(g, fn() { @sf.pg_card_room })
-        body(g)
-      })
-      |> ignore
-  }
-}
-
-///|
 /// Adding one, `label` its words: on the one station online at once, else on one picked from a menu by it (which
 /// station?), in the new connect's dialog (`targets`, as they are as it is pressed). `primary`: the first one's (a
-/// solid button, its menu in its middle); `round`: the narrow title's ＋.
+/// solid button, its menu in its middle); otherwise the responsive header action button.
 fn cn_add_node(
   parent : @view.View,
   src : Source,
@@ -586,7 +556,6 @@ fn cn_add_node(
   targets : () -> Array[Json],
   label : () -> String,
   primary : Bool,
-  round? : Bool = false,
 ) -> Unit {
   // (pressed: the button itself what its menu goes by)
   let press = fn(b : @view.View) {
@@ -603,10 +572,10 @@ fn cn_add_node(
     })
     @sf.menu(items, from=Node(b), title=@sf.t("web-pages.connects.whichStation"), along=if primary { Middle } else { End })
   }
-  if round {
-    @sf.icon_button_opens_node(parent, "plus", label, press) |> ignore
+  if primary {
+    @sf.button_opens_node(parent, label, press, tone=Primary, icon="plus") |> ignore
   } else {
-    @sf.button_opens_node(parent, label, press, tone=if primary { Primary } else { Plain }, icon="plus") |> ignore
+    @sf.page_action_opens_node(parent, "plus", label, press)
   }
 }
 
@@ -617,7 +586,6 @@ fn cn_add_node(
 fn cn_row_node(
   r : @view.View,
   core : Core,
-  look : Look,
   station : String,
   station_name : () -> String,
   s : () -> Json?,
@@ -648,11 +616,9 @@ fn cn_row_node(
   let status = said(fn(c) { text(c, "statusText") })
   let by = @signals.computed(fn(_) { field(cv(), "createdBy") }, same=json_opt_same)
   let on = fn() { [("station", station), ("id", id())] }
-  let wide = look == Wide
   let end = fn(e : @view.View) {
     // (wide: where it runs and who made it, dropped before its name where the line has not the room)
-    e.gap(Is(12.0)).fits(Is(wide)) |> ignore
-    if wide {
+    @sf.row_end_facts_node(e, fn(e) {
       e.box(fn(f) {
         @sf.style_node(f, fn() { cn_facts })
         f.drops(Is(cn_drop_facts)) |> ignore
@@ -660,7 +626,7 @@ fn cn_row_node(
         cn_owner_node(f, core, fn() { by.get() }, tips, stint)
       })
       |> ignore
-    }
+    })
     doing_mark_node(e, fn() { is_doing(core, ["connect.delete"], on()) }, fn() { failed_of(core, ["connect.delete"], on()) }, tips~, size=doing_mark_end)
     e.box(fn(st) {
       @sf.style_node(st, fn() { cn_narrow_state })
@@ -687,30 +653,53 @@ fn cn_row_node(
   // mark said once on a row, where the row leads with it, else before its team)
   r.pick(fn() { image.get() is Some(_) }, fn(p, pictured) {
     let lead_make = fn(l) { cn_avatar_node(l, core, id, name, fn() { image.get() }, kind, stint) }
-    @sf.link_row_node(
+    let lead : @sf.RowLead = if pictured { LeadMade(lead_make) } else { LeadLine(lead_make) }
+    // its Slack workspace after its name (short of room, its name kept: its team leaves its line first)
+    let title_after = fn(a : @view.View) {
+      a.drops(Is(cn_drop_team)) |> ignore
+      a.box(fn(t) {
+        @sf.style_node(t, fn() { cn_team })
+        if pictured {
+          cn_kind_node(t, kind, cn_team_icon)
+        }
+        @sf.words_node(t, team, fn() { cn_meta }) |> ignore
+      })
+      |> ignore
+    }
+    let title_after_shown = fn() { teamed.get() }
+    let open = fn() { (core.push)(Connect(station, @signals.untracked(id))) }
+    @sf.by_page_look(
       p,
-      name,
-      fn() { (core.push)(Connect(station, @signals.untracked(id))) },
-      note=how,
-      note_cut=true,
-      chevron=false,
-      lead=if pictured { LeadMade(lead_make) } else { LeadLine(lead_make) },
-      face=pictured,
-      // its Slack workspace after its name (short of room, its name kept: its team leaves its line first)
-      title_after=fn(a) {
-        a.drops(Is(cn_drop_team)) |> ignore
-        a.box(fn(t) {
-          @sf.style_node(t, fn() { cn_team })
-          if pictured {
-            cn_kind_node(t, kind, cn_team_icon)
-          }
-          @sf.words_node(t, team, fn() { cn_meta }) |> ignore
-        })
-        |> ignore
+      wide=fn(p) {
+        @sf.link_row_node(
+          p,
+          name,
+          open,
+          note=how,
+          note_cut=true,
+          chevron=false,
+          lead~,
+          face=pictured,
+          title_after~,
+          title_after_shown~,
+          control=end,
+        )
       },
-      title_after_shown=fn() { teamed.get() },
-      tail?=if wide { None } else { Some(end) },
-      control?=if wide { Some(end) } else { None },
+      narrow=fn(p) {
+        @sf.link_row_node(
+          p,
+          name,
+          open,
+          note=how,
+          note_cut=true,
+          chevron=false,
+          lead~,
+          face=pictured,
+          title_after~,
+          title_after_shown~,
+          tail=end,
+        )
+      },
     )
   })
 }
@@ -814,7 +803,6 @@ fn cn_waiting_app_node(
   src : Source,
   core : Core,
   here : () -> Here,
-  look : Look,
   a : () -> Json,
   s : () -> Json,
   tips : @sf.TipLayer,
@@ -877,16 +865,14 @@ fn cn_waiting_app_node(
     },
     title_after_shown=fn() { opt_text(av(), "team") is Some(_) },
     control=fn(e) {
-      let wide = look == Wide
-      e.gap(Is(12.0)).fits(Is(wide)) |> ignore
-      if wide {
+      @sf.row_end_facts_node(e, fn(e) {
         e.box(fn(f) {
           @sf.style_node(f, fn() { cn_facts })
           f.drops(Is(cn_drop_facts)) |> ignore
           cn_station_tag_node(f, fn() { text(sv(), "name") }, sv, stint)
         })
         |> ignore
-      }
+      })
       e.show(fn() { !online() }, fn(w) {
         @sf.words_node(w, fn() { @sf.t("web-pages.connects.stationOffline") }, fn() { cn_meta }) |> ignore
       })
@@ -897,11 +883,7 @@ fn cn_waiting_app_node(
           let (st, id) = @signals.untracked(fn() { (station(), app_id()) })
           new_connect_dialog(src, core, @signals.untracked(here), st, made_app=id)
         }
-        if wide {
-          @sf.button_node(c, fn() { @sf.t("web-pages.connects.continue") }, go) |> ignore
-        } else {
-          @sf.tap_text_node(c, fn() { @sf.t("web-pages.connects.continue") }, go)
-        }
+        @sf.row_action_node(c, fn() { @sf.t("web-pages.connects.continue") }, go)
         // dropped from under ⋯ (its menu), asked again first; it stays in Slack
         c.show(fn() { !dropping() }, fn(m) { cn_more_node(m, drop) })
       })
@@ -1028,24 +1010,6 @@ let cn_more_icon : Double = 16.0
 let cn_kind_box : @ui.Style = @ui.css("w=S7 align=ACenter justify=JCenter")
 
 ///|
-/// The filter, as wide as what it says, 8 further under the head than the head's own room, where the web's is
-/// (pageHead: 28 under it), and 12 over the list; the waiting apps' title (sectionTitleQuiet: the meta's 12 in 500 muted, 6 under).
-// kept across runs: a value (no field of it changes)
-let cn_filter_room : @ui.Style = @ui.css("w=Full pt=S2 pb=S3 align=AStart")
-
-///|
-// kept across runs: a value (no field of it changes)
-let cn_quiet_room : @ui.Style = @ui.css("w=Full pb=S1_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let cn_quiet : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=Muted, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let cn_none_room : @ui.Style = @ui.css("w=Full")
-
-///|
 // kept across runs: a value (no field of it changes)
 let cn_error : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Danger, w=Full)
 
@@ -1109,12 +1073,7 @@ let cn_more_w : Double = 32.0
 
 
 ///|
-/// Narrow: the filter in the page's room, 10 under; a row's line under its name (the secondary's, on one line);
-/// how it is at its end, its dot before the words.
-// kept across runs: a value (no field of it changes)
-let cn_filter_room_narrow : @ui.Style = @ui.css("w=Full pb=S2_5 align=AStart")
-
-///|
+/// How it is at its end, its dot before the words.
 // kept across runs: a value (no field of it changes)
 let cn_narrow_state : @ui.Style = @ui.css("row gap=S1_25 align=ACenter")
 

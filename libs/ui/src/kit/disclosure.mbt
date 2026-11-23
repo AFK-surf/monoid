@@ -1,9 +1,8 @@
 // What shows a part and hides the rest: a collapsible (Radix's Collapsible: its trigger opens and closes its content,
 // which grows and shrinks to its height), an accordion (Radix's Accordion: a column of collapsibles, their triggers one
 // roving group, Up and Down moving among them; one open at a time unless `multiple`), tabs (Radix's Tabs: a roving
-// group of tabs, the arrows choosing as they move, the chosen one's panel shown), a scroll area (Radix's ScrollArea:
-// what is taller than its room scrolls in it, by the wheel, a drag and the keys, with a bar while it moves). Whether
-// each is open, and which tab is chosen, are the view's.
+// group of tabs, the arrows choosing as they move, the chosen one's panel shown). Whether each is open, and which tab
+// is chosen, are the view's.
 
 ///|
 /// What a collapsible's or an accordion item's trigger look is given: its words, open, pointed at, focus shown,
@@ -281,14 +280,4 @@ pub fn tabs(
   })
   |> ignore
   { value: now, response: { ..@ui.Response::none(), id, changed: now != value } }
-}
-
-///|
-/// `key`'s scroll area (see the file's head), `h` high, what `body` builds scrolling in it when it is taller; named
-/// `label` for the semantics tree.
-pub fn scroll_area(c : @ui.Ctx, key : String, h : Double, body : () -> Unit, label? : String = "") -> Unit {
-  let i = c.box(h=Px(h), clip=true, fn() {
-    c.list(key, 1, h, fn(_) { body() }, h=Fill(1.0)) |> ignore
-  })
-  c.semantics(i, ScrollArea, label~)
 }

@@ -4,7 +4,6 @@
 // settings_page.mbt).
 
 using @sf {
-  type Look,
   desk_lane_most,
   desk_lane_in,
   desk_column_most,

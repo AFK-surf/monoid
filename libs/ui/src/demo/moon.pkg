@@ -1,6 +1,8 @@
 import {
   "ui/host",
+  "ui/signals",
   "ui/ui",
+  "ui/view",
   "ui/wasmrt",
 }
 

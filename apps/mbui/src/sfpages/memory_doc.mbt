@@ -96,8 +96,6 @@ fn doc_body_node(
       let picked = doc_at.get(key).unwrap_or(at)
       if n == 0 { 0 } else if picked >= n { n - 1 } else if picked < 0 { 0 } else { picked }
     }
-    // (its text on a card on a narrow page (the narrow app's), on the page itself on a wide one (the web's))
-    let narrow = @sf.look_node(p) is Narrow
     p.box(fn(l) {
       @sf.style_node(l, fn() { md_doc })
       l.box(fn(h) {
@@ -122,7 +120,7 @@ fn doc_body_node(
         } else {
           // what kind it is and when it is read: a card, alone where it is one of the layers (narrow), as the page's
           // cards are where it is wide
-          @sf.page_card_node(h, layered=narrow, fn(k) { doc_skill_card_node(k, kv) })
+          @sf.page_card_node(h, layered_narrow=true, fn(k) { doc_skill_card_node(k, kv) })
         }
       })
       |> ignore
@@ -178,11 +176,7 @@ fn doc_body_node(
         let text_in = fn(t : @view.View) {
           @sf.markdown_node(t, words, size=fn() { @sf.text_scale.base.0 }) |> ignore
         }
-        if narrow {
-          @sf.page_card_node(d, layered=true, text_in)
-        } else {
-          text_in(d)
-        }
+        @sf.page_narrow_card_node(d, text_in)
       })
       |> ignore
     })

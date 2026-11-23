@@ -38,19 +38,6 @@ fn disclosure(c : @ui.Ctx) -> Unit {
             c.text("cedar, willow, birch", size=t.font, color=t.muted) |> ignore
           }).value
       })
-      section(c, "Scroll area", fn() {
-        c.box(radius=t.radius, border=1.0, border_color=t.line, clip=true, fn() {
-          @kit.scroll_area(c, "log", 96.0, fn() {
-            c.box(pad=10.0, gap=4.0, fn() {
-              for i in 0..<20 {
-                c.text("line \{i}", size=t.font_sm, color=t.muted) |> ignore
-              }
-            })
-            |> ignore
-          })
-        })
-        |> ignore
-      })
     })
     |> ignore
     c.box(w=Fill(1.0), gap=18.0, fn() {

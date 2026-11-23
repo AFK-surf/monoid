@@ -17,12 +17,7 @@ pub fn appearance_node(
   said? : (@sf.PageSaid) -> Unit,
   width? : () -> Double,
 ) -> Unit {
-  let wide = fn() {
-    match width {
-      Some(w) => @sf.look_for(w()) is Wide
-      None => false
-    }
-  }
+  let wide = fn() { @sf.width_is_wide(width) }
   // (what this device offers: its window zoomed, files dropped in; the rail changed where it is beside the page)
   let keys = fn() {
     let k = ["theme", "accent", "fonts", "motion", "haptics", "language"]

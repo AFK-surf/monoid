@@ -215,7 +215,7 @@ fn notify_block_node(
       @sf.section_node(
         b,
         fn() { @sf.t("web-pages.notifications.ways.title") },
-        note=fn() { if @sf.look_node(b) is Wide { @sf.t("web-pages.notifications.noteDevice") } else { "" } },
+        about=fn() { @sf.t("web-pages.notifications.noteDevice") },
         fn(sec) {
           @sf.way_tiles_node(sec, fn(r) {
             let permission = fn() { text(notify(), "permission") }
@@ -269,9 +269,6 @@ fn notify_block_node(
               )
             }
           })
-          if @sf.look_node(sec) is Narrow {
-            @sf.page_note_node(sec, fn() { @sf.t("web-pages.notifications.noteDevice") })
-          }
         },
       )
     "kinds" =>

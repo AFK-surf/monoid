@@ -131,16 +131,7 @@ pub fn security_node(
             k.unsafe_substring(start=mine_key.length(), end=k.length()),
             foot=false,
             under=fn(room, piece) {
-              if @sf.look_node(room) is Wide {
-                let tall = fn() {
-                  if piece() is (CardFoot | CardWhole) && !sec_web_noted(lock(), mine().0) { sec_section_foot } else { 0.0 }
-                }
-                room.box(fn(e) {
-                  e.height(By(fn() { Some(tall()) })) |> ignore
-                  e.reacts(tall, fn(_) { e.resizes() |> ignore }, at_start=false)
-                })
-                |> ignore
-              }
+              @sf.section_foot_when_node(room, fn() { piece() is (CardFoot | CardWhole) && !sec_web_noted(lock(), mine().0) })
             },
             fn(card, d, _) { sec_device_row_node(card, core, ws, d, fn() { flag(lock(), "signs") }, menu=true) },
           )
@@ -599,32 +590,7 @@ fn sec_said_line_node(
   acts~ : (@view.View) -> Unit,
   acts_shown~ : () -> Bool,
 ) -> Unit {
-  let wide = @sf.look_node(parent) is Wide
-  parent.box(fn(r) {
-    @sf.style_node(r, fn() { if wide { sec_said_row } else { sec_said_row_narrow } })
-    // (on its first line, across its middle: the body's narrow, the UI's wide)
-    let mark = fn(m : @view.View) {
-      @sf.icon_node(m, @signals.untracked(icon), sec_device_glyph, By(ink), name_now=icon) |> ignore
-    }
-    if wide {
-      @sf.first_line_node(r, Ui, leading=L6, mark) |> ignore
-    } else {
-      @sf.first_line_node(r, Body, mark) |> ignore
-    }
-    r.box(fn(t) {
-      @sf.style_node(t, fn() { sec_said_words }, in_row=true)
-      @sf.words_node(t, title, fn() { if wide { sec_said_ui } else { sec_said_body } }) |> ignore
-      t.show(fn() { note() != "" }, fn(w) {
-        @sf.words_node(w, note, fn() { if wide { sec_said_why } else { @sf.pg_link_note } }) |> ignore
-      })
-      t.show(acts_shown, fn(ab) {
-        @sf.style_node(ab, fn() { sec_acts_under })
-        acts(ab)
-      })
-    })
-    |> ignore
-  })
-  |> ignore
+  @sf.said_line_node(parent, title, icon, ink, note~, acts~, acts_shown~)
 }
 
 ///|
@@ -801,13 +767,7 @@ let station_key : String = "station/"
 /// What a web page may do (the core's words), under the viewer's devices: a page's note, as far under their card as a
 /// note is under what it says of; wide, the section's room under it (section_foot's, which the card leaves it).
 fn sec_web_note_node(b : @view.View) -> Unit {
-  b.box(fn(n) {
-    if @sf.look_node(n) is Wide {
-      n.padding(Is((0.0, 0.0, 0.0, sec_section_foot))) |> ignore
-    }
-    @sf.page_note_node(n, fn() { @sf.t("web-pages.security.webRisk") })
-  })
-  |> ignore
+  @sf.page_section_note_node(b, fn() { @sf.t("web-pages.security.webRisk") })
 }
 
 ///|
@@ -965,9 +925,7 @@ fn sec_member_panel(
     v.reacts(fn() { lock() is Some(_) && now() is None }, fn(gone) { if gone { close() } })
     // (who they are, over their devices: a sheet says it under its title (its description); a popover beside the row,
     // which says none, in its body)
-    if @sf.look_node(v) is Wide {
-      @sf.panel_note_node(v, fn() { about })
-    }
+    @sf.panel_popover_note_node(v, fn() { about })
     @sf.group_node(v, fn(g) {
       // (each by its id: what a row reads once as it is made, which machine it is, stays its own)
       g.each(fn() { sec_devices_of(Some(shown())) }, fn(d) { text(Some(d), "id") }, fn(row, d) {
@@ -1206,11 +1164,8 @@ fn open_block_node(parent : @view.View, core : Core, ws : () -> String, draft : 
       })
     // what signing it means for a web page, cancel, 签名并开启 (foot)
     _ => {
-      let wide = @sf.look_node(parent) is Wide
       let opening = fn() { is_doing(core, ["lock.open"], [("workspace", ws())]) }
-      parent.box(fn(f) {
-        @sf.style_node(f, fn() { if wide { sec_open_foot } else { sec_open_foot_narrow } })
-        f.wraps(Is(Some(sec_open_foot_gap))) |> ignore
+      @sf.page_foot_bar_node(parent, wrap_gap=sec_open_foot_gap, fn(f) {
         @sf.words_node(
           f,
           fn() { @sf.t(if flag(draft(), "canSign") { "web-pages.security.webExpiry" } else { "web-pages.security.webCannotSign" }) },
@@ -1241,7 +1196,6 @@ fn open_block_node(parent : @view.View, core : Core, ws : () -> String, draft : 
         })
         |> ignore
       })
-      |> ignore
     }
   }
 }
@@ -1325,12 +1279,6 @@ pub fn turn_off_dialog(core : Core, ws : String, name : String) -> Unit {
 }
 
 ///|
-let sec_device_glyph : Double = 16.0
-
-///|
-let sec_row_least : Double = 30.0
-
-///|
 /// A spinner in place of what a sentence does, and at a device's row's end while it is at work (@settings.spinner's 14).
 let sec_spin : Double = 14.0
 
@@ -1340,44 +1288,6 @@ let sec_actions_gap : Double = 10.0
 
 ///|
 let sec_open_foot_gap : Double = 12.0
-
-///|
-/// A wide page's room under a section (the library's section_foot), under the web's note that the viewer's devices'
-/// card leaves it.
-let sec_section_foot : Double = 28.0
-
-///|
-/// A sentence of the page's (sec_said_line_node's rows): wide, a card's row with its words from its top; narrow, a
-/// group's row so, rounded at the card's ends. Its mark beside its first line, its words the body's (narrow) or the
-/// UI's (wide) on as many lines as they take, why under them the meta's.
-// kept across runs: a value (no field of it changes)
-let sec_said_row : @ui.Style = @ui.style(row=true, w=Full, min_h=Fixed(sec_row_least), gap=S3, align=AStart)
-
-///|
-// kept across runs: a value (no field of it changes)
-let sec_said_row_narrow : @ui.Style = @sf.pg_said_row.then(@ui.style(radius=@sf.group_row_end_radius)).then(@ui.css("align=AStart"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let sec_said_words : @ui.Style = @ui.style(w=@sf.grow, gap=S1)
-
-///|
-// kept across runs: a value (no field of it changes)
-let sec_said_ui : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Fg, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let sec_said_body : @ui.TextStyle = @sf.body.then(@sf.full_words)
-
-///|
-// kept across runs: a value (no field of it changes)
-let sec_said_why : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=Full)
-
-///|
-/// What a sentence does (更新, 知道了), a line of its own under its words (Security.tsx's mDeviceActs: 6 under them, 20
-/// apart).
-// kept across runs: a value (no field of it changes)
-let sec_acts_under : @ui.Style = @ui.css("row gap=S5 pt=S1_5")
 
 ///|
 /// The state (state: the body's 14 in 500; its meta the ui's 13 muted).
@@ -1420,16 +1330,6 @@ let sec_said : @ui.TextStyle = @sf.card_muted
 /// A note beside a button, as wide as it is (the row goes on under where it has not the room).
 // kept across runs: a value (no field of it changes)
 let sec_note_line : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted)
-
-///|
-/// 开启安全模式's foot (foot: what signing means for a web page, then cancel and 签名并开启; narrow, 16 from the page's
-/// sides, 4 in its room).
-// kept across runs: a value (no field of it changes)
-let sec_open_foot : @ui.Style = @ui.css("row w=Full pt=S5 gap=S3 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sec_open_foot_narrow : @ui.Style = @ui.css("row w=Full px=S1 pt=S4 gap=S3 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)

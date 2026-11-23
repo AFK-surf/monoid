@@ -1,6 +1,5 @@
 // The prototype's demo: a chat screen with 10,000 messages in a virtual
-// list, a composer that takes the system input method, and tabs whose
-// indicator moves on a spring.
+// list (`View::scrolls_window`) and a header bar.
 
 ///|
 struct Msg {
@@ -54,163 +53,91 @@ fn make_messages(n : Int) -> Array[Msg] {
 }
 
 ///|
-struct App {
-  msgs : Array[Msg]
-  initial : Int
-  mut tab : Int
-  mut sent : Int
-  /// what is being written (the composer's field shows it; sending takes it)
-  draft : @ui.Field
+fn demo_look(size : Double, weight? : Int = 400, wrap? : Bool = true) -> @view.WordsLook {
+  { size, weight, line: 0.0, wrap, tracking: Points(0.0), balance: false, max_lines: 0 }
 }
 
 ///|
-let app : App = { msgs: make_messages(10000), initial: 10000, tab: 0, sent: 0, draft: @ui.Field::new() }
-
-///|
-fn message_row(c : @ui.Ctx, i : Int) -> Unit {
-  let m = app.msgs[i]
+fn message_row(parent : @view.View, m : Msg) -> Unit {
   let mine = m.author == 0
-  // messages sent in this session slide in on a spring
-  let appear = if i >= app.initial {
-    c.spring("appear", 1.0, from=0.0, stiffness=260.0, damping=24.0)
-  } else {
-    1.0
-  }
-  c.box(
-    dir=Row,
-    padx=16.0,
-    pady=6.0,
-    gap=10.0,
-    align=AStart,
-    opacity=if appear * 1.4 > 1.0 { 1.0 } else { appear * 1.4 },
-    ty=(1.0 - appear) * 24.0,
-    fn() {
-      c.box(
-        w=Px(36.0),
-        h=Px(36.0),
-        radius=18.0,
-        bg=colors[m.author],
-        align=ACenter,
-        justify=JCenter,
-        fn() {
-          c.text(
-            names[m.author][0:1].to_owned(),
-            size=15.0,
-            weight=600,
-            color=0xFFFFFFFFL,
-            wrap=false,
-          )
-          |> ignore
-        },
-      )
+  parent.box(fn(row) {
+    row
+    .row(Is(true))
+    .padding(Is((16.0, 6.0, 16.0, 6.0)))
+    .gap(Is(10.0))
+    .lines_up(Is(Some(Start)))
+    |> ignore
+    row.box(fn(av) {
+      av
+      .width(Is(Some(36.0)))
+      .height(Is(Some(36.0)))
+      .radius(Is(18.0))
+      .ground(Is(colors[m.author]))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Middle))
       |> ignore
-      c.box(
-        w=Fill(1.0),
-        gap=4.0,
-        align=AStart,
-        fn() {
-          c.row(gap=8.0, fn() {
-            c.text(names[m.author], size=13.0, weight=600, wrap=false) |> ignore
-            c.text(m.time, size=12.0, color=0x8E8E93FFL, wrap=false) |> ignore
-          })
-          |> ignore
-          c.box(
-            padx=12.0,
-            pady=8.0,
-            radius=14.0,
-            bg=if mine { 0x0A84FFFFL } else { 0xFFFFFFFFL },
-            shadow=if mine { 0.0 } else { 3.0 },
-            fn() {
-              c.text(
-                m.text,
-                size=15.0,
-                color=if mine { 0xFFFFFFFFL } else { 0x1D1D1FFFL },
-              )
-              |> ignore
-            },
-          )
-          |> ignore
-        },
-      )
+      av.words(Is(names[m.author][0:1].to_owned()), ink=0xFFFFFFFFL, look=demo_look(15.0, weight=600, wrap=false))
       |> ignore
-    },
-  )
+    })
+    |> ignore
+    row.box(fn(col) {
+      col.grow(Is(1.0)).gap(Is(4.0)).lines_up(Is(Some(Start))) |> ignore
+      col.box(fn(meta) {
+        meta.row(Is(true)).gap(Is(8.0)) |> ignore
+        meta.words(Is(names[m.author]), look=demo_look(13.0, weight=600, wrap=false)) |> ignore
+        meta.words(Is(m.time), ink=0x8E8E93FFL, look=demo_look(12.0, wrap=false)) |> ignore
+      })
+      |> ignore
+      col.box(fn(bubble) {
+        bubble
+        .padding(Is((12.0, 8.0, 12.0, 8.0)))
+        .radius(Is(14.0))
+        .ground(Is(if mine { 0x0A84FFFFL } else { 0xFFFFFFFFL }))
+        |> ignore
+        bubble.words(
+          Is(m.text),
+          ink=if mine { 0xFFFFFFFFL } else { 0x1D1D1FFFL },
+          look=demo_look(15.0),
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
   |> ignore
 }
 
 ///|
-fn send(text : String) -> Unit {
-  app.msgs.push({ author: 0, text, time: "现在" })
-  app.sent = app.sent + 1
-}
-
-///|
-fn view(c : @ui.Ctx) -> Unit {
-  // the demo keeps iOS's colours (its goldens on every platform are drawn in them)
-  c.set_theme(@ui.Theme::ios_light())
-  c.box(w=Fill(1.0), h=Fill(1.0), bg=0xF5F5F7FFL, fn() {
-    // header
-    c.box(
-      dir=Row,
-      padx=16.0,
-      pady=10.0,
-      gap=12.0,
-      align=ACenter,
-      bg=0xFFFFFFFFL,
-      fn() {
-        c.text("MoonBit UI", size=17.0, weight=700, wrap=false) |> ignore
-        let narrow = c.width < 600.0
-        c.segmented(
-          "tabs",
-          ["全部", "未读", "@我"],
-          app.tab,
-          item_w=if narrow { 58.0 } else { 76.0 },
-          on_pick=fn(i) { app.tab = i },
-        )
-        c.spacer()
-        if !narrow {
-          c.text(
-          "\{app.msgs.length()} 条",
-          size=12.0,
-          color=0x8E8E93FFL,
-          wrap=false,
-          )
-          |> ignore
-        }
-      },
-    )
+fn demo_tree(root : @view.View) -> Unit {
+  let msgs = make_messages(10000)
+  let keys : @signals.Signal[Array[Int]] = @signals.signal(Array::makei(msgs.length(), fn(i) { i }))
+  let scroll = @view.Scroll::list()
+  root.grow(Is(1.0)).ground(Is(0xF5F5F7FFL)) |> ignore
+  // header
+  root.box(fn(head) {
+    head
+    .row(Is(true))
+    .padding(Is((16.0, 10.0, 16.0, 10.0)))
+    .gap(Is(12.0))
+    .lines_up(Is(Some(Middle)))
+    .ground(Is(0xFFFFFFFFL))
     |> ignore
-    c.box(h=Px(1.0), bg=0xE5E5EAFFL, fn() {  }) |> ignore
-    c.list(
-      "messages",
-      app.msgs.length(),
-      64.0,
-      fn(i) { message_row(c, i) },
-      stick_end=true,
-    )
-    |> ignore
-    // composer
-    c.box(
-      dir=Row,
-      padx=12.0,
-      pady=10.0,
-      gap=10.0,
-      align=AEnd,
-      bg=0xFFFFFFFFL,
-      fn() {
-        // (Enter sends here with a finger too: the demo says so in its placeholder)
-        let r = c.editor("composer", placeholder="输入消息，回车发送", enter_sends=true, field=app.draft)
-        let sends = fn() {
-          let st = app.draft.take()
-          if st.length() > 0 {
-            send(st)
-          }
-        }
-        c.button("发送", on_press=sends)
-        if r.submitted is Some(_) {
-          sends()
-        }
-      },
+    head.words(Is("MoonBit UI"), look=demo_look(17.0, weight=700, wrap=false)) |> ignore
+    head.box(fn(sp) { sp.grow(Is(1.0)) |> ignore }) |> ignore
+    head.words(Is("\{msgs.length()} 条"), ink=0x8E8E93FFL, look=demo_look(12.0, wrap=false)) |> ignore
+  })
+  |> ignore
+  root.box(fn(line) { line.height(Is(Some(1.0))).ground(Is(0xE5E5EAFFL)) |> ignore }) |> ignore
+  root.box(fn(list) {
+    list
+    .grow(Is(1.0))
+    .scrolls_window(
+      scroll,
+      fn() { keys.get() },
+      fn(row, i) { message_row(row, msgs[i]) },
+      est=64.0,
+      from_end=true,
     )
     |> ignore
   })
@@ -219,5 +146,5 @@ fn view(c : @ui.Ctx) -> Unit {
 
 ///|
 fn main {
-  @ui.run_legacy_ctx("MoonBit UI 原型", view)
+  @ui.run("MoonBit UI 原型", demo_tree, theme=fn() { @ui.Theme::ios_light() })
 }

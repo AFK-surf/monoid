@@ -1,12 +1,5 @@
 {
   "counts": {
-    "page-look": {
-      "src/sfpages/appearance.mbt": 1,
-      "src/sfpages/connects.mbt": 8,
-      "src/sfpages/memory_doc.mbt": 1,
-      "src/sfpages/notifications.mbt": 2,
-      "src/sfpages/security.mbt": 5
-    },
     "page-at-moment": {
       "src/sfpages/about.mbt": 1,
       "src/sfpages/activity_steady_node.mbt": 1,

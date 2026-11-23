@@ -2283,6 +2283,7 @@ pub fn page_card_node(
   body : (@view.View) -> Unit,
   footed? : Bool = false,
   layered? : Bool = false,
+  layered_narrow? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   let at = part_of(parent)
@@ -2300,7 +2301,7 @@ pub fn page_card_node(
     })
     |> ignore
   }
-  if layered || (at.look is Wide && at.section) {
+  if layered || (layered_narrow && at.look is Narrow) || (at.look is Wide && at.section) {
     card(parent)
   } else {
     // (narrow, 10 under it; wide, alone on the page, a section's 28 (wide_alone's))
@@ -2708,6 +2709,260 @@ pub fn list_row_face_node(
     face.box(fn(w) {
       w.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       words_node(w, title, fn() { if wide { desk_list_title } else { pg_row_title } }) |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// A document body in `parent`: wrapped in a layered card when narrow, placed directly on the page when wide.
+#callsite(autofill(loc))
+pub fn page_narrow_card_node(
+  parent : @view.View,
+  body : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  if look_node(parent) is Narrow {
+    page_card_node(loc~, parent, layered=true, body)
+  } else {
+    body(parent)
+  }
+}
+
+///|
+/// Content sitting on a page's ground: directly in `parent` when wide, inset by `pg_card_room` when narrow.
+#callsite(autofill(loc))
+pub fn page_gutter_node(
+  parent : @view.View,
+  body : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  match look_node(parent) {
+    Wide => body(parent)
+    Narrow =>
+      parent.box(made_for=loc, fn(g) {
+        style_node(g, fn() { pg_card_room })
+        body(g)
+      })
+      |> ignore
+  }
+}
+
+///|
+/// A page header action button that opens a menu or dialog: a round icon button when narrow, a plain icon+label button
+/// when wide.
+#callsite(autofill(loc))
+pub fn page_action_opens_node(
+  parent : @view.View,
+  icon : String,
+  label : () -> String,
+  press : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  if look_node(parent) is Narrow {
+    icon_button_opens_node(loc~, parent, icon, label, press) |> ignore
+  } else {
+    button_opens_node(loc~, parent, label, press, tone=Plain, icon~) |> ignore
+  }
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let pg_filter_room_wide : @ui.Style = @ui.css("w=Full pt=S2 pb=S3 align=AStart")
+
+///|
+// kept across runs: a value (no field of it changes)
+let pg_filter_room_narrow : @ui.Style = @ui.css("w=Full pb=S2_5 align=AStart")
+
+///|
+// kept across runs: a value (no field of it changes)
+let pg_empty_room_wide : @ui.Style = @ui.css("w=Full")
+
+///|
+// kept across runs: a value (no field of it changes)
+let pg_quiet_room_wide : @ui.Style = @ui.css("w=Full pb=S1_5")
+
+///|
+// kept across runs: a value (no field of it changes)
+let pg_quiet_heading_text : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=Muted, wrap=false)
+
+///|
+/// A page's filter bar container: responsive spacing above and below the filter control.
+#callsite(autofill(loc))
+pub fn page_filter_room_node(
+  parent : @view.View,
+  body : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  let wide = look_node(parent) is Wide
+  parent.box(made_for=loc, fn(f) {
+    style_node(f, fn() { if wide { pg_filter_room_wide } else { pg_filter_room_narrow } })
+    body(f)
+  })
+  |> ignore
+}
+
+///|
+/// A page's empty/error message container under the filter bar: responsive spacing for wide and narrow layouts.
+#callsite(autofill(loc))
+pub fn page_empty_room_node(
+  parent : @view.View,
+  body : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  let wide = look_node(parent) is Wide
+  parent.box(made_for=loc, fn(n) {
+    style_node(n, fn() { if wide { pg_empty_room_wide } else { pg_filter_room_narrow } })
+    body(n)
+  })
+  |> ignore
+}
+
+///|
+/// A quiet section heading over a group: a compact muted label when wide, a standard `heading_node` when narrow.
+#callsite(autofill(loc))
+pub fn quiet_heading_node(
+  parent : @view.View,
+  title : () -> String,
+  loc~ : SourceLoc,
+) -> Unit {
+  if look_node(parent) is Wide {
+    parent.box(made_for=loc, fn(t) {
+      style_node(t, fn() { pg_quiet_room_wide })
+      words_node(t, title, fn() { pg_quiet_heading_text }) |> ignore
+    })
+    |> ignore
+  } else {
+    heading_node(loc~, parent, title)
+  }
+}
+
+///|
+/// Trailing container setup for a row's end slot: sets a 12pt gap, enables `fits` when wide, and renders `facts` only
+/// in the wide arrangement.
+pub fn row_end_facts_node(
+  parent : @view.View,
+  facts : (@view.View) -> Unit,
+) -> Unit {
+  let wide = look_node(parent) is Wide
+  parent.gap(Is(12.0)).fits(Is(wide)) |> ignore
+  if wide {
+    facts(parent)
+  }
+}
+
+///|
+/// A row-level inline action: a standard button when wide, a link-ink `tap_text_node` when narrow.
+#callsite(autofill(loc))
+pub fn row_action_node(
+  parent : @view.View,
+  label : () -> String,
+  press : () -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  if look_node(parent) is Wide {
+    button_node(loc~, parent, label, press) |> ignore
+  } else {
+    tap_text_node(loc~, parent, label, press)
+  }
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let pg_foot_bar_wide : @ui.Style = @ui.css("row w=Full pt=S5 gap=S3 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let pg_foot_bar_narrow : @ui.Style = @ui.css("row w=Full px=S1 pt=S4 gap=S3 align=ACenter")
+
+///|
+/// A wrapping footer action bar at the bottom of a page: responsive top/side padding for wide and narrow layouts.
+#callsite(autofill(loc))
+pub fn page_foot_bar_node(
+  parent : @view.View,
+  body : (@view.View) -> Unit,
+  wrap_gap? : Double = 12.0,
+  loc~ : SourceLoc,
+) -> Unit {
+  let wide = look_node(parent) is Wide
+  parent.box(made_for=loc, fn(f) {
+    style_node(f, fn() { if wide { pg_foot_bar_wide } else { pg_foot_bar_narrow } })
+    f.wraps(Is(Some(wrap_gap))) |> ignore
+    body(f)
+  })
+  |> ignore
+}
+
+///|
+let said_line_glyph : Double = 16.0
+
+///|
+let said_line_least : Double = 30.0
+
+///|
+// kept across runs: a value (no field of it changes)
+let said_line_row_wide : @ui.Style = @ui.style(row=true, w=Full, min_h=Fixed(said_line_least), gap=S3, align=AStart)
+
+///|
+// kept across runs: a value (no field of it changes)
+let said_line_row_narrow : @ui.Style = pg_said_row.then(@ui.style(radius=group_row_end_radius)).then(@ui.css("align=AStart"))
+
+///|
+// kept across runs: a value (no field of it changes)
+let said_line_words : @ui.Style = @ui.style(w=grow, gap=S1)
+
+///|
+// kept across runs: a value (no field of it changes)
+let said_line_ui : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Fg, w=Full)
+
+///|
+// kept across runs: a value (no field of it changes)
+let said_line_body : @ui.TextStyle = body.then(full_words)
+
+///|
+// kept across runs: a value (no field of it changes)
+let said_line_why : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=Full)
+
+///|
+// kept across runs: a value (no field of it changes)
+let said_line_acts : @ui.Style = @ui.css("row gap=S5 pt=S1_5")
+
+///|
+/// A sentence row inside a card: a leading icon aligned to the first line, multi-line `title`, optional `note` below,
+/// and an optional action row `acts` shown while `acts_shown` holds, styled for wide and narrow arrangements.
+#callsite(autofill(loc))
+pub fn said_line_node(
+  parent : @view.View,
+  title : () -> String,
+  icon : () -> String,
+  ink : () -> Int64,
+  note? : () -> String = fn() { "" },
+  acts~ : (@view.View) -> Unit,
+  acts_shown~ : () -> Bool,
+  loc~ : SourceLoc,
+) -> Unit {
+  let wide = look_node(parent) is Wide
+  parent.box(made_for=loc, fn(r) {
+    style_node(r, fn() { if wide { said_line_row_wide } else { said_line_row_narrow } })
+    let mark = fn(m : @view.View) {
+      icon_node(m, @signals.untracked(icon), said_line_glyph, By(ink), name_now=icon) |> ignore
+    }
+    if wide {
+      first_line_node(r, Ui, leading=L6, mark) |> ignore
+    } else {
+      first_line_node(r, Body, mark) |> ignore
+    }
+    r.box(fn(t) {
+      style_node(t, fn() { said_line_words }, in_row=true)
+      words_node(t, title, fn() { if wide { said_line_ui } else { said_line_body } }) |> ignore
+      t.show(fn() { note() != "" }, fn(w) {
+        words_node(w, note, fn() { if wide { said_line_why } else { pg_link_note } }) |> ignore
+      })
+      t.show(acts_shown, fn(ab) {
+        style_node(ab, fn() { said_line_acts })
+        acts(ab)
+      })
     })
     |> ignore
   })

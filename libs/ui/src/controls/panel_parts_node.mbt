@@ -280,6 +280,16 @@ pub fn panel_note_node(parent : @view.View, words : () -> String, loc~ : SourceL
 }
 
 ///|
+/// A note shown in the body only when the panel is laid out wide (popover, which has no title description line; a narrow
+/// sheet shows its description under the title).
+#callsite(autofill(loc))
+pub fn panel_popover_note_node(parent : @view.View, words : () -> String, loc~ : SourceLoc) -> Unit {
+  if look_node(parent) is Wide {
+    panel_note_node(loc~, parent, words)
+  }
+}
+
+///|
 /// A panel's row to press in `parent` (menu_item's `panel` row): its icon 18 in a column 20 wide, 10 from its words, in
 /// the red where `danger`, what it is at now (`note`) at its end, quiet, and `end` an icon after that; reaching past the
 /// panel's padding as a menu's row does (menu_row_reach), its words a row's padding in, its ground under the hand.

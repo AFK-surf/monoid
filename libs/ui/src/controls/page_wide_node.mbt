@@ -1009,3 +1009,30 @@ pub fn narrow_about_node(parent : @view.View, about : () -> String, tips : TipLa
     about_mark_node(parent, about, fn() { t("web-main.about") }, tips, loc~) |> ignore
   }
 }
+
+///|
+/// A wide page's trailing section gap (`section_foot`) placed dynamically when `shown` holds; nothing when narrow.
+#callsite(autofill(loc))
+pub fn section_foot_when_node(parent : @view.View, shown : () -> Bool, loc~ : SourceLoc) -> Unit {
+  if look_node(parent) is Wide {
+    let tall = fn() { if shown() { section_foot } else { 0.0 } }
+    parent.box(made_for=loc, fn(e) {
+      e.height(By(fn() { Some(tall()) })) |> ignore
+      e.reacts(tall, fn(_) { e.resizes() |> ignore }, at_start=false)
+    })
+    |> ignore
+  }
+}
+
+///|
+/// A page note that carries the section's trailing gap (`section_foot`) underneath it when laid out wide.
+#callsite(autofill(loc))
+pub fn page_section_note_node(parent : @view.View, words : () -> String, loc~ : SourceLoc) -> Unit {
+  parent.box(made_for=loc, fn(n) {
+    if look_node(n) is Wide {
+      n.padding(Is((0.0, 0.0, 0.0, section_foot))) |> ignore
+    }
+    page_note_node(n, words)
+  })
+  |> ignore
+}

@@ -120,7 +120,6 @@
     "globals": {},
     "style-literal": {
       "src/controls/parts.mbt": 3,
-      "src/demo/main.mbt": 47,
       "src/effectdemo/demo.mbt": 3,
       "src/kit/button.mbt": 9,
       "src/kit/checkbox.mbt": 8,
@@ -142,7 +141,7 @@
       "src/kit/toast.mbt": 32,
       "src/kit/toggle.mbt": 39,
       "src/kitdemo/gallery/controls.mbt": 12,
-      "src/kitdemo/gallery/disclosure.mbt": 8,
+      "src/kitdemo/gallery/disclosure.mbt": 5,
       "src/kitdemo/gallery/foundation.mbt": 22,
       "src/kitdemo/gallery/gallery.mbt": 11,
       "src/kitdemo/gallery/menus.mbt": 12,
@@ -158,12 +157,11 @@
       "src/webdemo/main.mbt": 35
     },
     "box-loose": {
-      "src/demo/main.mbt": 15,
       "src/effectdemo/demo.mbt": 1,
       "src/kit/button.mbt": 3,
       "src/kit/checkbox.mbt": 3,
       "src/kit/dialog.mbt": 10,
-      "src/kit/disclosure.mbt": 10,
+      "src/kit/disclosure.mbt": 9,
       "src/kit/field.mbt": 1,
       "src/kit/form.mbt": 4,
       "src/kit/look.mbt": 2,
@@ -180,7 +178,7 @@
       "src/kit/toast.mbt": 9,
       "src/kit/toggle.mbt": 8,
       "src/kitdemo/gallery/controls.mbt": 11,
-      "src/kitdemo/gallery/disclosure.mbt": 11,
+      "src/kitdemo/gallery/disclosure.mbt": 8,
       "src/kitdemo/gallery/foundation.mbt": 13,
       "src/kitdemo/gallery/gallery.mbt": 6,
       "src/kitdemo/gallery/menus.mbt": 11,
@@ -235,9 +233,7 @@
     "cursor-hand": {},
     "tier-outside-shell": {},
     "fixture-import": {},
-    "motion-spring": {
-      "src/demo/main.mbt": 1
-    },
+    "motion-spring": {},
     "built-by-hand": {
       "src/kit/pick.mbt": 3
     },
@@ -279,23 +275,15 @@
       "src/motion/layer.mbt": 21,
       "src/studio_pages/studio.mbt": 2
     },
-    "old-list": {
-      "src/demo/main.mbt": 1,
-      "src/kit/disclosure.mbt": 1
-    },
+    "old-list": {},
     "list-comes-off": {},
     "old-island": {},
     "old-panel": {},
-    "old-set-theme": {
-      "src/demo/main.mbt": 1,
-      "src/textdiff/main.mbt": 1
-    },
+    "old-set-theme": {},
     "old-empty-around": {},
     "click-read": {},
     "key-read": {},
-    "submitted-read": {
-      "src/demo/main.mbt": 1
-    },
+    "submitted-read": {},
     "part-place": {},
     "button-by-hand": {},
     "layout-told": {},

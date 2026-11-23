@@ -1,8 +1,5 @@
 {
   "counts": {
-    "page-hand": {
-      "src/sfapp/app.mbt": 1
-    },
     "tier-outside-shell": {
       "src/sfapp/settings/core.mbt": 3,
       "src/sfapp/viewer_host.mbt": 1

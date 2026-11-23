@@ -1,11 +1,5 @@
 {
   "counts": {
-    "page-hand": {
-      "src/sfdesk/frame.mbt": 2
-    },
-    "page-look": {
-      "src/sfdesk/frame.mbt": 2
-    },
     "tier-outside-shell": {
       "src/sfdesk/chat_page.mbt": 1,
       "src/sfdesk/lists.mbt": 6,
@@ -20,6 +14,5 @@
       "src/sfdesk/rail_node.mbt": 2,
       "src/sfdesk/tape_view.mbt": 1
     }
-  },
-  "excused": {}
+  }
 }

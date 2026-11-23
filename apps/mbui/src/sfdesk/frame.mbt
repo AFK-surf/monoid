@@ -32,7 +32,7 @@
 ///|
 /// What the frame keeps of its own (the rest is the stack's and the core's): the sidebar's width and how it was left,
 /// how the block is moving, what is open from the rail and the lists.
-pub(all) struct Wide {
+pub(all) struct WideFrame {
   /// the sidebar's width, whether it is folded to the rail (⌘\), its edge in hand (pressed or dragged: its width kept,
   /// and the block moved, once it is let go)
   side_w : @signals.Signal[Double]
@@ -114,7 +114,7 @@ pub(all) enum TapePane {
 }
 
 ///|
-pub let wide : Wide = {
+pub let wide : WideFrame = {
   side_w: @signals.signal(side_own, same=fn(a, b) { a == b }),
   folded: @signals.signal(false, same=fn(a, b) { a == b }),
   edge_held: @signals.signal(false, same=fn(a, b) { a == b }),
@@ -625,7 +625,7 @@ fn dock_ground(bar : Bool) -> Int64 {
 /// Whether a finger has the pointer now (the frame's panes: a finger drags their lists and holds to pick words, a mouse
 /// scrolls them by the wheel and drags to pick).
 fn pane_finger() -> Bool {
-  @ui.pointing() is Finger
+  !@sf.pointer_rests()
 }
 
 ///|
@@ -1231,7 +1231,7 @@ fn side_peek(c : @ui.Ctx, bar_x : Double, bar_y : Double, bar_r : Double, bar_b 
   let held = @sf.presenting() || @sfpages.renaming() || @sfpages.workspace_menu_open()
   // a finger, which rests on nothing: shown as it presses the bar (folded for the room: as its place is pressed,
   // rail.mbt), until a tap off the bar and the sidebar shown with nothing from it open
-  if @ui.pointing() is Finger {
+  if !@sf.pointer_rests() {
     let on_bar = fn(x : Double, y : Double) { x >= bar_x && x < bar_r && y >= bar_y && y < bar_b }
     if !wide.crowded && on_bar(px, py) && px < bar_x + rail_closed_w {
       wide.peeking.set(true)

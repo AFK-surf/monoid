@@ -117,29 +117,6 @@ test "tabs, manual: the arrows move the focus only; Enter chooses" {
 }
 
 ///|
-test "scroll area: what is taller than its room scrolls in it" {
-  let t = @ui.Tester::new(fn(c) {
-    c.column(fn() {
-      @kit.scroll_area(c, "s", 200.0, label="Log", fn() {
-        c.column(fn() {
-          for i in 0..<40 {
-            c.text("line \{i}") |> ignore
-          }
-        })
-        |> ignore
-      })
-    })
-    |> ignore
-  })
-  let (_, _, _, h) = t.get(@ui.Role::ScrollArea, label="Log").rect
-  assert_eq(h, 200.0)
-  let (_, y0, _, _) = t.rect_of("line 0").unwrap()
-  t.wheel(100.0, 100.0, 120.0)
-  let (_, y1, _, _) = t.rect_of("line 0").unwrap_or((0.0, -1000.0, 0.0, 0.0))
-  assert_true(y1 < y0)
-}
-
-///|
 test "form: nothing wrong shows before it is left or handed on; handed on wrong, why shows and the focus goes there" {
   let got : Ref[Map[String, String]?] = Ref(None)
   let t = @ui.Tester::new(fn(c) {

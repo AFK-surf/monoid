@@ -562,7 +562,7 @@ priv enum AppIs {
 /// Whether the stack of pages laid out Small (narrow_shell.mbt) is in a finger's hand now: its lists dragged and words
 /// held to pick (pick.mbt); else a mouse's, the wheel scrolling them and a drag picking words, as the wide frame's.
 fn stack_by_finger() -> Bool {
-  @ui.pointing() is Finger
+  !@sf.pointer_rests()
 }
 
 ///|
