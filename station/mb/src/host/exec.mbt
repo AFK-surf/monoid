@@ -16,6 +16,9 @@ extern "C" fn env_set_ffi(name : Bytes, val : Bytes) -> Int = "sfh_env_set"
 extern "C" fn env_unset_ffi(name : Bytes) -> Int = "sfh_env_unset"
 
 ///|
+extern "C" fn getcwd_ffi() -> Bytes = "sfh_getcwd"
+
+///|
 extern "C" fn exe_path_ffi() -> Bytes = "sfh_exe_path"
 
 ///|
@@ -65,6 +68,17 @@ pub fn env_set(name : String, val : String) -> Bool {
 /// Unsets environment variable `name`.
 pub fn env_unset(name : String) -> Bool {
   env_unset_ffi(cstr(name)) != 0
+}
+
+///|
+/// Returns the current working directory, if available.
+pub fn getcwd() -> String? {
+  let b = getcwd_ffi()
+  if b.length() == 0 {
+    None
+  } else {
+    Some(@utf8.decode_lossy(b))
+  }
 }
 
 ///|

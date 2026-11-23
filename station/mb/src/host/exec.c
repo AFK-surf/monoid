@@ -143,6 +143,24 @@ int32_t sfh_env_unset(moonbit_bytes_t name) {
 #endif
 }
 
+/// Returns the current working directory (UTF-8), or empty bytes on failure.
+moonbit_bytes_t sfh_getcwd(void) {
+#ifdef _WIN32
+  DWORD need = GetCurrentDirectoryW(0, NULL);
+  if (need == 0) return moonbit_make_bytes(0, 0);
+  wchar_t *buf = (wchar_t *)malloc((size_t)need * sizeof(wchar_t));
+  if (buf == NULL) return moonbit_make_bytes(0, 0);
+  DWORD got = GetCurrentDirectoryW(need, buf);
+  moonbit_bytes_t out = (got > 0 && got < need) ? wide_to_bytes(buf) : moonbit_make_bytes(0, 0);
+  free(buf);
+  return out;
+#else
+  char buf[PATH_MAX];
+  if (getcwd(buf, sizeof(buf)) == NULL) return moonbit_make_bytes(0, 0);
+  return bytes_from_cstr(buf);
+#endif
+}
+
 /// Returns the canonical path of the current executable, or empty bytes on failure.
 moonbit_bytes_t sfh_exe_path(void) {
 #ifdef _WIN32
@@ -255,7 +273,8 @@ int32_t sfh_same_file(moonbit_bytes_t a, moonbit_bytes_t b) {
 #endif
 }
 
-/// Searches explicit PATH directories for an executable named `name` (never searches CWD on Windows).
+/// Searches PATH directories for an executable named `name`.
+/// Platform convention: Windows strictly excludes CWD from PATH lookup; Unix follows POSIX where an empty segment in a non-empty PATH denotes ".".
 moonbit_bytes_t sfh_find_in_path(moonbit_bytes_t name) {
   const char *cmd = (const char *)name;
   if (cmd[0] == '\0') return moonbit_make_bytes(0, 0);

@@ -39,18 +39,54 @@ test "app_candidates preserves symlinked argv0 before canonical exe path" {
   )
   assert_eq(with_flag, ["/explicit/app", "/release/app", "/cache"])
 
-  // Relative invocation without leading `./` preserves symlinked `<app>` as `.`
-  assert_eq(app_from_path("station/stillfail-reader"), Some("."))
-  assert_eq(app_from_path("station\\stillfail-reader.exe"), Some("."))
-  assert_eq(app_from_path("./station/stillfail-reader"), Some("."))
-  assert_eq(app_from_path("app/station/stillfail-reader"), Some("app"))
-  assert_eq(app_from_path("stillfail-reader"), None)
-  let rel = app_candidates(
-    ["admin", "--help"],
-    Some("station/stillfail-reader"),
-    Some("/cache/store/stillfail-reader"),
+  // Relative and absolute symlink invocations resolved lexically against cwd without dereferencing symlinks
+  assert_eq(
+    app_candidates(
+      ["admin", "--help"],
+      Some("station/stillfail-reader"),
+      Some("/cache/store/stillfail-reader"),
+      cwd=Some("/release/app"),
+    ),
+    ["/release/app", "/cache"],
   )
-  assert_eq(rel, [".", "/cache"])
+  assert_eq(
+    app_candidates(
+      ["admin", "--help"],
+      Some("./stillfail-reader"),
+      Some("/cache/store/stillfail-reader"),
+      cwd=Some("/release/app/station"),
+    ),
+    ["/release/app", "/cache"],
+  )
+  assert_eq(
+    app_candidates(
+      ["admin", "--help"],
+      Some("../stillfail-reader"),
+      Some("/cache/store/stillfail-reader"),
+      cwd=Some("/release/app/station/sub"),
+    ),
+    ["/release/app", "/cache"],
+  )
+  assert_eq(
+    app_candidates(
+      ["admin", "--help"],
+      Some("/release/app/station/stillfail-reader"),
+      Some("/cache/store/stillfail-reader"),
+      cwd=Some("/release/app/station"),
+    ),
+    ["/release/app", "/cache"],
+  )
+  assert_eq(
+    app_candidates(
+      ["admin", "--help"],
+      Some("..\\stillfail-reader.exe"),
+      Some("C:\\cache\\store\\stillfail-reader.exe"),
+      win=true,
+      cwd=Some("C:\\release\\app\\station\\sub"),
+    ),
+    ["C:\\release\\app", "C:\\cache"],
+  )
+  assert_eq(app_from_path("stillfail-reader"), None)
 }
 
 ///|

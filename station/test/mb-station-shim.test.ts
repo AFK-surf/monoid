@@ -276,13 +276,26 @@ test("Unix: symlinked <app>/station/stillfail-reader resolves bundled node & mai
   assert.equal(out.pid, r.pid);
   assert.deepEqual(out.argv, ["status", "--data", "/tmp/d"]);
 
-  // Relative invocation without leading `./` (e.g. `station/stillfail-reader admin --help`) also preserves symlink <app>
-  const rRel = await runWithPid("station/stillfail-reader", ["admin", "--help"], baseEnv(), app);
-  assert.equal(rRel.code, 0, rRel.stderr);
-  const outRel = JSON.parse(rRel.stdout.trim());
-  assert.equal(outRel.who, "symlink-admin.js");
-  assert.equal(outRel.pid, rRel.pid);
-  assert.deepEqual(outRel.argv, ["--help"]);
+  // Symlinked <app>/station/stillfail-reader with empty PATH and bundled Node works across all 4 invocation forms:
+  // 1) cwd=app: `station/stillfail-reader`
+  // 2) cwd=app/station: `./stillfail-reader`
+  // 3) cwd=app/station/sub: `../stillfail-reader`
+  // 4) cwd=app/station: absolute symlink path
+  const subDir = join(app, "station", "sub");
+  mkdirSync(subDir, { recursive: true });
+  for (const [cmd, cwd] of [
+    ["station/stillfail-reader", app],
+    ["./stillfail-reader", join(app, "station")],
+    ["../stillfail-reader", subDir],
+    [linkBin, join(app, "station")],
+  ] as const) {
+    const rSym = await runWithPid(cmd, ["admin", "--help"], baseEnv(), cwd);
+    assert.equal(rSym.code, 0, `${cmd} in ${cwd}: ${rSym.stderr}`);
+    const outSym = JSON.parse(rSym.stdout.trim());
+    assert.equal(outSym.who, "symlink-admin.js", `${cmd} in ${cwd}`);
+    assert.equal(outSym.pid, rSym.pid);
+    assert.deepEqual(outSym.argv, ["--help"]);
+  }
 
   // POSIX PATH semantics on Unix: trailing empty segment in non-empty PATH searches CWD (`.`)
   const pathApp = makeApp(t, { mainJs: true });

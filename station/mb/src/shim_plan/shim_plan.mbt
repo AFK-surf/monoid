@@ -92,34 +92,63 @@ pub fn parent_dir(p : String) -> String? {
 }
 
 ///|
+fn is_abs_path(p : String, win : Bool) -> Bool {
+  if p == "" {
+    return false
+  }
+  if p.has_prefix("/") {
+    return true
+  }
+  if !win {
+    return false
+  }
+  if p.has_prefix("\\") {
+    return true
+  }
+  if p.length() >= 3 {
+    let c0 = p.unsafe_get(0).to_int()
+    let c1 = p.unsafe_get(1).to_int()
+    let c2 = p.unsafe_get(2).to_int()
+    let is_letter = (c0 >= 'A' && c0 <= 'Z') || (c0 >= 'a' && c0 <= 'z')
+    if is_letter && c1 == ':' && (c2 == '\\' || c2 == '/') {
+      return true
+    }
+  }
+  false
+}
+
+///|
+/// Lexically resolves `p` against `cwd` (folding `.` and `..`) without dereferencing symlinks.
+pub fn lexical_resolve(p : String, win : Bool, cwd : String?) -> String {
+  let sep = sep_of(win)
+  if is_abs_path(p, win) {
+    @nodepath.join(sep, [p])
+  } else {
+    match cwd {
+      Some(dir) if dir != "" => @nodepath.join(sep, [dir, p])
+      _ => @nodepath.join(sep, [p])
+    }
+  }
+}
+
+///|
 /// Infers `<app>` from `stillfail-reader`'s path (`<app>/station/stillfail-reader` -> `<app>`).
-/// For a single-segment relative invocation such as `station/stillfail-reader` (no leading `./`),
-/// the parent of `station` is `.` without dereferencing symlinks.
 pub fn app_from_path(p : String) -> String? {
   guard parent_dir(p) is Some(station_dir) else { return None }
-  match parent_dir(station_dir) {
-    Some(app) => Some(app)
-    None =>
-      if station_dir != "" &&
-        station_dir != "." &&
-        station_dir != ".." &&
-        !station_dir.has_suffix(":") {
-        Some(".")
-      } else {
-        None
-      }
-  }
+  parent_dir(station_dir)
 }
 
 ///|
 /// Candidate `<app>` directories in priority order:
 /// 1. Explicit `--app` flag;
-/// 2. Inferred from invoked `argv[0]` path (preserving symlink location);
+/// 2. Inferred from lexically-normalized invoked `argv[0]` path (preserving symlink location);
 /// 3. Inferred from canonical executable path (`self_exe`).
 pub fn app_candidates(
   args : Array[String],
   invoked : String?,
   exe : String?,
+  win? : Bool = false,
+  cwd? : String? = None,
 ) -> Array[String] {
   let out : Array[String] = []
   let push_unique = (d : String) => if d != "" && !out.contains(d) {
@@ -128,7 +157,7 @@ pub fn app_candidates(
   if flag_value(args, "--app") is Some(a) {
     push_unique(a)
   }
-  if invoked is Some(p) && app_from_path(p) is Some(a) {
+  if invoked is Some(p) && app_from_path(lexical_resolve(p, win, cwd)) is Some(a) {
     push_unique(a)
   }
   if exe is Some(p) && app_from_path(p) is Some(a) {

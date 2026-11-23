@@ -26,7 +26,13 @@ pub fn run_station_shim(argv : Array[String]) -> Int {
   let argv0 = if argv.length() > 0 { argv[0] } else { "stillfail-reader" }
   let win = @host.is_windows()
   let args = argv[1:].to_owned()
-  let apps = @shim_plan.app_candidates(args, invoked_path(argv0), @host.exe_path())
+  let apps = @shim_plan.app_candidates(
+    args,
+    invoked_path(argv0),
+    @host.exe_path(),
+    win~,
+    cwd=@host.getcwd(),
+  )
 
   guard @shim_plan.resolve_node(
     apps,
