@@ -600,6 +600,7 @@ let retire_declared : String =
   #|    "type": "object",
   #|    "properties": {
   #|      "action": {
+  #|        "type": "string",
   #|        "enum": [
   #|          "preview",
   #|          "status",

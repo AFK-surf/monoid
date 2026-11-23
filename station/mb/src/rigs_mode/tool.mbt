@@ -36,7 +36,7 @@ pub fn rig_use() -> Json {
                 (
                   "properties",
                   jobj([
-                    ("kind", jobj([("enum", jarr([jstr("idle"), jstr("fixed")]))])),
+                    ("kind", jobj([("type", jstr("string")), ("enum", jarr([jstr("idle"), jstr("fixed")]))])),
                     ("seconds", jobj([("type", jstr("integer"))])),
                   ]),
                 ),

@@ -30,7 +30,7 @@ export const MOVE_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      action: { enum: ["plan", "move", "back", "status", "stop"] },
+      action: { type: "string", enum: ["plan", "move", "back", "status", "stop"] },
       to: { type: "string", description: "The other station: name or id (station_list)." },
       module: { type: "string" },
       item: { type: "string" },

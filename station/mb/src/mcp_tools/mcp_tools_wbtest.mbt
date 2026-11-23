@@ -97,3 +97,64 @@ test "a scale as toFixed(3) says it" {
   assert_eq(fixed_number(2.0, 3), 2.0)
   assert_eq(fixed_number(1.0005, 3), 1.0)
 }
+
+///|
+test "every declared tool inputSchema node specifies type (or anyOf/oneOf), hidden tools included" {
+  let missing : Array[String] = []
+  fn walk(node : JV, path : String) -> Unit {
+    match node {
+      Obj(_) => {
+        if node.get("type") is None &&
+          node.get("anyOf") is None &&
+          node.get("oneOf") is None {
+          missing.push(path)
+        }
+        match node.get("properties") {
+          Some(Obj(ps)) =>
+            for p in ps {
+              walk(p.1, path + "." + p.0)
+            }
+          _ => ()
+        }
+        match node.get("items") {
+          Some(it) => walk(it, path + "[]")
+          None => ()
+        }
+        for key in ["anyOf", "oneOf", "allOf"] {
+          match node.get(key) {
+            Some(Arr(xs)) =>
+              for i, x in xs {
+                walk(x, path + "." + key + "[" + i.to_string() + "]")
+              }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  let all_declared = [
+    decl_chat_post, decl_slack_api, decl_chat_state, decl_chat_leave,
+    decl_chat_history, decl_chat_list, decl_chat_read, decl_session_send,
+    decl_chat_create, decl_chat_archive, decl_chat_configure,
+    decl_session_history, decl_archive_policy, decl_station_list,
+    decl_station_task, decl_station_file, decl_workspace_limit,
+    decl_job_start, decl_job_list, decl_job_log, decl_job_stop,
+    decl_screen, decl_permissions, decl_computer, decl_peer_forward,
+    decl_relays, decl_feedback_send, decl_feedback_reply,
+    decl_station_move, decl_station_retire, decl_device_list,
+    decl_device_use, decl_station_use, decl_skill_read, decl_search,
+  ]
+  for raw in all_declared {
+    let decl = try_parse(raw).unwrap_or(jobj([]))
+    let name = match decl.get("name") {
+      Some(Str(s)) => s
+      _ => "?"
+    }
+    match decl.get("inputSchema") {
+      Some(schema) => walk(schema, name)
+      None => missing.push(name)
+    }
+  }
+  assert_eq(missing, [])
+}

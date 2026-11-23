@@ -730,6 +730,7 @@ const AGY_EXECUTOR_ERROR = "⚠ agent executor error:";
 const AGY_UNAUTHENTICATED = "⚠ unauthenticated (code 401):";
 const AGY_VERIFICATION_REQUIRED = "⚠ verification required";
 const AGY_PERMISSION_DENIED = "⚠ permission '";
+const AGY_UNABLE_TO_SUBMIT = "⚠ unable to submit request";
 export function noticeFailure(said: string): FailureReason | null {
   const text = said.trim();
   const last = text.slice(text.lastIndexOf("\n") + 1).trim();
@@ -743,6 +744,7 @@ export function noticeFailure(said: string): FailureReason | null {
   if (lower.startsWith(AGY_VERIFICATION_REQUIRED)) return "auth";
   if (!text.startsWith("⚠") || text.includes("\n")) return null;
   if (lower.startsWith(AGY_PERMISSION_DENIED) && lower.includes("denied")) return "auth";
+  if (lower.startsWith(AGY_UNABLE_TO_SUBMIT)) return "other";
   const reason = acpClassify("agy", text);
   return reason === "model" ? null : reason;
 }

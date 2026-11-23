@@ -368,6 +368,7 @@ export function noticeFailure(said: string): FailureReason | null {
   if (lower.startsWith(AGY_VERIFICATION_REQUIRED)) return "auth";
   if (!text.startsWith("⚠") || text.includes("\n")) return null;
   if (lower.startsWith(AGY_PERMISSION_DENIED) && lower.includes("denied")) return "auth";
+  if (lower.startsWith(AGY_UNABLE_TO_SUBMIT)) return "other";
   const reason = classifyFailure(text);
   return reason === "model" ? null : reason;
 }
@@ -378,6 +379,7 @@ const AGY_EXECUTOR_ERROR = "⚠ agent executor error:";
 const AGY_UNAUTHENTICATED = "⚠ unauthenticated (code 401):";
 const AGY_VERIFICATION_REQUIRED = "⚠ verification required";
 const AGY_PERMISSION_DENIED = "⚠ permission '";
+const AGY_UNABLE_TO_SUBMIT = "⚠ unable to submit request";
 
 /// The process's arguments: the profile's files, no approvals, no telemetry.
 export const agyArgs = (home: string) => ["acp", "--gemini-dir", geminiDir(home), "--dangerously-skip-permissions", "--disable-telemetry"];

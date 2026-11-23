@@ -11,7 +11,7 @@ export const VERSION_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      action: { enum: ["list", "update", "back", "wait"] },
+      action: { type: "string", enum: ["list", "update", "back", "wait"] },
       to: { type: "string", description: "back: a version from list's earlier." },
       until: { type: "array", items: { type: "string" }, description: "wait: conditions (pr:N, fix:FB-N, commit:SHA, version:0.1.N, after:0.1.N)." },
       clear: { type: "boolean", description: "wait: clear wait conditions." },

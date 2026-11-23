@@ -1945,6 +1945,15 @@ test("google-vertex writes and updates its key file before start, authenticates 
     noticeFailure("partial\n⚠ Permission 'aiplatform.endpoints.predict' denied on resource '//aiplatform.googleapis.com/projects/demo-project'."),
     null,
   );
+  // Vertex request refusal notice fails the turn as other (one-line only).
+  assert.equal(
+    noticeFailure("⚠ Unable to submit request because mcp_stillfail_station_task functionDeclaration parameters.action schema didn't specify the schema type field."),
+    "other",
+  );
+  assert.equal(
+    noticeFailure("partial\n⚠ Unable to submit request because bad schema."),
+    null,
+  );
   await s1.prompt("vertex-iam-denied");
   await until(() => ended(events1).length === 1);
   assert.equal(ended(events1)[0]!.outcome.kind, "failed");

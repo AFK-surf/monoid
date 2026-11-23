@@ -661,6 +661,7 @@ let decl_station_task : String =
   #|        "type": "string"
   #|      },
   #|      "action": {
+  #|        "type": "string",
   #|        "enum": [
   #|          "prepare",
   #|          "start",
@@ -730,6 +731,7 @@ let decl_station_file : String =
   #|        "type": "string"
   #|      },
   #|      "direction": {
+  #|        "type": "string",
   #|        "enum": [
   #|          "upload",
   #|          "download"
@@ -1234,6 +1236,7 @@ let decl_station_move : String =
   #|    "type": "object",
   #|    "properties": {
   #|      "action": {
+  #|        "type": "string",
   #|        "enum": [
   #|          "plan",
   #|          "move",
@@ -1290,6 +1293,7 @@ let decl_station_retire : String =
   #|    "type": "object",
   #|    "properties": {
   #|      "action": {
+  #|        "type": "string",
   #|        "enum": [
   #|          "preview",
   #|          "status",
@@ -1348,6 +1352,7 @@ let decl_device_use : String =
   #|        "description": "How long the grant should last (the owner may choose another): idle (ends once this chat has not used the device that long) or fixed, in whole minutes from 1 minute to 30 days. Default: idle, 1 hour.",
   #|        "properties": {
   #|          "kind": {
+  #|            "type": "string",
   #|            "enum": [
   #|              "idle",
   #|              "fixed"
@@ -1393,6 +1398,7 @@ let decl_station_use : String =
   #|        "description": "How long the grant should last (the owner may choose another): idle (ends once this chat has not used that station that long) or fixed, in whole minutes from 1 minute to 30 days. Default: idle, 1 hour.",
   #|        "properties": {
   #|          "kind": {
+  #|            "type": "string",
   #|            "enum": [
   #|              "idle",
   #|              "fixed"
@@ -1460,6 +1466,7 @@ let decl_search : String =
   #|      "kinds": {
   #|        "type": "array",
   #|        "items": {
+  #|          "type": "string",
   #|          "enum": [
   #|            "chat",
   #|            "message",

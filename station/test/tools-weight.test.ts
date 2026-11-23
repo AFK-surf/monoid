@@ -31,9 +31,11 @@ const PARTS_GIVE = 14;
 // release when the latest broke something (2026-11-18), which no tool did before; lowered back to 62,000 (2026-11-19:
 // 59,429 visible across 47 tools) after hiding superseded tools (adb_devices, phone_use, secret_reask, station_retire)
 // and trimming vault tool boilerplate while adding chat_configure and chat_list filters.
+// CORE_TOTAL raised to 14,100 (2026-11-23: 14,019 bytes) because the core tools' enum parameters (`station_task.action`,
+// `station_file.direction`) now carry `"type": "string"` (Vertex AI refuses a declaration without it).
 // TOOLS_WEIGHT_TABLE=1 prints every tool's.
 const TOTAL = 62_000;
-const CORE_TOTAL = 14_000;
+const CORE_TOTAL = 14_100;
 const HEAVIEST = 5_000;
 // One tool's input schema, as compact JSON. Not a rounding: Codex 0.169.0 strips every description from an MCP tool's
 // input schema once it is over 5,000 bytes (measured 2026-11-14 with the station's list against a fake model endpoint:
@@ -78,4 +80,22 @@ test("the tools a station declares stay under their ceilings: the whole list, th
   assert.ok(core <= CORE_TOTAL, `the core tools declare ${core} bytes, more than ${CORE_TOTAL}. ${TOLD}\n${table(tools.filter((x) => CORE.includes(x.name)))}`);
   assert.ok(weight(heaviest) <= HEAVIEST, `${heaviest.name} declares ${weight(heaviest)} bytes, more than ${HEAVIEST} for one tool. ${TOLD}`);
   assert.ok(schemaBytes(widest) <= SCHEMA, `${widest.name}'s input schema is ${schemaBytes(widest)} bytes, more than ${SCHEMA}: over 5,000 Codex gives its model the tool with no parameter descriptions at all. Shorten its parameters' descriptions, keeping there what a model needs to call it right; this ceiling is not raised.`);
+});
+
+test("every tool's inputSchema node specifies type (or anyOf/oneOf), hidden tools included", () => {
+  const missing: string[] = [];
+  const walk = (node: unknown, path: string): void => {
+    if (node === null || typeof node !== "object") return;
+    const obj = node as Record<string, unknown>;
+    if (!("type" in obj) && !("anyOf" in obj) && !("oneOf" in obj)) missing.push(path);
+    if (obj.properties !== null && typeof obj.properties === "object") {
+      for (const [k, v] of Object.entries(obj.properties as Record<string, unknown>)) walk(v, `${path}.${k}`);
+    }
+    if (obj.items !== null && typeof obj.items === "object") walk(obj.items, `${path}[]`);
+    for (const key of ["anyOf", "oneOf", "allOf"]) {
+      if (Array.isArray(obj[key])) obj[key].forEach((x, i) => walk(x, `${path}.${key}[${i}]`));
+    }
+  };
+  for (const tool of stationTools()) walk(tool.inputSchema, tool.name);
+  assert.deepEqual(missing, [], `schema nodes missing type: ${missing.join(", ")}`);
 });

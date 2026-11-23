@@ -16,7 +16,7 @@ export const RETIRE_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      action: { enum: ["preview", "status", "start", "hand_over", "again", "cancel"] },
+      action: { type: "string", enum: ["preview", "status", "start", "hand_over", "again", "cancel"] },
       station: { type: "string", description: "The station retired, by name or id (station_list); default this one." },
       to: { type: "string", description: "start, preview: the station its chats go to, by name or id." },
     },

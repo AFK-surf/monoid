@@ -359,6 +359,9 @@ pub fn notice_failure(said : String) -> String? {
   if lower.has_prefix("\u{26a0} permission '") && lower.contains("denied") {
     return Some("auth")
   }
+  if lower.has_prefix("\u{26a0} unable to submit request") {
+    return Some("other")
+  }
   let reason = classify("agy", text)
   if reason == "model" {
     None
