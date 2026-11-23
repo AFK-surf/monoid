@@ -49,9 +49,6 @@ struct RuntimeSession {
   mut live_sync_enabled : Bool
   mut device_app : String
   mut device_locale : String
-  mut notify_asked : Bool
-  mut notify_on : Bool
-  mut notify_permission : String
 }
 
 let g_session : Array[Option[RuntimeSession]] = [None]
@@ -850,41 +847,6 @@ fn build_prefs_view(sess : RuntimeSession) -> base_codec::Json {
   base_codec::json_obj(out_fields)
 }
 
-fn build_notify_view(sess : RuntimeSession) -> base_codec::Json {
-  let ws_briefs = list_workspaces_briefs(sess.db)
-  let ws_out : Array[base_codec::Json] = []
-  for i in 0..<ws_briefs.length() {
-    let w = ws_briefs[i]
-    let id = match opt_str_param(w, "id") { Some(s) => s; None => "" }
-    let name = match opt_str_param(w, "name") { Some(s) => s; None => id }
-    ws_out.push(base_codec::json_obj([
-      ("id", base_codec::json_str(id)),
-      ("name", base_codec::json_str(name)),
-      ("on", base_codec::json_bool(true)),
-    ]))
-  }
-  base_codec::json_obj([
-    ("on", base_codec::json_bool(sess.notify_on)),
-    ("asked", base_codec::json_bool(sess.notify_asked)),
-    ("push", base_codec::json_bool(true)),
-    (
-      "kinds",
-      base_codec::json_obj([
-        ("wait", base_codec::json_bool(true)),
-        ("failed", base_codec::json_bool(true)),
-        ("done", base_codec::json_str("away")),
-        ("message", base_codec::json_bool(true)),
-        ("billed", base_codec::json_bool(false)),
-      ]),
-    ),
-    ("preview", base_codec::json_bool(true)),
-    ("muted", base_codec::json_arr([])),
-    ("workspaces", base_codec::json_arr(ws_out)),
-    ("permission", base_codec::json_str(sess.notify_permission)),
-    ("show", base_codec::json_arr([])),
-  ])
-}
-
 fn sess_lang(sess : RuntimeSession) -> String {
   match sess.prefs.get("lang") {
     Some(base_codec::Json::Str(s)) => if s == "en" { "en" } else { "zh" }
@@ -1373,10 +1335,8 @@ pub extern "C" fn pion_core_runtime_start(
     live_sync_enabled: false,
     device_app: "desktop",
     device_locale: "",
-    notify_asked: false,
-    notify_on: true,
-    notify_permission: "unknown",
   }
+  sess.core.lang = sess_lang(sess)
   g_session[0] = Some(sess)
   1
 }
@@ -1568,29 +1528,20 @@ fn evaluate_runtime_topic(
       _ => None
     }
     let sess_param : Option[String] = match topic.param("session") {
-      Some(base_codec::Json::Str(s)) => Some(s)
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
       _ => match topic.param("key") {
-        Some(base_codec::Json::Str(s)) => Some(s)
+        Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
         _ => None
       }
     }
-    let (resolved_st, th_opt, chat_meta) = resolve_thread_and_chat_meta(sess, st, th_param, sess_param)
-    let th = match th_opt {
-      Some(t) => t
-      None => return Some(protocol::CoreEvent::Waiting(id))
+    if th_param.is_none() && sess_param.is_none() {
+      return Some(protocol::CoreEvent::Waiting(id))
     }
-    let md = if resolved_st == sess.core.md_store.station {
-      sess.core.md_store
-    } else {
-      match sess.md_stores.get(resolved_st) {
-        Some(ms) => ms
-        None => {
-          let ms = store::MdStore::new(sess.db, resolved_st)
-          sess.md_stores.set(resolved_st, ms)
-          ms
-        }
-      }
+    let compact = match topic.param("compact") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
     }
+    let (resolved_st, _, chat_meta) = resolve_thread_and_chat_meta(sess, st, th_param, sess_param)
     let online = is_station_online(sess, resolved_st)
     let ws_of_st = match resolved_st.index_of("/") {
       idx if idx > 0 => resolved_st.slice(0, idx)
@@ -1604,11 +1555,12 @@ fn evaluate_runtime_topic(
         break
       }
     }
-    match views::project_chat(
+    match views::project_chat_by_params(
       sess.db,
-      md,
-      resolved_st,
-      th,
+      st,
+      th_param,
+      sess_param,
+      compact,
       sess_viewer_email(sess),
       now_ms,
       utc_offset_min=utc_offset_min,
@@ -1721,22 +1673,6 @@ fn handle_runtime_subscribe(sess : RuntimeSession, id : Int64, topic : protocol:
     Some(build_workspaces_topic_json(sess))
   } else if tname == "prefs" {
     Some(build_prefs_view(sess))
-  } else if tname == "doing" {
-    Some(base_codec::json_obj([("doing", base_codec::json_arr([]))]))
-  } else if tname == "lockPrompts" {
-    Some(base_codec::json_obj([
-      ("pairing", base_codec::json_arr([])),
-      ("asks", base_codec::json_arr([])),
-    ]))
-  } else if tname == "status" {
-    Some(base_codec::json_obj([
-      ("items", base_codec::json_arr([])),
-      ("lines", base_codec::json_arr([])),
-    ]))
-  } else if tname == "notify" {
-    Some(build_notify_view(sess))
-  } else if tname == "notices" {
-    Some(base_codec::json_obj([("items", base_codec::json_arr([]))]))
   } else if tname == "driveTransfers" {
     Some(base_codec::json_obj([
       ("supported", base_codec::json_bool(false)),
@@ -1905,25 +1841,45 @@ pub extern "C" fn pion_core_runtime_send(
           }
           if call_name == "notify.permission" {
             match opt_str_param(params, "state") {
-              Some(st) => sess.notify_permission = st
+              Some(st) => { sess.core.notify_permission = st }
               None => ()
             }
             let (out_j, out_b) = protocol::encode_core_event(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
             emit_wire(out_j, payload=out_b)
+            emit_topic_refresh(sess, "notify")
             let _ = drain_and_emit(sess)
             return
           }
           if call_name == "notify.set" {
             match base_codec::json_get(params, "asked") {
-              Some(base_codec::Json::Bool(b)) => sess.notify_asked = b
+              Some(base_codec::Json::Bool(b)) => { sess.core.notify_asked = b }
               _ => ()
             }
             match base_codec::json_get(params, "on") {
-              Some(base_codec::Json::Bool(b)) => sess.notify_on = b
+              Some(base_codec::Json::Bool(b)) => { sess.core.notify_on = b }
               _ => ()
             }
-            let (out_j, out_b) = protocol::encode_core_event(protocol::CoreEvent::Ok(id, build_notify_view(sess), None))
+            match base_codec::json_get(params, "push") {
+              Some(base_codec::Json::Bool(b)) => { sess.core.notify_push = b }
+              _ => ()
+            }
+            match base_codec::json_get(params, "preview") {
+              Some(base_codec::Json::Bool(b)) => { sess.core.notify_preview = b }
+              _ => ()
+            }
+            let nv = match views::project_notify(sess.db, sess.core.current_notify_state(), sess.core.notices_held, lang=sess_lang(sess)) {
+              sql::SqlResult::Ok(j) => j
+              sql::SqlResult::Err(e) => {
+                let err_ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() })
+                let (ej, eb) = protocol::encode_core_event(err_ev)
+                emit_wire(ej, payload=eb)
+                let _ = drain_and_emit(sess)
+                return
+              }
+            }
+            let (out_j, out_b) = protocol::encode_core_event(protocol::CoreEvent::Ok(id, nv, None))
             emit_wire(out_j, payload=out_b)
+            emit_topic_refresh(sess, "notify")
             let _ = drain_and_emit(sess)
             return
           }
@@ -1990,6 +1946,7 @@ pub extern "C" fn pion_core_runtime_send(
                   }
                   _ => ()
                 }
+                sess.core.lang = sess_lang(sess)
                 let (out_j, out_b) = protocol::encode_core_event(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
                 emit_wire(out_j, payload=out_b)
                 emit_topic_refresh(sess, "prefs")

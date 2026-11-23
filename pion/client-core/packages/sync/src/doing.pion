@@ -143,6 +143,15 @@ pub fn DoingTracker::get(self : DoingTracker, id : Int) -> Option[DoingEntry] {
   None
 }
 
+/// Snapshot all active entries (oldest first) for `views::project_doing`.
+pub fn DoingTracker::entries_snapshot(self : DoingTracker) -> Array[DoingEntry] {
+  let out : Array[DoingEntry] = []
+  for i in 0..<self.entries.length() {
+    out.push(self.entries[i])
+  }
+  out
+}
+
 /// Project the `doing` topic value (`{ doing: [...] }`), oldest first, 1:1 with `doing.ts Doing.value()`.
 pub fn DoingTracker::value(
   self : DoingTracker,

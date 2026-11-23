@@ -1,0 +1,173 @@
+// W27e unit tests covering:
+// 1. `marksDirty` coalescing via `marksWanted` (no duplicate concurrent `GET /chats?marks=1&own=1`)
+// 2. Empty SSE `event: lock` (`{}` / `{"entries":[]}`) silently ignored (0 `LockRejected`)
+// 3. `ClientCore::set_viewer(..., selves=Some([...]))` + `mineFor` `via == "slack"` 1:1 with `chat-row.ts`
+// 4. `ClientCore` W28a runtime topic projectors (`status`, `lockPrompts`, `notices`, `notify`, `doing`, `lock` `lock_corrupt`, `chat` `compact`/`session`, `auth.complete {query}`)
+
+import "base_codec"
+import "effect"
+import "protocol"
+import "sql"
+import "store"
+import "wire"
+
+fn open_w27e_db(rt : effect::Runtime) -> sql::Sql {
+  let sim_db = SimAccountDb::new(rt)
+  match sql::Sql::open(sim_db.sh, "w27e-test") {
+    sql::SqlResult::Ok(db) => db
+    sql::SqlResult::Err(e) => panic("sql::Sql::open failed: " + e.to_string())
+  }
+}
+
+test "W27e: marksDirty burst coalesces into a single GET /chats?marks=1&own=1 via marksWanted" {
+  let rt = effect::Runtime::new()
+  let db = open_w27e_db(rt)
+  let marks_reqs : Array[String] = []
+  let tr = StationTransport::{
+    request_k: fn(
+      _m : String,
+      path : String,
+      _h : Array[(String, String)],
+      _b : Bytes,
+      k : (effect::Exit[HttpReply]) -> Unit,
+    ) -> Unit {
+      if path.starts_with("/chats?marks=1&own=1") {
+        marks_reqs.push(path)
+        let body = "{\"reads\":{\"1\":3,\"2\":5},\"pins\":{\"chat:c-1\":1700000000000},\"kept\":[],\"hidden\":[],\"muted\":[],\"dismissed\":[],\"selves\":[\"U111\"]}"
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: body.to_bytes() }))
+      } else {
+        k(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{}".to_bytes() }))
+      }
+    },
+    stream_k: fn(
+      _p : String,
+      _h : Array[(String, String)],
+      _on_chunk : (Bytes) -> Unit,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    },
+  }
+  let core = ClientCore::new("ws-1", "ws-1/st-1", rt, db, tr, fn() -> Unit {})
+  let sse_batch : Array[wire::Event] = [
+    wire::Event::{ name: "chat-mark", data: "{\"thread\":1,\"read\":3}", id: Some("e1") },
+    wire::Event::{ name: "chat-mark", data: "{\"session\":\"chat:c-1\",\"pinned\":1700000000000}", id: Some("e2") },
+    wire::Event::{ name: "chat-mark", data: "{\"thread\":2,\"read\":5}", id: Some("e3") },
+  ]
+  match core.events.apply_sse_batch(sse_batch) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(e) => debug_assert(false, e.to_string())
+  }
+  rt.advance(100)
+  debug_assert(marks_reqs.length() == 1, "3 marksDirty events must coalesce into 1 GET /chats?marks=1&own=1, got " + marks_reqs.length().to_string())
+  debug_assert(marks_reqs[0].contains("session=chat%3Ac-1"), "merged request includes session")
+  debug_assert(marks_reqs[0].contains("thread=1") && marks_reqs[0].contains("thread=2"), "merged request includes both threads")
+}
+
+test "W27e: empty SSE event: lock ({} and {entries:[]}) silently ignored without LockRejected" {
+  let rt = effect::Runtime::new()
+  let db = open_w27e_db(rt)
+  let core = ClientCore::new("ws-1", "ws-1/st-1", rt, db, core_offline_transport(), fn() -> Unit {})
+  core.pin_lock_root("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+  let _ = core.drain_frame()
+  let sse_batch : Array[wire::Event] = [
+    wire::Event::{ name: "lock", data: "{}", id: Some("l1") },
+    wire::Event::{ name: "lock", data: "{\"entries\":[]}", id: Some("l2") },
+  ]
+  match core.events.apply_sse_batch(sse_batch) {
+    sql::SqlResult::Ok(applied) => debug_assert(applied == 0, "empty lock events should apply 0")
+    sql::SqlResult::Err(e) => debug_assert(false, e.to_string())
+  }
+  let evs = core.drain_frame()
+  let mut rejected = 0
+  for i in 0..<evs.length() {
+    match evs[i] {
+      CoreEvent::LockRejected(_, _) => { rejected += 1 }
+      _ => ()
+    }
+  }
+  debug_assert(rejected == 0, "empty SSE event: lock must NOT emit LockRejected")
+}
+
+test "W27e: set_viewer selves & mineFor via==slack 1:1 parity with chat-row.ts" {
+  let rt = effect::Runtime::new()
+  let db = open_w27e_db(rt)
+  let core = ClientCore::new("ws-1", "ws-1/st-1", rt, db, core_offline_transport(), fn() -> Unit {})
+  let slack_person = base_codec::json_obj([
+    ("id", base_codec::json_str("T012345:U998877")),
+    ("via", base_codec::json_str("slack")),
+  ])
+  let non_slack_person = base_codec::json_obj([
+    ("id", base_codec::json_str("T012345:U998877")),
+    ("via", base_codec::json_str("feishu")),
+  ])
+  debug_assert(!viewer_matches_person("alice@test.com", ["U998877"], non_slack_person), "feishu must not strip team prefix for slack selves")
+  debug_assert(viewer_matches_person("alice@test.com", ["U998877"], slack_person), "via==slack must match id tail in selves")
+  debug_assert(viewer_matches_person("Alice@Test.com", [], base_codec::json_obj([("email", base_codec::json_str("alice@test.com"))])), "case-insensitive email match")
+
+  core.set_viewer("alice@test.com", sub="sub-alice")
+  debug_assert(core.events.viewer_selves.length() == 1 && core.events.viewer_selves[0] == "sub-alice", "default sub self set")
+  core.set_viewer("alice@test.com", selves=Some(["U998877"]))
+  debug_assert(core.events.viewer_selves.length() == 1 && core.events.viewer_selves[0] == "U998877", "independent selves updated on events")
+  debug_assert(core.viewer_marks.selves.length() == 1 && core.viewer_marks.selves[0] == "U998877", "independent selves updated on viewer_marks")
+}
+
+test "W27e: ClientCore W28a runtime topics, lock_corrupt, compact chat & auth.complete query" {
+  let rt = effect::Runtime::new()
+  let db = open_w27e_db(rt)
+  let _ = store::put_workspace_pref(db, "ws-1", "lock", "{not-valid-json")
+  let core = ClientCore::new("ws-1", "ws-1/st-1", rt, db, core_offline_transport(), fn() -> Unit {})
+  debug_assert(core.is_lock_corrupt(), "corrupt persisted lock detected")
+  let sm = core.current_safe_mode_view()
+  debug_assert(sm.locked && sm.lock_corrupt, "project_safe_mode must stay locked when lock_corrupt=true")
+
+  // `doing` topic reads live `core.doing`
+  let did = core.doing.start("chat.rename", base_codec::json_obj([("station", base_codec::json_str("ws-1/st-1"))]), 1700000000000L)
+  match core.handle_request(protocol::CoreRequest::Subscribe(1L, protocol::Topic::{ name: "doing", params: [] }, false, None, None)) {
+    Some(protocol::CoreEvent::Value(_, v, _)) => {
+      let s = base_codec::json_stringify(v)
+      debug_assert(s.contains("chat.rename") && s.contains("\"stage\":\"running\""), "doing topic projects real DoingTracker item: " + s)
+    }
+    _ => debug_assert(false, "expected doing value")
+  }
+  core.doing.end(did)
+
+  // `status`, `lockPrompts`, `notices`, `notify` all evaluate through real W28a projectors
+  let tnames = ["status", "lockPrompts", "notices", "notify"]
+  for i in 0..<tnames.length() {
+    match core.handle_request(protocol::CoreRequest::Subscribe((10 + i).to_int64(), protocol::Topic::{ name: tnames[i], params: [] }, false, None, None)) {
+      Some(protocol::CoreEvent::Value(_, _, _)) => ()
+      _ => debug_assert(false, "expected real projector value for " + tnames[i])
+    }
+  }
+
+  // `auth.begin` + `auth.complete { query }` (no verifier/code/error_description leak)
+  let mut state_tok = ""
+  match core.handle_request(protocol::CoreRequest::Call(20L, "auth.begin", base_codec::json_obj([]), None)) {
+    Some(protocol::CoreEvent::Ok(_, v, _)) => {
+      let raw = base_codec::json_stringify(v)
+      debug_assert(!raw.contains("verifier"), "auth.begin must never expose verifier")
+      match base_codec::json_get(v, "state") {
+        Some(base_codec::Json::Str(s)) => { state_tok = s }
+        _ => debug_assert(false, "missing state")
+      }
+    }
+    _ => debug_assert(false, "auth.begin failed")
+  }
+  let q = "?state=" + state_tok + "&code=secret_auth_code_42"
+  match core.handle_request(protocol::CoreRequest::Call(21L, "auth.complete", base_codec::json_obj([("query", base_codec::json_str(q))]), None)) {
+    Some(protocol::CoreEvent::Ok(_, v, _)) => {
+      let raw = base_codec::json_stringify(v)
+      debug_assert(raw.contains("\"ok\":true"), "auth.complete query succeeded")
+      debug_assert(!raw.contains("secret_auth_code_42") && !raw.contains("verifier"), "auth.complete must never expose code or verifier")
+    }
+    _ => debug_assert(false, "auth.complete query failed")
+  }
+  // Unverified error_description must NEVER leak
+  match core.handle_request(protocol::CoreRequest::Call(22L, "auth.complete", base_codec::json_obj([("query", base_codec::json_str("?error=access_denied&error_description=EVIL_PHISHING_TEXT"))]), None)) {
+    Some(protocol::CoreEvent::Err(_, err)) => {
+      debug_assert(!err.message.contains("EVIL_PHISHING_TEXT"), "unverified error_description must not leak")
+    }
+    _ => debug_assert(false, "expected auth.complete error")
+  }
+}
