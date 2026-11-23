@@ -2635,6 +2635,9 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   self.idle_now(a)
   let turn = a.turn
   a.turn = None
+  if kind == "completed" && !a.stop_requested && turn is Some({ declared: None, .. }) {
+    a.warm = true
+  }
   if turn is Some(t) {
     let trace_outcome = if a.stop_requested || kind == "aborted" {
       "stopped"
@@ -2644,9 +2647,6 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       "done"
     }
     self.emit_turn_trace(a, t, trace_outcome)
-  }
-  if kind == "completed" && !a.stop_requested && turn is Some({ declared: None, .. }) {
-    a.warm = true
   }
   let had_turn = turn is Some(_)
   if had_turn {
