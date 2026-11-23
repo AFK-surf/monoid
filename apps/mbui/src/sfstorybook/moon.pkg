@@ -1,12 +1,12 @@
 import {
-  "mbui/hostapi",
-  "mbui/motion",
-  "mbui/ui",
-  "mbui/view",
-  "mbui/signals",
+  "ui/hostapi",
+  "ui/motion",
+  "ui/ui",
+  "ui/view",
+  "ui/signals",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/string",
-  "stillfail/sf",
+  "ui/controls" @sf,
   "stillfail/sfbase",
   "stillfail/sfkept",
 }

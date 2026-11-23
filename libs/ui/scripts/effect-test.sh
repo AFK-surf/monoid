@@ -1,0 +1,20 @@
+#!/bin/bash
+# effect.mb (src/effect): its own tests on native, the window's runtime on the frames' clock (src/ui/fx_test.mbt),
+# and the demo of a screen, its logic and a simulated backend on one clock over seeds (src/effectdemo). A seeded test
+# that fails says its seed: SEED=<n> scripts/effect-test.sh replays it.
+D="$(cd "$(dirname "$0")" && pwd)"
+. "$D/env.sh"
+cd "$D/.."
+F='^Warning\|^ *│\|^ *╭\|^ *╰\|^─\|^ *[0-9]* │'
+code=0
+for t in native; do
+  echo "== effect, $t"
+  moon_tests -p ui/effecttest 2>&1 | grep -v "$F" | tail -${LINES_OUT:-30}
+  [ ${PIPESTATUS[0]} = 0 ] || code=1
+done
+echo "== the window's runtime and the demo, native"
+moon_tests src/ui/fx_test.mbt 2>&1 | grep -v "$F" | tail -${LINES_OUT:-30}
+[ ${PIPESTATUS[0]} = 0 ] || code=1
+moon_tests -p ui/effectdemo 2>&1 | grep -v "$F" | tail -${LINES_OUT:-30}
+[ ${PIPESTATUS[0]} = 0 ] || code=1
+exit $code

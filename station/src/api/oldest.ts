@@ -16,7 +16,7 @@ export const BUILD_HEADER = "stillfail-build";
 export const OLDEST_CORE = 7917;
 
 /// A build under this is no release's count of commits, and is not held to the floor: a development build's (`0.1.0`,
-/// `0.1.1`) and an iOS app's, whose number is its TestFlight build's (libs/mbui/scripts/ios.sh MBUI_IOS_BUILD).
+/// `0.1.1`) and an iOS app's, whose number is its TestFlight build's (libs/ui/scripts/ios.sh MBUI_IOS_BUILD).
 export const COUNTED_FROM = 1000;
 
 /// The build in `0.<m>.<n>` (or `<n>`), null for none: n, the commits up to it; m, the stable releases up to it, only

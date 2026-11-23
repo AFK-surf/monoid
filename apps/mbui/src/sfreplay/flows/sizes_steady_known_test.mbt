@@ -14,7 +14,7 @@ fn init {
     ("src/sfreplay/flows/sheet_drag_test.mbt", 1),
     ("src/sfreplay/flows/viewer_test.mbt", 1),
     // (shown as the replay gives each message at its own moment, a device's timing: the answer's words in the old
-    // chat page's state row (made at mbui/src/ui/nav_view.mbt:258, the old view's) step 4.03 in the frame at 1383.3
+    // chat page's state row (made at ui/src/ui/nav_view.mbt:258, the old view's) step 4.03 in the frame at 1383.3
     // between 0 and -0.6, the row's change set out from the frame that builds it. Goes as the chat page is made as
     // nodes)
     ("src/sfreplay/flows/wide_switcher_test.mbt", 1),

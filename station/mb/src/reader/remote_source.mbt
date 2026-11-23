@@ -349,6 +349,28 @@ async fn Actors::settle(self : Actors, path : String, entry : Json, got : Json) 
   }
   let new_notices = match notices { Array(n) => n.length() > 0 && !json_equal(field_of(entry, "notices"), notices); _ => false }
   if finished || new_notices {
+    if finished {
+      let job = field_of(result, "job")
+      let exit_code = field_of(job, "exitCode")
+      let failed = state != "exited" || (match exit_code { Number(n, ..) => n != 0.0; _ => false })
+      let attrs : Map[String, Json] = {
+        "stillfail.task.small": jbool(field_of(entry, "small") is True),
+        "stillfail.task.screen": jbool(field_of(entry, "screen") is True),
+        "stillfail.task.sync": jbool(field_of(entry, "dir") is String(_)),
+      }
+      if exit_code is Number(n, ..) {
+        attrs["stillfail.task.exit_code"] = jnum(n.floor())
+      }
+      self.tell_trace(remote_key, {
+        "name": jstr("station.task"),
+        "startMs": jnum(since),
+        "endMs": jnum(now),
+        "attributes": Json::object(attrs),
+        "failed": jbool(failed),
+        "alwaysKeep": jbool(true),
+        "slowMs": jnum(-1.0),
+      })
+    }
     let message = "Remote task \{text_of(entry, "key")} on \{text_of(entry, "station")}: \{js_text(result)}"
     self.told_then_written(path, text_of(entry, "session"), message, with_field(with_field(entry, "notices", notices), "delivered", jbool(finished))) catch {
       _ => return jstr("again")
@@ -631,7 +653,7 @@ async fn Actors::tool(self : Actors, tool : String, session : String, args : Jso
     if text_of(self.read_json(prepared), "preparing") != attempt {
       raise refusal("a newer prepare superseded this one; prepare again before starting")
     }
-    self.write_json(prepared, { "workspace": jstr(workspace), "session": jstr(session), "station": jstr(station), "key": jstr(key), "dir": spec.get("dir").unwrap_or(Json::null()), "back": spec.get("back").unwrap_or(Json::null()) })
+    self.write_json(prepared, { "workspace": jstr(workspace), "session": jstr(session), "station": jstr(station), "key": jstr(key), "dir": spec.get("dir").unwrap_or(Json::null()), "back": spec.get("back").unwrap_or(Json::null()), "small": spec.get("small").unwrap_or(jbool(false)), "screen": spec.get("screen").unwrap_or(jbool(false)) })
     return answer
   }
   request["spec"] = Json::object(spec)
@@ -689,6 +711,8 @@ async fn Actors::tool(self : Actors, tool : String, session : String, args : Jso
       if !(local is Null) {
         e["dir"] = field_of(local, "dir")
         e["back"] = field_of(local, "back")
+        e["small"] = field_of(local, "small")
+        e["screen"] = field_of(local, "screen")
         e["prefix"] = jstr(text_of(synced, "prefix"))
       }
       self.write_json(path, Json::object(e))

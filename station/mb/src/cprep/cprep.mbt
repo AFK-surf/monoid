@@ -1,4 +1,4 @@
-// cprep: the reader's C as moonc wrote it, made ready for mbui's mbc (libs/mbui/scripts/mbc compile) to split and
+// cprep: the reader's C as moonc wrote it, made ready for mbui's mbc (libs/ui/scripts/mbc compile) to split and
 // compile it so that a change compiles again only the units it changed, and none of them for minutes.
 //
 //     cprep IN.c OUT.c
@@ -19,7 +19,7 @@
 // - A `#line N "PATH"` directive names the source by its absolute path, which differs between checkouts and runners
 //   (ci-1's actions-runner-<n>/_work/..., each one's moon in actions-runner-<n>/_tool/...): every unit's text was
 //   another on each, and 389 of 415 units missed MBC_STORE (2026-11-17). PATH from its first of `/station/mb/`,
-//   `/rules/`, `/libs/mbui/` or `/lib/core/` on is kept, relative (`station/mb/src/reader/actors.mbt`).
+//   `/rules/`, `/libs/ui/` or `/lib/core/` on is kept, relative (`station/mb/src/reader/actors.mbt`).
 
 ///|
 #borrow(path)
@@ -147,8 +147,8 @@ fn prelude_end(t : BytesView) -> Int {
 
 ///|
 /// Where a `#line` directive's path names the source from a checkout or a moon on (`station/mb/...`, `rules/...`,
-/// `libs/mbui/...`, `lib/core/...`).
-let line_roots : Array[Bytes] = [b"/station/mb/", b"/rules/", b"/libs/mbui/", b"/lib/core/"]
+/// `libs/ui/...`, `lib/core/...`).
+let line_roots : Array[Bytes] = [b"/station/mb/", b"/rules/", b"/libs/ui/", b"/lib/core/"]
 
 ///|
 /// For a line starting at i that is a `#line N "PATH"` directive (spaces or tabs before it) whose PATH has one of

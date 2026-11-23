@@ -191,6 +191,8 @@ export type SessionDeps = {
   backgroundOnMessage(key: string): boolean;
   /// Where the runtime's live steps go, for whoever watches the session (and that it went on in a new runtime session).
   live?: { event(key: string, event: LiveEvent): void; turnEnded(key: string): Promise<void> | void; moved?(key: string): void };
+  /// Records an internal trace span emitted by the MoonBit `--sessions` program (`agent.open`, `turn.run`).
+  emitTrace?(payload: unknown): void;
   /// What it is told when it goes on on `to` in a new runtime session rather than take up `id` (last run on `was`, when
   /// the store does not know); null: it takes it up (sessions/afresh.ts).
   startsAfresh?(key: string, id: string, to: Profile, was: string | null): string | null;

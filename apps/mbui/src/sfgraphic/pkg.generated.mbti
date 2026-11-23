@@ -2,7 +2,7 @@
 package "stillfail/sfgraphic"
 
 import {
-  "mbui/ui",
+  "ui/ui",
 }
 
 // Values

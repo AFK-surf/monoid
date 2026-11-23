@@ -11,7 +11,7 @@ import {
   "station/session_chats",
   "station/sql",
   "station/vault_crypto",
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/buffer",
   "moonbitlang/core/double",
   "moonbitlang/core/cmp",

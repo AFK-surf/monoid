@@ -6,7 +6,7 @@ D="$(cd "$(dirname "$0")" && pwd)"
 . "$D/env.sh"
 
 MANIFEST="$A/mbui.json"
-MBUI="$MBUI_DIR/scripts/mbui"
+MBUI="$MBUI_DIR/scripts/ui"
 
 fail() {
   echo "mbui-meta-test.sh: FAIL: $*" >&2

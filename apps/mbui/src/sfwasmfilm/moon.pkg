@@ -1,12 +1,12 @@
 import {
-  "mbui/halt",
-  "mbui/ui",
-  "mbui/hostapi",
+  "ui/halt",
+  "ui/ui",
+  "ui/hostapi",
   "stillfail/sfapp",
   "stillfail/sffilmscene",
   "stillfail/sfstorybook",
-  "mbui/view",
-  "mbui/film",
+  "ui/view",
+  "ui/film",
 }
 
 options(

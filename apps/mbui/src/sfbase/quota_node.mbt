@@ -1,4 +1,4 @@
-// Quota and meter chip nodes (moved from libs/sf-ui/src/quota_node.mbt).
+// Quota and meter chip nodes (moved from libs/ui/src/controls/quota_node.mbt).
 
 ///|
 /// An allowance's windows as chips in a line (quota_chips', not worded, as a node) in `parent`, `q` as the core says it

@@ -9,7 +9,7 @@ monoid (also built as still.fail, the same code under its other name: `client/i1
 - `station/`: TypeScript station on bundled Node + Effect (`scripts/station-bundle.sh`), prebuilt native parts (`station/native`), and MoonBit program (`station/mb`) for readers, builders, and the whole station (not shipped alone until it matches TypeScript). Holds chats, sessions, agents, jobs, and accounts over the mesh.
 - `cloud/`: Cloudflare Workers for accounts, workspaces, member credentials, and relays. People only.
 - `client/core-ts/`: TypeScript + Effect client core for every app (accounts, station links, SQLite cache, views). UIs only render it. `client/shell` (Rust) is native IO, `client/iroh-wasm` is browser iroh, `client/i18n/catalog` holds shared zh/en strings with matching keys.
-- `apps/mbui/`: single app for Android, iOS, macOS, Windows, Linux, and web in MoonBit on `libs/mbui`. `libs/comma-ui` is Comma's component library. `libs/sf-ui` is still.fail's component library.
+- `apps/mbui/`: single app for Android, iOS, macOS, Windows, Linux, and web in MoonBit on `libs/ui` (`ui.monoid`: unified UI framework and component library). `libs/comma-ui` is Comma's component library.
 - `libs/base/`: program-agnostic MoonBit base (Rust shell binding, `sql`, `scheduler`, mesh wire/device side, `hash`, `net`). `station/mb` uses shell-free packages.
 - `libs/client-core/`: first MoonBit client-core slice on `libs/base` (zero-write chat open, `MdStore`, `FrameOutbox`). Unused in production yet.
 - `web/`: web host for the mbui app, Preact pages, and `web/ui`. `apps/extension` sends browser pages to a chat.

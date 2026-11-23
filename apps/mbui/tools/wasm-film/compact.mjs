@@ -4,7 +4,7 @@
 // Unsupported instruction encodings fail closed: a new compiler feature must not silently change a picture.
 // moonc v0.10.21 (moon 0.1.20261117) writes no start section: it exports `_start` instead, a wrapper of no locals that
 // guards against a second run, calls the initializer and then `main`. There the initializer is what is compacted, and
-// the host calls `_start` itself after instantiating (run.mjs, libs/mbui/src/host/wasm_shell.c).
+// the host calls `_start` itself after instantiating (run.mjs, libs/ui/src/host/wasm_shell.c).
 
 // Whether the module has a start section, so that instantiating it already ran the packages' initializers.
 export function hasStartSection(data) {

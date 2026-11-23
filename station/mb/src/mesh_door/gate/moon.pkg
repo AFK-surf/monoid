@@ -1,6 +1,6 @@
 import {
   "station/mesh_door/door",
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/json",
   "moonbitlang/core/string",
   "moonbitlang/core/encoding/base64",

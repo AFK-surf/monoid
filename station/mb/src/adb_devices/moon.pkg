@@ -12,7 +12,7 @@ import {
   "station/nodepath",
   "station/memory",
   "station/session_chats",
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/buffer",
   "moonbitlang/core/cmp",

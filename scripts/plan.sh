@@ -26,7 +26,7 @@ decide() {
   if has '^docs/releases/'; then static+=(web-beta); fi
   # (the app's page, each of the web app's pages: the app and mbui's web host built into it, apps/mbui/scripts/web-app.sh;
   # the Worker that serves them, cloud/src/web.ts)
-  if has '^(web/|client/|libs/mesh-transport/|rules/js/|shared/(release-keys|moved-from)\.ts$|apps/mbui/(src|assets)/|libs/mbui/(src|web)/|libs/sf-ui/src/|libs/sf-ui/moon\.(mod|work)$|package\.json$|pnpm-lock\.yaml$|cloud/(deploy\.py|build-static\.ts|wrangler\.web-beta\.jsonc|src/(web|compat)\.ts)$|apps/mbui/scripts/web-app\.sh$|libs/mbui/scripts/web\.sh$)' && [ ${#static[@]} = 0 ]; then static+=(web-beta); fi
+  if has '^(web/|client/|libs/mesh-transport/|rules/js/|shared/(release-keys|moved-from)\.ts$|apps/mbui/(src|assets)/|libs/ui/(src|web)/|package\.json$|pnpm-lock\.yaml$|cloud/(deploy\.py|build-static\.ts|wrangler\.web-beta\.jsonc|src/(web|compat)\.ts)$|apps/mbui/scripts/web-app\.sh$|libs/ui/scripts/web\.sh$)' && [ ${#static[@]} = 0 ]; then static+=(web-beta); fi
   if has '^(web/|client/|rules/js/|shared/(release-keys|moved-from)\.ts$|package\.json$|pnpm-lock\.yaml$|cloud/(deploy\.py|build-static\.ts|wrangler\.admin\.jsonc)$)'; then static+=(admin); fi
   if has '^cloud/(src/preview\.ts|build-static\.ts|wrangler\.preview\.jsonc)$'; then static+=(preview); fi
   # (the official site, website/, with the legal pages it serves from web/public)
@@ -44,7 +44,7 @@ decide() {
   # The station in TypeScript, its native parts (vendor/: the mesh addon's iroh), its programs in MoonBit (station/mb: the
   # shell they link, client/shell, the base's packages they take, libs/base, and mbui's effect), the rules it checks the lock and
   # vaults by (rules/js), what it shares with the core (shared/, client/core-ts/src: scripts/plan-covers.ts finds which), the words it says, the installer it carries (cloud/src/install*.ts: scripts/installers.ts), its deltas (scripts/delta.ts, delta-fast.c, release-deltas.ts).
-  if has '^(station/(src|native|mb|assets)/|shared/|libs/base/(src/|moon\.mod$)|client/shell/|libs/mesh-transport/|libs/mbui/src/effect/|rules/js/|client/core-ts/src/(shapes/[^/]+|lock-form|rig-form|whitespace|titles|chat-row|cache-policy|codex-quota|mediaFacts|digest|redact|preset-records|features|model-speed)\.ts$|station/(package\.json|pnpm-lock\.yaml)$|vendor/|client/i18n/|bin/|scripts/(release|station-bundle)\.sh$|scripts/(posthog-key|native|installers|release-sign|delta|release-deltas)\.ts$|scripts/delta-fast\.c$|cloud/src/(install|install-windows|i18n)\.ts$)'; then station=true; fi
+  if has '^(station/(src|native|mb|assets)/|shared/|libs/base/(src/|moon\.mod$)|client/shell/|libs/mesh-transport/|libs/ui/src/effect/|rules/js/|client/core-ts/src/(shapes/[^/]+|lock-form|rig-form|whitespace|titles|chat-row|cache-policy|codex-quota|mediaFacts|digest|redact|preset-records|features|model-speed)\.ts$|station/(package\.json|pnpm-lock\.yaml)$|vendor/|client/i18n/|bin/|scripts/(release|station-bundle)\.sh$|scripts/(posthog-key|native|installers|release-sign|delta|release-deltas)\.ts$|scripts/delta-fast\.c$|cloud/src/(install|install-windows|i18n)\.ts$)'; then station=true; fi
   # The beta Android app: mbui's in the Kotlin one's place (scripts/release.sh --beta android), released for a
   # change to what apps/mbui's beta is made of (scripts/beta.sh APP_SRC: its code, mbui's with its Android host's
   # Java, JZlib among it, the client's, media's, vendor's), to the tool that packs and repacks its APK (mbui's
@@ -55,17 +55,17 @@ decide() {
   # twice a day (station/package.json's packages) without changing the core. One that does change it ships with the
   # next release, its core made anew because the key changed.
   android_beta=false
-  if has '^(apps/mbui/(src|core|android|ios|engine)/|libs/mbui/(src|android)/|libs/sf-ui/src/|(apps|libs)/mbui/moon\.(mod|work)$|libs/sf-ui/moon\.(mod|work)$|client/|libs/mesh-transport/|rules/js/|shared/(release-keys|moved-from)\.ts$|web/public/avatars/index\.json$|media/|vendor/|libs/mbui/tools/apk/|scripts/(release\.sh|native\.ts|delta\.ts|delta-fast\.c|release-deltas\.ts)$|\.github/release\.sh$|apps/mbui/scripts/(beta|android|android-core|core)\.sh$|libs/mbui/scripts/android\.sh$)'; then android_beta=true; fi
+  if has '^(apps/mbui/(src|core|android|ios|engine)/|libs/ui/(src|android)/|(apps/mbui|libs/ui)/moon\.(mod|work)$|client/|libs/mesh-transport/|rules/js/|shared/(release-keys|moved-from)\.ts$|web/public/avatars/index\.json$|media/|vendor/|libs/ui/tools/apk/|scripts/(release\.sh|native\.ts|delta\.ts|delta-fast\.c|release-deltas\.ts)$|\.github/release\.sh$|apps/mbui/scripts/(beta|android|android-core|core)\.sh$|libs/ui/scripts/android\.sh$)'; then android_beta=true; fi
   # The beta Mac app: mbui's in the Electron one's place (scripts/release.sh --beta desktop), released, as the
   # Android one, for a change to what apps/mbui's Mac app is made of (its code, mbui's with its Mac host, the
   # client's, media's, vendor's) or to how it is built and released.
   mac_beta=false
-  if has '^(apps/mbui/(src|core|engine)/|libs/mbui/src/|libs/sf-ui/src/|(apps|libs)/mbui/moon\.(mod|work)$|libs/sf-ui/moon\.(mod|work)$|client/|libs/mesh-transport/|rules/js/|shared/(release-keys|moved-from)\.ts$|web/public/avatars/index\.json$|media/|vendor/|scripts/(release|mac-feeds)\.sh$|scripts/(native|delta|release-deltas)\.ts$|scripts/delta-fast\.c$|\.github/(release-desktop\.sh|mac_signing\.py)$|apps/mbui/scripts/(beta|mac-app|mac|core)\.sh$|libs/mbui/scripts/mac\.sh$|apps/mbui/scripts/mac-icon\.swift$)'; then mac_beta=true; fi
+  if has '^(apps/mbui/(src|core|engine)/|libs/ui/src/|(apps/mbui|libs/ui)/moon\.(mod|work)$|client/|libs/mesh-transport/|rules/js/|shared/(release-keys|moved-from)\.ts$|web/public/avatars/index\.json$|media/|vendor/|scripts/(release|mac-feeds)\.sh$|scripts/(native|delta|release-deltas)\.ts$|scripts/delta-fast\.c$|\.github/(release-desktop\.sh|mac_signing\.py)$|apps/mbui/scripts/(beta|mac-app|mac|core)\.sh$|libs/ui/scripts/mac\.sh$|apps/mbui/scripts/mac-icon\.swift$)'; then mac_beta=true; fi
   # The beta Windows app: mbui's in the Electron one's place (scripts/release.sh --beta desktop-win), released, as
   # the Mac one, for a change to what apps/mbui's Windows app is made of (its code, mbui's with its Windows host,
   # its installer, the client's, media's, vendor's) or to how it is built and released.
   win_beta=false
-  if has '^(apps/mbui/(src|core|engine|windows)/|libs/mbui/src/|libs/sf-ui/src/|(apps|libs)/mbui/moon\.(mod|work)$|libs/sf-ui/moon\.(mod|work)$|client/|libs/mesh-transport/|rules/js/|shared/(release-keys|moved-from)\.ts$|web/public/avatars/index\.json$|media/|vendor/|scripts/(release|win-feeds)\.sh$|scripts/(native|delta|release-deltas|release-sign)\.ts$|scripts/delta-fast\.c$|apps/mbui/scripts/(win|core)\.sh$|libs/mbui/scripts/win\.sh$|apps/mbui/scripts/mac-icon\.swift$)'; then win_beta=true; fi
+  if has '^(apps/mbui/(src|core|engine|windows)/|libs/ui/src/|(apps/mbui|libs/ui)/moon\.(mod|work)$|client/|libs/mesh-transport/|rules/js/|shared/(release-keys|moved-from)\.ts$|web/public/avatars/index\.json$|media/|vendor/|scripts/(release|win-feeds)\.sh$|scripts/(native|delta|release-deltas|release-sign)\.ts$|scripts/delta-fast\.c$|apps/mbui/scripts/(win|core)\.sh$|libs/ui/scripts/win\.sh$|apps/mbui/scripts/mac-icon\.swift$)'; then win_beta=true; fi
   # The mbui app's Windows shell and engine, prebuilt: fetched and the shell's tests run (windows-natives), for a
   # change to what they are made of.
   windows_natives=false
@@ -78,23 +78,23 @@ decide() {
   # mbui-web and deployed by monoid-kit, for a change to what it is made of (the app's code and mbui's, mbui's web host)
   # or to how it is built and served.
   kit=false
-  if has '^(apps/mbui/(src|assets)/|libs/mbui/(src|web)/|libs/sf-ui/src/|((apps|libs)/mbui|libs/sf-ui)/moon\.(mod|work)$|apps/mbui/scripts/(kit-web\.sh|kit\.html|web\.sh|env\.sh|mbui\.sh|assets)$|libs/mbui/scripts/(web|env)\.sh$|apps/mbui/tools/assets/|cloud/(deploy\.py|wrangler\.kit\.jsonc)$)'; then kit=true; fi
+  if has '^(apps/mbui/(src|assets)/|libs/ui/(src|web)/|(apps/mbui|libs/ui)/moon\.(mod|work)$|apps/mbui/scripts/(kit-web\.sh|kit\.html|web\.sh|env\.sh|mbui\.sh|assets)$|libs/ui/scripts/(web|env)\.sh$|apps/mbui/tools/assets/|cloud/(deploy\.py|wrangler\.kit\.jsonc)$)'; then kit=true; fi
   # The ui.monoid.build site & docs (website/ui/build.mjs, monoid's alone: cloud/wrangler.ui.jsonc), built by
   # mbui-ui and deployed by monoid-ui, for a change to its pages/assets, the embeds it builds, or how it is served.
   ui=false
-  if has '^(website/ui/|apps/mbui/(src|assets)/|libs/mbui/(src|web)/|libs/sf-ui/src/|((apps|libs)/mbui|libs/sf-ui)/moon\.(mod|work)$|apps/mbui/scripts/(kit-web\.sh|kit\.html|web\.sh|env\.sh|mbui\.sh|assets)$|libs/mbui/scripts/(web|env)\.sh$|apps/mbui/tools/assets/|cloud/(deploy\.py|wrangler\.ui\.jsonc)$)'; then ui=true; fi
+  if has '^(website/ui/|apps/mbui/(src|assets)/|libs/ui/(src|web)/|(apps/mbui|libs/ui)/moon\.(mod|work)$|apps/mbui/scripts/(kit-web\.sh|kit\.html|web\.sh|env\.sh|mbui\.sh|assets)$|libs/ui/scripts/(web|env)\.sh$|apps/mbui/tools/assets/|cloud/(deploy\.py|wrangler\.ui\.jsonc)$)'; then ui=true; fi
   # The mbui app's own tests (check-mbui, mbui-check.yml; main's run there on their own): for a change to it, to mbui
-  # (libs/mbui), or to its component library (libs/sf-ui).
+  # (libs/ui), or to its component library (libs/ui).
   mbui=false
-  if has '^(apps|libs)/mbui/|^libs/sf-ui/' || has '^\.github/workflows/mbui-check\.yml$'; then mbui=true; fi
+  if has '^(apps/mbui|libs/ui)/' || has '^\.github/workflows/mbui-check\.yml$'; then mbui=true; fi
   # Comma's parts' module's check (check-comma-ui: libs/comma-ui/scripts/check.sh): for a change to it, or to mbui, which
   # it is built on.
   comma_ui=false
-  if has '^libs/(comma-ui|mbui)/'; then comma_ui=true; fi
-  # still.fail's component library's check (check-sf-ui: libs/sf-ui/scripts/check.sh): for a change to it, or to mbui,
+  if has '^libs/(comma-ui|ui)/'; then comma_ui=true; fi
+  # still.fail's component library's check (check-sf-ui: libs/ui/scripts/check-controls.sh): for a change to it, or to mbui,
   # which it is built on.
   sf_ui=false
-  if has '^libs/(sf-ui|mbui)/'; then sf_ui=true; fi
+  if has '^libs/ui/'; then sf_ui=true; fi
   # The station's tests (check-station: scripts/check.sh's station-tests, in slices on Linux runners): for a change to
   # what they read, as check.sh says it (its station_paths, read from there: said once), to the check itself, or to
   # CI's own files (which make every check run whole: pipeline.yml).
@@ -116,7 +116,7 @@ decide() {
   # left from before by proc_listpids and KERN_PROCARGS2; `check` runs them on Linux): only when one of them or CI's
   # own files changed.
   check_mac=false
-  if has '^(station/native/helper/|station/native/launcher/|vendor/(PermissionFlow|serve-sim)/|apps/mbui/(src/host/apple_reports\.m|scripts/ios[_-]reports)|\.github/(mac-release-prebuild|test_mac_release_prebuild)\.sh$|(apps|libs)/mbui/scripts/mac\.sh$)' || has_but '^\.github/' '^\.github/workflows/(mbui-|preview\.yml$|cache-prune\.yml$|side\.yml$)'; then check_mac=true; fi
+  if has '^(station/native/helper/|station/native/launcher/|vendor/(PermissionFlow|serve-sim)/|apps/mbui/(src/host/apple_reports\.m|scripts/ios[_-]reports)|\.github/(mac-release-prebuild|test_mac_release_prebuild)\.sh$|(apps/mbui|libs/ui)/scripts/mac\.sh$)' || has_but '^\.github/' '^\.github/workflows/(mbui-|preview\.yml$|cache-prune\.yml$|side\.yml$)'; then check_mac=true; fi
   # Whether `check` tests the native parts' Rust (scripts/check.sh's cargo tests: the station's launcher, runner, mesh
   # and screen, the mesh transport, the client's shells), on ci-1, whose sccache keeps their builds short: only when
   # that Rust, what it vendors or ci-1's own setup changed. Otherwise check runs on GitHub's runners without them

@@ -1,0 +1,29 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "ui/webpage"
+
+// Values
+pub fn history_back() -> Unit
+
+pub let history_channel : String
+
+pub fn history_push(String) -> Unit
+
+pub fn history_replace(String) -> Unit
+
+pub fn loaded_title() -> String
+
+pub fn location() -> String
+
+pub fn set_cjk_face(face? : Int, weight_step? : Int, families? : Array[String]) -> Unit
+
+pub fn set_theme_color(String) -> Unit
+
+pub fn set_title(String) -> Unit
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

@@ -26,7 +26,7 @@ for part in glob.glob(os.path.join(ROOT, "client/i18n/catalog/zh/*.json")):
         catalog.update(json.load(f))
 words = {SETTINGS: listed(SETTINGS), BASE: listed(BASE) | listed(SETTINGS)}
 lacking = []
-for path in sorted(glob.glob(os.path.join(A, "src/**/*.mbt"), recursive=True)) + sorted(glob.glob(os.path.join(ROOT, "libs/sf-ui/src/**/*.mbt"), recursive=True)):
+for path in sorted(glob.glob(os.path.join(A, "src/**/*.mbt"), recursive=True)) + sorted(glob.glob(os.path.join(ROOT, "libs/ui/src/controls/**/*.mbt"), recursive=True)):
     if re.search(r"/strings_(zh|en)\.mbt$", path):
         continue
     own = SETTINGS if path.startswith(SETTINGS + os.sep) else BASE

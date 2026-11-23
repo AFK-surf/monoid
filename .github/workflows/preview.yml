@@ -21,8 +21,7 @@ on:
     branches: ["**"]
     paths:
       - "apps/mbui/**"
-      - "libs/mbui/**"
-      - "libs/sf-ui/**"
+      - "libs/ui/**"
       - "client/**"
       - "rules/js/**"
       - "web/public/avatars/index.json"
@@ -109,7 +108,7 @@ jobs:
             base=${{ github.event.before }}
             [ -n "$branch" ] && base=$(git merge-base origin/main HEAD)
             if git cat-file -e "$base^{commit}" 2>/dev/null && git diff --name-only "$base" HEAD |
-              grep -qE '^(apps/mbui/windows/|apps/mbui/e2e/win/handoff\.sh$|apps/mbui/scripts/win\.sh$|apps/mbui/src/host/win_core\.c$|apps/mbui/src/host/win_(electron_sealed|hello)\.h$|libs/mbui/src/host/win_(life|update)\.h$|scripts/(win-feeds|release)\.sh$|scripts/release-sign\.ts$|shared/(release-keys|release-signed|delta)\.ts$|station/src/updates/)'; then v=yes; fi
+              grep -qE '^(apps/mbui/windows/|apps/mbui/e2e/win/handoff\.sh$|apps/mbui/scripts/win\.sh$|apps/mbui/src/host/win_core\.c$|apps/mbui/src/host/win_(electron_sealed|hello)\.h$|libs/ui/src/host/win_(life|update)\.h$|scripts/(win-feeds|release)\.sh$|scripts/release-sign\.ts$|shared/(release-keys|release-signed|delta)\.ts$|station/src/updates/)'; then v=yes; fi
           fi
           echo "handoff=$v" >> "$GITHUB_OUTPUT"
           echo "handoff: $v"
@@ -121,7 +120,7 @@ jobs:
           else
             base=$(git merge-base origin/main HEAD)
             if git cat-file -e "$base^{commit}" 2>/dev/null && git diff --name-only "$base" HEAD |
-              grep -qE '^(apps/mbui/scripts/(win|win-compiler|beta|env)\.sh$|libs/mbui/scripts/(win\.sh|mbc|env\.sh)$|libs/mbui/tools/mbc/|\.github/workflows/(preview|pipeline|stable)\.yml$|\.github/actions/(msvc|mbui-moonbit)/|scripts/release\.sh$)'; then v=yes; fi
+              grep -qE '^(apps/mbui/scripts/(win|win-compiler|beta|env)\.sh$|libs/ui/scripts/(win\.sh|mbc|env\.sh)$|libs/ui/tools/mbc/|\.github/workflows/(preview|pipeline|stable)\.yml$|\.github/actions/(msvc|mbui-moonbit)/|scripts/release\.sh$)'; then v=yes; fi
           fi
           echo "win_build=$v" >> "$GITHUB_OUTPUT"
           echo "win_build: $v"
@@ -142,7 +141,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || '' }}
     # (a run by hand, or the day's, compiles what main's store has none of whole: once the units' commands named mbui at
-    # libs/mbui, 2026-11-13, none of the store's were theirs, and a push's 5 minutes did not see it through)
+    # libs/ui, 2026-11-13, none of the store's were theirs, and a push's 5 minutes did not see it through)
     timeout-minutes: ${{ github.event_name == 'push' && 5 || 10 }}
     env:
       # (scripts/native.ts: GitHub's release API, asked when the release's download fails, with the job's token, not
@@ -212,7 +211,7 @@ jobs:
           node scripts/native.ts fetch engine linux-${{ matrix.arch }}
           node scripts/native.ts fetch shell linux-${{ matrix.arch }}
           node scripts/native.ts fetch ghostty-vt linux-${{ matrix.arch }}
-      # (moon's own build of mbui's and the app's copies, libs/mbui/scripts/linux.sh's out/linux/mod and out/linux/app:
+      # (moon's own build of mbui's and the app's copies, libs/ui/scripts/linux.sh's out/linux/mod and out/linux/app:
       # mirrored by content there so that moon, going by mtimes, builds again only what changed, but made from nothing
       # on every runner, ~75 s of moonc before mbc's units were asked: 578a45fe4's linux (x64) cut at its reserve. main's
       # newest, saved below; mbc's units are the store's below, left out here)
@@ -220,10 +219,10 @@ jobs:
         id: moon
         with:
           path: |
-            libs/mbui/out/linux/mod
-            libs/mbui/out/linux/app
-            !libs/mbui/out/linux/**/*.mbc
-            !libs/mbui/out/linux/**/*.mbc/**
+            libs/ui/out/linux/mod
+            libs/ui/out/linux/app
+            !libs/ui/out/linux/**/*.mbc
+            !libs/ui/out/linux/**/*.mbc/**
           # (of no image, as the ios job's: moonc and its C the same on each)
           key: mbui-linux-moon-${{ matrix.arch }}-${{ github.sha }}
           restore-keys: mbui-linux-moon-${{ matrix.arch }}-
@@ -429,10 +428,10 @@ jobs:
       - id: moon-room
         if: always() && github.ref == 'refs/heads/main' && steps.start.outcome == 'success'
         run: |
-          c=libs/mbui/out/linux/app/_build/native/release/build/stillfail/stillfail/stillfail.c
+          c=libs/ui/out/linux/app/_build/native/release/build/stillfail/stillfail/stillfail.c
           left=$(( JOB_END - $(date +%s) ))
           if [ -s "$c" ] && [ "$left" -gt 14 ]; then
-            find libs/mbui/out/linux -type d -name '*.mbc' -prune -exec rm -rf {} +
+            find libs/ui/out/linux -type d -name '*.mbc' -prune -exec rm -rf {} +
             echo "key=mbui-linux-moon-${{ matrix.arch }}-$(sha256sum "$c" | cut -c1-16)" >> "$GITHUB_OUTPUT"
           else
             echo "moon's build not saved: stillfail.c=${c} (${left} s left)"
@@ -442,10 +441,10 @@ jobs:
         continue-on-error: true
         with:
           path: |
-            libs/mbui/out/linux/mod
-            libs/mbui/out/linux/app
-            !libs/mbui/out/linux/**/*.mbc
-            !libs/mbui/out/linux/**/*.mbc/**
+            libs/ui/out/linux/mod
+            libs/ui/out/linux/app
+            !libs/ui/out/linux/**/*.mbc
+            !libs/ui/out/linux/**/*.mbc/**
           key: ${{ steps.moon-room.outputs.key }}
       - uses: actions/upload-artifact@v4
         if: github.ref != 'refs/heads/main'
@@ -497,7 +496,7 @@ jobs:
     if: github.repository_owner == 'AFK-surf' && needs.what.outputs.ios == 'yes' && needs.ios-shell.outputs.have == 'yes'
     runs-on: xcode-27
     # (a run by hand, or the day's, compiles what main's store has none of whole: once the units' commands named mbui at
-    # libs/mbui, 2026-11-13, none of the store's were theirs, and a push's 5 minutes saw 3 of it go)
+    # libs/ui, 2026-11-13, none of the store's were theirs, and a push's 5 minutes saw 3 of it go)
     timeout-minutes: ${{ github.event_name == 'push' && 5 || 10 }}
     env:
       # (scripts/native.ts: GitHub's release API, asked when the release's download fails, with the job's token, not
@@ -656,7 +655,7 @@ jobs:
             shell-apple-target-ios-arm64-
       # (a build cut short by its own limit, before the job's, still keeps what it compiled: main's store saved over what
       # was restored, nothing taken out, so the next run goes on from there, as the Linux jobs' do. Cut at the job's five
-      # minutes it kept nothing: main's ten pushes up to c64dfaa7 (2026-11-16, libs/mbui changed) each compiled from
+      # minutes it kept nothing: main's ten pushes up to c64dfaa7 (2026-11-16, libs/ui changed) each compiled from
       # the same old store till they were cut, 43908146733's after 254 s of it. Cut 24 s before the job is, moon's
       # build saved after the store too: the upload, the key and both saves after a whole build took 14 s
       # (43981912517), ~21 s on a slower runner, and the post steps ~6 s; after a cut the stop, the key, both saves and
@@ -693,11 +692,11 @@ jobs:
             done
             if [ "$(cat "$B/status")" != 0 ]; then
               cat "$B/log"
-              libs/mbui/scripts/chk errs < apps/mbui/out/ios-device/moon.log || true
+              libs/ui/scripts/chk errs < apps/mbui/out/ios-device/moon.log || true
               grep "^mbc:" apps/mbui/out/ios-device/moon.log || true
               exit 1
             fi
-            libs/mbui/scripts/chk errs < apps/mbui/out/ios-device/moon.log | grep -v "^errors: 0" || true
+            libs/ui/scripts/chk errs < apps/mbui/out/ios-device/moon.log | grep -v "^errors: 0" || true
             grep "^mbc:" apps/mbui/out/ios-device/moon.log || true
             bash apps/mbui/scripts/ios.sh build
             cd apps/mbui/out/ios-device && rm -rf Payload *.ipa && mkdir Payload && mv MBUI.app Payload/
@@ -903,7 +902,7 @@ jobs:
           for c in collate sealed hello reports; do
             nohup bash -c 'bash apps/mbui/scripts/win.sh "$1" > "$0/$1.log" 2>&1; echo $? > "$0/$1.status"' "$L" "$c" > /dev/null 2>&1 &
           done
-      # The app's build as the last run on main left it (mbui's in libs/mbui: moon's _build, the split C and its objects, the .exe): of main's pushes that run this job, three in four leave the app's C
+      # The app's build as the last run on main left it (mbui's in libs/ui: moon's _build, the split C and its objects, the .exe): of main's pushes that run this job, three in four leave the app's C
       # as it was (tests, docs, client/, media/; 96 of 129, 2026-10-18 to 20), and then moonc writes the same C again,
       # scripts/mbc finds every unit's object made of the same inputs (by content) and the same link made already:
       # nothing is compiled (with an mbui whose win.sh mirrors its copies and makes cl, link and lib reproducible, mbui#49:
@@ -913,12 +912,12 @@ jobs:
         id: build-cache
         with:
           path: |
-            libs/mbui/_build
-            libs/mbui/out
+            libs/ui/_build
+            libs/ui/out
           key: mbui-win-build-mono-${{ github.sha }}
           restore-keys: mbui-win-build-mono-
-      # (main's build from before mbui moved to libs/mbui, at its paths then, moved into place, while main has saved
-      # none at libs/mbui: the objects found by content there all the same. Goes once one is saved there.)
+      # (main's build from before mbui moved to libs/ui, at its paths then, moved into place, while main has saved
+      # none at libs/ui: the objects found by content there all the same. Goes once one is saved there.)
       - uses: actions/cache/restore@v4
         id: build-cache-before
         if: steps.build-cache.outputs.cache-matched-key == ''
@@ -930,8 +929,8 @@ jobs:
           restore-keys: mbui-win-build-mono-
       - if: steps.build-cache-before.outputs.cache-matched-key != ''
         run: |
-          mkdir -p libs/mbui
-          for d in _build out; do [ ! -d "apps/mbui/mbui/$d" ] || mv "apps/mbui/mbui/$d" "libs/mbui/$d"; done
+          mkdir -p libs/ui
+          for d in _build out; do [ ! -d "apps/mbui/mbui/$d" ] || mv "apps/mbui/mbui/$d" "libs/ui/$d"; done
           rm -rf apps/mbui/mbui
       # A branch's own units over main's build (MBC_STORE: those of its last push, by content, which main's build has
       # not): without, each push of a branch compiled all it changed against main again, presets' 277 of 480 units on
@@ -1254,8 +1253,8 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: |
-            libs/mbui/_build
-            libs/mbui/out
+            libs/ui/_build
+            libs/ui/out
           key: ${{ env.BUILD_KEY }}
       # (main's however the build ended: one cut short keeps what it compiled, nothing taken out, so the next run goes on
       # from there, as the Linux jobs' do; a branch's only of a build that went through, as theirs; what it left running (moon, mbc, clang-cl) stopped first
@@ -1305,8 +1304,8 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: |
-            libs/mbui/_build
-            libs/mbui/out
+            libs/ui/_build
+            libs/ui/out
           key: ${{ steps.moon-key.outputs.key }}
       - name: The Windows app's installer signed, put, checked, then its feed
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'

@@ -87,7 +87,7 @@ test "实验性功能's page: its switches, each off by default and on and off a
     assert_true(!kept("farviewNative") && !kept("board"), msg="\{at}: all off by default")
     // (but the wide frame's own: the sidebar's edge over what its pane shows by 6, sfdesk/pane_view.mbt's, as
     // station_move_wbtest's move_audit has it)
-    let faults = t.audit().filter(fn(f) { !f.contains("stillfail/sf/src/edge_node.mbt:37, in what was asked for at stillfail/src/sfdesk/pane_view.mbt:") })
+    let faults = t.audit().filter(fn(f) { !f.contains("ui/src/controls/edge_node.mbt:37, in what was asked for at stillfail/src/sfdesk/pane_view.mbt:") })
     assert_true(faults.is_empty(), msg="\{at}: " + faults.join("\n"))
     t.click(Switch, label="对话列表看板视图")
     t.run_for(@ui.move_most_ms)

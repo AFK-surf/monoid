@@ -137,7 +137,7 @@ test "a panel opened the first time over a core 40 ms late: nothing of it seen t
       // app's holds so: not judged there)
       if name != "dialog" {
         // (the sidebar's edge lies half over the pane on purpose, the frame's: not this page's)
-        assert_eq(t.audit().filter(fn(f) { !f.contains("stillfail/sf/src/edge_node.mbt") }), [], msg=at)
+        assert_eq(t.audit().filter(fn(f) { !f.contains("ui/src/controls/edge_node.mbt") }), [], msg=at)
       }
     }
   }
@@ -343,7 +343,7 @@ test "a station's page opened over a core 40 ms late: the screen as it was till 
       }
       if gates {
         // (the sidebar's edge lies half over the pane on purpose, the frame's: not this page's)
-        assert_eq(t.audit().filter(fn(f) { !f.contains("stillfail/sf/src/edge_node.mbt") }), [], msg=at)
+        assert_eq(t.audit().filter(fn(f) { !f.contains("ui/src/controls/edge_node.mbt") }), [], msg=at)
       }
     }
   }

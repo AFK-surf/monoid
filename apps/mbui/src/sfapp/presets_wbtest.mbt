@@ -714,10 +714,10 @@ fn preset_dialog_known(f : String) -> Bool {
   (f.has_prefix("rule 5: a box in 「") && f.contains(" falls short 8 at its ") && f.contains("(at 404,") && f.contains(" 472×36,")) ||
   (
     f.has_prefix("apart: a box (a node of the window's tree's at ") &&
-    f.contains("made at stillfail/sf/src/icon_button_node.mbt:") &&
-    f.contains(", in what was asked for at stillfail/sf/src/panel_centred_node.mbt:") &&
+    f.contains("made at ui/src/controls/icon_button_node.mbt:") &&
+    f.contains(", in what was asked for at ui/src/controls/panel_centred_node.mbt:") &&
     f.contains(" (a node of the window's tree's at ") &&
-    f.contains("made at stillfail/sf/src/panel_centred_node.mbt:") &&
+    f.contains("made at ui/src/controls/panel_centred_node.mbt:") &&
     f.has_suffix(") are drawn over each other by 58×1")
   )
 }

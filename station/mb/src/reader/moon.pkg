@@ -54,7 +54,7 @@ import {
   "moonbitlang/core/json",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/buffer",
-  "mbui/effect",
+  "ui/effect",
   "station/station_main",
 }
 

@@ -1,9 +1,0 @@
-import {
-  "mbui/ui",
-  "mbui/view",
-  "mbui/signals",
-  "mbui/paint",
-  "mbui/headless",
-  "stillfail/sf",
-  "stillfail/sf/glass",
-}

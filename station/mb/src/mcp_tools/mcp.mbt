@@ -356,14 +356,18 @@ pub(all) struct Reply {
 pub struct McpEndpoint {
   tools : () -> Array[Tool]
   backend : ToolsBackend
+  now_ms : () -> Int64
+  on_tool : ((String, String, Int64, Int64, Bool, String?) -> Unit)?
 }
 
 ///|
 pub fn McpEndpoint::new(
   backend : ToolsBackend,
   tools : () -> Array[Tool],
+  now_ms? : () -> Int64 = () => 0L,
+  on_tool? : (String, String, Int64, Int64, Bool, String?) -> Unit,
 ) -> McpEndpoint {
-  { tools, backend }
+  { tools, backend, now_ms, on_tool }
 }
 
 ///|
@@ -584,23 +588,43 @@ pub async fn McpEndpoint::handle(
         }
       }
       let args = typed(given, tool.input_schema)
+      let start_ms = (self.now_ms)()
       try {
         match tool.content {
           Some(content) => {
             let r = content(session, args)
+            if self.on_tool is Some(cb) {
+              cb(name, session, start_ms, (self.now_ms)(), r.is_error, if r.is_error { Some("tool_error") } else { None })
+            }
             let fields = [("content", jarr(r.content.map(c => c.to_jv())))]
             if r.is_error {
               fields.push(("isError", jbool(true)))
             }
             reply([("result", jobj(fields))])
           }
-          None => reply([("result", text_result((tool.run)(session, args, jsig)))])
+          None => {
+            let out = (tool.run)(session, args, jsig)
+            if self.on_tool is Some(cb) {
+              cb(name, session, start_ms, (self.now_ms)(), false, None)
+            }
+            reply([("result", text_result(out))])
+          }
         }
       } catch {
         error => {
           let aborted = match signal {
             Some(s) => s.aborted
             None => false
+          }
+          if self.on_tool is Some(cb) {
+            let err_type = if aborted {
+              "aborted"
+            } else if error is Refusal(_) {
+              "refused"
+            } else {
+              "error"
+            }
+            cb(name, session, start_ms, (self.now_ms)(), true, Some(err_type))
           }
           if !aborted {
             self.backend.log(

@@ -5,5 +5,5 @@ import {
 }
 
 import {
-  "mbui/effect",
+  "ui/effect",
 } for "wbtest"

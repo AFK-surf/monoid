@@ -22,6 +22,9 @@ priv struct Turn {
   // (a turn its background work woke, `job`: the need of the turn before it, still asked of a person as it began, so
   // that a turn that only says how that work goes and waits on asks the same; `begin_turn`)
   asked_before : Json?
+  started_at : Double
+  mut first_live_at : Double?
+  mut tools_count : Int
 }
 
 ///|
@@ -127,6 +130,7 @@ priv struct Actor {
   stopped : Array[Json]
   mut stopped_note : String?
   mut idle_since : Double
+  mut open_kind : String
   mut working_for : Array[Working]
   mut ended_for : Array[Working]
   mut tools : Array[(String, String)]
@@ -282,6 +286,12 @@ fn Actors::tell(self : Actors, key : String, f : String, args : Array[Json]) -> 
 }
 
 ///|
+/// Emits a side-channel telemetry trace span without mirroring intermediate actor state to Node.
+fn Actors::tell_trace(self : Actors, key : String, payload : Json) -> Unit {
+  self.say_node({ "tell": Json::string("trace"), "actor": Json::string(key), "args": Json::array([payload]) })
+}
+
+///|
 /// A wait of Node's clock (`after`): `then` once its time comes; the function given back lets it go.
 fn Actors::after(self : Actors, ms : Double, then : () -> Unit, on? : String) -> () -> Unit {
   self.next += 1
@@ -372,6 +382,7 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         stopped: [],
         stopped_note: None,
         idle_since: self.now,
+        open_kind: "other",
         working_for: [],
         ended_for: [],
         tools: [],

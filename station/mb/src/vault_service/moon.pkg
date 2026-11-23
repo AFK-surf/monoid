@@ -12,5 +12,5 @@ import {
   "stillfail/rules/vault",
   "moonbitlang/core/double",
   "moonbitlang/core/cmp",
-  "mbui/effect",
+  "ui/effect",
 }

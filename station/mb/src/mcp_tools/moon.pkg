@@ -8,5 +8,5 @@ import {
   "station/session_storage",
   "moonbitlang/core/encoding/base64",
   "moonbitlang/core/bigint",
-  "mbui/effect",
+  "ui/effect",
 }

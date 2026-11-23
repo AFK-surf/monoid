@@ -722,6 +722,10 @@ export class MbActor {
         deps.chat(connect)?.standsAt?.({ channel, threadTs }, stands);
         return;
       }
+      case "trace": {
+        deps.emitTrace?.(args[0]);
+        return;
+      }
     }
     log.warn("session", "a session told the station what it does not know", { session: this.key, tell: f });
   }

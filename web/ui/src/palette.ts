@@ -1,5 +1,5 @@
 // still.fail's colours, the one place they are written: the web's pages take them as CSS variables
-// (web/src/styles/global.css.ts) and the app as its palette (libs/sf-ui/src/palette_data.mbt, made from this by
+// (web/src/styles/global.css.ts) and the app as its palette (libs/ui/src/controls/palette_data.mbt, made from this by
 // scripts/palette.ts). "#RRGGBB" or "#RRGGBBAA"; tone(ink): a tone's ground, its ink at the theme's TONE opacity.
 
 /** A tone's ground: `ink` at the theme's opacity (TONE). */

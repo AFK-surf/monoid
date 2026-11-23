@@ -8,7 +8,7 @@ import {
   "station/jscase",
   "station/nodepath",
   "station/cloud_net",
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/encoding/base64",
   "moonbitlang/core/double",
   "moonbitlang/core/buffer",

@@ -1,9 +1,9 @@
 import {
-  "mbui/wasmrt",
+  "ui/wasmrt",
   "moonbitlang/core/double",
-  "mbui/codec",
-  "mbui/hostapi",
-  "mbui/signals",
+  "ui/codec",
+  "ui/hostapi",
+  "ui/signals",
   "moonbitlang/core/json",
   "moonbitlang/core/env",
 }

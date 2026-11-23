@@ -1,11 +1,11 @@
 import {
-  "mbui/figure",
-  "mbui/film",
-  "mbui/host",
-  "mbui/motion",
-  "mbui/signals",
-  "mbui/ui",
-  "mbui/view",
+  "ui/figure",
+  "ui/film",
+  "ui/host",
+  "ui/motion",
+  "ui/signals",
+  "ui/ui",
+  "ui/view",
 }
 
 options(

@@ -1,6 +1,6 @@
 import {
-  "mbui/halt",
-  "mbui/wasmrt",
+  "ui/halt",
+  "ui/wasmrt",
   "moonbitlang/core/double",
   "stillfail/core",
   "stillfail/sfapp",
@@ -8,14 +8,14 @@ import {
   "stillfail/sfcore",
   "stillfail/sfbase",
   "stillfail/sfkept",
-  "stillfail/sf",
-  "mbui/ui",
-  "mbui/view",
+  "ui/controls" @sf,
+  "ui/ui",
+  "ui/view",
   "moonbitlang/core/json",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/env",
-  "mbui/runfs",
-  "mbui/signals",
+  "ui/runfs",
+  "ui/signals",
 }
 
 options(

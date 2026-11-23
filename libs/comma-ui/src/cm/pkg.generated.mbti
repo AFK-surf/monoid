@@ -2,9 +2,9 @@
 package "comma-ui/cm"
 
 import {
-  "mbui/signals",
-  "mbui/ui",
-  "mbui/view",
+  "ui/signals",
+  "ui/ui",
+  "ui/view",
   "moonbitlang/core/debug",
   "moonbitlang/core/ref",
 }

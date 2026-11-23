@@ -98,7 +98,7 @@ pub fn chat_row_node(
   }
   parent.box(fn(slot) {
     // (row-internal marks, badges and icons settle at once unless an explicit transition moves the row itself,
-    // isolating them from the sidebar list's own slot transitions: libs/mbui/src/view/transition.mbt)
+    // isolating them from the sidebar list's own slot transitions: libs/ui/src/view/transition.mbt)
     slot.transitions_only() |> ignore
     // (in its slot, cut to its corners where its list stands: moved across in it, its tray beside it; a finger's in a
     // box of its own, its slot lifted round it; a mouse's its slot itself, the room under it its margin)

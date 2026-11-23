@@ -8,8 +8,8 @@
 #include <sys/un.h>
 #import "apple.h"
 // (mbui's, beside its host: moon compiles this app's stub with no include path of mbui's)
-#include "../../../../libs/mbui/src/host/post_api.h"
-#include "../../../../libs/mbui/src/host/mini_json.h"
+#include "../../../../libs/ui/src/host/post_api.h"
+#include "../../../../libs/ui/src/host/mini_json.h"
 #include "station_install.h"  // what the installer is handed
 
 // What it says changed (a step of the installer, an act done): a message posted on the app's channel for it, which

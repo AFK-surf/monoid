@@ -1,16 +1,16 @@
 import {
   "moonbitlang/core/json",
   "moonbitlang/core/double",
-  "mbui/ui",
-  "mbui/signals",
-  "mbui/view",
-  "mbui/headless",
-  "mbui/hostapi",
-  "mbui/pixels",
-  "stillfail/sf",
+  "ui/ui",
+  "ui/signals",
+  "ui/view",
+  "ui/headless",
+  "ui/hostapi",
+  "ui/pixels",
+  "ui/controls" @sf,
   "stillfail/sfbase",
   "stillfail/sfapp/settings",
-  "mbui/motion",
+  "ui/motion",
   "stillfail/sfpages",
 }
-import { "mbui/halt" } for "wbtest"
+import { "ui/halt" } for "wbtest"

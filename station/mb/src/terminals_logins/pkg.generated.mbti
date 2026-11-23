@@ -2,7 +2,7 @@
 package "station/terminals_logins"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "station/jsjson",
   "station/ops_platform",
 }

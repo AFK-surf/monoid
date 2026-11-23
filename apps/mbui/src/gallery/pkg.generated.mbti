@@ -2,7 +2,7 @@
 package "stillfail/gallery"
 
 import {
-  "mbui/ui",
+  "ui/ui",
 }
 
 // Values

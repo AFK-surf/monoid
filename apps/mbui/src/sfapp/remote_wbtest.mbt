@@ -11,7 +11,7 @@ fn remote_faults(t : @ui.Tester) -> Array[String] {
   .filter(fn(f) {
     (f.contains("remote_node") || f.contains("side_node.mbt")) &&
     // (the sidebar's edge to drag, laid over its own side as every place's sidebar has it)
-    !(f.contains("stillfail/sf/src/edge_node.mbt:") && f.contains("in what was asked for at stillfail/src/sfdesk/pane_view.mbt:")) &&
+    !(f.contains("ui/src/controls/edge_node.mbt:") && f.contains("in what was asked for at stillfail/src/sfdesk/pane_view.mbt:")) &&
     !(f.has_prefix("apart: ") && f.contains("made at stillfail/src/sfdesk/rail_node.mbt:")) &&
     // (on 小屏 the list runs on under the bottom bar's glass, as the chats' list does: a row there is pressed where the
     // glass does not lie over it)

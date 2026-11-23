@@ -1,18 +1,18 @@
 import {
   "fvclient/stage",
-  "mbui/halt",
+  "ui/halt",
   "moonbitlang/core/double",
-  "mbui/pixels",
-  "mbui/codec",
+  "ui/pixels",
+  "ui/codec",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/json",
-  "mbui/ui",
-  "mbui/signals",
-  "mbui/view",
-  "mbui/kit",
-  "mbui/motion",
-  "stillfail/sf",
-  "mbui/hostapi",
+  "ui/ui",
+  "ui/signals",
+  "ui/view",
+  "ui/kit",
+  "ui/motion",
+  "ui/controls" @sf,
+  "ui/hostapi",
   "stillfail/sfapp/settings",
   "stillfail/sfbase",
   "stillfail/sfdesk",
@@ -20,4 +20,4 @@ import {
   "stillfail/sffixture",
 }
 
-import { "stillfail/sfkept", "stillfail/sfscreens", "stillfail/core", "mbui/dmath", "moonbitlang/core/cmp", "mbui/player" } for "wbtest"
+import { "stillfail/sfkept", "stillfail/sfscreens", "stillfail/core", "ui/dmath", "moonbitlang/core/cmp", "ui/player" } for "wbtest"

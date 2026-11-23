@@ -9,7 +9,7 @@ import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { restarter } from "../ops/restart.ts";
 import { managesStation } from "../mesh/credential.ts";
-import { ControlPlane, Events, Key, Parts, Paths, Peers, Store } from "../services.ts";
+import { ControlPlane, Events, Key, MeshSide, Parts, Paths, Peers, Store } from "../services.ts";
 import { Agents } from "../sessions/agents.ts";
 import { retiredWs } from "../sessions/hub.ts";
 import { Copies } from "./copies.ts";
@@ -39,6 +39,7 @@ export const CopiesLive = Layer.effectDiscard(
     const parts = yield* Parts;
     const key = yield* Key;
     const agents = yield* Agents;
+    const meshSide = yield* MeshSide;
     const fibers = yield* Effect.acquireRelease(Effect.sync(() => new Fibers("copies")), (f) => Effect.promise(() => f.close()));
     const runner = yield* Effect.acquireRelease(
       Effect.sync(() => new ProgramRunner({ db: join(data, "stillfail.db"), replica: join(data, "replica"), dataDir: data, origin: key.id })),
@@ -60,6 +61,7 @@ export const CopiesLive = Layer.effectDiscard(
       restart: () => restarter(data),
       taking: () => retire.takingNow(),
       backup: () => readBackupConfig(agents.config.raw()),
+      traces: () => meshSide.traces ?? null,
     });
     // The jobs and services of a workspace's chats up now (what a retirement stops and the preview lists), and this
     // station's own accounts (no copy borrowed, not the machine's login: what may move, share/index.ts moveProfile).

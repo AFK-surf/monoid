@@ -1,6 +1,6 @@
 import {
-  "mbui/ui",
-  "mbui/view",
-  "mbui/signals",
+  "ui/ui",
+  "ui/view",
+  "ui/signals",
   "comma-ui/cm",
 }

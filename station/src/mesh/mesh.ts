@@ -178,9 +178,14 @@ export const MeshLive = Layer.effectDiscard(
       const traces = yield* Effect.acquireRelease(
         Effect.sync(() => {
           const said = config.raw()?.telemetry?.traces;
-          return said === false ? new Traces(false) : said === true ? new Traces(true) : new Traces(true, { tailOnly: true });
+          const t = said === false ? new Traces(false) : said === true ? new Traces(true) : new Traces(true, { tailOnly: true });
+          side.traces = t;
+          return t;
         }),
-        (traces) => Effect.promise(() => traces.close()),
+        (traces) => Effect.promise(async () => {
+          if (side.traces === traces) side.traces = null;
+          await traces.close();
+        }),
       );
       if (traces.enabled) traces.exportTo((spans) => Effect.runPromise(plane.traces(spans)));
       // The station's log, waiting since it started (ops/log-export.ts).

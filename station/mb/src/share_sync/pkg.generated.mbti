@@ -2,7 +2,7 @@
 package "station/share_sync"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/json",
   "station/host",
   "station/sql",

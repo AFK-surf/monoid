@@ -32,7 +32,7 @@
       "src/cm"
     ],
     "imports": [
-      "mbui/",
+      "ui/",
       "moonbitlang/"
     ]
   },

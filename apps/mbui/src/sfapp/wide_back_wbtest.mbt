@@ -401,7 +401,7 @@ fn back_hint_audit(t : @ui.Tester) -> Array[String] {
   // station_move_wbtest.mbt).
   t
   .audit()
-  .filter(fn(f) { !(f.contains("stillfail/sf/src/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
+  .filter(fn(f) { !(f.contains("ui/src/controls/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
 }
 
 ///|

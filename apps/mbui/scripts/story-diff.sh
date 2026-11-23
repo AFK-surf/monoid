@@ -11,7 +11,7 @@
 #     DRIVE is the scene's steps (media.sh's; default `wait 300`), e.g. `tap 环境` to draw the bar's 环境 panel open.
 #     MBUI_FILM_SCALE (2) and the rest of media.sh's scene settings apply to every picture.
 #   story-diff.sh --before DIR1 --after DIR2 --out REPORT
-#     Each picture of DIR1 with one of the same name in DIR2 compared (libs/mbui/scripts/imgdiff.mjs: before | after |
+#     Each picture of DIR1 with one of the same name in DIR2 compared (libs/ui/scripts/imgdiff.mjs: before | after |
 #     what differs, side by side, REPORT/<name>), and REPORT/summary.md: each one's share of pixels differing and the
 #     rules found before and after. Fails where a picture is in one set alone.
 set -eu
@@ -70,7 +70,7 @@ if [ -n "$before" ] || [ -n "$after" ]; then
       missing=1
       continue
     fi
-    said=$(node "$repo/libs/mbui/scripts/imgdiff.mjs" "$a" "$b" "$out/$name" || true)
+    said=$(node "$repo/libs/ui/scripts/imgdiff.mjs" "$a" "$b" "$out/$name" || true)
     px=$(printf '%s' "$said" | sed -n 's/^.*: \([0-9]*\) px differ (\([0-9.]*%\)).*$/\1/p')
     share=$(printf '%s' "$said" | sed -n 's/^.*: \([0-9]*\) px differ (\([0-9.]*%\)).*$/\2/p')
     case "$said" in *'size changed'*) share="$share (size changed)" ;; esac

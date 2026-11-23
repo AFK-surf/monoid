@@ -194,6 +194,60 @@ test "spans are batched: sent once EXPORT_MS after the first, 500 a batch, a fai
 }
 
 ///|
+test "internal root spans omit parentSpanId, set kind=1, respect tail_only + always_keep + slow_ms, and no-op when disabled" {
+  let hr = Ref(0L)
+  let rt = @effect.Runtime::new()
+  let off = @mesh_runtime.Traces::new(false, rt, () => hr.val, (_, _, _) => ())
+  assert_true(off.start_root("4bf92f3577b34da6a3ce929d0e0e4736", "0000000000000001", 1000L) is None)
+  off.record_internal("4bf92f3577b34da6a3ce929d0e0e4736", "0000000000000001", 1000L, 2000L, "agent.open", [], false, always_keep=true)
+  assert_eq(off.spans.length(), 0)
+  off.close()
+
+  let tail = @mesh_runtime.Traces::new(true, rt, () => hr.val, (_, _, _) => (), tail_only=true, slow_ms=1000)
+  // 1. quick span with always_keep=true is kept, omits parentSpanId, kind=1, status=1
+  let s1 = tail.start_root("4bf92f3577b34da6a3ce929d0e0e4736", "0000000000000001", 1000L).unwrap()
+  hr.val += 10_000_000L // 10 ms
+  tail.end_internal(s1, "agent.open", [("stillfail.runtime", Json::string("claude")), ("stillfail.take_across", Json::boolean(false))], false, always_keep=true)
+  assert_eq(tail.spans.length(), 1)
+  let rec1 = tail.spans[0].as_object().unwrap()
+  assert_true(rec1.get("parentSpanId") is None)
+  assert_eq(rec1.get("name"), Some(Json::string("agent.open")))
+  assert_eq(rec1.get("kind"), Some(Json::number(1.0)))
+  assert_eq(rec1.get("status"), Some(o([("code", Json::number(1.0))])))
+
+  // 2. quick span with always_keep=false and slow_ms=500 is dropped (< 500ms)
+  let s2 = tail.start_root("4bf92f3577b34da6a3ce929d0e0e4736", "0000000000000002", 2000L).unwrap()
+  hr.val += 499_000_000L // 499 ms
+  tail.end_internal(s2, "mcp.tool", [("stillfail.tool", Json::string("chat_post"))], false, always_keep=false, slow_ms=500)
+  assert_eq(tail.spans.length(), 1)
+
+  // 3. slow span (>= 500ms) with slow_ms=500 is kept even though default slow_ms=1000
+  let s3 = tail.start_root("4bf92f3577b34da6a3ce929d0e0e4736", "0000000000000003", 3000L).unwrap()
+  hr.val += 500_000_000L // 500 ms
+  tail.end_internal(s3, "mcp.tool", [("stillfail.tool", Json::string("chat_post"))], false, always_keep=false, slow_ms=500)
+  assert_eq(tail.spans.length(), 2)
+
+  // 4. quick failed span with always_keep=false is kept with status.code=2
+  tail.record_internal(
+    "4bf92f3577b34da6a3ce929d0e0e4736",
+    "0000000000000004",
+    4_000_000_000L,
+    4_010_000_000L,
+    "replica.level",
+    [("stillfail.target_kind", Json::string("s3")), ("error.type", Json::string("network"))],
+    true,
+    always_keep=false,
+    slow_ms=500,
+  )
+  assert_eq(tail.spans.length(), 3)
+  let rec4 = tail.spans[2].as_object().unwrap()
+  assert_true(rec4.get("parentSpanId") is None)
+  assert_eq(rec4.get("kind"), Some(Json::number(1.0)))
+  assert_eq(rec4.get("status"), Some(o([("code", Json::number(2.0))])))
+  tail.close()
+}
+
+///|
 test "a pacer lets two frames go before the round trip is known, then as many as the link takes" {
   let now = Ref(0.0)
   let p = @mesh_runtime.Pacer::new(() => now.val, start=Some(1_500_000.0))

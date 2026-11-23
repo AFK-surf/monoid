@@ -2,13 +2,13 @@
 package "stillfail/sfdesk"
 
 import {
-  "mbui/signals",
-  "mbui/ui",
-  "mbui/view",
+  "ui/signals",
+  "ui/ui",
+  "ui/view",
   "moonbitlang/core/debug",
   "moonbitlang/core/json",
   "moonbitlang/core/ref",
-  "stillfail/sf",
+  "ui/controls",
   "stillfail/sfapp/settings",
   "stillfail/sfbase",
 }

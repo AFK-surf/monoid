@@ -1,6 +1,6 @@
 import {
   "station/host",
-  "mbui/effect",
+  "ui/effect",
   "base/net",
   "base/hash",
   "base/time",

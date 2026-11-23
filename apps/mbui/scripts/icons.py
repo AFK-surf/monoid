@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """still.fail's icons (still.fail design/icons, 24x24 strokes) flattened for mbui:
-libs/sf-ui/src/icon_data.mbt holds, per icon, its strokes and fills as polylines in
-the 24 grid, which libs/sf-ui/src/icons.mbt draws at any size.
+libs/ui/src/controls/icon_data.mbt holds, per icon, its strokes and fills as polylines in
+the 24 grid, which libs/ui/src/controls/icons.mbt draws at any size.
 
-  python3 scripts/icons.py <still.fail>/design/icons > ../../libs/sf-ui/src/icon_data.mbt
+  python3 scripts/icons.py <still.fail>/design/icons > ../../libs/ui/src/controls/icon_data.mbt
 
 Each icon is one run of numbers (as text, space-separated): parts, each
   kind (0 open stroke, 1 closed stroke, 2 fill), width, n, x0, y0, … x(n-1), y(n-1)

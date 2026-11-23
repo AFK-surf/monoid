@@ -21,7 +21,7 @@ fn move_tester(calls : Array[Made], mode : String, w? : Double = 390.0, h? : Dou
 fn move_audit(t : @ui.Tester, at : String) -> Unit {
   // (but the wide frame's own: the sidebar's edge over what its pane shows by 6, sfdesk/pane_view.mbt's, which the
   // station's page has too, this page none of its own)
-  let faults = t.audit().filter(fn(f) { !f.contains("stillfail/sf/src/edge_node.mbt:37, in what was asked for at stillfail/src/sfdesk/pane_view.mbt:") })
+  let faults = t.audit().filter(fn(f) { !f.contains("ui/src/controls/edge_node.mbt:37, in what was asked for at stillfail/src/sfdesk/pane_view.mbt:") })
   if faults.length() > 0 {
     @halt.saying(at + ": " + faults.join("\n"))
   }

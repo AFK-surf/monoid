@@ -52,7 +52,7 @@
   "library": {
     "roots": [],
     "imports": [
-      "mbui/",
+      "ui/",
       "moonbitlang/",
       "stillfail/sfkept"
     ]

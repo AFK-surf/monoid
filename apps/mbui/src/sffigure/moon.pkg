@@ -1,10 +1,10 @@
 import {
-  "mbui/film",
-  "mbui/host",
-  "mbui/hostapi",
-  "mbui/ui",
-  "mbui/view",
-  "stillfail/sf",
+  "ui/film",
+  "ui/host",
+  "ui/hostapi",
+  "ui/ui",
+  "ui/view",
+  "ui/controls" @sf,
   "stillfail/sfbase",
   "stillfail/sfgraphic",
 }

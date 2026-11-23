@@ -1,9 +1,9 @@
 import {
-  "mbui/hostapi",
-  "mbui/ui",
+  "ui/hostapi",
+  "ui/ui",
   "moonbitlang/core/cmp",
   "moonbitlang/core/json",
-  "stillfail/sf",
+  "ui/controls" @sf,
   "stillfail/sfapp",
   "stillfail/sfapp/settings",
   "stillfail/sfbase",

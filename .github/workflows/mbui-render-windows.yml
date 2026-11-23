@@ -1,4 +1,4 @@
-# mbui (libs/mbui, zzj3720/mbui merged in 2026-10-21): its own workflow, as it had it there, run in its directory.
+# mbui (libs/ui, zzj3720/mbui merged in 2026-10-21): its own workflow, as it had it there, run in its directory.
 # The renderer's pixels on Windows ("Pixel references belong to one kind of machine"): a Tester's
 # draw list drawn offscreen by the Direct3D 11 renderer on WARP on GitHub's windows-2025 runner, twice in each of two
 # jobs at once, against its reference (goldens/render/windows-controls.png) to the byte, on the runner image the
@@ -8,26 +8,26 @@ name: mbui-render-windows
 on:
   pull_request:
     paths: &paths
-      - "libs/mbui/src/host/win_render.cpp"
-      - "libs/mbui/src/host/glass_damage.h"
-      - "libs/mbui/src/host/win_text.cpp"
-      - "libs/mbui/src/host/win_image.cpp"
-      - "libs/mbui/scripts/win.sh"
-      - "libs/mbui/src/render/**"
-      - "libs/mbui/src/damage/**"
-      - "libs/mbui/src/ui/drawlist.mbt"
-      - "libs/mbui/src/ui/scene.mbt"
-      - "libs/mbui/src/ui/line.mbt"
-      - "libs/mbui/tools/chk/pictures.mbt"
-      - "libs/mbui/src/kitdemo/gallery/dl_print_wbtest.mbt"
-      - "libs/mbui/src/ui/smooth.mbt"
-      - "libs/mbui/src/host/corner*"
-      - "libs/mbui/src/host/contained.h"
-      - "libs/mbui/goldens/render/windows*"
-      - "libs/mbui/goldens/render/controls.dl"
-      - "libs/mbui/scripts/render_dl.sh"
-      - "libs/mbui/scripts/render_windows.sh"
-      - "libs/mbui/scripts/render_words.sh"
+      - "libs/ui/src/host/win_render.cpp"
+      - "libs/ui/src/host/glass_damage.h"
+      - "libs/ui/src/host/win_text.cpp"
+      - "libs/ui/src/host/win_image.cpp"
+      - "libs/ui/scripts/win.sh"
+      - "libs/ui/src/render/**"
+      - "libs/ui/src/damage/**"
+      - "libs/ui/src/ui/drawlist.mbt"
+      - "libs/ui/src/ui/scene.mbt"
+      - "libs/ui/src/ui/line.mbt"
+      - "libs/ui/tools/chk/pictures.mbt"
+      - "libs/ui/src/kitdemo/gallery/dl_print_wbtest.mbt"
+      - "libs/ui/src/ui/smooth.mbt"
+      - "libs/ui/src/host/corner*"
+      - "libs/ui/src/host/contained.h"
+      - "libs/ui/goldens/render/windows*"
+      - "libs/ui/goldens/render/controls.dl"
+      - "libs/ui/scripts/render_dl.sh"
+      - "libs/ui/scripts/render_windows.sh"
+      - "libs/ui/scripts/render_words.sh"
       - ".github/workflows/mbui-render-windows.yml"
       - ".github/actions/mbui-warp/**"
       - ".github/actions/msvc/**"
@@ -47,7 +47,7 @@ jobs:
     timeout-minutes: 5
     defaults:
       run:
-        working-directory: libs/mbui
+        working-directory: libs/ui
         shell: bash
     steps:
       - run: git config --global core.autocrlf false
@@ -61,8 +61,8 @@ jobs:
         with:
           name: windows-render-build
           path: |
-            libs/mbui/out/render/
-            libs/mbui/out/win/mod/_build/native/release/build/render/render.exe
+            libs/ui/out/render/
+            libs/ui/out/win/mod/_build/native/release/build/render/render.exe
 
   offscreen:
     needs: build
@@ -74,7 +74,7 @@ jobs:
     timeout-minutes: 5
     defaults:
       run:
-        working-directory: libs/mbui
+        working-directory: libs/ui
         shell: bash
     steps:
       - run: git config --global core.autocrlf false
@@ -86,7 +86,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: windows-render-build
-          path: libs/mbui/out/
+          path: libs/ui/out/
       - name: Drawn offscreen, twice (scripts/render_windows.sh)
         run: scripts/render_windows.sh draw
       - uses: actions/upload-artifact@v4
@@ -95,7 +95,7 @@ jobs:
           name: render-windows-${{ matrix.run }}
           # (a rerun's own: the attempt before's put by, so `same` compares this attempt's pictures)
           overwrite: true
-          path: libs/mbui/out/render/
+          path: libs/ui/out/render/
       - name: Against the reference, on the machine it was made on
         run: scripts/render_windows.sh against
       # Words for people to set beside the Mac's (scripts/render_words.sh), asked for by hand (the fonts fetched for it): nothing checked
@@ -113,7 +113,7 @@ jobs:
         continue-on-error: true
         with:
           name: words-windows
-          path: libs/mbui/out/words/*.png
+          path: libs/ui/out/words/*.png
           if-no-files-found: warn
 
   # the two jobs' pictures (two machines of the kind, at once): the same to the byte

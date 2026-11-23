@@ -2,7 +2,7 @@
 package "station/connects_hub"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/ref",
   "station/jsjson",
   "station/session_chats",

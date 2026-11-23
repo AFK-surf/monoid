@@ -52,7 +52,7 @@ variant() {
   local MBUI_APP_ID MBUI_APP_NAME MBUI_EXECUTABLE MBUI_VERSION MBUI_BUILD MBUI_VARIANT \
     MBUI_RUNTIME MBUI_MODULE_DIR MBUI_ENTRY MBUI_SCHEMES MBUI_UPDATE_FEED MBUI_UPDATE_CHANNEL \
     MBUI_ENV_KV MBUI_MAC_MIN_VERSION MBUI_WIN_INSTALL_DIR MBUI_WIN_COMPANY
-  meta=$("$MBUI_DIR/scripts/mbui" meta "$A/mbui.json" --variant "$v" --format sh) || {
+  meta=$("$MBUI_DIR/scripts/ui" meta "$A/mbui.json" --variant "$v" --format sh) || {
     echo "win.sh: MBUI_VARIANT is preview, stable, beta, monoid or monoid-beta, not $v" >&2
     return 1
   }

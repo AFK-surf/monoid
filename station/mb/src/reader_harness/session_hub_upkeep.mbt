@@ -76,7 +76,7 @@ async fn harness_session_hub(host : @host.Host) -> Unit {
           @effect.scoped(scope => {
             let f1 = scope.fork(async fn() { hub.run_archive_upkeep_if_due(now) })
             read_started.wait() catch { _ => () }
-            // `@effect`'s ready queue is strictly FIFO (`libs/mbui/src/effect/runtime.mbt:416`). Forking `f2`
+            // `@effect`'s ready queue is strictly FIFO (`libs/ui/src/effect/runtime.mbt:416`). Forking `f2`
             // before `turn` and joining `turn` guarantees `f2` runs to its first suspension (or completes)
             // before `turn` executes:
             // - Unfixed code: `f2` sees `upkeep_state_loaded == true`, has no real suspension in fake `world.ask`,

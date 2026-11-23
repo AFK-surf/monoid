@@ -317,7 +317,28 @@ fn P51::member_traces(self : P51, plane : Plane) -> @gate.Traces? {
   }
   let traces = @mesh_runtime.Traces::new(true, self.host.rt, () => @host.now() * 1000000L, (level, words, with_) => p51_log(level.to_upper(), "traces", words, fields=with_), tail_only~)
   traces.export_to(async fn(spans) { plane.control.traces(spans) })
-  self.stops.push(() => traces.close())
+  let gen = self.bus.emit_span_gen.val + 1
+  self.bus.emit_span_gen.val = gen
+  self.bus.emit_span.val = fn(name, start_ms, end_ms, attrs, failed, always_keep, slow_ms) {
+    let end_ns = (if end_ms < start_ms { start_ms } else { end_ms }) * 1_000_000L
+    traces.record_internal(
+      @drive.hex(@drive.random_bytes(16)),
+      @drive.hex(@drive.random_bytes(8)),
+      start_ms * 1_000_000L,
+      end_ns,
+      name,
+      attrs,
+      failed,
+      always_keep~,
+      slow_ms~,
+    )
+  }
+  self.stops.push(() => {
+    if self.bus.emit_span_gen.val == gen {
+      self.bus.emit_span.val = fn(_n, _s, _e, _a, _f, _k, _m) { () }
+    }
+    traces.close()
+  })
   let span_of = (j : Json) => match j {
     { "trace": String(t), "span": String(s), "id": String(id), "wall": Number(w, ..), "started": Number(st, ..), .. } =>
       Some(({ parent: { trace: t, span: s, sampled: true }, id, wall_ns: w.to_int64(), started: st.to_int64() } : @mesh_runtime.Span))

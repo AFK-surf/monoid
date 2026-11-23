@@ -66,7 +66,7 @@ Claude Code、Codex、Cursor、Devin、Grok Build、DeepSeek Harness、Hermes Ag
 
 - **station**（`station/`，运行在 Node 上的 TypeScript，带少量预编译的原生组件和一个 MoonBit 写的读取程序）运行在你选定的电脑上。它启动并保持 agent 会话，连接 Slack、飞书和 Comma，把对话存在本地 SQLite 里。除了 mesh，外界没有任何入口能连到它。
 - **workspace** 把人和 station 组织在一起。云端（`cloud/`，Cloudflare Workers）只是账号系统：账号、workspace、成员凭证和中继。对话内容从不经过它。
-- **客户端**是各平台同一个 app，用 MoonBit 和 mbui 界面框架写（`apps/mbui/`、`libs/mbui`）。它们共用一个 TypeScript 写的客户端 core（`client/core-ts`），它缓存 workspace 的数据，并与各 station 保持同步。
+- **客户端**是各平台同一个 app，用 MoonBit 和 mbui 界面框架写（`apps/mbui/`、`libs/ui`）。它们共用一个 TypeScript 写的客户端 core（`client/core-ts`），它缓存 workspace 的数据，并与各 station 保持同步。
 
 ## 从源码构建
 
@@ -91,7 +91,7 @@ cd cloud && pnpm install --frozen-lockfile && pnpm run types && pnpm test
 | --- | --- |
 | `station/` | station：agent runtime、Slack 和飞书、任务、文件、屏幕、密钥库；原生组件在 `station/native/` |
 | `client/` | 共用的客户端 core（`core-ts`）、它的原生外壳（`shell`，Rust）、浏览器用的 iroh（`iroh-wasm`）和翻译（`i18n`） |
-| `apps/mbui/` | 各端 app（安卓、iOS、macOS、Windows、Linux 和网页），用 mbui（`libs/mbui`）写 |
+| `apps/mbui/` | 各端 app（安卓、iOS、macOS、Windows、Linux 和网页），用 mbui（`libs/ui`）写 |
 | `libs/` | mbui、组件库和 MoonBit 基础库 |
 | `web/` | 网页上运行 app 的宿主，以及登录、分享和管理后台页面 |
 | `website/` | 官网（[monoid.build](https://monoid.build)）和 [ui.monoid.build](https://ui.monoid.build) |

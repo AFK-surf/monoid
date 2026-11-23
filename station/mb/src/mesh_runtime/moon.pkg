@@ -6,7 +6,7 @@ import {
   "station/jscase",
   "station/wire",
   "station/mesh_door/door",
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/json",
   "moonbitlang/core/string",
   "moonbitlang/core/double",

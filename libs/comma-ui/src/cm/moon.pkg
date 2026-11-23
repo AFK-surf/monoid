@@ -1,16 +1,16 @@
 import {
-  "mbui/ui",
-  "mbui/view",
-  "mbui/signals",
-  "mbui/motion",
-  "mbui/halt",
-  "mbui/paint",
-  "mbui/pixels",
-  "mbui/headless",
+  "ui/ui",
+  "ui/view",
+  "ui/signals",
+  "ui/motion",
+  "ui/halt",
+  "ui/paint",
+  "ui/pixels",
+  "ui/headless",
 }
 
 import {
-  "mbui/ui",
-  "mbui/view",
-  "mbui/signals",
+  "ui/ui",
+  "ui/view",
+  "ui/signals",
 } for "wbtest"

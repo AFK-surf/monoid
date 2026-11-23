@@ -1107,7 +1107,7 @@ jobs:
             if bash apps/mbui/scripts/ios-reports-test.sh > "$RUNNER_TEMP/ios-reports.log" 2>&1; then echo "· iOS crash reports … ok"
             else echo "· iOS crash reports … FAILED"; sed 's/^/    /' "$RUNNER_TEMP/ios-reports.log"; status=1; fi
           fi
-          if touches '^(\.github/(mac-release-prebuild|test_mac_release_prebuild)\.sh$|(apps|libs)/mbui/scripts/mac\.sh$)'; then
+          if touches '^(\.github/(mac-release-prebuild|test_mac_release_prebuild)\.sh$|(apps/mbui|libs/ui)/scripts/mac\.sh$)'; then
             if bash .github/test_mac_release_prebuild.sh > "$RUNNER_TEMP/mac-prebuild.log" 2>&1; then echo "· Mac release prebuild … ok"
             else echo "· Mac release prebuild … FAILED"; sed 's/^/    /' "$RUNNER_TEMP/mac-prebuild.log"; status=1; fi
           fi
@@ -1279,7 +1279,7 @@ jobs:
           path: ${{ env.MBC_STORE }}
           key: comma-ui-linux-store-${{ steps.img.outputs.img }}-${{ github.sha }}
 
-  # still.fail's component library (libs/sf-ui), on its own beside mbui: detlint, type-checked on native and js, its
+  # still.fail's component library (libs/ui), on its own beside mbui: detlint, type-checked on native and js, its
   # tests. On main too: nothing runs it after the merge.
   check-sf-ui:
     needs: plan
@@ -1288,7 +1288,7 @@ jobs:
     timeout-minutes: 5
     permissions: { contents: read }
     env:
-      MBC_STORE: ${{ github.workspace }}/libs/sf-ui/_build/native/release/mbc-store
+      MBC_STORE: ${{ github.workspace }}/libs/ui/_build/native/release/mbc-store
     steps:
       # (the runner's compiler, reckoned as mbui-check.yml's IMG, whose app-pkgs store it takes when it has none of its own)
       - name: The runner's compiler
@@ -1315,10 +1315,11 @@ jobs:
           restore-keys: |
             sf-ui-linux-store-${{ steps.img.outputs.img }}-
             sf-ui-linux-store-
+            mbui-linux-store-app-pkgs-b-${{ steps.img.outputs.img }}-
             mbui-linux-store-app-pkgs-m-${{ steps.img.outputs.img }}-
             mbui-linux-store-app-pkgs-m-
       - run: touch "$RUNNER_TEMP/start"
-      - run: bash libs/sf-ui/scripts/check.sh
+      - run: bash libs/ui/scripts/check-controls.sh
       - if: github.ref == 'refs/heads/main' && steps.store.outputs.cache-hit != 'true'
         run: |
           sh apps/mbui/scripts/used.sh "$RUNNER_TEMP/start" "$MBC_STORE"
@@ -1837,7 +1838,7 @@ jobs:
     if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && ((github.ref == 'refs/heads/main' && needs.plan.outputs.mac_beta == 'true') || needs.plan.outputs.release_smoke == 'true') }}
     runs-on: macos-26
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || '' }}
-    # (a run by hand compiles what main's store has none of whole: once the units' commands named mbui at libs/mbui,
+    # (a run by hand compiles what main's store has none of whole: once the units' commands named mbui at libs/ui,
     # 2026-11-13, none of the store's were theirs, 441 of 831 units, cut at 5 on a push)
     timeout-minutes: ${{ github.event_name == 'push' && 5 || 10 }}
     env:
@@ -2248,7 +2249,7 @@ jobs:
     runs-on: windows-2025
     environment: production
     # (a run by hand, or the day's, compiles what main's store has none of whole: once the units' commands named mbui at
-    # libs/mbui, 2026-11-13, none of the store's were theirs, and a push's 5 minutes did not see it through)
+    # libs/ui, 2026-11-13, none of the store's were theirs, and a push's 5 minutes did not see it through)
     timeout-minutes: ${{ github.event_name == 'push' && 5 || 10 }}
     defaults:
       run:
@@ -2338,8 +2339,8 @@ jobs:
         id: build-cache
         with:
           path: |
-            libs/mbui/_build
-            libs/mbui/out
+            libs/ui/_build
+            libs/ui/out
           key: mbui-win-build-mono-${{ github.sha }}
           restore-keys: mbui-win-build-mono-
       # The beta app built in the background from here on (MBUI_WIN_CORE=0: its core put beside it below), as the
@@ -2552,8 +2553,8 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: |
-            libs/mbui/_build
-            libs/mbui/out
+            libs/ui/_build
+            libs/ui/out
           key: ${{ env.BUILD_KEY }}
     outputs:
       monoid: ${{ steps.monoid.outputs.packed }}
@@ -2619,8 +2620,8 @@ jobs:
             /shared/delta.ts
             /.node-version
             /.github/actions/node/
-            /libs/mbui/android/app/src/main/java/dev/mbui/Delta.java
-            /libs/mbui/android/jzlib/
+            /libs/ui/android/app/src/main/java/dev/mbui/Delta.java
+            /libs/ui/android/jzlib/
           sparse-checkout-cone-mode: false
       # Sparse checkout in ci-1's reused workspaces left skip-worktree bits behind.
       # Later natives jobs could not find station/mb/build.sh (main 44691945453 and 44692636480).

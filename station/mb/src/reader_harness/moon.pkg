@@ -3,7 +3,7 @@ import {
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/json",
   "moonbitlang/core/string",
-  "mbui/effect",
+  "ui/effect",
   "base/codec",
   "base/flate",
   "base/hash",

@@ -741,7 +741,7 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     // (the window's sides beside the system's bars kept, all of it between: sides.mbt)
     root.sides(By(fn() { sides_room() })) |> ignore
     // (static by default across the whole app: structures, lists and reshapes settle at Δt 0 unless told inside
-    // @view.transition for an explicit cause, libs/mbui/src/view/transition.mbt)
+    // @view.transition for an explicit cause, libs/ui/src/view/transition.mbt)
     root.transitions_only() |> ignore
     // over another app (a share sheet over the app it came from: share.mbt): nothing but the sheet, an old view of its
     // own; the app's state's nodes let go meanwhile, made again as it opens

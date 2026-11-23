@@ -48,6 +48,7 @@ import type { Outside } from "./mesh/peer.ts";
 import { Net } from "./jobs/load.ts";
 import type { PeerRoute } from "./tools/http.ts";
 import type { HereLocal } from "./mesh/peer-http.ts";
+import type { Traces } from "./mesh/traces.ts";
 import type { Json } from "./store/store.ts";
 import { StationParts } from "./parts.ts";
 import { wall } from "./ops/fibers.ts";
@@ -376,9 +377,11 @@ export type MeshSideShape = {
   /// A connection to a device attached here, for a chat of another station (devices/module.ts): what peer-http.ts's
   /// `HereLocal.device` is; none until the devices' part is up.
   device: HereLocal["device"] | null;
+  /// Active OTLP trace batcher (mesh/mesh.ts), null when mesh is not up or telemetry.traces is false.
+  traces?: Traces | null;
 };
 export class MeshSide extends Context.Service<MeshSide, MeshSideShape>()("stillfail/MeshSide") {
-  static readonly layer = Layer.sync(MeshSide, (): MeshSideShape => ({ net: new Net(), peers: { route: null }, outside: null, forwarded: () => false, runtimes: () => [], device: null }));
+  static readonly layer = Layer.sync(MeshSide, (): MeshSideShape => ({ net: new Net(), peers: { route: null }, outside: null, forwarded: () => false, runtimes: () => [], device: null, traces: null }));
 }
 
 /// A device as an agent is shown it (devices/, 2026-11-10): what it is, where it is attached, whose it is, and whether

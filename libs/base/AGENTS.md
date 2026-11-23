@@ -32,4 +32,4 @@ Narrower rules: `src/shell/AGENTS.md` (the shell's binding), `src/mesh/AGENTS.md
 ## Working here
 
 - Never run `moon check` or `moon info` on the whole workspace (it rewrites `mbui`'s `.mbti` files). Check and test by package: `moon check --target native src/mesh` (and `--target js`), `moon test --target native src/wire`. Committed `pkg.generated.mbti` files are from `native`.
-- A compiler warning is an error or off (`moon.mod`'s `warnings`, as `libs/mbui`).
+- A compiler warning is an error or off (`moon.mod`'s `warnings`, as `libs/ui`).

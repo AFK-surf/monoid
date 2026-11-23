@@ -9,7 +9,7 @@ import {
   "station/nodepath",
   "station/cloud_net",
   "station/footprint",
-  "mbui/effect",
+  "ui/effect",
   "base/net",
   "moonbitlang/core/json",
   "moonbitlang/core/encoding/utf8",

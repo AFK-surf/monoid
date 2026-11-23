@@ -152,7 +152,7 @@ const TAR = osPlatform() === "win32" ? join(process.env.SystemRoot ?? "C:\\Windo
 /// What the reader and its tests' program (reader-harness) are made of and how: one source, two programs.
 const READER_INPUTS = ["station/mb/src", "station/mb/moon.mod", "station/mb/moon.work", "station/mb/build.sh",
   "rules/src", "rules/moon.mod", "libs/base/src", "libs/base/moon.mod",
-  "libs/mbui/src/effect", "libs/mbui/src/halt", "libs/mbui/moon.mod", "libs/mbui/scripts/mbc-stub.sh",
+  "libs/ui/src/effect", "libs/ui/src/halt", "libs/ui/moon.mod", "libs/ui/scripts/mbc-stub.sh",
   ":(exclude,glob)**/*_test.mbt", ":(exclude,glob)**/*_wbtest.mbt", ":(exclude,glob)**/pkg.generated.mbti"];
 const readerRecipe = (t: Target) => ({ moon: "native release", shell: t === "darwin-arm64" ? key("shell-apple", t) : key("shell-station", t) });
 type Target = "darwin-arm64" | "linux-x64" | "linux-arm64" | "win32-x64" | "wasm32" | "android-arm64" | "ios-arm64" | "ios-sim-arm64";
@@ -378,15 +378,12 @@ function mbuiRenderer(app: string, launcher: string): Part {
     publish: [],
     rust: false,
     // Generated interface summaries are not compiler inputs; `moon check` can rewrite them without changing a scene.
-    inputs: ["apps/mbui/src", "libs/mbui/src", "libs/mbui/tools", "libs/mbui/scripts", "libs/sf-ui/src",
-      "apps/mbui/moon.mod", "apps/mbui/moon.work", "apps/mbui/farview.pin", "apps/mbui/scripts/farview.sh", "libs/mbui/moon.mod",
-      "libs/sf-ui/moon.mod",
+    inputs: ["apps/mbui/src", "libs/ui/src", "libs/ui/tools", "libs/ui/scripts",
+      "apps/mbui/moon.mod", "apps/mbui/moon.work", "apps/mbui/farview.pin", "apps/mbui/scripts/farview.sh", "libs/ui/moon.mod",
       "apps/mbui/scripts/env.sh", "apps/mbui/scripts/mbui.sh", "apps/mbui/scripts/mac.sh", `apps/mbui/scripts/${launcher}`,
       ":(exclude,glob)apps/mbui/**/*_test.mbt", ":(exclude,glob)apps/mbui/**/*_wbtest.mbt",
-      ":(exclude,glob)apps/mbui/**/pkg.generated.mbti", ":(exclude,glob)libs/mbui/**/*_test.mbt",
-      ":(exclude,glob)libs/mbui/**/*_wbtest.mbt", ":(exclude,glob)libs/mbui/**/pkg.generated.mbti",
-      ":(exclude,glob)libs/sf-ui/**/*_test.mbt", ":(exclude,glob)libs/sf-ui/**/*_wbtest.mbt",
-      ":(exclude,glob)libs/sf-ui/**/pkg.generated.mbti"],
+      ":(exclude,glob)apps/mbui/**/pkg.generated.mbti", ":(exclude,glob)libs/ui/**/*_test.mbt",
+      ":(exclude,glob)libs/ui/**/*_wbtest.mbt", ":(exclude,glob)libs/ui/**/pkg.generated.mbti"],
     recipe: () => ({ app, target: "native", mode: "release", host: "macOS", scene: 1 }),
     build(t, out) {
       if (t !== "darwin-arm64" || osPlatform() !== "darwin" || osArch() !== "arm64") {

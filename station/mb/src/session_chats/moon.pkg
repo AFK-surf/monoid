@@ -1,7 +1,7 @@
 import {
   "base/time",
   "base/url",
-  "mbui/effect",
+  "ui/effect",
   "station/jsjson",
   "station/nodepath",
   "station/i18n",

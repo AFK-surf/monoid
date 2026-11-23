@@ -70,14 +70,14 @@ test("the mbui app reaches Android and the desktop; its desktop's own pages and 
   const nothing = ["apps/mbui/e2e/traces/wide-new-chat.trace", "apps/mbui/src/sfkept/kept.mbt", "apps/mbui/src/sffilm/main.mbt", "apps/mbui/src/sfapp/search_fixture.mbt", "apps/mbui/src/sfapp/wide_panel_wbtest.mbt", "apps/mbui/scripts/motion/wide-switcher.drive", "apps/mbui/detlint.json", "apps/mbui/detlint.counts/sfpages.json", "client/core-ts/scripts/kept-answers.ts"];
   assert.deepEqual(partsOf([...desk, ...nothing]), ["desktop"]);
   assert.deepEqual(partsOf(["apps/mbui/src/sfapp/chat.mbt", ...nothing]), ["android", "desktop"]);
-  assert.deepEqual(partsOf(["libs/mbui/src/ui/text.mbt"]), ["android", "desktop"]);
-  // still.fail's component library (libs/sf-ui) as the app it is built into; its tests, check and lint add nothing
-  const sfNothing = ["libs/sf-ui/detlint.json", "libs/sf-ui/src/avatar_wbtest.mbt", "libs/sf-ui/scripts/check.sh"];
-  assert.deepEqual(partsOf(["libs/sf-ui/src/button_node.mbt"]), ["android", "desktop"]);
+  assert.deepEqual(partsOf(["libs/ui/src/ui/text.mbt"]), ["android", "desktop"]);
+  // still.fail's component library (libs/ui) as the app it is built into; its tests, check and lint add nothing
+  const sfNothing = ["libs/ui/detlint.json", "libs/ui/src/controls/avatar_wbtest.mbt", "libs/ui/scripts/check-controls.sh"];
+  assert.deepEqual(partsOf(["libs/ui/src/controls/button_node.mbt"]), ["android", "desktop"]);
   assert.deepEqual(partsOf([...desk, ...sfNothing]), ["desktop"]);
-  assert.deepEqual(partsOf(["apps/mbui/android/app/src/main/java/dev/mbui/Crashes.java", "libs/mbui/src/host/android_host.c"]), ["android"]);
-  assert.deepEqual(partsOf(["libs/mbui/src/host/mac_app.m", "apps/mbui/src/host/win_core.c"]), ["desktop"]);
-  assert.deepEqual(partsOf(["libs/mbui/src/host/ios_app.m", "apps/mbui/ios/Info.plist"]), []);
+  assert.deepEqual(partsOf(["apps/mbui/android/app/src/main/java/dev/mbui/Crashes.java", "libs/ui/src/host/android_host.c"]), ["android"]);
+  assert.deepEqual(partsOf(["libs/ui/src/host/mac_app.m", "apps/mbui/src/host/win_core.c"]), ["desktop"]);
+  assert.deepEqual(partsOf(["libs/ui/src/host/ios_app.m", "apps/mbui/ios/Info.plist"]), []);
 });
 
 test("a commit's agent says the parts people see it in; one that does not, or names none of them, is refused", () => {

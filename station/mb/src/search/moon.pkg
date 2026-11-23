@@ -5,6 +5,6 @@ import {
   "station/jscase",
   "station/jsjson",
   "station/nodepath",
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/json",
 }

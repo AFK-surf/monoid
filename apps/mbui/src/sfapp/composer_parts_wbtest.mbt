@@ -676,7 +676,7 @@ test "cache cold sits below need card with zero audit faults across sizes, font 
     t_wide.run_for(@ui.move_most_ms)
     let faults_wide = t_wide
       .audit()
-      .filter(fn(f) { !(f.contains("stillfail/sf/src/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
+      .filter(fn(f) { !(f.contains("ui/src/controls/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
     assert_eq(faults_wide, [], msg="zero audit faults at 1280x800 (1.0x): \{Repr(faults_wide)}")
     // English locale
     @sf.set_language(Some("en"))
@@ -857,7 +857,7 @@ test "offline and updating chats show status in station capsule and composer pla
     assert_true(hint_shown_at(t_wide, off_ph) is Some(_), msg="wide: offline placeholder is visibly drawn while focused and empty")
     let faults_wide = t_wide
       .audit()
-      .filter(fn(f) { !(f.contains("stillfail/sf/src/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
+      .filter(fn(f) { !(f.contains("ui/src/controls/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
     assert_eq(faults_wide, [], msg="wide offline chat zero audit faults: \{Repr(faults_wide)}")
     t_wide.type_text("签名")
     t_wide.draw()

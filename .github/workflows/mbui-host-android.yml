@@ -1,4 +1,4 @@
-# mbui (libs/mbui, zzj3720/mbui merged in 2026-10-21): its own workflow, as it had it there, run in its directory.
+# mbui (libs/ui, zzj3720/mbui merged in 2026-10-21): its own workflow, as it had it there, run in its directory.
 # The host's and the text's contracts on Android ("What is compared, and where"; scripts/
 # host_contract.sh): kitdemo's controls page run on an x86_64 emulator with its scripted taps, its tape made a
 # Tester's test and run here (every frame the same), then the committed tape's text (android_controls) asked of the
@@ -19,7 +19,7 @@ jobs:
   contracts:
     defaults:
       run:
-        working-directory: libs/mbui
+        working-directory: libs/ui
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -95,5 +95,5 @@ jobs:
         continue-on-error: true
         with:
           name: host-android
-          path: libs/mbui/out/host/
+          path: libs/ui/out/host/
           if-no-files-found: ignore

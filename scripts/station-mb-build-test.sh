@@ -13,12 +13,12 @@ pids=()
 trap 'for p in ${pids[@]+"${pids[@]}"}; do kill "$p" 2>/dev/null; done; rm -rf "$t"' EXIT
 fail() { echo "station-mb-build-test: $*" >&2; exit 1; }
 
-# The tree build.sh is run in: its own place, libs/mbui/scripts/mbc beside it, the tools on PATH.
-mkdir -p "$t/root/station/mb/src/reader" "$t/root/libs/mbui/scripts" "$t/bin" "$t/moon/lib/runtime" "$t/moon/include" "$t/log" "$t/home" \
-  "$t/root/rules/src" "$t/root/libs/base/src" "$t/root/libs/mbui/src/effect" "$t/root/libs/mbui/src/halt"
+# The tree build.sh is run in: its own place, libs/ui/scripts/mbc beside it, the tools on PATH.
+mkdir -p "$t/root/station/mb/src/reader" "$t/root/libs/ui/scripts" "$t/bin" "$t/moon/lib/runtime" "$t/moon/include" "$t/log" "$t/home" \
+  "$t/root/rules/src" "$t/root/libs/base/src" "$t/root/libs/ui/src/effect" "$t/root/libs/ui/src/halt"
 # (what the prepared C's key reads: build.sh's own tree's files)
 for f in station/mb/moon.mod station/mb/moon.work station/mb/src/reader/reader.mbt rules/moon.mod rules/src/a.mbt libs/base/moon.mod libs/base/src/a.mbt \
-  libs/mbui/moon.mod libs/mbui/scripts/mbc-stub.sh libs/mbui/src/effect/a.mbt libs/mbui/src/halt/a.mbt; do
+  libs/ui/moon.mod libs/ui/scripts/mbc-stub.sh libs/ui/src/effect/a.mbt libs/ui/src/halt/a.mbt; do
   echo "$f" > "$t/root/$f"
 done
 cp "$build" "$t/root/station/mb/build.sh"
@@ -48,7 +48,7 @@ cat > "$t/bin/getconf" <<'EOF'
 #!/bin/bash
 echo "${CORES:-16}"
 EOF
-cat > "$t/root/libs/mbui/scripts/mbc" <<'EOF'
+cat > "$t/root/libs/ui/scripts/mbc" <<'EOF'
 #!/bin/bash
 [ "$1" = path ] && { echo /made-up/mbc; exit 0; }
 [ "$1" = key ] && { echo made-up-mbc; exit 0; }
@@ -91,7 +91,7 @@ cat > "$t/bin/ar" <<'EOF'
 lib=$2; shift 2
 cat "$@" > "$lib"
 EOF
-chmod +x "$t/bin/zig" "$t/bin/moon" "$t/bin/getconf" "$t/bin/cc" "$t/bin/ar" "$t/root/libs/mbui/scripts/mbc"
+chmod +x "$t/bin/zig" "$t/bin/moon" "$t/bin/getconf" "$t/bin/cc" "$t/bin/ar" "$t/root/libs/ui/scripts/mbc"
 
 export PATH="$t/bin:$PATH" HOME="$t/home" MOON_HOME="$t/moon" SHELL_LIB="$t/shell.a" MBC_STORE="$t/store" LOG="$t/log"
 unset MBUI_TOOLS MBC_JOBS STILLFAIL_NATIVE_ONE STILLFAIL_NATIVE_READERS STATION_READER_OPT RUNNER_ENVIRONMENT GITHUB_REF

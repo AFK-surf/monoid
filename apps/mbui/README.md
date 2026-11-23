@@ -1,16 +1,16 @@
 # still.fail's apps
 
 still.fail's apps for Android, iOS, macOS, Windows and Linux, one app on every device,
-written in mbui (`libs/mbui`), the MoonBit UI framework. The released apps are built from here: the Android app since
+written in mbui (`libs/ui`), the MoonBit UI framework. The released apps are built from here: the Android app since
 2026-10-24, the Mac and Windows apps since 2026-10-26, each in the place of the one before it (its ids, its data and
 sign-in kept).
 
 mbui is the framework (layout, text, the UI tree, motion, Markdown, the platform hosts, the build's C step), at
-`libs/mbui` (zzj3720/mbui merged in with its history, 2026-10-21): a change to the framework and the app is one
+`libs/ui` (zzj3720/mbui merged in with its history, 2026-10-21): a change to the framework and the app is one
 pull request, checked by one run. `moon.work` names it a member beside this module, whose `moon.mod` imports `mbui`;
 `scripts/mbui.sh` says where it is.
 
-What knows still.fail is the rest of this directory: its component library (`libs/sf-ui/src`, sf/styles.mbt), its pages and
+What knows still.fail is the rest of this directory: its component library (`libs/ui/src/controls`, sf/styles.mbt), its pages and
 frames (`src/sfpages`, `src/sfdesk`, `src/sfapp`, over the model in `src/sfbase`), the core client and its engine
 hosts (`src/core`, `src/sfcore`, `src/host/*_core.*`), the apps (`src/stillfail`; `src/sffix` over made-up data,
 `src/coredemo`), a photo's ThumbHash picture (`src/gallery`), the core's bundling (`core/`, from
@@ -48,7 +48,7 @@ apps/mbui/scripts/win.sh build                      # Windows (Git Bash, MSVC): 
 apps/mbui/e2e/win.sh                                # Windows: signed in against a local cloud, then Home (CI: preview.yml)
 ```
 
-These are mbui's own scripts (`libs/mbui/scripts/`) building this module (`MBUI_APP_MOD`), with what still.fail adds:
+These are mbui's own scripts (`libs/ui/scripts/`) building this module (`MBUI_APP_MOD`), with what still.fail adds:
 the core in Hermes, the same `core.hbc` on every platform: on Android and Windows still.fail's prebuilt engine
 (`scripts/android-core.sh`, `engine/`), on Apple's `src/host/apple_core.mm` with React Native 0.81.4's Hermes
 framework and the Rust shell (`scripts/core.sh apple`).

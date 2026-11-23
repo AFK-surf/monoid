@@ -2,7 +2,7 @@
 package "station/jobs_host"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/json",
   "station/cloud_net",
   "station/host",

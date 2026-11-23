@@ -1,4 +1,4 @@
-// Writes the app's tokens (libs/sf-ui/src/tokens_data.mbt) from still.fail's type scale, lines and corners
+// Writes the app's tokens (libs/ui/src/controls/tokens_data.mbt) from still.fail's type scale, lines and corners
 // (web/ui/src/tokens.ts), so the web's pages and the app have one set; and holds still.fail's colours
 // (web/ui/src/palette.ts) to what reads: each ink on the grounds it is drawn on, by WCAG 2.1's contrast ratio and
 // APCA's Lc. `--check` fails when the file is not what the tokens make or a pair falls under its floor; `--report`
@@ -9,7 +9,7 @@ import { PALETTE, TONE } from "../web/ui/src/palette.ts";
 import { LEADING, RADII, TYPE_SCALE } from "../web/ui/src/tokens.ts";
 
 const at = (p: string) => fileURLToPath(new URL(`../${p}`, import.meta.url));
-const out = at("libs/sf-ui/src/tokens_data.mbt");
+const out = at("libs/ui/src/controls/tokens_data.mbt");
 
 // --- the app's tokens
 

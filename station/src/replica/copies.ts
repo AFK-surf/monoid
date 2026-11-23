@@ -14,6 +14,7 @@ import { GEN, type Head, STATION, WORKSPACE, genMade } from "./format.ts";
 import { FolderPlace, type Held, type Known, type Levelled, type Place, handOver, holdsAll, level } from "./places.ts";
 import { type Ask, COPIES, PeerPlace, keepers, ranked, serve } from "./peers.ts";
 import { Refused } from "../mesh/bus.ts";
+import type { Traces } from "../mesh/traces.ts";
 import { NotEmpty, type Outcome, type Ready, copyDir, outcomeFile, readyFile } from "./restore.ts";
 import type { Runner, WorkPassed } from "./runner.ts";
 import { type BackupView, type NormalizedBackupConfig, type NormalizedS3Target, buildBackupView } from "./backup-config.ts";
@@ -139,6 +140,8 @@ export type CopiesDeps = {
   backup?: () => NormalizedBackupConfig;
   /// Optional S3 client overrides (deterministic clock / multipart thresholds in tests).
   s3ClientOptions?: S3ClientOptions;
+  /// Active OTLP traces batcher for `replica.export` and `replica.level` spans.
+  traces?: () => Traces | null;
 };
 
 /// How a place for this station's copies stands: how far it goes, when it was brought level last, what went wrong.
@@ -382,9 +385,17 @@ export class Copies {
     const told = this.#told;
     this.#told = nothingTold();
     this.#again = false;
+    const reason = told.transcripts === true
+      ? "transcripts"
+      : told.sessions.length > 0 || told.threads.length > 0 || told.marks.length > 0 || told.removedSessions.length > 0 || told.removedThreads.length > 0
+      ? "demand"
+      : "pass";
     this.#passing = (async () => {
+      const traces = this.#d.traces?.() ?? null;
+      const span = traces?.startRoot() ?? null;
       try {
         const passed = await this.#d.runner.pass(told);
+        if (span && traces) traces.endInternal(span, "replica.export", [["stillfail.reason", reason], ["stillfail.changed", passed.wrote]], false, { alwaysKeep: true });
         this.#passed = passed;
         this.#retrying?.();
         this.#retrying = null;
@@ -396,6 +407,11 @@ export class Copies {
         for (const [ws, head] of Object.entries(passed.heads)) if (head.batches.length > 0) this.#levelAll(ws);
         if (passed.more) this.#again = true;
       } catch (e) {
+        if (span && traces) {
+          const msg = ((e as Error).message ?? "").toLowerCase();
+          const errType = msg.includes("locked") || msg.includes("busy") ? "locked" : msg.includes("enoent") || msg.includes("no such") ? "enoent" : "export";
+          traces.endInternal(span, "replica.export", [["stillfail.reason", reason], ["error.type", errType]], true, { alwaysKeep: true });
+        }
         log.warn("copies", "an export failed", { error: (e as Error).message });
         // (what was told goes with the next one, a while from now: its thread started again where it ended)
         this.#merge(told);
@@ -711,6 +727,8 @@ export class Copies {
     const wasError = k.error;
     const prevReason = k.reason;
     const run = (async () => {
+      const traces = this.#d.traces?.() ?? null;
+      const span = traces?.startRoot() ?? null;
       try {
         const place = new PeerPlace(peer, this.#d.ask);
         let { head: syncedHead, done } = await levelNewest(
@@ -761,8 +779,14 @@ export class Copies {
           reason: null,
           error: null,
         });
+        if (span && traces) traces.endInternal(span, "replica.level", [["stillfail.target_kind", "station"], ["stillfail.missing", done.missing]], false, { alwaysKeep: false, slowMs: 500 });
       } catch (e) {
         const reason = this.#reason(peer, e);
+        if (span && traces) {
+          const msg = ((e as Error).message ?? "").toLowerCase();
+          const errType = msg.includes("enoent") || msg.includes("no such") ? "enoent" : reason === "offline" || msg.includes("network") || msg.includes("timeout") || msg.includes("unreached") || msg.includes("reset") ? "network" : reason === "old" ? "old" : "other";
+          traces.endInternal(span, "replica.level", [["stillfail.target_kind", "station"], ["error.type", errType]], true, { alwaysKeep: false, slowMs: 500 });
+        }
         // (one from before copies, which knows no `replica.*`: nothing to say or retry until it says it is up, as
         // share/memory.ts does; 15 stations said so 49 times an hour, 2026-11-18)
         if (reason === "old") this.#old.add(peer);
@@ -838,6 +862,8 @@ export class Copies {
     const wasError = k.error;
     const prevReason = k.reason;
     const run = (async () => {
+      const traces = this.#d.traces?.() ?? null;
+      const span = traces?.startRoot() ?? null;
       try {
         const place = this.#s3Place(target);
         const opts = { includeTranscripts: target.includeTranscripts };
@@ -890,8 +916,14 @@ export class Copies {
           reason: null,
           error: null,
         });
+        if (span && traces) traces.endInternal(span, "replica.level", [["stillfail.target_kind", "s3"], ["stillfail.missing", done.missing]], false, { alwaysKeep: false, slowMs: 500 });
       } catch (e) {
         const reason: Reason = e instanceof S3HttpError ? "error" : "offline";
+        if (span && traces) {
+          const msg = ((e as Error).message ?? "").toLowerCase();
+          const errType = msg.includes("enoent") || msg.includes("no such") ? "enoent" : reason === "offline" || msg.includes("network") || msg.includes("timeout") || msg.includes("unreached") || msg.includes("reset") ? "network" : "other";
+          traces.endInternal(span, "replica.level", [["stillfail.target_kind", "s3"], ["error.type", errType]], true, { alwaysKeep: false, slowMs: 500 });
+        }
         if (keeping.error === null) log.warn("copies", "an S3 place not brought level", { ws, s3: target.id, error: (e as Error).message });
         keeping.error = (e as Error).message;
         keeping.reason = reason;

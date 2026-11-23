@@ -1,0 +1,9 @@
+import {
+  "ui/skia",
+  "ui/svg",
+  "ui/font",
+  "ui/shape",
+  "ui/skiatest",
+  "ui/pixels",
+  "moonbitlang/core/encoding/utf8",
+} for "test"

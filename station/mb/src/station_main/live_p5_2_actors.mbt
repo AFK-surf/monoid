@@ -1036,6 +1036,7 @@ fn MbActor::told_(self : MbActor, f : String, args : Array[Json]) -> Unit {
     }
     "node.working" => ctx.working(self.key, jitems(a(0)), a(1))
     "chat.standsAt" => ctx.stands_at(a(0), a(1), a(2), a(3))
+    "trace" => ctx.bus.emit_trace_json(a(0))
     // (given up by the program: its stop, suspension, close or deadline; `open` ends what comes of it)
     "node.cancelOpen" =>
       match as_num(a(0)) {

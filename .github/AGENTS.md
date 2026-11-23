@@ -105,6 +105,6 @@
   station's and Android's (`station`, `android`): each hands `put` only what it finished, and one cut at its upload held
   the signed Mac and Windows betas back (main 44147606865, 2026-11-17). A failed or cancelled part leaves its feed as
   it was; it is main's red, and `done` waits for it, so the next run plans it again.
-- The Android delta's deflater is part of the format: JZlib's version (`libs/mbui/android/jzlib`) and the level and settings
+- The Android delta's deflater is part of the format: JZlib's version (`libs/ui/android/jzlib`) and the level and settings
   `Delta.java` deflates with must be what every installed app carries, or what it makes no longer is the release's APK
   (each delta is checked by the Java applier before it is published, so such a change only stops Android's deltas).

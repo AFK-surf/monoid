@@ -312,7 +312,7 @@ if part ts; then
   # still.fail's colours are web/ui/src/palette.ts's (the app's palette made from it) and its type scale, lines and
   # corners web/ui/src/tokens.ts's (the app's tokens made from it), every ink on its grounds held to its contrast
   # floor (scripts/tokens.ts); the web's curves are the app's.
-  if touches '^web/ui/src/(palette|tokens|curves-data)\.ts$|^scripts/(palette|tokens|curves)\.ts$|^libs/sf-ui/src/(palette_data|tokens_data|tokens)\.mbt$|^libs/mbui/src/ui/motion\.mbt$'; then
+  if touches '^web/ui/src/(palette|tokens|curves-data)\.ts$|^scripts/(palette|tokens|curves)\.ts$|^libs/ui/src/controls/(palette_data|tokens_data|tokens)\.mbt$|^libs/ui/src/ui/motion\.mbt$'; then
     step "palette, tokens and curves" sh -c 'node scripts/palette.ts --check && node scripts/tokens.ts --check && node scripts/curves.ts --check'
   fi
   # The app's UI fault categories are the core's (client/core-ts/src/ui-faults.ts).
@@ -369,7 +369,7 @@ if part ts; then
   # The UIs never make a request of a station or still.fail cloud themselves: they name what they want done
   # (client/core-ts/src/ops.ts), and the core, which knows what it changes, brings every topic that shows it up to date.
   # the Wasm side of the native host's calls as their declarations make it
-  if touches '^libs/mbui/src/host/.*native\.mbt$|^apps/mbui/src/(core|stillfail|pinyin|sfreplay)/.*native\.mbt$|^libs/mbui/tools/wasmhost/'; then
+  if touches '^libs/ui/src/host/.*native\.mbt$|^apps/mbui/src/(core|stillfail|pinyin|sfreplay)/.*native\.mbt$|^libs/ui/tools/wasmhost/'; then
     step "wasm host calls" bash apps/mbui/scripts/wasm-app.sh check
   fi
   if touches '^(web/src|web/ui|apps/mbui/src)/'; then
@@ -479,7 +479,7 @@ if part ts; then
   # mesh's words are what the device base's own make (client/core-ts/src/lang.zh.json, lang.en.json).
   # (the first for a change to an mbui package's imports too: it holds which of them the base is built with, the ones
   # the moon step below is run for)
-  if touches '^libs/base/|^scripts/mb-base\.ts$|^libs/mbui/src/[^/]+/moon\.pkg$'; then
+  if touches '^libs/base/|^scripts/mb-base\.ts$|^libs/ui/src/[^/]+/moon\.pkg$'; then
     step "the base in MoonBit knows no program" node scripts/mb-base.ts
   fi
   if touches '^libs/base/|^client/core-ts/src/lang\.(zh|en)\.json$|^scripts/mb-base-words\.ts$'; then
@@ -544,8 +544,8 @@ if part ts; then
   # The TypeScript core: its own tsconfig.
   # (with the station's deps: what the core imports of the station's imports its packages, effect among them)
   if touches "$ts_core" || touches "$core_station"; then prep core deps client/core-ts; prep station deps station; step "typecheck: core-ts" after core after station sh -c 'cd client/core-ts && pnpm exec tsgo --noEmit'; fi
-  if touches "$ts_core|^client/math/|^libs/sf-ui/src/math_glyphs\\.mbt$"; then prep core deps client/core-ts; step "shared math alphabet" after core node client/core-ts/scripts/math-font.ts --check; fi
-  if touches "$ts_core|^client/fixtures/math\\.json$|^libs/sf-ui/src/math\\.json$"; then prep core deps client/core-ts; step "shared math fixture" after core node client/core-ts/scripts/math-fixture.ts --check; fi
+  if touches "$ts_core|^client/math/|^libs/ui/src/controls/math_glyphs\\.mbt$"; then prep core deps client/core-ts; step "shared math alphabet" after core node client/core-ts/scripts/math-font.ts --check; fi
+  if touches "$ts_core|^client/fixtures/math\\.json$|^libs/ui/src/controls/math\\.json$"; then prep core deps client/core-ts; step "shared math fixture" after core node client/core-ts/scripts/math-fixture.ts --check; fi
   # The core's pure answers the mbui app's runs without a core keep (apps/mbui/src/sfkept), as the core answers them now.
   if touches "$ts_core|^apps/mbui/src/sfkept/kept\\.mbt$"; then prep core deps client/core-ts; step "kept core answers" after core node client/core-ts/scripts/kept-answers.ts --check; fi
   # What makes the views writes only on what it made, never on what it was given (「谁能改什么」).
@@ -573,7 +573,7 @@ if [ $full = 1 ]; then
   # mbui is a member of its workspace, and moon would write mbui's pkg.generated.mbti files too. No Rust shell is
   # linked here: a native test that reaches the shell's C does not link, and says so (libs/base/AGENTS.md). No test
   # opens a link to a peer, and nothing reads what the page's shell's JavaScript does with iroh.
-  if part ts && touches '^libs/base/|^libs/mbui/src/(effect|halt)/|^libs/mbui/moon\.(mod|work)$'; then
+  if part ts && touches '^libs/base/|^libs/ui/src/(effect|halt)/|^libs/ui/moon\.(mod|work)$'; then
     if has moon; then
       # shellcheck disable=SC2016 # the command's own variable, expanded by its shell
       step "the base in MoonBit: every package checked for native and js, its tests on both" sh -c 'cd libs/base && pkgs=$(find src -name moon.pkg -exec dirname {} \; | sort) && [ -n "$pkgs" ] && moon check --no-mbti --target native $pkgs && moon check --no-mbti --target js $pkgs && moon test --target native $pkgs && moon test --target js $pkgs'
@@ -582,7 +582,7 @@ if [ $full = 1 ]; then
   # The client core in MoonBit (libs/client-core): every package checked for native and js, its tests on both (on a
   # database stood in, no SQLite linked), for a change to it, to the base it stands on, or to what that is built with
   # of mbui. By package, writing no interface, as the base's.
-  if part ts && touches '^libs/client-core/|^libs/base/|^libs/mbui/src/(effect|halt|signals)/|^libs/mbui/moon\.(mod|work)$'; then
+  if part ts && touches '^libs/client-core/|^libs/base/|^libs/ui/src/(effect|halt|signals)/|^libs/ui/moon\.(mod|work)$'; then
     if has moon; then
       # shellcheck disable=SC2016 # the command's own variable, expanded by its shell
       step "the client core in MoonBit: every package checked for native and js, its tests on both" sh -c 'cd libs/client-core && pkgs=$(find src -name moon.pkg -exec dirname {} \; | sort) && [ -n "$pkgs" ] && moon check --no-mbti --target native $pkgs && moon check --no-mbti --target js $pkgs && moon test --target native $pkgs && moon test --target js $pkgs'
@@ -608,7 +608,7 @@ if [ $full = 1 ]; then
   if part ts && touches "$ts_cloud"; then remembered "tests: cloud" "cloud client/i18n shared/lock.ts shared/log-keep.ts client/core-ts/src/lock-form.ts rules/js" after cloud sh -c 'cd cloud && pnpm test'; fi
   # The station: it and its tests run whenever it, one of its native parts or the words it says changed (station_paths:
   # scripts/plan.sh reads it from this line for CI's check-station).
-  station_paths='^station/|^shared/|^vendor/|^client/i18n/|^client/core-ts/src/features\.ts$|^client/shell/|^libs/mesh-transport/|^libs/mbui/src/effect/|^libs/base/(src/|moon\.mod$)|^rules/(js|src)/|^rules/moon\.mod$|^scripts/native\.ts$|^scripts/station-slice\.sh$'
+  station_paths='^station/|^shared/|^vendor/|^client/i18n/|^client/core-ts/src/features\.ts$|^client/shell/|^libs/mesh-transport/|^libs/ui/src/effect/|^libs/base/(src/|moon\.mod$)|^rules/(js|src)/|^rules/moon\.mod$|^scripts/native\.ts$|^scripts/station-slice\.sh$'
   # Its tests' native parts, prebuilt (mesh addon, runner, the reader in MoonBit, and for darwin-arm64 and linux-x64
   # the Rust station's archive command, the launcher, which runs the whole station in mb-live-station.test.ts, and the
   # tests' MoonBit program with every package's harness, reader-harness: the mb-*.test.ts files').
@@ -618,7 +618,7 @@ if [ $full = 1 ]; then
     prep station deps station
     # Its programs in MoonBit (station/mb): all 59 packages with native unit tests,
     # in one moon test (a call a package checked their shared dependencies again each time).
-    remembered "tests: station's MoonBit" "station/mb libs/base/src libs/base/moon.mod libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/accounts_oauth src/accounts_pool src/acp src/adb_devices src/admit src/agent_drivers src/agent_runtimes src/api_routes src/browser src/claude src/cloud_lock src/cloud_net src/codex src/comma src/connects_hub src/cprep src/cursor src/drive src/dsh src/events src/feishu src/front src/history src/host src/i18n src/jobs_host src/jscase src/jsjson src/live_wire src/mcp_tools src/memory src/mesh_door/door src/mesh_door/gate src/mesh_runtime src/mesh_scopes src/move_coord src/nodepath src/ops_platform src/packed src/pi src/pieces src/replica_coord src/rigs_mode src/screens src/session_chats src/session_hub src/session_storage src/share_sync src/slack src/station_main/media src/store_schema src/store_sessions src/store_threads src/terminals_logins src/updates src/usagecount src/vault_crypto src/vault_service src/wire'
+    remembered "tests: station's MoonBit" "station/mb libs/base/src libs/base/moon.mod libs/ui/src/effect libs/ui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/accounts_oauth src/accounts_pool src/acp src/adb_devices src/admit src/agent_drivers src/agent_runtimes src/api_routes src/browser src/claude src/cloud_lock src/cloud_net src/codex src/comma src/connects_hub src/cprep src/cursor src/drive src/dsh src/events src/feishu src/front src/history src/host src/i18n src/jobs_host src/jscase src/jsjson src/live_wire src/mcp_tools src/memory src/mesh_door/door src/mesh_door/gate src/mesh_runtime src/mesh_scopes src/move_coord src/nodepath src/ops_platform src/packed src/pi src/pieces src/replica_coord src/rigs_mode src/screens src/session_chats src/session_hub src/session_storage src/share_sync src/slack src/station_main/media src/store_schema src/store_sessions src/store_threads src/terminals_logins src/updates src/usagecount src/vault_crypto src/vault_service src/wire'
     step "typecheck: station" after station sh -c 'cd station && pnpm exec tsgo --noEmit'
     # The station's time is its Clock's (写法): the machine's only through ops/fibers.ts' wall.
     step "station: time through its clock" sh -c '! git grep -nE "Date\.now\(|new Date\(\)|setTimeout\(|setInterval\(" -- station/src ":!station/src/ops/fibers.ts"'
@@ -634,7 +634,7 @@ if [ $full = 1 ]; then
     # Node --test sorts its file arguments; run-files preserves the slice's longest-first order.
     # (STILLFAIL_NODE_TEST_JOBS: that many files at a time rather than Node's own count)
     # shellcheck disable=SC2016 # the command's own variables, expanded by its shell
-    remembered "tests: station${slice:+ $slice}" "station shared client/i18n client/shell libs/mesh-transport vendor rules/js rules/src rules/moon.mod libs/base/src libs/base/moon.mod libs/mbui/src/effect scripts/native.ts scripts/station-slice.sh" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node ./test/run-files.mjs $files'
+    remembered "tests: station${slice:+ $slice}" "station shared client/i18n client/shell libs/mesh-transport vendor rules/js rules/src rules/moon.mod libs/base/src libs/base/moon.mod libs/ui/src/effect scripts/native.ts scripts/station-slice.sh" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node ./test/run-files.mjs $files'
   fi
   # The usage stream exercises the real station reader and the client together. Keep it out of either side's own
   # typecheck and prepare both sides before checking and running it, including on a fresh checkout.

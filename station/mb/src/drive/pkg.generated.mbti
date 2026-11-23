@@ -2,7 +2,7 @@
 package "station/drive"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/json",
   "moonbitlang/core/ref",
   "station/host",

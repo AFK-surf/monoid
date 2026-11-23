@@ -2,7 +2,7 @@
 package "station/session_storage"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/json",
   "moonbitlang/core/ref",
   "moonbitlang/core/set",

@@ -2,8 +2,8 @@
 package "stillfail/sffixture"
 
 import {
-  "mbui/player",
-  "mbui/ui",
+  "ui/player",
+  "ui/ui",
   "moonbitlang/core/ref",
   "stillfail/sfbase",
 }

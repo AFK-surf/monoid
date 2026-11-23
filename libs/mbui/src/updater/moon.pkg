@@ -1,9 +1,0 @@
-import {
-  "mbui/codec",
-  "mbui/hostapi",
-  "mbui/zip",
-  "moonbitlang/core/bigint",
-  "moonbitlang/core/debug",
-  "moonbitlang/core/encoding/utf8",
-  "moonbitlang/core/json",
-}

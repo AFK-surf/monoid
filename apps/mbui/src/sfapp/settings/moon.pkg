@@ -1,17 +1,17 @@
 import {
   "moonbitlang/core/cmp",
-  "mbui/codec",
-  "mbui/hostapi",
-  "mbui/ui",
-  "mbui/kit",
-  "mbui/motion",
-  "mbui/pixels",
-  "stillfail/sf",
+  "ui/codec",
+  "ui/hostapi",
+  "ui/ui",
+  "ui/kit",
+  "ui/motion",
+  "ui/pixels",
+  "ui/controls" @sf,
   "moonbitlang/core/json",
-  "mbui/signals",
-  "mbui/view",
+  "ui/signals",
+  "ui/view",
 }
 
 import {
-  "mbui/halt",
+  "ui/halt",
 } for "wbtest"

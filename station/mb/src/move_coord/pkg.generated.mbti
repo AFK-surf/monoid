@@ -2,7 +2,7 @@
 package "station/move_coord"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "station/host",
   "station/jsjson",
 }

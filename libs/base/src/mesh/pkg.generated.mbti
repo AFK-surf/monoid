@@ -3,7 +3,7 @@ package "base/mesh"
 
 import {
   "base/shell",
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/debug",
   "moonbitlang/core/json",
 }

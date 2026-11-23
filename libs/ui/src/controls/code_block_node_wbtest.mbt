@@ -1,0 +1,97 @@
+// A code block as nodes (markdown_node.mbt's code_block_node) beside the old view's (markdown.mbt's code_block): its
+// keys (换行, 复制) pressed as far round them as a press's room reaches, the code under them as it was; its bar's words
+// at the system's size of words set to 1.3 as the old view's are.
+
+///|
+/// A block of `cb_code` in sh in a column `w` wide as nodes (`code_block_node`), with
+/// a finger (platform 2) or a mouse (0), its words at `scale`. Drawn at rest.
+fn cb_tester(w? : Double = 390.0, platform? : Int = 2, scale? : Double = 1.0, code? : String = cb_line) -> @ui.Tester {
+  let t = @ui.Tester::new(
+    fn(c) { begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(b) {
+        b.padding(Is((16.0, 40.0, 16.0, 0.0))) |> ignore
+        b.box(fn(k) { code_block_node(k, fn() { code }, fn() { "sh" }, fn() { None }) }) |> ignore
+      })
+      |> ignore
+    },
+    w~,
+    h=400.0,
+    platform~,
+  )
+  if scale != 1.0 {
+    t.set_font_scale(scale)
+  }
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+// kept across runs: a value
+let cb_line : String = "moon test --target native src/sf/code_block_node_wbtest.mbt"
+
+///|
+/// What `t.audit()` says of a code block but a press's room what scrolls its code is short of with a finger at the
+/// default size of words (42 high, under 44): said exactly `known` times, so that once it is mended this is taken out.
+/// Its keys (换行, 复制) have theirs as the hit test reaches them, over what scrolls too (the test below).
+fn cb_audit(t : @ui.Tester, known : Int) -> Array[String] {
+  let all = t.audit()
+  let room = all.filter(fn(f) { f.has_prefix("room: ") && f.contains("ui/src/controls/markdown_node.mbt") })
+  let faults = all.filter(fn(f) { !room.contains(f) })
+  if room.length() != known {
+    faults.push("a code block's rooms short \{room.length()} times, \{known} known: " + room.join(" | "))
+  }
+  faults
+}
+
+///|
+test "a code block's bar (its language, 换行, 复制) at the system's words set to 1.0 and 1.3 passes audit; a finger's and a mouse's" {
+  for platform in [2, 0] {
+    for scale in [1.0, 1.3] {
+      let at = "platform \{platform} at \{scale}"
+      let t = cb_tester(platform~, scale~)
+      assert_true(t.find("moon test") is Some(_), msg=at)
+      if platform == 2 {
+        assert_true(t.find("sh") is Some(_), msg=at)
+        assert_true(t.find(md_wrap_words(false)) is Some(_), msg=at)
+        assert_true(t.find(md_copy_words(false)) is Some(_), msg=at)
+      }
+      let faults = cb_audit(t, 0)
+      assert_true(faults.is_empty(), msg=at + ": " + faults.join(" || "))
+    }
+  }
+}
+
+///|
+test "a code block's 换行 is pressed as far round it as a press's room: over it, and under it where the code is" {
+  for dy in [-6.0, 26.0] {
+    let t = cb_tester()
+    let w = t.words().iter().find_first(fn(w) { w.0 == md_wrap_words(false) }).unwrap()
+    assert_eq(cb_audit(t, 0), [])
+    t.tap(w.1 + w.3 / 2.0, w.2 + dy)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find(md_wrap_words(true)) is Some(_), msg="\{dy} from its words' top")
+  }
+}
+
+///|
+test "code_block_node: 1.0x/1.3x keep 24pt code keys; 2.0x grows copy and wrap keys with zero fixed_outgrown or squeeze_faults" {
+  let t = cb_tester(platform=2, scale=1.0)
+  let keys_1 = t.semantics().filter(fn(s) { s.role == Button && !s.hidden }).map(fn(s) { s.rect.3 })
+  assert_eq(keys_1, [24.0, 24.0], msg="1.0x code keys exact 24pt")
+  assert_eq(t.fixed_outgrown(), [], msg="1.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="1.0x squeeze_faults")
+  t.set_font_scale(1.3)
+  t.draw()
+  let keys_13 = t.semantics().filter(fn(s) { s.role == Button && !s.hidden }).map(fn(s) { s.rect.3 })
+  assert_eq(keys_13, [24.0, 24.0], msg="1.3x code keys exact 24pt")
+  assert_eq(t.fixed_outgrown(), [], msg="1.3x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="1.3x squeeze_faults")
+  t.set_font_scale(2.0)
+  t.draw()
+  let keys_2 = t.semantics().filter(fn(s) { s.role == Button && !s.hidden }).map(fn(s) { s.rect.3 })
+  assert_true(keys_2.length() == 2 && keys_2.iter().all(fn(h) { h > 24.0 }), msg="2.0x code keys grew: \{Repr(keys_2)}")
+  assert_eq(t.fixed_outgrown(), [], msg="2.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="2.0x squeeze_faults")
+}

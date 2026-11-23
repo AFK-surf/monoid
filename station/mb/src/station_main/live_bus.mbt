@@ -81,6 +81,11 @@ pub(all) struct LiveBus {
   forwarded_port : Ref[(Int) -> Bool]
   runtimes_available : Ref[() -> Array[String]]
   here_device : Ref[async (Json, Json) -> Unit]
+  /// Records an internal business span on the active Traces instance (no-op when disabled or no mesh).
+  /// (name, start_wall_ms, end_wall_ms, attributes, failed, always_keep, slow_ms)
+  emit_span : Ref[(String, Int64, Int64, Array[(String, Json)], Bool, Bool, Int) -> Unit]
+  /// Generation counter for `emit_span` so stopping one workspace's traces does not clear another active workspace's.
+  emit_span_gen : Ref[Int]
   // ── Agents / Hub / MCP / Handover / Drain / Status (owned by P5-2) ──
   /// Custom `/mcp` HTTP handler (when `Some`, handles auth, `LISTINGS`, `OUTWARD` gating, `station_tool`, `SPEAKS`).
   mcp_handle : Ref[(async (Request) -> Reply)?]
@@ -254,6 +259,8 @@ pub fn LiveBus::new(
     forwarded_port: Ref(_port => false),
     runtimes_available: Ref(() => []),
     here_device: Ref(async fn(_ask, _conn) { () }),
+    emit_span: Ref(fn(_name, _start, _end, _attrs, _failed, _always_keep, _slow_ms) { () }),
+    emit_span_gen: Ref(0),
     mcp_handle: Ref(None),
     hub_ask: Ref(async fn(_op, _arg) { Json::null() }),
     hub_models_for: Ref(_connect => []),
@@ -276,6 +283,42 @@ pub fn LiveBus::new(
   // `subscribe` gives every part of the TypeScript)
   ignore(b.store.subscribe(c => b.notify_store(c)))
   b
+}
+
+///|
+/// Records an internal span from a JSON payload emitted by `--sessions` or `replica_coord` (`told("trace", [payload])`).
+pub fn LiveBus::emit_trace_json(self : LiveBus, payload : Json) -> Unit {
+  guard payload is Object(m) else { return }
+  let name = match m.get("name") {
+    Some(String(s)) if s != "" => s
+    _ => return
+  }
+  let start_ms = match m.get("startMs") {
+    Some(Number(n, ..)) => n.to_int64()
+    _ => wall_ms()
+  }
+  let raw_end_ms = match m.get("endMs") {
+    Some(Number(n, ..)) => n.to_int64()
+    _ => start_ms
+  }
+  let end_ms = if raw_end_ms < start_ms { start_ms } else { raw_end_ms }
+  let attrs : Array[(String, Json)] = []
+  match m.get("attributes") {
+    Some(Object(a)) =>
+      for k, v in a {
+        if !(v is Null) {
+          attrs.push((k, v))
+        }
+      }
+    _ => ()
+  }
+  let failed = m.get("failed") is Some(True)
+  let always_keep = m.get("alwaysKeep") is Some(True)
+  let slow_ms = match m.get("slowMs") {
+    Some(Number(n, ..)) => n.to_int()
+    _ => -1
+  }
+  (self.emit_span.val)(name, start_ms, end_ms, attrs, failed, always_keep, slow_ms)
 }
 
 ///|

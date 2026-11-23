@@ -4,7 +4,8 @@ import { mock, test } from "node:test";
 import { Effect, Exit, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { log } from "../src/ops/log.ts";
-import { Traces, otlpBody, parseParent, route } from "../src/mesh/traces.ts";
+import { Traces, otlpBody, parseParent, recordTracePayload, route } from "../src/mesh/traces.ts";
+import { McpEndpoint, type Tool } from "../src/tools/mcp.ts";
 
 test("a traceparent is read as W3C says", () => {
   const parent = parseParent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")!;
@@ -168,4 +169,112 @@ test("an OTLP batch says what describes the station, an empty one left out", () 
     { key: "service.version", value: { stringValue: "0.1.1" } },
     { key: "os.type", value: { stringValue: "darwin" } },
   ]);
+});
+
+test("internal root spans omit parentSpanId, set kind=1, respect tailOnly + alwaysKeep + slowMs, and no-op when off", async () => {
+  await clocked(async ({ hr, clock }) => {
+    const off = new Traces(false, { clock });
+    assert.equal(off.startRoot(), null);
+    off.recordInternal(1_000n, 2_000n, "agent.open", [["stillfail.runtime", "claude"]], false, { alwaysKeep: true });
+    recordTracePayload(off, { name: "turn.run", startMs: 10, endMs: 20, attributes: { "stillfail.runtime": "claude" }, failed: false, alwaysKeep: true, slowMs: -1 });
+    assert.equal(off.spans.length, 0);
+    await off.close();
+
+    const tail = new Traces(true, { clock, tailOnly: true, slowMs: 1_000 });
+    const s1 = tail.startRoot()!;
+    hr.ns += 10_000_000n; // 10ms
+    tail.endInternal(s1, "agent.open", [["stillfail.runtime", "claude"], ["stillfail.kind", "kick"]], false, { alwaysKeep: true });
+    assert.equal(tail.spans.length, 1);
+    const r1 = tail.spans[0] as any;
+    assert.equal("parentSpanId" in r1, false);
+    assert.equal(r1.kind, 1);
+    assert.equal(r1.name, "agent.open");
+    assert.equal(r1.status.code, 1);
+
+    // Dropped when < slowMs (500ms) and not failed and !alwaysKeep
+    const s2 = tail.startRoot()!;
+    hr.ns += 499_000_000n;
+    tail.endInternal(s2, "mcp.tool", [["stillfail.tool", "chat_post"]], false, { alwaysKeep: false, slowMs: 500 });
+    assert.equal(tail.spans.length, 1);
+
+    // Kept when >= slowMs (500ms)
+    const s3 = tail.startRoot()!;
+    hr.ns += 500_000_000n;
+    tail.endInternal(s3, "mcp.tool", [["stillfail.tool", "chat_post"]], false, { alwaysKeep: false, slowMs: 500 });
+    assert.equal(tail.spans.length, 2);
+
+    // Payload helper records failed quick span with status=2 and omits null attributes
+    recordTracePayload(tail, {
+      name: "station.task",
+      startMs: 100,
+      endMs: 120,
+      attributes: { "stillfail.task.small": true, "stillfail.task.screen": false, "stillfail.task.sync": false, "stillfail.task.exit_code": 1, "ignored": null },
+      failed: true,
+      alwaysKeep: true,
+      slowMs: -1,
+    });
+    assert.equal(tail.spans.length, 3);
+    const r3 = tail.spans[2] as any;
+    assert.equal("parentSpanId" in r3, false);
+    assert.equal(r3.kind, 1);
+    assert.equal(r3.status.code, 2);
+    assert.deepEqual(r3.attributes.map((a: any) => a.key), ["stillfail.task.small", "stillfail.task.screen", "stillfail.task.sync", "stillfail.task.exit_code"]);
+    await tail.close();
+  });
+});
+
+test("mcp.tool traces record tool name and runtime without leaking arguments or paths", async () => {
+  await clocked(async ({ hr, clock }) => {
+    const traces = new Traces(true, { clock, tailOnly: true, slowMs: 1_000 });
+    const tools: Tool[] = [
+      {
+        name: "chat_post",
+        description: "Post",
+        inputSchema: { type: "object", properties: { text: { type: "string" } } },
+        run: async () => {
+          hr.ns += 550_000_000n; // 550ms -> kept by slowMs=500
+          return "ok";
+        },
+      },
+      {
+        name: "secret_run",
+        description: "Run",
+        inputSchema: { type: "object", properties: { command: { type: "string" } } },
+        run: async () => {
+          hr.ns += 10_000_000n; // 10ms -> kept because failed
+          throw new Error("failed at /Users/secret/path with sk_live_123");
+        },
+      },
+    ];
+    const mcp = new McpEndpoint(
+      (token) => (token === "tok" ? "sess-secret-key" : undefined),
+      tools,
+      undefined,
+      undefined,
+      { traces: () => traces, runtimeOf: () => "claude" },
+    );
+    await mcp.handle("POST", "Bearer tok", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "chat_post", arguments: { text: "private body" } } }));
+    await mcp.handle("POST", "Bearer tok", JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "secret_run", arguments: { command: "echo sk_live_123" } } }));
+    assert.equal(traces.spans.length, 2);
+    const raw = JSON.stringify(traces.spans);
+    assert.equal(raw.includes("sess-secret-key"), false);
+    assert.equal(raw.includes("private body"), false);
+    assert.equal(raw.includes("sk_live_123"), false);
+    assert.equal(raw.includes("/Users/secret/path"), false);
+    const [okSpan, errSpan] = traces.spans as any[];
+    assert.equal(okSpan.name, "mcp.tool");
+    assert.equal(okSpan.status.code, 1);
+    assert.deepEqual(okSpan.attributes, [
+      { key: "stillfail.tool", value: { stringValue: "chat_post" } },
+      { key: "stillfail.runtime", value: { stringValue: "claude" } },
+    ]);
+    assert.equal(errSpan.name, "mcp.tool");
+    assert.equal(errSpan.status.code, 2);
+    assert.deepEqual(errSpan.attributes, [
+      { key: "stillfail.tool", value: { stringValue: "secret_run" } },
+      { key: "stillfail.runtime", value: { stringValue: "claude" } },
+      { key: "error.type", value: { stringValue: "error" } },
+    ]);
+    await traces.close();
+  });
 });

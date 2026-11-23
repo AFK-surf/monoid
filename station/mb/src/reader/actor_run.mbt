@@ -52,7 +52,10 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
       })
     "kick" => {
       let before = a.start_failures
-      self.enqueue(a, async fn() { self.pump(a, before_failures=before) })
+      self.enqueue(a, async fn() {
+        a.open_kind = "kick"
+        self.pump(a, before_failures=before)
+      })
     }
     "notify" => {
       // (not told where it is archived: Node's to see, as it asks)
@@ -236,7 +239,10 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
         }
         self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_REFILL"), passive=true)
       })
-    "recover" => return self.recover(a)
+    "recover" => {
+      a.open_kind = "recover"
+      return self.recover(a)
+    }
     "cutOffByRestart" => return self.cut_off_by_restart(a)
     "takeWait" => self.enqueue(a, async fn() { self.take_wait(a) })
     "takeRefill" =>
@@ -259,6 +265,7 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
           return
         }
         self.log(a, "info", "warming session process")
+        a.open_kind = "warm"
         ignore(self.ensure_agent(a)) catch {
           // (its start given up by a stop, a suspension or a close: nothing to warm)
           e if open_abort_reason(e) is Some(_) => return
@@ -1225,6 +1232,9 @@ fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : 
           Some(Object(_) as b) => Some(b)
           _ => None
         },
+        started_at: self.now,
+        first_live_at: None,
+        tools_count: 0,
       })
     _ => None
   }
@@ -1651,10 +1661,18 @@ fn Actors::say(self : Actors, a : Actor, status : Json) -> Unit {
 ///|
 /// A live step of the running turn, for its threads' status line.
 fn Actors::on_live(self : Actors, a : Actor, event : Json) -> Unit {
+  let kind = str_of(event.value("kind")).unwrap_or("")
+  if a.turn is Some(t) {
+    if t.first_live_at is None {
+      t.first_live_at = Some(self.now)
+    }
+    if kind == "start" && str_of(event.value("step")) == Some("tool") {
+      t.tools_count += 1
+    }
+  }
   if a.working_for.length() == 0 {
     return
   }
-  let kind = str_of(event.value("kind")).unwrap_or("")
   let id = str_of(event.value("id")).unwrap_or("")
   if kind == "start" && str_of(event.value("step")) == Some("tool") && str_of(event.value("tool")) is Some(tool) && tool != "" {
     if !a.tools.iter().any(t => t.0 == id) {
@@ -1824,6 +1842,7 @@ async fn Actors::start_turn(
         }
         if turn is Some(t) {
           let stopped = why == "stopped"
+          self.emit_turn_trace(a, t, "stopped")
           ignore(self.store(a, "endTurn", [jstr(t.id), jstr("aborted"), jstr(if stopped { "user" } else { "other: " + why }), if stopped { jstr("stopped") } else { Json::null() }, Json::null()]))
         }
         self.set_running(a, false)
@@ -1834,6 +1853,9 @@ async fn Actors::start_turn(
       a.phase = "idle"
       if session_cap_info(e) is Some((profile, active, cap, protection)) {
         paused_by_cap = true
+        if turn is Some(t) {
+          self.emit_turn_trace(a, t, "cap")
+        }
         self.pause_for_session_cap(a, profile, active, cap, protection, kind, by, turn)
         raise e
       }
@@ -1842,6 +1864,7 @@ async fn Actors::start_turn(
         _ => e.to_string()
       }
       if turn is Some(t) {
+        self.emit_turn_trace(a, t, "failed")
         ignore(self.store(a, "endTurn", [jstr(t.id), jstr("failed"), jstr("other: " + message), Json::null(), Json::null()]))
       }
       self.set_running(a, false)
@@ -2034,7 +2057,7 @@ async fn Actors::begin_turn(self : Actors, a : Actor, kind : String, by : Json, 
   let id = str_of(Some(self.rpc(a.key, "node.uuid", []))).unwrap_or("")
   let asked_before = if kind == "job" { self.asked_now(a) } else { None }
   let is_passive = passive || kind == "title" || kind == "nudge"
-  a.turn = Some({ id, declared: None, auth_retried: kind == "auth_retry", codex_retried: kind == "codex_retry", passive: is_passive, by, asked_before })
+  a.turn = Some({ id, declared: None, auth_retried: kind == "auth_retry", codex_retried: kind == "codex_retry", passive: is_passive, by, asked_before, started_at: self.now, first_live_at: None, tools_count: 0 })
   a.deferred_end = None
   a.warm = false
   a.phase = "running"
@@ -2235,6 +2258,57 @@ async fn Actors::open_over(self : Actors, a : Actor, passive : Bool) -> Agent ra
 }
 
 ///|
+/// Emits a `turn.run` internal span with no PII/paths/content.
+fn Actors::emit_turn_trace(self : Actors, a : Actor, t : Turn, outcome : String) -> Unit {
+  let attrs : Map[String, Json] = {
+    "stillfail.runtime": jstr(a.runtime),
+    "stillfail.tools_count": jnum(t.tools_count.to_double()),
+    "stillfail.outcome": jstr(outcome),
+  }
+  if str_of(a.running_identity.value("model")) is Some(m) && m != "" {
+    attrs["stillfail.model"] = jstr(m)
+  }
+  if t.first_live_at is Some(fl) && fl >= t.started_at {
+    attrs["stillfail.ttft_ms"] = jnum((fl - t.started_at).floor())
+  }
+  let failed = outcome == "failed" || outcome == "cap"
+  self.tell_trace(a.key, {
+    "name": jstr("turn.run"),
+    "startMs": jnum(t.started_at),
+    "endMs": jnum(self.now),
+    "attributes": Json::object(attrs),
+    "failed": jbool(failed),
+    "alwaysKeep": jbool(true),
+    "slowMs": jnum(-1.0),
+  })
+}
+
+///|
+/// Classifies an `agent.open` error into a short enum (never raw stderr or paths).
+fn open_error_type(e : Error) -> (String, Bool) {
+  if e is Asked(j) && j.value("openTimeout") is Some(True) {
+    return ("timeout", true)
+  }
+  if open_abort_reason(e) is Some(_) {
+    return ("abort", false)
+  }
+  if session_cap_info(e) is Some(_) {
+    return ("cap", false)
+  }
+  if e is Asked(j) && j.value("auth") is Some(True) {
+    return ("auth", false)
+  }
+  if e is Asked(j) && j.value("missing") is Some(True) {
+    return ("missing", false)
+  }
+  let msg = Asked::message(e).to_lower()
+  if msg.contains("spawn") || msg.contains("enoent") {
+    return ("spawn", false)
+  }
+  ("rpc", false)
+}
+
+///|
 /// actor.ts `ensureAgent`: its runtime session, opened (Node's: the driver, its options, the words it is told of how it
 /// was opened) where it has none.
 async fn Actors::ensure_agent(self : Actors, a : Actor) -> Agent raise {
@@ -2269,7 +2343,58 @@ async fn Actors::ensure_agent(self : Actors, a : Actor) -> Agent raise {
     }
     // (what it is changed in while it opens is taken once it is open: `changed` counts it with no process to mark)
     let seq = a.change_seq
-    let opened = self.rpc_open(a, [Json::array(a.stopped), jbool(a.read_back), a.profile, jbool(a.force_session_cap)])
+    let open_start = self.now
+    let prev_runtime = a.runtime
+    let open_kind = a.open_kind
+    a.open_kind = "other"
+    let opened = try {
+      self.rpc_open(a, [Json::array(a.stopped), jbool(a.read_back), a.profile, jbool(a.force_session_cap)])
+    } catch {
+      e => {
+        let (err_type, is_timeout) = open_error_type(e)
+        let rt = match e {
+          Asked(j) => str_of(j.value("runtime")).unwrap_or(a.runtime)
+          _ => a.runtime
+        }
+        let attrs : Map[String, Json] = {
+          "stillfail.runtime": jstr(rt),
+          "stillfail.kind": jstr(open_kind),
+          "stillfail.take_across": jbool(prev_runtime != "" && rt != prev_runtime),
+          "error.type": jstr(err_type),
+        }
+        if is_timeout {
+          attrs["stillfail.open_timeout"] = jbool(true)
+        }
+        self.tell_trace(a.key, {
+          "name": jstr("agent.open"),
+          "startMs": jnum(open_start),
+          "endMs": jnum(self.now),
+          "attributes": Json::object(attrs),
+          "failed": jbool(true),
+          "alwaysKeep": jbool(true),
+          "slowMs": jnum(-1.0),
+        })
+        raise e
+      }
+    }
+    let opened_rt = str_of(opened.value("runtime")).unwrap_or(prev_runtime)
+    let open_attrs : Map[String, Json] = {
+      "stillfail.runtime": jstr(opened_rt),
+      "stillfail.kind": jstr(open_kind),
+      "stillfail.take_across": jbool(prev_runtime != "" && opened_rt != prev_runtime),
+    }
+    if opened.value("identity") is Some(Object(ident)) && str_of(ident.get("model")) is Some(m) && m != "" {
+      open_attrs["stillfail.model"] = jstr(m)
+    }
+    self.tell_trace(a.key, {
+      "name": jstr("agent.open"),
+      "startMs": jnum(open_start),
+      "endMs": jnum(self.now),
+      "attributes": Json::object(open_attrs),
+      "failed": jbool(false),
+      "alwaysKeep": jbool(true),
+      "slowMs": jnum(-1.0),
+    })
     a.force_session_cap = false
     a.paused_cap = false
     a.cap_wait_notified = false
@@ -2506,6 +2631,16 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   a.turn = None
   if kind == "completed" && !a.stop_requested && turn is Some({ declared: None, .. }) {
     a.warm = true
+  }
+  if turn is Some(t) {
+    let trace_outcome = if a.stop_requested || kind == "aborted" {
+      "stopped"
+    } else if kind == "failed" {
+      "failed"
+    } else {
+      "done"
+    }
+    self.emit_turn_trace(a, t, trace_outcome)
   }
   let had_turn = turn is Some(_)
   if had_turn {

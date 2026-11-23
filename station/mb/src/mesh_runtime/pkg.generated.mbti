@@ -2,7 +2,7 @@
 package "station/mesh_runtime"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/debug",
   "moonbitlang/core/json",
   "station/host",

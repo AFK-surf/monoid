@@ -2,6 +2,7 @@
 // session's bearer token; tools run on behalf of that session. This takes a request's method, authorization and body,
 // and gives its status and body; the HTTP wiring is the server's.
 import { log } from "../ops/log.ts";
+import type { Traces } from "../mesh/traces.ts";
 
 /// The tools that reach out of the station, refused while it is in no workspace (`gated`): what posts or sends to
 /// people (chat_post, into still.fail chats and Slack, with its files), slack_api (as the workspace's Slack bot) and
@@ -187,12 +188,22 @@ export class McpEndpoint {
   private listing?: (session: string) => Listing | undefined;
   /// How many `tools/list` or `tools/call` requests each session's token made here (`heard`).
   private heardBy = new Map<string, number>();
+  private traces?: () => Traces | null;
+  private runtimeOf?: (session: string) => string | undefined;
 
-  constructor(resolve: (token: string) => string | undefined, tools: readonly Tool[] | (() => readonly Tool[]), gate?: (session: string) => string | undefined, listing?: (session: string) => Listing | undefined) {
+  constructor(
+    resolve: (token: string) => string | undefined,
+    tools: readonly Tool[] | (() => readonly Tool[]),
+    gate?: (session: string) => string | undefined,
+    listing?: (session: string) => Listing | undefined,
+    options?: { traces?: () => Traces | null; runtimeOf?: (session: string) => string | undefined },
+  ) {
     this.tools = typeof tools === "function" ? tools : () => tools;
     this.resolve = resolve;
     this.gate = gate;
     this.listing = listing;
+    this.traces = options?.traces;
+    this.runtimeOf = options?.runtimeOf;
   }
 
   /// The tools a session is declared: all of them, or those within its runtime's budget and INDIRECT for the rest;
@@ -266,16 +277,28 @@ export class McpEndpoint {
           }
         }
         const args = typed(given, tool.inputSchema);
+        const traces = this.traces?.() ?? null;
+        const span = traces?.startRoot() ?? null;
+        const toolAttrs = (errType?: string): [string, unknown][] => {
+          const a: [string, unknown][] = [["stillfail.tool", name]];
+          const rt = this.runtimeOf?.(session);
+          if (rt) a.push(["stillfail.runtime", rt]);
+          if (errType) a.push(["error.type", errType]);
+          return a;
+        };
         try {
           if (tool.content) {
             const { content, isError } = await tool.content(session, args);
+            if (span && traces) traces.endInternal(span, "mcp.tool", toolAttrs(isError ? "tool_error" : undefined), isError === true, { alwaysKeep: false, slowMs: 500 });
             return reply({ result: { content, ...(isError ? { isError: true } : {}) } });
           }
           const said = await tool.run(session, args, signal);
+          if (span && traces) traces.endInternal(span, "mcp.tool", toolAttrs(), false, { alwaysKeep: false, slowMs: 500 });
           const ended = this.listing?.(session)?.ended;
           const stops = ended !== undefined && tool.endsTurn?.(session, args, said) === true;
           return reply({ result: { content: [{ type: "text", text: said }], ...(stops ? { _meta: ended } : {}) } });
         } catch (error) {
+          if (span && traces) traces.endInternal(span, "mcp.tool", toolAttrs(signal?.aborted ? "aborted" : "error"), true, { alwaysKeep: false, slowMs: 500 });
           if (!signal?.aborted) log.warn("mcp", "tool call failed", { session, tool: name, error: (error as Error).message });
           return reply({ result: { content: [{ type: "text", text: (error as Error).message }], isError: true } });
         }

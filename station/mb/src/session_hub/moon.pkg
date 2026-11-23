@@ -15,7 +15,7 @@ import {
   "station/memory",
   "station/claude",
   "moonbitlang/core/json",
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/cmp",
   "moonbitlang/core/double",
   "moonbitlang/core/string",

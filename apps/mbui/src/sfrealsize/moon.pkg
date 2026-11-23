@@ -1,6 +1,6 @@
 import {
   "moonbitlang/core/json",
-  "mbui/signals",
+  "ui/signals",
   "stillfail/core",
   "stillfail/sfbase",
 }

@@ -2,16 +2,16 @@
 package "stillfail/sfapp"
 
 import {
-  "mbui/hostapi",
-  "mbui/motion",
-  "mbui/paint",
-  "mbui/signals",
-  "mbui/text",
-  "mbui/ui",
-  "mbui/view",
+  "ui/hostapi",
+  "ui/motion",
+  "ui/paint",
+  "ui/signals",
+  "ui/text",
+  "ui/ui",
+  "ui/view",
   "moonbitlang/core/json",
   "moonbitlang/core/ref",
-  "stillfail/sf",
+  "ui/controls",
   "stillfail/sfapp/settings",
   "stillfail/sfbase",
 }
