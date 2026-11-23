@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [dfcde34c0](https://github.com/AFK-surf/monoid/commit/dfcde34c089d4df139ef20f962ff5fa96f34e632) test(pion): add L1/L2 TS-vs-Pion differential pari | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 100.44 | 132.06 |
 | [7ba6b7030](https://github.com/AFK-surf/monoid/commit/7ba6b7030c6551a6974b32fe1dc1796955ec35d2) feat(ui): add runtime Agent Bridge protocol on vie | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 100.44 | 132.06 |
 | [62801b760](https://github.com/AFK-surf/monoid/commit/62801b76096c861e6fe7b463fc0463b5a43079af) feat(headless): add reorder/transfer, tree, and me | 2.73 | 3.68 | 14.91 | 37.09 | 56.8 | 32.48 | 65.96 | 100.44 | 128.5 |
 | [a09f1aec1](https://github.com/AFK-surf/monoid/commit/a09f1aec17d98631174f16e4fa75a21cf6256adc) feat(mbui): apply Liquid Glass surface to narrow o | 2.73 | 3.68 | 14.91 | 37.08 | 56.8 | 32.48 | 65.96 | 100.42 | 137.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ce60a1ea9](https://github.com/AFK-surf/monoid/commit/ce60a1ea96cdc634e515fb6e0a755ed70a14ca5d) feat(ui,mbui): tint Windows window controls with t | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.74 | 100.29 | 124.88 |
 | [934faffca](https://github.com/AFK-surf/monoid/commit/934faffca6785d00328d49383125062c3d80b96e) feat(ui,mbui): unify transient overlay coordinatio | 2.72 | 3.66 | 14.84 | 36.99 | 56.56 | 32.4 | 65.72 | 100.19 | 114.81 |
 | [579c8c48e](https://github.com/AFK-surf/monoid/commit/579c8c48ec22e0c60284fca5ae88fa3d4cb07d21) fix(station): look up collected jobs' ends in batc | 2.72 | 3.66 | 14.83 | 36.99 | 56.52 | 32.4 | 65.72 | 100.19 | 124.7 |
-| [f40ab04c2](https://github.com/AFK-surf/monoid/commit/f40ab04c2a1041e1fabf8b6d60ae6cacc1d3dfb3) fix(mbui,ui): open ⌘K, place sidebars and named pa | 2.72 | 3.66 | 14.83 | 36.99 | 56.52 | 32.4 | 65.72 | 100.19 | 124.7 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [dfcde34c0](https://github.com/AFK-surf/monoid/commit/dfcde34c089d4df139ef20f962ff5fa96f34e632) test(pion): add L1/L2 TS-vs-Pion differential pari | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.85 | 55.07 |
 | [7ba6b7030](https://github.com/AFK-surf/monoid/commit/7ba6b7030c6551a6974b32fe1dc1796955ec35d2) feat(ui): add runtime Agent Bridge protocol on vie | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.85 | 55.26 |
 | [62801b760](https://github.com/AFK-surf/monoid/commit/62801b76096c861e6fe7b463fc0463b5a43079af) feat(headless): add reorder/transfer, tree, and me | 0.49 | 0.64 | 2.45 | 3.52 | 5.84 | 1.8 | 4.85 | 55.28 |
 | [a09f1aec1](https://github.com/AFK-surf/monoid/commit/a09f1aec17d98631174f16e4fa75a21cf6256adc) feat(mbui): apply Liquid Glass surface to narrow o | 0.49 | 0.64 | 2.45 | 3.52 | 5.84 | 1.8 | 4.85 | 55.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ce60a1ea9](https://github.com/AFK-surf/monoid/commit/ce60a1ea96cdc634e515fb6e0a755ed70a14ca5d) feat(ui,mbui): tint Windows window controls with t | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.15 |
 | [934faffca](https://github.com/AFK-surf/monoid/commit/934faffca6785d00328d49383125062c3d80b96e) feat(ui,mbui): unify transient overlay coordinatio | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.3 |
 | [579c8c48e](https://github.com/AFK-surf/monoid/commit/579c8c48ec22e0c60284fca5ae88fa3d4cb07d21) fix(station): look up collected jobs' ends in batc | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.26 |
-| [f40ab04c2](https://github.com/AFK-surf/monoid/commit/f40ab04c2a1041e1fabf8b6d60ae6cacc1d3dfb3) fix(mbui,ui): open ⌘K, place sidebars and named pa | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.1 |
