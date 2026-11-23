@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -21,9 +21,9 @@ interface Run {
   stderr: string;
 }
 
-function run(file: string, args: string[], env: Record<string, string>): Promise<Run> {
+function run(file: string, args: string[], env: Record<string, string>, cwd?: string): Promise<Run> {
   return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(file, args, { env, cwd, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => { stdout += d.toString("utf8"); });
@@ -47,7 +47,7 @@ function toolsDir(base: string): string {
 
 // What a fake entry saw: which one ran, its arguments, the two variables the command gives it.
 const reportJs = (who: string) => `
-const out = { who: ${JSON.stringify(who)}, args: process.argv.slice(2), cmd: process.env.STILLFAIL_CMD ?? null, data: process.env.STILLFAIL_DATA ?? null };
+const out = { who: ${JSON.stringify(who)}, args: process.argv.slice(2), cmd: process.env.STILLFAIL_CMD ?? null, data: process.env.STILLFAIL_DATA ?? null, ...(process.env.FAKE_CWD ? { cwd: process.cwd() } : {}) };
 process.stdout.write(JSON.stringify(out) + "\\n");
 process.stderr.write("to stderr from " + ${JSON.stringify(who)} + "\\n");
 process.exitCode = Number(process.env.FAKE_EXIT ?? "0");
@@ -459,11 +459,28 @@ test("bin/stillfail.ps1 admin under Windows PowerShell 5.1 and PowerShell 7", { 
         assert.equal(r.code, 0, `${argv.join(" ")}: ${r.stderr}`);
         assert.deepEqual(parseReport(r.stdout), { who: "admin-cli.js", args: argv, cmd: "stillfail", data }, argv.join(" "));
       }
-      const exact = ["pre", "", "post", 'a"b', 'say "hi there"', "C:\\dir with space\\", "back\\\\\"slash", "tab\there", "--json"];
+      const exact = ["pre", "", "post", 'a"b', 'say "hi there"', "C:\\dir with space\\", "back\\\\\"slash", "tab\there", "a\\\n", "--json"];
       for (const argv of [[], ["whoami"], exact]) {
         const r = await byCall(argv);
         assert.equal(r.code, 0, `${JSON.stringify(argv)}: ${r.stderr}`);
         assert.deepEqual(parseReport(r.stdout).args, argv);
+      }
+      // Started from one folder, moved to another: Node and the reader run in the one PowerShell is at, where a relative
+      // --data (cfg) is found.
+      const started = join(base, "started");
+      const moved = join(base, "moved");
+      mkdirSync(started, { recursive: true });
+      mkdirSync(moved, { recursive: true });
+      const inMoved = (engine: string) => {
+        const command = `Set-Location -LiteralPath ${psLiteral(moved)}; & ${psLiteral(script)} admin --data cfg whoami; exit $LASTEXITCODE`;
+        return run(exe, ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")], { ...env, FAKE_CWD: "1", ...(engine ? { STILLFAIL_ADMIN_ENGINE: engine } : {}) }, started);
+      };
+      for (const engine of ["", "moonbit"]) {
+        const r = await inMoved(engine);
+        assert.equal(r.code, 0, `${engine}: ${r.stderr}`);
+        const report = parseReport(r.stdout) as { cwd?: string; args: string[] };
+        assert.equal(realpathSync.native(report.cwd!).toLowerCase(), realpathSync.native(moved).toLowerCase(), engine || "node");
+        assert.deepEqual(report.args.slice(-3), ["--data", "cfg", "whoami"]);
       }
       const kept = await byFile(["whoami"], { STILLFAIL_CMD: "monoid" });
       assert.equal(parseReport(kept.stdout).cmd, "monoid");

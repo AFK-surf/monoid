@@ -337,12 +337,14 @@ switch ("$($a[0]) $($a[1])".Trim()) {
     function QuoteArg([string] $s) {
       if ($s -ne '' -and $s -notmatch '[\s"]') { return $s }
       $s = [regex]::Replace($s, '(\\*)"', { param($m) $m.Groups[1].Value * 2 + '\"' })
-      $s = [regex]::Replace($s, '(\\+)$', { param($m) $m.Groups[1].Value * 2 })
+      $s = [regex]::Replace($s, '(\\+)\z', { param($m) $m.Groups[1].Value * 2 })
       return '"' + $s + '"'
     }
     function RunNative([string] $file, [string[]] $argv) {
       $start = New-Object System.Diagnostics.ProcessStartInfo $file
       $start.UseShellExecute = $false
+      # (Set-Location moves PowerShell's location, not the process's: a relative --data is the person's location's)
+      $start.WorkingDirectory = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath
       $start.Arguments = (@($argv) | ForEach-Object { QuoteArg $_ }) -join ' '
       $child = [System.Diagnostics.Process]::Start($start)
       $child.WaitForExit()
