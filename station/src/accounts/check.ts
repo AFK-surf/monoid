@@ -115,7 +115,7 @@ export function checkConfig(raw: any, _data: string, services: ServiceRegistry =
       variant(p.access.kind, ACCESS_KINDS, "an access kind");
       for (const f of ["key", "provider", "endpoint", "protocol", "service"]) optional(p.access[f], "string", "a string");
     }
-    for (const f of ["machine", "backgroundOnMessage", "fast", "enabled", "newAccountProtection"]) optional(p[f], "boolean", "a boolean");
+    for (const f of ["machine", "backgroundOnMessage", "fast", "enabled", "newAccountProtection", "directQuota"]) optional(p[f], "boolean", "a boolean");
     optional(p.name, "string", "a string");
     optional(p.model, "string", "a string");
     if (p.maxConcurrentSessions !== undefined && p.maxConcurrentSessions !== null) {

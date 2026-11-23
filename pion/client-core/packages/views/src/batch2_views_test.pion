@@ -1,0 +1,864 @@
+// Deterministic regression tests for Batch 2 views:
+// - `vault_crypto_view`: X25519+HKDF+ChaCha20-Poly1305 box seal/open & AAD binding,
+//   native `pion/rules` `vault::vault_ok`/`item_ok`/`supersedes`, non-safe-mode `personal_lock_of`
+//   & `can_manage_workspace_vault`, pre-removal `level_vaults`/`take_before` (0 box reads, 0 prompts),
+//   approval queue (`secret_use`/`secret_save`/`secret_delete`, `plainMode == false`).
+// - `presets_view`: `merge_preset_records`, strictly newer send/forward, `gone_kept` trimming,
+//   ownerless deletion claim, own vs `other_presets` (read-only + copy), stars, and `board_drafts`.
+// - `downloads_view`: `merge_ranges`, `missing_ranges`, concurrent save/preview in both arrival
+//   orders & mid-flight cancellation (`leave_reader`) with 0 duplicate station requests.
+// - `auth_view`: multi-account register/switch/sign-out, 60s single-flight refresh, token stripping,
+//   OAuth PKCE / Passkey login flow with recovery hints, and `admit_member_role` cloud role capping.
+
+import "base_codec"
+import "form"
+import "lock"
+import "vault"
+
+fn b2_assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("batch2 assertion failed")
+  }
+}
+
+fn b2_assert_eq[T](a : T, b : T) -> Unit {
+  if a != b {
+    panic("batch2 assert_eq failed")
+  }
+}
+
+fn b2_assert_opt_eq(a : Option[String], b : Option[String]) -> Unit {
+  match (a, b) {
+    (None, None) => ()
+    (Some(x), Some(y)) => if x != y { panic("batch2 assert_opt_eq failed: " + x + " != " + y) }
+    _ => panic("batch2 assert_opt_eq failed")
+  }
+}
+
+fn b2_seed(tag : Int) -> Bytes {
+  let b = Bytes::new(32)
+  for i in 0..<32 {
+    b[i] = ((tag * 31 + i * 7 + 13) % 256) as Byte
+  }
+  b
+}
+
+fn b2_hex32(ch : String) -> String {
+  let sb = StringBuilder::new()
+  for _ in 0..<64 {
+    sb.write_string(ch)
+  }
+  sb.to_string()
+}
+
+fn b2_bytes_eq(a : Bytes, b : Bytes) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn b2_make_person_genesis(
+  sub : String,
+  device_id : String,
+  seed : Bytes,
+) -> form::Json {
+  let key_id = lock_key_id_of_seed(seed)
+  let raw = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("person:" + sub)),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    ("body", form::Json::Obj([
+      ("sub", form::Json::Str(sub)),
+      ("device", form::Json::Obj([
+        ("key", form::Json::Str(key_id)),
+        ("id", form::Json::Str(device_id)),
+        ("label", form::Json::Str(sub + "-app")),
+        ("sign_key", form::Json::Str(key_id)),
+      ])),
+    ])),
+  ])
+  match sign_entry_ed25519(seed, raw) {
+    Ok(signed) => signed
+    Err(e) => panic("sign person genesis failed: " + e)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. Vault Crypto, Personal Lock Folding, Leveling & Approval Queue Tests
+// ---------------------------------------------------------------------------
+
+test "vault_crypto_view: X25519 box seal/open with AAD binding and item AEAD" {
+  let dev_priv = b2_seed(1)
+  let other_priv = b2_seed(2)
+  let eph_priv = b2_seed(3)
+  let dev_pub = match vault_box_public(dev_priv) {
+    Ok(p) => p
+    Err(e) => panic(e)
+  }
+  let secret_key = b2_seed(9)
+  let sealed = match vault_seal_box(dev_pub, secret_key, "ws-1", "v_01ARZ3NDEKTSV4RRFFQ69G5FAV", 2.to_int64(), eph_priv) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+
+  // Exact match opens cleanly.
+  match vault_open_box(dev_priv, sealed, "ws-1", "v_01ARZ3NDEKTSV4RRFFQ69G5FAV", 2.to_int64()) {
+    Ok(opened) => b2_assert(b2_bytes_eq(opened, secret_key))
+    Err(e) => panic("expected open success: " + e)
+  }
+  // Wrong workspace, vault_id, epoch, or private key must all fail.
+  b2_assert(vault_open_box(dev_priv, sealed, "ws-2", "v_01ARZ3NDEKTSV4RRFFQ69G5FAV", 2.to_int64()).is_err())
+  b2_assert(vault_open_box(dev_priv, sealed, "ws-1", "v_01ARZ3NDEKTSV4RRFFQ69G5FAW", 2.to_int64()).is_err())
+  b2_assert(vault_open_box(dev_priv, sealed, "ws-1", "v_01ARZ3NDEKTSV4RRFFQ69G5FAV", 3.to_int64()).is_err())
+  b2_assert(vault_open_box(other_priv, sealed, "ws-1", "v_01ARZ3NDEKTSV4RRFFQ69G5FAV", 2.to_int64()).is_err())
+
+  // Item encrypt/decrypt with AAD binding.
+  let nonce = Bytes::new(12)
+  for i in 0..<12 { nonce[i] = (i + 5) as Byte }
+  let payload = "{\"token\":\"sk_live_secret\"}".to_bytes()
+  let ct = match vault_encrypt_item(secret_key, payload, "ws-1", "v_01ARZ3NDEKTSV4RRFFQ69G5FAV", "i_01ARZ3NDEKTSV4RRFFQ69G5FAV", 0.to_int64(), 2.to_int64(), nonce) {
+    Ok(c) => c
+    Err(e) => panic(e)
+  }
+  match vault_decrypt_item(secret_key, ct, "ws-1", "v_01ARZ3NDEKTSV4RRFFQ69G5FAV", "i_01ARZ3NDEKTSV4RRFFQ69G5FAV", 0.to_int64(), 2.to_int64()) {
+    Ok(pt) => b2_assert(b2_bytes_eq(pt, payload))
+    Err(e) => panic("item decrypt failed: " + e)
+  }
+  b2_assert(vault_decrypt_item(secret_key, ct, "ws-1", "v_01ARZ3NDEKTSV4RRFFQ69G5FAV", "i_01ARZ3NDEKTSV4RRFFQ69G5FAV", 1.to_int64(), 2.to_int64()).is_err())
+}
+
+test "vault_crypto_view: non-safe-mode personal_lock_of, can_manage, level_vaults, take_before, and approval queue" {
+  let lc = views_lock_crypto()
+  let alice_seed = b2_seed(11)
+  let bob_seed = b2_seed(12)
+  let attacker_seed = b2_seed(13)
+  let alice_dev = b2_hex32("a")
+  let bob_dev = b2_hex32("b")
+  let attacker_dev = b2_hex32("f")
+
+  let alice_gen = b2_make_person_genesis("alice", alice_dev, alice_seed)
+  let bob_gen = b2_make_person_genesis("bob", bob_dev, bob_seed)
+  let forged_alice_gen = b2_make_person_genesis("alice", attacker_dev, attacker_seed)
+  let bad_chain = [form::Json::Obj([("broken", form::Json::Bool(true))])]
+
+  let lock_view = match personal_lock_of(
+    "ws-shared",
+    "alice",
+    PersonalLockStanding::Member,
+    [alice_gen],
+    [
+      ("alice", [forged_alice_gen]), // MUST be ignored: never overwrite own pinned chain!
+      ("bob", [bob_gen]),
+      ("carol", bad_chain), // Malformed teammate chain ignored without breaking alice/bob!
+    ],
+    [("alice", "owner"), ("bob", "member"), ("dave", "admin")],
+    lc,
+  ) {
+    Ok(lv) => lv
+    Err(e) => panic("personal_lock_of failed: " + e)
+  }
+  // Own pinned device present; attacker device under alice's sub NEVER added; bob's device added!
+  b2_assert(lock_view.devices.get(alice_dev).is_some())
+  b2_assert(lock_view.devices.get(attacker_dev).is_none())
+  b2_assert(lock_view.devices.get(bob_dev).is_some())
+
+  // Build real Ed25519-signed box cert + shared workspace vault + item verified by native `pion/rules`.
+  let alice_box_pub = match vault_box_public(b2_seed(21)) { Ok(p) => p; Err(e) => panic(e) }
+  let cert_raw = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("ws-shared")),
+    ("device", form::Json::Str(alice_dev)),
+    ("box", form::Json::Str(alice_box_pub)),
+    ("at", form::Json::Num(1700000100.0)),
+  ])
+  let cert = match sign_vault_record(alice_seed, "stillfail-vault-box/1", cert_raw) {
+    Ok(j) => j
+    Err(e) => panic(e)
+  }
+  let wrapped = match vault_seal_box(alice_box_pub, b2_seed(22), "ws-shared", "v_01ARZ3NDEKTSV4RRFFQ69G5FAV", 0.to_int64(), b2_seed(23)) {
+    Ok(w) => w
+    Err(e) => panic(e)
+  }
+  let v0_raw = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("ws-shared")),
+    ("id", form::Json::Str("v_01ARZ3NDEKTSV4RRFFQ69G5FAV")),
+    ("seq", form::Json::Num(0.0)),
+    ("owner", form::Json::Str("alice")),
+    ("name", form::Json::Str("Team Secrets")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("alice"), form::Json::Str("bob")])),
+    ("epoch", form::Json::Num(0.0)),
+    ("keys", form::Json::Arr([form::Json::Obj([("cert", cert), ("wrapped", form::Json::Str(wrapped))])])),
+    ("at", form::Json::Num(1700000200.0)),
+  ])
+  let v0 = match sign_vault_record(alice_seed, "stillfail-vault/1", v0_raw) {
+    Ok(j) => j
+    Err(e) => panic(e)
+  }
+  b2_assert(verify_vault_record(lock_view, None, v0, false).is_none())
+
+  // `can_manage_workspace_vault`: alice (owner + member) = true; bob (member, not admin) = false; dave (admin, not member) = false.
+  b2_assert(can_manage_workspace_vault(lock_view, v0, "alice"))
+  b2_assert(!can_manage_workspace_vault(lock_view, v0, "bob"))
+  b2_assert(!can_manage_workspace_vault(lock_view, v0, "dave"))
+
+  // Verify item + supersedes.
+  let nonce = Bytes::new(12)
+  let ct = match vault_encrypt_item(b2_seed(22), "secret-value".to_bytes(), "ws-shared", "v_01ARZ3NDEKTSV4RRFFQ69G5FAV", "i_01ARZ3NDEKTSV4RRFFQ69G5FAV", 0.to_int64(), 0.to_int64(), nonce) {
+    Ok(c) => c
+    Err(e) => panic(e)
+  }
+  let item0_raw = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("ws-shared")),
+    ("vault", form::Json::Str("v_01ARZ3NDEKTSV4RRFFQ69G5FAV")),
+    ("id", form::Json::Str("i_01ARZ3NDEKTSV4RRFFQ69G5FAV")),
+    ("version", form::Json::Num(0.0)),
+    ("epoch", form::Json::Num(0.0)),
+    ("ct", form::Json::Str(ct)),
+    ("at", form::Json::Num(1700000300.0)),
+  ])
+  let item0 = match sign_vault_record(bob_seed, "stillfail-vault-item/1", item0_raw) {
+    Ok(j) => j
+    Err(e) => panic(e)
+  }
+  b2_assert(verify_item_record(lock_view, v0, None, item0, false).is_none())
+
+  let v1_raw = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("ws-shared")),
+    ("id", form::Json::Str("v_01ARZ3NDEKTSV4RRFFQ69G5FAV")),
+    ("seq", form::Json::Num(1.0)),
+    ("owner", form::Json::Str("alice")),
+    ("name", form::Json::Str("Team Secrets v1")),
+    ("scope", form::Json::Str("workspace")),
+    ("members", form::Json::Arr([form::Json::Str("alice"), form::Json::Str("bob")])),
+    ("epoch", form::Json::Num(0.0)),
+    ("keys", form::Json::Arr([form::Json::Obj([("cert", cert), ("wrapped", form::Json::Str(wrapped))])])),
+    ("at", form::Json::Num(1700000400.0)),
+  ])
+  let v1 = match sign_vault_record(alice_seed, "stillfail-vault/1", v1_raw) {
+    Ok(j) => j
+    Err(e) => panic(e)
+  }
+  b2_assert(vault_supersedes(v1, v0))
+  b2_assert(!vault_supersedes(v0, v1))
+
+  // Pre-removal `level_vaults` & `take_before`: 0 box reads, 0 unlock prompts, rekey deferred.
+  let lv_store = VaultLevelingStore::new()
+  let forged_v2 = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("ws-shared")),
+    ("id", form::Json::Str("v_01ARZ3NDEKTSV4RRFFQ69G5FAV")),
+    ("seq", form::Json::Num(99.0)),
+  ])
+  let outcome = level_vaults(
+    lv_store,
+    "ws-shared",
+    lock_view,
+    [alice_dev],
+    [
+      StationVaultSnapshot::{ station_id: "st-1", reachable: true, vaults: [v0, forged_v2] },
+      StationVaultSnapshot::{ station_id: "st-2", reachable: false, vaults: [v1] },
+    ],
+  )
+  b2_assert_eq(outcome.leveled_count, 1)
+  b2_assert_eq(outcome.rejected_count, 1)
+  b2_assert_eq(outcome.box_key_reads, 0)
+  b2_assert_eq(outcome.unlock_prompts, 0)
+  b2_assert(outcome.rekey_deferred)
+
+  // Later vault `v1` signed by `alice_dev` (which is in `out_ids`) is accepted via `take_before`!
+  b2_assert(take_before(lv_store, "ws-shared", "v_01ARZ3NDEKTSV4RRFFQ69G5FAV", v1))
+  b2_assert(!take_before(lv_store, "ws-shared", "v_01ARZ3NDEKTSV4RRFFQ69G5FAV", forged_v2))
+
+  // Approval queue (`secret_use`, `secret_save`, `secret_delete`, `plainMode == false`).
+  let q = VaultApprovalQueue::new()
+  q.enqueue(VaultApprovalRequest::{
+    id: "req-use",
+    ws: "ws-shared",
+    vault_id: "v_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    item_id: "i_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    item_name: "Stripe Key",
+    kind: VaultRequestKind::SecretUse,
+    mode: "proxy",
+    reason: "run payment test",
+    hosts: ["api.stripe.com"],
+    max_scope: "hour",
+    at_ms: 1000.to_int64(),
+    status: VaultRequestStatus::Pending,
+    granted_scope: None,
+    decided_at_ms: None,
+    decision_note: None,
+  })
+  q.enqueue(VaultApprovalRequest::{
+    id: "req-save",
+    ws: "ws-shared",
+    vault_id: "v_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    item_id: "i_new",
+    item_name: "New Token",
+    kind: VaultRequestKind::SecretSave,
+    mode: "env",
+    reason: "save token",
+    hosts: [],
+    max_scope: "chat",
+    at_ms: 1001.to_int64(),
+    status: VaultRequestStatus::Pending,
+    granted_scope: None,
+    decided_at_ms: None,
+    decision_note: None,
+  })
+  q.enqueue(VaultApprovalRequest::{
+    id: "req-del",
+    ws: "ws-shared",
+    vault_id: "v_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    item_id: "i_old",
+    item_name: "Old Token",
+    kind: VaultRequestKind::SecretDelete,
+    mode: "env",
+    reason: "remove obsolete",
+    hosts: [],
+    max_scope: "once",
+    at_ms: 1002.to_int64(),
+    status: VaultRequestStatus::Pending,
+    granted_scope: None,
+    decided_at_ms: None,
+    decision_note: None,
+  })
+  // Scope "chat" exceeds max_scope "hour" -> rejected!
+  b2_assert(q.approve("req-use", "chat", 2000.to_int64()).is_err())
+  b2_assert(q.approve("req-use", "hour", 2001.to_int64()).is_ok())
+  b2_assert(q.deny("req-del", 2002.to_int64(), note=Some("still needed")).is_ok())
+
+  let proj = project_vault_approvals(q, "ws-shared")
+  b2_assert(!j_bool(proj, "plainMode"))
+  b2_assert_eq(j_arr(proj, "pending").length(), 1)
+  b2_assert_eq(j_arr(proj, "decided").length(), 2)
+}
+
+// ---------------------------------------------------------------------------
+// 2. Presets, Stars, `other_presets`, and Board Drafts Tests
+// ---------------------------------------------------------------------------
+
+test "presets_view: strictly newer merge, forward, gone_kept trim, ownerless claim, other_presets, and board_drafts" {
+  let p1_v1 = PresetRecord::live("p-1", "alice", 1, 100.to_int64(), 50.to_int64(), "alice@ex.com", "st-1", "Rust Dev")
+  let p1_v2 = PresetRecord::live("p-1", "alice", 2, 200.to_int64(), 50.to_int64(), "alice@ex.com", "st-1", "Rust Dev v2")
+  let p2_live = PresetRecord::live("p-2", "alice", 1, 110.to_int64(), 60.to_int64(), "alice@ex.com", "st-1", "Legacy Preset")
+  let p2_ownerless_del = PresetRecord::tombstone("p-2", "", 1, 150.to_int64())
+  let bob_preset = PresetRecord::live("p-bob", "bob", 1, 120.to_int64(), 70.to_int64(), "bob@ex.com", "st-2", "Bob Preset")
+  let bob_ownerless_del = PresetRecord::tombstone("p-bob", "", 1, 160.to_int64())
+
+  // Merge strictly newer p1_v2 + ownerless deletion of alice's p-2 (claimed!) + bob's preset/del (ignored!).
+  let merged = merge_preset_records(
+    [p1_v1, p2_live],
+    [p1_v2, p2_ownerless_del, bob_preset, bob_ownerless_del],
+    "alice",
+    "alice@ex.com",
+  )
+  b2_assert(merged.changed)
+  b2_assert_eq(merged.forward_to_others.length(), 2)
+  // Verify p-2 was claimed by alice at rev 2 and gone == true.
+  let mut p2_claimed = false
+  for i in 0..<merged.records.length() {
+    if merged.records[i].id == "p-2" {
+      p2_claimed = merged.records[i].gone && merged.records[i].owner == "alice" && merged.records[i].rev == 2
+    }
+  }
+  b2_assert(p2_claimed)
+
+  // `lacking_presets` sends ONLY strictly newer records to station holding p1_v2 (already current) and missing p-2 tombstone.
+  let to_send = lacking_presets(merged.records, [p1_v2], "alice")
+  b2_assert_eq(to_send.length(), 1)
+  b2_assert_eq(to_send[0].id, "p-2")
+
+  // `gone_kept` trims tombstones per owner to limit (keeping latest by updatedAt desc).
+  let many_gone : Array[PresetRecord] = [
+    PresetRecord::tombstone("g-1", "alice", 2, 100.to_int64()),
+    PresetRecord::tombstone("g-2", "alice", 2, 500.to_int64()),
+    PresetRecord::tombstone("g-3", "alice", 2, 300.to_int64()),
+    PresetRecord::tombstone("g-4", "alice", 2, 400.to_int64()),
+    PresetRecord::tombstone("g-5", "alice", 2, 200.to_int64()),
+  ]
+  let trimmed = gone_kept(many_gone, limit=3)
+  b2_assert_eq(trimmed.length(), 3)
+  let mut has_g1 = false
+  let mut has_g2 = false
+  for i in 0..<trimmed.length() {
+    if trimmed[i].id == "g-1" { has_g1 = true }
+    if trimmed[i].id == "g-2" { has_g2 = true }
+  }
+  b2_assert(!has_g1)
+  b2_assert(has_g2)
+
+  // Default shows own presets only; `other_presets` shows bob's read-only + copyable, never editable.
+  let own_view = project_own_presets(merged.records, "alice")
+  b2_assert_eq(j_arr(own_view, "presets").length(), 1)
+  b2_assert_eq(j_str(j_arr(own_view, "presets")[0], "id"), "p-1")
+  b2_assert(j_bool(j_arr(own_view, "presets")[0], "editable"))
+
+  let bob_v2 = PresetRecord::live("p-bob", "bob", 2, 300.to_int64(), 70.to_int64(), "bob@ex.com", "st-2", "Bob Preset v2")
+  let others_view = project_other_presets([[bob_preset, p1_v2], [bob_v2]], merged.records, "alice", false)
+  let other_items = j_arr(others_view, "presets")
+  b2_assert_eq(other_items.length(), 1)
+  b2_assert_eq(j_str(other_items[0], "name"), "Bob Preset v2")
+  b2_assert(!j_bool(other_items[0], "editable"))
+  b2_assert(j_bool(other_items[0], "copyable"))
+  b2_assert(!can_edit_preset(bob_v2, "alice"))
+  let copied = copy_preset(bob_v2, "p-copy", "alice", "alice@ex.com", "st-1", 999.to_int64())
+  b2_assert(can_edit_preset(copied, "alice"))
+  b2_assert_eq(copied.rev, 1)
+
+  // Stars merge & cap (oldest unstarred dropped first).
+  let stars = merge_stars(
+    [
+      StarEntry::{ key: "m-unstarred", on: false, rev: 2, at: 10.to_int64() },
+      StarEntry::{ key: "m-a", on: true, rev: 1, at: 20.to_int64() },
+    ],
+    [StarEntry::{ key: "m-b", on: true, rev: 1, at: 30.to_int64() }],
+    limit=2,
+  )
+  b2_assert_eq(stars.length(), 2)
+  b2_assert_eq(starred_keys(stars).length(), 2)
+
+  // Board drafts merge + pending uploads + projection (zero polling).
+  let d1 = BoardDraftRecord::live(
+    "draft-1",
+    "alice",
+    1,
+    1000.to_int64(),
+    1000.to_int64(),
+    "Ship batch 2",
+    "ws/st-1",
+    "Studio",
+    files=[DraftAttachment::{ id: "f-1", name: "spec.md", size: 512.to_int64() }],
+  )
+  let d2 = BoardDraftRecord::live("draft-2", "alice", 1, 2000.to_int64(), 2000.to_int64(), "Review PR", "ws/st-2", "Linux")
+  let dm = merge_board_drafts([d1], [d2], "alice")
+  b2_assert(dm.changed)
+  let uploads = pending_draft_uploads(dm.drafts, "ws/st-1", [])
+  b2_assert_eq(uploads.length(), 1)
+  b2_assert_eq(uploads[0].1.id, "f-1")
+  let bd_view = project_board_drafts(dm.drafts, "alice")
+  let bd_items = j_arr(bd_view, "drafts")
+  b2_assert_eq(bd_items.length(), 2)
+  b2_assert_eq(j_str(bd_items[0], "id"), "draft-2") // newest `at` first!
+}
+
+// ---------------------------------------------------------------------------
+// 3. Shared File Downloads & Byte-Range Dedup Invariants (`downloads.test.ts`)
+// ---------------------------------------------------------------------------
+
+fn b2_make_file_bytes(n : Int) -> Bytes {
+  let b = Bytes::new(n)
+  for i in 0..<n {
+    b[i] = ((i * 17 + 3) % 251) as Byte
+  }
+  b
+}
+
+fn b2_slice(b : Bytes, start : Int, end : Int) -> Bytes {
+  let out = Bytes::new(end - start)
+  for i in 0..<(end - start) {
+    out[i] = b[start + i]
+  }
+  out
+}
+
+test "downloads_view: range arithmetic, both arrival orders, and mid-flight cancellation with 0 duplicate dispatches" {
+  // Range merge & missing_ranges basics.
+  let merged = merge_ranges([
+    ByteRange::new(32.to_int64(), 64.to_int64()),
+    ByteRange::new(0.to_int64(), 32.to_int64()),
+    ByteRange::new(80.to_int64(), 96.to_int64()),
+  ])
+  b2_assert_eq(merged.length(), 2)
+  b2_assert_eq(merged[0].start, 0.to_int64())
+  b2_assert_eq(merged[0].end, 64.to_int64())
+  let miss = missing_ranges(ByteRange::new(0.to_int64(), 96.to_int64()), merged)
+  b2_assert_eq(miss.length(), 1)
+  b2_assert_eq(miss[0].start, 64.to_int64())
+  b2_assert_eq(miss[0].end, 80.to_int64())
+
+  let file = b2_make_file_bytes(96)
+
+  // Order A: Preview [32, 64) starts first (held mid-flight), then Save [0, 96) joins,
+  // then Save cancels mid-flight -> Preview MUST NOT be interrupted and completes with 0 duplicate requests!
+  let sfr_a = SharedFileReads::new()
+  let prev_plan_a = sfr_a.join_reader("preview", "ws/st:data.bin", "v1", 32.to_int64(), 64.to_int64())
+  b2_assert_eq(prev_plan_a.new_requests.length(), 1)
+  let shared_req_a = prev_plan_a.new_requests[0].req_id
+
+  let save_plan_a = sfr_a.join_reader("save", "ws/st:data.bin", "v1", 0.to_int64(), 96.to_int64())
+  // Save attaches to [32, 64) and dispatches ONLY [0, 32) and [64, 96)!
+  b2_assert_eq(save_plan_a.attached_req_ids.length(), 1)
+  b2_assert_eq(save_plan_a.attached_req_ids[0], shared_req_a)
+  b2_assert_eq(save_plan_a.new_requests.length(), 2)
+  b2_assert_eq(save_plan_a.new_requests[0].start, 0.to_int64())
+  b2_assert_eq(save_plan_a.new_requests[0].end, 32.to_int64())
+  b2_assert_eq(save_plan_a.new_requests[1].start, 64.to_int64())
+  b2_assert_eq(save_plan_a.new_requests[1].end, 96.to_int64())
+  b2_assert(!sfr_a.has_duplicate_dispatches("ws/st:data.bin", "v1"))
+
+  // Save cancels mid-flight: its exclusive [0,32) and [64,96) cancel, shared [32,64) stays active!
+  let cancelled_a = sfr_a.leave_reader("save")
+  b2_assert_eq(cancelled_a.length(), 2)
+  b2_assert(sfr_a.is_active(shared_req_a))
+
+  // Release held wire for [32, 64): Preview completes with exact bytes!
+  b2_assert(sfr_a.deliver_chunk(shared_req_a, 32.to_int64(), b2_slice(file, 32, 64)))
+  b2_assert(sfr_a.complete_request(shared_req_a))
+  match sfr_a.read_completed_bytes("ws/st:data.bin", "v1", 32.to_int64(), 64.to_int64()) {
+    Some(got) => b2_assert(b2_bytes_eq(got, b2_slice(file, 32, 64)))
+    None => panic("preview bytes missing after save cancelled")
+  }
+  b2_assert(!sfr_a.has_duplicate_dispatches("ws/st:data.bin", "v1"))
+
+  // Order B: Save [0, 96) starts first (held mid-flight), Preview [32, 64) joins (0 new requests!),
+  // then Preview cancels mid-flight -> Save stays active and completes full [0, 96) with 0 duplicate requests!
+  let sfr_b = SharedFileReads::new()
+  let save_plan_b = sfr_b.join_reader("save", "ws/st:data.bin", "v1", 0.to_int64(), 96.to_int64())
+  b2_assert_eq(save_plan_b.new_requests.length(), 1)
+  let whole_req_b = save_plan_b.new_requests[0].req_id
+
+  let prev_plan_b = sfr_b.join_reader("preview", "ws/st:data.bin", "v1", 32.to_int64(), 64.to_int64())
+  b2_assert_eq(prev_plan_b.new_requests.length(), 0)
+  b2_assert_eq(prev_plan_b.attached_req_ids.length(), 1)
+  b2_assert_eq(prev_plan_b.attached_req_ids[0], whole_req_b)
+
+  // Preview leaves: 0 requests cancelled because Save is still waiting!
+  let cancelled_b = sfr_b.leave_reader("preview")
+  b2_assert_eq(cancelled_b.length(), 0)
+  b2_assert(sfr_b.is_active(whole_req_b))
+
+  b2_assert(sfr_b.deliver_chunk(whole_req_b, 0.to_int64(), file))
+  b2_assert(sfr_b.complete_request(whole_req_b))
+  match sfr_b.read_completed_bytes("ws/st:data.bin", "v1", 0.to_int64(), 96.to_int64()) {
+    Some(got) => b2_assert(b2_bytes_eq(got, file))
+    None => panic("save bytes missing after preview cancelled")
+  }
+  b2_assert(!sfr_b.has_duplicate_dispatches("ws/st:data.bin", "v1"))
+
+  // `download_title_of` strips station upload prefix only when followed by >= 1 char.
+  b2_assert_eq(download_title_of("2026-10-24T21-59-13-dc7ed5-e2e-tune.m4a"), "e2e-tune.m4a")
+  b2_assert_eq(download_title_of("2026-10-24T21-59-13-dc7ed5-"), "2026-10-24T21-59-13-dc7ed5-")
+}
+
+// ---------------------------------------------------------------------------
+// 4. Auth Lifecycle, Login State Machine & Member Role Capping Tests
+// ---------------------------------------------------------------------------
+
+test "auth_view: multi-account single-flight refresh, zero token leak, login flow, and admit_member_role capping" {
+  let store = AccountStore::new()
+  store.register_account(StoredAccount::{
+    sub: "u-alice",
+    email: "alice@example.com",
+    name: "Alice",
+    picture: "https://ex/a.png",
+    access: "secret_access_alice",
+    refresh: "secret_refresh_alice",
+    access_expires: 1000.to_int64(),
+  })
+  store.register_account(StoredAccount::{
+    sub: "u-bob",
+    email: "bob@example.com",
+    name: "Bob",
+    picture: "",
+    access: "secret_access_bob",
+    refresh: "secret_refresh_bob",
+    access_expires: 2000.to_int64(),
+  })
+  b2_assert(store.switch_account("u-bob").is_ok())
+  b2_assert(store.switch_account("u-ghost").is_err())
+
+  // UI topic JSON MUST NOT contain any access/refresh token!
+  let topic_json = base_codec::json_stringify(project_accounts_topic(store))
+  b2_assert(topic_json.index_of("secret_access_alice") < 0)
+  b2_assert(topic_json.index_of("secret_refresh_alice") < 0)
+  b2_assert(topic_json.index_of("secret_access_bob") < 0)
+  b2_assert(topic_json.index_of("alice@example.com") >= 0)
+
+  // Token expiry & single-flight refresh coalescing (60s skew).
+  b2_assert(!store.needs_refresh("u-alice", 939.to_int64()))
+  b2_assert(store.needs_refresh("u-alice", 940.to_int64()))
+  match store.begin_refresh("u-alice", 900.to_int64()) {
+    RefreshDecision::UseCached(tok) => b2_assert_eq(tok, "secret_access_alice")
+    _ => panic("expected cached token")
+  }
+  match store.begin_refresh("u-alice", 950.to_int64()) {
+    RefreshDecision::StartRefresh => ()
+    _ => panic("expected StartRefresh")
+  }
+  // Concurrent caller coalesces into WaitInFlight!
+  match store.begin_refresh("u-alice", 951.to_int64()) {
+    RefreshDecision::WaitInFlight => ()
+    _ => panic("expected WaitInFlight")
+  }
+  // Transient 500 keeps account signed in; 401 forgets account!
+  let _ = store.fail_refresh("u-alice", 500)
+  b2_assert_eq(store.accounts.length(), 2)
+  let _ = store.fail_refresh("u-alice", 401)
+  b2_assert_eq(store.accounts.length(), 1)
+
+  // Login flow state machine: OAuth PKCE, one-shot state check, return_to sanitization, cancel & Passkey recovery.
+  let flow = LoginFlowMachine::new()
+  let auth_url = flow.begin_oauth("https://cloud.still.fail", "st-xyz", "verifier-secret-123", "http://127.0.0.1:8765/cb", "/auth/login", "MacBook")
+  b2_assert(auth_url.index_of("code_challenge_method=S256") >= 0)
+  // UI JSON must NEVER leak PKCE verifier.
+  let flow_json = base_codec::json_stringify(flow.to_json())
+  b2_assert(flow_json.index_of("verifier-secret-123") < 0)
+
+  // State mismatch fails with explicit recovery hint and consumes one-shot login!
+  let bad_cb = flow.complete_oauth_callback("wrong-state", Some("code-1"), None)
+  b2_assert(!bad_cb.ok)
+  b2_assert_eq(bad_cb.error_code, "login_state_mismatch")
+  b2_assert(bad_cb.recovery_hint.length() > 0)
+
+  // Fresh OAuth flow succeeds and sanitizes `/auth/*` return_to to `"/"`.
+  let _ = flow.begin_oauth("https://cloud.still.fail", "st-ok", "ver-2", "http://127.0.0.1:8765/cb", "/auth/callback", "MacBook")
+  let ok_cb = flow.complete_oauth_callback("st-ok", Some("code-ok"), None)
+  b2_assert(ok_cb.ok)
+  b2_assert_eq(ok_cb.return_to, "/")
+
+  // Passkey failure provides explicit recovery hint.
+  flow.begin_passkey("chal-1", "app.still.fail")
+  b2_assert(flow.complete_passkey("u-bob", false).is_err())
+  b2_assert(j_str(flow.to_json(), "recoveryHint").length() > 0)
+
+  // Member admission role capping (`admit_member_role`: default "member", strictly <= cloud_role, NEVER trusts cloud alone!).
+  b2_assert_opt_eq(admit_member_role(None, "owner"), Some("member"))
+  b2_assert_opt_eq(admit_member_role(None, "admin"), Some("member"))
+  b2_assert_opt_eq(admit_member_role(None, "member"), Some("member"))
+  b2_assert_opt_eq(admit_member_role(None, "viewer"), Some("viewer"))
+  b2_assert_opt_eq(admit_member_role(Some("admin"), "owner"), Some("admin"))
+  b2_assert_opt_eq(admit_member_role(Some("admin"), "member"), Some("member"))
+  b2_assert_opt_eq(admit_member_role(Some("owner"), "viewer"), Some("viewer"))
+  b2_assert_opt_eq(admit_member_role(Some("owner"), "owner"), Some("owner"))
+  b2_assert(admit_member_role(None, "superadmin").is_none())
+
+  // Actor-checked admission: admin cannot admit owner, member cannot admit anyone.
+  b2_assert(admit_member_role_by_actor("admin", Some("owner"), None, "owner").is_none())
+  b2_assert(admit_member_role_by_actor("member", None, None, "member").is_none())
+  b2_assert_opt_eq(admit_member_role_by_actor("owner", Some("admin"), None, "admin"), Some("admin"))
+}
+
+fn b2_hex_bytes(h : String) -> Bytes {
+  match base_codec::hex_decode(h) {
+    Some(b) => b
+    None => panic("invalid test hex: " + h)
+  }
+}
+
+fn b2_sig_hex(j : form::Json) -> String {
+  match form::json_field(Some(j), "sig") {
+    Some(sig) => match form::json_field(Some(sig), "sig") {
+      Some(form::Json::Str(s)) => s
+      _ => ""
+    }
+    None => ""
+  }
+}
+
+test "vault_crypto_view: byte-for-byte parity with station/test/fixtures/vault-vectors.json" {
+  let ws = "01HZZZZZZZZZZZZZZZZZZZZZZZ"
+  let signer_seed = b2_hex_bytes("0101010101010101010101010101010101010101010101010101010101010101")
+  let signer_key = "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+  let device_id = "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"
+  let box_priv = b2_hex_bytes("0202020202020202020202020202020202020202020202020202020202020202")
+  let box_pub = "x25519:ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59"
+  let vault_key = b2_hex_bytes("0404040404040404040404040404040404040404040404040404040404040404")
+  let eph_wrap = b2_hex_bytes("0303030303030303030303030303030303030303030303030303030303030303")
+  let eph_grant = b2_hex_bytes("0808080808080808080808080808080808080808080808080808080808080808")
+  let nonce = b2_hex_bytes("050505050505050505050505")
+  let plain = "{\"kind\":\"token\",\"name\":\"GitHub\",\"fields\":{\"value\":\"ghp_abc\"},\"domains\":[\"github.com\"],\"notes\":\"\"}".to_bytes()
+  let req_box_priv = b2_hex_bytes("0707070707070707070707070707070707070707070707070707070707070707")
+  let req_box_pub = "x25519:13be4feaeaf204c7fd3358fc9c00721881d174278128227ec674f37f7fe97b6d"
+  let vault_id = "v_01HZZZZZZZZZZZZZZZZZZZZZZZ"
+  let item_id = "i_01HZZZZZZZZZZZZZZZZZZZZZZZ"
+  let req_id = "r_01HZZZZZZZZZZZZZZZZZZZZZZZ"
+
+  // 1. X25519 public key derivation matches box.pub & requestBox.pub.
+  b2_assert_eq(lock_key_id_of_seed(signer_seed), signer_key)
+  match vault_box_public(box_priv) {
+    Ok(p) => b2_assert_eq(p, box_pub)
+    Err(e) => panic("box_pub failed: " + e)
+  }
+  match vault_box_public(req_box_priv) {
+    Ok(p) => b2_assert_eq(p, req_box_pub)
+    Err(e) => panic("req_box_pub failed: " + e)
+  }
+
+  // 2. vault_seal_box / vault_open_box byte-exact match with vault.keys[0].wrapped.
+  let expected_wrapped = "Xf7dO2vUf2-ijuFdlp1bsOpTd01Ii9r53xxuASSz7yJDgZdvIxpZ4xz9N5GPzKQ5SrJIl25ht6p5lKdj5_L2kxE_LfPQ7ENB9Y7VDfSuVpU"
+  let wrapped = match vault_seal_box(box_pub, vault_key, ws, vault_id, 0.to_int64(), eph_wrap) {
+    Ok(s) => s
+    Err(e) => panic("vault_seal_box failed: " + e)
+  }
+  b2_assert_eq(wrapped, expected_wrapped)
+  match vault_open_box(box_priv, expected_wrapped, ws, vault_id, 0.to_int64()) {
+    Ok(opened) => b2_assert(b2_bytes_eq(opened, vault_key))
+    Err(e) => panic("vault_open_box failed: " + e)
+  }
+
+  // 3. vault_encrypt_item / vault_decrypt_item byte-exact match with item.ct.
+  let expected_ct = "BQUFBQUFBQUFBQUF67SMusB5UZAkOOXJXLqOVDdwOwET6f10XoJGJcz3VVh6Cg0KHH67mJowrcSGWLQyuxNqolw421Fr0GTasCL7rx4dhHkg0kIrsLaDrmR1z9We0Wg3Wm5eRt1lHpc6SR5LP2Bnz6W5zHTUI7nPk1Y5UYs"
+  let ct = match vault_encrypt_item(vault_key, plain, ws, vault_id, item_id, 0.to_int64(), 0.to_int64(), nonce) {
+    Ok(c) => c
+    Err(e) => panic("vault_encrypt_item failed: " + e)
+  }
+  b2_assert_eq(ct, expected_ct)
+  match vault_decrypt_item(vault_key, expected_ct, ws, vault_id, item_id, 0.to_int64(), 0.to_int64()) {
+    Ok(pt) => b2_assert(b2_bytes_eq(pt, plain))
+    Err(e) => panic("vault_decrypt_item failed: " + e)
+  }
+
+  // 4. vault_seal_with_context / vault_open_with_context byte-exact match with grant.secret.
+  let expected_grant_secret = "MdSras7slhE3kXA3k25gcW-sVzr-lNnahKgCBEjfwRLB1R-ZKpLv3OMOUIg_N1kFkiPjwTEfVc87-HzcYOQirmM8G5UIVlHLvybTCmxo0oCc-oLgCrPQLqr3-pIbo5gA7YCWrB4CSep9fW4xR8hjgS13BXshMAwYJ6dgNMnNDKmRXdkcCAxbzFR-lmBKmy0m7w"
+  let grant_aad = vault_grant_context(ws, req_id)
+  let grant_secret = match vault_seal_with_context(req_box_pub, plain, grant_aad, eph_grant) {
+    Ok(s) => s
+    Err(e) => panic("grant seal failed: " + e)
+  }
+  b2_assert_eq(grant_secret, expected_grant_secret)
+  match vault_open_with_context(req_box_priv, expected_grant_secret, grant_aad) {
+    Ok(pt) => b2_assert(b2_bytes_eq(pt, plain))
+    Err(e) => panic("grant open failed: " + e)
+  }
+
+  // 5. Ed25519 signatures on cert, vault, item, grant, deny match vault-vectors.json byte-for-byte,
+  //    and native `pion/rules` vault::cert_ok / verify_vault_record / verify_item_record all pass.
+  let cert_raw = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("device", form::Json::Str(device_id)),
+    ("box", form::Json::Str(box_pub)),
+    ("at", form::Json::Num(1000.0)),
+  ])
+  let cert = match sign_vault_record(signer_seed, "stillfail-vault-box/1", cert_raw) {
+    Ok(j) => j
+    Err(e) => panic("sign cert failed: " + e)
+  }
+  b2_assert_eq(
+    b2_sig_hex(cert),
+    "def5641091f2b3664d6e90d9906bfb810ce0da70141215d65d4ce4cd37677a42dd3c9bc4d926eb0c471028ee04cccbc2f73fdf63f9e5bdd23dc987d2f213680f",
+  )
+
+  let vault_raw = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("id", form::Json::Str(vault_id)),
+    ("seq", form::Json::Num(0.0)),
+    ("owner", form::Json::Str("alice")),
+    ("name", form::Json::Str("Personal")),
+    ("members", form::Json::Arr([form::Json::Str("alice")])),
+    ("epoch", form::Json::Num(0.0)),
+    ("keys", form::Json::Arr([form::Json::Obj([("cert", cert), ("wrapped", form::Json::Str(wrapped))])])),
+    ("recovery", form::Json::Str("9bLW5g-Ud-MQwpgtqqbJE2wQihd3xZR-RI-jfWgXRVeNStRBvmSZoxo9kQWOua6y1jPMwv_4ZxzyL0iDQxI9k9Wkz-yIOgRz5J695gw8Cic")),
+    ("at", form::Json::Num(1000.0)),
+  ])
+  let vault_rec = match sign_vault_record(signer_seed, "stillfail-vault/1", vault_raw) {
+    Ok(j) => j
+    Err(e) => panic("sign vault failed: " + e)
+  }
+  b2_assert_eq(
+    b2_sig_hex(vault_rec),
+    "b54ad4f1b61b49c6b5d951420e197d948f10478313851e24eec6f4c7c318fcd5944f3b2543699a126bf7937226cd14f1b47ef2bc6bff1d2be1f3b9b21baf5508",
+  )
+
+  let item_raw = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("vault", form::Json::Str(vault_id)),
+    ("id", form::Json::Str(item_id)),
+    ("version", form::Json::Num(0.0)),
+    ("epoch", form::Json::Num(0.0)),
+    ("ct", form::Json::Str(ct)),
+    ("listing", form::Json::Obj([
+      ("name", form::Json::Str("GitHub")),
+      ("kind", form::Json::Str("token")),
+      ("modes", form::Json::Arr([form::Json::Str("proxy")])),
+      ("hosts", form::Json::Arr([form::Json::Str("api.github.com"), form::Json::Str("*.github.com")])),
+      ("env", form::Json::Str("GH_TOKEN")),
+    ])),
+    ("at", form::Json::Num(1001.0)),
+  ])
+  let item_rec = match sign_vault_record(signer_seed, "stillfail-vault-item/1", item_raw) {
+    Ok(j) => j
+    Err(e) => panic("sign item failed: " + e)
+  }
+  b2_assert_eq(
+    b2_sig_hex(item_rec),
+    "1c71d0dc5646daed028254b3a254785d54e6caea1e14504c8aca9f409f75d84779c9f96a0a35958df757d98e3542efec184700bf1adcc0d4ede05c70bac59a04",
+  )
+
+  let grant_raw = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("request", form::Json::Str(req_id)),
+    ("vault", form::Json::Str(vault_id)),
+    ("item", form::Json::Str(item_id)),
+    ("mode", form::Json::Str("proxy")),
+    ("hosts", form::Json::Arr([form::Json::Str("api.github.com")])),
+    ("scope", form::Json::Str("once")),
+    ("exp", form::Json::Num(1600.0)),
+    ("secret", form::Json::Str(grant_secret)),
+    ("at", form::Json::Num(1002.0)),
+  ])
+  let grant_rec = match sign_vault_record(signer_seed, "stillfail-vault-grant/1", grant_raw) {
+    Ok(j) => j
+    Err(e) => panic("sign grant failed: " + e)
+  }
+  b2_assert_eq(
+    b2_sig_hex(grant_rec),
+    "6bceda6bbfd02a61fe91bcf7d9c21467c8901a7e0cb60b419dce10a476282bd6c360d8571ec25149cdde7b5394dc54351bd13e0f54c60429eeb7c888940a7805",
+  )
+
+  let deny_raw = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("request", form::Json::Str(req_id)),
+    ("at", form::Json::Num(1003.0)),
+  ])
+  let deny_rec = match sign_vault_record(signer_seed, "stillfail-vault-deny/1", deny_raw) {
+    Ok(j) => j
+    Err(e) => panic("sign deny failed: " + e)
+  }
+  b2_assert_eq(
+    b2_sig_hex(deny_rec),
+    "bf7dc8af9777f6e1caa52cd8ce26d566cc18384c791143b0ce628b5d67299f1ed68e4dc256dd8547599f9e1f93efa7bf81a817ff635856a20861ed3c7730e403",
+  )
+
+  // Verify cert, vault, and item against a LockView with alice's device.
+  let members_m : form::OrderedMap[Bool] = form::OrderedMap::new()
+  members_m.set("alice", true)
+  let roles_m : form::OrderedMap[String] = form::OrderedMap::new()
+  roles_m.set("alice", "owner")
+  let devices_m : form::OrderedMap[vault::Device] = form::OrderedMap::new()
+  devices_m.set(device_id, vault::Device::{
+    sub: "alice",
+    kind: "app",
+    sign_key: Some(signer_key),
+    own: true,
+  })
+  let sign_keys_m : form::OrderedMap[Array[String]] = form::OrderedMap::new()
+  sign_keys_m.set(device_id, [signer_key])
+  let lv = vault::LockView::{
+    ws: ws,
+    members: members_m,
+    roles: roles_m,
+    devices: devices_m,
+    sign_keys: sign_keys_m,
+  }
+  b2_assert(vault::cert_ok(lv, Some(cert), false, views_vault_crypto()).is_none())
+  b2_assert(verify_vault_record(lv, None, vault_rec, false).is_none())
+  b2_assert(verify_item_record(lv, vault_rec, None, item_rec, false).is_none())
+}

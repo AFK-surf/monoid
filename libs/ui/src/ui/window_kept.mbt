@@ -339,6 +339,7 @@ fn window_kept_ui_3() -> Array[WindowKept] {
   ink_x: 0.0,
   ink_y: 0.0,
   ink_r: 0.0,
+  ink_line: false,
 }) }),
     kept_struct(fn() { let held = { ..hand }; fn() { hand.window_put(held) } }, fn() { hand.window_put({
   over: @signals.keyed(),
@@ -856,6 +857,7 @@ fn GlassPaint::window_put(self : GlassPaint, o : GlassPaint) -> Unit {
   self.ink_x = o.ink_x
   self.ink_y = o.ink_y
   self.ink_r = o.ink_r
+  self.ink_line = o.ink_line
 }
 
 ///|

@@ -1,5 +1,6 @@
 // The lock's and vault's rules as the station and the cloud call them (shared/lock.ts, station/src/vault/crypto.ts):
-// the MoonBit build (rules/js/rules.js) or its Pion port (pion/rules/js/rules-wasm.mjs), by STILLFAIL_RULES_MODE.
+// the MoonBit build (rules/js/rules.js) or its Pion port (pion/rules/js/rules-wasm.mjs; in a release, station/pion-rules/
+// beside main.js: PION_RULES_AT), by STILLFAIL_RULES_MODE.
 //   moonbit (default, and anywhere without process.env): rules.js's own functions, nothing in between.
 //   shadow: rules.js answers; the Pion port is asked the same and every answer compared (canonical JSON, a thrown
 //     error's message, whether a handle came back). A difference is logged, or thrown with
@@ -40,6 +41,10 @@ function modeOf(v: string | undefined): RulesMode {
   throw new Error(`STILLFAIL_RULES_MODE is moonbit, shadow or pion, not ${JSON.stringify(v)}`);
 }
 
+/// Where the Pion port is, from this module's URL, in order: a release's (scripts/station-bundle.sh copies
+/// pion/rules/js beside the bundled station/main.js, which this module is part of), then the source tree's.
+export const PION_RULES_AT = ["./pion-rules/rules-wasm.mjs", "../pion/rules/js/rules-wasm.mjs"] as const;
+
 let pionLoaded: Rules | null = null;
 /// The Pion port, loaded once on first use (Node only).
 function pion(): Rules {
@@ -48,7 +53,10 @@ function pion(): Rules {
   if (typeof getBuiltin !== "function") throw new Error("the Pion rules are loaded only in Node");
   const { createRequire } = getBuiltin("node:module");
   const { fileURLToPath } = getBuiltin("node:url");
-  const path = fileURLToPath(new URL("../pion/rules/js/rules-wasm.mjs", import.meta.url));
+  const { existsSync } = getBuiltin("node:fs");
+  const tried = PION_RULES_AT.map((at) => fileURLToPath(new URL(at, import.meta.url)));
+  const path = tried.find((p) => existsSync(p)); // sync: once a process, on its first call through shadow or pion
+  if (path === undefined) throw new Error(`the Pion rules (STILLFAIL_RULES_MODE shadow or pion) are at none of ${tried.join(", ")}`);
   pionLoaded = createRequire(import.meta.url)(path) as Rules;
   return pionLoaded;
 }

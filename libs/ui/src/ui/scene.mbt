@@ -1133,6 +1133,67 @@ fn glyph_next(x : Double, y : Double, h : Double, line : Int, cx : Double) -> Gl
 }
 
 ///|
+fn is_ascii_word(u : Int) -> Bool {
+  (u >= 0x41 && u <= 0x5A) ||
+  (u >= 0x61 && u <= 0x7A) ||
+  (u >= 0x30 && u <= 0x39) ||
+  u == 0x27
+}
+
+///|
+/// Per-cluster horizontal word center (relative to `ox + dx`) for short ASCII words (2..=12 visible chars)
+/// on the same line; longer runs (> 12 chars), CJK, punctuation, and single chars leave `has[k] = false`
+/// so glyphs keep their own horizontal center.
+fn ink_short_word_centers(tl : TextLayout, keys : Array[Int]) -> (FixedArray[Double], FixedArray[Bool]) {
+  let s = tl.shaped
+  let n = s.starts.length()
+  let wcx = FixedArray::make(n, 0.0)
+  let has = FixedArray::make(n, false)
+  let mut i = 0
+  while i < n {
+    if is_ascii_word(s.cu[i]) {
+      let line = tl.line_of[i]
+      let mut j = i + 1
+      while j < n && tl.line_of[j] == line && is_ascii_word(s.cu[j]) {
+        j = j + 1
+      }
+      let mut vis = 0
+      let mut x0 = 0.0
+      let mut x1 = 0.0
+      for k in i..<j {
+        if keys[k] >= 0 {
+          let lx0 = tl.xs[k]
+          let lx1 = lx0 + s.adv[k]
+          if vis == 0 {
+            x0 = lx0
+            x1 = lx1
+          } else {
+            if lx0 < x0 {
+              x0 = lx0
+            }
+            if lx1 > x1 {
+              x1 = lx1
+            }
+          }
+          vis = vis + 1
+        }
+      }
+      if vis >= 2 && vis <= 12 {
+        let cx = (x0 + x1) * 0.5
+        for k in i..<j {
+          wcx[k] = cx
+          has[k] = true
+        }
+      }
+      i = j
+    } else {
+      i = i + 1
+    }
+  }
+  (wcx, has)
+}
+
+///|
 fn Ctx::emit_text(
   self : Ctx,
   tl : TextLayout,
@@ -1161,6 +1222,12 @@ fn Ctx::emit_text(
   let (keys, z) = match zoomed {
     Some(big) => (big, zoom)
     None => (s.keys, 1.0)
+  }
+  let mark_line = glass_paint.ink_r > 0.0 || glass_paint.ink_line
+  let (word_cx, has_word_cx) = if mark_line && n > 0 {
+    ink_short_word_centers(tl, keys)
+  } else {
+    (FixedArray::make(0, 0.0), FixedArray::make(0, false))
   }
   keep_text_runs(
     tl,
@@ -1249,6 +1316,14 @@ fn Ctx::emit_text(
     // (its halo's, where its words have one: halo.mbt)
     halo_told(self.ninst, key)
     glyph_pushing.val = true
+    let (line_dx, line_dy) = if mark_line && !g.color {
+      let gcx = gx + gw * 0.5
+      let gcy = gy + gh * 0.5
+      let dx_w = if has_word_cx[c] { ox + dx + word_cx[c] - gcx } else { 0.0 }
+      (dx_w, top + tl.line_h * 0.5 - gcy)
+    } else {
+      (0.0, 0.0)
+    }
     self.push_inst(
       gx,
       gy,
@@ -1256,8 +1331,8 @@ fn Ctx::emit_text(
       gh,
       0.0,
       if g.color { 3.0 } else if adaptive { 7.0 } else { 1.0 },
-      0.0,
-      0.0,
+      line_dx,
+      line_dy,
       if g.color {
         0xFFFFFFFFL
       } else if spans.is_empty() {

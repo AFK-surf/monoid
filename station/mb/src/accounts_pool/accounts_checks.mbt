@@ -371,7 +371,13 @@ fn via_jv(v : Via) -> JV {
 /// `check`: POST /profiles/:id/check: asks the provider or runtime whether the profile works, its models, its
 /// reasoning levels and what it can decide with.
 /// `recheck`: asked again after a runtime on it was refused (profiles.ts `CheckOptions.recheck`).
-pub async fn Accounts::check(self : Accounts, id : String, lang : String, recheck? : Bool = false) -> JV {
+pub async fn Accounts::check(
+  self : Accounts,
+  id : String,
+  lang : String,
+  recheck? : Bool = false,
+  stands? : Bool = false,
+) -> JV {
   guard self.profile(id) is Some(profile) else {
     raise refusal(404, "unknown profile \{id}")
   }
@@ -383,7 +389,7 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String, rechec
   }
   let kind = access_kind(profile.raw)
   if borrowed(profile.raw) && kind == "subscription" && self.given.shared {
-    return self.check_borrowed(profile, lang)
+    return self.check_borrowed(profile, lang, stands~)
   }
   let kimi = kimi_signed_in(profile.raw)
   if kimi {
@@ -652,11 +658,88 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String, rechec
 }
 
 ///|
+fn borrowed_failure_stands(
+  stands : Bool,
+  previous : JV?,
+  unreachable_since : Map[String, Double],
+  id : String,
+  now : Double,
+) -> JV? {
+  match previous {
+    Some(prev) if stands &&
+      prev.get("state") == Some(Str("ok")) &&
+      !is_truthy(prev.get("codexRevoked")) => {
+      let since = match unreachable_since.get(id) {
+        Some(s) => s
+        None => {
+          unreachable_since[id] = now
+          now
+        }
+      }
+      if now - since < borrowed_host_stands_ms {
+        Some(prev)
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+///|
+fn preserve_check_metadata(check : JV, previous : JV?) -> JV {
+  let mut out = check
+  match previous {
+    Some(prev) if out.get("models") == Some(Null) &&
+      prev.get("models") != Some(Null) &&
+      prev.get("models") is Some(_) => {
+      out = jset(out, "models", prev.get("models").unwrap())
+      if out.get("modelEfforts") is None && prev.get("modelEfforts") is Some(m) {
+        out = jset(out, "modelEfforts", m)
+      }
+      if out.get("modelEffortDefaults") is None &&
+        prev.get("modelEffortDefaults") is Some(m) {
+        out = jset(out, "modelEffortDefaults", m)
+      }
+      if out.get("codexUltrafastModels") is None &&
+        prev.get("codexUltrafastModels") is Some(m) {
+        out = jset(out, "codexUltrafastModels", m)
+      }
+      if out.get("fusion") is None && prev.get("fusion") is Some(m) {
+        out = jset(out, "fusion", m)
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+///|
+fn quota_ok_should_recheck(
+  runtime : String?,
+  auth_revoked : Bool,
+  kind : String,
+  quota_state : JV?,
+  check_state : JV?,
+) -> Bool {
+  (runtime != Some("codex") || auth_revoked) &&
+  kind == "subscription" &&
+  quota_state == Some(Str("ok")) &&
+  (check_state == Some(Str("failed")) || check_state == Some(Str("login")))
+}
+
+///|
 /// `checkBorrowed`: a copy of another station's subscription: how it is doing is what its host says.
-async fn Accounts::check_borrowed(self : Accounts, profile : Profile, lang : String) -> JV {
+async fn Accounts::check_borrowed(
+  self : Accounts,
+  profile : Profile,
+  lang : String,
+  stands? : Bool = false,
+) -> JV {
   let id = profile.id
   let asked = async fn() -> JV {
     let got = self.ask("shared.status", [profile.raw])
+    self.borrowed_unreachable_since.remove(id)
     let got_quota = got.get("quota")
     let check = match got.get("check") {
       Some(Obj(_) as c) => c
@@ -710,7 +793,7 @@ async fn Accounts::check_borrowed(self : Accounts, profile : Profile, lang : Str
     check
   }
   let mut check = asked() catch {
-    _ => {
+    e => {
       let host = if self.given.shared_host_name {
         match self.ask("shared.hostName", [profile.raw]) {
           Null => ""
@@ -719,12 +802,26 @@ async fn Accounts::check_borrowed(self : Accounts, profile : Profile, lang : Str
       } else {
         ""
       }
-      jobj([
-        ("state", js("failed")),
-        ("detail", js(self.tr(lang, "station.share.hostOffline", args=[("host", host)]))),
-        ("models", Null),
-        ("checkedAt", jint(0)),
-      ])
+      let previous = self.checks.get(id)
+      let now = self.background.now()
+      if borrowed_failure_stands(stands, previous, self.borrowed_unreachable_since, id, now)
+        is Some(prev) {
+        self.log("warn", "borrowed profile host did not answer; keeping previous check", [
+          ("profile", js(id)),
+          ("host", js(host)),
+          ("error", js(message_of(e))),
+        ])
+        return prev
+      }
+      preserve_check_metadata(
+        jobj([
+          ("state", js("failed")),
+          ("detail", js(self.tr(lang, "station.share.hostOffline", args=[("host", host)]))),
+          ("models", Null),
+          ("checkedAt", jint(0)),
+        ]),
+        previous,
+      )
     }
   }
   let local = self.checks.get(id)
@@ -916,7 +1013,7 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
       self.changed()
       return Some(read)
     }
-    ignore(self.check_borrowed(profile, lang)) catch {
+    ignore(self.check_borrowed(profile, lang, stands=true)) catch {
       _ => ()
     }
     return self.quotas.get(id)
@@ -992,11 +1089,13 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
         _ => ()
       }
     })
-  } else if (profile.runtime == Some("claude") || self.auth_revoked.contains(id)) &&
-    access_kind(profile.raw) == "subscription" &&
-    read.get("state") == Some(Str("ok")) &&
-    (jget(self.checks.get(id), "state") == Some(Str("failed")) ||
-      jget(self.checks.get(id), "state") == Some(Str("login"))) {
+  } else if quota_ok_should_recheck(
+      profile.runtime,
+      self.auth_revoked.contains(id),
+      access_kind(profile.raw),
+      read.get("state"),
+      jget(self.checks.get(id), "state"),
+    ) {
     self.background.spawn(async fn() {
       ignore(self.check(id, self.ctx.station_lang)) catch {
         _ => ()
@@ -1035,7 +1134,7 @@ pub fn Accounts::recheck_borrowed(self : Accounts) -> Unit {
     if borrowed(p.raw) && access_kind(p.raw) == "subscription" {
       let id = p.id
       self.background.spawn(async fn() {
-        ignore(self.check(id, self.ctx.station_lang)) catch {
+        ignore(self.check(id, self.ctx.station_lang, stands=true)) catch {
           _ => ()
         }
       })
@@ -1075,7 +1174,7 @@ pub async fn Accounts::shared_changed(self : Accounts, id : String, reset : Bool
     !self.given.shared {
     return
   }
-  ignore(self.check_borrowed(profile, self.ctx.station_lang))
+  ignore(self.check_borrowed(profile, self.ctx.station_lang, stands=true))
   if profile.runtime == Some("codex") && self.given.shared_lend_codex {
     let before = match self.borrowed_login.get(id) {
       Some(b) => b
@@ -1109,7 +1208,7 @@ pub async fn Accounts::shared_changed(self : Accounts, id : String, reset : Bool
       ignore(self.ask("hub.profileLoginChanged", [js(id)]))
     }
   }
-  ignore(self.check_borrowed(profile, self.ctx.station_lang))
+  ignore(self.check_borrowed(profile, self.ctx.station_lang, stands=true))
 }
 
 ///|

@@ -93,8 +93,19 @@ export function launcher(args: string[]): Control {
     }
   });
   // The launcher gone: nothing will hand this process over or stop it, so it stops.
-  channel.on("close", () => handlers.get("stop")?.forEach((f) => f()));
-  const say = (value: unknown) => channel.write(JSON.stringify(value) + "\n");
+  let closed = false;
+  channel.on("close", () => {
+    if (closed) return;
+    closed = true;
+    handlers.get("stop")?.forEach((f) => f());
+  });
+  // A launcher that closes its end first (a handover, a stop) makes the next line written fail with EPIPE, told
+  // later as "error": heard here, so it never becomes an uncaughtException; "close" follows and stops the process.
+  channel.on("error", () => {});
+  const say = (value: unknown) => {
+    if (closed || channel.destroyed || !channel.writable) return;
+    channel.write(JSON.stringify(value) + "\n", () => {});
+  };
   const carries = args.includes("--launcher-carries");
   const heartbeats = args.includes("--launcher-heartbeat");
   // Signals reach the launcher; this process hears of them on the channel.

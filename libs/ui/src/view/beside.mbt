@@ -30,8 +30,10 @@ pub(all) enum Along {
 /// anchor where it fits on neither: Radix's shift on both axes); `on`: the side it is on now, where it stays as long
 /// as it has the room there (else as `side` and `flip` say); `rtl`: right to left, a start the right; `clear`: how
 /// far in from the window's top, right, foot and left the system's bars reach (their safe area: the status bar, an
-/// iPhone Duo's bars of the app's actions and tabs, the home indicator), kept clear as the window's own edges are. Its
-/// top left, and the side it went on.
+/// iPhone Duo's bars of the app's actions and tabs, the home indicator), kept clear as the window's own edges are;
+/// `away`: a box of the window's own over all else of it (its own buttons, Tree::keeps_away) it would lie under where
+/// placed so, its anchor clear of it: moved along its side till `padding` clear of it, where that keeps it in the
+/// window, else past it across (below it, a box at the window's top). Its top left, and the side it went on.
 pub fn place_beside(
   anchor : (Double, Double, Double, Double),
   w : Double,
@@ -47,6 +49,7 @@ pub fn place_beside(
   on? : Side,
   rtl? : Bool = false,
   clear? : (Double, Double, Double, Double) = (0.0, 0.0, 0.0, 0.0),
+  away? : (Double, Double, Double, Double),
 ) -> (Double, Double, Side) {
   let (ax, ay, aw, ah) = anchor
   let (top, right, foot, left) = clear
@@ -119,7 +122,31 @@ pub fn place_beside(
       lo + padding
     }
   }
-  (keep(x, w, left, vw - right), keep(y, h, top, vh - foot), side)
+  let x = keep(x, w, left, vw - right)
+  let y = keep(y, h, top, vh - foot)
+  let meets = fn(bx : Double, by : Double, bw : Double, bh : Double, o : (Double, Double, Double, Double)) {
+    bx < o.0 + o.2 && o.0 < bx + bw && by < o.1 + o.3 && o.1 < by + bh
+  }
+  guard away is Some(o) && meets(x, y, w, h, o) && !meets(ax, ay, aw, ah, o) else { return (x, y, side) }
+  // (along its side, to the side of the box its anchor's middle is on; where that leaves the window, past it across,
+  // on whichever side of it has more room)
+  let (ox, oy, ow, oh) = o
+  let room_in = fn(lo : Double, hi : Double, v : Double, len : Double) { v >= lo + padding && v + len <= hi - padding }
+  if across {
+    let to = if ax + aw / 2.0 < ox + ow / 2.0 { ox - padding - w } else { ox + ow + padding }
+    if room_in(left, vw - right, to, w) {
+      return (to, y, side)
+    }
+    let to = if oy - top > vh - foot - (oy + oh) { oy - padding - h } else { oy + oh + padding }
+    (x, keep(to, h, top, vh - foot), side)
+  } else {
+    let to = if ay + ah / 2.0 < oy + oh / 2.0 { oy - padding - h } else { oy + oh + padding }
+    if room_in(top, vh - foot, to, h) {
+      return (x, to, side)
+    }
+    let to = if ox - left > vw - right - (ox + ow) { ox - padding - w } else { ox + ow + padding }
+    (keep(to, w, left, vw - right), y, side)
+  }
 }
 
 ///|
@@ -444,6 +471,7 @@ fn Tree::beside_laid(self : Tree, at : Int, seen : Array[Int]) -> (Double, Doubl
     along_offset=b.along_offset,
     padding=b.padding,
     clear=self.clear.untracked(),
+    away?=self.away,
   )
   Some((x, y))
 }
@@ -643,6 +671,7 @@ fn Tree::besides_placed(self : Tree) -> Unit {
       along_offset=b.along_offset * hs,
       padding=b.padding,
       clear=self.clear.untracked(),
+      away?=self.away,
     )
     // (where it grows from, where it is drawn bigger or smaller about the side it went on: View::scale's FromBeside)
     if n.went != Some(went) {

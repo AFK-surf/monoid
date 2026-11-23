@@ -356,6 +356,9 @@ pub fn notice_failure(said : String) -> String? {
   if text.unsafe_get(0).to_int() != 0x26a0 || text.contains("\n") {
     return None
   }
+  if lower.has_prefix("\u{26a0} permission '") && lower.contains("denied") {
+    return Some("auth")
+  }
   let reason = classify("agy", text)
   if reason == "model" {
     None

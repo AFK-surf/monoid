@@ -82,3 +82,10 @@ test "FB-44: a host's login over is said apart from its not answering (LOGIN_OVE
   assert_true(!over_here(Failed("network unreachable")))
   assert_eq(error_words(LoginOver("sh-1", "sign in again")), "sign in again")
 }
+
+///|
+test "next_retry_wait doubles from retry_ms and caps at retry_max_ms" {
+  assert_eq(next_retry_wait(retry_ms), 120_000.0)
+  assert_eq(next_retry_wait(900_000.0), retry_max_ms)
+  assert_eq(next_retry_wait(retry_max_ms), retry_max_ms)
+}

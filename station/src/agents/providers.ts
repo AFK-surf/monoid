@@ -46,6 +46,7 @@ export const SOURCES: Source[] = [
   source("openai", "OpenAI", { responses: "https://api.openai.com/v1" }),
   source("anthropic", "Anthropic", { anthropic: "https://api.anthropic.com", auth: "apiKey" }),
   source("google", "Google Gemini", { chat: "https://generativelanguage.googleapis.com/v1beta/openai" }),
+  source("google-vertex", "Google Vertex AI"),
   source("xai", "xAI", { responses: "https://api.x.ai/v1" }),
   source("mistral", "Mistral", { chat: "https://api.mistral.ai/v1" }),
   // China.

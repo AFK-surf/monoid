@@ -906,6 +906,11 @@ export interface Profile {
 	maxConcurrentSessions?: number;
 	/** True while the default new-account protection cap is active; absent otherwise. */
 	newAccountProtection?: boolean;
+	/**
+	 * An Antigravity CLI subscription's: whether what its CLI leaves out of its quota is asked of Google's API with
+	 * its sign-in, as the CLI would; absent on other profiles and from a station of before the setting.
+	 */
+	directQuota?: boolean;
 	/** Whether this profile may be used; absent on stations from before disabling profiles. */
 	enabled?: boolean;
 	fast?: boolean;

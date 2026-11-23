@@ -350,13 +350,40 @@ int main(void) {
     assert(strstr(m_cloud, "\"stations\":1") != NULL);
     assert(atomic_load(&g_srv.got_me) >= 1 && atomic_load(&g_srv.got_ws) >= 1);
 
-    // 2. Real Rust `stream.open` + `stream.read` -> live `/events` SSE stream
+    // 2. Subscribe to real `packages/views` projections: workspaces, stations, chats, chat, lock, vaults
+    send_json("{\"id\":10,\"subscribe\":{\"topic\":\"workspaces\"},\"keyed\":true}");
+    char *m_ws_sub = wait_for_matching_msg(&g_host, "\"id\":10", "\"workspaces\"", 10);
+    printf("[live_net_e2e] #10 subscribe workspaces -> %s\n", m_ws_sub);
+    assert(strstr(m_ws_sub, "Live Workspace") != NULL);
+
+    send_json("{\"id\":11,\"subscribe\":{\"topic\":\"stations\",\"scope\":\"ws-live\"},\"keyed\":true}");
+    char *m_st_sub = wait_for_matching_msg(&g_host, "\"id\":11", "Live Station", 10);
+    printf("[live_net_e2e] #11 subscribe stations -> %s\n", m_st_sub);
+
+    send_json("{\"id\":12,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-live\"},\"keyed\":true}");
+    char *m_chats_sub = wait_for_matching_msg(&g_host, "\"id\":12", "\"days\"", 10);
+    printf("[live_net_e2e] #12 subscribe chats -> %s\n", m_chats_sub);
+
+    send_json("{\"id\":13,\"subscribe\":{\"topic\":\"chat\",\"station\":\"st-local\",\"thread\":42},\"keyed\":true}");
+    char *m_chat_sub = wait_for_matching_msg(&g_host, "\"id\":13", "\"messages\"", 10);
+    printf("[live_net_e2e] #13 subscribe chat -> %s\n", m_chat_sub);
+
+    send_json("{\"id\":14,\"subscribe\":{\"topic\":\"lock\",\"workspace\":\"ws-live\"},\"keyed\":true}");
+    char *m_lock_sub = wait_for_matching_msg(&g_host, "\"id\":14", "\"locked\":false", 10);
+    printf("[live_net_e2e] #14 subscribe lock -> %s\n", m_lock_sub);
+    assert(strstr(m_lock_sub, "\xe4\xb8\xaa\xe4\xba\xba\xe9\x94\x81") == NULL);
+
+    send_json("{\"id\":15,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"ws-live\"},\"keyed\":true}");
+    char *m_vaults_sub = wait_for_matching_msg(&g_host, "\"id\":15", "\"vaults\"", 10);
+    printf("[live_net_e2e] #15 subscribe vaults -> %s\n", m_vaults_sub);
+
+    // 3. Real Rust `stream.open` + `stream.read` -> live `/events` SSE stream
     send_json("{\"id\":2,\"call\":\"station.connect\",\"params\":{}}");
     char *m_conn = wait_for_matching_msg(&g_host, "\"event\":\"connection\"", "\"state\":\"connected\"", 10);
     printf("[live_net_e2e] #2 station.connect SSE -> %s\n", m_conn);
     assert(atomic_load(&g_srv.got_events) >= 1);
 
-    // 3. Real online `message.send` -> HTTP POST -> live SSE push -> `OutboxResolved` by `clientKey`
+    // 4. Real online `message.send` -> HTTP POST -> live SSE push -> `OutboxResolved` + real ChatView keyed `delta`
     send_json("{\"id\":3,\"call\":\"message.send\",\"params\":{\"thread\":42,\"clientKey\":\"ck-live-net-1\",\"author\":\"alice\",\"text\":\"hello over real rust shell\"}}");
     char *m_send = wait_for_matching_msg(&g_host, "\"id\":3", "\"queued\":true", 10);
     printf("[live_net_e2e] #3 message.send -> %s\n", m_send);
@@ -366,7 +393,17 @@ int main(void) {
     assert(strstr(m_resolved, "\"n\":7") != NULL);
     assert(atomic_load(&g_srv.got_post_msg) == 1);
 
-    // 4. Clean stop with post_stop=0
+    // Expect live pushed ChatView keyed delta on sub 13 containing confirmed message (seq 7) and dropping outbox item (0 duplicates), <= 4096 bytes!
+    char *m_chat_delta = wait_for_matching_msg(&g_host, "\"id\":13", "\"seq\":7", 10);
+    size_t delta_len = strlen(m_chat_delta);
+    printf("[live_net_e2e] #5 live ChatView keyed delta (%zu bytes) -> %s\n", delta_len, m_chat_delta);
+    assert(strstr(m_chat_delta, "\"delta\"") != NULL);
+    assert(strstr(m_chat_delta, "hello over real rust shell") != NULL);
+    assert(strstr(m_chat_delta, "\"drop\"") != NULL);
+    assert(strstr(m_chat_delta, "\"seq\":0") == NULL);
+    assert(delta_len <= 4096);
+
+    // 5. Clean stop with post_stop=0
     atomic_store(&g_host.stopped, 1);
     mb_core_stop();
     stop_fake_server();

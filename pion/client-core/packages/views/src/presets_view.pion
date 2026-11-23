@@ -1,0 +1,1040 @@
+// Personal Presets, Starred Models, `other_presets`, and Board Drafts (`待派发`).
+//
+// Strictly matches `client/core-ts/src/preset-records.ts`, `client/core-ts/src/presets-kept.ts`,
+// `client/core-ts/src/views/presets.ts`, `client/core-ts/src/board-drafts.ts`,
+// `client/core-ts/src/views/board-drafts.ts`, and `client/core-ts/src/views/AGENTS.md`:
+// - Single shared merge logic (`merge_preset_records`), zero duplication, zero polling timers.
+// - Strictly newer revision/timestamp merge, sends only strictly newer records, forwards newer
+//   station records to other reachable stations.
+// - Deletion tombstone trimming (`GONE_KEPT = 200` per owner) and ownerless legacy deletion claim
+//   only when this device owns that live preset.
+// - Shows own presets by default; `other_presets` on demand (readable, usable, copyable, NEVER editable).
+// - `board_drafts` merge with target station + attachment upload references, zero polling.
+
+import "base_codec"
+import "form"
+
+pub fn gone_kept_limit() -> Int { 200 }
+pub fn stars_most() -> Int { 200 }
+pub fn drafts_most() -> Int { 200 }
+pub fn gone_drafts_most() -> Int { 200 }
+
+// ---------------------------------------------------------------------------
+// 1. Canonical string comparison & helpers
+// ---------------------------------------------------------------------------
+
+fn cmp_str_pv(a : String, b : String) -> Int {
+  let la = a.length()
+  let lb = b.length()
+  let lim = if la < lb { la } else { lb }
+  for i in 0..<lim {
+    let ca = a.code_unit_at(i)
+    let cb = b.code_unit_at(i)
+    if ca != cb {
+      return if ca < cb { -1 } else { 1 }
+    }
+  }
+  if la < lb { -1 } else if la > lb { 1 } else { 0 }
+}
+
+fn lower_ascii_pv(s : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32) as Byte)
+    } else {
+      sb.write_byte(c as Byte)
+    }
+  }
+  sb.to_string()
+}
+
+fn same_email_pv(a : String, b : String) -> Bool {
+  a.length() > 0 && lower_ascii_pv(a) == lower_ascii_pv(b)
+}
+
+fn str_in_pv(xs : Array[String], s : String) -> Bool {
+  for i in 0..<xs.length() {
+    if xs[i] == s {
+      return true
+    }
+  }
+  false
+}
+
+// ---------------------------------------------------------------------------
+// 2. Presets (`preset-records.ts` + `presets-kept.ts` + `views/presets.ts`)
+// ---------------------------------------------------------------------------
+
+pub struct PresetDir {
+  pub path : String
+  pub repo : Option[String]
+  pub station : String
+}
+
+pub struct PresetRecord {
+  pub id : String
+  pub owner : String
+  pub rev : Int
+  pub gone : Bool
+  pub updated_at : Int64
+  pub created_at : Int64
+  pub created_by : String
+  pub home : String
+  pub name : String
+  pub instructions : String
+  pub dirs : Array[PresetDir]
+  pub auto_station : Bool
+  pub station : Option[String]
+  pub stations : Array[String]
+  pub model : Option[String]
+}
+
+pub fn PresetRecord::live(
+  id : String,
+  owner : String,
+  rev : Int,
+  updated_at : Int64,
+  created_at : Int64,
+  created_by : String,
+  home : String,
+  name : String,
+  instructions : String = "",
+  dirs : Array[PresetDir] = [],
+  auto_station : Bool = false,
+  station : Option[String] = None,
+  stations : Array[String] = [],
+  model : Option[String] = None,
+) -> PresetRecord {
+  PresetRecord::{
+    id: id,
+    owner: owner,
+    rev: rev,
+    gone: false,
+    updated_at: updated_at,
+    created_at: created_at,
+    created_by: created_by,
+    home: home,
+    name: name,
+    instructions: instructions,
+    dirs: dirs,
+    auto_station: auto_station,
+    station: station,
+    stations: stations,
+    model: model,
+  }
+}
+
+pub fn PresetRecord::tombstone(
+  id : String,
+  owner : String,
+  rev : Int,
+  updated_at : Int64,
+) -> PresetRecord {
+  PresetRecord::{
+    id: id,
+    owner: owner,
+    rev: rev,
+    gone: true,
+    updated_at: updated_at,
+    created_at: 0.to_int64(),
+    created_by: "",
+    home: "",
+    name: "",
+    instructions: "",
+    dirs: [],
+    auto_station: false,
+    station: None,
+    stations: [],
+    model: None,
+  }
+}
+
+pub fn preset_canonical(r : PresetRecord) -> String {
+  let obj = if r.gone {
+    form::Json::Obj([
+      ("gone", form::Json::Bool(true)),
+      ("id", form::Json::Str(r.id)),
+      ("owner", form::Json::Str(r.owner)),
+      ("rev", form::Json::Num(r.rev.to_double())),
+      ("updatedAt", form::Json::Num(r.updated_at.to_double())),
+    ])
+  } else {
+    let dirs_j : Array[form::Json] = []
+    for i in 0..<r.dirs.length() {
+      let d = r.dirs[i]
+      let repo_j = match d.repo {
+        Some(s) => form::Json::Str(s)
+        None => form::Json::Null
+      }
+      dirs_j.push(form::Json::Obj([
+        ("path", form::Json::Str(d.path)),
+        ("repo", repo_j),
+        ("station", form::Json::Str(d.station)),
+      ]))
+    }
+    let fields : Array[(String, form::Json)] = [
+      ("createdAt", form::Json::Num(r.created_at.to_double())),
+      ("createdBy", form::Json::Str(r.created_by)),
+      ("dirs", form::Json::Arr(dirs_j)),
+      ("home", form::Json::Str(r.home)),
+      ("id", form::Json::Str(r.id)),
+      ("instructions", form::Json::Str(r.instructions)),
+      ("name", form::Json::Str(r.name)),
+      ("owner", form::Json::Str(r.owner)),
+      ("rev", form::Json::Num(r.rev.to_double())),
+      ("updatedAt", form::Json::Num(r.updated_at.to_double())),
+    ]
+    if r.auto_station {
+      fields.push(("autoStation", form::Json::Bool(true)))
+    }
+    match r.station {
+      Some(s) => fields.push(("station", form::Json::Str(s)))
+      None => ()
+    }
+    if r.stations.length() > 0 {
+      let sj : Array[form::Json] = []
+      for i in 0..<r.stations.length() {
+        sj.push(form::Json::Str(r.stations[i]))
+      }
+      fields.push(("stations", form::Json::Arr(sj)))
+    }
+    match r.model {
+      Some(m) => fields.push(("model", form::Json::Str(m)))
+      None => ()
+    }
+    form::Json::Obj(fields)
+  }
+  match form::canonical(obj) {
+    Ok(s) => s
+    Err(_) => ""
+  }
+}
+
+/// Total order choosing the newer of two records for the same preset (`preset-records.ts newerRecord`):
+/// higher `rev` -> deletion (`gone`) wins over live -> later `updated_at` -> larger canonical text.
+pub fn newer_preset(a : PresetRecord, b : PresetRecord) -> PresetRecord {
+  if a.rev != b.rev {
+    return if a.rev > b.rev { a } else { b }
+  }
+  if a.gone != b.gone {
+    return if a.gone { a } else { b }
+  }
+  if a.updated_at != b.updated_at {
+    return if a.updated_at > b.updated_at { a } else { b }
+  }
+  if cmp_str_pv(preset_canonical(a), preset_canonical(b)) >= 0 { a } else { b }
+}
+
+/// True iff `candidate` is strictly newer than `existing` (not equal and wins `newer_preset`).
+pub fn strictly_newer_preset(candidate : PresetRecord, existing : PresetRecord) -> Bool {
+  let cc = preset_canonical(candidate)
+  let ec = preset_canonical(existing)
+  if cc == ec {
+    return false
+  }
+  preset_canonical(newer_preset(existing, candidate)) == cc
+}
+
+/// Whether `r` belongs to `(who_sub, who_email)` (`presets-kept.ts theirs`).
+pub fn preset_is_theirs(r : PresetRecord, who_sub : String, who_email : String) -> Bool {
+  if who_sub.length() == 0 {
+    return false
+  }
+  if r.owner == who_sub {
+    return true
+  }
+  r.owner.length() == 0 && !r.gone && same_email_pv(r.created_by, who_email)
+}
+
+/// Adopt a legacy ownerless record (`owner == ""`) as owned by `who_sub` with `rev + 1`.
+pub fn adopt_preset(r : PresetRecord, who_sub : String) -> PresetRecord {
+  if r.owner.length() > 0 {
+    return r
+  }
+  PresetRecord::{
+    id: r.id,
+    owner: who_sub,
+    rev: r.rev + 1,
+    gone: r.gone,
+    updated_at: r.updated_at,
+    created_at: r.created_at,
+    created_by: r.created_by,
+    home: r.home,
+    name: r.name,
+    instructions: r.instructions,
+    dirs: r.dirs,
+    auto_station: r.auto_station,
+    station: r.station,
+    stations: r.stations,
+    model: r.model,
+  }
+}
+
+/// Claim an ownerless legacy deletion (`owner == ""`, `gone == true`) ONLY when `held` contains
+/// that preset live and owned by `who_sub` (`presets-kept.ts ownerless`).
+pub fn claim_ownerless_deletion(
+  raw : PresetRecord,
+  held : Map[String, PresetRecord],
+  who_sub : String,
+) -> Option[PresetRecord] {
+  if !raw.gone || raw.owner.length() > 0 || who_sub.length() == 0 {
+    return None
+  }
+  match held.get(raw.id) {
+    Some(cur) => {
+      if cur.gone || cur.owner != who_sub {
+        return None
+      }
+      Some(PresetRecord::tombstone(raw.id, who_sub, raw.rev + 1, raw.updated_at))
+    }
+    None => None
+  }
+}
+
+fn gone_before_pv(a : PresetRecord, b : PresetRecord) -> Bool {
+  if a.updated_at != b.updated_at {
+    return a.updated_at > b.updated_at
+  }
+  if a.rev != b.rev {
+    return a.rev > b.rev
+  }
+  cmp_str_pv(a.id, b.id) < 0
+}
+
+/// Trim deletion tombstones per owner to at most `limit` (default `GONE_KEPT = 200`),
+/// keeping the latest by `updated_at` desc, then `rev` desc, then `id` asc (`preset-records.ts goneKept`).
+pub fn gone_kept(
+  records : Array[PresetRecord],
+  limit : Int = 200,
+) -> Array[PresetRecord] {
+  let by_owner : Map[String, Array[PresetRecord]] = Map::new()
+  let owners : Array[String] = []
+  for i in 0..<records.length() {
+    let r = records[i]
+    if !r.gone {
+      continue
+    }
+    match by_owner.get(r.owner) {
+      Some(xs) => xs.push(r)
+      None => {
+        owners.push(r.owner)
+        by_owner.set(r.owner, [r])
+      }
+    }
+  }
+  let mut any_over = false
+  for i in 0..<owners.length() {
+    match by_owner.get(owners[i]) {
+      Some(xs) => if xs.length() > limit { any_over = true }
+      None => ()
+    }
+  }
+  if !any_over {
+    return records
+  }
+  let keep_ids : Map[String, Bool] = Map::new()
+  for i in 0..<owners.length() {
+    match by_owner.get(owners[i]) {
+      Some(xs) => {
+        for a in 1..<xs.length() {
+          let cur = xs[a]
+          let mut j = a - 1
+          while j >= 0 && gone_before_pv(cur, xs[j]) {
+            xs[j + 1] = xs[j]
+            j -= 1
+          }
+          xs[j + 1] = cur
+        }
+        let n = if xs.length() < limit { xs.length() } else { limit }
+        for k in 0..<n {
+          keep_ids.set(xs[k].id, true)
+        }
+      }
+      None => ()
+    }
+  }
+  let out : Array[PresetRecord] = []
+  for i in 0..<records.length() {
+    let r = records[i]
+    if !r.gone || keep_ids.get(r.id).is_some() {
+      out.push(r)
+    }
+  }
+  out
+}
+
+pub struct PresetMergeOutcome {
+  pub records : Array[PresetRecord]
+  pub changed : Bool
+  pub forward_to_others : Array[PresetRecord]
+}
+
+/// Unified preset merge (`presets-kept.ts taken` + `goneKept` + `forward_to_others`):
+/// - Takes only records belonging to `who` or ownerless deletions of `who`'s live presets.
+/// - Applies strictly newer updates, trims tombstones to `GONE_KEPT`, and returns the exact
+///   strictly newer records to forward to other reachable stations (zero timers).
+pub fn merge_preset_records(
+  held : Array[PresetRecord],
+  given : Array[PresetRecord],
+  who_sub : String,
+  who_email : String,
+  gone_limit : Int = 200,
+) -> PresetMergeOutcome {
+  let by_id : Map[String, PresetRecord] = Map::new()
+  let order : Array[String] = []
+  for i in 0..<held.length() {
+    let r = held[i]
+    if by_id.get(r.id).is_none() {
+      order.push(r.id)
+    }
+    by_id.set(r.id, r)
+  }
+
+  let mut changed = false
+  let forward : Array[PresetRecord] = []
+  for i in 0..<given.length() {
+    let raw = given[i]
+    let resolved = match claim_ownerless_deletion(raw, by_id, who_sub) {
+      Some(claimed) => claimed
+      None => {
+        if !preset_is_theirs(raw, who_sub, who_email) {
+          continue
+        }
+        adopt_preset(raw, who_sub)
+      }
+    }
+    let take = match by_id.get(resolved.id) {
+      None => true
+      Some(was) => strictly_newer_preset(resolved, was)
+    }
+    if take {
+      if by_id.get(resolved.id).is_none() {
+        order.push(resolved.id)
+      }
+      by_id.set(resolved.id, resolved)
+      forward.push(resolved)
+      changed = true
+    }
+  }
+
+  let all : Array[PresetRecord] = []
+  for i in 0..<order.length() {
+    match by_id.get(order[i]) {
+      Some(r) => all.push(r)
+      None => ()
+    }
+  }
+  let trimmed = gone_kept(all, limit=gone_limit)
+  if trimmed.length() != all.length() {
+    changed = true
+  }
+  PresetMergeOutcome::{ records: trimmed, changed: changed, forward_to_others: forward }
+}
+
+/// Records owned by `who_sub` that a target station holding `station_records` lacks or holds strictly older.
+/// Guarantees we ONLY send strictly newer records (`views/presets.ts lacking`).
+pub fn lacking_presets(
+  held : Array[PresetRecord],
+  station_records : Array[PresetRecord],
+  who_sub : String,
+) -> Array[PresetRecord] {
+  let there : Map[String, PresetRecord] = Map::new()
+  for i in 0..<station_records.length() {
+    there.set(station_records[i].id, station_records[i])
+  }
+  let out : Array[PresetRecord] = []
+  for i in 0..<held.length() {
+    let r = held[i]
+    if r.owner != who_sub {
+      continue
+    }
+    match there.get(r.id) {
+      None => out.push(r)
+      Some(st) => {
+        if strictly_newer_preset(r, st) {
+          out.push(r)
+        }
+      }
+    }
+  }
+  out
+}
+
+/// Whether `who_sub` may edit or delete `r`: strictly true only for own live presets, NEVER for others'.
+pub fn can_edit_preset(r : PresetRecord, who_sub : String) -> Bool {
+  !r.gone && who_sub.length() > 0 && r.owner == who_sub
+}
+
+/// Copy any preset (own or another member's) into a new personal preset owned by `who_sub` at `rev = 1`.
+pub fn copy_preset(
+  source : PresetRecord,
+  new_id : String,
+  who_sub : String,
+  who_email : String,
+  home_station : String,
+  now_ms : Int64,
+  new_name : Option[String] = None,
+) -> PresetRecord {
+  let name = match new_name {
+    Some(n) => if n.length() > 0 { n } else { source.name }
+    None => source.name
+  }
+  PresetRecord::{
+    id: new_id,
+    owner: who_sub,
+    rev: 1,
+    gone: false,
+    updated_at: now_ms,
+    created_at: now_ms,
+    created_by: who_email,
+    home: home_station,
+    name: name,
+    instructions: source.instructions,
+    dirs: source.dirs,
+    auto_station: source.auto_station,
+    station: source.station,
+    stations: source.stations,
+    model: source.model,
+  }
+}
+
+/// Default presets view: shows ONLY the person's own live presets (`mine: true`, `editable: true`).
+pub fn project_own_presets(
+  held : Array[PresetRecord],
+  who_sub : String,
+) -> base_codec::Json {
+  let live : Array[PresetRecord] = []
+  for i in 0..<held.length() {
+    let r = held[i]
+    if !r.gone && r.owner == who_sub {
+      live.push(r)
+    }
+  }
+  for i in 1..<live.length() {
+    let cur = live[i]
+    let mut j = i - 1
+    while j >= 0 && (live[j].created_at > cur.created_at || (live[j].created_at == cur.created_at && cmp_str_pv(live[j].id, cur.id) > 0)) {
+      live[j + 1] = live[j]
+      j -= 1
+    }
+    live[j + 1] = cur
+  }
+  let items : Array[base_codec::Json] = []
+  for i in 0..<live.length() {
+    let r = live[i]
+    items.push(base_codec::json_obj([
+      ("id", base_codec::json_str(r.id)),
+      ("name", base_codec::json_str(r.name)),
+      ("home", base_codec::json_str(r.home)),
+      ("rev", base_codec::json_int(r.rev)),
+      ("mine", base_codec::json_bool(true)),
+      ("editable", base_codec::json_bool(true)),
+      ("copyable", base_codec::json_bool(true)),
+    ]))
+  }
+  base_codec::json_obj([("presets", base_codec::json_arr(items))])
+}
+
+/// On-demand `other_presets` view: merges newest record per id across stations, excludes own presets,
+/// and marks every entry read-only (`mine: false`, `editable: false`, `copyable: true`).
+pub fn project_other_presets(
+  station_lists : Array[Array[PresetRecord]],
+  own_held : Array[PresetRecord],
+  who_sub : String,
+  reading : Bool,
+) -> base_codec::Json {
+  let own_ids : Map[String, Bool] = Map::new()
+  for i in 0..<own_held.length() {
+    own_ids.set(own_held[i].id, true)
+  }
+  let by_id : Map[String, PresetRecord] = Map::new()
+  let ids : Array[String] = []
+  for s in 0..<station_lists.length() {
+    let list = station_lists[s]
+    for i in 0..<list.length() {
+      let r = list[i]
+      if r.gone || r.owner == who_sub || own_ids.get(r.id).is_some() {
+        continue
+      }
+      match by_id.get(r.id) {
+        None => {
+          ids.push(r.id)
+          by_id.set(r.id, r)
+        }
+        Some(was) => by_id.set(r.id, newer_preset(was, r))
+      }
+    }
+  }
+  let merged : Array[PresetRecord] = []
+  for i in 0..<ids.length() {
+    match by_id.get(ids[i]) {
+      Some(r) => merged.push(r)
+      None => ()
+    }
+  }
+  for i in 1..<merged.length() {
+    let cur = merged[i]
+    let mut j = i - 1
+    while j >= 0 && (merged[j].created_at > cur.created_at || (merged[j].created_at == cur.created_at && cmp_str_pv(merged[j].id, cur.id) > 0)) {
+      merged[j + 1] = merged[j]
+      j -= 1
+    }
+    merged[j + 1] = cur
+  }
+  let items : Array[base_codec::Json] = []
+  for i in 0..<merged.length() {
+    let r = merged[i]
+    items.push(base_codec::json_obj([
+      ("id", base_codec::json_str(r.id)),
+      ("name", base_codec::json_str(r.name)),
+      ("whose", base_codec::json_str(if r.created_by.length() > 0 { r.created_by } else { r.owner })),
+      ("home", base_codec::json_str(r.home)),
+      ("mine", base_codec::json_bool(false)),
+      ("editable", base_codec::json_bool(false)),
+      ("copyable", base_codec::json_bool(true)),
+    ]))
+  }
+  base_codec::json_obj([
+    ("reading", base_codec::json_bool(reading)),
+    ("presets", base_codec::json_arr(items)),
+  ])
+}
+
+// ---------------------------------------------------------------------------
+// 3. Starred models (`preset-records.ts` `mergeStars` + `starsLacking`)
+// ---------------------------------------------------------------------------
+
+pub struct StarEntry {
+  pub key : String
+  pub on : Bool
+  pub rev : Int
+  pub at : Int64
+}
+
+pub fn newer_star(a : StarEntry, b : StarEntry) -> StarEntry {
+  if a.rev != b.rev {
+    return if a.rev > b.rev { a } else { b }
+  }
+  if a.on != b.on {
+    return if !a.on { a } else { b }
+  }
+  if b.at > a.at { b } else { a }
+}
+
+fn star_drop_before_pv(a : StarEntry, b : StarEntry) -> Bool {
+  let ao = if a.on { 1 } else { 0 }
+  let bo = if b.on { 1 } else { 0 }
+  if ao != bo {
+    return ao < bo
+  }
+  if a.at != b.at {
+    return a.at < b.at
+  }
+  cmp_str_pv(a.key, b.key) < 0
+}
+
+pub fn merge_stars(
+  kept : Array[StarEntry],
+  given : Array[StarEntry],
+  limit : Int = 200,
+) -> Array[StarEntry] {
+  let by_key : Map[String, StarEntry] = Map::new()
+  let keys : Array[String] = []
+  for i in 0..<kept.length() {
+    let s = kept[i]
+    if by_key.get(s.key).is_none() {
+      keys.push(s.key)
+    }
+    by_key.set(s.key, s)
+  }
+  for i in 0..<given.length() {
+    let s = given[i]
+    match by_key.get(s.key) {
+      None => {
+        keys.push(s.key)
+        by_key.set(s.key, s)
+      }
+      Some(was) => by_key.set(s.key, newer_star(was, s))
+    }
+  }
+  let all : Array[StarEntry] = []
+  for i in 0..<keys.length() {
+    match by_key.get(keys[i]) {
+      Some(s) => all.push(s)
+      None => ()
+    }
+  }
+  if all.length() > limit {
+    let by_drop : Array[StarEntry] = []
+    for i in 0..<all.length() {
+      by_drop.push(all[i])
+    }
+    for i in 1..<by_drop.length() {
+      let cur = by_drop[i]
+      let mut j = i - 1
+      while j >= 0 && star_drop_before_pv(cur, by_drop[j]) {
+        by_drop[j + 1] = by_drop[j]
+        j -= 1
+      }
+      by_drop[j + 1] = cur
+    }
+    let drop_n = all.length() - limit
+    let dropped : Map[String, Bool] = Map::new()
+    for i in 0..<drop_n {
+      dropped.set(by_drop[i].key, true)
+    }
+    let kept_out : Array[StarEntry] = []
+    for i in 0..<all.length() {
+      if dropped.get(all[i].key).is_none() {
+        kept_out.push(all[i])
+      }
+    }
+    all.clear()
+    for i in 0..<kept_out.length() {
+      all.push(kept_out[i])
+    }
+  }
+  // Sort deterministically by key.
+  for i in 1..<all.length() {
+    let cur = all[i]
+    let mut j = i - 1
+    while j >= 0 && cmp_str_pv(all[j].key, cur.key) > 0 {
+      all[j + 1] = all[j]
+      j -= 1
+    }
+    all[j + 1] = cur
+  }
+  all
+}
+
+pub fn starred_keys(stars : Array[StarEntry]) -> Array[String] {
+  let on_list : Array[StarEntry] = []
+  for i in 0..<stars.length() {
+    if stars[i].on {
+      on_list.push(stars[i])
+    }
+  }
+  for i in 1..<on_list.length() {
+    let cur = on_list[i]
+    let mut j = i - 1
+    while j >= 0 && (on_list[j].at > cur.at || (on_list[j].at == cur.at && cmp_str_pv(on_list[j].key, cur.key) > 0)) {
+      on_list[j + 1] = on_list[j]
+      j -= 1
+    }
+    on_list[j + 1] = cur
+  }
+  let out : Array[String] = []
+  for i in 0..<on_list.length() {
+    out.push(on_list[i].key)
+  }
+  out
+}
+
+// ---------------------------------------------------------------------------
+// 4. Board Drafts (`待派发`: `board-drafts.ts` + `views/board-drafts.ts`)
+// ---------------------------------------------------------------------------
+
+pub struct DraftAttachment {
+  pub id : String
+  pub name : String
+  pub size : Int64
+}
+
+pub struct BoardDraftRecord {
+  pub id : String
+  pub owner : String
+  pub rev : Int
+  pub gone : Bool
+  pub at : Int64
+  pub updated_at : Int64
+  pub title : String
+  pub station : String
+  pub station_name : String
+  pub files : Array[DraftAttachment]
+}
+
+pub fn BoardDraftRecord::live(
+  id : String,
+  owner : String,
+  rev : Int,
+  at : Int64,
+  updated_at : Int64,
+  title : String,
+  station : String,
+  station_name : String,
+  files : Array[DraftAttachment] = [],
+) -> BoardDraftRecord {
+  BoardDraftRecord::{
+    id: id,
+    owner: owner,
+    rev: rev,
+    gone: false,
+    at: at,
+    updated_at: updated_at,
+    title: title,
+    station: station,
+    station_name: station_name,
+    files: files,
+  }
+}
+
+pub fn BoardDraftRecord::tombstone(
+  id : String,
+  owner : String,
+  rev : Int,
+  updated_at : Int64,
+) -> BoardDraftRecord {
+  BoardDraftRecord::{
+    id: id,
+    owner: owner,
+    rev: rev,
+    gone: true,
+    at: 0.to_int64(),
+    updated_at: updated_at,
+    title: "",
+    station: "",
+    station_name: "",
+    files: [],
+  }
+}
+
+pub fn draft_canonical(d : BoardDraftRecord) -> String {
+  let obj = if d.gone {
+    form::Json::Obj([
+      ("gone", form::Json::Bool(true)),
+      ("id", form::Json::Str(d.id)),
+      ("owner", form::Json::Str(d.owner)),
+      ("rev", form::Json::Num(d.rev.to_double())),
+      ("updatedAt", form::Json::Num(d.updated_at.to_double())),
+    ])
+  } else {
+    let fs : Array[form::Json] = []
+    for i in 0..<d.files.length() {
+      let f = d.files[i]
+      fs.push(form::Json::Obj([
+        ("id", form::Json::Str(f.id)),
+        ("name", form::Json::Str(f.name)),
+        ("size", form::Json::Num(f.size.to_double())),
+      ]))
+    }
+    form::Json::Obj([
+      ("at", form::Json::Num(d.at.to_double())),
+      ("files", form::Json::Arr(fs)),
+      ("id", form::Json::Str(d.id)),
+      ("owner", form::Json::Str(d.owner)),
+      ("rev", form::Json::Num(d.rev.to_double())),
+      ("station", form::Json::Str(d.station)),
+      ("stationName", form::Json::Str(d.station_name)),
+      ("title", form::Json::Str(d.title)),
+      ("updatedAt", form::Json::Num(d.updated_at.to_double())),
+    ])
+  }
+  match form::canonical(obj) {
+    Ok(s) => s
+    Err(_) => ""
+  }
+}
+
+pub fn newer_draft(a : BoardDraftRecord, b : BoardDraftRecord) -> BoardDraftRecord {
+  if a.rev != b.rev {
+    return if a.rev > b.rev { a } else { b }
+  }
+  if a.gone != b.gone {
+    return if a.gone { a } else { b }
+  }
+  if a.updated_at != b.updated_at {
+    return if a.updated_at > b.updated_at { a } else { b }
+  }
+  if cmp_str_pv(draft_canonical(a), draft_canonical(b)) >= 0 { a } else { b }
+}
+
+pub fn strictly_newer_draft(candidate : BoardDraftRecord, existing : BoardDraftRecord) -> Bool {
+  let cc = draft_canonical(candidate)
+  let ec = draft_canonical(existing)
+  if cc == ec {
+    return false
+  }
+  draft_canonical(newer_draft(existing, candidate)) == cc
+}
+
+pub struct DraftMergeOutcome {
+  pub drafts : Array[BoardDraftRecord]
+  pub changed : Bool
+  pub forward_to_others : Array[BoardDraftRecord]
+}
+
+/// Merge board drafts (`board-drafts.ts mergeDrafts`):
+/// - Keeps strictly newer per id, converts live drafts past `live_limit` (`DRAFTS_MOST = 200`)
+///   into deletions (`rev + 1`), and trims deletions past `gone_limit` (`GONE_DRAFTS_MOST = 200`).
+pub fn merge_board_drafts(
+  held : Array[BoardDraftRecord],
+  given : Array[BoardDraftRecord],
+  who_sub : String,
+  live_limit : Int = 200,
+  gone_limit : Int = 200,
+) -> DraftMergeOutcome {
+  let by_id : Map[String, BoardDraftRecord] = Map::new()
+  let order : Array[String] = []
+  for i in 0..<held.length() {
+    let d = held[i]
+    if by_id.get(d.id).is_none() {
+      order.push(d.id)
+    }
+    by_id.set(d.id, d)
+  }
+
+  let mut changed = false
+  let forward : Array[BoardDraftRecord] = []
+  for i in 0..<given.length() {
+    let d = given[i]
+    if d.owner != who_sub {
+      continue
+    }
+    let take = match by_id.get(d.id) {
+      None => true
+      Some(was) => strictly_newer_draft(d, was)
+    }
+    if take {
+      if by_id.get(d.id).is_none() {
+        order.push(d.id)
+      }
+      by_id.set(d.id, d)
+      forward.push(d)
+      changed = true
+    }
+  }
+
+  // Cap live drafts at `live_limit` (oldest by `at` become gone tombstones with `rev + 1`).
+  let live_list : Array[BoardDraftRecord] = []
+  for i in 0..<order.length() {
+    match by_id.get(order[i]) {
+      Some(d) => if !d.gone { live_list.push(d) }
+      None => ()
+    }
+  }
+  if live_list.length() > live_limit {
+    for i in 1..<live_list.length() {
+      let cur = live_list[i]
+      let mut j = i - 1
+      while j >= 0 && (live_list[j].at < cur.at || (live_list[j].at == cur.at && cmp_str_pv(live_list[j].id, cur.id) > 0)) {
+        live_list[j + 1] = live_list[j]
+        j -= 1
+      }
+      live_list[j + 1] = cur
+    }
+    for i in live_limit..<live_list.length() {
+      let d = live_list[i]
+      by_id.set(d.id, BoardDraftRecord::tombstone(d.id, d.owner, d.rev + 1, d.updated_at))
+      changed = true
+    }
+  }
+
+  // Cap gone drafts at `gone_limit`.
+  let gone_list : Array[BoardDraftRecord] = []
+  for i in 0..<order.length() {
+    match by_id.get(order[i]) {
+      Some(d) => if d.gone { gone_list.push(d) }
+      None => ()
+    }
+  }
+  let dropped : Map[String, Bool] = Map::new()
+  if gone_list.length() > gone_limit {
+    for i in 1..<gone_list.length() {
+      let cur = gone_list[i]
+      let mut j = i - 1
+      while j >= 0 && (gone_list[j].updated_at < cur.updated_at || (gone_list[j].updated_at == cur.updated_at && (gone_list[j].rev < cur.rev || (gone_list[j].rev == cur.rev && cmp_str_pv(gone_list[j].id, cur.id) > 0)))) {
+        gone_list[j + 1] = gone_list[j]
+        j -= 1
+      }
+      gone_list[j + 1] = cur
+    }
+    for i in gone_limit..<gone_list.length() {
+      dropped.set(gone_list[i].id, true)
+      changed = true
+    }
+  }
+
+  let out : Array[BoardDraftRecord] = []
+  for i in 0..<order.length() {
+    let id = order[i]
+    if dropped.get(id).is_some() {
+      continue
+    }
+    match by_id.get(id) {
+      Some(d) => out.push(d)
+      None => ()
+    }
+  }
+  DraftMergeOutcome::{ drafts: out, changed: changed, forward_to_others: forward }
+}
+
+/// Draft attachments targeting `station_addr` that are not yet present in `station_kept_file_ids`.
+pub fn pending_draft_uploads(
+  drafts : Array[BoardDraftRecord],
+  station_addr : String,
+  station_kept_file_ids : Array[String],
+) -> Array[(String, DraftAttachment)] {
+  let out : Array[(String, DraftAttachment)] = []
+  for i in 0..<drafts.length() {
+    let d = drafts[i]
+    if d.gone || d.station != station_addr {
+      continue
+    }
+    for j in 0..<d.files.length() {
+      let f = d.files[j]
+      if !str_in_pv(station_kept_file_ids, f.id) {
+        out.push((d.id, f))
+      }
+    }
+  }
+  out
+}
+
+/// Project `boardDrafts` topic (newest first by `at`, then `id` asc) with target station & attachment refs.
+pub fn project_board_drafts(
+  drafts : Array[BoardDraftRecord],
+  who_sub : String,
+) -> base_codec::Json {
+  let live : Array[BoardDraftRecord] = []
+  for i in 0..<drafts.length() {
+    let d = drafts[i]
+    if !d.gone && d.owner == who_sub {
+      live.push(d)
+    }
+  }
+  for i in 1..<live.length() {
+    let cur = live[i]
+    let mut j = i - 1
+    while j >= 0 && (live[j].at < cur.at || (live[j].at == cur.at && cmp_str_pv(live[j].id, cur.id) > 0)) {
+      live[j + 1] = live[j]
+      j -= 1
+    }
+    live[j + 1] = cur
+  }
+  let items : Array[base_codec::Json] = []
+  for i in 0..<live.length() {
+    let d = live[i]
+    let fields : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(d.id)),
+      ("title", base_codec::json_str(d.title)),
+      ("station", base_codec::json_str(d.station)),
+      ("stationName", base_codec::json_str(d.station_name)),
+    ]
+    if d.files.length() > 0 {
+      let fs : Array[base_codec::Json] = []
+      for j in 0..<d.files.length() {
+        let f = d.files[j]
+        fs.push(base_codec::json_obj([
+          ("id", base_codec::json_str(f.id)),
+          ("name", base_codec::json_str(f.name)),
+          ("size", base_codec::json_int64(f.size)),
+        ]))
+      }
+      fields.push(("files", base_codec::json_arr(fs)))
+    }
+    items.push(base_codec::json_obj(fields))
+  }
+  base_codec::json_obj([("drafts", base_codec::json_arr(items))])
+}

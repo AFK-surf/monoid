@@ -20,7 +20,7 @@ import { platform } from "../platform/index.ts";
 import { peerHttpBase } from "../tools/http.ts";
 import { AcpDriver, AcpSession, KeptTranscript, errorText, type AcpStart } from "./acp.ts";
 import type { Events } from "./own-process.ts";
-import { accessKind, expandRoute, profileEnv, profileModel } from "./profiles.ts";
+import { accessKind, expandRoute, profileEnv, profileModel, profileVia, vertexKeyFile } from "./profiles.ts";
 import { AGY_REPO_RULES_COMMAND } from "./repo-rules.ts";
 import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions, type Profile } from "./runtime.ts";
 import { keepLocal } from "../ops/agent-env.ts";
@@ -367,6 +367,7 @@ export function noticeFailure(said: string): FailureReason | null {
   if (lower.startsWith(AGY_UNAUTHENTICATED)) return "auth";
   if (lower.startsWith(AGY_VERIFICATION_REQUIRED)) return "auth";
   if (!text.startsWith("⚠") || text.includes("\n")) return null;
+  if (lower.startsWith(AGY_PERMISSION_DENIED) && lower.includes("denied")) return "auth";
   const reason = classifyFailure(text);
   return reason === "model" ? null : reason;
 }
@@ -376,6 +377,7 @@ const AGY_TERMINATED = "⚠ agent execution terminated due to error.";
 const AGY_EXECUTOR_ERROR = "⚠ agent executor error:";
 const AGY_UNAUTHENTICATED = "⚠ unauthenticated (code 401):";
 const AGY_VERIFICATION_REQUIRED = "⚠ verification required";
+const AGY_PERMISSION_DENIED = "⚠ permission '";
 
 /// The process's arguments: the profile's files, no approvals, no telemetry.
 export const agyArgs = (home: string) => ["acp", "--gemini-dir", geminiDir(home), "--dangerously-skip-permissions", "--disable-telemetry"];
@@ -720,6 +722,14 @@ export class AgyDriver extends AcpDriver<AgySession> {
     const borrowed = this.lent?.borrowed(options.profile) === true;
     if (borrowed) await this.renewLent(options.profile);
     else if (accessKind(options.profile) === "subscription") await agyTakeBack(options.profile.home);
+    else if (accessKind(options.profile) === "api-provider" && profileVia(options.profile).provider === "google-vertex") {
+      const key = typeof (options.profile.access as { key?: unknown } | undefined)?.key === "string" ? (options.profile.access as { key: string }).key.trim() : "";
+      if (key !== "") {
+        const file = vertexKeyFile(options.profile.home);
+        const existing = await readFile(file, "utf8").catch(() => null);
+        if (existing !== key) await writePrivateSoon(file, key);
+      }
+    }
     // Read before the process starts: the token it reads, never read again (AGY_LENT_RENEW_MS).
     const until = borrowed ? await agyExpiry(options.profile.home) : null;
     // Failed here, before anything starts, so the session goes on in a new conversation and reads back.
@@ -778,12 +788,11 @@ export class AgyDriver extends AcpDriver<AgySession> {
   }
 
   protected override async initialized(session: AgySession, answer: Json, options: OpenOptions): Promise<void> {
-    if (
-      accessKind(options.profile) === "api-provider" &&
-      Array.isArray(answer?.result?.authMethods) &&
-      answer.result.authMethods.some((m: Json) => m?.id === "gemini-api-key")
-    ) {
-      await session.request(`auth:${uuid()}`, "authenticate", { methodId: "gemini-api-key" });
+    if (accessKind(options.profile) !== "api-provider" || !Array.isArray(answer?.result?.authMethods)) return;
+    const provider = profileVia(options.profile).provider;
+    const methodId = provider === "google" ? "gemini-api-key" : provider === "google-vertex" ? "agent-platform" : null;
+    if (methodId !== null && answer.result.authMethods.some((m: Json) => m?.id === methodId)) {
+      await session.request(`auth:${uuid()}`, "authenticate", { methodId });
     }
   }
 

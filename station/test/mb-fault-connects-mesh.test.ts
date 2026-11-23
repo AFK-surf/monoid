@@ -367,8 +367,7 @@ before(async () => {
     STILLFAIL_LOCAL_ADMIN: "1", STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${meshPort}`,
     STILLFAIL_SLACK_API: slack.base, STILLFAIL_ANTHROPIC_API: "http://127.0.0.1:9", STILLFAIL_AGENT_NICE: "0", STILLFAIL_HELD_EVERY_MS: "300",
   };
-  const loopPort = await freeTcpPort();
-  const station = spawn(launcher, ["run", "--app", app, "--data", data, "--port", String(loopPort)], { stdio: ["ignore", "pipe", "pipe"], env });
+  const station = spawn(launcher, ["run", "--app", app, "--data", data], { stdio: ["ignore", "pipe", "pipe"], env });
   children.push(station);
   let said = "";
   station.stdout!.on("data", (d) => (said += d));

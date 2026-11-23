@@ -27,4 +27,5 @@ outbox = { path = "../outbox" }
 store = { path = "../store" }
 protocol = { path = "../protocol" }
 core_abi = { path = "../core_abi" }
+views = { path = "../views" }
 sync = { path = "../sync" }

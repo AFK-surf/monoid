@@ -20,6 +20,31 @@ test("a decision-only provider is checked without asking it anything", async (t)
   assert.equal(asked.mock.callCount(), 0);
 });
 
+test("google-vertex checkProfile refuses non-service-account JSON and accepts valid service account JSON without fetch", async (t) => {
+  const asked = t.mock.method(globalThis, "fetch", () => Promise.reject(new Error("asked")));
+  const badJson = await checkProfile({ ...base, runtime: "agy", kind: "api-provider", key: "not-json", via: { provider: "google-vertex" } });
+  assert.equal(badJson.state, "failed");
+  assert.match(badJson.detail, /服务账号 JSON/);
+  const wrongType = await checkProfile({
+    ...base,
+    runtime: "agy",
+    kind: "api-provider",
+    key: JSON.stringify({ type: "authorized_user", project_id: "p", client_email: "a@b", private_key: "k" }),
+    via: { provider: "google-vertex" },
+  });
+  assert.equal(wrongType.state, "failed");
+  const valid = await checkProfile({
+    ...base,
+    runtime: "agy",
+    kind: "api-provider",
+    key: JSON.stringify({ type: "service_account", project_id: "p", client_email: "a@p.iam.gserviceaccount.com", private_key: "-----BEGIN PRIVATE KEY-----\nk\n-----END PRIVATE KEY-----\n" }),
+    via: { provider: "google-vertex" },
+  });
+  assert.deepEqual([valid.state, valid.models], ["unknown", null]);
+  assert.equal(valid.detail, "密钥格式正确，需要 Antigravity CLI 才能确认可用");
+  assert.equal(asked.mock.callCount(), 0);
+});
+
 test("a key is tried where its provider says whether it works", async () => {
   const p = await provider((asked) => {
     if (asked.headers.authorization !== "Bearer good") return { status: 401, body: { error: "no" } };

@@ -321,39 +321,47 @@ fn LocalOutbox::dispatch_message(self : LocalOutbox, rt : effect::Runtime, msg :
             let parsed = base_codec::json_parse(bytes_to_str(reply.body))
             match parsed {
               base_codec::JsonParseResult::Ok(j) => {
-                let server_n = match base_codec::json_get(j, "n") {
-                  Some(base_codec::Json::Num(n, _)) => n.to_int()
-                  _ => 0
+                let server_n_opt = match base_codec::json_get(j, "n") {
+                  Some(base_codec::Json::Num(n, _)) => {
+                    let ni = n.to_int()
+                    if ni > 0 { Some(ni) } else { None }
+                  }
+                  _ => None
                 }
                 let ack_key = match base_codec::json_get(j, "clientKey") {
                   Some(base_codec::Json::Str(ck)) => ck
                   _ => msg.client_key
                 }
-                if ack_key == msg.client_key {
-                  let burst = sql::Burst::new(self.db)
-                  let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
-                    let entry_raw = base_codec::json_stringify(base_codec::json_obj([
-                      ("n", base_codec::json_int(server_n)),
-                      ("thread", base_codec::json_int(msg.thread)),
-                      ("kind", base_codec::json_str("message")),
-                      ("authorKind", base_codec::json_str("person")),
-                      ("author", base_codec::json_str(msg.author)),
-                      ("text", base_codec::json_str(msg.text)),
-                      ("at", base_codec::json_int64(msg.created_at)),
-                      ("clientKey", base_codec::json_str(msg.client_key)),
-                    ]))
-                    match b.run(sql_entry_put(), params=[
-                      base_codec::json_str(self.station),
-                      base_codec::json_int(msg.thread),
-                      base_codec::json_int(server_n),
-                      base_codec::json_str(entry_raw),
-                    ]) {
-                      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-                      sql::SqlResult::Ok(_) => ()
+                match server_n_opt {
+                  Some(server_n) => {
+                    if ack_key == msg.client_key {
+                      let burst = sql::Burst::new(self.db)
+                      let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+                        let entry_raw = base_codec::json_stringify(base_codec::json_obj([
+                          ("n", base_codec::json_int(server_n)),
+                          ("thread", base_codec::json_int(msg.thread)),
+                          ("kind", base_codec::json_str("message")),
+                          ("authorKind", base_codec::json_str("person")),
+                          ("author", base_codec::json_str(msg.author)),
+                          ("text", base_codec::json_str(msg.text)),
+                          ("at", base_codec::json_int64(msg.created_at)),
+                          ("clientKey", base_codec::json_str(msg.client_key)),
+                        ]))
+                        match b.run(sql_entry_put(), params=[
+                          base_codec::json_str(self.station),
+                          base_codec::json_int(msg.thread),
+                          base_codec::json_int(server_n),
+                          base_codec::json_str(entry_raw),
+                        ]) {
+                          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+                          sql::SqlResult::Ok(_) => ()
+                        }
+                        self.reconcile_entry_in_burst(b, msg.thread, server_n, msg.client_key)
+                        sql::SqlResult::Ok(())
+                      })
                     }
-                    self.reconcile_entry_in_burst(b, msg.thread, server_n, msg.client_key)
-                    sql::SqlResult::Ok(())
-                  })
+                  }
+                  None => ()
                 }
               }
               base_codec::JsonParseResult::Err(_) => ()

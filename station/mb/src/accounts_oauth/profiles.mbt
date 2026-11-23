@@ -260,6 +260,12 @@ async fn check_inner(
     if o.login && o.key == "" {
       return check("login", t("station.profile.kimiSignedOut", []), None)
     }
+    if o.provider == Some("google-vertex") {
+      if @agent_runtimes.vertex_account(o.key) is None {
+        return check("failed", t("station.profile.vertexKeyInvalid", []), None)
+      }
+      return check("unknown", t("station.profile.vertexUnchecked", []), None)
+    }
     let done = check_api(io, deps, words, src, ends, o.key, lang)
     if o.login && done.get("state") is Some(String("failed")) {
       return check("login", t("station.profile.kimiSignedOut", []), None)

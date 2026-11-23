@@ -461,6 +461,7 @@ pub struct Slice1Router {
   sub_ids : Array[Int64]
   kept : Map[String, KeptSub]
   kept_order : Array[String]
+  mut topic_evaluator : Option[(Int64, Topic) -> Option[CoreEvent]]
 }
 
 pub fn Slice1Router::new(db : sql::Sql, md_store : store::MdStore, workspace : String = "default") -> Slice1Router {
@@ -472,7 +473,16 @@ pub fn Slice1Router::new(db : sql::Sql, md_store : store::MdStore, workspace : S
     sub_ids: [],
     kept: Map::new(),
     kept_order: [],
+    topic_evaluator: None,
   }
+}
+
+/// Install a custom view projector for topic subscriptions (used by `ClientCore` to wire `packages/views`).
+pub fn Slice1Router::set_topic_evaluator(
+  self : Slice1Router,
+  eval : (Int64, Topic) -> Option[CoreEvent],
+) -> Unit {
+  self.topic_evaluator = Some(eval)
 }
 
 pub fn Slice1Router::active_sub(self : Slice1Router, id : Int64) -> Option[String] {
@@ -896,6 +906,14 @@ fn Slice1Router::handle_chat_draft(self : Slice1Router, id : Int64, params : bas
 }
 
 fn Slice1Router::evaluate_topic_value(self : Slice1Router, id : Int64, topic : Topic) -> CoreEvent {
+  match self.topic_evaluator {
+    Some(eval_fn) =>
+    match eval_fn(id, topic) {
+      Some(ev) => return ev
+      None => ()
+    }
+    None => ()
+  }
   if topic.name == "chat" {
     return self.handle_chat_open(id, topic.to_json(), true)
   }

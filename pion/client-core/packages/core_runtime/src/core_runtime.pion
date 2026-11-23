@@ -168,12 +168,45 @@ fn emit_core_event(ev : sync::CoreEvent) -> Unit {
   }
 }
 
+fn emit_topic_refresh(sess : RuntimeSession, topic_name : String) -> Unit {
+  let deltas = sess.core.refresh_topic(topic_name)
+  for i in 0..<deltas.length() {
+    let (dj, db) = protocol::encode_core_event(deltas[i])
+    emit_wire(dj, payload=db)
+  }
+}
+
 fn drain_and_emit(sess : RuntimeSession) -> Unit {
   let _ = sess.sh.turn()
   if sess.live_sync_enabled {
     let evs = sess.core.drain_frame()
+    let mut refresh_chat = false
+    let mut refresh_chats = false
+    let mut refresh_lock = false
     for i in 0..<evs.length() {
+      match evs[i] {
+        sync::CoreEvent::EntryAdded(_, _, _, _) | sync::CoreEvent::OutboxResolved(_, _, _, _) => {
+          refresh_chat = true
+        }
+        sync::CoreEvent::ChatsChanged(_, _) | sync::CoreEvent::ThreadReadChanged(_, _, _, _) => {
+          refresh_chats = true
+        }
+        sync::CoreEvent::LockUpdated(_, _, _, _) => {
+          refresh_lock = true
+        }
+        _ => ()
+      }
       emit_core_event(evs[i])
+    }
+    if refresh_chat {
+      emit_topic_refresh(sess, "chat")
+    }
+    if refresh_chats {
+      emit_topic_refresh(sess, "chats")
+    }
+    if refresh_lock {
+      emit_topic_refresh(sess, "lock")
+      emit_topic_refresh(sess, "vaults")
     }
   }
 }
@@ -214,6 +247,49 @@ pub extern "C" fn pion_core_runtime_start(
       emit_fatal("ensure_md_kept failed: " + e.to_string())
       return 0
     }
+  }
+  match store::ensure_kept(acct.db) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(e) => {
+      emit_fatal("ensure_kept failed: " + e.to_string())
+      return 0
+    }
+  }
+  match store::ensure_moved(acct.db) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(e) => {
+      emit_fatal("ensure_moved failed: " + e.to_string())
+      return 0
+    }
+  }
+  // Ensure derived `chat` columns (`hidden`, `led`, `watched`) and covering `chat_recent` index exist.
+  match acct.db.all("PRAGMA table_info(chat)") {
+    sql::SqlResult::Ok(cols) => {
+      let mut has_hidden = false
+      let mut has_led = false
+      let mut has_watched = false
+      for i in 0..<cols.length() {
+        let cname = sql::col_text(cols[i], 1)
+        if cname == "hidden" {
+          has_hidden = true
+        } else if cname == "led" {
+          has_led = true
+        } else if cname == "watched" {
+          has_watched = true
+        }
+      }
+      if !has_hidden {
+        let _ = acct.db.exec("ALTER TABLE chat ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+      }
+      if !has_led {
+        let _ = acct.db.exec("ALTER TABLE chat ADD COLUMN led INTEGER NOT NULL DEFAULT 0")
+      }
+      if !has_watched {
+        let _ = acct.db.exec("ALTER TABLE chat ADD COLUMN watched INTEGER NOT NULL DEFAULT 0")
+      }
+      let _ = acct.db.exec(store::sql_ensure_chat_window_indexes())
+    }
+    sql::SqlResult::Err(_) => ()
   }
   let transport = if origin.length() > 0 {
     sync::shell_http_transport(sh, origin)
@@ -297,6 +373,12 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
         }
         effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
         effect::Exit::Succeeded(me) => {
+          let viewer_role = if me.workspaces.length() > 0 && me.workspaces[0].role.length() > 0 {
+            me.workspaces[0].role
+          } else {
+            "member"
+          }
+          sess.core.set_viewer(me.email, sub=me.sub, role=viewer_role)
           let ws_target : Option[String] = match want_ws {
             Some(w) => Some(w)
             None => if me.workspaces.length() > 0 { Some(me.workspaces[0].id) } else { None }
@@ -334,6 +416,10 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
                     ]), None)
                     let (out_j, out_b) = protocol::encode_core_event(ok_ev)
                     emit_wire(out_j, payload=out_b)
+                    emit_topic_refresh(sess, "workspaces")
+                    emit_topic_refresh(sess, "workspace")
+                    emit_topic_refresh(sess, "stations")
+                    emit_topic_refresh(sess, "chats")
                   }
                 }
                 fk(effect::Exit::Succeeded(()))

@@ -8,7 +8,7 @@ import { AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILIN
 import { REPO_RULES_HOOK } from "../src/agents/repo-rules.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
-import { profileRuntimes } from "../src/agents/profiles.ts";
+import { billedPerUse, profileRuntimes, vertexKeyFile } from "../src/agents/profiles.ts";
 import { Accounts, accountEmailSoon } from "../src/accounts/index.ts";
 import { uncheckOutdated } from "../src/accounts/models.ts";
 import { accessKinds, checkProfile, loginCommand } from "../src/accounts/profiles.ts";
@@ -1893,4 +1893,179 @@ test("agy session/load ghost history replay on first prompt is discarded and ori
   assert.deepEqual(ended(newEvents), [{ type: "turnEnded", outcome: { kind: "completed" } }]);
   assert.equal(rpc(newDump).filter((m) => m.method === "session/prompt").length, 1, "session/new never resends");
   await fresh.dispose();
+});
+
+test("google-vertex writes and updates its key file before start, authenticates agent-platform (and gemini-api-key only for google), and fails IAM denied notices as auth", async () => {
+  const sa1 = JSON.stringify({
+    type: "service_account",
+    project_id: "proj-one",
+    client_email: "bot@proj-one.iam.gserviceaccount.com",
+    private_key: "-----BEGIN PRIVATE KEY-----\nkey1\n-----END PRIVATE KEY-----\n",
+  });
+  const sa2 = JSON.stringify({
+    type: "service_account",
+    project_id: "proj-two",
+    client_email: "bot@proj-two.iam.gserviceaccount.com",
+    private_key: "-----BEGIN PRIVATE KEY-----\nkey2\n-----END PRIVATE KEY-----\n",
+  });
+
+  // 1. google-vertex profile: writes key file, sets ADC env (no GEMINI_API_KEY), authenticates agent-platform.
+  const id1 = ++n;
+  const dump1 = join(data, `dump-vertex-${id1}`);
+  const home = join(data, `home-vertex-${id1}`);
+  const driver = new AgyDriver({ data });
+  drivers.push(driver);
+  const events1: RuntimeEvent[] = [];
+  const baseOpts = (key: string, dump: string): OpenOptions => ({
+    key: `agy-vertex-${++n}`,
+    profile: { id: "vx", runtime: "agy", home, access: { kind: "api-provider", provider: "google-vertex", key }, env: { PATH: fake, FAKE_DUMP: dump } },
+    cwd: data,
+    instructions: "",
+    mcpToken: "t",
+    mcpUrl: "http://127.0.0.1:12345/mcp",
+    route: "vertex-test",
+  });
+  const s1 = await driver.open(baseOpts(sa1, dump1), (e) => events1.push(e));
+  assert.equal(readFileSync(vertexKeyFile(home), "utf8"), sa1);
+  const started1 = JSON.parse(readFileSync(dump1, "utf8").trim().split("\n")[0]!);
+  assert.deepEqual(
+    [started1.key, started1.adcAuth, started1.project, started1.location, started1.credentials],
+    [null, "1", "proj-one", "global", vertexKeyFile(home)],
+  );
+  assert.deepEqual(
+    rpc(dump1).filter((m) => m.method === "authenticate").map((m) => m.params.methodId),
+    ["agent-platform"],
+  );
+  // IAM permission denied notice fails the turn as auth.
+  assert.equal(
+    noticeFailure("⚠ Permission 'aiplatform.endpoints.predict' denied on resource '//aiplatform.googleapis.com/projects/demo-project/locations/global/publishers/google/models/gemini-4-carbon' (or it may not exist)."),
+    "auth",
+  );
+  assert.equal(
+    noticeFailure("partial\n⚠ Permission 'aiplatform.endpoints.predict' denied on resource '//aiplatform.googleapis.com/projects/demo-project'."),
+    null,
+  );
+  await s1.prompt("vertex-iam-denied");
+  await until(() => ended(events1).length === 1);
+  assert.equal(ended(events1)[0]!.outcome.kind, "failed");
+  assert.equal((ended(events1)[0]!.outcome as any).reason, "auth");
+  await s1.dispose();
+
+  // Key changed in config -> rewritten before next start with updated project.
+  const dump2 = join(data, `dump-vertex-${++n}`);
+  const s2 = await driver.open(baseOpts(sa2, dump2), () => {});
+  assert.equal(readFileSync(vertexKeyFile(home), "utf8"), sa2);
+  const started2 = JSON.parse(readFileSync(dump2, "utf8").trim().split("\n")[0]!);
+  assert.equal(started2.project, "proj-two");
+  await s2.dispose();
+
+  // 2. google (Gemini API key) authenticates gemini-api-key, not agent-platform.
+  const { options: gOpts, driver: gDriver, dump: gDump } = setup();
+  const gs = await gDriver.open(gOpts, () => {});
+  assert.deepEqual(
+    rpc(gDump).filter((m) => m.method === "authenticate").map((m) => m.params.methodId),
+    ["gemini-api-key"],
+  );
+  await gs.dispose();
+});
+
+test("Accounts.newKeyedProfile adds a google-vertex profile with runtimes ['agy'], lists it in apiProviders, and probes agy catalog", async () => {
+  const dir = mkdtempSync(join(data, "acc-vertex-"));
+  const store = Store.open(":memory:", null);
+  const config = new ConfigFile(dir);
+  const viewer = { sub: "sub-owner", email: "a@b.c", name: "A", role: "owner" as const, workspace: "ws", device: "d" };
+  const accounts = new Accounts({
+    data: dir,
+    store,
+    config,
+    machine: null,
+    checkOnStart: false,
+    agy: () => ({
+      models: async () => ["gemini-4-neon"],
+      catalog: async () => ({ models: ["gemini-4-neon"], efforts: { "gemini-4-neon": ["low", "medium", "high"] }, defaults: { "gemini-4-neon": "medium" } }),
+    }),
+  });
+  try {
+    assert.ok(accounts.apiProviders().some((p) => p.id === "google-vertex" && p.group === "labs"));
+    await assert.rejects(
+      accounts.newKeyedProfile({ access: { kind: "api-provider", provider: "google-vertex", key: "not-a-service-account" } }, viewer, "zh"),
+      /服务账号 JSON/,
+    );
+    const sa = JSON.stringify({
+      type: "service_account",
+      project_id: "proj-acc",
+      client_email: "bot@proj-acc.iam.gserviceaccount.com",
+      private_key: "-----BEGIN PRIVATE KEY-----\nk\n-----END PRIVATE KEY-----\n",
+    });
+    const id = await accounts.newKeyedProfile({ access: { kind: "api-provider", provider: "google-vertex", key: sa } }, viewer, "zh");
+    const profile = accounts.profiles().find((p) => p.id === id)!;
+    assert.ok(profile);
+    assert.deepEqual(profile.runtimes, ["agy"]);
+    assert.equal(profile.runtime, "agy");
+    assert.equal(billedPerUse(profile), true);
+    const checked = await accounts.check(id, "zh");
+    assert.equal(checked.state, "ok");
+    assert.deepEqual(checked.models, ["gemini-4-neon"]);
+  } finally {
+    await accounts.close();
+    store.close();
+  }
+});
+
+test("agy subscription falls back to google-vertex when spent (notifying billedFallback) and returns when usable again", async () => {
+  const sa = JSON.stringify({
+    type: "service_account",
+    project_id: "proj-fb",
+    client_email: "bot@proj-fb.iam.gserviceaccount.com",
+    private_key: "-----BEGIN PRIVATE KEY-----\nk\n-----END PRIVATE KEY-----\n",
+  });
+  const cfg = hubConfig(
+    {
+      profiles: [
+        { id: "ag-sub", name: "Google AI", runtime: "agy", home: "/h/sub", access: { kind: "subscription" }, models: ["gemini-4-neon"] },
+        { id: "ag-vertex", name: "Google Vertex AI", home: "/h/vx", access: { kind: "api-provider", provider: "google-vertex", key: sa }, models: ["gemini-4-neon"] },
+      ],
+    },
+    "/x",
+  );
+  const sessions = new Map<string, any>([
+    ["s-fb", { key: "s-fb", runtime: "agy", profile: "ag-sub", profilePinned: false, model: "gemini-4-neon", effort: "medium" }],
+  ]);
+  const fallbacks: Array<{ session: string; profile: string }> = [];
+  let now = 2000;
+  const pool = new SessionAccounts({
+    config: () => cfg,
+    store: {
+      getSession: (k: string) => sessions.get(k),
+      setSessionProfile: (k: string, p: string, pinned: boolean) => {
+        const row = sessions.get(k);
+        if (row) {
+          row.profile = p;
+          row.profilePinned = pinned;
+        }
+      },
+      lastTurn: () => ({ endedAt: 1000 }),
+      recentlyCompacted: () => false,
+      compactionsReady: () => false,
+      lastContexts: () => [],
+      compactionPoints: () => new Map(),
+    } as never,
+    running: () => [],
+    clock: { currentTimeMillisUnsafe: () => now } as never,
+    billedFallback: (info) => fallbacks.push({ session: info.session, profile: info.profile.id }),
+  });
+  pool.setHealth(() => ({ check: { state: "ok", detail: "ok", models: ["gemini-4-neon"], checkedAt: 1500 } }));
+
+  // Subscription hits its allowance -> spend moves to google-vertex and notifies billedFallback.
+  const moved = pool.spend("s-fb", "ag-sub");
+  assert.deepEqual(moved, ["Google AI", "Google Vertex AI"]);
+  assert.equal(sessions.get("s-fb").profile, "ag-vertex");
+  assert.deepEqual(fallbacks, [{ session: "s-fb", profile: "ag-vertex" }]);
+
+  // Once the subscription is usable again, runOn moves the session back before the next turn.
+  pool.resetAllowance("ag-sub");
+  now += 1000;
+  const back = pool.runOn("s-fb");
+  assert.equal(back.id, "ag-sub");
+  assert.equal(sessions.get("s-fb").profile, "ag-sub");
 });

@@ -897,13 +897,16 @@ const PLANS: Record<string, { plan: string; provider: string }> = {
 const planOf = (runtime: string) => PLANS[runtime] ?? PLANS.claude!;
 /// Google's tile signs in a company's Google account too (Gemini Enterprise: `login.new` access agy-enterprise).
 const companyPlan = (tile: J): boolean => tile?.id === "google" && tile.hasPlan === true;
+/// Google's tile offers Vertex AI (service account JSON key, running Antigravity CLI) where the station lists `google-vertex` and runs `agy`.
+const vertexPlan = (tile: J): boolean => tile?.id === "google" && tile.hasVertex === true;
 /// Google's tile signs in a Google Colab compute account where the station advertises `colab` in `profileServices`.
 const colabPlan = (tile: J): boolean => tile?.id === "google" && tile?.service === "colab";
-/// How many ways a tile is connected by: a key, a plan, Google's company plan, and Google Colab.
+/// How many ways a tile is connected by: a key, a plan, Google's company plan, Vertex AI, and Google Colab.
 const waysOf = (tile: J): number =>
   (tile.hasKey === true ? 1 : 0) +
   (tile.hasPlan === true ? 1 : 0) +
   (companyPlan(tile) ? 1 : 0) +
+  (vertexPlan(tile) ? 1 : 0) +
   (colabPlan(tile) ? 1 : 0);
 
 function usesOf(source: providers.Source, endpoint: string | null, protocol: string | null, runtimes: string[]): string[] {
@@ -913,7 +916,7 @@ function usesOf(source: providers.Source, endpoint: string | null, protocol: str
   return at !== null ? usesNames(providers.uses(at, source.id)).filter((u) => u === "decision" || runtimes.includes(u)) : [];
 }
 
-function tileOf(source: providers.Source, hasKey: boolean, hasPlan: boolean, runtimes: string[], hasColab = false): J {
+function tileOf(source: providers.Source, hasKey: boolean, hasPlan: boolean, runtimes: string[], hasColab = false, hasVertex = false): J {
   const kind = source.legacy === "opencode-go" ? "opencode-go" : source.legacy === "anthropic-api" ? "anthropic-api" : "api-provider";
   // xAI's plan (SuperGrok) runs Grok Build; Google's (a Google account signed in to) the Antigravity CLI.
   const runtime = source.id === "openai" ? "codex" : source.id === "anthropic" ? "claude" : source.id === "xai" && hasPlan ? "grok" : source.id === "google" && hasPlan ? "agy" : null;
@@ -930,6 +933,7 @@ function tileOf(source: providers.Source, hasKey: boolean, hasPlan: boolean, run
     ...(hasColab ? { service: "colab" } : {}),
     hasKey,
     hasPlan,
+    hasVertex,
     runtime,
     endpointRequired: source.endpointRequired === true,
     endpointExample: providers.example(source.id),
@@ -960,11 +964,12 @@ export function groups(supported: string[] | null, runtimes: string[] = format.R
   const listed = (id: string) => supported !== null && supported.includes(id);
   const out: J[] = [];
   for (const group of providers.GROUPS) {
-    const tiles = providers.SOURCES.filter((s) => s.group === group && !providers.isChinaVariant(s.id) && s.id !== "kimi-code").flatMap((s) => {
+    const tiles = providers.SOURCES.filter((s) => s.group === group && !providers.isChinaVariant(s.id) && s.id !== "kimi-code" && s.id !== "google-vertex").flatMap((s) => {
       const hasKey = s.legacy !== undefined || listed(s.id);
       const hasPlan = s.id === "openai" || s.id === "anthropic" || (s.id === "opencode-go" && console) || (s.id === "moonshotai" && listed("kimi-code")) || (s.id === "xai" && runtimes.includes("grok")) || (s.id === "google" && runtimes.includes("agy"));
       const hasColab = s.id === "google" && services.includes("colab");
-      return hasKey || hasPlan || hasColab ? [tileOf(s, hasKey, hasPlan, runtimes, hasColab)] : [];
+      const hasVertex = s.id === "google" && listed("google-vertex") && runtimes.includes("agy");
+      return hasKey || hasPlan || hasColab || hasVertex ? [tileOf(s, hasKey, hasPlan, runtimes, hasColab, hasVertex)] : [];
     });
     if (group === "labs") for (const r of PLAN_ALONE) if (runtimes.includes(r)) tiles.push(planTile(r));
     if (group === "local") {
@@ -1018,6 +1023,7 @@ function profileView(station: string, draft: J, overview: J, manages = false): J
     out.choices = [
       ...(tile.hasPlan === true ? [{ id: "plan", title: t("core-views.flow.plan", { plan }), hint: t(`core-views.flow.plan_hint.${opencode ? "opencode" : kimi ? "kimi" : runtime}`) }] : []),
       ...(companyPlan(tile) ? [{ id: "enterprise", title: t("core-views.flow.enterprise"), hint: t("core-views.flow.enterprise_hint") }] : []),
+      ...(vertexPlan(tile) ? [{ id: "vertex", title: t("core-views.flow.vertex"), hint: t("core-views.flow.vertex_hint") }] : []),
       ...(colabPlan(tile) ? [{ id: "colab", title: t("core-views.flow.colab"), hint: t("core-views.flow.colab_hint") }] : []),
       ...(tile.hasKey === true ? [{ id: "key", title: t("core-views.flow.key_card"), hint: t("core-views.flow.key_card_hint", { name: tile.id === "google" ? "Google Gemini" : name }) }] : []),
     ];
@@ -1025,6 +1031,15 @@ function profileView(station: string, draft: J, overview: J, manages = false): J
   }
   out.step = "connect";
   const kind = str(tile.kind, "api-provider");
+  if (method === "vertex" && vertexPlan(tile)) {
+    out.showKey = true;
+    out.keyLabel = t("core-views.flow.vertex_key");
+    out.keyHint = t("core-views.flow.vertex_key_hint");
+    out.canSubmit = draft.pending !== true && str(draft.key).trim() !== "";
+    out.submitLabel = t("core-views.flow.add");
+    out.usesLine = t("core-views.flow.uses", { uses: runtimeName("agy") });
+    return out;
+  }
   if (method === "colab" && colabPlan(tile)) {
     out.title = t("core-views.flow.connect", { name: "Google Colab" });
     out.signIn = { service: "colab", provider: "Google Colab" };
@@ -1144,12 +1159,12 @@ export class ProfileFlows {
         else {
           const tile = findTile(gs, patch.provider);
           if (tile === undefined) throw CoreError.invalid(t("core-views.flow.unknown_provider"));
-          const method = waysOf(tile) > 1 ? "" : tile.hasPlan === true ? "plan" : colabPlan(tile) ? "colab" : "key";
+          const method = waysOf(tile) > 1 ? "" : tile.hasPlan === true ? "plan" : vertexPlan(tile) ? "vertex" : colabPlan(tile) ? "colab" : "key";
           d.value = { ...blank(), provider: patch.provider, method };
         }
       }
       if (typeof patch.method === "string") {
-        if (!["", "plan", "key", "enterprise", "colab"].includes(patch.method)) throw CoreError.invalid(t("core-views.flow.unknown_provider"));
+        if (!["", "plan", "key", "enterprise", "vertex", "colab"].includes(patch.method)) throw CoreError.invalid(t("core-views.flow.unknown_provider"));
         d.value.method = patch.method;
       }
       if (patch.back === true) {
@@ -1181,7 +1196,8 @@ export class ProfileFlows {
     const tile = shown.tile;
     const kind = str(tile.kind, "api-provider");
     let input: J;
-    if (kind === "env") input = { runtime: tile.runtime ?? null, access: { kind: "env" } };
+    if (shown.method === "vertex") input = { access: { kind: "api-provider", provider: "google-vertex", key: str(d.value.key).trim() } };
+    else if (kind === "env") input = { runtime: tile.runtime ?? null, access: { kind: "env" } };
     else {
       const access: J = { kind };
       const k = str(d.value.key).trim();

@@ -585,6 +585,10 @@ async fn replica_export(host : @host.Host, db : String, replica : String, data_d
     Some(n) => @string.parse_int(n) catch { _ => @replica.transcript_pass_bytes }
     None => @replica.transcript_pass_bytes
   }
+  let chunk_gc_grace_ms = match flag("--chunk-gc-grace-ms") {
+    Some(n) => @string.parse_double(n) catch { _ => @replica.chunk_gc_grace_ms }
+    None => @replica.chunk_gc_grace_ms
+  }
   let fold = !@host.args().contains("--no-fold")
   let exporter = @replica.Exporter::new(
     host,
@@ -598,6 +602,7 @@ async fn replica_export(host : @host.Host, db : String, replica : String, data_d
     chunk_bytes~,
     transcript_pass_files~,
     transcript_pass_bytes~,
+    chunk_gc_grace_ms~,
     fold~,
   ) catch {
     e => {

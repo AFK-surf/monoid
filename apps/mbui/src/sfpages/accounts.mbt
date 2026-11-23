@@ -2157,6 +2157,19 @@ fn profile_settings_node(
                 busy~,
               )
             })
+            // An Antigravity CLI subscription's quota asked of Google's API beside its CLI (only those say `directQuota`).
+            g.show(at_once=true, fn() { has(p(), "directQuota") && !profile_copy(p()) }, fn(r) {
+              @sf.switch_row_node(
+                r,
+                fn() { @sf.t("web-pages.profiles.directQuota") },
+                fn() { flag(p(), "directQuota") },
+                fn(next) {
+                  put(@sf.t("web-pages.profiles.directQuota"), "directQuota", next, if next { @sf.t("web-pages.profiles.turnedOn") } else { @sf.t("web-pages.profiles.turnedOff") })
+                },
+                note=fn() { if flag(p(), "directQuota") { @sf.t("web-pages.profiles.directQuotaOn") } else { @sf.t("web-pages.profiles.directQuotaOff") } },
+                busy~,
+              )
+            })
             let max_sessions_shown = @signals.computed(fn(_) { profile_max_sessions(p()) })
             let max_sessions_protection = @signals.computed(fn(_) { profile_in_protection(p()) })
             let max_sessions_cap = @signals.computed(fn(_) {

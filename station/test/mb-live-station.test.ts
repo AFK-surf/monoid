@@ -402,8 +402,7 @@ test("a release with no Node: the launcher runs the MoonBit station whole, a mem
     STILLFAIL_LOCAL_ADMIN: "1", STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${meshPort}`,
     STILLFAIL_SLACK_API: slack.base, STILLFAIL_ANTHROPIC_API: anthropic.base, STILLFAIL_AGENT_NICE: "0", STILLFAIL_HELD_EVERY_MS: "300",
   };
-  const loopPort = await freeTcpPort();
-  const station = spawn(launcher, ["run", "--app", app, "--data", data, "--port", String(loopPort)], { stdio: ["ignore", "pipe", "pipe"], env });
+  const station = spawn(launcher, ["run", "--app", app, "--data", data], { stdio: ["ignore", "pipe", "pipe"], env });
   children.push(station);
   let err = "";
   station.stdout!.on("data", (d) => (err += d));
@@ -581,8 +580,7 @@ async function launchedAt(k: { id: string; data: string }, name: string, app: st
   writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
   const mcpPort = await freeTcpPort();
   writeFileSync(join(data, "config.json"), JSON.stringify({ language: "en", http: { port: mcpPort }, profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }], maxNudges: 1 }));
-  const loopPort = await freeTcpPort();
-  const station = spawn(launcher, ["run", "--app", app, "--data", data, "--port", String(loopPort)], {
+  const station = spawn(launcher, ["run", "--app", app, "--data", data], {
     stdio: ["ignore", "pipe", "pipe"],
     env: { PATH: bin, HOME: data, TMPDIR: tmpdir(), STILLFAIL_LOCAL_ADMIN: "1", STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${meshPort}`, STILLFAIL_AGENT_NICE: "0", ...env },
   });
@@ -797,8 +795,7 @@ test("a release with no Node: --serve children answer routed reads, marks, idemp
     STILLFAIL_LOCAL_ADMIN: "1", STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${meshPort}`,
     STILLFAIL_AGENT_NICE: "0",
   };
-  const loopPort = await freeTcpPort();
-  const station = spawn(launcher, ["run", "--app", app, "--data", data, "--port", String(loopPort)], { stdio: ["ignore", "pipe", "pipe"], env });
+  const station = spawn(launcher, ["run", "--app", app, "--data", data], { stdio: ["ignore", "pipe", "pipe"], env });
   children.push(station);
   let err = "";
   station.stdout!.on("data", (d) => (err += d));

@@ -936,7 +936,13 @@ async fn check_quota_inner(
       Some(Obj(_) as e) => jspread(env, e)
       _ => env
     }
-    return agy_quota(ctx, profile.home, source, lang)
+    return agy_quota(
+      ctx,
+      profile.home,
+      source,
+      lang,
+      direct=p.get("directQuota") != Some(Bool(false)),
+    )
   }
   if kind == "subscription" && profile.runtime == Some("claude") {
     return claude_with_refresh(

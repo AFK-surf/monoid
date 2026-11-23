@@ -1163,7 +1163,7 @@ int main(void) {
       mb_render_set_fixed_dt(0.0);
       glass_forget();
 
-      // Test C: wide adaptive light capsule spanning left 45% dark (#141418) + right 55% white (#FFFFFF).
+      // Test C: wide 320x44pt adaptive light capsule spanning left 45% dark (#141418) + right 55% white (#FFFFFF).
       // Verifies: whole capsule stays light, left-half neutral ink (kind 10 & kind 7) inverts bright locally,
       // right-half neutral ink stays dark, left chromatic accent preserves hue, out-of-bd elements stay dark,
       // and expanding to full dark converges the whole capsule and all ink to dark glass with light ink.
@@ -1174,8 +1174,8 @@ int main(void) {
         double tc[9 * MB_INST];
         rect_at(tc, 0, 0, 400, 300, 0, 1.0, 1.0, 1.0, 0);
         rect_at(tc + MB_INST, 0, 0, 184, 300, 0, 20.0 / 255.0, 20.0 / 255.0, 24.0 / 255.0, 0);
-        rect_at(tc + 2 * MB_INST, 40, 132, 320, 36, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -23);
-        tc[2 * MB_INST + 4] = 18.0;
+        rect_at(tc + 2 * MB_INST, 40, 128, 320, 44, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -23);
+        tc[2 * MB_INST + 4] = 22.0;
         tc[2 * MB_INST + 6] = 1.0;
         tc[2 * MB_INST + 7] = 2.0;
         tc[2 * MB_INST + 11] = 0x67 / 255.0;
@@ -1191,35 +1191,35 @@ int main(void) {
         tc[3 * MB_INST + 4] = 4.0;
         tc[3 * MB_INST + 12] = 0.1; tc[3 * MB_INST + 13] = 0.5;
         tc[3 * MB_INST + 14] = 0.9; tc[3 * MB_INST + 15] = 0.5;
-        tc[3 * MB_INST + 21] = 200.0; tc[3 * MB_INST + 22] = 150.0; tc[3 * MB_INST + 23] = 36.0;
+        tc[3 * MB_INST + 21] = 200.0; tc[3 * MB_INST + 22] = 150.0; tc[3 * MB_INST + 23] = 44.0;
         // 4: Left text glyph (kind 7) at center (104, 150)
         rect_at(tc + 4 * MB_INST, 96, 142, 16, 16, 7, 0.14, 0.15, 0.17, 0);
         tc[4 * MB_INST + 12] = 16.0; tc[4 * MB_INST + 13] = 16.0;
         tc[4 * MB_INST + 14] = 16.0; tc[4 * MB_INST + 15] = 16.0;
-        tc[4 * MB_INST + 21] = 200.0; tc[4 * MB_INST + 22] = 150.0; tc[4 * MB_INST + 23] = 36.0;
+        tc[4 * MB_INST + 21] = 200.0; tc[4 * MB_INST + 22] = 150.0; tc[4 * MB_INST + 23] = 44.0;
         // 5: Left chromatic accent (kind 10) at center (136, 150)
         rect_at(tc + 5 * MB_INST, 124, 140, 24, 20, 10, 0.90, 0.30, 0.15, 0);
         tc[5 * MB_INST + 4] = 4.0;
         tc[5 * MB_INST + 12] = 0.1; tc[5 * MB_INST + 13] = 0.5;
         tc[5 * MB_INST + 14] = 0.9; tc[5 * MB_INST + 15] = 0.5;
-        tc[5 * MB_INST + 21] = 200.0; tc[5 * MB_INST + 22] = 150.0; tc[5 * MB_INST + 23] = 36.0;
+        tc[5 * MB_INST + 21] = 200.0; tc[5 * MB_INST + 22] = 150.0; tc[5 * MB_INST + 23] = 44.0;
         // 6: Right subtle ink (kind 10) at center (232, 150)
         rect_at(tc + 6 * MB_INST, 220, 140, 24, 20, 10, 0.34, 0.36, 0.38, 0);
         tc[6 * MB_INST + 4] = 4.0;
         tc[6 * MB_INST + 12] = 0.1; tc[6 * MB_INST + 13] = 0.5;
         tc[6 * MB_INST + 14] = 0.9; tc[6 * MB_INST + 15] = 0.5;
-        tc[6 * MB_INST + 21] = 200.0; tc[6 * MB_INST + 22] = 150.0; tc[6 * MB_INST + 23] = 36.0;
+        tc[6 * MB_INST + 21] = 200.0; tc[6 * MB_INST + 22] = 150.0; tc[6 * MB_INST + 23] = 44.0;
         // 7: Right text glyph (kind 7) at center (268, 150)
         rect_at(tc + 7 * MB_INST, 260, 142, 16, 16, 7, 0.14, 0.15, 0.17, 0);
         tc[7 * MB_INST + 12] = 16.0; tc[7 * MB_INST + 13] = 16.0;
         tc[7 * MB_INST + 14] = 16.0; tc[7 * MB_INST + 15] = 16.0;
-        tc[7 * MB_INST + 21] = 200.0; tc[7 * MB_INST + 22] = 150.0; tc[7 * MB_INST + 23] = 36.0;
+        tc[7 * MB_INST + 21] = 200.0; tc[7 * MB_INST + 22] = 150.0; tc[7 * MB_INST + 23] = 44.0;
         // 8: Out-of-bd guard (kind 10) at (16, 16), outside capsule bd capture rect: must NOT sample clamped dark edge
         rect_at(tc + 8 * MB_INST, 4, 6, 24, 20, 10, 0.34, 0.36, 0.38, 0);
         tc[8 * MB_INST + 4] = 4.0;
         tc[8 * MB_INST + 12] = 0.1; tc[8 * MB_INST + 13] = 0.5;
         tc[8 * MB_INST + 14] = 0.9; tc[8 * MB_INST + 15] = 0.5;
-        tc[8 * MB_INST + 21] = 200.0; tc[8 * MB_INST + 22] = 150.0; tc[8 * MB_INST + 23] = 36.0;
+        tc[8 * MB_INST + 21] = 200.0; tc[8 * MB_INST + 22] = 150.0; tc[8 * MB_INST + 23] = 44.0;
 
         mb_render_set_fixed_dt(1.0 / 60.0);
         glass_forget();
@@ -1277,6 +1277,196 @@ int main(void) {
                min_l_sub, min_l_txt, end_r_sub, end_g_right);
         CHECK(end_r_sub > 0.68);
         CHECK(end_g_right < 0.35);
+
+        // Test D: small 240x30pt adaptive capsule (half_w=120, half_h=15) straddling a horizontal white/dark edge
+        // (top white #FFFFFF, bottom dark #141418 starting at y=152; capsule average luma > 0.45 stays light).
+        // Two adjacent kind-7 glyphs simulating uppercase 'H' (upper box) and lowercase 'o' (lower box):
+        // small capsules disable local ink override, so both glyphs stay dark (< 0.35) with matching luma.
+        {
+          double td[5 * MB_INST];
+          rect_at(td, 0, 0, 400, 300, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(td + MB_INST, 0, 152, 400, 148, 0, 20.0 / 255.0, 20.0 / 255.0, 24.0 / 255.0, 0);
+          rect_at(td + 2 * MB_INST, 80, 135, 240, 30, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -24);
+          td[2 * MB_INST + 4] = 15.0;
+          td[2 * MB_INST + 6] = 1.0;
+          td[2 * MB_INST + 7] = 2.0;
+          td[2 * MB_INST + 11] = 0x67 / 255.0;
+          td[2 * MB_INST + 12] = 0.0;
+          td[2 * MB_INST + 13] = 12.0;
+          td[2 * MB_INST + 14] = -1.0;
+          td[2 * MB_INST + 15] = 1.0;
+          // 3: uppercase 'H' glyph (upper box, center y=144 in white)
+          rect_at(td + 3 * MB_INST, 180, 138, 12, 12, 7, 0.14, 0.15, 0.17, 0);
+          td[3 * MB_INST + 12] = 16.0; td[3 * MB_INST + 13] = 16.0;
+          td[3 * MB_INST + 14] = 16.0; td[3 * MB_INST + 15] = 16.0;
+          td[3 * MB_INST + 21] = 200.0; td[3 * MB_INST + 22] = 150.0; td[3 * MB_INST + 23] = 30.0;
+          // 4: lowercase 'o' glyph (lower box, center y=158 in dark)
+          rect_at(td + 4 * MB_INST, 196, 153, 12, 10, 7, 0.14, 0.15, 0.17, 0);
+          td[4 * MB_INST + 12] = 16.0; td[4 * MB_INST + 13] = 16.0;
+          td[4 * MB_INST + 14] = 16.0; td[4 * MB_INST + 15] = 16.0;
+          td[4 * MB_INST + 21] = 200.0; td[4 * MB_INST + 22] = 150.0; td[4 * MB_INST + 23] = 30.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(td, 5, 1.0, 1.0, 1.0);
+          present_drain();
+          uint8_t *px_td = read_texture(canvas, &aw, &ah);
+          uint8_t *p_H = px_td + (288 * aw + 372) * 4;
+          uint8_t *p_o = px_td + (316 * aw + 404) * 4;
+          double l_H = (0.2126 * p_H[2] + 0.7152 * p_H[1] + 0.0722 * p_H[0]) / 255.0;
+          double l_o = (0.2126 * p_o[2] + 0.7152 * p_o[1] + 0.0722 * p_o[0]) / 255.0;
+          printf("apple_render: wave7 testD small_pill_no_local l_H=%.3f l_o=%.3f\n", l_H, l_o);
+          CHECK(l_H < 0.35);
+          CHECK(l_o < 0.35);
+          CHECK(fabs(l_H - l_o) < 0.05);
+          free(px_td);
+        }
+
+        // Test E1: expanded 320x80pt large capsule (capHalf.y=40 > 28) with dark quadrant 0..184 x 0..152.
+        // Center-relative offsets in slots 6-7: tall 'H' (y=138..148) and short 'o' (y=154..164) share line_cy=142,
+        // and trailing 'i' (x=180..192 straddling x=184) shifts slot 6 to word center x=160: all 3 invert bright (> 0.82).
+        {
+          double te1[6 * MB_INST];
+          rect_at(te1, 0, 0, 400, 300, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(te1 + MB_INST, 0, 0, 184, 152, 0, 20.0 / 255.0, 20.0 / 255.0, 24.0 / 255.0, 0);
+          rect_at(te1 + 2 * MB_INST, 40, 110, 320, 80, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -25);
+          te1[2 * MB_INST + 4] = 22.0;
+          te1[2 * MB_INST + 6] = 1.0;
+          te1[2 * MB_INST + 7] = 2.0;
+          te1[2 * MB_INST + 11] = 0x67 / 255.0;
+          te1[2 * MB_INST + 12] = 0.0;
+          te1[2 * MB_INST + 13] = 14.0;
+          te1[2 * MB_INST + 14] = -1.0;
+          te1[2 * MB_INST + 15] = 1.0;
+          // 3: uppercase 'H' (96, 138, 12, 10), center (102, 143), target (102, 142)
+          rect_at(te1 + 3 * MB_INST, 96, 138, 12, 10, 7, 0.14, 0.15, 0.17, 0);
+          te1[3 * MB_INST + 6] = 0.0; te1[3 * MB_INST + 7] = 142.0 - 143.0;
+          te1[3 * MB_INST + 12] = 16.0; te1[3 * MB_INST + 13] = 16.0;
+          te1[3 * MB_INST + 14] = 16.0; te1[3 * MB_INST + 15] = 16.0;
+          te1[3 * MB_INST + 21] = 200.0; te1[3 * MB_INST + 22] = 150.0; te1[3 * MB_INST + 23] = 80.0;
+          // 4: lowercase 'o' (112, 154, 12, 10), center (118, 159), target (118, 142)
+          rect_at(te1 + 4 * MB_INST, 112, 154, 12, 10, 7, 0.14, 0.15, 0.17, 0);
+          te1[4 * MB_INST + 6] = 0.0; te1[4 * MB_INST + 7] = 142.0 - 159.0;
+          te1[4 * MB_INST + 12] = 16.0; te1[4 * MB_INST + 13] = 16.0;
+          te1[4 * MB_INST + 14] = 16.0; te1[4 * MB_INST + 15] = 16.0;
+          te1[4 * MB_INST + 21] = 200.0; te1[4 * MB_INST + 22] = 150.0; te1[4 * MB_INST + 23] = 80.0;
+          // 5: trailing 'i' (180, 138, 12, 10), center (186, 143) straddling x=184, target word center (160, 142)
+          rect_at(te1 + 5 * MB_INST, 180, 138, 12, 10, 7, 0.14, 0.15, 0.17, 0);
+          te1[5 * MB_INST + 6] = 160.0 - 186.0; te1[5 * MB_INST + 7] = 142.0 - 143.0;
+          te1[5 * MB_INST + 12] = 16.0; te1[5 * MB_INST + 13] = 16.0;
+          te1[5 * MB_INST + 14] = 16.0; te1[5 * MB_INST + 15] = 16.0;
+          te1[5 * MB_INST + 21] = 200.0; te1[5 * MB_INST + 22] = 150.0; te1[5 * MB_INST + 23] = 80.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(te1, 6, 1.0, 1.0, 1.0);
+          present_drain();
+          uint8_t *px_e1 = read_texture(canvas, &aw, &ah);
+          uint8_t *p_H = px_e1 + (286 * aw + 204) * 4;
+          uint8_t *p_o = px_e1 + (318 * aw + 236) * 4;
+          uint8_t *p_i = px_e1 + (286 * aw + 372) * 4;
+          double l_H = (0.2126 * p_H[2] + 0.7152 * p_H[1] + 0.0722 * p_H[0]) / 255.0;
+          double l_o = (0.2126 * p_o[2] + 0.7152 * p_o[1] + 0.0722 * p_o[0]) / 255.0;
+          double l_i = (0.2126 * p_i[2] + 0.7152 * p_i[1] + 0.0722 * p_i[0]) / 255.0;
+          printf("apple_render: wave7 testE1 line_word_unified l_H=%.3f l_o=%.3f l_i=%.3f\n", l_H, l_o, l_i);
+          CHECK(l_H > 0.82 && l_o > 0.82 && l_i > 0.82 && fabs(l_H - l_o) < 0.05 && fabs(l_H - l_i) < 0.05);
+          free(px_e1);
+        }
+
+        // Test E2: macro spatial low-pass rejects short-range oscillation.
+        // 320x44pt large capsule over left dark region (0..184) with an embedded 16x10pt 2D white highlight (100..116, 145..155).
+        // Three adjacent glyphs at x=90, x=108 (over highlight), x=126 must all stay bright (> 0.82, diff < 0.05),
+        // while the right-side glyph at x=268 over white stays dark (< 0.35).
+        {
+          double te2[8 * MB_INST];
+          rect_at(te2, 0, 0, 400, 300, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(te2 + MB_INST, 0, 0, 184, 300, 0, 20.0 / 255.0, 20.0 / 255.0, 24.0 / 255.0, 0);
+          rect_at(te2 + 2 * MB_INST, 100, 145, 16, 10, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(te2 + 3 * MB_INST, 40, 128, 320, 44, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -27);
+          te2[3 * MB_INST + 4] = 22.0;
+          te2[3 * MB_INST + 6] = 1.0;
+          te2[3 * MB_INST + 7] = 2.0;
+          te2[3 * MB_INST + 11] = 0x67 / 255.0;
+          te2[3 * MB_INST + 12] = 0.0;
+          te2[3 * MB_INST + 13] = 14.0;
+          te2[3 * MB_INST + 14] = -1.0;
+          te2[3 * MB_INST + 15] = 1.0;
+          double gx_xs[4] = { 84.0, 102.0, 120.0, 262.0 };
+          for (int k = 0; k < 4; k++) {
+            double *g = te2 + (4 + k) * MB_INST;
+            rect_at(g, gx_xs[k], 142, 12, 16, 7, 0.14, 0.15, 0.17, 0);
+            g[6] = 0.0; g[7] = 0.0;
+            g[12] = 16.0; g[13] = 16.0; g[14] = 16.0; g[15] = 16.0;
+            g[21] = 200.0; g[22] = 150.0; g[23] = 44.0;
+          }
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(te2, 8, 1.0, 1.0, 1.0);
+          present_drain();
+          uint8_t *px_e2 = read_texture(canvas, &aw, &ah);
+          uint8_t *p1 = px_e2 + (300 * aw + 180) * 4;
+          uint8_t *p2 = px_e2 + (300 * aw + 216) * 4;
+          uint8_t *p3 = px_e2 + (300 * aw + 252) * 4;
+          uint8_t *p4 = px_e2 + (300 * aw + 536) * 4;
+          double l1 = (0.2126 * p1[2] + 0.7152 * p1[1] + 0.0722 * p1[0]) / 255.0;
+          double l2 = (0.2126 * p2[2] + 0.7152 * p2[1] + 0.0722 * p2[0]) / 255.0;
+          double l3 = (0.2126 * p3[2] + 0.7152 * p3[1] + 0.0722 * p3[0]) / 255.0;
+          double l4 = (0.2126 * p4[2] + 0.7152 * p4[1] + 0.0722 * p4[0]) / 255.0;
+          printf("apple_render: wave7 testE2 lowpass_anti_osc l1=%.3f l2=%.3f l3=%.3f l4=%.3f\n",
+                 l1, l2, l3, l4);
+          CHECK(l1 > 0.82 && l2 > 0.82 && l3 > 0.82);
+          CHECK(fabs(l1 - l2) < 0.05 && fabs(l2 - l3) < 0.05);
+          CHECK(l4 < 0.35);
+          free(px_e2);
+        }
+
+        // Test F: expanded 320x80pt large capsule (capHalf.y=40 > 28) with horizontal dark/white boundary at y=152
+        // (top-left dark quadrant so whole capsule stays light). Two kind-11 vector bands (upper y=138..148 in dark,
+        // lower y=154..164 in white) share p.zw pointing to joint icon center (104, 142) in dark:
+        // both bands must invert bright (> 0.82) with matching luma (no band-splitting).
+        {
+          double tf[6 * MB_INST];
+          rect_at(tf, 0, 0, 400, 300, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(tf + MB_INST, 0, 0, 184, 152, 0, 20.0 / 255.0, 20.0 / 255.0, 24.0 / 255.0, 0);
+          rect_at(tf + 2 * MB_INST, 40, 110, 320, 80, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -26);
+          tf[2 * MB_INST + 4] = 22.0;
+          tf[2 * MB_INST + 6] = 1.0;
+          tf[2 * MB_INST + 7] = 2.0;
+          tf[2 * MB_INST + 11] = 0x67 / 255.0;
+          tf[2 * MB_INST + 12] = 0.0;
+          tf[2 * MB_INST + 13] = 14.0;
+          tf[2 * MB_INST + 14] = -1.0;
+          tf[2 * MB_INST + 15] = 1.0;
+          // 3: upper kind-11 band (96, 138, 16, 10), center (104, 143), p.zw -> (104, 142)
+          rect_at(tf + 3 * MB_INST, 96, 138, 16, 10, 11, 0.14, 0.15, 0.17, 0);
+          tf[3 * MB_INST + 4] = 4.0;
+          tf[3 * MB_INST + 6] = 104.0 - 104.0; tf[3 * MB_INST + 7] = 142.0 - 143.0;
+          tf[3 * MB_INST + 12] = 0.0; tf[3 * MB_INST + 13] = 1.0;
+          tf[3 * MB_INST + 21] = 200.0; tf[3 * MB_INST + 22] = 150.0; tf[3 * MB_INST + 23] = 80.0;
+          // 4: lower kind-11 band (96, 154, 16, 10), center (104, 159), p.zw -> (104, 142)
+          rect_at(tf + 4 * MB_INST, 96, 154, 16, 10, 11, 0.14, 0.15, 0.17, 0);
+          tf[4 * MB_INST + 4] = 4.0;
+          tf[4 * MB_INST + 6] = 104.0 - 104.0; tf[4 * MB_INST + 7] = 142.0 - 159.0;
+          tf[4 * MB_INST + 12] = 0.0; tf[4 * MB_INST + 13] = 1.0;
+          tf[4 * MB_INST + 21] = 200.0; tf[4 * MB_INST + 22] = 150.0; tf[4 * MB_INST + 23] = 80.0;
+          // 5: kind-12 segment data: horizontal segment across center of band
+          memset(tf + 5 * MB_INST, 0, MB_INST * sizeof(double));
+          tf[5 * MB_INST + 0] = 0.1; tf[5 * MB_INST + 1] = 0.5;
+          tf[5 * MB_INST + 2] = 0.9; tf[5 * MB_INST + 3] = 0.5;
+          tf[5 * MB_INST + 5] = 12.0;
+
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(tf, 6, 1.0, 1.0, 1.0);
+          present_drain();
+          uint8_t *px_tf = read_texture(canvas, &aw, &ah);
+          uint8_t *p_top = px_tf + (286 * aw + 208) * 4;
+          uint8_t *p_bot = px_tf + (318 * aw + 208) * 4;
+          double l_top = (0.2126 * p_top[2] + 0.7152 * p_top[1] + 0.0722 * p_top[0]) / 255.0;
+          double l_bot = (0.2126 * p_bot[2] + 0.7152 * p_bot[1] + 0.0722 * p_bot[0]) / 255.0;
+          printf("apple_render: wave7 testF icon_bands_unified l_top=%.3f l_bot=%.3f\n", l_top, l_bot);
+          CHECK(l_top > 0.82 && l_bot > 0.82 && fabs(l_top - l_bot) < 0.05);
+          free(px_tf);
+        }
+
         mb_render_set_fixed_dt(0.0);
         glass_forget();
       }

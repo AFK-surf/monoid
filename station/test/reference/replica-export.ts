@@ -32,6 +32,7 @@ export * from "../../src/replica/export.ts";
 export const CHUNK_PLAIN_BYTES = 4 * 1024 * 1024;
 export const TRANSCRIPT_PASS_FILES = 512;
 export const TRANSCRIPT_PASS_BYTES = 32 * 1024 * 1024;
+export const CHUNK_GC_GRACE_MS = 10 * 60_000;
 
 const ONE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.@+-]*$/;
 
@@ -97,6 +98,7 @@ CREATE TABLE IF NOT EXISTS entering (ws TEXT NOT NULL, thread INTEGER NOT NULL, 
 CREATE TABLE IF NOT EXISTS transcript_files (ws TEXT NOT NULL, path TEXT NOT NULL, room TEXT, size INTEGER NOT NULL, mtime INTEGER NOT NULL, mode INTEGER NOT NULL, chunks_json TEXT NOT NULL, PRIMARY KEY (ws, path)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS transcript_chunks (plain_hash TEXT PRIMARY KEY, chunk_hash TEXT NOT NULL, comp_size INTEGER NOT NULL) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS transcript_chunks_hash ON transcript_chunks (chunk_hash);
+CREATE TABLE IF NOT EXISTS transcript_chunk_gc (chunk_hash TEXT PRIMARY KEY, gone_at INTEGER NOT NULL) WITHOUT ROWID;
 `;
 
 /// The reads the export makes of stillfail.db, each by an index (or the rowid) and a limit, or by a key
@@ -165,6 +167,8 @@ export type ExporterOptions = {
   transcriptPassFiles?: number;
   /// Max changed transcript bytes processed per pass before yielding (default 32 MiB).
   transcriptPassBytes?: number;
+  /// Grace period (ms) before orphan transcript chunks are removed from disk (default 10 minutes; 0 for immediate GC).
+  chunkGcGraceMs?: number;
   /// False: batches left as they were written, never folded (a test's, to restore a generation from them as written).
   fold?: boolean;
 };
@@ -196,6 +200,9 @@ export class Exporter {
   }
   get #transcriptPassBytes(): number {
     return this.#o.transcriptPassBytes !== undefined && this.#o.transcriptPassBytes > 0 ? this.#o.transcriptPassBytes : TRANSCRIPT_PASS_BYTES;
+  }
+  get #chunkGcGraceMs(): number {
+    return this.#o.chunkGcGraceMs !== undefined && this.#o.chunkGcGraceMs >= 0 ? this.#o.chunkGcGraceMs : CHUNK_GC_GRACE_MS;
   }
 
   constructor(o: ExporterOptions) {
@@ -233,7 +240,7 @@ export class Exporter {
 
   /// Everything exported is forgotten: the next pass writes it all again, in new generations.
   #forget(): void {
-    this.#state.exec("DELETE FROM meta WHERE k <> 'after'; DELETE FROM digests; DELETE FROM threads; DELETE FROM sent; DELETE FROM entering; DELETE FROM transcript_files;");
+    this.#state.exec("DELETE FROM meta WHERE k <> 'after'; DELETE FROM digests; DELETE FROM threads; DELETE FROM sent; DELETE FROM entering; DELETE FROM transcript_files; DELETE FROM transcript_chunk_gc;");
     this.#known = false;
     this.#transcriptsPending = false;
   }
@@ -965,18 +972,54 @@ export class Exporter {
   }
 
   #gcTranscriptChunks(): void {
+    const now = this.#o.now();
+    const graceMs = this.#chunkGcGraceMs;
     const chunksDir = join(this.#o.replica, "chunks");
     const live = new Set<string>();
     for (const row of this.#state.prepare("SELECT chunks_json FROM transcript_files").all() as { chunks_json: string }[]) {
       for (const ch of JSON.parse(row.chunks_json) as string[]) live.add(ch);
     }
+    const pending = new Map<string, number>();
+    for (const row of this.#state.prepare("SELECT chunk_hash, gone_at FROM transcript_chunk_gc").all() as { chunk_hash: string; gone_at: number }[]) {
+      pending.set(row.chunk_hash, num(row.gone_at));
+    }
+    for (const ch of pending.keys()) {
+      if (live.has(ch)) {
+        this.#state.prepare("DELETE FROM transcript_chunk_gc WHERE chunk_hash = ?").run(ch);
+      }
+    }
+    const keptOnDisk = new Set<string>();
     try {
       for (const name of readdirSync(chunksDir)) { // sync: in the export's own thread (worker.ts)
-        if (!live.has(name)) rmSync(join(chunksDir, name), { force: true }); // sync: in the export's own thread (worker.ts)
+        if (live.has(name)) continue;
+        if (graceMs <= 0) {
+          rmSync(join(chunksDir, name), { force: true }); // sync: in the export's own thread (worker.ts)
+          if (pending.has(name)) {
+            this.#state.prepare("DELETE FROM transcript_chunk_gc WHERE chunk_hash = ?").run(name);
+          }
+          continue;
+        }
+        const goneAt = pending.get(name);
+        if (goneAt === undefined) {
+          this.#state.prepare("INSERT OR REPLACE INTO transcript_chunk_gc (chunk_hash, gone_at) VALUES (?, ?)").run(name, now);
+          keptOnDisk.add(name);
+        } else if (now - goneAt >= graceMs) {
+          rmSync(join(chunksDir, name), { force: true }); // sync: in the export's own thread (worker.ts)
+          this.#state.prepare("DELETE FROM transcript_chunk_gc WHERE chunk_hash = ?").run(name);
+        } else {
+          keptOnDisk.add(name);
+        }
       }
     } catch {}
+    for (const ch of pending.keys()) {
+      if (!live.has(ch) && !keptOnDisk.has(ch)) {
+        this.#state.prepare("DELETE FROM transcript_chunk_gc WHERE chunk_hash = ?").run(ch);
+      }
+    }
     for (const row of this.#state.prepare("SELECT plain_hash, chunk_hash FROM transcript_chunks").all() as { plain_hash: string; chunk_hash: string }[]) {
-      if (!live.has(row.chunk_hash)) this.#state.prepare("DELETE FROM transcript_chunks WHERE plain_hash = ?").run(row.plain_hash);
+      if (!live.has(row.chunk_hash) && !keptOnDisk.has(row.chunk_hash)) {
+        this.#state.prepare("DELETE FROM transcript_chunks WHERE plain_hash = ?").run(row.plain_hash);
+      }
     }
   }
 

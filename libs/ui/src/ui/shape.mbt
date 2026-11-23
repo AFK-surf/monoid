@@ -103,12 +103,17 @@ fn Ctx::paint_shapes(self : Ctx, n : Node, alpha : Double) -> Unit {
       b
     }
   }
+  let ink_center = if glass_paint.ink_r > 0.0 || glass_paint.ink_line {
+    shape_bands_center(bands)
+  } else {
+    None
+  }
   for k, s in n.shapes {
     if s.fill != 0L {
-      self.emit_bands(n.x, n.y, bands.fills[k], 0.0, s.fill, alpha)
+      self.emit_bands(n.x, n.y, bands.fills[k], 0.0, s.fill, alpha, ink_center~)
     }
     if s.stroke != 0L && s.width > 0.0 {
-      self.emit_bands(n.x, n.y, bands.strokes[k], s.width / 2.0, s.stroke, alpha)
+      self.emit_bands(n.x, n.y, bands.strokes[k], s.width / 2.0, s.stroke, alpha, ink_center~)
     }
   }
 }
@@ -188,6 +193,58 @@ fn Ctx::emit_shape(
 }
 
 ///|
+/// Joint bounding-box center (in local shape coordinates) of a band list.
+fn bands_bbox_center(bands : Array[ShapeBand]) -> (Double, Double)? {
+  if bands.is_empty() {
+    return None
+  }
+  let mut x0 = 1.0e18
+  let mut y0 = 1.0e18
+  let mut x1 = -1.0e18
+  let mut y1 = -1.0e18
+  for b in bands {
+    x0 = dmin(x0, b.x)
+    y0 = dmin(y0, b.y)
+    x1 = dmax(x1, b.x + b.w)
+    y1 = dmax(y1, b.y + b.h)
+  }
+  Some(((x0 + x1) * 0.5, (y0 + y1) * 0.5))
+}
+
+///|
+/// Joint bounding-box center (in local node coordinates) across all fill and stroke bands of a node's shapes.
+fn shape_bands_center(bands : ShapeBands) -> (Double, Double)? {
+  let mut has = false
+  let mut x0 = 1.0e18
+  let mut y0 = 1.0e18
+  let mut x1 = -1.0e18
+  let mut y1 = -1.0e18
+  for bs in bands.fills {
+    for b in bs {
+      has = true
+      x0 = dmin(x0, b.x)
+      y0 = dmin(y0, b.y)
+      x1 = dmax(x1, b.x + b.w)
+      y1 = dmax(y1, b.y + b.h)
+    }
+  }
+  for bs in bands.strokes {
+    for b in bs {
+      has = true
+      x0 = dmin(x0, b.x)
+      y0 = dmin(y0, b.y)
+      x1 = dmax(x1, b.x + b.w)
+      y1 = dmax(y1, b.y + b.h)
+    }
+  }
+  if has {
+    Some(((x0 + x1) * 0.5, (y0 + y1) * 0.5))
+  } else {
+    None
+  }
+}
+
+///|
 /// Bands of a shape put at (`ox`, `oy`), `hw` half its stroke's width (0: a fill), in `color`: their pieces after the
 /// frame's, an instance each.
 fn Ctx::emit_bands(
@@ -198,10 +255,24 @@ fn Ctx::emit_bands(
   hw : Double,
   color : Int64,
   alpha : Double,
+  ink_center? : (Double, Double)? = None,
 ) -> Unit {
+  let mark_ink = glass_paint.ink_r > 0.0 || glass_paint.ink_line
+  let center = if mark_ink {
+    match ink_center {
+      Some(c) => Some(c)
+      None => bands_bbox_center(bands)
+    }
+  } else {
+    None
+  }
   for b in bands {
     let first = self.segs.length() / 4
     self.segs.append(b.pieces)
+    let (dx, dy) = match center {
+      Some((scx, scy)) => (scx - (b.x + b.w * 0.5), scy - (b.y + b.h * 0.5))
+      None => (0.0, 0.0)
+    }
     self.push_inst(
       ox + b.x,
       oy + b.y,
@@ -209,8 +280,8 @@ fn Ctx::emit_bands(
       b.h,
       hw,
       11.0,
-      0.0,
-      0.0,
+      dx,
+      dy,
       color,
       alpha,
       first.to_double(),

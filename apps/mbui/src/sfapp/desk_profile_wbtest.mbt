@@ -261,6 +261,54 @@ test "wide: the station's Hermes profile can be selected from its custom variabl
 }
 
 ///|
+test "wide: Google Vertex AI way shows and pasting multi-line service account JSON reaches profile.flow.edit intact" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="settings-new-profile-google-vertex-ways")
+  t.draw()
+  app.nav.push(Setting(@settings.Route::NewProfile("ws1/st1")))
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("Vertex AI") is Some(_), msg="Vertex AI way shown")
+  let ways_audit = t.audit().filter(fn(f) { f.contains("new_profile") || f.contains("ways") || f.contains("field_node") })
+  let ways_msg = ways_audit.join("; ")
+  assert_eq(ways_audit + t.squeeze_faults() + t.words_over_now() + t.fixed_outgrown(), [], msg="vertex ways audit: \{ways_msg}")
+  match t.find("Vertex AI") {
+    Some((x, y)) => t.tap(x, y)
+    None => @halt.saying("no Vertex AI")
+  }
+  t.draw()
+  assert_true(
+    calls.iter().any(fn(m) { m.name == "profile.flow.edit" && text(field(Some(m.params), "input"), "method") == "vertex" }),
+    msg="choosing vertex tells the core",
+  )
+
+  let calls2 : Array[Made] = []
+  let t2 = wide_tester(calls2, mode="settings-new-profile-google-vertex-key")
+  t2.draw()
+  app.nav.push(Setting(@settings.Route::NewProfile("ws1/st1")))
+  t2.run_for(@ui.move_most_ms)
+  assert_true(t2.find("服务账号密钥（JSON）") is Some(_), msg="vertex key label shown")
+  let key_audit = t2.audit().filter(fn(f) { f.contains("new_profile") || f.contains("ways") || f.contains("field_node") })
+  let key_msg = key_audit.join("; ")
+  assert_eq(key_audit + t2.squeeze_faults() + t2.words_over_now() + t2.fixed_outgrown(), [], msg="vertex key audit: \{key_msg}")
+  let sa = "{\n  \"type\": \"service_account\",\n  \"project_id\": \"demo-proj\",\n  \"client_email\": \"bot@demo-proj.iam.gserviceaccount.com\",\n  \"private_key\": \"-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----\\n\"\n}"
+  match t2.find(@sf.t("android-settings.profile.keyPlaceholder")) {
+    Some((x, y)) => {
+      t2.tap(x, y)
+      t2.paste(sa)
+    }
+    None => @halt.saying("no key placeholder")
+  }
+  t2.draw()
+  let sent = calls2.filter(fn(m) { m.name == "profile.flow.edit" && field(field(Some(m.params), "input"), "key") is Some(_) })
+  assert_true(sent.length() > 0, msg="pasting multi-line JSON sent profile.flow.edit")
+  let got = text(field(Some(sent[sent.length() - 1].params), "input"), "key")
+  assert_eq(got, sa, msg="multi-line JSON reached profile.flow.edit verbatim")
+  let parsed = @json.parse(got) catch { _ => @halt.saying("pasted key did not parse as JSON") }
+  assert_eq(text(Some(parsed), "type"), "service_account")
+  assert_eq(text(Some(parsed), "project_id"), "demo-proj")
+}
+
+///|
 test "wide: a secret's page says what it is, how agents may get it and when they did, its content masked until opened" {
   let t = wide_tester([], mode="settings")
   t.draw()

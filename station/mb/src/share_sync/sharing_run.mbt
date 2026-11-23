@@ -465,17 +465,34 @@ async fn Sharing::reconcile_once(self : Sharing) -> Unit {
   // What did not get through is tried again, less often the longer it does not.
   if !pending.val {
     self.retry_wait = retry_ms
-  } else if self.retry is None && !self.closed {
-    let wait = self.retry_wait
-    self.retry_wait = if self.retry_wait * 2.0 < retry_max_ms { self.retry_wait * 2.0 } else { retry_max_ms }
-    self.retry = Some(
-      (self.deps.clock.after)(wait, () => {
-        self.retry = None
-        self.reconcile_soon()
-      }),
-    )
+  } else {
+    self.schedule_retry()
   }
   (self.deps.changed)()
+}
+
+///|
+fn next_retry_wait(current : Double) -> Double {
+  if current * 2.0 < retry_max_ms {
+    current * 2.0
+  } else {
+    retry_max_ms
+  }
+}
+
+///|
+fn Sharing::schedule_retry(self : Sharing) -> Unit {
+  if self.closed || self.retry is Some(_) {
+    return
+  }
+  let wait = self.retry_wait
+  self.retry_wait = next_retry_wait(self.retry_wait)
+  self.retry = Some(
+    (self.deps.clock.after)(wait, () => {
+      self.retry = None
+      self.reconcile_soon()
+    }),
+  )
 }
 
 // ── copies of others' shares ──

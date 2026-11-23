@@ -198,6 +198,14 @@ test "agy Verification Required is classified as auth failure even under load_re
   assert_eq(@acp.classify("agy", "Verification Required"), "auth")
   assert_eq(@acp.notice_failure("\u{26a0} Verification Required"), Some("auth"))
   assert_eq(@acp.notice_failure("partial text\n\u{26a0} Verification Required\n"), Some("auth"))
+  assert_eq(
+    @acp.notice_failure("\u{26a0} Permission 'aiplatform.endpoints.predict' denied on resource '//aiplatform.googleapis.com/projects/p/locations/global/publishers/google/models/gemini-4-carbon' (or it may not exist)."),
+    Some("auth"),
+  )
+  assert_eq(
+    @acp.notice_failure("partial\n\u{26a0} Permission 'aiplatform.endpoints.predict' denied on resource '//aiplatform.googleapis.com/projects/p'."),
+    None,
+  )
 
   let now = () => 1000.0
   let s = @acp.Session::new("agy", kept=true)

@@ -729,6 +729,7 @@ const AGY_TERMINATED = "⚠ agent execution terminated due to error.";
 const AGY_EXECUTOR_ERROR = "⚠ agent executor error:";
 const AGY_UNAUTHENTICATED = "⚠ unauthenticated (code 401):";
 const AGY_VERIFICATION_REQUIRED = "⚠ verification required";
+const AGY_PERMISSION_DENIED = "⚠ permission '";
 export function noticeFailure(said: string): FailureReason | null {
   const text = said.trim();
   const last = text.slice(text.lastIndexOf("\n") + 1).trim();
@@ -741,6 +742,7 @@ export function noticeFailure(said: string): FailureReason | null {
   if (lower.startsWith(AGY_UNAUTHENTICATED)) return "auth";
   if (lower.startsWith(AGY_VERIFICATION_REQUIRED)) return "auth";
   if (!text.startsWith("⚠") || text.includes("\n")) return null;
+  if (lower.startsWith(AGY_PERMISSION_DENIED) && lower.includes("denied")) return "auth";
   const reason = acpClassify("agy", text);
   return reason === "model" ? null : reason;
 }

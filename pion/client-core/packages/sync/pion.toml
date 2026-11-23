@@ -18,3 +18,4 @@ vault = { workspace = true }
 outbox = { workspace = true }
 store = { workspace = true }
 protocol = { workspace = true }
+views = { path = "../views" }

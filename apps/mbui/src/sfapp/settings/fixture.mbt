@@ -482,6 +482,12 @@ let fx_new_login_done : Ref[Bool] = Ref(false)
 let fx_google_profiles : Ref[Bool] = Ref(false)
 
 ///|
+/// Whether the person's Google account asks Google's API for its quota beside its CLI (`directQuota`; off in
+/// settings-profile-google-off).
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_google_direct : Ref[Bool] = Ref(true)
+
+///|
 /// Whether a Google Colab compute service account is among the profiles (settings-profiles-colab, settings-profile-colab).
 // kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
 let fx_colab_profiles : Ref[Bool] = Ref(false)
@@ -648,6 +654,7 @@ fn fixture_reset() -> Unit {
   fx_google_login.val = ""
   fx_new_login_done.val = false
   fx_google_profiles.val = false
+  fx_google_direct.val = true
   fx_colab_profiles.val = false
   fx_colab_login.val = false
   fx_long_name.val = false
@@ -1150,7 +1157,11 @@ pub fn fixture_page(mode : String) -> String {
       fx_google.val = "enterprise"
       fx_google_login.val = "needs_project"
     }
-    "settings-profiles-google" => fx_google_profiles.val = true
+    "settings-profiles-google" | "settings-profile-google" => fx_google_profiles.val = true
+    "settings-profile-google-off" => {
+      fx_google_profiles.val = true
+      fx_google_direct.val = false
+    }
     "settings-profiles-colab" | "settings-profile-colab" => fx_colab_profiles.val = true
     "settings-new-profile-colab-login" => fx_colab_login.val = true
     // a key's form for a provider with a choice of region and of protocol (Kimi's: 中国 / 国际, OpenAI / Anthropic
@@ -1330,7 +1341,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-adb-second" => "adb:ws1/st2"
     "settings-profile-menu" | "settings-profile-lower" | "settings-profile-share" | "settings-profile-login" | "settings-profile-login-station" =>
       "profile:ws1/st1#cc"
-    "settings-new-profile" | "settings-new-profile-hermes" | "settings-new-profile-colab" | "settings-new-profile-google-colab-ways" | "settings-new-profile-colab-login" | "settings-new-profile-stations" | "settings-new-profile-login" | "settings-new-profile-login-station" | "settings-new-profile-key" | "settings-new-profile-google" | "settings-new-profile-google-ways"
+    "settings-new-profile" | "settings-new-profile-hermes" | "settings-new-profile-colab" | "settings-new-profile-google-colab-ways" | "settings-new-profile-google-vertex-ways" | "settings-new-profile-google-vertex-key" | "settings-new-profile-colab-login" | "settings-new-profile-stations" | "settings-new-profile-login" | "settings-new-profile-login-station" | "settings-new-profile-key" | "settings-new-profile-google" | "settings-new-profile-google-ways"
     | "settings-new-profile-google-code" | "settings-new-profile-google-plan" | "settings-new-profile-google-project" => "new-profile:ws1/st1"
     "settings-connect-menu" | "settings-connect-mode" => "connect:ws1/st1#k1"
     "settings-connect-run" | "settings-connect-switch" | "settings-slack-app" => "connect:ws1/st1#k1"
@@ -1380,6 +1391,7 @@ pub fn fixture_page(mode : String) -> String {
       "profile:ws1/st1#cc"
     "settings-profile-key" | "settings-profile-move-key" => "profile:ws1/st1#k2"
     "settings-profile-colab" => "profile:ws1/st1#colab"
+    "settings-profile-google" | "settings-profile-google-off" => "profile:ws1/st1#gp"
     "settings-profile-move" => "profile:ws1/st1#cx"
     "settings-profile-copy" => "profile:ws1/st1#bx"
     "settings-profile-quota" | "settings-profile-quota-login" | "settings-profile-quota-expiry" | "settings-profile-unshareable" => "profile:ws1/st1#cx"
@@ -1594,6 +1606,7 @@ fn fx_profiles() -> Array[Json] {
           ("signInProvider", str("Google")),
           ("usesText", str("Antigravity CLI")),
           ("usedBy", []),
+          ("directQuota", Json::boolean(g.0 != "gp" || fx_google_direct.val)),
           ("quota", obj([
             ("state", str("ok")),
             ("windows", [
@@ -3712,6 +3725,8 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
       )
     "profileFlow" if fx_colab_login.val => Some(fx_profile_flow_colab_login())
     "profileFlow" if mode == "settings-new-profile-google-colab-ways" => Some(fx_profile_flow_google_colab_ways())
+    "profileFlow" if mode == "settings-new-profile-google-vertex-ways" => Some(fx_profile_flow_google_vertex_ways())
+    "profileFlow" if mode == "settings-new-profile-google-vertex-key" => Some(fx_profile_flow_google_vertex_key())
     "profileFlow" if fx_google.val != "" => Some(fx_profile_flow_google(fx_google.val))
     "profileFlow" if fx.new_login => Some(fx_profile_flow_plan())
     "profileFlow" if fx.new_key => Some(fx_profile_flow_key())
@@ -5278,6 +5293,82 @@ fn fx_profile_flow_google_colab_ways() -> Json {
     ("pending", Json::boolean(false)),
     ("submitLabel", str("")),
     ("usesLine", str("")),
+  ])
+}
+
+///|
+/// A new profile's draft at Google's 5-way method picker with Vertex AI (`profileFlow`, settings-new-profile-google-vertex-ways).
+fn fx_profile_flow_google_vertex_ways() -> Json {
+  let choice = fn(id : String, title : String, hint : String) { obj([("id", str(id)), ("title", str(title)), ("hint", str(hint))]) }
+  obj([
+    ("step", str("method")),
+    ("station", str("ws1/st1")),
+    ("title", str("连接 Google")),
+    ("hint", str("")),
+    ("method", str("")),
+    (
+      "tile",
+      obj([
+        ("id", str("google")), ("name", str("Google")), ("kind", str("api-provider")), ("runtime", str("agy")),
+        ("service", str("colab")), ("mark", str("gemini")), ("hasKey", Json::boolean(true)), ("hasPlan", Json::boolean(true)),
+        ("hasVertex", Json::boolean(true)),
+      ]),
+    ),
+    ("groups", []),
+    (
+      "choices",
+      [
+        choice("plan", "订阅 · Google AI", "Google AI Pro / Ultra 或免费账号，运行 Antigravity CLI（第三方工具使用有封号风险）"),
+        choice("enterprise", "企业版 · Gemini Enterprise", "Google Workspace / Cloud 公司账号，运行 Antigravity CLI（第三方工具使用有封号风险）"),
+        choice("vertex", "Vertex AI", "Google Cloud 项目的服务账号密钥，运行 Antigravity CLI，按量计费"),
+        choice("colab", "Google Colab", "Google Colab / AI Ultra 账号，用于 GPU 算力任务"),
+        choice("key", "API key", "使用 Google Gemini 的 API key，按量计费"),
+      ],
+    ),
+    ("showEndpoint", Json::boolean(false)),
+    ("endpoint", str("")),
+    ("protocols", []),
+    ("showKey", Json::boolean(false)),
+    ("key", str("")),
+    ("keyLabel", str("")),
+    ("canSubmit", Json::boolean(false)),
+    ("pending", Json::boolean(false)),
+    ("submitLabel", str("")),
+    ("usesLine", str("")),
+  ])
+}
+
+///|
+/// A new profile's draft at Google Vertex AI's key form with an error under it (`profileFlow`, settings-new-profile-google-vertex-key).
+fn fx_profile_flow_google_vertex_key() -> Json {
+  obj([
+    ("step", str("connect")),
+    ("station", str("ws1/st1")),
+    ("title", str("连接 Google")),
+    ("hint", str("")),
+    ("method", str("vertex")),
+    (
+      "tile",
+      obj([
+        ("id", str("google")), ("name", str("Google")), ("kind", str("api-provider")), ("runtime", str("agy")),
+        ("mark", str("gemini")), ("hasKey", Json::boolean(true)), ("hasPlan", Json::boolean(true)),
+        ("hasVertex", Json::boolean(true)),
+      ]),
+    ),
+    ("groups", []),
+    ("choices", []),
+    ("showEndpoint", Json::boolean(false)),
+    ("endpoint", str("")),
+    ("protocols", []),
+    ("showKey", Json::boolean(true)),
+    ("key", str("")),
+    ("keyLabel", str("服务账号密钥（JSON）")),
+    ("keyHint", str("粘贴服务账号 JSON 密钥的全部内容，仅保存在此 station 上")),
+    ("error", str("验证没通过：请粘贴有效的 Google Cloud 服务账号 JSON 密钥（需包含 type、project_id、client_email 和 private_key）")),
+    ("canSubmit", Json::boolean(true)),
+    ("pending", Json::boolean(false)),
+    ("submitLabel", str("添加")),
+    ("usesLine", str("添加后可用于：Antigravity CLI")),
   ])
 }
 

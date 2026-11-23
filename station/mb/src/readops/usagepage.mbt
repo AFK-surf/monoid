@@ -81,6 +81,14 @@ let sources : Array[Source] = [
     protocols: [],
   },
   {
+    id: "google-vertex",
+    chat: false,
+    responses: false,
+    anthropic: false,
+    at_address: false,
+    protocols: [],
+  },
+  {
     id: "xai",
     chat: false,
     responses: true,
@@ -452,7 +460,7 @@ fn first_runtime(p : @jsjson.JValue) -> String raise {
       "dsh"
     } else if id == "xai" {
       "grok"
-    } else if id == "google" {
+    } else if id == "google" || id == "google-vertex" {
       "agy"
     } else {
       "claude"

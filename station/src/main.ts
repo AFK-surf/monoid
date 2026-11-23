@@ -283,6 +283,8 @@ function run() {
   // Said of this process in <data>/run/health.json (ops/health.ts) until it stops or hands over: what the next one says
   // from then on.
   let healthSaid = true;
+  // The samples' timers (one says the heartbeat), stopped as the process stops.
+  const timers: (() => void)[] = [];
   const running = Effect.gen(function* () {
     yield* SubscriptionRef.set(yield* Up, true);
     const stationParts = yield* Parts;
@@ -351,7 +353,7 @@ function run() {
     let ownCpu = process.threadCpuUsage();
     let usage = process.resourceUsage();
     let sampled = wall.now();
-    wall.every(HELD_EVERY_MS, () => { // timer: a sample of this thread
+    timers.push(wall.every(HELD_EVERY_MS, () => { // timer: a sample of this thread
       // Its loop runs: said to the launcher, which ends a process that says nothing for long (lifecycle.rs heartbeat).
       control.heartbeat();
       const ms = held.max / 1e6;
@@ -385,10 +387,10 @@ function run() {
       sampled = now;
       gc.ms = 0;
       gc.longest = 0;
-    });
+    }));
     // With how the process is (as health.json says it) and what ops/forewarn.ts looks at: its descriptors, the data
     // directory's disk and the database's log.
-    wall.every(process.env.STILLFAIL_MEMLOG ? 10_000 : 600_000, () => {
+    timers.push(wall.every(process.env.STILLFAIL_MEMLOG ? 10_000 : 600_000, () => {
       const m = process.memoryUsage();
       const mb = (v: number) => Math.round(v / 1048576);
       void Promise.all([readers.heaps(), lookAt(data, mesh.relayConflict?.() === true)]).then(([heaps, l]) =>
@@ -400,7 +402,7 @@ function run() {
           walBytes: l.walBytes,
         }),
       );
-    });
+    }));
     return yield* Effect.never;
   });
   const main = asRig ? running.pipe(Effect.provide(rigStation)) : running.pipe(Effect.provide(station));
@@ -411,6 +413,8 @@ function run() {
     if (stopping) return;
     stopping = true;
     healthSaid = false;
+    // No more heartbeats or samples while it stops: the launcher may have closed the channel already.
+    timers.splice(0).forEach((stopTimer) => stopTimer());
     log.info("station", "stopping", { why });
     Effect.runFork(Fiber.interrupt(fiber)).addObserver(() => void Promise.all([reports.shutdown(), stationLog.shutdown()]).finally(() => process.exit(0)));
   };

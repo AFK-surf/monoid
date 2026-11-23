@@ -36,6 +36,22 @@ export const billedPerUse = (p: Profile): boolean => {
 export const kimiSignedIn = (p: Profile): boolean => accessKind(p) === "api-provider" && access(p).provider === KIMI_CODE && access(p).login === true;
 /// The file a profile's runtime reads its current key from, where it has one (a Kimi sign-in's token: KIMI_TOKEN_FILE).
 export const keyFile = (p: Profile): string | undefined => (kimiSignedIn(p) ? join(p.home, KIMI_TOKEN_FILE) : undefined);
+/// Where a Google Vertex AI profile's service account JSON is written for `agy` (`GOOGLE_APPLICATION_CREDENTIALS`).
+export const vertexKeyFile = (home: string): string => join(home, "agy", "vertex-credentials.json");
+/// Parses a Google Cloud service account JSON key; returns its project id when valid, else null.
+export function vertexAccount(key: string): { project: string } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(key);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const o = parsed as Record<string, unknown>;
+  const nonEmpty = (v: unknown) => typeof v === "string" && v.trim() !== "";
+  if (o.type !== "service_account" || !nonEmpty(o.project_id) || !nonEmpty(o.client_email) || !nonEmpty(o.private_key)) return null;
+  return { project: (o.project_id as string).trim() };
+}
 /// Its model, when it names one.
 export const profileModel = (p: Profile): string | undefined => str(p.model);
 /// On the machine's own login.
@@ -232,7 +248,8 @@ export function profileRuntimes(p: Profile): Runtime[] {
     // xAI's key runs Grok Build too (its own API, not one of the protocols). A Kimi sign-in runs Claude Code alone: only
     // it reads its key again as the token is renewed (`keyFile`).
     if (kimiSignedIn(p)) return ["claude"];
-    // A Gemini key runs the Antigravity CLI too.
+    // A Google Vertex AI service account runs the Antigravity CLI alone; a Gemini key runs it too.
+    if (found[0].id === "google-vertex") return ["agy"];
     return found[0].id === "xai" ? [...runtimesOf(found[1]), "grok"] : found[0].id === "google" ? [...runtimesOf(found[1]), "agy"] : runtimesOf(found[1]);
   }
   if (kind === "opencode-go") return ["claude", "codex", "dsh", "pi"];
@@ -262,7 +279,17 @@ export function profileEnv(p: Profile, runtime: Runtime): Record<string, string>
   if (!profileRuntimes(p).includes(runtime)) return {};
   const key = (access(p).key ?? "").trim();
   const custom = customEnv(p);
-  const env = accessEnv(runtime, accessKind(p), key, profileModel(p), profileVia(p));
+  const via = profileVia(p);
+  const env = accessEnv(runtime, accessKind(p), key, profileModel(p), via);
+  if (runtime === "agy" && accessKind(p) === "api-provider" && via.provider === "google-vertex") {
+    const account = vertexAccount(key);
+    if (account !== null) {
+      env.AGY_ADC_AUTH = "1";
+      env.GOOGLE_CLOUD_PROJECT = account.project;
+      env.GOOGLE_CLOUD_LOCATION = "global";
+      env.GOOGLE_APPLICATION_CREDENTIALS = vertexKeyFile(p.home);
+    }
+  }
   // Its key read from a file instead (`keyFile`): none given, or Claude Code would take it over the file's.
   if (keyFile(p) !== undefined) {
     delete env.ANTHROPIC_AUTH_TOKEN;

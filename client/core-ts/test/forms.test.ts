@@ -600,3 +600,91 @@ test("Google Colab is aggregated under Google tile across all runtime/key/servic
   assert.equal(view.step, "method");
   assert.deepEqual(view.choices.map((c: J) => c.id), ["plan", "enterprise", "key"]);
 });
+
+test("Google Vertex AI is offered as a way under the Google tile when google-vertex is listed and agy is available", () => {
+  const { s, flows, topic } = flow();
+  flows.change(topic, 1, "open", {});
+
+  // 1. google + google-vertex + agy + colab -> 5 choices under Google, vertex after enterprise and before colab/key; no separate google-vertex tile.
+  s.set(overview, {
+    ok: {
+      apiProviders: [{ id: "google" }, { id: "google-vertex" }],
+      updates: [{ id: "agy", name: "Antigravity CLI", installed: true }],
+      profileServices: ["colab"],
+    },
+  });
+  let view = flows.value(topic);
+  assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
+  const labs = view.groups.find((g: J) => g.id === "labs").providers;
+  assert.equal(labs.find((p: J) => p.id === "google-vertex"), undefined);
+  const googleTile = labs.find((p: J) => p.id === "google");
+  assert.ok(googleTile);
+  assert.equal(googleTile.hasVertex, true);
+
+  flows.change(topic, 1, "edit", { provider: "google" });
+  view = flows.value(topic);
+  assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
+  assert.equal(view.step, "method");
+  assert.deepEqual(view.choices.map((c: J) => c.id), ["plan", "enterprise", "vertex", "colab", "key"]);
+  assert.deepEqual(view.choices[2], {
+    id: "vertex",
+    title: "Vertex AI",
+    hint: "Google Cloud 项目的服务账号密钥，运行 Antigravity CLI，按量计费",
+  });
+
+  // Connect step for vertex: empty key cannot submit, non-empty key can submit, begin() produces google-vertex api-provider input.
+  flows.change(topic, 1, "edit", { method: "vertex" });
+  view = flows.value(topic);
+  assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
+  assert.deepEqual(
+    [view.step, view.method, view.showKey, view.showEndpoint, view.keyLabel, view.keyHint, view.usesLine, view.submitLabel, view.canSubmit],
+    ["connect", "vertex", true, false, "服务账号密钥（JSON）", "粘贴服务账号 JSON 密钥的全部内容，仅保存在此 station 上", "添加后可用于：Antigravity CLI", "添加", false],
+  );
+  const saJson = '{\n  "type": "service_account",\n  "project_id": "proj-1",\n  "client_email": "a@proj-1.iam.gserviceaccount.com",\n  "private_key": "-----BEGIN PRIVATE KEY-----\\nkey\\n-----END PRIVATE KEY-----\\n"\n}';
+  flows.change(topic, 1, "edit", { key: `  ${saJson}  ` });
+  view = flows.value(topic);
+  assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
+  assert.equal(view.canSubmit, true);
+  assert.deepEqual(flows.begin(topic, 1), {
+    access: { kind: "api-provider", provider: "google-vertex", key: saJson },
+  });
+  assert.equal(flows.value(topic).canSubmit, false, "cannot submit while pending");
+  flows.finish(topic, 1, null);
+
+  // 2. Without google-vertex listed: no vertex choice.
+  s.set(overview, {
+    ok: {
+      apiProviders: [{ id: "google" }],
+      updates: [{ id: "agy", name: "Antigravity CLI", installed: true }],
+    },
+  });
+  flows.change(topic, 1, "edit", { provider: "google" });
+  view = flows.value(topic);
+  assert.equal(view.tile.hasVertex, false);
+  assert.deepEqual(view.choices.map((c: J) => c.id), ["plan", "enterprise", "key"]);
+
+  // 3. With google-vertex listed but no agy runtime: vertex is not offered.
+  s.set(overview, {
+    ok: {
+      apiProviders: [{ id: "google" }, { id: "google-vertex" }],
+      updates: [{ id: "station" }],
+    },
+  });
+  flows.change(topic, 1, "edit", { provider: "google" });
+  view = flows.value(topic);
+  assert.equal(view.step, "connect");
+  assert.equal(view.method, "key");
+  assert.equal(view.tile.hasVertex, false);
+
+  // 4. With only google-vertex + agy (no google key, no colab): Google tile exists with plan, enterprise, vertex.
+  s.set(overview, {
+    ok: {
+      apiProviders: [{ id: "google-vertex" }],
+      updates: [{ id: "agy", name: "Antigravity CLI", installed: true }],
+    },
+  });
+  flows.change(topic, 1, "edit", { provider: "google" });
+  view = flows.value(topic);
+  assert.equal(view.step, "method");
+  assert.deepEqual(view.choices.map((c: J) => c.id), ["plan", "enterprise", "vertex"]);
+});

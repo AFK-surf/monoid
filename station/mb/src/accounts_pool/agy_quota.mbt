@@ -793,13 +793,15 @@ fn clip_keeping_links(text : String, most : Int) -> String {
 }
 
 ///|
-/// `agyQuota`. `source`: the environment `agy` is started from (the station's, the profile's own over it).
+/// `agyQuota`. `source`: the environment `agy` is started from (the station's, the profile's own over it). `direct`:
+/// as `agyQuota`'s (the profile's `directQuota`).
 pub async fn agy_quota(
   ctx : Ctx,
   home : String,
   source : JV,
   lang : String,
   command? : String = "agy",
+  direct? : Bool = true,
 ) -> JV {
   if ctx.io.b.ask("agy.takeBack", [js(home)]) != Bool(true) {
     raise Thrown(
@@ -841,7 +843,7 @@ pub async fn agy_quota(
   let parsed = parse_json_line(stdout)
   if jget(parsed, "status") == Some(Str("SUCCESS")) {
     let (windows, scoped) = agy_allowance(ctx, parsed)
-    if windows.length() > 0 && !windows.iter().any(is_gemini_weekly) {
+    if direct && windows.length() > 0 && !windows.iter().any(is_gemini_weekly) {
       let base = agy_base(ctx, agy_cloud_code_url)
       if agy_quota_project(ctx, home, base) is Some(project) {
         match agy_gemini_weekly(ctx, agy_base(ctx, agy_production_url), project) {
@@ -900,7 +902,7 @@ pub async fn agy_quota(
     }
     None => ()
   }
-  if agy_location_ineligible(said) {
+  if direct && agy_location_ineligible(said) {
     match agy_direct_quota(ctx, home, lang) {
       Some(q) => return q
       None => ()

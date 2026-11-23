@@ -1,0 +1,523 @@
+// Shared station file reads, byte-range deduplication, and Downloads view projection.
+//
+// Strictly upholds `client/core-ts/AGENTS.md` ("Shared file reads"),
+// `client/core-ts/src/station/file-ranges.ts`, and `client/core-ts/src/views/downloads.ts`:
+// - Multiple concurrent readers of the same `(file_key, version)` share both cached (`kept`)
+//   byte ranges and in-flight station range requests (`in_flight`), NEVER requesting the
+//   same byte interval twice from the station.
+// - `merge_ranges` coalesces overlapping/adjacent intervals; `missing_ranges(want, covered)`
+//   computes exact missing sub-ranges.
+// - `leave_reader` cancels an in-flight range request ONLY when no other reader is waiting
+//   on it — cancelling one reader NEVER interrupts a surviving reader.
+
+import "base_codec"
+
+pub fn download_part_bytes() -> Int64 { (4 * 1024 * 1024).to_int64() }
+
+// ---------------------------------------------------------------------------
+// 1. Half-open byte range arithmetic (`[start, end)`)
+// ---------------------------------------------------------------------------
+
+pub struct ByteRange {
+  pub start : Int64
+  pub end : Int64
+}
+
+pub fn ByteRange::new(start : Int64, end : Int64) -> ByteRange {
+  ByteRange::{ start: start, end: end }
+}
+
+pub fn ByteRange::len(self : ByteRange) -> Int64 {
+  if self.end > self.start { self.end - self.start } else { 0.to_int64() }
+}
+
+pub fn ByteRange::overlaps(self : ByteRange, other : ByteRange) -> Bool {
+  self.start < other.end && other.start < self.end
+}
+
+/// Sort and coalesce overlapping or contiguous `[start, end)` intervals.
+pub fn merge_ranges(ranges : Array[ByteRange]) -> Array[ByteRange] {
+  let valid : Array[ByteRange] = []
+  for i in 0..<ranges.length() {
+    let r = ranges[i]
+    if r.end > r.start {
+      valid.push(r)
+    }
+  }
+  if valid.length() <= 1 {
+    return valid
+  }
+  for i in 1..<valid.length() {
+    let cur = valid[i]
+    let mut j = i - 1
+    while j >= 0 && (valid[j].start > cur.start || (valid[j].start == cur.start && valid[j].end > cur.end)) {
+      valid[j + 1] = valid[j]
+      j -= 1
+    }
+    valid[j + 1] = cur
+  }
+  let out : Array[ByteRange] = [valid[0]]
+  for i in 1..<valid.length() {
+    let cur = valid[i]
+    let last_idx = out.length() - 1
+    let last = out[last_idx]
+    if cur.start <= last.end {
+      let next_end = if cur.end > last.end { cur.end } else { last.end }
+      out[last_idx] = ByteRange::{ start: last.start, end: next_end }
+    } else {
+      out.push(cur)
+    }
+  }
+  out
+}
+
+/// Compute the sorted, disjoint sub-ranges of `want` not covered by `covered`.
+pub fn missing_ranges(want : ByteRange, covered : Array[ByteRange]) -> Array[ByteRange] {
+  if want.end <= want.start {
+    return []
+  }
+  let merged = merge_ranges(covered)
+  let out : Array[ByteRange] = []
+  let mut cursor = want.start
+  for i in 0..<merged.length() {
+    let c = merged[i]
+    if c.end <= cursor {
+      continue
+    }
+    if c.start >= want.end {
+      break
+    }
+    if c.start > cursor {
+      out.push(ByteRange::{ start: cursor, end: c.start })
+    }
+    if c.end > cursor {
+      cursor = c.end
+    }
+    if cursor >= want.end {
+      break
+    }
+  }
+  if cursor < want.end {
+    out.push(ByteRange::{ start: cursor, end: want.end })
+  }
+  out
+}
+
+// ---------------------------------------------------------------------------
+// 2. Shared file reads coordinator (`FileRanges` + kept byte cache)
+// ---------------------------------------------------------------------------
+
+pub struct KeptSegment {
+  pub start : Int64
+  pub data : Bytes
+}
+
+pub struct InFlightRequest {
+  pub req_id : Int
+  pub file_key : String
+  pub version : String
+  pub range : ByteRange
+  pub readers : Array[String]
+  pub mut loaded : Int64
+  pub mut completed : Bool
+  pub mut cancelled : Bool
+}
+
+pub struct DispatchedRange {
+  pub req_id : Int
+  pub file_key : String
+  pub version : String
+  pub start : Int64
+  pub end : Int64
+}
+
+pub struct JoinReadPlan {
+  pub reader_id : String
+  pub new_requests : Array[DispatchedRange]
+  pub attached_req_ids : Array[Int]
+  pub covered_kept : Array[ByteRange]
+}
+
+pub struct SharedFileReads {
+  pub kept : Map[String, Array[KeptSegment]]
+  pub in_flight : Array[InFlightRequest]
+  pub dispatched : Array[DispatchedRange]
+  pub mut next_req_id : Int
+}
+
+pub fn SharedFileReads::new() -> SharedFileReads {
+  SharedFileReads::{
+    kept: Map::new(),
+    in_flight: [],
+    dispatched: [],
+    next_req_id: 1,
+  }
+}
+
+pub fn file_version_key(file_key : String, version : String) -> String {
+  file_key + "\u{01}" + version
+}
+
+fn str_in_dv(xs : Array[String], s : String) -> Bool {
+  for i in 0..<xs.length() {
+    if xs[i] == s {
+      return true
+    }
+  }
+  false
+}
+
+/// Return the coalesced byte ranges currently kept in cache for `(file_key, version)`.
+pub fn SharedFileReads::kept_ranges(
+  self : SharedFileReads,
+  file_key : String,
+  version : String,
+) -> Array[ByteRange] {
+  let k = file_version_key(file_key, version)
+  match self.kept.get(k) {
+    None => []
+    Some(segs) => {
+      let rs : Array[ByteRange] = []
+      for i in 0..<segs.length() {
+        let s = segs[i]
+        rs.push(ByteRange::{ start: s.start, end: s.start + s.data.length().to_int64() })
+      }
+      merge_ranges(rs)
+    }
+  }
+}
+
+/// Seed cached bytes directly into `kept` (e.g. from a prior preview or persisted drive-kept store).
+pub fn SharedFileReads::put_kept(
+  self : SharedFileReads,
+  file_key : String,
+  version : String,
+  start : Int64,
+  data : Bytes,
+) -> Unit {
+  if data.length() == 0 {
+    return
+  }
+  let k = file_version_key(file_key, version)
+  match self.kept.get(k) {
+    Some(segs) => segs.push(KeptSegment::{ start: start, data: data })
+    None => self.kept.set(k, [KeptSegment::{ start: start, data: data }])
+  }
+}
+
+/// Register a reader wanting `[want_start, want_end)` of `(file_key, version)`:
+/// - Reuses all overlapping `kept` ranges.
+/// - Attaches `reader_id` to all overlapping active `in_flight` requests (zero duplicate fetches).
+/// - Reserves and dispatches ONLY the uncovered `missing_ranges` as new in-flight requests.
+pub fn SharedFileReads::join_reader(
+  self : SharedFileReads,
+  reader_id : String,
+  file_key : String,
+  version : String,
+  want_start : Int64,
+  want_end : Int64,
+) -> JoinReadPlan {
+  let want = ByteRange::{ start: want_start, end: want_end }
+  let kept_rs = self.kept_ranges(file_key, version)
+  let covered : Array[ByteRange] = []
+  for i in 0..<kept_rs.length() {
+    covered.push(kept_rs[i])
+  }
+
+  let attached : Array[Int] = []
+  for i in 0..<self.in_flight.length() {
+    let req = self.in_flight[i]
+    if req.cancelled || req.completed {
+      continue
+    }
+    if req.file_key == file_key && req.version == version && req.range.overlaps(want) {
+      if !str_in_dv(req.readers, reader_id) {
+        req.readers.push(reader_id)
+      }
+      attached.push(req.req_id)
+      covered.push(req.range)
+    }
+  }
+
+  let missing = missing_ranges(want, covered)
+  let new_reqs : Array[DispatchedRange] = []
+  for i in 0..<missing.length() {
+    let r = missing[i]
+    let id = self.next_req_id
+    self.next_req_id += 1
+    let inf = InFlightRequest::{
+      req_id: id,
+      file_key: file_key,
+      version: version,
+      range: r,
+      readers: [reader_id],
+      loaded: 0.to_int64(),
+      completed: false,
+      cancelled: false,
+    }
+    self.in_flight.push(inf)
+    let disp = DispatchedRange::{
+      req_id: id,
+      file_key: file_key,
+      version: version,
+      start: r.start,
+      end: r.end,
+    }
+    self.dispatched.push(disp)
+    new_reqs.push(disp)
+  }
+
+  JoinReadPlan::{
+    reader_id: reader_id,
+    new_requests: new_reqs,
+    attached_req_ids: attached,
+    covered_kept: kept_rs,
+  }
+}
+
+/// Deliver a streamed chunk for an active in-flight request, caching bytes immediately in `kept`
+/// so even a later cancellation preserves everything already received.
+pub fn SharedFileReads::deliver_chunk(
+  self : SharedFileReads,
+  req_id : Int,
+  offset : Int64,
+  chunk : Bytes,
+) -> Bool {
+  for i in 0..<self.in_flight.length() {
+    let req = self.in_flight[i]
+    if req.req_id == req_id {
+      if req.cancelled {
+        return false
+      }
+      self.put_kept(req.file_key, req.version, offset, chunk)
+      req.loaded += chunk.length().to_int64()
+      return true
+    }
+  }
+  false
+}
+
+/// Mark an in-flight request completed.
+pub fn SharedFileReads::complete_request(self : SharedFileReads, req_id : Int) -> Bool {
+  for i in 0..<self.in_flight.length() {
+    let req = self.in_flight[i]
+    if req.req_id == req_id {
+      if req.cancelled {
+        return false
+      }
+      req.completed = true
+      return true
+    }
+  }
+  false
+}
+
+/// Detach `reader_id` from all in-flight requests it was waiting on.
+/// Cancels a request ONLY when it has 0 remaining readers (`file-ranges.ts #release`).
+/// Returns the list of `req_id`s that were cancelled.
+pub fn SharedFileReads::leave_reader(self : SharedFileReads, reader_id : String) -> Array[Int] {
+  let cancelled_ids : Array[Int] = []
+  for i in 0..<self.in_flight.length() {
+    let req = self.in_flight[i]
+    if req.cancelled || req.completed {
+      continue
+    }
+    let next_readers : Array[String] = []
+    let mut removed = false
+    for j in 0..<req.readers.length() {
+      if req.readers[j] == reader_id {
+        removed = true
+      } else {
+        next_readers.push(req.readers[j])
+      }
+    }
+    if removed {
+      req.readers.clear()
+      for j in 0..<next_readers.length() {
+        req.readers.push(next_readers[j])
+      }
+      if req.readers.length() == 0 {
+        req.cancelled = true
+        cancelled_ids.push(req.req_id)
+      }
+    }
+  }
+  cancelled_ids
+}
+
+/// Whether `req_id` is still actively running (not cancelled and not completed).
+pub fn SharedFileReads::is_active(self : SharedFileReads, req_id : Int) -> Bool {
+  for i in 0..<self.in_flight.length() {
+    let req = self.in_flight[i]
+    if req.req_id == req_id {
+      return !req.cancelled && !req.completed
+    }
+  }
+  false
+}
+
+/// Assemble the exact contiguous byte slice `[start, end)` from `kept` if fully covered; else `None`.
+pub fn SharedFileReads::read_completed_bytes(
+  self : SharedFileReads,
+  file_key : String,
+  version : String,
+  start : Int64,
+  end : Int64,
+) -> Option[Bytes] {
+  if end < start {
+    return None
+  }
+  if end == start {
+    return Some(Bytes::new(0))
+  }
+  let want = ByteRange::{ start: start, end: end }
+  if missing_ranges(want, self.kept_ranges(file_key, version)).length() > 0 {
+    return None
+  }
+  let k = file_version_key(file_key, version)
+  let segs = match self.kept.get(k) {
+    Some(s) => s
+    None => return None
+  }
+  let total_len = (end - start).to_int()
+  let out = Bytes::new(total_len)
+  for i in 0..<segs.length() {
+    let s = segs[i]
+    let seg_end = s.start + s.data.length().to_int64()
+    let left = if start > s.start { start } else { s.start }
+    let right = if end < seg_end { end } else { seg_end }
+    if right <= left {
+      continue
+    }
+    let src_off = (left - s.start).to_int()
+    let dst_off = (left - start).to_int()
+    let n = (right - left).to_int()
+    for j in 0..<n {
+      out[dst_off + j] = s.data[src_off + j]
+    }
+  }
+  Some(out)
+}
+
+/// Check that no two dispatched requests for `(file_key, version)` overlap (0 duplicate byte requests).
+pub fn SharedFileReads::has_duplicate_dispatches(
+  self : SharedFileReads,
+  file_key : String,
+  version : String,
+) -> Bool {
+  let mine : Array[ByteRange] = []
+  for i in 0..<self.dispatched.length() {
+    let d = self.dispatched[i]
+    if d.file_key == file_key && d.version == version {
+      let cur = ByteRange::{ start: d.start, end: d.end }
+      for j in 0..<mine.length() {
+        if mine[j].overlaps(cur) {
+          return true
+        }
+      }
+      mine.push(cur)
+    }
+  }
+  false
+}
+
+// ---------------------------------------------------------------------------
+// 3. Downloads view projection (`views/downloads.ts` `titleOf` & `shown`)
+// ---------------------------------------------------------------------------
+
+fn is_digit_dv(c : Int) -> Bool { c >= 48 && c <= 57 }
+fn is_hex_lower_dv(c : Int) -> Bool { is_digit_dv(c) || (c >= 97 && c <= 102) }
+
+/// Strip station upload prefix `YYYY-MM-DDTHH-MM-SS-<6hex>-` when followed by at least 1 char.
+pub fn download_title_of(name : String) -> String {
+  // Prefix length is 27 chars: 4+1+2+1+2+1+2+1+2+1+2+1+6+1 = 27.
+  if name.length() <= 27 {
+    return name
+  }
+  let ok =
+  is_digit_dv(name.code_unit_at(0)) &&
+  is_digit_dv(name.code_unit_at(1)) &&
+  is_digit_dv(name.code_unit_at(2)) &&
+  is_digit_dv(name.code_unit_at(3)) &&
+  name.code_unit_at(4) == 45 &&
+  is_digit_dv(name.code_unit_at(5)) &&
+  is_digit_dv(name.code_unit_at(6)) &&
+  name.code_unit_at(7) == 45 &&
+  is_digit_dv(name.code_unit_at(8)) &&
+  is_digit_dv(name.code_unit_at(9)) &&
+  name.code_unit_at(10) == 84 &&
+  is_digit_dv(name.code_unit_at(11)) &&
+  is_digit_dv(name.code_unit_at(12)) &&
+  name.code_unit_at(13) == 45 &&
+  is_digit_dv(name.code_unit_at(14)) &&
+  is_digit_dv(name.code_unit_at(15)) &&
+  name.code_unit_at(16) == 45 &&
+  is_digit_dv(name.code_unit_at(17)) &&
+  is_digit_dv(name.code_unit_at(18)) &&
+  name.code_unit_at(19) == 45 &&
+  is_hex_lower_dv(name.code_unit_at(20)) &&
+  is_hex_lower_dv(name.code_unit_at(21)) &&
+  is_hex_lower_dv(name.code_unit_at(22)) &&
+  is_hex_lower_dv(name.code_unit_at(23)) &&
+  is_hex_lower_dv(name.code_unit_at(24)) &&
+  is_hex_lower_dv(name.code_unit_at(25)) &&
+  name.code_unit_at(26) == 45
+  if ok { name.slice(27, name.length()) } else { name }
+}
+
+pub struct DownloadEntry {
+  pub id : String
+  pub station : String
+  pub name : String
+  pub size : Int64
+  pub loaded : Int64
+  pub state : String
+  pub error : Option[String]
+  pub started_at : Int64
+}
+
+/// Project `downloads` topic newest first by `started_at`.
+pub fn project_downloads(entries : Array[DownloadEntry]) -> base_codec::Json {
+  let sorted : Array[DownloadEntry] = []
+  for i in 0..<entries.length() {
+    sorted.push(entries[i])
+  }
+  for i in 1..<sorted.length() {
+    let cur = sorted[i]
+    let mut j = i - 1
+    while j >= 0 && sorted[j].started_at < cur.started_at {
+      sorted[j + 1] = sorted[j]
+      j -= 1
+    }
+    sorted[j + 1] = cur
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<sorted.length() {
+    let d = sorted[i]
+    let prog = if d.size > 0.to_int64() {
+      d.loaded.to_double() / d.size.to_double()
+    } else if d.state == "going" || d.state == "waiting" {
+      0.0
+    } else {
+      1.0
+    }
+    let fields : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(d.id)),
+      ("station", base_codec::json_str(d.station)),
+      ("name", base_codec::json_str(d.name)),
+      ("title", base_codec::json_str(download_title_of(d.name))),
+      ("size", base_codec::json_int64(d.size)),
+      ("loaded", base_codec::json_int64(d.loaded)),
+      ("progress", base_codec::json_num(prog)),
+      ("state", base_codec::json_str(d.state)),
+      ("active", base_codec::json_bool(d.state != "failed")),
+      ("startedAt", base_codec::json_int64(d.started_at)),
+    ]
+    match d.error {
+      Some(e) => fields.push(("error", base_codec::json_str(e)))
+      None => ()
+    }
+    out.push(base_codec::json_obj(fields))
+  }
+  base_codec::json_obj([("downloads", base_codec::json_arr(out))])
+}

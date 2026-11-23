@@ -1105,6 +1105,10 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
           ("workspaces", jstrs(others.filter(w => allowed_in(p, Some(w), home)))),
           ("serves", jbool(allowed_in(p, joined, home))),
         ])
+    // Whether its quota is asked of Google's API beside the CLI: an Antigravity CLI subscription's alone.
+    if kind == "subscription" && p.runtime == Some("agy") {
+      view = jset(view, "directQuota", jbool(p.get("directQuota") != Some(Bool(false))))
+    }
     if p.max_concurrent_sessions is Some(n) {
       view = jset(view, "maxConcurrentSessions", jint(n))
       if p.new_account_protection {

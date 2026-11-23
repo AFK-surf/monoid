@@ -357,7 +357,7 @@ pub fn check_config(
         optional(a.get(f), "string", "a string")
       }
     }
-    for f in ["machine", "backgroundOnMessage", "fast", "enabled", "newAccountProtection"] {
+    for f in ["machine", "backgroundOnMessage", "fast", "enabled", "newAccountProtection", "directQuota"] {
       optional(p.get(f), "boolean", "a boolean")
     }
     optional(p.get("name"), "string", "a string")

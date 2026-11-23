@@ -905,7 +905,7 @@
     float bgL = mb_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));
     return is_dark_glass ? smoothstep(0.35, 0.85, bgL) : (1.0 - smoothstep(0.30, 0.42, bgL));
   }
-  vec2 ad_sample_ink(vec2 ac, float fallback_r) {
+  vec2 ad_sample_ink(vec2 ac, float fallback_r, out vec2 capCenter, out vec2 capHalf) {
     if (u_ad_n > 0) {
       int best = -1;
       float best_d = 1e9;
@@ -927,33 +927,43 @@
       }
       if (best >= 0) {
         vec4 px = texelFetch(u_ad, ivec2(best, 0), 0);
+        capCenter = u_ad_box[best].xy;
+        capHalf = u_ad_box[best].zw;
         return vec2(mb_unpack16(px.rg), px.a);
       }
     }
+    capCenter = ac;
+    capHalf = vec2(0.0);
     float bgL = mb_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));
     return vec2(1.0 - smoothstep(0.30, 0.42, bgL), bgL);
   }
-  vec3 mb_adaptive_ink_at(vec3 rgb, vec2 ac, float fallback_r, vec4 rect) {
+  vec3 mb_adaptive_ink_at(vec3 rgb, vec2 ac, float fallback_r, vec4 rect, vec2 sample_off, bool is_icon) {
     float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);
     float origL = luma(rgb);
     if (ch > 0.08 || origL >= 0.5) return rgb;
-    vec2 cap = ad_sample_ink(ac, fallback_r);
+    vec2 capCenter, capHalf;
+    vec2 cap = ad_sample_ink(ac, fallback_r, capCenter, capHalf);
     float capsuleDarkT = cap.x;
     float capsuleBgL = cap.y;
     float darkT = capsuleDarkT;
     float localBoost = 0.0;
-    if (capsuleDarkT < 0.999) {
-      vec2 gc = rect.xy + rect.zw * 0.5;
-      vec2 guv = gc * u_map.xy + u_map.zw;
+    bool is_large = (capHalf.x >= 140.0 && capHalf.y >= 19.0);
+    if (is_large && capsuleDarkT < 0.999) {
+      vec2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;
+      if (capHalf.y <= 28.0) samplePos.y = capCenter.y;
+      vec2 guv = samplePos * u_map.xy + u_map.zw;
       if (u_uvc.z > u_uvc.x && u_uvc.w > u_uvc.y && guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {
-        float rx = clamp(rect.z * 0.35, 6.0, 14.0);
-        float ry = clamp(rect.w * 0.35, 5.0, 10.0);
-        float localL = (luma(backdrop(gc)) * 2.0
-          + luma(backdrop(gc + vec2(-rx, -ry)))
-          + luma(backdrop(gc + vec2(rx, -ry)))
-          + luma(backdrop(gc + vec2(-rx, ry)))
-          + luma(backdrop(gc + vec2(rx, ry)))) / 6.0;
-        float localDarkT = 1.0 - smoothstep(0.24, 0.40, localL);
+        vec2 sampleH;
+        if (is_icon) {
+          sampleH = vec2(10.0, 8.0);
+        } else {
+          float edgeDist = min(samplePos.x - (capCenter.x - capHalf.x + 8.0), (capCenter.x + capHalf.x - 8.0) - samplePos.x);
+          float rx = clamp(edgeDist / 0.76, 10.0, 20.0);
+          float ry = clamp(capHalf.y * 0.55, 8.0, 14.0);
+          sampleH = vec2(rx, ry);
+        }
+        float localL = mb_backdrop_luma_rect(samplePos, sampleH);
+        float localDarkT = 1.0 - smoothstep(0.22, 0.28, localL);
         float localW = max(smoothstep(0.35, 0.44, capsuleBgL), smoothstep(0.08, 0.20, capsuleBgL - localL));
         float localEff = localDarkT * localW;
         if (localEff > darkT) {
@@ -999,7 +1009,7 @@
         for (int i = first; i < first + n; i++) { int t = (i / 6) * 15 + mb_seg_slot(i); w += mb_path_rows(texelFetch(u_segs, ivec2(t % 2040, t / 2040), 0), v_rect, p, u_scale); }
         a = mb_path_cover(w, v_c2.z);
       }
-      if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink_at(col.rgb, v_pad.yz, v_pad.w * 0.5, v_rect);
+      if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink_at(col.rgb, v_pad.yz, v_pad.w * 0.5, v_rect, v_p.zw, true);
       o = vec4(col.rgb, 1.0) * col.a * a;
       return;
     }
@@ -1010,7 +1020,7 @@
       vec2 a = v_rect.xy + v_c2.xy * v_rect.zw, ab = v_rect.xy + v_c2.zw * v_rect.zw - a;
       float h = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-8), 0.0, 1.0);
       float d = length(p - a - ab * h) - v_p.x;
-      if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink_at(col.rgb, v_pad.yz, v_pad.w * 0.5, v_rect);
+      if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink_at(col.rgb, v_pad.yz, v_pad.w * 0.5, v_rect, vec2(0.0), true);
       o = vec4(col.rgb, 1.0) * col.a * clamp(0.5 - d * u_scale, 0.0, 1.0);
       return;
     }
@@ -1031,7 +1041,7 @@
       #if ONE_KIND < 0
       if (kind == 7) {
         // inked by how light what is under its glass is, looked at round the glass's middle and locally
-        vec3 ink = mb_adaptive_ink_at(col.rgb, v_pad.yz, v_pad.w * 0.5, v_rect);
+        vec3 ink = mb_adaptive_ink_at(col.rgb, v_pad.yz, v_pad.w * 0.5, v_rect, v_p.zw, false);
         o = vec4(ink, 1.0) * (t.a * col.a);
         return;
       }

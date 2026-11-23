@@ -29,7 +29,7 @@ import { join } from "node:path";
 import type { Env, MachineToken } from "../agents/machine-logins.ts";
 import { linkCodexAuthSoon } from "../agents/machine-logins.ts";
 import { type AccessKind, accessKind, KIMI_CODE, kimiSignedIn, profileVia, type Runtime, takesFast, fastNeedsCredits, type Via } from "../agents/profiles.ts";
-import { cleanEndpoint, endpoints, find, groupOf, LEGACY, runtimesOf as runtimesOfEndpoints, SOURCES } from "../agents/providers.ts";
+import { cleanEndpoint, endpoints, find, groupOf, LEGACY, SOURCES } from "../agents/providers.ts";
 import { type Viewer, managesStation } from "../mesh/credential.ts";
 import { maskValue, startEnv } from "../ops/agent-env.ts";
 import type { ConfigFile } from "../ops/config.ts";
@@ -73,6 +73,9 @@ const QUOTA_EVERY_MS = 5 * 60_000;
 /// How long an allowance read stands while its provider gives no answer (six rounds): past it the failure is said, so
 /// a station long off the network says that, not an allowance of hours ago (the user, 2026-11-11).
 const QUOTA_STANDS_MS = 30 * 60_000;
+/// How long a borrowed subscription's previous `ok` check stands while its host does not answer (e.g. during a host
+/// handover or transient drop), before background checks mark it failed.
+const BORROWED_HOST_STANDS_MS = 10 * 60_000;
 /// A Claude token handed to a process (or lent to another station) that cannot renew it is renewed first when it would
 /// last less than this, so it is not swapped soon after.
 const HANDED_MARGIN_MS = 3600_000;
@@ -279,6 +282,7 @@ export class Accounts {
   /// thread: `codexAccountRead`), and the reads under way.
   private readonly codexAccounts = new Map<string, { home: string; account: string | null }>();
   private readonly codexAccountReads = new Map<string, { home: string; read: Promise<void> }>();
+  private borrowedUnreachableSince = new Map<string, number>();
   /// What each profile's home said when last read (`HomeSays`), by profile, with what it was read for: the overview is
   /// made again at each change for each viewer, and read every profile's files on the thread each time (a few dozen
   /// calls; seconds on a machine short of memory). Read again off the thread as it is made, at most every
@@ -413,7 +417,7 @@ export class Accounts {
     }
     if (this.deps.checkOnStart !== false) {
       this.background.after(CHECK_ON_START_MS, () => {
-        for (const p of this.profiles()) if (p.enabled !== false) this.background.spawn(() => this.check(p.id));
+        for (const p of this.profiles()) if (p.enabled !== false) this.background.spawn(() => this.check(p.id, stationLang(), false, true));
         this.renewConsoles();
       });
     }
@@ -628,7 +632,7 @@ export class Accounts {
       const existing: Json | undefined = list.find((p) => p?.id === id);
       const machine = existing?.machine === true;
       // One on the machine's login is the machine's: only which of its models are used, and how it runs, are chosen.
-      const get = (key: string): unknown => (machine && !["model", "models", "backgroundOnMessage", "fast", "maxConcurrentSessions", "newAccountProtection"].includes(key) ? undefined : given[key]);
+      const get = (key: string): unknown => (machine && !["model", "models", "backgroundOnMessage", "fast", "maxConcurrentSessions", "newAccountProtection", "directQuota"].includes(key) ? undefined : given[key]);
       // env: a string sets the value; null removes the key; an omitted key keeps it (so masked secrets survive edits).
       const env: Record<string, string> = isObject(existing?.env) ? { ...existing.env } : {};
       const givenEnv = get("env");
@@ -690,6 +694,10 @@ export class Accounts {
       else fast = typeof existing?.fast === "boolean" ? existing.fast : undefined;
       const givenBackground = get("backgroundOnMessage");
       const background = typeof givenBackground === "boolean" ? givenBackground : typeof existing?.backgroundOnMessage === "boolean" ? existing.backgroundOnMessage : undefined;
+      // An Antigravity CLI profile's quota asked of Google's API beside its CLI (agy-quota.ts `agyQuota` `direct`).
+      const givenDirect = get("directQuota");
+      if (givenDirect !== undefined && typeof givenDirect !== "boolean") throw new Refusal(400, "directQuota must be a boolean");
+      const directQuota = typeof givenDirect === "boolean" ? givenDirect : existing?.directQuota === false ? false : undefined;
       const givenMaxSessions = get("maxConcurrentSessions");
       let maxConcurrentSessions: number | undefined;
       if (givenMaxSessions === undefined) {
@@ -741,6 +749,7 @@ export class Accounts {
       if (isObject(existing?.share)) next.share = existing.share;
       // Only the default's opposite is written.
       if (background === false) next.backgroundOnMessage = false;
+      if (directQuota === false) next.directQuota = false;
       if (maxConcurrentSessions !== undefined) next.maxConcurrentSessions = maxConcurrentSessions;
       if (newAccountProtection === true && maxConcurrentSessions !== undefined) next.newAccountProtection = true;
       if (fast === true) next.fast = true;
@@ -802,7 +811,7 @@ export class Accounts {
     // Of one at the reader's own address: the protocol it speaks there (the one chosen, else its first).
     const protocol = source?.endpointRequired ? (source.protocols.find((p) => p === givenProtocol) ?? source.protocols[0]) : undefined;
     // A key runs every runtime it can; custom variables are for the runtime given.
-    const runtimes: Runtime[] = source ? runtimesOfEndpoints(endpoints(source, endpoint, protocol) ?? {}) : runtimesOf(kind, runtimeOf(input.runtime));
+    const runtimes: Runtime[] = source ? runtimesFor({ kind, provider: source.id, endpoint, protocol }, undefined) : runtimesOf(kind, runtimeOf(input.runtime));
     if ((runtimes.length === 0 && !source) || !runtimes.every((r) => accessKinds(r).includes(kind))) throw new Refusal(400, `unknown access ${kind}`);
     const runtime = runtimes[0] ?? "claude";
     const key = typeof access?.key === "string" ? access.key.trim() : "";
@@ -1489,12 +1498,12 @@ export class Accounts {
   /// POST /profiles/:id/check: asks the provider or runtime whether the profile works, its models, its reasoning levels
   /// (Codex) and what it can decide with.
   /// `recheck`: asked again after a runtime on it was refused (profiles.ts `CheckOptions.recheck`).
-  async check(id: string, lang: Lang = stationLang(), recheck = false): Promise<ProfileCheck> {
+  async check(id: string, lang: Lang = stationLang(), recheck = false, stands = false): Promise<ProfileCheck> {
     const profile = this.profile(id);
     if (!profile) throw new Refusal(404, `unknown profile ${id}`);
     if (profile.enabled === false) throw new Refusal(409, tr(lang, "station.profile.disabled", { profile: profile.name }));
     const kind = accessKind(profile);
-    if (borrowed(profile) && kind === "subscription" && this.deps.shared) return this.checkBorrowed(profile, lang);
+    if (borrowed(profile) && kind === "subscription" && this.deps.shared) return this.checkBorrowed(profile, lang, stands);
     // Signed in to Kimi: asked with its current token (renewed first where due), none once signed out.
     const kimi = kimiSignedIn(profile);
     if (kimi) await this.renewKimi(id);
@@ -1601,11 +1610,13 @@ export class Accounts {
     return check;
   }
 
-  /// A copy of another station's subscription: how it is doing is what its host says (unusable while it does not answer).
-  private async checkBorrowed(profile: Profile, lang: Lang): Promise<ProfileCheck> {
+  /// A copy of another station's subscription: how it is doing is what its host says (unusable while it does not answer,
+  /// after a transient grace period for background checks).
+  private async checkBorrowed(profile: Profile, lang: Lang, stands = false): Promise<ProfileCheck> {
     let check: ProfileCheck;
     try {
       const got = await this.deps.shared!.status(profile);
+      this.borrowedUnreachableSince.delete(profile.id);
       check = isObject(got.check) ? (got.check as ProfileCheck) : { state: "unknown", detail: "", models: null, checkedAt: 0 };
       // Unless what the borrowed login read here is newer.
       const local = this.checks.get(profile.id);
@@ -1623,9 +1634,29 @@ export class Accounts {
         this.#keepQuota(profile.id, got.quota);
       }
       this.refreshMissingBorrowedResetDetails(profile);
-    } catch {
+    } catch (e) {
       const host = this.deps.shared!.hostName?.(profile) ?? "";
+      const previous = this.checks.get(profile.id);
+      const now = this.background.now();
+      if (stands && previous?.state === "ok" && !previous.codexRevoked) {
+        let since = this.borrowedUnreachableSince.get(profile.id);
+        if (since === undefined) {
+          since = now;
+          this.borrowedUnreachableSince.set(profile.id, since);
+        }
+        if (now - since < BORROWED_HOST_STANDS_MS) {
+          log.warn("accounts", "borrowed profile host did not answer; keeping previous check", { profile: profile.id, host, error: e instanceof Error ? e.message : String(e) });
+          return previous;
+        }
+      }
       check = { state: "failed", detail: tr(lang, "station.share.hostOffline", { host }), models: null, checkedAt: 0 };
+      if (previous !== undefined && previous.models !== null) {
+        check.models = previous.models;
+        if (previous.modelEfforts !== undefined) check.modelEfforts = previous.modelEfforts;
+        if (previous.modelEffortDefaults !== undefined) check.modelEffortDefaults = previous.modelEffortDefaults;
+        if (previous.codexUltrafastModels !== undefined) check.codexUltrafastModels = previous.codexUltrafastModels;
+        if (previous.fusion !== undefined) check.fusion = previous.fusion;
+      }
     }
     // The host's login can work while this station still has an independently refused borrowed token. Keep that
     // evidence through an offline check as well, so the host coming back cannot make the old token usable again.
@@ -1746,7 +1777,7 @@ export class Accounts {
         this.changed();
         return read;
       }
-      await this.checkBorrowed(profile, stationLang()).catch(() => {});
+      await this.checkBorrowed(profile, stationLang(), true).catch(() => {});
       return this.quotas.get(id) ?? null;
     }
     if (!this.quotaFn) return this.quotas.get(id) ?? null;
@@ -1790,7 +1821,7 @@ export class Accounts {
     } else if (recheck && this.checks.get(id)?.state === "ok") {
       this.background.spawn(() => this.check(id).catch(() => undefined));
     } else if (
-      (profile.runtime === "claude" || this.authRevoked.has(id)) &&
+      (profile.runtime !== "codex" || this.authRevoked.has(id)) &&
       accessKind(profile) === "subscription" &&
       read.state === "ok" &&
       (this.checks.get(id)?.state === "failed" || this.checks.get(id)?.state === "login")
@@ -1818,7 +1849,7 @@ export class Accounts {
   /// Copies of other stations' subscriptions checked again (their host answers again, or may).
   recheckBorrowed() {
     for (const p of this.profiles()) {
-      if (borrowed(p) && accessKind(p) === "subscription") this.background.spawn(() => this.check(p.id).catch(() => {}));
+      if (borrowed(p) && accessKind(p) === "subscription") this.background.spawn(() => this.check(p.id, stationLang(), false, true).catch(() => {}));
     }
   }
 
@@ -1831,7 +1862,7 @@ export class Accounts {
     if (profile?.enabled === false) await this.deps.hub?.profileGone?.(id);
     if (!profile || !borrowed(profile) || accessKind(profile) !== "subscription" || !this.deps.shared) return;
     // A host that signed out may have no login to lend; its status must still reach the copy.
-    await this.checkBorrowed(profile, stationLang());
+    await this.checkBorrowed(profile, stationLang(), true);
     if (profile.runtime === "codex" && this.deps.shared.lendCodex) {
       const before = this.borrowedLogin.has(id) ? this.borrowedLogin.get(id) : await lentLoginVersion(profile.home);
       if (!this.borrowedLogin.has(id)) this.borrowedLogin.set(id, before ?? null);
@@ -1852,7 +1883,7 @@ export class Accounts {
       await this.deps.shared.lendAgy(profile, true).catch(() => {});
       await this.deps.hub?.profileLoginChanged?.(id);
     }
-    await this.checkBorrowed(profile, stationLang());
+    await this.checkBorrowed(profile, stationLang(), true);
   }
 
   /// Another station redeemed a reset on a subscription hosted here.
@@ -2122,6 +2153,8 @@ export class Accounts {
         machine: p.machine === true,
         enabled: p.enabled !== false,
         backgroundOnMessage: p.backgroundOnMessage,
+        // Whether its quota is asked of Google's API beside the CLI: an Antigravity CLI subscription's alone.
+        ...(kind === "subscription" && p.runtime === "agy" ? { directQuota: p.directQuota !== false } : {}),
         ...(p.maxConcurrentSessions !== undefined ? { maxConcurrentSessions: p.maxConcurrentSessions } : {}),
         ...(p.newAccountProtection === true && p.maxConcurrentSessions !== undefined ? { newAccountProtection: true } : {}),
         fast: takesFast(p) && (!fastNeedsCredits(p) || this.quotas.get(p.id)?.extraUsage === true) ? p.fast === true : null,

@@ -1,0 +1,541 @@
+// Multi-account lifecycle, OAuth/Passkey login flow state machine, and member admission
+// role capping.
+//
+// Strictly matches `client/core-ts/src/accounts.ts`, `client/core-ts/src/cloud.ts`,
+// `client/core-ts/src/views/pair.ts`, and `client/core-ts/src/views/AGENTS.md`:
+// - Multi-account register / switch / sign-out + 60s token expiry check & single-flight
+//   refresh coalescing; NEVER exposes access/refresh tokens to UI topic views.
+// - Login flow state machine: loopback OAuth (PKCE S256, one-shot state check, returnTo
+//   sanitization) and Passkey challenge, with explicit recovery hints on cancel/failure.
+// - Member admission role capping (`admit_member_role(noted_role, cloud_role)`): defaults
+//   to `"member"`, strictly capped at `cloud_role`, NEVER trusts cloud alone to elevate.
+
+import "base_codec"
+import "crypto"
+
+/// Refresh threshold in seconds (`accounts.ts`: `a.access_expires - 60 > now`).
+pub fn token_refresh_skew_secs() -> Int64 { 60.to_int64() }
+
+// ---------------------------------------------------------------------------
+// 1. Multi-account store & single-flight refresh lifecycle
+// ---------------------------------------------------------------------------
+
+pub struct StoredAccount {
+  pub sub : String
+  pub email : String
+  pub name : String
+  pub picture : String
+  pub access : String
+  pub refresh : String
+  pub access_expires : Int64
+}
+
+pub enum RefreshDecision {
+  UseCached(String)
+  StartRefresh
+  WaitInFlight
+  SignedOut
+}
+
+pub struct AccountStore {
+  pub accounts : Array[StoredAccount]
+  pub mut active_sub : Option[String]
+  pub refreshing : Map[String, Bool]
+}
+
+pub fn AccountStore::new() -> AccountStore {
+  AccountStore::{
+    accounts: [],
+    active_sub: None,
+    refreshing: Map::new(),
+  }
+}
+
+/// Add or replace an account in place (preserving list order). Sets `active_sub` if none is set.
+pub fn AccountStore::register_account(self : AccountStore, account : StoredAccount) -> Unit {
+  let mut replaced = false
+  for i in 0..<self.accounts.length() {
+    if self.accounts[i].sub == account.sub {
+      self.accounts[i] = account
+      replaced = true
+      break
+    }
+  }
+  if !replaced {
+    self.accounts.push(account)
+  }
+  if self.active_sub.is_none() {
+    self.active_sub = Some(account.sub)
+  }
+}
+
+/// Switch active account to `sub`, failing if `sub` is not signed in.
+pub fn AccountStore::switch_account(self : AccountStore, sub : String) -> Result[Unit, String] {
+  for i in 0..<self.accounts.length() {
+    if self.accounts[i].sub == sub {
+      self.active_sub = Some(sub)
+      return Ok(())
+    }
+  }
+  Err("account_not_found: 请先登录该账号")
+}
+
+/// Sign out `sub`: removes stored credentials, clears in-flight refresh, and advances `active_sub`.
+pub fn AccountStore::sign_out(self : AccountStore, sub : String) -> Bool {
+  let next : Array[StoredAccount] = []
+  let mut removed = false
+  for i in 0..<self.accounts.length() {
+    if self.accounts[i].sub == sub {
+      removed = true
+    } else {
+      next.push(self.accounts[i])
+    }
+  }
+  if !removed {
+    return false
+  }
+  self.accounts.clear()
+  for i in 0..<next.length() {
+    self.accounts.push(next[i])
+  }
+  self.refreshing.remove(sub)
+  match self.active_sub {
+    Some(cur) => {
+      if cur == sub {
+        self.active_sub = if self.accounts.length() > 0 { Some(self.accounts[0].sub) } else { None }
+      }
+    }
+    None => ()
+  }
+  true
+}
+
+/// Whether `sub`'s access token needs a refresh at `now_sec` (within 60s of expiry).
+pub fn AccountStore::needs_refresh(self : AccountStore, sub : String, now_sec : Int64) -> Bool {
+  for i in 0..<self.accounts.length() {
+    if self.accounts[i].sub == sub {
+      return self.accounts[i].access_expires - token_refresh_skew_secs() <= now_sec
+    }
+  }
+  false
+}
+
+/// Acquire an access token or coalesce a single-flight refresh (`accounts.ts accessToken`).
+pub fn AccountStore::begin_refresh(
+  self : AccountStore,
+  sub : String,
+  now_sec : Int64,
+) -> RefreshDecision {
+  for i in 0..<self.accounts.length() {
+    let a = self.accounts[i]
+    if a.sub == sub {
+      if a.access_expires - token_refresh_skew_secs() > now_sec {
+        return RefreshDecision::UseCached(a.access)
+      }
+      if self.refreshing.get(sub).is_some() {
+        return RefreshDecision::WaitInFlight
+      }
+      self.refreshing.set(sub, true)
+      return RefreshDecision::StartRefresh
+    }
+  }
+  RefreshDecision::SignedOut
+}
+
+/// Apply rotated tokens after a successful `/v1/auth/refresh`.
+pub fn AccountStore::complete_refresh(
+  self : AccountStore,
+  sub : String,
+  new_access : String,
+  new_refresh : String,
+  new_expires : Int64,
+  new_name : Option[String] = None,
+) -> Result[String, String] {
+  self.refreshing.remove(sub)
+  for i in 0..<self.accounts.length() {
+    let a = self.accounts[i]
+    if a.sub == sub {
+      let resolved_name = match new_name {
+        Some(n) => if n.length() > 0 { n } else { a.name }
+        None => a.name
+      }
+      self.accounts[i] = StoredAccount::{
+        sub: a.sub,
+        email: a.email,
+        name: resolved_name,
+        picture: a.picture,
+        access: new_access,
+        refresh: new_refresh,
+        access_expires: new_expires,
+      }
+      return Ok(new_access)
+    }
+  }
+  Err("signed_out")
+}
+
+/// Handle a failed refresh: HTTP 401 forgets the account (session expired); transient errors
+/// keep the account signed in so a later caller can retry (`accounts.ts #refresh`).
+pub fn AccountStore::fail_refresh(
+  self : AccountStore,
+  sub : String,
+  http_status : Int,
+) -> String {
+  self.refreshing.remove(sub)
+  if http_status == 401 {
+    let _ = self.sign_out(sub)
+    return "session_expired: 登录已失效，请重新登录"
+  }
+  "refresh_failed: 令牌刷新失败，请稍后重试"
+}
+
+/// Project UI-safe `accounts` topic: strictly `{ sub, email, name, picture }` — NEVER exposes tokens!
+pub fn project_accounts_topic(store : AccountStore) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<store.accounts.length() {
+    let a = store.accounts[i]
+    out.push(base_codec::json_obj([
+      ("sub", base_codec::json_str(a.sub)),
+      ("email", base_codec::json_str(a.email)),
+      ("name", base_codec::json_str(a.name)),
+      ("picture", base_codec::json_str(a.picture)),
+    ]))
+  }
+  let active_j = match store.active_sub {
+    Some(s) => base_codec::json_str(s)
+    None => base_codec::json_null()
+  }
+  base_codec::json_obj([
+    ("activeSub", active_j),
+    ("accounts", base_codec::json_arr(out)),
+  ])
+}
+
+// ---------------------------------------------------------------------------
+// 2. Login flow state machine (Loopback OAuth PKCE / Passkey / Cancel & Recovery)
+// ---------------------------------------------------------------------------
+
+pub enum LoginState {
+  Idle
+  PendingOAuth(String, String, String, String, String)
+  PendingPasskey(String, String)
+  Completed(String, String)
+  Failed(String, String, String)
+}
+
+pub struct LoginFlowMachine {
+  pub mut state : LoginState
+}
+
+pub fn LoginFlowMachine::new() -> LoginFlowMachine {
+  LoginFlowMachine::{ state: LoginState::Idle }
+}
+
+/// Compute PKCE S256 code_challenge = base64url(sha256(verifier)).
+pub fn pkce_s256_challenge(verifier : String) -> String {
+  base_codec::base64url_encode(crypto::sha256(verifier.to_bytes()))
+}
+
+fn sanitize_return_to_av(return_to : String) -> String {
+  if return_to.length() == 0 || return_to.starts_with("/auth/") {
+    "/"
+  } else {
+    return_to
+  }
+}
+
+/// Start loopback OAuth PKCE sign-in, returning the authorize URL.
+pub fn LoginFlowMachine::begin_oauth(
+  self : LoginFlowMachine,
+  cloud_origin : String,
+  state_token : String,
+  verifier : String,
+  redirect_uri : String,
+  return_to : String,
+  device_name : String,
+) -> String {
+  let challenge = pkce_s256_challenge(verifier)
+  let url =
+  cloud_origin +
+  "/v1/auth/google/start?state=" +
+  state_token +
+  "&code_challenge=" +
+  challenge +
+  "&code_challenge_method=S256&redirect_uri=" +
+  redirect_uri +
+  "&name=" +
+  device_name
+  self.state = LoginState::PendingOAuth(state_token, verifier, redirect_uri, return_to, url)
+  url
+}
+
+pub struct OAuthCallbackOutcome {
+  pub ok : Bool
+  pub code : String
+  pub verifier : String
+  pub redirect_uri : String
+  pub return_to : String
+  pub error_code : String
+  pub recovery_hint : String
+}
+
+/// Complete loopback OAuth callback. A pending login is strictly one-shot regardless of outcome.
+pub fn LoginFlowMachine::complete_oauth_callback(
+  self : LoginFlowMachine,
+  callback_state : String,
+  code : Option[String],
+  error : Option[String],
+) -> OAuthCallbackOutcome {
+  let prev = self.state
+  // One-shot: clear pending state immediately.
+  self.state = LoginState::Idle
+  match error {
+    Some(e) => {
+      if e.length() > 0 {
+        let (ec, msg, hint) = if e == "login_cancelled" {
+          ("login_cancelled", "登录已取消", "可重新点击登录继续")
+        } else {
+          ("login_failed", "登录失败", "请重试登录或更换账号")
+        }
+        self.state = LoginState::Failed(ec, msg, hint)
+        return OAuthCallbackOutcome::{
+          ok: false,
+          code: "",
+          verifier: "",
+          redirect_uri: "",
+          return_to: "/",
+          error_code: ec,
+          recovery_hint: hint,
+        }
+      }
+    }
+    None => ()
+  }
+  match prev {
+    LoginState::PendingOAuth(expected_state, verifier, redirect_uri, return_to, _) => {
+      if callback_state != expected_state {
+        let hint = "请重新发起登录（安全校验状态不匹配）"
+        self.state = LoginState::Failed("login_state_mismatch", "登录状态校验失败", hint)
+        return OAuthCallbackOutcome::{
+          ok: false,
+          code: "",
+          verifier: "",
+          redirect_uri: "",
+          return_to: "/",
+          error_code: "login_state_mismatch",
+          recovery_hint: hint,
+        }
+      }
+      match code {
+        Some(c) => {
+          if c.length() == 0 {
+            let hint = "授权码缺失，请重新发起登录"
+            self.state = LoginState::Failed("login_expired", "登录已过期", hint)
+            return OAuthCallbackOutcome::{
+              ok: false,
+              code: "",
+              verifier: "",
+              redirect_uri: "",
+              return_to: "/",
+              error_code: "login_expired",
+              recovery_hint: hint,
+            }
+          }
+          let target = sanitize_return_to_av(return_to)
+          OAuthCallbackOutcome::{
+            ok: true,
+            code: c,
+            verifier: verifier,
+            redirect_uri: redirect_uri,
+            return_to: target,
+            error_code: "",
+            recovery_hint: "",
+          }
+        }
+        None => {
+          let hint = "授权码缺失，请重新发起登录"
+          self.state = LoginState::Failed("login_expired", "登录已过期", hint)
+          OAuthCallbackOutcome::{
+            ok: false,
+            code: "",
+            verifier: "",
+            redirect_uri: "",
+            return_to: "/",
+            error_code: "login_expired",
+            recovery_hint: hint,
+          }
+        }
+      }
+    }
+    _ => {
+      let hint = "没有进行中的登录请求，请重新点击登录"
+      self.state = LoginState::Failed("login_state_mismatch", "登录状态已失效", hint)
+      OAuthCallbackOutcome::{
+        ok: false,
+        code: "",
+        verifier: "",
+        redirect_uri: "",
+        return_to: "/",
+        error_code: "login_state_mismatch",
+        recovery_hint: hint,
+      }
+    }
+  }
+}
+
+/// Start a Passkey challenge flow.
+pub fn LoginFlowMachine::begin_passkey(
+  self : LoginFlowMachine,
+  challenge : String,
+  rp_id : String,
+) -> Unit {
+  self.state = LoginState::PendingPasskey(challenge, rp_id)
+}
+
+/// Finish Passkey verification or fail with explicit recovery hint.
+pub fn LoginFlowMachine::complete_passkey(
+  self : LoginFlowMachine,
+  sub : String,
+  verified : Bool,
+) -> Result[Unit, String] {
+  match self.state {
+    LoginState::PendingPasskey(_, _) => {
+      if verified && sub.length() > 0 {
+        self.state = LoginState::Completed(sub, "/")
+        Ok(())
+      } else {
+        let hint = "请重试通行密钥验证，或改用浏览器 OAuth 登录"
+        self.state = LoginState::Failed("passkey_failed", "通行密钥验证失败", hint)
+        Err(hint)
+      }
+    }
+    _ => {
+      let hint = "当前没有待验证的通行密钥挑战，请重新发起登录"
+      self.state = LoginState::Failed("passkey_invalid_state", "验证状态失效", hint)
+      Err(hint)
+    }
+  }
+}
+
+/// Cancel an in-progress login flow with explicit recovery guidance.
+pub fn LoginFlowMachine::cancel(self : LoginFlowMachine) -> Unit {
+  self.state = LoginState::Failed("login_cancelled", "登录已取消", "可随时重新发起登录")
+}
+
+/// Mark login completed after token exchange succeeds.
+pub fn LoginFlowMachine::mark_completed(
+  self : LoginFlowMachine,
+  sub : String,
+  return_to : String,
+) -> Unit {
+  self.state = LoginState::Completed(sub, sanitize_return_to_av(return_to))
+}
+
+/// Project login flow state to UI-safe JSON (NEVER exposes PKCE verifier!).
+pub fn LoginFlowMachine::to_json(self : LoginFlowMachine) -> base_codec::Json {
+  match self.state {
+    LoginState::Idle => base_codec::json_obj([("phase", base_codec::json_str("idle"))])
+    LoginState::PendingOAuth(_, _, _, _, url) => base_codec::json_obj([
+      ("phase", base_codec::json_str("pending_oauth")),
+      ("authorizeUrl", base_codec::json_str(url)),
+    ])
+    LoginState::PendingPasskey(ch, rp) => base_codec::json_obj([
+      ("phase", base_codec::json_str("pending_passkey")),
+      ("challenge", base_codec::json_str(ch)),
+      ("rpId", base_codec::json_str(rp)),
+    ])
+    LoginState::Completed(sub, ret) => base_codec::json_obj([
+      ("phase", base_codec::json_str("completed")),
+      ("sub", base_codec::json_str(sub)),
+      ("returnTo", base_codec::json_str(ret)),
+    ])
+    LoginState::Failed(code, msg, hint) => base_codec::json_obj([
+      ("phase", base_codec::json_str("failed")),
+      ("code", base_codec::json_str(code)),
+      ("message", base_codec::json_str(msg)),
+      ("recoveryHint", base_codec::json_str(hint)),
+    ])
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 3. Member admission role capping (`views/pair.ts admitOf` + `views/AGENTS.md`)
+// ---------------------------------------------------------------------------
+
+/// Role hierarchy rank (`viewer` < `member` < `admin` < `owner`). Returns -1 for unknown roles.
+pub fn role_rank(r : String) -> Int {
+  if r == "viewer" {
+    0
+  } else if r == "member" {
+    1
+  } else if r == "admin" {
+    2
+  } else if r == "owner" {
+    3
+  } else {
+    -1
+  }
+}
+
+fn lower_role_av(a : String, b : String) -> String {
+  if role_rank(a) <= role_rank(b) { a } else { b }
+}
+
+/// Compute the admitted member role from `noted_role` (default `"member"`) capped strictly at
+/// `cloud_role` (`views/AGENTS.md` & `views/pair.ts admitOf`):
+/// - NEVER trusts `cloud_role` alone to elevate a newcomer above `"member"` (or above `noted_role`).
+/// - Returns `None` if `cloud_role` is not a valid role.
+pub fn admit_member_role(noted_role : Option[String], cloud_role : String) -> Option[String] {
+  if role_rank(cloud_role) < 0 {
+    return None
+  }
+  let base = match noted_role {
+    Some(r) => if role_rank(r) >= 0 { r } else { return None }
+    None => "member"
+  }
+  Some(lower_role_av(base, cloud_role))
+}
+
+/// Full actor-checked admission role calculation (`views/pair.ts admitOf`):
+/// - Only `"owner"` or `"admin"` may admit.
+/// - An `"admin"` cannot admit an `"owner"` (either via `cloud_role` or `noted_role`).
+/// - Falls back to `noted_role ?? existing_role ?? "member"`, lowered to `cloud_role`.
+pub fn admit_member_role_by_actor(
+  actor_role : String,
+  noted_role : Option[String],
+  existing_role : Option[String],
+  cloud_role : String,
+) -> Option[String] {
+  if actor_role != "owner" && actor_role != "admin" {
+    return None
+  }
+  if role_rank(cloud_role) < 0 {
+    return None
+  }
+  if actor_role == "admin" && cloud_role == "owner" {
+    return None
+  }
+  match noted_role {
+    Some(nr) => {
+      if role_rank(nr) < 0 {
+        return None
+      }
+      if actor_role == "admin" && nr == "owner" {
+        return None
+      }
+    }
+    None => ()
+  }
+  let chosen = match noted_role {
+    Some(nr) => nr
+    None => match existing_role {
+      Some(er) => if role_rank(er) >= 0 { er } else { "member" }
+      None => "member"
+    }
+  }
+  let final_role = lower_role_av(chosen, cloud_role)
+  if actor_role == "admin" && final_role == "owner" {
+    return None
+  }
+  Some(final_role)
+}

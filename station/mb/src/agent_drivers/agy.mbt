@@ -1372,6 +1372,23 @@ pub fn AgyDriver::begin_once(
     self.renew_lent(profile)
   } else if access_kind(profile) == "subscription" {
     self.take_back(home).map(_ => ())
+  } else if access_kind(profile) == "api-provider" &&
+    str_at(get(Some(profile), "access"), "provider") == Some("google-vertex") {
+    let key = @jscase.trim(str_at(get(Some(profile), "access"), "key").unwrap_or(""))
+    if key == "" {
+      done(lp)
+    } else {
+      let file = m.join([agy_home(m, home), "vertex-credentials.json"])
+      m
+      .read_file(file)
+      .map(raw => Some(raw))
+      .recover(_ => Later::ok(lp, None))
+      .bind(existing => if existing == Some(key) {
+        done(lp)
+      } else {
+        m.write_file(file, key, private=true)
+      })
+    }
   } else {
     done(lp)
   }
@@ -1535,11 +1552,19 @@ pub fn AgyDriver::acp_begin(
 pub fn AgyDriver::initialized(self : AgyDriver, session : AgySession, answer : JValue, options : JValue) -> Later[Unit] {
   let profile = get(Some(options), "profile").unwrap_or(Null)
   let methods = arr_at(get(Some(answer), "result"), "authMethods")
-  match methods {
-    Some(ms) if access_kind(profile) == "api-provider" &&
-      ms.iter().any(x => str_at(Some(x), "id") == Some("gemini-api-key")) =>
+  let method_id = if access_kind(profile) == "api-provider" {
+    match str_at(get(Some(profile), "access"), "provider") {
+      Some("google") => Some("gemini-api-key")
+      Some("google-vertex") => Some("agent-platform")
+      _ => None
+    }
+  } else {
+    None
+  }
+  match (methods, method_id) {
+    (Some(ms), Some(mid)) if ms.iter().any(x => str_at(Some(x), "id") == Some(mid)) =>
       session.acp
-      .request("auth:\{(self.ids.next)()}", "authenticate", obj([("methodId", s("gemini-api-key"))]))
+      .request("auth:\{(self.ids.next)()}", "authenticate", obj([("methodId", s(mid))]))
       .map(_ => ())
     _ => done(self.lp())
   }

@@ -10,6 +10,7 @@ import "outbox"
 import "protocol"
 import "sql"
 import "store"
+import "views"
 
 pub struct ClientCore {
   pub workspace : String
@@ -22,8 +23,19 @@ pub struct ClientCore {
   pub local_outbox : LocalOutbox
   pub sync : SyncScheduler
   pub router : protocol::Slice1Router
+  pub rows_memo : views::RowsMemo
+  pub mut viewer_marks : views::ViewerMarks
+  pub lock_pending : views::LockPendingQueue
   mut lock_state : Option[lock::LockState]
   mut lock_root : Option[String]
+  mut lock_effective : Option[views::EffectiveLockState]
+  mut viewer_sub : String
+  mut viewer_role : String
+  mut device_id : String
+  mut device_kind : String
+  mut device_sign_key : Option[String]
+  mut lock_available : Bool
+  mut vaults_set_up : Bool
 }
 
 pub fn ClientCore::new(
@@ -51,9 +63,23 @@ pub fn ClientCore::new(
     local_outbox: local_outbox,
     sync: sync,
     router: router,
+    rows_memo: views::RowsMemo::new(),
+    viewer_marks: views::ViewerMarks::new(""),
+    lock_pending: views::LockPendingQueue::new(),
     lock_state: None,
     lock_root: None,
+    lock_effective: None,
+    viewer_sub: "",
+    viewer_role: "member",
+    device_id: "",
+    device_kind: "app",
+    device_sign_key: None,
+    lock_available: true,
+    vaults_set_up: false,
   }
+  router.set_topic_evaluator(fn(id : Int64, topic : protocol::Topic) -> Option[protocol::CoreEvent] {
+    core.evaluate_view_topic(id, topic)
+  })
   events.set_hooks(
     fn(b : sql::Burst, th : Int, n : Int, ck : String) -> Unit {
       local_outbox.reconcile_entry_in_burst(b, th, n, ck)
@@ -152,6 +178,7 @@ pub fn ClientCore::rename_chat(self : ClientCore, chat_id : String, title : Stri
 
 /// Optimistically pin/unpin a chat (rolled back automatically if station refuses).
 pub fn ClientCore::pin_chat(self : ClientCore, chat_id : String, pinned_at : Option[Int64]) -> sql::SqlResult[Int] {
+  self.viewer_marks.set_pin(self.station, chat_id, pinned_at)
   let v = match pinned_at {
     Some(ts) => base_codec::json_int64(ts)
     None => base_codec::json_null()
@@ -181,7 +208,246 @@ pub fn ClientCore::answer_card(self : ClientCore, thread : Int, seq : Int, optio
 
 /// Update read cursor locally in SQLite and notify station when online.
 pub fn ClientCore::mark_chat_read(self : ClientCore, thread : Int, read_seq : Int, unread_count : Int = 0) -> sql::SqlResult[Unit] {
+  self.viewer_marks.set_read(self.station, thread, read_seq)
   self.local_outbox.mark_read(self.rt, thread, read_seq, unread_count)
+}
+
+/// Configure viewer identity & device metadata used by `views::project_*` and `views::project_safe_mode`.
+pub fn ClientCore::set_viewer(
+  self : ClientCore,
+  email : String,
+  sub : String = "",
+  role : String = "member",
+  device_id : String = "",
+  device_kind : String = "app",
+  device_sign_key : Option[String] = None,
+) -> Unit {
+  if email.length() > 0 && self.viewer_marks.me != email {
+    let prev = self.viewer_marks
+    self.viewer_marks = views::ViewerMarks::{
+      me: email,
+      selves: prev.selves,
+      reads: prev.reads,
+      pins: prev.pins,
+      kept: prev.kept,
+      hidden: prev.hidden,
+      muted: prev.muted,
+      dismissed: prev.dismissed,
+      quoted_threads: prev.quoted_threads,
+    }
+  }
+  if sub.length() > 0 {
+    self.viewer_sub = sub
+  }
+  if role.length() > 0 {
+    self.viewer_role = role
+  }
+  if device_id.length() > 0 {
+    self.device_id = device_id
+  }
+  if device_kind.length() > 0 {
+    self.device_kind = device_kind
+  }
+  if device_sign_key.is_some() {
+    self.device_sign_key = device_sign_key
+  }
+}
+
+/// Build `views::StationBrief` list for `ws_scope` (always including `self.station` as fallback).
+fn ClientCore::station_briefs_for_scope(self : ClientCore, ws_scope : String) -> Array[views::StationBrief] {
+  let out : Array[views::StationBrief] = []
+  let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
+  let mut has_self = false
+  match store::list_stations(self.db, kind="overview") {
+    sql::SqlResult::Ok(rows) => {
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        let matches_scope = prefix.length() == 0 || r.address.starts_with(prefix) || r.address == self.station
+        if !matches_scope {
+          continue
+        }
+        if r.address == self.station {
+          has_self = true
+        }
+        let doc = match base_codec::json_parse(r.json) {
+          base_codec::JsonParseResult::Ok(j) => j
+          base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+        }
+        let sid = match j_opt_str(doc, "id") {
+          Some(s) => s
+          None => r.address
+        }
+        let sname = match j_opt_str(doc, "name") {
+          Some(s) => s
+          None => sid
+        }
+        let is_online = match base_codec::json_get(doc, "online") {
+          Some(base_codec::Json::Bool(b)) => b
+          _ => true
+        }
+        out.push(views::StationBrief::{
+          address: r.address,
+          id: sid,
+          name: sname,
+          emoji: j_opt_str(doc, "emoji"),
+          icon: j_opt_str(doc, "icon"),
+          online: is_online,
+          updating: j_bool(doc, "updating"),
+          offline_text: j_opt_str(doc, "offlineText"),
+          reconnecting_text: j_opt_str(doc, "reconnectingText"),
+          running: if r.address == self.station { self.running_session_count() } else { 0 },
+        })
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+  if !has_self {
+    out.push(views::StationBrief::{
+      address: self.station,
+      id: self.station,
+      name: self.station,
+      emoji: None,
+      icon: None,
+      online: true,
+      updating: false,
+      offline_text: None,
+      reconnecting_text: None,
+      running: self.running_session_count(),
+    })
+  }
+  out
+}
+
+/// Project unified `views::SafeModeView` for this workspace (zero 「个人锁」 leakage).
+pub fn ClientCore::current_safe_mode_view(self : ClientCore) -> views::SafeModeView {
+  let station_names : Map[String, String] = Map::new()
+  let online_stations : Map[String, Bool] = Map::new()
+  let briefs = self.station_briefs_for_scope(self.workspace)
+  for i in 0..<briefs.length() {
+    let b = briefs[i]
+    station_names.set(b.id, b.name)
+    if b.online {
+      online_stations.set(b.id, true)
+    }
+  }
+  let inp = views::SafeModeInput::{
+    available: self.lock_available,
+    viewer_sub: self.viewer_sub,
+    viewer_role: self.viewer_role,
+    device_id: self.device_id,
+    device_kind: self.device_kind,
+    device_sign_key: self.device_sign_key,
+    personal_standing: "",
+    signer_unsaid: false,
+    no_device_answered: false,
+    rebound_admins: [],
+    station_names: station_names,
+    online_stations: online_stations,
+    pending: self.lock_pending,
+  }
+  views::project_safe_mode(self.lock_effective, inp)
+}
+
+/// Evaluate subscription topics through `packages/views` projections so `Slice1Router`
+/// delivers `shapes/`-conforming payloads and ≤ 4 KB keyed deltas.
+fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protocol::Topic) -> Option[protocol::CoreEvent] {
+  if topic.name == "chats" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    let mine_only = match topic.param("mine") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    let watching_only = match topic.param("watching") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    let hidden_mode = match topic.param("hidden") {
+      Some(base_codec::Json::Bool(true)) => 1
+      _ => 0
+    }
+    let briefs = self.station_briefs_for_scope(ws_scope)
+    match views::project_chats(
+      self.db,
+      ws_scope,
+      briefs,
+      self.rt.now(),
+      self.rows_memo,
+      self.viewer_marks,
+      mine_only=mine_only,
+      watching_only=watching_only,
+      hidden_mode=hidden_mode,
+    ) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "chat" {
+    let st = match topic.param("station") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { self.station }
+      _ => self.station
+    }
+    let th = match topic.param("thread") {
+      Some(base_codec::Json::Num(n, _)) => n.to_int()
+      _ => return Some(protocol::CoreEvent::Waiting(id))
+    }
+    let md = if st == self.md_store.station { self.md_store } else { store::MdStore::new(self.db, st) }
+    match views::project_chat(self.db, md, st, th, self.viewer_marks.me, self.rt.now()) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "workspaces" {
+    match views::project_workspaces(self.db) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "workspace" {
+    let ws = match topic.param("workspace") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    match views::project_workspace(self.db, ws) {
+      sql::SqlResult::Ok(Some(j)) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Ok(None) => return Some(protocol::CoreEvent::Waiting(id))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "stations" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    match views::project_stations(self.db, ws_scope) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "accounts" {
+    match views::project_accounts(self.db) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "lock" {
+    let sm = self.current_safe_mode_view()
+    return Some(protocol::CoreEvent::Value(id, sm.to_json(), None))
+  }
+  if topic.name == "vaults" {
+    let ws = match topic.param("workspace") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    let sm = self.current_safe_mode_view()
+    match views::project_vaults(self.db, ws, sm, self.lock_available, self.vaults_set_up) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  None
 }
 
 /// Refresh an active subscription and emit incremental keyed `CoreEvent::Delta` if changed.
@@ -214,6 +480,16 @@ pub fn ClientCore::apply_lock_chain(
       }
       self.lock_state = Some(v.state)
       self.lock_root = Some(root_hash)
+      let now_secs = match now {
+        Some(t) => t
+        None => self.rt.now().to_double() / 1000.0
+      }
+      match views::effective_state(self.workspace, entries, [], [], now_secs, views::views_lock_crypto()) {
+        Ok(eff) => {
+          self.lock_effective = Some(eff)
+        }
+        Err(_) => ()
+      }
       self.outbox.tell(CoreEvent::LockUpdated(
         self.workspace,
         v.state.head,

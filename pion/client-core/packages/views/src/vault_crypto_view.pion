@@ -1,0 +1,956 @@
+// Encrypted Vault approval, X25519+HKDF+ChaCha20-Poly1305 box sealing, non-safe-mode
+// shared workspace vault personal-chain folding, pre-removal `level_vaults` / `take_before`,
+// and approval request queue projection.
+//
+// Strictly matches `client/core-ts/src/vault/crypto.ts`, `client/core-ts/src/views/vault.ts`,
+// `client/core-ts/src/views/AGENTS.md`, and native `pion/rules` (`vault`, `history`, `lock`).
+
+import "base_codec"
+import "crypto"
+import "form"
+import "history"
+import "lock"
+import "mesh"
+import "vault"
+
+// ---------------------------------------------------------------------------
+// 1. Byte & context helpers (matching `client/core-ts/src/vault/crypto.ts`)
+// ---------------------------------------------------------------------------
+
+fn is_lower_hex_64_vc(s : String) -> Bool {
+  if s.length() != 64 {
+    return false
+  }
+  for i in 0..<64 {
+    let c = s.code_unit_at(i)
+    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) {
+      return false
+    }
+  }
+  true
+}
+
+fn concat_bytes_vc(a : Bytes, b : Bytes) -> Bytes {
+  let out = Bytes::new(a.length() + b.length())
+  for i in 0..<a.length() {
+    out[i] = a[i]
+  }
+  for i in 0..<b.length() {
+    out[a.length() + i] = b[i]
+  }
+  out
+}
+
+fn slice_bytes_vc(b : Bytes, start : Int, end : Int) -> Bytes {
+  let len = if end > start { end - start } else { 0 }
+  let out = Bytes::new(len)
+  for i in 0..<len {
+    out[i] = b[start + i]
+  }
+  out
+}
+
+fn nul_join_bytes_vc(parts : Array[String]) -> Bytes {
+  let encoded : Array[Bytes] = []
+  let mut total = 0
+  for i in 0..<parts.length() {
+    let b = parts[i].to_bytes()
+    encoded.push(b)
+    total += b.length()
+    if i + 1 < parts.length() {
+      total += 1
+    }
+  }
+  let out = Bytes::new(total)
+  let mut at = 0
+  for i in 0..<encoded.length() {
+    let b = encoded[i]
+    for j in 0..<b.length() {
+      out[at] = b[j]
+      at += 1
+    }
+    if i + 1 < encoded.length() {
+      out[at] = 0 as Byte
+      at += 1
+    }
+  }
+  out
+}
+
+fn form_str_vc(j : form::Json, key : String) -> Option[String] {
+  match form::json_field(Some(j), key) {
+    Some(form::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn form_num_i64_vc(j : form::Json, key : String) -> Int64 {
+  match form::json_field(Some(j), key) {
+    Some(form::Json::Num(n)) => n.to_int64()
+    _ => 0.to_int64()
+  }
+}
+
+fn form_bool_vc(j : form::Json, key : String) -> Bool {
+  match form::json_field(Some(j), key) {
+    Some(form::Json::Bool(b)) => b
+    _ => false
+  }
+}
+
+fn str_in_vc(xs : Array[String], s : String) -> Bool {
+  for i in 0..<xs.length() {
+    if xs[i] == s {
+      return true
+    }
+  }
+  false
+}
+
+/// Plain library mode is ALWAYS false (`views/vault.ts plainMode`).
+pub fn vault_plain_mode(_ws : String) -> Bool {
+  false
+}
+
+/// Context AAD for wrapping a vault key (`stillfail-vault-key/1\0<ws>\0<vault>\0<epoch>`).
+pub fn vault_key_context(ws : String, vault_id : String, epoch : Int64) -> Bytes {
+  nul_join_bytes_vc(["stillfail-vault-key/1", ws, vault_id, epoch.to_string()])
+}
+
+/// Context AAD for encrypting a vault item (`stillfail-vault-item/1\0<ws>\0<vault>\0<id>\0<version>\0<epoch>`).
+pub fn vault_item_context(
+  ws : String,
+  vault_id : String,
+  item_id : String,
+  version : Int64,
+  epoch : Int64,
+) -> Bytes {
+  nul_join_bytes_vc([
+    "stillfail-vault-item/1",
+    ws,
+    vault_id,
+    item_id,
+    version.to_string(),
+    epoch.to_string(),
+  ])
+}
+
+/// Context AAD for sealing a granted secret (`stillfail-vault-grant/1\0<ws>\0<request>`).
+pub fn vault_grant_context(ws : String, request_id : String) -> Bytes {
+  nul_join_bytes_vc(["stillfail-vault-grant/1", ws, request_id])
+}
+
+/// Context AAD for sealing a `secret_save` payload (`stillfail-vault-save/1\0<ws>\0<request>`).
+pub fn vault_save_context(ws : String, request_id : String) -> Bytes {
+  nul_join_bytes_vc(["stillfail-vault-save/1", ws, request_id])
+}
+
+/// Format an X25519 public key from a 32-byte private key as `x25519:<64hex>`.
+pub fn vault_box_public(priv_key : Bytes) -> Result[String, String] {
+  match crypto::x25519_public_key(priv_key) {
+    Ok(pub_bytes) => Ok("x25519:" + base_codec::hex_encode(pub_bytes))
+    Err(_) => Err("vault_invalid: invalid x25519 private key")
+  }
+}
+
+fn decode_box_pub_vc(pub_str : String) -> Result[Bytes, String] {
+  if !pub_str.starts_with("x25519:") {
+    return Err("vault_invalid: not an x25519 key")
+  }
+  let hex = pub_str.slice(7, pub_str.length())
+  if !is_lower_hex_64_vc(hex) {
+    return Err("vault_invalid: not an x25519 key")
+  }
+  match base_codec::hex_decode(hex) {
+    Some(b) => Ok(b)
+    None => Err("vault_invalid: not an x25519 key")
+  }
+}
+
+/// Seal `plaintext` to a device's X25519 box public key (`x25519:<hex>`) with arbitrary AAD context,
+/// using X25519 ECDH + HKDF-SHA256 (`salt = ephPub || recipientPub`, `info = "stillfail-vault-seal/1"`)
+/// + ChaCha20-Poly1305 AEAD (`nonce = 12 zero bytes`).
+pub fn vault_seal_with_context(
+  recipient_pub : String,
+  plaintext : Bytes,
+  aad : Bytes,
+  eph_priv : Bytes,
+) -> Result[String, String] {
+  let to_pub = match decode_box_pub_vc(recipient_pub) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let eph_pub = match crypto::x25519_public_key(eph_priv) {
+    Ok(b) => b
+    Err(_) => return Err("vault_invalid: invalid ephemeral x25519 key")
+  }
+  let shared = match crypto::x25519(eph_priv, to_pub) {
+    Ok(b) => b
+    Err(_) => return Err("vault_invalid: x25519 key exchange failed")
+  }
+  let salt = concat_bytes_vc(eph_pub, to_pub)
+  let info = "stillfail-vault-seal/1".to_bytes()
+  let sym_key = match crypto::hkdf_sha256(salt, shared, info, 32) {
+    Ok(k) => k
+    Err(_) => return Err("vault_invalid: hkdf failed")
+  }
+  let nonce0 = Bytes::new(12)
+  let ct = match crypto::chacha20_poly1305_seal(sym_key, nonce0, aad, plaintext) {
+    Ok(c) => c
+    Err(_) => return Err("vault_invalid: aead seal failed")
+  }
+  Ok(base_codec::base64url_encode(concat_bytes_vc(eph_pub, ct)))
+}
+
+/// Open a box sealed by `vault_seal_with_context` using the recipient's X25519 private key and AAD.
+pub fn vault_open_with_context(
+  recipient_priv : Bytes,
+  sealed : String,
+  aad : Bytes,
+) -> Result[Bytes, String] {
+  let raw = match base_codec::base64url_decode(sealed) {
+    Some(b) => b
+    None => return Err("vault_invalid: seal is not base64url")
+  }
+  if raw.length() < 48 {
+    return Err("vault_invalid: not a seal")
+  }
+  let eph_pub = slice_bytes_vc(raw, 0, 32)
+  let ct = slice_bytes_vc(raw, 32, raw.length())
+  let my_pub = match crypto::x25519_public_key(recipient_priv) {
+    Ok(b) => b
+    Err(_) => return Err("vault_invalid: invalid x25519 private key")
+  }
+  let shared = match crypto::x25519(recipient_priv, eph_pub) {
+    Ok(b) => b
+    Err(_) => return Err("vault_unsealed: this key does not open it")
+  }
+  let salt = concat_bytes_vc(eph_pub, my_pub)
+  let info = "stillfail-vault-seal/1".to_bytes()
+  let sym_key = match crypto::hkdf_sha256(salt, shared, info, 32) {
+    Ok(k) => k
+    Err(_) => return Err("vault_unsealed: hkdf failed")
+  }
+  let nonce0 = Bytes::new(12)
+  match crypto::chacha20_poly1305_open(sym_key, nonce0, aad, ct) {
+    Ok(pt) => Ok(pt)
+    Err(_) => Err("vault_unsealed: this key does not open it")
+  }
+}
+
+/// Seal a vault box key to a device's X25519 public key, binding `(workspace, vault_id, epoch)` in AAD.
+pub fn vault_seal_box(
+  recipient_pub : String,
+  plaintext : Bytes,
+  workspace : String,
+  vault_id : String,
+  epoch : Int64,
+  eph_priv : Bytes,
+) -> Result[String, String] {
+  let aad = vault_key_context(workspace, vault_id, epoch)
+  vault_seal_with_context(recipient_pub, plaintext, aad, eph_priv)
+}
+
+/// Open a sealed vault box key using the device's X25519 private key, verifying `(workspace, vault_id, epoch)` AAD.
+pub fn vault_open_box(
+  recipient_priv : Bytes,
+  sealed : String,
+  workspace : String,
+  vault_id : String,
+  epoch : Int64,
+) -> Result[Bytes, String] {
+  let aad = vault_key_context(workspace, vault_id, epoch)
+  vault_open_with_context(recipient_priv, sealed, aad)
+}
+
+/// Encrypt a vault item payload under the 32-byte vault key and 12-byte nonce, binding item metadata in AAD.
+pub fn vault_encrypt_item(
+  vault_key : Bytes,
+  plaintext : Bytes,
+  workspace : String,
+  vault_id : String,
+  item_id : String,
+  version : Int64,
+  epoch : Int64,
+  nonce : Bytes,
+) -> Result[String, String] {
+  if nonce.length() != 12 {
+    return Err("vault_invalid: item nonce must be 12 bytes")
+  }
+  let aad = vault_item_context(workspace, vault_id, item_id, version, epoch)
+  match crypto::chacha20_poly1305_seal(vault_key, nonce, aad, plaintext) {
+    Ok(ct) => Ok(base_codec::base64url_encode(concat_bytes_vc(nonce, ct)))
+    Err(_) => Err("vault_invalid: item encrypt failed")
+  }
+}
+
+/// Decrypt a vault item payload, verifying `(workspace, vault_id, item_id, version, epoch)` AAD.
+pub fn vault_decrypt_item(
+  vault_key : Bytes,
+  ct_b64 : String,
+  workspace : String,
+  vault_id : String,
+  item_id : String,
+  version : Int64,
+  epoch : Int64,
+) -> Result[Bytes, String] {
+  let raw = match base_codec::base64url_decode(ct_b64) {
+    Some(b) => b
+    None => return Err("vault_invalid: item ciphertext is not base64url")
+  }
+  if raw.length() < 28 {
+    return Err("vault_invalid: not an item ciphertext")
+  }
+  let nonce = slice_bytes_vc(raw, 0, 12)
+  let ct = slice_bytes_vc(raw, 12, raw.length())
+  let aad = vault_item_context(workspace, vault_id, item_id, version, epoch)
+  match crypto::chacha20_poly1305_open(vault_key, nonce, aad, ct) {
+    Ok(pt) => Ok(pt)
+    Err(_) => Err("vault_unsealed: the vault key does not open this item")
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. Native `pion/rules` vault signing, verification & supersedes ordering
+// ---------------------------------------------------------------------------
+
+/// Sign a vault record (`box`, `vault`, `item`, `grant`, `deny`) with an Ed25519 32-byte seed.
+pub fn sign_vault_record(seed : Bytes, tag : String, record : form::Json) -> Result[form::Json, String] {
+  let fields = match record {
+    form::Json::Obj(fs) => fs
+    _ => return Err("vault record must be an object")
+  }
+  let rest : Array[(String, form::Json)] = []
+  for i in 0..<fields.length() {
+    if fields[i].0 != "sig" {
+      rest.push(fields[i])
+    }
+  }
+  let canon = match form::canonical(form::Json::Obj(rest)) {
+    Ok(s) => s
+    Err(_) => return Err("canonical encoding failed")
+  }
+  let digest = crypto::sha256(canon.to_bytes())
+  let msg = concat_bytes_vc(concat_bytes_vc(tag.to_bytes(), Bytes::new(1)), digest)
+  let (pk, sig) = mesh::ed25519_sign(seed, msg)
+  let sig_obj = form::Json::Obj([
+    ("key", form::Json::Str("ed25519:" + base_codec::hex_encode(pk))),
+    ("alg", form::Json::Str("Ed25519")),
+    ("sig", form::Json::Str(base_codec::hex_encode(sig))),
+  ])
+  rest.push(("sig", sig_obj))
+  Ok(form::Json::Obj(rest))
+}
+
+/// Compare two canonical JSON strings lexicographically by UTF-16 code units.
+fn compare_text_vc(a : String, b : String) -> Int {
+  let la = a.length()
+  let lb = b.length()
+  let lim = if la < lb { la } else { lb }
+  for i in 0..<lim {
+    let ca = a.code_unit_at(i)
+    let cb = b.code_unit_at(i)
+    if ca != cb {
+      return if ca > cb { 1 } else { -1 }
+    }
+  }
+  if la > lb { 1 } else if la < lb { -1 } else { 0 }
+}
+
+/// Whether vault version `a` supersedes `b` (`pion/rules` `history::supersedes`).
+pub fn vault_supersedes(a : form::Json, b : form::Json) -> Bool {
+  let ca = match form::canonical(a) { Ok(s) => s; Err(_) => "" }
+  let cb = match form::canonical(b) { Ok(s) => s; Err(_) => "" }
+  history::supersedes(
+    form_num_i64_vc(a, "seq"),
+    form_bool_vc(a, "deleted"),
+    form_num_i64_vc(a, "epoch"),
+    form_num_i64_vc(b, "seq"),
+    form_bool_vc(b, "deleted"),
+    form_num_i64_vc(b, "epoch"),
+    compare_text_vc(ca, cb),
+  )
+}
+
+/// Whether item version `a` supersedes `b` (`pion/rules` `history::supersedes`).
+pub fn item_supersedes(a : form::Json, b : form::Json) -> Bool {
+  let ca = match form::canonical(a) { Ok(s) => s; Err(_) => "" }
+  let cb = match form::canonical(b) { Ok(s) => s; Err(_) => "" }
+  history::supersedes(
+    form_num_i64_vc(a, "version"),
+    form_bool_vc(a, "deleted"),
+    form_num_i64_vc(a, "epoch"),
+    form_num_i64_vc(b, "version"),
+    form_bool_vc(b, "deleted"),
+    form_num_i64_vc(b, "epoch"),
+    compare_text_vc(ca, cb),
+  )
+}
+
+/// Verify a vault record against `lock` using native `pion/rules` `vault::vault_ok`.
+pub fn verify_vault_record(
+  lock_view : vault::LockView,
+  prev : Option[form::Json],
+  next : form::Json,
+  copy : Bool,
+) -> Option[String] {
+  vault::vault_ok(lock_view, prev, next, copy, views_vault_crypto())
+}
+
+/// Verify a vault item record against `lock` and `vault` using native `pion/rules` `vault::item_ok`.
+pub fn verify_item_record(
+  lock_view : vault::LockView,
+  vault_rec : form::Json,
+  prev : Option[form::Json],
+  next : form::Json,
+  copy : Bool,
+) -> Option[String] {
+  vault::item_ok(lock_view, vault_rec, prev, next, copy, views_vault_crypto())
+}
+
+// ---------------------------------------------------------------------------
+// 3. Non-safe-mode shared workspace vault personal lock folding (`personal_lock_of`)
+//    and `can_manage_workspace_vault`
+// ---------------------------------------------------------------------------
+
+pub enum PersonalLockStanding {
+  Member
+  NotBegun
+  Outside
+  Replaced
+}
+
+/// Build the `vault::LockView` for a workspace when safe mode is OFF (`views/vault.ts personalLockOf`):
+/// - Folds and verifies `own_pinned` (this person's own pinned personal chain).
+/// - Folds and verifies teammates' personal chains locally, ignoring malformed teammate chains.
+/// - NEVER replaces or overwrites this person's own pinned chain or devices.
+/// - Merges workspace member roles (defaulting own role to `"owner"`, teammates to `"member"`).
+pub fn personal_lock_of(
+  ws : String,
+  own_sub : String,
+  own_standing : PersonalLockStanding,
+  own_pinned : Array[form::Json],
+  member_chains : Array[(String, Array[form::Json])],
+  member_roles : Array[(String, String)],
+  c : lock::Crypto,
+) -> Result[vault::LockView, String] {
+  if own_sub.length() == 0 {
+    return Err("vault_no_account")
+  }
+  match own_standing {
+    PersonalLockStanding::Outside | PersonalLockStanding::Replaced =>
+    return Err("vault_personal_outside")
+    _ => ()
+  }
+
+  let roles_map : form::OrderedMap[String] = form::OrderedMap::new()
+  let members_map : form::OrderedMap[Bool] = form::OrderedMap::new()
+  let devices_map : form::OrderedMap[vault::Device] = form::OrderedMap::new()
+  let sign_keys_map : form::OrderedMap[Array[String]] = form::OrderedMap::new()
+
+  // Resolve own role from member_roles (default "owner" per `personalChecked`).
+  let mut own_role = "owner"
+  for i in 0..<member_roles.length() {
+    let (m_sub, m_role) = member_roles[i]
+    if m_sub == own_sub && m_role.length() > 0 {
+      own_role = m_role
+    }
+  }
+  members_map.set(own_sub, true)
+  roles_map.set(own_sub, own_role)
+  for i in 0..<member_roles.length() {
+    let (m_sub, m_role) = member_roles[i]
+    if m_sub != own_sub && m_sub.length() > 0 && m_role.length() > 0 {
+      members_map.set(m_sub, true)
+      roles_map.set(m_sub, m_role)
+    }
+  }
+
+  // Fold and verify own pinned personal chain first.
+  if own_pinned.length() > 0 {
+    let own_folded = match lock::fold_person(own_pinned, own_sub, c) {
+      Ok(f) => f
+      Err(e) => return Err("vault_lock_invalid: " + lock::error_msg(e))
+    }
+    let own_devs = own_folded.devices.entries()
+    for i in 0..<own_devs.length() {
+      let (_, d) = own_devs[i]
+      devices_map.set(d.id, vault::Device::{
+        sub: own_sub,
+        kind: "app",
+        sign_key: d.sign_key,
+        own: true,
+      })
+      sign_keys_map.set(d.id, d.sign_keys)
+    }
+  }
+
+  // Fold and verify teammates' personal chains locally; NEVER overwrite own_sub or existing device ids.
+  for i in 0..<member_chains.length() {
+    let (m_sub, m_chain) = member_chains[i]
+    if m_sub == own_sub || m_sub.length() == 0 || m_chain.length() == 0 {
+      continue
+    }
+    match lock::fold_person(m_chain, m_sub, c) {
+      Ok(mf) => {
+        let m_devs = mf.devices.entries()
+        for j in 0..<m_devs.length() {
+          let (_, d) = m_devs[j]
+          if devices_map.contains(d.id) {
+            continue
+          }
+          devices_map.set(d.id, vault::Device::{
+            sub: m_sub,
+            kind: "app",
+            sign_key: d.sign_key,
+            own: true,
+          })
+          sign_keys_map.set(d.id, d.sign_keys)
+        }
+        if !members_map.contains(m_sub) {
+          members_map.set(m_sub, true)
+          roles_map.set(m_sub, "member")
+        }
+      }
+      Err(_) => ()
+    }
+  }
+
+  Ok(vault::LockView::{
+    ws: ws,
+    members: members_map,
+    roles: roles_map,
+    devices: devices_map,
+    sign_keys: sign_keys_map,
+  })
+}
+
+/// Whether `sub` can manage `vault_rec` (`views/vault.ts canManage`):
+/// - Shared workspace vault (`scope == "workspace"`): must be a member of the vault AND workspace owner/admin.
+/// - Personal vault: must be `vault_rec.owner`.
+pub fn can_manage_workspace_vault(
+  lock_view : vault::LockView,
+  vault_rec : form::Json,
+  sub : String,
+) -> Bool {
+  let is_ws = match form_str_vc(vault_rec, "scope") {
+    Some(s) => s == "workspace"
+    None => false
+  }
+  if is_ws {
+    let role_ok = match lock_view.roles.get(sub) {
+      Some(r) => r == "owner" || r == "admin"
+      None => false
+    }
+    if !role_ok {
+      return false
+    }
+    match form::json_field(Some(vault_rec), "members") {
+      Some(form::Json::Arr(xs)) => {
+        for i in 0..<xs.length() {
+          match xs[i] {
+            form::Json::Str(m) => if m == sub { return true }
+            _ => ()
+          }
+        }
+        false
+      }
+      _ => false
+    }
+  } else {
+    match form_str_vc(vault_rec, "owner") {
+      Some(o) => o == sub
+      None => false
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 4. Pre-removal `level_vaults` & `take_before` (no box key read, no prompt,
+//    rekey deferred until next explicit unseal)
+// ---------------------------------------------------------------------------
+
+pub struct StationVaultSnapshot {
+  pub station_id : String
+  pub reachable : Bool
+  pub vaults : Array[form::Json]
+}
+
+pub struct BeforeOutSnapshot {
+  pub pre_removal_lock : vault::LockView
+  pub out_ids : Array[String]
+}
+
+pub struct VaultLevelingStore {
+  pub held : Map[String, form::Json]
+  pub before_out : Map[String, BeforeOutSnapshot]
+  pub took_locks : Map[String, vault::LockView]
+  pub mut box_key_reads : Int
+  pub mut unlock_prompts : Int
+}
+
+pub fn VaultLevelingStore::new() -> VaultLevelingStore {
+  VaultLevelingStore::{
+    held: Map::new(),
+    before_out: Map::new(),
+    took_locks: Map::new(),
+    box_key_reads: 0,
+    unlock_prompts: 0,
+  }
+}
+
+pub struct LevelVaultsOutcome {
+  pub leveled_count : Int
+  pub rejected_count : Int
+  pub box_key_reads : Int
+  pub unlock_prompts : Int
+  pub rekey_deferred : Bool
+}
+
+/// Level vaults from all reachable stations against `pre_removal_lock` BEFORE removing a member/device.
+/// - Verifies every station vault against `pre_removal_lock` via `vault::vault_ok(..., copy=true)`.
+/// - Keeps the superseding valid version per vault id (`vault_supersedes`).
+/// - Records `before_out` snapshot for `take_before` if a removed device/member wrote a later version
+///   on a station that wasn't reached yet.
+/// - NEVER reads any box key and NEVER triggers a background unlock prompt (`rekey_deferred == true`).
+pub fn level_vaults(
+  store : VaultLevelingStore,
+  ws : String,
+  pre_removal_lock : vault::LockView,
+  out_ids : Array[String],
+  snapshots : Array[StationVaultSnapshot],
+) -> LevelVaultsOutcome {
+  let mut leveled = 0
+  let mut rejected = 0
+  let vc = views_vault_crypto()
+  for i in 0..<snapshots.length() {
+    let snap = snapshots[i]
+    if !snap.reachable {
+      continue
+    }
+    for j in 0..<snap.vaults.length() {
+      let cand = snap.vaults[j]
+      let vid = match form_str_vc(cand, "id") {
+        Some(id) => id
+        None => {
+          rejected += 1
+          continue
+        }
+      }
+      match vault::vault_ok(pre_removal_lock, None, cand, true, vc) {
+        Some(_) => {
+          rejected += 1
+          continue
+        }
+        None => ()
+      }
+      let key = ws + "/" + vid
+      let should_take = match store.held.get(key) {
+        None => true
+        Some(prev) => vault_supersedes(cand, prev)
+      }
+      if should_take {
+        store.held.set(key, cand)
+        store.took_locks.set(key, pre_removal_lock)
+        leveled += 1
+      }
+    }
+  }
+  // Merge out_ids into before_out snapshot for this workspace.
+  let merged_out : Array[String] = []
+  match store.before_out.get(ws) {
+    Some(prev_bo) => {
+      for i in 0..<prev_bo.out_ids.length() {
+        merged_out.push(prev_bo.out_ids[i])
+      }
+    }
+    None => ()
+  }
+  for i in 0..<out_ids.length() {
+    if !str_in_vc(merged_out, out_ids[i]) {
+      merged_out.push(out_ids[i])
+    }
+  }
+  store.before_out.set(ws, BeforeOutSnapshot::{
+    pre_removal_lock: pre_removal_lock,
+    out_ids: merged_out,
+  })
+  LevelVaultsOutcome::{
+    leveled_count: leveled,
+    rejected_count: rejected,
+    box_key_reads: 0,
+    unlock_prompts: 0,
+    rekey_deferred: true,
+  }
+}
+
+/// Accept a later vault version received after removal if it was signed by a removed device/member
+/// and verified against the recorded pre-removal lock (`views/vault.ts takeBefore`).
+/// Never reads a box key or prompts the user.
+pub fn take_before(
+  store : VaultLevelingStore,
+  ws : String,
+  vault_id : String,
+  later_vault : form::Json,
+) -> Bool {
+  let bo = match store.before_out.get(ws) {
+    Some(x) => x
+    None => return false
+  }
+  let vc = views_vault_crypto()
+  if vault::vault_ok(bo.pre_removal_lock, None, later_vault, true, vc).is_some() {
+    return false
+  }
+  let sig_key = match form::json_field(Some(later_vault), "sig") {
+    Some(sig) => match form_str_vc(sig, "key") {
+      Some(k) => k
+      None => return false
+    }
+    None => return false
+  }
+  // Find signer device in pre_removal_lock (current sign_key or historical sign_keys).
+  let devs = bo.pre_removal_lock.devices.entries()
+  let mut matched_out = false
+  for i in 0..<devs.length() {
+    let (did, d) = devs[i]
+    let cur_match = match d.sign_key {
+      Some(k) => k == sig_key
+      None => false
+    }
+    let hist_match = match bo.pre_removal_lock.sign_keys.get(did) {
+      Some(ks) => str_in_vc(ks, sig_key)
+      None => false
+    }
+    if cur_match || hist_match {
+      if str_in_vc(bo.out_ids, did) || str_in_vc(bo.out_ids, d.sub) {
+        matched_out = true
+        break
+      }
+    }
+  }
+  if !matched_out {
+    return false
+  }
+  let key = ws + "/" + vault_id
+  store.held.set(key, later_vault)
+  store.took_locks.set(key, bo.pre_removal_lock)
+  true
+}
+
+// ---------------------------------------------------------------------------
+// 5. Approval request queue projection (`secret_use`, `secret_save`, `secret_delete`)
+// ---------------------------------------------------------------------------
+
+pub enum VaultRequestKind {
+  SecretUse
+  SecretSave
+  SecretDelete
+}
+
+pub enum VaultRequestStatus {
+  Pending
+  Granted
+  Denied
+  Expired
+  Withdrawn
+}
+
+pub struct VaultApprovalRequest {
+  pub id : String
+  pub ws : String
+  pub vault_id : String
+  pub item_id : String
+  pub item_name : String
+  pub kind : VaultRequestKind
+  pub mode : String
+  pub reason : String
+  pub hosts : Array[String]
+  pub max_scope : String
+  pub at_ms : Int64
+  pub mut status : VaultRequestStatus
+  pub mut granted_scope : Option[String]
+  pub mut decided_at_ms : Option[Int64]
+  pub mut decision_note : Option[String]
+}
+
+fn scope_rank_vc(s : String) -> Int {
+  if s == "once" {
+    0
+  } else if s == "hour" {
+    1
+  } else if s == "chat" {
+    2
+  } else {
+    -1
+  }
+}
+
+/// Whether granting `grant_scope` is permitted under item/vault `lasts` cap (`vault/crypto.ts allows`).
+pub fn vault_allows_scope(lasts : Option[String], grant_scope : String) -> Bool {
+  let sr = scope_rank_vc(grant_scope)
+  if sr < 0 {
+    return false
+  }
+  let cap = match lasts {
+    Some(l) => scope_rank_vc(l)
+    None => 2
+  }
+  cap >= 0 && sr <= cap
+}
+
+pub struct VaultApprovalQueue {
+  pub requests : Array[VaultApprovalRequest]
+}
+
+pub fn VaultApprovalQueue::new() -> VaultApprovalQueue {
+  VaultApprovalQueue::{ requests: [] }
+}
+
+pub fn VaultApprovalQueue::enqueue(self : VaultApprovalQueue, req : VaultApprovalRequest) -> Unit {
+  for i in 0..<self.requests.length() {
+    if self.requests[i].id == req.id {
+      self.requests[i] = req
+      return
+    }
+  }
+  self.requests.push(req)
+}
+
+/// Approve a pending request (`secret_use`, `secret_save`, or `secret_delete`).
+/// Enforces `grant_scope <= max_scope` for `SecretUse`.
+pub fn VaultApprovalQueue::approve(
+  self : VaultApprovalQueue,
+  request_id : String,
+  grant_scope : String,
+  now_ms : Int64,
+) -> Result[Unit, String] {
+  for i in 0..<self.requests.length() {
+    let r = self.requests[i]
+    if r.id != request_id {
+      continue
+    }
+    match r.status {
+      VaultRequestStatus::Pending => ()
+      _ => return Err("request is no longer pending")
+    }
+    match r.kind {
+      VaultRequestKind::SecretUse => {
+        let cap = if r.max_scope.length() > 0 { Some(r.max_scope) } else { None }
+        if !vault_allows_scope(cap, grant_scope) {
+          return Err("scope exceeds allowed lasts cap")
+        }
+        r.granted_scope = Some(grant_scope)
+      }
+      VaultRequestKind::SecretSave | VaultRequestKind::SecretDelete => {
+        r.granted_scope = None
+      }
+    }
+    r.status = VaultRequestStatus::Granted
+    r.decided_at_ms = Some(now_ms)
+    r.decision_note = Some("approved")
+    return Ok(())
+  }
+  Err("request not found")
+}
+
+/// Deny a pending request with an optional reason.
+pub fn VaultApprovalQueue::deny(
+  self : VaultApprovalQueue,
+  request_id : String,
+  now_ms : Int64,
+  note : Option[String] = None,
+) -> Result[Unit, String] {
+  for i in 0..<self.requests.length() {
+    let r = self.requests[i]
+    if r.id != request_id {
+      continue
+    }
+    match r.status {
+      VaultRequestStatus::Pending => ()
+      _ => return Err("request is no longer pending")
+    }
+    r.status = VaultRequestStatus::Denied
+    r.decided_at_ms = Some(now_ms)
+    r.decision_note = note
+    return Ok(())
+  }
+  Err("request not found")
+}
+
+/// Withdraw a pending request (`secret_cancel`).
+pub fn VaultApprovalQueue::withdraw(self : VaultApprovalQueue, request_id : String) -> Bool {
+  for i in 0..<self.requests.length() {
+    let r = self.requests[i]
+    if r.id == request_id {
+      match r.status {
+        VaultRequestStatus::Pending => {
+          r.status = VaultRequestStatus::Withdrawn
+          return true
+        }
+        _ => return false
+      }
+    }
+  }
+  false
+}
+
+fn kind_str_vc(k : VaultRequestKind) -> String {
+  match k {
+    VaultRequestKind::SecretUse => "secret_use"
+    VaultRequestKind::SecretSave => "secret_save"
+    VaultRequestKind::SecretDelete => "secret_delete"
+  }
+}
+
+fn status_str_vc(s : VaultRequestStatus) -> String {
+  match s {
+    VaultRequestStatus::Pending => "pending"
+    VaultRequestStatus::Granted => "granted"
+    VaultRequestStatus::Denied => "denied"
+    VaultRequestStatus::Expired => "expired"
+    VaultRequestStatus::Withdrawn => "withdrawn"
+  }
+}
+
+/// Project workspace vault approval queue to UI-safe JSON (always `plainMode: false`, never leaks keys/secrets).
+pub fn project_vault_approvals(queue : VaultApprovalQueue, ws : String) -> base_codec::Json {
+  let pending_arr : Array[base_codec::Json] = []
+  let decided_arr : Array[base_codec::Json] = []
+  for i in 0..<queue.requests.length() {
+    let r = queue.requests[i]
+    if r.ws != ws {
+      continue
+    }
+    let hosts_j : Array[base_codec::Json] = []
+    for h in 0..<r.hosts.length() {
+      hosts_j.push(base_codec::json_str(r.hosts[h]))
+    }
+    let fields : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(r.id)),
+      ("vault", base_codec::json_str(r.vault_id)),
+      ("item", base_codec::json_str(r.item_id)),
+      ("itemName", base_codec::json_str(r.item_name)),
+      ("kind", base_codec::json_str(kind_str_vc(r.kind))),
+      ("mode", base_codec::json_str(r.mode)),
+      ("reason", base_codec::json_str(r.reason)),
+      ("hosts", base_codec::json_arr(hosts_j)),
+      ("status", base_codec::json_str(status_str_vc(r.status))),
+      ("at", base_codec::json_int64(r.at_ms)),
+    ]
+    match r.granted_scope {
+      Some(sc) => fields.push(("scope", base_codec::json_str(sc)))
+      None => ()
+    }
+    let obj = base_codec::json_obj(fields)
+    match r.status {
+      VaultRequestStatus::Pending => pending_arr.push(obj)
+      _ => decided_arr.push(obj)
+    }
+  }
+  base_codec::json_obj([
+    ("workspace", base_codec::json_str(ws)),
+    ("plainMode", base_codec::json_bool(vault_plain_mode(ws))),
+    ("pending", base_codec::json_arr(pending_arr)),
+    ("decided", base_codec::json_arr(decided_arr)),
+  ])
+}
