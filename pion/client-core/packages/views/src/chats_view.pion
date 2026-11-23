@@ -1054,3 +1054,593 @@ pub fn project_chats(
   }
   sql::SqlResult::Ok(base_codec::json_obj(view_fields))
 }
+
+// ---------------------------------------------------------------------------
+// Chat Stage & Viewer Attention Rules (`chat-stage.ts`, `decisions.ts`, `present.ts`)
+// ---------------------------------------------------------------------------
+
+fn j_is_obj(v : Option[base_codec::Json]) -> Bool {
+  match v {
+    Some(base_codec::Json::Obj(_)) => true
+    _ => false
+  }
+}
+
+fn j_trimmed(v : Option[base_codec::Json]) -> Option[String] {
+  match v {
+    Some(base_codec::Json::Str(s)) => {
+      let t = s.trim()
+      if t.length() > 0 { Some(t) } else { None }
+    }
+    _ => None
+  }
+}
+
+fn j_u64(v : Option[base_codec::Json]) -> Option[Int64] {
+  match v {
+    Some(base_codec::Json::Num(n, repr)) => {
+      if n != n.floor() || n < 0.0 || n > 9007199254740991.0 {
+        return None
+      }
+      if repr.length() > 0 {
+        match base_codec::parse_int64_str(repr) {
+          Some(iv) => if iv >= 0.to_int64() { Some(iv) } else { None }
+          None => Some(n.to_int64())
+        }
+      } else {
+        Some(n.to_int64())
+      }
+    }
+    _ => None
+  }
+}
+
+fn j_get_opt(v : Option[base_codec::Json], k : String) -> Option[base_codec::Json] {
+  match v {
+    Some(obj) => base_codec::json_get(obj, k)
+    None => None
+  }
+}
+
+fn ascii_lower(s : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    if c >= 65 && c <= 90 {
+      sb.write_char((c + 32).unsafe_to_char())
+    } else {
+      sb.write_char(c.unsafe_to_char())
+    }
+  }
+  sb.to_string()
+}
+
+/// `present.ts isViewer(me, person, [])`.
+pub fn is_viewer_match(me : base_codec::Json, person : String) -> Bool {
+  match base_codec::json_get(me, "id") {
+    Some(base_codec::Json::Str(id)) => if id == person { return true }
+    _ => ()
+  }
+  match base_codec::json_get(me, "email") {
+    Some(base_codec::Json::Str(em)) => ascii_lower(em) == ascii_lower(person)
+    _ => false
+  }
+}
+
+/// `decisions.ts decider(card, creator)`.
+pub fn decider_of(card : base_codec::Json, creator : base_codec::Json) -> Option[String] {
+  match j_trimmed(base_codec::json_get(card, "assignee")) {
+    Some(a) => Some(a)
+    None => match j_trimmed(base_codec::json_get(creator, "email")) {
+      Some(e) => Some(e)
+      None => j_trimmed(base_codec::json_get(creator, "id"))
+    }
+  }
+}
+
+/// `decisions.ts led(row)` / `chat-stage.ts isLedSubchat(row)`.
+pub fn is_led_subchat(row : base_codec::Json) -> Bool {
+  match j_get_opt(base_codec::json_get(row, "opener"), "led") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+}
+
+/// `decisions.ts ofRow(row)`.
+pub fn card_of_row(row : base_codec::Json) -> Option[base_codec::Json] {
+  let card = base_codec::json_get(row, "card")
+  if card.is_some() && j_u64(j_get_opt(card, "seq")).is_some() && j_is_obj(j_get_opt(card, "card")) {
+    return card
+  }
+  let decision = base_codec::json_get(row, "decision")
+  if decision.is_none() || j_u64(j_get_opt(decision, "seq")).is_none() {
+    return None
+  }
+  match decision {
+    Some(base_codec::Json::Obj(fs)) => {
+      if j_is_obj(j_get_opt(decision, "card")) {
+        return decision
+      }
+      let opts = match j_get_opt(decision, "options") {
+        Some(o) => o
+        None => base_codec::json_null()
+      }
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fs.length() {
+        if fs[i].0 != "card" {
+          out.push(fs[i])
+        }
+      }
+      out.push(("card", base_codec::json_obj([
+        ("type", base_codec::json_str("options")),
+        ("options", opts),
+      ])))
+      Some(base_codec::json_obj(out))
+    }
+    _ => None
+  }
+}
+
+fn is_dismissed_card(card : base_codec::Json) -> Bool {
+  match base_codec::json_get(card, "dismissed") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+}
+
+/// `decisions.ts waits(row)`: `pending(row) !== null`.
+pub fn card_waits(row : base_codec::Json) -> Bool {
+  match card_of_row(row) {
+    Some(c) => !is_dismissed_card(c)
+    None => false
+  }
+}
+
+/// `decisions.ts asked(row)`.
+pub fn asked_of_row(row : base_codec::Json) -> Option[base_codec::Json] {
+  match card_of_row(row) {
+    Some(c) => return Some(c)
+    None => ()
+  }
+  let need = base_codec::json_get(row, "need")
+  if j_u64(j_get_opt(need, "seq")).is_none() || !j_is_obj(j_get_opt(need, "message")) {
+    return None
+  }
+  match need {
+    Some(base_codec::Json::Obj(fs)) => {
+      let asks = j_trimmed(j_get_opt(need, "decider"))
+      let card_fields : Array[(String, base_codec::Json)] = [("type", base_codec::json_str("text"))]
+      match asks {
+        Some(a) => card_fields.push(("assignee", base_codec::json_str(a)))
+        None => ()
+      }
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fs.length() {
+        if fs[i].0 != "card" {
+          out.push(fs[i])
+        }
+      }
+      out.push(("card", base_codec::json_obj(card_fields)))
+      Some(base_codec::json_obj(out))
+    }
+    _ => None
+  }
+}
+
+/// `decisions.ts undecided(row)`.
+pub fn undecided_of_row(row : base_codec::Json) -> Array[base_codec::Json] {
+  match asked_of_row(row) {
+    Some(d) => if is_dismissed_card(d) { [] } else { [d] }
+    None => []
+  }
+}
+
+/// `decisions.ts forViewer(row, me)`.
+pub fn decision_for_viewer(row : base_codec::Json, me : base_codec::Json) -> Option[base_codec::Json] {
+  if is_led_subchat(row) {
+    return None
+  }
+  let d = match asked_of_row(row) {
+    Some(x) => if is_dismissed_card(x) { return None } else { x }
+    None => return None
+  }
+  let card_obj = match base_codec::json_get(d, "card") {
+    Some(c) => c
+    None => base_codec::json_null()
+  }
+  let creator = match base_codec::json_get(row, "creator") {
+    Some(c) => c
+    None => base_codec::json_null()
+  }
+  match decider_of(card_obj, creator) {
+    Some(who) => if is_viewer_match(me, who) { Some(d) } else { None }
+    None => None
+  }
+}
+
+/// `present.ts watches(agents)` / `chat-stage.ts hasActiveWatch(agents)`.
+pub fn has_active_watch(agents : Array[base_codec::Json]) -> Bool {
+  for i in 0..<agents.length() {
+    match j_get_opt(base_codec::json_get(agents[i], "watch"), "names") {
+      Some(base_codec::Json::Arr(ns)) => {
+        for j in 0..<ns.length() {
+          match ns[j] {
+            base_codec::Json::Str(_) => return true
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  false
+}
+
+/// `present.ts ending(s)`.
+pub fn session_ending(s : base_codec::Json) -> Option[String] {
+  let turn = base_codec::json_get(s, "lastTurn")
+  if !j_is_obj(turn) {
+    return None
+  }
+  let said = match j_get_opt(turn, "ending") {
+    Some(base_codec::Json::Str(x)) => x
+    _ => match j_get_opt(turn, "declared") {
+      Some(base_codec::Json::Str(x)) => x
+      _ => return None
+    }
+  }
+  if said == "final" {
+    Some("all_done")
+  } else if said == "block" || said == "need_decision" {
+    Some("need_help")
+  } else {
+    Some(said)
+  }
+}
+
+fn failed_start(s : base_codec::Json) -> Bool {
+  if !j_bool(s, "startFailed") {
+    return false
+  }
+  match j_u64(base_codec::json_get(s, "pending")) {
+    Some(n) => n > 0.to_int64()
+    None => false
+  }
+}
+
+fn opt_str_is_cv(o : Option[String], s : String) -> Bool {
+  match o {
+    Some(x) => x == s
+    None => false
+  }
+}
+
+/// `present.ts sessionStatus(s)`.
+pub fn session_status(s : base_codec::Json) -> String {
+  if j_str(s, "process") == "running" {
+    return "running"
+  }
+  if failed_start(s) {
+    return "failed"
+  }
+  let turn = base_codec::json_get(s, "lastTurn")
+  let has_turn = j_is_obj(turn)
+  let e = if has_turn { session_ending(s) } else { None }
+  if has_turn {
+    let ended_null = match j_get_opt(turn, "endedAt") {
+      Some(base_codec::Json::Null) => true
+      _ => false
+    }
+    let outcome_none = match j_get_opt(turn, "outcome") {
+      None => true
+      Some(base_codec::Json::Null) => true
+      _ => false
+    }
+    if (ended_null && outcome_none) || opt_str_is_cv(e, "waiting") {
+      return "running"
+    }
+  }
+  match j_u64(base_codec::json_get(s, "pending")) {
+    Some(n) => if n > 0.to_int64() { return "queued" }
+    None => ()
+  }
+  if !has_turn {
+    return "idle"
+  }
+  if opt_str_is_cv(e, "all_done") {
+    return "final"
+  }
+  if opt_str_is_cv(e, "need_help") {
+    return "block"
+  }
+  match j_get_opt(turn, "outcome") {
+    Some(base_codec::Json::Str("failed")) => "failed"
+    Some(base_codec::Json::Str("aborted")) => "aborted"
+    _ => "unexpected"
+  }
+}
+
+fn is_session_waiting(s : base_codec::Json) -> Bool {
+  let turn = base_codec::json_get(s, "lastTurn")
+  if !j_is_obj(turn) || !opt_str_is_cv(session_ending(s), "waiting") {
+    return false
+  }
+  let has_int_end = match j_get_opt(turn, "endedAt") {
+    Some(base_codec::Json::Num(n, _)) => n == n.floor()
+    _ => false
+  }
+  has_int_end && session_status(s) == "running" && j_str(s, "process") != "running"
+}
+
+fn is_session_watching(s : base_codec::Json) -> Bool {
+  if !j_is_obj(base_codec::json_get(s, "watch")) || !is_session_waiting(s) {
+    return false
+  }
+  match j_get_opt(base_codec::json_get(s, "lastTurn"), "waitWatch") {
+    Some(base_codec::Json::Bool(false)) => false
+    _ => true
+  }
+}
+
+/// `present.ts shownStatus(s)`.
+pub fn shown_status(s : base_codec::Json) -> String {
+  if is_session_watching(s) { "idle" } else { session_status(s) }
+}
+
+fn badge_of_status(status : String) -> Option[String] {
+  if status == "running" || status == "queued" {
+    Some("run")
+  } else if status == "block" || status == "decision" {
+    Some("block")
+  } else if status == "failed" || status == "unexpected" {
+    Some("failed")
+  } else {
+    None
+  }
+}
+
+/// `present.ts rowState(agents)`.
+pub fn row_state(agents : Array[base_codec::Json]) -> Option[String] {
+  let mut has_block = false
+  let mut has_run = false
+  let mut has_failed = false
+  for i in 0..<agents.length() {
+    match badge_of_status(shown_status(agents[i])) {
+      Some("block") => { has_block = true }
+      Some("run") => { has_run = true }
+      Some("failed") => { has_failed = true }
+      _ => ()
+    }
+  }
+  if has_block {
+    Some("block")
+  } else if has_run {
+    Some("run")
+  } else if has_failed {
+    Some("failed")
+  } else {
+    None
+  }
+}
+
+/// `chat-stage.ts startedBy(row, me)`.
+pub fn started_by(row : base_codec::Json, me : base_codec::Json) -> Bool {
+  let creator = base_codec::json_get(row, "creator")
+  let who : Option[String] = match creator {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    Some(obj) => match j_opt_str(obj, "email") {
+      Some(e) => Some(e)
+      None => j_opt_str(obj, "id")
+    }
+    None => None
+  }
+  let me_missing = match me {
+    base_codec::Json::Null => true
+    _ => false
+  }
+  match who {
+    None => j_bool(row, "mine")
+    Some(w) => if me_missing { j_bool(row, "mine") } else { is_viewer_match(me, w) }
+  }
+}
+
+/// `chat-stage.ts failedForViewer(row, me)`.
+pub fn failed_for_viewer(row : base_codec::Json, me : base_codec::Json) -> Bool {
+  j_bool(row, "mine") && opt_str_is_cv(row_state(j_arr(row, "agents")), "failed") && started_by(row, me)
+}
+
+/// `chat-stage.ts needsViewer(row, me, opts)`.
+pub fn needs_viewer(
+  row : base_codec::Json,
+  me : base_codec::Json,
+  gone : Option[Array[String]] = None,
+  failure_id : Option[String] = None,
+  unsent_opt : Option[Bool] = None,
+) -> Bool {
+  if is_led_subchat(row) {
+    return false
+  }
+  let unsent_flag = match unsent_opt {
+    Some(true) => true
+    _ => false
+  }
+  if unsent_flag || j_bool(row, "unsent") {
+    return true
+  }
+  if decision_for_viewer(row, me).is_some() {
+    return true
+  }
+  if !failed_for_viewer(row, me) {
+    return false
+  }
+  match (gone, failure_id) {
+    (Some(gs), Some(fid)) => {
+      for i in 0..<gs.length() {
+        if gs[i] == fid {
+          return false
+        }
+      }
+      true
+    }
+    _ => true
+  }
+}
+
+/// `chat-stage.ts hasOpenAskForOthers(row, me)`.
+pub fn has_open_ask_for_others(row : base_codec::Json, me : base_codec::Json) -> Bool {
+  !is_led_subchat(row) && undecided_of_row(row).length() > 0 && decision_for_viewer(row, me).is_none()
+}
+
+fn leads_active(row : base_codec::Json) -> Bool {
+  let opened = j_arr(row, "opened")
+  for i in 0..<opened.length() {
+    if j_bool(opened[i], "led") && j_bool(opened[i], "active") {
+      return true
+    }
+  }
+  false
+}
+
+/// `chat-stage.ts isRunningOrWaitingAsync(row)`.
+pub fn is_running_or_waiting_async(row : base_codec::Json) -> Bool {
+  if j_bool(row, "pending") {
+    return true
+  }
+  let agents = j_arr(row, "agents")
+  if agents.length() == 0 {
+    return true
+  }
+  for i in 0..<agents.length() {
+    let s = session_status(agents[i])
+    if s == "running" || s == "queued" || j_bool(agents[i], "waitingAsync") {
+      return true
+    }
+  }
+  leads_active(row)
+}
+
+/// `chat-stage.ts noTurnBegun(row)`.
+pub fn no_turn_begun(row : base_codec::Json) -> Bool {
+  let agents = j_arr(row, "agents")
+  if agents.length() == 0 {
+    return false
+  }
+  for i in 0..<agents.length() {
+    if session_status(agents[i]) != "idle" {
+      return false
+    }
+  }
+  true
+}
+
+fn is_pinned_row(row : base_codec::Json) -> Bool {
+  match base_codec::json_get(row, "pinned") {
+    Some(base_codec::Json::Bool(true)) => true
+    Some(base_codec::Json::Num(_, _)) => true
+    _ => false
+  }
+}
+
+/// `present.ts ended(row)`.
+pub fn ended_row(row : base_codec::Json) -> Bool {
+  let agents = j_arr(row, "agents")
+  if agents.length() == 0 {
+    return false
+  }
+  for i in 0..<agents.length() {
+    if shown_status(agents[i]) != "final" {
+      return false
+    }
+  }
+  !card_waits(row)
+}
+
+/// `present.ts settled(row)`.
+pub fn settled_row(row : base_codec::Json) -> Bool {
+  ended_row(row) && !j_bool(row, "unread")
+}
+
+/// `present.ts archivable(row)`.
+pub fn archivable_row(row : base_codec::Json) -> Bool {
+  if !settled_row(row) || is_pinned_row(row) || j_bool(row, "archiveReminderDismissed") {
+    return false
+  }
+  !j_bool(row, "archiveReviewed") || j_bool(row, "archiveRecommended")
+}
+
+/// `chat-stage.ts archiveRead(row, me)`.
+pub fn archive_read(row : base_codec::Json, me : base_codec::Json) -> Bool {
+  !is_led_subchat(row) && archivable_row(row) && started_by(row, me)
+}
+
+/// `chat-stage.ts boardStageOf(row, me, opts)`.
+pub fn board_stage_of(
+  row : base_codec::Json,
+  me : base_codec::Json,
+  gone : Option[Array[String]] = None,
+  failure_id : Option[String] = None,
+  unsent_opt : Option[Bool] = None,
+) -> String {
+  if needs_viewer(row, me, gone=gone, failure_id=failure_id, unsent_opt=unsent_opt) {
+    return "wait"
+  }
+  if has_active_watch(j_arr(row, "agents")) {
+    return "watch"
+  }
+  if is_running_or_waiting_async(row) || has_open_ask_for_others(row, me) {
+    return "run"
+  }
+  "done"
+}
+
+/// `chat-stage.ts subchatsLabel(row)` (zh-CN catalog, matching `holdLanguage()`).
+pub fn subchats_label(row : base_codec::Json) -> Option[String] {
+  let opened = j_arr(row, "opened")
+  let mut active_n = 0
+  let mut asking_n = 0
+  for i in 0..<opened.length() {
+    if j_bool(opened[i], "led") && j_bool(opened[i], "active") {
+      active_n += 1
+      if j_bool(opened[i], "asks") {
+        asking_n += 1
+      }
+    }
+  }
+  if active_n == 0 {
+    return None
+  }
+  if asking_n > 0 {
+    if asking_n == 1 {
+      Some("1 个子会话在等它处理")
+    } else {
+      Some(asking_n.to_string() + " 个子会话在等它处理")
+    }
+  } else if active_n == 1 {
+    Some("1 个子会话进行中")
+  } else {
+    Some(active_n.to_string() + " 个子会话进行中")
+  }
+}
+
+/// `chat-stage.ts stageFields(row, me, opts)`.
+pub fn stage_fields(
+  row : base_codec::Json,
+  me : base_codec::Json,
+  gone : Option[Array[String]] = None,
+  failure_id : Option[String] = None,
+  unsent_opt : Option[Bool] = None,
+) -> base_codec::Json {
+  let stage = board_stage_of(row, me, gone=gone, failure_id=failure_id, unsent_opt=unsent_opt)
+  let out : Array[(String, base_codec::Json)] = []
+  if stage != "done" {
+    out.push(("stage", base_codec::json_str(stage)))
+  }
+  match subchats_label(row) {
+    Some(s) => out.push(("subchats", base_codec::json_str(s)))
+    None => ()
+  }
+  if stage == "done" && archive_read(row, me) {
+    out.push(("archiveRead", base_codec::json_bool(true)))
+  }
+  base_codec::json_obj(out)
+}

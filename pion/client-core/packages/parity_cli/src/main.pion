@@ -149,6 +149,10 @@ fn handle_op(op : String, args : base_codec::Json, sess : ParityCoreSession) -> 
     Some(r) => return r
     None => ()
   }
+  match handle_l4_op(op, args, sess) {
+    Some(r) => return r
+    None => ()
+  }
   // ── Module A: delta.ts ──
   if op == "delta.diff" {
     let ops = protocol::diff(get_json(args, "old"), get_json(args, "next"))

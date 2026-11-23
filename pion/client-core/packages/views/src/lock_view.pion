@@ -1624,3 +1624,837 @@ pub fn SafeModeView::to_json(self : SafeModeView) -> base_codec::Json {
   push_opt_str(out, "onAgainText", self.on_again_text)
   base_codec::json_obj(out)
 }
+
+// ---------------------------------------------------------------------------
+// 6. Lock Handover & Moved Statement Planning (`lock-handover.ts`, `lock-moved.ts`, `lock-statements.ts`)
+// ---------------------------------------------------------------------------
+
+pub fn hand_over_from() -> Int64 { 1794614400.to_int64() }
+pub fn hand_over_first_secs() -> Int64 { (14 * 86400).to_int64() }
+pub fn counted_from() -> Int { 1000 }
+pub fn moved_from_build() -> Int { 9144 }
+pub fn root_out_from_build() -> Int { 9244 }
+pub fn logs_before() -> Int { 256 }
+pub fn logs_any_from_build() -> Int { 9275 }
+pub fn take_over_rounds() -> Int { 4 }
+
+/// Whether a device reporting `build` takes a moved workspace (`lock-handover.ts ableBuild`).
+pub fn able_build(build : Int) -> Bool {
+  build >= 0 && (build < counted_from() || build >= moved_from_build())
+}
+
+/// Whether a device reporting `build` takes a large moved workspace (`lock-handover.ts ableLarge`).
+pub fn able_large(build : Int) -> Bool {
+  build >= 0 && (build < counted_from() || build >= logs_any_from_build())
+}
+
+fn form_arr_lv(j : Option[form::Json]) -> Array[form::Json] {
+  match j {
+    Some(form::Json::Arr(xs)) => xs
+    _ => []
+  }
+}
+
+fn form_num_lv(j : form::Json, key : String) -> Option[Double] {
+  match form::json_field(Some(j), key) {
+    Some(form::Json::Num(n)) => Some(n)
+    _ => None
+  }
+}
+
+/// Who turned safe mode on: the person of the device the genesis names with the key that signed it
+/// (falling back to `body.owner`; `None` if `entries[0]` is not `genesis`).
+pub fn genesis_person(entries : Array[form::Json]) -> Option[String] {
+  if entries.length() == 0 {
+    return None
+  }
+  let g = entries[0]
+  match form_str_lv(g, "kind") {
+    Some("genesis") => ()
+    _ => return None
+  }
+  let body = form::json_field(Some(g), "body")
+  let sig_key = match form::json_field(form::json_field(Some(g), "sig"), "key") {
+    Some(form::Json::Str(s)) => Some(s)
+    _ => None
+  }
+  match sig_key {
+    Some(sk) => {
+      let devs = form_arr_lv(form::json_field(body, "devices"))
+      for i in 0..<devs.length() {
+        let d = devs[i]
+        match form_str_lv(d, "sign_key") {
+          Some(dsk) => {
+            if dsk == sk {
+              match form_str_lv(d, "sub") {
+                Some(sub) => return Some(sub)
+                None => break
+              }
+            }
+          }
+          None => ()
+        }
+      }
+    }
+    None => ()
+  }
+  match form::json_field(body, "owner") {
+    Some(form::Json::Str(owner)) => Some(owner)
+    _ => None
+  }
+}
+
+/// The root a chain moved to, or `None` (a `disable` entry turns it off immediately).
+pub fn moved_root(entries : Array[form::Json]) -> Option[String] {
+  let mut root : Option[String] = None
+  for i in 0..<entries.length() {
+    let e = entries[i]
+    match form_str_lv(e, "kind") {
+      Some("disable") => return None
+      Some("moved") => {
+        match form::json_field(form::json_field(Some(e), "body"), "root") {
+          Some(form::Json::Str(r)) => {
+            root = Some(r)
+          }
+          _ => ()
+        }
+      }
+      _ => ()
+    }
+  }
+  root
+}
+
+struct FoldedMember {
+  email : String
+  role : String
+}
+
+struct UncheckedFold {
+  members : Map[String, FoldedMember]
+  stations : Map[String, String]
+  persons : Map[String, String]
+  mut disabled : Bool
+}
+
+fn fold_unchecked(entries : Array[form::Json]) -> UncheckedFold {
+  let f = UncheckedFold::{
+    members: Map::new(),
+    stations: Map::new(),
+    persons: Map::new(),
+    disabled: false,
+  }
+  for i in 0..<entries.length() {
+    let e = entries[i]
+    let b = form::json_field(Some(e), "body")
+    match form_str_lv(e, "kind") {
+      Some("genesis") => {
+        let ms = form_arr_lv(form::json_field(b, "members"))
+        for j in 0..<ms.length() {
+          let m = ms[j]
+          match form_str_lv(m, "sub") {
+            Some(sub) => {
+              let email = match form_str_lv(m, "email") { Some(x) => x; None => "" }
+              let role_s = match form_str_lv(m, "role") { Some(x) => x; None => "" }
+              f.members.set(sub, FoldedMember::{ email: email, role: role_s })
+            }
+            None => ()
+          }
+        }
+        let sts = form_arr_lv(form::json_field(b, "stations"))
+        for j in 0..<sts.length() {
+          let s = sts[j]
+          match form_str_lv(s, "key") {
+            Some(k) => {
+              let nm = match form_str_lv(s, "name") { Some(x) => x; None => "" }
+              f.stations.set(k, nm)
+            }
+            None => ()
+          }
+        }
+      }
+      Some("member") => {
+        match form::json_field(b, "sub") {
+          Some(form::Json::Str(sub)) => {
+            let email = match form::json_field(b, "email") { Some(form::Json::Str(x)) => x; _ => "" }
+            let role_s = match form::json_field(b, "role") { Some(form::Json::Str(x)) => x; _ => "" }
+            f.members.set(sub, FoldedMember::{ email: email, role: role_s })
+          }
+          _ => ()
+        }
+      }
+      Some("member.remove") => {
+        match form::json_field(b, "sub") {
+          Some(form::Json::Str(sub)) => {
+            f.members.remove(sub)
+            f.persons.remove(sub)
+          }
+          _ => ()
+        }
+      }
+      Some("person") => {
+        match (form::json_field(b, "sub"), form::json_field(b, "person")) {
+          (Some(form::Json::Str(sub)), Some(form::Json::Str(p))) => f.persons.set(sub, p)
+          _ => ()
+        }
+      }
+      Some("station") => {
+        match form::json_field(b, "key") {
+          Some(form::Json::Str(k)) => {
+            let nm = match form::json_field(b, "name") { Some(form::Json::Str(x)) => x; _ => "" }
+            f.stations.set(k, nm)
+          }
+          _ => ()
+        }
+      }
+      Some("station.remove") => {
+        match form::json_field(b, "key") {
+          Some(form::Json::Str(k)) => f.stations.remove(k)
+          _ => ()
+        }
+      }
+      Some("disable") => {
+        f.disabled = true
+      }
+      _ => ()
+    }
+  }
+  f
+}
+
+/// Whether `sub` may hand over `entries` at `now` given `from` (`lock-handover.ts mayHandOver`).
+pub fn may_hand_over(entries : Array[form::Json], sub : String, from : Double, now : Double) -> Bool {
+  if entries.length() == 0 || moved_root(entries).is_some() {
+    return false
+  }
+  let f = fold_unchecked(entries)
+  match f.members.get(sub) {
+    Some(m) => if m.role != "owner" { return false }
+    None => return false
+  }
+  let first = genesis_person(entries)
+  match first {
+    Some(fp) => {
+      if fp == sub {
+        return true
+      }
+      match f.members.get(fp) {
+        Some(m) => if m.role != "owner" { return true }
+        None => return true
+      }
+      let g_at = match form_num_lv(entries[0], "at") {
+        Some(v) => v
+        None => 0.0
+      }
+      let base = if from > g_at { from } else { g_at }
+      now >= base + hand_over_first_secs().to_double()
+    }
+    None => true
+  }
+}
+
+pub fn ws_tag_str(ws : String, genesis : String, c : lock::Crypto) -> String {
+  lock::ws_tag(ws, genesis, c)
+}
+
+pub fn body_hash_str(body : form::Json, c : lock::Crypto) -> Option[String] {
+  match lock::body_hash(body, c) {
+    Ok(h) => Some(h)
+    Err(_) => None
+  }
+}
+
+fn sort_strings_lv(xs : Array[String]) -> Unit {
+  for i in 1..<xs.length() {
+    let cur = xs[i]
+    let mut j = i - 1
+    while j >= 0 && xs[j] > cur {
+      xs[j + 1] = xs[j]
+      j -= 1
+    }
+    xs[j + 1] = cur
+  }
+}
+
+fn opt_str_is_lv(o : Option[String], s : String) -> Bool {
+  match o {
+    Some(x) => x == s
+    None => false
+  }
+}
+
+/// `lock-statements.ts prevOf`: latest `ws` statement on `log` for `ws` whose whole `prev` chain is in `kept`.
+pub fn prev_of_log(
+  ws : String,
+  log : Array[form::Json],
+  kept : Map[String, form::Json],
+  c : lock::Crypto,
+) -> Option[String] {
+  if log.length() == 0 {
+    return None
+  }
+  let g_hash = entry_hash_or_empty(log[0], c)
+  if g_hash.length() == 0 {
+    return None
+  }
+  let t = lock::ws_tag(ws, g_hash, c)
+  let whole = fn(h : String) -> Bool {
+    let mut p : Option[String] = Some(h)
+    let mut n = 0
+    while n < 10000 {
+      match p {
+        None => return true
+        Some(cur) => {
+          match kept.get(cur) {
+            None => return false
+            Some(b) => {
+              p = form_str_lv(b, "prev")
+            }
+          }
+        }
+      }
+      n += 1
+    }
+    true
+  }
+  let mut i = log.length() - 1
+  while i > 0 {
+    let e = log[i]
+    if opt_str_is_lv(form_str_lv(e, "kind"), "ws") {
+      let b = form::json_field(Some(e), "body")
+      match (form::json_field(b, "t"), form::json_field(b, "h")) {
+        (Some(form::Json::Str(et)), Some(form::Json::Str(eh))) => {
+          if et == t && whole(eh) {
+            return Some(eh)
+          }
+        }
+        _ => ()
+      }
+    }
+    i -= 1
+  }
+  None
+}
+
+/// `lock-statements.ts cancelsOf`: sorted hashes of kept admit bodies matching a removal.
+pub fn cancels_of_kept(
+  ws : String,
+  kind : String,
+  target : String,
+  kept : Map[String, form::Json],
+  root : Option[(String, String)],
+) -> Array[String] {
+  let out : Array[String] = []
+  let ks = kept.keys()
+  for i in 0..<ks.length() {
+    let h = ks[i]
+    match kept.get(h) {
+      Some(b) => {
+        if !opt_str_is_lv(form_str_lv(b, "ws"), ws) {
+          continue
+        }
+        if kind == "member.remove" {
+          if opt_str_is_lv(form_str_lv(b, "kind"), "member") && opt_str_is_lv(form_str_lv(b, "sub"), target) {
+            out.push(h)
+          }
+        } else if kind == "station.remove" {
+          if opt_str_is_lv(form_str_lv(b, "kind"), "station") && opt_str_is_lv(form_str_lv(b, "key"), target) {
+            out.push(h)
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  match root {
+    Some((r_sub, r_gen)) => {
+      if kind == "member.remove" && target == r_sub && !str_in_array_lv(out, r_gen) {
+        out.push(r_gen)
+      }
+    }
+    None => ()
+  }
+  sort_strings_lv(out)
+  out
+}
+
+fn pad_salt_lv(idx : Int) -> String {
+  let s = idx.to_string()
+  let sb = StringBuilder::new()
+  let zeros = 32 - s.length()
+  for _ in 0..<zeros {
+    sb.write_string("0")
+  }
+  sb.write_string(s)
+  sb.to_string()
+}
+
+fn make_stmt_body(
+  ws : String,
+  said : form::Json,
+  log : Array[form::Json],
+  kept : Map[String, form::Json],
+  salt : String,
+  root : Option[(String, String)],
+  c : lock::Crypto,
+) -> form::Json {
+  let prev = prev_of_log(ws, log, kept, c)
+  let kind = match form_str_lv(said, "kind") { Some(k) => k; None => "" }
+  let out : Array[(String, form::Json)] = []
+  match said {
+    form::Json::Obj(fs) => {
+      for i in 0..<fs.length() {
+        let k = fs[i].0
+        if k != "ws" && k != "prev" && k != "salt" && k != "cancels" {
+          out.push(fs[i])
+        }
+      }
+    }
+    _ => ()
+  }
+  if kind == "member.remove" {
+    let sub = match form_str_lv(said, "sub") { Some(s) => s; None => "" }
+    let cs = cancels_of_kept(ws, kind, sub, kept, root)
+    let cj : Array[form::Json] = []
+    for i in 0..<cs.length() {
+      cj.push(form::Json::Str(cs[i]))
+    }
+    out.push(("cancels", form::Json::Arr(cj)))
+  } else if kind == "station.remove" {
+    let key = match form_str_lv(said, "key") { Some(s) => s; None => "" }
+    let cs = cancels_of_kept(ws, kind, key, kept, root)
+    let cj : Array[form::Json] = []
+    for i in 0..<cs.length() {
+      cj.push(form::Json::Str(cs[i]))
+    }
+    out.push(("cancels", form::Json::Arr(cj)))
+  }
+  out.push(("ws", form::Json::Str(ws)))
+  out.push(("prev", match prev { Some(p) => form::Json::Str(p); None => form::Json::Null }))
+  out.push(("salt", form::Json::Str(salt)))
+  form::Json::Obj(out)
+}
+
+struct ListedMember {
+  role : String
+  lock : String
+  email : Option[String]
+}
+
+struct ListedRoster {
+  members : Map[String, ListedMember]
+  member_keys : Array[String]
+  stations : Map[String, Bool]
+  station_keys : Array[String]
+  newest : Option[String]
+}
+
+fn roster_listed_lv(
+  ws : String,
+  root : String,
+  chains : Array[Array[form::Json]],
+  bodies : Array[form::Json],
+  c : lock::Crypto,
+  moved : Option[Array[form::Json]],
+) -> Option[ListedRoster] {
+  let r = match moved {
+    Some(m) => lock::roster_moved(ws, m, chains, bodies, [], c)
+    None => lock::roster(ws, root, chains, bodies, c)
+  }
+  if !r.rooted {
+    return None
+  }
+  let in_force : Map[String, String] = Map::new()
+  for i in 0..<r.in_force.length() {
+    in_force.set(r.in_force[i].0, r.in_force[i].1)
+  }
+  let kept : Map[String, form::Json] = Map::new()
+  for i in 0..<bodies.length() {
+    match body_hash_str(bodies[i], c) {
+      Some(h) => if kept.get(h).is_none() { kept.set(h, bodies[i]) }
+      None => ()
+    }
+  }
+  let was = match moved {
+    Some(m) => Some(fold_unchecked(m))
+    None => None
+  }
+  let members : Map[String, ListedMember] = Map::new()
+  let member_keys : Array[String] = []
+  for i in 0..<r.members.length() {
+    let m = r.members[i]
+    let mut email : Option[String] = None
+    match m.admit {
+      Some(adm) => {
+        if adm.starts_with("~") {
+          match was {
+            Some(wf) => match wf.members.get(m.sub) {
+              Some(fm) => { email = Some(fm.email) }
+              None => ()
+            }
+            None => ()
+          }
+        } else {
+          match in_force.get(adm) {
+            Some(bh) => match kept.get(bh) {
+              Some(b) => { email = form_str_lv(b, "email") }
+              None => ()
+            }
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+    members.set(m.sub, ListedMember::{ role: m.role, lock: m.lock, email: email })
+    member_keys.push(m.sub)
+  }
+  let stations : Map[String, Bool] = Map::new()
+  let station_keys : Array[String] = []
+  for i in 0..<r.stations.length() {
+    stations.set(r.stations[i], true)
+    station_keys.push(r.stations[i])
+  }
+  Some(ListedRoster::{
+    members: members,
+    member_keys: member_keys,
+    stations: stations,
+    station_keys: station_keys,
+    newest: r.newest,
+  })
+}
+
+fn same_said_subject(a : form::Json, b : form::Json) -> Bool {
+  match (form_str_lv(a, "sub"), form_str_lv(b, "sub")) {
+    (Some(sa), Some(sb)) => if sa == sb { return true }
+    _ => ()
+  }
+  match (form_str_lv(a, "key"), form_str_lv(b, "key")) {
+    (Some(ka), Some(kb)) => ka == kb
+    _ => false
+  }
+}
+
+/// Plan statements for a moved workspace (`lock-statements.ts plan`):
+/// - Collateral-removal protection (re-states members/stations that removing an actor would drop, up to `TAKE_OVER_ROUNDS = 4`).
+/// - Refuses no-op / unauthorized statements (e.g. non-root `off`/`open`, non-owner/admin changes).
+pub fn plan_moved_statements(
+  ws : String,
+  root : String,
+  chains : Map[String, Array[form::Json]],
+  bodies : Array[form::Json],
+  own_genesis : String,
+  own_sub : String,
+  own_key : String,
+  meant : Array[form::Json],
+  now_secs : Double,
+  moved : Option[Array[form::Json]],
+  root_out : Bool,
+  c : lock::Crypto,
+) -> Result[Array[form::Json], String] {
+  let named : Option[(String, String)] = if root_out {
+    match chains.get(root) {
+      Some(rc) => if rc.length() > 0 {
+        match form::json_field(form::json_field(Some(rc[0]), "body"), "sub") {
+          Some(form::Json::Str(s)) => Some((s, root))
+          _ => None
+        }
+      } else { None }
+      None => None
+    }
+  } else {
+    None
+  }
+  let all_chains : Array[Array[form::Json]] = []
+  let all_ckeys = chains.keys()
+  for i in 0..<all_ckeys.length() {
+    match chains.get(all_ckeys[i]) {
+      Some(es) => all_chains.push(es)
+      None => ()
+    }
+  }
+  let before = match roster_listed_lv(ws, root, all_chains, bodies, c, moved) {
+    Some(r) => r
+    None => return Err("the workspace's root log is not held here")
+  }
+  let log = match chains.get(own_genesis) {
+    Some(l) => if l.length() > 0 { l } else { return Err("this device's person log is not held here") }
+    None => return Err("this device's person log is not held here")
+  }
+  let extra : Array[form::Json] = []
+  for _round in 0..<take_over_rounds() {
+    let says : Array[form::Json] = []
+    for i in 0..<extra.length() {
+      says.push(extra[i])
+    }
+    for i in 0..<meant.length() {
+      says.push(meant[i])
+    }
+    let made : Map[String, Bool] = Map::new()
+    let kept : Map[String, form::Json] = Map::new()
+    for i in 0..<bodies.length() {
+      match body_hash_str(bodies[i], c) {
+        Some(h) => if kept.get(h).is_none() { kept.set(h, bodies[i]) }
+        None => ()
+      }
+    }
+    let chain : Array[form::Json] = []
+    for i in 0..<log.length() {
+      chain.push(log[i])
+    }
+    let new_bodies : Array[form::Json] = []
+    for i in 0..<says.length() {
+      let b = make_stmt_body(ws, says[i], chain, kept, pad_salt_lv(new_bodies.length()), named, c)
+      let bh = match body_hash_str(b, c) { Some(h) => h; None => "" }
+      kept.set(bh, b)
+      new_bodies.push(b)
+      let last = chain[chain.length() - 1]
+      let last_at = match form_num_lv(last, "at") { Some(v) => v; None => 0.0 }
+      let at = if last_at > now_secs { last_at } else { now_secs }
+      let e_no_sig = form::Json::Obj([
+        ("v", form::Json::Num(1.0)),
+        ("ws", form::Json::Str("person:" + own_sub)),
+        ("seq", form::Json::Num(chain.length().to_double())),
+        ("prev", form::Json::Str(entry_hash_or_empty(last, c))),
+        ("at", form::Json::Num(at)),
+        ("kind", form::Json::Str("ws")),
+        ("body", form::Json::Obj([
+          ("t", form::Json::Str(lock::ws_tag(ws, own_genesis, c))),
+          ("h", form::Json::Str(bh)),
+        ])),
+      ])
+      let eh = entry_hash_or_empty(e_no_sig, c)
+      made.set(eh, true)
+      chain.push(form::Json::Obj([
+        ("v", form::Json::Num(1.0)),
+        ("ws", form::Json::Str("person:" + own_sub)),
+        ("seq", form::Json::Num(chain.length().to_double())),
+        ("prev", form::Json::Str(entry_hash_or_empty(last, c))),
+        ("at", form::Json::Num(at)),
+        ("kind", form::Json::Str("ws")),
+        ("body", form::Json::Obj([
+          ("t", form::Json::Str(lock::ws_tag(ws, own_genesis, c))),
+          ("h", form::Json::Str(bh)),
+        ])),
+        ("sig", form::Json::Obj([
+          ("key", form::Json::Str(own_key)),
+          ("alg", form::Json::Str("Ed25519")),
+          ("sig", form::Json::Str("")),
+        ])),
+      ]))
+    }
+    let binding : Map[String, Bool] = Map::new()
+    for i in 0..<says.length() {
+      if opt_str_is_lv(form_str_lv(says[i], "kind"), "bind") {
+        match form_str_lv(says[i], "key") {
+          Some(k) => binding.set(k, true)
+          None => ()
+        }
+      }
+    }
+    let orig_sig = c.sig_valid
+    let orig_tagged = c.tagged_sig_valid
+    let sim_c = lock::Crypto::{
+      sha256_hex: c.sha256_hex,
+      sig_valid: fn(sig : form::Json, hash : String, origins : Array[String], rp_id : String, passkey : Bool) -> Bool {
+        if made.get(hash).is_some() && opt_str_is_lv(form_str_lv(sig, "key"), own_key) {
+          return true
+        }
+        orig_sig(sig, hash, origins, rp_id, passkey)
+      },
+      valid_key_id: c.valid_key_id,
+      endpoint_proof: c.endpoint_proof,
+      tagged_sig_valid: fn(key : String, sig : String, tag : String, digest : String) -> Bool {
+        if binding.get(key).is_some() {
+          return true
+        }
+        orig_tagged(key, sig, tag, digest)
+      },
+    }
+    let sim_chains : Array[Array[form::Json]] = []
+    let ckeys = chains.keys()
+    for i in 0..<ckeys.length() {
+      if ckeys[i] != own_genesis {
+        match chains.get(ckeys[i]) {
+          Some(es) => sim_chains.push(es)
+          None => ()
+        }
+      }
+    }
+    sim_chains.push(chain)
+    let sim_bodies : Array[form::Json] = []
+    for i in 0..<bodies.length() {
+      sim_bodies.push(bodies[i])
+    }
+    for i in 0..<new_bodies.length() {
+      sim_bodies.push(new_bodies[i])
+    }
+    let after = match roster_listed_lv(ws, root, sim_chains, sim_bodies, sim_c, moved) {
+      Some(r) => r
+      None => return Err("the workspace's root log is not held here")
+    }
+    // Check `otherwise(before, after, meant, own)`
+    let mut is_binding = false
+    let subs : Map[String, Bool] = Map::new()
+    let sub_list : Array[String] = []
+    let keys : Map[String, Bool] = Map::new()
+    let key_list : Array[String] = []
+    let mut last_on_off : Option[String] = None
+    for i in 0..<meant.length() {
+      let m = meant[i]
+      let mk = match form_str_lv(m, "kind") { Some(x) => x; None => "" }
+      if mk == "bind" {
+        is_binding = true
+      }
+      if mk == "open" || mk == "off" {
+        last_on_off = Some(mk)
+      }
+      match form_str_lv(m, "sub") {
+        Some(s) => {
+          if subs.get(s).is_none() {
+            subs.set(s, true)
+            sub_list.push(s)
+          }
+        }
+        None => ()
+      }
+      match form_str_lv(m, "key") {
+        Some(k) => {
+          if keys.get(k).is_none() {
+            keys.set(k, true)
+            key_list.push(k)
+          }
+        }
+        None => ()
+      }
+    }
+    for i in 0..<sub_list.length() {
+      let sub = sub_list[i]
+      let mut last_member : Option[form::Json] = None
+      let mut j = meant.length() - 1
+      while j >= 0 {
+        if opt_str_is_lv(form_str_lv(meant[j], "kind"), "member") && opt_str_is_lv(form_str_lv(meant[j], "sub"), sub) {
+          last_member = Some(meant[j])
+          break
+        }
+        j -= 1
+      }
+      let now_m = after.members.get(sub)
+      match last_member {
+        Some(lm) => {
+          let want_role = match form_str_lv(lm, "role") { Some(x) => x; None => "" }
+          let want_lock = match form_str_lv(lm, "lock") { Some(x) => x; None => "" }
+          match now_m {
+            Some(nm) => if nm.role != want_role || nm.lock != want_lock {
+              return Err("the change would not take effect by the rules")
+            }
+            None => return Err("the change would not take effect by the rules")
+          }
+        }
+        None => {
+          if now_m.is_some() {
+            return Err("the change would not take effect by the rules")
+          }
+        }
+      }
+    }
+    for i in 0..<key_list.length() {
+      let key = key_list[i]
+      let mut last_kind = ""
+      let mut j = meant.length() - 1
+      while j >= 0 {
+        if opt_str_is_lv(form_str_lv(meant[j], "key"), key) {
+          last_kind = match form_str_lv(meant[j], "kind") { Some(x) => x; None => "" }
+          break
+        }
+        j -= 1
+      }
+      if after.stations.get(key).is_some() != (last_kind == "station") {
+        return Err("the change would not take effect by the rules")
+      }
+    }
+    match last_on_off {
+      Some(oo) => if !opt_str_is_lv(after.newest, oo) {
+        return Err("the change would not take effect by the rules")
+      }
+      None => ()
+    }
+    let again : Array[form::Json] = []
+    for i in 0..<before.member_keys.length() {
+      let sub = before.member_keys[i]
+      if subs.get(sub).is_some() {
+        continue
+      }
+      let bm = match before.members.get(sub) { Some(x) => x; None => continue }
+      let nm = after.members.get(sub)
+      let unchanged = match nm {
+        Some(x) => x.role == bm.role && x.lock == bm.lock
+        None => false
+      }
+      if unchanged {
+        continue
+      }
+      if is_binding && sub == own_sub {
+        match nm {
+          Some(x) => if x.role == bm.role && x.lock == own_genesis { continue }
+          None => ()
+        }
+      }
+      match bm.email {
+        None => return Err("it would change someone it does not mean")
+        Some(em) => {
+          again.push(form::Json::Obj([
+            ("kind", form::Json::Str("member")),
+            ("sub", form::Json::Str(sub)),
+            ("email", form::Json::Str(em)),
+            ("lock", form::Json::Str(bm.lock)),
+            ("role", form::Json::Str(bm.role)),
+          ]))
+        }
+      }
+    }
+    for i in 0..<after.member_keys.length() {
+      let sub = after.member_keys[i]
+      if subs.get(sub).is_none() && before.members.get(sub).is_none() {
+        return Err("it would change someone it does not mean")
+      }
+    }
+    for i in 0..<before.station_keys.length() {
+      let key = before.station_keys[i]
+      if keys.get(key).is_none() && after.stations.get(key).is_none() {
+        again.push(form::Json::Obj([
+          ("kind", form::Json::Str("station")),
+          ("key", form::Json::Str(key)),
+        ]))
+      }
+    }
+    for i in 0..<after.station_keys.length() {
+      let key = after.station_keys[i]
+      if keys.get(key).is_none() && before.stations.get(key).is_none() {
+        return Err("it would change someone it does not mean")
+      }
+    }
+    if again.length() == 0 {
+      return Ok(says)
+    }
+    let mut more = false
+    for i in 0..<again.length() {
+      let a = again[i]
+      let mut dup = false
+      for j in 0..<extra.length() {
+        if same_said_subject(extra[j], a) {
+          dup = true
+          break
+        }
+      }
+      if !dup {
+        extra.push(a)
+        more = true
+      }
+    }
+    if !more {
+      return Err("what it would take out besides cannot be said again by this device")
+    }
+  }
+  Err("what it would take out besides cannot be said again by this device")
+}

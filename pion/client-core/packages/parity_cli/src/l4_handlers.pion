@@ -1,0 +1,627 @@
+// Layer 4 differential parity RPC handlers for `parity_cli`:
+// - Sub-suite 1: Lock Handover, Moved Workspaces (`state4_moved`), and Statement Planning (`lock-statements.ts`)
+// - Sub-suite 2: Chat Stage & Viewer Attention Rules (`chat-stage.ts` + `decisions.ts` + `present.ts`)
+// - Sub-suite 3: Shared File Ranges (`merge_ranges`, `missing_ranges`, `SharedFileReads`) & `download_title_of`
+// - Sub-suite 4: Multi-Hop `moved` Chat Resolution & `LocalOutbox` Reconciliation
+
+import "base_codec"
+import "effect"
+import "form"
+import "lock"
+import "outbox"
+import "sql"
+import "store"
+import "sync"
+import "views"
+
+fn sort_strs_l4(xs : Array[String]) -> Unit {
+  for i in 1..<xs.length() {
+    let cur = xs[i]
+    let mut j = i - 1
+    while j >= 0 && xs[j] > cur {
+      xs[j + 1] = xs[j]
+      j -= 1
+    }
+    xs[j + 1] = cur
+  }
+}
+
+fn j_str_arr_l4(j : base_codec::Json, k : String) -> Option[Array[String]] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Arr(xs)) => {
+      let out : Array[String] = []
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => ()
+        }
+      }
+      Some(out)
+    }
+    _ => None
+  }
+}
+
+fn j_opt_bool_l4(j : base_codec::Json, k : String) -> Option[Bool] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+}
+
+fn parse_byte_ranges_l4(arr : Array[base_codec::Json]) -> Array[views::ByteRange] {
+  let out : Array[views::ByteRange] = []
+  for i in 0..<arr.length() {
+    let r = arr[i]
+    out.push(views::ByteRange::new(j_i64(r, "start"), j_i64(r, "end")))
+  }
+  out
+}
+
+fn encode_byte_ranges_l4(rs : Array[views::ByteRange]) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<rs.length() {
+    out.push(base_codec::json_obj([
+      ("start", base_codec::json_int64(rs[i].start)),
+      ("end", base_codec::json_int64(rs[i].end)),
+    ]))
+  }
+  base_codec::json_arr(out)
+}
+
+pub fn handle_l4_op(op : String, args : base_codec::Json, _sess : ParityCoreSession) -> Option[String] {
+  // ── Sub-suite 1: Lock Handover, Moved Workspaces & Statement Planning ──
+  if op == "lock.handoverConstants" {
+    return Some(ok_resp(base_codec::json_obj([
+      ("HAND_OVER_FROM", base_codec::json_int64(views::hand_over_from())),
+      ("HAND_OVER_FIRST_SECS", base_codec::json_int64(views::hand_over_first_secs())),
+      ("COUNTED_FROM", base_codec::json_int(views::counted_from())),
+      ("MOVED_FROM_BUILD", base_codec::json_int(views::moved_from_build())),
+      ("ROOT_OUT_FROM_BUILD", base_codec::json_int(views::root_out_from_build())),
+      ("LOGS_BEFORE", base_codec::json_int(views::logs_before())),
+      ("LOGS_ANY_FROM_BUILD", base_codec::json_int(views::logs_any_from_build())),
+    ])))
+  }
+  if op == "lock.ableBuild" {
+    return Some(ok_resp(base_codec::json_bool(views::able_build(j_i(args, "build")))))
+  }
+  if op == "lock.ableLarge" {
+    return Some(ok_resp(base_codec::json_bool(views::able_large(j_i(args, "build")))))
+  }
+  if op == "lock.genesisPerson" {
+    let entries = parse_form_entries(j_arr_l3(args, "entries"))
+    return Some(ok_resp(opt_str_json(views::genesis_person(entries))))
+  }
+  if op == "lock.movedRoot" {
+    let entries = parse_form_entries(j_arr_l3(args, "entries"))
+    return Some(ok_resp(opt_str_json(views::moved_root(entries))))
+  }
+  if op == "lock.mayHandOver" {
+    let entries = parse_form_entries(j_arr_l3(args, "entries"))
+    let sub = j_s(args, "sub")
+    let from = match j_onum(args, "from") { Some(v) => v; None => 0.0 }
+    let now = match j_onum(args, "now") { Some(v) => v; None => 0.0 }
+    return Some(ok_resp(base_codec::json_bool(views::may_hand_over(entries, sub, from, now))))
+  }
+  if op == "lock.effectiveStateFull" {
+    let c = views::views_lock_crypto()
+    let ws = j_s(args, "ws")
+    let chain = parse_form_entries(j_arr_l3(args, "chain"))
+    let raw_pcs = j_arr_l3(args, "personChains")
+    let pcs : Array[Array[form::Json]] = []
+    for i in 0..<raw_pcs.length() {
+      match raw_pcs[i] {
+        base_codec::Json::Arr(a) => pcs.push(parse_form_entries(a))
+        _ => ()
+      }
+    }
+    let bodies = parse_form_entries(j_arr_l3(args, "bodies"))
+    let now_s = match j_onum(args, "now") { Some(v) => v; None => 0.0 }
+    match views::effective_state(ws, chain, pcs, bodies, now_s, c) {
+      Err(e) => return Some(err_resp(e))
+      Ok(ef) => {
+        let member_subs = ef.state.members.keys()
+        sort_strs_l4(member_subs)
+        let members_fs : Array[(String, base_codec::Json)] = []
+        for i in 0..<member_subs.length() {
+          let sub = member_subs[i]
+          match ef.state.members.get(sub) {
+            Some(m) => {
+              let lock_g = match ef.state.persons.get(sub) { Some(g) => g; None => "" }
+              members_fs.push((sub, base_codec::json_obj([
+                ("role", base_codec::json_str(m.role)),
+                ("email", base_codec::json_str(m.email)),
+                ("lock", base_codec::json_str(lock_g)),
+              ])))
+            }
+            None => ()
+          }
+        }
+        let dev_ids = ef.state.devices.keys()
+        sort_strs_l4(dev_ids)
+        let devs_fs : Array[(String, base_codec::Json)] = []
+        for i in 0..<dev_ids.length() {
+          let did = dev_ids[i]
+          match ef.state.devices.get(did) {
+            Some(d) => {
+              let df : Array[(String, base_codec::Json)] = [
+                ("sub", base_codec::json_str(d.sub)),
+                ("kind", base_codec::json_str(d.kind)),
+                ("label", base_codec::json_str(d.label)),
+              ]
+              match d.sign_key {
+                Some(sk) => df.push(("sign_key", base_codec::json_str(sk)))
+                None => ()
+              }
+              match d.by {
+                Some(by_s) => df.push(("by", base_codec::json_str(by_s)))
+                None => ()
+              }
+              devs_fs.push((did, base_codec::json_obj(df)))
+            }
+            None => ()
+          }
+        }
+        let st_keys = ef.state.stations.keys()
+        sort_strs_l4(st_keys)
+        let sts_j : Array[base_codec::Json] = []
+        for i in 0..<st_keys.length() {
+          sts_j.push(base_codec::json_str(st_keys[i]))
+        }
+        return Some(ok_resp(base_codec::json_obj([
+          ("ws", base_codec::json_str(ef.ws)),
+          ("moved", base_codec::json_bool(ef.moved)),
+          ("movedRoot", opt_str_json(ef.moved_root)),
+          ("on", base_codec::json_str(ef.on)),
+          ("safeMode", base_codec::json_bool(ef.safe_mode)),
+          ("rootIn", base_codec::json_bool(ef.root_in)),
+          ("members", base_codec::json_obj(members_fs)),
+          ("devices", base_codec::json_obj(devs_fs)),
+          ("stations", base_codec::json_arr(sts_j)),
+        ])))
+      }
+    }
+  }
+  if op == "lock.planStatements" {
+    let c = views::views_lock_crypto()
+    let ws = j_s(args, "ws")
+    let root = j_s(args, "root")
+    let chains : Map[String, Array[form::Json]] = Map::new()
+    match base_codec::json_get(args, "chains") {
+      Some(base_codec::Json::Obj(fs)) => {
+        for i in 0..<fs.length() {
+          match fs[i].1 {
+            base_codec::Json::Arr(es) => chains.set(fs[i].0, parse_form_entries(es))
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    let bodies = parse_form_entries(j_arr_l3(args, "bodies"))
+    let own_gen = j_s(args, "ownGenesis")
+    let own_sub = j_s(args, "ownSub")
+    let own_key = j_s(args, "ownKey")
+    let meant = parse_form_entries(j_arr_l3(args, "meant"))
+    let now_s = match j_onum(args, "now") { Some(v) => v; None => 0.0 }
+    let moved : Option[Array[form::Json]] = match base_codec::json_get(args, "moved") {
+      Some(base_codec::Json::Arr(es)) => Some(parse_form_entries(es))
+      _ => None
+    }
+    let root_out = j_b(args, "rootOut")
+    match views::plan_moved_statements(ws, root, chains, bodies, own_gen, own_sub, own_key, meant, now_s, moved, root_out, c) {
+      Ok(says) => return Some(ok_resp(base_codec::json_obj([("says", form_entries_to_base(says))])))
+      Err(why) => return Some(ok_resp(base_codec::json_obj([("why", base_codec::json_str(why))])))
+    }
+  }
+
+  // ── Sub-suite 2: Chat Stage & Viewer Attention Rules ──
+  if op == "stage.evalAll" {
+    let row = get_json(args, "row")
+    let me = get_json(args, "me")
+    let gone = j_str_arr_l4(args, "gone")
+    let failure_id = j_os(args, "failureId")
+    let unsent_opt = j_opt_bool_l4(args, "unsent")
+    let agents = match base_codec::json_get(row, "agents") {
+      Some(base_codec::Json::Arr(a)) => a
+      _ => []
+    }
+    let und = views::undecided_of_row(row)
+    let fv = views::decision_for_viewer(row, me)
+    let card_for_dec = match base_codec::json_get(args, "card") {
+      Some(c) => c
+      None => base_codec::json_null()
+    }
+    let creator = match base_codec::json_get(row, "creator") {
+      Some(c) => c
+      None => base_codec::json_null()
+    }
+    return Some(ok_resp(base_codec::json_obj([
+      ("led", base_codec::json_bool(views::is_led_subchat(row))),
+      ("isLedSubchat", base_codec::json_bool(views::is_led_subchat(row))),
+      ("hasActiveWatch", base_codec::json_bool(views::has_active_watch(agents))),
+      ("startedBy", base_codec::json_bool(views::started_by(row, me))),
+      ("failedForViewer", base_codec::json_bool(views::failed_for_viewer(row, me))),
+      ("needsViewer", base_codec::json_bool(views::needs_viewer(row, me, gone=gone, failure_id=failure_id, unsent_opt=unsent_opt))),
+      ("hasOpenAskForOthers", base_codec::json_bool(views::has_open_ask_for_others(row, me))),
+      ("archiveRead", base_codec::json_bool(views::archive_read(row, me))),
+      ("boardStageOf", base_codec::json_str(views::board_stage_of(row, me, gone=gone, failure_id=failure_id, unsent_opt=unsent_opt))),
+      ("stageFields", views::stage_fields(row, me, gone=gone, failure_id=failure_id, unsent_opt=unsent_opt)),
+      ("undecidedCount", base_codec::json_int(und.length())),
+      ("forViewerPresent", base_codec::json_bool(fv.is_some())),
+      ("decider", opt_str_json(views::decider_of(card_for_dec, creator))),
+    ])))
+  }
+
+  // ── Sub-suite 3: Shared File Ranges & Downloads ──
+  if op == "downloads.constants" {
+    return Some(ok_resp(base_codec::json_obj([
+      ("DOWNLOAD_PART", base_codec::json_int64(views::download_part_bytes())),
+    ])))
+  }
+  if op == "downloads.mergeRanges" {
+    let rs = parse_byte_ranges_l4(j_arr_l3(args, "ranges"))
+    return Some(ok_resp(encode_byte_ranges_l4(views::merge_ranges(rs))))
+  }
+  if op == "downloads.missingRanges" {
+    let want_j = get_json(args, "want")
+    let want = views::ByteRange::new(j_i64(want_j, "start"), j_i64(want_j, "end"))
+    let cov = parse_byte_ranges_l4(j_arr_l3(args, "covered"))
+    return Some(ok_resp(encode_byte_ranges_l4(views::missing_ranges(want, cov))))
+  }
+  if op == "downloads.titleOf" {
+    return Some(ok_resp(base_codec::json_str(views::download_title_of(j_s(args, "name")))))
+  }
+  if op == "downloads.simSharedReads" {
+    let sfr = views::SharedFileReads::new()
+    let steps = j_arr_l3(args, "steps")
+    let step_results : Array[base_codec::Json] = []
+    for i in 0..<steps.length() {
+      let st = steps[i]
+      let kind = j_s(st, "kind")
+      if kind == "join" {
+        let plan = sfr.join_reader(
+          j_s(st, "reader"),
+          j_s(st, "fileKey"),
+          j_s(st, "version"),
+          j_i64(st, "start"),
+          j_i64(st, "end"),
+        )
+        let nreqs : Array[base_codec::Json] = []
+        for j in 0..<plan.new_requests.length() {
+          let nr = plan.new_requests[j]
+          nreqs.push(base_codec::json_obj([
+            ("reqId", base_codec::json_int(nr.req_id)),
+            ("start", base_codec::json_int64(nr.start)),
+            ("end", base_codec::json_int64(nr.end)),
+          ]))
+        }
+        let att : Array[base_codec::Json] = []
+        for j in 0..<plan.attached_req_ids.length() {
+          att.push(base_codec::json_int(plan.attached_req_ids[j]))
+        }
+        step_results.push(base_codec::json_obj([
+          ("kind", base_codec::json_str("join")),
+          ("newRequests", base_codec::json_arr(nreqs)),
+          ("attachedReqIds", base_codec::json_arr(att)),
+        ]))
+      } else if kind == "deliver" {
+        let data = match base_codec::hex_decode(j_s(st, "hex")) {
+          Some(b) => b
+          None => Bytes::new(0)
+        }
+        let ok = sfr.deliver_chunk(j_i(st, "reqId"), j_i64(st, "offset"), data)
+        step_results.push(base_codec::json_obj([
+          ("kind", base_codec::json_str("deliver")),
+          ("ok", base_codec::json_bool(ok)),
+        ]))
+      } else if kind == "complete" {
+        let ok = sfr.complete_request(j_i(st, "reqId"))
+        step_results.push(base_codec::json_obj([
+          ("kind", base_codec::json_str("complete")),
+          ("ok", base_codec::json_bool(ok)),
+        ]))
+      } else if kind == "leave" {
+        let cancelled = sfr.leave_reader(j_s(st, "reader"))
+        let cj : Array[base_codec::Json] = []
+        for j in 0..<cancelled.length() {
+          cj.push(base_codec::json_int(cancelled[j]))
+        }
+        step_results.push(base_codec::json_obj([
+          ("kind", base_codec::json_str("leave")),
+          ("cancelled", base_codec::json_arr(cj)),
+        ]))
+      } else if kind == "isActive" {
+        step_results.push(base_codec::json_obj([
+          ("kind", base_codec::json_str("isActive")),
+          ("active", base_codec::json_bool(sfr.is_active(j_i(st, "reqId")))),
+        ]))
+      } else if kind == "read" {
+        let res = sfr.read_completed_bytes(
+          j_s(st, "fileKey"),
+          j_s(st, "version"),
+          j_i64(st, "start"),
+          j_i64(st, "end"),
+        )
+        let hex_j = match res {
+          Some(b) => base_codec::json_str(base_codec::hex_encode(b))
+          None => base_codec::json_null()
+        }
+        step_results.push(base_codec::json_obj([
+          ("kind", base_codec::json_str("read")),
+          ("hex", hex_j),
+        ]))
+      }
+    }
+    let disp : Array[base_codec::Json] = []
+    for i in 0..<sfr.dispatched.length() {
+      let d = sfr.dispatched[i]
+      disp.push(base_codec::json_obj([
+        ("reqId", base_codec::json_int(d.req_id)),
+        ("fileKey", base_codec::json_str(d.file_key)),
+        ("version", base_codec::json_str(d.version)),
+        ("start", base_codec::json_int64(d.start)),
+        ("end", base_codec::json_int64(d.end)),
+      ]))
+    }
+    let check_fk = j_s(args, "checkFileKey")
+    let check_ver = j_s(args, "checkVersion")
+    return Some(ok_resp(base_codec::json_obj([
+      ("steps", base_codec::json_arr(step_results)),
+      ("dispatched", base_codec::json_arr(disp)),
+      ("hasDuplicates", base_codec::json_bool(sfr.has_duplicate_dispatches(check_fk, check_ver))),
+    ])))
+  }
+
+  // ── Sub-suite 4: Multi-Hop `moved` Chat Resolution & `LocalOutbox` Reconciliation ──
+  if op == "moved.simResolve" {
+    let rt = effect::Runtime::new()
+    let sim = ParitySimDb::new(rt)
+    let db = match sql::Sql::open(sim.sh, "moved_sim") {
+      sql::SqlResult::Ok(d) => d
+      sql::SqlResult::Err(_) => return Some(err_resp("failed to open db"))
+    }
+    // Seed chat rows first
+    let chats = j_arr_l3(args, "chats")
+    for i in 0..<chats.length() {
+      let c = chats[i]
+      sim.put_chat_row(ParityChatRow::{
+        station: j_s(c, "station"),
+        archived: 0,
+        id: j_s(c, "id"),
+        ord: 1.0,
+        thread: j_oi(c, "thread"),
+        session: j_os(c, "session"),
+        pinned_at: None,
+        last_active: j_i64(c, "lastActiveAt"),
+        json: base_codec::json_stringify(get_json(c, "doc")),
+      })
+    }
+    // Apply `put_moved` hops
+    let hops = j_arr_l3(args, "hops")
+    for i in 0..<hops.length() {
+      let h = hops[i]
+      let to_opt = match base_codec::json_get(h, "to") {
+        Some(base_codec::Json::Obj(_)) => {
+          let to_j = get_json(h, "to")
+          Some(store::MovedTo::{
+            station: j_s(to_j, "station"),
+            thread: j_oi(to_j, "thread"),
+            there: j_oi(to_j, "there"),
+            at: j_oi64(to_j, "at"),
+            came: j_b(to_j, "came"),
+          })
+        }
+        _ => None
+      }
+      match store::put_moved(db, j_s(h, "station"), j_s(h, "session"), to_opt) {
+        sql::SqlResult::Err(e) => return Some(err_resp("put_moved: " + e.to_string()))
+        sql::SqlResult::Ok(_) => ()
+      }
+    }
+    // Resolve queries
+    let queries = j_arr_l3(args, "queries")
+    let resolved : Array[base_codec::Json] = []
+    for i in 0..<queries.length() {
+      let q = queries[i]
+      let res = match j_oi(q, "thread") {
+        Some(th) => store::resolve_chat_now_by_thread(db, j_s(q, "station"), th)
+        None => store::resolve_chat_now(db, j_s(q, "station"), j_s(q, "session"))
+      }
+      match res {
+        sql::SqlResult::Err(e) => return Some(err_resp("resolve: " + e.to_string()))
+        sql::SqlResult::Ok(None) => resolved.push(base_codec::json_null())
+        sql::SqlResult::Ok(Some(loc)) => {
+          let th_j = match loc.thread { Some(t) => base_codec::json_int(t); None => base_codec::json_null() }
+          resolved.push(base_codec::json_obj([
+            ("station", base_codec::json_str(loc.station)),
+            ("session", base_codec::json_str(loc.session)),
+            ("thread", th_j),
+          ]))
+        }
+      }
+    }
+    // Project multi-station chats to verify origin-row deduplication
+    let st_addrs = j_arr_l3(args, "stations")
+    let briefs : Array[views::StationBrief] = []
+    for i in 0..<st_addrs.length() {
+      match st_addrs[i] {
+        base_codec::Json::Str(addr) => {
+          briefs.push(views::StationBrief::{
+            address: addr,
+            id: addr,
+            name: addr,
+            emoji: None,
+            icon: None,
+            online: true,
+            updating: false,
+            offline_text: None,
+            reconnecting_text: None,
+            running: 0,
+          })
+        }
+        _ => ()
+      }
+    }
+    let memo = views::RowsMemo::new()
+    let marks = views::ViewerMarks::new("alice@example.com")
+    let listed_rows : Array[base_codec::Json] = []
+    if briefs.length() > 0 {
+      match views::project_chats(db, "ws1", briefs, 1795442000000.to_int64(), memo, marks) {
+        sql::SqlResult::Err(e) => return Some(err_resp("project_chats: " + e.to_string()))
+        sql::SqlResult::Ok(view) => {
+          let days = j_arr_l3(view, "days")
+          for di in 0..<days.length() {
+            let items = j_arr_l3(days[di], "items")
+            for ci in 0..<items.length() {
+              listed_rows.push(base_codec::json_obj([
+                ("station", base_codec::json_str(j_s(items[ci], "station"))),
+                ("id", base_codec::json_str(j_s(items[ci], "id"))),
+                ("session", base_codec::json_str(j_s(items[ci], "session"))),
+              ]))
+            }
+          }
+        }
+      }
+    }
+    return Some(ok_resp(base_codec::json_obj([
+      ("resolved", base_codec::json_arr(resolved)),
+      ("listed", base_codec::json_arr(listed_rows)),
+    ])))
+  }
+
+  if op == "outbox.simRun" {
+    let rt = effect::Runtime::new()
+    let sim = ParitySimDb::new(rt)
+    let db = match sql::Sql::open(sim.sh, "outbox_sim") {
+      sql::SqlResult::Ok(d) => d
+      sql::SqlResult::Err(_) => return Some(err_resp("failed to open db"))
+    }
+    let frame_ob : outbox::FrameOutbox[sync::CoreEvent] = outbox::FrameOutbox::new(fn() -> Unit {})
+    let sent_order : Array[String] = []
+    let replies : Map[String, (Int, String)] = Map::new()
+    let reply_specs = j_arr_l3(args, "replies")
+    for i in 0..<reply_specs.length() {
+      let r = reply_specs[i]
+      replies.set(j_s(r, "clientKey"), (j_i(r, "status"), j_s(r, "body")))
+    }
+    let transport = sync::StationTransport::{
+      request_k: fn(_method : String, _path : String, _headers : Array[(String, String)], body : Bytes, k : (effect::Exit[sync::HttpReply]) -> Unit) -> Unit {
+        let sb = StringBuilder::new()
+        for bi in 0..<body.length() {
+          sb.write_byte(body[bi])
+        }
+        let body_str = sb.to_string()
+        let ck = match base_codec::json_parse(body_str) {
+          base_codec::JsonParseResult::Ok(j) => j_s(j, "clientKey")
+          base_codec::JsonParseResult::Err(_) => ""
+        }
+        sent_order.push(ck)
+        match replies.get(ck) {
+          Some((status, rbody)) => {
+            if status == 0 {
+              // Simulate transient network failure (leave in outbox)
+              k(effect::Exit::Failed(effect::EffectError::Custom("network_down")))
+            } else {
+              k(effect::Exit::Succeeded(sync::HttpReply::{ status: status, headers: [], body: rbody.to_bytes() }))
+            }
+          }
+          None => {
+            // Leave pending for SSE reconciliation (202 Accepted without `n`)
+            k(effect::Exit::Succeeded(sync::HttpReply::{ status: 202, headers: [], body: "{}".to_bytes() }))
+          }
+        }
+      },
+      stream_k: fn(_path : String, _headers : Array[(String, String)], _on_chunk : (Bytes) -> Unit, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+        k(effect::Exit::Succeeded(()))
+      },
+    }
+    let station = match j_os(args, "station") { Some(s) => s; None => "ws1/s1" }
+    let lo = sync::LocalOutbox::new(station, db, frame_ob, transport)
+    let events_log : Array[base_codec::Json] = []
+    let drain_events = fn() -> Unit {
+      let batch = frame_ob.take(most=Some(100))
+      for ei in 0..<batch.length() {
+        match batch[ei] {
+          sync::CoreEvent::OutboxQueued(_, th, ck, txt) =>
+          events_log.push(base_codec::json_obj([
+            ("kind", base_codec::json_str("queued")),
+            ("thread", base_codec::json_int(th)),
+            ("clientKey", base_codec::json_str(ck)),
+            ("text", base_codec::json_str(txt)),
+          ]))
+          sync::CoreEvent::OutboxResolved(_, th, ck, n) =>
+          events_log.push(base_codec::json_obj([
+            ("kind", base_codec::json_str("resolved")),
+            ("thread", base_codec::json_int(th)),
+            ("clientKey", base_codec::json_str(ck)),
+            ("n", base_codec::json_int(n)),
+          ]))
+          sync::CoreEvent::OverlayRolledBack(_, ck, opk, code, rec) =>
+          events_log.push(base_codec::json_obj([
+            ("kind", base_codec::json_str("rolledBack")),
+            ("clientKey", base_codec::json_str(ck)),
+            ("op", base_codec::json_str(opk)),
+            ("code", base_codec::json_str(code)),
+            ("recovery", base_codec::json_str(rec)),
+          ]))
+          _ => ()
+        }
+      }
+    }
+
+    let steps = j_arr_l3(args, "steps")
+    let snapshots : Array[base_codec::Json] = []
+    for i in 0..<steps.length() {
+      let st = steps[i]
+      let kind = j_s(st, "kind")
+      if kind == "online" {
+        lo.set_online(j_b(st, "value"))
+      } else if kind == "send" {
+        match lo.send_message(rt, j_i(st, "thread"), j_s(st, "clientKey"), j_s(st, "author"), j_s(st, "text"), j_i64(st, "at")) {
+          sql::SqlResult::Err(e) => return Some(err_resp("send_message: " + e.to_string()))
+          sql::SqlResult::Ok(_) => ()
+        }
+        rt.advance(10)
+      } else if kind == "sseEntry" {
+        let th = j_i(st, "thread")
+        let n = j_i(st, "n")
+        let ck = j_s(st, "clientKey")
+        let burst = sql::Burst::new(db)
+        let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+          lo.reconcile_entry_in_burst(b, th, n, ck)
+          sql::SqlResult::Ok(())
+        })
+      } else if kind == "flush" {
+        lo.flush_offline(rt)
+        rt.advance(10)
+      } else if kind == "snapshot" {
+        let th = j_i(st, "thread")
+        let db_row = match sim.outbox_rows.get(station + ":" + th.to_string()) {
+          Some(raw) => match base_codec::json_parse(raw) {
+            base_codec::JsonParseResult::Ok(j) => j
+            base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+          }
+          None => base_codec::json_arr([])
+        }
+        snapshots.push(base_codec::json_obj([
+          ("pendingCount", base_codec::json_int(lo.pending_message_count())),
+          ("dbOutbox", db_row),
+        ]))
+      }
+      drain_events()
+    }
+    let sent_j : Array[base_codec::Json] = []
+    for i in 0..<sent_order.length() {
+      sent_j.push(base_codec::json_str(sent_order[i]))
+    }
+    return Some(ok_resp(base_codec::json_obj([
+      ("sentOrder", base_codec::json_arr(sent_j)),
+      ("events", base_codec::json_arr(events_log)),
+      ("snapshots", base_codec::json_arr(snapshots)),
+      ("finalPendingCount", base_codec::json_int(lo.pending_message_count())),
+    ])))
+  }
+
+  None
+}

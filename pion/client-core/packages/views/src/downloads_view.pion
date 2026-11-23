@@ -433,10 +433,15 @@ pub fn SharedFileReads::has_duplicate_dispatches(
 fn is_digit_dv(c : Int) -> Bool { c >= 48 && c <= 57 }
 fn is_hex_lower_dv(c : Int) -> Bool { is_digit_dv(c) || (c >= 97 && c <= 102) }
 
-/// Strip station upload prefix `YYYY-MM-DDTHH-MM-SS-<6hex>-` when followed by at least 1 char.
+/// Strip station upload prefix `YYYY-MM-DDTHH-MM-SS-<6hex>-` when followed by at least 1 non-line-terminator char.
 pub fn download_title_of(name : String) -> String {
   // Prefix length is 27 chars: 4+1+2+1+2+1+2+1+2+1+2+1+6+1 = 27.
   if name.length() <= 27 {
+    return name
+  }
+  // JS regex `(?=.)` rejects line terminators (`\n`, `\r`, `\u2028`, `\u2029`).
+  let c27 = name.code_unit_at(27)
+  if c27 == 10 || c27 == 13 || c27 == 8232 || c27 == 8233 {
     return name
   }
   let ok =

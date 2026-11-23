@@ -43,6 +43,7 @@ pub struct ParitySimDb {
   pub station_doc_order : Array[String]
   pub log_use : Map[String, Int64]
   pub md : Map[String, (Int64, String)]
+  pub moved_rows : Map[String, (String, Option[Int], Option[Int], Option[Int64], Int)]
   pub ran : Array[String]
   pub mut writes : Int
 }
@@ -80,6 +81,7 @@ pub fn ParitySimDb::new(rt : effect::Runtime) -> ParitySimDb {
     station_doc_order: [],
     log_use: Map::new(),
     md: Map::new(),
+    moved_rows: Map::new(),
     ran: [],
     writes: 0,
   }
@@ -583,6 +585,102 @@ fn ParitySimDb::answer(self : ParitySimDb, op : String, args : base_codec::Json)
     changed = 1
   } else if stmt.starts_with("DELETE FROM changing") {
     self.changing_rows.remove(ps_str(p, 0) + ":" + ps_int(p, 1).to_string())
+    changed = 1
+  } else if stmt == store::sql_moved_get() {
+    let k = ps_str(p, 0) + "\u{01}" + ps_str(p, 1)
+    match self.moved_rows.get(k) {
+      Some((there_st, th, there_th, at_ms, came)) => {
+        let th_j = match th { Some(v) => base_codec::json_int(v); None => base_codec::json_null() }
+        let there_j = match there_th { Some(v) => base_codec::json_int(v); None => base_codec::json_null() }
+        let at_j = match at_ms { Some(v) => base_codec::json_int64(v); None => base_codec::json_null() }
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(there_st),
+          th_j,
+          there_j,
+          at_j,
+          base_codec::json_int(came),
+        ]))
+      }
+      None => ()
+    }
+  } else if stmt == store::sql_moved_by_thread() {
+    let st = ps_str(p, 0)
+    let want_th = ps_int(p, 1)
+    let prefix = st + "\u{01}"
+    let ks = self.moved_rows.keys()
+    for i in 0..<ks.length() {
+      let k = ks[i]
+      if k.starts_with(prefix) {
+        match self.moved_rows.get(k) {
+          Some((_, Some(th), _, _, _)) => {
+            if th == want_th {
+              let sess = k.slice(prefix.length(), k.length())
+              rows.push(base_codec::json_arr([base_codec::json_str(sess)]))
+              break
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+  } else if stmt == store::sql_moved_from() {
+    let st = ps_str(p, 0)
+    let prefix = st + "\u{01}"
+    let ks = self.moved_rows.keys()
+    let found : Array[String] = []
+    for i in 0..<ks.length() {
+      let k = ks[i]
+      if k.starts_with(prefix) {
+        found.push(k.slice(prefix.length(), k.length()))
+      }
+    }
+    for i in 1..<found.length() {
+      let cur = found[i]
+      let mut j = i - 1
+      while j >= 0 && found[j] > cur {
+        found[j + 1] = found[j]
+        j -= 1
+      }
+      found[j + 1] = cur
+    }
+    for i in 0..<found.length() {
+      rows.push(base_codec::json_arr([base_codec::json_str(found[i])]))
+    }
+  } else if stmt == store::sql_moved_put() {
+    let k = ps_str(p, 0) + "\u{01}" + ps_str(p, 1)
+    self.moved_rows.set(k, (ps_str(p, 2), ps_opt_int(p, 3), ps_opt_int(p, 4), ps_opt_int64(p, 5), ps_int(p, 6)))
+    changed = 1
+  } else if stmt == store::sql_moved_delete() {
+    let k = ps_str(p, 0) + "\u{01}" + ps_str(p, 1)
+    self.moved_rows.remove(k)
+    changed = 1
+  } else if stmt == store::sql_chat_drop_session() {
+    let st = ps_str(p, 0)
+    let sess = ps_str(p, 1)
+    let drop_keys : Array[String] = []
+    for i in 0..<self.chat_order.length() {
+      let ck = self.chat_order[i]
+      match self.chats.get(ck) {
+        Some(c) => {
+          if c.station == st {
+            let match_sess = match c.session {
+              Some(s) => s == sess
+              None => c.id == sess
+            }
+            if match_sess {
+              drop_keys.push(ck)
+            }
+          }
+        }
+        None => ()
+      }
+    }
+    for i in 0..<drop_keys.length() {
+      self.chats.remove(drop_keys[i])
+      changed += 1
+    }
+  } else if stmt == sync::sql_entry_put() {
+    self.put_entry_row(ps_str(p, 0), ps_int(p, 1), ps_int(p, 2), ps_str(p, 3))
     changed = 1
   }
   if op == "sql.run" {
