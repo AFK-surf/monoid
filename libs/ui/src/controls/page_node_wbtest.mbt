@@ -988,3 +988,28 @@ test "narrow page_node with back renders floating liquid glass back pill and pro
   assert_eq(t.drawn_glass().length(), 0, msg="zero glass when back is None: \{Repr(t.drawn_glass())}")
   assert_eq(t.audit(), [], msg="audit without back")
 }
+
+///|
+test "a page its frame names, its blocks told in place of what it showed waiting: at its top, narrow and wide" {
+  // (no head, title or lead over its blocks: the room at its foot an item of its list, alone in it as its blocks
+  // were told, held what showed, and they came in over it, the page at its end)
+  for w in [1280.0, 390.0] {
+    let t = @ui.Tester::new(fn(_c) {  }, w~, h=600.0, platform=2)
+    let blocks : @signals.Signal[Array[String]] = @signals.signal(["wait"])
+    @ui.set_view_app(fn(root) {
+      root.box(fn(b) {
+        b.height(Is(Some(600.0))).width(Is(Some(w))) |> ignore
+        page_node(b, fn() { "Title" }, fn() { blocks.get() }, fn(v, k) {
+          v.box(fn(x) { x.height(Is(Some(60.0))).words(Is("block " + k)) |> ignore }) |> ignore
+        }, on_back=fn() {  }, frame=fn() { { back: None, top: 0.0, foot: 0.0, named: true } })
+      })
+      |> ignore
+    })
+    t.draw()
+    blocks.set(Array::makei(30, fn(i) { "b\{i}" }))
+    t.run_for(@ui.move_most_ms)
+    let drawn = @ui.view_tree().unwrap().drawn()
+    let first = drawn.search_by(fn(d) { d.words == "block b0" }).map(fn(i) { drawn[i].y })
+    assert_true(first is Some(y) && y.abs() < 0.5, msg="\{w}: its first block at \{Repr(first)}")
+  }
+}

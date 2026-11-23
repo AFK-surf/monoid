@@ -332,7 +332,7 @@ pub fn styled_words(w : @view.View, words : () -> String, style : () -> @ui.Text
 
 ///|
 /// What a page made once holds, in its order (page_node's): what stands over it, back, its large title, what it is for,
-/// its blocks by their keys, the room at its foot.
+/// its blocks by their keys; the room at its foot its list's foot, under them and no item of it.
 #derive(Eq, Hash)
 priv enum PageItem {
   Top
@@ -340,7 +340,6 @@ priv enum PageItem {
   Head
   Lead
   Block(String)
-  Foot
 }
 
 ///|
@@ -583,7 +582,6 @@ fn narrow_page_node(
     for k in pg_blocks_read(was, other, blocks()) {
       out.push(Block(k))
     }
-    out.push(Foot)
     out
   }
   v.box(made_for=loc, fn(sc) {
@@ -612,6 +610,10 @@ fn narrow_page_node(
       goes=fn(k) { !other.val && k is Block(_) },
       near_foot?,
       place~,
+      // 30 under the last (in a panel of its own, its last card as far from its foot as from its sides: page_foot),
+      // then the frame's room: the list's foot, under what it holds and no block of it, so blocks told after the page
+      // shows come in under its top, never over a block of room alone in it, the page at its end
+      foot=fn(f) { f.height(By(fn() { Some(page_foot(f) + frame().foot) })) |> ignore },
       // (a block of a kind `reused` gives put by as it no more shows and taken by the next of its kind, made in the
       // page's room as `block` makes one (below), its kind and its key as it is now given `make_reused`)
       reused?=reused.map(fn(r) {
@@ -727,9 +729,6 @@ fn narrow_page_node(
             s.grow(Is(1.0)) |> ignore
             page_block(s, fn(room) { block(room, k) })
           }
-          // 30 under the last (in a panel of its own, its last card as far from its foot as from its sides: page_foot),
-          // then the frame's room
-          Foot => s.height(By(fn() { Some(page_foot(s) + frame().foot) })) |> ignore
         }
       })
     })
