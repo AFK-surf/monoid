@@ -166,7 +166,7 @@ fn context_share_at(x : Double, y : Double, go : () -> Unit, link : String, word
     context.image = ""
     context.field = 0
     context.field_can = 0
-    context.words = @ui.picked_words()
+    context.words = @ui.picked_words_at(x, y)
   }
   context.share = Some(go)
   context.share_link = link
@@ -206,7 +206,7 @@ fn context_reset() -> Unit {
 pub fn context_node(v : @view.View) -> Unit {
   @ui.words_picked(v)
   v.on_menu(fn(m) {
-    let words = @ui.picked_words()
+    let words = @ui.picked_words_in(v)
     if !context_opened_at(m.wx, m.wy) && words.trim(chars=" \n\t") != "" {
       context_asked(m.wx, m.wy, words)
     }

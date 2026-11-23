@@ -7,13 +7,14 @@
 ///|
 /// What a paragraph of words is, as it is copied (words_shaped): a heading of its level; a list's item (how deep, from
 /// 1; its number, 0 in a bulleted list; which item, so its paragraphs stay one); a code block's (which); a quote's
-/// (which).
+/// (which); a table cell (table id, absolute row, column, whether header).
 #derive(Eq, Debug)
 pub(all) enum WordsShape {
   Heading(Int)
   Item(Int, Int, @view.NodeId)
   Code(@view.NodeId)
   Quote(@view.NodeId)
+  Cell(Int, Int, Int, Bool)
 }
 
 ///|
@@ -44,21 +45,29 @@ priv struct CopiedPart {
 /// What is picked with the pointer of the window's tree's words as HTML (copied_html), each paragraph's shape what the
 /// part showing it says (words_shaped) and its pieces its runs'; "" where none of it is shaped.
 fn picked_html() -> String {
+  guard picked_scope_live_now() else { return "" }
   guard picked_in_order() is Some((spans, _)) else { return "" }
   let parts : Array[CopiedPart] = []
   for e in spans {
     let (k, s) = e
     let v = match (view_app.val, picked_shown.get(k)) {
-      (Some(tree), Some((id, _))) => tree.view_of(id)
+      (Some(tree), Some((id, _, _))) => tree.view_of(id)
       _ => None
     }
     let shape = match v {
-      Some(v) => v.lent(words_shapes).map(fn(f) { f() })
-      None => None
+      Some(v) =>
+        match v.lent(words_shapes).map(fn(f) { f() }) {
+          Some(sh) => Some(sh)
+          None => s.shape
+        }
+      None => s.shape
     }
     let runs = match v {
-      Some(v) => v.runs_set_now().0
-      None => []
+      Some(v) => {
+        let rs = v.runs_set_now().0
+        if rs.is_empty() { s.runs } else { rs }
+      }
+      None => s.runs
     }
     parts.push({ shape, runs, text: s.text, a: s.a, b: s.b })
   }
@@ -149,6 +158,7 @@ fn copied_html(parts : Array[CopiedPart]) -> String {
   let mut item : @view.NodeId? = None
   let mut code : @view.NodeId? = None
   let mut quote : @view.NodeId? = None
+  let mut table : (Int, Int, Int, String)? = None
   let close_code = fn() {
     if code is Some(_) {
       out.write_string("</code></pre>")
@@ -160,6 +170,15 @@ fn copied_html(parts : Array[CopiedPart]) -> String {
       out.write_string("</blockquote>")
     }
     quote = None
+  }
+  let close_table = fn() {
+    match table {
+      Some((_, _, _, tag)) => {
+        out.write_string("</\{tag}></tr></table>")
+        table = None
+      }
+      None => ()
+    }
   }
   let close_lists = fn(depth : Int) {
     while lists.length() > depth {
@@ -177,6 +196,7 @@ fn copied_html(parts : Array[CopiedPart]) -> String {
       Some(Item(depth, number, id)) => {
         close_code()
         close_quote()
+        close_table()
         let depth = if depth < 1 { 1 } else { depth }
         if lists.length() > depth {
           close_lists(depth)
@@ -218,6 +238,7 @@ fn copied_html(parts : Array[CopiedPart]) -> String {
       Some(Code(id)) => {
         close_lists(0)
         close_quote()
+        close_table()
         if code == Some(id) {
           out.write_string("\n")
         } else {
@@ -230,6 +251,7 @@ fn copied_html(parts : Array[CopiedPart]) -> String {
       Some(Quote(id)) => {
         close_lists(0)
         close_code()
+        close_table()
         if quote != Some(id) {
           close_quote()
           out.write_string("<blockquote>")
@@ -241,13 +263,46 @@ fn copied_html(parts : Array[CopiedPart]) -> String {
         close_lists(0)
         close_code()
         close_quote()
+        close_table()
         let n = if level < 1 { 1 } else if level > 6 { 6 } else { level }
         out.write_string("<h\{n}>" + pieces + "</h\{n}>")
+      }
+      Some(Cell(tid, row, col, head)) => {
+        close_lists(0)
+        close_code()
+        close_quote()
+        let tag = if head { "th" } else { "td" }
+        match table {
+          Some((otid, orow, ocol, otag)) if otid == tid && row >= orow =>
+            if row == orow && col == ocol {
+              out.write_string("<br>" + pieces)
+            } else if row == orow && col > ocol {
+              out.write_string("</\{otag}>")
+              for _ in (ocol + 1)..<col {
+                out.write_string("<\{tag}></\{tag}>")
+              }
+              out.write_string("<\{tag}>" + pieces)
+              table = Some((tid, row, col, tag))
+            } else {
+              out.write_string("</\{otag}></tr><tr>")
+              for _ in 0..<col {
+                out.write_string("<\{tag}></\{tag}>")
+              }
+              out.write_string("<\{tag}>" + pieces)
+              table = Some((tid, row, col, tag))
+            }
+          _ => {
+            close_table()
+            out.write_string("<table><tr><\{tag}>" + pieces)
+            table = Some((tid, row, col, tag))
+          }
+        }
       }
       None => {
         close_lists(0)
         close_code()
         close_quote()
+        close_table()
         out.write_string("<p>" + pieces + "</p>")
       }
     }
@@ -255,6 +310,7 @@ fn copied_html(parts : Array[CopiedPart]) -> String {
   close_lists(0)
   close_code()
   close_quote()
+  close_table()
   if shaped {
     out.to_string()
   } else {

@@ -257,7 +257,7 @@ test "words picked held past a page's list's foot, the list shorter under a poin
 }
 
 ///|
-test "words picked in a page's list, let go, then the page laid out nowhere: what was picked kept whole, nothing picking on" {
+test "words picked in a page's list, let go, then the page laid out nowhere: invisible scope selection is cleared" {
   let height = @signals.signal(300.0)
   let hidden = @signals.signal(false)
   let (t, _) = picked_list_tester(height, hidden)
@@ -275,7 +275,7 @@ test "words picked in a page's list, let go, then the page laid out nowhere: wha
   hidden.set(true)
   t.frame_at(t.time() + input_step_ms)
   t.frame_at(t.time() + move_most_ms)
-  assert_eq(t.ctx().selected_text(), kept, msg="laid out nowhere")
+  assert_eq(t.ctx().selected_text(), "", msg="laid out nowhere clears selection")
 }
 
 ///|
@@ -415,4 +415,244 @@ test "what a finger is picking read as it goes (Tester::picking): the word held,
   t.tap(200.0, 250.0)
   t.draw()
   assert_eq(t.picking(), None)
+}
+
+///|
+test "two side-by-side words_picked scopes in the same layer: dragging across whitespace or into neighbor stays strictly within starting scope" {
+  let t = Tester::new(fn(_c) {  }, w=500.0, h=300.0, platform=0)
+  t.check_looks(false)
+  let look : @view.WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  let right_nodes : Array[@view.View] = []
+  let left_nodes : Array[@view.View] = []
+  set_view_app(fn(root) {
+    root.box(fn(row) {
+      row.row(Is(true)).width(Is(Some(500.0))).height(Is(Some(300.0))) |> ignore
+      row.box(fn(left) {
+        left.width(Is(Some(240.0))).gap(Is(30.0)) |> ignore
+        words_picked(left)
+        left.box(fn(n) {
+          n.width(Is(Some(220.0))).words_runs(Is([plain("left first line")]), ink=0x333333FFL, look~) |> ignore
+          left_nodes.push(n)
+        })
+        |> ignore
+        left.box(fn(n) {
+          n.width(Is(Some(220.0))).words_runs(Is([plain("left second line")]), ink=0x333333FFL, look~) |> ignore
+          left_nodes.push(n)
+        })
+        |> ignore
+      })
+      |> ignore
+      row.box(fn(right) {
+        right.width(Is(Some(240.0))).gap(Is(4.0)) |> ignore
+        words_picked(right)
+        right.box(fn(n) {
+          n.width(Is(Some(220.0))).words_runs(Is([plain("right row zero")]), ink=0x333333FFL, look~) |> ignore
+          right_nodes.push(n)
+        })
+        |> ignore
+        right.box(fn(n) {
+          n.width(Is(Some(220.0))).words_runs(Is([plain("right row one")]), ink=0x333333FFL, look~) |> ignore
+          right_nodes.push(n)
+        })
+        |> ignore
+        right.box(fn(n) {
+          n.width(Is(Some(220.0))).words_runs(Is([plain("right row two")]), ink=0x333333FFL, look~) |> ignore
+          right_nodes.push(n)
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.drawn_now()
+  // Drag from left first line into the 30px vertical gap between left lines (where right row one sits at same y=36)
+  let next1 = dragged_at(t, 4.0, 10.0, 100.0, 36.0, t.time(), true)
+  t.frame_at(next1)
+  assert_true(!t.ctx().selected_text().contains("right"), msg="gap leaked right: \{t.ctx().selected_text()}")
+  for n in right_nodes {
+    assert_eq(n.runs_picked_now(), (0, 0), msg="right node highlighted on left gap drag")
+  }
+  // Drag from left first line directly into right scope (past double_click_ms so it starts a fresh drag, not a double-click)
+  let next2 = dragged_at(t, 1.0, 10.0, 350.0, 40.0, next1 + double_click_ms, true)
+  t.frame_at(next2)
+  assert_true(t.ctx().selected_text().contains("left first"), msg="left selected: \{t.ctx().selected_text()}")
+  assert_true(!t.ctx().selected_text().contains("right"), msg="drag into right leaked: \{t.ctx().selected_text()}")
+  for n in right_nodes {
+    assert_eq(n.runs_picked_now(), (0, 0), msg="right node highlighted on cross-pane drag")
+  }
+  // Reverse: drag from right scope into left scope
+  let next3 = dragged_at(t, 360.0, 40.0, 10.0, 10.0, next2 + double_click_ms, true)
+  t.frame_at(next3)
+  assert_true(t.ctx().selected_text().contains("right"), msg="right selected: \{t.ctx().selected_text()}")
+  assert_true(!t.ctx().selected_text().contains("left"), msg="drag into left leaked: \{t.ctx().selected_text()}")
+  for n in left_nodes {
+    assert_eq(n.runs_picked_now(), (0, 0), msg="left node highlighted on reverse cross-pane drag")
+  }
+}
+
+///|
+test "nested words_picked shares scope by default; apart=true creates an independent sub-scope" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  t.check_looks(false)
+  let look : @view.WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  set_view_app(fn(root) {
+    root.box(fn(outer) {
+      outer.width(Is(Some(360.0))).gap(Is(8.0)) |> ignore
+      words_picked(outer)
+      // idempotent repeat on same node
+      words_picked(outer)
+      outer.box(fn(n) { n.width(Is(Some(300.0))).words_runs(Is([plain("outer line")]), ink=0x333333FFL, look~) |> ignore })
+      |> ignore
+      outer.box(fn(child) {
+        // nested without apart: inherits outer scope
+        words_picked(child)
+        child.box(fn(n) { n.width(Is(Some(300.0))).words_runs(Is([plain("shared child")]), ink=0x333333FFL, look~) |> ignore })
+        |> ignore
+      })
+      |> ignore
+      outer.box(fn(sub) {
+        // nested with apart=true: independent scope
+        words_picked(sub, apart=true)
+        sub.box(fn(n) { n.width(Is(Some(300.0))).words_runs(Is([plain("apart sub")]), ink=0x333333FFL, look~) |> ignore })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.drawn_now()
+  // Drag across all three vertically: outer + shared child are selected, apart sub is excluded
+  let next = dragged_at(t, 2.0, 10.0, 280.0, 75.0, t.time(), true)
+  t.frame_at(next)
+  assert_eq(t.ctx().selected_text(), "outer line\nshared child")
+}
+
+///|
+test "unequal-height Middle-centered cells with words_hit_box: vertical whitespace hits own cell first/last line and row gap hits nearest row" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  t.check_looks(false)
+  let look : @view.WordsLook = { size: 14.0, weight: 400, line: 20.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.width(Is(Some(360.0))).gap(Is(12.0)) |> ignore
+      words_picked(page)
+      // Row 0: short Middle-centered cell on left (height 80), tall 4-line cell on right
+      page.box(fn(r0) {
+        r0.row(Is(true)).width(Is(Some(360.0))) |> ignore
+        r0.box(fn(c0) {
+          c0.width(Is(Some(140.0))).height(Is(Some(80.0))).lies_along(Is(Middle)) |> ignore
+          words_hit_box(c0)
+          c0.box(fn(w) { w.words_runs(Is([plain("shortA")]), ink=0x333333FFL, look~) |> ignore }) |> ignore
+        })
+        |> ignore
+        r0.box(fn(c1) {
+          c1.width(Is(Some(200.0))).height(Is(Some(80.0))) |> ignore
+          words_hit_box(c1)
+          c1.box(fn(w) { w.words_runs(Is([plain("tall1\ntall2\ntall3\ntall4")]), ink=0x333333FFL, look~) |> ignore })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      // Row 1 (12px gap below row 0, y=92..152)
+      page.box(fn(r1) {
+        r1.row(Is(true)).width(Is(Some(360.0))) |> ignore
+        r1.box(fn(c0) {
+          c0.width(Is(Some(140.0))).height(Is(Some(60.0))).lies_along(Is(Middle)) |> ignore
+          words_hit_box(c0)
+          c0.box(fn(w) { w.words_runs(Is([plain("row1A")]), ink=0x333333FFL, look~) |> ignore }) |> ignore
+        })
+        |> ignore
+        r1.box(fn(c1) {
+          c1.width(Is(Some(200.0))).height(Is(Some(60.0))) |> ignore
+          words_hit_box(c1)
+          c1.box(fn(w) { w.words_runs(Is([plain("row1B1\nrow1B2\nrow1B3")]), ink=0x333333FFL, look~) |> ignore })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.drawn_now()
+  // Drag inside top whitespace of shortA (y=8, well above its Middle-centered text at y=30..50): must hit shortA, not tall1
+  let next1 = dragged_at(t, 2.0, 8.0, 100.0, 72.0, t.time(), true)
+  t.frame_at(next1)
+  assert_eq(t.ctx().selected_text(), "shortA")
+  // Drag from start of shortA to the row gap closer to row 0 (y=83, gap is 80..92, closer to row 0 than row 1): must stay in row 0 col 0, not jump to row1B
+  let next2 = dragged_at(t, 2.0, 40.0, 80.0, 83.0, next1 + double_click_ms, true)
+  t.frame_at(next2)
+  assert_eq(t.ctx().selected_text(), "shortA")
+}
+
+///|
+test "cross-slice horizontal edge scroll stops when pointer leaves table vertical band and hands off to visible peer when start slice unmounts" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  t.check_looks(false)
+  let look : @view.WordsLook = { size: 12.0, weight: 400, line: 18.0, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  let parent_across = @view.Scroll::across()
+  let s1 = parent_across.beside()
+  let show_slice0 = @signals.signal(true)
+  let line = "col0-abcdef col1-ghijkl col2-mnopqr col3-stuvwx col4-yz0123 col5-456789 col6-abcdef col7-ghijkl col8-mnopqr col9-stuvwx col10-yz0123 col11-456789"
+  set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.width(Is(Some(220.0))).gap(Is(4.0)) |> ignore
+      words_picked(page)
+      page.show(at_once=true, fn() { show_slice0.get() }, fn(slot) {
+        let s0 = parent_across.beside()
+        slot.box(fn(b) {
+          b.width(Is(Some(200.0))).height(Is(Some(30.0))) |> ignore
+          b.scrolls(s0, fn(held) {
+            held.box(fn(n) { n.words_runs(Is([plain(line)]), ink=0x333333FFL, look~) |> ignore }) |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      page.box(fn(b) {
+        b.width(Is(Some(200.0))).height(Is(Some(30.0))) |> ignore
+        b.scrolls(s1, fn(held) {
+          held.box(fn(n) { n.words_runs(Is([plain(line)]), ink=0x333333FFL, look~) |> ignore }) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.drawn_now()
+  // Start dragging on slice 0, move past right edge within slice 0's vertical band (y=12)
+  finger(0, 2.0, 12.0)
+  t.frame_at(t.time() + 16.0)
+  finger(1, 280.0, 12.0)
+  t.frame_at(t.time() + 16.0)
+  assert_true(tree_edge.val is Some({ speed_across, .. }) && speed_across > 0.0, msg="scrolling right inside table band")
+  t.frame_at(t.time() + 200.0)
+  let x_in = s1.at(view_app.val.unwrap())
+  assert_true(x_in > 10.0, msg="scrolled right: \{x_in}")
+  // Move pointer vertically outside both slices (y=200): horizontal edge scroll must stop immediately
+  finger(1, 280.0, 200.0)
+  t.frame_at(t.time() + 16.0)
+  assert_true(tree_edge.val is Some({ speed_across, .. }) && speed_across == 0.0, msg="stopped outside table vertical band")
+  let x_stopped = s1.at(view_app.val.unwrap())
+  t.frame_at(t.time() + 200.0)
+  assert_eq(s1.at(view_app.val.unwrap()), x_stopped)
+  // Unmount slice 0 (simulating virtualized slice scrolling out of view), move pointer into slice 1's vertical band (y=12 after slice0 gone) past right edge
+  show_slice0.set(false)
+  t.frame_at(t.time() + 16.0)
+  finger(1, 280.0, 12.0)
+  t.frame_at(t.time() + 16.0)
+  assert_true(tree_edge.val is Some({ speed_across, .. }) && speed_across > 0.0, msg="peer slice took over horizontal edge scroll")
+  t.frame_at(t.time() + 200.0)
+  let x_peer = s1.at(view_app.val.unwrap())
+  assert_true(x_peer > x_stopped + 10.0, msg="peer continued scrolling: \{x_stopped} -> \{x_peer}")
+  finger(2, 280.0, 12.0)
+  t.frame_at(t.time() + 16.0)
 }

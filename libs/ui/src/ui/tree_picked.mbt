@@ -14,6 +14,10 @@ pub struct WordsPicked {
   /// what each paragraph picked is of, as what holds it said (picked_of), in the page's order, one said by paragraphs
   /// next to each other once; those whose holders said none left out
   of : Array[String]
+  /// the selection scope root (words_picked) that this selection belongs to
+  within : @view.NodeId
+  /// how many non-empty selected paragraphs had no `picked_of` owner
+  strays : Int
   /// the node of the tree's whose words it ends in (where the pointer let it go: dragged down, its last; dragged up,
   /// its first), as it was shown when that paragraph was last found (picked_end_piece: where in it)
   ends_in : @view.NodeId
@@ -47,10 +51,7 @@ let picked_wholes : @view.Lent[Bool] = @view.Lent::new()
 /// to a select all over a finger's pick in them (the system's text menu's): it takes all the words said of what is
 /// picked, not all the page's (finger_select_all: a message's 全选). `v`.
 pub fn picked_of(v : @view.View, of : String, whole? : Bool = false) -> @view.View {
-  if whole {
-    v.lends(picked_wholes, true) |> ignore
-  }
-  v.lends(picked_ofs, of)
+  v.lends(picked_wholes, whole).lends(picked_ofs, of)
 }
 
 ///|
@@ -75,15 +76,16 @@ fn tree_keeps_picked_at(tree : @view.Tree, x : Double, y : Double) -> Bool {
 }
 
 ///|
-/// What node of the tree's last showed each paragraph that can be picked, and what its words were said to be of
-/// (picked_of), as they were found (tree_sels): what is picked is told by them, those scrolled away as they were.
+/// What node of the tree's last showed each paragraph that can be picked, what its words were said to be of
+/// (picked_of), and its selection scope root (words_picked), as they were found (tree_sels): what is picked is told by
+/// them, those scrolled away as they were.
 // kept across runs: said as paragraphs are found, those picked kept, the rest let go past a few hundred
-let picked_shown : Map[SelKey, (@view.NodeId, String?)] = Map([])
+let picked_shown : Map[SelKey, (@view.NodeId, String?, @view.NodeId)] = Map([])
 
 ///|
-/// Paragraph `base` found shown by node `v` (tree_sels).
-fn picked_shown_by(base : SelKey, v : @view.View) -> Unit {
-  picked_shown[base] = (v.id(), v.lent(picked_ofs))
+/// Paragraph `base` found shown by node `v` in selection scope `scope_id` (tree_sels).
+fn picked_shown_by(base : SelKey, v : @view.View, scope_id : @view.NodeId) -> Unit {
+  picked_shown[base] = (v.id(), v.lent(picked_ofs), scope_id)
   if picked_shown.length() > 512 {
     let gone : Array[SelKey] = []
     picked_shown.each(fn(k, _) {
@@ -104,12 +106,15 @@ fn picked_in_order() -> (Array[(SelKey, SelSpan)], SelKey)? {
   let spans : Array[(SelKey, SelSpan)] = []
   picked.spans.each(fn(k, s) {
     if s.a < s.b {
-      spans.push((k, s))
+      let at = refresh_at(k, s.at, s.row_depth)
+      spans.push((k, { ..s, at }))
     }
   })
   guard !spans.is_empty() else { return None }
   spans.sort_by(fn(p, q) { order_cmp(p.1.at, q.1.at) })
-  let down = spot_cmp(picked.from, picked.to) <= 0
+  let from = refresh_spot(picked.from)
+  let to = refresh_spot(picked.to)
+  let down = spot_cmp(from, to) <= 0
   Some((spans, if down { spans[spans.length() - 1].0 } else { spans[0].0 }))
 }
 
@@ -127,6 +132,60 @@ pub fn picked_now() -> WordsPicked? {
 }
 
 ///|
+/// What is picked in `v`'s selection scope (`words_picked`), followed as it changes; `None` if nothing is picked or the
+/// selection belongs to another scope.
+pub fn picked_now_in(v : @view.View) -> WordsPicked? {
+  guard v.lent(words_picks) is Some(scope) else { return None }
+  match picked_now() {
+    Some(p) if p.within == scope => Some(p)
+    _ => None
+  }
+}
+
+///|
+/// The currently selected words if and only if the selection belongs to `v`'s selection scope (`words_picked`); `""`
+/// otherwise.
+pub fn picked_words_in(v : @view.View) -> String {
+  guard v.lent(words_picks) is Some(scope) else { return "" }
+  match picked.layer {
+    TreeScope(_, within) if within == scope => selected_words()
+    _ => ""
+  }
+}
+
+///|
+/// The currently selected words if the selection belongs to the scope covering window point `(x, y)` (or an old view);
+/// `""` if the selection belongs to a different visible scope.
+pub fn picked_words_at(x : Double, y : Double) -> String {
+  match picked.layer {
+    TreeScope(_, within) => {
+      guard view_app.val is Some(tree) else { return "" }
+      guard tree.view_of(within) is Some(v) && !v.shown_nowhere() && tree.allows(within) else { return "" }
+      match tree.drop_at(x, y) {
+        Some(OnNode(hit_id)) =>
+          match tree.view_of(hit_id).bind(fn(hv) { hv.lent(words_picks) }) {
+            Some(hit_scope) => return if hit_scope == within { selected_words() } else { "" }
+            None => ()
+          }
+        _ => ()
+      }
+      let (rx, ry, rw, rh) = v.rect()
+      let (bx0, by0, bx1, by1) = tree.seen_bounds(within)
+      let x0 = dmax(rx, bx0)
+      let y0 = dmax(ry, by0)
+      let x1 = dmin(rx + rw, bx1)
+      let y1 = dmin(ry + rh, by1)
+      if x >= x0 && x < x1 && y >= y0 && y < y1 {
+        selected_words()
+      } else {
+        ""
+      }
+    }
+    OldLayer(_) => selected_words()
+  }
+}
+
+///|
 /// What is picked with the pointer told to what follows it (picked_now), as it changes and as the pointer lets it go.
 fn picked_now_tell() -> Unit {
   picked_now_said.val.set(picked_now_worked())
@@ -135,17 +194,40 @@ fn picked_now_tell() -> Unit {
 ///|
 /// What picked_now says, worked out of what is picked.
 fn picked_now_worked() -> WordsPicked? {
-  guard tree_picking() && !picked.dragging else { return None }
+  guard picked.layer is TreeScope(_, within) && !picked.dragging else { return None }
+  guard tree_scope_live(within) else { return None }
   guard picked_in_order() is Some((spans, end)) else { return None }
-  guard picked_shown.get(end) is Some((ends_in, _)) else { return None }
+  guard picked_shown.get(end) is Some((ends_in, _, end_scope)) && end_scope == within else { return None }
+  guard view_app.val is Some(tree) else { return None }
+  guard tree.view_of(ends_in) is Some(end_v) && end_v.lent(words_picks) == Some(within) else { return None }
   let of : Array[String] = []
+  let mut strays = 0
   for e in spans {
-    match picked_shown.get(e.0) {
-      Some((_, Some(o))) if of.last() != Some(o) => of.push(o)
-      _ => ()
+    let owner = match e.1.of {
+      Some(o) => Some(o)
+      None =>
+        match picked_shown.get(e.0) {
+          Some((_, Some(o), _)) => Some(o)
+          _ => None
+        }
+    }
+    match owner {
+      Some(o) => if of.last() != Some(o) { of.push(o) }
+      None => strays = strays + 1
     }
   }
-  Some({ text: selected_words(), of, ends_in, ends_at_start: spot_cmp(picked.from, picked.to) > 0, finger: picked.finger, made: picked.made })
+  let from = refresh_spot(picked.from)
+  let to = refresh_spot(picked.to)
+  Some({
+    text: selected_words(),
+    of,
+    within,
+    strays,
+    ends_in,
+    ends_at_start: spot_cmp(from, to) > 0,
+    finger: picked.finger,
+    made: picked.made,
+  })
 }
 
 ///|

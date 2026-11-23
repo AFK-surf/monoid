@@ -129,18 +129,18 @@ fn Ctx::finger_hold(self : Ctx) -> Unit {
 fn Ctx::finger_pick(self : Ctx, t : SelTarget, x : Double, y : Double) -> Unit {
   finger_held.val = self.press_at
   let text = t.text
-  let off = imax(0, imin(t.offset_at(x, y), text.length()))
+  let off = t.offset_at_clamped(x, y)
   let (s, e) = finger_word_at(text, off)
   if e <= s {
     return
   }
   select_none()
   picked.made = picked.made + 1
-  let ws = { base: t.base, off: s, at: t.at }
-  let we = { base: t.base, off: e, at: t.at }
+  let ws = { base: t.base, off: s, at: t.at, row_depth: t.row_depth }
+  let we = { base: t.base, off: e, at: t.at, row_depth: t.row_depth }
   picked.from = ws
   picked.to = we
-  picked.spans[t.base] = { a: s, b: e, text, at: t.at }
+  picked.spans[t.base] = { a: s, b: e, text, at: t.at, row_depth: t.row_depth, of: t.of, shape: t.shape, runs: t.runs }
   picked.dragging = true
   picked.finger = true
   picked.layer = t.layer
@@ -271,12 +271,24 @@ fn Ctx::finger_select_all(self : Ctx) -> Unit {
   match view_app.val {
     Some(tree) =>
       picked.spans.each(fn(k, s) {
+        if s.a >= s.b {
+          return
+        }
         match picked_shown.get(k) {
-          Some((id, Some(o))) if s.a < s.b && !ofs.contains(o) =>
-            match tree.view_of(id) {
-              Some(v) if v.lent(picked_wholes) == Some(true) => ofs.push(o)
+          Some((id, shown_of, _)) => {
+            let owner = match s.of {
+              Some(o) => Some(o)
+              None => shown_of
+            }
+            match owner {
+              Some(o) if !ofs.contains(o) =>
+                match tree.view_of(id) {
+                  Some(v) if v.lent(picked_wholes) == Some(true) => ofs.push(o)
+                  _ => ()
+                }
               _ => ()
             }
+          }
           _ => ()
         }
       })
@@ -286,18 +298,47 @@ fn Ctx::finger_select_all(self : Ctx) -> Unit {
     t.layer == picked.layer &&
     t.island == picked.island &&
     (ofs.is_empty() ||
-    (match picked_shown.get(t.base) {
-      Some((_, Some(o))) => ofs.contains(o)
-      _ => false
+    (match t.of {
+      Some(o) => ofs.contains(o)
+      None => false
     }))
   })
   if laid.is_empty() {
     return
   }
+  let new_spans : Map[SelKey, SelSpan] = Map([])
+  // Retain off-screen spans only when confirmed to belong to the target `ofs` (or the same scope when `ofs` is empty).
+  picked.spans.each(fn(k, s) {
+    if s.a >= s.b {
+      return
+    }
+    let keep = if !ofs.is_empty() {
+      match s.of {
+        Some(o) => ofs.contains(o)
+        None =>
+          match picked_shown.get(k) {
+            Some((_, Some(o), _)) => ofs.contains(o)
+            _ => false
+          }
+      }
+    } else {
+      match picked.layer {
+        TreeScope(_, within) =>
+          match picked_shown.get(k) {
+            Some((_, _, sc)) => sc == within
+            None => false
+          }
+        OldLayer(_) => true
+      }
+    }
+    if keep {
+      new_spans[k] = { ..s, a: 0, b: s.text.length(), at: refresh_at(k, s.at, s.row_depth) }
+    }
+  })
   let mut first = laid[0]
   let mut last = laid[0]
   for t in laid {
-    picked.spans[t.base] = { a: 0, b: t.text.length(), text: t.text, at: t.at }
+    new_spans[t.base] = { a: 0, b: t.text.length(), text: t.text, at: t.at, row_depth: t.row_depth, of: t.of, shape: t.shape, runs: t.runs }
     if order_cmp(t.at, first.at) < 0 {
       first = t
     }
@@ -305,8 +346,9 @@ fn Ctx::finger_select_all(self : Ctx) -> Unit {
       last = t
     }
   }
-  picked.from = { base: first.base, off: 0, at: first.at }
-  picked.to = { base: last.base, off: last.text.length(), at: last.at }
+  picked.spans = new_spans
+  picked.from = { base: first.base, off: 0, at: first.at, row_depth: first.row_depth }
+  picked.to = { base: last.base, off: last.text.length(), at: last.at, row_depth: last.row_depth }
   finger_let_go()
   picked_told()
 }

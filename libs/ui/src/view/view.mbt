@@ -1411,6 +1411,9 @@ pub struct Tree {
   /// the list lives; read as the key is read, so that what reads it reads it again as a block is taken for another key),
   /// and where it is among them now (View::row_place, View::row_order)
   rows_named : Map[Int, (NodeId, () -> Int, () -> Int)]
+  /// a page's list's lookup from a row's stable number (View::row_place) to its current order among the list's keys
+  /// (Tree::row_order_of), by the list's node index and generation, let go with the list
+  rows_order_by_number : Map[Int, (Int, (Int) -> Int?)]
   /// when each way carrying a node and what it holds is over (View::shift's `ends`, View::carries_until), by the node,
   /// with the making it was said of: kept here, not on each node (a few say one), let go of with its node (View::owns)
   carried : Map[Int, (Int, () -> Double)]
@@ -1849,6 +1852,7 @@ pub fn Tree::new(
     alone_laid: [],
     alone_asks: {},
     rows_named: {},
+    rows_order_by_number: {},
     carried: {},
     words_edges: {},
     lists_scrolled: {},

@@ -1182,6 +1182,7 @@ fn View::scrolls_window_ids(
   // (each key's number, given as it is first asked (words picked in its row: View::row_place), kept while the list
   // lives: what its row is known by, whichever node it is made in (Tree's rows_named); a key come back the same row)
   let row_numbers : Map[Int, Int] = Map([])
+  let number_to_key : Map[Int, Int] = Map([])
   let row_numbered = Ref(0)
   let number_of = fn(k : Int) {
     match row_numbers.get(k) {
@@ -1189,10 +1190,23 @@ fn View::scrolls_window_ids(
       None => {
         row_numbered.val = row_numbered.val + 1
         row_numbers[k] = row_numbered.val
+        number_to_key[row_numbered.val] = k
         row_numbered.val
       }
     }
   }
+  let list_node_id = self.id()
+  self.tree.rows_order_by_number[list_node_id.at] = (
+    list_node_id.gen,
+    fn(num) { number_to_key.get(num).bind(fn(k) { laid_at.get(k) }) },
+  )
+  self.owns(fn() {
+    match self.tree.rows_order_by_number.get(list_node_id.at) {
+      Some((gen, _)) if gen == list_node_id.gen => self.tree.rows_order_by_number.remove(list_node_id.at)
+      _ => ()
+    }
+  })
+  |> ignore
   let height_of = fn(k : Int) {
     match heights.get(k) {
       Some(h) => (h, true)

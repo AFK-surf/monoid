@@ -79,6 +79,8 @@ pub struct Scroll {
   /// what is told as it scrolls (its bar, and those of what scrolls beside it: Scroll::beside), at the moment, by the
   /// node each scrolls in
   priv peers_scrolled : Map[Int, (Double) -> Unit]
+  /// the live host nodes and their scrolls in the same Scroll::beside group, by host node index
+  priv peers_hosts : Map[Int, (View, Scroll)]
   /// which column it is, of all made (what hosts the tree tells its glides by: Tree::on_glides)
   priv serial : Int
   /// it moves as a page's list does on the platform it is on (Scroll::new / Scroll::list): what shows past its ends,
@@ -278,6 +280,7 @@ pub fn Scroll::beside(self : Scroll) -> Scroll {
     past: self.past,
     // (scrolled by the hand in any of them: the bar of each told, wherever it is)
     peers_scrolled: self.peers_scrolled,
+    peers_hosts: self.peers_hosts,
   }
 }
 
@@ -302,6 +305,7 @@ fn Scroll::made(as_list : Bool, across? : Bool = false, rows_list? : Bool = fals
     hand_on: @signals.signal(false, same=fn(a, b) { a == b }),
     claimed: false,
     peers_scrolled: Map([]),
+    peers_hosts: Map([]),
     to_foot: fn(_) { false },
     serial: {
       scrolls_made.val += 1
@@ -979,18 +983,41 @@ fn Scroll::flung(self : Scroll, v : View, t : Double) -> Unit {
 /// on from where it is then at the new speed: where it is a function of the time, nothing stepped by frames. Not where
 /// it scrolls in nothing (View::scrolls not said, or let go).
 pub fn Scroll::edge_toward(self : Scroll, speed : Double) -> Unit {
-  guard self.host is Some(v) else { return }
+  let active = match self.host {
+    Some(v) if v.alive() => Some((v, self))
+    _ => self.shown_peers().get(0)
+  }
+  guard active is Some((v, s)) else { return }
   @signals.untracked(fn() {
     let t = v.tree.logic_said()
-    let x0 = self.stopped(t)
+    let x0 = s.stopped(t)
     if speed == 0.0 {
       return
     }
     // (from where it is, as far as it can go that way now: worked out, its end said, by edge_due)
-    let bound = if speed > 0.0 { self.most() } else { self.top_now() }
-    self.edge.set(Some({ x0, v: speed, t0: t, bound, end_t: t, parked: false }))
-    self.edge_due(v, t)
+    let bound = if speed > 0.0 { s.most() } else { s.top_now() }
+    s.edge.set(Some({ x0, v: speed, t0: t, bound, end_t: t, parked: false }))
+    s.edge_due(v, t)
   })
+}
+
+///|
+/// Every currently alive and visible host node (and its `Scroll`) sharing this scroll group (`Scroll::beside`, or just
+/// `self` when unshared).
+pub fn Scroll::shown_peers(self : Scroll) -> Array[(View, Scroll)] {
+  let out : Array[(View, Scroll)] = []
+  self.peers_hosts.each(fn(_, pair) {
+    if !pair.0.shown_nowhere() {
+      out.push(pair)
+    }
+  })
+  if out.is_empty() {
+    match self.host {
+      Some(v) if !v.shown_nowhere() => out.push((v, self))
+      _ => ()
+    }
+  }
+  out
 }
 
 ///|
@@ -1145,6 +1172,7 @@ pub fn View::scrolls(
     }
   }
   s.host = Some(self)
+  s.peers_hosts[self.at] = (self, s)
   // (at its foot, told only as that changes: a page's list says it by its blocks (View::scrolls_window); else by how
   // far it can go as last laid out, where it is drawn)
   if s.at_foot_said is None && !s.across {
@@ -1549,6 +1577,10 @@ pub fn View::scrolls(
       _ => ()
     }
     s.peers_scrolled.remove(self.at)
+    match s.peers_hosts.get(self.at) {
+      Some((h, _)) if h.same(self) => s.peers_hosts.remove(self.at)
+      _ => ()
+    }
     guard s.host is Some(h) && h.same(self) else { return }
     // (no finger on it after it)
     s.hand_fingers.clear()
@@ -1559,11 +1591,11 @@ pub fn View::scrolls(
     // (the hand past its edge: at rest where it had it then, as far as it could go as it was said: how far it can go is
     // gone with what it was laid out in, as a fling's below)
     match s.edge.untracked() {
-      Some(e) => {
+      Some(e) if s.peers_hosts.is_empty() => {
         s.edge.set(None)
         s.x.set(e.at(self.tree.logic_said()))
       }
-      None => ()
+      _ => ()
     }
     // (a fling under way at rest where it was then: nothing reads the time for it after)
     match s.fling.untracked() {

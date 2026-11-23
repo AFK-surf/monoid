@@ -132,3 +132,84 @@ test "words picked in a page's list's row, its block put by and taken for anothe
   assert_eq(t.ctx().selected_text(), said)
   assert_eq(picked_drawn(t), drawn)
 }
+
+///|
+test "table inside scrolls_window with nested each and two 4-row slices: survives 3-screen scroll, zero ghost highlight on reuse, and preserves order after prepending rows" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=260.0, platform=0)
+  t.check_looks(false)
+  let s = @view.Scroll::list()
+  let look : @view.WordsLook = { size: 13.0, weight: 400, line: 18.0, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  // Keys: 0 = table slice 0 (rows 0..3), 1 = table slice 1 (rows 4..8), 2..29 = other messages with same-shape 2-col table
+  let keys = @signals.signal(Array::makei(30, fn(i) { i }))
+  set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.height(Is(Some(200.0))).width(Is(Some(320.0))) |> ignore
+      words_picked(page)
+      page.scrolls_window(
+        s,
+        fn() { keys.get() },
+        est=80.0,
+        fn(_, _) { @halt.saying("all reused") },
+        reused=fn(_) { Some(0) },
+        make_reused=fn(b, key) {
+          // Two nested View::each levels (table rows -> table cells), like table_frame_node
+          let row_range = fn() {
+            let k = key()
+            if k == 0 {
+              [0, 1, 2, 3]
+            } else if k == 1 {
+              [4, 5, 6, 7, 8]
+            } else {
+              [0, 1, 2, 3]
+            }
+          }
+          b.each(row_range, fn(r) { r }, at_once=true, fn(tr, r_sig) {
+            let r = r_sig.untracked()
+            tr.row(Is(true)).gap(Is(8.0)) |> ignore
+            tr.each(fn() { [0, 1] }, fn(c) { c }, at_once=true, fn(td, c_sig) {
+              let c = c_sig.untracked()
+              words_hit_box(td)
+              words_shaped(td, fn() { Cell(100, r, c, r == 0) }) |> ignore
+              td.width(Is(Some(120.0))) |> ignore
+              td.box(fn(w) {
+                w.words_runs(By(fn() { [plain("k\{key()}r\{r}c\{c}")] }), ink=0x333333FFL, look~) |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.drawn_now()
+  // Drag across slice 0 (rows 0..3, y=0..72) into slice 1 (row 4, y=72..90); 5/6 of drag reaches (217, 84)
+  let next = dragged_at(t, 2.0, 6.0, 260.0, 100.0, t.time(), true)
+  t.frame_at(next)
+  let said = t.ctx().selected_text()
+  assert_true(said.contains("k0r0c0\tk0r0c1") && said.contains("k1r4c0\tk1r4c1"), msg="cross-slice TSV: \{said}")
+  let drawn = picked_drawn(t)
+  assert_true(drawn.length() >= 8, msg="drawn cells: \{drawn.length()}")
+  // Scroll 3 screens down so blocks 0 and 1 are recycled for later keys: zero ghost highlights!
+  t.wheel(150.0, 100.0, 800.0)
+  t.run_for(move_most_ms)
+  assert_eq(picked_drawn(t), [], msg="ghost highlight on recycled table blocks")
+  assert_eq(t.ctx().selected_text(), said)
+  // Prepend 3 history rows above while selection is off-screen: order & copied text must stay identical!
+  let prepended = [-3, -2, -1]
+  prepended.append(keys.untracked())
+  keys.set(prepended)
+  t.run_for(move_most_ms)
+  assert_eq(t.ctx().selected_text(), said)
+  // Scroll back to top (past prepended rows), then down past the 3 prepended rows (3 * 72 = 216px) so keys 0 & 1 are in the 200px viewport
+  t.wheel(150.0, 100.0, -1200.0)
+  t.run_for(move_most_ms)
+  t.wheel(150.0, 100.0, 220.0)
+  t.run_for(move_most_ms)
+  assert_eq(t.ctx().selected_text(), said)
+  assert_true(picked_drawn(t).length() >= 8, msg="re-highlighted after scroll back: \{picked_drawn(t).length()}")
+}

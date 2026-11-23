@@ -225,7 +225,7 @@ pub let runs_picker : Lent[(View) -> Live[(Int, Int)]] = Lent::new()
 pub fn View::row_place(self : View) -> (NodeId, Array[Int]) {
   let up : Array[Int] = []
   let mut at = self
-  while at.live() is Some(n) && !n.each_row && at.parent() is Some(p) {
+  while at.live() is Some(_) && !self.tree.rows_named.contains(at.at) && at.parent() is Some(p) {
     up.push(p.kids().search_by(fn(k) { k.at == at.at }).unwrap_or(0))
     at = p
   }
@@ -237,6 +237,17 @@ pub fn View::row_place(self : View) -> (NodeId, Array[Int]) {
       (list, up.rev())
     }
     None => (at.id(), up.rev())
+  }
+}
+
+///|
+/// Where a page's list's row (identified by its list `list` and stable `row_number` from `View::row_place`) stands
+/// among the list's keys now; `None` if the list is gone or no longer holds that row.
+pub fn Tree::row_order_of(self : Tree, list : NodeId, row_number : Int) -> Int? {
+  guard self.alive_id(list) else { return None }
+  match self.rows_order_by_number.get(list.at) {
+    Some((gen, lookup)) if gen == list.gen => lookup(row_number)
+    _ => None
   }
 }
 

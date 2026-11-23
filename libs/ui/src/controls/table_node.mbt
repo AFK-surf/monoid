@@ -259,6 +259,8 @@ fn md_table_body_node(
       (Some((_, upto)), None) => Some(fn() { table().map_or(true, fn(t) { upto >= t.rows.length() + 1 }) })
       (None, _) => None
     }
+    // (table id shared across all 4-row slices of the same table: taken from the parent `across` before `beside()`)
+    let table_id = across.serial()
     let across = match rows {
       Some(_) => across.beside()
       None => across
@@ -337,6 +339,7 @@ fn md_table_body_node(
               beside,
               table,
               widths,
+              table_id~,
               head_h~,
               on_link~,
               on_link_hold~,
@@ -401,6 +404,7 @@ fn md_table_body_node(
             let k = scale()
             (ws.map(fn(w) { w * k }), total * k)
           },
+          table_id~,
           scale=Some(scale),
           on_link~,
           on_link_hold~,
@@ -462,6 +466,7 @@ fn table_frame_node(
   beside : @view.View,
   table : () -> MdTable?,
   widths : () -> (Array[Double], Double),
+  table_id? : Int = 0,
   head_h? : Ref[@view.View?] = Ref(None),
   on_link? : (String) -> Unit = fn(_) {  },
   on_link_hold? : ((String, (Double, Double, Double, Double)) -> Unit)? = None,
@@ -527,6 +532,8 @@ fn table_frame_node(
             }
           }
           said(cell, fn(cell) {
+            @ui.words_hit_box(cell)
+            @ui.words_shaped(cell, fn() { @ui.WordsShape::Cell(table_id, r, k, head) }) |> ignore
             let words = fn() {
               match table() {
                 Some(t) => (if head { t.head } else { t.rows.get(r - 1).unwrap_or([]) }).get(k).unwrap_or([])

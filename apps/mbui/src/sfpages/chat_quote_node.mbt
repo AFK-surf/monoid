@@ -11,27 +11,28 @@
 // link), each pressed doing it for what was picked as the bar was made.
 
 ///|
-/// The message of chat `rows` whose words a mouse's pick lies wholly within, once the pointer let it go: what is
-/// picked and the message (a message the core has, by its ts: the id the old page quoted by); none otherwise.
-fn chat_quotable(rows : ChatBodyList) -> (@ui.WordsPicked, Message)? {
-  guard chat_picked_message(rows) is Some((p, m)) && !p.finger else { return None }
+/// The message of chat `rows` whose words a mouse's pick lies wholly within (in `v`'s selection scope, with no stray
+/// unowned paragraphs), once the pointer let it go: what is picked and the message (a message the core has, by its ts:
+/// the id the old page quoted by); none otherwise.
+fn chat_quotable(v : @view.View, rows : ChatBodyList) -> (@ui.WordsPicked, Message)? {
+  guard chat_picked_message(v, rows) is Some((p, m)) && !p.finger else { return None }
   Some((p, m))
 }
 
 ///|
-/// The message of chat `rows` whose words a finger's pick lies wholly within, once let go: what is picked and the
-/// message; none otherwise.
-fn chat_finger_picked(rows : ChatBodyList) -> (@ui.WordsPicked, Message)? {
-  guard chat_picked_message(rows) is Some((p, m)) && p.finger else { return None }
+/// The message of chat `rows` whose words a finger's pick lies wholly within (in `v`'s selection scope, with no stray
+/// unowned paragraphs), once let go: what is picked and the message; none otherwise.
+fn chat_finger_picked(v : @view.View, rows : ChatBodyList) -> (@ui.WordsPicked, Message)? {
+  guard chat_picked_message(v, rows) is Some((p, m)) && p.finger else { return None }
   Some((p, m))
 }
 
 ///|
-/// The message of chat `rows` whose words what is picked lies wholly within, once let go, with the mouse or a finger
-/// (one the viewer sent not yet the chat's too: outgoing_said; one said in Slack or Feishu: elsewhere_said): what is
-/// picked and the message; none otherwise.
-fn chat_picked_message(rows : ChatBodyList) -> (@ui.WordsPicked, Message)? {
-  guard @ui.picked_now() is Some(p) && p.of.length() == 1 else { return None }
+/// The message of chat `rows` whose words what is picked lies wholly within (in `v`'s selection scope, with no stray
+/// unowned paragraphs), once let go, with the mouse or a finger (one the viewer sent not yet the chat's too:
+/// outgoing_said; one said in Slack or Feishu: elsewhere_said): what is picked and the message; none otherwise.
+fn chat_picked_message(v : @view.View, rows : ChatBodyList) -> (@ui.WordsPicked, Message)? {
+  guard @ui.picked_now_in(v) is Some(p) && p.of.length() == 1 && p.strays == 0 else { return None }
   match rows.read().get(p.of[0]) {
     Some({ entry: Said(m), .. }) if m.ts != "" => Some((p, m))
     // (one of the viewer's not the chat's yet, on its way or failed: theirs, of no message, as the old rows quote it)
@@ -53,8 +54,8 @@ fn elsewhere_said(s : Elsewhere) -> Message {
 /// What is picked within one message of chat `rows` quoted into draft `draft` (writing_quote: whose words and as what,
 /// as the old rows said them, sfpages' picking; its text trimmed, nothing where that is empty) and let go; picked
 /// across messages or in no message, nothing done, what is picked left as it is.
-fn chat_quote_take(src : Source, draft : String, rows : ChatBodyList) -> Unit {
-  guard @signals.untracked(fn() { chat_picked_message(rows) }) is Some((p, m)) else { return }
+fn chat_quote_take(v : @view.View, src : Source, draft : String, rows : ChatBodyList) -> Unit {
+  guard @signals.untracked(fn() { chat_picked_message(v, rows) }) is Some((p, m)) else { return }
   chat_quote_of(src, draft, p, m)
 }
 
@@ -114,7 +115,7 @@ fn chat_quote_node(
   let draft = r.station + ":" + r.session
   // (a pick whose words' block was put by as the list moved on: let go of it and its bar or pill)
   place.on_sight(fn(_) {
-    match chat_picked_message(rows) {
+    match chat_picked_message(v, rows) {
       Some((p, _)) =>
         match @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) {
           Some(end) if !end.shown_nowhere() => ()
@@ -133,8 +134,8 @@ fn chat_quote_node(
   // presses it covers while it shows; made there as a finger first picks, where there is one, living with the list;
   // else over the list itself)
   let bar_in = fn(at : @view.View) {
-    at.pick(fn() { chat_finger_picked(rows).map(fn(q) { q.0 }) }, fn(holds, picked) {
-      guard picked is Some(p) && @signals.untracked(fn() { chat_finger_picked(rows) }) is Some((_, m)) else { return }
+    at.pick(fn() { chat_finger_picked(v, rows).map(fn(q) { q.0 }) }, fn(holds, picked) {
+      guard picked is Some(p) && @signals.untracked(fn() { chat_finger_picked(v, rows) }) is Some((_, m)) else { return }
       // (where the words it ends in are no more, made of none of a list's rows round what shows as it was moved on, or
       // put by to be another's: no bar beside nothing, and what was picked let go as they go, the bar with it)
       guard @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) is Some(end) else { return }
@@ -218,12 +219,12 @@ fn chat_quote_node(
       None => bar_in(v)
     }
   }
-  v.reacts(fn() { chat_finger_picked(rows) is Some(_) }, fn(on) { if on { make() } })
+  v.reacts(fn() { chat_finger_picked(v, rows) is Some(_) }, fn(on) { if on { make() } })
   let quote_in = fn(host : @view.View) {
-    host.pick(fn() { chat_quotable(rows).map(fn(q) { q.0.made }) }, fn(holds, made) {
-      guard made is Some(_) && @signals.untracked(fn() { chat_quotable(rows) }) is Some((p, _)) else { return }
+    host.pick(fn() { chat_quotable(v, rows).map(fn(q) { q.0.made }) }, fn(holds, made) {
+      guard made is Some(_) && @signals.untracked(fn() { chat_quotable(v, rows) }) is Some((p, _)) else { return }
       guard @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) is Some(end) else { return }
-      @sf.action_box_node(holds, fn() { @sf.t("web-main.chat.quote") }, fn(_) { chat_quote_take(src, draft, rows) }, fn(b) {
+      @sf.action_box_node(holds, fn() { @sf.t("web-main.chat.quote") }, fn(_) { chat_quote_take(v, src, draft, rows) }, fn(b) {
         let gone = fn() { chat_pick_gone(p) }
         let unkept = end.owns_while(gone)
         b.owns(unkept) |> ignore
@@ -248,7 +249,7 @@ fn chat_quote_node(
       None => quote_in(v)
     }
   }
-  v.reacts(fn() { chat_quotable(rows) is Some(_) }, fn(on) { if on { make_quote() } })
+  v.reacts(fn() { chat_quotable(v, rows) is Some(_) }, fn(on) { if on { make_quote() } })
 }
 
 ///|

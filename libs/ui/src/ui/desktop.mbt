@@ -202,11 +202,11 @@ priv enum SelKey {
 ///|
 /// Which layer words picked with the pointer are in, the only one a selection picks in (as a browser's started in a
 /// dialog stays in it): an old view's (overlay.mbt: its id; 0 the page), or one of the window's tree's (where in its
-/// stack of layers: Tree::stack_of, -1 in none).
+/// stack of layers: Tree::stack_of, -1 in none, plus its selection scope root node id).
 #derive(Eq)
 priv enum SelLayer {
   OldLayer(Int)
-  TreeLayer(Int)
+  TreeScope(Int, @view.NodeId)
 }
 
 ///|
@@ -216,6 +216,8 @@ priv struct SelTarget {
   /// the old view it was built in (Node's `island`): whether a press may pick it now, view_host.mbt's old_owner_open
   island : @view.NodeId?
   at : Array[Int]
+  /// index in `at` holding a `scrolls_window` row order (-1 if none), refreshed when rows are inserted above
+  row_depth : Int
   lay : RichLayout
   text : String
   ox : Double
@@ -224,6 +226,11 @@ priv struct SelTarget {
   y0 : Double
   x1 : Double
   y1 : Double
+  /// hit-test container box (words_hit_box, e.g. table cell); defaults to (x0, y0, x1, y1)
+  hx0 : Double
+  hy0 : Double
+  hx1 : Double
+  hy1 : Double
   /// how big it is drawn (a node of the window's tree in what is drawn bigger or smaller: its words laid out in its
   /// own terms, `lay`'s, from (ox, oy) in the window); an old view's paragraph 1
   sc : Double
@@ -231,6 +238,12 @@ priv struct SelTarget {
   center : Double
   /// the node of the window's tree that shows it now (none: an old view's)
   node : @view.NodeId?
+  /// owner id lent by `picked_of`, snapshotted so off-screen spans never lose ownership
+  of : String?
+  /// copy shape lent by `words_shaped`, snapshotted so off-screen spans retain HTML/TSV formatting
+  shape : WordsShape?
+  /// text runs snapshotted so off-screen spans retain inline formatting on HTML copy
+  runs : Array[@text.Run]
 }
 
 ///|
@@ -240,6 +253,18 @@ fn SelTarget::offset_at(self : SelTarget, x : Double, y : Double) -> Int {
   let lx = (x - self.ox) / self.sc
   let ly = (y - self.oy) / self.sc
   self.lay.offset_at(lx - rich_shift_at(self.lay, ly, self.center), ly)
+}
+
+///|
+/// Like `offset_at`, clamping `y` into the paragraph's visible text box `[y0, y1 - 0.5]` so hits in vertical cell
+/// whitespace (e.g. a `Middle`-centered short table cell) clamp cleanly to the first or last line.
+fn SelTarget::offset_at_clamped(self : SelTarget, x : Double, y : Double) -> Int {
+  let cy = if self.y1 > self.y0 {
+    dclamp(y, self.y0, dmax(self.y0, self.y1 - 0.5))
+  } else {
+    y
+  }
+  imax(0, imin(self.offset_at(x, cy), self.text.length()))
 }
 
 ///|
@@ -256,6 +281,7 @@ priv struct SelSpot {
   base : SelKey
   off : Int
   at : Array[Int]
+  row_depth : Int
 }
 
 ///|
@@ -266,6 +292,10 @@ priv struct SelSpan {
   b : Int
   text : String
   at : Array[Int]
+  row_depth : Int
+  of : String?
+  shape : WordsShape?
+  runs : Array[@text.Run]
 }
 
 ///|
@@ -319,7 +349,7 @@ let picked : Picked = {
 
 ///|
 // kept across runs: a value (no field of it changes)
-let no_spot : SelSpot = { base: NoSel, off: 0, at: [] }
+let no_spot : SelSpot = { base: NoSel, off: 0, at: [], row_depth: -1 }
 
 ///|
 let desk : Desk = {
@@ -872,11 +902,129 @@ pub fn picked_words() -> String {
 }
 
 ///|
-/// The words picked with the pointer, each paragraph's on a line of its own in the page's order ("" none).
+/// Refresh the `scrolls_window` row-order entry in `at` for `base` so off-screen spans stay ordered correctly when
+/// history rows are prepended above.
+fn refresh_at(base : SelKey, at : Array[Int], row_depth : Int) -> Array[Int] {
+  guard row_depth >= 0 && row_depth < at.length() else { return at }
+  match (base, view_app.val) {
+    (Words(tree_no, list_id, path), Some(tree)) if tree_no == view_tree_made.val && path.length() > 0 =>
+      match tree.row_order_of(list_id, path[0]) {
+        Some(cur) if at[row_depth] != cur => {
+          let next = at.copy()
+          next[row_depth] = cur
+          next
+        }
+        _ => at
+      }
+    _ => at
+  }
+}
+
+///|
+fn refresh_spot(s : SelSpot) -> SelSpot {
+  let at = refresh_at(s.base, s.at, s.row_depth)
+  if physical_equal(at, s.at) { s } else { { ..s, at } }
+}
+
+///|
+/// Escape a cell's text for multi-cell TSV output when it contains tabs, newlines, or quotes.
+fn tsv_cell_escape(s : String) -> String {
+  if !s.contains("\t") && !s.contains("\n") && !s.contains("\r") && !s.contains("\"") {
+    return s
+  }
+  let sb = StringBuilder()
+  sb.write_char('"')
+  for c in s {
+    if c == '"' {
+      sb.write_string("\"\"")
+    } else {
+      sb.write_char(c)
+    }
+  }
+  sb.write_char('"')
+  sb.to_string()
+}
+
+///|
+/// The words picked with the pointer, each paragraph's on a line of its own in the page's order ("" none); multi-cell
+/// table selections serialize as TSV (tabs between columns, padding skipped empty columns, quoting cells containing
+/// tabs/newlines/quotes), while single-cell selections output the raw substring.
 fn selected_words() -> String {
-  let spans : Array[SelSpan] = picked.spans.values().filter(fn(s) { s.a < s.b }).collect()
+  guard picked_scope_live_now() else { return "" }
+  let spans : Array[SelSpan] = []
+  picked.spans.each(fn(k, s) {
+    if s.a < s.b {
+      let at = refresh_at(k, s.at, s.row_depth)
+      spans.push({ ..s, at })
+    }
+  })
+  if spans.is_empty() {
+    return ""
+  }
   spans.sort_by(fn(p, q) { order_cmp(p.at, q.at) })
-  spans.map(fn(s) { s.text.clamped_view(start=s.a, end=s.b).to_owned() }).join("\n")
+  if spans.length() == 1 {
+    let s = spans[0]
+    return s.text.clamped_view(start=s.a, end=s.b).to_owned()
+  }
+  // Check whether any span is a table cell; if not, keep the fast newline join.
+  let mut has_cell = false
+  for s in spans {
+    if s.shape is Some(Cell(_, _, _, _)) {
+      has_cell = true
+      break
+    }
+  }
+  if !has_cell {
+    return spans.map(fn(s) { s.text.clamped_view(start=s.a, end=s.b).to_owned() }).join("\n")
+  }
+  // Group consecutive spans belonging to the exact same (table_id, row, col) cell.
+  let grouped : Array[(WordsShape?, String)] = []
+  for s in spans {
+    let piece = s.text.clamped_view(start=s.a, end=s.b).to_owned()
+    match (grouped.last(), s.shape) {
+      (Some((Some(Cell(ptid, prow, pcol, phead)), prev)), Some(Cell(tid, row, col, _))) if ptid == tid &&
+        prow == row &&
+        pcol == col => grouped[grouped.length() - 1] = (Some(Cell(ptid, prow, pcol, phead)), prev + "\n" + piece)
+      _ => grouped.push((s.shape, piece))
+    }
+  }
+  if grouped.length() == 1 {
+    return grouped[0].1
+  }
+  let sb = StringBuilder()
+  let mut prev_cell : (Int, Int, Int)? = None
+  for i, entry in grouped {
+    let (shape, text) = entry
+    match shape {
+      Some(Cell(tid, row, col, _)) => {
+        if i > 0 {
+          match prev_cell {
+            Some((ptid, prow, pcol)) if ptid == tid && prow == row && col > pcol =>
+              for _ in 0..<(col - pcol) {
+                sb.write_char('\t')
+              }
+            Some((ptid, prow, _)) if ptid == tid && row > prow => {
+              sb.write_char('\n')
+              for _ in 0..<col {
+                sb.write_char('\t')
+              }
+            }
+            _ => sb.write_char('\n')
+          }
+        }
+        sb.write_string(tsv_cell_escape(text))
+        prev_cell = Some((tid, row, col))
+      }
+      _ => {
+        if i > 0 {
+          sb.write_char('\n')
+        }
+        sb.write_string(text)
+        prev_cell = None
+      }
+    }
+  }
+  sb.to_string()
 }
 
 ///|
@@ -1017,24 +1165,37 @@ fn Ctx::sel_walk(
     match (n.rcut, n.rich) {
       (Some(r), _) | (None, Some(r)) if r.select =>
         match n.rich_layout(dmax(n.fw - n.pad_l - n.pad_r, 0.0)) {
-          Some(lay) =>
+          Some(lay) => {
+            let rx0 = dmax(n.x, x0)
+            let ry0 = dmax(n.y, y0)
+            let rx1 = dmin(n.x + n.fw, x1)
+            let ry1 = dmin(n.y + n.fh, y1)
             out.push({
               base: Para(r.base),
               layer: OldLayer(layer),
               island: n.island,
               at: at.copy(),
+              row_depth: -1,
               lay,
               text: n.text,
               ox: n.x + n.pad_l,
               oy: n.y + n.pad_t,
-              x0: dmax(n.x, x0),
-              y0: dmax(n.y, y0),
-              x1: dmin(n.x + n.fw, x1),
-              y1: dmin(n.y + n.fh, y1),
+              x0: rx0,
+              y0: ry0,
+              x1: rx1,
+              y1: ry1,
+              hx0: rx0,
+              hy0: ry0,
+              hx1: rx1,
+              hy1: ry1,
               sc: 1.0,
               center: -1.0,
               node: None,
+              of: None,
+              shape: None,
+              runs: [],
             })
+          }
           None => ()
         }
       _ => ()
@@ -1105,7 +1266,31 @@ fn selectable_painted(
   x1 : Double,
   y1 : Double,
 ) -> Unit {
-  desk.next_sels.push({ base, layer, island, at, lay, text, ox, oy, x0, y0, x1, y1, sc: 1.0, center: -1.0, node: None })
+  desk.next_sels.push({
+    base,
+    layer,
+    island,
+    at,
+    row_depth: -1,
+    lay,
+    text,
+    ox,
+    oy,
+    x0,
+    y0,
+    x1,
+    y1,
+    hx0: x0,
+    hy0: y0,
+    hx1: x1,
+    hy1: y1,
+    sc: 1.0,
+    center: -1.0,
+    node: None,
+    of: None,
+    shape: None,
+    runs: [],
+  })
 }
 
 ///|
@@ -1118,48 +1303,90 @@ fn selected_rects(base : SelKey, lay : RichLayout) -> Array[(Double, Double, Dou
 }
 
 ///|
-/// Where the pointer at (x, y) takes what is picked, among the paragraphs laid out (`laid`, Words::offset_at's way): in
-/// the one whose part shown holds its height (the nearest across: beside a table's cell); else at the start of the
-/// nearest one under it; under them all, at the end of the lowest. None with none shown.
+/// Where the pointer at (x, y) takes what is picked, among the paragraphs laid out (`laid`, already filtered to the
+/// active layer and scope): two-stage box-first hit testing.
+/// Stage 1: topmost target whose hit box `[hx0, hx1) x [hy0, hy1)` contains `(x, y)`, clamping `y` to `[y0, y1 - 0.5]`.
+/// Stage 2: outside all hit boxes, above all -> start of tree-first visible; below all -> end of tree-last visible;
+/// within a row's vertical band -> horizontally nearest box (topmost on tie); in a pure vertical gap -> vertically
+/// nearest box first, then horizontally nearest, clamping to its top/bottom line.
 fn sel_spot_at(laid : Array[SelTarget], x : Double, y : Double) -> (SelTarget, Int)? {
-  let mut hit : SelTarget? = None
-  let mut best = 1.0e18
-  let mut under : SelTarget? = None
-  let mut lowest : SelTarget? = None
+  // Stage 1: inside a hit box, topmost (last drawn) first
+  let mut k = laid.length() - 1
+  while k >= 0 {
+    let t = laid[k]
+    if t.hx1 > t.hx0 && t.hy1 > t.hy0 && x >= t.hx0 && x < t.hx1 && y >= t.hy0 && y < t.hy1 {
+      return Some((t, t.offset_at_clamped(x, y)))
+    }
+    k = k - 1
+  }
+  // Stage 2: outside all hit boxes
+  let mut min_hy0 = 1.0e18
+  let mut max_hy1 = -1.0e18
+  let mut first_vis : SelTarget? = None
+  let mut last_vis : SelTarget? = None
+  let mut band_hit : SelTarget? = None
+  let mut band_dx = 1.0e18
+  let mut gap_hit : SelTarget? = None
+  let mut gap_dy = 1.0e18
+  let mut gap_dx = 1.0e18
   for t in laid {
-    if t.x1 <= t.x0 || t.y1 <= t.y0 {
+    if t.hx1 <= t.hx0 || t.hy1 <= t.hy0 {
       continue
     }
-    if y >= t.y0 && y < t.y1 {
-      let d = if x < t.x0 {
-        t.x0 - x
-      } else if x > t.x1 {
-        x - t.x1
-      } else {
-        0.0
-      }
-      if d < best {
-        best = d
-        hit = Some(t)
-      }
+    if t.hy0 < min_hy0 {
+      min_hy0 = t.hy0
     }
-    match under {
-      Some(u) if u.y0 <= t.y0 => ()
-      _ => if t.y0 > y { under = Some(t) }
+    if t.hy1 > max_hy1 {
+      max_hy1 = t.hy1
     }
-    match lowest {
-      Some(l) if l.y1 > t.y1 => ()
-      _ => lowest = Some(t)
+    match first_vis {
+      Some(f) if order_cmp(t.at, f.at) >= 0 => ()
+      _ => first_vis = Some(t)
+    }
+    match last_vis {
+      Some(l) if order_cmp(t.at, l.at) <= 0 => ()
+      _ => last_vis = Some(t)
+    }
+    let dx = if x < t.hx0 {
+      t.hx0 - x
+    } else if x > t.hx1 {
+      x - t.hx1
+    } else {
+      0.0
+    }
+    if y >= t.hy0 && y < t.hy1 {
+      if dx <= band_dx {
+        band_dx = dx
+        band_hit = Some(t)
+      }
+    } else {
+      let dy = if y < t.hy0 { t.hy0 - y } else { y - t.hy1 }
+      let closer_y = dy < gap_dy - 1.0e-6
+      let same_y_closer_x = (dy - gap_dy).abs() <= 1.0e-6 && dx <= gap_dx
+      if closer_y || same_y_closer_x {
+        gap_dy = dy
+        gap_dx = dx
+        gap_hit = Some(t)
+      }
     }
   }
-  match (hit, under, lowest) {
-    (Some(t), _, _) => {
-      let off = t.offset_at(x, y)
-      Some((t, imax(0, imin(off, t.text.length()))))
-    }
-    (None, Some(t), _) => Some((t, 0))
-    (None, None, Some(t)) => Some((t, t.text.length()))
-    _ => None
+  guard first_vis is Some(first) && last_vis is Some(last) else { return None }
+  if y < min_hy0 {
+    return Some((first, 0))
+  }
+  if y >= max_hy1 {
+    return Some((last, last.text.length()))
+  }
+  match band_hit {
+    Some(t) => Some((t, t.offset_at_clamped(x, y)))
+    None =>
+      match gap_hit {
+        Some(t) => {
+          let edge_y = if y < t.hy0 { t.y0 } else { dmax(t.y0, t.y1 - 0.5) }
+          Some((t, t.offset_at_clamped(x, edge_y)))
+        }
+        None => None
+      }
   }
 }
 
@@ -1181,13 +1408,13 @@ fn Ctx::select_to(self : Ctx, x : Double, y : Double) -> Unit {
   let drawn : Map[SelKey, SelSpan] = Map([])
   for t in laid {
     if !drawn.contains(t.base) {
-      drawn[t.base] = { a: 0, b: 0, text: t.text, at: t.at }
+      drawn[t.base] = { a: 0, b: 0, text: t.text, at: t.at, row_depth: t.row_depth, of: t.of, shape: t.shape, runs: t.runs }
     }
   }
   let now = fn(s : SelSpot) {
     match drawn.get(s.base) {
-      Some(d) => { ..s, at: d.at }
-      None => s
+      Some(d) => { ..s, at: d.at, row_depth: d.row_depth }
+      None => refresh_spot(s)
     }
   }
   picked.from = now(picked.from)
@@ -1198,13 +1425,13 @@ fn Ctx::select_to(self : Ctx, x : Double, y : Double) -> Unit {
         // it: finger_word_at), that word kept whole (Pick::slide's)
         Some((ws, we)) => {
           let (s, e) = finger_word_at(t.text, off)
-          let start = now({ base: t.base, off: s, at: [] })
+          let start = now({ base: t.base, off: s, at: [], row_depth: t.row_depth })
           if spot_cmp(start, now(ws)) < 0 {
             picked.from = now(we)
             start
           } else {
             picked.from = now(ws)
-            let end = now({ base: t.base, off: e, at: [] })
+            let end = now({ base: t.base, off: e, at: [], row_depth: t.row_depth })
             if spot_cmp(end, now(we)) > 0 {
               end
             } else {
@@ -1212,7 +1439,7 @@ fn Ctx::select_to(self : Ctx, x : Double, y : Double) -> Unit {
             }
           }
         }
-        None => now({ base: t.base, off, at: [] })
+        None => now({ base: t.base, off, at: [], row_depth: t.row_depth })
       }
     None => now(picked.to)
   }
@@ -1222,7 +1449,11 @@ fn Ctx::select_to(self : Ctx, x : Double, y : Double) -> Unit {
     (picked.to, picked.from)
   }
   let known : Map[SelKey, SelSpan] = Map([])
-  picked.spans.each(fn(k, s) { if !drawn.contains(k) { known[k] = s } })
+  picked.spans.each(fn(k, s) {
+    if !drawn.contains(k) {
+      known[k] = { ..s, at: refresh_at(k, s.at, s.row_depth) }
+    }
+  })
   drawn.each(fn(k, d) { known[k] = d })
   let spans : Map[SelKey, SelSpan] = Map([])
   known.each(fn(k, s) {
@@ -1467,10 +1698,7 @@ fn Ctx::select_press(self : Ctx, x : Double, y : Double, clicks : Int) -> Unit {
   match self.sel_at(x, y) {
     Some(target) => {
       let text = target.text
-      let off = imax(
-        0,
-        imin(target.offset_at(x, y), text.length()),
-      )
+      let off = target.offset_at_clamped(x, y)
       let (s, e) = if clicks <= 1 {
         (off, off)
       } else if clicks == 2 {
@@ -1481,9 +1709,9 @@ fn Ctx::select_press(self : Ctx, x : Double, y : Double, clicks : Int) -> Unit {
       let at = target.at
       // (another selection: the one before let go, this one begun by this press)
       picked.made = picked.made + 1
-      picked.from = { base: target.base, off: s, at }
-      picked.to = { base: target.base, off: e, at }
-      picked.spans[target.base] = { a: s, b: e, text, at }
+      picked.from = { base: target.base, off: s, at, row_depth: target.row_depth }
+      picked.to = { base: target.base, off: e, at, row_depth: target.row_depth }
+      picked.spans[target.base] = { a: s, b: e, text, at, row_depth: target.row_depth, of: target.of, shape: target.shape, runs: target.runs }
       picked.dragging = clicks <= 1
       picked.layer = target.layer
       // (the list it lies in: sideways boxes in it scroll it no way the pointer goes up or down)

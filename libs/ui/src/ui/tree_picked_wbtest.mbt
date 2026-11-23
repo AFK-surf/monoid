@@ -401,3 +401,199 @@ test "words of the tree's a finger picked in a column it scrolls, then a finger 
   assert_true(scroll.at(view_tree().unwrap()) > 0.0, msg="the column scrolled: \{scroll.at(view_tree().unwrap())}")
   assert_eq(pressed.val, 0)
 }
+
+///|
+test "WordsPicked.within and strays: single message plus unowned paragraph reports strays > 0; hiding or destroying scope root clears selection and blocks copy" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  t.check_looks(false)
+  let look : @view.WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  let show_scope = @signals.signal(true)
+  let hide_scope = @signals.signal(false)
+  let left_view : Ref[@view.View?] = Ref(None)
+  let right_view : Ref[@view.View?] = Ref(None)
+  set_view_app(fn(root) {
+    root.box(fn(row) {
+      row.row(Is(true)).width(Is(Some(400.0))) |> ignore
+      row.show(at_once=true, fn() { show_scope.get() }, fn(slot) {
+        slot.box(fn(left) {
+          left.width(Is(Some(200.0))).laid_nowhere(By(fn() { hide_scope.get() })) |> ignore
+          words_picked(left)
+          left_view.val = Some(left)
+          left.box(fn(m1) {
+            picked_of(m1, "m1") |> ignore
+            m1.box(fn(n) { n.width(Is(Some(180.0))).words_runs(Is([plain("owned msg")]), ink=0x333333FFL, look~) |> ignore })
+            |> ignore
+          })
+          |> ignore
+          left.box(fn(stray) {
+            stray.box(fn(n) { n.width(Is(Some(180.0))).words_runs(Is([plain("unowned notice")]), ink=0x333333FFL, look~) |> ignore })
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      row.box(fn(right) {
+        right.width(Is(Some(200.0))) |> ignore
+        words_picked(right)
+        right_view.val = Some(right)
+        right.box(fn(n) { n.width(Is(Some(180.0))).words_runs(Is([plain("other pane")]), ink=0x333333FFL, look~) |> ignore })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.drawn_now()
+  let lv = left_view.val.unwrap()
+  let rv = right_view.val.unwrap()
+  // Drag across owned msg + unowned notice
+  let next1 = dragged_at(t, 2.0, 10.0, 160.0, 34.0, t.time(), true)
+  t.frame_at(next1)
+  guard picked_now_in(lv) is Some(p) else { fail("expected picked_now_in(left)") }
+  assert_eq(p.of, ["m1"])
+  assert_eq(p.strays, 1)
+  assert_eq(picked_now_in(rv), None)
+  assert_eq(picked_words_in(rv), "")
+  assert_true(picked_words_in(lv).contains("owned msg"))
+  // Hide scope root via laid_nowhere: next frame clears selection and ⌘C copies nothing
+  hide_scope.set(true)
+  t.draw()
+  assert_eq(picked_now(), None)
+  assert_eq(t.ctx().selected_text(), "")
+  t.key(key_copy)
+  assert_eq(t.clipboard(), "")
+  // Re-show, select again, then destroy scope root: selection clears immediately
+  hide_scope.set(false)
+  t.draw()
+  let next2 = dragged_at(t, 2.0, 10.0, 80.0, 10.0, t.time(), true)
+  t.frame_at(next2)
+  assert_true(picked_now() is Some(_))
+  show_scope.set(false)
+  t.draw()
+  assert_eq(picked_now(), None)
+  assert_eq(t.ctx().selected_text(), "")
+}
+
+///|
+test "finger_select_all stays within scope, drops stale spans outside target set, and respects inner picked_of(whole=false)" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=2, pointing=Finger)
+  t.check_looks(false)
+  let look : @view.WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  set_view_app(fn(root) {
+    root.box(fn(row) {
+      row.row(Is(true)).width(Is(Some(400.0))) |> ignore
+      row.box(fn(left) {
+        left.width(Is(Some(200.0))) |> ignore
+        words_picked(left)
+        left.box(fn(n) { n.width(Is(Some(180.0))).words_runs(Is([plain("alpha beta")]), ink=0x333333FFL, look~) |> ignore })
+        |> ignore
+        left.box(fn(outer_whole) {
+          picked_of(outer_whole, "outer", whole=true) |> ignore
+          outer_whole.box(fn(inner_not_whole) {
+            picked_of(inner_not_whole, "inner", whole=false) |> ignore
+            inner_not_whole.box(fn(n) { n.width(Is(Some(180.0))).words_runs(Is([plain("gamma delta")]), ink=0x333333FFL, look~) |> ignore })
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      row.box(fn(right) {
+        right.width(Is(Some(200.0))) |> ignore
+        words_picked(right)
+        right.box(fn(n) { n.width(Is(Some(180.0))).words_runs(Is([plain("neighbor words")]), ink=0x333333FFL, look~) |> ignore })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  // Long press on "gamma" (in inner picked_of whole=false nested under whole=true)
+  t.press_at(16.0, 32.0)
+  t.run_for(long_press_ms)
+  t.release(16.0, 32.0)
+  t.draw()
+  assert_eq(t.ctx().selected_text(), "gamma")
+  // Select all: because inner is whole=false, selects all of left scope (alpha beta + gamma delta) and NEVER neighbor words
+  picked_select_all()
+  t.draw()
+  assert_eq(t.ctx().selected_text(), "alpha beta\ngamma delta")
+  assert_true(!t.ctx().selected_text().contains("neighbor"))
+}
+
+///|
+test "finger_select_all on a whole=true message drops stale spans from other paragraphs outside the message" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=2, pointing=Finger)
+  t.check_looks(false)
+  let look : @view.WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.width(Is(Some(300.0))) |> ignore
+      words_picked(page)
+      page.box(fn(m1) {
+        picked_of(m1, "m1", whole=true) |> ignore
+        m1.box(fn(n) { n.width(Is(Some(280.0))).words_runs(Is([plain("first part")]), ink=0x333333FFL, look~) |> ignore }) |> ignore
+        m1.box(fn(n) { n.width(Is(Some(280.0))).words_runs(Is([plain("second part")]), ink=0x333333FFL, look~) |> ignore }) |> ignore
+      })
+      |> ignore
+      page.box(fn(stray) {
+        stray.box(fn(n) { n.width(Is(Some(280.0))).words_runs(Is([plain("stray outside")]), ink=0x333333FFL, look~) |> ignore })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  // Long press on "second" in m1 (y=32) and slide down into "stray outside" (y=54)
+  t.press_at(16.0, 32.0)
+  t.run_for(long_press_ms)
+  t.move_to(120.0, 54.0)
+  t.draw()
+  t.release(120.0, 54.0)
+  t.draw()
+  assert_true(t.ctx().selected_text().contains("stray"), msg="before select_all: \{t.ctx().selected_text()}")
+  // Select all: m1 is whole=true, so only m1's paragraphs stay and stale "stray outside" span is dropped
+  picked_select_all()
+  t.draw()
+  assert_eq(t.ctx().selected_text(), "first part\nsecond part")
+}
+
+///|
+test "picked_words_at returns empty inside a nested apart=true sub-scope even though the point lies inside the outer scope rect" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  t.check_looks(false)
+  let look : @view.WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  set_view_app(fn(root) {
+    root.box(fn(outer) {
+      outer.width(Is(Some(360.0))).height(Is(Some(200.0))).gap(Is(8.0)) |> ignore
+      words_picked(outer)
+      outer.box(fn(n) { n.width(Is(Some(300.0))).words_runs(Is([plain("outer words here")]), ink=0x333333FFL, look~) |> ignore })
+      |> ignore
+      outer.box(fn(sub) {
+        sub.width(Is(Some(300.0))).height(Is(Some(80.0))).ground(Is(0xEEEEEEFFL)) |> ignore
+        words_picked(sub, apart=true)
+        sub.box(fn(n) { n.width(Is(Some(280.0))).words_runs(Is([plain("nested apart words")]), ink=0x333333FFL, look~) |> ignore })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.drawn_now()
+  // Select in outer scope (y=0..22)
+  let next = dragged_at(t, 1.0, 10.0, 160.0, 10.0, t.time(), true)
+  t.frame_at(next)
+  let sel = t.ctx().selected_text()
+  assert_true(sel.contains("outer"), msg="selected outer: \{sel}")
+  // Point inside outer scope (y=10) returns selection
+  assert_eq(picked_words_at(50.0, 10.0), sel)
+  // Point inside nested apart=true sub-scope (y=50, still inside outer's 0..200 rect) must return ""
+  assert_eq(picked_words_at(50.0, 50.0), "")
+}

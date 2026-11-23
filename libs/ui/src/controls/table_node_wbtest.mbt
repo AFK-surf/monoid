@@ -517,3 +517,38 @@ test "a table's cells as a message's words as nodes: a file's chip whole on one 
   assert_eq(made_words, ["@新架构 chat 表格问题", "\"whole\" | \"tasks\""])
   assert_eq(led, [path_link("libs/ui/src/controls/table_node.mbt", Some(152))])
 }
+
+///|
+test "table_node cells expose words_hit_box and words_shaped(Cell) for TSV and HTML table copy" {
+  let s = fn(w : String) { Json::string(w) }
+  let el = fn(name : String, kids : Array[Json]) { Json::array([s(name), Json::array(kids)]) }
+  let tbl = Json::array([
+    el("table", [
+      el("tr", [el("th", [s("ColA")]), el("th", [s("ColB")])]),
+      el("tr", [el("td", [s("v1")]), el("td", [s("v2")])]),
+    ]),
+  ])
+  let tt = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=400.0, h=300.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(page) {
+      @ui.words_picked(page)
+      table_node(page, fn() { "| ColA | ColB |\n|---|---|\n| v1 | v2 |" }, tree=fn() { Some(tbl) }, copy=false)
+    })
+    |> ignore
+  })
+  tt.run_for(@ui.move_most_ms)
+  let at = fn(w : String) {
+    match tt.words().iter().find_first(fn(x) { x.0 == w }) {
+      Some(x) => x
+      None => @halt.saying("\{w} not drawn: \{Repr(tt.words())}")
+    }
+  }
+  let a = at("ColA")
+  let b = at("v2")
+  tt.drag(a.1 + 1.0, a.2 + a.4 / 2.0, b.1 + b.3 - 1.0, b.2 + b.4 / 2.0)
+  tt.run_for(@ui.move_most_ms)
+  tt.key(@ui.key_code_copy)
+  assert_eq(tt.clipboard(), "ColA\tColB\nv1\tv2")
+  assert_eq(tt.clipboard_html(), "<table><tr><th>ColA</th><th>ColB</th></tr><tr><td>v1</td><td>v2</td></tr></table>")
+}

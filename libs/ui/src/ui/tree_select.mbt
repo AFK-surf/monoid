@@ -13,16 +13,78 @@
 let view_tree_made : Ref[Int] = Ref(0)
 
 ///|
-/// What a node lends what it holds: its words are picked with the pointer (words_picked).
+/// What a node lends what it holds: the root node of the selection scope its words belong to (words_picked).
 // kept across runs: what each node lends (View::lends), let go with it
-let words_picks : @view.Lent[Bool] = @view.Lent::new()
+let words_picks : @view.Lent[@view.NodeId] = @view.Lent::new()
+
+///|
+/// What a node lends what it holds: the hit-test container box for pointer selection (words_hit_box, e.g. a table cell).
+// kept across runs: what each node lends (View::lends), let go with it
+let words_hit_boxes : @view.Lent[@view.NodeId] = @view.Lent::new()
 
 ///|
 /// The words in pieces node `v` holds, now or later, picked with the pointer, a mouse's (a page's, as an old view's
 /// page's in Ctx::selectable): pressed and dragged over, picked; ⌘C (Ctrl+C) copies them; a press elsewhere lets them
-/// go.
-pub fn words_picked(v : @view.View) -> Unit {
-  v.lends(words_picks, true).lends(@view.runs_picker, words_picker) |> ignore
+/// go. By default (`apart=false`), inherits an enclosing `words_picked` scope if one exists; pass `apart=true` to start
+/// an independent selection scope inside an existing one.
+pub fn words_picked(v : @view.View, apart? : Bool = false) -> Unit {
+  let existing = if !apart { v.lent(words_picks) } else { None }
+  let scope_id = existing.unwrap_or_else(fn() { v.id() })
+  v.lends(words_picks, scope_id).lends(@view.runs_picker, words_picker) |> ignore
+  if existing is None {
+    v.owns(fn() {
+      match picked.layer {
+        TreeScope(_, id) if id == scope_id => select_none()
+        _ => ()
+      }
+    })
+    |> ignore
+  }
+}
+
+///|
+/// Mark `v` as the selection hit-test box for words inside it (e.g. a table cell whose words are vertically centered
+/// in a taller row): pointer hits anywhere inside `v`'s visible box clamp to the words' first or last line instead of
+/// falling through to neighboring columns.
+pub fn words_hit_box(v : @view.View) -> Unit {
+  v.lends(words_hit_boxes, v.id()) |> ignore
+}
+
+///|
+/// Whether selection scope `scope_id` is still alive and visible in the current window's tree.
+fn tree_scope_live(scope_id : @view.NodeId) -> Bool {
+  match view_app.val {
+    Some(tree) =>
+      match tree.view_of(scope_id) {
+        Some(v) => !v.shown_nowhere()
+        None => false
+      }
+    None => false
+  }
+}
+
+///|
+/// Whether the current selection's scope (if any tree selection) is alive and visible.
+fn picked_scope_live_now() -> Bool {
+  match picked.layer {
+    TreeScope(_, scope_id) => tree_scope_live(scope_id)
+    _ => true
+  }
+}
+
+///|
+/// If the current tree selection belongs to a scope that was destroyed or hidden (`shown_nowhere`), clear it.
+fn ensure_picked_scope_live() -> Bool {
+  match picked.layer {
+    TreeScope(_, scope_id) =>
+      if !tree_scope_live(scope_id) {
+        select_none()
+        false
+      } else {
+        true
+      }
+    _ => true
+  }
 }
 
 ///|
@@ -120,30 +182,55 @@ fn tree_sels(finger? : Bool = false) -> Array[SelTarget] {
         }
         match tree.view_of(c.id) {
           // (where its words are picked, by the picker that picks them: not where a block in it was lent another)
-          Some(v) if v.lent(words_picks) == Some(true) &&
+          Some(v) if v.lent(words_picks) is Some(scope_id) &&
             v.lent(@view.runs_picker).map(fn(f) { physical_equal(f, words_picker) }) == Some(true) => {
-            let (r, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks, tabular=c.words_tabular)
             let (bx0, by0, bx1, by1) = tree.seen_bounds(c.id)
-            let place = tree_place(v)
+            let x0 = dmax(x, bx0)
+            let y0 = dmax(y, by0)
+            let x1 = dmin(x + c.w * s, bx1)
+            let y1 = dmin(y + c.h * s, by1)
+            let (hx0, hy0, hx1, hy1) = match v.lent(words_hit_boxes).bind(fn(bid) { tree.view_of(bid) }) {
+              Some(box_v) => {
+                let (rx, ry, rw, rh) = box_v.rect()
+                let (hbx0, hby0, hbx1, hby1) = tree.seen_bounds(box_v.id())
+                (dmax(rx, hbx0), dmax(ry, hby0), dmin(rx + rw, hbx1), dmin(ry + rh, hby1))
+              }
+              None => (x0, y0, x1, y1)
+            }
+            if (hx1 <= hx0 || hy1 <= hy0) && (x1 <= x0 || y1 <= y0) {
+              return
+            }
+            let (r, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks, tabular=c.words_tabular)
+            let (place, row_depth) = tree_place_with_row(v)
             let base = tree_key(v)
+            let of = v.lent(picked_ofs)
+            let shape = v.lent(words_shapes).map(fn(f) { f() })
             // (who shows it, what it is of: what is picked of it told by them, picked_now)
-            picked_shown_by(base, v)
+            picked_shown_by(base, v, scope_id)
             out.push({
               base,
-              layer: TreeLayer(tree.stack_of(c.id)),
+              layer: TreeScope(tree.stack_of(c.id), scope_id),
               island: None,
               at: place,
+              row_depth,
               lay,
               text: lay.text,
               ox: x,
               oy: y,
-              x0: dmax(x, bx0),
-              y0: dmax(y, by0),
-              x1: dmin(x + c.w * s, bx1),
-              y1: dmin(y + c.h * s, by1),
+              x0,
+              y0,
+              x1,
+              y1,
+              hx0,
+              hy0,
+              hx1,
+              hy1,
               sc: s,
               center: if c.words_center { c.w } else { -1.0 },
               node: Some(c.id),
+              of,
+              shape,
+              runs: c.runs,
             })
             ignore(r)
           }
@@ -164,21 +251,27 @@ let tree_sels_made : Ref[Int] = Ref(0)
 
 ///|
 /// Where node `v` stands in the window's tree: from the root down, each node's place among what holds it (a page's
-/// list's row's as its key's among the list's keys, whichever of its rows are made: View::row_order), the order the
-/// tree holds them in whatever is drawn over what, as an old view's paragraphs' places are (Ctx::page_order): their
-/// order, not who they are (tree_key's).
-fn tree_place(v : @view.View) -> Array[Int] {
+/// list's row's as its key's among the list's keys, whichever of its rows are made: View::row_order), and the index in
+/// that path where a `scrolls_window` row order was recorded (-1 if none).
+fn tree_place_with_row(v : @view.View) -> (Array[Int], Int) {
   let up : Array[Int] = []
+  let mut row_from_bottom = -1
   let mut at = v
   while at.parent() is Some(p) {
     let i = match at.row_order() {
-      Some(i) => i
+      Some(i) => {
+        if row_from_bottom < 0 {
+          row_from_bottom = up.length()
+        }
+        i
+      }
       None => p.kids().search_by(fn(k) { k.id() == at.id() }).unwrap_or(0)
     }
     up.push(i)
     at = p
   }
-  up.rev()
+  let row_depth = if row_from_bottom >= 0 { up.length() - 1 - row_from_bottom } else { -1 }
+  (up.rev(), row_depth)
 }
 
 ///|
@@ -195,7 +288,7 @@ fn tree_sel_at(x : Double, y : Double, finger? : Bool = false) -> SelTarget? {
   let mut k = sels.length() - 1
   while k >= 0 {
     let t = sels[k]
-    if x >= t.x0 && x < t.x1 && y >= t.y0 && y < t.y1 {
+    if x >= t.hx0 && x < t.hx1 && y >= t.hy0 && y < t.hy1 {
       return Some(t)
     }
     k = k - 1
@@ -225,7 +318,7 @@ fn tree_words_under(x : Double, y : Double, laid? : Bool = true) -> Bool {
       return
     }
     match tree.view_of(c.id) {
-      Some(v) if v.lent(words_picks) == Some(true) &&
+      Some(v) if v.lent(words_picks) is Some(_) &&
         v.lent(@view.runs_picker).map(fn(f) { physical_equal(f, words_picker) }) == Some(true) => found.val = true
       _ => ()
     }
@@ -234,9 +327,9 @@ fn tree_words_under(x : Double, y : Double, laid? : Bool = true) -> Bool {
 }
 
 ///|
-/// Whether what is picked with the pointer is of the window's tree's words (a layer of its: SelLayer's TreeLayer).
+/// Whether what is picked with the pointer is of the window's tree's words (a scope of its: SelLayer's TreeScope).
 fn tree_picking() -> Bool {
-  picked.layer is TreeLayer(_)
+  picked.layer is TreeScope(_, _)
 }
 
 ///|
@@ -248,7 +341,7 @@ fn tree_picking() -> Bool {
 priv struct TreeEdge {
   scroll : @view.Scroll?
   mut speed : Double
-  across : @view.Scroll?
+  mut across : @view.Scroll?
   mut speed_across : Double
 }
 
@@ -311,6 +404,44 @@ fn tree_edge_speed(tree : @view.Tree, s : @view.Scroll, across : Bool, at : Doub
 }
 
 ///|
+/// Horizontal edge-scroll speed for a horizontal scroll group (`Scroll::beside` peers): only scrolls while `py` is
+/// within at least one alive, visible peer's vertical visible band, returning the active peer's `Scroll` so edge
+/// scrolling continues even after the slice where selection started scrolls out of view.
+fn tree_edge_across_speed(
+  tree : @view.Tree,
+  s : @view.Scroll,
+  px : Double,
+  py : Double,
+  held : Bool,
+) -> (Double, @view.Scroll?) {
+  guard held else { return (0.0, None) }
+  for pair in s.shown_peers() {
+    let (peer, peer_scroll) = pair
+    let (x, y, w, h) = peer.rect()
+    let (bx0, by0, bx1, by1) = tree.seen_bounds(peer.id())
+    let vtop = dmax(y, by0)
+    let vbot = dmin(y + h, by1)
+    if vbot <= vtop || py < vtop || py > vbot {
+      continue
+    }
+    let left = dmax(x, bx0)
+    let right = dmin(x + w, bx1)
+    if right <= left {
+      continue
+    }
+    let v = if px < left {
+      -(left - px + select_edge_least) * select_edge_rate
+    } else if px > right {
+      (px - right + select_edge_least) * select_edge_rate
+    } else {
+      0.0
+    }
+    return (v, Some(peer_scroll))
+  }
+  (0.0, None)
+}
+
+///|
 /// What words of the window's tree are being picked in toward the pointer (the Ctx's px, py) while `held`
 /// (tree_edge_speed): said to each only as how fast changes (Scroll::edge_toward goes on as it is said, its place a
 /// function of time), never again for the same. The column shown nowhere: all of it still, and known no more, at once;
@@ -338,10 +469,23 @@ fn tree_edge_to(c : Ctx, held : Bool) -> Unit {
   }
   match e.across {
     Some(s) => {
-      let v = tree_edge_speed(tree, s, true, c.px, held).unwrap_or(0.0)
-      if v != e.speed_across {
-        e.speed_across = v
-        s.edge_toward(v)
+      let (v, active) = tree_edge_across_speed(tree, s, c.px, c.py, held)
+      match active {
+        Some(peer_s) => {
+          let switched = peer_s.serial() != s.serial()
+          if switched {
+            e.across = Some(peer_s)
+          }
+          if v != e.speed_across || switched {
+            e.speed_across = v
+            peer_s.edge_toward(v)
+          }
+        }
+        None =>
+          if e.speed_across != 0.0 {
+            e.speed_across = 0.0
+            s.edge_toward(0.0)
+          }
       }
     }
     None => ()
