@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { groupAlive } from "../src/ops/group.ts";
 import { killGroups } from "./kill-groups.ts";
-import { COLLECT_YIELD_EVERY, JOB_FILES_ORPHAN_MS, JOB_LOGS_KEPT_MS, Jobs, WRAPPER, tail } from "../src/jobs/jobs.ts";
+import { COLLECT_BATCH_SIZE, COLLECT_YIELD_EVERY, JOB_FILES_ORPHAN_MS, JOB_LOGS_KEPT_MS, Jobs, WRAPPER, tail } from "../src/jobs/jobs.ts";
 import { JOB_LOG_CAP } from "../src/ops/storage.ts";
 import { Store } from "../src/store/store.ts";
 import { WINDOWS } from "../src/platform/index.ts";
@@ -152,31 +152,62 @@ describe("jobs' files", { concurrency: true }, () => {
       writeFileSync(join(exits, `kept${i}`), "0");
     }
     r.store.insertJob(row("up", "running", null));
-    writeFileSync(join(logs, "up.log"), "x");
-    writeFileSync(join(logs, "up.log.1"), "x");
-    const read: string[] = [];
+    // (its files beside the exit files, so that jobs/logs holds the N kept logs alone: read in N / COLLECT_BATCH_SIZE)
+    writeFileSync(join(exits, "up"), "0");
+    writeFileSync(join(exits, "up.tmp"), "");
+    let single = 0;
     const getJob = r.store.getJob.bind(r.store);
-    r.store.getJob = (id: string) => (read.push(id), getJob(id));
-    // what else the loop has to do while it collects: each turn it is given back, the reads since the last counted
-    let last = 0;
-    let most = 0;
+    r.store.getJob = (id: string) => (single++, getJob(id));
+    const read: string[] = [];
+    const batches: number[] = [];
+    const jobsEnds = r.store.jobsEnds.bind(r.store);
+    r.store.jobsEnds = (ids: readonly string[]) => (batches.push(ids.length), read.push(...ids), jobsEnds(ids));
+    // what else the loop has to do while it collects: each turn it is given back, the files gone through counted by
+    // the turns
     let turns = 0;
     let collecting = true;
     const other = () => {
-      most = Math.max(most, read.length - last);
-      last = read.length;
       turns++;
       if (collecting) setImmediate(other);
     };
     setImmediate(other);
     const gone = await r.jobs.collect(T + 1000);
     collecting = false;
-    most = Math.max(most, read.length - last);
     assert.deepEqual(gone, [], "all within their time");
+    assert.equal(single, 0, "no job read one at a time");
     assert.ok(!read.includes("up"), "a job up is not read");
+    assert.equal(new Set(read).size, N, "each kept job read");
     assert.equal(read.length, N, "each kept job read once, for its log and its exit file both");
-    assert.ok(most <= COLLECT_YIELD_EVERY, `${most} reads in one turn of the loop`);
+    assert.equal(batches.length, Math.ceil(N / COLLECT_BATCH_SIZE), `read in ${batches.join(", ")}`);
+    assert.ok(batches.every((n) => n <= COLLECT_BATCH_SIZE), `read in ${batches.join(", ")}`);
     assert.ok(turns >= N / COLLECT_YIELD_EVERY, `the loop given back ${turns} times`);
+  });
+
+  test("a store that cannot say a batch's jobs keeps their files, and collects them once it can", async () => {
+    const r = rig();
+    const logs = join(r.dir, "jobs", "logs");
+    mkdirSync(logs, { recursive: true });
+    const T = 1_000_000_000_000;
+    const old = (T - JOB_FILES_ORPHAN_MS - JOB_LOGS_KEPT_MS) / 1000;
+    r.store.insertJob({
+      id: "over", sessionKey: "s1", name: "over", command: "true", cwd: r.work, port: null, token: "t-over", state: "exited", pgid: null, exitCode: 0,
+      startedAt: T - JOB_LOGS_KEPT_MS - 2000, endedAt: T - JOB_LOGS_KEPT_MS - 1000, restarts: 0, log: join(logs, "over.log"), watch: false,
+    });
+    for (const id of ["over", "ghost"]) {
+      writeFileSync(join(logs, `${id}.log`), "x");
+      utimesSync(join(logs, `${id}.log`), old, old);
+    }
+    const jobsEnds = r.store.jobsEnds.bind(r.store);
+    let failing = true;
+    r.store.jobsEnds = (ids: readonly string[]) => {
+      if (failing) throw new Error("database is locked");
+      return jobsEnds(ids);
+    };
+    assert.deepEqual(await r.jobs.collect(T), [], "nothing removed while the store cannot say");
+    assert.ok(existsSync(join(logs, "over.log")) && existsSync(join(logs, "ghost.log")));
+    failing = false;
+    assert.deepEqual((await r.jobs.collect(T)).sort(), ["ghost", "over"]);
+    assert.ok(!existsSync(join(logs, "over.log")) && !existsSync(join(logs, "ghost.log")));
   });
 
   test("a job's exit code is there whole or not at all: written aside, then moved into place", { skip: WINDOWS && "the wrapper's sh and mv" }, () => {

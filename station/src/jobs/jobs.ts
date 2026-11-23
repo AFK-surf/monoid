@@ -33,6 +33,9 @@ export { outputAt, tail };
 export const JOB_LOGS_KEPT_MS = 14 * 24 * 3600_000;
 /// How many of its files (or reads of the store) `collect` goes through before it gives the loop back once.
 export const COLLECT_YIELD_EVERY = 32;
+/// How many of a directory's files `collect` looks up in the store at once (one `jobsEnds` query each, as
+/// jobs_host/jobs.mbt).
+export const COLLECT_BATCH_SIZE = 500;
 /// A job's files whose job the store no longer has (its session deleted, its record cleared) kept this long.
 export const JOB_FILES_ORPHAN_MS = 3600_000;
 
@@ -601,38 +604,60 @@ export class Jobs {
   async collect(now: number): Promise<string[]> {
     const gone = new Set<string>();
     const up = new Set(this.store.jobsUp().map((j) => j.id));
-    const looked = new Map<string, JobRow | null>();
+    const looked = new Map<string, { state: string; endedAt: number | null } | null>();
     // (each read of the store is synchronous: so many files, all kept, made no await at all, and 1,043 reads held the
-    // main thread 4.5 s, 2026-11-18; the loop is given back every COLLECT_YIELD_EVERY files or reads)
+    // main thread 4.5 s, 2026-11-18; one read each, `getJob`, ran 26 slow queries of up to 11 s in a row on 0.1.11116:
+    // the jobs of COLLECT_BATCH_SIZE files are read at once, and the loop given back every COLLECT_YIELD_EVERY files)
     let since = 0;
-    const jobOf = (id: string) => {
-      if (!looked.has(id)) {
-        since++;
-        looked.set(id, this.store.getJob(id));
-      }
-      return looked.get(id)!;
-    };
     const idOf = (name: string, sub: "logs" | "exit") => (sub === "logs" ? /^(.+?)\.log(\.1(\.tmp)?)?$/.exec(name)?.[1] : /^(.+?)(\.(lost|tmp))?$/.exec(name)?.[1]) ?? null;
     const isUp = (id: string) => up.has(id) || this.running.has(id);
     for (const sub of ["logs", "exit"] as const) {
       const dir = join(this.dir, sub);
-      for (const name of await readdir(dir).catch(() => [] as string[])) {
-        if (++since >= COLLECT_YIELD_EVERY) {
+      const names = await readdir(dir).catch(() => [] as string[]);
+      for (let offset = 0; offset < names.length; offset += COLLECT_BATCH_SIZE) {
+        const end = Math.min(offset + COLLECT_BATCH_SIZE, names.length);
+        if (offset > 0) {
           since = 0;
           await new Promise<void>((resolve) => setImmediate(resolve));
         }
-        const id = idOf(name, sub);
-        if (id === null || isUp(id)) continue;
-        const job = jobOf(id);
-        const file = join(dir, name);
-        if (job === null) {
-          const st = await lstat(file).catch(() => null);
-          if (st === null || now - st.mtimeMs < JOB_FILES_ORPHAN_MS) continue;
-        } else if (job.state === "running" || job.endedAt === null || now - job.endedAt < JOB_LOGS_KEPT_MS) continue;
-        // (started again while the loop was given back)
-        if (isUp(id)) continue;
-        await rm(file, { force: true }).catch(() => undefined);
-        gone.add(id);
+        const need: string[] = [];
+        const asked = new Set<string>();
+        for (let i = offset; i < end; i++) {
+          const id = idOf(names[i]!, sub);
+          if (id === null || isUp(id) || looked.has(id) || asked.has(id)) continue;
+          asked.add(id);
+          need.push(id);
+        }
+        if (need.length > 0) {
+          let found: Record<string, { state: string; endedAt: number | null }>;
+          try {
+            found = this.store.jobsEnds(need);
+          } catch (error) {
+            // (the store could not say: nothing of these files is removed, and they are looked at again next time)
+            log.warn("jobs", "jobs' ends not read: their files kept for now", { jobs: need.length, error: (error as Error).message });
+            continue;
+          }
+          for (const id of need) looked.set(id, Object.hasOwn(found, id) ? found[id]! : null);
+        }
+        for (let i = offset; i < end; i++) {
+          if (++since >= COLLECT_YIELD_EVERY) {
+            since = 0;
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          }
+          const name = names[i]!;
+          const id = idOf(name, sub);
+          if (id === null || isUp(id) || !looked.has(id)) continue;
+          const job = looked.get(id)!;
+          const file = join(dir, name);
+          if (job === null) {
+            const st = await lstat(file).catch(() => null);
+            if (st === null || now - st.mtimeMs < JOB_FILES_ORPHAN_MS) continue;
+          } else if (job.state === "running" || job.endedAt === null || now - job.endedAt < JOB_LOGS_KEPT_MS) continue;
+          // (started again while the loop was given back)
+          if (isUp(id)) continue;
+          await rm(file, { force: true }).catch(() => undefined);
+          gone.add(id);
+        }
       }
     }
     if (gone.size > 0) log.info("jobs", "files of jobs long over or gone removed", { jobs: gone.size });
