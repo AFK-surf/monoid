@@ -330,58 +330,59 @@ fn menu_node_by(
           }
           None => ()
         }
-        p.focusable(By(live), keys=0) |> ignore
-        anchored_popover_shell_by(p, at.id(), look, side~, along~, offset~, holds_side=false, host?)
-        .min_width(Is(Some(min_w)))
-        .max_width(
-          By(fn() {
-            let room = dmax(0.0, over_room(layer).0 - 16.0)
-            Some(if max_w > 0.0 { dmin(max_w, room) } else { room })
-          }),
-        )
-        .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
-        // (small_panel: its padding, its rows reaching past it to stand concentric with its corners;
-        // submenu levels use `r_menu - 12` inset so the 24x24 circular `<` back button (radius 12) sits concentric with `r_menu`)
-        .padding(
-          By(fn() {
-            let top_pad = if cur_depth() > 0 {
-              r_menu - 12.0
-            } else if first_row() {
-              panel_pad - reach
-            } else {
-              panel_pad
-            }
-            (panel_pad - reach, top_pad, panel_pad - reach, if last_row() { panel_pad - reach } else { panel_pad })
-          }),
-        )
-        |> ignore
-        p.box(fn(body) {
-          body_ref.val = Some(body)
-          // (what it is to the keys and a screen reader: @headless.menu, in `body`; roving arrows, Home/End,
-          // typeahead, keep_field, and submenu close_key handled by @headless.menu)
-          @headless.menu(
-            body,
-            label=fn() { title_plain(cur_title()) },
-            on_close?=if !modal && back >= 0 {
-              Some(fn() {
-                if @signals.untracked(live) {
-                  cancel()
+        let menu_ref : Ref[@headless.Menu?] = Ref(None)
+        // (what it is to the keys and a screen reader: @headless.menu on `p` itself so `Menu` role, rect, and Tab stops
+        // (panel + roving item) match the panel; Escape goes through `@headless.overlay` on the unified overlay stack)
+        @headless.menu(
+          p,
+          label=fn() { title_plain(cur_title()) },
+          on_close?=if !modal && back >= 0 {
+            Some(fn() {
+              if @signals.untracked(live) {
+                cancel()
+              }
+            })
+          } else {
+            None
+          },
+          close_key?=if !modal && back >= 0 { Some(back) } else { None },
+          wraps=true,
+          disabled=fn() { !live() },
+          takes_focus=true,
+          roving=true,
+          typeahead=true,
+          typeahead_ms=@headless.typeahead_ms,
+          keep_field~,
+          captures_unfocused=true,
+          in_node=true,
+          fn(p, menu) {
+            menu_ref.val = Some(menu)
+            anchored_popover_shell_by(p, at.id(), look, side~, along~, offset~, holds_side=false, host?)
+            .min_width(Is(Some(min_w)))
+            .max_width(
+              By(fn() {
+                let room = dmax(0.0, over_room(layer).0 - 16.0)
+                Some(if max_w > 0.0 { dmin(max_w, room) } else { room })
+              }),
+            )
+            .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
+            // (small_panel: its padding, its rows reaching past it to stand concentric with its corners;
+            // submenu levels use `r_menu - 12` inset so the 24x24 circular `<` back button (radius 12) sits concentric with `r_menu`)
+            .padding(
+              By(fn() {
+                let top_pad = if cur_depth() > 0 {
+                  r_menu - 12.0
+                } else if first_row() {
+                  panel_pad - reach
+                } else {
+                  panel_pad
                 }
-              })
-            } else {
-              None
-            },
-            close_key?=if !modal && back >= 0 { Some(back) } else { None },
-            wraps=true,
-            disabled=fn() { !live() },
-            takes_focus=false,
-            roving=true,
-            typeahead=true,
-            typeahead_ms=@headless.typeahead_ms,
-            keep_field~,
-            captures_unfocused=true,
-            in_node=true,
-            fn(body, menu) {
+                (panel_pad - reach, top_pad, panel_pad - reach, if last_row() { panel_pad - reach } else { panel_pad })
+              }),
+            )
+            |> ignore
+            p.box(fn(body) {
+              body_ref.val = Some(body)
               // (all it holds as far in as its look says, past the panel's own ground, edge and shadow: its rows, their
               // grounds, checks, marks and words, its headings and lines, the same, Look's `words` as a surface's are)
               let side = panel_pad - reach
@@ -520,10 +521,10 @@ fn menu_node_by(
                   None => ()
                 }
               })
-            },
-          )
-          |> ignore
-        })
+            })
+            |> ignore
+          },
+        )
         |> ignore
         // (the focus given as it opens: opened by the keyboard, to its first item; else its panel; or, by a finger
         // beside a field, left in that field (`keep_field`), returning focus as it goes)
@@ -538,8 +539,8 @@ fn menu_node_by(
         let before_dismiss = fn(how : @headless.OverlayDismiss) {
           how == Back && level_back()
         }
+        let ov_ref : Ref[@headless.Overlay?] = Ref(None)
         if modal {
-          let ov_ref : Ref[@headless.Overlay?] = Ref(None)
           @headless.overlay(
             layer,
             fn(_) { cancel() },
@@ -579,10 +580,28 @@ fn menu_node_by(
             initial_focus?=init_focus,
             before_dismiss~,
             in_node=true,
-            fn(_, _) {  },
+            fn(_, ov) { ov_ref.val = Some(ov) },
           )
           |> ignore
+          // Keep panel as a Tab stop alongside its roving items (`@headless.overlay` sets `tab=false`).
+          p.focusable(By(live), keys=0) |> ignore
         }
+        // Handle Escape (with or without modifiers, matching legacy menu) via the overlay stack, and delegate all
+        // other menu navigation/typeahead keys to `@headless.Menu::handle_key`.
+        p.on_key(fn(k) {
+          if k.code == @ui.key_escape {
+            if ov_ref.val is Some(ov) && @signals.untracked(fn() { ov.is_top() }) {
+              ov.dismiss(Escape)
+              return true
+            }
+            return false
+          }
+          match menu_ref.val {
+            Some(m) => m.handle_key(k)
+            None => false
+          }
+        })
+        |> ignore
       })
       |> ignore
     },
