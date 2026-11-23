@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a8ecd98c2](https://github.com/AFK-surf/monoid/commit/a8ecd98c2a3237ab773bcbd86e6ba6b44468f7d3) test(station): stop holding the frozen station_mai | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 120.97 |
 | [73d9f3d25](https://github.com/AFK-surf/monoid/commit/73d9f3d257d00e5206e3ef176e7df6c4f5f72b0f) fix(station): run Node's admin CLI before the Moon | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [546e938ea](https://github.com/AFK-surf/monoid/commit/546e938ea59163bea3e380e00fd0c670add3fbb2) fix(ui,mbui): clear chat/composer motion exemption | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [e1dbcc2c0](https://github.com/AFK-surf/monoid/commit/e1dbcc2c02c889de1943876155f8b73771150fa5) ci: trigger station/core checks and beta release o | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [42840c9fd](https://github.com/AFK-surf/monoid/commit/42840c9fd2e9ea8baca1ce606efe1540a3720397) refactor(ui): migrate remaining controls widgets t | 2.74 | 3.68 | 14.93 | 37.12 | 56.89 | 32.51 | 66.02 | 101.02 | 127.06 |
 | [fe7620826](https://github.com/AFK-surf/monoid/commit/fe76208265984fa7fdaf635ef0e6b653bf48be2d) fix(mbui,i18n): pass preferred device language to  | 2.74 | 3.68 | 14.93 | 37.1 | 56.86 | 32.5 | 65.99 | 101.02 | 123.61 |
 | [1c6f7ba9e](https://github.com/AFK-surf/monoid/commit/1c6f7ba9e306cce12b17a9961a9405bed7775e31) fix(mbui): show overflowed iOS Duo tabs in a nativ | 2.74 | 3.68 | 14.93 | 37.1 | 56.86 | 32.5 | 65.99 | 100.8 | 114.91 |
-| [a7554d680](https://github.com/AFK-surf/monoid/commit/a7554d6800128293eae5b055843e068716aa51cf) docs(releases): 0.1.11070 stable notes (#8347) | 2.74 | 3.68 | 14.93 | 37.1 | 56.86 | 32.5 | 65.99 | 100.8 | 114.91 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a8ecd98c2](https://github.com/AFK-surf/monoid/commit/a8ecd98c2a3237ab773bcbd86e6ba6b44468f7d3) test(station): stop holding the frozen station_mai | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.35 |
 | [73d9f3d25](https://github.com/AFK-surf/monoid/commit/73d9f3d257d00e5206e3ef176e7df6c4f5f72b0f) fix(station): run Node's admin CLI before the Moon | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.33 |
 | [546e938ea](https://github.com/AFK-surf/monoid/commit/546e938ea59163bea3e380e00fd0c670add3fbb2) fix(ui,mbui): clear chat/composer motion exemption | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.49 |
 | [e1dbcc2c0](https://github.com/AFK-surf/monoid/commit/e1dbcc2c02c889de1943876155f8b73771150fa5) ci: trigger station/core checks and beta release o | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.3 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [42840c9fd](https://github.com/AFK-surf/monoid/commit/42840c9fd2e9ea8baca1ce606efe1540a3720397) refactor(ui): migrate remaining controls widgets t | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 57.93 |
 | [fe7620826](https://github.com/AFK-surf/monoid/commit/fe76208265984fa7fdaf635ef0e6b653bf48be2d) fix(mbui,i18n): pass preferred device language to  | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 58.18 |
 | [1c6f7ba9e](https://github.com/AFK-surf/monoid/commit/1c6f7ba9e306cce12b17a9961a9405bed7775e31) fix(mbui): show overflowed iOS Duo tabs in a nativ | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 58.25 |
-| [a7554d680](https://github.com/AFK-surf/monoid/commit/a7554d6800128293eae5b055843e068716aa51cf) docs(releases): 0.1.11070 stable notes (#8347) | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 58.23 |
