@@ -4,6 +4,7 @@
 
 import "base_codec"
 import "effect"
+import "mesh"
 import "shell"
 import "wire"
 
@@ -177,214 +178,489 @@ pub fn shell_http_transport(
   }
 }
 
-// ── iroh Mesh `StationTransport` (`iroh.bind` + `iroh.setRelayEntries` + `iroh.connect` + `conn.openBi` + `istream.*`) ──
+// ── Production `pion/base/packages/mesh` `StationTransport` ──
+// Strictly aligned with `client/core-ts/src/station/mesh-wire.ts` & `client/core-ts/src/lock.ts`:
+//   - ALPN: `"stillfail/admin/1"`
+//   - Control stream hello: `{ credential, protocol: 2, lock: { device, proof, kind?, label?, entries? } }`
+//     where `proof` is an Ed25519 signature over `stillfail-lock-endpoint/1\0<ws>\0<endpoint>` via `Mesh::sign`
+//   - Parses `Link::admitted_k` metadata (`lock_unconfirmed`, `station`, refusal codes)
+//   - Delegates all HTTP requests & `/events` SSE streams directly to `StationTransport::from_link(link)`
+//   - Supports credential renewal (`Link::exchange_k`) and clean teardown (`Link::close` / `Mesh::drop_link` / `Mesh::close_k`).
 
-struct IrohMeshState {
-  sh : shell::Shell
-  peer_id_hex : String
-  relay_url : String
-  relay_entries : Array[(String, String)]
-  ips : Array[String]
-  alpn : Bytes
-  secret_key : Bytes
-  auth_header : Option[String]
-  mut local_endpoint_id : Option[Int64]
-  mut conn_id : Option[Int64]
+pub fn station_mesh_alpn() -> String {
+  "stillfail/admin/1"
 }
 
-fn iroh_concat_bytes(a : Bytes, b : Bytes) -> Bytes {
-  if a.length() == 0 {
-    return b
-  }
-  if b.length() == 0 {
-    return a
-  }
-  a.concat(b)
+pub fn station_mesh_protocol() -> Int {
+  2
 }
 
-fn iroh_join_chunks(chunks : Array[Bytes]) -> Bytes {
-  let mut total = 0
-  for i in 0..<chunks.length() {
-    total += chunks[i].length()
-  }
-  let out = Bytes::new(total)
-  let mut off = 0
-  for i in 0..<chunks.length() {
-    let c = chunks[i]
-    for j in 0..<c.length() {
-      out[off + j] = c[j]
-    }
-    off += c.length()
-  }
-  out
+pub fn station_mesh_addresses_key() -> String {
+  "station-addresses"
 }
 
-fn iroh_drop_conn(state : IrohMeshState, cid : Int64) -> Unit {
-  match state.conn_id {
-    Some(cur) => {
-      if cur == cid {
-        state.conn_id = None
-        state.sh.conn_close(cid)
+/// Build the device's endpoint lock claim (`client/core-ts/src/lock.ts:58-72` `claimBy`),
+/// signed with the mesh's Ed25519 device base key (`Mesh::sign`) over
+/// `stillfail-lock-endpoint/1\0<workspace>\0<endpoint>`.
+pub fn build_lock_claim(
+  m : mesh::Mesh,
+  workspace : String,
+  endpoint : String,
+  kind : String = "",
+  label : String = "",
+  entries : Array[base_codec::Json] = [],
+) -> base_codec::Json {
+  let msg = endpoint_signed_bytes(workspace, endpoint)
+  let (pk, sig) = m.sign(msg)
+  let fields : Array[(String, base_codec::Json)] = [
+    ("device", base_codec::json_str(base_codec::hex_encode(pk))),
+    ("proof", base_codec::json_str(base_codec::hex_encode(sig))),
+  ]
+  if kind.length() > 0 {
+    fields.push(("kind", base_codec::json_str(kind)))
+  }
+  if label.length() > 0 {
+    fields.push(("label", base_codec::json_str(label)))
+  }
+  if entries.length() > 0 {
+    fields.push(("entries", base_codec::json_arr(entries)))
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Parse station lock-refusal control answers identically to `client/core-ts/src/station/mesh-wire.ts:518-525`.
+pub fn station_mesh_refusal(answer : base_codec::Json, reason : String) -> Option[effect::EffectError] {
+  match j_opt_str(answer, "code") {
+    Some(code) => {
+      if code == "lock_unconfirmed" {
+        return Some(effect::EffectError::Custom("lock_unconfirmed:" + reason))
       }
+      if code == "lock_station" {
+        let why = match j_opt_str(answer, "why") {
+          Some(w) => if w.length() > 0 { w } else { reason }
+          None => reason
+        }
+        return Some(effect::EffectError::Custom("lock_station:" + why))
+      }
+      None
     }
-    None => ()
+    None => None
   }
 }
 
-fn iroh_ensure_endpoint_k(
-  state : IrohMeshState,
-  k : (effect::Exit[Int64]) -> Unit,
+/// Structured admission state parsed from `Link::admitted_k` or `Link::exchange_k`.
+pub struct MeshAdmission {
+  pub raw : base_codec::Json
+  pub lock_unconfirmed : Bool
+  pub station_id : Option[String]
+  pub station_name : Option[String]
+  pub error_code : Option[String]
+  pub error_reason : Option[String]
+}
+
+pub fn parse_mesh_admission(ans : base_codec::Json) -> MeshAdmission {
+  let code = j_opt_str(ans, "code")
+  let err_reason = j_opt_str(ans, "error")
+  let lock_unconfirmed = j_bool(ans, "lock_unconfirmed") || match code {
+    Some(c) => c == "lock_unconfirmed"
+    None => false
+  }
+  let (station_id, station_name) = match base_codec::json_get(ans, "station") {
+    Some(base_codec::Json::Str(s)) => (Some(s), None)
+    Some(st_obj) => (j_opt_str(st_obj, "id"), j_opt_str(st_obj, "name"))
+    None => (j_opt_str(ans, "stationId"), j_opt_str(ans, "stationName"))
+  }
+  MeshAdmission::{
+    raw: ans,
+    lock_unconfirmed: lock_unconfirmed,
+    station_id: station_id,
+    station_name: station_name,
+    error_code: code,
+    error_reason: err_reason,
+  }
+}
+
+fn effect_error_text(e : effect::EffectError) -> String {
+  match e {
+    effect::EffectError::Custom(s) => s
+    effect::EffectError::IoError(s) => s
+    effect::EffectError::Interrupt => "interrupted"
+    effect::EffectError::QueueShutdown => "queue_shutdown"
+    effect::EffectError::BothFailed(a, _) => effect_error_text(a)
+  }
+}
+
+fn admission_from_error(e : effect::EffectError) -> MeshAdmission {
+  let msg = effect_error_text(e)
+  if msg.contains("lock_unconfirmed") {
+    MeshAdmission::{
+      raw: base_codec::json_obj([
+        ("code", base_codec::json_str("lock_unconfirmed")),
+        ("error", base_codec::json_str(msg)),
+      ]),
+      lock_unconfirmed: true,
+      station_id: None,
+      station_name: None,
+      error_code: Some("lock_unconfirmed"),
+      error_reason: Some(msg),
+    }
+  } else if msg.contains("lock_station") {
+    MeshAdmission::{
+      raw: base_codec::json_obj([
+        ("code", base_codec::json_str("lock_station")),
+        ("error", base_codec::json_str(msg)),
+      ]),
+      lock_unconfirmed: false,
+      station_id: None,
+      station_name: None,
+      error_code: Some("lock_station"),
+      error_reason: Some(msg),
+    }
+  } else {
+    MeshAdmission::{
+      raw: base_codec::json_obj([("error", base_codec::json_str(msg))]),
+      lock_unconfirmed: false,
+      station_id: None,
+      station_name: None,
+      error_code: Some("mesh_refused"),
+      error_reason: Some(msg),
+    }
+  }
+}
+
+/// Configuration for a production `MeshStationTransport` connecting over `pion/base/packages/mesh`.
+pub struct MeshStationConfig {
+  pub workspace : String
+  pub peer_id : String
+  pub relays : Array[String]
+  pub relay_only : Bool
+  pub device_kind : String
+  pub device_label : String
+  pub lock_entries : Array[base_codec::Json]
+  pub link_scope : String
+  pub theirs : Option[Array[String]]
+  pub off : Option[Array[String]]
+  pub get_credential_k : (String, Bool, (effect::Exit[String]) -> Unit) -> Unit
+  pub on_admission : Option[(MeshAdmission) -> Unit]
+}
+
+pub fn MeshStationConfig::new(
+  workspace : String,
+  peer_id : String,
+  relays : Array[String],
+  get_credential_k : (String, Bool, (effect::Exit[String]) -> Unit) -> Unit,
+  relay_only : Bool = false,
+  device_kind : String = "app",
+  device_label : String = "",
+  lock_entries : Array[base_codec::Json] = [],
+  link_scope : String = "",
+  theirs : Option[Array[String]] = None,
+  off : Option[Array[String]] = None,
+  on_admission : Option[(MeshAdmission) -> Unit] = None,
+) -> MeshStationConfig {
+  MeshStationConfig::{
+    workspace: workspace,
+    peer_id: peer_id,
+    relays: relays,
+    relay_only: relay_only,
+    device_kind: device_kind,
+    device_label: device_label,
+    lock_entries: lock_entries,
+    link_scope: link_scope,
+    theirs: theirs,
+    off: off,
+    get_credential_k: get_credential_k,
+    on_admission: on_admission,
+  }
+}
+
+/// Production `StationTransport` controller backed by `pion/base/packages/mesh` (`Mesh`, `Link`,
+/// `Presented`, `Link::admitted_k`, `Link::exchange_k`, `Mesh::sign`, `StationTransport::from_link`).
+pub struct MeshStationTransport {
+  sh : shell::Shell
+  config : MeshStationConfig
+  gate : effect::Semaphore
+  mut mesh_inst : Option[mesh::Mesh]
+  mut active_link : Option[mesh::Link]
+  mut active_transport : Option[StationTransport]
+  mut last_admission : Option[MeshAdmission]
+  mut closed : Bool
+}
+
+pub fn MeshStationTransport::new(
+  sh : shell::Shell,
+  config : MeshStationConfig,
+) -> MeshStationTransport {
+  MeshStationTransport::{
+    sh: sh,
+    config: config,
+    gate: effect::Semaphore::new(1),
+    mesh_inst: None,
+    active_link: None,
+    active_transport: None,
+    last_admission: None,
+    closed: false,
+  }
+}
+
+pub fn MeshStationTransport::admission(self : MeshStationTransport) -> Option[MeshAdmission] {
+  self.last_admission
+}
+
+pub fn MeshStationTransport::is_lock_unconfirmed(self : MeshStationTransport) -> Bool {
+  match self.last_admission {
+    Some(adm) => adm.lock_unconfirmed
+    None => false
+  }
+}
+
+pub fn MeshStationTransport::device_id(self : MeshStationTransport) -> Option[String] {
+  match self.mesh_inst {
+    Some(m) => Some(m.device_id())
+    None => None
+  }
+}
+
+pub fn MeshStationTransport::link(self : MeshStationTransport) -> Option[mesh::Link] {
+  self.active_link
+}
+
+fn MeshStationTransport::record_failed_admission(
+  self : MeshStationTransport,
+  e : effect::EffectError,
 ) -> Unit {
-  match state.local_endpoint_id {
-    Some(eid) => {
-      k(effect::Exit::Succeeded(eid))
+  let fallback = admission_from_error(e)
+  let preserve = match (self.last_admission, fallback.error_code) {
+    (Some(prev), Some(fc)) =>
+    match prev.error_code {
+      Some(pc) =>
+      pc == fc && (
+        base_codec::json_get(prev.raw, "lock").is_some() ||
+        base_codec::json_get(prev.raw, "entries").is_some() ||
+        base_codec::json_get(prev.raw, "person").is_some() ||
+        base_codec::json_get(prev.raw, "out").is_some() ||
+        base_codec::json_get(prev.raw, "left").is_some() ||
+        base_codec::json_get(prev.raw, "why").is_some()
+      )
+      None => false
+    }
+    _ => false
+  }
+  if !preserve {
+    self.last_admission = Some(fallback)
+    match self.config.on_admission { Some(cb) => cb(fallback); None => () }
+  }
+}
+
+fn MeshStationTransport::ensure_mesh_k(
+  self : MeshStationTransport,
+  k : (effect::Exit[mesh::Mesh]) -> Unit,
+) -> Unit {
+  if self.closed {
+    k(effect::Exit::Failed(effect::EffectError::Custom("mesh transport closed")))
+    return
+  }
+  match self.mesh_inst {
+    Some(m) => {
+      k(effect::Exit::Succeeded(m))
       return
     }
     None => ()
   }
-  let sk = if state.secret_key.length() == 32 {
-    state.secret_key
-  } else {
-    state.sh.random(32)
-  }
-  let relays : Array[String] = if state.relay_url.length() > 0 { [state.relay_url] } else { [] }
-  let alpns_hex : Array[String] = [base_codec::hex_encode(state.alpn)]
-  state.sh.iroh_bind_k(
-    sk,
-    relays,
-    alpns_hex,
-    fn(ex : effect::Exit[Int64]) -> Unit {
+  let opts = mesh::Options::new(
+    station_mesh_alpn(),
+    self.config.relays,
+    relay_only=self.config.relay_only,
+    says=[("protocol", base_codec::json_int(station_mesh_protocol()))],
+    refusal=Some(fn(ans : base_codec::Json, reason : String) -> Option[effect::EffectError] {
+      match station_mesh_refusal(ans, reason) {
+        Some(err) => {
+          let adm = parse_mesh_admission(ans)
+          self.last_admission = Some(adm)
+          match self.config.on_admission { Some(cb) => cb(adm); None => () }
+          Some(err)
+        }
+        None => None
+      }
+    }),
+  )
+  let store = mesh::shell_store(self.sh)
+  mesh::Mesh::make_k(
+    self.sh,
+    store,
+    opts,
+    fn(ex : effect::Exit[mesh::Mesh]) -> Unit {
       match ex {
         effect::Exit::Interrupted => k(effect::Exit::Interrupted)
         effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-        effect::Exit::Succeeded(eid) => {
-          state.local_endpoint_id = Some(eid)
-          if state.relay_entries.length() > 0 {
-            state.sh.iroh_set_relay_entries_k(
-              eid,
-              state.relay_entries,
-              fn(rex : effect::Exit[Unit]) -> Unit {
-                match rex {
-                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-                  effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(eid))
-                }
-              },
-            )
-          } else {
-            k(effect::Exit::Succeeded(eid))
+        effect::Exit::Succeeded(m) => {
+          if self.closed {
+            m.close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
+            k(effect::Exit::Failed(effect::EffectError::Custom("mesh transport closed")))
+            return
           }
+          self.mesh_inst = Some(m)
+          k(effect::Exit::Succeeded(m))
         }
       }
     },
-    relay_entries=state.relay_entries,
+    addresses=station_mesh_addresses_key(),
   )
 }
 
-fn iroh_ensure_conn_k(
-  state : IrohMeshState,
-  k : (effect::Exit[Int64]) -> Unit,
+/// Dial or reuse the authenticated `mesh::Link` for this station, awaiting control-stream
+/// admission (`Link::admitted_k`) and surfacing `lock_unconfirmed` / station metadata.
+pub fn MeshStationTransport::connect_k(
+  self : MeshStationTransport,
+  k : (effect::Exit[mesh::Link]) -> Unit,
 ) -> Unit {
-  match state.conn_id {
-    Some(cid) => {
-      k(effect::Exit::Succeeded(cid))
+  if self.closed {
+    k(effect::Exit::Failed(effect::EffectError::Custom("mesh transport closed")))
+    return
+  }
+  match self.active_link {
+    Some(link) =>
+    if link.usable() {
+      k(effect::Exit::Succeeded(link))
       return
+    } else {
+      self.active_link = None
+      self.active_transport = None
     }
     None => ()
   }
-  iroh_ensure_endpoint_k(state, fn(ex : effect::Exit[Int64]) -> Unit {
-    match ex {
-      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-      effect::Exit::Succeeded(eid) => {
-        let relays : Array[String] = if state.relay_url.length() > 0 { [state.relay_url] } else { [] }
-        state.sh.iroh_connect_k(
-          eid,
-          state.peer_id_hex,
-          relays,
-          state.ips,
-          state.alpn,
-          fn(cex : effect::Exit[Int64]) -> Unit {
-            match cex {
-              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-              effect::Exit::Succeeded(cid) => {
-                state.conn_id = Some(cid)
-                k(effect::Exit::Succeeded(cid))
-              }
-            }
-          },
-        )
-      }
-    }
-  })
-}
-
-fn iroh_open_stream_k(
-  state : IrohMeshState,
-  retry_on_stale : Bool,
-  k : (effect::Exit[(Int64, Int64)]) -> Unit,
-) -> Unit {
-  let had_cached = state.conn_id.is_some()
-  iroh_ensure_conn_k(state, fn(cex : effect::Exit[Int64]) -> Unit {
-    match cex {
-      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-      effect::Exit::Succeeded(cid) => {
-        state.sh.conn_open_bi_k(cid, fn(sex : effect::Exit[Int64]) -> Unit {
-          match sex {
-            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-            effect::Exit::Failed(e) => {
-              iroh_drop_conn(state, cid)
-              if had_cached && retry_on_stale {
-                iroh_open_stream_k(state, false, k)
-              } else {
-                k(effect::Exit::Failed(e))
-              }
-            }
-            effect::Exit::Succeeded(sid) => k(effect::Exit::Succeeded((cid, sid)))
-          }
-        })
-      }
-    }
-  })
-}
-
-fn iroh_read_head_k(
-  state : IrohMeshState,
-  cid : Int64,
-  sid : Int64,
-  carry : wire::Carry,
-  k : (effect::Exit[(Int, Array[(String, String)])]) -> Unit,
-) -> Unit {
-  match carry.line() {
-    Some(line) =>
-    match wire::reply_head(line) {
-      wire::Head::Head(status, headers) => k(effect::Exit::Succeeded((status, headers)))
-      wire::Head::Unreadable(msg) => k(effect::Exit::Failed(effect::EffectError::Custom("iroh unreadable reply head: " + msg)))
-      wire::Head::NoStatus => k(effect::Exit::Failed(effect::EffectError::Custom("iroh reply head missing status")))
-    }
-    None => {
-      if effect::is_interrupted() {
-        k(effect::Exit::Interrupted)
+  self.gate.with_permit_k(
+    fn(pk : (effect::Exit[mesh::Link]) -> Unit) -> Unit {
+      if self.closed {
+        pk(effect::Exit::Failed(effect::EffectError::Custom("mesh transport closed")))
         return
       }
-      state.sh.istream_read_k(sid, fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+      match self.active_link {
+        Some(link) =>
+        if link.usable() {
+          pk(effect::Exit::Succeeded(link))
+          return
+        } else {
+          self.active_link = None
+          self.active_transport = None
+        }
+        None => ()
+      }
+      self.ensure_mesh_k(fn(mex : effect::Exit[mesh::Mesh]) -> Unit {
+        match mex {
+          effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => pk(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(m) => {
+            if self.closed {
+              pk(effect::Exit::Failed(effect::EffectError::Custom("mesh transport closed")))
+              return
+            }
+            let ws = self.config.workspace
+            let dev_kind = self.config.device_kind
+            let dev_label = self.config.device_label
+            let lock_entries = self.config.lock_entries
+            let get_cred = self.config.get_credential_k
+            let cred_source = fn(device_id : String, fresh : Bool, ck : (effect::Exit[mesh::Presented]) -> Unit) -> Unit {
+              get_cred(device_id, fresh, fn(cex : effect::Exit[String]) -> Unit {
+                match cex {
+                  effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(cred) => {
+                    let claim = build_lock_claim(
+                      m,
+                      ws,
+                      device_id,
+                      kind=dev_kind,
+                      label=dev_label,
+                      entries=lock_entries,
+                    )
+                    ck(effect::Exit::Succeeded(mesh::Presented::new(cred, also=[("lock", claim)])))
+                  }
+                }
+              })
+            }
+            m.link_k(
+              self.config.peer_id,
+              cred_source,
+              fn(lex : effect::Exit[mesh::Link]) -> Unit {
+                match lex {
+                  effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => {
+                    self.record_failed_admission(e)
+                    pk(effect::Exit::Failed(e))
+                  }
+                  effect::Exit::Succeeded(link) => {
+                    if self.closed {
+                      link.close(reason="closed")
+                      pk(effect::Exit::Failed(effect::EffectError::Custom("mesh transport closed")))
+                      return
+                    }
+                    link.admitted_k(fn(aex : effect::Exit[base_codec::Json]) -> Unit {
+                      match aex {
+                        effect::Exit::Interrupted => {
+                          link.close(reason="interrupted")
+                          pk(effect::Exit::Interrupted)
+                        }
+                        effect::Exit::Failed(e) => {
+                          self.record_failed_admission(e)
+                          link.close(reason="admission_refused")
+                          pk(effect::Exit::Failed(e))
+                        }
+                        effect::Exit::Succeeded(ans) => {
+                          if self.closed {
+                            link.close(reason="closed")
+                            pk(effect::Exit::Failed(effect::EffectError::Custom("mesh transport closed")))
+                            return
+                          }
+                          let adm = parse_mesh_admission(ans)
+                          self.last_admission = Some(adm)
+                          match self.config.on_admission { Some(cb) => cb(adm); None => () }
+                          self.active_link = Some(link)
+                          self.active_transport = Some(StationTransport::from_link(link))
+                          pk(effect::Exit::Succeeded(link))
+                        }
+                      }
+                    })
+                  }
+                }
+              },
+              link_scope=self.config.link_scope,
+              theirs=self.config.theirs,
+              off=self.config.off,
+            )
+          }
+        }
+      })
+    },
+    k,
+  )
+}
+
+/// Renew the Cloud member credential on the live control stream via `Link::exchange_k`.
+pub fn MeshStationTransport::refresh_credential_k(
+  self : MeshStationTransport,
+  credential : String,
+  k : (effect::Exit[MeshAdmission]) -> Unit,
+) -> Unit {
+  match self.active_link {
+    None => k(effect::Exit::Failed(effect::EffectError::Custom("no active mesh link to refresh")))
+    Some(link) => {
+      if !link.usable() {
+        k(effect::Exit::Failed(effect::EffectError::Custom("active mesh link is not usable")))
+        return
+      }
+      link.exchange_k(credential, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
         match ex {
           effect::Exit::Interrupted => k(effect::Exit::Interrupted)
           effect::Exit::Failed(e) => {
-            iroh_drop_conn(state, cid)
+            self.record_failed_admission(e)
             k(effect::Exit::Failed(e))
           }
-          effect::Exit::Succeeded(None) => {
-            iroh_drop_conn(state, cid)
-            k(effect::Exit::Failed(effect::EffectError::Custom("iroh stream closed before reply head")))
-          }
-          effect::Exit::Succeeded(Some(chunk)) => {
-            if chunk.length() > 0 {
-              carry.push(chunk)
-            }
-            iroh_read_head_k(state, cid, sid, carry, k)
+          effect::Exit::Succeeded(ans) => {
+            let adm = parse_mesh_admission(ans)
+            self.last_admission = Some(adm)
+            match self.config.on_admission { Some(cb) => cb(adm); None => () }
+            k(effect::Exit::Succeeded(adm))
           }
         }
       })
@@ -392,92 +668,42 @@ fn iroh_read_head_k(
   }
 }
 
-fn iroh_read_body_all_k(
-  state : IrohMeshState,
-  cid : Int64,
-  sid : Int64,
-  chunks : Array[Bytes],
-  k : (effect::Exit[Bytes]) -> Unit,
-) -> Unit {
-  if effect::is_interrupted() {
-    k(effect::Exit::Interrupted)
-    return
-  }
-  state.sh.istream_read_k(sid, fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
-    match ex {
-      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-      effect::Exit::Failed(e) => {
-        iroh_drop_conn(state, cid)
-        k(effect::Exit::Failed(e))
-      }
-      effect::Exit::Succeeded(None) => k(effect::Exit::Succeeded(iroh_join_chunks(chunks)))
-      effect::Exit::Succeeded(Some(chunk)) => {
-        if chunk.length() > 0 {
-          chunks.push(chunk)
-        }
-        iroh_read_body_all_k(state, cid, sid, chunks, k)
-      }
+/// Drop the current peer link without closing the underlying `Mesh` endpoint.
+pub fn MeshStationTransport::drop_link(self : MeshStationTransport, reason : String = "closed") -> Unit {
+  match self.active_link {
+    Some(link) => {
+      link.close(reason=reason)
+      self.active_link = None
     }
-  })
+    None => ()
+  }
+  self.active_transport = None
+  match self.mesh_inst {
+    Some(m) => m.drop_link(self.config.peer_id, link_scope=self.config.link_scope, reason=reason)
+    None => ()
+  }
 }
 
-fn iroh_pump_stream_k(
-  state : IrohMeshState,
-  cid : Int64,
-  sid : Int64,
-  on_chunk : (Bytes) -> Unit,
+/// Close the active link and tear down the underlying `Mesh` instance cleanly.
+pub fn MeshStationTransport::close_k(
+  self : MeshStationTransport,
   k : (effect::Exit[Unit]) -> Unit,
+  reason : String = "closed",
 ) -> Unit {
-  if effect::is_interrupted() {
-    k(effect::Exit::Interrupted)
-    return
-  }
-  state.sh.istream_read_k(sid, fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
-    match ex {
-      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-      effect::Exit::Failed(e) => {
-        iroh_drop_conn(state, cid)
-        k(effect::Exit::Failed(e))
-      }
-      effect::Exit::Succeeded(None) => {
-        iroh_drop_conn(state, cid)
-        k(effect::Exit::Succeeded(()))
-      }
-      effect::Exit::Succeeded(Some(chunk)) => {
-        if chunk.length() > 0 {
-          on_chunk(chunk)
-        }
-        iroh_pump_stream_k(state, cid, sid, on_chunk, k)
-      }
+  self.closed = true
+  self.drop_link(reason=reason)
+  match self.mesh_inst {
+    Some(m) => {
+      self.mesh_inst = None
+      m.close_k(k)
     }
-  })
+    None => k(effect::Exit::Succeeded(()))
+  }
 }
 
-/// Build an HTTP/SSE `StationTransport` over real Rust Shell iroh bidirectional QUIC streams
-/// (`iroh.bind`, `iroh.setRelayEntries`, `iroh.connect`, `conn.openBi`, `istream.write`/`read`/`finish`)
-/// using `wire::head_line` and `wire::reply_head` framing.
-pub fn shell_iroh_transport(
-  sh : shell::Shell,
-  endpoint_id : String,
-  relay_url : String,
-  alpn : Bytes,
-  secret_key : Bytes = Bytes::new(0),
-  relay_entries : Array[(String, String)] = [],
-  ips : Array[String] = [],
-  auth_header : Option[String] = None,
-) -> StationTransport {
-  let state = IrohMeshState::{
-    sh: sh,
-    peer_id_hex: endpoint_id,
-    relay_url: relay_url,
-    relay_entries: relay_entries,
-    ips: ips,
-    alpn: alpn,
-    secret_key: secret_key,
-    auth_header: auth_header,
-    local_endpoint_id: None,
-    conn_id: None,
-  }
+/// Expose this `MeshStationTransport` as a standard `StationTransport` backed by
+/// `StationTransport::from_link(link)` (with real `reply.cancel()` on interruption/error).
+pub fn MeshStationTransport::transport(self : MeshStationTransport) -> StationTransport {
   StationTransport::{
     request_k: fn(
       method_name : String,
@@ -486,62 +712,20 @@ pub fn shell_iroh_transport(
       body : Bytes,
       k : (effect::Exit[HttpReply]) -> Unit,
     ) -> Unit {
-      iroh_open_stream_k(state, true, fn(oex : effect::Exit[(Int64, Int64)]) -> Unit {
-        match oex {
+      self.connect_k(fn(cex : effect::Exit[mesh::Link]) -> Unit {
+        match cex {
           effect::Exit::Interrupted => k(effect::Exit::Interrupted)
           effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-          effect::Exit::Succeeded((cid, sid)) => {
-            let req_headers = with_auth_headers(headers, state.auth_header)
-            let head_bytes = wire::head_line(method_name, path, req_headers).to_bytes()
-            let wire_payload = iroh_concat_bytes(head_bytes, body)
-            state.sh.istream_write_k(sid, wire_payload, fn(wex : effect::Exit[Unit]) -> Unit {
-              match wex {
-                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                effect::Exit::Failed(e) => {
-                  iroh_drop_conn(state, cid)
-                  k(effect::Exit::Failed(e))
-                }
-                effect::Exit::Succeeded(_) => {
-                  state.sh.istream_finish_k(sid, fn(fex : effect::Exit[Unit]) -> Unit {
-                    match fex {
-                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                      effect::Exit::Failed(e) => {
-                        iroh_drop_conn(state, cid)
-                        k(effect::Exit::Failed(e))
-                      }
-                      effect::Exit::Succeeded(_) => {
-                        let carry = wire::Carry::new()
-                        iroh_read_head_k(state, cid, sid, carry, fn(hex : effect::Exit[(Int, Array[(String, String)])]) -> Unit {
-                          match hex {
-                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-                            effect::Exit::Succeeded((status, resp_headers)) => {
-                              let chunks : Array[Bytes] = []
-                              let rem = carry.take()
-                              if rem.length() > 0 {
-                                chunks.push(rem)
-                              }
-                              iroh_read_body_all_k(state, cid, sid, chunks, fn(bex : effect::Exit[Bytes]) -> Unit {
-                                match bex {
-                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-                                  effect::Exit::Succeeded(resp_body) =>
-                                  k(effect::Exit::Succeeded(HttpReply::{
-                                    status: status,
-                                    headers: resp_headers,
-                                    body: resp_body,
-                                  }))
-                                }
-                              })
-                            }
-                          }
-                        })
-                      }
-                    }
-                  })
-                }
+          effect::Exit::Succeeded(link) => {
+            let tr = match self.active_transport {
+              Some(t) => t
+              None => {
+                let t = StationTransport::from_link(link)
+                self.active_transport = Some(t)
+                t
               }
-            })
+            }
+            (tr.request_k)(method_name, path, headers, body, k)
           }
         }
       })
@@ -552,57 +736,32 @@ pub fn shell_iroh_transport(
       on_chunk : (Bytes) -> Unit,
       k : (effect::Exit[Unit]) -> Unit,
     ) -> Unit {
-      iroh_open_stream_k(state, true, fn(oex : effect::Exit[(Int64, Int64)]) -> Unit {
-        match oex {
+      self.connect_k(fn(cex : effect::Exit[mesh::Link]) -> Unit {
+        match cex {
           effect::Exit::Interrupted => k(effect::Exit::Interrupted)
           effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-          effect::Exit::Succeeded((cid, sid)) => {
-            let req_headers = with_auth_headers(headers, state.auth_header)
-            let head_bytes = wire::head_line("GET", path, req_headers).to_bytes()
-            state.sh.istream_write_k(sid, head_bytes, fn(wex : effect::Exit[Unit]) -> Unit {
-              match wex {
-                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                effect::Exit::Failed(e) => {
-                  iroh_drop_conn(state, cid)
-                  k(effect::Exit::Failed(e))
-                }
-                effect::Exit::Succeeded(_) => {
-                  state.sh.istream_finish_k(sid, fn(fex : effect::Exit[Unit]) -> Unit {
-                    match fex {
-                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                      effect::Exit::Failed(e) => {
-                        iroh_drop_conn(state, cid)
-                        k(effect::Exit::Failed(e))
-                      }
-                      effect::Exit::Succeeded(_) => {
-                        let carry = wire::Carry::new()
-                        iroh_read_head_k(state, cid, sid, carry, fn(hex : effect::Exit[(Int, Array[(String, String)])]) -> Unit {
-                          match hex {
-                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-                            effect::Exit::Succeeded((status, _resp_headers)) => {
-                              if status < 200 || status >= 300 {
-                                iroh_drop_conn(state, cid)
-                                k(effect::Exit::Failed(effect::EffectError::Custom("events stream status " + status.to_string())))
-                                return
-                              }
-                              let rem = carry.take()
-                              if rem.length() > 0 {
-                                on_chunk(rem)
-                              }
-                              iroh_pump_stream_k(state, cid, sid, on_chunk, k)
-                            }
-                          }
-                        })
-                      }
-                    }
-                  })
-                }
+          effect::Exit::Succeeded(link) => {
+            let tr = match self.active_transport {
+              Some(t) => t
+              None => {
+                let t = StationTransport::from_link(link)
+                self.active_transport = Some(t)
+                t
               }
-            })
+            }
+            (tr.stream_k)(path, headers, on_chunk, k)
           }
         }
       })
     },
   }
+}
+
+/// Build a production `StationTransport` backed by `pion/base/packages/mesh` (`MeshStationTransport`).
+pub fn shell_mesh_transport(
+  sh : shell::Shell,
+  config : MeshStationConfig,
+) -> (MeshStationTransport, StationTransport) {
+  let controller = MeshStationTransport::new(sh, config)
+  (controller, controller.transport())
 }

@@ -27,6 +27,7 @@ pub struct ClientCore {
   pub router : protocol::Slice1Router
   pub mut rows_memo : views::RowsMemo
   pub mut viewer_marks : views::ViewerMarks
+  pending_dirty_rows : Array[(String, String)]
   pub lock_pending : views::LockPendingQueue
   pub auth_store : views::AccountStore
   pub login_flow : views::LoginFlowMachine
@@ -82,6 +83,7 @@ pub fn ClientCore::new(
     router: router,
     rows_memo: views::RowsMemo::new(),
     viewer_marks: views::ViewerMarks::new(""),
+    pending_dirty_rows: [],
     lock_pending: views::LockPendingQueue::new(),
     auth_store: views::AccountStore::new(),
     login_flow: views::LoginFlowMachine::new(),
@@ -126,6 +128,11 @@ pub fn ClientCore::new(
           k(effect::Exit::Succeeded(()))
         })
       })
+      let _ = rt.fork_quiet_named("initial-lock:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+        sync.fetch_lock_k(effect::priority_shown(), fn(_ex : effect::Exit[Bool]) -> Unit {
+          k(effect::Exit::Succeeded(()))
+        })
+      })
       local_outbox.flush_offline(rt)
     },
     fn(lock_payload : base_codec::Json) -> Unit {
@@ -138,9 +145,29 @@ pub fn ClientCore::new(
         k(effect::Exit::Succeeded(()))
       })
     })
+    let _ = rt.fork_quiet_named("missed-marks:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      sync.fetch_marks_k(effect::priority_shown(), fn(_ex : effect::Exit[Array[String]]) -> Unit {
+        k(effect::Exit::Succeeded(()))
+      })
+    })
+    let _ = rt.fork_quiet_named("missed-lock:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      sync.fetch_lock_k(effect::priority_shown(), fn(_ex : effect::Exit[Bool]) -> Unit {
+        k(effect::Exit::Succeeded(()))
+      })
+    })
+  })
+  events.set_marks_applied_hook(fn(
+    payload : base_codec::Json,
+    is_whole : Bool,
+    affected : Array[String],
+    scoped_sessions : Array[String],
+    scoped_threads : Array[Int],
+  ) -> Unit {
+    core.sync_viewer_marks_from_payload(station, payload, is_whole, affected, scoped_sessions, scoped_threads)
   })
   events.set_marks_dirty_hook(fn(ev_name : String, payload : base_codec::Json) -> Unit {
-    core.rows_memo = views::RowsMemo::new()
+    let scoped_sessions : Array[String] = []
+    let scoped_threads : Array[Int] = []
     if ev_name == "chat-mark" {
       match (j_opt_u64(payload, "thread"), j_opt_u64(payload, "read")) {
         (Some(th), Some(r)) => core.viewer_marks.set_read(station, th.to_int(), r.to_int())
@@ -159,15 +186,33 @@ pub fn ClientCore::new(
         _ => ()
       }
     }
-    let tag = match j_opt_str(payload, "session") {
-      Some(s) => s
-      None =>
-      match j_opt_u64(payload, "thread") {
-        Some(th) => "thread:" + th.to_string()
-        None => ev_name
+    match j_opt_str(payload, "session") {
+      Some(sess) => {
+        if sess.length() > 0 {
+          scoped_sessions.push(sess)
+          core.mark_row_dirty(station, sess)
+        }
       }
+      None => ()
     }
-    frame_outbox.tell(CoreEvent::ChatsChanged(station, [tag]))
+    match j_opt_u64(payload, "thread") {
+      Some(th) => {
+        let tid = th.to_int()
+        scoped_threads.push(tid)
+        core.mark_thread_rows_dirty(station, tid)
+      }
+      None => ()
+    }
+    let _ = rt.fork_quiet_named("marks-reread:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      sync.fetch_marks_k(
+        effect::priority_shown(),
+        fn(_ex : effect::Exit[Array[String]]) -> Unit {
+          k(effect::Exit::Succeeded(()))
+        },
+        sessions=scoped_sessions,
+        threads=scoped_threads,
+      )
+    })
   })
   events.set_thread_dirty_hook(fn(th : Int) -> Unit {
     let _ = rt.fork_quiet_named("dirty-thread:" + station + ":" + th.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
@@ -180,18 +225,255 @@ pub fn ClientCore::new(
   core
 }
 
+fn ClientCore::mark_row_dirty(self : ClientCore, station : String, chat_id : String) -> Unit {
+  if chat_id.length() == 0 {
+    return
+  }
+  for i in 0..<self.pending_dirty_rows.length() {
+    if self.pending_dirty_rows[i].0 == station && self.pending_dirty_rows[i].1 == chat_id {
+      return
+    }
+  }
+  self.pending_dirty_rows.push((station, chat_id))
+}
+
+fn ClientCore::mark_thread_rows_dirty(self : ClientCore, station : String, thread : Int) -> Unit {
+  match self.db.all("SELECT id FROM chat WHERE station = ? AND thread = ?", params=[
+    base_codec::json_str(station),
+    base_codec::json_int(thread),
+  ]) {
+    sql::SqlResult::Ok(rows) => {
+      for i in 0..<rows.length() {
+        self.mark_row_dirty(station, sql::col_text(rows[i], 0))
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+}
+
+fn ClientCore::sync_viewer_marks_from_payload(
+  self : ClientCore,
+  station : String,
+  payload : base_codec::Json,
+  is_whole : Bool,
+  affected : Array[String],
+  scoped_sessions : Array[String],
+  scoped_threads : Array[Int],
+) -> Unit {
+  let prefix = station + ":"
+  if is_whole {
+    let clear_prefix = fn(m : Map[String, Bool]) -> Unit {
+      let ks = m.keys()
+      for i in 0..<ks.length() {
+        if ks[i].starts_with(prefix) {
+          m.remove(ks[i])
+        }
+      }
+    }
+    let rks = self.viewer_marks.reads.keys()
+    for i in 0..<rks.length() {
+      if rks[i].starts_with(prefix) {
+        self.viewer_marks.reads.remove(rks[i])
+      }
+    }
+    let pks = self.viewer_marks.pins.keys()
+    for i in 0..<pks.length() {
+      if pks[i].starts_with(prefix) {
+        self.viewer_marks.pins.remove(pks[i])
+      }
+    }
+    clear_prefix(self.viewer_marks.kept)
+    clear_prefix(self.viewer_marks.hidden)
+    clear_prefix(self.viewer_marks.muted)
+    clear_prefix(self.viewer_marks.dismissed)
+  } else {
+    for ti in 0..<scoped_threads.length() {
+      let tid = scoped_threads[ti]
+      let tk = prefix + tid.to_string()
+      self.viewer_marks.reads.remove(tk)
+      self.viewer_marks.kept.remove(tk)
+      self.viewer_marks.hidden.remove(tk)
+      self.viewer_marks.muted.remove(tk)
+      let dpref = tk + ":"
+      let dks = self.viewer_marks.dismissed.keys()
+      for di in 0..<dks.length() {
+        if dks[di].starts_with(dpref) {
+          self.viewer_marks.dismissed.remove(dks[di])
+        }
+      }
+      self.mark_thread_rows_dirty(station, tid)
+    }
+    for si in 0..<scoped_sessions.length() {
+      let sess = scoped_sessions[si]
+      if sess.length() > 0 {
+        self.viewer_marks.pins.remove(prefix + sess)
+        self.mark_row_dirty(station, sess)
+      }
+    }
+  }
+  match base_codec::json_get(payload, "reads") {
+    Some(base_codec::Json::Obj(fs)) => {
+      for i in 0..<fs.length() {
+        let (th_s, val_j) = fs[i]
+        match (base_codec::parse_int64_str(th_s), val_j) {
+          (Some(th_i64), base_codec::Json::Num(n, _)) => {
+            let tid = th_i64.to_int()
+            self.viewer_marks.set_read(station, tid, n.to_int())
+            self.mark_thread_rows_dirty(station, tid)
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  match base_codec::json_get(payload, "pins") {
+    Some(base_codec::Json::Obj(fs)) => {
+      for i in 0..<fs.length() {
+        let (sess, val_j) = fs[i]
+        match val_j {
+          base_codec::Json::Num(n, repr) => {
+            let at_v = if repr.length() > 0 && !repr.contains(".") {
+              match base_codec::parse_int64_str(repr) {
+                Some(v) => v
+                None => n.to_int64()
+              }
+            } else {
+              n.to_int64()
+            }
+            self.viewer_marks.set_pin(station, sess, Some(at_v))
+            self.mark_row_dirty(station, sess)
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  match base_codec::json_get(payload, "kept") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Num(n, _) => {
+            let tid = n.to_int()
+            self.viewer_marks.kept.set(prefix + tid.to_string(), true)
+            self.mark_thread_rows_dirty(station, tid)
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  match base_codec::json_get(payload, "hidden") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Num(n, _) => {
+            let tid = n.to_int()
+            self.viewer_marks.hidden.set(prefix + tid.to_string(), true)
+            self.mark_thread_rows_dirty(station, tid)
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  match base_codec::json_get(payload, "muted") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Num(n, _) => {
+            let tid = n.to_int()
+            self.viewer_marks.muted.set(prefix + tid.to_string(), true)
+            self.mark_thread_rows_dirty(station, tid)
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  match base_codec::json_get(payload, "dismissed") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(dk) => {
+            if dk.length() > 0 {
+              self.viewer_marks.dismissed.set(prefix + dk, true)
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  match base_codec::json_get(payload, "selves") {
+    Some(base_codec::Json::Arr(xs)) => {
+      let next_selves : Array[String] = []
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => if s.length() > 0 { next_selves.push(s) }
+          _ => ()
+        }
+      }
+      if next_selves.length() > 0 {
+        let prev = self.viewer_marks
+        self.viewer_marks = views::ViewerMarks::{
+          me: prev.me,
+          selves: next_selves,
+          reads: prev.reads,
+          pins: prev.pins,
+          kept: prev.kept,
+          hidden: prev.hidden,
+          muted: prev.muted,
+          dismissed: prev.dismissed,
+          quoted_threads: prev.quoted_threads,
+        }
+      }
+    }
+    _ => ()
+  }
+  for i in 0..<affected.length() {
+    let tag = affected[i]
+    if !tag.starts_with("thread:") && !tag.starts_with("dismissed:") {
+      self.mark_row_dirty(station, tag)
+    }
+  }
+}
+
+/// Attach a station-specific `StationTransport` to `local_outbox` and automatically flush
+/// any queued or transiently `unreached` backlog targeting that station.
+pub fn ClientCore::attach_station_transport(
+  self : ClientCore,
+  station : String,
+  transport : StationTransport,
+) -> Unit {
+  self.local_outbox.register_station_transport(station, transport)
+  if self.local_outbox.has_unreached_for_station(station) {
+    self.local_outbox.flush_station_offline(self.rt, station)
+  }
+}
+
+/// Detach a station-specific `StationTransport` from `local_outbox` when that station disconnects.
+pub fn ClientCore::detach_station_transport(self : ClientCore, station : String) -> Unit {
+  self.local_outbox.unregister_station_transport(station)
+}
+
 /// Register a station-specific `StationTransport` for multi-station routing.
 pub fn ClientCore::register_station_transport(
   self : ClientCore,
   station : String,
   transport : StationTransport,
 ) -> Unit {
-  self.local_outbox.register_station_transport(station, transport)
+  self.attach_station_transport(station, transport)
 }
 
 /// Unregister a station-specific `StationTransport` when a station disconnects.
 pub fn ClientCore::unregister_station_transport(self : ClientCore, station : String) -> Unit {
-  self.local_outbox.unregister_station_transport(station)
+  self.detach_station_transport(station)
 }
 
 /// Start live SSE `/events` consumption (never polls).
@@ -336,8 +618,11 @@ pub fn ClientCore::perform_op(
     OpResult::Invalid(msg) => Err(msg)
     OpResult::Ok(req) => {
       let target_st = match req.target {
+        OpTarget::Cloud(acc) => return Err("cloud_op_requires_cloud_transport: " + name + " (account=" + acc + ")")
         OpTarget::Station(s) => if s.length() > 0 { s } else { self.station }
-        _ => self.station
+      }
+      if req.method == "GET" {
+        return Err("read_op_not_mutation: " + name)
       }
       match self.local_outbox.apply_op(self.rt, req, chat_id, name, station=Some(target_st)) {
         sql::SqlResult::Ok(op_id) => Ok(op_id)
@@ -648,6 +933,16 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       _ => 0
     }
     let briefs = self.station_briefs_for_scope(ws_scope)
+    let dirty_opt : Option[Array[(String, String)]] = if self.pending_dirty_rows.length() > 0 {
+      let copy : Array[(String, String)] = []
+      for di in 0..<self.pending_dirty_rows.length() {
+        copy.push(self.pending_dirty_rows[di])
+      }
+      self.pending_dirty_rows.clear()
+      Some(copy)
+    } else {
+      None
+    }
     match views::project_chats(
       self.db,
       ws_scope,
@@ -658,6 +953,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       mine_only=mine_only,
       watching_only=watching_only,
       hidden_mode=hidden_mode,
+      changed_keys=dirty_opt,
     ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
@@ -1612,14 +1908,6 @@ fn ClientCore::handle_lock_event(self : ClientCore, payload : base_codec::Json) 
     }
     None => ()
   }
-  let root = match base_codec::json_get(payload, "root") {
-    Some(base_codec::Json::Str(r)) => r
-    _ =>
-    match self.lock_root {
-      Some(r) => r
-      None => return
-    }
-  }
   let raw_entries = match base_codec::json_get(payload, "entries") {
     Some(base_codec::Json::Arr(xs)) => xs
     _ => return
@@ -1627,6 +1915,49 @@ fn ClientCore::handle_lock_event(self : ClientCore, payload : base_codec::Json) 
   let form_entries : Array[form::Json] = []
   for i in 0..<raw_entries.length() {
     form_entries.push(codec_to_form(raw_entries[i]))
+  }
+  match base_codec::json_get(payload, "aside") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        form_entries.push(codec_to_form(xs[i]))
+      }
+    }
+    _ => ()
+  }
+  let head_genesis : Option[String] = match base_codec::json_get(payload, "head") {
+    Some(hj) => proto_str(hj, "genesis")
+    None => None
+  }
+  let root = match proto_str(payload, "root") {
+    Some(r) => if r.length() > 0 { r } else { "" }
+    None =>
+    match head_genesis {
+      Some(g) => if g.length() > 0 { g } else { "" }
+      None =>
+      match self.lock_root {
+        Some(r) => r
+        None => {
+          // Derive genesis root hash from seq=0 genesis entry on initial fetch/event
+          let mut derived = ""
+          let c = native_lock_crypto()
+          for i in 0..<form_entries.length() {
+            if lock_entry_seq(form_entries[i]) == 0 {
+              match lock::entry_hash(form_entries[i], c) {
+                Ok(h) => {
+                  derived = h
+                  break
+                }
+                Err(_) => ()
+              }
+            }
+          }
+          derived
+        }
+      }
+    }
+  }
+  if root.length() == 0 {
+    return
   }
   let _ = self.apply_lock_chain(form_entries, root)
 }
@@ -1835,34 +2166,53 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
         }
       }
-      if call_name == "chat.archive" || call_name == "chat.keep" || call_name == "chat.hide" ||
-      call_name == "chat.mute" || call_name == "chat.rename" || call_name == "chat.pin" ||
-      call_name == "chat.regenerateTitle" || call_name == "chat.forSession" || call_name == "chat.report" ||
-      call_name == "session.delete" || call_name == "session.stop" || call_name == "session.warm" ||
-      call_name == "session.evict" || call_name == "session.compact" || call_name == "session.clear" ||
-      call_name == "session.settings" || call_name == "session.new" ||
-      call_name == "decision.dismiss" || call_name == "decision.close" ||
-      call_name == "job.stop" {
-        let chat_id = match proto_str(params, "session") {
-          Some(s) => s
-          None =>
-          match proto_str(params, "key") {
+      let op_probe = {
+        let enriched = match base_codec::json_get(params, "station") {
+          Some(base_codec::Json::Str(s)) => if s.length() > 0 { params } else { j_set_field(params, "station", base_codec::json_str(self.station)) }
+          _ => j_set_field(params, "station", base_codec::json_str(self.station))
+        }
+        ops_request(call_name, enriched)
+      }
+      match op_probe {
+        OpResult::Invalid(msg) =>
+        return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: msg }))
+        OpResult::Ok(req) => {
+          match req.target {
+            OpTarget::Cloud(acc) =>
+            return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{
+              code: "cloud_transport_required",
+              message: "cloud_op_requires_cloud_transport: " + call_name + " (account=" + acc + ")",
+            }))
+            OpTarget::Station(_) => ()
+          }
+          if req.method == "GET" {
+            return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{
+              code: "read_op_not_mutation",
+              message: "read-only GET op cannot be queued in local_outbox: " + call_name,
+            }))
+          }
+          let chat_id = match proto_str(params, "session") {
             Some(s) => s
             None =>
-            match proto_str(params, "id") {
+            match proto_str(params, "key") {
               Some(s) => s
               None =>
-              match proto_int(params, "thread") {
-                Some(th) => "thread:" + th.to_string()
-                None => ""
+              match proto_str(params, "id") {
+                Some(s) => s
+                None =>
+                match proto_int(params, "thread") {
+                  Some(th) => "thread:" + th.to_string()
+                  None => ""
+                }
               }
             }
           }
+          match self.perform_op(call_name, params, chat_id=chat_id) {
+            Ok(op_id) => return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("opId", base_codec::json_int(op_id))]), None))
+            Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: msg }))
+          }
         }
-        match self.perform_op(call_name, params, chat_id=chat_id) {
-          Ok(op_id) => return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("opId", base_codec::json_int(op_id))]), None))
-          Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: msg }))
-        }
+        OpResult::Unknown => ()
       }
       if call_name == "lock.status" {
         let req_ws = match proto_str(params, "workspace") {

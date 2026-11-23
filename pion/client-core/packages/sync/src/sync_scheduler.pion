@@ -64,6 +64,116 @@ pub fn SyncScheduler::focus_thread(self : SyncScheduler, thread : Option[Int]) -
   }
 }
 
+/// Schedule a workspace lock fetch (`GET /lock`) at the given priority.
+/// Parses `{ head, entries, aside? }` and forwards it to `StationEvents::notify_lock_payload`
+/// (`ClientCore::handle_lock_event` -> `ClientCore::apply_lock_chain`), preserving Gate #2
+/// genesis pinning, anti-rollback, and SQLite `workspace_pref(ws, "lock")` persistence.
+pub fn SyncScheduler::fetch_lock_k(
+  self : SyncScheduler,
+  priority : Int,
+  k : (effect::Exit[Bool]) -> Unit,
+) -> Unit {
+  let key = self.task_key("lock")
+  self.lane.run_k(
+    key,
+    priority,
+    fn(_preempt : effect::Preempt, tk : (effect::Exit[Bool]) -> Unit) -> Unit {
+      let req_fn = self.transport.request_k
+      req_fn("GET", "/lock", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(reply) => {
+            if reply.status == 404 {
+              self.completed_order.push("lock")
+              tk(effect::Exit::Succeeded(false))
+              return
+            }
+            if reply.status < 200 || reply.status >= 300 {
+              tk(effect::Exit::Failed(effect::EffectError::Custom("lock fetch status " + reply.status.to_string())))
+              return
+            }
+            match base_codec::json_parse(bytes_to_str(reply.body)) {
+              base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+              base_codec::JsonParseResult::Ok(j) => {
+                let has_entries = match base_codec::json_get(j, "entries") {
+                  Some(base_codec::Json::Arr(xs)) => xs.length() > 0
+                  _ => false
+                }
+                if has_entries {
+                  self.events.notify_lock_payload(j)
+                }
+                self.completed_order.push("lock")
+                tk(effect::Exit::Succeeded(has_entries))
+              }
+            }
+          }
+        }
+      })
+    },
+    k,
+  )
+}
+
+/// Schedule a viewer marks fetch (`GET /chats?marks=1&own=1` with optional `&session=...&thread=...` scope),
+/// strictly aligned with `client/core-ts/src/station/sync.ts` `#marksWhole` / `#marksRead`.
+/// Atomically persists `reads`/`pins`/`kept`/`hidden`/`muted`/`dismissed` into SQLite `shared_mark`
+/// and triggers targeted refresh callbacks for affected `(station, id)` / `thread` keys.
+pub fn SyncScheduler::fetch_marks_k(
+  self : SyncScheduler,
+  priority : Int,
+  k : (effect::Exit[Array[String]]) -> Unit,
+  sessions : Array[String] = [],
+  threads : Array[Int] = [],
+) -> Unit {
+  let is_whole = sessions.length() == 0 && threads.length() == 0
+  let key = self.task_key(if is_whole { "marks:whole" } else { "marks:scoped" })
+  let path_sb = StringBuilder::new()
+  path_sb.write_string("/chats?marks=1&own=1")
+  for i in 0..<sessions.length() {
+    if sessions[i].length() > 0 {
+      path_sb.write_string("&session=")
+      path_sb.write_string(encode_uri_component(sessions[i]))
+    }
+  }
+  for i in 0..<threads.length() {
+    path_sb.write_string("&thread=")
+    path_sb.write_string(threads[i].to_string())
+  }
+  let req_path = path_sb.to_string()
+  self.lane.run_k(
+    key,
+    priority,
+    fn(_preempt : effect::Preempt, tk : (effect::Exit[Array[String]]) -> Unit) -> Unit {
+      let req_fn = self.transport.request_k
+      req_fn("GET", req_path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(reply) => {
+            if reply.status < 200 || reply.status >= 300 {
+              tk(effect::Exit::Failed(effect::EffectError::Custom("marks fetch status " + reply.status.to_string())))
+              return
+            }
+            match base_codec::json_parse(bytes_to_str(reply.body)) {
+              base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+              base_codec::JsonParseResult::Ok(j) =>
+              match self.events.apply_marks_to_db(j, is_whole, scoped_sessions=sessions, scoped_threads=threads) {
+                sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
+                sql::SqlResult::Ok(affected) => {
+                  self.completed_order.push("marks")
+                  tk(effect::Exit::Succeeded(affected))
+                }
+              }
+            }
+          }
+        }
+      })
+    },
+    k,
+  )
+}
+
 /// Schedule a snapshot fetch (`GET /chats`) at `priority_shown()` (or `priority_focused()`).
 pub fn SyncScheduler::fetch_snapshot_k(
   self : SyncScheduler,

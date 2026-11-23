@@ -1,5 +1,5 @@
-// Real station HTTP operation route mapper, strictly 1:1 aligned with `client/core-ts/src/ops.ts`
-// (`request(name, params)`) and `client/core-ts/src/station/sync.ts` (`post`, `read`).
+// Real station & cloud HTTP operation route mapper, strictly 1:1 aligned with
+// `client/core-ts/src/ops.ts` (`request(name, params)`) and `client/core-ts/src/station/sync.ts` (`post`, `read`).
 // Zero fabricated endpoints.
 
 import "base_codec"
@@ -22,6 +22,11 @@ pub enum OpEffect {
   Presets
   Move
   Identity
+  Drive(String, Array[String])
+  MachineLogins
+  Login(Option[String], Option[Array[String]])
+  Tab(String)
+  ScreenGone(String, Option[String])
 }
 
 pub struct OpRequest {
@@ -62,6 +67,96 @@ pub fn encode_uri_component(text : String) -> String {
   sb.to_string()
 }
 
+/// Parent folder of a drive path (`a/b/c` -> `a/b`, root entries -> `""`), matching `ops.ts folderOf`.
+pub fn drive_folder_of(path : String) -> String {
+  let parts : Array[String] = []
+  let bytes = path.to_bytes()
+  let mut start = 0
+  for i in 0..<(bytes.length() + 1) {
+    if i == bytes.length() || bytes[i].to_int() == 47 {
+      let seg = path.slice(start, i)
+      if seg.length() > 0 && seg != "." {
+        parts.push(seg)
+      }
+      start = i + 1
+    }
+  }
+  if parts.length() <= 1 {
+    return ""
+  }
+  let sb = StringBuilder::new()
+  for i in 0..<(parts.length() - 1) {
+    if i > 0 {
+      sb.write_string("/")
+    }
+    sb.write_string(parts[i])
+  }
+  sb.to_string()
+}
+
+fn is_valid_tab_id(id : String) -> Bool {
+  if id.length() != 14 || !id.starts_with("u_") {
+    return false
+  }
+  for i in 2..<14 {
+    let c = id.code_unit_at(i)
+    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) {
+      return false
+    }
+  }
+  true
+}
+
+/// Normalize profile input (`models` deduplicated and sorted lexicographically), matching `ops.ts profileInput`.
+fn normalize_profile_input(input : base_codec::Json) -> base_codec::Json {
+  match input {
+    base_codec::Json::Obj(fs) => {
+      let mut models_opt : Option[Array[base_codec::Json]] = None
+      for i in 0..<fs.length() {
+        if fs[i].0 == "models" {
+          match fs[i].1 {
+            base_codec::Json::Arr(xs) => { models_opt = Some(xs) }
+            _ => ()
+          }
+        }
+      }
+      match models_opt {
+        None => input
+        Some(xs) => {
+          let seen : Map[String, Bool] = Map::new()
+          let uniq : Array[String] = []
+          for i in 0..<xs.length() {
+            match xs[i] {
+              base_codec::Json::Str(s) =>
+              if seen.get(s).is_none() {
+                seen.set(s, true)
+                uniq.push(s)
+              }
+              _ => ()
+            }
+          }
+          // Insertion sort ascending (matching JS `Array.prototype.sort()` default UTF-16 order)
+          for i in 1..<uniq.length() {
+            let cur = uniq[i]
+            let mut j = i - 1
+            while j >= 0 && uniq[j] > cur {
+              uniq[j + 1] = uniq[j]
+              j -= 1
+            }
+            uniq[j + 1] = cur
+          }
+          let sorted_j : Array[base_codec::Json] = []
+          for i in 0..<uniq.length() {
+            sorted_j.push(base_codec::json_str(uniq[i]))
+          }
+          j_set_field(input, "models", base_codec::json_arr(sorted_j))
+        }
+      }
+    }
+    _ => input
+  }
+}
+
 pub fn OpEffect::to_json(self : OpEffect) -> base_codec::Json {
   match self {
     OpEffect::None => base_codec::json_obj([("kind", base_codec::json_str("none"))])
@@ -90,6 +185,52 @@ pub fn OpEffect::to_json(self : OpEffect) -> base_codec::Json {
     OpEffect::Presets => base_codec::json_obj([("kind", base_codec::json_str("presets"))])
     OpEffect::Move => base_codec::json_obj([("kind", base_codec::json_str("move"))])
     OpEffect::Identity => base_codec::json_obj([("kind", base_codec::json_str("identity"))])
+    OpEffect::Drive(root, paths) => {
+      let arr : Array[base_codec::Json] = []
+      for i in 0..<paths.length() {
+        arr.push(base_codec::json_str(paths[i]))
+      }
+      base_codec::json_obj([
+        ("kind", base_codec::json_str("drive")),
+        ("root", base_codec::json_str(root)),
+        ("paths", base_codec::json_arr(arr)),
+      ])
+    }
+    OpEffect::MachineLogins => base_codec::json_obj([("kind", base_codec::json_str("machineLogins"))])
+    OpEffect::Login(id_opt, from_opt) => {
+      let ij = match id_opt {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      }
+      let fj = match from_opt {
+        Some(xs) => {
+          let arr : Array[base_codec::Json] = []
+          for i in 0..<xs.length() {
+            arr.push(base_codec::json_str(xs[i]))
+          }
+          base_codec::json_arr(arr)
+        }
+        None => base_codec::json_null()
+      }
+      base_codec::json_obj([
+        ("kind", base_codec::json_str("login")),
+        ("id", ij),
+        ("from", fj),
+      ])
+    }
+    OpEffect::Tab(screen) =>
+    base_codec::json_obj([("kind", base_codec::json_str("tab")), ("screen", base_codec::json_str(screen))])
+    OpEffect::ScreenGone(screen, view_opt) => {
+      let vj = match view_opt {
+        Some(v) => base_codec::json_str(v)
+        None => base_codec::json_null()
+      }
+      base_codec::json_obj([
+        ("kind", base_codec::json_str("screenGone")),
+        ("screen", base_codec::json_str(screen)),
+        ("view", vj),
+      ])
+    }
   }
 }
 
@@ -157,6 +298,13 @@ fn p_at(params : base_codec::Json, name : String) -> Result[String, String] {
   }
 }
 
+fn p_value(params : base_codec::Json, name : String) -> Result[base_codec::Json, String] {
+  match p_get(params, name) {
+    Some(v) => Ok(v)
+    None => Err("missing " + name)
+  }
+}
+
 fn p_opt_u64(params : base_codec::Json, name : String) -> Option[Int64] {
   match p_get(params, name) {
     Some(base_codec::Json::Num(n, repr)) => {
@@ -202,6 +350,21 @@ fn p_pick(params : base_codec::Json, names : Array[String]) -> base_codec::Json 
   base_codec::json_obj(out)
 }
 
+fn p_pick_into(
+  base_fields : Array[(String, base_codec::Json)],
+  params : base_codec::Json,
+  names : Array[String],
+) -> base_codec::Json {
+  for i in 0..<names.length() {
+    let k = names[i]
+    match p_get(params, k) {
+      Some(v) => base_fields.push((k, v))
+      None => ()
+    }
+  }
+  base_codec::json_obj(base_fields)
+}
+
 fn make_station_op(
   params : base_codec::Json,
   method_name : String,
@@ -224,8 +387,30 @@ fn make_station_op(
   }
 }
 
-fn ops_session_request(name : String, params : base_codec::Json) -> OpResult {
-  if name == "session.stop" {
+fn make_cloud_op(
+  params : base_codec::Json,
+  method_name : String,
+  path : String,
+  body : Option[base_codec::Json],
+) -> OpResult {
+  match op_str(params, "account") {
+    Err(e) => OpResult::Invalid(e)
+    Ok(account) =>
+    OpResult::Ok(OpRequest::{
+      target: OpTarget::Cloud(account),
+      method: method_name,
+      path: path,
+      body: body,
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+}
+
+// ── Session operations (12) ──
+
+fn ops_session_request(op : String, params : base_codec::Json) -> OpResult {
+  if op == "session.stop" {
     let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let key_raw = match p_word(params, "key") { Some(s) => s; None => "" }
@@ -238,7 +423,7 @@ fn ops_session_request(name : String, params : base_codec::Json) -> OpResult {
       effect: OpEffect::Process(key_raw),
     })
   }
-  if name == "session.cancelRetry" {
+  if op == "session.cancelRetry" {
     let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let key_raw = match p_word(params, "key") { Some(s) => s; None => "" }
@@ -251,7 +436,7 @@ fn ops_session_request(name : String, params : base_codec::Json) -> OpResult {
       effect: OpEffect::Process(key_raw),
     })
   }
-  if name == "session.retry" {
+  if op == "session.retry" {
     let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let key_raw = match p_word(params, "key") { Some(s) => s; None => "" }
@@ -264,7 +449,7 @@ fn ops_session_request(name : String, params : base_codec::Json) -> OpResult {
       effect: OpEffect::Process(key_raw),
     })
   }
-  if name == "session.reassign" {
+  if op == "session.reassign" {
     let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let key_raw = match p_word(params, "key") { Some(s) => s; None => "" }
@@ -277,7 +462,7 @@ fn ops_session_request(name : String, params : base_codec::Json) -> OpResult {
       effect: OpEffect::Process(key_raw),
     })
   }
-  if name == "session.warm" {
+  if op == "session.warm" {
     let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     return OpResult::Ok(OpRequest::{
@@ -289,7 +474,7 @@ fn ops_session_request(name : String, params : base_codec::Json) -> OpResult {
       effect: OpEffect::None,
     })
   }
-  if name == "session.evict" {
+  if op == "session.evict" {
     let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let key_raw = match p_word(params, "key") { Some(s) => s; None => "" }
@@ -302,7 +487,7 @@ fn ops_session_request(name : String, params : base_codec::Json) -> OpResult {
       effect: OpEffect::Process(key_raw),
     })
   }
-  if name == "session.compact" {
+  if op == "session.compact" {
     let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     return OpResult::Ok(OpRequest::{
@@ -314,7 +499,7 @@ fn ops_session_request(name : String, params : base_codec::Json) -> OpResult {
       effect: OpEffect::Session(p_word(params, "key")),
     })
   }
-  if name == "session.clear" {
+  if op == "session.clear" {
     let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let body = if p_has(params, "readBack") { Some(p_pick(params, ["readBack"])) } else { None }
@@ -327,7 +512,7 @@ fn ops_session_request(name : String, params : base_codec::Json) -> OpResult {
       effect: OpEffect::Session(p_word(params, "key")),
     })
   }
-  if name == "session.delete" {
+  if op == "session.delete" {
     let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     return OpResult::Ok(OpRequest::{
@@ -339,7 +524,7 @@ fn ops_session_request(name : String, params : base_codec::Json) -> OpResult {
       effect: OpEffect::Session(p_word(params, "key")),
     })
   }
-  if name == "session.settings" {
+  if op == "session.settings" {
     let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let body = p_pick(params, [
@@ -354,13 +539,13 @@ fn ops_session_request(name : String, params : base_codec::Json) -> OpResult {
       effect: OpEffect::Session(p_word(params, "key")),
     })
   }
-  if name == "session.new" {
+  if op == "session.new" {
     let body = p_pick(params, [
       "runtime", "profile", "profiles", "model", "effort", "fast", "speed", "tui", "context", "preset",
     ])
     return make_station_op(params, "POST", "/sessions", Some(body), OpEffect::Session(None))
   }
-  if name == "session.transcript" {
+  if op == "session.transcript" {
     let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     return OpResult::Ok(OpRequest::{
@@ -375,8 +560,10 @@ fn ops_session_request(name : String, params : base_codec::Json) -> OpResult {
   OpResult::Unknown
 }
 
-fn ops_chat_request(name : String, params : base_codec::Json) -> OpResult {
-  if name == "chat.archive" {
+// ── Chat operations (13) ──
+
+fn ops_chat_request(op : String, params : base_codec::Json) -> OpResult {
+  if op == "chat.archive" {
     let method_name = if p_bool(params, "archived") { "POST" } else { "DELETE" }
     let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let sess_enc = match p_at(params, "session") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
@@ -401,7 +588,7 @@ fn ops_chat_request(name : String, params : base_codec::Json) -> OpResult {
       })
     }
   }
-  if name == "chat.keep" {
+  if op == "chat.keep" {
     let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
     let is_drop = match p_get(params, "kept") {
       Some(base_codec::Json::Bool(false)) => true
@@ -410,7 +597,7 @@ fn ops_chat_request(name : String, params : base_codec::Json) -> OpResult {
     let method_name = if is_drop { "DELETE" } else { "PUT" }
     return make_station_op(params, method_name, "/threads/" + th.to_string() + "/keep", None, OpEffect::Thread(false))
   }
-  if name == "chat.hide" {
+  if op == "chat.hide" {
     let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
     return make_station_op(
       params,
@@ -420,7 +607,7 @@ fn ops_chat_request(name : String, params : base_codec::Json) -> OpResult {
       OpEffect::Thread(false),
     )
   }
-  if name == "chat.mute" {
+  if op == "chat.mute" {
     let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
     return make_station_op(
       params,
@@ -430,7 +617,7 @@ fn ops_chat_request(name : String, params : base_codec::Json) -> OpResult {
       OpEffect::Thread(false),
     )
   }
-  if name == "chat.rename" {
+  if op == "chat.rename" {
     match p_opt_u64(params, "thread") {
       Some(th) =>
       return make_station_op(
@@ -454,11 +641,11 @@ fn ops_chat_request(name : String, params : base_codec::Json) -> OpResult {
       }
     }
   }
-  if name == "chat.regenerateTitle" {
+  if op == "chat.regenerateTitle" {
     let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
     return make_station_op(params, "POST", "/threads/" + th.to_string() + "/regenerate-title", None, OpEffect::Thread(false))
   }
-  if name == "chat.pin" {
+  if op == "chat.pin" {
     let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let sess_enc = match p_at(params, "session") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let method_name = if p_bool(params, "pinned") { "PUT" } else { "DELETE" }
@@ -471,11 +658,11 @@ fn ops_chat_request(name : String, params : base_codec::Json) -> OpResult {
       effect: OpEffect::Session(p_word(params, "session")),
     })
   }
-  if name == "chat.relayPlaces" {
+  if op == "chat.relayPlaces" {
     let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
     return make_station_op(params, "GET", "/threads/" + th.to_string() + "/relay", None, OpEffect::None)
   }
-  if name == "chat.relay" {
+  if op == "chat.relay" {
     let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
     return make_station_op(
       params,
@@ -485,7 +672,7 @@ fn ops_chat_request(name : String, params : base_codec::Json) -> OpResult {
       OpEffect::Thread(false),
     )
   }
-  if name == "chat.relayPeople" {
+  if op == "chat.relayPeople" {
     let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
     let qs : Array[String] = []
     let keys = ["connect", "channel", "link"]
@@ -502,29 +689,31 @@ fn ops_chat_request(name : String, params : base_codec::Json) -> OpResult {
     }
     return make_station_op(params, "GET", "/threads/" + th.to_string() + "/relay/people?" + qstr.to_string(), None, OpEffect::None)
   }
-  if name == "chat.report" {
+  if op == "chat.report" {
     let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
     let seq = match p_u64(params, "seq") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
     let body = base_codec::json_obj([("n", base_codec::json_int64(seq))])
     return make_station_op(params, "POST", "/threads/" + th.to_string() + "/report", Some(body), OpEffect::None)
   }
-  if name == "chats.archived" {
+  if op == "chats.archived" {
     return make_station_op(params, "GET", "/chats?archived=1", None, OpEffect::None)
   }
-  if name == "chat.forSession" {
+  if op == "chat.forSession" {
     return make_station_op(params, "POST", "/threads", Some(p_pick(params, ["session"])), OpEffect::Thread(false))
   }
   OpResult::Unknown
 }
 
-fn ops_decision_job_request(name : String, params : base_codec::Json) -> OpResult {
-  if name == "decision.dismiss" {
+// ── Station admin / config / copies / move / decisions / jobs / memory (37) ──
+
+fn ops_station_admin_request(op : String, params : base_codec::Json) -> OpResult {
+  if op == "decision.dismiss" {
     let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
     let seq = match p_u64(params, "seq") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
     let body = base_codec::json_obj([("n", base_codec::json_int64(seq))])
     return make_station_op(params, "PUT", "/threads/" + th.to_string() + "/dismissed", Some(body), OpEffect::Thread(false))
   }
-  if name == "decision.close" {
+  if op == "decision.close" {
     let th = match p_u64(params, "thread") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
     let seq = match p_u64(params, "seq") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
     let opt = match op_str(params, "option") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
@@ -534,7 +723,7 @@ fn ops_decision_job_request(name : String, params : base_codec::Json) -> OpResul
     ])
     return make_station_op(params, "PUT", "/threads/" + th.to_string() + "/closed-card", Some(body), OpEffect::Session(None))
   }
-  if name == "job.get" {
+  if op == "job.get" {
     let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     return OpResult::Ok(OpRequest::{
@@ -546,7 +735,7 @@ fn ops_decision_job_request(name : String, params : base_codec::Json) -> OpResul
       effect: OpEffect::None,
     })
   }
-  if name == "job.log" {
+  if op == "job.log" {
     let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let lines = match p_u64(params, "lines") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
@@ -559,7 +748,7 @@ fn ops_decision_job_request(name : String, params : base_codec::Json) -> OpResul
       effect: OpEffect::None,
     })
   }
-  if name == "job.stop" {
+  if op == "job.stop" {
     let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
     return OpResult::Ok(OpRequest::{
@@ -571,21 +760,1074 @@ fn ops_decision_job_request(name : String, params : base_codec::Json) -> OpResul
       effect: OpEffect::Job,
     })
   }
+  if op == "tools.access" {
+    return make_station_op(params, "GET", "/tools/access", None, OpEffect::None)
+  }
+  if op == "tools.setAccess" {
+    return make_station_op(params, "PUT", "/tools/access", Some(p_pick(params, ["access"])), OpEffect::Overview)
+  }
+  if op == "agentEnv.set" {
+    return make_station_op(params, "PUT", "/agent-env", Some(p_pick(params, ["env", "text"])), OpEffect::Overview)
+  }
+  if op == "search.setPersonal" {
+    return make_station_op(params, "PUT", "/search/settings", Some(p_pick(params, ["personal"])), OpEffect::Overview)
+  }
+  if op == "network.setCongestion" {
+    return make_station_op(params, "PUT", "/network/settings", Some(p_pick(params, ["congestion"])), OpEffect::Overview)
+  }
+  if op == "copies.setSettings" {
+    return make_station_op(params, "PUT", "/copies/settings", Some(p_pick(params, ["mode", "stations", "acceptOthers", "s3"])), OpEffect::Overview)
+  }
+  if op == "copies.testS3" {
+    return make_station_op(
+      params,
+      "POST",
+      "/copies/s3/test",
+      Some(p_pick(params, ["id", "endpoint", "region", "bucket", "prefix", "forcePathStyle", "accessKeyId", "secretAccessKey", "encryptionKey"])),
+      OpEffect::None,
+    )
+  }
+  if op == "copies.restore" {
+    let from_obj = if p_has(params, "fromS3") {
+      match op_str(params, "fromS3") {
+        Ok(s3) =>
+        if s3.length() > 0 {
+          base_codec::json_obj([("s3", base_codec::json_str(s3))])
+        } else {
+          let fs = match op_str(params, "fromStation") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+          base_codec::json_obj([("station", base_codec::json_str(fs))])
+        }
+        Err(e) => return OpResult::Invalid(e)
+      }
+    } else {
+      let fs = match op_str(params, "fromStation") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+      base_codec::json_obj([("station", base_codec::json_str(fs))])
+    }
+    let origin = match op_str(params, "origin") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let gen = match op_str(params, "gen") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let body = base_codec::json_obj([
+      ("station", base_codec::json_str(origin)),
+      ("gen", base_codec::json_str(gen)),
+      ("from", from_obj),
+    ])
+    return make_station_op(params, "POST", "/copies/restore", Some(body), OpEffect::Overview)
+  }
+  if op == "copies.history" {
+    let path = match p_get(params, "limit") {
+      Some(base_codec::Json::Num(n, _)) => {
+        let mut lim = n.floor().to_int()
+        if lim < 1 { lim = 1 }
+        if lim > 50 { lim = 50 }
+        "/copies/history?limit=" + lim.to_string()
+      }
+      _ => "/copies/history"
+    }
+    return make_station_op(params, "GET", path, None, OpEffect::None)
+  }
+  if op == "copies.retire" {
+    let to = match op_str(params, "to") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    return make_station_op(params, "POST", "/retire", Some(base_codec::json_obj([("to", base_codec::json_str(to))])), OpEffect::Overview)
+  }
+  if op == "copies.retireCancel" {
+    return make_station_op(params, "DELETE", "/retire", None, OpEffect::Overview)
+  }
+  if op == "copies.retireAgain" {
+    return make_station_op(params, "POST", "/retire/again", None, OpEffect::Overview)
+  }
+  if op == "copies.retirePreview" {
+    return make_station_op(params, "GET", "/retire/preview", None, OpEffect::None)
+  }
+  if op == "move.start" {
+    let to = match op_str(params, "to") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let body = p_pick_into([("to", base_codec::json_str(to))], params, ["module", "item", "all", "withNeeds"])
+    return make_station_op(params, "POST", "/move", Some(body), OpEffect::Move)
+  }
+  if op == "move.back" {
+    let from = match op_str(params, "from") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let body = p_pick_into([("from", base_codec::json_str(from))], params, ["module", "item", "all"])
+    return make_station_op(params, "POST", "/move/back", Some(body), OpEffect::Move)
+  }
+  if op == "move.stop" {
+    return make_station_op(params, "POST", "/move/stop", Some(base_codec::json_obj([])), OpEffect::Move)
+  }
+  if op == "station.restart" {
+    return make_station_op(params, "POST", "/station/restart", None, OpEffect::Overview)
+  }
+  if op == "station.resumeInterrupted" {
+    let body = if p_has(params, "keys") { Some(p_pick(params, ["keys"])) } else { None }
+    return make_station_op(params, "POST", "/sessions/resume-interrupted", body, OpEffect::Overview)
+  }
+  if op == "station.dismissInterrupted" {
+    let body = if p_has(params, "keys") { Some(p_pick(params, ["keys"])) } else { None }
+    return make_station_op(params, "POST", "/sessions/dismiss-interrupted", body, OpEffect::Overview)
+  }
+  if op == "context.setAfresh" {
+    return make_station_op(params, "PUT", "/context/settings", Some(p_pick(params, ["afreshWhenCold", "afreshAbove"])), OpEffect::Overview)
+  }
+  if op == "diagnostics.setLogs" {
+    return make_station_op(params, "PUT", "/diagnostics/settings", Some(p_pick(params, ["logs"])), OpEffect::Overview)
+  }
+  if op == "elevation.set" {
+    return make_station_op(params, "PUT", "/elevation", Some(p_pick(params, ["on"])), OpEffect::Overview)
+  }
+  if op == "screenService.set" {
+    return make_station_op(params, "PUT", "/screen-service", Some(p_pick(params, ["on"])), OpEffect::Overview)
+  }
+  if op == "automaticDecisions.save" {
+    let body = match p_get(params, "input") { Some(v) => v; None => base_codec::json_obj([]) }
+    return make_station_op(params, "PUT", "/automatic-decisions", Some(body), OpEffect::Overview)
+  }
+  if op == "automaticDecisions.review" {
+    return make_station_op(params, "POST", "/automatic-decisions/review", Some(base_codec::json_obj([])), OpEffect::Overview)
+  }
+  if op == "automaticDecisions.policy" {
+    let body = match p_get(params, "input") { Some(v) => v; None => base_codec::json_obj([]) }
+    return make_station_op(params, "PUT", "/automatic-decisions/policy", Some(body), OpEffect::Overview)
+  }
+  if op == "automaticDecisions.refresh" {
+    return make_station_op(params, "POST", "/automatic-decisions/refresh", Some(base_codec::json_obj([])), OpEffect::Overview)
+  }
+  if op == "archiving.save" {
+    return make_station_op(params, "PUT", "/archiving", Some(p_pick(params, ["days", "slackDays", "reviewed"])), OpEffect::Overview)
+  }
+  if op == "autoChats.save" {
+    return make_station_op(params, "PUT", "/auto-chats", Some(p_pick(params, ["enabled"])), OpEffect::Overview)
+  }
+  if op == "memory.get" {
+    return make_station_op(params, "GET", "/memory", None, OpEffect::None)
+  }
+  if op == "process.end" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let pid = match p_u64(params, "pid") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/resources/processes/" + pid.to_string() + "/end",
+      body: Some(p_pick(params, ["session"])),
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  if op == "permissions.request" {
+    let grant = match op_str(params, "grant") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    return make_station_op(params, "POST", "/permissions/request", Some(base_codec::json_obj([("grant", base_codec::json_str(grant))])), OpEffect::Overview)
+  }
   OpResult::Unknown
 }
 
-/// Build the exact station HTTP request for `name` and `params`, matching `client/core-ts/src/ops.ts` `request()`.
-pub fn ops_request(name : String, params : base_codec::Json) -> OpResult {
-  if !name.contains(".") {
+// ── Presets, files, links, widgets, machineSessions, profiles, skills, logins (32) ──
+
+fn ops_preset_profile_request(op : String, params : base_codec::Json) -> OpResult {
+  if op == "preset.add" {
+    let name_s = match op_str(params, "name") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let dirs_v = match p_value(params, "dirs") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let instr = match p_word(params, "instructions") { Some(s) => s; None => "" }
+    let body = p_pick_into(
+      [("name", base_codec::json_str(name_s)), ("dirs", dirs_v), ("instructions", base_codec::json_str(instr))],
+      params,
+      ["autoStation", "stations", "model"],
+    )
+    return make_station_op(params, "POST", "/presets", Some(body), OpEffect::Presets)
+  }
+  if op == "preset.put" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let name_s = match op_str(params, "name") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let dirs_v = match p_value(params, "dirs") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let instr = match p_word(params, "instructions") { Some(s) => s; None => "" }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let body = p_pick_into(
+      [("name", base_codec::json_str(name_s)), ("dirs", dirs_v), ("instructions", base_codec::json_str(instr))],
+      params,
+      ["autoStation", "stations", "model"],
+    )
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "PUT",
+      path: "/presets/" + id_enc,
+      body: Some(body),
+      fallback: None,
+      effect: OpEffect::Presets,
+    })
+  }
+  if op == "preset.delete" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "DELETE",
+      path: "/presets/" + id_enc,
+      body: None,
+      fallback: None,
+      effect: OpEffect::Presets,
+    })
+  }
+  if op == "preset.clone" {
+    let url = match op_str(params, "url") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    return make_station_op(params, "POST", "/presets/clone", Some(base_codec::json_obj([("url", base_codec::json_str(url))])), OpEffect::Presets)
+  }
+  if op == "preset.cloneDrop" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "DELETE",
+      path: "/presets/clones/" + id_enc,
+      body: None,
+      fallback: None,
+      effect: OpEffect::Presets,
+    })
+  }
+  if op == "file.peek" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let path_enc = match p_at(params, "path") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let line_q = match p_opt_u64(params, "line") {
+      Some(l) => "&line=" + l.to_string()
+      None => ""
+    }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "GET",
+      path: "/sessions/" + key_enc + "/peek?path=" + path_enc + line_q,
+      body: None,
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  if op == "link.preview" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let url_enc = match p_at(params, "url") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "GET",
+      path: "/link-preview?url=" + url_enc,
+      body: None,
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  if op == "widget.state" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let path_enc = match p_at(params, "path") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "GET",
+      path: "/sessions/" + key_enc + "/widget-state?path=" + path_enc,
+      body: None,
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  if op == "widget.setState" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let key_enc = match p_at(params, "key") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "PUT",
+      path: "/sessions/" + key_enc + "/widget-state",
+      body: Some(p_pick(params, ["path", "state"])),
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  if op == "machineSessions.list" {
+    return make_station_op(params, "GET", "/machine-sessions", None, OpEffect::None)
+  }
+  if op == "machineSessions.read" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let rt_enc = match p_at(params, "runtime") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let lim = match p_opt_u64(params, "limit") { Some(v) => v; None => 200.to_int64() }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "GET",
+      path: "/machine-sessions/" + rt_enc + "/" + id_enc + "?limit=" + lim.to_string(),
+      body: None,
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  if op == "machineSessions.continue" {
+    return make_station_op(params, "POST", "/machine-sessions", Some(p_pick(params, ["runtime", "id"])), OpEffect::None)
+  }
+  if op == "profile.add" {
+    return make_station_op(params, "POST", "/profiles", Some(p_pick(params, ["runtime", "access"])), OpEffect::Overview)
+  }
+  if op == "profile.useMachineLogin" {
+    return make_station_op(params, "POST", "/profiles/machine", Some(p_pick(params, ["runtime"])), OpEffect::Overview)
+  }
+  if op == "profile.put" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let raw_in = match p_get(params, "input") { Some(v) => v; None => base_codec::json_obj([]) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "PUT",
+      path: "/profiles/" + id_enc,
+      body: Some(normalize_profile_input(raw_in)),
+      fallback: None,
+      effect: OpEffect::Overview,
+    })
+  }
+  if op == "profile.addModel" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let model = match p_word(params, "model") { Some(s) => s; None => "" }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "PUT",
+      path: "/profiles/" + id_enc,
+      body: Some(base_codec::json_obj([("addModel", base_codec::json_str(model))])),
+      fallback: None,
+      effect: OpEffect::Overview,
+    })
+  }
+  if op == "profile.delete" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "DELETE",
+      path: "/profiles/" + id_enc,
+      body: None,
+      fallback: None,
+      effect: OpEffect::Overview,
+    })
+  }
+  if op == "profile.share" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let allow_j = match p_get(params, "allow") { Some(v) => v; None => base_codec::json_null() }
+    let fields : Array[(String, base_codec::Json)] = [
+      ("on", base_codec::json_bool(p_bool(params, "on"))),
+      ("allow", allow_j),
+    ]
+    match p_get(params, "among") {
+      Some(v) => fields.push(("among", v))
+      None => ()
+    }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/profiles/" + id_enc + "/share",
+      body: Some(base_codec::json_obj(fields)),
+      fallback: None,
+      effect: OpEffect::Overview,
+    })
+  }
+  if op == "profile.move" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let to = match p_word(params, "to") { Some(s) => s; None => "" }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/profiles/" + id_enc + "/move",
+      body: Some(base_codec::json_obj([("station", base_codec::json_str(to))])),
+      fallback: None,
+      effect: OpEffect::Overview,
+    })
+  }
+  if op == "skill.share" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let name_enc = match p_at(params, "name") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let allow_j = match p_get(params, "allow") { Some(v) => v; None => base_codec::json_null() }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/skills/" + name_enc + "/share",
+      body: Some(base_codec::json_obj([("on", base_codec::json_bool(p_bool(params, "on"))), ("allow", allow_j)])),
+      fallback: None,
+      effect: OpEffect::Memory,
+    })
+  }
+  if op == "profile.resetQuota" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let body = if p_has(params, "reset") { Some(p_pick(params, ["reset"])) } else { None }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/profiles/" + id_enc + "/reset-quota",
+      body: body,
+      fallback: None,
+      effect: OpEffect::Overview,
+    })
+  }
+  if op == "profile.quota" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/profiles/" + id_enc + "/quota",
+      body: None,
+      fallback: None,
+      effect: OpEffect::Overview,
+    })
+  }
+  if op == "profile.check" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/profiles/" + id_enc + "/check",
+      body: None,
+      fallback: None,
+      effect: OpEffect::Overview,
+    })
+  }
+  if op == "profile.fusion" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "GET",
+      path: "/profiles/" + id_enc + "/fusion",
+      body: None,
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  if op == "profile.login" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/profiles/" + id_enc + "/login",
+      body: None,
+      fallback: None,
+      effect: OpEffect::Overview,
+    })
+  }
+  if op == "profile.cancelLogin" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "DELETE",
+      path: "/profiles/" + id_enc + "/login",
+      body: None,
+      fallback: None,
+      effect: OpEffect::Overview,
+    })
+  }
+  if op == "profile.loginCode" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/profiles/" + id_enc + "/login-code",
+      body: Some(p_pick(params, ["code"])),
+      fallback: None,
+      effect: OpEffect::Overview,
+    })
+  }
+  if op == "profile.loginBrowser" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/profiles/" + id_enc + "/login-browser",
+      body: None,
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  if op == "login.new" {
+    return make_station_op(params, "POST", "/logins", Some(p_pick(params, ["runtime", "access", "service"])), OpEffect::Login(None, None))
+  }
+  if op == "login.code" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_raw = match op_str(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = encode_uri_component(id_raw)
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/logins/" + id_enc + "/code",
+      body: Some(p_pick(params, ["code"])),
+      fallback: None,
+      effect: OpEffect::Login(Some(id_raw), Some(["needs_code", "needs_project"])),
+    })
+  }
+  if op == "login.drop" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_raw = match op_str(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = encode_uri_component(id_raw)
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "DELETE",
+      path: "/logins/" + id_enc,
+      body: None,
+      fallback: None,
+      effect: OpEffect::Login(Some(id_raw), None),
+    })
+  }
+  if op == "login.browser" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/logins/" + id_enc + "/browser",
+      body: None,
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  OpResult::Unknown
+}
+
+// ── Connects, Feishu, Comma, Group, Slack (17) ──
+
+fn ops_connect_request(op : String, params : base_codec::Json) -> OpResult {
+  if op == "connect.create" {
+    let body = match p_get(params, "input") { Some(v) => Some(v); None => None }
+    return make_station_op(params, "POST", "/connects", body, OpEffect::Connect(p_word(params, "id")))
+  }
+  if op == "connect.put" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let body = match p_get(params, "input") { Some(v) => v; None => base_codec::json_obj([]) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "PUT",
+      path: "/connects/" + id_enc,
+      body: Some(body),
+      fallback: None,
+      effect: OpEffect::Connect(p_word(params, "id")),
+    })
+  }
+  if op == "connect.delete" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "DELETE",
+      path: "/connects/" + id_enc,
+      body: None,
+      fallback: None,
+      effect: OpEffect::Connect(p_word(params, "id")),
+    })
+  }
+  if op == "connect.reconnect" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/connects/" + id_enc + "/reconnect",
+      body: None,
+      fallback: None,
+      effect: OpEffect::Connect(p_word(params, "id")),
+    })
+  }
+  if op == "connect.move" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let to = match op_str(params, "to") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/connects/" + id_enc + "/move",
+      body: Some(base_codec::json_obj([("station", base_codec::json_str(to))])),
+      fallback: None,
+      effect: OpEffect::Connect(p_word(params, "id")),
+    })
+  }
+  if op == "connect.bindSession" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let conn_enc = match p_at(params, "connect") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/connects/" + conn_enc + "/session",
+      body: Some(p_pick(params, ["session", "title"])),
+      fallback: None,
+      effect: OpEffect::Connect(p_word(params, "connect")),
+    })
+  }
+  if op == "feishu.register" {
+    return make_station_op(params, "POST", "/feishu/registrations", Some(p_pick(params, ["domain", "name", "bind", "mode", "requireMention", "threads"])), OpEffect::Overview)
+  }
+  if op == "feishu.cancelRegistration" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "DELETE",
+      path: "/feishu/registrations/" + id_enc,
+      body: None,
+      fallback: None,
+      effect: OpEffect::Overview,
+    })
+  }
+  if op == "feishu.verify" {
+    return make_station_op(params, "POST", "/feishu/verify", Some(p_pick(params, ["appId", "appSecret", "domain"])), OpEffect::None)
+  }
+  if op == "feishu.createConnect" {
+    return make_station_op(params, "POST", "/feishu/connects", Some(p_pick(params, ["feishu", "bind", "mode", "requireMention", "owner"])), OpEffect::Connect(None))
+  }
+  if op == "feishu.putSecret" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "PUT",
+      path: "/feishu/connects/" + id_enc + "/secret",
+      body: Some(p_pick(params, ["appSecret"])),
+      fallback: None,
+      effect: OpEffect::Connect(p_word(params, "id")),
+    })
+  }
+  if op == "comma.createConnect" {
+    return make_station_op(params, "POST", "/comma/connects", Some(p_pick(params, ["line", "bind"])), OpEffect::Connect(None))
+  }
+  if op == "group.createConnect" {
+    return make_station_op(params, "POST", "/group/connects", Some(p_pick(params, ["group", "bind", "mode", "requireMention", "owner"])), OpEffect::Connect(None))
+  }
+  if op == "slack.verify" {
+    return make_station_op(params, "POST", "/slack/verify", Some(p_pick(params, ["connect", "install", "appToken", "botToken"])), OpEffect::None)
+  }
+  if op == "slack.people" {
+    return make_station_op(params, "GET", "/slack/people", None, OpEffect::None)
+  }
+  if op == "slack.createAppUrl" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let name_enc = match p_at(params, "name") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "GET",
+      path: "/slack/create-app-url?name=" + name_enc,
+      body: None,
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  if op == "slack.identity" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let user_enc = match p_at(params, "user") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let method_name = if p_bool(params, "bound") { "PUT" } else { "DELETE" }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: method_name,
+      path: "/me/slack/" + user_enc,
+      body: None,
+      fallback: None,
+      effect: OpEffect::Identity,
+    })
+  }
+  OpResult::Unknown
+}
+
+// ── Software, Drive, MachineLogin, Screen, Terminal, Signin (44) ──
+
+fn ops_screen_drive_software_request(op : String, params : base_codec::Json) -> OpResult {
+  if op == "software.update" {
+    return make_station_op(params, "POST", "/updates", Some(p_pick(params, ["id", "repair", "to"])), OpEffect::Overview)
+  }
+  if op == "software.updateAll" {
+    return make_station_op(params, "POST", "/updates/all", None, OpEffect::Overview)
+  }
+  if op == "software.check" {
+    return make_station_op(params, "POST", "/updates/check", None, OpEffect::Overview)
+  }
+  if op == "software.channel" {
+    return make_station_op(params, "POST", "/updates/channel", Some(p_pick(params, ["channel"])), OpEffect::Overview)
+  }
+  if op == "software.auto" {
+    return make_station_op(params, "POST", "/updates/auto", Some(base_codec::json_obj([("on", base_codec::json_bool(p_bool(params, "on")))])), OpEffect::Overview)
+  }
+  if op == "software.wait" {
+    let body = if p_bool(params, "clear") {
+      base_codec::json_obj([("wait", base_codec::json_null())])
+    } else {
+      p_pick(params, ["wait"])
+    }
+    return make_station_op(params, "POST", "/updates/wait", Some(body), OpEffect::Overview)
+  }
+  if op == "drive.setRoots" {
+    return make_station_op(params, "PUT", "/drive/roots", Some(p_pick(params, ["roots"])), OpEffect::Overview)
+  }
+  if op == "drive.folders" {
+    let p_s = match p_word(params, "path") { Some(s) => s; None => "" }
+    return make_station_op(params, "GET", "/drive/folders?path=" + encode_uri_component(p_s), None, OpEffect::None)
+  }
+  if op == "drive.mkdir" {
+    let root = match op_str(params, "root") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let path_v = match op_str(params, "path") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    return make_station_op(params, "POST", "/drive/mkdir", Some(p_pick(params, ["root", "path"])), OpEffect::Drive(root, [drive_folder_of(path_v)]))
+  }
+  if op == "drive.rename" {
+    let root = match op_str(params, "root") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let from_v = match op_str(params, "from") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let to_v = match op_str(params, "to") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    return make_station_op(params, "POST", "/drive/rename", Some(p_pick(params, ["root", "from", "to"])), OpEffect::Drive(root, [drive_folder_of(from_v), drive_folder_of(to_v)]))
+  }
+  if op == "drive.remove" {
+    let root = match op_str(params, "root") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    let path_v = match op_str(params, "path") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    return make_station_op(params, "POST", "/drive/remove", Some(p_pick(params, ["root", "path", "permanent"])), OpEffect::Drive(root, [drive_folder_of(path_v)]))
+  }
+  if op == "drive.zip" {
+    return make_station_op(params, "POST", "/drive/zip", Some(p_pick(params, ["root", "path"])), OpEffect::None)
+  }
+  if op == "drive.stage" {
+    return make_station_op(params, "POST", "/drive/stage", Some(p_pick(params, ["root", "path", "zip"])), OpEffect::None)
+  }
+  if op == "machineLogin.cancel" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "DELETE",
+      path: "/machine-logins/" + id_enc,
+      body: None,
+      fallback: None,
+      effect: OpEffect::MachineLogins,
+    })
+  }
+  if op == "machineLogin.answer" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/machine-logins/" + id_enc + "/answer",
+      body: Some(p_pick(params, ["text"])),
+      fallback: None,
+      effect: OpEffect::MachineLogins,
+    })
+  }
+  if op == "machineLogin.again" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/machine-logins/" + id_enc + "/again",
+      body: None,
+      fallback: None,
+      effect: OpEffect::MachineLogins,
+    })
+  }
+  if op == "machineLogin.browser" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/machine-logins/" + id_enc + "/browser",
+      body: None,
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  if op == "screen.openBrowser" {
+    let eff = match p_word(params, "id") {
+      Some(id_s) => if is_valid_tab_id(id_s) { OpEffect::Tab("browser:" + id_s) } else { OpEffect::None }
+      None => OpEffect::None
+    }
+    return make_station_op(params, "POST", "/screens/browser", Some(p_pick(params, ["url", "id"])), eff)
+  }
+  if op == "screen.close" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr = match op_str(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/screens/" + encode_uri_component(scr) + "/close",
+      body: None,
+      fallback: None,
+      effect: OpEffect::ScreenGone(scr, None),
+    })
+  }
+  if op == "terminal.end" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let term_enc = match p_at(params, "terminal") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/terminals/" + term_enc + "/end",
+      body: None,
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  if op == "screen.sleep" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/sleep", body: None, fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.reload" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/reload", body: None, fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.back" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/back", body: None, fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.forward" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/forward", body: None, fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.endView" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr = match op_str(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let view = match op_str(params, "view") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/screens/" + encode_uri_component(scr) + "/views/" + encode_uri_component(view) + "/end",
+      body: None,
+      fallback: None,
+      effect: OpEffect::ScreenGone(scr, Some(view)),
+    })
+  }
+  if op == "screen.watchOnly" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let view_enc = match p_at(params, "view") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/views/" + view_enc + "/watch", body: None, fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.endViews" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/views/end", body: None, fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.logs" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let after = match p_u64(params, "after") { Ok(v) => v; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "GET", path: "/screens/" + scr_enc + "/logs?after=" + after.to_string(), body: None, fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.apps" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "GET", path: "/screens/" + scr_enc + "/apps", body: None, fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.relaunch" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/relaunch", body: Some(p_pick(params, ["app"])), fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.settings" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "GET", path: "/screens/" + scr_enc + "/settings", body: None, fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.setSetting" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/settings", body: Some(p_pick(params, ["name", "value"])), fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.screenshot" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/screenshot", body: None, fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.biometrics" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/biometrics", body: Some(p_pick(params, ["what"])), fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.uninstall" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/uninstall", body: Some(p_pick(params, ["app"])), fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.recordStart" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/record", body: Some(p_pick(params, ["panel"])), fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.recordStop" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/record/stop", body: None, fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.install" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/install", body: Some(p_pick(params, ["path"])), fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.openUrl" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/open-url", body: Some(p_pick(params, ["url"])), fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.location" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/location", body: Some(p_pick(params, ["at"])), fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.statusBar" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/status-bar", body: Some(p_pick(params, ["tidy"])), fallback: None, effect: OpEffect::None })
+  }
+  if op == "screen.push" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let scr_enc = match p_at(params, "screen") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{ target: OpTarget::Station(station), method: "POST", path: "/screens/" + scr_enc + "/push", body: Some(p_pick(params, ["app", "text"])), fallback: None, effect: OpEffect::None })
+  }
+  if op == "signin.self" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/browser/sign-ins/" + id_enc + "/self",
+      body: Some(base_codec::json_obj([("done", base_codec::json_bool(p_bool(params, "done")))])),
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  if op == "signin.deny" {
+    let station = match op_str(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let id_enc = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return OpResult::Ok(OpRequest::{
+      target: OpTarget::Station(station),
+      method: "POST",
+      path: "/browser/sign-ins/" + id_enc + "/deny",
+      body: None,
+      fallback: None,
+      effect: OpEffect::None,
+    })
+  }
+  OpResult::Unknown
+}
+
+// ── Cloud workspace / invitation / loginSession / account operations (21) ──
+
+fn ops_cloud_request(op : String, params : base_codec::Json) -> OpResult {
+  if op == "workspace.create" {
+    return make_cloud_op(params, "POST", "/v1/workspaces", Some(p_pick(params, ["name", "invite_code"])))
+  }
+  if op == "workspace.rename" {
+    let ws = match p_at(params, "workspace") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return make_cloud_op(params, "PATCH", "/v1/workspaces/" + ws, Some(p_pick(params, ["name", "emoji", "icon"])))
+  }
+  if op == "workspace.setRelays" {
+    let ws = match p_at(params, "workspace") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return make_cloud_op(params, "PUT", "/v1/workspaces/" + ws + "/relays", Some(p_pick(params, ["relays"])))
+  }
+  if op == "workspace.setWay" {
+    let ws = match p_at(params, "workspace") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return make_cloud_op(params, "PUT", "/v1/workspaces/" + ws + "/ways", Some(p_pick(params, ["way", "on"])))
+  }
+  if op == "workspace.delete" {
+    let ws = match p_at(params, "workspace") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return make_cloud_op(params, "DELETE", "/v1/workspaces/" + ws, None)
+  }
+  if op == "workspace.invite" {
+    let ws = match p_at(params, "workspace") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return make_cloud_op(params, "POST", "/v1/workspaces/" + ws + "/invitations", Some(p_pick(params, ["role", "email"])))
+  }
+  if op == "workspace.removeAdded" {
+    let ws = match p_at(params, "workspace") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let em = match p_at(params, "email") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return make_cloud_op(params, "DELETE", "/v1/workspaces/" + ws + "/added/" + em, None)
+  }
+  if op == "workspace.revokeInvitation" {
+    let ws = match p_at(params, "workspace") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let inv = match p_at(params, "invitation") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return make_cloud_op(params, "DELETE", "/v1/workspaces/" + ws + "/invitations/" + inv, None)
+  }
+  if op == "workspace.setRole" {
+    let ws = match p_at(params, "workspace") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let mem = match p_at(params, "member") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return make_cloud_op(params, "PATCH", "/v1/workspaces/" + ws + "/members/" + mem, Some(p_pick(params, ["role"])))
+  }
+  if op == "workspace.removeMember" {
+    let ws = match p_at(params, "workspace") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let mem = match p_at(params, "member") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return make_cloud_op(params, "DELETE", "/v1/workspaces/" + ws + "/members/" + mem, None)
+  }
+  if op == "workspace.enroll" {
+    let ws = match p_at(params, "workspace") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return make_cloud_op(params, "POST", "/v1/workspaces/" + ws + "/enrollments", Some(p_pick(params, ["name"])))
+  }
+  if op == "workspace.createProvisionKey" {
+    let ws = match p_at(params, "workspace") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return make_cloud_op(params, "POST", "/v1/workspaces/" + ws + "/provision-keys", Some(p_pick(params, ["name", "days"])))
+  }
+  if op == "workspace.renameStation" {
+    let ws = match p_at(params, "workspace") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let st = match p_at(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return make_cloud_op(params, "PATCH", "/v1/workspaces/" + ws + "/stations/" + st, Some(p_pick(params, ["name", "emoji", "icon"])))
+  }
+  if op == "workspace.removeStation" {
+    let ws = match p_at(params, "workspace") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let st = match p_at(params, "station") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return make_cloud_op(params, "DELETE", "/v1/workspaces/" + ws + "/stations/" + st, None)
+  }
+  if op == "workspace.feedbackReply" {
+    let ws = match p_at(params, "workspace") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    let fid = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return make_cloud_op(params, "POST", "/v1/workspaces/" + ws + "/feedback/" + fid + "/reply", Some(p_pick(params, ["text"])))
+  }
+  if op == "invitation.preview" {
+    return make_cloud_op(params, "POST", "/v1/invitations/preview", Some(p_pick(params, ["token"])))
+  }
+  if op == "invitation.accept" {
+    if p_has(params, "id") {
+      let iid = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+      return make_cloud_op(params, "POST", "/v1/invitations/" + iid + "/accept", None)
+    }
+    return make_cloud_op(params, "POST", "/v1/invitations/accept", Some(p_pick(params, ["token"])))
+  }
+  if op == "invitation.decline" {
+    let iid = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return make_cloud_op(params, "POST", "/v1/invitations/" + iid + "/decline", None)
+  }
+  if op == "loginSession.revoke" {
+    let sid = match p_at(params, "id") { Ok(s) => s; Err(e) => return OpResult::Invalid(e) }
+    return make_cloud_op(params, "DELETE", "/v1/auth/sessions/" + sid, None)
+  }
+  if op == "account.setPicture" {
+    return make_cloud_op(params, "PUT", "/v1/me/picture", Some(p_pick(params, ["picture"])))
+  }
+  if op == "account.removePicture" {
+    return make_cloud_op(params, "DELETE", "/v1/me/picture", None)
+  }
+  OpResult::Unknown
+}
+
+/// Build the exact station or cloud HTTP request for `op` and `params`, matching `client/core-ts/src/ops.ts` `request()`.
+pub fn ops_request(op : String, params : base_codec::Json) -> OpResult {
+  if !op.contains(".") {
     return OpResult::Unknown
   }
-  if name.starts_with("session.") {
-    return ops_session_request(name, params)
+  if op.starts_with("session.") {
+    return ops_session_request(op, params)
   }
-  if name.starts_with("chat.") || name.starts_with("chats.") {
-    return ops_chat_request(name, params)
+  if op.starts_with("chat.") || op.starts_with("chats.") {
+    return ops_chat_request(op, params)
   }
-  ops_decision_job_request(name, params)
+  if op.starts_with("workspace.") || op.starts_with("invitation.") || op.starts_with("loginSession.") || op.starts_with("account.") {
+    return ops_cloud_request(op, params)
+  }
+  if op.starts_with("preset.") || op.starts_with("file.") || op.starts_with("link.") || op.starts_with("widget.") ||
+  op.starts_with("machineSessions.") || op.starts_with("profile.") || op.starts_with("skill.") || op.starts_with("login.") {
+    return ops_preset_profile_request(op, params)
+  }
+  if op.starts_with("connect.") || op.starts_with("feishu.") || op.starts_with("comma.") || op.starts_with("group.") || op.starts_with("slack.") {
+    return ops_connect_request(op, params)
+  }
+  if op.starts_with("software.") || op.starts_with("drive.") || op.starts_with("machineLogin.") ||
+  op.starts_with("screen.") || op.starts_with("terminal.") || op.starts_with("signin.") {
+    return ops_screen_drive_software_request(op, params)
+  }
+  ops_station_admin_request(op, params)
 }
 
 /// Real station HTTP request for `chat.send` (`POST /threads/<thread>/messages`, `station/sync.ts` `post`).

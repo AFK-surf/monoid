@@ -85,6 +85,7 @@ pub struct LocalOutbox {
   in_flight_threads : Map[String, String]
   in_flight_pending : Map[String, Bool]
   in_flight_overlays : Map[String, Bool]
+  mut on_error : (String, String) -> Unit
 }
 
 fn thread_flight_key(station : String, thread : Int) -> String {
@@ -145,9 +146,44 @@ pub fn LocalOutbox::new(
     in_flight_threads: Map::new(),
     in_flight_pending: Map::new(),
     in_flight_overlays: Map::new(),
+    on_error: fn(_code : String, _msg : String) -> Unit {},
   }
   let _ = ob.load_from_db()
   ob
+}
+
+pub fn LocalOutbox::set_error_hook(self : LocalOutbox, cb : (String, String) -> Unit) -> Unit {
+  self.on_error = cb
+}
+
+fn station_unregistered_hint(station : String) -> String {
+  "Station \"" + station + "\" is not connected yet. Your change is saved locally and will send automatically once the station connects; check Station status or reconnect."
+}
+
+fn network_error_hint(station : String) -> String {
+  "Could not reach station \"" + station + "\". Your message is saved locally and will retry automatically when the network recovers; check your connection or tap Retry."
+}
+
+/// Check whether `station` has any queued messages, pending chats, or overlays awaiting delivery
+/// (including transiently `unreached` messages).
+pub fn LocalOutbox::has_unreached_for_station(self : LocalOutbox, station : String) -> Bool {
+  for i in 0..<self.queued_messages.length() {
+    let m = self.queued_messages[i]
+    if m.station == station && m.seq.is_none() && !m.final_failed && (m.state == "sending" || (m.state == "failed" && m.unreached)) {
+      return true
+    }
+  }
+  for i in 0..<self.queued_pending.length() {
+    if self.queued_pending[i].station == station {
+      return true
+    }
+  }
+  for i in 0..<self.queued_overlays.length() {
+    if self.queued_overlays[i].station == station {
+      return true
+    }
+  }
+  false
 }
 
 /// Register a station-specific `StationTransport` so multi-station operations route to the exact target station.
@@ -762,7 +798,7 @@ fn LocalOutbox::dispatch_message(self : LocalOutbox, rt : effect::Runtime, msg :
       self.mark_message_transient_failed(
         msg,
         "station_unregistered",
-        "Target station not connected; queued until station connects.",
+        station_unregistered_hint(msg.station),
       )
       return
     }
@@ -781,7 +817,7 @@ fn LocalOutbox::dispatch_message(self : LocalOutbox, rt : effect::Runtime, msg :
         effect::Exit::Interrupted => k(effect::Exit::Interrupted)
         effect::Exit::Failed(_) => {
           // Transient network drop: mark `failed` + `unreached` and STOP pumping this thread (strict FIFO!).
-          self.mark_message_transient_failed(msg, "network_error", "Station unreachable; will retry on reconnect.")
+          self.mark_message_transient_failed(msg, "network_error", network_error_hint(msg.station))
           k(effect::Exit::Succeeded(()))
         }
         effect::Exit::Succeeded(reply) => {
@@ -903,7 +939,7 @@ fn LocalOutbox::dispatch_pending_chat(self : LocalOutbox, rt : effect::Runtime, 
         op.client_key,
         "session.new",
         "station_unregistered",
-        "Target station not connected; queued until station connects.",
+        station_unregistered_hint(op.station),
       ))
       return
     }
@@ -1105,7 +1141,7 @@ fn LocalOutbox::dispatch_overlay(self : LocalOutbox, rt : effect::Runtime, ov : 
         ov.chat_id,
         ov.op_kind,
         "station_unregistered",
-        "Target station not connected; queued until station connects.",
+        station_unregistered_hint(ov.station),
       ))
       return
     }
@@ -1216,6 +1252,80 @@ pub fn LocalOutbox::flush_offline(self : LocalOutbox, rt : effect::Runtime) -> U
   let ovs : Array[ChangingOverlay] = []
   for i in 0..<self.queued_overlays.length() {
     ovs.push(self.queued_overlays[i])
+  }
+  for i in 0..<ovs.length() {
+    self.dispatch_overlay(rt, ovs[i])
+  }
+}
+
+/// Flush all queued/unreached offline messages, pending chats, and overlays targeting one specific `station`
+/// (called automatically by `ClientCore::attach_station_transport` when a station connects).
+pub fn LocalOutbox::flush_station_offline(self : LocalOutbox, rt : effect::Runtime, station : String) -> Unit {
+  if self.transport_for(station).is_none() {
+    return
+  }
+  self.online = true
+  let rearmed : Array[Int] = []
+  let rearmed_seen : Map[Int, Bool] = Map::new()
+  for i in 0..<self.queued_messages.length() {
+    let m = self.queued_messages[i]
+    if m.station == station && m.state == "failed" && m.unreached && !m.final_failed && m.seq.is_none() {
+      m.state = "sending"
+      m.unreached = false
+      m.error = None
+      if rearmed_seen.get(m.thread).is_none() {
+        rearmed_seen.set(m.thread, true)
+        rearmed.push(m.thread)
+      }
+    }
+  }
+  if rearmed.length() > 0 {
+    let burst = sql::Burst::new(self.db)
+    match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+      for i in 0..<rearmed.length() {
+        match self.write_thread_outbox_in_burst(b, station, rearmed[i]) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => ()
+        }
+      }
+      sql::SqlResult::Ok(())
+    }) {
+      sql::SqlResult::Err(e) => {
+        let cb = self.on_error
+        cb("sql_error", e.to_string())
+        return
+      }
+      sql::SqlResult::Ok(_) => ()
+    }
+  }
+  let seen_threads : Map[Int, Bool] = Map::new()
+  let targets : Array[Int] = []
+  for i in 0..<self.queued_messages.length() {
+    let m = self.queued_messages[i]
+    if m.station == station && m.state == "sending" && !m.final_failed && m.seq.is_none() {
+      if seen_threads.get(m.thread).is_none() {
+        seen_threads.set(m.thread, true)
+        targets.push(m.thread)
+      }
+    }
+  }
+  for i in 0..<targets.length() {
+    self.pump_thread(rt, station, targets[i])
+  }
+  let pends : Array[PendingChatOp] = []
+  for i in 0..<self.queued_pending.length() {
+    if self.queued_pending[i].station == station {
+      pends.push(self.queued_pending[i])
+    }
+  }
+  for i in 0..<pends.length() {
+    self.dispatch_pending_chat(rt, pends[i])
+  }
+  let ovs : Array[ChangingOverlay] = []
+  for i in 0..<self.queued_overlays.length() {
+    if self.queued_overlays[i].station == station {
+      ovs.push(self.queued_overlays[i])
+    }
   }
   for i in 0..<ovs.length() {
     self.dispatch_overlay(rt, ovs[i])

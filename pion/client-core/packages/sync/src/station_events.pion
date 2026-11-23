@@ -698,6 +698,7 @@ pub struct StationEvents {
   mut on_lock_payload : (base_codec::Json) -> Unit
   mut on_missed : () -> Unit
   mut on_marks_dirty : (String, base_codec::Json) -> Unit
+  mut on_marks_applied : (base_codec::Json, Bool, Array[String], Array[String], Array[Int]) -> Unit
   mut on_thread_dirty : (Int) -> Unit
   mut stream_fiber : Option[effect::Fiber[Unit]]
   mut active_stream_fiber : Option[effect::Fiber[Unit]]
@@ -735,6 +736,7 @@ pub fn StationEvents::new(
     on_lock_payload: fn(_j : base_codec::Json) -> Unit {},
     on_missed: fn() -> Unit {},
     on_marks_dirty: fn(_ev : String, _j : base_codec::Json) -> Unit {},
+    on_marks_applied: fn(_j : base_codec::Json, _whole : Bool, _affected : Array[String], _sessions : Array[String], _threads : Array[Int]) -> Unit {},
     on_thread_dirty: fn(_th : Int) -> Unit {},
     stream_fiber: None,
     active_stream_fiber: None,
@@ -748,6 +750,18 @@ pub fn StationEvents::set_missed_hook(self : StationEvents, cb : () -> Unit) -> 
 
 pub fn StationEvents::set_marks_dirty_hook(self : StationEvents, cb : (String, base_codec::Json) -> Unit) -> Unit {
   self.on_marks_dirty = cb
+}
+
+pub fn StationEvents::set_marks_applied_hook(
+  self : StationEvents,
+  cb : (base_codec::Json, Bool, Array[String], Array[String], Array[Int]) -> Unit,
+) -> Unit {
+  self.on_marks_applied = cb
+}
+
+pub fn StationEvents::notify_lock_payload(self : StationEvents, payload : base_codec::Json) -> Unit {
+  let cb = self.on_lock_payload
+  cb(payload)
 }
 
 pub fn StationEvents::set_thread_dirty_hook(self : StationEvents, cb : (Int) -> Unit) -> Unit {
@@ -2007,6 +2021,7 @@ fn StationEvents::apply_one_sse_event(
   missed_flag : Array[Bool],
   marks_dirty : Array[(String, base_codec::Json)],
   newly_dirty : Array[Int],
+  lock_payloads : Array[base_codec::Json],
 ) -> sql::SqlResult[Int] {
   if ev_name == "thread" {
     return self.apply_sse_thread(b, payload, pending_events, newly_dirty)
@@ -2174,6 +2189,10 @@ fn StationEvents::apply_one_sse_event(
       }
     }
   }
+  if ev_name == "lock" {
+    lock_payloads.push(payload)
+    return sql::SqlResult::Ok(1)
+  }
   if ev_name == "overview" {
     let raw = base_codec::json_stringify(payload)
     match b.run(sql_station_overview_upsert(), params=[
@@ -2185,6 +2204,268 @@ fn StationEvents::apply_one_sse_event(
     }
   }
   sql::SqlResult::Ok(0)
+}
+
+fn push_unique_str(xs : Array[String], seen : Map[String, Bool], v : String) -> Unit {
+  if v.length() > 0 && seen.get(v).is_none() {
+    seen.set(v, true)
+    xs.push(v)
+  }
+}
+
+/// Apply a real `GET /chats?marks=1&own=1` payload atomically into SQLite `shared_mark`
+/// (and patch matching `chat`/`thread` rows in the same `sql::Burst` transaction),
+/// then invoke `on_marks_applied` so `ClientCore::viewer_marks` stays synchronized and
+/// only affected `(station, id)` / `thread` entries refresh.
+pub fn StationEvents::apply_marks_to_db(
+  self : StationEvents,
+  payload : base_codec::Json,
+  is_whole : Bool,
+  scoped_sessions : Array[String] = [],
+  scoped_threads : Array[Int] = [],
+) -> sql::SqlResult[Array[String]] {
+  let affected : Array[String] = []
+  let seen : Map[String, Bool] = Map::new()
+  let burst = sql::Burst::new(self.db)
+  let res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+    let old_hidden : Array[Int] = []
+    let old_muted : Array[Int] = []
+    if is_whole {
+      match b.all("SELECT kind, k FROM shared_mark WHERE station = ? AND kind IN ('hidden', 'muted')", params=[base_codec::json_str(self.station)]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(rows) => {
+          for i in 0..<rows.length() {
+            let kind = sql::col_text(rows[i], 0)
+            match base_codec::parse_int64_str(sql::col_text(rows[i], 1)) {
+              Some(th_i64) => {
+                if kind == "hidden" {
+                  old_hidden.push(th_i64.to_int())
+                } else if kind == "muted" {
+                  old_muted.push(th_i64.to_int())
+                }
+              }
+              None => ()
+            }
+          }
+        }
+      }
+      match b.run("DELETE FROM shared_mark WHERE station = ?", params=[base_codec::json_str(self.station)]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+    } else {
+      for si in 0..<scoped_sessions.length() {
+        let sess = scoped_sessions[si]
+        if sess.length() > 0 {
+          match b.run(
+            "DELETE FROM shared_mark WHERE station = ? AND kind = 'pin' AND k = ?",
+            params=[base_codec::json_str(self.station), base_codec::json_str(sess)],
+          ) {
+            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(_) => ()
+          }
+          push_unique_str(affected, seen, sess)
+        }
+      }
+      for ti in 0..<scoped_threads.length() {
+        let tid = scoped_threads[ti]
+        let tk = tid.to_string()
+        match b.run(
+          "DELETE FROM shared_mark WHERE station = ? AND kind IN ('read', 'kept', 'hidden', 'muted') AND k = ?",
+          params=[base_codec::json_str(self.station), base_codec::json_str(tk)],
+        ) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => ()
+        }
+        match b.run(
+          "DELETE FROM shared_mark WHERE station = ? AND kind = 'dismissed' AND k LIKE ?",
+          params=[base_codec::json_str(self.station), base_codec::json_str(tk + ":%")],
+        ) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => ()
+        }
+        match patch_chats_for_thread_bool_in_burst(b, self.station, tid, "hidden", false) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(ids) => {
+            for ci in 0..<ids.length() {
+              push_unique_str(affected, seen, ids[ci])
+            }
+          }
+        }
+        match patch_chats_for_thread_bool_in_burst(b, self.station, tid, "muted", false) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(ids) => {
+            for ci in 0..<ids.length() {
+              push_unique_str(affected, seen, ids[ci])
+            }
+          }
+        }
+        push_unique_str(affected, seen, "thread:" + tk)
+      }
+    }
+    match base_codec::json_get(payload, "reads") {
+      Some(base_codec::Json::Obj(fs)) => {
+        for i in 0..<fs.length() {
+          let (th_s, val_j) = fs[i]
+          match val_j {
+            base_codec::Json::Num(n, _) => {
+              let rn = n.to_int()
+              match upsert_shared_mark_in_burst(b, self.station, "read", th_s, Some(rn.to_string())) {
+                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+                sql::SqlResult::Ok(_) => ()
+              }
+              match base_codec::parse_int64_str(th_s) {
+                Some(th_i64) => {
+                  match set_read_in_burst(b, self.station, th_i64.to_int(), rn) {
+                    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+                    sql::SqlResult::Ok(_) => ()
+                  }
+                  push_unique_str(affected, seen, "thread:" + th_i64.to_string())
+                }
+                None => ()
+              }
+            }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    match base_codec::json_get(payload, "pins") {
+      Some(base_codec::Json::Obj(fs)) => {
+        for i in 0..<fs.length() {
+          let (sess, val_j) = fs[i]
+          let at_opt : Option[Int64] = match val_j {
+            base_codec::Json::Num(n, repr) =>
+            if repr.length() > 0 && !repr.contains(".") {
+              match base_codec::parse_int64_str(repr) {
+                Some(v) => Some(v)
+                None => Some(n.to_int64())
+              }
+            } else {
+              Some(n.to_int64())
+            }
+            _ => None
+          }
+          match at_opt {
+            Some(at_v) => {
+              match upsert_shared_mark_in_burst(b, self.station, "pin", sess, Some(at_v.to_string())) {
+                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+                sql::SqlResult::Ok(_) => ()
+              }
+              push_unique_str(affected, seen, sess)
+            }
+            None => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    let new_hidden : Map[Int, Bool] = Map::new()
+    let new_muted : Map[Int, Bool] = Map::new()
+    let bool_lists : Array[(String, String)] = [
+      ("kept", "kept"),
+      ("hidden", "hidden"),
+      ("muted", "muted"),
+    ]
+    for bi in 0..<bool_lists.length() {
+      let (field, kind) = bool_lists[bi]
+      match base_codec::json_get(payload, field) {
+        Some(base_codec::Json::Arr(xs)) => {
+          for i in 0..<xs.length() {
+            match xs[i] {
+              base_codec::Json::Num(n, _) => {
+                let th = n.to_int()
+                match upsert_shared_mark_in_burst(b, self.station, kind, th.to_string(), Some("1")) {
+                  sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+                  sql::SqlResult::Ok(_) => ()
+                }
+                if kind == "hidden" {
+                  new_hidden.set(th, true)
+                } else if kind == "muted" {
+                  new_muted.set(th, true)
+                }
+                if kind == "hidden" || kind == "muted" {
+                  match patch_chats_for_thread_bool_in_burst(b, self.station, th, kind, true) {
+                    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+                    sql::SqlResult::Ok(ids) => {
+                      for ci in 0..<ids.length() {
+                        push_unique_str(affected, seen, ids[ci])
+                      }
+                    }
+                  }
+                }
+                push_unique_str(affected, seen, "thread:" + th.to_string())
+              }
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+    if is_whole {
+      for i in 0..<old_hidden.length() {
+        let th = old_hidden[i]
+        if new_hidden.get(th).is_none() {
+          match patch_chats_for_thread_bool_in_burst(b, self.station, th, "hidden", false) {
+            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(ids) => {
+              for ci in 0..<ids.length() {
+                push_unique_str(affected, seen, ids[ci])
+              }
+            }
+          }
+          push_unique_str(affected, seen, "thread:" + th.to_string())
+        }
+      }
+      for i in 0..<old_muted.length() {
+        let th = old_muted[i]
+        if new_muted.get(th).is_none() {
+          match patch_chats_for_thread_bool_in_burst(b, self.station, th, "muted", false) {
+            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(ids) => {
+              for ci in 0..<ids.length() {
+                push_unique_str(affected, seen, ids[ci])
+              }
+            }
+          }
+          push_unique_str(affected, seen, "thread:" + th.to_string())
+        }
+      }
+    }
+    match base_codec::json_get(payload, "dismissed") {
+      Some(base_codec::Json::Arr(xs)) => {
+        for i in 0..<xs.length() {
+          match xs[i] {
+            base_codec::Json::Str(dk) => {
+              if dk.length() > 0 {
+                match upsert_shared_mark_in_burst(b, self.station, "dismissed", dk, Some("1")) {
+                  sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+                  sql::SqlResult::Ok(_) => ()
+                }
+                push_unique_str(affected, seen, "dismissed:" + dk)
+              }
+            }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    sql::SqlResult::Ok(())
+  })
+  match res {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => {
+      let cb = self.on_marks_applied
+      cb(payload, is_whole, affected, scoped_sessions, scoped_threads)
+      if affected.length() > 0 {
+        self.outbox.tell(CoreEvent::ChatsChanged(self.station, affected))
+      }
+      sql::SqlResult::Ok(affected)
+    }
+  }
 }
 
 /// Apply a batch of parsed real Station SSE events in a SINGLE `sql::Burst` transaction,
@@ -2199,6 +2480,7 @@ pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire:
   let missed_flag : Array[Bool] = [false]
   let marks_dirty : Array[(String, base_codec::Json)] = []
   let newly_dirty : Array[Int] = []
+  let lock_payloads : Array[base_codec::Json] = []
   let mut pending_last_event_id : Option[String] = None
   let burst = sql::Burst::new(self.db)
   let res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Int] {
@@ -2228,7 +2510,7 @@ pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire:
         }
         None => ()
       }
-      match self.apply_one_sse_event(b, ev.name, payload, changed_chats, pending_events, missed_flag, marks_dirty, newly_dirty) {
+      match self.apply_one_sse_event(b, ev.name, payload, changed_chats, pending_events, missed_flag, marks_dirty, newly_dirty, lock_payloads) {
         sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
         sql::SqlResult::Ok(n) => { applied += n }
       }
@@ -2247,6 +2529,10 @@ pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire:
       }
       for i in 0..<pending_events.length() {
         self.outbox.tell(pending_events[i])
+      }
+      for i in 0..<lock_payloads.length() {
+        let cb = self.on_lock_payload
+        cb(lock_payloads[i])
       }
       for i in 0..<marks_dirty.length() {
         self.marks_dirty_count += 1

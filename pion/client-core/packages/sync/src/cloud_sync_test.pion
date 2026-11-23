@@ -2,11 +2,14 @@
 // and `effect::Runtime` virtual clock (zero real sockets, zero real sleeps).
 
 import "base_codec"
+import "crypto"
 import "effect"
+import "mesh"
 import "outbox"
 import "shell"
 import "sql"
 import "store"
+import "wire"
 
 struct MockCloudDb {
   account_docs : Map[String, String]
@@ -355,34 +358,214 @@ test "shell_http_transport streams real SSE chunks into StationEvents and closes
   let _ = rt.run_ready()
 }
 
-test "shell_iroh_transport: bind, setRelayEntries, connect, framed HTTP request/reply, SSE stream, and disconnect reconnect" {
+test "P0-6: MeshStationTransport real pion/base/packages/mesh control handshake, claimBy Ed25519 proof, lock_unconfirmed, HTTP/SSE, cancel, and exchange" {
   let rt = effect::Runtime::new()
   let mock_db = MockCloudDb::new()
-  let calls : Array[(Int64, String, base_codec::Json, Option[Bytes])] = []
+  let storage : Map[String, Bytes] = Map::new()
+  let mut captured_alpn = ""
+  let mut captured_hello_line = ""
+  let mut captured_refresh_line = ""
+  let mut captured_http_req = ""
+  let mut saw_stream_reset = false
+  let mut next_stream_id = 30
+  let mut sse_stream_id = 0
+  let mut sse_pending_read : Option[Int64] = None
+  let mut ctrl_stream_id = 0
+  let mut ctrl_write_count = 0
+  let mut ctrl_pending_read : Option[Int64] = None
+  let mut http_stream_id = 0
+  let mut http_read_step = 0
+  let mut local_ep_id = ""
+  let mut admit_lock_unconfirmed = true
+  let peer_id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+  let holder : Array[shell::Shell] = []
   let sh = shell::Shell::stood_in(
     rt,
     fn(id : Int64, op : String, args : base_codec::Json, bytes : Option[Bytes]) -> Unit {
-      calls.push((id, op, args, bytes))
+      let s = holder[0]
+      if op == "storage.get" {
+        let k = j_str(args, "key")
+        s.answer(id, base_codec::json_obj([]), bytes=storage.get(k))
+        return
+      }
+      if op == "storage.set" {
+        let k = j_str(args, "key")
+        match bytes {
+          Some(b) => storage.set(k, b)
+          None => ()
+        }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "iroh.bind" {
+        let seed = match bytes { Some(b) => b; None => Bytes::new(32) }
+        local_ep_id = crypto::sha256_hex(seed)
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(10))]))
+        return
+      }
+      if op == "iroh.connect" {
+        captured_alpn = match bytes { Some(b) => bytes_to_str(b); None => "" }
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(20))]))
+        return
+      }
+      if op == "conn.closed" {
+        return
+      }
+      if op == "conn.close" || op == "iroh.close" {
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "conn.openBi" {
+        let sid = next_stream_id
+        next_stream_id += 1
+        if ctrl_stream_id == 0 {
+          ctrl_stream_id = sid
+        } else if http_stream_id == 0 {
+          http_stream_id = sid
+        } else {
+          sse_stream_id = sid
+        }
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(sid))]))
+        return
+      }
+      if op == "istream.write" {
+        let sid = j_int(args, "id")
+        let payload = match bytes { Some(b) => bytes_to_str(b); None => "" }
+        if sid == ctrl_stream_id {
+          ctrl_write_count += 1
+          if ctrl_write_count == 1 {
+            captured_hello_line = payload
+          } else {
+            captured_refresh_line = payload
+          }
+          s.answer(id, base_codec::json_obj([]))
+          match ctrl_pending_read {
+            Some(rid) => {
+              ctrl_pending_read = None
+              let ans = if ctrl_write_count == 1 {
+                "{\"ok\":true,\"lock_unconfirmed\":" + admit_lock_unconfirmed.to_string() + ",\"station\":{\"id\":\"st-mesh-1\",\"name\":\"Tokyo Studio\"}}\n"
+              } else {
+                "{\"ok\":true,\"lock_unconfirmed\":false,\"station\":{\"id\":\"st-mesh-1\",\"name\":\"Tokyo Studio\"}}\n"
+              }
+              s.answer(rid, base_codec::json_obj([]), bytes=Some(ans.to_bytes()))
+            }
+            None => ()
+          }
+          return
+        }
+        if sid == http_stream_id {
+          captured_http_req = captured_http_req + payload
+        }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "istream.finish" {
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "istream.reset" {
+        saw_stream_reset = true
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "istream.read" {
+        let sid = j_int(args, "id")
+        if sid == ctrl_stream_id {
+          if ctrl_write_count == 1 {
+            let ans = "{\"ok\":true,\"lock_unconfirmed\":" + admit_lock_unconfirmed.to_string() + ",\"station\":{\"id\":\"st-mesh-1\",\"name\":\"Tokyo Studio\"}}\n"
+            s.answer(id, base_codec::json_obj([]), bytes=Some(ans.to_bytes()))
+          } else if ctrl_write_count >= 2 {
+            let ans = "{\"ok\":true,\"lock_unconfirmed\":false,\"station\":{\"id\":\"st-mesh-1\",\"name\":\"Tokyo Studio\"}}\n"
+            s.answer(id, base_codec::json_obj([]), bytes=Some(ans.to_bytes()))
+          } else {
+            ctrl_pending_read = Some(id)
+          }
+          return
+        }
+        if sid == http_stream_id {
+          if http_read_step == 0 {
+            http_read_step = 1
+            s.answer(id, base_codec::json_obj([]), bytes=Some("{\"status\":201,\"headers\":{\"x-mesh\":\"1\"}}\n{\"ok\":true}".to_bytes()))
+          } else {
+            s.answer(id, base_codec::json_obj([]), bytes=None)
+          }
+          return
+        }
+        if sid == sse_stream_id {
+          if sse_pending_read.is_none() {
+            sse_pending_read = Some(0.to_int64())
+            let sse_payload = "{\"status\":200,\"headers\":{\"content-type\":\"text/event-stream\"}}\nid: m-1\nevent: thread\ndata: {\"id\":5,\"entries\":[{\"thread\":5,\"n\":1,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice@still.fail\",\"text\":\"via real mesh\",\"at\":1000}]}\n\n"
+            s.answer(id, base_codec::json_obj([]), bytes=Some(sse_payload.to_bytes()))
+          } else {
+            // Keep SSE open until cancelled
+            sse_pending_read = Some(id)
+          }
+          return
+        }
+        s.answer(id, base_codec::json_obj([]), bytes=None)
+        return
+      }
+      s.answer(id, base_codec::json_obj([]))
     },
     fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if op == "iroh.endpointId" {
+        return shell::AskResult::Ok(base_codec::json_str(local_ep_id))
+      }
+      if op == "iroh.relayStatus" {
+        return shell::AskResult::Ok(base_codec::json_arr([
+          base_codec::json_obj([("url", base_codec::json_str("https://relay.still.fail/")), ("connected", base_codec::json_bool(true))]),
+        ]))
+      }
+      if op == "conn.closeReason" {
+        return shell::AskResult::Ok(base_codec::json_null())
+      }
+      if op == "conn.paths" {
+        return shell::AskResult::Ok(base_codec::json_arr([
+          base_codec::json_obj([("selected", base_codec::json_bool(true)), ("relay", base_codec::json_str("https://relay.still.fail/"))]),
+        ]))
+      }
+      if op == "conn.stats" {
+        return shell::AskResult::Ok(base_codec::json_obj([("rxBytes", base_codec::json_int(0)), ("txBytes", base_codec::json_int(0))]))
+      }
+      if op == "ed25519.sign" {
+        return shell::AskResult::Err(shell::ShellError::{ message: "use pure pion ed25519" })
+      }
       mock_db.handle_sql(op, args)
     },
-    fn(n : Int) -> Bytes { Bytes::new(n) },
+    fn(n : Int) -> Bytes {
+      let out = Bytes::new(n)
+      for i in 0..<n {
+        out[i] = ((0x21 + i * 7) & 0xFF) as Byte
+      }
+      out
+    },
   )
-  let db = match sql::Sql::open(sh, "iroh-test") {
+  holder.push(sh)
+
+  let db = match sql::Sql::open(sh, "real-mesh-test") {
     sql::SqlResult::Ok(d) => d
     sql::SqlResult::Err(e) => panic(e.to_string())
   }
-  let transport = shell_iroh_transport(
-    sh,
-    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    "https://relay.still.fail",
-    "/stillfail/http/1".to_bytes(),
-    relay_entries=[("https://entry.still.fail", "https://relay.still.fail")],
-    auth_header=Some("Bearer iroh-tok"),
+  let mut admissions_seen = 0
+  let mut last_unconfirmed = false
+  let cfg = MeshStationConfig::new(
+    "ws-mesh-prod",
+    peer_id,
+    ["https://relay.still.fail/"],
+    fn(_dev : String, _fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
+      ck(effect::Exit::Succeeded("cloud-signed-cred-v1"))
+    },
+    device_kind="app",
+    device_label="MacBook Pro",
+    on_admission=Some(fn(adm : MeshAdmission) -> Unit {
+      admissions_seen += 1
+      last_unconfirmed = adm.lock_unconfirmed
+    }),
   )
+  let (ctrl, transport) = shell_mesh_transport(sh, cfg)
 
-  // 1. Framed HTTP POST request over iroh bidirectional stream (split reply head + body)
+  // 1. Send HTTP POST over real `mesh::Link` + `StationTransport::from_link`
   let mut got_status = 0
   let mut got_body = ""
   let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
@@ -390,7 +573,7 @@ test "shell_iroh_transport: bind, setRelayEntries, connect, framed HTTP request/
       "POST",
       "/threads/42/messages",
       [("content-type", "application/json")],
-      "{\"text\":\"hi mesh\"}".to_bytes(),
+      "{\"text\":\"hi real mesh\"}".to_bytes(),
       fn(ex : effect::Exit[HttpReply]) -> Unit {
         match ex {
           effect::Exit::Succeeded(rep) => {
@@ -405,120 +588,75 @@ test "shell_iroh_transport: bind, setRelayEntries, connect, framed HTTP request/
   })
   let _ = rt.run_ready()
 
-  // iroh.bind -> id 10
-  debug_assert(calls.length() == 1 && calls[0].1 == "iroh.bind", "iroh.bind issued")
-  sh.answer(calls[0].0, base_codec::json_obj([("id", base_codec::json_int(10))]))
-  let _ = rt.run_ready()
-
-  // iroh.setRelayEntries
-  debug_assert(calls.length() == 2 && calls[1].1 == "iroh.setRelayEntries", "iroh.setRelayEntries issued")
-  sh.answer(calls[1].0, base_codec::json_obj([]))
-  let _ = rt.run_ready()
-
-  // iroh.connect -> conn 20
-  debug_assert(calls.length() == 3 && calls[2].1 == "iroh.connect", "iroh.connect issued")
-  sh.answer(calls[2].0, base_codec::json_obj([("id", base_codec::json_int(20))]))
-  let _ = rt.run_ready()
-
-  // conn.openBi -> stream 30
-  debug_assert(calls.length() == 4 && calls[3].1 == "conn.openBi", "conn.openBi issued")
-  sh.answer(calls[3].0, base_codec::json_obj([("id", base_codec::json_int(30))]))
-  let _ = rt.run_ready()
-
-  // istream.write contains wire::head_line + JSON body + auth header
-  debug_assert(calls.length() == 5 && calls[4].1 == "istream.write", "istream.write issued")
-  match calls[4].3 {
-    Some(wb) => {
-      let ws = bytes_to_str(wb)
-      debug_assert(ws.contains("\"method\":\"POST\"") && ws.contains("/threads/42/messages") && ws.contains("Bearer iroh-tok") && ws.contains("hi mesh"), "wire::head_line + body written")
-    }
-    None => debug_assert(false, "expected write bytes")
+  // Verify ALPN == "stillfail/admin/1"
+  debug_assert(captured_alpn == "stillfail/admin/1", "ALPN must be stillfail/admin/1")
+  // Verify control-stream hello carries protocol==2, Cloud credential, and valid Ed25519 claimBy proof!
+  let hello_json = match base_codec::json_parse(captured_hello_line) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => panic("bad hello line: " + e)
   }
-  sh.answer(calls[4].0, base_codec::json_obj([]))
-  let _ = rt.run_ready()
+  debug_assert(j_str(hello_json, "credential") == "cloud-signed-cred-v1", "hello carries Cloud member credential")
+  debug_assert(j_int(hello_json, "protocol") == 2, "hello carries protocol: 2")
+  let lock_obj = match base_codec::json_get(hello_json, "lock") {
+    Some(v) => v
+    None => panic("hello missing lock claim")
+  }
+  let claim_dev = j_str(lock_obj, "device")
+  let claim_proof = j_str(lock_obj, "proof")
+  debug_assert(j_str(lock_obj, "kind") == "app" && j_str(lock_obj, "label") == "MacBook Pro", "lock claim metadata")
+  let ep_id = match ctrl.device_id() { Some(id) => id; None => panic("missing device_id") }
+  let proof_ok = (native_lock_crypto().endpoint_proof)("ws-mesh-prod", claim_dev, ep_id, claim_proof)
+  debug_assert(proof_ok, "claimBy Ed25519 signature MUST verify via native_lock_crypto().endpoint_proof")
+  // Verify lock_unconfirmed: true surfaced from admitted_k
+  debug_assert(admissions_seen == 1 && last_unconfirmed && ctrl.is_lock_unconfirmed(), "lock_unconfirmed surfaced from admitted_k")
+  match ctrl.admission() {
+    Some(adm) =>
+    match adm.station_id {
+      Some(sid) => debug_assert(sid == "st-mesh-1", "station metadata parsed from admitted_k")
+      None => debug_assert(false, "expected station_id")
+    }
+    None => debug_assert(false, "expected admission")
+  }
+  debug_assert(got_status == 201 && got_body == "{\"ok\":true}", "HTTP POST succeeded over real mesh::Link")
 
-  // istream.finish
-  debug_assert(calls.length() == 6 && calls[5].1 == "istream.finish", "istream.finish issued")
-  sh.answer(calls[5].0, base_codec::json_obj([]))
+  // 2. Credential renewal via Link::exchange_k
+  let mut renewed_unconfirmed = true
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.refresh_credential_k("cloud-signed-cred-v2", fn(ex : effect::Exit[MeshAdmission]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(adm) => { renewed_unconfirmed = adm.lock_unconfirmed }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
   let _ = rt.run_ready()
+  debug_assert(captured_refresh_line.contains("cloud-signed-cred-v2") && !renewed_unconfirmed && !ctrl.is_lock_unconfirmed(), "Link::exchange_k renewed credential and updated admission")
 
-  // istream.read #1 (first half of reply head) + #2 (second half + body prefix) + #3 (body rest) + #4 (EOF)
-  debug_assert(calls.length() == 7 && calls[6].1 == "istream.read", "istream.read #1")
-  sh.answer(calls[6].0, base_codec::json_obj([]), bytes=Some("{\"status\":201,\"headers\":{\"x-mesh\":\"1\"".to_bytes()))
-  let _ = rt.run_ready()
-
-  debug_assert(calls.length() == 8 && calls[7].1 == "istream.read", "istream.read #2")
-  sh.answer(calls[7].0, base_codec::json_obj([]), bytes=Some("}}\n{\"ok\":".to_bytes()))
-  let _ = rt.run_ready()
-
-  debug_assert(calls.length() == 9 && calls[8].1 == "istream.read", "istream.read #3")
-  sh.answer(calls[8].0, base_codec::json_obj([]), bytes=Some("true}".to_bytes()))
-  let _ = rt.run_ready()
-
-  debug_assert(calls.length() == 10 && calls[9].1 == "istream.read", "istream.read #4")
-  sh.answer(calls[9].0, base_codec::json_obj([("end", base_codec::json_bool(true))]))
-  let _ = rt.run_ready()
-  debug_assert(got_status == 201 && got_body == "{\"ok\":true}", "framed HTTP reply parsed across split chunks")
-
-  // 2. SSE streaming over cached iroh connection (reuses conn 20 without re-binding/re-connecting), then disconnect & reconnect
+  // 3. SSE stream consumption over real mesh::Link + clean cancellation (`reply.cancel()` -> `istream.reset`)
   let fb : outbox::FrameOutbox[CoreEvent] = outbox::FrameOutbox::new(fn() -> Unit {})
-  let evs = StationEvents::new("ws-mesh", "st-mesh", db, fb, transport)
+  let evs = StationEvents::new("ws-mesh-prod", "st-mesh-1", db, fb, transport)
   evs.start(rt)
   let _ = rt.run_ready()
-
-  // Reused conn 20 -> directly conn.openBi -> stream 31
-  let c_open = calls[calls.length() - 1]
-  debug_assert(c_open.1 == "conn.openBi", "SSE reuses cached iroh conn")
-  sh.answer(c_open.0, base_codec::json_obj([("id", base_codec::json_int(31))]))
-  let _ = rt.run_ready()
-
-  let c_wr = calls[calls.length() - 1]
-  debug_assert(c_wr.1 == "istream.write", "SSE writes GET /events head")
-  sh.answer(c_wr.0, base_codec::json_obj([]))
-  let _ = rt.run_ready()
-
-  let c_fin = calls[calls.length() - 1]
-  debug_assert(c_fin.1 == "istream.finish", "SSE finishes write half")
-  sh.answer(c_fin.0, base_codec::json_obj([]))
-  let _ = rt.run_ready()
-
-  // Deliver reply head + SSE entry in one chunk
-  let c_rd1 = calls[calls.length() - 1]
-  debug_assert(c_rd1.1 == "istream.read", "SSE read head")
-  let sse_payload = "{\"status\":200,\"headers\":{\"content-type\":\"text/event-stream\"}}\nid: m-1\nevent: thread\ndata: {\"id\":5,\"entries\":[{\"thread\":5,\"n\":1,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice@still.fail\",\"text\":\"via iroh mesh\",\"at\":1000}]}\n\n"
-  sh.answer(c_rd1.0, base_codec::json_obj([]), bytes=Some(sse_payload.to_bytes()))
-  let _ = rt.run_ready()
-  debug_assert(mock_db.entries.get("st-mesh:5:1").is_some(), "SSE entry over iroh ingested into SQLite")
-
-  // Simulate abrupt stream disconnect -> drops conn 20 (conn.close) and schedules backoff reconnect
-  let c_rd2 = calls[calls.length() - 1]
-  debug_assert(c_rd2.1 == "istream.read", "SSE read next")
-  sh.refuse(c_rd2.0, "connection reset by peer")
-  let _ = rt.run_ready()
-
-  let mut saw_conn_close = false
-  for i in 0..<calls.length() {
-    if calls[i].1 == "conn.close" {
-      saw_conn_close = true
-    }
-  }
-  debug_assert(saw_conn_close, "conn.close sent on stream drop")
-
-  // Advance virtual clock 2000ms (link.ts RECONNECT_MS) -> StationEvents reconnects via fresh iroh.connect (reusing local endpoint 10, no second iroh.bind!)
-  let count_before_reconn = calls.length()
-  rt.advance(2000)
-  debug_assert(calls.length() > count_before_reconn, "reconnect triggered after backoff")
-  let c_reconn = calls[calls.length() - 1]
-  debug_assert(c_reconn.1 == "iroh.connect", "fresh iroh.connect on reconnect without re-binding")
-  let mut bind_count = 0
-  for i in 0..<calls.length() {
-    if calls[i].1 == "iroh.bind" {
-      bind_count += 1
-    }
-  }
-  debug_assert(bind_count == 1, "local iroh endpoint bound only once")
+  debug_assert(mock_db.entries.get("st-mesh-1:5:1").is_some(), "SSE entry ingested over real mesh::Link")
   evs.stop()
   let _ = rt.run_ready()
+  debug_assert(saw_stream_reset, "stopping SSE cancels mesh::Reply via istream.reset")
+
+  // 4. Clean teardown via close_k
+  let mut closed_ok = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.close_k(fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => { closed_ok = true }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(closed_ok && ctrl.link().is_none(), "close_k cleaned up mesh link and endpoint")
+  let _ = admit_lock_unconfirmed
 }
 
 test "P0-7: CloudSync fetch_workspace_k never overwrites station overview and parses full CloudStation metadata" {
@@ -605,4 +743,245 @@ test "P0-7: CloudSync fetch_workspace_k never overwrites station overview and pa
     }
     None => debug_assert(false, "expected CloudWorkspace result")
   }
+}
+
+test "P0-6: MeshStationTransport preserves full lock_unconfirmed refusal payload (lock, entries, left, person)" {
+  let rt = effect::Runtime::new()
+  let storage : Map[String, Bytes] = Map::new()
+  let mut local_ep_id = ""
+  let mut ctrl_stream_id = 0
+  let mut ctrl_wrote = false
+  let mut ctrl_pending_read : Option[Int64] = None
+  let refusal_line = "{\"ok\":false,\"code\":\"lock_unconfirmed\",\"error\":\"device not yet confirmed\",\"lock\":{\"head\":{\"seq\":3,\"genesis\":\"g-1\"}},\"entries\":[{\"seq\":0}],\"left\":2,\"person\":\"alice@still.fail\"}\n"
+  let peer_id = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+  let holder : Array[shell::Shell] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, bytes : Option[Bytes]) -> Unit {
+      let s = holder[0]
+      if op == "storage.get" {
+        s.answer(id, base_codec::json_obj([]), bytes=storage.get(j_str(args, "key")))
+        return
+      }
+      if op == "storage.set" {
+        match bytes { Some(b) => storage.set(j_str(args, "key"), b); None => () }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "iroh.bind" {
+        let seed = match bytes { Some(b) => b; None => Bytes::new(32) }
+        local_ep_id = crypto::sha256_hex(seed)
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(11))]))
+        return
+      }
+      if op == "iroh.connect" {
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(21))]))
+        return
+      }
+      if op == "conn.closed" {
+        return
+      }
+      if op == "conn.openBi" {
+        ctrl_stream_id = 31
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(31))]))
+        return
+      }
+      if op == "istream.write" {
+        if j_int(args, "id") == ctrl_stream_id {
+          ctrl_wrote = true
+          s.answer(id, base_codec::json_obj([]))
+          match ctrl_pending_read {
+            Some(rid) => {
+              ctrl_pending_read = None
+              s.answer(rid, base_codec::json_obj([]), bytes=Some(refusal_line.to_bytes()))
+            }
+            None => ()
+          }
+          return
+        }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "istream.read" {
+        if j_int(args, "id") == ctrl_stream_id {
+          if ctrl_wrote {
+            s.answer(id, base_codec::json_obj([]), bytes=Some(refusal_line.to_bytes()))
+          } else {
+            ctrl_pending_read = Some(id)
+          }
+          return
+        }
+        s.answer(id, base_codec::json_obj([]), bytes=None)
+        return
+      }
+      s.answer(id, base_codec::json_obj([]))
+    },
+    fn(op : String, _args : base_codec::Json) -> shell::AskResult {
+      if op == "iroh.endpointId" { return shell::AskResult::Ok(base_codec::json_str(local_ep_id)) }
+      if op == "iroh.relayStatus" { return shell::AskResult::Ok(base_codec::json_arr([])) }
+      if op == "conn.closeReason" { return shell::AskResult::Ok(base_codec::json_null()) }
+      if op == "conn.paths" { return shell::AskResult::Ok(base_codec::json_arr([])) }
+      if op == "conn.stats" { return shell::AskResult::Ok(base_codec::json_obj([])) }
+      if op == "ed25519.sign" { return shell::AskResult::Err(shell::ShellError::{ message: "pure pion" }) }
+      shell::AskResult::Ok(base_codec::json_null())
+    },
+    fn(n : Int) -> Bytes {
+      let out = Bytes::new(n)
+      for i in 0..<n { out[i] = ((0x33 + i * 5) & 0xFF) as Byte }
+      out
+    },
+  )
+  holder.push(sh)
+  let cfg = MeshStationConfig::new(
+    "ws-refusal",
+    peer_id,
+    ["https://relay.still.fail/"],
+    fn(_dev : String, _fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
+      ck(effect::Exit::Succeeded("cred-refusal"))
+    },
+  )
+  let (ctrl, _) = shell_mesh_transport(sh, cfg)
+  let mut failed = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.connect_k(fn(ex : effect::Exit[mesh::Link]) -> Unit {
+      match ex {
+        effect::Exit::Failed(_) => { failed = true }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(failed, "lock_unconfirmed refusal fails connect_k")
+  debug_assert(ctrl.is_lock_unconfirmed(), "ctrl.is_lock_unconfirmed() == true")
+  match ctrl.admission() {
+    Some(adm) => {
+      debug_assert(base_codec::json_get(adm.raw, "lock").is_some(), "raw.lock preserved")
+      debug_assert(base_codec::json_get(adm.raw, "entries").is_some(), "raw.entries preserved")
+      debug_assert(j_int(adm.raw, "left") == 2, "raw.left preserved")
+      debug_assert(j_str(adm.raw, "person") == "alice@still.fail", "raw.person preserved")
+    }
+    None => debug_assert(false, "expected admission payload")
+  }
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+}
+
+test "P0-6: MeshStationTransport close_k during pending connect_k closes link on handshake completion and leaves link() None" {
+  let rt = effect::Runtime::new()
+  let storage : Map[String, Bytes] = Map::new()
+  let mut local_ep_id = ""
+  let mut ctrl_stream_id = 0
+  let mut ctrl_pending_read : Option[Int64] = None
+  let mut conn_close_count = 0
+  let peer_id = "111122223333444455556666777788889999aaaabbbbccccddddeeeeffff0000"
+  let holder : Array[shell::Shell] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, bytes : Option[Bytes]) -> Unit {
+      let s = holder[0]
+      if op == "storage.get" {
+        s.answer(id, base_codec::json_obj([]), bytes=storage.get(j_str(args, "key")))
+        return
+      }
+      if op == "storage.set" {
+        match bytes { Some(b) => storage.set(j_str(args, "key"), b); None => () }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "iroh.bind" {
+        let seed = match bytes { Some(b) => b; None => Bytes::new(32) }
+        local_ep_id = crypto::sha256_hex(seed)
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(12))]))
+        return
+      }
+      if op == "iroh.connect" {
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(22))]))
+        return
+      }
+      if op == "conn.closed" {
+        return
+      }
+      if op == "conn.close" {
+        conn_close_count += 1
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "conn.openBi" {
+        ctrl_stream_id = 32
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(32))]))
+        return
+      }
+      if op == "istream.read" {
+        if j_int(args, "id") == ctrl_stream_id {
+          // Hold admission read pending so close_k can race with connect_k!
+          ctrl_pending_read = Some(id)
+          return
+        }
+        s.answer(id, base_codec::json_obj([]), bytes=None)
+        return
+      }
+      s.answer(id, base_codec::json_obj([]))
+    },
+    fn(op : String, _args : base_codec::Json) -> shell::AskResult {
+      if op == "iroh.endpointId" { return shell::AskResult::Ok(base_codec::json_str(local_ep_id)) }
+      if op == "iroh.relayStatus" { return shell::AskResult::Ok(base_codec::json_arr([])) }
+      if op == "conn.closeReason" { return shell::AskResult::Ok(base_codec::json_null()) }
+      if op == "conn.paths" { return shell::AskResult::Ok(base_codec::json_arr([])) }
+      if op == "conn.stats" { return shell::AskResult::Ok(base_codec::json_obj([])) }
+      if op == "ed25519.sign" { return shell::AskResult::Err(shell::ShellError::{ message: "pure pion" }) }
+      shell::AskResult::Ok(base_codec::json_null())
+    },
+    fn(n : Int) -> Bytes {
+      let out = Bytes::new(n)
+      for i in 0..<n { out[i] = ((0x44 + i * 3) & 0xFF) as Byte }
+      out
+    },
+  )
+  holder.push(sh)
+  let cfg = MeshStationConfig::new(
+    "ws-close-race",
+    peer_id,
+    ["https://relay.still.fail/"],
+    fn(_dev : String, _fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
+      ck(effect::Exit::Succeeded("cred-race"))
+    },
+  )
+  let (ctrl, _) = shell_mesh_transport(sh, cfg)
+  let mut connect_outcome = ""
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.connect_k(fn(ex : effect::Exit[mesh::Link]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => { connect_outcome = effect_error_text(e) }
+        effect::Exit::Interrupted => { connect_outcome = "interrupted" }
+        effect::Exit::Succeeded(_) => { connect_outcome = "succeeded" }
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(ctrl_pending_read.is_some(), "control stream admission read is pending")
+
+  // Close transport while connect_k is awaiting admitted_k!
+  let mut closed_done = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit {
+      closed_done = true
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(closed_done, "close_k completed")
+
+  // Now resolve the pending control stream admission read -> must auto-close link and NOT retain it!
+  match ctrl_pending_read {
+    Some(rid) => sh.answer(rid, base_codec::json_obj([]), bytes=Some("{\"ok\":true,\"station\":{\"id\":\"st-race\"}}\n".to_bytes()))
+    None => ()
+  }
+  let _ = rt.run_ready()
+  debug_assert(conn_close_count >= 1, "link closed on handshake completion after close_k")
+  debug_assert(ctrl.link().is_none(), "ctrl.link() must remain None after close_k race")
+  debug_assert(connect_outcome != "succeeded" && connect_outcome.length() > 0, "connect_k did not succeed after close_k")
 }
