@@ -2,8 +2,10 @@
 // Consumes station `/events` as a true streaming SSE response with zero polling and cleans up
 // the stream handle on EOF, error, or fiber interruption.
 
+import "base_codec"
 import "effect"
 import "shell"
+import "wire"
 
 fn strip_trailing_slash(s : String) -> String {
   if s.length() > 0 && s.ends_with("/") {
@@ -171,6 +173,436 @@ pub fn shell_http_transport(
         },
         called=fn(id : Int64) -> Unit { open_call_id = id },
       )
+    },
+  }
+}
+
+// ── iroh Mesh `StationTransport` (`iroh.bind` + `iroh.setRelayEntries` + `iroh.connect` + `conn.openBi` + `istream.*`) ──
+
+struct IrohMeshState {
+  sh : shell::Shell
+  peer_id_hex : String
+  relay_url : String
+  relay_entries : Array[(String, String)]
+  ips : Array[String]
+  alpn : Bytes
+  secret_key : Bytes
+  auth_header : Option[String]
+  mut local_endpoint_id : Option[Int64]
+  mut conn_id : Option[Int64]
+}
+
+fn iroh_concat_bytes(a : Bytes, b : Bytes) -> Bytes {
+  if a.length() == 0 {
+    return b
+  }
+  if b.length() == 0 {
+    return a
+  }
+  a.concat(b)
+}
+
+fn iroh_join_chunks(chunks : Array[Bytes]) -> Bytes {
+  let mut total = 0
+  for i in 0..<chunks.length() {
+    total += chunks[i].length()
+  }
+  let out = Bytes::new(total)
+  let mut off = 0
+  for i in 0..<chunks.length() {
+    let c = chunks[i]
+    for j in 0..<c.length() {
+      out[off + j] = c[j]
+    }
+    off += c.length()
+  }
+  out
+}
+
+fn iroh_drop_conn(state : IrohMeshState, cid : Int64) -> Unit {
+  match state.conn_id {
+    Some(cur) => {
+      if cur == cid {
+        state.conn_id = None
+        state.sh.conn_close(cid)
+      }
+    }
+    None => ()
+  }
+}
+
+fn iroh_ensure_endpoint_k(
+  state : IrohMeshState,
+  k : (effect::Exit[Int64]) -> Unit,
+) -> Unit {
+  match state.local_endpoint_id {
+    Some(eid) => {
+      k(effect::Exit::Succeeded(eid))
+      return
+    }
+    None => ()
+  }
+  let sk = if state.secret_key.length() == 32 {
+    state.secret_key
+  } else {
+    state.sh.random(32)
+  }
+  let relays : Array[String] = if state.relay_url.length() > 0 { [state.relay_url] } else { [] }
+  let alpns_hex : Array[String] = [base_codec::hex_encode(state.alpn)]
+  state.sh.iroh_bind_k(
+    sk,
+    relays,
+    alpns_hex,
+    fn(ex : effect::Exit[Int64]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(eid) => {
+          state.local_endpoint_id = Some(eid)
+          if state.relay_entries.length() > 0 {
+            state.sh.iroh_set_relay_entries_k(
+              eid,
+              state.relay_entries,
+              fn(rex : effect::Exit[Unit]) -> Unit {
+                match rex {
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(eid))
+                }
+              },
+            )
+          } else {
+            k(effect::Exit::Succeeded(eid))
+          }
+        }
+      }
+    },
+    relay_entries=state.relay_entries,
+  )
+}
+
+fn iroh_ensure_conn_k(
+  state : IrohMeshState,
+  k : (effect::Exit[Int64]) -> Unit,
+) -> Unit {
+  match state.conn_id {
+    Some(cid) => {
+      k(effect::Exit::Succeeded(cid))
+      return
+    }
+    None => ()
+  }
+  iroh_ensure_endpoint_k(state, fn(ex : effect::Exit[Int64]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(eid) => {
+        let relays : Array[String] = if state.relay_url.length() > 0 { [state.relay_url] } else { [] }
+        state.sh.iroh_connect_k(
+          eid,
+          state.peer_id_hex,
+          relays,
+          state.ips,
+          state.alpn,
+          fn(cex : effect::Exit[Int64]) -> Unit {
+            match cex {
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(cid) => {
+                state.conn_id = Some(cid)
+                k(effect::Exit::Succeeded(cid))
+              }
+            }
+          },
+        )
+      }
+    }
+  })
+}
+
+fn iroh_open_stream_k(
+  state : IrohMeshState,
+  retry_on_stale : Bool,
+  k : (effect::Exit[(Int64, Int64)]) -> Unit,
+) -> Unit {
+  let had_cached = state.conn_id.is_some()
+  iroh_ensure_conn_k(state, fn(cex : effect::Exit[Int64]) -> Unit {
+    match cex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(cid) => {
+        state.sh.conn_open_bi_k(cid, fn(sex : effect::Exit[Int64]) -> Unit {
+          match sex {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => {
+              iroh_drop_conn(state, cid)
+              if had_cached && retry_on_stale {
+                iroh_open_stream_k(state, false, k)
+              } else {
+                k(effect::Exit::Failed(e))
+              }
+            }
+            effect::Exit::Succeeded(sid) => k(effect::Exit::Succeeded((cid, sid)))
+          }
+        })
+      }
+    }
+  })
+}
+
+fn iroh_read_head_k(
+  state : IrohMeshState,
+  cid : Int64,
+  sid : Int64,
+  carry : wire::Carry,
+  k : (effect::Exit[(Int, Array[(String, String)])]) -> Unit,
+) -> Unit {
+  match carry.line() {
+    Some(line) =>
+    match wire::reply_head(line) {
+      wire::Head::Head(status, headers) => k(effect::Exit::Succeeded((status, headers)))
+      wire::Head::Unreadable(msg) => k(effect::Exit::Failed(effect::EffectError::Custom("iroh unreadable reply head: " + msg)))
+      wire::Head::NoStatus => k(effect::Exit::Failed(effect::EffectError::Custom("iroh reply head missing status")))
+    }
+    None => {
+      if effect::is_interrupted() {
+        k(effect::Exit::Interrupted)
+        return
+      }
+      state.sh.istream_read_k(sid, fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => {
+            iroh_drop_conn(state, cid)
+            k(effect::Exit::Failed(e))
+          }
+          effect::Exit::Succeeded(None) => {
+            iroh_drop_conn(state, cid)
+            k(effect::Exit::Failed(effect::EffectError::Custom("iroh stream closed before reply head")))
+          }
+          effect::Exit::Succeeded(Some(chunk)) => {
+            if chunk.length() > 0 {
+              carry.push(chunk)
+            }
+            iroh_read_head_k(state, cid, sid, carry, k)
+          }
+        }
+      })
+    }
+  }
+}
+
+fn iroh_read_body_all_k(
+  state : IrohMeshState,
+  cid : Int64,
+  sid : Int64,
+  chunks : Array[Bytes],
+  k : (effect::Exit[Bytes]) -> Unit,
+) -> Unit {
+  if effect::is_interrupted() {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  state.sh.istream_read_k(sid, fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => {
+        iroh_drop_conn(state, cid)
+        k(effect::Exit::Failed(e))
+      }
+      effect::Exit::Succeeded(None) => k(effect::Exit::Succeeded(iroh_join_chunks(chunks)))
+      effect::Exit::Succeeded(Some(chunk)) => {
+        if chunk.length() > 0 {
+          chunks.push(chunk)
+        }
+        iroh_read_body_all_k(state, cid, sid, chunks, k)
+      }
+    }
+  })
+}
+
+fn iroh_pump_stream_k(
+  state : IrohMeshState,
+  cid : Int64,
+  sid : Int64,
+  on_chunk : (Bytes) -> Unit,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if effect::is_interrupted() {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  state.sh.istream_read_k(sid, fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => {
+        iroh_drop_conn(state, cid)
+        k(effect::Exit::Failed(e))
+      }
+      effect::Exit::Succeeded(None) => {
+        iroh_drop_conn(state, cid)
+        k(effect::Exit::Succeeded(()))
+      }
+      effect::Exit::Succeeded(Some(chunk)) => {
+        if chunk.length() > 0 {
+          on_chunk(chunk)
+        }
+        iroh_pump_stream_k(state, cid, sid, on_chunk, k)
+      }
+    }
+  })
+}
+
+/// Build an HTTP/SSE `StationTransport` over real Rust Shell iroh bidirectional QUIC streams
+/// (`iroh.bind`, `iroh.setRelayEntries`, `iroh.connect`, `conn.openBi`, `istream.write`/`read`/`finish`)
+/// using `wire::head_line` and `wire::reply_head` framing.
+pub fn shell_iroh_transport(
+  sh : shell::Shell,
+  endpoint_id : String,
+  relay_url : String,
+  alpn : Bytes,
+  secret_key : Bytes = Bytes::new(0),
+  relay_entries : Array[(String, String)] = [],
+  ips : Array[String] = [],
+  auth_header : Option[String] = None,
+) -> StationTransport {
+  let state = IrohMeshState::{
+    sh: sh,
+    peer_id_hex: endpoint_id,
+    relay_url: relay_url,
+    relay_entries: relay_entries,
+    ips: ips,
+    alpn: alpn,
+    secret_key: secret_key,
+    auth_header: auth_header,
+    local_endpoint_id: None,
+    conn_id: None,
+  }
+  StationTransport::{
+    request_k: fn(
+      method_name : String,
+      path : String,
+      headers : Array[(String, String)],
+      body : Bytes,
+      k : (effect::Exit[HttpReply]) -> Unit,
+    ) -> Unit {
+      iroh_open_stream_k(state, true, fn(oex : effect::Exit[(Int64, Int64)]) -> Unit {
+        match oex {
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Succeeded((cid, sid)) => {
+            let req_headers = with_auth_headers(headers, state.auth_header)
+            let head_bytes = wire::head_line(method_name, path, req_headers).to_bytes()
+            let wire_payload = iroh_concat_bytes(head_bytes, body)
+            state.sh.istream_write_k(sid, wire_payload, fn(wex : effect::Exit[Unit]) -> Unit {
+              match wex {
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => {
+                  iroh_drop_conn(state, cid)
+                  k(effect::Exit::Failed(e))
+                }
+                effect::Exit::Succeeded(_) => {
+                  state.sh.istream_finish_k(sid, fn(fex : effect::Exit[Unit]) -> Unit {
+                    match fex {
+                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                      effect::Exit::Failed(e) => {
+                        iroh_drop_conn(state, cid)
+                        k(effect::Exit::Failed(e))
+                      }
+                      effect::Exit::Succeeded(_) => {
+                        let carry = wire::Carry::new()
+                        iroh_read_head_k(state, cid, sid, carry, fn(hex : effect::Exit[(Int, Array[(String, String)])]) -> Unit {
+                          match hex {
+                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                            effect::Exit::Succeeded((status, resp_headers)) => {
+                              let chunks : Array[Bytes] = []
+                              let rem = carry.take()
+                              if rem.length() > 0 {
+                                chunks.push(rem)
+                              }
+                              iroh_read_body_all_k(state, cid, sid, chunks, fn(bex : effect::Exit[Bytes]) -> Unit {
+                                match bex {
+                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                  effect::Exit::Succeeded(resp_body) =>
+                                  k(effect::Exit::Succeeded(HttpReply::{
+                                    status: status,
+                                    headers: resp_headers,
+                                    body: resp_body,
+                                  }))
+                                }
+                              })
+                            }
+                          }
+                        })
+                      }
+                    }
+                  })
+                }
+              }
+            })
+          }
+        }
+      })
+    },
+    stream_k: fn(
+      path : String,
+      headers : Array[(String, String)],
+      on_chunk : (Bytes) -> Unit,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      iroh_open_stream_k(state, true, fn(oex : effect::Exit[(Int64, Int64)]) -> Unit {
+        match oex {
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Succeeded((cid, sid)) => {
+            let req_headers = with_auth_headers(headers, state.auth_header)
+            let head_bytes = wire::head_line("GET", path, req_headers).to_bytes()
+            state.sh.istream_write_k(sid, head_bytes, fn(wex : effect::Exit[Unit]) -> Unit {
+              match wex {
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => {
+                  iroh_drop_conn(state, cid)
+                  k(effect::Exit::Failed(e))
+                }
+                effect::Exit::Succeeded(_) => {
+                  state.sh.istream_finish_k(sid, fn(fex : effect::Exit[Unit]) -> Unit {
+                    match fex {
+                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                      effect::Exit::Failed(e) => {
+                        iroh_drop_conn(state, cid)
+                        k(effect::Exit::Failed(e))
+                      }
+                      effect::Exit::Succeeded(_) => {
+                        let carry = wire::Carry::new()
+                        iroh_read_head_k(state, cid, sid, carry, fn(hex : effect::Exit[(Int, Array[(String, String)])]) -> Unit {
+                          match hex {
+                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                            effect::Exit::Succeeded((status, _resp_headers)) => {
+                              if status < 200 || status >= 300 {
+                                iroh_drop_conn(state, cid)
+                                k(effect::Exit::Failed(effect::EffectError::Custom("events stream status " + status.to_string())))
+                                return
+                              }
+                              let rem = carry.take()
+                              if rem.length() > 0 {
+                                on_chunk(rem)
+                              }
+                              iroh_pump_stream_k(state, cid, sid, on_chunk, k)
+                            }
+                          }
+                        })
+                      }
+                    }
+                  })
+                }
+              }
+            })
+          }
+        }
+      })
     },
   }
 }

@@ -479,6 +479,104 @@ fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Jso
         None => ()
       }
     }
+  } else if stmt == store::sql_moved_from() {
+    let _ = p_str(p, 0)
+  } else if stmt == store::sql_pending_by_station() {
+    let st = p_str(p, 0)
+    let prefix = st + ":"
+    let ks = self.pending_rows.keys()
+    for i in 0..<ks.length() {
+      let k = ks[i]
+      if k.starts_with(prefix) {
+        let pkey = k.slice(prefix.length(), k.length())
+        match self.pending_rows.get(k) {
+          Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(pkey), base_codec::json_str(st), base_codec::json_str(j)]))
+          None => ()
+        }
+      }
+    }
+  } else if stmt == store::sql_draft_by_station() {
+    let st = p_str(p, 0)
+    let prefix = st + ":"
+    let ks = self.drafts.keys()
+    for i in 0..<ks.length() {
+      let k = ks[i]
+      if k.starts_with(prefix) {
+        let chat_k = k.slice(prefix.length(), k.length())
+        match self.drafts.get(k) {
+          Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(st), base_codec::json_str(chat_k), base_codec::json_str(j)]))
+          None => ()
+        }
+      }
+    }
+  } else if stmt == store::sql_changing_by_station() {
+    let st = p_str(p, 0)
+    let prefix = st + ":"
+    let ks = self.changing_rows.keys()
+    for i in 0..<ks.length() {
+      let k = ks[i]
+      if k.starts_with(prefix) {
+        let id_str = k.slice(prefix.length(), k.length())
+        let cid = match base_codec::parse_int64_str(id_str) {
+          Some(v) => v.to_int()
+          None => 0
+        }
+        match self.changing_rows.get(k) {
+          Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(st), base_codec::json_int(cid), base_codec::json_str(j)]))
+          None => ()
+        }
+      }
+    }
+  } else if stmt == store::sql_thread_one() {
+    let st = p_str(p, 0)
+    let th = p_int(p, 1)
+    let tk = st + ":" + th.to_string()
+    match self.threads.get(tk) {
+      Some(tj) => {
+        let (rd_j, un_j) = match self.thread_reads.get(tk) {
+          Some((r, u)) => (base_codec::json_int(r), base_codec::json_int(u))
+          None => (base_codec::json_null(), base_codec::json_int(0))
+        }
+        rows.push(base_codec::json_arr([
+          base_codec::json_int(th),
+          base_codec::json_null(),
+          rd_j,
+          un_j,
+          base_codec::json_int(0),
+          base_codec::json_int(0),
+          base_codec::json_str("chat"),
+          base_codec::json_null(),
+          base_codec::json_str(tj),
+        ]))
+      }
+      None => ()
+    }
+  } else if stmt == store::sql_entry_exists_before() {
+    let k = p_str(p, 0) + " " + p_int(p, 1).to_string()
+    let before_n = p_int(p, 2)
+    match self.entries.get(k) {
+      Some(all) => {
+        for i in 0..<all.length() {
+          if all[i].0 < before_n {
+            rows.push(base_codec::json_arr([base_codec::json_int(1)]))
+            break
+          }
+        }
+      }
+      None => ()
+    }
+  } else if stmt == store::sql_workspace_one() {
+    let wid = p_str(p, 0)
+    match self.workspaces.get(wid) {
+      Some((j, conf)) => {
+        let cj = match conf {
+          Some(ts) => base_codec::json_int64(ts)
+          None => base_codec::json_null()
+        }
+        rows.push(base_codec::json_arr([base_codec::json_str(wid), base_codec::json_str(j), cj]))
+      }
+      None => ()
+    }
   } else {
     return shell::AskResult::Err(shell::ShellError::{ message: "SimAccountDb unknown SQL: " + stmt })
   }
@@ -1734,7 +1832,7 @@ test "E2E 10: accounts, vault, said search, settings, and chats/chat keyed delta
   let deltas = core.refresh_topic("chats")
   debug_assert(deltas.length() == 1, "one chats delta emitted")
   let (delta_json, _) = protocol::encode_core_event(deltas[0])
-  debug_assert(delta_json.contains("\"delta\"") && delta_json.contains("\"put\"") && delta_json.contains("c-beta") && !delta_json.contains("c-alpha"), "incremental keyed delta only carries c-beta")
+  debug_assert(delta_json.contains("\"delta\"") && delta_json.contains("\"put\"") && delta_json.contains("c-beta") && !delta_json.contains("Alpha Launch") && delta_json.length() <= 4096, "incremental keyed delta only carries c-beta")
 
   // Unsubscribe with keep: true -> get `v` token -> re-subscribe with `have: v` -> `same: true`
   let v_tok = match core.handle_wire("{\"id\":50,\"unsubscribe\":true,\"keep\":true}") {
@@ -1806,4 +1904,107 @@ test "E2E 11: offline edit_message, delete_message, card.answer flush_offline di
   debug_assert(saw_edit && saw_del && saw_card, "exact thread mutation routes dispatched on reconnect")
   debug_assert(!saw_bad_chats_route, "never misrouted to /chats/thread:...")
   debug_assert(core.local_outbox.pending_overlay_count() == 0, "all 3 overlays cleared from changing after confirmation")
+}
+
+test "E2E 12: ClientCore wired to packages/views projects chats, chat, workspaces, stations, accounts, vaults, lock with <=4KB keyed deltas" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-views") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  station.snapshot_json = base_codec::json_obj([
+    (
+      "chats",
+      base_codec::json_arr([
+        base_codec::json_obj([
+          ("id", base_codec::json_str("c-v1")),
+          ("title", base_codec::json_str("Views Chat 1")),
+          ("thread", base_codec::json_int(7)),
+          ("lastActive", base_codec::json_int(1000)),
+        ]),
+      ]),
+    ),
+  ])
+  let core = ClientCore::new("ws-views", "st1", rt, db, station.transport(), fn() -> Unit {})
+  core.set_viewer("alice@still.fail", sub="u-alice", role="owner", device_id="dev-1")
+
+  let _ = store::upsert_workspace(db, "ws-views", "{\"name\":\"Views WS\",\"role\":\"owner\",\"members\":[{\"sub\":\"u-alice\",\"email\":\"alice@still.fail\",\"role\":\"owner\"}],\"stations\":[{\"id\":\"st1\"}]}", confirmed=Some(1000.to_int64()))
+  let _ = store::upsert_station_doc(db, "ws-views/st1", "overview", "{\"id\":\"st1\",\"name\":\"Tokyo Studio\",\"online\":true,\"apiProviders\":[{\"secret\":\"strip-me\"}]}", confirmed=Some(1000.to_int64()))
+  let _ = store::put_account_doc(db, "accounts", "[{\"id\":\"a1\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"token\":\"secret-tok\"}]")
+  let _ = store::put_account_doc(db, "active_account", "\"a1\"")
+  let _ = store::put_account_doc(db, "vaults:ws-views", "{\"vaults\":[{\"id\":\"v1\",\"name\":\"Personal\",\"owner\":\"u-alice\",\"ownerName\":\"Alice\",\"mine\":true,\"members\":[],\"station\":\"ws-views/st1\",\"stationName\":\"Tokyo Studio\",\"items\":2,\"devices\":1,\"open\":true,\"keyed\":true,\"missing\":0,\"recoverable\":false}],\"requests\":[],\"refused\":[]}")
+
+  core.start()
+  rt.advance(30)
+
+  // 1. workspaces / workspace / stations / accounts / lock / vaults all go through packages/views (stripping secrets, 0 个人锁 leakage)
+  match core.handle_wire("{\"id\":101,\"subscribe\":{\"topic\":\"workspaces\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"workspaces\"") && txt.contains("Views WS") && txt.contains("\"stationsCount\":1"), "workspaces view")
+    None => debug_assert(false, "expected workspaces")
+  }
+  match core.handle_wire("{\"id\":102,\"subscribe\":{\"topic\":\"workspace\",\"workspace\":\"ws-views\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"members\"") && txt.contains("Tokyo Studio") && !txt.contains("strip-me"), "workspace view strips detail fields")
+    None => debug_assert(false, "expected workspace")
+  }
+  match core.handle_wire("{\"id\":103,\"subscribe\":{\"topic\":\"stations\",\"scope\":\"ws-views\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("Tokyo Studio") && !txt.contains("strip-me"), "stations view strips apiProviders")
+    None => debug_assert(false, "expected stations")
+  }
+  match core.handle_wire("{\"id\":104,\"subscribe\":{\"topic\":\"accounts\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("alice@still.fail") && !txt.contains("secret-tok"), "accounts view strips token")
+    None => debug_assert(false, "expected accounts")
+  }
+  match core.handle_wire("{\"id\":105,\"subscribe\":{\"topic\":\"lock\",\"workspace\":\"ws-views\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"locked\":false") && !txt.contains("个人锁"), "unified SafeModeView with zero personal-lock leakage")
+    None => debug_assert(false, "expected lock")
+  }
+  match core.handle_wire("{\"id\":106,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"ws-views\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"vaults\"") && txt.contains("Personal") && !txt.contains("个人锁"), "vaults view")
+    None => debug_assert(false, "expected vaults")
+  }
+
+  // 2. chats view uses `days` bucketing + RowsMemo reuse + <= 4KB keyed delta
+  match core.handle_wire("{\"id\":107,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-views\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"days\"") && txt.contains("\"glyph\"") && txt.contains("Views Chat 1"), "ChatsView shape")
+    None => debug_assert(false, "expected chats")
+  }
+  let reused_before = core.rows_memo.rows_reused
+  station.push_sse(
+    "id: c-v2\nevent: chat\ndata: {\"id\":\"c-v2\",\"title\":\"Views Chat 2\",\"thread\":8,\"lastActive\":2000}\n\n",
+  )
+  let chats_deltas = core.refresh_topic("chats")
+  debug_assert(chats_deltas.length() == 1, "chats delta emitted")
+  let (cd_json, _) = protocol::encode_core_event(chats_deltas[0])
+  debug_assert(cd_json.length() <= 4096 && cd_json.contains("c-v2") && !cd_json.contains("Views Chat 1"), "chats delta <= 4KB and only carries c-v2")
+  debug_assert(core.rows_memo.rows_reused > reused_before, "RowsMemo reused unchanged c-v1")
+
+  // 3. chat view: 0 SQL writes on cold open, outbox clientKey dedup, and <= 4KB keyed delta on SSE arrival
+  let ran_before = sim_db.ran.length()
+  match core.handle_wire("{\"id\":108,\"subscribe\":{\"topic\":\"chat\",\"station\":\"st1\",\"thread\":7},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"messages\"") && txt.contains("\"outbox\"") && txt.contains("\"toolGroups\""), "ChatView shape")
+    None => debug_assert(false, "expected chat")
+  }
+  let (_, writes_on_open, _) = sim_db.counts_since(ran_before)
+  debug_assert(writes_on_open == 0, "0 SQL writes on cold chat subscribe")
+
+  // Optimistic message.send -> outbox entry appears in delta -> SSE confirms -> outbox cleared & message added (0 duplicates)
+  let _ = core.send_message(7, "ck-views-1", "alice@still.fail", "hello views", rt.now())
+  let d_outbox = core.refresh_topic("chat")
+  debug_assert(d_outbox.length() == 1, "chat delta for optimistic outbox")
+  let (d_ob_json, _) = protocol::encode_core_event(d_outbox[0])
+  debug_assert(d_ob_json.length() <= 4096 && d_ob_json.contains("ck-views-1"), "optimistic outbox delta <= 4KB")
+
+  station.push_sse(
+    "id: e-v1\nevent: entry\ndata: {\"thread\":7,\"n\":1,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice@still.fail\",\"text\":\"hello views\",\"clientKey\":\"ck-views-1\",\"at\":3000}\n\n",
+  )
+  let d_confirmed = core.refresh_topic("chat")
+  debug_assert(d_confirmed.length() == 1, "chat delta for SSE confirmation")
+  let (d_cf_json, _) = protocol::encode_core_event(d_confirmed[0])
+  debug_assert(d_cf_json.length() <= 4096 && d_cf_json.contains("\"delta\"") && d_cf_json.contains("hello views") && d_cf_json.contains("\"drop\""), "SSE chat delta <= 4KB and drops reconciled outbox item")
+  core.stop()
 }

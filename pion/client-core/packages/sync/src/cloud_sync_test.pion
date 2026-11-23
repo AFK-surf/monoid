@@ -345,3 +345,169 @@ test "shell_http_transport streams real SSE chunks into StationEvents and closes
   evs.stop()
   let _ = rt.run_ready()
 }
+
+test "shell_iroh_transport: bind, setRelayEntries, connect, framed HTTP request/reply, SSE stream, and disconnect reconnect" {
+  let rt = effect::Runtime::new()
+  let mock_db = MockCloudDb::new()
+  let calls : Array[(Int64, String, base_codec::Json, Option[Bytes])] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, bytes : Option[Bytes]) -> Unit {
+      calls.push((id, op, args, bytes))
+    },
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      mock_db.handle_sql(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "iroh-test") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.to_string())
+  }
+  let transport = shell_iroh_transport(
+    sh,
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "https://relay.still.fail",
+    "/stillfail/http/1".to_bytes(),
+    relay_entries=[("https://entry.still.fail", "https://relay.still.fail")],
+    auth_header=Some("Bearer iroh-tok"),
+  )
+
+  // 1. Framed HTTP POST request over iroh bidirectional stream (split reply head + body)
+  let mut got_status = 0
+  let mut got_body = ""
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (transport.request_k)(
+      "POST",
+      "/threads/42/messages",
+      [("content-type", "application/json")],
+      "{\"text\":\"hi mesh\"}".to_bytes(),
+      fn(ex : effect::Exit[HttpReply]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(rep) => {
+            got_status = rep.status
+            got_body = bytes_to_str(rep.body)
+          }
+          _ => ()
+        }
+        k(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  let _ = rt.run_ready()
+
+  // iroh.bind -> id 10
+  debug_assert(calls.length() == 1 && calls[0].1 == "iroh.bind", "iroh.bind issued")
+  sh.answer(calls[0].0, base_codec::json_obj([("id", base_codec::json_int(10))]))
+  let _ = rt.run_ready()
+
+  // iroh.setRelayEntries
+  debug_assert(calls.length() == 2 && calls[1].1 == "iroh.setRelayEntries", "iroh.setRelayEntries issued")
+  sh.answer(calls[1].0, base_codec::json_obj([]))
+  let _ = rt.run_ready()
+
+  // iroh.connect -> conn 20
+  debug_assert(calls.length() == 3 && calls[2].1 == "iroh.connect", "iroh.connect issued")
+  sh.answer(calls[2].0, base_codec::json_obj([("id", base_codec::json_int(20))]))
+  let _ = rt.run_ready()
+
+  // conn.openBi -> stream 30
+  debug_assert(calls.length() == 4 && calls[3].1 == "conn.openBi", "conn.openBi issued")
+  sh.answer(calls[3].0, base_codec::json_obj([("id", base_codec::json_int(30))]))
+  let _ = rt.run_ready()
+
+  // istream.write contains wire::head_line + JSON body + auth header
+  debug_assert(calls.length() == 5 && calls[4].1 == "istream.write", "istream.write issued")
+  match calls[4].3 {
+    Some(wb) => {
+      let ws = bytes_to_str(wb)
+      debug_assert(ws.contains("\"method\":\"POST\"") && ws.contains("/threads/42/messages") && ws.contains("Bearer iroh-tok") && ws.contains("hi mesh"), "wire::head_line + body written")
+    }
+    None => debug_assert(false, "expected write bytes")
+  }
+  sh.answer(calls[4].0, base_codec::json_obj([]))
+  let _ = rt.run_ready()
+
+  // istream.finish
+  debug_assert(calls.length() == 6 && calls[5].1 == "istream.finish", "istream.finish issued")
+  sh.answer(calls[5].0, base_codec::json_obj([]))
+  let _ = rt.run_ready()
+
+  // istream.read #1 (first half of reply head) + #2 (second half + body prefix) + #3 (body rest) + #4 (EOF)
+  debug_assert(calls.length() == 7 && calls[6].1 == "istream.read", "istream.read #1")
+  sh.answer(calls[6].0, base_codec::json_obj([]), bytes=Some("{\"status\":201,\"headers\":{\"x-mesh\":\"1\"".to_bytes()))
+  let _ = rt.run_ready()
+
+  debug_assert(calls.length() == 8 && calls[7].1 == "istream.read", "istream.read #2")
+  sh.answer(calls[7].0, base_codec::json_obj([]), bytes=Some("}}\n{\"ok\":".to_bytes()))
+  let _ = rt.run_ready()
+
+  debug_assert(calls.length() == 9 && calls[8].1 == "istream.read", "istream.read #3")
+  sh.answer(calls[8].0, base_codec::json_obj([]), bytes=Some("true}".to_bytes()))
+  let _ = rt.run_ready()
+
+  debug_assert(calls.length() == 10 && calls[9].1 == "istream.read", "istream.read #4")
+  sh.answer(calls[9].0, base_codec::json_obj([("end", base_codec::json_bool(true))]))
+  let _ = rt.run_ready()
+  debug_assert(got_status == 201 && got_body == "{\"ok\":true}", "framed HTTP reply parsed across split chunks")
+
+  // 2. SSE streaming over cached iroh connection (reuses conn 20 without re-binding/re-connecting), then disconnect & reconnect
+  let fb : outbox::FrameOutbox[CoreEvent] = outbox::FrameOutbox::new(fn() -> Unit {})
+  let evs = StationEvents::new("ws-mesh", "st-mesh", db, fb, transport)
+  evs.start(rt)
+  let _ = rt.run_ready()
+
+  // Reused conn 20 -> directly conn.openBi -> stream 31
+  let c_open = calls[calls.length() - 1]
+  debug_assert(c_open.1 == "conn.openBi", "SSE reuses cached iroh conn")
+  sh.answer(c_open.0, base_codec::json_obj([("id", base_codec::json_int(31))]))
+  let _ = rt.run_ready()
+
+  let c_wr = calls[calls.length() - 1]
+  debug_assert(c_wr.1 == "istream.write", "SSE writes GET /events head")
+  sh.answer(c_wr.0, base_codec::json_obj([]))
+  let _ = rt.run_ready()
+
+  let c_fin = calls[calls.length() - 1]
+  debug_assert(c_fin.1 == "istream.finish", "SSE finishes write half")
+  sh.answer(c_fin.0, base_codec::json_obj([]))
+  let _ = rt.run_ready()
+
+  // Deliver reply head + SSE entry in one chunk
+  let c_rd1 = calls[calls.length() - 1]
+  debug_assert(c_rd1.1 == "istream.read", "SSE read head")
+  let sse_payload = "{\"status\":200,\"headers\":{\"content-type\":\"text/event-stream\"}}\nid: m-1\nevent: entry\ndata: {\"thread\":5,\"n\":1,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice\",\"text\":\"via iroh mesh\"}\n\n"
+  sh.answer(c_rd1.0, base_codec::json_obj([]), bytes=Some(sse_payload.to_bytes()))
+  let _ = rt.run_ready()
+  debug_assert(mock_db.entries.get("st-mesh:5:1").is_some(), "SSE entry over iroh ingested into SQLite")
+
+  // Simulate abrupt stream disconnect -> drops conn 20 (conn.close) and schedules backoff reconnect
+  let c_rd2 = calls[calls.length() - 1]
+  debug_assert(c_rd2.1 == "istream.read", "SSE read next")
+  sh.refuse(c_rd2.0, "connection reset by peer")
+  let _ = rt.run_ready()
+
+  let mut saw_conn_close = false
+  for i in 0..<calls.length() {
+    if calls[i].1 == "conn.close" {
+      saw_conn_close = true
+    }
+  }
+  debug_assert(saw_conn_close, "conn.close sent on stream drop")
+
+  // Advance virtual clock 1000ms -> StationEvents reconnects via fresh iroh.connect (reusing local endpoint 10, no second iroh.bind!)
+  let count_before_reconn = calls.length()
+  rt.advance(1000)
+  debug_assert(calls.length() > count_before_reconn, "reconnect triggered after backoff")
+  let c_reconn = calls[calls.length() - 1]
+  debug_assert(c_reconn.1 == "iroh.connect", "fresh iroh.connect on reconnect without re-binding")
+  let mut bind_count = 0
+  for i in 0..<calls.length() {
+    if calls[i].1 == "iroh.bind" {
+      bind_count += 1
+    }
+  }
+  debug_assert(bind_count == 1, "local iroh endpoint bound only once")
+  evs.stop()
+  let _ = rt.run_ready()
+}

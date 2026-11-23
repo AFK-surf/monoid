@@ -45,8 +45,18 @@ pub fn spec_for_topic(topic_name : String) -> Option[KeyedSpec] {
   if topic_name == "jobs" {
     return Some(spec_fields([("jobs", spec_items("id"))]))
   }
-  if topic_name == "stations" || topic_name == "workspace" {
-    return Some(spec_fields([("stations", spec_items("address"))]))
+  if topic_name == "stations" {
+    return Some(KeyedSpec::{
+      key: ["station"],
+      item: None,
+      fields: [("stations", spec_items("station"))],
+    })
+  }
+  if topic_name == "workspace" {
+    return Some(spec_fields([
+      ("stations", spec_items("station")),
+      ("members", spec_items("sub")),
+    ]))
   }
   if topic_name == "workspaces" {
     return Some(spec_fields([("workspaces", spec_items("id"))]))
