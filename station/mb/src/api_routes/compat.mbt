@@ -144,6 +144,32 @@ fn frame(text : String, supported : Array[String], services : Bool) -> String ra
 }
 
 ///|
+/// What older clients of the same vocabulary are told of one event is the same text: made once for all their streams
+/// (runtime-compat.ts `frameOnce`), the latest frames only.
+let framed : Map[String, String] = Map::new()
+
+///|
+fn frame_once(
+  vocabulary : String,
+  text : String,
+  supported : Array[String],
+  services : Bool,
+) -> String raise {
+  let key = "\{vocabulary}\u{0}\{text}"
+  match framed.get(key) {
+    Some(made) => made
+    None => {
+      let made = frame(text, supported, services)
+      if framed.length() >= 128 {
+        framed.clear()
+      }
+      framed[key] = made
+      made
+    }
+  }
+}
+
+///|
 fn find_frame_end(b : Bytes, from : Int32) -> Int32 {
   let mut i = from
   while i + 1 < b.length() {
@@ -162,6 +188,9 @@ fn events_view(
   supported : Array[String],
   services : Bool,
 ) -> async () -> Bytes? {
+  let vocabulary = supported.copy()
+  vocabulary.sort()
+  let vocabulary = vocabulary.join(",") + (if services { "|1" } else { "|0" })
   let pending = @buffer.new()
   let out : Array[Bytes] = []
   let ended = Ref(false)
@@ -174,7 +203,7 @@ fn events_view(
           let mut at = 0
           while find_frame_end(all, at) is end && end >= 0 {
             let text = utf8_text(all[at:end].to_bytes())
-            out.push(utf8(frame(text, supported, services) + "\n\n"))
+            out.push(utf8(frame_once(vocabulary, text, supported, services) + "\n\n"))
             at = end + 2
           }
           pending.reset()
@@ -185,7 +214,7 @@ fn events_view(
           let rest = utf8_text(pending.to_bytes())
           pending.reset()
           if rest != "" {
-            out.push(utf8(frame(rest, supported, services)))
+            out.push(utf8(frame_once(vocabulary, rest, supported, services)))
           }
         }
       }
