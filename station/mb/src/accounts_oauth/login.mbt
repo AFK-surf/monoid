@@ -31,13 +31,18 @@ pub(all) struct LoginJob {
   mut browser : Bool
   /// The screen of the tab its page is open in, in the station's browser, while it is.
   mut screen : String?
+  /// Of a service profile's sign-in (no runtime: `runtime` is ""): the service, `colab`.
+  service : String?
 }
 
 ///|
 pub fn LoginJob::to_json(self : LoginJob) -> Json {
-  let m : Map[String, Json] = {
-    "profile": Json::string(self.profile),
-    "runtime": Json::string(self.runtime),
+  let m : Map[String, Json] = { "profile": Json::string(self.profile) }
+  if self.runtime != "" {
+    m["runtime"] = Json::string(self.runtime)
+  }
+  if self.service is Some(s) {
+    m["service"] = Json::string(s)
   }
   if self.provider is Some(p) {
     m["provider"] = Json::string(p)
@@ -268,6 +273,20 @@ priv struct Running {
   agy : AgySteps?
   /// What Claude's command said since its code went in (none before), read for its refusal.
   mut said : String?
+  /// A service's OAuth sign-in (`start_oauth_code`): its code is taken by the station itself, no command.
+  oauth : OAuthCode?
+}
+
+///|
+/// An OAuth2 authorization-code sign-in the station makes itself (a service profile's, login.ts `startOAuthCode`):
+/// the page the person approves on, the code they paste checked (`validate`: the code, or raises the words of why
+/// not, the sign-in still waiting for one), exchanged and written to the profile's home (`exchange`), and the code
+/// read off the station's browser where its page lands back there (`callback_code`, given the tab's address).
+pub(all) struct OAuthCode {
+  url : String
+  validate : (String, String) -> String raise
+  exchange : async (String, String) -> Unit
+  callback_code : (String?) -> String?
 }
 
 ///|
@@ -356,6 +375,25 @@ pub fn LoginManager::attach(self : LoginManager, pages : LoginPages) -> Unit {
     guard key.has_prefix("profile:") else { return }
     let profile = from(key, 8)
     guard self.jobs.get(profile) is Some(running) else { return }
+    // A service's OAuth page come back with its code in the station's browser: taken from there, its tab closed.
+    if running.oauth is Some(flow) && running.job.state == "needs_code" {
+      match (flow.callback_code)((pages.url_of)(key)) {
+        Some(code) => {
+          (pages.close)(key)
+          (self.io.spawn)(async fn() {
+            ignore(self.submit_code(profile, code, running.lang)) catch {
+              e =>
+                (self.io.log)("warn", "login", "a code read off the station's browser was not taken", {
+                  "profile": Json::string(profile),
+                  "error": Json::string(message_of(e)),
+                })
+            }
+          })
+          return
+        }
+        None => ()
+      }
+    }
     // The Antigravity CLI's page come back with its code in the station's browser: taken from there, its tab closed.
     if running.job.runtime == "agy" && running.job.state == "needs_code" {
       match agy_callback_code((pages.url_of)(key), running.job.url) {
@@ -646,6 +684,7 @@ pub async fn LoginManager::start(self : LoginManager, profile : LoginProfile, la
     expires_at: now + login_timeout_ms,
     browser: false,
     screen: None,
+    service: None,
   }
   let id = profile.id
   let cancelled = () => {
@@ -679,6 +718,7 @@ pub async fn LoginManager::start(self : LoginManager, profile : LoginProfile, la
     stop: None,
     back: None,
     said: None,
+    oauth: None,
     cancel_timer: () => (),
   }
   running.cancel_timer = (self.io.after)(login_timeout_ms, () => self.fail_run(id, run, t("station.login.timedOut", [])))
@@ -892,6 +932,7 @@ async fn LoginManager::device_sign_in(
     expires_at: now + login_timeout_ms,
     browser: false,
     screen: None,
+    service: None,
   }
   self.runs += 1
   let run = self.runs
@@ -911,6 +952,7 @@ async fn LoginManager::device_sign_in(
     chose: false,
     agy: None,
     said: None,
+    oauth: None,
   }
   self.jobs[id] = running
   self.emit(id)
@@ -1031,6 +1073,7 @@ pub async fn LoginManager::start_cursor(self : LoginManager, id : String, home :
     expires_at: now + login_timeout_ms,
     browser: false,
     screen: None,
+    service: None,
   }
   self.runs += 1
   let run = self.runs
@@ -1050,6 +1093,7 @@ pub async fn LoginManager::start_cursor(self : LoginManager, id : String, home :
     chose: false,
     agy: None,
     said: None,
+    oauth: None,
   }
   self.jobs[id] = running
   running.cancel_timer = (self.io.after)(login_timeout_ms, () => self.fail_run(id, run, t("station.login.timedOut", [])))
@@ -1129,6 +1173,116 @@ pub async fn LoginManager::start_cursor(self : LoginManager, id : String, home :
 }
 
 ///|
+/// Starts an OAuth2 authorization-code sign-in for a service profile (no command), replacing any running sign-in: the
+/// page to approve on, then the code the person pastes (or the station's browser reads) exchanged by `flow`.
+pub async fn LoginManager::start_oauth_code(
+  self : LoginManager,
+  id : String,
+  home : String,
+  service : String,
+  flow : OAuthCode,
+  lang : String,
+) -> LoginJob {
+  let t = (key : String, args : Array[(String, String)]) => tr(self.words, lang, key, args)
+  self.cancel(id)
+  self.finished.remove(id)
+  let now = (self.io.now)()
+  let job : LoginJob = {
+    profile: id,
+    runtime: "",
+    provider: None,
+    state: "needs_code",
+    url: Some(flow.url),
+    user_code: None,
+    error: None,
+    started_at: now,
+    expires_at: now + login_timeout_ms,
+    browser: false,
+    screen: None,
+    service: Some(service),
+  }
+  self.runs += 1
+  let run = self.runs
+  let running : Running = {
+    run,
+    job,
+    child: None,
+    raw: "",
+    output: "",
+    exited: true,
+    lang,
+    home: Some(home),
+    cancel_timer: () => (),
+    stop: None,
+    opened: None,
+    back: None,
+    chose: false,
+    agy: None,
+    said: None,
+    oauth: Some(flow),
+  }
+  self.jobs[id] = running
+  running.cancel_timer = (self.io.after)(login_timeout_ms, () => self.fail_run(id, run, t("station.login.timedOut", [])))
+  (self.io.mkdir)(home, true) catch {
+    e => {
+      if self.is_current(id, running) {
+        self.finish(id, "failed", Some(t("station.login.homeFailed", [("error", message_of(e))])))
+      }
+      return self.get(id).unwrap()
+    }
+  }
+  if !self.is_current(id, running) {
+    return match self.get(id) {
+      Some(j) => j
+      None => { ..job.copy(), state: "cancelled" }
+    }
+  }
+  (self.io.log)("info", "login", "OAuth code sign-in started", {
+    "profile": Json::string(id),
+    "service": Json::string(service),
+  })
+  self.emit(id)
+  job.copy()
+}
+
+///|
+/// A service's OAuth code checked, then exchanged within `verify_wait_ms`: done once written, failed with why.
+async fn LoginManager::exchange_code(
+  self : LoginManager,
+  profile : String,
+  running : Running,
+  flow : OAuthCode,
+  code : String,
+  lang : String,
+) -> LoginJob {
+  // One it would not take is refused here, the sign-in still waiting for a code.
+  let clean = (flow.validate)(code, lang)
+  if running.stop is Some(s) {
+    s()
+  }
+  let verifying = () => self.is_current(profile, running) && running.job.state == "verifying"
+  // timer: a deadline for the OAuth code's exchange
+  running.stop = Some((self.io.after)(verify_wait_ms, () => if verifying() {
+    self.finish(profile, "failed", Some(tr(self.words, running.lang, "station.login.verifyTimedOut", [])))
+  }))
+  running.job.state = "verifying"
+  let job = running.job.copy()
+  self.emit(profile)
+  (flow.exchange)(clean, lang) catch {
+    e => {
+      if verifying() {
+        self.finish(profile, "failed", Some(message_of(e)))
+      }
+      return self.get(profile).unwrap_or(job)
+    }
+  }
+  if verifying() {
+    self.finish(profile, "done", None)
+  }
+  self.get(profile).unwrap_or(job)
+}
+
+///|
 /// A sign-in that cannot be started here, recorded like any other failure, so the page shows why.
 fn LoginManager::refused(self : LoginManager, id : String, runtime : String, error : String) -> LoginJob {
   let now = (self.io.now)()
@@ -1144,6 +1298,7 @@ fn LoginManager::refused(self : LoginManager, id : String, runtime : String, err
     expires_at: now,
     browser: false,
     screen: None,
+    service: None,
   }
   self.finished[id] = failed
   self.emit(id)
@@ -1162,6 +1317,9 @@ pub async fn LoginManager::submit_code(self : LoginManager, profile : String, co
   let trimmed = trim(code)
   if trimmed == "" {
     raise Failed(t("station.login.emptyCode"))
+  }
+  if running.oauth is Some(flow) {
+    return self.exchange_code(profile, running, flow, trimmed, lang)
   }
   // Claude's is checked before it goes in: one it would not take is refused here, the sign-in still waiting for a code.
   let clean = if running.job.runtime == "claude" {

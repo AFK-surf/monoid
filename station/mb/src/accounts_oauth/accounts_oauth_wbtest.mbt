@@ -645,3 +645,43 @@ test "Claude OAuth token refresh and /v1/models send claude-cli User-Agent only 
     assert_eq(get(get(Some(r), "headers"), "user-agent"), None)
   }
 }
+
+///|
+test "a service's OAuth code: one it would not take refused in place, one taken exchanged and done, a failed exchange said" {
+  let w = World::new({})
+  let io = w.io()
+  let t : Terminals = { written: [], events: Ref(None), killed: [] }
+  let logins = LoginManager::new(io, login_deps(terminal_platform(w, t), (_, _) => false), words(), "/d")
+  let exchanged = []
+  let flow : OAuthCode = {
+    url: "https://accounts.example/auth?state=s",
+    validate: (raw, _) => if raw == "bad" { raise Failed("not a code") } else { "c-\{raw}" },
+    exchange: async fn(code, _) {
+      if code == "c-boom" {
+        raise Failed("exchange refused")
+      }
+      exchanged.push(code)
+    },
+    callback_code: _ => None,
+  }
+  let job = w.drive(async fn() { logins.start_oauth_code("co", "/p/co", "colab", flow, "zh").to_json() }, timers=false)
+  assert_eq(get(Some(job), "state"), Some(Json::string("needs_code")))
+  assert_eq(get(Some(job), "service"), Some(Json::string("colab")))
+  assert_eq(get(Some(job), "runtime"), None)
+  assert_eq(get(Some(job), "url"), Some(Json::string("https://accounts.example/auth?state=s")))
+  let refused = w.drive(async fn() {
+    ignore(logins.submit_code("co", "bad", "zh")) catch {
+      e => return Json::string(message_of(e))
+    }
+    Json::null()
+  }, timers=false)
+  assert_eq(refused, Json::string("not a code"))
+  assert_eq(logins.get("co").unwrap().state, "needs_code")
+  let done = w.drive(async fn() { logins.submit_code("co", " good ", "zh").to_json() }, timers=false)
+  assert_eq(get(Some(done), "state"), Some(Json::string("done")))
+  assert_eq(exchanged, ["c-good"])
+  ignore(w.drive(async fn() { logins.start_oauth_code("co", "/p/co", "colab", flow, "zh").to_json() }, timers=false))
+  let failed = w.drive(async fn() { logins.submit_code("co", "boom", "zh").to_json() }, timers=false)
+  assert_eq(get(Some(failed), "state"), Some(Json::string("failed")))
+  assert_eq(get(Some(failed), "error"), Some(Json::string("exchange refused")))
+}
