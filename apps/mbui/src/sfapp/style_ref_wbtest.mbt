@@ -164,18 +164,19 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // Whole-pixel View::shift lets ride_kept_for hit across the narrow page slide, moving cached segment coordinates by 1 ULP (2e-14 px).
   inspect(out.to_string(), content=(
     #|settings narrow 102204:7f17d648
-    #|station narrow 96686:e6b9eb77
+    #|station narrow 97623:c4610fb8
     #|me-reading narrow 31606:126b67b0
     #|settings wide 204457:ab771352
-    #|station wide 275132:f1508c18
+    #|station wide 275892:c6cfebd4
     #|me-reading wide 199176:3c1c9ea
     #|settings-dark narrow 102468:e3d5247a
-    #|station-dark narrow 96583:215e73df
+    #|station-dark narrow 97515:e93d761a
     #|me-reading-dark narrow 31739:8b3c5a3b
     #|settings-dark wide 204349:32841efe
-    #|station-dark wide 274770:cd4ea834
+    #|station-dark wide 275525:77c10d4c
     #|me-reading-dark wide 199134:f5de9219
     #|
+
 
 
 

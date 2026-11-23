@@ -1654,7 +1654,7 @@ test("a_list_of_stations_is_rows_one_station_its_page_and_the_models_are_the_cor
   const allowed = new Set(["station", "id", "name", "emoji", "icon", "summary", "face", "line", "online", "reconnecting", "blocked", "stateText", "stateBusy", "problems", "lastSeen", "version", "way", "joined", "home", "mine", "acceptAutoChats", "host", "overview"]);
   for (const row of list.value as J[]) assert.deepEqual(Object.keys(row).filter((k) => !allowed.has(k)), [], row.station);
   assert.deepEqual(Object.keys(a.overview).sort(), ["counts", "disk", "drive", "viewer"]);
-  assert.deepEqual(Object.keys(a.host).sort(), ["identity", "meters", "os"]);
+  assert.deepEqual(Object.keys(a.host).sort(), ["egressText", "identity", "meters", "os"]);
   assert.deepEqual([a.overview.counts.sessions, a.overview.drive.roots[0].path, a.host.os], [3, "/Users/me", "macOS 26"]);
   // Its page: all of it but the models.
   const p: J = page.value;
