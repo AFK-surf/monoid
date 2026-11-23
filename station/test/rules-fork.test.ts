@@ -9,9 +9,8 @@
 // RULES_FORK_SEEDS=<n> worlds a variant and family (by default 32 for the workspace lock, 96 for person logs: several
 // hundred in all), RULES_FORK_STEPS=<n> steps a world (120), RULES_FORK_SCRIPTED=<n> seeds of the fourth round's
 // scripted worlds (6). Worker threads as lock-fork-choice.test.ts (lock-fork-pool.ts). The person logs' drawn worlds
-// are dealt by seed to this file and rules-fork-person-a.test.ts and rules-fork-person-b.test.ts, a third each (by
-// default seeds 1-32 here, 33-64 and 65-96 there: 384 worlds in all), so that each takes a slice of check-station of
-// its own (rules-fork-runner.ts).
+// are run by rules-fork-person-a.test.ts, -b and -c, a third of the seeds each (by default 1-32, 33-64 and 65-96: 384
+// worlds in all), so that each of the four files takes a slice of check-station of its own (rules-fork-runner.ts).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -19,9 +18,8 @@ import { type Entry, endpointProof, entryHash, sigValid, taggedSigValid, validKe
 import { key, signed } from "./lock-world-sim.ts";
 import { VARIANTS } from "./lock-fork-choice-model.ts";
 import { print } from "./lock-fork-pool.ts";
-import { V3 } from "./lock-roster-model.ts";
 import type { Job, Out } from "./rules-fork-check.ts";
-import { LOCK_SEEDS, SCRIPTED, assertPersonWorlds, assertRulesModeUsed, createRulesForkPool, missing, personSeedRanges, seedJobs, sum, told } from "./rules-fork-runner.ts";
+import { LOCK_SEEDS, SCRIPTED, assertRulesModeUsed, createRulesForkPool, missing, seedJobs, sum, told } from "./rules-fork-runner.ts";
 import * as rules from "../../shared/rules-runtime.ts";
 
 /// The workspace lock's variants the rules have: one vote a device or by role, the active chain or everything offered,
@@ -30,9 +28,7 @@ const LOCK_V = VARIANTS.filter((v) => v.removal === "device" && v.hashfield === 
 
 const ask = createRulesForkPool();
 const run = (js: Job[]) => (ask === null ? Promise.resolve([] as Out[]) : Promise.all(js.map((j) => ask<Out>(j))));
-const [[personFrom, personTo]] = personSeedRanges();
 const lockOut = run(seedJobs("lock", LOCK_V, 1, LOCK_SEEDS));
-const personOut = run(seedJobs("person", V3, personFrom, personTo));
 const scriptedOut = run(Array.from({ length: SCRIPTED }, (_, i) => ({ t: "scripted", from: i + 1, to: i + 1 }) as Job));
 
 test("the rules export the fork choice and the list", () => {
@@ -47,11 +43,6 @@ test("the rules' active chain of the workspace lock is every model keeper's, at 
   assert.equal(o.differ.length, 0, "the rules and the model differ (the first are printed above)");
   // (branches came up, and forgeries were refused: the comparison was not of straight chains alone)
   assert.ok(o.branched > 0 && o.refusedSeen > 0, `${o.branched} beaten, ${o.refusedSeen} refused`);
-});
-
-test("the rules' person logs, bodies, lists and states are the fourth round's model's on its drawn worlds, label for label, with the same reasons", async () => {
-  assert.ok(ask !== null, "no rules to compare");
-  assertPersonWorlds(sum(await personOut), V3.length, personFrom, personTo);
 });
 
 test("the rules are the fourth round's model's on its scripted worlds: bodies no one's, web devices by a keeper's clock, a revoked key, off and on again, the handover, the handover that waits for nobody", async () => {
@@ -115,5 +106,5 @@ test("a person's log says each device's signer: the fold keeps it and those said
 });
 
 test("under STILLFAIL_RULES_MODE shadow or pion, the worlds above went through it, with no difference between the ports", async () => {
-  assertRulesModeUsed([...await lockOut, ...await personOut, ...await scriptedOut]);
+  assertRulesModeUsed([...await lockOut, ...await scriptedOut]);
 });

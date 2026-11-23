@@ -1,4 +1,4 @@
-// What rules-fork.test.ts, rules-fork-person-a.test.ts and rules-fork-person-b.test.ts share: the seeds, the jobs a
+// What rules-fork.test.ts and rules-fork-person-a.test.ts, -b and -c share: the seeds, the jobs a
 // range of seeds makes, the worker pool of rules-fork-check.ts, and the sums and assertions over what came back. The
 // person logs' drawn worlds are dealt to the three files by seed (`personSeedRanges`), each its own slice of
 // check-station (scripts/station-slice.sh): one file of all of them took more than a slice's 5 minutes on CI's runners

@@ -48,10 +48,13 @@ i=${s%/*} n=${s#*/}
 # (176-187 the job). At 480 and 310 slice 0 sheds some 133 units and slice 1 15, slices 2-5 taking 35-38 each.)
 # Once the rules went through Pion by default (#8379), rules-fork alone outgrew a slice: check-station (0) cut at its
 # 5 minutes at 313 and 311 s (45245278147, 45246805471), the file 218-220 s of them. Its person logs' drawn worlds are
-# dealt by seed to three files (rules-fork-runner.ts: rules-fork 260 with the workspace lock's and scripted worlds and
-# a third of the person logs', rules-fork-person-a and -b 180 each), so the six heavy files (mb-fault-replica-retire,
-# rules-fork, memory-sync-random, rules-fork-person-a and -b, mb-fault-runtimes-and-lend) take a slice each.
-long="test/rules-fork.test.ts:260 test/rules-fork-person-a.test.ts:180 test/rules-fork-person-b.test.ts:180"
+# dealt by seed to rules-fork-person-a, -b and -c (rules-fork-runner.ts), rules-fork keeping the workspace lock's and
+# the scripted worlds. Dealt as three files (rules-fork at 260 with a third of the person logs', -a and -b at 180),
+# #8397's 45254939914 cut rules-fork's slice at 5 minutes (286 s of tests) and took 184 and 243 s of tests for -a's
+# and -b's where the other slices took 150-185: so each third counts 340 and rules-fork 180, each of the four on a
+# slice of its own.
+long="test/rules-fork.test.ts:180 test/rules-fork-person-a.test.ts:340 test/rules-fork-person-b.test.ts:340"
+long="$long test/rules-fork-person-c.test.ts:340"
 long="$long test/mb-fault-replica-retire.test.ts:310 test/memory-sync-random.test.ts:200"
 long="$long test/mb-fault-runtimes-and-lend.test.ts:150 test/mb-reader-usage-page.test.ts:94"
 long="$long test/move-accounts.test.ts:91 test/replica-retire.test.ts:91 test/mb-fault-adb-device-connects.test.ts:81"
