@@ -760,7 +760,7 @@
   "web-pages.profiles.disabled": "Disabled",
   "web-pages.profiles.directQuota": "Show full quota",
   "web-pages.profiles.directQuotaOn": "Shows every limit, but Google may flag the account",
-  "web-pages.profiles.directQuotaOff": "Safer, but some limits may not show",
+  "web-pages.profiles.directQuotaOff": "Safer. When on, quota is read by calling Google's API directly; while off, some limits may not show",
   "web-pages.profiles.disableKeyBody": "The key and its settings are kept, and can be enabled again. Sessions using it move to another Profile, or stop if none is available. Stations with shared copies sync the disabled state after they update.",
   "web-pages.stations.agentEnv": "Agent environment variables",
   "web-pages.stations.agentEnvClose": "close the variables",

@@ -2453,7 +2453,7 @@ let en : Map[String, String] = {
   "web-pages.profiles.backgroundOff": "New messages wait until the running command or subagent finishes",
   "web-pages.profiles.backgroundOn": "While Claude Code waits on a command or subagent, a new message moves it to the background (like Ctrl+B). The agent reads the message immediately and handles the results when they finish.",
   "web-pages.profiles.directQuota": "Show full quota",
-  "web-pages.profiles.directQuotaOff": "Safer, but some limits may not show",
+  "web-pages.profiles.directQuotaOff": "Safer. When on, quota is read by calling Google's API directly; while off, some limits may not show",
   "web-pages.profiles.directQuotaOn": "Shows every limit, but Google may flag the account",
   "web-pages.profiles.maxConcurrentSessions": "Concurrency limit",
   "web-pages.profiles.maxConcurrentSessionsHint": "Positive integer (blank or 0 for unlimited)",
