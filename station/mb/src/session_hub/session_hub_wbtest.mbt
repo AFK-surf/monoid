@@ -38,6 +38,10 @@ test "a thread's commands and a reason given" {
   assert_eq(thread_command("<@U-1> -stop"), None)
   assert_true(is_reason("已合进 main 82f108a5"))
   assert_true(!is_reason("Done!"))
+  assert_true(asks_nothing("无需操作；此状态不应使用"))
+  assert_true(asks_nothing(" No action needed."))
+  assert_true(!asks_nothing("要 Stripe 的测试 key"))
+  assert_true(!asks_nothing("确认是否无需操作"))
   assert_eq(model_name("anthropic/claude-opus-5-5"), "Opus 5.5")
 }
 

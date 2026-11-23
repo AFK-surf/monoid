@@ -212,14 +212,32 @@ fn alnum_point(c : Int) -> Bool {
 /// `isReason`: whether all_done's `done` gives a reason, not only the word: at least a few characters, and not one of
 /// the words that say only that it is done.
 pub fn is_reason(done : String) -> Bool {
+  let bare = bare_words(done)
+  chars(bare) >= min_reason && !empty_reasons.contains(bare)
+}
+
+///|
+fn bare_words(text : String) -> String {
   let b = StringBuilder()
-  for c in done {
+  for c in text {
     if alnum_point(c.to_int()) {
       b.write_char(c)
     }
   }
-  let bare = @jscase.lower(b.to_string())
-  chars(bare) >= min_reason && !empty_reasons.contains(bare)
+  @jscase.lower(b.to_string())
+}
+
+///|
+let asks_nothing_openings : Array[String] = [
+  "无需操作", "无需处理", "不需要操作", "不需要处理", "noaction", "nothingneeded", "nothingtodo",
+]
+
+///|
+/// `asksNothing`: whether need_human's `need` opens by saying that nobody has to do anything: such a turn would ask a
+/// person for nothing.
+fn asks_nothing(need : String) -> Bool {
+  let bare = bare_words(need)
+  asks_nothing_openings.any(p => bare.has_prefix(p))
 }
 
 ///|
@@ -256,6 +274,11 @@ pub fn need_arg(args : Map[String, Json], kind : Json, said : String) -> String?
   if k == "need_help" && need is None && said == "now" {
     raise refuse(
       "need is required for need_human: what the person has to give, do or decide, in one sentence",
+    )
+  }
+  if need is Some(n) && asks_nothing(n) {
+    raise refuse(
+      "need must name what a person has to give, do or decide. If only your own work is running, post without kind and end with chat_state kind=waiting. If nothing is left, use all_done.",
     )
   }
   if k == "all_done" && done is None && said == "now" {

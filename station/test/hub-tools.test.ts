@@ -624,6 +624,9 @@ test("a turn ends all_done, needing a decision or help, or waiting, and the word
   const last = () => r.store.lastTurn(key)!;
   // need_help says what is needed: kept with the turn; refused without it.
   assert.ok((await r.refused(key, "chat_post", { to, text: "卡住了", kind: "need_help" })).includes("need is required"));
+  for (const nothing of ["无需操作；此状态不应使用", "No action needed."]) {
+    assert.ok((await r.refused(key, "chat_post", { to, text: "任务已启动", kind: "need_human", need: nothing })).includes("chat_state kind=waiting"), nothing);
+  }
   assert.equal(await r.call(key, "chat_post", { to, text: "卡住了", kind: "need_human", need: " 要 Stripe 的测试 key " }), `Posted to ${to}, and recorded state need_human.`);
   r.claude.last().complete();
   await settle();

@@ -63,12 +63,21 @@ export function stateArg(value: Json): [DeclaredState, Said] | null {
 /// Whether all_done's `done` gives a reason, not only the word: at least a few characters, and not one of the words
 /// that say only that it is done.
 export function isReason(done: string): boolean {
-  const bare = Array.from(done)
+  const bare = bareWords(done);
+  const EMPTY = ["做完了", "已完成", "全部完成", "都完成了", "done", "ok", "alldone", "finished", "allfinished"];
+  return chars(bare) >= MIN_REASON && !EMPTY.includes(bare);
+}
+
+const bareWords = (text: string): string =>
+  Array.from(text)
     .filter((c) => /^[\p{Alphabetic}\p{N}]$/u.test(c))
     .join("")
     .toLowerCase();
-  const EMPTY = ["做完了", "已完成", "全部完成", "都完成了", "done", "ok", "alldone", "finished", "allfinished"];
-  return chars(bare) >= MIN_REASON && !EMPTY.includes(bare);
+
+/// Whether need_human's `need` opens by saying that nobody has to do anything: such a turn would ask a person for nothing.
+function asksNothing(need: string): boolean {
+  const bare = bareWords(need);
+  return ["无需操作", "无需处理", "不需要操作", "不需要处理", "noaction", "nothingneeded", "nothingtodo"].some((p) => bare.startsWith(p));
 }
 
 /// The turn's words kept with it (turns.need): what a need_help turn needs of a person (`need`), or what an all_done
@@ -89,6 +98,9 @@ export function needArg(args: Args, kind: DeclaredState, said: Said): string | n
     );
   }
   if (kind.kind === "need_help" && need === null && said === "now") throw new Error("need is required for need_human: what the person has to give, do or decide, in one sentence");
+  if (need !== null && asksNothing(need)) {
+    throw new Error("need must name what a person has to give, do or decide. If only your own work is running, post without kind and end with chat_state kind=waiting. If nothing is left, use all_done.");
+  }
   if (kind.kind === "all_done" && done === null && said === "now") {
     throw new Error("done is required for all_done: why nothing in the chat is left, with the evidence (e.g. 已合进 main 82f108a5，测试版 1389 已发，你确认过滑动可以)");
   }

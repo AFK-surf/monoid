@@ -32,7 +32,7 @@ let decl_chat_post : String =
   #|          "all_done",
   #|          "need_human"
   #|        ],
-  #|        "description": "Omit for a progress update. all_done: nothing in the chat is left unfinished; give done. need_human: a person has to give, do or decide something (a card you posted included); give need. Only for a real unresolved need: a factual answer alone needs no follow-up question."
+  #|        "description": "Omit for a progress update, and also when only your own work is still running (then end with chat_state kind=waiting). all_done: nothing in the chat is left unfinished; give done. need_human: a person has to give, do or decide something (a card you posted included); give need. Only for a real unresolved need: a factual answer alone needs no follow-up question."
   #|      },
   #|      "need": {
   #|        "type": "string",
