@@ -1,0 +1,622 @@
+// Keyed delta engine & value digest tokens matching `client/core-ts/src/collections.ts`,
+// `client/core-ts/src/delta.ts`, and `client/core-ts/src/store.ts` (`have` / `keep` / `same` / `delta`).
+// Produces minimal item-level ops (`put`, `patch`, `drop`, `move`, `set`, `remove`, `append`)
+// so incremental updates to `chats` and `chat` never resend unchanged rows or messages.
+
+import "base_codec"
+import "crypto"
+
+pub struct KeyedSpec {
+  pub key : Array[String]
+  pub item : Option[KeyedSpec]
+  pub fields : Array[(String, KeyedSpec)]
+}
+
+fn spec_items(key_field : String) -> KeyedSpec {
+  KeyedSpec::{ key: [key_field], item: None, fields: [] }
+}
+
+fn spec_fields(fs : Array[(String, KeyedSpec)]) -> KeyedSpec {
+  KeyedSpec::{ key: [], item: None, fields: fs }
+}
+
+/// Keyed collection spec by topic name (matches `collections.ts SPECS`).
+pub fn spec_for_topic(topic_name : String) -> Option[KeyedSpec] {
+  let chat_rows = KeyedSpec::{ key: ["station", "id"], item: None, fields: [] }
+  if topic_name == "chats" {
+    let day_spec = KeyedSpec::{
+      key: ["daysAgo"],
+      item: Some(spec_fields([("items", chat_rows)])),
+      fields: [],
+    }
+    return Some(spec_fields([("rows", chat_rows), ("days", day_spec)]))
+  }
+  if topic_name == "chat" {
+    let msg_spec = KeyedSpec::{ key: ["seq", "outgoing"], item: None, fields: [] }
+    return Some(spec_fields([
+      ("entries", spec_items("n")),
+      ("messages", msg_spec),
+      ("outbox", spec_items("id")),
+    ]))
+  }
+  if topic_name == "sessions" {
+    return Some(spec_fields([("sessions", spec_items("key"))]))
+  }
+  if topic_name == "jobs" {
+    return Some(spec_fields([("jobs", spec_items("id"))]))
+  }
+  if topic_name == "stations" || topic_name == "workspace" {
+    return Some(spec_fields([("stations", spec_items("address"))]))
+  }
+  if topic_name == "workspaces" {
+    return Some(spec_fields([("workspaces", spec_items("id"))]))
+  }
+  if topic_name == "vaults" {
+    return Some(spec_fields([("vaults", spec_items("id")), ("requests", spec_items("id"))]))
+  }
+  if topic_name == "vaultItems" {
+    return Some(spec_fields([("items", spec_items("id"))]))
+  }
+  if topic_name == "search" || topic_name == "chatSearch" {
+    let msg_hit = KeyedSpec::{ key: ["station", "thread", "seq"], item: None, fields: [] }
+    return Some(spec_fields([("items", chat_rows), ("messages", msg_hit)]))
+  }
+  None
+}
+
+/// Deterministic opaque value token for `keep` / `have` negotiation (`v` / `same: true`).
+pub fn value_token(v : base_codec::Json) -> String {
+  crypto::sha256_hex(base_codec::json_stringify(v).to_bytes())
+}
+
+pub fn json_equal(a : base_codec::Json, b : base_codec::Json) -> Bool {
+  base_codec::json_stringify(a) == base_codec::json_stringify(b)
+}
+
+fn spec_field_get(spec : KeyedSpec, name : String) -> Option[KeyedSpec] {
+  for i in 0..<spec.fields.length() {
+    if spec.fields[i].0 == name {
+      return Some(spec.fields[i].1)
+    }
+  }
+  spec.item
+}
+
+fn copy_path(path : Array[base_codec::Json]) -> Array[base_codec::Json] {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<path.length() {
+    out.push(path[i])
+  }
+  out
+}
+
+fn key_of_item(item : base_codec::Json, fields : Array[String]) -> base_codec::Json {
+  if fields.length() == 1 {
+    match base_codec::json_get(item, fields[0]) {
+      Some(v) => v
+      None => base_codec::json_null()
+    }
+  } else {
+    let arr : Array[base_codec::Json] = []
+    for i in 0..<fields.length() {
+      match base_codec::json_get(item, fields[i]) {
+        Some(v) => arr.push(v)
+        None => arr.push(base_codec::json_null())
+      }
+    }
+    base_codec::json_arr(arr)
+  }
+}
+
+fn key_text(k : base_codec::Json) -> String {
+  base_codec::json_stringify(k)
+}
+
+fn fields_json(fields : Array[String]) -> base_codec::Json {
+  let arr : Array[base_codec::Json] = []
+  for i in 0..<fields.length() {
+    arr.push(base_codec::json_str(fields[i]))
+  }
+  base_codec::json_arr(arr)
+}
+
+fn unique_keys_of(arr : Array[base_codec::Json], start : Int, end_i : Int, fields : Array[String]) -> Option[Array[String]] {
+  let out : Array[String] = []
+  let seen : Map[String, Bool] = Map::new()
+  for i in start..<end_i {
+    let kt = key_text(key_of_item(arr[i], fields))
+    if seen.get(kt).is_some() {
+      return None
+    }
+    seen.set(kt, true)
+    out.push(kt)
+  }
+  Some(out)
+}
+
+/// Longest strictly increasing subsequence of non-negative indices in `positions`.
+fn longest_increasing_run(positions : Array[Int]) -> Map[Int, Bool] {
+  let n = positions.length()
+  let tails : Array[Int] = []
+  let prev : Array[Int] = []
+  for _ in 0..<n {
+    prev.push(-1)
+  }
+  for i in 0..<n {
+    let p = positions[i]
+    if p < 0 {
+      continue
+    }
+    let mut lo = 0
+    let mut hi = tails.length()
+    while lo < hi {
+      let mid = (lo + hi) / 2
+      if positions[tails[mid]] < p {
+        lo = mid + 1
+      } else {
+        hi = mid
+      }
+    }
+    if lo > 0 {
+      prev[i] = tails[lo - 1]
+    }
+    if lo == tails.length() {
+      tails.push(i)
+    } else {
+      tails[lo] = i
+    }
+  }
+  let stay : Map[Int, Bool] = Map::new()
+  let mut cur = if tails.length() > 0 { tails[tails.length() - 1] } else { -1 }
+  while cur >= 0 {
+    stay.set(cur, true)
+    cur = prev[cur]
+  }
+  stay
+}
+
+fn diff_keyed_list(
+  path : Array[base_codec::Json],
+  old_arr : Array[base_codec::Json],
+  next_arr : Array[base_codec::Json],
+  spec : KeyedSpec,
+  ops : Array[base_codec::Json],
+) -> Bool {
+  let fields = spec.key
+  let mut start = 0
+  while start < old_arr.length() && start < next_arr.length() && json_equal(old_arr[start], next_arr[start]) {
+    start += 1
+  }
+  let mut old_end = old_arr.length()
+  let mut next_end = next_arr.length()
+  while old_end > start && next_end > start && json_equal(old_arr[old_end - 1], next_arr[next_end - 1]) {
+    old_end -= 1
+    next_end -= 1
+  }
+  if start == old_end && start == next_end {
+    return true
+  }
+  let old_keys = match unique_keys_of(old_arr, start, old_end, fields) {
+    Some(ks) => ks
+    None => return false
+  }
+  let next_keys = match unique_keys_of(next_arr, start, next_end, fields) {
+    Some(ks) => ks
+    None => return false
+  }
+  let was : Map[String, Int] = Map::new()
+  for i in 0..<old_keys.length() {
+    was.set(old_keys[i], start + i)
+  }
+  let now_set : Map[String, Bool] = Map::new()
+  for i in 0..<next_keys.length() {
+    now_set.set(next_keys[i], true)
+  }
+  let kj = fields_json(fields)
+  let out : Array[base_codec::Json] = []
+  for i in start..<old_end {
+    if now_set.get(old_keys[i - start]).is_none() {
+      out.push(base_codec::json_obj([
+        ("path", base_codec::json_arr(copy_path(path))),
+        ("key", kj),
+        ("drop", key_of_item(old_arr[i], fields)),
+      ]))
+    }
+  }
+  let positions : Array[Int] = []
+  for i in 0..<next_keys.length() {
+    match was.get(next_keys[i]) {
+      Some(idx) => positions.push(idx)
+      None => positions.push(-1)
+    }
+  }
+  let stay = longest_increasing_run(positions)
+  let mut j = positions.length() - 1
+  while j >= 0 {
+    let i = start + j
+    let before = if i + 1 < next_arr.length() {
+      key_of_item(next_arr[i + 1], fields)
+    } else {
+      base_codec::json_null()
+    }
+    let from = positions[j]
+    if from < 0 {
+      out.push(base_codec::json_obj([
+        ("path", base_codec::json_arr(copy_path(path))),
+        ("key", kj),
+        ("put", next_arr[i]),
+        ("before", before),
+      ]))
+    } else {
+      if stay.get(j).is_none() {
+        out.push(base_codec::json_obj([
+          ("path", base_codec::json_arr(copy_path(path))),
+          ("key", kj),
+          ("move", key_of_item(next_arr[i], fields)),
+          ("before", before),
+        ]))
+      }
+      let item_changes = diff_keyed(old_arr[from], next_arr[i], spec.item)
+      if item_changes.length() > 0 {
+        out.push(base_codec::json_obj([
+          ("path", base_codec::json_arr(copy_path(path))),
+          ("key", kj),
+          ("patch", key_of_item(next_arr[i], fields)),
+          ("ops", base_codec::json_arr(item_changes)),
+        ]))
+      }
+    }
+    j -= 1
+  }
+  for i in 0..<out.length() {
+    ops.push(out[i])
+  }
+  true
+}
+
+fn diff_at(
+  path : Array[base_codec::Json],
+  old : base_codec::Json,
+  next : base_codec::Json,
+  spec : Option[KeyedSpec],
+  ops : Array[base_codec::Json],
+) -> Unit {
+  if json_equal(old, next) {
+    return
+  }
+  match (old, next) {
+    (base_codec::Json::Arr(oa), base_codec::Json::Arr(na)) => {
+      match spec {
+        Some(sp) => {
+          if sp.key.length() > 0 && diff_keyed_list(path, oa, na, sp, ops) {
+            return
+          }
+        }
+        None => ()
+      }
+      if oa.length() == na.length() {
+        let item_spec = match spec {
+          Some(sp) => sp.item
+          None => None
+        }
+        for i in 0..<oa.length() {
+          path.push(base_codec::json_int(i))
+          diff_at(path, oa[i], na[i], item_spec, ops)
+          let _ = path.pop()
+        }
+        return
+      }
+      if oa.length() < na.length() {
+        let mut prefix_same = true
+        for i in 0..<oa.length() {
+          if !json_equal(oa[i], na[i]) {
+            prefix_same = false
+            break
+          }
+        }
+        if prefix_same {
+          let tail : Array[base_codec::Json] = []
+          for i in oa.length()..<na.length() {
+            tail.push(na[i])
+          }
+          ops.push(base_codec::json_obj([
+            ("path", base_codec::json_arr(copy_path(path))),
+            ("append", base_codec::json_arr(tail)),
+          ]))
+          return
+        }
+      }
+      ops.push(base_codec::json_obj([
+        ("path", base_codec::json_arr(copy_path(path))),
+        ("set", next),
+      ]))
+    }
+    (base_codec::Json::Obj(of), base_codec::Json::Obj(nf)) => {
+      for i in 0..<nf.length() {
+        let (k, nv) = nf[i]
+        path.push(base_codec::json_str(k))
+        match base_codec::json_obj_get(of, k) {
+          Some(ov) => {
+            let child_spec = match spec {
+              Some(sp) => spec_field_get(sp, k)
+              None => None
+            }
+            diff_at(path, ov, nv, child_spec, ops)
+          }
+          None => {
+            ops.push(base_codec::json_obj([
+              ("path", base_codec::json_arr(copy_path(path))),
+              ("set", nv),
+            ]))
+          }
+        }
+        let _ = path.pop()
+      }
+      for i in 0..<of.length() {
+        let (k, _) = of[i]
+        if base_codec::json_obj_get(nf, k).is_none() {
+          path.push(base_codec::json_str(k))
+          ops.push(base_codec::json_obj([
+            ("path", base_codec::json_arr(copy_path(path))),
+            ("remove", base_codec::json_bool(true)),
+          ]))
+          let _ = path.pop()
+        }
+      }
+    }
+    _ => {
+      ops.push(base_codec::json_obj([
+        ("path", base_codec::json_arr(copy_path(path))),
+        ("set", next),
+      ]))
+    }
+  }
+}
+
+/// Compute minimal ops (keyed where `spec` applies) transforming `old` into `next`.
+pub fn diff_keyed(
+  old : base_codec::Json,
+  next : base_codec::Json,
+  spec : Option[KeyedSpec],
+) -> Array[base_codec::Json] {
+  let ops : Array[base_codec::Json] = []
+  let path : Array[base_codec::Json] = []
+  diff_at(path, old, next, spec, ops)
+  ops
+}
+
+fn parse_key_fields(j : base_codec::Json) -> Array[String] {
+  let out : Array[String] = []
+  match j {
+    base_codec::Json::Arr(arr) => {
+      for i in 0..<arr.length() {
+        match arr[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn find_key_index(list : Array[base_codec::Json], fields : Array[String], want : base_codec::Json) -> Int {
+  let wt = key_text(want)
+  for i in 0..<list.length() {
+    if key_text(key_of_item(list[i], fields)) == wt {
+      return i
+    }
+  }
+  -1
+}
+
+fn insert_before_key(
+  list : Array[base_codec::Json],
+  fields : Array[String],
+  item : base_codec::Json,
+  before : base_codec::Json,
+) -> Array[base_codec::Json] {
+  let at = match before {
+    base_codec::Json::Null => -1
+    _ => find_key_index(list, fields, before)
+  }
+  let out : Array[base_codec::Json] = []
+  if at < 0 {
+    for i in 0..<list.length() {
+      out.push(list[i])
+    }
+    out.push(item)
+  } else {
+    for i in 0..<list.length() {
+      if i == at {
+        out.push(item)
+      }
+      out.push(list[i])
+    }
+  }
+  out
+}
+
+fn remove_at_index(list : Array[base_codec::Json], idx : Int) -> Array[base_codec::Json] {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<list.length() {
+    if i != idx {
+      out.push(list[i])
+    }
+  }
+  out
+}
+
+fn apply_list_op(list : Array[base_codec::Json], op : base_codec::Json) -> Array[base_codec::Json] {
+  let fields = match base_codec::json_get(op, "key") {
+    Some(kj) => parse_key_fields(kj)
+    None => return list
+  }
+  match base_codec::json_get(op, "drop") {
+    Some(dk) => {
+      let i = find_key_index(list, fields, dk)
+      if i >= 0 {
+        return remove_at_index(list, i)
+      }
+      return list
+    }
+    None => ()
+  }
+  match base_codec::json_get(op, "patch") {
+    Some(pk) => {
+      let i = find_key_index(list, fields, pk)
+      if i >= 0 {
+        let sub_ops = match base_codec::json_get(op, "ops") {
+          Some(base_codec::Json::Arr(a)) => a
+          _ => []
+        }
+        let out : Array[base_codec::Json] = []
+        for idx in 0..<list.length() {
+          if idx == i {
+            out.push(apply_keyed(list[idx], sub_ops))
+          } else {
+            out.push(list[idx])
+          }
+        }
+        return out
+      }
+      return list
+    }
+    None => ()
+  }
+  match base_codec::json_get(op, "move") {
+    Some(mk) => {
+      let i = find_key_index(list, fields, mk)
+      if i < 0 {
+        return list
+      }
+      let item = list[i]
+      let without = remove_at_index(list, i)
+      let before = match base_codec::json_get(op, "before") {
+        Some(b) => b
+        None => base_codec::json_null()
+      }
+      return insert_before_key(without, fields, item, before)
+    }
+    None => ()
+  }
+  match base_codec::json_get(op, "put") {
+    Some(item) => {
+      let i = find_key_index(list, fields, key_of_item(item, fields))
+      let before_opt = base_codec::json_get(op, "before")
+      if i >= 0 && before_opt.is_none() {
+        let out : Array[base_codec::Json] = []
+        for idx in 0..<list.length() {
+          if idx == i {
+            out.push(item)
+          } else {
+            out.push(list[idx])
+          }
+        }
+        return out
+      }
+      let without = if i >= 0 { remove_at_index(list, i) } else { list }
+      let before = match before_opt {
+        Some(b) => b
+        None => base_codec::json_null()
+      }
+      return insert_before_key(without, fields, item, before)
+    }
+    None => list
+  }
+}
+
+fn apply_one(node : base_codec::Json, path : Array[base_codec::Json], depth : Int, op : base_codec::Json) -> base_codec::Json {
+  if depth == path.length() {
+    if base_codec::json_get(op, "key").is_some() {
+      match node {
+        base_codec::Json::Arr(a) => return base_codec::json_arr(apply_list_op(a, op))
+        _ => return node
+      }
+    }
+    match base_codec::json_get(op, "set") {
+      Some(v) => return v
+      None => ()
+    }
+    match base_codec::json_get(op, "append") {
+      Some(base_codec::Json::Arr(extra)) =>
+      match node {
+        base_codec::Json::Arr(a) => {
+          let out : Array[base_codec::Json] = []
+          for i in 0..<a.length() {
+            out.push(a[i])
+          }
+          for i in 0..<extra.length() {
+            out.push(extra[i])
+          }
+          return base_codec::json_arr(out)
+        }
+        _ => return node
+      }
+      _ => ()
+    }
+    return node
+  }
+  let seg = path[depth]
+  match (node, seg) {
+    (base_codec::Json::Arr(a), base_codec::Json::Num(idx_d, _)) => {
+      let idx = idx_d.to_int()
+      if idx < 0 || idx >= a.length() {
+        return node
+      }
+      let out : Array[base_codec::Json] = []
+      for i in 0..<a.length() {
+        if i == idx {
+          out.push(apply_one(a[i], path, depth + 1, op))
+        } else {
+          out.push(a[i])
+        }
+      }
+      base_codec::json_arr(out)
+    }
+    (base_codec::Json::Obj(fs), base_codec::Json::Str(k)) => {
+      if base_codec::json_get(op, "remove").is_some() && depth == path.length() - 1 {
+        let out : Array[(String, base_codec::Json)] = []
+        for i in 0..<fs.length() {
+          if fs[i].0 != k {
+            out.push(fs[i])
+          }
+        }
+        return base_codec::json_obj(out)
+      }
+      let mut found = false
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fs.length() {
+        if fs[i].0 == k {
+          found = true
+          out.push((k, apply_one(fs[i].1, path, depth + 1, op)))
+        } else {
+          out.push(fs[i])
+        }
+      }
+      if !found && depth == path.length() - 1 {
+        match base_codec::json_get(op, "set") {
+          Some(v) => out.push((k, v))
+          None => ()
+        }
+      }
+      base_codec::json_obj(out)
+    }
+    _ => node
+  }
+}
+
+/// Apply keyed/unkeyed delta ops produced by `diff_keyed` to `value`.
+pub fn apply_keyed(value : base_codec::Json, ops : Array[base_codec::Json]) -> base_codec::Json {
+  let mut cur = value
+  for i in 0..<ops.length() {
+    let op = ops[i]
+    let path = match base_codec::json_get(op, "path") {
+      Some(base_codec::Json::Arr(p)) => p
+      _ => []
+    }
+    cur = apply_one(cur, path, 0, op)
+  }
+  cur
+}

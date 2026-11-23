@@ -1,0 +1,256 @@
+// High-frequency local store operations: draft persistence, thread read cursor updates,
+// workspace preference settings (`workspace_pref`), indexed chat search (`chat_recent`),
+// and message full-text search via the trigger-maintained `said` table.
+// Never performs a full-table scan of `chat`.
+
+import "base_codec"
+import "sql"
+
+pub fn sql_draft_put() -> String {
+  "INSERT OR REPLACE INTO draft (station, chat, json) VALUES (?, ?, ?)"
+}
+
+pub fn sql_draft_delete() -> String {
+  "DELETE FROM draft WHERE station = ? AND chat = ?"
+}
+
+pub fn sql_thread_set_read() -> String {
+  "UPDATE thread SET read = ?, unread = ? WHERE station = ? AND id = ?"
+}
+
+pub fn sql_chat_set_unread() -> String {
+  "UPDATE chat SET unread = ? WHERE station = ? AND archived = 0 AND thread = ?"
+}
+
+pub fn sql_pref_get() -> String {
+  "SELECT json FROM workspace_pref WHERE workspace = ? AND key = ?"
+}
+
+pub fn sql_pref_all() -> String {
+  "SELECT key, json FROM workspace_pref WHERE workspace = ? ORDER BY key"
+}
+
+pub fn sql_pref_put() -> String {
+  "INSERT OR REPLACE INTO workspace_pref (workspace, key, json) VALUES (?, ?, ?)"
+}
+
+pub fn sql_search_messages_station() -> String {
+  "SELECT station, thread, seq, n, at, text FROM said WHERE station = ? AND instr(lower(text), lower(?)) > 0 ORDER BY at DESC, seq DESC LIMIT ?"
+}
+
+pub fn sql_search_messages_all() -> String {
+  "SELECT station, thread, seq, n, at, text FROM said WHERE instr(lower(text), lower(?)) > 0 ORDER BY at DESC, seq DESC LIMIT ?"
+}
+
+/// Indexed chat search bounded by `chat_recent` (`archived = 0`, ordered by `pinned_at DESC, last_active DESC`).
+pub fn sql_search_chats() -> String {
+  "SELECT c.station, c.archived, c.id, c.thread, c.last_active, c.json " +
+  "FROM chat AS c " +
+  "WHERE c.archived = 0 AND instr(?1, char(1) || c.station || char(1)) > 0 " +
+  "AND (?2 = '' OR instr(lower(coalesce(json_extract(c.json, '$.title'), c.id)), lower(?2)) > 0) " +
+  "ORDER BY c.pinned_at DESC, c.last_active DESC LIMIT ?3"
+}
+
+pub struct PrefRow {
+  pub workspace : String
+  pub key : String
+  pub json : String
+}
+
+pub struct SearchMessageHit {
+  pub station : String
+  pub thread : Int
+  pub seq : Int
+  pub n : Int
+  pub at : Option[Int64]
+  pub text : String
+}
+
+pub struct SearchChatHit {
+  pub station : String
+  pub archived : Int
+  pub id : String
+  pub thread : Option[Int]
+  pub last_active : Int64
+  pub json : String
+}
+
+/// Persist a local draft for `(station, chat)`.
+pub fn put_draft(db : sql::Sql, station : String, chat : String, json : String) -> sql::SqlResult[Unit] {
+  match db.run(sql_draft_put(), params=[
+    base_codec::json_str(station),
+    base_codec::json_str(chat),
+    base_codec::json_str(json),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+  }
+}
+
+/// Remove a local draft for `(station, chat)`.
+pub fn delete_draft(db : sql::Sql, station : String, chat : String) -> sql::SqlResult[Unit] {
+  match db.run(sql_draft_delete(), params=[
+    base_codec::json_str(station),
+    base_codec::json_str(chat),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+  }
+}
+
+/// Update read cursor & unread count for `(station, thread)` atomically in one `Burst` transaction.
+pub fn update_thread_read(
+  db : sql::Sql,
+  station : String,
+  thread : Int,
+  read_seq : Int,
+  unread_count : Int,
+) -> sql::SqlResult[Unit] {
+  let burst = sql::Burst::new(db)
+  burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+    match b.run(sql_thread_set_read(), params=[
+      base_codec::json_int(read_seq),
+      base_codec::json_int(unread_count),
+      base_codec::json_str(station),
+      base_codec::json_int(thread),
+    ]) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => ()
+    }
+    match b.run(sql_chat_set_unread(), params=[
+      base_codec::json_int(unread_count),
+      base_codec::json_str(station),
+      base_codec::json_int(thread),
+    ]) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => ()
+    }
+    sql::SqlResult::Ok(())
+  })
+}
+
+/// Read one workspace preference key from `workspace_pref`.
+pub fn get_workspace_pref(db : sql::Sql, workspace : String, key : String) -> sql::SqlResult[Option[String]] {
+  match db.all(sql_pref_get(), params=[base_codec::json_str(workspace), base_codec::json_str(key)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        sql::SqlResult::Ok(Some(sql::col_text(rows[0], 0)))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}
+
+/// List all workspace preferences for `workspace`, ordered by `key`.
+pub fn list_workspace_prefs(db : sql::Sql, workspace : String) -> sql::SqlResult[Array[PrefRow]] {
+  match db.all(sql_pref_all(), params=[base_codec::json_str(workspace)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[PrefRow] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        out.push(PrefRow::{
+          workspace: workspace,
+          key: sql::col_text(r, 0),
+          json: sql::col_text(r, 1),
+        })
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
+}
+
+/// Persist one workspace preference key in `workspace_pref`.
+pub fn put_workspace_pref(db : sql::Sql, workspace : String, key : String, json : String) -> sql::SqlResult[Unit] {
+  match db.run(sql_pref_put(), params=[
+    base_codec::json_str(workspace),
+    base_codec::json_str(key),
+    base_codec::json_str(json),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+  }
+}
+
+/// Search messages through the trigger-maintained SQLite `said` table.
+pub fn search_messages(
+  db : sql::Sql,
+  query : String,
+  station : Option[String] = None,
+  limit : Int = 50,
+) -> sql::SqlResult[Array[SearchMessageHit]] {
+  if query.length() == 0 || limit <= 0 {
+    return sql::SqlResult::Ok([])
+  }
+  let res = match station {
+    Some(st) =>
+    db.all(sql_search_messages_station(), params=[
+      base_codec::json_str(st),
+      base_codec::json_str(query),
+      base_codec::json_int(limit),
+    ])
+    None =>
+    db.all(sql_search_messages_all(), params=[
+      base_codec::json_str(query),
+      base_codec::json_int(limit),
+    ])
+  }
+  match res {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[SearchMessageHit] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        out.push(SearchMessageHit::{
+          station: sql::col_text(r, 0),
+          thread: sql::col_int(r, 1),
+          seq: sql::col_int(r, 2),
+          n: sql::col_int(r, 3),
+          at: sql::col_opt_int64(r, 4),
+          text: sql::col_text(r, 5),
+        })
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
+}
+
+/// Search active chats across `stations` bounded by `chat_recent` index and `limit`.
+pub fn search_chats(
+  db : sql::Sql,
+  stations : Array[String],
+  query : String,
+  limit : Int = 30,
+) -> sql::SqlResult[Array[SearchChatHit]] {
+  if stations.length() == 0 || limit <= 0 {
+    return sql::SqlResult::Ok([])
+  }
+  match db.all(sql_search_chats(), params=[
+    base_codec::json_str(in_order(stations)),
+    base_codec::json_str(query),
+    base_codec::json_int(limit),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[SearchChatHit] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        let th = match sql::col_opt_int64(r, 3) {
+          Some(v) => Some(v.to_int())
+          None => None
+        }
+        out.push(SearchChatHit::{
+          station: sql::col_text(r, 0),
+          archived: sql::col_int(r, 1),
+          id: sql::col_text(r, 2),
+          thread: th,
+          last_active: sql::col_int64(r, 4),
+          json: sql::col_text(r, 5),
+        })
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
+}

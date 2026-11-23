@@ -1,0 +1,250 @@
+// Real `core_api.h` runtime engine wiring `packages/core_abi/native/core_pion.c`
+// directly to `sync::ClientCore` + `shell_native::open` (real Rust `libstillfail_shell`
+// SQLite WAL + Tokio async IO) on the dedicated core worker thread.
+
+import "base_codec"
+import "core_abi"
+import "effect"
+import "protocol"
+import "shell"
+import "shell_native"
+import "sql"
+import "store"
+import "sync"
+
+extern "C" fn mb_core_emit(json : Ptr, len : Int64, bytes : Ptr, blen : Int64) -> Int
+
+struct RuntimeSession {
+  sh : shell::Shell
+  db : sql::Sql
+  core : sync::ClientCore
+  mut last_ack_call : Double
+  mut last_ack_ts : Double
+  mut screen_inputs : Int
+}
+
+let g_session : Array[Option[RuntimeSession]] = [None]
+
+fn bytes_to_str(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+fn ptr_to_string(p : Ptr, n : Int64) -> String {
+  if ptr_is_null(p) || n <= 0.to_int64() {
+    return ""
+  }
+  bytes_to_str(bytes_from_ptr(p, n.to_int()))
+}
+
+fn emit_wire(json_text : String, payload : Option[Bytes] = None) -> Unit {
+  let jb = json_text.to_bytes()
+  let jptr = bytes_data_ptr(jb)
+  let jlen = jb.length().to_int64()
+  match payload {
+    Some(pb) => {
+      let pptr = bytes_data_ptr(pb)
+      let plen = pb.length().to_int64()
+      let _ = mb_core_emit(jptr, jlen, pptr, plen)
+      let _ = pb.length()
+    }
+    None => {
+      let empty = Bytes::new(0)
+      let _ = mb_core_emit(jptr, jlen, bytes_data_ptr(empty), 0.to_int64())
+      let _ = empty.length()
+    }
+  }
+  let _ = jb.length()
+}
+
+fn emit_fatal(reason : String) -> Unit {
+  let frame = core_abi::make_fatal_frame(reason)
+  emit_wire(frame.json, payload=frame.bytes)
+}
+
+fn offline_transport() -> sync::StationTransport {
+  sync::StationTransport::{
+    request_k: fn(
+      _m : String,
+      _p : String,
+      _h : Array[(String, String)],
+      _b : Bytes,
+      k : (effect::Exit[sync::HttpReply]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Failed(effect::EffectError::Custom("offline")))
+    },
+    stream_k: fn(
+      _p : String,
+      _h : Array[(String, String)],
+      _on_chunk : (Bytes) -> Unit,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Failed(effect::EffectError::Custom("offline")))
+    },
+  }
+}
+
+/// Start the Pion `ClientCore` + real Rust `stillfail-shell` on `data_dir` (called on core thread).
+pub extern "C" fn pion_core_runtime_start(
+  data_dir : Ptr,
+  data_dir_len : Int64,
+  cloud_origin : Ptr,
+  cloud_origin_len : Int64,
+  beta : Int,
+) -> Int {
+  let dir = ptr_to_string(data_dir, data_dir_len)
+  let _origin = ptr_to_string(cloud_origin, cloud_origin_len)
+  let _beta_flag = beta != 0
+  if dir.length() == 0 {
+    emit_fatal("missing data_dir")
+    return 0
+  }
+  let rt = effect::Runtime::new()
+  let sh = match shell_native::open(rt, dir) {
+    Ok(s) => s
+    Err(e) => {
+      emit_fatal("shell_native::open failed: " + e)
+      return 0
+    }
+  }
+  let acct = match store::open_account_db(sh, "default") {
+    sql::SqlResult::Ok(a) => a
+    sql::SqlResult::Err(e) => {
+      emit_fatal("open_account_db failed: " + e.to_string())
+      return 0
+    }
+  }
+  match store::ensure_md_kept(acct.db) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(e) => {
+      emit_fatal("ensure_md_kept failed: " + e.to_string())
+      return 0
+    }
+  }
+  let core = sync::ClientCore::new("ws-default", "st-local", rt, acct.db, offline_transport(), fn() -> Unit {})
+  g_session[0] = Some(RuntimeSession::{
+    sh: sh,
+    db: acct.db,
+    core: core,
+    last_ack_call: 0.0,
+    last_ack_ts: 0.0,
+    screen_inputs: 0,
+  })
+  1
+}
+
+fn affected_topic_for_call(call_name : String) -> Option[String] {
+  if call_name == "settings.set" {
+    return Some("settings")
+  }
+  if call_name == "chat.draft" {
+    return Some("draft")
+  }
+  if call_name == "account.switch" {
+    return Some("accounts")
+  }
+  if call_name == "message.send" || call_name == "message.edit" || call_name == "message.delete" || call_name == "card.answer" {
+    return Some("chat")
+  }
+  if call_name == "chat.read" || call_name == "chat.rename" {
+    return Some("chats")
+  }
+  None
+}
+
+/// Dispatch one JSON + optional binary message from `mb_core_send` on the core thread.
+pub extern "C" fn pion_core_runtime_send(
+  json : Ptr,
+  len : Int64,
+  bytes : Ptr,
+  blen : Int64,
+) -> Unit {
+  let sess = match g_session[0] {
+    Some(s) => s
+    None => {
+      emit_fatal("core runtime not started")
+      return
+    }
+  }
+  let json_text = ptr_to_string(json, len)
+  let payload = if !ptr_is_null(bytes) && blen > 0.to_int64() {
+    Some(bytes_from_ptr(bytes, blen.to_int()))
+  } else {
+    None
+  }
+  let parsed = protocol::decode_client_message(json_text, bytes=payload)
+  match parsed {
+    protocol::ParseRequestResult::Invalid(msg) => {
+      let ev = protocol::CoreEvent::Err(0.to_int64(), protocol::CoreError::{ code: "bad_message", message: msg })
+      let (out_j, out_b) = protocol::encode_core_event(ev)
+      emit_wire(out_j, payload=out_b)
+    }
+    protocol::ParseRequestResult::Ok(req) => {
+      let refresh_topic = match req {
+        protocol::CoreRequest::Call(_, call_name, _, _) => affected_topic_for_call(call_name)
+        _ => None
+      }
+      match sess.core.handle_request(req) {
+        Some(ev) => {
+          let (out_j, out_b) = protocol::encode_core_event(ev)
+          emit_wire(out_j, payload=out_b)
+        }
+        None => ()
+      }
+      let _ = sess.sh.pump(0.to_int64())
+      sess.core.rt.tick()
+      match refresh_topic {
+        Some(tname) => {
+          let deltas = sess.core.refresh_topic(tname)
+          for i in 0..<deltas.length() {
+            let (dj, db) = protocol::encode_core_event(deltas[i])
+            emit_wire(dj, payload=db)
+          }
+        }
+        None => ()
+      }
+    }
+  }
+}
+
+/// Stop the Pion `ClientCore` and close its SQLite database handle cleanly.
+pub extern "C" fn pion_core_runtime_stop() -> Unit {
+  match g_session[0] {
+    Some(sess) => {
+      sess.core.stop()
+      sess.db.close()
+      g_session[0] = None
+    }
+    None => ()
+  }
+}
+
+/// Handle `mb_core_screen_ack(call, ts)` forwarded from `core_pion.c`.
+pub extern "C" fn pion_core_runtime_screen_ack(call : Double, ts : Double) -> Int {
+  match g_session[0] {
+    Some(sess) => {
+      sess.last_ack_call = call
+      sess.last_ack_ts = ts
+      1
+    }
+    None => 0
+  }
+}
+
+/// Handle `mb_core_screen_input(call, json, len)` forwarded from `core_pion.c`.
+pub extern "C" fn pion_core_runtime_screen_input(call : Double, json : Ptr, len : Int64) -> Int {
+  let _ = call
+  match g_session[0] {
+    Some(sess) => {
+      if ptr_is_null(json) || len <= 0.to_int64() {
+        return 0
+      }
+      sess.screen_inputs += 1
+      1
+    }
+    None => 0
+  }
+}

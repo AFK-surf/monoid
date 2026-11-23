@@ -39,7 +39,7 @@ pub fn ClientCore::new(
   let events = StationEvents::new(workspace, station, db, frame_outbox, transport)
   let local_outbox = LocalOutbox::new(station, db, frame_outbox, transport)
   let sync = SyncScheduler::new(workspace, station, events, transport)
-  let router = protocol::Slice1Router::new(db, md_store)
+  let router = protocol::Slice1Router::new(db, md_store, workspace=workspace)
   let core = ClientCore::{
     workspace: workspace,
     station: station,
@@ -162,6 +162,36 @@ pub fn ClientCore::pin_chat(self : ClientCore, chat_id : String, pinned_at : Opt
 /// Optimistically archive a chat (rolled back automatically if station refuses).
 pub fn ClientCore::archive_chat(self : ClientCore, chat_id : String) -> sql::SqlResult[Int] {
   self.local_outbox.apply_chat_overlay(self.rt, chat_id, "archive", base_codec::json_obj([("archived", base_codec::json_bool(true))]))
+}
+
+/// Optimistically edit a message in `thread` at `target_seq`.
+pub fn ClientCore::edit_message(self : ClientCore, thread : Int, target_seq : Int, text : String, now : Int64) -> sql::SqlResult[Int] {
+  self.local_outbox.edit_message(self.rt, thread, target_seq, text, now)
+}
+
+/// Optimistically delete a message in `thread` at `target_seq`.
+pub fn ClientCore::delete_message(self : ClientCore, thread : Int, target_seq : Int, now : Int64) -> sql::SqlResult[Int] {
+  self.local_outbox.delete_message(self.rt, thread, target_seq, now)
+}
+
+/// Optimistically answer a decision card at `(thread, seq)`.
+pub fn ClientCore::answer_card(self : ClientCore, thread : Int, seq : Int, option : String, action : String, now : Int64) -> sql::SqlResult[Int] {
+  self.local_outbox.answer_card(self.rt, thread, seq, option, action, now)
+}
+
+/// Update read cursor locally in SQLite and notify station when online.
+pub fn ClientCore::mark_chat_read(self : ClientCore, thread : Int, read_seq : Int, unread_count : Int = 0) -> sql::SqlResult[Unit] {
+  self.local_outbox.mark_read(self.rt, thread, read_seq, unread_count)
+}
+
+/// Refresh an active subscription and emit incremental keyed `CoreEvent::Delta` if changed.
+pub fn ClientCore::refresh_subscription(self : ClientCore, id : Int64) -> Option[protocol::CoreEvent] {
+  self.router.refresh_sub(id)
+}
+
+/// Refresh all active subscriptions matching `topic_name` (`"chats"`, `"chat"`, etc.).
+pub fn ClientCore::refresh_topic(self : ClientCore, topic_name : String) -> Array[protocol::CoreEvent] {
+  self.router.refresh_topic_name(topic_name)
 }
 
 /// Verify and apply a workspace lock chain natively via `pion/rules` (0 JSON boundary).
@@ -313,6 +343,120 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
         }
         match self.send_message(th, ck, author, text, self.rt.now()) {
           sql::SqlResult::Ok(_) => return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("queued", base_codec::json_bool(true)), ("clientKey", base_codec::json_str(ck))]), None))
+          sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+        }
+      }
+      if call_name == "message.edit" {
+        let th = match proto_int(params, "thread") {
+          Some(t) => t
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing thread" }))
+        }
+        let target = match proto_int(params, "target") {
+          Some(t) => t
+          None =>
+          match proto_int(params, "seq") {
+            Some(s) => s
+            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing target" }))
+          }
+        }
+        let text = match proto_str(params, "text") {
+          Some(s) => s
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing text" }))
+        }
+        match self.edit_message(th, target, text, self.rt.now()) {
+          sql::SqlResult::Ok(op_id) =>
+          return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+            ("opId", base_codec::json_int(op_id)),
+            ("thread", base_codec::json_int(th)),
+            ("target", base_codec::json_int(target)),
+          ]), None))
+          sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+        }
+      }
+      if call_name == "message.delete" {
+        let th = match proto_int(params, "thread") {
+          Some(t) => t
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing thread" }))
+        }
+        let target = match proto_int(params, "target") {
+          Some(t) => t
+          None =>
+          match proto_int(params, "seq") {
+            Some(s) => s
+            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing target" }))
+          }
+        }
+        match self.delete_message(th, target, self.rt.now()) {
+          sql::SqlResult::Ok(op_id) =>
+          return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+            ("opId", base_codec::json_int(op_id)),
+            ("thread", base_codec::json_int(th)),
+            ("target", base_codec::json_int(target)),
+          ]), None))
+          sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+        }
+      }
+      if call_name == "card.answer" {
+        let th = match proto_int(params, "thread") {
+          Some(t) => t
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing thread" }))
+        }
+        let seq = match proto_int(params, "seq") {
+          Some(s) => s
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing seq" }))
+        }
+        let option = match proto_str(params, "option") {
+          Some(o) => o
+          None =>
+          match proto_str(params, "value") {
+            Some(v) => v
+            None =>
+            match proto_str(params, "text") {
+              Some(t) => t
+              None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing option" }))
+            }
+          }
+        }
+        let action = match proto_str(params, "action") {
+          Some(a) => a
+          None => "reply"
+        }
+        match self.answer_card(th, seq, option, action, self.rt.now()) {
+          sql::SqlResult::Ok(op_id) =>
+          return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+            ("opId", base_codec::json_int(op_id)),
+            ("thread", base_codec::json_int(th)),
+            ("seq", base_codec::json_int(seq)),
+            ("option", base_codec::json_str(option)),
+            ("action", base_codec::json_str(action)),
+          ]), None))
+          sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+        }
+      }
+      if call_name == "chat.read" {
+        let th = match proto_int(params, "thread") {
+          Some(t) => t
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing thread" }))
+        }
+        let read_seq = match proto_int(params, "read") {
+          Some(r) => r
+          None =>
+          match proto_int(params, "seq") {
+            Some(s) => s
+            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing read" }))
+          }
+        }
+        let unread = match proto_int(params, "unread") {
+          Some(u) => u
+          None => 0
+        }
+        match self.mark_chat_read(th, read_seq, unread_count=unread) {
+          sql::SqlResult::Ok(_) =>
+          return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+            ("thread", base_codec::json_int(th)),
+            ("read", base_codec::json_int(read_seq)),
+            ("unread", base_codec::json_int(unread)),
+          ]), None))
           sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
         }
       }

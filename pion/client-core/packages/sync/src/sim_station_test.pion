@@ -31,12 +31,18 @@ struct SimAccountDb {
   sh : shell::Shell
   entries : Map[String, Array[(Int, String)]]
   chats : Map[String, SimChatRow]
+  chat_order : Array[String]
   threads : Map[String, String]
+  thread_reads : Map[String, (Int, Int)]
   sessions : Map[String, String]
   jobs : Map[String, String]
   outbox_rows : Map[String, String]
   pending_rows : Map[String, String]
   changing_rows : Map[String, String]
+  drafts : Map[String, String]
+  prefs : Map[String, String]
+  pref_order : Array[String]
+  said : Array[(String, Int, Int, Int, Int64, String)]
   account_docs : Map[String, String]
   workspaces : Map[String, (String, Option[Int64])]
   workspace_order : Array[String]
@@ -61,12 +67,18 @@ fn SimAccountDb::new(rt : effect::Runtime) -> SimAccountDb {
     sh: sh,
     entries: Map::new(),
     chats: Map::new(),
+    chat_order: [],
     threads: Map::new(),
+    thread_reads: Map::new(),
     sessions: Map::new(),
     jobs: Map::new(),
     outbox_rows: Map::new(),
     pending_rows: Map::new(),
     changing_rows: Map::new(),
+    drafts: Map::new(),
+    prefs: Map::new(),
+    pref_order: [],
+    said: [],
     account_docs: Map::new(),
     workspaces: Map::new(),
     workspace_order: [],
@@ -197,13 +209,41 @@ fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Jso
     self.log_use.set(p_str(p, 0) + " " + p_str(p, 1) + " " + p_str(p, 2), p_int64(p, 3))
     changed = 1
   } else if stmt == sql_entry_put() {
-    self.put_entry_row(p_str(p, 0), p_int(p, 1), p_int(p, 2), p_str(p, 3))
+    let st = p_str(p, 0)
+    let th = p_int(p, 1)
+    let n = p_int(p, 2)
+    let raw = p_str(p, 3)
+    self.put_entry_row(st, th, n, raw)
+    // Mirror `said_put` SQLite trigger for message/edit entries
+    match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) => {
+        let kind = match base_codec::json_get(j, "kind") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+        if kind == "message" {
+          let txt = match base_codec::json_get(j, "text") {
+            Some(base_codec::Json::Str(s)) => s
+            _ => ""
+          }
+          let at = match base_codec::json_get(j, "at") {
+            Some(base_codec::Json::Num(v, _)) => v.to_int64()
+            _ => 0.to_int64()
+          }
+          self.said.push((st, th, n, n, at, txt))
+        }
+      }
+      base_codec::JsonParseResult::Err(_) => ()
+    }
     changed = 1
   } else if stmt == sql_chat_upsert() {
     let st = p_str(p, 0)
     let cid = p_str(p, 1)
     let arch = p_int(p, 2)
     let key = st + ":" + arch.to_string() + ":" + cid
+    if self.chats.get(key).is_none() {
+      self.chat_order.push(key)
+    }
     self.chats.set(key, SimChatRow::{
       station: st,
       archived: arch,
@@ -216,6 +256,32 @@ fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Jso
       json: p_str(p, 15),
     })
     changed = 1
+  } else if stmt == store::sql_chat_window() {
+    let limit = p_int(p, 6)
+    for i in 0..<self.chat_order.length() {
+      if rows.length() >= limit {
+        break
+      }
+      match self.chats.get(self.chat_order[i]) {
+        Some(c) => {
+          if c.archived == 0 {
+            let pj = match c.pinned_at {
+              Some(ts) => base_codec::json_int64(ts)
+              None => base_codec::json_null()
+            }
+            rows.push(base_codec::json_arr([
+              base_codec::json_str(c.station),
+              base_codec::json_int(c.archived),
+              base_codec::json_str(c.id),
+              pj,
+              base_codec::json_int64(c.last_active),
+              base_codec::json_num(c.ord),
+            ]))
+          }
+        }
+        None => ()
+      }
+    }
   } else if stmt == store::sql_chat_by_key() {
     let key = p_str(p, 0) + ":" + p_int(p, 1).to_string() + ":" + p_str(p, 2)
     match self.chats.get(key) {
@@ -314,6 +380,99 @@ fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Jso
               base_codec::json_str(kind),
               base_codec::json_str(j),
               cj,
+            ]))
+          }
+        }
+        None => ()
+      }
+    }
+  } else if stmt == store::sql_draft_put() {
+    self.drafts.set(p_str(p, 0) + ":" + p_str(p, 1), p_str(p, 2))
+    changed = 1
+  } else if stmt == store::sql_draft_delete() {
+    self.drafts.remove(p_str(p, 0) + ":" + p_str(p, 1))
+    changed = 1
+  } else if stmt == store::sql_draft_one() {
+    let st = p_str(p, 0)
+    let ch = p_str(p, 1)
+    match self.drafts.get(st + ":" + ch) {
+      Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(st), base_codec::json_str(ch), base_codec::json_str(j)]))
+      None => ()
+    }
+  } else if stmt == store::sql_thread_set_read() {
+    let read_seq = p_int(p, 0)
+    let unread = p_int(p, 1)
+    let st = p_str(p, 2)
+    let th = p_int(p, 3)
+    self.thread_reads.set(st + ":" + th.to_string(), (read_seq, unread))
+    changed = 1
+  } else if stmt == store::sql_chat_set_unread() {
+    changed = 1
+  } else if stmt == store::sql_pref_put() {
+    let k = p_str(p, 0) + ":" + p_str(p, 1)
+    if self.prefs.get(k).is_none() {
+      self.pref_order.push(k)
+    }
+    self.prefs.set(k, p_str(p, 2))
+    changed = 1
+  } else if stmt == store::sql_pref_get() {
+    match self.prefs.get(p_str(p, 0) + ":" + p_str(p, 1)) {
+      Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(j)]))
+      None => ()
+    }
+  } else if stmt == store::sql_pref_all() {
+    let ws_prefix = p_str(p, 0) + ":"
+    for i in 0..<self.pref_order.length() {
+      let fk = self.pref_order[i]
+      if fk.starts_with(ws_prefix) {
+        let key_only = fk.slice(ws_prefix.length(), fk.length())
+        match self.prefs.get(fk) {
+          Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(key_only), base_codec::json_str(j)]))
+          None => ()
+        }
+      }
+    }
+  } else if stmt == store::sql_search_messages_station() || stmt == store::sql_search_messages_all() {
+    let filter_st = if stmt == store::sql_search_messages_station() { Some(p_str(p, 0)) } else { None }
+    let q = if stmt == store::sql_search_messages_station() { p_str(p, 1) } else { p_str(p, 0) }
+    for i in 0..<self.said.length() {
+      let (st, th, seq, n, at, txt) = self.said[i]
+      let st_ok = match filter_st {
+        Some(want) => st == want
+        None => true
+      }
+      if st_ok && txt.contains(q) {
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(st),
+          base_codec::json_int(th),
+          base_codec::json_int(seq),
+          base_codec::json_int(n),
+          base_codec::json_int64(at),
+          base_codec::json_str(txt),
+        ]))
+      }
+    }
+  } else if stmt == store::sql_search_chats() {
+    let q = p_str(p, 1)
+    let limit = p_int(p, 2)
+    for i in 0..<self.chat_order.length() {
+      if rows.length() >= limit {
+        break
+      }
+      match self.chats.get(self.chat_order[i]) {
+        Some(c) => {
+          if c.archived == 0 && (q.length() == 0 || c.json.contains(q) || c.id.contains(q)) {
+            let th_j = match c.thread {
+              Some(t) => base_codec::json_int(t)
+              None => base_codec::json_null()
+            }
+            rows.push(base_codec::json_arr([
+              base_codec::json_str(c.station),
+              base_codec::json_int(c.archived),
+              base_codec::json_str(c.id),
+              th_j,
+              base_codec::json_int64(c.last_active),
+              base_codec::json_str(c.json),
             ]))
           }
         }
@@ -1388,4 +1547,263 @@ test "E2E 8: SessionChanged/JobChanged live sync, account.doc & workspace/statio
     None => debug_assert(false, "expected workspaces subscribe")
   }
   core.stop()
+}
+
+test "E2E 9: message.edit, message.delete, card.answer, chat.read, chat.draft with optimistic dispatch & rollback" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-interact") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  let core = ClientCore::new("ws-core", "st1", rt, db, station.transport(), fn() -> Unit {})
+
+  core.start()
+  rt.advance(20)
+  let _ = core.drain_frame()
+
+  // 1. message.edit + message.delete + card.answer succeed online
+  match core.handle_wire("{\"id\":1,\"call\":\"message.edit\",\"params\":{\"thread\":42,\"target\":1,\"text\":\"updated text\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"opId\"") && txt.contains("\"target\":1"), "message.edit ok")
+    None => debug_assert(false, "expected message.edit")
+  }
+  match core.handle_wire("{\"id\":2,\"call\":\"message.delete\",\"params\":{\"thread\":42,\"target\":2}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"opId\"") && txt.contains("\"target\":2"), "message.delete ok")
+    None => debug_assert(false, "expected message.delete")
+  }
+  match core.handle_wire("{\"id\":3,\"call\":\"card.answer\",\"params\":{\"thread\":42,\"seq\":3,\"option\":\"Ship it\",\"action\":\"reply\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"option\":\"Ship it\""), "card.answer ok")
+    None => debug_assert(false, "expected card.answer")
+  }
+  rt.advance(30)
+  debug_assert(core.local_outbox.pending_overlay_count() == 0, "all 3 overlays confirmed and cleared")
+  let mut saw_edit_req = false
+  let mut saw_del_req = false
+  let mut saw_card_req = false
+  for i in 0..<station.requests_seen.length() {
+    let r = station.requests_seen[i]
+    if r == "POST /threads/42/messages/1/edit" { saw_edit_req = true }
+    if r == "DELETE /threads/42/messages/2" { saw_del_req = true }
+    if r == "POST /threads/42/cards/3/answer" { saw_card_req = true }
+  }
+  debug_assert(saw_edit_req && saw_del_req && saw_card_req, "station received edit, delete, card.answer")
+
+  // 2. Station 403 rejection on card.answer rolls back cleanly with recovery hint
+  station.reject_path_prefix = Some("/threads/42/cards/")
+  station.reject_code = "card_closed"
+  station.reject_recovery = "Card was already answered by another member."
+  let _ = core.drain_frame()
+  match core.handle_wire("{\"id\":4,\"call\":\"card.answer\",\"params\":{\"thread\":42,\"seq\":9,\"option\":\"Yes\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"opId\""), "optimistic card.answer accepted locally")
+    None => debug_assert(false, "expected optimistic ok")
+  }
+  rt.advance(30)
+  let evs = core.drain_frame()
+  let mut saw_rollback = false
+  for i in 0..<evs.length() {
+    match evs[i] {
+      CoreEvent::OverlayRolledBack(_, _, kind, code, rec) => {
+        if kind == "card_answer" && code == "card_closed" && rec.contains("already answered") {
+          saw_rollback = true
+        }
+      }
+      _ => ()
+    }
+  }
+  debug_assert(saw_rollback && core.local_outbox.pending_overlay_count() == 0, "card.answer rolled back cleanly")
+
+  // 3. chat.read updates local SQLite thread read cursor and emits ThreadReadChanged
+  station.reject_path_prefix = None
+  match core.handle_wire("{\"id\":5,\"call\":\"chat.read\",\"params\":{\"thread\":42,\"read\":12,\"unread\":0}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"read\":12") && txt.contains("\"unread\":0"), "chat.read ok")
+    None => debug_assert(false, "expected chat.read")
+  }
+  match sim_db.thread_reads.get("st1:42") {
+    Some((r, u)) => debug_assert(r == 12 && u == 0, "thread read cursor persisted")
+    None => debug_assert(false, "expected thread read cursor in DB")
+  }
+
+  // 4. chat.draft persists, reads back, and clears
+  match core.handle_wire("{\"id\":6,\"call\":\"chat.draft\",\"params\":{\"chat\":\"c-42\",\"text\":\"work in progress\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"saved\":true"), "draft saved")
+    None => debug_assert(false, "expected draft save")
+  }
+  match core.handle_wire("{\"id\":7,\"call\":\"chat.draft\",\"params\":{\"chat\":\"c-42\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("work in progress"), "draft read back")
+    None => debug_assert(false, "expected draft read")
+  }
+  match core.handle_wire("{\"id\":8,\"call\":\"chat.draft\",\"params\":{\"chat\":\"c-42\",\"clear\":true}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"cleared\":true"), "draft cleared")
+    None => debug_assert(false, "expected draft clear")
+  }
+  core.stop()
+}
+
+test "E2E 10: accounts, vault, said search, settings, and chats/chat keyed delta + have/keep token" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-biz") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  station.snapshot_json = base_codec::json_obj([
+    (
+      "chats",
+      base_codec::json_arr([
+        base_codec::json_obj([
+          ("id", base_codec::json_str("c-alpha")),
+          ("title", base_codec::json_str("Alpha Launch")),
+          ("thread", base_codec::json_int(10)),
+          ("lastActive", base_codec::json_int(1000)),
+        ]),
+      ]),
+    ),
+  ])
+  let core = ClientCore::new("ws-biz", "st1", rt, db, station.transport(), fn() -> Unit {})
+
+  // Seed account docs for accounts & vault
+  let _ = store::put_account_doc(db, "accounts", "[{\"email\":\"alice@still.fail\"},{\"email\":\"bob@still.fail\"}]")
+  let _ = store::put_account_doc(db, "active_account", "\"alice@still.fail\"")
+  let _ = store::put_account_doc(db, "vault_status", "{\"enabled\":true,\"unlocked\":true,\"vaultCount\":1,\"secretCount\":1}")
+  let _ = store::put_account_doc(db, "vault_secrets", "[{\"id\":\"s1\",\"vault\":\"personal\",\"name\":\"OpenAI Key\",\"about\":\"API\"}]")
+
+  core.start()
+  rt.advance(30)
+  // Push an SSE message so `said` trigger populates searchable text
+  station.push_sse(
+    "id: e-1\nevent: entry\ndata: {\"thread\":10,\"n\":1,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"Pion Stage 2 core parity ready\",\"at\":1050}\n\n",
+  )
+
+  // 1. accounts + account.switch
+  match core.handle_wire("{\"id\":1,\"call\":\"accounts\",\"params\":{}}") {
+    Some((txt, _)) => debug_assert(txt.contains("alice@still.fail") && txt.contains("bob@still.fail"), "accounts")
+    None => debug_assert(false, "expected accounts")
+  }
+  match core.handle_wire("{\"id\":2,\"call\":\"account.switch\",\"params\":{\"account\":\"bob@still.fail\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"switched\":true") && txt.contains("bob@still.fail"), "account.switch")
+    None => debug_assert(false, "expected account.switch")
+  }
+
+  // 2. vault.status + vault.secrets
+  match core.handle_wire("{\"id\":3,\"call\":\"vault.status\",\"params\":{}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"enabled\":true") && txt.contains("\"secretCount\":1"), "vault.status")
+    None => debug_assert(false, "expected vault.status")
+  }
+  match core.handle_wire("{\"id\":4,\"call\":\"vault.secrets\",\"params\":{\"query\":\"OpenAI\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("OpenAI Key"), "vault.secrets")
+    None => debug_assert(false, "expected vault.secrets")
+  }
+
+  // 3. search.chats + search.messages (using `said` table)
+  match core.handle_wire("{\"id\":5,\"call\":\"search.chats\",\"params\":{\"query\":\"Alpha\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("c-alpha") && txt.contains("Alpha Launch"), "search.chats")
+    None => debug_assert(false, "expected search.chats")
+  }
+  match core.handle_wire("{\"id\":6,\"call\":\"search.messages\",\"params\":{\"query\":\"Stage 2\",\"station\":\"st1\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("Pion Stage 2 core parity ready"), "search.messages via said")
+    None => debug_assert(false, "expected search.messages")
+  }
+
+  // 4. settings.set + settings.get
+  match core.handle_wire("{\"id\":7,\"call\":\"settings.set\",\"params\":{\"key\":\"locale\",\"value\":\"zh-CN\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"saved\":true"), "settings.set")
+    None => debug_assert(false, "expected settings.set")
+  }
+  match core.handle_wire("{\"id\":8,\"call\":\"settings.get\",\"params\":{\"key\":\"locale\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"value\":\"zh-CN\""), "settings.get")
+    None => debug_assert(false, "expected settings.get")
+  }
+
+  // 5. Keyed `chats` subscription delta + keep/have token negotiation
+  match core.handle_wire("{\"id\":50,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-biz\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"value\"") && txt.contains("c-alpha"), "initial chats value")
+    None => debug_assert(false, "expected chats subscribe")
+  }
+  // Push a second chat over SSE -> refresh_topic("chats") emits keyed `put` delta containing ONLY c-beta
+  station.push_sse(
+    "id: c-2\nevent: chat\ndata: {\"id\":\"c-beta\",\"title\":\"Beta Review\",\"thread\":11,\"lastActive\":2000}\n\n",
+  )
+  let deltas = core.refresh_topic("chats")
+  debug_assert(deltas.length() == 1, "one chats delta emitted")
+  let (delta_json, _) = protocol::encode_core_event(deltas[0])
+  debug_assert(delta_json.contains("\"delta\"") && delta_json.contains("\"put\"") && delta_json.contains("c-beta") && !delta_json.contains("c-alpha"), "incremental keyed delta only carries c-beta")
+
+  // Unsubscribe with keep: true -> get `v` token -> re-subscribe with `have: v` -> `same: true`
+  let v_tok = match core.handle_wire("{\"id\":50,\"unsubscribe\":true,\"keep\":true}") {
+    Some((txt, _)) =>
+    match base_codec::json_parse(txt) {
+      base_codec::JsonParseResult::Ok(j) =>
+      match base_codec::json_get(j, "v") {
+        Some(base_codec::Json::Str(v)) => v
+        _ => panic("missing v token")
+      }
+      _ => panic("bad json")
+    }
+    None => panic("expected unsub v")
+  }
+  let resub = "{\"id\":51,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-biz\"},\"keyed\":true,\"have\":\"" + v_tok + "\"}"
+  match core.handle_wire(resub) {
+    Some((txt, _)) => debug_assert(txt == "{\"id\":51,\"same\":true}", "resubscribe with matching have returns same:true")
+    None => debug_assert(false, "expected same:true")
+  }
+  core.stop()
+}
+
+test "E2E 11: offline edit_message, delete_message, card.answer flush_offline dispatches exact thread routes" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-offline-mut") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  station.offline = true
+  let core = ClientCore::new("ws-off", "st1", rt, db, station.transport(), fn() -> Unit {})
+
+  // Queue edit_message, delete_message, and card.answer while offline
+  match core.edit_message(42, 1, "offline edit", 1000.to_int64()) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(_) => debug_assert(false, "offline edit_message failed")
+  }
+  match core.delete_message(42, 2, 1001.to_int64()) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(_) => debug_assert(false, "offline delete_message failed")
+  }
+  match core.answer_card(42, 3, "Approve", "reply", 1002.to_int64()) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(_) => debug_assert(false, "offline answer_card failed")
+  }
+  debug_assert(core.local_outbox.pending_overlay_count() == 3, "3 overlays queued offline")
+  debug_assert(station.requests_seen.length() == 0, "0 requests while offline")
+
+  // Come back online -> flush_offline must route to exact /threads/... endpoints, never /chats/thread:...
+  station.offline = false
+  core.set_online(true)
+  rt.advance(40)
+
+  let mut saw_edit = false
+  let mut saw_del = false
+  let mut saw_card = false
+  let mut saw_bad_chats_route = false
+  for i in 0..<station.requests_seen.length() {
+    let r = station.requests_seen[i]
+    if r == "POST /threads/42/messages/1/edit" { saw_edit = true }
+    if r == "DELETE /threads/42/messages/2" { saw_del = true }
+    if r == "POST /threads/42/cards/3/answer" { saw_card = true }
+    if r.contains("/chats/thread:") { saw_bad_chats_route = true }
+  }
+  debug_assert(saw_edit && saw_del && saw_card, "exact thread mutation routes dispatched on reconnect")
+  debug_assert(!saw_bad_chats_route, "never misrouted to /chats/thread:...")
+  debug_assert(core.local_outbox.pending_overlay_count() == 0, "all 3 overlays cleared from changing after confirmation")
 }

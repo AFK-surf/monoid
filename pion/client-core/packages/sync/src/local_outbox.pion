@@ -52,6 +52,8 @@ pub struct ChangingOverlay {
   pub op_id : Int
   pub chat_id : String
   pub op_kind : String
+  pub http_method : String
+  pub http_path : String
   pub value_json : base_codec::Json
   pub previous_chat_json : Option[String]
 }
@@ -491,6 +493,8 @@ pub fn LocalOutbox::apply_chat_overlay(
     op_id: op_id,
     chat_id: chat_id,
     op_kind: op_kind,
+    http_method: "POST",
+    http_path: "/chats/" + chat_id + "/" + op_kind,
     value_json: value,
     previous_chat_json: prev,
   }
@@ -606,6 +610,253 @@ pub fn LocalOutbox::flush_offline(self : LocalOutbox, rt : effect::Runtime) -> U
     ovs.push(self.queued_overlays[i])
   }
   for i in 0..<ovs.length() {
-    self.dispatch_overlay(rt, ovs[i])
+    let ov = ovs[i]
+    if ov.op_kind == "message_edit" || ov.op_kind == "message_delete" || ov.op_kind == "card_answer" {
+      self.dispatch_thread_mutation(rt, ov, ov.http_method, ov.http_path)
+    } else {
+      self.dispatch_overlay(rt, ov)
+    }
   }
+}
+
+/// Optimistically edit a message in `thread` at `target_seq`: records overlay in `changing`,
+/// emits `OverlayApplied`, and dispatches `POST /threads/<thread>/messages/<target>/edit` when online.
+pub fn LocalOutbox::edit_message(
+  self : LocalOutbox,
+  rt : effect::Runtime,
+  thread : Int,
+  target_seq : Int,
+  text : String,
+  now : Int64,
+) -> sql::SqlResult[Int] {
+  let op_id = self.next_change_id
+  self.next_change_id += 1
+  let jval = base_codec::json_obj([
+    ("thread", base_codec::json_int(thread)),
+    ("target", base_codec::json_int(target_seq)),
+    ("text", base_codec::json_str(text)),
+    ("at", base_codec::json_int64(now)),
+  ])
+  let path = "/threads/" + thread.to_string() + "/messages/" + target_seq.to_string() + "/edit"
+  let ov = ChangingOverlay::{
+    op_id: op_id,
+    chat_id: "thread:" + thread.to_string(),
+    op_kind: "message_edit",
+    http_method: "POST",
+    http_path: path,
+    value_json: jval,
+    previous_chat_json: None,
+  }
+  self.queued_overlays.push(ov)
+  let raw = base_codec::json_stringify(base_codec::json_obj([
+    ("id", base_codec::json_int(op_id)),
+    ("kind", base_codec::json_str("message_edit")),
+    ("value", jval),
+  ]))
+  let burst = sql::Burst::new(self.db)
+  match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+    match b.run(sql_changing_put(), params=[base_codec::json_str(self.station), base_codec::json_int(op_id), base_codec::json_str(raw)]) {
+      sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+    }
+  }) {
+    sql::SqlResult::Err(e) => {
+      let _ = self.remove_queued_overlay(op_id)
+      return sql::SqlResult::Err(e)
+    }
+    sql::SqlResult::Ok(_) => ()
+  }
+  self.outbox.tell(CoreEvent::OverlayApplied(self.station, ov.chat_id, "message_edit"))
+  if self.online {
+    self.dispatch_thread_mutation(rt, ov, ov.http_method, ov.http_path)
+  }
+  sql::SqlResult::Ok(op_id)
+}
+
+/// Optimistically delete a message in `thread` at `target_seq`: records overlay in `changing`,
+/// emits `OverlayApplied`, and dispatches `DELETE /threads/<thread>/messages/<target>` when online.
+pub fn LocalOutbox::delete_message(
+  self : LocalOutbox,
+  rt : effect::Runtime,
+  thread : Int,
+  target_seq : Int,
+  now : Int64,
+) -> sql::SqlResult[Int] {
+  let op_id = self.next_change_id
+  self.next_change_id += 1
+  let jval = base_codec::json_obj([
+    ("thread", base_codec::json_int(thread)),
+    ("target", base_codec::json_int(target_seq)),
+    ("at", base_codec::json_int64(now)),
+  ])
+  let path = "/threads/" + thread.to_string() + "/messages/" + target_seq.to_string()
+  let ov = ChangingOverlay::{
+    op_id: op_id,
+    chat_id: "thread:" + thread.to_string(),
+    op_kind: "message_delete",
+    http_method: "DELETE",
+    http_path: path,
+    value_json: jval,
+    previous_chat_json: None,
+  }
+  self.queued_overlays.push(ov)
+  let raw = base_codec::json_stringify(base_codec::json_obj([
+    ("id", base_codec::json_int(op_id)),
+    ("kind", base_codec::json_str("message_delete")),
+    ("value", jval),
+  ]))
+  let burst = sql::Burst::new(self.db)
+  match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+    match b.run(sql_changing_put(), params=[base_codec::json_str(self.station), base_codec::json_int(op_id), base_codec::json_str(raw)]) {
+      sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+    }
+  }) {
+    sql::SqlResult::Err(e) => {
+      let _ = self.remove_queued_overlay(op_id)
+      return sql::SqlResult::Err(e)
+    }
+    sql::SqlResult::Ok(_) => ()
+  }
+  self.outbox.tell(CoreEvent::OverlayApplied(self.station, ov.chat_id, "message_delete"))
+  if self.online {
+    self.dispatch_thread_mutation(rt, ov, ov.http_method, ov.http_path)
+  }
+  sql::SqlResult::Ok(op_id)
+}
+
+/// Optimistically answer a decision card at `(thread, seq)`: records overlay in `changing`,
+/// emits `OverlayApplied`, and dispatches `POST /threads/<thread>/cards/<seq>/answer` when online.
+pub fn LocalOutbox::answer_card(
+  self : LocalOutbox,
+  rt : effect::Runtime,
+  thread : Int,
+  seq : Int,
+  option : String,
+  action : String,
+  now : Int64,
+) -> sql::SqlResult[Int] {
+  let op_id = self.next_change_id
+  self.next_change_id += 1
+  let jval = base_codec::json_obj([
+    ("thread", base_codec::json_int(thread)),
+    ("seq", base_codec::json_int(seq)),
+    ("option", base_codec::json_str(option)),
+    ("action", base_codec::json_str(action)),
+    ("at", base_codec::json_int64(now)),
+  ])
+  let path = "/threads/" + thread.to_string() + "/cards/" + seq.to_string() + "/answer"
+  let ov = ChangingOverlay::{
+    op_id: op_id,
+    chat_id: "thread:" + thread.to_string(),
+    op_kind: "card_answer",
+    http_method: "POST",
+    http_path: path,
+    value_json: jval,
+    previous_chat_json: None,
+  }
+  self.queued_overlays.push(ov)
+  let raw = base_codec::json_stringify(base_codec::json_obj([
+    ("id", base_codec::json_int(op_id)),
+    ("kind", base_codec::json_str("card_answer")),
+    ("value", jval),
+  ]))
+  let burst = sql::Burst::new(self.db)
+  match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+    match b.run(sql_changing_put(), params=[base_codec::json_str(self.station), base_codec::json_int(op_id), base_codec::json_str(raw)]) {
+      sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+    }
+  }) {
+    sql::SqlResult::Err(e) => {
+      let _ = self.remove_queued_overlay(op_id)
+      return sql::SqlResult::Err(e)
+    }
+    sql::SqlResult::Ok(_) => ()
+  }
+  self.outbox.tell(CoreEvent::OverlayApplied(self.station, ov.chat_id, "card_answer"))
+  if self.online {
+    self.dispatch_thread_mutation(rt, ov, ov.http_method, ov.http_path)
+  }
+  sql::SqlResult::Ok(op_id)
+}
+
+fn LocalOutbox::dispatch_thread_mutation(
+  self : LocalOutbox,
+  rt : effect::Runtime,
+  ov : ChangingOverlay,
+  method_name : String,
+  path : String,
+) -> Unit {
+  let req_fn = self.transport.request_k
+  let body = base_codec::json_stringify(ov.value_json).to_bytes()
+  let headers = [("content-type", "application/json")]
+  let _ = rt.fork_quiet_named("mut:" + ov.op_kind + ":" + ov.op_id.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    req_fn(method_name, path, headers, body, fn(ex : effect::Exit[HttpReply]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(_) => k(effect::Exit::Succeeded(()))
+        effect::Exit::Succeeded(reply) => {
+          if reply.status >= 200 && reply.status < 300 {
+            let _ = self.remove_queued_overlay(ov.op_id)
+            let burst = sql::Burst::new(self.db)
+            let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+              match b.run(sql_changing_delete(), params=[base_codec::json_str(self.station), base_codec::json_int(ov.op_id)]) {
+                sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+                sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+              }
+            })
+            self.outbox.tell(CoreEvent::ChatsChanged(self.station, [ov.chat_id]))
+          } else if reply.status >= 400 && reply.status < 500 {
+            let (code, recovery) = parse_station_error(reply.body, reply.status)
+            let _ = self.remove_queued_overlay(ov.op_id)
+            let burst = sql::Burst::new(self.db)
+            let _ = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+              match b.run(sql_changing_delete(), params=[base_codec::json_str(self.station), base_codec::json_int(ov.op_id)]) {
+                sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+                sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+              }
+            })
+            self.outbox.tell(CoreEvent::OverlayRolledBack(
+              self.station,
+              ov.chat_id,
+              ov.op_kind,
+              code,
+              recovery,
+            ))
+          }
+          k(effect::Exit::Succeeded(()))
+        }
+      }
+    })
+  })
+}
+
+/// Update read cursor locally in SQLite and notify station when online.
+pub fn LocalOutbox::mark_read(
+  self : LocalOutbox,
+  rt : effect::Runtime,
+  thread : Int,
+  read_seq : Int,
+  unread_count : Int,
+) -> sql::SqlResult[Unit] {
+  match store::update_thread_read(self.db, self.station, thread, read_seq, unread_count) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => ()
+  }
+  self.outbox.tell(CoreEvent::ThreadReadChanged(self.station, thread, read_seq, unread_count))
+  if self.online {
+    let req_fn = self.transport.request_k
+    let body = base_codec::json_stringify(base_codec::json_obj([
+      ("read", base_codec::json_int(read_seq)),
+      ("unread", base_codec::json_int(unread_count)),
+    ])).to_bytes()
+    let path = "/threads/" + thread.to_string() + "/read"
+    let _ = rt.fork_quiet_named("chat-read:" + thread.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      req_fn("POST", path, [("content-type", "application/json")], body, fn(_ex : effect::Exit[HttpReply]) -> Unit {
+        k(effect::Exit::Succeeded(()))
+      })
+    })
+  }
+  sql::SqlResult::Ok(())
 }
