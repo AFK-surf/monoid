@@ -626,7 +626,7 @@ test("what says a thing whole is kept as it was last told only", async () => {
   await first.close();
   for (let i = 1; i <= 5; i++) {
     overview.running = i;
-    change({ type: "processes" } as StoreChange);
+    events.overviewChanged();
     change({ type: "session", key: "s2" });
     if (i % 2 === 1) change({ type: "thread", id: 4, entries: [{ n: i } as any] });
     await settle();
@@ -1221,4 +1221,51 @@ test("what is told to every stream looks up the session or thread it names once,
   assert.deepEqual(JSON.parse(/data: (.*)\n/.exec(told[0]![0]!)![1]!), { type: "rate", tokensPerSecond: 3, key: "k" });
   assert.deepEqual(streams.map((s) => s.got.some((e) => e.event === "chat-changed")), [true, false, true]);
   await Promise.all(streams.map((s) => s.close()));
+});
+
+test("background overview changes coalesce into one trailing push and volatile telemetry drift is ignored", async () => {
+  const time = testClock();
+  const { events, change } = setup(time.clock);
+  let state = {
+    counts: { running: 1 },
+    disk: { freeBytes: 50_000_000_000, totalBytes: 100_000_000_000 },
+    processes: [{ pid: 1, rssMb: 100 }],
+    machine: { uptime: 10, loadavg: [1, 1, 1] },
+  };
+  events.follow({ overview: async () => structuredClone(state) });
+  const stream = await opened(events);
+
+  // First background change fires immediately.
+  change({ type: "processes" } as StoreChange);
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, 1);
+
+  // Burst of background changes within 10 s coalesces into a single trailing overview after the window.
+  for (let i = 2; i <= 5; i++) {
+    state.counts.running = i;
+    events.overviewSoon();
+    await settle();
+  }
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, 1, "burst held back until window ends");
+  await time.adjust(10_000);
+  await settle();
+  const afterBurst = stream.got.filter((e) => e.event === "overview");
+  assert.equal(afterBurst.length, 2, "one trailing overview after burst");
+  assert.equal(afterBurst[1]!.data.counts.running, 5);
+
+  // Jitter in ample disk freeBytes, process rssMb, and machine telemetry does not emit another overview.
+  state.disk.freeBytes -= 4_096_000;
+  state.processes[0]!.rssMb = 142;
+  state.machine.uptime = 999;
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, 2, "volatile telemetry drift suppressed");
+
+  // Crossing below the 5 GiB low-disk floor still emits immediately.
+  state.disk.freeBytes = 2_000_000_000;
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, 3, "low-disk change emits");
+
+  await stream.close();
 });

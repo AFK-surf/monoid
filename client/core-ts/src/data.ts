@@ -6,7 +6,7 @@
 // Topics of this data have no value of their own: their value is read from here (`shared`), by query, when it goes
 // out; each database's writer says which topics a burst changed, and the store pushes what changed (keyed deltas).
 import { Deferred, Effect, Fiber, Queue } from "effect";
-import { OVERVIEW_CHAT, OVERVIEW_PROFILED, OVERVIEW_SETTINGS } from "./db/schema.ts";
+import { OVERVIEW_CHAT, OVERVIEW_PROFILED, OVERVIEW_SETTINGS, ROOM_BACK_PAGES } from "./db/schema.ts";
 import { AccountDb, LIST_OF, MD_SHOWN_EVERY, foundOf, type ChatFound, type Changes, type Derive, type HeadRow, type ListKind, type LogTable, type MdPut, type MovedTo, type RowChange, frozen } from "./db/account.ts";
 import type { SharedMarkKind, SharedMarksSnapshot, SharedMeta } from "./db/chats.ts";
 import { KEPT as BESIDE, type AnyKept, type Kept, type Maker, type Owner } from "./db/kept.ts";
@@ -187,6 +187,10 @@ export const KEPT = 256 * 1024 * 1024;
 const KEPT_TO = 0.8;
 /// How often, at most, the room taken is looked at as logs are written.
 const KEPT_CHECK_MS = 10_000;
+/// When non-evictable tables alone already exceed KEPT, back off before re-scanning for newly arrived transcripts.
+const KEPT_FULL_BACKOFF_MS = 10 * 60_000;
+/// Minimum interval between runtime room-reclamation runs triggered by eviction (startup always runs once).
+const ROOM_BACK_EVERY_MS = 5 * 60_000;
 
 /// What a database's state says through the `status` topic: a burst not written for want of room, a database a newer
 /// core wrote (read only), one another process holds.
@@ -357,6 +361,10 @@ export class Data {
   readonly #keeping = new Set<AccountDb>();
   /// Accounts currently giving unused pages back to the device (`#giveBackRoom`).
   readonly #givingBack = new Set<AccountDb>();
+  /// Per-db backoff timestamp when non-evictable tables alone exceed KEPT.
+  readonly #keptUntil = new WeakMap<AccountDb, number>();
+  /// Last time runtime eviction ran `#giveBackRoom` for each db.
+  readonly #gaveBackAt = new WeakMap<AccountDb, number>();
   #roomWaiters: Deferred.Deferred<void>[] = [];
   #keptAt = -Infinity;
 
@@ -562,7 +570,9 @@ export class Data {
       const now = this.#host.nowMs();
       if (now - this.#keptAt >= KEPT_CHECK_MS) {
         this.#keptAt = now;
-        for (const db of this.#dbs.values()) this.#keepWithin(db);
+        for (const db of this.#dbs.values()) {
+          if (now >= (this.#keptUntil.get(db) ?? -Infinity)) this.#keepWithin(db);
+        }
       }
     }
     for (const topic of changes.topics.values()) {
@@ -1705,6 +1715,7 @@ export class Data {
     this.#keeping.add(db);
     this.#runner.fork(Effect.gen({ self: this }, function* () {
       let evicted = false;
+      let exhausted = false;
       try {
         // Do not make the account's first values or a committed change wait for maintenance.
         yield* Effect.yieldNow;
@@ -1718,7 +1729,10 @@ export class Data {
             const key = `transcript\u0001${l.station}\u0001${l.id}`;
             return !this.#shown.has(key) && !gone.has(key);
           });
-          if (logs.length === 0) return;
+          if (logs.length === 0) {
+            exhausted = true;
+            return;
+          }
           for (const l of logs) {
             if (this.#dbs.get(db.sub) !== db) return;
             const key = `transcript\u0001${l.station}\u0001${l.id}`;
@@ -1733,14 +1747,22 @@ export class Data {
         }
       } finally {
         this.#keeping.delete(db);
-        if (evicted && this.#dbs.get(db.sub) === db) this.#giveBackRoom(db);
+        if (this.#dbs.get(db.sub) === db) {
+          const now = this.#host.nowMs();
+          if (exhausted && db.used() > this.#kept) this.#keptUntil.set(db, now + KEPT_FULL_BACKOFF_MS);
+          else this.#keptUntil.delete(db);
+          if (evicted && db.freelistPages() >= ROOM_BACK_PAGES && now - (this.#gaveBackAt.get(db) ?? -Infinity) >= ROOM_BACK_EVERY_MS) {
+            this.#gaveBackAt.set(db, now);
+            this.#giveBackRoom(db, ROOM_BACK_PAGES);
+          }
+        }
       }
     }));
   }
 
   /// Gives unused pages in `db` back to the device in bounded steps after the first views have been answered
   /// (`mdTurn`), yielding between steps so startup reads and writes are never blocked.
-  #giveBackRoom(db: AccountDb): void {
+  #giveBackRoom(db: AccountDb, minFree = 1): void {
     if (db.readOnly || this.#givingBack.has(db)) return;
     this.#givingBack.add(db);
     this.#runner.fork(Effect.gen({ self: this }, function* () {
@@ -1748,7 +1770,9 @@ export class Data {
         // Yield first so Core.create finishes wiring `mdTurn = () => store.turn()` after `data.open()`.
         yield* Effect.yieldNow;
         yield* this.mdTurn();
-        while (this.#dbs.get(db.sub) === db && db.giveBackRoomStep()) {
+        let min = minFree;
+        while (this.#dbs.get(db.sub) === db && db.giveBackRoomStep(undefined, min)) {
+          min = 1;
           yield* Effect.yieldNow;
         }
       } finally {

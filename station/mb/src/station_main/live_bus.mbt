@@ -66,6 +66,7 @@ pub(all) struct LiveBus {
   events_tell : Ref[(String, Json, String, Json) -> Unit]
   events_send_live : Ref[(String, Json, Json) -> Unit]
   overview_changed : Ref[() -> Unit]
+  overview_soon : Ref[() -> Unit]
   host_sample : Ref[async () -> Json]
   // ── PeerBus & MeshSide (transport attached by P5-1; handlers registered by any slice) ──
   peer_handlers : Map[String, async (String, String?, Json, Bytes?) -> (Json, Bytes?)]
@@ -248,6 +249,7 @@ pub fn LiveBus::new(
     events_tell: Ref(fn(_ev, _data, _key, _to) { () }),
     events_send_live: Ref(fn(_ev, _data, _to) { () }),
     overview_changed: Ref(() => ()),
+    overview_soon: Ref(() => ()),
     host_sample: Ref(async fn() { machine() }),
     peer_handlers,
     peer_prefixes,

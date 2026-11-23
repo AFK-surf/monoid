@@ -1517,3 +1517,88 @@ test("log_removal_paths_invalidate_their_number_indices_and_payload_windows", as
     } finally { runner.shutdown(); }
   }
 });
+
+test("overview_update_touching_unrelated_fields_does_not_rewrite_station_part", async () => {
+  const { data, open, db, runner } = fresh();
+  await open();
+  try {
+    const base = {
+      counts: { running: 1 },
+      profiles: [{ id: "p1", name: "Claude", models: ["claude-sonnet-5-5"] }],
+      connects: [{ id: "c1", kind: "slack" }],
+      copies: { to: 10 },
+    };
+    data.set(overview("w/a"), base);
+    await run(data.written);
+    // Attach an audit trigger on station_part to count physical UPDATEs fired by station_part_set.
+    db().inner.exec("CREATE TEMP TABLE sp_updates (n INTEGER); CREATE TEMP TRIGGER sp_upd AFTER UPDATE ON station_part BEGIN INSERT INTO sp_updates VALUES (1); END;");
+    // Changing only `copies.to` (not in station_part) must NOT fire an UPDATE on station_part.
+    data.set(overview("w/a"), { ...base, copies: { to: 11 } });
+    await run(data.written);
+    assert.equal(db().inner.all("SELECT count(*) FROM sp_updates")[0]![0], 0, "station_part not rewritten for unrelated overview field");
+    // Changing `counts.running` (in station_part.row) DOES update station_part.
+    data.set(overview("w/a"), { ...base, copies: { to: 11 }, counts: { running: 2 } });
+    await run(data.written);
+    assert.equal(db().inner.all("SELECT count(*) FROM sp_updates")[0]![0], 1, "station_part updates when a part column changes");
+  } finally { runner.shutdown(); }
+});
+
+test("session_detail_lives_apart_from_session_and_counted_putSummary_skips_reading_it", async () => {
+  const { data, open, db, runner } = fresh();
+  await open();
+  try {
+    const bigTurn = { id: "t1", kind: "chat", outcome: "done", detail: "x".repeat(4000) };
+    data.set({ topic: "session", station: "w/a", key: "k1" }, { session: { key: "k1", turns: 1, workMs: 100 }, turns: [bigTurn], threads: [] });
+    await run(data.written);
+    assert.equal(db().all("SELECT detail FROM session WHERE station = 'w/a' AND key = 'k1'")[0]![0], null, "detail is not stored inline on session");
+    assert.equal(db().all("SELECT count(*) FROM session_detail WHERE station = 'w/a' AND key = 'k1'")[0]![0], 1);
+    // Counted summary update must neither read detail JSON nor touch session_detail.
+    db().reads = [];
+    db().statements = [];
+    const again = data.putSummary("w/a", { key: "k1", turns: 2, workMs: 250, title: "updated" });
+    await run(data.written);
+    assert.equal(again, false, "counted summary needs no detail refetch");
+    assert.ok(!db().reads.some((q) => q.includes("SELECT detail FROM session")), `putSummary must not read detail payload: ${JSON.stringify(db().reads)}`);
+    assert.ok(!db().writes().some((q) => q.includes("session_detail")), "summary update must not rewrite session_detail");
+    assert.equal((data.get({ topic: "session", station: "w/a", key: "k1" }) as J).session.title, "updated");
+    // Legacy inline detail migrates out of session on summary update.
+    db().inner.run("DELETE FROM session_detail WHERE station = 'w/a' AND key = 'k1'");
+    db().inner.run("UPDATE session SET detail = ? WHERE station = 'w/a' AND key = 'k1'", [JSON.stringify({ turns: [bigTurn], threadIds: [] })]);
+    data.putSummary("w/a", { key: "k1", turns: 3, workMs: 400, title: "migrated" });
+    await run(data.written);
+    assert.equal(db().all("SELECT detail FROM session WHERE station = 'w/a' AND key = 'k1'")[0]![0], null, "legacy inline detail cleared");
+    assert.equal(db().all("SELECT count(*) FROM session_detail WHERE station = 'w/a' AND key = 'k1'")[0]![0], 1, "legacy detail moved to session_detail");
+  } finally { runner.shutdown(); }
+});
+
+test("kept_eviction_backs_off_when_non_evictable_tables_exceed_cap", async () => {
+  const host = new FakeHost();
+  const runner = new Runner(host.time.clock);
+  const sql = new NodeSql(new DatabaseSync(":memory:"), true);
+  host.openDbHook = () => sql;
+  const data = new Data(host, runner, { owner: () => "s1", kept: 128 * 1024 });
+  await run(data.open(["s1"]));
+  try {
+    const big = "字".repeat(4000);
+    // Write a transcript first, then fill non-evictable entries past the 128 KB cap.
+    data.putItems("transcript", "w/a", "k1", [[0, { text: "one" }]]);
+    for (let t = 1; t <= 5; t++) {
+      data.putItems("entry", "w/a", String(t), Array.from({ length: 10 }, (_, i) => [i + 1, { n: i + 1, kind: "message", text: `${t} ${big}`, at: i }] as [number, J]));
+    }
+    await run(data.written);
+    await flush();
+    assert.equal(data.evicted("transcript", "w/a", "k1"), true, "initial pass evicts k1 and enters backoff");
+    // 15 s later (within 10 min backoff), a newly written transcript is not immediately evicted.
+    host.advance(15_000);
+    data.putItems("transcript", "w/a", "k2", [[0, { text: "two" }]]);
+    await run(data.written);
+    await flush();
+    assert.equal(data.evicted("transcript", "w/a", "k2"), false, "backoff prevents 10s thrashing loop");
+    // Once the 10 min backoff expires, the next log write evicts k2.
+    host.advance(10 * 60_000);
+    data.putItems("transcript", "w/a", "k3", [[0, { text: "three" }]]);
+    await run(data.written);
+    await flush();
+    assert.equal(data.evicted("transcript", "w/a", "k2"), true, "eviction resumes after backoff");
+  } finally { runner.shutdown(); }
+});

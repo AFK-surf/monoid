@@ -57,7 +57,7 @@ export const CopiesLive = Layer.effectDiscard(
       ask: (station, request) => bus.ask(station, request),
       runner,
       fibers,
-      changed: () => events.overviewChanged(),
+      changed: () => events.overviewSoon(),
       restart: () => restarter(data),
       taking: () => retire.takingNow(),
       backup: () => readBackupConfig(agents.config.raw()),

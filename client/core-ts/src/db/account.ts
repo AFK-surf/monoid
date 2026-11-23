@@ -180,6 +180,11 @@ export class AccountDb {
     });
 
     if (!this.readOnly) {
+      try {
+        this.sql.exec("PRAGMA journal_size_limit = 8388608");
+      } catch {
+        // Ignore on custom/mock Sql adapters that do not implement journal_size_limit.
+      }
       const was = this.sql.all("SELECT value FROM meta WHERE key = 'account'")[0]?.[0];
       if (was === undefined) this.sql.run("INSERT INTO meta (key, value) VALUES ('account', ?)", [sub]);
       ensureLetters(sql);
@@ -187,6 +192,7 @@ export class AccountDb {
       this.#chats.openSharedSidecar();
       this.#logs.openSaid(false);
       this.#docs.openParts(false);
+      this.#sessions.openDetail(false);
       // (after the tables they are kept beside, station_part's: ensureOverviewParts)
       this.kept.open(KEPT_ALL);
       try {
@@ -202,6 +208,7 @@ export class AccountDb {
     } else {
       this.#logs.openSaid(true);
       this.#docs.openParts(true);
+      this.#sessions.openDetail(true);
     }
     this.#bursts = Effect.runSync(Queue.unbounded<void>());
     // The one write fiber: a burst is committed once what started it has run.
@@ -358,13 +365,23 @@ export class AccountDb {
     return this.#logs.logPutSince(table, station, id, since);
   }
 
+  /// Free pages waiting to be returned to the OS (`PRAGMA freelist_count`).
+  freelistPages(): number {
+    if (this.readOnly || this.#closed) return 0;
+    try {
+      return Number(this.sql.all("PRAGMA freelist_count")[0]?.[0] ?? 0);
+    } catch {
+      return 0;
+    }
+  }
+
   /// One step of giving unused pages back to the device (schema.ts `giveBackRoomStep`). Returns true while more steps
   /// remain, including when a write transaction is open so the writer commits before vacuum runs.
-  giveBackRoomStep(pages?: number): boolean {
+  giveBackRoomStep(pages?: number, minFree?: number): boolean {
     if (this.readOnly || this.#closed) return false;
     if (this.#inTx) return true;
     try {
-      return giveBackRoomStep(this.sql, pages);
+      return giveBackRoomStep(this.sql, pages, minFree);
     } catch {
       return false;
     }
@@ -695,6 +712,7 @@ export class AccountDb {
       }
       if (this.sql.all("SELECT 1 FROM sqlite_master WHERE name = 'log_use'").length > 0) this.sql.run("DELETE FROM log_use WHERE station = ?", [station]);
       this.#slack.forgetStation(station, (session) => this.#logs.tellLog("slack", station, session));
+      this.#sessions.forgetStation(station);
       this.#keptCache.forgetStation(station);
       this.#logs.forgetStation(station);
       this.kept.forgetStation(station);

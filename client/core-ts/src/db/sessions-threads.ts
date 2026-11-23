@@ -2,6 +2,7 @@
 import type { SqlRow, SqlValue } from "../host.ts";
 import { equal, isObject } from "../util.ts";
 import { type DbEnv, type J, K, OWN_IN, frozen, get, membersOf, num, parse, placesFor, str, u64 } from "./collection.ts";
+import { ensureSessionDetail } from "./schema.ts";
 
 export type SessionsThreadsHooks = {
   summaryCame(station: string, key: string, summary: J): void;
@@ -13,10 +14,48 @@ export type SessionsThreadsHooks = {
 export class SessionsThreadsStore {
   readonly #env: DbEnv;
   readonly #hooks: SessionsThreadsHooks;
+  /// Whether `session_detail` is kept apart from `session` so summary updates never rewrite large detail overflow pages.
+  #detailTable = false;
 
   constructor(env: DbEnv, hooks: SessionsThreadsHooks) {
     this.#env = env;
     this.#hooks = hooks;
+  }
+
+  openDetail(readOnly: boolean): void {
+    const sql = this.#env.sql;
+    if (!readOnly) {
+      try {
+        ensureSessionDetail(sql);
+        this.#detailTable = true;
+      } catch {
+        // No room to make it: fall back to inline `session.detail`.
+      }
+      return;
+    }
+    this.#detailTable = sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_detail'").length > 0;
+  }
+
+  forgetStation(station: string): void {
+    if (this.#detailTable) this.#env.sql.run("DELETE FROM session_detail WHERE station = ?", [station]);
+  }
+
+  #readDetailRaw(station: string, key: string): string | null {
+    if (this.#detailTable) {
+      const r = this.#env.sql.all("SELECT detail FROM session_detail WHERE station = ? AND key = ?", [station, key])[0];
+      if (r && r[0] !== null) return String(r[0]);
+    }
+    const r = this.#env.sql.all("SELECT detail FROM session WHERE station = ? AND key = ?", [station, key])[0];
+    return r && r[0] !== null ? String(r[0]) : null;
+  }
+
+  #writeDetailRaw(station: string, key: string, json: string, clearLegacy = true): void {
+    if (this.#detailTable) {
+      this.#env.run("INSERT OR REPLACE INTO session_detail (station, key, detail) VALUES (?, ?, ?)", [station, key, json]);
+      if (clearLegacy) this.#env.run("UPDATE session SET detail = NULL WHERE station = ? AND key = ? AND detail IS NOT NULL", [station, key]);
+      return;
+    }
+    this.#env.run("UPDATE session SET detail = ? WHERE station = ? AND key = ?", [json, station, key]);
   }
 
   // ── sessions ──
@@ -114,23 +153,39 @@ export class SessionsThreadsStore {
     if (key === null) return false;
     let again = false;
     this.#env.write(() => {
-      const r = this.#env.sql.all("SELECT ord, summary, listed, detail, turns FROM session WHERE station = ? AND key = ?", [station, key])[0];
+      const r = this.#env.sql.all("SELECT ord, summary, listed, detail IS NOT NULL FROM session WHERE station = ? AND key = ?", [station, key])[0];
       const shown = (get(summary, "archivedAt") ?? null) === null;
       const listKnown = this.#env.listed(station, "sessions");
       const listed = shown && listKnown ? 1 : r && !shown ? 0 : ((r?.[2] as number | undefined) ?? 0);
       let ord = r ? (r[0] as number) : 0;
       if (listed === 1 && r?.[2] !== 1) ord = ((this.#env.sql.all("SELECT min(ord) FROM session WHERE station = ? AND listed = 1", [station])[0]?.[0] as number | null) ?? 1) - 1;
       const json = JSON.stringify(summary);
-      const detail = r && r[3] !== null ? parse(r[3]) : undefined;
-      again = detail === undefined || (!counted(summary) && !sameTurns(get(detail, "turns"), summary));
-      // One more turn, or the last one gone on, as the summary says it: put in place, not all its turns read again.
-      const placed = again && detail !== undefined && placeTurn(detail, summary);
-      if (placed) {
+      const hasLegacy = r?.[3] === 1;
+      const hasTable = this.#detailTable && this.#env.sql.all("SELECT 1 FROM session_detail WHERE station = ? AND key = ?", [station, key]).length > 0;
+      const hasDetail = hasTable || hasLegacy;
+      if (!hasDetail) {
+        again = true;
+      } else if (counted(summary)) {
+        // Counted summaries already carry turns/workMs, so the large detail JSON never needs to be read or parsed.
         again = false;
-        this.#env.run("UPDATE session SET detail = ? WHERE station = ? AND key = ?", [JSON.stringify(detail), station, key]);
-        this.#tellSession(station, key);
+      } else {
+        const raw = this.#readDetailRaw(station, key);
+        const detail = raw !== null ? parse(raw) : undefined;
+        again = detail === undefined || !sameTurns(get(detail, "turns"), summary);
+        // One more turn, or the last one gone on, as the summary says it: put in place, not all its turns read again.
+        const placed = again && detail !== undefined && placeTurn(detail, summary);
+        if (placed) {
+          again = false;
+          this.#writeDetailRaw(station, key, JSON.stringify(detail), hasLegacy);
+          this.#tellSession(station, key);
+        }
       }
       if (r && r[1] === json && r[2] === listed) return;
+      // Move any legacy inline detail out of the session row once so this and future summary updates stay small.
+      if (hasLegacy && this.#detailTable) {
+        if (!hasTable) this.#env.run("INSERT OR IGNORE INTO session_detail (station, key, detail) SELECT station, key, detail FROM session WHERE station = ? AND key = ? AND detail IS NOT NULL", [station, key]);
+        this.#env.run("UPDATE session SET detail = NULL WHERE station = ? AND key = ? AND detail IS NOT NULL", [station, key]);
+      }
       // Its detail shows it as it is now too (`detail`).
       this.#putSummary(station, key, summary, json, listed, ord);
     });
@@ -141,7 +196,8 @@ export class SessionsThreadsStore {
   /// part in go too.
   dropSession(station: string, key: string): void {
     this.#env.write(() => {
-      const r = this.#env.sql.all("SELECT listed, detail FROM session WHERE station = ? AND key = ?", [station, key])[0];
+      const r = this.#env.sql.all("SELECT listed FROM session WHERE station = ? AND key = ?", [station, key])[0];
+      if (this.#detailTable) this.#env.run("DELETE FROM session_detail WHERE station = ? AND key = ?", [station, key]);
       if (r) {
         this.#env.run("DELETE FROM session WHERE station = ? AND key = ?", [station, key]);
         this.#env.cache.delete(K("sum", station, key));
@@ -169,13 +225,14 @@ export class SessionsThreadsStore {
     const ck = K("detail", station, key);
     const hit = this.#env.cache.get(ck);
     if (hit !== undefined) return hit ?? undefined;
-    const r = this.#env.sql.all("SELECT detail, summary FROM session WHERE station = ? AND key = ?", [station, key])[0];
-    if (!r || r[0] === null) {
+    const raw = this.#readDetailRaw(station, key);
+    if (raw === null) {
       this.#env.cache.set(ck, null);
       return undefined;
     }
-    const detail = parse(r[0]);
-    if (r[1] !== null) detail.session = parse(r[1]);
+    const detail = parse(raw);
+    const sum = this.#env.sql.all("SELECT summary FROM session WHERE station = ? AND key = ?", [station, key])[0]?.[0];
+    if (sum !== undefined && sum !== null) detail.session = parse(sum);
     detail.threads = this.#detailThreads(station, key, Array.isArray(detail.threadIds) ? detail.threadIds : []);
     delete detail.threadIds;
     const v = frozen(detail);
@@ -185,6 +242,7 @@ export class SessionsThreadsStore {
 
   /// Whether a session's detail is held.
   hasDetail(station: string, key: string): boolean {
+    if (this.#detailTable && this.#env.sql.all("SELECT 1 FROM session_detail WHERE station = ? AND key = ?", [station, key]).length > 0) return true;
     return this.#env.sql.all("SELECT 1 FROM session WHERE station = ? AND key = ? AND detail IS NOT NULL", [station, key]).length > 0;
   }
 
@@ -204,10 +262,11 @@ export class SessionsThreadsStore {
       delete rest.threads;
       rest.threadIds = threads.flatMap((t: J) => (u64(get(t, "id")) === null ? [] : [t.id]));
       const json = JSON.stringify(rest);
-      const r = this.#env.sql.all("SELECT detail FROM session WHERE station = ? AND key = ?", [station, key])[0];
+      const r = this.#env.sql.all("SELECT detail IS NOT NULL FROM session WHERE station = ? AND key = ?", [station, key])[0];
       if (!r) this.#env.run("INSERT INTO session (station, key, listed, ord) VALUES (?, ?, 0, 0)", [station, key]);
-      const changed = !r || r[0] !== json;
-      if (changed) this.#env.run("UPDATE session SET detail = ? WHERE station = ? AND key = ?", [json, station, key]);
+      const prev = this.#readDetailRaw(station, key);
+      const changed = prev !== json;
+      if (changed || (r?.[0] === 1 && this.#detailTable)) this.#writeDetailRaw(station, key, json, r?.[0] === 1);
       for (const view of threads) this.#upsertThread(station, view, false);
       if (changed) this.#tellSession(station, key);
     });
@@ -215,24 +274,24 @@ export class SessionsThreadsStore {
 
   /// A thread a session is no longer in: out of the ids its detail named.
   #leftThread(station: string, key: string, id: number): void {
-    const r = this.#env.sql.all("SELECT detail FROM session WHERE station = ? AND key = ?", [station, key])[0];
-    if (!r || r[0] === null) return;
-    const detail = parse(r[0]);
+    const raw = this.#readDetailRaw(station, key);
+    if (raw === null) return;
+    const detail = parse(raw);
     if (!Array.isArray(detail.threadIds) || !detail.threadIds.includes(id)) return;
     detail.threadIds = detail.threadIds.filter((t: number) => t !== id);
-    this.#env.run("UPDATE session SET detail = ? WHERE station = ? AND key = ?", [JSON.stringify(detail), station, key]);
+    this.#writeDetailRaw(station, key, JSON.stringify(detail));
   }
 
   /// Changes a session's detail in place (a job's event); nothing while none is held.
   patchDetail(station: string, key: string, change: (detail: J) => void): void {
     this.#env.write(() => {
-      const r = this.#env.sql.all("SELECT detail FROM session WHERE station = ? AND key = ?", [station, key])[0];
-      if (!r || r[0] === null) return;
-      const detail = parse(r[0]);
+      const raw = this.#readDetailRaw(station, key);
+      if (raw === null) return;
+      const detail = parse(raw);
       change(detail);
       const json = JSON.stringify(detail);
-      if (json === r[0]) return;
-      this.#env.run("UPDATE session SET detail = ? WHERE station = ? AND key = ?", [json, station, key]);
+      if (json === raw) return;
+      this.#writeDetailRaw(station, key, json);
       this.#tellSession(station, key);
     });
   }
@@ -246,13 +305,15 @@ export class SessionsThreadsStore {
   /// Only the last turn matters; earlier turns and the rest of each detail stay in the database.
   sessionsToRead(station: string, keys?: readonly string[]): [string, boolean][] {
     if (keys?.length === 0) return [];
-    const only = keys === undefined ? "" : ` AND key IN (${keys.map(() => "?").join(", ")})`;
+    const only = keys === undefined ? "" : ` AND s.key IN (${keys.map(() => "?").join(", ")})`;
+    const join = this.#detailTable ? " LEFT JOIN session_detail d ON d.station = s.station AND d.key = s.key" : "";
+    const detailExpr = this.#detailTable ? "coalesce(d.detail, s.detail)" : "s.detail";
     return this.#env.sql.all(
-      `SELECT key, summary, detail IS NOT NULL,
-         CASE WHEN json_type(detail, '$.turns') = 'array' THEN json_array_length(detail, '$.turns') ELSE 0 END,
-         CASE WHEN json_type(detail, '$.turns') = 'array' AND json_array_length(detail, '$.turns') > 0
-              THEN json_quote(json_extract(detail, '$.turns[#-1]')) END
-       FROM session WHERE station = ? AND listed = 1${only} ORDER BY ord`,
+      `SELECT s.key, s.summary, ${detailExpr} IS NOT NULL,
+         CASE WHEN json_type(${detailExpr}, '$.turns') = 'array' THEN json_array_length(${detailExpr}, '$.turns') ELSE 0 END,
+         CASE WHEN json_type(${detailExpr}, '$.turns') = 'array' AND json_array_length(${detailExpr}, '$.turns') > 0
+              THEN json_quote(json_extract(${detailExpr}, '$.turns[#-1]')) END
+       FROM session s${join} WHERE s.station = ? AND s.listed = 1${only} ORDER BY s.ord`,
       [station, ...(keys ?? [])],
     ).map((r) => {
       const summary = parse(r[1]);

@@ -16,6 +16,69 @@ let host_ms : Double = 10_000.0
 let usage_every_ms : Double = 60_000.0
 
 ///|
+let overview_soon_ms : Double = 10_000.0
+
+///|
+let disk_free_floor : Double = 5368709120.0
+
+///|
+/// events.ts `overviewComparable`: omits volatile machine telemetry and process RSS drift, and normalizes ample
+/// free-disk bytes so ordinary writes do not defeat overview deduplication.
+fn overview_comparable(value : J) -> String {
+  match value {
+    Obj(entries) => {
+      let out : Array[(String, J)] = []
+      for e in entries {
+        let (k, v) = e
+        if k == "machine" {
+          continue
+        }
+        if k == "disk" {
+          match v {
+            Obj(de) => {
+              let dout : Array[(String, J)] = []
+              for d in de {
+                if d.0 == "freeBytes" {
+                  match d.1 {
+                    Num(free) if free > disk_free_floor =>
+                      dout.push((d.0, jn(disk_free_floor)))
+                    _ => dout.push(d)
+                  }
+                } else {
+                  dout.push(d)
+                }
+              }
+              out.push((k, Obj(dout)))
+            }
+            _ => out.push(e)
+          }
+          continue
+        }
+        if k == "processes" {
+          match v {
+            Arr(items) => {
+              let pout : Array[J] = []
+              for item in items {
+                match item {
+                  Obj(_) => pout.push(without(item, "rssMb"))
+                  _ => pout.push(item)
+                }
+              }
+              out.push((k, Arr(pout)))
+            }
+            _ => out.push(e)
+          }
+          continue
+        }
+        out.push(e)
+      }
+      stringify(Obj(out))
+    }
+    _ => stringify(value)
+  }
+}
+
+///|
 /// events.ts RESUMED, HEAD, FOLLOWS: the answer's headers.
 pub let resumed_header : String = "stillfail-resumed"
 
@@ -228,6 +291,8 @@ pub struct Events {
   mut usage_told : Double
   mut usage_later : (() -> Unit)?
   mut usage_from : UsageFrom
+  mut overview_told_at : Double
+  mut overview_later : (() -> Unit)?
   /// Reads to be told once read under way (events.ts `reading`), and who waits for none (a handover).
   mut reading : Int32
   idle_waiters : Array[() -> Unit]
@@ -267,6 +332,8 @@ pub fn Events::new(deps : Deps, run : String, taking~ : Bool = false) -> Events 
     usage_told: -@double.infinity,
     usage_later: None,
     usage_from: Unset,
+    overview_told_at: -@double.infinity,
+    overview_later: None,
     reading: 0,
     idle_waiters: [],
     taking,
@@ -585,6 +652,24 @@ pub fn Events::presets_changed(self : Events) -> Unit {
 pub fn Events::overview_changed(self : Events) -> Unit {
   self.dirty.overview = true
   self.wake()
+}
+
+///|
+pub fn Events::overview_soon(self : Events) -> Unit {
+  if self.overview_later is Some(_) {
+    return
+  }
+  let wait = self.overview_told_at + overview_soon_ms - (self.deps.now)()
+  if wait <= 0.0 {
+    self.overview_changed()
+    return
+  }
+  self.overview_later = Some(
+    self.after(wait, () => {
+      self.overview_later = None
+      self.overview_changed()
+    }),
+  )
 }
 
 ///|
@@ -1427,7 +1512,7 @@ pub fn Events::store_changed(self : Events, change : J) -> Unit {
       }
       self.emit("chat-mark", mark, to)
     }
-    "processes" | "decisionChecks" => self.overview_changed()
+    "processes" | "decisionChecks" => self.overview_soon()
     _ => ()
   }
 }
@@ -1546,7 +1631,11 @@ fn Events::flush(self : Events, done : () -> Unit) -> Unit {
       f(key) is Some(state) &&
       self.states.get(key) != Some(state) {
       self.states[key] = state
-      overview.val = true
+      if self.overview_told_at + overview_soon_ms <= (self.deps.now)() {
+        overview.val = true
+      } else {
+        self.overview_soon()
+      }
     }
   }
   if !self.listening() {
@@ -1606,6 +1695,13 @@ fn Events::flush_overviews(
   guard (overview || only.length() > 0) && self.deps.overview is Some(overview_of) else {
     return done()
   }
+  if overview {
+    self.overview_told_at = (self.deps.now)()
+    if self.overview_later is Some(stop) {
+      stop()
+      self.overview_later = None
+    }
+  }
   let seen : Map[String, Unit] = Map([])
   let viewers = []
   for c in self.clients {
@@ -1625,7 +1721,7 @@ fn Events::flush_overviews(
       match got {
         Ok(value) => {
           let k = viewer_key(viewer, lang)
-          let text = stringify(value)
+          let text = overview_comparable(value)
           if self.overview_told.get(k) != Some(text) {
             self.overview_told[k] = text
             self.emit(
@@ -1788,6 +1884,11 @@ pub fn Events::hand_over(
     stop()
     self.usage_later = None
     self.tell_usage()
+  }
+  if self.overview_later is Some(stop) {
+    stop()
+    self.overview_later = None
+    self.overview_changed()
   }
   let finish = () => {
     let listening = self.listening()

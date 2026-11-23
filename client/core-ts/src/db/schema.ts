@@ -305,7 +305,8 @@ export const partRev = (column: string) => `${column}_rev`;
 /// place where there is one, each column's revision raised where its text is another; one put in now counted from 0.
 const partPut = (j: string, address: string, from: string, key: string): [string, string] => [
   `INSERT INTO station_part (address, ${PART_COLUMNS.map(([c]) => c).join(", ")}) SELECT ${address}, ${PART_COLUMNS.map(([, of]) => of(j)).join(", ")} ${from}
-        ON CONFLICT (address) DO UPDATE SET ${PART_COLUMNS.map(([c]) => `${c} = excluded.${c}, ${partRev(c)} = coalesce(station_part.${partRev(c)}, 0) + (station_part.${c} IS NOT excluded.${c})`).join(", ")}`,
+        ON CONFLICT (address) DO UPDATE SET ${PART_COLUMNS.map(([c]) => `${c} = excluded.${c}, ${partRev(c)} = coalesce(station_part.${partRev(c)}, 0) + (station_part.${c} IS NOT excluded.${c})`).join(", ")}
+        WHERE ${PART_COLUMNS.map(([c]) => `station_part.${c} IS NOT excluded.${c}`).join(" OR ")}`,
   `UPDATE station_part SET ${PART_COLUMNS.map(([c]) => `${partRev(c)} = 0`).join(", ")} WHERE address = ${key} AND ${partRev(PART_COLUMNS[0][0])} IS NULL`,
 ];
 const triggerPut = () => partPut("new.json", "new.address", "WHERE json_valid(new.json)", "new.address").map((s) => `${s};`).join("\n        ");
@@ -747,6 +748,11 @@ function dropSaidIndex(sql: Sql): void {
   }
 }
 
+/// Keeps each session's large detail JSON out of the `session` row so summary upserts never rewrite its overflow pages.
+export function ensureSessionDetail(sql: Sql): void {
+  sql.exec("CREATE TABLE IF NOT EXISTS session_detail (station TEXT NOT NULL, key TEXT NOT NULL, detail TEXT NOT NULL, PRIMARY KEY (station, key))");
+}
+
 /// How many free pages `giveBackRoomStep` returns to the OS at once (about 1 MB at SQLite's 4 KB page size).
 export const ROOM_BACK_PAGES = 256;
 
@@ -755,7 +761,7 @@ export const ROOM_BACK_PAGES = 256;
 /// gone). A database made before is rewritten once (VACUUM) to keep its free pages at the end (auto_vacuum
 /// INCREMENTAL); then only those free are cut off, `pages` at a time, and the WAL is truncated once no free pages
 /// remain. Answers whether more free pages remain for a following step.
-export function giveBackRoomStep(sql: Sql, pages = ROOM_BACK_PAGES): boolean {
+export function giveBackRoomStep(sql: Sql, pages = ROOM_BACK_PAGES, minFree = 1): boolean {
   const one = (q: string) => Number(sql.all(q)[0]?.[0] ?? 0);
   if (one("PRAGMA auto_vacuum") !== 2) {
     sql.exec("PRAGMA auto_vacuum = INCREMENTAL");
@@ -764,7 +770,7 @@ export function giveBackRoomStep(sql: Sql, pages = ROOM_BACK_PAGES): boolean {
     return false;
   }
   const before = one("PRAGMA freelist_count");
-  if (before <= 0) return false;
+  if (before < minFree) return false;
   sql.exec(`PRAGMA incremental_vacuum(${Math.max(1, Math.floor(pages))})`);
   const after = one("PRAGMA freelist_count");
   if (after > 0 && after < before) return true;

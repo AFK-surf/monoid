@@ -808,7 +808,7 @@ export const AgentsLive = (control: Control) =>
       hub.profilesChanged();
       // What the overview shows changes: told on the event streams.
       const unlistenOverview = [
-        accounts.onChange(() => events.overviewChanged()),
+        accounts.onChange(() => events.overviewSoon()),
         updates.changes(() => events.overviewChanged()),
         // macOS's grants to still.fail Helper (the station's page shows them as they change).
         grants?.onChange(() => events.overviewChanged()) ?? (() => {}),

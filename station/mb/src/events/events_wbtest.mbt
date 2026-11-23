@@ -372,3 +372,26 @@ test "connect_shown emits startsOn and startsOnStations consistently for none, s
   assert_eq(auto_c.get("startsOn").map(stringify), Some("null"))
   assert_eq(auto_c.get("startsOnStations").map(stringify), Some("null"))
 }
+
+///|
+test "overview_comparable ignores volatile telemetry drift while preserving real and low-disk changes" {
+  let a = jo([
+    ("counts", jo([("running", jn(1.0))])),
+    ("disk", jo([("freeBytes", jn(50_000_000_000.0)), ("totalBytes", jn(100_000_000_000.0))])),
+    ("processes", ja([jo([("pid", jn(1.0)), ("rssMb", jn(100.0))])])),
+    ("machine", jo([("uptime", jn(10.0))])),
+  ])
+  let b = jo([
+    ("counts", jo([("running", jn(1.0))])),
+    ("disk", jo([("freeBytes", jn(49_996_000_000.0)), ("totalBytes", jn(100_000_000_000.0))])),
+    ("processes", ja([jo([("pid", jn(1.0)), ("rssMb", jn(142.0))])])),
+    ("machine", jo([("uptime", jn(999.0))])),
+  ])
+  let low = jo([
+    ("counts", jo([("running", jn(1.0))])),
+    ("disk", jo([("freeBytes", jn(2_000_000_000.0)), ("totalBytes", jn(100_000_000_000.0))])),
+    ("processes", ja([jo([("pid", jn(1.0)), ("rssMb", jn(142.0))])])),
+  ])
+  assert_eq(overview_comparable(a), overview_comparable(b))
+  assert_not_eq(overview_comparable(a), overview_comparable(low))
+}

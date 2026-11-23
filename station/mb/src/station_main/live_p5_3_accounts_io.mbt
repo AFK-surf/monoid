@@ -308,7 +308,7 @@ async fn P53Accounts::machine_answer(self : P53Accounts, name : String, args : A
     "claudeVersion" => Some(to_jv(self.bus.coord_updates_version("claude")))
     // (agents.ts: what the overview shows of the accounts changed, told the event streams: `onChange`)
     "changed" => {
-      (self.bus.overview_changed.val)()
+      (self.bus.overview_soon.val)()
       Some(Null)
     }
     _ => None

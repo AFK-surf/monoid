@@ -293,9 +293,11 @@ export class DocsStore {
     this.#env.write(() => {
       const json = JSON.stringify(value);
       const where = doc.keys.map((c) => `${c} = ?`).join(" AND ");
-      const same = this.#env.sql.all(`SELECT json = ? FROM ${doc.table} WHERE ${where}`, [json, ...doc.of])[0]?.[0];
-      if (same === 1) {
-        if (doc.confirmed !== undefined && doc.confirmed !== null) this.#env.run(`UPDATE ${doc.table} SET confirmed = ? WHERE ${where}`, [doc.confirmed, ...doc.of]);
+      const same = doc.confirmed === undefined
+        ? this.#env.sql.all(`SELECT json = ? FROM ${doc.table} WHERE ${where}`, [json, ...doc.of])[0]
+        : this.#env.sql.all(`SELECT json = ?, confirmed FROM ${doc.table} WHERE ${where}`, [json, ...doc.of])[0];
+      if (same?.[0] === 1) {
+        if (doc.confirmed !== undefined && doc.confirmed !== null && same[1] !== doc.confirmed) this.#env.run(`UPDATE ${doc.table} SET confirmed = ? WHERE ${where}`, [doc.confirmed, ...doc.of]);
         return;
       }
       const columns = [...doc.keys, "json", ...(doc.confirmed === undefined ? [] : ["confirmed"])];

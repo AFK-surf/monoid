@@ -12,9 +12,11 @@ pub let build_header : String
 
 pub fn build_of(String?) -> Double?
 
+pub fn client_profile_services(Array[(String, String)]) -> Bool
+
 pub fn client_runtimes(Array[(String, String)]) -> Map[String, Unit]
 
-pub fn compat_frame(String, Map[String, Unit]) -> String
+pub fn compat_frame(String, Map[String, Unit], services? : Bool) -> String
 
 pub fn core_too_old(Array[(String, @jsjson.JValue)], oldest? : Int32) -> Bool
 
@@ -68,6 +70,8 @@ pub fn overview(OverviewDeps, OverviewKept, Viewer, String, (Result[@jsjson.JVal
 
 pub fn percent_decode(String) -> String
 
+pub let profile_services_header : String
+
 pub fn read_only(String) -> Bool
 
 pub let resumed_header : String
@@ -76,7 +80,7 @@ pub fn runtime_compatible(String, Array[(String, String)], String, String, JsonA
 
 pub let runtime_kinds : Array[String]
 
-pub fn runtime_view(@jsjson.JValue, @jsjson.JValue?, Map[String, Unit]) -> View
+pub fn runtime_view(@jsjson.JValue, @jsjson.JValue?, Map[String, Unit], services? : Bool) -> View
 
 pub let runtimes_header : String
 
@@ -92,9 +96,11 @@ pub fn segment(String) -> String
 
 pub fn session_seen(SeenStore, Viewer, String) -> Bool
 
+pub let spared_header : String
+
 pub let stale_ms : Double
 
-pub fn takes_every(Map[String, Unit]) -> Bool
+pub fn takes_every(Map[String, Unit], services? : Bool) -> Bool
 
 pub fn thread_seen(SeenStore, Viewer, Double) -> Bool
 
@@ -132,16 +138,18 @@ pub(all) struct Asked {
   brief : Bool
   logins : Array[String]
   running : Bool
+  spare : Array[String]?
 }
 
 type Client
 
 pub struct CompatStream {
   supported : Map[String, Unit]
+  services : Bool
   mut pending : String
 }
 pub fn CompatStream::end(Self) -> String?
-pub fn CompatStream::new(Map[String, Unit]) -> Self
+pub fn CompatStream::new(Map[String, Unit], services? : Bool) -> Self
 pub fn CompatStream::push(Self, String) -> Array[String]
 
 pub(all) struct ConnectKind {
@@ -172,7 +180,7 @@ pub(all) struct Deps {
   mut process_state : ((String) -> String?)?
   mut followed : (() -> Unit)?
   seen : ((Viewer, Of) -> Bool)?
-  seer : ((Of) -> (Viewer) -> Bool)?
+  seer : ((Of) -> ((Viewer) -> Bool))?
   mut login_screen : ((String, (Screen) -> Unit) -> (() -> Unit)?)?
   mut in_vault : ((Viewer, String) -> Bool)?
   now : () -> Double
@@ -226,6 +234,8 @@ pub struct Events {
   mut usage_told : Double
   mut usage_later : (() -> Unit)?
   mut usage_from : UsageFrom
+  mut overview_told_at : Double
+  mut overview_later : (() -> Unit)?
   mut reading : Int32
   idle_waiters : Array[() -> Unit]
   mut taking : Bool
@@ -246,9 +256,11 @@ pub fn Events::machine_logins(Self, @jsjson.JValue, @jsjson.JValue, String) -> U
 pub fn Events::new(Deps, String, taking? : Bool) -> Self
 pub fn Events::open(Self, Viewer, String, Asked, (Result[Answer, String]) -> Unit) -> Unit
 pub fn Events::overview_changed(Self) -> Unit
+pub fn Events::overview_soon(Self) -> Unit
 pub fn Events::presets_changed(Self) -> Unit
 pub fn Events::rows_changed(Self, String?, made? : Bool) -> Unit
 pub fn Events::screens(Self, (String) -> @jsjson.JValue) -> Unit
+pub fn Events::send_live(Self, String, @jsjson.JValue, @jsjson.JValue) -> Unit
 pub fn Events::store_changed(Self, @jsjson.JValue) -> Unit
 pub fn Events::take_up(Self, String?, unread? : Bool, from? : Int32) -> Unit
 pub fn Events::tell(Self, String, @jsjson.JValue, String, @jsjson.JValue) -> Unit

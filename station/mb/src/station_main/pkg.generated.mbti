@@ -2,7 +2,6 @@
 package "station/station_main"
 
 import {
-  "ui/effect",
   "moonbitlang/core/json",
   "moonbitlang/core/ref",
   "station/cloud_lock",
@@ -14,6 +13,7 @@ import {
   "station/store_sessions",
   "station/store_threads",
   "station/updates",
+  "ui/effect",
 }
 
 // Values
@@ -97,7 +97,7 @@ pub fn is_windows() -> Bool
 
 pub fn iso_time(Double) -> String
 
-pub async fn join_workspace(@host.Host, String, String, String?, String, () -> Bool) -> @json.Json
+pub async fn join_workspace(@host.Host, String, String, String?, String, () -> Bool, rig? : String?, expected_workspace? : String?) -> @json.Json
 
 pub fn json_reply(Int32, @json.Json) -> Reply
 
@@ -333,7 +333,9 @@ pub(all) struct LiveBus {
   reader_ask : @ref.Ref[async (String, @json.Json, String) -> @json.Json]
   model_catalog : @ref.Ref[() -> @json.Json]
   events_tell : @ref.Ref[(String, @json.Json, String, @json.Json) -> Unit]
+  events_send_live : @ref.Ref[(String, @json.Json, @json.Json) -> Unit]
   overview_changed : @ref.Ref[() -> Unit]
+  overview_soon : @ref.Ref[() -> Unit]
   host_sample : @ref.Ref[async () -> @json.Json]
   peer_handlers : Map[String, async (String, String?, @json.Json, Bytes?) -> (@json.Json, Bytes?)]
   peer_prefixes : Array[(String, async (String, String?, String, @json.Json, Bytes?) -> (@json.Json, Bytes?))]
@@ -348,14 +350,18 @@ pub(all) struct LiveBus {
   forwarded_port : @ref.Ref[(Int32) -> Bool]
   runtimes_available : @ref.Ref[() -> Array[String]]
   here_device : @ref.Ref[async (@json.Json, @json.Json) -> Unit]
+  emit_span : @ref.Ref[(String, Int64, Int64, Array[(String, @json.Json)], Bool, Bool, Int32) -> Unit]
+  emit_span_gen : @ref.Ref[Int32]
   mcp_handle : @ref.Ref[(async (Request) -> Reply)?]
   hub_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
+  rig_described : @ref.Ref[((String) -> @json.Json)?]
   hub_models_for : @ref.Ref[(String) -> Array[@json.Json]]
   handover_sessions : @ref.Ref[async () -> Array[@json.Json]]
   take_handover : @ref.Ref[async (@json.Json?) -> Unit]
   drain_wait : @ref.Ref[async () -> String]
   status_agents : @ref.Ref[() -> @json.Json?]
   jobs_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
+  accounts_found : @ref.Ref[(String) -> Array[String]?]
   ui_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
   ui_screen_view : @ref.Ref[(async (@door.Stream, Bytes, @json.Json, @json.Json) -> Bool)?]
   ui_helper_search : @ref.Ref[(async (Array[String], String, Double, Array[String]) -> Array[String])?]
@@ -371,6 +377,7 @@ pub fn LiveBus::as_rig(Self) -> Bool
 pub async fn LiveBus::call_peer(Self, String, String?, String, @json.Json, bytes? : Bytes) -> (@json.Json, Bytes?)
 pub async fn LiveBus::dispatch_peer(Self, String, String?, String, @json.Json, Bytes?) -> (@json.Json, Bytes?)
 pub fn LiveBus::drain_thread_requests(Self, @store_threads.Store) -> Unit
+pub fn LiveBus::emit_trace_json(Self, @json.Json) -> Unit
 pub fn LiveBus::new(@host.Host, String, Array[String], String, String, String, @cloud_lock.StationKey, @sql.Db, @store_sessions.Store, StationParts, @effect.Deferred[String], Bool, String, Int32?, (@json.Json) -> Unit, (String) -> Unit, restart_front? : () -> Unit, run_installer? : (String, Map[String, String]) -> Unit) -> Self
 pub fn LiveBus::notify_peer_heard(Self, String) -> Unit
 pub fn LiveBus::notify_store(Self, @json.Json) -> Unit

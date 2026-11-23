@@ -123,7 +123,7 @@ async fn P55::start_copies(self : P55) -> Unit {
   let here = () => Some(bus.key.id)
   let w = self.replica_world(async fn(name, _args) { raise BusError("copies: nothing answers \{name} here") }, (name, args) => {
     if name == "changed" {
-      (bus.overview_changed.val)()
+      (bus.overview_soon.val)()
     } else if name == "trace" && args.length() > 0 {
       bus.emit_trace_json(of_jv(args[0]))
     }
@@ -139,7 +139,7 @@ async fn P55::start_copies(self : P55) -> Unit {
     }),
     roster: ws => self.members(ws),
     runner,
-    changed: () => (bus.overview_changed.val)(),
+    changed: () => (bus.overview_soon.val)(),
     restart: async fn() { restarter(data) },
     taking: Some(() => match retire_ref.val {
       Some(r) => r.taking_now()
