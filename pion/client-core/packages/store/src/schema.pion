@@ -152,6 +152,11 @@ pub fn sql_ensure_md_kept() -> String {
   "CREATE TABLE IF NOT EXISTS md_kept (station TEXT NOT NULL, key TEXT NOT NULL, of TEXT NOT NULL, size INTEGER NOT NULL, used INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (station, key)) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS md_kept_used ON md_kept (used); CREATE INDEX IF NOT EXISTS md_kept_of ON md_kept (station, of);"
 }
 
+/// DDL for `moved` table (schema.ts `ensureMoved`).
+pub fn sql_ensure_moved() -> String {
+  "CREATE TABLE IF NOT EXISTS moved (station TEXT NOT NULL, session TEXT NOT NULL, there_station TEXT NOT NULL, thread INTEGER, there INTEGER, at INTEGER, came INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (station, session)) WITHOUT ROWID"
+}
+
 /// DDL adding derived `chat` columns and covering partial `chat_recent` index (schema.ts `ensureChatColumns`).
 pub fn sql_ensure_chat_window_indexes() -> String {
   "DROP INDEX IF EXISTS chat_recent;\n" +
@@ -165,6 +170,10 @@ pub fn ensure_kept(db : sql::Sql) -> sql::SqlResult[Unit] {
 
 pub fn ensure_md_kept(db : sql::Sql) -> sql::SqlResult[Unit] {
   db.exec(sql_ensure_md_kept())
+}
+
+pub fn ensure_moved(db : sql::Sql) -> sql::SqlResult[Unit] {
+  db.exec(sql_ensure_moved())
 }
 
 fn drop_said_index(db : sql::Sql) -> Unit {
@@ -293,6 +302,10 @@ pub fn open_account_db(sh : shell::Shell, name : String) -> sql::SqlResult[Accou
       sql::SqlResult::Ok(_) => ()
     }
     match ensure_said(db) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => ()
+    }
+    match ensure_moved(db) {
       sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
       sql::SqlResult::Ok(_) => ()
     }

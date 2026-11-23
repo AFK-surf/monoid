@@ -1,0 +1,960 @@
+// Deterministic unit tests for `chats_view`, `chat_view`, `workspace_view`, and `store::moved`:
+// - `moved` table + multi-hop `resolve_chat_now` + cycle protection + 0 duplicate rows on origin
+// - `RowsMemo` incremental recomputation + 3x scale constant-read budget + <= 4 KB keyed delta
+// - `project_chats` day bucketing, pinned sorting, `pending`, `changing` (rename/pin/archive), `draft`, viewer marks
+// - `project_chat` messages, `tool_call`/`tool_result` folding, `card` (options/text/login + answeredBy),
+//   attachment token without inline bytes, `outbox` `clientKey` dedup, `unreadLine`/`hasMore`/`oldest`, 0 SQL writes
+// - `project_workspaces`, `project_workspace`, `project_stations`, `project_accounts`, `project_vaults` conform stripping
+
+import "base_codec"
+import "effect"
+import "protocol"
+import "shell"
+import "sql"
+import "store"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn assert_eq[T](a : T, b : T) -> Unit {
+  if a != b {
+    panic("assert_eq failed")
+  }
+}
+
+fn assert_opt_eq[T](a : Option[T], b : Option[T]) -> Unit {
+  match (a, b) {
+    (None, None) => ()
+    (Some(x), Some(y)) => if x != y { panic("assert_opt_eq failed") }
+    _ => panic("assert_opt_eq failed")
+  }
+}
+
+struct FakeMovedRow {
+  there_station : String
+  thread : Option[Int]
+  there : Option[Int]
+  at : Option[Int64]
+  came : Int
+}
+
+struct FakeChatEntry {
+  station : String
+  archived : Int
+  id : String
+  ord : Double
+  thread : Option[Int]
+  session : Option[String]
+  pinned_at : Option[Int64]
+  last_active : Int64
+  mine : Int
+  hidden : Int
+  led : Int
+  watched : Int
+  json : String
+}
+
+struct FakeThreadRow {
+  id : Int
+  last : Option[Int]
+  read : Option[Int]
+  unread : Option[Int]
+  sort_at : Int64
+  created_at : Int64
+  surface : Option[String]
+  first_member : Option[String]
+  json : String
+}
+
+struct ViewsFakeDb {
+  shell : shell::Shell
+  chats : Array[FakeChatEntry]
+  moved : Map[String, FakeMovedRow]
+  moved_keys : Array[String]
+  pending : Array[(String, String, String)]
+  changing : Array[(String, Int, String)]
+  drafts : Map[String, String]
+  draft_keys : Array[(String, String)]
+  outbox : Map[String, String]
+  threads : Map[String, FakeThreadRow]
+  entries : Map[String, Array[(Int, String)]]
+  md : Map[String, (Int64, String)]
+  log_use : Map[String, Int64]
+  workspaces : Array[(String, String)]
+  stations : Array[(String, String, String)]
+  account_docs : Map[String, String]
+  ran : Array[String]
+}
+
+fn ViewsFakeDb::new() -> ViewsFakeDb {
+  let holder : Array[ViewsFakeDb] = []
+  let sh = shell::Shell::stood_in(
+    effect::Runtime::new(),
+    fn(_ : Int64, _ : String, _ : base_codec::Json, _ : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      holder[0].answer(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = ViewsFakeDb::{
+    shell: sh,
+    chats: [],
+    moved: Map::new(),
+    moved_keys: [],
+    pending: [],
+    changing: [],
+    drafts: Map::new(),
+    draft_keys: [],
+    outbox: Map::new(),
+    threads: Map::new(),
+    entries: Map::new(),
+    md: Map::new(),
+    log_use: Map::new(),
+    workspaces: [],
+    stations: [],
+    account_docs: Map::new(),
+    ran: [],
+  }
+  holder.push(db)
+  db
+}
+
+fn vt_param_str(p : Array[base_codec::Json], i : Int) -> String {
+  if i < 0 || i >= p.length() { "" } else { sql::col_text(p, i) }
+}
+
+fn vt_param_i64(p : Array[base_codec::Json], i : Int) -> Int64 {
+  if i < 0 || i >= p.length() { 0.to_int64() } else { sql::col_int64(p, i) }
+}
+
+fn vt_param_opt_i64(p : Array[base_codec::Json], i : Int) -> Option[Int64] {
+  if i < 0 || i >= p.length() { None } else { sql::col_opt_int64(p, i) }
+}
+
+fn vt_param_opt_int(p : Array[base_codec::Json], i : Int) -> Option[Int] {
+  match vt_param_opt_i64(p, i) {
+    Some(v) => Some(v.to_int())
+    None => None
+  }
+}
+
+fn vt_param_int(p : Array[base_codec::Json], i : Int) -> Int {
+  vt_param_i64(p, i).to_int()
+}
+
+fn vt_station_pos(in_ord : String, st : String) -> Int {
+  let sb = StringBuilder::new()
+  sb.write_byte(1 as Byte)
+  sb.write_string(st)
+  sb.write_byte(1 as Byte)
+  let idx = in_ord.index_of(sb.to_string())
+  if idx < 0 { 0 } else { idx + 1 }
+}
+
+fn vt_in_apart(apart : String, st : String, key : String) -> Bool {
+  if apart.length() == 0 {
+    return false
+  }
+  let sb = StringBuilder::new()
+  sb.write_byte(1 as Byte)
+  sb.write_string(st)
+  sb.write_byte(2 as Byte)
+  sb.write_string(key)
+  sb.write_byte(1 as Byte)
+  apart.index_of(sb.to_string()) >= 0
+}
+
+fn vt_chat_before(a : FakeChatEntry, b : FakeChatEntry, in_ord : String) -> Bool {
+  let ap = match a.pinned_at { Some(v) => v; None => -1.to_int64() }
+  let bp = match b.pinned_at { Some(v) => v; None => -1.to_int64() }
+  if ap != bp { return ap > bp }
+  if a.last_active != b.last_active { return a.last_active > b.last_active }
+  let apos = vt_station_pos(in_ord, a.station)
+  let bpos = vt_station_pos(in_ord, b.station)
+  if apos != bpos { return apos < bpos }
+  if a.ord != b.ord { return a.ord < b.ord }
+  a.id < b.id
+}
+
+fn ViewsFakeDb::answer(self : ViewsFakeDb, op : String, args : base_codec::Json) -> shell::AskResult {
+  if op == "sql.open" {
+    return shell::AskResult::Ok(base_codec::json_obj([("id", base_codec::json_int(1))]))
+  }
+  if op == "sql.close" {
+    return shell::AskResult::Ok(base_codec::json_null())
+  }
+  let stmt = match base_codec::json_get(args, "sql") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return shell::AskResult::Err(shell::ShellError::{ message: "no sql" })
+  }
+  let p = match base_codec::json_get(args, "params") {
+    Some(base_codec::Json::Arr(a)) => a
+    _ => []
+  }
+  self.ran.push(stmt)
+  if op == "sql.exec" {
+    return shell::AskResult::Ok(base_codec::json_null())
+  }
+  let rows : Array[base_codec::Json] = []
+  let mut changed = 0
+
+  if stmt == store::sql_chat_window() {
+    let in_ord = vt_param_str(p, 0)
+    let mine = vt_param_int(p, 1)
+    let hidden = vt_param_int(p, 2)
+    let watching = vt_param_int(p, 3)
+    let apart_th = vt_param_str(p, 4)
+    let apart_sess = vt_param_str(p, 5)
+    let limit = vt_param_int(p, 6)
+    let matched : Array[FakeChatEntry] = []
+    for i in 0..<self.chats.length() {
+      let c = self.chats[i]
+      if c.archived != 0 { continue }
+      if vt_station_pos(in_ord, c.station) == 0 { continue }
+      if mine != 0 && c.mine != 1 { continue }
+      if hidden != 2 && c.hidden != hidden { continue }
+      if c.led != 0 { continue }
+      if watching != 0 && c.watched != 1 { continue }
+      let mut skip = false
+      match c.thread {
+        Some(t) => if vt_in_apart(apart_th, c.station, t.to_string()) { skip = true }
+        None => ()
+      }
+      match c.session {
+        Some(s) => if vt_in_apart(apart_sess, c.station, s) { skip = true }
+        None => ()
+      }
+      if !skip { matched.push(c) }
+    }
+    for i in 1..<matched.length() {
+      let cur = matched[i]
+      let mut j = i - 1
+      while j >= 0 && vt_chat_before(cur, matched[j], in_ord) {
+        matched[j + 1] = matched[j]
+        j -= 1
+      }
+      matched[j + 1] = cur
+    }
+    let take_n = if limit < matched.length() { limit } else { matched.length() }
+    for i in 0..<take_n {
+      let c = matched[i]
+      let pj = match c.pinned_at { Some(v) => base_codec::json_int64(v); None => base_codec::json_null() }
+      rows.push(base_codec::json_arr([
+        base_codec::json_str(c.station),
+        base_codec::json_int(c.archived),
+        base_codec::json_str(c.id),
+        pj,
+        base_codec::json_int64(c.last_active),
+        base_codec::json_num(c.ord),
+      ]))
+    }
+  } else if stmt == store::sql_chat_by_key() {
+    let st = vt_param_str(p, 0)
+    let arch = vt_param_int(p, 1)
+    let cid = vt_param_str(p, 2)
+    for i in 0..<self.chats.length() {
+      let c = self.chats[i]
+      if c.station == st && c.archived == arch && c.id == cid {
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(c.station),
+          base_codec::json_int(c.archived),
+          base_codec::json_str(c.id),
+          base_codec::json_str(c.json),
+        ]))
+        break
+      }
+    }
+  } else if stmt == store::sql_moved_get() {
+    let k = vt_param_str(p, 0) + "\u{01}" + vt_param_str(p, 1)
+    match self.moved.get(k) {
+      Some(m) => {
+        let th_j = match m.thread { Some(v) => base_codec::json_int(v); None => base_codec::json_null() }
+        let there_j = match m.there { Some(v) => base_codec::json_int(v); None => base_codec::json_null() }
+        let at_j = match m.at { Some(v) => base_codec::json_int64(v); None => base_codec::json_null() }
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(m.there_station),
+          th_j,
+          there_j,
+          at_j,
+          base_codec::json_int(m.came),
+        ]))
+      }
+      None => ()
+    }
+  } else if stmt == store::sql_moved_by_thread() {
+    let st = vt_param_str(p, 0)
+    let th = vt_param_int(p, 1)
+    let prefix = st + "\u{01}"
+    for i in 0..<self.moved_keys.length() {
+      let mk = self.moved_keys[i]
+      if !mk.starts_with(prefix) { continue }
+      match self.moved.get(mk) {
+        Some(m) => {
+          match m.thread {
+            Some(t) => if t == th {
+              rows.push(base_codec::json_arr([base_codec::json_str(mk.slice(prefix.length(), mk.length()))]))
+              break
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+    }
+  } else if stmt == store::sql_moved_from() {
+    let st = vt_param_str(p, 0)
+    let prefix = st + "\u{01}"
+    for i in 0..<self.moved_keys.length() {
+      let mk = self.moved_keys[i]
+      if mk.starts_with(prefix) && self.moved.get(mk).is_some() {
+        rows.push(base_codec::json_arr([base_codec::json_str(mk.slice(prefix.length(), mk.length()))]))
+      }
+    }
+  } else if stmt == store::sql_moved_put() {
+    let k = vt_param_str(p, 0) + "\u{01}" + vt_param_str(p, 1)
+    if self.moved.get(k).is_none() {
+      self.moved_keys.push(k)
+    }
+    self.moved.set(k, FakeMovedRow::{
+      there_station: vt_param_str(p, 2),
+      thread: vt_param_opt_int(p, 3),
+      there: vt_param_opt_int(p, 4),
+      at: vt_param_opt_i64(p, 5),
+      came: vt_param_int(p, 6),
+    })
+    changed = 1
+  } else if stmt == store::sql_moved_delete() {
+    let k = vt_param_str(p, 0) + "\u{01}" + vt_param_str(p, 1)
+    self.moved.remove(k)
+    changed = 1
+  } else if stmt == store::sql_chat_drop_session() {
+    let st = vt_param_str(p, 0)
+    let sess = vt_param_str(p, 1)
+    let kept : Array[FakeChatEntry] = []
+    for i in 0..<self.chats.length() {
+      let c = self.chats[i]
+      let drop = c.station == st && match c.session { Some(s) => s == sess; None => false }
+      if !drop { kept.push(c) } else { changed += 1 }
+    }
+    self.chats.clear()
+    for i in 0..<kept.length() { self.chats.push(kept[i]) }
+  } else if stmt == store::sql_pending_by_station() {
+    let st = vt_param_str(p, 0)
+    for i in 0..<self.pending.length() {
+      let (pk, pst, pj) = self.pending[i]
+      if pst == st {
+        rows.push(base_codec::json_arr([base_codec::json_str(pk), base_codec::json_str(pst), base_codec::json_str(pj)]))
+      }
+    }
+  } else if stmt == store::sql_changing_by_station() {
+    let st = vt_param_str(p, 0)
+    for i in 0..<self.changing.length() {
+      let (cst, cid, cj) = self.changing[i]
+      if cst == st {
+        rows.push(base_codec::json_arr([base_codec::json_str(cst), base_codec::json_int(cid), base_codec::json_str(cj)]))
+      }
+    }
+  } else if stmt == store::sql_draft_by_station() {
+    let st = vt_param_str(p, 0)
+    for i in 0..<self.draft_keys.length() {
+      let (dst, dch) = self.draft_keys[i]
+      if dst == st {
+        match self.drafts.get(dst + "\u{01}" + dch) {
+          Some(dj) => rows.push(base_codec::json_arr([base_codec::json_str(dst), base_codec::json_str(dch), base_codec::json_str(dj)]))
+          None => ()
+        }
+      }
+    }
+  } else if stmt == store::sql_outbox_one() {
+    let st = vt_param_str(p, 0)
+    let th = vt_param_int(p, 1)
+    match self.outbox.get(st + ":" + th.to_string()) {
+      Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(st), base_codec::json_int(th), base_codec::json_str(j)]))
+      None => ()
+    }
+  } else if stmt == store::sql_thread_one() {
+    let st = vt_param_str(p, 0)
+    let th = vt_param_int(p, 1)
+    match self.threads.get(st + ":" + th.to_string()) {
+      Some(tr) => {
+        let last_j = match tr.last { Some(v) => base_codec::json_int(v); None => base_codec::json_null() }
+        let read_j = match tr.read { Some(v) => base_codec::json_int(v); None => base_codec::json_null() }
+        let unread_j = match tr.unread { Some(v) => base_codec::json_int(v); None => base_codec::json_null() }
+        let surf_j = match tr.surface { Some(s) => base_codec::json_str(s); None => base_codec::json_null() }
+        let fm_j = match tr.first_member { Some(s) => base_codec::json_str(s); None => base_codec::json_null() }
+        rows.push(base_codec::json_arr([
+          base_codec::json_int(tr.id),
+          last_j,
+          read_j,
+          unread_j,
+          base_codec::json_int64(tr.sort_at),
+          base_codec::json_int64(tr.created_at),
+          surf_j,
+          fm_j,
+          base_codec::json_str(tr.json),
+        ]))
+      }
+      None => ()
+    }
+  } else if stmt == store::sql_window_end() {
+    let key = vt_param_str(p, 0) + ":" + vt_param_int(p, 1).to_string()
+    let most = vt_param_int(p, 2)
+    match self.entries.get(key) {
+      Some(all) => {
+        let mut i = all.length() - 1
+        while i >= 0 && rows.length() < most {
+          let (en, ej) = all[i]
+          rows.push(base_codec::json_arr([base_codec::json_int(en), base_codec::json_str(ej)]))
+          i -= 1
+        }
+      }
+      None => ()
+    }
+  } else if stmt == store::sql_entry_exists_before() {
+    let key = vt_param_str(p, 0) + ":" + vt_param_int(p, 1).to_string()
+    let before_n = vt_param_int(p, 2)
+    match self.entries.get(key) {
+      Some(all) => {
+        for i in 0..<all.length() {
+          if all[i].0 < before_n {
+            rows.push(base_codec::json_arr([base_codec::json_int(1)]))
+            break
+          }
+        }
+      }
+      None => ()
+    }
+  } else if stmt.starts_with(store::sql_md_many_head()) {
+    let st = vt_param_str(p, 0)
+    for i in 1..<p.length() {
+      let key = vt_param_str(p, i)
+      match self.md.get(st + ":" + key) {
+        Some((u, j)) => rows.push(base_codec::json_arr([base_codec::json_str(key), base_codec::json_int64(u), base_codec::json_str(j)]))
+        None => ()
+      }
+    }
+  } else if stmt == store::sql_opened() {
+    let k = vt_param_str(p, 0) + ":" + vt_param_str(p, 1) + ":" + vt_param_str(p, 2)
+    match self.log_use.get(k) {
+      Some(v) => rows.push(base_codec::json_arr([base_codec::json_int64(v)]))
+      None => ()
+    }
+  } else if stmt == store::sql_workspace_all() {
+    for i in 0..<self.workspaces.length() {
+      let (id, j) = self.workspaces[i]
+      rows.push(base_codec::json_arr([base_codec::json_str(id), base_codec::json_str(j), base_codec::json_null()]))
+    }
+  } else if stmt == store::sql_workspace_one() {
+    let want = vt_param_str(p, 0)
+    for i in 0..<self.workspaces.length() {
+      let (id, j) = self.workspaces[i]
+      if id == want {
+        rows.push(base_codec::json_arr([base_codec::json_str(id), base_codec::json_str(j), base_codec::json_null()]))
+        break
+      }
+    }
+  } else if stmt == store::sql_station_doc_by_kind() {
+    let want_kind = vt_param_str(p, 0)
+    for i in 0..<self.stations.length() {
+      let (addr, kind, j) = self.stations[i]
+      if kind == want_kind {
+        rows.push(base_codec::json_arr([base_codec::json_str(addr), base_codec::json_str(kind), base_codec::json_str(j), base_codec::json_null()]))
+      }
+    }
+  } else if stmt == store::sql_account_doc_one() {
+    match self.account_docs.get(vt_param_str(p, 0)) {
+      Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(j)]))
+      None => ()
+    }
+  } else {
+    return shell::AskResult::Err(shell::ShellError::{ message: "ViewsFakeDb unknown stmt: " + stmt })
+  }
+
+  if op == "sql.run" {
+    shell::AskResult::Ok(base_codec::json_int(changed))
+  } else {
+    shell::AskResult::Ok(base_codec::json_arr(rows))
+  }
+}
+
+fn ViewsFakeDb::write_count_since(self : ViewsFakeDb, from : Int) -> Int {
+  let mut w = 0
+  for i in from..<self.ran.length() {
+    let s = self.ran[i]
+    if s.starts_with("INSERT") || s.starts_with("UPDATE") || s.starts_with("DELETE") || s.starts_with("CREATE") || s.starts_with("BEGIN") || s.starts_with("COMMIT") {
+      w += 1
+    }
+  }
+  w
+}
+
+fn make_station(addr : String, id : String, name : String) -> StationBrief {
+  StationBrief::{
+    address: addr,
+    id: id,
+    name: name,
+    emoji: None,
+    icon: None,
+    online: true,
+    updating: false,
+    offline_text: None,
+    reconnecting_text: None,
+    running: 0,
+  }
+}
+
+fn add_fake_chat(
+  fake : ViewsFakeDb,
+  station : String,
+  id : String,
+  thread : Int,
+  title : String,
+  last_active : Int64,
+  pinned_at : Option[Int64],
+  unread : Bool,
+  client_key : Option[String] = None,
+) -> Unit {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(id)),
+    ("session", base_codec::json_str(id)),
+    ("thread", base_codec::json_int(thread)),
+    ("title", base_codec::json_str(title)),
+    ("unread", base_codec::json_bool(unread)),
+    ("mine", base_codec::json_bool(true)),
+    ("lastActiveAt", base_codec::json_int64(last_active)),
+    ("agents", base_codec::json_arr([])),
+    ("last", base_codec::json_obj([("seq", base_codec::json_int(10)), ("preview", base_codec::json_str("hi " + id))])),
+  ]
+  match client_key {
+    Some(ck) => fields.push(("clientKey", base_codec::json_str(ck)))
+    None => ()
+  }
+  fake.chats.push(FakeChatEntry::{
+    station: station,
+    archived: 0,
+    id: id,
+    ord: -last_active.to_double(),
+    thread: Some(thread),
+    session: Some(id),
+    pinned_at: pinned_at,
+    last_active: last_active,
+    mine: 1,
+    hidden: 0,
+    led: 0,
+    watched: 0,
+    json: base_codec::json_stringify(base_codec::json_obj(fields)),
+  })
+}
+
+fn count_listed_items(view : base_codec::Json) -> Int {
+  let days = j_arr(view, "days")
+  let mut total = 0
+  for i in 0..<days.length() {
+    total += j_arr(days[i], "items").length()
+  }
+  total
+}
+
+test "moved table: multi-hop resolve_chat_now, cycle protection, and zero duplicate rows on origin" {
+  let fake = ViewsFakeDb::new()
+  let db = match sql::Sql::open(fake.shell, "acct") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic("open failed: " + e.message)
+  }
+  let now = 1700000000000.to_int64()
+  add_fake_chat(fake, "ws/st-a", "sess-1", 10, "Moved Chat", now, None, false)
+  add_fake_chat(fake, "ws/st-c", "sess-1", 30, "Moved Chat", now, None, false)
+
+  // Move st-a -> st-b -> st-c
+  let ch1 = match store::put_moved(db, "ws/st-a", "sess-1", Some(store::MovedTo::{
+    station: "ws/st-b",
+    thread: Some(10),
+    there: Some(20),
+    at: Some(now),
+    came: false,
+  })) {
+    sql::SqlResult::Ok(b) => b
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  assert(ch1)
+  let _ = store::put_moved(db, "ws/st-b", "sess-1", Some(store::MovedTo::{
+    station: "ws/st-c",
+    thread: Some(20),
+    there: Some(30),
+    at: Some(now),
+    came: false,
+  }))
+
+  // Multi-hop resolution by session and by thread
+  match store::resolve_chat_now(db, "ws/st-a", "sess-1") {
+    sql::SqlResult::Ok(Some(loc)) => {
+      assert_eq(loc.station, "ws/st-c")
+      assert_eq(loc.session, "sess-1")
+      assert_opt_eq(loc.thread, Some(30))
+    }
+    _ => panic("expected multi-hop ChatLocation")
+  }
+  match store::resolve_chat_now_by_thread(db, "ws/st-a", 10) {
+    sql::SqlResult::Ok(Some(loc)) => {
+      assert_eq(loc.station, "ws/st-c")
+      assert_opt_eq(loc.thread, Some(30))
+    }
+    _ => panic("expected thread resolution to ws/st-c")
+  }
+
+  // Project chats across st-a, st-b, st-c: sess-1 appears ONCE (on st-c), never duplicated on st-a!
+  let memo = RowsMemo::new()
+  let marks = ViewerMarks::new("me@example.com")
+  let view = match project_chats(
+    db,
+    "ws",
+    [make_station("ws/st-a", "st-a", "A"), make_station("ws/st-b", "st-b", "B"), make_station("ws/st-c", "st-c", "C")],
+    now,
+    memo,
+    marks,
+  ) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  assert_eq(count_listed_items(view), 1)
+  let item0 = j_arr(j_arr(view, "days")[0], "items")[0]
+  assert_eq(j_str(item0, "station"), "ws/st-c")
+
+  // Cycle protection: st-c -> st-a forms a cycle, resolve_chat_now must return None
+  let _ = store::put_moved(db, "ws/st-c", "sess-1", Some(store::MovedTo::{
+    station: "ws/st-a",
+    thread: Some(30),
+    there: Some(10),
+    at: Some(now),
+    came: false,
+  }))
+  match store::resolve_chat_now(db, "ws/st-a", "sess-1") {
+    sql::SqlResult::Ok(None) => ()
+    _ => panic("cycle must return None")
+  }
+}
+
+test "RowsMemo 3x scale constant-read budget and <= 4 KB keyed delta on single-chat change" {
+  let run_scale = fn(n_chats : Int) -> (Int, Int, Int, Int) {
+    let fake = ViewsFakeDb::new()
+    let db = match sql::Sql::open(fake.shell, "acct") {
+      sql::SqlResult::Ok(d) => d
+      sql::SqlResult::Err(e) => panic(e.message)
+    }
+    let now = 1700000000000.to_int64()
+    for i in 0..<n_chats {
+      let id = "chat-" + i.to_string()
+      add_fake_chat(fake, "ws/st-1", id, i + 1, "Title " + i.to_string(), now - (i * 1000).to_int64(), None, false)
+    }
+    let memo = RowsMemo::new()
+    let marks = ViewerMarks::new("alice@example.com")
+    let stations = [make_station("ws/st-1", "st-1", "Studio")]
+    let prev = match project_chats(db, "ws", stations, now, memo, marks, window_limit=20) {
+      sql::SqlResult::Ok(v) => v
+      sql::SqlResult::Err(e) => panic(e.message)
+    }
+    memo.reset_counters()
+
+    // Mutate exactly 1 chat (`chat-3`)
+    for i in 0..<fake.chats.length() {
+      if fake.chats[i].id == "chat-3" {
+        let updated = base_codec::json_obj([
+          ("id", base_codec::json_str("chat-3")),
+          ("session", base_codec::json_str("chat-3")),
+          ("thread", base_codec::json_int(4)),
+          ("title", base_codec::json_str("Updated Title 3")),
+          ("unread", base_codec::json_bool(true)),
+          ("mine", base_codec::json_bool(true)),
+          ("lastActiveAt", base_codec::json_int64(now + 5000.to_int64())),
+          ("agents", base_codec::json_arr([])),
+        ])
+        fake.chats[i] = FakeChatEntry::{
+          station: "ws/st-1",
+          archived: 0,
+          id: "chat-3",
+          ord: -(now + 5000.to_int64()).to_double(),
+          thread: Some(4),
+          session: Some("chat-3"),
+          pinned_at: None,
+          last_active: now + 5000.to_int64(),
+          mine: 1,
+          hidden: 0,
+          led: 0,
+          watched: 0,
+          json: base_codec::json_stringify(updated),
+        }
+      }
+    }
+
+    let next = match project_chats(
+      db,
+      "ws",
+      stations,
+      now + 5000.to_int64(),
+      memo,
+      marks,
+      window_limit=20,
+      changed_keys=Some([("ws/st-1", "chat-3")]),
+    ) {
+      sql::SqlResult::Ok(v) => v
+      sql::SqlResult::Err(e) => panic(e.message)
+    }
+    let ops = protocol::diff_keyed(prev, next, protocol::spec_for_topic("chats"))
+    let applied = protocol::apply_keyed(prev, ops)
+    if !protocol::json_equal(applied, next) {
+      panic("apply_keyed mismatch: ops=" + base_codec::json_stringify(base_codec::json_arr(ops)))
+    }
+    let delta_bytes = base_codec::json_stringify(base_codec::json_arr(ops)).length()
+    if delta_bytes > 4096 {
+      panic("delta too large: " + delta_bytes.to_string())
+    }
+    (memo.json_reads, memo.rows_made, memo.rows_reused, delta_bytes)
+  }
+
+  let (reads_1x, made_1x, reused_1x, bytes_1x) = run_scale(20)
+  let (reads_3x, made_3x, reused_3x, bytes_3x) = run_scale(60)
+  assert_eq(reads_1x, 1)
+  assert_eq(reads_3x, 1)
+  assert_eq(made_1x, 1)
+  assert_eq(made_3x, 1)
+  assert_eq(reused_1x, 19)
+  assert_eq(reused_3x, 19)
+  assert(bytes_1x <= 4096)
+  assert(bytes_3x <= 4096)
+}
+
+test "project_chats: day bucketing, pinned sorting, pending, changing (rename/pin/archive), draft, and viewer marks" {
+  let fake = ViewsFakeDb::new()
+  let db = match sql::Sql::open(fake.shell, "acct") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let day = 86400000.to_int64()
+  let now = 1700000000000.to_int64()
+  add_fake_chat(fake, "ws/st-1", "c-today", 1, "Today Chat", now - 1000.to_int64(), None, false)
+  add_fake_chat(fake, "ws/st-1", "c-yest", 2, "Yesterday Chat", now - day, None, false)
+  add_fake_chat(fake, "ws/st-1", "c-pin", 3, "Pinned Chat", now - day * 2.to_int64(), Some(now), false)
+  add_fake_chat(fake, "ws/st-1", "c-arch", 4, "To Archive", now - 2000.to_int64(), None, false)
+  add_fake_chat(fake, "ws/st-1", "c-conf", 5, "Confirmed New", now - 500.to_int64(), None, false, client_key=Some("ck-done"))
+
+  // Pending: one unconfirmed (must show), one already confirmed by clientKey (must deduplicate!)
+  fake.pending.push(("ck-pending", "ws/st-1", "{\"title\":\"Draft Pending\",\"createdAt\":1700000000000}"))
+  fake.pending.push(("ck-done", "ws/st-1", "{\"title\":\"Duplicate Pending\",\"createdAt\":1700000000000}"))
+
+  // Changing overlays: rename c-today, pin c-yest, archive c-arch
+  fake.changing.push(("ws/st-1", 1, "{\"kind\":\"rename\",\"id\":\"c-today\",\"title\":\"Renamed Today\"}"))
+  fake.changing.push(("ws/st-1", 2, "{\"kind\":\"pin\",\"id\":\"c-yest\",\"pinned\":true,\"pinnedAt\":1700000005000}"))
+  fake.changing.push(("ws/st-1", 3, "{\"kind\":\"archive\",\"id\":\"c-arch\",\"archived\":true}"))
+
+  // Draft on c-today
+  fake.drafts.set("ws/st-1\u{01}c-today", "{\"text\":\"unfinished reply\"}")
+  fake.draft_keys.push(("ws/st-1", "c-today"))
+
+  // Viewer marks: unread (last seq 10 > read 5) + quoted on c-today
+  let marks = ViewerMarks::new("alice@example.com")
+  marks.set_read("ws/st-1", 1, 5)
+  marks.set_quoted("ws/st-1", 1, true)
+
+  let memo = RowsMemo::new()
+  let view = match project_chats(db, "ws", [make_station("ws/st-1", "st-1", "Studio")], now, memo, marks) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let days = j_arr(view, "days")
+  // Bucket 0 must be pinned (daysAgo = -1) with c-yest (pinnedAt higher) then c-pin
+  assert_opt_eq(j_opt_int64(days[0], "daysAgo"), Some(-1.to_int64()))
+  let pinned_items = j_arr(days[0], "items")
+  assert_eq(pinned_items.length(), 2)
+  assert_eq(j_str(pinned_items[0], "id"), "c-yest")
+  assert_eq(j_str(pinned_items[1], "id"), "c-pin")
+
+  // Bucket 1 must be today (daysAgo = 0): ck-pending, c-conf, c-today (c-arch archived, ck-done deduped!)
+  assert_opt_eq(j_opt_int64(days[1], "daysAgo"), Some(0.to_int64()))
+  let today_items = j_arr(days[1], "items")
+  assert_eq(today_items.length(), 3)
+  let mut saw_pending = false
+  let mut saw_renamed = false
+  for i in 0..<today_items.length() {
+    let it = today_items[i]
+    let id = j_str(it, "id")
+    assert(id != "c-arch")
+    assert(id != "ck-done")
+    if id == "ck-pending" {
+      saw_pending = j_bool(it, "pending")
+    }
+    if id == "c-today" {
+      saw_renamed = j_str(it, "title") == "Renamed Today" && j_bool(it, "draft") && j_bool(it, "unread") && j_bool(it, "quoted")
+    }
+  }
+  assert(saw_pending)
+  assert(saw_renamed)
+}
+
+test "project_chat: messages, tool folding, cards, image tokens without bytes, outbox dedup, unreadLine, 0 SQL writes" {
+  let fake = ViewsFakeDb::new()
+  let db = match sql::Sql::open(fake.shell, "acct") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let station = "ws/st-1"
+  let thread = 42
+  let now = 1700000000000.to_int64()
+  fake.threads.set(station + ":42", FakeThreadRow::{
+    id: 42,
+    last: Some(10),
+    read: Some(2),
+    unread: Some(3),
+    sort_at: now,
+    created_at: now - 60000.to_int64(),
+    surface: Some("chat"),
+    first_member: Some("alice@example.com"),
+    json: "{\"title\":\"Design Review\"}",
+  })
+
+  // Entries: n=1 older, n=2 person (read), n=3..4 tool_call/tool_result, n=5 agent with card + attachment with inline bytes (must be stripped!),
+  // n=6 person confirmed outbox message (clientKey ck-1), n=7 message to be deleted via changing, n=8 agent text card
+  let ents : Array[(Int, String)] = [
+    (1, "{\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice@example.com\",\"text\":\"Earlier\",\"at\":1000}"),
+    (2, "{\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice@example.com\",\"text\":\"Start\",\"at\":2000}"),
+    (3, "{\"kind\":\"tool_call\",\"callId\":\"tc-1\",\"name\":\"read_file\",\"args\":\"a.pion\"}"),
+    (4, "{\"kind\":\"tool_result\",\"callId\":\"tc-1\",\"result\":\"ok\"}"),
+    (5, "{\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"claude\",\"authorName\":\"Claude\",\"text\":\"Pick an option\",\"at\":3000,\"attachments\":[{\"name\":\"shot.png\",\"path\":\"/img/shot.png\",\"size\":1024,\"token\":\"tok-img-1\",\"bytes\":\"INLINE_SECRET_BYTES\",\"base64\":\"AAAA\",\"dataUrl\":\"data:image/png;base64,AAA\"}],\"card\":{\"type\":\"options\",\"assignee\":\"alice@example.com\",\"options\":[{\"label\":\"Best\",\"recommended\":true},{\"label\":\"Alt\"}]}}"),
+    (6, "{\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice@example.com\",\"text\":\"Confirmed msg\",\"clientKey\":\"ck-1\",\"at\":4000}"),
+    (7, "{\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice@example.com\",\"text\":\"Delete me\",\"at\":5000}"),
+    (8, "{\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"claude\",\"text\":\"Enter API key\",\"at\":6000,\"card\":{\"type\":\"text\",\"placeholder\":\"sk-...\"}}"),
+  ]
+  fake.entries.set(station + ":42", ents)
+
+  // Outbox: ck-1 (already confirmed in entry n=6 -> MUST NOT duplicate!) + ck-2 (still sending -> stays in outbox)
+  fake.outbox.set(station + ":42", "[{\"id\":\"ob-1\",\"clientKey\":\"ck-1\",\"text\":\"Confirmed msg\",\"state\":\"sending\"},{\"id\":\"ob-2\",\"clientKey\":\"ck-2\",\"text\":\"Pending msg\",\"state\":\"sending\"}]")
+
+  // Changing: edit n=6, delete n=7, answer card at n=5
+  fake.changing.push((station, 1, "{\"kind\":\"message_edit\",\"thread\":42,\"seq\":6,\"text\":\"Confirmed msg (edited)\"}"))
+  fake.changing.push((station, 2, "{\"kind\":\"message_delete\",\"thread\":42,\"seq\":7}"))
+  fake.changing.push((station, 3, "{\"kind\":\"card_answer\",\"thread\":42,\"seq\":5,\"answer\":\"Best\",\"answeredBy\":\"alice@example.com\"}"))
+
+  let md_store = store::MdStore::new(db, station)
+  let before_ops = fake.ran.length()
+  let view = match project_chat(db, md_store, station, thread, "alice@example.com", now, rows=30) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  // Cold open MUST perform 0 SQL writes!
+  assert_eq(fake.write_count_since(before_ops), 0)
+
+  // Tool folding
+  let tgs = j_arr(view, "toolGroups")
+  assert_eq(tgs.length(), 1)
+  assert_eq(j_str(tgs[0], "status"), "done")
+  assert_opt_eq(j_opt_int(tgs[0], "count"), Some(1))
+
+  // Messages: n=1, 2, 5, 6, 8 (n=7 deleted!)
+  let msgs = j_arr(view, "messages")
+  assert_eq(msgs.length(), 5)
+
+  // Card at n=5: recommended option sorted LAST, decision resolved via changing overlay, image bytes STRIPPED
+  let m5 = msgs[2]
+  assert_opt_eq(j_opt_int(m5, "seq"), Some(5))
+  let opts = j_arr(m5, "options")
+  assert_eq(opts.length(), 2)
+  assert_eq(j_str(opts[0], "label"), "Alt")
+  assert_eq(j_str(opts[1], "label"), "Best")
+  assert(j_bool(opts[1], "recommended"))
+  let dec5 = match base_codec::json_get(m5, "decision") { Some(d) => d; None => panic("missing decision") }
+  assert(j_bool(dec5, "resolved"))
+  assert_eq(j_str(dec5, "answeredBy"), "alice@example.com")
+  assert_eq(j_str(dec5, "chosen"), "Best")
+
+  let att0 = j_arr(m5, "attachments")[0]
+  assert_eq(j_str(att0, "token"), "tok-img-1")
+  assert(base_codec::json_get(att0, "bytes").is_none())
+  assert(base_codec::json_get(att0, "base64").is_none())
+  assert(base_codec::json_get(att0, "dataUrl").is_none())
+
+  // Message n=6: edited via changing + outgoing clientKey reconciled
+  let m6 = msgs[3]
+  assert_eq(j_str(m6, "text"), "Confirmed msg (edited)")
+  assert_eq(j_str(m6, "outgoing"), "ck-1")
+
+  // Outbox: only ck-2 remains (0 duplicates for ck-1!)
+  let ob = j_arr(view, "outbox")
+  assert_eq(ob.length(), 1)
+  assert_eq(j_str(ob[0], "clientKey"), "ck-2")
+
+  // UnreadLine = 5 (first non-mine message after read=2), oldest = 1, hasMore = false
+  assert_opt_eq(j_opt_int(view, "unreadLine"), Some(5))
+  assert_opt_eq(j_opt_int(view, "oldest"), Some(1))
+  assert(!j_bool(view, "hasMore"))
+}
+
+test "workspace_view: workspaces, stations, accounts, and vaults strictly strip internal/detail/secret fields" {
+  let fake = ViewsFakeDb::new()
+  let db = match sql::Sql::open(fake.shell, "acct") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  fake.workspaces.push(("ws-1", "{\"name\":\"Core Team\",\"role\":\"owner\",\"locked\":true,\"cloud_keys\":{\"k\":\"secret\"},\"stations\":[{\"id\":\"st-1\"}],\"members\":[{\"sub\":\"u1\",\"email\":\"a@b.com\",\"role\":\"owner\",\"token\":\"tok\"}]}"))
+  fake.stations.push(("ws-1/st-1", "overview", "{\"id\":\"st-1\",\"name\":\"Studio\",\"online\":true,\"runtimes\":[{\"id\":\"claude\",\"models\":[\"huge\"]}],\"apiProviders\":[\"secret\"],\"slackUsers\":[\"U1\"],\"logins\":[{\"id\":\"L1\"}],\"overview\":{\"viewer\":{\"via\":\"mesh\"},\"counts\":{\"sessions\":5,\"running\":2,\"warm\":1},\"profiles\":[{\"secret\":\"x\"}]}}"))
+  fake.account_docs.set("accounts", "[{\"id\":\"a1\",\"email\":\"a@b.com\",\"name\":\"Alice\",\"accessToken\":\"SECRET_TOK\",\"refreshToken\":\"SECRET_REF\"}]")
+  fake.account_docs.set("active_account", "\"a1\"")
+  fake.account_docs.set("vaults:ws-1", "{\"vaults\":[{\"id\":\"v1\",\"name\":\"My Vault\",\"owner\":\"u1\",\"ownerName\":\"Alice\",\"mine\":true,\"members\":[],\"station\":\"st-1\",\"stationName\":\"Studio\",\"items\":3,\"devices\":2,\"open\":false,\"keyed\":true,\"missing\":0,\"recoverable\":true,\"encryptedBlob\":\"RAW_CIPHER\"}],\"requests\":[],\"refused\":[]}")
+
+  let ws_list = match project_workspaces(db) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let w0 = j_arr(ws_list, "workspaces")[0]
+  assert_eq(j_str(w0, "name"), "Core Team")
+  assert(base_codec::json_get(w0, "cloud_keys").is_none())
+  assert(base_codec::json_get(w0, "members").is_none())
+
+  let st_list = match project_stations(db, "ws-1") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let s0 = match st_list { base_codec::Json::Arr(xs) => xs[0]; _ => panic("expected array") }
+  assert_eq(j_str(s0, "name"), "Studio")
+  assert(base_codec::json_get(s0, "runtimes").is_none())
+  assert(base_codec::json_get(s0, "apiProviders").is_none())
+  assert(base_codec::json_get(s0, "slackUsers").is_none())
+  assert(base_codec::json_get(s0, "logins").is_none())
+  let ov0 = match base_codec::json_get(s0, "overview") { Some(o) => o; None => panic("missing overview") }
+  assert(base_codec::json_get(ov0, "profiles").is_none())
+
+  let accts = match project_accounts(db) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let a0 = j_arr(accts, "accounts")[0]
+  assert_eq(j_str(a0, "email"), "a@b.com")
+  assert(j_bool(a0, "active"))
+  assert(base_codec::json_get(a0, "accessToken").is_none())
+  assert(base_codec::json_get(a0, "refreshToken").is_none())
+
+  let sm = project_safe_mode(None, SafeModeInput::{
+    available: true,
+    viewer_sub: "u1",
+    viewer_role: "owner",
+    device_id: "d1",
+    device_kind: "app",
+    device_sign_key: Some("ed25519:0000000000000000000000000000000000000000000000000000000000000000"),
+    personal_standing: "member",
+    signer_unsaid: false,
+    no_device_answered: false,
+    rebound_admins: [],
+    station_names: Map::new(),
+    online_stations: Map::new(),
+    pending: LockPendingQueue::new(),
+  })
+  let vv = match project_vaults(db, "ws-1", sm, true, true) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let v0 = j_arr(vv, "vaults")[0]
+  assert_eq(j_str(v0, "name"), "My Vault")
+  assert(base_codec::json_get(v0, "encryptedBlob").is_none())
+  assert(base_codec::json_get(vv, "plain").is_none())
+}

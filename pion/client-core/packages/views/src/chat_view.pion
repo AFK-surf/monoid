@@ -1,0 +1,632 @@
+// Chat detail projection (`chat` topic): projects raw SQLite `entry` JSON into a structured
+// message stream (`person`/`agent`/`system`), folds `tool_call`/`tool_result` groups,
+// projects interactive decision cards (`options`/`text`/`login`, pending/answered, `answeredBy`),
+// emits image/attachment tokens without ever inlining image bytes, reconciles `outbox` by exact
+// `clientKey` (0 duplicates), overlays optimistic `changing` edits/deletes/card answers,
+// and computes `unreadLine`, `hasMore`, `oldest` with 0 SQL writes on cold open.
+
+import "base_codec"
+import "sql"
+import "store"
+
+struct MessageEditOverlay {
+  text : Option[String]
+  deleted : Bool
+}
+
+struct CardAnswerOverlay {
+  chosen : String
+  answered_by : String
+}
+
+/// Sanitize one attachment object: preserve metadata and opaque token, NEVER inline image bytes.
+fn sanitize_attachment(att : base_codec::Json) -> base_codec::Json {
+  let out : Array[(String, base_codec::Json)] = [
+    ("name", base_codec::json_str(j_str(att, "name"))),
+    ("path", base_codec::json_str(j_str(att, "path"))),
+    ("size", base_codec::json_int64(match j_opt_int64(att, "size") { Some(v) => v; None => 0.to_int64() })),
+  ]
+  push_opt_int64(out, "width", j_opt_int64(att, "width"))
+  push_opt_int64(out, "height", j_opt_int64(att, "height"))
+  push_opt_str(out, "thumbhash", j_opt_str(att, "thumbhash"))
+  push_opt_str(out, "token", j_opt_str(att, "token"))
+  push_opt_int64(out, "duration", j_opt_int64(att, "duration"))
+  push_opt_int64(out, "frames", j_opt_int64(att, "frames"))
+  push_opt_str(out, "owner", j_opt_str(att, "owner"))
+  push_opt_str(out, "upload", j_opt_str(att, "upload"))
+  push_opt_bool(out, "held", j_opt_bool(att, "held"))
+  base_codec::json_obj(out)
+}
+
+fn sanitize_attachments(raw : base_codec::Json) -> Array[base_codec::Json] {
+  let xs = j_arr(raw, "attachments")
+  let out : Array[base_codec::Json] = []
+  for i in 0..<xs.length() {
+    out.push(sanitize_attachment(xs[i]))
+  }
+  out
+}
+
+/// Sort options so the recommended option appears last (matching `shapes/chat.ts MessageCard`).
+fn project_card_options(card : base_codec::Json) -> Option[Array[base_codec::Json]] {
+  let raw_opts = j_arr(card, "options")
+  if raw_opts.length() == 0 {
+    return None
+  }
+  let normal : Array[base_codec::Json] = []
+  let recommended : Array[base_codec::Json] = []
+  for i in 0..<raw_opts.length() {
+    let o = raw_opts[i]
+    let of : Array[(String, base_codec::Json)] = [("label", base_codec::json_str(j_str(o, "label")))]
+    push_opt_str(of, "detail", j_opt_str(o, "detail"))
+    let is_rec = j_bool(o, "recommended")
+    if is_rec {
+      of.push(("recommended", base_codec::json_bool(true)))
+    }
+    let closes = j_bool(o, "closes") || j_str(o, "action") == "close"
+    if closes {
+      of.push(("closes", base_codec::json_bool(true)))
+    }
+    let built = base_codec::json_obj(of)
+    if is_rec {
+      recommended.push(built)
+    } else {
+      normal.push(built)
+    }
+  }
+  for i in 0..<recommended.length() {
+    normal.push(recommended[i])
+  }
+  Some(normal)
+}
+
+fn project_card(card : base_codec::Json) -> (base_codec::Json, Option[Array[base_codec::Json]]) {
+  let ctype = match j_opt_str(card, "type") {
+    Some(t) => t
+    None => "options"
+  }
+  let out : Array[(String, base_codec::Json)] = [("type", base_codec::json_str(ctype))]
+  push_opt_str(out, "assignee", j_opt_str(card, "assignee"))
+  push_opt_str(out, "assigneeText", j_opt_str(card, "assigneeText"))
+  push_opt_str(out, "placeholder", j_opt_str(card, "placeholder"))
+  push_opt_str(out, "login", j_opt_str(card, "login"))
+  push_opt_str(out, "station", j_opt_str(card, "station"))
+  push_opt_str(out, "vault", j_opt_str(card, "vault"))
+  let opts = project_card_options(card)
+  match opts {
+    Some(arr) => out.push(("options", base_codec::json_arr(arr)))
+    None => ()
+  }
+  (base_codec::json_obj(out), opts)
+}
+
+fn build_message_by(raw : base_codec::Json, author_kind : String, author : String) -> base_codec::Json {
+  let name = match j_opt_str(raw, "authorName") {
+    Some(n) => n
+    None => if author.length() > 0 { author } else { author_kind }
+  }
+  let out : Array[(String, base_codec::Json)] = [("name", base_codec::json_str(name))]
+  if author_kind == "agent" {
+    push_opt_str(out, "agent", j_opt_str(raw, "authorModel"))
+    push_opt_str(out, "runtime", j_opt_str(raw, "authorRuntime"))
+  }
+  push_opt_str(out, "picture", j_opt_str(raw, "authorPicture"))
+  base_codec::json_obj(out)
+}
+
+fn is_system_author(author_kind : String) -> Bool {
+  author_kind == "system" || author_kind == "station" || author_kind == "ember" || author_kind == "stillfail"
+}
+
+struct ToolCallItem {
+  call_id : String
+  name : String
+  args_preview : String
+  mut result_preview : Option[String]
+  mut status : String
+}
+
+/// Project a chat's detail view (`ChatView`) from SQLite with **zero SQL writes** on cold open.
+pub fn project_chat(
+  db : sql::Sql,
+  md_store : store::MdStore,
+  station : String,
+  thread : Int,
+  viewer_email : String,
+  now_ms : Int64,
+  rows : Int = 30,
+  at : Option[Int] = None,
+) -> sql::SqlResult[base_codec::Json] {
+  // 1. Cold open entries + 1-statement md_kept preload (0 SQL writes!).
+  let opened = match store::open_chat(md_store, thread, now_ms, rows=rows, at=at) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(v) => v
+  }
+  // 2. Read thread metadata, outbox, and changing overlays (all pure SELECTs, 0 writes).
+  let thread_rec = match store::get_thread(db, station, thread) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(v) => v
+  }
+  let outbox_row = match store::get_outbox(db, station, thread) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(v) => v
+  }
+  let changing_rows = match store::list_changing_for_station(db, station) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(v) => v
+  }
+
+  // Parse local optimistic overlays from `changing` for this thread.
+  let edit_overlays : Map[Int, MessageEditOverlay] = Map::new()
+  let card_overlays : Map[Int, CardAnswerOverlay] = Map::new()
+  for i in 0..<changing_rows.length() {
+    let cj = parse_json_or_null(changing_rows[i].json)
+    let c_thread = match j_opt_int(cj, "thread") {
+      Some(t) => t
+      None => -1
+    }
+    if c_thread != thread {
+      continue
+    }
+    let kind = j_str(cj, "kind")
+    let target_seq = match j_opt_int(cj, "seq") {
+      Some(s) => s
+      None => match j_opt_int(cj, "target") {
+        Some(s) => s
+        None => -1
+      }
+    }
+    if target_seq < 0 {
+      continue
+    }
+    if kind == "message_edit" {
+      edit_overlays.set(target_seq, MessageEditOverlay::{
+        text: j_opt_str_any(cj, "text"),
+        deleted: false,
+      })
+    } else if kind == "message_delete" {
+      edit_overlays.set(target_seq, MessageEditOverlay::{
+        text: None,
+        deleted: true,
+      })
+    } else if kind == "card_answer" {
+      let chosen = match j_opt_str_any(cj, "answer") {
+        Some(a) => a
+        None => j_str(cj, "chosen")
+      }
+      let who = match j_opt_str(cj, "answeredBy") {
+        Some(w) => w
+        None => viewer_email
+      }
+      card_overlays.set(target_seq, CardAnswerOverlay::{ chosen: chosen, answered_by: who })
+    }
+  }
+
+  // Fold entry-level edits, deletes, and card answers from the loaded raw_entries stream.
+  let entry_edits : Map[Int, String] = Map::new()
+  let entry_deletes : Map[Int, Bool] = Map::new()
+  let entry_card_answers : Map[Int, CardAnswerOverlay] = Map::new()
+  let mut oldest_opt : Option[Int] = None
+  let mut newest_opt : Option[Int] = None
+
+  for i in 0..<opened.raw_entries.length() {
+    let (n, raw) = opened.raw_entries[i]
+    match oldest_opt {
+      None => {
+        oldest_opt = Some(n)
+      }
+      Some(o) => if n < o { oldest_opt = Some(n) }
+    }
+    match newest_opt {
+      None => {
+        newest_opt = Some(n)
+      }
+      Some(mx) => if n > mx { newest_opt = Some(n) }
+    }
+    let kind = j_str(raw, "kind")
+    if kind == "edit" {
+      match j_opt_int(raw, "target") {
+        Some(t) => {
+          match j_opt_str_any(raw, "text") {
+            Some(txt) => entry_edits.set(t, txt)
+            None => ()
+          }
+        }
+        None => ()
+      }
+    } else if kind == "delete" {
+      match j_opt_int(raw, "target") {
+        Some(t) => entry_deletes.set(t, true)
+        None => ()
+      }
+    } else if kind == "card_answer" {
+      match j_opt_int(raw, "target") {
+        Some(t) => {
+          let chosen = match j_opt_str_any(raw, "chosen") {
+            Some(c) => c
+            None => j_str(raw, "answer")
+          }
+          let who = match j_opt_str(raw, "answeredBy") {
+            Some(w) => w
+            None => j_str(raw, "author")
+          }
+          entry_card_answers.set(t, CardAnswerOverlay::{ chosen: chosen, answered_by: who })
+        }
+        None => ()
+      }
+    }
+  }
+
+  // Check if older entries exist in SQLite (pure SELECT, 0 writes).
+  let has_more = match oldest_opt {
+    Some(old_n) =>
+    match store::has_entries_before(db, station, thread, old_n) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(b) => b
+    }
+    None => false
+  }
+
+  // Parse outbox items (may be JSON array or single JSON object).
+  let raw_outbox_items : Array[base_codec::Json] = match outbox_row {
+    Some(ob) => {
+      let parsed = parse_json_or_null(ob.json)
+      match parsed {
+        base_codec::Json::Arr(xs) => xs
+        base_codec::Json::Obj(_) => [parsed]
+        _ => []
+      }
+    }
+    None => []
+  }
+  let outbox_by_ck : Map[String, Bool] = Map::new()
+  for i in 0..<raw_outbox_items.length() {
+    let ck = match j_opt_str(raw_outbox_items[i], "clientKey") {
+      Some(k) => k
+      None => j_str(raw_outbox_items[i], "id")
+    }
+    if ck.length() > 0 {
+      outbox_by_ck.set(ck, true)
+    }
+  }
+
+  // Project messages, fold tool_call/tool_result into grouped `toolGroups`, and track confirmed clientKeys.
+  let messages : Array[base_codec::Json] = []
+  let tool_groups : Array[base_codec::Json] = []
+  let confirmed_cks : Map[String, Bool] = Map::new()
+  let mut pending_tools : Array[ToolCallItem] = []
+  let mut pending_tool_after_seq = 0
+  let mut last_card_idx = -1
+  let mut last_card_seq = -1
+
+  let flush_tools = fn() -> Unit {
+    if pending_tools.length() == 0 {
+      return
+    }
+    let calls_json : Array[base_codec::Json] = []
+    let mut all_done = true
+    for ti in 0..<pending_tools.length() {
+      let tc = pending_tools[ti]
+      if tc.status != "done" {
+        all_done = false
+      }
+      let cf : Array[(String, base_codec::Json)] = [
+        ("id", base_codec::json_str(tc.call_id)),
+        ("name", base_codec::json_str(tc.name)),
+        ("status", base_codec::json_str(tc.status)),
+      ]
+      if tc.args_preview.length() > 0 {
+        cf.push(("args", base_codec::json_str(tc.args_preview)))
+      }
+      push_opt_str(cf, "result", tc.result_preview)
+      calls_json.push(base_codec::json_obj(cf))
+    }
+    let first_id = pending_tools[0].call_id
+    tool_groups.push(base_codec::json_obj([
+      ("id", base_codec::json_str("tg:" + first_id)),
+      ("afterSeq", base_codec::json_int(pending_tool_after_seq)),
+      ("count", base_codec::json_int(pending_tools.length())),
+      ("status", base_codec::json_str(if all_done { "done" } else { "running" })),
+      ("collapsed", base_codec::json_bool(true)),
+      ("calls", base_codec::json_arr(calls_json)),
+    ]))
+    pending_tools = []
+  }
+
+  let read_cursor = match thread_rec {
+    Some(tr) => match tr.read {
+      Some(r) => r
+      None => 0
+    }
+    None => 0
+  }
+  let mut unread_line : Option[Int] = None
+  let asks : Array[base_codec::Json] = []
+  // Track person replies after a card so card resolution is accurate even without explicit `card_answer`.
+  let person_reply_after : Map[Int, (String, String)] = Map::new()
+  for i in 0..<opened.raw_entries.length() {
+    let (n, raw) = opened.raw_entries[i]
+    let kind = j_str(raw, "kind")
+    if kind == "message" && j_str(raw, "authorKind") == "person" && last_card_seq > 0 && n > last_card_seq {
+      if person_reply_after.get(last_card_seq).is_none() {
+        let who = match j_opt_str(raw, "authorName") {
+          Some(nm) => nm
+          None => j_str(raw, "author")
+        }
+        person_reply_after.set(last_card_seq, (who, j_str(raw, "text")))
+      }
+    }
+    if kind == "message" && base_codec::json_get(raw, "card").is_some() {
+      last_card_seq = n
+    }
+  }
+  let _ = last_card_idx
+
+  for i in 0..<opened.raw_entries.length() {
+    let (n, raw) = opened.raw_entries[i]
+    let kind = j_str(raw, "kind")
+
+    if kind == "tool_call" {
+      let cid = match j_opt_str(raw, "callId") {
+        Some(c) => c
+        None => "call-" + n.to_string()
+      }
+      let tname = match j_opt_str(raw, "name") {
+        Some(nm) => nm
+        None => "tool"
+      }
+      pending_tools.push(ToolCallItem::{
+        call_id: cid,
+        name: tname,
+        args_preview: j_str(raw, "args"),
+        result_preview: None,
+        status: "running",
+      })
+      continue
+    }
+    if kind == "tool_result" {
+      let cid = j_str(raw, "callId")
+      let res_txt = match j_opt_str_any(raw, "result") {
+        Some(r) => Some(r)
+        None => j_opt_str_any(raw, "text")
+      }
+      let mut matched = false
+      for ti in 0..<pending_tools.length() {
+        if pending_tools[ti].call_id == cid || (cid.length() == 0 && pending_tools[ti].status == "running") {
+          pending_tools[ti].result_preview = res_txt
+          pending_tools[ti].status = if j_bool(raw, "error") { "failed" } else { "done" }
+          matched = true
+          break
+        }
+      }
+      if !matched {
+        pending_tools.push(ToolCallItem::{
+          call_id: if cid.length() > 0 { cid } else { "res-" + n.to_string() },
+          name: match j_opt_str(raw, "name") { Some(nm) => nm; None => "tool" },
+          args_preview: "",
+          result_preview: res_txt,
+          status: if j_bool(raw, "error") { "failed" } else { "done" },
+        })
+      }
+      continue
+    }
+    if kind != "message" {
+      continue
+    }
+    // Skip letter entries (shown in `chatLetters`, not `ChatView.messages`).
+    match base_codec::json_get(raw, "letter") {
+      Some(base_codec::Json::Obj(_)) => continue
+      _ => ()
+    }
+    // Skip deleted messages (either confirmed or optimistic).
+    if entry_deletes.get(n).is_some() {
+      continue
+    }
+    match edit_overlays.get(n) {
+      Some(ov) => if ov.deleted { continue }
+      None => ()
+    }
+
+    flush_tools()
+    pending_tool_after_seq = n
+
+    let author_kind = j_str(raw, "authorKind")
+    let author = j_str(raw, "author")
+    let system_flag = is_system_author(author_kind)
+    let mine = !system_flag && author_kind == "person" && viewer_email.length() > 0 && author == viewer_email
+    let mut text = j_str(raw, "text")
+    match entry_edits.get(n) {
+      Some(t) => {
+        text = t
+      }
+      None => ()
+    }
+    match edit_overlays.get(n) {
+      Some(ov) => {
+        match ov.text {
+          Some(t) => {
+            text = t
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+
+    // Track confirmed outbox reconciliation by exact `clientKey`.
+    let outgoing_ck : Option[String] = match j_opt_str(raw, "clientKey") {
+      Some(ck) => {
+        confirmed_cks.set(ck, true)
+        if outbox_by_ck.get(ck).is_some() { Some(ck) } else { None }
+      }
+      None => None
+    }
+
+    // Unread line: first message after `read_cursor` that is not the viewer's own.
+    if unread_line.is_none() && n > read_cursor && !mine && !system_flag {
+      unread_line = Some(n)
+    }
+
+    let created_at = match j_opt_int64(raw, "at") {
+      Some(v) => v
+      None => match j_opt_int64(raw, "createdAt") {
+        Some(v) => v
+        None => 0.to_int64()
+      }
+    }
+    let ts = match j_opt_str(raw, "ts") {
+      Some(s) => s
+      None => n.to_string()
+    }
+    let atts = sanitize_attachments(raw)
+    let quotes = j_arr(raw, "quotes")
+
+    let mf : Array[(String, base_codec::Json)] = [
+      ("seq", base_codec::json_int(n)),
+      ("thread", base_codec::json_int(thread)),
+      ("ts", base_codec::json_str(ts)),
+      ("authorKind", base_codec::json_str(author_kind)),
+      ("author", base_codec::json_str(author)),
+      ("text", base_codec::json_str(text)),
+      ("attachments", base_codec::json_arr(atts)),
+      ("quotes", base_codec::json_arr(quotes)),
+      ("createdAt", base_codec::json_int64(created_at)),
+      ("mine", base_codec::json_bool(mine)),
+      ("system", base_codec::json_bool(system_flag)),
+      ("by", build_message_by(raw, author_kind, author)),
+      ("waiting", base_codec::json_bool(j_bool(raw, "waiting"))),
+    ]
+    push_opt_str(mf, "outgoing", outgoing_ck)
+    push_opt_str(mf, "ending", j_opt_str(raw, "ending"))
+
+    // Interactive decision card (`options` / `text` / `login`) + resolution state
+    match base_codec::json_get(raw, "card") {
+      Some(card_raw) =>
+      match card_raw {
+        base_codec::Json::Obj(_) => {
+          let (card_json, opts_opt) = project_card(card_raw)
+          mf.push(("card", card_json))
+          match opts_opt {
+            Some(opts) => mf.push(("options", base_codec::json_arr(opts)))
+            None => ()
+          }
+          // Check resolution priority: optimistic changing overlay -> entry card_answer -> later person reply
+          let resolved_info : Option[(String, String)] = match card_overlays.get(n) {
+            Some(co) => Some((co.answered_by, co.chosen))
+            None => match entry_card_answers.get(n) {
+              Some(ea) => Some((ea.answered_by, ea.chosen))
+              None => person_reply_after.get(n)
+            }
+          }
+          match resolved_info {
+            Some((who, chosen)) => {
+              let dec_fields : Array[(String, base_codec::Json)] = [
+                ("resolved", base_codec::json_bool(true)),
+                ("answeredBy", base_codec::json_str(who)),
+                ("chosen", base_codec::json_str(chosen)),
+                ("text", base_codec::json_str(who + " 选了「" + chosen + "」")),
+              ]
+              mf.push(("decision", base_codec::json_obj(dec_fields)))
+            }
+            None => {
+              mf.push(("decision", base_codec::json_obj([("resolved", base_codec::json_bool(false))])))
+              mf.push(("asked", base_codec::json_bool(true)))
+              let assignee = j_str(card_raw, "assignee")
+              asks.push(base_codec::json_obj([
+                ("seq", base_codec::json_int(n)),
+                ("card", base_codec::json_bool(true)),
+                ("mine", base_codec::json_bool(assignee.length() == 0 || assignee == viewer_email)),
+                ("text", base_codec::json_str(text)),
+              ]))
+            }
+          }
+        }
+        _ => ()
+      }
+      None => ()
+    }
+
+    messages.push(base_codec::json_obj(mf))
+  }
+  flush_tools()
+
+  // Emit remaining unconfirmed outbox messages (skipping any whose exact `clientKey` was confirmed).
+  let outbox_out : Array[base_codec::Json] = []
+  for i in 0..<raw_outbox_items.length() {
+    let item = raw_outbox_items[i]
+    let ck = match j_opt_str(item, "clientKey") {
+      Some(k) => k
+      None => j_str(item, "id")
+    }
+    if ck.length() > 0 && confirmed_cks.get(ck).is_some() {
+      continue
+    }
+    let ob_id = match j_opt_str(item, "id") {
+      Some(s) => s
+      None => ck
+    }
+    let ob_fields : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(ob_id)),
+      ("clientKey", base_codec::json_str(ck)),
+      ("text", base_codec::json_str(j_str(item, "text"))),
+      ("attachments", base_codec::json_arr(sanitize_attachments(item))),
+      ("quotes", base_codec::json_arr(j_arr(item, "quotes"))),
+      ("createdAt", base_codec::json_int64(match j_opt_int64(item, "createdAt") { Some(v) => v; None => now_ms })),
+      ("state", base_codec::json_str(match j_opt_str(item, "state") { Some(s) => s; None => "sending" })),
+    ]
+    push_opt_str(ob_fields, "error", j_opt_str(item, "error"))
+    outbox_out.push(base_codec::json_obj(ob_fields))
+  }
+
+  let title = match thread_rec {
+    Some(tr) => {
+      let tj = parse_json_or_null(tr.json)
+      match j_opt_str(tj, "title") {
+        Some(t) => t
+        None => "新对话"
+      }
+    }
+    None => "新对话"
+  }
+
+  let out : Array[(String, base_codec::Json)] = [
+    ("archived", base_codec::json_bool(false)),
+    ("me", base_codec::json_obj([("email", base_codec::json_str(viewer_email))])),
+    ("title", base_codec::json_str(title)),
+    ("people", base_codec::json_arr([])),
+    ("agents", base_codec::json_arr([])),
+    ("messages", base_codec::json_arr(messages)),
+    ("toolGroups", base_codec::json_arr(tool_groups)),
+    ("outbox", base_codec::json_arr(outbox_out)),
+    ("asks", base_codec::json_arr(asks)),
+    ("more", base_codec::json_bool(has_more)),
+    ("hasMore", base_codec::json_bool(has_more)),
+    ("newer", base_codec::json_bool(false)),
+    ("offline", base_codec::json_bool(false)),
+    ("pending", base_codec::json_bool(false)),
+    ("link", base_codec::json_obj([("state", base_codec::json_str("online"))])),
+  ]
+  push_opt_int(out, "oldest", oldest_opt)
+  push_opt_int(out, "firstEntry", oldest_opt)
+  push_opt_int(out, "lastEntry", newest_opt)
+  push_opt_int(out, "unreadLine", unread_line)
+  match thread_rec {
+    Some(tr) => {
+      let unread_cnt = match tr.unread {
+        Some(u) => u
+        None => 0
+      }
+      let surf = match tr.surface {
+        Some(s) => s
+        None => "chat"
+      }
+      out.push(("thread", base_codec::json_obj([
+        ("id", base_codec::json_int(tr.id)),
+        ("surface", base_codec::json_str(surf)),
+        ("unread", base_codec::json_int(unread_cnt)),
+      ])))
+    }
+    None => ()
+  }
+  sql::SqlResult::Ok(base_codec::json_obj(out))
+}

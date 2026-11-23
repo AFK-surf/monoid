@@ -1,0 +1,1620 @@
+// Unified safe-mode lock state machine (`lock` topic) built natively on `pion/rules`
+// (`lock`, `fork`, `form`, `role`, `vault`), `mesh`, and `crypto` — zero JS/JSON glue.
+//
+// Strictly upholds `client/core-ts/src/views/AGENTS.md` and `lock-state-invariants.test.ts`:
+// - Active chain + fork choice (`ASIDE_MOST = 256`), never appends `prev != head_hash`,
+//   `again_of` re-sign cap (`AGAIN_MOST = 3`).
+// - Moved workspace (`moved {root}`): computes effective state via `lock::state4_moved`
+//   from moved chain + personal logs + statement bodies; refuses signing on moved chain (`lock_moved`).
+// - Automatic personal lock (`vouchers_in`, `approved_in`): strictly via trusted signer key
+//   of an ancestor device on the workspace lock — never by device id, never widening to
+//   approvers of devices already on the lock.
+// - `LockPendingQueue`: cloud acceptance NEVER counts; entries stay `Waiting` until read back
+//   from a named station (`deliver_from_station`), or surface as `Failed` with dismiss guidance.
+// - Unified safe mode (`SafeModeView`): never distinguishes 「工作区锁」 and 「个人锁」 to UI;
+//   every error/refusal/wait provides an explicit recovery path (Laws A, B, C).
+
+import "base_codec"
+import "crypto"
+import "form"
+import "fork"
+import "lock"
+import "mesh"
+import "role"
+import "vault"
+
+pub fn aside_most() -> Int { 256 }
+pub fn again_most() -> Int { 3 }
+pub fn pending_most() -> Int { 8 }
+
+// ---------------------------------------------------------------------------
+// Native `pion/rules` crypto adapters (zero JS/JSON bridge)
+// ---------------------------------------------------------------------------
+
+fn is_lower_hex_64_lv(s : String) -> Bool {
+  if s.length() != 64 {
+    return false
+  }
+  for i in 0..<64 {
+    let c = s.code_unit_at(i)
+    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) {
+      return false
+    }
+  }
+  true
+}
+
+fn tagged_bytes_lv(tag : String, payload : Bytes) -> Bytes {
+  let tb = tag.to_bytes()
+  let out = Bytes::new(tb.length() + 1 + payload.length())
+  for i in 0..<tb.length() {
+    out[i] = tb[i]
+  }
+  out[tb.length()] = 0 as Byte
+  for i in 0..<payload.length() {
+    out[tb.length() + 1 + i] = payload[i]
+  }
+  out
+}
+
+fn lock_signed_bytes_lv(entry_hash : String) -> Option[Bytes] {
+  if !is_lower_hex_64_lv(entry_hash) {
+    return None
+  }
+  match base_codec::hex_decode(entry_hash) {
+    Some(digest) => Some(tagged_bytes_lv("stillfail-lock/1 sig", digest))
+    None => None
+  }
+}
+
+fn endpoint_signed_bytes_lv(ws : String, endpoint : String) -> Bytes {
+  let prefix = "stillfail-lock-endpoint/1".to_bytes()
+  let ws_b = ws.to_bytes()
+  let ep_b = endpoint.to_bytes()
+  let out = Bytes::new(prefix.length() + 1 + ws_b.length() + 1 + ep_b.length())
+  let mut at = 0
+  for i in 0..<prefix.length() {
+    out[at] = prefix[i]
+    at += 1
+  }
+  out[at] = 0 as Byte
+  at += 1
+  for i in 0..<ws_b.length() {
+    out[at] = ws_b[i]
+    at += 1
+  }
+  out[at] = 0 as Byte
+  at += 1
+  for i in 0..<ep_b.length() {
+    out[at] = ep_b[i]
+    at += 1
+  }
+  out
+}
+
+pub fn valid_lock_key_id(id : String) -> Bool {
+  if id.length() > 200 {
+    return false
+  }
+  if id.starts_with("ed25519:") {
+    return is_lower_hex_64_lv(id.slice(8, id.length()))
+  }
+  if id.starts_with("p256:") {
+    match base_codec::base64url_decode(id.slice(5, id.length())) {
+      Some(pt) => pt.length() == 65 && pt[0].to_int() == 4
+      None => false
+    }
+  } else {
+    false
+  }
+}
+
+fn verify_ed25519_lv(key_id : String, message : Bytes, sig_hex : String) -> Bool {
+  if !key_id.starts_with("ed25519:") {
+    return false
+  }
+  let pk_hex = key_id.slice(8, key_id.length())
+  if !is_lower_hex_64_lv(pk_hex) {
+    return false
+  }
+  let pk = match base_codec::hex_decode(pk_hex) {
+    Some(b) => b
+    None => return false
+  }
+  let sig = match base_codec::hex_decode(sig_hex) {
+    Some(b) => b
+    None => return false
+  }
+  mesh::ed25519_verify(pk, message, sig)
+}
+
+fn form_str_lv(j : form::Json, key : String) -> Option[String] {
+  match form::json_field(Some(j), key) {
+    Some(form::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn form_int_lv(j : form::Json, key : String) -> Int {
+  match form::json_field(Some(j), key) {
+    Some(form::Json::Num(n)) => n.to_int()
+    _ => -1
+  }
+}
+
+fn concat_bytes_lv(a : Bytes, b : Bytes) -> Bytes {
+  let out = Bytes::new(a.length() + b.length())
+  for i in 0..<a.length() {
+    out[i] = a[i]
+  }
+  for i in 0..<b.length() {
+    out[a.length() + i] = b[i]
+  }
+  out
+}
+
+fn bytes_to_utf8_str_lv(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+fn bytes_eq_prefix_lv(a : Bytes, b : Bytes, n : Int) -> Bool {
+  if a.length() < n || b.length() < n {
+    return false
+  }
+  for i in 0..<n {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn decode_p256_key_id_lv(key_id : String) -> Option[Bytes] {
+  if !key_id.starts_with("p256:") {
+    return None
+  }
+  match base_codec::base64url_decode(key_id.slice(5, key_id.length())) {
+    Some(pt) => if pt.length() == 65 && pt[0].to_int() == 4 { Some(pt) } else { None }
+    None => None
+  }
+}
+
+fn str_in_array_lv(xs : Array[String], target : String) -> Bool {
+  for i in 0..<xs.length() {
+    if xs[i] == target {
+      return true
+    }
+  }
+  false
+}
+
+/// Verify a WebAuthn / Passkey P-256 DER assertion matching `shared/lock.ts sigValid` and `lock_bridge.pion`.
+fn verify_webauthn_p256_lv(
+  sig : form::Json,
+  entry_hash : String,
+  origins : Array[String],
+  rp_id : String,
+) -> Bool {
+  let key = match form_str_lv(sig, "key") {
+    Some(k) => k
+    None => return false
+  }
+  let pk = match decode_p256_key_id_lv(key) {
+    Some(p) => p
+    None => return false
+  }
+  if !is_lower_hex_64_lv(entry_hash) {
+    return false
+  }
+  let hash_bytes = match base_codec::hex_decode(entry_hash) {
+    Some(b) => b
+    None => return false
+  }
+  let client_data_b64 = match form_str_lv(sig, "client_data") {
+    Some(s) => s
+    None => return false
+  }
+  let auth_data_b64 = match form_str_lv(sig, "authenticator_data") {
+    Some(s) => s
+    None => return false
+  }
+  let sig_b64 = match form_str_lv(sig, "sig") {
+    Some(s) => s
+    None => return false
+  }
+  let client_bytes = match base_codec::base64url_decode(client_data_b64) {
+    Some(b) => b
+    None => return false
+  }
+  let client_json = match base_codec::json_parse(bytes_to_utf8_str_lv(client_bytes)) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return false
+  }
+  match base_codec::json_get(client_json, "type") {
+    Some(base_codec::Json::Str(t)) => if t != "webauthn.get" { return false }
+    _ => return false
+  }
+  let expected_challenge = base_codec::base64url_encode(hash_bytes)
+  match base_codec::json_get(client_json, "challenge") {
+    Some(base_codec::Json::Str(ch)) => if ch != expected_challenge { return false }
+    _ => return false
+  }
+  match base_codec::json_get(client_json, "origin") {
+    Some(base_codec::Json::Str(orig)) => if !str_in_array_lv(origins, orig) { return false }
+    _ => return false
+  }
+  let auth_bytes = match base_codec::base64url_decode(auth_data_b64) {
+    Some(b) => b
+    None => return false
+  }
+  // rpIdHash (32 bytes) + flags (1 byte, UP bit 0x01) + signCount (4 bytes) = 37 bytes minimum.
+  if auth_bytes.length() < 37 {
+    return false
+  }
+  let rp_hash = crypto::sha256(rp_id.to_bytes())
+  if !bytes_eq_prefix_lv(auth_bytes, rp_hash, 32) {
+    return false
+  }
+  if (auth_bytes[32].to_int() & 1) == 0 {
+    return false
+  }
+  let der_sig = match base_codec::base64url_decode(sig_b64) {
+    Some(b) => b
+    None => return false
+  }
+  let signed = concat_bytes_lv(auth_bytes, crypto::sha256(client_bytes))
+  match crypto::p256_verify_der(pk, signed, der_sig) {
+    Ok(_) => true
+    Err(_) => false
+  }
+}
+
+/// Native `lock::Crypto` directly wired to `crypto::sha256_hex`, `mesh::ed25519_verify`,
+/// and `crypto::p256_verify_der` / `crypto::p256_verify_es256`.
+pub fn views_lock_crypto() -> lock::Crypto {
+  lock::Crypto::{
+    sha256_hex: fn(text : String) -> String { crypto::sha256_hex(text.to_bytes()) },
+    sig_valid: fn(sig : form::Json, entry_hash : String, origins : Array[String], rp_id : String, passkey : Bool) -> Bool {
+      let alg = match form_str_lv(sig, "alg") {
+        Some(a) => a
+        None => return false
+      }
+      if alg == "webauthn" {
+        if !passkey {
+          return false
+        }
+        return verify_webauthn_p256_lv(sig, entry_hash, origins, rp_id)
+      }
+      if passkey {
+        return false
+      }
+      let key = match form_str_lv(sig, "key") {
+        Some(k) => k
+        None => return false
+      }
+      let sig_str = match form_str_lv(sig, "sig") {
+        Some(s) => s
+        None => return false
+      }
+      if alg == "Ed25519" {
+        match lock_signed_bytes_lv(entry_hash) {
+          Some(msg) => verify_ed25519_lv(key, msg, sig_str)
+          None => false
+        }
+      } else if alg == "ES256" {
+        let pk = match decode_p256_key_id_lv(key) {
+          Some(p) => p
+          None => return false
+        }
+        let raw_sig = match base_codec::base64url_decode(sig_str) {
+          Some(b) => b
+          None => return false
+        }
+        match lock_signed_bytes_lv(entry_hash) {
+          Some(msg) =>
+          match crypto::p256_verify_es256(pk, msg, raw_sig) {
+            Ok(_) => true
+            Err(_) => false
+          }
+          None => false
+        }
+      } else {
+        false
+      }
+    },
+    valid_key_id: valid_lock_key_id,
+    endpoint_proof: fn(ws : String, base : String, endpoint : String, proof : String) -> Bool {
+      if !is_lower_hex_64_lv(base) {
+        return false
+      }
+      verify_ed25519_lv("ed25519:" + base, endpoint_signed_bytes_lv(ws, endpoint), proof)
+    },
+    tagged_sig_valid: fn(key : String, sig_hex : String, tag : String, digest_hex : String) -> Bool {
+      if !is_lower_hex_64_lv(digest_hex) {
+        return false
+      }
+      match base_codec::hex_decode(digest_hex) {
+        Some(digest) => verify_ed25519_lv(key, tagged_bytes_lv(tag, digest), sig_hex)
+        None => false
+      }
+    },
+  }
+}
+
+/// Native `vault::Crypto` backed directly by `crypto::sha256` and `mesh::ed25519_verify`.
+pub fn views_vault_crypto() -> vault::Crypto {
+  vault::Crypto::{
+    record_sig_valid: fn(sig : form::Json, tag : String, canonical_text : String) -> Bool {
+      let key = match form_str_lv(sig, "key") {
+        Some(k) => k
+        None => return false
+      }
+      let alg = match form_str_lv(sig, "alg") {
+        Some(a) => a
+        None => return false
+      }
+      let sig_hex = match form_str_lv(sig, "sig") {
+        Some(s) => s
+        None => return false
+      }
+      if alg != "Ed25519" {
+        return false
+      }
+      let digest = crypto::sha256(canonical_text.to_bytes())
+      verify_ed25519_lv(key, tagged_bytes_lv(tag, digest), sig_hex)
+    },
+  }
+}
+
+/// Compute `ed25519:<64hex>` key id for a 32-byte Ed25519 seed.
+pub fn lock_key_id_of_seed(seed : Bytes) -> String {
+  let (pk, _) = mesh::ed25519_sign(seed, Bytes::new(0))
+  "ed25519:" + base_codec::hex_encode(pk)
+}
+
+/// Sign a lock entry (`form::Json` without `sig`) with an Ed25519 32-byte seed.
+pub fn sign_entry_ed25519(seed : Bytes, entry : form::Json) -> Result[form::Json, String] {
+  let c = views_lock_crypto()
+  let h = match lock::entry_hash(entry, c) {
+    Ok(x) => x
+    Err(e) => return Err(lock::error_msg(e))
+  }
+  let msg = match lock_signed_bytes_lv(h) {
+    Some(m) => m
+    None => return Err("invalid entry hash")
+  }
+  let (pk, sig) = mesh::ed25519_sign(seed, msg)
+  let key_id = "ed25519:" + base_codec::hex_encode(pk)
+  let sig_obj = form::Json::Obj([
+    ("key", form::Json::Str(key_id)),
+    ("alg", form::Json::Str("Ed25519")),
+    ("sig", form::Json::Str(base_codec::hex_encode(sig))),
+  ])
+  match entry {
+    form::Json::Obj(fields) => {
+      let out : Array[(String, form::Json)] = []
+      for i in 0..<fields.length() {
+        if fields[i].0 != "sig" {
+          out.push(fields[i])
+        }
+      }
+      out.push(("sig", sig_obj))
+      Ok(form::Json::Obj(out))
+    }
+    _ => Err("lock entry must be an object")
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. Active chain + fork choice (`ASIDE_MOST`, `prev == head`, `again_of`)
+// ---------------------------------------------------------------------------
+
+pub struct KeptLog {
+  pub entries : Array[form::Json]
+  pub aside : Array[form::Json]
+  pub head : String
+  pub genesis : String
+}
+
+pub fn KeptLog::empty() -> KeptLog {
+  KeptLog::{ entries: [], aside: [], head: "", genesis: "" }
+}
+
+pub struct KeepOutcome {
+  pub kept : KeptLog
+  pub moved_head : Bool
+  pub changed : Bool
+  pub rejected : Int
+}
+
+fn entry_hash_or_empty(e : form::Json, c : lock::Crypto) -> String {
+  match lock::entry_hash(e, c) {
+    Ok(h) => h
+    Err(_) => ""
+  }
+}
+
+/// Verify that `entries` link hop-by-hop (`seq == i`, `prev == hash(entries[i - 1])`).
+pub fn links_valid(entries : Array[form::Json], c : lock::Crypto) -> Bool {
+  for i in 0..<entries.length() {
+    let e = entries[i]
+    if form_int_lv(e, "seq") != i {
+      return false
+    }
+    if i == 0 {
+      match form::json_field(Some(e), "prev") {
+        Some(form::Json::Null) => ()
+        _ => return false
+      }
+    } else {
+      let prev_h = entry_hash_or_empty(entries[i - 1], c)
+      match form_str_lv(e, "prev") {
+        Some(p) => if p != prev_h { return false }
+        None => return false
+      }
+    }
+  }
+  true
+}
+
+fn is_aside_off(o : lock::Off) -> Bool {
+  match o {
+    lock::Off::Beaten(_, _) => true
+    lock::Off::Below(_) => true
+    _ => false
+  }
+}
+
+fn sort_entries_by_seq(xs : Array[form::Json]) -> Unit {
+  for i in 1..<xs.length() {
+    let cur = xs[i]
+    let cur_seq = form_int_lv(cur, "seq")
+    let mut j = i - 1
+    while j >= 0 && form_int_lv(xs[j], "seq") > cur_seq {
+      xs[j + 1] = xs[j]
+      j -= 1
+    }
+    xs[j + 1] = cur
+  }
+}
+
+/// Merge `brought` entries into `was` using native `pion/rules` fork choice (`lock_chain` or
+/// `person_chain`), keeping beaten/below fork branches in `aside` up to `ASIDE_MOST` (256).
+pub fn keep_entries(
+  was : KeptLog,
+  brought : Array[form::Json],
+  root_hash : String,
+  is_person : Bool,
+  now : Option[Double],
+  c : lock::Crypto,
+) -> Result[KeepOutcome, String] {
+  let kept_hashes : Map[String, Bool] = Map::new()
+  for i in 0..<was.entries.length() {
+    let h = entry_hash_or_empty(was.entries[i], c)
+    if h.length() > 0 {
+      kept_hashes.set(h, true)
+    }
+  }
+  for i in 0..<was.aside.length() {
+    let h = entry_hash_or_empty(was.aside[i], c)
+    if h.length() > 0 {
+      kept_hashes.set(h, true)
+    }
+  }
+
+  let seen : Map[String, Bool] = Map::new()
+  let fresh : Array[form::Json] = []
+  for i in 0..<brought.length() {
+    let h = entry_hash_or_empty(brought[i], c)
+    if h.length() == 0 || kept_hashes.get(h).is_some() || seen.get(h).is_some() {
+      continue
+    }
+    seen.set(h, true)
+    fresh.push(brought[i])
+  }
+  if fresh.length() == 0 {
+    return Ok(KeepOutcome::{ kept: was, moved_head: false, changed: false, rejected: 0 })
+  }
+
+  let all : Array[form::Json] = []
+  for i in 0..<was.entries.length() {
+    all.push(was.entries[i])
+  }
+  for i in 0..<was.aside.length() {
+    all.push(was.aside[i])
+  }
+  for i in 0..<fresh.length() {
+    all.push(fresh[i])
+  }
+
+  let ch = if is_person {
+    match lock::person_chain(all, root_hash, c) {
+      Ok(x) => x
+      Err(e) => return Err(lock::error_msg(e))
+    }
+  } else {
+    match lock::lock_chain(all, root_hash, lock::Votes::Roles, now, c) {
+      Ok(x) => x
+      Err(e) => return Err(lock::error_msg(e))
+    }
+  }
+
+  let on_set : Map[String, Bool] = Map::new()
+  for i in 0..<ch.hashes.length() {
+    on_set.set(ch.hashes[i], true)
+  }
+  let off_by_hash : Map[String, lock::Off] = Map::new()
+  let mut rejected = 0
+  for i in 0..<ch.off.length() {
+    let (idx, why) = ch.off[i]
+    let h = entry_hash_or_empty(all[idx], c)
+    if h.length() > 0 {
+      off_by_hash.set(h, why)
+    }
+    match why {
+      lock::Off::NotValid(_) => {
+        rejected += 1
+      }
+      _ => ()
+    }
+  }
+
+  let is_aside = fn(e : form::Json) -> Bool {
+    let h = entry_hash_or_empty(e, c)
+    match off_by_hash.get(h) {
+      Some(o) => is_aside_off(o)
+      None => false
+    }
+  }
+
+  // Ensure previously held active chain entries were not refused by rules.
+  for i in 0..<was.entries.length() {
+    let e = was.entries[i]
+    let h = entry_hash_or_empty(e, c)
+    if on_set.get(h).is_none() && !is_aside(e) {
+      return Err("the chain held does not hold by the rules")
+    }
+  }
+
+  // Retain aside entries up to ASIDE_MOST (256), pruning descendants of dropped entries.
+  let old_aside : Array[form::Json] = []
+  for i in 0..<was.aside.length() {
+    if is_aside(was.aside[i]) {
+      old_aside.push(was.aside[i])
+    }
+  }
+  for i in 0..<was.entries.length() {
+    let e = was.entries[i]
+    let h = entry_hash_or_empty(e, c)
+    if on_set.get(h).is_none() && is_aside(e) {
+      old_aside.push(e)
+    }
+  }
+
+  let fresh_sorted : Array[form::Json] = []
+  for i in 0..<fresh.length() {
+    fresh_sorted.push(fresh[i])
+  }
+  sort_entries_by_seq(fresh_sorted)
+
+  let mut room = aside_most() - old_aside.length()
+  let side_raw : Array[form::Json] = []
+  for i in 0..<old_aside.length() {
+    side_raw.push(old_aside[i])
+  }
+  for i in 0..<fresh_sorted.length() {
+    let e = fresh_sorted[i]
+    let h = entry_hash_or_empty(e, c)
+    if on_set.get(h).is_some() || !is_aside(e) || room <= 0 {
+      continue
+    }
+    side_raw.push(e)
+    room -= 1
+  }
+
+  // Trim oldest if exceeding ASIDE_MOST.
+  let side_trimmed : Array[form::Json] = []
+  let start_idx = if side_raw.length() > aside_most() { side_raw.length() - aside_most() } else { 0 }
+  for i in start_idx..<side_raw.length() {
+    side_trimmed.push(side_raw[i])
+  }
+
+  // Drop entries whose parent was dropped.
+  let side_by_seq : Array[form::Json] = []
+  for i in 0..<side_trimmed.length() {
+    side_by_seq.push(side_trimmed[i])
+  }
+  sort_entries_by_seq(side_by_seq)
+  let kept_now : Map[String, Bool] = Map::new()
+  for i in 0..<ch.hashes.length() {
+    kept_now.set(ch.hashes[i], true)
+  }
+  for i in 0..<side_by_seq.length() {
+    let e = side_by_seq[i]
+    match form_str_lv(e, "prev") {
+      Some(p) => {
+        if kept_now.get(p).is_some() {
+          let h = entry_hash_or_empty(e, c)
+          if h.length() > 0 {
+            kept_now.set(h, true)
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  let final_side : Array[form::Json] = []
+  for i in 0..<side_trimmed.length() {
+    let h = entry_hash_or_empty(side_trimmed[i], c)
+    if kept_now.get(h).is_some() {
+      final_side.push(side_trimmed[i])
+    }
+  }
+
+  let next_head = if ch.hashes.length() > 0 { ch.hashes[ch.hashes.length() - 1] } else { "" }
+  let next_gen = if ch.hashes.length() > 0 { ch.hashes[0] } else { root_hash }
+  let moved_head = next_head != was.head
+  let mut changed = ch.entries.length() != was.entries.length() || final_side.length() != was.aside.length()
+  if !changed {
+    for i in 0..<ch.entries.length() {
+      if ch.hashes[i] != entry_hash_or_empty(was.entries[i], c) {
+        changed = true
+        break
+      }
+    }
+  }
+  if !changed {
+    for i in 0..<final_side.length() {
+      let h = entry_hash_or_empty(final_side[i], c)
+      if kept_hashes.get(h).is_none() {
+        changed = true
+        break
+      }
+    }
+  }
+  let next_kept = if changed {
+    KeptLog::{ entries: ch.entries, aside: final_side, head: next_head, genesis: next_gen }
+  } else {
+    was
+  }
+  Ok(KeepOutcome::{ kept: next_kept, moved_head: moved_head, changed: changed, rejected: rejected })
+}
+
+/// Strictly validate and append a single entry to `was`:
+/// - Never appends an entry whose `prev != was.head`!
+/// - Refuses with `"lock_moved"` if the workspace chain already moved to personal logs!
+pub fn append_entry(
+  was : KeptLog,
+  entry : form::Json,
+  is_person : Bool,
+  now : Option[Double],
+  c : lock::Crypto,
+) -> Result[KeptLog, String] {
+  if was.entries.length() == 0 {
+    return Err("cannot append to empty chain without genesis")
+  }
+  // Check moved status on workspace chains first (`Lock.append` returns `lock_moved`).
+  if !is_person {
+    let mut st = match lock::genesis(was.entries[0], c) {
+      Ok(g) => g
+      Err(e) => return Err(lock::error_msg(e))
+    }
+    for i in 1..<was.entries.length() {
+      st = match lock::apply(st, was.entries[i], now, c) {
+        Ok(n) => n
+        Err(e) => return Err(lock::error_msg(e))
+      }
+    }
+    if st.moved.is_some() {
+      return Err("lock_moved")
+    }
+  }
+  match form_str_lv(entry, "prev") {
+    Some(p) => {
+      if p != was.head {
+        return Err("prev_mismatch: entry.prev does not match head hash")
+      }
+    }
+    None => return Err("prev_mismatch: entry.prev is missing")
+  }
+  let h = match lock::entry_hash(entry, c) {
+    Ok(x) => x
+    Err(e) => return Err(lock::error_msg(e))
+  }
+  let next_entries : Array[form::Json] = []
+  for i in 0..<was.entries.length() {
+    next_entries.push(was.entries[i])
+  }
+  next_entries.push(entry)
+  if !links_valid(next_entries, c) {
+    return Err("prev_mismatch: chain links invalid")
+  }
+  // Verify via rules
+  if is_person {
+    let sub = match form_str_lv(was.entries[0], "ws") {
+      Some(w) => if w.starts_with("person:") { w.slice(7, w.length()) } else { "" }
+      None => ""
+    }
+    match lock::fold_person(next_entries, sub, c) {
+      Ok(_) => ()
+      Err(e) => return Err(lock::error_msg(e))
+    }
+  } else {
+    let mut st = match lock::genesis(next_entries[0], c) {
+      Ok(g) => g
+      Err(e) => return Err(lock::error_msg(e))
+    }
+    for i in 1..<next_entries.length() {
+      st = match lock::apply(st, next_entries[i], now, c) {
+        Ok(n) => n
+        Err(e) => return Err(lock::error_msg(e))
+      }
+    }
+  }
+  Ok(KeptLog::{ entries: next_entries, aside: was.aside, head: h, genesis: was.genesis })
+}
+
+pub enum AgainDecision {
+  Done
+  Otherwise
+  Unmoved
+  ReSign
+  Exhausted
+}
+
+/// Decide what becomes of a displaced entry `lost` (`lock-keep.ts againOf`), enforcing `AGAIN_MOST = 3`.
+pub fn again_of(
+  chain : Array[form::Json],
+  aside : Array[form::Json],
+  lost : form::Json,
+  subject_of : (form::Json) -> Option[String],
+  tries : Int,
+  c : lock::Crypto,
+) -> AgainDecision {
+  let lost_h = entry_hash_or_empty(lost, c)
+  let at : Map[String, Int] = Map::new()
+  for i in 0..<chain.length() {
+    let h = entry_hash_or_empty(chain[i], c)
+    if h.length() > 0 {
+      at.set(h, i)
+    }
+  }
+  if at.get(lost_h).is_some() {
+    return AgainDecision::Done
+  }
+  let up : Map[String, form::Json] = Map::new()
+  for i in 0..<aside.length() {
+    let h = entry_hash_or_empty(aside[i], c)
+    if h.length() > 0 {
+      up.set(h, aside[i])
+    }
+  }
+  let mut parent = form_str_lv(lost, "prev")
+  let mut steps = 0
+  while steps <= aside.length() {
+    match parent {
+      None => break
+      Some(p) => {
+        if at.get(p).is_some() {
+          break
+        }
+        match up.get(p) {
+          Some(pe) => {
+            parent = form_str_lv(pe, "prev")
+          }
+          None => {
+            parent = None
+          }
+        }
+      }
+    }
+    steps += 1
+  }
+  let fork_idx = match parent {
+    Some(p) => match at.get(p) {
+      Some(idx) => idx
+      None => return AgainDecision::Unmoved
+    }
+    None => return AgainDecision::Unmoved
+  }
+  if fork_idx == chain.length() - 1 {
+    return AgainDecision::Unmoved
+  }
+  let lost_kind = match form_str_lv(lost, "kind") {
+    Some(k) => k
+    None => ""
+  }
+  let lost_body_canon = match form::canonical(match form::json_field(Some(lost), "body") { Some(b) => b; None => form::Json::Null }) {
+    Ok(s) => s
+    Err(_) => ""
+  }
+  let lost_sub = subject_of(lost)
+  for i in (fork_idx + 1)..<chain.length() {
+    let e = chain[i]
+    let ek = match form_str_lv(e, "kind") {
+      Some(k) => k
+      None => ""
+    }
+    let eb = match form::canonical(match form::json_field(Some(e), "body") { Some(b) => b; None => form::Json::Null }) {
+      Ok(s) => s
+      Err(_) => ""
+    }
+    if ek == lost_kind && eb == lost_body_canon {
+      return AgainDecision::Done
+    }
+  }
+  match lost_sub {
+    Some(about) => {
+      for i in (fork_idx + 1)..<chain.length() {
+        match subject_of(chain[i]) {
+          Some(s) => if s == about { return AgainDecision::Otherwise }
+          None => ()
+        }
+      }
+    }
+    None => ()
+  }
+  if tries >= again_most() {
+    AgainDecision::Exhausted
+  } else {
+    AgainDecision::ReSign
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. Effective state & moved workspace (`moved {root}` -> `lock::state4_moved`)
+// ---------------------------------------------------------------------------
+
+pub struct EffectiveLockState {
+  pub ws : String
+  pub moved : Bool
+  pub moved_root : Option[String]
+  pub on : String
+  pub safe_mode : Bool
+  pub root_in : Bool
+  pub root_sub : Option[String]
+  pub state : lock::LockState
+}
+
+/// Compute effective workspace lock state via native `pion/rules`:
+/// - If the chain contains `moved {root}`, calls `lock::state4_moved` combining the moved chain,
+///   personal logs (`person_chains`), and statement bodies (`bodies`).
+/// - Otherwise folds the workspace chain directly via `lock::genesis` + `lock::apply`.
+pub fn effective_state(
+  ws : String,
+  chain : Array[form::Json],
+  person_chains : Array[Array[form::Json]],
+  bodies : Array[form::Json],
+  now_secs : Double,
+  c : lock::Crypto,
+) -> Result[EffectiveLockState, String] {
+  if chain.length() == 0 {
+    return Err("no lock chain")
+  }
+  let mut st = match lock::genesis(chain[0], c) {
+    Ok(g) => g
+    Err(e) => return Err(lock::error_msg(e))
+  }
+  for i in 1..<chain.length() {
+    st = match lock::apply(st, chain[i], Some(now_secs), c) {
+      Ok(next) => next
+      Err(e) => return Err(lock::error_msg(e))
+    }
+  }
+  match st.moved {
+    Some(root) => {
+      let s4 = lock::state4_moved(ws, chain, person_chains, bodies, now_secs, c)
+      let mut root_sub : Option[String] = None
+      let ps = s4.lock.persons.entries()
+      for i in 0..<ps.length() {
+        if ps[i].1 == root {
+          root_sub = Some(ps[i].0)
+          break
+        }
+      }
+      let safe = s4.on == "on" && !s4.lock.disabled
+      Ok(EffectiveLockState::{
+        ws: ws,
+        moved: true,
+        moved_root: Some(root),
+        on: s4.on,
+        safe_mode: safe,
+        root_in: s4.root_in,
+        root_sub: root_sub,
+        state: s4.lock,
+      })
+    }
+    None => {
+      let safe = !st.disabled
+      Ok(EffectiveLockState::{
+        ws: ws,
+        moved: false,
+        moved_root: None,
+        on: if safe { "on" } else { "off" },
+        safe_mode: safe,
+        root_in: false,
+        root_sub: None,
+        state: st,
+      })
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 3. Automatic personal lock (`ownLockFor`: `vouchers_in` & `approved_in`)
+// ---------------------------------------------------------------------------
+
+pub struct OwnDevice {
+  pub id : String
+  pub sub : String
+  pub label : String
+  pub sign_key : Option[String]
+  pub said : Option[String]
+  pub by : Option[String]
+  pub by_sub : Option[String]
+  pub by_key : Option[String]
+  pub since : Int
+}
+
+pub struct OwnStandings {
+  pub devices : Map[String, OwnDevice]
+  pub device_ids : Array[String]
+}
+
+pub struct ApprovedDevice {
+  pub key : String
+  pub id : String
+  pub label : String
+  pub sign_key : Option[String]
+}
+
+/// Walk `by` ancestor lineage for `base` within `own` (cycle-safe, `views/lock.ts ancestors`).
+pub fn ancestors_of(own : OwnStandings, base : String) -> Array[OwnDevice] {
+  let out : Array[OwnDevice] = []
+  let seen : Map[String, Bool] = Map::new()
+  let mut cur : Option[String] = Some(base)
+  while true {
+    match cur {
+      None => break
+      Some(id) => {
+        if seen.get(id).is_some() {
+          break
+        }
+        seen.set(id, true)
+        match own.devices.get(id) {
+          Some(d) => {
+            out.push(d)
+            cur = d.by
+          }
+          None => break
+        }
+      }
+    }
+  }
+  out
+}
+
+/// `views/lock.ts vouchersIn`: keys (`said`) declared by devices up `base`'s lineage across
+/// trusted workspace locks. Never widens by device id.
+pub fn vouchers_in(locks : Array[OwnStandings], _sub : String, base : String) -> Array[String] {
+  let seen : Map[String, Bool] = Map::new()
+  let out : Array[String] = []
+  for i in 0..<locks.length() {
+    let ancs = ancestors_of(locks[i], base)
+    for j in 0..<ancs.length() {
+      match ancs[j].said {
+        Some(k) => {
+          if seen.get(k).is_none() {
+            seen.set(k, true)
+            out.push(k)
+          }
+        }
+        None => ()
+      }
+    }
+  }
+  out
+}
+
+/// `views/lock.ts approvedIn`: strictly admits only devices endorsed by a trusted signer key
+/// (`by_key` in `chain_signers`, NEVER by device id), NEVER for devices/keys already `ever`
+/// on the personal lock, and ONLY when an ancestor in its lineage is `me` (by BOTH `id` and
+/// `sign_key`) or already signed an entry on the personal chain (`chain_signed`).
+pub fn approved_in(
+  locks : Array[OwnStandings],
+  sub : String,
+  me_id : Option[String],
+  me_sign_key : Option[String],
+  chain_signers : Map[String, Bool],
+  chain_signed : Map[String, Bool],
+  ever_ids : Map[String, Bool],
+  ever_keys : Map[String, Bool],
+) -> Array[ApprovedDevice] {
+  let out : Array[ApprovedDevice] = []
+  let out_ids : Map[String, Bool] = Map::new()
+  let out_keys : Map[String, Bool] = Map::new()
+
+  let takes = fn(a : OwnDevice) -> Bool {
+    let is_me = match (me_id, me_sign_key, a.sign_key) {
+      (Some(mid), Some(msk), Some(ask)) => a.id == mid && ask == msk
+      _ => false
+    }
+    if is_me {
+      return true
+    }
+    match a.said {
+      Some(s) => chain_signed.get(s).is_some()
+      None => false
+    }
+  }
+
+  for li in 0..<locks.length() {
+    let own = locks[li]
+    for di in 0..<own.device_ids.length() {
+      let did = own.device_ids[di]
+      let d = match own.devices.get(did) {
+        Some(x) => x
+        None => continue
+      }
+      let said = match d.said {
+        Some(s) => s
+        None => continue
+      }
+      if d.by.is_none() {
+        continue
+      }
+      match d.by_sub {
+        Some(bs) => if bs != sub { continue }
+        None => continue
+      }
+      let by_key = match d.by_key {
+        Some(bk) => bk
+        None => continue
+      }
+      // Rule: must match signer key on the chain — NEVER widened by device id!
+      if chain_signers.get(by_key).is_none() {
+        continue
+      }
+      // Rule: never re-admit a device id or key that was ever on the lock!
+      if ever_ids.get(d.id).is_some() || ever_keys.get(said).is_some() ||
+      out_ids.get(d.id).is_some() || out_keys.get(said).is_some() {
+        continue
+      }
+      let ancs = ancestors_of(own, d.id)
+      let mut has_taker = false
+      for ai in 0..<ancs.length() {
+        if takes(ancs[ai]) {
+          has_taker = true
+          break
+        }
+      }
+      if !has_taker {
+        continue
+      }
+      out_ids.set(d.id, true)
+      out_keys.set(said, true)
+      out.push(ApprovedDevice::{
+        key: said,
+        id: d.id,
+        label: d.label,
+        sign_key: d.sign_key,
+      })
+    }
+  }
+  out
+}
+
+// ---------------------------------------------------------------------------
+// 4. Lock pending queue (`lock-pending.ts`: station acceptance vs cloud)
+// ---------------------------------------------------------------------------
+
+pub struct PendingLockEntry {
+  pub id : String
+  pub entry : form::Json
+  pub act : String
+  pub name : String
+  pub at_ms : Int64
+  pub mut state : String
+  pub mut why : Option[String]
+  pub mut cloud_mirrored : Bool
+  pub mut tries : Int
+}
+
+pub struct LockPendingQueue {
+  pub items : Array[PendingLockEntry]
+}
+
+pub fn LockPendingQueue::new() -> LockPendingQueue {
+  LockPendingQueue::{ items: [] }
+}
+
+pub fn LockPendingQueue::waiting_count(self : LockPendingQueue) -> Int {
+  let mut n = 0
+  for i in 0..<self.items.length() {
+    if self.items[i].state == "waiting" {
+      n += 1
+    }
+  }
+  n
+}
+
+/// Queue a signed entry awaiting confirmation from a named station (NEVER put on-chain yet).
+/// Enforces `PENDING_MOST = 8` waiting entries with explicit recovery guidance.
+pub fn LockPendingQueue::submit(
+  self : LockPendingQueue,
+  entry : form::Json,
+  act : String,
+  name : String,
+  now_ms : Int64,
+  c : lock::Crypto,
+) -> Result[String, String] {
+  if self.waiting_count() >= pending_most() {
+    return Err("已有 8 项安全模式改动等待 station 确认，请等待任一受保护的 station 上线后再试")
+  }
+  let id = match lock::entry_hash(entry, c) {
+    Ok(h) => h
+    Err(e) => return Err(lock::error_msg(e))
+  }
+  for i in 0..<self.items.length() {
+    if self.items[i].id == id && self.items[i].state == "waiting" {
+      return Ok(id)
+    }
+  }
+  self.items.push(PendingLockEntry::{
+    id: id,
+    entry: entry,
+    act: act,
+    name: name,
+    at_ms: now_ms,
+    state: "waiting",
+    why: None,
+    cloud_mirrored: false,
+    tries: 0,
+  })
+  Ok(id)
+}
+
+/// Record that cloud accepted a mirror copy.
+/// INVARIANT: Cloud acceptance NEVER counts as confirmed — entry remains `waiting`!
+pub fn LockPendingQueue::mark_cloud_mirrored(self : LockPendingQueue, id : String) -> Unit {
+  for i in 0..<self.items.length() {
+    if self.items[i].id == id {
+      self.items[i].cloud_mirrored = true
+    }
+  }
+}
+
+/// Reconcile pending entries against what a named station read back:
+/// - Entries whose hash appears in `station_chain_hashes` are delivered (removed from pending).
+/// - Entries explicitly refused by the station transition to `failed` with `why` (never silently dropped).
+pub fn LockPendingQueue::deliver_from_station(
+  self : LockPendingQueue,
+  station_chain_hashes : Map[String, Bool],
+  refused : Map[String, String],
+) -> Array[String] {
+  let delivered : Array[String] = []
+  let kept : Array[PendingLockEntry] = []
+  for i in 0..<self.items.length() {
+    let it = self.items[i]
+    if it.state == "waiting" && station_chain_hashes.get(it.id).is_some() {
+      delivered.push(it.id)
+      continue
+    }
+    match refused.get(it.id) {
+      Some(reason) => {
+        it.state = "failed"
+        it.why = Some(reason)
+      }
+      None => ()
+    }
+    kept.push(it)
+  }
+  self.items.clear()
+  for i in 0..<kept.length() {
+    self.items.push(kept[i])
+  }
+  delivered
+}
+
+pub fn LockPendingQueue::dismiss_failed(self : LockPendingQueue, id : String) -> Bool {
+  let kept : Array[PendingLockEntry] = []
+  let mut removed = false
+  for i in 0..<self.items.length() {
+    if self.items[i].id == id && self.items[i].state == "failed" {
+      removed = true
+    } else {
+      kept.push(self.items[i])
+    }
+  }
+  if removed {
+    self.items.clear()
+    for i in 0..<kept.length() {
+      self.items.push(kept[i])
+    }
+  }
+  removed
+}
+
+// ---------------------------------------------------------------------------
+// 5. Unified Safe Mode UI projection (`SafeModeView`, Laws A / B / C)
+// ---------------------------------------------------------------------------
+
+pub struct SafeModeMe {
+  pub device : Option[String]
+  pub kind : String
+  pub confirmed : Bool
+  pub waiting : Bool
+  pub unsigned : Bool
+  pub out_text : Option[String]
+  pub needs_app_text : Option[String]
+  pub state_text : Option[String]
+  pub confirm_text : Option[String]
+  pub restart_text : Option[String]
+  pub restart_note_text : Option[String]
+  pub replaced_title_text : Option[String]
+  pub replaced_note_text : Option[String]
+  pub forget_text : Option[String]
+  pub rebound_text : Option[String]
+}
+
+pub struct SafeModeView {
+  pub available : Bool
+  pub locked : Bool
+  pub role : String
+  pub manages : Bool
+  pub owner : Bool
+  pub can_sign : Bool
+  pub signs : Bool
+  pub me : SafeModeMe
+  pub signers : Int
+  pub protected_stations : Int
+  pub pending_rows : Array[base_codec::Json]
+  pub pending_text : Option[String]
+  pub root_text : Option[String]
+  pub on_again_text : Option[String]
+  pub members_json : Array[base_codec::Json]
+  pub stations_json : Array[base_codec::Json]
+}
+
+pub struct SafeModeInput {
+  pub available : Bool
+  pub viewer_sub : String
+  pub viewer_role : String
+  pub device_id : String
+  pub device_kind : String
+  pub device_sign_key : Option[String]
+  pub personal_standing : String
+  pub signer_unsaid : Bool
+  pub no_device_answered : Bool
+  pub rebound_admins : Array[String]
+  pub station_names : Map[String, String]
+  pub online_stations : Map[String, Bool]
+  pub pending : LockPendingQueue
+}
+
+fn join_names(names : Array[String], most : Int) -> String {
+  let sb = StringBuilder::new()
+  let n = if names.length() < most { names.length() } else { most }
+  for i in 0..<n {
+    if i > 0 {
+      sb.write_string("、")
+    }
+    sb.write_string(names[i])
+  }
+  sb.to_string()
+}
+
+/// Project unified `SafeModeView` from `EffectiveLockState` (or unlocked workspace).
+/// Strictly obeys:
+/// - Never distinguishes 「工作区锁」 vs 「个人锁」 (never outputs 「个人锁」 or 「共享调试」).
+/// - Law A: `me.confirmed` matches exact device admission in effective state.
+/// - Law B: Every unconfirmed, non-signing, or restricted state has an explicit next step.
+pub fn project_safe_mode(
+  eff : Option[EffectiveLockState],
+  inp : SafeModeInput,
+) -> SafeModeView {
+  let is_app = inp.device_kind == "app"
+  let is_owner = inp.viewer_role == "owner"
+  let is_manager = is_owner || inp.viewer_role == "admin"
+
+  match eff {
+    None => {
+      return SafeModeView::{
+        available: inp.available,
+        locked: false,
+        role: inp.viewer_role,
+        manages: is_manager,
+        owner: is_owner,
+        can_sign: is_app,
+        signs: is_app && inp.device_sign_key.is_some() && !inp.signer_unsaid && inp.personal_standing != "outside" && inp.personal_standing != "replaced",
+        me: SafeModeMe::{
+          device: if inp.device_id.length() > 0 { Some(inp.device_id) } else { None },
+          kind: inp.device_kind,
+          confirmed: true,
+          waiting: false,
+          unsigned: false,
+          out_text: None,
+          needs_app_text: None,
+          state_text: if inp.signer_unsaid && is_app { Some("请验证此设备以启用签名") } else { None },
+          confirm_text: if inp.signer_unsaid && is_app { Some("验证") } else { None },
+          restart_text: None,
+          restart_note_text: None,
+          replaced_title_text: None,
+          replaced_note_text: None,
+          forget_text: None,
+          rebound_text: None,
+        },
+        signers: 0,
+        protected_stations: 0,
+        pending_rows: [],
+        pending_text: None,
+        root_text: None,
+        on_again_text: None,
+        members_json: [],
+        stations_json: [],
+      }
+    }
+    Some(ef) => {
+      let st = ef.state
+      let locked = ef.safe_mode
+      let is_member = st.members.contains(inp.viewer_sub)
+      let dev_opt = st.devices.get(inp.device_id)
+      let admitted = match dev_opt {
+        Some(d) => d.sub == inp.viewer_sub && inp.personal_standing != "replaced"
+        None => false
+      }
+      let confirmed = if locked { admitted } else { true }
+
+      let signs = if !locked {
+        is_app && inp.device_sign_key.is_some() && !inp.signer_unsaid && inp.personal_standing != "replaced"
+      } else if !confirmed || !is_app {
+        false
+      } else {
+        match (dev_opt, inp.device_sign_key) {
+          (Some(d), Some(sk)) =>
+          match d.sign_key {
+            Some(dsk) => dsk == sk && !inp.signer_unsaid
+            None => false
+          }
+          _ => false
+        }
+      }
+
+      // Check whether the viewer has any app device in the effective state (for web devices).
+      let mut viewer_has_app = false
+      let all_devs = st.devices.values()
+      let mut signers_cnt = 0
+      for i in 0..<all_devs.length() {
+        let d = all_devs[i]
+        if d.kind == "app" && d.sign_key.is_some() {
+          signers_cnt += 1
+        }
+        if d.sub == inp.viewer_sub && d.kind == "app" {
+          viewer_has_app = true
+        }
+      }
+
+      // Law B: compute explicit recovery guidance for every unconfirmed / non-signing state.
+      let mut waiting = false
+      let mut unsigned = false
+      let mut out_text : Option[String] = None
+      let mut needs_app_text : Option[String] = None
+      let mut state_text : Option[String] = None
+      let mut confirm_text : Option[String] = None
+      let mut restart_text : Option[String] = None
+      let mut restart_note_text : Option[String] = None
+      let mut replaced_title_text : Option[String] = None
+      let mut replaced_note_text : Option[String] = None
+      let mut forget_text : Option[String] = None
+      let mut rebound_text : Option[String] = None
+
+      if locked && !confirmed {
+        if inp.personal_standing == "replaced" {
+          replaced_title_text = Some("你的受信任设备已在另一台设备上重新开始")
+          replaced_note_text = Some("确认是本人操作后，可切换到新的受信任设备列表并重新请求批准；若不是本人操作请勿继续。")
+          forget_text = Some("是我本人操作，继续请求批准")
+        } else if inp.personal_standing == "rebound" {
+          let who = if inp.rebound_admins.length() > 0 { join_names(inp.rebound_admins, 3) } else { "工作区管理员" }
+          rebound_text = Some("请联系 " + who + " 将你移出工作区并重新添加，以完成安全模式重新绑定。")
+        } else if !is_member {
+          let who = if inp.rebound_admins.length() > 0 { join_names(inp.rebound_admins, 3) } else { "工作区所有者或管理员" }
+          out_text = Some("你当前不在安全模式成员列表中，请联系 " + who + " 重新添加。")
+        } else if inp.device_kind == "web" && !viewer_has_app {
+          needs_app_text = Some("请先在桌面端或移动端安装并登录应用成为受信任设备，再批准此网页版。")
+        } else if inp.no_device_answered && is_app {
+          waiting = true
+          restart_text = Some("我的其它设备都不在了")
+          restart_note_text = Some("将此设备设为唯一受信任设备后，需由工作区管理员重新添加你，并重新批准你的其它设备。")
+        } else {
+          waiting = true
+        }
+      } else if locked && confirmed && is_app && !signs {
+        if inp.signer_unsaid {
+          state_text = Some("此设备尚未在安全模式中完成签名验证")
+          confirm_text = Some("验证")
+        } else {
+          unsigned = true
+          state_text = Some("此设备尚未启用签名，请通过受信任设备面对面批准以升级为受信任设备")
+        }
+      }
+
+      // Moved workspace owner controls (root person vs other owners)
+      let mut root_text : Option[String] = None
+      let mut on_again_text : Option[String] = None
+      if ef.moved && is_owner {
+        let is_root = match ef.root_sub {
+          Some(rs) => rs == inp.viewer_sub
+          None => ef.root_in
+        }
+        if is_root {
+          if !locked {
+            on_again_text = Some("重新开启安全模式")
+          }
+        } else {
+          let root_name = match ef.root_sub {
+            Some(rs) => match st.members.get(rs) {
+              Some(m) => if m.email.length() > 0 { m.email } else { rs }
+              None => rs
+            }
+            None => "安全模式创建者"
+          }
+          root_text = Some("仅 " + root_name + " 可关闭或重新开启安全模式；如无法联系，可在 station 上运行 stillfail lock reset 重置。")
+        }
+      }
+
+      // Build station list & pending rows
+      let station_keys = st.stations.keys()
+      let stations_json : Array[base_codec::Json] = []
+      let waiting_station_names : Array[String] = []
+      for i in 0..<station_keys.length() {
+        let sk = station_keys[i]
+        let sname = match inp.station_names.get(sk) {
+          Some(nm) => nm
+          None => match st.stations.get(sk) {
+            Some(sd) => if sd.name.length() > 0 { sd.name } else { sk }
+            None => sk
+          }
+        }
+        waiting_station_names.push(sname)
+        let is_online = inp.online_stations.get(sk).is_some()
+        stations_json.push(base_codec::json_obj([
+          ("id", base_codec::json_str(sk)),
+          ("name", base_codec::json_str(sname)),
+          ("online", base_codec::json_bool(is_online)),
+          ("protected", base_codec::json_bool(true)),
+        ]))
+      }
+
+      let pending_rows : Array[base_codec::Json] = []
+      let station_label = if waiting_station_names.length() > 0 { join_names(waiting_station_names, 3) } else { "受保护的 station" }
+      for i in 0..<inp.pending.items.length() {
+        let p = inp.pending.items[i]
+        let pf : Array[(String, base_codec::Json)] = [
+          ("id", base_codec::json_str(p.id)),
+          ("state", base_codec::json_str(p.state)),
+        ]
+        if p.state == "waiting" {
+          pf.push(("text", base_codec::json_str(p.name + "：等待 " + station_label + " 确认")))
+          let st_arr : Array[base_codec::Json] = []
+          let lim = if waiting_station_names.length() < 3 { waiting_station_names.length() } else { 3 }
+          for j in 0..<lim {
+            st_arr.push(base_codec::json_str(waiting_station_names[j]))
+          }
+          pf.push(("stations", base_codec::json_arr(st_arr)))
+        } else {
+          let why_str = match p.why {
+            Some(w) => w
+            None => "改动未能生效，请刷新后重试"
+          }
+          pf.push(("text", base_codec::json_str(p.name + " 未生效：" + why_str)))
+          pf.push(("stations", base_codec::json_arr([])))
+          pf.push(("why", base_codec::json_str(why_str)))
+          pf.push(("dismissText", base_codec::json_str("知道了")))
+        }
+        pending_rows.push(base_codec::json_obj(pf))
+      }
+
+      // Build members list
+      let members_json : Array[base_codec::Json] = []
+      let ms = st.members.values()
+      for i in 0..<ms.length() {
+        let m = ms[i]
+        members_json.push(base_codec::json_obj([
+          ("sub", base_codec::json_str(m.sub)),
+          ("email", base_codec::json_str(m.email)),
+          ("name", base_codec::json_str(m.email)),
+          ("role", base_codec::json_str(m.role)),
+          ("you", base_codec::json_bool(m.sub == inp.viewer_sub)),
+          ("nameText", base_codec::json_str(m.email)),
+          ("roleText", base_codec::json_str(m.role)),
+          ("groups", base_codec::json_arr([])),
+        ]))
+      }
+
+      SafeModeView::{
+        available: inp.available,
+        locked: locked,
+        role: inp.viewer_role,
+        manages: is_manager,
+        owner: is_owner,
+        can_sign: is_app,
+        signs: signs,
+        me: SafeModeMe::{
+          device: if inp.device_id.length() > 0 { Some(inp.device_id) } else { None },
+          kind: inp.device_kind,
+          confirmed: confirmed,
+          waiting: waiting,
+          unsigned: unsigned,
+          out_text: out_text,
+          needs_app_text: needs_app_text,
+          state_text: state_text,
+          confirm_text: confirm_text,
+          restart_text: restart_text,
+          restart_note_text: restart_note_text,
+          replaced_title_text: replaced_title_text,
+          replaced_note_text: replaced_note_text,
+          forget_text: forget_text,
+          rebound_text: rebound_text,
+        },
+        signers: signers_cnt,
+        protected_stations: station_keys.length(),
+        pending_rows: pending_rows,
+        pending_text: if pending_rows.length() > 0 { Some("以下改动还没有生效") } else { None },
+        root_text: root_text,
+        on_again_text: on_again_text,
+        members_json: members_json,
+        stations_json: stations_json,
+      }
+    }
+  }
+}
+
+/// Serialize `SafeModeView` to wire JSON strictly conforming to `shapes/lock.ts LockView`.
+pub fn SafeModeView::to_json(self : SafeModeView) -> base_codec::Json {
+  let me_fields : Array[(String, base_codec::Json)] = [
+    ("kind", base_codec::json_str(self.me.kind)),
+    ("confirmed", base_codec::json_bool(self.me.confirmed)),
+    ("waiting", base_codec::json_bool(self.me.waiting)),
+  ]
+  push_opt_str(me_fields, "device", self.me.device)
+  if self.me.unsigned {
+    me_fields.push(("unsigned", base_codec::json_bool(true)))
+  }
+  push_opt_str(me_fields, "outText", self.me.out_text)
+  push_opt_str(me_fields, "needsAppText", self.me.needs_app_text)
+  push_opt_str(me_fields, "stateText", self.me.state_text)
+  push_opt_str(me_fields, "confirmText", self.me.confirm_text)
+  push_opt_str(me_fields, "restartText", self.me.restart_text)
+  push_opt_str(me_fields, "restartNoteText", self.me.restart_note_text)
+  push_opt_str(me_fields, "replacedTitleText", self.me.replaced_title_text)
+  push_opt_str(me_fields, "replacedNoteText", self.me.replaced_note_text)
+  push_opt_str(me_fields, "forgetText", self.me.forget_text)
+  push_opt_str(me_fields, "reboundText", self.me.rebound_text)
+
+  let out : Array[(String, base_codec::Json)] = [
+    ("available", base_codec::json_bool(self.available)),
+    ("locked", base_codec::json_bool(self.locked)),
+    ("notice", base_codec::json_bool(false)),
+    ("role", base_codec::json_str(self.role)),
+    ("manages", base_codec::json_bool(self.manages)),
+    ("owner", base_codec::json_bool(self.owner)),
+    ("canSign", base_codec::json_bool(self.can_sign)),
+    ("signs", base_codec::json_bool(self.signs)),
+    ("me", base_codec::json_obj(me_fields)),
+    ("signers", base_codec::json_int(self.signers)),
+    ("members", base_codec::json_arr(self.members_json)),
+    ("stations", base_codec::json_arr(self.stations_json)),
+    ("protected", base_codec::json_int(self.protected_stations)),
+    ("renew", base_codec::json_arr([])),
+    ("attention", base_codec::json_int(self.pending_rows.length())),
+    ("pending", base_codec::json_arr(self.pending_rows)),
+  ]
+  push_opt_str(out, "pendingText", self.pending_text)
+  push_opt_str(out, "rootText", self.root_text)
+  push_opt_str(out, "onAgainText", self.on_again_text)
+  base_codec::json_obj(out)
+}

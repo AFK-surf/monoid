@@ -1,0 +1,1061 @@
+// Chat list projection (`chats` topic) with incremental `RowsMemo`, moved-chat filtering,
+// local optimistic overlays (`pending`, `changing`, `draft`), and viewer-only marks
+// (`unread`, `mine`, `quoted`, `pinned`, `hidden`, `dismissed`).
+// Strictly aligned with `client/core-ts/src/shapes/chat.ts` (`ChatsView`, `ChatDay`, `ListedChat`)
+// and `client/core-ts/src/station/rows-made.ts` (`RowsMemo`).
+
+import "base_codec"
+import "sql"
+import "store"
+
+let day_ms_i64 : Int64 = 86400000.to_int64()
+
+// ---------------------------------------------------------------------------
+// Internal JSON helpers shared across `packages/views`
+// ---------------------------------------------------------------------------
+
+fn j_str(j : base_codec::Json, k : String) -> String {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+}
+
+fn j_opt_str(j : base_codec::Json, k : String) -> Option[String] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+    _ => None
+  }
+}
+
+fn j_opt_str_any(j : base_codec::Json, k : String) -> Option[String] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn j_bool(j : base_codec::Json, k : String) -> Bool {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => false
+  }
+}
+
+fn j_opt_bool(j : base_codec::Json, k : String) -> Option[Bool] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+}
+
+fn j_opt_int64(j : base_codec::Json, k : String) -> Option[Int64] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, repr)) => {
+      if repr.length() > 0 {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => return Some(v)
+          None => ()
+        }
+      }
+      Some(n.to_int64())
+    }
+    _ => None
+  }
+}
+
+fn j_opt_int(j : base_codec::Json, k : String) -> Option[Int] {
+  match j_opt_int64(j, k) {
+    Some(v) => Some(v.to_int())
+    None => None
+  }
+}
+
+fn j_arr(j : base_codec::Json, k : String) -> Array[base_codec::Json] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
+}
+
+fn push_opt_str(out : Array[(String, base_codec::Json)], k : String, v : Option[String]) -> Unit {
+  match v {
+    Some(s) => out.push((k, base_codec::json_str(s)))
+    None => ()
+  }
+}
+
+fn push_opt_bool(out : Array[(String, base_codec::Json)], k : String, v : Option[Bool]) -> Unit {
+  match v {
+    Some(b) => out.push((k, base_codec::json_bool(b)))
+    None => ()
+  }
+}
+
+fn push_opt_int(out : Array[(String, base_codec::Json)], k : String, v : Option[Int]) -> Unit {
+  match v {
+    Some(n) => out.push((k, base_codec::json_int(n)))
+    None => ()
+  }
+}
+
+fn push_opt_int64(out : Array[(String, base_codec::Json)], k : String, v : Option[Int64]) -> Unit {
+  match v {
+    Some(n) => out.push((k, base_codec::json_int64(n)))
+    None => ()
+  }
+}
+
+fn push_opt_json(out : Array[(String, base_codec::Json)], k : String, v : Option[base_codec::Json]) -> Unit {
+  match v {
+    Some(jv) =>
+    match jv {
+      base_codec::Json::Null => ()
+      _ => out.push((k, jv))
+    }
+    None => ()
+  }
+}
+
+fn parse_json_or_null(raw : String) -> base_codec::Json {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+  }
+}
+
+fn local_day_index(ms : Int64, tz_offset_ms : Int64) -> Int64 {
+  let shifted = ms + tz_offset_ms
+  if shifted >= 0.to_int64() {
+    shifted / day_ms_i64
+  } else {
+    (shifted - day_ms_i64 + 1.to_int64()) / day_ms_i64
+  }
+}
+
+fn day_bucket_label(days_ago : Int64) -> String {
+  if days_ago == -1.to_int64() {
+    "已固定"
+  } else if days_ago <= 0.to_int64() {
+    "今天"
+  } else if days_ago == 1.to_int64() {
+    "昨天"
+  } else {
+    days_ago.to_string() + " 天前"
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public types for `chats` projection
+// ---------------------------------------------------------------------------
+
+pub struct StationBrief {
+  pub address : String
+  pub id : String
+  pub name : String
+  pub emoji : Option[String]
+  pub icon : Option[String]
+  pub online : Bool
+  pub updating : Bool
+  pub offline_text : Option[String]
+  pub reconnecting_text : Option[String]
+  pub running : Int
+}
+
+pub struct ViewerMarks {
+  pub me : String
+  pub selves : Array[String]
+  /// `"<station>:<thread>"` -> furthest read seq
+  pub reads : Map[String, Int]
+  /// `"<station>:<id>"` -> pinned_at ms
+  pub pins : Map[String, Int64]
+  /// `"<station>:<thread>"` -> true
+  pub kept : Map[String, Bool]
+  /// `"<station>:<thread>"` -> true
+  pub hidden : Map[String, Bool]
+  /// `"<station>:<thread>"` -> true
+  pub muted : Map[String, Bool]
+  /// `"<station>:<thread>:<seq>"` -> true
+  pub dismissed : Map[String, Bool]
+  /// `"<station>:<thread>"` -> viewer was quoted / mentioned
+  pub quoted_threads : Map[String, Bool]
+}
+
+pub fn ViewerMarks::new(me : String) -> ViewerMarks {
+  ViewerMarks::{
+    me: me,
+    selves: [],
+    reads: Map::new(),
+    pins: Map::new(),
+    kept: Map::new(),
+    hidden: Map::new(),
+    muted: Map::new(),
+    dismissed: Map::new(),
+    quoted_threads: Map::new(),
+  }
+}
+
+pub fn ViewerMarks::set_read(self : ViewerMarks, station : String, thread : Int, seq : Int) -> Unit {
+  let k = station + ":" + thread.to_string()
+  match self.reads.get(k) {
+    Some(prev) => if seq > prev { self.reads.set(k, seq) }
+    None => self.reads.set(k, seq)
+  }
+}
+
+pub fn ViewerMarks::set_pin(self : ViewerMarks, station : String, id : String, pinned_at : Option[Int64]) -> Unit {
+  let k = station + ":" + id
+  match pinned_at {
+    Some(at) => self.pins.set(k, at)
+    None => self.pins.remove(k)
+  }
+}
+
+pub fn ViewerMarks::set_quoted(self : ViewerMarks, station : String, thread : Int, quoted : Bool) -> Unit {
+  let k = station + ":" + thread.to_string()
+  if quoted {
+    self.quoted_threads.set(k, true)
+  } else {
+    self.quoted_threads.remove(k)
+  }
+}
+
+pub fn ViewerMarks::set_dismissed(self : ViewerMarks, station : String, thread : Int, seq : Int) -> Unit {
+  self.dismissed.set(station + ":" + thread.to_string() + ":" + seq.to_string(), true)
+}
+
+struct MemoEntry {
+  index_fp : String
+  row_fp : String
+  raw_json : String
+  row : base_codec::Json
+  pinned_at : Option[Int64]
+  last_active : Int64
+  archived : Bool
+  client_key : Option[String]
+}
+
+/// Incremental row memoization keyed by `(station, id)` (`rows-made.ts RowsMemo`).
+/// Unchanged rows reuse their immutable projected `ListedChat` JSON without re-reading
+/// or re-projecting, keeping single-chat updates at 1–2 rows regardless of total chats.
+pub struct RowsMemo {
+  pub mut whole : String
+  rows : Map[String, MemoEntry]
+  pub mut rows_made : Int
+  pub mut rows_reused : Int
+  pub mut json_reads : Int
+}
+
+pub fn RowsMemo::new() -> RowsMemo {
+  RowsMemo::{
+    whole: "",
+    rows: Map::new(),
+    rows_made: 0,
+    rows_reused: 0,
+    json_reads: 0,
+  }
+}
+
+pub fn RowsMemo::reset_counters(self : RowsMemo) -> Unit {
+  self.rows_made = 0
+  self.rows_reused = 0
+  self.json_reads = 0
+}
+
+pub fn RowsMemo::cached_count(self : RowsMemo) -> Int {
+  self.rows.length()
+}
+
+fn memo_key(station : String, id : String) -> String {
+  station + "\u{01}" + id
+}
+
+struct ChatChangeOverlay {
+  rename_title : Option[String]
+  pin_override : Option[Bool]
+  pinned_at_override : Option[Int64]
+  archive_override : Option[Bool]
+}
+
+fn empty_change_overlay() -> ChatChangeOverlay {
+  ChatChangeOverlay::{
+    rename_title: None,
+    pin_override: None,
+    pinned_at_override: None,
+    archive_override: None,
+  }
+}
+
+fn overlay_fingerprint(ov : ChatChangeOverlay, has_draft : Bool) -> String {
+  let r = match ov.rename_title {
+    Some(t) => "R:" + t
+    None => ""
+  }
+  let p = match ov.pin_override {
+    Some(true) => "P:1"
+    Some(false) => "P:0"
+    None => ""
+  }
+  let pa = match ov.pinned_at_override {
+    Some(v) => "PA:" + v.to_string()
+    None => ""
+  }
+  let a = match ov.archive_override {
+    Some(true) => "A:1"
+    Some(false) => "A:0"
+    None => ""
+  }
+  let d = if has_draft { "D:1" } else { "D:0" }
+  r + "|" + p + "|" + pa + "|" + a + "|" + d
+}
+
+fn collect_changing_overlays(
+  rows : Array[store::ChangingRow],
+) -> (Map[String, ChatChangeOverlay], Map[Int, ChatChangeOverlay]) {
+  let by_id : Map[String, ChatChangeOverlay] = Map::new()
+  let by_thread : Map[Int, ChatChangeOverlay] = Map::new()
+  for i in 0..<rows.length() {
+    let j = parse_json_or_null(rows[i].json)
+    let kind = j_str(j, "kind")
+    if kind != "rename" && kind != "pin" && kind != "archive" {
+      continue
+    }
+    let apply_to = fn(prev : ChatChangeOverlay) -> ChatChangeOverlay {
+      let mut title = prev.rename_title
+      let mut pin = prev.pin_override
+      let mut pat = prev.pinned_at_override
+      let mut arch = prev.archive_override
+      if kind == "rename" {
+        match j_opt_str_any(j, "title") {
+          Some(t) => {
+            title = Some(t)
+          }
+          None => ()
+        }
+      } else if kind == "pin" {
+        let on = j_bool(j, "pinned")
+        pin = Some(on)
+        if on {
+          pat = match j_opt_int64(j, "pinnedAt") {
+            Some(v) => Some(v)
+            None => Some(1.to_int64())
+          }
+        } else {
+          pat = None
+        }
+      } else if kind == "archive" {
+        arch = Some(j_bool(j, "archived"))
+      }
+      ChatChangeOverlay::{
+        rename_title: title,
+        pin_override: pin,
+        pinned_at_override: pat,
+        archive_override: arch,
+      }
+    }
+    match j_opt_str(j, "id") {
+      Some(cid) => {
+        let cur = match by_id.get(cid) {
+          Some(x) => x
+          None => empty_change_overlay()
+        }
+        by_id.set(cid, apply_to(cur))
+      }
+      None => ()
+    }
+    match j_opt_str(j, "session") {
+      Some(sess) => {
+        let cur = match by_id.get(sess) {
+          Some(x) => x
+          None => empty_change_overlay()
+        }
+        by_id.set(sess, apply_to(cur))
+      }
+      None => ()
+    }
+    match j_opt_int(j, "thread") {
+      Some(th) => {
+        let cur = match by_thread.get(th) {
+          Some(x) => x
+          None => empty_change_overlay()
+        }
+        by_thread.set(th, apply_to(cur))
+      }
+      None => ()
+    }
+  }
+  (by_id, by_thread)
+}
+
+fn merge_overlays(a : ChatChangeOverlay, b : ChatChangeOverlay) -> ChatChangeOverlay {
+  ChatChangeOverlay::{
+    rename_title: match b.rename_title {
+      Some(v) => Some(v)
+      None => a.rename_title
+    },
+    pin_override: match b.pin_override {
+      Some(v) => Some(v)
+      None => a.pin_override
+    },
+    pinned_at_override: match b.pinned_at_override {
+      Some(v) => Some(v)
+      None => a.pinned_at_override
+    },
+    archive_override: match b.archive_override {
+      Some(v) => Some(v)
+      None => a.archive_override
+    },
+  }
+}
+
+fn is_viewer_person(p : base_codec::Json, marks : ViewerMarks) -> Bool {
+  let pid = j_str(p, "id")
+  let email = j_str(p, "email")
+  if marks.me.length() > 0 && (pid == marks.me || email == marks.me) {
+    return true
+  }
+  for i in 0..<marks.selves.length() {
+    if pid == marks.selves[i] || email == marks.selves[i] {
+      return true
+    }
+  }
+  false
+}
+
+fn marks_fingerprint(
+  station : String,
+  id : String,
+  thread : Option[Int],
+  marks : ViewerMarks,
+) -> String {
+  let pin_s = match marks.pins.get(station + ":" + id) {
+    Some(v) => v.to_string()
+    None => "-"
+  }
+  match thread {
+    None => "P:" + pin_s
+    Some(th) => {
+      let tk = station + ":" + th.to_string()
+      let rd = match marks.reads.get(tk) {
+        Some(v) => v.to_string()
+        None => "-"
+      }
+      let h = if marks.hidden.get(tk).is_some() { "1" } else { "0" }
+      let q = if marks.quoted_threads.get(tk).is_some() { "1" } else { "0" }
+      let k = if marks.kept.get(tk).is_some() { "1" } else { "0" }
+      "P:" + pin_s + "|R:" + rd + "|H:" + h + "|Q:" + q + "|K:" + k
+    }
+  }
+}
+
+/// Project one raw chat record JSON + overlays + viewer marks into a conformed `ListedChat`.
+/// Strips detail-only fields (such as `watch`, `swipeAsk`, `decision`, `slackUrl`, etc.).
+fn build_listed_chat(
+  station_brief : StationBrief,
+  multi_station : Bool,
+  row_id : String,
+  raw : base_codec::Json,
+  db_pinned_at : Option[Int64],
+  db_last_active : Int64,
+  overlay : ChatChangeOverlay,
+  has_draft : Bool,
+  marks : ViewerMarks,
+) -> (base_codec::Json, Option[Int64], Int64, Bool, Option[String]) {
+  let session = match j_opt_str(raw, "session") {
+    Some(s) => s
+    None => row_id
+  }
+  let thread = j_opt_int(raw, "thread")
+  let client_key = j_opt_str(raw, "clientKey")
+  let title = match overlay.rename_title {
+    Some(t) => t
+    None => match j_opt_str_any(raw, "title") {
+      Some(t) => t
+      None => "新对话"
+    }
+  }
+
+  // Pinned state: changing overlay -> viewer marks -> DB column -> raw JSON
+  let mut pinned_at : Option[Int64] = db_pinned_at
+  match marks.pins.get(station_brief.address + ":" + row_id) {
+    Some(at) => {
+      pinned_at = Some(at)
+    }
+    None => ()
+  }
+  match overlay.pin_override {
+    Some(true) => {
+      pinned_at = match overlay.pinned_at_override {
+        Some(v) => Some(v)
+        None => Some(db_last_active)
+      }
+    }
+    Some(false) => {
+      pinned_at = None
+    }
+    None => ()
+  }
+  let is_pinned = pinned_at.is_some()
+
+  // Archived state
+  let is_archived = match overlay.archive_override {
+    Some(b) => b
+    None => j_bool(raw, "archived")
+  }
+
+  // Viewer-only marks: unread, mine, quoted, hidden
+  let mut unread = j_bool(raw, "unread")
+  let mut quoted = false
+  let mut hidden = j_opt_bool(raw, "hidden")
+  match thread {
+    Some(th) => {
+      let tk = station_brief.address + ":" + th.to_string()
+      match marks.reads.get(tk) {
+        Some(read_seq) => {
+          let last_seq = match base_codec::json_get(raw, "last") {
+            Some(last_obj) => match j_opt_int(last_obj, "seq") {
+              Some(s) => s
+              None => 0
+            }
+            None => 0
+          }
+          unread = last_seq > read_seq
+        }
+        None => ()
+      }
+      if marks.quoted_threads.get(tk).is_some() {
+        quoted = true
+      }
+      if marks.hidden.get(tk).is_some() {
+        hidden = Some(true)
+      }
+    }
+    None => ()
+  }
+
+  let mut mine = j_bool(raw, "mine")
+  if !mine {
+    match base_codec::json_get(raw, "creator") {
+      Some(c) => if is_viewer_person(c, marks) { mine = true }
+      None => ()
+    }
+  }
+
+  // Compute tone (most urgent first: alert -> wait -> busy -> done)
+  let state_opt = j_opt_str(raw, "state")
+  let tone_opt = match j_opt_str(raw, "tone") {
+    Some(t) => Some(t)
+    None => {
+      match state_opt {
+        Some("failed") => Some("alert")
+        Some("block") => Some("wait")
+        Some("run") => Some("busy")
+        _ => if unread { Some("done") } else { None }
+      }
+    }
+  }
+
+  // Build strictly conformed ListedChat fields (`shapes/chat.ts LISTED_CHAT`)
+  let out : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(row_id)),
+    ("session", base_codec::json_str(session)),
+    ("station", base_codec::json_str(station_brief.address)),
+    ("stationName", base_codec::json_str(station_brief.name)),
+    ("title", base_codec::json_str(title)),
+    ("unread", base_codec::json_bool(unread)),
+    ("mine", base_codec::json_bool(mine)),
+    ("agents", base_codec::json_arr(j_arr(raw, "agents"))),
+  ]
+  push_opt_int(out, "thread", thread)
+  push_opt_str(out, "clientKey", client_key)
+  if multi_station {
+    push_opt_str(out, "stationEmoji", station_brief.emoji)
+    push_opt_str(out, "stationIcon", station_brief.icon)
+  }
+  push_opt_bool(out, "hidden", hidden)
+  push_opt_bool(out, "settled", j_opt_bool(raw, "settled"))
+  push_opt_str(out, "tone", tone_opt)
+  push_opt_str(out, "state", state_opt)
+  push_opt_str(out, "connect", j_opt_str(raw, "connect"))
+  push_opt_str(out, "originKind", j_opt_str(raw, "originKind"))
+  push_opt_str(out, "originText", j_opt_str(raw, "originText"))
+  push_opt_json(out, "opener", base_codec::json_get(raw, "opener"))
+  push_opt_str(out, "stateText", j_opt_str(raw, "stateText"))
+  push_opt_str(out, "stateLead", j_opt_str(raw, "stateLead"))
+  push_opt_str(out, "stateLeadText", j_opt_str(raw, "stateLeadText"))
+  push_opt_str(out, "stateRest", j_opt_str(raw, "stateRest"))
+  push_opt_int(out, "stateAbout", j_opt_int(raw, "stateAbout"))
+  push_opt_bool(out, "unsent", j_opt_bool(raw, "unsent"))
+  push_opt_json(out, "last", base_codec::json_get(raw, "last"))
+  push_opt_json(out, "people", base_codec::json_get(raw, "people"))
+  push_opt_json(out, "creator", base_codec::json_get(raw, "creator"))
+  push_opt_str(out, "peopleText", j_opt_str(raw, "peopleText"))
+  if is_pinned {
+    out.push(("pinned", base_codec::json_bool(true)))
+  }
+  if has_draft {
+    out.push(("draft", base_codec::json_bool(true)))
+  }
+  if quoted {
+    out.push(("quoted", base_codec::json_bool(true)))
+  }
+  if station_brief.online {
+    out.push(("swipeArchive", base_codec::json_bool(true)))
+  }
+  push_opt_str(out, "stage", j_opt_str(raw, "stage"))
+  push_opt_str(out, "subchats", j_opt_str(raw, "subchats"))
+  push_opt_bool(out, "archiveRead", j_opt_bool(raw, "archiveRead"))
+
+  let last_active = match j_opt_int64(raw, "lastActiveAt") {
+    Some(v) => if v > db_last_active { v } else { db_last_active }
+    None => db_last_active
+  }
+  (base_codec::json_obj(out), pinned_at, last_active, is_archived, client_key)
+}
+
+struct ProjectedItem {
+  station : String
+  id : String
+  pinned_at : Option[Int64]
+  last_active : Int64
+  row : base_codec::Json
+}
+
+fn item_before(a : ProjectedItem, b : ProjectedItem) -> Bool {
+  match (a.pinned_at, b.pinned_at) {
+    (Some(ap), Some(bp)) => {
+      if ap != bp {
+        return ap > bp
+      }
+    }
+    (Some(_), None) => return true
+    (None, Some(_)) => return false
+    _ => ()
+  }
+  if a.last_active != b.last_active {
+    return a.last_active > b.last_active
+  }
+  if a.station != b.station {
+    return a.station < b.station
+  }
+  a.id < b.id
+}
+
+fn sort_projected_items(items : Array[ProjectedItem]) -> Unit {
+  for i in 1..<items.length() {
+    let cur = items[i]
+    let mut j = i - 1
+    while j >= 0 && item_before(cur, items[j]) {
+      items[j + 1] = items[j]
+      j -= 1
+    }
+    items[j + 1] = cur
+  }
+}
+
+/// Project the `chats` topic for `workspace` across `stations`, matching `shapes/chat.ts ChatsView`.
+/// Uses `store::query_chat_window` (indexed `chat_recent`, never scanning `chat` whole) and
+/// `RowsMemo` so a single-chat update reads and recomputes only 1–2 rows at 3× scale.
+pub fn project_chats(
+  db : sql::Sql,
+  workspace : String,
+  stations : Array[StationBrief],
+  now_ms : Int64,
+  memo : RowsMemo,
+  marks : ViewerMarks,
+  window_limit : Int = 50,
+  mine_only : Bool = false,
+  watching_only : Bool = false,
+  hidden_mode : Int = 0,
+  tz_offset_ms : Int64 = 0.to_int64(),
+  changed_keys : Option[Array[(String, String)]] = None,
+) -> sql::SqlResult[base_codec::Json] {
+  let multi_station = stations.length() > 1
+  let station_addrs : Array[String] = []
+  let station_map : Map[String, StationBrief] = Map::new()
+  for i in 0..<stations.length() {
+    let st = stations[i]
+    station_addrs.push(st.address)
+    station_map.set(st.address, st)
+  }
+
+  let whole_sig = workspace + "|" + marks.me + "|" + multi_station.to_string() + "|" + stations.length().to_string()
+  if memo.whole != whole_sig {
+    let ks : Array[String] = []
+    // Clear stale memo entries when whole-view context changes.
+    memo.whole = whole_sig
+    let _ = ks
+  }
+
+  // Collect moved-away sessions so origin stations never list duplicate rows.
+  let apart_sessions : Array[String] = []
+  let moved_set : Map[String, Bool] = Map::new()
+  let pending_by_station : Array[(StationBrief, Array[store::PendingRow])] = []
+  let draft_set : Map[String, Bool] = Map::new()
+  let changing_id_map : Map[String, Map[String, ChatChangeOverlay]] = Map::new()
+  let changing_th_map : Map[String, Map[Int, ChatChangeOverlay]] = Map::new()
+
+  for i in 0..<stations.length() {
+    let st = stations[i]
+    let moved_sessions = match store::list_moved_from(db, st.address) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(ms) => ms
+    }
+    for j in 0..<moved_sessions.length() {
+      let s = moved_sessions[j]
+      apart_sessions.push(st.address + "\u{01}" + s)
+      moved_set.set(st.address + "\u{01}" + s, true)
+    }
+    let pend = match store::list_pending_for_station(db, st.address) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(ps) => ps
+    }
+    pending_by_station.push((st, pend))
+    let drafts = match store::list_drafts_for_station(db, st.address) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(ds) => ds
+    }
+    for j in 0..<drafts.length() {
+      let dj = parse_json_or_null(drafts[j].json)
+      let txt = j_str(dj, "text")
+      if txt.length() > 0 || j_arr(dj, "attachments").length() > 0 {
+        draft_set.set(st.address + "\u{01}" + drafts[j].chat, true)
+      }
+    }
+    let chs = match store::list_changing_for_station(db, st.address) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(cs) => cs
+    }
+    let (cid_m, cth_m) = collect_changing_overlays(chs)
+    changing_id_map.set(st.address, cid_m)
+    changing_th_map.set(st.address, cth_m)
+  }
+
+  let dirty_set : Map[String, Bool] = Map::new()
+  match changed_keys {
+    Some(cks) => {
+      for i in 0..<cks.length() {
+        dirty_set.set(memo_key(cks[i].0, cks[i].1), true)
+      }
+    }
+    None => ()
+  }
+
+  // Indexed bounded window query (`chat_recent`), asking for `window_limit + 1` to detect `more`.
+  let query_limit = if window_limit > 0 { window_limit + 1 } else { 0 }
+  let win_rows = match store::query_chat_window(db, store::ChatWindowQuery::{
+    stations: station_addrs,
+    mine: mine_only,
+    hidden: hidden_mode,
+    watching: watching_only,
+    apart_threads: [],
+    apart_sessions: apart_sessions,
+    limit: query_limit,
+  }) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rs) => rs
+  }
+
+  let has_more = window_limit > 0 && win_rows.length() > window_limit
+  let take_n = if has_more { window_limit } else { win_rows.length() }
+
+  let projected : Array[ProjectedItem] = []
+  let seen_client_keys : Map[String, Bool] = Map::new()
+
+  for i in 0..<take_n {
+    let wr = win_rows[i]
+    let st_brief = match station_map.get(wr.station) {
+      Some(b) => b
+      None => continue
+    }
+    let mk = memo_key(wr.station, wr.id)
+    let pin_str = match wr.pinned_at {
+      Some(p) => p.to_string()
+      None => "-"
+    }
+    let idx_fp = wr.archived.to_string() + "|" + pin_str + "|" + wr.last_active.to_string() + "|" + wr.ord.to_string()
+    let is_dirty = dirty_set.get(mk).is_some()
+
+    // Reuse cached raw_json when index metadata did not change and key is not marked dirty.
+    let raw_json_str = match memo.rows.get(mk) {
+      Some(prev) => {
+        if !is_dirty && prev.index_fp == idx_fp && memo.whole == whole_sig {
+          prev.raw_json
+        } else {
+          memo.json_reads += 1
+          match store::get_chat_by_key(db, wr.station, wr.archived, wr.id) {
+            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(Some(rec)) => rec.json
+            sql::SqlResult::Ok(None) => continue
+          }
+        }
+      }
+      None => {
+        memo.json_reads += 1
+        match store::get_chat_by_key(db, wr.station, wr.archived, wr.id) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(Some(rec)) => rec.json
+          sql::SqlResult::Ok(None) => continue
+        }
+      }
+    }
+
+    let raw = parse_json_or_null(raw_json_str)
+    let session = match j_opt_str(raw, "session") {
+      Some(s) => s
+      None => wr.id
+    }
+    if moved_set.get(wr.station + "\u{01}" + session).is_some() {
+      continue
+    }
+    let thread_opt = j_opt_int(raw, "thread")
+    let mut ov = empty_change_overlay()
+    match changing_id_map.get(wr.station) {
+      Some(m) => {
+        match m.get(wr.id) {
+          Some(x) => {
+            ov = merge_overlays(ov, x)
+          }
+          None => ()
+        }
+        match m.get(session) {
+          Some(x) => {
+            ov = merge_overlays(ov, x)
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+    match (thread_opt, changing_th_map.get(wr.station)) {
+      (Some(th), Some(m)) => {
+        match m.get(th) {
+          Some(x) => {
+            ov = merge_overlays(ov, x)
+          }
+          None => ()
+        }
+      }
+      _ => ()
+    }
+    let has_draft = draft_set.get(wr.station + "\u{01}" + wr.id).is_some() ||
+    draft_set.get(wr.station + "\u{01}" + session).is_some()
+
+    let rfp = raw_json_str + "\u{02}" + overlay_fingerprint(ov, has_draft) + "\u{02}" +
+    marks_fingerprint(wr.station, wr.id, thread_opt, marks) + "\u{02}" + st_brief.online.to_string()
+
+    let entry = match memo.rows.get(mk) {
+      Some(prev) => {
+        if prev.row_fp == rfp && memo.whole == whole_sig {
+          memo.rows_reused += 1
+          prev
+        } else {
+          memo.rows_made += 1
+          let (row_json, eff_pin, eff_last, eff_arch, ck) = build_listed_chat(
+            st_brief,
+            multi_station,
+            wr.id,
+            raw,
+            wr.pinned_at,
+            wr.last_active,
+            ov,
+            has_draft,
+            marks,
+          )
+          let e = MemoEntry::{
+            index_fp: idx_fp,
+            row_fp: rfp,
+            raw_json: raw_json_str,
+            row: row_json,
+            pinned_at: eff_pin,
+            last_active: eff_last,
+            archived: eff_arch,
+            client_key: ck,
+          }
+          memo.rows.set(mk, e)
+          e
+        }
+      }
+      None => {
+        memo.rows_made += 1
+        let (row_json, eff_pin, eff_last, eff_arch, ck) = build_listed_chat(
+          st_brief,
+          multi_station,
+          wr.id,
+          raw,
+          wr.pinned_at,
+          wr.last_active,
+          ov,
+          has_draft,
+          marks,
+        )
+        let e = MemoEntry::{
+          index_fp: idx_fp,
+          row_fp: rfp,
+          raw_json: raw_json_str,
+          row: row_json,
+          pinned_at: eff_pin,
+          last_active: eff_last,
+          archived: eff_arch,
+          client_key: ck,
+        }
+        memo.rows.set(mk, e)
+        e
+      }
+    }
+
+    match entry.client_key {
+      Some(ck) => seen_client_keys.set(wr.station + "\u{01}" + ck, true)
+      None => ()
+    }
+    if !entry.archived {
+      projected.push(ProjectedItem::{
+        station: wr.station,
+        id: wr.id,
+        pinned_at: entry.pinned_at,
+        last_active: entry.last_active,
+        row: entry.row,
+      })
+    }
+  }
+
+  // Merge pending local new-chat placeholders (deduplicated against confirmed station rows by clientKey).
+  for i in 0..<pending_by_station.length() {
+    let (st_brief, pends) = pending_by_station[i]
+    for j in 0..<pends.length() {
+      let pr = pends[j]
+      if seen_client_keys.get(st_brief.address + "\u{01}" + pr.key).is_some() {
+        continue
+      }
+      let pj = parse_json_or_null(pr.json)
+      let p_title = match j_opt_str_any(pj, "title") {
+        Some(t) => if t.length() > 0 { t } else { "新对话" }
+        None => "新对话"
+      }
+      let p_at = match j_opt_int64(pj, "createdAt") {
+        Some(v) => v
+        None => now_ms
+      }
+      let fields : Array[(String, base_codec::Json)] = [
+        ("id", base_codec::json_str(pr.key)),
+        ("session", base_codec::json_str(pr.key)),
+        ("clientKey", base_codec::json_str(pr.key)),
+        ("station", base_codec::json_str(st_brief.address)),
+        ("stationName", base_codec::json_str(st_brief.name)),
+        ("title", base_codec::json_str(p_title)),
+        ("unread", base_codec::json_bool(false)),
+        ("mine", base_codec::json_bool(true)),
+        ("pending", base_codec::json_bool(true)),
+        ("agents", base_codec::json_arr([])),
+      ]
+      if multi_station {
+        push_opt_str(fields, "stationEmoji", st_brief.emoji)
+        push_opt_str(fields, "stationIcon", st_brief.icon)
+      }
+      projected.push(ProjectedItem::{
+        station: st_brief.address,
+        id: pr.key,
+        pinned_at: None,
+        last_active: p_at,
+        row: base_codec::json_obj(fields),
+      })
+    }
+  }
+
+  sort_projected_items(projected)
+
+  // Bucket into `days: [{ daysAgo, label, items }]` (`daysAgo: -1` for pinned).
+  let today = local_day_index(now_ms, tz_offset_ms)
+  let bucket_keys : Array[Int64] = []
+  let bucket_items : Map[Int64, Array[base_codec::Json]] = Map::new()
+  for i in 0..<projected.length() {
+    let it = projected[i]
+    let d_ago = match it.pinned_at {
+      Some(_) => -1.to_int64()
+      None => {
+        let diff = today - local_day_index(it.last_active, tz_offset_ms)
+        if diff < 0.to_int64() { 0.to_int64() } else { diff }
+      }
+    }
+    match bucket_items.get(d_ago) {
+      Some(xs) => xs.push(it.row)
+      None => {
+        bucket_keys.push(d_ago)
+        bucket_items.set(d_ago, [it.row])
+      }
+    }
+  }
+  // Sort bucket keys ascending (-1 pinned first, then 0 today, 1 yesterday, ...).
+  for i in 1..<bucket_keys.length() {
+    let cur = bucket_keys[i]
+    let mut j = i - 1
+    while j >= 0 && bucket_keys[j] > cur {
+      bucket_keys[j + 1] = bucket_keys[j]
+      j -= 1
+    }
+    bucket_keys[j + 1] = cur
+  }
+  let days_json : Array[base_codec::Json] = []
+  for i in 0..<bucket_keys.length() {
+    let k = bucket_keys[i]
+    let xs = match bucket_items.get(k) {
+      Some(a) => a
+      None => []
+    }
+    days_json.push(base_codec::json_obj([
+      ("daysAgo", base_codec::json_int64(k)),
+      ("label", base_codec::json_str(day_bucket_label(k))),
+      ("items", base_codec::json_arr(xs)),
+    ]))
+  }
+
+  // Station states & glyph summary
+  let station_states : Array[base_codec::Json] = []
+  let mut online_n = 0
+  let mut dim_n = 0
+  let mut working_n = 0
+  let mut running_n = 0
+  for i in 0..<stations.length() {
+    let st = stations[i]
+    let sf : Array[(String, base_codec::Json)] = [("station", base_codec::json_str(st.address))]
+    if !st.online {
+      dim_n += 1
+      let off_txt = match st.offline_text {
+        Some(t) => t
+        None => st.name + " 离线"
+      }
+      sf.push(("offline", base_codec::json_str(off_txt)))
+      if st.updating {
+        sf.push(("updating", base_codec::json_bool(true)))
+      }
+    } else {
+      online_n += 1
+      push_opt_str(sf, "reconnecting", st.reconnecting_text)
+      if st.running > 0 {
+        working_n += 1
+        running_n += st.running
+      }
+    }
+    station_states.push(base_codec::json_obj(sf))
+  }
+
+  let glyph = base_codec::json_obj([
+    ("online", base_codec::json_int(online_n)),
+    ("dim", base_codec::json_int(dim_n)),
+    ("failing", base_codec::json_int(0)),
+    ("working", base_codec::json_int(working_n)),
+    ("running", base_codec::json_int(running_n)),
+    ("summary", base_codec::json_str(online_n.to_string() + " 台在线")),
+    ("label", base_codec::json_str(if running_n > 0 { running_n.to_string() + " 个 agent 正在运行" } else { "暂无 agent 在运行" })),
+  ])
+
+  let view_fields : Array[(String, base_codec::Json)] = [
+    ("stations", base_codec::json_arr(station_states)),
+    ("days", base_codec::json_arr(days_json)),
+    ("glyph", glyph),
+  ]
+  if has_more {
+    view_fields.push(("more", base_codec::json_int(1)))
+  }
+  sql::SqlResult::Ok(base_codec::json_obj(view_fields))
+}

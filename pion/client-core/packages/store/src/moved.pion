@@ -1,0 +1,254 @@
+// Moved-chat routing table (`moved`) and multi-hop `resolve_chat_now` resolution,
+// aligned with `client/core-ts/src/views/moved.ts` and `client/core-ts/src/data.ts` (`chatNow`).
+// A chat handed from one station to another is never duplicated on its origin station,
+// and all routing follows `resolve_chat_now` (with cycle detection).
+
+import "base_codec"
+import "sql"
+
+pub struct MovedTo {
+  pub station : String
+  pub thread : Option[Int]
+  pub there : Option[Int]
+  pub at : Option[Int64]
+  pub came : Bool
+}
+
+pub struct ChatLocation {
+  pub station : String
+  pub session : String
+  pub thread : Option[Int]
+}
+
+pub fn sql_moved_get() -> String {
+  "SELECT there_station, thread, there, at, came FROM moved WHERE station = ? AND session = ?"
+}
+
+pub fn sql_moved_by_thread() -> String {
+  "SELECT session FROM moved WHERE station = ? AND thread = ? LIMIT 1"
+}
+
+pub fn sql_moved_from() -> String {
+  "SELECT session FROM moved WHERE station = ? ORDER BY session"
+}
+
+pub fn sql_moved_put() -> String {
+  "INSERT OR REPLACE INTO moved (station, session, there_station, thread, there, at, came) VALUES (?, ?, ?, ?, ?, ?, ?)"
+}
+
+pub fn sql_moved_delete() -> String {
+  "DELETE FROM moved WHERE station = ? AND session = ?"
+}
+
+pub fn sql_chat_drop_session() -> String {
+  "DELETE FROM chat WHERE station = ? AND session = ?"
+}
+
+fn opt_int_param(v : Option[Int]) -> base_codec::Json {
+  match v {
+    Some(n) => base_codec::json_int(n)
+    None => base_codec::json_null()
+  }
+}
+
+fn opt_int64_param(v : Option[Int64]) -> base_codec::Json {
+  match v {
+    Some(n) => base_codec::json_int64(n)
+    None => base_codec::json_null()
+  }
+}
+
+fn opt_col_int(row : Array[base_codec::Json], i : Int) -> Option[Int] {
+  match sql::col_opt_int64(row, i) {
+    Some(v) => Some(v.to_int())
+    None => None
+  }
+}
+
+fn opt_int_eq(a : Option[Int], b : Option[Int]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+fn moved_opt_i64_eq(a : Option[Int64], b : Option[Int64]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+fn same_moved(a : MovedTo, b : MovedTo) -> Bool {
+  a.station == b.station &&
+  opt_int_eq(a.thread, b.thread) &&
+  opt_int_eq(a.there, b.there) &&
+  moved_opt_i64_eq(a.at, b.at) &&
+  a.came == b.came
+}
+
+/// Read the `moved` target for `(station, session)`, if any.
+pub fn get_moved(db : sql::Sql, station : String, session : String) -> sql::SqlResult[Option[MovedTo]] {
+  match db.all(sql_moved_get(), params=[base_codec::json_str(station), base_codec::json_str(session)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        let r = rows[0]
+        sql::SqlResult::Ok(Some(MovedTo::{
+          station: sql::col_text(r, 0),
+          thread: opt_col_int(r, 1),
+          there: opt_col_int(r, 2),
+          at: sql::col_opt_int64(r, 3),
+          came: sql::col_int(r, 4) != 0,
+        }))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}
+
+/// Look up the moved session key on `station` that previously owned `thread`.
+pub fn get_moved_session_by_thread(db : sql::Sql, station : String, thread : Int) -> sql::SqlResult[Option[String]] {
+  match db.all(sql_moved_by_thread(), params=[base_codec::json_str(station), base_codec::json_int(thread)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        sql::SqlResult::Ok(Some(sql::col_text(rows[0], 0)))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}
+
+/// List all session keys recorded as moved away from `station`.
+pub fn list_moved_from(db : sql::Sql, station : String) -> sql::SqlResult[Array[String]] {
+  match db.all(sql_moved_from(), params=[base_codec::json_str(station)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[String] = []
+      for i in 0..<rows.length() {
+        out.push(sql::col_text(rows[i], 0))
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
+}
+
+/// Record that `(station, session)` moved to `to` (`None` or self-station means it returned).
+/// Drops any stale `chat` row on the origin `station` atomically so origin never holds duplicates.
+/// Returns `Ok(true)` if the `moved` record changed.
+pub fn put_moved(
+  db : sql::Sql,
+  station : String,
+  session : String,
+  to : Option[MovedTo],
+) -> sql::SqlResult[Bool] {
+  let effective : Option[MovedTo] = match to {
+    Some(dest) => if dest.station == station { None } else { Some(dest) }
+    None => None
+  }
+  let existing = match get_moved(db, station, session) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(v) => v
+  }
+  match (existing, effective) {
+    (None, None) => return sql::SqlResult::Ok(false)
+    (Some(old), Some(dest)) => {
+      if same_moved(old, dest) {
+        return sql::SqlResult::Ok(false)
+      }
+    }
+    _ => ()
+  }
+  let burst = sql::Burst::new(db)
+  let res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+    match effective {
+      None =>
+      match b.run(sql_moved_delete(), params=[base_codec::json_str(station), base_codec::json_str(session)]) {
+        sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+      }
+      Some(dest) => {
+        match b.run(sql_moved_put(), params=[
+          base_codec::json_str(station),
+          base_codec::json_str(session),
+          base_codec::json_str(dest.station),
+          opt_int_param(dest.thread),
+          opt_int_param(dest.there),
+          opt_int64_param(dest.at),
+          base_codec::json_int(if dest.came { 1 } else { 0 }),
+        ]) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => ()
+        }
+        match b.run(sql_chat_drop_session(), params=[base_codec::json_str(station), base_codec::json_str(session)]) {
+          sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+        }
+      }
+    }
+  })
+  match res {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(true)
+  }
+}
+
+/// Whether `(station, session)` is recorded as moved away to another station.
+pub fn is_moved_away(db : sql::Sql, station : String, session : String) -> sql::SqlResult[Bool] {
+  match get_moved(db, station, session) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(Some(_)) => sql::SqlResult::Ok(true)
+    sql::SqlResult::Ok(None) => sql::SqlResult::Ok(false)
+  }
+}
+
+/// Resolve where `(station, session)` lives now by following `moved` hops (`data.ts chatNow`).
+/// Returns `Ok(None)` if not moved or if the move graph contains a cycle.
+pub fn resolve_chat_now(
+  db : sql::Sql,
+  station : String,
+  session : String,
+) -> sql::SqlResult[Option[ChatLocation]] {
+  let mut at = station
+  let mut thread : Option[Int] = None
+  let seen : Map[String, Bool] = Map::new()
+  seen.set(at, true)
+  while true {
+    match get_moved(db, at, session) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(None) => break
+      sql::SqlResult::Ok(Some(to)) => {
+        if seen.get(to.station).is_some() {
+          return sql::SqlResult::Ok(None)
+        }
+        seen.set(to.station, true)
+        at = to.station
+        thread = to.there
+      }
+    }
+  }
+  if at == station {
+    sql::SqlResult::Ok(None)
+  } else {
+    sql::SqlResult::Ok(Some(ChatLocation::{ station: at, session: session, thread: thread }))
+  }
+}
+
+/// Resolve where `(station, thread)` lives now via `moved` hops (`data.ts chatNow(station, { thread })`).
+pub fn resolve_chat_now_by_thread(
+  db : sql::Sql,
+  station : String,
+  thread : Int,
+) -> sql::SqlResult[Option[ChatLocation]] {
+  let session = match get_moved_session_by_thread(db, station, thread) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(Some(s)) => s
+    sql::SqlResult::Ok(None) => return sql::SqlResult::Ok(None)
+  }
+  resolve_chat_now(db, station, session)
+}

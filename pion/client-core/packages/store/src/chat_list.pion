@@ -82,6 +82,22 @@ pub fn sql_draft_one() -> String {
   "SELECT station, chat, json FROM draft WHERE station = ? AND chat = ?"
 }
 
+pub fn sql_draft_by_station() -> String {
+  "SELECT station, chat, json FROM draft WHERE station = ? ORDER BY chat"
+}
+
+pub fn sql_changing_by_station() -> String {
+  "SELECT station, id, json FROM changing WHERE station = ? ORDER BY id"
+}
+
+pub fn sql_thread_one() -> String {
+  "SELECT id, last, read, unread, sort_at, created_at, surface, first_member, json FROM thread WHERE station = ? AND id = ?"
+}
+
+pub fn sql_entry_exists_before() -> String {
+  "SELECT 1 FROM entry WHERE station = ? AND thread = ? AND n < ? LIMIT 1"
+}
+
 pub fn sql_account_doc_one() -> String {
   "SELECT json FROM account_doc WHERE name = ?"
 }
@@ -155,6 +171,24 @@ pub struct PendingRow {
 pub struct DraftRow {
   pub station : String
   pub chat : String
+  pub json : String
+}
+
+pub struct ChangingRow {
+  pub station : String
+  pub id : Int
+  pub json : String
+}
+
+pub struct ThreadRecord {
+  pub id : Int
+  pub last : Option[Int]
+  pub read : Option[Int]
+  pub unread : Option[Int]
+  pub sort_at : Int64
+  pub created_at : Int64
+  pub surface : Option[String]
+  pub first_member : Option[String]
   pub json : String
 }
 
@@ -315,6 +349,101 @@ pub fn get_draft(db : sql::Sql, station : String, chat : String) -> sql::SqlResu
         sql::SqlResult::Ok(None)
       }
     }
+  }
+}
+
+/// List local draft overlays for `station`.
+pub fn list_drafts_for_station(db : sql::Sql, station : String) -> sql::SqlResult[Array[DraftRow]] {
+  match db.all(sql_draft_by_station(), params=[base_codec::json_str(station)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[DraftRow] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        out.push(DraftRow::{
+          station: sql::col_text(r, 0),
+          chat: sql::col_text(r, 1),
+          json: sql::col_text(r, 2),
+        })
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
+}
+
+/// List local optimistic `changing` overlays for `station`.
+pub fn list_changing_for_station(db : sql::Sql, station : String) -> sql::SqlResult[Array[ChangingRow]] {
+  match db.all(sql_changing_by_station(), params=[base_codec::json_str(station)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[ChangingRow] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        out.push(ChangingRow::{
+          station: sql::col_text(r, 0),
+          id: sql::col_int(r, 1),
+          json: sql::col_text(r, 2),
+        })
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
+}
+
+/// Read thread metadata row for `(station, thread)`.
+pub fn get_thread(db : sql::Sql, station : String, thread : Int) -> sql::SqlResult[Option[ThreadRecord]] {
+  match db.all(sql_thread_one(), params=[base_codec::json_str(station), base_codec::json_int(thread)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        let r = rows[0]
+        let last_v = match sql::col_opt_int64(r, 1) {
+          Some(v) => Some(v.to_int())
+          None => None
+        }
+        let read_v = match sql::col_opt_int64(r, 2) {
+          Some(v) => Some(v.to_int())
+          None => None
+        }
+        let unread_v = match sql::col_opt_int64(r, 3) {
+          Some(v) => Some(v.to_int())
+          None => None
+        }
+        let surface_v = match r[6] {
+          base_codec::Json::Str(s) => Some(s)
+          _ => None
+        }
+        let first_m = match r[7] {
+          base_codec::Json::Str(s) => Some(s)
+          _ => None
+        }
+        sql::SqlResult::Ok(Some(ThreadRecord::{
+          id: sql::col_int(r, 0),
+          last: last_v,
+          read: read_v,
+          unread: unread_v,
+          sort_at: sql::col_int64(r, 4),
+          created_at: sql::col_int64(r, 5),
+          surface: surface_v,
+          first_member: first_m,
+          json: sql::col_text(r, 8),
+        }))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}
+
+/// Check if any entry exists strictly before `before_n` for `(station, thread)` (pure SELECT).
+pub fn has_entries_before(db : sql::Sql, station : String, thread : Int, before_n : Int) -> sql::SqlResult[Bool] {
+  match db.all(sql_entry_exists_before(), params=[
+    base_codec::json_str(station),
+    base_codec::json_int(thread),
+    base_codec::json_int(before_n),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => sql::SqlResult::Ok(rows.length() > 0)
   }
 }
 

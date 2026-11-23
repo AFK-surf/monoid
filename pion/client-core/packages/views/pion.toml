@@ -1,0 +1,18 @@
+[package]
+name = "views"
+version = "0.1.0"
+
+[dependencies]
+base_codec = { workspace = true }
+crypto = { workspace = true }
+effect = { workspace = true }
+shell = { workspace = true }
+sql = { workspace = true }
+mesh = { workspace = true }
+form = { workspace = true }
+fork = { workspace = true }
+role = { workspace = true }
+lock = { workspace = true }
+vault = { workspace = true }
+store = { workspace = true }
+protocol = { workspace = true }

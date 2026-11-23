@@ -1,0 +1,752 @@
+// Deterministic tests for unified safe-mode & lock state machine (`lock_view.pion`),
+// directly calling native `pion/rules` (`lock`, `fork`, `form`, `role`, `vault`) with real Ed25519 keys.
+// Verifies all invariants from `client/core-ts/src/views/AGENTS.md` and `lock-state-invariants.test.ts`:
+// - Active chain + fork choice (`ASIDE_MOST`, `prev != head` refusal, `again_of` + `AGAIN_MOST = 3`)
+// - Moved workspace (`moved {root}` -> `lock::state4_moved`, `lock_moved` refusal on moved chain)
+// - Automatic personal lock (`vouchers_in`, `approved_in` — never by device id, never widening `ever`)
+// - `LockPendingQueue` (cloud acceptance never counts, station delivery, refusal surfacing, `PENDING_MOST = 8`)
+// - Unified Safe Mode Laws A, B, C + zero 「个人锁」/「共享调试」 UI leakage
+
+import "base_codec"
+import "crypto"
+import "form"
+import "lock"
+import "sql"
+import "store"
+
+fn seed_fill(tag : Int) -> Bytes {
+  let b = Bytes::new(32)
+  for i in 0..<32 {
+    b[i] = ((tag * 37 + i * 13 + 7) % 256) as Byte
+  }
+  b
+}
+
+fn hex_id(tag : Int) -> String {
+  let sb = StringBuilder::new()
+  let hex = "0123456789abcdef"
+  for i in 0..<64 {
+    let v = (tag * 17 + i) % 16
+    sb.write_byte(hex.code_unit_at(v) as Byte)
+  }
+  sb.to_string()
+}
+
+fn make_ws_genesis(
+  ws : String,
+  owner_sub : String,
+  owner_dev : String,
+  owner_seed : Bytes,
+  member_sub : String,
+  member_dev : String,
+  member_seed : Bytes,
+  station_key : String,
+) -> form::Json {
+  let owner_key = lock_key_id_of_seed(owner_seed)
+  let member_key = lock_key_id_of_seed(member_seed)
+  let unsigned = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    ("body", form::Json::Obj([
+      ("owner", form::Json::Str(owner_sub)),
+      ("origins", form::Json::Arr([form::Json::Str("https://still.fail")])),
+      ("rp_id", form::Json::Str("still.fail")),
+      ("members", form::Json::Arr([
+        form::Json::Obj([
+          ("sub", form::Json::Str(owner_sub)),
+          ("email", form::Json::Str("owner@example.com")),
+          ("role", form::Json::Str("owner")),
+        ]),
+        form::Json::Obj([
+          ("sub", form::Json::Str(member_sub)),
+          ("email", form::Json::Str("member@example.com")),
+          ("role", form::Json::Str("member")),
+        ]),
+      ])),
+      ("devices", form::Json::Arr([
+        form::Json::Obj([
+          ("id", form::Json::Str(owner_dev)),
+          ("sub", form::Json::Str(owner_sub)),
+          ("kind", form::Json::Str("app")),
+          ("label", form::Json::Str("Owner Mac")),
+          ("sign_key", form::Json::Str(owner_key)),
+        ]),
+        form::Json::Obj([
+          ("id", form::Json::Str(member_dev)),
+          ("sub", form::Json::Str(member_sub)),
+          ("kind", form::Json::Str("app")),
+          ("label", form::Json::Str("Member Phone")),
+          ("sign_key", form::Json::Str(member_key)),
+        ]),
+      ])),
+      ("stations", form::Json::Arr([
+        form::Json::Obj([
+          ("key", form::Json::Str(station_key)),
+          ("name", form::Json::Str("Studio")),
+        ]),
+      ])),
+    ])),
+  ])
+  match sign_entry_ed25519(owner_seed, unsigned) {
+    Ok(e) => e
+    Err(m) => panic("sign genesis failed: " + m)
+  }
+}
+
+fn make_ws_entry(
+  ws : String,
+  seq : Int,
+  prev : String,
+  kind : String,
+  body : form::Json,
+  seed : Bytes,
+) -> form::Json {
+  let unsigned = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("seq", form::Json::Num(seq.to_double())),
+    ("prev", form::Json::Str(prev)),
+    ("at", form::Json::Num((1700000000 + seq * 10).to_double())),
+    ("kind", form::Json::Str(kind)),
+    ("body", body),
+  ])
+  match sign_entry_ed25519(seed, unsigned) {
+    Ok(e) => e
+    Err(m) => panic("sign ws entry failed: " + m)
+  }
+}
+
+fn make_person_genesis(sub : String, dev_id : String, seed : Bytes) -> form::Json {
+  let key = lock_key_id_of_seed(seed)
+  let unsigned = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("person:" + sub)),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    ("body", form::Json::Obj([
+      ("sub", form::Json::Str(sub)),
+      ("device", form::Json::Obj([
+        ("key", form::Json::Str(key)),
+        ("id", form::Json::Str(dev_id)),
+        ("label", form::Json::Str("Owner Mac")),
+        ("sign_key", form::Json::Str(key)),
+      ])),
+    ])),
+  ])
+  match sign_entry_ed25519(seed, unsigned) {
+    Ok(e) => e
+    Err(m) => panic("sign person genesis failed: " + m)
+  }
+}
+
+fn make_person_ws_stmt(ws : String, p_root : String, sub : String, seq : Int, prev : String, body : form::Json, seed : Bytes, c : lock::Crypto) -> form::Json {
+  let h_hash = match lock::body_hash(body, c) {
+    Ok(h) => h
+    Err(e) => panic("body_hash failed: " + lock::error_msg(e))
+  }
+  let tag = lock::ws_tag(ws, p_root, c)
+  let unsigned = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("person:" + sub)),
+    ("seq", form::Json::Num(seq.to_double())),
+    ("prev", form::Json::Str(prev)),
+    ("at", form::Json::Num((1700000000 + seq * 10).to_double())),
+    ("kind", form::Json::Str("ws")),
+    ("body", form::Json::Obj([
+      ("t", form::Json::Str(tag)),
+      ("h", form::Json::Str(h_hash)),
+    ])),
+  ])
+  match sign_entry_ed25519(seed, unsigned) {
+    Ok(e) => e
+    Err(m) => panic("sign person stmt failed: " + m)
+  }
+}
+
+fn assert_unified_copy(j : base_codec::Json) -> Unit {
+  let s = base_codec::json_stringify(j)
+  assert(!s.contains("个人锁"))
+  assert(!s.contains("共享调试"))
+}
+
+fn assert_law_b(v : SafeModeView) -> Unit {
+  if v.locked && !v.me.confirmed {
+    let has_way = v.me.waiting ||
+    v.me.forget_text.is_some() ||
+    v.me.restart_text.is_some() ||
+    v.me.out_text.is_some() ||
+    v.me.needs_app_text.is_some() ||
+    v.me.rebound_text.is_some()
+    assert(has_way)
+  }
+  if v.locked && v.me.confirmed && v.can_sign && !v.signs {
+    assert(v.me.unsigned || v.me.confirm_text.is_some())
+  }
+  assert_unified_copy(v.to_json())
+}
+
+test "active chain + fork choice (ASIDE_MOST), prev!=head refusal, and again_of AGAIN_MOST cap" {
+  let c = views_lock_crypto()
+  let owner_seed = seed_fill(1)
+  let member_seed = seed_fill(2)
+  let owner_dev = hex_id(1)
+  let member_dev = hex_id(2)
+  let station_k = hex_id(10)
+  let gen = make_ws_genesis("ws-1", "u-owner", owner_dev, owner_seed, "u-member", member_dev, member_seed, station_k)
+  let gen_h = match lock::entry_hash(gen, c) { Ok(h) => h; Err(e) => panic(lock::error_msg(e)) }
+
+  // Two competing seq=1 entries: member adds a web device (weight 1), owner adds a station (weight 3).
+  let member_e1 = make_ws_entry(
+    "ws-1",
+    1,
+    gen_h,
+    "device",
+    form::Json::Obj([
+      ("id", form::Json::Str(hex_id(3))),
+      ("sub", form::Json::Str("u-member")),
+      ("kind", form::Json::Str("web")),
+      ("label", form::Json::Str("Member Web")),
+      ("exp", form::Json::Num(1700500000.0)),
+    ]),
+    member_seed,
+  )
+  let owner_e1 = make_ws_entry(
+    "ws-1",
+    1,
+    gen_h,
+    "station",
+    form::Json::Obj([
+      ("key", form::Json::Str(hex_id(11))),
+      ("name", form::Json::Str("Backup Station")),
+    ]),
+    owner_seed,
+  )
+
+  // Fork choice MUST select owner's higher-weight branch and retain member's branch in `aside`.
+  let kept = match keep_entries(KeptLog::empty(), [gen, member_e1, owner_e1], gen_h, false, None, c) {
+    Ok(out) => {
+      assert(out.moved_head)
+      assert(out.changed)
+      assert_eq(out.kept.entries.length(), 2)
+      assert_eq(out.kept.aside.length(), 1)
+      out.kept
+    }
+    Err(m) => panic("keep_entries failed: " + m)
+  }
+  assert(links_valid(kept.entries, c))
+  let owner_e1_h = match lock::entry_hash(owner_e1, c) { Ok(h) => h; Err(e) => panic(lock::error_msg(e)) }
+  assert_eq(kept.head, owner_e1_h)
+
+  // Appending an entry whose prev != head MUST be refused!
+  let bad_prev = make_ws_entry(
+    "ws-1",
+    2,
+    gen_h,
+    "station",
+    form::Json::Obj([("key", form::Json::Str(hex_id(12))), ("name", form::Json::Str("Bad"))]),
+    owner_seed,
+  )
+  match append_entry(kept, bad_prev, false, None, c) {
+    Err(msg) => assert(msg.contains("prev_mismatch"))
+    Ok(_) => panic("append_entry must refuse prev != head")
+  }
+
+  // `again_of` on displaced member_e1: different subject -> ReSign while tries < AGAIN_MOST (3), Exhausted at 3!
+  let subj_fn = fn(e : form::Json) -> Option[String] {
+    match form::json_field(Some(e), "kind") {
+      Some(form::Json::Str("device")) => match form::json_field(form::json_field(Some(e), "body"), "id") {
+        Some(form::Json::Str(id)) => Some("dev:" + id)
+        _ => None
+      }
+      Some(form::Json::Str("station")) => match form::json_field(form::json_field(Some(e), "body"), "key") {
+        Some(form::Json::Str(k)) => Some("st:" + k)
+        _ => None
+      }
+      _ => None
+    }
+  }
+  match again_of(kept.entries, kept.aside, member_e1, subj_fn, 0, c) {
+    AgainDecision::ReSign => ()
+    _ => panic("expected ReSign for tries=0")
+  }
+  match again_of(kept.entries, kept.aside, member_e1, subj_fn, 3, c) {
+    AgainDecision::Exhausted => ()
+    _ => panic("expected Exhausted at AGAIN_MOST=3")
+  }
+  match again_of(kept.entries, kept.aside, owner_e1, subj_fn, 0, c) {
+    AgainDecision::Done => ()
+    _ => panic("expected Done for entry already on active chain")
+  }
+}
+
+test "moved workspace (moved {root}): state4_moved computation and lock_moved signing refusal" {
+  let c = views_lock_crypto()
+  let owner_seed = seed_fill(21)
+  let member_seed = seed_fill(22)
+  let owner_dev = hex_id(21)
+  let member_dev = hex_id(22)
+  let station_k = hex_id(25)
+
+  // Build root person's personal log
+  let p_gen = make_person_genesis("u-owner", owner_dev, owner_seed)
+  let p_root = match lock::entry_hash(p_gen, c) { Ok(h) => h; Err(e) => panic(lock::error_msg(e)) }
+
+  // Build workspace chain: genesis -> moved {root: p_root}
+  let ws_gen = make_ws_genesis("ws-m", "u-owner", owner_dev, owner_seed, "u-member", member_dev, member_seed, station_k)
+  let ws_gen_h = match lock::entry_hash(ws_gen, c) { Ok(h) => h; Err(e) => panic(lock::error_msg(e)) }
+  let ws_moved = make_ws_entry("ws-m", 1, ws_gen_h, "moved", form::Json::Obj([("root", form::Json::Str(p_root))]), owner_seed)
+  let ws_moved_h = match lock::entry_hash(ws_moved, c) { Ok(h) => h; Err(e) => panic(lock::error_msg(e)) }
+
+  let kept = KeptLog::{ entries: [ws_gen, ws_moved], aside: [], head: ws_moved_h, genesis: ws_gen_h }
+
+  // Signing on moved chain MUST be refused with `lock_moved`!
+  let illegal = make_ws_entry(
+    "ws-m",
+    2,
+    ws_moved_h,
+    "station",
+    form::Json::Obj([("key", form::Json::Str(hex_id(26))), ("name", form::Json::Str("After Move"))]),
+    owner_seed,
+  )
+  match append_entry(kept, illegal, false, None, c) {
+    Err(msg) => assert_eq(msg, "lock_moved")
+    Ok(_) => panic("append_entry on moved chain must fail with lock_moved")
+  }
+
+  // Compute effective state via native `lock::state4_moved`
+  let eff = match effective_state("ws-m", [ws_gen, ws_moved], [[p_gen]], [], 1700000100.0, c) {
+    Ok(e) => e
+    Err(m) => panic("effective_state failed: " + m)
+  }
+  assert(eff.moved)
+  assert(eff.safe_mode)
+  assert(eff.root_in)
+  assert(eff.state.members.contains("u-owner"))
+  assert(eff.state.devices.contains(owner_dev))
+
+  // Root disables safe mode via `off` statement in personal log -> effective state becomes off!
+  let off_body = form::Json::Obj([
+    ("ws", form::Json::Str("ws-m")),
+    ("kind", form::Json::Str("off")),
+    ("prev", form::Json::Null),
+    ("salt", form::Json::Str("0123456789abcdef0123456789abcdef")),
+  ])
+  let p_off = make_person_ws_stmt("ws-m", p_root, "u-owner", 1, p_root, off_body, owner_seed, c)
+  let eff_off = match effective_state("ws-m", [ws_gen, ws_moved], [[p_gen, p_off]], [off_body], 1700000300.0, c) {
+    Ok(e) => e
+    Err(m) => panic("effective_state off failed: " + m)
+  }
+  assert(eff_off.moved)
+  assert(!eff_off.safe_mode)
+  assert_eq(eff_off.on, "off")
+}
+
+test "ownLockFor invariants (vouchers_in & approved_in): signer key only, never device id, never ever-on-lock" {
+  let devs : Map[String, OwnDevice] = Map::new()
+  // Root trusted device `d1` (approved nobody, is `me`)
+  devs.set("d1", OwnDevice::{
+    id: "d1",
+    sub: "u1",
+    label: "Mac",
+    sign_key: Some("ed25519:key1"),
+    said: Some("ed25519:p1"),
+    by: None,
+    by_sub: None,
+    by_key: None,
+    since: 1,
+  })
+  // Valid descendant `d2` endorsed by `d1`'s signer key (`ed25519:key1`)
+  devs.set("d2", OwnDevice::{
+    id: "d2",
+    sub: "u1",
+    label: "Phone",
+    sign_key: Some("ed25519:key2"),
+    said: Some("ed25519:p2"),
+    by: Some("d1"),
+    by_sub: Some("u1"),
+    by_key: Some("ed25519:key1"),
+    since: 2,
+  })
+  // Forged device `d3` claiming `by: "d1"` (device id!) but with untrusted `by_key` -> MUST BE REJECTED!
+  devs.set("d3", OwnDevice::{
+    id: "d3",
+    sub: "u1",
+    label: "Forged",
+    sign_key: Some("ed25519:key3"),
+    said: Some("ed25519:p3"),
+    by: Some("d1"),
+    by_sub: Some("u1"),
+    by_key: Some("ed25519:untrusted_attacker"),
+    since: 3,
+  })
+  // Previously-on-lock device `d4` (in `ever_ids`) -> MUST BE REJECTED!
+  devs.set("d4", OwnDevice::{
+    id: "d4",
+    sub: "u1",
+    label: "Old Phone",
+    sign_key: Some("ed25519:key4"),
+    said: Some("ed25519:p4"),
+    by: Some("d1"),
+    by_sub: Some("u1"),
+    by_key: Some("ed25519:key1"),
+    since: 4,
+  })
+
+  let standings = OwnStandings::{ devices: devs, device_ids: ["d1", "d2", "d3", "d4"] }
+  let vs = vouchers_in([standings], "u1", "d2")
+  assert_eq(vs.length(), 2)
+
+  let chain_signers : Map[String, Bool] = Map::new()
+  chain_signers.set("ed25519:key1", true)
+  let chain_signed : Map[String, Bool] = Map::new()
+  let ever_ids : Map[String, Bool] = Map::new()
+  ever_ids.set("d4", true)
+  let ever_keys : Map[String, Bool] = Map::new()
+
+  let approved = approved_in(
+    [standings],
+    "u1",
+    Some("d1"),
+    Some("ed25519:key1"),
+    chain_signers,
+    chain_signed,
+    ever_ids,
+    ever_keys,
+  )
+  // ONLY d2 is admitted; d3 (wrong by_key) and d4 (ever on lock) are rejected!
+  assert_eq(approved.length(), 1)
+  assert_eq(approved[0].id, "d2")
+  assert_eq(approved[0].key, "ed25519:p2")
+}
+
+test "LockPendingQueue: cloud acceptance never counts, station read delivers, refusal surfaces, cap at PENDING_MOST=8" {
+  let c = views_lock_crypto()
+  let seed = seed_fill(31)
+  let q = LockPendingQueue::new()
+  let e1 = make_ws_entry("ws-p", 1, hex_id(1), "station", form::Json::Obj([("key", form::Json::Str(hex_id(2))), ("name", form::Json::Str("S1"))]), seed)
+  let id1 = match q.submit(e1, "protectStation", "保护 S1", 1000.to_int64(), c) {
+    Ok(id) => id
+    Err(m) => panic(m)
+  }
+  assert_eq(q.waiting_count(), 1)
+
+  // Cloud mirroring NEVER counts as confirmed!
+  q.mark_cloud_mirrored(id1)
+  assert_eq(q.waiting_count(), 1)
+  assert_eq(q.items[0].state, "waiting")
+
+  // Station refusal surfaces as `failed` with reason (never silently dropped)
+  let e2 = make_ws_entry("ws-p", 2, hex_id(1), "station", form::Json::Obj([("key", form::Json::Str(hex_id(3))), ("name", form::Json::Str("S2"))]), seed)
+  let id2 = match q.submit(e2, "protectStation", "保护 S2", 2000.to_int64(), c) {
+    Ok(id) => id
+    Err(m) => panic(m)
+  }
+  let station_hashes : Map[String, Bool] = Map::new()
+  station_hashes.set(id1, true)
+  let refused : Map[String, String] = Map::new()
+  refused.set(id2, "station rejected entry")
+  let delivered = q.deliver_from_station(station_hashes, refused)
+  assert_eq(delivered.length(), 1)
+  assert_eq(delivered[0], id1)
+  assert_eq(q.waiting_count(), 0)
+  assert_eq(q.items.length(), 1)
+  assert_eq(q.items[0].state, "failed")
+  assert_opt_eq(q.items[0].why, Some("station rejected entry"))
+
+  // Dismiss failed entry
+  assert(q.dismiss_failed(id2))
+  assert_eq(q.items.length(), 0)
+
+  // Cap at PENDING_MOST = 8
+  for i in 0..<8 {
+    let ei = make_ws_entry("ws-p", 10 + i, hex_id(1), "station", form::Json::Obj([("key", form::Json::Str(hex_id(40 + i))), ("name", form::Json::Str("S"))]), seed)
+    match q.submit(ei, "protectStation", "保护", (3000 + i).to_int64(), c) {
+      Ok(_) => ()
+      Err(m) => panic("unexpected error under cap: " + m)
+    }
+  }
+  let e9 = make_ws_entry("ws-p", 99, hex_id(1), "station", form::Json::Obj([("key", form::Json::Str(hex_id(99))), ("name", form::Json::Str("S9"))]), seed)
+  match q.submit(e9, "protectStation", "保护", 9000.to_int64(), c) {
+    Err(msg) => assert(msg.contains("8"))
+    Ok(_) => panic("9th pending entry must be refused past PENDING_MOST")
+  }
+}
+
+test "Unified Safe Mode Laws A, B, C: recovery paths in every state and zero personal-lock leakage" {
+  let c = views_lock_crypto()
+  let owner_seed = seed_fill(51)
+  let member_seed = seed_fill(52)
+  let owner_dev = hex_id(51)
+  let member_dev = hex_id(52)
+  let station_k = hex_id(55)
+  let p_gen = make_person_genesis("u-owner", owner_dev, owner_seed)
+  let p_root = match lock::entry_hash(p_gen, c) { Ok(h) => h; Err(e) => panic(lock::error_msg(e)) }
+  let ws_gen = make_ws_genesis("ws-u", "u-owner", owner_dev, owner_seed, "u-member", member_dev, member_seed, station_k)
+  let ws_gen_h = match lock::entry_hash(ws_gen, c) { Ok(h) => h; Err(e) => panic(lock::error_msg(e)) }
+  let ws_moved = make_ws_entry("ws-u", 1, ws_gen_h, "moved", form::Json::Obj([("root", form::Json::Str(p_root))]), owner_seed)
+  let eff = match effective_state("ws-u", [ws_gen, ws_moved], [[p_gen]], [], 1700000100.0, c) {
+    Ok(e) => e
+    Err(m) => panic(m)
+  }
+
+  let fake = ViewsFakeDb::new()
+  let db = match sql::Sql::open(fake.shell, "acct") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.message)
+  }
+  let base_input = fn(
+    sub : String,
+    role_s : String,
+    dev : String,
+    kind : String,
+    sk : Option[String],
+    standing : String,
+    unsaid : Bool,
+    no_ans : Bool,
+  ) -> SafeModeInput {
+    SafeModeInput::{
+      available: true,
+      viewer_sub: sub,
+      viewer_role: role_s,
+      device_id: dev,
+      device_kind: kind,
+      device_sign_key: sk,
+      personal_standing: standing,
+      signer_unsaid: unsaid,
+      no_device_answered: no_ans,
+      rebound_admins: ["owner@example.com"],
+      station_names: Map::new(),
+      online_stations: Map::new(),
+      pending: LockPendingQueue::new(),
+    }
+  }
+
+  // 1. Confirmed signing owner device
+  let v1 = project_safe_mode(Some(eff), base_input("u-owner", "owner", owner_dev, "app", Some(lock_key_id_of_seed(owner_seed)), "member", false, false))
+  assert(v1.locked && v1.me.confirmed && v1.signs)
+  assert(v1.root_text.is_none())
+  assert_law_b(v1)
+  let vaults1 = match project_vaults(db, "ws-u", v1, true, true) { sql::SqlResult::Ok(x) => x; sql::SqlResult::Err(e) => panic(e.message) }
+  assert_eq(j_bool(vaults1, "locked"), v1.locked)
+  assert_eq(j_bool(vaults1, "canSign"), v1.signs)
+  assert_unified_copy(vaults1)
+
+  // 2. Confirmed app device with unsaid signer -> Law B & Law C require matching confirmText ("验证")
+  let v2 = project_safe_mode(Some(eff), base_input("u-owner", "owner", owner_dev, "app", Some(lock_key_id_of_seed(owner_seed)), "member", true, false))
+  assert(v2.me.confirmed && !v2.signs && v2.me.confirm_text.is_some())
+  assert_law_b(v2)
+  let vaults2 = match project_vaults(db, "ws-u", v2, true, true) { sql::SqlResult::Ok(x) => x; sql::SqlResult::Err(e) => panic(e.message) }
+  assert(j_opt_str(vaults2, "confirmText").is_some())
+  assert_unified_copy(vaults2)
+
+  // 3. Unconfirmed device -> waiting, and vaults has no dead-end stateText (Law C)
+  let v3 = project_safe_mode(Some(eff), base_input("u-member", "member", hex_id(77), "app", None, "outside", false, false))
+  assert(!v3.me.confirmed && v3.me.waiting)
+  assert_law_b(v3)
+  let vaults3 = match project_vaults(db, "ws-u", v3, true, true) { sql::SqlResult::Ok(x) => x; sql::SqlResult::Err(e) => panic(e.message) }
+  assert(j_opt_str(vaults3, "stateText").is_none())
+  assert_unified_copy(vaults3)
+
+  // 4. Replaced personal lock -> forgetText offered
+  let v4 = project_safe_mode(Some(eff), base_input("u-owner", "owner", owner_dev, "app", None, "replaced", false, false))
+  assert(!v4.me.confirmed && v4.me.forget_text.is_some())
+  assert_law_b(v4)
+
+  // 5. Rebound while workspace binds old lock -> reboundText naming admins
+  let v5 = project_safe_mode(Some(eff), base_input("u-member", "member", hex_id(78), "app", None, "rebound", false, false))
+  assert(!v5.me.confirmed && v5.me.rebound_text.is_some())
+  assert_law_b(v5)
+
+  // 6. Removed non-member -> outText
+  let v6 = project_safe_mode(Some(eff), base_input("u-removed", "member", hex_id(79), "app", None, "none", false, false))
+  assert(!v6.me.confirmed && v6.me.out_text.is_some())
+  assert_law_b(v6)
+
+  // 7. Web device whose person has no app -> needsAppText, waiting == false
+  let ws_webonly = make_ws_entry(
+    "ws-u",
+    1,
+    ws_gen_h,
+    "member",
+    form::Json::Obj([
+      ("sub", form::Json::Str("u-webonly")),
+      ("email", form::Json::Str("web@example.com")),
+      ("role", form::Json::Str("member")),
+    ]),
+    owner_seed,
+  )
+  let ws_webonly_h = match lock::entry_hash(ws_webonly, c) { Ok(h) => h; Err(e) => panic(lock::error_msg(e)) }
+  let ws_moved2 = make_ws_entry("ws-u", 2, ws_webonly_h, "moved", form::Json::Obj([("root", form::Json::Str(p_root))]), owner_seed)
+  let eff_web = match effective_state("ws-u", [ws_gen, ws_webonly, ws_moved2], [[p_gen]], [], 1700000100.0, c) {
+    Ok(e) => e
+    Err(m) => panic(m)
+  }
+  let v7 = project_safe_mode(Some(eff_web), base_input("u-webonly", "member", hex_id(80), "web", None, "none", false, false))
+  assert(!v7.me.confirmed && !v7.me.waiting && v7.me.needs_app_text.is_some())
+  assert_law_b(v7)
+
+  // 8. No trusted device answered -> restartText ("我的其它设备都不在了")
+  let v8 = project_safe_mode(Some(eff), base_input("u-member", "member", hex_id(81), "app", None, "outside", false, true))
+  assert(!v8.me.confirmed && v8.me.restart_text.is_some())
+  assert_law_b(v8)
+
+  // 9. Non-root owner of moved workspace -> rootText naming root & `stillfail lock reset`
+  let v9 = project_safe_mode(Some(eff), base_input("u-other-owner", "owner", hex_id(82), "app", None, "none", false, false))
+  match v9.root_text {
+    Some(rt) => assert(rt.contains("stillfail lock reset"))
+    None => panic("non-root owner must be told who alone toggles safe mode")
+  }
+  assert_law_b(v9)
+}
+
+fn lv_encode_der_uint(buf : Bytes, start : Int, len : Int) -> Bytes {
+  let mut s = start
+  let end = start + len
+  while s < end - 1 && buf[s].to_int() == 0 {
+    s += 1
+  }
+  let need_pad = (buf[s].to_int() & 0x80) != 0
+  let body_len = (end - s) + (if need_pad { 1 } else { 0 })
+  let out = Bytes::new(2 + body_len)
+  out[0] = 0x02 as Byte
+  out[1] = body_len as Byte
+  let mut at = 2
+  if need_pad {
+    out[at] = 0 as Byte
+    at += 1
+  }
+  for i in s..<end {
+    out[at] = buf[i]
+    at += 1
+  }
+  out
+}
+
+fn lv_es256_raw_to_der(raw64 : Bytes) -> Bytes {
+  let r_der = lv_encode_der_uint(raw64, 0, 32)
+  let s_der = lv_encode_der_uint(raw64, 32, 32)
+  let total = r_der.length() + s_der.length()
+  let out = Bytes::new(2 + total)
+  out[0] = 0x30 as Byte
+  out[1] = total as Byte
+  let mut at = 2
+  for i in 0..<r_der.length() {
+    out[at] = r_der[i]
+    at += 1
+  }
+  for i in 0..<s_der.length() {
+    out[at] = s_der[i]
+    at += 1
+  }
+  out
+}
+
+fn lv_build_passkey_sig(
+  sk32 : Bytes,
+  pk65 : Bytes,
+  entry_hash_hex : String,
+  origin : String,
+  rp_id : String,
+  webauthn_type : String,
+  flags : Int,
+  tamper_der : Bool,
+) -> form::Json {
+  let hash_bytes = match base_codec::hex_decode(entry_hash_hex) {
+    Some(b) => b
+    None => panic("bad hex")
+  }
+  let challenge = base_codec::base64url_encode(hash_bytes)
+  let client_str = base_codec::json_stringify(base_codec::json_obj([
+    ("type", base_codec::json_str(webauthn_type)),
+    ("challenge", base_codec::json_str(challenge)),
+    ("origin", base_codec::json_str(origin)),
+  ]))
+  let client_bytes = client_str.to_bytes()
+  let rp_hash = crypto::sha256(rp_id.to_bytes())
+  let auth_bytes = Bytes::new(37)
+  for i in 0..<32 {
+    auth_bytes[i] = rp_hash[i]
+  }
+  auth_bytes[32] = flags as Byte
+  auth_bytes[36] = 1 as Byte
+  let c_hash = crypto::sha256(client_bytes)
+  let signed = Bytes::new(auth_bytes.length() + 32)
+  for i in 0..<auth_bytes.length() {
+    signed[i] = auth_bytes[i]
+  }
+  for i in 0..<32 {
+    signed[auth_bytes.length() + i] = c_hash[i]
+  }
+  let raw_sig = match crypto::p256_sign_es256(sk32, signed) {
+    Ok(s) => s
+    Err(_) => panic("p256_sign_es256 failed")
+  }
+  let der = lv_es256_raw_to_der(raw_sig)
+  if tamper_der {
+    let last = der.length() - 1
+    der[last] = ((der[last].to_int() ^ 0xFF) & 0xFF) as Byte
+  }
+  let key_id = "p256:" + base_codec::base64url_encode(pk65)
+  form::Json::Obj([
+    ("key", form::Json::Str(key_id)),
+    ("alg", form::Json::Str("webauthn")),
+    ("authenticator_data", form::Json::Str(base_codec::base64url_encode(auth_bytes))),
+    ("client_data", form::Json::Str(base_codec::base64url_encode(client_bytes))),
+    ("sig", form::Json::Str(base_codec::base64url_encode(der))),
+  ])
+}
+
+test "views_lock_crypto verifies P-256 WebAuthn passkey DER and ES256 signatures and rejects tampered inputs" {
+  let sk = match base_codec::hex_decode("c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721") {
+    Some(b) => b
+    None => panic("bad sk")
+  }
+  let pk = match crypto::p256_public_key(sk) {
+    Ok(p) => p
+    Err(_) => panic("p256_public_key failed")
+  }
+  let key_id = "p256:" + base_codec::base64url_encode(pk)
+  assert(valid_lock_key_id(key_id))
+
+  let c = views_lock_crypto()
+  let origins = ["https://app.still.fail", "https://still.fail"]
+  let rp_id = "still.fail"
+  let entry_hash = crypto::sha256_hex("views-lock-entry-body".to_bytes())
+  let other_hash = crypto::sha256_hex("other-lock-entry-body".to_bytes())
+
+  // 1. Valid WebAuthn Passkey assertion (DER) -> accepted
+  let valid_pk = lv_build_passkey_sig(sk, pk, entry_hash, "https://app.still.fail", rp_id, "webauthn.get", 1, false)
+  assert((c.sig_valid)(valid_pk, entry_hash, origins, rp_id, true))
+  // passkey=false must reject alg="webauthn"
+  assert(!(c.sig_valid)(valid_pk, entry_hash, origins, rp_id, false))
+  // Tampered origin, rp_id, challenge, DER, UP=0, type -> all rejected
+  assert(!(c.sig_valid)(lv_build_passkey_sig(sk, pk, entry_hash, "https://evil.example", rp_id, "webauthn.get", 1, false), entry_hash, origins, rp_id, true))
+  assert(!(c.sig_valid)(lv_build_passkey_sig(sk, pk, entry_hash, "https://app.still.fail", "evil.example", "webauthn.get", 1, false), entry_hash, origins, rp_id, true))
+  assert(!(c.sig_valid)(lv_build_passkey_sig(sk, pk, other_hash, "https://app.still.fail", rp_id, "webauthn.get", 1, false), entry_hash, origins, rp_id, true))
+  assert(!(c.sig_valid)(lv_build_passkey_sig(sk, pk, entry_hash, "https://app.still.fail", rp_id, "webauthn.get", 1, true), entry_hash, origins, rp_id, true))
+  assert(!(c.sig_valid)(lv_build_passkey_sig(sk, pk, entry_hash, "https://app.still.fail", rp_id, "webauthn.get", 0, false), entry_hash, origins, rp_id, true))
+  assert(!(c.sig_valid)(lv_build_passkey_sig(sk, pk, entry_hash, "https://app.still.fail", rp_id, "webauthn.create", 1, false), entry_hash, origins, rp_id, true))
+
+  // 2. Valid ES256 device signature -> accepted when passkey=false, rejected when passkey=true or tampered
+  let digest = match base_codec::hex_decode(entry_hash) { Some(b) => b; None => panic("bad hex") }
+  let tag = "stillfail-lock/1 sig".to_bytes()
+  let msg = Bytes::new(tag.length() + 1 + digest.length())
+  for i in 0..<tag.length() { msg[i] = tag[i] }
+  msg[tag.length()] = 0 as Byte
+  for i in 0..<digest.length() { msg[tag.length() + 1 + i] = digest[i] }
+  let es_raw = match crypto::p256_sign_es256(sk, msg) { Ok(s) => s; Err(_) => panic("es256 sign failed") }
+  let es_sig = form::Json::Obj([
+    ("key", form::Json::Str(key_id)),
+    ("alg", form::Json::Str("ES256")),
+    ("sig", form::Json::Str(base_codec::base64url_encode(es_raw))),
+  ])
+  assert((c.sig_valid)(es_sig, entry_hash, origins, rp_id, false))
+  assert(!(c.sig_valid)(es_sig, entry_hash, origins, rp_id, true))
+  assert(!(c.sig_valid)(es_sig, other_hash, origins, rp_id, false))
+}

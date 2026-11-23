@@ -1,0 +1,358 @@
+// Workspace, station, account, and vault view projections strictly conforming to
+// `client/core-ts/src/shapes/{station,vault,common}.ts`.
+// Enforces the conform/reshaped principle: list items strip heavy detail-page fields
+// (e.g. `apiProviders`, `runtimes`/`models`, `profiles`, `connects`, `slackUsers`, tokens).
+
+import "base_codec"
+import "sql"
+import "store"
+
+/// Project the `workspaces` list topic (`workspace` table).
+/// Strips internal fields (`cloud_keys`, `lock_chain`, full `members`, `secrets`).
+pub fn project_workspaces(db : sql::Sql) -> sql::SqlResult[base_codec::Json] {
+  let rows = match store::list_workspaces(db) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rs) => rs
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let j = parse_json_or_null(r.json)
+    let name = match j_opt_str(j, "name") {
+      Some(n) => n
+      None => r.id
+    }
+    let role_s = match j_opt_str(j, "role") {
+      Some(s) => s
+      None => "member"
+    }
+    let stations_n = j_arr(j, "stations").length()
+    let item : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(r.id)),
+      ("name", base_codec::json_str(name)),
+      ("role", base_codec::json_str(role_s)),
+      ("stationsCount", base_codec::json_int(stations_n)),
+    ]
+    push_opt_str(item, "emoji", j_opt_str(j, "emoji"))
+    push_opt_str(item, "icon", j_opt_str(j, "icon"))
+    push_opt_bool(item, "locked", j_opt_bool(j, "locked"))
+    out.push(base_codec::json_obj(item))
+  }
+  sql::SqlResult::Ok(base_codec::json_obj([("workspaces", base_codec::json_arr(out))]))
+}
+
+/// Project one workspace detail topic (`workspace`).
+pub fn project_workspace(db : sql::Sql, workspace_id : String) -> sql::SqlResult[Option[base_codec::Json]] {
+  let row = match store::get_workspace(db, workspace_id) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(Some(r)) => r
+    sql::SqlResult::Ok(None) => return sql::SqlResult::Ok(None)
+  }
+  let j = parse_json_or_null(row.json)
+  let name = match j_opt_str(j, "name") {
+    Some(n) => n
+    None => row.id
+  }
+  let role_s = match j_opt_str(j, "role") {
+    Some(s) => s
+    None => "member"
+  }
+  // Project members stripping any internal credentials/tokens.
+  let raw_members = j_arr(j, "members")
+  let members_out : Array[base_codec::Json] = []
+  for i in 0..<raw_members.length() {
+    let m = raw_members[i]
+    let mf : Array[(String, base_codec::Json)] = [
+      ("sub", base_codec::json_str(j_str(m, "sub"))),
+      ("email", base_codec::json_str(j_str(m, "email"))),
+      ("name", base_codec::json_str(match j_opt_str(m, "name") { Some(s) => s; None => j_str(m, "email") })),
+      ("role", base_codec::json_str(match j_opt_str(m, "role") { Some(s) => s; None => "member" })),
+    ]
+    push_opt_str(mf, "picture", j_opt_str(m, "picture"))
+    members_out.push(base_codec::json_obj(mf))
+  }
+  let stations_out = match project_stations(db, workspace_id) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(s) => s
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(row.id)),
+    ("name", base_codec::json_str(name)),
+    ("role", base_codec::json_str(role_s)),
+    ("locked", base_codec::json_bool(j_bool(j, "locked"))),
+    ("members", base_codec::json_arr(members_out)),
+    ("stations", stations_out),
+  ]
+  push_opt_str(fields, "emoji", j_opt_str(j, "emoji"))
+  push_opt_str(fields, "icon", j_opt_str(j, "icon"))
+  sql::SqlResult::Ok(Some(base_codec::json_obj(fields)))
+}
+
+fn project_host_row(host : base_codec::Json) -> base_codec::Json {
+  let out : Array[(String, base_codec::Json)] = [
+    ("identity", base_codec::json_str(j_str(host, "identity"))),
+    ("os", base_codec::json_str(j_str(host, "os"))),
+    ("meters", base_codec::json_arr(j_arr(host, "meters"))),
+    ("egressText", base_codec::json_str(j_str(host, "egressText"))),
+  ]
+  base_codec::json_obj(out)
+}
+
+fn project_overview_row(ov : base_codec::Json) -> base_codec::Json {
+  let out : Array[(String, base_codec::Json)] = []
+  match base_codec::json_get(ov, "viewer") {
+    Some(v) => out.push(("viewer", v))
+    None => out.push(("viewer", base_codec::json_obj([("via", base_codec::json_str("mesh"))])))
+  }
+  match base_codec::json_get(ov, "counts") {
+    Some(c) => out.push(("counts", c))
+    None => out.push(("counts", base_codec::json_obj([
+      ("sessions", base_codec::json_int(0)),
+      ("running", base_codec::json_int(0)),
+      ("warm", base_codec::json_int(0)),
+    ])))
+  }
+  push_opt_json(out, "disk", base_codec::json_get(ov, "disk"))
+  push_opt_json(out, "drive", base_codec::json_get(ov, "drive"))
+  base_codec::json_obj(out)
+}
+
+/// Project `stations` list topic (`Array[StationRow]`, strictly conforming to `shapes/station.ts`).
+/// Strips detail-only heavy fields (`runtimes`, `models`, `apiProviders`, `profiles`, `connects`,
+/// `slackUsers`, `slackTeams`, `logins`, `updates`, `agentEnv`).
+pub fn project_stations(db : sql::Sql, workspace_id : String) -> sql::SqlResult[base_codec::Json] {
+  let rows = match store::list_stations(db, kind="overview") {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rs) => rs
+  }
+  let prefix = workspace_id + "/"
+  let out : Array[base_codec::Json] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    if workspace_id.length() > 0 && !r.address.starts_with(prefix) {
+      continue
+    }
+    let j = parse_json_or_null(r.json)
+    let id = match j_opt_str(j, "id") {
+      Some(s) => s
+      None => if r.address.starts_with(prefix) { r.address.slice(prefix.length(), r.address.length()) } else { r.address }
+    }
+    let name = match j_opt_str(j, "name") {
+      Some(s) => s
+      None => id
+    }
+    let online = j_bool(j, "online")
+    let reconnecting = j_bool(j, "reconnecting")
+    let state_busy = j_bool(j, "stateBusy")
+    let state_text = match j_opt_str(j, "stateText") {
+      Some(s) => s
+      None => if online { "在线" } else { "离线" }
+    }
+    let summary = match j_opt_str(j, "summary") {
+      Some(s) => s
+      None => state_text
+    }
+    let sf : Array[(String, base_codec::Json)] = [
+      ("station", base_codec::json_str(r.address)),
+      ("id", base_codec::json_str(id)),
+      ("name", base_codec::json_str(name)),
+      ("summary", base_codec::json_str(summary)),
+      ("online", base_codec::json_bool(online)),
+      ("reconnecting", base_codec::json_bool(reconnecting)),
+      ("stateText", base_codec::json_str(state_text)),
+      ("stateBusy", base_codec::json_bool(state_busy)),
+      ("problems", base_codec::json_arr(j_arr(j, "problems"))),
+      ("joined", base_codec::json_bool(j_bool(j, "joined"))),
+      ("mine", base_codec::json_bool(j_bool(j, "mine"))),
+      ("acceptAutoChats", base_codec::json_bool(j_bool(j, "acceptAutoChats"))),
+    ]
+    push_opt_str(sf, "emoji", j_opt_str(j, "emoji"))
+    push_opt_str(sf, "icon", j_opt_str(j, "icon"))
+    push_opt_str(sf, "face", j_opt_str(j, "face"))
+    push_opt_str(sf, "line", j_opt_str(j, "line"))
+    push_opt_str(sf, "blocked", j_opt_str(j, "blocked"))
+    push_opt_bool(sf, "protect", j_opt_bool(j, "protect"))
+    push_opt_int64(sf, "lastSeen", j_opt_int64(j, "lastSeen"))
+    push_opt_str(sf, "version", j_opt_str(j, "version"))
+    push_opt_json(sf, "way", base_codec::json_get(j, "way"))
+    push_opt_str(sf, "home", j_opt_str(j, "home"))
+    match base_codec::json_get(j, "host") {
+      Some(h) =>
+      match h {
+        base_codec::Json::Obj(_) => sf.push(("host", project_host_row(h)))
+        _ => ()
+      }
+      None => ()
+    }
+    match base_codec::json_get(j, "overview") {
+      Some(ov) =>
+      match ov {
+        base_codec::Json::Obj(_) => sf.push(("overview", project_overview_row(ov)))
+        _ => ()
+      }
+      None => ()
+    }
+    out.push(base_codec::json_obj(sf))
+  }
+  sql::SqlResult::Ok(base_codec::json_arr(out))
+}
+
+/// Project `accounts` topic from `account_doc`, strictly stripping tokens/secrets.
+pub fn project_accounts(db : sql::Sql) -> sql::SqlResult[base_codec::Json] {
+  let raw_accounts = match store::get_account_doc(db, "accounts") {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(Some(s)) => parse_json_or_null(s)
+    sql::SqlResult::Ok(None) => base_codec::json_null()
+  }
+  let active_id = match store::get_account_doc(db, "active_account") {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(Some(s)) => {
+      let aj = parse_json_or_null(s)
+      match aj {
+        base_codec::Json::Str(id) => id
+        _ => match j_opt_str(aj, "id") {
+          Some(id) => id
+          None => s
+        }
+      }
+    }
+    sql::SqlResult::Ok(None) => j_str(raw_accounts, "active")
+  }
+  let items = match raw_accounts {
+    base_codec::Json::Arr(xs) => xs
+    base_codec::Json::Obj(_) => j_arr(raw_accounts, "accounts")
+    _ => []
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<items.length() {
+    let a = items[i]
+    let id = j_str(a, "id")
+    let email = j_str(a, "email")
+    let name = match j_opt_str(a, "name") {
+      Some(n) => n
+      None => email
+    }
+    let provider = match j_opt_str(a, "provider") {
+      Some(p) => p
+      None => "stillfail"
+    }
+    let af : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(id)),
+      ("email", base_codec::json_str(email)),
+      ("name", base_codec::json_str(name)),
+      ("provider", base_codec::json_str(provider)),
+      ("active", base_codec::json_bool(id == active_id && active_id.length() > 0)),
+    ]
+    push_opt_str(af, "picture", j_opt_str(a, "picture"))
+    out.push(base_codec::json_obj(af))
+  }
+  sql::SqlResult::Ok(base_codec::json_obj([
+    ("accounts", base_codec::json_arr(out)),
+    ("active", base_codec::json_str(active_id)),
+  ]))
+}
+
+/// Project `vaults` topic (`VaultsView`, strictly conforming to `shapes/vault.ts` and Law C).
+/// Guarantees:
+/// - `vaults.locked == safe_mode.locked`
+/// - When `safe_mode.locked && available`: `vaults.canSign == safe_mode.signs`,
+///   `vaults.confirmText` matches `safe_mode.me.confirm_text`, and when unconfirmed `stateText` is omitted.
+/// - Never sets `plain: true` (`plainMode` is always false) and never mentions 「个人锁」.
+pub fn project_vaults(
+  db : sql::Sql,
+  workspace_id : String,
+  safe_mode : SafeModeView,
+  available : Bool,
+  set_up : Bool,
+) -> sql::SqlResult[base_codec::Json] {
+  let doc_raw = match store::get_account_doc(db, "vaults:" + workspace_id) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(Some(s)) => parse_json_or_null(s)
+    sql::SqlResult::Ok(None) => base_codec::json_null()
+  }
+
+  let raw_vaults = j_arr(doc_raw, "vaults")
+  let vaults_out : Array[base_codec::Json] = []
+  let mut total_items = 0
+  let mut has_workspace_vault = false
+  for i in 0..<raw_vaults.length() {
+    let v = raw_vaults[i]
+    let v_scope = j_opt_str(v, "scope")
+    match v_scope {
+      Some("workspace") => {
+        has_workspace_vault = true
+      }
+      _ => ()
+    }
+    let items_n = match j_opt_int(v, "items") {
+      Some(n) => n
+      None => 0
+    }
+    total_items += items_n
+    // Conform to `VaultRow` strictly (strip encrypted key blobs / raw ciphertexts / private fields).
+    let vf : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(j_str(v, "id"))),
+      ("name", base_codec::json_str(j_str(v, "name"))),
+      ("owner", base_codec::json_str(j_str(v, "owner"))),
+      ("ownerName", base_codec::json_str(j_str(v, "ownerName"))),
+      ("mine", base_codec::json_bool(j_bool(v, "mine"))),
+      ("members", base_codec::json_arr(j_arr(v, "members"))),
+      ("station", base_codec::json_str(j_str(v, "station"))),
+      ("stationName", base_codec::json_str(j_str(v, "stationName"))),
+      ("items", base_codec::json_int(items_n)),
+      ("devices", base_codec::json_int(match j_opt_int(v, "devices") { Some(n) => n; None => 0 })),
+      ("open", base_codec::json_bool(j_bool(v, "open"))),
+      ("keyed", base_codec::json_bool(j_bool(v, "keyed"))),
+      ("missing", base_codec::json_int(match j_opt_int(v, "missing") { Some(n) => n; None => 0 })),
+      ("recoverable", base_codec::json_bool(j_bool(v, "recoverable"))),
+    ]
+    push_opt_str(vf, "scope", v_scope)
+    push_opt_bool(vf, "manages", j_opt_bool(v, "manages"))
+    push_opt_str(vf, "lasts", j_opt_str(v, "lasts"))
+    push_opt_str(vf, "waits", j_opt_str(v, "waits"))
+    vaults_out.push(base_codec::json_obj(vf))
+  }
+
+  let requests_out = j_arr(doc_raw, "requests")
+  let refused_out = j_arr(doc_raw, "refused")
+
+  let can_sign = available && safe_mode.signs
+  let confirm_text : Option[String] = if available { safe_mode.me.confirm_text } else { None }
+  let state_text : Option[String] = if !available {
+    None
+  } else if safe_mode.locked && !safe_mode.me.confirmed {
+    // Law C: unconfirmed device is never held on vaults page by a text card with nothing to press.
+    None
+  } else if confirm_text.is_some() {
+    safe_mode.me.state_text
+  } else {
+    None
+  }
+
+  let status_bad = requests_out.length() > 0
+  let status_text = if status_bad {
+    requests_out.length().to_string() + " 项待审批"
+  } else if set_up {
+    total_items.to_string() + " 项密钥"
+  } else {
+    "未开启"
+  }
+
+  let out : Array[(String, base_codec::Json)] = [
+    ("available", base_codec::json_bool(available)),
+    ("locked", base_codec::json_bool(safe_mode.locked)),
+    ("canSign", base_codec::json_bool(can_sign)),
+    ("setUp", base_codec::json_bool(set_up)),
+    ("vaults", base_codec::json_arr(vaults_out)),
+    ("requests", base_codec::json_arr(requests_out)),
+    ("refused", base_codec::json_arr(refused_out)),
+    ("statusText", base_codec::json_str(status_text)),
+    ("statusBad", base_codec::json_bool(status_bad)),
+  ]
+  push_opt_str(out, "stateText", state_text)
+  push_opt_str(out, "confirmText", confirm_text)
+  if safe_mode.manages && set_up && !has_workspace_vault {
+    out.push(("canCreateWorkspace", base_codec::json_bool(true)))
+  }
+  sql::SqlResult::Ok(base_codec::json_obj(out))
+}

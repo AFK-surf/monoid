@@ -57,6 +57,13 @@ pub fn spec_for_topic(topic_name : String) -> Option[KeyedSpec] {
   if topic_name == "vaultItems" {
     return Some(spec_fields([("items", spec_items("id"))]))
   }
+  if topic_name == "lock" {
+    return Some(spec_fields([
+      ("members", spec_items("sub")),
+      ("stations", spec_items("id")),
+      ("pending", spec_items("id")),
+    ]))
+  }
   if topic_name == "search" || topic_name == "chatSearch" {
     let msg_hit = KeyedSpec::{ key: ["station", "thread", "seq"], item: None, fields: [] }
     return Some(spec_fields([("items", chat_rows), ("messages", msg_hit)]))
@@ -70,7 +77,37 @@ pub fn value_token(v : base_codec::Json) -> String {
 }
 
 pub fn json_equal(a : base_codec::Json, b : base_codec::Json) -> Bool {
-  base_codec::json_stringify(a) == base_codec::json_stringify(b)
+  match (a, b) {
+    (base_codec::Json::Null, base_codec::Json::Null) => true
+    (base_codec::Json::Bool(x), base_codec::Json::Bool(y)) => x == y
+    (base_codec::Json::Num(x, _), base_codec::Json::Num(y, _)) => x == y
+    (base_codec::Json::Str(x), base_codec::Json::Str(y)) => x == y
+    (base_codec::Json::Arr(xs), base_codec::Json::Arr(ys)) => {
+      if xs.length() != ys.length() {
+        return false
+      }
+      for i in 0..<xs.length() {
+        if !json_equal(xs[i], ys[i]) {
+          return false
+        }
+      }
+      true
+    }
+    (base_codec::Json::Obj(xf), base_codec::Json::Obj(yf)) => {
+      if xf.length() != yf.length() {
+        return false
+      }
+      for i in 0..<xf.length() {
+        let (k, xv) = xf[i]
+        match base_codec::json_obj_get(yf, k) {
+          Some(yv) => if !json_equal(xv, yv) { return false }
+          None => return false
+        }
+      }
+      true
+    }
+    _ => false
+  }
 }
 
 fn spec_field_get(spec : KeyedSpec, name : String) -> Option[KeyedSpec] {

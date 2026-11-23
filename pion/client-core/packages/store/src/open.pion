@@ -21,6 +21,7 @@ pub struct ChatOpenView {
   pub station : String
   pub thread : Int
   pub entries : Array[Entry]
+  pub raw_entries : Array[(Int, base_codec::Json)]
   pub trees : Map[String, String]
   pub tree_keys : Array[String]
   pub unread : Array[String]
@@ -68,18 +69,23 @@ pub fn open_chat(
     }
   }
   let all : Array[Entry] = []
+  let all_raw : Array[(Int, base_codec::Json)] = []
   for i in 0..<read.length() {
     let r = read[i]
+    let n_val = sql::col_int(r, 0)
     let parsed = match base_codec::json_parse(sql::col_text(r, 1)) {
       base_codec::JsonParseResult::Ok(j) => j
       base_codec::JsonParseResult::Err(_) => base_codec::json_null()
     }
-    all.push(Entry::of_json(sql::col_int(r, 0), parsed))
+    all.push(Entry::of_json(n_val, parsed))
+    all_raw.push((n_val, parsed))
   }
   let (from, to) = first_shown_window(all, rows, at=at)
   let entries : Array[Entry] = []
+  let raw_entries : Array[(Int, base_codec::Json)] = []
   for i in from..<to {
     entries.push(all[i])
+    raw_entries.push(all_raw[i])
   }
   let keyed : Map[String, String] = Map::new()
   let keys : Array[String] = []
@@ -129,6 +135,7 @@ pub fn open_chat(
     station: store.station,
     thread: thread,
     entries: entries,
+    raw_entries: raw_entries,
     trees: trees,
     tree_keys: tree_keys,
     unread: unread,

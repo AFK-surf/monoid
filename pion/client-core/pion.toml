@@ -5,6 +5,7 @@ members = [
   "packages/protocol",
   "packages/core_abi",
   "packages/sync",
+  "packages/views",
 ]
 
 [workspace.dependencies]
@@ -32,3 +33,4 @@ store = { path = "packages/store" }
 protocol = { path = "packages/protocol" }
 core_abi = { path = "packages/core_abi" }
 sync = { path = "packages/sync" }
+views = { path = "packages/views" }
