@@ -8,7 +8,8 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { portableComponent, portableName } from "../src/ops/paths.ts";
-import { unix } from "../src/platform/unix.ts";
+import { elasticMemory, isMonoidStationVm } from "../src/platform/text.ts";
+import { elasticMemoryReader, unix } from "../src/platform/unix.ts";
 import { cmdPath, drives, gitShell, gitShellSoon, posixShells, readShim, savedPathOf, windows } from "../src/platform/windows.ts";
 import { syncCalls } from "./main-thread-sync.ts";
 
@@ -259,4 +260,65 @@ test("Windows' sh looked for off the station's thread waits on no file", async (
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("Monoid Machine station VM cmdline detection matches monoid.vm=station as a whole word", () => {
+  const real = "memory_hotplug.memmap_on_memory=1 console=hvc0 lockdown=confidentiality monoid.vm=station systemd.hostname=station psi=1 loglevel=4";
+  assert.equal(isMonoidStationVm(real), true);
+  assert.equal(isMonoidStationVm("monoid.vm=apps"), false);
+  assert.equal(isMonoidStationVm("xmonoid.vm=station"), false);
+  assert.equal(isMonoidStationVm("monoid.vm=stationx"), false);
+  assert.equal(isMonoidStationVm(""), false);
+});
+
+test("elasticMemory adds unplugged dom0 headroom and leaves invalid or unknown memory unchanged", () => {
+  const T = 12681484 * 1024;
+  const U = 4_000_000_000;
+  const base = { totalBytes: T, usedBytes: U, swapUsedBytes: 0 };
+  const pvg = { boot: 6576668672, guarantee: 11811160064, max: 26306674688, plugged: 6845104128, target: 6845104128 };
+  assert.deepEqual(elasticMemory(base, pvg), { totalBytes: T + 12884901888, usedBytes: U, swapUsedBytes: 0 });
+  // max <= held: unchanged.
+  assert.deepEqual(elasticMemory(base, { boot: 1000, plugged: 500, max: 1500 }), base);
+  assert.deepEqual(elasticMemory(base, { boot: 1000, plugged: 500, max: 1200 }), base);
+  // Missing field, non-number, non-finite, null, or known: false: unchanged.
+  assert.deepEqual(elasticMemory(base, { boot: 1000, plugged: 500 }), base);
+  assert.deepEqual(elasticMemory(base, { boot: "1000", plugged: 500, max: 5000 }), base);
+  assert.deepEqual(elasticMemory(base, { boot: 1000, plugged: 500, max: Number.POSITIVE_INFINITY }), base);
+  assert.deepEqual(elasticMemory(base, null), base);
+  const unknown = { totalBytes: T, usedBytes: 0, swapUsedBytes: null, known: false };
+  assert.deepEqual(elasticMemory(unknown, pvg), unknown);
+});
+
+test("elasticMemoryReader skips fetch off a station VM and caches the last good answer for 60 s", async () => {
+  let fetches = 0;
+  const nonVm = elasticMemoryReader(
+    async () => "console=hvc0 monoid.vm=apps",
+    async () => { fetches++; return { boot: 1, plugged: 0, max: 10 }; },
+    () => 1_000,
+  );
+  assert.equal(await nonVm(), null);
+  assert.equal(await nonVm(), null);
+  assert.equal(fetches, 0);
+
+  const T = 12681484 * 1024;
+  const U = 4_000_000_000;
+  const base = { totalBytes: T, usedBytes: U, swapUsedBytes: null };
+  const pvg = { boot: 6576668672, guarantee: 11811160064, max: 26306674688, plugged: 6845104128, target: 6845104128 };
+  let clock = 10_000;
+  let cmdlineReads = 0;
+  let nextAnswer: () => Promise<unknown> = async () => pvg;
+  const vm = elasticMemoryReader(
+    async () => { cmdlineReads++; return "console=hvc0 monoid.vm=station psi=1"; },
+    () => nextAnswer(),
+    () => clock,
+  );
+  assert.deepEqual(elasticMemory(base, await vm()), { totalBytes: T + 12884901888, usedBytes: U, swapUsedBytes: null });
+  // Failing fetch under 60 s keeps the last good answer.
+  nextAnswer = async () => { throw new Error("timeout"); };
+  clock = 10_000 + 59_999;
+  assert.deepEqual(elasticMemory(base, await vm()), { totalBytes: T + 12884901888, usedBytes: U, swapUsedBytes: null });
+  // At 60 s and after, falls back to plain meminfo.
+  clock = 10_000 + 60_000;
+  assert.deepEqual(elasticMemory(base, await vm()), base);
+  assert.equal(cmdlineReads, 1);
 });

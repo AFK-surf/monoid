@@ -95,6 +95,8 @@ pub fn domain_of(String) -> String?
 
 pub fn echoes_of(String, String?) -> Bool?
 
+pub fn elastic_memory(Memory, @json.Json) -> Memory
+
 pub fn end_choice(Array[ProcessInfo]?, Double, String, Map[Double, Whose], Array[Double]) -> Result[String, String]
 
 pub fn end_group_looks(Double) -> Int32
@@ -188,6 +190,10 @@ pub fn in_terminal(Bool, String?, String, Array[String], Int32, Int32) -> (Strin
 pub fn inside(Plat, String, String) -> Bool
 
 pub fn invalid_json_message(Catalog, String, String, String) -> String
+
+pub fn is_dom0_mem_answer(@json.Json) -> Bool
+
+pub fn is_monoid_station_vm(String) -> Bool
 
 pub fn iso_time(Double) -> String
 

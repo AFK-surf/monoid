@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { wall } from "../ops/fibers.ts";
 import type { Env, Found, Host, HostSample, Platform } from "./index.ts";
 import { holder, osCpuTicks } from "./processes.ts";
-import { fieldOrNull, firstWord, idleOfIoreg, parseF64, parseLsof, parseMounts, parsePs, parseTopMem, parseU64, pressureOfAvailable, pressureOfLevel, pressureOfSwap, procStatTicks, swapoutsOf, swapUsedOf, trim, worsePressure } from "./text.ts";
+import { elasticMemory, fieldOrNull, firstWord, idleOfIoreg, isDom0MemAnswer, isMonoidStationVm, parseF64, parseLsof, parseMounts, parsePs, parseTopMem, parseU64, pressureOfAvailable, pressureOfLevel, pressureOfSwap, procStatTicks, swapoutsOf, swapUsedOf, trim, worsePressure } from "./text.ts";
 
 const MACOS = process.platform === "darwin";
 /// Names in the order people read them (numbers by value, case aside), as the drive sorts them.
@@ -163,6 +163,43 @@ async function macPressureReading(): Promise<{ memory: HostSample["memory"]; swa
   return { memory, swap: pressureOfSwap(swapUsedOf(swap), memory.totalBytes > 0 ? memory.totalBytes : null, perSecond) };
 }
 
+const DOM0_MEM_URL = "http://10.77.0.2:7070/v1/mem/self";
+const DOM0_MEM_TIMEOUT_MS = 500;
+const DOM0_MEM_STALE_MS = 60_000;
+
+/// On a Monoid Machine, l4h hot-plugs VM memory through dom0's broker in 512 MiB steps, so /proc/meminfo reports only
+/// what is plugged now. Dom0's `max` is the pool shared with the `apps` VM, so it is an upper bound.
+export function elasticMemoryReader(
+  readCmdline: () => Promise<string> = () => readFile("/proc/cmdline", "utf8").catch(() => ""),
+  fetchAnswer: () => Promise<unknown> = async () => {
+    const res = await fetch(DOM0_MEM_URL, { signal: AbortSignal.timeout(DOM0_MEM_TIMEOUT_MS) });
+    if (!res.ok) return null;
+    return res.json();
+  },
+  now: () => number = () => wall.now(),
+): () => Promise<unknown> {
+  let isVm: Promise<boolean> | null = null;
+  let last: { at: number; answer: unknown } | null = null;
+  return async () => {
+    isVm ??= readCmdline().then(isMonoidStationVm, () => false);
+    if (!(await isVm)) return null;
+    let answer: unknown = null;
+    try {
+      answer = await fetchAnswer();
+    } catch {
+      answer = null;
+    }
+    const t = now();
+    if (isDom0MemAnswer(answer)) {
+      last = { at: t, answer };
+      return answer;
+    }
+    return last !== null && t - last.at < DOM0_MEM_STALE_MS ? last.answer : null;
+  };
+}
+
+const readElasticMemory = elasticMemoryReader();
+
 const host: Host = {
   /// On macOS the CPUs' user, system, idle and nice time (os.cpus, from the same counters as Mach's
   /// HOST_CPU_LOAD_INFO, in ms rather than ticks: the share is the same); elsewhere /proc/stat, read off the main
@@ -207,15 +244,18 @@ const host: Host = {
         ownRss: bytes !== undefined ? Number(bytes) : await rssOfPs(),
       };
     }
-    const [info, cpus, up, ownRss] = await Promise.all([file("/proc/meminfo"), file("/proc/cpuinfo"), file("/proc/uptime"), rssOfPs()]);
+    const [info, cpus, up, ownRss, dom0] = await Promise.all([file("/proc/meminfo"), file("/proc/cpuinfo"), file("/proc/uptime"), rssOfPs(), readElasticMemory()]);
     const total = fieldOrNull(info, "MemTotal");
     const available = fieldOrNull(info, "MemAvailable");
     const swapTotal = fieldOrNull(info, "SwapTotal");
     const swapFree = fieldOrNull(info, "SwapFree");
     const swapUsedBytes = swapTotal !== null && swapFree !== null && swapFree <= swapTotal ? (swapTotal - swapFree) * 1024 : null;
-    const memory = total === null || total <= 0 || available === null || available > total
-      ? { totalBytes: (total ?? 0) * 1024, usedBytes: 0, swapUsedBytes, known: false }
-      : { totalBytes: total * 1024, usedBytes: (total - available) * 1024, swapUsedBytes };
+    const memory = elasticMemory(
+      total === null || total <= 0 || available === null || available > total
+        ? { totalBytes: (total ?? 0) * 1024, usedBytes: 0, swapUsedBytes, known: false }
+        : { totalBytes: total * 1024, usedBytes: (total - available) * 1024, swapUsedBytes },
+      dom0,
+    );
     let cpuModel = "";
     for (const l of cpus.split("\n")) {
       if (!l.startsWith("model name")) continue;
@@ -704,6 +744,7 @@ export const unix: Platform = {
           : pressureOfLevel(level, mem.totalBytes - mem.usedBytes, mem.totalBytes);
         return worsePressure(ofLevel, read?.swap ?? null);
       }
+      // Pressure is about memory held now, not elastic headroom from dom0.
       const info = await readFile("/proc/meminfo", "utf8");
       return pressureOfAvailable(fieldOrNull(info, "MemAvailable"), fieldOrNull(info, "MemTotal"));
     } catch {

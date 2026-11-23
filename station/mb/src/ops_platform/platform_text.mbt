@@ -455,3 +455,49 @@ pub fn tree_of(table : Array[ProcessInfo]) -> Array[(Double, Array[Double])] {
   }
   children
 }
+
+///|
+/// text.ts `isMonoidStationVm`: whether `monoid.vm=station` is a whole whitespace-separated word.
+pub fn is_monoid_station_vm(cmdline : String) -> Bool {
+  split_words(cmdline).contains("monoid.vm=station")
+}
+
+///|
+/// text.ts `isDom0MemAnswer`: whether `answer` has finite `boot > 0`, `plugged >= 0`, and `max`.
+pub fn is_dom0_mem_answer(answer : Json) -> Bool {
+  guard answer is Object(o) else { return false }
+  guard o.get("boot") is Some(Number(boot, ..)) &&
+    o.get("plugged") is Some(Number(plugged, ..)) &&
+    o.get("max") is Some(Number(max, ..)) else {
+    return false
+  }
+  @jsjson.is_finite(boot) &&
+  @jsjson.is_finite(plugged) &&
+  @jsjson.is_finite(max) &&
+  boot > 0.0 &&
+  plugged >= 0.0
+}
+
+///|
+/// text.ts `elasticMemory`: adds dom0's unplugged headroom (`max - (boot + plugged)`) to `total_bytes`.
+pub fn elastic_memory(memory : Memory, answer : Json) -> Memory {
+  if memory.known == Some(false) {
+    return memory
+  }
+  guard answer is Object(o) else { return memory }
+  guard o.get("boot") is Some(Number(boot, ..)) &&
+    o.get("plugged") is Some(Number(plugged, ..)) &&
+    o.get("max") is Some(Number(max, ..)) else {
+    return memory
+  }
+  if !@jsjson.is_finite(boot) ||
+    !@jsjson.is_finite(plugged) ||
+    !@jsjson.is_finite(max) {
+    return memory
+  }
+  let held = boot + plugged
+  if !(boot > 0.0) || !(plugged >= 0.0) || !(max > held) {
+    return memory
+  }
+  { ..memory, total_bytes: memory.total_bytes + (max - held) }
+}

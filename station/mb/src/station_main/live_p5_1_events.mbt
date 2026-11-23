@@ -16,6 +16,50 @@ fn cpu_ticks() -> @events.Ticks? {
 }
 
 ///|
+let monoid_station_vm : Ref[Bool?] = { val: None }
+
+///|
+let elastic_mem_last : Ref[(Double, Json)?] = { val: None }
+
+///|
+/// On a Monoid Machine, l4h hot-plugs VM memory through dom0's broker in 512 MiB steps, so /proc/meminfo reports only
+/// what is plugged now. Dom0's `max` is the pool shared with the `apps` VM, so it is an upper bound.
+async fn read_elastic_memory(host : @host.Host) -> Json {
+  let is_vm = match monoid_station_vm.val {
+    Some(v) => v
+    None => {
+      let v = @ops_platform.is_monoid_station_vm(
+        shell_read_text(host, "/proc/cmdline").unwrap_or(""),
+      )
+      monoid_station_vm.val = Some(v)
+      v
+    }
+  }
+  if !is_vm {
+    return Json::null()
+  }
+  let answer = try {
+    let r = host.fetch("http://10.77.0.2:7070/v1/mem/self", timeout_ms=500)
+    if r.status >= 200 && r.status < 300 {
+      @json.parse(r.text()) catch { _ => Json::null() }
+    } else {
+      Json::null()
+    }
+  } catch {
+    _ => Json::null()
+  }
+  let now = p5_epoch_ms().to_double()
+  if @ops_platform.is_dom0_mem_answer(answer) {
+    elastic_mem_last.val = Some((now, answer))
+    return answer
+  }
+  match elastic_mem_last.val {
+    Some((at, last)) if now - at < 60000.0 => last
+    _ => Json::null()
+  }
+}
+
+///|
 /// platform's `host.sample`: the memory as the machine counts it, the CPU's model, the uptime, the OS, this process's
 /// own memory.
 async fn host_sample(host : @host.Host) -> Json {
@@ -72,6 +116,7 @@ async fn host_sample(host : @host.Host) -> Json {
       shell_read_text(host, "/proc/cpuinfo").unwrap_or(""),
       shell_read_text(host, "/proc/uptime").unwrap_or(""),
     )
+    let memory = @ops_platform.elastic_memory(memory, read_elastic_memory(host))
     let release = run_said(host, "/bin/uname", ["-r"], 3000).unwrap_or("")
     {
       "memory": memory.to_json(),

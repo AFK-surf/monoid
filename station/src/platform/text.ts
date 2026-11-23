@@ -149,3 +149,33 @@ export function parseMounts(out: string): string[] {
   }
   return found;
 }
+
+/// Whether a Linux kernel command line marks a Monoid Machine station VM (`monoid.vm=station` as a whole word).
+export function isMonoidStationVm(cmdline: string): boolean {
+  return splitWords(cmdline).includes("monoid.vm=station");
+}
+
+/// Whether `answer` is a well-formed dom0 elastic memory response (`boot`, `plugged`, `max` finite byte counts).
+export function isDom0MemAnswer(answer: unknown): answer is { boot: number; plugged: number; max: number } {
+  if (typeof answer !== "object" || answer === null) return false;
+  const { boot, plugged, max } = answer as { boot?: unknown; plugged?: unknown; max?: unknown };
+  return (
+    typeof boot === "number" &&
+    typeof plugged === "number" &&
+    typeof max === "number" &&
+    Number.isFinite(boot) &&
+    Number.isFinite(plugged) &&
+    Number.isFinite(max) &&
+    boot > 0 &&
+    plugged >= 0
+  );
+}
+
+/// Applies dom0's elastic memory answer (`boot`, `plugged`, `max` in bytes) to meminfo memory: adds unplugged headroom
+/// (`max - (boot + plugged)`) to `totalBytes` while keeping `usedBytes` and other fields unchanged.
+export function elasticMemory<T extends { totalBytes: number; usedBytes: number; known?: boolean }>(memory: T, answer: unknown): T {
+  if (memory.known === false || !isDom0MemAnswer(answer)) return memory;
+  const held = answer.boot + answer.plugged;
+  if (!(answer.max > held)) return memory;
+  return { ...memory, totalBytes: memory.totalBytes + (answer.max - held) };
+}

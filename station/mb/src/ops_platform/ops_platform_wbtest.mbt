@@ -248,3 +248,38 @@ test "the swap says what the memory used leaves out" {
   assert_eq(swapouts_of("Pages free: 1.\nSwapouts:                                  375142124.\n"), Some(375142124.0))
   assert_eq(swap_used_of("total = 68608.00M  used = 66279.69M  free = 2328.31M  (encrypted)"), Some(69499292221.0))
 }
+
+///|
+test "is_monoid_station_vm and elastic_memory" {
+  let real = "memory_hotplug.memmap_on_memory=1 console=hvc0 lockdown=confidentiality monoid.vm=station systemd.hostname=station psi=1 loglevel=4"
+  assert_true(is_monoid_station_vm(real))
+  assert_true(!is_monoid_station_vm("monoid.vm=apps"))
+  assert_true(!is_monoid_station_vm("xmonoid.vm=station"))
+  assert_true(!is_monoid_station_vm("monoid.vm=stationx"))
+  assert_true(!is_monoid_station_vm(""))
+
+  let total = 12681484.0 * 1024.0
+  let used = 4000000000.0
+  let base : Memory = { total_bytes: total, used_bytes: used, swap_used_bytes: Some(0.0), known: None }
+  let pvg : Json = {
+    "boot": 6576668672.0,
+    "guarantee": 11811160064.0,
+    "max": 26306674688.0,
+    "plugged": 6845104128.0,
+    "target": 6845104128.0,
+  }
+  let expanded = elastic_memory(base, pvg)
+  assert_eq(expanded.total_bytes, total + 12884901888.0)
+  assert_eq(expanded.used_bytes, used)
+  assert_eq(expanded.swap_used_bytes, Some(0.0))
+  assert_eq(expanded.known, None)
+
+  assert_eq(elastic_memory(base, { "boot": 1000.0, "plugged": 500.0, "max": 1500.0 }).total_bytes, total)
+  assert_eq(elastic_memory(base, { "boot": 1000.0, "plugged": 500.0, "max": 1200.0 }).total_bytes, total)
+  assert_eq(elastic_memory(base, { "boot": 1000.0, "plugged": 500.0 }).total_bytes, total)
+  assert_eq(elastic_memory(base, { "boot": "1000", "plugged": 500.0, "max": 5000.0 }).total_bytes, total)
+  assert_eq(elastic_memory(base, Json::null()).total_bytes, total)
+  let unknown : Memory = { total_bytes: total, used_bytes: 0.0, swap_used_bytes: None, known: Some(false) }
+  assert_eq(elastic_memory(unknown, pvg).total_bytes, total)
+  assert_eq(elastic_memory(unknown, pvg).known, Some(false))
+}
