@@ -243,6 +243,11 @@ async function turn(text) {
     const started = await tool("job_start", { name, port: Number(port), command: `cd '${dir}' && exec python3 -m http.server ${port} --bind 127.0.0.1` });
     record("assistant", [{ type: "text", text: started }]);
     said = await post(to, { text: words ?? name, kind: "all_done", done: "started the service that was asked for" });
+  } else if (/Your (?:request|grant) r_[\w-]+ (?:for|of) /.test(text)) {
+    // A rig or device grant, refusal or end the station tells the chat (station/src/rigs/requests.ts): ended here with
+    // chat_state, since still.fail's fake answers it with no MCP call, which the station takes for its tools lost and
+    // restarts it mid-session.
+    said = await tool("chat_state", { kind: "all_done", done: "noted the rig or device grant notice" });
   } else {
     // steps: a command and what it printed, an edit, then the answer
     const words = line("steps:");
@@ -303,7 +308,7 @@ async function drill(text, to, line) {
   return done(`drill: no such word in ${text.slice(0, 200)}`);
 }
 
-const ours = (text) => /still has no title, and nobody is at work in it now/.test(text) || /(^|\s)(card:|text-card:|steps:|serve:|md:|secret:|rig:|rigtask:|devtalk:|drill-[a-z]+:)/.test(text) ||/Granted: 「[^」]*」, grant r_|\(r_[\w-]+\) was (refused|let go)/.test(text);
+const ours = (text) => /still has no title, and nobody is at work in it now/.test(text) || /(^|\s)(card:|text-card:|steps:|serve:|md:|secret:|rig:|rigtask:|devtalk:|drill-[a-z]+:)/.test(text) ||/Granted: 「[^」]*」, grant r_|\(r_[\w-]+\) was (refused|let go)/.test(text) || /Your (?:request|grant) r_[\w-]+ (?:for|of) /.test(text);
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   let msg = null;
   try {

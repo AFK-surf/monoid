@@ -767,8 +767,7 @@ pub fn drag_ghost_node(v : @view.View) -> Unit {
     |> ignore
     g.box(fn(chip) {
       @sf.style_node(chip, fn() { fdrag_ghost_chip })
-      // (its shadow and its opacity, which style_node does not set: shadow=Lg, a little see-through)
-      chip.shadow(By(fn() { (15.0, 10.0, @ui.tree_theme().shadow) })).alpha(Is(0.9)) |> ignore
+      @sf.glass_capsule_node(chip, sharing=false, panel=true) |> ignore
       @sf.icon_node(chip, "", drag_icon, By(fn() { @sf.theme().p.muted }), name_now=fn() {
         match item() {
           Some(i) => dv_kind_icon(if i.dir { "folder" } else { dv_kind_of(i.name) })
@@ -812,10 +811,10 @@ let fclash_facts : @ui.Style = @ui.css("row w=Full px=S3 py=S2_5 gap=S3 radius=X
 let fclash_all : @ui.Style = @ui.css("row min_h=S9 gap=S2 align=ACenter")
 
 ///|
-/// The picture carried: a chip on the raised ground, its shadow under it.
+/// The picture carried: a floating liquid glass chip following the pointer.
 // kept across runs: a value (no field of it changes)
 let fdrag_ghost_chip : @ui.Style = @ui.css((
-  #|row h=S8 px=S3 gap=S2 align=ACenter radius=Lg bg=Raised
+  #|row h=S8 px=S3 gap=S2 align=ACenter radius=Lg
 ))
 
 ///|

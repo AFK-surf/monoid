@@ -99,7 +99,9 @@ export type OutsideChat = { workspace: string; workspaceName: string; station: s
 /// cold.ts; the default keeps nothing cold.
 export interface ColdStorage {
   isCold(key: string): Promise<boolean>;
-  restore(key: string): void | Promise<void>;
+  restore(key: string, opts?: { onlyIfUnarchived?: boolean }): void | Promise<void>;
+  /// Cancels any in-flight `workspace.pack` for this session.
+  cancelPack?(key: string): void;
   /// Packs what it can of an archived, idle session.
   pack(key: string): void | Promise<void>;
   /// Whether an archived session's directory holds more than its chat's files, and empties it of that.
@@ -1705,6 +1707,36 @@ export class Hub {
     return this.outsideHook?.(ws) ?? [];
   }
 
+  /// Background cold-storage restores started by `archiveBy(..., false)`, by session key.
+  private readonly restores = new Map<string, Set<Promise<void>>>();
+
+  trackRestore(key: string, work: Promise<void>): void {
+    let set = this.restores.get(key);
+    if (!set) this.restores.set(key, (set = new Set()));
+    const settled = work.then(() => {}, () => {});
+    set.add(settled);
+    void settled.finally(() => {
+      set.delete(settled);
+      if (set.size === 0) this.restores.delete(key);
+    });
+  }
+
+  async waitRestore(key: string): Promise<void> {
+    for (;;) {
+      const set = this.restores.get(key);
+      if (!set || set.size === 0) return;
+      await Promise.all([...set]);
+    }
+  }
+
+  async waitRestores(): Promise<void> {
+    for (;;) {
+      const all = [...this.restores.values()].flatMap((s) => [...s]);
+      if (all.length === 0) return;
+      await Promise.all(all);
+    }
+  }
+
   async shutdown() {
     this.holdsRunners = false;
     this.incoming.abort();
@@ -1715,6 +1747,7 @@ export class Hub {
     await this.sessionDirectories?.close();
     await this.processJobs?.close();
     await Promise.all([...this.actors.values()].map((a) => a.dispose()));
+    await this.waitRestores();
     await this.actorsProgram?.close();
     await Promise.all([...this.drivers.values()].map((d) => d.shutdown()));
   }
@@ -2057,8 +2090,11 @@ export class Hub {
       carrySubagents: (from, to, on, ids) => carrySubagents(this, from, to, on, ids),
       ranIn: (key, id, profile) => this.store.ranIn(key, id, profile),
       idle: (key) => this.idleNow(key),
-      archiveIsCold: (key) => this.cold.isCold(key),
-      restoreArchive: (key) => this.cold.restore(key),
+      archiveIsCold: async (key) => this.restores.has(key) || (await this.cold.isCold(key)),
+      restoreArchive: async (key) => {
+        await this.waitRestore(key);
+        if (await this.cold.isCold(key)) await this.cold.restore(key);
+      },
       cleanArchive: (key) => this.cold.pack(key),
       held: (key) => this.holdsNow.size > 0 || this.heldChats.has(key) || !this.inAWorkspace(key),
       stoppedNotice: (key) => {

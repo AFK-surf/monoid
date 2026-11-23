@@ -36,7 +36,7 @@
 //   reset {} — the connections kept for requests are taken for gone
 //   zstd.open {} → {id}; zstd.push {id} + bytes → {whole} + what they make; zstd.close {id} — a station's reply taken
 //     apart in the shell (libzstd), not in JS (Host.unzstd)
-//   iroh.bind {relayUrls, lookup, relayOnly, alpns: [hex]} + key → {id}; iroh.connect {id, addr, additional: [hex]} +
+//   iroh.bind {relayUrls, lookup, dht?, relayOnly, alpns: [hex]} + key → {id}; iroh.connect {id, addr, additional: [hex]} +
 //     alpn → {id}; iroh.accept {id} → {id, alpn: hex} (the next connection coming, its handshake done; {end} once the
 //     endpoint is gone); iroh.networkChange {id}; iroh.close {id}
 //   conn.openBi / conn.acceptBi / conn.openUni {id} → {id} (acceptBi: {end} once gone); conn.closed {id} → reason;
@@ -581,6 +581,7 @@ export function bridgeIroh(bridge: Bridge): Iroh {
             ...(o.relayAllowlist !== undefined ? { relayAllowlist: o.relayAllowlist } : {}),
             ...(o.allowPublicRelays === true ? { allowPublicRelays: true } : {}),
             lookup: o.lookup,
+            ...(o.dht === false ? { dht: false } : {}),
             relayOnly: o.relayOnly,
             alpns: (o.alpns ?? []).map(hex),
           },

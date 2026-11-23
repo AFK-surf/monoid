@@ -107,6 +107,9 @@ pub struct Options {
     pub allow_public_relays: Option<bool>,
     /// Found on the LAN and through the DHT, as a station is. Off for tests.
     pub discovery: Option<bool>,
+    /// The DHT among those ways, on by default: off where a company's filter marks the Mainline DHT (its bootstrap
+    /// names, its BitTorrent UDP) as risky, mDNS left as it is (`STILLFAIL_NO_DHT`).
+    pub dht: Option<bool>,
     /// Where to listen; any free port when not said.
     pub bind_addr: Option<String>,
     /// A client's endpoint (the core in TypeScript, client/core-ts): it looks stations up on the LAN and in the DHT
@@ -307,20 +310,26 @@ async fn bind_with(options: Options, #[allow(unused_variables)] insecure: bool) 
     if insecure {
         builder = builder.ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify());
     }
+    let with_dht = options.dht.unwrap_or(true);
     if lookup_active {
         let mdns = Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE).advertise(false));
-        let dht_lookup = Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).no_publish());
+        let dht_lookup = with_dht.then(|| Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).no_publish()));
         if let Some(allowed) = lookup_relays.clone() {
-            builder = builder
-                .address_lookup(FilteredLookup(allowed.clone(), mdns))
-                .address_lookup(FilteredLookup(allowed, dht_lookup));
+            builder = builder.address_lookup(FilteredLookup(allowed.clone(), mdns));
+            if let Some(dht_lookup) = dht_lookup {
+                builder = builder.address_lookup(FilteredLookup(allowed, dht_lookup));
+            }
         } else {
-            builder = builder.address_lookup(mdns).address_lookup(dht_lookup);
+            builder = builder.address_lookup(mdns);
+            if let Some(dht_lookup) = dht_lookup {
+                builder = builder.address_lookup(dht_lookup);
+            }
         }
     } else if options.discovery.unwrap_or(true) {
-        builder = builder
-            .address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE)))
-            .address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key)));
+        builder = builder.address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE)));
+        if with_dht {
+            builder = builder.address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key)));
+        }
     }
     Ok(Endpoint { inner: builder.bind().await.map_err(failed)?, mesh, keepers: Arc::default(), homes: StdMutex::new(relays.clone()), bound: relays, held: Arc::default(), accepted: Arc::default(), lookup_relays })
 }
@@ -1323,6 +1332,7 @@ mod tests {
                 relay_allowlist: None,
                 allow_public_relays: None,
                 discovery: Some(false),
+                dht: None,
                 bind_addr: Some("127.0.0.1:0".into()),
                 lookup: None,
                 relay_only: None,
@@ -1510,6 +1520,7 @@ mod tests {
                 relay_allowlist: Some(vec![allowed.to_string()]),
                 allow_public_relays: Some(true),
                 discovery: Some(false),
+                dht: None,
                 bind_addr: Some("127.0.0.1:0".into()),
                 lookup: Some(false),
                 relay_only: Some(false),
@@ -1538,6 +1549,7 @@ mod tests {
                 relay_allowlist: None,
                 allow_public_relays: None,
                 discovery: Some(false),
+                dht: None,
                 bind_addr: Some("127.0.0.1:0".into()),
                 lookup: Some(false),
                 relay_only: Some(false),

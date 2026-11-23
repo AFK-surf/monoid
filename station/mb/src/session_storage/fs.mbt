@@ -16,6 +16,8 @@ pub struct Files {
   /// Where a directory's size is measured (`@footprint.answer`'s ask, answered as it answers): a backgrounded process
   /// of its own where the station runs it (sessions/footprint.ts); None, this program's own.
   priv footprint_by : (async (String) -> Json)?
+  /// Cancels an in-flight `workspace.pack` subprocess for the given workspace directory.
+  priv cancel_packed_by : ((String) -> Unit)?
 }
 
 ///|
@@ -26,8 +28,16 @@ pub fn Files::new(
   sep? : String = "/",
   packed? : async (Json) -> Json,
   footprint? : async (String) -> Json,
+  cancel_packed? : (String) -> Unit,
 ) -> Files {
-  { host, held: {}, sep, packed_by: packed, footprint_by: footprint }
+  { host, held: {}, sep, packed_by: packed, footprint_by: footprint, cancel_packed_by: cancel_packed }
+}
+
+///|
+pub fn Files::cancel_packed(self : Files, dir : String) -> Unit {
+  if self.cancel_packed_by is Some(cancel) {
+    cancel(dir)
+  }
 }
 
 ///|

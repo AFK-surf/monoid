@@ -15,7 +15,7 @@ import { homesFirst, sessionPlaces } from "../read/transcript.ts";
 import { transcriptPathsSoon } from "../read/transcript-soon.ts";
 import * as archive from "./archive.ts";
 import { runtimeNamed } from "./config.ts";
-import { measureRoom, roomOfSoon, safeToRemove, within } from "./footprint.ts";
+import { MEASURE_UP_TO, measureRoom, measuredUpTo, roomOfSoon, safeToRemove, within } from "./footprint.ts";
 import type { ColdStorage, Hub } from "./hub.ts";
 import type { Located } from "./live.ts";
 import type { RuntimeKind } from "../agents/runtime.ts";
@@ -79,14 +79,27 @@ async function findRoom(dataDir: string, workspace: string): Promise<void> {
 /// Whether `path` is there, asked off the station's thread.
 const there = (path: string): Promise<boolean> => access(path).then(() => true, () => false);
 
+/// Workspaces larger than this after cleaning rebuildable directories are left unpacked on archive (marked `cold` so
+/// expiry and low-disk reclamation still apply, and transcripts are still packed).
+export const MAX_PACK_WORKSPACE_BYTES = 2 * 1024 ** 3;
+
 export class ColdRooms implements ColdStorage {
   /// The hub it works for (made after it).
   private readonly hub: () => Hub;
   private readonly measure: typeof measureRoom;
+  private readonly maxPackWorkspaceBytes: number;
+  private readonly packing = new Map<string, Set<AbortController>>();
 
-  constructor(hub: () => Hub, opts?: { measureRoom?: typeof measureRoom }) {
+  constructor(hub: () => Hub, opts?: { measureRoom?: typeof measureRoom; maxPackWorkspaceBytes?: number }) {
     this.hub = hub;
     this.measure = opts?.measureRoom ?? measureRoom;
+    this.maxPackWorkspaceBytes = opts?.maxPackWorkspaceBytes ?? MAX_PACK_WORKSPACE_BYTES;
+  }
+
+  cancelPack(key: string): void {
+    const active = this.packing.get(key);
+    if (!active) return;
+    for (const ac of active) ac.abort();
   }
 
   private dataDir() {
@@ -173,7 +186,10 @@ export class ColdRooms implements ColdStorage {
     return jobs.some((job) => job.sessionKey === key || inRoom(job.cwd, dir));
   }
 
-  private async cleanRebuildableIn(key: string, requireArchived: boolean): Promise<{ freed: number; complete: boolean } | null> {
+  private async cleanRebuildableIn(
+    key: string,
+    requireArchived: boolean,
+  ): Promise<{ freed: number; complete: boolean; remaining: number; walkComplete: boolean } | null> {
     await this.findRoom(key);
     const dir = this.cleanableRoom(key, requireArchived);
     if (dir === null) return null;
@@ -205,8 +221,9 @@ export class ColdRooms implements ColdStorage {
         { session: key, freed },
       );
     }
-    const incompleteWalk = room.complete === false && (room.reason === "duration" || (room.reason === "entries" && freed > 0));
-    return { freed, complete: !interrupted && !incompleteWalk };
+    const walkComplete = room.complete !== false;
+    const incompleteWalk = !walkComplete && (room.reason === "duration" || (room.reason === "entries" && freed > 0));
+    return { freed, complete: !interrupted && !incompleteWalk, remaining: Math.max(0, room.bytes - freed), walkComplete };
   }
 
   /// Removes what a build or an install makes again (node_modules, a Cargo target, …; footprint.ts `rebuildableSoon`) from
@@ -292,12 +309,14 @@ export class ColdRooms implements ColdStorage {
     return false;
   }
 
-  async restore(key: string): Promise<void> {
+  async restore(key: string, opts?: { onlyIfUnarchived?: boolean }): Promise<void> {
+    this.cancelPack(key);
     const row = this.hub().store.getSession(key);
     if (!row) throw new Error(`unknown session ${key}`);
     const room = await roomOfSoon(this.dataDir(), row.workspace);
     if (room === null) return;
     await archive.withLock(room, async () => {
+      if (opts?.onlyIfUnarchived === true && this.hub().store.getSession(key)?.archivedAt !== null) return;
       await archive.restoreWorkspace(room);
       // Restoration must work even after the store has already brought this chat back.
       for (const path of await this.historyFilesSoon(key, false)) await archive.restoreFile(path);
@@ -334,21 +353,75 @@ export class ColdRooms implements ColdStorage {
   }
 
   async pack(key: string): Promise<void> {
-    await this.findRoom(key);
-    const room = this.archiveRoom(key);
-    if (room === null) return;
-    const ready = () => this.archiveRoom(key) !== null;
-    await archive.withLock(room, async () => {
-      if (!ready()) return;
-      await this.stopStrays(key, join(room, "workspace"));
-      if (!ready()) return;
-      await this.cleanRebuildable(key);
-      if (!ready()) return;
-      await writeFile(join(room, "cold"), "workspace and history may be compressed\n");
-      await archive.packWorkspaceIf(room, ready);
-      if (!ready()) return;
-      await this.packHistory(key, ready);
-    });
+    const ac = new AbortController();
+    let active = this.packing.get(key);
+    if (!active) this.packing.set(key, (active = new Set()));
+    active.add(ac);
+    try {
+      await this.findRoom(key);
+      if (ac.signal.aborted) return;
+      const room = this.archiveRoom(key);
+      if (room === null) return;
+      const ready = () => !ac.signal.aborted && this.archiveRoom(key) !== null;
+      await archive.withLock(room, async () => {
+        if (!ready()) return;
+        await this.stopStrays(key, join(room, "workspace"));
+        if (!ready()) return;
+        const clean = await this.cleanRebuildableIn(key, true);
+        if (clean === null || !ready()) return;
+        await writeFile(join(room, "cold"), "workspace and history may be compressed\n");
+        let shouldPackWorkspace = false;
+        if (clean.remaining > this.maxPackWorkspaceBytes) {
+          log.info("hub", "archived workspace too large to compress; left unpacked", {
+            session: key,
+            bytes: clean.remaining,
+            limit: this.maxPackWorkspaceBytes,
+          });
+        } else if (!clean.walkComplete) {
+          if (clean.freed === 0) {
+            log.info("hub", "archived workspace too large to compress; left unpacked", {
+              session: key,
+              bytes: clean.remaining,
+              limit: this.maxPackWorkspaceBytes,
+              incomplete: true,
+            });
+          } else {
+            let check: { bytes: number; complete: boolean } | null;
+            try {
+              check = await measuredUpTo(join(room, "workspace"), this.maxPackWorkspaceBytes, ac.signal, MEASURE_UP_TO, false);
+            } catch (error) {
+              if (ac.signal.aborted) return;
+              log.warn("hub", "re-measuring archived workspace failed; leaving unpacked", {
+                session: key,
+                error: (error as Error).message,
+              });
+              check = { bytes: clean.remaining, complete: false };
+            }
+            if (!ready()) return;
+            if (check.complete && check.bytes <= this.maxPackWorkspaceBytes) {
+              shouldPackWorkspace = true;
+            } else {
+              log.info("hub", "archived workspace too large to compress; left unpacked", {
+                session: key,
+                bytes: check.bytes,
+                limit: this.maxPackWorkspaceBytes,
+                incomplete: !check.complete,
+              });
+            }
+          }
+        } else {
+          shouldPackWorkspace = true;
+        }
+        if (shouldPackWorkspace) {
+          await archive.packWorkspaceIf(room, ready, { signal: ac.signal });
+        }
+        if (!ready()) return;
+        await this.packHistory(key, ready);
+      });
+    } finally {
+      active.delete(ac);
+      if (active.size === 0) this.packing.delete(key);
+    }
   }
 
   /// What still runs in an archived session's workspace, its agent's and its jobs' processes gone: what they left

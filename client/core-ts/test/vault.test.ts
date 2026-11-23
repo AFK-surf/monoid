@@ -29,7 +29,7 @@ import { checkLock } from "../src/vault/lock-check.ts";
 import { OAUTH_WAIT_MS, SLACK, handedTo, stateOf as oauthState } from "../src/vault/oauth.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { checkWith, forgetVerifiedHere, keepVerified } from "../src/vault/verified.ts";
-import { BOX_KEY, BOX_PUB, UNLOCK_MS, askAnswers, levelVaults, tookOut, vaultCome, vaultsView, waitingAs, waitingChecks } from "../src/views/vault.ts";
+import { BOX_KEY, BOX_PUB, UNLOCK_MS, askAnswers, levelVaults, pairBoxCerts, tookOut, vaultCome, vaultsView, waitingAs, waitingChecks } from "../src/views/vault.ts";
 import { handOver, inForceOf, leftIn, pairs, pendingHeld, read as readLock, roster, signerKnown } from "../src/views/lock.ts";
 import { type Duplex, dialer, personalBegin, personalProve, serveTrusted } from "../src/views/pair.ts";
 import { PERSONAL_KEY } from "../src/personal-lock.ts";
@@ -707,6 +707,24 @@ test("what the system said no with is said in the person's words: no screen lock
     return true;
   });
   assert.equal(r.host.secure.get(BOX_KEY), undefined);
+  r.core.close();
+});
+
+test("a host keeping keys as an app does but without secure storage (a NodeHost with no sealer): pairing's box certificates fail as vault_unavailable, not a defect", async () => {
+  // (taken away before the core starts: its host wraps only what the inner one has then, wake.ts `WakingHost`)
+  const me = { signer: null as Signer | null };
+  const r = await started(base(), 0, undefined, (x) => {
+    x.host.appKeys = true;
+    me.signer = Effect.runSync(Signer.make(x.host));
+    x.host.secureSet = undefined;
+  });
+  assert.equal(r.core.inner.host.secureSet, undefined);
+  // (a defect, as the TypeError of `secureSet!` was, rejects here instead of being flipped)
+  const failed = await Effect.runPromise(Effect.flip(pairBoxCerts(r.core.inner, "dev-1", me.signer!, [], ["ws"])));
+  assert.ok(failed instanceof CoreError);
+  assert.equal(failed.code, "vault_unavailable");
+  assert.equal(await Effect.runPromise(Effect.orElseSucceed(pairBoxCerts(r.core.inner, "dev-1", me.signer!, [], ["ws"]), () => null)), null);
+  assert.equal(r.host.storage.get(BOX_PUB), undefined, "no box key made");
   r.core.close();
 });
 

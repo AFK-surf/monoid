@@ -662,6 +662,9 @@ fn settings_children_of(
       if @hostapi.perf_state() >= 0 {
         a.push(("perf", @sf.t("web-pages.about.perf.title"), About, "性能日志 诊断日志 打开日志文件夹 卡顿记录 performance log folder"))
       }
+      if @ui.platform() != 4 {
+        a.push(("dht", @sf.t("web-pages.about.dht.title"), About, "DHT 网络 查找 Station 中继 公司网络 防火墙 network relay lookup firewall"))
+      }
       a
     }
     _ => []

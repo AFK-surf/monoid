@@ -4,7 +4,7 @@
 // hold that the program's end does not leave waiting. The runner here is a fake on a Unix socket, as
 // mb-agents-leave.test.ts's.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -26,7 +26,7 @@ const out = (stream: "out" | "err", at: number, text: string) => JSON.stringify(
 const frame = (event: object) => JSON.stringify({ type: "stream_event", event, parent_tool_use_id: null, session_id: "s1", uuid: `u${Math.random()}` }) + "\n";
 
 /// A fake runner: `onAttach` given each connection as the program attaches; and a host reading it.
-async function world(name: string, onAttach: (conn: Socket) => void) {
+async function world(name: string, onAttach: (conn: Socket) => void, onMessage?: (conn: Socket, message: { op: string }) => void) {
   // Short: a Unix socket's path is 104 bytes at most on macOS.
   const data = mkdtempSync(process.platform === "darwin" ? `/tmp/${name}-` : join(tmpdir(), `${name}-`));
   const socket = join(data, "r.sock");
@@ -40,6 +40,7 @@ async function world(name: string, onAttach: (conn: Socket) => void) {
         const message = JSON.parse(carry.slice(0, i));
         carry = carry.slice(i + 1);
         if (message.op === "attach") onAttach(conn);
+        onMessage?.(conn, message);
       }
     });
     conn.on("error", () => {});
@@ -134,6 +135,32 @@ test("the program ending while a handover holds its reading leaves the handover 
     await new Promise((r) => setImmediate(r));
     assert.ok(held, "the hold went on once the program was gone");
   } finally {
+    await w.end();
+  }
+});
+
+test("a process being killed whose socket closes before its runner has exited is told ended, not taken over", { skip }, async () => {
+  // (its runner: a process still there as the socket closes, ended a moment after)
+  const runner = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  await new Promise<void>((resolve) => runner.once("spawn", () => resolve()));
+  // (it takes no signal and says no exit: told done, it closes its socket first and its process ends after)
+  const w = await world("mbx", () => {}, (conn, message) => {
+    if (message.op !== "done") return;
+    conn.end();
+    setTimeout(() => runner.kill("SIGKILL"), 150);
+  });
+  try {
+    let handed = false;
+    let ended: string | null = null;
+    const options: HostedOptions = { label: "test", heard: () => {}, handed: () => void (handed = true), exit: (said) => void (ended = said) };
+    const p = HostedProcess.adopt(w.host, { ...w.info, runner: runner.pid! }, options, null, null);
+    await until(() => w.conns.length === 1);
+    await p.kill(50);
+    assert.equal(await p.exited, "runner gone");
+    assert.equal(ended, "runner gone");
+    assert.equal(handed, false, "its own kill is no other station's takeover");
+  } finally {
+    runner.kill("SIGKILL");
     await w.end();
   }
 });

@@ -1044,6 +1044,7 @@ pub fn front_bind_options(
   alpns : Array[Bytes],
   relay_urls : Array[String],
   discovery? : Bool = true,
+  dht? : Bool = true,
   bind_addr? : String? = None,
   relay_only? : Bool = false,
   congestion? : String? = None,
@@ -1054,6 +1055,10 @@ pub fn front_bind_options(
     ("relayUrls", Json::array(relay_urls.map(jstr))),
     ("discovery", Json::boolean(discovery)),
   ]
+  // (the DHT left out of `discovery` only where said, as FrontEndpoint.bind)
+  if !dht {
+    options.push(("dht", Json::boolean(false)))
+  }
   if bind_addr is Some(a) && a != "" {
     options.push(("bindAddr", jstr(a)))
   }

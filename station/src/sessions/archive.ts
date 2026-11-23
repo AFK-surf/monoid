@@ -27,7 +27,7 @@ import { clean, inside, segments } from "../ops/paths.ts";
 import { walkBounded } from "../ops/walk.ts";
 import { link as symlinkOrStandIn } from "../ops/links.ts";
 import { platform } from "../platform/index.ts";
-import { packedProgram } from "./packed-mb.ts";
+import { PackAborted, packedProgram, runPackedOnce } from "./packed-mb.ts";
 
 // ── paths ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -386,7 +386,12 @@ export const packWorkspace = (room: string) => packWorkspaceIf(room, () => true)
 /// after the eviction).
 export const WORKSPACE_RENAME_BACKOFF = [50, 100, 200, 400, 800] as const;
 
-export async function packWorkspaceIf(room: string, ready: () => boolean, opts?: Omit<RenameRetry, "backoff">): Promise<void> {
+export async function packWorkspaceIf(
+  room: string,
+  ready: () => boolean,
+  opts?: Omit<RenameRetry, "backoff"> & { signal?: AbortSignal },
+): Promise<void> {
+  if (opts?.signal?.aborted) return;
   const archive = workspaceArchive(room);
   if (await exists(archive)) return;
   const workspace = join(room, "workspace");
@@ -406,10 +411,20 @@ export async function packWorkspaceIf(room: string, ready: () => boolean, opts?:
       await saved.close();
     }
     if (locked !== null) throw locked;
+    if (opts?.signal?.aborted || !ready()) {
+      await unlockWorktrees(room);
+      return;
+    }
     // Into `temp`, every entry read back to the end of the zstd stream and its checksum, and the workspace found as it
     // was before (each path's size and modification time) before any original is touched.
-    await packedProgram().ask("workspace.pack", { dir: workspace, out: temp });
-    if (!ready()) {
+    try {
+      await runPackedOnce("workspace.pack", { dir: workspace, out: temp }, { background: true, signal: opts?.signal });
+    } catch (error) {
+      await unlockWorktrees(room).catch(() => {});
+      if (opts?.signal?.aborted || error instanceof PackAborted) return;
+      throw error;
+    }
+    if (opts?.signal?.aborted || !ready()) {
       await unlockWorktrees(room);
       return;
     }

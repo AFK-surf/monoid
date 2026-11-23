@@ -512,12 +512,9 @@ pub async fn Hub::archive_by(self : Hub, key : String, archived : Bool, by : Str
   let found = self.store.members_of(anchor)
   let members = if found.is_empty() { [key] } else { found }
   if !archived {
-    for m in members {
-      ignore((self.world.ask)("cold.restore", Json::string(m)))
-    }
     self.store.set_archived(key, false, by)
     for m in members {
-      ignore((self.world.ask)("fs.rm", { "path": Json::string(self.transcript_copy(m)) }))
+      (self.world.tell)("cold.restoreBg", Json::string(m))
     }
     return
   }
@@ -554,12 +551,27 @@ pub async fn Hub::archive(self : Hub, key : String, archived : Bool) -> Unit {
 }
 
 ///|
-/// `archiveChat`: a session's own chat goes with its session; a chat of its own goes alone.
+/// `archiveChat`: a session's own chat goes with its session; a chat of its own goes alone. Lists show a chat through a
+/// session that is shown, so one shown again with none brings its sessions back first.
 pub async fn Hub::archive_chat(self : Hub, thread : Json, archived : Bool) -> Unit {
   let chat = self.stillfail_chat(thread)
   match str_of(chat, "home") {
     Some(home) => self.archive(home, archived)
-    None => self.store.set_thread_hidden(thread, archived, manual)
+    None => {
+      if !archived {
+        let sessions = items(Some(self.tw(() => self.threads.thread_sessions(thread)))).map(m => str_of(m, "session").unwrap_or(""))
+        let none_shown = sessions.iter().all(s => match self.get_session(s) {
+          Some(r) => !(field(r, "archivedAt") is (None | Some(Null)))
+          None => false
+        })
+        if !sessions.is_empty() && none_shown {
+          for s in sessions {
+            self.archive(s, false)
+          }
+        }
+      }
+      self.store.set_thread_hidden(thread, archived, manual)
+    }
   }
 }
 
@@ -572,9 +584,11 @@ pub async fn Hub::delete_session(self : Hub, key : String) -> Unit {
     Some(r) => r
     None => raise Refused("unknown session \{key}")
   }
+  (self.world.tell)("cold.cancelPack", Json::string(key))
   if self.drop_actor(key) {
     ignore(self.ask_actor(key, "dispose"))
   }
+  ignore((self.world.ask)("cold.waitRestore", Json::string(key)))
   // Flush any unread transcript tail into usage statistics before deleting the session row and its transcripts.
   match self.counter {
     Some(c) => ignore(c.read(Some([key])))

@@ -304,3 +304,8 @@ test "parse_rebuild_result and is_incomplete_walk classify complete, duration, e
   assert_eq(why4, Some("depth"))
   assert_false(is_incomplete_walk(c4, why4, 64.0))
 }
+
+///|
+test "max_pack_workspace_bytes is 2 GiB" {
+  assert_eq(max_pack_workspace_bytes, 2.0 * 1024.0 * 1024.0 * 1024.0)
+}

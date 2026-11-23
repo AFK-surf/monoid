@@ -1652,9 +1652,52 @@ pub fn terminal_pane_node(
           .row(Is(true))
           .gap(Is(8.0))
           .padding(Is((16.0, 16.0, 16.0, 14.0)))
-          .lines_up(Is(Some(End)))
+          .lines_up(Is(Some(Middle)))
           .lies_along(Is(End))
           |> ignore
+          let float_pill = fn(parent : @view.View, label : () -> String, press : () -> Unit) {
+            @sf.action_box_node(parent, label, fn(_) { press() }, fn(b) {
+              b
+              .row(Is(true))
+              .min_height(Is(Some(36.0)))
+              .padding(Is((14.0, 6.0, 14.0, 6.0)))
+              .radius(By(fn() { @ui.tree_theme().corner(Full) }))
+              .lines_up(Is(Some(Middle)))
+              .lies_along(Is(Middle))
+              |> ignore
+              @sf.hover_ground_node(
+                b,
+                color=fn() {
+                  if b.pressed() && !b.glass_solid() {
+                    0xFFFFFF2EL
+                  } else {
+                    @ui.tree_theme().color(Hover)
+                  }
+                },
+              )
+              @sf.glass_capsule_node(b, sharing=false, panel=true, interactive=true) |> ignore
+              b.box(fn(w) {
+                w
+                .words(By(label))
+                .words_look(By(fn() {
+                  let th = @sf.theme()
+                  {
+                    size: th.t.ui,
+                    weight: if th.touch { 600 } else { 500 },
+                    line: th.t.ui_line,
+                    wrap: false,
+                    tracking: @view.letters_own,
+                    balance: false,
+                    max_lines: 0,
+                  }
+                }))
+                .ink(By(fn() { @sf.theme().p.text }))
+                |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
+          }
           fl.show(
             fn() {
               let _ = drawn.get()
@@ -1663,7 +1706,7 @@ pub fn terminal_pane_node(
               terminal_url_at(kept.val, -1, -1, true) is Some(_)
             },
             fn(ob) {
-              @sf.button_node(
+              float_pill(
                 ob,
                 fn() { @sf.t("web-pages.remote.openInRemoteBrowser") },
                 fn() {
@@ -1675,24 +1718,20 @@ pub fn terminal_pane_node(
                     None => ()
                   }
                 },
-                tone=Plain,
               )
-              |> ignore
             },
           )
           fl.show(
             fn() { @sf.soft_keyboard() && (modes_sig.get() & @hostapi.term_mode_has_selection) != 0 },
             fn(cp) {
-              @sf.button_node(
+              float_pill(
                 cp,
                 fn() { @sf.t("web-pages.terminal.copySelection") },
                 fn() {
                   copy_selection()
                   clear_selection()
                 },
-                tone=Plain,
               )
-              |> ignore
             },
           )
           fl.show(
@@ -1723,30 +1762,143 @@ pub fn terminal_pane_node(
         })
         |> ignore
       })
-      // Centered overlay when the terminal session has ended or failed
+      // Centered theme-adaptive liquid glass status card when the terminal session has ended or failed
       k.show(ended, fn(ov) {
         ov
         .over(Is(true))
-        .ground(Is(0x16171AD9L))
+        .padding(Is((24.0, 24.0, 24.0, 24.0)))
         .lines_up(Is(Some(Middle)))
         .lies_along(Is(Middle))
         |> ignore
         ov.box(fn(card) {
-          @sf.style_node(card, fn() { ended_box })
-          @sf.words_node(card, fn() { @sf.t("web-pages.terminal.ended") }, fn() { ended_title }) |> ignore
-          let sub_text = fn() {
-            let msg = text(s(), "message")
-            if msg != "" { msg } else { cwd() }
-          }
-          card.show(fn() { sub_text() != "" }, fn(sub) {
-            @sf.words_node(sub, sub_text, fn() { ended_why }).allow_ellipsis(Is(true)) |> ignore
+          card
+          .width_share(Is(1.0))
+          .max_width(Is(Some(@sf.confirm_w)))
+          .padding(Is((@sf.card_pad, @sf.card_pad, @sf.card_pad, @sf.card_pad)))
+          .gap(Is(18.0))
+          |> ignore
+          @sf.panel_surface_decorate(card, radius=@sf.card_corner, clips=true) |> ignore
+          card.box(fn(head) {
+            head.gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
+            head.box(fn(badge) {
+              badge
+              .width(Is(Some(40.0)))
+              .height(Is(Some(40.0)))
+              .radius(Is(20.0))
+              .ground(By(fn() { @sf.alpha(@sf.theme().p.text, if @sf.theme().dark { 0.10 } else { 0.07 }) }))
+              .lines_up(Is(Some(Middle)))
+              .lies_along(Is(Middle))
+              |> ignore
+              @sf.icon_node(badge, "terminal", 18.0, By(fn() { @sf.alpha(@sf.theme().p.text, 0.85) })) |> ignore
+            })
+            |> ignore
+            head.box(fn(words) {
+              words.width_share(Is(1.0)).gap(Is(4.0)).lines_up(Is(Some(Middle))) |> ignore
+              words.box(fn(ttl) {
+                ttl
+                .width_share(Is(1.0))
+                .words(By(fn() { @sf.t("web-pages.terminal.ended") }))
+                .words_look(By(fn() {
+                  let (px, line) = @ui.tree_theme().text_size(Title)
+                  {
+                    size: px,
+                    weight: 600,
+                    line,
+                    wrap: true,
+                    tracking: @view.letters_own,
+                    balance: false,
+                    max_lines: 0,
+                  }
+                }))
+                .words_centered(Is(true))
+                .ink(By(fn() { @sf.theme().p.text }))
+                |> ignore
+              })
+              |> ignore
+              let sub_text = fn() {
+                let msg = text(s(), "message")
+                if msg != "" { msg } else { cwd() }
+              }
+              words.show(fn() { sub_text() != "" }, fn(sub) {
+                sub
+                .width_share(Is(1.0))
+                .words(By(sub_text))
+                .words_look(By(fn() {
+                  let (px, line) = @ui.tree_theme().text_size(Caption)
+                  {
+                    size: px,
+                    weight: 400,
+                    line,
+                    wrap: false,
+                    tracking: @view.letters_own,
+                    balance: false,
+                    max_lines: 1,
+                  }
+                }))
+                .words_centered(Is(true))
+                .allow_ellipsis(Is(true))
+                .ink(By(fn() { @sf.alpha(@sf.theme().p.text, if @sf.theme().dark { 0.70 } else { 0.74 }) }))
+                |> ignore
+              })
+            })
+            |> ignore
           })
+          |> ignore
           card.show(may, fn(act) {
-            @sf.button_node(
+            let h = @sf.button_height()
+            let reach = @sf.card_foot_in(h) - @sf.card_pad
+            act.row(Is(true)).margin(Is((reach, 0.0, reach, reach))) |> ignore
+            @sf.action_box_node(
               act,
               fn() { @sf.t("web-pages.screen.again") },
-              fn() { go_terminal("new", false, @signals.untracked(cwd)) },
-              tone=Primary,
+              fn(_) { go_terminal("new", false, @signals.untracked(cwd)) },
+              fn(b) {
+                b
+                .grow(Is(1.0))
+                .basis(Is(Some(0.0)))
+                .height(Is(Some(h)))
+                .padding(Is((16.0, 0.0, 16.0, 0.0)))
+                .radius(Is(h / 2.0))
+                .row(Is(true))
+                .lines_up(Is(Some(Middle)))
+                .lies_along(Is(Middle))
+                .ground(By(fn() {
+                  let p = @sf.theme().p
+                  if @sf.theme().dark { 0xFFFFFFEBL } else { p.primary }
+                }))
+                |> ignore
+                @sf.hover_ground_node(
+                  b,
+                  color=fn() {
+                    if @sf.theme().dark {
+                      if b.pressed() { 0x00000018L } else { 0xFFFFFF40L }
+                    } else if b.pressed() {
+                      0xFFFFFF24L
+                    } else {
+                      0xFFFFFF18L
+                    }
+                  },
+                )
+                b.box(fn(w) {
+                  w
+                  .words(By(fn() { @sf.t("web-pages.screen.again") }))
+                  .words_look(By(fn() {
+                    let (px, line) = @ui.tree_theme().text_size(Ui)
+                    {
+                      size: px,
+                      weight: 600,
+                      line,
+                      wrap: false,
+                      tracking: @view.letters_own,
+                      balance: false,
+                      max_lines: 0,
+                    }
+                  }))
+                  .ink(By(fn() { if @sf.theme().dark { 0x16171AFFL } else { @sf.theme().p.on_primary } }))
+                  |> ignore
+                })
+                |> ignore
+              },
             )
             |> ignore
           })

@@ -157,6 +157,8 @@ fn Client::raw(self : Client, text : String) -> Unit {
 struct Dirty {
   sessions : Map[String, Unit]
   mut overview : Bool
+  /// The viewers (`viewer_key`) whose overview alone is made again: a stream of theirs came back.
+  overview_of : Map[String, Unit]
   mut whole : Bool
   item_sessions : Map[String, Unit]
   /// Threads by their JSON (a number), with the number as it came.
@@ -168,6 +170,7 @@ fn Dirty::clean() -> Dirty {
   {
     sessions: Map([]),
     overview: false,
+    overview_of: Map([]),
     whole: false,
     item_sessions: Map([]),
     item_threads: Map([]),
@@ -179,6 +182,7 @@ fn Dirty::any(self : Dirty) -> Bool {
   self.sessions.length() > 0 ||
   self.whole ||
   self.overview ||
+  self.overview_of.length() > 0 ||
   self.item_sessions.length() > 0 ||
   self.item_threads.length() > 0
 }
@@ -960,8 +964,10 @@ fn Events::opened(
     }
   }
   let head = if resumes { Some(self.log.at()) } else { None }
+  // Coming back: their overview alone made again, as events.ts.
   if resumes {
-    self.overview_changed()
+    self.dirty.overview_of[k] = ()
+    self.wake()
   }
   if self.clients.length() == 1 {
     self.start_timers()
@@ -1512,7 +1518,7 @@ fn Events::flush(self : Events, done : () -> Unit) -> Unit {
   let keys = dirty.sessions.keys().to_array()
   fn summaries(i : Int32) {
     if i >= keys.length() {
-      return self.flush_overviews(overview.val, () => {
+      return self.flush_overviews(overview.val, dirty.overview_of, () => {
         self.tell_shared(dirty, done)
       })
     }
@@ -1557,16 +1563,17 @@ fn Events::flush(self : Events, done : () -> Unit) -> Unit {
 fn Events::flush_overviews(
   self : Events,
   overview : Bool,
+  only : Map[String, Unit],
   done : () -> Unit,
 ) -> Unit {
-  guard overview && self.deps.overview is Some(overview_of) else {
+  guard (overview || only.length() > 0) && self.deps.overview is Some(overview_of) else {
     return done()
   }
   let seen : Map[String, Unit] = Map([])
   let viewers = []
   for c in self.clients {
     let k = viewer_key(c.viewer, c.lang)
-    if !seen.contains(k) {
+    if (overview || only.contains(k)) && !seen.contains(k) {
       seen[k] = ()
       viewers.push((c.viewer, c.lang))
     }

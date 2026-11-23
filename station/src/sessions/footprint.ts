@@ -242,8 +242,14 @@ export const measured = async (path: string, signal?: AbortSignal, budget: Measu
 
 /// Count the whole path when it fits; once it exceeds `limit`, return a lower bound without traversing the rest. A
 /// workspace too large or too slow to walk within `budget` (MEASURE_UP_TO) is a lower bound too, `truncated`.
-export async function measuredUpTo(path: string, limit: number, signal?: AbortSignal, budget: MeasureBudget = MEASURE_UP_TO): Promise<{ bytes: number; complete: boolean; truncated?: true }> {
-  const got = await measure(path, { finding: false, strict: true, stopAfter: limit }, budget, signal);
+export async function measuredUpTo(
+  path: string,
+  limit: number,
+  signal?: AbortSignal,
+  budget: MeasureBudget = MEASURE_UP_TO,
+  strict = true,
+): Promise<{ bytes: number; complete: boolean; truncated?: true }> {
+  const got = await measure(path, { finding: false, strict, stopAfter: limit }, budget, signal);
   if (got.enough) return { bytes: got.bytes, complete: false };
   if (got.complete) return { bytes: got.bytes, complete: true };
   log.info("workspace-size", "workspace walk cut short", { path, bytes: got.bytes, reason: got.reason });

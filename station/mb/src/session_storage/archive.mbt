@@ -435,7 +435,16 @@ pub async fn Files::pack_workspace(self : Files, room : String) -> Unit {
 }
 
 ///|
-pub async fn Files::pack_workspace_if(self : Files, room : String, ready : async () -> Bool) -> Unit {
+pub async fn Files::pack_workspace_if(
+  self : Files,
+  room : String,
+  ready : async () -> Bool,
+  aborted? : Ref[Bool],
+  on_pack_dir? : (String?) -> Unit,
+) -> Unit {
+  if aborted is Some(a) && a.val {
+    return
+  }
   let archive = self.workspace_archive(room)
   if self.there(archive) {
     return
@@ -457,8 +466,31 @@ pub async fn Files::pack_workspace_if(self : Files, room : String, ready : async
     if locked is Some(e) {
       raise e
     }
-    ignore(self.packed("workspace.pack", [("dir", js(workspace)), ("out", js(temp))]))
-    if !ready() {
+    if (aborted is Some(a) && a.val) || !ready() {
+      self.unlock_worktrees(room)
+      return
+    }
+    if on_pack_dir is Some(f) {
+      f(Some(workspace))
+    }
+    try {
+      ignore(self.packed("workspace.pack", [("dir", js(workspace)), ("out", js(temp))]))
+    } catch {
+      e => {
+        if on_pack_dir is Some(f) {
+          f(None)
+        }
+        self.unlock_worktrees(room) catch { _ => () }
+        if aborted is Some(a) && a.val {
+          return
+        }
+        raise e
+      }
+    }
+    if on_pack_dir is Some(f) {
+      f(None)
+    }
+    if (aborted is Some(a) && a.val) || !ready() {
       self.unlock_worktrees(room)
       return
     }

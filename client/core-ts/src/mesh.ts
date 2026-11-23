@@ -865,6 +865,9 @@ export type MeshEnv = {
   /// DHT), while it has a relay and is not `relayOnly`; without it a peer is reached by the relays and addresses it is
   /// dialled with alone.
   lookup?: boolean;
+  /// Whether that lookup is in the DHT too, read as the main endpoint is bound (none: it is); what it says changed is
+  /// taken by `relook`.
+  dht?: () => boolean;
   /// Through relays alone: the main endpoint has no IP transports (and looks nothing up), and no peer is dialled at
   /// the addresses it said (its LAN's, its tailnet's).
   relayOnly?: boolean;
@@ -1066,7 +1069,7 @@ export class Mesh {
     relayAllowlist: string[],
   ): Effect.Effect<IrohEndpoint, CoreError> {
     const lookupActive = env.lookup === true && env.relayOnly !== true && relays.length > 0;
-    return Mesh.#bind(env.iroh, secret, relays, env.relayOnly === true, env.lookup === true, env.takes, relayEntries, lookupActive ? relayAllowlist : undefined, lookupActive);
+    return Mesh.#bind(env.iroh, secret, relays, env.relayOnly === true, env.lookup === true, env.takes, relayEntries, lookupActive ? relayAllowlist : undefined, lookupActive, env.dht?.() ?? true);
   }
 
   /// An endpoint: one at an address or on one relay alone looks nothing up (`lookup` only with a relay, and IP
@@ -1081,12 +1084,14 @@ export class Mesh {
     relayEntries: { entry: string; relay: string }[] = [],
     relayAllowlist?: string[],
     allowPublicRelays = false,
+    dht = true,
   ): Effect.Effect<IrohEndpoint, CoreError> {
     return Effect.mapError(
       iroh.bind({
         secretKey: secret,
         relayUrls: relays,
         lookup: lookup && !relayOnly && relays.length > 0,
+        ...(dht ? {} : { dht: false }),
         relayOnly,
         ...(alpns.length > 0 ? { alpns } : {}),
         ...(relayEntries.length > 0 ? { relayEntries } : {}),
@@ -1559,6 +1564,11 @@ export class Mesh {
       );
       return yield* Deferred.await(d);
     });
+  }
+
+  /// Told its lookup changed (`MeshEnv.dht`): the main endpoint bound anew as it now says, the links on it closed.
+  relook(): void {
+    if (!this.#closed) this.#env.runner.fork(Effect.asVoid(this.#rebind(true)));
   }
 
   /// Told the relays and entries anew: the first `/v1/me` of a run, after the mesh came up on those it kept from the last

@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { DISK_LOW_BYTES } from "../src/ops/disk.ts";
 import { packed, workspaceArchive, workspaceFile } from "../src/sessions/archive.ts";
-import { ColdRooms } from "../src/sessions/cold.ts";
+import { ColdRooms, MAX_PACK_WORKSPACE_BYTES } from "../src/sessions/cold.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { archive, autoArchive, deleteSession, expireArchived, relieveArchived } from "../src/sessions/lifecycle.ts";
@@ -19,9 +19,9 @@ import { MANUAL } from "../src/store/store.ts";
 import { Rig, type Setup, message, reply, settle, testClock } from "./hub-fakes.ts";
 
 /// A rig whose hub keeps archived sessions cold, as the station's does.
-function coldRig(setup: Setup = {}): [Rig, ColdRooms] {
+function coldRig(setup: Setup = {}, coldOpts?: ConstructorParameters<typeof ColdRooms>[1]): [Rig, ColdRooms] {
   let r!: Rig;
-  const cold = new ColdRooms(() => r.hub);
+  const cold = new ColdRooms(() => r.hub, coldOpts);
   r = new Rig({ ...setup, cold });
   return [r, cold];
 }
@@ -106,7 +106,8 @@ test("archiving a session cleans what can be made again from its directory", asy
   while (existsSync(join(workspace, "app/node_modules"))) await new Promise((res) => setTimeout(res, 10));
   await finishArchive(r, key);
   assert.deepEqual(await workspaceFile(dirname(workspace), "notes.md"), Buffer.from("kept"));
-  await archive(r.hub, key, false);
+  archive(r.hub, key, false);
+  await r.hub.waitRestore(key);
   assert.equal(readFileSync(join(workspace, "notes.md"), "utf8"), "kept");
   await r.close();
 });
@@ -171,7 +172,8 @@ test("archive cleanup keeps running jobs and shared projects", async () => {
   assert.ok(!existsSync(join(workspace, "app/node_modules")), "old archive cleaned after the job stops");
   assert.deepEqual(await workspaceFile(dirname(workspace), "unfinished.rs"), Buffer.from("uncommitted work"));
   await finishArchive(r, key);
-  await archive(r.hub, key, false);
+  archive(r.hub, key, false);
+  await r.hub.waitRestore(key);
   assert.equal(readFileSync(join(workspace, "unfinished.rs"), "utf8"), "uncommitted work");
   mkdirSync(join(workspace, "app/node_modules"), { recursive: true });
   await finishArchive(r, key);
@@ -304,7 +306,8 @@ test("a session archived long enough keeps only its history and the files sent i
 test("a workspace archived long enough is emptied even when it was never packed, and one shown again is not", async () => {
   const [r, cold] = coldRig();
   const { key, workspace } = await packedSession(r);
-  await archive(r.hub, key, false);
+  archive(r.hub, key, false);
+  await r.hub.waitRestore(key);
   assert.ok(existsSync(join(workspace, "app", "src", "main.rs")));
   const shownAt = Date.now();
   await expireArchived(r.hub, shownAt + 30 * DAY);
@@ -351,4 +354,246 @@ test("archivedWorkspaceDays 0 keeps archived workspaces", async () => {
   assert.ok(existsSync(workspaceArchive(dirname(workspace))));
   assert.deepEqual(await workspaceFile(dirname(workspace), "app/src/main.rs"), Buffer.from("work"));
   await r.close();
+});
+
+test("oversize archived workspace skips tar compression, marks cold, packs transcript, expires, and restores", async () => {
+  assert.equal(MAX_PACK_WORKSPACE_BYTES, 2 * 1024 ** 3);
+  const [r, cold] = coldRig({}, { maxPackWorkspaceBytes: 2048 });
+  const { key } = await idleSession(r);
+  const transcript = transcriptOf(r, key, '{"type":"user","message":{"content":"oversize-history"}}\n');
+  const workspace = r.session(key).workspace;
+  mkdirSync(join(workspace, "uploads"), { recursive: true });
+  writeFileSync(join(workspace, "uploads", "shot.png"), "pic");
+  writeFileSync(join(workspace, "huge.bin"), Buffer.alloc(64 * 1024, 0x41));
+  archive(r.hub, key, true);
+  await finishArchive(r, key);
+  const room = dirname(workspace);
+  assert.ok(!existsSync(workspaceArchive(room)), "oversize workspace must not be compressed");
+  assert.ok(existsSync(join(workspace, "huge.bin")), "original workspace files stay intact");
+  assert.ok(existsSync(join(room, "cold")), "cold marker still written");
+  assert.ok(!existsSync(transcript) && existsSync(packed(transcript)), "transcript still compressed");
+  assert.equal(await cold.needsPack(key), false, "needsPack must be false so backfill does not loop");
+  assert.equal(await cold.holdsMore(key), true, "holdsMore stays true for expiry/reclamation");
+
+  // Unarchiving returns immediately and restores transcript in background.
+  archive(r.hub, key, false);
+  assert.equal(r.session(key).archivedAt, null);
+  await r.hub.waitRestore(key);
+  assert.ok(existsSync(transcript), "transcript restored");
+  assert.ok(!existsSync(join(room, "cold")), "cold marker removed");
+  assert.ok(existsSync(join(workspace, "huge.bin")));
+
+  // Re-archive and expire: oversize unpacked workspace is still emptied keeping uploads/.
+  archive(r.hub, key, true);
+  await finishArchive(r, key);
+  assert.ok(!existsSync(workspaceArchive(room)));
+  const archivedAt = r.session(key).archivedAt!;
+  await expireArchived(r.hub, archivedAt + 7 * DAY);
+  assert.deepEqual(readdirSync(workspace), ["uploads"]);
+  assert.equal(readFileSync(join(workspace, "uploads", "shot.png"), "utf8"), "pic");
+  await r.close();
+});
+
+test("cleaning rebuildable directories below threshold still compresses the workspace", async () => {
+  const [r] = coldRig({}, { maxPackWorkspaceBytes: 32 * 1024 });
+  const { key } = await idleSession(r);
+  const workspace = r.session(key).workspace;
+  mkdirSync(join(workspace, "app/node_modules/pkg"), { recursive: true });
+  writeFileSync(join(workspace, "app/node_modules/pkg/big.js"), Buffer.alloc(128 * 1024, 1));
+  writeFileSync(join(workspace, "small.txt"), "tiny");
+  archive(r.hub, key, true);
+  await finishArchive(r, key);
+  assert.ok(!existsSync(join(workspace, "app/node_modules")));
+  assert.ok(existsSync(workspaceArchive(dirname(workspace))), "workspace compressed once rebuildables are removed");
+  assert.deepEqual(await workspaceFile(dirname(workspace), "small.txt"), Buffer.from("tiny"));
+  await r.close();
+});
+
+test("incomplete walk skips compression when freed === 0 and re-measures when freed > 0", async () => {
+  // Case 1: incomplete walk with freed === 0 -> skip workspace compression, still mark cold and pack transcript.
+  {
+    const [r] = coldRig({}, {
+      maxPackWorkspaceBytes: 64 * 1024,
+      measureRoom: async () => ({ bytes: 100, rebuild: [], complete: false, reason: "entries" }),
+    });
+    const { key } = await idleSession(r);
+    const transcript = transcriptOf(r, key, '{"type":"user","message":{"content":"inc-0"}}\n');
+    const workspace = r.session(key).workspace;
+    writeFileSync(join(workspace, "file.txt"), "keep");
+    archive(r.hub, key, true);
+    await finishArchive(r, key);
+    assert.ok(!existsSync(workspaceArchive(dirname(workspace))), "skipped on incomplete walk with freed === 0");
+    assert.ok(existsSync(join(workspace, "file.txt")));
+    assert.ok(existsSync(join(dirname(workspace), "cold")));
+    assert.ok(existsSync(packed(transcript)));
+    await r.close();
+  }
+
+  // Case 2: incomplete walk with freed > 0 and remaining fits limit -> secondary bounded measure allows compression.
+  {
+    let wsPath = "";
+    const [r] = coldRig({}, {
+      maxPackWorkspaceBytes: 32 * 1024,
+      measureRoom: async () => ({
+        bytes: 128 * 1024,
+        rebuild: [[join(wsPath, "node_modules"), 120 * 1024]],
+        complete: false,
+        reason: "entries",
+      }),
+    });
+    const { key } = await idleSession(r);
+    wsPath = r.session(key).workspace;
+    mkdirSync(join(wsPath, "node_modules"), { recursive: true });
+    writeFileSync(join(wsPath, "node_modules/a.js"), Buffer.alloc(16 * 1024, 1));
+    writeFileSync(join(wsPath, "src.txt"), "small");
+    archive(r.hub, key, true);
+    await finishArchive(r, key);
+    assert.ok(!existsSync(join(wsPath, "node_modules")));
+    assert.ok(existsSync(workspaceArchive(dirname(wsPath))), "secondary measure confirmed workspace fits limit");
+    await r.close();
+  }
+
+  // Case 3: incomplete walk with freed > 0 and remaining still exceeds limit -> secondary bounded measure skips compression.
+  {
+    let wsPath = "";
+    const [r] = coldRig({}, {
+      maxPackWorkspaceBytes: 2048,
+      measureRoom: async () => ({
+        bytes: 128 * 1024,
+        rebuild: [[join(wsPath, "node_modules"), 127 * 1024]],
+        complete: false,
+        reason: "entries",
+      }),
+    });
+    const { key } = await idleSession(r);
+    wsPath = r.session(key).workspace;
+    mkdirSync(join(wsPath, "node_modules"), { recursive: true });
+    writeFileSync(join(wsPath, "node_modules/a.js"), Buffer.alloc(8 * 1024, 1));
+    writeFileSync(join(wsPath, "big.bin"), Buffer.alloc(64 * 1024, 2));
+    archive(r.hub, key, true);
+    await finishArchive(r, key);
+    assert.ok(!existsSync(join(wsPath, "node_modules")));
+    assert.ok(!existsSync(workspaceArchive(dirname(wsPath))), "secondary measure saw remaining > limit");
+    assert.ok(existsSync(join(wsPath, "big.bin")));
+    await r.close();
+  }
+});
+
+test("unarchive returns immediately while restore runs in background, and openAgent waits for it", async () => {
+  const restoreStarted = Promise.withResolvers<void>();
+  const restoreGate = Promise.withResolvers<void>();
+  let restoreCalls = 0;
+  let isColdNow = false;
+  const r = new Rig({
+    cold: {
+      isCold: async () => isColdNow,
+      restore: async () => {
+        restoreCalls++;
+        restoreStarted.resolve();
+        await restoreGate.promise;
+        isColdNow = false;
+      },
+      pack: () => {},
+    },
+  });
+  try {
+    const { m, key } = await idleSession(r);
+    archive(r.hub, key, true);
+    await finishArchive(r, key);
+    isColdNow = true;
+    assert.notEqual(r.session(key).archivedAt, null);
+
+    // Unarchive returns synchronously while slow restore is still blocked.
+    archive(r.hub, key, false);
+    assert.equal(r.session(key).archivedAt, null, "session is immediately back in the list");
+    await restoreStarted.promise;
+    assert.equal(restoreCalls, 1);
+
+    // Sending a message before background restore finishes must wait for restore before opening agent.
+    let warmed = false;
+    const warmPromise = r.accept(reply(m, "9999.1", "<@UBOT> wake up", { addressed: true }))
+      .then(() => r.hub.actor(r.session(key)).warm())
+      .then(() => { warmed = true; });
+    for (let i = 0; i < 5; i++) await new Promise<void>((res) => setImmediate(res));
+    assert.equal(warmed, false, "openAgent waits while background restore is in flight");
+    assert.equal(restoreCalls, 1, "does not start a duplicate restore while one is in flight");
+
+    restoreGate.resolve();
+    await warmPromise;
+    assert.equal(warmed, true);
+    assert.equal(isColdNow, false);
+  } finally {
+    restoreGate.resolve();
+    await r.close();
+  }
+});
+
+test("rapid unarchive then re-archive skips unpacking via onlyIfUnarchived", async () => {
+  const [r, cold] = coldRig();
+  const { key, workspace } = await packedSession(r);
+  const room = dirname(workspace);
+  assert.ok(existsSync(workspaceArchive(room)));
+
+  // Hold the room lock so background restore cannot enter yet, unarchive, then immediately re-archive.
+  const { withLock } = await import("../src/sessions/archive.ts");
+  const releaseLock = Promise.withResolvers<void>();
+  const locked = Promise.withResolvers<void>();
+  const hold = withLock(room, async () => {
+    locked.resolve();
+    await releaseLock.promise;
+  });
+  await locked.promise;
+
+  archive(r.hub, key, false);
+  assert.equal(r.session(key).archivedAt, null);
+  archive(r.hub, key, true);
+  assert.notEqual(r.session(key).archivedAt, null);
+
+  releaseLock.resolve();
+  await hold;
+  await r.hub.waitRestore(key);
+  assert.ok(existsSync(workspaceArchive(room)), "onlyIfUnarchived prevents unpacking a re-archived session");
+  assert.ok(await cold.isCold(key));
+  await r.close();
+});
+
+test("deleteSession cancels pack and waits for in-flight background restore before removing directory", async () => {
+  const restoreStarted = Promise.withResolvers<void>();
+  const restoreGate = Promise.withResolvers<void>();
+  let canceledKey: string | null = null;
+  let wroteAfterDelete = false;
+  let r!: Rig;
+  r = new Rig({
+    cold: {
+      isCold: async () => false,
+      cancelPack: (k) => { canceledKey = k; },
+      restore: async (k) => {
+        restoreStarted.resolve();
+        await restoreGate.promise;
+        const row = r.store.getSession(k);
+        if (!row) wroteAfterDelete = true;
+      },
+      pack: () => {},
+    },
+  });
+  try {
+    const { key } = await idleSession(r);
+    archive(r.hub, key, true);
+    archive(r.hub, key, false);
+    await restoreStarted.promise;
+
+    let deleted = false;
+    const delPromise = deleteSession(r.hub, key).then(() => { deleted = true; });
+    await new Promise<void>((res) => setImmediate(res));
+    assert.equal(canceledKey, key, "deleteSession cancels any in-flight pack");
+    assert.equal(deleted, false, "deleteSession waits for background restore");
+
+    restoreGate.resolve();
+    await delPromise;
+    assert.equal(deleted, true);
+    assert.equal(wroteAfterDelete, false, "restore finished before session row and room were removed");
+  } finally {
+    restoreGate.resolve();
+    await r.close();
+  }
 });

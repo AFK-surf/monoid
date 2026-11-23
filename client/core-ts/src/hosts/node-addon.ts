@@ -41,6 +41,7 @@ export type Addon = {
     allowPublicRelays?: boolean;
     discovery?: boolean;
     lookup?: boolean;
+    dht?: boolean;
     relayOnly?: boolean;
   }): Promise<NEndpoint>;
 };
@@ -67,6 +68,7 @@ export function addonIroh(addon: Addon): Iroh {
         ...(o.allowPublicRelays === true ? { allowPublicRelays: true } : {}),
         discovery: false,
         lookup: o.lookup,
+        ...(o.dht === false ? { dht: false } : {}),
         relayOnly: o.relayOnly,
       }) as Promise<BoundEndpoint>,
     (bytes) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),

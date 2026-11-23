@@ -23,6 +23,81 @@ type Waiting = { resolve: (answer: Json) => void; reject: (error: Error) => void
 /// The program ended while an ask was under way (`close`).
 export class PackedProgramStopped extends Error {}
 
+/// A one-shot packed operation (such as `workspace.pack`) was aborted via `AbortSignal`.
+export class PackAborted extends Error {}
+
+/// Runs a single `--builder packed` ask in its own process, killed immediately on reply or abort so slow
+/// `workspace.pack` runs never block interactive restores/reads on the shared `packedProgram()`.
+export function runPackedOnce<A = Json>(
+  op: string,
+  args: Record<string, unknown>,
+  options?: { binary?: string; shellDir?: string; background?: boolean; signal?: AbortSignal },
+): Promise<A> {
+  const signal = options?.signal;
+  if (signal?.aborted) return Promise.reject(new PackAborted("workspace packing aborted"));
+  return new Promise((resolve, reject) => {
+    const p = new MbProcess(
+      options?.binary ?? readerBinary(),
+      ["--builder", "packed", "--shell-dir", options?.shellDir ?? tmpdir()],
+      { background: options?.background },
+    );
+    let settled = false;
+    let aborted = false;
+    let exited = false;
+    const done = (f: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", stop);
+      f();
+    };
+    const finishChild = () => {
+      p.ref(false);
+      p.kill();
+    };
+    const stop = () => {
+      if (settled || aborted) return;
+      aborted = true;
+      finishChild();
+      // Wait for the child process to exit before rejecting so file handles (e.g. `.writing` on Windows) are released.
+      if (exited) done(() => reject(new PackAborted("workspace packing aborted")));
+    };
+    signal?.addEventListener("abort", stop, { once: true });
+    p.on("message", (answer: Json) => {
+      if (answer?.id !== 1 || aborted) return;
+      done(() => {
+        finishChild();
+        if (typeof answer.error === "string") reject(new Error(answer.error));
+        else resolve(answer as A);
+      });
+    });
+    let failure: Error | null = null;
+    p.on("error", (error: Error) => {
+      failure = error;
+      if (aborted) return;
+      done(() => {
+        finishChild();
+        reject(error);
+      });
+    });
+    p.on("exit", (code: number) => {
+      exited = true;
+      if (aborted) {
+        done(() => reject(new PackAborted("workspace packing aborted")));
+        return;
+      }
+      done(() => reject(failure ?? new Error(`the archive's program stopped (exit ${code})`)));
+    });
+    try {
+      p.postMessage({ ...args, id: 1, op });
+    } catch (error) {
+      done(() => {
+        finishChild();
+        reject(error as Error);
+      });
+    }
+  });
+}
+
 export class PackedProgram {
   readonly #binary: string | null;
   readonly #shellDir: string;

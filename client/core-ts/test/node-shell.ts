@@ -176,6 +176,7 @@ export class NodeShell implements Native {
           ...(a.allowPublicRelays === true ? { allowPublicRelays: true } : {}),
           discovery: false,
           lookup: a.lookup,
+          ...(a.dht === false ? { dht: false } : {}),
           relayOnly: a.relayOnly,
         });
         this.bound.push(e);
