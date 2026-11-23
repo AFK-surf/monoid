@@ -4,13 +4,17 @@
 // way). Each step's line keeps the left edge it rests at, at every look 20 ms apart while it opens.
 
 ///|
-/// Where `words` is drawn across at each look 20 ms apart over a whole way, from now: none where it is not seen yet.
+/// How far apart the test looks while a step's line opens: several looks over a way.
+let open_side_look_ms : Double = 20.0
+
+///|
+/// Where `words` is drawn across at each look `open_side_look_ms` apart over a whole way, from now: none where it is not seen yet.
 fn open_side_xs(t : @ui.Tester, words : String) -> Array[Double] {
   let xs = []
   let mut ms = 0.0
   while ms < @ui.move_most_ms {
-    t.run_for(20.0)
-    ms = ms + 20.0
+    t.run_for(open_side_look_ms)
+    ms = ms + open_side_look_ms
     match t.drawn_of(words) {
       Some((x, _)) => xs.push(x)
       None => ()
