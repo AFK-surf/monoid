@@ -9,7 +9,7 @@ import { windowsInstallScript } from "./install-windows.ts";
 import { cloudProduct, requestLang, setCloud, tr } from "./i18n.ts";
 import { latestDownload, serveRelease, upstreamRelease } from "./releases.ts";
 import { appleConfigured } from "./apple";
-import { authConfigured, bearerToken, denied, digest, readJson, readText, reply, validId, validSecret, verifyToken } from "./auth";
+import { authConfigured, bearerToken, clock, denied, digest, readJson, readText, reply, validId, validSecret, verifyToken } from "./auth";
 import { devicePage, googleStart, consumeLoginRate, signedInPage } from "./login";
 import { passwordSignIn } from "./password";
 import { adminOrigins, betaOrigin, header, publicOrigins } from "./compat";
@@ -18,7 +18,7 @@ import { isMoveCall, moveApi, moving } from "./move";
 import { asProductOf } from "./here";
 import type { Env } from "./env";
 import { adminApi, adminKeyApi, api, audited, blockAccount, relayAdmin, FEEDBACK_REPLY_PATH, FEEDBACK_STATUS_PATH, feedbackList, liveOf, notBetaReply, onTestChannel, replyToFeedback, setFeedbackStatus } from "./api";
-import { cloudLogToTelemetry, errorMessage, noted, parseTraceparent, recordCall, relayToTelemetry, route, takeNotes, unverifiedNotes } from "./tracing";
+import { cloudLogToTelemetry, errorMessage, noted, parseTraceparent, recordCall, recordRootSpan, relayToTelemetry, route, takeNotes, unverifiedNotes, type SpanNotes, type TraceParent } from "./tracing";
 export { TelemetryLimiter } from "./tracing";
 export { Account } from "./account";
 export { Directory } from "./directory";
@@ -34,6 +34,17 @@ import { relayUrls } from "./relays";
 
 /** The minute of each hour the models' catalog is made afresh (`scheduled`). */
 const MODELS_MINUTE = 7;
+
+/**
+ * How long a call nobody traced (no recorded traceparent), a socket's opening and a scheduled task take before they are
+ * slow: a trace of its own then (`observe`, `runCron`), so the slow ones are found without tracing every call.
+ */
+const SLOW_HTTP_MS = 1_500;
+const SLOW_WS_MS = 1_000;
+const SLOW_CRON_MS = 10_000;
+
+/** The sockets the cloud keeps (a device's events, a station's presence): their openings are watched (`observe`). */
+const SOCKETS = new Set(["/v1/events", "/v1/stations/connect"]);
 
 // The admin's console has a host of its own, ADMIN_ORIGIN: its /v1/ calls come here too — the calls its client core
 // makes to sign in and stay signed in (the core talks to the page's origin), and the console's API; nothing else. A
@@ -91,9 +102,11 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 async function answer(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  const parent = new URL(request.url).pathname.startsWith("/v1/") && request.headers.get("upgrade") === null ? parseTraceparent(request.headers.get("traceparent")) : null;
-  const started = Date.now();
   const path = new URL(request.url).pathname;
+  // A socket's opening is a call like any other here; any other upgrade (none is routed here) is left alone.
+  const traced = path.startsWith("/v1/") && (SOCKETS.has(path) || request.headers.get("upgrade") === null);
+  const parent = traced ? parseTraceparent(request.headers.get("traceparent")) : null;
+  const started = clock.now();
   let handled: Response;
   try {
     handled = await handle(request, env);
@@ -103,9 +116,10 @@ async function answer(request: Request, env: Env, ctx: ExecutionContext): Promis
     ctx.waitUntil(cloudLogToTelemetry(env, "ERROR", "http", "unhandled worker error", { method: request.method, path: route(path), error: errorMessage(error) }));
     throw error;
   }
+  const ended = clock.now();
   // What the handler noted for the span never goes out with the answer.
   const { response, notes } = takeNotes(handled);
-  if (parent?.sampled) ctx.waitUntil(recordCall(env, parent, request, response, started, Date.now(), notes));
+  if (traced) observe(env, ctx, request, path, response, parent, started, ended, notes);
   // (telemetry's own failures are not logged through it: a Google Cloud refusing would loop)
   if (response.status >= 500 && !path.startsWith("/v1/telemetry/")) {
     ctx.waitUntil(cloudLogToTelemetry(env, "ERROR", "http", "worker returned 5xx", { method: request.method, path: route(path), status: response.status }));
@@ -113,27 +127,68 @@ async function answer(request: Request, env: Env, ctx: ExecutionContext): Promis
   return response;
 }
 
-/** A scheduled task's failure: said on the console and logged (cloudLogToTelemetry), its caller going on with `fallback`. */
-function cronFailed<T>(env: Env, task: string, fallback: T): (error: unknown) => Promise<T> {
-  return async (error) => {
+/**
+ * What is recorded of a /v1/* call once it is answered. One in a recorded trace is a span of it (`recordCall`). One
+ * nobody traced is a trace of its own (`cloud.http`) when it was slow, refused for its rate (also a WARN line) or failed:
+ * so the cloud's slow and failing calls are seen though the clients record few of theirs. A socket's opening refused
+ * or slow is `cloud.ws.upgrade` (a refusal also a WARN line). Telemetry's own calls only ever as a recorded trace's: a
+ * line or a span of theirs, sent to Google Cloud through them, would loop when Google is slow or refusing.
+ */
+function observe(env: Env, ctx: ExecutionContext, request: Request, path: string, response: Response, parent: TraceParent | null, started: number, ended: number, notes: SpanNotes): void {
+  const ms = ended - started;
+  const status = response.status;
+  if (SOCKETS.has(path)) {
+    const ok = status === 101;
+    if (parent?.sampled) ctx.waitUntil(recordCall(env, parent, request, response, started, ended, notes));
+    else if (!ok || ms >= SLOW_WS_MS) {
+      ctx.waitUntil(recordRootSpan(env, "cloud.ws.upgrade", started, ended, { "http.route": path, "http.response.status_code": status, "stillfail.ws.ok": ok, "stillfail.sampled_reason": ok ? "slow" : status >= 500 ? "5xx" : "rejected" }, status >= 500, 2));
+    }
+    if (status >= 400 && status < 500) ctx.waitUntil(cloudLogToTelemetry(env, "WARN", "ws", "websocket upgrade rejected", { path, status, ms }));
+    return;
+  }
+  if (parent?.sampled) {
+    ctx.waitUntil(recordCall(env, parent, request, response, started, ended, notes));
+    return;
+  }
+  if (path.startsWith("/v1/telemetry/")) return;
+  const reason = status >= 500 ? "5xx" : status === 429 ? "429" : ms >= SLOW_HTTP_MS ? "slow" : null;
+  if (reason === null) return;
+  ctx.waitUntil(recordRootSpan(env, "cloud.http", started, ended, { ...notes, "http.request.method": request.method, "http.route": route(path), "http.response.status_code": status, "stillfail.sampled_reason": reason }, status >= 500, 2));
+  if (status === 429) ctx.waitUntil(cloudLogToTelemetry(env, "WARN", "http", "rate limited", { method: request.method, path: route(path), status, ms }));
+}
+
+/**
+ * A scheduled task, a trace of its own (`cloud.cron`) whatever became of it, and a WARN line when slow. Its failure is
+ * said on the console and logged (cloudLogToTelemetry), its caller going on with `fallback`. What is sent of it goes
+ * beside the next task, not before it.
+ */
+async function runCron<T>(env: Env, ctx: ExecutionContext, task: string, fallback: T, fn: () => Promise<T>): Promise<T> {
+  const started = clock.now();
+  try {
+    const value = await fn();
+    const ended = clock.now();
+    ctx.waitUntil(recordRootSpan(env, "cloud.cron", started, ended, { "stillfail.cron.task": task, "stillfail.cron.ok": true }, false, 1));
+    if (ended - started >= SLOW_CRON_MS) ctx.waitUntil(cloudLogToTelemetry(env, "WARN", "cron", "slow cron task", { task, ms: ended - started }));
+    return value;
+  } catch (error) {
+    const ended = clock.now();
     console.error(`cron ${task}:`, error);
-    await cloudLogToTelemetry(env, "ERROR", "cron", `${task} failed`, { task, error: errorMessage(error) });
+    ctx.waitUntil(recordRootSpan(env, "cloud.cron", started, ended, { "stillfail.cron.task": task, "stillfail.cron.ok": false }, true, 1));
+    ctx.waitUntil(cloudLogToTelemetry(env, "ERROR", "cron", `${task} failed`, { task, ms: ended - started, error: errorMessage(error) }));
     return fallback;
-  };
+  }
 }
 
 async function scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
   const minute = Math.floor(controller.scheduledTime / 60_000);
   ctx.waitUntil(
-    sampleOwnRelay(env)
-      .catch(cronFailed(env, "sampleOwnRelay", [] as string[]))
-      .then(async (full) => {
-        await env.DIRECTORY.getByName("primary").tellAdmins({ type: "relays" }).catch(() => undefined);
-        await checkServices(env, full).catch(cronFailed(env, "checkServices", undefined));
-      }),
+    runCron(env, ctx, "sampleOwnRelay", [] as string[], () => sampleOwnRelay(env)).then(async (full) => {
+      await env.DIRECTORY.getByName("primary").tellAdmins({ type: "relays" }).catch(() => undefined);
+      await runCron(env, ctx, "checkServices", undefined, () => checkServices(env, full));
+    }),
   );
-  if (minute % 60 === MODELS_MINUTE && !env.FORWARD_TO) ctx.waitUntil(checkModels(env).catch(cronFailed(env, "checkModels", undefined)));
-  if (env.RELAY_PROBES === "globalping" && minute % PROBE_EVERY_MIN === 0) ctx.waitUntil(probeAndSay(env).catch(cronFailed(env, "probeAndSay", undefined)));
+  if (minute % 60 === MODELS_MINUTE && !env.FORWARD_TO) ctx.waitUntil(runCron(env, ctx, "checkModels", undefined, () => checkModels(env)));
+  if (env.RELAY_PROBES === "globalping" && minute % PROBE_EVERY_MIN === 0) ctx.waitUntil(runCron(env, ctx, "probeAndSay", undefined, () => probeAndSay(env)));
 }
 
 /** Whether the request carries FEEDBACK_TOKEN, the team's feedback monitor's (unset or short: nobody's). */
