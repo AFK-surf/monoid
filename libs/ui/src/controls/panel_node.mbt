@@ -74,6 +74,8 @@ fn panel_node(
       let live = fn() { !layer.leaving() }
       // (a submenu row's menu in what it holds made in it: submenu_layer_lent)
       submenu_layer_lend(layer)
+      // (hover cards opened inside this panel live in its modal layer, above its body and below higher serials/tips)
+      panel_hover_lend(layer)
       // (what its fields offer made in it: offers_layer_lent)
       offers_layer_lend(layer)
       // (the focus left where it is as it opens (not `focus`): what is typed still that field's, its keys the layer's
@@ -130,15 +132,20 @@ fn panel_node(
       gate.collect(fn() {
       layer.box(fn(p) {
         presented_popovers[keyed.serial] = p
-        anchored_popover_shell(
+        let (p_host, p_offset) = match matched {
+          Some(_) => (None, x.offset)
+          None => floating_anchor_beside(at, x.side, x.offset)
+        }
+        anchored_popover_shell_by(
           p,
           at.id(),
           look,
           side=x.side,
           along=x.along,
-          offset=x.offset,
+          offset=p_offset,
           holds_side=true,
           concentric_inset=panel_pad,
+          host?=p_host,
         )
         // (`fits`: as wide as what it holds is laid out, `w` at most, clamped to window room on narrow screens)
         .width(if x.fits { Is(None) } else { By(fn() { Some(dmin(x.w, dmax(0.0, over_room(layer).0 - 16.0))) }) })

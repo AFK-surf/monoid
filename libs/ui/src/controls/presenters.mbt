@@ -422,6 +422,7 @@ pub fn presenters_reset() -> Unit {
 
 ///|
 fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit = fn() {  }) -> Unit {
+  transient_dismiss_for_present(from)
   let held_flag = presented_held.val
   presented_held.val = false
   // (presented as a sheet closed, none drawn of that going yet (what was chosen or pressed in it presents this): in
@@ -1488,7 +1489,7 @@ pub let pick_search_from : Int = 8
 
 ///|
 /// How far a small panel stands from what opened it, by default (the web's popovers' sideOffset: 6).
-pub let panel_offset : Double = 6.0
+pub let panel_offset : Double = floating_trigger_gap
 
 ///|
 /// A small panel's width beside what opened it, by default (parts.css.ts popover: 280, and what its rows' words came

@@ -21,7 +21,7 @@ pub let hover_card_close_ms : Double = 120.0
 
 ///|
 /// How far a card is from what it is of.
-let hover_card_offset : Double = 6.0
+let hover_card_offset : Double = floating_trigger_gap
 
 ///|
 /// How long a card comes in (`pop_ms`) and goes out (`pop_out_ms`): liquid glass uses `glass_pop_in` / `glass_pop_out`,
@@ -30,44 +30,6 @@ let hover_card_in_ms : Double = @motion.pop_ms
 
 ///|
 pub let hover_card_out_ms : Double = @motion.pop_out_ms
-
-///|
-// kept across runs: put back as a run begins (on_reset)
-let hover_open_seq : Ref[Int] = Ref(0)
-
-///|
-// kept across runs: put back as a run begins (on_reset)
-let hover_open_active : Ref[(Int, () -> Unit)?] = Ref(None)
-
-///|
-fn init {
-  @ui.on_reset(fn() {
-    hover_open_seq.val = 0
-    hover_open_active.val = None
-  })
-}
-
-///|
-/// Claims the window's single active hover slot for `id`, closing whichever other hover card or panel was open.
-fn hover_claim(id : Int, close : () -> Unit) -> Unit {
-  match hover_open_active.val {
-    Some((prev_id, prev_close)) if prev_id != id => {
-      hover_open_active.val = None
-      prev_close()
-    }
-    _ => ()
-  }
-  hover_open_active.val = Some((id, close))
-}
-
-///|
-/// Releases the window's single active hover slot if `id` currently holds it.
-fn hover_release(id : Int) -> Unit {
-  match hover_open_active.val {
-    Some((cur_id, _)) if cur_id == id => hover_open_active.val = None
-    _ => ()
-  }
-}
 
 ///|
 /// What is done with a card (hover_card_node's) by what it is of or by what is in it: opened as a finger's hold opens
@@ -165,7 +127,7 @@ pub fn hover_card_node(
   let holder_v : Ref[@view.View?] = Ref(None)
   let set_open : Ref[(Bool) -> Unit] = Ref(fn(_) {  })
   let make = fn() -> Bool {
-    guard (layer.layer)() is Some(l) else { return false }
+    guard transient_resolve_layer(layer, anchor) is Some(l) else { return false }
     let holder = l.box(made_for=loc, fn(h) { h.transitions_only().over(Is(true)) |> ignore }).lives_with(owner)
     // (a wheel on the card that moves nothing in it scrolls the page under the card)
     holder.wheel_passes() |> ignore
@@ -222,8 +184,18 @@ pub fn hover_card_node(
         let p = way.shown(t)
         (if way.target() > 0.5 { pop_in_for(t) } else { pop_out_for(t) }).at(p, p)
       }
+      let (beside_host, beside_offset) = floating_anchor_beside(anchor, side, hover_card_offset)
       small_panel_node(t)
-      .beside(anchor.id(), side~, along~, offset=hover_card_offset, padding=8.0, piece?, along_offset~)
+      .beside(
+        anchor.id(),
+        side~,
+        along~,
+        offset=beside_offset,
+        padding=floating_viewport_pad,
+        piece?,
+        along_offset~,
+        host?=beside_host,
+      )
       .width(Is(if tile { None } else { Some(hover_card_px) }))
       .min_width(Is(if tile { Some(hover_tile_least_px) } else { None }))
       .max_width(By(fn() { Some(if tile { dmin(hover_tile_most_px, over_room(t).0 - 16.0) } else { over_room(t).0 - 16.0 }) }))
@@ -242,7 +214,9 @@ pub fn hover_card_node(
       // (its submenu rows' one open: row_open; their menus made in the card's own layer over the window, not in what
       // it scrolls, which would cut them and what takes their presses)
       t.lends(panel_submenus_lent, row_open) |> ignore
+      t.lends(panel_submenu_aim_lent, Ref(None)) |> ignore
       t.lends(submenu_layer_lent, holder) |> ignore
+      t.lends(transient_parent_lent, hover_id.val) |> ignore
       gate.val.collect(fn() {
       t.box(fn(b) {
         b.margin(Is((-panel_pad, 0.0, -panel_pad, 0.0))).alpha(By(fn() { look().words })) |> ignore
@@ -272,22 +246,21 @@ pub fn hover_card_node(
     stop_due()
     if !on {
       by_hand.val = false
-      hover_release(hover_id.val)
+      transient_release(hover_id.val)
       row_open.set(None)
     }
     if on == open.untracked() {
       return
+    }
+    if on && hover_id.val == 0 {
+      hover_id.val = transient_next_id()
     }
     if on && !made.val {
       made.val = make()
       guard made.val else { return }
     }
     if on {
-      if hover_id.val == 0 {
-        hover_open_seq.val += 1
-        hover_id.val = hover_open_seq.val
-      }
-      hover_claim(hover_id.val, fn() { (set_open.val)(false) })
+      transient_claim(hover_id.val, fn() { holder_v.val }, held, fn() { (set_open.val)(false) })
       // (none made: made as it is opened, coming in once what it holds is: OpenGate; one still going, at once)
       if card.untracked() is None {
         gate.val = OpenGate::new()
@@ -474,7 +447,7 @@ pub fn hover_card_node(
   // counting never frees)
   owner.owns(fn() {
     stop_due()
-    hover_release(hover_id.val)
+    transient_release(hover_id.val)
     way.put(0.0)
     set_open.val = fn(_) {  }
   })
@@ -528,7 +501,7 @@ pub fn hover_panel_spec(
   tall? : Double = 0.65,
   side? : @view.Side = Left,
   along? : @view.Along = Middle,
-  offset? : Double = 8.0,
+  offset? : Double = floating_surface_gap,
   open_delay? : Double = hover_panel_open_ms,
   close_delay? : Double = hover_panel_close_ms,
 ) -> HoverPanelSpec {
@@ -543,7 +516,7 @@ pub fn hover_panel_spec(
 fn hover_panel_surface(
   t : @view.View,
   holder : @view.View,
-  anchor_id : @view.NodeId,
+  anchor : @view.View,
   opened : @view.Opener?,
   title : String,
   body : (@view.View, () -> Unit) -> Unit,
@@ -559,14 +532,16 @@ fn hover_panel_surface(
     (if way.target() > 0.5 { pop_in_for(t) } else { pop_out_for(t) }).at(p, p)
   }
   let live = fn() { !t.leaving() }
-  anchored_popover_shell(
+  let (beside_host, beside_offset) = floating_anchor_beside(anchor, spec.side, spec.offset)
+  anchored_popover_shell_by(
     t,
-    anchor_id,
+    anchor.id(),
     look,
     side=spec.side,
     along=spec.along,
-    offset=spec.offset,
+    offset=beside_offset,
     holds_side=true,
+    host?=beside_host,
   )
   .width(Is(Some(spec.w)))
   .max_width(By(fn() { Some(dmax(0.0, over_room(t).0 - 16.0)) }))
@@ -590,6 +565,7 @@ fn hover_panel_surface(
     None => ()
   }
   t.lends(panel_submenus_lent, row_open) |> ignore
+  t.lends(panel_submenu_aim_lent, Ref(None)) |> ignore
   t.lends(submenu_layer_lent, holder) |> ignore
   gate.val.collect(fn() {
     if title != "" {
@@ -671,7 +647,7 @@ pub fn hover_panel_node(
   let set_open : Ref[(Bool) -> Unit] = Ref(fn(_) {  })
   let close_explicit : Ref[() -> Unit] = Ref(fn() {  })
   let make = fn() -> Bool {
-    guard (layer.layer)() is Some(l) else { return false }
+    guard transient_resolve_layer(layer, anchor) is Some(l) else { return false }
     let holder = l.box(made_for=loc, fn(h) { h.transitions_only().over(Is(true)) |> ignore }).lives_with(owner)
     holder_v.val = Some(holder)
     holder.on_key(fn(k) {
@@ -718,10 +694,11 @@ pub fn hover_panel_node(
         }
       })
       |> ignore
+      t.lends(transient_parent_lent, hover_id.val) |> ignore
       hover_panel_surface(
         t,
         holder,
-        anchor.id(),
+        anchor,
         Some(@view.ByNode(anchor.id())),
         title,
         body,
@@ -740,22 +717,21 @@ pub fn hover_panel_node(
     stop_due()
     if !on {
       by_hand.val = false
-      hover_release(hover_id.val)
+      transient_release(hover_id.val)
       row_open.set(None)
     }
     if on == open.untracked() {
       return
+    }
+    if on && hover_id.val == 0 {
+      hover_id.val = transient_next_id()
     }
     if on && !made.val {
       made.val = make()
       guard made.val else { return }
     }
     if on {
-      if hover_id.val == 0 {
-        hover_open_seq.val += 1
-        hover_id.val = hover_open_seq.val
-      }
-      hover_claim(hover_id.val, fn() { (set_open.val)(false) })
+      transient_claim(hover_id.val, fn() { holder_v.val }, held, fn() { (set_open.val)(false) })
       if card.untracked() is None {
         gate.val = OpenGate::new()
       }
@@ -863,7 +839,7 @@ pub fn hover_panel_node(
   // (set_open and close_explicit let go of last: each names itself through make, a ring native's counting never frees)
   owner.owns(fn() {
     stop_due()
-    hover_release(hover_id.val)
+    transient_release(hover_id.val)
     way.put(0.0)
     set_open.val = fn(_) {  }
     close_explicit.val = fn() {  }

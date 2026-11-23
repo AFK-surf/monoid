@@ -1,17 +1,38 @@
 // A panel's row opening the next menu beside it (submenu_row's) as nodes of the window's tree: a menu's row with a
 // chevron toward where it opens. On 小屏 pressed, the presenters' menu of its items (a sheet, titled by its words); on
-// 中屏 and 大屏 pressed, or the mouse's pointer come onto it, or the arrow key toward that side with the focus on it, its
-// menu beside it at once (menu_node, not modal: what is under it its own as ever), at its side (Right, else Left),
-// lined up with its top, as far off it as two of a panel's padding (the two panels' edges that far apart); the pointer
-// leaving it leaves the menu open. One of a panel's at a time (panel_submenus_lent): another's opened, this one's
-// closed. Closed by a choice (closed, then what it does), Escape, the arrow key back, a press outside it (which goes on
-// to what it lands on), and as the row goes.
+// 中屏 and 大屏 pressed, or the arrow key toward that side with the focus on it, its menu opens immediately (0 ms),
+// while hovering with a mouse opens after `submenu_open_ms` and closes after `submenu_close_ms` once the pointer leaves
+// both row and submenu (with `submenu_corridor_ms` grace while traversing the aiming triangle toward the submenu, and
+// kept open while visible keyboard focus is inside the submenu). Standalone submenu rows participate in window-level
+// L1 transient exclusion; rows embedded inside a hover card/panel share its parent scope.
+
+///|
+/// Hover open delay (ms) for a desktop submenu row; click/tap/keyboard open immediately (0 ms).
+pub let submenu_open_ms : Double = 160.0
+
+///|
+/// Hover close delay (ms) after the pointer leaves both the submenu trigger row and its submenu panel.
+pub let submenu_close_ms : Double = 160.0
+
+///|
+/// Maximum width (pt) of a submenu panel so long labels truncate cleanly instead of overflowing the window.
+pub let submenu_max_w : Double = 380.0
+
+///|
+/// Grace delay (ms) when leaving the trigger row toward the submenu inside its safe aiming triangle.
+let submenu_corridor_ms : Double = 300.0
 
 ///|
 /// Which of a presented panel's submenu rows has its menu open (one at a time): lent by presented_nodes to each of what
 /// it presents, let go with it.
 // kept across runs: what each presented one is lent, let go with it
 let panel_submenus_lent : @view.Lent[@signals.Signal[@view.View?]] = @view.Lent::new()
+
+///|
+/// Aiming-corridor check of whichever submenu row is currently open in the panel, so sibling rows can switch
+/// immediately (0 ms) when the pointer is not inside the active submenu's safe aiming triangle.
+// kept across runs: what each presented one is lent, let go with it
+let panel_submenu_aim_lent : @view.Lent[Ref[(() -> Bool)?]] = @view.Lent::new()
 
 ///|
 /// Where the menus of the submenu rows a panel holds are made: the panel's own layer (modal, over the window: the
@@ -24,6 +45,7 @@ let submenu_layer_lent : @view.Lent[@view.View] = @view.Lent::new()
 /// What presented_nodes lends `row`, the node one presented is made in: its submenu rows' one open, none at first.
 fn panel_submenus_lend(row : @view.View) -> Unit {
   row.lends(panel_submenus_lent, @signals.signal_by(None, same=same_view)) |> ignore
+  row.lends(panel_submenu_aim_lent, Ref(None)) |> ignore
 }
 
 ///|
@@ -39,6 +61,39 @@ fn same_view(a : @view.View?, b : @view.View?) -> Bool {
     (Some(x), Some(y)) => x.id() == y.id()
     (None, None) => true
     _ => false
+  }
+}
+
+///|
+/// Deterministic 2D point-in-triangle check (inclusive of edges) for the submenu aiming corridor.
+fn point_in_triangle(
+  px : Double,
+  py : Double,
+  ax : Double,
+  ay : Double,
+  bx : Double,
+  by : Double,
+  cx : Double,
+  cy : Double,
+) -> Bool {
+  let cross = fn(x1 : Double, y1 : Double, x2 : Double, y2 : Double, x3 : Double, y3 : Double) {
+    (x1 - x3) * (y2 - y3) - (x2 - x3) * (y1 - y3)
+  }
+  let d1 = cross(px, py, ax, ay, bx, by)
+  let d2 = cross(px, py, bx, by, cx, cy)
+  let d3 = cross(px, py, cx, cy, ax, ay)
+  let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0
+  let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0
+  !(has_neg && has_pos)
+}
+
+///|
+/// Whether visible keyboard focus currently resides inside `holder`.
+fn submenu_key_focus_in(holder : @view.View) -> Bool {
+  let (fid, visible) = holder.tree.focused_now()
+  match fid {
+    Some(id) => visible && holder.alive() && holder.tree.holds(holder.id(), id)
+    None => false
   }
 }
 
@@ -60,46 +115,182 @@ pub fn submenu_row_node(
     Some(o) => o
     None => @signals.signal_by(None, same=same_view)
   }
+  let aim_slot = match parent.lent(panel_submenu_aim_lent) {
+    Some(a) => a
+    None => Ref(None)
+  }
   let layer = parent.lent(submenu_layer_lent).unwrap_or(parent)
+  let inside_transient = parent.lent(transient_parent_lent) is Some(_)
+  let sub_id = Ref(0)
   // (opened by the keyboard: its first item's the focus as it opens)
   let by_key = Ref(false)
+  // (opened by a touch tap on Medium/Large: stays open until outside press/selection/Escape/arrow)
+  let by_hand = Ref(false)
   let small = fn() { layout(parent.window_w()) is Small }
-  let open = fn(r : @view.View, key : Bool) {
+  let open_due : Ref[(() -> Unit)?] = Ref(None)
+  let close_due : Ref[(() -> Unit)?] = Ref(None)
+  let stop_open = fn() {
+    match open_due.val {
+      Some(s) => s()
+      None => ()
+    }
+    open_due.val = None
+  }
+  let stop_close = fn() {
+    match close_due.val {
+      Some(s) => s()
+      None => ()
+    }
+    close_due.val = None
+  }
+  let holder_ref : Ref[@view.View?] = Ref(None)
+  let menu_panel_ref : Ref[@view.View?] = Ref(None)
+  let last_on_row : Ref[(Double, Double)?] = Ref(None)
+  let in_aim_corridor = fn(r : @view.View) -> Bool {
+    match (last_on_row.val, menu_panel_ref.val) {
+      (Some((lx, ly)), Some(mp)) if mp.alive() => {
+        let (mx, my, mw, mh) = mp.placed_window_now()
+        if mw > 0.0 && mh > 0.0 {
+          let (px, py) = r.tree.pointer_said()
+          if (px - lx).abs() < 1.0 && (py - ly).abs() < 1.0 {
+            false
+          } else {
+            let near_x = if mx >= lx { mx } else { mx + mw }
+            point_in_triangle(px, py, lx, ly, near_x, my, near_x, my + mh)
+          }
+        } else {
+          false
+        }
+      }
+      _ => false
+    }
+  }
+  // (closed, where it is this one's open: another's opened at that moment stays)
+  let close = fn(r : @view.View) {
+    stop_open()
+    stop_close()
+    by_hand.val = false
+    if !inside_transient {
+      transient_release(sub_id.val)
+    }
+    if same_view(open_row.untracked(), Some(r)) {
+      aim_slot.val = None
+      open_row.set(None)
+    }
+  }
+  let open = fn(r : @view.View, key : Bool, hand : Bool) {
+    stop_open()
+    stop_close()
     if small() {
       present(Menu(items(), label(), Start, Bottom), Node(r))
       return
     }
     by_key.val = key
-    open_row.set(Some(r))
-  }
-  // (closed, where it is this one's open: another's opened at that moment stays)
-  let close = fn(r : @view.View) {
-    if same_view(open_row.untracked(), Some(r)) {
-      open_row.set(None)
+    by_hand.val = hand
+    if !inside_transient {
+      if sub_id.val == 0 {
+        sub_id.val = transient_next_id()
+      }
+      transient_claim(sub_id.val, fn() { holder_ref.val }, fn() { false }, fn() { close(r) })
     }
+    aim_slot.val = Some(fn() { in_aim_corridor(r) })
+    open_row.set(Some(r))
   }
   let toward = if side == Left { @ui.key_code_left } else { @ui.key_code_right }
   panel_row_by(
     loc~,
     parent,
     label,
-    fn(r) { open(r, r.focus_shown()) },
+    fn(r) { open(r, r.focus_shown(), @ui.pointing() is Finger) },
     icon,
     fn() { "" },
     if side == Left { "chevron-left" } else { "chevron-right" },
     false,
     plain=true,
     made=fn(r) {
-      // (the mouse's pointer come onto it: open at that moment, as long as nothing has it since)
-      r.reacts(fn() { hovered_node(r) }, at_start=false, fn(on) {
-        if on && !small() {
-          open(r, false)
+      // (its menu made as it opens, as it was opened then: by the keyboard or not; let go at once as it closes; made in
+      // the panel's layer, in what lives as long as its row does (View::lives_with: its scope the row's, as a tip's in
+      // its layer): out of sight as its row starts leaving, back as that comes back, gone with it)
+      let holder = layer.box(fn(h) { h.over(Is(true)) |> ignore }).lives_with(r)
+      holder_ref.val = Some(holder)
+      let was_on_row = Ref(false)
+      let hover_state = fn() {
+        let is_open = same_view(open_row.get(), Some(r))
+        let on_row = hovered_node(r)
+        if !is_open {
+          (false, on_row, false)
+        } else {
+          (true, on_row, holder.pointed_in())
+        }
+      }
+      r.reacts(hover_state, at_start=false, fn(st) {
+        let (is_open, on_row, on_menu) = st
+        let at = r.cause_at()
+        let entered_row = on_row && !was_on_row.val
+        let left_row = was_on_row.val && !on_row
+        was_on_row.val = on_row
+        if on_row {
+          last_on_row.val = Some(r.tree.pointer_said())
+        }
+        if !is_open {
+          stop_close()
+          by_hand.val = false
+          if !inside_transient {
+            transient_release(sub_id.val)
+          }
+          if entered_row && !small() && @ui.pointing() is Mouse {
+            stop_open()
+            let sibling_open = open_row.untracked() is Some(_)
+            let in_sibling_corridor = match aim_slot.val {
+              Some(f) => f()
+              None => false
+            }
+            if sibling_open && !in_sibling_corridor {
+              if @signals.untracked(fn() { r.takes_input() }) {
+                open(r, false, false)
+              }
+            } else {
+              open_due.val = Some(
+                r.at_moment(at + submenu_open_ms, fn() {
+                  open_due.val = None
+                  if r.alive() &&
+                    !small() &&
+                    @ui.pointing() is Mouse &&
+                    @signals.untracked(fn() { r.pointed_in() && r.takes_input() }) {
+                    open(r, false, false)
+                  }
+                }),
+              )
+            }
+          } else if !on_row {
+            stop_open()
+          }
+          return
+        }
+        stop_open()
+        if on_row || on_menu {
+          stop_close()
+        } else if @ui.pointing() is Mouse && !by_hand.val && !submenu_key_focus_in(holder) && close_due.val is None {
+          let delay = if left_row && in_aim_corridor(r) { submenu_corridor_ms } else { submenu_close_ms }
+          close_due.val = Some(
+            r.at_moment(at + delay, fn() {
+              close_due.val = None
+              if r.alive() &&
+                same_view(open_row.untracked(), Some(r)) &&
+                @ui.pointing() is Mouse &&
+                !by_hand.val &&
+                !submenu_key_focus_in(holder) &&
+                !@signals.untracked(fn() { r.pointed_in() || holder.pointed_in() }) {
+                close(r)
+              }
+            }),
+          )
         }
       })
       // (asked of every node that takes keys, the topmost first: its own while it has the focus)
       r.on_key(fn(k) {
         if k.mods == 0 && k.code == toward && r.focused() && !small() {
-          open(r, true)
+          open(r, true, false)
           true
         } else {
           false
@@ -107,24 +298,33 @@ pub fn submenu_row_node(
       })
       |> ignore
       // (closed as it starts leaving (its menu out of sight from then: lives_with), and as it is let go)
-      r.on_leaving(fn() { close(r) }) |> ignore
-      r.owns(fn() { close(r) }) |> ignore
-      // (its menu made as it opens, as it was opened then: by the keyboard or not; let go at once as it closes; made in
-      // the panel's layer, in what lives as long as its row does (View::lives_with: its scope the row's, as a tip's in
-      // its layer): out of sight as its row starts leaving, back as that comes back, gone with it)
-      let holder = layer.box(fn(h) { h.over(Is(true)) |> ignore }).lives_with(r)
+      r.on_leaving(fn() {
+        was_on_row.val = false
+        close(r)
+      })
+      |> ignore
+      r.owns(fn() {
+        close(r)
+        holder_ref.val = None
+        menu_panel_ref.val = None
+      })
+      |> ignore
       holder.show(fn() { same_view(open_row.get(), Some(r)) }, at_once=true, fn(m) {
         // (the focus given back to its row as it goes: what opened it, kit's submenu's return_focus)
         m.over(Is(true)).opened_by(@view.ByNode(r.id())) |> ignore
         let items_now = items()
-        menu_node(
+        let (sub_host, sub_offset) = match r.lent(floating_host_lent) {
+          Some(h) if h.alive() => (Some(h.id()), floating_surface_gap)
+          _ => (None, panel_pad + floating_surface_gap)
+        }
+        menu_node_by(
           m,
           fn() { true },
           fn(_) { r },
           fn() { items_now },
           "",
           Start,
-          panel_pad + panel_pad,
+          sub_offset,
           by_key.val,
           false,
           fn(item) {
@@ -132,8 +332,12 @@ pub fn submenu_row_node(
             (item.select)()
           },
           fn() { close(r) },
+          max_w=submenu_max_w,
           side~,
           modal=false,
+          false,
+          panel_ref=menu_panel_ref,
+          host?=sub_host,
         )
       })
     },

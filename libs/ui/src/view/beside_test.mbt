@@ -538,3 +538,58 @@ test "beside holding its side: below its anchor, the window made too short below
   t.frame(400.0, 300.0) |> ignore
   assert_eq(at(), Some(164.0), msg="window too short below: above")
 }
+
+///|
+test "beside host: Left, Right, and Left->Right viewport flip clear outer host edge horizontally while aligning vertically to inner anchor" {
+  let host_x = @signals.signal(200.0, same=fn(a, b) { a == b })
+  let ids : Map[String, @view.NodeId] = Map([])
+  let make = fn(side : @view.Side) {
+    let t = @view.Tree::new(
+      fn(root) {
+        root.box(fn(host) {
+          ids["host"] = host.id()
+          host
+          .over(Is(true))
+          .width(Is(Some(120.0)))
+          .height(Is(Some(100.0)))
+          .padding(Is((20.0, 30.0, 20.0, 20.0)))
+          .offset(By(fn() { (host_x.get(), 100.0) }))
+          |> ignore
+          host.box(fn(a) {
+            ids["a"] = a.id()
+            a.width(Is(Some(80.0))).height(Is(Some(24.0))) |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        root.box(fn(b) {
+          ids["b"] = b.id()
+          b
+          .width(Is(Some(60.0)))
+          .height(Is(Some(40.0)))
+          .beside(ids["a"], side~, along=Start, offset=8.0, padding=8.0, host=ids["host"])
+          |> ignore
+        })
+        |> ignore
+      },
+      time=fn() { 0.0 },
+    )
+    t
+  }
+  // side=Left: host at [200, 320], anchor at y=130 -> overlay x = 200 - 8 - 60 = 132, y = 130
+  let tl = make(Left)
+  tl.frame(500.0, 300.0) |> ignore
+  let dl = tl.drawn_of(ids["b"]).unwrap()
+  assert_eq((dl.x, dl.y), (132.0, 130.0), msg="Left clears host left edge by 8pt and aligns to inner anchor y")
+  // Flip Left -> Right when host moves to x=20 (only 4pt room on left): overlay x = 20 + 120 + 8 = 148, y = 130
+  tl.event(10.0, fn() { host_x.set(20.0) })
+  tl.frame(500.0, 300.0) |> ignore
+  let df = tl.drawn_of(ids["b"]).unwrap()
+  assert_eq((df.x, df.y), (148.0, 130.0), msg="Left->Right flip clears host right edge by 8pt and keeps anchor y")
+  // side=Right: host back at [200, 320] -> overlay x = 320 + 8 = 328, y = 130
+  host_x.set(200.0)
+  let tr = make(Right)
+  tr.frame(500.0, 300.0) |> ignore
+  let dr = tr.drawn_of(ids["b"]).unwrap()
+  assert_eq((dr.x, dr.y), (328.0, 130.0), msg="Right clears host right edge by 8pt and aligns to inner anchor y")
+}

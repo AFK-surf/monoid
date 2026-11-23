@@ -2010,6 +2010,7 @@ let en : Map[String, String] = {
   "web-pages.chat.subchatsRunning": "{n} running",
   "web-pages.chat.subchatsNeed": "{n} waiting",
   "web-pages.chat.subchatsArchived": "Archived",
+  "web-pages.chat.subchatsOther": "Other opened chats",
   "web-pages.chat.subchatsDone": "Done",
   "web-pages.chat.subchatsNone": "No sub-chats",
   "web-pages.chat.subchatsIdle": "None active",

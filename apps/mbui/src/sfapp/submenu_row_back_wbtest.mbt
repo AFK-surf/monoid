@@ -23,7 +23,7 @@ fn sub_back_a_frame_on(away : Bool) -> @ui.Tester raise {
   }
   // (shown again before its Move is over: the same row, back)
   shown.set(true)
-  t.run_for(@ui.move_most_ms)
+  t.run_for(@sf.submenu_open_ms + @ui.move_most_ms)
   t
 }
 
@@ -39,6 +39,6 @@ test "a submenu row in a dialog called back a frame after it starts going, the p
   assert_true(sub_has(t, "甲") && !sub_has(t, "甲一"), msg="back, closed: \{Repr(sub_at(t, ["甲", "甲一"]))}")
   let (x, y) = sub_mid(t, "甲")
   t.move_to(x, y)
-  t.run_for(@ui.move_most_ms)
+  t.run_for(@sf.submenu_open_ms + @ui.move_most_ms)
   assert_true(sub_has(t, "甲一"), msg="pointed at, open")
 }

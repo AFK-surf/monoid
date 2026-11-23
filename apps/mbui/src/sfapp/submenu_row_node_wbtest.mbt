@@ -81,8 +81,8 @@ test "a submenu row as nodes, on a wide window: the rows, and its menu pressed o
     seen.push("\{f.0}: \{at.join(" | ")}")
   }
   inspect(seen.join("\n"), content=(
-    #|dialog: 说明文字 (404, 347.5, 472, 18) | 甲 (404, 389.5, 450, 20) | 乙 (404, 441.5, 450, 20) | 末尾文字 (404, 485.5, 472, 18) | 甲一 (918, 396.5, 26, 18) | 甲二 (918, 432.5, 26, 18)
-    #|beside: 说明文字 (306, 192, 284, 18) | 甲 (322, 218, 230, 20) | 乙 (322, 254, 230, 20) | 末尾文字 (306, 282, 284, 18) | 甲一 (624, 225, 26, 18) | 甲二 (624, 261, 26, 18)
+    #|dialog: 说明文字 (404, 347.5, 472, 18) | 甲 (404, 389.5, 450, 20) | 乙 (404, 441.5, 450, 20) | 末尾文字 (404, 485.5, 472, 18) | 甲一 (930, 396.5, 26, 18) | 甲二 (930, 432.5, 26, 18)
+    #|beside: 说明文字 (306, 192, 284, 18) | 甲 (322, 218, 230, 20) | 乙 (322, 254, 230, 20) | 末尾文字 (306, 282, 284, 18) | 甲一 (626, 225, 26, 18) | 甲二 (626, 261, 26, 18)
   ))
 }
 
@@ -105,25 +105,35 @@ test "a submenu row as nodes, on 小屏: pressed, a sheet of its items titled by
 }
 
 ///|
-test "a submenu row as nodes: the mouse's pointer onto it opens its menu at once; off it onto the panel's words, open still; onto the other row, that one's in its place" {
+test "a submenu row as nodes: the mouse's pointer onto it opens its menu after submenu_open_ms; moving into submenu keeps it open; leaving both to panel words closes after submenu_close_ms; hovering the other row switches cleanly" {
   for f in sub_froms {
     let about = f.0
     let t = sub_panel(f.1, [], @signals.signal(true))
     let (x, y) = sub_mid(t, "甲")
     t.move_to(x, y)
-    t.frame()
-    // (there at once, on its way in)
-    assert_true(t.words().any(fn(w) { w.0 == "甲一" }), msg="\{about}: at once")
+    t.run_for(@sf.submenu_open_ms - 20.0)
+    assert_false(sub_has(t, "甲一"), msg="\{about}: not open before submenu_open_ms")
+    t.run_for(20.0 + @ui.move_most_ms)
+    assert_true(sub_has(t, "甲一"), msg="\{about}: opened after submenu_open_ms")
+    // Moving into submenu keeps it open past submenu_close_ms
+    let (mx, my) = sub_mid(t, "甲一")
+    t.move_to(mx, my)
+    t.run_for(@sf.submenu_close_ms + @ui.move_most_ms)
+    assert_true(sub_has(t, "甲一"), msg="\{about}: stays open while on submenu")
+    // Moving off both onto panel words closes submenu after submenu_close_ms
     let (wx, wy) = sub_mid(t, "说明文字")
     t.move_to(wx, wy)
-    t.run_for(@ui.move_most_ms)
-    assert_true(sub_has(t, "甲一"), msg="\{about}: open still")
+    t.run_for(@sf.submenu_close_ms + @ui.move_most_ms)
+    assert_false(sub_has(t, "甲一"), msg="\{about}: closed after leaving both")
+    // Hovering 甲 then switching to 乙 replaces 甲's submenu with 乙's
+    t.move_to(x, y)
+    t.run_for(@sf.submenu_open_ms + @ui.move_most_ms)
+    assert_true(sub_has(t, "甲一"), msg="\{about}: reopened 甲")
     let (bx, by) = sub_mid(t, "乙")
     t.move_to(bx, by)
-    t.frame()
-    assert_true(t.words().any(fn(w) { w.0 == "乙一" }), msg="\{about}: the other's")
-    t.run_for(@ui.move_most_ms)
-    assert_true(!sub_has(t, "甲一"), msg="\{about}: the first's gone")
+    t.run_for(@sf.submenu_open_ms + @ui.move_most_ms)
+    assert_true(sub_has(t, "乙一"), msg="\{about}: the other's opened")
+    assert_false(sub_has(t, "甲一"), msg="\{about}: the first's gone")
   }
 }
 
@@ -195,9 +205,10 @@ test "a submenu row as nodes: its row going (its room closing on a Move), its me
 }
 
 ///|
-/// How long after its row starts going it is called back: half the way of the longest Move, the row still going (a
-/// frame on, the panel's height turning back from rest is judged: View::come_back's, the smoothness line's).
-let sub_back_after : Double = @ui.move_most_ms / 2.0
+/// How long after its row starts going it is called back: mid-Move (under move_least_ms = 200ms so the row is still
+/// going, and under submenu_open_ms = 160ms so the neighbour row sliding under the stationary pointer does not begin
+/// a pop_in whose anchor shifts mid-transition when this row returns).
+let sub_back_after : Double = 120.0
 
 ///|
 /// The panel of `f` (sub_panel), the row 甲's menu pressed open, then the row going (`shown` false) and called back
@@ -218,7 +229,7 @@ fn sub_called_back(f : (String, @sf.Anchor), away : Bool) -> @ui.Tester raise {
   }
   // (shown again before its Move is over: the same row, back)
   shown.set(true)
-  t.run_for(@ui.move_most_ms)
+  t.run_for(@sf.submenu_open_ms + @ui.move_most_ms)
   t
 }
 
@@ -237,7 +248,7 @@ test "a submenu row as nodes, called back as it goes, the mouse's pointer moved 
     assert_true(sub_has(t, "甲") && !sub_has(t, "甲一"), msg="\{f.0}: back, closed: \{Repr(sub_at(t, ["甲", "甲一"]))}")
     let (x, y) = sub_mid(t, "甲")
     t.move_to(x, y)
-    t.run_for(@ui.move_most_ms)
+    t.run_for(@sf.submenu_open_ms + @ui.move_most_ms)
     assert_true(sub_has(t, "甲一"), msg="\{f.0}: pointed at, open")
   }
 }

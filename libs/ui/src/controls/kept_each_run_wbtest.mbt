@@ -57,12 +57,16 @@ test "a run begins with none of the system's bars said, nothing said over the wi
 }
 
 ///|
-test "a run begins with no active hover slot and hover_open_seq reset, whatever the run before left" {
+test "a run begins with no active transient overlay state and transient_seq reset, whatever the run before left" {
   ker_run() |> ignore
-  hover_open_seq.val = 7
-  hover_claim(7, fn() {  })
-  assert_true(hover_open_active.val is Some(_))
+  let id = transient_next_id()
+  transient_claim(id, fn() { None }, fn() { false }, fn() {  })
+  assert_true(transient_seq.val > 0)
+  assert_true(transient_active.val is Some(_))
   ker_run() |> ignore
-  assert_eq(hover_open_seq.val, 0)
-  assert_true(hover_open_active.val is None)
+  assert_eq(transient_seq.val, 0)
+  assert_true(transient_active.val is None)
+  assert_true(transient_tip_active.val is None)
+  assert_true(window_hover_at.val is None)
+  assert_true(window_hover_root.val is None)
 }

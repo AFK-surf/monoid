@@ -43,6 +43,7 @@ pub fn menu_node(
   gone? : () -> Unit = fn() {  },
   extras? : (Int) -> MenuExtra = fn(_) { menu_no_extra },
   min_w? : Double = menu_w,
+  max_w? : Double = 0.0,
   side? : @ui.Side = Bottom,
   modal? : Bool = true,
 ) -> Unit {
@@ -62,6 +63,7 @@ pub fn menu_node(
     gone~,
     extras~,
     min_w~,
+    max_w~,
     side~,
     modal~,
     false,
@@ -132,12 +134,15 @@ fn menu_node_by(
   gone? : () -> Unit = fn() {  },
   extras? : (Int) -> MenuExtra = fn(_) { menu_no_extra },
   min_w? : Double = menu_w,
+  max_w? : Double = 0.0,
   side? : @ui.Side = Bottom,
   modal? : Bool = true,
   ticks : Bool,
   check_end? : Bool = false,
   sub_levels? : () -> Array[(Int, String, Array[MenuItem?])] = fn() { [] },
   level_back? : () -> Bool = fn() { false },
+  panel_ref? : Ref[@view.View?],
+  host? : @view.NodeId,
 ) -> Unit {
   // (no line at either end, none twice: menu_clean_items)
   let content = fn() { menu_clean_items(content()) }
@@ -459,6 +464,13 @@ fn menu_node_by(
       anchored_popover_bridge(layer, at, look, side~, along~, offset~)
       layer.box(fn(p) {
         panel.val = Some(p)
+        match panel_ref {
+          Some(r) => {
+            r.val = Some(p)
+            p.owns(fn() { r.val = None }) |> ignore
+          }
+          None => ()
+        }
         // (what it is to the keys and a screen reader: @headless.menu, in its own node; the focus its own as it opens by
         // the pointer, no key pressing it, one of its two stops of Tab's, its rows the other; Escape, and not modal the
         // arrow back, closing it while the focus is in it, the layer's keys closing it otherwise)
@@ -475,9 +487,14 @@ fn menu_node_by(
           roving=true,
           in_node=true,
           fn(p, menu) {
-            anchored_popover_shell(p, at.id(), look, side~, along~, offset~, holds_side=false)
+            anchored_popover_shell_by(p, at.id(), look, side~, along~, offset~, holds_side=false, host?)
             .min_width(Is(Some(min_w)))
-            .max_width(By(fn() { Some(over_room(layer).0 - 16.0) }))
+            .max_width(
+              By(fn() {
+                let room = dmax(0.0, over_room(layer).0 - 16.0)
+                Some(if max_w > 0.0 { dmin(max_w, room) } else { room })
+              }),
+            )
             .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
             // (small_panel: its padding, its rows reaching past it to stand concentric with its corners;
             // submenu levels use `r_menu - 12` inset so the 24x24 circular `<` back button (radius 12) sits concentric with `r_menu`)
@@ -592,7 +609,19 @@ fn menu_node_by(
                         0 => menu_rule_node(cell, reach)
                         1 => menu_heading_node(cell, fn() { item().label }, past, reach)
                         _ => {
-                          rows[i] = menu_row_node(cell, menu, item, kind, lead, gap, reach, fn() { go(i) }, row_extra, check_end~)
+                          rows[i] = menu_row_node(
+                            cell,
+                            menu,
+                            item,
+                            kind,
+                            lead,
+                            gap,
+                            reach,
+                            fn() { go(i) },
+                            row_extra,
+                            check_end~,
+                            clip_label=max_w > 0.0,
+                          )
                           cell.owns(fn() {
                             match rows.get(i) {
                               Some(r) if r.id() == cell.id() => rows.remove(i)
@@ -718,6 +747,7 @@ fn menu_row_node(
   go : () -> Unit,
   extra : MenuExtra,
   check_end? : Bool = false,
+  clip_label? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   let t = theme()
@@ -790,6 +820,9 @@ fn menu_row_node(
         None => ()
       }
       into.box(fn(w) {
+        if clip_label {
+          w.shrink(Is(1.0)).min_width(Is(Some(0.0))).cuts(Is(true)).allow_ellipsis(Is(true)) |> ignore
+        }
         w
         .words(By(fn() { item().label }), look=toast_words_look(Ui, L5, 400, false))
         .ink(By(fn() { @ui.tree_theme().color(if off() { Subtle } else if item().danger { Danger } else { Fg }) }))

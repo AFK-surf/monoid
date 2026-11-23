@@ -108,6 +108,8 @@ pub fn tip_node(
   // one), held there for its control, let go with it)
   let made = Ref(false)
   let holder_v : Ref[@view.View?] = Ref(None)
+  let tip_id = Ref(0)
+  let close_tip : Ref[() -> Unit] = Ref(fn() {  })
   // (Escape while it shows: its, before what is under it (a viewer it is over) is asked; gone, shut as a press shuts it)
   let escaped : Ref[() -> Unit] = Ref(fn() {  })
   let make = fn() -> Bool {
@@ -154,6 +156,10 @@ pub fn tip_node(
       }
       if made.val {
         @headless.tip_claim(owner)
+        if tip_id.val == 0 {
+          tip_id.val = transient_next_id()
+        }
+        transient_tip_register(tip_id.val, anchor, fn() { (close_tip.val)() })
       }
       match taken {
         // (in whole at once, its ground going from where the other's was to its own place, its words with it)
@@ -162,6 +168,7 @@ pub fn tip_node(
         None => fade.go(anchor, 1.0, at, tip_in_ms, Out)
       }
     } else {
+      transient_tip_release(tip_id.val)
       // (out, as pop_out: from where it is at this moment, eased to leave, over as long as it is kept going)
       fade.go(anchor, 0.0, at, @motion.pop_out_ms, Leave)
       tips.went_at = at
@@ -262,20 +269,28 @@ pub fn tip_node(
       )
     }
   })
+  close_tip.val = fn() {
+    if open.untracked() {
+      stop_rest()
+      set_open(false)
+    }
+  }
   escaped.val = fn() {
     shut.val = true
     (lifted_end.val)()
     hand.set(Free)
     set_open(false)
   }
-  // (its control let go: nothing of it left pending; escaped let go of last, as it names itself through set_open's
-  // make, a ring native's counting never frees)
+  // (its control let go: nothing of it left pending; escaped/close_tip let go of last, as they name themselves through
+  // set_open's make, a ring native's counting never frees)
   anchor.owns(fn() {
     stop_rest()
     fade.stop()
     glide.gone()
+    transient_tip_release(tip_id.val)
     (lifted_end.val)()
     escaped.val = fn() {  }
+    close_tip.val = fn() {  }
   })
   |> ignore
   {
@@ -667,7 +682,7 @@ let tip_cap_node_look : @ui.Style = @ui.css("row px=S1_25 align=ACenter justify=
 
 ///|
 /// How far a tip is from its control (kit's tooltip `offset`), and how wide it may grow (tip_max).
-let tip_gap : Double = 6.0
+let tip_gap : Double = floating_trigger_gap
 
 ///|
 let tip_widest : Double = match tip_max {

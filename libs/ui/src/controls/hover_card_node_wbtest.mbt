@@ -918,7 +918,7 @@ test "hover_card_node with submenu_row_node: moving into submenu keeps both open
     assert_true(open(), msg="card opened")
     guard word_mid("屏幕") is Some((sx, sy)) else { fail("no 屏幕 row") }
     t.move_to(sx, sy)
-    t.run_for(hover_settled_ms)
+    t.run_for(submenu_open_ms + hover_settled_ms)
     assert_true(word_mid("主屏") is Some(_), msg="submenu opened")
   }
   // 1) Move across gap into submenu item: both stay open; click item triggers callback and closes submenu
@@ -1044,7 +1044,7 @@ test "window-level hover exclusion between hover_card_node and hover_panel_node,
   assert_true(open_a(), msg="甲 held open")
   guard word_mid("甲子菜单") is Some((ax, ay)) else { fail("no 甲子菜单") }
   t.move_to(ax, ay)
-  t.run_for(hover_settled_ms)
+  t.run_for(submenu_open_ms + hover_settled_ms)
   assert_true(word_mid("甲项") is Some(_), msg="甲 submenu open")
   let (bx, by) = trigger_mid("乙")
   t.move_to(bx, by)
@@ -1061,7 +1061,7 @@ test "window-level hover exclusion between hover_card_node and hover_panel_node,
   // 3) hover_panel_node with submenu: stays open on submenu, closes on leave after hover_panel_close_ms
   guard word_mid("丙子菜单") is Some((px, py)) else { fail("no 丙子菜单") }
   t.move_to(px, py)
-  t.run_for(hover_settled_ms)
+  t.run_for(submenu_open_ms + hover_settled_ms)
   guard word_mid("丙项") is Some((ix, iy)) else { fail("no 丙项") }
   t.move_to(ix, iy)
   t.run_for(hover_panel_close_ms + hover_settled_ms)
@@ -1077,7 +1077,7 @@ test "window-level hover exclusion between hover_card_node and hover_panel_node,
   assert_true(open_c(), msg="丙 reopened")
   guard word_mid("丙子菜单") is Some((px2, py2)) else { fail("no 丙子菜单") }
   t.move_to(px2, py2)
-  t.run_for(hover_settled_ms)
+  t.run_for(submenu_open_ms + hover_settled_ms)
   assert_true(word_mid("丙项") is Some(_), msg="丙 submenu reopened")
   t.move_to(hover_away.0, hover_away.1)
   t.tap(hover_away.0, hover_away.1)
@@ -1352,4 +1352,480 @@ test "a wheel on a card under a modal layer does not reach the list the layer ke
   t.wheel(40.0, 52.0, 120.0)
   t.run_for(hover_settled_ms)
   assert_eq(list(), 0.0, msg="kept from input")
+}
+
+///|
+test "transient L1 mutual exclusion inside a panel: submenu_row_node and hover_card_node close each other" {
+  set_words(fn(key, _) { key })
+  let t = @ui.Tester::new(fn(_c) {  }, w=900.0, h=600.0, platform=0)
+  t.check_looks(false)
+  let card_hand : Ref[HoverHand?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) { b.width(Is(Some(40.0))).height(Is(Some(40.0))) |> ignore }) |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  panel_nodes(
+    "面板",
+    fn(v, _) {
+      submenu_row_node(v, fn() { "子菜单行" }, fn() { [Some(menu_item_of("子项甲", fn() {  }))] }, side=Left)
+      v.box(fn(k) {
+        k.margin(Is((0.0, 4.0, 0.0, 0.0))).min_height(Is(Some(36.0))).says(Is(Some(@view.said(Button, label="预览行")))) |> ignore
+        k.box(fn(w) { w.words(Is("预览行")) |> ignore }) |> ignore
+        card_hand.val = Some(
+          hover_card_node(
+            window_tips(),
+            k,
+            fn(b) { b.box(fn(w) { w.words(Is("预览卡内容")) |> ignore }) |> ignore },
+            side=Left,
+            press=fn() {  },
+          ),
+        )
+      })
+      |> ignore
+    },
+    from=At(520.0, 60.0, 80.0, 32.0),
+  )
+  t.run_for(@ui.move_most_ms)
+  let word_mid = fn(w : String) -> (Double, Double)? {
+    match t.words().filter(fn(x) { x.0 == w && x.5 > 0.5 }).last() {
+      Some(x) => Some((x.1 + x.3 / 2.0, x.2 + x.4 / 2.0))
+      None => None
+    }
+  }
+  // 1) Open submenu -> hover preview row -> hover card opens and immediately closes submenu
+  guard word_mid("子菜单行") is Some((sx, sy)) else { fail("no 子菜单行") }
+  t.move_to(sx, sy)
+  t.run_for(submenu_open_ms + hover_settled_ms)
+  assert_true(word_mid("子项甲") is Some(_), msg="submenu opened")
+  guard word_mid("预览行") is Some((px, py)) else { fail("no 预览行") }
+  t.move_to(px, py)
+  t.run_for(hover_card_open_ms + hover_settled_ms)
+  assert_true(card_hand.val is Some(h) && @signals.untracked(h.open), msg="hover card opened")
+  assert_true(word_mid("预览卡内容") is Some(_), msg="hover card visible")
+  assert_true(word_mid("子项甲") is None, msg="submenu closed when hover card opened")
+  // 2) Click submenu row while hover card is open -> submenu opens and closes hover card
+  t.move_to(sx, sy)
+  t.tap(sx, sy)
+  t.run_for(hover_settled_ms)
+  assert_true(word_mid("子项甲") is Some(_), msg="submenu reopened")
+  assert_false(card_hand.val is Some(h) && @signals.untracked(h.open), msg="hover card closed when submenu opened")
+  assert_eq(t.audit(), [])
+  presenters_reset()
+}
+
+///|
+test "embedded submenu_row_node inside hover_card_node closes after submenu_close_ms when moving to another row in the same card while the card stays open" {
+  set_words(fn(key, _) { key })
+  let t = @ui.Tester::new(fn(_c) {  }, w=900.0, h=600.0, platform=0)
+  t.check_looks(false)
+  let hand : Ref[HoverHand?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(k) {
+      k
+      .margin(Is((40.0, 40.0, 0.0, 0.0)))
+      .width(Is(Some(120.0)))
+      .height(Is(Some(36.0)))
+      .says(Is(Some(@view.said(Button, label="站触发"))))
+      |> ignore
+      hand.val = Some(
+        hover_card_node(
+          window_tips(),
+          k,
+          fn(b) {
+            submenu_row_node(b, fn() { "屏幕" }, fn() { [Some(menu_item_of("主屏", fn() {  }))] })
+            panel_row_node(b, fn() { "查看详情" }, fn() {  }, plain=true)
+          },
+          padded=false,
+          press=fn() {  },
+        ),
+      )
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  let word_mid = fn(w : String) -> (Double, Double)? {
+    match t.words().filter(fn(x) { x.0 == w && x.5 > 0.5 }).last() {
+      Some(x) => Some((x.1 + x.3 / 2.0, x.2 + x.4 / 2.0))
+      None => None
+    }
+  }
+  t.move_to(100.0, 58.0)
+  t.run_for(hover_card_open_ms + hover_settled_ms)
+  assert_true(hand.val is Some(h) && @signals.untracked(h.open), msg="card open")
+  guard word_mid("屏幕") is Some((sx, sy)) else { fail("no 屏幕") }
+  t.move_to(sx, sy)
+  t.run_for(submenu_open_ms + hover_settled_ms)
+  assert_true(word_mid("主屏") is Some(_), msg="submenu open")
+  // Move onto 查看详情 inside the same card: submenu closes after submenu_close_ms, card stays open
+  guard word_mid("查看详情") is Some((dx, dy)) else { fail("no 查看详情") }
+  t.move_to(dx, dy)
+  t.run_for(submenu_close_ms + hover_settled_ms)
+  assert_true(word_mid("主屏") is None, msg="embedded submenu closed after moving to 查看详情")
+  assert_true(hand.val is Some(h) && @signals.untracked(h.open), msg="parent hover card remains open")
+  assert_eq(t.audit(), [])
+  presenters_reset()
+}
+
+///|
+test "L1 hover card dismisses external L2 tip_node while allowing an internal tip_node inside the card" {
+  set_words(fn(key, _) { key })
+  let t = @ui.Tester::new(fn(_c) {  }, w=900.0, h=600.0, platform=0)
+  t.check_looks(false)
+  let hand : Ref[HoverHand?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.row(Is(true)) |> ignore
+    root.box(fn(ext) {
+      ext
+      .margin(Is((40.0, 40.0, 0.0, 0.0)))
+      .width(Is(Some(100.0)))
+      .height(Is(Some(36.0)))
+      .focusable(Is(true))
+      .presses(Is(true))
+      .says(Is(Some(@view.said(Button, label="外按钮"))))
+      |> ignore
+      ext.box(fn(w) { w.words(Is("外按钮")) |> ignore }) |> ignore
+      tip_node(window_tips(), ext, fn() { "外部提示" }) |> ignore
+    })
+    |> ignore
+    root.box(fn(k) {
+      k
+      .margin(Is((40.0, 40.0, 0.0, 0.0)))
+      .width(Is(Some(100.0)))
+      .height(Is(Some(36.0)))
+      .says(Is(Some(@view.said(Button, label="卡按钮"))))
+      |> ignore
+      k.box(fn(w) { w.words(Is("卡按钮")) |> ignore }) |> ignore
+      hand.val = Some(
+        hover_card_node(
+          window_tips(),
+          k,
+          fn(b) {
+            b.box(fn(inner) {
+              inner
+              .width(Is(Some(90.0)))
+              .height(Is(Some(36.0)))
+              .presses(Is(true))
+              .says(Is(Some(@view.said(Button, label="内按钮"))))
+              |> ignore
+              inner.box(fn(w) { w.words(Is("内按钮")) |> ignore }) |> ignore
+              tip_node(window_tips(), inner, fn() { "内部提示" }, within=true) |> ignore
+            })
+            |> ignore
+          },
+          press=fn() {  },
+        ),
+      )
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  let has_word = fn(w : String) { t.words().any(fn(x) { x.0 == w && x.5 > 0.5 }) }
+  // 1) Focus external button so its L2 tooltip stays open even when pointer moves
+  t.tab()
+  t.run_for(tip_delay_ms + hover_settled_ms)
+  assert_true(has_word("外部提示"), msg="external tooltip visible")
+  // 2) Open L1 hover card -> external L2 tooltip is dismissed
+  let card_btn = t.semantics().filter(fn(s) { s.label == "卡按钮" && !s.hidden })[0].rect
+  t.move_to(card_btn.0 + card_btn.2 / 2.0, card_btn.1 + card_btn.3 / 2.0)
+  t.run_for(hover_card_open_ms + hover_settled_ms)
+  assert_true(hand.val is Some(h) && @signals.untracked(h.open), msg="card open")
+  assert_false(has_word("外部提示"), msg="external tooltip dismissed when L1 card opens")
+  // 3) Hover button inside card -> internal L2 tooltip shows normally above card
+  let inner_btn = t.semantics().filter(fn(s) { s.role == Button && s.label == "内按钮" && !s.hidden })[0].rect
+  t.move_to(inner_btn.0 + inner_btn.2 / 2.0, inner_btn.1 + inner_btn.3 / 2.0)
+  t.run_for(tip_delay_ms + hover_settled_ms)
+  assert_true(has_word("内部提示"), msg="internal tooltip visible inside L1 card")
+  assert_eq(t.audit(), [])
+  presenters_reset()
+}
+
+///|
+test "present() from outside immediately closes active hover_card_node while present() from Node(card) preserves it" {
+  set_words(fn(key, _) { key })
+  let t = @ui.Tester::new(fn(_c) {  }, w=900.0, h=600.0, platform=0)
+  t.check_looks(false)
+  let hand : Ref[HoverHand?] = Ref(None)
+  let held = @signals.signal(false)
+  let ext_anchor : Ref[@view.View?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.row(Is(true)) |> ignore
+    root.box(fn(k) {
+      k
+      .margin(Is((40.0, 40.0, 0.0, 0.0)))
+      .width(Is(Some(120.0)))
+      .height(Is(Some(36.0)))
+      .says(Is(Some(@view.said(Button, label="卡触发"))))
+      |> ignore
+      hand.val = Some(
+        hover_card_node(
+          window_tips(),
+          k,
+          fn(b) {
+            action_box_node(
+              b,
+              fn() { "换模型" },
+              fn(btn) {
+                pick("选模型", [choice("a", "模型甲")], "a", fn(_) {  }, from=Node(btn))
+                held.set(true)
+              },
+              fn(btn) { btn.height(Is(Some(36.0))).words(Is("换模型")) |> ignore },
+            )
+            |> ignore
+          },
+          held=fn() { held.get() },
+          press=fn() {  },
+        ),
+      )
+    })
+    |> ignore
+    root.box(fn(ext) {
+      ext_anchor.val = Some(ext)
+      ext
+      .margin(Is((40.0, 40.0, 0.0, 0.0)))
+      .width(Is(Some(120.0)))
+      .height(Is(Some(36.0)))
+      .says(Is(Some(@view.said(Button, label="外弹窗"))))
+      |> ignore
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  let open = fn() { hand.val is Some(h) && @signals.untracked(h.open) }
+  // 1) Open card, then present from outside -> card closes immediately
+  t.move_to(100.0, 58.0)
+  t.run_for(hover_card_open_ms + hover_settled_ms)
+  assert_true(open(), msg="card opened")
+  menu([Some(menu_item_of("外项", fn() {  }))], from=Node(ext_anchor.val.unwrap()))
+  assert_false(open(), msg="external present() closes active hover card immediately")
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  // 2) Reopen card, click internal button that calls present(..., from=Node(btn)) before setting held=true -> card stays open
+  t.move_to(hover_away.0, hover_away.1)
+  t.run_for(hover_short_ms)
+  t.move_to(100.0, 58.0)
+  t.run_for(hover_card_open_ms + hover_settled_ms)
+  assert_true(open(), msg="card reopened")
+  let btn_rect = t.semantics().filter(fn(s) { s.label == "换模型" && !s.hidden })[0].rect
+  t.tap(btn_rect.0 + btn_rect.2 / 2.0, btn_rect.1 + btn_rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(open(), msg="present() from Node inside hover card preserves card")
+  assert_true(presenting(), msg="picker presented")
+  assert_eq(t.audit(), [])
+  presenters_reset()
+}
+
+///|
+test "submenu_row_node clamps ultra-long items to submenu_max_w with clean audit" {
+  set_words(fn(key, _) { key })
+  let t = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, platform=0)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) { b.width(Is(Some(40.0))).height(Is(Some(40.0))) |> ignore }) |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  let long_label = "这是一个超过一百个字符的超长子菜单标题用于验证菜单限宽与单行省略号截断逻辑不会撑爆视口或者触发布局审计报错这是一个超过一百个字符的超长子菜单标题用于验证菜单限宽与单行省略号截断逻辑"
+  panel_nodes(
+    "限宽面板",
+    fn(v, _) {
+      submenu_row_node(v, fn() { "超长列表" }, fn() { [Some(menu_item_of(long_label, fn() {  }))] })
+    },
+    from=At(120.0, 80.0, 80.0, 32.0),
+  )
+  t.run_for(@ui.move_most_ms)
+  let row_rect = t.semantics().filter(fn(s) { s.label == "超长列表" && !s.hidden })[0].rect
+  t.tap(row_rect.0 + row_rect.2 / 2.0, row_rect.1 + row_rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  let menus = t.semantics().filter(fn(s) { s.role == Menu && !s.hidden })
+  assert_true(menus.length() > 0, msg="expected submenu")
+  let mw = menus[menus.length() - 1].rect.2
+  assert_true(mw <= submenu_max_w + 0.5, msg="submenu width \{mw} must be <= \{submenu_max_w}")
+  assert_eq(t.audit(), [])
+  presenters_reset()
+}
+
+///|
+test "submenu_row_node tapped by Finger on Medium/Large stays open past submenu_close_ms until outside tap" {
+  set_words(fn(key, _) { key })
+  let t = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, platform=1)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) { b.width(Is(Some(40.0))).height(Is(Some(40.0))) |> ignore }) |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  panel_nodes(
+    "触控面板",
+    fn(v, _) {
+      submenu_row_node(v, fn() { "触控子菜单" }, fn() { [Some(menu_item_of("触控项", fn() {  }))] })
+    },
+    from=At(120.0, 80.0, 80.0, 32.0),
+  )
+  t.run_for(@ui.move_most_ms)
+  let row_rect = t.semantics().filter(fn(s) { s.label == "触控子菜单" && !s.hidden })[0].rect
+  let (rx, ry) = (row_rect.0 + row_rect.2 / 2.0, row_rect.1 + row_rect.3 / 2.0)
+  t.touch(0, rx, ry)
+  t.touch(2, rx, ry)
+  t.run_for(submenu_close_ms + hover_settled_ms)
+  assert_true(t.words().any(fn(w) { w.0 == "触控项" && w.5 > 0.5 }), msg="Finger-tapped submenu must stay open past submenu_close_ms")
+  // Tap outside closes submenu
+  t.touch(0, 10.0, 10.0)
+  t.touch(2, 10.0, 10.0)
+  t.run_for(hover_settled_ms)
+  assert_false(t.words().any(fn(w) { w.0 == "触控项" && w.5 > 0.5 }), msg="outside tap closes Finger-tapped submenu")
+  assert_eq(t.audit(), [])
+  presenters_reset()
+}
+
+///|
+test "floating overlay gap spec: panel hover_card (Left), hover_card submenu (Right), and centred dialog submenu (Right) each clear host outer edge by floating_surface_gap (8pt)" {
+  set_words(fn(key, _) { key })
+  // 1) panel_node inner row -> hover_card_node(side=Left): card right edge to Dialog left edge == 8pt
+  let t1 = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, platform=0)
+  t1.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) { b.width(Is(Some(40.0))).height(Is(Some(40.0))) |> ignore }) |> ignore
+    presented_nodes(root)
+  })
+  t1.draw()
+  panel_nodes(
+    "宿主面板",
+    fn(v, _) {
+      v.box(fn(row) {
+        row
+        .fills_across(Is(true))
+        .height(Is(Some(36.0)))
+        .presses(Is(true))
+        .points(Is(true))
+        .says(Is(Some(@view.said(Button, label="触发行"))))
+        |> ignore
+        row.box(fn(w) { w.words(Is("触发行")) |> ignore }) |> ignore
+        hover_card_node(
+          window_tips(),
+          row,
+          fn(b) { b.box(fn(w) { w.words(Is("预览内容")) |> ignore }) |> ignore },
+          side=Left,
+        )
+        |> ignore
+      })
+      |> ignore
+    },
+    from=At(700.0, 80.0, 80.0, 32.0),
+  )
+  t1.run_for(@ui.move_most_ms)
+  guard t1.semantics().iter().find_first(fn(s) { s.role == Dialog && s.label == "宿主面板" && !s.hidden }) is Some(panel_sem) else {
+    fail("expected host panel Dialog")
+  }
+  guard t1.semantics().iter().find_first(fn(s) { s.role == Button && s.label == "触发行" && !s.hidden }) is Some(row_sem) else {
+    fail("expected trigger row")
+  }
+  t1.move_to(row_sem.rect.0 + 10.0, row_sem.rect.1 + 10.0)
+  t1.run_for(hover_card_open_ms + @ui.move_most_ms)
+  guard t1.semantics().iter().find_first(fn(s) { s.role == Group && !s.hidden }) is Some(card_sem) else {
+    fail("expected hover card Group")
+  }
+  let gap1 = panel_sem.rect.0 - (card_sem.rect.0 + card_sem.rect.2)
+  assert_true(
+    (gap1 - floating_surface_gap).abs() <= 0.5,
+    msg="panel->hover_card Left gap expected \{floating_surface_gap}, got \{gap1} (card=\{Repr(card_sem.rect)}, panel=\{Repr(panel_sem.rect)})",
+  )
+  assert_eq(t1.audit(), [])
+  presenters_reset()
+
+  // 2) hover_card_node inner submenu_row_node(side=Right): submenu left edge to hover card right edge == 8pt
+  let t2 = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, platform=0)
+  t2.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(trig) {
+      trig
+      .margin(Is((120.0, 80.0, 0.0, 0.0)))
+      .width(Is(Some(80.0)))
+      .height(Is(Some(36.0)))
+      .presses(Is(true))
+      .points(Is(true))
+      .says(Is(Some(@view.said(Button, label="卡片入口"))))
+      |> ignore
+      hover_card_node(
+        window_tips(),
+        trig,
+        fn(b) {
+          submenu_row_node(b, fn() { "二级菜单" }, fn() { [Some(menu_item_of("子菜单项", fn() {  }))] })
+        },
+        padded=false,
+      )
+      |> ignore
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t2.draw()
+  t2.move_to(140.0, 96.0)
+  t2.run_for(hover_card_open_ms + @ui.move_most_ms)
+  guard t2.semantics().iter().find_first(fn(s) { s.role == Group && !s.hidden }) is Some(hc_sem) else {
+    fail("expected parent hover card Group")
+  }
+  guard t2.semantics().iter().find_first(fn(s) { s.label == "二级菜单" && !s.hidden }) is Some(sub_row) else {
+    fail("expected submenu row inside hover card")
+  }
+  t2.move_to(sub_row.rect.0 + 10.0, sub_row.rect.1 + 10.0)
+  t2.run_for(submenu_open_ms + @ui.move_most_ms)
+  guard t2.semantics().iter().find_first(fn(s) { s.role == Menu && !s.hidden }) is Some(menu_sem) else {
+    fail("expected submenu Menu")
+  }
+  let gap2 = menu_sem.rect.0 - (hc_sem.rect.0 + hc_sem.rect.2)
+  assert_true(
+    (gap2 - floating_surface_gap).abs() <= 0.5,
+    msg="hover_card->submenu Right gap expected \{floating_surface_gap}, got \{gap2} (card=\{Repr(hc_sem.rect)}, menu=\{Repr(menu_sem.rect)})",
+  )
+  assert_eq(t2.audit(), [])
+  presenters_reset()
+
+  // 3) centred dialog (panel_centred_node, sides=24pt) inner submenu_row_node(side=Right): submenu clears Dialog outer right edge by 8pt
+  let t3 = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, platform=0)
+  t3.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) { b.width(Is(Some(40.0))).height(Is(Some(40.0))) |> ignore }) |> ignore
+    presented_nodes(root)
+  })
+  t3.draw()
+  panel_nodes(
+    "居中弹窗",
+    fn(v, _) {
+      submenu_row_node(v, fn() { "弹窗子菜单" }, fn() { [Some(menu_item_of("弹窗子项", fn() {  }))] })
+      v.box(fn(s) { s.height(Is(Some(24.0))) |> ignore }) |> ignore
+    },
+    from=Unanchored,
+  )
+  t3.run_for(@ui.move_most_ms)
+  guard t3.semantics().iter().find_first(fn(s) { s.role == Dialog && s.label == "居中弹窗" && !s.hidden }) is Some(dlg_sem) else {
+    fail("expected centred Dialog")
+  }
+  guard t3.semantics().iter().find_first(fn(s) { s.label == "弹窗子菜单" && !s.hidden }) is Some(dlg_row) else {
+    fail("expected submenu row in centred dialog")
+  }
+  t3.move_to(dlg_row.rect.0 + 10.0, dlg_row.rect.1 + 10.0)
+  t3.run_for(submenu_open_ms + @ui.move_most_ms)
+  guard t3.semantics().iter().find_first(fn(s) { s.role == Menu && !s.hidden }) is Some(dlg_menu) else {
+    fail("expected submenu Menu beside centred dialog")
+  }
+  let gap3 = dlg_menu.rect.0 - (dlg_sem.rect.0 + dlg_sem.rect.2)
+  assert_true(
+    (gap3 - floating_surface_gap).abs() <= 0.5,
+    msg="centred_dialog->submenu Right gap expected \{floating_surface_gap}, got \{gap3} (dialog=\{Repr(dlg_sem.rect)}, menu=\{Repr(dlg_menu.rect)})",
+  )
+  assert_eq(t3.audit(), [])
+  presenters_reset()
 }

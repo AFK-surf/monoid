@@ -742,6 +742,7 @@ fn side_own_node(
   foot_card : () -> @ui.Style,
 ) -> Unit {
   q.box(fn(s) {
+    @sf.floating_host_lend(s)
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
     if tab == "subchats" {
       s
@@ -756,6 +757,7 @@ fn side_own_node(
             }
           },
           show_head=true,
+          include_opened=true,
         )
       })
       .grow(Is(1.0))

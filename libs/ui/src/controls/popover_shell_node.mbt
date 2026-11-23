@@ -485,6 +485,22 @@ pub fn anchored_popover_shell(
   holds_side? : Bool = true,
   concentric_inset? : Double = -1.0,
 ) -> @view.View {
+  anchored_popover_shell_by(p, anchor_id, look, side~, along~, offset~, holds_side~, concentric_inset~)
+}
+
+///|
+fn anchored_popover_shell_by(
+  p : @view.View,
+  anchor_id : @view.NodeId,
+  look : () -> @ui.Look,
+  side? : @ui.Side = Bottom,
+  along? : @ui.Along = Start,
+  offset? : Double = panel_offset,
+  holds_side? : Bool = true,
+  concentric_inset? : Double = -1.0,
+  host? : @view.NodeId,
+) -> @view.View {
+  floating_host_lend(p)
   let (eff_offset, eff_along_offset) = match p.lent(pill_morph_lent) {
     Some(pm) if !p.glass_solid() => {
       pm.shell_ref.val = Some(p)
@@ -508,8 +524,9 @@ pub fn anchored_popover_shell(
     along=view_along(along),
     offset=eff_offset,
     along_offset=eff_along_offset,
-    padding=8.0,
+    padding=floating_viewport_pad,
     holds_side~,
+    host?,
   )
   |> ignore
   match p.lent(pill_morph_lent) {

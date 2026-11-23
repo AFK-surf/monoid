@@ -138,6 +138,8 @@ pub(all) struct Beside {
   along_offset : Double
   /// on the side it is on while it has the room there (View::beside's `holds_side`)
   holds_side : Bool
+  /// optional outer host container whose left/right edges are cleared when `side` is `Left` or `Right`
+  host : NodeId?
 }
 
 ///|
@@ -189,6 +191,7 @@ pub fn View::beside(
   piece? : (Double, Double) -> (Double, Double, Double, Double)?,
   along_offset? : Double = 0.0,
   holds_side? : Bool = false,
+  host? : NodeId,
 ) -> View {
   guard self.live() is Some(n) else { return self }
   n.beside_piece = piece
@@ -206,7 +209,7 @@ pub fn View::beside(
     }
     None => self.tree.beside_widths.remove(self.at)
   }
-  n.beside = Some({ anchor, side, along, offset, padding, at_pointer, width, along_offset, holds_side })
+  n.beside = Some({ anchor, side, along, offset, padding, at_pointer, width, along_offset, holds_side, host })
   if !self.tree.besides_at.contains(self.at) {
     self.tree.besides_at.push(self.at)
   }
@@ -237,6 +240,7 @@ pub fn View::float_beside(
   piece? : (Double, Double) -> (Double, Double, Double, Double)?,
   along_offset? : Double = 0.0,
   holds_side? : Bool = false,
+  host? : NodeId,
   loc~ : SourceLoc,
 ) -> View {
   self.over(Is(true), loc~) |> ignore
@@ -253,6 +257,7 @@ pub fn View::float_beside(
         piece?,
         along_offset~,
         holds_side~,
+        host?,
       )
     None => self
   }
@@ -279,10 +284,11 @@ pub fn View::beside_by(
   piece? : (Double, Double) -> (Double, Double, Double, Double)?,
   along_offset? : Double = 0.0,
   holds_side? : Bool = false,
+  host? : NodeId,
   loc~ : SourceLoc,
 ) -> View {
   self.bind(loc~, BesideOf, anchor, Place, fn(a) {
-    self.beside(a, side~, along~, offset~, padding~, at_pointer~, width~, piece?, along_offset~, holds_side~)
+    self.beside(a, side~, along~, offset~, padding~, at_pointer~, width~, piece?, along_offset~, holds_side~, host?)
     |> ignore
   })
   self
@@ -393,6 +399,36 @@ fn Tree::beside_laid(self : Tree, at : Int, seen : Array[Int]) -> (Double, Doubl
       (true, Some((ox, oy))) => (ax + ox, ay + oy, 0.0, 0.0)
       _ => (ax, ay, aw, ah)
     }
+  }
+  let rect = match (b.side, b.host) {
+    (Left | Right, Some(h)) if self.alive_id(h) &&
+      h.at != at &&
+      !seen.contains(h.at) &&
+      self.held_from_root(h.at) &&
+      !self.out_at(h.at) &&
+      !self.leaving_at(h.at) => {
+      let mut k = h.at
+      let mut in_at = false
+      while k >= 0 {
+        if k == at {
+          in_at = true
+          break
+        }
+        k = self.nodes[k].parent
+      }
+      if in_at {
+        rect
+      } else {
+        seen.push(at)
+        let (host_x, _) = self.laid_window_at(h.at, seen)
+        seen.pop() |> ignore
+        let hw = self.laid_width_of(h.at)
+        let left_x = if rect.0 < host_x { rect.0 } else { host_x }
+        let right_x = dmax(rect.0 + rect.2, host_x + hw)
+        (left_x, rect.1, right_x - left_x, rect.3)
+      }
+    }
+    _ => rect
   }
   let on = if b.holds_side { n.went } else { None }
   let (x, y, _) = place_beside(
@@ -508,9 +544,33 @@ fn Tree::besides_placed(self : Tree) -> Unit {
       }
       i = self.nodes[i].parent
     }
-    // (what goes beside another among its anchor and what holds it, and what holds it itself, placed first: where they
+    let host_at : Int? = match b.host {
+      Some(h) if self.alive_id(h) &&
+        h.at != at &&
+        self.held_from_root(h.at) &&
+        !self.out_at(h.at) &&
+        !self.leaving_at(h.at) => {
+        let mut k = h.at
+        let mut in_at = false
+        while k >= 0 {
+          if k == at {
+            in_at = true
+            break
+          }
+          k = self.nodes[k].parent
+        }
+        if in_at { None } else { Some(h.at) }
+      }
+      _ => None
+    }
+    // (what goes beside another among its anchor, its outer host, and what holds it, placed first: where they
     // are placed is what it is placed by; one that comes round to it again, or is refused, refuses it)
-    for start in [b.anchor.at, n.parent] {
+    let starts : Array[Int] = [b.anchor.at, n.parent]
+    match host_at {
+      Some(hat) => starts.push(hat)
+      None => ()
+    }
+    for start in starts {
       let mut i = start
       while i >= 0 {
         if self.nodes[i].beside is Some(_) && !place_one(i) {
@@ -554,6 +614,19 @@ fn Tree::besides_placed(self : Tree) -> Unit {
         (true, Some((ox, oy))) => (ax + ox * ascale, ay + oy * ascale, 0.0, 0.0)
         _ => (ax, ay, aw, ah)
       }
+    }
+    let rect = match (b.side, host_at) {
+      (Left | Right, Some(hat)) =>
+        match self.window_place(hat) {
+          Some((host_x, _, host_scale)) => {
+            let hw = self.nodes[hat].lw * host_scale
+            let left_x = if rect.0 < host_x { rect.0 } else { host_x }
+            let right_x = dmax(rect.0 + rect.2, host_x + hw)
+            (left_x, rect.1, right_x - left_x, rect.3)
+          }
+          None => rect
+        }
+      _ => rect
     }
     // (holding the side it is on: kept there while it has the room there)
     let on = if b.holds_side { n.went } else { None }

@@ -31,18 +31,15 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, view : () -> ChatVi
   })
   v.show(fn() { opened.get() is Some(_) }, fn(g) {
     @sf.style_node(g, fn() { info_tools(false) })
-    // (beside the panel, to its left: the panel stands at the window's end; pointed at, it opens)
-    @sf.submenu_row_node(
+    info_row_node(
       g,
+      "spawned",
       fn() { opened.get().unwrap_or("") },
+      fn() { "" },
       fn() {
-        match @signals.untracked(view) {
-          Some(cv) => @sfpages.opened_items(cv.opened, then=done)
-          None => []
-        }
+        done()
+        side_tab_open(src, r, "subchats")
       },
-      icon=fn() { "spawned" },
-      side=Left,
     )
   })
   // (what is in it as every screen's info reads it: sfpages' chat_holds_said; beside the system's tabs, its rows fewer)

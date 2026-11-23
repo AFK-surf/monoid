@@ -45,6 +45,9 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
   let tips = TipLayer::new(fn() { tips_at.val })
   // (the reader's layout's panel, laid over it: under what is presented, which stands in the window's stack of layers)
   reader_layout_nodes(root)
+  // (page-level transient hover layer: created lazily on first hover so screens without hover pay zero node overhead)
+  window_hover_root.val = Some((root, loc))
+  window_hover_at.val = None
   // (what is presented followed as it is told, on the screen it is drawn on: how each open one is drawn, what closed
   // unsaid let go of, what has gone let go: presented_followed)
   root.reacts(

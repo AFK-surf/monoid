@@ -199,13 +199,26 @@ pub fn subchats_list_node(
   in_panel? : () -> Unit,
   show_head? : Bool = true,
   scroll_most? : () -> Double,
+  include_opened? : Bool = false,
 ) -> Unit {
-  let subchats = fn() { led_subchats(opened()) }
+  let led = fn() { led_subchats(opened()) }
+  let other = fn() { if include_opened { opened().filter(fn(o) { !o.led }) } else { [] } }
+  let subchats = fn() {
+    let l = led()
+    if include_opened && l.is_empty() {
+      other()
+    } else {
+      l
+    }
+  }
+  let extra_other = fn() { if include_opened && !led().is_empty() { other() } else { [] } }
+  let all_items = fn() { if include_opened { opened() } else { led() } }
   let done = fn() { subchats().filter(fn(o) { subchat_is_done(o) }) }
   let archived = fn() { subchats().filter(fn(o) { o.archived }) }
   // Folded until pressed; the finished ones led with, the latest until pressed
   let done_open : @signals.Signal[Bool] = @signals.signal(false)
   let archived_open : @signals.Signal[Bool] = @signals.signal(false)
+  let other_open : @signals.Signal[Bool] = @signals.signal(false)
   let done_more : @signals.Signal[Bool] = @signals.signal(false)
   let archived_more : @signals.Signal[Bool] = @signals.signal(false)
   let lead_kind = fn() { subchats_lead_kind(subchats()) }
@@ -244,7 +257,7 @@ pub fn subchats_list_node(
         return
       }
       let key_of = fn(o : @sfbase.OpenedChat) { o.chat.station + "\u{1}" + o.chat.session }
-      let by_key = body.keyed_by(subchats, key_of)
+      let by_key = body.keyed_by(all_items, key_of)
       body.box(fn(list) {
         @sf.style_node(list, fn() { subchats_list })
         list.box(fn(g) {
@@ -273,37 +286,55 @@ pub fn subchats_list_node(
         let folds_done = fn() { if lead_kind() == 0 { done() } else { [] } }
         let folds_archived = fn() { if lead_kind() != 2 { archived() } else { [] } }
         // (a hairline between what it leads with and what folds under it, only while something folds there)
-        list.show(at_once=true, fn() { folds_done().length() > 0 || folds_archived().length() > 0 }, fn(sec) {
-          @sf.style_node(sec, fn() { subchats_list })
-          sec.box(fn(l) { @sf.style_node(l, fn() { subchats_sec_line }) }) |> ignore
-          sec.box(fn(heads) {
-          @sf.style_node(heads, fn() { subchats_group })
-          subchats_collapsible_group_node(
-            heads,
-            fn() { @sf.t("web-pages.chat.subchatsDone") },
-            "check",
-            folds_done,
-            done_open,
-            fn() { false },
-            key_of,
-            by_key,
-            close?=close,
-          )
-          subchats_collapsible_group_node(
-            heads,
-            fn() { @sf.t("web-pages.chat.subchatsArchived") },
-            "archive",
-            folds_archived,
-            archived_open,
-            // (spaced only from an open 已完成 above it: under a folded one the two heads stand as rows of one list)
-            fn() { folds_done().length() > 0 && done_open.get() },
-            key_of,
-            by_key,
-            close?=close,
-          )
-          })
-          |> ignore
-        })
+        list.show(
+          at_once=true,
+          fn() { folds_done().length() > 0 || folds_archived().length() > 0 || extra_other().length() > 0 },
+          fn(sec) {
+            @sf.style_node(sec, fn() { subchats_list })
+            sec.box(fn(l) { @sf.style_node(l, fn() { subchats_sec_line }) }) |> ignore
+            sec.box(fn(heads) {
+              @sf.style_node(heads, fn() { subchats_group })
+              subchats_collapsible_group_node(
+                heads,
+                fn() { @sf.t("web-pages.chat.subchatsDone") },
+                "check",
+                folds_done,
+                done_open,
+                fn() { false },
+                key_of,
+                by_key,
+                close?=close,
+              )
+              subchats_collapsible_group_node(
+                heads,
+                fn() { @sf.t("web-pages.chat.subchatsArchived") },
+                "archive",
+                folds_archived,
+                archived_open,
+                // (spaced only from an open 已完成 above it: under a folded one the two heads stand as rows of one list)
+                fn() { folds_done().length() > 0 && done_open.get() },
+                key_of,
+                by_key,
+                close?=close,
+              )
+              subchats_collapsible_group_node(
+                heads,
+                fn() { @sf.t("web-pages.chat.subchatsOther") },
+                "spawned",
+                extra_other,
+                other_open,
+                fn() {
+                  (folds_done().length() > 0 && done_open.get()) ||
+                  (folds_archived().length() > 0 && archived_open.get())
+                },
+                key_of,
+                by_key,
+                close?=close,
+              )
+            })
+            |> ignore
+          },
+        )
       })
       |> ignore
     })

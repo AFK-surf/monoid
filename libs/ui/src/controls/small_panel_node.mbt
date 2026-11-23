@@ -7,6 +7,7 @@
 /// Node `p` drawn as a small panel is (small_panel's): what it holds panel_pad in, r_menu round, on the panel's ground,
 /// its line round it and its shadow under it, what reaches past its edge cut there. It.
 pub fn small_panel_node(p : @view.View) -> @view.View {
+  floating_host_lend(p)
   corner_card_node(p, fn() { r_menu }, inset=fn() { panel_pad })
   p.padding(Is((panel_pad, panel_pad, panel_pad, panel_pad))) |> ignore
   @glass.liquid_panel_surface_decorate(

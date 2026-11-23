@@ -44,26 +44,47 @@ test "wide: a chat another chat's agent made has that chat in its info (…); pr
 }
 
 ///|
-test "wide: a chat whose agent made others has how many in its info (…), each where it stands in the menu that opens left of it as it is pointed at; one chosen opens" {
+test "wide: a chat whose agent made others has a click-only row in its info (…) that never pops a submenu on hover, leaves PR peek unobstructed, and opens the subchats side tab on click" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, mode="chat-opened")
   t.click(Button, label="对话信息")
   t.run_for(@ui.move_most_ms)
-  // (not each of them in it: one row)
-  assert_true(t.query(MenuItem, label="旧版引导页的截图 · 已归档") is None)
+  // Hovering 创建了 3 个对话 does not pop a submenu
   let (x, y, _, _) = t.rect_of("创建了 3 个对话").unwrap()
   let (px, _, _, _) = t.rect_of("发起").unwrap()
   t.move_to(x + 4.0, y + 4.0)
+  t.run_for(@sf.submenu_open_ms + @ui.move_most_ms)
+  assert_true(t.query(MenuItem, label="夜里的构建又失败了") is None, msg="hovering 创建了 3 个对话 must not pop a submenu")
+  assert_true(t.query(MenuItem, label="旧版引导页的截图 · 已归档") is None)
+  // Moving onto PR row opens only a single PR preview card to the left of the info panel with clean audit
+  let (prx, pry, _, _) = t.rect_of("首页列表按天分组").unwrap()
+  t.move_to(prx + 8.0, pry + 4.0)
+  t.run_for(@sf.hover_card_open_ms + @ui.move_most_ms)
+  assert_true(t.query(MenuItem, label="夜里的构建又失败了") is None, msg="no submenu behind PR peek")
+  guard t.rect_of("acme/shop #128") is Some((cx, cy, cw, ch)) else { fail("expected PR preview card") }
+  assert_true(cx + cw < px, msg="PR preview card stands left of info panel")
+  let info_dlgs = t.all(Dialog).filter(fn(d) { d.rect.0 <= px + 0.5 && d.rect.0 + d.rect.2 >= px - 0.5 })
+  assert_true(info_dlgs.length() > 0, msg="expected chat info Dialog")
+  let info_dlg = info_dlgs[info_dlgs.length() - 1]
+  let pr_cards = t.all(Group).filter(fn(g) {
+    g.rect.0 <= cx + 0.5 && g.rect.0 + g.rect.2 >= cx + cw - 0.5 && g.rect.1 <= cy + 0.5 && g.rect.1 + g.rect.3 >= cy + ch - 0.5
+  })
+  assert_true(pr_cards.length() > 0, msg="expected PR preview card Group box")
+  let pr_card = pr_cards[pr_cards.length() - 1].rect
+  let pr_gap = info_dlg.rect.0 - (pr_card.0 + pr_card.2)
+  assert_true(
+    (pr_gap - @sf.floating_surface_gap).abs() <= 0.5,
+    msg="PR preview card to chat info Dialog gap expected \{@sf.floating_surface_gap}, got \{pr_gap} (card=\{Repr(pr_card)}, info=\{Repr(info_dlg.rect)})",
+  )
+  assert_eq(t.audit().filter(fn(f) { !f.contains("edge_node.mbt") && !f.contains("「已合并」") }), [])
+  // Clicking 创建了 3 个对话 closes the info popover and opens the subchats side tab
+  t.click(Button, label="创建了 3 个对话")
   t.run_for(@ui.move_most_ms)
-  // left of the info's panel, not over it
-  let (mx, _, mw, _) = t.rect_of("旧版引导页的截图 · 已归档").unwrap()
-  ignore(mx)
-  assert_true(mx + mw < px)
-  t.click(MenuItem, label="夜里的构建又失败了")
-  match app.nav.top() {
-    Chat(r) => assert_eq(r.session, "s-c3")
-    _ => fail("no chat open")
-  }
+  assert_false(@sf.presenting(), msg="info panel closed on click")
+  assert_true(
+    calls.iter().any(fn(c) { c.name == "chat.tabs.open" && text(Some(c.params), "tab") == "subchats" }),
+    msg="expected chat.tabs.open subchats",
+  )
 }
 
 ///|
@@ -232,13 +253,54 @@ test "wide: sub-chats bar entry excludes non-led chats, opens popover, navigates
 }
 
 ///|
-test "wide: side panel subchats tab renders led sub-chats and excludes non-led" {
+test "wide: side panel subchats tab renders led sub-chats, folds non-led under 其他创建的对话, and shows non-led directly when no led exist" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, mode="chat-subchats-panel")
   t.draw()
   assert_eq(t.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [])
   assert_true(t.query(Button, label="安卓构建与冒烟测试") is Some(_))
+  // Non-led chat is hidden by default inside the collapsed 其他创建的对话 group
   assert_true(t.query(Button, label="给产品评审建的独立讨论") is None)
+  guard t.query(Button, label="其他创建的对话") is Some(other_btn) else {
+    fail("expected collapsed 其他创建的对话 disclosure in side panel")
+  }
+  assert_eq(other_btn.expanded, Some(false))
+  t.click(Button, label="其他创建的对话")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.query(Button, label="其他创建的对话").unwrap().expanded, Some(true))
+  assert_true(t.query(Button, label="给产品评审建的独立讨论") is Some(_))
+  assert_eq(t.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [])
+  t.click(Button, label="给产品评审建的独立讨论")
+  match app.nav.top() {
+    Chat(r) => assert_eq(r.session, "s-c9")
+    _ => fail("expected non-led opened chat s-c9 open")
+  }
+
+  // Non-led only: when a chat has only non-led opened chats, side panel shows them directly without 暂无子会话
+  let calls2 : Array[Made] = []
+  let non_led_only = fn(n : String, tp : Topic) -> Topic {
+    if n != "chat" {
+      return tp
+    }
+    match tp.value {
+      Some(Object(m)) => {
+        let copy = m.copy()
+        copy["opened"] = [
+          { "station": "ws1/st1", "session": "s-c9", "title": "独立评审对话", "led": false },
+          { "station": "ws1/st1", "session": "s-c12", "title": "已归档独立对话", "archived": true, "led": false },
+        ]
+        copy["openedText"] = "创建了 2 个对话"
+        { ..tp, value: Some(Json::object(copy)) }
+      }
+      _ => tp
+    }
+  }
+  let t2 = wide_bar_at(calls2, mode="chat-subchats-panel", over=non_led_only)
+  t2.draw()
+  assert_true(t2.find("暂无子会话") is None, msg="non-led-only side panel must not show empty state")
+  assert_true(t2.query(Button, label="独立评审对话") is Some(_), msg="non-led active chat shown directly")
+  assert_true(t2.query(Button, label="已归档") is Some(_), msg="non-led archived chat grouped under 已归档")
+  assert_eq(t2.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [])
 }
 
 ///|

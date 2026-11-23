@@ -34,17 +34,21 @@ pub fn web_peek_node(
     let h = href()
     h.has_prefix("https://") || h.has_prefix("http://")
   }
-  // (its layer: over all of the window, in what holds all of the window's tree, made as the card first opens and let
-  // go with its row)
-  let layer : Ref[@view.View?] = Ref(None)
+  // (its layer: unified transient hover layer via presented_nodes, falling back to root over_all only in standalone tests)
+  let unified = @sf.transient_layer_of(row)
+  let fallback : Ref[@view.View?] = Ref(None)
   let tips = @sf.TipLayer::new(fn() {
-    match layer.val {
+    match (unified.layer)() {
       Some(_) as l => l
-      None => {
-        let l = peek_layer(row).box(fn(h) { h.over(Is(true)).over_all(Is(true)) |> ignore }).lives_with(row)
-        layer.val = Some(l)
-        Some(l)
-      }
+      None =>
+        match fallback.val {
+          Some(_) as l => l
+          None => {
+            let l = peek_layer(row).box(fn(h) { h.over(Is(true)).over_all(Is(true)) |> ignore }).lives_with(row)
+            fallback.val = Some(l)
+            Some(l)
+          }
+        }
     }
   })
   // (what is read as the pointer comes onto the row, while it is: the pictures it names asked as it comes, so that they

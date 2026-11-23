@@ -36,6 +36,7 @@ pub fn dialog_surface_decorate(
   edge_w? : Double = 1.0,
   clips? : Bool = true,
 ) -> @view.View {
+  floating_host_lend(v)
   @glass.liquid_dialog_surface_decorate(
     v,
     solid=panel_ground,

@@ -34,7 +34,7 @@ pub let offers_most : Double = 320.0
 
 ///|
 /// How far under the field it stands (kit's popover: 6).
-let offers_off : Double = 6.0
+let offers_off : Double = floating_trigger_gap
 
 ///|
 /// Its panel (refMenu): panel_pad round what it holds, the menu's corner; on glass, a small shadow (the composer's

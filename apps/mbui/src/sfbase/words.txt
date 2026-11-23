@@ -1980,6 +1980,7 @@ web-pages.chat.subchats
 web-pages.chat.subchatsRunning
 web-pages.chat.subchatsNeed
 web-pages.chat.subchatsArchived
+web-pages.chat.subchatsOther
 web-pages.chat.subchatsDone
 web-pages.chat.subchatsNone
 web-pages.chat.subchatsIdle

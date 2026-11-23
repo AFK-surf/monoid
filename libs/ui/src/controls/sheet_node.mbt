@@ -650,6 +650,7 @@ fn sheet_node(
         }
       })
       |> ignore
+      panel_hover_lend(layer)
       layer
       .over(Is(true))
       // (its ground its scrim: what is lifted over the scrim (a row held for its menu: lift_node) drawn over it, under

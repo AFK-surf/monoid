@@ -99,7 +99,7 @@ test "大屏, 中屏: each row of the chat's info does what it says and closes i
 }
 
 ///|
-test "大屏: the info of a chat another's agent made says that chat, pressed it opens; of one whose agent made chats, their menu beside it; its letters beside the chat" {
+test "大屏: the info of a chat another's agent made says that chat, pressed it opens; of one whose agent made chats, its subchats beside the chat; its letters beside the chat" {
   // (who made it: 由「…」创建, a link to that chat)
   let calls : Array[Made] = []
   let t = wide_bar_at(calls, mode="chat-opener-pop")
@@ -112,16 +112,11 @@ test "大屏: the info of a chat another's agent made says that chat, pressed it
     },
   )
   assert_eq(@sfdesk.chat_pops_open(), (false, false))
-  // (what its agent made: 创建了 3 个对话, their menu beside it, the info still open under it)
+  // (what its agent made: 创建了 3 个对话, its subchats beside the chat)
   let t = wide_bar_at(calls, mode="chat-opened-pop")
   t.click(Button, label="创建了 3 个对话")
   t.run_for(@ui.move_most_ms)
-  assert_true(t.all(Menu).length() > 0, msg="its menu")
-  assert_eq(@sfdesk.chat_pops_open(), (true, false))
-  t.key(@ui.key_escape)
-  t.run_for(@ui.move_most_ms)
-  t.key(@ui.key_escape)
-  t.run_for(@ui.move_most_ms)
+  assert_true(calls.iter().any(fn(c) { c.name == "chat.tabs.open" && text(Some(c.params), "tab") == "subchats" }))
   assert_eq(@sfdesk.chat_pops_open(), (false, false))
   // (what its agents and other chats' wrote each other: agent 往来, beside the chat)
   let t = wide_bar_at(calls, mode="chat-letters-pop")

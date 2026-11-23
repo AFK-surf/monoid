@@ -1989,6 +1989,7 @@ let zh : Map[String, String] = {
   "web-pages.chat.subchatsRunning": "{n} 进行中",
   "web-pages.chat.subchatsNeed": "{n} 待处理",
   "web-pages.chat.subchatsArchived": "已归档",
+  "web-pages.chat.subchatsOther": "其他创建的对话",
   "web-pages.chat.subchatsDone": "已完成",
   "web-pages.chat.subchatsNone": "暂无子会话",
   "web-pages.chat.subchatsIdle": "暂无进行中",
