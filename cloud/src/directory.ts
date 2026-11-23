@@ -331,6 +331,14 @@ export class Directory extends DurableObject<Env> {
     return this.#locks.recordDevice(sub, workspace, device, said);
   }
 
+  /** A device's ask for a credential, in one call (the one object every ask waits its turn on: two calls of it were each
+   * ask's, its queue 5 s long when a device's endpoints asked together, 2026-11-23): the asker's role, refusing one who
+   * is not a member before anything is kept, then the device kept as recordDevice keeps it and the relays it is told. */
+  credentialDevice(sub: string, workspace: string, device: string, said: { base?: string; kind?: string; label?: string }): { role: Role } & ReturnType<typeof relays> {
+    const role = this.#stations.memberRole(sub, workspace);
+    return { role, ...this.#locks.recordDevice(sub, workspace, device, said) };
+  }
+
   devices(sub: string, workspace: string): { devices: DeviceView[] } {
     return this.#locks.devices(sub, workspace);
   }

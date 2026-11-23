@@ -245,6 +245,66 @@ test("a_kept_credential_reaches_the_stations_without_ember_cloud", async () => {
   core.close();
 });
 
+test("every_endpoints_credential_is_kept_when_they_are_answered_together", async () => {
+  const host = new FakeHost();
+  host.store(STORAGE_KEY, [account("s1", "a@x.com", "阿一", "a", "r", nowS(host) + 3600)]);
+  const asked: string[] = [];
+  host.onFetch((req) => {
+    const path = req.url.replace("https://stillfail.test", "");
+    if (path === "/v1/me") return jsonResponse(200, { workspaces: [{ id: "ws", name: "W" }], invitations: [], relay_url: "https://relay.test" });
+    if (path === "/v1/workspaces/ws/credential") {
+      const device = (parseJson(req.body!) as { device: string }).device;
+      asked.push(device);
+      return jsonResponse(200, { credential: `c-${device}`, issued_at: nowS(host), expires_at: nowS(host) + 30 * 86400, relay_url: "https://relay.test" });
+    }
+    return jsonResponse(404, { error: "not_found" });
+  });
+  // Kept credentials are read and written as a phone's or a browser's storage does, later than asked: what another
+  // fiber does meanwhile comes between the reading and the writing.
+  const storageGet = host.storageGet.bind(host);
+  host.storageGet = (key) => Effect.andThen(Effect.yieldNow, storageGet(key));
+  const core = await Core.create(host, { clock: host.time.clock });
+  const inner = core.inner;
+  // Every way the workspace is reached, each an endpoint of its own beside the mesh's: 16 relays, lan, tailnet, fences.
+  const endpoints = Array.from({ length: 16 }, (_, i) => `endpoint-${i}`);
+  const all = () => run(Effect.all(endpoints.map((d) => inner.cloudSync.credential("ws", d, false, "main")), { concurrency: "unbounded" }));
+  const first = await all();
+  assert.deepEqual(first.map((c) => c.credential), endpoints.map((d) => `c-${d}`));
+  assert.deepEqual([...asked].sort(), [...endpoints].sort(), "each endpoint asked once");
+  const kept = parseJson(host.stored(`${CREDENTIAL_KEY}/s1/ws/others`)!) as { device: string }[];
+  assert.deepEqual(kept.map((k) => k.device).sort(), [...endpoints].sort(), "none written over, none pushed out");
+  // Dialled again together: every one served from what is kept, the cloud not asked.
+  const again = await all();
+  assert.deepEqual(again.map((c) => c.credential), endpoints.map((d) => `c-${d}`));
+  assert.equal(asked.length, endpoints.length);
+  core.close();
+});
+
+test("a_credential_answered_after_its_account_signed_out_is_not_kept", async () => {
+  const host = new FakeHost();
+  host.store(STORAGE_KEY, [account("s1", "a@x.com", "阿一", "a", "r", nowS(host) + 3600)]);
+  host.onFetch((req) => {
+    const path = req.url.replace("https://stillfail.test", "");
+    if (path === "/v1/me") return jsonResponse(200, { workspaces: [{ id: "ws", name: "W" }], invitations: [], relay_url: "https://relay.test" });
+    if (path === "/v1/workspaces/ws/credential") return jsonResponse(200, { credential: "c", issued_at: nowS(host), expires_at: nowS(host) + 30 * 86400, relay_url: "https://relay.test" });
+    return jsonResponse(404, { error: "not_found" });
+  });
+  const core = await Core.create(host, { clock: host.time.clock });
+  const inner = core.inner;
+  await run(inner.cloudSync.credential("ws", "dev", false, null));
+  const release = host.hold("/v1/workspaces/ws/credential");
+  const asking = run(Effect.result(inner.cloudSync.credential("ws", "endpoint", false, "main")));
+  await host.settle();
+  await run(inner.accounts.signOut("s1"));
+  await host.time.pass(10);
+  release();
+  await asking;
+  await host.settle();
+  assert.equal(host.stored(`${CREDENTIAL_KEY}/s1/ws`), undefined);
+  assert.equal(host.stored(`${CREDENTIAL_KEY}/s1/ws/others`), undefined);
+  core.close();
+});
+
 test("an_accounts_devices_are_a_topic_read_again_after_a_write", async () => {
   const { host, core } = await cloudCore();
   const ui = core.connect();

@@ -301,3 +301,32 @@ test("replacing an invitation at the open-invitation limit keeps its seat and in
     await h.close();
   }
 });
+
+test("a credential is one call of the Directory, and one asked by a non-member keeps nothing of its device", async () => {
+  const h = await harness();
+  try {
+    const alice = h.as(await h.login("alice"));
+    const carol = h.as(await h.login("carol"));
+    const ws = ((await (await alice("POST", "/v1/workspaces", { name: "Home" })).json()) as any).id as string;
+    const directory = await h.object("DIRECTORY", "primary");
+    await h.settled();
+    // (adminLoad counts itself as "admin", not here)
+    const workspaces = async () => ((await directory.adminLoad()).calls.families.workspaces ?? []).reduce((a: number, b: number) => a + b, 0);
+    const device = await key();
+    const before = await workspaces();
+    const issued = (await (await alice("POST", `/v1/workspaces/${ws}/credential`, { device: device.id, kind: "app", label: "alice's Mac" })).json()) as any;
+    assert.equal(typeof issued.credential, "string");
+    assert.ok(Array.isArray(issued.relay_urls));
+    assert.equal((await workspaces()) - before, 1, "the role and the device in one call");
+
+    // Not a member: refused, its device not kept, not even once it joins later.
+    const stranger = await key();
+    assert.equal((await carol("POST", `/v1/workspaces/${ws}/credential`, { device: stranger.id })).status, 404);
+    const invite = (await (await alice("POST", `/v1/workspaces/${ws}/invitations`, { role: "member", email: "carol@example.test" })).json()) as any;
+    assert.equal((await carol("POST", "/v1/invitations/accept", { token: invite.token })).status, 200);
+    const devices = ((await (await alice("GET", `/v1/workspaces/${ws}/devices`)).json()) as any).devices;
+    assert.deepEqual(devices.map((d: any) => [d.email, d.device, d.kind, d.label]), [["alice@example.test", device.id, "app", "alice's Mac"]]);
+  } finally {
+    await h.close();
+  }
+});

@@ -5,7 +5,7 @@
 // say what changed. A write to still.fail cloud answers once what it changed is read again.
 import { SignalMap } from "../reactive.ts";
 import { record, said } from "../record.ts";
-import { Deferred, Effect, Exit, Fiber, Scope } from "effect";
+import { Deferred, Effect, Exit, Fiber, Scope, Semaphore } from "effect";
 import type { AccountView } from "../accounts.ts";
 import { NOT_BETA, notBetaText, readCredential, type Credential } from "../cloud.ts";
 import { CREDENTIAL_FOR_S, CREDENTIAL_KEY, CREDENTIAL_OTHERS, CREDENTIAL_OTHERS_KEPT, entriesOf, entryTargetsOf, PUSH_KEY, relaysOf, type Inner } from "../core.ts";
@@ -87,6 +87,12 @@ export class CloudSync {
   /// A credential asked of the cloud and not answered yet, by device and key (`#credential`): what every dial of the
   /// device that wants it meanwhile waits on, renewed or not.
   readonly #asking = new Map<string, Deferred.Deferred<Credential, CoreError>>();
+  /// One write at a time of a workspace's kept credentials, by key (`credential/<account>/<workspace>`): the other
+  /// endpoints' are one list, read, changed and written back, so two answered together each wrote it without the other's.
+  readonly #keeping = new Map<string, ReturnType<typeof Semaphore.makeUnsafe>>();
+  /// How many times a workspace's kept credentials were removed (an account signed out), by key: an ask answered after
+  /// keeps nothing.
+  readonly #removed = new Map<string, number>();
 
   constructor(core: Inner) {
     this.#core = core;
@@ -488,7 +494,9 @@ export class CloudSync {
     for (const w of isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []) {
       if (!isObject(w) || typeof w.id !== "string") continue;
       const key = `${CREDENTIAL_KEY}/${sub}/${w.id}`;
-      core.runner.fork(Effect.all([Effect.ignore(core.host.storageDelete(`${key}/${CREDENTIAL_OTHERS}`), { log: "Unhandled", message: "credentials removed" }), Effect.ignore(core.host.storageDelete(key), { log: "Unhandled", message: "credentials removed" })]));
+      this.#removed.set(key, (this.#removed.get(key) ?? 0) + 1);
+      const removing = Effect.all([Effect.ignore(core.host.storageDelete(`${key}/${CREDENTIAL_OTHERS}`), { log: "Unhandled", message: "credentials removed" }), Effect.ignore(core.host.storageDelete(key), { log: "Unhandled", message: "credentials removed" })]);
+      core.runner.fork(this.#keepingOf(key).withPermits(1)(removing));
     }
   }
 
@@ -641,14 +649,21 @@ export class CloudSync {
       const kept: Credential | null = keptOne && keptOne.expires_at > now + 60 && !fresh ? strip(keptOne) : null;
       if (kept && now - kept.issued_at < CREDENTIAL_FOR_S) return kept;
       const said = claim === null ? undefined : { base: claim.device, proof: claim.proof, kind: core.host.appKeys ? "app" : "web", label: prefs.deviceName(core.data) ?? "" };
+      const removed = this.#removed.get(key) ?? 0;
+      const keeping = this.#keepingOf(key);
+      const self = this;
       const ask = Effect.gen(function* () {
         const c = yield* core.provider.credential(sub, workspace, device, said);
         const k: KeptCredential = { device, ...c };
-        if (other) {
-          // (read again: another endpoint's may have been kept while this one's was asked)
-          const others = [k, ...(yield* readOthers).filter((o) => o.device !== device)].slice(0, CREDENTIAL_OTHERS_KEPT);
-          yield* Effect.ignore(core.host.storageSet(othersKey, toJsonBytes(others)), { log: "Unhandled", message: "credentials kept" });
-        } else yield* Effect.ignore(core.host.storageSet(key, toJsonBytes(k)), { log: "Unhandled", message: "credentials kept" });
+        // (only the keeping takes turns, never the asks: each endpoint's first ask goes out at once)
+        yield* keeping.withPermits(1)(Effect.gen(function* () {
+          if ((self.#removed.get(key) ?? 0) !== removed) return;
+          if (other) {
+            // (read again, in turn: another endpoint's may have been kept while this one's was asked)
+            const others = [k, ...(yield* readOthers).filter((o) => o.device !== device)].slice(0, CREDENTIAL_OTHERS_KEPT);
+            yield* Effect.ignore(core.host.storageSet(othersKey, toJsonBytes(others)), { log: "Unhandled", message: "credentials kept" });
+          } else yield* Effect.ignore(core.host.storageSet(key, toJsonBytes(k)), { log: "Unhandled", message: "credentials kept" });
+        }));
         return c;
       });
       // One ask out at a time for a device's credential, which every dial wanting it meanwhile waits on: a device
@@ -675,6 +690,12 @@ export class CloudSync {
       }
       return yield* once;
     });
+  }
+
+  #keepingOf(key: string): ReturnType<typeof Semaphore.makeUnsafe> {
+    let turn = this.#keeping.get(key);
+    if (turn === undefined) this.#keeping.set(key, (turn = Semaphore.makeUnsafe(1)));
+    return turn;
   }
 
   /// Gives this device's push registration (as kept) to the signed-in accounts that do not have it yet.
