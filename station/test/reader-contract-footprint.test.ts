@@ -4,8 +4,9 @@
 // Set `STILLFAIL_READER_CANDIDATE=/path/to/stillfail-pion` to verify a candidate binary
 // with zero edits to this suite. Never silently skips when the binary is missing.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { chmodSync, constants as fsConstants, existsSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { type FileHandle, open as fsOpen } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, normalize, sep } from "node:path";
 import { after, test } from "node:test";
@@ -453,6 +454,92 @@ test("cancellation and termination: pre-aborted AbortSignal, stdin EOF, and idle
   assert.equal(sigtermIdle.stdout, "");
   assert.equal(sigtermIdle.signal, "SIGTERM");
   assertProcessGone(sigtermIdle.pid);
+});
+
+test("in-flight walk cancellation: POSIX FIFO barrier proves traversal started before SIGTERM/SIGKILL", async (t) => {
+  if (platform.os === "windows") {
+    t.skip("POSIX FIFO barrier");
+    return;
+  }
+
+  for (const cancelSignal of ["SIGTERM", "SIGKILL"] as const) {
+    const root = freshDir(`footprint-fifo-${cancelSignal.toLowerCase()}-`);
+    const sub = join(root, "sub");
+    mkdirSync(sub, { recursive: true });
+    const fifoPath = join(sub, "CACHEDIR.TAG");
+    await new Promise<void>((resolve, reject) => {
+      execFile("mkfifo", [fifoPath], (err) => (err ? reject(err) : resolve()));
+    });
+
+    const child = spawn(CANDIDATE, ["--builder", "footprint", "--sep", sep], {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const pid = child.pid!;
+    assert.ok(pid > 0);
+
+    let stdout = "";
+    let stderr = "";
+    let writer: FileHandle | null = null;
+    let exited = false;
+    child.stdout!.on("data", (c: Buffer) => { stdout += c.toString("utf8"); });
+    child.stderr!.on("data", (c: Buffer) => { stderr += c.toString("utf8"); });
+    child.stdin!.on("error", () => {});
+
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      child.on("error", reject);
+      child.on("close", (code, signal) => {
+        exited = true;
+        resolve({ code, signal });
+      });
+    });
+
+    const timer = setTimeout(() => {
+      if (!exited) child.kill("SIGKILL");
+    }, CHILD_TIMEOUT_MS);
+
+    try {
+      // Opening FIFO with O_WRONLY blocks until the candidate process actually enters `sub`
+      // and opens `CACHEDIR.TAG` for reading during its rebuildable probe.
+      const writerPromise = fsOpen(fifoPath, fsConstants.O_WRONLY);
+      child.stdin!.write(
+        `${JSON.stringify({
+          path: root,
+          base: normalize(root),
+          finding: true,
+          strict: false,
+          maxEntries: MEASURE_ROOM.maxEntries,
+          maxDurationMs: MEASURE_ROOM.maxDurationMs,
+        })}\n`,
+      );
+
+      writer = await Promise.race([
+        writerPromise,
+        closed.then(({ code, signal }) => {
+          throw new Error(
+            `candidate exited before reaching FIFO barrier (code=${code}, signal=${signal}, stdout=${stdout}, stderr=${stderr})`,
+          );
+        }),
+      ]);
+
+      // Candidate is deterministically mid-walk (blocked reading CACHEDIR.TAG with no bytes written).
+      child.kill(cancelSignal);
+      const { signal } = await closed;
+      assert.equal(stdout, "", `${cancelSignal}: cancelled in-flight walk must not emit a response`);
+      assert.equal(signal, cancelSignal, `expected exit signal ${cancelSignal}, got ${signal}`);
+      assertProcessGone(pid);
+    } finally {
+      clearTimeout(timer);
+      if (!exited) child.kill("SIGKILL");
+      if (writer !== null) {
+        await writer.close().catch(() => {});
+      } else {
+        // Unblock any still-pending O_WRONLY open on the libuv threadpool if we errored before barrier.
+        const unblocker = await fsOpen(fifoPath, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK).catch(() => null);
+        await unblocker?.close().catch(() => {});
+      }
+    }
+  }
 });
 
 test("invalid CLI arguments, malformed JSON requests, and missing paths follow error contract", async () => {
