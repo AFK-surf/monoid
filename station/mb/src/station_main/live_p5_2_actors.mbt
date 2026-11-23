@@ -1304,6 +1304,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
       }
     }
     "profileId" => jfield(ctx.run_on(self.key, a(0) is True, true, force_cap=a(1) is True), "id")
+    "toolsHeard" => jn(ctx.mcp_heard_of(self.key).to_double())
     "toolsUnheard" => {
       let handle = as_num(a(0)).unwrap_or(-1.0).to_int()
       let nudged = a(1) is True

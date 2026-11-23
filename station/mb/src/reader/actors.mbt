@@ -112,6 +112,9 @@ priv struct Actor {
   asked_to_name : Array[String]
   mut overloads : Int
   mut tools_lost : String?
+  /// How many requests the station's tools had heard on the session's token when they were found lost (`node.toolsHeard`):
+  /// heard more by the turn's end, the process reached them again and is kept.
+  mut tools_lost_heard : Double?
   mut tools_restarts : Int
   mut tools_retry : Int?
   mut tools_retries : Int
@@ -364,6 +367,7 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         asked_to_name: [],
         overloads: 0,
         tools_lost: None,
+        tools_lost_heard: None,
         tools_restarts: 0,
         tools_retry: None,
         tools_retries: 0,

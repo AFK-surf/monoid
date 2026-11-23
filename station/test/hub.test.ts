@@ -2216,6 +2216,44 @@ test("a process ended while its turn waits on its background work: it goes on at
   await r.close();
 });
 
+test("a process whose call failed as unreachable but reached the station's tools after it is kept, with its background work", async () => {
+  // (mm2 2026-11-23: one call met a kept connection closed under it, ECONNRESET, and the next reached the tools 2 s
+  // later; ended at the turn's end as one that lost them, it took 5 background tasks with it)
+  const heard = new Map<string, number>();
+  const r = new Rig({ toolsHeard: heard });
+  await r.accept(message());
+  await settle();
+  const first = r.claude.last();
+  const key = first.options.route;
+  heard.set(key, 3);
+  first.tasks = [{ id: "b1", kind: "command", description: "watch CI" }];
+  first.events({ type: "toolsLost", why: "ECONNRESET: The socket connection was closed unexpectedly" });
+  await settle();
+  heard.set(key, 4);
+  await r.call(key, "chat_state", { kind: "waiting", seconds: 600, for: "CI" });
+  first.complete();
+  await settle();
+  assert.ok(!first.disposed, "reached again: its process and background work are kept");
+  assert.equal(r.claude.last(), first);
+  await r.close();
+});
+
+test("a process whose call failed as unreachable and reached nothing after it is ended, the count read", async () => {
+  const heard = new Map<string, number>();
+  const r = new Rig({ toolsHeard: heard });
+  await r.accept(message());
+  await settle();
+  const first = r.claude.last();
+  heard.set(first.options.route, 3);
+  first.events({ type: "toolsLost", why: "ECONNREFUSED: Unable to connect" });
+  await settle();
+  first.complete();
+  await settle();
+  assert.ok(first.disposed, "the process that lost them ends");
+  assert.notEqual(r.claude.last(), first);
+  await r.close();
+});
+
 test("a process that exits while its turn waits on its background work: it goes on at once, told what stopped", async () => {
   const r = new Rig();
   await r.accept(message());

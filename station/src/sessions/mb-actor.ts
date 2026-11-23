@@ -874,6 +874,9 @@ export class MbActor {
       // A process this station opened whose turn ended saying nothing, that never once reached the station's tools
       // (not even to list them: its MCP connection failed as it opened, 2026-11-19 with the station out of file
       // handles), is one that lost them: why, else null. Not a Codex app-server's, shared by sessions and opened before.
+      // How many requests the station's tools have heard on the session's token: one that lost them, heard more by its
+      // turn's end, reached them again (actor_run.mbt `tools_lost_heard`).
+      case "toolsHeard": return deps.toolsHeard?.(this.key) ?? null;
       case "toolsUnheard": {
         if (deps.toolsHeard === undefined) return null;
         const [handle, nudged] = args;
