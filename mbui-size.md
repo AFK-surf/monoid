@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4bf06aed2](https://github.com/AFK-surf/monoid/commit/4bf06aed222f21fa5c4166e34f07676621346eb5) feat(ui): add continuous glass frost control and i | 2.74 | 3.68 | 14.92 | 37.1 | 56.84 | 32.49 | 65.97 | 100.98 | 127.63 |
 | [6f3b36a66](https://github.com/AFK-surf/monoid/commit/6f3b36a661c600080e492e49fc49cfe981e16b73) test(pion): add L3 TS-vs-Pion differential parity  | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 101.07 | 132.14 |
 | [03be8a1bb](https://github.com/AFK-surf/monoid/commit/03be8a1bb0b100130890aed6b3a8436b69d3b95a) fix(ui): count Windows dropped frames from DWM syn | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 101.07 | 132.14 |
 | [c37b4165c](https://github.com/AFK-surf/monoid/commit/c37b4165c270850041448958f0030387fd4b7bf7) fix(ui): show composer words in the text loupe and | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 100.83 | 127.46 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0d8cf668d](https://github.com/AFK-surf/monoid/commit/0d8cf668d6cddf351a0a72757ef7f03bc1cbe093) fix(station): show a restored chat when all its ag | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.24 | 123.25 |
 | [ff21deb09](https://github.com/AFK-surf/monoid/commit/ff21deb09232de3b0c86c469835cfffe4c306cf3) fix(station): do not treat own kill socket close a | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.4 | 117.69 |
 | [cdbb71b9f](https://github.com/AFK-surf/monoid/commit/cdbb71b9f8bca652c3fb932f99ba8f8661142d5b) fix(core): guard ensureBoxKey on able(inner) when  | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.4 | 117.69 |
-| [f4342853d](https://github.com/AFK-surf/monoid/commit/f4342853d40855e4a1a6239128d2bad362eb447a) fix(mbui): keep the iOS 27 action tab's accent was | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.34 | 126.46 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4bf06aed2](https://github.com/AFK-surf/monoid/commit/4bf06aed222f21fa5c4166e34f07676621346eb5) feat(ui): add continuous glass frost control and i | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.87 | 55.81 |
 | [6f3b36a66](https://github.com/AFK-surf/monoid/commit/6f3b36a661c600080e492e49fc49cfe981e16b73) test(pion): add L3 TS-vs-Pion differential parity  | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.87 | 55.74 |
 | [03be8a1bb](https://github.com/AFK-surf/monoid/commit/03be8a1bb0b100130890aed6b3a8436b69d3b95a) fix(ui): count Windows dropped frames from DWM syn | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.87 | 56.02 |
 | [c37b4165c](https://github.com/AFK-surf/monoid/commit/c37b4165c270850041448958f0030387fd4b7bf7) fix(ui): show composer words in the text loupe and | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.87 | 55.64 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0d8cf668d](https://github.com/AFK-surf/monoid/commit/0d8cf668d6cddf351a0a72757ef7f03bc1cbe093) fix(station): show a restored chat when all its ag | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.05 |
 | [ff21deb09](https://github.com/AFK-surf/monoid/commit/ff21deb09232de3b0c86c469835cfffe4c306cf3) fix(station): do not treat own kill socket close a | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.03 |
 | [cdbb71b9f](https://github.com/AFK-surf/monoid/commit/cdbb71b9f8bca652c3fb932f99ba8f8661142d5b) fix(core): guard ensureBoxKey on able(inner) when  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.35 |
-| [f4342853d](https://github.com/AFK-surf/monoid/commit/f4342853d40855e4a1a6239128d2bad362eb447a) fix(mbui): keep the iOS 27 action tab's accent was | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.07 |
