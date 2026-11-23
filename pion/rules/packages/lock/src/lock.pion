@@ -136,7 +136,7 @@ fn str_max(v : Option[form::Json], max : Int) -> Option[String] {
 fn safe_int(v : Option[form::Json]) -> Option[Double] {
   match v {
     Some(form::Json::Num(n)) => {
-      if n == n.floor() && n.abs() <= max_safe {
+      if n >= -max_safe && n <= max_safe && n.to_int64().to_double() == n {
         Some(n)
       } else {
         None
@@ -511,6 +511,10 @@ fn copied_from(prev : LockState, hash : String) -> LockState {
 }
 
 pub fn genesis(e : form::Json, c : Crypto) -> Result[LockState, LockError] {
+  genesis_hashed(e, None, c)
+}
+
+fn genesis_hashed(e : form::Json, known_hash : Option[String], c : Crypto) -> Result[LockState, LockError] {
   let v = Some(e)
   let ws = match text_of(field(v, "ws")) {
     Some(s) => s
@@ -537,9 +541,14 @@ pub fn genesis(e : form::Json, c : Crypto) -> Result[LockState, LockError] {
     }
     oi = oi + 1
   }
-  let hash = match entry_hash(e, c) {
-    Ok(h) => h
-    Err(err) => return Err(err)
+  let hash = match known_hash {
+    Some(h) => h
+    None => {
+      match entry_hash(e, c) {
+        Ok(h) => h
+        Err(err) => return Err(err)
+      }
+    }
   }
   let rp_id = match str_max(field(b, "rp_id"), 200) {
     Some(s) => s
@@ -673,6 +682,17 @@ pub fn apply(prev : LockState, e : form::Json, now : Option[Double], c : Crypto)
 }
 
 fn step(prev : LockState, e : form::Json, now : Option[Double], c : Crypto, in_place : Bool) -> Result[LockState, LockError] {
+  step_hashed(prev, e, now, c, in_place, None)
+}
+
+fn step_hashed(
+  prev : LockState,
+  e : form::Json,
+  now : Option[Double],
+  c : Crypto,
+  in_place : Bool,
+  known_hash : Option[String],
+) -> Result[LockState, LockError] {
   stepped_box[0] = stepped_box[0] + 1
   let v = Some(e)
   match prev.moved {
@@ -696,9 +716,14 @@ fn step(prev : LockState, e : form::Json, now : Option[Double], c : Crypto, in_p
     Some(n) => n
     None => return Err(LockError::Refused("at is unix seconds"))
   }
-  let hash = match entry_hash(e, c) {
-    Ok(h) => h
-    Err(err) => return Err(err)
+  let hash = match known_hash {
+    Some(h) => h
+    None => {
+      match entry_hash(e, c) {
+        Ok(h) => h
+        Err(err) => return Err(err)
+      }
+    }
   }
   let by = match signer(prev, sig_key(e), now) {
     Some(w) => w

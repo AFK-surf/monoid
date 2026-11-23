@@ -6,14 +6,30 @@ import { createPionRuntime } from "./pion_wasm_rt.mjs";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: false });
+const HAS_BUFFER = typeof Buffer !== "undefined";
+const EMPTY_ORIGINS = Object.freeze([]);
 
 let preloadedWasm = null;
 let inst = null;
 let mem = null;
+let cachedBuf = null;
+let memU8 = null;
+let memBuf = null;
+let inStr = "";
+let inLen = 0;
 let inBytes = new Uint8Array(0);
 let outStr = "";
 let cbBytes = new Uint8Array(0);
 let curCrypto = null;
+
+function syncMem() {
+  const buf = mem.buffer;
+  if (buf !== cachedBuf) {
+    cachedBuf = buf;
+    memU8 = new Uint8Array(buf);
+    memBuf = HAS_BUFFER ? Buffer.from(buf) : null;
+  }
+}
 
 const lockRegistry = typeof FinalizationRegistry === "function"
   ? new FinalizationRegistry((id) => { if (inst) inst.exports.free_lock_handle(id); })
@@ -30,6 +46,9 @@ export function initWasm(wasmModuleOrBytes) {
   preloadedWasm = wasmModuleOrBytes;
   inst = null;
   mem = null;
+  cachedBuf = null;
+  memU8 = null;
+  memBuf = null;
 }
 
 /**
@@ -60,7 +79,10 @@ export function wasmMemoryStats() {
 function readMemStr(ptr, len) {
   const n = Number(len);
   if (n <= 0) return "";
-  return decoder.decode(new Uint8Array(mem.buffer, Number(ptr), n));
+  syncMem();
+  const p = Number(ptr);
+  if (memBuf !== null) return memBuf.toString("utf8", p, p + n);
+  return decoder.decode(memU8.subarray(p, p + n));
 }
 
 function loadWasmModule() {
@@ -80,10 +102,16 @@ function loadWasmModule() {
 function ensureInit() {
   if (inst !== null) return inst.exports;
   const rt = createPionRuntime();
-  rt.imports.pion_rt.rules_in_len = () => inBytes.length;
+  rt.imports.pion_rt.rules_in_len = () => inLen;
   rt.imports.pion_rt.rules_in_copy = (dst) => {
-    if (inBytes.length > 0) {
-      new Uint8Array(mem.buffer).set(inBytes, Number(dst));
+    if (inLen > 0) {
+      syncMem();
+      const d = Number(dst);
+      if (memBuf !== null) {
+        memBuf.utf8Write(inStr, d, inLen);
+      } else {
+        memU8.set(inBytes, d);
+      }
     }
   };
   rt.imports.pion_rt.rules_out_set = (src, len) => {
@@ -91,18 +119,41 @@ function ensureInit() {
   };
   rt.imports.pion_rt.rules_cb_copy = (dst) => {
     if (cbBytes.length > 0) {
-      new Uint8Array(mem.buffer).set(cbBytes, Number(dst));
+      syncMem();
+      memU8.set(cbBytes, Number(dst));
     }
   };
-  rt.imports.pion_rt.rules_sha256_hex = (ptr, len) => {
+  rt.imports.pion_rt.rules_sha256_hex_into = (ptr, len, dst) => {
     const res = String(curCrypto.sha256Hex(readMemStr(ptr, len)));
+    if (res.length === 64) {
+      syncMem();
+      const d = Number(dst);
+      let ascii = true;
+      for (let i = 0; i < 64; i++) {
+        const c = res.charCodeAt(i);
+        if (c >= 0x80) { ascii = false; break; }
+        memU8[d + i] = c;
+      }
+      if (ascii) return 64;
+    }
     cbBytes = encoder.encode(res);
-    return cbBytes.length;
+    return -cbBytes.length - 1;
   };
   rt.imports.pion_rt.rules_sig_valid = (sp, sl, hp, hl, op, ol, rp, rl, pk) => {
     const sig = JSON.parse(readMemStr(sp, sl));
     const hash = readMemStr(hp, hl);
-    const origins = JSON.parse(readMemStr(op, ol));
+    const origins = Number(ol) <= 0 ? EMPTY_ORIGINS : JSON.parse(readMemStr(op, ol));
+    const rpId = readMemStr(rp, rl);
+    return curCrypto.sigValid(sig, hash, origins, rpId, pk !== 0) ? 1 : 0;
+  };
+  rt.imports.pion_rt.rules_sig_valid_ed = (kp, kl, ap, al, sp, sl, hp, hl, op, ol, rp, rl, pk) => {
+    const sig = {
+      key: readMemStr(kp, kl),
+      alg: readMemStr(ap, al),
+      sig: readMemStr(sp, sl),
+    };
+    const hash = readMemStr(hp, hl);
+    const origins = Number(ol) <= 0 ? EMPTY_ORIGINS : JSON.parse(readMemStr(op, ol));
     const rpId = readMemStr(rp, rl);
     return curCrypto.sigValid(sig, hash, origins, rpId, pk !== 0) ? 1 : 0;
   };
@@ -143,7 +194,32 @@ function ensureInit() {
 
 class NotLockValue extends Error {}
 
-function encodeStrict(v) {
+const OBJ_PROTO = Object.prototype;
+
+function isFastJsonSafe(v) {
+  if (v === null) return true;
+  const t = typeof v;
+  if (t === "string" || t === "boolean") return true;
+  if (t === "number") return Number.isFinite(v);
+  if (t !== "object") return false;
+  if (Array.isArray(v)) {
+    if (v.toJSON !== undefined) return false;
+    for (let i = 0; i < v.length; i++) {
+      if (!isFastJsonSafe(v[i])) return false;
+    }
+    return true;
+  }
+  const proto = Object.getPrototypeOf(v);
+  if (proto !== OBJ_PROTO && proto !== null) return false;
+  if (v.toJSON !== undefined) return false;
+  for (const k in v) {
+    const val = v[k];
+    if (val !== undefined && !isFastJsonSafe(val)) return false;
+  }
+  return true;
+}
+
+function encodeStrictSlow(v) {
   if (v === null) return "null";
   const t = typeof v;
   if (t === "boolean") return v ? "true" : "false";
@@ -157,7 +233,7 @@ function encodeStrict(v) {
     let out = "[";
     for (let i = 0; i < v.length; i++) {
       if (i > 0) out += ",";
-      out += encodeStrict(v[i]);
+      out += encodeStrictSlow(v[i]);
     }
     return out + "]";
   }
@@ -171,11 +247,16 @@ function encodeStrict(v) {
       if (val === undefined) continue;
       if (!first) out += ",";
       first = false;
-      out += JSON.stringify(k) + ":" + encodeStrict(val);
+      out += JSON.stringify(k) + ":" + encodeStrictSlow(val);
     }
     return out + "}";
   }
   throw new NotLockValue("not a lock value");
+}
+
+function encodeStrict(v) {
+  if (isFastJsonSafe(v)) return JSON.stringify(v);
+  return encodeStrictSlow(v);
 }
 
 function encodeRecord(v, nullNone = false) {
@@ -188,6 +269,7 @@ function encodeRecord(v, nullNone = false) {
 }
 
 function encodeEntries(entries) {
+  if (Array.isArray(entries) && isFastJsonSafe(entries)) return JSON.stringify(entries);
   let out = "[";
   for (let i = 0; i < entries.length; i++) {
     if (i > 0) out += ",";
@@ -197,6 +279,17 @@ function encodeEntries(entries) {
 }
 
 function encodeChains(chains) {
+  if (Array.isArray(chains)) {
+    let fast = true;
+    for (let i = 0; i < chains.length; i++) {
+      const ch = chains[i];
+      if (!Array.isArray(ch) || !isFastJsonSafe(ch)) {
+        fast = false;
+        break;
+      }
+    }
+    if (fast) return JSON.stringify(chains);
+  }
   let out = "[";
   for (let i = 0; i < chains.length; i++) {
     if (i > 0) out += ",";
@@ -206,6 +299,7 @@ function encodeChains(chains) {
 }
 
 function encodeBodies(bodies) {
+  if (Array.isArray(bodies) && isFastJsonSafe(bodies)) return JSON.stringify(bodies);
   let out = "[";
   let first = true;
   for (let i = 0; i < bodies.length; i++) {
@@ -256,12 +350,22 @@ function encodeLockView(lock) {
   return JSON.stringify({ ws: lock.ws, members, devices, signKeys });
 }
 
+function setInput(payloadStr) {
+  if (HAS_BUFFER) {
+    inStr = payloadStr;
+    inLen = Buffer.byteLength(payloadStr);
+  } else {
+    inBytes = encoder.encode(payloadStr);
+    inLen = inBytes.length;
+  }
+}
+
 function callStr(fnName, payloadStr, crypto = null, arg0 = undefined) {
   const exp = ensureInit();
   const prevCrypto = curCrypto;
   if (crypto !== null) curCrypto = crypto;
   try {
-    inBytes = encoder.encode(payloadStr);
+    setInput(payloadStr);
     outStr = "";
     if (arg0 === undefined) {
       exp[fnName]();
@@ -479,7 +583,7 @@ export function vault_supersedes_js(a, b) {
     return false;
   }
   const exp = ensureInit();
-  inBytes = encoder.encode(enc);
+  setInput(enc);
   return exp.wasm_vault_supersedes() !== 0;
 }
 
@@ -491,7 +595,7 @@ export function item_supersedes_js(a, b) {
     return false;
   }
   const exp = ensureInit();
-  inBytes = encoder.encode(enc);
+  setInput(enc);
   return exp.wasm_item_supersedes() !== 0;
 }
 
@@ -551,7 +655,7 @@ export function carried_js(chain, crypto) {
   const prevCrypto = curCrypto;
   curCrypto = crypto;
   try {
-    inBytes = encoder.encode(enc);
+    setInput(enc);
     const id = Number(exp.wasm_carried());
     return wrapCarriedHandle(id);
   } finally {
@@ -570,7 +674,13 @@ export function roster_carried_js(ws, h, chains, bodies, without, crypto) {
 }
 
 export function roster_moved_js(ws, chain, chains, bodies, without, crypto) {
-  return roster_carried_js(ws, carried_js(chain, crypto), chains, bodies, without, crypto);
+  let enc;
+  try {
+    enc = `{"ws":${JSON.stringify(ws)},"chain":${encodeEntries(chain)},"chains":${encodeChains(chains)},"bodies":${encodeBodies(bodies)},"without":${encodeTexts(without)}}`;
+  } catch (e) {
+    return { error: e instanceof NotLockValue ? e.message : String(e) };
+  }
+  return callJson("wasm_roster_moved", enc, crypto);
 }
 
 export function state4_js(ws, root, chains, bodies, now, crypto) {
@@ -594,7 +704,13 @@ export function state4_carried_js(ws, h, chains, bodies, now, crypto) {
 }
 
 export function state4_moved_js(ws, chain, chains, bodies, now, crypto) {
-  return state4_carried_js(ws, carried_js(chain, crypto), chains, bodies, now, crypto);
+  let enc;
+  try {
+    enc = `{"ws":${JSON.stringify(ws)},"chain":${encodeEntries(chain)},"chains":${encodeChains(chains)},"bodies":${encodeBodies(bodies)},"now":${encodeStrict(now)}}`;
+  } catch (e) {
+    return { error: e instanceof NotLockValue ? e.message : String(e) };
+  }
+  return unwrapHeld(callJson("wasm_state4_moved", enc, crypto));
 }
 
 export function bind_digest_js(ws, sub, log, moved, crypto) {
@@ -622,15 +738,35 @@ export function body_refusal_js(ws, body, commits, crypto) {
   } catch (e) {
     return `a body is {ws, kind, …, salt}: ${e instanceof NotLockValue ? e.message : String(e)}`;
   }
+  if (body === null || typeof body !== "object" || Array.isArray(body) || body.ws !== ws) {
+    return callJson("wasm_body_refusal", `{"ws":${JSON.stringify(ws)},"body":${bodyEnc},"commits":[]}`, crypto);
+  }
   let cs = "[";
   let first = true;
   for (let i = 0; i < commits.length; i++) {
     const x = commits[i];
+    const ch = x.chain;
     let chainEnc;
-    try {
-      chainEnc = encodeEntries(x.chain);
-    } catch {
-      continue;
+    if (Array.isArray(ch) && isFastJsonSafe(ch)) {
+      let s = "[";
+      for (let j = 0; j < ch.length; j++) {
+        if (j > 0) s += ",";
+        const e = ch[j];
+        if (e !== null && typeof e === "object" && !Array.isArray(e) && e.kind === "ws" && e.body !== null && typeof e.body === "object" && !Array.isArray(e.body)) {
+          const t = typeof e.body.t === "string" ? JSON.stringify(e.body.t) : "null";
+          const h = typeof e.body.h === "string" ? JSON.stringify(e.body.h) : "null";
+          s += `{"kind":"ws","body":{"t":${t},"h":${h}}}`;
+        } else {
+          s += "{}";
+        }
+      }
+      chainEnc = s + "]";
+    } else {
+      try {
+        chainEnc = encodeEntries(ch);
+      } catch {
+        continue;
+      }
     }
     if (!first) cs += ",";
     first = false;

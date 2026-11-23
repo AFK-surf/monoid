@@ -80,11 +80,15 @@ test("form, role, fork, supersedes, and edge-case parity", () => {
     "名字 😀", "\ud800", "\udfff", "\ud800x\udfff", "\ud800\udc00",
     [], [1, "a", null, true, { z: 1, a: 2 }],
     { b: 1, a: 2, "\ud800": 3, "😀": 4, "\uffff": 5, undef: undefined },
+    new String("x"), new Number(1), new Boolean(true), new Date(0),
+    { a: new String("x"), b: new Number(1), c: new Boolean(true), d: new Date(0) },
+    Object.assign(Object.create(null), { b: 1, a: 2 }),
     undefined, () => {}, Symbol("s"),
   ];
   for (const v of formCases) {
-    assert.equal(pionRules.canonical_of(v), mbRules.canonical_of(v), `canonical_of(${String(v)})`);
-    assert.equal(pionRules.entry_text_of(v), mbRules.entry_text_of(v), `entry_text_of(${String(v)})`);
+    const label = typeof v === "object" && v !== null && Object.getPrototypeOf(v) === null ? "[null-proto]" : String(v);
+    assert.equal(pionRules.canonical_of(v), mbRules.canonical_of(v), `canonical_of(${label})`);
+    assert.equal(pionRules.entry_text_of(v), mbRules.entry_text_of(v), `entry_text_of(${label})`);
   }
 
   const entry = { v: 1, ws: "w", seq: 0, prev: null, at: 100, kind: "genesis", body: { b: 1, a: "😀\ud800" }, sig: { key: "k" }, extra: 9 };

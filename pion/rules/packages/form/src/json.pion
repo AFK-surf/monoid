@@ -139,7 +139,26 @@ fn Parser::parse_string(self : Parser) -> Result[String, String] {
     return Err("expected '\"'")
   }
   self.pos = self.pos + 1
+  let start = self.pos
+  while self.pos < self.len {
+    let b = self.src.code_unit_at(self.pos)
+    if b == 34 {
+      let s = self.src.slice(start, self.pos)
+      self.pos = self.pos + 1
+      return Ok(s)
+    }
+    if b == 92 {
+      break
+    }
+    self.pos = self.pos + 1
+  }
+  if self.pos >= self.len {
+    return Err("unterminated string")
+  }
   let sb = StringBuilder::new()
+  if self.pos > start {
+    sb.write_string(self.src.slice(start, self.pos))
+  }
   while self.pos < self.len {
     let b = self.src.code_unit_at(self.pos)
     if b == 34 {
@@ -213,12 +232,28 @@ fn Parser::parse_string(self : Parser) -> Result[String, String] {
 
 fn Parser::parse_number(self : Parser) -> Result[Json, String] {
   let start = self.pos
+  let mut neg = false
   if self.pos < self.len && self.src.code_unit_at(self.pos) == 45 {
+    neg = true
     self.pos = self.pos + 1
   }
+  let dig_start = self.pos
+  let mut acc : Int64 = 0.to_int64()
+  while self.pos < self.len {
+    let b = self.src.code_unit_at(self.pos)
+    if b >= 48 && b <= 57 {
+      acc = acc * 10.to_int64() + (b - 48).to_int64()
+      self.pos = self.pos + 1
+    } else {
+      break
+    }
+  }
+  let digits = self.pos - dig_start
+  let mut is_float = false
   while self.pos < self.len {
     let b = self.src.code_unit_at(self.pos)
     if (b >= 48 && b <= 57) || b == 46 || b == 101 || b == 69 || b == 43 || b == 45 {
+      is_float = true
       self.pos = self.pos + 1
     } else {
       break
@@ -226,6 +261,15 @@ fn Parser::parse_number(self : Parser) -> Result[Json, String] {
   }
   if self.pos == start {
     return Err("expected number")
+  }
+  if !is_float && digits > 0 && digits <= 15 {
+    if neg {
+      if acc == 0.to_int64() {
+        return Ok(Json::Num(-0.0))
+      }
+      return Ok(Json::Num((0.to_int64() - acc).to_double()))
+    }
+    return Ok(Json::Num(acc.to_double()))
   }
   let slice = self.src.slice(start, self.pos)
   match slice.to_double() {
@@ -390,8 +434,24 @@ pub fn write_unicode_escape(sb : StringBuilder, c : Int) -> Unit {
 
 ///| Quote a WTF-8 string as JSON.stringify writes it (lone surrogates escaped as `\udxxx`).
 pub fn write_quoted(sb : StringBuilder, s : String) -> Unit {
-  sb.write_byte(34.to_byte())
   let n = s.length()
+  let mut k = 0
+  let mut plain = true
+  while k < n {
+    let b = s.code_unit_at(k)
+    if b < 0x20 || b >= 0x80 || b == 0x22 || b == 0x5C {
+      plain = false
+      break
+    }
+    k = k + 1
+  }
+  if plain {
+    sb.write_byte(34.to_byte())
+    sb.write_string(s)
+    sb.write_byte(34.to_byte())
+    return
+  }
+  sb.write_byte(34.to_byte())
   let mut i = 0
   while i < n {
     let b0 = s.code_unit_at(i)
@@ -452,7 +512,7 @@ fn write_json_impl(sb : StringBuilder, v : Json) -> Unit {
     Json::Bool(true) => sb.write_string("true")
     Json::Bool(false) => sb.write_string("false")
     Json::Num(d) => {
-      if d == d.floor() && d.abs() <= 9007199254740991.0 {
+      if d >= -9007199254740991.0 && d <= 9007199254740991.0 && d.to_int64().to_double() == d {
         sb.write_string(d.to_int64().to_string())
       } else if d != d || d == 1.0 / 0.0 || d == -1.0 / 0.0 {
         sb.write_string("null")
