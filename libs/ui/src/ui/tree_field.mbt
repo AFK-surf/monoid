@@ -841,7 +841,7 @@ fn tree_field_handle_down(x : Double, y : Double, at : Double) -> Bool {
   c.handle_drag = c.focus
   c.handle_dy = dy
   if pointing() is Finger {
-    tree_finger_read.val.set(Some((x, y - loupe_reach)))
+    tree_finger_read.val.set(Some(handle_read(Some(st), x, y, dy)))
   }
   if which != 1 {
     st.menu = false
@@ -890,7 +890,7 @@ fn tree_field_moved(id : @view.NodeId, x : Double, y : Double, at : Double) -> B
   } else if tf.handle != 0 {
     handle_move(g(), x, y, at)
     if pointing() is Finger {
-      tree_finger_read.val.set(Some((x, y - loupe_reach)))
+      tree_finger_read.val.set(Some(handle_read(Some(st), x, y, g().handle_dy)))
     }
   } else if tf.word_drag {
     match st.local_point(x, y) {

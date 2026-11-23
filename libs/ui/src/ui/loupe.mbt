@@ -20,13 +20,24 @@ pub fn finger_reads() -> (Double, Double)? {
   }
   if c.handle_drag != 0 {
     hand.pointer.get() |> ignore
-    Some((c.px, c.py - loupe_reach))
+    Some(handle_read(c.editors.get(c.handle_drag), c.px, c.py, c.handle_dy))
   } else if c.word_drag != 0 {
     hand.pointer.get() |> ignore
     Some((c.px, c.py))
   } else {
     None
   }
+}
+
+///|
+/// Where a finger at (`x`, `y`) in the window dragging a handle of field `st` reads, `dy` under the tip of what it
+/// moves (the field's words' terms, as handle_move takes it): its x, and the middle of the line the tip stands under,
+/// where the caret goes (handle_move, EditorState::sel_handle_to), as drawn now; not where the finger happens to be on
+/// the handle's ball (a finger low on it read the ball itself, and the loupe showed it). Else loupe_reach over it.
+fn handle_read(st : EditorState?, x : Double, y : Double, dy : Double) -> (Double, Double) {
+  guard st is Some(st) && st.tl is Some(tl) && st.local_point(x, y) is Some((lx, ly)) else { return (x, y - loupe_reach) }
+  let (_, wy, _, _) = st.drawn_box(lx, ly - dy - tl.line_h / 2.0, 0.0, 0.0)
+  (x, wy)
 }
 
 ///|
@@ -37,8 +48,8 @@ pub let loupe_reach : Double = 26.0
 /// A node of the window's tree magnifying what was drawn before it (View::magnifies: round (`sx`, `sy`) in the window,
 /// `z` times as large), its content `c` drawn at (`x`, `y`) as big as `s` and as opaque as `a`, over its own ground (the
 /// first instance of it at `own`; where it is drawn off and bigger, `ground`, so too what it shows): the frame's instances before that which lie there copied after the frame's and set
-/// larger about there into it, cut to it (what is inked by glass and what punches through left out; glass as the
-/// ground of its tint). Drawn only.
+/// larger about there into it, cut to it (what punches through left out; glass as the ground of its tint, words
+/// inked by glass in their own ink). Drawn only.
 fn Ctx::view_magnified(
   self : Ctx,
   c : @view.Content,
@@ -71,8 +82,8 @@ fn Ctx::view_magnified(
     let b = k * inst_size
     let ia = self.inst
     let kind = ia[b + 5]
-    // (what is inked by glass and what punches through: left out)
-    if kind == 7.0 || kind == 9.0 {
+    // (what punches through: left out)
+    if kind == 9.0 {
       continue
     }
     if ia[b] > qx1 || ia[b + 1] > qy1 || ia[b] + ia[b + 2] < qx0 || ia[b + 1] + ia[b + 3] < qy0 {
@@ -93,6 +104,15 @@ fn Ctx::view_magnified(
       ia[d + 5] = 0.0
       ia[d + 11] = ia[d + 15]
       for j in [6, 7, 12, 13, 14, 15, 20, 21, 22, 23] {
+        ia[d + j] = 0.0
+      }
+    }
+    if kind == 7.0 {
+      // a glyph in adaptive glass (a composer's words) as a glyph of its own ink: what the renderer would ink it by
+      // is the glass under it, which the loupe does not copy; left out, the words picked in a glass field never
+      // showed in it, only what is picked's ground and the handle
+      ia[d + 5] = 1.0
+      for j in [21, 22, 23] {
         ia[d + j] = 0.0
       }
     }
