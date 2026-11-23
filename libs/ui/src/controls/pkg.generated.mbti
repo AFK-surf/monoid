@@ -160,8 +160,6 @@ pub fn ask_words_node(@view.View, () -> String, () -> String, loc~ : SourceLoc) 
 
 pub fn at_point(Double, Double) -> Beside
 
-pub fn at_row_end() -> Bool
-
 pub fn attach_from_sheet() -> Bool
 
 pub let attention_dot : @ui.Len
@@ -322,8 +320,6 @@ pub fn card_foot_in(Double) -> Double
 pub fn card_foot_node(@view.View, (@view.View) -> Unit, at_end? : Bool, loc~ : SourceLoc) -> Unit
 
 pub let card_foot_out : @ui.Style
-
-pub fn card_foot_words(() -> Unit, on? : Bool) -> Unit
 
 pub let card_line : @ui.TextStyle
 
@@ -630,8 +626,6 @@ pub let desk_lane_in : Double
 pub let desk_lane_most : Double
 
 pub let desk_list : @ui.Style
-
-pub fn desk_list_card() -> @ui.Style
 
 pub let desk_list_out : Double
 
@@ -999,10 +993,6 @@ pub fn glass_selection() -> Int64
 
 pub fn glass_sheet() -> @paint.Glass
 
-pub fn glass_tab_bar(spot? : (Double, Double)?, merge? : Double) -> @paint.Glass
-
-pub fn glass_tab_lens(Double) -> @paint.Glass
-
 pub fn glass_toast() -> @paint.Glass
 
 pub fn glass_viewer_clear(spot? : (Double, Double)?) -> @paint.Glass
@@ -1064,8 +1054,6 @@ pub fn heading_node(@view.View, () -> String, ends? : (@view.View) -> Unit, lead
 pub fn held_in() -> @ui.Style
 
 pub let held_raised : Raised
-
-pub fn held_reach() -> @ui.Style
 
 pub let hint_back_ms : Double
 
@@ -1167,8 +1155,6 @@ pub let in_lines : @ui.TextStyle
 pub fn in_pane() -> Bool
 
 pub fn in_panel() -> Bool
-
-pub fn in_small_panel() -> Bool
 
 pub fn in_small_panel_node(@view.View) -> Bool
 
@@ -1763,8 +1749,6 @@ pub fn overlay_card_node(@view.View, (@headless.OverlayDismiss) -> Unit, (@view.
 
 pub fn overlay_solid_edge() -> (Double, Int64)
 
-pub fn oversize(Double) -> @ui.Style
-
 #callsite(autofill(loc))
 pub fn own_head_node(@view.View, (@view.View, Double) -> Unit, () -> String, rename? : () -> Unit, renames? : () -> Bool, rename_label? : () -> String, busy? : () -> Bool, tags? : (@view.View) -> Unit, lines? : () -> Array[String], state? : (@view.View) -> Unit, actions? : (@view.View) -> Unit, dot? : () -> String, state_shown? : () -> Bool, warnings? : () -> Array[(String, Bool)], mark_press? : (() -> String, () -> Unit), loc~ : SourceLoc) -> Unit
 
@@ -1864,11 +1848,7 @@ pub fn panel_button_node(@view.View, () -> String, () -> Unit, tone? : PanelTone
 
 pub let panel_card_in : Double
 
-pub fn panel_card_last() -> @ui.Style
-
 pub fn panel_card_last_node(@view.View) -> @ui.Style
-
-pub fn panel_card_out() -> @ui.Style
 
 pub fn panel_card_out_node(@view.View) -> @ui.Style
 
@@ -1928,8 +1908,6 @@ pub let panel_pill : Double
 pub fn panel_popover_note_node(@view.View, () -> String, loc~ : SourceLoc) -> Unit
 
 pub fn panel_reshaped_node(@view.View) -> Unit
-
-pub fn panel_row_in() -> @ui.Style
 
 pub fn panel_row_in_node(@view.View) -> @ui.Style
 
@@ -2011,8 +1989,6 @@ pub let pg_note_bad : @ui.TextStyle
 pub let pg_note_box : @ui.Style
 
 pub let pg_room : @ui.Style
-
-pub fn pg_room_now() -> @ui.Style
 
 pub let pg_row : @ui.Style
 
@@ -2916,15 +2892,11 @@ pub let take_over_max : @ui.Len
 #callsite(autofill(loc))
 pub fn tap_text_node(@view.View, () -> String, () -> Unit, size? : Double, loc~ : SourceLoc) -> Unit
 
-pub fn tape_bar_end(Double, side? : Double) -> Double
-
 pub fn tape_bar_end_of(FixedArray[@paint.CornerOf], @paint.CornerRoots, Double, side? : Double) -> Double
 
 pub fn tape_bar_over() -> Double
 
 pub fn tape_bar_over_room() -> @ui.Space
-
-pub fn tape_bar_start(Double, side? : Double) -> Double
 
 pub fn tape_bar_start_of(FixedArray[@paint.CornerOf], @paint.CornerRoots, Double, side? : Double) -> Double
 
@@ -3043,8 +3015,6 @@ pub let tool_side : Double
 
 pub let tools_apart : Double
 
-pub fn tools_line() -> @ui.Style
-
 pub fn top_bar_actions_lent(@view.View) -> Unit
 
 pub let top_bar_title_look : @view.WordsLook
@@ -3079,8 +3049,6 @@ pub fn transient_layer_of(@view.View) -> TipLayer
 pub fn ui_theme() -> @ui.Theme
 
 pub fn ui_theme_now() -> @ui.Theme
-
-pub fn untitled_clear() -> @ui.Style
 
 pub fn untitled_clear_node(@view.View) -> @ui.Style
 
@@ -3120,8 +3088,6 @@ pub let video_shade : @ui.Color
 pub fn viewer_act_foot(Double) -> Double
 
 pub fn viewer_act_head(Double) -> Double
-
-pub fn viewer_back_at_corner() -> Bool
 
 pub fn viewer_back_corner(Double) -> @paint.CornerOf
 
@@ -3266,8 +3232,6 @@ pub let wide_value : @ui.TextStyle
 
 pub fn width_is_wide((() -> Double)?) -> Bool
 
-pub fn window_clear_in(Double) -> Double
-
 pub fn window_corner_clear(Double) -> Double
 
 pub fn window_corner_key() -> @paint.CornerOf
@@ -3281,8 +3245,6 @@ pub fn window_follow(Double) -> @paint.CornerOf
 pub let window_in : Double
 
 pub fn window_key_in(Double, roots? : @paint.CornerRoots) -> Double
-
-pub fn window_keys_at(Double, whole? : Bool) -> (Double, Double)
 
 pub let window_keys_band : Double
 

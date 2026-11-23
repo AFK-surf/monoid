@@ -73,17 +73,8 @@ pub fn glass_viewer_dark(spot? : (Double, Double)? = None) -> @ui.Glass {
 }
 
 ///|
-/// The bottom bar's glass: iOS 27 regular liquid glass calibrated for 56pt controls (flutter_liquid_glass
-/// ios27Light / ios27Dark: uniform 2.1pt Gaussian blur across center and rim, quarter-circle bevel refraction,
-/// adaptive color transfer, inner bevel shadow, glint, and 0.75pt external contour); where glass is drawn solid,
-/// its opaque ground.
-pub fn glass_tab_bar(spot? : (Double, Double)? = None, merge? : Double = 0.0) -> @ui.Glass {
-  @glass.liquid_tab_bar_glass(spot~, merge~)
-}
-
-///|
 /// Thin `@sf` bottom bar glass decorator delegating to `@glass.liquid_tab_bar_surface_decorate`: `v` drawn in the
-/// bottom bar's glass (`glass_tab_bar`'s) at the `spot` and `merge` `glass_spec` answers as each frame is drawn,
+/// bottom bar's glass at the `spot` and `merge` `glass_spec` answers as each frame is drawn,
 /// `sharing()` where it does not merge given `share_when_unmerged`. Returns `v` for chaining.
 pub fn tab_bar_surface_decorate(
   v : @view.View,
@@ -120,14 +111,8 @@ pub fn glass_knob() -> @ui.Glass {
 }
 
 ///|
-/// Clear lifted liquid glass lens while a tab bar / segmented control thumb is held (iOS 27 clear loupe).
-pub fn glass_tab_lens(press : Double) -> @ui.Glass {
-  @glass.liquid_tab_lens_glass(press, solid=theme().p.raised)
-}
-
-///|
 /// Thin `@sf` bottom bar lens decorator delegating to `@glass.liquid_tab_lens_surface_decorate`: `v` drawn in the
-/// held lens's glass (`glass_tab_lens`'s, its solid ground the theme's raised) as far as `press()` holds it, and
+/// held lens's glass (its solid ground the theme's raised) as far as `press()` holds it, and
 /// given `shadow`, that shadow outside only. Returns `v` for chaining.
 pub fn tab_lens_surface_decorate(
   v : @view.View,

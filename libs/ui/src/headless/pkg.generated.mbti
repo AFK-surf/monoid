@@ -515,6 +515,7 @@ pub struct Overlay {
 }
 pub fn Overlay::depth(Self) -> Int32
 pub fn Overlay::dismiss(Self, OverlayDismiss) -> Unit
+pub fn Overlay::escape(Self) -> Bool
 pub fn Overlay::is_top(Self) -> Bool
 pub fn Overlay::node(Self) -> @view.View
 

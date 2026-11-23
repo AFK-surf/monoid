@@ -93,15 +93,19 @@ test "a dialog takes all input over the page while it is open; Escape shuts it, 
   })
   t.act(Button, Activate, label="Delete")
   t.run_for(floating_ms)
-  let shown = t.all(Dialog, label="Delete this project?").length()
+  let shown = (t.all(Dialog, label="Delete this project?").length(), @headless.overlays_open(@ui.view_tree().unwrap()))
   t.key(@ui.key_escape)
   t.run_for(floating_ms)
-  let escaped = (open.get(), t.all(Dialog, label="Delete this project?").length())
+  let escaped = (open.get(), t.all(Dialog, label="Delete this project?").length(), @headless.overlays_open(@ui.view_tree().unwrap()))
   t.act(Button, Activate, label="Delete")
   t.run_for(floating_ms)
-  t.act(Button, Activate, label="Close dialog")
+  let reopened = @headless.overlays_open(@ui.view_tree().unwrap())
+  t.tap(10.0, 10.0)
   t.run_for(floating_ms)
-  assert_eq((shown, escaped, open.get()), (1, (false, 0), false))
+  assert_eq(
+    (shown, escaped, reopened, open.get(), @headless.overlays_open(@ui.view_tree().unwrap())),
+    ((1, 1), (false, 0, 0), 1, false, 0),
+  )
 }
 
 ///|

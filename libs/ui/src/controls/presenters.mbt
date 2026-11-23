@@ -753,11 +753,6 @@ pub fn panel_depth() -> Int {
 }
 
 ///|
-/// The room a panel leaves at its sides while its body is drawn (the presenters set it): what panel_bleed reaches across,
-/// and what a row's ground reaches out across, its words on the column's line (choice_row).
-let panel_sides_in : Ref[Double] = { val: 0.0 }
-
-///|
 /// Whether what is drawn now is a panel's body (the presenters', in whatever way it shows): what lays itself out as a
 /// page's (a page's column in the window, the room over and under it the frame leaves) lays itself out in the panel's
 /// room instead.
@@ -774,23 +769,6 @@ let panel_body_now : Ref[Int] = Ref(0)
 let sheet_column_box : @ui.Style = @ui.css("w=Full")
 
 ///|
-/// Whether what is drawn now stands in a column on its panel's words' line already (a dialog's body: panel_centred),
-/// so a sheet's column in it is that one.
-// kept across runs: said by panel_centred round what a dialog holds
-let column_given : Ref[Bool] = { val: false }
-
-///|
-/// Whether the panel whose body is drawn now is a small panel beside what opened it (a popover's): its rows stand as
-/// a menu's do, at its padding, their words a row's padding in (text_in), concentric with it.
-pub fn in_small_panel() -> Bool {
-  small_panel_now.val
-}
-
-///|
-// kept across runs: said by the presenters while a panel's body is drawn
-let small_panel_now : Ref[Bool] = { val: false }
-
-///|
 /// How far in from the column a panel's body stands in its words go (each block of them, a row's), so they stand on
 /// the panel's words' line wherever it is drawn: a row's padding in a small panel (its column at its padding: text_in),
 /// what a sheet's rows leave of its words' 20 in a sheet a press opened (sheet_held: its column at its rows'), none
@@ -800,55 +778,8 @@ pub fn panel_words_in() -> @ui.Style {
 }
 
 ///|
-/// A card a page lays out itself in a panel's body: out across the room the panel leaves at its sides as its rows'
-/// grounds are (rows_out), `panel_card_in` (16) in from its sides, concentric with its corners (the user, 2026-11-03:
-/// 面板里可以放卡片; 第二套感觉还行); none outside a panel.
-pub fn panel_card_out() -> @ui.Style {
-  // (none in a small panel: what it holds stands at its padding already)
-  if small_panel_now.val {
-    return no_card_out
-  }
-  // (from the column it stands in, `panel_sides_in` from the panel's sides (a list's in a dialog nearer them, the
-  // list out across the room its rows reach), out or in to `panel_card_in` from them)
-  if panel_sides_in.val <= 0.0 && words_in_now.val <= 0.0 {
-    return no_card_out
-  }
-  @ui.style(mx=room(panel_card_in - panel_sides_in.val))
-}
-
-///|
-/// The same on the last of what a dialog holds itself, where that is a card (or holds one at its foot): its margin under
-/// it, what follows it in a column with a gap between not pushed further down by that gap.
-pub fn panel_card_last() -> @ui.Style {
-  if column_given.val && !small_panel_now.val {
-    @ui.style(mb=room(-(dialog_pad - panel_card_in)))
-  } else {
-    no_card_out
-  }
-}
-
-///|
 // kept across runs: a value (no field of it changes)
 let no_card_out : @ui.Style = @ui.css("")
-
-///|
-/// A row of a panel's body, its words so (panel_words_in), concentric with a small panel where it is in one; one to
-/// press (a box with an id), its ground under the hand (parts.css.ts panelRow: a button's :hover).
-pub fn panel_row_in() -> @ui.Style {
-  if small_panel_now.val {
-    small_panel_row_in
-  } else {
-    panel_words_in().then(panel_row_lit)
-  }
-}
-
-///|
-// kept across runs: a value (no field of it changes)
-let small_panel_row_in : @ui.Style = @ui.style(px=room(text_in), radius=Inner, hovered=@ui.patch(bg=Hover))
-
-///|
-// kept across runs: a value (no field of it changes)
-let panel_row_lit : @ui.Style = @ui.css("hovered{bg=Hover}")
 
 ///|
 // kept across runs: said by the presenters while a panel's body is drawn

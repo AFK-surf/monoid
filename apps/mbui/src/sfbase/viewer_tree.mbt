@@ -1307,9 +1307,9 @@ fn notched(dx : Double, dy : Double) -> Bool {
 }
 
 ///|
-/// A key to viewer `vw` (its layer's: View::on_key), at its moment: Escape leaves marking (the marks it was making) or
-/// else closes it; ← and → step to the picture before and after; the zoom's keys zoom (viewer_zoom_key). True where it
-/// took the key; closing, it takes none.
+/// A key to viewer `vw` (its layer's: View::on_key), at its moment: ← and → step to the picture before and after;
+/// the zoom's keys zoom (viewer_zoom_key). Escape is handled by `fullscreen_overlay_node` before reaching here.
+/// True where it took the key; closing, it takes none.
 fn Viewer::key_on(self : Viewer, src : Source, k : @view.Key) -> Bool {
   let v = self
   if v.closing {
@@ -1326,14 +1326,6 @@ fn Viewer::key_on(self : Viewer, src : Source, k : @view.Key) -> Bool {
   // there too: Viewer::player_stage)
   if v.played() {
     return false
-  }
-  if k.code == @ui.key_escape && k.mods == 0 {
-    if marking.on {
-      marks_back()
-    } else {
-      v.shut(c)
-    }
-    return true
   }
   if marking.on || v.shown_kind() != Some(KImage) || (k.mods & (@ui.mod_cmd | @ui.mod_ctrl | @ui.mod_alt)) != 0 {
     return false

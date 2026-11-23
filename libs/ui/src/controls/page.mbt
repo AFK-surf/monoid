@@ -182,19 +182,6 @@ let pg_said_row_square : @ui.Style = @ui.css("row w=Full gap=S3 align=ACenter").
 let cut_words : @ui.TextStyle = @ui.text_style(w=Cut, wrap=false)
 
 ///|
-/// How many rows' ends what is drawn now is at.
-// kept across runs: counted up and down round what a row's end draws (0 between them)
-let row_ends : Ref[Int] = Ref(0)
-
-///|
-/// Whether a button of words alone drawn now is at a row's end, on either width: its words on the line where
-/// the row's value would end, its ground reaching past them by its own room, out to a list card's edge (the row's
-/// words room and the card's pad, 16, a button's own), as one at a section's head reaches to the column's.
-pub fn at_row_end() -> Bool {
-  row_ends.val > 0
-}
-
-///|
 /// A row's title, distinct from its note and value on every page width and input.
 let row_title_weight : @ui.TextStyle = @ui.text_style(weight=Medium)
 
@@ -356,21 +343,6 @@ pub let pg_room : @ui.Style = @ui.style(w=Full, px=room(pg_room_in))
 
 ///|
 let pg_room_in : Double = 12.0
-
-///|
-/// A narrow page's room in a panel of its own (the tape's, laid out Medium: in_pane): its cards cards of the panel's,
-/// `panel_card_in` from its sides (the user, 2026-11-03: 面板里可以放卡片); on a phone's screen, pg_room.
-pub fn pg_room_now() -> @ui.Style {
-  if in_pane() {
-    pg_room_pane
-  } else {
-    pg_room
-  }
-}
-
-///|
-// kept across runs: a value (no field of it changes)
-let pg_room_pane : @ui.Style = @ui.style(w=Full, px=room(panel_card_in))
 
 ///|
 /// A card on a narrow page (in its room): 10 under each.
@@ -573,35 +545,6 @@ let panel_card_rows : @ui.Style = @ui.style(p=room(corner_inset))
 
 ///|
 pub let desk_list : @ui.Style = @ui.style(w=Full, p=list_room, gap=S0_5, radius=list_card_radius, bg=Card)
-
-///|
-/// The same in a panel of its own (in_pane): a card of the panel's, its words 24 in from its edges, its rows' grounds
-/// the ladder's inset in (wide_list_link_pane: reaching past their rows to there), a card's corner, its rows as close
-/// as a list card's; what stands at a row's end in its corners stands outside them, as far in as its words (the user,
-/// 2026-11-03: 就按第 3 版).
-pub fn desk_list_card() -> @ui.Style {
-  if in_pane() {
-    desk_list_pane
-  } else {
-    desk_list
-  }
-}
-
-///|
-// kept across runs: a value (no field of it changes)
-let desk_list_pane : @ui.Style = @ui.style(
-  w=Full,
-  px=room(corner_inset),
-  py=room(card_pad - wide_row_pad),
-  gap=S0_5,
-  radius=card_radius,
-  bg=Card,
-)
-
-///|
-/// How far a wide list's row's words stand under its top and over its foot (wide_list_row_ground's and
-/// wide_in_list's py=S2_5).
-let wide_row_pad : Double = 10.0
 
 ///|
 pub let desk_list_out : Double = 12.0

@@ -7,7 +7,6 @@ import {
   "ui/ui",
   "ui/signals",
   "ui/hostapi",
-  "ui/kit",
   "ui/player",
   "ui/headless",
   "ui/view",

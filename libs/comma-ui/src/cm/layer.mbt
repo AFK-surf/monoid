@@ -3,15 +3,23 @@
 // lives with what opened it, and comes and goes there by its own fade.
 
 ///|
-/// The layer floating parts are drawn in: the node `layer_node` made.
+/// The layer floating parts are drawn in: the node `layer_node` made, and its tooltips' shared warmup group.
 pub struct Layer {
   at : Ref[@view.View?]
+  priv tips : @headless.TooltipGroup[@view.NodeId]
 }
 
 ///|
 /// A layer not made yet (layer_node makes it).
 pub fn Layer::new() -> Layer {
-  { at: Ref(None) }
+  let shown : @signals.Signal[@view.NodeId?] = @signals.signal(None)
+  let tips = @headless.TooltipGroup::new(
+    fn() { shown.get() },
+    fn(k) { shown.set(k) },
+    open_delay_ms=300.0,
+    warmup_ms=300.0,
+  )
+  { at: Ref(None), tips }
 }
 
 ///|
@@ -51,26 +59,4 @@ fn opening(n : @view.View, open : () -> Bool, in_ms : Double, out_ms : Double) -
 /// whole at its full size.
 fn seen_at(scale : Double) -> Double {
   ((scale - 0.5) * 2.0).max(0.0).min(1.0)
-}
-
-///|
-/// A press anywhere in `h` (over all of the window) closing what floats in it: under it, named for a screen reader.
-#callsite(autofill(loc))
-fn closes_outside(h : @view.View, close : () -> Unit, label : String, loc~ : SourceLoc) -> Unit {
-  @headless.button(made_for=loc, h, fn() { label }, fn(_) { close() }, fn(c, _) { c.over(Is(true)) |> ignore })
-  |> ignore
-}
-
-///|
-/// Escape in `h`, while `open`, closes it.
-fn escape_closes(h : @view.View, open : () -> Bool, close : () -> Unit) -> Unit {
-  h.on_key(fn(k) {
-    if k.code == @ui.key_escape && @signals.untracked(open) {
-      close()
-      true
-    } else {
-      false
-    }
-  })
-  |> ignore
 }

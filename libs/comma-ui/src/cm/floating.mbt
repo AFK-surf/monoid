@@ -47,40 +47,39 @@ pub fn tooltip_node(
   delay? : Double = 300.0,
   shown? : () -> Bool = fn() { false },
 ) -> Unit {
-  let open : @signals.Signal[Bool] = @signals.signal(false)
-  let pending : Ref[() -> Unit] = Ref(fn() {  })
-  let wants = fn() {
-    (@ui.pointing() is Mouse && anchor.pointed(), anchor.focus_shown(), shown())
+  let group = if (delay - 300.0).abs() < 0.001 {
+    layer.tips
+  } else {
+    let s : @signals.Signal[@view.NodeId?] = @signals.signal(None)
+    @headless.TooltipGroup::new(
+      fn() { s.get() },
+      fn(k) { s.set(k) },
+      open_delay_ms=delay,
+      warmup_ms=300.0,
+    )
   }
-  anchor.reacts(wants, fn(w) {
-    let (over, focused, said) = w
-    (pending.val)()
-    pending.val = fn() {  }
-    if focused || said {
-      open.set(true)
-    } else if over {
-      pending.val = anchor.at_moment(anchor.cause_at() + delay, fn() { open.set(true) })
-    } else {
-      open.set(false)
-    }
-  })
+  let key = anchor.id()
+  group.trigger(anchor, key)
+  let is_open = fn() { group.is_open(key) || shown() }
   let h = layer.holder(anchor)
-  h.show(fn() { open.get() }, leave=ms_tooltip_exit, fn(t) {
-    let e = opening(t, fn() { open.get() }, ms_tooltip_enter, ms_tooltip_exit)
-    t.beside(anchor.id(), side~, along=Middle, offset=space_sm) |> ignore
-    t
-    .padding(Is((space_md, space_xs, space_md, space_xs)))
-    .radius(Is(radius_md))
-    .ground(By(fn() { colors().tooltip_bg }))
-    .edge(By(fn() { (0.5, colors().tooltip_border) }))
-    .shadow(By(fn() { cast(shadow_xs, shadow_dark_xs) }))
-    .scale(By(fn() { 0.97 + 0.03 * e.shown(t) }))
-    .alpha(By(fn() { e.shown(t) }))
-    // (leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
-    .says(By(fn() { Some(@view.said(Tooltip, label=label())) }))
-    |> ignore
-    t.box(fn(w) {
-      w.words(By(label), look=words_in(type_mini, weight=weight_medium)).ink(By(fn() { colors().tooltip_text })) |> ignore
+  h.show(is_open, leave=ms_tooltip_exit, fn(slot) {
+    slot.over(Is(true)).presses(Is(false)) |> ignore
+    @headless.tooltip_bubble(slot, label, fn(t) {
+      let e = opening(t, is_open, ms_tooltip_enter, ms_tooltip_exit)
+      t.beside(anchor.id(), side~, along=Middle, offset=space_sm) |> ignore
+      t
+      .padding(Is((space_md, space_xs, space_md, space_xs)))
+      .radius(Is(radius_md))
+      .ground(By(fn() { colors().tooltip_bg }))
+      .edge(By(fn() { (0.5, colors().tooltip_border) }))
+      .shadow(By(fn() { cast(shadow_xs, shadow_dark_xs) }))
+      .scale(By(fn() { 0.97 + 0.03 * e.shown(t) }))
+      .alpha(By(fn() { e.shown(t) }))
+      |> ignore
+      t.box(fn(w) {
+        w.words(By(label), look=words_in(type_mini, weight=weight_medium)).ink(By(fn() { colors().tooltip_text })) |> ignore
+      })
+      |> ignore
     })
     |> ignore
   })
@@ -124,21 +123,22 @@ fn menu_rows(
   items : () -> Array[MenuRow],
   label : String,
   close : () -> Unit,
+  on_escape : () -> Unit,
   radios? : Bool = false,
   first? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
-  @headless.menu(m, in_node=true, made_for=loc, label=fn() { label }, on_close=close, fn(_, menu) {
+  let mn = @headless.menu(m, made_for=loc, label=fn() { label }, on_close=on_escape, fn(mn, menu) {
     let all = @signals.untracked(items)
     for item in all {
       if item.divided {
-        m.box(fn(d) {
+        mn.box(fn(d) {
           d.height(Is(Some(0.5))).margin(Is((0.0, space_xs, 0.0, space_xs))).ground(By(fn() { colors().border_primary }))
           |> ignore
         })
         |> ignore
       }
-      m.box(fn(g) {
+      mn.box(fn(g) {
         g.padding(Is((space_sm, 0.0, space_sm, 0.0))) |> ignore
         let act = fn(_ : @view.View) {
           (item.press)()
@@ -189,12 +189,11 @@ fn menu_rows(
       |> ignore
     }
   })
-  |> ignore
   // (the focus its ground's as it opens, or the one chosen's: the keys from there; given back as it goes)
   if first {
-    m.focus_opens_first(takes=fn(s) { s.check == Some(On) }) |> ignore
+    mn.focus_opens_first(takes=fn(s) { s.check == Some(On) }) |> ignore
   } else {
-    m.focus_opens_first(takes=fn(_) { false }) |> ignore
+    mn.focus_opens_first(takes=fn(_) { false }) |> ignore
   }
 }
 
@@ -213,23 +212,36 @@ pub fn menu_node(
   side? : @view.Side = Bottom,
 ) -> Unit {
   let close = fn() { open.set(false) }
+  let is_open = fn() { open.get() }
   let h = layer.holder(anchor)
-  escape_closes(h, fn() { open.get() }, close)
-  h.show(fn() { open.get() }, fn(c) { closes_outside(c, close, "Close " + label) })
   h.box(fn(room) {
     // (inset 8pt horizontally to match View::beside's default window padding so max_width(..., within=true) fits)
     room.over(Is(true)).margin(Is((space_md, 0.0, space_md, 0.0))) |> ignore
-    room.show(fn() { open.get() }, leave=ms_menu_exit, fn(m) {
-      let e = opening(m, fn() { open.get() }, ms_menu_enter, ms_menu_exit)
-      m.beside(anchor.id(), side~, along=Start, offset=space_xs) |> ignore
-      // (leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
-      m
-      .width(Is(Some(width)))
-      .max_width(Is(Some(width)), within=true)
-      .padding(Is((0.0, space_sm, 0.0, space_sm)))
+    room.show(is_open, leave=ms_menu_exit, fn(slot) {
+      slot.over(Is(true)) |> ignore
+      @headless.overlay(
+        slot,
+        fn(_) { close() },
+        modal=false,
+        dismiss_on_escape=true,
+        dismiss_on_outside=true,
+        inert=fn() { !is_open() },
+        anchor~,
+        auto_focus=false,
+        return_focus=true,
+        fn(m, ov) {
+          let e = opening(m, is_open, ms_menu_enter, ms_menu_exit)
+          m.beside(anchor.id(), side~, along=Start, offset=space_xs) |> ignore
+          m
+          .width(Is(Some(width)))
+          .max_width(Is(Some(width)), within=true)
+          .padding(Is((0.0, space_sm, 0.0, space_sm)))
+          |> ignore
+          panel_look(m, e, radius_xl, fn() { colors().bg_popup_secondary }, fn() { cast(shadow_lg, shadow_dark_lg) })
+          menu_rows(m, items, label, close, fn() { ov.escape() |> ignore })
+        },
+      )
       |> ignore
-      panel_look(m, e, radius_xl, fn() { colors().bg_popup_secondary }, fn() { cast(shadow_lg, shadow_dark_lg) })
-      menu_rows(m, items, label, close)
     })
   })
   |> ignore
@@ -321,20 +333,33 @@ pub fn dropdown_node(
     },
   )
   let close = fn() { open.set(false) }
+  let is_open = fn() { open.get() }
   let h = layer.holder(trigger)
-  escape_closes(h, fn() { open.get() }, close)
-  h.show(fn() { open.get() }, fn(c) { closes_outside(c, close, "Close " + label) })
-  h.show(fn() { open.get() }, leave=ms_menu_exit, fn(m) {
-    let e = opening(m, fn() { open.get() }, ms_menu_enter, ms_menu_exit)
-    m.beside(trigger.id(), side=Bottom, along=Start, offset=space_xs, width=Anchor) |> ignore
-    // (leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
-    m.padding(Is((0.0, space_sm, 0.0, space_sm))) |> ignore
-    panel_look(m, e, radius_xl, fn() { colors().bg_popup_secondary }, fn() { cast(shadow_lg, shadow_dark_lg) })
-    let items = fn() {
-      let i = chosen.get()
-      options.mapi(fn(j, o) { menu_item(o, fn() { chosen.set(j) }, checked=j == i) })
-    }
-    menu_rows(m, items, label, close, radios=true, first=true)
+  h.show(is_open, leave=ms_menu_exit, fn(slot) {
+    slot.over(Is(true)) |> ignore
+    @headless.overlay(
+      slot,
+      fn(_) { close() },
+      modal=false,
+      dismiss_on_escape=true,
+      dismiss_on_outside=true,
+      inert=fn() { !is_open() },
+      anchor=trigger,
+      auto_focus=false,
+      return_focus=true,
+      fn(m, ov) {
+        let e = opening(m, is_open, ms_menu_enter, ms_menu_exit)
+        m.beside(trigger.id(), side=Bottom, along=Start, offset=space_xs, width=Anchor) |> ignore
+        m.padding(Is((0.0, space_sm, 0.0, space_sm))) |> ignore
+        panel_look(m, e, radius_xl, fn() { colors().bg_popup_secondary }, fn() { cast(shadow_lg, shadow_dark_lg) })
+        let items = fn() {
+          let i = chosen.get()
+          options.mapi(fn(j, o) { menu_item(o, fn() { chosen.set(j) }, checked=j == i) })
+        }
+        menu_rows(m, items, label, close, fn() { ov.escape() |> ignore }, radios=true, first=true)
+      },
+    )
+    |> ignore
   })
   trigger
 }
@@ -352,24 +377,37 @@ pub fn popup_node(
   width? : Double = 360.0,
 ) -> Unit {
   let close = fn() { open.set(false) }
+  let is_open = fn() { open.get() }
   let h = layer.holder(anchor)
-  escape_closes(h, fn() { open.get() }, close)
-  h.show(fn() { open.get() }, fn(c) { closes_outside(c, close, "Close " + label) })
   h.box(fn(room) {
     // (inset 8pt horizontally to match View::beside's default window padding so max_width(..., within=true) fits)
     room.over(Is(true)).margin(Is((space_md, 0.0, space_md, 0.0))) |> ignore
-    room.show(fn() { open.get() }, leave=ms_hover_card_exit, fn(p) {
-      let e = opening(p, fn() { open.get() }, ms_hover_card_enter, ms_hover_card_exit)
-      p.beside(anchor.id(), side=Bottom, along=Start, offset=space_md) |> ignore
-      // (leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
-      p
-      .width(Is(Some(width)))
-      .max_width(Is(Some(width)), within=true)
-      .padding(Is((space_xl, space_xl, space_xl, space_xl)))
+    room.show(is_open, leave=ms_hover_card_exit, fn(slot) {
+      slot.over(Is(true)) |> ignore
+      @headless.overlay(
+        slot,
+        fn(_) { close() },
+        modal=false,
+        dismiss_on_escape=true,
+        dismiss_on_outside=true,
+        inert=fn() { !is_open() },
+        anchor~,
+        auto_focus=true,
+        return_focus=true,
+        label=fn() { label },
+        fn(p, _) {
+          let e = opening(p, is_open, ms_hover_card_enter, ms_hover_card_exit)
+          p.beside(anchor.id(), side=Bottom, along=Start, offset=space_md) |> ignore
+          p
+          .width(Is(Some(width)))
+          .max_width(Is(Some(width)), within=true)
+          .padding(Is((space_xl, space_xl, space_xl, space_xl)))
+          |> ignore
+          panel_look(p, e, radius_2xl, fn() { colors().bg_popup_primary }, fn() { cast(shadow_sm, shadow_dark_sm) })
+          body(p)
+        },
+      )
       |> ignore
-      panel_look(p, e, radius_2xl, fn() { colors().bg_popup_primary }, fn() { cast(shadow_sm, shadow_dark_sm) })
-      p.says(Is(Some(@view.said(Dialog, label~)))) |> ignore
-      body(p)
     })
   })
   |> ignore
@@ -391,66 +429,73 @@ pub fn dialog_node(
   width? : Double = 400.0,
 ) -> Unit {
   let close = fn() { open.set(false) }
+  let is_open = fn() { open.get() }
   match layer.at.val {
     None => @halt.saying("cm: a dialog made before its layer (layer_node)")
     Some(l) =>
       l.box(fn(h) {
         h.over(Is(true)) |> ignore
-        h.show(fn() { open.get() }, leave=ms_dialog_exit, fn(s) {
-          // (Escape taken by the dialog itself: what is under a modal layer takes no keys)
-          escape_closes(s, fn() { open.get() }, close)
-          let e = opening(s, fn() { open.get() }, ms_dialog_enter, ms_dialog_exit)
+        h.show(is_open, leave=ms_dialog_exit, fn(s) {
+          let e = opening(s, is_open, ms_dialog_enter, ms_dialog_exit)
           s
           .over(Is(true))
           .lines_up(Is(Some(Middle)))
           .lies_along(Is(Middle))
           .padding(Is((space_xl, space_xl, space_xl, space_xl)))
           |> ignore
-          // (leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
-          s.modal(By(fn() { open.get() })) |> ignore
-          // (the scrim: a press on it closes the dialog)
-          @headless.button(s, fn() { "Close dialog" }, fn(_) { close() }, fn(c, _) {
+          s.box(fn(c) {
             c
             .over(Is(true))
             // (Comma's bg-overlay-scrim: the overlay's colour at 60%, generate-css.ts)
             .ground(By(fn() { alpha(colors().bg_overlay, 0.6) }))
             .alpha(By(fn() { e.shown(c) }))
+            .presses(Is(false))
             |> ignore
           })
           |> ignore
-          s.box(fn(p) {
-            p
-            .width(Is(Some(width)))
-            .max_width(Is(Some(width)), within=true)
-            .gap(Is(space_2xl))
-            .padding(Is((space_xl, space_xl, space_xl, space_xl)))
-            .clips(Is(true))
-            |> ignore
-            panel_look(p, e, radius_xl, fn() { colors().bg_popup_primary }, fn() { cast(shadow_md, shadow_dark_md) })
-            p.says(By(fn() { Some(@view.said(Dialog, label=title())) })) |> ignore
-            p.box(fn(head) {
-              head.gap(Is(space_xxs)) |> ignore
-              head.box(fn(w) {
-                w
-                .words(By(title), look=words_in(type_regular, weight=weight_semibold, wrap=true))
-                .ink(By(fn() { colors().text_primary }))
+          @headless.overlay(
+            s,
+            fn(_) { close() },
+            modal=true,
+            dismiss_on_escape=true,
+            dismiss_on_outside=true,
+            inert=fn() { !is_open() },
+            auto_focus=true,
+            return_focus=true,
+            label=title,
+            fn(p, _) {
+              p
+              .width(Is(Some(width)))
+              .max_width(Is(Some(width)), within=true)
+              .gap(Is(space_2xl))
+              .padding(Is((space_xl, space_xl, space_xl, space_xl)))
+              .clips(Is(true))
+              |> ignore
+              panel_look(p, e, radius_xl, fn() { colors().bg_popup_primary }, fn() { cast(shadow_md, shadow_dark_md) })
+              p.box(fn(head) {
+                head.gap(Is(space_xxs)) |> ignore
+                head.box(fn(w) {
+                  w
+                  .words(By(title), look=words_in(type_regular, weight=weight_semibold, wrap=true))
+                  .ink(By(fn() { colors().text_primary }))
+                  |> ignore
+                })
                 |> ignore
+                head.show(fn() { description() != "" }, fn(d) {
+                  d.words(By(description), look=words_in(type_mini, wrap=true)).ink(By(fn() { colors().text_quaternary }))
+                  |> ignore
+                })
               })
               |> ignore
-              head.show(fn() { description() != "" }, fn(d) {
-                d.words(By(description), look=words_in(type_mini, wrap=true)).ink(By(fn() { colors().text_quaternary }))
+              body(p)
+              p.box(fn(f) {
+                f.row(Is(true)).wraps(Is(Some(space_md)), reverse=true).lies_along(Is(End)).lines_up(Is(Some(Middle))).gap(Is(space_md))
                 |> ignore
+                actions(f)
               })
-            })
-            |> ignore
-            body(p)
-            p.box(fn(f) {
-              f.row(Is(true)).wraps(Is(Some(space_md)), reverse=true).lies_along(Is(End)).lines_up(Is(Some(Middle))).gap(Is(space_md))
               |> ignore
-              actions(f)
-            })
-            |> ignore
-          })
+            },
+          )
           |> ignore
         })
       })

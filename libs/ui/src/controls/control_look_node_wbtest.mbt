@@ -194,3 +194,55 @@ test "a menu card opened on a modal card: Escape closes the menu first, the moda
     0,
   ))
 }
+
+///|
+test "fullscreen_overlay_node with on_key routes Escape through stack past upper dismiss_on_escape=false overlay" {
+  let full = @signals.signal(false)
+  let upper = @signals.signal(false)
+  let closed = Ref(0)
+  let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=300.0)
+  @ui.set_view_app(fn(root) {
+    @headless.button(root, fn() { "打开" }, fn(_) {
+      full.set(true)
+      upper.set(true)
+    }, fn(v, _) { v.width(Is(Some(100.0))).height(Is(Some(40.0))) |> ignore })
+    |> ignore
+    root.show(fn() { full.get() }, fn(v) {
+      fullscreen_overlay_node(
+        v,
+        fn() {
+          closed.val += 1
+          full.set(false)
+        },
+        auto_focus=true,
+        on_key=fn(k, dismiss_escape) {
+          if k.code == @ui.key_escape && k.mods == 0 {
+            dismiss_escape()
+          } else {
+            false
+          }
+        },
+      )
+      |> ignore
+      @headless.button(v, fn() { "操作" }, fn(_) {  }, fn(b, _) {
+        b.width(Is(Some(100.0))).height(Is(Some(40.0))) |> ignore
+      })
+      |> ignore
+    })
+    root.show(fn() { upper.get() }, fn(s) {
+      @headless.overlay(
+        s,
+        fn(_) {  },
+        dismiss_on_escape=false,
+        dismiss_on_outside=false,
+        fn(n, _) { n.over(Is(true)).width(Is(Some(120.0))).height(Is(Some(32.0))) |> ignore },
+      )
+      |> ignore
+    })
+  })
+  t.draw()
+  t.click(Button, label="打开")
+  assert_eq((full.get(), upper.get(), @headless.overlays_open(@ui.view_tree().unwrap())), (true, true, 2))
+  t.key(@ui.key_escape)
+  assert_eq((closed.val, full.get(), upper.get(), @headless.overlays_open(@ui.view_tree().unwrap())), (1, false, true, 1))
+}

@@ -621,13 +621,6 @@ pub fn card_foot_in(height : Double) -> Double {
 }
 
 ///|
-/// What scrolls in a small panel held to the room it has (@kit.in_room's `reach`): its box out across the panel's
-/// padding, so that it and its bar reach the panel's sides; what it holds (`style`) back in as far.
-pub fn held_reach() -> @ui.Style {
-  @ui.style(w=Full, mx=room(-panel_pad))
-}
-
-///|
 pub fn held_in() -> @ui.Style {
   @ui.style(w=Full, px=room(panel_pad))
 }
@@ -642,19 +635,6 @@ pub fn foot_across(height : Double) -> @ui.Style {
 fn card_foot_words_in(height : Double) -> Double {
   card_pad - card_foot_in(height)
 }
-///|
-/// Build controls at a card's foot, or fields immediately above them, with their words on the card's line (`on` when
-/// they are on a card). The previous setting is put back afterwards.
-pub fn card_foot_words(body : () -> Unit, on? : Bool = true) -> Unit {
-  let was = card_foot_words_now.val
-  card_foot_words_now.val = was || on
-  body()
-  card_foot_words_now.val = was
-}
-
-///|
-// kept across runs: set while a card's foot and its fields are built, and put back afterwards
-let card_foot_words_now : Ref[Bool] = Ref(false)
 
 ///|
 /// A card's foot with a capsule `height` high in its corners: as far in as makes it concentric (card_foot_in).
@@ -2287,24 +2267,9 @@ pub fn keys_row(size? : Double = bar_key_side) -> @ui.Style {
 let keys_row_look : @ui.Style = @ui.css("row align=ACenter")
 
 ///|
-/// A page's bar in a panel of the tape (laid out Medium, its corners pane_round): its buttons (32 across) on the tape's
-/// one line, where they are concentric with the tape's corner, its bar as much taller over them
-/// (`tape_bar_over`: every bar of the tape and the sidebar's first row on it); at its end as far in as makes the last
-/// concentric with the panel's top right corner (capsule_fit), else clear of it (as far in as it is round, or where it
-/// stands in the wide frame, `alone`, if that is further: nothing of the bar's in a corner it can not be concentric
-/// with: a Mac's page at the window's edge, its corner the window's) (`tape_bar_end`); a round button at its start (a
-/// settings page's back) so in its top left one (`tape_bar_start`); `side` the last's height (a round button's 32:
-/// line_end_in; a capsule's of words, its own).
-pub fn tape_bar_end(alone : Double, side? : Double = bar_key_side) -> Double {
-  match pane_round.val {
-    Some(k) => tape_bar_end_of(k, @ui.corner_roots(), alone, side~)
-    None => alone
-  }
-}
-
-///|
-/// tape_bar_end in a panel whose corners are `k` (tape_corners', worked out from `roots`): what a node of the window's
-/// tree in it asks, the panel's corners told it, not the page's being built (pane_round).
+/// In a panel of the tape (laid out Medium) whose corners are `k` (tape_corners', worked out from `roots`): at its end
+/// as far in as makes the last concentric with the panel's top right corner (capsule_fit), else clear of it; `side` the
+/// last's height (a round button's 32: line_end_in; a capsule's of words, its own).
 pub fn tape_bar_end_of(
   k : FixedArray[@ui.CornerOf],
   roots : @ui.CornerRoots,
@@ -2320,15 +2285,8 @@ pub fn tape_bar_end_of(
 }
 
 ///|
-pub fn tape_bar_start(alone : Double, side? : Double = bar_key_side) -> Double {
-  match pane_round.val {
-    Some(k) => tape_bar_start_of(k, @ui.corner_roots(), alone, side~)
-    None => alone
-  }
-}
-
-///|
-/// tape_bar_start in a panel whose corners are `k` (worked out from `roots`), as tape_bar_end_of.
+/// In a panel whose corners are `k` (worked out from `roots`), a round button at its start (a settings page's back)
+/// in its top left corner, as tape_bar_end_of.
 pub fn tape_bar_start_of(
   k : FixedArray[@ui.CornerOf],
   roots : @ui.CornerRoots,
@@ -2382,17 +2340,6 @@ fn window_link_in(link : @ui.CornerOf, alone : Double, roots : @ui.CornerRoots) 
   } else {
     window_corner_past(alone, roots~)
   }
-}
-
-///|
-/// How far in from the window's side what ends a bar stands at the window's top corner where it is a long capsule (⌘F's
-/// field, 复制图片, 只看/控制): past the window's corner by `alone` (window_corner_past); before the window's own buttons
-/// where they are the app's.
-pub fn window_clear_in(alone : Double) -> Double {
-  if @ui.window_keys_own() {
-    return window_keys_room() + alone
-  }
-  window_corner_past(alone)
 }
 
 ///|

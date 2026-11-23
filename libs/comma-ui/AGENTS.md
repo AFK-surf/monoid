@@ -15,12 +15,13 @@ a sample of what mbui needs to carry a second design (the user, 2026-11-13: 先�
   that component's role (react-aria's). Every part is a node of mbui's window's tree (`libs/ui/src/view`), never an old view.
 - The library is looks (`libs/ui/AGENTS.md`, Components): what a control is to the hand, the keyboard and a screen
   reader is mbui's headless component's (`libs/ui/src/headless`) where there is one, and the part here is that
-  component with Comma's look, saying no role, press or focus of its own: buttons (the button, a tag's ✕, a toast's ✕,
-  what closes a floating part from outside it) over `@headless.button`; the checkbox and the toggle over
-  `@headless.toggle`; the collapse over `@headless.disclosure`; a lone radio over `@headless.choice`; the radio group,
-  the button group (react-aria's ToggleButtonGroup choosing one) and the status indicator over `@headless.radio_group`;
-  the slider over `@headless.slider`; a menu's rows (the menu's and the dropdown's list's) over `@headless.menu`, the
-  dropdown's trigger over `@headless.disclosure`. Where what floats goes beside what opened it is the framework's
+  component with Comma's look, saying no role, press or focus of its own: buttons (the button, a tag's ✕, a toast's ✕)
+  over `@headless.button`; the checkbox and the toggle over `@headless.toggle`; the collapse over `@headless.disclosure`;
+  a lone radio over `@headless.choice`; the radio group, the button group (react-aria's ToggleButtonGroup choosing one)
+  and the status indicator over `@headless.radio_group`; the slider over `@headless.slider`; floating surfaces (menu,
+  dropdown list, popup, dialog) over `@headless.overlay` and tooltips over `@headless.TooltipGroup` /
+  `@headless.tooltip_bubble`; a menu's rows (the menu's and the dropdown's list's) over `@headless.menu`, the dropdown's
+  trigger over `@headless.disclosure`. Where what floats goes beside what opened it is the framework's
   (`View::beside`, which flips and keeps it in the window as it lays out), not `@headless.anchor_place`'s numbers: those
   are for a look that places what it draws itself, and reading the anchor's laid-out box back to feed them is what
   mbui's layout forbids (`layout-told`). `src/cm/presses.mbt` keeps only what a look reads of the hand (`lit`,

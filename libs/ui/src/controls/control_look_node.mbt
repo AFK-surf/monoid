@@ -198,14 +198,8 @@ pub fn fullscreen_overlay_node(
   |> ignore
   if on_key is Some(handler) {
     let dismiss_escape = fn() {
-      if dismiss_on_escape &&
-        ov_ref.val is Some(ov) &&
-        @signals.untracked(fn() { ov.is_top() }) {
-        if before_dismiss is Some(f) && @signals.untracked(f) {
-          return true
-        }
-        ov.dismiss(Escape)
-        true
+      if dismiss_on_escape && ov_ref.val is Some(ov) {
+        ov.escape()
       } else {
         false
       }

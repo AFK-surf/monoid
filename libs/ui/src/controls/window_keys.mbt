@@ -77,25 +77,6 @@ pub fn window_keys_w() -> Double {
 }
 
 ///|
-/// Where the pill holding the buttons stands in a window `width` wide: its top from the window's top, its side from
-/// the window's. In a window's whole (Large) its buttons on its bars' line (bar_keys_top), the pill a long capsule past
-/// the window's corner as a bar's last capsule is (window_corner_past); on the tape (Medium) its buttons on its panels'
-/// line, the pill concentric with the top right corner of the panel at the window's edge (tape_line, line_end_in);
-/// laid out Small, in the middle of the band over the page. Over a page alone over all the window (`whole`: a window of
-/// its own, a file over the whole window), on its bar's line at any width, as in a window's whole: no tape round it, no
-/// band over it.
-pub fn window_keys_at(width : Double, whole? : Bool = false) -> (Double, Double) {
-  if whole {
-    return (bar_keys_top() - window_keys_pill_pad + window_keys_bar_extra, window_keys_side())
-  }
-  match layout(width) {
-    Small => ((window_keys_band - window_keys_pill_h) / 2.0, window_keys_side())
-    Medium => (window_in + tape_line - window_keys_pill_pad, window_keys_side_tape())
-    Large => (bar_keys_top() - window_keys_pill_pad + window_keys_bar_extra, window_keys_side())
-  }
-}
-
-///|
 /// In a window's whole, how far in from the window's side the pill holding the buttons stands: `9.0` (`window_keys_in`,
 /// symmetric with its top inset) for square windows and corners smaller than the pill's half-height (`18.0`, including
 /// Windows 11's `8.0`); past the window's corner (`window_corner_past`) for rounder windows (`>= 18.0`). The window's

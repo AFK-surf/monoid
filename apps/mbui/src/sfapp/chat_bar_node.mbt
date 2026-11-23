@@ -211,7 +211,7 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
       }
     }
   })
-  // Progressive scroll-edge blur (`glass_scroll_edge`): keep collapsed bars on their full-height fade (matching #8101),
+  // Progressive scroll-edge blur (`narrow_bar_scrim_node`): keep collapsed bars on their full-height fade (matching #8101),
   // and smoothly narrow the bottom fade band to 52pt as Row 2 or breadcrumbs open so the full-blur plateau follows the
   // descended title down while leaving the first message 16pt past the foot clear (smoothstep has zero slope at ramp=1).
   let collapsed_h = fn(s : @view.View) { status_top_now(s.window_w()) + bar_h + 16.0 }

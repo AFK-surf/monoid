@@ -12,15 +12,11 @@ pub let lift_held : Double = 0.35
 /// What of the window's tree is lifted over the scrim (View::over_scrim: a chat's row) kept clear of the sheet up,
 /// and clear of it all the way once it is up (where it is and how tall).
 fn init {
-  @ui.over_scrim_floor.val = fn(c) {
-    match @kit.sheet_place(c) {
-      Some(p) => Some(p)
-      // (a sheet of the window's tree up: where it was drawn this frame, sheet_node's)
-      None =>
-        match tree_sheet_place.val {
-          Some(f) => f()
-          None => None
-        }
+  @ui.over_scrim_floor.val = fn(_c) {
+    // (a sheet of the window's tree up: where it was drawn this frame, sheet_node's)
+    match tree_sheet_place.val {
+      Some(f) => f()
+      None => None
     }
   }
 }

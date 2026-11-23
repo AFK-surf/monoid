@@ -107,14 +107,7 @@ let viewer_buttons_w : Double = 72.0
 pub let viewer_bar_in : Double = 12.0
 
 ///|
-/// Whether the way back stands at the window's top left corner: no buttons of the system's there (window_keys_left),
-/// the bar in the window's whole, not a pane's (in_pane, as bar_keys_link has the bar's last key at its right).
-pub fn viewer_back_at_corner() -> Bool {
-  !@ui.window_keys_left() && !in_pane()
-}
-
-///|
-/// The corner of the way back at the window's top left corner (viewer_back_at_corner): the window's followed from as far
+/// The corner of the way back at the window's top left corner: the window's followed from as far
 /// in as it stands from the bar's top (bar_keys_top), a block concentric with it where the window's corner lets one
 /// follow it (a Mac's 16, 6 in: 11.2), as a page's bar's last key at its right is (window_corner_key); `alone` (the
 /// theme's Xl) where it cannot.

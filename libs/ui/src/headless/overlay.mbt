@@ -269,6 +269,12 @@ pub fn Overlay::dismiss(self : Overlay, how : OverlayDismiss) -> Unit {
 }
 
 ///|
+/// Dispatch an Escape dismissal through this overlay's stack (skipping upper layers with `dismiss_on_escape=false`).
+pub fn Overlay::escape(self : Overlay) -> Bool {
+  self.stack.escape(Escape)
+}
+
+///|
 /// Its node.
 pub fn Overlay::node(self : Overlay) -> @view.View {
   self.entry.node

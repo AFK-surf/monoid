@@ -155,12 +155,6 @@ pub fn outset_bottom(y : Double) -> @ui.Style {
 }
 
 ///|
-/// Drawn `x` larger on every side than the room it takes (art with air round it): oversize.
-pub fn oversize(x : Double) -> @ui.Style {
-  @ui.style(m=room(-x))
-}
-
-///|
 /// `x` taken away, for a value that needs it inside another (neg).
 pub fn neg(x : Double) -> Double {
   -x

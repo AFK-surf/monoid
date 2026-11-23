@@ -329,16 +329,6 @@ pub(all) struct Tool {
 }
 
 ///|
-/// A row of tools (tools_row): 6 apart, more where a press's room needs it (keys_gap), on a line.
-pub fn tools_line() -> @ui.Style {
-  tools_line_look.then(@ui.style(gap=keys_gap(least=tools_apart)))
-}
-
-///|
-// kept across runs: a value (no field of it changes)
-let tools_line_look : @ui.Style = @ui.css("row align=ACenter")
-
-///|
 /// The key of the menu open now ("" none).
 pub fn menu_open_key() -> String {
   menu_now()
@@ -542,17 +532,6 @@ let dialog_close_row : @ui.Style = @ui.css("row w=Full justify=JEnd")
 /// How far from its padding's end the first row of an untitled dialog keeps clear of its close button (and 8 more).
 fn dialog_close_clear() -> Double {
   @ui.capsule_in(dialog_r, dialog_close) - dialog_pad + dialog_close + 8.0
-}
-
-///|
-/// What the first row of what an untitled dialog holds keeps clear of at its end, its close button over it (0 elsewhere).
-// kept across runs: said by dialog round what an untitled one holds
-let untitled_clear_now : Ref[Double] = { val: 0.0 }
-
-///|
-/// The room a head of its own keeps at its end in an untitled dialog, its close button over it there (none elsewhere).
-pub fn untitled_clear() -> @ui.Style {
-  @ui.style(pr=room(untitled_clear_now.val))
 }
 
 ///|
