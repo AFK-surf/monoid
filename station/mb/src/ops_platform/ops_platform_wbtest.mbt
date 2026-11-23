@@ -234,3 +234,17 @@ test "a long sign-in page broken by its program at 200 or 80 columns put togethe
   assert_eq(url_continuation(wide, wide, "rest", 200, None), Some(200))
   assert_eq(url_continuation(wide, wide, "rest", 1000, None), None)
 }
+
+///|
+test "the swap says what the memory used leaves out" {
+  let gib = 1024.0 * 1024.0 * 1024.0
+  // 66 GiB swapped on a 64 GiB machine, pages still going out: critical; swap kept from before, nothing going out: normal.
+  assert_eq(pressure_of_swap(Some(66.0 * gib), Some(64.0 * gib), Some(5000.0)), Some("critical"))
+  assert_eq(pressure_of_swap(Some(20.0 * gib), Some(64.0 * gib), Some(5000.0)), Some("high"))
+  assert_eq(pressure_of_swap(Some(66.0 * gib), Some(64.0 * gib), Some(0.0)), Some("normal"))
+  assert_eq(pressure_of_swap(Some(66.0 * gib), Some(64.0 * gib), None), None)
+  assert_eq(worse_pressure(Some("normal"), Some("critical")), Some("critical"))
+  assert_eq(worse_pressure(None, Some("high")), Some("high"))
+  assert_eq(swapouts_of("Pages free: 1.\nSwapouts:                                  375142124.\n"), Some(375142124.0))
+  assert_eq(swap_used_of("total = 68608.00M  used = 66279.69M  free = 2328.31M  (encrypted)"), Some(69499292221.0))
+}

@@ -8,7 +8,7 @@ import { TestClock } from "effect/testing";
 import type { Pressure } from "../src/jobs/admit.ts";
 import { MemoryWatch, SETTLE_MS, STOP_GRACE_MS, type Unit, limitOf, unitsOf } from "../src/jobs/memory.ts";
 import type { ProcessInfo } from "../src/platform/index.ts";
-import { fieldOrNull, parsePs, parseTopMem, pressureOfAvailable, pressureOfLevel } from "../src/platform/text.ts";
+import { fieldOrNull, parsePs, parseTopMem, pressureOfAvailable, pressureOfLevel, pressureOfSwap, swapUsedOf, swapoutsOf, worsePressure } from "../src/platform/text.ts";
 
 const GiB = 1024 ** 3;
 const p = (pid: number, ppid: number, pgid: number, gib: number, command = "node"): ProcessInfo => ({ pid, ppid, pgid, bytes: gib * GiB, command });
@@ -45,6 +45,20 @@ test("a unit is a job's group and what it started, or one command a runtime star
     ],
   );
   assert.equal(units[1]!.label, "command zig (pid 22)");
+});
+
+test("the swap says what the memory used leaves out (macOS)", () => {
+  // 66 GiB swapped on a 64 GiB machine with pages still going out: critical; a quarter: high; swap kept from before while
+  // nothing goes out says nothing.
+  assert.equal(pressureOfSwap(66 * GiB, 64 * GiB, 5000), "critical");
+  assert.equal(pressureOfSwap(20 * GiB, 64 * GiB, 5000), "high");
+  assert.equal(pressureOfSwap(8 * GiB, 64 * GiB, 5000), "normal");
+  assert.equal(pressureOfSwap(66 * GiB, 64 * GiB, 0), "normal");
+  assert.equal(pressureOfSwap(66 * GiB, 64 * GiB, null), null);
+  assert.equal(worsePressure("normal", "critical"), "critical");
+  assert.equal(worsePressure("high", null), "high");
+  assert.equal(swapoutsOf("Pages free: 1.\nSwapouts:                                  375142124.\n"), 375142124);
+  assert.equal(swapUsedOf("total = 68608.00M  used = 66279.69M  free = 2328.31M  (encrypted)"), 69499292221);
 });
 
 test("what the machines say reads", () => {
@@ -148,6 +162,7 @@ test("under pressure the largest few are told once, and still nothing is stopped
   await r.watch.look();
   assert.deepEqual(r.told.map(([who]) => who), ["s2", "job_1", "s9"], "the codex command's session found by its directory");
   assert.match(r.told[0]![1], /memory is under pressure/);
+  // (pnpm, 1 GiB, is under PAUSED_MIN: it runs on beside zig)
   assert.deepEqual(r.signals, []);
   assert.deepEqual(r.state.exact, [true, true], "read exactly under pressure");
   // Eased, and again under pressure: told again.
@@ -156,6 +171,70 @@ test("under pressure the largest few are told once, and still nothing is stopped
   r.state.pressure = "high";
   await r.watch.look();
   assert.equal(r.told.length, 6);
+});
+
+test("under pressure the agents' big commands queue: one runs, the rest wait paused and go on in their order once it eases", async () => {
+  const r = rig();
+  const saved: number[][] = [];
+  const watch = new MemoryWatch({
+    pressure: async () => r.state.pressure, table: async () => r.state.table, totalBytes: () => 64 * GiB,
+    cwds: async () => new Map(), jobs: () => [], agents: async () => [{ pid: 21, session: "s2" }],
+    sessionAt: () => null, tell: (u: Unit, text) => void r.told.push([u.session, text]),
+    stopJob: async () => {}, signal: (pid, signal) => void r.signals.push([pid, signal]), self: 10,
+    savePaused: async (pids) => void saved.push(pids),
+  });
+  const shell = (pid: number, gib: number, program: string) => [p(pid, 21, pid, 0.1, "zsh"), p(pid + 1, pid, pid, gib, program)];
+  r.state.table = [p(21, 20, 20, 0.5, "claude"), ...shell(30, 6, "lean")];
+  await watch.look();
+  r.state.table.push(...shell(40, 5, "lean"), ...shell(50, 4, "cargo"), p(60, 21, 60, 1.5, "mcp-browser"));
+  r.state.pressure = "high";
+  await watch.look();
+  assert.deepEqual(r.signals, [[40, "SIGSTOP"], [41, "SIGSTOP"], [50, "SIGSTOP"], [51, "SIGSTOP"]], "the earliest (pid 30) runs on");
+  assert.deepEqual(saved.at(-1), [40, 41, 50, 51]);
+  await watch.look();
+  assert.equal(r.signals.length, 4, "paused once");
+  // The pressure gone: one a look, earliest first.
+  r.state.pressure = "normal";
+  await watch.look();
+  assert.deepEqual(r.signals.slice(4), [[40, "SIGCONT"], [41, "SIGCONT"]]);
+  assert.match(r.told.at(-1)![1], /command lean \(pid 40\), paused while .* goes on now/);
+  await watch.look();
+  assert.deepEqual(r.signals.slice(6), [[50, "SIGCONT"], [51, "SIGCONT"]]);
+  assert.deepEqual(saved.at(-1), []);
+  // Paused again, then the station ends: nothing is left stopped behind it.
+  r.state.pressure = "high";
+  await watch.look();
+  r.signals.length = 0;
+  await watch.close();
+  assert.deepEqual(r.signals, [[40, "SIGCONT"], [41, "SIGCONT"], [50, "SIGCONT"], [51, "SIGCONT"]]);
+  assert.deepEqual(saved.at(-1), []);
+});
+
+test("what a command left running after its shell ended stays its session's, and under pressure it is stopped first", async () => {
+  const r = rig();
+  const watch = new MemoryWatch({
+    clock: r.clock,
+    pressure: async () => r.state.pressure, table: async () => r.state.table, totalBytes: () => 64 * GiB,
+    cwds: async () => new Map(), jobs: () => [], agents: async () => [{ pid: 21, session: "s2" }],
+    sessionAt: () => null, tell: (u: Unit, text) => void r.told.push([u.session, text]),
+    stopJob: async () => {}, signal: (pid, signal) => void r.signals.push([pid, signal]), self: 10,
+  });
+  // lake runs lean under the agent's shell; the shell and lake end, lean is left to the system (its parent 1).
+  r.state.table = [p(21, 20, 20, 0.5, "claude"), p(30, 21, 30, 0.1, "zsh"), p(31, 30, 30, 0.1, "lake"), p(32, 31, 30, 9, "lean")];
+  await watch.look();
+  r.state.table = [p(21, 20, 20, 0.5, "claude"), p(32, 1, 30, 9, "lean"), p(33, 32, 30, 1, "lean"), p(60, 1, 60, 8, "Xcode")];
+  await watch.look();
+  assert.deepEqual(r.signals, [], "nothing stopped while there is room");
+  // A pid taken again by another program is not it.
+  const units = unitsOf(r.state.table, [], [{ pid: 21, session: "s2" }], 10, new Map([[32, { session: "s2", command: "lean", label: "x" }], [60, { session: "s2", command: "lean", label: "x" }]]));
+  assert.deepEqual(units.map((u) => [u.key, u.session, u.pids.sort((a, b) => a - b), u.orphan]), [["orphan:32", "s2", [32, 33], true]]);
+  r.state.pressure = "high";
+  const look = watch.look();
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  await stopping(r, look);
+  assert.deepEqual(r.signals, [[32, "SIGTERM"], [33, "SIGTERM"], [32, "SIGKILL"], [33, "SIGKILL"]]);
+  assert.ok(r.told.some(([who, text]) => who === "s2" && /stopped your command lean \(pid 32, left running after its shell ended\)/.test(text)));
+  await watch.close();
 });
 
 test("commands in the same directory share its owner lookup within one memory check", async () => {

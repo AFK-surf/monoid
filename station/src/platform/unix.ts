@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { wall } from "../ops/fibers.ts";
 import type { Env, Found, Host, HostSample, Platform } from "./index.ts";
 import { holder, osCpuTicks } from "./processes.ts";
-import { fieldOrNull, firstWord, idleOfIoreg, parseF64, parseLsof, parseMounts, parsePs, parseTopMem, parseU64, pressureOfAvailable, pressureOfLevel, procStatTicks, trim } from "./text.ts";
+import { fieldOrNull, firstWord, idleOfIoreg, parseF64, parseLsof, parseMounts, parsePs, parseTopMem, parseU64, pressureOfAvailable, pressureOfLevel, pressureOfSwap, procStatTicks, swapoutsOf, swapUsedOf, trim, worsePressure } from "./text.ts";
 
 const MACOS = process.platform === "darwin";
 /// Names in the order people read them (numbers by value, case aside), as the drive sorts them.
@@ -142,9 +142,10 @@ function macMemoryOf(totalText: string | null, vm: string | null, swap: () => st
   return { totalBytes: total, usedBytes: 0, swapUsedBytes: null, known: false };
 }
 
-/// host.memory on macOS, its commands not waited on (the main thread's: memoryPressure). The swap is not asked: the
-/// pressure reads only the memory used.
-async function macMemory(): Promise<HostSample["memory"]> {
+/// What memoryPressure reads on macOS, its commands not waited on (the main thread's): the memory (host.memory) and
+/// what the swap says of it, pages swapped out a second since the last look (`lastSwapouts`).
+let lastSwapouts: { pages: number; at: number } | null = null;
+async function macPressureReading(): Promise<{ memory: HostSample["memory"]; swap: "normal" | "high" | "critical" | null }> {
   const said = async (command: string, args: string[]) => {
     try {
       return trim((await run(command, args, { encoding: "utf8", timeout: 3000 })).stdout);
@@ -152,8 +153,14 @@ async function macMemory(): Promise<HostSample["memory"]> {
       return null;
     }
   };
-  const [total, vm] = await Promise.all([said("sysctl", ["-n", "hw.memsize"]), said("vm_stat", [])]);
-  return macMemoryOf(total, vm, () => null);
+  const [total, vm, swap] = await Promise.all([said("sysctl", ["-n", "hw.memsize"]), said("vm_stat", []), said("sysctl", ["-n", "vm.swapusage"])]);
+  const memory = macMemoryOf(total, vm, () => swap);
+  const pages = swapoutsOf(vm);
+  const now = wall.now();
+  const before = lastSwapouts;
+  lastSwapouts = pages === null ? null : { pages, at: now };
+  const perSecond = pages === null || before === null || now <= before.at || pages < before.pages ? null : ((pages - before.pages) * 1000) / (now - before.at);
+  return { memory, swap: pressureOfSwap(swapUsedOf(swap), memory.totalBytes > 0 ? memory.totalBytes : null, perSecond) };
 }
 
 const host: Host = {
@@ -684,13 +691,18 @@ export const unix: Platform = {
   async memoryPressure() {
     try {
       if (MACOS) {
-        const level = (await run("sysctl", ["-n", "kern.memorystatus_vm_pressure_level"])).stdout;
+        const [level, read] = await Promise.all([
+          run("sysctl", ["-n", "kern.memorystatus_vm_pressure_level"]).then((r) => r.stdout),
+          macPressureReading().catch(() => null),
+        ]);
         const trimmed = trim(level);
-        if (trimmed !== "1" && trimmed !== "2") return pressureOfLevel(level);
-        // Read without waiting: this is asked every few seconds while memory may be short (level 1 can stay normal
-        // on a 14 GB VM even with <100 MB free, and level 2 can warn with plenty of reclaimable memory).
-        const mem = await macMemory();
-        return mem.known === false ? pressureOfLevel(level) : pressureOfLevel(level, mem.totalBytes - mem.usedBytes, mem.totalBytes);
+        // Level 1 can stay normal on a 14 GB VM even with <100 MB free, and level 2 can warn with plenty of reclaimable
+        // memory: the memory used says which, and the swap what that leaves out (pressureOfSwap).
+        const mem = read?.memory;
+        const ofLevel = trimmed !== "1" && trimmed !== "2" || mem === undefined || mem.known === false
+          ? pressureOfLevel(level)
+          : pressureOfLevel(level, mem.totalBytes - mem.usedBytes, mem.totalBytes);
+        return worsePressure(ofLevel, read?.swap ?? null);
       }
       const info = await readFile("/proc/meminfo", "utf8");
       return pressureOfAvailable(fieldOrNull(info, "MemAvailable"), fieldOrNull(info, "MemTotal"));

@@ -10,11 +10,20 @@
 // - The memory under pressure (high): the agents of the largest few told, once each while it lasts. (The queue,
 //   jobs/admit.ts, starts no task meanwhile.)
 // - Critical: the largest unit stopped (SIGTERM, SIGKILL after STOP_GRACE_MS); another only SETTLE_MS later, if it is
-//   still critical.
+//   still critical. An orphaned command goes first.
+// - An orphaned command: what a runtime's command started that outlived it (its shell gone, it was left to the system),
+//   still its session's (each process of a command is remembered with its name while it is seen). Nothing waits on
+//   it: under pressure the largest over TOLD_MIN is stopped, one a look, its agent told.
+// - The agents' own commands queue as other stations' tasks do (jobs/admit.ts): under pressure only the earliest big
+//   command (over PAUSED_MIN) of the runtimes runs on, the others paused (SIGSTOP), their agents told; once the pressure
+//   is gone they go on (SIGCONT), the earliest first, one a look. What is paused is written down (`savePaused`) so a
+//   station that ends or restarts meanwhile lets them go on (close, `resumeSaved`).
 //
 // Looked at every WATCH_MS, every PRESSED_MS under pressure, when the memory is read exactly (macOS: the processes'
 // footprint, which counts what is compressed or swapped out, where resident memory does not).
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { totalmem } from "node:os";
+import { join } from "node:path";
 import type { Clock } from "effect";
 import { runnerId } from "../agents/process.ts";
 import { liveRunners, type RunnerInfo } from "../agents/runner.ts";
@@ -36,6 +45,9 @@ export const STOP_GRACE_MS = 5000;
 export const TOLD_MIN = 512 * 1024 ** 2;
 /// How many agents are told when the memory comes under pressure.
 export const TOLD_PRESSED = 3;
+/// A runtime's command waits paused under pressure only from this big: a build, a proof, a test suite, never the small
+/// servers a runtime keeps (an MCP server, its browser), which it would hang on.
+export const PAUSED_MIN = 2 * 1024 ** 3;
 
 /// A unit's agent told when it is over this: an eighth of the machine's memory, 2 GiB at least.
 export const limitOf = (totalBytes: number): number => Math.max(2 * 1024 ** 3, Math.floor(totalBytes / 8));
@@ -51,13 +63,19 @@ export type Unit = {
   label: string;
   pids: number[];
   bytes: number;
+  /// A runtime's command that outlived its shell: nothing waits on it.
+  orphan?: boolean;
 };
+
+/// A process of a runtime's command as last seen: whose, and its name (a pid taken again by another program is not it).
+export type Remembered = { session: string | null; command: string; label: string };
 
 export type WatchedJob = { id: string; session: string; pgid: number; label: string };
 export type WatchedAgent = { pid: number; session: string | null };
 
 /// The units of `table`: the jobs' groups first, then the commands each runtime started (children of `agents`' pids).
-export function unitsOf(table: readonly ProcessInfo[], jobs: readonly WatchedJob[], agents: readonly WatchedAgent[], self: number): Unit[] {
+export function unitsOf(table: readonly ProcessInfo[], jobs: readonly WatchedJob[], agents: readonly WatchedAgent[], self: number,
+  remembered: ReadonlyMap<number, Remembered> = new Map()): Unit[] {
   const { byPid, children } = treeOf(table);
   const taken = new Set<number>([self]);
   // What runs the agents is never part of a unit.
@@ -89,6 +107,21 @@ export function unitsOf(table: readonly ProcessInfo[], jobs: readonly WatchedJob
       units.push({ key: `pid:${child}`, session: a.session, job: null, label: `command ${program} (pid ${child})`, pids, bytes: sum(pids) });
     }
   }
+  // What a command left behind: a remembered process no unit took, at the top of what is left of it (its parent not
+  // another such), with the name it had.
+  const left = (pid: number) => {
+    const was = remembered.get(pid);
+    const now = byPid.get(pid);
+    return was !== undefined && now !== undefined && !taken.has(pid) && was.command === now.command;
+  };
+  for (const proc of table) {
+    if (!left(proc.pid) || left(proc.ppid)) continue;
+    const was = remembered.get(proc.pid)!;
+    const pids = under([proc.pid]);
+    if (pids.length === 0) continue;
+    const program = proc.command.split("/").at(-1) || "a command";
+    units.push({ key: `orphan:${proc.pid}`, session: was.session, job: null, label: `command ${program} (pid ${proc.pid}, left running after its shell ended)`, pids, bytes: sum(pids), orphan: true });
+  }
   return units;
 }
 
@@ -109,6 +142,8 @@ export type MemoryOptions = {
   stopJob(id: string): Promise<void>;
   signal(pid: number, signal: NodeJS.Signals): void;
   self: number;
+  /// Writes down what is paused (the pids), so another station or this one started again lets them go on.
+  savePaused?(pids: number[]): Promise<void>;
 };
 
 const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
@@ -123,6 +158,13 @@ export class MemoryWatch {
   #pressed = false;
   #lastStop: number | null = null;
   #stopping = new Set<string>();
+  /// The processes of the runtimes' commands as last seen, to know what one left behind (unitsOf's orphans).
+  #remembered = new Map<number, Remembered>();
+  /// The look each unit was first seen at: which command came first.
+  #since = new Map<string, number>();
+  #looks = 0;
+  /// The commands paused under pressure (SIGSTOP), by their units' keys.
+  #paused = new Map<string, { pids: number[]; label: string; session: string | null; bytes: number }>();
 
   constructor(options: MemoryOptions) {
     this.#o = options;
@@ -143,7 +185,18 @@ export class MemoryWatch {
     next(WATCH_MS);
   }
 
-  close(): Promise<void> {
+  /// Lets go on what a station before this one paused and wrote down (it ended or restarted meanwhile).
+  resumeSaved(pids: readonly number[]): void {
+    for (const pid of pids) this.#o.signal(pid, "SIGCONT");
+  }
+
+  /// What is paused goes on: nothing is left stopped behind a station that ends.
+  async close(): Promise<void> {
+    for (const p of this.#paused.values()) for (const pid of p.pids) this.#o.signal(pid, "SIGCONT");
+    if (this.#paused.size > 0) {
+      this.#paused.clear();
+      await this.#save();
+    }
     return this.#fibers.close();
   }
 
@@ -153,9 +206,15 @@ export class MemoryWatch {
     const pressed = pressure === "high" || pressure === "critical";
     const table = await this.#o.table(pressed).catch(() => null);
     if (table === null) return pressure;
-    const units = unitsOf(table, this.#o.jobs(), await this.#o.agents(), this.#o.self).sort((a, b) => b.bytes - a.bytes);
+    const units = unitsOf(table, this.#o.jobs(), await this.#o.agents(), this.#o.self, this.#remembered).sort((a, b) => b.bytes - a.bytes);
     const present = new Set(units.map((u) => u.key));
     for (const key of this.#told.keys()) if (!present.has(key)) this.#told.delete(key);
+    this.#looks++;
+    for (const key of this.#since.keys()) if (!present.has(key)) this.#since.delete(key);
+    for (const u of units) if (!this.#since.has(u.key)) this.#since.set(u.key, this.#looks);
+    let pausedGone = false;
+    for (const key of this.#paused.keys()) if (!present.has(key)) { this.#paused.delete(key); pausedGone = true; }
+    if (pausedGone) await this.#save();
 
     const limit = limitOf(this.#o.totalBytes());
     // A shared runtime's commands need their directories only when their agents are about to be told.
@@ -175,9 +234,11 @@ export class MemoryWatch {
       this.#tell(u, `Your ${u.label} on this station uses ${gib(u.bytes)} of memory, more than an eighth of the machine's ${gib(this.#o.totalBytes())}. The station does not stop it for that: only when the machine is about to run out of memory is the largest of what the agents run here stopped.`);
     }
 
+    this.#remember(table, units);
     if (!pressed) {
       this.#pressed = false;
       this.#toldPressed.clear();
+      await this.#resumeEarliest(units);
       return pressure;
     }
     if (!this.#pressed) log.warn("memory", "the memory is under pressure", { pressure, largest: units.slice(0, TOLD_PRESSED).map((u) => [u.label, u.bytes]) });
@@ -187,9 +248,20 @@ export class MemoryWatch {
       this.#toldPressed.add(u.key);
       this.#tell(u, `This station's memory is under pressure, and your ${u.label} uses ${gib(u.bytes)}, among the most of what the agents run here. New station tasks wait until it eases; if the machine is about to run out of memory, the largest is stopped.`);
     }
+    await this.#queue(units);
     const now = this.#fibers.now();
+    // Nothing waits on what a command left behind: the largest goes, one a look.
+    const orphan = units.find((u) => u.orphan === true && u.bytes >= TOLD_MIN && !this.#stopping.has(u.key));
+    if (orphan !== undefined && pressure !== "critical") {
+      await this.#whose([orphan]);
+      await this.#stop(orphan, `This station's memory is under pressure, so it stopped your ${orphan.label} (${gib(orphan.bytes)}): it was left running after the shell that started it ended, and nothing waits on it. End what a command starts with it (its whole process group) when its shell ends.`);
+    }
     if (pressure === "critical" && (this.#lastStop === null || now - this.#lastStop >= SETTLE_MS)) {
-      const largest = units.find((u) => u.bytes >= TOLD_MIN && !this.#stopping.has(u.key));
+      // What nothing waits on first, then the largest.
+      const rank = (u: Unit) => (u.orphan === true ? 0 : 1);
+      const largest = units
+        .filter((u) => u.bytes >= TOLD_MIN && !this.#stopping.has(u.key))
+        .sort((a, b) => rank(a) - rank(b) || b.bytes - a.bytes)[0];
       if (largest) {
         // A unit already told under pressure may still be the next one stopped.
         if (!toTell.has(largest)) await this.#whose([largest]);
@@ -223,16 +295,81 @@ export class MemoryWatch {
     }
   }
 
-  async #stop(u: Unit): Promise<void> {
-    log.warn("memory", "the memory is about to run out: stopping the largest", { unit: u.key, label: u.label, bytes: u.bytes, session: u.session });
+  /// Remembers the processes of the runtimes' commands seen this look (and forgets those gone), with whose they are.
+  #remember(table: readonly ProcessInfo[], units: readonly Unit[]): void {
+    const alive = new Map(table.map((p) => [p.pid, p.command]));
+    for (const pid of this.#remembered.keys()) if (!alive.has(pid)) this.#remembered.delete(pid);
+    for (const u of units) {
+      if (u.job !== null) continue;
+      for (const pid of u.pids) {
+        const was = this.#remembered.get(pid);
+        this.#remembered.set(pid, { session: u.session ?? was?.session ?? null, command: alive.get(pid) ?? "", label: u.label });
+      }
+    }
+  }
+
+  /// The agents' big commands under pressure: the earliest runs on, the others wait paused.
+  async #queue(units: readonly Unit[]): Promise<void> {
+    const big = units
+      .filter((u) => u.job === null && u.orphan !== true && u.bytes >= PAUSED_MIN && !this.#stopping.has(u.key))
+      .sort((a, b) => this.#since.get(a.key)! - this.#since.get(b.key)! || a.pids[0]! - b.pids[0]!);
+    if (big.length === 0) return;
+    const [first, ...rest] = big;
+    if (this.#paused.has(first!.key) && rest.every((u) => this.#paused.has(u.key))) await this.#resume(first!);
+    const waiting = rest.filter((u) => !this.#paused.has(u.key));
+    if (waiting.length === 0) return;
+    await this.#whose(waiting);
+    for (const u of waiting) {
+      for (const pid of u.pids) this.#o.signal(pid, "SIGSTOP");
+      this.#paused.set(u.key, { pids: u.pids, label: u.label, session: u.session, bytes: u.bytes });
+      log.warn("memory", "paused under pressure", { unit: u.key, label: u.label, bytes: u.bytes, session: u.session });
+      this.#tell(u, `This station's memory is under pressure, so your ${u.label} (${gib(u.bytes)}) is paused (SIGSTOP) while an earlier command of the agents here runs: what the agents run on this machine queues as other stations' tasks do. It goes on by itself once the memory eases. Stop it if you no longer need it; a build or test suite need not wait, on another station (station_task).`);
+    }
+    await this.#save();
+  }
+
+  /// Once the pressure is gone: the earliest paused command goes on (one a look, so they do not all come back at once).
+  async #resumeEarliest(units: readonly Unit[]): Promise<void> {
+    if (this.#paused.size === 0) return;
+    const earliest = units
+      .filter((u) => this.#paused.has(u.key))
+      .sort((a, b) => this.#since.get(a.key)! - this.#since.get(b.key)! || a.pids[0]! - b.pids[0]!)[0];
+    if (earliest !== undefined) await this.#resume(earliest);
+  }
+
+  async #resume(u: Unit): Promise<void> {
+    const paused = this.#paused.get(u.key);
+    if (paused === undefined) return;
+    this.#paused.delete(u.key);
+    for (const pid of new Set([...paused.pids, ...u.pids])) this.#o.signal(pid, "SIGCONT");
+    log.info("memory", "goes on", { unit: u.key, label: u.label });
+    this.#tell(u, `Your ${u.label}, paused while this station's memory was under pressure, goes on now (SIGCONT).`);
+    await this.#save();
+  }
+
+  async #save(): Promise<void> {
+    try {
+      await this.#o.savePaused?.([...this.#paused.values()].flatMap((p) => p.pids));
+    } catch (error) {
+      log.warn("memory", "what is paused not written down", { error: (error as Error).message });
+    }
+  }
+
+  async #stop(u: Unit, text?: string): Promise<void> {
+    log.warn("memory", "stopping what the agents run", { unit: u.key, label: u.label, bytes: u.bytes, session: u.session, orphan: u.orphan === true });
     this.#stopping.add(u.key);
-    this.#tell(u, `This station was about to run out of memory, so it stopped your ${u.label} (${gib(u.bytes)}, the largest of what the agents run here) to keep the machine up.`);
+    this.#tell(u, text ?? `This station was about to run out of memory, so it stopped your ${u.label} (${gib(u.bytes)}, the largest of what the agents run here) to keep the machine up.`);
     try {
       if (u.job !== null) {
         await this.#o.stopJob(u.job);
         return;
       }
       for (const pid of u.pids) this.#o.signal(pid, "SIGTERM");
+      // A paused one hears it only once it goes on.
+      if (this.#paused.delete(u.key)) {
+        for (const pid of u.pids) this.#o.signal(pid, "SIGCONT");
+        await this.#save();
+      }
       await this.#fibers.sleep(STOP_GRACE_MS);
       for (const pid of u.pids) this.#o.signal(pid, "SIGKILL");
     } catch (error) {
@@ -322,7 +459,9 @@ export function liveMemory(o: { data: string; store: Store; jobs: Jobs; notify: 
     if (!found.has(dir)) found.set(dir, sessionIn(store.listSessions(), dir));
     return found.get(dir)!;
   };
-  return new MemoryWatch({
+  // What a station before this one paused and wrote down goes on (it ended or restarted before it let them).
+  const pausedFile = join(o.data, "run", "paused-commands.json");
+  const watch = new MemoryWatch({
     clock: o.clock,
     // (the queue told each reading: it decides by it as a task asks to start)
     pressure: async () => {
@@ -358,5 +497,18 @@ export function liveMemory(o: { data: string; store: Store; jobs: Jobs; notify: 
       } catch {}
     },
     self: process.pid,
+    savePaused: async (pids) => {
+      if (pids.length === 0) await rm(pausedFile, { force: true });
+      else await writeFile(pausedFile, JSON.stringify(pids));
+    },
   });
+  void readFile(pausedFile, "utf8").then(
+    async (text) => {
+      const pids = JSON.parse(text) as unknown;
+      if (Array.isArray(pids)) watch.resumeSaved(pids.filter((pid): pid is number => Number.isInteger(pid) && pid > 1));
+      await rm(pausedFile, { force: true });
+    },
+    () => undefined,
+  ).catch((error) => log.warn("memory", "what was paused not read", { error: (error as Error).message }));
+  return watch;
 }

@@ -353,6 +353,8 @@ pub fn pressure_of_available(Double?, Double?) -> String?
 
 pub fn pressure_of_level(String, available? : Double?, total? : Double?) -> String?
 
+pub fn pressure_of_swap(Double?, Double?, Double?) -> String?
+
 pub let previous_limit_ms : Double
 
 pub fn previous_pid(String?, Double) -> Double?
@@ -530,6 +532,12 @@ pub fn storage_entry(String) -> StorageEntry?
 pub let storage_manifest : Array[StorageEntry]
 
 pub fn stores_secret(String) -> Bool
+
+pub fn swap_used_of(String) -> Double?
+
+pub fn swapouts_of(String) -> Double?
+
+pub let swapping_pages_per_second : Double
 
 pub fn tcp_port_inodes(Array[String], Int32) -> Array[String]
 
@@ -720,6 +728,8 @@ pub fn with_shell_command(String, Array[(String, String)], (Array[(String, Strin
 pub fn within(Plat, String, String) -> Bool
 
 pub fn working_of(Bool, @json.Json?, Bool, Bool, Bool, Double) -> @json.Json
+
+pub fn worse_pressure(String?, String?) -> String?
 
 // Errors
 

@@ -95,6 +95,76 @@ pub fn pressure_of_level(
 }
 
 ///|
+/// text.ts `SWAPPING_PAGES_PER_SECOND`.
+pub let swapping_pages_per_second : Double = 256.0
+
+///|
+/// text.ts `pressureOfSwap`: high while a quarter of the memory's size is swapped out and pages still go out,
+/// critical at half.
+pub fn pressure_of_swap(
+  swap_used : Double?,
+  total : Double?,
+  out_per_second : Double?,
+) -> String? {
+  guard swap_used is Some(u) && total is Some(t) && out_per_second is Some(r) else {
+    return None
+  }
+  if !(t > 0.0) || !(u >= 0.0) {
+    return None
+  }
+  if r < swapping_pages_per_second {
+    return Some("normal")
+  }
+  Some(if u >= t / 2.0 { "critical" } else if u >= t / 4.0 { "high" } else { "normal" })
+}
+
+///|
+fn pressure_rank(p : String) -> Int {
+  match p {
+    "critical" => 2
+    "high" => 1
+    _ => 0
+  }
+}
+
+///|
+/// text.ts `worsePressure`.
+pub fn worse_pressure(a : String?, b : String?) -> String? {
+  match (a, b) {
+    (None, _) => b
+    (_, None) => a
+    (Some(x), Some(y)) => if pressure_rank(x) >= pressure_rank(y) { a } else { b }
+  }
+}
+
+///|
+/// text.ts `swapoutsOf`: vm_stat's "Swapouts".
+pub fn swapouts_of(vm : String) -> Double? {
+  for line in split_lines(vm) {
+    if starts(line, "Swapouts:") {
+      let rest = rtrim(sub(line, 9, line.length()))
+      let n = if ends(rest, ".") { sub(rest, 0, rest.length() - 1) } else { rest }
+      return parse_u64(n)
+    }
+  }
+  None
+}
+
+///|
+/// text.ts `swapUsedOf`: `sysctl -n vm.swapusage`'s "used = <n>M", in bytes.
+pub fn swap_used_of(text : String) -> Double? {
+  let at = index_of(text, "used = ")
+  guard at >= 0 else { return None }
+  let rest = sub(text, at + 7, text.length())
+  let m = index_of(rest, "M")
+  guard m > 0 else { return None }
+  match parse_f64(sub(rest, 0, m)) {
+    Some(n) => Some(js_round(n * 1024.0 * 1024.0))
+    None => None
+  }
+}
+
+///|
 pub(all) struct ProcessInfo {
   pid : Double
   ppid : Double

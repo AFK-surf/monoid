@@ -944,34 +944,9 @@ async fn p53_pressure_read(host : @host.Host) -> String? {
   }
   if platform() == "darwin" {
     guard shell_proc_run(host, "/usr/sbin/sysctl", ["-n", "kern.memorystatus_vm_pressure_level"]) is Some(level) else { return None }
-    match level.trim_space().to_string() {
-      "1" => {
-        let m = machine()
-        match (jnum_of(m, "freemem"), jnum_of(m, "totalmem")) {
-          (Some(f), Some(t)) =>
-            match of_available(f, t) {
-              Some(p) => Some(p)
-              None => Some("normal")
-            }
-          _ => Some("normal")
-        }
-      }
-      "4" => Some("critical")
-      "2" => {
-        // (warn is high only while what is left says so too: macOS warns while its free pages are low)
-        let m = machine()
-        match (jnum_of(m, "freemem"), jnum_of(m, "totalmem")) {
-          (Some(f), Some(t)) =>
-            match of_available(f, t) {
-              Some("normal") => Some("normal")
-              Some(p) => Some(p)
-              None => Some("high")
-            }
-          _ => Some("high")
-        }
-      }
-      _ => None
-    }
+    // What the memory used leaves out, the swap (text.ts pressureOfSwap): pages swapped out a second since the last read.
+    let swap = p53_swap_pressure(host)
+    @ops_platform.worse_pressure(p53_level_pressure(level, of_available), swap)
   } else {
     guard shell_read_text(host, "/proc/meminfo") is Some(info) else { return None }
     let field = (name : String) => {
@@ -1259,4 +1234,67 @@ fn P53Jobs::tools(self : P53Jobs) -> Array[PartTool] {
 
 fn p53_has_port(job : Json) -> Bool {
   jnum_of(job, "port") is Some(_)
+}
+
+///|
+/// macOS's level as p53_pressure_read reads it (warn is high only while what is left says so too).
+fn p53_level_pressure(level : String, of_available : (Double, Double) -> String?) -> String? {
+  match level.trim_space().to_string() {
+    "1" => {
+      let m = machine()
+      match (jnum_of(m, "freemem"), jnum_of(m, "totalmem")) {
+        (Some(f), Some(t)) =>
+          match of_available(f, t) {
+            Some(p) => Some(p)
+            None => Some("normal")
+          }
+        _ => Some("normal")
+      }
+    }
+    "4" => Some("critical")
+    "2" => {
+      // (warn is high only while what is left says so too: macOS warns while its free pages are low)
+      let m = machine()
+      match (jnum_of(m, "freemem"), jnum_of(m, "totalmem")) {
+        (Some(f), Some(t)) =>
+          match of_available(f, t) {
+            Some("normal") => Some("normal")
+            Some(p) => Some(p)
+            None => Some("high")
+          }
+        _ => Some("high")
+      }
+    }
+    _ => None
+  }
+}
+
+///|
+let p53_last_swapouts : Ref[(Double, Int64)?] = Ref(None)
+
+///|
+/// What the swap says of the memory (text.ts pressureOfSwap), from vm_stat's swapouts since the last read.
+async fn p53_swap_pressure(host : @host.Host) -> String? {
+  let vm = shell_proc_run(host, "/usr/bin/vm_stat", [])
+  let usage = shell_proc_run(host, "/usr/sbin/sysctl", ["-n", "vm.swapusage"])
+  let pages = match vm {
+    Some(v) => @ops_platform.swapouts_of(v)
+    None => None
+  }
+  let now = @host.now()
+  let before = p53_last_swapouts.val
+  p53_last_swapouts.val = match pages {
+    Some(p) => Some((p, now))
+    None => None
+  }
+  let per_second = match (pages, before) {
+    (Some(p), Some((bp, at))) if now > at && p >= bp => Some((p - bp) * 1000.0 / (now - at).to_double())
+    _ => None
+  }
+  let total = jnum_of(machine(), "totalmem")
+  let used = match usage {
+    Some(u) => @ops_platform.swap_used_of(u)
+    None => None
+  }
+  @ops_platform.pressure_of_swap(used, total, per_second)
 }

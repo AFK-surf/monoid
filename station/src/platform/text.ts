@@ -39,6 +39,42 @@ export function pressureOfLevel(level: string, available: number | null = null, 
   }
 }
 
+/// What the swap says of the memory's pressure (macOS): what the memory used counts leaves out what was swapped out, so a
+/// machine paging hard can read as having memory left (2026-11-23: 66 GiB swapped on a 64 GiB machine, load 246, read
+/// normal until it was too late). High while a quarter of the memory's size is swapped out and pages still go out,
+/// critical at half; swap kept from before while nothing goes out says nothing. `outPerSecond`: pages swapped out a
+/// second since the last look (null on the first).
+export const SWAPPING_PAGES_PER_SECOND = 256;
+export function pressureOfSwap(swapUsed: number | null, total: number | null, outPerSecond: number | null): "normal" | "high" | "critical" | null {
+  if (swapUsed === null || total === null || !(total > 0) || !(swapUsed >= 0) || outPerSecond === null) return null;
+  if (outPerSecond < SWAPPING_PAGES_PER_SECOND) return "normal";
+  return swapUsed >= total / 2 ? "critical" : swapUsed >= total / 4 ? "high" : "normal";
+}
+
+const RANK = { normal: 0, high: 1, critical: 2 } as const;
+/// The worse of two readings (one unknown: the other).
+export function worsePressure(a: "normal" | "high" | "critical" | null, b: "normal" | "high" | "critical" | null): "normal" | "high" | "critical" | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return RANK[a] >= RANK[b] ? a : b;
+}
+
+/// `vm_stat`'s "Swapouts" (pages swapped out since the machine started); null where it does not say.
+export function swapoutsOf(vm: string | null): number | null {
+  if (vm === null) return null;
+  const m = vm.match(/^Swapouts:\s+(\d+)\.?\s*$/m);
+  return m ? Number(m[1]) : null;
+}
+
+/// `sysctl -n vm.swapusage` ("total = 2048.00M  used = 657.06M  free = …"): the swap used (bytes); null where it does
+/// not say.
+export function swapUsedOf(text: string | null): number | null {
+  const m = text?.match(/used = ([0-9.]+)M/);
+  if (!m) return null;
+  const mb = parseF64(m[1]!);
+  return mb === null ? null : Math.round(mb * 1024 * 1024);
+}
+
 /// `ps -axo pid=,ppid=,pgid=,rss=,comm=`: each process with its resident memory (bytes).
 export function parsePs(text: string): { pid: number; ppid: number; pgid: number; bytes: number; command: string }[] {
   const out: { pid: number; ppid: number; pgid: number; bytes: number; command: string }[] = [];
