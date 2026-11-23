@@ -1094,9 +1094,9 @@ pub let caret_blink_android_ms : Double = 500.0
 /// Whether a field takes a finger's ways here (a tap as it is let go, a long press's word, the caret's drop handle
 /// and the picked words' teardrops): a system whose fields feel as Android's (h_feel 2, still.fail's iOS and a browser
 /// started with a finger among them), or a finger on a machine that has a mouse too (a laptop's touch screen, a
-/// browser started with a mouse then touched).
+/// browser started with a mouse then touched). iOS's own feel (h_feel 1) keeps its own ways for a finger.
 fn field_touch_feel() -> Bool {
-  h_feel() == 2 || @signals.untracked(pointing) is Finger
+  h_feel() == 2 || (h_feel() != 1 && @signals.untracked(pointing) is Finger)
 }
 
 ///|

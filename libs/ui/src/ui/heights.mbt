@@ -26,9 +26,15 @@ pub fn Tester::height_faults(self : Tester) -> Array[String] {
 
 ///|
 /// Whether node `i` is a control of a row to the rule: drawn, taking presses (not only pointed at), showing a ground
-/// at rest or under the hand, no taller than height_most.
+/// at rest or under the hand, no taller than height_most; a node of the window's tree said a ground (View::as_ground:
+/// a field's frame given its presses, field_backdrop) is none.
 fn Ctx::height_control(self : Ctx, i : Int) -> Bool {
   let b = self.nodes[i]
+  let ground = match (view_app.val, tree_frame_ids.get(i)) {
+    (Some(t), Some(id)) => t.is_ground(id)
+    _ => false
+  }
+  !ground &&
   b.kind == kind_box &&
   b.id != 0 &&
   b.hit &&

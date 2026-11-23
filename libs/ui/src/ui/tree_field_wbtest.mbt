@@ -2295,6 +2295,20 @@ test "field_backdrop: the room round a field its own to a press: a finger's tap 
 }
 
 ///|
+test "field_backdrop: a press on the room before a field's words while it has not the focus (a label, an icon) writes on at their end; focused, the caret where it went down" {
+  // (a mouse's press, then a finger's tap: the caret at the words' end, never before the first)
+  for platform in [0, 2] {
+    let f = Field::new(text="hello")
+    let t = padded_field(f, platform~)
+    t.tap(20.0 + 3.0, 30.0)
+    assert_eq((f.focused(), f.selection()), (true, (5, 5)), msg="\{platform}: unfocused")
+    t.run_for(double_click_ms + double_tap_ms)
+    t.tap(20.0 + 3.0, 30.0)
+    assert_eq(f.selection(), (0, 0), msg="\{platform}: focused")
+  }
+}
+
+///|
 test "a finger on a machine with a mouse too (a laptop's touch screen, a browser started with a mouse): a field's tap, its caret's menu and its long press's 粘贴 a finger's, its handle drawn" {
   for platform in [3, 4] {
     let f = Field::new(text="然后 ios")

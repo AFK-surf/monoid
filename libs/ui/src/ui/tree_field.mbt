@@ -830,9 +830,12 @@ fn tree_field_down(
   }
   tf.run = (tf.clicks, at, x, y)
   tf.shifted = (mods_held() & mod_shift_key) != 0
+  let to_end = tree_field_to_end(tf, id, x, y)
   g().focus_moved(tree_said_id(id))
   if tf.shifted {
     st.widen_by_pointer(x, y, at)
+  } else if to_end {
+    caret_at_end(st, at)
   } else {
     place_caret_at(st, x, y, at)
     if tf.clicks > 1 {
@@ -842,6 +845,29 @@ fn tree_field_down(
   tf.editing = true
   tree_field_redraw()
   true
+}
+
+///|
+/// Whether the press now held on field node `id` went down on a ground round it (field_backdrop: a label or an icon
+/// laid before its words, its padding) while it had not the focus, before where its words start: a press to write on
+/// in it, its caret at its words' end as a focus given it leaves it, never before the first of them.
+fn tree_field_to_end(tf : TreeField, id : @view.NodeId, x : Double, y : Double) -> Bool {
+  guard tf.pressed_node is Some(pid) && pid != id && g().focus != tree_said_id(id) else { return false }
+  match tf.st.local_point(x, y) {
+    Some((lx, _)) => lx < tf.st.ox
+    None => false
+  }
+}
+
+///|
+/// The caret put at the end of field `st`'s words, nothing picked, its blinking from `t`.
+fn caret_at_end(st : EditorState, t : Double) -> Unit {
+  st.blink0 = t
+  st.menu = false
+  st.sel_handles = false
+  st.caret = st.text.length()
+  st.anchor = st.caret
+  st.upstream = -1
 }
 
 ///|
@@ -994,6 +1020,7 @@ fn tree_field_tapped(id : @view.NodeId) -> Unit {
   let c = g()
   let said = tree_said_id(id)
   let was_focused = c.focus == said
+  let to_end = tree_field_to_end(tf, id, x, y)
   if was_focused {
     c.ime_sig = "tap"
   }
@@ -1008,7 +1035,12 @@ fn tree_field_tapped(id : @view.NodeId) -> Unit {
     }
     tf.last_tap = (-1.0e9, 0.0, 0.0)
   } else {
-    st.tap_caret_at(was_focused, x, y, t)
+    if to_end {
+      caret_at_end(st, t)
+      st.handle = st.text.length() > 0
+    } else {
+      st.tap_caret_at(was_focused, x, y, t)
+    }
     tf.last_tap = (t, x, y)
   }
   tree_field_redraw()
