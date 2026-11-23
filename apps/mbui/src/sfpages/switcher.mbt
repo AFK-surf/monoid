@@ -824,8 +824,8 @@ pub fn finder_list_node(
     combo.list_node(l)
     let lit = l.selected(fn() { chosen_key.get() })
     // (a line's block taken by the next line of its make to show as it no more does, or as the words typed bring
-    // others, its key that one's: finder_line_shape; the room under its last line the list's own foot, under what it
-    // holds and no block of it: never what holds what shows, so lines told after it shows come in under the list's top)
+    // others, its key that one's: finder_line_shape; the room under its last line the list's end_room, no block of it:
+    // never what holds what shows, so lines told after it shows come in under the list's top)
     l.scrolls_reused(
       @view.Scroll::list(),
       fn() { keys.get() },
@@ -839,7 +839,7 @@ pub fn finder_list_node(
       // line making its way in or out under the hand at each key)
       comes=fn(_) { false },
       goes=fn(_) { false },
-      foot?=if foot_in > 0.0 { Some(fn(f) { f.height(Is(Some(foot_in))) |> ignore }) } else { None },
+      end_room=fn() { foot_in },
       fn(b, k) {
         let held = @signals.computed_by(fn(_) { of_key.get().get(k()) }, same=fn(a, b) {
           match (a, b) {

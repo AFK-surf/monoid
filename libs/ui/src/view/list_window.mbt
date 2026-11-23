@@ -503,7 +503,9 @@ pub(all) struct ListBand[K] {
 /// its way goes, that long (ms) on that curve (0 … 1 of the time to 0 … 1 of the way), where the page says it (one's own
 /// words sent, their bubble flying in from the field on a flight's rise), else a Move. Said, the list's one way of that
 /// moment goes so, all of it (what is over the key, what gives its room back under it), not a Move: one motion, the
-/// key's (flex's ComeGroup `spec`; the coordinator of the migration, 2026-11-14). `foot_clear`: how tall the top of its
+/// key's (flex's ComeGroup `spec`; the coordinator of the migration, 2026-11-14). `end_room`: room under its last block
+/// in what it scrolls, no block of it (so never what holds what shows: blocks told after it shows come in under its top,
+/// not over a block of room alone in it) and nothing pinned (none of `foot`'s nodes, nothing covered). `foot_clear`: how tall the top of its
 /// foot is that hides nothing of what shows (room it keeps under its last block the rows show through): what is pinned
 /// over its foot and hides (Scroll::foot_hides_now, what a thing flying from the list is seen clear of) is the rest of it.
 /// `reorders`: asked of a key that stays
@@ -556,6 +558,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   head? : (View) -> Unit,
   foot? : (View) -> Unit,
   foot_clear? : () -> Double = fn() { 0.0 },
+  end_room? : () -> Double = fn() { 0.0 },
   bands? : (() -> Array[ListBand[K]], (View, () -> ListBand[K]) -> Unit),
   slices? : (K) -> Int,
   make_slice? : (View, K, Int) -> Unit,
@@ -627,6 +630,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     head?=head,
     foot?=foot,
     foot_clear~,
+    end_room~,
     bands?=bands.map(fn(b) {
       let (all, look) = b
       (fn() { all().map(band_ids) }, fn(v, band : () -> ListBand[Int]) { look(v, fn() { band_keys(band()) }) })
@@ -691,6 +695,7 @@ pub fn[K : Hash + Eq] View::scrolls_reused(
   head? : (View) -> Unit,
   foot? : (View) -> Unit,
   foot_clear? : () -> Double = fn() { 0.0 },
+  end_room? : () -> Double = fn() { 0.0 },
   bands? : (() -> Array[ListBand[K]], (View, () -> ListBand[K]) -> Unit),
 ) -> View {
   guard self.live() is Some(_) else { return self }
@@ -742,6 +747,7 @@ pub fn[K : Hash + Eq] View::scrolls_reused(
     head?=head,
     foot?=foot,
     foot_clear~,
+    end_room~,
     bands?=bands.map(fn(b) {
       let (all, look) = b
       (fn() { all().map(band_ids) }, fn(v, band : () -> ListBand[Int]) { look(v, fn() { band_keys(band()) }) })
@@ -823,6 +829,7 @@ fn View::scrolls_window_ids(
   head? : (View) -> Unit,
   foot? : (View) -> Unit,
   foot_clear~ : () -> Double,
+  end_room~ : () -> Double,
   bands? : (() -> Array[ListBand[Int]], (View, () -> ListBand[Int]) -> Unit),
   keep_first? : (Int) -> Bool,
   slice_ends? : (Int) -> (Int, Int),
@@ -838,7 +845,8 @@ fn View::scrolls_window_ids(
   let head_tall : @signals.Signal[Double] = @signals.signal(0.0, same=fn(a, b) { a == b })
   let foot_v : Ref[View?] = Ref(None)
   let foot_h : @signals.Signal[Double] = @signals.signal(0.0, same=fn(a, b) { a == b })
-  let room_under = fn() { foot_h.get() }
+  // (the room under the last block: its foot's, pinned over it, and its end_room, under it and no node)
+  let room_under = fn() { foot_h.get() + end_room() }
   // (what asks it to show a block or its foot: the page's, else its own, which End asks its foot of at once,
   // scroll_keys.mbt)
   let place = Some(place)

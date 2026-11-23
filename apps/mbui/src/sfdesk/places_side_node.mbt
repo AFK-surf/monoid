@@ -714,9 +714,9 @@ fn place_list_node(
     est~,
     slop=@ui.touch_slop(),
     bar=@ui.tree_scroll_bar(),
-    // (the room under its last: the list's own foot, under what it holds and no block of it, so lines told after it
-    // shows come in under its top, never over a block of room alone in it)
-    foot=fn(f) { f.height(By(fn() { Some(@sf.list_foot_in(list_at)) })) |> ignore },
+    // (the room under its last: the list's end_room, no block of it, so lines told after it shows come in under its
+    // top, never over a block of room alone in it)
+    end_room=fn() { @sf.list_foot_in(list_at) },
     fn(b, k) {
       b.box(fn(back) {
         back.margin(Is((-side_into_rail, 0.0, 0.0, 0.0))) |> ignore

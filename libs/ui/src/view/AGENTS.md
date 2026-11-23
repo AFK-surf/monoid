@@ -22,7 +22,7 @@
 
 ## Virtualized lists (`View::scrolls_window`)
 
-- Use built-in `head` (scrolls over keys, never anchor) and `foot` (pinned over bottom, reserves tail room, passes non-interactive hits through) instead of spacer rows or manual offsets.
+- Use built-in `head` (scrolls over keys, never anchor), `foot` (pinned over bottom, reserves tail room, passes non-interactive hits through) and `end_room` (bottom padding of what scrolls, no node) instead of spacer rows or manual offsets: a trailing spacer key is the only block while data waits, so the list anchors on it and lands at its end when rows arrive.
 - Declare handler-driven height changes via `View::resizes` so they join the column's `ComeGroup`. Pass shown height to backgrounds via `View::shown_by`.
 - Anchor reading position every frame: blocks mark content start with `View::read_from` (`libs/ui/src/view/list_read_from.mbt`), and the list pins the first visible marked start so growth above expands upward and growth inside expands downward (falling back to top visible block when unmarked).
 - Defer `ListPlace` jumps (to top, middle, or foot) until a pass can build target rows and settle interfering motions, landing at the final foot (`libs/ui/src/view/list_to_end_lands_test.mbt`).

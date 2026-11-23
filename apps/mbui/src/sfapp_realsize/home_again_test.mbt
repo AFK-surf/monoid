@@ -369,7 +369,8 @@ test "home again: Home come back to in a taller phone's window, and from a page 
       let first = if place == "profiles" {
         (734, 0, 568)
       } else if place == "connects" {
-        (442, 0, 309)
+        // (-2 made/-1 laid: a page's room under its last block its list's end_room, no block of it)
+        (440, 0, 308)
       } else {
         // (用量's controls that are a button only while they filter, its rank rows and its legend, each over
         // action_box_while_node's pick; 3 seg_fill_nodes -> made unchanged, +9 initial laid; -1 structure-box in usage_node;

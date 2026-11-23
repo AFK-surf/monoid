@@ -7,7 +7,7 @@
 
 ///|
 /// What a wide page made once holds, in its order: what stands over it, its head, its blocks by their keys; the room
-/// at its foot its list's foot, under them and no item of it.
+/// at its foot its list's end_room, no item of it.
 #derive(Eq, Hash)
 priv enum WideItem {
   WideTop
@@ -74,9 +74,9 @@ fn wide_page_node(
       comes=fn(k) { !other.val && k is WideBlock(_) },
       goes=fn(k) { !other.val && k is WideBlock(_) },
       near_foot?,
-      // (80 under the last, then the frame's room: the list's foot, under what it holds and no block of it, so blocks
-      // told after the page shows come in under its top, never over a block of room alone in it, the page at its end)
-      foot=fn(f) { f.height(By(fn() { Some(desk_foot_h + frame().foot) })) |> ignore },
+      // (80 under the last, then the frame's room: the list's end_room, no block of it, so blocks told after the page
+      // shows come in under its top, never over a block of room alone in it, the page at its end)
+      end_room=fn() { desk_foot_h + frame().foot },
       // (a block of a kind `reused` gives put by as it no more shows and taken by the next of its kind, in its lane as
       // `block` makes one (below), the first's room over it following which key it shows now)
       reused?=reused.map(fn(r) {
