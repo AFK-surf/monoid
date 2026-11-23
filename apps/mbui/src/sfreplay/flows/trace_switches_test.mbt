@@ -50,6 +50,8 @@
 /// key beside the app's update) off in all 81 as it came.
 /// MBUI_STATION_MOVE (2026-11-15: a station's page asks what of it moves, `stationMove`, for its 迁移 row) off in all
 /// 81 as it came.
+/// MBUI_STATION_WORKSPACES (2026-11-23: a station's settings page asks for its workspace memberships, `memberships`, for
+/// its Workspace section) off in all barred traces recorded before it.
 /// MBUI_TERMINALS (2026-11-15: a station's terminals among its screens on its page) off in all 81 as it came.
 /// MBUI_SWR_VIEWS (2026-11-15: a view's own topic kept and shown again at once, a chat's services' pop read from its
 /// bar's summary till its own comes, an agent's card asking ahead its model's menu) off in all 81 as it came.
@@ -75,6 +77,7 @@ let switches_known : Map[String, Int] = {
   "MBUI_SWITCH_AHEAD": 48,
   "MBUI_STATION_UPDATES": 48,
   "MBUI_STATION_MOVE": 48,
+  "MBUI_STATION_WORKSPACES": 81,
   "MBUI_TERMINALS": 48,
   "MBUI_AGENT_RATES": 50,
   "MBUI_SWR_VIEWS": 48,

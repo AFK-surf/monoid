@@ -108,6 +108,9 @@ pub(all) struct Core {
   /// `asks_station_move`, not in a replay of a run from before; where the station offers it is its own to say
   /// (`move_said`: its overview's `move.offered`)
   move_on : () -> Bool
+  /// whether a station's settings page asks for its workspace memberships (`memberships`: sfpages station_node.mbt):
+  /// the source's `asks_station_workspaces`, not in a replay of a run from before
+  workspaces_on : () -> Bool
   /// whether a station's terminals are asked for (the source's `asks_terminals`: not in a replay of a run from before);
   /// where the station offers them is its own to say (`station_feature(s, "terminal")`)
   terminals_on : () -> Bool

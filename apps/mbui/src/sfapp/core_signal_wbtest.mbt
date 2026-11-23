@@ -1911,6 +1911,7 @@ test "a chat after closing the switcher reads station changes made in the gap" {
     switches_ahead: fn() { true },
     asks_station_updates: fn() { true },
     asks_station_move: fn() { true },
+    asks_station_workspaces: fn() { true },
     asks_terminals: fn() { true },
     asks_agent_rates: fn() { true },
   }

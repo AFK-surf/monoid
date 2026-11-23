@@ -185,6 +185,9 @@ pub(all) struct Source {
   /// whether a station's page asks what of it moves (`stationMove`: its 迁移 row while a move runs, something is
   /// stopped or a turn failed, sfpages station_node.mbt): not of a run seen again that was recorded before the app did
   asks_station_move : () -> Bool
+  /// whether a station's settings page asks for its workspace memberships (`memberships`: sfpages station_node.mbt):
+  /// not of a run seen again that was recorded before the app did
+  asks_station_workspaces : () -> Bool
   /// whether a station's terminals are asked for (`terminals`, among its screens: sfpages station_terminals_node.mbt):
   /// not of a run seen again that was recorded before the app did
   asks_terminals : () -> Bool
@@ -906,6 +909,7 @@ pub fn made_source(
     switches_ahead: fn() { true },
     asks_station_updates: fn() { true },
     asks_station_move: fn() { true },
+    asks_station_workspaces: fn() { true },
     asks_terminals: fn() { true },
     asks_agent_rates: fn() { true },
     swr_views: fn() { true },

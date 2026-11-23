@@ -19,7 +19,7 @@ test "a station's menu leaves out what it does not offer, one line before what t
     (false, true, false, ["edit", "line", "trash"]),
     (true, true, false, ["edit", "power", "boxes", "line", "trash"]),
     (true, false, false, ["edit", "power", "line", "trash"]),
-    (true, true, true, ["edit", "power", "line", "trash"]),
+    (true, true, true, ["edit", "power", "boxes", "line", "trash"]),
   ] {
     let station : Json = {
       "station": "ws1/st1",

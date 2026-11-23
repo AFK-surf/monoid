@@ -214,7 +214,7 @@ fn station_view_node(
           } else {
             ["processes"]
           }
-        "settings" => station_settings_keys(s(), manager)
+        "settings" => station_settings_keys(s(), manager, (core.workspaces_on)())
         _ => station_overview_keys(core, here, s())
       },
     )
@@ -418,7 +418,7 @@ fn station_overview_keys_by(s : Json?, screens : Json?, terminals? : Bool = fals
 ///|
 /// The keys of its 设置's parts (station_settings'), those it has now. Away, a banner saying it is a read-only snapshot
 /// followed by cached software, permissions and runtime settings (no restore offers or active logins).
-fn station_settings_keys(s : Json?, manager : Bool) -> Array[String] {
+fn station_settings_keys(s : Json?, manager : Bool, workspaces_on : Bool) -> Array[String] {
   let o = field(s, "overview")
   let online = flag(s, "online")
   let out = if online { ["software"] } else { ["offline", "software"] }
@@ -432,7 +432,7 @@ fn station_settings_keys(s : Json?, manager : Bool) -> Array[String] {
   if has_env || has_search || field(o, "diagnostics") is Some(Object(_)) || field(o, "elevation") is Some(Object(_)) || field(o, "screenService") is Some(Object(_)) || field(o, "autoChats") is Some(Object(_)) {
     out.push("system")
   }
-  if manager {
+  if manager && workspaces_on {
     out.push("workspaces")
   }
   if online && items(field(o, "copies"), "offers").length() > 0 {
@@ -520,7 +520,7 @@ fn station_block_asks(core : Core, here : Here, address : String, s : Json?, man
 fn station_part_asks(core : Core, here : Here, address : String, s : Json?, manager : Bool, part : String) -> Array[(String, Map[String, Json])] {
   let keys = match part {
     "processes" => ["processes"]
-    "settings" => station_settings_keys(s, manager)
+    "settings" => station_settings_keys(s, manager, (core.workspaces_on)())
     _ => ["screens", ..station_overview_keys_by(s, None, terminals=terminals_offered(core, s), has_devices=true)]
   }
   let out : Array[(String, Map[String, Json])] = []

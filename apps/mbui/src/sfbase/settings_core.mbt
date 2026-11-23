@@ -163,6 +163,7 @@ fn settings_core_of(
     read_only: if src.read_only { read_only_words } else { "" },
     devices_on: src.asks_devices,
     move_on: fn() { (src.asks_station_move)() },
+    workspaces_on: fn() { (src.asks_station_workspaces)() },
     terminals_on: fn() { (src.asks_terminals)() },
   }
 }
