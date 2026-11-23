@@ -862,20 +862,25 @@ int main(void) {
       // Wave 7: adaptive liquid glass (slot 14 = -1.0) + adaptive kind 10 neutral/chromatic ink:
       // 0: light glass over white (bg=1.0) -> light glass + dark ink
       // 1: light glass over black (bg=0.0) -> dark glass + light ink
-      // 2: light glass over mid-tone (bg=0.50) -> stays light glass + dark ink
+      // 2: light glass over a linear ~50% mid-tone (bg=0.72, 0.72^2 = 0.52) -> stays light glass + dark ink
       // 3: dark glass (0x20202067) over white (bg=1.0) -> stays dark smoked glass + light ink (never flips white)
       double ad[4 * MB_INST];
-      struct { double bg; int dark_glass; double ink; } w7_cases[4] = {
-        {1.0, 0, 0.11},
-        {0.0, 0, 0.11},
-        {0.50, 0, 0.11},
-        {1.0, 1, 0.93},
+      // 4: light glass over Apple blue #007AFF -> dark ink flips white (sRGB luma 0.414 sat on the dark edge;
+      //    the ink decision reads linear-ish luma c*c, 0.236, well inside the dark side)
+      // 5: light glass over light gray #F5F5F7 -> stays light glass + dark ink
+      struct { double bg, bg_g, bg_b; int dark_glass; double ink; } w7_cases[6] = {
+        {1.0, 1.0, 1.0, 0, 0.11},
+        {0.0, 0.0, 0.0, 0, 0.11},
+        {0.72, 0.72, 0.72, 0, 0.11},
+        {1.0, 1.0, 1.0, 1, 0.93},
+        {0.0, 122.0 / 255.0, 1.0, 0, 0.11},
+        {245.0 / 255.0, 245.0 / 255.0, 247.0 / 255.0, 0, 0.11},
       };
-      for (int ci = 0; ci < 4; ci++) {
-        double bg = w7_cases[ci].bg;
+      for (int ci = 0; ci < 6; ci++) {
+        double bg = w7_cases[ci].bg, bg_g = w7_cases[ci].bg_g, bg_b = w7_cases[ci].bg_b;
         int dg = w7_cases[ci].dark_glass;
         double ink = w7_cases[ci].ink;
-        rect_at(ad, 0, 0, 400, 300, 0, bg, bg, bg, 0);
+        rect_at(ad, 0, 0, 400, 300, 0, bg, bg_g, bg_b, 0);
         rect_at(ad + MB_INST, 100, 80, 200, 140, 6,
                 dg ? 32.0 / 255.0 : 253.0 / 255.0,
                 dg ? 32.0 / 255.0 : 252.0 / 255.0,
@@ -913,7 +918,7 @@ int main(void) {
         ad[3 * MB_INST + 23] = 70.0;
         glass_forget();
         mb_host_render_dirty(0, 0, 400, 300);
-        mb_render_present(ad, 4, bg, bg, bg);
+        mb_render_present(ad, 4, bg, bg_g, bg_b);
         present_drain();
         uint8_t *px_ad = read_texture(canvas, &aw, &ah);
         // Glass interior at (240, 150) -> (480, 300) at 2x (BGRA)
@@ -935,9 +940,14 @@ int main(void) {
         } else if (ci == 2) {
           CHECK(g_lum > 0.55);
           CHECK(n_lum < 0.25);
-        } else {
+        } else if (ci == 3) {
           CHECK(g_lum < 0.45);
           CHECK(n_lum > 0.85);
+        } else if (ci == 4) {
+          CHECK(n_lum > 0.70);
+        } else {
+          CHECK(g_lum > 0.75);
+          CHECK(n_lum < 0.25);
         }
         CHECK((int)cp[2] > (int)cp[0] + 120);
         free(px_ad);

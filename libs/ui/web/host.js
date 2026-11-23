@@ -857,6 +857,7 @@
     return texture(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw)).rgb;
   }
   float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+  float mb_ink_luma(vec3 c) { return dot(c * c, vec3(0.2126, 0.7152, 0.0722)); }
   float mb_backdrop_luma_rect(vec2 c, vec2 h) {
     float sum = 0.0;
     float mx1 = -1.0, mx2 = -1.0;
@@ -865,7 +866,7 @@
       float py = c.y + float(iy) * (h.y * 0.60);
       for (int ix = -2; ix <= 2; ix++) {
         float px = c.x + float(ix) * (h.x * 0.38);
-        float y = luma(backdrop(vec2(px, py)));
+        float y = mb_ink_luma(backdrop(vec2(px, py)));
         sum += y;
         if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }
         if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }
@@ -1651,6 +1652,7 @@
   uniform vec4 u_param;
   out vec4 o;
   float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+  float mb_ink_luma(vec3 c) { return dot(c * c, vec3(0.2126, 0.7152, 0.0722)); }
   float mb_unpack16(vec2 rg) {
     float hi = floor(clamp(rg.x, 0.0, 1.0) * 255.0 + 0.5);
     float lo = floor(clamp(rg.y, 0.0, 1.0) * 255.0 + 0.5);
@@ -1670,7 +1672,7 @@
       for (int ix = -2; ix <= 2; ix++) {
         float px = c.x + float(ix) * (h.x * 0.38);
         vec2 uv = clamp(vec2(px, py) * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw);
-        float y = luma(texture(u_bd, uv).rgb);
+        float y = mb_ink_luma(texture(u_bd, uv).rgb);
         sum += y;
         if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }
         if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }
