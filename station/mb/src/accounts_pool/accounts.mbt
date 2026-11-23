@@ -17,6 +17,9 @@ let quota_every_ms : Double = 300_000.0
 let quota_stands_ms : Double = 1_800_000.0
 
 ///|
+let borrowed_host_stands_ms : Double = 600_000.0
+
+///|
 let handed_margin_ms : Double = 3_600_000.0
 
 ///|
@@ -304,6 +307,7 @@ pub struct Accounts {
   reset_details_asked : Map[String, (Double, Double)]
   login_generation : Map[String, Int]
   borrowed_login : Map[String, String?]
+  borrowed_unreachable_since : Map[String, Double]
   renewing : Map[String, @effect.Deferred[Unit]]
   settling : Map[String, Bool]
   pending : Map[String, Pending]
@@ -391,6 +395,7 @@ pub async fn Accounts::new(
     reset_details_asked: Map::new(),
     login_generation: Map::new(),
     borrowed_login: Map::new(),
+    borrowed_unreachable_since: Map::new(),
     renewing: Map::new(),
     settling: Map::new(),
     pending: Map::new(),
@@ -496,7 +501,7 @@ pub fn Accounts::start(self : Accounts) -> Unit {
           if p.enabled {
             let id = p.id
             self.background.spawn(async fn() {
-              ignore(self.check(id, self.ctx.station_lang))
+              ignore(self.check(id, self.ctx.station_lang, stands=true))
             })
           }
         }

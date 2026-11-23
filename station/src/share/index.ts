@@ -684,6 +684,8 @@ export class Sharing {
     this.closed = true;
     for (const stop of this.stops.splice(0)) stop();
     this.stopWatches();
+    this.retry?.();
+    this.retry = null;
     await this.time.close();
     await this.program.close();
     // (the links' turn, files alone, done; a pass still asking other stations is not waited for, its watches refused)
@@ -925,15 +927,18 @@ export class Sharing {
     await this.linkBorrowedSkills(state);
     // What did not get through is tried again, less often the longer it does not.
     if (!pending) this.retryMs = RETRY_MS;
-    else if (this.retry === null) {
-      const wait = this.retryMs;
-      this.retryMs = Math.min(this.retryMs * 2, RETRY_MAX_MS);
-      this.retry = this.time.after(wait, () => {
-        this.retry = null;
-        void this.reconcile();
-      });
-    }
+    else this.scheduleRetry();
     this.deps.changed();
+  }
+
+  private scheduleRetry(): void {
+    if (this.closed || this.retry !== null) return;
+    const wait = this.retryMs;
+    this.retryMs = Math.min(this.retryMs * 2, RETRY_MAX_MS);
+    this.retry = this.time.after(wait, () => {
+      this.retry = null;
+      void this.reconcile();
+    });
   }
 
   // ── copies of others' shares ──
@@ -1546,8 +1551,10 @@ export class Sharing {
       // Left out by who may use it (notOurs): nothing lent before is used, and the copy is asked of again, which takes
       // it away. Any other refusal is the host not answering, as before.
       const ours = !notOurs(e);
-      if (ours) this.unreachable.set(host, this.time.now());
-      else {
+      if (ours) {
+        this.unreachable.set(host, this.time.now());
+        this.scheduleRetry();
+      } else {
         this.lentClaude.delete(profile.id);
         this.askAgain(profile.share.id);
       }
@@ -1576,8 +1583,10 @@ export class Sharing {
       if (loginOver(e)) throw this.overThere(profile, e);
       // Left out by who may use it (notOurs): as lendClaude.
       const ours = !notOurs(e);
-      if (ours) this.unreachable.set(host, this.time.now());
-      else this.askAgain(profile.share.id);
+      if (ours) {
+        this.unreachable.set(host, this.time.now());
+        this.scheduleRetry();
+      } else this.askAgain(profile.share.id);
       this.deps.changed();
       const kept = await keptCodexExpiry(join(home, "auth.json"));
       if (ours && !rejected && kept - this.time.now() >= KEEP_LENT_MS) {
@@ -1613,8 +1622,10 @@ export class Sharing {
       if (loginOver(e)) throw this.overThere(profile, e);
       // Left out by who may use it (notOurs): as lendClaude.
       const ours = !notOurs(e);
-      if (ours) this.unreachable.set(host, this.time.now());
-      else this.askAgain(profile.share.id);
+      if (ours) {
+        this.unreachable.set(host, this.time.now());
+        this.scheduleRetry();
+      } else this.askAgain(profile.share.id);
       this.deps.changed();
       const until = ours ? await kept() : 0;
       if (ours && !rejected && until - this.time.now() >= KEEP_AGY_MS) {
@@ -1646,12 +1657,14 @@ export class Sharing {
   /// there first (a host from before asks nothing again: its answer is what it had).
   async status(profile: Json, recheck = false): Promise<{ check: Json; quota: Json }> {
     const host = this.hostOf(profile);
+    await this.rosterSaid();
     try {
       const got = await this.deps.ask(host, null, { method: "share.status", id: profile.share.id, ...(recheck ? { recheck: true } : {}) });
       this.unreachable.delete(host);
       return { check: got?.check ?? null, quota: got?.quota ?? null };
     } catch (e) {
       this.unreachable.set(host, this.time.now());
+      this.scheduleRetry();
       throw e;
     }
   }

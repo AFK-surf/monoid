@@ -920,3 +920,70 @@ test "a profile's home joined as paths.ts joinPath joins it" {
   assert_eq(join_under("\\", "C:\\data", "\\\\srv\\share\\h"), "\\\\srv\\share\\h")
   assert_eq(join_under("\\", "C:\\data", "/abs"), "/abs")
 }
+
+///|
+test "borrowed_failure_stands keeps previous ok within grace, resets on recovery, and respects stands=false and codexRevoked" {
+  let prev_ok = jobj([
+    ("state", js("ok")),
+    ("detail", js("host ok")),
+    ("models", jarr([js("gemini-4-neon")])),
+    ("modelEfforts", jobj([("agy", jobj([("gemini-4-neon", jarr([js("medium"), js("high")]))]))])),
+    ("modelEffortDefaults", jobj([("agy", jobj([("gemini-4-neon", js("medium"))]))])),
+  ])
+  let since : Map[String, Double] = Map::new()
+  // Within 10 min grace: keeps previous ok.
+  assert_true(borrowed_failure_stands(true, Some(prev_ok), since, "ba", 1000.0) is Some(_))
+  assert_true(borrowed_failure_stands(true, Some(prev_ok), since, "ba", 1000.0 + 300_000.0) is Some(_))
+  // Recovery clears since; next outage gets a full 10 min window.
+  since.remove("ba")
+  assert_true(borrowed_failure_stands(true, Some(prev_ok), since, "ba", 1000.0 + 400_000.0) is Some(_))
+  assert_true(borrowed_failure_stands(true, Some(prev_ok), since, "ba", 1000.0 + 400_000.0 + 599_999.0) is Some(_))
+  // At or past 10 min grace: no longer stands.
+  assert_true(borrowed_failure_stands(true, Some(prev_ok), since, "ba", 1000.0 + 400_000.0 + 600_000.0) is None)
+  // Manual check (stands=false) never uses grace.
+  since.remove("ba")
+  assert_true(borrowed_failure_stands(false, Some(prev_ok), since, "ba", 1000.0) is None)
+  // codexRevoked or non-ok previous never uses grace.
+  let revoked = jset(prev_ok, "codexRevoked", jbool(true))
+  assert_true(borrowed_failure_stands(true, Some(revoked), since, "ba", 1000.0) is None)
+  let failed_prev = jobj([("state", js("failed")), ("models", Null)])
+  assert_true(borrowed_failure_stands(true, Some(failed_prev), since, "ba", 1000.0) is None)
+}
+
+///|
+test "preserve_check_metadata keeps models and effort capabilities when borrowed check fails" {
+  let prev = jobj([
+    ("state", js("ok")),
+    ("models", jarr([js("gemini-4-neon"), js("gemini-4-pro")])),
+    ("modelEfforts", jobj([("agy", jobj([("gemini-4-neon", jarr([js("medium"), js("high")]))]))])),
+    ("modelEffortDefaults", jobj([("agy", jobj([("gemini-4-neon", js("medium"))]))])),
+    ("codexUltrafastModels", jarr([js("gpt-6")])),
+    ("fusion", jbool(true)),
+  ])
+  let failed = jobj([
+    ("state", js("failed")),
+    ("detail", js("host offline")),
+    ("models", Null),
+    ("checkedAt", jint(0)),
+  ])
+  let kept = preserve_check_metadata(failed, Some(prev))
+  assert_true(kept.get("state") == Some(Str("failed")))
+  assert_true(kept.get("models") == prev.get("models"))
+  assert_true(kept.get("modelEfforts") == prev.get("modelEfforts"))
+  assert_true(kept.get("modelEffortDefaults") == prev.get("modelEffortDefaults"))
+  assert_true(kept.get("codexUltrafastModels") == prev.get("codexUltrafastModels"))
+  assert_true(kept.get("fusion") == prev.get("fusion"))
+}
+
+///|
+test "quota_ok_should_recheck covers all non-codex subscriptions (agy, claude, cursor, grok)" {
+  assert_true(quota_ok_should_recheck(Some("agy"), false, "subscription", Some(Str("ok")), Some(Str("failed"))))
+  assert_true(quota_ok_should_recheck(Some("agy"), false, "subscription", Some(Str("ok")), Some(Str("login"))))
+  assert_true(quota_ok_should_recheck(Some("claude"), false, "subscription", Some(Str("ok")), Some(Str("failed"))))
+  assert_true(quota_ok_should_recheck(Some("cursor"), false, "subscription", Some(Str("ok")), Some(Str("failed"))))
+  assert_true(quota_ok_should_recheck(Some("grok"), false, "subscription", Some(Str("ok")), Some(Str("failed"))))
+  assert_false(quota_ok_should_recheck(Some("codex"), false, "subscription", Some(Str("ok")), Some(Str("failed"))))
+  assert_true(quota_ok_should_recheck(Some("codex"), true, "subscription", Some(Str("ok")), Some(Str("failed"))))
+  assert_false(quota_ok_should_recheck(Some("agy"), false, "api-provider", Some(Str("ok")), Some(Str("failed"))))
+  assert_false(quota_ok_should_recheck(Some("agy"), false, "subscription", Some(Str("ok")), Some(Str("ok"))))
+}

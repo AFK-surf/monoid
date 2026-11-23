@@ -31,7 +31,7 @@ const member = viewer("dev@example.com", "member");
 
 type Rig = Awaited<ReturnType<typeof rig>>;
 
-async function rig(o: { approval?: string; data?: string; store?: Store; quota?: { n: number }; readQuota?: AccountsDeps["quota"]; resetQuota?: AccountsDeps["resetQuota"]; codex?: AccountsDeps["codex"]; hub?: AccountsDeps["hub"]; hermes?: AccountsDeps["hermes"]; machine?: MachineLogins; check?: AccountsDeps["check"]; discover?: AccountsDeps["discover"]; review?: AccountsDeps["reviewUndecided"]; clock?: Clock.Clock; workspaces?: string[]; shared?: AccountsDeps["shared"]; urls?: AccountsDeps["urls"]; claudeVersion?: string; ownReset?: boolean } = {}) {
+async function rig(o: { approval?: string; data?: string; store?: Store; quota?: { n: number }; readQuota?: AccountsDeps["quota"]; resetQuota?: AccountsDeps["resetQuota"]; codex?: AccountsDeps["codex"]; hub?: AccountsDeps["hub"]; hermes?: AccountsDeps["hermes"]; machine?: MachineLogins; check?: AccountsDeps["check"]; checkOnStart?: boolean; discover?: AccountsDeps["discover"]; review?: AccountsDeps["reviewUndecided"]; clock?: Clock.Clock; workspaces?: string[]; shared?: AccountsDeps["shared"]; urls?: AccountsDeps["urls"]; claudeVersion?: string; ownReset?: boolean } = {}) {
   const data = o.data ?? temp("routes");
   const path = join(data, "config.json");
   if (!existsSync(path)) {
@@ -58,7 +58,7 @@ async function rig(o: { approval?: string; data?: string; store?: Store; quota?:
     config,
     loginCommands: { claude: exe(fake), codex: exe(fake) },
     machine: o.machine ?? null,
-    checkOnStart: false,
+    checkOnStart: o.checkOnStart ?? false,
     check: o.check ?? (async () => ({ state: "ok", detail: "fake", models: [], checkedAt: Date.now() })),
     quota:
       o.readQuota ??
@@ -1682,5 +1682,136 @@ test("the profiles are made once until the config or a profile's check changes",
     assert.equal(r.accounts.profiles().find((p) => p.id === "cx")?.enabled, false);
   } finally {
     await r.close();
+  }
+});
+
+test("borrowed subscription keeps previous ok check during transient host outage, resets on recovery, preserves models after grace, and manual check fails immediately", async () => {
+  const time = testClock();
+  const data = temp("borrowed-grace");
+  writeFileSync(join(data, "config.json"), JSON.stringify({
+    profiles: [{
+      id: "ba",
+      runtime: "agy",
+      home: "homes/ba",
+      access: { kind: "subscription" },
+      share: { id: "sh-1", borrowed: true, host: "H" },
+    }],
+    connects: [],
+  }));
+  let hostUp = true;
+  let statusCalls = 0;
+  const hostCheck = {
+    state: "ok",
+    detail: "host ok",
+    models: ["gemini-4-neon", "gemini-4-pro"],
+    modelEfforts: { agy: { "gemini-4-neon": ["medium", "high"] } },
+    modelEffortDefaults: { agy: { "gemini-4-neon": "medium" } },
+    checkedAt: 100,
+  };
+  const shared = {
+    status: async () => {
+      statusCalls++;
+      if (!hostUp) throw new Error("host unreachable");
+      return {
+        check: hostCheck,
+        quota: { state: "ok", windows: [{ label: "5 小时", usedPercent: 10, resetsAt: null }], detail: null, checkedAt: 100 },
+      };
+    },
+    hostName: () => "Studio",
+    view: () => null,
+  };
+  const t = await rig({ data, clock: time.clock, shared, checkOnStart: true });
+  try {
+    // Initial manual check establishes ok + model metadata.
+    const initial = await t.accounts.check("ba");
+    assert.equal(initial.state, "ok");
+    assert.deepEqual(initial.models, ["gemini-4-neon", "gemini-4-pro"]);
+    assert.equal(t.accounts.health("ba").check?.state, "ok");
+
+    // Host goes offline: checkOnStart (3s), refreshQuota, and recheckBorrowed all keep previous ok within 10 min.
+    hostUp = false;
+    await time.adjust(3_000);
+    await settle();
+    assert.equal(t.accounts.health("ba").check?.state, "ok", "checkOnStart keeps ok during grace");
+    assert.deepEqual(t.accounts.health("ba").check?.models, ["gemini-4-neon", "gemini-4-pro"]);
+
+    await time.adjust(5 * 60_000);
+    await t.accounts.refreshQuota("ba");
+    assert.equal(t.accounts.health("ba").check?.state, "ok", "refreshQuota keeps ok within 10 min grace");
+
+    t.accounts.recheckBorrowed();
+    await settle();
+    assert.equal(t.accounts.health("ba").check?.state, "ok", "recheckBorrowed keeps ok within 10 min grace");
+
+    // Host recovers: clears unreachable timer.
+    hostUp = true;
+    await t.accounts.refreshQuota("ba");
+    await settle();
+    assert.equal(t.accounts.health("ba").check?.state, "ok");
+
+    // Second outage: timer starts fresh, so 5 min later it is still ok.
+    hostUp = false;
+    await t.accounts.refreshQuota("ba");
+    await settle();
+    assert.equal(t.accounts.health("ba").check?.state, "ok", "second outage starts fresh grace period");
+    await time.adjust(5 * 60_000);
+    await t.accounts.refreshQuota("ba");
+    await settle();
+    assert.equal(t.accounts.health("ba").check?.state, "ok", "still ok 5 min into second outage");
+
+    // Past 10 min grace: background check marks failed AND preserves models/efforts metadata.
+    await time.adjust(5 * 60_000);
+    await t.accounts.refreshQuota("ba");
+    await settle();
+    const failed = t.accounts.health("ba").check;
+    assert.equal(failed?.state, "failed", "marks failed once grace period expires");
+    assert.deepEqual(failed?.models, ["gemini-4-neon", "gemini-4-pro"], "preserves models when marked failed");
+    assert.deepEqual(failed?.modelEfforts, hostCheck.modelEfforts);
+    assert.deepEqual(failed?.modelEffortDefaults, hostCheck.modelEffortDefaults);
+
+    // Recover back to ok, then go offline and trigger explicit manual POST /profiles/ba/check: fails immediately.
+    hostUp = true;
+    await t.accounts.refreshQuota("ba");
+    assert.equal(t.accounts.health("ba").check?.state, "ok");
+    hostUp = false;
+    const [status, manual] = await t.call("POST", "/profiles/ba/check");
+    assert.equal(status, 200);
+    assert.equal(manual.state, "failed", "manual check fails immediately without grace");
+    assert.deepEqual(manual.models, ["gemini-4-neon", "gemini-4-pro"], "manual check still preserves models");
+    assert.ok(statusCalls >= 8);
+  } finally {
+    await t.close();
+  }
+});
+
+test("non-Codex local subscription (agy) recovers from failed check when askQuota returns ok", async () => {
+  const data = temp("agy-quota-recover");
+  writeFileSync(join(data, "config.json"), JSON.stringify({
+    profiles: [{ id: "ag", runtime: "agy", home: "homes/ag", access: { kind: "subscription" } }],
+    connects: [],
+  }));
+  let checks = 0;
+  let checkState: "failed" | "ok" = "failed";
+  const t = await rig({
+    data,
+    check: async () => {
+      checks++;
+      return { state: checkState, detail: checkState === "ok" ? "works" : "startup timeout", models: checkState === "ok" ? ["gemini-4-neon"] : null, checkedAt: 0 };
+    },
+    readQuota: async () => ({ state: "ok", windows: [{ label: "5 小时", usedPercent: 15, resetsAt: null }], detail: null, checkedAt: 0 }),
+  });
+  try {
+    await t.accounts.check("ag");
+    assert.equal(t.accounts.health("ag").check?.state, "failed");
+    assert.equal(checks, 1);
+
+    checkState = "ok";
+    await t.accounts.refreshQuota("ag");
+    await until(() => t.accounts.health("ag").check?.state === "ok", "ok quota triggers recovery check for agy subscription");
+    await settle();
+    assert.equal(checks, 2);
+    assert.deepEqual(t.accounts.health("ag").check?.models, ["gemini-4-neon"]);
+  } finally {
+    await t.close();
   }
 });

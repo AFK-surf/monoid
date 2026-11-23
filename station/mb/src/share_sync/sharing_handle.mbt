@@ -747,6 +747,7 @@ pub async fn Sharing::lend_claude(self : Sharing, profile : Json, rejected? : St
       let ours = !not_ours(e)
       if ours {
         self.silent_hosts[host] = now()
+        self.schedule_retry()
       } else {
         self.lent_claude.remove(pid)
         self.ask_again(profile)
@@ -799,6 +800,7 @@ pub async fn Sharing::lend_codex(self : Sharing, profile : Json, rejected? : Boo
       let ours = !not_ours(e)
       if ours {
         self.silent_hosts[host] = now()
+        self.schedule_retry()
       } else {
         self.ask_again(profile)
       }
@@ -901,6 +903,7 @@ pub async fn Sharing::lend_agy(self : Sharing, profile : Json, rejected? : Bool 
       let ours = !not_ours(e)
       if ours {
         self.silent_hosts[host] = now()
+        self.schedule_retry()
       } else {
         self.ask_again(profile)
       }
@@ -948,6 +951,7 @@ fn Sharing::over_there(self : Sharing, profile : Json, e : Error) -> ShareError 
 /// there first (a host from before asks nothing again: its answer is what it had).
 pub async fn Sharing::status(self : Sharing, profile : Json, recheck? : Bool = false) -> Json {
   let host = host_of(profile)
+  self.roster_said()
   try {
     let request = jobj([("method", jstr("share.status")), ("id", gets(Some(profile), ["share", "id"]).unwrap_or(jnull()))])
     if recheck && request is Object(m) {
@@ -963,6 +967,7 @@ pub async fn Sharing::status(self : Sharing, profile : Json, recheck? : Bool = f
   } catch {
     e => {
       self.silent_hosts[host] = (self.deps.clock.now)()
+      self.schedule_retry()
       raise e
     }
   }

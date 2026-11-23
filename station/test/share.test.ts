@@ -14,6 +14,7 @@ import { memory } from "./reference/memory.ts";
 import { Cloud } from "../src/cloud/state.ts";
 import { allowedIn } from "../src/sessions/config.ts";
 import { until } from "./accounts-fakes.ts";
+import { testClock } from "./hub-fakes.ts";
 
 const A = "a".repeat(64);
 const B = "b".repeat(64);
@@ -60,7 +61,7 @@ type Station = { data: string; config: ConfigFile; sharing: Sharing; lent: strin
 const made: Sharing[] = [];
 after(() => Promise.all(made.map((s) => s.close())));
 
-function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void>; itself?: (station: string) => boolean; agyRenew?: (home: string) => Promise<void> } = {}): Station {
+function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void>; itself?: (station: string) => boolean; agyRenew?: (home: string) => Promise<void>; clock?: any; recheck?: () => void } = {}): Station {
   const data = mkdtempSync(join(tmpdir(), "share-"));
   writeFileSync(join(data, "config.json"), JSON.stringify({ profiles }));
   const config = new ConfigFile(data);
@@ -1247,4 +1248,51 @@ test("sharing a profile updates hosted state and notifies local listeners at onc
   assert.equal(c.config.raw().profiles.length, 2, "C borrowed both shared profiles");
   await a.sharing.close();
   await c.sharing.close();
+});
+
+test("Sharing.status waits for rosterSaid and schedules retry when host is unreachable, triggering recheck on recovery", async () => {
+  const cloud = new FakeCloud();
+  const time = testClock();
+  const all = new Map<string, Station>();
+  let rechecks = 0;
+  const a = station(cloud, A, () => all, [SUB]);
+  const b = station(cloud, B, () => all, [], undefined, { clock: time.clock, recheck: () => { rechecks++; } });
+  all.set(A, a).set(B, b);
+
+  await a.sharing.shareProfile("max", true, null);
+  await settle(a, b);
+  const borrowed = b.config.raw().profiles[0];
+  assert.ok(borrowed?.share?.borrowed === true);
+
+  // 1. status() waits for rosterSaid() before asking the host.
+  const bCloud = (b.sharing as any).deps.cloud;
+  bCloud.peersCurrent = false;
+  let askedStatus = 0;
+  const origAsk = (b.sharing as any).deps.ask;
+  (b.sharing as any).deps.ask = async (to: string, ws: string | null, req: any) => {
+    if (req?.method === "share.status") askedStatus++;
+    return origAsk(to, ws, req);
+  };
+  const pending = b.sharing.status(borrowed);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(askedStatus, 0, "status waits until peersCurrent becomes true");
+  bCloud.peersCurrent = true;
+  cloud.tell();
+  const got = await pending;
+  assert.equal(askedStatus, 1, "status asks host once roster is ready");
+  assert.equal(got.check.state, "ok");
+
+  // 2. When host goes offline after reconcile already settled, status() marks unreachable and schedules retry.
+  all.delete(A);
+  await assert.rejects(() => b.sharing.status(borrowed), /peer unavailable/);
+  assert.equal(rechecks, 0);
+
+  // Host comes back: advancing clock past RETRY_MS (60s) fires scheduled reconcile, probes host, and calls recheck().
+  all.set(A, a);
+  await time.adjust(60_000);
+  await until(() => rechecks === 1, "scheduled retry probes recovered host and triggers recheck");
+  assert.equal(rechecks, 1);
+
+  await a.sharing.close();
+  await b.sharing.close();
 });
