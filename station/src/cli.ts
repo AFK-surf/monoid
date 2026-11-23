@@ -15,6 +15,7 @@ import { version } from "./ops/version.ts";
 import { wall } from "./ops/fibers.ts";
 import { healthOf, healthPath, workingOf } from "./ops/health.ts";
 import { pendingLock } from "./cloud/presence.ts";
+import { formatWaitCondition, parseAutoUpdateWhen, readOverrideSync } from "./updates/override.ts";
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => typeof s === "string") : []);
 
@@ -305,6 +306,18 @@ export function status(data: string, now = wall.now()): string {
   const running = station && Number.isInteger(station.pid) && station.pid > 0 && alive(station.pid) ? station : null;
   const out = [say("station.cli.status.data", { path: data })];
   out.push(running ? say("station.cli.status.running", { pid: running.pid, version: typeof running.version === "string" ? running.version : "?" }) : say("station.cli.status.notRunning"));
+  const override = readOverrideSync(join(data, "app"));
+  const cfg = read(process.env.STILLFAIL_CONFIG || join(data, "config.json"));
+  const autoWhen = parseAutoUpdateWhen(cfg);
+  if (override !== null) {
+    out.push(say("station.cli.status.override", { kind: override.kind, base: override.baseVersion ?? "?" }));
+    if (override.note) out.push(say("station.cli.status.overrideNote", { note: override.note }));
+  }
+  if (autoWhen !== null && autoWhen.wait.length > 0) {
+    out.push(say("station.cli.status.autoWhen", { conditions: autoWhen.wait.map(formatWaitCondition).join(", ") }));
+  } else if (override !== null || (autoWhen !== null && autoWhen.wait.length === 0)) {
+    out.push(say("station.cli.status.autoHeld"));
+  }
   const join_ = say("station.cli.status.join");
   const state = existsSync(join(data, "mesh", "cloud.json")) ? readState(data) : null;
   if (!state) {

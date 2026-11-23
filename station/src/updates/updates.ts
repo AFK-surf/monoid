@@ -55,8 +55,12 @@ import type { RuntimeKind } from "../agents/runtime.ts";
 import { platform as machine } from "../platform/index.ts";
 import { holding, onLetGo } from "./holds.ts";
 import { AGY_MANIFESTS, watchAgyDownload } from "./agy-download.ts";
-import { type Back, applyApart, backTo, earlierIn, planBack, planUpdate, readFeed, takeArchive, takeDelta, verifiedOrNull, type Plan } from "./release.ts";
-import type { Release } from "../../../shared/release-signed.ts";
+import { type Back, applyApart, backTo, earlierIn, planBack, planUpdate, readFeed, readIncluded, takeArchive, takeDelta, verifiedOrNull, type Plan } from "./release.ts";
+import { allowed, type Release } from "../../../shared/release-signed.ts";
+import {
+  type AutoUpdateWhen, type OverrideMeta, type ReleaseIncluded, type WaitCondition,
+  conditionsMet, formatWaitCondition, needsIncluded, parseAutoUpdateWhen, parseWaitCondition, readOverrideSoon, readOverrideSync,
+} from "./override.ts";
 import { SDK_PACKAGE, sdkPrefix, sdkVersionSoon } from "../agents/cursor.ts";
 import { canSwitchCodexSoon, captureCodexSoon, codexBinarySoon, hasCodexHostSoon, missingCodexHost, restoreCodex, switchCodex, type CodexEntry } from "./codex-repair.ts";
 import {
@@ -85,6 +89,12 @@ export type SoftwareVersion = {
   auto?: boolean;
   /// The station's, updating by itself turned off as it went back: the release it left, past which it turns on again.
   autoAfter?: string;
+  overridden?: true;
+  overrideBase?: string;
+  overrideKind?: "bundle" | "overlay";
+  overrideNote?: string;
+  autoWhen?: string[];
+  autoHeld?: true;
   updatable: boolean;
   repairable?: boolean;
   note?: string;
@@ -342,6 +352,12 @@ export class Updates {
 
   /// The runtimes whose versions are read (none on a rig).
   private readonly kinds: readonly RuntimeKind[];
+  /// Local override metadata (<app>/OVERRIDE), read at construction and refreshed in readStation.
+  private override: OverrideMeta | null;
+  /// Verified latest release on the active channel, and its verified included manifest (when needed by autoUpdateWhen).
+  private latestRelease: Release | null = null;
+  private latestIncluded: ReleaseIncluded | null = null;
+  private includedCache = new Map<string, ReleaseIncluded>();
 
   constructor(o: UpdatesOptions) {
     this.app = o.app;
@@ -369,6 +385,7 @@ export class Updates {
     // Read before an update can replace the release.
     this.release = releaseChannel(this.app);
     this.installed = this.release ?? channelFrom(this.config.raw(), null);
+    this.override = readOverrideSync(this.app);
     // The station itself is there from the start: what it runs and whether it is updated from here are its own, read
     // now (the pages said 未安装 until every runtime's version was read, and for good where one of those never ended).
     this.items.station = {
@@ -425,6 +442,16 @@ export class Updates {
     return !this.auto() && typeof after === "string" && buildOf(after) !== null ? after : null;
   }
 
+  /// Conditional auto-update rule (`autoUpdateWhen` in config.json), when set.
+  autoWhen(): AutoUpdateWhen | null {
+    return parseAutoUpdateWhen(this.config.raw());
+  }
+
+  /// Local override metadata (<app>/OVERRIDE), when this station runs a locally replaced build.
+  overrideMeta(): OverrideMeta | null {
+    return this.override;
+  }
+
   // ---- the life of the part ----
 
   /// Reads them at once and every few hours after (every ten minutes while the station updates itself); an update of
@@ -445,6 +472,7 @@ export class Updates {
       if (!this.closed) this.autoUpdate("what held the update back ended");
     });
     this.started = true;
+    this.spawn(() => this.reconcileOverrideWait());
     this.spawn(() => this.followStarted());
     this.schedule();
   }
@@ -464,7 +492,7 @@ export class Updates {
   }
 
   private setting() {
-    return `${this.channel()} ${this.auto()} ${this.autoAfter()}`;
+    return `${this.channel()} ${this.auto()} ${this.autoAfter()} ${JSON.stringify(this.autoWhen())}`;
   }
 
   private spawn(f: () => Promise<unknown>) {
@@ -572,7 +600,10 @@ export class Updates {
         ? offer(item.version, latest, channel, this.installed)
         : [item.version !== null && latest !== null && newer(item.version, latest), false];
       // Only where it can be updated from here.
-      const here = station && item.note === null && item.version !== null;
+      const here = station && item.note === null && (item.version !== null || this.override !== null);
+      const when = station ? this.autoWhen() : null;
+      const autoWhen = when && when.wait.length > 0 ? when.wait.map(formatWaitCondition) : undefined;
+      const autoHeld = station && ((this.override !== null && (when === null || when.wait.length === 0)) || (when !== null && when.wait.length === 0)) ? true : undefined;
       const progress = item.updating === null ? null : station ? this.progressOf(item.step) : item.progress;
       const line: SoftwareVersion = {
         id: kind,
@@ -586,6 +617,12 @@ export class Updates {
         channel: here ? channel : undefined,
         auto: here ? this.auto() : undefined,
         autoAfter: here ? (this.autoAfter() ?? undefined) : undefined,
+        overridden: station && this.override !== null ? true : undefined,
+        overrideBase: station ? (this.override?.baseVersion ?? undefined) : undefined,
+        overrideKind: station ? this.override?.kind : undefined,
+        overrideNote: station ? this.override?.note : undefined,
+        autoWhen,
+        autoHeld,
         updatable: item.how !== null || here,
         repairable: item.repairable || undefined,
         note: item.note ? say(item.note, lang) : undefined,
@@ -672,25 +709,48 @@ export class Updates {
   }
 
   private async readStation(channel: Channel): Promise<Item> {
+    this.override = await readOverrideSoon(this.app);
     const version = (await stationVersionSoon(this.app)) ?? null;
     const app = await canonical(this.app);
     const origin = this.origin() || null;
     const note = stationNote(this.app, app, app === null ? null : await canonical(join(this.data, "app")), origin);
     let latest: string | null = null;
     let earlier: Release[] = [];
+    let release: Release | null = null;
+    let included: ReleaseIncluded | null = null;
     if (origin !== null) {
       try {
         const said = await readFeed(channel, origin, 15_000, this.cloudRequest);
         // Only a release whose words verify is one (none is newer than a feed that does not).
-        const { release, why } = verifiedOrNull(said, this.trusted);
-        if (release === null) log.warn("updates", "the station's latest release does not verify: not offered", { channel, why });
+        const verified = verifiedOrNull(said, this.trusted);
+        release = verified.release;
+        if (release === null) log.warn("updates", "the station's latest release does not verify: not offered", { channel, why: verified.why });
         latest = release?.version ?? null;
         const before = earlierIn(said, this.trusted);
         if (before.why.length > 0) log.warn("updates", "releases before the latest do not verify: not offered", { channel, why: before.why });
         earlier = before.releases;
+        const when = this.autoWhen();
+        if (release !== null && when !== null && when.wait.length > 0 && needsIncluded(when.wait) && release.included !== undefined) {
+          const cached = this.includedCache.get(release.included.sha256);
+          if (cached !== undefined) {
+            included = cached;
+          } else {
+            try {
+              included = await readIncluded(origin, release.included, this.cloudRequest);
+              if (this.includedCache.size >= 16) this.includedCache.clear();
+              this.includedCache.set(release.included.sha256, included);
+            } catch (e) {
+              log.warn("updates", "the station's included manifest not read", { file: release.included.file, error: (e as Error).message });
+            }
+          }
+        }
       } catch (e) {
         log.warn("updates", "the station's latest release not read", { error: (e as Error).message });
       }
+    }
+    if (channel === this.channel()) {
+      this.latestRelease = release;
+      this.latestIncluded = included;
     }
     return { ...empty(), installed: true, version, latest, note, channel, earlier };
   }
@@ -759,10 +819,18 @@ export class Updates {
   /// read at once, and a newer release installed.
   async setAuto(on: boolean, lang: Lang = stationLang()) {
     this.refuseStationNote(lang);
-    if (this.auto() !== on || this.config.raw()?.autoUpdateAfter !== undefined) {
+    if (this.override !== null && on) throw refused(lang, "station.updates.overrideAutoRefused");
+    const existingWhen = this.autoWhen();
+    const clearRestore = !on && this.override !== null && existingWhen !== null && existingWhen.restoreAuto;
+    const clearWhen = on && this.override === null && this.config.raw()?.autoUpdateWhen !== undefined;
+    if (this.auto() !== on || this.config.raw()?.autoUpdateAfter !== undefined || clearWhen || clearRestore) {
       await this.config.updateSoon((raw) => {
         raw.autoUpdate = on;
         delete raw.autoUpdateAfter;
+        if (on && this.override === null) delete raw.autoUpdateWhen;
+        if (clearRestore && raw.autoUpdateWhen && typeof raw.autoUpdateWhen === "object") {
+          (raw.autoUpdateWhen as Record<string, unknown>).restoreAuto = false;
+        }
       });
       this.lastSetting = this.setting();
       log.info("updates", "the station's updating by itself set", { on });
@@ -770,6 +838,47 @@ export class Updates {
     }
     if (on) await this.check();
     this.schedule();
+  }
+
+  /// Sets or clears conditional auto-update wait rules (`autoUpdateWhen`).
+  async setWait(wait: WaitCondition[] | null, lang: Lang = stationLang()) {
+    this.refuseStationNote(lang);
+    const checkAfter = await this.keepWait(wait);
+    if (checkAfter) await this.check();
+    this.schedule();
+  }
+
+  /// Persists `autoUpdateWhen` without refusing on station note (shared by `setWait` and SIGHUP `wait-ask`).
+  /// Returns whether a feed check should run next.
+  async keepWait(wait: WaitCondition[] | null): Promise<boolean> {
+    const existing = this.autoWhen();
+    if (wait === null) {
+      if (existing === null) return false;
+      const restore = this.override === null && existing.restoreAuto;
+      await this.config.updateSoon((raw) => {
+        delete raw.autoUpdateWhen;
+        if (restore) raw.autoUpdate = true;
+      });
+      this.lastSetting = this.setting();
+      log.info("updates", "the station's auto-update wait cleared", { restoredAuto: restore });
+      this.changed();
+      return restore;
+    }
+    const restoreAuto = existing !== null ? existing.restoreAuto : this.auto();
+    const next: AutoUpdateWhen = {
+      wait,
+      restoreAuto,
+      ...(this.override !== null ? { forOverride: true } : {}),
+      setAt: this.fibers.now(),
+    };
+    await this.config.updateSoon((raw) => {
+      raw.autoUpdate = false;
+      raw.autoUpdateWhen = next;
+    });
+    this.lastSetting = this.setting();
+    log.info("updates", "the station's auto-update wait set", { wait: wait.map(formatWaitCondition), forOverride: this.override !== null });
+    this.changed();
+    return true;
   }
 
   /// Puts the station on `channel` (as someone asked, from a page): kept in its config, and what is out read again from
@@ -795,12 +904,17 @@ export class Updates {
   /// channel in run/channel-ask, keeps it, reads what is out on it, and answers in run/channel-answer. Asks heard
   /// while one is answered wait for it (each reads the ask the one before left).
   answerChannelAsk(): Promise<void> {
-    const answered = this.answering.then(() =>
-      answerChannelAsk(join(this.data, "run"), async (channel) => {
+    const runDir = join(this.data, "run");
+    const answered = this.answering.then(async () => {
+      await answerChannelAsk(runDir, async (channel) => {
         await this.keepChannel(channel);
         this.spawn(() => this.check());
-      }),
-    );
+      });
+      await answerWaitAsk(runDir, async (wait) => {
+        const checkAfter = await this.keepWait(wait);
+        if (checkAfter) this.spawn(() => this.check());
+      });
+    });
     this.answering = answered.catch(() => {});
     return answered;
   }
@@ -824,17 +938,70 @@ export class Updates {
   /// restarting, to the next start). What is not handed over is (holds.ts: a command run with a vault grant, whose
   /// proxy would go with this process).
   toUpdateTo(): string | null {
-    if (!this.auto() || holding() > 0) return null;
+    if (holding() > 0) return null;
     const item = this.items.station;
     if (item.note !== null || item.updating !== null || item.channel !== this.channel() || this.runtimeUpdating() !== null) return null;
     if (item.latest === null) return null;
+    const when = this.autoWhen();
+    if (this.override !== null) {
+      if (when === null || when.wait.length === 0) return null;
+      if (this.latestRelease === null || this.latestRelease.version !== item.latest) return null;
+      if (!allowed(this.latestRelease, buildOf(item.version), this.channel(), this.installed, this.override.baseBuild)) return null;
+      if (!conditionsMet(when.wait, this.latestRelease, this.latestIncluded)) return null;
+      return this.tried !== item.latest || this.retryDue === item.latest ? item.latest : null;
+    }
+    if (when !== null) {
+      if (when.wait.length === 0) return null;
+      if (this.latestRelease === null || this.latestRelease.version !== item.latest) return null;
+      if (!conditionsMet(when.wait, this.latestRelease, this.latestIncluded)) return null;
+      const [isNewer] = offer(item.version, item.latest, this.channel(), this.installed);
+      return isNewer && (this.tried !== item.latest || this.retryDue === item.latest) ? item.latest : null;
+    }
+    if (!this.auto()) return null;
     const [isNewer] = offer(item.version, item.latest, this.channel(), this.installed);
     return isNewer && (this.tried !== item.latest || this.retryDue === item.latest) ? item.latest : null;
+  }
+
+  /// Clears `autoUpdateWhen` and restores `restoreAuto` once an override is gone or a non-override wait condition is
+  /// already satisfied by the running official version.
+  private async reconcileOverrideWait() {
+    if (this.override !== null) return;
+    const when = this.autoWhen();
+    if (when === null) return;
+    let satisfied = when.forOverride === true;
+    if (!satisfied && when.wait.length > 0) {
+      const version = this.items.station.version;
+      const curBuild = buildOf(version);
+      if (version !== null && this.latestRelease !== null && this.latestRelease.version === version && conditionsMet(when.wait, this.latestRelease, this.latestIncluded)) {
+        satisfied = true;
+      } else if (curBuild !== null && !needsIncluded(when.wait)) {
+        satisfied = when.wait.every((c) => {
+          if (c.kind === "version") {
+            const n = buildOf(c.value);
+            return n !== null && curBuild >= n;
+          }
+          if (c.kind === "after") {
+            const n = buildOf(c.value);
+            return n !== null && curBuild > n;
+          }
+          return false;
+        });
+      }
+    }
+    if (!satisfied) return;
+    await this.config.updateSoon((raw) => {
+      delete raw.autoUpdateWhen;
+      if (when.restoreAuto) raw.autoUpdate = true;
+    });
+    this.lastSetting = this.setting();
+    log.info("updates", "auto-update wait settled on official release", { restoredAuto: when.restoreAuto, forOverride: when.forOverride === true });
+    this.changed();
   }
 
   /// Updating by itself, turned off as the station went back (backStation), on again once its channel's latest is
   /// newer than the release it left.
   private async resumeAuto() {
+    await this.reconcileOverrideWait();
     const after = this.autoAfter();
     const item = this.items.station;
     if (after === null || item.channel !== this.channel() || item.latest === null) return;
@@ -863,7 +1030,7 @@ export class Updates {
     const attempt = Effect.promise(async () => {
       if (over()) return true;
       this.retryDue = version;
-      if (this.auto()) {
+      if (this.auto() || this.autoWhen() !== null) {
         try {
           // A runtime-only reading may already be in flight; wait for it, then read the station's feed too.
           if (this.checking) await this.checking.catch(() => {});
@@ -1327,7 +1494,7 @@ export class Updates {
     // The release verified, the installer to run and what it is told (refused in `lang`: not left updating).
     let plan: Plan;
     try {
-      plan = await planUpdate({ base: origin, channel, app: this.app, installed: this.installed, lang, trusted: this.trusted, request: this.cloudRequest });
+      plan = await planUpdate({ base: origin, channel, app: this.app, installed: this.installed, lang, override: this.override, trusted: this.trusted, request: this.cloudRequest });
     } catch (e) {
       Object.assign(station, before);
       throw e;
@@ -1717,6 +1884,9 @@ export class Updates {
 /// Where `stillfail-station channel` asks the running station for an update channel, and where it answers.
 export const CHANNEL_ASK = "channel-ask";
 export const CHANNEL_ANSWER = "channel-answer";
+/// Where `stillfail replace --wait` asks the running station to set/clear `autoUpdateWhen`, and where it answers.
+export const WAIT_ASK = "wait-ask";
+export const WAIT_ANSWER = "wait-answer";
 
 /// Writes `text` to `path` whole (a reader never sees half of it).
 export async function writeWhole(path: string, text: string): Promise<void> {
@@ -1747,6 +1917,41 @@ export async function answerChannelAsk(runDir: string, set: (channel: Channel) =
     await writeWhole(join(runDir, CHANNEL_ANSWER), `${answer}\n`);
   } catch (e) {
     log.warn("updates", "the update channel's answer not written", { error: (e as Error).message });
+  }
+}
+
+/// The running station's side of `stillfail replace --wait`: takes the JSON payload in <run>/wait-ask
+/// (`{ wait: WaitCondition[] | null }`), updates config, and answers in <run>/wait-answer (`ok` or `error <why>`).
+export async function answerWaitAsk(runDir: string, set: (wait: WaitCondition[] | null) => Promise<void> | void): Promise<void> {
+  const ask = join(runDir, WAIT_ASK);
+  const asked = await readFile(ask, "utf8").catch(() => null);
+  if (asked === null) return;
+  await rm(ask, { force: true });
+  let answer: string;
+  try {
+    const parsed = JSON.parse(asked);
+    if (parsed?.wait === null) {
+      await set(null);
+      answer = "ok";
+    } else if (Array.isArray(parsed?.wait)) {
+      const wait: WaitCondition[] = [];
+      for (const item of parsed.wait) {
+        const c = parseWaitCondition(item);
+        if (c === null) throw new Error("invalid wait condition in wait-ask");
+        wait.push(c);
+      }
+      await set(wait);
+      answer = "ok";
+    } else {
+      throw new Error("wait-ask expects { wait: [...] | null }");
+    }
+  } catch (e) {
+    answer = `error ${(e as Error).message}`;
+  }
+  try {
+    await writeWhole(join(runDir, WAIT_ANSWER), `${answer}\n`);
+  } catch (e) {
+    log.warn("updates", "the auto-update wait answer not written", { error: (e as Error).message });
   }
 }
 

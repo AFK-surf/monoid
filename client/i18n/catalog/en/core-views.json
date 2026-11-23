@@ -893,6 +893,8 @@
   "core-views.present.access.service": "Service account",
   "core-views.present.profile.never_checked": "Not checked yet",
   "core-views.software.dev": "Dev build",
+  "core-views.software.override": "Local override",
+  "core-views.software.override_based": "Local override (based on {base})",
   "core-views.software.unknown": "Unknown",
   "core-views.software.not_installed": "Not installed",
   "core-views.software.latest": "Up to date",

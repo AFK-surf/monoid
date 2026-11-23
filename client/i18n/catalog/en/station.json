@@ -216,6 +216,12 @@
   "station.cli.status.frontDown": "Work: failing (the local mesh front is disconnected and reconnecting; devices can't reach this station until it's back. The launcher restarts the front by itself)",
   "station.cli.status.keyConflict": "Work: failing (another machine or process is using this station's key, and each keeps replacing the other's connection, so devices connect and drop; stop the station running elsewhere, or enroll one of them again as a new station)",
   "station.cli.status.limited": "Work: limited (not connected to still.fail cloud yet, retrying; devices may not find this station until then — see the “Online” line above for why)",
+  "station.cli.status.override": "Local override: {kind} (base {base})",
+  "station.cli.status.overrideNote": "Override note: {note}",
+  "station.cli.status.autoWhen": "Auto-update: waiting for {conditions}",
+  "station.cli.status.autoHeld": "Auto-update: paused (held by local override)",
+  "station.cli.replace.none": "No local override active",
+  "station.cli.replace.backup": "Revert backup: {path}",
   "station.cli.unknownChannel": "Unknown channel {channel}",
   "station.connect.heldElsewhere": "This bot is already connected on the station {station}. A connect runs on one station of the workspace: move it there instead of adding it again.",
   "station.connect.moveWhere": "Pick another station of this connect's workspace to move it to.",
@@ -869,5 +875,6 @@
   "station.group.badCode": "A join code is 16 letters and digits, like XXXX-XXXX-XXXX-XXXX",
   "station.group.longName": "A member's name is {most} characters at most",
   "station.speed.invalid": "Choose Standard, Fast or Ultrafast on a runtime that supports speed settings.",
-  "station.speed.ultrafast_unavailable": "To use Ultrafast, choose a supported Codex model and an eligible ChatGPT subscription, or choose Standard or Fast."
+  "station.speed.ultrafast_unavailable": "To use Ultrafast, choose a supported Codex model and an eligible ChatGPT subscription, or choose Standard or Fast.",
+  "station.updates.overrideAutoRefused": "Auto-update cannot be enabled while running a local override; set wait conditions or restore the official release first"
 }

@@ -453,6 +453,19 @@ fn Admin::updates_routes(self : Admin) -> Array[Route] {
         self.backend.tell("updates.setAuto", [jbool(on), js(r.lang)])
       }),
     ),
+    // Conditional auto-update wait rules: { wait: string[] | null }.
+    route(
+      "POST",
+      "^\\/updates\\/wait$",
+      answer(async fn(r) {
+        match input(r).get("wait") {
+          Some(Null) => self.backend.tell("updates.setWait", [Null, js(r.lang)])
+          Some(Arr(xs)) if xs.iter().all(x => x is Str(_)) =>
+            self.backend.tell("updates.setWait", [Arr(xs), js(r.lang)])
+          _ => raise Refused(400, "wait: string[] or null")
+        }
+      }),
+    ),
     // One of them updated (or a runtime installed): { id }; the station put back to a release before it: { id, to }.
     route(
       "POST",

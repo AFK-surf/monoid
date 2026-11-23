@@ -23,6 +23,61 @@ test("an incomplete Codex is not labelled up to date", () => {
   assert.equal((conform("SoftwareVersion", shown) as J).ok.repairable, true);
 });
 
+test("an overridden station shows local override version and is not labelled up to date", () => {
+  const withBase = p.software({
+    id: "station",
+    name: "Station",
+    installed: true,
+    version: "0.1.1288",
+    latest: "0.1.1288",
+    newer: false,
+    downgrade: false,
+    updatable: true,
+    state: "idle",
+    overridden: true,
+    overrideBase: "0.1.1288",
+    overrideKind: "overlay",
+    overrideNote: "hotfix",
+    autoWhen: ["#8270", "FB-123"],
+  }) as J;
+  assert.equal(withBase.shownText, "本地替换版（基于 0.1.1288）");
+  assert.equal(withBase.tipText, "");
+  const conformedBase = (conform("SoftwareVersion", withBase) as J).ok;
+  assert.equal(conformedBase.overridden, true);
+  assert.equal(conformedBase.overrideBase, "0.1.1288");
+  assert.equal(conformedBase.overrideKind, "overlay");
+  assert.equal(conformedBase.overrideNote, "hotfix");
+  assert.deepEqual(conformedBase.autoWhen, ["#8270", "FB-123"]);
+
+  const withoutBase = p.software({
+    id: "station",
+    name: "Station",
+    installed: true,
+    version: "0.1.1288",
+    latest: null,
+    checkedAt: 1_000,
+    newer: false,
+    downgrade: false,
+    updatable: true,
+    state: "idle",
+    overridden: true,
+    autoHeld: true,
+  }) as J;
+  assert.equal(withoutBase.shownText, "本地替换版");
+  assert.equal(withoutBase.tipText, "检查更新失败，点击「检查更新」重试");
+  const conformedPlain = (conform("SoftwareVersion", withoutBase) as J).ok;
+  assert.equal(conformedPlain.autoHeld, true);
+  assert.deepEqual(conformedPlain.autoWhen, []);
+
+  try {
+    setCurrent("en");
+    assert.equal((p.software({ id: "station", name: "Station", installed: true, latest: "0.1.1288", newer: false, updatable: true, state: "idle", overridden: true, overrideBase: "0.1.1288" }) as J).shownText, "Local override (based on 0.1.1288)");
+    assert.equal((p.software({ id: "station", name: "Station", installed: true, latest: "0.1.1288", newer: false, updatable: true, state: "idle", overridden: true }) as J).shownText, "Local override");
+  } finally {
+    setCurrent("zh");
+  }
+});
+
 test("reset credits show the expiries known for each available card", () => {
   const now = 1_900_000_000_000;
   const day = 86_400_000;

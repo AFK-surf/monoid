@@ -301,6 +301,32 @@ pub fn status_text(host : @host.Host, data : String, now : Double) -> String {
       )
     None => out.push(say("station.cli.status.notRunning", []))
   }
+  let override_meta = match read_text(path([data, "app", "OVERRIDE"])) {
+    Some(t) => @updates.parse_override_json(t)
+    None => None
+  }
+  let auto_when = match read_json(config_path(data)) {
+    Some(cfg) => @updates.parse_auto_update_when(to_jv(cfg))
+    None => None
+  }
+  match override_meta {
+    Some(ov) => {
+      out.push(say("station.cli.status.override", [("kind", ov.kind), ("base", ov.base_version.unwrap_or("?"))]))
+      match ov.note {
+        Some(n) => out.push(say("station.cli.status.overrideNote", [("note", n)]))
+        None => ()
+      }
+    }
+    None => ()
+  }
+  match auto_when {
+    Some(aw) if aw.wait.length() > 0 =>
+      out.push(say("station.cli.status.autoWhen", [("conditions", aw.wait.map(@updates.format_wait_condition).join(", "))]))
+    _ =>
+      if override_meta is Some(_) || (auto_when is Some(aw) && aw.wait.length() == 0) {
+        out.push(say("station.cli.status.autoHeld", []))
+      }
+  }
   let join_ = say("station.cli.status.join", [])
   let disk : @cloud_lock.Disk = { host, }
   let state = if disk.exists(path([data, "mesh", "cloud.json"])) {

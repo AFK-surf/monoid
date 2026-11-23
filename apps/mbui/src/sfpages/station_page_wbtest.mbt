@@ -1385,6 +1385,106 @@ test "gone back, updating by itself held till a newer release says so under the 
 }
 
 ///|
+test "an overridden station with autoWhen shows override status, hides auto switch, and restores official after confirm" {
+  for (w, platform) in page_cases {
+    let calls : Array[Json] = []
+    let t = setting_tester(Station("ws1/st1"), w, platform~, mode="settings-station-override", h=2400.0, over=fn(s) {
+      {
+        ..s,
+        call: fn(name, params, done) {
+          if name == "software.update" { calls.push(params) }
+          (s.call)(name, params, done)
+        },
+      }
+    })
+    t.run_for(@ui.move_most_ms)
+    let at = "\{w} platform \{platform}"
+    assert_true(t.find("本地替换版（基于 0.1.1288）") is Some(_), msg="shownText: \{at}")
+    assert_true(t.find("mm2 overview 扇出热修复") is Some(_), msg="overrideNote: \{at}")
+    assert_true(t.find("将在 #8270、FB-123 发布后自动恢复官方版") is Some(_), msg="autoWhen: \{at}")
+    assert_true(t.query(Switch, label="自动更新") is None, msg="auto switch hidden while overridden: \{at}")
+    assert_true(t.query(Button, label="恢复官方版本") is Some(_), msg="restore button: \{at}")
+    assert_eq(t.audit(), [], msg="audit \{at}: \{Repr(t.audit())}")
+    assert_eq(t.squeeze_faults(), [], msg="squeeze \{at}: \{Repr(t.squeeze_faults())}")
+    t.click(Button, label="恢复官方版本")
+    t.draw()
+    presented_in(t)
+    assert_true(t.find("恢复为官方版本？") is Some(_), msg="confirm title: \{at}")
+    assert_true(t.find("0.1.1300") is Some(_), msg="confirm note latest: \{at}")
+    assert_eq(calls.length(), 0, msg="asked first: \{at}")
+    assert_eq(t.audit(), [], msg="confirm audit: \{at}")
+    t.click(Button, label="恢复官方版")
+    t.draw()
+    presented_in(t)
+    assert_eq(calls.length(), 1, msg="restore called: \{at}")
+    assert_eq(text(Some(calls[0]), "id"), "station", msg=at)
+    assert_eq(text(Some(calls[0]), "station"), "ws1/st1", msg=at)
+    // Also audit software_row_node with autoWhen directly at 1.0x and 1.3x font scales across widths
+    @sfbase.reset()
+    reset()
+    @settings.reset()
+    @sffixture.fixture_reset()
+    @sf.presenters_reset()
+    @sf.set_words(@sfbase.fill)
+    let src = @sffixture.fixture("settings")
+    let row_json : Json = {
+      "id": "station", "name": "Station", "installed": true, "updatable": true, "state": "idle",
+      "shownText": "本地替换版（基于 0.1.1288）", "latest": "0.1.1300", "overridden": true,
+      "overrideBase": "0.1.1288", "overrideKind": "overlay", "overrideNote": "mm2 overview 扇出热修复",
+      "autoWhen": ["#8270", "FB-123"], "channel": "stable", "auto": false,
+    }
+    let core = @sfbase.settings_core(src, rig_workspace)
+    let rt = station_part_tester(fn(p) {
+      software_row_node(p, core, "ws1/st1", fn() { Some(row_json) }, true, fn() { false }, fn() { false }, fn() { true }, @sf.TipLayer::new(fn() { None }))
+    }, w~, h=400.0, platform~)
+    for scale in [1.0, 1.3] {
+      rt.set_font_scale(scale)
+      rt.draw()
+      assert_eq(rt.audit(), [], msg="row autoWhen audit \{at} scale \{scale}: \{Repr(rt.audit())}")
+      assert_eq(rt.squeeze_faults(), [], msg="row autoWhen squeeze \{at} scale \{scale}: \{Repr(rt.squeeze_faults())}")
+    }
+  }
+}
+
+///|
+test "an overridden station with autoHeld shows paused note and restore button cleanly across languages and font scales" {
+  for (w, platform) in page_cases {
+    @sfbase.reset()
+    reset()
+    @settings.reset()
+    @sffixture.fixture_reset()
+    @sf.presenters_reset()
+    @sf.set_words(@sfbase.fill)
+    let src = @sffixture.fixture("settings")
+    let held : Json = {
+      "id": "station", "name": "Station", "installed": true, "updatable": true, "state": "idle",
+      "shownText": "本地替换版", "overridden": true, "autoHeld": true, "channel": "stable", "auto": false,
+    }
+    let core = @sfbase.settings_core(src, rig_workspace)
+    let t = station_part_tester(fn(p) {
+      software_row_node(p, core, "ws1/st1", fn() { Some(held) }, true, fn() { false }, fn() { false }, fn() { true }, @sf.TipLayer::new(fn() { None }))
+    }, w~, h=400.0, platform~)
+    let at = "\{w} platform \{platform}"
+    assert_true(t.find("本地替换中，已暂停自动更新") is Some(_), msg=at)
+    assert_true(t.query(Switch, label="自动更新") is None, msg="auto switch hidden: \{at}")
+    assert_true(t.query(Button, label="恢复官方版本") is Some(_), msg=at)
+    for scale in [1.0, 1.3] {
+      t.set_font_scale(scale)
+      t.draw()
+      assert_eq(t.audit(), [], msg="audit \{at} scale \{scale}: \{Repr(t.audit())}")
+      assert_eq(t.squeeze_faults(), [], msg="squeeze \{at} scale \{scale}: \{Repr(t.squeeze_faults())}")
+    }
+    t.set_font_scale(1.0)
+    @sf.set_language(Some("en"))
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("Local override active; auto-update paused") is Some(_), msg="en held: \{at}")
+    assert_true(t.query(Button, label="Restore official") is Some(_), msg="en restore: \{at}")
+    assert_eq(t.audit(), [], msg="en audit \{at}: \{Repr(t.audit())}")
+    @sf.set_language(None)
+  }
+}
+
+///|
 /// Where the CPU's dial says its name (in its full words or its short ones), None where neither is drawn.
 fn cpu_dial_at(t : @ui.Tester, full : String, short : String) -> (Double, Double)? {
   match t.find(full) {

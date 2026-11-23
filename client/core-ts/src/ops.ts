@@ -227,6 +227,7 @@ export const PARAMS: Record<string, string> = {
   "drive.zip": "root:string path:string",
   "drive.stage": "root:string path:string zip?:boolean",
   "software.auto": "on?:boolean",
+  "software.wait": "wait?:strings clear?:boolean",
   "machineLogin.cancel": "id:string",
   "machineLogin.answer": "id:string text:string",
   "machineLogin.browser": "id:string",
@@ -805,6 +806,8 @@ function stationOp(name: string, params: unknown): Request | null {
       return op("POST", () => "/updates/channel", p.pick(["channel"]), OVERVIEW);
     case "software.auto":
       return op("POST", () => "/updates/auto", { on: p.bool("on") }, OVERVIEW);
+    case "software.wait":
+      return op("POST", () => "/updates/wait", p.bool("clear") ? { wait: null } : p.pick(["wait"]), OVERVIEW);
     // The station's drive: the folders it lends its members, named by the workspace's owners and admins
     // (their folders to pick from: `drive.folders`), and changes of what is in them. A station in several workspaces keeps a
     // list for each: the asker's.

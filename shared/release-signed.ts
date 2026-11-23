@@ -30,6 +30,9 @@ export function trustedKeys(env: Record<string, string | undefined> = process.en
 /// .tar.gz; Windows' zip with every entry stored), which the installer is then handed and checks instead.
 export type Build = { sha256: string; size: number; nodeSha256: string; rawSha256?: string; rawSize?: number };
 
+/// The release's signed included-changes manifest (scripts/release-included.ts), served at `/releases/<file>`.
+export type ReleaseIncludedRef = { file: string; sha256: string; size: number };
+
 /// A release's signed words, as scripts/release-sign.ts writes them.
 export type Release = {
   kind: "stillfail-station-release";
@@ -38,11 +41,13 @@ export type Release = {
   commit: string;
   node: string;
   builds: Record<string, Build>;
+  included?: ReleaseIncludedRef;
 };
 
 export class Unverified extends Error {}
 
 const SHA = /^[0-9a-f]{64}$/;
+const INCLUDED_FILE = /^station\/included\/[0-9]+-[0-9a-f]{16}\.json$/;
 
 const publicKey = (raw: string) => createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: Buffer.from(raw, "base64").toString("base64url") }, format: "jwk" });
 
@@ -82,13 +87,23 @@ export function verifyFeed(feed: any, trusted: Map<string, string> = trustedKeys
     if ((b.rawSha256 !== undefined || b.rawSize !== undefined) && (!SHA.test(b.rawSha256 ?? "") || !Number.isSafeInteger(b.rawSize) || b.rawSize < 0))
       throw new Unverified(`the release's ${p} build is not well formed`);
   }
+  if (r.included !== undefined) {
+    const inc = r.included;
+    if (typeof inc !== "object" || inc === null || typeof inc.file !== "string" || !INCLUDED_FILE.test(inc.file) || !SHA.test(inc.sha256 ?? "") || !Number.isSafeInteger(inc.size) || inc.size < 0)
+      throw new Unverified("the release's included manifest is not well formed");
+  }
   return r as Release;
 }
 
 /// Whether going from the release built `current` (from `installed`'s channel) to `release` on `channel` is allowed: a
 /// newer build, the same one again, or an older one only back from the beta to the stable channel (a person's ask: the
-/// cloud cannot switch a station's channel). Anything else would let whoever serves the feed put back an older release.
-export function allowed(release: Release, current: number | null, channel: string, installed: string | null): boolean {
+/// cloud cannot switch a station's channel). When `overrideBaseBuild` is set (a locally replaced station), `release`
+/// must be at or above that official baseline build (or back to stable from beta) to prevent cloud downgrade.
+export function allowed(release: Release, current: number | null, channel: string, installed: string | null, overrideBaseBuild?: number | null): boolean {
+  if (overrideBaseBuild !== undefined && overrideBaseBuild !== null && Number.isSafeInteger(overrideBaseBuild)) {
+    if (release.build >= overrideBaseBuild) return true;
+    return channel === "stable" && installed === "beta";
+  }
   if (current === null) return true;
   if (release.build >= current) return true;
   return channel === "stable" && installed === "beta";

@@ -158,6 +158,7 @@ export interface OperationParams {
   "drive.zip": { root: string; path: string };
   "drive.stage": { root: string; path: string; zip?: boolean | null | undefined };
   "software.auto": { on?: boolean | null | undefined };
+  "software.wait": { wait?: string[] | null | undefined; clear?: boolean | null | undefined };
   "machineLogin.cancel": { id: string };
   "machineLogin.answer": { id: string; text: string };
   "machineLogin.browser": { id: string };
@@ -372,6 +373,7 @@ export function bindStationOperations(call: Call) {
     driveZip: <T = unknown>(params: OperationParams["drive.zip"]) => call("drive.zip", params) as Promise<T>,
     driveStage: <T = unknown>(params: OperationParams["drive.stage"]) => call("drive.stage", params) as Promise<T>,
     softwareAuto: <T = unknown>(params: OperationParams["software.auto"] = {}) => call("software.auto", params) as Promise<T>,
+    softwareWait: <T = unknown>(params: OperationParams["software.wait"] = {}) => call("software.wait", params) as Promise<T>,
     machineLoginCancel: <T = unknown>(params: OperationParams["machineLogin.cancel"]) => call("machineLogin.cancel", params) as Promise<T>,
     machineLoginAnswer: <T = unknown>(params: OperationParams["machineLogin.answer"]) => call("machineLogin.answer", params) as Promise<T>,
     machineLoginBrowser: <T = unknown>(params: OperationParams["machineLogin.browser"]) => call("machineLogin.browser", params) as Promise<T>,

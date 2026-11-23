@@ -1869,6 +1869,7 @@ web-main.versions.auto
 web-main.versions.autoAfter
 web-main.versions.autoIdleTip
 web-main.versions.autoTip
+web-main.versions.autoWhen
 web-main.versions.back
 web-main.versions.backAsk
 web-main.versions.backDo
@@ -1885,7 +1886,13 @@ web-main.versions.checking
 web-main.versions.checkingVersions
 web-main.versions.install
 web-main.versions.lastChecked
+web-main.versions.overrideHeld
 web-main.versions.repairNpm
+web-main.versions.restoreAsk
+web-main.versions.restoreDo
+web-main.versions.restoreNote
+web-main.versions.restoreNoteNoLatest
+web-main.versions.restoreOfficial
 web-main.versions.update
 web-main.video.pauseKey
 web-main.video.playKey

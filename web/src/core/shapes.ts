@@ -1177,6 +1177,18 @@ export interface SoftwareVersion {
 	 * which it updates itself again (a newer one out). None otherwise, and from a station older than it.
 	 */
 	autoAfter?: string;
+	/** The station runs a local replacement (`stillfail replace`). */
+	overridden?: boolean;
+	/** The official version the local replacement is based on (e.g. `0.1.1288`). */
+	overrideBase?: string;
+	/** `bundle` or `overlay`. */
+	overrideKind?: string;
+	/** Optional note recorded when replacing the station. */
+	overrideNote?: string;
+	/** Formatted fix conditions (`#8270`, `FB-123`, `>= 0.1.1300`) that trigger automatic restore/update once released. */
+	autoWhen?: string[];
+	/** Automatic updates are paused during local override with no wait conditions. */
+	autoHeld?: boolean;
 	/** Automatic updates wait for clients and running turns to leave, then five quiet minutes. */
 	idleOnly?: boolean;
 	/** The pages can update it (or install it, when it is not installed). */

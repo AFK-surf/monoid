@@ -20,6 +20,8 @@ import { wall } from "../ops/fibers.ts";
 import { readJsonFile } from "../ops/json-file.ts";
 import { setChannel } from "./channel.ts";
 import { applyFile } from "../../../shared/delta.ts";
+import { readOverrideSoon } from "./override.ts";
+import { replaceSubcommand } from "./replace.ts";
 import { type Applier, planUpdate, takeDelta } from "./release.ts";
 import { type Channel, channelOf, releaseChannel } from "./versions.ts";
 
@@ -49,6 +51,7 @@ const applyHere: Applier = async (app, delta, out) => applyFile({ dir: app }, de
 
 export async function updateCommand(args: string[], data: string, trusted?: Map<string, string>): Promise<number> {
   if (args.includes("--apply-delta")) return applyDeltaCommand(args);
+  if (args.some((a) => a.startsWith("--replace-"))) return replaceSubcommand(args, data);
   const app = flag(args, "--app");
   const asked = args.filter((a) => a === "--beta" || a === "--stable");
   const positional = args.filter((a, i) => !a.startsWith("--") && !(i > 0 && ["--app", "--data"].includes(args[i - 1]!)));
@@ -66,8 +69,9 @@ export async function updateCommand(args: string[], data: string, trusted?: Map<
     const request = base === CLOUD_ORIGIN ? transport.fetch : fetch;
     const channel = channelOf(raw, app);
     const installed = releaseChannel(app) ?? channel;
+    const override = await readOverrideSoon(app);
     // (the feed read again after a failure on the way: this process runs once, on the machine's own time)
-    const plan = await planUpdate({ base, channel, app, installed, lang, trusted, request, wait: wall.sleep });
+    const plan = await planUpdate({ base, channel, app, installed, lang, override, trusted, request, wait: wall.sleep });
     // timer: a deadline of an outside request (the delta's download), past which the installer downloads the release.
     // (the delta downloaded again after a failure on the way, as the feed is read again)
     const handed = await takeDelta(plan, { app, apply: applyHere, signal: AbortSignal.timeout(DELTA_MS), request, wait: wall.sleep });

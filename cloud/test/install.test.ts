@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { bundledInstallScript, installScript, releaseType } from "../src/install.ts";
+import { bundledInstallScript, installScript, releaseType, sharedRelease } from "../src/install.ts";
 
 test("the installer braces every variable that words follow, so no shell takes a character for part of its name", () => {
   const script = installScript("https://ember.test");
@@ -103,6 +103,17 @@ test("the releases bucket serves the station's releases and the apps' builds, an
   assert.equal(releaseType("android/other-890.apk"), null);
   assert.equal(releaseType("android/../secret"), null);
   assert.equal(releaseType("desktop/other.zip"), null);
+  // Signed station included-changes manifests (channel-free, content-addressed).
+  assert.equal(releaseType("station/included/11125-0123456789abcdef.json"), "application/json");
+  assert.equal(sharedRelease("station/included/11125-0123456789abcdef.json"), true);
+  assert.equal(releaseType("station/included/11125-bad.json"), null);
+  assert.equal(sharedRelease("station/included/11125-bad.json"), false);
+});
+
+test("install.sh does not short-circuit upToDate when OVERRIDE exists, and cleans app.before-replace on official update", () => {
+  const script = installScript("https://ember.test");
+  assert.match(script, /\[ ! -f "\$app\/OVERRIDE" \] && \[ -f "\$app\/VERSION" \] && cmp -s "\$tmp\/stillfail\/VERSION" "\$app\/VERSION"/);
+  assert.match(script, /rm -rf "\$app\.old" "\$data\/app\.before-replace"/);
 });
 
 /**

@@ -22,7 +22,8 @@ import { fileURLToPath } from "node:url";
 import { type Lang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import { platform as machine } from "../platform/index.ts";
-import { type Build, type Release, Unverified, allowed, expected, trustedKeys, verifyFeed } from "../../../shared/release-signed.ts";
+import { type Build, type Release, type ReleaseIncludedRef, Unverified, allowed, expected, sha256, trustedKeys, verifyFeed } from "../../../shared/release-signed.ts";
+import { type OverrideMeta, type ReleaseIncluded, parseReleaseIncluded } from "./override.ts";
 import { type Channel, feed, platform, stationVersionSoon } from "./versions.ts";
 
 const UA = { "user-agent": "stillfail-station" };
@@ -107,17 +108,57 @@ export function deltaFor(said: any, build: Build, platform: string | null, curre
   return { from: current, url: `${base}/releases/${d.file}`, sha256: d.sha256, size: d.size, rawSha256: build.rawSha256, rawSize: build.rawSize };
 }
 
+/// Downloads and verifies the release's signed included-changes manifest (size and SHA-256 checked before JSON.parse).
+export async function readIncluded(
+  base: string,
+  included: ReleaseIncludedRef,
+  request: CloudFetch = fetch,
+  wait?: (ms: number) => Promise<void>,
+): Promise<ReleaseIncluded> {
+  const url = `${base}/releases/${included.file}`;
+  const once = async () => {
+    const response = await request(url, { headers: UA, signal: AbortSignal.timeout(15_000) });
+    if ([502, 503, 504].includes(response.status)) throw new OnTheWay(`${url}: ${response.status}`);
+    if (!response.ok) throw new Error(`${url}: ${response.status}`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength !== included.size) throw new Error(`the included manifest is ${bytes.byteLength} bytes, signed words say ${included.size}`);
+    if (sha256(bytes) !== included.sha256) throw new Error("the included manifest's sha256 does not match the signed words");
+    let raw: unknown;
+    try {
+      raw = JSON.parse(Buffer.from(bytes).toString("utf8"));
+    } catch {
+      throw new Error("the included manifest is not JSON");
+    }
+    const parsed = parseReleaseIncluded(raw);
+    if (parsed === null) throw new Error("the included manifest is not well formed");
+    return parsed;
+  };
+  for (let i = 0; ; i++) {
+    try {
+      return await once();
+    } catch (e) {
+      if (wait === undefined || i >= FEED_AGAIN_MS.length || !onTheWay(e)) throw e;
+      log.warn("updates", "the included manifest not read, tried again", { url, error: (e as Error).message, after: FEED_AGAIN_MS[i] });
+      // timer: a retry after a failure, with a backoff (the caller's clock).
+      await wait(FEED_AGAIN_MS[i]!);
+    }
+  }
+}
+
 /// What updating the station of `app` (from `installed`'s channel) to `channel`'s latest at `base` runs. Refusals are
 /// thrown in `lang`: a feed that does not verify, an older release (but back to the stable one from the beta), none
 /// for this machine, no installer in this release.
 /// `wait`: the feed read again after a failure on the way (readFeed).
-export async function planUpdate(o: { base: string; channel: Channel; app: string; installed: Channel; lang: Lang; trusted?: Map<string, string>; request?: CloudFetch; wait?: (ms: number) => Promise<void> }): Promise<Plan> {
+export async function planUpdate(o: { base: string; channel: Channel; app: string; installed: Channel; lang: Lang; override?: OverrideMeta | null; trusted?: Map<string, string>; request?: CloudFetch; wait?: (ms: number) => Promise<void> }): Promise<Plan> {
   const said = await readFeed(o.channel, o.base, 15_000, o.request, o.wait);
   const { release, why } = verifiedOrNull(said, o.trusted);
   if (release === null) throw new Error(tr(o.lang, "station.updates.unverified", { why }));
   const version = (await stationVersionSoon(o.app)) ?? null;
   const current = version === null ? null : Number(/^0\.\d+\.(\d+)$/.exec(version)?.[1] ?? NaN);
-  if (!allowed(release, current, o.channel, o.installed)) throw new Error(tr(o.lang, "station.updates.older", { version: release.version, current: version }));
+  const override = o.override ?? null;
+  if (!allowed(release, current, o.channel, o.installed, override?.baseBuild)) {
+    throw new Error(tr(o.lang, "station.updates.older", { version: release.version, current: override?.baseVersion ?? version }));
+  }
   let build;
   try {
     build = expected(release, platform());
@@ -136,7 +177,7 @@ export async function planUpdate(o: { base: string; channel: Channel; app: strin
       STILLFAIL_NODE_SHA256: build.nodeSha256,
       STILLFAIL_INSTALL_LANG: o.lang,
     },
-    delta: deltaFor(said, build, platform(), Number.isSafeInteger(current) ? current : null, o.base),
+    delta: override !== null ? null : deltaFor(said, build, platform(), Number.isSafeInteger(current) ? current : null, o.base),
   };
 }
 

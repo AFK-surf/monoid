@@ -36,7 +36,7 @@
 set -eu
 # Called through a link (~/.local/bin/stillfail): the app is where the link points.
 self=$(readlink -f "$0" 2>/dev/null || echo "$0")
-here=$(cd "$(dirname "$self")/.." && pwd)
+here=${STILLFAIL_REPLACE_APP:-$(cd "$(dirname "$self")/.." && pwd)}
 # Whose station this is: its product's data directory beside still.fail's (~/.monoid, client/i18n/brand.ts). Called as
 # another product's command (`monoid`: the installer links it so), that product's, whether its data is there now or not
 # (on a disk not connected, or taken away): never still.fail's instead. Called as stillfail (ember its name before) from
@@ -152,7 +152,7 @@ local $SIG{ALRM} = sub { exit 0 }; alarm 3; my $b; sysread($s, $b, 1);' "$sock" 
     if [ -L "$data" ]; then there=$(readlink "$data"); case "$there" in /?*) rm -rf "$there" ;; esac; fi
     rm -rf "$data"
   else
-    rm -rf "$data/app" "$data/app.old" "$data/app.failed" "$data/node" "$data/helper" "$data/run" "$data/stillfail.pid"
+    rm -rf "$data/app" "$data/app.old" "$data/app.failed" "$data/app.before-replace" "$data/node" "$data/helper" "$data/run" "$data/stillfail.pid"
     [ ! -d "$data" ] || : > "$data/uninstalled"
   fi
   if [ -n "$purge" ]; then echo "stillfail: uninstalled, $data removed"; else echo "stillfail: uninstalled; chats, memory and secrets kept in $data"; fi
@@ -346,6 +346,228 @@ move() {
   exit 7
 }
 
+# Runs `stillfail-station` (or fallback Node main.js in a checkout without a launcher binary).
+run_station_update() {
+  if [ -x "$station" ]; then
+    "$station" update "$@"
+  else
+    node=${STILLFAIL_NODE:-$here/node/bin/node}
+    [ -f "$here/station/main.js" ] && { [ -x "$node" ] || node=$(command -v node 2>/dev/null || true); } && [ -n "$node" ] || {
+      echo "stillfail: $here is not an installed release (no $station)" >&2; exit 1
+    }
+    "$node" "$here/station/main.js" update "$@"
+  fi
+}
+
+# stillfail replace: local bundle or overlay replacement, conditional auto-update wait, status, revert, and restore.
+replace_cmd() {
+  app=$here
+  mode="" source="" dist="" main_f="" reader_f="" note="" no_hold="" clear="" hold=""
+  set -- "$@"
+  # Parse arguments into mode and wait specs (newline-separated in $waits).
+  waits=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --status) mode=status; shift ;;
+      --revert) mode=revert; shift ;;
+      --restore) mode=restore; shift ;;
+      --wait) mode=wait; shift ;;
+      --clear) clear=yes; shift ;;
+      --hold) hold=yes; shift ;;
+      --no-hold) no_hold=yes; shift ;;
+      --dist) [ $# -ge 2 ] || { echo "stillfail replace: --dist requires a directory" >&2; exit 2; }; dist=$2; shift 2 ;;
+      --main) [ $# -ge 2 ] || { echo "stillfail replace: --main requires a file" >&2; exit 2; }; main_f=$2; shift 2 ;;
+      --reader) [ $# -ge 2 ] || { echo "stillfail replace: --reader requires a file" >&2; exit 2; }; reader_f=$2; shift 2 ;;
+      --note) [ $# -ge 2 ] || { echo "stillfail replace: --note requires text" >&2; exit 2; }; note=$2; shift 2 ;;
+      --until-pr) [ $# -ge 2 ] || { echo "stillfail replace: --until-pr requires a number" >&2; exit 2; }; waits="${waits}pr:$2
+"; shift 2 ;;
+      --until-fix) [ $# -ge 2 ] || { echo "stillfail replace: --until-fix requires FB-N" >&2; exit 2; }; waits="${waits}fix:$2
+"; shift 2 ;;
+      --until-commit) [ $# -ge 2 ] || { echo "stillfail replace: --until-commit requires a commit SHA" >&2; exit 2; }; waits="${waits}commit:$2
+"; shift 2 ;;
+      --until-version) [ $# -ge 2 ] || { echo "stillfail replace: --until-version requires a version" >&2; exit 2; }; waits="${waits}version:$2
+"; shift 2 ;;
+      --until-after) [ $# -ge 2 ] || { echo "stillfail replace: --until-after requires a version" >&2; exit 2; }; waits="${waits}after:$2
+"; shift 2 ;;
+      --*) echo "stillfail replace: unknown option $1" >&2; exit 2 ;;
+      *)
+        if [ -n "$source" ]; then echo "stillfail replace: unexpected argument $1" >&2; exit 2; fi
+        source=$1; shift ;;
+    esac
+  done
+
+  if [ "$mode" = status ]; then
+    run_station_update --replace-status --app "$app" --data "$data"
+    return $?
+  fi
+  if [ "$mode" = restore ]; then
+    plan=$(run_station_update --app "$app" --data "$data") || exit $?
+    script=""
+    while IFS='=' read -r key value; do
+      case $key in
+        script) script=$value ;;
+        STILLFAIL_ORIGIN|STILLFAIL_CHANNEL|STILLFAIL_RELEASE_SHA256|STILLFAIL_NODE_SHA256|STILLFAIL_INSTALL_LANG|STILLFAIL_ARCHIVE) export "$key=$value" ;;
+      esac
+    done <<PLAN
+$plan
+PLAN
+    [ -n "$script" ] || { echo "stillfail replace --restore: no installer to run" >&2; exit 1; }
+    STILLFAIL_DATA=$data exec sh "$script"
+  fi
+  if [ "$mode" = wait ]; then
+    if [ -z "$clear" ] && [ -z "$hold" ] && [ -z "$waits" ]; then
+      echo "usage: stillfail replace --wait (--until-pr N | --until-fix FB-N | --until-commit SHA | --until-version V | --until-after V | --hold | --clear)" >&2
+      exit 2
+    fi
+    set -- --replace-wait --data "$data"
+    [ -z "$clear" ] || set -- "$@" --clear
+    [ -z "$hold" ] || set -- "$@" --hold
+    if [ -n "$waits" ]; then
+      old_ifs=$IFS; IFS='
+'
+      for w in $waits; do [ -n "$w" ] && set -- "$@" --until "$w"; done
+      IFS=$old_ifs
+    fi
+    run_station_update "$@"
+    return $?
+  fi
+
+  # Acquire install.lock to serialize with official updates and concurrent replacements.
+  tmp=$(mktemp -d)
+  lock_dir="$data/run/install.lock"
+  mkdir -p "$data/run"
+  waited=0
+  until mkdir "$lock_dir" 2>/dev/null; do
+    holder=$(cat "$lock_dir/pid" 2>/dev/null || true)
+    if { [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; } || [ "$waited" -ge 300 ]; then rm -rf "$lock_dir"; continue; fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  echo $$ > "$lock_dir/pid"
+  trap 'rm -rf "$tmp" "$lock_dir" "${STILLFAIL_REPLACE_COPY:-}"' EXIT
+
+  station_json="$data/run/station.json"
+  said() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" "$station_json" 2>/dev/null | head -1; }
+  pid=""
+  if [ -f "$station_json" ]; then
+    pid=$(said pid)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      case "$(ps -p "$pid" -o command= 2>/dev/null)" in
+        *stillfail-station*) ;;
+        *) [ -n "${STILLFAIL_REPLACE_ALLOW_PID:-}" ] || pid="" ;;
+      esac
+    else
+      pid=""
+    fi
+  fi
+
+  if [ "$mode" = revert ]; then
+    [ -d "$data/app.before-replace" ] || { echo "stillfail replace --revert: no backup at $data/app.before-replace" >&2; exit 1; }
+    started=$(said startedAt)
+    rm -rf "$app.old"
+    [ -d "$app" ] && mv "$app" "$app.old"
+    mv "$data/app.before-replace" "$app"
+    if [ -n "$pid" ] && [ -n "$(said handoff)" ]; then
+      rm -f "$data/run/handoff-failed"
+      kill -USR2 "$pid"
+      handed=""
+      limit=${STILLFAIL_REPLACE_WAIT:-180}
+      poll=${STILLFAIL_REPLACE_POLL:-1}
+      i=0
+      while [ "$i" -lt "$limit" ]; do
+        sleep "$poll"
+        i=$((i + 1))
+        if [ "$(said startedAt)" != "$started" ]; then handed=yes; break; fi
+        [ -f "$data/run/handoff-failed" ] && break
+      done
+      if [ -z "$handed" ]; then
+        mv "$app" "$data/app.before-replace"
+        [ -d "$app.old" ] && mv "$app.old" "$app"
+        echo "stillfail replace --revert: handoff failed; kept previous build" >&2
+        exit 1
+      fi
+    fi
+    rm -rf "$app.old"
+    run_station_update --replace-reconcile-revert --data "$data"
+    echo "stillfail replace: reverted to official backup"
+    return 0
+  fi
+
+  # Bundle or overlay replacement.
+  set -- --replace-prepare --app "$app" --data "$data" --stage "$tmp/stage"
+  [ -z "$source" ] || set -- "$@" --source "$source"
+  [ -z "$dist" ] || set -- "$@" --dist "$dist"
+  [ -z "$main_f" ] || set -- "$@" --main "$main_f"
+  [ -z "$reader_f" ] || set -- "$@" --reader "$reader_f"
+  [ -z "$note" ] || set -- "$@" --note "$note"
+  run_station_update "$@" >/dev/null
+
+  # Preserve official baseline backup once (never overwrite on consecutive replacements).
+  created_backup=""
+  if [ ! -d "$data/app.before-replace" ] && [ ! -f "$app/OVERRIDE" ] && [ -d "$app" ]; then
+    cp -pPR "$app" "$data/app.before-replace"
+    created_backup=yes
+  fi
+
+  started=$(said startedAt)
+  rm -rf "$app.old"
+  [ -d "$app" ] && mv "$app" "$app.old"
+  mv "$tmp/stage" "$app"
+
+  # Write autoUpdateWhen (pausing autoUpdate) BEFORE handover so even an older hotfix bundle boots paused.
+  cfg_file="${STILLFAIL_CONFIG:-$data/config.json}"
+  had_cfg=""
+  if [ -f "$cfg_file" ]; then
+    cp -p "$cfg_file" "$tmp/config.before.json"
+    had_cfg=yes
+  fi
+  if [ -z "$no_hold" ]; then
+    set -- --replace-wait --direct --app "$app" --data "$data"
+    if [ -n "$waits" ]; then
+      old_ifs=$IFS; IFS='
+'
+      for w in $waits; do [ -n "$w" ] && set -- "$@" --until "$w"; done
+      IFS=$old_ifs
+    else
+      set -- "$@" --hold
+    fi
+    if ! run_station_update "$@"; then
+      rm -rf "$app.failed"
+      mv "$app" "$app.failed" && { mv "$app.old" "$app" || mv "$app.failed" "$app"; }
+      rm -rf "$app.failed"
+      [ -n "$created_backup" ] && rm -rf "$data/app.before-replace"
+      if [ -n "$had_cfg" ]; then cp -p "$tmp/config.before.json" "$cfg_file"; else rm -f "$cfg_file"; fi
+      exit 1
+    fi
+  fi
+
+  if [ -n "$pid" ] && [ -n "$(said handoff)" ]; then
+    rm -f "$data/run/handoff-failed"
+    kill -USR2 "$pid"
+    handed=""
+    limit=${STILLFAIL_REPLACE_WAIT:-180}
+    poll=${STILLFAIL_REPLACE_POLL:-1}
+    i=0
+    while [ "$i" -lt "$limit" ]; do
+      sleep "$poll"
+      i=$((i + 1))
+      if [ "$(said startedAt)" != "$started" ]; then handed=yes; break; fi
+      [ -f "$data/run/handoff-failed" ] && break
+    done
+    if [ -z "$handed" ]; then
+      rm -rf "$app.failed"
+      mv "$app" "$app.failed" && { mv "$app.old" "$app" || mv "$app.failed" "$app"; }
+      rm -rf "$app.failed"
+      [ -n "$created_backup" ] && rm -rf "$data/app.before-replace"
+      if [ -n "$had_cfg" ]; then cp -p "$tmp/config.before.json" "$cfg_file"; else rm -f "$cfg_file"; fi
+      echo "stillfail replace: handoff failed; rolled back to previous build" >&2
+      exit 1
+    fi
+  fi
+  rm -rf "$app.old"
+  echo "stillfail replace: replaced $app"
+}
+
 case "${1:-} ${2:-}" in
   "uninstall ") [ $# -eq 1 ] || { echo "usage: stillfail uninstall [--purge]" >&2; exit 2; }; uninstall "" ;;
   "uninstall --purge") [ $# -eq 2 ] || { echo "usage: stillfail uninstall [--purge]" >&2; exit 2; }; uninstall yes ;;
@@ -364,6 +586,19 @@ case "${1:-} ${2:-}" in
     fi
     trap 'rm -rf "$STILLFAIL_MOVE_COPY"' EXIT
     move "$2" ;;
+  "replace "*)
+    shift
+    case "${1:-}" in
+      --status|--wait|--restore) replace_cmd "$@" ;;
+      *)
+        if [ -z "${STILLFAIL_REPLACE_COPY:-}" ]; then
+          dir=$(mktemp -d "${TMPDIR:-/tmp}/stillfail-replace.XXXXXX")
+          cp "$self" "$dir/stillfail"
+          STILLFAIL_REPLACE_COPY=$dir STILLFAIL_REPLACE_APP=$here STILLFAIL_DATA=$data exec sh "$dir/stillfail" replace "$@"
+        fi
+        trap 'rm -rf "$STILLFAIL_REPLACE_COPY"' EXIT
+        replace_cmd "$@" ;;
+    esac ;;
   "update "*)
     # The channel's latest release, verified by this release's station (its `update`: its signature, newer than this
     # one) and installed by the installer this release carries, told what it must hash to (scripts/release-sign.ts).

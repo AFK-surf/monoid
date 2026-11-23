@@ -1466,7 +1466,7 @@ describe("going back to a release before the one the station runs", { skip: WIND
     assert.deepEqual(listed, { version: "0.1.1300", latest: "0.1.1310", newer: true, channel: "stable", auto: false, autoAfter: null, earlier: ["0.1.1290"], state: "idle" });
     await assert.rejects(tool!.run("s", { action: "back" }), /to: a version list names in earlier/);
     await assert.rejects(tool!.run("s", { action: "back", to: "0.1.1250" }), (e: Error) => e.message === tr("en", "station.updates.backUnknown", { version: "0.1.1250" }));
-    await assert.rejects(tool!.run("s", { action: "other" }), /action: list, update or back/);
+    await assert.rejects(tool!.run("s", { action: "other" }), /action: list, update, back or wait/);
     const started = JSON.parse(await tool!.run("s", { action: "back", to: "0.1.1290" }));
     assert.equal(started.started, true);
     await until("ended", () => station(c.updates).state !== "updating", t.signal);

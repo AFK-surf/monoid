@@ -113,6 +113,26 @@ fn entries(j : J) -> Array[(String, J)] {
 }
 
 ///|
+/// `/^station\/included\/[0-9]+-[0-9a-f]{16}\.json$/`.
+fn is_included_file(f : String) -> Bool {
+  let prefix = "station/included/"
+  let suffix = ".json"
+  if !starts_with(f, prefix) || !ends_with(f, suffix) {
+    return false
+  }
+  let body = slice(f, prefix.length(), end=f.length() - suffix.length())
+  let dash = index_of(body, "-")
+  if dash <= 0 {
+    return false
+  }
+  let build = slice(body, 0, end=dash)
+  let hash = slice(body, dash + 1)
+  all_digits(build) &&
+  hash.length() == 16 &&
+  hash.iter().all(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))
+}
+
+///|
 /// The release a feed says, verified: its signature by one of the keys, its words well formed and the version they
 /// say the one the feed says. Raises Unverified otherwise.
 pub fn verify_feed(w : World, feed_said : J, trusted : Array[(String, String)]) -> J raise {
@@ -150,6 +170,17 @@ pub fn verify_feed(w : World, feed_said : J, trusted : Array[(String, String)]) 
       raise unverified(bad)
     }
   }
+  match get(Some(r), "included") {
+    None => ()
+    Some(Obj(_) as inc) => {
+      let f = text(get(Some(inc), "file")).unwrap_or("")
+      let s = get(Some(inc), "size")
+      if !is_included_file(f) || !sha_test(get(Some(inc), "sha256")) || !is_safe_integer(s) || num(s).unwrap() < 0.0 {
+        raise unverified("the release's included manifest is not well formed")
+      }
+    }
+    Some(_) => raise unverified("the release's included manifest is not well formed")
+  }
   r
 }
 
@@ -167,14 +198,29 @@ pub fn release_version(r : J) -> String {
 ///|
 /// Whether going from the release built `current` (from `installed`'s channel) to `release` on `channel` is allowed:
 /// a newer build, the same one again, or an older one only back from the beta to the stable channel.
-pub fn allowed(release : J, current : Double?, channel : String, installed : String?) -> Bool {
-  match current {
-    None => true
-    Some(c) =>
-      if release_build(release) >= c {
+pub fn allowed(
+  release : J,
+  current : Double?,
+  channel : String,
+  installed : String?,
+  override_base_build? : Double? = None,
+) -> Bool {
+  match override_base_build {
+    Some(base) if is_safe_integer(Some(Num(base))) =>
+      if release_build(release) >= base {
         true
       } else {
         channel == "stable" && installed == Some("beta")
+      }
+    _ =>
+      match current {
+        None => true
+        Some(c) =>
+          if release_build(release) >= c {
+            true
+          } else {
+            channel == "stable" && installed == Some("beta")
+          }
       }
   }
 }

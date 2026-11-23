@@ -213,6 +213,12 @@
   "station.cli.status.frontDown": "工作：异常（本机 mesh front 断开，正在重新连接；连上之前设备连不上这个 station。launcher 会自动重启 front）",
   "station.cli.status.keyConflict": "工作：异常（另一台机器或进程正在用这个 station 的同一份密钥，两边轮流把对方的连接顶掉，设备时连时断；请停掉另一处的 station，或在其中一台上重新注册成新的 station）",
   "station.cli.status.limited": "工作：受限（还没连上 still.fail cloud，正在重试；连上之前设备可能找不到这个 station，原因见上面的「在线」一行）",
+  "station.cli.status.override": "本地替换：{kind}（官方基线 {base}）",
+  "station.cli.status.overrideNote": "替换备注：{note}",
+  "station.cli.status.autoWhen": "自动更新：等待 {conditions}",
+  "station.cli.status.autoHeld": "自动更新：已暂停（本地替换保持中）",
+  "station.cli.replace.none": "未启用本地替换",
+  "station.cli.replace.backup": "回退备份：{path}",
   "station.cli.unknownChannel": "无法识别的渠道 {channel}",
   "station.connect.heldElsewhere": "这个机器人已经接在 station「{station}」上了。一个 connect 只跑在 workspace 的一台 station 上，要换的话请把它移过去，不要重复添加。",
   "station.connect.moveWhere": "请选这个 connect 所在 workspace 里的另一台 station。",
@@ -857,5 +863,6 @@
   "station.group.badCode": "加入码是 16 位字母数字，形如 XXXX-XXXX-XXXX-XXXX",
   "station.group.longName": "成员名称最多 {most} 个字",
   "station.speed.invalid": "请在支持速度设置的运行时选择标准、Fast 或 Ultrafast。",
-  "station.speed.ultrafast_unavailable": "请选用支持 Ultrafast 的 Codex 模型和符合条件的 ChatGPT 订阅，也可选择标准或 Fast。"
+  "station.speed.ultrafast_unavailable": "请选用支持 Ultrafast 的 Codex 模型和符合条件的 ChatGPT 订阅，也可选择标准或 Fast。",
+  "station.updates.overrideAutoRefused": "本地替换运行期间无法开启自动更新；请先设置等待条件或恢复官方版本"
 }

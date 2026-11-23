@@ -26,6 +26,12 @@ pub fn software_version(
   channel : String?,
   auto : Bool?,
   auto_after : String?,
+  overridden : Bool,
+  override_base : String?,
+  override_kind : String?,
+  override_note : String?,
+  auto_when : Array[String],
+  auto_held : Bool,
   updatable : Bool,
   repairable : Bool,
   note : String?,
@@ -54,6 +60,18 @@ pub fn software_version(
     None => ()
   }
   opt("autoAfter", auto_after)
+  if overridden {
+    fs.push(("overridden", jb(true)))
+  }
+  opt("overrideBase", override_base)
+  opt("overrideKind", override_kind)
+  opt("overrideNote", override_note)
+  if auto_when.length() > 0 {
+    fs.push(("autoWhen", jstrs(auto_when)))
+  }
+  if auto_held {
+    fs.push(("autoHeld", jb(true)))
+  }
   fs.push(("updatable", jb(updatable)))
   if repairable {
     fs.push(("repairable", jb(true)))
@@ -413,6 +431,10 @@ pub struct Updates {
   priv mut follows : Int
   /// The runtimes whose versions are read (none on a rig).
   kinds : Array[String]
+  priv mut override_meta : OverrideMeta?
+  priv mut latest_release : J?
+  priv mut latest_included : ReleaseIncluded?
+  priv included_cache : Map[String, ReleaseIncluded]
 }
 
 ///|
@@ -475,6 +497,7 @@ pub async fn Updates::new(w : World, o : UpdatesOptions) -> Updates {
     Some(r) => r
     None => channel_from(o.config.raw, None)
   }
+  let override_meta = read_override(w, o.app, sync=true)
   let items : Map[String, Item] = Map([])
   for k in kinds {
     items[k] = empty()
@@ -539,6 +562,10 @@ pub async fn Updates::new(w : World, o : UpdatesOptions) -> Updates {
     following_id: 0,
     follows: 0,
     kinds: if o.station_only { [] } else { runtime_kinds },
+    override_meta,
+    latest_release: None,
+    latest_included: None,
+    included_cache: Map([]),
   }
 }
 
@@ -626,6 +653,16 @@ pub fn Updates::auto_after(self : Updates) -> String? {
 }
 
 ///|
+pub fn Updates::auto_when(self : Updates) -> AutoUpdateWhen? {
+  parse_auto_update_when(self.config.raw)
+}
+
+///|
+pub fn Updates::override_meta(self : Updates) -> OverrideMeta? {
+  self.override_meta
+}
+
+///|
 /// The build of a station's version (0.<m>.<n>: n), when it is one.
 fn build_or_none(version : String?) -> Double? {
   match version {
@@ -682,6 +719,7 @@ pub fn Updates::start(self : Updates) -> Unit {
     on_let_go(() => if !self.closed { self.auto_update("what held the update back ended") }),
   )
   self.started = true
+  self.spawn(async fn() { self.reconcile_override_wait() })
   self.spawn(async fn() { self.follow_started() })
   self.schedule()
 }
@@ -717,7 +755,11 @@ fn Updates::setting(self : Updates) -> String {
     Some(a) => a
     None => "null"
   }
-  "\{self.channel()} \{self.auto()} \{after}"
+  let when_s = match self.auto_when() {
+    Some(w) => stringify(auto_update_when_to_j(w))
+    None => "null"
+  }
+  "\{self.channel()} \{self.auto()} \{after} \{when_s}"
 }
 
 ///|
@@ -892,7 +934,15 @@ pub fn Updates::get(self : Updates, lang : String) -> Array[J] {
       )
     }
     // Only where it can be updated from here.
-    let here = station && item.note is None && item.version is Some(_)
+    let here = station && item.note is None && (item.version is Some(_) || self.override_meta is Some(_))
+    let when = if station { self.auto_when() } else { None }
+    let auto_when = match when {
+      Some(w) if w.wait.length() > 0 => w.wait.map(format_wait_condition)
+      _ => []
+    }
+    let auto_held = station &&
+      ((self.override_meta is Some(_) && auto_when.length() == 0) ||
+      (when is Some(w) && w.wait.length() == 0))
     let progress = match item.updating {
       None => None
       Some(_) => if station { self.progress_of(item.step) } else { item.progress }
@@ -909,6 +959,12 @@ pub fn Updates::get(self : Updates, lang : String) -> Array[J] {
       if here { Some(channel) } else { None },
       if here { Some(self.auto()) } else { None },
       if here { self.auto_after() } else { None },
+      station && self.override_meta is Some(_),
+      if station { self.override_meta.bind(o => o.base_version) } else { None },
+      if station { self.override_meta.map(o => o.kind) } else { None },
+      if station { self.override_meta.bind(o => o.note) } else { None },
+      auto_when,
+      auto_held,
       item.how is Some(_) || here,
       item.repairable,
       item.note.map(n => say(n, lang)),
@@ -1058,6 +1114,7 @@ async fn Updates::safe_read_runtime(self : Updates, kind : String) -> Item {
 ///|
 async fn Updates::read_station(self : Updates, channel : String) -> Item {
   let w = self.w
+  self.override_meta = read_override(w, self.app)
   let version = station_version_soon(w, self.app)
   let app = w.realpath_or_null(self.app)
   let origin = origin_given(self.origin)
@@ -1068,6 +1125,8 @@ async fn Updates::read_station(self : Updates, channel : String) -> Item {
   let note = station_note(self.app, app, installed, origin)
   let mut latest : String? = None
   let mut earlier : Array[J] = []
+  let mut latest_release : J? = None
+  let mut latest_included : ReleaseIncluded? = None
   match origin {
     Some(o) =>
       (try {
@@ -1081,6 +1140,7 @@ async fn Updates::read_station(self : Updates, channel : String) -> Item {
             fields=jo([("channel", js(channel)), ("why", jopt(why))]),
           )
         }
+        latest_release = release
         latest = release.map(release_version)
         let (before, why_before) = earlier_in(w, said, self.trusted)
         if why_before.length() > 0 {
@@ -1091,11 +1151,48 @@ async fn Updates::read_station(self : Updates, channel : String) -> Item {
           )
         }
         earlier = before
+        let when = self.auto_when()
+        match (release, when) {
+          (Some(rel), Some(aw)) if aw.wait.length() > 0 && needs_included(aw.wait) =>
+            match get(Some(rel), "included") {
+              Some(Obj(_) as inc_ref) => {
+                let sha = text(get(Some(inc_ref), "sha256")).unwrap_or("")
+                match self.included_cache.get(sha) {
+                  Some(cached) => latest_included = Some(cached)
+                  None =>
+                    try {
+                      let inc = read_included(w, o, inc_ref, self.cloud_request())
+                      if self.included_cache.length() >= 16 {
+                        self.included_cache.clear()
+                      }
+                      self.included_cache[sha] = inc
+                      latest_included = Some(inc)
+                    } catch {
+                      e =>
+                        w.warn(
+                          "updates",
+                          "the station's included manifest not read",
+                          fields=jo([
+                            ("file", jopt(text(get(Some(inc_ref), "file")))),
+                            ("error", js(message_of(e))),
+                          ]),
+                        )
+                    }
+                }
+              }
+              _ => ()
+            }
+          _ => ()
+        }
       } catch {
         e =>
           w.warn("updates", "the station's latest release not read", fields=jo([("error", js(message_of(e)))]))
       })
     None => ()
+  }
+  if channel == self.channel() {
+    self.latest_release = latest_release
+    self.latest_included = latest_included
   }
   let i = empty()
   i.installed = true
@@ -1310,8 +1407,29 @@ async fn Updates::read_cursor(self : Updates) -> Item {
 /// Turns updating by itself on or off: kept in its config; turned on, what is out is read at once.
 pub async fn Updates::set_auto(self : Updates, on : Bool, lang : String) -> Unit {
   self.refuse_station_note(lang)
-  if self.auto() != on || get(Some(self.config.raw), "autoUpdateAfter") is Some(_) {
-    self.config.edit_soon(self.w, [("autoUpdate", Some(jb(on))), ("autoUpdateAfter", None)])
+  if self.override_meta is Some(_) && on {
+    raise refused(lang, "station.updates.overrideAutoRefused")
+  }
+  let existing_when = self.auto_when()
+  let clear_restore = !on && self.override_meta is Some(_) && existing_when is Some(ex) && ex.restore_auto
+  let clear_when = on && self.override_meta is None && get(Some(self.config.raw), "autoUpdateWhen") is Some(_)
+  if self.auto() != on || get(Some(self.config.raw), "autoUpdateAfter") is Some(_) || clear_when || clear_restore {
+    let edits : Array[(String, J?)] = [("autoUpdate", Some(jb(on))), ("autoUpdateAfter", None)]
+    if on && self.override_meta is None {
+      edits.push(("autoUpdateWhen", None))
+    }
+    if clear_restore {
+      if existing_when is Some(ex) {
+        let updated : AutoUpdateWhen = {
+          wait: ex.wait,
+          restore_auto: false,
+          for_override: ex.for_override,
+          set_at: ex.set_at,
+        }
+        edits.push(("autoUpdateWhen", Some(auto_update_when_to_j(updated))))
+      }
+    }
+    self.config.edit_soon(self.w, edits)
     self.last_setting = self.setting()
     self.w.info("updates", "the station's updating by itself set", fields=jo([("on", jb(on))]))
     self.changed()
@@ -1320,6 +1438,62 @@ pub async fn Updates::set_auto(self : Updates, on : Bool, lang : String) -> Unit
     self.check()
   }
   self.schedule()
+}
+
+///|
+/// Sets or clears conditional auto-update wait rules (`autoUpdateWhen`).
+pub async fn Updates::set_wait(self : Updates, wait : Array[WaitCondition]?, lang : String) -> Unit {
+  self.refuse_station_note(lang)
+  let check_after = self.keep_wait(wait)
+  if check_after {
+    self.check()
+  }
+  self.schedule()
+}
+
+///|
+/// Persists `autoUpdateWhen` without refusing on station note (shared by `set_wait` and SIGHUP `wait-ask`).
+pub async fn Updates::keep_wait(self : Updates, wait : Array[WaitCondition]?) -> Bool {
+  let existing = self.auto_when()
+  match wait {
+    None => {
+      guard existing is Some(ex) else { return false }
+      let restore = self.override_meta is None && ex.restore_auto
+      let edits : Array[(String, J?)] = [("autoUpdateWhen", None)]
+      if restore {
+        edits.push(("autoUpdate", Some(jb(true))))
+      }
+      self.config.edit_soon(self.w, edits)
+      self.last_setting = self.setting()
+      self.w.info("updates", "the station's auto-update wait cleared", fields=jo([("restoredAuto", jb(restore))]))
+      self.changed()
+      restore
+    }
+    Some(conds) => {
+      let restore_auto = match existing {
+        Some(ex) => ex.restore_auto
+        None => self.auto()
+      }
+      let next : AutoUpdateWhen = {
+        wait: conds,
+        restore_auto,
+        for_override: self.override_meta is Some(_),
+        set_at: Some(self.fibers.now()),
+      }
+      self.config.edit_soon(self.w, [
+        ("autoUpdate", Some(jb(false))),
+        ("autoUpdateWhen", Some(auto_update_when_to_j(next))),
+      ])
+      self.last_setting = self.setting()
+      self.w.info(
+        "updates",
+        "the station's auto-update wait set",
+        fields=jo([("wait", jstrs(conds.map(format_wait_condition))), ("forOverride", jb(next.for_override))]),
+      )
+      self.changed()
+      true
+    }
+  }
 }
 
 ///|
@@ -1353,10 +1527,17 @@ pub async fn Updates::answer_channel_ask(self : Updates) -> Unit {
     Some(b) => b.wait() catch { _ => () }
     None => ()
   }
+  let run_dir = pjoin([self.data, "run"])
   let r : Result[Unit, Error] = try {
-    answer_channel_ask(self.w, pjoin([self.data, "run"]), async fn(channel) {
+    answer_channel_ask(self.w, run_dir, async fn(channel) {
       self.keep_channel(channel)
       self.spawn(async fn() { self.check() })
+    })
+    answer_wait_ask(self.w, run_dir, async fn(wait) {
+      let check_after = self.keep_wait(wait)
+      if check_after {
+        self.spawn(async fn() { self.check() })
+      }
     })
     Ok(())
   } catch {
@@ -1398,7 +1579,7 @@ fn Updates::runtime_updating(self : Updates) -> String? {
 /// The version the station updates itself to now, when it does: it updates itself, can be updated from here, is not
 /// updating, and its channel's latest is newer and not one it already went for, unless that failure's retry is due.
 pub fn Updates::to_update_to(self : Updates) -> String? {
-  if !self.auto() || holding() > 0 {
+  if holding() > 0 {
     return None
   }
   let item = self.item("station")
@@ -1409,6 +1590,44 @@ pub fn Updates::to_update_to(self : Updates) -> String? {
     return None
   }
   guard item.latest is Some(latest) else { return None }
+  let when = self.auto_when()
+  match self.override_meta {
+    Some(ov) => {
+      guard when is Some(aw) && aw.wait.length() > 0 else { return None }
+      guard self.latest_release is Some(rel) && release_version(rel) == latest else { return None }
+      if !allowed(rel, build_or_none(item.version), self.channel(), Some(self.installed), override_base_build=ov.base_build) {
+        return None
+      }
+      if !conditions_met(aw.wait, rel, self.latest_included) {
+        return None
+      }
+      if self.tried != Some(latest) || self.retry_due == Some(latest) {
+        return Some(latest)
+      }
+      return None
+    }
+    None => ()
+  }
+  match when {
+    Some(aw) => {
+      if aw.wait.length() == 0 {
+        return None
+      }
+      guard self.latest_release is Some(rel) && release_version(rel) == latest else { return None }
+      if !conditions_met(aw.wait, rel, self.latest_included) {
+        return None
+      }
+      let (is_newer, _) = offer(item.version, item.latest, self.channel(), self.installed)
+      if is_newer && (self.tried != Some(latest) || self.retry_due == Some(latest)) {
+        return Some(latest)
+      }
+      return None
+    }
+    None => ()
+  }
+  if !self.auto() {
+    return None
+  }
   let (is_newer, _) = offer(item.version, item.latest, self.channel(), self.installed)
   if is_newer && (self.tried != Some(latest) || self.retry_due == Some(latest)) {
     Some(latest)
@@ -1418,7 +1637,56 @@ pub fn Updates::to_update_to(self : Updates) -> String? {
 }
 
 ///|
+async fn Updates::reconcile_override_wait(self : Updates) -> Unit {
+  if self.override_meta is Some(_) {
+    return
+  }
+  guard self.auto_when() is Some(when) else { return }
+  let mut satisfied = when.for_override
+  if !satisfied && when.wait.length() > 0 {
+    let version = self.item("station").version
+    let cur_build = build_or_none(version)
+    match (version, self.latest_release) {
+      (Some(v), Some(rel)) if release_version(rel) == v && conditions_met(when.wait, rel, self.latest_included) =>
+        satisfied = true
+      _ =>
+        if cur_build is Some(cb) && !needs_included(when.wait) {
+          satisfied = when.wait.iter().all(c => match c {
+            Version(v) =>
+              match build_or_none(Some(v)) {
+                Some(n) => cb >= n
+                None => false
+              }
+            After(v) =>
+              match build_or_none(Some(v)) {
+                Some(n) => cb > n
+                None => false
+              }
+            _ => false
+          })
+        }
+    }
+  }
+  if !satisfied {
+    return
+  }
+  let edits : Array[(String, J?)] = [("autoUpdateWhen", None)]
+  if when.restore_auto {
+    edits.push(("autoUpdate", Some(jb(true))))
+  }
+  self.config.edit_soon(self.w, edits)
+  self.last_setting = self.setting()
+  self.w.info(
+    "updates",
+    "auto-update wait settled on official release",
+    fields=jo([("restoredAuto", jb(when.restore_auto)), ("forOverride", jb(when.for_override))]),
+  )
+  self.changed()
+}
+
+///|
 async fn Updates::resume_auto(self : Updates) -> Unit {
+  self.reconcile_override_wait()
   guard self.auto_after() is Some(after) else { return }
   let item = self.item("station")
   guard item.channel == Some(self.channel()) && item.latest is Some(latest) else { return }
@@ -1479,7 +1747,7 @@ fn Updates::retry_station(self : Updates, version : String) -> Unit {
         return
       }
       self.retry_due = Some(version)
-      if self.auto() {
+      if self.auto() || self.auto_when() is Some(_) {
         (try {
           // A runtime-only reading may already be in flight; wait for it, then read the station's feed too.
           match self.checking {
@@ -2348,7 +2616,17 @@ async fn Updates::update_station_rest(self : Updates, lang : String, begun : Beg
   // The release verified, the installer to run and what it is told (refused in `lang`: not left updating).
   let plan = {
     errdefer put_back()
-    plan_update(w, begun.origin, channel, self.app, self.installed, lang, self.trusted, self.cloud_request())
+    plan_update(
+      w,
+      begun.origin,
+      channel,
+      self.app,
+      self.installed,
+      lang,
+      self.trusted,
+      self.cloud_request(),
+      override_meta=self.override_meta,
+    )
   }
   if plan.delta is None {
     if !self.start_planned(plan, []) {
@@ -2950,5 +3228,45 @@ pub async fn answer_channel_ask(w : World, run_dir : String, set_to : async (Str
   write_whole(w, pjoin([run_dir, channel_answer]), "\{answer}\n") catch {
     e =>
       w.warn("updates", "the update channel's answer not written", fields=jo([("error", js(message_of(e)))]))
+  }
+}
+
+///|
+/// The running station's side of `stillfail replace --wait`: takes the JSON payload in <run>/wait-ask
+/// (`{ wait: [...] | null }`), updates config, and answers in <run>/wait-answer (`ok` or `error <why>`).
+pub async fn answer_wait_ask(
+  w : World,
+  run_dir : String,
+  set_to : async (Array[WaitCondition]?) -> Unit,
+) -> Unit {
+  let ask = pjoin([run_dir, wait_ask])
+  guard w.read_text_or_null(ask) is Some(asked) else { return }
+  w.rm(ask)
+  let answer = try {
+    let parsed = parse(asked)
+    match get(Some(parsed), "wait") {
+      Some(Null) => {
+        set_to(None)
+        "ok"
+      }
+      Some(Arr(xs)) => {
+        let wait : Array[WaitCondition] = []
+        for x in xs {
+          match parse_wait_condition(x) {
+            Some(c) => wait.push(c)
+            None => raise fail("invalid wait condition in wait-ask")
+          }
+        }
+        set_to(Some(wait))
+        "ok"
+      }
+      _ => raise fail("wait-ask expects { wait: [...] | null }")
+    }
+  } catch {
+    e => "error \{message_of(e)}"
+  }
+  write_whole(w, pjoin([run_dir, wait_answer]), "\{answer}\n") catch {
+    e =>
+      w.warn("updates", "the auto-update wait answer not written", fields=jo([("error", js(message_of(e)))]))
   }
 }

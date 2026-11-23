@@ -318,7 +318,7 @@ test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api 
   assert.deepEqual(Object.keys(JSON.parse(version.result.content[0].text)).slice(0, 8), ["version", "latest", "newer", "channel", "auto", "autoAfter", "earlier", "state"]);
   const unknown = await post(mcp.port, "/mcp", { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "station_version", arguments: { action: "other" } } }, "t1");
   assert.equal(unknown.result.isError, true);
-  assert.equal(unknown.result.content[0].text, "action: list, update or back");
+  assert.equal(unknown.result.content[0].text, "action: list, update, back or wait");
   const called = await post(mcp.port, "/mcp", { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "slack_api", arguments: { method: "conversations.info", params: { channel: "C9" } } } }, "t1");
   assert.equal(called.result.isError, undefined, JSON.stringify(called));
   assert.deepEqual(JSON.parse(called.result.content[0].text), { ok: true, channel: { id: "C9", name: "name-C9" } });

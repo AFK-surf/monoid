@@ -54,6 +54,8 @@ const READER_NATIVE = /^natives\/reader-(darwin-arm64|linux-x64|linux-arm64|win3
 const READER_NATIVE_SECONDS = 14 * 24 * 3600;
 /** The station's archives under their own names, and their deltas (scripts/release-deltas.ts). */
 const STATION_ARCHIVE = /^station\/archive\/(stable|beta)\/(\d+)-([0-9a-f]{64})-([a-z0-9-]+?)(\.tar\.gz|\.zip|\.from-\d+-[0-9a-f]{16}\.delta)$/;
+/** The station's signed included-changes manifests (scripts/release-included.ts). */
+const STATION_INCLUDED = /^station\/included\/(\d+)-([0-9a-f]{16})\.json$/;
 
 const older = (a: string, b: string) => {
   const [x, y] = [a.split(".").map(Number), b.split(".").map(Number)];
@@ -115,18 +117,22 @@ export function doomedOf(keys: string[], feeds: Record<string, string>, webNamed
   // The station's feeds: by channel, the build each names, the archives (by sha256) it names as its own or as a base
   // of its deltas, and its deltas.
   const station = new Map<string, { build: number; named: Set<string>; deltas: Set<string> }>();
+  const stationIncluded = new Set<string>();
   for (const [feed, channel] of [["station.json", "stable"], ["station-beta.json", "beta"]] as const) {
     const text = feeds[feed];
     if (text === undefined) continue;
     try {
       const f = JSON.parse(text), words = JSON.parse(Buffer.from(f.release, "base64").toString("utf8"));
       const named = new Set<string>(Object.values(words.builds ?? {}).map((b: any) => String(b.sha256)));
+      if (typeof words.included?.file === "string") stationIncluded.add(words.included.file);
       const deltas = new Set<string>();
       for (const list of Object.values(f.deltas ?? {})) for (const d of list as any[]) { named.add(String(d.base)); deltas.add(String(d.file)); }
-      // (the releases a station may go back to: their archives, by their signed words)
+      // (the releases a station may go back to: their archives and included manifests, by their signed words)
       for (const e of Array.isArray(f.earlier) ? f.earlier : []) {
         try {
-          for (const b of Object.values<any>(JSON.parse(Buffer.from(e.release, "base64").toString("utf8")).builds ?? {})) named.add(String(b.sha256));
+          const ew = JSON.parse(Buffer.from(e.release, "base64").toString("utf8"));
+          for (const b of Object.values<any>(ew.builds ?? {})) named.add(String(b.sha256));
+          if (typeof ew.included?.file === "string") stationIncluded.add(ew.included.file);
         } catch {}
       }
       station.set(channel, { build: Number(words.build), named, deltas });
@@ -135,6 +141,7 @@ export function doomedOf(keys: string[], feeds: Record<string, string>, webNamed
       station.set(channel, { build: Infinity, named: new Set(), deltas: new Set() });
     }
   }
+  const maxStationBuild = station.size === 0 ? Infinity : Math.max(...[...station.values()].map((s) => s.build));
 
   // The versions of each installer's blockmaps and of its .sigs, newest first.
   const kind = (file: { group: string; extra: string }) => file.group + file.extra;
@@ -167,6 +174,11 @@ export function doomedOf(keys: string[], feeds: Record<string, string>, webNamed
       const feed = station.get(archive[1]!);
       if (!feed || Number(archive[2]) > feed.build) return false;
       return archive[5]!.endsWith(".delta") ? !feed.deltas.has(key) : !feed.named.has(archive[3]!);
+    }
+    const inc = key.match(STATION_INCLUDED);
+    if (inc) {
+      if (Number(inc[1]) > maxStationBuild) return false;
+      return !stationIncluded.has(key);
     }
     const file = installer(key);
     const named = file && current.get(file.group);

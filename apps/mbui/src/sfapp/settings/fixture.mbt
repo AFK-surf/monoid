@@ -522,6 +522,10 @@ let fx_station_updated : Ref[Bool] = Ref(false)
 let fx_station_back : Ref[String] = Ref("")
 
 ///|
+/// A station running a local replacement (`stillfail replace`, `settings-station-override`) with conditional auto-update.
+let fx_station_override : Ref[Bool] = Ref(false)
+
+///|
 /// The workspace in safe mode with its stations not named by it: Willow, online, which the viewer could protect here
 /// (the core's `protect`), and Maple, offline, which it could not.
 let fx_unprotected : Ref[Bool] = Ref(false)
@@ -546,6 +550,7 @@ fn fixture_reset() -> Unit {
   fx_station_update_failed.val = false
   fx_station_updated.val = false
   fx_station_back.val = ""
+  fx_station_override.val = false
   fx_unprotected.val = false
   fx.restored.clear()
   fx.skills_shared.clear()
@@ -1065,11 +1070,12 @@ pub fn fixture_page(mode : String) -> String {
       station_parts["ws1/st1"] = "settings"
       up("", "settings/station/ws1/st1", 0)
     }
-    "settings-station-versions" | "settings-station-update-failed" | "settings-station-updated" | "settings-station-back" | "settings-station-back-held" => {
+    "settings-station-versions" | "settings-station-update-failed" | "settings-station-updated" | "settings-station-back" | "settings-station-back-held" | "settings-station-override" => {
       station_parts["ws1/st1"] = "settings"
       fx_station_update_failed.val = m == "settings-station-update-failed"
       fx_station_updated.val = m == "settings-station-updated"
       fx_station_back.val = if m.has_prefix("settings-station-back") { m } else { "" }
+      fx_station_override.val = m == "settings-station-override"
       up("", "settings/station/ws1/st1", 0)
     }
     "settings-stations-add" => up("add", "", 0)
@@ -1312,7 +1318,7 @@ pub fn fixture_page(mode : String) -> String {
     _ if moves => "move:ws1/st1"
     "settings-backup" => "backup"
     "settings-backup-station" | "settings-backup-s3-form" | "settings-backup-restore-s3" => "backup:ws1/st1"
-    "settings-station-mark" | "settings-station-gpu" | "settings-station-gpu-many" | "settings-station-env" | "settings-station-processes" | "settings-station-lower" | "settings-station-versions" | "settings-station-update-failed" | "settings-station-updated" | "settings-station-back" | "settings-station-back-held" | "settings-station-network" | "settings-station-away" | "settings-station-copies" | "settings-station-copies-alone" | "settings-station-copies-config" | "settings-station-copies-s3-form" | "settings-station-restore" | "settings-station-restore-offer" | "settings-station-restore-confirm" | "settings-station-restore-confirm-long" | "settings-station-restore-s3" | "settings-station-restored" | "settings-station-retire" | "settings-station-retire-panel" | "settings-station-retire-panel-pick" | "settings-station-retire-panel-none" | "settings-station-retire-panel-joined" | "settings-station-retire-panel-long" | "settings-station-retire-sending" | "settings-station-retire-sent" | "settings-station-retire-sent-failed" | "settings-station-retire-quiet" | "settings-station-retire-failed" | "settings-station-retire-accounts" | "settings-station-retire-done" | "settings-station-retire-done-left" | "settings-station-taking" | "settings-station-terminals" =>
+    "settings-station-mark" | "settings-station-gpu" | "settings-station-gpu-many" | "settings-station-env" | "settings-station-processes" | "settings-station-lower" | "settings-station-versions" | "settings-station-update-failed" | "settings-station-updated" | "settings-station-back" | "settings-station-back-held" | "settings-station-override" | "settings-station-network" | "settings-station-away" | "settings-station-copies" | "settings-station-copies-alone" | "settings-station-copies-config" | "settings-station-copies-s3-form" | "settings-station-restore" | "settings-station-restore-offer" | "settings-station-restore-confirm" | "settings-station-restore-confirm-long" | "settings-station-restore-s3" | "settings-station-restored" | "settings-station-retire" | "settings-station-retire-panel" | "settings-station-retire-panel-pick" | "settings-station-retire-panel-none" | "settings-station-retire-panel-joined" | "settings-station-retire-panel-long" | "settings-station-retire-sending" | "settings-station-retire-sent" | "settings-station-retire-sent-failed" | "settings-station-retire-quiet" | "settings-station-retire-failed" | "settings-station-retire-accounts" | "settings-station-retire-done" | "settings-station-retire-done-left" | "settings-station-taking" | "settings-station-terminals" =>
       "station:ws1/st1"
     "settings-stations-add" | "settings-stations-existing" | "settings-stations-command" | "settings-first-station" =>
       "stations"
@@ -2748,7 +2754,7 @@ fn fx_station(address : String) -> Json {
                 ("latest", str("0.1.1300")),
                 ("newer", Json::boolean(!fx_station_updated.val)),
                 ("channel", str("stable")),
-                ("auto", Json::boolean(if fx_station_back.val == "" { fx.auto } else { fx_station_back.val == "settings-station-back" })),
+                ("auto", Json::boolean(if fx_station_override.val { false } else if fx_station_back.val == "" { fx.auto } else { fx_station_back.val == "settings-station-back" })),
                 ("updatable", Json::boolean(true)),
                 ("state", str(if fx_station_update_failed.val || fx.willow_away { "failed" } else { "idle" })),
                 ("failedText", str("更新失败")),
@@ -2756,9 +2762,20 @@ fn fx_station(address : String) -> Json {
                 ("checkedAt", Json::number(if fx.willow_away { 1795189320000.0 } else { 1.0 })),
                 ("done", str(if fx_station_updated.val { "已更新到 0.1.1300，agent 未中断" } else { "" })),
                 // (the core's words of it: present.ts software)
-                ("shownText", str(if fx_station_updated.val { "0.1.1300" } else { "0.1.1288" })),
+                ("shownText", str(if fx_station_override.val { "本地替换版（基于 0.1.1288）" } else if fx_station_updated.val { "0.1.1300" } else { "0.1.1288" })),
                 ("tipText", str("")),
               ] +
+                (if fx_station_override.val {
+                  [
+                    ("overridden", Json::boolean(true)),
+                    ("overrideBase", str("0.1.1288")),
+                    ("overrideKind", str("overlay")),
+                    ("overrideNote", str("mm2 overview 扇出热修复")),
+                    ("autoWhen", Json::array([str("#8270"), str("FB-123")])),
+                  ]
+                } else {
+                  []
+                }) +
                 (if fx_station_back.val == "" {
                   []
                 } else {

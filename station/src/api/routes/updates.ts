@@ -6,6 +6,7 @@ import type { Route } from "../admin.ts";
 import { managesStation } from "../../mesh/credential.ts";
 import { tr } from "../../ops/i18n.ts";
 import type { Updates } from "../../updates/updates.ts";
+import { parseWaitSpec, type WaitCondition } from "../../updates/override.ts";
 import { channelOfId } from "../../updates/versions.ts";
 
 export type UpdatesDeps = { updates?: Updates | null };
@@ -55,6 +56,30 @@ export const routes = ({ updates }: UpdatesDeps): Route[] => {
         const on = input(r).on;
         if (typeof on !== "boolean") throw new Refused(400, tr(r.lang, "station.admin.badOn"));
         await u.setAuto(on, r.lang);
+      }),
+    },
+    // Conditional auto-update wait rules: { wait: string[] | null }.
+    {
+      method: "POST",
+      pattern: /^\/updates\/wait$/,
+      handle: answer(async (u, r) => {
+        const raw = input(r).wait;
+        if (raw === null) {
+          await u.setWait(null, r.lang);
+          return;
+        }
+        if (!Array.isArray(raw) || !raw.every((x) => typeof x === "string")) {
+          throw new Refused(400, "wait: string[] or null");
+        }
+        const parsed: WaitCondition[] = [];
+        for (const s of raw) {
+          try {
+            parsed.push(parseWaitSpec(s));
+          } catch (e) {
+            throw new Refused(400, (e as Error).message);
+          }
+        }
+        await u.setWait(parsed, r.lang);
       }),
     },
     // One of them updated (or a runtime installed): { id }; the station put back to a release before it: { id, to }.

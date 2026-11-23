@@ -245,6 +245,61 @@ fn build_of(version : String) -> Double {
 }
 
 ///|
+/// Downloads and verifies the release's signed included-changes manifest (size and SHA-256 checked before JSON.parse).
+pub async fn read_included(
+  w : World,
+  base : String,
+  included : J,
+  request : Request,
+  wait? : Wait,
+) -> ReleaseIncluded {
+  let file = text(get(Some(included), "file")).unwrap_or("")
+  let expected_sha = text(get(Some(included), "sha256")).unwrap_or("")
+  let expected_size = num(get(Some(included), "size")).unwrap_or(-1.0)
+  let url = "\{base}/releases/\{file}"
+  let mut i = 0
+  while true {
+    let got : Result[ReleaseIncluded, Error] = try {
+      let response = request(url, None)
+      if response.status == 502 || response.status == 503 || response.status == 504 {
+        raise on_way("\{url}: \{response.status}")
+      }
+      if !response.ok() {
+        raise fail("\{url}: \{response.status}")
+      }
+      let bytes = response.bytes()
+      if bytes.length().to_double() != expected_size {
+        raise fail("the included manifest is \{bytes.length()} bytes, signed words say \{num_text(expected_size)}")
+      }
+      if sha256(bytes) != expected_sha {
+        raise fail("the included manifest's sha256 does not match the signed words")
+      }
+      let raw = parse(utf8_text(bytes)) catch { _ => raise fail("the included manifest is not JSON") }
+      match parse_release_included(raw) {
+        Some(parsed) => Ok(parsed)
+        None => raise fail("the included manifest is not well formed")
+      }
+    } catch {
+      e => Err(e)
+    }
+    match got {
+      Ok(inc) => return inc
+      Err(e) => {
+        guard wait is Some(wait) && i < feed_again_ms.length() && on_the_way(e) else { raise e }
+        w.warn(
+          "updates",
+          "the included manifest not read, tried again",
+          fields=jo([("url", js(url)), ("error", js(message_of(e))), ("after", jn(feed_again_ms[i]))]),
+        )
+        wait(feed_again_ms[i])
+        i += 1
+      }
+    }
+  }
+  raise fail("unreachable")
+}
+
+///|
 /// `planUpdate`: what updating the station of `app` (from `installed`'s channel) to `channel`'s latest at `base`
 /// runs. Refusals are raised in `lang`.
 pub async fn plan_update(
@@ -256,6 +311,7 @@ pub async fn plan_update(
   lang : String,
   trusted : Array[(String, String)]?,
   request : Request,
+  override_meta? : OverrideMeta? = None,
   wait? : Wait,
 ) -> Plan {
   let said = read_feed(w, channel, base, request, wait?)
@@ -268,12 +324,21 @@ pub async fn plan_update(
     Some(v) => Some(build_of(v))
     None => None
   }
-  if !allowed(release, current, channel, Some(installed)) {
+  let ov_base = match override_meta {
+    Some(o) => o.base_build
+    None => None
+  }
+  let ov_ver = match override_meta {
+    Some(o) => o.base_version
+    None => None
+  }
+  let is_overridden = override_meta is Some(_)
+  if !allowed(release, current, channel, Some(installed), override_base_build=ov_base) {
     raise fail(
       tr(
         lang,
         "station.updates.older",
-        args=jo([("version", js(release_version(release))), ("current", jopt(version))]),
+        args=jo([("version", js(release_version(release))), ("current", jopt(if ov_ver is Some(_) { ov_ver } else { version }))]),
       ),
     )
   }
@@ -298,7 +363,7 @@ pub async fn plan_update(
       ("STILLFAIL_NODE_SHA256", js_string_opt(get(Some(build), "nodeSha256"))),
       ("STILLFAIL_INSTALL_LANG", lang),
     ],
-    delta: delta_for(said, build, platform(), safe, base),
+    delta: if is_overridden { None } else { delta_for(said, build, platform(), safe, base) },
     archive: None,
   }
 }

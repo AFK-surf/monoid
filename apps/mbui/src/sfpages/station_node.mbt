@@ -2262,7 +2262,12 @@ fn software_row_node(
 ) -> Unit {
   let id = text(@signals.untracked(v), "id")
   let own = id == "station"
-  let switches = fn() { online() && own && manager && ((beta() && has(v(), "channel")) || has(v(), "auto") || software_earlier(v()).length() > 0) }
+  let switches = fn() {
+    online() &&
+    own &&
+    manager &&
+    ((beta() && has(v(), "channel")) || (has(v(), "auto") && !flag(v(), "overridden")) || software_earlier(v()).length() > 0)
+  }
   let call = fn(name : String, params : Array[(String, Json)]) { software_call(core, station, name, params) }
   @sf.item_row_node(row, fn(r) {
     // (its mark on its first line, never centred on the lines under it (its version, what an update says, its switches):
@@ -2318,6 +2323,19 @@ fn software_row_node(
         @sf.words_node(w, fn() { @sf.t("web-main.versions.autoAfter", args=[("version", text(v(), "autoAfter"))]) }, fn() { sw_note })
         |> ignore
       })
+      u.show(fn() { text(v(), "overrideNote") != "" }, fn(w) {
+        @sf.words_node(w, fn() { text(v(), "overrideNote") }, fn() { sw_note }) |> ignore
+      })
+      u.show(fn() { software_auto_when(v()).length() > 0 }, fn(w) {
+        @sf.words_node(w, fn() {
+          let sep = if @sf.language() == "en" { ", " } else { "、" }
+          @sf.t("web-main.versions.autoWhen", args=[("conditions", software_auto_when(v()).join(sep))])
+        }, fn() { sw_note })
+        |> ignore
+      })
+      u.show(fn() { software_auto_when(v()).length() == 0 && flag(v(), "autoHeld") }, fn(w) {
+        @sf.words_node(w, fn() { @sf.t("web-main.versions.overrideHeld") }, fn() { sw_note }) |> ignore
+      })
       u.show(fn() { text(v(), "state") == "failed" && text(v(), "message") != "" }, fn(w) {
         @sf.words_node(w, fn() { text(v(), "message") }, fn() { sw_note }) |> ignore
       })
@@ -2337,7 +2355,7 @@ fn software_row_node(
             fn() { @sf.t("web-main.versions.betaNote") },
           )
         })
-        sw.show(fn() { has(v(), "auto") }, fn(l) {
+        sw.show(fn() { has(v(), "auto") && !flag(v(), "overridden") }, fn(l) {
           software_switch_node(
             l,
             tips,
@@ -2381,6 +2399,8 @@ fn software_end(v : Json?) -> String {
     "updating"
   } else if state == "failed" {
     "failed"
+  } else if flag(v, "overridden") {
+    "restore"
   } else if flag(v, "repairable") {
     "repair"
   } else if !flag(v, "installed") {
@@ -2392,6 +2412,34 @@ fn software_end(v : Json?) -> String {
   } else {
     ""
   }
+}
+
+///|
+/// Formatted fix conditions (`autoWhen`) that trigger automatic restore/update once released.
+fn software_auto_when(v : Json?) -> Array[String] {
+  items(v, "autoWhen").filter_map(fn(e) {
+    match e {
+      String(s) if s != "" => Some(s)
+      _ => None
+    }
+  })
+}
+
+///|
+/// Asks before restoring an overridden station `v` back to the official signed release on its channel.
+fn software_restore_ask(v : Json?, call : (String, Array[(String, Json)]) -> Unit) -> Unit {
+  let latest = text(v, "latest")
+  let note = if latest != "" {
+    @sf.t("web-main.versions.restoreNote", args=[("latest", latest)])
+  } else {
+    @sf.t("web-main.versions.restoreNoteNoLatest")
+  }
+  confirm(
+    @sf.t("web-main.versions.restoreAsk"),
+    note,
+    @sf.t("web-main.versions.restoreDo"),
+    fn() { call("software.update", [("id", str("station"))]) },
+  )
 }
 
 ///|
@@ -2474,6 +2522,13 @@ fn software_end_node(
         button(fn() { @sf.t("common.retry") }, false)
       }
     }
+    "restore" =>
+      if manager && flag(@signals.untracked(v), "updatable") {
+        @sf.button_node(e, fn() { @sf.t("web-main.versions.restoreOfficial") }, fn() {
+          software_restore_ask(@signals.untracked(v), call)
+        }, tone=Primary, disabled=busy)
+        |> ignore
+      }
     "repair" => repair(fn() { @sf.t("web-main.versions.repairNpm") })
     "install" => button(fn() { @sf.t("web-main.versions.install") }, false)
     "newer" => {

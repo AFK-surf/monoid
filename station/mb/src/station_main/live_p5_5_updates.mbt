@@ -265,6 +265,23 @@ fn updates_routes(u : @updates.Updates) -> Array[PartRoute] {
         _ => raise BusError(@updates.tr(lang, "station.admin.badOn"))
       }
     })),
+    p55_route("POST", "^/updates/wait$", answer(async fn(r) {
+      let lang = lang_in(r)
+      match jfield(jfield(r, "body"), "wait") {
+        Null => u.set_wait(None, lang)
+        Array(xs) => {
+          let parsed : Array[@updates.WaitCondition] = []
+          for x in xs {
+            match x {
+              String(s) => parsed.push(@updates.parse_wait_spec(s))
+              _ => raise BusError("wait: string[] or null")
+            }
+          }
+          u.set_wait(Some(parsed), lang)
+        }
+        _ => raise BusError("wait: string[] or null")
+      }
+    })),
     p55_route("POST", "^/updates$", answer(async fn(r) {
       let lang = lang_in(r)
       let body = jfield(r, "body")
@@ -342,7 +359,7 @@ let p55_watch_ms : Int = 250
 let version_declared : String =
   #|{
   #|  "name": "station_version",
-  #|  "description": "This station's release: list (version, latest, earlier releases), update to the latest, or back to an earlier one when the latest broke something (auto-update pauses until a newer one).",
+  #|  "description": "This station's release: list (version, latest, earlier, override/wait), update to latest, back to an earlier one, or wait until a PR/fix/commit/version ships.",
   #|  "inputSchema": {
   #|    "type": "object",
   #|    "properties": {
@@ -350,12 +367,24 @@ let version_declared : String =
   #|        "enum": [
   #|          "list",
   #|          "update",
-  #|          "back"
+  #|          "back",
+  #|          "wait"
   #|        ]
   #|      },
   #|      "to": {
   #|        "type": "string",
   #|        "description": "back: a version from list's earlier."
+  #|      },
+  #|      "until": {
+  #|        "type": "array",
+  #|        "items": {
+  #|          "type": "string"
+  #|        },
+  #|        "description": "wait: conditions (pr:N, fix:FB-N, commit:SHA, version:0.1.N, after:0.1.N)."
+  #|      },
+  #|      "clear": {
+  #|        "type": "boolean",
+  #|        "description": "wait: clear wait conditions."
   #|      }
   #|    },
   #|    "required": [
@@ -390,11 +419,21 @@ async fn version_tool(u : @updates.Updates, args : Json) -> Json {
       },
       "state": jfield(v, "state"),
     }
-    for k in ["progress", "message", "note"] {
+    for k in ["progress", "message", "note", "overrideBase", "overrideKind", "overrideNote"] {
       match jfield(v, k) {
         String(t) if t != "" => m[k] = Json::string(t)
         _ => ()
       }
+    }
+    for k in ["overridden", "autoHeld"] {
+      match jfield(v, k) {
+        True => m[k] = Json::boolean(true)
+        _ => ()
+      }
+    }
+    match jfield(v, "autoWhen") {
+      Array(xs) if xs.length() > 0 => m["autoWhen"] = Json::array(xs)
+      _ => ()
     }
     m
   }
@@ -419,7 +458,29 @@ async fn version_tool(u : @updates.Updates, args : Json) -> Json {
       u.update("station", "en", to~)
       started()
     }
-    _ => raise BusError("action: list, update or back")
+    String("wait") =>
+      match jfield(args, "clear") {
+        True => {
+          u.set_wait(None, "en")
+          Json::object(line())
+        }
+        _ =>
+          match jfield(args, "until") {
+            Array(xs) => {
+              let parsed : Array[@updates.WaitCondition] = []
+              for x in xs {
+                match x {
+                  String(s) => parsed.push(@updates.parse_wait_spec(s))
+                  _ => raise BusError("wait: pass until (array of conditions) or clear: true")
+                }
+              }
+              u.set_wait(Some(parsed), "en")
+              Json::object(line())
+            }
+            _ => raise BusError("wait: pass until (array of conditions) or clear: true")
+          }
+      }
+    _ => raise BusError("action: list, update, back or wait")
   }
 }
 

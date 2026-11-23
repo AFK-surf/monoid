@@ -150,6 +150,7 @@ export const STORAGE_MANIFEST: readonly StorageEntry[] = [
   { name: "drive-grant.key", class: "authoritative", what: "the drive's grant key" },
   // Programs and runtimes: replaced as they are updated.
   { name: "app", class: "authoritative", what: "the station's release" },
+  { name: "app.before-replace", class: "bounded-ephemeral", what: "official release backup kept before local replacement (stillfail replace)", reclaim: "removed on official update or stillfail replace --revert" },
   { name: "node", class: "authoritative", what: "the station's Node (its half-done downloads, .part-*, held by Upkeep)", maxAgeMs: NODE_PART_MS, reclaim: "Upkeep staleNodeParts" },
   { name: "bin", class: "authoritative", what: "commands installed for the station" },
   { name: "ca", class: "authoritative", what: "certificates the station trusts" },

@@ -809,6 +809,8 @@
   "core-views.present.access.service": "服务账号",
   "core-views.present.profile.never_checked": "尚未检查",
   "core-views.software.dev": "开发版",
+  "core-views.software.override": "本地替换版",
+  "core-views.software.override_based": "本地替换版（基于 {base}）",
   "core-views.software.unknown": "版本未知",
   "core-views.software.not_installed": "未安装",
   "core-views.software.latest": "已是最新",

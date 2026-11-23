@@ -1745,11 +1745,17 @@ export function installView(runtime: string, updates: J[], manages: boolean): J 
 /// hover (up to date, or that the last check failed), and while it updates or once that failed, in words.
 export function software(u: J): J {
   const installed = get(u, "installed") === true;
+  const overridden = get(u, "overridden") === true;
+  const overrideBase = typeof get(u, "overrideBase") === "string" && (get(u, "overrideBase") as string) !== "" ? (get(u, "overrideBase") as string) : null;
   const version = typeof get(u, "version") === "string" ? (get(u, "version") as string) : null;
   const latest = typeof get(u, "latest") === "string" ? (get(u, "latest") as string) : null;
-  const shownText = installed ? (version ?? t(get(u, "id") === "station" ? "core-views.software.dev" : "core-views.software.unknown")) : t("core-views.software.not_installed");
+  const shownText = overridden
+    ? (overrideBase !== null ? t("core-views.software.override_based", { base: overrideBase }) : t("core-views.software.override"))
+    : installed
+      ? (version ?? t(get(u, "id") === "station" ? "core-views.software.dev" : "core-views.software.unknown"))
+      : t("core-views.software.not_installed");
   const tips = [
-    installed && get(u, "repairable") !== true && get(u, "newer") !== true && get(u, "downgrade") !== true && latest !== null ? t("core-views.software.latest") : null,
+    installed && !overridden && get(u, "repairable") !== true && get(u, "newer") !== true && get(u, "downgrade") !== true && latest !== null ? t("core-views.software.latest") : null,
     installed && latest === null && typeof get(u, "checkedAt") === "number" ? t("core-views.software.check_failed_retry") : null,
   ].filter((x): x is string => x !== null);
   const progress = get(u, "progress");

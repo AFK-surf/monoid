@@ -11,6 +11,12 @@ pub let channel_ask : String = "channel-ask"
 pub let channel_answer : String = "channel-answer"
 
 ///|
+pub let wait_ask : String = "wait-ask"
+
+///|
+pub let wait_answer : String = "wait-answer"
+
+///|
 /// The station's environment as these read it: STILLFAIL_CONFIG, its pid.
 let env_config : Ref[String?] = Ref(None)
 

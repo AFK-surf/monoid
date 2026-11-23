@@ -67,6 +67,9 @@ export const BETA_RELEASE_FILE = /^beta\/stillfail-station-((darwin-arm64|linux-
  */
 export const STATION_ARCHIVE = /^station\/archive\/(stable|beta)\/[0-9]+-[0-9a-f]{64}-((darwin-arm64|linux-x64|linux-arm64)\.tar\.gz|win32-x64\.zip|(darwin-arm64|linux-x64|linux-arm64|win32-x64)\.from-[0-9]+-[0-9a-f]{16}\.delta)$/;
 
+/** The station's signed included-changes manifests (scripts/release-included.ts). */
+export const STATION_INCLUDED = /^station\/included\/[0-9]+-[0-9a-f]{16}\.json$/;
+
 /**
  * The Node a release runs on (its NODE_VERSION file says the version), kept apart from it, once per version (scripts/node-dist.sh):
  * the installer gets it when the machine has none of that version yet, with its sha256 to check it by.
@@ -162,7 +165,7 @@ const APP_FILES: [RegExp, string][] = [
  * upstreamRelease); never an app's feed or build, which would update its apps to another product's.
  */
 export function sharedRelease(file: string): boolean {
-  return RELEASE_FILE.test(file) || BETA_RELEASE_FILE.test(file) || STATION_ARCHIVE.test(file) || NODE_FILE.test(file) || /^station(-beta)?\.json$|^(fonts|natives|relay)\//.test(file);
+  return RELEASE_FILE.test(file) || BETA_RELEASE_FILE.test(file) || STATION_ARCHIVE.test(file) || STATION_INCLUDED.test(file) || NODE_FILE.test(file) || /^station(-beta)?\.json$|^(fonts|natives|relay)\//.test(file);
 }
 
 /** The content type a file of the releases bucket is served with; null for a name that is not one of its files. */
@@ -170,6 +173,7 @@ export function releaseType(file: string): string | null {
   const archive = file.endsWith(".zip") ? "application/zip" : "application/gzip";
   if (RELEASE_FILE.test(file) || BETA_RELEASE_FILE.test(file)) return archive;
   if (STATION_ARCHIVE.test(file)) return file.endsWith(".delta") ? "application/octet-stream" : archive;
+  if (STATION_INCLUDED.test(file)) return "application/json";
   if (NODE_FILE.test(file)) return file.endsWith(".sha256") ? "text/plain; charset=utf-8" : archive;
   return APP_FILES.find(([name]) => name.test(file))?.[1] ?? null;
 }
@@ -504,8 +508,8 @@ done
 echo $$ > "$lock_dir/pid"
 trap 'rm -rf "$tmp" "$lock_dir"' EXIT
 
-# Already on this release, and running as its service would: nothing to do.
-if [ -n "$pid" ] && [ -f "$app/VERSION" ] && cmp -s "$tmp/stillfail/VERSION" "$app/VERSION" && same_service; then
+# Already on this release, and running as its service would: nothing to do (unless locally replaced).
+if [ -n "$pid" ] && [ ! -f "$app/OVERRIDE" ] && [ -f "$app/VERSION" ] && cmp -s "$tmp/stillfail/VERSION" "$app/VERSION" && same_service; then
   cp "$tmp/stillfail/CHANNEL" "$app/CHANNEL" 2>/dev/null || true
   echo "${say("cloud.install.upToDate", { version: '$(cut -c1-7 "$app/VERSION")' })}"
   exit 0
@@ -541,7 +545,7 @@ if [ -n "$pid" ] && [ -n "$(said handoff)" ] && [ -n "$(said renew)" ] && same_s
     [ -f "$data/run/handoff-failed" ] && break
   done
   if [ -n "$handed" ]; then
-    rm -rf "$app.old"
+    rm -rf "$app.old" "$data/app.before-replace"
     prune_node
   elif [ -f "$data/run/handoff-failed" ] && kill -0 "$pid" 2>/dev/null && [ "$(said startedAt)" = "$started" ]; then
     # The new release did not come up or take over, and the station is the launcher it was: the release before goes
@@ -557,7 +561,7 @@ if [ -n "$pid" ] && [ -n "$(said handoff)" ] && [ -n "$(said renew)" ] && same_s
   elif [ "$(said startedAt)" != "$started" ]; then
     # It went down mid-way and its service started the new release: done, the usual way.
     handed=restarted
-    rm -rf "$app.old"
+    rm -rf "$app.old" "$data/app.before-replace"
   else
     echo "${say("cloud.install.handoff.noAnswer")}" >&2
   fi
@@ -612,7 +616,7 @@ for dp_pair in $dup_products; do
   if [ -L "$HOME/.local/bin/$dp" ]; then case "$(readlink "$HOME/.local/bin/$dp")" in "$data/app/"*) rm -f "$HOME/.local/bin/$dp" ;; esac; fi
 done
 [ -n "$swapped" ] || swap_app
-rm -rf "$app.old"
+rm -rf "$app.old" "$data/app.before-replace"
 prune_node
 fi
 mkdir -p "$HOME/.local/bin"

@@ -245,6 +245,25 @@ fn P55::admin_ops(self : P55, u : @updates.Updates) -> Unit {
     u.set_auto(arg_at(a, 0) is True, arg_str(a, 1))
     Json::null()
   })
+  self.op("updates.setWait", async fn(arg) {
+    let a = jitems(arg)
+    let lang = arg_str(a, 1)
+    match arg_at(a, 0) {
+      Null => u.set_wait(None, lang)
+      Array(xs) => {
+        let parsed : Array[@updates.WaitCondition] = []
+        for x in xs {
+          match x {
+            String(s) => parsed.push(@updates.parse_wait_spec(s))
+            _ => raise BusError("wait: string[] or null")
+          }
+        }
+        u.set_wait(Some(parsed), lang)
+      }
+      _ => raise BusError("wait: string[] or null")
+    }
+    Json::null()
+  })
   self.op("updates.repairCodex", async fn(arg) {
     u.repair_codex(arg_str(jitems(arg), 0))
     Json::null()

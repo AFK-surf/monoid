@@ -25,10 +25,12 @@
 import { spawn } from "node:child_process";
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign } from "node:crypto";
 import { createReadStream, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createGunzip } from "node:zlib";
-import { type Build, RELEASE_KEYS, keyId, verifySigned } from "../shared/release-signed.ts";
+import { type Build, type ReleaseIncludedRef, RELEASE_KEYS, keyId, verifySigned } from "../shared/release-signed.ts";
 import { storedZip } from "./delta.ts";
+import { writeReleaseIncluded } from "./release-included.ts";
 
 const args = process.argv.slice(2);
 const flag = (name: string) => {
@@ -143,10 +145,18 @@ switch (positional[0]) {
       builds[platform!] = { ...file, nodeSha256, rawSha256: raw.sha256, rawSize: raw.size };
     });
     if (Object.keys(builds).length === 0) usage();
+    const includedDir = flag("--included-dir");
+    let included: ReleaseIncludedRef | undefined;
+    if (includedDir) {
+      const repo = flag("--repo") ?? resolve(dirname(fileURLToPath(import.meta.url)), "..");
+      const written = writeReleaseIncluded(repo, includedDir, { rev: commit, build: n });
+      included = { file: written.file, sha256: written.sha256, size: written.size };
+    }
     const k = keyOrNone();
-    const feed = { version, build: n, commit, ...(k ? signed({ kind: "stillfail-station-release", version, build: n, commit, node, builds }, k) : {}) };
+    const words = { kind: "stillfail-station-release", version, build: n, commit, node, builds, ...(included ? { included } : {}) };
+    const feed = { version, build: n, commit, ...(k ? signed(words, k) : {}) };
     writeFileSync(out, `${JSON.stringify(feed)}\n`);
-    console.error(`release-sign: ${out}: ${version}${k ? `, signed by ${keyId(k.raw)}` : ", NOT signed"} (${Object.keys(builds).join(", ")})`);
+    console.error(`release-sign: ${out}: ${version}${k ? `, signed by ${keyId(k.raw)}` : ", NOT signed"} (${Object.keys(builds).join(", ")})${included ? ` + ${included.file}` : ""}`);
     break;
   }
   case "file": {

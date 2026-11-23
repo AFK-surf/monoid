@@ -69,6 +69,45 @@ test "what is allowed: a newer build, or back to stable from the beta" {
   assert_true(!allowed(r, Some(6.0), "stable", Some("stable")))
   assert_true(allowed(r, Some(6.0), "stable", Some("beta")))
   assert_true(!allowed(r, Some(6.0), "beta", Some("beta")))
+  // override_base_build floor
+  assert_true(allowed(r, Some(10.0), "stable", Some("stable"), override_base_build=Some(5.0)))
+  assert_true(!allowed(r, Some(10.0), "stable", Some("stable"), override_base_build=Some(6.0)))
+  assert_true(allowed(r, Some(10.0), "stable", Some("beta"), override_base_build=Some(6.0)))
+}
+
+///|
+test "included file pattern and wait condition parsing/matching" {
+  assert_true(is_included_file("station/included/11125-0123456789abcdef.json"))
+  assert_true(!is_included_file("station/included/11125-0123.json"))
+  assert_true(!is_included_file("beta/station/included/11125-0123456789abcdef.json"))
+  assert_eq(parse_wait_spec("pr:8270"), Pr(8270))
+  assert_eq(parse_wait_spec("#8270"), Pr(8270))
+  assert_eq(parse_wait_spec("fix:FB-123"), Fix(123))
+  assert_eq(parse_wait_spec("FB-123"), Fix(123))
+  assert_eq(parse_wait_spec("commit:ABCDEF123456"), Commit("abcdef123456"))
+  assert_eq(parse_wait_spec("version:0.1.11125"), Version("0.1.11125"))
+  assert_eq(parse_wait_spec("0.1.11125"), Version("0.1.11125"))
+  assert_eq(parse_wait_spec("after:0.1.10884"), After("0.1.10884"))
+  assert_eq(format_wait_condition(Pr(8270)), "#8270")
+  assert_eq(format_wait_condition(Fix(123)), "FB-123")
+  assert_eq(format_wait_condition(Commit("abcdef1234567890")), "commit abcdef123456")
+  assert_eq(format_wait_condition(Version("0.1.11125")), ">= 0.1.11125")
+  assert_eq(format_wait_condition(After("0.1.10884")), "> 0.1.10884")
+  let rel = jo([("build", ji(11130)), ("commit", js("deadbeef1234567890abcdef1234567890abcdef"))])
+  let inc : ReleaseIncluded = {
+    build: 11130.0,
+    commit: "deadbeef1234567890abcdef1234567890abcdef",
+    base_build: 11125.0,
+    base_commit: "1111111111111111111111111111111111111111",
+    window_from_build: 8131.0,
+    prs: [8270],
+    fixes: [123],
+    commits: ["deadbeef1234", "abcdef123456"],
+  }
+  assert_true(!conditions_met([], rel, Some(inc)))
+  assert_true(conditions_met([Pr(8270), Fix(123), Commit("abcdef12"), Version("0.1.11130"), After("0.1.11129")], rel, Some(inc)))
+  assert_true(!conditions_met([Pr(8270), Pr(9999)], rel, Some(inc)))
+  assert_true(conditions_met([Commit("deadbeef12")], rel, None))
 }
 
 ///|

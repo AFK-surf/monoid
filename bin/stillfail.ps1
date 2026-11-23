@@ -95,7 +95,7 @@ function Uninstall([bool] $purge) {
     Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host "stillfail: uninstalled, $full removed"
   } else {
-    foreach ($part in @('app', 'app.failed', 'node', 'helper', 'run', 'windows.json')) {
+    foreach ($part in @('app', 'app.failed', 'app.before-replace', 'node', 'helper', 'run', 'windows.json')) {
       Remove-Item -LiteralPath (Join-Path $full $part) -Recurse -Force -ErrorAction SilentlyContinue
     }
     Get-ChildItem -LiteralPath $full -Directory -Filter 'app.old*' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
@@ -116,6 +116,165 @@ switch ("$($a[0]) $($a[1])".Trim()) {
   'station id' { Run @('id', '--data', $data) }
   { $_ -eq 'lock status' -or $_ -eq 'lock reset' } { Run (@('lock', $a[1]) + $(if ($a.Count -gt 2) { $a[2..($a.Count - 1)] } else { @() }) + @('--data', $data)) }
   { $_ -like 'station enroll*' } { Run (@('enroll') + $a[2..($a.Count)] + @('--data', $data)) }
+  { $a[0] -eq 'replace' } {
+    $rest = if ($a.Count -gt 1) { $a[1..($a.Count - 1)] } else { @() }
+    $app = $here
+    $mode = ''; $source = $null; $dist = $null; $mainF = $null; $readerF = $null; $note = $null
+    $noHold = $false; $clear = $false; $hold = $false; $waits = @()
+    for ($i = 0; $i -lt $rest.Count; $i++) {
+      switch ($rest[$i]) {
+        '--status' { $mode = 'status' }
+        '--revert' { $mode = 'revert' }
+        '--restore' { $mode = 'restore' }
+        '--wait' { $mode = 'wait' }
+        '--clear' { $clear = $true }
+        '--hold' { $hold = $true }
+        '--no-hold' { $noHold = $true }
+        '--dist' { $i++; $dist = $rest[$i] }
+        '--main' { $i++; $mainF = $rest[$i] }
+        '--reader' { $i++; $readerF = $rest[$i] }
+        '--note' { $i++; $note = $rest[$i] }
+        '--until-pr' { $i++; $waits += "pr:$($rest[$i])" }
+        '--until-fix' { $i++; $waits += "fix:$($rest[$i])" }
+        '--until-commit' { $i++; $waits += "commit:$($rest[$i])" }
+        '--until-version' { $i++; $waits += "version:$($rest[$i])" }
+        '--until-after' { $i++; $waits += "after:$($rest[$i])" }
+        default {
+          if ($rest[$i].StartsWith('--')) { [Console]::Error.WriteLine("stillfail replace: unknown option $($rest[$i])"); exit 2 }
+          if ($source) { [Console]::Error.WriteLine("stillfail replace: unexpected argument $($rest[$i])"); exit 2 }
+          $source = $rest[$i]
+        }
+      }
+    }
+    if ($mode -eq 'status') { Run @('update', '--replace-status', '--app', $app, '--data', $data) }
+    if ($mode -eq 'wait') {
+      if (-not $clear -and -not $hold -and $waits.Count -eq 0) {
+        [Console]::Error.WriteLine('usage: stillfail replace --wait (--until-pr N | --until-fix FB-N | --until-commit SHA | --until-version V | --until-after V | --hold | --clear)')
+        exit 2
+      }
+      $uargs = @('update', '--replace-wait', '--data', $data)
+      if ($clear) { $uargs += '--clear' }
+      if ($hold) { $uargs += '--hold' }
+      foreach ($w in $waits) { $uargs += @('--until', $w) }
+      Run $uargs
+    }
+    if ($mode -eq 'restore') {
+      if (-not (Test-Path -LiteralPath $station)) { [Console]::Error.WriteLine("stillfail replace --restore: no $station"); exit 1 }
+      $plan = & $station update --app $app --data $data
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      $script = $null
+      foreach ($line in @($plan)) {
+        $key, $value = $line -split '=', 2
+        if ($key -eq 'script') { $script = $value }
+        elseif ($key -in 'STILLFAIL_ORIGIN', 'STILLFAIL_CHANNEL', 'STILLFAIL_RELEASE_SHA256', 'STILLFAIL_NODE_SHA256', 'STILLFAIL_INSTALL_LANG', 'STILLFAIL_ARCHIVE') { Set-Item -Path "env:$key" -Value $value }
+      }
+      if (-not $script) { [Console]::Error.WriteLine('stillfail replace --restore: no installer to run'); exit 1 }
+      $env:STILLFAIL_DATA = $data
+      & (Get-Process -Id $PID).Path -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script
+      exit $LASTEXITCODE
+    }
+    # Handover helper via Windows launcher named pipe (mirrors install-windows.ts).
+    $run = Join-Path $data 'run'
+    $said = $null; $proc = $null
+    try { $said = Get-Content (Join-Path $run 'station.json') -Raw | ConvertFrom-Json } catch {}
+    if ($said -and $said.pid) {
+      $p = Get-CimInstance Win32_Process -Filter ('ProcessId=' + [int]$said.pid) -ErrorAction SilentlyContinue
+      if ($p -and $p.Name -like 'stillfail-station*') { $proc = $p }
+    }
+    function AskPipe([string]$op) {
+      try {
+        $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', ('stillfail-launcher-' + $proc.ProcessId), [System.IO.Pipes.PipeDirection]::Out)
+        $pipe.Connect(5000)
+        $line = [Text.Encoding]::UTF8.GetBytes('{"op":"' + $op + '"}' + [char]10)
+        $pipe.Write($line, 0, $line.Length); $pipe.Flush(); $pipe.Dispose()
+        return $true
+      } catch { return $false }
+    }
+    function WaitHandover($started) {
+      $deadline = (Get-Date).AddSeconds(180)
+      while ((Get-Date) -lt $deadline) {
+        Start-Sleep 1
+        $now = try { Get-Content (Join-Path $run 'station.json') -Raw | ConvertFrom-Json } catch { $null }
+        if ($now -and $now.startedAt -ne $started) { return $true }
+        if (Test-Path (Join-Path $run 'handoff-failed')) { return $false }
+      }
+      return $false
+    }
+    $backup = Join-Path $data 'app.before-replace'
+    if ($mode -eq 'revert') {
+      if (-not (Test-Path -LiteralPath $backup)) { [Console]::Error.WriteLine("stillfail replace --revert: no backup at $backup"); exit 1 }
+      $aside = $app + '.old-' + (Get-Date -Format 'yyyyMMddHHmmss')
+      Move-Item $app $aside
+      Move-Item $backup $app
+      if ($proc -and $said.handoff -eq 1) {
+        Remove-Item (Join-Path $run 'handoff-failed') -ErrorAction SilentlyContinue
+        if (-not (AskPipe 'handover') -or -not (WaitHandover $said.startedAt)) {
+          Move-Item $app $backup
+          Move-Item $aside $app
+          [Console]::Error.WriteLine('stillfail replace --revert: handoff failed; kept previous build'); exit 1
+        }
+      }
+      Remove-Item $aside -Recurse -Force -ErrorAction SilentlyContinue
+      & $station update --replace-reconcile-revert --data $data
+      Write-Host 'stillfail replace: reverted to official backup'
+      exit 0
+    }
+    $stage = Join-Path ([IO.Path]::GetTempPath()) ('stillfail-replace-' + [guid]::NewGuid().ToString('N'))
+    $pargs = @('update', '--replace-prepare', '--app', $app, '--data', $data, '--stage', $stage)
+    if ($source) { $pargs += @('--source', $source) }
+    if ($dist) { $pargs += @('--dist', $dist) }
+    if ($mainF) { $pargs += @('--main', $mainF) }
+    if ($readerF) { $pargs += @('--reader', $readerF) }
+    if ($note) { $pargs += @('--note', $note) }
+    & $station @pargs | Out-Null
+    if ($LASTEXITCODE -ne 0) { Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue; exit $LASTEXITCODE }
+    $createdBackup = $false
+    if (-not (Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath (Join-Path $app 'OVERRIDE')) -and (Test-Path -LiteralPath $app)) {
+      Copy-Item -LiteralPath $app -Destination $backup -Recurse -Force
+      $createdBackup = $true
+    }
+    $aside = $app + '.old-' + (Get-Date -Format 'yyyyMMddHHmmss')
+    if (Test-Path -LiteralPath $app) { Move-Item $app $aside }
+    Move-Item $stage $app
+    $cfgFile = if ($env:STILLFAIL_CONFIG) { $env:STILLFAIL_CONFIG } else { Join-Path $data 'config.json' }
+    $savedCfg = $null
+    if (Test-Path -LiteralPath $cfgFile) {
+      $savedCfg = Join-Path ([IO.Path]::GetTempPath()) ('stillfail-cfg-' + [guid]::NewGuid().ToString('N') + '.json')
+      Copy-Item -LiteralPath $cfgFile -Destination $savedCfg -Force
+    }
+    if (-not $noHold) {
+      $uargs = @('update', '--replace-wait', '--direct', '--app', $app, '--data', $data)
+      if ($waits.Count -gt 0) { foreach ($w in $waits) { $uargs += @('--until', $w) } } else { $uargs += '--hold' }
+      & $station @uargs
+      if ($LASTEXITCODE -ne 0) {
+        $failed = $app + '.failed'
+        Remove-Item $failed -Recurse -Force -ErrorAction SilentlyContinue
+        Move-Item $app $failed
+        Move-Item $aside $app
+        Remove-Item $failed -Recurse -Force -ErrorAction SilentlyContinue
+        if ($createdBackup) { Remove-Item $backup -Recurse -Force -ErrorAction SilentlyContinue }
+        if ($savedCfg) { Copy-Item -LiteralPath $savedCfg -Destination $cfgFile -Force; Remove-Item $savedCfg -Force -ErrorAction SilentlyContinue } else { Remove-Item $cfgFile -Force -ErrorAction SilentlyContinue }
+        exit $LASTEXITCODE
+      }
+    }
+    if ($proc -and $said.handoff -eq 1) {
+      Remove-Item (Join-Path $run 'handoff-failed') -ErrorAction SilentlyContinue
+      if (-not (AskPipe 'handover') -or -not (WaitHandover $said.startedAt)) {
+        $failed = $app + '.failed'
+        Remove-Item $failed -Recurse -Force -ErrorAction SilentlyContinue
+        Move-Item $app $failed
+        Move-Item $aside $app
+        Remove-Item $failed -Recurse -Force -ErrorAction SilentlyContinue
+        if ($createdBackup) { Remove-Item $backup -Recurse -Force -ErrorAction SilentlyContinue }
+        if ($savedCfg) { Copy-Item -LiteralPath $savedCfg -Destination $cfgFile -Force; Remove-Item $savedCfg -Force -ErrorAction SilentlyContinue } else { Remove-Item $cfgFile -Force -ErrorAction SilentlyContinue }
+        [Console]::Error.WriteLine('stillfail replace: handoff failed; rolled back to previous build'); exit 1
+      }
+    }
+    Remove-Item $aside -Recurse -Force -ErrorAction SilentlyContinue
+    if ($savedCfg) { Remove-Item $savedCfg -Force -ErrorAction SilentlyContinue }
+    Write-Host "stillfail replace: replaced $app"
+    exit 0
+  }
   { $a[0] -eq 'update' } {
     # The channel's latest release, verified by this release's station (its `update`: its signature, newer than this
     # one) and installed by the installer this release carries, told what it must hash to (scripts/release-sign.ts).

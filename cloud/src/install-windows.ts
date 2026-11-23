@@ -220,9 +220,9 @@ if ($said -and $said.pid) {
   if ($p -and $p.Name -like 'stillfail-station*') { $station = $p }
 }
 $haveTask = [bool](Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue)
-# Already on this release, and running as its task runs it: nothing to do.
+# Already on this release, and running as its task runs it: nothing to do (unless locally replaced).
 $version = Join-Path $app 'VERSION'
-if (-not $Token -and $station -and $haveTask -and (Test-Path $version) -and ((Get-Content $version -Raw).Trim() -eq (Get-Content (Join-Path $new 'VERSION') -Raw).Trim())) {
+if (-not $Token -and $station -and $haveTask -and -not (Test-Path (Join-Path $app 'OVERRIDE')) -and (Test-Path $version) -and ((Get-Content $version -Raw).Trim() -eq (Get-Content (Join-Path $new 'VERSION') -Raw).Trim())) {
   Copy-Item (Join-Path $new 'CHANNEL') (Join-Path $app 'CHANNEL') -ErrorAction SilentlyContinue
   $short = (Get-Content $version -Raw).Trim().Substring(0, 7)
   Say (__SAY(cloud.install.upToDate, version=$short))
@@ -351,6 +351,7 @@ if (-not $handed) {
   if (-not $swap.done) { Swap }
 }
 & $old
+Remove-Item -LiteralPath (Join-Path $data 'app.before-replace') -Recurse -Force -ErrorAction SilentlyContinue
 # The Nodes no release here runs on any more: all of them once it runs on none.
 if ($nodeDir) {
   Get-ChildItem (Join-Path $data 'node') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.FullName -ne $nodeDir } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue

@@ -103,7 +103,7 @@ put_feed() {
   if [ -n "${feed_packages:-}" ]; then
     pids=""
     for package in "$@"; do
-      case ${package%%=*} in *.zip) ctype=application/zip ;; *.tar.gz) ctype=application/gzip ;; *) ctype=application/octet-stream ;; esac
+      case ${package%%=*} in *.zip) ctype=application/zip ;; *.tar.gz) ctype=application/gzip ;; *.json) ctype=application/json ;; *) ctype=application/octet-stream ;; esac
       put "${package#*=}" "${package%%=*}" "$ctype" &
       pids="$pids $!"
     done
@@ -404,8 +404,18 @@ fi
 # version, and the words naming each archive and its Node (where it has one), signed with $RELEASE_SIGNING_KEY (scripts/release-sign.ts,
 # scripts/release-sign.ts). Not signing is an error but into RELEASE_DIR outside CI (a dev cloud's), where it warns.
 if [ -n "${station:-}" ]; then
+  mkdir -p "$out/included"
   node "$root/scripts/release-sign.ts" station "$out/station.json" --build "$build" --commit "$(git -C "$root" rev-parse HEAD)" \
-    --node "$(cat "$root/.node-version")" ${RELEASE_DIR:+--unsigned-ok} $signing
+    --node "$(cat "$root/.node-version")" --included-dir "$out/included" --repo "$root" ${RELEASE_DIR:+--unsigned-ok} $signing
+  for inc_file in "$out/included"/station/included/*.json; do
+    [ -f "$inc_file" ] || continue
+    inc_key="station/included/$(basename "$inc_file")"
+    if [ -n "${RELEASE_DIR:-}" ]; then
+      put "$inc_file" "$inc_key" application/json
+    else
+      station_files="${station_files:-} $inc_key=$inc_file"
+    fi
+  done
   # (into the bucket: the packages with the feed, after its deltas: put_feed's feed_packages)
   feed_packages=yes
   # shellcheck disable=SC2086 # name=file pairs, one word each

@@ -73,6 +73,9 @@ pub async fn update_command(
   if args.contains("--apply-delta") {
     return apply_delta_command(w, args, deflate)
   }
+  if args.iter().any(a => starts_with(a, "--replace-")) {
+    return replace_subcommand(w, args, data)
+  }
   let app = flag(args, "--app")
   let asked = args.filter(a => a == "--beta" || a == "--stable")
   let positional = []
@@ -107,9 +110,10 @@ pub async fn update_command(
     let request = request_by(w, if base == cloud_origin { "cloud.fetch" } else { "fetch" })
     let channel = channel_of(w, raw, app)
     let installed = release_channel(w, app).unwrap_or(channel)
+    let override_meta = read_override(w, app)
     // (the feed read again after a failure on the way: this process runs once, on the machine's own time)
     let wall_sleep : Wait = async fn(ms) { w.tell("wall.sleep", [jn(ms)]) }
-    let plan = plan_update(w, base, channel, app, installed, lang, trusted, request, wait=wall_sleep)
+    let plan = plan_update(w, base, channel, app, installed, lang, trusted, request, override_meta~, wait=wall_sleep)
     // timer: a deadline of an outside request (the delta's download), past which the installer downloads the release.
     let handed = take_delta(w, plan, app, apply_here(w, deflate), Signal::new(), request, wait=wall_sleep)
     let env : Array[(String, String)] = []
