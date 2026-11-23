@@ -28,6 +28,7 @@ import { hearErrors, hearLines, log } from "./ops/log.ts";
 import { recordNodeCrash, reportLauncherEvents, reportNodeCrash } from "./ops/launcher-events.ts";
 import { stationLog } from "./ops/log-export.ts";
 import { Forewarn, lookAt } from "./ops/forewarn.ts";
+import { pressureNow, pressureSince } from "./ops/pressure.ts";
 import { ConfigFile } from "./ops/config.ts";
 import { InvalidJsonFile } from "./ops/json-file.ts";
 import { ErrorReports, builtKey } from "./ops/telemetry.ts";
@@ -331,8 +332,10 @@ function run() {
     //   CPUs from it (`windowSwitches`: another process's work wanted them), its synchronous calls of node:fs and its
     //   statements (store/timed.ts) and the processes it waited on (ops/file-waits.ts), many short ones as much as a
     //   long one, with the longest by who made them.
-    // Its own CPU near `heldMs` is work of its own; neither that nor a wait near it: it was not given a CPU, or waited on
-    // what is timed nowhere.
+    // - on Linux, what the machine went short of in the window (ops/pressure.ts `pressureSince`): the ms its tasks waited
+    //   for a CPU or on memory, and the allocations it stalled to compact or reclaim memory.
+    // Its own CPU near `heldMs` is work of its own; neither that nor a wait near it: it was not given a CPU (the machine's
+    // waits say so), or waited on what is timed nowhere.
     // What runs out on this machine said before it does (ops/forewarn.ts), looked at with each sample.
     const forewarn = new Forewarn();
     const forewarned = () => void lookAt(data, mesh.relayConflict?.() === true).then((l) => {
@@ -353,6 +356,8 @@ function run() {
     let ownCpu = process.threadCpuUsage();
     let usage = process.resourceUsage();
     let sampled = wall.now();
+    // (read off the thread at each sample, the one before the window's start)
+    let pressure = pressureNow();
     timers.push(wall.every(HELD_EVERY_MS, () => { // timer: a sample of this thread
       // Its loop runs: said to the launcher, which ends a process that says nothing for long (lifecycle.rs heartbeat).
       control.heartbeat();
@@ -367,8 +372,10 @@ function run() {
       const waited = files.take();
       const spawned = processes.take();
       const queried = takeQueries();
+      const before = pressure;
+      pressure = pressureNow();
       if (ms >= HELD_MS) {
-        log.warn("station", "the main thread was held", {
+        const fields = {
           heldMs: Math.round(ms),
           longestQueryMs: Math.round(queried.longest), longestFileMs: Math.round(waited.longest), longestProcessMs: Math.round(spawned.longest), gcLongestMs: Math.round(gc.longest),
           windowMs: now - sampled,
@@ -378,7 +385,8 @@ function run() {
           windowFilesMs: Math.round(waited.ms), windowFiles: waited.calls, ...(waited.by.size > 0 ? { waitedOn: longestWaits(waited) } : {}),
           windowQueriesMs: Math.round(queried.ms), windowQueries: queried.calls, ...(queried.by.size > 0 ? { queriedBy: longestWaits(queried) } : {}),
           windowProcessesMs: Math.round(spawned.ms), windowProcesses: spawned.calls, ...(spawned.by.size > 0 ? { spawnedBy: longestWaits(spawned) } : {}),
-        });
+        };
+        void Promise.all([before, pressure]).then(([a, b]) => log.warn("station", "the main thread was held", { ...fields, ...pressureSince(a, b) }));
       }
       held.reset();
       cpu = process.cpuUsage();

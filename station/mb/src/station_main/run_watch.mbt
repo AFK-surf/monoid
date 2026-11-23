@@ -81,10 +81,107 @@ fn main_query_said(sql : String, ms : Double, rows : Int?, failed : String?) -> 
 }
 
 ///|
+/// ops/pressure.ts `Pressure`: the machine's counters at one time, the µs some or every task waited, and the stalls.
+priv struct Pressure {
+  cpu_some : Double
+  memory_some : Double
+  memory_full : Double
+  compact_stalls : Double
+  alloc_stalls : Double
+}
+
+///|
+/// A counter of the kernel's (its decimal digits), none where it is not one.
+fn counter(text : String) -> Double? {
+  if text.length() == 0 {
+    return None
+  }
+  let mut n = 0.0
+  for c in text {
+    guard c >= '0' && c <= '9' else { return None }
+    n = n * 10.0 + (c.to_int() - '0'.to_int()).to_double()
+  }
+  Some(n)
+}
+
+///|
+/// ops/pressure.ts `stallTotal`: `total=` of the `some` or `full` line of a /proc/pressure file (µs).
+fn stall_total(text : String, which : String) -> Double? {
+  for line in text.split("\n") {
+    let line = line.to_owned()
+    if line.has_prefix(which + " ") {
+      for part in line.split(" ") {
+        let part = part.to_owned()
+        if part.has_prefix("total=") {
+          return counter(part[6:].to_owned())
+        }
+      }
+    }
+  }
+  None
+}
+
+///|
+/// ops/pressure.ts `vmStalls`: /proc/vmstat's direct compaction stalls and direct reclaim stalls (`allocstall_*`).
+fn vm_stalls(text : String) -> (Double, Double) {
+  let mut compact = 0.0
+  let mut alloc = 0.0
+  for line in text.split("\n") {
+    let parts = line.split(" ").map(p => p.to_owned()).collect()
+    if parts.length() >= 2 {
+      let n = counter(parts[1]).unwrap_or(0.0)
+      if parts[0] == "compact_stall" {
+        compact = n
+      } else if parts[0].has_prefix("allocstall_") {
+        alloc += n
+      }
+    }
+  }
+  (compact, alloc)
+}
+
+///|
+/// ops/pressure.ts `pressureNow`: the counters now; none where the system keeps none.
+fn pressure_now() -> Pressure? {
+  let read = (p : String) => (try { Some(@utf8.decode_lossy(@drive.read_all(p))) } catch { _ => None })
+  guard read("/proc/pressure/cpu") is Some(cpu) &&
+    read("/proc/pressure/memory") is Some(memory) &&
+    read("/proc/vmstat") is Some(vmstat) else {
+    return None
+  }
+  guard stall_total(cpu, "some") is Some(cpu_some) &&
+    stall_total(memory, "some") is Some(memory_some) &&
+    stall_total(memory, "full") is Some(memory_full) else {
+    return None
+  }
+  let (compact_stalls, alloc_stalls) = vm_stalls(vmstat)
+  Some({ cpu_some, memory_some, memory_full, compact_stalls, alloc_stalls })
+}
+
+///|
+/// The machine's counters at the window's start (main.ts `pressure`).
+let pressure_before : Ref[Pressure?] = Ref(None)
+
+///|
+/// ops/pressure.ts `pressureSince`: what the counters went up by in the window, as the held thread's log says it.
+fn pressure_since(before : Pressure?, after : Pressure?, fields : Map[String, Json]) -> Unit {
+  guard before is Some(a) && after is Some(b) else { return }
+  let ms = (x : Double, y : Double) => Json::number(if y > x { ((y - x) / 1000.0).round() } else { 0.0 })
+  let n = (x : Double, y : Double) => Json::number(if y > x { y - x } else { 0.0 })
+  fields["windowCpuWaitMs"] = ms(a.cpu_some, b.cpu_some)
+  fields["windowMemoryWaitMs"] = ms(a.memory_some, b.memory_some)
+  fields["windowMemoryStallMs"] = ms(a.memory_full, b.memory_full)
+  fields["windowCompactStalls"] = n(a.compact_stalls, b.compact_stalls)
+  fields["windowAllocStalls"] = n(a.alloc_stalls, b.alloc_stalls)
+}
+
+///|
 /// The loop's sample (main.ts's HELD_EVERY_MS): `late` ms past `every`, said where it was held, with the window's
 /// statements, what the runtime waits on and how the process is.
 fn Station::sampled(self : Station, late : Double, every : Int) -> Unit {
   let (longest, ms, calls) = take_queries()
+  let before = pressure_before.val
+  pressure_before.val = pressure_now()
   if late >= HELD_SAID_MS {
     let fields : Map[String, Json] = {
       "heldMs": Json::number(late.round()),
@@ -100,6 +197,7 @@ fn Station::sampled(self : Station, late : Double, every : Int) -> Unit {
     if self_rss_bytes() is Some(rss) {
       fields["rssMb"] = Json::number(@ops_platform.forewarn_mb(rss))
     }
+    pressure_since(before, pressure_before.val, fields)
     p51_log("WARN", "station", "the main thread was held", fields=Json::object(fields))
   }
 }
