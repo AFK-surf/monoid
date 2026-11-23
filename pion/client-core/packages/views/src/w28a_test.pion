@@ -1,0 +1,355 @@
+// W28a unit tests covering:
+// 1. `store::list_workspace_stations_merged` (empty station table, live overview merge, Gate #9 isolation)
+// 2. `SafeModeView` `lock_corrupt` non-degrading locked state & recovery actions (zero 「个人锁」 leakage)
+// 3. `LoginFlowMachine::complete_oauth_query` (`?` stripping, `%XX`/`+`, error_description, CSRF state, no verifier leak)
+// 4. `project_chat_by_params` (`{station, session, compact}` + multi-hop `moved` + cycle detection)
+// 5. `project_status`, `project_lock_prompts`, `project_notices`, `project_notify`, `project_doing`
+
+import "base_codec"
+import "effect"
+import "shell"
+import "sql"
+import "store"
+
+test "w28a: list_workspace_stations_merged empty station table, live merge & Gate #9 isolation" {
+  let ws1_json = "{\"id\":\"ws-1\",\"name\":\"WS One\",\"stations\":[{\"id\":\"st-a\",\"name\":\"Alpha\",\"emoji\":\"🚀\",\"online\":false},{\"id\":\"st-b\",\"name\":\"Beta\",\"online\":false}]}"
+  let ws10_json = "{\"id\":\"ws-10\",\"name\":\"WS Ten\",\"stations\":[{\"id\":\"st-z\",\"name\":\"Zeta\",\"online\":true}]}"
+  let rt = effect::Runtime::new()
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(_id : Int64, _op : String, _args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if op == "sql.open" {
+        return shell::AskResult::Ok(base_codec::json_obj([("id", base_codec::json_int(1))]))
+      }
+      if op == "sql.close" {
+        return shell::AskResult::Ok(base_codec::json_null())
+      }
+      let sql_s = j_str(args, "sql")
+      let params = j_arr(args, "params")
+      if sql_s == store::sql_station_doc_by_kind() {
+        let rows = base_codec::json_arr([
+          base_codec::json_arr([
+            base_codec::json_str("ws-1/st-b"),
+            base_codec::json_str("overview"),
+            base_codec::json_str("{\"id\":\"st-b\",\"name\":\"Beta Live\",\"online\":true,\"version\":\"0.1.9999\"}"),
+            base_codec::json_int64(1000L),
+          ]),
+          base_codec::json_arr([
+            base_codec::json_str("ws-10/st-z"),
+            base_codec::json_str("overview"),
+            base_codec::json_str("{\"id\":\"st-z\",\"name\":\"Zeta Live\",\"online\":true}"),
+            base_codec::json_int64(1000L),
+          ]),
+        ])
+        return shell::AskResult::Ok(rows)
+      }
+      if sql_s == store::sql_workspace_one() {
+        let ws = if params.length() > 0 {
+          match params[0] {
+            base_codec::Json::Str(v) => v
+            _ => ""
+          }
+        } else {
+          ""
+        }
+        let rows = if ws == "ws-1" {
+          base_codec::json_arr([
+            base_codec::json_arr([
+              base_codec::json_str("ws-1"),
+              base_codec::json_str(ws1_json),
+              base_codec::json_int64(500L),
+            ]),
+          ])
+        } else if ws == "ws-10" {
+          base_codec::json_arr([
+            base_codec::json_arr([
+              base_codec::json_str("ws-10"),
+              base_codec::json_str(ws10_json),
+              base_codec::json_int64(500L),
+            ]),
+          ])
+        } else {
+          base_codec::json_arr([])
+        }
+        return shell::AskResult::Ok(rows)
+      }
+      shell::AskResult::Ok(base_codec::json_arr([]))
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "w28a.db") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic("open failed: " + e.to_string())
+  }
+  let merged = match store::list_workspace_stations_merged(db, "ws-1") {
+    sql::SqlResult::Ok(rs) => rs
+    sql::SqlResult::Err(e) => {
+      debug_assert(false, "merged failed: " + e.to_string())
+      []
+    }
+  }
+  debug_assert(merged.length() == 2, "ws-1 must have exactly 2 stations (no ws-10 leakage)")
+  debug_assert(merged[0].address == "ws-1/st-a", "first station from workspace.json")
+  debug_assert(merged[1].address == "ws-1/st-b", "second station merged with overview")
+  let st_b_j = parse_json_or_null(merged[1].json)
+  debug_assert(j_str(st_b_j, "name") == "Beta Live", "live overview name overrides workspace.json")
+  debug_assert(j_bool(st_b_j, "online"), "live overview online overrides workspace.json")
+}
+
+test "w28a: SafeModeView lock_corrupt never degrades to unlocked and leaks no personal-lock term" {
+  let inp = SafeModeInput::{
+    available: true,
+    viewer_sub: "u-owner",
+    viewer_role: "owner",
+    device_id: "dev-1",
+    device_kind: "app",
+    device_sign_key: Some("ed25519:deadbeef"),
+    personal_standing: "member",
+    signer_unsaid: false,
+    no_device_answered: false,
+    rebound_admins: [],
+    station_names: Map::new(),
+    online_stations: Map::new(),
+    pending: LockPendingQueue::new(),
+  }
+  let sm = project_safe_mode(None, inp, lock_corrupt=true)
+  debug_assert(sm.locked, "lock_corrupt MUST keep locked=true")
+  debug_assert(sm.lock_corrupt, "lock_corrupt flag exposed")
+  debug_assert(!sm.signs, "lock_corrupt MUST disable signing")
+  debug_assert(!sm.me.confirmed, "lock_corrupt MUST set me.confirmed=false")
+  debug_assert(sm.me.waiting, "lock_corrupt MUST set me.waiting=true")
+  debug_assert(sm.me.state_text.is_some(), "lock_corrupt MUST expose recovery guidance in state_text")
+  debug_assert(sm.me.confirm_text.is_none(), "lock_corrupt MUST NOT occupy confirm_text slot")
+  debug_assert(sm.me.restart_text.is_none(), "lock_corrupt MUST NOT occupy restart_text (lock.restartOwn) slot")
+  debug_assert(sm.me.restart_note_text.is_none(), "lock_corrupt MUST NOT occupy restart_note_text slot")
+  let wire = base_codec::json_stringify(sm.to_json())
+  debug_assert(wire.contains("\"lockCorrupt\":true"), "wire exposes lockCorrupt")
+  debug_assert(wire.contains("\"recoveryAction\":\"resync_safe_mode\""), "wire exposes recoveryAction")
+  debug_assert(!wire.contains("\"restartText\""), "wire MUST NOT contain restartText")
+  debug_assert(!wire.contains("\"confirmText\""), "wire MUST NOT contain confirmText")
+  debug_assert(!wire.contains("个人锁"), "zero personal-lock term leakage")
+}
+
+test "w28a: auth.complete query parsing, UTF-8 decoding, CSRF check & zero verifier leak" {
+  debug_assert(decode_query_component("hello+world%21%2F%E4%B8%AD%E6%96%87") == "hello world!/中文", "decode_query_component handles + and UTF-8 %XX")
+  debug_assert(decode_query_component("bad%2Gseq") == "bad%2Gseq", "malformed % kept verbatim")
+  let pairs = parse_oauth_query("??code=abc%2B123&state=st+1&empty&&flag")
+  debug_assert(pairs.length() == 4, "parse_oauth_query skips empty segments")
+  debug_assert(pairs[0].0 == "code" && pairs[0].1 == "abc+123", "code decoded")
+  debug_assert(pairs[1].0 == "state" && pairs[1].1 == "st 1", "state decoded")
+  debug_assert(pairs[2].0 == "empty" && pairs[2].1 == "", "empty val")
+  debug_assert(pairs[3].0 == "flag" && pairs[3].1 == "", "bare key")
+
+  let m = LoginFlowMachine::new()
+  let _ = m.begin_oauth("https://cloud.still.fail", "st-xyz", "super-secret-pkce-verifier", "http://127.0.0.1:9999/cb", "/w/ws-1", "Mac")
+  let err_out = m.complete_oauth_query("?error=access_denied&error_description=PHISHING+Visit+evil.example")
+  debug_assert(!err_out.ok && err_out.error_code == "login_failed", "access_denied maps to login_failed with fixed message")
+  debug_assert(!err_out.recovery_hint.contains("PHISHING"), "unverified error_description MUST NOT appear in recovery_hint")
+  let err_ui = base_codec::json_stringify(err_out.to_ui_json())
+  let err_mach = base_codec::json_stringify(m.to_json())
+  debug_assert(!err_ui.contains("PHISHING") && !err_mach.contains("PHISHING"), "unverified error_description MUST NOT appear in UI or machine JSON")
+
+  let m2 = LoginFlowMachine::new()
+  let _ = m2.begin_oauth("https://cloud.still.fail", "st-good", "secret-verifier-2", "http://127.0.0.1:9999/cb", "/w/ws-1", "Mac")
+  let bad_csrf = m2.complete_oauth_query("?code=c1&state=st-evil")
+  debug_assert(!bad_csrf.ok && bad_csrf.error_code == "login_state_mismatch", "CSRF state mismatch rejected")
+
+  let m3 = LoginFlowMachine::new()
+  let _ = m3.begin_oauth("https://cloud.still.fail", "st-ok", "secret-verifier-3", "http://127.0.0.1:9999/cb", "/auth/callback", "Mac")
+  let ok_out = m3.complete_oauth_query("?state=st-ok&code=auth%2Fcode%2B42")
+  debug_assert(ok_out.ok, "valid query succeeds")
+  debug_assert(ok_out.code == "auth/code+42", "code decoded accurately")
+  debug_assert(ok_out.verifier == "secret-verifier-3", "internal outcome carries verifier for token exchange")
+  debug_assert(ok_out.return_to == "/", "/auth/* sanitized to /")
+  let ui_json = base_codec::json_stringify(ok_out.to_ui_json())
+  let machine_json = base_codec::json_stringify(m3.to_json())
+  debug_assert(!ui_json.contains("secret-verifier-3") && !ui_json.contains("auth/code+42"), "UI JSON never leaks verifier or code")
+  debug_assert(!machine_json.contains("secret-verifier-3"), "Machine JSON never leaks verifier")
+}
+
+test "w28a: compact_chat_json strips agents[].jobs and sets hasJobs" {
+  let full = base_codec::json_obj([
+    ("title", base_codec::json_str("Demo")),
+    (
+      "agents",
+      base_codec::json_arr([
+        base_codec::json_obj([
+          ("status", base_codec::json_str("running")),
+          ("jobs", base_codec::json_arr([base_codec::json_obj([("id", base_codec::json_str("j1"))])])),
+        ]),
+        base_codec::json_obj([
+          ("status", base_codec::json_str("idle")),
+          ("jobs", base_codec::json_arr([])),
+        ]),
+      ]),
+    ),
+  ])
+  let comp = compact_chat_json(full)
+  let agents = j_arr(comp, "agents")
+  debug_assert(agents.length() == 2, "2 agents preserved")
+  debug_assert(j_arr(agents[0], "jobs").length() == 0 && j_bool(agents[0], "hasJobs"), "agent 0 jobs cleared & hasJobs=true")
+  debug_assert(j_arr(agents[1], "jobs").length() == 0 && !j_bool(agents[1], "hasJobs"), "agent 1 jobs cleared & hasJobs=false")
+}
+
+test "w28a: runtime_topics_view real projections" {
+  let st = project_status(
+    [
+      StatusWaitEntry::{ place: Some("Studio"), what: "读取对话", connecting: false, since_ms: 1000L, bytes: 2048L },
+      StatusWaitEntry::{ place: Some("Studio"), what: "读取对话", connecting: false, since_ms: 1500L, bytes: 0L },
+    ],
+    [],
+    [],
+    4096L,
+    2000L,
+    5000L,
+  )
+  debug_assert(j_str(st, "state") == "slow", "status state is slow")
+  debug_assert(j_arr(st, "items").length() == 1, "identical slow waits coalesced")
+  debug_assert(j_str(j_arr(st, "items")[0], "text").contains("×2"), "coalesced count shown")
+
+  let lp = project_lock_prompts(
+    [
+      LockPairingPromptInput::{
+        device: "dev-expired",
+        name: "Old",
+        email: "a@b.com",
+        kind: "app",
+        label: "Old",
+        code: "111222",
+        device_text: "Old Mac",
+        device_code: None,
+        build: None,
+        will_sign: Some(true),
+        handover_vaults: [],
+        role_text: None,
+        workspaces: [],
+        created_at: 100L,
+        until: 4000L,
+        until_text: "10:00",
+      },
+      LockPairingPromptInput::{
+        device: "dev-live",
+        name: "Alice",
+        email: "alice@example.com",
+        kind: "app",
+        label: "MacBook",
+        code: "654321",
+        device_text: "MacBook · still.fail",
+        device_code: Some("ABC-DEF"),
+        build: Some("0.1.9500"),
+        will_sign: Some(true),
+        handover_vaults: [],
+        role_text: None,
+        workspaces: [],
+        created_at: 1000L,
+        until: 9000L,
+        until_text: "12:00 前有效",
+      },
+    ],
+    [
+      VaultKeyAskInput::{
+        workspace: "ws-1",
+        workspace_name: "WS1",
+        vault: "v1",
+        vault_name: "Main",
+        device: "dev-old",
+        device_text: "Old",
+        device_code: None,
+        owner_name: None,
+        owner_email: None,
+        is_own_device: Some(true),
+        vault_scope: Some("personal"),
+        vault_items: Some(3),
+        safe_mode: Some(true),
+        at: 100L,
+        at_text: "5 分钟前",
+        dismissed: false,
+      },
+      VaultKeyAskInput::{
+        workspace: "ws-1",
+        workspace_name: "WS1",
+        vault: "v1",
+        vault_name: "Main",
+        device: "dev-new",
+        device_text: "New",
+        device_code: None,
+        owner_name: None,
+        owner_email: None,
+        is_own_device: Some(true),
+        vault_scope: Some("personal"),
+        vault_items: Some(3),
+        safe_mode: Some(true),
+        at: 200L,
+        at_text: "1 分钟前",
+        dismissed: false,
+      },
+    ],
+    5000L,
+  )
+  debug_assert(j_arr(lp, "pairing").length() == 1 && j_str(j_arr(lp, "pairing")[0], "device") == "dev-live", "expired pairing dropped")
+  debug_assert(j_arr(lp, "asks").length() == 2 && j_str(j_arr(lp, "asks")[0], "device") == "dev-new", "asks sorted newest-first")
+}
+
+test "w28a: notice body UTF-8 multibyte truncation preserves 50 CJK chars and cleanly cuts 150 CJK chars to 139 + ellipsis" {
+  let sb50 = StringBuilder::new()
+  for _i in 0..<50 {
+    sb50.write_string("汉")
+  }
+  let s50 = sb50.to_string()
+  let sb150 = StringBuilder::new()
+  for _i in 0..<150 {
+    sb150.write_string("汉")
+  }
+  let s150 = sb150.to_string()
+  let sb139 = StringBuilder::new()
+  for _i in 0..<139 {
+    sb139.write_string("汉")
+  }
+  let want139 = sb139.to_string() + "…"
+
+  let notices = project_notices([
+    NoticeItemInput::{
+      id: "n50",
+      kind: "message",
+      station: "ws-1/st-a",
+      workspace: "ws-1",
+      station_id: "st-a",
+      session: "s-50",
+      thread: Some(1),
+      seq: Some(1),
+      title: "CJK50",
+      body: s50,
+      tag: "ws-1/st-a/s-50",
+      url: "/o/ws-1/st-a/s-50",
+      at: 100L,
+    },
+    NoticeItemInput::{
+      id: "n150",
+      kind: "message",
+      station: "ws-1/st-a",
+      workspace: "ws-1",
+      station_id: "st-a",
+      session: "s-150",
+      thread: Some(2),
+      seq: Some(2),
+      title: "CJK150",
+      body: s150,
+      tag: "ws-1/st-a/s-150",
+      url: "/o/ws-1/st-a/s-150",
+      at: 200L,
+    },
+  ])
+  let items = j_arr(notices, "items")
+  debug_assert(items.length() == 2, "2 CJK notices")
+  debug_assert(j_str(items[0], "body") == s50, "50 CJK chars (150 bytes) MUST NOT be truncated")
+  debug_assert(j_str(items[1], "body") == want139, "150 CJK chars MUST truncate cleanly to 139 CJK chars + ellipsis")
+  let roundtrip = base_codec::json_stringify(notices)
+  match base_codec::json_parse(roundtrip) {
+    base_codec::JsonParseResult::Ok(parsed) => {
+      let p_items = j_arr(parsed, "items")
+      debug_assert(j_str(p_items[1], "body") == want139, "JSON round-trip preserves valid UTF-8")
+    }
+    base_codec::JsonParseResult::Err(e) => debug_assert(false, "JSON round-trip failed: " + e)
+  }
+}

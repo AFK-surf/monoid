@@ -1433,9 +1433,18 @@ pub fn Slice1Router::refresh_topic_name(self : Slice1Router, topic_name : String
 }
 
 fn Slice1Router::handle_chat_open(self : Slice1Router, id : Int64, params : base_codec::Json, is_sub : Bool) -> CoreEvent {
-  let thread = match opt_nonneg_int64(params, "thread") {
-    Some(t) => t.to_int()
-    None => return CoreEvent::Err(id, CoreError::{ code: "bad_params", message: "missing thread" })
+  let req_station = match opt_str_field(params, "station") {
+    Some(s) => if s.length() > 0 { s } else { self.md_store.station }
+    None => self.md_store.station
+  }
+  let req_thread = match opt_nonneg_int64(params, "thread") {
+    Some(t) => Some(t.to_int())
+    None => None
+  }
+  let req_session = opt_str_field(params, "session")
+  let compact = match opt_bool_field(params, "compact") {
+    Some(true) => true
+    _ => false
   }
   let rows = match opt_nonneg_int64(params, "rows") {
     Some(r) => r.to_int()
@@ -1449,10 +1458,121 @@ fn Slice1Router::handle_chat_open(self : Slice1Router, id : Int64, params : base
     Some(ts) => ts
     None => 0.to_int64()
   }
-  match store::open_chat(self.md_store, thread, now, rows=rows, at=at) {
+
+  // Transparently resolve moved chats via `store::resolve_chat_now` / `resolve_chat_now_by_thread`.
+  let mut eff_station = req_station
+  let mut eff_thread = req_thread
+  let mut here_thread : Option[Int] = None
+  let mut eff_session = req_session
+
+  match req_thread {
+    Some(th) => {
+      match store::resolve_chat_now_by_thread(self.db, req_station, th) {
+        sql::SqlResult::Err(e) => return CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+        sql::SqlResult::Ok(Some(loc)) => {
+          eff_station = loc.station
+          eff_session = Some(loc.session)
+          match loc.thread {
+            Some(there_th) => {
+              here_thread = Some(th)
+              eff_thread = Some(there_th)
+            }
+            None => ()
+          }
+        }
+        sql::SqlResult::Ok(None) => ()
+      }
+    }
+    None => {
+      match req_session {
+        Some(sess) => {
+          if sess.length() > 0 && !sess.starts_with("new:") {
+            match store::resolve_chat_now(self.db, req_station, sess) {
+              sql::SqlResult::Err(e) => return CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+              sql::SqlResult::Ok(Some(loc)) => {
+                match store::get_moved(self.db, req_station, sess) {
+                  sql::SqlResult::Ok(Some(orig_m)) => {
+                    here_thread = orig_m.thread
+                  }
+                  _ => ()
+                }
+                eff_station = loc.station
+                eff_thread = loc.thread
+              }
+              sql::SqlResult::Ok(None) => ()
+            }
+          }
+        }
+        None => ()
+      }
+    }
+  }
+
+  if eff_thread.is_none() {
+    match eff_session {
+      Some(sess) => {
+        if sess.length() > 0 {
+          match store::get_chat_by_session(self.db, eff_station, sess) {
+            sql::SqlResult::Err(e) => return CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+            sql::SqlResult::Ok(Some(rec)) => {
+              match base_codec::json_parse(rec.json) {
+                base_codec::JsonParseResult::Ok(j) => {
+                  match opt_nonneg_int64(j, "thread") {
+                    Some(t) => {
+                      eff_thread = Some(t.to_int())
+                    }
+                    None => ()
+                  }
+                }
+                base_codec::JsonParseResult::Err(_) => ()
+              }
+            }
+            sql::SqlResult::Ok(None) => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+
+  let thread = match eff_thread {
+    Some(t) => t
+    None => return CoreEvent::Err(id, CoreError::{ code: "bad_params", message: "missing thread or session" })
+  }
+  let target_md = if eff_station == self.md_store.station {
+    self.md_store
+  } else {
+    store::MdStore::new(self.db, eff_station)
+  }
+  match store::open_chat(target_md, thread, now, rows=rows, at=at) {
     sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
     sql::SqlResult::Ok(view) => {
-      let payload = encode_open_view(view)
+      let base_payload = encode_open_view(view)
+      let payload = match base_payload {
+        base_codec::Json::Obj(fs) => {
+          let next_fs : Array[(String, base_codec::Json)] = []
+          for i in 0..<fs.length() {
+            let (k, v) = fs[i]
+            if k == "thread" {
+              match here_thread {
+                Some(ht) => next_fs.push(("thread", base_codec::json_int(ht)))
+                None => next_fs.push((k, v))
+              }
+            } else {
+              next_fs.push((k, v))
+            }
+          }
+          if compact {
+            next_fs.push(("compact", base_codec::json_bool(true)))
+          }
+          if eff_station != req_station {
+            next_fs.push(("resolvedStation", base_codec::json_str(eff_station)))
+            next_fs.push(("resolvedThread", base_codec::json_int(thread)))
+          }
+          base_codec::json_obj(next_fs)
+        }
+        other => other
+      }
       if is_sub {
         CoreEvent::Value(id, payload, None)
       } else {
@@ -1569,7 +1689,19 @@ fn Slice1Router::handle_stations_list(self : Slice1Router, id : Int64, params : 
     Some(k) => k
     None => "overview"
   }
-  match store::list_stations(self.db, kind=kind) {
+  let ws_scope = match opt_str_field(params, "workspace") {
+    Some(w) => w
+    None => match opt_str_field(params, "scope") {
+      Some(sc) => sc
+      None => ""
+    }
+  }
+  let rows_res = if kind == "overview" {
+    store::list_workspace_stations_merged(self.db, ws_scope)
+  } else {
+    store::list_stations(self.db, kind=kind)
+  }
+  match rows_res {
     sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
     sql::SqlResult::Ok(rows) => {
       let items : Array[base_codec::Json] = []

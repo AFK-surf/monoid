@@ -1270,6 +1270,7 @@ pub struct SafeModeMe {
 pub struct SafeModeView {
   pub available : Bool
   pub locked : Bool
+  pub lock_corrupt : Bool
   pub role : String
   pub manages : Bool
   pub owner : Bool
@@ -1319,19 +1320,61 @@ fn join_names(names : Array[String], most : Int) -> String {
 /// - Never distinguishes 「工作区锁」 vs 「个人锁」 (never outputs 「个人锁」 or 「共享调试」).
 /// - Law A: `me.confirmed` matches exact device admission in effective state.
 /// - Law B: Every unconfirmed, non-signing, or restricted state has an explicit next step.
+/// - Corrupt local lock (`lock_corrupt == true`): NEVER silently degrades to unlocked (`locked: false`);
+///   always surfaces a locked state with an explicit user-actionable recovery step.
 pub fn project_safe_mode(
   eff : Option[EffectiveLockState],
   inp : SafeModeInput,
+  lock_corrupt : Bool = false,
 ) -> SafeModeView {
   let is_app = inp.device_kind == "app"
   let is_owner = inp.viewer_role == "owner"
   let is_manager = is_owner || inp.viewer_role == "admin"
+
+  if lock_corrupt {
+    return SafeModeView::{
+      available: inp.available,
+      locked: true,
+      lock_corrupt: true,
+      role: inp.viewer_role,
+      manages: is_manager,
+      owner: is_owner,
+      can_sign: is_app,
+      signs: false,
+      me: SafeModeMe::{
+        device: if inp.device_id.length() > 0 { Some(inp.device_id) } else { None },
+        kind: inp.device_kind,
+        confirmed: false,
+        waiting: true,
+        unsigned: false,
+        out_text: None,
+        needs_app_text: None,
+        state_text: Some("本地安全模式数据已损坏，为防止安全降级已保持锁定；请重新同步受保护的 station 或重启此设备的安全模式状态。"),
+        confirm_text: None,
+        restart_text: None,
+        restart_note_text: None,
+        replaced_title_text: None,
+        replaced_note_text: None,
+        forget_text: None,
+        rebound_text: None,
+      },
+      signers: 0,
+      protected_stations: 0,
+      pending_rows: [],
+      pending_text: Some("本地安全模式状态损坏，等待重新同步恢复"),
+      root_text: None,
+      on_again_text: None,
+      members_json: [],
+      stations_json: [],
+    }
+  }
 
   match eff {
     None => {
       return SafeModeView::{
         available: inp.available,
         locked: false,
+        lock_corrupt: false,
         role: inp.viewer_role,
         manages: is_manager,
         owner: is_owner,
@@ -1544,6 +1587,7 @@ pub fn project_safe_mode(
       SafeModeView::{
         available: inp.available,
         locked: locked,
+        lock_corrupt: false,
         role: inp.viewer_role,
         manages: is_manager,
         owner: is_owner,
@@ -1622,6 +1666,10 @@ pub fn SafeModeView::to_json(self : SafeModeView) -> base_codec::Json {
   push_opt_str(out, "pendingText", self.pending_text)
   push_opt_str(out, "rootText", self.root_text)
   push_opt_str(out, "onAgainText", self.on_again_text)
+  if self.lock_corrupt {
+    out.push(("lockCorrupt", base_codec::json_bool(true)))
+    out.push(("recoveryAction", base_codec::json_str("resync_safe_mode")))
+  }
   base_codec::json_obj(out)
 }
 

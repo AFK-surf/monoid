@@ -121,7 +121,7 @@ fn project_overview_row(ov : base_codec::Json) -> base_codec::Json {
 /// Strips detail-only heavy fields (`runtimes`, `models`, `apiProviders`, `profiles`, `connects`,
 /// `slackUsers`, `slackTeams`, `logins`, `updates`, `agentEnv`).
 pub fn project_stations(db : sql::Sql, workspace_id : String) -> sql::SqlResult[base_codec::Json] {
-  let rows = match store::list_stations(db, kind="overview") {
+  let rows = match store::list_workspace_stations_merged(db, workspace_id) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
     sql::SqlResult::Ok(rs) => rs
   }

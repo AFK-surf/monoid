@@ -346,7 +346,7 @@ pub fn project_settings(
   db : sql::Sql,
   ws_scope : String,
 ) -> sql::SqlResult[base_codec::Json] {
-  let st_rows = match store::list_stations(db, kind="overview") {
+  let st_rows = match store::list_workspace_stations_merged(db, ws_scope) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
     sql::SqlResult::Ok(rs) => rs
   }
@@ -432,7 +432,7 @@ pub fn project_station_updates(
   ws_scope : String,
   now_ms : Int64,
 ) -> sql::SqlResult[base_codec::Json] {
-  let st_rows = match store::list_stations(db, kind="overview") {
+  let st_rows = match store::list_workspace_stations_merged(db, ws_scope) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
     sql::SqlResult::Ok(rs) => rs
   }

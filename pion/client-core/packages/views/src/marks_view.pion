@@ -181,7 +181,7 @@ pub fn project_workspace_marks(
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
     sql::SqlResult::Ok(rs) => rs
   }
-  let st_rows = match store::list_stations(db, kind="overview") {
+  let all_ov_rows = match store::list_stations(db, kind="overview") {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
     sql::SqlResult::Ok(rs) => rs
   }
@@ -208,41 +208,21 @@ pub fn project_workspace_marks(
       None => ws_id
     }
     let fails_gone = parse_fails_gone(prefs, ws_id)
-    let prefix = ws_id + "/"
+    let st_rows = store::merge_workspace_stations_rows(ws_id, Some(wr), all_ov_rows)
     let st_addrs : Array[String] = []
     let st_names : Map[String, String] = Map::new()
     for si in 0..<st_rows.length() {
       let sr = st_rows[si]
-      if sr.address.starts_with(prefix) {
-        st_addrs.push(sr.address)
-        let sj = parse_json_or_null(sr.json)
-        let sname = match j_opt_str(sj, "name") {
-          Some(nm) => nm
+      st_addrs.push(sr.address)
+      let sj = parse_json_or_null(sr.json)
+      let sname = match j_opt_str(sj, "name") {
+        Some(nm) => if nm.length() > 0 { nm } else { sr.address }
+        None => match j_opt_str(sj, "id") {
+          Some(sid) => if sid.length() > 0 { sid } else { sr.address }
           None => sr.address
         }
-        st_names.set(sr.address, sname)
       }
-    }
-    // Merge stations listed in already-parsed `workspace.json` (`wj`, zero extra SQL) so fresh devices with empty `station` table still count all workspace stations (#8369).
-    let ws_stations = j_arr(wj, "stations")
-    for si in 0..<ws_stations.length() {
-      let ws_st = ws_stations[si]
-      match j_opt_str(ws_st, "id") {
-        Some(sid) => {
-          if sid.length() > 0 {
-            let addr = ws_id + "/" + sid
-            if st_names.get(addr).is_none() {
-              st_addrs.push(addr)
-              let sname = match j_opt_str(ws_st, "name") {
-                Some(nm) => if nm.length() > 0 { nm } else { sid }
-                None => sid
-              }
-              st_names.set(addr, sname)
-            }
-          }
-        }
-        None => ()
-      }
+      st_names.set(sr.address, sname)
     }
 
     let mut alert_n = 0

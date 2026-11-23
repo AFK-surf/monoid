@@ -725,3 +725,190 @@ pub fn get_station_doc(db : sql::Sql, address : String, kind : String = "overvie
     }
   }
 }
+
+fn merge_station_doc_json(ws_st : base_codec::Json, ov_opt : Option[base_codec::Json], sid : String) -> String {
+  let base_fields : Array[(String, base_codec::Json)] = match ws_st {
+    base_codec::Json::Obj(fs) => fs
+    _ => []
+  }
+  let ov_fields : Array[(String, base_codec::Json)] = match ov_opt {
+    Some(base_codec::Json::Obj(fs)) => fs
+    _ => []
+  }
+  let ov_map : Map[String, base_codec::Json] = Map::new()
+  for i in 0..<ov_fields.length() {
+    let (k, v) = ov_fields[i]
+    match v {
+      base_codec::Json::Null => ()
+      _ => ov_map.set(k, v)
+    }
+  }
+  let seen : Map[String, Bool] = Map::new()
+  let out : Array[(String, base_codec::Json)] = []
+  for i in 0..<base_fields.length() {
+    let (k, v) = base_fields[i]
+    seen.set(k, true)
+    match ov_map.get(k) {
+      Some(ov_v) => out.push((k, ov_v))
+      None => out.push((k, v))
+    }
+  }
+  for i in 0..<ov_fields.length() {
+    let (k, v) = ov_fields[i]
+    if seen.get(k).is_none() {
+      seen.set(k, true)
+      out.push((k, v))
+    }
+  }
+  if seen.get("id").is_none() && sid.length() > 0 {
+    out.push(("id", base_codec::json_str(sid)))
+  }
+  base_codec::json_stringify(base_codec::json_obj(out))
+}
+
+fn merge_one_workspace_stations(
+  ws_id : String,
+  ws_row_opt : Option[WorkspaceRow],
+  ov_rows : Array[StationDocRow],
+  out : Array[StationDocRow],
+) -> Unit {
+  let prefix = ws_id + "/"
+  let ov_by_addr : Map[String, StationDocRow] = Map::new()
+  let ov_addrs : Array[String] = []
+  for i in 0..<ov_rows.length() {
+    let r = ov_rows[i]
+    if r.address.starts_with(prefix) {
+      ov_by_addr.set(r.address, r)
+      ov_addrs.push(r.address)
+    }
+  }
+  let emitted : Map[String, Bool] = Map::new()
+  match ws_row_opt {
+    Some(wr) => {
+      match base_codec::json_parse(wr.json) {
+        base_codec::JsonParseResult::Ok(wj) => {
+          match base_codec::json_get(wj, "stations") {
+            Some(base_codec::Json::Arr(ws_stations)) => {
+              for i in 0..<ws_stations.length() {
+                let ws_st = ws_stations[i]
+                let sid = match base_codec::json_get(ws_st, "id") {
+                  Some(base_codec::Json::Str(s)) => s
+                  _ => ""
+                }
+                if sid.length() == 0 || sid.contains("/") {
+                  continue
+                }
+                let addr = prefix + sid
+                if emitted.get(addr).is_some() {
+                  continue
+                }
+                emitted.set(addr, true)
+                match ov_by_addr.get(addr) {
+                  Some(ov_row) => {
+                    let ov_j = match base_codec::json_parse(ov_row.json) {
+                      base_codec::JsonParseResult::Ok(j) => Some(j)
+                      base_codec::JsonParseResult::Err(_) => None
+                    }
+                    out.push(StationDocRow::{
+                      address: addr,
+                      kind: "overview",
+                      json: merge_station_doc_json(ws_st, ov_j, sid),
+                      confirmed: ov_row.confirmed,
+                    })
+                  }
+                  None => {
+                    out.push(StationDocRow::{
+                      address: addr,
+                      kind: "overview",
+                      json: merge_station_doc_json(ws_st, None, sid),
+                      confirmed: wr.confirmed,
+                    })
+                  }
+                }
+              }
+            }
+            _ => ()
+          }
+        }
+        base_codec::JsonParseResult::Err(_) => ()
+      }
+    }
+    None => ()
+  }
+  // Append any overview rows for this workspace not listed in `workspace.json` (e.g. local cache / tests).
+  for i in 0..<ov_addrs.length() {
+    let addr = ov_addrs[i]
+    if emitted.get(addr).is_none() {
+      match ov_by_addr.get(addr) {
+        Some(ov_row) => {
+          emitted.set(addr, true)
+          out.push(ov_row)
+        }
+        None => ()
+      }
+    }
+  }
+}
+
+/// Pure in-memory merge of one workspace's Cloud `workspace.json` `stations` roster
+/// with pre-fetched `station(addr, "overview")` rows (strictly isolated to `ws_id + "/"`).
+/// Allows multi-workspace views (e.g. `marks_view`) to query `station` once and avoid W redundant SQL reads.
+pub fn merge_workspace_stations_rows(
+  ws_id : String,
+  ws_row_opt : Option[WorkspaceRow],
+  ov_rows : Array[StationDocRow],
+) -> Array[StationDocRow] {
+  let out : Array[StationDocRow] = []
+  if ws_id.length() == 0 {
+    return out
+  }
+  merge_one_workspace_stations(ws_id, ws_row_opt, ov_rows, out)
+  out
+}
+
+/// Merge Cloud `workspace.json` `stations` roster with live `station(addr, "overview")` rows.
+/// Strictly isolated to `workspace` (Gate #9: zero cross-workspace leakage when `workspace != ""`).
+/// When `workspace == ""`, merges across all known workspaces and overview rows.
+pub fn list_workspace_stations_merged(
+  db : sql::Sql,
+  workspace : String,
+) -> sql::SqlResult[Array[StationDocRow]] {
+  let ov_rows = match list_stations(db, kind="overview") {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rs) => rs
+  }
+  let out : Array[StationDocRow] = []
+  if workspace.length() > 0 {
+    let ws_opt = match get_workspace(db, workspace) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(w) => w
+    }
+    merge_one_workspace_stations(workspace, ws_opt, ov_rows, out)
+    return sql::SqlResult::Ok(out)
+  }
+  let ws_rows = match list_workspaces(db) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rs) => rs
+  }
+  let seen_addr : Map[String, Bool] = Map::new()
+  for i in 0..<ws_rows.length() {
+    let wr = ws_rows[i]
+    let tmp : Array[StationDocRow] = []
+    merge_one_workspace_stations(wr.id, Some(wr), ov_rows, tmp)
+    for j in 0..<tmp.length() {
+      let row = tmp[j]
+      if seen_addr.get(row.address).is_none() {
+        seen_addr.set(row.address, true)
+        out.push(row)
+      }
+    }
+  }
+  for i in 0..<ov_rows.length() {
+    let r = ov_rows[i]
+    if seen_addr.get(r.address).is_none() {
+      seen_addr.set(r.address, true)
+      out.push(r)
+    }
+  }
+  sql::SqlResult::Ok(out)
+}

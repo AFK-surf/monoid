@@ -1,0 +1,717 @@
+// Pure runtime topic projections strictly conforming to `client/core-ts/src/shapes/`:
+// - `project_status` (`StatusView`, `shapes/common.ts` & `client/core-ts/src/status.ts`)
+// - `project_lock_prompts` (`LockPromptsView`, `shapes/lock.ts` & `client/core-ts/src/views/lock.ts`)
+// - `project_notices` (`NoticesView`, `shapes/common.ts` & `client/core-ts/src/notices.ts`)
+// - `project_notify` (`NotifyView`, `shapes/prefs.ts` & `client/core-ts/src/attention.ts`)
+// - `project_doing` (`DoingView`, `shapes/common.ts` & `client/core-ts/src/doing.ts`)
+//
+// Zero static empty stubs: every projection computes deterministically from live inputs / SQLite.
+
+import "base_codec"
+import "sql"
+import "store"
+
+// ---------------------------------------------------------------------------
+// 1. `status` topic (`StatusView`, `client/core-ts/src/status.ts`)
+// ---------------------------------------------------------------------------
+
+pub fn status_slow_ms() -> Int64 { 2000L }
+pub fn status_rate_window_ms() -> Int64 { 3000L }
+
+pub struct StatusDbNote {
+  pub kind : String
+  pub detail : Option[String]
+}
+
+pub struct StatusDownSocket {
+  pub since_ms : Int64
+  pub retry_at_ms : Int64
+  pub message : String
+  pub tries : Int
+}
+
+pub struct StatusWaitEntry {
+  pub place : Option[String]
+  pub what : String
+  pub connecting : Bool
+  pub since_ms : Int64
+  pub bytes : Int64
+}
+
+/// Format byte size matching `status.ts size(bytes)`: "820 B", "12 KB", "1.4 MB".
+pub fn format_status_bytes(bytes : Int64) -> String {
+  if bytes < 1024L {
+    return bytes.to_string() + " B"
+  }
+  if bytes < 1048576L {
+    let kb = (bytes + 512L) / 1024L
+    return kb.to_string() + " KB"
+  }
+  let tenths = (bytes * 10L + 524288L) / 1048576L
+  let whole = tenths / 10L
+  let frac = tenths % 10L
+  whole.to_string() + "." + frac.to_string() + " MB"
+}
+
+fn db_note_texts_rtv(note : StatusDbNote, lang : String) -> (String, String) {
+  let en = lang == "en"
+  if note.kind == "full" {
+    if en {
+      ("Local storage is full", "Free up disk space so still.fail can keep saving data.")
+    } else {
+      ("本地存储空间不足", "请清理磁盘空间以便继续保存本地数据。")
+    }
+  } else if note.kind == "newer" {
+    if en {
+      ("Local data was written by a newer version", "Update still.fail to write to this database.")
+    } else {
+      ("本地数据由更新版本写入", "当前为只读模式，请更新应用后恢复写入。")
+    }
+  } else if note.kind == "busy" {
+    if en {
+      ("Local database is in use by another process", "Close the other still.fail window or wait for it to finish.")
+    } else {
+      ("本地数据库正被另一个进程占用", "请关闭其他窗口或等待其释放。")
+    }
+  } else {
+    let why = match note.detail {
+      Some(d) => d
+      None => ""
+    }
+    if en {
+      ("Local database error", if why.length() > 0 { why } else { "Failed to open local database." })
+    } else {
+      ("本地数据库异常", if why.length() > 0 { why } else { "无法打开本地数据库。" })
+    }
+  }
+}
+
+/// Project `status` topic (`StatusView`: `{ state?, text?, items, lines }`),
+/// strictly aligned with `client/core-ts/src/status.ts value()`.
+pub fn project_status(
+  waits : Array[StatusWaitEntry],
+  downs : Array[StatusDownSocket],
+  db_notes : Array[StatusDbNote],
+  recent_bytes : Int64,
+  window_ms : Int64,
+  now_ms : Int64,
+  lang : String = "zh",
+) -> base_codec::Json {
+  let en = lang == "en"
+  let items : Array[base_codec::Json] = []
+  let trouble_lines : Array[base_codec::Json] = []
+
+  // 1. DB notes first (deduplicated by `kind`).
+  let seen_db : Map[String, Bool] = Map::new()
+  let mut db_count = 0
+  for i in 0..<db_notes.length() {
+    let n = db_notes[i]
+    if seen_db.get(n.kind).is_some() {
+      continue
+    }
+    seen_db.set(n.kind, true)
+    db_count += 1
+    let (txt, det) = db_note_texts_rtv(n, lang)
+    items.push(base_codec::json_obj([
+      ("state", base_codec::json_str("trouble")),
+      ("text", base_codec::json_str(txt)),
+      ("detail", base_codec::json_str(det)),
+    ]))
+    trouble_lines.push(base_codec::json_str(txt))
+  }
+
+  // 2. Down cloud sockets (only those down >= SLOW_MS; pick smallest retryIn).
+  let mut best_down : Option[StatusDownSocket] = None
+  for i in 0..<downs.length() {
+    let d = downs[i]
+    if now_ms - d.since_ms < status_slow_ms() {
+      continue
+    }
+    match best_down {
+      None => {
+        best_down = Some(d)
+      }
+      Some(cur) => {
+        if d.retry_at_ms - now_ms < cur.retry_at_ms - now_ms {
+          best_down = Some(d)
+        }
+      }
+    }
+  }
+  let has_down = best_down.is_some()
+  match best_down {
+    Some(d) => {
+      let retry_in = d.retry_at_ms - now_ms
+      let wait_secs = if retry_in > 0L { (retry_in + 999L) / 1000L } else { 0L }
+      let when_txt = if wait_secs > 0L {
+        if en { "retrying in " + wait_secs.to_string() + "s" } else { wait_secs.to_string() + " 秒后重试" }
+      } else if en {
+        "retrying"
+      } else {
+        "正在重试"
+      }
+      let tries_txt = if d.tries > 1 {
+        if en { " (attempt " + d.tries.to_string() + ")" } else { "（第 " + d.tries.to_string() + " 次）" }
+      } else {
+        ""
+      }
+      let txt = if en {
+        "still.fail cloud unreachable · " + when_txt + tries_txt
+      } else {
+        "无法连接 still.fail cloud · " + when_txt + tries_txt
+      }
+      let det = if d.message.length() == 0 {
+        if en { "Sync paused until connection recovers" } else { "连接恢复前同步已暂停" }
+      } else if en {
+        "Sync paused: " + d.message
+      } else {
+        "同步已暂停：" + d.message
+      }
+      items.push(base_codec::json_obj([
+        ("state", base_codec::json_str("trouble")),
+        ("text", base_codec::json_str(txt)),
+        ("detail", base_codec::json_str(det)),
+      ]))
+      trouble_lines.push(base_codec::json_str(txt))
+    }
+    None => ()
+  }
+
+  // 3. Slow waits (age >= SLOW_MS): connecting first, then oldest first; coalesce identical text.
+  let slow : Array[(StatusWaitEntry, Int64)] = []
+  for i in 0..<waits.length() {
+    let w = waits[i]
+    let age = now_ms - w.since_ms
+    if age >= status_slow_ms() {
+      slow.push((w, age))
+    }
+  }
+  for i in 1..<slow.length() {
+    let cur = slow[i]
+    let mut j = i - 1
+    while j >= 0 {
+      let prev = slow[j]
+      let move_left = if prev.0.connecting == cur.0.connecting {
+        prev.1 < cur.1
+      } else {
+        !prev.0.connecting && cur.0.connecting
+      }
+      if move_left {
+        slow[j + 1] = slow[j]
+        j -= 1
+      } else {
+        break
+      }
+    }
+    slow[j + 1] = cur
+  }
+
+  let alike_order : Array[String] = []
+  let alike_first : Map[String, (StatusWaitEntry, Int64)] = Map::new()
+  let alike_count : Map[String, Int] = Map::new()
+  for i in 0..<slow.length() {
+    let (w, age) = slow[i]
+    let txt = if w.connecting {
+      let p = match w.place {
+        Some(s) => if s.length() > 0 { s } else { "station" }
+        None => "station"
+      }
+      if en { "Connecting to " + p } else { "正在连接 " + p }
+    } else {
+      match w.place {
+        Some(p) => if p.length() > 0 { p + " · " + w.what } else { w.what }
+        None => w.what
+      }
+    }
+    match alike_count.get(txt) {
+      Some(cnt) => alike_count.set(txt, cnt + 1)
+      None => {
+        alike_order.push(txt)
+        alike_first.set(txt, (w, age))
+        alike_count.set(txt, 1)
+      }
+    }
+  }
+
+  for i in 0..<alike_order.length() {
+    let base_txt = alike_order[i]
+    let cnt = match alike_count.get(base_txt) {
+      Some(c) => c
+      None => 1
+    }
+    match alike_first.get(base_txt) {
+      Some((w, age)) => {
+        let secs = age / 1000L
+        let det = if w.connecting {
+          if en { "Waited " + secs.to_string() + "s" } else { "已等待 " + secs.to_string() + " 秒" }
+        } else if w.bytes <= 0L {
+          if en { "No data received · " + secs.to_string() + "s" } else { "尚未收到数据 · " + secs.to_string() + " 秒" }
+        } else if en {
+          "Received " + format_status_bytes(w.bytes) + " · " + secs.to_string() + "s"
+        } else {
+          "已接收 " + format_status_bytes(w.bytes) + " · " + secs.to_string() + " 秒"
+        }
+        let shown_txt = if cnt > 1 { base_txt + " ×" + cnt.to_string() } else { base_txt }
+        items.push(base_codec::json_obj([
+          ("state", base_codec::json_str("slow")),
+          ("text", base_codec::json_str(shown_txt)),
+          ("detail", base_codec::json_str(det)),
+        ]))
+      }
+      None => ()
+    }
+  }
+
+  if items.length() == 0 {
+    return base_codec::json_obj([
+      ("items", base_codec::json_arr([])),
+      ("lines", base_codec::json_arr([])),
+    ])
+  }
+
+  let eff_window = if window_ms > 0L { window_ms } else { status_rate_window_ms() }
+  let rate = if recent_bytes > 0L && eff_window > 0L {
+    (recent_bytes * 1000L) / eff_window
+  } else {
+    0L
+  }
+  let top_state = if has_down || db_count > 0 { "trouble" } else { "slow" }
+  let mut headline = j_str(items[0], "text")
+  if slow.length() > 0 && !has_down && db_count == 0 {
+    let secs = slow[0].1 / 1000L
+    headline = headline + " · " + (if en { secs.to_string() + "s" } else { secs.to_string() + " 秒" })
+  }
+  let total_count = items.length() - alike_order.length() + slow.length()
+  if total_count > 1 {
+    headline = headline + " · " + (if en { total_count.to_string() + " items" } else { "共 " + total_count.to_string() + " 项" })
+  }
+  if slow.length() > 0 && rate > 0L {
+    headline = headline + " · " + format_status_bytes(rate) + "/s"
+  }
+
+  base_codec::json_obj([
+    ("state", base_codec::json_str(top_state)),
+    ("text", base_codec::json_str(headline)),
+    ("items", base_codec::json_arr(items)),
+    ("lines", base_codec::json_arr(trouble_lines)),
+  ])
+}
+
+// ---------------------------------------------------------------------------
+// 2. `lockPrompts` topic (`LockPromptsView`, `shapes/lock.ts`)
+// ---------------------------------------------------------------------------
+
+pub struct LockPairingPromptInput {
+  pub device : String
+  pub name : String
+  pub email : String
+  pub kind : String
+  pub label : String
+  pub code : String
+  pub device_text : String
+  pub device_code : Option[String]
+  pub build : Option[String]
+  pub will_sign : Option[Bool]
+  pub handover_vaults : Array[base_codec::Json]
+  pub role_text : Option[String]
+  pub workspaces : Array[base_codec::Json]
+  pub created_at : Int64
+  pub until : Int64
+  pub until_text : String
+}
+
+pub struct VaultKeyAskInput {
+  pub workspace : String
+  pub workspace_name : String
+  pub vault : String
+  pub vault_name : String
+  pub device : String
+  pub device_text : String
+  pub device_code : Option[String]
+  pub owner_name : Option[String]
+  pub owner_email : Option[String]
+  pub is_own_device : Option[Bool]
+  pub vault_scope : Option[String]
+  pub vault_items : Option[Int]
+  pub safe_mode : Option[Bool]
+  pub at : Int64
+  pub at_text : String
+  pub dismissed : Bool
+}
+
+/// Project `lockPrompts` topic (`LockPromptsView`: `{ pairing, asks }`),
+/// strictly conforming to `client/core-ts/src/shapes/lock.ts LockPromptsView` and `shapes/vault.ts VaultKeyAsk`:
+/// - Drops expired pairing prompts (`until <= now_ms`).
+/// - Drops dismissed vault key asks and sorts remaining asks newest-first (`at` desc).
+pub fn project_lock_prompts(
+  pairing : Array[LockPairingPromptInput],
+  asks : Array[VaultKeyAskInput],
+  now_ms : Int64,
+) -> base_codec::Json {
+  let pairing_out : Array[base_codec::Json] = []
+  for i in 0..<pairing.length() {
+    let p = pairing[i]
+    if p.until <= now_ms {
+      continue
+    }
+    let pf : Array[(String, base_codec::Json)] = [
+      ("device", base_codec::json_str(p.device)),
+      ("name", base_codec::json_str(p.name)),
+      ("email", base_codec::json_str(p.email)),
+      ("kind", base_codec::json_str(p.kind)),
+      ("label", base_codec::json_str(p.label)),
+      ("code", base_codec::json_str(p.code)),
+      ("deviceText", base_codec::json_str(p.device_text)),
+      ("workspaces", base_codec::json_arr(p.workspaces)),
+      ("created_at", base_codec::json_int64(p.created_at)),
+      ("until", base_codec::json_int64(p.until)),
+      ("untilText", base_codec::json_str(p.until_text)),
+    ]
+    push_opt_str(pf, "deviceCode", p.device_code)
+    push_opt_str(pf, "build", p.build)
+    push_opt_bool(pf, "willSign", p.will_sign)
+    if p.handover_vaults.length() > 0 {
+      pf.push(("handoverVaults", base_codec::json_arr(p.handover_vaults)))
+    }
+    push_opt_str(pf, "roleText", p.role_text)
+    pairing_out.push(base_codec::json_obj(pf))
+  }
+
+  let active_asks : Array[VaultKeyAskInput] = []
+  for i in 0..<asks.length() {
+    if !asks[i].dismissed {
+      active_asks.push(asks[i])
+    }
+  }
+  // Newest asking first (`shapes/lock.ts:150`).
+  for i in 1..<active_asks.length() {
+    let cur = active_asks[i]
+    let mut j = i - 1
+    while j >= 0 && active_asks[j].at < cur.at {
+      active_asks[j + 1] = active_asks[j]
+      j -= 1
+    }
+    active_asks[j + 1] = cur
+  }
+  let asks_out : Array[base_codec::Json] = []
+  for i in 0..<active_asks.length() {
+    let a = active_asks[i]
+    let af : Array[(String, base_codec::Json)] = [
+      ("workspace", base_codec::json_str(a.workspace)),
+      ("workspaceName", base_codec::json_str(a.workspace_name)),
+      ("vault", base_codec::json_str(a.vault)),
+      ("vaultName", base_codec::json_str(a.vault_name)),
+      ("device", base_codec::json_str(a.device)),
+      ("deviceText", base_codec::json_str(a.device_text)),
+      ("at", base_codec::json_int64(a.at)),
+      ("atText", base_codec::json_str(a.at_text)),
+    ]
+    push_opt_str(af, "deviceCode", a.device_code)
+    push_opt_str(af, "ownerName", a.owner_name)
+    push_opt_str(af, "ownerEmail", a.owner_email)
+    push_opt_bool(af, "isOwnDevice", a.is_own_device)
+    push_opt_str(af, "vaultScope", a.vault_scope)
+    push_opt_int(af, "vaultItems", a.vault_items)
+    push_opt_bool(af, "safeMode", a.safe_mode)
+    asks_out.push(base_codec::json_obj(af))
+  }
+
+  base_codec::json_obj([
+    ("pairing", base_codec::json_arr(pairing_out)),
+    ("asks", base_codec::json_arr(asks_out)),
+  ])
+}
+
+// ---------------------------------------------------------------------------
+// 3. `notices` & `notify` topics (`NoticesView`, `NotifyView`, `shapes/{common,prefs}.ts`)
+// ---------------------------------------------------------------------------
+
+pub fn notices_keep_limit() -> Int { 20 }
+pub fn notice_body_max_chars() -> Int { 140 }
+
+pub struct NoticeItemInput {
+  pub id : String
+  pub kind : String
+  pub station : String
+  pub workspace : String
+  pub station_id : String
+  pub session : String
+  pub thread : Option[Int]
+  pub seq : Option[Int]
+  pub title : String
+  pub body : String
+  pub tag : String
+  pub url : String
+  pub at : Int64
+}
+
+pub struct NotifyKindsInput {
+  pub wait : Bool
+  pub failed : Bool
+  pub done : String
+  pub message : Bool
+  pub billed : Bool
+}
+
+pub struct NotifyStateInput {
+  pub on : Bool
+  pub asked : Bool
+  pub push : Bool
+  pub kinds : NotifyKindsInput
+  pub preview : Bool
+  pub muted : Array[String]
+  pub permission : String
+  pub in_front : Bool
+}
+
+fn truncate_notice_body_rtv(s : String, max_len : Int) -> String {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let mut chars = 0
+  let mut cut_byte = -1
+  let target = if max_len > 1 { max_len - 1 } else { 0 }
+  for i in 0..<n {
+    let b = raw[i].to_int()
+    if (b & 0xC0) != 0x80 {
+      if chars == target && cut_byte < 0 {
+        cut_byte = i
+      }
+      chars += 1
+    }
+  }
+  if chars <= max_len {
+    return s
+  }
+  if max_len <= 1 || cut_byte <= 0 {
+    return "…"
+  }
+  let sb = StringBuilder::new()
+  for i in 0..<cut_byte {
+    sb.write_byte(raw[i])
+  }
+  sb.write_string("…")
+  sb.to_string()
+}
+
+fn notice_to_json_rtv(n : NoticeItemInput, hide_preview : Bool, lang : String) -> base_codec::Json {
+  let body_txt = if hide_preview {
+    let en = lang == "en"
+    if n.kind == "wait" || n.kind == "block" {
+      if en { "Needs your attention" } else { "需要你处理" }
+    } else if n.kind == "failed" {
+      if en { "Something went wrong" } else { "出现错误" }
+    } else if n.kind == "done" {
+      if en { "Finished" } else { "已完成" }
+    } else if n.kind == "billed" {
+      if en { "Switched to pay-as-you-go profile" } else { "已切换到按量计费账号" }
+    } else if en {
+      "New message"
+    } else {
+      "收到新消息"
+    }
+  } else {
+    truncate_notice_body_rtv(n.body, notice_body_max_chars())
+  }
+  let nf : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(n.id)),
+    ("kind", base_codec::json_str(n.kind)),
+    ("station", base_codec::json_str(n.station)),
+    ("workspace", base_codec::json_str(n.workspace)),
+    ("stationId", base_codec::json_str(n.station_id)),
+    ("session", base_codec::json_str(n.session)),
+    ("title", base_codec::json_str(n.title)),
+    ("body", base_codec::json_str(body_txt)),
+    ("tag", base_codec::json_str(n.tag)),
+    ("url", base_codec::json_str(n.url)),
+    ("at", base_codec::json_int64(n.at)),
+  ]
+  push_opt_int(nf, "thread", n.thread)
+  push_opt_int(nf, "seq", n.seq)
+  base_codec::json_obj(nf)
+}
+
+/// Project `notices` topic (`NoticesView`: `{ items }`, oldest first, capped at `KEEP = 20`),
+/// strictly isolated to `workspace_filter` when provided (`Some(ws)`).
+pub fn project_notices(
+  items : Array[NoticeItemInput],
+  workspace_filter : Option[String] = None,
+  lang : String = "zh",
+) -> base_codec::Json {
+  let filtered : Array[NoticeItemInput] = []
+  for i in 0..<items.length() {
+    let it = items[i]
+    match workspace_filter {
+      Some(ws) => if ws.length() > 0 && it.workspace != ws { continue }
+      None => ()
+    }
+    filtered.push(it)
+  }
+  // Sort oldest first (`at` ascending).
+  for i in 1..<filtered.length() {
+    let cur = filtered[i]
+    let mut j = i - 1
+    while j >= 0 && filtered[j].at > cur.at {
+      filtered[j + 1] = filtered[j]
+      j -= 1
+    }
+    filtered[j + 1] = cur
+  }
+  let keep = notices_keep_limit()
+  let start = if filtered.length() > keep { filtered.length() - keep } else { 0 }
+  let out : Array[base_codec::Json] = []
+  for i in start..<filtered.length() {
+    out.push(notice_to_json_rtv(filtered[i], false, lang))
+  }
+  base_codec::json_obj([("items", base_codec::json_arr(out))])
+}
+
+fn str_in_rtv(xs : Array[String], s : String) -> Bool {
+  for i in 0..<xs.length() {
+    if xs[i] == s {
+      return true
+    }
+  }
+  false
+}
+
+fn notice_kind_enabled_rtv(kinds : NotifyKindsInput, kind : String, in_front : Bool) -> Bool {
+  if kind == "wait" || kind == "block" {
+    kinds.wait
+  } else if kind == "failed" {
+    kinds.failed
+  } else if kind == "done" {
+    if kinds.done == "always" {
+      true
+    } else if kinds.done == "away" {
+      !in_front
+    } else {
+      false
+    }
+  } else if kind == "message" {
+    kinds.message
+  } else if kind == "billed" {
+    kinds.billed
+  } else {
+    true
+  }
+}
+
+/// Project `notify` topic (`NotifyView`, `shapes/prefs.ts` & `client/core-ts/src/attention.ts`):
+/// reads real workspaces from SQLite `workspace` table, computes per-workspace `on` vs `muted`,
+/// and filters `show` notices according to `on`, `kinds`, `muted`, `in_front`, and `preview`.
+pub fn project_notify(
+  db : sql::Sql,
+  state : NotifyStateInput,
+  pending_notices : Array[NoticeItemInput],
+  lang : String = "zh",
+) -> sql::SqlResult[base_codec::Json] {
+  let ws_rows = match store::list_workspaces(db) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rs) => rs
+  }
+  let ws_out : Array[base_codec::Json] = []
+  for i in 0..<ws_rows.length() {
+    let r = ws_rows[i]
+    let j = parse_json_or_null(r.json)
+    let nm = match j_opt_str(j, "name") {
+      Some(s) => if s.length() > 0 { s } else { r.id }
+      None => r.id
+    }
+    let wf : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(r.id)),
+      ("name", base_codec::json_str(nm)),
+      ("on", base_codec::json_bool(!str_in_rtv(state.muted, r.id))),
+    ]
+    push_opt_str(wf, "emoji", j_opt_str(j, "emoji"))
+    push_opt_str(wf, "icon", j_opt_str(j, "icon"))
+    ws_out.push(base_codec::json_obj(wf))
+  }
+
+  let muted_j : Array[base_codec::Json] = []
+  for i in 0..<state.muted.length() {
+    muted_j.push(base_codec::json_str(state.muted[i]))
+  }
+
+  let show_out : Array[base_codec::Json] = []
+  if state.on {
+    for i in 0..<pending_notices.length() {
+      let n = pending_notices[i]
+      if str_in_rtv(state.muted, n.workspace) {
+        continue
+      }
+      if !notice_kind_enabled_rtv(state.kinds, n.kind, state.in_front) {
+        continue
+      }
+      show_out.push(notice_to_json_rtv(n, !state.preview, lang))
+    }
+  }
+
+  let perm = if state.permission == "granted" || state.permission == "denied" || state.permission == "default" {
+    state.permission
+  } else {
+    "unknown"
+  }
+  let done_mode = if state.kinds.done == "off" || state.kinds.done == "always" {
+    state.kinds.done
+  } else {
+    "away"
+  }
+
+  sql::SqlResult::Ok(base_codec::json_obj([
+    ("on", base_codec::json_bool(state.on)),
+    ("asked", base_codec::json_bool(state.asked)),
+    ("push", base_codec::json_bool(state.push)),
+    (
+      "kinds",
+      base_codec::json_obj([
+        ("wait", base_codec::json_bool(state.kinds.wait)),
+        ("failed", base_codec::json_bool(state.kinds.failed)),
+        ("done", base_codec::json_str(done_mode)),
+        ("message", base_codec::json_bool(state.kinds.message)),
+        ("billed", base_codec::json_bool(state.kinds.billed)),
+      ]),
+    ),
+    ("preview", base_codec::json_bool(state.preview)),
+    ("muted", base_codec::json_arr(muted_j)),
+    ("workspaces", base_codec::json_arr(ws_out)),
+    ("permission", base_codec::json_str(perm)),
+    ("show", base_codec::json_arr(show_out)),
+  ]))
+}
+
+// ---------------------------------------------------------------------------
+// 4. `doing` topic (`DoingView`, `shapes/common.ts` & `client/core-ts/src/doing.ts`)
+// ---------------------------------------------------------------------------
+
+pub struct DoingItemInput {
+  pub call : String
+  pub params : Array[(String, String)]
+  pub since : Int64
+  pub stage : String
+  pub error : Option[String]
+  pub note : Option[String]
+}
+
+/// Project `doing` topic (`DoingView`: `{ doing: DoingItem[] }`), oldest first.
+pub fn project_doing(items : Array[DoingItemInput]) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<items.length() {
+    let it = items[i]
+    let p_fields : Array[(String, base_codec::Json)] = []
+    for pi in 0..<it.params.length() {
+      let (k, v) = it.params[pi]
+      p_fields.push((k, base_codec::json_str(v)))
+    }
+    let stage_s = if it.stage == "rechecking" || it.stage == "failed" { it.stage } else { "running" }
+    let df : Array[(String, base_codec::Json)] = [
+      ("call", base_codec::json_str(it.call)),
+      ("params", base_codec::json_obj(p_fields)),
+      ("since", base_codec::json_int64(it.since)),
+      ("stage", base_codec::json_str(stage_s)),
+    ]
+    push_opt_str(df, "error", it.error)
+    push_opt_str(df, "note", it.note)
+    out.push(base_codec::json_obj(df))
+  }
+  base_codec::json_obj([("doing", base_codec::json_arr(out))])
+}

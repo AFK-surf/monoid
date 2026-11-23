@@ -54,7 +54,7 @@ fn ProtoFakeDb::new() -> ProtoFakeDb {
           base_codec::json_arr([base_codec::json_str(k), base_codec::json_int(0), base_codec::json_str("[[\"p\"]]")]),
         ]))
       }
-      if stmt == store::sql_opened() {
+      if stmt == store::sql_opened() || stmt == store::sql_moved_by_thread() || stmt == store::sql_moved_get() {
         return shell::AskResult::Ok(base_codec::json_arr([]))
       }
       if stmt == store::sql_chat_window() {

@@ -169,7 +169,74 @@ fn build_chat_agent(raw : base_codec::Json, lang : String = "zh") -> base_codec:
     ("status", base_codec::json_str(status)),
   ]
   push_opt_str(out, "badge", badge_opt)
+  match base_codec::json_get(raw, "jobs") {
+    Some(base_codec::Json::Arr(js)) => out.push(("jobs", base_codec::json_arr(js)))
+    _ => ()
+  }
   base_codec::json_obj(out)
+}
+
+/// Apply `compact` chat projection matching `client/core-ts/src/output.ts compactChat`:
+/// clears `agents[].jobs` to `[]` and sets `agents[].hasJobs = jobs.length > 0`.
+pub fn compact_chat_json(value : base_codec::Json) -> base_codec::Json {
+  match value {
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        if k == "agents" {
+          match v {
+            base_codec::Json::Arr(agents) => {
+              let next_agents : Array[base_codec::Json] = []
+              for ai in 0..<agents.length() {
+                match agents[ai] {
+                  base_codec::Json::Obj(af) => {
+                    let next_af : Array[(String, base_codec::Json)] = []
+                    let mut had_jobs_arr = false
+                    let mut has_jobs = false
+                    let mut saw_has_jobs = false
+                    for fi in 0..<af.length() {
+                      let (ak, av) = af[fi]
+                      if ak == "jobs" {
+                        match av {
+                          base_codec::Json::Arr(js) => {
+                            had_jobs_arr = true
+                            has_jobs = js.length() > 0
+                            next_af.push(("jobs", base_codec::json_arr([])))
+                          }
+                          _ => next_af.push((ak, av))
+                        }
+                      } else if ak == "hasJobs" {
+                        saw_has_jobs = true
+                      } else {
+                        next_af.push((ak, av))
+                      }
+                    }
+                    if had_jobs_arr {
+                      next_af.push(("hasJobs", base_codec::json_bool(has_jobs)))
+                    } else if saw_has_jobs {
+                      match base_codec::json_obj_get(af, "hasJobs") {
+                        Some(hv) => next_af.push(("hasJobs", hv))
+                        None => ()
+                      }
+                    }
+                    next_agents.push(base_codec::json_obj(next_af))
+                  }
+                  other => next_agents.push(other)
+                }
+              }
+              out.push((k, base_codec::json_arr(next_agents)))
+            }
+            _ => out.push((k, v))
+          }
+        } else {
+          out.push((k, v))
+        }
+      }
+      base_codec::json_obj(out)
+    }
+    _ => value
+  }
 }
 
 fn is_system_author(author_kind : String) -> Bool {
@@ -199,6 +266,7 @@ pub fn project_chat(
   online : Bool = true,
   station_name : String = "",
   chat_meta : Option[base_codec::Json] = None,
+  compact : Bool = false,
 ) -> sql::SqlResult[base_codec::Json] {
   // 1. Cold open entries + 1-statement md_kept preload (0 SQL writes!).
   let opened = match store::open_chat(md_store, thread, now_ms, rows=rows, at=at) {
@@ -762,7 +830,214 @@ pub fn project_chat(
     }
     None => ()
   }
-  sql::SqlResult::Ok(base_codec::json_obj(out))
+  let built = base_codec::json_obj(out)
+  sql::SqlResult::Ok(if compact { compact_chat_json(built) } else { built })
+}
+
+fn rewrite_thread_id_as_here(chat_val : base_codec::Json, here_thread : Int, there_thread : Int) -> base_codec::Json {
+  if here_thread == there_thread {
+    return chat_val
+  }
+  match chat_val {
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        if k == "thread" {
+          match v {
+            base_codec::Json::Obj(tf) => {
+              let next_tf : Array[(String, base_codec::Json)] = []
+              for ti in 0..<tf.length() {
+                let (tk, tv) = tf[ti]
+                if tk == "id" {
+                  next_tf.push(("id", base_codec::json_int(here_thread)))
+                } else {
+                  next_tf.push((tk, tv))
+                }
+              }
+              out.push((k, base_codec::json_obj(next_tf)))
+            }
+            _ => out.push((k, v))
+          }
+        } else {
+          out.push((k, v))
+        }
+      }
+      base_codec::json_obj(out)
+    }
+    _ => chat_val
+  }
+}
+
+/// Project `chat` topic from `{ station, thread?, session?, compact? }` params with
+/// transparent multi-hop `moved` resolution (`store::resolve_chat_now` / `resolve_chat_now_by_thread`,
+/// with cycle detection) and `compact` mode (`output.ts compactChat`).
+/// Keeps 0 SQL writes on cold open.
+pub fn project_chat_by_params(
+  db : sql::Sql,
+  station : String,
+  thread : Option[Int],
+  session : Option[String],
+  compact : Bool,
+  viewer_email : String,
+  now_ms : Int64,
+  rows : Int = 30,
+  at : Option[Int] = None,
+  utc_offset_min : Int = 0,
+  lang : String = "zh",
+  online : Bool = true,
+  station_name : String = "",
+  chat_meta : Option[base_codec::Json] = None,
+) -> sql::SqlResult[base_codec::Json] {
+  let mut eff_station = station
+  let mut eff_thread = thread
+  let mut here_thread : Option[Int] = None
+  let mut resolved_session = session
+
+  match thread {
+    Some(th) => {
+      match store::resolve_chat_now_by_thread(db, station, th) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(Some(loc)) => {
+          eff_station = loc.station
+          resolved_session = Some(loc.session)
+          match loc.thread {
+            Some(there_th) => {
+              here_thread = Some(th)
+              eff_thread = Some(there_th)
+            }
+            None => ()
+          }
+        }
+        sql::SqlResult::Ok(None) => ()
+      }
+    }
+    None => {
+      match session {
+        Some(sess) => {
+          if sess.length() > 0 && !sess.starts_with("new:") {
+            match store::resolve_chat_now(db, station, sess) {
+              sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+              sql::SqlResult::Ok(Some(loc)) => {
+                match store::get_moved(db, station, sess) {
+                  sql::SqlResult::Ok(Some(orig_m)) => {
+                    here_thread = orig_m.thread
+                  }
+                  _ => ()
+                }
+                eff_station = loc.station
+                eff_thread = loc.thread
+              }
+              sql::SqlResult::Ok(None) => ()
+            }
+          }
+        }
+        None => ()
+      }
+    }
+  }
+
+  let mut eff_meta = chat_meta
+  if eff_thread.is_none() {
+    match resolved_session {
+      Some(sess) => {
+        if sess.length() > 0 {
+          match store::get_chat_by_session(db, eff_station, sess) {
+            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(Some(rec)) => {
+              let rec_j = parse_json_or_null(rec.json)
+              if eff_meta.is_none() {
+                eff_meta = Some(rec_j)
+              }
+              eff_thread = j_opt_int(rec_j, "thread")
+            }
+            sql::SqlResult::Ok(None) => ()
+          }
+        }
+      }
+      None => ()
+    }
+  } else if eff_meta.is_none() {
+    match eff_thread {
+      Some(th) => {
+        match store::get_chat_by_thread(db, eff_station, th) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(Some(rec)) => {
+            eff_meta = Some(parse_json_or_null(rec.json))
+          }
+          sql::SqlResult::Ok(None) => ()
+        }
+      }
+      None => ()
+    }
+  }
+
+  match eff_thread {
+    Some(th) => {
+      let md = store::MdStore::new(db, eff_station)
+      let res = match project_chat(
+        db,
+        md,
+        eff_station,
+        th,
+        viewer_email,
+        now_ms,
+        rows=rows,
+        at=at,
+        utc_offset_min=utc_offset_min,
+        lang=lang,
+        online=online,
+        station_name=station_name,
+        chat_meta=eff_meta,
+        compact=compact,
+      ) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(v) => v
+      }
+      match here_thread {
+        Some(ht) => sql::SqlResult::Ok(rewrite_thread_id_as_here(res, ht, th))
+        None => sql::SqlResult::Ok(res)
+      }
+    }
+    None => {
+      // Unchatted / pending session with no thread yet: project a valid empty ChatView.
+      let chat_doc = match eff_meta {
+        Some(cm) => cm
+        None => base_codec::json_null()
+      }
+      let chat_agents_raw = j_arr(chat_doc, "agents")
+      let chat_agents_out : Array[base_codec::Json] = []
+      for ai in 0..<chat_agents_raw.length() {
+        chat_agents_out.push(build_chat_agent(chat_agents_raw[ai], lang=lang))
+      }
+      let title = match j_opt_str(chat_doc, "title") {
+        Some(t) => t
+        None => if lang == "en" { "New chat" } else { "新对话" }
+      }
+      let out : Array[(String, base_codec::Json)] = [
+        ("archived", base_codec::json_bool(j_bool(chat_doc, "archived"))),
+        ("me", base_codec::json_obj([("email", base_codec::json_str(viewer_email))])),
+        ("title", base_codec::json_str(title)),
+        ("cc", base_codec::json_arr([])),
+        ("people", base_codec::json_arr(j_arr(chat_doc, "people"))),
+        ("agents", base_codec::json_arr(chat_agents_out)),
+        ("messages", base_codec::json_arr([])),
+        ("elsewhere", base_codec::json_arr([])),
+        ("outbox", base_codec::json_arr([])),
+        ("screens", base_codec::json_arr([])),
+        ("asks", base_codec::json_arr([])),
+        ("openers", base_codec::json_arr([])),
+        ("opened", base_codec::json_arr([])),
+        ("more", base_codec::json_bool(false)),
+        ("newer", base_codec::json_bool(false)),
+        ("offline", base_codec::json_bool(!online)),
+        ("pending", base_codec::json_bool(match resolved_session { Some(s) => s.starts_with("new:"); None => false })),
+        ("link", base_codec::json_obj([("state", base_codec::json_str(if online { "online" } else { "offline" }))])),
+      ]
+      let built = base_codec::json_obj(out)
+      sql::SqlResult::Ok(if compact { compact_chat_json(built) } else { built })
+    }
+  }
 }
 
 /// Project `chatOutline` topic (`ChatOutlineView`) for a thread from local SQLite entries.
