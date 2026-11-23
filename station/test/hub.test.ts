@@ -2893,6 +2893,27 @@ test("kept chats survive idle archiving but can be archived by hand", async () =
   await r.close();
 });
 
+test("a chat of its own restored after its agent was archived brings its agent back, and one with an agent shown leaves the rest", async () => {
+  const r = new Rig();
+  const [key, thread] = await newSession(r.hub, chat());
+  const second = openChat(r.hub, key, "alice", null);
+  archiveChat(r.hub, second.id, true);
+  archiveChat(r.hub, thread.id, true);
+  assert.ok(r.session(key).archivedAt !== null);
+  await archiveChat(r.hub, second.id, false);
+  assert.equal(r.store.getThread(second.id)!.hiddenAt, null);
+  assert.equal(r.session(key).archivedAt, null, "a chat is listed by an agent that is shown");
+
+  const [other] = await newSession(r.hub, chat());
+  addToThread(r.hub, second.id, other);
+  archive(r.hub, other, true);
+  archiveChat(r.hub, second.id, true);
+  await archiveChat(r.hub, second.id, false);
+  assert.ok(r.session(other).archivedAt !== null, "another agent is shown: this one stays archived");
+  await settle();
+  await r.close();
+});
+
 test("where only what the archive review recommended is archived on its own, an idle chat waits for its recommendation", async () => {
   const r = new Rig();
   const later = Date.now() + 3 * 86_400_000;

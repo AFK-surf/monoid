@@ -429,11 +429,16 @@ export function archiveBy(hub: Hub, key: string, archived: boolean, by: string, 
 export const archive = (hub: Hub, key: string, archived: boolean) => archiveBy(hub, key, archived, MANUAL);
 
 /// Archives a chat on the pages, or shows it again: a session's own chat goes with its session; a chat of its own goes
-/// alone, its sessions staying as they are.
+/// alone, its sessions staying as they are. Lists show a chat through a session that is shown, so one shown again with
+/// none brings its sessions back first.
 export function archiveChat(hub: Hub, thread: number, archived: boolean): void | Promise<void> {
   const chat = stillfailChat(hub, thread);
   if (chat.home !== null) return archive(hub, chat.home, archived);
-  hub.store.setThreadHidden(thread, archived, MANUAL);
+  const show = () => hub.store.setThreadHidden(thread, archived, MANUAL);
+  if (archived) return show();
+  const sessions = hub.store.threadSessions(thread).map((m) => m.session);
+  if (sessions.length === 0 || sessions.some((s) => hub.store.getSession(s)?.archivedAt == null)) return show();
+  return Promise.all(sessions.map((s) => archive(hub, s, false))).then(show);
 }
 
 /// A snapshot-bounded walk of archived workspaces; no main-thread query returns more than a page.
