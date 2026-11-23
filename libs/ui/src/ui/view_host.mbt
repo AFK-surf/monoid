@@ -240,6 +240,12 @@ let view_due_at : Ref[String] = Ref("")
 let view_blocks : ByNode[ViewBlock] = ByNode::new()
 
 ///|
+/// The node on its way as a container whose own ground is composed in the clip level beside it, under its flight's cut
+/// (Tree::lift_casts_uncut): set as that cut is pushed, taken as its own is composed (Ctx::view_blit).
+// kept across runs: put back as a run begins (view_forget)
+let lift_shadow_uncut : Ref[(@view.NodeId, Int)?] = Ref(None)
+
+///|
 /// A glyph in a node's `ViewBlock` before it is set on the pixels, with its base key and zoom so its horizontal
 /// subpixel phase (glyph_sub_at) can be updated in place without rebuilding the block.
 priv struct UnplacedGlyph {
@@ -606,6 +612,7 @@ fn view_forget() -> Unit {
   }
   let c = g()
   targets_forget()
+  lift_shadow_uncut.val = None
   // (each field of the tree's its editor no longer: tree_field_gone, as its node is let go)
   for id in tree_fields.keys().collect() {
     tree_field_gone(id)
@@ -2149,6 +2156,12 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     if !(particling.length() > 0 && particling[particling.length() - 1].id == c.id) {
       match tree.lift_cut(c.id) {
         Some((x0, y0, x1, y1)) => {
+          // (a container's cut is its own box alone, for what it holds: its own ground (its shadow and its glass's
+          // contour, drawn outside that box) kept to the clip it would be in were it not on its way, so they are there
+          // all along instead of coming at once as it lands, view_blit)
+          if nav_clip is None && tree.lift_casts_uncut(c.id) {
+            lift_shadow_uncut.val = Some((c.id, clip_top()))
+          }
           let (tl, tr, br, bl) = tree.lift_cut_corners(c.id).unwrap_or((0.0, 0.0, 0.0, 0.0))
           push_box_clip(x0, y0, dmax(0.0, x1 - x0), dmax(0.0, y1 - y0), tl, tr, br, bl)
           clipping.push(c.id)
@@ -3777,6 +3790,14 @@ fn Ctx::view_blit(
   // in: square where its corners are its own, round only at a corner it shares with that clip, that clip's curve kept
   // as its outer where it reaches in; not that clip's corners set on its own box's, which would cut its words round)
   let has_cut = made.cut.0 < made.cut.1
+  // (its own ground's clip, where it is a container on its way: the one under its flight's cut, Tree::lift_casts_uncut)
+  let k_ground = match lift_shadow_uncut.val {
+    Some((sid, lk)) if sid == id => {
+      lift_shadow_uncut.val = None
+      lk
+    }
+    _ => -1
+  }
   let k_cut = if has_cut {
     push_box_clip(x, y, made.w, made.h, 0.0, 0.0, 0.0, 0.0)
     clip_top()
@@ -3825,7 +3846,13 @@ fn Ctx::view_blit(
       s.unsafe_set(b + 33, s.unsafe_get(b + 33) + x)
       s.unsafe_set(b + 34, s.unsafe_get(b + 34) + y)
     }
-    let ck = if i >= made.cut.0 && i < made.cut.1 { k_cut } else { k }
+    let ck = if k_ground >= 0 && i < made.ground_n {
+      k_ground
+    } else if i >= made.cut.0 && i < made.cut.1 {
+      k_cut
+    } else {
+      k
+    }
     for j in 0..<4 {
       s.unsafe_set(b + 16 + j, clip_stack.unsafe_get(ck + j))
     }

@@ -1077,6 +1077,16 @@ fn Tree::flights_within_of(self : Tree, at : Int) -> NodeId? {
 }
 
 ///|
+/// Whether node `id`'s own ground (its shadow, its glass's contour: drawn outside its box) is drawn uncut by
+/// Tree::lift_cut on its way: a container's (View::shared's, View::flies_in's `container`) drawn within no node said
+/// View::flights_within, whose cut is only its own box, there to keep what it holds within it. At rest what it casts
+/// lies outside its box; cut to it on the way, it would come all at once as it lands.
+pub fn Tree::lift_casts_uncut(self : Tree, id : NodeId) -> Bool {
+  guard self.alive_id(id) && self.nodes[id.at].lift is Some(l) else { return false }
+  l.box && self.within_cut(l) is None
+}
+
+///|
 /// Where what flies on way `l` is drawn within, both its ends within a node said View::flights_within: that node where it
 /// is drawn now, as what holds it cuts it (Tree::seen_bounds), in the window (x0, y0, x1, y1); none where it is not, or
 /// that node is gone.
