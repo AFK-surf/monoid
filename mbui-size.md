@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7d4a6e7fd](https://github.com/AFK-surf/monoid/commit/7d4a6e7fd254a4a22fab46851a89cf7c110b8d3b) fix(station): sign in Google Colab profiles on the | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [0137c6212](https://github.com/AFK-surf/monoid/commit/0137c6212710357ba77f919d775790e0ac96785e) perf(station): read the sessions waiting for a per | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [e8c5ae383](https://github.com/AFK-surf/monoid/commit/e8c5ae383aeb2bea5739328cde431f1b566a997c) ci(station): run the station's tests in seven slic | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [fab977045](https://github.com/AFK-surf/monoid/commit/fab977045e7869d0f1cbfa5296a51294edbdc119) fix(ui): space a long pick's search off its first  | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [19c48cfb4](https://github.com/AFK-surf/monoid/commit/19c48cfb4574abbb4f542c5f4d8f516df90bf2b5) feat(ui): absorb control-layer behaviors into head | 2.74 | 3.68 | 14.92 | 37.1 | 56.85 | 32.5 | 65.99 | 101.24 | 119.54 |
 | [47e246545](https://github.com/AFK-surf/monoid/commit/47e2465454d6bed53eec810e2b2add228b2364fe) fix(helper): ignore typing cursor obscure in macOS | 2.74 | 3.68 | 14.92 | 37.1 | 56.85 | 32.5 | 65.99 | 101.24 | 119.54 |
 | [dd3b6ec54](https://github.com/AFK-surf/monoid/commit/dd3b6ec5435eb7dfba2807386e185eb8d8d8123c) feat(station,mbui): show each backup keeper's prog | 2.74 | 3.68 | 14.92 | 37.1 | 56.85 | 32.5 | 65.99 | 101.24 | 119.54 |
-| [65b57cfa2](https://github.com/AFK-surf/monoid/commit/65b57cfa229678239b35658828e33fcec0fd2fcf) test(pion): add L4 TS-vs-Pion deep domain behavior | 2.74 | 3.68 | 14.92 | 37.1 | 56.84 | 32.49 | 65.97 | 101.12 | 127.44 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7d4a6e7fd](https://github.com/AFK-surf/monoid/commit/7d4a6e7fd254a4a22fab46851a89cf7c110b8d3b) fix(station): sign in Google Colab profiles on the | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.26 |
 | [0137c6212](https://github.com/AFK-surf/monoid/commit/0137c6212710357ba77f919d775790e0ac96785e) perf(station): read the sessions waiting for a per | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.51 |
 | [e8c5ae383](https://github.com/AFK-surf/monoid/commit/e8c5ae383aeb2bea5739328cde431f1b566a997c) ci(station): run the station's tests in seven slic | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.3 |
 | [fab977045](https://github.com/AFK-surf/monoid/commit/fab977045e7869d0f1cbfa5296a51294edbdc119) fix(ui): space a long pick's search off its first  | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.3 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [19c48cfb4](https://github.com/AFK-surf/monoid/commit/19c48cfb4574abbb4f542c5f4d8f516df90bf2b5) feat(ui): absorb control-layer behaviors into head | 0.55 | 0.71 | 2.79 | 3.8 | 6.87 | 2.04 | 5.64 | 58.07 |
 | [47e246545](https://github.com/AFK-surf/monoid/commit/47e2465454d6bed53eec810e2b2add228b2364fe) fix(helper): ignore typing cursor obscure in macOS | 0.55 | 0.71 | 2.79 | 3.8 | 6.87 | 2.04 | 5.64 | 57.56 |
 | [dd3b6ec54](https://github.com/AFK-surf/monoid/commit/dd3b6ec5435eb7dfba2807386e185eb8d8d8123c) feat(station,mbui): show each backup keeper's prog | 0.55 | 0.71 | 2.79 | 3.8 | 6.87 | 2.04 | 5.64 | 57.74 |
-| [65b57cfa2](https://github.com/AFK-surf/monoid/commit/65b57cfa229678239b35658828e33fcec0fd2fcf) test(pion): add L4 TS-vs-Pion deep domain behavior | 0.55 | 0.71 | 2.79 | 3.8 | 6.87 | 2.04 | 5.64 | 57.87 |
