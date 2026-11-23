@@ -1092,6 +1092,7 @@ fn P53Remote::tools(self : P53Remote) -> Array[PartTool] {
             (
               "action",
               jobj_of([
+                ("type", jstr("string")),
                 ("enum", Json::array(["prepare", "start", "get", "log", "stop", "release", "list", "mirrors", "clean"].map(jstr))),
                 ("description", jstr("get, log (lines) and stop address the task of key. release, on a task some of whose results could not be saved, lets another task use its mirror: keep them with station_file first. list and mirrors need only station; clean, station and mirror.")),
               ]),
@@ -1122,7 +1123,7 @@ fn P53Remote::tools(self : P53Remote) -> Array[PartTool] {
           jobj_of([
             ("station", s(None)),
             ("key", s(None)),
-            ("direction", jobj_of([("enum", Json::array([jstr("upload"), jstr("download")]))])),
+            ("direction", jobj_of([("type", jstr("string")), ("enum", Json::array([jstr("upload"), jstr("download")]))])),
             ("path", s(None)),
             ("local", s(None)),
           ]),

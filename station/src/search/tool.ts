@@ -86,7 +86,7 @@ export function searchTools(deps: SearchDeps): Tool[] {
         type: "object",
         properties: {
           query: { type: "string", description: "The words to find (at most 200 characters)." },
-          kinds: { type: "array", items: { enum: KINDS }, description: "Only these kinds. Left out: all." },
+          kinds: { type: "array", items: { type: "string", enum: KINDS }, description: "Only these kinds. Left out: all." },
           limit: { type: "integer", description: `At most this many of each kind on each station (default ${SHOWN}, at most 50).` },
           station: { type: "string", description: "Only this station, by its name or id. Left out: every station of the workspace." },
         },

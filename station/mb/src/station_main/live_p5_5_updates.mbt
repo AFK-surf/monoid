@@ -364,6 +364,7 @@ let version_declared : String =
   #|    "type": "object",
   #|    "properties": {
   #|      "action": {
+  #|        "type": "string",
   #|        "enum": [
   #|          "list",
   #|          "update",

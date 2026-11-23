@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { test } from "node:test";
-import { CORE, HIDDEN, type Tool, weight } from "../src/tools/mcp.ts";
+import { CORE, HIDDEN, type Tool, indirectTool, weight } from "../src/tools/mcp.ts";
 import { stationTools } from "./station-tools.ts";
 
 /// The factories the list (test/station-tools.ts `stationTools`) is made of, by the names their callers call them by.
@@ -31,9 +31,11 @@ const PARTS_GIVE = 14;
 // release when the latest broke something (2026-11-18), which no tool did before; lowered back to 62,000 (2026-11-19:
 // 59,429 visible across 47 tools) after hiding superseded tools (adb_devices, phone_use, secret_reask, station_retire)
 // and trimming vault tool boilerplate while adding chat_configure and chat_list filters.
+// CORE_TOTAL raised from 14,000 to 14,100 (2026-11-23: 14,019 bytes) after adding explicit `"type": "string"` to
+// `station_task.action` and `station_file.direction` enums (+32 bytes) required by Vertex AI functionDeclaration validation.
 // TOOLS_WEIGHT_TABLE=1 prints every tool's.
 const TOTAL = 62_000;
-const CORE_TOTAL = 14_000;
+const CORE_TOTAL = 14_100;
 const HEAVIEST = 5_000;
 // One tool's input schema, as compact JSON. Not a rounding: Codex 0.169.0 strips every description from an MCP tool's
 // input schema once it is over 5,000 bytes (measured 2026-11-14 with the station's list against a fake model endpoint:
@@ -78,4 +80,54 @@ test("the tools a station declares stay under their ceilings: the whole list, th
   assert.ok(core <= CORE_TOTAL, `the core tools declare ${core} bytes, more than ${CORE_TOTAL}. ${TOLD}\n${table(tools.filter((x) => CORE.includes(x.name)))}`);
   assert.ok(weight(heaviest) <= HEAVIEST, `${heaviest.name} declares ${weight(heaviest)} bytes, more than ${HEAVIEST} for one tool. ${TOLD}`);
   assert.ok(schemaBytes(widest) <= SCHEMA, `${widest.name}'s input schema is ${schemaBytes(widest)} bytes, more than ${SCHEMA}: over 5,000 Codex gives its model the tool with no parameter descriptions at all. Shorten its parameters' descriptions, keeping there what a model needs to call it right; this ceiling is not raised.`);
+});
+
+function checkSchemaTypes(node: unknown, path: string, missing: string[]): void {
+  if (node === null || typeof node !== "object" || Array.isArray(node)) {
+    missing.push(`${path}: not a schema object`);
+    return;
+  }
+  const obj = node as Record<string, unknown>;
+  const hasType = typeof obj.type === "string" && obj.type.trim() !== "";
+  const hasCombinator = (["anyOf", "oneOf", "allOf"] as const).some((k) => Array.isArray(obj[k]) && obj[k].length > 0);
+  if (obj.enum !== undefined && !hasType) {
+    missing.push(`${path}: enum schema missing non-empty string type`);
+  } else if (!hasType && !hasCombinator) {
+    missing.push(`${path}: missing non-empty string type`);
+  }
+  if (obj.properties !== undefined && obj.properties !== null && typeof obj.properties === "object" && !Array.isArray(obj.properties)) {
+    for (const [k, v] of Object.entries(obj.properties as Record<string, unknown>)) {
+      checkSchemaTypes(v, `${path}.properties.${k}`, missing);
+    }
+  }
+  if (obj.items !== undefined) {
+    if (Array.isArray(obj.items)) {
+      for (let i = 0; i < obj.items.length; i++) checkSchemaTypes(obj.items[i], `${path}.items[${i}]`, missing);
+    } else {
+      checkSchemaTypes(obj.items, `${path}.items`, missing);
+    }
+  }
+  for (const key of ["anyOf", "oneOf", "allOf"] as const) {
+    const branch = obj[key];
+    if (Array.isArray(branch)) {
+      for (let i = 0; i < branch.length; i++) checkSchemaTypes(branch[i], `${path}.${key}[${i}]`, missing);
+    }
+  }
+  if (obj.additionalProperties !== undefined && typeof obj.additionalProperties === "object" && obj.additionalProperties !== null) {
+    checkSchemaTypes(obj.additionalProperties, `${path}.additionalProperties`, missing);
+  }
+}
+
+test("every MCP tool inputSchema node specifies a non-empty string type (Vertex AI functionDeclaration requirement)", () => {
+  const all = stationTools();
+  const tools = [...all, indirectTool(all.filter((x) => !HIDDEN.includes(x.name)))];
+  const missing: string[] = [];
+  for (const tool of tools) {
+    checkSchemaTypes(tool.inputSchema, `${tool.name}.inputSchema`, missing);
+  }
+  assert.deepEqual(
+    missing,
+    [],
+    `MCP tool schema nodes without explicit string type (rejected by Vertex AI):\n${missing.join("\n")}`,
+  );
 });

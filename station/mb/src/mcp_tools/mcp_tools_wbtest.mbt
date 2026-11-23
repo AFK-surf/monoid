@@ -97,3 +97,109 @@ test "a scale as toFixed(3) says it" {
   assert_eq(fixed_number(2.0, 3), 2.0)
   assert_eq(fixed_number(1.0005, 3), 1.0)
 }
+
+///|
+fn check_decl_schema_types(node : JV, path : String, missing : Array[String]) -> Unit {
+  match node {
+    Obj(fields) => {
+      let has_type = fields
+        .iter()
+        .any(fn(p) { p.0 == "type" && (match p.1 { Str(s) => s.length() > 0; _ => false }) })
+      let has_enum = fields.iter().any(fn(p) { p.0 == "enum" })
+      let has_combinator = fields
+        .iter()
+        .any(fn(p) {
+          (p.0 == "anyOf" || p.0 == "oneOf" || p.0 == "allOf") &&
+          (match p.1 { Arr(xs) => xs.length() > 0; _ => false })
+        })
+      if has_enum && !has_type {
+        missing.push("\{path}: enum schema missing non-empty string type")
+      } else if !has_type && !has_combinator {
+        missing.push("\{path}: missing non-empty string type")
+      }
+      for p in fields {
+        if p.0 == "properties" {
+          match p.1 {
+            Obj(props) =>
+              for kv in props {
+                check_decl_schema_types(kv.1, "\{path}.properties.\{kv.0}", missing)
+              }
+            _ => ()
+          }
+        } else if p.0 == "items" {
+          match p.1 {
+            Arr(xs) =>
+              for i, x in xs {
+                check_decl_schema_types(x, "\{path}.items[\{i}]", missing)
+              }
+            other => check_decl_schema_types(other, "\{path}.items", missing)
+          }
+        } else if p.0 == "anyOf" || p.0 == "oneOf" || p.0 == "allOf" {
+          match p.1 {
+            Arr(xs) =>
+              for i, x in xs {
+                check_decl_schema_types(x, "\{path}.\{p.0}[\{i}]", missing)
+              }
+            _ => ()
+          }
+        } else if p.0 == "additionalProperties" {
+          match p.1 {
+            Obj(_) => check_decl_schema_types(p.1, "\{path}.additionalProperties", missing)
+            _ => ()
+          }
+        }
+      }
+    }
+    _ => missing.push("\{path}: not a schema object")
+  }
+}
+
+///|
+test "every declared MCP tool inputSchema node specifies a string type" {
+  let decls : Array[(String, String)] = [
+    ("chat_post", decl_chat_post),
+    ("slack_api", decl_slack_api),
+    ("chat_state", decl_chat_state),
+    ("chat_leave", decl_chat_leave),
+    ("chat_history", decl_chat_history),
+    ("chat_list", decl_chat_list),
+    ("chat_read", decl_chat_read),
+    ("session_send", decl_session_send),
+    ("chat_create", decl_chat_create),
+    ("chat_archive", decl_chat_archive),
+    ("chat_configure", decl_chat_configure),
+    ("session_history", decl_session_history),
+    ("archive_policy", decl_archive_policy),
+    ("station_list", decl_station_list),
+    ("station_task", decl_station_task),
+    ("station_file", decl_station_file),
+    ("workspace_limit", decl_workspace_limit),
+    ("job_start", decl_job_start),
+    ("job_list", decl_job_list),
+    ("job_log", decl_job_log),
+    ("job_stop", decl_job_stop),
+    ("screen", decl_screen),
+    ("permissions", decl_permissions),
+    ("computer", decl_computer),
+    ("peer_forward", decl_peer_forward),
+    ("relays", decl_relays),
+    ("feedback_send", decl_feedback_send),
+    ("feedback_reply", decl_feedback_reply),
+    ("station_move", decl_station_move),
+    ("station_retire", decl_station_retire),
+    ("device_list", decl_device_list),
+    ("device_use", decl_device_use),
+    ("station_use", decl_station_use),
+    ("skill_read", decl_skill_read),
+    ("search", decl_search),
+  ]
+  let missing : Array[String] = []
+  for pair in decls {
+    let parsed = try_parse(pair.1).unwrap_or(jobj([]))
+    match jget(Some(parsed), "inputSchema") {
+      Some(schema) => check_decl_schema_types(schema, "\{pair.0}.inputSchema", missing)
+      None => missing.push("\{pair.0}: missing inputSchema")
+    }
+  }
+  assert_eq(missing, [])
+}

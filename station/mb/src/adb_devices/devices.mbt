@@ -408,7 +408,7 @@ pub let device_use_decl : J = tool_decl(
         (
           "properties",
           jo([
-            ("kind", jo([("enum", jsa(["idle", "fixed"]))])),
+            ("kind", jo([("type", js("string")), ("enum", jsa(["idle", "fixed"]))])),
             ("seconds", jo([("type", js("integer"))])),
           ]),
         ),

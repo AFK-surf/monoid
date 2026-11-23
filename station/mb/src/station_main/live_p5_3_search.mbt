@@ -527,7 +527,7 @@ fn P53Search::tool(self : P53Search) -> PartTool {
         "properties",
         jobj_of([
           ("query", jobj_of([("type", jstr("string")), ("description", jstr("The words to find (at most 200 characters)."))])),
-          ("kinds", jobj_of([("type", jstr("array")), ("items", jobj_of([("enum", Json::array(p53_search_kinds.map(jstr)))])), ("description", jstr("Only these kinds. Left out: all."))])),
+          ("kinds", jobj_of([("type", jstr("array")), ("items", jobj_of([("type", jstr("string")), ("enum", Json::array(p53_search_kinds.map(jstr)))])), ("description", jstr("Only these kinds. Left out: all."))])),
           ("limit", jobj_of([("type", jstr("integer")), ("description", jstr("At most this many of each kind on each station (default 5, at most 50)."))])),
           ("station", jobj_of([("type", jstr("string")), ("description", jstr("Only this station, by its name or id. Left out: every station of the workspace."))])),
         ]),
