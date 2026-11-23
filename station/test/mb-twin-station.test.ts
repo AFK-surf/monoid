@@ -14,9 +14,8 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { type AddressInfo, createServer as netServer } from "node:net";
+import type { AddressInfo } from "node:net";
 import { createServer as httpServer } from "node:http";
-import { createSocket } from "node:dgram";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -124,20 +123,41 @@ after(async () => {
   }
 });
 
-/// Looked at until `look` gives something (real processes: every 50 ms), or failing with `what` after `ms`.
-async function until<T>(what: string, look: () => T | null | undefined | false | Promise<T | null | undefined | false>, detail: () => string = () => "", ms = 30_000): Promise<T> {
+/// `work`, or failing with `what` once `ms` have passed (a real process's answer that may never come: every wait on one
+/// is bounded, so a test fails saying where instead of running into its own timeout).
+async function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what}: no answer in ${ms} ms`)), ms);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([work, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/// Looked at until `look` gives something (real processes: every 50 ms), or failing with `what` after `ms`; at once
+/// where the launcher gave up or ended (`aborted`). A look that does not come back counts against `ms` too.
+async function until<T>(what: string, look: () => T | null | undefined | false | Promise<T | null | undefined | false>, detail: () => string = () => "", ms = 30_000, aborted?: () => string): Promise<T> {
   const end = Date.now() + ms;
   let last: unknown = null;
+  const never = (why: string) => new Error(`never: ${what}${why}${last ? ` (${(last as Error).message})` : ""}; ${detail()}`);
   for (;;) {
+    const gone = aborted?.() ?? "";
+    if (gone !== "") throw never(` (${gone})`);
+    if (/giving up/.test(detail())) throw never("");
+    const left = end - Date.now();
+    if (left <= 0) throw never(` in ${ms} ms`);
     try {
-      const v = await look();
+      const v = await withTimeout(Promise.resolve().then(look), left, what);
       if (v) {
         return v as T;
       }
     } catch (e) {
       last = e;
     }
-    if (Date.now() > end || /giving up/.test(detail())) throw new Error(`never: ${what}${last ? ` (${(last as Error).message})` : ""}; ${detail()}`);
     await new Promise((r) => setTimeout(r, 50));
   }
 }
@@ -149,22 +169,6 @@ const readJson = (p: string) => {
     return null;
   }
 };
-
-async function freeTcpPort(): Promise<number> {
-  const s = netServer();
-  await new Promise<void>((r) => s.listen(0, "127.0.0.1", () => r()));
-  const port = (s.address() as AddressInfo).port;
-  await new Promise<void>((r) => s.close(() => r()));
-  return port;
-}
-
-async function freeUdpPort(): Promise<number> {
-  const socket = createSocket("udp4");
-  await new Promise<void>((r) => socket.bind(0, "127.0.0.1", () => r()));
-  const port = socket.address().port;
-  await new Promise<void>((r) => socket.close(() => r()));
-  return port;
-}
 
 /// The control plane of the test's, one for both: its HTTP (the model catalog at `/v1/models` under an ETag the test
 /// changes, every other request answered `{}`) and its presence socket, which tells each station its state and carries
@@ -263,7 +267,7 @@ done
 const script = (calls: [string, string][]) =>
   `JOB=$(/usr/bin/grep -h -o 'job_[0-9a-f]\\{8\\}' "$FAKE_OUT"/*.json 2>/dev/null | /usr/bin/head -1)\n` +
   `last() { /usr/bin/grep -o 'job_[0-9a-f]\\{8\\}' "$FAKE_OUT/$SID-$N-start.json" 2>/dev/null | /usr/bin/head -1; }\n` +
-  `call() { /usr/bin/curl -s -X POST "$URL" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" -d "$2" > "$FAKE_OUT/$SID-$N-$1.json"; }\n` +
+  `call() { /usr/bin/curl -s --max-time 20 -X POST "$URL" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" -d "$2" > "$FAKE_OUT/$SID-$N-$1.json"; }\n` +
   calls.map(([id, body]) => `call ${id} '${body.replaceAll("'", "'\\''").replaceAll("$TO", `'"$TO"'`).replaceAll("$JOB", `'"$JOB"'`).replaceAll("$LAST", `'"$(last)"'`)}'`).join("\n") + "\n";
 
 const line = (stream: MeshStream, value: unknown) => stream.write(Buffer.from(JSON.stringify(value) + "\n"));
@@ -280,23 +284,25 @@ class Station {
   readonly app: string;
   readonly data: string;
   readonly out: string;
-  readonly mcpPort: number;
-  readonly meshPort: number;
+  /// The UDP port its mesh is bound on now (the system's pick of `127.0.0.1:0`, read from its `mesh listening`).
+  meshPort = 0;
   readonly id: string;
   readonly bin: string;
-  constructor(o: { kind: "node" | "mb"; app: string; data: string; out: string; mcpPort: number; meshPort: number; id: string; bin: string }) {
+  constructor(o: { kind: "node" | "mb"; app: string; data: string; out: string; id: string; bin: string }) {
     this.kind = o.kind;
     this.app = o.app;
     this.data = o.data;
     this.out = o.out;
-    this.mcpPort = o.mcpPort;
-    this.meshPort = o.meshPort;
     this.id = o.id;
     this.bin = o.bin;
   }
 
   tail = () => this.said.slice(-6000);
   takenOver = () => [...this.said.matchAll(/(?:Node|station) (\d+) has taken over/g)].map((m) => Number(m[1]));
+  /// The port each process it ran bound its mesh on, in order.
+  meshPorts = () => [...this.said.matchAll(/mesh listening[^\n]*?sockets=[^\n]*?127\.0\.0\.1:(\d+)/g)].map((m) => Number(m[1]));
+  /// Why the launcher is no more, once it is not.
+  exited = () => (this.child && (this.child.exitCode !== null || this.child.signalCode !== null) ? `launcher exited (code=${this.child.exitCode}, signal=${this.child.signalCode})` : "");
 
   /// A member's request on the mesh: a body given as JSON, or bytes as they are.
   async ask(method: string, path: string, body?: unknown): Promise<Answer> {
@@ -308,7 +314,11 @@ class Station {
     }
   }
 
-  private async asked(method: string, path: string, body?: unknown): Promise<Answer> {
+  private asked(method: string, path: string, body?: unknown): Promise<Answer> {
+    return withTimeout(this.asking(method, path, body), 30_000, `${this.kind}: ${method} ${path}`);
+  }
+
+  private async asking(method: string, path: string, body?: unknown): Promise<Answer> {
     const stream = await this.conn.openBi();
     const bytes = Buffer.isBuffer(body);
     await line(stream, { method, path: `/admin/api${path}`, headers: { "content-type": bytes ? "application/octet-stream" : "application/json" } });
@@ -348,11 +358,18 @@ class Twins {
 
   /// Every station of the pair stopped as its launcher is (SIGTERM), what is left of each ended, the member's endpoint
   /// and the control plane closed: the next test has the machine to itself.
+  /// (each wait bounded: a stop that hangs would hide the error that brought the test here)
   async stop() {
-    for (const s of this.stations) if (s.child.exitCode === null && s.child.signalCode === null) s.child.kill("SIGTERM");
-    await Promise.all(this.stations.map((s) => s.ended));
+    const running = () => this.stations.filter((s) => s.child && s.child.exitCode === null && s.child.signalCode === null);
+    for (const s of running()) s.child.kill("SIGTERM");
+    const ended = (ms: number) => withTimeout(Promise.all(this.stations.map((s) => s.ended)), ms, "the launchers' stop").catch(() => undefined);
+    await ended(35_000);
+    if (running().length > 0) {
+      for (const s of running()) s.child.kill("SIGKILL");
+      await ended(2_000);
+    }
     for (const s of this.stations) endAll(s.data);
-    await this.client?.close().catch(() => undefined);
+    if (this.client) await withTimeout(this.client.close(), 5_000, "the member's endpoint closed").catch(() => undefined);
     this.plane?.close();
   }
 
@@ -380,8 +397,6 @@ class Twins {
     const made = spawnSync(binary!, ["id", "--data", data], { env: { PATH: "/usr/bin:/bin", HOME: data }, encoding: "utf8" });
     const id = made.stdout.trim();
     assert.match(id, /^[0-9a-f]{64}$/, made.stderr);
-    const meshPort = await freeUdpPort();
-    const mcpPort = await freeTcpPort();
     writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({
       origin: this.plane.origin, station: id, workspace: "w1", workspace_name: "团队", name: "mac", relay_url: "", relay_urls: [], grant_keys: { keys: [this.grant.jwk] }, peers: [], revocations: [],
     }));
@@ -389,11 +404,10 @@ class Twins {
     writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
     writeFileSync(join(data, "config.json"), JSON.stringify({
       language: "en",
-      http: { port: mcpPort },
       profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }],
       maxNudges: 1,
     }));
-    const s = new Station({ kind, app, data, out, mcpPort, meshPort, id, bin });
+    const s = new Station({ kind, app, data, out, id, bin });
     await this.launch(s);
     return s;
   }
@@ -402,7 +416,7 @@ class Twins {
   async launch(s: Station) {
     const env: Record<string, string> = {
       PATH: s.bin, HOME: s.data, TMPDIR: tmpdir(), FAKE_OUT: s.out, FAKE_SCRIPTS: this.scripts,
-      STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${s.meshPort}`,
+      STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_MESH_BIND_ADDR: "127.0.0.1:0",
       STILLFAIL_AGENT_NICE: "0", STILLFAIL_HELD_EVERY_MS: "300",
       // (Node's, for main.js: its addon, the program and the runner as the release would have them beside it)
       STILLFAIL_NODE: process.execPath, STILLFAIL_MESH_NATIVE: meshNative,
@@ -414,20 +428,42 @@ class Twins {
     s.child.stdout!.on("data", (d) => (s.said += d));
     s.child.stderr!.on("data", (d) => (s.said += d));
     s.ended = new Promise((resolve) => s.child.on("exit", (code) => resolve(code)));
-    await until(`${s.kind}: taken over`, () => s.takenOver()[0], s.tail, 60_000);
+    await until(`${s.kind}: taken over`, () => s.takenOver()[0], s.tail, 60_000, s.exited);
+    // (its mesh bound where the system put it: dialled only once it listens there)
+    s.meshPort = await until(`${s.kind}: mesh listening`, () => s.meshPorts()[0], s.tail, 30_000, s.exited);
     await this.connect(s);
   }
 
+  /// A member let in on the mesh, each try's handshake given up after 5 s (iroh's own wait is its idle timeout's).
   async connect(s: Station) {
     const now = Math.floor(Date.now() / 1000);
     const credential = this.grant.credential({ typ: "stillfail-member+jwt" }, { iss: "stillfail-cloud", sub: "u1", email: "ada@x.com", name: "Ada", ws: "w1", role: "owner", device: this.client.id(), sid: "s1", iat: now, exp: now + 3600 });
+    const old = s.conn as Connection | undefined;
+    if (old) {
+      try { old.close?.(0, "reconnecting"); } catch {}
+    }
     s.conn = await until(`${s.kind}: connected on the mesh`, async () => {
-      const conn = await this.client.connect({ id: s.id, ips: [`127.0.0.1:${s.meshPort}`] }, Buffer.from("stillfail/admin/1"));
-      const first = await conn.openBi();
-      await line(first, { credential, protocol: 2 });
-      const hello = await new Reader(first).line();
-      return hello.ok === true ? conn : null;
-    }, s.tail);
+      let giveUp!: () => void;
+      const givenUp = new Promise<void>((r) => (giveUp = r));
+      const timer = setTimeout(() => giveUp(), 5_000);
+      timer.unref?.();
+      let conn: Connection | undefined;
+      try {
+        conn = await withTimeout(this.client.connect({ id: s.id, ips: [`127.0.0.1:${s.meshPort}`] }, Buffer.from("stillfail/admin/1"), undefined, givenUp), 5_000, `${s.kind}: connect`);
+        const first = await withTimeout(conn.openBi(), 5_000, `${s.kind}: the hello's stream`);
+        await withTimeout(line(first, { credential, protocol: 2 }), 5_000, `${s.kind}: the hello sent`);
+        const hello = await withTimeout(new Reader(first).line(), 5_000, `${s.kind}: the hello's answer`);
+        if (hello?.ok === true) return conn;
+        try { conn.close?.(0, "refused"); } catch {}
+        return null;
+      } catch (e) {
+        try { conn?.close?.(0, "failed"); } catch {}
+        throw e;
+      } finally {
+        clearTimeout(timer);
+        giveUp();
+      }
+    }, s.tail, 30_000, s.exited);
   }
 
   /// The same request of both, each answer made comparable.
@@ -480,6 +516,20 @@ async function check(name: string, f: () => void | Promise<void>) {
   }
   ownResults.getStore()!.push({ name, ok: why === "", why });
 }
+/// Where a test is, for an error that would otherwise say only what it waited on.
+type Phase = { at: string };
+/// A test's run, its error told with where it was, how many checks it got through and, where it says none, the
+/// stations' last words.
+async function phased(phase: Phase, results: Results, twins: Twins, run: () => Promise<void>) {
+  try {
+    await run();
+  } catch (e) {
+    const err = e as Error;
+    const said = /\bsaid:|INFO|WARN|ERROR/.test(err.message ?? "") ? "" : twins.stations.map((s) => `\n--- ${s.kind} ---\n${s.said.slice(-1500)}`).join("");
+    throw new Error(`[phase=${phase.at}, checks=${results.length}] ${err.message}${said}`, { cause: err });
+  }
+}
+
 function judged(results: Results) {
   const wrong: string[] = [];
   for (const r of results) {
@@ -613,7 +663,8 @@ test("the MoonBit station answers as the TypeScript one, side by side, and a han
   const twins = new Twins();
   const results = sideBySideResults;
   try {
-    await ownResults.run(results, () => sideBySide(twins));
+    const phase: Phase = { at: "start" };
+    await ownResults.run(results, () => phased(phase, results, twins, () => sideBySide(twins, phase)));
   } finally {
     if (process.env.TWIN_DUMP) {
       writeFileSync(join(process.env.TWIN_DUMP, "results.json"), JSON.stringify(results, null, 1));
@@ -625,7 +676,8 @@ test("the MoonBit station answers as the TypeScript one, side by side, and a han
   assert.deepEqual(wrong, [], wrong.join("\n\n"));
 });
 
-async function sideBySide(twins: Twins) {
+async function sideBySide(twins: Twins, phase: Phase) {
+  phase.at = "start";
   await twins.start();
   const [node, mb] = twins.stations as [Station, Station];
   const roots = [node.data, mb.data, node.app, mb.app, node.out, mb.out, twins.scripts, node.id, mb.id];
@@ -639,12 +691,14 @@ async function sideBySide(twins: Twins) {
   // account's own are compared there, beside what is still each one's first look: the copies to take back)
   const overviewed = [...machine.map((r) => new RegExp(r.source.replace("^\\.", "^(?:\\.overview)?\\."))), /^(?:\.overview)?\.(automaticDecisions|machine|machineLogins|rigs|updates|mesh)\b/, /^(?:\.overview)?\.copies\.(empty|restorable)\b/, /^(?:\.overview)?\.profiles\[\d+\]\.check\b/];
 
+  phase.at = "initial GETs";
   // ── the admin API's reads of a station new to it ──
   for (const path of ["/sessions", "/threads", "/workspaces", "/jobs", "/drive", "/presets", "/stars", "/usage", "/profiles/pace"]) {
     const [a, b] = await twins.both("GET", path);
     await same(`GET ${path}`, a, b, roots, machine);
   }
 
+  phase.at = "settings";
   // ── its settings: written, refused, read back ──
   for (const [method, path, body] of [
     ["PUT", "/archiving", { days: 2, slackDays: 5 }],
@@ -657,6 +711,7 @@ async function sideBySide(twins: Twins) {
     const [a, b] = await twins.both(method, path, body);
     await same(`${method} ${path} ${JSON.stringify(body)}`, a, b, roots, machine);
   }
+  phase.at = "profiles";
   // an account of the station's own (its variables, which nothing checks): made, renamed, read, taken away
   {
     const [a, b] = await twins.both("POST", "/profiles", { runtime: "claude", name: "Twin", access: { kind: "env", env: { TWIN: "1" } } });
@@ -669,6 +724,7 @@ async function sideBySide(twins: Twins) {
       }
     }
   }
+  phase.at = "presets";
   // a preset: made, changed, taken away
   {
     const [a, b] = await twins.both("POST", "/presets", { name: "p1", runtime: "claude", profile: "cc" });
@@ -684,6 +740,7 @@ async function sideBySide(twins: Twins) {
     }
   }
 
+  phase.at = "session create";
   // ── a chat: a session made, its agent's turns through /mcp ──
   const made: Made[] = [];
   for (const s of twins.stations) {
@@ -695,6 +752,7 @@ async function sideBySide(twins: Twins) {
     const [a, b] = await twins.both("GET", "/sessions");
     await same("GET /sessions with one", a, b, roots, machine);
   }
+  phase.at = "turn:tools";
   // the tools an agent is given, each as it declares itself
   const [listed] = [await turn(twins, made, "tools", [["list", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })], ["post", mcp(2, "chat_post", { to: "$TO", text: "listed", kind: "all_done", done: "listed the tools" })]])];
   await check("tools/list: the same tools", () => {
@@ -717,6 +775,7 @@ async function sideBySide(twins: Twins) {
     assert.deepEqual(meta(listed[1].list), meta(listed[0].list));
   });
 
+  phase.at = "turn:chat";
   // a turn that names the chat, says how it goes, asks with a card and reads the chat back
   const chat = await turn(twins, made, "chat", [
     ["title", mcp(1, "chat_post", { to: "$TO", text: "working on it", title: "Twin chat" })],
@@ -731,6 +790,7 @@ async function sideBySide(twins: Twins) {
       assert.deepEqual(d, [], d.join("\n"));
     });
   }
+  phase.at = "turn:answered";
   // the person answers; the agent withdraws nothing, reads, and ends done
   const answered = await turn(twins, made, "answered", [
     ["read", mcp(1, "chat_read", { chat: "$TO" })],
@@ -747,6 +807,7 @@ async function sideBySide(twins: Twins) {
     await same("GET /threads after the chat", a, b, roots, machine);
   }
 
+  phase.at = "turn:jobs";
   // ── a background job: started, listed, its log, stopped ──
   const jobs = await turn(twins, made, "jobs", [
     // (it ends once the test says so: its end comes after the turn that started it, on both)
@@ -766,6 +827,7 @@ async function sideBySide(twins: Twins) {
       try { return (db.prepare("SELECT state FROM jobs").get() as { state: string } | undefined)?.state === "exited"; } finally { db.close(); }
     }, s.tail);
   }
+  phase.at = "turn:jobs-ended";
   // (its end told to the session: a turn of its own, which has to begin and end too; the job's row says it exited
   // before the session is told)
   for (const [i, s] of twins.stations.entries()) await until(`${s.kind}: settled after the job's end`, () => turnsOf(s, made[i]!.key) > turnsBefore[i]! && settled(s, made[i]!.key), s.tail);
@@ -787,6 +849,7 @@ async function sideBySide(twins: Twins) {
     });
   }
 
+  phase.at = "turn:jobs-stop";
   // a job that runs until it is stopped
   const stopped = await turn(twins, made, "jobs-stop", [
     ["start", mcp(1, "job_start", { name: "lasting", command: "exec sleep 600" })],
@@ -800,6 +863,7 @@ async function sideBySide(twins: Twins) {
     });
   }
 
+  phase.at = "turn:vault";
   // ── the vault, never turned on here: what its tools answer ──
   const vault = await turn(twins, made, "vault", [
     ["list", mcp(1, "secret_list", {})],
@@ -813,12 +877,14 @@ async function sideBySide(twins: Twins) {
     });
   }
 
+  phase.at = "uploads";
   // ── a file uploaded for a message, read back ──
   {
     const [a, b] = await twins.both("POST", "/uploads?name=twin.txt", Buffer.from("a twin's file\n"));
     await same("POST /uploads", a, b, roots, machine);
   }
 
+  phase.at = "archive";
   // ── the chat archived through the admin API, and its row read back ──
   {
     const [a, b] = await twins.both("POST", (_, i) => `/sessions/${encodeURIComponent(made[i]!.key)}/archive`, {});
@@ -827,6 +893,7 @@ async function sideBySide(twins: Twins) {
     await same("GET /sessions archived", x, y, roots, machine);
   }
 
+  phase.at = "db tables";
   // ── what each wrote of it all ──
   for (const table of ["sessions", "threads", "thread_sessions", "entries", "turns", "jobs", "closed_cards", "card_choices", "archive_policy", "deliveries"]) {
     await check(`stillfail.db ${table}`, () => {
@@ -839,6 +906,7 @@ async function sideBySide(twins: Twins) {
     });
   }
 
+  phase.at = "presence models";
   // ── what the plane's presence socket tells each: the model catalog changed (models/module.ts `plane.told("models")`)
   {
     for (const s of [node, mb]) await until(`${s.kind}: on the presence socket`, () => twins.plane.connected(s.id), s.tail);
@@ -853,6 +921,7 @@ async function sideBySide(twins: Twins) {
     await check("presence models: both catalogs alike", () => assert.deepEqual(readJson(join(mb.data, "model-catalog.json")), readJson(join(node.data, "model-catalog.json"))));
   }
 
+  phase.at = "config.json events";
   // ── config.json edited by another program while an event stream is open: the overview told again by both ──
   {
     const streams = await Promise.all([node, mb].map((s) => events(s)));
@@ -868,6 +937,7 @@ async function sideBySide(twins: Twins) {
     }
   }
 
+  phase.at = "overview";
   // ── the overview, once both have been up a while (what each part puts in it, its first look done): a field each ──
   {
     // (each one's first look done: the machine's sign-ins read, the copies' export caught up with the chats; on a
@@ -888,11 +958,14 @@ async function sideBySide(twins: Twins) {
 
 /// An event stream of a member's on the mesh (GET /events): what it said so far, as it comes.
 async function events(s: Station, since?: string) {
-  const stream = await s.conn.openBi();
-  await line(stream, { method: "GET", path: `/admin/api/events${since === undefined ? "" : `?since=${encodeURIComponent(since)}`}`, headers: {} });
-  await stream.finish();
-  const reader = new Reader(stream);
-  const head = await reader.line();
+  const { stream, reader, head } = await withTimeout((async () => {
+    const stream = await s.conn.openBi();
+    await line(stream, { method: "GET", path: `/admin/api/events${since === undefined ? "" : `?since=${encodeURIComponent(since)}`}`, headers: {} });
+    await stream.finish();
+    const reader = new Reader(stream);
+    const head = await reader.line();
+    return { stream, reader, head };
+  })(), 15_000, `${s.kind}: the event stream's head`);
   const heard: string[] = [reader.carry.toString()];
   let open = true;
   void (async () => {
@@ -919,7 +992,8 @@ test("a handover chain by the launcher: Node → MoonBit → MoonBit → Node, a
   const twins = new Twins();
   const results: Results = [];
   try {
-    await ownResults.run(results, () => chain(twins));
+    const phase: Phase = { at: "chain:start" };
+    await ownResults.run(results, () => phased(phase, results, twins, () => chain(twins, phase)));
   } finally {
     if (process.env.TWIN_DUMP) {
       writeFileSync(join(process.env.TWIN_DUMP, "chain.json"), JSON.stringify(results, null, 1));
@@ -931,7 +1005,8 @@ test("a handover chain by the launcher: Node → MoonBit → MoonBit → Node, a
   assert.deepEqual(wrong, [], wrong.join("\n\n"));
 });
 
-async function chain(twins: Twins) {
+async function chain(twins: Twins, phase: Phase) {
+  phase.at = "chain:start";
   await twins.start(["node"]);
   const s = twins.stations[0]!;
   const roots = [s.data, s.app, s.out, twins.scripts, s.id];
@@ -970,11 +1045,16 @@ async function chain(twins: Twins) {
   for (const [i, hop] of hops.entries()) {
     const before = s.takenOver().at(-1)!;
     const seen = s.takenOver().length;
+    const seenMesh = s.meshPorts().length;
     const lastId = stream.ids().at(-1)!;
     Twins.layOut(s.app, hop.to);
     s.child.kill("SIGUSR2");
-    const next = await until(`${hop.name}: the next process took over`, () => s.takenOver()[seen], s.tail, 60_000);
-    await until(`${hop.name}: the process before gone`, () => !alive(before), s.tail);
+    phase.at = `chain:${hop.name}:handover`;
+    const next = await until(`${hop.name}: the next process took over`, () => s.takenOver()[seen], s.tail, 60_000, s.exited);
+    await until(`${hop.name}: the process before gone`, () => !alive(before), s.tail, 30_000, s.exited);
+    // (no front here: each process binds a mesh of its own, on a port of the system's)
+    phase.at = `chain:${hop.name}:connect`;
+    s.meshPort = await until(`${hop.name}: mesh listening`, () => s.meshPorts()[seenMesh], s.tail, 30_000, s.exited);
     await check(`${hop.name}: every part's memory carried over and taken up (live.plans, live.tails, vault)`, () => {
       const failed = s.said.split("\n").filter((l) => /memory is not carried over|carried over is not taken up/.test(l));
       assert.deepEqual(failed, [], failed.join("\n"));
@@ -985,6 +1065,7 @@ async function chain(twins: Twins) {
     });
     await twins.connect(s);
     // the event stream taken up where it was: what came after the last id it heard, no `missed`
+    phase.at = `chain:${hop.name}:events`;
     stream = await events(s, lastId);
     await until(`${hop.name}: the event stream open again`, () => stream.text().length > 0 || !stream.open(), () => stream.text().slice(0, 400));
     await check(`${hop.name}: the event stream resumed, nothing missed`, async () => {
@@ -993,6 +1074,7 @@ async function chain(twins: Twins) {
       assert.ok(!stream.names().includes("missed"), stream.text().slice(0, 600));
     });
     // the session's next turn, under the next process
+    phase.at = `chain:${hop.name}:turn`;
     await check(`${hop.name}: the session's next turn`, async () => {
       const said = await turn(twins, [made], `chain-${i}`, [
         ["list", mcp(1, "job_list", {})],
@@ -1026,6 +1108,7 @@ async function chain(twins: Twins) {
     }
   });
   // a stop: the launcher, its station and the job's runner end with it; nothing of the station left
+  phase.at = "chain:stop";
   s.child.kill("SIGTERM");
   await check("the chain: a stop ends with code 0", async () => assert.equal(await s.ended, 0, s.tail()));
 }
