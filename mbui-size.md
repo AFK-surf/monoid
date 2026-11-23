@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [42840c9fd](https://github.com/AFK-surf/monoid/commit/42840c9fd2e9ea8baca1ce606efe1540a3720397) refactor(ui): migrate remaining controls widgets t | 2.74 | 3.68 | 14.93 | 37.12 | 56.89 | 32.51 | 66.02 | 101.02 | 127.06 |
 | [fe7620826](https://github.com/AFK-surf/monoid/commit/fe76208265984fa7fdaf635ef0e6b653bf48be2d) fix(mbui,i18n): pass preferred device language to  | 2.74 | 3.68 | 14.93 | 37.1 | 56.86 | 32.5 | 65.99 | 101.02 | 123.61 |
 | [1c6f7ba9e](https://github.com/AFK-surf/monoid/commit/1c6f7ba9e306cce12b17a9961a9405bed7775e31) fix(mbui): show overflowed iOS Duo tabs in a nativ | 2.74 | 3.68 | 14.93 | 37.1 | 56.86 | 32.5 | 65.99 | 100.8 | 114.91 |
 | [a7554d680](https://github.com/AFK-surf/monoid/commit/a7554d6800128293eae5b055843e068716aa51cf) docs(releases): 0.1.11070 stable notes (#8347) | 2.74 | 3.68 | 14.93 | 37.1 | 56.86 | 32.5 | 65.99 | 100.8 | 114.91 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1273b1fd4](https://github.com/AFK-surf/monoid/commit/1273b1fd443398b42169f28c2231cf258111722c) fix(ui): place popovers clear of the window's own  | 2.73 | 3.67 | 14.89 | 37.06 | 56.73 | 32.46 | 65.91 | 100.58 | 113.28 |
 | [9ce847dfe](https://github.com/AFK-surf/monoid/commit/9ce847dfebf3c9ceee104640eda346dce9efd4bf) feat(client-core): wire views projections into Cli | 2.73 | 3.67 | 14.89 | 37.06 | 56.73 | 32.46 | 65.91 | 100.42 | 124.6 |
 | [34df40aaa](https://github.com/AFK-surf/monoid/commit/34df40aaa4d4948a5be5ce4e194ad830405883bc) feat(station): a switch on Antigravity profiles fo | 2.73 | 3.67 | 14.89 | 37.06 | 56.73 | 32.45 | 65.89 | 100.52 | 128.2 |
-| [ac5672f84](https://github.com/AFK-surf/monoid/commit/ac5672f843714a2096df49c0980cf525fd100980) feat(station): add Google Vertex AI account for An | 2.73 | 3.67 | 14.88 | 37.06 | 56.72 | 32.45 | 65.87 | 100.42 | 127.1 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [42840c9fd](https://github.com/AFK-surf/monoid/commit/42840c9fd2e9ea8baca1ce606efe1540a3720397) refactor(ui): migrate remaining controls widgets t | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 57.93 |
 | [fe7620826](https://github.com/AFK-surf/monoid/commit/fe76208265984fa7fdaf635ef0e6b653bf48be2d) fix(mbui,i18n): pass preferred device language to  | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 58.18 |
 | [1c6f7ba9e](https://github.com/AFK-surf/monoid/commit/1c6f7ba9e306cce12b17a9961a9405bed7775e31) fix(mbui): show overflowed iOS Duo tabs in a nativ | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 58.25 |
 | [a7554d680](https://github.com/AFK-surf/monoid/commit/a7554d6800128293eae5b055843e068716aa51cf) docs(releases): 0.1.11070 stable notes (#8347) | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 58.23 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1273b1fd4](https://github.com/AFK-surf/monoid/commit/1273b1fd443398b42169f28c2231cf258111722c) fix(ui): place popovers clear of the window's own  | 0.49 | 0.64 | 2.45 | 3.51 | 5.81 | 1.79 | 4.83 | 55.28 |
 | [9ce847dfe](https://github.com/AFK-surf/monoid/commit/9ce847dfebf3c9ceee104640eda346dce9efd4bf) feat(client-core): wire views projections into Cli | 0.49 | 0.64 | 2.45 | 3.51 | 5.81 | 1.79 | 4.83 | 55.28 |
 | [34df40aaa](https://github.com/AFK-surf/monoid/commit/34df40aaa4d4948a5be5ce4e194ad830405883bc) feat(station): a switch on Antigravity profiles fo | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.26 |
-| [ac5672f84](https://github.com/AFK-surf/monoid/commit/ac5672f843714a2096df49c0980cf525fd100980) feat(station): add Google Vertex AI account for An | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.48 |
