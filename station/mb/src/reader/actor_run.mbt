@@ -2500,12 +2500,23 @@ async fn Actors::on_event(self : Actors, a : Actor, generation : Int, event : Js
       let why = str_of(event.value("why")).unwrap_or("")
       ignore(
         self.enqueue(a, async fn() {
-          if !self.is_current(a, generation) || a.tools_lost is Some(_) {
+          if !self.is_current(a, generation) {
+            return
+          }
+          // (lost again after it reached them since: this loss is the one its turn's end goes by; lost again with
+          // nothing reached between, said once)
+          let now = self.tools_heard(a)
+          let again = match (a.tools_lost, a.tools_lost_heard, now) {
+            (None, _, _) => true
+            (Some(_), Some(before), Some(n)) => n > before
+            _ => false
+          }
+          if !again {
             return
           }
           self.log(a, "warn", "the agent cannot reach the station's tools", fields={ "why": jstr(why) })
           a.tools_lost = Some(why)
-          a.tools_lost_heard = self.tools_heard(a)
+          a.tools_lost_heard = now
         }),
       )
     }

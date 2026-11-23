@@ -185,6 +185,8 @@ export function openAgentsDoor(
   // the agent's next call on it as ECONNRESET, read as the station's tools lost (mm2, 2026-11-23). Kept past a long
   // thought; `close` ends the idle ones at once.
   server.keepAliveTimeout = 65_000;
+  // (a kept connection's next request is timed by headersTimeout, which must outlast it)
+  server.headersTimeout = 70_000;
   // An upload to another station's service takes as long as it takes.
   server.requestTimeout = 0;
   // Another station's service's WebSocket, or a part's (the station's browser); nothing else upgrades.

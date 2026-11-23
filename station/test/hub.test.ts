@@ -2238,6 +2238,26 @@ test("a process whose call failed as unreachable but reached the station's tools
   await r.close();
 });
 
+test("a process that reached the station's tools after one failed call, then lost them for good, is ended", async () => {
+  const heard = new Map<string, number>();
+  const r = new Rig({ toolsHeard: heard });
+  await r.accept(message());
+  await settle();
+  const first = r.claude.last();
+  const key = first.options.route;
+  heard.set(key, 3);
+  first.events({ type: "toolsLost", why: "ECONNRESET: The socket connection was closed unexpectedly" });
+  await settle();
+  heard.set(key, 4);
+  first.events({ type: "toolsLost", why: "ECONNREFUSED: Unable to connect" });
+  await settle();
+  first.complete();
+  await settle();
+  assert.ok(first.disposed, "the last loss, with nothing reached after it, ends the process");
+  assert.notEqual(r.claude.last(), first);
+  await r.close();
+});
+
 test("a process whose call failed as unreachable and reached nothing after it is ended, the count read", async () => {
   const heard = new Map<string, number>();
   const r = new Rig({ toolsHeard: heard });
