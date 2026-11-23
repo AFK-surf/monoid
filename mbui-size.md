@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [576b3c3bf](https://github.com/AFK-surf/monoid/commit/576b3c3bfa187f50f42b5d062bfce9f291aba37b) feat(pion-core): W28a merged stations roster, lock | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.58 | 121.18 |
 | [2074adb56](https://github.com/AFK-surf/monoid/commit/2074adb56bb048760d3da413f0ef9d71302692b9) fix(station): check borrowed API provider profiles | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.58 | 121.18 |
 | [452a24829](https://github.com/AFK-surf/monoid/commit/452a248291c8ee8922510e3c11f2ed41e62d3fc4) feat(pion-core): W24-v6 1:1 views parity, chat-sha | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.58 | 121.18 |
 | [cfeddd40f](https://github.com/AFK-surf/monoid/commit/cfeddd40ffa87c2fe84cd131f4e28d54ddc4449b) feat(pion-client-core): wire mesh transport, lock/ | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.58 | 121.18 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9fe8e5978](https://github.com/AFK-surf/monoid/commit/9fe8e597874d74064c2c723ba4891a5b32af080e) refactor(mbui): zero out remaining old-list, old-s | 2.74 | 3.68 | 14.92 | 37.1 | 56.84 | 32.49 | 65.97 | 100.98 | 127.63 |
 | [4bf06aed2](https://github.com/AFK-surf/monoid/commit/4bf06aed222f21fa5c4166e34f07676621346eb5) feat(ui): add continuous glass frost control and i | 2.74 | 3.68 | 14.92 | 37.1 | 56.84 | 32.49 | 65.97 | 100.98 | 127.63 |
 | [6f3b36a66](https://github.com/AFK-surf/monoid/commit/6f3b36a661c600080e492e49fc49cfe981e16b73) test(pion): add L3 TS-vs-Pion differential parity  | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 101.07 | 132.14 |
-| [03be8a1bb](https://github.com/AFK-surf/monoid/commit/03be8a1bb0b100130890aed6b3a8436b69d3b95a) fix(ui): count Windows dropped frames from DWM syn | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 101.07 | 132.14 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [576b3c3bf](https://github.com/AFK-surf/monoid/commit/576b3c3bfa187f50f42b5d062bfce9f291aba37b) feat(pion-core): W28a merged stations roster, lock | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.25 |
 | [2074adb56](https://github.com/AFK-surf/monoid/commit/2074adb56bb048760d3da413f0ef9d71302692b9) fix(station): check borrowed API provider profiles | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.18 |
 | [452a24829](https://github.com/AFK-surf/monoid/commit/452a248291c8ee8922510e3c11f2ed41e62d3fc4) feat(pion-core): W24-v6 1:1 views parity, chat-sha | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.12 |
 | [cfeddd40f](https://github.com/AFK-surf/monoid/commit/cfeddd40ffa87c2fe84cd131f4e28d54ddc4449b) feat(pion-client-core): wire mesh transport, lock/ | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.39 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9fe8e5978](https://github.com/AFK-surf/monoid/commit/9fe8e597874d74064c2c723ba4891a5b32af080e) refactor(mbui): zero out remaining old-list, old-s | 0.55 | 0.71 | 2.79 | 3.8 | 6.87 | 2.04 | 5.64 | 57.87 |
 | [4bf06aed2](https://github.com/AFK-surf/monoid/commit/4bf06aed222f21fa5c4166e34f07676621346eb5) feat(ui): add continuous glass frost control and i | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.87 | 55.81 |
 | [6f3b36a66](https://github.com/AFK-surf/monoid/commit/6f3b36a661c600080e492e49fc49cfe981e16b73) test(pion): add L3 TS-vs-Pion differential parity  | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.87 | 55.74 |
-| [03be8a1bb](https://github.com/AFK-surf/monoid/commit/03be8a1bb0b100130890aed6b3a8436b69d3b95a) fix(ui): count Windows dropped frames from DWM syn | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.87 | 56.02 |
