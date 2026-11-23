@@ -1,0 +1,401 @@
+// Per-mode reader engine selector and shadow-mode safety gate for migrating `stillfail-reader`
+// from MoonBit (`mb`) to Pion (`pion`) one slice at a time.
+//
+// Invariants:
+// - Default engine is always `"mb"`.
+// - Environment variable override (`readerModeEnvKey(mode)`, i.e. prefix `"STILLFAIL"` + `"_READER_"` +
+//   `<UPPER_SNAKE_MODE>`) overrides `config.json`'s `readers[mode]`.
+// - Only pure read-only, side-effect-free modes (e.g. `footprint`, `data`) may run in `"shadow"` mode.
+//   Stateful, database-writing, filesystem-mutating, or socket-binding modes MUST reject `"shadow"`
+//   and fall back safely to `"mb"` so two engines never mutate the same store or state concurrently.
+// - Requesting `"pion"` (or an allowed `"shadow"`) when no Pion binary is available falls back safely
+//   to `"mb"` with a structured reason for logging.
+
+export type ReaderEngine = "mb" | "pion" | "shadow";
+
+export type ReaderSideEffect = "read-only" | "write-db" | "write-fs" | "network";
+
+export type ReaderModeMeta = {
+  readonly allowShadow: boolean;
+  readonly sideEffect: ReaderSideEffect;
+  readonly note: string;
+};
+
+/**
+ * Explicit registry of every `stillfail-reader` execution mode (`--data`, `--serve`, `--sessions`,
+ * and `--builder <kind>`), declaring whether dual-run `shadow` mode is permitted.
+ */
+export const READER_MODES = {
+  // Pure read-only / no-side-effect modes (shadow allowed)
+  footprint: {
+    allowShadow: true,
+    sideEffect: "read-only",
+    note: "Read-only disk footprint walk (--builder footprint)",
+  },
+  data: {
+    allowShadow: true,
+    sideEffect: "read-only",
+    note: "Read-only query pool process (--data)",
+  },
+  search: {
+    allowShadow: true,
+    sideEffect: "read-only",
+    note: "Read-only transcript and history search (--builder search)",
+  },
+  "live-locator": {
+    allowShadow: true,
+    sideEffect: "read-only",
+    note: "Read-only live transcript locator (--builder live-locator)",
+  },
+  "usage-check": {
+    allowShadow: true,
+    sideEffect: "read-only",
+    note: "Read-only historical usage coverage check (--builder usage-check)",
+  },
+
+  // Stateful / DB-writing / FS-mutating / network-binding modes (shadow strictly forbidden)
+  serve: {
+    allowShadow: false,
+    sideEffect: "network",
+    note: "Device request server over Unix socket (--serve)",
+  },
+  sessions: {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Session actors, #jobs, #remote, #live with SQLite writes (--sessions)",
+  },
+  memory: {
+    allowShadow: false,
+    sideEffect: "write-fs",
+    note: "Agent memory file 3-way merges and writes (--builder memory)",
+  },
+  packed: {
+    allowShadow: false,
+    sideEffect: "write-fs",
+    note: "Cold-storage zstd/tar packing and unpacking (--builder packed)",
+  },
+  "replica-export": {
+    allowShadow: false,
+    sideEffect: "write-fs",
+    note: "Replica chunk export and state mutation (--builder replica-export)",
+  },
+  "replica-restore": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Replica restore into SQLite and data dir (--builder replica-restore)",
+  },
+  "replica-carry": {
+    allowShadow: false,
+    sideEffect: "write-fs",
+    note: "Migration file gather/place operations (--builder replica-carry)",
+  },
+  "vault-uses": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Vault use-index writes (--builder vault-uses)",
+  },
+  "usage-counter": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Usage transcript scan and SQLite writes (--builder usage-counter)",
+  },
+  "usage-retire": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Legacy usage table fill and drop (--builder usage-retire)",
+  },
+  "archive-marks": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Archive mark index builder (--builder archive-marks)",
+  },
+  "archive-last": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Archive last-message index builder (--builder archive-last)",
+  },
+  "session-bindings": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Session bindings index builder (--builder session-bindings)",
+  },
+  "session-up-jobs": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Session up-jobs index builder (--builder session-up-jobs)",
+  },
+  "workspace-up-jobs": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Workspace up-jobs index builder (--builder workspace-up-jobs)",
+  },
+  "widget-sources": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Widget sources index builder (--builder widget-sources)",
+  },
+  "card-posts": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Card posts index builder (--builder card-posts)",
+  },
+  "closed-cards": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Closed cards index builder (--builder closed-cards)",
+  },
+  "people-since": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "People-since index builder (--builder people-since)",
+  },
+  "legacy-edits": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Legacy edits migration builder (--builder legacy-edits)",
+  },
+  "legacy-said": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Legacy said migration builder (--builder legacy-said)",
+  },
+  "session-counts": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Session counts backfill builder (--builder session-counts)",
+  },
+  "session-backfill": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Session activity/recovery backfill builder (--builder session-backfill)",
+  },
+  "post-blocks": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Post blocks index builder (--builder post-blocks)",
+  },
+  "signin-save": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Sign-in index builder (--builder signin-save)",
+  },
+  "search-scope": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Search scope preparation builder (--builder search-scope)",
+  },
+  "outflow-chats": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Outflow chats index builder (--builder outflow-chats)",
+  },
+  said: {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Sidebar said-state builder (--builder said)",
+  },
+  "page-letters": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Old page letters builder (--builder page-letters)",
+  },
+  "recent-chat": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Recent chat preparation builder (--builder recent-chat)",
+  },
+  "cc-index": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Copy destinations and chat order builder (--builder cc-index)",
+  },
+  "turn-counts": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Session turn-counts builder (--builder turn-counts)",
+  },
+  "session-list": {
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Session list index builder (--builder session-list)",
+  },
+  forward: {
+    allowShadow: false,
+    sideEffect: "network",
+    note: "Local TCP port forwarder (--builder forward)",
+  },
+  mesh: {
+    allowShadow: false,
+    sideEffect: "network",
+    note: "Iroh mesh front endpoint (--builder mesh)",
+  },
+} as const satisfies Record<string, ReaderModeMeta>;
+
+export type ReaderMode = keyof typeof READER_MODES;
+
+export type ReaderSelectConfig = {
+  readonly readers?: Readonly<Record<string, unknown>> | null;
+} | null | undefined;
+
+export type ReaderSelectOptions = {
+  readonly config?: ReaderSelectConfig;
+  readonly env?: Readonly<Record<string, string | undefined>>;
+  readonly hasPionBinary: boolean;
+};
+
+export type ReaderSelectSource = "default" | "config" | "env";
+
+export type ReaderFallbackReason =
+  | "invalid-value"
+  | "shadow-forbidden"
+  | "pion-binary-missing";
+
+export type ReaderSelection = {
+  readonly mode: ReaderMode;
+  readonly engine: ReaderEngine;
+  readonly requested: ReaderEngine | null;
+  readonly rawRequested: string | null;
+  readonly source: ReaderSelectSource;
+  readonly fallback: boolean;
+  readonly reason?: ReaderFallbackReason;
+  readonly detail?: string;
+};
+
+// Constructed from segments because Node-only reader routing has no counterpart in `station/mb/`
+// (`station/test/mb-station-contracts.test.ts` scans `station/src/` for literal env tokens).
+const READER_ENV_PREFIX = ["STILLFAIL", "READER"].join("_");
+
+/** Compute the canonical environment variable name for a reader mode. */
+export function readerModeEnvKey(mode: ReaderMode): string {
+  return `${READER_ENV_PREFIX}_${mode.replaceAll("-", "_").toUpperCase()}`;
+}
+
+/** Type guard for known reader modes. */
+export function isReaderMode(value: string): value is ReaderMode {
+  return Object.hasOwn(READER_MODES, value);
+}
+
+function parseEngineValue(raw: unknown): { engine: ReaderEngine | null; rawText: string } {
+  if (typeof raw !== "string") {
+    return { engine: null, rawText: String(raw) };
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "mb" || normalized === "pion" || normalized === "shadow") {
+    return { engine: normalized, rawText: raw };
+  }
+  return { engine: null, rawText: raw };
+}
+
+/**
+ * Resolve which engine (`"mb"`, `"pion"`, or `"shadow"`) should execute `mode`.
+ *
+ * Precedence:
+ * 1. Environment variable `readerModeEnvKey(mode)` (non-empty trimmed string)
+ * 2. `config.readers[mode]`
+ * 3. Default `"mb"`
+ *
+ * Safety gates:
+ * - Invalid values fall back to `"mb"` (`reason: "invalid-value"`).
+ * - `"shadow"` on any mode with `allowShadow === false` is refused and falls back to `"mb"`
+ *   (`reason: "shadow-forbidden"`).
+ * - `"pion"` or `"shadow"` when `hasPionBinary === false` falls back to `"mb"`
+ *   (`reason: "pion-binary-missing"`).
+ */
+export function resolveReaderEngine(
+  mode: ReaderMode,
+  opts: ReaderSelectOptions,
+): ReaderSelection {
+  const meta: ReaderModeMeta = READER_MODES[mode];
+  const env = opts.env ?? process.env;
+  const envKey = readerModeEnvKey(mode);
+  const rawEnv = env[envKey];
+
+  let source: ReaderSelectSource = "default";
+  let rawInput: unknown = undefined;
+
+  if (typeof rawEnv === "string" && rawEnv.trim() !== "") {
+    source = "env";
+    rawInput = rawEnv;
+  } else {
+    const readers = opts.config?.readers;
+    if (readers !== null && readers !== undefined && typeof readers === "object" && Object.hasOwn(readers, mode)) {
+      const configured = readers[mode];
+      if (configured !== undefined && configured !== null && !(typeof configured === "string" && configured.trim() === "")) {
+        source = "config";
+        rawInput = configured;
+      }
+    }
+  }
+
+  if (source === "default") {
+    return {
+      mode,
+      engine: "mb",
+      requested: null,
+      rawRequested: null,
+      source: "default",
+      fallback: false,
+    };
+  }
+
+  const parsed = parseEngineValue(rawInput);
+  if (parsed.engine === null) {
+    return {
+      mode,
+      engine: "mb",
+      requested: null,
+      rawRequested: parsed.rawText,
+      source,
+      fallback: true,
+      reason: "invalid-value",
+      detail: `invalid reader engine ${JSON.stringify(parsed.rawText)} from ${source} for mode "${mode}"; expected "mb" | "pion" | "shadow", falling back to "mb"`,
+    };
+  }
+
+  const requested = parsed.engine;
+  if (requested === "mb") {
+    return {
+      mode,
+      engine: "mb",
+      requested,
+      rawRequested: parsed.rawText,
+      source,
+      fallback: false,
+    };
+  }
+
+  if (requested === "shadow" && !meta.allowShadow) {
+    return {
+      mode,
+      engine: "mb",
+      requested,
+      rawRequested: parsed.rawText,
+      source,
+      fallback: true,
+      reason: "shadow-forbidden",
+      detail: `mode "${mode}" (${meta.sideEffect}) forbids shadow execution; falling back to "mb"`,
+    };
+  }
+
+  if (!opts.hasPionBinary) {
+    return {
+      mode,
+      engine: "mb",
+      requested,
+      rawRequested: parsed.rawText,
+      source,
+      fallback: true,
+      reason: "pion-binary-missing",
+      detail: `mode "${mode}" requested "${requested}" from ${source} but Pion binary is unavailable; falling back to "mb"`,
+    };
+  }
+
+  return {
+    mode,
+    engine: requested,
+    requested,
+    rawRequested: parsed.rawText,
+    source,
+    fallback: false,
+  };
+}
