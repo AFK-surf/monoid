@@ -7,6 +7,7 @@ import "effect"
 import "shell"
 
 extern "C" fn bsh_start(dir : Ptr) -> Int
+extern "C" fn bsh_stop() -> Unit
 extern "C" fn bsh_attached() -> Int
 extern "C" fn bsh_free(ptr : Ptr) -> Unit
 extern "C" fn bsh_wait(ms : Int64, out_len : Ptr) -> Ptr
@@ -136,12 +137,18 @@ fn native_pump(ms : Int64) -> Option[Bytes] {
   Some(raw)
 }
 
-/// Start the native Rust `stillfail-shell` on `data_dir` and return a `shell::Shell` wired to it.
+/// Start the native Rust `stillfail-shell` on `data_dir` (stopping one already started) and return a `shell::Shell` wired to it.
 pub fn open(rt : effect::Runtime, data_dir : String) -> Result[shell::Shell, String] {
   if bsh_start(data_dir.as_cstr()) == 0 {
     return Err("bsh_start failed for data_dir: " + data_dir)
   }
   Ok(shell::Shell::with_hooks(rt, 0.to_int64(), native_calls, native_asks, random_bytes, native_pump))
+}
+
+/// Stop the native shell started by `open` (or detach a shared one): queued and late answers of it are
+/// dropped, so a later `open` in the same process never sees them.
+pub fn stop() -> Unit {
+  bsh_stop()
 }
 
 /// Drive the native shell pump + `effect::Runtime` until `done()` returns true or `timeout_ms` elapses.
