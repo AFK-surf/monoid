@@ -60,6 +60,7 @@ function makeHost({ w = 400, h = 800, dpr = 3, search = '', nav = { platform: 'L
     TEXTURE1: 0x84c1,
     TEXTURE2: 0x84c2,
     TEXTURE3: 0x84c3,
+    TEXTURE4: 0x84c4,
   };
 
   const gl = new Proxy(GL_CONST, {
@@ -80,11 +81,14 @@ function makeHost({ w = 400, h = 800, dpr = 3, search = '', nav = { platform: 'L
       };
       if (name === 'attachShader') return (p, s) => { p.shaders.push(s); };
       if (name === 'linkProgram') return (p) => {
+        const vs = p.shaders.find((s) => s.type === GL_CONST.VERTEX_SHADER);
         const fs = p.shaders.find((s) => s.type === GL_CONST.FRAGMENT_SHADER);
+        p.vsSrc = vs ? vs.src : '';
         p.fsSrc = fs ? fs.src : '';
         p.isFlat = p.fsSrc.includes('void main() { o = vec4(v_color.rgb, 1.0) * v_color.a; }');
         const m = p.fsSrc.match(/#define ONE_KIND (-?\d+)/);
         p.oneKind = m ? Number(m[1]) : null;
+        p.vsAdaptive = p.vsSrc.includes('#define MB_VS_ADAPTIVE 1');
         calls.push({ fn: 'linkProgram', prog: p });
       };
       if (name === 'getProgramParameter') return () => true;
@@ -415,23 +419,26 @@ test('14 mixed-size/blur glass captures pre-size levels once, hit 100% cache whe
   }
 });
 
-test('ONE_KIND lazy shader compilation, progFlat for large solid rects, and banded strips for hollow border & occluded shadow', () => {
+test('MB_PROG_UI batching, VS adaptive ink, progFlat for large solid rects, and banded strips for hollow border & occluded shadow', () => {
   const b = makeHost({ w: 400, h: 400, dpr: 2 }); // 800x800 px
   const initLinks = b.calls.filter((c) => c.fn === 'linkProgram');
-  // Startup links fallback, progFlat, post and adaptive state, but no per-kind programs.
+  // Startup links MB_PROG_UI, progFlat, post and adaptive state; glass/path/lens programs are lazy.
   assert.equal(initLinks.length, 4, 'startup compiles only the shared programs');
-  assert.ok(initLinks.some((c) => c.prog.oneKind === -1), 'fallback ONE_KIND -1 compiled at startup');
+  const uiProg = initLinks.find((c) => c.prog.oneKind === -1)?.prog;
+  assert.ok(uiProg, 'MB_PROG_UI compiled at startup');
+  assert.ok(uiProg.vsAdaptive, 'MB_PROG_UI enables VS adaptive ink');
+  assert.ok(!uiProg.fsSrc.includes('mb_adaptive_ink_at'), 'FS carries no per-fragment adaptive ink');
   assert.ok(initLinks.some((c) => c.prog.isFlat), 'progFlat compiled at startup');
 
-  // 1) Large solid-color rounded rect (kind 0, 300x300 pt = 600x600 px) -> lazy compiles ONE_KIND 0 and uses progFlat
+  // 1) Large solid-color rounded rect (kind 0, 300x300 pt = 600x600 px) -> uses MB_PROG_UI (no extra compile) and progFlat
   b.resetCalls();
   const buf1 = new Float64Array(INST);
   makeRect(buf1, 0, 20, 20, 300, 300, { r: 0.5, a: 1, rad: 16 });
   b.H.present(buf1, 1, 0, 0, 0);
-  assert.ok(b.calls.some((c) => c.fn === 'linkProgram' && c.prog.oneKind === 0), 'ONE_KIND 0 lazily compiled');
+  assert.equal(b.calls.filter((c) => c.fn === 'linkProgram').length, 0, 'kind 0 reuses startup MB_PROG_UI');
   const draws1 = b.calls.filter((c) => c.fn === 'drawArraysInstanced');
   assert.ok(draws1.some((d) => d.prog.isFlat && d.scissorOn), 'interior cross drawn with progFlat');
-  assert.ok(draws1.some((d) => d.prog.oneKind === 0 && d.scissorOn), 'edges/corners drawn with ONE_KIND 0');
+  assert.ok(draws1.some((d) => d.prog === uiProg && d.scissorOn), 'edges/corners drawn with MB_PROG_UI');
 
   // 2) Hollow border (kind 0, fill alpha 0, border=2, 300x300 pt) -> banded strips skipping center
   b.resetCalls();
@@ -439,11 +446,11 @@ test('ONE_KIND lazy shader compilation, progFlat for large solid rects, and band
   makeRect(buf2, 0, 20, 20, 300, 300, { r: 0, a: 0, border: 2, rad: 16 });
   b.H.present(buf2, 1, 0, 0, 0);
   const draws2 = b.calls.filter((c) => c.fn === 'drawArraysInstanced');
-  assert.ok(draws2.length >= 4 && draws2.every((d) => d.scissorOn && d.prog.oneKind === 0), 'hollow border drawn in scissor strips');
+  assert.ok(draws2.length >= 4 && draws2.every((d) => d.scissorOn && d.prog === uiProg), 'hollow border drawn in scissor strips');
   const shadedArea2 = draws2.reduce((sum, d) => sum + d.scissorBox[2] * d.scissorBox[3], 0);
   assert.ok(shadedArea2 < 600 * 600 * 0.5, `hollow border skips center (shaded ${shadedArea2} < half of 360000)`);
 
-  // 3) Occluded shadow (kind 2) followed by opaque kind 0 box -> lazy compiles ONE_KIND 2 and skips occluded center
+  // 3) Occluded shadow (kind 2) followed by opaque kind 0 box -> reuses MB_PROG_UI and skips occluded center
   b.resetCalls();
   const buf3 = new Float64Array(INST * 2);
   // Shadow (kind 2) at 50,50 250x250 blur=12
@@ -455,10 +462,39 @@ test('ONE_KIND lazy shader compilation, progFlat for large solid rects, and band
   // Opaque box right after it
   makeRect(buf3, 1, 50, 50, 250, 250, { r: 1, a: 1, rad: 16 });
   b.H.present(buf3, 2, 0, 0, 0);
-  assert.ok(b.calls.some((c) => c.fn === 'linkProgram' && c.prog.oneKind === 2), 'ONE_KIND 2 lazily compiled');
-  const shadowDraws = b.calls.filter((c) => c.fn === 'drawArraysInstanced' && c.prog.oneKind === 2);
+  assert.equal(b.calls.filter((c) => c.fn === 'linkProgram').length, 0, 'kind 2 reuses startup MB_PROG_UI');
+  const shadowDraws = b.calls.filter((c) => c.fn === 'drawArraysInstanced' && dIsShadowOrEdge(c, uiProg));
   assert.ok(shadowDraws.length >= 4 && shadowDraws.every((d) => d.scissorOn), 'occluded shadow drawn in scissor strips');
+
+  // 4) Mixed basic UI kinds (0, 1, 2, 10) with tid=0 batch into a single instanced draw call & 1 useProgram
+  b.resetCalls();
+  const buf4 = new Float64Array(INST * 8);
+  for (let i = 0; i < 2; i++) {
+    const y = 10 + i * 24;
+    makeRect(buf4, i * 4 + 0, 10, y, 16, 16, { r: 0.2, g: 0.4, b: 0.8, a: 1 });
+    // kind 1 glyph
+    const g = (i * 4 + 1) * INST;
+    buf4[g] = 30; buf4[g + 1] = y; buf4[g + 2] = 10; buf4[g + 3] = 12;
+    buf4[g + 5] = 1; buf4[g + 11] = 1; buf4[g + 16] = -1e9; buf4[g + 17] = -1e9; buf4[g + 18] = 1e9; buf4[g + 19] = 1e9;
+    // kind 2 small shadow
+    const sh = (i * 4 + 2) * INST;
+    buf4[sh] = 44; buf4[sh + 1] = y; buf4[sh + 2] = 12; buf4[sh + 3] = 12;
+    buf4[sh + 5] = 2; buf4[sh + 7] = 2; buf4[sh + 11] = 0.3; buf4[sh + 16] = -1e9; buf4[sh + 17] = -1e9; buf4[sh + 18] = 1e9; buf4[sh + 19] = 1e9;
+    // kind 10 line
+    const ln = (i * 4 + 3) * INST;
+    buf4[ln] = 60; buf4[ln + 1] = y; buf4[ln + 2] = 16; buf4[ln + 3] = 12;
+    buf4[ln + 4] = 1.5; buf4[ln + 5] = 10; buf4[ln + 8] = 0.9; buf4[ln + 11] = 1;
+    buf4[ln + 12] = 0.1; buf4[ln + 13] = 0.5; buf4[ln + 14] = 0.9; buf4[ln + 15] = 0.5;
+    buf4[ln + 16] = -1e9; buf4[ln + 17] = -1e9; buf4[ln + 18] = 1e9; buf4[ln + 19] = 1e9;
+  }
+  b.H.present(buf4, 8, 1, 1, 1);
+  const mixedDraws = b.calls.filter((c) => c.fn === 'drawArraysInstanced');
+  const mixedUses = b.calls.filter((c) => c.fn === 'useProgram');
+  assert.equal(mixedDraws.length, 1, '8 mixed basic UI instances batch into 1 drawArraysInstanced');
+  assert.equal(mixedDraws[0].instCount, 8);
+  assert.equal(mixedUses.length, 1, 'only 1 useProgram for batched UI frame');
 });
+function dIsShadowOrEdge(c, uiProg) { return c.prog === uiProg; }
 
 test('pointermove uses cached getBoundingClientRect and expands touch getCoalescedEvents', () => {
   const b = makeHost({ w: 400, h: 800, dpr: 3 });

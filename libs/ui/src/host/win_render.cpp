@@ -193,64 +193,6 @@ static const char *shader_src =
     "  nointerpolation float4 rs : INST7; nointerpolation float4 rr : INST8;\n"
     "  nointerpolation float4 oclip : INST9; nointerpolation float4 orc : INST10; nointerpolation float4 ors : INST11;\n"
     "  nointerpolation float4 fade : INST12; nointerpolation float4 fadex : INST13; };\n"
-    "VOut vmain(VIn I) {\n"
-    "  uint vid = I.vid;\n"
-    "  float2 corner = float2((vid == 1 || vid == 4 || vid == 5) ? 1.0 : 0.0,\n"
-    "                         (vid == 2 || vid == 3 || vid == 5) ? 1.0 : 0.0);\n"
-    "  int kind = int(I.p.y + 0.5);\n"
-    "  bool merged_liquid = kind == 6 && I.pd.w > 0.0;\n"
-    "  float grow = kind == 2 ? I.p.w * 3.0 + 2.0 : (kind == 6 && I.pd.w <= 0.0) ? 2.0 : ((kind == 0 || kind == 4 || kind == 5 || kind == 8) ? 1.0 : 0.0);\n"
-    "  float2 pos = I.rect.xy - grow + corner * (I.rect.zw + 2.0 * grow);\n"
-    "  if (merged_liquid) pos = lerp(ggb.xy, ggb.zw, corner);\n"
-    "  // the pieces of shapes (kind 12): nothing drawn\n"
-    "  if (kind == 12) pos = float2(0.0, 0.0);\n"
-    "  // turned (scene.mbt 32-35): drawn turned about its point, everything of how in its own place (o.p), its clip\n"
-    "  // there too or (35: one from outside what turned) where it is drawn (o.cp)\n"
-    "  float2 at = pos;\n"
-    "  if (I.rot.x != 0.0) { float2 d = pos - I.rot.yz; float c = cos(I.rot.x), s = sin(I.rot.x);\n"
-    "    at = I.rot.yz + float2(c * d.x - s * d.y, s * d.x + c * d.y); }\n"
-    "  VOut o;\n"
-    "  float2 rel = at - origin;\n"
-    "  o.pos = float4(rel.x / vp.x * 2.0 - 1.0, 1.0 - rel.y / vp.y * 2.0, 0.0, 1.0);\n"
-    "  o.p = pos; o.cp = I.rot.w > 0.5 ? at : pos; o.rect = I.rect; o.prm = I.p; o.color = I.color; o.c2 = I.c2; o.clip = I.clip; o.pd = I.pd; o.rc = I.rc; o.rs = I.rs; o.rr = I.rr;\n"
-    "  if (kind == 1) o.prm.x = I.rot.x;\n"
-    "  if (kind == 4 && I.pd.z > 0.5) o.pd.x = I.rot.w;\n"
-    "  o.oclip = I.oclip; o.orc = I.orc; o.ors = I.ors; o.fade = I.fade; o.fadex = I.fadex;\n"
-    "  return o;\n"
-    "}\n"
-    MB_CORNER_SL
-    "float sd_rr(float2 p, float4 r, float4 rad) {\n"
-    "  float2 hs = r.zw * 0.5;\n"
-    "  return mb_sd_box(p - r.xy - hs, hs, mb_corner_of(p - r.xy - hs, rad), 1e9);\n"
-    "}\n"
-    "// a notch cut into the top edge (scene.mbt 21-23): a circle about the top's middle (pad.y below it, pad.z its radius),\n"
-    "// met by the edge through fillets (pad.w): the rounded intersection with what is outside the circle\n"
-    "float notch_cut(float d, float2 p, float4 r, float4 pad) {\n"
-    "  if (pad.z <= 0.0) return d;\n"
-    "  float b = pad.z - length(p - float2(r.x + r.z * 0.5, r.y + pad.y));\n"
-    "  float f = max(pad.w, 0.0);\n"
-    "  float2 u = max(float2(f + d, f + b), 0.0);\n"
-    "  return min(-f, max(d, b)) + length(u);\n"
-    "}\n"
-    "float smin_k(float a, float b, float k) {\n"
-    "  if (k <= 0.0) return min(a, b);\n"
-    "  float h = max(k - abs(a - b), 0.0) / k;\n"
-    "  return min(a, b) - h * h * k * 0.25;\n"
-    "}\n"
-    "float sd_group(float2 p, float k) {\n"
-    "  float d = 1e9;\n"
-    "  int n = int(gmisc.x + 0.5);\n"
-    "  [loop] for (int i = 0; i < 8; i++) {\n"
-    "    if (i >= n) break;\n"
-    "    d = smin_k(d, sd_rr(p, gshape[i], grad[i]), k);\n"
-    "  }\n"
-    "  return d;\n"
-    "}\n"
-    "// Integral of linear ramp from 0 to w (contourOffset = 0, width w in device px)\n"
-    "float mb_contour_int(float t, float w) {\n"
-    "  float u = clamp(t, 0.0, w);\n"
-    "  return u - u * u / (2.0 * w);\n"
-    "}\n"
     "float3 backdrop(float2 p) {\n"
     "  return bd.SampleLevel(samp, clamp(p * gmap.xy + gmap.zw, guvc.xy, guvc.zw), 0).rgb;\n"
     "}\n"
@@ -276,34 +218,6 @@ static const char *shader_src =
     "  float hi = floor(saturate(rg.x) * 255.0 + 0.5);\n"
     "  float lo = floor(saturate(rg.y) * 255.0 + 0.5);\n"
     "  return (hi * 256.0 + lo) / 65535.0;\n"
-    "}\n"
-    "float ad_sample(float2 ac, float fallback_r, bool is_dark_glass) {\n"
-    "  int ad_n = int(gad_meta.x + 0.5);\n"
-    "  [branch] if (ad_n > 0) {\n"
-    "    int best = -1;\n"
-    "    float best_d = 1e9;\n"
-    "    [loop] for (int i = 0; i < 16; i++) {\n"
-    "      if (i >= ad_n) break;\n"
-    "      float d = length(ac - gad_box[i].xy);\n"
-    "      if (d <= 2.0 && d < best_d) { best = i; best_d = d; }\n"
-    "    }\n"
-    "    if (best < 0) {\n"
-    "      best_d = 1e9;\n"
-    "      [loop] for (int i = 0; i < 16; i++) {\n"
-    "        if (i >= ad_n) break;\n"
-    "        float2 diff = abs(ac - gad_box[i].xy);\n"
-    "        if (diff.x <= gad_box[i].z + 2.0 && diff.y <= gad_box[i].w + 2.0) {\n"
-    "          float d = length(diff);\n"
-    "          if (d < best_d) { best = i; best_d = d; }\n"
-    "        }\n"
-    "      }\n"
-    "    }\n"
-    "    if (best >= 0) {\n"
-    "      return mb_unpack16(ad_tex.Load(int3(best, 0, 0)).rg);\n"
-    "    }\n"
-    "  }\n"
-    "  float bgL = mb_backdrop_luma_rect(ac, float2(max(fallback_r, 1.0), max(fallback_r, 1.0)));\n"
-    "  return is_dark_glass ? smoothstep(0.35, 0.85, bgL) : (1.0 - smoothstep(0.30, 0.42, bgL));\n"
     "}\n"
     "float2 ad_sample_ink(float2 ac, float fallback_r, out float2 capCenter, out float2 capHalf) {\n"
     "  int ad_n = int(gad_meta.x + 0.5);\n"
@@ -379,6 +293,111 @@ static const char *shader_src =
     "  float lightL = lerp(baseLightL, localLightL, localBoost);\n"
     "  return lerp(rgb, float3(lightL, lightL, lightL), inkT);\n"
     "}\n"
+    "VOut vmain(VIn I) {\n"
+    "  uint vid = I.vid;\n"
+    "  float2 corner = float2((vid == 1 || vid == 4 || vid == 5) ? 1.0 : 0.0,\n"
+    "                         (vid == 2 || vid == 3 || vid == 5) ? 1.0 : 0.0);\n"
+    "  int kind = int(I.p.y + 0.5);\n"
+    "  bool merged_liquid = kind == 6 && I.pd.w > 0.0;\n"
+    "  float grow = kind == 2 ? I.p.w * 3.0 + 2.0 : (kind == 6 && I.pd.w <= 0.0) ? 2.0 : ((kind == 0 || kind == 4 || kind == 5 || kind == 8) ? 1.0 : 0.0);\n"
+    "  float2 pos = I.rect.xy - grow + corner * (I.rect.zw + 2.0 * grow);\n"
+    "  if (merged_liquid) pos = lerp(ggb.xy, ggb.zw, corner);\n"
+    "  // the pieces of shapes (kind 12): nothing drawn\n"
+    "  if (kind == 12) pos = float2(0.0, 0.0);\n"
+    "  // turned (scene.mbt 32-35): drawn turned about its point, everything of how in its own place (o.p), its clip\n"
+    "  // there too or (35: one from outside what turned) where it is drawn (o.cp)\n"
+    "  float2 at = pos;\n"
+    "  if (I.rot.x != 0.0) { float2 d = pos - I.rot.yz; float c = cos(I.rot.x), s = sin(I.rot.x);\n"
+    "    at = I.rot.yz + float2(c * d.x - s * d.y, s * d.x + c * d.y); }\n"
+    "  float4 col = I.color;\n"
+    "  if (kind == 7) {\n"
+    "    col.rgb = mb_adaptive_ink_at(col.rgb, I.pd.yz, I.pd.w * 0.5, I.rect, I.p.zw, false);\n"
+    "  } else if (kind == 10 && I.pd.w > 0.0) {\n"
+    "    col.rgb = mb_adaptive_ink_at(col.rgb, I.pd.yz, I.pd.w * 0.5, I.rect, float2(0.0, 0.0), true);\n"
+    "  } else if (kind == 11 && I.pd.w > 0.0) {\n"
+    "    col.rgb = mb_adaptive_ink_at(col.rgb, I.pd.yz, I.pd.w * 0.5, I.rect, I.p.zw, true);\n"
+    "  } else if (kind == 0 && I.pd.w < 0.0) {\n"
+    "    float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
+    "    float2 capCenter, capHalf;\n"
+    "    float darkT = ad_sample_ink(I.pd.yz, -I.pd.w * 0.5, capCenter, capHalf).x;\n"
+    "    if (ch <= 0.08 && luma(col.rgb) < 0.5) {\n"
+    "      col.rgb = lerp(col.rgb, float3(1.0, 1.0, 1.0), darkT);\n"
+    "      col.a = lerp(col.a, min(col.a * 1.45, 0.28), darkT);\n"
+    "    } else if (ch > 0.08 && luma(col.rgb) < 0.35) {\n"
+    "      col.rgb = lerp(col.rgb, min(col.rgb * 1.65 + float3(0.28, 0.20, 0.18), float3(1.0, 1.0, 1.0)), darkT);\n"
+    "      col.a = lerp(col.a, min(col.a * 1.45, 0.36), darkT);\n"
+    "    }\n"
+    "  }\n"
+    "  VOut o;\n"
+    "  float2 rel = at - origin;\n"
+    "  o.pos = float4(rel.x / vp.x * 2.0 - 1.0, 1.0 - rel.y / vp.y * 2.0, 0.0, 1.0);\n"
+    "  o.p = pos; o.cp = I.rot.w > 0.5 ? at : pos; o.rect = I.rect; o.prm = I.p; o.color = col; o.c2 = I.c2; o.clip = I.clip; o.pd = I.pd; o.rc = I.rc; o.rs = I.rs; o.rr = I.rr;\n"
+    "  if (kind == 1) o.prm.x = I.rot.x;\n"
+    "  if (kind == 4 && I.pd.z > 0.5) o.pd.x = I.rot.w;\n"
+    "  o.oclip = I.oclip; o.orc = I.orc; o.ors = I.ors; o.fade = I.fade; o.fadex = I.fadex;\n"
+    "  return o;\n"
+    "}\n"
+    MB_CORNER_SL
+    "float sd_rr(float2 p, float4 r, float4 rad) {\n"
+    "  float2 hs = r.zw * 0.5;\n"
+    "  return mb_sd_box(p - r.xy - hs, hs, mb_corner_of(p - r.xy - hs, rad), 1e9);\n"
+    "}\n"
+    "// a notch cut into the top edge (scene.mbt 21-23): a circle about the top's middle (pad.y below it, pad.z its radius),\n"
+    "// met by the edge through fillets (pad.w): the rounded intersection with what is outside the circle\n"
+    "float notch_cut(float d, float2 p, float4 r, float4 pad) {\n"
+    "  if (pad.z <= 0.0) return d;\n"
+    "  float b = pad.z - length(p - float2(r.x + r.z * 0.5, r.y + pad.y));\n"
+    "  float f = max(pad.w, 0.0);\n"
+    "  float2 u = max(float2(f + d, f + b), 0.0);\n"
+    "  return min(-f, max(d, b)) + length(u);\n"
+    "}\n"
+    "float smin_k(float a, float b, float k) {\n"
+    "  if (k <= 0.0) return min(a, b);\n"
+    "  float h = max(k - abs(a - b), 0.0) / k;\n"
+    "  return min(a, b) - h * h * k * 0.25;\n"
+    "}\n"
+    "float sd_group(float2 p, float k) {\n"
+    "  float d = 1e9;\n"
+    "  int n = int(gmisc.x + 0.5);\n"
+    "  [loop] for (int i = 0; i < 8; i++) {\n"
+    "    if (i >= n) break;\n"
+    "    d = smin_k(d, sd_rr(p, gshape[i], grad[i]), k);\n"
+    "  }\n"
+    "  return d;\n"
+    "}\n"
+    "// Integral of linear ramp from 0 to w (contourOffset = 0, width w in device px)\n"
+    "float mb_contour_int(float t, float w) {\n"
+    "  float u = clamp(t, 0.0, w);\n"
+    "  return u - u * u / (2.0 * w);\n"
+    "}\n"
+    "float ad_sample(float2 ac, float fallback_r, bool is_dark_glass) {\n"
+    "  int ad_n = int(gad_meta.x + 0.5);\n"
+    "  [branch] if (ad_n > 0) {\n"
+    "    int best = -1;\n"
+    "    float best_d = 1e9;\n"
+    "    [loop] for (int i = 0; i < 16; i++) {\n"
+    "      if (i >= ad_n) break;\n"
+    "      float d = length(ac - gad_box[i].xy);\n"
+    "      if (d <= 2.0 && d < best_d) { best = i; best_d = d; }\n"
+    "    }\n"
+    "    if (best < 0) {\n"
+    "      best_d = 1e9;\n"
+    "      [loop] for (int i = 0; i < 16; i++) {\n"
+    "        if (i >= ad_n) break;\n"
+    "        float2 diff = abs(ac - gad_box[i].xy);\n"
+    "        if (diff.x <= gad_box[i].z + 2.0 && diff.y <= gad_box[i].w + 2.0) {\n"
+    "          float d = length(diff);\n"
+    "          if (d < best_d) { best = i; best_d = d; }\n"
+    "        }\n"
+    "      }\n"
+    "    }\n"
+    "    if (best >= 0) {\n"
+    "      return mb_unpack16(ad_tex.Load(int3(best, 0, 0)).rg);\n"
+    "    }\n"
+    "  }\n"
+    "  float bgL = mb_backdrop_luma_rect(ac, float2(max(fallback_r, 1.0), max(fallback_r, 1.0)));\n"
+    "  return is_dark_glass ? smoothstep(0.35, 0.85, bgL) : (1.0 - smoothstep(0.30, 0.42, bgL));\n"
+    "}\n"
     "// how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth\n"
     "// each is), its edge covered as a box's own (0.5 - d * scale), so what it cuts meets the ground of the box that cuts\n"
     "// it\n"
@@ -442,7 +461,6 @@ static const char *shader_src =
     "      for (int i = first; i < first + n; i++) w += mb_path_rows(segs.Load((i / 6) * 15 + mb_seg_slot(i)), I.rect, p, scale);\n"
     "      a = mb_path_cover(w, I.c2.z);\n"
     "    }\n"
-    "    [branch] if (I.pd.w > 0.0) col.rgb = mb_adaptive_ink_at(col.rgb, I.pd.yz, I.pd.w * 0.5, I.rect, I.prm.zw, true);\n"
     "    return (float4(col.rgb, 1.0) * col.a * a) * cover;\n"
     "  }\n"
     "  if (kind == 10) {\n"
@@ -450,7 +468,6 @@ static const char *shader_src =
     "    float2 a = I.rect.xy + I.c2.xy * I.rect.zw, ab = I.rect.xy + I.c2.zw * I.rect.zw - a;\n"
     "    float h = saturate(dot(p - a, ab) / max(dot(ab, ab), 1e-8));\n"
     "    float d = length(p - a - ab * h) - I.prm.x;\n"
-    "    [branch] if (I.pd.w > 0.0) col.rgb = mb_adaptive_ink_at(col.rgb, I.pd.yz, I.pd.w * 0.5, I.rect, float2(0.0, 0.0), true);\n"
     "    return (float4(col.rgb, 1.0) * col.a * saturate(0.5 - d * scale)) * cover;\n"
     "  }\n"
     "  if (kind == 1 || kind == 3 || kind == 7) {\n"
@@ -476,9 +493,7 @@ static const char *shader_src =
     "      return float4(col.rgb * stripes, dot(stripes, float3(1.0, 1.0, 1.0) / 3.0));\n"
     "    }\n"
     "    if (kind == 7) {\n"
-    "      // inked by how light what is under its glass is, looked at round the glass's middle and locally\n"
-    "      float3 ink = mb_adaptive_ink_at(col.rgb, I.pd.yz, I.pd.w * 0.5, I.rect, I.prm.zw, false);\n"
-    "      return (float4(ink, 1.0) * (t.a * col.a)) * cover;\n"
+    "      return (float4(col.rgb, 1.0) * (t.a * col.a)) * cover;\n"
     "    }\n"
     "    return (t * col.a) * cover;\n"
     "  }\n"
@@ -864,18 +879,6 @@ static const char *shader_src =
     "    g3 += mb_dither(p * scale) * ps / 255.0;\n"
     "    float edge_a = prog_glass ? smoothstep(0.0, 0.04, fade_r) : 1.0;\n"
     "    return (float4(g3, 1.0) * (a * I.c2.w * edge_a)) * cover;\n"
-    "  }\n"
-    "  if (I.pd.w < 0.0) {\n"
-    "    float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
-    "    float2 capCenter, capHalf;\n"
-    "    float darkT = ad_sample_ink(I.pd.yz, -I.pd.w * 0.5, capCenter, capHalf).x;\n"
-    "    if (ch <= 0.08 && luma(col.rgb) < 0.5) {\n"
-    "      col.rgb = lerp(col.rgb, float3(1.0, 1.0, 1.0), darkT);\n"
-    "      col.a = lerp(col.a, min(col.a * 1.45, 0.28), darkT);\n"
-    "    } else if (ch > 0.08 && luma(col.rgb) < 0.35) {\n"
-    "      col.rgb = lerp(col.rgb, min(col.rgb * 1.65 + float3(0.28, 0.20, 0.18), float3(1.0, 1.0, 1.0)), darkT);\n"
-    "      col.a = lerp(col.a, min(col.a * 1.45, 0.36), darkT);\n"
-    "    }\n"
     "  }\n"
     "  float4 fill = float4(col.rgb, 1.0) * col.a;\n"
     "  float bw = I.prm.z;\n"
@@ -1943,6 +1946,7 @@ static void ad_run_updates(RenderWin *w, const WinAdPend *pend, int n_upd, doubl
   int cur = w->ad_cur, nxt = 1 - cur;
   ID3D11ShaderResourceView *none6[6] = {NULL, NULL, NULL, NULL, NULL, NULL};
   ctx->PSSetShaderResources(0, 6, none6);
+  ctx->VSSetShaderResources(0, 6, none6);
   ctx->CopyResource(w->ad_tex[nxt].t, w->ad_tex[cur].t);
   ctx->OMSetRenderTargets(1, &w->ad_tex[nxt].rt, NULL);
   D3D11_VIEWPORT vp = {0, 0, (float)MB_ADAPTIVE_MAX, 1.0f, 0, 1};
@@ -2043,6 +2047,7 @@ static void glass_free(void) {
   if (!ctx) return;
   ID3D11ShaderResourceView *none[6] = {NULL, NULL, NULL, NULL, NULL, NULL};
   ctx->PSSetShaderResources(0, 6, none);
+  ctx->VSSetShaderResources(0, 6, none);
   gsrv = NULL;
   for (int j = 0; j < 5; j++) level_release(&lv[j]);
   for (int i = 0; i < MB_GLASS_SLOTS; i++) {
@@ -2086,6 +2091,7 @@ void mb_render_trim(void) {
 static void post_pass(level *src, int sw, int sh, level *dst, int w, int h, int mode, float sg, float dx, float dy) {
   ID3D11ShaderResourceView *none[3] = {NULL, NULL, NULL};
   ctx->PSSetShaderResources(0, 3, none);
+  ctx->VSSetShaderResources(2, 1, none);
   ctx->OMSetRenderTargets(1, &dst->rt, NULL);
   D3D11_VIEWPORT vp = {0, 0, (float)w, (float)h, 0, 1};
   ctx->RSSetViewports(1, &vp);
@@ -2568,6 +2574,7 @@ static int blur_grab(ID3D11RenderTargetView *target, const Grab *m) {
     }
     ID3D11ShaderResourceView *none4[4] = {NULL, NULL, NULL, NULL};
     ctx->PSSetShaderResources(0, 4, none4);
+    ctx->VSSetShaderResources(2, 1, none4);
     ctx->PSSetShader(prog_ps, NULL, 0);
     ctx->OMSetRenderTargets(1, &lv[4].rt, NULL);
     D3D11_VIEWPORT vp = {0, 0, (float)m->w, (float)m->h, 0, 1};
@@ -2601,6 +2608,7 @@ static int blur_grab(ID3D11RenderTargetView *target, const Grab *m) {
     }
     ID3D11ShaderResourceView *none[3] = {NULL, NULL, NULL};
     ctx->PSSetShaderResources(0, 3, none);
+    ctx->VSSetShaderResources(2, 1, none);
   }
   return 1;
 }
@@ -2726,6 +2734,9 @@ static void main_state(ID3D11RenderTargetView *target, int pw, int ph) {
   ID3D11ShaderResourceView *ad_srv = (rw && rw->ad_tex[rw->ad_cur].srv) ? rw->ad_tex[rw->ad_cur].srv : atlas_srv;
   ctx->PSSetShaderResources(5, 1, &ad_srv);
   ctx->PSSetSamplers(0, 1, &sampler);
+  ctx->VSSetShaderResources(2, 1, gsrv ? &gsrv : &atlas_srv);
+  ctx->VSSetShaderResources(5, 1, &ad_srv);
+  ctx->VSSetSamplers(0, 1, &sampler);
   ctx->OMSetBlendState(blend, NULL, 0xffffffff);
 }
 
@@ -2824,6 +2835,7 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
           ctx->UpdateSubresource(gbuf, 0, NULL, &gu, 0, 0);
           ID3D11ShaderResourceView *bsrv = gsrv ? gsrv : atlas_srv;
           ctx->PSSetShaderResources(2, 1, &bsrv);
+          ctx->VSSetShaderResources(2, 1, &bsrv);
         }
       }
       // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
@@ -2878,6 +2890,7 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
       // Pass 1: render children into lens_lv[0]
       ID3D11ShaderResourceView *none[3] = {NULL, NULL, NULL};
       ctx->PSSetShaderResources(0, 3, none);
+      ctx->VSSetShaderResources(2, 1, none);
       float zclear[4] = {0, 0, 0, 0};
       ctx->OMSetRenderTargets(1, &lens_lv[0].rt, NULL);
       ctx->ClearRenderTargetView(lens_lv[0].rt, zclear);
@@ -2890,6 +2903,7 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
       ctx->PSSetShaderResources(0, 1, &atlas_srv);
       ctx->PSSetShaderResources(2, 1, &atlas_srv);
       ctx->PSSetShaderResources(3, 1, &segs_srv);
+      ctx->VSSetShaderResources(2, 1, &atlas_srv);
       int32_t cs = start + 1, cend_all = start + 1 + child_n;
       while (cs < cend_all) {
         int ctid = (int)f[cs * MB_INST + 20];

@@ -22,8 +22,13 @@
   };
   let cb = null;
   let modifiersSaid = 0;
-  const MB_KIND_LIQUID_SINGLE = 13;
-  const MB_KINDS = 14;
+  const MB_PROG_UI = 0;
+  const MB_PROG_FROSTED = 1;
+  const MB_PROG_LIQUID_MERGED = 2;
+  const MB_PROG_LIQUID_SINGLE = 3;
+  const MB_PROG_LENS = 4;
+  const MB_PROG_PATH = 5;
+  const MB_PROGS = 6;
   const GLASS_SLOTS = 32;
   function makeGlassSlots() {
     return Array.from({ length: GLASS_SLOTS }, () => ({
@@ -31,7 +36,7 @@
       under: null, underN: 0, whole: 0, picked: 0, grab: null, key: null, valid: false, used: 0,
     }));
   }
-  let canvas, gl, vs, prog, progs = new Array(MB_KINDS + 1).fill(null), progFlat, ufVp, progGen = 0, progNow = null, post, vao, instBuf, atlasTex, ta;
+  let canvas, gl, vs, vsAd, prog, progs = new Array(MB_PROGS).fill(null), progFlat, ufVp, progGen = 0, progNow = null, post, vao, instBuf, atlasTex, ta;
   let U = {}, PU = {};
   let cssW = 0, cssH = 0, dpr = 1;
   let rectLeft = 0, rectTop = 0, rectValid = false;
@@ -470,6 +475,113 @@
   uniform vec2 u_vp;
   uniform vec2 u_origin;
   uniform vec4 u_gb;
+  #if MB_VS_ADAPTIVE
+  uniform highp sampler2D u_bd;
+  uniform vec4 u_map;
+  uniform vec4 u_uvc;
+  uniform highp sampler2D u_ad;
+  uniform vec4 u_ad_box[16];
+  uniform int u_ad_n;
+  vec3 vs_backdrop(vec2 p) {
+    return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0).rgb;
+  }
+  float vs_luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+  float vs_ink_luma(vec3 c) { return dot(c * c, vec3(0.2126, 0.7152, 0.0722)); }
+  float vs_backdrop_luma_rect(vec2 c, vec2 h) {
+    float sum = 0.0;
+    float mx1 = -1.0, mx2 = -1.0;
+    float mn1 = 2.0, mn2 = 2.0;
+    for (int iy = -1; iy <= 1; iy++) {
+      float py = c.y + float(iy) * (h.y * 0.60);
+      for (int ix = -2; ix <= 2; ix++) {
+        float px = c.x + float(ix) * (h.x * 0.38);
+        float y = vs_ink_luma(vs_backdrop(vec2(px, py)));
+        sum += y;
+        if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }
+        if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }
+      }
+    }
+    return (sum - mx1 - mx2 - mn1 - mn2) / 11.0;
+  }
+  float vs_unpack16(vec2 rg) {
+    float hi = floor(clamp(rg.x, 0.0, 1.0) * 255.0 + 0.5);
+    float lo = floor(clamp(rg.y, 0.0, 1.0) * 255.0 + 0.5);
+    return (hi * 256.0 + lo) / 65535.0;
+  }
+  vec2 vs_ad_sample_ink(vec2 ac, float fallback_r, out vec2 capCenter, out vec2 capHalf) {
+    if (u_ad_n > 0) {
+      int best = -1;
+      float best_d = 1e9;
+      for (int i = 0; i < 16; i++) {
+        if (i >= u_ad_n) break;
+        float d = length(ac - u_ad_box[i].xy);
+        if (d <= 2.0 && d < best_d) { best = i; best_d = d; }
+      }
+      if (best < 0) {
+        best_d = 1e9;
+        for (int i = 0; i < 16; i++) {
+          if (i >= u_ad_n) break;
+          vec2 diff = abs(ac - u_ad_box[i].xy);
+          if (diff.x <= u_ad_box[i].z + 2.0 && diff.y <= u_ad_box[i].w + 2.0) {
+            float d = length(diff);
+            if (d < best_d) { best = i; best_d = d; }
+          }
+        }
+      }
+      if (best >= 0) {
+        vec4 px = texelFetch(u_ad, ivec2(best, 0), 0);
+        capCenter = u_ad_box[best].xy;
+        capHalf = u_ad_box[best].zw;
+        return vec2(vs_unpack16(px.rg), px.a);
+      }
+    }
+    capCenter = ac;
+    capHalf = vec2(0.0);
+    float bgL = vs_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));
+    return vec2(1.0 - smoothstep(0.30, 0.42, bgL), bgL);
+  }
+  vec3 vs_adaptive_ink_at(vec3 rgb, vec2 ac, float fallback_r, vec4 rect, vec2 sample_off, bool is_icon) {
+    float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);
+    float origL = vs_luma(rgb);
+    if (ch > 0.08 || origL >= 0.5) return rgb;
+    vec2 capCenter, capHalf;
+    vec2 cap = vs_ad_sample_ink(ac, fallback_r, capCenter, capHalf);
+    float capsuleDarkT = cap.x;
+    float capsuleBgL = cap.y;
+    float darkT = capsuleDarkT;
+    float localBoost = 0.0;
+    bool is_large = (capHalf.x >= 140.0 && capHalf.y >= 19.0);
+    if (is_large && capsuleDarkT < 0.999) {
+      vec2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;
+      if (capHalf.y <= 28.0) samplePos.y = capCenter.y;
+      vec2 guv = samplePos * u_map.xy + u_map.zw;
+      if (u_uvc.z > u_uvc.x && u_uvc.w > u_uvc.y && guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {
+        vec2 sampleH;
+        if (is_icon) {
+          sampleH = vec2(10.0, 8.0);
+        } else {
+          float edgeDist = min(samplePos.x - (capCenter.x - capHalf.x + 8.0), (capCenter.x + capHalf.x - 8.0) - samplePos.x);
+          float rx = clamp(edgeDist / 0.76, 10.0, 20.0);
+          float ry = clamp(capHalf.y * 0.55, 8.0, 14.0);
+          sampleH = vec2(rx, ry);
+        }
+        float localL = vs_backdrop_luma_rect(samplePos, sampleH);
+        float localDarkT = 1.0 - smoothstep(0.22, 0.28, localL);
+        float localW = max(smoothstep(0.35, 0.44, capsuleBgL), smoothstep(0.08, 0.20, capsuleBgL - localL));
+        float localEff = localDarkT * localW;
+        if (localEff > darkT) {
+          localBoost = clamp(localEff - capsuleDarkT, 0.0, 1.0);
+          darkT = localEff;
+        }
+      }
+    }
+    float inkT = smoothstep(0.0, 1.0, darkT);
+    float baseLightL = clamp(1.06 - origL, 0.68, 0.98);
+    float localLightL = clamp(1.14 - origL * 0.60, 0.86, 0.99);
+    float lightL = mix(baseLightL, localLightL, localBoost);
+    return mix(rgb, vec3(lightL), inkT);
+  }
+  #endif
   out vec2 v_pos; out vec2 v_cpos;
   flat out vec4 v_rect; flat out vec4 v_p; flat out vec4 v_color; flat out vec4 v_c2; flat out vec4 v_clip; flat out vec4 v_pad;
   flat out vec4 v_rc; flat out vec4 v_rs; flat out vec4 v_rr; flat out vec4 v_oclip; flat out vec4 v_orc; flat out vec4 v_ors;
@@ -493,6 +605,24 @@
     vec2 rel = at - u_origin;
     gl_Position = vec4(rel.x / u_vp.x * 2.0 - 1.0, 1.0 - rel.y / u_vp.y * 2.0, 0.0, 1.0);
     v_pos = pos; v_cpos = a_rot.w > 0.5 ? at : pos; v_rect = a_rect; v_p = a_p; v_color = a_color; v_c2 = a_c2; v_clip = a_clip; v_pad = a_pad; v_rc = a_rc; v_rs = a_rs; v_rr = a_rr;
+    #if MB_VS_ADAPTIVE
+    if (kind == 7) {
+      v_color.rgb = vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, a_p.zw, false);
+    } else if ((kind == 10 || kind == 11) && a_pad.w > 0.0) {
+      v_color.rgb = vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, kind == 10 ? vec2(0.0) : a_p.zw, true);
+    } else if (kind == 0 && a_pad.w < 0.0) {
+      float ch = max(max(a_color.r, a_color.g), a_color.b) - min(min(a_color.r, a_color.g), a_color.b);
+      vec2 capCenter, capHalf;
+      float darkT = vs_ad_sample_ink(a_pad.yz, -a_pad.w * 0.5, capCenter, capHalf).x;
+      if (ch <= 0.08 && vs_luma(a_color.rgb) < 0.5) {
+        v_color.rgb = mix(a_color.rgb, vec3(1.0), darkT);
+        v_color.a = mix(a_color.a, min(a_color.a * 1.45, 0.28), darkT);
+      } else if (ch > 0.08 && vs_luma(a_color.rgb) < 0.35) {
+        v_color.rgb = mix(a_color.rgb, min(a_color.rgb * 1.65 + vec3(0.28, 0.20, 0.18), vec3(1.0)), darkT);
+        v_color.a = mix(a_color.a, min(a_color.a * 1.45, 0.36), darkT);
+      }
+    }
+    #endif
     // (a glyph's p.x, which it has no use for: how it is turned, for its texels taken whole where it is not)
     if (kind == 1 || kind == 3 || kind == 7) v_p.x = a_rot.x;
     if (kind == 4 && a_pad.z > 0.5) v_pad.x = a_rot.w;
@@ -801,33 +931,50 @@
   flat in vec4 v_rc; flat in vec4 v_rs; flat in vec4 v_rr; flat in vec4 v_oclip; flat in vec4 v_orc; flat in vec4 v_ors;
   in vec4 v_ramp;
   uniform float u_scale;
+  #if MB_HAS(1) || MB_HAS(3) || MB_HAS(7)
   uniform sampler2D u_atlas;
+  #endif
+  #if MB_HAS(4)
   uniform sampler2D u_img;
+  #endif
   // glass (src/ui/glass.mbt): the blurred copy under it and where a point is in it (uv = p * u_map.xy + u_map.zw, kept
   // in u_uvc), a liquid group's shapes and corners, how many
+  #if MB_HAS_BACKDROP
   uniform highp sampler2D u_bd;
   uniform vec4 u_map;
   uniform vec4 u_uvc;
+  #endif
   // a liquid group's bounds (as the vertex shader has them)
+  #if MB_HAS_GROUP
   uniform vec4 u_gb;
   uniform vec4 u_shape[8];
   uniform vec4 u_rad[8];
   uniform int u_n;
+  #endif
+  #if MB_HAS_LIQUID
   uniform vec2 u_glight;
+  #endif
+  #if MB_HAS_ADAPTIVE
   uniform highp sampler2D u_ad;
   uniform vec4 u_ad_box[16];
   uniform int u_ad_n;
+  #endif
   // the pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), 2040 fours
   // (136 instances) a row
+  #if MB_HAS(11)
   uniform highp sampler2D u_segs;
+  #endif
   out vec4 o;
   ${CORNERS}
+  #if MB_HAS(5) || MB_HAS_LIQUID || MB_HAS(8)
   float sd_rr(vec2 p, vec4 r, vec4 rad) {
     vec2 hs = r.zw * 0.5;
     return mb_sd_box(p - r.xy - hs, hs, mb_corner_of(p - r.xy - hs, rad), 1e9);
   }
+  #endif
   // a notch cut into the top edge (scene.mbt 21-23): a circle about the top's middle (pad.y below it, pad.z its
   // radius), met by the edge through fillets (pad.w): the rounded intersection with what is outside the circle
+  #if MB_HAS(0) || MB_HAS(5)
   float notch_cut(float d, vec2 p, vec4 r, vec4 pad) {
     if (pad.z <= 0.0) return d;
     float b = pad.z - length(p - vec2(r.x + r.z * 0.5, r.y + pad.y));
@@ -835,6 +982,8 @@
     vec2 u = max(vec2(f + d, f + b), 0.0);
     return min(-f, max(d, b)) + length(u);
   }
+  #endif
+  #if MB_HAS_GROUP
   float smin_k(float a, float b, float k) {
     if (k <= 0.0) return min(a, b);
     float h = max(k - abs(a - b), 0.0) / k;
@@ -848,16 +997,22 @@
     }
     return d;
   }
+  #endif
   // Integral of linear ramp from 0 to w (contourOffset = 0, width w in device px)
+  #if MB_HAS_LIQUID
   float mb_contour_int(float t, float w) {
     float u = clamp(t, 0.0, w);
     return u - u * u / (2.0 * w);
   }
+  #endif
+  #if MB_HAS(5) || MB_HAS_LIQUID || MB_HAS_ADAPTIVE
   vec3 backdrop(vec2 p) {
     return texture(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw)).rgb;
   }
   float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
   float mb_ink_luma(vec3 c) { return dot(c * c, vec3(0.2126, 0.7152, 0.0722)); }
+  #endif
+  #if MB_HAS_ADAPTIVE
   float mb_backdrop_luma_rect(vec2 c, vec2 h) {
     float sum = 0.0;
     float mx1 = -1.0, mx2 = -1.0;
@@ -906,79 +1061,7 @@
     float bgL = mb_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));
     return is_dark_glass ? smoothstep(0.35, 0.85, bgL) : (1.0 - smoothstep(0.30, 0.42, bgL));
   }
-  vec2 ad_sample_ink(vec2 ac, float fallback_r, out vec2 capCenter, out vec2 capHalf) {
-    if (u_ad_n > 0) {
-      int best = -1;
-      float best_d = 1e9;
-      for (int i = 0; i < 16; i++) {
-        if (i >= u_ad_n) break;
-        float d = length(ac - u_ad_box[i].xy);
-        if (d <= 2.0 && d < best_d) { best = i; best_d = d; }
-      }
-      if (best < 0) {
-        best_d = 1e9;
-        for (int i = 0; i < 16; i++) {
-          if (i >= u_ad_n) break;
-          vec2 diff = abs(ac - u_ad_box[i].xy);
-          if (diff.x <= u_ad_box[i].z + 2.0 && diff.y <= u_ad_box[i].w + 2.0) {
-            float d = length(diff);
-            if (d < best_d) { best = i; best_d = d; }
-          }
-        }
-      }
-      if (best >= 0) {
-        vec4 px = texelFetch(u_ad, ivec2(best, 0), 0);
-        capCenter = u_ad_box[best].xy;
-        capHalf = u_ad_box[best].zw;
-        return vec2(mb_unpack16(px.rg), px.a);
-      }
-    }
-    capCenter = ac;
-    capHalf = vec2(0.0);
-    float bgL = mb_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));
-    return vec2(1.0 - smoothstep(0.30, 0.42, bgL), bgL);
-  }
-  vec3 mb_adaptive_ink_at(vec3 rgb, vec2 ac, float fallback_r, vec4 rect, vec2 sample_off, bool is_icon) {
-    float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);
-    float origL = luma(rgb);
-    if (ch > 0.08 || origL >= 0.5) return rgb;
-    vec2 capCenter, capHalf;
-    vec2 cap = ad_sample_ink(ac, fallback_r, capCenter, capHalf);
-    float capsuleDarkT = cap.x;
-    float capsuleBgL = cap.y;
-    float darkT = capsuleDarkT;
-    float localBoost = 0.0;
-    bool is_large = (capHalf.x >= 140.0 && capHalf.y >= 19.0);
-    if (is_large && capsuleDarkT < 0.999) {
-      vec2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;
-      if (capHalf.y <= 28.0) samplePos.y = capCenter.y;
-      vec2 guv = samplePos * u_map.xy + u_map.zw;
-      if (u_uvc.z > u_uvc.x && u_uvc.w > u_uvc.y && guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {
-        vec2 sampleH;
-        if (is_icon) {
-          sampleH = vec2(10.0, 8.0);
-        } else {
-          float edgeDist = min(samplePos.x - (capCenter.x - capHalf.x + 8.0), (capCenter.x + capHalf.x - 8.0) - samplePos.x);
-          float rx = clamp(edgeDist / 0.76, 10.0, 20.0);
-          float ry = clamp(capHalf.y * 0.55, 8.0, 14.0);
-          sampleH = vec2(rx, ry);
-        }
-        float localL = mb_backdrop_luma_rect(samplePos, sampleH);
-        float localDarkT = 1.0 - smoothstep(0.22, 0.28, localL);
-        float localW = max(smoothstep(0.35, 0.44, capsuleBgL), smoothstep(0.08, 0.20, capsuleBgL - localL));
-        float localEff = localDarkT * localW;
-        if (localEff > darkT) {
-          localBoost = clamp(localEff - capsuleDarkT, 0.0, 1.0);
-          darkT = localEff;
-        }
-      }
-    }
-    float inkT = smoothstep(0.0, 1.0, darkT);
-    float baseLightL = clamp(1.06 - origL, 0.68, 0.98);
-    float localLightL = clamp(1.14 - origL * 0.60, 0.86, 0.99);
-    float lightL = mix(baseLightL, localLightL, localBoost);
-    return mix(rgb, vec3(lightL), inkT);
-  }
+  #endif
   // how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth
   // each is), its edge covered as a box's own (0.5 - d * scale), so what it cuts meets the ground of the box that cuts it
   float clip_cover(vec2 p, vec4 c, vec4 r, vec4 s, float scale) {
@@ -987,15 +1070,12 @@
   }
   // what it shows at p, as if uncut
   void shade(vec2 p, float fade_r) {
-    #ifndef ONE_KIND
-    #define ONE_KIND -1
-    #endif
-    int kind = ONE_KIND == 13 ? 6 : (ONE_KIND >= 0 ? ONE_KIND : int(v_p.y + 0.5));
-    #if ONE_KIND < 0
+    int kind = (MB_LIQUID_SINGLE != 0) ? 6 : (ONE_KIND >= 0 ? ONE_KIND : int(v_p.y + 0.5));
+    #if MB_HAS(9)
     if (kind == 9) { vec2 hh = v_rect.zw * 0.5; float rr = min(mb_corner_of(p - v_rect.xy - hh, v_rr), min(hh.x, hh.y)); vec2 q = abs(p - v_rect.xy - hh) - hh + rr; if (length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rr > 0.0) discard; o = vec4(0.0); return; }
     #endif
     vec4 col = v_color;
-    #if ONE_KIND < 0 || ONE_KIND == 11
+    #if MB_HAS(11)
     if (kind == 11) {
       // a band of a shape (src/ui/shape.mbt): c2.y of its pieces from c2.x; p.x half its stroke's width (0: a fill,
       // c2.z 1 by the even-odd rule)
@@ -1010,23 +1090,21 @@
         for (int i = first; i < first + n; i++) { int t = (i / 6) * 15 + mb_seg_slot(i); w += mb_path_rows(texelFetch(u_segs, ivec2(t % 2040, t / 2040), 0), v_rect, p, u_scale); }
         a = mb_path_cover(w, v_c2.z);
       }
-      if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink_at(col.rgb, v_pad.yz, v_pad.w * 0.5, v_rect, v_p.zw, true);
       o = vec4(col.rgb, 1.0) * col.a * a;
       return;
     }
     #endif
-    #if ONE_KIND < 0 || ONE_KIND == 10
+    #if MB_HAS(10)
     if (kind == 10) {
       // a piece of a line (scene.mbt): from c2.xy to c2.zw (shares of its rect), p.x half its width, its ends round
       vec2 a = v_rect.xy + v_c2.xy * v_rect.zw, ab = v_rect.xy + v_c2.zw * v_rect.zw - a;
       float h = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-8), 0.0, 1.0);
       float d = length(p - a - ab * h) - v_p.x;
-      if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink_at(col.rgb, v_pad.yz, v_pad.w * 0.5, v_rect, vec2(0.0), true);
       o = vec4(col.rgb, 1.0) * col.a * clamp(0.5 - d * u_scale, 0.0, 1.0);
       return;
     }
     #endif
-    #if ONE_KIND < 0 || ONE_KIND == 1 || ONE_KIND == 3
+    #if MB_HAS(1) || MB_HAS(3) || MB_HAS(7)
     if (kind == 1 || kind == 3 || kind == 7) {
       // within its own cell (c2: where in the atlas, in texels), however its rect is stretched or turned: a sample
       // past the cell's edge texels would blend in what lies beside it (another glyph, one left from before the
@@ -1039,19 +1117,11 @@
       vec2 tex = exact ? floor(p * u_scale - r0i) + 0.5 : (p - v_rect.xy) / v_rect.zw * v_c2.zw;
       vec2 uv = clamp(v_c2.xy + tex, v_c2.xy + 0.5, v_c2.xy + v_c2.zw - 0.5) / ${ATLAS}.0;
       vec4 t = texture(u_atlas, uv);
-      #if ONE_KIND < 0
-      if (kind == 7) {
-        // inked by how light what is under its glass is, looked at round the glass's middle and locally
-        vec3 ink = mb_adaptive_ink_at(col.rgb, v_pad.yz, v_pad.w * 0.5, v_rect, v_p.zw, false);
-        o = vec4(ink, 1.0) * (t.a * col.a);
-        return;
-      }
-      #endif
-      o = kind == 1 ? vec4(col.rgb, 1.0) * (t.a * col.a) : t * col.a;
+      o = (kind == 1 || kind == 7) ? vec4(col.rgb, 1.0) * (t.a * col.a) : t * col.a;
       return;
     }
     #endif
-    #if ONE_KIND < 0 || ONE_KIND == 6 || ONE_KIND == 13
+    #if MB_HAS_LIQUID
     if (kind == 6) {
       // Copyright 2025, Tim Lehmann for whynotmake.it. Adapted from flutter_liquid_glass
       // liquid_glass_final_render_core.glsl, Apache-2.0.
@@ -1059,7 +1129,7 @@
       vec4 s_rr = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? v_rr : vec4(v_p.x);
       float d;
       float halfMinor = 1e9;
-      #if ONE_KIND == 13
+      #if MB_LIQUID_SINGLE
       d = sd_rr(p, v_rect, s_rr);
       halfMinor = min(v_rect.z, v_rect.w) * 0.5;
       #else
@@ -1113,7 +1183,7 @@
       bool need_grad = (inward < max(bevel, 23.0)) || (ext_cov > 0.0);
       if (need_grad) {
         float e = 0.5;
-        #if ONE_KIND == 13
+        #if MB_LIQUID_SINGLE
         vec2 grad = vec2(
             sd_rr(p + vec2(e, 0.0), v_rect, s_rr) - sd_rr(p - vec2(e, 0.0), v_rect, s_rr),
             sd_rr(p + vec2(0.0, e), v_rect, s_rr) - sd_rr(p - vec2(0.0, e), v_rect, s_rr)
@@ -1141,7 +1211,7 @@
       float lensZoom = (v_p.w < 0.0) ? clamp(1.0 - v_p.w, 1.0, 3.0) : 1.0;
       vec2 sampleBase = p;
       if (lensZoom > 1.0001) {
-        #if ONE_KIND == 13
+        #if MB_LIQUID_SINGLE
         vec2 zoomC = v_rect.xy + v_rect.zw * 0.5;
         #else
         vec2 zoomC = (k <= 0.0) ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);
@@ -1186,7 +1256,7 @@
         glintFaceGain = mix(0.0, 0.25, clearVeil);
         glintVib = mix(2.85, 1.5, clearVeil);
       } else if (is_adaptive) {
-        #if ONE_KIND == 13
+        #if MB_LIQUID_SINGLE
         vec2 ac = v_rect.xy + v_rect.zw * 0.5;
         float ar = max(min(v_rect.z, v_rect.w) * 0.5, 1.0) * 0.5;
         #else
@@ -1329,7 +1399,7 @@
       return;
     }
     #endif
-    #if ONE_KIND < 0
+    #if MB_HAS(8)
     if (kind == 8) {
       vec4 s_rr = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? v_rr : vec4(v_p.x);
       float d = sd_rr(p, v_rect, s_rr);
@@ -1365,7 +1435,7 @@
       return;
     }
     #endif
-    #if ONE_KIND < 0 || ONE_KIND == 0 || ONE_KIND == 2 || ONE_KIND == 4 || ONE_KIND == 5
+    #if MB_HAS_BOX
     vec2 hs = v_rect.zw * 0.5;
     vec2 c = v_rect.xy + hs;
     // worked out as near the curve as its cover, its edge or its blur reaches
@@ -1373,10 +1443,10 @@
     // (its corner by p: v_rr, each its own)
     float rad = mb_corner_of(p - c, v_rr);
     float d = mb_sd_box(p - c, hs, rad, band);
-    #if ONE_KIND < 0 || ONE_KIND == 0 || ONE_KIND == 5
+    #if MB_HAS(0) || MB_HAS(5)
     if ((kind == 0 && v_pad.w >= 0.0) || kind == 5) d = notch_cut(d, p, v_rect, v_pad);
     #endif
-    #if ONE_KIND < 0 || ONE_KIND == 4
+    #if MB_HAS(4)
     if (kind == 4) {
       vec2 uv = v_c2.xy + clamp((p - v_rect.xy) / v_rect.zw, 0.0, 1.0) * v_c2.zw;
       vec4 pic = texture(u_img, clamp(uv, 0.0, 1.0));
@@ -1399,7 +1469,7 @@
       return;
     }
     #endif
-    #if ONE_KIND < 0 || ONE_KIND == 2
+    #if MB_HAS(2)
     if (kind == 2) {
       // as Core Animation's: the shape blurred, sigma its radius (corner.sl mb_shadow)
       float a = mb_shadow(p - c, hs, rad, max(v_p.w, 0.25));
@@ -1413,9 +1483,9 @@
       return;
     }
     #endif
-    #if ONE_KIND < 0 || ONE_KIND == 0 || ONE_KIND == 5
+    #if MB_HAS(0) || MB_HAS(5)
     float a = clamp(0.5 - d * u_scale, 0.0, 1.0);
-    #if ONE_KIND < 0 || ONE_KIND == 5
+    #if MB_HAS(5)
     if (kind == 5) {
       // frosted: the blurred copy, saturated, the tint over it; the rim (a hairline inside the edge, the top left lit,
       // the foot and right less), 0.5 wide
@@ -1445,19 +1515,7 @@
       return;
     }
     #endif
-    #if ONE_KIND < 0 || ONE_KIND == 0
-    if (v_pad.w < 0.0) {
-      float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);
-      vec2 capCenter, capHalf;
-      float darkT = ad_sample_ink(v_pad.yz, -v_pad.w * 0.5, capCenter, capHalf).x;
-      if (ch <= 0.08 && luma(col.rgb) < 0.5) {
-        col.rgb = mix(col.rgb, vec3(1.0), darkT);
-        col.a = mix(col.a, min(col.a * 1.45, 0.28), darkT);
-      } else if (ch > 0.08 && luma(col.rgb) < 0.35) {
-        col.rgb = mix(col.rgb, min(col.rgb * 1.65 + vec3(0.28, 0.20, 0.18), vec3(1.0)), darkT);
-        col.a = mix(col.a, min(col.a * 1.45, 0.36), darkT);
-      }
-    }
+    #if MB_HAS(0)
     vec4 fill = vec4(col.rgb, 1.0) * col.a;
     if (v_p.z > 0.0) {
       float inner = clamp(0.5 - (d + v_p.z) * u_scale, 0.0, 1.0);
@@ -1483,15 +1541,20 @@
       if (cover <= 0.0) discard;
     }
     // and faded out towards a cut, each pixel by where it is (scene.mbt 52-59)
-    int kind = ONE_KIND >= 0 ? ONE_KIND : int(v_p.y + 0.5);
-    bool prog_glass = (kind == 5 && v_pad.z < -0.5);
     vec4 ramp = clamp(v_ramp, 0.0, 1.0);
     float fade_r = ramp.x * ramp.y * ramp.z * ramp.w;
     if (fade_r <= 0.0) discard;
+    #if MB_HAS(5)
+    int kind = ONE_KIND >= 0 ? ONE_KIND : int(v_p.y + 0.5);
+    bool prog_glass = (kind == 5 && v_pad.z < -0.5);
     if (!prog_glass) {
       cover *= fade_r;
       if (cover <= 0.0) discard;
     }
+    #else
+    cover *= fade_r;
+    if (cover <= 0.0) discard;
+    #endif
     shade(p, fade_r);
     o *= cover;
   }`;
@@ -1723,10 +1786,42 @@
     return s;
   }
 
-  const hasOwnProg = (kind) => (kind >= 0 && kind <= 6) || kind === 10 || kind === 11 || kind === MB_KIND_LIQUID_SINGLE;
+  function groupOfKind(kind, padW) {
+    if (kind === 11) return MB_PROG_PATH;
+    if (kind === 5) return MB_PROG_FROSTED;
+    if (kind === 6) return padW > 0 ? MB_PROG_LIQUID_MERGED : MB_PROG_LIQUID_SINGLE;
+    if (kind === 13) return MB_PROG_LIQUID_SINGLE;
+    if (kind === 8) return MB_PROG_LENS;
+    return MB_PROG_UI;
+  }
 
-  function makeProg(vsShader, kind) {
-    const src = `#version 300 es\n#define ONE_KIND ${kind}\n` + FS.slice('#version 300 es\n'.length);
+  function makeProg(group) {
+    let vsShader = vs;
+    let fsHead;
+    switch (group) {
+      case MB_PROG_FROSTED:
+        fsHead = '#version 300 es\n#define ONE_KIND 5\n#define MB_HAS(K) ((K) == 5)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 1\n#define MB_HAS_BOX 1\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
+        break;
+      case MB_PROG_LIQUID_MERGED:
+        fsHead = '#version 300 es\n#define ONE_KIND 6\n#define MB_HAS(K) ((K) == 6)\n#define MB_HAS_LIQUID 1\n#define MB_HAS_ADAPTIVE 1\n#define MB_HAS_BACKDROP 1\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 1\n#define MB_LIQUID_SINGLE 0\n';
+        break;
+      case MB_PROG_LIQUID_SINGLE:
+        fsHead = '#version 300 es\n#define ONE_KIND 13\n#define MB_HAS(K) ((K) == 6)\n#define MB_HAS_LIQUID 1\n#define MB_HAS_ADAPTIVE 1\n#define MB_HAS_BACKDROP 1\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 1\n';
+        break;
+      case MB_PROG_LENS:
+        fsHead = '#version 300 es\n#define ONE_KIND 8\n#define MB_HAS(K) ((K) == 8)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 1\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
+        break;
+      case MB_PROG_PATH:
+        vsShader = vsAd;
+        fsHead = '#version 300 es\n#define ONE_KIND 11\n#define MB_HAS(K) ((K) == 11)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
+        break;
+      case MB_PROG_UI:
+      default:
+        vsShader = vsAd;
+        fsHead = '#version 300 es\n#define ONE_KIND -1\n#define MB_HAS(K) ((K) == 0 || (K) == 1 || (K) == 2 || (K) == 3 || (K) == 4 || (K) == 7 || (K) == 9 || (K) == 10)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 1\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
+        break;
+    }
+    const src = fsHead + FS.slice('#version 300 es\n'.length);
     const fs = compile(gl.FRAGMENT_SHADER, src);
     const p = gl.createProgram();
     gl.attachShader(p, vsShader);
@@ -1738,26 +1833,30 @@
     for (const n of ['u_vp', 'u_origin', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_glight', 'u_segs', 'u_ad', 'u_ad_box', 'u_ad_n']) {
       u[n] = gl.getUniformLocation(p, n);
     }
+    progNow = p;
     gl.useProgram(p);
     if (u.u_atlas) gl.uniform1i(u.u_atlas, 0);
     if (u.u_img) gl.uniform1i(u.u_img, 1);
     if (u.u_bd) gl.uniform1i(u.u_bd, 2);
     if (u.u_segs) gl.uniform1i(u.u_segs, 3);
     if (u.u_ad) gl.uniform1i(u.u_ad, 4);
-    return { p, u, gen: 0 };
+    return { p, u, gen: progGen - 1 };
   }
 
-  function getProg(kind) {
-    const idx = kind >= 0 && hasOwnProg(kind) ? kind : MB_KINDS;
+  function getProg(group) {
+    const idx = (group >= 0 && group < MB_PROGS) ? group : MB_PROG_UI;
     let k = progs[idx];
-    if (!k) k = progs[idx] = makeProg(vs, idx === MB_KINDS ? -1 : idx);
+    if (!k) k = progs[idx] = makeProg(idx);
     return k;
   }
 
-  function useProg(kind) {
-    const k = getProg(kind);
-    progNow = k.p;
-    gl.useProgram(k.p);
+  function useProg(group) {
+    const k = getProg(group);
+    if (progNow === k.p && k.gen === progGen) return;
+    if (progNow !== k.p) {
+      progNow = k.p;
+      gl.useProgram(k.p);
+    }
     if (k.gen === progGen) return;
     k.gen = progGen;
     const u = k.u;
@@ -1782,11 +1881,13 @@
     gl = canvas.getContext('webgl2', { premultipliedAlpha: true, antialias: false, alpha: true });
     cv = null;
     cvOk = false;
-    vs = compile(gl.VERTEX_SHADER, VS);
-    progs = new Array(MB_KINDS + 1).fill(null);
-    progs[MB_KINDS] = makeProg(vs, -1);
-    prog = progs[MB_KINDS].p;
-    U = progs[MB_KINDS].u;
+    const vsBody = VS.slice('#version 300 es\n'.length);
+    vs = compile(gl.VERTEX_SHADER, '#version 300 es\n#define MB_VS_ADAPTIVE 0\n' + vsBody);
+    vsAd = compile(gl.VERTEX_SHADER, '#version 300 es\n#define MB_VS_ADAPTIVE 1\n' + vsBody);
+    progs = new Array(MB_PROGS).fill(null);
+    progs[MB_PROG_UI] = makeProg(MB_PROG_UI);
+    prog = progs[MB_PROG_UI].p;
+    U = progs[MB_PROG_UI].u;
     const fsFlat = compile(gl.FRAGMENT_SHADER, FS_FLAT);
     progFlat = gl.createProgram();
     gl.attachShader(progFlat, vs);
@@ -2610,7 +2711,8 @@
     gl.activeTexture(gl.TEXTURE4);
     gl.bindTexture(gl.TEXTURE_2D, adTex[adCur] || atlasTex);
     progGen++;
-    useProg(-1);
+    progNow = null;
+    useProg(MB_PROG_UI);
   }
 
   // The pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), for the
@@ -3144,12 +3246,12 @@
             cs++;
             continue;
           }
-          const cown = hasOwnProg(ck);
+          const cgrp = groupOfKind(ck, f32[cs * INST + 23]);
           let ce = cs + 1;
           while (ce < cendAll && (f32[ce * INST + 20] | 0) === ctid) {
             const kk = Math.round(f32[ce * INST + 5]);
             if (kk === 5 || kk === 6 || kk === 8 || kk === 9 || kk === 12) break;
-            if (cown ? kk !== ck : hasOwnProg(kk)) break;
+            if (groupOfKind(kk, f32[ce * INST + 23]) !== cgrp) break;
             ce++;
           }
           let ct = atlasTex;
@@ -3164,7 +3266,7 @@
           }
           gl.activeTexture(gl.TEXTURE1);
           gl.bindTexture(gl.TEXTURE_2D, ct);
-          useProg(cown ? ck : -1);
+          useProg(cgrp);
           drawRun(cs, ce - cs);
           cs = ce;
         }
@@ -3186,7 +3288,7 @@
         guvc[0] = 0.5 / W; guvc[1] = 0.5 / H;
         guvc[2] = (pw - 0.5) / W; guvc[3] = (ph - 0.5) / H;
         mainState();
-        useProg(-1);
+        useProg(MB_PROG_LENS);
         drawRun(start, 1);
         bdTex = prevBd;
         gl.activeTexture(gl.TEXTURE2);
@@ -3195,13 +3297,17 @@
         start += 1 + childN;
         continue;
       }
+      if (kind === 12) {
+        start++;
+        continue;
+      }
       const h = kind === 9;
-      const own = tid >= 0 && !h && hasOwnProg(kind);
+      const grp = groupOfKind(kind, f32[start * INST + 23]);
       let end = start + 1;
       while (end < n && (f32[end * INST + 20] | 0) === tid) {
         const k = Math.round(f32[end * INST + 5]);
-        if (k === 8 || (k === 9) !== h) break;
-        if (own ? k !== kind : (tid >= 0 && !h && hasOwnProg(k))) break;
+        if (k === 8 || k === 12 || (k === 9) !== h) break;
+        if (tid >= 0 && !h && groupOfKind(k, f32[end * INST + 23]) !== grp) break;
         end++;
       }
       if (tid < 0) {
@@ -3237,14 +3343,13 @@
         if (shows) {
           // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
           const mergedLiquid = kind === 6 && f32[start * INST + 23] > 0;
-          const gkind = kind === 5 ? 5 : (kind === 6 ? (mergedLiquid ? 6 : MB_KIND_LIQUID_SINGLE) : -1);
-          useProg(gkind);
+          useProg(groupOfKind(kind, f32[start * INST + 23]));
           drawRun(start, mergedLiquid ? 1 : end - start);
         }
         start = end;
         continue;
       }
-      useProg(own ? kind : -1);
+      useProg(grp);
       // a stream's picture (STREAM_TEX + its id): nothing until a frame of its own shows; a hole's image is its
       // view's (src/hostapi/host.mbt view_tex_base + its id), the element under the canvas here
       // (in a window beside the page, its own texture of each: slotTex)
@@ -5704,7 +5809,7 @@
   const rolesKept = new Map();
   function winSave(s) {
     Object.assign(s, {
-      canvas, gl, vs, prog, progs, progFlat, ufVp, progGen, progNow, post, adProg, vao, instBuf, atlasTex, ta, U, PU, ADU,
+      canvas, gl, vs, vsAd, prog, progs, progFlat, ufVp, progGen, progNow, post, adProg, vao, instBuf, atlasTex, ta, U, PU, ADU,
       cssW, cssH, dpr, rectLeft, rectTop, rectValid, sizeDirty, sizeObserver,
       lv, lvW, lvH, bdTex, glassSlots, glassSlotsClock, adTex, adFb, adCur, adSlots, adLastTime, adFrameSerial, adSettling, adRaf, lastN, lastR, lastG, lastB, lastF32,
       cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
@@ -5714,7 +5819,7 @@
   }
   function winLoad(s) {
     ({
-      canvas, gl, vs, prog, progs, progFlat, ufVp, progGen, progNow, post, adProg, vao, instBuf, atlasTex, ta, U, PU, ADU,
+      canvas, gl, vs, vsAd, prog, progs, progFlat, ufVp, progGen, progNow, post, adProg, vao, instBuf, atlasTex, ta, U, PU, ADU,
       cssW, cssH, dpr, rectLeft, rectTop, rectValid, sizeDirty, sizeObserver,
       lv, lvW, lvH, bdTex, glassSlots, glassSlotsClock, adTex, adFb, adCur, adSlots, adLastTime, adFrameSerial, adSettling, adRaf, lastN, lastR, lastG, lastB, lastF32,
       cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
@@ -5851,12 +5956,13 @@
         if (s.progFlat) sg.deleteProgram(s.progFlat);
         if (s.post) sg.deleteProgram(s.post);
         if (s.vs) sg.deleteShader(s.vs);
+        if (s.vsAd) sg.deleteShader(s.vsAd);
         const loser = sg.getExtension('WEBGL_lose_context');
         if (loser) loser.loseContext();
       } catch (err) { /* its context gone */ }
     }
     Object.assign(s, {
-      gl: null, vs: null, prog: null, progs: new Array(MB_KINDS + 1).fill(null), progFlat: null, ufVp: null,
+      gl: null, vs: null, vsAd: null, prog: null, progs: new Array(MB_PROGS).fill(null), progFlat: null, ufVp: null,
       progGen: 0, progNow: null, post: null, vao: null, instBuf: null, atlasTex: null, segsTex: null, segsHad: null,
       lv: null, lvW: 0, lvH: 0, bdTex: null, glassSlots: makeGlassSlots(), glassSlotsClock: 0,
       adProg: null, ADU: {}, adTex: [null, null], adFb: [null, null], adCur: 0, adSlots: makeAdSlots(),
@@ -5973,7 +6079,7 @@
     const s = {
       wid, win: child, role, minW, minH, closed: false, closing: false, pending: false, raf: 0, wake: { at: -1 },
       texs: new Map(),
-      canvas: ccanvas, gl: null, vs: null, prog: null, progs: new Array(MB_KINDS + 1).fill(null), progFlat: null,
+      canvas: ccanvas, gl: null, vs: null, vsAd: null, prog: null, progs: new Array(MB_PROGS).fill(null), progFlat: null,
       ufVp: null, progGen: 0, progNow: null, post: null, vao: null, instBuf: null, atlasTex: null, ta: cta,
       U: {}, PU: {}, cssW: 0, cssH: 0, dpr: child.devicePixelRatio || 1, rectLeft: 0, rectTop: 0, rectValid: false,
       sizeDirty: true, sizeObserver: null,
