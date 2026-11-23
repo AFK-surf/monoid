@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [15e4bd88f](https://github.com/AFK-surf/monoid/commit/15e4bd88f4e1d5d313e9187ee46950e1f1e6dfad) refactor(ui): merge libs/mbui and libs/sf-ui into  | 2.71 | 3.66 | 14.82 | 36.95 | 56.48 | 32.38 | 65.71 | 100.07 | 123.65 |
 | [2e080a421](https://github.com/AFK-surf/monoid/commit/2e080a421b8050968fdabe36bb82370f22840c2f) fix(mbui): invert adaptive glass ink locally over  | 2.72 | 3.66 | 14.83 | 36.95 | 56.5 | 32.38 | 65.71 | 100.07 | 121.9 |
 | [2346b90bb](https://github.com/AFK-surf/monoid/commit/2346b90bb670992e634f127e736f30c02e116cc0) feat(cloud): trace cron tasks, slow, rate-limited  | 2.72 | 3.66 | 14.83 | 36.95 | 56.5 | 32.38 | 65.71 | 99.68 | 109.58 |
 | [cbb992816](https://github.com/AFK-surf/monoid/commit/cbb9928169cca710826d0540c72d1112b5eed0de) perf(mbui): lazy-compile pruned GLES shaders and f | 2.72 | 3.66 | 14.83 | 36.95 | 56.5 | 32.38 | 65.71 | 99.68 | 109.58 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [627160f39](https://github.com/AFK-surf/monoid/commit/627160f39bc0c40e1bcab473e7161d2d4789ec48) chore(sf-ui): guard against raw glass outside @lg  | 2.7 | 3.63 | 14.73 | 36.82 | 56.09 | 32.25 | 65.38 | 99.21 | 121.28 |
 | [dd573a706](https://github.com/AFK-surf/monoid/commit/dd573a706239ec1ae450b59bff9fef8f5d839ce3) refactor(sf-ui): delegate controls, capsules, lens | 2.7 | 3.63 | 14.73 | 36.82 | 56.09 | 32.25 | 65.38 | 99.32 | 125.45 |
 | [f70cbae6f](https://github.com/AFK-surf/monoid/commit/f70cbae6f66c4022f8d655a311a01a188ebc1ae9) fix(mbui,sf-ui): let the wheel scroll the page und | 2.7 | 3.64 | 14.73 | 36.82 | 56.11 | 32.25 | 65.39 | 99.12 | 119.8 |
-| [085d7c0a8](https://github.com/AFK-surf/monoid/commit/085d7c0a84130648707d7f09f68058f82a90c5a0) fix(mbui): unbind blur levels before glass draws i | 2.7 | 3.64 | 14.73 | 36.82 | 56.11 | 32.25 | 65.39 | 99.12 | 119.8 |
 
-## Minimal framework baseline (`libs/mbui` `demo`)
+## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [15e4bd88f](https://github.com/AFK-surf/monoid/commit/15e4bd88f4e1d5d313e9187ee46950e1f1e6dfad) refactor(ui): merge libs/mbui and libs/sf-ui into  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.02 |
 | [2e080a421](https://github.com/AFK-surf/monoid/commit/2e080a421b8050968fdabe36bb82370f22840c2f) fix(mbui): invert adaptive glass ink locally over  | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.83 | 55.22 |
 | [2346b90bb](https://github.com/AFK-surf/monoid/commit/2346b90bb670992e634f127e736f30c02e116cc0) feat(cloud): trace cron tasks, slow, rate-limited  | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.67 |
 | [cbb992816](https://github.com/AFK-surf/monoid/commit/cbb9928169cca710826d0540c72d1112b5eed0de) perf(mbui): lazy-compile pruned GLES shaders and f | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.38 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [627160f39](https://github.com/AFK-surf/monoid/commit/627160f39bc0c40e1bcab473e7161d2d4789ec48) chore(sf-ui): guard against raw glass outside @lg  | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.85 |
 | [dd573a706](https://github.com/AFK-surf/monoid/commit/dd573a706239ec1ae450b59bff9fef8f5d839ce3) refactor(sf-ui): delegate controls, capsules, lens | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.85 |
 | [f70cbae6f](https://github.com/AFK-surf/monoid/commit/f70cbae6f66c4022f8d655a311a01a188ebc1ae9) fix(mbui,sf-ui): let the wheel scroll the page und | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.85 |
-| [085d7c0a8](https://github.com/AFK-surf/monoid/commit/085d7c0a84130648707d7f09f68058f82a90c5a0) fix(mbui): unbind blur levels before glass draws i | 0.48 | 0.63 | 2.44 | 3.49 | 5.79 | 1.78 | 4.82 | 54.79 |
