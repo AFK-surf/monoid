@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ff21deb09](https://github.com/AFK-surf/monoid/commit/ff21deb09232de3b0c86c469835cfffe4c306cf3) fix(station): do not treat own kill socket close a | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.4 | 117.69 |
 | [cdbb71b9f](https://github.com/AFK-surf/monoid/commit/cdbb71b9f8bca652c3fb932f99ba8f8661142d5b) fix(core): guard ensureBoxKey on able(inner) when  | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.4 | 117.69 |
 | [f4342853d](https://github.com/AFK-surf/monoid/commit/f4342853d40855e4a1a6239128d2bad362eb447a) fix(mbui): keep the iOS 27 action tab's accent was | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.34 | 126.46 |
 | [283b75d55](https://github.com/AFK-surf/monoid/commit/283b75d55ec1fd956b32de7f7b80d2868883d467) feat(mesh): a switch for the DHT, on by default (# | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.34 | 126.46 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2e83ff5d4](https://github.com/AFK-surf/monoid/commit/2e83ff5d4f1a7ac17214417e10e508cf021d3733) fix(mbui): refresh page-seconds and rebalance app  | 2.72 | 3.66 | 14.83 | 36.94 | 56.49 | 32.37 | 65.71 | 99.62 | 124.9 |
 | [8c3c82085](https://github.com/AFK-surf/monoid/commit/8c3c82085e63fd332d5a3670cea5d94714a0e689) feat(mbui): merge composer-top controls into one c | 2.72 | 3.66 | 14.83 | 36.94 | 56.49 | 32.37 | 65.71 | 99.62 | 124.9 |
 | [13cfd02f3](https://github.com/AFK-surf/monoid/commit/13cfd02f3d105d402dd4ff4bd2a8d9ab6fd4f5c2) feat(sf-ui): upgrade floating player controls and  | 2.71 | 3.65 | 14.82 | 36.93 | 56.44 | 32.35 | 65.66 | 99.57 | 157.03 |
-| [4dcdd2a40](https://github.com/AFK-surf/monoid/commit/4dcdd2a40e05ee58cf7453db5422eeac18879dda) fix(mbui): track composed text for composer line r | 2.71 | 3.65 | 14.82 | 36.93 | 56.43 | 32.35 | 65.66 | 99.63 | 125.17 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ff21deb09](https://github.com/AFK-surf/monoid/commit/ff21deb09232de3b0c86c469835cfffe4c306cf3) fix(station): do not treat own kill socket close a | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.03 |
 | [cdbb71b9f](https://github.com/AFK-surf/monoid/commit/cdbb71b9f8bca652c3fb932f99ba8f8661142d5b) fix(core): guard ensureBoxKey on able(inner) when  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.35 |
 | [f4342853d](https://github.com/AFK-surf/monoid/commit/f4342853d40855e4a1a6239128d2bad362eb447a) fix(mbui): keep the iOS 27 action tab's accent was | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.07 |
 | [283b75d55](https://github.com/AFK-surf/monoid/commit/283b75d55ec1fd956b32de7f7b80d2868883d467) feat(mesh): a switch for the DHT, on by default (# | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.23 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2e83ff5d4](https://github.com/AFK-surf/monoid/commit/2e83ff5d4f1a7ac17214417e10e508cf021d3733) fix(mbui): refresh page-seconds and rebalance app  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.58 |
 | [8c3c82085](https://github.com/AFK-surf/monoid/commit/8c3c82085e63fd332d5a3670cea5d94714a0e689) feat(mbui): merge composer-top controls into one c | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 55 |
 | [13cfd02f3](https://github.com/AFK-surf/monoid/commit/13cfd02f3d105d402dd4ff4bd2a8d9ab6fd4f5c2) feat(sf-ui): upgrade floating player controls and  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.84 |
-| [4dcdd2a40](https://github.com/AFK-surf/monoid/commit/4dcdd2a40e05ee58cf7453db5422eeac18879dda) fix(mbui): track composed text for composer line r | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.74 |
