@@ -145,6 +145,8 @@ priv struct Actor {
   mut steered : Array[Json]
   mut steered_for : Array[Working]
   mut unread : Array[Json]
+  /// how many of the last of `unread` are not written to it yet (a steer on its way): a `requesting` keeps them
+  mut unread_preparing : Int
   mut delivery_interruptions : Int
   mut recoveries : Int
   mut recovery_deferred : Bool
@@ -397,6 +399,7 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         steered: [],
         steered_for: [],
         unread: [],
+        unread_preparing: 0,
         delivery_interruptions: 0,
         recoveries: 0,
         recovery_deferred: false,

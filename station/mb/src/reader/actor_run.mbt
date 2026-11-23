@@ -1122,6 +1122,7 @@ async fn Actors::suspend(self : Actors, a : Actor, why? : String = "the station 
     a.steered = []
     a.steered_for = []
     a.unread = []
+    a.unread_preparing = 0
     if agent is None && turn is None {
       return
     }
@@ -1528,11 +1529,10 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
     if a.stale {
       return
     }
-    if truthy(self.deps(a, "backgroundOnMessage", [jstr(a.key)])) {
-      ignore(self.agent_do(a, agent, "backgroundTools", []))
-    }
-    let (handed, told) = self.with_choices(a, d.text)
-    // (unread before it is written: the model can read it and ask again, `requesting`, before the steer answers)
+    // (unread before it is written: the model can read it and ask again, `requesting`, before the steer answers; and
+    // before it is marked delivered: Node's copy of it (`mirror`) is what a `chat_post` holds by once its delivery is
+    // marked. The mirror goes on the pipe before `backgroundOnMessage`'s ask, and Node answers that ask after taking
+    // it, so Node has it before the mark. Not written yet, a `requesting` leaves it: `unread_preparing`.)
     let before = a.unread.length()
     let mut added = 0
     for m in d.pending {
@@ -1541,9 +1541,43 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
         added += 1
       }
     }
-    let unsteer = () => if a.unread.length() >= before + added {
-      for _ in 0..<added {
-        ignore(a.unread.pop())
+    a.unread_preparing = added
+    if added > 0 {
+      self.mirror(a)
+    }
+    let unsteer = () => {
+      a.unread_preparing = 0
+      if a.unread.length() >= before + added {
+        for _ in 0..<added {
+          ignore(a.unread.pop())
+        }
+      }
+      if added > 0 {
+        self.mirror(a)
+      }
+    }
+    let background = self.deps(a, "backgroundOnMessage", [jstr(a.key)]) catch {
+      e => {
+        unsteer()
+        raise e
+      }
+    }
+    if truthy(background) {
+      ignore(self.agent_do(a, agent, "backgroundTools", [])) catch {
+        e => {
+          unsteer()
+          raise e
+        }
+      }
+    }
+    if !still(a, was) || a.stale {
+      unsteer()
+      return
+    }
+    let (handed, told) = self.with_choices(a, d.text) catch {
+      e => {
+        unsteer()
+        raise e
       }
     }
     // (marked delivered before it is written, as a prompt's is: the model can read it and answer with `chat_post`
@@ -1552,6 +1586,8 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
     if marked.length() > 0 {
       ignore(self.store(a, "markDelivered", [jstr(a.key), Json::array(marked)]))
     }
+    // (written from here: a `requesting` now is the model's after it)
+    a.unread_preparing = 0
     let steered = truthy(self.agent_do(a, agent, "steer", [jstr(self.timed(a, handed))])) catch {
       e => {
         unsteer()
@@ -1986,6 +2022,7 @@ async fn Actors::start_turn_body(
   a.steered = []
   a.steered_for = []
   a.unread = []
+  a.unread_preparing = 0
   self.begin_turn(a, kind, by, passive~, fresh~)
   if !(retry_about is Null) && a.turn is Some(t) {
     ignore(self.store(a, "setAbout", [jstr(t.id), [retry_about.value("thread").unwrap_or(Json::null()), retry_about.value("seq").unwrap_or(Json::null()), retry_about.value("ts").unwrap_or(Json::null())]]))
@@ -2486,10 +2523,18 @@ async fn Actors::on_event(self : Actors, a : Actor, generation : Int, event : Js
     "live" => {
       let ev = event.value("event").unwrap_or(Json::null())
       if str_of(ev.value("kind")) == Some("phase") && str_of(ev.value("phase")) == Some("requesting") {
-        if a.unread.length() > 0 {
+        // (what it has been written; what a steer on its way has not been, it has yet to read)
+        let keep = a.unread_preparing
+        let removable = a.unread.length() - keep
+        if removable > 0 {
           ignore(self.enqueue(a, async fn() { self.undeclare(a) }))
+          let tail : Array[Json] = []
+          for i in removable..<a.unread.length() {
+            tail.push(a.unread[i])
+          }
+          a.unread = tail
+          self.mirror(a)
         }
-        a.unread = []
       }
       if self.is_current(a, generation) {
         self.hear_words(a, ev)
