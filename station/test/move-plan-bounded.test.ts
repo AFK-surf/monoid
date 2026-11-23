@@ -137,6 +137,7 @@ const WANT: string[] = [
   "repos | repo:https://example.test/shared.git | shared |  |  | here | ",
   "repos | repo:https://example.test/own.git | own |  |  | here | ",
   "settings | setting:askToName | askToName |  |  | here | ",
+  "settings | setting:autoArchiveKeep | autoArchiveKeep |  |  | here | ",
 ];
 
 /// Every statement run on a database, whenever and however it was prepared (the store keeps what it prepares, so a
