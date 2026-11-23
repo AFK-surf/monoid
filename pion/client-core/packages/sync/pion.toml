@@ -3,6 +3,7 @@ name = "sync"
 version = "0.1.0"
 
 [dependencies]
+base64 = { workspace = true }
 effect = { workspace = true }
 base_codec = { workspace = true }
 crypto = { workspace = true }

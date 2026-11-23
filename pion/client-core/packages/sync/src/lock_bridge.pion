@@ -2,6 +2,7 @@
 // `mesh` Ed25519 + `hash` SHA-256 directly — zero Wasm or JSON serialization boundary.
 // Signing formats match `shared/lock.ts` and `station/src/vault/crypto.ts` byte-for-byte.
 
+import "base64"
 import "base_codec"
 import "form"
 import "crypto"
@@ -81,7 +82,218 @@ fn endpoint_signed_bytes(ws : String, endpoint : String) -> Bytes {
   out
 }
 
-/// Validate a lock/vault signing key id (`ed25519:<64hex>` or `p256:<base64url uncompressed point>`).
+// ── Exact NIST P-256 (secp256r1) curve validation over F_p (8 x 32-bit limbs, zero float) ──
+
+fn p256_prime_limbs() -> FixedArray[UInt64] {
+  [
+    0xFFFFFFFFUL, 0xFFFFFFFFUL, 0xFFFFFFFFUL, 0x00000000UL,
+    0x00000000UL, 0x00000000UL, 0x00000001UL, 0xFFFFFFFFUL,
+  ]
+}
+
+fn p256_b_limbs() -> FixedArray[UInt64] {
+  [
+    0x27D2604BUL, 0x3BCE3C3EUL, 0xCC53B0F6UL, 0x651D06B0UL,
+    0x769886BCUL, 0xB3EBBD55UL, 0xAA3A93E7UL, 0x5AC635D8UL,
+  ]
+}
+
+fn p256_be32_to_limbs(buf : Bytes, off : Int) -> FixedArray[UInt64] {
+  let out = FixedArray::make(8, 0UL)
+  for i in 0..<8 {
+    let bo = off + (7 - i) * 4
+    let b0 = buf[bo].to_int() as UInt64
+    let b1 = buf[bo + 1].to_int() as UInt64
+    let b2 = buf[bo + 2].to_int() as UInt64
+    let b3 = buf[bo + 3].to_int() as UInt64
+    out[i] = (b0 << 24UL) | (b1 << 16UL) | (b2 << 8UL) | b3
+  }
+  out
+}
+
+fn p256_limbs_is_zero(a : FixedArray[UInt64]) -> Bool {
+  for i in 0..<8 {
+    if a[i] != 0UL {
+      return false
+    }
+  }
+  true
+}
+
+fn p256_limbs_eq(a : FixedArray[UInt64], b : FixedArray[UInt64]) -> Bool {
+  for i in 0..<8 {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn p256_limbs_lt(a : FixedArray[UInt64], b : FixedArray[UInt64]) -> Bool {
+  let mut i = 7
+  while i >= 0 {
+    if a[i] < b[i] {
+      return true
+    }
+    if a[i] > b[i] {
+      return false
+    }
+    i -= 1
+  }
+  false
+}
+
+fn p256_fp_add(a : FixedArray[UInt64], b : FixedArray[UInt64], p : FixedArray[UInt64]) -> FixedArray[UInt64] {
+  let sum = FixedArray::make(8, 0UL)
+  let mut carry = 0UL
+  for i in 0..<8 {
+    let s = a[i] + b[i] + carry
+    sum[i] = s & 0xFFFFFFFFUL
+    carry = s >> 32UL
+  }
+  if carry != 0UL || !p256_limbs_lt(sum, p) {
+    let diff = FixedArray::make(8, 0UL)
+    let mut borrow = 0UL
+    for i in 0..<8 {
+      let d = (sum[i] + 0x100000000UL) - p[i] - borrow
+      diff[i] = d & 0xFFFFFFFFUL
+      borrow = 1UL - (d >> 32UL)
+    }
+    diff
+  } else {
+    sum
+  }
+}
+
+fn p256_fp_sub(a : FixedArray[UInt64], b : FixedArray[UInt64], p : FixedArray[UInt64]) -> FixedArray[UInt64] {
+  let diff = FixedArray::make(8, 0UL)
+  let mut borrow = 0UL
+  for i in 0..<8 {
+    let d = (a[i] + 0x100000000UL) - b[i] - borrow
+    diff[i] = d & 0xFFFFFFFFUL
+    borrow = 1UL - (d >> 32UL)
+  }
+  if borrow != 0UL {
+    let out = FixedArray::make(8, 0UL)
+    let mut carry = 0UL
+    for i in 0..<8 {
+      let s = diff[i] + p[i] + carry
+      out[i] = s & 0xFFFFFFFFUL
+      carry = s >> 32UL
+    }
+    out
+  } else {
+    diff
+  }
+}
+
+fn p256_fp_mul(a : FixedArray[UInt64], b : FixedArray[UInt64], p : FixedArray[UInt64]) -> FixedArray[UInt64] {
+  let mut res = FixedArray::make(8, 0UL)
+  let mut cur = FixedArray::make(8, 0UL)
+  for i in 0..<8 {
+    cur[i] = a[i]
+  }
+  for limb_i in 0..<8 {
+    let w = b[limb_i]
+    for bit in 0..<32 {
+      if ((w >> (bit as UInt64)) & 1UL) != 0UL {
+        res = p256_fp_add(res, cur, p)
+      }
+      cur = p256_fp_add(cur, cur, p)
+    }
+  }
+  res
+}
+
+/// Verify that `pt` is a valid uncompressed NIST P-256 point (`0x04 || x || y`,
+/// `0 <= x < p`, `0 <= y < p`, `(x, y) != (0, 0)`, and `y^2 == x^3 - 3x + b (mod p)`).
+pub fn is_valid_p256_uncompressed_point(pt : Bytes) -> Bool {
+  if pt.length() != 65 || pt[0].to_int() != 4 {
+    return false
+  }
+  let p = p256_prime_limbs()
+  let x = p256_be32_to_limbs(pt, 1)
+  let y = p256_be32_to_limbs(pt, 33)
+  if !p256_limbs_lt(x, p) || !p256_limbs_lt(y, p) {
+    return false
+  }
+  if p256_limbs_is_zero(x) && p256_limbs_is_zero(y) {
+    return false
+  }
+  let y2 = p256_fp_mul(y, y, p)
+  let x2 = p256_fp_mul(x, x, p)
+  let x3 = p256_fp_mul(x2, x, p)
+  let two_x = p256_fp_add(x, x, p)
+  let three_x = p256_fp_add(two_x, x, p)
+  let rhs = p256_fp_add(p256_fp_sub(x3, three_x, p), p256_b_limbs(), p)
+  p256_limbs_eq(y2, rhs)
+}
+
+fn b64url_val(c : Int) -> Int {
+  if c >= 65 && c <= 90 {
+    c - 65
+  } else if c >= 97 && c <= 122 {
+    c - 97 + 26
+  } else if c >= 48 && c <= 57 {
+    c - 48 + 52
+  } else if c == 45 {
+    62
+  } else if c == 95 {
+    63
+  } else {
+    -1
+  }
+}
+
+fn b64url_char(v : Int) -> Byte {
+  if v < 26 {
+    (65 + v) as Byte
+  } else if v < 52 {
+    (97 + (v - 26)) as Byte
+  } else if v < 62 {
+    (48 + (v - 52)) as Byte
+  } else if v == 62 {
+    45 as Byte
+  } else {
+    95 as Byte
+  }
+}
+
+/// Decode a `p256:<base64url>` key id matching both TS Station (`shared/lock.ts`) and Hermes
+/// client (`client/core-ts/src/vault/crypto.ts:125-139` `fromB64url`):
+/// strictly requires unpadded `[A-Za-z0-9_-]` of length 87 (65 bytes), ignores the 2 unused
+/// trailing bits on char 86 to prevent lock consensus splits, and validates the uncompressed
+/// point on NIST P-256 (`is_valid_p256_uncompressed_point`).
+fn decode_p256_key_id(key_id : String) -> Option[Bytes] {
+  if key_id.length() > 200 || !key_id.starts_with("p256:") {
+    return None
+  }
+  let raw = key_id.slice(5, key_id.length())
+  if raw.length() != 87 {
+    return None
+  }
+  let canon = Bytes::new(87)
+  for i in 0..<87 {
+    let c = raw.code_unit_at(i)
+    let v = b64url_val(c)
+    if v < 0 {
+      return None
+    }
+    if i == 86 {
+      // Mask off the 2 unused trailing bits (65 bytes = 520 bits; 87 chars = 522 bits)
+      // to match `fromB64url` & Node `Buffer.from(..., "base64url")`.
+      canon[i] = b64url_char(v & 0x3C)
+    } else {
+      canon[i] = c as Byte
+    }
+  }
+  match base64::url_decode_no_pad_bytes(canon) {
+    Ok(pt) => if is_valid_p256_uncompressed_point(pt) { Some(pt) } else { None }
+    Err(_) => None
+  }
+}
+
+/// Validate a lock/vault signing key id (`ed25519:<64hex>` or `p256:<strict base64url uncompressed P-256 point>`).
 pub fn valid_key_id(id : String) -> Bool {
   if id.length() > 200 {
     return false
@@ -90,13 +302,9 @@ pub fn valid_key_id(id : String) -> Bool {
     return is_lower_hex_64(id.slice(8, id.length()))
   }
   if id.starts_with("p256:") {
-    match base_codec::base64url_decode(id.slice(5, id.length())) {
-      Some(pt) => pt.length() == 65 && pt[0].to_int() == 4
-      None => false
-    }
-  } else {
-    false
+    return decode_p256_key_id(id).is_some()
   }
+  false
 }
 
 fn verify_ed25519_key_id(key_id : String, message : Bytes, sig_hex : String) -> Bool {
@@ -143,16 +351,6 @@ fn bytes_eq_prefix(a : Bytes, b : Bytes, n : Int) -> Bool {
     }
   }
   true
-}
-
-fn decode_p256_key_id(key_id : String) -> Option[Bytes] {
-  if !key_id.starts_with("p256:") {
-    return None
-  }
-  match base_codec::base64url_decode(key_id.slice(5, key_id.length())) {
-    Some(pt) => if pt.length() == 65 && pt[0].to_int() == 4 { Some(pt) } else { None }
-    None => None
-  }
 }
 
 fn str_in_array(xs : Array[String], target : String) -> Bool {
@@ -363,6 +561,31 @@ pub fn codec_to_form(j : base_codec::Json) -> form::Json {
         out.push((k, codec_to_form(v)))
       }
       form::Json::Obj(out)
+    }
+  }
+}
+
+/// Convert `form::Json` AST directly into `base_codec::Json` AST for SQLite persistence.
+pub fn form_to_codec(j : form::Json) -> base_codec::Json {
+  match j {
+    form::Json::Null => base_codec::json_null()
+    form::Json::Bool(b) => base_codec::json_bool(b)
+    form::Json::Num(n) => base_codec::json_num(n)
+    form::Json::Str(s) => base_codec::json_str(s)
+    form::Json::Arr(xs) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<xs.length() {
+        out.push(form_to_codec(xs[i]))
+      }
+      base_codec::json_arr(out)
+    }
+    form::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        out.push((k, form_to_codec(v)))
+      }
+      base_codec::json_obj(out)
     }
   }
 }

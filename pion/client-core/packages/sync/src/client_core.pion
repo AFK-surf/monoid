@@ -41,6 +41,10 @@ pub struct ClientCore {
   mut auth_seq : Int
   mut lock_state : Option[lock::LockState]
   mut lock_root : Option[String]
+  mut lock_kept_entries : Array[form::Json]
+  mut lock_kept_aside : Array[form::Json]
+  mut lock_seen : Option[base_codec::Json]
+  mut lock_corrupt : Bool
   mut lock_effective : Option[views::EffectiveLockState]
   mut viewer_sub : String
   mut viewer_role : String
@@ -92,6 +96,10 @@ pub fn ClientCore::new(
     auth_seq: 0,
     lock_state: None,
     lock_root: None,
+    lock_kept_entries: [],
+    lock_kept_aside: [],
+    lock_seen: None,
+    lock_corrupt: false,
     lock_effective: None,
     viewer_sub: "",
     viewer_role: "member",
@@ -168,6 +176,7 @@ pub fn ClientCore::new(
       })
     })
   })
+  core.restore_lock_state()
   core
 }
 
@@ -396,67 +405,167 @@ pub fn ClientCore::set_viewer(
   }
 }
 
-/// Build `views::StationBrief` list for `ws_scope` (always including `self.station` as fallback).
-fn ClientCore::station_briefs_for_scope(self : ClientCore, ws_scope : String) -> Array[views::StationBrief] {
+/// Build `views::StationBrief` list for `ws_scope`, bootstrapping from persisted Cloud
+/// `workspace.json` (`list_workspace_stations`) and merging live `station(addr, "overview")`
+/// fields without leaking `self.station` across workspace boundaries.
+pub fn ClientCore::station_briefs_for_scope(self : ClientCore, ws_scope : String) -> Array[views::StationBrief] {
   let out : Array[views::StationBrief] = []
   let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
-  let mut has_self = false
+  let is_own_scope = ws_scope.length() == 0 || ws_scope == self.workspace
+
+  // 1. Collect live `station(addr, "overview")` documents strictly matching `ws_scope`.
+  let overview_by_addr : Map[String, base_codec::Json] = Map::new()
+  let overview_addrs : Array[String] = []
   match store::list_stations(self.db, kind="overview") {
     sql::SqlResult::Ok(rows) => {
       for i in 0..<rows.length() {
         let r = rows[i]
-        let matches_scope = prefix.length() == 0 || r.address.starts_with(prefix) || r.address == self.station
+        let matches_scope = if prefix.length() == 0 {
+          true
+        } else if r.address.starts_with(prefix) {
+          true
+        } else if is_own_scope && r.address == self.station && !self.station.contains("/") {
+          true
+        } else {
+          false
+        }
         if !matches_scope {
           continue
-        }
-        if r.address == self.station {
-          has_self = true
         }
         let doc = match base_codec::json_parse(r.json) {
           base_codec::JsonParseResult::Ok(j) => j
           base_codec::JsonParseResult::Err(_) => base_codec::json_null()
         }
-        let sid = match j_opt_str(doc, "id") {
-          Some(s) => s
-          None => r.address
+        if overview_by_addr.get(r.address).is_none() {
+          overview_addrs.push(r.address)
         }
-        let sname = match j_opt_str(doc, "name") {
-          Some(s) => s
-          None => sid
-        }
-        let is_online = match base_codec::json_get(doc, "online") {
-          Some(base_codec::Json::Bool(b)) => b
-          _ => true
-        }
-        out.push(views::StationBrief::{
-          address: r.address,
-          id: sid,
-          name: sname,
-          emoji: j_opt_str(doc, "emoji"),
-          icon: j_opt_str(doc, "icon"),
-          online: is_online,
-          updating: j_bool(doc, "updating"),
-          offline_text: j_opt_str(doc, "offlineText"),
-          reconnecting_text: j_opt_str(doc, "reconnectingText"),
-          running: if r.address == self.station { self.running_session_count() } else { 0 },
-        })
+        overview_by_addr.set(r.address, doc)
       }
     }
     sql::SqlResult::Err(_) => ()
   }
-  if !has_self {
+
+  let seen_addrs : Map[String, Bool] = Map::new()
+  let mut has_self = false
+
+  // 2. Bootstrap from Cloud `workspace.json` station roster and overlay any live `overview` fields.
+  let cloud_stations = list_workspace_stations(self.db, ws_scope)
+  for i in 0..<cloud_stations.length() {
+    let cs = cloud_stations[i]
+    let addr = if prefix.length() > 0 { prefix + cs.id } else { cs.id }
+    seen_addrs.set(addr, true)
+    if addr == self.station {
+      has_self = true
+    }
+    match overview_by_addr.get(addr) {
+      Some(doc) => {
+        let sid = match j_opt_str(doc, "id") {
+          Some(s) => s
+          None => cs.id
+        }
+        let sname = match j_opt_str(doc, "name") {
+          Some(s) => s
+          None => if cs.name.length() > 0 { cs.name } else { sid }
+        }
+        let is_online = match base_codec::json_get(doc, "online") {
+          Some(base_codec::Json::Bool(b)) => b
+          _ => cs.online
+        }
+        let emoji = match j_opt_str(doc, "emoji") {
+          Some(v) => Some(v)
+          None => cs.emoji
+        }
+        let icon = match j_opt_str(doc, "icon") {
+          Some(v) => Some(v)
+          None => cs.icon
+        }
+        out.push(views::StationBrief::{
+          address: addr,
+          id: sid,
+          name: sname,
+          emoji: emoji,
+          icon: icon,
+          online: is_online,
+          updating: j_bool(doc, "updating"),
+          offline_text: j_opt_str(doc, "offlineText"),
+          reconnecting_text: j_opt_str(doc, "reconnectingText"),
+          running: if addr == self.station { self.running_session_count() } else { 0 },
+        })
+      }
+      None => {
+        let sname = if cs.name.length() > 0 { cs.name } else { cs.id }
+        out.push(views::StationBrief::{
+          address: addr,
+          id: cs.id,
+          name: sname,
+          emoji: cs.emoji,
+          icon: cs.icon,
+          online: cs.online,
+          updating: false,
+          offline_text: None,
+          reconnecting_text: None,
+          running: if addr == self.station { self.running_session_count() } else { 0 },
+        })
+      }
+    }
+  }
+
+  // 3. Include any live `overview`-only stations matching `ws_scope`.
+  for i in 0..<overview_addrs.length() {
+    let addr = overview_addrs[i]
+    if seen_addrs.get(addr).is_some() {
+      continue
+    }
+    if addr == self.station {
+      has_self = true
+    }
+    let doc = match overview_by_addr.get(addr) {
+      Some(j) => j
+      None => base_codec::json_null()
+    }
+    let sid = match j_opt_str(doc, "id") {
+      Some(s) => s
+      None => addr
+    }
+    let sname = match j_opt_str(doc, "name") {
+      Some(s) => s
+      None => sid
+    }
+    let is_online = match base_codec::json_get(doc, "online") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => true
+    }
     out.push(views::StationBrief::{
-      address: self.station,
-      id: self.station,
-      name: self.station,
-      emoji: None,
-      icon: None,
-      online: true,
-      updating: false,
-      offline_text: None,
-      reconnecting_text: None,
-      running: self.running_session_count(),
+      address: addr,
+      id: sid,
+      name: sname,
+      emoji: j_opt_str(doc, "emoji"),
+      icon: j_opt_str(doc, "icon"),
+      online: is_online,
+      updating: j_bool(doc, "updating"),
+      offline_text: j_opt_str(doc, "offlineText"),
+      reconnecting_text: j_opt_str(doc, "reconnectingText"),
+      running: if addr == self.station { self.running_session_count() } else { 0 },
     })
+  }
+
+  // 4. Fallback to `self.station` ONLY for this workspace's own scope (never inject into another workspace!).
+  if is_own_scope && !has_self {
+    let self_in_scope = !self.station.contains("/") || prefix.length() == 0 || self.station.starts_with(prefix)
+    if self_in_scope {
+      out.push(views::StationBrief::{
+        address: self.station,
+        id: self.station,
+        name: self.station,
+        emoji: None,
+        icon: None,
+        online: true,
+        updating: false,
+        offline_text: None,
+        reconnecting_text: None,
+        running: self.running_session_count(),
+      })
+    }
   }
   out
 }
@@ -606,6 +715,33 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
     }
   }
   if topic.name == "lock" {
+    let req_ws = match topic.param("workspace") {
+      Some(base_codec::Json::Str(s)) => s
+      _ =>
+      match topic.param("scope") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => self.workspace
+      }
+    }
+    if req_ws.length() > 0 && req_ws != self.workspace {
+      let empty_inp = views::SafeModeInput::{
+        available: self.lock_available,
+        viewer_sub: "",
+        viewer_role: "viewer",
+        device_id: "",
+        device_kind: "app",
+        device_sign_key: None,
+        personal_standing: "",
+        signer_unsaid: false,
+        no_device_answered: false,
+        rebound_admins: [],
+        station_names: Map::new(),
+        online_stations: Map::new(),
+        pending: views::LockPendingQueue::new(),
+      }
+      let sm = views::project_safe_mode(None, empty_inp)
+      return Some(protocol::CoreEvent::Value(id, sm.to_json(), None))
+    }
     let sm = self.current_safe_mode_view()
     return Some(protocol::CoreEvent::Value(id, sm.to_json(), None))
   }
@@ -614,7 +750,26 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => s
       _ => self.workspace
     }
-    let sm = self.current_safe_mode_view()
+    let sm = if ws.length() > 0 && ws != self.workspace {
+      let empty_inp = views::SafeModeInput::{
+        available: self.lock_available,
+        viewer_sub: "",
+        viewer_role: "viewer",
+        device_id: "",
+        device_kind: "app",
+        device_sign_key: None,
+        personal_standing: "",
+        signer_unsaid: false,
+        no_device_answered: false,
+        rebound_admins: [],
+        station_names: Map::new(),
+        online_stations: Map::new(),
+        pending: views::LockPendingQueue::new(),
+      }
+      views::project_safe_mode(None, empty_inp)
+    } else {
+      self.current_safe_mode_view()
+    }
     match views::project_vaults(self.db, ws, sm, self.lock_available, self.vaults_set_up) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
@@ -873,14 +1028,367 @@ pub fn ClientCore::refresh_topic(self : ClientCore, topic_name : String) -> Arra
   self.router.refresh_topic_name(topic_name)
 }
 
-/// Verify and apply a workspace lock chain natively via `pion/rules` (0 JSON boundary).
+fn lock_aside_most() -> Int { 256 }
+
+fn lock_entry_hash(e : form::Json, c : lock::Crypto) -> String {
+  match lock::entry_hash(e, c) {
+    Ok(h) => h
+    Err(_) => ""
+  }
+}
+
+fn lock_entry_seq(e : form::Json) -> Int {
+  match form::json_field(Some(e), "seq") {
+    Some(form::Json::Num(n)) => n.to_int()
+    _ => -1
+  }
+}
+
+fn lock_entry_prev(e : form::Json) -> Option[String] {
+  match form::json_field(Some(e), "prev") {
+    Some(form::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn lock_is_aside_off(o : lock::Off) -> Bool {
+  match o {
+    lock::Off::Beaten(_, _) => true
+    lock::Off::Below(_) => true
+    _ => false
+  }
+}
+
+fn lock_sort_by_seq(xs : Array[form::Json]) -> Unit {
+  for i in 1..<xs.length() {
+    let cur = xs[i]
+    let cur_seq = lock_entry_seq(cur)
+    let mut j = i - 1
+    while j >= 0 && lock_entry_seq(xs[j]) > cur_seq {
+      xs[j + 1] = xs[j]
+      j -= 1
+    }
+    xs[j + 1] = cur
+  }
+}
+
+fn lock_same_hash_seq(a : Array[form::Json], b : Array[form::Json], c : lock::Crypto) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if lock_entry_hash(a[i], c) != lock_entry_hash(b[i], c) {
+      return false
+    }
+  }
+  true
+}
+
+/// Persist lock state into `workspace_pref(self.workspace, "lock")` using the exact TS schema
+/// (`client/core-ts/src/views/lock.ts:1249`): `{ head: { seq, hash, genesis }, entries, aside?, seen? }`.
+fn ClientCore::persist_lock_state(self : ClientCore) -> Result[Unit, String] {
+  let head_j = match self.lock_state {
+    Some(st) =>
+    base_codec::json_obj([
+      ("seq", base_codec::json_num(st.seq)),
+      ("hash", base_codec::json_str(st.head)),
+      ("genesis", base_codec::json_str(st.genesis)),
+    ])
+    None =>
+    match self.lock_root {
+      Some(g) =>
+      base_codec::json_obj([
+        ("seq", base_codec::json_int(-1)),
+        ("hash", base_codec::json_str("")),
+        ("genesis", base_codec::json_str(g)),
+      ])
+      None => return Ok(())
+    }
+  }
+  let entries_j : Array[base_codec::Json] = []
+  for i in 0..<self.lock_kept_entries.length() {
+    entries_j.push(form_to_codec(self.lock_kept_entries[i]))
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("head", head_j),
+    ("entries", base_codec::json_arr(entries_j)),
+  ]
+  if self.lock_kept_aside.length() > 0 {
+    let aside_j : Array[base_codec::Json] = []
+    for i in 0..<self.lock_kept_aside.length() {
+      aside_j.push(form_to_codec(self.lock_kept_aside[i]))
+    }
+    fields.push(("aside", base_codec::json_arr(aside_j)))
+  }
+  match self.lock_seen {
+    Some(seen_v) => fields.push(("seen", seen_v))
+    None => ()
+  }
+  match store::put_workspace_pref(self.db, self.workspace, "lock", base_codec::json_stringify(base_codec::json_obj(fields))) {
+    sql::SqlResult::Ok(_) => Ok(())
+    sql::SqlResult::Err(e) => {
+      let msg = "failed to persist lock state: " + e.to_string()
+      self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+      Err(msg)
+    }
+  }
+}
+
+fn ClientCore::mark_lock_corrupt(self : ClientCore, detail : String) -> Unit {
+  self.lock_corrupt = true
+  self.outbox.tell(CoreEvent::LockRejected(self.workspace, "corrupt persisted lock state; refusing TOFU reset (" + detail + ")"))
+}
+
+fn ClientCore::restore_lock_state(self : ClientCore) -> Unit {
+  let raw = match store::get_workspace_pref(self.db, self.workspace, "lock") {
+    sql::SqlResult::Ok(Some(s)) => if s.length() > 0 { s } else { return }
+    _ => return
+  }
+  let doc = match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => {
+      self.mark_lock_corrupt("invalid json: " + e)
+      return
+    }
+  }
+  let root : String = match base_codec::json_get(doc, "head") {
+    Some(base_codec::Json::Null) => {
+      // Valid TS unlocked workspace record: `{"head": null, "entries": [], "seen": [...]}` (`views/lock.ts:1249`).
+      match base_codec::json_get(doc, "entries") {
+        None => {
+          self.lock_seen = base_codec::json_get(doc, "seen")
+          return
+        }
+        Some(base_codec::Json::Arr(xs)) => {
+          if xs.length() == 0 {
+            self.lock_seen = base_codec::json_get(doc, "seen")
+            return
+          }
+          self.mark_lock_corrupt("head is null with non-empty entries")
+          return
+        }
+        _ => {
+          self.mark_lock_corrupt("head is null with non-array entries")
+          return
+        }
+      }
+    }
+    Some(head_j) =>
+    match proto_str(head_j, "genesis") {
+      Some(g) => if g.length() > 0 { g } else {
+        self.mark_lock_corrupt("empty head.genesis")
+        return
+      }
+      None => {
+        self.mark_lock_corrupt("missing head.genesis")
+        return
+      }
+    }
+    None => {
+      self.mark_lock_corrupt("missing head")
+      return
+    }
+  }
+  let kept_entries : Array[form::Json] = []
+  match base_codec::json_get(doc, "entries") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        kept_entries.push(codec_to_form(xs[i]))
+      }
+    }
+    None => ()
+    _ => {
+      self.mark_lock_corrupt("entries is not an array")
+      return
+    }
+  }
+  let kept_aside : Array[form::Json] = []
+  match base_codec::json_get(doc, "aside") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        kept_aside.push(codec_to_form(xs[i]))
+      }
+    }
+    None => ()
+    _ => {
+      self.mark_lock_corrupt("aside is not an array")
+      return
+    }
+  }
+  self.lock_seen = base_codec::json_get(doc, "seen")
+  if kept_entries.length() == 0 {
+    self.lock_root = Some(root)
+    return
+  }
+  let all : Array[form::Json] = []
+  for i in 0..<kept_entries.length() {
+    all.push(kept_entries[i])
+  }
+  for i in 0..<kept_aside.length() {
+    all.push(kept_aside[i])
+  }
+  match verify_workspace_lock(all, root, votes=lock::Votes::Roles, now=None) {
+    Ok(v) => {
+      if v.state.ws != self.workspace || v.state.genesis != root {
+        self.mark_lock_corrupt("persisted chain workspace/genesis mismatch")
+        return
+      }
+      self.lock_root = Some(root)
+      self.lock_state = Some(v.state)
+      self.lock_kept_entries = v.chain.entries
+      self.lock_kept_aside = kept_aside
+      let now_secs = self.rt.now().to_double() / 1000.0
+      match views::effective_state(self.workspace, v.chain.entries, [], [], now_secs, native_lock_crypto()) {
+        Ok(eff) => {
+          self.lock_effective = Some(eff)
+        }
+        Err(_) => ()
+      }
+    }
+    Err(why) => {
+      self.mark_lock_corrupt("persisted chain verification failed: " + why)
+    }
+  }
+}
+
+/// Pin this workspace's lock genesis hash and persist it to SQLite `workspace_pref(ws, "lock")`.
+/// Once pinned to `G` (or if persisted state is corrupt), any attempt to re-pin is rejected.
+pub fn ClientCore::pin_lock_root(self : ClientCore, genesis : String) -> Unit {
+  if self.lock_corrupt {
+    self.outbox.tell(CoreEvent::LockRejected(self.workspace, "corrupt persisted lock state; refusing TOFU reset"))
+    return
+  }
+  if genesis.length() == 0 {
+    return
+  }
+  match self.lock_root {
+    Some(pinned) => {
+      if pinned != genesis {
+        self.outbox.tell(CoreEvent::LockRejected(self.workspace, "lock root already pinned to " + pinned + ", refusing " + genesis))
+        return
+      }
+    }
+    None => {
+      self.lock_root = Some(genesis)
+      let _ = self.persist_lock_state()
+    }
+  }
+}
+
+pub fn ClientCore::is_lock_corrupt(self : ClientCore) -> Bool {
+  self.lock_corrupt
+}
+
+pub fn ClientCore::pinned_lock_root(self : ClientCore) -> Option[String] {
+  self.lock_root
+}
+
+pub fn ClientCore::lock_kept_entries(self : ClientCore) -> Array[form::Json] {
+  self.lock_kept_entries
+}
+
+pub fn ClientCore::lock_kept_aside(self : ClientCore) -> Array[form::Json] {
+  self.lock_kept_aside
+}
+
+/// Verify and apply a workspace lock chain natively via `pion/rules` (0 JSON boundary),
+/// enforcing genesis root pinning, fork-choice merge (`lock::lock_chain` + `ASIDE_MOST = 256`),
+/// anti-rollback protection, and TS-compatible `workspace_pref(ws, "lock")` persistence.
 pub fn ClientCore::apply_lock_chain(
   self : ClientCore,
   entries : Array[form::Json],
   root_hash : String,
   now : Option[Double] = None,
 ) -> Result[VerifiedWorkspaceLock, String] {
-  match verify_workspace_lock(entries, root_hash, votes=lock::Votes::Roles, now=now) {
+  // Law 0: Never degrade to TOFU when persisted lock state is corrupt.
+  if self.lock_corrupt {
+    let msg = "corrupt persisted lock state; refusing TOFU reset"
+    self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+    return Err(msg)
+  }
+  // Law 1: Genesis root pinning (anti-hijack). Once pinned to `G`, never accept any other root.
+  match self.lock_root {
+    Some(pinned) => {
+      if pinned != root_hash {
+        let msg = "lock root mismatch: pinned to " + pinned + ", got " + root_hash
+        self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+        return Err(msg)
+      }
+    }
+    None => ()
+  }
+  if entries.length() == 0 {
+    let msg = "empty lock chain"
+    self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+    return Err(msg)
+  }
+
+  let c = native_lock_crypto()
+  let kept_hashes : Map[String, Bool] = Map::new()
+  for i in 0..<self.lock_kept_entries.length() {
+    let h = lock_entry_hash(self.lock_kept_entries[i], c)
+    if h.length() > 0 {
+      kept_hashes.set(h, true)
+    }
+  }
+  for i in 0..<self.lock_kept_aside.length() {
+    let h = lock_entry_hash(self.lock_kept_aside[i], c)
+    if h.length() > 0 {
+      kept_hashes.set(h, true)
+    }
+  }
+
+  let seen : Map[String, Bool] = Map::new()
+  let fresh : Array[form::Json] = []
+  let mut max_incoming_seq = -1
+  for i in 0..<entries.length() {
+    let s = lock_entry_seq(entries[i])
+    if s > max_incoming_seq {
+      max_incoming_seq = s
+    }
+    let h = lock_entry_hash(entries[i], c)
+    if h.length() == 0 || kept_hashes.get(h).is_some() || seen.get(h).is_some() {
+      continue
+    }
+    seen.set(h, true)
+    fresh.push(entries[i])
+  }
+
+  // Law 2a: Prefix rollback detection when all incoming entries are already known.
+  // Re-delivering the current high-water head (e.g. `[e2]` with `max_incoming_seq == cur_seq`)
+  // is a benign duplicate and returns `Ok` silently without emitting `LockRejected` or `LockUpdated`.
+  if fresh.length() == 0 {
+    match self.lock_state {
+      Some(cur_st) => {
+        let cur_seq = cur_st.seq.to_int()
+        if max_incoming_seq < cur_seq {
+          let msg = "lock rollback rejected: incoming max seq " + max_incoming_seq.to_string() + " < held seq " + cur_seq.to_string()
+          self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+          return Err(msg)
+        }
+        return verify_workspace_lock(self.lock_kept_entries, root_hash, votes=lock::Votes::Roles, now=now)
+      }
+      None => {
+        let msg = "no valid lock entries"
+        self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+        return Err(msg)
+      }
+    }
+  }
+
+  // Law 2b: Merge kept entries + kept aside + fresh entries and run `lock::lock_chain` fork choice.
+  let all : Array[form::Json] = []
+  for i in 0..<self.lock_kept_entries.length() {
+    all.push(self.lock_kept_entries[i])
+  }
+  for i in 0..<self.lock_kept_aside.length() {
+    all.push(self.lock_kept_aside[i])
+  }
+  for i in 0..<fresh.length() {
+    all.push(fresh[i])
+  }
+
+  match verify_workspace_lock(all, root_hash, votes=lock::Votes::Roles, now=now) {
     Err(why) => {
       self.outbox.tell(CoreEvent::LockRejected(self.workspace, why))
       Err(why)
@@ -891,17 +1399,144 @@ pub fn ClientCore::apply_lock_chain(
         self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
         return Err(msg)
       }
+      if v.state.genesis != root_hash {
+        let msg = "lock genesis mismatch: expected " + root_hash + ", got " + v.state.genesis
+        self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+        return Err(msg)
+      }
+
+      let on_set : Map[String, Bool] = Map::new()
+      for i in 0..<v.chain.hashes.length() {
+        on_set.set(v.chain.hashes[i], true)
+      }
+      let off_by_hash : Map[String, lock::Off] = Map::new()
+      for i in 0..<v.chain.off.length() {
+        let (idx, why) = v.chain.off[i]
+        let h = lock_entry_hash(all[idx], c)
+        if h.length() > 0 {
+          off_by_hash.set(h, why)
+        }
+      }
+      let is_aside = fn(e : form::Json) -> Bool {
+        let h = lock_entry_hash(e, c)
+        match off_by_hash.get(h) {
+          Some(o) => lock_is_aside_off(o)
+          None => false
+        }
+      }
+
+      // Align with `lock-keep.ts:89`: held chain entries may only leave for a rules-beaten branch.
+      for i in 0..<self.lock_kept_entries.length() {
+        let e = self.lock_kept_entries[i]
+        let h = lock_entry_hash(e, c)
+        if on_set.get(h).is_none() && !is_aside(e) {
+          let msg = "the chain held does not hold by the rules"
+          self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+          return Err(msg)
+        }
+      }
+
+      // Retain aside entries up to ASIDE_MOST (256), pruning descendants of dropped entries (`lock-keep.ts:91-104`).
+      let old_aside : Array[form::Json] = []
+      for i in 0..<self.lock_kept_aside.length() {
+        if is_aside(self.lock_kept_aside[i]) {
+          old_aside.push(self.lock_kept_aside[i])
+        }
+      }
+      for i in 0..<self.lock_kept_entries.length() {
+        let e = self.lock_kept_entries[i]
+        let h = lock_entry_hash(e, c)
+        if on_set.get(h).is_none() && is_aside(e) {
+          old_aside.push(e)
+        }
+      }
+
+      let fresh_sorted : Array[form::Json] = []
+      for i in 0..<fresh.length() {
+        fresh_sorted.push(fresh[i])
+      }
+      lock_sort_by_seq(fresh_sorted)
+
+      let mut room = lock_aside_most() - old_aside.length()
+      let side_raw : Array[form::Json] = []
+      for i in 0..<old_aside.length() {
+        side_raw.push(old_aside[i])
+      }
+      for i in 0..<fresh_sorted.length() {
+        let e = fresh_sorted[i]
+        let h = lock_entry_hash(e, c)
+        if on_set.get(h).is_some() || !is_aside(e) || room <= 0 {
+          continue
+        }
+        side_raw.push(e)
+        room -= 1
+      }
+
+      let side_trimmed : Array[form::Json] = []
+      let start_idx = if side_raw.length() > lock_aside_most() { side_raw.length() - lock_aside_most() } else { 0 }
+      for i in start_idx..<side_raw.length() {
+        side_trimmed.push(side_raw[i])
+      }
+
+      let side_by_seq : Array[form::Json] = []
+      for i in 0..<side_trimmed.length() {
+        side_by_seq.push(side_trimmed[i])
+      }
+      lock_sort_by_seq(side_by_seq)
+      let kept_now : Map[String, Bool] = Map::new()
+      for i in 0..<v.chain.hashes.length() {
+        kept_now.set(v.chain.hashes[i], true)
+      }
+      for i in 0..<side_by_seq.length() {
+        let e = side_by_seq[i]
+        match lock_entry_prev(e) {
+          Some(p) => {
+            if kept_now.get(p).is_some() {
+              let h = lock_entry_hash(e, c)
+              if h.length() > 0 {
+                kept_now.set(h, true)
+              }
+            }
+          }
+          None => ()
+        }
+      }
+      let final_aside : Array[form::Json] = []
+      for i in 0..<side_trimmed.length() {
+        let h = lock_entry_hash(side_trimmed[i], c)
+        if kept_now.get(h).is_some() {
+          final_aside.push(side_trimmed[i])
+        }
+      }
+
+      // If we already hold a lock state and NONE of the fresh incoming entries entered the active
+      // chain or aside (e.g. forged signatures `NotValid` OR spoofed `root: G` carrying a foreign
+      // chain `NoParent`), emit LockRejected and return Err — NEVER emit LockUpdated!
+      let active_same = lock_same_hash_seq(v.chain.entries, self.lock_kept_entries, c)
+      let aside_same = lock_same_hash_seq(final_aside, self.lock_kept_aside, c)
+      if self.lock_state.is_some() && active_same && aside_same {
+        let msg = "incoming lock entries rejected (" + fresh.length().to_string() + " unaccepted, " + v.rejected_count.to_string() + " invalid)"
+        self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+        return Err(msg)
+      }
+
+      self.lock_root = Some(v.state.genesis)
       self.lock_state = Some(v.state)
-      self.lock_root = Some(root_hash)
+      self.lock_kept_entries = v.chain.entries
+      self.lock_kept_aside = final_aside
       let now_secs = match now {
         Some(t) => t
         None => self.rt.now().to_double() / 1000.0
       }
-      match views::effective_state(self.workspace, entries, [], [], now_secs, views::views_lock_crypto()) {
+      match views::effective_state(self.workspace, v.chain.entries, [], [], now_secs, c) {
         Ok(eff) => {
           self.lock_effective = Some(eff)
         }
         Err(_) => ()
+      }
+      match self.persist_lock_state() {
+        Ok(_) => ()
+        Err(msg) => return Err(msg)
       }
       self.outbox.tell(CoreEvent::LockUpdated(
         self.workspace,
@@ -919,7 +1554,19 @@ pub fn ClientCore::current_lock(self : ClientCore) -> Option[lock::LockState] {
 }
 
 /// Build the structured `lock.status` JSON payload for this workspace.
-pub fn ClientCore::lock_status_json(self : ClientCore) -> base_codec::Json {
+/// Law 3 (workspace isolation): requesting a different workspace MUST NOT leak this workspace's lock state.
+pub fn ClientCore::lock_status_json(self : ClientCore, workspace : Option[String] = None) -> base_codec::Json {
+  match workspace {
+    Some(ws) => {
+      if ws.length() > 0 && ws != self.workspace {
+        return base_codec::json_obj([
+          ("workspace", base_codec::json_str(ws)),
+          ("locked", base_codec::json_bool(false)),
+        ])
+      }
+    }
+    None => ()
+  }
   match self.lock_state {
     None =>
     base_codec::json_obj([
@@ -957,6 +1604,14 @@ pub fn ClientCore::open_job_count(self : ClientCore) -> Int {
 }
 
 fn ClientCore::handle_lock_event(self : ClientCore, payload : base_codec::Json) -> Unit {
+  match proto_str(payload, "workspace") {
+    Some(ws) => {
+      if ws.length() > 0 && ws != self.workspace {
+        return
+      }
+    }
+    None => ()
+  }
   let root = match base_codec::json_get(payload, "root") {
     Some(base_codec::Json::Str(r)) => r
     _ =>
@@ -1210,7 +1865,11 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
         }
       }
       if call_name == "lock.status" {
-        return Some(protocol::CoreEvent::Ok(id, self.lock_status_json(), None))
+        let req_ws = match proto_str(params, "workspace") {
+          Some(s) => Some(s)
+          None => proto_str(params, "scope")
+        }
+        return Some(protocol::CoreEvent::Ok(id, self.lock_status_json(workspace=req_ws), None))
       }
       if call_name == "sessions.list" {
         let all = self.events.all_sessions()

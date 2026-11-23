@@ -2447,3 +2447,422 @@ test "E2E 15: ClientCore wires missed -> fetch_snapshot_k, chat-mark -> viewer_m
   debug_assert(saw_thread_fetch, "dirty thread MUST trigger ClientCore fetch_thread_k (GET /threads/7/entries)")
   core.stop()
 }
+
+// ── Test 14: Gate #2 (P0-10) — P-256 curve + strict base64url + Genesis Pin + Anti-Rollback + Restart + Fork Switch + Workspace Isolation ──
+
+test "E2E 16: Gate #2 P-256 curve validation and strict unpadded canonical base64url in valid_key_id" {
+  // 1. Valid NIST P-256 public key from real scalar -> ACCEPTED
+  let sk = match base_codec::hex_decode("c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721") {
+    Some(b) => b
+    None => panic("bad sk")
+  }
+  let pk = match crypto::p256_public_key(sk) {
+    Ok(p) => p
+    Err(_) => panic("p256_public_key failed")
+  }
+  let valid_b64 = base_codec::base64url_encode(pk)
+  debug_assert(valid_key_id("p256:" + valid_b64), "valid P-256 point accepted")
+
+  // 2. Off-curve point (y + 1) -> REJECTED
+  let off_curve = Bytes::new(65)
+  for i in 0..<65 {
+    off_curve[i] = pk[i]
+  }
+  off_curve[64] = ((off_curve[64].to_int() + 1) & 0xFF) as Byte
+  debug_assert(!valid_key_id("p256:" + base_codec::base64url_encode(off_curve)), "off-curve P-256 point rejected")
+
+  // 3. Point at infinity (0x04 || 0..0 || 0..0) -> REJECTED
+  let zero_pt = Bytes::new(65)
+  zero_pt[0] = 4 as Byte
+  debug_assert(!valid_key_id("p256:" + base_codec::base64url_encode(zero_pt)), "zero point (0,0) rejected")
+
+  // 4. x >= p (x = p) -> REJECTED
+  let p_bytes = match base_codec::hex_decode("ffffffff00000001000000000000000000000000ffffffffffffffffffffffff") {
+    Some(b) => b
+    None => panic("bad p")
+  }
+  let x_ge_p = Bytes::new(65)
+  x_ge_p[0] = 4 as Byte
+  for i in 0..<32 {
+    x_ge_p[1 + i] = p_bytes[i]
+    x_ge_p[33 + i] = pk[33 + i]
+  }
+  debug_assert(!valid_key_id("p256:" + base_codec::base64url_encode(x_ge_p)), "x >= p rejected")
+
+  // 5. y >= p (y = p) -> REJECTED
+  let y_ge_p = Bytes::new(65)
+  y_ge_p[0] = 4 as Byte
+  for i in 0..<32 {
+    y_ge_p[1 + i] = pk[1 + i]
+    y_ge_p[33 + i] = p_bytes[i]
+  }
+  debug_assert(!valid_key_id("p256:" + base_codec::base64url_encode(y_ge_p)), "y >= p rejected")
+
+  // 6. Padded base64url (`=`) -> REJECTED
+  debug_assert(!valid_key_id("p256:" + valid_b64 + "="), "padded base64url rejected")
+
+  // 7. Non-zero unused trailing 2 bits on char 86 -> ACCEPTED (1:1 parity with TS shared/lock.ts + Hermes fromB64url)
+  //    while standard base64 `+`/`/` and whitespace -> REJECTED!
+  let last_ch = valid_b64.code_unit_at(valid_b64.length() - 1)
+  let last_val = b64url_val(last_ch)
+  let alt_last_bytes = Bytes::new(1)
+  alt_last_bytes[0] = b64url_char(last_val | 1)
+  let alt_last_str = bytes_to_str(alt_last_bytes)
+  let non_canon_tail = valid_b64.slice(0, valid_b64.length() - 1) + alt_last_str
+  debug_assert(valid_key_id("p256:" + non_canon_tail), "unused trailing 2 bits match TS/Hermes fromB64url")
+  debug_assert(!valid_key_id("p256:" + valid_b64.slice(0, 10) + "+" + valid_b64.slice(11, valid_b64.length())), "plus rejected")
+  debug_assert(!valid_key_id("p256:" + valid_b64.slice(0, 10) + "/" + valid_b64.slice(11, valid_b64.length())), "slash rejected")
+  debug_assert(!valid_key_id("p256:" + valid_b64.slice(0, 10) + " " + valid_b64.slice(10, valid_b64.length())), "space rejected")
+
+  // 8. Overlong (> 200 chars) & invalid Ed25519 -> REJECTED
+  debug_assert(valid_key_id("ed25519:" + hex_64("a")), "valid ed25519 accepted")
+  debug_assert(!valid_key_id("ed25519:" + hex_64("A")), "uppercase ed25519 rejected")
+  debug_assert(!valid_key_id("ed25519:abcd"), "short ed25519 rejected")
+  let long_id = "p256:" + valid_b64 + hex_64("a") + hex_64("b")
+  debug_assert(long_id.length() > 200 && !valid_key_id(long_id), "overlong key id > 200 rejected")
+}
+
+fn gate2_seed(tag : Int) -> Bytes {
+  let b = Bytes::new(32)
+  for i in 0..<32 {
+    b[i] = ((tag + i * 7) & 0xFF) as Byte
+  }
+  b
+}
+
+test "E2E 17: Gate #2 lock root pinning, anti-hijack, anti-rollback, SQLite restart persistence, fork switch, and workspace isolation" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-gate2") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => panic("sql open failed")
+  }
+  let station = SimStation::new(rt)
+  let core = ClientCore::new("ws-gate2", "st1", rt, db, station.transport(), fn() -> Unit {})
+
+  let alice_seed = gate2_seed(21)
+  let bob_seed = gate2_seed(22)
+  let evil_seed = gate2_seed(23)
+  let alice_key = ed25519_key_id(alice_seed)
+  let bob_key = ed25519_key_id(bob_seed)
+  let evil_key = ed25519_key_id(evil_seed)
+  let alice_dev = hex_64("1")
+  let bob_dev = hex_64("2")
+  let evil_dev = hex_64("9")
+
+  // Genesis G (Alice owner, Bob admin)
+  let g_raw = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("ws-gate2")),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1790000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    (
+      "body",
+      form::Json::Obj([
+        ("owner", form::Json::Str("alice")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("still.fail")),
+        ("cloud_keys", form::Json::Obj([("keys", form::Json::Arr([]))])),
+        (
+          "members",
+          form::Json::Arr([
+            form::Json::Obj([("sub", form::Json::Str("alice")), ("email", form::Json::Str("alice@example.com")), ("role", form::Json::Str("owner"))]),
+            form::Json::Obj([("sub", form::Json::Str("bob")), ("email", form::Json::Str("bob@example.com")), ("role", form::Json::Str("admin"))]),
+          ]),
+        ),
+        (
+          "devices",
+          form::Json::Arr([
+            form::Json::Obj([("id", form::Json::Str(alice_dev)), ("sub", form::Json::Str("alice")), ("kind", form::Json::Str("app")), ("label", form::Json::Str("Alice Mac")), ("sign_key", form::Json::Str(alice_key))]),
+            form::Json::Obj([("id", form::Json::Str(bob_dev)), ("sub", form::Json::Str("bob")), ("kind", form::Json::Str("app")), ("label", form::Json::Str("Bob Mac")), ("sign_key", form::Json::Str(bob_key))]),
+          ]),
+        ),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ]),
+    ),
+  ])
+  let e0 = match sign_lock_entry(alice_seed, g_raw) { Ok(e) => e; Err(m) => panic(m) }
+  let c = native_lock_crypto()
+  let root_g = match lock::entry_hash(e0, c) { Ok(h) => h; Err(_) => panic("hash e0") }
+
+  // e1 (seq=1): Bob (admin, weight=2) adds Carol
+  let e1 = match sign_lock_entry(
+    bob_seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-gate2")),
+      ("seq", form::Json::Num(1.0)),
+      ("prev", form::Json::Str(root_g)),
+      ("at", form::Json::Num(1790000010.0)),
+      ("kind", form::Json::Str("member")),
+      ("body", form::Json::Obj([("sub", form::Json::Str("carol")), ("email", form::Json::Str("carol@example.com")), ("role", form::Json::Str("member"))])),
+    ]),
+  ) { Ok(e) => e; Err(m) => panic(m) }
+  let h1 = match lock::entry_hash(e1, c) { Ok(h) => h; Err(_) => panic("hash e1") }
+
+  // e2 (seq=2): Bob adds Erin
+  let e2 = match sign_lock_entry(
+    bob_seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-gate2")),
+      ("seq", form::Json::Num(2.0)),
+      ("prev", form::Json::Str(h1)),
+      ("at", form::Json::Num(1790000020.0)),
+      ("kind", form::Json::Str("member")),
+      ("body", form::Json::Obj([("sub", form::Json::Str("erin")), ("email", form::Json::Str("erin@example.com")), ("role", form::Json::Str("member"))])),
+    ]),
+  ) { Ok(e) => e; Err(m) => panic(m) }
+  let h2 = match lock::entry_hash(e2, c) { Ok(h) => h; Err(_) => panic("hash e2") }
+
+  // Pin G and apply [e0, e1, e2]
+  core.pin_lock_root(root_g)
+  match core.apply_lock_chain([e0, e1, e2], root_g) {
+    Ok(v) => debug_assert(v.state.seq == 2.0 && v.state.head == h2, "initial chain at seq=2")
+    Err(m) => panic("initial apply failed: " + m)
+  }
+  let _ = core.drain_frame()
+
+  // Attack 1: Evil station sends a completely self-consistent, validly signed chain under G_evil != G
+  let g_evil_raw = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("ws-gate2")),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1790000001.0)),
+    ("kind", form::Json::Str("genesis")),
+    (
+      "body",
+      form::Json::Obj([
+        ("owner", form::Json::Str("evil")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("still.fail")),
+        ("cloud_keys", form::Json::Obj([("keys", form::Json::Arr([]))])),
+        ("members", form::Json::Arr([form::Json::Obj([("sub", form::Json::Str("evil")), ("email", form::Json::Str("evil@evil.test")), ("role", form::Json::Str("owner"))])])),
+        ("devices", form::Json::Arr([form::Json::Obj([("id", form::Json::Str(evil_dev)), ("sub", form::Json::Str("evil")), ("kind", form::Json::Str("app")), ("label", form::Json::Str("Evil")), ("sign_key", form::Json::Str(evil_key))])])),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ]),
+    ),
+  ])
+  let e0_evil = match sign_lock_entry(evil_seed, g_evil_raw) { Ok(e) => e; Err(m) => panic(m) }
+  let root_evil = match lock::entry_hash(e0_evil, c) { Ok(h) => h; Err(_) => panic("hash evil") }
+  debug_assert(root_evil != root_g, "evil root differs from pinned G")
+
+  match core.apply_lock_chain([e0_evil], root_evil) {
+    Ok(_) => debug_assert(false, "hijack chain with G_evil MUST be rejected")
+    Err(_) => ()
+  }
+  let evs1 = core.drain_frame()
+  let mut saw_rej1 = false
+  for i in 0..<evs1.length() {
+    match evs1[i] {
+      CoreEvent::LockRejected(ws, _) => if ws == "ws-gate2" { saw_rej1 = true }
+      _ => ()
+    }
+  }
+  debug_assert(saw_rej1, "LockRejected emitted on G_evil hijack")
+  match core.current_lock() {
+    Some(st) => debug_assert(st.genesis == root_g && st.seq == 2.0 && st.head == h2, "state untouched after hijack")
+    None => debug_assert(false, "lock state missing")
+  }
+
+  // Attack 1b (spoofed root): Attacker claims `root = G` but sends a LONGER validly self-signed foreign chain
+  // `[e0_evil, e1_evil, e2_evil, e3_evil]` -> MUST return Err, emit LockRejected, NEVER emit LockUpdated, and keep G/seq=2!
+  let e1_evil = match sign_lock_entry(
+    evil_seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-gate2")),
+      ("seq", form::Json::Num(1.0)),
+      ("prev", form::Json::Str(root_evil)),
+      ("at", form::Json::Num(1790000006.0)),
+      ("kind", form::Json::Str("member")),
+      ("body", form::Json::Obj([("sub", form::Json::Str("evil1")), ("email", form::Json::Str("e1@evil.test")), ("role", form::Json::Str("member"))])),
+    ]),
+  ) { Ok(e) => e; Err(m) => panic(m) }
+  let h1_evil = match lock::entry_hash(e1_evil, c) { Ok(h) => h; Err(_) => panic("hash e1_evil") }
+  let e2_evil = match sign_lock_entry(
+    evil_seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-gate2")),
+      ("seq", form::Json::Num(2.0)),
+      ("prev", form::Json::Str(h1_evil)),
+      ("at", form::Json::Num(1790000007.0)),
+      ("kind", form::Json::Str("member")),
+      ("body", form::Json::Obj([("sub", form::Json::Str("evil2")), ("email", form::Json::Str("e2@evil.test")), ("role", form::Json::Str("member"))])),
+    ]),
+  ) { Ok(e) => e; Err(m) => panic(m) }
+  let h2_evil = match lock::entry_hash(e2_evil, c) { Ok(h) => h; Err(_) => panic("hash e2_evil") }
+  let e3_evil = match sign_lock_entry(
+    evil_seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-gate2")),
+      ("seq", form::Json::Num(3.0)),
+      ("prev", form::Json::Str(h2_evil)),
+      ("at", form::Json::Num(1790000008.0)),
+      ("kind", form::Json::Str("member")),
+      ("body", form::Json::Obj([("sub", form::Json::Str("evil3")), ("email", form::Json::Str("e3@evil.test")), ("role", form::Json::Str("member"))])),
+    ]),
+  ) { Ok(e) => e; Err(m) => panic(m) }
+
+  match core.apply_lock_chain([e0_evil, e1_evil, e2_evil, e3_evil], root_g) {
+    Ok(_) => debug_assert(false, "spoofed root G with foreign chain MUST be rejected")
+    Err(_) => ()
+  }
+  let evs1b = core.drain_frame()
+  let mut saw_rej1b = false
+  let mut saw_upd1b = false
+  for i in 0..<evs1b.length() {
+    match evs1b[i] {
+      CoreEvent::LockRejected(ws, _) => if ws == "ws-gate2" { saw_rej1b = true }
+      CoreEvent::LockUpdated(_, _, _, _) => { saw_upd1b = true }
+      _ => ()
+    }
+  }
+  debug_assert(saw_rej1b && !saw_upd1b, "spoofed root foreign chain must emit LockRejected and NEVER LockUpdated")
+  match core.current_lock() {
+    Some(st) => debug_assert(st.genesis == root_g && st.seq == 2.0 && st.head == h2, "state untouched after spoofed-root foreign chain")
+    None => debug_assert(false, "lock state missing")
+  }
+
+  // Attack 2: Malicious station replays old prefix [e0] -> MUST NOT rollback!
+  match core.apply_lock_chain([e0], root_g) {
+    Ok(_) => debug_assert(false, "prefix rollback [e0] MUST be rejected")
+    Err(_) => ()
+  }
+  let evs2 = core.drain_frame()
+  let mut saw_rej2 = false
+  for i in 0..<evs2.length() {
+    match evs2[i] {
+      CoreEvent::LockRejected(ws, _) => if ws == "ws-gate2" { saw_rej2 = true }
+      _ => ()
+    }
+  }
+  debug_assert(saw_rej2, "LockRejected emitted on prefix rollback")
+  match core.current_lock() {
+    Some(st) => debug_assert(st.seq == 2.0 && st.head == h2, "high-water seq=2 head=h2 preserved")
+    None => debug_assert(false, "lock state missing")
+  }
+
+  // Attack 2b (P2): Re-delivering the current high-water head alone `[e2]` MUST NOT emit LockRejected or LockUpdated!
+  match core.apply_lock_chain([e2], root_g) {
+    Ok(v) => debug_assert(v.state.seq == 2.0 && v.state.head == h2, "duplicate head [e2] returns Ok at seq=2")
+    Err(m) => debug_assert(false, "duplicate head [e2] must not fail: " + m)
+  }
+  let evs2b = core.drain_frame()
+  debug_assert(evs2b.length() == 0, "duplicate head [e2] emits neither LockRejected nor LockUpdated")
+
+  // Attack 3: Restart ClientCore on the SAME SQLite DB -> pinned G MUST survive restart, G_evil still rejected!
+  let core2 = ClientCore::new("ws-gate2", "st1", rt, db, station.transport(), fn() -> Unit {})
+  match core2.pinned_lock_root() {
+    Some(r) => debug_assert(r == root_g, "pinned G restored from SQLite across restart")
+    None => debug_assert(false, "expected pinned G restored from SQLite")
+  }
+  match core2.current_lock() {
+    Some(st) => debug_assert(st.genesis == root_g && st.seq == 2.0 && st.head == h2, "lock state restored across restart")
+    None => debug_assert(false, "expected lock state restored from SQLite")
+  }
+  match core2.apply_lock_chain([e0_evil], root_evil) {
+    Ok(_) => debug_assert(false, "G_evil MUST still be rejected after restart")
+    Err(_) => ()
+  }
+
+  // Legitimate higher-weight competing fork under same genesis G: Alice (owner, weight=3) at seq=1 beats Bob (admin, weight=2)
+  let e1_alice = match sign_lock_entry(
+    alice_seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-gate2")),
+      ("seq", form::Json::Num(1.0)),
+      ("prev", form::Json::Str(root_g)),
+      ("at", form::Json::Num(1790000030.0)),
+      ("kind", form::Json::Str("member")),
+      ("body", form::Json::Obj([("sub", form::Json::Str("dave")), ("email", form::Json::Str("dave@example.com")), ("role", form::Json::Str("member"))])),
+    ]),
+  ) { Ok(e) => e; Err(m) => panic(m) }
+  let h1_alice = match lock::entry_hash(e1_alice, c) { Ok(h) => h; Err(_) => panic("hash e1_alice") }
+
+  match core2.apply_lock_chain([e1_alice], root_g) {
+    Ok(v) => {
+      debug_assert(v.state.head == h1_alice && v.state.members.contains("dave"), "switched to Alice owner fork")
+      debug_assert(!v.state.members.contains("carol"), "Bob losing fork carol no longer active")
+    }
+    Err(m) => panic("legitimate fork switch failed: " + m)
+  }
+  // Bob's displaced branch [e1, e2] must be retained in lock_kept_aside (<= 256)
+  debug_assert(core2.lock_kept_aside().length() == 2, "displaced branch [e1, e2] retained in lock_kept_aside")
+
+  // Workspace isolation (Gate #9): querying lock.status or lock topic for another workspace leaks nothing!
+  let other_status = core2.lock_status_json(workspace=Some("ws-other"))
+  debug_assert(j_str(other_status, "workspace") == "ws-other" && !j_bool(other_status, "locked") && base_codec::json_get(other_status, "genesis").is_none(), "cross-workspace lock_status_json leaks nothing")
+  let wire_other = core2.handle_wire("{\"id\":77,\"call\":\"lock.status\",\"params\":{\"workspace\":\"ws-other\"}}")
+  match wire_other {
+    Some((txt, _)) => debug_assert(txt.contains("\"locked\":false") && !txt.contains(root_g), "wire lock.status isolates workspaces")
+    None => debug_assert(false, "expected wire response")
+  }
+  let sub_other = core2.handle_wire("{\"id\":78,\"subscribe\":{\"topic\":\"lock\",\"workspace\":\"ws-other\"}}")
+  match sub_other {
+    Some((txt, _)) => debug_assert(txt.contains("\"value\"") && !txt.contains("\"error\"") && !txt.contains("alice") && !txt.contains("dave") && !txt.contains(root_g), "lock topic isolates workspaces")
+    None => debug_assert(false, "expected sub response")
+  }
+
+  // Corrupt persisted workspace_pref(ws, "lock") MUST NOT degrade to TOFU!
+  let _ = store::put_workspace_pref(db, "ws-corrupt", "lock", "{corrupt json")
+  let core_corrupt = ClientCore::new("ws-corrupt", "st1", rt, db, station.transport(), fn() -> Unit {})
+  debug_assert(core_corrupt.is_lock_corrupt(), "corrupt persisted lock flagged")
+  match core_corrupt.apply_lock_chain([e0_evil], root_evil) {
+    Ok(_) => debug_assert(false, "corrupt lock core MUST reject TOFU chain")
+    Err(_) => ()
+  }
+}
+
+test "E2E 18: P1 Cloud station roster bootstrap from workspace.json, overview merge, and zero cross-workspace leakage" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-p1-stations") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => panic("sql open failed")
+  }
+  let station = SimStation::new(rt)
+  let core = ClientCore::new("ws-a", "ws-a/st-self", rt, db, station.transport(), fn() -> Unit {})
+
+  // 1. Fresh device: ONLY `workspace` table has Cloud stations (`station` table completely empty!)
+  let ws_json = "{\"id\":\"ws-a\",\"name\":\"Alpha\",\"rev\":1,\"members\":[],\"stations\":[{\"id\":\"st-1\",\"name\":\"Tokyo\",\"online\":true,\"emoji\":\"🗼\",\"icon\":\"mac\"},{\"id\":\"st-2\",\"name\":\"Shanghai\",\"online\":false,\"emoji\":\"🏙️\"}]}"
+  let _ = store::upsert_workspace(db, "ws-a", ws_json, confirmed=Some(1000.to_int64()))
+  let briefs1 = core.station_briefs_for_scope("ws-a")
+  let mut found_st1 = false
+  let mut found_st2 = false
+  for i in 0..<briefs1.length() {
+    if briefs1[i].address == "ws-a/st-1" && briefs1[i].name == "Tokyo" {
+      found_st1 = true
+    }
+    if briefs1[i].address == "ws-a/st-2" && briefs1[i].name == "Shanghai" && !briefs1[i].online {
+      found_st2 = true
+    }
+  }
+  debug_assert(found_st1 && found_st2, "fresh device bootstraps stations from workspace.json even when station table is empty")
+
+  // 2. When live `station(addr, "overview")` exists for st-1, live fields overlay Cloud metadata cleanly
+  let ov_json = "{\"id\":\"st-1\",\"name\":\"Tokyo Live\",\"online\":true,\"updating\":true,\"offlineText\":\"updating\"}"
+  let _ = store::upsert_station_doc(db, "ws-a/st-1", "overview", ov_json, confirmed=Some(2000.to_int64()))
+  let briefs2 = core.station_briefs_for_scope("ws-a")
+  let mut merged_ok = false
+  for i in 0..<briefs2.length() {
+    if briefs2[i].address == "ws-a/st-1" && briefs2[i].name == "Tokyo Live" && briefs2[i].updating {
+      merged_ok = true
+    }
+  }
+  debug_assert(merged_ok, "live overview fields overlay Cloud station metadata")
+
+  // 3. Querying ANOTHER workspace `ws-other` MUST NEVER leak `self.station` (`ws-a/st-self`) or `ws-a` stations!
+  let briefs_other = core.station_briefs_for_scope("ws-other")
+  debug_assert(briefs_other.length() == 0, "other workspace with no stations returns empty list (zero self.station leakage)")
+}

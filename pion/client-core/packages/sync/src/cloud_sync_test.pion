@@ -11,6 +11,7 @@ import "store"
 struct MockCloudDb {
   account_docs : Map[String, String]
   workspaces : Map[String, String]
+  station_docs : Map[String, String]
   entries : Map[String, String]
 }
 
@@ -18,6 +19,7 @@ fn MockCloudDb::new() -> MockCloudDb {
   MockCloudDb::{
     account_docs: Map::new(),
     workspaces: Map::new(),
+    station_docs: Map::new(),
     entries: Map::new(),
   }
 }
@@ -49,6 +51,13 @@ fn MockCloudDb::handle_sql(self : MockCloudDb, op : String, args : base_codec::J
     } else if sql_text.contains("INTO workspace") && params.length() >= 2 {
       match (params[0], params[1]) {
         (base_codec::Json::Str(wid), base_codec::Json::Str(raw)) => self.workspaces.set(wid, raw)
+        _ => ()
+      }
+    } else if sql_text.contains("INTO station") && params.length() >= 3 {
+      match (params[0], params[1], params[2]) {
+        (base_codec::Json::Str(addr), base_codec::Json::Str(kind), base_codec::Json::Str(raw)) => {
+          self.station_docs.set(addr + ":" + kind, raw)
+        }
         _ => ()
       }
     } else if sql_text.contains("INTO entry") && params.length() >= 4 {
@@ -510,4 +519,90 @@ test "shell_iroh_transport: bind, setRelayEntries, connect, framed HTTP request/
   debug_assert(bind_count == 1, "local iroh endpoint bound only once")
   evs.stop()
   let _ = rt.run_ready()
+}
+
+test "P0-7: CloudSync fetch_workspace_k never overwrites station overview and parses full CloudStation metadata" {
+  let rt = effect::Runtime::new()
+  let mock_db = MockCloudDb::new()
+  let pending : Array[(Int64, String, base_codec::Json)] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {
+      pending.push((id, op, args))
+    },
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      mock_db.handle_sql(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "cloud-p0-7-test") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.to_string())
+  }
+
+  // Pre-seed a rich station-owned `overview` document with version/counts/joined/problems.
+  let rich_overview = "{\"id\":\"st-1\",\"name\":\"Tokyo Studio\",\"version\":\"0.1.9500\",\"counts\":{\"chats\":42,\"running\":3,\"jobs\":2},\"joined\":true,\"problems\":[{\"code\":\"disk_low\",\"detail\":\"12 GB free\"}]}"
+  let _ = store::upsert_station_doc(db, "ws-1/st-1", "overview", rich_overview, confirmed=Some(1000.to_int64()))
+  match mock_db.station_docs.get("ws-1/st-1:overview") {
+    Some(before) => debug_assert(before == rich_overview, "pre-seeded station overview present")
+    None => debug_assert(false, "expected pre-seeded station overview")
+  }
+
+  let cs = CloudSync::new(sh, db, "https://cloud.example", token="tok-p07")
+  let mut got_ws : Option[CloudWorkspace] = None
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_workspace_k("ws-1", fn(ex : effect::Exit[CloudWorkspace]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(ws) => {
+          got_ws = Some(ws)
+        }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(pending.length() == 1, "1 fetch_workspace_k pending")
+  let (id0, _, _) = pending[0]
+  let cloud_payload = "{\"id\":\"ws-1\",\"name\":\"Core\",\"rev\":9,\"members\":[{\"sub\":\"u1\",\"email\":\"alice@still.fail\",\"role\":\"owner\"}],\"stations\":[{\"id\":\"st-1\",\"name\":\"Tokyo\",\"online\":true,\"endpoint_id\":\"ep-snake-1\",\"relay\":\"https://relay-1.example\",\"ips\":[\"10.0.0.1:443\",\"192.168.1.2:443\"],\"mode\":\"full\",\"emoji\":\"🗼\",\"version\":\"0.1.9500\",\"joined\":true},{\"id\":\"st-2\",\"name\":\"Rig\",\"online\":false,\"endpointId\":\"ep-camel-2\",\"relayUrl\":\"https://relay-2.example\",\"ips\":[\"10.0.0.2:443\"],\"mode\":\"tasks\"}]}"
+  sh.answer(
+    id0,
+    base_codec::json_obj([("status", base_codec::json_int(200)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
+    bytes=Some(cloud_payload.to_bytes()),
+  )
+  let _ = rt.run_ready()
+
+  // 1. Station-owned `overview` row MUST remain byte-for-byte identical!
+  match mock_db.station_docs.get("ws-1/st-1:overview") {
+    Some(after) => debug_assert(after == rich_overview, "station overview must NOT be overwritten by CloudSync")
+    None => debug_assert(false, "station overview disappeared")
+  }
+  debug_assert(mock_db.station_docs.get("ws-1/st-2:overview").is_none(), "CloudSync must not fabricate overview for st-2")
+
+  // 2. Full raw workspace JSON persisted strictly in `workspace` table.
+  match mock_db.workspaces.get("ws-1") {
+    Some(ws_raw) => debug_assert(ws_raw.contains("ep-snake-1") && ws_raw.contains("ep-camel-2"), "workspace raw_json preserved")
+    None => debug_assert(false, "expected workspace row")
+  }
+
+  // 3. CloudWorkspace.stations parsed endpoint_id / relay / ips / mode (both snake_case and camelCase).
+  match got_ws {
+    Some(ws) => {
+      debug_assert(ws.stations.length() == 2, "parsed 2 stations")
+      let s0 = ws.stations[0]
+      debug_assert(s0.id == "st-1", "s0 id")
+      match s0.endpoint_id { Some(v) => debug_assert(v == "ep-snake-1", "s0 endpoint_id"); None => debug_assert(false, "s0 endpoint_id") }
+      match s0.relay { Some(v) => debug_assert(v == "https://relay-1.example", "s0 relay"); None => debug_assert(false, "s0 relay") }
+      debug_assert(s0.ips.length() == 2 && s0.ips[0] == "10.0.0.1:443" && s0.ips[1] == "192.168.1.2:443", "s0 ips")
+      match s0.mode { Some(v) => debug_assert(v == "full", "s0 mode"); None => debug_assert(false, "s0 mode") }
+      debug_assert(s0.joined, "s0 joined")
+      let s1 = ws.stations[1]
+      debug_assert(s1.id == "st-2", "s1 id")
+      match s1.endpoint_id { Some(v) => debug_assert(v == "ep-camel-2", "s1 camelCase endpointId"); None => debug_assert(false, "s1 endpointId") }
+      match s1.relay { Some(v) => debug_assert(v == "https://relay-2.example", "s1 camelCase relayUrl"); None => debug_assert(false, "s1 relayUrl") }
+      debug_assert(s1.ips.length() == 1 && s1.ips[0] == "10.0.0.2:443", "s1 ips")
+      match s1.mode { Some(v) => debug_assert(v == "tasks", "s1 mode"); None => debug_assert(false, "s1 mode") }
+    }
+    None => debug_assert(false, "expected CloudWorkspace result")
+  }
 }
