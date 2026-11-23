@@ -1,0 +1,223 @@
+// In-flight user mutation tracker (`doing` topic), 1:1 parity with `client/core-ts/src/doing.ts`.
+// Tracks every optimistic write from initiation until confirmation, keeping failures visible
+// with their exact error string until dismissed or retried.
+
+import "base_codec"
+
+/// How long a failure stays visible where it was asked (`doing.ts FAILED_SHOWN_MS`).
+pub fn doing_failed_shown_ms() -> Int {
+  6000
+}
+
+/// Calls whose params are too big to keep a copy of while they run (`doing.ts heavy()`).
+pub fn doing_is_heavy(name : String) -> Bool {
+  name == "station.upload" ||
+  name == "station.upload.part" ||
+  name == "drive.upload.part" ||
+  name == "station.preview" ||
+  name == "preview.socket.send" ||
+  name == "draft.put" ||
+  name == "composer.add" ||
+  name == "composer.text" ||
+  name == "chat.send" ||
+  name == "migrate" ||
+  name == "push.register"
+}
+
+fn doing_words(v : base_codec::Json) -> Option[String] {
+  match v {
+    base_codec::Json::Str(s) => Some(s)
+    base_codec::Json::Bool(b) => Some(if b { "true" } else { "false" })
+    base_codec::Json::Num(n, repr) => {
+      if repr.length() > 0 {
+        Some(repr)
+      } else if n == n.floor() && n.abs() <= 9007199254740991.0 {
+        Some(n.to_int64().to_string())
+      } else {
+        Some(n.to_string())
+      }
+    }
+    _ => None
+  }
+}
+
+pub struct DoingEntry {
+  pub id : Int
+  pub call : String
+  pub params : Array[(String, String)]
+  pub since : Int64
+  pub mut failed : Option[String]
+}
+
+pub struct DoingTracker {
+  mut next_id : Int
+  entries : Array[DoingEntry]
+}
+
+pub fn DoingTracker::new() -> DoingTracker {
+  DoingTracker::{ next_id: 0, entries: [] }
+}
+
+pub fn DoingTracker::count(self : DoingTracker) -> Int {
+  self.entries.length()
+}
+
+/// Record a started call; returns its id for `end` / `fail` / `dismiss`.
+pub fn DoingTracker::start(self : DoingTracker, call : String, params : base_codec::Json, now : Int64) -> Int {
+  self.next_id += 1
+  let id = self.next_id
+  let plain : Array[(String, String)] = []
+  match params {
+    base_codec::Json::Obj(fs) => {
+      for i in 0..<fs.length() {
+        let (k, v) = fs[i]
+        match doing_words(v) {
+          Some(w) => plain.push((k, w))
+          None => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  self.entries.push(DoingEntry::{
+    id: id,
+    call: call,
+    params: plain,
+    since: now,
+    failed: None,
+  })
+  id
+}
+
+/// Remove a completed or dismissed entry by id.
+pub fn DoingTracker::end(self : DoingTracker, id : Int) -> Unit {
+  let kept : Array[DoingEntry] = []
+  for i in 0..<self.entries.length() {
+    if self.entries[i].id != id {
+      kept.push(self.entries[i])
+    }
+  }
+  self.entries.clear()
+  for i in 0..<kept.length() {
+    self.entries.push(kept[i])
+  }
+}
+
+/// Mark an in-flight entry as failed with its error message.
+pub fn DoingTracker::fail(self : DoingTracker, id : Int, why : String) -> Unit {
+  for i in 0..<self.entries.length() {
+    if self.entries[i].id == id {
+      self.entries[i].failed = Some(why)
+      return
+    }
+  }
+}
+
+/// Dismiss a failed entry by id. Returns `true` if found and removed.
+pub fn DoingTracker::dismiss(self : DoingTracker, id : Int) -> Bool {
+  let mut found = false
+  let kept : Array[DoingEntry] = []
+  for i in 0..<self.entries.length() {
+    if self.entries[i].id == id {
+      found = true
+    } else {
+      kept.push(self.entries[i])
+    }
+  }
+  if found {
+    self.entries.clear()
+    for i in 0..<kept.length() {
+      self.entries.push(kept[i])
+    }
+  }
+  found
+}
+
+/// Look up an entry by id.
+pub fn DoingTracker::get(self : DoingTracker, id : Int) -> Option[DoingEntry] {
+  for i in 0..<self.entries.length() {
+    if self.entries[i].id == id {
+      return Some(self.entries[i])
+    }
+  }
+  None
+}
+
+/// Project the `doing` topic value (`{ doing: [...] }`), oldest first, 1:1 with `doing.ts Doing.value()`.
+pub fn DoingTracker::value(
+  self : DoingTracker,
+  rechecking : (Array[(String, String)]) -> Bool,
+  rechecking_note : String = "station 未响应，等待其恢复后确认操作是否成功",
+) -> base_codec::Json {
+  let items : Array[base_codec::Json] = []
+  for i in 0..<self.entries.length() {
+    let e = self.entries[i]
+    let p_fields : Array[(String, base_codec::Json)] = []
+    for pi in 0..<e.params.length() {
+      p_fields.push((e.params[pi].0, base_codec::json_str(e.params[pi].1)))
+    }
+    let stage = match e.failed {
+      Some(_) => "failed"
+      None => if rechecking(e.params) { "rechecking" } else { "running" }
+    }
+    let fields : Array[(String, base_codec::Json)] = [
+      ("call", base_codec::json_str(e.call)),
+      ("params", base_codec::json_obj(p_fields)),
+      ("since", base_codec::json_int64(e.since)),
+      ("stage", base_codec::json_str(stage)),
+    ]
+    if stage == "rechecking" {
+      fields.push(("note", base_codec::json_str(rechecking_note)))
+    }
+    match e.failed {
+      Some(err) => fields.push(("error", base_codec::json_str(err)))
+      None => ()
+    }
+    items.push(base_codec::json_obj(fields))
+  }
+  base_codec::json_obj([("doing", base_codec::json_arr(items))])
+}
+
+test "DoingTracker matches doing.ts lifecycle, primitive filtering, rechecking note, fail, dismiss, and heavy()" {
+  debug_assert(doing_failed_shown_ms() == 6000, "FAILED_SHOWN_MS == 6000")
+  debug_assert(doing_is_heavy("chat.send"), "chat.send is heavy")
+  debug_assert(doing_is_heavy("station.upload.part"), "station.upload.part is heavy")
+  debug_assert(!doing_is_heavy("chat.rename"), "chat.rename is not heavy")
+
+  let tr = DoingTracker::new()
+  let id1 = tr.start(
+    "chat.rename",
+    base_codec::json_obj([
+      ("station", base_codec::json_str("ws-1/st-1")),
+      ("count", base_codec::json_int(2)),
+      ("ok", base_codec::json_bool(true)),
+      ("nested", base_codec::json_obj([("skip", base_codec::json_int(1))])),
+    ]),
+    1000.to_int64(),
+  )
+  let id2 = tr.start("chat.pin", base_codec::json_obj([("station", base_codec::json_str("ws-1/st-2"))]), 1200.to_int64())
+  debug_assert(tr.count() == 2, "two running entries")
+
+  let v_recheck = tr.value(fn(ps : Array[(String, String)]) -> Bool {
+    for i in 0..<ps.length() {
+      if ps[i].0 == "station" && ps[i].1 == "ws-1/st-1" {
+        return true
+      }
+    }
+    false
+  })
+  let raw_recheck = base_codec::json_stringify(v_recheck)
+  debug_assert(raw_recheck.contains("\"stage\":\"rechecking\""), "rechecking stage emitted")
+  debug_assert(raw_recheck.contains("station 未响应，等待其恢复后确认操作是否成功"), "rechecking note matches i18n")
+  debug_assert(!raw_recheck.contains("nested"), "non-primitive params omitted")
+
+  tr.fail(id1, "403 forbidden")
+  let v_fail = base_codec::json_stringify(tr.value(fn(_ps : Array[(String, String)]) -> Bool { false }))
+  debug_assert(v_fail.contains("\"stage\":\"failed\""), "failed stage emitted")
+  debug_assert(v_fail.contains("\"error\":\"403 forbidden\""), "failed error preserved")
+
+  debug_assert(tr.dismiss(id1), "dismiss removes failed entry")
+  debug_assert(!tr.dismiss(id1), "second dismiss returns false")
+  tr.end(id2)
+  debug_assert(tr.count() == 0, "all entries cleared")
+}

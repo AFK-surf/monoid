@@ -1,0 +1,187 @@
+// Layer 5 differential parity RPC handlers for `parity_cli` (strict TS-vs-Pion head-to-head only):
+// - Suite 1a: `doing.ts` (`FAILED_SHOWN_MS`, `heavy()`, `DoingTracker` lifecycle)
+// - Suite 2a: `station/sync.ts` reconnect & read-retry exponential backoff (`RECONNECT_MS`, `RECONNECT_MAX_MS`, `retryAfter`)
+// - Suite 2d: `sync/scheduler.ts` foreground preemption (`SyncScheduler`)
+// - Suite 3b: `prefs.ts` full `prefs.set` patch & validation semantics (`store::set_device_prefs`)
+
+import "base_codec"
+import "effect"
+import "outbox"
+import "protocol"
+import "sql"
+import "store"
+import "sync"
+
+pub fn handle_l5_op(op : String, args : base_codec::Json, _sess : ParityCoreSession) -> Option[String] {
+  // ── Suite 1a: `doing.ts` parity ──
+  if op == "l5.doingConstants" {
+    let heavy_names = j_arr_l3(args, "names")
+    let heavy_out : Array[(String, base_codec::Json)] = []
+    for i in 0..<heavy_names.length() {
+      match heavy_names[i] {
+        base_codec::Json::Str(nm) => heavy_out.push((nm, base_codec::json_bool(sync::doing_is_heavy(nm))))
+        _ => ()
+      }
+    }
+    return Some(ok_resp(base_codec::json_obj([
+      ("FAILED_SHOWN_MS", base_codec::json_int(sync::doing_failed_shown_ms())),
+      ("heavy", base_codec::json_obj(heavy_out)),
+    ])))
+  }
+
+  if op == "l5.doingSim" {
+    let tracker = sync::DoingTracker::new()
+    let ids : Array[Int] = []
+    let steps = j_arr_l3(args, "steps")
+    let snapshots : Array[base_codec::Json] = []
+    for i in 0..<steps.length() {
+      let st = steps[i]
+      let kind = j_s(st, "kind")
+      if kind == "start" {
+        let id = tracker.start(j_s(st, "call"), get_json(st, "params"), j_i64(st, "now"))
+        ids.push(id)
+      } else if kind == "fail" {
+        let idx = j_i(st, "index")
+        if idx >= 0 && idx < ids.length() {
+          tracker.fail(ids[idx], j_s(st, "why"))
+        }
+      } else if kind == "end" {
+        let idx = j_i(st, "index")
+        if idx >= 0 && idx < ids.length() {
+          tracker.end(ids[idx])
+        }
+      } else if kind == "value" {
+        let rech_st = j_os(st, "recheckStation")
+        let v = tracker.value(fn(ps : Array[(String, String)]) -> Bool {
+          match rech_st {
+            Some(want) => {
+              for pi in 0..<ps.length() {
+                if ps[pi].0 == "station" && ps[pi].1 == want {
+                  return true
+                }
+              }
+              false
+            }
+            None => false
+          }
+        })
+        snapshots.push(v)
+      }
+    }
+    return Some(ok_resp(base_codec::json_obj([
+      ("snapshots", base_codec::json_arr(snapshots)),
+    ])))
+  }
+
+  // ── Suite 2a: Backoff sequence parity ──
+  if op == "l5.syncBackoff" {
+    let max_n = j_i(args, "maxAttempt")
+    let seq : Array[base_codec::Json] = []
+    let retry_seq : Array[base_codec::Json] = []
+    for n in 0..<(max_n + 1) {
+      seq.push(base_codec::json_int(sync::reconnect_backoff_ms(n)))
+      retry_seq.push(base_codec::json_int(sync::retry_after_ms(n)))
+    }
+    return Some(ok_resp(base_codec::json_obj([
+      ("RECONNECT_MS", base_codec::json_int(sync::reconnect_ms())),
+      ("RECONNECT_MAX_MS", base_codec::json_int(sync::reconnect_max_ms())),
+      ("READ_RETRY_MS", base_codec::json_int(sync::read_retry_ms())),
+      ("backoff", base_codec::json_arr(seq)),
+      ("retryAfter", base_codec::json_arr(retry_seq)),
+    ])))
+  }
+
+  // ── Suite 2d: `SyncScheduler` foreground preemption ──
+  if op == "l5.schedulerPreemptSim" {
+    let rt = effect::Runtime::new()
+    let sim = ParitySimDb::new(rt)
+    let db = match sql::Sql::open(sim.sh, "l5_sched") {
+      sql::SqlResult::Ok(d) => d
+      sql::SqlResult::Err(_) => return Some(err_resp("failed to open db"))
+    }
+    let frame_ob : outbox::FrameOutbox[sync::CoreEvent] = outbox::FrameOutbox::new(fn() -> Unit {})
+    let started_order : Array[base_codec::Json] = []
+    let transport = sync::StationTransport::{
+      request_k: fn(_m : String, path : String, _h : Array[(String, String)], _b : Bytes, k : (effect::Exit[sync::HttpReply]) -> Unit) -> Unit {
+        started_order.push(base_codec::json_str(path))
+        let delay = if path == "/threads/100/entries" { 200 } else { 30 }
+        effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
+          match sex {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            _ => k(effect::Exit::Succeeded(sync::HttpReply::{ status: 200, headers: [], body: "{\"entries\":[]}".to_bytes() }))
+          }
+        })
+      },
+      stream_k: fn(_p : String, _h : Array[(String, String)], _on : (Bytes) -> Unit, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+        k(effect::Exit::Succeeded(()))
+      },
+    }
+    let evs = sync::StationEvents::new("ws-1", "ws-1/st-1", db, frame_ob, transport)
+    let sched = sync::SyncScheduler::new("ws-1", "ws-1/st-1", evs, transport, width=2, urgent_room=2)
+
+    let _ = rt.fork_quiet_named("bg-idle", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      sched.prefetch_idle_k(100, fn(_ex : effect::Exit[Int]) -> Unit { k(effect::Exit::Succeeded(())) })
+    })
+    rt.advance(10)
+    sched.focus_thread(Some(200))
+    let _ = rt.fork_quiet_named("fg-focus", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      sched.fetch_thread_k(200, effect::priority_shown(), true, fn(_ex : effect::Exit[Int]) -> Unit { k(effect::Exit::Succeeded(())) })
+    })
+    rt.advance(1000)
+
+    let completed = sched.completed_tasks()
+    let comp_j : Array[base_codec::Json] = []
+    for i in 0..<completed.length() {
+      comp_j.push(base_codec::json_str(completed[i]))
+    }
+    return Some(ok_resp(base_codec::json_obj([
+      ("startedOrder", base_codec::json_arr(started_order)),
+      ("completedOrder", base_codec::json_arr(comp_j)),
+      ("idlePreemptions", base_codec::json_int(sched.idle_preemptions())),
+    ])))
+  }
+
+  // ── Suite 3b: `prefs.set` patch semantics ──
+  if op == "l5.prefsSim" {
+    let rt = effect::Runtime::new()
+    let sim = ParitySimDb::new(rt)
+    let db = match sql::Sql::open(sim.sh, "l5_prefs") {
+      sql::SqlResult::Ok(d) => d
+      sql::SqlResult::Err(_) => return Some(err_resp("failed to open db"))
+    }
+    let md = store::MdStore::new(db, "ws-1/st-1")
+    let router = protocol::Slice1Router::new(db, md, workspace="ws-1")
+    let steps = j_arr_l3(args, "steps")
+    let results : Array[base_codec::Json] = []
+    let mut seq : Int64 = 1.to_int64()
+    for i in 0..<steps.length() {
+      let st = steps[i]
+      let patch = get_json(st, "patch")
+      let fill = j_b(st, "fill")
+      let now = j_i64(st, "now")
+      let params = base_codec::json_obj([
+        ("patch", patch),
+        ("fill", base_codec::json_bool(fill)),
+        ("now", base_codec::json_int64(now)),
+      ])
+      match router.handle(protocol::CoreRequest::Call(seq, "prefs.set", params, None)) {
+        Some(protocol::CoreEvent::Ok(_, v, _)) =>
+        results.push(base_codec::json_obj([("ok", v)]))
+        Some(protocol::CoreEvent::Err(_, e)) =>
+        results.push(base_codec::json_obj([("err", base_codec::json_str(e.message))]))
+        _ => results.push(base_codec::json_null())
+      }
+      seq += 1.to_int64()
+    }
+    let final_prefs = match store::get_device_prefs(db) {
+      sql::SqlResult::Ok(j) => j
+      sql::SqlResult::Err(_) => base_codec::json_null()
+    }
+    return Some(ok_resp(base_codec::json_obj([
+      ("results", base_codec::json_arr(results)),
+      ("finalPrefs", final_prefs),
+    ])))
+  }
+
+  None
+}

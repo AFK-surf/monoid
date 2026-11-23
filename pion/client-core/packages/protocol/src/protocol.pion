@@ -1226,6 +1226,31 @@ fn Slice1Router::handle_chat_draft(self : Slice1Router, id : Int64, params : bas
   }
   match base_codec::json_get(params, "text") {
     Some(text_j) => {
+      // Match `composer.ts`: blank / whitespace-only draft text (with no quotes/files) auto-deletes the draft row.
+      let text_blank = match text_j {
+        base_codec::Json::Str(s) => s.trim().length() == 0
+        base_codec::Json::Null => true
+        _ => false
+      }
+      let has_extras = match base_codec::json_get(params, "quotes") {
+        Some(base_codec::Json::Arr(a)) => a.length() > 0
+        _ => false
+      } || match base_codec::json_get(params, "files") {
+        Some(base_codec::Json::Arr(a)) => a.length() > 0
+        _ => false
+      }
+      if text_blank && !has_extras {
+        match store::delete_draft(self.db, st, chat_key) {
+          sql::SqlResult::Err(e) => return CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+          sql::SqlResult::Ok(_) =>
+          return CoreEvent::Ok(id, base_codec::json_obj([
+            ("station", base_codec::json_str(st)),
+            ("chat", base_codec::json_str(chat_key)),
+            ("draft", base_codec::json_null()),
+            ("cleared", base_codec::json_bool(true)),
+          ]), None)
+        }
+      }
       let draft_obj = base_codec::json_obj([
         ("text", text_j),
         ("updatedAt", match opt_nonneg_int64(params, "updatedAt") {
@@ -1267,6 +1292,46 @@ fn Slice1Router::handle_chat_draft(self : Slice1Router, id : Int64, params : bas
   }
 }
 
+fn Slice1Router::handle_prefs_get(self : Slice1Router, id : Int64, is_sub : Bool) -> CoreEvent {
+  match store::get_device_prefs(self.db) {
+    sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+    sql::SqlResult::Ok(j) =>
+    if is_sub { CoreEvent::Value(id, j, None) } else { CoreEvent::Ok(id, j, None) }
+  }
+}
+
+fn Slice1Router::handle_prefs_set(self : Slice1Router, id : Int64, params : base_codec::Json) -> CoreEvent {
+  let fill = match opt_bool_field(params, "fill") {
+    Some(true) => true
+    _ => false
+  }
+  let now = match opt_nonneg_int64(params, "now") {
+    Some(ts) => ts
+    None => 0.to_int64()
+  }
+  let patch = match base_codec::json_get(params, "patch") {
+    Some(p) => p
+    None =>
+    match params {
+      base_codec::Json::Obj(fs) => {
+        let filtered : Array[(String, base_codec::Json)] = []
+        for i in 0..<fs.length() {
+          let (k, v) = fs[i]
+          if k != "fill" && k != "now" {
+            filtered.push((k, v))
+          }
+        }
+        base_codec::json_obj(filtered)
+      }
+      _ => params
+    }
+  }
+  match store::set_device_prefs(self.db, patch, fill, now) {
+    Err(msg) => CoreEvent::Err(id, CoreError::{ code: "invalid", message: msg })
+    Ok(next) => CoreEvent::Ok(id, next, None)
+  }
+}
+
 fn Slice1Router::evaluate_topic_value(self : Slice1Router, id : Int64, topic : Topic) -> CoreEvent {
   match self.topic_evaluator {
     Some(eval_fn) =>
@@ -1296,6 +1361,9 @@ fn Slice1Router::evaluate_topic_value(self : Slice1Router, id : Int64, topic : T
   }
   if topic.name == "draft" {
     return self.handle_chat_draft(id, topic.to_json(), true)
+  }
+  if topic.name == "prefs" {
+    return self.handle_prefs_get(id, true)
   }
   if topic.name == "search" || topic.name == "chatSearch" {
     match self.handle_search_chats(id, topic.to_json()) {
@@ -1577,6 +1645,12 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
       }
       if call_name == "chat.draft" {
         return Some(self.handle_chat_draft(id, params, false))
+      }
+      if call_name == "prefs.get" {
+        return Some(self.handle_prefs_get(id, false))
+      }
+      if call_name == "prefs.set" {
+        return Some(self.handle_prefs_set(id, params))
       }
       if call_name == "echo.bytes" {
         return Some(CoreEvent::Ok(id, params, bytes))

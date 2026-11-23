@@ -495,9 +495,9 @@ test "shell_iroh_transport: bind, setRelayEntries, connect, framed HTTP request/
   }
   debug_assert(saw_conn_close, "conn.close sent on stream drop")
 
-  // Advance virtual clock 1000ms -> StationEvents reconnects via fresh iroh.connect (reusing local endpoint 10, no second iroh.bind!)
+  // Advance virtual clock 2000ms (link.ts RECONNECT_MS) -> StationEvents reconnects via fresh iroh.connect (reusing local endpoint 10, no second iroh.bind!)
   let count_before_reconn = calls.length()
-  rt.advance(1000)
+  rt.advance(2000)
   debug_assert(calls.length() > count_before_reconn, "reconnect triggered after backoff")
   let c_reconn = calls[calls.length() - 1]
   debug_assert(c_reconn.1 == "iroh.connect", "fresh iroh.connect on reconnect without re-binding")

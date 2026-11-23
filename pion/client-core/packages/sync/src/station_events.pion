@@ -246,11 +246,32 @@ fn opt_i64_json(v : Option[Int64]) -> base_codec::Json {
   }
 }
 
-/// Exponential reconnect backoff capped at 30s (matches `client/core-ts/src/station/sync.ts`).
+/// Base reconnect delay in ms (matches `client/core-ts/src/station/link.ts RECONNECT_MS`).
+pub fn reconnect_ms() -> Int {
+  2000
+}
+
+/// Maximum reconnect backoff in ms (matches `client/core-ts/src/station/link.ts RECONNECT_MAX_MS`).
+pub fn reconnect_max_ms() -> Int {
+  60000
+}
+
+/// Base read retry delay in ms (matches `client/core-ts/src/station/sync.ts READ_RETRY_MS`).
+pub fn read_retry_ms() -> Int {
+  2000
+}
+
+/// Exponential reconnect backoff capped at 60s (1:1 parity with `client/core-ts/src/station/link.ts`
+/// & `sync.ts retryAfter`: `min(2000 * 2^min(n, 10), 60000)` -> 2000, 4000, 8000, 16000, 32000, 60000).
 pub fn reconnect_backoff_ms(attempt : Int) -> Int {
-  let clamped = if attempt < 0 { 0 } else if attempt > 5 { 5 } else { attempt }
-  let ms = 1000 << clamped
-  if ms > 30000 { 30000 } else { ms }
+  let clamped = if attempt < 0 { 0 } else if attempt > 10 { 10 } else { attempt }
+  let ms = 2000 << clamped
+  if ms > 60000 { 60000 } else { ms }
+}
+
+/// Exponential read retry backoff matching `client/core-ts/src/station/sync.ts retryAfter(n)`.
+pub fn retry_after_ms(n : Int) -> Int {
+  reconnect_backoff_ms(n)
 }
 
 pub struct SessionStatus {

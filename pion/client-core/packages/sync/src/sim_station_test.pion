@@ -946,8 +946,8 @@ test "E2E 2: offline optimistic send_message -> auto-flush on reconnect -> exact
   core.start()
   rt.advance(50)
   station.offline = false
-  // Advance past first reconnect backoff (1000ms) + connect + POST flush.
-  rt.advance(1200)
+  // Advance past first reconnect backoff (2000ms, matching link.ts RECONNECT_MS) + connect + POST flush.
+  rt.advance(2200)
 
   // Verify auto-flush succeeded, outbox cleared, and entry stored once with exact client_key.
   debug_assert(core.local_outbox.pending_message_count() == 0, "outbox reconciled after reconnect")

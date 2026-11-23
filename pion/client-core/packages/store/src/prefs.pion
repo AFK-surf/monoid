@@ -1,0 +1,832 @@
+// Device preferences patch & validation engine (`prefs.set`), 1:1 parity with
+// `client/core-ts/src/prefs.ts`: field replacement, `null` deletion, nested map shallow merge,
+// `fill: true` fill-only semantics, `ONE_OF` exclusivity, `readerOf`/`barsOf`/`badgeKindsOf`,
+// `chatTabs`/`jobsSeen`/`failsGone` caps, and SQLite persistence in `account_doc("prefs")`.
+
+import "base_codec"
+import "sql"
+
+let PREFS_DOC_NAME : String = "prefs"
+let TABS_KEPT : Int = 200
+let JOBS_SEEN_KEPT : Int = 200
+let FAILS_GONE_KEPT : Int = 200
+let BAR_SIZE : Int = 4
+
+fn is_allowed_pref_field(f : String) -> Bool {
+  f == "onlyMine" || f == "onlyWatching" || f == "listFilter" || f == "boardViews" ||
+  f == "boardGroups" || f == "boardShowEmpty" || f == "boardDrafts" || f == "appearance" ||
+  f == "accent" || f == "windowZoom" || f == "terminalZoom" || f == "motion" ||
+  f == "glassFrost" || f == "haptics" || f == "dht" || f == "appUpdate" ||
+  f == "rowPicture" || f == "absoluteTime" || f == "language" || f == "keys" ||
+  f == "workspace" || f == "lastChat" || f == "chatTabs" || f == "dropFiles" ||
+  f == "dropAs" || f == "archiveHint" || f == "screenTouch" || f == "screenQuality" ||
+  f == "screenFps" || f == "screenCodec" || f == "screenMouse" || f == "driveViews" ||
+  f == "filesTabs" || f == "remoteTabs" || f == "driveFavorites" ||
+  f == "driveFavoritesHidden" || f == "resume" || f == "invite" || f == "badge" ||
+  f == "badgeKinds" || f == "reader" || f == "lockNotice" || f == "rail" ||
+  f == "rails" || f == "bars" || f == "barsBy" || f == "fonts" ||
+  f == "previewSizes" || f == "sidebars" || f == "trouble" || f == "jobsSeen" ||
+  f == "failsGone" || f == "fillOff" || f == "fillMax" || f == "shareLook" ||
+  f == "cpuDial" || f == "sendKey" || f == "moveTo" || f == "experimental" ||
+  f == "reports"
+}
+
+fn is_map_pref_field(f : String) -> Bool {
+  f == "listFilter" || f == "boardViews" || f == "boardGroups" || f == "boardShowEmpty" ||
+  f == "boardDrafts" || f == "keys" || f == "lastChat" || f == "chatTabs" ||
+  f == "dropFiles" || f == "driveViews" || f == "filesTabs" || f == "remoteTabs" ||
+  f == "driveFavorites" || f == "driveFavoritesHidden" || f == "resume" ||
+  f == "lockNotice" || f == "rails" || f == "barsBy" || f == "previewSizes" ||
+  f == "sidebars" || f == "trouble" || f == "jobsSeen" || f == "failsGone" ||
+  f == "moveTo" || f == "experimental"
+}
+
+fn is_list_filter_value(s : String) -> Bool {
+  s == "all" || s == "mine" || s == "watching" || s == "hidden" || s == "archive"
+}
+
+fn is_bar_place(s : String) -> Bool {
+  s == "chats" || s == "files" || s == "remote" || s == "stations" ||
+  s == "profiles" || s == "connects" || s == "usage" || s == "archive" || s == "vault"
+}
+
+fn is_board_group(s : String) -> Bool {
+  s == "state" || s == "station" || s == "person"
+}
+
+fn is_accent_named(s : String) -> Bool {
+  s == "blue" || s == "teal" || s == "purple" || s == "pink"
+}
+
+fn is_valid_custom_accent(s : String) -> Bool {
+  if !s.starts_with("custom:") {
+    return false
+  }
+  let rest = s.slice(7, s.length()).to_bytes()
+  if rest.length() == 0 || rest.length() > 3 {
+    return false
+  }
+  let mut acc = 0
+  for i in 0..<rest.length() {
+    let ch = rest[i].to_int()
+    if ch < 48 || ch > 57 {
+      return false
+    }
+    acc = acc * 10 + (ch - 48)
+  }
+  acc < 360
+}
+
+fn is_valid_glass_frost(s : String) -> Bool {
+  if s == "0" || s == "100" {
+    return true
+  }
+  let bs = s.to_bytes()
+  if bs.length() == 1 {
+    let c = bs[0].to_int()
+    return c >= 49 && c <= 57
+  }
+  if bs.length() == 2 {
+    let c0 = bs[0].to_int()
+    let c1 = bs[1].to_int()
+    return c0 >= 49 && c0 <= 57 && c1 >= 48 && c1 <= 57
+  }
+  false
+}
+
+fn is_valid_window_zoom(s : String) -> Bool {
+  s == "50" || s == "67" || s == "75" || s == "80" || s == "90" ||
+  s == "110" || s == "125" || s == "150" || s == "175" || s == "200"
+}
+
+fn is_valid_terminal_zoom(s : String) -> Bool {
+  let bs = s.to_bytes()
+  if bs.length() < 2 || bs.length() > 3 {
+    return false
+  }
+  let mut v = 0
+  for i in 0..<bs.length() {
+    let c = bs[i].to_int()
+    if c < 48 || c > 57 {
+      return false
+    }
+    v = v * 10 + (c - 48)
+  }
+  v >= 60 && v <= 200
+}
+
+fn is_valid_share_look(s : String) -> Bool {
+  let bs = s.to_bytes()
+  if bs.length() == 0 || bs.length() > 32 {
+    return false
+  }
+  let c0 = bs[0].to_int()
+  if c0 < 97 || c0 > 122 {
+    return false
+  }
+  for i in 1..<bs.length() {
+    let c = bs[i].to_int()
+    let ok = (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+fn is_valid_screen_fps(n : Double) -> Bool {
+  n == 15.0 || n == 30.0 || n == 60.0
+}
+
+fn sort_strings_asc(xs : Array[String]) -> Unit {
+  for i in 1..<xs.length() {
+    let cur = xs[i]
+    let mut j = i - 1
+    while j >= 0 && xs[j] > cur {
+      xs[j + 1] = xs[j]
+      j -= 1
+    }
+    xs[j + 1] = cur
+  }
+}
+
+fn obj_to_map(j : base_codec::Json) -> (Map[String, base_codec::Json], Array[String]) {
+  let m : Map[String, base_codec::Json] = Map::new()
+  let ks : Array[String] = []
+  match j {
+    base_codec::Json::Obj(fs) => {
+      for i in 0..<fs.length() {
+        let (k, v) = fs[i]
+        if m.get(k).is_none() {
+          ks.push(k)
+        }
+        m.set(k, v)
+      }
+    }
+    _ => ()
+  }
+  (m, ks)
+}
+
+fn map_to_sorted_obj(m : Map[String, base_codec::Json]) -> base_codec::Json {
+  let ks = m.keys()
+  sort_strings_asc(ks)
+  let fs : Array[(String, base_codec::Json)] = []
+  for i in 0..<ks.length() {
+    let k = ks[i]
+    match m.get(k) {
+      Some(v) => fs.push((k, v))
+      None => ()
+    }
+  }
+  base_codec::json_obj(fs)
+}
+
+fn prefs_num_clamp(v : Option[base_codec::Json], lo : Double, hi : Double, step : Double, fallback : Double) -> Double {
+  match v {
+    Some(base_codec::Json::Num(n, _)) => {
+      if n != n {
+        return fallback
+      }
+      let rounded = (n / step + (if n >= 0.0 { 0.5 } else { -0.5 })).floor() * step
+      if rounded < lo { lo } else if rounded > hi { hi } else { rounded }
+    }
+    _ => fallback
+  }
+}
+
+/// Normalize reader preferences matching `prefs.ts readerOf`.
+pub fn reader_of(v : base_codec::Json) -> base_codec::Json {
+  let (m, _) = obj_to_map(v)
+  let size = prefs_num_clamp(m.get("size"), 12.0, 32.0, 1.0, 16.0).to_int()
+  let raw_line = prefs_num_clamp(m.get("line"), 1.2, 2.4, 0.1, 1.7)
+  let line = (raw_line * 10.0 + 0.5).floor() / 10.0
+  let margin = prefs_num_clamp(m.get("margin"), 8.0, 44.0, 1.0, 22.0).to_int()
+  let face = match m.get("face") {
+    Some(base_codec::Json::Str(s)) => if s == "serif" || s == "sans" { s } else { "sans" }
+    _ => "sans"
+  }
+  let indent = match m.get("indent") {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => true
+  }
+  let paper = match m.get("paper") {
+    Some(base_codec::Json::Str(s)) =>
+    if s == "follow" || s == "white" || s == "green" || s == "grey" || s == "night" { s } else { "follow" }
+    _ => "follow"
+  }
+  base_codec::json_obj([
+    ("size", base_codec::json_int(size)),
+    ("line", base_codec::json_num(line)),
+    ("margin", base_codec::json_int(margin)),
+    ("face", base_codec::json_str(face)),
+    ("indent", base_codec::json_bool(indent)),
+    ("paper", base_codec::json_str(paper)),
+  ])
+}
+
+fn default_bars() -> base_codec::Json {
+  base_codec::json_obj([
+    ("sets", base_codec::json_arr([
+      base_codec::json_arr([
+        base_codec::json_str("chats"),
+        base_codec::json_str("files"),
+        base_codec::json_str("profiles"),
+        base_codec::json_str("stations"),
+      ]),
+      base_codec::json_arr([
+        base_codec::json_str("remote"),
+        base_codec::json_str("archive"),
+        base_codec::json_str("usage"),
+        base_codec::json_str("connects"),
+      ]),
+    ])),
+    ("current", base_codec::json_int(0)),
+  ])
+}
+
+/// Normalize phone bottom bars matching `prefs.ts barsOf`.
+pub fn bars_of(v : base_codec::Json) -> base_codec::Json {
+  let sets_raw = match base_codec::json_get(v, "sets") {
+    Some(base_codec::Json::Arr(a)) => a
+    _ => return default_bars()
+  }
+  let sets_out : Array[base_codec::Json] = []
+  for i in 0..<sets_raw.length() {
+    match sets_raw[i] {
+      base_codec::Json::Arr(items) => {
+        let seen : Map[String, Bool] = Map::new()
+        let row : Array[base_codec::Json] = []
+        for j in 0..<items.length() {
+          if row.length() >= BAR_SIZE {
+            break
+          }
+          match items[j] {
+            base_codec::Json::Str(s) => {
+              if is_bar_place(s) && seen.get(s).is_none() {
+                seen.set(s, true)
+                row.push(base_codec::json_str(s))
+              }
+            }
+            _ => ()
+          }
+        }
+        if row.length() > 0 {
+          sets_out.push(base_codec::json_arr(row))
+        }
+      }
+      _ => ()
+    }
+  }
+  if sets_out.length() == 0 {
+    return default_bars()
+  }
+  let cur_raw = match base_codec::json_get(v, "current") {
+    Some(base_codec::Json::Num(n, _)) => if n == n { (n + 0.5).floor().to_int() } else { 0 }
+    _ => 0
+  }
+  let max_cur = sets_out.length() - 1
+  let cur = if cur_raw < 0 { 0 } else if cur_raw > max_cur { max_cur } else { cur_raw }
+  base_codec::json_obj([
+    ("sets", base_codec::json_arr(sets_out)),
+    ("current", base_codec::json_int(cur)),
+  ])
+}
+
+/// Normalize badge kinds matching `prefs.ts badgeKindsOf`.
+pub fn badge_kinds_of(prefs_m : Map[String, base_codec::Json], override_bk : base_codec::Json) -> base_codec::Json {
+  let by = match prefs_m.get("badge") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  let unread = by != "decisions" && by != "attention"
+  let base_failed = by != "decisions"
+  let flag = fn(name : String, def : Bool) -> Bool {
+    match base_codec::json_get(override_bk, name) {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => def
+    }
+  }
+  base_codec::json_obj([
+    ("on", base_codec::json_bool(flag("on", true))),
+    ("wait", base_codec::json_bool(flag("wait", true))),
+    ("failed", base_codec::json_bool(flag("failed", base_failed))),
+    ("done", base_codec::json_bool(flag("done", unread))),
+    ("message", base_codec::json_bool(flag("message", unread))),
+    ("services", base_codec::json_bool(flag("services", true))),
+  ])
+}
+
+fn from_locale_lang(s : String) -> String {
+  if s.starts_with("zh") || s.starts_with("ZH") || s.starts_with("Zh") {
+    "zh"
+  } else if s.length() > 0 {
+    "en"
+  } else {
+    "zh"
+  }
+}
+
+fn filter_list_filters(v : base_codec::Json) -> base_codec::Json {
+  match v {
+    base_codec::Json::Obj(fs) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fs.length() {
+        let (k, fv) = fs[i]
+        match fv {
+          base_codec::Json::Str(s) => {
+            if is_list_filter_value(s) {
+              out.push((k, fv))
+            }
+          }
+          _ => ()
+        }
+      }
+      base_codec::json_obj(out)
+    }
+    _ => base_codec::json_obj([])
+  }
+}
+
+/// Apply `patch` to `current` prefs matching `client/core-ts/src/prefs.ts set()`.
+/// - Replaces fields with non-null values;
+/// - Deletes fields when set to `null` (unless `fill == true` and already set);
+/// - Shallow-merges nested map fields (`MAPS`), deleting sub-keys set to `null`, skipping
+///   already-present sub-keys when `fill == true`;
+/// - Enforces `ONE_OF` (`onlyMine`/`onlyWatching`), `readerOf`, `barsOf`, `badgeKindsOf`,
+///   `chatTabs` LRU cap (200), `jobsSeen`/`failsGone` caps (200), and field validators.
+pub fn apply_prefs_patch(
+  current : base_codec::Json,
+  patch : base_codec::Json,
+  fill : Bool,
+  now : Int64,
+) -> Result[base_codec::Json, String] {
+  match patch {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err("params must be an object")
+  }
+  let (prefs, _) = obj_to_map(current)
+  // Clean legacy / deprecated fields matching TS prefs.ts
+  match prefs.get("listFilter") {
+    Some(lf) => prefs.set("listFilter", filter_list_filters(lf))
+    None => ()
+  }
+  prefs.remove("chatPage")
+  prefs.remove("onlyDecisions")
+  prefs.remove("decisionsDeferred")
+
+  let (patch_m, _) = obj_to_map(patch)
+  let patch_keys = patch_m.keys()
+  sort_strings_asc(patch_keys)
+
+  for pi in 0..<patch_keys.length() {
+    let field = patch_keys[pi]
+    if !is_allowed_pref_field(field) {
+      return Err("unknown_field:" + field)
+    }
+    let value = match patch_m.get(field) {
+      Some(v) => v
+      None => base_codec::json_null()
+    }
+    let is_null = match value {
+      base_codec::Json::Null => true
+      _ => false
+    }
+    let is_obj = match value {
+      base_codec::Json::Obj(_) => true
+      _ => false
+    }
+
+    if field == "bars" && !is_null {
+      prefs.set("bars", bars_of(value))
+    } else if field == "reader" && is_obj {
+      let prev_r = match prefs.get("reader") {
+        Some(base_codec::Json::Obj(fs)) => base_codec::json_obj(fs)
+        _ => base_codec::json_obj([])
+      }
+      let (chosen, _) = obj_to_map(prev_r)
+      let (val_m, _) = obj_to_map(value)
+      let vks = val_m.keys()
+      for vi in 0..<vks.length() {
+        let vk = vks[vi]
+        match val_m.get(vk) {
+          Some(vv) => chosen.set(vk, vv)
+          None => ()
+        }
+      }
+      let norm = reader_of(map_to_sorted_obj(chosen))
+      let kept_r : Map[String, base_codec::Json] = Map::new()
+      let (norm_m, _) = obj_to_map(norm)
+      let nks = norm_m.keys()
+      for ni in 0..<nks.length() {
+        let nk = nks[ni]
+        if chosen.get(nk).is_some() {
+          match norm_m.get(nk) {
+            Some(nv) => kept_r.set(nk, nv)
+            None => ()
+          }
+        }
+      }
+      prefs.set("reader", map_to_sorted_obj(kept_r))
+    } else if field == "badgeKinds" && is_obj {
+      let prev_bk = match prefs.get("badgeKinds") {
+        Some(base_codec::Json::Obj(fs)) => base_codec::json_obj(fs)
+        _ => base_codec::json_obj([])
+      }
+      let (merged_bk, _) = obj_to_map(prev_bk)
+      let (val_m, _) = obj_to_map(value)
+      let vks = val_m.keys()
+      for vi in 0..<vks.length() {
+        let vk = vks[vi]
+        match val_m.get(vk) {
+          Some(vv) => merged_bk.set(vk, vv)
+          None => ()
+        }
+      }
+      prefs.set("badgeKinds", badge_kinds_of(prefs, map_to_sorted_obj(merged_bk)))
+    } else if is_obj && is_map_pref_field(field) {
+      let prev_map_j = match prefs.get(field) {
+        Some(base_codec::Json::Obj(fs)) => base_codec::json_obj(fs)
+        Some(_) => continue
+        None => base_codec::json_obj([])
+      }
+      let (map_m, _) = obj_to_map(prev_map_j)
+      let (val_m, _) = obj_to_map(value)
+      let sub_keys = val_m.keys()
+      sort_strings_asc(sub_keys)
+      for si in 0..<sub_keys.length() {
+        let sk = sub_keys[si]
+        if fill && map_m.get(sk).is_some() {
+          continue
+        }
+        let mut entry = match val_m.get(sk) {
+          Some(ev) => ev
+          None => base_codec::json_null()
+        }
+        match entry {
+          base_codec::Json::Null => {
+            map_m.remove(sk)
+            continue
+          }
+          _ => ()
+        }
+        if field == "jobsSeen" {
+          match entry {
+            base_codec::Json::Arr(xs) => {
+              if xs.length() > JOBS_SEEN_KEPT {
+                let trimmed : Array[base_codec::Json] = []
+                let start = xs.length() - JOBS_SEEN_KEPT
+                for ti in start..<xs.length() {
+                  trimmed.push(xs[ti])
+                }
+                entry = base_codec::json_arr(trimmed)
+              }
+            }
+            _ => ()
+          }
+        }
+        if field == "failsGone" {
+          match entry {
+            base_codec::Json::Arr(xs) => {
+              let combined : Array[base_codec::Json] = []
+              let seen : Map[String, Bool] = Map::new()
+              match map_m.get(sk) {
+                Some(base_codec::Json::Arr(was)) => {
+                  for wi in 0..<was.length() {
+                    let s = base_codec::json_stringify(was[wi])
+                    if seen.get(s).is_none() {
+                      seen.set(s, true)
+                      combined.push(was[wi])
+                    }
+                  }
+                }
+                _ => ()
+              }
+              for xi in 0..<xs.length() {
+                let s = base_codec::json_stringify(xs[xi])
+                if seen.get(s).is_none() {
+                  seen.set(s, true)
+                  combined.push(xs[xi])
+                }
+              }
+              if combined.length() > FAILS_GONE_KEPT {
+                let trimmed : Array[base_codec::Json] = []
+                let start = combined.length() - FAILS_GONE_KEPT
+                for ti in start..<combined.length() {
+                  trimmed.push(combined[ti])
+                }
+                entry = base_codec::json_arr(trimmed)
+              } else {
+                entry = base_codec::json_arr(combined)
+              }
+            }
+            _ => ()
+          }
+        }
+        if field == "boardViews" {
+          match entry {
+            base_codec::Json::Str("board") => ()
+            _ => return Err("invalid:boardViews." + sk)
+          }
+        }
+        if field == "boardGroups" {
+          match entry {
+            base_codec::Json::Str(s) => if !is_board_group(s) { return Err("invalid:boardGroups." + sk) }
+            _ => return Err("invalid:boardGroups." + sk)
+          }
+        }
+        if field == "boardShowEmpty" {
+          match entry {
+            base_codec::Json::Bool(false) => ()
+            _ => return Err("invalid:boardShowEmpty." + sk)
+          }
+        }
+        if field == "barsBy" {
+          entry = bars_of(entry)
+        }
+        if field == "chatTabs" {
+          match entry {
+            base_codec::Json::Obj(efs) => {
+              // Conform to `PrefsView` `chatTabs` shape: must contain a `tabs` array.
+              match base_codec::json_get(entry, "tabs") {
+                Some(base_codec::Json::Arr(_)) => ()
+                _ => return Err("invalid:chatTabs." + sk + ":missing tabs")
+              }
+              let mut last_at : Int64 = 0.to_int64()
+              let mks = map_m.keys()
+              for mi in 0..<mks.length() {
+                match map_m.get(mks[mi]) {
+                  Some(mv) =>
+                  match base_codec::json_get(mv, "at") {
+                    Some(base_codec::Json::Num(n, _)) => {
+                      let a = n.to_int64()
+                      if a > last_at {
+                        last_at = a
+                      }
+                    }
+                    _ => ()
+                  }
+                  None => ()
+                }
+              }
+              let next_at = if now > last_at + 1.to_int64() { now } else { last_at + 1.to_int64() }
+              let new_fs : Array[(String, base_codec::Json)] = []
+              for fi in 0..<efs.length() {
+                if efs[fi].0 != "at" {
+                  new_fs.push(efs[fi])
+                }
+              }
+              new_fs.push(("at", base_codec::json_int64(next_at)))
+              entry = base_codec::json_obj(new_fs)
+            }
+            _ => ()
+          }
+        }
+        map_m.set(sk, entry)
+      }
+      if field == "experimental" && map_m.keys().length() == 0 {
+        prefs.remove("experimental")
+      } else {
+        prefs.set(field, map_to_sorted_obj(map_m))
+      }
+    } else if fill && prefs.get(field).is_some() {
+      // keep existing value
+    } else if is_null {
+      prefs.remove(field)
+    } else {
+      if (field == "onlyMine" || field == "onlyWatching") && !fill {
+        match value {
+          base_codec::Json::Bool(true) => {
+            if field == "onlyMine" {
+              prefs.remove("onlyWatching")
+            } else {
+              prefs.remove("onlyMine")
+            }
+          }
+          _ => ()
+        }
+      }
+      prefs.set(field, value)
+    }
+  }
+
+  // Cap `chatTabs` to TABS_KEPT (200) by oldest `at`.
+  match prefs.get("chatTabs") {
+    Some(base_codec::Json::Obj(_)) => {
+      let (tabs_m, _) = obj_to_map(match prefs.get("chatTabs") { Some(t) => t; None => base_codec::json_obj([]) })
+      let tks = tabs_m.keys()
+      if tks.length() > TABS_KEPT {
+        let pairs : Array[(Int64, String)] = []
+        for i in 0..<tks.length() {
+          let tk = tks[i]
+          let at = match tabs_m.get(tk) {
+            Some(tv) =>
+            match base_codec::json_get(tv, "at") {
+              Some(base_codec::Json::Num(n, _)) => n.to_int64()
+              _ => 0.to_int64()
+            }
+            None => 0.to_int64()
+          }
+          pairs.push((at, tk))
+        }
+        for i in 1..<pairs.length() {
+          let cur = pairs[i]
+          let mut j = i - 1
+          while j >= 0 && pairs[j].0 > cur.0 {
+            pairs[j + 1] = pairs[j]
+            j -= 1
+          }
+          pairs[j + 1] = cur
+        }
+        let drop_n = pairs.length() - TABS_KEPT
+        for i in 0..<drop_n {
+          tabs_m.remove(pairs[i].1)
+        }
+        prefs.set("chatTabs", map_to_sorted_obj(tabs_m))
+      }
+    }
+    _ => ()
+  }
+
+  // Field validators matching TS prefs.ts
+  match prefs.get("badge") {
+    Some(base_codec::Json::Str(s)) =>
+    if s != "decisions" && s != "attention" && s != "all" { return Err("invalid:badge") }
+    Some(_) => return Err("invalid:badge")
+    None => ()
+  }
+  match prefs.get("motion") {
+    Some(base_codec::Json::Str(s)) =>
+    if s != "reduce" && s != "full" { return Err("invalid:motion") }
+    Some(_) => return Err("invalid:motion")
+    None => ()
+  }
+  match prefs.get("glassFrost") {
+    Some(base_codec::Json::Str(s)) =>
+    if !is_valid_glass_frost(s) { return Err("invalid:glassFrost") }
+    Some(_) => return Err("invalid:glassFrost")
+    None => ()
+  }
+  match prefs.get("accent") {
+    Some(base_codec::Json::Str(s)) =>
+    if !is_accent_named(s) && !is_valid_custom_accent(s) { return Err("invalid:accent") }
+    Some(_) => return Err("invalid:accent")
+    None => ()
+  }
+  match prefs.get("haptics") {
+    Some(base_codec::Json::Str("off")) => ()
+    Some(_) => return Err("invalid:haptics")
+    None => ()
+  }
+  match prefs.get("dht") {
+    Some(base_codec::Json::Str("off")) => ()
+    Some(_) => return Err("invalid:dht")
+    None => ()
+  }
+  match prefs.get("appUpdate") {
+    Some(base_codec::Json::Str("off")) => ()
+    Some(_) => return Err("invalid:appUpdate")
+    None => ()
+  }
+  match prefs.get("windowZoom") {
+    Some(base_codec::Json::Str(s)) =>
+    if !is_valid_window_zoom(s) { return Err("invalid:windowZoom") }
+    Some(_) => return Err("invalid:windowZoom")
+    None => ()
+  }
+  match prefs.get("terminalZoom") {
+    Some(base_codec::Json::Str(s)) =>
+    if !is_valid_terminal_zoom(s) { return Err("invalid:terminalZoom") }
+    Some(_) => return Err("invalid:terminalZoom")
+    None => ()
+  }
+  match prefs.get("sendKey") {
+    Some(base_codec::Json::Str("mod")) => ()
+    Some(_) => return Err("invalid:sendKey")
+    None => ()
+  }
+  match prefs.get("reports") {
+    Some(base_codec::Json::Str("off")) => ()
+    Some(_) => return Err("invalid:reports")
+    None => ()
+  }
+  match prefs.get("dropAs") {
+    Some(base_codec::Json::Str(s)) =>
+    if s != "file" && s != "path" { return Err("invalid:dropAs") }
+    Some(_) => return Err("invalid:dropAs")
+    None => ()
+  }
+  match prefs.get("cpuDial") {
+    Some(base_codec::Json::Str("busy")) => ()
+    Some(_) => return Err("invalid:cpuDial")
+    None => ()
+  }
+  match prefs.get("shareLook") {
+    Some(base_codec::Json::Str(s)) =>
+    if !is_valid_share_look(s) { return Err("invalid:shareLook") }
+    Some(_) => return Err("invalid:shareLook")
+    None => ()
+  }
+  match prefs.get("archiveHint") {
+    Some(base_codec::Json::Str(s)) =>
+    if s != "off" && s != "done" && s != "reviewed" { return Err("invalid:archiveHint") }
+    Some(_) => return Err("invalid:archiveHint")
+    None => ()
+  }
+  match prefs.get("screenTouch") {
+    Some(base_codec::Json::Str(s)) =>
+    if s != "direct" && s != "pad" { return Err("invalid:screenTouch") }
+    Some(_) => return Err("invalid:screenTouch")
+    None => ()
+  }
+  match prefs.get("screenQuality") {
+    Some(base_codec::Json::Str(s)) =>
+    if s != "smooth" && s != "hd" && s != "qhd" && s != "original" { return Err("invalid:screenQuality") }
+    Some(_) => return Err("invalid:screenQuality")
+    None => ()
+  }
+  match prefs.get("screenFps") {
+    Some(base_codec::Json::Num(n, _)) =>
+    if !is_valid_screen_fps(n) { return Err("invalid:screenFps") }
+    Some(_) => return Err("invalid:screenFps")
+    None => ()
+  }
+  match prefs.get("screenCodec") {
+    Some(base_codec::Json::Str("h264")) => ()
+    Some(_) => return Err("invalid:screenCodec")
+    None => ()
+  }
+  match prefs.get("screenMouse") {
+    Some(base_codec::Json::Str("off")) => ()
+    Some(_) => return Err("invalid:screenMouse")
+    None => ()
+  }
+  match prefs.get("fillOff") {
+    Some(base_codec::Json::Bool(_)) => ()
+    Some(_) => return Err("invalid:fillOff")
+    None => ()
+  }
+  match prefs.get("fillMax") {
+    Some(base_codec::Json::Num(n, _)) =>
+    if n != n || n < 0.0 || n.floor() != n { return Err("invalid:fillMax") }
+    Some(_) => return Err("invalid:fillMax")
+    None => ()
+  }
+  match prefs.get("language") {
+    Some(base_codec::Json::Str(s)) =>
+    if s != "zh" && s != "en" { return Err("invalid:language") }
+    Some(_) => return Err("invalid:language")
+    None => ()
+  }
+
+  // Derive `lang` matching TS `withLang(prefs)`
+  let chosen_lang = match prefs.get("language") {
+    Some(base_codec::Json::Str(s)) => s
+    _ =>
+    match prefs.get("device") {
+      Some(dev) =>
+      match base_codec::json_get(dev, "locale") {
+        Some(base_codec::Json::Str(loc)) => loc
+        _ => ""
+      }
+      None => ""
+    }
+  }
+  prefs.set("lang", base_codec::json_str(from_locale_lang(chosen_lang)))
+
+  Ok(map_to_sorted_obj(prefs))
+}
+
+/// Read persisted device preferences from `account_doc("prefs")`.
+pub fn get_device_prefs(db : sql::Sql) -> sql::SqlResult[base_codec::Json] {
+  match get_account_doc(db, PREFS_DOC_NAME) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(None) => sql::SqlResult::Ok(base_codec::json_obj([]))
+    sql::SqlResult::Ok(Some(raw)) =>
+    match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) => sql::SqlResult::Ok(j)
+      base_codec::JsonParseResult::Err(_) => sql::SqlResult::Ok(base_codec::json_obj([]))
+    }
+  }
+}
+
+/// Apply `patch` (with `fill` and `now`) and persist to `account_doc("prefs")`.
+pub fn set_device_prefs(
+  db : sql::Sql,
+  patch : base_codec::Json,
+  fill : Bool,
+  now : Int64,
+) -> Result[base_codec::Json, String] {
+  let cur = match get_device_prefs(db) {
+    sql::SqlResult::Err(e) => return Err("sql_error:" + e.to_string())
+    sql::SqlResult::Ok(j) => j
+  }
+  let next = match apply_prefs_patch(cur, patch, fill, now) {
+    Err(e) => return Err(e)
+    Ok(j) => j
+  }
+  match put_account_doc(db, PREFS_DOC_NAME, base_codec::json_stringify(next)) {
+    sql::SqlResult::Err(e) => Err("sql_error:" + e.to_string())
+    sql::SqlResult::Ok(_) => Ok(next)
+  }
+}
