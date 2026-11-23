@@ -324,6 +324,39 @@ test("credential_asks_are_paced_and_cool_down_after_429", async () => {
   core.close();
 });
 
+test("a_credential_answered_after_another_was_refused_keeps_the_cool_down", async () => {
+  // (asks out together across the cloud's limit: the one refused answers at once, the one let through later, from the
+  // Directory; its answer must not end the cool-down the refusal began)
+  const host = new FakeHost();
+  host.store(STORAGE_KEY, [account("s1", "a@x.com", "阿一", "a", "r", nowS(host) + 3600)]);
+  const asked: string[] = [];
+  host.onFetch((req) => {
+    const path = req.url.replace("https://stillfail.test", "");
+    if (path === "/v1/me") return jsonResponse(200, { workspaces: [{ id: "ws", name: "W" }], invitations: [], relay_url: "https://relay.test" });
+    if (path === "/v1/workspaces/ws/credential") {
+      const device = (parseJson(req.body!) as { device: string }).device;
+      asked.push(device);
+      if (device === "refused") return jsonResponse(429, { error: "rate_limited" });
+      return jsonResponse(200, { credential: `c-${device}`, issued_at: nowS(host), expires_at: nowS(host) + 30 * 86400, relay_url: "https://relay.test" });
+    }
+    return jsonResponse(404, { error: "not_found" });
+  });
+  const core = await Core.create(host, { clock: host.time.clock });
+  const inner = core.inner;
+  const release = host.hold("/v1/workspaces/ws/credential");
+  const through = run(inner.cloudSync.credential("ws", "through", false, "main"));
+  await host.settle();
+  const refused = await run(Effect.result(inner.cloudSync.credential("ws", "refused", false, "main")));
+  assert.equal(refused._tag === "Failure" ? refused.failure.status : 200, 429);
+  release();
+  assert.equal((await through).credential, "c-through");
+  assert.deepEqual(asked, ["through", "refused"]);
+  const next = await run(Effect.result(inner.cloudSync.credential("ws", "next", false, "main")));
+  assert.equal(next._tag === "Failure" ? next.failure.status : 200, 429, "still cooling down");
+  assert.deepEqual(asked, ["through", "refused"], "nothing asked of the cloud");
+  core.close();
+});
+
 test("stale_kept_credential_skips_background_renewal_during_429_cooldown", async () => {
   const host = new FakeHost();
   host.store(STORAGE_KEY, [account("s1", "a@x.com", "阿一", "a", "r", nowS(host) + 3 * 86400)]);

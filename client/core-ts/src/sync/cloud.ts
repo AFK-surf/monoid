@@ -666,7 +666,11 @@ export class CloudSync {
         Effect.suspend(() => {
           if (cooled()) return Effect.fail(cloudError("rate_limited", 429));
           return core.provider.credential(sub, workspace, device, said).pipe(
-            Effect.tap(() => Effect.sync(() => self.#credentialBackoff.delete(sub))),
+            // (one answered after another of the same turn was refused leaves its cool-down as it is: the minute is used up all
+            // the same)
+            Effect.tap(() => Effect.sync(() => {
+              if (!cooled()) self.#credentialBackoff.delete(sub);
+            })),
             Effect.tapError((e) => Effect.sync(() => {
               if (e.status === 429) self.#credentialBackoff.set(sub, core.host.nowMs() + CREDENTIAL_429_COOLDOWN_MS);
             })),
