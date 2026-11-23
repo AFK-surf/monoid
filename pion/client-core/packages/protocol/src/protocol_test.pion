@@ -313,19 +313,37 @@ test "Slice1Router serves chat.open (0 writes), chats.window, account.doc, subsc
 }
 
 test "keyed delta diff/apply round-trip and have/keep token negotiation (same, delta+kept, from)" {
-  // 1. Direct diff_keyed + apply_keyed round-trip on `chats` (put, patch, drop, move)
+  // 1. Direct diff_keyed + apply_keyed round-trip on `chats` (`days[].items[]`: put, patch, drop, move)
   let old_chats = base_codec::json_obj([
-    ("rows", base_codec::json_arr([
-      base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c1")), ("lastActive", base_codec::json_int(100))]),
-      base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c2")), ("lastActive", base_codec::json_int(200))]),
-      base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c3")), ("lastActive", base_codec::json_int(300))]),
+    ("days", base_codec::json_arr([
+      base_codec::json_obj([
+        ("daysAgo", base_codec::json_int(0)),
+        ("items", base_codec::json_arr([
+          base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c1")), ("title", base_codec::json_str("Long chat title one for patch size")), ("lastActive", base_codec::json_int(100))]),
+          base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c2")), ("title", base_codec::json_str("Long chat title two for patch size")), ("lastActive", base_codec::json_int(200))]),
+          base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c3")), ("title", base_codec::json_str("Long chat title three for patch size")), ("lastActive", base_codec::json_int(300))]),
+          base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c5")), ("title", base_codec::json_str("Unchanged chat row five padding payload")), ("lastActive", base_codec::json_int(500))]),
+          base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c6")), ("title", base_codec::json_str("Unchanged chat row six padding payload")), ("lastActive", base_codec::json_int(600))]),
+          base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c7")), ("title", base_codec::json_str("Unchanged chat row seven padding payload")), ("lastActive", base_codec::json_int(700))]),
+          base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c8")), ("title", base_codec::json_str("Unchanged chat row eight padding payload")), ("lastActive", base_codec::json_int(800))]),
+        ])),
+      ]),
     ])),
   ])
   let next_chats = base_codec::json_obj([
-    ("rows", base_codec::json_arr([
-      base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c3")), ("lastActive", base_codec::json_int(350))]),
-      base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c1")), ("lastActive", base_codec::json_int(100))]),
-      base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c4")), ("lastActive", base_codec::json_int(400))]),
+    ("days", base_codec::json_arr([
+      base_codec::json_obj([
+        ("daysAgo", base_codec::json_int(0)),
+        ("items", base_codec::json_arr([
+          base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c3")), ("title", base_codec::json_str("Long chat title three for patch size")), ("lastActive", base_codec::json_int(350))]),
+          base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c1")), ("title", base_codec::json_str("Long chat title one for patch size")), ("lastActive", base_codec::json_int(100))]),
+          base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c4")), ("title", base_codec::json_str("Long chat title four for patch size")), ("lastActive", base_codec::json_int(400))]),
+          base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c5")), ("title", base_codec::json_str("Unchanged chat row five padding payload")), ("lastActive", base_codec::json_int(500))]),
+          base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c6")), ("title", base_codec::json_str("Unchanged chat row six padding payload")), ("lastActive", base_codec::json_int(600))]),
+          base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c7")), ("title", base_codec::json_str("Unchanged chat row seven padding payload")), ("lastActive", base_codec::json_int(700))]),
+          base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c8")), ("title", base_codec::json_str("Unchanged chat row eight padding payload")), ("lastActive", base_codec::json_int(800))]),
+        ])),
+      ]),
     ])),
   ])
   let ops = diff_keyed(old_chats, next_chats, spec_for_topic("chats"))
@@ -361,7 +379,7 @@ test "keyed delta diff/apply round-trip and have/keep token negotiation (same, d
     }
     None => panic("expected unsub response")
   }
-  debug_assert(kept_tok.length() == 64 && router.kept_count() == 1, "sha256 token kept")
+  debug_assert(kept_tok.contains(":") && router.kept_count() == 1, "digest version token kept")
 
   // Re-subscribe with `have: kept_tok` while unchanged -> `same: true`
   let resub1 = "{\"id\":101,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-1\"},\"keyed\":true,\"have\":\"" + kept_tok + "\"}"
@@ -370,7 +388,7 @@ test "keyed delta diff/apply round-trip and have/keep token negotiation (same, d
     None => debug_assert(false, "expected same:true")
   }
 
-  // Add row c2 -> refresh active sub 101 emits keyed `put` delta (not full list!)
+  // Add row c2 -> refresh active sub 101 emits delta sending only c2 (not c1)
   fake.chat_rows.push(base_codec::json_arr([
     base_codec::json_str("s1"),
     base_codec::json_int(0),
@@ -382,9 +400,9 @@ test "keyed delta diff/apply round-trip and have/keep token negotiation (same, d
   match router.refresh_sub(101.to_int64()) {
     Some(ev) => {
       let (dj, _) = encode_core_event(ev)
-      debug_assert(dj.contains("\"delta\"") && dj.contains("\"put\"") && dj.contains("\"c2\"") && !dj.contains("\"c1\""), "keyed delta sends only c2")
+      debug_assert(dj.contains("\"delta\"") && (dj.contains("\"put\"") || dj.contains("\"append\"")) && dj.contains("\"c2\"") && !dj.contains("\"c1\""), "delta sends only c2")
     }
-    None => debug_assert(false, "expected keyed delta on refresh")
+    None => debug_assert(false, "expected delta on refresh")
   }
 
   // Re-subscribe with old `have: kept_tok` -> returns `delta` + `kept: true`!

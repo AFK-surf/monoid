@@ -263,6 +263,57 @@ pub fn vault_open_box(
   vault_open_with_context(recipient_priv, sealed, aad)
 }
 
+/// Encrypt `plaintext` under a 32-byte key and 12-byte nonce with arbitrary AAD (`vault/crypto.ts encryptWith`).
+pub fn vault_encrypt_with_context(
+  key : Bytes,
+  plaintext : Bytes,
+  aad : Bytes,
+  nonce : Bytes,
+) -> Result[String, String] {
+  if nonce.length() != 12 {
+    return Err("vault_invalid: item nonce must be 12 bytes")
+  }
+  match crypto::chacha20_poly1305_seal(key, nonce, aad, plaintext) {
+    Ok(ct) => Ok(base_codec::base64url_encode(concat_bytes_vc(nonce, ct)))
+    Err(_) => Err("vault_invalid: item encrypt failed")
+  }
+}
+
+/// Decrypt ciphertext produced by `vault_encrypt_with_context` with arbitrary AAD (`vault/crypto.ts decrypt`).
+pub fn vault_decrypt_with_context(
+  key : Bytes,
+  ct_b64 : String,
+  aad : Bytes,
+) -> Result[Bytes, String] {
+  let raw = match base_codec::base64url_decode(ct_b64) {
+    Some(b) => b
+    None => return Err("vault_invalid: item ciphertext is not base64url")
+  }
+  if raw.length() < 28 {
+    return Err("vault_invalid: not an item ciphertext")
+  }
+  let nonce = slice_bytes_vc(raw, 0, 12)
+  let ct = slice_bytes_vc(raw, 12, raw.length())
+  match crypto::chacha20_poly1305_open(key, nonce, aad, ct) {
+    Ok(pt) => Ok(pt)
+    Err(_) => Err("vault_unsealed: the vault key does not open this item")
+  }
+}
+
+/// Derive the X25519 recovery key pair from 32-byte entropy (`vault/crypto.ts recoveryPair`).
+pub fn vault_recovery_pair(entropy : Bytes) -> Result[(String, Bytes), String] {
+  let salt = Bytes::new(0)
+  let info = "stillfail-vault-recovery/1".to_bytes()
+  let priv_key = match crypto::hkdf_sha256(salt, entropy, info, 32) {
+    Ok(k) => k
+    Err(_) => return Err("vault_invalid: recovery hkdf failed")
+  }
+  match vault_box_public(priv_key) {
+    Ok(pub_str) => Ok((pub_str, priv_key))
+    Err(e) => Err(e)
+  }
+}
+
 /// Encrypt a vault item payload under the 32-byte vault key and 12-byte nonce, binding item metadata in AAD.
 pub fn vault_encrypt_item(
   vault_key : Bytes,
@@ -274,14 +325,8 @@ pub fn vault_encrypt_item(
   epoch : Int64,
   nonce : Bytes,
 ) -> Result[String, String] {
-  if nonce.length() != 12 {
-    return Err("vault_invalid: item nonce must be 12 bytes")
-  }
   let aad = vault_item_context(workspace, vault_id, item_id, version, epoch)
-  match crypto::chacha20_poly1305_seal(vault_key, nonce, aad, plaintext) {
-    Ok(ct) => Ok(base_codec::base64url_encode(concat_bytes_vc(nonce, ct)))
-    Err(_) => Err("vault_invalid: item encrypt failed")
-  }
+  vault_encrypt_with_context(vault_key, plaintext, aad, nonce)
 }
 
 /// Decrypt a vault item payload, verifying `(workspace, vault_id, item_id, version, epoch)` AAD.
@@ -294,20 +339,8 @@ pub fn vault_decrypt_item(
   version : Int64,
   epoch : Int64,
 ) -> Result[Bytes, String] {
-  let raw = match base_codec::base64url_decode(ct_b64) {
-    Some(b) => b
-    None => return Err("vault_invalid: item ciphertext is not base64url")
-  }
-  if raw.length() < 28 {
-    return Err("vault_invalid: not an item ciphertext")
-  }
-  let nonce = slice_bytes_vc(raw, 0, 12)
-  let ct = slice_bytes_vc(raw, 12, raw.length())
   let aad = vault_item_context(workspace, vault_id, item_id, version, epoch)
-  match crypto::chacha20_poly1305_open(vault_key, nonce, aad, ct) {
-    Ok(pt) => Ok(pt)
-    Err(_) => Err("vault_unsealed: the vault key does not open this item")
-  }
+  vault_decrypt_with_context(vault_key, ct_b64, aad)
 }
 
 // ---------------------------------------------------------------------------

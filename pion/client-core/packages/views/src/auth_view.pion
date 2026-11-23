@@ -519,6 +519,14 @@ pub fn admit_member_role_by_actor(
   if actor_role == "admin" && cloud_role == "owner" {
     return None
   }
+  match existing_role {
+    Some(er) => {
+      if actor_role == "admin" && er == "owner" {
+        return None
+      }
+    }
+    None => ()
+  }
   match noted_role {
     Some(nr) => {
       if role_rank(nr) < 0 {

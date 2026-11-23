@@ -1,0 +1,9 @@
+[package]
+name = "parity_cli"
+version = "0.1.0"
+
+[dependencies]
+base_codec = { workspace = true }
+form = { workspace = true }
+protocol = { workspace = true }
+views = { workspace = true }

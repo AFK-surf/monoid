@@ -141,6 +141,27 @@ theorem admit_member_role_by_actor_non_manager (actor_role : String)
   have hb2 : (actor_role != "admin") = true := bne_iff_ne.mpr h2
   simp [hb1, hb2]
 
+/-- An `"admin"` can never approve/re-approve an existing `"owner"` (`MemberRemove(was_owner)`). -/
+theorem admit_member_role_by_actor_admin_no_touch_owner (actor_role : String)
+    (noted_role existing_role : Option String) (cloud_role : String)
+    (hact : actor_role = "admin") (hex : existing_role = some "owner") :
+    views.admit_member_role_by_actor actor_role noted_role existing_role cloud_role ⦃ res =>
+      res = none ⦄ := by
+  subst hact; subst hex
+  unfold views.admit_member_role_by_actor
+  have hnot : (("admin" != "owner") && ("admin" != "admin")) = false := by decide
+  simp only [hnot, Bool.false_eq_true, ↓reduceIte]
+  rw [role_rank_eq, b_ok]
+  by_cases hclt : roleRankI32 cloud_role < 0#i32
+  · rw [ite_eq_left hclt, spec_ok]
+  · rw [ite_eq_right hclt]
+    by_cases hco : (("admin" == "admin") && (cloud_role == "owner")) = true
+    · simp only [hco, ↓reduceIte, spec_ok]
+    · have hcof : (("admin" == "admin") && (cloud_role == "owner")) = false := by
+        cases h : (("admin" == "admin") && (cloud_role == "owner")) <;> simp_all
+      have heq : (("admin" == "admin") && ("owner" == "owner")) = true := by decide
+      simp only [hcof, Bool.false_eq_true, ↓reduceIte, heq, b_ok, spec_ok]
+
 /-- An `"admin"` can never approve an `"owner"`, and any approved role is valid and `≤ cloud_role`. -/
 theorem admit_member_role_by_actor_spec (actor_role : String)
     (noted_role existing_role : Option String) (cloud_role : String) :
@@ -214,45 +235,98 @@ theorem admit_member_role_by_actor_spec (actor_role : String)
               injection hr with hreq
               subst hreq
               exact ⟨hact_or, hfr0, hle_c⟩
-        cases noted_role with
-        | some nr =>
-          dsimp only
-          rw [role_rank_eq, b_ok]
-          have hnr := roleRankI32_val nr
-          by_cases hnrlt : roleRankI32 nr < 0#i32
-          · rw [ite_eq_left hnrlt, b_ok, spec_ok]
-            exact ⟨(fun _ h => nomatch h), (fun _ h => nomatch h)⟩
-          · rw [ite_eq_right hnrlt]
-            have hnr0 : 0 ≤ roleRankVal nr := by
-              have h0 : (0#i32 : Std.I32).val = 0 := by simp
-              have : ¬ (roleRankI32 nr).val < (0#i32 : Std.I32).val := hnrlt
-              omega
-            by_cases hadm_n : ((actor_role == "admin") && (nr == "owner")) = true
-            · simp only [hadm_n, ↓reduceIte, b_ok, spec_ok]
-              exact ⟨(fun _ h => nomatch h), (fun _ h => nomatch h)⟩
-            · have hadm_nf : ((actor_role == "admin") && (nr == "owner")) = false := by
-                cases h : ((actor_role == "admin") && (nr == "owner")) <;> simp_all
-              simp only [hadm_nf, Bool.false_eq_true, ↓reduceIte, b_ok]
-              exact hstep nr hnr0
-        | none =>
-          simp only [b_ok]
-          cases existing_role with
-          | none =>
-            simp only [b_ok]
-            exact hstep "member" (by simp [roleRankVal])
-          | some er =>
+        have hrest : ∀ ex : Option String,
+            (do
+              let __s1 : (Sum (Option String) Unit) ← do
+                match noted_role with
+                | .some nr =>
+                  let __t_1 ← views.role_rank nr
+                  if __t_1 < 0#i32 then
+                    ok (.inl (none : (Option String)))
+                  else
+                    if ((actor_role == "admin") && (nr == "owner")) then
+                      ok (.inl (none : (Option String)))
+                    else
+                      ok (.inr ())
+                | .none =>
+                  ok (.inr ())
+              match __s1 with
+              | .inl __r1 => ok __r1
+              | .inr () =>
+                let chosen ← do
+                  match noted_role with
+                  | .some nr_1 =>
+                    ok nr_1
+                  | .none =>
+                    match ex with
+                    | .some er_1 =>
+                      let __t_4 ← views.role_rank er_1
+                      ok (if __t_4 >= 0#i32 then er_1 else "member")
+                    | .none =>
+                      ok "member"
+                let final_role ← views.lower_role_av chosen cloud_role
+                if ((actor_role == "admin") && (final_role == "owner")) then
+                  ok (none : (Option String))
+                else
+                  ok (some final_role : (Option String))) ⦃ res =>
+              (actor_role = "admin" → res ≠ some "owner") ∧
+              (∀ r, res = some r →
+                (actor_role = "owner" ∨ actor_role = "admin") ∧
+                0 ≤ roleRankVal r ∧
+                roleRankVal r ≤ roleRankVal cloud_role) ⦄ := by
+          intro ex
+          cases noted_role with
+          | some nr =>
             dsimp only
             rw [role_rank_eq, b_ok]
-            have her := roleRankI32_val er
-            by_cases herge : roleRankI32 er ≥ 0#i32
-            · rw [ite_eq_left herge, b_ok]
-              have her0 : 0 ≤ roleRankVal er := by
+            have hnr := roleRankI32_val nr
+            by_cases hnrlt : roleRankI32 nr < 0#i32
+            · rw [ite_eq_left hnrlt, b_ok, spec_ok]
+              exact ⟨(fun _ h => nomatch h), (fun _ h => nomatch h)⟩
+            · rw [ite_eq_right hnrlt]
+              have hnr0 : 0 ≤ roleRankVal nr := by
                 have h0 : (0#i32 : Std.I32).val = 0 := by simp
-                have : (roleRankI32 er).val ≥ (0#i32 : Std.I32).val := herge
+                have : ¬ (roleRankI32 nr).val < (0#i32 : Std.I32).val := hnrlt
                 omega
-              exact hstep er her0
-            · rw [ite_eq_right herge, b_ok]
+              by_cases hadm_n : ((actor_role == "admin") && (nr == "owner")) = true
+              · simp only [hadm_n, ↓reduceIte, b_ok, spec_ok]
+                exact ⟨(fun _ h => nomatch h), (fun _ h => nomatch h)⟩
+              · have hadm_nf : ((actor_role == "admin") && (nr == "owner")) = false := by
+                  cases h : ((actor_role == "admin") && (nr == "owner")) <;> simp_all
+                simp only [hadm_nf, Bool.false_eq_true, ↓reduceIte, b_ok]
+                exact hstep nr hnr0
+          | none =>
+            simp only [b_ok]
+            cases ex with
+            | none =>
+              simp only [b_ok]
               exact hstep "member" (by simp [roleRankVal])
+            | some er =>
+              dsimp only
+              rw [role_rank_eq, b_ok]
+              have her := roleRankI32_val er
+              by_cases herge : roleRankI32 er ≥ 0#i32
+              · rw [ite_eq_left herge, b_ok]
+                have her0 : 0 ≤ roleRankVal er := by
+                  have h0 : (0#i32 : Std.I32).val = 0 := by simp
+                  have : (roleRankI32 er).val ≥ (0#i32 : Std.I32).val := herge
+                  omega
+                exact hstep er her0
+              · rw [ite_eq_right herge, b_ok]
+                exact hstep "member" (by simp [roleRankVal])
+        cases existing_role with
+        | none =>
+          simp only [b_ok]
+          exact hrest none
+        | some er =>
+          dsimp only
+          by_cases hadm_e : ((actor_role == "admin") && (er == "owner")) = true
+          · simp only [hadm_e, ↓reduceIte, b_ok, spec_ok]
+            exact ⟨(fun _ h => nomatch h), (fun _ h => nomatch h)⟩
+          · have hadm_ef : ((actor_role == "admin") && (er == "owner")) = false := by
+              cases h : ((actor_role == "admin") && (er == "owner")) <;> simp_all
+            simp only [hadm_ef, Bool.false_eq_true, ↓reduceIte, b_ok]
+            exact hrest (some er)
 
 /-! ## 2. `vault_allows_scope` (`once <= hour <= chat`) -/
 

@@ -23,7 +23,7 @@ pub fn Topic::to_json(self : Topic) -> base_codec::Json {
 }
 
 pub fn topic_key(t : Topic) -> String {
-  base_codec::json_stringify(t.to_json())
+  to_sorted_json_str(t.to_json())
 }
 
 pub fn same_topic(a : Topic, b : Topic) -> Bool {
@@ -47,7 +47,7 @@ fn opt_bool_field(j : base_codec::Json, k : String) -> Option[Bool] {
 fn opt_nonneg_int64(j : base_codec::Json, k : String) -> Option[Int64] {
   match base_codec::json_get(j, k) {
     Some(base_codec::Json::Num(n, repr)) => {
-      if n < 0.0 || n.to_int64().to_double() != n {
+      if n < 0.0 || n != n || n.floor() != n {
         return None
       }
       if repr.length() > 0 {
@@ -56,267 +56,528 @@ fn opt_nonneg_int64(j : base_codec::Json, k : String) -> Option[Int64] {
           None => ()
         }
       }
+      if n > 9223372036854774784.0 {
+        return None
+      }
       Some(n.to_int64())
     }
     _ => None
   }
 }
 
-/// Parse and normalize a `Topic` object (`{topic, ...}`), filling defaults and rejecting malformed params.
+enum ParamKind {
+  PStr
+  PU64
+  PU32
+  PU16
+  PBool
+  PObj
+}
+
+enum ParamHow {
+  HReq
+  HDef
+  HOpt
+  HSkip
+  HSkipFalse
+}
+
+fn param_fits(v : base_codec::Json, kind : ParamKind) -> Bool {
+  match kind {
+    ParamKind::PStr => match v {
+      base_codec::Json::Str(_) => true
+      _ => false
+    }
+    ParamKind::PBool => match v {
+      base_codec::Json::Bool(_) => true
+      _ => false
+    }
+    ParamKind::PObj => match v {
+      base_codec::Json::Obj(_) => true
+      _ => false
+    }
+    ParamKind::PU16 => match v {
+      base_codec::Json::Num(n, _) => n == n && n >= 0.0 && n <= 65535.0 && n.floor() == n
+      _ => false
+    }
+    ParamKind::PU32 => match v {
+      base_codec::Json::Num(n, _) => n == n && n >= 0.0 && n <= 4294967295.0 && n.floor() == n
+      _ => false
+    }
+    ParamKind::PU64 => match v {
+      base_codec::Json::Num(n, _) => n == n && n >= 0.0 && n <= 18446744073709551616.0 && n.floor() == n
+      _ => false
+    }
+  }
+}
+
+fn is_valid_station_part(part : String) -> Bool {
+  part == "archiving" ||
+  part == "automaticDecisions" ||
+  part == "profiles" ||
+  part == "machineLogins" ||
+  part == "logins" ||
+  part == "updates" ||
+  part == "copies"
+}
+
+fn topic_spec_fields(name : String) -> Option[Array[(String, ParamKind, ParamHow)]] {
+  let req_s = (ParamKind::PStr, ParamHow::HReq)
+  if name == "accounts" ||
+  name == "workspaces" ||
+  name == "prefs" ||
+  name == "doing" ||
+  name == "adbShare" ||
+  name == "releases" ||
+  name == "fonts" ||
+  name == "workspaceMarks" ||
+  name == "lockPrompts" ||
+  name == "downloads" {
+    return Some([])
+  }
+  if name == "workspace" ||
+  name == "rigs" ||
+  name == "devices" ||
+  name == "workspaceWays" ||
+  name == "lock" ||
+  name == "joinable" ||
+  name == "lockDraft" ||
+  name == "vaults" ||
+  name == "driveTransfers" ||
+  name == "filesTabs" {
+    return Some([("workspace", req_s.0, req_s.1)])
+  }
+  if name == "link" ||
+  name == "overview" ||
+  name == "sessions" ||
+  name == "host" ||
+  name == "memory" ||
+  name == "presets" ||
+  name == "profilePace" ||
+  name == "net" ||
+  name == "way" ||
+  name == "threads" ||
+  name == "chatRows" ||
+  name == "jobs" ||
+  name == "machineLogins" ||
+  name == "stationNet" ||
+  name == "stationDiag" ||
+  name == "connection" ||
+  name == "archivedRows" ||
+  name == "stationUsage" ||
+  name == "stationRates" ||
+  name == "stationResources" ||
+  name == "adbCard" ||
+  name == "memberships" ||
+  name == "screens" ||
+  name == "terminals" {
+    return Some([("station", req_s.0, req_s.1)])
+  }
+  if name == "session" || name == "live" || name == "history" || name == "agentCard" {
+    return Some([("station", req_s.0, req_s.1), ("key", req_s.0, req_s.1)])
+  }
+  if name == "stationMove" {
+    return Some([
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("to", ParamKind::PStr, ParamHow::HDef),
+      ("module", ParamKind::PStr, ParamHow::HDef),
+      ("limit", ParamKind::PU32, ParamHow::HSkip),
+    ])
+  }
+  if name == "thread" || name == "letters" || name == "chatLetters" || name == "chatOutline" {
+    return Some([
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("thread", ParamKind::PU64, ParamHow::HReq),
+    ])
+  }
+  if name == "slackApp" {
+    return Some([("station", req_s.0, req_s.1), ("connect", req_s.0, req_s.1)])
+  }
+  if name == "jobLog" {
+    return Some([
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("job", ParamKind::PStr, ParamHow::HReq),
+      ("lines", ParamKind::PU64, ParamHow::HReq),
+    ])
+  }
+  if name == "machineLogin" || name == "machineLoginScreen" || name == "job" {
+    return Some([("station", req_s.0, req_s.1), ("id", req_s.0, req_s.1)])
+  }
+  if name == "loginSessions" || name == "adminOverview" {
+    return Some([("account", req_s.0, req_s.1)])
+  }
+  if name == "admin" {
+    return Some([("account", req_s.0, req_s.1), ("list", req_s.0, req_s.1)])
+  }
+  if name == "adminList" {
+    return Some([
+      ("account", ParamKind::PStr, ParamHow::HReq),
+      ("list", ParamKind::PStr, ParamHow::HReq),
+      ("query", ParamKind::PStr, ParamHow::HDef),
+      ("filter", ParamKind::PStr, ParamHow::HSkip),
+      ("sort", ParamKind::PStr, ParamHow::HSkip),
+      ("limit", ParamKind::PU32, ParamHow::HSkip),
+    ])
+  }
+  if name == "adminItem" {
+    return Some([
+      ("account", ParamKind::PStr, ParamHow::HReq),
+      ("list", ParamKind::PStr, ParamHow::HReq),
+      ("id", ParamKind::PStr, ParamHow::HReq),
+    ])
+  }
+  if name == "adminRelays" {
+    return Some([
+      ("account", ParamKind::PStr, ParamHow::HReq),
+      ("range", ParamKind::PStr, ParamHow::HSkip),
+    ])
+  }
+  if name == "chats" {
+    return Some([
+      ("scope", ParamKind::PStr, ParamHow::HReq),
+      ("mine", ParamKind::PBool, ParamHow::HDef),
+      ("watching", ParamKind::PBool, ParamHow::HSkipFalse),
+      ("hidden", ParamKind::PBool, ParamHow::HSkipFalse),
+    ])
+  }
+  if name == "chatRow" || name == "chatFeedback" {
+    return Some([("station", req_s.0, req_s.1), ("session", req_s.0, req_s.1)])
+  }
+  if name == "stations" ||
+  name == "profiles" ||
+  name == "profilesOverview" ||
+  name == "newChat" ||
+  name == "otherPresets" ||
+  name == "boardDrafts" ||
+  name == "longJobs" ||
+  name == "agentRates" ||
+  name == "fleet" ||
+  name == "stationUpdates" ||
+  name == "settings" {
+    return Some([("scope", req_s.0, req_s.1)])
+  }
+  if name == "station" {
+    return Some([("scope", req_s.0, req_s.1), ("station", req_s.0, req_s.1)])
+  }
+  if name == "stationPart" {
+    return Some([
+      ("scope", ParamKind::PStr, ParamHow::HReq),
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("part", ParamKind::PStr, ParamHow::HReq),
+    ])
+  }
+  if name == "profile" {
+    return Some([
+      ("scope", ParamKind::PStr, ParamHow::HReq),
+      ("key", ParamKind::PStr, ParamHow::HSkip),
+      ("station", ParamKind::PStr, ParamHow::HSkip),
+      ("id", ParamKind::PStr, ParamHow::HSkip),
+    ])
+  }
+  if name == "connects" {
+    return Some([
+      ("scope", ParamKind::PStr, ParamHow::HReq),
+      ("mine", ParamKind::PBool, ParamHow::HDef),
+    ])
+  }
+  if name == "connect" || name == "connectCandidates" {
+    return Some([
+      ("scope", ParamKind::PStr, ParamHow::HReq),
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("id", ParamKind::PStr, ParamHow::HReq),
+    ])
+  }
+  if name == "chat" {
+    return Some([
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("thread", ParamKind::PU64, ParamHow::HOpt),
+      ("session", ParamKind::PStr, ParamHow::HOpt),
+      ("compact", ParamKind::PBool, ParamHow::HSkipFalse),
+    ])
+  }
+  if name == "status" || name == "notices" || name == "notify" {
+    return Some([("workspace", ParamKind::PStr, ParamHow::HSkip)])
+  }
+  if name == "draft" {
+    return Some([("station", req_s.0, req_s.1), ("chat", req_s.0, req_s.1)])
+  }
+  if name == "composer" {
+    return Some([("key", req_s.0, req_s.1)])
+  }
+  if name == "chatSearch" {
+    return Some([
+      ("scope", ParamKind::PStr, ParamHow::HReq),
+      ("query", ParamKind::PStr, ParamHow::HDef),
+      ("station", ParamKind::PStr, ParamHow::HSkip),
+      ("exclude", ParamKind::PStr, ParamHow::HSkip),
+      ("limit", ParamKind::PU32, ParamHow::HSkip),
+      ("messages", ParamKind::PU32, ParamHow::HSkip),
+      ("elsewhere", ParamKind::PBool, ParamHow::HSkipFalse),
+    ])
+  }
+  if name == "archive" {
+    return Some([
+      ("scope", ParamKind::PStr, ParamHow::HReq),
+      ("q", ParamKind::PStr, ParamHow::HSkip),
+      ("limit", ParamKind::PU32, ParamHow::HSkip),
+    ])
+  }
+  if name == "search" {
+    return Some([
+      ("scope", ParamKind::PStr, ParamHow::HReq),
+      ("query", ParamKind::PStr, ParamHow::HDef),
+      ("kind", ParamKind::PStr, ParamHow::HSkip),
+      ("limit", ParamKind::PU32, ParamHow::HSkip),
+    ])
+  }
+  if name == "stationSearch" {
+    return Some([
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("q", ParamKind::PStr, ParamHow::HReq),
+      ("kind", ParamKind::PStr, ParamHow::HSkip),
+      ("limit", ParamKind::PU32, ParamHow::HSkip),
+      ("archived", ParamKind::PBool, ParamHow::HSkipFalse),
+    ])
+  }
+  if name == "linkPreview" {
+    return Some([("station", req_s.0, req_s.1), ("url", req_s.0, req_s.1)])
+  }
+  if name == "filePeek" {
+    return Some([
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("key", ParamKind::PStr, ParamHow::HReq),
+      ("path", ParamKind::PStr, ParamHow::HReq),
+      ("line", ParamKind::PU32, ParamHow::HSkip),
+    ])
+  }
+  if name == "messagePeek" {
+    return Some([
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("thread", ParamKind::PU64, ParamHow::HReq),
+      ("seq", ParamKind::PU64, ParamHow::HReq),
+    ])
+  }
+  if name == "preset" {
+    return Some([("scope", req_s.0, req_s.1), ("id", req_s.0, req_s.1)])
+  }
+  if name == "shareIn" {
+    return Some([
+      ("scope", ParamKind::PStr, ParamHow::HReq),
+      ("source", ParamKind::PStr, ParamHow::HReq),
+      ("query", ParamKind::PStr, ParamHow::HDef),
+    ])
+  }
+  if name == "pick" {
+    return Some([("station", req_s.0, req_s.1), ("of", req_s.0, req_s.1)])
+  }
+  if name == "chatJobs" {
+    return Some([
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("thread", ParamKind::PU64, ParamHow::HOpt),
+      ("session", ParamKind::PStr, ParamHow::HOpt),
+      ("compact", ParamKind::PBool, ParamHow::HSkipFalse),
+      ("summary", ParamKind::PBool, ParamHow::HSkipFalse),
+    ])
+  }
+  if name == "chatThings" {
+    return Some([
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("thread", ParamKind::PU64, ParamHow::HReq),
+      ("q", ParamKind::PStr, ParamHow::HSkip),
+    ])
+  }
+  if name == "imageNear" {
+    return Some([
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("thread", ParamKind::PU64, ParamHow::HOpt),
+      ("session", ParamKind::PStr, ParamHow::HOpt),
+      ("path", ParamKind::PStr, ParamHow::HReq),
+      ("at", ParamKind::PStr, ParamHow::HSkip),
+    ])
+  }
+  if name == "usage" {
+    return Some([
+      ("scope", ParamKind::PStr, ParamHow::HReq),
+      ("days", ParamKind::PU32, ParamHow::HSkip),
+      ("split", ParamKind::PStr, ParamHow::HSkip),
+      ("only", ParamKind::PObj, ParamHow::HSkip),
+      ("day", ParamKind::PStr, ParamHow::HSkip),
+    ])
+  }
+  if name == "railCard" {
+    return Some([("scope", req_s.0, req_s.1), ("place", req_s.0, req_s.1)])
+  }
+  if name == "resources" {
+    return Some([
+      ("scope", ParamKind::PStr, ParamHow::HReq),
+      ("station", ParamKind::PStr, ParamHow::HSkip),
+    ])
+  }
+  if name == "drive" {
+    return Some([
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("root", ParamKind::PStr, ParamHow::HReq),
+      ("path", ParamKind::PStr, ParamHow::HDef),
+    ])
+  }
+  if name == "drivePlace" {
+    return Some([
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("root", ParamKind::PStr, ParamHow::HReq),
+      ("path", ParamKind::PStr, ParamHow::HReq),
+    ])
+  }
+  if name == "previewLoad" {
+    return Some([
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("port", ParamKind::PU16, ParamHow::HReq),
+    ])
+  }
+  if name == "slackTokens" ||
+  name == "connectFlow" ||
+  name == "decisionForm" ||
+  name == "policyForm" ||
+  name == "agentEnvForm" ||
+  name == "profileFlow" {
+    return Some([("station", req_s.0, req_s.1), ("form", req_s.0, req_s.1)])
+  }
+  if name == "changelog" {
+    return Some([
+      ("news", ParamKind::PBool, ParamHow::HSkipFalse),
+      ("part", ParamKind::PStr, ParamHow::HSkip),
+      ("limit", ParamKind::PU32, ParamHow::HSkip),
+    ])
+  }
+  if name == "screenCard" {
+    return Some([("station", req_s.0, req_s.1), ("screen", req_s.0, req_s.1)])
+  }
+  if name == "terminalCard" {
+    return Some([("station", req_s.0, req_s.1), ("terminal", req_s.0, req_s.1)])
+  }
+  if name == "vaultItems" {
+    return Some([("workspace", req_s.0, req_s.1), ("vault", req_s.0, req_s.1)])
+  }
+  if name == "driveBrowse" {
+    return Some([
+      ("owner", ParamKind::PStr, ParamHow::HReq),
+      ("place", ParamKind::PStr, ParamHow::HReq),
+      ("view", ParamKind::PStr, ParamHow::HReq),
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("root", ParamKind::PStr, ParamHow::HReq),
+      ("path", ParamKind::PStr, ParamHow::HDef),
+      ("write", ParamKind::PBool, ParamHow::HSkipFalse),
+    ])
+  }
+  if name == "vaultUses" {
+    return Some([
+      ("workspace", ParamKind::PStr, ParamHow::HReq),
+      ("vault", ParamKind::PStr, ParamHow::HReq),
+      ("item", ParamKind::PStr, ParamHow::HReq),
+    ])
+  }
+  None
+}
+
+/// Parse and normalize a `Topic` object (`{topic, ...}`), matching `client/core-ts/src/protocol.ts parseTopic` 1:1.
 pub fn parse_topic(raw : base_codec::Json) -> Option[Topic] {
+  match raw {
+    base_codec::Json::Obj(_) => ()
+    _ => return None
+  }
   let name = match opt_str_field(raw, "topic") {
     Some(s) => s
     None => return None
   }
+  let spec = match topic_spec_fields(name) {
+    Some(s) => s
+    None => return None
+  }
   let params : Array[(String, base_codec::Json)] = []
-  if name == "accounts" || name == "workspaces" || name == "prefs" || name == "doing" || name == "downloads" {
-    return Some(Topic::{ name: name, params: params })
-  }
-  if name == "presets" || name == "otherPresets" || name == "stars" || name == "boardDrafts" || name == "vaultApprovals" {
-    match opt_str_field(raw, "workspace") {
-      Some(ws) => params.push(("workspace", base_codec::json_str(ws)))
-      None =>
-      match opt_str_field(raw, "scope") {
-        Some(sc) => params.push(("workspace", base_codec::json_str(sc)))
-        None => ()
+  for i in 0..<spec.length() {
+    let (fname, kind, how) = spec[i]
+    let val_opt = base_codec::json_get(raw, fname)
+    let is_req = match how {
+      ParamHow::HReq => true
+      _ => false
+    }
+    let absent = match val_opt {
+      None => true
+      Some(base_codec::Json::Null) => !is_req
+      Some(_) => false
+    }
+    if absent {
+      match how {
+        ParamHow::HReq => return None
+        ParamHow::HDef =>
+        match kind {
+          ParamKind::PBool => params.push((fname, base_codec::json_bool(false)))
+          _ => params.push((fname, base_codec::json_str("")))
+        }
+        ParamHow::HOpt => params.push((fname, base_codec::json_null()))
+        ParamHow::HSkip => ()
+        ParamHow::HSkipFalse => ()
       }
+      continue
     }
-    return Some(Topic::{ name: name, params: params })
-  }
-  if name == "models" || name == "profiles" || name == "profilesOverview" || name == "stationUpdates" || name == "fleet" || name == "agentRates" || name == "longJobs" {
-    match opt_str_field(raw, "scope") {
-      Some(sc) => params.push(("scope", base_codec::json_str(sc)))
-      None =>
-      match opt_str_field(raw, "workspace") {
-        Some(ws) => params.push(("scope", base_codec::json_str(ws)))
-        None => ()
-      }
-    }
-    return Some(Topic::{ name: name, params: params })
-  }
-  if name == "usage" {
-    match opt_str_field(raw, "scope") {
-      Some(sc) => params.push(("scope", base_codec::json_str(sc)))
-      None =>
-      match opt_str_field(raw, "workspace") {
-        Some(ws) => params.push(("scope", base_codec::json_str(ws)))
-        None => ()
-      }
-    }
-    match opt_nonneg_int64(raw, "days") {
-      Some(d) => params.push(("days", base_codec::json_int64(d)))
-      None => ()
-    }
-    match opt_str_field(raw, "split") {
-      Some(sp) => params.push(("split", base_codec::json_str(sp)))
-      None => ()
-    }
-    return Some(Topic::{ name: name, params: params })
-  }
-  if name == "archive" {
-    match opt_str_field(raw, "scope") {
-      Some(sc) => params.push(("scope", base_codec::json_str(sc)))
-      None =>
-      match opt_str_field(raw, "workspace") {
-        Some(ws) => params.push(("scope", base_codec::json_str(ws)))
-        None => ()
-      }
-    }
-    match opt_str_field(raw, "query") {
-      Some(q) => params.push(("query", base_codec::json_str(q)))
-      None =>
-      match opt_str_field(raw, "q") {
-        Some(q) => params.push(("query", base_codec::json_str(q)))
-        None => ()
-      }
-    }
-    match opt_nonneg_int64(raw, "limit") {
-      Some(l) => params.push(("limit", base_codec::json_int64(l)))
-      None => ()
-    }
-    return Some(Topic::{ name: name, params: params })
-  }
-  if name == "railCard" {
-    match opt_str_field(raw, "scope") {
-      Some(sc) => params.push(("scope", base_codec::json_str(sc)))
-      None =>
-      match opt_str_field(raw, "workspace") {
-        Some(ws) => params.push(("scope", base_codec::json_str(ws)))
-        None => ()
-      }
-    }
-    let place = match opt_str_field(raw, "place") {
-      Some(p) => p
-      None => "chats"
-    }
-    params.push(("place", base_codec::json_str(place)))
-    return Some(Topic::{ name: name, params: params })
-  }
-  if name == "chatJobs" {
-    let station = match opt_str_field(raw, "station") {
-      Some(s) => s
+    let v = match val_opt {
+      Some(x) => x
       None => return None
     }
-    params.push(("station", base_codec::json_str(station)))
-    match opt_nonneg_int64(raw, "thread") {
-      Some(th) => params.push(("thread", base_codec::json_int64(th)))
-      None => params.push(("thread", base_codec::json_null()))
+    if !param_fits(v, kind) {
+      return None
     }
-    match opt_bool_field(raw, "summary") {
-      Some(true) => params.push(("summary", base_codec::json_bool(true)))
-      _ => ()
-    }
-    return Some(Topic::{ name: name, params: params })
-  }
-  if name == "chats" {
-    let sc = match opt_str_field(raw, "scope") {
-      Some(s) => s
-      None => return None
-    }
-    let mine = match opt_bool_field(raw, "mine") {
-      Some(b) => b
-      None => false
-    }
-    params.push(("scope", base_codec::json_str(sc)))
-    params.push(("mine", base_codec::json_bool(mine)))
-    match opt_bool_field(raw, "watching") {
-      Some(true) => params.push(("watching", base_codec::json_bool(true)))
-      _ => ()
-    }
-    match opt_bool_field(raw, "hidden") {
-      Some(true) => params.push(("hidden", base_codec::json_bool(true)))
-      _ => ()
-    }
-    return Some(Topic::{ name: name, params: params })
-  }
-  if name == "chat" {
-    let station = match opt_str_field(raw, "station") {
-      Some(s) => s
-      None => return None
-    }
-    params.push(("station", base_codec::json_str(station)))
-    match base_codec::json_get(raw, "thread") {
-      None => params.push(("thread", base_codec::json_null()))
-      Some(base_codec::Json::Null) => params.push(("thread", base_codec::json_null()))
-      Some(_) =>
-      match opt_nonneg_int64(raw, "thread") {
-        Some(th) => params.push(("thread", base_codec::json_int64(th)))
-        None => return None
+    match how {
+      ParamHow::HSkipFalse =>
+      match v {
+        base_codec::Json::Bool(false) => continue
+        _ => ()
       }
+      _ => ()
     }
-    match base_codec::json_get(raw, "session") {
-      None => params.push(("session", base_codec::json_null()))
-      Some(base_codec::Json::Null) => params.push(("session", base_codec::json_null()))
-      Some(base_codec::Json::Str(s)) => params.push(("session", base_codec::json_str(s)))
+    params.push((fname, v))
+  }
+  if name == "stationPart" {
+    match base_codec::json_obj_get(params, "part") {
+      Some(base_codec::Json::Str(p)) => if !is_valid_station_part(p) { return None }
       _ => return None
     }
-    match opt_bool_field(raw, "compact") {
-      Some(true) => params.push(("compact", base_codec::json_bool(true)))
-      _ => ()
-    }
-    return Some(Topic::{ name: name, params: params })
   }
-  if name == "thread" {
-    let station = match opt_str_field(raw, "station") {
-      Some(s) => s
-      None => return None
-    }
-    let th = match opt_nonneg_int64(raw, "thread") {
-      Some(v) => v
-      None => return None
-    }
-    params.push(("station", base_codec::json_str(station)))
-    params.push(("thread", base_codec::json_int64(th)))
-    return Some(Topic::{ name: name, params: params })
+  Some(Topic::{ name: name, params: params })
+}
+
+/// The station a station topic belongs to; `None` for account/core/view topics (`protocol.ts topicStation`).
+pub fn topic_station(t : Topic) -> Option[String] {
+  let n = t.name
+  let is_st =
+  n == "link" || n == "overview" || n == "sessions" || n == "host" || n == "net" ||
+  n == "way" || n == "threads" || n == "chatRows" || n == "jobs" || n == "archivedRows" ||
+  n == "stationUsage" || n == "stationRates" || n == "stationResources" || n == "session" ||
+  n == "live" || n == "thread" || n == "letters" || n == "slackApp" || n == "jobLog" ||
+  n == "drive" || n == "screens" || n == "terminals" || n == "screenCard" || n == "terminalCard" ||
+  n == "machineLogins" || n == "machineLogin" || n == "machineLoginScreen" || n == "stationSearch" ||
+  n == "memory" || n == "presets" || n == "profilePace" || n == "stationMove" ||
+  n == "linkPreview" || n == "filePeek" || n == "messagePeek"
+  if !is_st {
+    return None
   }
-  if name == "draft" {
-    let station = match opt_str_field(raw, "station") {
-      Some(s) => s
-      None => return None
-    }
-    let chat = match opt_str_field(raw, "chat") {
-      Some(s) => s
-      None => return None
-    }
-    params.push(("station", base_codec::json_str(station)))
-    params.push(("chat", base_codec::json_str(chat)))
-    return Some(Topic::{ name: name, params: params })
+  match t.param("station") {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
   }
-  if name == "workspace" || name == "lock" || name == "vaults" {
-    let ws = match opt_str_field(raw, "workspace") {
-      Some(s) => s
-      None => return None
-    }
-    params.push(("workspace", base_codec::json_str(ws)))
-    return Some(Topic::{ name: name, params: params })
-  }
-  if name == "vaultItems" {
-    let ws = match opt_str_field(raw, "workspace") {
-      Some(s) => s
-      None => return None
-    }
-    let vault = match opt_str_field(raw, "vault") {
-      Some(s) => s
-      None => return None
-    }
-    params.push(("workspace", base_codec::json_str(ws)))
-    params.push(("vault", base_codec::json_str(vault)))
-    return Some(Topic::{ name: name, params: params })
-  }
-  if name == "stations" || name == "settings" {
-    let sc = match opt_str_field(raw, "scope") {
-      Some(s) => s
-      None => return None
-    }
-    params.push(("scope", base_codec::json_str(sc)))
-    return Some(Topic::{ name: name, params: params })
-  }
-  if name == "station" {
-    let sc = match opt_str_field(raw, "scope") {
-      Some(s) => s
-      None => return None
-    }
-    let st = match opt_str_field(raw, "station") {
-      Some(s) => s
-      None => return None
-    }
-    params.push(("scope", base_codec::json_str(sc)))
-    params.push(("station", base_codec::json_str(st)))
-    return Some(Topic::{ name: name, params: params })
-  }
-  if name == "sessions" || name == "jobs" {
-    let st = match opt_str_field(raw, "station") {
-      Some(s) => s
-      None => return None
-    }
-    params.push(("station", base_codec::json_str(st)))
-    return Some(Topic::{ name: name, params: params })
-  }
-  if name == "search" || name == "chatSearch" {
-    let sc = match opt_str_field(raw, "scope") {
-      Some(s) => s
-      None => return None
-    }
-    let q = match opt_str_field(raw, "query") {
-      Some(s) => s
-      None => ""
-    }
-    params.push(("scope", base_codec::json_str(sc)))
-    params.push(("query", base_codec::json_str(q)))
-    match opt_nonneg_int64(raw, "limit") {
-      Some(l) => params.push(("limit", base_codec::json_int64(l)))
-      None => ()
-    }
-    return Some(Topic::{ name: name, params: params })
-  }
-  if name == "status" || name == "notices" {
-    match opt_str_field(raw, "workspace") {
-      Some(ws) => params.push(("workspace", base_codec::json_str(ws)))
-      None => ()
-    }
-    return Some(Topic::{ name: name, params: params })
-  }
-  None
+}
+
+/// Whether `t` is a view topic (`protocol.ts isView`).
+pub fn is_view(t : Topic) -> Bool {
+  let n = t.name
+  n == "chats" || n == "chatRow" || n == "stations" || n == "station" || n == "stationPart" ||
+  n == "profiles" || n == "profile" || n == "connects" || n == "connect" || n == "connectCandidates" ||
+  n == "chat" || n == "history" || n == "agentCard" || n == "stationNet" || n == "stationDiag" ||
+  n == "chatSearch" || n == "search" || n == "archive" || n == "chatJobs" || n == "chatLetters" ||
+  n == "chatThings" || n == "chatOutline" || n == "imageNear" || n == "longJobs" ||
+  n == "workspaceMarks" || n == "decisions" || n == "usage" || n == "agentRates" || n == "fleet" ||
+  n == "railCard" || n == "stationUpdates" || n == "settings" || n == "resources" ||
+  n == "adminList" || n == "adminItem" || n == "adminOverview" || n == "adminRelays" ||
+  n == "workspaceWays"
 }
 
 pub enum CoreRequest {
@@ -347,13 +608,9 @@ pub enum ParseRequestResult {
   Invalid(String)
 }
 
-/// Thin JSON wire decoder matching `client/core-ts/src/protocol.ts parseClientMessage`.
-pub fn decode_client_message(json_text : String, bytes : Option[Bytes] = None) -> ParseRequestResult {
+/// Parse a client message from a JSON value matching `client/core-ts/src/protocol.ts parseClientMessage` 1:1.
+pub fn parse_client_message(raw : base_codec::Json, bytes : Option[Bytes] = None) -> ParseRequestResult {
   let bad = "data did not match any variant of untagged enum ClientMessage"
-  let raw = match base_codec::json_parse(json_text) {
-    base_codec::JsonParseResult::Err(e) => return ParseRequestResult::Invalid(e)
-    base_codec::JsonParseResult::Ok(j) => j
-  }
   match raw {
     base_codec::Json::Obj(_) => ()
     _ => return ParseRequestResult::Invalid(bad)
@@ -391,7 +648,7 @@ pub fn decode_client_message(json_text : String, bytes : Option[Bytes] = None) -
         }
         return ParseRequestResult::Ok(CoreRequest::Subscribe(id, topic, keyed, from_id, have))
       }
-      None => return ParseRequestResult::Invalid(bad)
+      None => ()
     }
     None => ()
   }
@@ -410,6 +667,15 @@ pub fn decode_client_message(json_text : String, bytes : Option[Bytes] = None) -
     None => ()
   }
   ParseRequestResult::Invalid(bad)
+}
+
+/// Thin JSON wire decoder matching `client/core-ts/src/protocol.ts parseClientMessage`.
+pub fn decode_client_message(json_text : String, bytes : Option[Bytes] = None) -> ParseRequestResult {
+  let raw = match base_codec::json_parse(json_text) {
+    base_codec::JsonParseResult::Err(e) => return ParseRequestResult::Invalid(e)
+    base_codec::JsonParseResult::Ok(j) => j
+  }
+  parse_client_message(raw, bytes=bytes)
 }
 
 /// Thin JSON wire encoder matching `client/core-ts/src/protocol.ts CoreMessage`.

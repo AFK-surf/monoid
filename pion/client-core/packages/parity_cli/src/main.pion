@@ -1,0 +1,473 @@
+// Native JSONL RPC harness for differential parity testing (`pion/client-core/test/parity.test.mjs`).
+// Reads one JSON object per line from stdin: `{"op": "...", "args": {...}}`
+// Calls the real public functions in `protocol`, `views`, and `form` (zero duplicated logic),
+// and writes one JSON response per line to stdout: `{"ok": ...}` or `{"err": "..."}`.
+
+import "base_codec"
+import "form"
+import "protocol"
+import "views"
+
+fn get_str(j : base_codec::Json, key : String) -> String {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+}
+
+fn get_opt_str(j : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn get_json(j : base_codec::Json, key : String) -> base_codec::Json {
+  match base_codec::json_get(j, key) {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+}
+
+fn get_arr(j : base_codec::Json, key : String) -> Array[base_codec::Json] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Arr(a)) => a
+    _ => []
+  }
+}
+
+fn get_str_arr(j : base_codec::Json, key : String) -> Array[String] {
+  let out : Array[String] = []
+  let arr = get_arr(j, key)
+  for i in 0..<arr.length() {
+    match arr[i] {
+      base_codec::Json::Str(s) => out.push(s)
+      _ => ()
+    }
+  }
+  out
+}
+
+fn get_hex_bytes(j : base_codec::Json, key : String) -> Option[Bytes] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Str(h)) => base_codec::hex_decode(h)
+    _ => None
+  }
+}
+
+fn spec_to_json(sp : protocol::KeyedSpec) -> base_codec::Json {
+  let out : Array[(String, base_codec::Json)] = []
+  if sp.key.length() > 0 {
+    let ks : Array[base_codec::Json] = []
+    for i in 0..<sp.key.length() {
+      ks.push(base_codec::json_str(sp.key[i]))
+    }
+    out.push(("key", base_codec::json_arr(ks)))
+  }
+  match sp.item {
+    Some(it) => out.push(("item", spec_to_json(it)))
+    None => ()
+  }
+  if sp.fields.length() > 0 {
+    let fs : Array[(String, base_codec::Json)] = []
+    for i in 0..<sp.fields.length() {
+      fs.push((sp.fields[i].0, spec_to_json(sp.fields[i].1)))
+    }
+    out.push(("fields", base_codec::json_obj(fs)))
+  }
+  base_codec::json_obj(out)
+}
+
+fn base_to_form(v : base_codec::Json) -> form::Json {
+  match v {
+    base_codec::Json::Null => form::Json::Null
+    base_codec::Json::Bool(b) => form::Json::Bool(b)
+    base_codec::Json::Num(n, _) => form::Json::Num(n)
+    base_codec::Json::Str(s) => form::Json::Str(s)
+    base_codec::Json::Arr(xs) => {
+      let out : Array[form::Json] = []
+      for i in 0..<xs.length() {
+        out.push(base_to_form(xs[i]))
+      }
+      form::Json::Arr(out)
+    }
+    base_codec::Json::Obj(fs) => {
+      let out : Array[(String, form::Json)] = []
+      for i in 0..<fs.length() {
+        out.push((fs[i].0, base_to_form(fs[i].1)))
+      }
+      form::Json::Obj(out)
+    }
+  }
+}
+
+fn form_to_base(v : form::Json) -> base_codec::Json {
+  match v {
+    form::Json::Null => base_codec::json_null()
+    form::Json::Bool(b) => base_codec::json_bool(b)
+    form::Json::Num(n) =>
+    if n == n.floor() && n.abs() <= 9007199254740991.0 {
+      base_codec::json_int64(n.to_int64())
+    } else {
+      base_codec::json_num(n)
+    }
+    form::Json::Str(s) => base_codec::json_str(s)
+    form::Json::Arr(xs) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<xs.length() {
+        out.push(form_to_base(xs[i]))
+      }
+      base_codec::json_arr(out)
+    }
+    form::Json::Obj(fs) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fs.length() {
+        out.push((fs[i].0, form_to_base(fs[i].1)))
+      }
+      base_codec::json_obj(out)
+    }
+  }
+}
+
+fn ok_resp(v : base_codec::Json) -> String {
+  base_codec::json_stringify(base_codec::json_obj([("ok", v)]))
+}
+
+fn err_resp(msg : String) -> String {
+  base_codec::json_stringify(base_codec::json_obj([("err", base_codec::json_str(msg))]))
+}
+
+fn opt_str_json(o : Option[String]) -> base_codec::Json {
+  match o {
+    Some(s) => base_codec::json_str(s)
+    None => base_codec::json_null()
+  }
+}
+
+fn handle_op(op : String, args : base_codec::Json) -> String {
+  // ── Module A: delta.ts ──
+  if op == "delta.diff" {
+    let ops = protocol::diff(get_json(args, "old"), get_json(args, "next"))
+    return ok_resp(base_codec::json_arr(ops))
+  }
+  if op == "delta.apply" {
+    let out = protocol::apply(get_json(args, "value"), get_arr(args, "ops"))
+    return ok_resp(out)
+  }
+  if op == "delta.jsonLength" {
+    let limit = match base_codec::json_get(args, "limit") {
+      Some(base_codec::Json::Num(n, _)) => n.to_int()
+      _ => -1
+    }
+    let n = protocol::json_length(get_json(args, "value"), limit=limit)
+    return ok_resp(base_codec::json_int(n))
+  }
+  if op == "delta.largerThan" {
+    let res = protocol::larger_than(get_arr(args, "ops"), get_json(args, "value"))
+    return ok_resp(base_codec::json_bool(res))
+  }
+
+  // ── Module B: collections.ts ──
+  if op == "collections.specOf" {
+    match protocol::spec_for_topic(get_str(args, "topic")) {
+      Some(sp) => return ok_resp(spec_to_json(sp))
+      None => return ok_resp(base_codec::json_null())
+    }
+  }
+  if op == "collections.keyOf" {
+    let k = protocol::key_of(get_json(args, "item"), get_str_arr(args, "fields"))
+    return ok_resp(k)
+  }
+  if op == "collections.diffKeyed" {
+    let spec = match get_opt_str(args, "topic") {
+      Some(t) => protocol::spec_for_topic(t)
+      None => None
+    }
+    let ops = protocol::diff_keyed(get_json(args, "old"), get_json(args, "next"), spec)
+    return ok_resp(base_codec::json_arr(ops))
+  }
+  if op == "collections.applyKeyed" {
+    let out = protocol::apply_keyed(get_json(args, "value"), get_arr(args, "ops"))
+    return ok_resp(out)
+  }
+  if op == "collections.heavier" {
+    let res = protocol::heavier(get_arr(args, "ops"), get_json(args, "value"))
+    return ok_resp(base_codec::json_bool(res))
+  }
+
+  // ── Module C: protocol.ts + digest.ts ──
+  if op == "protocol.parseTopic" {
+    match protocol::parse_topic(get_json(args, "raw")) {
+      Some(t) => return ok_resp(t.to_json())
+      None => return ok_resp(base_codec::json_null())
+    }
+  }
+  if op == "protocol.parseClientMessage" {
+    match protocol::parse_client_message(get_json(args, "raw")) {
+      protocol::ParseRequestResult::Invalid(msg) =>
+      return ok_resp(base_codec::json_obj([("invalid", base_codec::json_str(msg))]))
+      protocol::ParseRequestResult::Ok(req) =>
+      match req {
+        protocol::CoreRequest::Call(id, call_name, params, _) =>
+        return ok_resp(base_codec::json_obj([
+          ("kind", base_codec::json_str("call")),
+          ("id", base_codec::json_int64(id)),
+          ("call", base_codec::json_str(call_name)),
+          ("params", params),
+        ]))
+        protocol::CoreRequest::Subscribe(id, topic, keyed, from_id, have) => {
+          let fs : Array[(String, base_codec::Json)] = [
+            ("kind", base_codec::json_str("subscribe")),
+            ("id", base_codec::json_int64(id)),
+            ("subscribe", topic.to_json()),
+          ]
+          if keyed {
+            fs.push(("keyed", base_codec::json_bool(true)))
+          }
+          match from_id {
+            Some(f) => fs.push(("from", base_codec::json_int64(f)))
+            None => ()
+          }
+          match have {
+            Some(h) => fs.push(("have", base_codec::json_str(h)))
+            None => ()
+          }
+          return ok_resp(base_codec::json_obj(fs))
+        }
+        protocol::CoreRequest::Unsubscribe(id, unsub, keep) => {
+          let fs : Array[(String, base_codec::Json)] = [
+            ("kind", base_codec::json_str("unsubscribe")),
+            ("id", base_codec::json_int64(id)),
+            ("unsubscribe", base_codec::json_bool(unsub)),
+          ]
+          if keep {
+            fs.push(("keep", base_codec::json_bool(true)))
+          }
+          return ok_resp(base_codec::json_obj(fs))
+        }
+        protocol::CoreRequest::Cancel(id, c) =>
+        return ok_resp(base_codec::json_obj([
+          ("kind", base_codec::json_str("cancel")),
+          ("id", base_codec::json_int64(id)),
+          ("cancel", base_codec::json_bool(c)),
+        ]))
+      }
+    }
+  }
+  if op == "protocol.topicKey" {
+    match protocol::parse_topic(get_json(args, "raw")) {
+      Some(t) => return ok_resp(base_codec::json_str(protocol::topic_key(t)))
+      None => return err_resp("invalid topic")
+    }
+  }
+  if op == "protocol.topicStation" {
+    match protocol::parse_topic(get_json(args, "raw")) {
+      Some(t) => return ok_resp(opt_str_json(protocol::topic_station(t)))
+      None => return err_resp("invalid topic")
+    }
+  }
+  if op == "protocol.isView" {
+    match protocol::parse_topic(get_json(args, "raw")) {
+      Some(t) => return ok_resp(base_codec::json_bool(protocol::is_view(t)))
+      None => return err_resp("invalid topic")
+    }
+  }
+  if op == "digest.digest" {
+    return ok_resp(base_codec::json_str(protocol::digest(get_json(args, "value"))))
+  }
+  if op == "digest.version" {
+    return ok_resp(base_codec::json_str(protocol::value_version(get_json(args, "value"))))
+  }
+  if op == "digest.valueToken" {
+    return ok_resp(base_codec::json_str(protocol::value_token(get_json(args, "value"))))
+  }
+  if op == "digest.textHash" {
+    return ok_resp(base_codec::json_str(protocol::text_hash(get_str(args, "text"))))
+  }
+
+  // ── Module D: preset-records.ts + presets-kept.ts + board-drafts.ts ──
+  if op == "presets.canonical" {
+    return ok_resp(base_codec::json_str(views::preset_records_canonical(get_json(args, "value"))))
+  }
+  if op == "presets.newerRecord" {
+    return ok_resp(views::newer_record_json(get_json(args, "a"), get_json(args, "b")))
+  }
+  if op == "presets.recordOf" {
+    match views::record_of(get_json(args, "raw")) {
+      Ok(r) => return ok_resp(r)
+      Err(e) => return err_resp(e)
+    }
+  }
+  if op == "presets.goneKept" {
+    return ok_resp(base_codec::json_arr(views::gone_kept_json(get_arr(args, "gone"))))
+  }
+  if op == "presets.recordsKept" {
+    return ok_resp(views::records_kept_json(get_json(args, "records")))
+  }
+  if op == "presets.recordsLacking" {
+    let out = views::records_lacking_json(get_json(args, "records"), get_json(args, "said"), get_str(args, "sub"))
+    return ok_resp(base_codec::json_arr(out))
+  }
+  if op == "stars.newerStar" {
+    let a = get_json(args, "a")
+    let b = get_json(args, "b")
+    let sa = views::StarEntry::{
+      key: "k",
+      on: match base_codec::json_get(a, "on") { Some(base_codec::Json::Bool(x)) => x; _ => false },
+      rev: match base_codec::json_get(a, "rev") { Some(base_codec::Json::Num(n, _)) => n.to_int(); _ => 0 },
+      at: match base_codec::json_get(a, "at") { Some(base_codec::Json::Num(n, _)) => n.to_int64(); _ => 0.to_int64() },
+    }
+    let sb = views::StarEntry::{
+      key: "k",
+      on: match base_codec::json_get(b, "on") { Some(base_codec::Json::Bool(x)) => x; _ => false },
+      rev: match base_codec::json_get(b, "rev") { Some(base_codec::Json::Num(n, _)) => n.to_int(); _ => 0 },
+      at: match base_codec::json_get(b, "at") { Some(base_codec::Json::Num(n, _)) => n.to_int64(); _ => 0.to_int64() },
+    }
+    let w = views::newer_star(sa, sb)
+    return ok_resp(base_codec::json_obj([
+      ("on", base_codec::json_bool(w.on)),
+      ("rev", base_codec::json_int(w.rev)),
+      ("at", base_codec::json_int64(w.at)),
+    ]))
+  }
+  if op == "stars.starsOf" {
+    match views::stars_of(get_json(args, "raw")) {
+      Ok(r) => return ok_resp(r)
+      Err(e) => return err_resp(e)
+    }
+  }
+  if op == "stars.mergeStars" {
+    return ok_resp(views::merge_stars_json(get_json(args, "kept"), get_json(args, "given")))
+  }
+  if op == "stars.starsLacking" {
+    return ok_resp(views::stars_lacking_json(get_json(args, "stars"), get_json(args, "said")))
+  }
+  if op == "drafts.draftOf" {
+    match views::draft_of(get_json(args, "raw")) {
+      Ok(r) => return ok_resp(r)
+      Err(e) => return err_resp(e)
+    }
+  }
+  if op == "drafts.newerDraft" {
+    return ok_resp(views::newer_record_json(get_json(args, "a"), get_json(args, "b")))
+  }
+  if op == "drafts.mergeDrafts" {
+    return ok_resp(views::merge_drafts_json(get_json(args, "kept"), get_arr(args, "given")))
+  }
+  if op == "drafts.draftsLacking" {
+    return ok_resp(base_codec::json_arr(views::drafts_lacking_json(get_json(args, "drafts"), get_json(args, "said"))))
+  }
+  if op == "drafts.liveDrafts" {
+    return ok_resp(base_codec::json_arr(views::live_drafts_json(get_json(args, "drafts"))))
+  }
+
+  // ── Module E: lock.ts + vault/crypto.ts + views/pair.ts ──
+  if op == "lock.canonical" {
+    match form::canonical(base_to_form(get_json(args, "value"))) {
+      Ok(s) => return ok_resp(base_codec::json_str(s))
+      Err(e) => return err_resp(e)
+    }
+  }
+  if op == "vault.allows" {
+    let ok = views::vault_allows_scope(get_opt_str(args, "lasts"), get_str(args, "scope"))
+    return ok_resp(base_codec::json_bool(ok))
+  }
+  if op == "vault.boxPublic" {
+    let priv_b = match get_hex_bytes(args, "privHex") {
+      Some(b) => b
+      None => return err_resp("bad privHex")
+    }
+    match views::vault_box_public(priv_b) {
+      Ok(pub_s) => return ok_resp(base_codec::json_str(pub_s))
+      Err(e) => return err_resp(e)
+    }
+  }
+  if op == "vault.sealWith" {
+    let plain = match get_hex_bytes(args, "plainHex") { Some(b) => b; None => return err_resp("bad plainHex") }
+    let eph = match get_hex_bytes(args, "ephHex") { Some(b) => b; None => return err_resp("bad ephHex") }
+    let ctx = get_str(args, "context").to_bytes()
+    match views::vault_seal_with_context(get_str(args, "pub"), plain, ctx, eph) {
+      Ok(s) => return ok_resp(base_codec::json_str(s))
+      Err(e) => return err_resp(e)
+    }
+  }
+  if op == "vault.openSeal" {
+    let priv_b = match get_hex_bytes(args, "privHex") { Some(b) => b; None => return err_resp("bad privHex") }
+    let ctx = get_str(args, "context").to_bytes()
+    match views::vault_open_with_context(priv_b, get_str(args, "sealed"), ctx) {
+      Ok(pt) => return ok_resp(base_codec::json_str(base_codec::hex_encode(pt)))
+      Err(e) => return err_resp(e)
+    }
+  }
+  if op == "vault.encryptWith" {
+    let key = match get_hex_bytes(args, "keyHex") { Some(b) => b; None => return err_resp("bad keyHex") }
+    let plain = match get_hex_bytes(args, "plainHex") { Some(b) => b; None => return err_resp("bad plainHex") }
+    let nonce = match get_hex_bytes(args, "nonceHex") { Some(b) => b; None => return err_resp("bad nonceHex") }
+    let ctx = get_str(args, "context").to_bytes()
+    match views::vault_encrypt_with_context(key, plain, ctx, nonce) {
+      Ok(ct) => return ok_resp(base_codec::json_str(ct))
+      Err(e) => return err_resp(e)
+    }
+  }
+  if op == "vault.decrypt" {
+    let key = match get_hex_bytes(args, "keyHex") { Some(b) => b; None => return err_resp("bad keyHex") }
+    let ctx = get_str(args, "context").to_bytes()
+    match views::vault_decrypt_with_context(key, get_str(args, "ct"), ctx) {
+      Ok(pt) => return ok_resp(base_codec::json_str(base_codec::hex_encode(pt)))
+      Err(e) => return err_resp(e)
+    }
+  }
+  if op == "vault.recoveryPair" {
+    let ent = match get_hex_bytes(args, "entropyHex") { Some(b) => b; None => return err_resp("bad entropyHex") }
+    match views::vault_recovery_pair(ent) {
+      Ok((pub_s, priv_b)) =>
+      return ok_resp(base_codec::json_obj([
+        ("pub", base_codec::json_str(pub_s)),
+        ("privHex", base_codec::json_str(base_codec::hex_encode(priv_b))),
+      ]))
+      Err(e) => return err_resp(e)
+    }
+  }
+  if op == "vault.sign" {
+    let seed = match get_hex_bytes(args, "seedHex") { Some(b) => b; None => return err_resp("bad seedHex") }
+    let tag = get_str(args, "tag")
+    let rec = base_to_form(get_json(args, "record"))
+    match views::sign_vault_record(seed, tag, rec) {
+      Ok(signed) => return ok_resp(form_to_base(signed))
+      Err(e) => return err_resp(e)
+    }
+  }
+  if op == "pair.admitMemberRole" {
+    let res = views::admit_member_role(get_opt_str(args, "noted"), get_str(args, "cloud"))
+    return ok_resp(opt_str_json(res))
+  }
+  if op == "pair.admitMemberRoleByActor" {
+    let res = views::admit_member_role_by_actor(
+      get_str(args, "actor"),
+      get_opt_str(args, "noted"),
+      get_opt_str(args, "existing"),
+      get_str(args, "cloud"),
+    )
+    return ok_resp(opt_str_json(res))
+  }
+
+  err_resp("unknown op: " + op)
+}
+
+fn main(world : World) -> Unit {
+  while true {
+    match io_read_line(world) {
+      None => break
+      Some(line) => {
+        if line.length() == 0 {
+          continue
+        }
+        let resp = match base_codec::json_parse(line) {
+          base_codec::JsonParseResult::Err(e) => err_resp("json parse error: " + e)
+          base_codec::JsonParseResult::Ok(req) => handle_op(get_str(req, "op"), get_json(req, "args"))
+        }
+        io_println(world, resp)
+      }
+    }
+  }
+}

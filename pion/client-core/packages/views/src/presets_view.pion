@@ -13,6 +13,7 @@
 
 import "base_codec"
 import "form"
+import "protocol"
 
 pub fn gone_kept_limit() -> Int { 200 }
 pub fn stars_most() -> Int { 200 }
@@ -24,17 +25,7 @@ pub fn gone_drafts_most() -> Int { 200 }
 // ---------------------------------------------------------------------------
 
 fn cmp_str_pv(a : String, b : String) -> Int {
-  let la = a.length()
-  let lb = b.length()
-  let lim = if la < lb { la } else { lb }
-  for i in 0..<lim {
-    let ca = a.code_unit_at(i)
-    let cb = b.code_unit_at(i)
-    if ca != cb {
-      return if ca < cb { -1 } else { 1 }
-    }
-  }
-  if la < lb { -1 } else if la > lb { 1 } else { 0 }
+  protocol::compare_utf16(a, b)
 }
 
 fn lower_ascii_pv(s : String) -> String {
@@ -334,7 +325,7 @@ pub fn gone_kept(
   if !any_over {
     return records
   }
-  let keep_ids : Map[String, Bool] = Map::new()
+  let keep_keys : Map[String, Bool] = Map::new()
   for i in 0..<owners.length() {
     match by_owner.get(owners[i]) {
       Some(xs) => {
@@ -349,7 +340,7 @@ pub fn gone_kept(
         }
         let n = if xs.length() < limit { xs.length() } else { limit }
         for k in 0..<n {
-          keep_ids.set(xs[k].id, true)
+          keep_keys.set(xs[k].owner + "\u{0}" + xs[k].id, true)
         }
       }
       None => ()
@@ -358,7 +349,7 @@ pub fn gone_kept(
   let out : Array[PresetRecord] = []
   for i in 0..<records.length() {
     let r = records[i]
-    if !r.gone || keep_ids.get(r.id).is_some() {
+    if !r.gone || keep_keys.get(r.owner + "\u{0}" + r.id).is_some() {
       out.push(r)
     }
   }
@@ -1037,4 +1028,1056 @@ pub fn project_board_drafts(
     items.push(base_codec::json_obj(fields))
   }
   base_codec::json_obj([("drafts", base_codec::json_arr(items))])
+}
+
+// ---------------------------------------------------------------------------
+// 5. Full 1:1 `preset-records.ts`, `presets-kept.ts`, and `board-drafts.ts` parity
+// ---------------------------------------------------------------------------
+
+fn utf16_len_pv(s : String) -> Int {
+  let bs = s.to_bytes()
+  let mut i = 0
+  let mut n = 0
+  while i < bs.length() {
+    let b = bs[i].to_int()
+    if b < 0x80 {
+      n += 1
+      i += 1
+    } else if (b & 0xE0) == 0xC0 {
+      n += 1
+      i += 2
+    } else if (b & 0xF0) == 0xE0 {
+      n += 1
+      i += 3
+    } else if (b & 0xF8) == 0xF0 {
+      n += 2
+      i += 4
+    } else {
+      n += 1
+      i += 1
+    }
+  }
+  n
+}
+
+fn codepoint_len_pv(s : String) -> Int {
+  let bs = s.to_bytes()
+  let mut n = 0
+  for i in 0..<bs.length() {
+    if (bs[i].to_int() & 0xC0) != 0x80 {
+      n += 1
+    }
+  }
+  n
+}
+
+fn is_ws_byte_pv(b : Int) -> Bool {
+  b == 32 || b == 9 || b == 10 || b == 11 || b == 12 || b == 13
+}
+
+fn trim_js_pv(s : String) -> String {
+  let bs = s.to_bytes()
+  let mut lo = 0
+  let mut hi = bs.length()
+  while lo < hi {
+    let b = bs[lo].to_int()
+    if is_ws_byte_pv(b) {
+      lo += 1
+    } else if b == 0xC2 && lo + 1 < hi && bs[lo + 1].to_int() == 0xA0 {
+      lo += 2
+    } else if b == 0xEF && lo + 2 < hi && bs[lo + 1].to_int() == 0xBB && bs[lo + 2].to_int() == 0xBF {
+      lo += 3
+    } else if b == 0xE2 && lo + 2 < hi && bs[lo + 1].to_int() == 0x80 && (bs[lo + 2].to_int() == 0xA8 || bs[lo + 2].to_int() == 0xA9) {
+      lo += 3
+    } else {
+      break
+    }
+  }
+  while hi > lo {
+    let b = bs[hi - 1].to_int()
+    if is_ws_byte_pv(b) {
+      hi -= 1
+    } else if hi - 2 >= lo && bs[hi - 2].to_int() == 0xC2 && b == 0xA0 {
+      hi -= 2
+    } else if hi - 3 >= lo && bs[hi - 3].to_int() == 0xEF && bs[hi - 2].to_int() == 0xBB && b == 0xBF {
+      hi -= 3
+    } else if hi - 3 >= lo && bs[hi - 3].to_int() == 0xE2 && bs[hi - 2].to_int() == 0x80 && (b == 0xA8 || b == 0xA9) {
+      hi -= 3
+    } else {
+      break
+    }
+  }
+  if lo == 0 && hi == bs.length() {
+    return s
+  }
+  s.slice(lo, hi)
+}
+
+fn max_safe_i64_pv() -> Int64 {
+  (1.to_int64() << 53) - 1.to_int64()
+}
+
+fn is_safe_int_ge_pv(j : base_codec::Json, least : Int64) -> Option[Int64] {
+  match j {
+    base_codec::Json::Num(n, repr) => {
+      if n != n || n.floor() != n || n < -9007199254740991.0 || n > 9007199254740991.0 {
+        return None
+      }
+      let v = if repr.length() > 0 {
+        match base_codec::parse_int64_str(repr) {
+          Some(x) => x
+          None => n.to_int64()
+        }
+      } else {
+        n.to_int64()
+      }
+      if v >= least && v <= max_safe_i64_pv() {
+        Some(v)
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+fn is_preset_id_pv(s : String) -> Bool {
+  let n = s.length()
+  if n < 1 || n > 64 {
+    return false
+  }
+  for i in 0..<n {
+    let c = s.code_unit_at(i)
+    let ok = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 45
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+fn is_draft_id_pv(s : String) -> Bool {
+  let n = s.length()
+  if n < 1 || n > 120 {
+    return false
+  }
+  for i in 0..<n {
+    let c = s.code_unit_at(i)
+    let ok = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 58 || c == 95 || c == 46 || c == 45
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+fn j_str_pv(j : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn j_int64_pv(j : base_codec::Json, key : String) -> Int64 {
+  match base_codec::json_get(j, key) {
+    Some(v) => match is_safe_int_ge_pv(v, -max_safe_i64_pv()) {
+      Some(x) => x
+      None => 0.to_int64()
+    }
+    None => 0.to_int64()
+  }
+}
+
+fn j_is_gone_pv(j : base_codec::Json) -> Bool {
+  match base_codec::json_get(j, "gone") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+}
+
+/// Canonical JSON text with UTF-16 sorted keys (`preset-records.ts canonical`).
+pub fn preset_records_canonical(v : base_codec::Json) -> String {
+  protocol::digest_canonical(v)
+}
+
+/// `preset-records.ts modelOf`: validate and normalize a preset's model configuration.
+pub fn model_of_json(v : base_codec::Json) -> Option[base_codec::Json] {
+  match v {
+    base_codec::Json::Obj(_) => ()
+    _ => return None
+  }
+  let m = match j_str_pv(v, "model") {
+    Some(s) => trim_js_pv(s)
+    None => ""
+  }
+  if m.length() == 0 {
+    return None
+  }
+  let out : Array[(String, base_codec::Json)] = [("model", base_codec::json_str(m))]
+  match j_str_pv(v, "runtime") {
+    Some(s) => {
+      let rt = trim_js_pv(s)
+      if rt.length() > 0 {
+        out.push(("runtime", base_codec::json_str(rt)))
+      }
+    }
+    None => ()
+  }
+  match j_str_pv(v, "effort") {
+    Some(s) => {
+      let eff = trim_js_pv(s)
+      if eff.length() > 0 {
+        out.push(("effort", base_codec::json_str(eff)))
+      }
+    }
+    None => ()
+  }
+  match base_codec::json_get(v, "fast") {
+    Some(base_codec::Json::Bool(b)) => out.push(("fast", base_codec::json_bool(b)))
+    _ => ()
+  }
+  match base_codec::json_get(v, "tui") {
+    Some(base_codec::Json::Bool(true)) => out.push(("tui", base_codec::json_bool(true)))
+    _ => ()
+  }
+  match j_str_pv(v, "speed") {
+    Some(sp) => {
+      if sp == "standard" || sp == "fast" || sp == "ultrafast" {
+        out.push(("speed", base_codec::json_str(sp)))
+      }
+    }
+    None => ()
+  }
+  match base_codec::json_get(v, "context") {
+    Some(base_codec::Json::Num(n, repr)) => {
+      if n == n && n.floor() == n && n > 0.0 {
+        if repr.length() > 0 {
+          out.push(("context", base_codec::Json::Num(n, repr)))
+        } else {
+          out.push(("context", base_codec::json_int64(n.to_int64())))
+        }
+      }
+    }
+    _ => ()
+  }
+  match j_str_pv(v, "profile") {
+    Some(s) => {
+      let prof = trim_js_pv(s)
+      if prof.length() > 0 {
+        out.push(("profile", base_codec::json_str(prof)))
+      }
+    }
+    None => ()
+  }
+  match base_codec::json_get(v, "profiles") {
+    Some(base_codec::Json::Arr(xs)) => {
+      let ps : Array[String] = []
+      let pj : Array[base_codec::Json] = []
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => {
+            let t = trim_js_pv(s)
+            if t.length() > 0 && !str_in_pv(ps, t) {
+              ps.push(t)
+              pj.push(base_codec::json_str(t))
+            }
+          }
+          _ => ()
+        }
+      }
+      if pj.length() > 0 {
+        out.push(("profiles", base_codec::json_arr(pj)))
+      }
+    }
+    _ => ()
+  }
+  Some(base_codec::json_obj(out))
+}
+
+/// `preset-records.ts recordOf`: validate and normalize a raw JSON preset or deletion record.
+pub fn record_of(raw : base_codec::Json) -> Result[base_codec::Json, String] {
+  match raw {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err("a record is an object")
+  }
+  let id = match j_str_pv(raw, "id") {
+    Some(s) => if is_preset_id_pv(s) { s } else { return Err("id: 1 to 64 letters, digits, - or _") }
+    None => return Err("id: 1 to 64 letters, digits, - or _")
+  }
+  let owner = match j_str_pv(raw, "owner") {
+    Some(s) => if utf16_len_pv(s) <= 320 { s } else { return Err("owner: the sub of the person it is of") }
+    None => return Err("owner: the sub of the person it is of")
+  }
+  let rev = match base_codec::json_get(raw, "rev") {
+    Some(v) => match is_safe_int_ge_pv(v, 1.to_int64()) {
+      Some(x) => x
+      None => return Err("rev: how many times it was changed, from 1")
+    }
+    None => return Err("rev: how many times it was changed, from 1")
+  }
+  let updated_at = match base_codec::json_get(raw, "updatedAt") {
+    Some(v) => match is_safe_int_ge_pv(v, 0.to_int64()) {
+      Some(x) => x
+      None => return Err("updatedAt: a time in ms")
+    }
+    None => return Err("updatedAt: a time in ms")
+  }
+  if j_is_gone_pv(raw) {
+    return Ok(base_codec::json_obj([
+      ("id", base_codec::json_str(id)),
+      ("owner", base_codec::json_str(owner)),
+      ("rev", base_codec::json_int64(rev)),
+      ("gone", base_codec::json_bool(true)),
+      ("updatedAt", base_codec::json_int64(updated_at)),
+    ]))
+  }
+  let name = match j_str_pv(raw, "name") {
+    Some(s) => trim_js_pv(s)
+    None => ""
+  }
+  if name.length() == 0 {
+    return Err("a preset needs a name")
+  }
+  if codepoint_len_pv(name) > 60 {
+    return Err("a preset's name is 60 characters at most")
+  }
+  let instructions = match j_str_pv(raw, "instructions") {
+    Some(s) => trim_js_pv(s)
+    None => ""
+  }
+  if utf16_len_pv(instructions) > 20000 {
+    return Err("its instructions are too long")
+  }
+  let given_dirs : Array[base_codec::Json] = match base_codec::json_get(raw, "dirs") {
+    None | Some(base_codec::Json::Null) => []
+    Some(base_codec::Json::Arr(a)) => a
+    Some(_) => return Err("dirs: a list of folders")
+  }
+  let dirs_j : Array[base_codec::Json] = []
+  let dir_keys : Array[String] = []
+  for i in 0..<given_dirs.length() {
+    let d = given_dirs[i]
+    let path = match j_str_pv(d, "path") {
+      Some(p) => if trim_js_pv(p).length() == 0 || utf16_len_pv(p) > 4096 { return Err("a folder needs a path") } else { p }
+      None => return Err("a folder needs a path")
+    }
+    let station = match j_str_pv(d, "station") {
+      Some(st) => if trim_js_pv(st).length() == 0 || utf16_len_pv(st) > 300 {
+        return Err("folder " + path + ": station, the address of the station it is on")
+      } else { st }
+      None => return Err("folder " + path + ": station, the address of the station it is on")
+    }
+    let repo_j = match j_str_pv(d, "repo") {
+      Some(r) => {
+        if utf16_len_pv(r) > 4096 {
+          return Err("folder " + path + ": repo is too long")
+        }
+        if r.length() == 0 { base_codec::json_null() } else { base_codec::json_str(r) }
+      }
+      None => base_codec::json_null()
+    }
+    let dk = path + "\u{0}" + station
+    if !str_in_pv(dir_keys, dk) {
+      dir_keys.push(dk)
+      dirs_j.push(base_codec::json_obj([
+        ("path", base_codec::json_str(path)),
+        ("repo", repo_j),
+        ("station", base_codec::json_str(station)),
+      ]))
+    }
+  }
+  if dirs_j.length() > 20 {
+    return Err("a preset has 20 folders at most")
+  }
+  let mut st_auto = false
+  let mut st_one : Option[String] = None
+  let st_many : Array[String] = []
+  match base_codec::json_get(raw, "stations") {
+    Some(base_codec::Json::Arr(xs)) => {
+      let list : Array[String] = []
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => {
+            let t = trim_js_pv(s)
+            if t.length() > 0 && !str_in_pv(list, t) {
+              list.push(t)
+            }
+          }
+          _ => ()
+        }
+      }
+      if list.length() == 1 {
+        st_one = Some(list[0])
+      } else if list.length() > 1 {
+        for i in 0..<list.length() {
+          st_many.push(list[i])
+        }
+      }
+    }
+    _ => {
+      let s = match j_str_pv(raw, "station") {
+        Some(x) => trim_js_pv(x)
+        None => ""
+      }
+      if s.length() > 0 {
+        st_one = Some(s)
+      } else {
+        match base_codec::json_get(raw, "autoStation") {
+          Some(base_codec::Json::Bool(true)) => { st_auto = true }
+          _ => ()
+        }
+      }
+    }
+  }
+  let model_opt = match base_codec::json_get(raw, "model") {
+    Some(mv) => model_of_json(mv)
+    None => None
+  }
+  let created_by = match j_str_pv(raw, "createdBy") {
+    Some(s) => s
+    None => ""
+  }
+  if utf16_len_pv(created_by) > 320 {
+    return Err("createdBy is too long")
+  }
+  let created_at = match base_codec::json_get(raw, "createdAt") {
+    None => 0.to_int64()
+    Some(v) => match is_safe_int_ge_pv(v, 0.to_int64()) {
+      Some(x) => x
+      None => return Err("createdAt: a time in ms")
+    }
+  }
+  let home = match j_str_pv(raw, "home") {
+    Some(s) => if s.length() == 0 || utf16_len_pv(s) > 300 {
+      return Err("home: the id of the station it was made on")
+    } else { s }
+    None => return Err("home: the id of the station it was made on")
+  }
+  let out : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(id)),
+    ("name", base_codec::json_str(name)),
+    ("dirs", base_codec::json_arr(dirs_j)),
+    ("instructions", base_codec::json_str(instructions)),
+  ]
+  if st_auto {
+    out.push(("autoStation", base_codec::json_bool(true)))
+  }
+  match st_one {
+    Some(s) => out.push(("station", base_codec::json_str(s)))
+    None => ()
+  }
+  if st_many.length() > 0 {
+    let sj : Array[base_codec::Json] = []
+    for i in 0..<st_many.length() {
+      sj.push(base_codec::json_str(st_many[i]))
+    }
+    out.push(("stations", base_codec::json_arr(sj)))
+  }
+  match model_opt {
+    Some(m) => out.push(("model", m))
+    None => ()
+  }
+  out.push(("createdBy", base_codec::json_str(created_by)))
+  out.push(("createdAt", base_codec::json_int64(created_at)))
+  out.push(("updatedAt", base_codec::json_int64(updated_at)))
+  out.push(("owner", base_codec::json_str(owner)))
+  out.push(("rev", base_codec::json_int64(rev)))
+  out.push(("home", base_codec::json_str(home)))
+  Ok(base_codec::json_obj(out))
+}
+
+/// `preset-records.ts newerRecord` / `board-drafts.ts newerDraft` on JSON records.
+pub fn newer_record_json(a : base_codec::Json, b : base_codec::Json) -> base_codec::Json {
+  let ra = j_int64_pv(a, "rev")
+  let rb = j_int64_pv(b, "rev")
+  if ra != rb {
+    return if ra > rb { a } else { b }
+  }
+  let ga = j_is_gone_pv(a)
+  let gb = j_is_gone_pv(b)
+  if ga != gb {
+    return if ga { a } else { b }
+  }
+  let ua = j_int64_pv(a, "updatedAt")
+  let ub = j_int64_pv(b, "updatedAt")
+  if ua != ub {
+    return if ua > ub { a } else { b }
+  }
+  if cmp_str_pv(preset_records_canonical(a), preset_records_canonical(b)) >= 0 { a } else { b }
+}
+
+fn gone_json_before_pv(a : base_codec::Json, b : base_codec::Json) -> Bool {
+  let ua = j_int64_pv(a, "updatedAt")
+  let ub = j_int64_pv(b, "updatedAt")
+  if ua != ub {
+    return ua > ub
+  }
+  let ra = j_int64_pv(a, "rev")
+  let rb = j_int64_pv(b, "rev")
+  if ra != rb {
+    return ra > rb
+  }
+  let ia = match j_str_pv(a, "id") { Some(s) => s; None => "" }
+  let ib = match j_str_pv(b, "id") { Some(s) => s; None => "" }
+  cmp_str_pv(ia, ib) < 0
+}
+
+/// `preset-records.ts goneKept` on JSON gone records (preserves input order, keeps at most `limit` per owner).
+pub fn gone_kept_json(gone : Array[base_codec::Json], limit : Int = 200) -> Array[base_codec::Json] {
+  let by_owner : Map[String, Array[Int]] = Map::new()
+  let owners : Array[String] = []
+  for i in 0..<gone.length() {
+    let owner = match j_str_pv(gone[i], "owner") { Some(s) => s; None => "" }
+    match by_owner.get(owner) {
+      Some(idxs) => idxs.push(i)
+      None => {
+        owners.push(owner)
+        by_owner.set(owner, [i])
+      }
+    }
+  }
+  let mut any_over = false
+  for i in 0..<owners.length() {
+    match by_owner.get(owners[i]) {
+      Some(idxs) => if idxs.length() > limit { any_over = true }
+      None => ()
+    }
+  }
+  if !any_over {
+    return gone
+  }
+  let kept_idx : Map[Int, Bool] = Map::new()
+  for i in 0..<owners.length() {
+    match by_owner.get(owners[i]) {
+      Some(idxs) => {
+        for a in 1..<idxs.length() {
+          let cur = idxs[a]
+          let mut j = a - 1
+          while j >= 0 && gone_json_before_pv(gone[cur], gone[idxs[j]]) {
+            idxs[j + 1] = idxs[j]
+            j -= 1
+          }
+          idxs[j + 1] = cur
+        }
+        let n = if idxs.length() < limit { idxs.length() } else { limit }
+        for k in 0..<n {
+          kept_idx.set(idxs[k], true)
+        }
+      }
+      None => ()
+    }
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<gone.length() {
+    if kept_idx.get(i).is_some() {
+      out.push(gone[i])
+    }
+  }
+  out
+}
+
+/// `preset-records.ts recordsKept` on a JSON object map `{ [id]: KeptRecord }`.
+pub fn records_kept_json(records : base_codec::Json) -> base_codec::Json {
+  let fs = match records {
+    base_codec::Json::Obj(m) => m
+    _ => return records
+  }
+  let gone : Array[base_codec::Json] = []
+  let gone_pos : Array[Int] = []
+  for i in 0..<fs.length() {
+    if j_is_gone_pv(fs[i].1) {
+      gone.push(fs[i].1)
+      gone_pos.push(i)
+    }
+  }
+  let kept = gone_kept_json(gone, limit=200)
+  if kept.length() == gone.length() {
+    return records
+  }
+  let by_owner : Map[String, Array[Int]] = Map::new()
+  let owners : Array[String] = []
+  for i in 0..<gone.length() {
+    let owner = match j_str_pv(gone[i], "owner") { Some(s) => s; None => "" }
+    match by_owner.get(owner) {
+      Some(idxs) => idxs.push(i)
+      None => {
+        owners.push(owner)
+        by_owner.set(owner, [i])
+      }
+    }
+  }
+  let keep_field_idx : Map[Int, Bool] = Map::new()
+  for i in 0..<owners.length() {
+    match by_owner.get(owners[i]) {
+      Some(idxs) => {
+        for a in 1..<idxs.length() {
+          let cur = idxs[a]
+          let mut j = a - 1
+          while j >= 0 && gone_json_before_pv(gone[cur], gone[idxs[j]]) {
+            idxs[j + 1] = idxs[j]
+            j -= 1
+          }
+          idxs[j + 1] = cur
+        }
+        let n = if idxs.length() < 200 { idxs.length() } else { 200 }
+        for k in 0..<n {
+          keep_field_idx.set(gone_pos[idxs[k]], true)
+        }
+      }
+      None => ()
+    }
+  }
+  let out : Array[(String, base_codec::Json)] = []
+  for i in 0..<fs.length() {
+    if !j_is_gone_pv(fs[i].1) || keep_field_idx.get(i).is_some() {
+      out.push(fs[i])
+    }
+  }
+  base_codec::json_obj(out)
+}
+
+/// `presets-kept.ts lacking` on JSON object maps `{ [id]: KeptRecord }`.
+pub fn records_lacking_json(
+  records : base_codec::Json,
+  said : base_codec::Json,
+  who_sub : String,
+) -> Array[base_codec::Json] {
+  let fs = match records {
+    base_codec::Json::Obj(m) => m
+    _ => return []
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<fs.length() {
+    let r = fs[i].1
+    let owner = match j_str_pv(r, "owner") { Some(s) => s; None => "" }
+    if owner != who_sub {
+      continue
+    }
+    let id = match j_str_pv(r, "id") { Some(s) => s; None => "" }
+    match base_codec::json_get(said, id) {
+      None => out.push(r)
+      Some(there) => {
+        let cr = preset_records_canonical(r)
+        let ct = preset_records_canonical(there)
+        if cr != ct && preset_records_canonical(newer_record_json(there, r)) == cr {
+          out.push(r)
+        }
+      }
+    }
+  }
+  out
+}
+
+/// `preset-records.ts starsOf`: validate a stars object `{ [key]: { on, rev, at } }`.
+pub fn stars_of(raw : base_codec::Json) -> Result[base_codec::Json, String] {
+  let fs = match raw {
+    base_codec::Json::Obj(m) => m
+    _ => return Err("stars: an object of models' stars")
+  }
+  if fs.length() > 200 {
+    return Err("stars: 200 models at most")
+  }
+  let out : Array[(String, base_codec::Json)] = []
+  for i in 0..<fs.length() {
+    let (k, s) = fs[i]
+    if k.length() == 0 || utf16_len_pv(k) > 200 {
+      return Err("stars: a model's key is 1 to 200 characters")
+    }
+    match s {
+      base_codec::Json::Obj(_) => ()
+      _ => return Err("stars: " + k + " is {on, rev, at}")
+    }
+    let on = match base_codec::json_get(s, "on") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => return Err("stars: " + k + " is {on, rev, at}")
+    }
+    let rev = match base_codec::json_get(s, "rev") {
+      Some(v) => match is_safe_int_ge_pv(v, 1.to_int64()) {
+        Some(x) => x
+        None => return Err("stars: " + k + " is {on, rev, at}")
+      }
+      None => return Err("stars: " + k + " is {on, rev, at}")
+    }
+    let at = match base_codec::json_get(s, "at") {
+      Some(v) => match is_safe_int_ge_pv(v, 0.to_int64()) {
+        Some(x) => x
+        None => return Err("stars: " + k + " is {on, rev, at}")
+      }
+      None => return Err("stars: " + k + " is {on, rev, at}")
+    }
+    out.push((k, base_codec::json_obj([
+      ("on", base_codec::json_bool(on)),
+      ("rev", base_codec::json_int64(rev)),
+      ("at", base_codec::json_int64(at)),
+    ])))
+  }
+  Ok(base_codec::json_obj(out))
+}
+
+fn stars_json_to_entries_pv(raw : base_codec::Json) -> Array[StarEntry] {
+  let out : Array[StarEntry] = []
+  match raw {
+    base_codec::Json::Obj(fs) => {
+      for i in 0..<fs.length() {
+        let (k, s) = fs[i]
+        let on = match base_codec::json_get(s, "on") { Some(base_codec::Json::Bool(b)) => b; _ => false }
+        let rev = j_int64_pv(s, "rev").to_int()
+        let at = j_int64_pv(s, "at")
+        out.push(StarEntry::{ key: k, on: on, rev: rev, at: at })
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+/// `preset-records.ts mergeStars` on JSON star maps `{ [key]: { on, rev, at } }`.
+pub fn merge_stars_json(kept : base_codec::Json, given : base_codec::Json) -> base_codec::Json {
+  let merged = merge_stars(stars_json_to_entries_pv(kept), stars_json_to_entries_pv(given), limit=200)
+  let out : Array[(String, base_codec::Json)] = []
+  for i in 0..<merged.length() {
+    let s = merged[i]
+    out.push((s.key, base_codec::json_obj([
+      ("on", base_codec::json_bool(s.on)),
+      ("rev", base_codec::json_int(s.rev)),
+      ("at", base_codec::json_int64(s.at)),
+    ])))
+  }
+  base_codec::json_obj(out)
+}
+
+/// `presets-kept.ts starsLacking` on JSON star maps.
+pub fn stars_lacking_json(stars : base_codec::Json, said : base_codec::Json) -> base_codec::Json {
+  let fs = match stars {
+    base_codec::Json::Obj(m) => m
+    _ => return base_codec::json_obj([])
+  }
+  let out : Array[(String, base_codec::Json)] = []
+  for i in 0..<fs.length() {
+    let (k, s) = fs[i]
+    match base_codec::json_get(said, k) {
+      None => out.push((k, s))
+      Some(there) => {
+        if preset_records_canonical(there) != preset_records_canonical(s) {
+          let ta = StarEntry::{
+            key: k,
+            on: match base_codec::json_get(there, "on") { Some(base_codec::Json::Bool(b)) => b; _ => false },
+            rev: j_int64_pv(there, "rev").to_int(),
+            at: j_int64_pv(there, "at"),
+          }
+          let sb = StarEntry::{
+            key: k,
+            on: match base_codec::json_get(s, "on") { Some(base_codec::Json::Bool(b)) => b; _ => false },
+            rev: j_int64_pv(s, "rev").to_int(),
+            at: j_int64_pv(s, "at"),
+          }
+          let w = newer_star(ta, sb)
+          if w.on == sb.on && w.rev == sb.rev && w.at == sb.at {
+            out.push((k, s))
+          }
+        }
+      }
+    }
+  }
+  base_codec::json_obj(out)
+}
+
+/// `board-drafts.ts draftOf`: validate and normalize a raw JSON board draft or deletion.
+pub fn draft_of(raw : base_codec::Json) -> Result[base_codec::Json, String] {
+  match raw {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err("a draft is an object")
+  }
+  let id = match j_str_pv(raw, "id") {
+    Some(s) => if is_draft_id_pv(s) { s } else { return Err("id: 1 to 120 letters, digits, :, ., - or _") }
+    None => return Err("id: 1 to 120 letters, digits, :, ., - or _")
+  }
+  let owner = match j_str_pv(raw, "owner") {
+    Some(s) => if s.length() == 0 || utf16_len_pv(s) > 320 {
+      return Err("owner: the sub of the person it is of")
+    } else { s }
+    None => return Err("owner: the sub of the person it is of")
+  }
+  let rev = match base_codec::json_get(raw, "rev") {
+    Some(v) => match is_safe_int_ge_pv(v, 1.to_int64()) {
+      Some(x) => x
+      None => return Err("rev: how many times it was changed, from 1")
+    }
+    None => return Err("rev: how many times it was changed, from 1")
+  }
+  let updated_at = match base_codec::json_get(raw, "updatedAt") {
+    Some(v) => match is_safe_int_ge_pv(v, 0.to_int64()) {
+      Some(x) => x
+      None => return Err("updatedAt: a time in ms")
+    }
+    None => return Err("updatedAt: a time in ms")
+  }
+  if j_is_gone_pv(raw) {
+    return Ok(base_codec::json_obj([
+      ("id", base_codec::json_str(id)),
+      ("owner", base_codec::json_str(owner)),
+      ("rev", base_codec::json_int64(rev)),
+      ("gone", base_codec::json_bool(true)),
+      ("updatedAt", base_codec::json_int64(updated_at)),
+    ]))
+  }
+  let at = match base_codec::json_get(raw, "at") {
+    Some(v) => match is_safe_int_ge_pv(v, 0.to_int64()) {
+      Some(x) => x
+      None => return Err("at: when it was written, in ms")
+    }
+    None => return Err("at: when it was written, in ms")
+  }
+  let given_files : Array[base_codec::Json] = match base_codec::json_get(raw, "files") {
+    None | Some(base_codec::Json::Null) => []
+    Some(base_codec::Json::Arr(a)) => a
+    Some(_) => return Err("files: a list of files")
+  }
+  let files_j : Array[base_codec::Json] = []
+  let file_ids : Array[String] = []
+  for i in 0..<given_files.length() {
+    let f = given_files[i]
+    let fid = match j_str_pv(f, "id") {
+      Some(s) => if is_draft_id_pv(s) { s } else { return Err("a file needs an id") }
+      None => return Err("a file needs an id")
+    }
+    let fname = match j_str_pv(f, "name") {
+      Some(s) => if s.length() == 0 || utf16_len_pv(s) > 200 {
+        return Err("file " + fid + ": a name, 200 characters at most")
+      } else { s }
+      None => return Err("file " + fid + ": a name, 200 characters at most")
+    }
+    let fsize = match base_codec::json_get(f, "size") {
+      None | Some(base_codec::Json::Null) => 0.to_int64()
+      Some(v) => match is_safe_int_ge_pv(v, 0.to_int64()) {
+        Some(x) => x
+        None => return Err("file " + fid + ": size, in bytes")
+      }
+    }
+    if !str_in_pv(file_ids, fid) {
+      file_ids.push(fid)
+      files_j.push(base_codec::json_obj([
+        ("id", base_codec::json_str(fid)),
+        ("name", base_codec::json_str(fname)),
+        ("size", base_codec::json_int64(fsize)),
+      ]))
+    }
+  }
+  if files_j.length() > 20 {
+    return Err("a draft has 20 files at most")
+  }
+  let title = match j_str_pv(raw, "title") {
+    Some(s) => trim_js_pv(s)
+    None => ""
+  }
+  if utf16_len_pv(title) > 4000 {
+    return Err("its words are too long")
+  }
+  if title.length() == 0 && files_j.length() == 0 {
+    return Err("a draft needs words or a file")
+  }
+  let station = match j_str_pv(raw, "station") {
+    Some(s) => if s.length() == 0 || utf16_len_pv(s) > 200 {
+      return Err("station: the address of the station it is to run on")
+    } else { s }
+    None => return Err("station: the address of the station it is to run on")
+  }
+  let station_name = match j_str_pv(raw, "stationName") {
+    Some(s) => s
+    None => ""
+  }
+  if utf16_len_pv(station_name) > 200 {
+    return Err("stationName is too long")
+  }
+  Ok(base_codec::json_obj([
+    ("id", base_codec::json_str(id)),
+    ("owner", base_codec::json_str(owner)),
+    ("rev", base_codec::json_int64(rev)),
+    ("at", base_codec::json_int64(at)),
+    ("updatedAt", base_codec::json_int64(updated_at)),
+    ("title", base_codec::json_str(title)),
+    ("station", base_codec::json_str(station)),
+    ("stationName", base_codec::json_str(station_name)),
+    ("files", base_codec::json_arr(files_j)),
+  ]))
+}
+
+/// `board-drafts.ts mergeDrafts` on JSON map `{ [id]: KeptDraft }` and `given: KeptDraft[]`.
+pub fn merge_drafts_json(kept : base_codec::Json, given : Array[base_codec::Json]) -> base_codec::Json {
+  let by_id : Map[String, base_codec::Json] = Map::new()
+  let order : Array[String] = []
+  match kept {
+    base_codec::Json::Obj(fs) => {
+      for i in 0..<fs.length() {
+        let (id, d) = fs[i]
+        if by_id.get(id).is_none() {
+          order.push(id)
+        }
+        by_id.set(id, d)
+      }
+    }
+    _ => ()
+  }
+  for i in 0..<given.length() {
+    let r = given[i]
+    let id = match j_str_pv(r, "id") { Some(s) => s; None => continue }
+    let take = match by_id.get(id) {
+      None => true
+      Some(was) => {
+        let cw = preset_records_canonical(was)
+        let cr = preset_records_canonical(r)
+        cw != cr && preset_records_canonical(newer_record_json(was, r)) == cr
+      }
+    }
+    if take {
+      if by_id.get(id).is_none() {
+        order.push(id)
+      }
+      by_id.set(id, r)
+    }
+  }
+  let live_ids : Array[String] = []
+  for i in 0..<order.length() {
+    let id = order[i]
+    match by_id.get(id) {
+      Some(d) => if !j_is_gone_pv(d) { live_ids.push(id) }
+      None => ()
+    }
+  }
+  if live_ids.length() > 200 {
+    for i in 1..<live_ids.length() {
+      let cur = live_ids[i]
+      let cur_at = match by_id.get(cur) { Some(d) => j_int64_pv(d, "at"); None => 0.to_int64() }
+      let mut j = i - 1
+      while j >= 0 {
+        let prev_id = live_ids[j]
+        let prev_at = match by_id.get(prev_id) { Some(d) => j_int64_pv(d, "at"); None => 0.to_int64() }
+        if prev_at < cur_at || (prev_at == cur_at && cmp_str_pv(prev_id, cur) > 0) {
+          live_ids[j + 1] = prev_id
+          j -= 1
+        } else {
+          break
+        }
+      }
+      live_ids[j + 1] = cur
+    }
+    for i in 200..<live_ids.length() {
+      let id = live_ids[i]
+      match by_id.get(id) {
+        Some(d) => {
+          let owner = match j_str_pv(d, "owner") { Some(s) => s; None => "" }
+          let rev = j_int64_pv(d, "rev") + 1.to_int64()
+          let ua = j_int64_pv(d, "updatedAt")
+          by_id.set(id, base_codec::json_obj([
+            ("id", base_codec::json_str(id)),
+            ("owner", base_codec::json_str(owner)),
+            ("rev", base_codec::json_int64(rev)),
+            ("gone", base_codec::json_bool(true)),
+            ("updatedAt", base_codec::json_int64(ua)),
+          ]))
+        }
+        None => ()
+      }
+    }
+  }
+  let gone_ids : Array[String] = []
+  for i in 0..<order.length() {
+    let id = order[i]
+    match by_id.get(id) {
+      Some(d) => if j_is_gone_pv(d) { gone_ids.push(id) }
+      None => ()
+    }
+  }
+  let dropped : Map[String, Bool] = Map::new()
+  if gone_ids.length() > 200 {
+    for i in 1..<gone_ids.length() {
+      let cur = gone_ids[i]
+      let cur_d = match by_id.get(cur) { Some(d) => d; None => base_codec::json_null() }
+      let mut j = i - 1
+      while j >= 0 {
+        let prev_id = gone_ids[j]
+        let prev_d = match by_id.get(prev_id) { Some(d) => d; None => base_codec::json_null() }
+        if gone_json_before_pv(cur_d, prev_d) {
+          gone_ids[j + 1] = prev_id
+          j -= 1
+        } else {
+          break
+        }
+      }
+      gone_ids[j + 1] = cur
+    }
+    for i in 200..<gone_ids.length() {
+      dropped.set(gone_ids[i], true)
+    }
+  }
+  let out : Array[(String, base_codec::Json)] = []
+  for i in 0..<order.length() {
+    let id = order[i]
+    if dropped.get(id).is_some() {
+      continue
+    }
+    match by_id.get(id) {
+      Some(d) => out.push((id, d))
+      None => ()
+    }
+  }
+  base_codec::json_obj(out)
+}
+
+/// `board-drafts.ts draftsLacking` on JSON maps `{ [id]: KeptDraft }`.
+pub fn drafts_lacking_json(drafts : base_codec::Json, said : base_codec::Json) -> Array[base_codec::Json] {
+  let fs = match drafts {
+    base_codec::Json::Obj(m) => m
+    _ => return []
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<fs.length() {
+    let r = fs[i].1
+    let id = match j_str_pv(r, "id") { Some(s) => s; None => "" }
+    match base_codec::json_get(said, id) {
+      None => out.push(r)
+      Some(there) => {
+        let cr = preset_records_canonical(r)
+        let ct = preset_records_canonical(there)
+        if cr != ct && preset_records_canonical(newer_record_json(there, r)) == cr {
+          out.push(r)
+        }
+      }
+    }
+  }
+  out
+}
+
+/// `board-drafts.ts liveDrafts` on JSON map `{ [id]: KeptDraft }` (newest first by `at`, then `id` asc).
+pub fn live_drafts_json(drafts : base_codec::Json) -> Array[base_codec::Json] {
+  let fs = match drafts {
+    base_codec::Json::Obj(m) => m
+    _ => return []
+  }
+  let live : Array[base_codec::Json] = []
+  for i in 0..<fs.length() {
+    let d = fs[i].1
+    if !j_is_gone_pv(d) {
+      live.push(d)
+    }
+  }
+  for i in 1..<live.length() {
+    let cur = live[i]
+    let cur_at = j_int64_pv(cur, "at")
+    let cur_id = match j_str_pv(cur, "id") { Some(s) => s; None => "" }
+    let mut j = i - 1
+    while j >= 0 {
+      let prev = live[j]
+      let prev_at = j_int64_pv(prev, "at")
+      let prev_id = match j_str_pv(prev, "id") { Some(s) => s; None => "" }
+      if prev_at < cur_at || (prev_at == cur_at && cmp_str_pv(prev_id, cur_id) > 0) {
+        live[j + 1] = prev
+        j -= 1
+      } else {
+        break
+      }
+    }
+    live[j + 1] = cur
+  }
+  live
 }

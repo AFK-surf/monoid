@@ -6,6 +6,7 @@ members = [
   "packages/core_abi",
   "packages/sync",
   "packages/views",
+  "packages/parity_cli",
 ]
 
 [workspace.dependencies]

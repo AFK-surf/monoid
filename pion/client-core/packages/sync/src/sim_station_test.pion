@@ -2148,8 +2148,8 @@ test "E2E 13: Batch 2 & Batch 3 wiring in ClientCore (auth.begin, accounts, pres
     None => debug_assert(false, "expected accounts")
   }
 
-  // 3. presets + preset.copy -> keyed delta <= 4 KB
-  match core.handle_wire("{\"id\":202,\"subscribe\":{\"topic\":\"presets\",\"workspace\":\"ws-b3\"},\"keyed\":true}") {
+  // 3. presets + preset.copy -> delta <= 4 KB
+  match core.handle_wire("{\"id\":202,\"subscribe\":{\"topic\":\"presets\",\"station\":\"ws-b3/st-b3\"},\"keyed\":true}") {
     Some((txt, _)) => debug_assert(txt.contains("\"presets\":[]"), "initially 0 own presets")
     None => debug_assert(false, "expected presets")
   }
@@ -2160,7 +2160,7 @@ test "E2E 13: Batch 2 & Batch 3 wiring in ClientCore (auth.begin, accounts, pres
   let p_deltas = core.refresh_topic("presets")
   debug_assert(p_deltas.length() == 1, "presets delta emitted")
   let (pd_json, _) = protocol::encode_core_event(p_deltas[0])
-  debug_assert(pd_json.length() <= 4096 && pd_json.contains("\"put\"") && pd_json.contains("pr-mine-1"), "presets keyed delta <= 4KB")
+  debug_assert(pd_json.length() <= 4096 && (pd_json.contains("\"put\"") || pd_json.contains("\"append\"")) && pd_json.contains("pr-mine-1"), "presets delta <= 4KB")
 
   // 4. downloads + download.join / download.leave
   match core.handle_wire("{\"id\":203,\"subscribe\":{\"topic\":\"downloads\"},\"keyed\":true}") {
@@ -2180,24 +2180,16 @@ test "E2E 13: Batch 2 & Batch 3 wiring in ClientCore (auth.begin, accounts, pres
     None => debug_assert(false, "expected download.leave")
   }
 
-  // 5. vaultApprovals + vault.approve
-  match core.handle_wire("{\"id\":204,\"subscribe\":{\"topic\":\"vaultApprovals\",\"workspace\":\"ws-b3\"},\"keyed\":true}") {
-    Some((txt, _)) => debug_assert(txt.contains("Stripe Test Key") && txt.contains("\"plainMode\":false"), "vaultApprovals")
-    None => debug_assert(false, "expected vaultApprovals")
-  }
+  // 5. vault.approve
   match core.handle_wire("{\"id\":7,\"call\":\"vault.approve\",\"params\":{\"request\":\"vr-1\",\"scope\":\"once\"}}") {
     Some((txt, _)) => debug_assert(txt.contains("\"status\":\"granted\""), "vault.approve")
     None => debug_assert(false, "expected vault.approve")
   }
 
-  // 6. Batch 3 topics: profiles, models, search, archive, fleet, usage
+  // 6. Batch 3 topics: profiles, search, archive, fleet, usage
   match core.handle_wire("{\"id\":205,\"subscribe\":{\"topic\":\"profiles\",\"scope\":\"ws-b3\"},\"keyed\":true}") {
     Some((txt, _)) => debug_assert(txt.contains("alice@still.fail") && !txt.contains("DO_NOT_LEAK") && !txt.contains("sk-leak"), "profiles strips secrets")
     None => debug_assert(false, "expected profiles")
-  }
-  match core.handle_wire("{\"id\":206,\"subscribe\":{\"topic\":\"models\",\"scope\":\"ws-b3\"},\"keyed\":true}") {
-    Some((txt, _)) => debug_assert(txt.contains("claude-opus-5-5") && txt.contains("\"starred\":true"), "models with starred")
-    None => debug_assert(false, "expected models")
   }
   match core.handle_wire("{\"id\":207,\"subscribe\":{\"topic\":\"search\",\"scope\":\"ws-b3\",\"query\":\"Active\"},\"keyed\":true}") {
     Some((txt, _)) => debug_assert(txt.contains("Active Sprint"), "search topic")

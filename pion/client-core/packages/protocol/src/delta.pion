@@ -1,10 +1,9 @@
 // Keyed delta engine & value digest tokens matching `client/core-ts/src/collections.ts`,
-// `client/core-ts/src/delta.ts`, and `client/core-ts/src/store.ts` (`have` / `keep` / `same` / `delta`).
+// `client/core-ts/src/delta.ts`, `client/core-ts/src/digest.ts`, and `client/core-ts/src/store.ts`.
 // Produces minimal item-level ops (`put`, `patch`, `drop`, `move`, `set`, `remove`, `append`)
 // so incremental updates to `chats` and `chat` never resend unchanged rows or messages.
 
 import "base_codec"
-import "crypto"
 
 pub struct KeyedSpec {
   pub key : Array[String]
@@ -20,46 +19,73 @@ fn spec_fields(fs : Array[(String, KeyedSpec)]) -> KeyedSpec {
   KeyedSpec::{ key: [], item: None, fields: fs }
 }
 
-/// Keyed collection spec by topic name (matches `collections.ts SPECS`).
+/// Keyed collection spec by topic name (matches `client/core-ts/src/collections.ts SPECS` 1:1).
 pub fn spec_for_topic(topic_name : String) -> Option[KeyedSpec] {
-  let chat_rows = KeyedSpec::{ key: ["station", "id"], item: None, fields: [] }
+  let rows = KeyedSpec::{ key: ["station", "id"], item: None, fields: [] }
   if topic_name == "chats" {
     let day_spec = KeyedSpec::{
       key: ["daysAgo"],
-      item: Some(spec_fields([("items", chat_rows)])),
+      item: Some(spec_fields([("items", rows)])),
       fields: [],
     }
-    return Some(spec_fields([("rows", chat_rows), ("days", day_spec)]))
+    return Some(spec_fields([("days", day_spec)]))
+  }
+  if topic_name == "chatSearch" {
+    let msg_hit = KeyedSpec::{ key: ["station", "thread", "seq"], item: None, fields: [] }
+    return Some(spec_fields([("items", rows), ("messages", msg_hit)]))
+  }
+  if topic_name == "search" {
+    let msg_hit = KeyedSpec::{ key: ["station", "thread", "seq"], item: None, fields: [] }
+    let group_spec = KeyedSpec::{
+      key: ["kind"],
+      item: Some(spec_fields([("items", spec_items("key"))])),
+      fields: [],
+    }
+    return Some(spec_fields([
+      ("items", rows),
+      ("messages", msg_hit),
+      ("groups", group_spec),
+    ]))
   }
   if topic_name == "chat" {
     let msg_spec = KeyedSpec::{ key: ["seq", "outgoing"], item: None, fields: [] }
     return Some(spec_fields([
-      ("entries", spec_items("n")),
       ("messages", msg_spec),
       ("outbox", spec_items("id")),
     ]))
   }
+  if topic_name == "archive" {
+    let day_spec = KeyedSpec::{
+      key: ["label"],
+      item: Some(spec_fields([("items", rows)])),
+      fields: [],
+    }
+    return Some(spec_fields([("days", day_spec)]))
+  }
+  if topic_name == "chatRows" || topic_name == "archivedRows" || topic_name == "threads" || topic_name == "jobs" {
+    return Some(spec_items("id"))
+  }
   if topic_name == "sessions" {
-    return Some(spec_fields([("sessions", spec_items("key"))]))
+    return Some(spec_items("key"))
   }
-  if topic_name == "jobs" {
-    return Some(spec_fields([("jobs", spec_items("id"))]))
+  if topic_name == "history" {
+    return Some(spec_fields([("items", spec_items("key"))]))
   }
-  if topic_name == "stations" {
-    return Some(KeyedSpec::{
-      key: ["station"],
-      item: None,
-      fields: [("stations", spec_items("station"))],
-    })
+  if topic_name == "chatOutline" {
+    return Some(spec_fields([("days", spec_items("date"))]))
   }
-  if topic_name == "workspace" {
-    return Some(spec_fields([
-      ("stations", spec_items("station")),
-      ("members", spec_items("sub")),
-    ]))
-  }
-  if topic_name == "workspaces" {
-    return Some(spec_fields([("workspaces", spec_items("id"))]))
+  if topic_name == "changelog" {
+    let day_spec = KeyedSpec::{
+      key: ["day"],
+      item: Some(spec_fields([("entries", spec_items("version"))])),
+      fields: [],
+    }
+    let tab_spec = KeyedSpec::{
+      key: ["part"],
+      item: Some(spec_fields([("days", day_spec)])),
+      fields: [],
+    }
+    return Some(spec_fields([("tabs", tab_spec)]))
   }
   if topic_name == "vaults" {
     return Some(spec_fields([("vaults", spec_items("id")), ("requests", spec_items("id"))]))
@@ -67,93 +93,406 @@ pub fn spec_for_topic(topic_name : String) -> Option[KeyedSpec] {
   if topic_name == "vaultItems" {
     return Some(spec_fields([("items", spec_items("id"))]))
   }
-  if topic_name == "lock" {
-    return Some(spec_fields([
-      ("members", spec_items("sub")),
-      ("stations", spec_items("id")),
-      ("pending", spec_items("id")),
-    ]))
-  }
-  if topic_name == "search" || topic_name == "chatSearch" {
-    let msg_hit = KeyedSpec::{ key: ["station", "thread", "seq"], item: None, fields: [] }
-    return Some(spec_fields([("items", chat_rows), ("messages", msg_hit)]))
-  }
-  if topic_name == "presets" || topic_name == "otherPresets" {
-    return Some(spec_fields([("presets", spec_items("id"))]))
-  }
-  if topic_name == "boardDrafts" {
-    return Some(spec_fields([("drafts", spec_items("id"))]))
+  if topic_name == "driveTransfers" {
+    return Some(spec_fields([("transfers", rows)]))
   }
   if topic_name == "downloads" {
     return Some(spec_fields([("downloads", spec_items("id"))]))
   }
-  if topic_name == "vaultApprovals" {
-    return Some(spec_fields([
-      ("pending", spec_items("id")),
-      ("decided", spec_items("id")),
-    ]))
+  if topic_name == "jobLog" {
+    return Some(spec_fields([("lines", spec_items("n"))]))
   }
-  if topic_name == "profiles" {
-    return Some(spec_fields([("items", spec_items("key"))]))
+  if topic_name == "stations" {
+    return Some(spec_items("station"))
+  }
+  if topic_name == "newChat" {
+    return Some(spec_fields([("stations", spec_items("station"))]))
+  }
+  if topic_name == "stationMove" {
+    let mod_spec = KeyedSpec::{
+      key: ["id"],
+      item: Some(spec_fields([("items", spec_items("id"))])),
+      fields: [],
+    }
+    return Some(spec_fields([
+      ("targets", spec_items("station")),
+      ("modules", mod_spec),
+    ]))
   }
   if topic_name == "profilesOverview" {
     return Some(spec_fields([("pools", spec_items("title"))]))
   }
-  if topic_name == "models" {
-    return Some(spec_fields([("models", spec_items("id"))]))
-  }
-  if topic_name == "archive" {
-    let day_spec = KeyedSpec::{
-      key: ["label"],
-      item: Some(spec_fields([("items", chat_rows)])),
-      fields: [],
-    }
-    return Some(spec_fields([("items", chat_rows), ("days", day_spec)]))
-  }
-  if topic_name == "fleet" {
-    return Some(spec_fields([
-      ("spent", spec_items("key")),
-      ("daily", spec_items("day")),
-    ]))
-  }
-  if topic_name == "usage" {
-    let list_spec = KeyedSpec::{
-      key: ["key"],
-      item: Some(spec_fields([("items", spec_items("key"))])),
-      fields: [],
-    }
-    return Some(spec_fields([
-      ("daily", spec_items("day")),
-      ("lists", list_spec),
-    ]))
-  }
-  if topic_name == "agentRates" {
-    return Some(spec_fields([("rows", spec_items("key"))]))
-  }
-  if topic_name == "stationUpdates" {
-    return Some(spec_fields([("items", spec_items("station"))]))
-  }
-  if topic_name == "chatJobs" {
-    return Some(spec_fields([("jobs", spec_items("id"))]))
-  }
-  if topic_name == "longJobs" {
-    let group_spec = KeyedSpec::{
-      key: ["key"],
-      item: Some(spec_fields([("jobs", spec_items("id"))])),
-      fields: [],
-    }
-    return Some(spec_fields([
-      ("groups", group_spec),
-      ("otherGroups", group_spec),
-    ]))
+  if topic_name == "workspaceMarks" {
+    let ws_item = spec_fields([
+      ("items", KeyedSpec::{ key: ["station", "thread", "session"], item: None, fields: [] }),
+    ])
+    let ws_map = KeyedSpec::{ key: [], item: Some(ws_item), fields: [] }
+    return Some(spec_fields([("workspaces", ws_map)]))
   }
   None
 }
 
-/// Deterministic opaque value token for `keep` / `have` negotiation (`v` / `same: true`).
-pub fn value_token(v : base_codec::Json) -> String {
-  crypto::sha256_hex(base_codec::json_stringify(v).to_bytes())
+// ── Key comparison & JSON sorting (`util.ts` `compareKeys`, `sorted`, `toJson`) ──
+
+/// Rust / UTF-8 byte order (equivalent to Unicode code point order on valid UTF-8, matches `util.ts compareKeys`).
+pub fn compare_keys(a : String, b : String) -> Int {
+  let la = a.length()
+  let lb = b.length()
+  let lim = if la < lb { la } else { lb }
+  for i in 0..<lim {
+    let ca = a.code_unit_at(i)
+    let cb = b.code_unit_at(i)
+    if ca != cb {
+      return if ca < cb { -1 } else { 1 }
+    }
+  }
+  if la < lb { -1 } else if la > lb { 1 } else { 0 }
 }
+
+fn sort_strings_utf8(xs : Array[String]) -> Unit {
+  for i in 1..<xs.length() {
+    let cur = xs[i]
+    let mut j = i - 1
+    while j >= 0 && compare_keys(xs[j], cur) > 0 {
+      xs[j + 1] = xs[j]
+      j -= 1
+    }
+    xs[j + 1] = cur
+  }
+}
+
+/// Sort all object keys recursively by `compare_keys` (matches `util.ts sorted`).
+pub fn sorted_json(v : base_codec::Json) -> base_codec::Json {
+  match v {
+    base_codec::Json::Arr(xs) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<xs.length() {
+        out.push(sorted_json(xs[i]))
+      }
+      base_codec::json_arr(out)
+    }
+    base_codec::Json::Obj(fs) => {
+      let keys : Array[String] = []
+      for i in 0..<fs.length() {
+        keys.push(fs[i].0)
+      }
+      sort_strings_utf8(keys)
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<keys.length() {
+        let k = keys[i]
+        match base_codec::json_obj_get(fs, k) {
+          Some(fv) => out.push((k, sorted_json(fv)))
+          None => ()
+        }
+      }
+      base_codec::json_obj(out)
+    }
+    _ => v
+  }
+}
+
+/// JSON string with all object keys sorted by `compare_keys` (matches `util.ts toJson`).
+pub fn to_sorted_json_str(v : base_codec::Json) -> String {
+  base_codec::json_stringify(sorted_json(v))
+}
+
+// ── UTF-16 string decoding & `digest.ts` (`cyrb53`, `digest`, `version`, `textHash`) ──
+
+fn decode_utf8_to_utf16(s : String) -> Array[Int] {
+  let bytes = s.to_bytes()
+  let n = bytes.length()
+  let out : Array[Int] = []
+  let mut i = 0
+  while i < n {
+    let b0 = bytes[i].to_int()
+    if b0 < 0x80 {
+      out.push(b0)
+      i += 1
+    } else if (b0 & 0xE0) == 0xC0 && i + 1 < n {
+      let b1 = bytes[i + 1].to_int()
+      let cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F)
+      out.push(cp)
+      i += 2
+    } else if (b0 & 0xF0) == 0xE0 && i + 2 < n {
+      let b1 = bytes[i + 1].to_int()
+      let b2 = bytes[i + 2].to_int()
+      let cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)
+      out.push(cp)
+      i += 3
+    } else if (b0 & 0xF8) == 0xF0 && i + 3 < n {
+      let b1 = bytes[i + 1].to_int()
+      let b2 = bytes[i + 2].to_int()
+      let b3 = bytes[i + 3].to_int()
+      let cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
+      let adj = cp - 0x10000
+      out.push(0xD800 + (adj >> 10))
+      out.push(0xDC00 + (adj & 0x3FF))
+      i += 4
+    } else {
+      out.push(0xFFFD)
+      i += 1
+    }
+  }
+  out
+}
+
+/// Compare two strings by UTF-16 code units (matches JS `Array.prototype.sort()` / `<`).
+pub fn compare_utf16(a : String, b : String) -> Int {
+  let ua = decode_utf8_to_utf16(a)
+  let ub = decode_utf8_to_utf16(b)
+  let la = ua.length()
+  let lb = ub.length()
+  let lim = if la < lb { la } else { lb }
+  for i in 0..<lim {
+    if ua[i] != ub[i] {
+      return if ua[i] < ub[i] { -1 } else { 1 }
+    }
+  }
+  if la < lb { -1 } else if la > lb { 1 } else { 0 }
+}
+
+fn sort_strings_utf16(xs : Array[String]) -> Unit {
+  for i in 1..<xs.length() {
+    let cur = xs[i]
+    let mut j = i - 1
+    while j >= 0 && compare_utf16(xs[j], cur) > 0 {
+      xs[j + 1] = xs[j]
+      j -= 1
+    }
+    xs[j + 1] = cur
+  }
+}
+
+fn sort_json_utf16(v : base_codec::Json) -> base_codec::Json {
+  match v {
+    base_codec::Json::Arr(xs) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<xs.length() {
+        out.push(sort_json_utf16(xs[i]))
+      }
+      base_codec::json_arr(out)
+    }
+    base_codec::Json::Obj(fs) => {
+      let keys : Array[String] = []
+      for i in 0..<fs.length() {
+        keys.push(fs[i].0)
+      }
+      sort_strings_utf16(keys)
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<keys.length() {
+        let k = keys[i]
+        match base_codec::json_obj_get(fs, k) {
+          Some(fv) => out.push((k, sort_json_utf16(fv)))
+          None => ()
+        }
+      }
+      base_codec::json_obj(out)
+    }
+    _ => v
+  }
+}
+
+/// Canonical JSON with UTF-16 sorted keys (matches `digest.ts canonical` and `preset-records.ts canonical`).
+pub fn digest_canonical(v : base_codec::Json) -> String {
+  base_codec::json_stringify(sort_json_utf16(v))
+}
+
+fn u32_const(hi16 : Int, lo16 : Int) -> Int64 {
+  (hi16.to_int64() << 16) | lo16.to_int64()
+}
+
+fn imul32(a : Int64, b : Int64) -> Int64 {
+  let mask16 = 65535.to_int64()
+  let mask32 = u32_const(65535, 65535)
+  let a_lo = a & mask16
+  let a_hi = (a >> 16) & mask16
+  let b_lo = b & mask16
+  let b_hi = (b >> 16) & mask16
+  let lo = a_lo * b_lo
+  let mid = ((a_lo * b_hi + a_hi * b_lo) & mask16) << 16
+  (lo + mid) & mask32
+}
+
+fn cyrb53_utf16(s : String) -> (Int64, Int) {
+  let units = decode_utf8_to_utf16(s)
+  let mask32 = u32_const(65535, 65535)
+  let mut h1 : Int64 = u32_const(0xDEAD, 0xBEEF)
+  let mut h2 : Int64 = u32_const(0x41C6, 0xCE57)
+  let m1 = u32_const(0x9E37, 0x79B1) // 2654435761
+  let m2 = u32_const(0x5F35, 0x6495) // 1597334677
+  let m3 = u32_const(0x85EB, 0xCA6B) // 2246822507
+  let m4 = u32_const(0xC2B2, 0xAE35) // 3266489909
+  for i in 0..<units.length() {
+    let c = units[i].to_int64()
+    h1 = imul32(h1 ^ c, m1)
+    h2 = imul32(h2 ^ c, m2)
+  }
+  h1 = imul32(h1 ^ ((h1 & mask32) >> 16), m3)
+  h1 = (h1 ^ imul32(h2 ^ ((h2 & mask32) >> 13), m4)) & mask32
+  h2 = imul32(h2 ^ ((h2 & mask32) >> 16), m3)
+  h2 = (h2 ^ imul32(h1 ^ ((h1 & mask32) >> 13), m4)) & mask32
+  let hi = h2 & 2097151.to_int64()
+  let res = (hi << 32) + (h1 & mask32)
+  (res, units.length())
+}
+
+fn int64_to_base36(n : Int64) -> String {
+  let zero = 0.to_int64()
+  if n <= zero {
+    return "0"
+  }
+  let digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+  let rev : Array[Byte] = []
+  let mut x = n
+  let base = 36.to_int64()
+  while x > zero {
+    let rem = (x % base).to_int()
+    rev.push(digits.code_unit_at(rem) as Byte)
+    x = x / base
+  }
+  let sb = StringBuilder::new()
+  let mut i = rev.length() - 1
+  while i >= 0 {
+    sb.write_byte(rev[i])
+    i -= 1
+  }
+  sb.to_string()
+}
+
+/// Row digest matching `client/core-ts/src/digest.ts digest(v)`.
+pub fn digest(v : base_codec::Json) -> String {
+  let c = digest_canonical(v)
+  let (h, _) = cyrb53_utf16(c)
+  int64_to_base36(h)
+}
+
+/// Content version `<utf16LenBase36>:<cyrb53Base36>` matching `client/core-ts/src/digest.ts version(v)`.
+pub fn value_version(v : base_codec::Json) -> String {
+  let c = digest_canonical(v)
+  let (h, u16_len) = cyrb53_utf16(c)
+  int64_to_base36(u16_len.to_int64()) + ":" + int64_to_base36(h)
+}
+
+/// Deterministic value token matching `digest.ts version(v)` (and `digest.ts token(v)` for all primitives).
+pub fn value_token(v : base_codec::Json) -> String {
+  value_version(v)
+}
+
+/// Short hash for text matching `client/core-ts/src/digest.ts textHash(s)`.
+pub fn text_hash(s : String) -> String {
+  let (h, u16_len) = cyrb53_utf16(s)
+  int64_to_base36(h) + "-" + int64_to_base36(u16_len.to_int64())
+}
+
+// ── UTF-8 JSON byte counting (`delta.ts` `jsonLength` / `largerThan` / `heavier`) ──
+
+fn json_str_utf8_len(s : String) -> Int {
+  let raw = s.to_bytes()
+  let mut n = 2
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int()
+    if b == 34 || b == 92 || b == 8 || b == 12 || b == 10 || b == 13 || b == 9 {
+      n += 2
+    } else if b < 0x20 {
+      n += 6
+    } else {
+      n += 1
+    }
+  }
+  n
+}
+
+fn json_len_go(v : base_codec::Json, limit : Int, acc : Int) -> Int {
+  if limit >= 0 && acc > limit {
+    return acc
+  }
+  match v {
+    base_codec::Json::Null => acc + 4
+    base_codec::Json::Bool(b) => acc + (if b { 4 } else { 5 })
+    base_codec::Json::Str(s) => acc + json_str_utf8_len(s)
+    base_codec::Json::Num(_, _) => acc + base_codec::json_stringify(v).to_bytes().length()
+    base_codec::Json::Arr(xs) => {
+      let sep = if xs.length() > 1 { xs.length() - 1 } else { 0 }
+      let mut n = acc + 2 + sep
+      if limit >= 0 && n > limit {
+        return n
+      }
+      for i in 0..<xs.length() {
+        n = json_len_go(xs[i], limit, n)
+        if limit >= 0 && n > limit {
+          return n
+        }
+      }
+      n
+    }
+    base_codec::Json::Obj(fs) => {
+      let mut n = acc + 2
+      if limit >= 0 && n > limit {
+        return n
+      }
+      for i in 0..<fs.length() {
+        let (k, fv) = fs[i]
+        n = n + (if i > 0 { 1 } else { 0 }) + json_str_utf8_len(k) + 1
+        if limit >= 0 && n > limit {
+          return n
+        }
+        n = json_len_go(fv, limit, n)
+        if limit >= 0 && n > limit {
+          return n
+        }
+      }
+      n
+    }
+  }
+}
+
+/// How many UTF-8 bytes `v` takes as JSON (or a value > `limit` once exceeded when `limit >= 0`).
+pub fn json_length(v : base_codec::Json, limit : Int = -1) -> Int {
+  json_len_go(v, limit, 0)
+}
+
+/// Whether `ops` take at least as many JSON UTF-8 bytes as `value` itself (`delta.ts largerThan`).
+pub fn larger_than(ops : Array[base_codec::Json], value : base_codec::Json) -> Bool {
+  let size = json_length(base_codec::json_arr(ops))
+  json_length(value, limit=size) <= size
+}
+
+fn sets_long_list(ops : Array[base_codec::Json]) -> Bool {
+  for i in 0..<ops.length() {
+    let op = ops[i]
+    match base_codec::json_get(op, "set") {
+      Some(base_codec::Json::Arr(a)) => if a.length() > 256 { return true }
+      _ => ()
+    }
+    if base_codec::json_get(op, "patch").is_some() {
+      match base_codec::json_get(op, "ops") {
+        Some(base_codec::Json::Arr(sub)) => if sets_long_list(sub) { return true }
+        _ => ()
+      }
+    }
+  }
+  false
+}
+
+/// Whether `ops` are at least as heavy as `value` (`collections.ts heavier`).
+pub fn heavier(ops : Array[base_codec::Json], value : base_codec::Json) -> Bool {
+  if ops.length() == 1 && base_codec::json_get(ops[0], "set").is_some() {
+    match base_codec::json_get(ops[0], "path") {
+      Some(base_codec::Json::Arr(p)) => return p.length() == 0
+      _ => return false
+    }
+  }
+  if sets_long_list(ops) {
+    return false
+  }
+  let size = json_length(base_codec::json_arr(ops))
+  if size <= 4096 {
+    return false
+  }
+  json_length(value, limit=size) <= size
+}
+
+// ── Deep JSON equality & keyed helpers ──
 
 pub fn json_equal(a : base_codec::Json, b : base_codec::Json) -> Bool {
   match (a, b) {
@@ -206,7 +545,8 @@ fn copy_path(path : Array[base_codec::Json]) -> Array[base_codec::Json] {
   out
 }
 
-fn key_of_item(item : base_codec::Json, fields : Array[String]) -> base_codec::Json {
+/// Extract an item's key for `fields` (single field -> value or null; multiple -> array; matches `collections.ts keyOf`).
+pub fn key_of(item : base_codec::Json, fields : Array[String]) -> base_codec::Json {
   if fields.length() == 1 {
     match base_codec::json_get(item, fields[0]) {
       Some(v) => v
@@ -240,7 +580,7 @@ fn unique_keys_of(arr : Array[base_codec::Json], start : Int, end_i : Int, field
   let out : Array[String] = []
   let seen : Map[String, Bool] = Map::new()
   for i in start..<end_i {
-    let kt = key_text(key_of_item(arr[i], fields))
+    let kt = key_text(key_of(arr[i], fields))
     if seen.get(kt).is_some() {
       return None
     }
@@ -299,6 +639,15 @@ fn diff_keyed_list(
   ops : Array[base_codec::Json],
 ) -> Bool {
   let fields = spec.key
+  // Check uniqueness across the whole list first (matches TS `keysOf` when objects are distinct instances).
+  let all_old_keys = match unique_keys_of(old_arr, 0, old_arr.length(), fields) {
+    Some(ks) => ks
+    None => return false
+  }
+  let all_next_keys = match unique_keys_of(next_arr, 0, next_arr.length(), fields) {
+    Some(ks) => ks
+    None => return false
+  }
   let mut start = 0
   while start < old_arr.length() && start < next_arr.length() && json_equal(old_arr[start], next_arr[start]) {
     start += 1
@@ -312,46 +661,49 @@ fn diff_keyed_list(
   if start == old_end && start == next_end {
     return true
   }
-  let old_keys = match unique_keys_of(old_arr, start, old_end, fields) {
-    Some(ks) => ks
-    None => return false
-  }
-  let next_keys = match unique_keys_of(next_arr, start, next_end, fields) {
-    Some(ks) => ks
-    None => return false
-  }
   let was : Map[String, Int] = Map::new()
-  for i in 0..<old_keys.length() {
-    was.set(old_keys[i], start + i)
+  for i in start..<old_end {
+    was.set(all_old_keys[i], i)
   }
   let now_set : Map[String, Bool] = Map::new()
-  for i in 0..<next_keys.length() {
-    now_set.set(next_keys[i], true)
+  for i in start..<next_end {
+    now_set.set(all_next_keys[i], true)
   }
   let kj = fields_json(fields)
   let out : Array[base_codec::Json] = []
   for i in start..<old_end {
-    if now_set.get(old_keys[i - start]).is_none() {
+    if now_set.get(all_old_keys[i]).is_none() {
       out.push(base_codec::json_obj([
         ("path", base_codec::json_arr(copy_path(path))),
         ("key", kj),
-        ("drop", key_of_item(old_arr[i], fields)),
+        ("drop", key_of(old_arr[i], fields)),
       ]))
     }
   }
   let positions : Array[Int] = []
-  for i in 0..<next_keys.length() {
-    match was.get(next_keys[i]) {
+  let mut fresh = 0
+  for i in start..<next_end {
+    match was.get(all_next_keys[i]) {
       Some(idx) => positions.push(idx)
-      None => positions.push(-1)
+      None => {
+        positions.push(-1)
+        fresh += 1
+      }
     }
+  }
+  if fresh > 256 && fresh * 2 > next_arr.length() {
+    ops.push(base_codec::json_obj([
+      ("path", base_codec::json_arr(copy_path(path))),
+      ("set", base_codec::json_arr(next_arr)),
+    ]))
+    return true
   }
   let stay = longest_increasing_run(positions)
   let mut j = positions.length() - 1
   while j >= 0 {
     let i = start + j
     let before = if i + 1 < next_arr.length() {
-      key_of_item(next_arr[i + 1], fields)
+      key_of(next_arr[i + 1], fields)
     } else {
       base_codec::json_null()
     }
@@ -368,24 +720,40 @@ fn diff_keyed_list(
         out.push(base_codec::json_obj([
           ("path", base_codec::json_arr(copy_path(path))),
           ("key", kj),
-          ("move", key_of_item(next_arr[i], fields)),
+          ("move", key_of(next_arr[i], fields)),
           ("before", before),
         ]))
       }
       let item_changes = diff_keyed(old_arr[from], next_arr[i], spec.item)
       if item_changes.length() > 0 {
-        out.push(base_codec::json_obj([
-          ("path", base_codec::json_arr(copy_path(path))),
-          ("key", kj),
-          ("patch", key_of_item(next_arr[i], fields)),
-          ("ops", base_codec::json_arr(item_changes)),
-        ]))
+        let use_put = !sets_long_list(item_changes) && larger_than(item_changes, next_arr[i])
+        if use_put {
+          out.push(base_codec::json_obj([
+            ("path", base_codec::json_arr(copy_path(path))),
+            ("key", kj),
+            ("put", next_arr[i]),
+          ]))
+        } else {
+          out.push(base_codec::json_obj([
+            ("path", base_codec::json_arr(copy_path(path))),
+            ("key", kj),
+            ("patch", key_of(next_arr[i], fields)),
+            ("ops", base_codec::json_arr(item_changes)),
+          ]))
+        }
       }
     }
     j -= 1
   }
-  for i in 0..<out.length() {
-    ops.push(out[i])
+  if out.length() > 0 && heavier(out, base_codec::json_arr(next_arr)) {
+    ops.push(base_codec::json_obj([
+      ("path", base_codec::json_arr(copy_path(path))),
+      ("set", base_codec::json_arr(next_arr)),
+    ]))
+  } else {
+    for i in 0..<out.length() {
+      ops.push(out[i])
+    }
   }
   true
 }
@@ -448,8 +816,23 @@ fn diff_at(
       ]))
     }
     (base_codec::Json::Obj(of), base_codec::Json::Obj(nf)) => {
+      let changed : Array[String] = []
       for i in 0..<nf.length() {
         let (k, nv) = nf[i]
+        match base_codec::json_obj_get(of, k) {
+          Some(ov) => if !json_equal(ov, nv) { changed.push(k) }
+          None => changed.push(k)
+        }
+      }
+      if changed.length() > 1 {
+        sort_strings_utf8(changed)
+      }
+      for i in 0..<changed.length() {
+        let k = changed[i]
+        let nv = match base_codec::json_obj_get(nf, k) {
+          Some(v) => v
+          None => base_codec::json_null()
+        }
         path.push(base_codec::json_str(k))
         match base_codec::json_obj_get(of, k) {
           Some(ov) => {
@@ -468,16 +851,24 @@ fn diff_at(
         }
         let _ = path.pop()
       }
+      let gone : Array[String] = []
       for i in 0..<of.length() {
         let (k, _) = of[i]
         if base_codec::json_obj_get(nf, k).is_none() {
-          path.push(base_codec::json_str(k))
-          ops.push(base_codec::json_obj([
-            ("path", base_codec::json_arr(copy_path(path))),
-            ("remove", base_codec::json_bool(true)),
-          ]))
-          let _ = path.pop()
+          gone.push(k)
         }
+      }
+      if gone.length() > 1 {
+        sort_strings_utf8(gone)
+      }
+      for i in 0..<gone.length() {
+        let k = gone[i]
+        path.push(base_codec::json_str(k))
+        ops.push(base_codec::json_obj([
+          ("path", base_codec::json_arr(copy_path(path))),
+          ("remove", base_codec::json_bool(true)),
+        ]))
+        let _ = path.pop()
       }
     }
     _ => {
@@ -487,6 +878,11 @@ fn diff_at(
       ]))
     }
   }
+}
+
+/// Unkeyed diff matching `client/core-ts/src/delta.ts diff(old, next)`.
+pub fn diff(old : base_codec::Json, next : base_codec::Json) -> Array[base_codec::Json] {
+  diff_keyed(old, next, None)
 }
 
 /// Compute minimal ops (keyed where `spec` applies) transforming `old` into `next`.
@@ -520,7 +916,7 @@ fn parse_key_fields(j : base_codec::Json) -> Array[String] {
 fn find_key_index(list : Array[base_codec::Json], fields : Array[String], want : base_codec::Json) -> Int {
   let wt = key_text(want)
   for i in 0..<list.length() {
-    if key_text(key_of_item(list[i], fields)) == wt {
+    if key_text(key_of(list[i], fields)) == wt {
       return i
     }
   }
@@ -619,7 +1015,7 @@ fn apply_list_op(list : Array[base_codec::Json], op : base_codec::Json) -> Array
   }
   match base_codec::json_get(op, "put") {
     Some(item) => {
-      let i = find_key_index(list, fields, key_of_item(item, fields))
+      let i = find_key_index(list, fields, key_of(item, fields))
       let before_opt = base_codec::json_get(op, "before")
       if i >= 0 && before_opt.is_none() {
         let out : Array[base_codec::Json] = []
@@ -643,9 +1039,9 @@ fn apply_list_op(list : Array[base_codec::Json], op : base_codec::Json) -> Array
   }
 }
 
-fn apply_one(node : base_codec::Json, path : Array[base_codec::Json], depth : Int, op : base_codec::Json) -> base_codec::Json {
+fn apply_one(node : base_codec::Json, path : Array[base_codec::Json], depth : Int, op : base_codec::Json, make_missing_null : Bool) -> base_codec::Json {
   if depth == path.length() {
-    if base_codec::json_get(op, "key").is_some() {
+    if !make_missing_null && base_codec::json_get(op, "key").is_some() {
       match node {
         base_codec::Json::Arr(a) => return base_codec::json_arr(apply_list_op(a, op))
         _ => return node
@@ -678,13 +1074,13 @@ fn apply_one(node : base_codec::Json, path : Array[base_codec::Json], depth : In
   match (node, seg) {
     (base_codec::Json::Arr(a), base_codec::Json::Num(idx_d, _)) => {
       let idx = idx_d.to_int()
-      if idx < 0 || idx >= a.length() {
+      if idx_d.to_int().to_double() != idx_d || idx < 0 || idx >= a.length() {
         return node
       }
       let out : Array[base_codec::Json] = []
       for i in 0..<a.length() {
         if i == idx {
-          out.push(apply_one(a[i], path, depth + 1, op))
+          out.push(apply_one(a[i], path, depth + 1, op, make_missing_null))
         } else {
           out.push(a[i])
         }
@@ -706,7 +1102,7 @@ fn apply_one(node : base_codec::Json, path : Array[base_codec::Json], depth : In
       for i in 0..<fs.length() {
         if fs[i].0 == k {
           found = true
-          out.push((k, apply_one(fs[i].1, path, depth + 1, op)))
+          out.push((k, apply_one(fs[i].1, path, depth + 1, op, make_missing_null)))
         } else {
           out.push(fs[i])
         }
@@ -714,7 +1110,9 @@ fn apply_one(node : base_codec::Json, path : Array[base_codec::Json], depth : In
       if !found && depth == path.length() - 1 {
         match base_codec::json_get(op, "set") {
           Some(v) => out.push((k, v))
-          None => ()
+          None => if make_missing_null && base_codec::json_get(op, "append").is_some() {
+            out.push((k, base_codec::json_null()))
+          }
         }
       }
       base_codec::json_obj(out)
@@ -723,7 +1121,21 @@ fn apply_one(node : base_codec::Json, path : Array[base_codec::Json], depth : In
   }
 }
 
-/// Apply keyed/unkeyed delta ops produced by `diff_keyed` to `value`.
+/// Apply unkeyed delta ops matching `client/core-ts/src/delta.ts apply(value, ops)`.
+pub fn apply(value : base_codec::Json, ops : Array[base_codec::Json]) -> base_codec::Json {
+  let mut cur = value
+  for i in 0..<ops.length() {
+    let op = ops[i]
+    let path = match base_codec::json_get(op, "path") {
+      Some(base_codec::Json::Arr(p)) => p
+      _ => []
+    }
+    cur = apply_one(cur, path, 0, op, true)
+  }
+  cur
+}
+
+/// Apply keyed/unkeyed delta ops produced by `diff_keyed` to `value` (matches `collections.ts applyKeyed`).
 pub fn apply_keyed(value : base_codec::Json, ops : Array[base_codec::Json]) -> base_codec::Json {
   let mut cur = value
   for i in 0..<ops.length() {
@@ -732,7 +1144,7 @@ pub fn apply_keyed(value : base_codec::Json, ops : Array[base_codec::Json]) -> b
       Some(base_codec::Json::Arr(p)) => p
       _ => []
     }
-    cur = apply_one(cur, path, 0, op)
+    cur = apply_one(cur, path, 0, op, false)
   }
   cur
 }

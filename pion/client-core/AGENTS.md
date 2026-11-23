@@ -31,6 +31,7 @@ Pure-Pion client core workspace (`pion.toml`) on top of `pion/base` and official
   - `shell_transport.pion`: live HTTP/SSE `StationTransport` (`shell_http_transport`) and iroh Mesh bidirectional QUIC `StationTransport` (`shell_iroh_transport` over `iroh.bind`/`iroh.setRelayEntries`/`iroh.connect`/`conn.openBi`/`istream.*` + `wire::head_line`/`wire::reply_head`, zero polling).
   - `cloud_sync.pion`: `CloudSync` (`fetch_me_k`, `fetch_workspace_k`, `fetch_member_credential_k` with expiry cache, and `/v1/events` WebSocket consumer with `1000ms..60000ms` exponential backoff) persisting `/v1/me` (`account_doc`) and `/v1/workspaces/<ws>` (`workspace` + `station` overview) to SQLite.
   - `sim_station_test.pion` & `cloud_sync_test.pion`: deterministic `SimStation`, `SimAccountDb`, `CloudSync`, `shell_http_transport`, `shell_iroh_transport`, and `packages/views` subscription/delta tests on `effect::Runtime` virtual clock.
+- `packages/parity_cli`: native JSONL RPC harness invoking public `protocol`/`views`/`form` functions for the TS-vs-Pion differential parity suite `test/parity.test.mjs`.
 - `packages/core_runtime` (standalone, excluded from default workspace tests): real `core_api.h` engine exporting `pub extern "C" fn` driver hooks wired to `packages/core_abi/native/core_pion.c`, `ClientCore`, `CloudSync`, `shell_http_transport`, `packages/views` live SSE keyed delta push, and `shell_native::open` (`libstillfail_shell.so`), with cross-platform self-contained staticlib packager `packages/core_runtime/build_staticlib.sh`, C host E2E tests `packages/core_runtime/native/core_runtime_e2e.c` + `packages/core_runtime/native/core_runtime_live_net_e2e.c`, and runner `packages/core_runtime/run_e2e.sh`.
 - `packages/live_shell_smoke` (standalone, excluded from default workspace tests): end-to-end native executable linking `shell_native` + `shell_pion.c` + real Rust `libstillfail_shell` (`rusqlite` WAL + Tokio async IO).
 
@@ -44,6 +45,7 @@ Pure-Pion client core workspace (`pion.toml`) on top of `pion/base` and official
   - `pionc fmt --check pion/client-core`
   - `pionc check --json pion/client-core`
   - `pionc test --json pion/client-core`
+  - `node --test pion/client-core/test/parity.test.mjs`
   - `cc -Wall -Wextra -Werror -Iapps/mbui/src/host -I"$HOME/.pion/share/pion/runtime" pion/client-core/packages/core_abi/native/core_pion.c pion/client-core/packages/core_abi/native/core_abi_test.c -lpthread -o /tmp/core_abi_test && /tmp/core_abi_test`
   - `pionc build --target wasm32 pion/client-core/packages/sync`
   - `pionc build --target wasm32 pion/client-core/packages/views`

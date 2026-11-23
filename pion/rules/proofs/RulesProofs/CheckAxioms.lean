@@ -83,6 +83,7 @@ import RulesProofs.CoreInvariantsProofs
 #print axioms RulesProofs.CoreInvariantsP.admit_member_role_le_cloud
 #print axioms RulesProofs.CoreInvariantsP.admit_member_role_default_le_member
 #print axioms RulesProofs.CoreInvariantsP.admit_member_role_by_actor_non_manager
+#print axioms RulesProofs.CoreInvariantsP.admit_member_role_by_actor_admin_no_touch_owner
 #print axioms RulesProofs.CoreInvariantsP.admit_member_role_by_actor_spec
 #print axioms RulesProofs.CoreInvariantsP.scope_rank_vc_eq
 #print axioms RulesProofs.CoreInvariantsP.scopeRankI32_val
