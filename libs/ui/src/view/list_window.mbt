@@ -4595,7 +4595,7 @@ fn View::scrolls_window_ids(
             }
           } else {
             let active_ends = flip_way.untracked().map_or(-1.0, fn(w) { w.ends() })
-            if classify_flip_quiet(active_ends, at, answering_now(), was, ks) is QuietReset {
+            if classify_flip_quiet(active_ends, at, answering_now(), showing, was, ks) is QuietReset {
               gave_back.val = true
             }
           }
@@ -4726,72 +4726,31 @@ fn View::scrolls_window_ids(
           // (set out: what its blocks hold may tell it again from here, at this same moment)
           inner_at.val = -1.0
           // (told outside a transition where only one moves the list: classify QuietReset vs QuietDelta;
-          // QuietDelta smoothly remaps surviving keys of an active FlipWay without cutting it off, while
+          // QuietDelta preserves the active FlipWay in-place when the visible span is untouched, while
           // QuietReset skips synchronous laid_now() unless foot_room deduction or fade_settled handoff needs it)
           if quiet_once.val {
             let active_ends = flip_way.untracked().map_or(-1.0, fn(w) { w.ends() })
-            let quiet_kind = classify_flip_quiet(active_ends, at, answering_now(), was, ks)
+            let quiet_kind = classify_flip_quiet(active_ends, at, answering_now(), showing, was, ks)
             match (quiet_kind, flip_way.untracked()) {
-              (QuietDelta, Some(prev)) if prev.left(at).0 > 0.05 => {
-                if !fix {
+              (QuietDelta, Some(_)) => {
+                if !fix && foot_room.untracked() > 0.0 && flip_takes.val.length() > 0 {
                   self.tree.laid_now() |> ignore
-                  if flip_takes.val.length() > 0 {
-                    let mut came = 0.0
-                    for k in flip_takes.val {
-                      came = came + heights.get(k).unwrap_or(est)
-                    }
-                    flip_takes.val = []
-                    let left = dmax(0.0, foot_room.untracked() - came)
-                    if left != foot_room.untracked() {
-                      foot_room.set(left)
-                      self.tree.laid_now() |> ignore
-                    }
+                  let mut came = 0.0
+                  for k in flip_takes.val {
+                    came = came + heights.get(k).unwrap_or(est)
                   }
-                }
-                let after : Map[Int, (Double, Double, Double, Double)] = Map([])
-                for k, v in slot_views {
-                  if v.alive() {
-                    after[k] = v.laid_window_now()
+                  flip_takes.val = []
+                  let left = dmax(0.0, foot_room.untracked() - came)
+                  if left != foot_room.untracked() {
+                    foot_room.set(left)
+                    self.tree.laid_now() |> ignore
                   }
+                } else if !fix {
+                  flip_takes.val = []
                 }
-                if !fix && jumped_at.val == at && off_foot > 0.0 && @signals.untracked(fn() { s.at_foot() }) {
-                  for k, b in before {
-                    before[k] = (b.0, b.1 - off_foot, b.2, b.3)
-                  }
-                }
-                let (items, way) = flip_remap_active_items(prev, at, before, after, speed)
                 came_once.val = Some(false)
                 flip_came.clear()
                 moved_now.val = Map([])
-                let in_scale = if prev.said is Some(_) { 1.0 } else { prev.left(at).0 }
-                flip_prune_active_state(after, flip_new, flip_whole, flip_in_of, flip_in_amts, in_scale)
-                flip_raise()
-                flip_items.clear()
-                for k, it in items {
-                  flip_items[k] = it
-                }
-                if way.far > 0.5 {
-                  self.tree.hand_at_end(way.ends())
-                  (flip_end_off.val)()
-                  flip_end_off.val = self.at_moment(way.ends(), fn() {
-                    flip_items.clear()
-                    flip_new.clear()
-                    flip_whole.clear()
-                    flip_raise()
-                    flip_in_clear()
-                    flip_way.set(None)
-                    self.tree.sight_owe(self.tree.cause_now())
-                  })
-                  flip_way_said(at, way)
-                } else {
-                  (flip_end_off.val)()
-                  flip_items.clear()
-                  flip_new.clear()
-                  flip_whole.clear()
-                  flip_raise()
-                  flip_in_clear()
-                  flip_way.set(None)
-                }
                 return
               }
               _ =>

@@ -360,3 +360,138 @@ test "list_flip_engine: flips HoldRoomFade mid-fade arrival removes fading row i
     }
   }
 }
+
+///|
+fn assert_no_row_overlap(tree : Tree, ctx : String) -> Unit raise {
+  let rects : Array[(String, Double, Double)] = []
+  for d in tree.drawn() {
+    if d.words.has_prefix("item-") || d.words.has_prefix("row-") {
+      rects.push((d.words, d.y, d.y + d.h))
+    }
+  }
+  for i in 0..<rects.length() {
+    for j in (i + 1)..<rects.length() {
+      let (w1, top1, bot1) = rects[i]
+      let (w2, top2, bot2) = rects[j]
+      if top1 < bot2 - 1.0 && top2 < bot1 - 1.0 {
+        fail("\{ctx}: overlapping rows \{w1} [\{top1}, \{bot1}] and \{w2} [\{top2}, \{bot2}]")
+      }
+    }
+  }
+}
+
+///|
+test "list_flip_engine: wheel scroll mid-FlipWay plus offscreen QuietDelta never overlaps rows" {
+  for fps in [7.0, 24.0, 60.0, 120.0] {
+    let period = 1000.0 / fps
+    let clock = Ref(0.0)
+    let init_keys = Array::makei(20, fn(i) { i + 10 })
+    let keys = @signals.signal(init_keys, same=fn(a, b) { a == b })
+    let scroll = Scroll::list()
+    let tree = Tree::new(time=fn() { clock.val }, fn(root) {
+      root.transitions_only() |> ignore
+      root.box(fn(p) {
+        p.width(Is(Some(390.0))).height(Is(Some(200.0))) |> ignore
+        p.scrolls_window(
+          scroll,
+          fn() { keys.get() },
+          est=40.0,
+          flips=true,
+          follows=fn() { true },
+          comes=fn(_) { true },
+          fn(slot, k) {
+            slot.box(fn(b) { b.height(Is(Some(40.0))).words(Is("item-\{k}")) |> ignore }) |> ignore
+          },
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    tree.frame(390.0, 200.0, now=0.0) |> ignore
+    flip_step_to(tree, clock, 60.0, period)
+
+    // Start FlipWay via explicit transition appending tail row 30.
+    let with_30 = init_keys.copy()
+    with_30.push(30)
+    clock.val = 60.0
+    tree.event(60.0, fn() { transition(fn() { keys.set(with_30) }) })
+    flip_step_to(tree, clock, 90.0, period)
+
+    // Scroll up off foot mid-FlipWay.
+    clock.val = 90.0
+    tree.wheel_at(150.0, 100.0, 0.0, -240.0, 0, 90.0) |> ignore
+    flip_step_to(tree, clock, 120.0, period)
+    assert_no_row_overlap(tree, "at \{fps}fps after wheel")
+
+    // Quietly prepend offscreen key 1 outside visible span while FlipWay is still active.
+    let with_prepend = [1]
+    with_prepend.append(with_30)
+    clock.val = 120.0
+    tree.event(120.0, fn() { keys.set(with_prepend) })
+
+    // Step through remaining motion: zero row overlap at every frame.
+    let mut t = 120.0
+    while t < 700.0 {
+      let next_t = dmin(700.0, t + dmax(period, 16.0))
+      flip_step_to(tree, clock, next_t, period)
+      assert_no_row_overlap(tree, "at \{fps}fps t=\{next_t}")
+      t = next_t
+    }
+    assert_true(!answer_marks_left(), msg="at \{fps}fps: marks left set")
+    assert_true(!transition_now(), msg="at \{fps}fps: transition left active")
+    tree.dispose()
+  }
+}
+
+///|
+test "list_flip_engine: quiet insert inside visible span triggers QuietReset with no overlap" {
+  for fps in [7.0, 24.0, 60.0, 120.0] {
+    let period = 1000.0 / fps
+    let clock = Ref(0.0)
+    let keys = @signals.signal([10, 11, 12, 13, 14, 15], same=fn(a, b) { a == b })
+    let scroll = Scroll::list()
+    let tree = Tree::new(time=fn() { clock.val }, fn(root) {
+      root.transitions_only() |> ignore
+      root.box(fn(p) {
+        p.width(Is(Some(390.0))).height(Is(Some(200.0))) |> ignore
+        p.scrolls_window(
+          scroll,
+          fn() { keys.get() },
+          est=40.0,
+          flips=true,
+          follows=fn() { true },
+          comes=fn(_) { true },
+          fn(slot, k) {
+            slot.box(fn(b) { b.height(Is(Some(40.0))).words(Is("item-\{k}")) |> ignore }) |> ignore
+          },
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    tree.frame(390.0, 200.0, now=0.0) |> ignore
+    flip_step_to(tree, clock, 60.0, period)
+
+    // Start FlipWay via explicit transition appending tail row 16.
+    clock.val = 60.0
+    tree.event(60.0, fn() { transition(fn() { keys.set([10, 11, 12, 13, 14, 15, 16]) }) })
+    flip_step_to(tree, clock, 110.0, period)
+
+    // Quietly insert key 99 inside the visible span [11..16]: must QuietReset (zero sync pass, settled next frame, no overlap).
+    let passes_before = tree.passes_run()
+    clock.val = 110.0
+    tree.event(110.0, fn() { keys.set([10, 11, 12, 13, 99, 14, 15, 16]) })
+    let passes_in_event = tree.passes_run() - passes_before
+    assert_eq(passes_in_event, 0, msg="at \{fps}fps: visible-span QuietReset ran \{passes_in_event} sync passes")
+    flip_step_to(tree, clock, 110.0 + period, period)
+    assert_no_row_overlap(tree, "at \{fps}fps after visible-span QuietReset")
+    let y16 = flip_drawn_info(tree, "item-16").unwrap().0
+    assert_true(
+      (y16 - 160.0).abs() < 0.5,
+      msg="at \{fps}fps: visible-span QuietReset did not settle item-16 at 160, got \{y16}",
+    )
+    assert_true(!answer_marks_left(), msg="at \{fps}fps: marks left set")
+    assert_true(!transition_now(), msg="at \{fps}fps: transition left active")
+    tree.dispose()
+  }
+}

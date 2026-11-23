@@ -1,10 +1,10 @@
-// FLIP quiet-change classification, active-way remapping, and HoldRoomFade helpers for `View::scrolls_window`.
+// FLIP quiet-change classification and HoldRoomFade helpers for `View::scrolls_window`.
 // Pure `Int`-keyed helpers extracted from `list_window.mbt` to avoid generic monomorphization bloat.
 
 ///|
 /// How a quiet key change (outside any `transition`) interacts with an active FLIP way:
-/// `QuietReset` drops any active way (idle, answering, or disjoint replacement), while
-/// `QuietDelta` preserves the active way by remapping surviving keys to their new layout.
+/// `QuietReset` drops any active way (idle, answering, or visible-span mutation), while
+/// `QuietDelta` preserves the active way in-place when the visible span is untouched.
 priv enum FlipQuietKind {
   QuietReset
   QuietDelta
@@ -12,74 +12,48 @@ priv enum FlipQuietKind {
 
 ///|
 /// Classifies a quiet key update at `at` given the active FLIP way's end time (`active_ends <= at`
-/// when idle or finished), whether an initial answer is being settled, and the previous/next keys.
+/// when idle or finished), whether an initial answer is being settled, the currently showing keys,
+/// and the previous/next key arrays.
+///
+/// Returns `QuietDelta` only when an active FLIP way is running (`active_ends > at && !answering`)
+/// and the entire contiguous visible span `was[first_vis ..= last_vis]` is preserved verbatim and
+/// contiguously in `ks`. Any mutation inside the visible span returns `QuietReset`.
 fn classify_flip_quiet(
   active_ends : Double,
   at : Double,
   answering : Bool,
+  showing : Map[Int, Bool],
   was : Array[Int],
   ks : Array[Int],
 ) -> FlipQuietKind {
   if active_ends <= at || answering {
     return QuietReset
   }
-  for k in was {
-    if ks.contains(k) {
-      return QuietDelta
+  let mut first_vis = -1
+  let mut last_vis = -1
+  for i, k in was {
+    if showing.contains(k) {
+      if first_vis < 0 {
+        first_vis = i
+      }
+      last_vis = i
     }
   }
-  QuietReset
-}
-
-///|
-/// Remaps surviving keys of an active `FlipWay` (`prev`) at moment `at` from their visually drawn
-/// rects `before` to their newly laid-out resting rects `after`, keeping position and size
-/// continuous without enrolling newly arrived quiet keys.
-fn flip_remap_active_items(
-  prev : @flex.FlipWay,
-  at : Double,
-  before : Map[Int, (Double, Double, Double, Double)],
-  after : Map[Int, (Double, Double, Double, Double)],
-  speed : Map[Int, (Double, Double, Double, Double)],
-) -> (Map[Int, @flex.FlipItem], @flex.FlipWay) {
-  let items : Map[Int, @flex.FlipItem] = Map([])
-  let list : Array[@flex.FlipItem] = []
-  match prev.said {
-    Some(w) => {
-      let k_rem = prev.left(at).0
-      for k, a in after {
-        match before.get(k) {
-          Some(b) => {
-            let oa = (b.0 - a.0) / k_rem
-            let ob = (b.1 - a.1) / k_rem
-            let oc = -(b.2 - a.2) / k_rem
-            let od = -(b.3 - a.3) / k_rem
-            let it : @flex.FlipItem = { off: (oa, ob, oc, od), v: (0.0, 0.0, 0.0, 0.0) }
-            items[k] = it
-            list.push(it)
-          }
-          None => ()
+  if first_vis < 0 {
+    return QuietReset
+  }
+  let span_len = last_vis - first_vis + 1
+  guard ks.length() >= span_len else { return QuietReset }
+  match ks.search(was[first_vis]) {
+    Some(start) if start + span_len <= ks.length() => {
+      for j in 0..<span_len {
+        if ks[start + j] != was[first_vis + j] {
+          return QuietReset
         }
       }
-      (items, @flex.FlipWay::new(prev.at, list, said=w))
+      QuietDelta
     }
-    None => {
-      for k, a in after {
-        match before.get(k) {
-          Some(b) => {
-            let v = speed.get(k).unwrap_or((0.0, 0.0, 0.0, 0.0))
-            let it : @flex.FlipItem = {
-              off: (b.0 - a.0, b.1 - a.1, -(b.2 - a.2), -(b.3 - a.3)),
-              v,
-            }
-            items[k] = it
-            list.push(it)
-          }
-          None => ()
-        }
-      }
-      (items, @flex.FlipWay::new(at, list))
-    }
+    _ => QuietReset
   }
 }
 
@@ -98,64 +72,6 @@ fn flip_tail_removed(was : Array[Int], ks : Array[Int]) -> Array[Int] {
     was
   }
   at_end.filter(fn(k) { !ks.contains(k) })
-}
-
-///|
-/// Retains only surviving keys (present in `after`) in `flip_new`, `flip_whole`, `flip_in_of`, and
-/// `flip_in_amts`, scaling remaining inner offsets by `in_scale` when switching to a fresh `FlipWay`.
-fn flip_prune_active_state(
-  after : Map[Int, (Double, Double, Double, Double)],
-  flip_new : Map[Int, Bool],
-  flip_whole : Map[Int, Bool],
-  flip_in_of : Map[Int, Array[Int]],
-  flip_in_amts : Map[Int, FlipInAmt],
-  in_scale : Double,
-) -> Unit {
-  let drop_new : Array[Int] = []
-  for k, _ in flip_new {
-    if !after.contains(k) {
-      drop_new.push(k)
-    }
-  }
-  for k in drop_new {
-    flip_new.remove(k)
-  }
-  let drop_whole : Array[Int] = []
-  for k, _ in flip_whole {
-    if !after.contains(k) {
-      drop_whole.push(k)
-    }
-  }
-  for k in drop_whole {
-    flip_whole.remove(k)
-  }
-  let drop_in : Array[Int] = []
-  for k, ats in flip_in_of {
-    if !after.contains(k) {
-      drop_in.push(k)
-      for a in ats {
-        flip_in_amts.remove(a)
-      }
-    } else if in_scale != 1.0 {
-      for a in ats {
-        match flip_in_amts.get(a) {
-          Some(amt) =>
-            flip_in_amts[a] = {
-              ..amt,
-              dy: amt.dy * in_scale,
-              g: amt.g * in_scale,
-              sh: amt.sh * in_scale,
-              dx: amt.dx * in_scale,
-              lw: amt.lw * in_scale,
-            }
-          None => ()
-        }
-      }
-    }
-  }
-  for k in drop_in {
-    flip_in_of.remove(k)
-  }
 }
 
 ///|
