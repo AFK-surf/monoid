@@ -10423,7 +10423,9 @@ fn View::pick_by(
             going.val = None
             guard slot.alive() else { return }
             let now = @signals.untracked(which)
+            let said = slot.tree.said_count
             let nv = slot.structure_box(fn(n) { (now.make)(n) }, loc~)
+            slot.tree.structural(nv, said) |> ignore
             had.val = Some((now, nv))
           })
           going.val = Some((was, v, off))
@@ -16869,6 +16871,44 @@ fn Tree::alive_id(self : Tree, id : NodeId) -> Bool {
 fn Tree::structural(self : Tree, v : View, said : Int) -> Bool {
   guard v.live() is Some(n) && self.made_none(v.at, said) else { return false }
   n.flex.style.structural = true
+  true
+}
+
+///|
+/// Whether flex node `n` (under `holder`) is laid out nowhere at rest: DisplayNone, a structure's box that made
+/// nothing and is on no way, or a gone_empty box holding nothing (flex's laid_none, for what works out a sibling's gaps
+/// by hand).
+fn flex_laid_none(n : @flex.Node, holder : @flex.Node) -> Bool {
+  let s = n.style
+  if s.display == @flex.Display::DisplayNone || flex_nothing_made(n) {
+    return true
+  }
+  holder.holds_gone && s.gone_empty && flex_holds_none(n)
+}
+
+///|
+/// Whether all flex node `n` holds is laid out nowhere (flex_laid_none), or it holds nothing (flex's holds_none).
+fn flex_holds_none(n : @flex.Node) -> Bool {
+  for c in n.children {
+    if !flex_laid_none(c, n) {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// Whether flex node `n` is a structure's box that made nothing and is on no way (flex's nothing_made).
+fn flex_nothing_made(n : @flex.Node) -> Bool {
+  let s = n.style
+  if !s.structural || s.come_now == s.come_now {
+    return false
+  }
+  for c in n.children {
+    if c.style.display != @flex.Display::DisplayNone && !flex_nothing_made(c) {
+      return false
+    }
+  }
   true
 }
 

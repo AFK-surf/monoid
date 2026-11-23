@@ -258,9 +258,10 @@ pub(all) struct Style {
   // most such a share of all it holds), the gap before it the same (come_k); across, all of it till it holds nothing.
   mut gone_empty : Bool
   // Not CSS's: the box a structure makes for what it shows (the view's show, pick, each), not one the app said. Holding
-  // no box and on no way, it is nothing to a box that takes no room holding nothing (gone_empty): neither what that box
-  // holds, nor what it holds there (Node's nothing_made). A box the app says itself, holding nothing, is something:
-  // it may be as tall or as padded as it says; it is nothing only where it says gone_empty itself.
+  // no box and on no way (Node's nothing_made), it is laid out nowhere in whatever holds it: in no row or column, of no
+  // room, no gap before it, and nothing to a box that takes no room holding nothing (gone_empty). A box the app says
+  // itself, holding nothing, is something: an item of its row or column with its gap, as tall or as padded as it says;
+  // it is nothing only where it says gone_empty itself.
   mut structural : Bool
   // Not CSS's: a column whose items are a page's list's rows set on a host's pixels (this many a point; 0: anywhere): each
   // as tall as whole pixels, rounded up, what is under it lower by as much, the column as much taller (an old view's

@@ -42,7 +42,11 @@ pub fn own_head_node(
       mark(m, side)
     }
     match mark_press {
-      Some((label, press)) => action_box_node(holder, label, fn(_) { press() }, drawn) |> ignore
+      Some((label, press)) => {
+        // (an identity mark pressed as a whole, not a row's button: not held to a button's height, Tester::height_faults)
+        let b = action_box_node(holder, label, fn(_) { press() }, drawn)
+        @ui.tree_mark_tile(b)
+      }
       None => holder.box(drawn) |> ignore
     }
   }

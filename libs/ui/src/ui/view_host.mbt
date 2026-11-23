@@ -639,6 +639,7 @@ fn view_forget() -> Unit {
   }
   // (what was said of its nodes' corners its own: tree_corners_linked)
   tree_links.clear()
+  tree_height_tiles.clear()
   view_app.val = None
   // (the tree's theme and its window's inset forgotten once it is let go: what of it still read them told of none of
   // it, no tree laid out again as it goes)

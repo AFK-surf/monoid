@@ -61,7 +61,7 @@ fn Tree::width_in(self : Tree, at : Int, top : Int, w : Double) -> Double {
         let items = self.column_items(holder).filter(fn(o) {
           let os = self.nodes[o].flex.style
           self.nodes[o].live &&
-          os.display != @flex.Display::DisplayNone &&
+          !flex_laid_none(self.nodes[o].flex, self.nodes[holder].flex) &&
           !(os.position is @flex.PositionType::Absolute)
         })
         let mut others = 0.0

@@ -55,3 +55,80 @@ test "one height in a row: one wrapped in a box as big as it is still of the row
   assert_eq(off.length(), 1, msg=off.join("\n"))
   assert_eq(heights_row([36.0, 60.0]), [])
 }
+
+///|
+/// A tile of the window's tree in `v`, 40 high and wide, its ground 8 round, pressed as a whole, named `name`: marked
+/// a tile (tree_mark_tile) where `marked`. Its node.
+fn height_tile(v : @view.View, name : String, marked : Bool) -> @view.View {
+  v.box(fn(b) {
+    b
+    .width(Is(Some(40.0)))
+    .height(Is(Some(40.0)))
+    .ground(Is(0xDDDDDDFFL))
+    .radius(Is(8.0))
+    .on_press(fn() {  })
+    .says(Is(Some(@view.said(Button, label=name))))
+    |> ignore
+    if marked {
+      tree_mark_tile(b)
+    }
+  })
+}
+
+///|
+test "one height in a row: a tile marked so (tree_mark_tile) beside a button is no control of the row; unmarked, it is; let go, it is marked no more and one made after it is not" {
+  let row_of = fn(marked : Bool) -> Array[String] {
+    let t = Tester::tree(
+      fn(root) {
+        root.box(fn(row) {
+          row.row(Is(true)).gap(Is(8.0)) |> ignore
+          height_tile(row, "mark", marked) |> ignore
+          height_button(row, "more", 44.0)
+        })
+        |> ignore
+      },
+      w=400.0,
+      h=200.0,
+      platform=0,
+      corners_held=false,
+    )
+    t.draw()
+    t.height_faults()
+  }
+  assert_eq(row_of(true), [])
+  let off = row_of(false)
+  assert_eq(off.length(), 1, msg=off.join("\n"))
+  assert_true(off[0].contains("40×40") && off[0].contains("in its row 44"), msg=off[0])
+  // (the marked tile let go, an unmarked one made in its place: what was kept for the one let go forgotten, none kept
+  // for the new one, whatever index it is made at; its row lining them up in the middle, as a page's head does, so the
+  // pick's box is as big as the tile)
+  let which = @signals.signal(true, same=fn(a, b) { a == b })
+  let made : Array[@view.NodeId] = []
+  let t = Tester::tree(
+    fn(root) {
+      root.box(fn(row) {
+        row.row(Is(true)).lines_up(Is(Some(@view.Along::Middle))).gap(Is(8.0)) |> ignore
+        row.pick(at_once=true, fn() { which.get() }, fn(v, marked) {
+          made.push(height_tile(v, "mark", marked).id())
+        })
+        height_button(row, "more", 44.0)
+      })
+      |> ignore
+    },
+    w=400.0,
+    h=200.0,
+    platform=0,
+    corners_held=false,
+  )
+  t.draw()
+  assert_eq(made.length(), 1)
+  assert_true(tree_height_tiles.contains(made[0]))
+  assert_eq(t.height_faults(), [])
+  which.set(false)
+  t.draw()
+  assert_eq(made.length(), 2)
+  assert_false(tree_height_tiles.contains(made[0]))
+  assert_false(tree_height_tiles.contains(made[1]))
+  let off = t.height_faults()
+  assert_eq(off.length(), 1, msg=off.join("\n"))
+}

@@ -25,9 +25,28 @@ pub fn Tester::height_faults(self : Tester) -> Array[String] {
 }
 
 ///|
+/// Nodes of the window's tree that are an identity mark or avatar tile pressed as a whole (own_head_node's
+/// mark_press: 40 narrow, 32 wide by the page's look, whether pressed or not), not a row's button, chip or icon
+/// button.
+// kept across runs: each let go with its node
+let tree_height_tiles : ByNode[Bool] = ByNode::new()
+
+///|
+/// Mark node `v` of the window's tree as a tile or identity mark pressed as a whole, rather than a button, chip or
+/// icon button held to `Tester::height_faults`'s row button height.
+pub fn tree_mark_tile(v : @view.View) -> Unit {
+  let id = v.id()
+  tree_height_tiles[id] = true
+  v.owns(fn() { tree_height_tiles.remove(id) }) |> ignore
+}
+
+///|
 /// Whether node `i` is a control of a row to the rule: drawn, taking presses (not only pointed at), showing a ground
-/// at rest or under the hand, no taller than height_most.
+/// at rest or under the hand, no taller than height_most; a tile marked so (tree_mark_tile), not.
 fn Ctx::height_control(self : Ctx, i : Int) -> Bool {
+  if tree_frame_ids.get(i) is Some(id) && tree_height_tiles.contains(id) {
+    return false
+  }
   let b = self.nodes[i]
   b.kind == kind_box &&
   b.id != 0 &&
