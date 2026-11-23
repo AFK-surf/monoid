@@ -22,12 +22,12 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, test } from "node:test";
 import { WebSocketServer, type WebSocket } from "ws";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbStationBinary } from "./mb-harness.ts";
 import { loadMesh, type Connection, type Endpoint } from "../src/mesh/native.ts";
 import { Reader } from "../src/mesh/wire.ts";
 import { GrantKey } from "./fake-control-plane.ts";
 
-const binary = mbReaderBinary();
+const binary = mbStationBinary();
 const launcher = process.env.STILLFAIL_LAUNCHER ?? "";
 const runner = process.env.STILLFAIL_RUNNER ?? "";
 const addon = (() => {

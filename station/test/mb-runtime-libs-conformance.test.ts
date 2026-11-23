@@ -34,10 +34,9 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { connect as tlsConnect } from "node:tls";
 import { after, test } from "node:test";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
-import { mbHarnessBinary } from "./mb-harness.ts";
+import { mbHarnessBinary, mbStationBinary } from "./mb-harness.ts";
 
-const readerBin = mbReaderBinary();
+const readerBin = mbStationBinary();
 const harnessBin = mbHarnessBinary();
 const skipHarness =
   harnessBin === null
