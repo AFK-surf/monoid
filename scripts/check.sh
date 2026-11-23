@@ -566,7 +566,7 @@ if [ $full = 1 ]; then
     if [ -f web/src/core/iroh-pkg/.stand-in ] || [ ! -f web/src/core/iroh-pkg/built.js ]; then later "tests (need the iroh wasm)"; else step "tests" after root after core pnpm test; fi
   fi
   # `stillfail admin` (its test is one of those, run alone where only the commands changed).
-  if [ $core_tests = 0 ] && touches '^bin/(stillfail|stillfail\.ps1|admin-cli\.ts)$'; then step "stillfail admin wrapper test" node --test test/stillfail-admin-wrapper.test.ts; fi
+  if part ts && [ $core_tests = 0 ] && touches '^bin/(stillfail|stillfail\.ps1|admin-cli\.ts)$'; then step "stillfail admin wrapper test" node --test test/stillfail-admin-wrapper.test.ts; fi
   # The base in MoonBit (libs/base): every package under its src/ (each directory with a moon.pkg) type-checked for
   # native and for js, and every package's tests run on both (wire's; the mesh's, on a shell stood in for it; on js
   # the turning of the page's shell); for a change to it or to
