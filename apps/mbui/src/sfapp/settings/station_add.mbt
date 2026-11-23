@@ -415,41 +415,57 @@ fn join_existing_node(v : @view.View, core : Core, here : Here, manager : Bool, 
       |> ignore
     })
     |> ignore
-    col.each(rows, fn(s) { text(Some(s), "station") }, fn(r, s) {
-      // (a box of its own: what comes and goes, the whole row)
-      r.box(fn(row) {
-        let id = text(Some(s.untracked()), "station")
-        let took = fn() { took_it(s.get()) }
-        let st = fn() { Some(s.get()) }
-        let marked = @sf.has_station_mark(text(Some(s.untracked()), "emoji"), text(Some(s.untracked()), "icon"))
-        let is_rig = flag(Some(s.untracked()), "rig")
-        @sf.choice_row_node(
-          row,
-          fn() { text(st(), "name") },
-          fn() { took() || join_chosen(core, here, rows()).0.map(fn(ch) { text(Some(ch), "station") == id }).unwrap_or(false) },
-          press=fn() {
-            if !@signals.untracked(took) {
-              adding.picked.set(id)
-              adding.error.set("")
-              adding.here_error.set("")
-            }
-          },
-          note=fn() { if took() { tr("web-pages.settings.stations.joinedRow") } else { text(st(), "line") } },
-          lead?=if marked {
-            Some(fn(m) { station_mark_node_of(m, st, 15.0) })
-          } else if is_rig {
-            Some(fn(m) { @sf.icon_node(m, "boxes", 15.0, By(fn() { @sf.theme().p.muted })) |> ignore })
-          } else {
-            None
-          },
-          disabled=fn() { !took() && (join_chosen(core, here, rows()).1 || flag(st(), "needsLock")) },
-        )
+    @sf.group_node(col, fn(g) {
+      g.each(rows, fn(s) { text(Some(s), "station") }, fn(r, s) {
+        // (a box of its own: what comes and goes, the whole row)
+        r.box(fn(row) {
+          let id = text(Some(s.untracked()), "station")
+          let took = fn() { took_it(s.get()) }
+          let st = fn() { Some(s.get()) }
+          let marked = @sf.has_station_mark(text(Some(s.untracked()), "emoji"), text(Some(s.untracked()), "icon"))
+          let is_rig = flag(Some(s.untracked()), "rig")
+          let row_disabled = fn() { !took() && (join_chosen(core, here, rows()).1 || flag(st(), "needsLock")) }
+          @sf.choice_row_node(
+            row,
+            fn() { text(st(), "name") },
+            fn() { took() || join_chosen(core, here, rows()).0.map(fn(ch) { text(Some(ch), "station") == id }).unwrap_or(false) },
+            press=fn() {
+              if !@signals.untracked(took) {
+                adding.picked.set(id)
+                adding.error.set("")
+                adding.here_error.set("")
+              }
+            },
+            note=fn() { if took() { tr("web-pages.settings.stations.joinedRow") } else { text(st(), "line") } },
+            lead=fn(m) {
+              if marked {
+                m.alpha(By(fn() { if row_disabled() { 0.45 } else { 1.0 } })) |> ignore
+                station_mark_node_of(m, st, 15.0)
+              } else {
+                let icon = if is_rig { "boxes" } else { "server" }
+                @sf.icon_node(m, icon, 15.0, By(fn() { if row_disabled() { @sf.theme().p.subtle } else { @sf.theme().p.muted } })) |> ignore
+              }
+            },
+            trail?=if flag(Some(s.untracked()), "needsLock") {
+              Some(fn(e) {
+                e.show(fn() { !took() && flag(st(), "needsLock") }, at_once=true, fn(k) {
+                  k.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+                  @sf.icon_node(k, "shield-check", 14.0, By(fn() { @sf.theme().p.subtle })) |> ignore
+                })
+              })
+            } else {
+              None
+            },
+            disabled=row_disabled,
+          )
+        })
+        |> ignore
       })
-      |> ignore
     })
     if manager {
       col.show(chosen_can_full, fn(b) {
         @sf.style_node(b, fn() { join_mode_room })
+        @sf.words_node(b, fn() { tr("web-pages.settings.stations.joinMode") }, fn() { join_mode_label_words }) |> ignore
         add_choice_node(
           b,
           fn() { [tr("web-pages.rigs.add.kind.full"), tr("web-pages.rigs.add.kind.tasks")] },
@@ -481,9 +497,14 @@ fn join_existing_node(v : @view.View, core : Core, here : Here, manager : Bool, 
 }
 
 ///|
-/// The mode's choice under the joinable list: 10 over it (join_foot_room puts 10 under it).
+/// The mode's choice under the joinable list: 12 over it, 6 between its label and the segmented control.
 // kept across runs: a value (no field of it changes)
-let join_mode_room : @ui.Style = @ui.css("w=Full pt=S2_5")
+let join_mode_room : @ui.Style = @ui.css("w=Full pt=S3 gap=S1_5")
+
+///|
+/// Label above the join mode segmented control: caption, muted, 18 a line.
+// kept across runs: a value (no field of it changes)
+let join_mode_label_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, w=Full, leading=L5)
 
 ///|
 /// What a station shares of its machine, under the joinable ones: 10 over it, its error 10 under it.

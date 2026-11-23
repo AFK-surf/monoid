@@ -340,7 +340,7 @@ test "添加 station's sheet disables 添加这台 Mac with reason when this mac
   t.run_for(@ui.move_most_ms)
   t.click(Button, label="添加 station")
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("实验室已开启安全模式，此 workspace 未开启") is Some(_))
+  assert_true(t.find("所属 workspace「实验室」已开启安全模式，请先在当前 workspace 开启安全模式后再添加") is Some(_))
   let btn = t.query(Button, label="添加这台 Mac")
   assert_true(btn is Some(_))
   assert_true(btn.unwrap().disabled)

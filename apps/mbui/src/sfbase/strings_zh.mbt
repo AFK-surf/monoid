@@ -2817,7 +2817,7 @@ let zh : Map[String, String] = {
   "web-pages.stations.total": "共 {total}",
   "web-pages.stations.uses": "{name} 占用",
   "web-pages.stations.workspacesLead": "此 station 属于以下 workspace；各 workspace 的管理员对它的权限相同",
-  "web-pages.stations.workspacesLeadMixed": "此 station 属于以下 workspace；完整加入的 workspace 管理员可管理它，只执行任务的 workspace 仅按授权运行任务",
+  "web-pages.stations.workspacesLeadMixed": "此 station 已加入以下 workspace；完整模式下的管理员可管理它，只执行任务模式下仅按批准运行任务。",
   "web-pages.vault.hide": "隐藏",
   "web-pages.vault.title": "密钥",
   "web-pages.workspace.addAccount": "添加另一个账号",

@@ -1633,6 +1633,7 @@ web-pages.settings.stations.existingLeadTasks
 web-pages.settings.stations.existingNone
 web-pages.settings.stations.firstExisting
 web-pages.settings.stations.joinAction
+web-pages.settings.stations.joinMode
 web-pages.settings.stations.joinTasksOnlyNote
 web-pages.settings.stations.joinedRow
 web-pages.settings.stations.kindExisting

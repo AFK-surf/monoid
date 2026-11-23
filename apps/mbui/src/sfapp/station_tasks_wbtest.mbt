@@ -214,7 +214,7 @@ test "Station settings page shows Workspace section with mixed-mode tasks-only l
   t.wheel(700.0, 400.0, 2500.0)
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("Workspace") is Some(_))
-  assert_true(t.find("此 station 属于以下 workspace；完整加入的 workspace 管理员可管理它，只执行任务的 workspace 仅按授权运行任务") is Some(_))
+  assert_true(t.find("此 station 已加入以下 workspace；完整模式下的管理员可管理它，只执行任务模式下仅按批准运行任务。") is Some(_))
   assert_true(t.find("星火工作室") is Some(_))
   assert_true(t.find("主 workspace") is Some(_))
   assert_true(t.find("个人") is Some(_))

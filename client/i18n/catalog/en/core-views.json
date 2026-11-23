@@ -231,7 +231,7 @@
   "core-views.install.missing": "{name} isn't installed on this station",
   "core-views.install.retry": "Retry",
   "core-views.joinable.offline": "offline",
-  "core-views.joinable.needsLock": "{workspace} is in security mode. Turn on security mode in this workspace to add it.",
+  "core-views.joinable.needsLock": "Workspace “{workspace}” has security mode on — turn on security mode here first to add it.",
   "core-views.joinable.online": "online",
   "core-views.letters.out": "{name}: {text}",
   "core-views.letters.their": "Agent of “{chat}”",

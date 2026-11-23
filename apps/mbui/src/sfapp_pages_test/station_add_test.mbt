@@ -231,7 +231,7 @@ test "添加 station: a station of another workspace, the first open one picked,
       if n == "station.join" { Some(Ok({ "joined": { "name": "客厅的 mini" } })) } else { None }
     })
     t.run_for(@ui.move_most_ms)
-    for w in ["将你在其他 workspace 管理的 station 也添加到这里", "完整", "只执行任务", "家里的 mini", "个人 · 在线", "build-box", "个人 · 只执行任务 · 在线", "实验机", "实验室已开启安全模式，此 workspace 未开启", "添加到此 workspace", "取消"] {
+    for w in ["选择你在其他 workspace 的 station，添加到当前 workspace", "加入方式", "完整", "只执行任务", "家里的 mini", "个人 · 在线", "build-box", "个人 · 只执行任务 · 在线", "实验机", "所属 workspace「实验室」已开启安全模式，请先在当前 workspace 开启安全模式后再添加", "添加到此 workspace", "取消"] {
       assert_true(sa_drawn(t, w), msg="\{at}: \{w}")
     }
     for w in ["名称", "生成命令"] {
@@ -254,8 +254,8 @@ test "添加 station: a station of another workspace, the first open one picked,
     assert_true(sa_at(t, "客厅的 mini", at).1 < sa_at(t, "build-box", at).1, msg="\{at}: where it was")
     // build-box is a rig: mode toggle hides under the list and tasks-only footer note shows (top lead stays stable)
     assert_false(sa_drawn(t, "完整"), msg="\{at}: rig hides full mode choice")
-    assert_true(sa_drawn(t, "将你在其他 workspace 管理的 station 也添加到这里"), msg=at)
-    assert_true(sa_drawn(t, "该 station 将以只执行任务模式加入，不运行 agent，也不保存此 workspace 的对话；哪些对话能用由你批准。"), msg=at)
+    assert_true(sa_drawn(t, "选择你在其他 workspace 的 station，添加到当前 workspace"), msg=at)
+    assert_true(sa_drawn(t, "仅用来运行任务，不在此 workspace 启动 agent 或保存对话；哪些对话可使用由你逐个批准。"), msg=at)
     assert_true(sa_drawn(t, "完成") && !sa_drawn(t, "取消"), msg=at)
     // join build-box too -> sends mode=tasks, then none open left
     t.click(Button, label="添加到此 workspace")
@@ -280,7 +280,7 @@ test "添加 station: joining an existing full station in tasks-only mode sends 
   assert_true(sa_at(t, "实验机", "wide").1 < sa_at(t, "只执行任务", "wide").1)
   t.click(Radio, label="只执行任务")
   t.run_for(@ui.move_most_ms)
-  assert_true(sa_drawn(t, "该 station 将以只执行任务模式加入，不运行 agent，也不保存此 workspace 的对话；哪些对话能用由你批准。"))
+  assert_true(sa_drawn(t, "仅用来运行任务，不在此 workspace 启动 agent 或保存对话；哪些对话可使用由你逐个批准。"))
   t.click(Button, label="添加到此 workspace")
   t.run_for(@ui.move_most_ms)
   let joins = calls.filter(fn(m) { m.name == "station.join" })

@@ -154,7 +154,7 @@ test("a station whose home is in security mode is listed for a workspace not in 
   assert.deepEqual((v(values, 1) as J).items.map((s: J) => [s.id, s.needsLock, s.line]), [
     ["a1", false, "甲 · 在线"],
     ["a2", false, "甲 · 在线"],
-    ["b1", true, "乙 已开启安全模式，需在此 workspace 也开启安全模式后才能添加"],
+    ["b1", true, "所属 workspace「乙」已开启安全模式，请先在当前 workspace 开启安全模式后再添加"],
   ]);
   core.close();
 });
@@ -332,7 +332,7 @@ test("joinable includes own rigs from non-manager workspaces, excludes rigs alre
   assert.equal(wsJoinable.offered, true);
   assert.deepEqual(wsJoinable.items.map((x: J) => [x.station, x.rig, x.canFull, x.needsLock, x.line]), [
     ["wa/a1", false, false, false, "甲 · 在线"],
-    [`wc/${RIG_OWN}`, true, false, true, "乙 已开启安全模式，需在此 workspace 也开启安全模式后才能添加"],
+    [`wc/${RIG_OWN}`, true, false, true, "所属 workspace「乙」已开启安全模式，请先在当前 workspace 开启安全模式后再添加"],
   ]);
   // Viewer cannot add any station.
   assert.deepEqual(v(values, 2), { offered: false, loading: false, items: [] });

@@ -201,7 +201,7 @@
   "core-views.install.missing": "此 station 尚未安装 {name}",
   "core-views.install.retry": "重试",
   "core-views.joinable.offline": "离线",
-  "core-views.joinable.needsLock": "{workspace} 已开启安全模式，需在此 workspace 也开启安全模式后才能添加",
+  "core-views.joinable.needsLock": "所属 workspace「{workspace}」已开启安全模式，请先在当前 workspace 开启安全模式后再添加",
   "core-views.joinable.online": "在线",
   "core-views.letters.out": "{name}：{text}",
   "core-views.letters.their": "「{chat}」的 agent",
