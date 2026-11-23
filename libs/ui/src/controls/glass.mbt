@@ -29,10 +29,10 @@ pub fn glass_menu(merge? : Double = 0.0) -> @ui.Glass {
 ///|
 /// Three-anchor continuous optical interpolation for iOS 27.0 in-place liquid-droplet popover morphing:
 /// - `stage == 0.0`: bar-pill anchor, bit-identical to `glass_bar_pill` (`a=0x67`, `blur=2.5`, `bezel=14`, `refr=20`, `rim=0.60`);
-/// - `stage == 0.5`: crisp luminous crystal droplet (`a=0x4E`, `blur=1.6`, `bezel=18`, `refr=15`, `rim=0.78`;
-///   `refr/bezel=0.83 < 1.0` prevents fold-over while matching native iOS 27.0 bright crystal refraction);
+/// - `stage == 0.5`: mid-flight frosted droplet (`a=0x88`, `blur=4.5`, `bezel=18`, `refr=15`, `rim=0.78`;
+///   `refr/bezel=0.83 < 1.0` prevents fold-over while keeping backdrop text legible during morph);
 /// - `stage == 1.0`: resting frosted menu anchor, bit-identical to `glass_menu` (`a=0xBF`, `blur=8.0`, `bezel=16`, `refr=22`, `rim=0.60`).
-/// Alpha stays strictly within `0x4E..0xBF` (at or above `kind == 6`'s `regMix` upper knee) for zero flash.
+/// Alpha stays strictly within `0x67..0xBF` (at or above `kind == 6`'s `regMix` upper knee) for zero flash.
 fn glass_menu_morph(
   stage : Double,
   merge? : Double = 0.0,

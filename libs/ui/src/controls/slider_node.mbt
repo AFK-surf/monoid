@@ -28,7 +28,7 @@ pub fn value_slider_node(
     @signals.untracked(value),
     lo=min,
     hi=max,
-    held_scale=@glass.thumb_held_scale,
+    held_scale=@glass.slider_thumb_held_scale,
   )
   parent.box(made_for=loc, fn(wrap) {
     wrap

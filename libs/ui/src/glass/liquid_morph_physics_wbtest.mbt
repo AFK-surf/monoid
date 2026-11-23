@@ -13,11 +13,17 @@ test "LiquidMorphPhysics open/close springs, recoil pulse, and horizontal splash
   assert_true(open_210 >= open_180 && open_210 <= 1.0, msg="open spring monotonic without overshoot: \{open_180} -> \{open_210}")
   let open_end = lm_open_progress(0.42)
   assert_true(open_end > 0.999 && open_end <= 1.0, msg="open spring settled by 420ms: \{open_end}")
-  // Open mid-phase aspect ratio stays near-circular on 190x265 menu (width leads height: w^0.44 vs h^0.70)
+  // Open mid-phase keeps natural corner-aligned expansion on 190x265 menu (w^0.72 vs h^0.84) without circular ballooning
   let f67 = lm_eval_pill_morph(300.0, 35.0, 74.0, 36.0, 358.0, 184.0, 35.0, 190.0, 265.0, 20.0, 1.0, false, 0.067)
   let aspect67 = f67.cur_w / f67.cur_h
-  assert_true(aspect67 >= 0.80 && aspect67 <= 1.15, msg="open mid bubble near-circular at 67ms: aspect=\{aspect67}")
+  assert_true(aspect67 >= 0.72 && aspect67 <= 1.15, msg="open mid bubble balanced at 67ms: aspect=\{aspect67}")
+  assert_true(f67.radius <= 26.0, msg="open mid corner radius stays capped (no giant circle): r=\{f67.radius}")
   assert_true(lm_open_size_progress(0.5, lm_scale_delta(36.0, 36.0, 190.0, 265.0)) > 0.65)
+  // Large 320x340 Top/End panel: never inflates into a giant circle on open or close, and upward close drift <= 2pt
+  let f_big = lm_eval_pill_morph(300.0, 500.0, 60.0, 32.0, 330.0, 40.0, 192.0, 320.0, 340.0, 20.0, 1.0, false, 0.09)
+  assert_true(f_big.radius <= 26.0, msg="large 320x340 open radius stays <= 26pt: \{f_big.radius}")
+  let f_big_close = lm_eval_pill_morph(300.0, 500.0, 60.0, 32.0, 330.0, 40.0, 192.0, 320.0, 340.0, 20.0, 1.0, true, 0.11)
+  assert_true(f_big_close.radius <= 32.0, msg="large 320x340 mid-close radius stays <= 32pt: \{f_big_close.radius}")
 
   // 2. Close spring (omega0=15, zeta=0.88): platter active > 0.045 at 200ms, hands off by ~320ms
   assert_eq(lm_close_progress(0.0), 1.0)
@@ -54,8 +60,8 @@ test "LiquidMorphPhysics open/close springs, recoil pulse, and horizontal splash
   let g5 = liquid_menu_morph_glass(0.5, dark=false)
   let g1 = liquid_menu_morph_glass(1.0, dark=false)
   assert_eq(g0.tint & 0xFFL, 0x67L)
-  assert_eq(g5.tint & 0xFFL, 0x4EL)
-  assert_true((g5.blur - 1.6).abs() < 1.0e-9)
+  assert_eq(g5.tint & 0xFFL, 0x88L)
+  assert_true((g5.blur - 4.5).abs() < 1.0e-9)
   assert_eq(g1.tint & 0xFFL, 0xBFL)
 
   // 8. No NaN and close hugs top bar (my <= pill_h + 18pt) across 0..600ms sampling
@@ -73,6 +79,6 @@ test "LiquidMorphPhysics open/close springs, recoil pulse, and horizontal splash
     let em = lm_close_blob_a_emergence(mx, my, mw, mh, r, 150.0, 18.0, raw_c)
     assert_true(em == 0.0 || (em >= 0.45 && em <= 1.0), msg="blob A emergence valid range: \{em}")
     let bl = lm_close_blend(raw_c)
-    assert_true(bl >= 0.0 && bl <= 22.0, msg="close blend in [0, 22]: \{bl}")
+    assert_true(bl >= 0.0 && bl <= 14.0, msg="close blend in [0, 14]: \{bl}")
   }
 }

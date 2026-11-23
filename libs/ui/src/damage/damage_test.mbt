@@ -457,3 +457,15 @@ test "liquid glass zoom margin includes refraction + abs(chroma), and light_angl
   // Subsequent frame at same angle -> clean again
   assert_eq(dg.next(copy(gl), 2, 400.0, 300.0, 2.0, 1.0, 1.0, 1.0, light_angle=0.785), [])
 }
+
+///|
+test "content_lens (kind 8): reach includes 3*blur + refraction + 4 + reach_pad" {
+  let a = frame([(0.0, 0.0, 400.0, 300.0, 0), (100.0, 80.0, 60.0, 40.0, 8)])
+  a[60 + 7] = 3.0 // blur
+  a[60 + 14] = 6.0 // refraction
+  let d = seen(a)
+  let b = copy(a)
+  b[60 + 7] = 3.5
+  // max grow from b: 3*3.5 + 6 + 4 + 2 = 22.5 -> x0 = 77.5, y0 = 57.5, w = 105, h = 85
+  debug_inspect(next(d, b), content="[(77.5, 57.5, 105, 85)]")
+}

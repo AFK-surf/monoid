@@ -65,10 +65,9 @@ test "liquid_segmented_node(glass_track=true): lens Z-order above text, lifted i
     }
     assert_true(last_glyph_idx >= 0, msg="dark=\{dark}: must draw label glyphs")
     assert_true(lens_idx > last_glyph_idx, msg="dark=\{dark}: clear lens (idx=\{lens_idx}) must draw AFTER text glyphs (last=\{last_glyph_idx})")
-    let inner_h = 44.0 - 2.0 * ctrl_seg_pad
     assert_true(
-      lens_h >= inner_h * 1.12 && lens_h <= inner_h * 1.25,
-      msg="dark=\{dark}: held lens height \{lens_h} must reflect 1.15x lift over inner_h=\{inner_h}",
+      lens_h >= 44.0 + 9.0 && lens_h <= 44.0 + 16.0,
+      msg="dark=\{dark}: held lens height \{lens_h} must overhang 44pt track by ~12pt (6pt top/bottom)",
     )
     assert_eq(t.audit(), [], msg="dark=\{dark}: held audit must be empty")
 
@@ -83,7 +82,7 @@ test "liquid_segmented_node(glass_track=true): lens Z-order above text, lifted i
 }
 
 ///|
-test "liquid_slider_node: elastic track thickening 6pt -> 10pt while held/dragged with laid == 0" {
+test "liquid_slider_node: crisp 6pt track while held/dragged with laid == 0" {
   let slider_val = @signals.signal(40.0)
   let t = glass_case(false, false, fn(page) {
     page.box(fn(s) {
@@ -127,8 +126,8 @@ test "liquid_slider_node: elastic track thickening 6pt -> 10pt while held/dragge
   }
   let held_tr = track_rect()
   let held_fl = fill_rect()
-  assert_true(held_tr.3 >= 9.5 && held_tr.3 <= 10.5, msg="held track height must thicken to ~10pt, got \{held_tr.3}")
-  assert_true(held_fl.3 >= 9.5 && held_fl.3 <= 10.5, msg="held fill height must thicken to ~10pt, got \{held_fl.3}")
+  assert_true((held_tr.3 - 6.0).abs() < 0.05, msg="held track height must stay crisp 6pt, got \{held_tr.3}")
+  assert_true((held_fl.3 - 6.0).abs() < 0.05, msg="held fill height must stay crisp 6pt, got \{held_fl.3}")
   let held_cy = held_tr.1 + held_tr.3 / 2.0
   assert_true((held_cy - rest_cy).abs() < 0.1, msg="thickened track must stay vertically centered (\{held_cy} vs \{rest_cy})")
 

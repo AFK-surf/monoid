@@ -335,7 +335,7 @@ pub fn anchored_popover_bridge(
             None
           } else {
             let stage = 0.5 * @glass.lm_smoothstep(0.0, 0.12, f.raw_value)
-            Some(glass_menu_morph(stage, layer=pill_layer, break_gap=48.0))
+            Some(glass_menu_morph(stage, layer=pill_layer, break_gap=24.0))
           }
         } else {
           Some((pm.rest_glass)())
@@ -576,9 +576,9 @@ pub fn anchored_popover_bridge(
           1.0
         } else {
           let u_open = @glass.lm_open_progress(t_open_now)
-          let open_w = @glass.lm_lerp(core, mw, @dmath.pow(dclamp(u_open, 0.0, 1.0), 0.44))
+          let open_w = @glass.lm_lerp(core, mw, @dmath.pow(dclamp(u_open, 0.0, 1.0), 0.72))
           let target_w_ratio = if mw > 0.0 { dclamp(open_w / mw, 0.20, 1.0) } else { u_open }
-          let target_s = @dmath.pow(target_w_ratio, 1.0 / 0.82)
+          let target_s = @dmath.pow(target_w_ratio, 1.0 / 0.92)
           dclamp((target_s - 0.20) / 0.80, 0.05, 1.0)
         }
         is_closing.set(true)
@@ -778,7 +778,7 @@ fn anchored_popover_shell_by(
         },
         layer=pm.pill_layer,
         break_gap=32.0,
-        close_break_gap=48.0,
+        close_break_gap=24.0,
       )
       |> ignore
     _ =>

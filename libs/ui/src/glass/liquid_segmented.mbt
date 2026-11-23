@@ -6,7 +6,7 @@
 
 ///|
 /// Horizontal growth cap (pt) for wide segments so the lifted lens keeps an even optical lip without overflowing.
-let ctrl_seg_max_grow_x : Double = 22.0
+let ctrl_seg_max_grow_x : Double = 24.0
 
 ///|
 /// A Liquid Glass segmented control in `parent`, displaying `labels` with `selected` active
@@ -81,7 +81,7 @@ pub fn liquid_segmented_node(
         .edge(By(fn() { if g.glass_solid() { liquid_solid_edge() } else { (0.0, clear) } }))
         |> ignore
       } else {
-        g.ground(By(fn() { alpha(@ui.tree_theme().fg, 0.06) })) |> ignore
+        g.ground(By(fn() { if is_dark() { 0x7878803DL } else { 0x7878801FL } })) |> ignore
       }
       match width {
         Some(w) => g.width(Is(Some(w))).max_width(Is(Some(w)), within=true) |> ignore
@@ -170,7 +170,7 @@ pub fn liquid_segmented_node(
           .width(Is(Some(0.0)))
           .height(By(fn() { Some(inner_h()) }))
           .radius(By(fn() { inner_h() / 2.0 }))
-          .alpha(By(fn() { 1.0 - clamp(lens(pill), 0.0, 1.0) }))
+          .alpha(By(fn() { clamp(1.0 - clamp(lens(pill), 0.0, 1.0) * 1.6, 0.0, 1.0) }))
           .ground_drawn(By(fn() {
             let (rx, rw) = rect_at(dd.value(pill))
             let ih = inner_h()
@@ -202,13 +202,7 @@ pub fn liquid_segmented_node(
             .width(Is(Some(0.0)))
             .height(By(fn() { Some(inner_h()) }))
             .radius(Is(1.0e6))
-            .shadow(By(fn() {
-              if full() > 0.001 {
-                shadow_thumb
-              } else {
-                (0.0, 0.0, clear)
-              }
-            }))
+            .shadow(By(fn() { seg_lens_shadow(full()) }))
             .shadow_outside(Is(true))
             .glass(By(fn() {
               let p = full()
@@ -221,19 +215,21 @@ pub fn liquid_segmented_node(
             .alpha(By(full))
             .ground_drawn(By(fn() {
               let (rx, rw) = rect_at(dd.value(gl))
+              let th = total_h()
               let ih = inner_h()
+              let p = full()
               let (sx, sy) = dd.jelly(gl, 10.0)
-              let lw = if glass_track {
-                let held_grow = ctrl_seg_held_scale - 1.0
-                let eff_w = if held_grow > 0.0 { dmin(rw, ctrl_seg_max_grow_x / held_grow) } else { rw }
-                dmax(0.0, rw + eff_w * (sx - 1.0))
-              } else {
-                dmax(0.0, rw + ih * (sx - 1.0))
-              }
-              let lh = dmax(0.0, ih * sy)
+              let press_scale = lerp(1.0, ctrl_seg_held_scale, p)
+              let vel_sx = if press_scale > 0.001 { sx / press_scale } else { 1.0 }
+              let vel_sy = if press_scale > 0.001 { sy / press_scale } else { 1.0 }
+              let base_grow_x = lerp(0.0, 20.0, p)
+              let grow_x = dmin(base_grow_x + rw * (vel_sx - 1.0), ctrl_seg_max_grow_x)
+              let lw = dmax(0.0, rw + grow_x)
+              let base_lh = lerp(ih, th + 12.0, p)
+              let lh = dmax(0.0, base_lh * vel_sy)
               {
                 dx: rx + (rw - lw) / 2.0,
-                dy: (total_h() - lh) / 2.0,
+                dy: (th - lh) / 2.0,
                 dw: lw,
                 dh: lh - ih,
                 corners: Some((lh / 2.0, lh / 2.0, lh / 2.0, lh / 2.0)),
