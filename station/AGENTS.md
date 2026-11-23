@@ -17,7 +17,7 @@ Narrower rules:
 
 - A release holds the TypeScript station on its own Node (`main.js`, `pnpm run build:node`, `NODE_VERSION` from `cloud/src/install.ts`), the MoonBit reader/builder (`stillfail-reader`), launcher, runner, Helper (`scripts/station-bundle.sh`).
 - The MoonBit program runs the whole station (`station/mb/src/station_main`, `station/test/mb-live-*.test.ts`) when a release omits `main.js` (`station/native/launcher/src/main.rs` `station`) or `config.json` sets `"engine": "moonbit"` (`station_of`). 0.1.9984-0.1.9996 shipped it alone and reverted (chat events, files, peers, accounts fell short): not alone again until those live tests match TypeScript.
-- Changes to `station/src/` production code must also update `station/mb/` or state why in a `Station-parity: <why>` commit trailer (`scripts/station-parity.ts`); `station/test/mb-station-contracts.test.ts` checks `reader` ↔ `station_main` and Node RPC contracts.
+- `station/src/` changes need no matching change in `station/mb/`: writing the whole station twice (`station_main`) is frozen, since only the shipped `reader` runs beside Node. That `reader` ↔ Node contract is what both sides keep, checked by `station/test/mb-station-contracts.test.ts` and the other `mb-` tests beside it.
 - Processes:
   - Launcher (`station/native/launcher`, Rust) owns the pid, data-dir lock, ports; it starts the next station, then stops the old.
   - Runner (`station/native/runner`) hosts each agent so turns survive restarts (`station/src/agents/runner.ts`, `station/src/agents/mb-agents.ts` `HostedProcess.adopt`); unowned runners end (`ownedRunners`, `station/src/sessions/hub.ts` `takeUp`, `endOrphan`).
