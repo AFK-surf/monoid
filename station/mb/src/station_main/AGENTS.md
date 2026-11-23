@@ -41,10 +41,10 @@
   `register_pids`). What is asked often across slices or by named fields, and every `$…` handler a slice asks of this
   station's own (`call_peer("self", …)`: `admin_called`, `forwards_call`, …), is a typed method of the bus
   (live_bus.mbt `hub_notify`, `jobs_stop`, …), its fields named once there. station/test/mb-station-contracts.test.ts holds every `Ref` of the bus
-  given by a slice, every name asked on a `*_ask` to one its slice's dispatcher answers, every method session_hub asks
-  of an actor to one reader/actor_run.mbt answers, and every `parts.carry`, `plane.told` and `events.follow` hook of the
-  TypeScript's given here; station/test/mb-live-hooks-parity.test.ts holds them live.
-  A release runs this program alone (station/AGENTS.md); held by station/test/mb-live-station.test.ts whole, under the
+  given by a slice, every name asked on a `*_ask` to one its slice's dispatcher answers, and every method session_hub
+  asks of an actor to one reader/actor_run.mbt answers. It no longer holds this program to what the TypeScript adds.
+  This program is frozen for new TypeScript features and runs only when a release omits `main.js` or `config.json`
+  sets `"engine": "moonbit"` (station/AGENTS.md). It is held by station/test/mb-live-station.test.ts whole, under the
   real launcher, and each slice by its own test:
   - P5-1 (`live_p5_1_*.mbt`), the platform: config.json, the log and error reports, the machine kept awake, a lost
     station's chats taken back before the store opens, the control plane and its presence, the readers and their

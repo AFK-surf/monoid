@@ -502,8 +502,12 @@ if part ts; then
   if touches '^station/mb/|^scripts/mb-station\.ts$'; then
     step "the station in MoonBit: errors shown, raw shell sockets and main-thread disk waits only fall, no bare fork, no monotonic wall, no shared .tmp, no reparsed JSON, no raw shell fetch, no SHA-256, SHA-1, CRC-32, base64, civil calendar or flate/adler of its own" node scripts/mb-station.ts
   fi
-  # Every RPC and tell that reader/ makes of the station is answered in station_main and Node's mb-actor.ts.
-  if touches '^station/(src|mb)/|^station/test/mb-station-contracts\.test\.ts$'; then
+  # Every RPC and tell the shipped reader/ makes of Node is answered in Node's mb-actor.ts (station/AGENTS.md).
+  if touches '^station/(src|mb)/|^station/test/mb-reader-contracts\.test\.ts$'; then
+    step "reader ↔ Node contracts" node --test station/test/mb-reader-contracts.test.ts
+  fi
+  # The frozen station_main stays wired in itself; station/src/ changes do not touch it (station/AGENTS.md).
+  if touches '^station/mb/|^station/test/mb-station-contracts\.test\.ts$'; then
     step "station MoonBit contracts" node --test station/test/mb-station-contracts.test.ts
   fi
   # Core tests also run for Rust-only client changes. A fresh CI checkout needs both
