@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b9ba82a65](https://github.com/AFK-surf/monoid/commit/b9ba82a65257adc5889f61cf930ed1e698b150a6) fix(core,station): reduce sqlite disk writes durin | 2.74 | 3.68 | 14.92 | 37.1 | 56.84 | 32.49 | 65.97 | 100.96 | 120.36 |
 | [9fe8e5978](https://github.com/AFK-surf/monoid/commit/9fe8e597874d74064c2c723ba4891a5b32af080e) refactor(mbui): zero out remaining old-list, old-s | 2.74 | 3.68 | 14.92 | 37.1 | 56.84 | 32.49 | 65.97 | 100.98 | 127.63 |
 | [4bf06aed2](https://github.com/AFK-surf/monoid/commit/4bf06aed222f21fa5c4166e34f07676621346eb5) feat(ui): add continuous glass frost control and i | 2.74 | 3.68 | 14.92 | 37.1 | 56.84 | 32.49 | 65.97 | 100.98 | 127.63 |
 | [6f3b36a66](https://github.com/AFK-surf/monoid/commit/6f3b36a661c600080e492e49fc49cfe981e16b73) test(pion): add L3 TS-vs-Pion differential parity  | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 101.07 | 132.14 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2df6efdf7](https://github.com/AFK-surf/monoid/commit/2df6efdf7362439ed5b62f306459e51d1bd28a50) feat(ui): adopt liquid glass on service marks, ter | 2.72 | 3.66 | 14.85 | 37.01 | 56.58 | 32.42 | 65.77 | 100.21 | 120.4 |
 | [ff2a4af05](https://github.com/AFK-surf/monoid/commit/ff2a4af05d73043c2eef064d0cb5645b47fe0c1b) fix(station): stop re-parsing config.json on every | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.24 | 123.25 |
 | [0d8cf668d](https://github.com/AFK-surf/monoid/commit/0d8cf668d6cddf351a0a72757ef7f03bc1cbe093) fix(station): show a restored chat when all its ag | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.24 | 123.25 |
-| [ff21deb09](https://github.com/AFK-surf/monoid/commit/ff21deb09232de3b0c86c469835cfffe4c306cf3) fix(station): do not treat own kill socket close a | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.4 | 117.69 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b9ba82a65](https://github.com/AFK-surf/monoid/commit/b9ba82a65257adc5889f61cf930ed1e698b150a6) fix(core,station): reduce sqlite disk writes durin | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.87 | 55.69 |
 | [9fe8e5978](https://github.com/AFK-surf/monoid/commit/9fe8e597874d74064c2c723ba4891a5b32af080e) refactor(mbui): zero out remaining old-list, old-s | 0.55 | 0.71 | 2.79 | 3.8 | 6.87 | 2.04 | 5.64 | 57.87 |
 | [4bf06aed2](https://github.com/AFK-surf/monoid/commit/4bf06aed222f21fa5c4166e34f07676621346eb5) feat(ui): add continuous glass frost control and i | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.87 | 55.81 |
 | [6f3b36a66](https://github.com/AFK-surf/monoid/commit/6f3b36a661c600080e492e49fc49cfe981e16b73) test(pion): add L3 TS-vs-Pion differential parity  | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.87 | 55.74 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2df6efdf7](https://github.com/AFK-surf/monoid/commit/2df6efdf7362439ed5b62f306459e51d1bd28a50) feat(ui): adopt liquid glass on service marks, ter | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.2 |
 | [ff2a4af05](https://github.com/AFK-surf/monoid/commit/ff2a4af05d73043c2eef064d0cb5645b47fe0c1b) fix(station): stop re-parsing config.json on every | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.17 |
 | [0d8cf668d](https://github.com/AFK-surf/monoid/commit/0d8cf668d6cddf351a0a72757ef7f03bc1cbe093) fix(station): show a restored chat when all its ag | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.05 |
-| [ff21deb09](https://github.com/AFK-surf/monoid/commit/ff21deb09232de3b0c86c469835cfffe4c306cf3) fix(station): do not treat own kill socket close a | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.03 |
