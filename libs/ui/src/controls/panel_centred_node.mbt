@@ -8,20 +8,6 @@
 // closes it with what it was given (nothing told).
 
 ///|
-/// Single-layer iOS 26/27 70% luminous liquid glass for modal dialogs (`panel_centred_node`, `confirm_node`,
-/// `switcher_node`), degrading cleanly to opaque `panel_ground()` under `MBUI_GLASS=solid`.
-pub fn dialog_glass() -> @ui.Glass {
-  let g = @glass.liquid_dialog_glass(solid=panel_ground())
-  // In Light mode, raise dialog veil density to 82% (`0xD1`) so muted secondary text (`#535559`) inside centred
-  // dialogs over dimmed or high-contrast page backdrops stays >= 4.5:1 WCAG AA (~4.70:1).
-  if theme().dark {
-    g
-  } else {
-    { ..g, tint: 0xFDFCFDD1L }
-  }
-}
-
-///|
 /// 1pt hairline border for floating liquid glass overlays degraded to opaque solid under `MBUI_GLASS=solid`.
 pub fn overlay_solid_edge() -> (Double, Int64) {
   @glass.liquid_overlay_solid_edge()

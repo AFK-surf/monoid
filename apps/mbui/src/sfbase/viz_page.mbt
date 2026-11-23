@@ -644,19 +644,7 @@ fn viz_full_shown(n : @view.View, src : Source, full : VizFull, html : String, s
     follow_up: Some(viz_follow_up(full.station, full.session)),
   }
   // (while it is the one open: the pages under it take no press, key or wheel; back and Escape close it)
-  n
-  .over(Is(true))
-  .modal(Is(true))
-  .on_key(fn(k) {
-    if k.code == @ui.key_escape {
-      viz_close_full()
-      true
-    } else {
-      false
-    }
-  })
-  .takes_back(fn() { viz_close_full() })
-  |> ignore
+  @sf.fullscreen_overlay_node(n, viz_close_full) |> ignore
   // beside the system's bars (an iPhone Duo's): its name and close and download there in place of a bar of its own, said
   // as that is so, kept as said while it is the one open (@sf.native_over_up)
   let alive = fn() {

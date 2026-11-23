@@ -87,6 +87,15 @@ priv enum WideTop {
 }
 
 ///|
+/// Register a wide fullscreen sub-page (`Scr`/`Far`/`Term`/`Read`/`Play`) on the unified overlay stack via
+/// `@sf.fullscreen_overlay_node` without binding Escape (so Escape inside Terminal, Farview browser, or Screen stays
+/// theirs), wiring system Back (`takes_back`) separately to `close`.
+fn wide_page_overlay(n : @view.View, close : () -> Unit) -> Unit {
+  @sf.fullscreen_overlay_node(n, close, dismiss_on_escape=false) |> ignore
+  n.takes_back(close) |> ignore
+}
+
+///|
 /// A station's screen (sfpages' screen_node), its terminal, a drive's text read or its film played on top over the wide
 /// frame, over all of it: nodes of the tree's of its own, one structure for them, a modal layer while it is on top, back
 /// closing it; made again for another.
@@ -107,12 +116,12 @@ fn wide_page(v : @view.View, src : Source) -> Unit {
       match top {
         Some(Scr(at)) => {
           // (back as the page has it: in 全屏 out of it first, its own back key's; else closed, as the stack's)
-          n.over(Is(true)).modal(Is(true)).takes_back(fn() { @sfbase.close_page(Screen(at)) |> ignore }) |> ignore
+          wide_page_overlay(n, fn() { @sfbase.close_page(Screen(at)) |> ignore })
           @sfpages.screen_node(n, src, at, fn() { system_frame_at(n.window_w()) })
         }
         Some(Far(at)) => {
           let close = fn() { @sfbase.close_page(Screen(at)) |> ignore }
-          n.over(Is(true)).modal(Is(true)).takes_back(close) |> ignore
+          wide_page_overlay(n, close)
           let back = fn() {
             let pages = app.nav.pages()
             if pages.length() >= 2 { @sfbase.back_label(pages[pages.length() - 2]) } else { @sf.t("common.back") }
@@ -131,7 +140,7 @@ fn wide_page(v : @view.View, src : Source) -> Unit {
           )
         }
         Some(Term(at)) => {
-          n.over(Is(true)).modal(Is(true)).takes_back(fn() { @sfbase.close_page(Terminal(at)) |> ignore }) |> ignore
+          wide_page_overlay(n, fn() { @sfbase.close_page(Terminal(at)) |> ignore })
           let back = fn() {
             let pages = app.nav.pages()
             if pages.length() >= 2 { @sfbase.back_label(pages[pages.length() - 2]) } else { @sf.t("common.back") }
@@ -148,11 +157,11 @@ fn wide_page(v : @view.View, src : Source) -> Unit {
           )
         }
         Some(Read(at)) => {
-          n.over(Is(true)).modal(Is(true)).takes_back(fn() { @sfbase.close_page(DriveRead(at)) |> ignore }) |> ignore
+          wide_page_overlay(n, fn() { @sfbase.close_page(DriveRead(at)) |> ignore })
           @sfpages.reader_page_node(n, src, at)
         }
         Some(Play(at)) => {
-          n.over(Is(true)).modal(Is(true)).takes_back(fn() { @sfbase.close_page(DrivePlay(at)) |> ignore }) |> ignore
+          wide_page_overlay(n, fn() { @sfbase.close_page(DrivePlay(at)) |> ignore })
           @sfpages.play_page_node(n, src, at)
         }
         None => ()

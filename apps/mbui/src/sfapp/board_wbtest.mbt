@@ -1827,7 +1827,7 @@ test "大屏: 看板 taken out of the rail from its menu, kept so; 侧边条恢�
   assert_true(@sfdesk.rail_items(src, "ws1").contains("board"))
   guard board_rail_rect(t, "看板") is Some((x, y, w, h)) else { fail("no 看板 in the rail") }
   t.right_click(x + w / 2.0, y + h / 2.0)
-  t.run_for(@kit.pop_ms)
+  t.run_for(@motion.pop_ms)
   t.tap_text("从侧边条移除看板")
   t.run_for(@ui.move_most_ms)
   assert_false(@sfdesk.rail_items(src, "ws1").contains("board"))
@@ -1836,7 +1836,7 @@ test "大屏: 看板 taken out of the rail from its menu, kept so; 侧边条恢�
   guard board_rail_rect(t, "对话") is Some((dx, dy, dw, dh)) else { fail("no 对话 in the rail") }
   let words_before = board_words_n(t, "看板")
   t.right_click(dx + dw / 2.0, dy + dh / 2.0)
-  t.run_for(@kit.pop_ms)
+  t.run_for(@motion.pop_ms)
   t.tap_text("自定义侧边条")
   t.run_for(@ui.move_most_ms)
   assert_true(@sfdesk.wide.editing.get())
@@ -1847,7 +1847,7 @@ test "大屏: 看板 taken out of the rail from its menu, kept so; 侧边条恢�
   // (the rail's menu: 侧边条恢复默认, the rail changed)
   guard board_rail_rect(t, "对话") is Some((cx, cy, cw, ch)) else { fail("no 对话 in the rail") }
   t.right_click(cx + cw / 2.0, cy + ch / 2.0)
-  t.run_for(@kit.pop_ms)
+  t.run_for(@motion.pop_ms)
   t.tap_text("侧边条恢复默认")
   t.run_for(@ui.move_most_ms)
   let items = @sfdesk.rail_items(src, "ws1")

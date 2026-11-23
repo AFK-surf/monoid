@@ -5,13 +5,6 @@
 // `find.prev` in the `Find` context), Escape lets the find go.
 
 ///|
-/// Single-layer iOS 26/27 liquid glass for floating find bars (`find_bar_node`), degrading cleanly to `panel_ground()`
-/// under `MBUI_GLASS=solid`.
-pub fn find_panel_glass() -> @ui.Glass {
-  @glass.liquid_panel_glass(solid=panel_ground())
-}
-
-///|
 /// Single-layer floating liquid glass for search capsules (`search_field_node`, `search_page_node`), degrading to
 /// the theme's subtle tinted ground under `MBUI_GLASS=solid`.
 pub fn search_capsule_glass(solid? : Int64) -> @ui.Glass {

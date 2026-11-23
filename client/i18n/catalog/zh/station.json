@@ -422,6 +422,7 @@
   "station.quota.noCredit": "没有可用的重置次数",
   "station.quota.nothingToReset": "当前没有可重置的额度",
   "station.quota.payAsYouGo": "按量计费，无额度上限",
+  "station.quota.planUnavailable": "无法读取套餐额度。请到服务商网站检查套餐和 API 密钥。",
   "station.quota.providerStatus": "{provider}返回 {status}",
   "station.quota.refused": "{provider}拒绝了这个账号（{status}）",
   "station.quota.refusedSaying": "{provider}拒绝了这个账号（{status}）：{said}",

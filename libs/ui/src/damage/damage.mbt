@@ -1048,8 +1048,16 @@ fn reach(a : FixedArray[Double], k : Int, into : Rect, cut? : Bool = true) -> Un
     }
     return
   }
-  // a shadow's blur (the renderers' vertex grows it 3 sigma and 2 more), else its antialiased edge
-  let grow = reach_pad + (if kind == 2 { 3.0 * a[o + 7] + 2.0 } else { 0.0 })
+  // a shadow's blur (the renderers' vertex grows it 3 sigma and 2 more), or content_lens (kind 8) blur + refraction,
+  // else its antialiased edge
+  let grow = reach_pad +
+    (if kind == 2 {
+      3.0 * a[o + 7] + 2.0
+    } else if kind == 8 {
+      3.0 * dmax(a[o + 7], 0.0) + dmax(a[o + 14], 0.0) + 4.0
+    } else {
+      0.0
+    })
   let mut x0 = a[o] - grow
   let mut y0 = a[o + 1] - grow
   let mut x1 = a[o] + a[o + 2] + grow

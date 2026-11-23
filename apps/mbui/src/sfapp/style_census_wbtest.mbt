@@ -104,12 +104,14 @@ test "styles: how many values of each kind the app's screens use" {
   // space 20 to 22.
   // One more once Appearance renders the Liquid Glass `@sf.value_slider_node` (6pt track / 24pt capsule thumb):
   // radius 22 to 23.
+  // Four more once iOS 27 pressed-lens calibration updates resting Switch/Slider thumb shadows and Switch/Segmented track grounds:
+  // color 83 to 87.
   inspect(counts.to_string(), content=(
     #|text 31
     #|weight 4
     #|space 22
     #|radius 23
-    #|color 83
+    #|color 87
     #|
 
 

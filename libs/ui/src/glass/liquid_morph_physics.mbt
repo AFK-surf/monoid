@@ -171,7 +171,8 @@ pub fn lm_open_drift(t : Double, menu_h : Double) -> Double {
 }
 
 ///|
-/// Opening platter corner radius: holds near-circular bubble (`rho = 1.0`) until `hold` then relaxes over `0.105s`.
+/// Opening platter corner radius: starts as a natural capsule (`min(shortest_half, target_r + 6pt)`) and relaxes
+/// smoothly to `target_r` over `0.16s` without inflating large popovers into oversized circles.
 pub fn lm_open_corner_radius(
   cur_w : Double,
   cur_h : Double,
@@ -180,15 +181,12 @@ pub fn lm_open_corner_radius(
   target_r : Double,
   t : Double,
 ) -> Double {
+  ignore(menu_w)
+  ignore(menu_h)
   let min_cur = if cur_w < cur_h { cur_w } else { cur_h }
   let shortest_half = if min_cur > 0.0 { min_cur * 0.5 } else { 0.0 }
-  let min_rest = if menu_w < menu_h { menu_w } else { menu_h }
-  let resting_half = if min_rest * 0.5 > 1.0e-3 { min_rest * 0.5 } else { 1.0e-3 }
-  let rho0 = clamp(target_r / resting_half, 0.0, 1.0)
-  let hold = clamp(0.085 - 0.02 * ((menu_h - 200.0) / 300.0), 0.055, 0.095)
-  let k = clamp((t - 0.02 - hold) / 0.105, 0.0, 1.0)
-  let roundness = rho0 + (1.0 - rho0) * @dmath.pow(1.0 - k, 1.3)
-  shortest_half * clamp(roundness, 0.0, 1.0)
+  let cap_r = target_r + 6.0 * (1.0 - lm_smoothstep(0.0, 0.16, t))
+  if shortest_half < cap_r { shortest_half } else { cap_r }
 }
 
 ///|
@@ -214,7 +212,8 @@ pub fn lm_close_height_envelope(u : Double, core_h : Double, resting_h : Double)
 }
 
 ///|
-/// Corner radius of the closing platter: climbs from `rho0` (resting menu) to `1.0` (circle) as `1 - (1 - rho0) * s^2.2`.
+/// Corner radius of the closing platter: stays close to `target_r` while large (`min_cur > target_r * 3`) and eases
+/// smoothly toward `shortest_half` only as the platter shrinks down to trigger-capsule scale.
 pub fn lm_close_corner_radius(
   cur_w : Double,
   cur_h : Double,
@@ -223,14 +222,20 @@ pub fn lm_close_corner_radius(
   target_r : Double,
   s : Double,
 ) -> Double {
+  ignore(menu_w)
+  ignore(menu_h)
   let min_cur = if cur_w < cur_h { cur_w } else { cur_h }
   let shortest_half = if min_cur > 0.0 { min_cur * 0.5 } else { 0.0 }
-  let min_rest = if menu_w < menu_h { menu_w } else { menu_h }
-  let resting_half = if min_rest * 0.5 > 1.0e-3 { min_rest * 0.5 } else { 1.0e-3 }
-  let rho0 = clamp(target_r / resting_half, 0.0, 1.0)
   let s = clamp(s, 0.0, 1.0)
-  let roundness = 1.0 - (1.0 - rho0) * @dmath.pow(s, 2.2)
-  shortest_half * clamp(roundness, 0.0, 1.0)
+  let max_r = target_r + (shortest_half - target_r) * @dmath.pow(1.0 - s, 3.0)
+  let r = if min_cur > target_r * 3.0 {
+    let soft_cap = target_r + 12.0 * (1.0 - s)
+    if max_r < soft_cap { max_r } else { soft_cap }
+  } else {
+    max_r
+  }
+  let clamped = if r < shortest_half { r } else { shortest_half }
+  if clamped > 0.0 { clamped } else { 0.0 }
 }
 
 ///|
@@ -268,7 +273,7 @@ pub fn lm_closing_teardrop_geometry(
   let u = clamp(raw_value, 0.0, 1.0)
   let min_side = if tw < th { tw } else { th }
   let close_glass_scale = lm_close_glass_scale(u, min_side, menu_w)
-  let w_scale = @dmath.pow(close_glass_scale, 0.82)
+  let w_scale = @dmath.pow(close_glass_scale, 0.92)
   let h_scale = close_glass_scale
   let tapered_core_h = min_side * (0.65 + 0.35 * lm_smoothstep(0.0, 0.24, u))
   let max_h = lm_close_height_envelope(u, tapered_core_h, menu_h)
@@ -288,7 +293,9 @@ pub fn lm_closing_teardrop_geometry(
   let recoil_catch_y = push_dy * (1.0 - u)
   if !horizontal_side {
     let dir_y = if menu_h * 0.5 - trig_cy >= 0.0 { 1.0 } else { -1.0 }
-    let close_drift_y = dir_y * lm_close_drift(t, menu_h)
+    let raw_drift_y = lm_close_drift(t, menu_h)
+    let eff_drift_y = if dir_y < 0.0 { clamp(raw_drift_y * 0.2, 0.0, 2.0) } else { raw_drift_y }
+    let close_drift_y = dir_y * eff_drift_y
     let raw_cy = base_cy + recoil_catch_y + close_drift_y
     // base_left = trig_cx * (1 - w_scale) starts at 0.0 (u=1), converges smoothly to trig_cx (u->0),
     // and keeps both left and right edges strictly monotonic with zero mid-close velocity spikes.
@@ -344,37 +351,36 @@ pub fn lm_close_blob_a_emergence(
 }
 
 ///|
-/// SDF smooth-union radius (pt) on close (`22.0 * ramp_in * ramp_out`), keeping the teardrop neck slender.
+/// SDF smooth-union radius (pt) on close (`14.0 * ramp_in * ramp_out`), keeping the teardrop neck tight without a beak.
 pub fn lm_close_blend(raw_value : Double) -> Double {
   let u = clamp(raw_value, 0.0, 1.0)
   let ramp_in = lm_smoothstep(0.0, 0.20, 0.97 - u)
   let ramp_out = 1.0 - lm_smoothstep(0.0, 0.16, 0.16 - u)
-  22.0 * ramp_in * ramp_out
+  14.0 * ramp_in * ramp_out
 }
 
 ///|
-/// Menu content opacity on open (`0 -> 1` across `t in [0.065, 0.145]s`: visible at +100ms, full by +145ms).
+/// Menu content opacity on open (`0 -> 1` across `t in [0.015, 0.14]s`).
 pub fn lm_open_content_opacity(t : Double) -> Double {
-  lm_smoothstep(0.065, 0.145, t)
+  lm_smoothstep(0.015, 0.14, t)
 }
 
 ///|
-/// Menu content blur sigma (pt) on open (`6.5 -> 0.0` across `t in [0.075, 0.175]s`: crisp by +175ms).
+/// Menu content blur sigma (pt) on open (`2.8 -> 0.0` across `t in [0.02, 0.16]s`).
 pub fn lm_open_content_blur(t : Double) -> Double {
-  6.5 * (1.0 - lm_smoothstep(0.075, 0.175, t))
+  2.8 * (1.0 - lm_smoothstep(0.02, 0.16, t))
 }
 
 ///|
-/// Menu content opacity on close: fades rows and focus highlights completely to `0.0` by `raw_value <= 0.45`
-/// (`t ≈ 115ms`), matching iOS 27.0 clearing text before droplet contraction and avoiding mid-close corner faults.
+/// Menu content opacity on close (`0 -> 1` across `raw_value in [0.28, 0.96]`).
 pub fn lm_close_content_opacity(raw_value : Double) -> Double {
-  lm_smoothstep(0.45, 0.98, clamp(raw_value, 0.0, 1.0))
+  lm_smoothstep(0.28, 0.96, clamp(raw_value, 0.0, 1.0))
 }
 
 ///|
-/// Menu content blur sigma (pt) on close (`28 * (1 - u)` clamped to `[0, 8]`).
+/// Menu content blur sigma (pt) on close (`5.5 * (1 - u)` clamped to `[0, 3.2]`).
 pub fn lm_close_content_blur(raw_value : Double) -> Double {
-  clamp(28.0 * (1.0 - clamp(raw_value, 0.0, 1.0)), 0.0, 8.0)
+  clamp(5.5 * (1.0 - clamp(raw_value, 0.0, 1.0)), 0.0, 3.2)
 }
 
 ///|
@@ -435,8 +441,8 @@ pub fn lm_eval_pill_morph(
     let raw = lm_open_progress(t)
     let u = clamp(raw, 0.0, 1.0)
     let core = if pill_w < pill_h { pill_w } else { pill_h }
-    let w_prog = @dmath.pow(u, 0.44)
-    let h_prog = @dmath.pow(u, 0.70)
+    let w_prog = @dmath.pow(u, 0.72)
+    let h_prog = @dmath.pow(u, 0.84)
     let cur_w = clamp(lm_lerp(core, menu_w, w_prog), core, menu_w)
     let cur_h = clamp(lm_lerp(core, menu_h, h_prog), core, menu_h)
     let pill_l = pill_x - px_win

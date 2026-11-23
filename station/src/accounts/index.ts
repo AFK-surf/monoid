@@ -1394,8 +1394,11 @@ export class Accounts {
     }
     if (check.state === "login" && before?.state !== "login") this.lost(id, before, forced);
     else if (check.state === "ok" && before?.state !== "ok") this.deps.loginBack?.(id);
+    const foundBefore = this.found(id);
     this.checks.set(id, check);
-    this.checksChanged++;
+    // The hub's config takes only the models a check found (`found`): a check that found the same keeps it, as one
+    // stamped anew on every round made every profile's config again for each overview and pick (0.1.11070).
+    if (!sameModels(foundBefore, this.found(id))) this.checksChanged++;
     this.deps.store.setProfileCheck(id, check);
     // Other models found: one may now replace one the profile names.
     if (
@@ -2454,3 +2457,10 @@ export function checkLabel(d: Json, lang: Lang): string {
 
 /// The id of the option a check picked, null when it failed.
 const pickedOf = (d: Json): string | null => (typeof d?.result?.selected === "string" ? d.result.selected : null);
+
+/// Whether two lists of found models are the same, in order (`Accounts.found`).
+function sameModels(a: readonly string[] | null, b: readonly string[] | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || a.length !== b.length) return false;
+  return a.every((m, i) => m === b[i]);
+}

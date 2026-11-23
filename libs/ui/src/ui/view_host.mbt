@@ -833,6 +833,73 @@ fn view_words_set(words : String, look : @view.WordsLook, kept : Bool) -> String
 }
 
 ///|
+/// Whether lightweight offscreen text shaping and subpixel glyph prewarming is enabled on the current host.
+/// Disabled during `MBUI_TEXT_RECORD=1` recording and on hosts without background glyph rasterization.
+pub fn words_ahead_able() -> Bool {
+  !text_recording() && @hostapi.glyphs_ahead_able()
+}
+
+///|
+/// Prewarm shaping, layout, and quarter-pixel-aligned background glyph rasterization for `words` at horizontal
+/// window origin `origin_x` without creating View nodes or touching the tree's first-measure baseline.
+/// Returns the laid-out width (or 0.0 when empty or disabled).
+pub fn words_ahead(
+  words : String,
+  look : @view.WordsLook,
+  origin_x : Double,
+  scale : Double,
+  width? : Double = -1.0,
+  kept? : Bool = false,
+  tabular? : Bool? = None,
+) -> Double {
+  if words == "" || !words_ahead_able() {
+    return 0.0
+  }
+  let text = view_words_set(words, look, kept)
+  with_measuring_origin_double(origin_x, fn() {
+    let (size, line, style, spacing) = (
+      view_sp(scale, look.size),
+      view_line(scale, look),
+      view_words_style(tabular~),
+      view_spacing(scale, look),
+    )
+    let max_w = if width < 0.0 || !look.wrap { 1.0e9 } else { width }
+    let tl = layout_words(
+      text,
+      size,
+      look.weight,
+      max_w,
+      look.wrap,
+      balance=look.balance,
+      line~,
+      style~,
+      spacing~,
+      max_lines=look.max_lines,
+    )
+    let tl = if !look.wrap && width >= 0.0 && tl.w > width + 0.5 {
+      ellipsized(text, tl, width, fn(s, keep_tabular) {
+        layout_text(s, size, look.weight, 1.0e9, false, line~, style~, spacing~, keep_tabular~)
+      })
+    } else {
+      tl
+    }
+    // Re-queue laid phases even when layout_text hit `s.lay` at a prior origin_x;
+    // identical (key, phase) pairs are deduplicated by `glyphs_ahead_laid_keys`.
+    laid_ahead(tl.shaped.keys, fn(c) { tl.xs[c] + tl.shaped.pad })
+    tl.w
+  })
+}
+
+///|
+/// Flush any remaining queued prewarmed glyphs (< batch size) to the host's background rasterizer.
+pub fn words_ahead_flush() -> Unit {
+  if !words_ahead_able() {
+    return
+  }
+  glyphs_ahead()
+}
+
+///|
 /// How wide a node's words too wide for `width` on one line are drawn where they say `shorter` ways (View::shorter), as
 /// an old view's are laid out (said_in: the first that fits whole, else the last cut with an ellipsis), at `scale`
 /// (view_words_measure's).

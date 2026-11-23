@@ -62,7 +62,14 @@ pub fn Damage::occlude(
       last = units
     }
     units = units + 1
-    k = k + (if kind == 13 { dmax(inst[o + 14], 1.0).to_int() } else { 1 })
+    k = k +
+      (if kind == 13 {
+        dmax(inst[o + 14], 1.0).to_int()
+      } else if kind == 8 {
+        1 + dmax(inst[o + 12], 0.0).to_int()
+      } else {
+        1
+      })
   }
   let pieces = if k < count { k } else { count }
   self.occ_units = units
@@ -289,7 +296,7 @@ fn Damage::shown_put(self : Damage, inst : FixedArray[Double]) -> (FixedArray[Do
 ///|
 /// Whether instance `k` (of `kind`) may be left out where it is covered.
 fn Damage::hideable(self : Damage, a : FixedArray[Double], k : Int, kind : Int) -> Bool {
-  if is_glass(kind) || kind == 9 || kind == 12 {
+  if is_glass(kind) || kind == 8 || kind == 9 || kind == 12 {
     return false
   }
   if kind == 13 {

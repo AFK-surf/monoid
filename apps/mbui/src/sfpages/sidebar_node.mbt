@@ -346,6 +346,181 @@ fn chats_pane_node(
       }
     }
   })
+  // Prewarm shaping and subpixel glyph rasterization for upcoming offscreen rows after a drawn frame
+  // without creating View nodes or scheduling extra frames.
+  let warm_queued : Ref[Bool] = Ref(false)
+  let warm_env : Ref[String] = Ref("")
+  let warmed : Set[String] = Set([])
+  v.owns(fn() {
+    warm_queued.val = false
+    warm_env.val = ""
+    warmed.clear()
+  })
+  |> ignore
+  v.reacts(fn() { (current(), revision.get(), v.words_scale()) }, fn(_) {
+    if !@signals.untracked(current) || warm_queued.val {
+      return
+    }
+    warm_queued.val = true
+    @ui.after_drawn_frame(fn() {
+      warm_queued.val = false
+      if !v.alive() || !@signals.untracked(current) || !@ui.words_ahead_able() {
+        return
+      }
+      @signals.untracked(fn() {
+        let (list_x, _, list_w, list_h) = v.laid_window_now()
+        if list_w <= 0.0 || list_h <= 0.0 {
+          return
+        }
+        let words_scale = v.words_scale()
+        let theme = @sf.theme()
+        let l = theme.chat_list
+        let env_key = "\{id}|\{filter}|\{list_x}|\{list_w}|\{words_scale}|\{theme.dark}"
+        if warm_env.val != env_key || warmed.length() > 256 {
+          warm_env.val = env_key
+          warmed.clear()
+        }
+        let row_pad = match frame.at {
+          Whole => @sf.phone_row_in.px()
+          Side | Tape => @sf.band_pad_in(frame.at)
+        }
+        let base_x = list_x + @sf.list_line_in(frame.at) + row_pad
+        let marked_x = base_x + row_mark_w() + row_mark_gap()
+        let heading_x = list_x +
+          (match frame.at {
+            Whole => @ui.Space::S5.px()
+            Side | Tape => @sf.list_line_in(frame.at) + @sf.heading_in_at(frame.at)
+          })
+        let top_cov = (frame.top)()
+        let scroll_y = scroll.drawn(v.tree)
+        let row_h = dmax(1.0, l.row_h)
+        let vis_start = dmax(0.0, (scroll_y - top_cov) / row_h).to_int()
+        let vis_count = dmax(1.0, (list_h - top_cov) / row_h).to_int()
+        let start = if vis_start + vis_count > 2 { vis_start + vis_count - 2 } else { 0 }
+        let heading_look = @ui.style_words(l.heading_words)
+        let heading_tab = @ui.style_tabular(l.heading_words)
+        let mut idx = 0
+        let mut count = 0
+        for d in days() {
+          if count >= 20 {
+            break
+          }
+          let mut day_warmed = false
+          for item in d.items {
+            let cur = idx
+            idx = idx + 1
+            if cur < start {
+              continue
+            }
+            if count >= 20 {
+              break
+            }
+            if !day_warmed {
+              day_warmed = true
+              let hk = "h/" + d.label
+              if !warmed.contains(hk) {
+                warmed.add(hk)
+                @ui.words_ahead(d.label, heading_look, heading_x, words_scale, tabular=heading_tab) |> ignore
+              }
+            }
+            let rk = "r/" + @sfbase.row_name(item)
+            if warmed.contains(rk) {
+              continue
+            }
+            warmed.add(rk)
+            count = count + 1
+            let title_text = if item.hidden == Some(true) {
+              item.title + " · " + @sf.t("web-main.filter.hidden")
+            } else {
+              item.title
+            }
+            let title_style = if item.unread { l.title_unread } else { l.title }
+            let title_ox = if @sfbase.row_tone(item) != "" { marked_x } else { base_x }
+            @ui.words_ahead(
+              title_text,
+              @ui.style_words(title_style),
+              title_ox,
+              words_scale,
+              tabular=@ui.style_tabular(title_style),
+            )
+            |> ignore
+            let state = match item.state_text {
+              Some(s) => Some(s)
+              None => item.decision_text
+            }
+            match state {
+              Some(st) => {
+                let lead = @sfbase.row_lead(item)
+                let turn = lead == "decision" || lead == "need"
+                let st_style = if item.unsent {
+                  l.state_alert
+                } else if turn {
+                  l.state_turn
+                } else {
+                  l.state_quiet
+                }
+                match lead {
+                  "need" | "done" | "archive" | "wait" | "watch" =>
+                    if item.state_rest != "" {
+                      @ui.words_ahead(
+                        item.state_rest,
+                        @ui.style_words(st_style),
+                        marked_x,
+                        words_scale,
+                        tabular=@ui.style_tabular(st_style),
+                      )
+                      |> ignore
+                    }
+                  "decision" if item.state_lead_text != "" && st.has_prefix(item.state_lead_text) => {
+                    let lead_style = st_style.then(l.state_lead)
+                    let lead_w = @ui.words_ahead(
+                      item.state_lead_text,
+                      @ui.style_words(lead_style),
+                      base_x,
+                      words_scale,
+                      tabular=@ui.style_tabular(lead_style),
+                    )
+                    let rest = st.clamped_view(start=item.state_lead_text.length()).to_owned()
+                    @ui.words_ahead(
+                      rest,
+                      @ui.style_words(st_style),
+                      base_x + lead_w,
+                      words_scale,
+                      tabular=@ui.style_tabular(st_style),
+                    )
+                    |> ignore
+                  }
+                  _ =>
+                    @ui.words_ahead(
+                      st,
+                      @ui.style_words(st_style),
+                      base_x,
+                      words_scale,
+                      tabular=@ui.style_tabular(st_style),
+                    )
+                    |> ignore
+                }
+              }
+              None =>
+                match item.last {
+                  Some(last) if last != "" =>
+                    @ui.words_ahead(
+                      last,
+                      @ui.style_words(l.last),
+                      base_x,
+                      words_scale,
+                      tabular=@ui.style_tabular(l.last),
+                    )
+                    |> ignore
+                  _ => ()
+                }
+            }
+          }
+        }
+        @ui.words_ahead_flush()
+      })
+    })
+  })
   let lead = fn() {
     match read().0 {
       Some(view) => view.leading

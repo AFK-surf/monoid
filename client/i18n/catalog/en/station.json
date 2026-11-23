@@ -431,6 +431,7 @@
   "station.quota.noCredit": "No resets left",
   "station.quota.nothingToReset": "Nothing to reset now",
   "station.quota.payAsYouGo": "Pay as you go; no usage limit",
+  "station.quota.planUnavailable": "Could not read plan limits. Check the plan and its API key on the provider site.",
   "station.quota.providerStatus": "{provider}returned {status}",
   "station.quota.refused": "{provider}refused this account ({status})",
   "station.quota.refusedSaying": "{provider}refused this account ({status}): {said}",

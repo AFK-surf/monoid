@@ -38,12 +38,11 @@ fn presented_sheet_rest(layer : @view.View, rest : (Bool) -> Double) -> Unit {
 }
 
 ///|
-/// When the sheet the presenters hold up (or let go of, sinking) is at rest: the latest of the old frame's sheet's
-/// rest and each of the tree's sheets' (its rise or sink, its scrim, a height it was dragged or tapped to, its way back
-/// under a finger let go), each its cause's moment and its length; -1 where none moves or ever did.
+/// When the sheet the presenters hold up (or let go of, sinking) is at rest: the latest of the tree's sheets'
+/// (its rise or sink, its scrim, a height it was dragged or tapped to, its way back under a finger let go),
+/// each its cause's moment and its length; -1 where none moves or ever did.
 pub fn presented_rest() -> Double {
-  // (the old frame's: the presenters' own key, present_sheet's)
-  let mut end = @kit.sheet_rest("sf-present")
+  let mut end = -1.0
   if presented_sheet_ended.val > end {
     end = presented_sheet_ended.val
   }

@@ -29,10 +29,10 @@ pub fn glass_menu(merge? : Double = 0.0) -> @ui.Glass {
 ///|
 /// Three-anchor continuous optical interpolation for iOS 27.0 in-place liquid-droplet popover morphing:
 /// - `stage == 0.0`: bar-pill anchor, bit-identical to `glass_bar_pill` (`a=0x67`, `blur=2.5`, `bezel=14`, `refr=20`, `rim=0.60`);
-/// - `stage == 0.5`: crisp luminous crystal droplet (`a=0x4E`, `blur=1.6`, `bezel=18`, `refr=15`, `rim=0.78`;
-///   `refr/bezel=0.83 < 1.0` prevents fold-over while matching native iOS 27.0 bright crystal refraction);
+/// - `stage == 0.5`: mid-flight frosted droplet (`a=0x88`, `blur=4.5`, `bezel=18`, `refr=15`, `rim=0.78`;
+///   `refr/bezel=0.83 < 1.0` prevents fold-over while keeping backdrop text legible during morph);
 /// - `stage == 1.0`: resting frosted menu anchor, bit-identical to `glass_menu` (`a=0xBF`, `blur=8.0`, `bezel=16`, `refr=22`, `rim=0.60`).
-/// Alpha stays strictly within `0x4E..0xBF` (at or above `kind == 6`'s `regMix` upper knee) for zero flash.
+/// Alpha stays strictly within `0x67..0xBF` (at or above `kind == 6`'s `regMix` upper knee) for zero flash.
 fn glass_menu_morph(
   stage : Double,
   merge? : Double = 0.0,
@@ -161,17 +161,6 @@ pub let sheet_scrim : Int64 = 0x00000047L
 /// `refraction=24`). Degrades to opaque `t.p.bg` under `MBUI_GLASS=solid`.
 pub fn glass_sheet() -> @ui.Glass {
   @glass.liquid_sheet_glass(solid=theme().p.bg)
-}
-
-///|
-/// Progressive blur soft scroll-edge backdrop (iOS 26 UIScrollEdgeEffect.soft): blurs and veils scrolled content
-/// progressively across the host node's `View::fades` band (blur sigma 0 -> 8.5pt, `p.bg` veil 0 -> 50% with
-/// adaptive contrast boost over opposing-luminance content, vibrancy saturation 1.25), degrading to a solid
-/// `p.bg` alpha fade under `MBUI_GLASS=solid`. `ground`: the ground it veils into where that is not `p.bg` (a page's
-/// panel a step darker behind the one in use); none (0) is `p.bg`.
-pub fn glass_scroll_edge(ground? : Int64 = 0L) -> @ui.Glass {
-  let bg = if ground != 0L { ground } else { theme().p.bg }
-  @glass.liquid_scroll_edge_glass(bg~)
 }
 
 ///|

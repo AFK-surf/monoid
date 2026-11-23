@@ -2,8 +2,11 @@
 package "ui/controls"
 
 import {
+  "moonbitlang/core/debug",
+  "moonbitlang/core/json",
+  "moonbitlang/core/ref",
+  "moonbitlang/core/set",
   "ui/headless",
-  "ui/kit",
   "ui/motion",
   "ui/paint",
   "ui/pixels",
@@ -12,35 +15,43 @@ import {
   "ui/text",
   "ui/ui",
   "ui/view",
-  "moonbitlang/core/debug",
-  "moonbitlang/core/json",
-  "moonbitlang/core/ref",
 }
 
 // Values
-pub fn about(@ui.Ctx, String, String, label~ : String, side? : @view.Side) -> Unit
-
-pub fn about_mark_node(@view.View, () -> String, () -> String, TipLayer) -> @view.View
+#callsite(autofill(loc))
+pub fn about_mark_node(@view.View, () -> String, () -> String, TipLayer, loc~ : SourceLoc) -> @view.View
 
 pub let accent : @ui.TextStyle
 
 pub fn accent_key() -> String
 
-pub fn accent_pick(@ui.Ctx, String, Array[String], String, String, String, on_pick? : (String) -> Unit) -> String
+#callsite(autofill(loc))
+pub fn accent_pick_node(@view.View, () -> Array[String], () -> String, () -> String, () -> String, (String) -> Unit, preview? : (String?) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let accents : Array[AccentTone]
 
-pub fn action(@ui.Ctx, String, String, icon? : String, busy? : Bool, disabled? : Bool, bad? : Bool) -> Bool
+#callsite(autofill(loc))
+pub fn[K] accordion_node(@view.View, Array[AccordionSection[K]], (K) -> Bool, (K) -> Unit, kind? : @headless.AccordionKind, disabled? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
+pub fn[K] accordion_section(K, () -> String, (@view.View) -> Unit, disabled? : () -> Bool) -> AccordionSection[K]
+
+#callsite(autofill(loc))
 pub fn action_box_node(@view.View, () -> String, (@view.View) -> Unit, (@view.View) -> Unit, selected? : () -> Bool, expanded? : () -> Bool, on? : () -> Bool, check? : () -> @view.Check, disabled? : () -> Bool, said_while_disabled? : Bool, focusable? : Bool, label_is? : String, in_node? : Bool, on_hold? : () -> Unit, loc~ : SourceLoc) -> @view.View
 
-pub fn action_box_while_node(@view.View, () -> Bool, () -> String, (@view.View) -> Unit, (@view.View) -> Unit, expanded? : () -> Bool, loc~ : SourceLoc) -> Unit
+#callsite(autofill(loc))
+pub fn action_box_while_node(@view.View, () -> Bool, () -> String, (@view.View) -> Unit, (@view.View) -> Unit, expanded? : () -> Bool, in_pick? : Bool, loc~ : SourceLoc) -> Unit
 
-pub fn action_node(@view.View, () -> String, () -> Unit, icon? : String, busy? : () -> Bool, disabled? : () -> Bool, bad? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn action_node(@view.View, () -> String, () -> Unit, icon? : String, busy? : () -> Bool, disabled? : () -> Bool, bad? : Bool, loc~ : SourceLoc) -> Unit
 
-pub fn address_bar_node(@view.View, @ui.Field, () -> String, (String) -> Unit, () -> String, () -> Unit, () -> Unit, () -> Unit, can_back? : () -> Bool, can_forward? : () -> Bool, busy? : () -> Bool, stop? : () -> Unit, keys_shown? : () -> Bool, placeholder? : () -> String, lead? : (@view.View) -> Unit, progress? : () -> (Double, @ui.Color)?, start? : (@view.View) -> Unit, end? : (@view.View) -> Unit, tips? : TipLayer, framed? : Bool) -> @view.View
+#callsite(autofill(loc))
+pub fn action_sheet_node(@view.View, () -> Bool, (@view.View) -> @view.View, () -> String, () -> String, () -> Array[SheetAction], () -> Unit, along? : @view.Along, loc~ : SourceLoc) -> Unit
 
-pub fn address_field_node(@view.View, @ui.Field, () -> String, (String) -> Unit, () -> String, placeholder? : () -> String, lead? : (@view.View) -> Unit, end? : ((@view.View) -> Unit)?, progress? : () -> (Double, @ui.Color)?, least? : Double, anywhere? : Bool, framed? : Bool, selects? : Bool) -> @view.View
+#callsite(autofill(loc))
+pub fn address_bar_node(@view.View, @ui.Field, () -> String, (String) -> Unit, () -> String, () -> Unit, () -> Unit, () -> Unit, can_back? : () -> Bool, can_forward? : () -> Bool, can_reload? : () -> Bool, editable? : () -> Bool, busy? : () -> Bool, stop? : () -> Unit, keys_shown? : () -> Bool, placeholder? : () -> String, lead? : (@view.View) -> Unit, progress? : () -> (Double, @ui.Color)?, start? : (@view.View) -> Unit, end? : (@view.View) -> Unit, tips? : TipLayer, framed? : Bool, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn address_field_node(@view.View, @ui.Field, () -> String, (String) -> Unit, () -> String, placeholder? : () -> String, editable? : () -> Bool, lead? : (@view.View) -> Unit, end? : ((@view.View) -> Unit)?, progress? : () -> (Double, @ui.Color)?, least? : Double, anywhere? : Bool, framed? : Bool, selects? : Bool, loc~ : SourceLoc) -> @view.View
 
 pub let agent_card_w : @ui.Len
 
@@ -53,31 +64,23 @@ pub let agent_station_most : @ui.Len
 pub fn alpha(Int64, Double) -> Int64
 
 #callsite(autofill(loc))
-pub fn anchored_popover_bridge(@view.View, @view.View, () -> @ui.Look, side? : @view.Side, along? : @view.Along, offset? : Double, loc~ : SourceLoc) -> Unit
+pub fn anchored_popover_bridge(@view.View, @view.View, () -> @ui.Look, side? : @view.Side, along? : @view.Along, offset? : Double, start_open? : (() -> Unit) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub fn anchored_popover_shell(@view.View, @view.NodeId, () -> @ui.Look, side? : @view.Side, along? : @view.Along, offset? : Double, holds_side? : Bool, concentric_inset? : Double) -> @view.View
 
-pub fn apart(@ui.Ctx, () -> Unit) -> Unit
+pub let answered_fade_ms : Double
 
-pub fn apart_node(@view.View, (@view.View) -> Unit) -> @view.View
+#callsite(autofill(loc))
+pub fn answered_in_place_node(@view.View, () -> (Bool, Array[@text.Run])?, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
-pub fn app_avatar_icon(AppAvatar, String, Int32, Int32, FixedArray[Byte]) -> @pixels.Canvas?
+pub let answered_over : @ui.Style
 
-pub fn app_buddies_ask(((Result[@json.Json, @json.Json]) -> Unit) -> Unit) -> Unit
+pub let answered_room : @ui.Style
 
-pub fn app_buddies_now() -> Array[AppAvatar]
+pub let answered_whole : @ui.Style
 
-pub fn app_icon_jpeg(@pixels.Canvas) -> (Bytes, String)
-
-pub let app_icon_px : Int32
-
-pub fn app_icons_reset() -> Unit
-
-pub let app_makers : Array[AppAvatar]
-
-pub fn app_own_icon(Int32, Int32, FixedArray[Byte]) -> @pixels.Canvas
-
-pub let app_own_px : Int32
+#callsite(autofill(loc))
+pub fn apart_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub fn around(Double, Double) -> Double
 
@@ -85,15 +88,37 @@ pub fn arranged(Double, wide~ : () -> Unit, narrow~ : () -> Unit) -> Unit
 
 pub fn ask(String, String, (String) -> Unit, value? : String, placeholder? : String, hint? : String, secret? : Bool, empty? : Bool, from? : Anchor) -> Unit
 
-pub fn ask_buttons(@ui.Ctx, () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn ask_buttons_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
-pub fn ask_buttons_node(@view.View, (@view.View) -> Unit) -> @view.View
+#callsite(autofill(loc))
+pub fn ask_card_node(@view.View, (@view.View) -> Unit, ground? : () -> Int64, loc~ : SourceLoc) -> @view.View
 
 pub let ask_card_room : @ui.Style
 
-pub fn ask_card_node(@view.View, (@view.View) -> Unit) -> @view.View
-
 pub let ask_card_room_most : @ui.Style
+
+pub let ask_dot : @ui.Style
+
+pub let ask_dot_line : @ui.Style
+
+pub let ask_dot_line_out : @ui.Style
+
+pub let ask_dot_on : @ui.Style
+
+pub let ask_ended : @ui.Style
+
+pub let ask_ended_at : @ui.Style
+
+pub let ask_ended_leading : @ui.Leading
+
+pub let ask_ended_past : @ui.Style
+
+pub let ask_ended_size : @ui.TextSize
+
+pub let ask_ended_start : @ui.Style
+
+pub let ask_ended_words : @ui.TextStyle
 
 pub let ask_foot : @ui.Style
 
@@ -103,23 +128,19 @@ pub fn ask_foot_lines() -> Double
 
 pub fn ask_here(String, String, (String) -> Unit, () -> Unit, value? : String, placeholder? : String, hint? : String) -> Unit
 
-pub fn ask_history_trigger(@ui.Ctx, String, Array[@text.Run], @ui.TextStyle, Double) -> Int32
+#callsite(autofill(loc))
+pub fn ask_history_trigger_node(@view.View, () -> Array[@text.Run], () -> @ui.TextStyle, Double, (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
-pub fn ask_history_trigger_node(@view.View, () -> Array[@text.Run], () -> @ui.TextStyle, Double, (@view.View) -> Unit) -> @view.View
+#callsite(autofill(loc))
+pub fn ask_line_button_node(@view.View, () -> String, Double, () -> Bool, () -> Unit, loc~ : SourceLoc) -> @view.View
 
-pub fn ask_line_button(@ui.Ctx, String, key~ : String, mark~ : Double, disabled? : Bool, on_press? : () -> Unit) -> Unit
-
-pub fn ask_line_button_node(@view.View, () -> String, Double, () -> Bool, () -> Unit) -> @view.View
-
-pub fn ask_line_card(@ui.Ctx, column? : Bool, () -> Unit) -> Int32
-
-pub fn ask_line_card_node(@view.View, () -> Bool, (@view.View, Bool) -> Unit) -> @view.View
+#callsite(autofill(loc))
+pub fn ask_line_card_node(@view.View, () -> Bool, (@view.View, Bool) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub fn ask_line_mark() -> @ui.Style
 
-pub fn ask_line_mark_node(@view.View, (@view.View) -> Unit) -> @view.View
-
-pub fn ask_line_start(Double) -> @ui.Style
+#callsite(autofill(loc))
+pub fn ask_line_mark_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub fn ask_line_words(@ui.TextStyle) -> @ui.TextStyle
 
@@ -127,13 +148,15 @@ pub fn ask_node(@view.View, () -> Bool, String, @ui.Field, String, String, Strin
 
 pub let ask_note : @ui.TextStyle
 
+#callsite(autofill(loc))
+pub fn ask_outcome_node(@view.View, () -> Bool, () -> Array[@text.Run], () -> Bool, history? : ((@view.View) -> Unit)?, loc~ : SourceLoc) -> Unit
+
 pub let ask_title : @ui.TextStyle
 
 pub let ask_what : @ui.Style
 
-pub fn ask_words(@ui.Ctx, String, String, centred? : Bool) -> Unit
-
-pub fn ask_words_node(@view.View, () -> String, () -> String) -> @view.View
+#callsite(autofill(loc))
+pub fn ask_words_node(@view.View, () -> String, () -> String, loc~ : SourceLoc) -> @view.View
 
 pub fn at_point(Double, Double) -> Beside
 
@@ -143,32 +166,38 @@ pub fn attach_from_sheet() -> Bool
 
 pub let attention_dot : @ui.Len
 
-pub fn avatar(@ui.Ctx, String, String, String, Double) -> Unit
-
 pub fn avatar_color(String) -> Int64
 
-pub fn avatar_node(@view.View, () -> String, () -> String, () -> String, Double) -> Unit
+#callsite(autofill(loc))
+pub fn avatar_node(@view.View, () -> String, () -> String, () -> String, Double, ring? : () -> (Double, Double, Int64), loc~ : SourceLoc) -> Unit
 
 #callsite(autofill(loc))
 pub fn avatar_stack_node(@view.View, Array[StackFace], Double, () -> Int64, ring_w? : Double, over? : Double, first_over? : Bool, letter? : (() -> Int64, () -> @ui.TextStyle), most? : Int32, more_look? : () -> @ui.TextStyle, label? : () -> String, tips? : TipLayer, tip? : () -> String, loc~ : SourceLoc) -> @view.View
-
-pub fn avatars_base() -> String
 
 pub let back : @ui.TextStyle
 
 pub let bad : @ui.TextStyle
 
-pub fn band_pad_in(ListAt) -> Double
+#callsite(autofill(loc))
+pub fn badge_node(@view.View, () -> String, tone? : PillTone, loc~ : SourceLoc) -> @view.View
 
-pub fn band_row(@ui.Ctx, String, Bool, () -> Unit) -> Bool
+pub fn band_pad_in(ListAt) -> Double
 
 pub fn band_row_h() -> Double
 
-pub fn band_row_node(@view.View, () -> Bool, () -> String, () -> Unit, ListAt, (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn band_row_node(@view.View, () -> Bool, () -> String, () -> Unit, ListAt, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
-pub fn band_words(@ui.Ctx, String) -> Unit
+pub let bar_field_least : Double
 
-pub fn bar(@ui.Ctx, @ui.Size, Double, radius? : Double, breathing? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn bar_field_node(@view.View, () -> Bool, (@view.View) -> Unit, end? : ((@view.View) -> Unit)?, part? : () -> (Double, @ui.Color)?, least? : Double, framed? : Bool, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn bar_icon_node(@view.View, String, () -> String, () -> Unit, tips? : TipLayer, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn bar_key_node(@view.View, () -> String, () -> String, () -> Unit, enabled? : () -> Bool, lit? : () -> Bool, ripples? : Bool, tips? : TipLayer, loc~ : SourceLoc) -> @view.View
 
 pub let bar_key_side : Double
 
@@ -176,9 +205,20 @@ pub fn bar_keys_link() -> @paint.CornerOf?
 
 pub fn bar_keys_top() -> Double
 
+#callsite(autofill(loc))
 pub fn bar_meter_button_node(@view.View, () -> String, (@view.View) -> Unit, ring~ : Double, part~ : () -> Double, value~ : () -> String, color~ : () -> Int64, loc~ : SourceLoc) -> @view.View
 
-pub fn baseline_drop(@view.View, @ui.TextSize, @ui.TextSize, leading? : @ui.Leading, own_leading? : @ui.Leading, weight? : Int, own_weight? : Int) -> Double
+#callsite(autofill(loc))
+pub fn bar_pill_group_node(@view.View, (@view.View) -> Unit, height? : Double, pad? : Double, gap? : Double, adaptive? : Bool, loc~ : SourceLoc) -> @view.View
+
+pub fn bar_pill_key_press_node(@view.View) -> Unit
+
+pub fn bar_pill_press_ink(solid? : Bool) -> Int64
+
+#callsite(autofill(loc))
+pub fn bar_place_node(@view.View, String, (() -> GlyphCounts)?, (@view.View) -> Double, () -> Int64, () -> String, loc~ : SourceLoc) -> Unit
+
+pub fn baseline_drop(@view.View, @ui.TextSize, @ui.TextSize, leading? : @ui.Leading, own_leading? : @ui.Leading, weight? : Int32, own_weight? : Int32) -> Double
 
 pub fn begin(@ui.Ctx) -> Theme
 
@@ -186,46 +226,65 @@ pub fn behind_ground(k? : Double) -> Int64
 
 pub let beside : @ui.Style
 
-pub fn beside_look(@ui.Size, inner? : @ui.Style, most? : Double) -> (@ui.Ctx, @kit.PopState, () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn beside_panel_node(@view.View, () -> Bool, (@view.View) -> @view.View, Double, () -> String, (@view.View) -> Unit, () -> Unit, keeps? : () -> @view.View?, side? : @view.Side, along? : @view.Along, offset? : Double, loc~ : SourceLoc) -> Unit
 
 pub fn beside_side_for(@view.View, need? : Double) -> @view.Side
+
+pub fn bind_pill_press(@view.View) -> Unit
 
 pub fn bleed_y(Double) -> @ui.Style
 
 pub fn blob_file(Bytes, String, Double, mime? : String, kind? : String, save~ : () -> Unit) -> ViewerFile
 
-pub fn block(@ui.Ctx, () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn block_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+pub fn block_width(Look, Double) -> Double
 
 pub let body : @ui.TextStyle
 
-pub fn bones(@ui.Ctx, () -> Unit, still? : Bool, fill? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn bot_tile_node(@view.View, () -> String, Double, (@view.View, Double) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub fn box_fit(Double, Double, Double) -> (Double, Double)
 
+pub fn branded(String) -> String
+
 pub let breath_ms : Double
 
-pub fn breathe(@ui.Ctx, Int32, failed? : Bool, low? : Double, resident? : Bool, share? : @motion.Anim) -> Unit
-
-pub fn breathe_node(@view.View, waits? : () -> Bool, low? : Double, failed? : () -> Bool) -> Unit
+#callsite(autofill(loc))
+pub fn breathe_node(@view.View, waits? : () -> Bool, low? : Double, failed? : () -> Bool, loc~ : SourceLoc) -> Unit
 
 pub let bubble_raised : Raised
-
-pub fn button(@ui.Ctx, String, key? : String, tone? : Tone, icon? : String, busy? : Bool, disabled? : Bool, w? : @ui.Size, reach? : @ui.Style, hint? : String, on_press? : () -> Unit) -> Bool
-
-pub let button_38 : @ui.Len
 
 pub let button_h : Double
 
 pub fn button_height() -> Double
 
-pub fn button_node(@view.View, () -> String, () -> Unit, tone? : Tone, busy? : () -> Bool, disabled? : () -> Bool, across? : Bool, icon? : String, done? : () -> Bool) -> @view.View
-pub fn button_opens_node(@view.View, () -> String, (@view.View) -> Unit, tone? : Tone, icon? : String) -> @view.View
+#callsite(autofill(loc))
+pub fn button_node(@view.View, () -> String, () -> Unit, tone? : Tone, busy? : () -> Bool, disabled? : () -> Bool, across? : Bool, icon? : String, card_words? : Bool, default_on? : () -> Bool, on_night? : Bool, done? : () -> Bool, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn button_opens_node(@view.View, () -> String, (@view.View) -> Unit, tone? : Tone, icon? : String, loc~ : SourceLoc) -> @view.View
 
 pub fn button_start_reach() -> @ui.Style
 
-pub fn capped_node(@view.View, () -> Double, (@view.View) -> Unit, bleed? : Bool) -> @view.View
+#callsite(autofill(loc))
+pub fn button_while_node(@view.View, () -> Bool, () -> String, (@view.View) -> Unit, (@view.View, Bool) -> Unit, open? : () -> Bool, in_row? : Bool, fills? : Bool, over? : Bool, plain? : Bool, across? : @view.Along, loc~ : SourceLoc) -> Unit
 
-pub fn capsule_chooser_node(@view.View, () -> String, () -> Array[(String, String)], () -> String, (String) -> Unit, disabled? : () -> Bool, side? : @ui.Side, on_open? : (Bool) -> Unit, loc~ : SourceLoc) -> @view.View
+#callsite(autofill(loc))
+pub fn by_look_node(@view.View, () -> Double, (@view.View) -> Unit, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+pub fn by_page_look(@view.View, wide~ : (@view.View) -> Unit, narrow~ : (@view.View) -> Unit) -> Unit
+
+pub fn cached_row_height(@view.View, (Double) -> Double) -> () -> Double
+
+#callsite(autofill(loc))
+pub fn capped_node(@view.View, () -> Double, (@view.View) -> Unit, bleed? : Bool, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn capsule_chooser_node(@view.View, () -> String, () -> Array[(String, String)], () -> String, (String) -> Unit, disabled? : () -> Bool, side? : @view.Side, on_open? : (Bool) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub fn capsule_end_room(Double, Double) -> @ui.Space
 
@@ -235,35 +294,62 @@ pub fn capsule_fit_room(Double, Double, Double, less? : Double) -> @ui.Space
 
 pub fn capsule_room(Double, Double, less? : Double) -> @ui.Space
 
+#callsite(autofill(loc))
 pub fn capsule_words_button_node(@view.View, () -> String, () -> String, () -> Unit, () -> @ui.TextStyle, room? : Double, tips? : TipLayer, loc~ : SourceLoc) -> @view.View
 
 pub let caption : @ui.TextStyle
 
-pub fn card(@ui.Ctx, gap? : Double, fill? : Bool, ground? : Int64, () -> Unit) -> Int32
-
 pub let card_across : @ui.Size
+
+pub fn card_block_out(top? : Bool, foot? : Bool) -> @ui.Style
 
 pub let card_body : @ui.TextStyle
 
+pub let card_control_end : Double
+
 pub let card_corner : Double
 
-pub fn card_foot(@ui.Ctx, () -> Unit, at_end? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn card_end_node(@view.View, TipLayer, String, () -> String, () -> Unit, loc~ : SourceLoc) -> Unit
+
+pub let card_end_out : @ui.Style
+
+pub let card_failed : @ui.TextStyle
 
 pub fn card_foot_in(Double) -> Double
+
+#callsite(autofill(loc))
+pub fn card_foot_node(@view.View, (@view.View) -> Unit, at_end? : Bool, loc~ : SourceLoc) -> Unit
+
+pub let card_foot_out : @ui.Style
 
 pub fn card_foot_words(() -> Unit, on? : Bool) -> Unit
 
 pub let card_line : @ui.TextStyle
 
-pub fn card_lines(@ui.Ctx, String, words? : String, note? : String, bad? : String, title_after? : () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn card_lines_node(@view.View, () -> String, words? : () -> String, note? : () -> String, bad? : () -> String, loc~ : SourceLoc) -> Unit
+
+pub let card_mark : @ui.Style
+
+pub let card_mark_out : @ui.Style
+
+pub let card_mark_size : Double
+
+pub let card_meta : @ui.TextStyle
 
 pub let card_muted : @ui.TextStyle
 
+pub let card_name : @ui.TextStyle
+
 pub let card_pad : Double
 
-pub fn card_piece_node(@view.View, () -> CardPiece, (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn card_piece_node(@view.View, () -> CardPiece, (@view.View) -> Unit, wide_card? : Bool, wide_list? : Bool, wide_gap? : Double, wide_group? : Bool, wide_group_foot? : Bool, wide_piece? : () -> CardPiece, loc~ : SourceLoc) -> Unit
 
 pub fn card_piece_of(Int32, Int32) -> CardPiece
+
+pub fn card_presses_node(@view.View, () -> Unit, () -> Bool) -> Unit
 
 pub let card_radius : @ui.Radius
 
@@ -277,50 +363,83 @@ pub let card_text : @ui.Style
 
 pub let card_title : @ui.TextStyle
 
+pub let card_top_end_out : @ui.Style
+
+pub let card_words : @ui.Style
+
 pub let centered : @ui.TextStyle
 
 pub let centred : @ui.Style
 
-pub fn change_node(@view.View, () -> Array[ChangeLine], () -> String, () -> String, () -> Bool) -> Unit
+#callsite(autofill(loc))
+pub fn change_node(@view.View, () -> Array[ChangeLine], () -> String, () -> String, () -> Bool, loc~ : SourceLoc) -> Unit
 
 pub let chat_station_in : @ui.Space
 
 pub let chat_station_most : @ui.Len
 
-pub fn check_node(@view.View, () -> Bool, (Bool) -> Unit, () -> String, disabled? : () -> Bool) -> Unit
+#callsite(autofill(loc))
+pub fn check_groups_node(@view.View, () -> Array[CheckSection], (String) -> Bool, (String, Bool) -> Unit, () -> Bool, () -> Unit, CheckGroupsSaid, TipLayer, loc~ : SourceLoc) -> Unit
 
-pub fn check_row_node(@view.View, () -> String, () -> Bool, (Bool) -> Unit, note? : () -> String, disabled? : () -> Bool, lead? : (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn check_mark_node(@view.View, () -> Bool, mixed? : () -> Bool, dimmed? : () -> Bool, loc~ : SourceLoc) -> Unit
 
-pub fn chip(@ui.Ctx, String, key? : String, icon? : String, ink? : Int64, disabled? : Bool, inner? : Bool, said? : String, on_press? : () -> Unit) -> Bool
+#callsite(autofill(loc))
+pub fn check_node(@view.View, () -> Bool, (Bool) -> Unit, () -> String, disabled? : () -> Bool, loc~ : SourceLoc) -> Unit
 
-pub fn chip_node(@view.View, () -> String, () -> Unit, icon? : String, ink? : () -> Int64, said? : () -> String, tips? : TipLayer) -> @view.View
+#callsite(autofill(loc))
+pub fn check_node_of(@view.View, () -> Bool, (Bool) -> Unit, () -> String, disabled? : () -> Bool, side? : Double, corner? : Double, edge? : () -> Int64, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn check_row_node(@view.View, () -> String, () -> Bool, (Bool) -> Unit, note? : () -> String, disabled? : () -> Bool, lead? : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+pub fn chip_field(@json.Json?, String) -> @json.Json?
+
+pub fn chip_joined(String, String) -> Bool
+
+pub let chip_label_text : @ui.TextStyle
+
+pub fn chip_left(@json.Json?) -> Int32
+
+#callsite(autofill(loc))
+pub fn chip_node(@view.View, () -> String, () -> Unit, icon? : String, ink? : () -> Int64, said? : () -> String, tips? : TipLayer, disabled? : () -> Bool, capsule? : Bool, loc~ : SourceLoc) -> @view.View
+
+pub let chip_refill_label_text : @ui.TextStyle
+
+pub fn chip_str(@json.Json?, String) -> String
 
 #callsite(autofill(loc))
 pub fn chip_tabs_node(@view.View, () -> String, Array[String], () -> String, (String) -> Unit, (String) -> String, (@view.View, String, RadioRow) -> Unit, on_item? : (String, @view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
-pub fn choice(String, String, note? : String, value? : String, icon? : String, mark? : ChoiceMark) -> Choice
+pub let chip_text : @ui.TextStyle
+
+pub fn choice(String, String, note? : String, value? : String, icon? : String, mark? : ChoiceMark, disabled? : Bool) -> Choice
+
+#callsite(autofill(loc))
+pub fn choice_cards_node(@view.View, () -> Array[(String, String)], () -> Int32, (Int32) -> Unit, said? : String, loc~ : SourceLoc) -> @view.View
 
 pub let choice_gap : Double
 
 pub fn choice_held() -> ChoiceHeld?
 
+#callsite(autofill(loc))
 pub fn choice_mark_node(@view.View, ChoiceMark, Double, loc~ : SourceLoc) -> Unit
 
-pub fn choice_row(@ui.Ctx, String, Bool, String, body? : () -> Unit, note? : String, lead? : () -> Unit, tag? : () -> Unit, trail? : () -> Unit, ink? : Int64, disabled? : Bool, busy? : Bool, on_press? : () -> Unit) -> Bool
+#callsite(autofill(loc))
+pub fn choice_row_node(@view.View, () -> String, () -> Bool, press? : () -> Unit, note? : () -> String, body? : (@view.View) -> Unit, lead? : (@view.View) -> Unit, tag? : (@view.View) -> Unit, trail? : (@view.View) -> Unit, ink? : () -> Int64, note_ink? : () -> Int64, compact? : Bool, disabled? : () -> Bool, held? : () -> Bool, grounded? : (@view.View) -> Unit, label_made? : (@view.View) -> @view.View, note_made? : (@view.View) -> @view.View, loc~ : SourceLoc) -> Unit
 
-pub fn choice_row_node(@view.View, () -> String, () -> Bool, press? : () -> Unit, note? : () -> String, body? : (@view.View) -> Unit, lead? : (@view.View) -> Unit, tag? : (@view.View) -> Unit, trail? : (@view.View) -> Unit, ink? : () -> Int64, disabled? : () -> Bool) -> Unit
+#callsite(autofill(loc))
+pub fn choices_node(@view.View, () -> String, () -> Array[(String, String, String)], (String) -> Unit, label? : () -> String, icon? : (@view.View, String) -> Unit, note_made? : (@view.View, String) -> Unit, extra? : (String) -> ((@view.View) -> Unit)?, disabled? : (String) -> Bool, loc~ : SourceLoc) -> Unit
 
-pub fn choices(@ui.Ctx, String, String, Array[(String, String, String)], label? : String, icon? : (String) -> Unit, extra? : (String) -> (() -> Unit)?, disabled? : Array[String], note? : (String) -> Unit) -> String
-
-pub fn chooser(@ui.Ctx, String, String, Array[@kit.Entry], () -> Bool, (Bool) -> Unit, side? : @view.Side, lead? : (Int64) -> Unit, disabled? : Bool, capsule? : Bool, as_button? : Bool, on_pick? : (String) -> Unit) -> @kit.Menu
-
-pub fn chooser_button_node(@view.View, () -> String, () -> Array[(String, String)], () -> String, (String) -> Unit, side? : @view.Side, card_words? : Bool) -> @view.View
-
-pub fn chooser_node(@view.View, () -> String, () -> Array[(String, String)], () -> String, (String) -> Unit, press? : () -> Unit, disabled? : () -> Bool) -> @view.View
+#callsite(autofill(loc))
+pub fn chooser_button_node(@view.View, () -> String, () -> Array[(String, String)], () -> String, (String) -> Unit, side? : @view.Side, card_words? : Bool, loc~ : SourceLoc) -> @view.View
 
 pub let chooser_chevron : Double
 
 pub let chooser_menu_w : Double
+
+#callsite(autofill(loc))
+pub fn chooser_node(@view.View, () -> String, () -> Array[(String, String)], () -> String, (String) -> Unit, press? : () -> Unit, disabled? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
 pub fn chunk_text(String, budget? : Int32) -> (Array[String], Array[Int32])
 
@@ -342,9 +461,8 @@ pub let code : @ui.TextStyle
 
 pub let code_big_size : @ui.TextSize
 
-pub fn code_block(@ui.Ctx, String, String, colours? : String?, face? : Int32?) -> Unit
-
-pub fn code_block_node(@view.View, () -> String, () -> String, () -> String?, face? : () -> Int?, command? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn code_block_node(@view.View, () -> String, () -> String, () -> String?, face? : () -> Int32?, command? : Bool, keys_always? : Bool, loc~ : SourceLoc) -> Unit
 
 #callsite(autofill(loc))
 pub fn code_display_node(@view.View, () -> String, groups? : Array[Int32], loc~ : SourceLoc) -> @view.View
@@ -352,8 +470,6 @@ pub fn code_display_node(@view.View, () -> String, groups? : Array[Int32], loc~ 
 pub let code_edge : @ui.Color
 
 pub fn code_face() -> Bytes
-
-pub fn code_ink(@ui.Ctx, String, String) -> String??
 
 pub fn code_ink_ask(String, String) -> Unit
 
@@ -363,16 +479,23 @@ pub fn code_ink_told(String, String) -> String??
 
 pub fn code_segments(String, groups? : Array[Int32]) -> Array[String]
 
+#callsite(autofill(loc))
+pub fn color_swatch_node(@view.View, () -> Int64, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn color_swatches_node(@view.View, () -> String, Array[(Int64, String)], () -> Int64, (Int64) -> Unit, loc~ : SourceLoc) -> Unit
+
 pub let columns : Columns
 
-pub fn combo_node(@view.View, () -> String, () -> Array[String], @signals.Signal[Int32], (Int32, Bool) -> Unit, (@view.View) -> Unit, (String) -> String, (@view.View, String, () -> Bool) -> Unit, list? : (@view.View) -> Unit, foot? : (@view.View) -> Unit) -> @view.View
+#callsite(autofill(loc))
+pub fn combo_node(@view.View, () -> String, () -> Array[String], @signals.Signal[Int32], (Int32, Bool) -> Unit, (@view.View) -> Unit, (String) -> String, (@view.View, String, () -> Bool) -> Unit, list? : (@view.View) -> Unit, foot? : (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub fn combobox_bindings() -> Array[@view.Binding]
 
-pub fn coming_mark(@ui.Ctx, String, Double?, Double, Int64) -> Unit
+#callsite(autofill(loc))
+pub fn coming_mark_node(@view.View, () -> Double, Double, () -> Int64, loc~ : SourceLoc) -> Unit
 
-pub fn coming_mark_node(@view.View, () -> Double, Double, () -> Int64) -> Unit
-
+pub fn command_sends(Bool) -> Bool
 
 pub fn compare_natural(String, String) -> Int32
 
@@ -388,15 +511,14 @@ pub fn composer_inner_radius() -> @ui.Radius
 
 pub let composer_pad : Double
 
-pub let composer_pad_room : @ui.Space
-
-pub fn composer_notice_node(@view.View, TipLayer, () -> String, () -> String, () -> Double, summary? : () -> (String, String)?, offer? : NoticeOffer, dismiss? : NoticeOffer, choice? : NoticeChoice, held? : () -> Bool, failed? : () -> String, loc~ : SourceLoc) -> @view.View
-
-pub fn composer_radius() -> @ui.Radius
+#callsite(autofill(loc))
+pub fn composer_quote_card_node(@view.View, TipLayer, () -> String, () -> String, () -> String, (@view.View) -> Unit, () -> Unit, () -> String, pictured? : () -> Bool, picture? : (@view.View) -> Unit, whole? : (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub let composer_round : @ref.Ref[Double]
 
 pub fn composer_round_in() -> Double
+
+pub fn composer_waiting_in() -> Double
 
 pub fn concentric_capsule_pad(@view.View, Double, Double) -> Double
 
@@ -409,6 +531,10 @@ pub fn confirm_node(@view.View, () -> Bool, () -> String, () -> String, () -> St
 
 pub let confirm_w : Double
 
+pub fn control_edge(hot? : Bool, solid? : Bool) -> (Double, Int64)
+
+pub let control_edge_w : Double
+
 #callsite(autofill(loc))
 pub fn control_look_node(@view.View, () -> @headless.ControlState, () -> ControlLook, loc~ : SourceLoc) -> Unit
 
@@ -418,6 +544,8 @@ pub fn control_state_seen(@headless.ControlState) -> @headless.ControlState
 
 pub let copied_ms : Double
 
+#callsite(autofill(loc))
+pub fn copy_tool_node(@view.View, () -> ViewerInk, @view.Live[Double], () -> Bool, tip? : TipLayer, loc~ : SourceLoc) -> @view.View
 
 pub fn corner_card_node(@view.View, () -> Double, inset? : () -> Double) -> Unit
 
@@ -429,18 +557,25 @@ pub let corner_ladder : Array[Double]
 
 pub fn corner_radii(FixedArray[@paint.CornerOf]) -> FixedArray[Double]
 
-pub fn corner_remove_face(@ui.Ctx) -> Int32
-
 pub fn corner_remove_reach(Double) -> Double
+
+#callsite(autofill(loc))
+pub fn corner_row_node(@view.View, () -> String, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub fn corners_radius(FixedArray[@paint.CornerOf]) -> @ui.Radius
 
 #callsite(autofill(loc))
-pub fn count_badge_node(@view.View, count? : () -> Int, look? : CountLook, tone? : CountTone, max? : Int, loc~ : SourceLoc) -> @view.View
+pub fn count_badge_node(@view.View, count? : () -> Int32, look? : CountLook, tone? : CountTone, max? : Int32, loc~ : SourceLoc) -> @view.View
 
-pub fn count_chip_node(@view.View, () -> String, (@view.View) -> Unit, count? : () -> String, chosen? : () -> Bool, dot? : () -> String, lead? : (@view.View) -> Unit, alarm? : () -> Bool, look? : ChipLook, corner? : () -> Double, named? : () -> String) -> @view.View
+#callsite(autofill(loc))
+pub fn count_chip_node(@view.View, () -> String, (@view.View) -> Unit, count? : () -> String, chosen? : () -> Bool, dot? : () -> String, lead? : (@view.View) -> Unit, alarm? : () -> Bool, look? : ChipLook, corner? : () -> Double, named? : () -> String, loc~ : SourceLoc) -> @view.View
 
-pub fn count_words(Int, max? : Int) -> String
+#callsite(autofill(loc))
+pub fn count_section_node(@view.View, () -> String, () -> Int32, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+pub fn count_words(Int32, max? : Int32) -> String
+
+pub fn countdown_now_node(@view.View, () -> Double, () -> Double, period? : Double) -> () -> Double
 
 pub let custom_field_r : @ui.Radius
 
@@ -448,15 +583,21 @@ pub fn custom_hue(String) -> Int32?
 
 pub fn custom_tone(Int32) -> AccentTone
 
+pub fn dashed_vector(Double, Double, Double, Double, Int64) -> @pixels.Vector
+
 pub fn data_image(String) -> String
 
-pub fn day_change_node(@view.View, () -> CardPiece, () -> Array[ChangeLine], () -> String, () -> String, () -> Bool) -> Unit
+#callsite(autofill(loc))
+pub fn day_change_node(@view.View, () -> CardPiece, () -> Array[ChangeLine], () -> String, () -> String, () -> Bool, loc~ : SourceLoc) -> Unit
 
-pub fn day_heading_node(@view.View, () -> String) -> Unit
+#callsite(autofill(loc))
+pub fn day_heading_node(@view.View, () -> String, wide_in? : Double, loc~ : SourceLoc) -> Unit
+
+pub fn dclamp(Double, Double, Double) -> Double
+
+pub fn default_words(String, Array[(String, String)]) -> String
 
 pub let desk_card : @ui.Style
-
-pub let desk_card_row : @ui.Style
 
 pub let desk_card_text : @ui.Style
 
@@ -478,8 +619,6 @@ pub let desk_grow_clip : @ui.Style
 
 pub let desk_grow_middle : @ui.Style
 
-pub let desk_hint_box : @ui.Style
-
 pub let desk_hint_words : @ui.TextStyle
 
 pub let desk_lane : @ui.Style
@@ -490,9 +629,9 @@ pub let desk_lane_in : Double
 
 pub let desk_lane_most : Double
 
-pub fn desk_lanes(@ui.Ctx, String, Array[() -> Unit], foot? : Double) -> Unit
-
 pub let desk_list : @ui.Style
+
+pub fn desk_list_card() -> @ui.Style
 
 pub let desk_list_out : Double
 
@@ -503,8 +642,6 @@ pub let desk_list_title : @ui.TextStyle
 pub let desk_mark : Double
 
 pub let desk_muted : @ui.TextStyle
-
-pub let desk_named : @ui.Style
 
 pub let desk_note_bad : @ui.TextStyle
 
@@ -532,13 +669,15 @@ pub let desk_strong : @ui.TextStyle
 
 pub let desk_words : @ui.TextStyle
 
-pub fn dialog(@ui.Ctx, String, Bool, String, () -> Unit, description? : String, footer? : () -> Unit, wide? : Bool, w? : Double, close_label? : String, step? : String, column_in? : Double, bare? : Bool, on_escape? : () -> Bool, scrim? : Int64, veil? : @motion.Anim) -> Bool
+#callsite(autofill(loc))
+pub fn detail_page_node(@view.View, () -> String, (@view.View) -> Unit, on_back~ : () -> Unit, frame? : () -> PageFrame, width? : () -> Double, actions? : (@view.View) -> Unit, loading? : () -> Bool, loc~ : SourceLoc) -> Unit
 
 pub let dialog_close : Double
 
 pub fn dialog_corner_foot(Double) -> @ui.Style
 
-pub fn dialog_foot_rows_node(@view.View, @ui.Style, (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn dialog_foot_rows_node(@view.View, @ui.Style, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let dialog_margin : Double
 
@@ -550,23 +689,21 @@ pub let dialog_shadow : Double
 
 pub let dialog_shadow_y : Double
 
+pub fn dialog_surface_decorate(@view.View, edge_w? : Double, clips? : Bool) -> @view.View
+
 pub let dialog_w : Double
 
 pub let dialog_wide_w : Double
 
-pub fn dials(@ui.Ctx, Array[Dial], details? : Array[String], columns? : Int32) -> Unit
-
-pub fn dials_node(@view.View, () -> Array[Dial], details? : () -> Array[String], columns? : Int32) -> Unit
+#callsite(autofill(loc))
+pub fn dials_node(@view.View, () -> Array[Dial], details? : () -> Array[String], columns? : Int32, lines? : Int32, press? : (Int32) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let diff_line_in : @ui.Space
 
 pub let diff_mark_in : @ui.Space
 
-pub fn dclamp(Double, Double, Double) -> Double
-
-pub fn default_words(String, Array[(String, String)]) -> String
-
-pub fn disc_key_node(@view.View, () -> String, () -> Unit, side~ : Double, ground~ : () -> Int64, (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn disc_key_node(@view.View, () -> String, () -> Unit, side~ : Double, ground~ : () -> Int64, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 #callsite(autofill(loc))
 pub fn disclosure_key_node(@view.View, () -> String, () -> Bool, () -> Unit, side? : Double, icon_size? : Double, loc~ : SourceLoc) -> Unit
@@ -575,15 +712,14 @@ pub fn dmax(Double, Double) -> Double
 
 pub fn dmin(Double, Double) -> Double
 
-pub fn donut(@ui.Ctx, Array[(Double, Int64)], Double, Double, Int64) -> Int32
-
 pub let dot_size : @ui.Len
-
-pub fn drawable(@ui.Ctx, String, Double, tint? : Int64) -> Int32
 
 pub fn drawable_height(String, Double) -> Double
 
-pub fn drawable_node(@view.View, String, Double, tint? : () -> Int64?) -> @view.View
+#callsite(autofill(loc))
+pub fn drawable_node(@view.View, String, Double, tint? : () -> Int64?, loc~ : SourceLoc) -> @view.View
+
+pub fn drawable_pixels(String, Int32, tint? : Int64) -> (Int32, Int32, FixedArray[Byte])?
 
 pub fn drawable_vector(String) -> @pixels.Vector?
 
@@ -591,8 +727,6 @@ pub fn drawable_vector(String) -> @pixels.Vector?
 pub fn drawer_node(@view.View, () -> Bool, () -> String, () -> Unit, (@view.View) -> Unit, spec? : DrawerSpec, loc~ : SourceLoc) -> Unit
 
 pub fn drawer_surface_decorate(@view.View, radius? : Double, solid? : () -> Int64, active? : () -> Bool, clips? : Bool) -> @view.View
-
-pub fn dropdown(@ui.Ctx, String, Bool, Int32, Array[@kit.Entry], Map[String, String], Double, submenu? : Bool, side? : @view.Side, along? : @view.Along, offset? : Double, at? : (Double, Double, Double, Double), row_end? : (@ui.Ctx, @kit.MenuItemState) -> Unit, danger? : Array[String], marks? : Map[String, (@ui.Ctx, Double) -> Unit], notes? : Map[String, String], check_end? : Bool, show_exit? : Bool, on_pick? : (String) -> Unit) -> @kit.Menu
 
 pub let dur_ms : Double
 
@@ -610,81 +744,91 @@ pub let edge_line_ms : Double
 
 pub let edge_line_steps : Int32
 
-pub fn edge_look(@ui.Ctx, String, over~ : Bool, on~ : Bool, active~ : Bool, line? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn edge_look_node(@view.View, () -> Bool, () -> Bool, () -> Bool, line? : () -> Bool, pull? : EdgePull, loc~ : SourceLoc) -> @view.View
 
-pub fn edge_look_node(@view.View, () -> Bool, () -> Bool, () -> Bool, line? : () -> Bool, pull? : EdgePull) -> @view.View
-
-pub fn edge_node(@view.View, () -> String, () -> Double, () -> Double, () -> Double, @view.Side, (Resized, Double) -> Unit, (Bool) -> Unit, on_beside? : (Double) -> Bool, beside? : (Double) -> Unit, tips? : TipLayer, side? : @view.Side, pull? : EdgePull) -> @view.View
+#callsite(autofill(loc))
+pub fn edge_node(@view.View, () -> String, () -> Double, () -> Double, () -> Double, @view.Side, (Resized, Double) -> Unit, (Bool) -> Unit, on_beside? : (Double) -> Bool, beside? : (Double) -> Unit, tips? : TipLayer, side? : @view.Side, pull? : EdgePull, loc~ : SourceLoc) -> @view.View
 
 pub fn edge_over() -> Bool
 
 pub fn edge_reach(Double) -> (Double, Double)
 
-pub fn edge_tip(@ui.Ctx, String, Int32, String, side? : @view.Side) -> Unit
-
 pub let edge_tip_gap : Double
 
 pub let edge_tip_ms : Double
 
-pub fn empty(@ui.Ctx, () -> Unit) -> Unit
-
 pub let empty_in : @ui.Space
 
-pub fn empty_node(@view.View, (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn empty_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn empty_state_node(@view.View, String, () -> String, note? : () -> String, action? : (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn empty_words_node(@view.View, () -> String, more? : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let ended_max : @ui.Len
-
-pub fn ends_reach(Double, Bool, Bool) -> (Double, Double)
 
 pub let enter_ms : Double
 
 pub let enter_rise : Double
 
-pub fn enter_sends() -> Bool
+pub fn enter_sends(command? : Bool) -> Bool
 
 pub fn extension_of(String) -> String
 
 pub let face_ink : Int64
 
+pub fn face_picture(Int32, Int32, FixedArray[Byte]) -> String
+
+pub let face_picture_px : Int32
+
+pub let face_picture_read : Int32
+
 pub let face_status_most : @ui.Len
 
 pub let fact_row_h : Double
 
+#callsite(autofill(loc))
 pub fn fact_row_node(FactsList, String, (@view.View) -> Unit, show? : () -> Bool, loc~ : SourceLoc) -> Unit
 
+#callsite(autofill(loc))
 pub fn facts_list_node(@view.View, Array[String], (FactsList) -> Unit, least? : Double, style? : () -> @ui.Style, loc~ : SourceLoc) -> @view.View
 
 pub fn facts_size(String, Double) -> String
 
 pub let faint_ground : @ui.Color
 
-pub fn feishu_mark(@ui.Ctx, Double) -> Int32
+#callsite(autofill(loc))
+pub fn field_bar_node(@view.View, () -> Bool, () -> FieldBarLabels, on_copied? : () -> Unit, loc~ : SourceLoc) -> Unit
 
-pub fn field(@ui.Ctx, String, () -> Unit, hint? : String, error? : String, aside? : () -> Unit) -> Unit
-
-pub fn field_node(@view.View, () -> String, (@view.View) -> Unit, aside? : (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn field_node(@view.View, () -> String, (@view.View) -> Unit, aside? : (@view.View) -> Unit, hint? : () -> String, error? : () -> String, loc~ : SourceLoc) -> Unit
 
 pub fn field_round() -> Double
 
 pub let field_wide_most : Double
 
-pub fn figures(@ui.Ctx, Array[(String, String, String)]) -> Unit
+#callsite(autofill(loc))
+pub fn figure_words_node(@view.View, (@view.View) -> Unit, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let file_capsule_h : @ui.Len
 
 pub let file_capsule_words_end : Double
 
-pub fn file_card(@ui.Ctx, String, String, Double, path? : String, dir? : Bool, named? : Bool, pending? : Bool, sent? : Double?, error? : String, download? : (Double, String)?, remove? : Bool, retry? : Bool, slot? : Bool, open? : Bool, title? : String, meta? : String, restore? : Bool, remove_label? : String, retry_label? : String, composer? : Bool) -> FileCardDone
-
-pub fn file_card_across(@ui.Ctx, String, Double, meta? : String, ends? : Int32) -> Double
-
-pub fn file_card_node(@view.View, TipLayer, () -> String, () -> String, () -> Bool, () -> Bool, () -> Bool, () -> String, () -> String, (FileCardPress) -> Unit, menu? : (Double, Double) -> Unit, pending? : () -> Bool, progress? : () -> Double?, open? : () -> Bool) -> @view.View
+#callsite(autofill(loc))
+pub fn file_card_node(@view.View, TipLayer, () -> String, () -> String, () -> Bool, () -> Bool, () -> Bool, () -> String, () -> String, (FileCardPress) -> Unit, menu? : (Double, Double) -> Unit, pending? : () -> Bool, progress? : () -> Double?, open? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
 pub let file_card_w : Double
 
+pub fn file_ext(String) -> String
+
 pub fn file_mark(String) -> String
 
-pub fn file_name(@ui.Ctx, String) -> Unit
+#callsite(autofill(loc))
+pub fn file_name_node(@view.View, () -> String, loc~ : SourceLoc) -> Unit
 
 pub fn file_name_of(String) -> String
 
@@ -692,13 +836,7 @@ pub let file_progress_w : @ui.Len
 
 pub fn file_radius(Double) -> @ui.Radius
 
-pub let file_sheet_h : @ui.Len
-
-pub let file_sheet_w : @ui.Len
-
 pub fn file_size(Double) -> String
-
-pub fn file_tile(@ui.Ctx, String, dir? : Bool, progress? : Double?, error? : Bool) -> Unit
 
 pub fn file_tile_fill(Double, Double, Int64) -> @paint.Shape
 
@@ -706,37 +844,58 @@ pub let files_gap : @ui.Space
 
 pub let files_row_end : @ui.Space
 
-pub fn fill_chip(@ui.Ctx, Int32, String, String, String, small? : Bool, compact? : Bool, label_muted? : Bool, refill? : Bool, drop? : Int32, keep? : Bool, key? : String, said? : String) -> Unit
-
 pub let fill_chip_corner : Double
 
 pub let fill_chip_h : Double
 
-pub fn fill_chip_node(@view.View, () -> Int32, () -> String, () -> String, () -> String, small? : Bool, label_muted? : Bool, refill? : () -> Bool, said? : () -> String, tips? : TipLayer, squeezes? : Bool) -> @view.View
+#callsite(autofill(loc))
+pub fn fill_chip_node(@view.View, () -> Int32, () -> String, () -> String, () -> String, small? : Bool, label_muted? : Bool, refill? : () -> Bool, said? : () -> String, tips? : TipLayer, tips_within? : Bool, squeezes? : Bool, loc~ : SourceLoc) -> @view.View
 
 pub let fill_chip_small_h : Double
 
-pub fn fill_chip_wide(@ui.Ctx, String, String, small? : Bool, compact? : Bool, label_muted? : Bool, refill? : Bool) -> Double
+#callsite(autofill(loc))
+pub fn filter_pill_node(@view.View, () -> String, (@view.View) -> Unit, picked? : () -> Bool, lead? : (@view.View) -> Unit, chevron? : Bool, clear? : () -> Unit, clear_label? : () -> String, loc~ : SourceLoc) -> @view.View
 
-pub fn filter_pill_node(@view.View, () -> String, (@view.View) -> Unit, picked? : () -> Bool, lead? : (@view.View) -> Unit, chevron? : Bool, clear? : () -> Unit, clear_label? : () -> String) -> @view.View
+pub fn find_marker_bg(Bool) -> Int64
 
 pub fn find_passage(String, String) -> (Int32, Int32)?
 
 pub fn find_words(String, Array[String]) -> Array[(Int32, Int32)]
 
+pub fn finder_bindings() -> Array[@view.Binding]
+
 pub let first_lead_most : @ui.Len
+
+#callsite(autofill(loc))
+pub fn first_line_node(@view.View, @ui.TextSize, (@view.View) -> Unit, leading? : @ui.Leading, loc~ : SourceLoc) -> @view.View
 
 pub let first_most : @ui.Len
 
-pub fn first_one(@ui.Ctx, String, () -> Unit, art? : () -> Unit, lead? : String) -> Unit
+#callsite(autofill(loc))
+pub fn first_one_node(@view.View, () -> String, (@view.View) -> Unit, art? : (@view.View) -> Unit, lead? : () -> String, loc~ : SourceLoc) -> Unit
 
-pub fn first_one_node(@view.View, () -> String, (@view.View) -> Unit, art? : (@view.View) -> Unit, lead? : () -> String) -> Unit
+#callsite(autofill(loc))
+pub fn fixed_anchor(@view.View, (Double, Double, Double, Double), loc~ : SourceLoc) -> @view.View
 
-pub fn fixed_anchor(@view.View, (Double, Double, Double, Double)) -> @view.View
+#callsite(autofill(loc))
+pub fn fixed_row_node(@view.View, () -> String, press? : () -> Unit, busy? : () -> Bool, two_line? : Bool, (RowScope) -> Unit, loc~ : SourceLoc) -> Unit
 
-pub fn float_button_node(@view.View, String, () -> String, () -> Unit, count? : () -> String, busy? : () -> Bool, tips? : TipLayer, shortcut? : String) -> @view.View
+pub let float_badge_look : @ui.Style
+
+pub let float_button_icon : Double
+
+#callsite(autofill(loc))
+pub fn float_button_node(@view.View, String, () -> String, () -> Unit, count? : () -> String, busy? : () -> Bool, tips? : TipLayer, shortcut? : String, loc~ : SourceLoc) -> @view.View
 
 pub let float_button_reach : Double
+
+pub let float_button_side : Double
+
+#callsite(autofill(loc))
+pub fn float_pill_group_node(@view.View, (@view.View) -> Unit, width? : Double, pad? : Double, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn float_pill_item_node(@view.View, String, () -> String, () -> Unit, busy? : () -> Bool, tips? : TipLayer, shortcut? : String, loc~ : SourceLoc) -> @view.View
 
 pub fn float_shadow() -> (Double, Double, Int64)
 
@@ -744,13 +903,26 @@ pub fn float_shadow_ink() -> Int64
 
 pub let floating : Raised
 
-pub fn foot_across(Double) -> @ui.Style
+pub fn floating_capsule_decorate(@view.View, sharing? : Bool, tint? : () -> Int64?, extra_blur? : () -> Double, active? : () -> Bool, with_edge? : Bool, with_shadow? : Bool, clips? : Bool) -> @view.View
 
-pub fn foot_chooser_node(@view.View, () -> String, () -> Array[(String, String)], () -> String, (String) -> Unit, press? : () -> Unit, disabled? : () -> Bool) -> @view.View
+pub fn floating_host_lend(@view.View) -> Unit
+
+pub let floating_surface_gap : Double
+
+pub let floating_trigger_gap : Double
+
+pub let floating_viewport_pad : Double
+
+pub fn focus_ring_node(@view.View) -> Unit
+
+pub fn foot_across(Double) -> @ui.Style
 
 pub fn foot_capsule(Double, Double, Double) -> (Double, Double, Double)
 
 pub fn foot_capsule_h(Double, Double) -> Double
+
+#callsite(autofill(loc))
+pub fn foot_chooser_node(@view.View, () -> String, () -> Array[(String, String)], () -> String, (String) -> Unit, press? : () -> Unit, disabled? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
 pub fn foot_corner(Double, Double, Double) -> @ui.Style
 
@@ -758,19 +930,30 @@ pub fn foot_fit(Double, Double, Double, least? : Double) -> Double
 
 pub fn foot_pad(Double) -> @ui.Style
 
-pub fn foot_place_node(@view.View, () -> Bool, (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn foot_part_node(@view.View, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn foot_place_node(@view.View, () -> Bool, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub fn foot_reach(Double, start? : Double, end? : Double, words_first? : Bool) -> @ui.Style
 
-pub fn foot_spacer_node(@view.View) -> Unit
+#callsite(autofill(loc))
+pub fn foot_spacer_node(@view.View, loc~ : SourceLoc) -> Unit
+
+pub let found_all : Int32
+
+pub fn found_grown(Found, Double, two~ : Bool) -> Double
 
 pub fn found_head_in(ListAt) -> @ui.Style
-
-pub fn found_line(@ui.Ctx, String, String, Array[(Int32, Int32)], @ui.TextStyle, Int64) -> Unit
 
 pub let found_line_h : @ui.Len
 
 pub fn found_line_in(ListAt) -> @ui.Style
+
+pub fn found_mark_h(Found, Double) -> Double
+
+pub fn found_marks(Array[@text.Run], Array[String], Int32) -> Array[@view.RunsMark]
 
 pub fn found_row_in(ListAt) -> @ui.Style
 
@@ -778,19 +961,22 @@ pub let found_start : @ui.Space
 
 pub fn found_weight(Array[@text.Run], Array[String]) -> Array[@text.Run]
 
+#callsite(autofill(loc))
+pub fn found_words_node(@view.View, () -> String, () -> Array[(Int32, Int32)], () -> @ui.TextStyle, () -> Int64, loc~ : SourceLoc) -> @view.View
+
 pub let full_width : @ui.Style
 
 pub let full_words : @ui.TextStyle
 
+#callsite(autofill(loc))
+pub fn fullscreen_overlay_node(@view.View, () -> Unit, inert? : () -> Bool, dismiss_on_escape? : Bool, auto_focus? : Bool, first_takes? : (@view.Said) -> Bool, before_dismiss? : () -> Bool, on_key? : (@view.Key, () -> Bool) -> Bool, loc~ : SourceLoc) -> @view.View
+
 pub fn give_faces() -> Unit
 
-pub fn glass_action() -> @paint.Glass
+#callsite(autofill(loc))
+pub fn glass_button_node(@view.View, () -> String, () -> Unit, prominent? : Bool, icon? : String, disabled? : () -> Bool, tips? : TipLayer, loc~ : SourceLoc) -> @view.View
 
-pub fn glass_bar() -> @paint.Glass
-
-pub fn glass_bar_ball() -> @paint.Glass
-
-pub fn glass_bottom_bar() -> @paint.Glass
+pub fn glass_capsule_node(@view.View, min_height? : Double?, radius? : Double?, sharing? : Bool, interactive? : Bool, dark? : Bool, panel? : Bool, solid? : () -> Int64, tint? : () -> Int64, active? : () -> Bool, trigger? : Bool) -> @view.View
 
 pub let glass_chooser_h : @ui.Len
 
@@ -798,9 +984,7 @@ pub let glass_chooser_station_most : @ui.Len
 
 pub fn glass_control_shadow() -> (Double, Double, Int64)
 
-pub fn glass_floating(tint? : Int64) -> @paint.Glass
-
-pub fn glass_foot() -> @paint.Glass
+pub fn glass_floating(tint? : Int64, spot? : (Double, Double)?) -> @paint.Glass
 
 pub fn glass_knob() -> @paint.Glass
 
@@ -811,9 +995,11 @@ pub fn glass_menu(merge? : Double) -> @paint.Glass
 
 pub fn glass_overlay_shadow() -> (Double, Double, Int64)
 
-pub fn glass_scroll_edge(ground? : Int64) -> @paint.Glass
+pub fn glass_selection() -> Int64
 
 pub fn glass_sheet() -> @paint.Glass
+
+pub fn glass_tab_bar(spot? : (Double, Double)?, merge? : Double) -> @paint.Glass
 
 pub fn glass_tab_lens(Double) -> @paint.Glass
 
@@ -825,43 +1011,34 @@ pub fn glass_viewer_dark(spot? : (Double, Double)?) -> @paint.Glass
 
 pub fn glyph_color(String, Bool) -> Int64?
 
-pub fn gradient(@ui.Ctx, Double, Double, Double, Int64, Int64, radius? : Double) -> Unit
+#callsite(autofill(loc))
+pub fn glyph_mark_node(@view.View, String, Double, () -> Int64, loc~ : SourceLoc) -> Unit
 
+pub fn gradient_key(Double, Double, Double, Int64, Int64) -> String
+
+#callsite(autofill(loc))
 pub fn grid_table_node(@view.View, (@view.View, GridTable) -> Unit, in_node? : Bool, loc~ : SourceLoc) -> @view.View
 
 pub fn ground_node(@view.View) -> @view.View
 
-pub fn group(@ui.Ctx, () -> Unit, card? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn ground_row_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let group_corner : Double
 
-pub fn group_node(@view.View, (@view.View) -> Unit, card? : Bool) -> Unit
-
-pub fn group_row(@ui.Ctx, Bool, Bool, () -> Unit, id? : Int32) -> Unit
+#callsite(autofill(loc))
+pub fn group_node(@view.View, (@view.View) -> Unit, card? : Bool, loc~ : SourceLoc) -> Unit
 
 pub let group_row_end_radius : @ui.Radius
 
-pub fn group_rows_node(@view.View, (@view.View) -> Unit) -> Unit
-
-pub fn key_pad_dpad_node(@view.View, Double, Double, Double, Double, (String) -> Unit, loc~ : SourceLoc) -> @view.View
-
-pub fn key_pad_key_node(@view.View, String, String, () -> Unit, width? : Double, height~ : Double, primary? : Bool, held? : () -> Bool, icon? : String, repeat? : Bool, loc~ : SourceLoc) -> @view.View
-
-pub fn key_pad_row_node(@view.View, Array[KeyPadKey], @signals.Signal[Array[String]], look? : () -> @ui.Style, loc~ : SourceLoc) -> @view.View
-
-pub fn[T : Eq, K : Hash + Eq] keyed_rows_node(@view.View, () -> Array[T], (T) -> K, (@view.View, @signals.Signal[T]) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn group_rows_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub fn grouped(Double) -> String
-
-pub fn groups(@ui.Ctx, () -> Unit) -> Unit
 
 pub let grow : @ui.Len
 
 pub let hairline : @ui.Len
-
-pub fn hand_stroke(@ui.Ctx, StrokeShape, Double, Double, Int64) -> Int32
-
-pub fn handle_drag(@ui.Ctx, Int32, Double, min~ : Double, max~ : Double, edge? : @view.Side) -> Resized
 
 pub let handle_out : Double
 
@@ -869,17 +1046,20 @@ pub let handle_w : Double
 
 pub fn has_drawable(String) -> Bool
 
-pub fn has_quota(@json.Json?) -> Bool
-
 pub fn has_station_mark(String, String) -> Bool
 
-pub fn head_end(@ui.Ctx, () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn head_actions_node(@view.View, Array[(String, () -> String, () -> Unit)], busy? : () -> Bool, loc~ : SourceLoc) -> Unit
 
-pub fn heading(@ui.Ctx, String, note? : String, actions? : () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn head_state_node(@view.View, () -> String, () -> String, () -> String, () -> String, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+pub let head_state_words : @ui.TextStyle
 
 pub fn heading_in_at(ListAt) -> Double
 
-pub fn heading_node(@view.View, () -> String) -> Unit
+#callsite(autofill(loc))
+pub fn heading_node(@view.View, () -> String, ends? : (@view.View) -> Unit, lead? : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub fn held_in() -> @ui.Style
 
@@ -887,13 +1067,12 @@ pub let held_raised : Raised
 
 pub fn held_reach() -> @ui.Style
 
-pub fn hex_color(String) -> Int64?
-
 pub let hint_back_ms : Double
 
 pub let hold_button_ms : Double
 
-pub fn hold_button_node(@view.View, () -> String, () -> Unit, hold_ms? : Double, danger? : Bool, disabled? : () -> Bool, undo? : (() -> Unit, Double), undo_label? : () -> String, moves? : (@motion.Moves) -> Unit) -> @view.View
+#callsite(autofill(loc))
+pub fn hold_button_node(@view.View, () -> String, () -> Unit, hold_ms? : Double, danger? : Bool, disabled? : () -> Bool, undo? : (() -> Unit, Double), undo_label? : () -> String, moves? : (@motion.Moves) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub fn holds_least(Double) -> Double
 
@@ -913,6 +1092,17 @@ pub let hover_card_out_ms : Double
 
 pub let hover_card_w : @ui.Len
 
+pub fn hover_ground_node(@view.View, by? : @view.View, on? : () -> Bool, extra? : () -> Bool, lit? : (() -> Bool)?, color? : () -> Int64) -> Unit
+
+pub let hover_panel_close_ms : Double
+
+#callsite(autofill(loc))
+pub fn hover_panel_node(TipLayer, @view.View, String, (@view.View, () -> Unit) -> Unit, spec? : HoverPanelSpec, held? : () -> Bool, pointed? : () -> Bool, owner? : @view.View, loc~ : SourceLoc) -> HoverHand
+
+pub let hover_panel_open_ms : Double
+
+pub fn hover_panel_spec(w? : Double, tall? : Double, side? : @view.Side, along? : @view.Along, offset? : Double, open_delay? : Double, close_delay? : Double) -> HoverPanelSpec
+
 pub let hover_tile_least : @ui.Len
 
 pub let hover_tile_most : @ui.Len
@@ -923,34 +1113,52 @@ pub fn hovered_item_node(@view.View) -> Bool
 
 pub fn hovered_node(@view.View) -> Bool
 
-pub fn icon(@ui.Ctx, String, size? : Double, color? : Int64, by_ink? : Bool) -> Int32
+#callsite(autofill(loc))
+pub fn icon_action_node(@view.View, String, () -> String, () -> Unit, disabled? : () -> Bool, tips? : TipLayer, loc~ : SourceLoc) -> @view.View
 
-pub fn icon_action(@ui.Ctx, String, String, String, disabled? : Bool) -> Bool
+#callsite(autofill(loc))
+pub fn icon_action_opens_node(@view.View, String, () -> String, (@view.View) -> Unit, disabled? : () -> Bool, tips? : TipLayer, loc~ : SourceLoc) -> @view.View
 
-pub fn icon_action_node(@view.View, String, () -> String, () -> Unit, disabled? : () -> Bool, tips? : TipLayer) -> @view.View
+#callsite(autofill(loc))
+pub fn icon_button_node(@view.View, String, () -> String, () -> Unit, tips? : TipLayer, size? : Double, icon_size? : Double, icon_now? : () -> String, disabled? : () -> Bool, linked? : () -> @paint.CornerOf?, shortcut? : String, ink? : () -> Int64, grounded? : Bool, on? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
-pub fn icon_action_opens_node(@view.View, String, () -> String, (@view.View) -> Unit, disabled? : () -> Bool, tips? : TipLayer) -> @view.View
-
-pub fn icon_button(@ui.Ctx, String, key? : String, size? : Double, icon_size? : Double, on? : Bool, lit? : Bool, round? : Bool, corner? : Double, linked? : @paint.CornerOf, ink? : Int64, quiet? : Int64, disabled? : Bool, label? : String, shortcut? : String, on_press? : () -> Unit) -> Bool
-
-pub fn icon_button_node(@view.View, String, () -> String, () -> Unit, tips? : TipLayer, size? : Double, icon_size? : Double, icon_now? : () -> String, disabled? : () -> Bool, linked? : () -> @ui.CornerOf?, shortcut? : String) -> @view.View
-pub fn icon_button_opens_node(@view.View, String, () -> String, (@view.View) -> Unit) -> @view.View
+#callsite(autofill(loc))
+pub fn icon_button_opens_node(@view.View, String, () -> String, (@view.View) -> Unit, size? : Double, loc~ : SourceLoc) -> @view.View
 
 pub let icon_button_side : Double
 
-pub let icon_fallback : Int64
+#callsite(autofill(loc))
+pub fn icon_inks_node(@view.View, String, Double, (@view.View) -> Array[(Array[Int32], Int64)], loc~ : SourceLoc) -> @view.View
 
-pub fn icon_node(@view.View, String, Double, @view.Live[Int64], name_now? : () -> String) -> @view.View
+#callsite(autofill(loc))
+pub fn icon_node(@view.View, String, Double, @view.Live[Int64], name_now? : () -> String, weighed? : Bool, loc~ : SourceLoc) -> @view.View
 
-pub fn icon_parts(@ui.Ctx, String, Array[Int32], size? : Double, color? : Int64) -> Int32
+pub fn icon_numbers(String) -> Array[Double]?
 
-pub fn icon_parts_node(@view.View, String, Array[Int32], Double, @view.Live[Int64]) -> @view.View
+#callsite(autofill(loc))
+pub fn icon_parts_node(@view.View, String, Array[Int32], Double, @view.Live[Int64], loc~ : SourceLoc) -> @view.View
 
 pub fn icon_path(String) -> String
 
+#callsite(autofill(loc))
+pub fn icon_point_row_node(@view.View, String, () -> String, rest? : () -> String, icon_now? : () -> String, look? : PointLook, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn icon_points_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+pub fn icon_shapes(Array[Double], Double, Int64) -> Array[@paint.Shape]
+
+pub fn icon_traced_data(String, (Int32, Array[Double]) -> Array[Array[Double]]) -> Array[Double]
+
+#callsite(autofill(loc))
+pub fn icon_well_node(@view.View, () -> String, () -> Unit, () -> Int64, () -> Int64, () -> String, () -> String, Int32, loc~ : SourceLoc) -> @view.View
+
 pub let identity_mark : Double
 
-pub fn image_reveal_node(@view.View, () -> String, () -> String, Double, Double, cover? : Bool, held? : () -> Bool, start_crop? : Bool) -> @view.View
+#callsite(autofill(loc))
+pub fn image_reveal_node(@view.View, () -> String, () -> String, () -> Double, () -> Double, cover? : Bool, decoded_for? : () -> Double, held? : () -> Bool, comes? : () -> Bool, start_crop? : () -> Bool, flies? : ((@view.View) -> Unit)?, corner? : Double, loc~ : SourceLoc) -> @view.View
+
+pub fn in_dialog_node(@view.View) -> Bool
 
 pub fn in_line(Double) -> @ui.Style
 
@@ -962,6 +1170,8 @@ pub fn in_panel() -> Bool
 
 pub fn in_small_panel() -> Bool
 
+pub fn in_small_panel_node(@view.View) -> Bool
+
 pub fn initial(String) -> String
 
 pub let ink_read : @ref.Ref[((String, String, (String?) -> Unit) -> Unit)?]
@@ -971,31 +1181,44 @@ pub fn ink_runs(String, String, Bool) -> Array[@text.Run]
 #callsite(autofill(loc))
 pub fn inline_rename_node(@view.View, @ui.Field, String, String, (String) -> Unit, () -> Unit, picks? : RenamePick, frame? : (@view.View) -> Unit, size_by? : () -> Double, line? : Double, colors_by? : () -> (Int64, Int64, Int64), loc~ : SourceLoc) -> @view.View
 
-pub fn input(@ui.Ctx, String, placeholder? : String, shorter? : Array[String], secret? : Bool, disabled? : Bool, small? : Bool, high? : Double, solid? : Bool, leaves? : Array[Int32], field? : @ui.Field, on_submit? : (String) -> Unit, on_change? : (String) -> Unit) -> @kit.Field
+pub fn input_bar_node(@view.View, @ui.Field, placeholder? : String, label? : String, shorter? : Array[String], secret? : Bool, placeholder_by? : () -> String, disabled? : () -> Bool, description? : () -> String, error? : () -> String, invalid? : () -> Bool, read_only? : () -> Bool, small? : Bool, high? : Double, solid? : Bool, leaves? : Array[Int32], submitted? : (String) -> Unit, edited? : (String) -> Unit, end? : (@view.View) -> Unit, lead? : (@view.View) -> Unit, card_words? : Bool) -> @view.View
 
 pub fn input_node(@view.View, @ui.Field, placeholder? : String, label? : String, shorter? : Array[String], secret? : Bool, placeholder_by? : () -> String, disabled? : () -> Bool, small? : Bool, solid? : Bool, leaves? : Array[Int32], submitted? : (String) -> Unit, edited? : (String) -> Unit, end? : (@view.View) -> Unit, lead? : (@view.View) -> Unit, card_words? : Bool) -> @view.View
 
 pub let inset_room : @ui.Space
 
-pub fn item_row(@ui.Ctx, () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn item_row_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let job_action_h : @ui.Len
 
 pub let jobs_row_h : @ui.Len
 
-pub fn item_row_node(@view.View, (@view.View) -> Unit) -> Unit
-
 pub fn join_meta(Array[String]) -> String
 
 pub let kept_call : @ref.Ref[((String, @json.Json, Bytes?) -> Result[(@json.Json, Bytes?), @json.Json]?)?]
 
+pub fn kept_md(String) -> @json.Json?
+
 pub fn kept_words(String) -> @json.Json?
 
+#callsite(autofill(loc))
 pub fn key_cap_node(@view.View, String, () -> String, () -> Unit, look? : KeyLook, icon? : String, width? : Double, height? : Double, primary? : Bool, held? : () -> Bool, steals_focus? : Bool, repeat? : Bool, felt? : @ui.Haptic, loc~ : SourceLoc) -> @view.View
 
 pub fn key_caps(String) -> Array[String]
 
 pub let key_mark_size : Double
+
+#callsite(autofill(loc))
+pub fn key_pad_dpad_node(@view.View, Double, Double, Double, Double, (String) -> Unit, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn key_pad_key_node(@view.View, String, String, () -> Unit, width? : Double, height~ : Double, primary? : Bool, held? : () -> Bool, icon? : String, repeat? : Bool, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn key_pad_row_node(@view.View, Array[KeyPadKey], @signals.Signal[Array[String]], look? : () -> @ui.Style, loc~ : SourceLoc) -> @view.View
+
+pub fn[T : Eq, K : Hash + Eq] keyed_rows_node(@view.View, () -> Array[T], (T) -> K, (@view.View, @signals.Signal[T]) -> Unit) -> Unit
 
 pub fn keys_apart(size? : Double, least? : Double) -> Double
 
@@ -1005,12 +1228,22 @@ pub fn keys_gap(size? : Double, least? : Double) -> @ui.Space
 
 pub fn keys_row(size? : Double) -> @ui.Style
 
-pub fn keys_row_node(@view.View, () -> String, () -> String, () -> Bool, () -> Bool, () -> Unit, () -> Bool, () -> Unit, () -> String, () -> String) -> Unit
+#callsite(autofill(loc))
+pub fn keys_row_node(@view.View, () -> String, () -> String, () -> Bool, () -> Bool, () -> Unit, () -> Bool, () -> Unit, () -> String, () -> String, loc~ : SourceLoc) -> Unit
 
-pub fn keys_rows_node(@view.View, (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn keys_rows_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub fn kind_icon(String) -> String
 
+#callsite(autofill(loc))
+pub fn kind_row_node(@view.View, () -> String, () -> String, () -> String, () -> Bool, () -> Unit, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn kinds_card_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn labeled_rule_node(@view.View, () -> String, loc~ : SourceLoc) -> @view.View
 
 pub fn labels_across(@view.View, Array[String]) -> Double
 
@@ -1028,13 +1261,9 @@ pub fn last_presented() -> Int32
 
 pub let later_ms : Double
 
-pub fn layers(@ui.Ctx, () -> Unit) -> Unit
-
 pub fn layout(Double) -> Layout
 
 pub let lead : @ui.TextStyle
-
-pub fn lead_by_first_line(@ui.Ctx, Double, Double, () -> Unit, () -> Unit, () -> Unit) -> Unit
 
 pub let leading_scale : @ui.LeadingScale
 
@@ -1048,17 +1277,13 @@ pub fn level_color(String) -> Int64
 
 pub let lift_held : Double
 
-pub fn lift_node(@view.View, () -> Bool, () -> Bool, Double) -> Unit
-
-pub fn lift_of(@ui.Ctx, String, Bool, Bool) -> Double
-
-pub fn lift_over(@ui.Ctx, Int32, String, Double, Double) -> Unit
-
-pub fn line_capsule_corner(Double) -> @ui.Radius
-
-pub fn line_end(@ui.Ctx, () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn lift_node(@view.View, () -> Bool, () -> Bool, Double, loc~ : SourceLoc) -> () -> Double
 
 pub fn line_end_in(Double, Double, side? : Double) -> Double
+
+#callsite(autofill(loc))
+pub fn line_end_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let line_stroke : StrokeShape
 
@@ -1066,31 +1291,48 @@ pub let link : @ui.TextStyle
 
 pub let link_card_w : @ui.Len
 
-pub fn link_cards_node(@view.View, TipLayer, @view.View, @ui.RunsLinks, () -> Array[(String, String, Int32)], (LinkOf) -> LinkCard?) -> Map[Int32, HoverHand]
+#callsite(autofill(loc))
+pub fn link_cards_node(@view.View, TipLayer, @view.View, @ui.RunsLinks, () -> Array[(String, String, Int32)], (LinkOf) -> LinkCard?, loc~ : SourceLoc) -> Map[Int32, HoverHand]
 
 pub fn link_ink() -> Int64
 
 pub fn link_menu(String, from~ : Beside, () -> Unit, () -> Unit) -> Unit
 
-pub fn link_row(@ui.Ctx, String, String, value? : String, value_lit? : Bool, value_bad? : Bool, value_dot? : Bool, strong? : Bool, danger? : Bool, out? : Bool, chevron? : Bool, chevron_room? : Bool, folds? : Bool, note? : String, lacks? : Bool, trouble? : String, lead? : () -> Unit, tail? : () -> Unit, below? : () -> Unit, below_open? : Double, goes? : Bool, acts? : Bool, adds? : Bool, title_after? : () -> Unit, control? : () -> Unit, note_cut? : Bool, face? : Bool, title_style? : @ui.TextStyle, title_cut? : Bool, value_cut? : Bool, tile? : Bool, on_press? : () -> Unit) -> Bool
+#callsite(autofill(loc))
+pub fn link_node(@view.View, () -> String, () -> Unit, icon? : String, chevron? : Bool, style? : () -> @ui.TextStyle, ink? : () -> Int64, on? : () -> Bool, shrink? : Double, role? : @view.Role, loc~ : SourceLoc) -> @view.View
 
-pub fn link_row_node(@view.View, () -> String, () -> Unit, value? : () -> String, value_bad? : () -> Bool, value_warn? : () -> Bool, value_dot? : () -> Bool, value_lit? : Bool, note? : () -> String, wide_note? : () -> String, trouble? : () -> String, strong? : Bool, danger? : Bool, lacks? : Bool, lead? : RowLead, face? : Bool, goes? : Bool, chevron? : Bool, out? : Bool, acts? : Bool, below? : (@view.View) -> Unit, below_open? : () -> Double, note_cut? : Bool, title_after? : (@view.View) -> Unit, title_after_shown? : () -> Bool, folds? : () -> Bool, tail? : (@view.View) -> Unit, tail_shown? : () -> Bool, control? : (@view.View) -> Unit, adds? : Bool, wide_title? : () -> @ui.TextStyle, title_cut? : Bool, value_cut? : Bool, chevron_room? : Bool, busy? : () -> Bool) -> Unit
+#callsite(autofill(loc))
+pub fn link_opens_node(@view.View, () -> String, (@view.View) -> Unit, icon? : String, chevron? : Bool, style? : () -> @ui.TextStyle, ink? : () -> Int64, on? : () -> Bool, shrink? : Double, role? : @view.Role, loc~ : SourceLoc) -> @view.View
 
-pub fn link_row_opens_node(@view.View, () -> String, (@view.View) -> Unit, value? : () -> String, value_bad? : () -> Bool, value_warn? : () -> Bool, value_dot? : () -> Bool, value_lit? : Bool, note? : () -> String, wide_note? : () -> String, trouble? : () -> String, strong? : Bool, danger? : Bool, lacks? : Bool, lead? : RowLead, face? : Bool, goes? : Bool, chevron? : Bool, out? : Bool, acts? : Bool, below? : (@view.View) -> Unit, below_open? : () -> Double, note_cut? : Bool, title_after? : (@view.View) -> Unit, title_after_shown? : () -> Bool, folds? : () -> Bool, tail? : (@view.View) -> Unit, tail_shown? : () -> Bool, control? : (@view.View) -> Unit, adds? : Bool, wide_title? : () -> @ui.TextStyle, title_cut? : Bool, value_cut? : Bool, chevron_room? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn link_row_node(@view.View, () -> String, () -> Unit, value? : () -> String, value_bad? : () -> Bool, value_warn? : () -> Bool, value_dot? : () -> Bool, value_lit? : Bool, note? : () -> String, wide_note? : () -> String, trouble? : () -> String, strong? : Bool, danger? : Bool, lacks? : Bool, lead? : RowLead, face? : Bool, goes? : Bool, chevron? : Bool, out? : Bool, acts? : Bool, below? : (@view.View) -> Unit, below_open? : () -> Double, note_cut? : Bool, note_own_width? : Bool, title_after? : (@view.View) -> Unit, title_after_shown? : () -> Bool, folds? : () -> Bool, tail? : (@view.View) -> Unit, tail_shown? : () -> Bool, control? : (@view.View) -> Unit, adds? : Bool, wide_title? : () -> @ui.TextStyle, title_cut? : Bool, value_cut? : Bool, value_wraps? : Bool, chevron_room? : Bool, lines_from_lead? : Bool, title_masked? : () -> Bool, busy? : () -> Bool, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn link_row_opens_node(@view.View, () -> String, (@view.View) -> Unit, value? : () -> String, value_bad? : () -> Bool, value_warn? : () -> Bool, value_dot? : () -> Bool, value_lit? : Bool, note? : () -> String, wide_note? : () -> String, trouble? : () -> String, strong? : Bool, danger? : Bool, lacks? : Bool, lead? : RowLead, face? : Bool, goes? : Bool, chevron? : Bool, out? : Bool, acts? : Bool, below? : (@view.View) -> Unit, below_open? : () -> Double, note_cut? : Bool, note_own_width? : Bool, title_after? : (@view.View) -> Unit, title_after_shown? : () -> Bool, folds? : () -> Bool, tail? : (@view.View) -> Unit, tail_shown? : () -> Bool, control? : (@view.View) -> Unit, adds? : Bool, wide_title? : () -> @ui.TextStyle, title_cut? : Bool, value_cut? : Bool, value_wraps? : Bool, chevron_room? : Bool, loc~ : SourceLoc) -> Unit
 
 pub fn link_to_of(@json.Json, text? : String, bare? : Bool) -> LinkTo
 
 pub let list_card_corner : Double
 
-pub fn list_card_node(@view.View, (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn list_card_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let list_card_radius : @ui.Radius
+
+#callsite(autofill(loc))
+pub fn list_coming_node(@view.View, () -> Bool, loc~ : SourceLoc) -> @view.View
+
+pub let list_control_end : Double
+
+#callsite(autofill(loc))
+pub fn list_failed_node(@view.View, () -> String, loc~ : SourceLoc) -> @view.View
 
 pub fn list_foot_in(ListAt) -> Double
 
 pub fn list_heading_in(ListAt) -> @ui.Style
 
-pub fn list_heading_node(@view.View, () -> String, ListAt) -> Unit
+#callsite(autofill(loc))
+pub fn list_heading_node(@view.View, () -> String, ListAt, loc~ : SourceLoc) -> Unit
 
 pub fn list_line(ListAt) -> @ui.Style
 
@@ -1098,37 +1340,51 @@ pub fn list_line_in(ListAt) -> Double
 
 pub fn list_more(ListAt) -> @ui.Style
 
+#callsite(autofill(loc))
+pub fn list_none_node(@view.View, () -> String, loc~ : SourceLoc) -> @view.View
+
 pub let list_note : @ui.TextStyle
 
 pub let list_note_bad : @ui.TextStyle
 
 pub let list_pad : Double
 
+#callsite(autofill(loc))
+pub fn[K : Hash + Eq] list_page_node(@view.View, () -> String, () -> Array[K], (@view.View, () -> K) -> Unit, on_back~ : () -> Unit, opts? : ListPageOpts[K], loc~ : SourceLoc) -> Unit
+
 pub let list_room : @ui.Space
 
-pub fn list_row(@ui.Ctx, Int32, ListAt, Int64, () -> Unit, () -> Unit, mark? : () -> Unit, high? : Bool, end_room? : Double, corner? : () -> Unit, corner_w? : Double, lines? : Int32, after? : () -> Unit, slotted? : Bool, end_slot? : Double, corner_end? : Double, ground_by? : () -> Int64, foot? : () -> Unit, foot_capsule? : Double) -> Int32
+#callsite(autofill(loc))
+pub fn list_row_face_node(@view.View, (@view.View) -> Unit, () -> String, make? : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub fn list_row_in(ListAt) -> @ui.Style
 
-pub fn list_row_line(@ui.Ctx, () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn list_row_line_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
-pub fn list_row_line_node(@view.View, (@view.View) -> Unit) -> Unit
-
-pub fn list_row_node(@view.View, ListAt, (@view.View) -> Unit, (@view.View) -> Unit, ground? : () -> Int64, mark? : (@view.View) -> Unit, high? : Bool, end_room? : () -> Double, corner? : (@view.View) -> Unit, corner_shown? : () -> Bool, corner_w? : () -> Double, after? : (@view.View) -> Unit, slotted? : Bool, end_slot? : Double, corner_end? : () -> Double) -> Unit
+#callsite(autofill(loc))
+pub fn list_row_node(@view.View, ListAt, (@view.View) -> Unit, (@view.View) -> Unit, ground? : () -> Int64, mark? : (@view.View) -> Unit, high? : Bool, end_room? : () -> Double, corner? : (@view.View) -> Unit, corner_shown? : () -> Bool, corner_w? : () -> Double, after? : (@view.View) -> Unit, slotted? : Bool, end_slot? : Double, corner_end? : () -> Double, loc~ : SourceLoc) -> Unit
 
 pub fn list_row_slot(ListAt) -> @ui.Style
+
+#callsite(autofill(loc))
+pub fn list_rows_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let list_words_room : @ui.Space
 
 pub let lit_apart : Double
 
-pub fn lit_node(@view.View) -> Bool
+pub fn lit_in_node(@view.View) -> Bool
 
-pub fn lit_within_node(@view.View, yields_to? : @view.View) -> Bool
+pub fn lit_node(@view.View) -> Bool
 
 pub let lit_reach : Double
 
+pub fn lit_within_node(@view.View, yields_to? : @view.View) -> Bool
+
 pub let local_ms : Double
+
+pub fn local_path_of_link(String) -> String?
 
 pub let login_card_corner : @ui.Radius
 
@@ -1136,7 +1392,6 @@ pub let login_card_least : @ui.Len
 
 pub let login_card_most : @ui.Len
 
-pub fn local_path_of_link(String) -> String?
 pub fn look() -> Look
 
 pub fn look_for(Double) -> Look
@@ -1145,15 +1400,16 @@ pub fn look_lent(@view.View, Look) -> Unit
 
 pub fn look_node(@view.View) -> Look
 
-pub fn loose(@ui.Ctx, () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn loose_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
-pub fn loose_node(@view.View, (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn loupe_node(@view.View, () -> Bool, loc~ : SourceLoc) -> Unit
 
 pub fn lower(String) -> String
 
-pub fn maker_mark(@ui.Ctx, String, String, Double) -> Int32
-
-pub fn maker_mark_node(@view.View, String, String, Double) -> @view.View
+#callsite(autofill(loc))
+pub fn maker_mark_node(@view.View, String, String, Double, loc~ : SourceLoc) -> @view.View
 
 pub let mark_bar_end : @ui.Space
 
@@ -1181,19 +1437,24 @@ pub let mark_ring_bg : @ui.Color
 
 pub let mark_said_h : @ui.Len
 
-pub fn mark_words_node(@view.View, () -> String, () -> @ui.TextStyle) -> @view.View
+#callsite(autofill(loc))
+pub fn mark_words_node(@view.View, () -> String, () -> @ui.TextStyle, loc~ : SourceLoc) -> @view.View
 
 pub fn mark_yellow() -> Int64
 
-pub fn markdown(@ui.Ctx, String, key? : String, tree? : @json.Json?, size? : Double, line? : Double, one_line? : Bool, ink? : Int64, on_link? : (String) -> Unit, on_link_hold? : ((String, (Double, Double, Double, Double)) -> Unit)?, on_link_shown? : ((String, String, Int32) -> Unit)?, files? : (String) -> Placed?, found? : Array[String], code? : (String, String) -> (() -> Unit)?, screens? : Screens?, chat_title? : (String) -> String?, document? : Bool, bleed? : Double, copy? : Bool, fit_tables? : Bool, paths? : Bool, text_face? : Int32?, code_face? : Int32?) -> Int32
+pub fn markdown_found_count(String, @json.Json?, Array[String]) -> Int32
 
-pub fn markdown_node(@view.View, () -> String, tree? : () -> @json.Json?, size? : () -> Double, line? : Double, ink? : () -> Int64, document? : Bool, bleed? : Double, copy? : Bool, fit_tables? : Bool, paths? : Bool, found? : () -> Array[String], on_link? : (String) -> Unit, on_link_hold? : ((String, (Double, Double, Double, Double)) -> Unit)?, on_link_shown? : (@view.View, Array[(String, String, Int32)]) -> Unit, link_cards? : (TipLayer, (LinkOf) -> LinkCard?), one_line? : Bool, one_line_by? : () -> Bool, chat_title? : (String) -> String?, code? : (String) -> ((@view.View, () -> String) -> Unit)?, files? : (String) -> PlacedNode?, screens? : ScreensNode) -> @view.View
+#callsite(autofill(loc))
+pub fn markdown_node(@view.View, () -> String, tree? : () -> @json.Json?, size? : () -> Double, line? : () -> Double, apart? : Bool, ink? : () -> Int64, document? : Bool, bleed? : () -> Double, copy? : Bool, fit_tables? : Bool, paths? : Bool, found? : () -> Array[String], found_at? : () -> Int32?, lit? : () -> (String, Int64), on_link? : (String) -> Unit, on_link_hold? : ((String, (Double, Double, Double, Double)) -> Unit)?, on_link_shown? : (@view.View, Array[(String, String, Int32)]) -> Unit, link_cards? : (TipLayer, (LinkOf) -> LinkCard?), one_line? : Bool, one_line_by? : () -> Bool, chat_title? : (String) -> String?, code? : (String) -> ((@view.View, () -> String) -> Unit)?, files? : (String) -> PlacedNode?, screens? : ScreensNode, piece? : MdPiece?, piece_by? : () -> MdPiece?, across_of? : (Int32) -> @view.Scroll, tracks_of? : (Int32) -> @view.TracksKept?, text_face? : () -> Int32?, code_face? : () -> Int32?, serif? : () -> Bool, nodes? : () -> Array[@json.Json], loc~ : SourceLoc) -> @view.View
 
-pub fn markdown_part(@ui.Ctx, String, Array[@json.Json], String, apart? : Bool, size? : Double, ink? : Int64, line? : Double, serif? : Bool, document? : Bool, found? : Array[String], on_link? : (String) -> Unit) -> Unit
+pub fn markdown_piece_with(String, @json.Json?, Array[MdPiece], passage? : String, words? : Array[String], at? : Int32) -> Int32
+
+pub fn markdown_pieces(String, @json.Json?) -> Array[MdPiece]?
 
 pub let markdown_read : @ref.Ref[((String, (@json.Json?) -> Unit) -> Unit)?]
 
-pub fn marks_actions_node(@view.View, () -> MarksActionsSaid, () -> ViewerInk, @view.Live[Double], () -> Unit, () -> Unit, () -> Unit, tip? : TipLayer) -> @view.View
+#callsite(autofill(loc))
+pub fn marks_actions_node(@view.View, () -> MarksActionsSaid, () -> ViewerInk, @view.Live[Double], () -> Unit, () -> Unit, () -> Unit, tip? : TipLayer, loc~ : SourceLoc) -> @view.View
 
 pub fn md_links_to(String, @json.Json?) -> Map[String, LinkTo]
 
@@ -1239,27 +1500,21 @@ pub let media_track_share : Double
 
 pub let medium_from : Double
 
-pub fn menu(Array[MenuItem?], from~ : Beside, title? : String, along? : @view.Along, gone? : () -> Unit) -> Unit
+pub fn menu(Array[MenuItem?], from~ : Beside, title? : String, along? : @view.Along, side? : @view.Side, gone? : () -> Unit) -> Unit
 
-pub fn menu_held(@ui.Ctx, String) -> Bool
+pub fn menu_clean_items(Array[MenuItem?]) -> Array[MenuItem?]
 
 pub fn menu_held_node() -> Unit
 
-pub fn menu_item(@ui.Ctx, String, key? : String, icon? : String, mark? : (@ui.Ctx, Double) -> Unit, danger? : Bool, on? : Bool, note? : String, under? : String, panel? : Bool, end? : String, at_top? : Bool, at_foot? : Bool, on_press? : () -> Unit) -> Bool
+pub fn menu_item_of(String, () -> Unit, icon? : String, danger? : Bool, disabled? : Bool, chosen? : Bool, checked? : Bool, heading? : Bool, further? : Bool) -> MenuItem
 
-pub fn menu_item_of(String, () -> Unit, icon? : String, danger? : Bool, disabled? : Bool, chosen? : Bool, heading? : Bool) -> MenuItem
-
-pub fn menu_node(@view.View, () -> Bool, (@view.View) -> @view.View, () -> Array[MenuItem?], String, @view.Along, Double, Bool, Bool, (MenuItem) -> Unit, () -> Unit, shown? : () -> Unit, gone? : () -> Unit, extras? : (Int32) -> MenuExtra, min_w? : Double, side? : @view.Side, modal? : Bool) -> Unit
-
-pub fn menu_of(@ui.Ctx, String, Array[MenuItem?], label~ : String, size? : Double) -> Bool
+pub fn menu_node(@view.View, () -> Bool, (@view.View) -> @view.View, () -> Array[MenuItem?], String, @view.Along, Double, Bool, Bool, (MenuItem) -> Unit, () -> Unit, shown? : () -> Unit, gone? : () -> Unit, extras? : (Int32) -> MenuExtra, min_w? : Double, max_w? : Double, side? : @view.Side, modal? : Bool) -> Unit
 
 pub fn menu_open_key() -> String
 
 pub fn menu_presses_node(@view.View, () -> Unit, (Double, Double, Bool) -> Unit) -> Unit
 
 pub let menu_raised : Raised
-
-pub fn menu_row(@ui.Ctx, @kit.MenuItemState, String, Bool, Double, ((@ui.Ctx, @kit.MenuItemState) -> Unit)?, danger? : Bool, mark? : (@ui.Ctx, Double) -> Unit, note? : String, at_top? : Bool, at_foot? : Bool) -> Unit
 
 pub let menu_row_end : @ui.Style
 
@@ -1269,9 +1524,9 @@ pub let menu_row_over : Double
 
 pub fn menu_row_reach(Double) -> Double
 
-pub fn menu_rule(@ui.Ctx) -> Unit
-
 pub fn menu_shown(String) -> Bool
+
+pub fn menu_ticks_node(@view.View, () -> Bool, (@view.View) -> @view.View, () -> Array[MenuItem?], String, @view.Along, Double, Bool, Bool, (MenuItem) -> Unit, () -> Unit, shown? : () -> Unit, gone? : () -> Unit, extras? : (Int32) -> MenuExtra, min_w? : Double, side? : @view.Side, modal? : Bool, check_end? : Bool) -> Unit
 
 pub let menu_w : Double
 
@@ -1295,19 +1550,21 @@ pub let message_stroke : StrokeShape
 
 pub let meta : @ui.TextStyle
 
-pub fn meter_chip(@ui.Ctx, @json.Json?, brief? : Bool, figure? : Bool, drop? : Int32, keep? : Bool, key? : String) -> Unit
+#callsite(autofill(loc))
+pub fn meter_chips_brief_node(@view.View, () -> Array[@json.Json], loc~ : SourceLoc) -> Unit
 
-pub fn meter_chips(@ui.Ctx, Array[@json.Json], brief? : Bool, key? : String) -> Unit
-
-pub fn meter_chips_brief_node(@view.View, () -> Array[@json.Json]) -> Unit
-
-pub fn meter_line(@ui.Ctx, Array[@json.Json], key? : String) -> Unit
-
-pub fn meter_line_node(@view.View, () -> Array[@json.Json], in_row? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn meter_line_node(@view.View, () -> Array[@json.Json], in_row? : Bool, loc~ : SourceLoc) -> Unit
 
 pub fn mix(Int64, Double, Int64) -> Int64
 
 pub fn mix_seen(Int64, Double, Int64) -> Int64
+
+#callsite(autofill(loc))
+pub fn mono_line_node(@view.View, () -> String, @ui.TextSize, () -> Int64, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn mono_words_node(@view.View, () -> String, @ui.TextStyle, loc~ : SourceLoc) -> Unit
 
 pub fn more_held() -> Bool
 
@@ -1315,15 +1572,25 @@ pub let mouse_chat_list : ChatList
 
 pub let mouse_found : Found
 
-pub fn name_line_node(@view.View, () -> String, () -> @ui.TextStyle, () -> String, () -> @ui.TextStyle) -> @view.View
+#callsite(autofill(loc))
+pub fn name_line_node(@view.View, () -> String, () -> @ui.TextStyle, () -> String, () -> @ui.TextStyle, loc~ : SourceLoc) -> @view.View
 
 pub let name_line_rest_least : Double
 
 pub let name_max : @ui.Len
 
-pub fn name_words(@ui.Ctx, String, @ui.TextStyle, color? : Int64) -> Int32
+pub let name_row : @ui.Style
 
 pub let named_actions : @ref.Ref[(() -> Unit)?]
+
+#callsite(autofill(loc))
+pub fn narrow_about_node(@view.View, () -> String, TipLayer, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn narrow_card_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn narrow_heading_node(@view.View, () -> String, loc~ : SourceLoc) -> Unit
 
 pub let narrow_most : Double
 
@@ -1340,7 +1607,6 @@ pub fn native_card_corner() -> Double
 pub fn native_card_corner_at(Int32) -> Double
 
 pub fn native_clear() -> Double
-
 
 pub fn native_foot_corner() -> Double?
 
@@ -1364,49 +1630,45 @@ pub fn native_over_up(String, alive~ : () -> Bool, owner? : String, over? : Int3
 
 pub fn native_side() -> Bool
 
-pub fn nav_action(@ui.Ctx, String, String, ((Beside) -> Unit)?, trailing? : () -> Unit, band? : @ui.Style, at? : ListAt) -> Unit
-
-pub fn nav_apart(@ui.Ctx, Bool, () -> Unit) -> Unit
-
-pub fn nav_back(@ui.Ctx, String, String, max_w? : Double) -> Bool
-
-pub fn nav_bar(@ui.Ctx, String, String, String, sub? : () -> Unit, title_after? : () -> Unit, trailing? : () -> Unit, back_max? : Double, bg? : Int64, top? : Double) -> Bool
+#callsite(autofill(loc))
+pub fn nav_bar_node(@view.View, () -> String, () -> String, () -> Unit, sub? : () -> String, top? : () -> Double, trailing? : (@view.View) -> Unit, trailing_shown? : () -> Bool, trailing_pill? : Bool, trailing_pad? : Double, back_most? : () -> Double, loc~ : SourceLoc) -> Unit
 
 pub let nav_fade : @motion.Spec
 
-pub fn nav_bar_node(@view.View, () -> String, () -> String, () -> Unit, sub? : () -> String, top? : () -> Double, trailing? : (@view.View) -> Unit, trailing_shown? : () -> Bool, trailing_pill? : Bool, trailing_pad? : Double, back_most? : () -> Double) -> Unit
-
-pub fn nav_ground_by(@ui.Ctx, String, Bool, Bool, lit? : Int64) -> () -> Int64
-
 pub fn nav_ground_node(@view.View, () -> Bool, lit? : Int64) -> Unit
 
-pub fn nav_ground_on(@ui.Ctx, Int32, String, Bool, Bool, lit? : Int64) -> Unit
-
-pub fn nav_item(@ui.Ctx, String, Bool, () -> Unit, () -> Unit, end? : () -> Unit, lines? : () -> Unit, keep_lines? : Int32, more? : Bool, foot? : () -> Unit, foot_capsule? : Double) -> Bool
+#callsite(autofill(loc))
+pub fn nav_item_node(@view.View, ListAt, () -> Bool, () -> String, (@view.View) -> Unit, (@view.View) -> Unit, (@view.View) -> Unit, end? : (@view.View) -> Unit, lines? : (@view.View) -> Unit, keep_lines? : Int32, more? : () -> Bool, foot? : (@view.View) -> Unit, foot_on? : () -> Bool, foot_capsule? : Double, loc~ : SourceLoc) -> Unit
 
 pub let nav_mark_side : Double
 
 pub fn nav_meta() -> @ui.TextStyle
 
+#callsite(autofill(loc))
+pub fn nav_meta_node(@view.View, () -> String, look? : () -> @ui.TextStyle, loc~ : SourceLoc) -> Unit
+
 pub fn nav_new() -> @ui.Style
-
-pub fn nav_quota_chips(@ui.Ctx, @json.Json?, key? : String, at? : ListAt, widest? : Double) -> Unit
-
-pub fn nav_quota_line(@ui.Ctx, @json.Json?) -> Double
-
-pub fn nav_row(@ui.Ctx, String, Bool, () -> Unit, align? : @ui.Align, more? : Bool) -> Bool
 
 pub let nav_sub_gap : @ui.Space
 
-pub fn nav_title(@ui.Ctx, String, away? : Bool) -> Unit
-
 pub let nav_title_clear : @ui.Space
 
-pub fn nav_words_node(@view.View, () -> String) -> Unit
+#callsite(autofill(loc))
+pub fn nav_title_node(@view.View, () -> String, away? : () -> Bool, after? : (@view.View) -> Unit, after_shown? : () -> Bool, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn nav_words_node(@view.View, () -> String, faint? : () -> Bool, loc~ : SourceLoc) -> Unit
 
 pub fn neg(Double) -> Double
 
 pub fn new_media(String) -> @player.Media
+
+pub let news_card_line : @ui.TextStyle
+
+#callsite(autofill(loc))
+pub fn news_card_node(@view.View, String, () -> String, () -> String, () -> Unit, (@view.View) -> Unit, close? : (TipLayer, () -> String, () -> Unit), loc~ : SourceLoc) -> @view.View
+
+pub let news_card_note : @ui.TextStyle
 
 pub fn next_in(String, Array[String]) -> String?
 
@@ -1418,41 +1680,63 @@ pub let no_ground : Int64
 
 pub let no_link_to : LinkTo
 
-pub let no_ring : Double
-
 pub fn node_sp(@view.View, Double) -> Double
 
 pub fn node_sp_of(@view.View, Double) -> Double
 
+pub fn node_words_w(String, Double, weight? : Int32) -> Double
+
 pub let note : @ui.TextStyle
 
-pub fn note_link_node(@view.View, () -> String, () -> String, () -> Unit, inline? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn note_link_node(@view.View, () -> String, () -> String, () -> Unit, inline? : Bool, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn notice_end_action_node(@view.View, () -> String, () -> Bool, () -> Bool, () -> Unit, strut? : () -> Double, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn notice_pill_node(@view.View, () -> String, () -> Bool, () -> Bool, () -> Int32, () -> Unit, (@view.View) -> Unit, md_led? : () -> Bool, end? : (@view.View, () -> Double) -> Unit, detailed? : () -> Bool, detail? : (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn notify_preview_node(@view.View, NoticeLook, () -> Double, () -> Bool, () -> String, () -> String, () -> IconMark, String, () -> String, loc~ : SourceLoc) -> Unit
 
 pub fn offers_bindings() -> Array[@view.Binding]
 
 pub let offers_most : Double
 
-pub fn offers_node(@view.View, @view.View, () -> Bool, () -> Array[String], @signals.Signal[Int32], (@view.View, String, () -> Bool) -> Unit, (String) -> String, (Int32) -> Unit, () -> Unit, String, head? : () -> (String, String), side? : @view.Side, offset? : Double, none? : (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn offers_node(@view.View, @view.View, () -> Bool, () -> Array[String], @signals.Signal[Int32], (@view.View, String, () -> Bool) -> Unit, (String) -> String, (Int32) -> Unit, () -> Unit, String, head? : () -> (String, String), side? : @view.Side, offset? : Double, none? : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub fn oklch(Double, Double, Double) -> Int64
 
-pub fn on_baseline(@view.View, @ui.TextSize, @ui.TextSize, leading? : @ui.Leading, own_leading? : @ui.Leading, weight? : Int, own_weight? : Int, loc~ : SourceLoc) -> @view.View
+#callsite(autofill(loc))
+pub fn on_baseline(@view.View, @ui.TextSize, @ui.TextSize, leading? : @ui.Leading, own_leading? : @ui.Leading, weight? : Int32, own_weight? : Int32, loc~ : SourceLoc) -> @view.View
 
 pub fn on_corner(Double, Double, room? : Double) -> Double
 
 pub let one_line : @ui.TextStyle
 
-pub fn one_of(@ui.Ctx, String, String, Array[(String, String)], (String) -> Unit, label? : String, placeholder? : String, disabled? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn one_of_node(@view.View, () -> String, () -> Array[(String, String)], (String) -> Unit, label? : () -> String, disabled? : () -> Bool, loc~ : SourceLoc) -> Unit
 
-pub fn one_of_node(@view.View, () -> String, () -> Array[(String, String)], (String) -> Unit, label? : () -> String, disabled? : () -> Bool) -> Unit
+pub fn open_gate_collecting() -> Bool
+
+pub fn open_gate_picture(String) -> Unit
+
+pub let open_hold_ms : Double
+
+#callsite(autofill(loc))
+pub fn opened_head_node(@view.View, () -> String, () -> String, () -> String, () -> String, () -> Double, Bool, (@view.View) -> Unit, () -> Unit, () -> String, () -> String, () -> Unit, keys_shown? : () -> Bool, keys_on? : () -> Bool, keys? : (@view.View) -> Unit, paste? : () -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let option_check_share : Double
 
-pub fn options_card(@ui.Ctx, String, Array[(String, String, Bool)], Bool, Int32?, chosen? : Int32?, wide? : Bool, history? : Bool, on_pick? : (Int32) -> Unit) -> Unit
-
-pub fn options_card_node(@view.View, () -> Array[(String, String, Bool)], () -> Bool, () -> Int32?, chosen? : () -> Int32?, wide? : Bool, history? : Bool, on_pick? : (Int32) -> Unit) -> @view.View
+#callsite(autofill(loc))
+pub fn options_card_node(@view.View, () -> Array[(String, String, Bool)], () -> Bool, () -> Int32?, chosen? : () -> Int32?, wide? : Bool, history? : Bool, on_pick? : (Int32) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub fn origin_mark_name(String) -> String
+
+#callsite(autofill(loc))
+pub fn origin_mark_node(@view.View, () -> String, Double, loc~ : SourceLoc) -> @view.View
 
 pub fn outset(Double) -> @ui.Style
 
@@ -1468,6 +1752,8 @@ pub fn over(Int64, Int64) -> Int64
 
 pub fn over_foot_reach(Double) -> @ui.Style
 
+pub fn over_panel_node(@view.View, () -> Bool, () -> Unit, (@view.View, @view.View, () -> @ui.Look) -> @view.View, within? : () -> Bool, back_within? : () -> Bool, top_share? : Double, come? : @motion.Trans, come_ms? : Double, ground_ms? : Double, go? : @motion.Trans, go_ms? : Double) -> Unit
+
 pub fn over_room(@view.View) -> (Double, Double)
 
 pub fn overlap(Double) -> @ui.Style
@@ -1475,52 +1761,75 @@ pub fn overlap(Double) -> @ui.Style
 #callsite(autofill(loc))
 pub fn overlay_card_node(@view.View, (@headless.OverlayDismiss) -> Unit, (@view.View, @headless.Overlay) -> Unit, place? : (@view.View) -> Unit, modal? : Bool, scrim? : Bool, dismiss_on_escape? : Bool, dismiss_on_outside? : Bool, inert? : () -> Bool, anchor? : @view.View, label? : () -> String, loc~ : SourceLoc) -> @view.View
 
+pub fn overlay_solid_edge() -> (Double, Int64)
+
 pub fn oversize(Double) -> @ui.Style
 
-pub fn own_head(@ui.Ctx, (Double) -> Unit, String, rename? : () -> Unit, rename_label? : String, busy? : Bool, tags? : () -> Unit, lines? : Array[String], dot? : String, state? : () -> Unit, warnings? : Array[(String, Bool)], actions? : () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn own_head_node(@view.View, (@view.View, Double) -> Unit, () -> String, rename? : () -> Unit, renames? : () -> Bool, rename_label? : () -> String, busy? : () -> Bool, tags? : (@view.View) -> Unit, lines? : () -> Array[String], state? : (@view.View) -> Unit, actions? : (@view.View) -> Unit, dot? : () -> String, state_shown? : () -> Bool, warnings? : () -> Array[(String, Bool)], mark_press? : (() -> String, () -> Unit), loc~ : SourceLoc) -> Unit
 
-pub fn own_head_node(@view.View, (@view.View, Double) -> Unit, () -> String, rename? : () -> Unit, renames? : () -> Bool, rename_label? : () -> String, busy? : () -> Bool, tags? : (@view.View) -> Unit, lines? : () -> Array[String], state? : (@view.View) -> Unit, actions? : (@view.View) -> Unit, dot? : () -> String, state_shown? : () -> Bool, warnings? : () -> Array[(String, Bool)]) -> Unit
+#callsite(autofill(loc))
+pub fn page_action_node(@view.View, String, () -> String, () -> Unit, loc~ : SourceLoc) -> @view.View
 
-pub fn page(@ui.Ctx, String, String, Array[() -> Unit], on_back~ : () -> Unit, frame? : PageFrame, lead? : String, about? : String, actions? : () -> Unit, head? : () -> Unit, small? : String) -> Unit
+#callsite(autofill(loc))
+pub fn page_action_opens_node(@view.View, String, () -> String, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
-pub fn page_block(@view.View, (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn page_add_node(@view.View, () -> String, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
-pub fn page_card(@ui.Ctx, () -> Unit, footed? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn page_bar_node(@view.View, (@view.View) -> Unit, corners? : (Double, Double)?, loc~ : SourceLoc) -> @view.View
 
-pub fn page_card_node(@view.View, (@view.View) -> Unit, footed? : Bool, layered? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn page_block(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
-pub fn page_choice(@ui.Ctx, String, Array[String], Int32, item_w? : Double, on_pick? : (Int32) -> Unit) -> Int32
+#callsite(autofill(loc))
+pub fn page_card_node(@view.View, (@view.View) -> Unit, footed? : Bool, layered? : Bool, layered_narrow? : Bool, loc~ : SourceLoc) -> Unit
 
-pub fn page_choice_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, item_w? : Double, thumb? : SegThumb) -> Unit
+#callsite(autofill(loc))
+pub fn page_choice_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, item_w? : Double, thumb? : SegThumb, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn page_empty_room_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn page_filter_room_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let page_find_key_side : Double
 
 #callsite(autofill(loc))
 pub fn page_find_node(@view.View, () -> String, (Int32) -> Unit, (Int32) -> Bool, () -> Unit, field? : @ui.Field, placeholder_by? : () -> String, edited? : (String) -> Unit, frame? : (@view.View) -> Unit, said_look? : () -> @ui.TextStyle, field_size? : Double, field_line? : Double, colors_by? : () -> (Int64, Int64, Int64), ink? : () -> Int64, tips? : TipLayer, key_side? : Double, prev_label? : () -> String, next_label? : () -> String, close_label? : () -> String, field_in? : Double, loc~ : SourceLoc) -> @view.View
 
-pub let page_list_opened : @ref.Ref[(@ui.Ctx, String, Int32) -> Unit]
+#callsite(autofill(loc))
+pub fn page_foot_bar_node(@view.View, (@view.View) -> Unit, wrap_gap? : Double, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn page_gutter_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn page_narrow_card_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let page_narrow_most : Double
 
-pub fn page_node(@view.View, () -> String, () -> Array[String], (@view.View, String) -> Unit, on_back~ : () -> Unit, frame? : () -> PageFrame, lead? : () -> String, about? : () -> String, actions? : (@view.View) -> Unit, said? : (PageSaid) -> Unit, width? : () -> Double, scroll? : @view.Scroll, tips? : TipLayer, head? : (@view.View) -> Unit, near_foot? : (Double, () -> Bool, () -> Unit), small? : () -> String, back_as? : () -> String, reused? : (String) -> Int?, make_reused? : (@view.View, Int, () -> String) -> Unit) -> Unit
+pub fn page_node(@view.View, () -> String, () -> Array[String], (@view.View, String) -> Unit, on_back~ : () -> Unit, frame? : () -> PageFrame, lead? : () -> String, about? : () -> String, actions? : (@view.View) -> Unit, said? : (PageSaid) -> Unit, width? : () -> Double, scroll? : @view.Scroll, tips? : TipLayer, head? : (@view.View) -> Unit, near_foot? : (Double, () -> Bool, () -> Unit), small? : () -> String, back_as? : () -> String, reused? : (String) -> Int32?, make_reused? : (@view.View, Int32, () -> String) -> Unit) -> Unit
 
-pub fn page_none_node(@view.View, () -> String) -> Unit
+#callsite(autofill(loc))
+pub fn page_none_node(@view.View, () -> String, loc~ : SourceLoc) -> Unit
 
-pub fn page_note(@ui.Ctx, String, bad? : Bool) -> Unit
-
-pub fn page_note_node(@view.View, () -> String, bad? : () -> Bool) -> Unit
+#callsite(autofill(loc))
+pub fn page_note_node(@view.View, () -> String, bad? : () -> Bool, loc~ : SourceLoc) -> Unit
 
 pub let page_raised : Raised
 
-pub fn page_said_node(@view.View, () -> String, bad? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn page_said_node(@view.View, () -> String, bad? : Bool, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn page_section_note_node(@view.View, () -> String, loc~ : SourceLoc) -> Unit
 
 pub fn page_viewer_ink() -> ViewerInk
 
-pub fn page_waiting(@ui.Ctx, String, () -> Unit, text? : String, error? : String, note? : WaitNote) -> Unit
-
 pub fn palette_of(Bool) -> Palette
-
-pub let pane_bar : @ref.Ref[((@ui.Ctx, PageBar, () -> Unit) -> Unit)?]
 
 pub fn pane_bar_actions_lent(@view.View) -> Unit
 
@@ -1540,59 +1849,68 @@ pub fn pane_foot_in(holds? : Double) -> Double
 
 pub fn pane_foot_rest(holds? : Double) -> Double
 
+pub let pane_lent : @view.Lent[Bool]
+
 pub fn pane_radii() -> FixedArray[Double]?
 
 pub let pane_round : @ref.Ref[FixedArray[@paint.CornerOf]?]
 
-pub fn panel(String, (@ui.Ctx, () -> Unit) -> Unit, from~ : Anchor, w? : Double, fits? : Bool, description? : String, foot? : (@ui.Ctx, () -> Unit) -> Unit, wide? : Bool, live? : () -> (String, String, String), gone? : () -> Unit, tall? : Double, grows? : Bool, focus? : Bool, ruled? : Bool, lists? : Bool, fade_out_together? : Bool, form? : Bool, field? : String, stage? : Bool, above? : (@ui.Ctx) -> Unit, head_end? : (@ui.Ctx) -> Unit, heads_itself? : Bool, side? : @view.Side, along? : @view.Along, offset? : Double, steps? : Bool, back? : () -> Unit) -> Unit
-
 pub fn panel_back(to? : Int32) -> Bool
 
-pub fn panel_button(@ui.Ctx, String, String, tone? : PanelTone, disabled? : Bool, on_press? : () -> Unit) -> Bool
+pub fn panel_bleed_node(@view.View) -> @ui.Style
 
-pub fn panel_button_node(@view.View, () -> String, () -> Unit, tone? : PanelTone) -> @view.View
+#callsite(autofill(loc))
+pub fn panel_button_node(@view.View, () -> String, () -> Unit, tone? : PanelTone, loc~ : SourceLoc) -> @view.View
+
+pub let panel_card_in : Double
+
+pub fn panel_card_last() -> @ui.Style
 
 pub fn panel_card_last_node(@view.View) -> @ui.Style
 
+pub fn panel_card_out() -> @ui.Style
+
 pub fn panel_card_out_node(@view.View) -> @ui.Style
 
-pub fn panel_column(@ui.Ctx, String, Double, @ui.Style, () -> Unit) -> Unit
-
+#callsite(autofill(loc))
 pub fn panel_content_row_node(@view.View, () -> String, (@view.View) -> Unit, (@view.View) -> Unit, highlighted? : (@view.View) -> Bool, loc~ : SourceLoc) -> Unit
 
 pub fn panel_corner_foot() -> @ui.Style
 
+pub fn panel_depth() -> Int32
+
 pub fn panel_edge() -> Int64
+
+pub let panel_end_icon : Double
 
 pub fn panel_field_in_node(@view.View) -> @ui.Style
 
-pub fn panel_go(String, (@ui.Ctx, () -> Unit) -> Unit, description? : String, foot? : (@ui.Ctx, () -> Unit) -> Unit, left? : () -> Unit, count? : String, back? : () -> Unit, live? : () -> (String, String, String)) -> Unit
+pub fn panel_foot_clear(Double, Double) -> @ui.Space
+
+pub fn panel_go_nodes(String, (@view.View, () -> Unit) -> Unit, description? : String, foot? : (@view.View, () -> Unit) -> Unit, left? : () -> Unit, back? : () -> Unit, live? : () -> (String, String, String)) -> Unit
 
 pub fn panel_ground() -> Int64
 
-pub fn panel_group(@ui.Ctx, () -> Unit, label? : String, lead? : (@ui.Ctx) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn panel_group_node(@view.View, () -> String, (@view.View) -> Unit, lead? : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
-pub fn panel_group_node(@view.View, () -> String, (@view.View) -> Unit, lead? : (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn panel_head_node(@view.View, () -> String, end? : (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
-pub fn panel_head(@ui.Ctx, String, note? : String, end? : (@ui.Ctx) -> Unit) -> Unit
-
-pub fn panel_heading_node(@view.View, () -> String) -> Unit
-
-pub fn panel_held() -> Bool
+#callsite(autofill(loc))
+pub fn panel_heading_node(@view.View, () -> String, loc~ : SourceLoc) -> Unit
 
 pub let panel_icon_size : Double
 
 pub let panel_in : @ui.Radius
 
-pub fn panel_list(@ui.Ctx, String, Int32, Double, (Int32) -> Unit, stick_end? : Bool, fills? : Bool) -> Int32
+#callsite(autofill(loc))
+pub fn[K : Hash + Eq] panel_list_node(@view.View, () -> Array[K], (@view.View, K) -> Unit, est~ : Double, fills? : Bool, most? : () -> Double, place? : @view.ListPlace[K], stick_end? : Bool, loc~ : SourceLoc) -> @view.View
 
-pub fn[K : Hash + Eq] panel_list_node(@view.View, () -> Array[K], (@view.View, K) -> Unit, est~ : Double, fills? : Bool, most? : () -> Double, place? : @view.ListPlace[K]) -> @view.View
+pub fn panel_nodes(String, (@view.View, () -> Unit) -> Unit, from~ : Anchor, w? : Double, fits? : Bool, heads_itself? : Bool, fade_out_together? : Bool, description? : String, foot? : (@view.View, () -> Unit) -> Unit, wide? : Bool, live? : () -> (String, String, String), gone? : () -> Unit, tall? : Double, focus? : Bool, ruled? : Bool, form? : Bool, grows? : Bool, popover? : Bool, side? : @view.Side, along? : @view.Along, offset? : Double, hugs? : Bool, hugs_centred? : Bool, match_panel? : Int32, steps? : Bool, back? : () -> Unit, top_share? : Double, most? : () -> Double, stage? : Bool, above? : (@view.View) -> Unit, head_end? : (@view.View) -> Unit) -> Unit
 
-pub fn panel_nodes(String, (@view.View, () -> Unit) -> Unit, from~ : Anchor, w? : Double, description? : String, foot? : (@view.View, () -> Unit) -> Unit, wide? : Bool, live? : () -> (String, String, String), gone? : () -> Unit, tall? : Double, focus? : Bool, ruled? : Bool, form? : Bool, grows? : Bool, side? : @view.Side, along? : @view.Along, offset? : Double, hugs? : Bool) -> Unit
-
-pub fn panel_note(@ui.Ctx, String) -> Unit
-
-pub fn panel_note_node(@view.View, () -> String) -> Unit
+#callsite(autofill(loc))
+pub fn panel_note_node(@view.View, () -> String, loc~ : SourceLoc) -> Unit
 
 pub let panel_offset : Double
 
@@ -1602,33 +1920,51 @@ pub fn panel_opens_on_node(@view.View) -> Unit
 
 pub let panel_pad : Double
 
+pub fn panel_parts_gap_node(@view.View) -> Double
+
 pub let panel_pill : Double
+
+#callsite(autofill(loc))
+pub fn panel_popover_note_node(@view.View, () -> String, loc~ : SourceLoc) -> Unit
+
+pub fn panel_reshaped_node(@view.View) -> Unit
 
 pub fn panel_row_in() -> @ui.Style
 
 pub fn panel_row_in_node(@view.View) -> @ui.Style
 
-pub fn panel_row_node(@view.View, () -> String, () -> Unit, icon? : () -> String, note? : () -> String, end? : String, danger? : Bool, plain? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn panel_row_node(@view.View, () -> String, () -> Unit, icon? : () -> String, note? : () -> String, end? : String, danger? : Bool, plain? : Bool, loc~ : SourceLoc) -> Unit
 
-pub fn panel_row_opens_node(@view.View, () -> String, (Anchor) -> Unit, icon? : () -> String, note? : () -> String) -> Unit
+#callsite(autofill(loc))
+pub fn panel_row_opens_node(@view.View, () -> String, (Anchor) -> Unit, icon? : () -> String, note? : () -> String, loc~ : SourceLoc) -> Unit
 
-pub fn panel_rule_node(@view.View) -> Unit
+#callsite(autofill(loc))
+pub fn panel_rule_node(@view.View, loc~ : SourceLoc) -> Unit
 
-pub fn panel_said_row_node(@view.View, () -> Array[@text.Run], () -> Unit, () -> String, lead? : (@view.View, Double) -> Unit, end? : () -> String, who? : (() -> String, (@view.View, Double) -> Unit), chosen? : () -> Bool, lit? : () -> Bool, made? : (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn panel_said_row_node(@view.View, () -> Array[@text.Run], () -> Unit, () -> String, lead? : (@view.View, Double) -> Unit, end? : () -> String, who? : (() -> String, (@view.View, Double) -> Unit), chosen? : () -> Bool, lit? : () -> Bool, point? : () -> Unit, made? : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub fn panel_search_at_hand_node(@view.View) -> Unit
 
 pub fn panel_sides_at_node(@view.View) -> Double
 
-pub fn panel_switch_row_node(@view.View, () -> String, () -> Bool, (Bool) -> Unit, note? : () -> String, disabled? : () -> Bool, busy? : () -> Bool) -> Unit
+pub fn panel_surface_decorate(@view.View, radius? : Double, solid? : () -> Int64, merge? : () -> Double, active? : () -> Bool, clips? : Bool) -> @view.View
+
+#callsite(autofill(loc))
+pub fn panel_switch_row_node(@view.View, () -> String, () -> Bool, (Bool) -> Unit, note? : () -> String, disabled? : () -> Bool, busy? : () -> Bool, loc~ : SourceLoc) -> Unit
 
 pub fn panel_tip_node(@view.View, () -> String) -> Unit
+
+pub let panel_tips_lent : @view.Lent[TipLayer]
 
 pub fn panel_tips_of(@view.View) -> TipLayer?
 
 pub fn panel_title_at_node(@view.View) -> Double
 
 pub let panel_w : Double
+
+pub let panel_words : Double
 
 pub fn panel_words_at_node(@view.View) -> Double
 
@@ -1642,6 +1978,8 @@ pub let paragraph : @ui.TextStyle
 
 pub fn parts_reset() -> Unit
 
+pub fn passage_marks(Array[@text.Run], (String, Int64), starts? : Bool, ends? : Bool) -> Array[@view.RunsMark]
+
 pub fn path_link(String, Int32?) -> String
 
 pub fn path_of_link(String) -> (String, Int32?)?
@@ -1654,9 +1992,7 @@ pub let peek_card_w : @ui.Len
 
 pub let peek_frame_px : Double
 
-pub let person_ringed : @ui.Len
-
-pub fn[K : Hash + Eq] pg_blocks_read(Ref[Set[K]], Ref[Bool], Array[K]) -> Array[K]
+pub fn[K : Hash + Eq] pg_blocks_read(@ref.Ref[@set.Set[K]], @ref.Ref[Bool], Array[K]) -> Array[K]
 
 pub let pg_card_room : @ui.Style
 
@@ -1676,6 +2012,8 @@ pub let pg_note_box : @ui.Style
 
 pub let pg_room : @ui.Style
 
+pub fn pg_room_now() -> @ui.Style
+
 pub let pg_row : @ui.Style
 
 pub let pg_row_title : @ui.TextStyle
@@ -1692,6 +2030,9 @@ pub let phone_row_in : @ui.Space
 
 pub fn pick(String, Array[Choice], String, (String) -> Unit, from~ : Beside, along? : @view.Along, side? : @view.Side, search? : Bool) -> Unit
 
+#callsite(autofill(loc))
+pub fn pick_bar_node(@view.View, Array[PickBarItem], compact? : Bool, loc~ : SourceLoc) -> @view.View
+
 pub fn pick_high() -> @ui.Style
 
 pub let pick_list_most : Double
@@ -1706,11 +2047,10 @@ pub let pick_search_from : Int32
 
 pub let pick_sub_line : @ui.Leading
 
-pub fn pick_tiles_node(@view.View, () -> String, () -> Array[(String, String)], (@view.View, String) -> Unit, (String) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn pick_tiles_node(@view.View, () -> String, () -> Array[(String, String)], (@view.View, String) -> Unit, (String) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let picture_of : @ref.Ref[(String, Int32) -> String]
-
-pub let picture_out_by : @ref.Ref[(@ui.Ctx, Bytes?, Bool) -> Bool]
 
 pub let picture_out_now_by : @ref.Ref[(Bytes?, Bool) -> Bool]
 
@@ -1718,19 +2058,35 @@ pub fn picture_out_way() -> (String, String)
 
 pub fn picture_to_album() -> Bool
 
-pub fn pill(@ui.Ctx, String, tone? : PillTone, icon? : String) -> Unit
-
 pub let pill_h : Double
 
 pub let pill_in : Double
 
-pub fn pill_node(@view.View, () -> String, tone? : PillTone, icon? : String) -> @view.View
+#callsite(autofill(loc))
+pub fn pill_node(@view.View, () -> String, tone? : PillTone, icon? : String, loc~ : SourceLoc) -> @view.View
 
 pub let pin_raised : Raised
 
-pub fn place_node(@view.View, () -> String, () -> String, (Bool) -> @ui.Style, @ui.TextStyle, press? : (() -> Unit)?, on? : () -> Bool, mark? : Double) -> @view.View
+pub fn place_mark_name(String, Bool) -> String
 
-pub fn player(@ui.Ctx, String, ViewerFile, Array[ViewerEntry], back_label~ : String, on_back~ : () -> Unit, on_go~ : (String) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn place_mark_node(@view.View, String, Double, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn place_node(@view.View, () -> String, () -> String, (Bool) -> @ui.Style, @ui.TextStyle, press? : (() -> Unit)?, on? : () -> Bool, mark? : Double, loc~ : SourceLoc) -> @view.View
+
+pub fn place_note_look(Bool) -> @ui.TextStyle
+
+#callsite(autofill(loc))
+pub fn place_note_node(@view.View, () -> String, () -> Bool, change? : () -> String, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn place_row_node(@view.View, () -> String, (@view.View) -> Unit, () -> Bool, end? : (@view.View) -> Unit, press? : () -> Unit, can? : () -> Bool, selected? : () -> Bool, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn play_mark_node(@view.View, Double, @ui.Color, loc~ : SourceLoc) -> @view.View
+
+pub fn player_bindings() -> Array[@view.Binding]
 
 pub fn player_fills_native(Double) -> Bool
 
@@ -1744,21 +2100,28 @@ pub let player_keep_ms : Double
 
 pub fn player_let_go(String) -> Unit
 
-pub fn player_media(@ui.Ctx, String, ViewerFile, Array[ViewerEntry]) -> @player.Media
+pub fn player_list_toggle(String) -> Unit
+
+pub fn player_listing(String) -> Bool
 
 pub let player_next_ms : Double
+
+#callsite(autofill(loc))
+pub fn player_node(@view.View, @player.Media, ViewerFile, () -> (Double, Double), back_label~ : () -> String, on_back~ : () -> Unit, still~ : () -> String, flying~ : () -> Bool, going~ : () -> Bool, move_beside~ : () -> (() -> Unit)?, list? : () -> Array[String], on_go? : (String) -> Unit, embedded? : Bool, margin? : Double, loc~ : SourceLoc) -> @view.View
+
+pub fn player_opened(@view.View, String, ViewerFile, () -> Array[ViewerEntry]) -> @player.Media
 
 pub fn player_picture_at(String) -> (Double, Double, Double, Double)?
 
 pub let player_place_ms : Double
 
-pub fn player_room(Double) -> (Double, Double)
+pub fn player_room(Double, embedded? : Bool) -> (Double, Double)
 
 pub let player_speeds : Array[Double]
 
-pub let player_track_inset : Double
+pub fn player_stage_w(Double) -> Double
 
-pub fn player_view(@ui.Ctx, @player.Media, ViewerFile, Array[String], back_label~ : String, on_back~ : () -> Unit, on_go~ : (String) -> Unit, still? : String, flying? : Bool) -> Unit
+pub let player_track_inset : Double
 
 pub fn player_view_let_go(String) -> Unit
 
@@ -1768,27 +2131,17 @@ pub fn playlist_for(ViewerFile, Array[ViewerEntry]) -> Array[String]
 
 pub fn playlist_of(Array[String], (String) -> Bool) -> Array[String]
 
-pub fn pointed_or_finger(@ui.Ctx, Bool) -> Bool
-
 pub fn pointer_hotspot(String) -> (Double, Double)
 
-pub fn pointer_image(@ui.Ctx, shape? : String) -> String
+pub fn pointer_image_at(Double, shape? : String) -> String
 
-pub fn pointer_png(@ui.Ctx, shape? : String) -> (String, () -> Bytes)
+pub fn pointer_png_at(Double, shape? : String) -> (String, () -> Bytes)
 
 pub fn pointer_rests() -> Bool
 
 pub let pointer_size : Double
 
 pub let pointer_tip : Double
-
-pub fn popover_bridge_alpha(@ui.Look) -> Double
-
-pub fn popover_bridge_merge(@ui.Look) -> Double
-
-pub fn popover_bridge_scale(@ui.Look) -> Double
-
-pub fn popover_from(@ui.Ctx, String, Bool, Beside, side? : @view.Side, along? : @view.Along, look? : (@ui.Ctx, @kit.PopState, () -> Unit) -> Unit, () -> Unit) -> @ui.Changed[Bool]
 
 pub fn presented(@ui.Ctx, alone? : Bool) -> Unit
 
@@ -1800,17 +2153,16 @@ pub fn presented_drawn_of(Int32) -> Bool
 
 pub fn presented_from(Anchor) -> Bool
 
-pub fn presented_nodes(@view.View) -> Unit
-
-pub fn presented_open_now(Int32) -> Bool
+#callsite(autofill(loc))
+pub fn presented_nodes(@view.View, loc~ : SourceLoc) -> Unit
 
 pub fn presented_open_chain_of(Int32) -> Bool
+
+pub fn presented_open_now(Int32) -> Bool
 
 pub fn presented_open_of(Int32) -> Bool
 
 pub fn presented_rest() -> Double
-
-pub fn presented_tree((@ui.Ctx) -> Unit) -> (@view.View) -> Unit
 
 pub fn presenter_visible() -> Bool
 
@@ -1821,33 +2173,51 @@ pub fn presenting() -> Bool
 #callsite(autofill(loc))
 pub fn press_chip_node(@view.View, () -> String, () -> Unit, icon? : String, disabled? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
-pub fn press_ripple(@ui.Ctx, Int32, Double) -> Unit
+pub fn press_late(@view.View) -> (() -> Bool, () -> Unit, () -> Unit)
 
-pub fn presses_held_node(@view.View, () -> Unit, Double, (@view.Drag) -> Unit, down? : () -> Unit, up? : () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn pressed_box_node(@view.View, () -> Unit, @view.Live[Double], @view.Role, () -> String, selected? : () -> Bool?, loc~ : SourceLoc) -> Unit
+
+pub fn presses_held_node(@view.View, () -> Unit, Double, (@view.Drag) -> Unit, down? : (@view.Drag) -> Unit, up? : () -> Unit) -> Unit
 
 pub fn presses_node(@view.View, () -> Unit, on? : () -> Bool) -> Unit
 
-pub fn progress(@ui.Ctx, String, Double?, w? : @ui.Size, color? : Int64) -> Unit
+pub fn product() -> String
 
-pub fn progress_node(@view.View, () -> Double?, () -> Int64, () -> Int64, h? : Double, period? : Double, finishing? : () -> Bool) -> @view.View
+#callsite(autofill(loc))
+pub fn progress_key_node(@view.View, TipLayer, Double, Double, String, () -> String, () -> Double?, () -> Bool, () -> Unit, loc~ : SourceLoc) -> @view.View
 
-pub fn progress_ring(@ui.Ctx, Double, Double, Int64) -> Int32
+#callsite(autofill(loc))
+pub fn progress_node(@view.View, () -> Double?, () -> Int64, () -> Int64, h? : Double, period? : Double, finishing? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
-pub fn progress_ring_node(@view.View, Double, () -> Double, () -> Int64) -> @view.View
+#callsite(autofill(loc))
+pub fn progress_ring_node(@view.View, Double, () -> Double, () -> Int64, label? : () -> String, loc~ : SourceLoc) -> @view.View
 
-pub fn progress_spinner(@ui.Ctx, String, Double?, size? : Double, stroke? : Double) -> Int32
+#callsite(autofill(loc))
+pub fn progress_spinner_node(@view.View, () -> Double?, size? : Double, stroke? : Double, label? : () -> String, loc~ : SourceLoc) -> @view.View
 
-pub fn progress_spinner_node(@view.View, () -> Double?, size? : Double, stroke? : Double) -> @view.View
+#callsite(autofill(loc))
+pub fn provider_logo_node(@view.View, String, String, Double, String, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn qr_code_node(@view.View, () -> @json.Json?, Double, () -> String, loc~ : SourceLoc) -> Unit
 
 pub let quiet : @ui.TextStyle
 
+#callsite(autofill(loc))
+pub fn quiet_action_node(@view.View, () -> String, () -> Unit, loc~ : SourceLoc) -> @view.View
+
 pub let quiet_card_corner : Double
 
-pub fn quiet_card_node(@view.View, (@view.View) -> Unit, last? : () -> Bool) -> Unit
+#callsite(autofill(loc))
+pub fn quiet_card_node(@view.View, (@view.View) -> Unit, last? : () -> Bool, loc~ : SourceLoc) -> Unit
 
 pub let quiet_card_style : @ui.Style
 
 pub fn quiet_first_line(@view.View) -> Unit
+
+#callsite(autofill(loc))
+pub fn quiet_heading_node(@view.View, () -> String, loc~ : SourceLoc) -> Unit
 
 pub let quiet_row_corner : Double
 
@@ -1857,7 +2227,8 @@ pub let quiet_row_label : @ui.TextStyle
 
 pub let quiet_row_middle : @ui.Style
 
-pub fn quiet_row_node(@view.View, () -> String, (@view.View) -> Unit, look? : @ui.Style, press? : () -> Unit) -> @view.View
+#callsite(autofill(loc))
+pub fn quiet_row_node(@view.View, () -> String, (@view.View) -> Unit, look? : @ui.Style, press? : () -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub let quiet_row_style : @ui.Style
 
@@ -1867,30 +2238,12 @@ pub let quiet_row_top : @ui.Style
 
 pub let quieter : @ui.TextStyle
 
-pub fn quota_chip(@ui.Ctx, @json.Json?, small? : Bool, compact? : Bool, marked? : Bool, key? : String, said? : String) -> Unit
-
-pub fn quota_chips(@ui.Ctx, @json.Json?, small? : Bool, marked? : Bool, worded? : Bool, gap? : Double, key? : String) -> Unit
-
-pub fn quota_chips_node(@view.View, () -> @json.Json?, small? : Bool, marked? : Bool, gap? : Double, tips? : TipLayer) -> Unit
-
-pub fn quota_figure(@json.Json?) -> String
-
-pub fn quota_is_refill(@json.Json?) -> Bool
-
-pub fn quota_lines_node(@view.View, () -> @json.Json?, small? : Bool, gap? : Double, in_row? : Bool) -> Unit
-
-pub fn quota_mark(@json.Json?) -> String
-
-pub fn quota_said(@json.Json?) -> String
-
-pub fn quote_card(@ui.Ctx, String, String, String, role? : String, comment? : String, composer? : Bool, jump? : Bool, remove? : Bool, picture? : () -> Unit, comment_field? : () -> Unit, words_width? : Double, words_key? : String) -> QuoteCardDone
-pub fn quote_card_node(@view.View, TipLayer, () -> String, () -> String, () -> String, () -> String, () -> Bool, () -> Unit, pictured? : () -> Bool, picture? : (@view.View) -> Unit) -> @view.View
+#callsite(autofill(loc))
+pub fn quote_card_node(@view.View, TipLayer, () -> String, () -> String, () -> String, () -> String, () -> Bool, () -> Unit, pictured? : () -> Bool, picture? : (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub let quote_picture_corner : Double
 
 pub let quote_pop_h : @ui.Len
-
-pub fn quote_sent_shift(String, String) -> (Double, Double)
 
 pub let r_field : Double
 
@@ -1898,7 +2251,8 @@ pub let r_menu : Double
 
 pub let radii : @ui.RadiusScale
 
-pub fn radio_rows_node(@view.View, () -> String, () -> Array[(String, String)], () -> String, (String) -> Unit, (@view.View, () -> String, RadioRow) -> Unit, gap? : Double) -> @view.View
+#callsite(autofill(loc))
+pub fn radio_rows_node(@view.View, () -> String, () -> Array[(String, String)], () -> String, (String) -> Unit, (@view.View, () -> String, RadioRow) -> Unit, gap? : Double, loc~ : SourceLoc) -> @view.View
 
 pub fn radius_between(Double) -> @ui.Radius
 
@@ -1914,19 +2268,20 @@ pub let rail_w : @ui.Len
 
 pub fn raised(Double, ambient? : Double, spot? : Double) -> Raised
 
-pub fn reader(@ui.Ctx, String, ViewerFile, markdown~ : Bool, back_label~ : String, on_back~ : () -> Unit) -> Unit
-
 pub let reader_bars_ms : Double
 
-pub fn reader_chapter(Reading, Book) -> Int32
+pub fn reader_bindings() -> Array[@view.Binding]
 
-pub fn reader_close_panel(@ui.Ctx, Reading) -> Unit
+pub fn reader_chapter(Book, (Int32, Double)) -> Int32
 
-pub fn reader_column(@ui.Ctx, Reading, Book, ReaderStyle, ReaderPaper, left~ : Double, right~ : Double, top~ : Double, foot~ : Double, headings? : Bool, cut? : Bool) -> Unit
+pub fn reader_close_panel(Reading) -> Unit
 
-pub fn reader_fraction(Reading, Book) -> Double
+pub fn reader_fraction(Book, (Int32, Double)) -> Double
 
-pub fn reader_jump(Reading, Int32, Int32) -> Unit
+pub fn reader_jump(Reading, Int32, Int32, lead? : Bool) -> Unit
+
+#callsite(autofill(loc))
+pub fn reader_layout_docked(@view.View, () -> Unit, fits? : Bool, loc~ : SourceLoc) -> Unit
 
 pub fn reader_let_go(String) -> Unit
 
@@ -1936,11 +2291,18 @@ pub let reader_margins : (Int32, Int32)
 
 pub let reader_most : Int32
 
-pub fn reader_open_at(@ui.Ctx, Reading, Book) -> Bool
+#callsite(autofill(loc))
+pub fn reader_node(@view.View, String, ViewerFile, markdown~ : Bool, back_label~ : () -> String, on_back~ : () -> Unit, host? : ReaderHost, width? : () -> Double, move_beside? : (() -> Bool, () -> Unit)?, source? : (() -> Unit)?, loc~ : SourceLoc) -> @view.View
 
-pub fn reader_open_panel(@ui.Ctx, Reading, ReaderPanel) -> Unit
+pub fn reader_open_at(Reading, Book, PlaceNow) -> Unit
+
+pub fn reader_open_panel(Reading, ReaderPanel) -> Unit
+
+pub fn reader_panel_of(String) -> ReaderPanel
 
 pub fn reader_panel_set(Reading, ReaderPanel) -> Unit
+
+pub fn reader_panel_toggle(String, ReaderPanel) -> Unit
 
 pub fn reader_paper(String) -> ReaderPaper
 
@@ -1960,49 +2322,98 @@ pub fn reading_for(String) -> Reading
 
 pub fn reads_as_markdown(String) -> Bool
 
+#callsite(autofill(loc))
+pub fn record_how_node(@view.View, () -> String, () -> Bool, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn record_row_node(@view.View, (@view.View) -> Unit, (@view.View) -> Unit, () -> String, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn record_rows_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
 pub let ref_item_corner : @ui.Radius
 
 pub let ref_menu_corner : @ui.Radius
 
-pub fn resize_handle(@ui.Ctx, String, Double, min~ : Double, max~ : Double, label~ : String, edge? : @view.Side, press? : String, over? : Bool, active? : Bool) -> Resized
+pub fn refused_dx(Double) -> Double
+
+pub let refused_ms : Double
+
+pub let refused_reach : Double
+
+#callsite(autofill(loc))
+pub fn refused_shake(@view.View, () -> Bool, loc~ : SourceLoc) -> Unit
+
+pub fn register_drawables(Map[String, @pixels.Vector]) -> Unit
+
+pub fn register_station_glyphs(Map[String, String]) -> Unit
+
+#callsite(autofill(loc))
+pub fn reused_page_node(@view.View, () -> String, () -> Array[String], (@view.View, Int32, () -> String) -> Unit, on_back~ : () -> Unit, shape? : (String) -> Int32?, frame? : () -> PageFrame, width? : () -> Double, loc~ : SourceLoc) -> Unit
 
 pub let reveal_least : Double
 
 pub let reveal_ms : Double
 
-pub fn reveal_part_node(@view.View, () -> Bool, (@view.View) -> Unit, look? : (@view.View) -> @ui.Style) -> Unit
+#callsite(autofill(loc))
+pub fn reveal_part_node(@view.View, () -> Bool, (@view.View) -> Unit, look? : (@view.View) -> @ui.Style, loc~ : SourceLoc) -> Unit
 
 pub fn ring_shapes(Double, Double, Int64) -> Array[@paint.Shape]
 
 pub let ring_turn_keep : Double
 
-pub fn rings(@ui.Ctx, Array[(Double, Int64)], Double, Int64, most~ : Int32) -> Int32
+#callsite(autofill(loc))
+pub fn rings_node(@view.View, () -> Array[(Double, Int64)], Double, Int64, most~ : Int32, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn ripple_button_node(@view.View, () -> String, () -> Unit, (@view.View, @headless.Button) -> @view.Live[Double], loc~ : SourceLoc) -> @view.View
 
 #callsite(autofill(loc))
 pub fn ripple_option_node(@view.View, SearchCombo, () -> String, () -> String, Double, loc~ : SourceLoc) -> Unit
 
-pub fn rippled_node(@view.View, () -> Unit, Double, () -> String) -> Unit
+#callsite(autofill(loc))
+pub fn rippled_node(@view.View, () -> Unit, Double, () -> String, loc~ : SourceLoc) -> Unit
 
-pub fn rolling_number_node(@view.View, () -> Int32, format? : (Int32) -> String, style? : () -> @ui.TextStyle, rolls? : () -> Bool) -> @view.View
+#callsite(autofill(loc))
+pub fn rolling_number_node(@view.View, () -> Int32, format? : (Int32) -> String, style? : () -> @ui.TextStyle, rolls? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
 pub fn room_of(Double) -> @ui.Space
 
-pub fn round_face() -> @ui.Style
+#callsite(autofill(loc))
+pub fn round_key_node(@view.View, String, () -> String, () -> Unit, side? : Double, icon_size? : Double, ink? : () -> Int64, opener? : Opener, icon_now? : () -> String, loc~ : SourceLoc) -> Unit
 
 pub let rove_lent : @view.Lent[RovingHover]
 
+#callsite(autofill(loc))
 pub fn roving_hover_node(RovingHover, @view.View, () -> Bool, () -> Int64, @view.Live[Double], () -> Bool, loc~ : SourceLoc) -> @view.View
 
-pub fn round_key_node(@view.View, String, () -> String, () -> Unit, side? : Double, icon_size? : Double, ink? : () -> Int64) -> Unit
+#callsite(autofill(loc))
+pub fn row_action_node(@view.View, () -> String, () -> Unit, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn row_apart_node(@view.View, loc~ : SourceLoc) -> Unit
+
+pub fn row_below_inset(@view.View) -> (Double, Double, Double, Double)
 
 #callsite(autofill(loc))
 pub fn row_box_node(@view.View, () -> String, press? : () -> Unit, busy? : () -> Bool, (RowScope) -> Unit, loc~ : SourceLoc) -> Unit
 
-pub fn row_chevron_node(@view.View) -> Unit
+#callsite(autofill(loc))
+pub fn row_chevron_node(@view.View, loc~ : SourceLoc) -> Unit
 
 pub let row_corner : Double
 
-pub fn row_corner_keys(@ui.Ctx, () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn row_corner_button_node(@view.View, () -> String, () -> Unit, busy? : () -> Bool, disabled? : () -> Bool, loc~ : SourceLoc) -> @view.View
+
+pub fn row_corner_key_look(@view.View, Double) -> () -> Double
+
+#callsite(autofill(loc))
+pub fn row_end_button_node(@view.View, () -> String, () -> Unit, busy? : () -> Bool, disabled? : () -> Bool, loc~ : SourceLoc) -> @view.View
+
+pub fn row_end_facts_node(@view.View, (@view.View) -> Unit) -> Unit
+
+pub fn row_end_key_grown(@view.View) -> Double
 
 pub let row_foot_in_y : Double
 
@@ -2018,9 +2429,11 @@ pub let row_key_box : @ui.Style
 
 pub fn row_keys_room(Int32) -> Double
 
-pub fn row_label_node(@view.View, String, () -> Double) -> Unit
+#callsite(autofill(loc))
+pub fn row_label_node(@view.View, String, () -> Double, loc~ : SourceLoc) -> Unit
 
-pub fn row_lead_mark(@ui.Ctx, String, color? : Int64) -> Unit
+#callsite(autofill(loc))
+pub fn row_lead_mark_node(@view.View, String, color? : () -> Int64, loc~ : SourceLoc) -> Unit
 
 pub fn row_lead_out_node(@view.View) -> @ui.Style
 
@@ -2028,51 +2441,92 @@ pub fn row_least() -> Double
 
 pub fn row_least_h() -> @ui.Style
 
-pub fn row_lines(@ui.Ctx, () -> Unit, () -> Unit, spaced? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn row_lines_node(@view.View, (@view.View) -> Unit, (@view.View) -> Unit, spaced? : Bool, loc~ : SourceLoc) -> Unit
 
 pub let row_mark : Double
 
+#callsite(autofill(loc))
+pub fn row_presses_node(@view.View, @view.Live[Double], () -> Unit, (@view.Drag) -> Unit, (@view.Drag) -> Unit, (Double, Double) -> Unit, held_ms? : Double, loc~ : SourceLoc) -> Unit
+
 pub let row_radius : @ui.Radius
 
-pub fn row_lines_node(@view.View, (@view.View) -> Unit, (@view.View) -> Unit, spaced? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn row_tag_node(@view.View, () -> String, loc~ : SourceLoc) -> Unit
 
-pub fn row_ripple(@ui.Ctx, Int32) -> Unit
-
-pub fn row_tag_node(@view.View, () -> String) -> Unit
+pub fn row_tile_side_node(@view.View, @view.View) -> () -> Double?
 
 pub let row_top_in_y : Double
 
-pub fn rows_list(@ui.Ctx, String, Int32, Double, (Int32) -> Unit, sized? : @ui.RowCauses) -> Int32
+#callsite(autofill(loc))
+pub fn rows_head_node(@view.View, (@view.View) -> Unit, first? : Bool, loc~ : SourceLoc) -> Unit
 
-pub fn rows_room(@ui.Ctx, () -> Unit) -> Unit
+pub fn rows_held(() -> Unit) -> Unit
+
+pub fn rule_color() -> Int64
+
+pub let rule_down : @ui.Style
+
+pub let rule_ink : @ui.Color
 
 pub let rule_line : @ui.Style
 
+pub let rule_w : Double
+
 pub fn run_begin() -> Unit
 
-pub let run_begun_by_app : Ref[() -> Bool]
+pub let run_begun_by_app : @ref.Ref[() -> Bool]
+
+#callsite(autofill(loc))
+pub fn said_line_node(@view.View, () -> String, () -> String, () -> Int64, note? : () -> String, acts~ : (@view.View) -> Unit, acts_shown~ : () -> Bool, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn said_row_node(@view.View, () -> String, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+pub fn sample_words(Int32) -> String
+
+pub fn scroll_edge_fill_decorate(@view.View, () -> Int64, active? : () -> Bool) -> @view.View
+
+pub fn search_capsule_decorate(@view.View, active? : () -> Bool, solid? : () -> Int64, clips? : Bool) -> @view.View
+
+pub fn search_capsule_glass(solid? : Int64) -> @paint.Glass
 
 #callsite(autofill(loc))
 pub fn search_combo_node(@view.View, () -> String, () -> Array[String], () -> String?, (String?) -> Unit, (String) -> Unit, chosen? : () -> String?, moved? : (String) -> Unit, loc~ : SourceLoc) -> SearchCombo
 
-pub fn said_row(@ui.Ctx, String, String, value? : () -> Unit, lead? : (@ui.Ctx) -> Unit) -> Unit
-
-pub fn said_row_node(@view.View, () -> String, (@view.View) -> Unit) -> Unit
-
-pub fn sample_words(Int32) -> String
-
 pub let search_ground : @ui.Color
 
 #callsite(autofill(loc))
-pub fn search_input_node(@view.View, @ui.Field, () -> String, at? : ListAt, shorter? : Array[String], edited? : (String) -> Unit, submitted? : (String) -> Unit, escape? : () -> Bool, cleared? : () -> Unit, end? : (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
+pub fn search_input_node(@view.View, @ui.Field, () -> String, at? : ListAt, shorter? : Array[String], edited? : (String) -> Unit, submitted? : (String) -> Unit, escape? : () -> Bool, step? : (Int32) -> Bool, step_can? : () -> Bool, cleared? : () -> Unit, end? : (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub let secondary : @ui.TextStyle
 
-pub fn section(@ui.Ctx, String, () -> Unit, heads? : Bool, note? : String, actions? : () -> Unit, title_after? : () -> Unit) -> Unit
+pub let secret_copied_life : Double
 
-pub fn section_node(@view.View, () -> String, (@view.View) -> Unit, heads? : Bool, note? : () -> String, about? : () -> String, actions? : (() -> Bool, (@view.View) -> Unit), ends? : (@view.View) -> Unit, title_after? : (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn secret_copy_node(@view.View, () -> String, () -> Bool, loc~ : SourceLoc) -> @view.View
 
-pub fn section_none_node(@view.View, () -> String) -> Unit
+#callsite(autofill(loc))
+pub fn secret_key_node(@view.View, String, () -> String, () -> Unit, icon_now? : () -> String, loc~ : SourceLoc) -> @view.View
+
+pub let secret_key_side : Double
+
+pub fn secret_mask(String) -> String
+
+#callsite(autofill(loc))
+pub fn secret_value_row_node(@view.View, () -> String, () -> String, (@view.View) -> Unit, shown? : () -> Bool, mono? : () -> Bool, one_line? : Bool, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn section_foot_when_node(@view.View, () -> Bool, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn section_heading_node(@view.View, () -> String, title_after? : (@view.View) -> Unit, note? : () -> String, trailing? : () -> String, lead? : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn section_node(@view.View, () -> String, (@view.View) -> Unit, heads? : Bool, note? : () -> String, about? : () -> String, actions? : (() -> Bool, (@view.View) -> Unit), ends? : (@view.View) -> Unit, title_after? : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn section_none_node(@view.View, () -> String, loc~ : SourceLoc) -> Unit
 
 pub let section_note_gap : Double
 
@@ -2080,39 +2534,44 @@ pub let section_note_most : @ui.Len
 
 pub fn seen_at(Double) -> Double
 
-pub fn seg_fill_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, said? : String, thumb? : SegThumb) -> @view.View
+#callsite(autofill(loc))
+pub fn seg_fill_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, said? : String, thumb? : SegThumb, loc~ : SourceLoc) -> @view.View
 
-pub fn seg_head_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, said? : String) -> @view.View
+#callsite(autofill(loc))
+pub fn seg_head_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, said? : String, loc~ : SourceLoc) -> @view.View
 
-pub fn seg_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, item_w? : Double, each_own? : Bool, said? : String) -> @view.View
+#callsite(autofill(loc))
+pub fn seg_icons_node(@view.View, () -> Array[(String, String, String)], () -> String, (String) -> Unit, said? : String, tips? : TipLayer, loc~ : SourceLoc) -> @view.View
 
-pub let seg_pill_min : @ui.Len
+#callsite(autofill(loc))
+pub fn seg_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, item_w? : Double, each_own? : Bool, said? : String, loc~ : SourceLoc) -> @view.View
 
-pub fn segmented(@ui.Ctx, String, Array[String], Int32, item_w? : Double, ink? : Int64, thumb? : Int64, icons? : Array[String], bar? : Bool, said? : String, tips? : Array[String], fill? : Bool, on_pick? : (Int32) -> Unit) -> Int32
+#callsite(autofill(loc))
+pub fn segment_rule_node(@view.View, Segments, () -> (Int32, Int32), tall? : Double, loc~ : SourceLoc) -> @view.View
 
 pub fn segmented_height() -> Double
 
 pub fn segmented_item_w(Double, Int32) -> Double
 
-pub fn segmented_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, head? : Bool, said? : String) -> Unit
+#callsite(autofill(loc))
+pub fn segmented_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, head? : Bool, said? : String, loc~ : SourceLoc) -> Unit
 
 pub fn segmented_node_height(Look) -> Double
 
-pub fn segments(@ui.Ctx, Double, Double, Int64, Int64) -> Int32
-
-pub fn segments_node(@view.View, Double, Double, () -> Int64, () -> Int64) -> @view.View
-
-pub fn select(@ui.Ctx, String, String, Array[(String, String)], (String) -> Unit, placeholder? : String, label? : String, disabled? : Bool, w? : Double, hints? : Map[String, String], whole? : Bool, icons? : Map[String, String]) -> Unit
+#callsite(autofill(loc))
+pub fn segments_node(@view.View, Double, Double, () -> Int64, () -> Int64, loc~ : SourceLoc) -> @view.View
 
 pub let select_chevron : Double
 
+#callsite(autofill(loc))
+pub fn select_node(@view.View, () -> String, () -> Array[(String, String)], (String) -> Unit, label? : () -> String, disabled? : () -> Bool, whole? : Bool, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
 pub fn select_ring_node(@view.View, () -> String, () -> Int32, () -> Unit, side? : Double, loc~ : SourceLoc) -> @view.View
 
 pub let select_ring_side : Double
 
 pub let select_w : Double
-
-pub fn select_node(@view.View, () -> String, () -> Array[(String, String)], (String) -> Unit, label? : () -> String, disabled? : () -> Bool, whole? : Bool) -> Unit
 
 #callsite(autofill(loc))
 pub fn send_button_node(@view.View, () -> String, () -> Bool, () -> Bool, () -> Unit, tips? : TipLayer, icon_now? : () -> String, loc~ : SourceLoc) -> @view.View
@@ -2123,19 +2582,30 @@ pub fn set_dark(Bool?) -> Unit
 
 pub fn set_language(String?) -> Unit
 
+pub fn set_product(String) -> Unit
+
 pub fn set_shortcuts((String) -> String) -> Unit
 
 pub fn set_viewer_host(ViewerHost) -> Unit
 
 pub fn set_words((String, Array[(String, String)]) -> String) -> Unit
 
-pub fn setting(@ui.Ctx, String, () -> Unit, note? : String) -> Unit
+#callsite(autofill(loc))
+pub fn setting_choice_node(@view.View, () -> String, () -> Array[String], () -> Int32, (Int32) -> Unit, note? : () -> String, alone? : Bool, loc~ : SourceLoc) -> Unit
 
-pub fn setting_link(@ui.Ctx, String, String, String, note? : String) -> Bool
+#callsite(autofill(loc))
+pub fn setting_link_node(@view.View, () -> String, () -> String, () -> Unit, note? : () -> String, loc~ : SourceLoc) -> Unit
 
-pub fn setting_switch(@ui.Ctx, String, String, Bool, note? : String) -> Bool
+#callsite(autofill(loc))
+pub fn setting_node(@view.View, () -> String, (@view.View) -> Unit, note? : () -> String, in_card? : Bool, loc~ : SourceLoc) -> Unit
 
-pub fn settings(@ui.Ctx, Array[() -> Unit]) -> Array[() -> Unit]
+#callsite(autofill(loc))
+pub fn setting_switch_node(@view.View, () -> String, () -> Bool, (Bool) -> Unit, note? : () -> String, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn settings_block(@view.View, String, () -> Array[String], (@view.View, String) -> Unit, loc~ : SourceLoc) -> Unit
+
+pub fn settings_keys((() -> Double)?, Array[String]) -> Array[String]
 
 pub let share_bar : Int64
 
@@ -2189,6 +2659,7 @@ pub let share_ring_grey : Int64
 
 pub let share_rings : Array[Int64]
 
+#callsite(autofill(loc))
 pub fn[K : Eq] share_tabs_node(@view.View, () -> String, Array[K], (K) -> String, () -> K, (K) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub let share_terminal_cell : Int64
@@ -2211,11 +2682,16 @@ pub let share_terminal_palette : Array[Int64]
 
 pub let share_w_most : Double
 
-pub fn sheet_column_node(@view.View, (@view.View) -> Unit) -> Unit
+pub fn sheet_action(String, () -> Unit, icon? : String, danger? : Bool) -> SheetAction
+
+#callsite(autofill(loc))
+pub fn sheet_column_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub fn sheet_foot_alpha(@view.View) -> Double
 
 pub fn sheet_foot_cover(@view.View) -> Double
+
+pub let sheet_grab_h : Double
 
 pub let sheet_grabber : @ui.Style
 
@@ -2226,6 +2702,8 @@ pub let sheet_panel_foot : Double
 pub let sheet_raised : Raised
 
 pub let sheet_scrim : Int64
+
+pub fn sheet_window_h_node(@view.View) -> Double
 
 pub fn shortcut_keys(String) -> String
 
@@ -2241,8 +2719,6 @@ pub let side_row_h : @ui.Len
 
 pub let side_row_radius : @ui.Radius
 
-pub fn side_scroll(@ui.Ctx, String, () -> Unit) -> Unit
-
 pub fn side_subtitle(String, Array[String]) -> String?
 
 pub let side_tab_h : @ui.Len
@@ -2253,19 +2729,28 @@ pub fn sides_clear(Double) -> @ui.Style
 
 pub let sign_in_title_size : @ui.TextSize
 
-pub fn sized_words_node(@view.View, () -> String, () -> Double, () -> Int64, wrap? : Bool, cut? : Bool) -> @view.View
+#callsite(autofill(loc))
+pub fn sized_words_node(@view.View, () -> String, () -> Double, () -> Int64, wrap? : Bool, cut? : Bool, loc~ : SourceLoc) -> @view.View
 
-pub fn slack_mark(@ui.Ctx, Double) -> Int32
+#callsite(autofill(loc))
+pub fn skeleton_card_node(@view.View, lines? : Int32, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn skeleton_circle_node(@view.View, size? : Double, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn skeleton_line_node(@view.View, share? : Double, h? : Double, loc~ : SourceLoc) -> @view.View
+
+pub let skeleton_ms : Double
+
+#callsite(autofill(loc))
+pub fn skeleton_rect_node(@view.View, Double, w? : Double?, corner? : Double, loc~ : SourceLoc) -> @view.View
 
 pub let sleep_ms : Double
-
-pub fn slider(@ui.Ctx, String, Double, Double, Double, step? : Double, ink? : Int64, accent? : Int64, ground? : Int64, on_change? : (Double) -> Unit, on_let_go? : (Double) -> Unit) -> Double
 
 pub let small_button : @ui.Len
 
 pub let small_corner : Double
-
-pub fn small_panel(@ui.Ctx, w? : @ui.Size, h? : @ui.Size, min_w? : Double, max_w? : Double, () -> Unit) -> Int32
 
 pub fn small_panel_inner(Double) -> Double
 
@@ -2275,15 +2760,16 @@ pub let small_radius : @ui.Radius
 
 pub fn soft_keyboard() -> Bool
 
+pub fn sought_part(Array[@text.Run], Array[@view.RunsMark], String) -> (Int32, Int32)?
+
 pub let space_5 : @ui.Space
 
 pub fn speed_label(Double) -> String
 
-pub fn spinner(@ui.Ctx, size? : Double, stroke? : Double, ring? : Int64, arc? : Int64, sweep? : Double, period? : Double) -> Int32
-
 pub let spinner_inline : Double
 
-pub fn spinner_node(@view.View, size? : Double, stroke? : Double, ring? : () -> Int64, arc? : () -> Int64, sweep? : Double, period? : Double) -> @view.View
+#callsite(autofill(loc))
+pub fn spinner_node(@view.View, size? : Double, stroke? : Double, ring? : () -> Int64, arc? : () -> Int64, sweep? : Double, period? : Double, loc~ : SourceLoc) -> @view.View
 
 pub let spinner_size : Double
 
@@ -2291,9 +2777,12 @@ pub let spinner_turn_ms : Double
 
 pub let spoke_step_ms : Double
 
-pub fn spokes(@ui.Ctx, Double, Int64, box? : Double) -> Int32
+pub fn spokes_lines(Double, Double, Int64) -> Array[@paint.Line]
 
-pub fn spokes_node(@view.View, Double, () -> Int64, box? : Double) -> @view.View
+#callsite(autofill(loc))
+pub fn spokes_node(@view.View, Double, () -> Int64, box? : Double, loc~ : SourceLoc) -> @view.View
+
+pub fn spokes_turn(@view.View) -> Double
 
 pub let stage_edge : Int64
 
@@ -2303,45 +2792,46 @@ pub let stage_plain_lit : Int64
 
 pub let stage_scrim : Int64
 
-pub fn state_dot_node(@view.View, () -> String, size? : Double, in_node? : Bool, breathes? : Bool) -> Unit
-
-pub let state_halo_out : Double
-
-pub let state_live_ms : Double
-
-pub fn station_glyph(@ui.Ctx, GlyphCounts, Double, Int64, Int64) -> Int32
+#callsite(autofill(loc))
+pub fn state_dot_node(@view.View, () -> String, size? : Double, in_node? : Bool, breathes? : Bool, loc~ : SourceLoc) -> Unit
 
 pub fn station_glyph_icon(GlyphCounts) -> String
 
-pub fn station_icon(@ui.Ctx, String, String, Double, Int64, here? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn station_glyph_node(@view.View, () -> GlyphCounts, Double, () -> Int64, () -> Int64, loc~ : SourceLoc) -> @view.View
 
 pub fn station_lead(() -> Bool, () -> String, () -> String, () -> Int32) -> RowLead
 
-pub fn station_mark(@ui.Ctx, String, String, Double, Int64, none? : String, still? : Bool, visible_only? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn station_mark_node(@view.View, () -> String, () -> String, Double, () -> Int64, () -> Int32, visible_only? : Bool, over? : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
-pub fn station_mark_node(@view.View, () -> String, () -> String, Double, () -> Int64, () -> Int32, visible_only? : Bool, over? : (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn stats_card_node(@view.View, () -> Bool, Array[(() -> Bool, (@view.View) -> Unit)], loc~ : SourceLoc) -> Unit
 
-pub fn station_mark_visible(@ui.Ctx, String, String, Double) -> Bool
-
-pub fn stats_card_node(@view.View, () -> Bool, Array[(() -> Bool, (@view.View) -> Unit)]) -> Unit
-
-pub fn status_dot(@ui.Ctx, String) -> Unit
+#callsite(autofill(loc))
+pub fn status_banner_line_node(@view.View, () -> Bool, () -> String, loc~ : SourceLoc) -> Unit
 
 pub let status_ring : Double
 
+pub fn std_row_height(@view.View, two_line? : Bool) -> () -> Double
+
+#callsite(autofill(loc))
 pub fn step_circle_button_node(@view.View, () -> String, () -> String, (@view.View) -> Unit, look? : StepLook, loc~ : SourceLoc) -> @view.View
 
+#callsite(autofill(loc))
 pub fn step_circle_node(@view.View, () -> String, look? : StepLook, first_line? : @ui.TextSize, leading? : @ui.Leading, loc~ : SourceLoc) -> @view.View
-
-pub let step_circle_side : Double
 
 pub let step_words : @ui.TextStyle
 
-pub fn steps(@ui.Ctx, Array[() -> Unit]) -> Unit
+#callsite(autofill(loc))
+pub fn steps_node(@view.View, Array[(@view.View) -> Unit], loc~ : SourceLoc) -> Unit
 
-pub fn steps_node(@view.View, Array[(@view.View) -> Unit]) -> Unit
+#callsite(autofill(loc))
+pub fn stops_node(@view.View, () -> Array[String], () -> Int32, Stops, said? : String, on_pick? : (Int32) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub fn stroke_corner(StrokeShape) -> (Double, Double)
+
+pub fn stroke_from_start(Array[Double], Double) -> Array[Double]
 
 pub let stroke_gap_ms : Double
 
@@ -2353,28 +2843,37 @@ pub fn strokes_ms(Int32) -> Double
 
 pub let strong : @ui.TextStyle
 
-pub fn style_node(@view.View, () -> @ui.Style, in_row? : Bool) -> Unit
-pub fn[T : Eq] style_node_and(@view.View, () -> @ui.Style, () -> T, (T) -> Unit, in_row? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn style_node(@view.View, () -> @ui.Style, in_row? : Bool, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn[T : Eq] style_node_and(@view.View, () -> @ui.Style, () -> T, (T) -> Unit, in_row? : Bool, loc~ : SourceLoc) -> Unit
 
 pub fn styled_words(@view.View, () -> String, () -> @ui.TextStyle) -> @view.View
 
-pub fn submenu_row(@ui.Ctx, String, String, Array[MenuItem?], icon? : String, side? : @view.Side) -> Unit
+pub let submenu_close_ms : Double
 
-pub fn submenu_row_node(@view.View, () -> String, () -> Array[MenuItem?], icon? : () -> String, side? : @view.Side) -> Unit
+pub let submenu_max_w : Double
+
+pub let submenu_open_ms : Double
+
+#callsite(autofill(loc))
+pub fn submenu_row_node(@view.View, () -> String, () -> Array[MenuItem?], icon? : () -> String, side? : @view.Side, loc~ : SourceLoc) -> Unit
 
 pub fn surface(Double, Double) -> Surface
 
-pub fn switch(@ui.Ctx, String, Bool, label? : String, disabled? : Bool, small? : Bool, busy? : Bool, on_change? : (Bool) -> Unit) -> Bool
+#callsite(autofill(loc))
+pub fn swatch_field_node(@view.View, @ui.Field, () -> Int64, String, after? : (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub let switch_h : Double
 
 pub let switch_in : Double
 
-pub fn switch_node(@view.View, () -> Bool, (Bool) -> Unit, () -> String) -> Unit
+#callsite(autofill(loc))
+pub fn switch_node(@view.View, () -> Bool, (Bool) -> Unit, () -> String, small? : Bool, disabled? : () -> Bool, loc~ : SourceLoc) -> Unit
 
-pub fn switch_row(@ui.Ctx, String, String, Bool, note? : String, disabled? : Bool, busy? : Bool, lead? : (@ui.Ctx) -> Unit, on_change? : (Bool) -> Unit) -> Bool
-
-pub fn switch_row_node(@view.View, () -> String, () -> Bool, (Bool) -> Unit, note? : () -> String, disabled? : () -> Bool, lead? : (@view.View) -> Unit, in_words? : Bool, busy? : () -> Bool) -> Unit
+#callsite(autofill(loc))
+pub fn switch_row_node(@view.View, () -> String, () -> Bool, (Bool) -> Unit, note? : () -> String, disabled? : () -> Bool, lead? : (@view.View) -> Unit, in_words? : Bool, busy? : () -> Bool, loc~ : SourceLoc) -> Unit
 
 pub let switch_small_h : Double
 
@@ -2386,19 +2885,36 @@ pub fn t(String, args? : Array[(String, String)]) -> String
 
 pub fn t_around(String, String, args? : Array[(String, String)]) -> (String, String)
 
+#callsite(autofill(loc))
+pub fn tab_bar_node(@view.View, () -> String, () -> Array[String], () -> String, (String) -> Unit, (String) -> String, (@view.View, String, TabShown) -> Unit, look? : TabLook, close? : (String) -> Unit, closes? : (String) -> Bool, close_label? : (String) -> String, close_shows? : TabClose, trail? : (@view.View) -> Unit, scrolls? : Bool, at_once? : Bool, tips? : TipLayer, tip? : (String) -> Bool, loc~ : SourceLoc) -> @view.View
+
+pub fn tab_bar_shadow() -> Raised
+
+pub fn tab_bar_surface_decorate(@view.View, () -> ((Double, Double)?, Double), share_when_unmerged? : Bool) -> @view.View
+
 pub let tab_lens_raised : Raised
 
-pub fn tab_bar_node(@view.View, () -> String, () -> Array[String], () -> String, (String) -> Unit, (String) -> String, (@view.View, String, TabShown) -> Unit, look? : TabLook, close? : (String) -> Unit, closes? : (String) -> Bool, close_label? : (String) -> String, close_shows? : TabClose, trail? : (@view.View) -> Unit, scrolls? : Bool, at_once? : Bool, tips? : TipLayer, tip? : (String) -> Bool) -> @view.View
+pub fn tab_lens_surface_decorate(@view.View, () -> Double, shadow? : (Double, Double, Int64)) -> @view.View
 
-pub fn tab_words_node(@view.View, () -> String, TabShown) -> @view.View
+#callsite(autofill(loc))
+pub fn tab_strip_node(@view.View, TabStripSpec, loc~ : SourceLoc) -> Unit
 
-pub fn table_node(@view.View, () -> String, bleed? : Double, tree? : () -> @json.Json?, copy? : Bool, on_link? : (String) -> Unit, on_link_hold? : ((String, (Double, Double, Double, Double)) -> Unit)?) -> Unit
+#callsite(autofill(loc))
+pub fn tab_words_node(@view.View, () -> String, TabShown, loc~ : SourceLoc) -> @view.View
 
-pub fn tag_node(@view.View, () -> String) -> Unit
+#callsite(autofill(loc))
+pub fn table_node(@view.View, () -> String, bleed? : Double, tree? : () -> @json.Json?, copy? : Bool, on_link? : (String) -> Unit, on_link_hold? : ((String, (Double, Double, Double, Double)) -> Unit)?, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn[K : Eq] tabs_node(@view.View, () -> String, Array[(K, () -> String)], () -> K, (K) -> Unit, (@view.View, K) -> Unit, look? : TabsLook, manual? : Bool, keep_mounted? : Bool, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn tag_node(@view.View, () -> String, lead? : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let take_over_max : @ui.Len
 
-pub fn tap_text_node(@view.View, () -> String, () -> Unit, size? : Double) -> Unit
+#callsite(autofill(loc))
+pub fn tap_text_node(@view.View, () -> String, () -> Unit, size? : Double, loc~ : SourceLoc) -> Unit
 
 pub fn tape_bar_end(Double, side? : Double) -> Double
 
@@ -2422,43 +2938,42 @@ pub let tape_line : Double
 
 pub fn tape_side_corners() -> FixedArray[@paint.CornerOf]
 
+#callsite(autofill(loc))
 pub fn text_action_node(@view.View, () -> String, () -> Unit, style? : () -> @ui.TextStyle, box? : () -> @ui.Style, label? : () -> String, disabled? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
 pub let text_in : Double
 
 pub let text_scale : @ui.TextScale
 
-pub fn text_toggle_node(@view.View, () -> String, () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn text_toggle_node(@view.View, () -> String, () -> Unit, loc~ : SourceLoc) -> Unit
 
-pub fn textarea(@ui.Ctx, String, rows? : Int32, most? : Int32, placeholder? : String, field? : @ui.Field, corner? : Double, solid? : Bool, on_change? : (String) -> Unit) -> String
-
-pub fn textarea_node(@view.View, @ui.Field, rows? : Int32, most? : Int32, placeholder? : String, label? : String, corner? : Double, placeholder_by? : () -> String, disabled? : () -> Bool, edited? : (String) -> Unit, solid? : Bool, card_words? : Bool) -> @view.View
+pub fn textarea_node(@view.View, @ui.Field, rows? : Int32, most? : Int32, placeholder? : String, label? : String, corner? : Double, placeholder_by? : () -> String, disabled? : () -> Bool, description? : () -> String, error? : () -> String, invalid? : () -> Bool, read_only? : () -> Bool, edited? : (String) -> Unit, solid? : Bool, card_words? : Bool) -> @view.View
 
 pub fn theme() -> Theme
 
-pub fn tile_avatar(@ui.Ctx, String, String, String, Double) -> Unit
+#callsite(autofill(loc))
+pub fn tile_avatar_node(@view.View, () -> String, () -> String, () -> String, Double, corner? : Double, loc~ : SourceLoc) -> Unit
+
+pub let tile_going_spinner : Double
 
 pub fn tile_whole() -> Bool
+
+pub let tip_delay_ms : Double
 
 pub fn tip_edge() -> (Double, Int64)
 
 pub fn tip_ground() -> Int64
 
-pub fn tip_words() -> Int64
-
-pub fn title_accented(String) -> String
-
-pub fn tip(@ui.Ctx, String, Int32, String, side? : @view.Side, shortcut? : String, shown? : Bool, repeats? : Bool) -> Unit
-
-pub let tip_delay_ms : Double
-
-pub fn tip_look(@ui.Ctx, String, String) -> Unit
-
 pub let tip_max : @ui.Len
 
-pub fn tip_node(TipLayer, @view.View, () -> String, side? : @view.Side, delay? : Double, skip? : Bool, gap? : Double, at_pointer? : Bool, within? : Bool, repeats? : Bool, shortcut? : String) -> TipHand
+pub fn tip_node(TipLayer, @view.View, () -> String, side? : @view.Side, delay? : Double, skip? : Bool, gap? : Double, at_pointer? : Bool, within? : Bool, repeats? : Bool, shortcut? : String, pressed? : () -> Bool) -> TipHand
+
+pub fn tip_words() -> Int64
 
 pub let title : @ui.TextStyle
+
+pub fn title_accented(String) -> String
 
 pub let title_card_narrow : Double
 
@@ -2503,18 +3018,26 @@ pub let toast_shadow_y : Double
 #callsite(autofill(loc))
 pub fn toaster_node(@view.View, () -> Array[Toast], (Toast) -> Double, () -> Double, (String) -> Unit, (String) -> Unit, key? : String, w? : Double, label? : String, loc~ : SourceLoc) -> @view.View
 
+#callsite(autofill(loc))
+pub fn toggle_chip_node(@view.View, () -> String, () -> Bool, () -> Unit, icon? : String, chevron? : Bool, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn[K] toggle_group_node(@view.View, () -> String, Array[ToggleItem[K]], (K) -> Bool, (K, Bool) -> Unit, kind? : @headless.ToggleGroupKind, size? : ToggleGroupSize, shape? : ToggleGroupShape, disabled? : () -> Bool, loc~ : SourceLoc) -> @view.View
+
+pub fn[K] toggle_item(K, () -> String, icon? : String, icon_only? : Bool, disabled? : () -> Bool) -> ToggleItem[K]
+
 pub fn tone_ground(Int64) -> Int64
 
 pub fn tone_of(String) -> AccentTone?
 
-pub fn tool_mark_node(@view.View, String, Double) -> Unit
+#callsite(autofill(loc))
+pub fn tool_mark_node(@view.View, String, Double, loc~ : SourceLoc) -> Unit
 
-pub fn tool_node(@view.View, () -> ToolSaid, () -> ViewerInk, @view.Live[Double], () -> Unit, tip? : TipLayer, lights? : Bool, ripples? : Bool, roving? : RovingHover, progress? : () -> Double?) -> @view.View
+#callsite(autofill(loc))
+pub fn tool_node(@view.View, () -> ToolSaid, () -> ViewerInk, @view.Live[Double], () -> Unit, tip? : TipLayer, lights? : Bool, ripples? : Bool, roving? : RovingHover, progress? : () -> Double?, loc~ : SourceLoc) -> @view.View
 
-pub fn tool_of(String, () -> Unit, drop? : Int32, instead? : Array[MenuItem]) -> Tool
-
+#callsite(autofill(loc))
 pub fn tool_round_node(@view.View, String, () -> String, () -> Unit, look? : ToolLook, tips? : TipLayer, felt? : @ui.Haptic, loc~ : SourceLoc) -> @view.View
-
 
 pub let tool_side : Double
 
@@ -2522,13 +3045,22 @@ pub let tools_apart : Double
 
 pub fn tools_line() -> @ui.Style
 
-pub fn tools_row(@ui.Ctx, String, Array[Tool], more? : Array[MenuItem?], label~ : String, style? : @ui.Style) -> Unit
-
 pub fn top_bar_actions_lent(@view.View) -> Unit
 
 pub let top_bar_title_look : @view.WordsLook
 
-pub fn top_bar_title_node(@view.View, () -> String, look? : @view.WordsLook) -> @view.View
+#callsite(autofill(loc))
+pub fn top_bar_title_node(@view.View, () -> String, look? : @view.WordsLook, loc~ : SourceLoc) -> @view.View
+
+pub fn top_reach(Double) -> @ui.Style
+
+pub fn top_reach_corner(Double) -> Double
+
+#callsite(autofill(loc))
+pub fn top_scroll_edge_by_node(@view.View, (@view.View) -> Double, (@view.View) -> Double, (@view.View) -> Int64, from_top? : Bool, shield? : Bool, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn top_scroll_edge_node(@view.View, (@view.View) -> Double, (@view.View) -> Double, bg? : () -> Int64, shield? : Bool, loc~ : SourceLoc) -> @view.View
 
 pub let touch_chat_list : ChatList
 
@@ -2542,23 +3074,21 @@ pub let touch_list_row_h : Double
 
 pub let track_h : @ui.Len
 
+pub fn transient_layer_of(@view.View) -> TipLayer
+
 pub fn ui_theme() -> @ui.Theme
 
 pub fn ui_theme_now() -> @ui.Theme
-
-pub fn under_bar_room() -> @ui.Space
 
 pub fn untitled_clear() -> @ui.Style
 
 pub fn untitled_clear_node(@view.View) -> @ui.Style
 
-pub fn update_key(@ui.Ctx, String, Double, Double, String, String, Bool, coming? : Double??, offered? : Bool) -> Bool
+#callsite(autofill(loc))
+pub fn update_key_node(@view.View, TipLayer, Double, Double, () -> String, () -> String, () -> Bool, () -> Double??, () -> Unit, offered? : () -> Bool, loc~ : SourceLoc) -> Unit
 
-pub fn update_key_node(@view.View, TipLayer, Double, Double, () -> String, () -> String, () -> Bool, () -> Double??, () -> Unit, offered? : () -> Bool) -> Unit
-
-pub fn updating_mark(@ui.Ctx, Double, Int64) -> Int32
-
-pub fn updating_mark_node(@view.View, Double, () -> Int64) -> Unit
+#callsite(autofill(loc))
+pub fn updating_mark_node(@view.View, Double, () -> Int64, loc~ : SourceLoc) -> Unit
 
 pub let updating_rise_ms : Double
 
@@ -2568,35 +3098,34 @@ pub fn usage_series(Int32) -> Int64
 
 pub let value : @ui.TextStyle
 
-pub fn value_slider_node(@view.View, () -> String, () -> Double, (Double) -> Unit, min? : Double, max? : Double, step? : Double, disabled? : () -> Bool, format? : (Int32) -> String, bubble? : Bool, tips? : TipLayer) -> @view.View
+pub fn[T : Eq] value_kept(@view.View, () -> T) -> () -> T
 
-pub fn vector(@ui.Ctx, String, @pixels.Vector, Double) -> Int32
+#callsite(autofill(loc))
+pub fn value_slider_node(@view.View, () -> String, () -> Double, (Double) -> Unit, min? : Double, max? : Double, step? : Double, disabled? : () -> Bool, format? : (Int32) -> String, bubble? : Bool, tips? : TipLayer, loc~ : SourceLoc) -> @view.View
 
-pub fn verify_ok_node(@view.View, () -> String) -> Unit
+#callsite(autofill(loc))
+pub fn verify_ok_node(@view.View, () -> String, loc~ : SourceLoc) -> Unit
 
 pub let vfr_head_coming_track : Double
 
-pub fn video_capsule(@ui.Ctx, String, Double, coming? : Double?, corner? : Double) -> Unit
-
 pub let video_capsule_h : Double
 
-pub fn video_capsule_node(@view.View, Double, corner? : Double) -> Unit
+#callsite(autofill(loc))
+pub fn video_capsule_node(@view.View, Double, corner? : Double, coming? : () -> Double?, loc~ : SourceLoc) -> Unit
 
 pub let video_ground : @ui.Color
 
 pub let video_shade : @ui.Color
 
-pub fn viewer_act_foot(@ui.Ctx) -> Double
+pub fn viewer_act_foot(Double) -> Double
 
-pub fn viewer_act_head(@ui.Ctx) -> Double
+pub fn viewer_act_head(Double) -> Double
 
 pub fn viewer_back_at_corner() -> Bool
 
 pub fn viewer_back_corner(Double) -> @paint.CornerOf
 
 pub let viewer_back_icon : Double
-
-pub fn viewer_bar(@ui.Ctx, String, String, String, String, Bool, ViewerInk, () -> Unit, title? : String, capsule_end? : Bool) -> Bool
 
 pub let viewer_bar_blur : Double
 
@@ -2610,29 +3139,35 @@ pub let viewer_bar_in : Double
 
 pub let viewer_bar_ms : Double
 
-pub fn viewer_bar_node(@view.View, () -> String, () -> String, () -> String, () -> String, () -> Bool, (@view.View) -> Double, () -> Double, () -> Double, () -> ViewerInk, (@view.View, @view.Live[Double]) -> Unit, () -> Unit, TipLayer) -> @view.View
+#callsite(autofill(loc))
+pub fn viewer_bar_node(@view.View, () -> String, () -> String, () -> String, () -> String, () -> Bool, (@view.View) -> Double, () -> Double, () -> Double, () -> ViewerInk, (@view.View, @view.Live[Double]) -> Unit, () -> Unit, TipLayer, capsule_end? : Bool, capsule_now? : () -> Bool, middle? : (@view.View) -> Unit, middle_shown? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
 pub let viewer_bar_reach : Double
 
 pub let viewer_bar_saturation : Double
 
+pub fn viewer_bar_sides() -> Double
+
 pub fn viewer_bar_start_in(Double, @paint.CornerRoots) -> Double
 
 pub fn viewer_bar_under() -> Double
 
-pub fn viewer_coming_node(@view.View, () -> (Double, Double?)?, () -> Double, () -> ViewerInk, lead? : Bool, track? : Double) -> @view.View
+#callsite(autofill(loc))
+pub fn viewer_coming_node(@view.View, () -> (Double, Double?)?, () -> Double, () -> ViewerInk, lead? : Bool, track? : Double, loc~ : SourceLoc) -> @view.View
+
+pub let viewer_facts_actions : Double
+
+pub let viewer_facts_card : (Double, Double, Double)
 
 pub let viewer_facts_icon : Double
 
-pub fn viewer_frame_act(@ui.Ctx, String, String, String, String, ViewerInk, String, busy? : Bool, disabled? : Bool) -> (Bool, Bool)
+#callsite(autofill(loc))
+pub fn viewer_frame_act_node(@view.View, () -> String, () -> String, () -> String, () -> ViewerInk, () -> String, () -> Double, TipLayer, copy? : () -> String, busy? : () -> Bool, busy_copy? : () -> Bool, disabled? : () -> Bool, on_close~ : () -> Unit, on_act~ : () -> Unit, on_copy? : () -> Unit, loc~ : SourceLoc) -> Unit
 
-pub fn viewer_frame_bar(@ui.Ctx, String, String, String, String, Bool, Bool, Double, Double, ViewerInk, () -> Unit, title? : String) -> (Bool, Double)
-
-pub fn viewer_head_node(@view.View, () -> String, () -> String, () -> Bool, (@view.View) -> Double, () -> Double, () -> Double, () -> ViewerInk, () -> @paint.Glass, (@view.View) -> Unit, () -> String, () -> Unit, tips? : TipLayer) -> @view.View
+#callsite(autofill(loc))
+pub fn viewer_head_node(@view.View, () -> String, () -> String, () -> Bool, (@view.View) -> Double, () -> Double, () -> Double, () -> ViewerInk, () -> @paint.Glass, (@view.View) -> Unit, () -> String, () -> Unit, tips? : TipLayer, loc~ : SourceLoc) -> @view.View
 
 pub fn viewer_host() -> ViewerHost
-
-pub fn viewer_lit(ViewerInk) -> @ui.Style
 
 pub fn viewer_page_glass() -> @paint.Glass
 
@@ -2640,11 +3175,8 @@ pub fn viewer_reset() -> Unit
 
 pub let viewer_small_w : Double
 
-pub fn viewer_steps_node(@view.View, () -> Bool, () -> Bool, () -> Bool, (@view.View) -> Double, () -> Bool, (Int32) -> Unit, TipLayer) -> @view.View
-
-pub fn viewer_tool(@ui.Ctx, String, String, String, ViewerInk, on? : Bool, disabled? : Bool) -> Bool
-
-pub fn viewer_tool_corner() -> @ui.Style
+#callsite(autofill(loc))
+pub fn viewer_steps_node(@view.View, () -> Bool, () -> Bool, () -> Bool, (@view.View) -> Double, () -> Bool, (Int32) -> Unit, TipLayer, loc~ : SourceLoc) -> @view.View
 
 pub let viewer_tool_icon : Double
 
@@ -2664,56 +3196,75 @@ pub let viz_way_side : @ui.Len
 
 pub let wait_bar_h : @ui.Len
 
-pub fn wait_line(@ui.Ctx, String, key? : String, error? : Bool) -> Unit
-
-pub fn wait_line_node(@view.View, () -> String) -> @view.View
+#callsite(autofill(loc))
+pub fn wait_line_node(@view.View, () -> String, loc~ : SourceLoc) -> @view.View
 
 pub fn wait_more_node(@view.View, () -> WaitNote, (@view.View) -> Unit) -> Unit
 
-pub fn wait_pill(@ui.Ctx, String, key? : String, error? : Bool) -> Unit
-
-pub fn waiting(@ui.Ctx, () -> Unit, text? : String, error? : String, note? : WaitNote, fill? : Bool, body? : () -> Unit) -> Unit
+pub fn waited_past_node(@view.View, () -> Double, Double, going? : () -> Bool) -> () -> Bool
 
 pub let waiting_in : @motion.Trans
 
-pub fn waiting_node(@view.View, (@view.View) -> Unit, error? : () -> String, note? : () -> WaitNote, fill? : Bool, fits? : Bool) -> Unit
+#callsite(autofill(loc))
+pub fn waiting_node(@view.View, (@view.View) -> Unit, error? : () -> String, note? : () -> WaitNote, fill? : Bool, fits? : Bool, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn waiting_page_node(@view.View, String, () -> String, () -> String, (@view.View) -> Unit, clear? : () -> Double, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn waiting_tile_node(@view.View, (@view.View) -> Unit, () -> Bool, () -> Double?, () -> Bool, () -> Unit, () -> String, video? : () -> Bool, loc~ : SourceLoc) -> @view.View
+
+pub let waiting_tile_side : Double
 
 pub let wake_ms : Double
 
-pub fn way_in_button_node(@view.View, () -> String, () -> Unit, solid? : Bool, busy? : () -> Bool) -> @view.View
+#callsite(autofill(loc))
+pub fn way_in_button_node(@view.View, () -> String, () -> Unit, solid? : Bool, busy? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
-pub fn way_in_node(@view.View, () -> String, () -> String, () -> String, () -> String, () -> String, () -> Unit, busy? : () -> Bool, said? : () -> (String, Bool)) -> @view.View
+#callsite(autofill(loc))
+pub fn way_in_node(@view.View, () -> String, () -> String, () -> String, () -> String, () -> String, () -> Unit, busy? : () -> Bool, said? : () -> (String, Bool), loc~ : SourceLoc) -> @view.View
 
-pub fn way_in_note_node(@view.View, () -> String) -> @view.View
+#callsite(autofill(loc))
+pub fn way_in_note_node(@view.View, () -> String, loc~ : SourceLoc) -> @view.View
 
-pub fn way_in_page_node(@view.View, () -> String, (@view.View) -> Unit) -> @view.View
+#callsite(autofill(loc))
+pub fn way_in_page_node(@view.View, () -> String, (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
-pub fn way_in_title_node(@view.View, () -> String) -> @view.View
+#callsite(autofill(loc))
+pub fn way_in_title_node(@view.View, () -> String, loc~ : SourceLoc) -> @view.View
 
-pub fn way_line(@ui.Ctx, String, Array[String], WayLook, (Int32) -> Unit, last_link? : Bool) -> Unit
-
-pub fn way_line_node(@view.View, () -> Array[String], () -> WayLook, (Int32) -> Unit) -> @view.View
+#callsite(autofill(loc))
+pub fn way_line_node(@view.View, () -> Array[String], () -> WayLook, (Int32) -> Unit, last_link? : Bool, loc~ : SourceLoc) -> @view.View
 
 pub let way_more : String
 
-pub fn ways_node(@view.View, () -> Array[(String, String, String)], (String) -> Unit, mark? : (@view.View, String) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn way_row_node(@view.View, () -> String, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn way_tile_node(@view.View, NoticeLook, WayPicture, () -> String, () -> String, () -> Bool, () -> String, () -> Bool, () -> Unit, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn way_tiles_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn ways_node(@view.View, () -> Array[(String, String, String)], (String) -> Unit, mark? : (@view.View, String) -> Unit, loc~ : SourceLoc) -> Unit
 
 pub let white : Int64
 
 pub let white_ink : @ui.Color
 
-pub fn whole_fitted(@ui.Ctx, String, Int32, Double, (Int32) -> Int32) -> Unit
-
 pub let wide_bar_h : Double
 
 pub let wide_bar_h_size : @ui.Len
-
 
 pub let wide_heading : @ui.TextStyle
 
 pub let wide_list_note : @ui.TextStyle
 
 pub let wide_value : @ui.TextStyle
+
+pub fn width_is_wide((() -> Double)?) -> Bool
 
 pub fn window_clear_in(Double) -> Double
 
@@ -2731,39 +3282,51 @@ pub let window_in : Double
 
 pub fn window_key_in(Double, roots? : @paint.CornerRoots) -> Double
 
-pub fn window_keys(@ui.Ctx, whole? : Bool) -> Unit
-
 pub fn window_keys_at(Double, whole? : Bool) -> (Double, Double)
 
 pub let window_keys_band : Double
 
+pub let window_keys_bar_extra : Double
+
+pub fn window_keys_bar_over() -> Double
+
+pub fn window_keys_bar_over_now() -> Double
+
 pub let window_keys_in : Double
 
-pub fn window_keys_room(roots? : @paint.CornerRoots) -> Double
+#callsite(autofill(loc))
+pub fn window_keys_node(@view.View, whole? : () -> Bool, loc~ : SourceLoc) -> Unit
 
-pub fn window_keys_room_at(Double) -> Double
+pub fn window_keys_room(roots? : @paint.CornerRoots) -> Double
 
 pub fn window_keys_room_tape(roots? : @paint.CornerRoots) -> Double
 
 pub fn window_keys_w() -> Double
 
-pub fn with_corner_remove(@ui.Ctx, String, String, Double, () -> Unit, w? : Double, turn? : () -> Double, on_remove? : () -> Unit) -> Unit
+pub fn window_tips() -> TipLayer
 
-pub fn with_ground(@ui.Ctx, Int64, () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn with_corner_remove_node(@view.View, () -> String, Double, (@view.View) -> Unit, () -> Unit, hung? : Bool, whole? : Bool, turn? : (@view.View) -> Double, loc~ : SourceLoc) -> @view.View
 
 pub fn with_look(Look, () -> Unit) -> Unit
 
-pub fn within_room(@ui.Ctx, @kit.PopState, () -> Unit, inner? : @ui.Style, most? : Double) -> Unit
+pub fn[T] with_pane(FixedArray[@paint.CornerOf]?, () -> T) -> T
+
+#callsite(autofill(loc))
+pub fn words_button_node(@view.View, () -> String, () -> @ui.TextStyle, () -> Unit, shown? : () -> Bool, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn words_links_node(@view.View, @view.View, () -> Array[@text.Run], (String) -> Unit, hold? : ((String, (Double, Double, Double, Double)) -> Unit)?, cards? : (TipLayer, (LinkOf) -> LinkCard?)?, shown? : ((Array[(String, String, Int32)]) -> Unit)?, loc~ : SourceLoc) -> Unit
 
 pub fn words_may_link(String) -> Bool
 
-pub fn words_node(@view.View, () -> String, () -> @ui.TextStyle) -> @view.View
+#callsite(autofill(loc))
+pub fn words_node(@view.View, () -> String, () -> @ui.TextStyle, loc~ : SourceLoc) -> @view.View
 
 pub fn words_told_count() -> Int32
 
-pub fn workspace_badge(@ui.Ctx, String, String, String, Double, still? : Bool) -> Unit
-
-pub fn workspace_badge_node(@view.View, () -> String, () -> String, () -> String, Double, stint? : () -> Int) -> Unit
+#callsite(autofill(loc))
+pub fn workspace_badge_node(@view.View, () -> String, () -> String, () -> String, Double, stint? : () -> Int32, loc~ : SourceLoc) -> Unit
 
 pub let workspace_letter : @ui.TextStyle
 
@@ -2782,27 +3345,21 @@ pub(all) struct AccentTone {
   dark_grounds : Grounds?
 }
 
+pub struct AccordionSection[K] {
+  // private fields
+}
+
 pub(all) enum Anchor {
-  Of(Int32)
   Node(@view.View)
   At(Double, Double, Double, Double)
   Unanchored
 }
 pub impl Eq for Anchor
 
-pub(all) struct AppAvatar {
-  id : String
-  label : String
-  bg : String
-  mark : String
-  mono : Bool
-}
-
 pub(all) struct BarOnScroll {
   mut hidden : Bool
   mut seen : (Int32, Double)
 }
-pub fn BarOnScroll::heard(Self, @ui.Ctx, String) -> Unit
 pub fn BarOnScroll::new() -> Self
 
 pub(all) struct Bars {
@@ -2812,13 +3369,13 @@ pub(all) struct Bars {
 }
 
 pub(all) enum Beside {
-  Of(Int32)
   Node(@view.View)
   At(Double, Double, Double, Double)
 }
 pub fn Beside::anchor(Self) -> Anchor
 pub impl Eq for Beside
 
+#derive(Eq)
 pub struct Book {
   title : String
   id : Int32
@@ -2836,14 +3393,15 @@ pub struct Book {
 pub fn Book::at(Self, Int32) -> (Int32, Int32)
 pub fn Book::offset_of(Self, Int32, Double) -> Int32
 
-#derive(Eq)
+#derive(Eq, @debug.Debug)
 pub(all) enum CardPiece {
   CardWhole
   CardTop
   CardBetween
   CardFoot
-} derive(Eq, Show)
+}
 
+#derive(Eq)
 pub(all) struct ChangeLine {
   label : String
   text : String
@@ -2901,7 +3459,30 @@ pub(all) struct ChatList {
   keys : Bool
   found : Found
   slide : @motion.Spec
-  move : @motion.Spec
+  reorder : @motion.Spec
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct CheckGroup {
+  id : String
+  label : String
+  tip : String
+  fixed : Bool
+  admin : Bool
+}
+
+pub(all) struct CheckGroupsSaid {
+  summary : (Int32, Int32) -> String
+  all_on : () -> String
+  select_all : () -> String
+  select_none : () -> String
+  admin : () -> String
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct CheckSection {
+  title : String
+  groups : Array[CheckGroup]
 }
 
 #derive(Eq, @debug.Debug)
@@ -2918,6 +3499,7 @@ pub(all) struct Choice {
   value : String
   icon : String
   mark : ChoiceMark?
+  disabled : Bool
 }
 
 pub struct ChoiceHeld {
@@ -2938,11 +3520,6 @@ pub(all) struct Columns {
   avatar_narrow : Double
   route : Double
   nav_row : Double
-}
-
-pub(all) struct Confirmed {
-  open : Bool
-  confirmed : Bool
 }
 
 pub struct ControlLook {
@@ -2967,6 +3544,7 @@ pub(all) enum CountTone {
   CountAccent
 }
 
+#derive(Eq)
 pub(all) struct Dial {
   number : String
   unit : String
@@ -2976,9 +3554,8 @@ pub(all) struct Dial {
   note : String
   label_short : String
   note_short : String
+  turns : Bool
 }
-
-type DrawnShapes
 
 #derive(Eq, @debug.Debug)
 pub(all) enum DrawerSide {
@@ -3006,12 +3583,21 @@ pub struct FactsList {
   // private fields
 }
 
-pub(all) struct FileCardDone {
-  removed : Bool
-  retried : Bool
-  restored : Bool
-  opened : Bool
+pub(all) struct FieldBarLabels {
+  cut : String
+  copy : String
+  paste : String
+  select_all : String
 }
+
+#derive(Eq, @debug.Debug)
+pub(all) enum FileCardPress {
+  Remove
+  Retry
+  Restore
+  Open
+}
+pub impl Show for FileCardPress
 
 pub(all) struct FileFacts {
   width : Double
@@ -3025,6 +3611,8 @@ pub(all) struct Found {
   two_h : Double
   head_h : Double
   quiet_h : Double
+  first_least : Double
+  second_least : Double
   row : @ui.Style
   two : @ui.Style
   mark : @ui.Style
@@ -3058,6 +3646,7 @@ pub(all) struct GlyphCounts {
   connecting : Int32
 }
 
+#derive(Eq)
 pub(all) struct Got {
   loaded : Double
   total : Double
@@ -3066,11 +3655,13 @@ pub(all) struct Got {
 pub struct GridRow {
   // private fields
 }
+#callsite(autofill(loc))
 pub fn GridRow::head(Self, @view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub struct GridTable {
   // private fields
 }
+#callsite(autofill(loc))
 pub fn GridTable::row(Self, @view.View, (@view.View, GridRow) -> Unit, in_node? : Bool, loc~ : SourceLoc) -> @view.View
 
 pub(all) struct Grounds {
@@ -3092,6 +3683,22 @@ pub struct HoverHand {
   close : () -> Unit
   open : () -> Bool
   card : () -> @view.View?
+}
+
+pub(all) struct HoverPanelSpec {
+  w : Double
+  tall : Double
+  side : @view.Side
+  along : @view.Along
+  offset : Double
+  open_delay : Double
+  close_delay : Double
+}
+
+pub(all) enum IconMark {
+  Count(Int32)
+  Dot
+  Unmarked
 }
 
 pub(all) struct Items {
@@ -3127,7 +3734,7 @@ pub fn KeyPadMods::holds(Self, Int32) -> Bool
 pub fn KeyPadMods::new() -> Self
 pub fn KeyPadMods::press(Self, Int32) -> Unit
 
-#derive(Eq, Show, @debug.Debug)
+#derive(Eq, @debug.Debug)
 pub(all) enum Layout {
   Small
   Medium
@@ -3159,6 +3766,7 @@ pub(all) struct LinkTo {
   bare : Bool
 }
 pub fn LinkTo::is_card(Self) -> Bool
+pub fn LinkTo::terminal_id(Self) -> String
 
 #derive(Eq)
 pub(all) enum ListAt {
@@ -3167,6 +3775,21 @@ pub(all) enum ListAt {
   Whole
 }
 
+pub(all) struct ListPageOpts[K] {
+  shape : (K) -> Int32
+  reuses : (K) -> Bool
+  est : Double
+  frame : () -> PageFrame
+  width : (() -> Double)?
+  scroll : @view.Scroll?
+  actions : ((@view.View) -> Unit)?
+  empty : ((@view.View) -> Unit)?
+  loading : (() -> Bool)?
+  loading_view : ((@view.View) -> Unit)?
+  near_foot : (Double, () -> Bool, () -> Unit)?
+}
+pub fn[K] ListPageOpts::default() -> Self[K]
+
 pub struct LiveArray[T] {
   // private fields
 }
@@ -3174,6 +3797,8 @@ pub fn[T] LiveArray::all(Self[T], (T) -> Bool) -> Bool
 pub fn[T] LiveArray::any(Self[T], (T) -> Bool) -> Bool
 #callsite(autofill(loc))
 pub fn[T] LiveArray::append(Self[T], Array[T], loc~ : SourceLoc) -> Unit
+#alias("_[_]")
+pub fn[T] LiveArray::at(Self[T], Int32) -> T
 #callsite(autofill(loc))
 pub fn[T] LiveArray::clear(Self[T], loc~ : SourceLoc) -> Unit
 pub fn[T : Eq] LiveArray::contains(Self[T], T) -> Bool
@@ -3195,14 +3820,14 @@ pub fn[T] LiveArray::length(Self[T]) -> Int32
 pub fn[T, U] LiveArray::map(Self[T], (T) -> U) -> Array[U]
 pub fn[T, U] LiveArray::mapi(Self[T], (Int32, T) -> U) -> Array[U]
 pub fn[T] LiveArray::new() -> Self[T]
-pub fn[T] LiveArray::op_get(Self[T], Int32) -> T
-pub fn[T] LiveArray::op_set(Self[T], Int32, T) -> Unit
 #callsite(autofill(loc))
 pub fn[T] LiveArray::pop(Self[T], loc~ : SourceLoc) -> T?
 #callsite(autofill(loc))
 pub fn[T] LiveArray::push(Self[T], T, loc~ : SourceLoc) -> Unit
 #callsite(autofill(loc))
 pub fn[T] LiveArray::push_iter(Self[T], Iter[T], loc~ : SourceLoc) -> Unit
+#alias("_[_]=_")
+pub fn[T] LiveArray::put(Self[T], Int32, T) -> Unit
 #callsite(autofill(loc))
 pub fn[T] LiveArray::remove(Self[T], Int32, loc~ : SourceLoc) -> T
 #callsite(autofill(loc))
@@ -3218,6 +3843,8 @@ pub fn[T] LiveArray::touched(Self[T], loc~ : SourceLoc) -> Unit
 pub struct LiveMap[K, V] {
   // private fields
 }
+#alias("_[_]")
+pub fn[K : Hash + Eq, V] LiveMap::at(Self[K, V], K) -> V
 #callsite(autofill(loc))
 pub fn[K, V] LiveMap::clear(Self[K, V], loc~ : SourceLoc) -> Unit
 pub fn[K : Hash + Eq, V] LiveMap::contains(Self[K, V], K) -> Bool
@@ -3230,8 +3857,8 @@ pub fn[K, V] LiveMap::iter2(Self[K, V]) -> Iter2[K, V]
 pub fn[K, V] LiveMap::keys(Self[K, V]) -> Iter[K]
 pub fn[K, V] LiveMap::length(Self[K, V]) -> Int32
 pub fn[K : Hash + Eq, V] LiveMap::new() -> Self[K, V]
-pub fn[K : Hash + Eq, V] LiveMap::op_get(Self[K, V], K) -> V
-pub fn[K : Hash + Eq, V] LiveMap::op_set(Self[K, V], K, V) -> Unit
+#alias("_[_]=_")
+pub fn[K : Hash + Eq, V] LiveMap::put(Self[K, V], K, V) -> Unit
 #callsite(autofill(loc))
 pub fn[K : Hash + Eq, V] LiveMap::remove(Self[K, V], K, loc~ : SourceLoc) -> Unit
 #callsite(autofill(loc))
@@ -3242,13 +3869,13 @@ pub fn[K : Hash + Eq, V] LiveMap::set(Self[K, V], K, V, loc~ : SourceLoc) -> Uni
 pub fn[K, V] LiveMap::touched(Self[K, V], loc~ : SourceLoc) -> Unit
 pub fn[K, V] LiveMap::values(Self[K, V]) -> Iter[V]
 
-#derive(Eq, Show)
+#derive(Eq, @debug.Debug)
 pub(all) enum Look {
   Narrow
   Wide
 }
 
-#derive(Eq, Show, @debug.Debug)
+#derive(Eq, @debug.Debug)
 pub(all) struct MarksActionsSaid {
   error : String
   ready : Bool
@@ -3260,6 +3887,14 @@ pub(all) struct MarksActionsSaid {
   making : String
 }
 
+#derive(Eq, @debug.Debug)
+pub(all) struct MdPiece {
+  from : Int32
+  upto : Int32
+  rows : (Int32, Int32)?
+  last : Bool
+}
+
 pub(all) struct MediaInk {
   text : Int64
   muted : Int64
@@ -3267,10 +3902,17 @@ pub(all) struct MediaInk {
   stage : Int64
 }
 
+pub(all) struct MenuEnd {
+  label : String
+  icon : String
+  press : () -> Unit
+}
+
 pub(all) struct MenuExtra {
   note : String
   value : String
   mark : ChoiceMark?
+  end : MenuEnd?
 }
 
 pub(all) struct MenuItem {
@@ -3279,7 +3921,9 @@ pub(all) struct MenuItem {
   danger : Bool
   disabled : Bool
   chosen : Bool?
+  checkbox : Bool
   heading : Bool
+  further : Bool
   select : () -> Unit
 }
 
@@ -3289,8 +3933,6 @@ pub(all) struct NativeBars {
   corners : @signals.Signal[FixedArray[Double]]
 }
 
-type NativeClaim
-
 pub(all) struct NativeOver {
   mut up : Bool
   mut title : String
@@ -3299,12 +3941,28 @@ pub(all) struct NativeOver {
   mut alive : () -> Bool
 }
 
-pub(all) struct NoticeChoice {
-  choices : () -> Array[(String, String)]
-  chosen : () -> String
-  choose : (String) -> Unit
-  on_open : ((Bool) -> Unit)?
+pub(all) enum NoticeLook {
+  MacOS
+  Windows
+  Phone(island~ : Bool)
 }
+
+pub struct OpenGate {
+  // private fields
+}
+pub fn OpenGate::collect(Self, () -> Unit) -> Unit
+pub fn OpenGate::go(Self, @view.View, () -> Unit) -> Unit
+pub fn OpenGate::holding(Self) -> Bool
+pub fn OpenGate::new() -> Self
+pub fn OpenGate::seal(Self, @view.View) -> Unit
+pub fn OpenGate::stop(Self) -> Unit
+
+pub struct Opener {
+  // private fields
+}
+pub fn Opener::mark(Self) -> Unit
+pub fn Opener::new() -> Self
+pub fn Opener::open(Self) -> Bool
 
 pub(all) struct PageBar {
   back : (String, () -> Unit)?
@@ -3326,6 +3984,7 @@ pub(all) struct PageFrame {
 pub(all) struct PageSaid {
   title : String
   about : String
+  back : String
 }
 
 pub(all) struct Palette {
@@ -3355,6 +4014,7 @@ pub(all) struct Palette {
   amber_bg : Int64
   online : Int64
   neutral_bg : Int64
+  secondary_bg : Int64
   overlay : Int64
   shadow : Int64
   primary : Int64
@@ -3374,6 +4034,13 @@ pub(all) enum PanelTone {
   Accent
   Quiet
   Filled
+}
+
+pub(all) struct PickBarItem {
+  label : String
+  icon : String
+  mark : Bool
+  press : () -> Unit
 }
 
 #derive(Eq)
@@ -3410,10 +4077,10 @@ pub(all) struct Playing {
   mut keeps : Int32
 }
 
-pub(all) struct QuoteCardDone {
-  jumped : Bool
-  removed : Bool
-  card : Int32
+#derive(Eq, @debug.Debug)
+pub(all) enum PointLook {
+  Told
+  Listed
 }
 
 pub struct RadioRow {
@@ -3436,6 +4103,13 @@ pub(all) struct ReadBook {
   chapters : Array[Chapter]
   heads : Array[Int32]
   md : Array[@json.Json]
+}
+
+#derive(Eq)
+pub(all) enum ReaderHost {
+  OwnPage
+  Tab
+  PanelTab
 }
 
 #derive(Eq)
@@ -3480,29 +4154,31 @@ pub(all) struct Reading {
   key : String
   mut file : ViewerFile?
   mut asked : Bool
-  mut got : Got?
+  got : @signals.Signal[Got?]
   failed : @signals.Signal[String?]
   book : @signals.Signal[Book?]
-  ready_n : @signals.Signal[Int32]
-  mut started : Bool
-  mut chunk : Int32
-  mut within : Double
-  mut chrome : Bool
-  mut panel : ReaderPanel
-  mut contents_put : Bool
-  mut closing : ReaderPanel
-  mut query : String
-  mut searched : String
-  mut typed_n : Int32
-  mut matches : Array[TextMatch]
-  mut hit : Int32
-  mut jump : (Int32, Int32, Bool)
-  mut jump_step : Int32
+  started : @signals.Signal[Bool]
+  place : @signals.Signal[(Int32, Double)]
+  chrome : @signals.Signal[Bool]
+  panel : @signals.Signal[ReaderPanel]
+  query : @signals.Signal[String]
+  search : @ui.Field
+  searched : @signals.Signal[String]
+  matches : @signals.Signal[Array[TextMatch]]
+  hit : @signals.Signal[Int32]
+  jump : @signals.Signal[(Int32, Int32, Bool)?]
+  list : @view.ListPlace[Int32]
+  contents : @view.ListPlace[Int32]
   mut kept : Int32
   mut moves : Int32
   mut kept_moves : Int32
-  mut draft : Double
-  bar : BarOnScroll
+  mut jumped : (Int32, Double, Int32, Double)
+  draft : @signals.Signal[Double]
+  bar_hidden : @signals.Signal[Bool]
+  long : @signals.Signal[Bool]
+  away : @signals.Signal[Bool]
+  mut sight_from : Double
+  mut seen : (Int32, Double)
 }
 
 #derive(Eq)
@@ -3512,7 +4188,7 @@ pub(all) enum RenamePick {
   NameAsGiven
 }
 
-#derive(Eq, Show, @debug.Debug)
+#derive(Eq, @debug.Debug)
 pub(all) enum Resized {
   Untouched
   Dragging(Double)
@@ -3520,11 +4196,17 @@ pub(all) enum Resized {
   Pressed
   Twice
 }
+pub impl Show for Resized
 
 pub(all) struct Round {
   side : Double
   glyph : Double
 }
+
+pub struct RovingHover {
+  // private fields
+}
+pub fn RovingHover::new() -> Self
 
 pub(all) enum RowChevron {
   ChevronRight
@@ -3571,11 +4253,6 @@ pub(all) enum RowTone {
   RowDanger
 }
 
-pub struct RovingHover {
-  // private fields
-}
-pub fn RovingHover::new() -> Self
-
 pub(all) struct Rows {
   pick : Double
   title : @ui.TextStyle
@@ -3608,6 +4285,19 @@ pub struct SegThumb {
 }
 pub fn SegThumb::new(@view.View, () -> Int32) -> Self
 
+pub struct Segments {
+  // private fields
+}
+pub fn Segments::made(Self, Int32, @view.View) -> Unit
+pub fn Segments::new() -> Self
+
+pub(all) struct SheetAction {
+  label : String
+  icon : String
+  danger : Bool
+  on_pick : () -> Unit
+}
+
 pub(all) struct StackFace {
   id : String
   name : String
@@ -3621,6 +4311,16 @@ pub(all) enum StepLook {
   Pin
 }
 
+pub struct Stops {
+  mut said : Int32
+  mut shown : Int32
+  mut expect : Int32
+  stale : Array[Int32]
+  resets : @signals.Signal[Int32]
+}
+pub fn Stops::new() -> Self
+pub fn Stops::reset(Self) -> Unit
+
 pub(all) struct StrokeShape {
   up : Double
   down : Double
@@ -3628,7 +4328,7 @@ pub(all) struct StrokeShape {
   width : Double
 }
 
-#derive(Eq, Show)
+#derive(Eq, @debug.Debug)
 pub(all) struct Surface {
   pad : Double
   inner : Double
@@ -3636,8 +4336,6 @@ pub(all) struct Surface {
 pub fn Surface::corner(Self) -> Double
 pub fn Surface::radius(Self) -> @ui.Radius
 pub fn Surface::style(Self) -> @ui.Style
-
-type SyncRest
 
 #derive(Eq, @debug.Debug)
 pub(all) enum TabClose {
@@ -3658,6 +4356,32 @@ pub struct TabShown {
 pub fn TabShown::front(Self) -> Bool
 pub fn TabShown::lit(Self) -> Bool
 
+pub(all) struct TabStripSpec {
+  group_label : () -> String
+  more_label : () -> String
+  tabs : () -> Array[String]
+  front : () -> String
+  names : (String) -> (String, String)
+  mark : (@view.View, String, () -> Bool) -> Unit
+  on_select : (String) -> Unit
+  on_close : (String) -> Unit
+  on_move : (String, Int32) -> Unit
+  on_menu : (String, Double, Double) -> Unit
+  on_overflow : ((Double, Double, Double, Double)) -> Unit
+  tips : TipLayer
+  strip_h : Double
+  panel_w : () -> Double?
+  words_front : @ui.TextStyle
+  words_lit : @ui.TextStyle
+  words_rest : @ui.TextStyle
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum TabsLook {
+  Underline
+  Pill
+}
+
 #derive(Eq, @debug.Debug)
 pub(all) struct TextMatch {
   chunk : Int32
@@ -3677,8 +4401,9 @@ pub(all) struct Theme {
   items : Items
   chat_list : ChatList
 }
-
-type TipFade
+pub fn Theme::find_bg(Self) -> Int64
+pub fn Theme::flash_bg(Self) -> Int64
+pub fn Theme::secondary_bg(Self) -> Int64
 
 pub struct TipHand {
   hold : () -> Unit
@@ -3698,7 +4423,6 @@ pub struct TipLayer {
 }
 pub fn TipLayer::new(() -> @view.View?) -> Self
 
-#derive(Eq)
 #derive(Eq, @debug.Debug)
 pub(all) struct Toast {
   id : String
@@ -3707,6 +4431,23 @@ pub(all) struct Toast {
   action : String
 }
 
+#derive(Eq, @debug.Debug)
+pub(all) enum ToggleGroupShape {
+  Rounded
+  Pill
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum ToggleGroupSize {
+  Compact
+  Regular
+}
+
+pub struct ToggleItem[K] {
+  // private fields
+}
+
+#derive(Eq)
 pub(all) enum Tone {
   Plain
   Primary
@@ -3729,7 +4470,7 @@ pub(all) enum ToolLook {
   Floating
 }
 
-#derive(Eq, Show, @debug.Debug)
+#derive(Eq, @debug.Debug)
 pub(all) struct ToolSaid {
   icon : String
   label : String
@@ -3784,7 +4525,6 @@ pub(all) struct ViewerFile {
 
 pub(all) struct ViewerHost {
   room : () -> (Double, Double)
-  sheet : ((@ui.Ctx, ViewerSheet) -> Unit)?
   on_link : (String) -> Unit
   reader_style : () -> ReaderStyle
   set_reader_style : (ReaderStyleChange) -> Unit
@@ -3794,6 +4534,7 @@ pub(all) struct ViewerHost {
   say : (String) -> Unit
 }
 
+#derive(Eq)
 pub(all) struct ViewerInk {
   ground : Int64
   ink : Int64
@@ -3801,17 +4542,6 @@ pub(all) struct ViewerInk {
   line : Int64
   hover : Int64
   chosen : Int64
-}
-
-pub(all) struct ViewerSheet {
-  title : String
-  trailing : String
-  height : Double
-  draggable : Bool
-  closing : Bool
-  close : () -> Unit
-  gone : () -> Unit
-  body : () -> Unit
 }
 
 pub(all) struct WaitNote {
@@ -3827,6 +4557,11 @@ pub(all) struct WayLook {
   here : @ui.TextStyle
   chevron : Double
   chevron_ink : Int64
+}
+
+pub(all) enum WayPicture {
+  BannerWay
+  BadgeWay
 }
 
 // Type aliases

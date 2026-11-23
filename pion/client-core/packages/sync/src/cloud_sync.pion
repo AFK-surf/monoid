@@ -63,6 +63,14 @@ pub struct CloudStation {
   pub name : String
   pub online : Bool
   pub url : Option[String]
+  pub endpoint_id : Option[String]
+  pub relay : Option[String]
+  pub ips : Array[String]
+  pub mode : Option[String]
+  pub emoji : Option[String]
+  pub icon : Option[String]
+  pub version : Option[String]
+  pub joined : Bool
 }
 
 pub struct CloudWorkspace {
@@ -206,11 +214,43 @@ fn parse_cloud_workspace(ws_id : String, j : base_codec::Json) -> CloudWorkspace
         let s = xs[i]
         let sid = j_str(s, "id")
         if sid.length() > 0 {
+          let endpoint_id = match j_opt_str(s, "endpoint_id") {
+            Some(v) => Some(v)
+            None => j_opt_str(s, "endpointId")
+          }
+          let relay = match j_opt_str(s, "relay") {
+            Some(v) => Some(v)
+            None =>
+            match j_opt_str(s, "relay_url") {
+              Some(v) => Some(v)
+              None => j_opt_str(s, "relayUrl")
+            }
+          }
+          let ips : Array[String] = []
+          match base_codec::json_get(s, "ips") {
+            Some(base_codec::Json::Arr(ip_xs)) => {
+              for k in 0..<ip_xs.length() {
+                match ip_xs[k] {
+                  base_codec::Json::Str(ip) => if ip.length() > 0 { ips.push(ip) }
+                  _ => ()
+                }
+              }
+            }
+            _ => ()
+          }
           stations.push(CloudStation::{
             id: sid,
             name: j_str(s, "name"),
             online: j_bool(s, "online"),
             url: j_opt_str(s, "url"),
+            endpoint_id: endpoint_id,
+            relay: relay,
+            ips: ips,
+            mode: j_opt_str(s, "mode"),
+            emoji: j_opt_str(s, "emoji"),
+            icon: j_opt_str(s, "icon"),
+            version: j_opt_str(s, "version"),
+            joined: j_bool(s, "joined"),
           })
         }
       }
@@ -224,6 +264,21 @@ fn parse_cloud_workspace(ws_id : String, j : base_codec::Json) -> CloudWorkspace
     members: members,
     stations: stations,
     raw: j,
+  }
+}
+
+/// Read the persisted Cloud workspace JSON from SQLite `workspace` table and return its stations.
+pub fn list_workspace_stations(db : sql::Sql, ws_id : String) -> Array[CloudStation] {
+  if ws_id.length() == 0 {
+    return []
+  }
+  match store::get_workspace(db, ws_id) {
+    sql::SqlResult::Ok(Some(row)) =>
+    match base_codec::json_parse(row.json) {
+      base_codec::JsonParseResult::Ok(j) => parse_cloud_workspace(ws_id, j).stations
+      base_codec::JsonParseResult::Err(_) => []
+    }
+    _ => []
   }
 }
 
@@ -367,33 +422,16 @@ pub fn fetch_workspace_k(
         let now_ms = sh.rt.now()
         let burst = sql::Burst::new(db)
         match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+          // Cloud MUST NEVER overwrite station-owned `station(address, "overview")` rows;
+          // full Cloud workspace metadata (including station roster) lives strictly in `workspace.json`.
           match b.run(sql_workspace_put(), params=[
             base_codec::json_str(ws.id),
             base_codec::json_str(raw_json),
             base_codec::json_int64(now_ms),
           ]) {
-            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-            sql::SqlResult::Ok(_) => ()
+            sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
           }
-          for i in 0..<ws.stations.length() {
-            let st = ws.stations[i]
-            let addr = ws.id + "/" + st.id
-            let st_json = base_codec::json_stringify(base_codec::json_obj([
-              ("id", base_codec::json_str(st.id)),
-              ("name", base_codec::json_str(if st.name.length() > 0 { st.name } else { st.id })),
-              ("online", base_codec::json_bool(st.online)),
-            ]))
-            match b.run(store::sql_station_doc_put(), params=[
-              base_codec::json_str(addr),
-              base_codec::json_str("overview"),
-              base_codec::json_str(st_json),
-              base_codec::json_int64(now_ms),
-            ]) {
-              sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-              sql::SqlResult::Ok(_) => ()
-            }
-          }
-          sql::SqlResult::Ok(())
         }) {
           sql::SqlResult::Err(e) => k(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
           sql::SqlResult::Ok(_) => k(effect::Exit::Succeeded(ws))

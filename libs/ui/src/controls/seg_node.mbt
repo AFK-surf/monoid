@@ -252,6 +252,8 @@ fn seg_lens_overlay_node(
     shadow_y=seg_lens_shadow_y,
     jelly?,
     grow=seg_lens_grow,
+    overhang_x=18.0,
+    overhang_y=16.0,
     active~,
     loc~,
   )

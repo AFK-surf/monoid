@@ -10,7 +10,7 @@
 // under it, the track as it is.
 
 ///|
-/// The thumb's glass, held `p` (iOS 27 clear loupe with 1.22× optical magnification).
+/// The thumb's glass, held `p` (Native iOS 27.0 clear droplet loupe: zoom=1.0, chroma=0, concave moat pinch in shader).
 fn toggle_glass(p : Double) -> @paint.Glass {
   let p = clamp(p, 0.0, 1.0)
   @paint.Glass::liquid(
@@ -18,13 +18,13 @@ fn toggle_glass(p : Double) -> @paint.Glass {
     tint=0xFFFFFF00L,
     solid=white,
     saturation=1.0,
-    rim=0.6 * p,
-    bezel=8.0 * p,
-    refraction=12.0 * p,
-    chroma=-0.06 * p,
+    rim=1.0 * p,
+    bezel=9.0 * p,
+    refraction=9.0 * p,
+    chroma=0.0,
     merge=0.0,
     adaptive=false,
-    zoom=1.0 + 0.22 * p,
+    zoom=1.0,
   )
 }
 
@@ -144,7 +144,7 @@ pub fn liquid_toggle_node(
       .ground(By(fn() {
         let off_c = match track_color {
           Some(f) => f()
-          None => colors().track
+          None => if is_dark() { colors().track } else { 0x78788052L }
         }
         let on_c = match on_color {
           Some(f) => f()
@@ -159,7 +159,7 @@ pub fn liquid_toggle_node(
       let thumb_shape = fn(n : @view.View, with_velocity : Bool) -> @view.GroundShape {
         let p = clamp(lens(n), 0.0, 1.0)
         let (sx, sy) = if no_lens() { (1.0, 1.0) } else { dd.jelly(n, 50.0) }
-        let base_w = tw * sx
+        let base_w = tw * sx * lerp(1.0, thumb_held_scale_x / thumb_held_scale, p)
         let base_h = th * sy
         let x = lerp(pad, pad + drag_dist, dd.value(n))
         let (w, h) = if with_velocity && !@ui.reduced_motion() {
@@ -184,7 +184,7 @@ pub fn liquid_toggle_node(
       .width(Is(Some(tw)))
       .height(Is(Some(th)))
       .radius(Is(th / 2.0))
-      .shadow(Is(shadow_thumb))
+      .shadow(By(fn() { thumb_lift_shadow(clamp(lens(thumb), 0.0, 1.0)) }))
       .shadow_outside(Is(true))
       .ground_drawn(By(fn() { thumb_shape(thumb, true) }))
       |> ignore
@@ -195,7 +195,8 @@ pub fn liquid_toggle_node(
         .height(Is(Some(th)))
         .radius(Is(th / 2.0))
         .ground(Is(white))
-        .alpha(By(fn() { 1.0 - clamp(lens(solid), 0.0, 1.0) }))
+        .edge(By(fn() { (0.5, if is_dark() { 0xFFFFFF18L } else { 0x00000014L }) }))
+        .alpha(By(fn() { clamp(1.0 - clamp(lens(solid), 0.0, 1.0) * 1.8, 0.0, 1.0) }))
         .ground_drawn(By(fn() { thumb_shape(solid, true) }))
         |> ignore
       })

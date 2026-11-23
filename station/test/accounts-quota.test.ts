@@ -16,6 +16,79 @@ import { hubConfig } from "../src/sessions/config.ts";
 import { machine, provider, script, temp, until } from "./accounts-fakes.ts";
 
 describe("allowances and renewing", { concurrency: true }, () => {
+  test("MiniMax Token Plan reports shared text quota and leaves ordinary keys alone", async (t) => {
+    const start = 1_800_000_000_000;
+    const end = start + 5 * 60 * 60_000;
+    const weeklyEnd = start + 7 * 24 * 60 * 60_000;
+    const p = await provider(() => ({
+      status: 200,
+      body: {
+        base_resp: { status_code: 0 },
+        model_remains: [
+          { model_name: "video", current_interval_remaining_percent: 10, start_time: start, end_time: end },
+          {
+            model_name: "general", start_time: start, end_time: end, current_interval_remaining_percent: 75,
+            weekly_start_time: start, weekly_end_time: weeklyEnd, current_weekly_remaining_percent: 95,
+          },
+        ],
+      },
+    }));
+    t.after(p.close);
+    const urls = { ...URLS, minimaxCnQuota: p.base + "/v1/token_plan/remains" };
+    const profile = { id: "minimax", runtime: "claude", home: "homes/minimax" } as const;
+    const check = (key: string) => {
+      const configured = { ...profile, access: { kind: "api-provider", provider: "minimax-cn", key } };
+      return checkQuota(hubConfig({ profiles: [configured] }, "/x").profiles[0]!, {}, undefined, urls, "en");
+    };
+
+    assert.equal((await check("ordinary-key")).state, "unsupported");
+    assert.equal(p.asked.length, 0);
+    const result = await check("sk-cp-test");
+    assert.equal(result.state, "ok");
+    assert.deepEqual(result.windows, [
+      { label: "5 小时", minutes: 300, usedPercent: 25, resetsAt: end },
+      { label: "每周", minutes: 10080, usedPercent: 5, resetsAt: weeklyEnd },
+    ]);
+    assert.deepEqual(p.asked.map((r) => [r.method, r.url, r.headers.authorization]), [
+      ["GET", "/v1/token_plan/remains", "Bearer sk-cp-test"],
+    ]);
+  });
+
+  test("GLM Coding Plan reports token windows and treats a failed lookup as unavailable", async (t) => {
+    const reset = 1_800_000_000_000;
+    let code = 200;
+    const p = await provider(() => ({
+      status: 200,
+      body: {
+        code,
+        data: { limits: [
+          { type: "TOKENS_LIMIT", unit: 6, number: 1, percentage: 11, nextResetTime: reset },
+          { type: "TOKENS_LIMIT", unit: 3, number: 5, percentage: 0 },
+          { type: "TIME_LIMIT", unit: 5, number: 1, percentage: 37, nextResetTime: reset },
+        ] },
+      },
+    }));
+    t.after(p.close);
+    const urls = { ...URLS, glmCodingCnQuota: p.base + "/api/monitor/usage/quota/limit" };
+    const profile = {
+      id: "glm", runtime: "pi", home: "homes/glm",
+      access: { kind: "api-provider", provider: "zai-coding-cn", key: "glm-test" },
+    } as const;
+    const check = () => checkQuota(hubConfig({ profiles: [profile] }, "/x").profiles[0]!, {}, undefined, urls, "en");
+
+    const result = await check();
+    assert.equal(result.state, "ok");
+    assert.deepEqual(result.windows, [
+      { label: "5 小时", minutes: 300, usedPercent: 0, resetsAt: null },
+      { label: "每周", minutes: 10080, usedPercent: 11, resetsAt: reset },
+    ]);
+    assert.deepEqual(p.asked.map((r) => [r.method, r.url, r.headers.authorization]), [
+      ["GET", "/api/monitor/usage/quota/limit", "Bearer glm-test"],
+    ]);
+    code = 401;
+    assert.equal((await check()).state, "unavailable");
+  });
+
   test("an account its provider refuses is blocked, a sign-in no longer good is not", async () => {
     let p = await provider(() => ({ status: 403, body: { error: { message: "This organization has been disabled." } } }));
     const blocked = await claudeUsage(p.base, "t", "zh");

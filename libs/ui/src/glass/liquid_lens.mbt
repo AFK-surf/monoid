@@ -21,6 +21,8 @@ pub fn liquid_lens_overlay_node(
   shadow_y? : Double = 2.0,
   jelly? : (@view.View) -> (Double, Double),
   grow? : Double = 0.0,
+  overhang_x? : Double = 0.0,
+  overhang_y? : Double = 0.0,
   active? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> Unit {
@@ -55,7 +57,11 @@ pub fn liquid_lens_overlay_node(
     .shadow(By(fn() {
       let p = full()
       if p > 0.001 {
-        (shadow_blur * p, shadow_y * p, shadow_color())
+        if overhang_y > 0.0 {
+          seg_lens_shadow(p)
+        } else {
+          (shadow_blur * p, shadow_y * p, shadow_color())
+        }
       } else {
         shadow_none
       }
@@ -70,14 +76,27 @@ pub fn liquid_lens_overlay_node(
             Some((rx, ry, rw, _)) => {
               let hh = height()
               let ww = width()
-              let (lw, lh) = match jelly {
-                Some(jf) => {
-                  let (sx, sy) = jf(l)
-                  (dmax(0.0, rw + hh * (sx - 1.0)), dmax(0.0, hh * sy))
+              let p = full()
+              let (lw, lh) = if overhang_x > 0.0 || overhang_y > 0.0 {
+                let (vel_sx, vel_sy) = match jelly {
+                  Some(jf) => {
+                    let (sx, sy) = jf(l)
+                    let ps = lerp(1.0, 1.0 + grow, p)
+                    if ps > 0.001 { (sx / ps, sy / ps) } else { (1.0, 1.0) }
+                  }
+                  None => (1.0, 1.0)
                 }
-                None => {
-                  let g = hh * grow * lens()
-                  (rw + g, hh + g)
+                (dmax(0.0, (rw + overhang_x * p) * vel_sx), dmax(0.0, (hh + overhang_y * p) * vel_sy))
+              } else {
+                match jelly {
+                  Some(jf) => {
+                    let (sx, sy) = jf(l)
+                    (dmax(0.0, rw + hh * (sx - 1.0)), dmax(0.0, hh * sy))
+                  }
+                  None => {
+                    let g = hh * grow * lens()
+                    (rw + g, hh + g)
+                  }
                 }
               }
               {

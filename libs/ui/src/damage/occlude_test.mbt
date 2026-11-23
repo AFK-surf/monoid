@@ -228,3 +228,19 @@ test "a frame that moves only its headers is left out of as all of it asked agai
   groups(d)
   assert_true(d.occlude_moved(at(20.0, 120.0), 7, 400.0, 300.0, [1, 5]) is None)
 }
+
+///|
+test "content_lens (kind 8) header and its child instances stay intact under opaque cover" {
+  let d = @damage.Damage::new()
+  // Instance 0: kind 8 header with 2 child instances (indices 1 and 2)
+  // Instance 3: opaque sheet covering everything below y=100
+  let a = frame([
+    (20.0, 120.0, 200.0, 120.0, 8),
+    (40.0, 140.0, 160.0, 24.0, 0),
+    (40.0, 170.0, 160.0, 24.0, 1),
+    (0.0, 100.0, 400.0, 200.0, 0),
+  ])
+  a[12] = 2.0
+  // None of the kind 8 header or its 2 children may be culled or split apart.
+  assert_eq(kept(d, a).map(fn(r) { r.4 }), [8, 0, 1, 0])
+}

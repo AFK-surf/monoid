@@ -346,14 +346,14 @@ pub fn liquid_tab_lens_glass(
       tint=0xFFFFFF00L,
       solid=sol,
       saturation=1.0,
-      rim=0.6 * p,
-      bezel=6.0 * p,
-      refraction=5.5 * p,
-      chroma=-0.02 * p,
+      rim=1.0 * p,
+      bezel=9.0 * p,
+      refraction=9.0 * p,
+      chroma=0.04 * p,
       merge=0.0,
       adaptive=false,
       spot=None,
-      zoom=1.0 + 0.08 * p,
+      zoom=1.0,
     ),
     sharing,
   )
@@ -388,20 +388,20 @@ fn ctrl_segmented_lens_glass(p : Double) -> @paint.Glass {
     tint=0xFFFFFF00L,
     solid=alpha(c.container, 1.0 / 0.4),
     saturation=1.0,
-    rim=0.6 * p,
-    bezel=8.0 * p,
-    refraction=8.5 * p,
-    chroma=-0.03 * p,
+    rim=1.0 * p,
+    bezel=9.0 * p,
+    refraction=9.0 * p,
+    chroma=0.04 * p,
     merge=0.0,
     adaptive=false,
     spot=None,
-    zoom=1.0 + 0.12 * p,
+    zoom=1.0,
   )
 }
 
 ///|
 /// Calibrated clear loupe recipe for compact 30-36pt segmented capsules overlaid above labels (`glass_track=false`).
-/// Keeps maximum inward refraction (~6.75pt) inside the clear margin so top/bottom bevel edges never sample text strokes.
+/// Pure crystal droplet (`tint=0xFFFFFF00L`, `zoom=1.0`) overhanging track edges for Native iOS 27 concentric moat.
 fn ctrl_segmented_compact_lens_glass(p : Double) -> @paint.Glass {
   let p = clamp(p, 0.0, 1.0)
   let c = colors()
@@ -410,13 +410,13 @@ fn ctrl_segmented_compact_lens_glass(p : Double) -> @paint.Glass {
     tint=0xFFFFFF00L,
     solid=alpha(c.container, 1.0 / 0.4),
     saturation=1.0,
-    rim=0.6 * p,
-    bezel=6.0 * p,
-    refraction=5.5 * p,
-    chroma=-0.02 * p,
+    rim=1.0 * p,
+    bezel=9.0 * p,
+    refraction=9.0 * p,
+    chroma=0.04 * p,
     merge=0.0,
     adaptive=false,
     spot=None,
-    zoom=1.0 + 0.08 * p,
+    zoom=1.0,
   )
 }

@@ -9,7 +9,7 @@
 // The catalog's lens also sees the track scaled under it (a combined backdrop): mbui's glass sees the track as it is.
 
 ///|
-/// The thumb's glass, held `p` (iOS 27 clear loupe with 1.22× optical magnification).
+/// The thumb's glass, held `p` (Native iOS 27.0 clear droplet loupe: paraxial bevel refraction, pinchWeight == 0).
 fn slider_glass(p : Double) -> @paint.Glass {
   let p = clamp(p, 0.0, 1.0)
   @paint.Glass::liquid(
@@ -17,13 +17,13 @@ fn slider_glass(p : Double) -> @paint.Glass {
     tint=0xFFFFFF00L,
     solid=white,
     saturation=1.0,
-    rim=0.6 * p,
-    bezel=10.0 * p,
-    refraction=14.0 * p,
-    chroma=-0.06 * p,
+    rim=1.0 * p,
+    bezel=8.0 * p,
+    refraction=3.0 * p,
+    chroma=0.0,
     merge=0.0,
     adaptive=false,
-    zoom=1.0 + 0.22 * p,
+    zoom=1.0,
   )
 }
 
@@ -50,8 +50,8 @@ fn slider_thumb_x_for(w : Double, tw : Double, progress : Double, flush : Bool) 
 let slider_stops_lean : Double = 0.25
 
 ///|
-/// Elastic track height growth while held/dragged (6pt -> 10pt in paint layer via ground_drawn, zero relayout).
-let slider_track_held_grow : Double = 4.0
+/// Elastic track height growth while held/dragged (0.0: native iOS 27 keeps crisp 6pt track).
+let slider_track_held_grow : Double = 0.0
 
 ///|
 /// A LiquidSlider in `parent`, at `value` along `least` … `most`; moved (its thumb dragged, its track tapped, a key, a
@@ -85,7 +85,7 @@ pub fn liquid_slider_node(
 ) -> @view.View {
   let dd = match drag {
     Some(d) => d
-    None => DampedDrag::new(@signals.untracked(value), lo=least, hi=most, threshold~, held_scale=thumb_held_scale)
+    None => DampedDrag::new(@signals.untracked(value), lo=least, hi=most, threshold~, held_scale=slider_thumb_held_scale)
   }
   let span = most - least
   let has_stops = stops > 1
@@ -371,7 +371,7 @@ pub fn liquid_slider_node(
           .width(Is(Some(thumb_w_px)))
           .height(Is(Some(thumb_h_px)))
           .radius(Is(thumb_h_px / 2.0))
-          .shadow(Is(shadow_thumb))
+          .shadow(By(fn() { thumb_lift_shadow(clamp(lens(thumb), 0.0, 1.0)) }))
           .shadow_outside(Is(true))
           .ground_drawn(By(fn() { thumb_shape(thumb) }))
           |> ignore
@@ -388,7 +388,8 @@ pub fn liquid_slider_node(
                 white
               }
             }))
-            .alpha(By(fn() { 1.0 - clamp(lens(solid), 0.0, 1.0) }))
+            .edge(By(fn() { (0.5, if is_dark() { 0xFFFFFF18L } else { 0x00000014L }) }))
+            .alpha(By(fn() { clamp(1.0 - clamp(lens(solid), 0.0, 1.0) * 1.8, 0.0, 1.0) }))
             .ground_drawn(By(fn() { thumb_shape(solid) }))
             |> ignore
           })

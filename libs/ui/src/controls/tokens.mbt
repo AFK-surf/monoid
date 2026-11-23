@@ -2586,14 +2586,6 @@ pub fn pick_high() -> @ui.Style {
 }
 
 ///|
-/// A small panel's row's margins over and under it reaching `reach` past the panel's padding where it is the `first`
-/// or the `last` in it (menu_row_reach), none where it is not.
-pub fn ends_reach(reach : Double, first : Bool, last : Bool) -> (Double, Double) {
-  let none = 0.0
-  (if first { -reach } else { none }, if last { -reach } else { none })
-}
-
-///|
 /// A small panel's row as high as pick_high, its words text_in in from its ground (a menu's item): reaching past the
 /// panel's padding where it is a capsule, to stand concentric with the panel's corners (menu_row_reach), its words
 /// where they were.

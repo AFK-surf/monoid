@@ -159,7 +159,7 @@ test "value_slider_node: lazy clear liquid glass lens on press, zero relayout du
 }
 
 ///|
-test "value_slider_node: unified iOS 26 6pt -> 10pt elastic track thickening and ~60x36pt clear pill lens with laid == 0" {
+test "value_slider_node: unified iOS 27 crisp 6pt track and ~60x36pt clear pill lens with laid == 0" {
   let v = @signals.signal(40.0)
   let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=300.0, platform=0)
   t.check_looks(false)
@@ -196,7 +196,7 @@ test "value_slider_node: unified iOS 26 6pt -> 10pt elastic track thickening and
   assert_true((rest_fl.3 - 6.0).abs() < 0.05, msg="rest fill height must be 6pt, got \{rest_fl.3}")
   let rest_cy = rest_tr.1 + rest_tr.3 / 2.0
 
-  // Press and hold: track & fill thicken from 6pt to ~10pt centered at rest_cy, lens is ~60x36pt horizontal liquid pill.
+  // Press and hold: track & fill stay crisp 6pt centered at rest_cy, lens is ~60x36pt horizontal liquid pill.
   let x0 = 20.0 + 20.0 + 0.4 * (300.0 - 40.0)
   let x1 = 20.0 + 20.0 + 0.72 * (300.0 - 40.0)
   let y = 60.0 + 14.0
@@ -204,10 +204,10 @@ test "value_slider_node: unified iOS 26 6pt -> 10pt elastic track thickening and
   t.run_for(slider_held_ms)
   let held_tr = track_rect()
   let held_fl = fill_rect()
-  assert_true(held_tr.3 >= 9.5 && held_tr.3 <= 10.6, msg="held track height must thicken to ~10pt, got \{held_tr.3}")
-  assert_true(held_fl.3 >= 9.5 && held_fl.3 <= 10.6, msg="held fill height must thicken to ~10pt, got \{held_fl.3}")
+  assert_true((held_tr.3 - 6.0).abs() < 0.05, msg="held track height must stay crisp 6pt, got \{held_tr.3}")
+  assert_true((held_fl.3 - 6.0).abs() < 0.05, msg="held fill height must stay crisp 6pt, got \{held_fl.3}")
   let held_cy = held_tr.1 + held_tr.3 / 2.0
-  assert_true((held_cy - rest_cy).abs() < 0.1, msg="thickened track must stay centered (\{held_cy} vs \{rest_cy})")
+  assert_true((held_cy - rest_cy).abs() < 0.1, msg="track must stay centered (\{held_cy} vs \{rest_cy})")
 
   let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 })
   assert_eq(lenses.length(), 1, msg="held must draw 1 clear liquid glass lens")
@@ -215,7 +215,7 @@ test "value_slider_node: unified iOS 26 6pt -> 10pt elastic track thickening and
   let lh = lenses[0][3]
   assert_true(
     lw >= 57.0 && lw <= 63.0 && lh >= 34.0 && lh <= 38.0,
-    msg="held lens must be unified iOS 26 liquid pill (~60x36pt), got \{lw}x\{lh}",
+    msg="held lens must be unified iOS 27 liquid pill (~60x36pt), got \{lw}x\{lh}",
   )
 
   // Dragging must not trigger relayout.

@@ -179,51 +179,6 @@ fn popover_content_motion(p : @view.View, node : @view.View, fallback : () -> Do
 }
 
 ///|
-/// Smooth capillary liquid-bridge merge radius (pt) during popover entrance/exit scale motion (`look.sx < 0.9999`):
-/// aligned to `glass_pop_in`'s `0.97..1.0` span (`0.03`) with a root-shaped curve (`s * 0.6 + s.sqrt() * 0.4`).
-pub fn popover_bridge_merge(look : @ui.Look) -> Double {
-  if look.alpha > 0.001 && look.sx < 0.9999 {
-    let rem = dclamp((1.0 - look.sx) / 0.03, 0.0, 1.0)
-    if rem > 0.003 {
-      let s = rem.sqrt()
-      let k = s * 0.6 + s.sqrt() * 0.4
-      40.0 * k
-    } else {
-      0.0
-    }
-  } else {
-    0.0
-  }
-}
-
-///|
-/// Full-body liquid-glass scale factor (`0.28 <-> 1.00`) for a non-pill button-anchored popover so it emerges from
-/// and retracts back into its anchor button across the standard `pop_ms` / `pop_out_ms` transition.
-pub fn popover_bridge_scale(look : @ui.Look) -> Double {
-  if look.sx >= 0.9999 {
-    1.0
-  } else {
-    let rem = dclamp((1.0 - look.sx) / 0.03, 0.0, 1.0)
-    let f = 0.45 * rem + 0.55 * rem.sqrt()
-    1.0 - 0.72 * f
-  }
-}
-
-///|
-/// High-presence opacity curve for a non-pill button-anchored liquid-glass popover.
-pub fn popover_bridge_alpha(look : @ui.Look) -> Double {
-  if look.alpha <= 0.001 {
-    0.0
-  } else if look.sx >= 0.9999 {
-    look.alpha
-  } else {
-    let rem = dclamp((1.0 - look.sx) / 0.03, 0.0, 1.0)
-    let a = 1.0 - rem * rem.sqrt()
-    dmin(a, dmin(look.alpha * 3.0, 1.0))
-  }
-}
-
-///|
 /// Configures anchored popover liquid morphing on `layer` immediately before the popover shell (`menu_node`):
 /// - Branch A (liquid glass `bar_pill_group_node` trigger): lends `pill_morph_lent` driving 1:1 iOS 27.0
 ///   `LiquidMorphPhysics` (trigger pill recoil, impact compression, horizontal splash, Blob A/B SDF fusion, and
@@ -335,7 +290,7 @@ pub fn anchored_popover_bridge(
             None
           } else {
             let stage = 0.5 * @glass.lm_smoothstep(0.0, 0.12, f.raw_value)
-            Some(glass_menu_morph(stage, layer=pill_layer, break_gap=48.0))
+            Some(glass_menu_morph(stage, layer=pill_layer, break_gap=24.0))
           }
         } else {
           Some((pm.rest_glass)())
@@ -576,9 +531,9 @@ pub fn anchored_popover_bridge(
           1.0
         } else {
           let u_open = @glass.lm_open_progress(t_open_now)
-          let open_w = @glass.lm_lerp(core, mw, @dmath.pow(dclamp(u_open, 0.0, 1.0), 0.44))
+          let open_w = @glass.lm_lerp(core, mw, @dmath.pow(dclamp(u_open, 0.0, 1.0), 0.72))
           let target_w_ratio = if mw > 0.0 { dclamp(open_w / mw, 0.20, 1.0) } else { u_open }
-          let target_s = @dmath.pow(target_w_ratio, 1.0 / 0.82)
+          let target_s = @dmath.pow(target_w_ratio, 1.0 / 0.92)
           dclamp((target_s - 0.20) / 0.80, 0.05, 1.0)
         }
         is_closing.set(true)
@@ -778,7 +733,7 @@ fn anchored_popover_shell_by(
         },
         layer=pm.pill_layer,
         break_gap=32.0,
-        close_break_gap=48.0,
+        close_break_gap=24.0,
       )
       |> ignore
     _ =>

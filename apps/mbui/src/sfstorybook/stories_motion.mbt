@@ -1521,6 +1521,7 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
           "跟手滑动与速度回弹 move_damped",
           fn(card) {
             let x_way = @motion.NodeWay::new(0.0)
+            let x_val = kept(0.0)
             let start_x = Ref(0.0)
             let start_wx = Ref(0.0)
             let knob_ref : Ref[@view.View?] = Ref(None)
@@ -1534,39 +1535,60 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
               .lies_along(Is(Middle))
               .clips(Is(true))
               |> ignore
-              track.box(fn(knob) {
-                knob_ref.val = Some(knob)
-                knob
-                .padding(Is((14.0, 8.0, 14.0, 8.0)))
-                .radius(Is(8.0))
-                .ground(By(fn() { @sf.theme().p.paper }))
-                .edge(By(fn() { (1.5, @sf.theme().p.accent) }))
-                .offset(By(fn() { (x_way.shown(knob), 0.0) }))
-                .cursor(Is(Some(Grab)))
-                .says(Is(Some(@view.said(Slider, label="跟手拖拽滑块"))))
-                .on_drag(fn(d) {
+              @headless.slider(
+                track,
+                fn() { "跟手拖拽滑块" },
+                fn() { x_val.get() },
+                min=-120.0,
+                max=120.0,
+                step=10.0,
+                fn(v) {
+                  x_val.set(v)
+                  match knob_ref.val {
+                    Some(k) => x_way.go(k, v, @motion.move_damped)
+                    None => x_way.put(v)
+                  }
+                },
+                drag=fn(d) {
                   match d.kind {
                     Down => {
                       start_x.val = x_way.value_at(d.at)
                       start_wx.val = d.wx
                       x_way.put(start_x.val)
+                      x_val.set(start_x.val)
                     }
                     Moved => {
                       let next = @sf.dclamp(start_x.val + (d.wx - start_wx.val), -120.0, 120.0)
                       x_way.put(next)
+                      x_val.set(next)
                     }
-                    Up | Off =>
-                      x_way.go(knob, 0.0, @motion.move_damped, velocity=d.vx() * 1000.0)
+                    Up | Off => {
+                      x_val.set(0.0)
+                      match knob_ref.val {
+                        Some(k) => x_way.go(k, 0.0, @motion.move_damped, velocity=d.vx() * 1000.0)
+                        None => x_way.put(0.0)
+                      }
+                    }
                   }
-                })
-                |> ignore
-                @sf.words_node(
-                  knob,
-                  fn() { "左右拖拽松手回弹" },
-                  fn() { @ui.text_style(size=Caption, weight=Medium, color=Fg, wrap=false) },
-                )
-                |> ignore
-              })
+                },
+                fn(knob, _) {
+                  knob_ref.val = Some(knob)
+                  knob
+                  .padding(Is((14.0, 8.0, 14.0, 8.0)))
+                  .radius(Is(8.0))
+                  .ground(By(fn() { @sf.theme().p.paper }))
+                  .edge(By(fn() { (1.5, @sf.theme().p.accent) }))
+                  .offset(By(fn() { (x_way.shown(knob), 0.0) }))
+                  .cursor(Is(Some(Grab)))
+                  |> ignore
+                  @sf.words_node(
+                    knob,
+                    fn() { "左右拖拽松手回弹" },
+                    fn() { @ui.text_style(size=Caption, weight=Medium, color=Fg, wrap=false) },
+                  )
+                  |> ignore
+                },
+              )
               |> ignore
             })
             |> ignore
@@ -2102,17 +2124,18 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
               .lies_along(Is(Middle))
               .clips(Is(true))
               |> ignore
-              stage.box(fn(bar) {
-                bar_ref.val = Some(bar)
-                bar
-                .padding(Is((14.0, 8.0, 14.0, 8.0)))
-                .radius(Is(8.0))
-                .ground(By(fn() { @sf.theme().p.paper }))
-                .edge(By(fn() { (1.5, @sf.theme().p.accent) }))
-                .offset(By(fn() { (pull.shown_on(bar).0, 0.0) }))
-                .cursor(Is(Some(Grab)))
-                .says(Is(Some(@view.said(Slider, label="边界过拉演示滑块"))))
-                .on_drag(fn(d) {
+              @headless.slider(
+                stage,
+                fn() { "边界过拉演示滑块" },
+                fn() { raw_past.get() },
+                min=-120.0,
+                max=120.0,
+                step=12.0,
+                fn(v) {
+                  raw_past.set(v)
+                  pull.drag(v, 32.0, 64.0)
+                },
+                drag=fn(d) {
                   match d.kind {
                     Down => down_wx.val = d.wx
                     Moved => {
@@ -2122,18 +2145,31 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
                     }
                     Up | Off => {
                       raw_past.set(0.0)
-                      pull.let_go(bar)
+                      match bar_ref.val {
+                        Some(b) => pull.let_go(b)
+                        None => ()
+                      }
                     }
                   }
-                })
-                |> ignore
-                @sf.words_node(
-                  bar,
-                  fn() { "左右过拉边界，松手回弹" },
-                  fn() { @ui.text_style(size=Caption, weight=Medium, color=Fg, wrap=false) },
-                )
-                |> ignore
-              })
+                },
+                fn(bar, _) {
+                  bar_ref.val = Some(bar)
+                  bar
+                  .padding(Is((14.0, 8.0, 14.0, 8.0)))
+                  .radius(Is(8.0))
+                  .ground(By(fn() { @sf.theme().p.paper }))
+                  .edge(By(fn() { (1.5, @sf.theme().p.accent) }))
+                  .offset(By(fn() { (pull.shown_on(bar).0, 0.0) }))
+                  .cursor(Is(Some(Grab)))
+                  |> ignore
+                  @sf.words_node(
+                    bar,
+                    fn() { "左右过拉边界，松手回弹" },
+                    fn() { @ui.text_style(size=Caption, weight=Medium, color=Fg, wrap=false) },
+                  )
+                  |> ignore
+                },
+              )
               |> ignore
             })
             |> ignore
@@ -2320,6 +2356,7 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
             let dismissed = kept(false)
             let verdict = kept("尚未拖拽")
             let drag_y = @motion.NodeWay::new(0.0)
+            let drag_pos = kept(0.0)
             let sheet_ref : Ref[@view.View?] = Ref(None)
             let down_wy = Ref(0.0)
             let stage_h = 152.0
@@ -2333,28 +2370,25 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
               .lies_along(Is(Middle))
               .clips(Is(true))
               |> ignore
-              stage.box(fn(sheet) {
-                sheet_ref.val = Some(sheet)
-                sheet
-                .width(Is(Some(220.0)))
-                .padding(Is((14.0, 12.0, 14.0, 12.0)))
-                .radius(Is(10.0))
-                .ground(By(fn() { @sf.theme().p.paper }))
-                .edge(By(fn() { (1.5, @sf.theme().p.accent) }))
-                .gap(Is(4.0))
-                .offset(By(fn() { (0.0, drag_y.shown(sheet)) }))
-                .alpha(By(fn() {
-                  let y = drag_y.shown(sheet)
-                  if y <= 0.0 { 1.0 } else { @sf.dclamp(1.0 - y / stage_h, 0.0, 1.0) }
-                }))
-                .presses(By(fn() { !dismissed.get() }))
-                .cursor(Is(Some(Grab)))
-                .says(Is(Some(@view.said(Slider, label="拖拽关闭卡片"))))
-                .on_drag(fn(d) {
+              @headless.slider(
+                stage,
+                fn() { "拖拽关闭卡片" },
+                fn() { drag_pos.get() },
+                min=-60.0,
+                max=stage_h,
+                step=16.0,
+                fn(v) {
+                  drag_pos.set(v)
+                  drag_y.put(v)
+                },
+                vertical=true,
+                disabled=fn() { dismissed.get() },
+                drag=fn(d) {
                   match d.kind {
                     Down => down_wy.val = d.wy
                     Moved => {
                       let visual = @motion.dismiss_drag_offset(d.wy - down_wy.val, stage_h)
+                      drag_pos.set(visual)
                       drag_y.put(visual)
                     }
                     Up | Off => {
@@ -2362,20 +2396,44 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
                       let vy = d.vy() * 1000.0
                       if @motion.should_dismiss(visual, vy, 56.0) {
                         dismissed.set(true)
+                        drag_pos.set(stage_h)
                         verdict.set("判定：关闭（位移 \{motion_round1(visual)} px）")
-                        drag_y.go(sheet, stage_h, @motion.tween(220.0, ease=Leave))
+                        match sheet_ref.val {
+                          Some(s) => drag_y.go(s, stage_h, @motion.tween(220.0, ease=Leave))
+                          None => drag_y.put(stage_h)
+                        }
                       } else {
                         dismissed.set(false)
+                        drag_pos.set(0.0)
                         verdict.set("判定：回弹保留（位移 \{motion_round1(visual)} px）")
-                        drag_y.go(sheet, 0.0, @motion.tactile_bounce)
+                        match sheet_ref.val {
+                          Some(s) => drag_y.go(s, 0.0, @motion.tactile_bounce)
+                          None => drag_y.put(0.0)
+                        }
                       }
                     }
                   }
-                })
-                |> ignore
-                @sf.words_node(sheet, fn() { "可上下拖拽卡片" }, fn() { story_card_title }) |> ignore
-                @sf.words_node(sheet, fn() { "上拉受橡皮筋阻尼，下拉 1:1 跟手" }, fn() { @sf.caption }) |> ignore
-              })
+                },
+                fn(sheet, _) {
+                  sheet_ref.val = Some(sheet)
+                  sheet
+                  .width(Is(Some(220.0)))
+                  .padding(Is((14.0, 12.0, 14.0, 12.0)))
+                  .radius(Is(10.0))
+                  .ground(By(fn() { @sf.theme().p.paper }))
+                  .edge(By(fn() { (1.5, @sf.theme().p.accent) }))
+                  .gap(Is(4.0))
+                  .offset(By(fn() { (0.0, drag_y.shown(sheet)) }))
+                  .alpha(By(fn() {
+                    let y = drag_y.shown(sheet)
+                    if y <= 0.0 { 1.0 } else { @sf.dclamp(1.0 - y / stage_h, 0.0, 1.0) }
+                  }))
+                  .cursor(Is(Some(Grab)))
+                  |> ignore
+                  @sf.words_node(sheet, fn() { "可上下拖拽卡片" }, fn() { story_card_title }) |> ignore
+                  @sf.words_node(sheet, fn() { "上拉受橡皮筋阻尼，下拉 1:1 跟手" }, fn() { @sf.caption }) |> ignore
+                },
+              )
               |> ignore
             })
             |> ignore

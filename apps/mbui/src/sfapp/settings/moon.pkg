@@ -3,7 +3,6 @@ import {
   "ui/codec",
   "ui/hostapi",
   "ui/ui",
-  "ui/kit",
   "ui/motion",
   "ui/pixels",
   "ui/controls" @sf,

@@ -392,3 +392,165 @@ test "non-integer DPI between-frame nodes under placed ancestors hit 100% of pai
     assert_eq(hit, placed, msg="scale \{sc}: \{hit} of \{placed} glyphs hit predicted subpixel phase")
   }
 }
+
+///|
+test "words_ahead matches painted quarter-pixel phases across non-integer DPI scales" {
+  let look = { ..@view.words_plain, size: 15.0, line: 22.0, wrap: false }
+  let unmarked = "无标记聊天标题 Home Row Title 123"
+  let marked = "有状态标记的聊天标题 Marked Row 456"
+  for sc in [3.6, 4.1, 2.625, 2.0, 1.0] {
+    let asked : Array[Int] = []
+    fake_ahead.val = Some(asked)
+    let t = Tester::new(fn(_c) {  }, w=360.0, h=200.0, scale=sc)
+    t.latin_advances(
+      FixedArray::makei(95, fn(i) { 0.45 + (i % 7).to_double() * 0.037 }),
+      FixedArray::makei(95, fn(i) { 0.48 + (i % 5).to_double() * 0.041 }),
+    )
+    let w1 = words_ahead(unmarked, look, 22.0, 1.0)
+    let w2 = words_ahead(marked, look, 40.0, 1.0)
+    words_ahead_flush()
+    fake_ahead.val = None
+    assert_true(w1 > 0.0 && w2 > 0.0, msg="scale \{sc}: expected positive prewarmed widths")
+    set_view_app(fn(root) {
+      root.box(fn(p) {
+        p.width(Is(Some(360.0))) |> ignore
+        p.box(fn(r1) {
+          r1.padding(Is((22.0, 0.0, 0.0, 0.0))) |> ignore
+          r1.box(fn(v) { v.words(Is(unmarked), look~) |> ignore }) |> ignore
+        })
+        |> ignore
+        p.box(fn(r2) {
+          r2.padding(Is((40.0, 0.0, 0.0, 0.0))) |> ignore
+          r2.box(fn(v) { v.words(Is(marked), look~) |> ignore }) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    t.draw()
+    let (placed, hit, _) = ahead_hits(asked)
+    assert_true(placed > 20, msg="scale \{sc}: expected > 20 placed glyphs, got \{placed}")
+    assert_eq(hit, placed, msg="scale \{sc}: \{hit} of \{placed} placed glyphs hit words_ahead phase")
+  }
+}
+
+///|
+test "words_ahead normalizes single-line newlines to hit the same shapes and phased glyph keys" {
+  let look = { ..@view.words_plain, size: 15.0, line: 22.0, wrap: false }
+  let asked : Array[Int] = []
+  fake_ahead.val = Some(asked)
+  let t = Tester::new(fn(_c) {  }, w=360.0, h=120.0, scale=3.6)
+  t.latin_advances(
+    FixedArray::makei(95, fn(i) { 0.45 + (i % 7).to_double() * 0.037 }),
+    FixedArray::makei(95, fn(i) { 0.48 + (i % 5).to_double() * 0.041 }),
+  )
+  let w = words_ahead("第一行\n第二行", look, 22.0, 1.0)
+  words_ahead_flush()
+  fake_ahead.val = None
+  assert_true(w > 0.0)
+  fake_shape_calls.val = Some(0)
+  set_view_app(fn(root) {
+    root.box(fn(p) {
+      p.width(Is(Some(360.0))).padding(Is((22.0, 0.0, 0.0, 0.0))) |> ignore
+      p.box(fn(v) { v.words(Is("第一行\n第二行"), look~) |> ignore }) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let shapes_during_draw = fake_shape_calls.val.unwrap_or(-1)
+  fake_shape_calls.val = None
+  assert_eq(shapes_during_draw, 0, msg="expected zero new shape calls after words_ahead normalized newline")
+  let (placed, hit, _) = ahead_hits(asked)
+  assert_true(placed >= 6, msg="expected >= 6 placed glyphs, got \{placed}")
+  assert_eq(hit, placed, msg="\{hit} of \{placed} placed glyphs hit normalized words_ahead phase")
+}
+
+///|
+test "words_ahead dispatches both phases for identical text at two origin_x offsets" {
+  let look = { ..@view.words_plain, size: 15.0, line: 22.0, wrap: false }
+  let sample = "同串双相位预热验证"
+  let asked : Array[Int] = []
+  fake_ahead.val = Some(asked)
+  let t = Tester::new(fn(_c) {  }, w=360.0, h=200.0, scale=3.6)
+  let _ = words_ahead(sample, look, 22.0, 1.0)
+  let _ = words_ahead(sample, look, 40.0, 1.0)
+  words_ahead_flush()
+  fake_ahead.val = None
+  let phases_by_base : Map[Int, Set[Int]] = Map([])
+  for k in asked {
+    let base = k & 0x03FFFFFF
+    let phase = (k >> 26) & 3
+    match phases_by_base.get(base) {
+      Some(s) => s.add(phase)
+      None => phases_by_base[base] = Set([phase])
+    }
+  }
+  let mut multi_phase = 0
+  for _, s in phases_by_base {
+    if s.length() >= 2 {
+      multi_phase = multi_phase + 1
+    }
+  }
+  assert_true(multi_phase >= 5, msg="expected >= 5 glyphs dispatched at 2 distinct phases, got \{multi_phase}")
+  set_view_app(fn(root) {
+    root.box(fn(p) {
+      p.width(Is(Some(360.0))) |> ignore
+      p.box(fn(r1) {
+        r1.padding(Is((22.0, 0.0, 0.0, 0.0))) |> ignore
+        r1.box(fn(v) { v.words(Is(sample), look~) |> ignore }) |> ignore
+      })
+      |> ignore
+      p.box(fn(r2) {
+        r2.padding(Is((40.0, 0.0, 0.0, 0.0))) |> ignore
+        r2.box(fn(v) { v.words(Is(sample), look~) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let (placed, hit, _) = ahead_hits(asked)
+  assert_true(placed >= 10)
+  assert_eq(hit, placed, msg="\{hit} of \{placed} placed glyphs hit dual-origin words_ahead phases")
+}
+
+///|
+test "words_ahead safely skips on default FakeHost and under MBUI_TEXT_RECORD=1" {
+  let look = { ..@view.words_plain, size: 15.0, line: 22.0, wrap: false }
+  let t = Tester::new(fn(_c) {  }, w=360.0, h=120.0, scale=3.6)
+  fake_ahead.val = None
+  assert_false(words_ahead_able())
+  assert_eq(words_ahead("默认宿主跳过", look, 22.0, 1.0), 0.0)
+  // Even when fake_ahead is attached, MBUI_TEXT_RECORD=1 must disable prewarming and emit no TEXTREC.
+  let asked : Array[Int] = []
+  fake_ahead.val = Some(asked)
+  t.set_env("MBUI_TEXT_RECORD", "1")
+  text_rec.val = -1
+  let logs_before = t.fake.logs.length()
+  let able_rec = words_ahead_able()
+  let w_rec = words_ahead("录制模式跳过", look, 22.0, 1.0)
+  words_ahead_flush()
+  let logs_after = t.fake.logs.length()
+  text_rec.val = -1
+  fake_ahead.val = None
+  assert_false(able_rec)
+  assert_eq(w_rec, 0.0)
+  assert_eq(asked.length(), 0)
+  assert_eq(logs_after, logs_before)
+}
+
+///|
+test "words_ahead ellipsizes overflowing single-line text and prewarms ellipsis glyph" {
+  let look = { ..@view.words_plain, size: 15.0, line: 22.0, wrap: false }
+  let asked : Array[Int] = []
+  fake_ahead.val = Some(asked)
+  let _t = Tester::new(fn(_c) {  }, w=360.0, h=120.0, scale=3.6)
+  let max_w = 80.0
+  let w = words_ahead("这是一段非常长的单行聊天标题需要被截断显示省略号", look, 22.0, 1.0, width=max_w)
+  words_ahead_flush()
+  fake_ahead.val = None
+  assert_true(w > 0.0 && w <= max_w + 0.5, msg="expected ellipsized width <= \{max_w + 0.5}, got \{w}")
+  let ellipsis_base = 0x2026
+  let has_ellipsis = asked.iter().any(fn(k) { (k & 0x03FFFFFF) == ellipsis_base })
+  assert_true(has_ellipsis, msg="expected ellipsis glyph U+2026 to be prewarmed")
+}

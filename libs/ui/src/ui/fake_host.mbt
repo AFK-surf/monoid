@@ -580,6 +580,11 @@ impl @hostapi.Host for FakeHost with glyphs_ahead(self, keys, n) {
 }
 
 ///|
+impl @hostapi.Host for FakeHost with glyphs_ahead_able(_) {
+  fake_ahead.val is Some(_)
+}
+
+///|
 impl @hostapi.Host for FakeHost with glyph(self, key, out) {
   if self.live is Some(l) {
     l.host.glyph(key, out)

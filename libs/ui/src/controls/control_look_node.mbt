@@ -150,3 +150,67 @@ pub fn overlay_card_node(
   |> ignore
   card.val.unwrap()
 }
+
+///|
+/// A full-window modal overlay layer in `node` (`@headless.overlay(..., modal=true, dismiss_on_outside=false,
+/// in_node=true)`): registers `node` on the window tree's unified overlay stack (`@headless.overlays_open`) and wires
+/// `.over(Is(true))`, modal input blocking, inert hiding, and Escape / system Back dismissal (`on_dismiss`).
+/// - `dismiss_on_escape`: defaults to `true`; pass `false` for hosts that own Escape (e.g. Terminal / Browser), and
+///   wire `takes_back` separately if needed.
+/// - `auto_focus` / `first_takes`: defaults to `false`; set `auto_focus=true` (and optional `first_takes`) to focus
+///   into the layer as it opens.
+/// - `before_dismiss`: returns `true` to consume Escape / Back without calling `on_dismiss` (e.g. while busy).
+/// - `on_key`: optional key handler receiving `(key, dismiss_escape)` so a fullscreen layer with extra shortcuts can
+///   still route Escape through the overlay stack's topmost-layer check.
+#callsite(autofill(loc))
+pub fn fullscreen_overlay_node(
+  node : @view.View,
+  on_dismiss : () -> Unit,
+  inert? : () -> Bool = fn() { false },
+  dismiss_on_escape? : Bool = true,
+  auto_focus? : Bool = false,
+  first_takes? : (@view.Said) -> Bool,
+  before_dismiss? : () -> Bool,
+  on_key? : (@view.Key, () -> Bool) -> Bool,
+  loc~ : SourceLoc,
+) -> @view.View {
+  let ov_ref : Ref[@headless.Overlay?] = Ref(None)
+  @headless.overlay(
+    node,
+    fn(_) { on_dismiss() },
+    fn(v, ov) {
+      ov_ref.val = Some(ov)
+      v.over(Is(true), loc~) |> ignore
+    },
+    modal=true,
+    inert~,
+    dismiss_on_escape~,
+    dismiss_on_outside=false,
+    auto_focus~,
+    first_takes?,
+    before_dismiss?=match before_dismiss {
+      Some(f) => Some(fn(_) { f() })
+      None => None
+    },
+    in_node=true,
+    made_for=loc,
+  )
+  |> ignore
+  if on_key is Some(handler) {
+    let dismiss_escape = fn() {
+      if dismiss_on_escape &&
+        ov_ref.val is Some(ov) &&
+        @signals.untracked(fn() { ov.is_top() }) {
+        if before_dismiss is Some(f) && @signals.untracked(f) {
+          return true
+        }
+        ov.dismiss(Escape)
+        true
+      } else {
+        false
+      }
+    }
+    node.on_key(fn(k) { handler(k, dismiss_escape) }) |> ignore
+  }
+  node
+}

@@ -96,24 +96,30 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       None => false
     }
   }
-  n
-  .over(Is(true))
-  // (while it is the one open: closing, the pages' input theirs again as it begins to go, whatever is still drawn)
-  .modal(By(live))
-  // (going, nothing of it read out: as panel_node / sheet_node / confirm_node / menu_node)
-  .hides(By(fn() { !live() }))
-  // (its keys, at their moment, where nothing over it (a menu, a field being written in) takes them first)
-  .on_key(fn(k) { vw.key_on(src, k) })
-  // (back: leaving marking first, else closing it; a sheet, a menu over it, theirs first: Ctx::back_taker)
-  .takes_back(fn() {
-    if !vw.closing {
-      if marking.on {
-        marks_back()
-      } else {
-        vw.shut_tree()
+  // (its keys, at their moment, where nothing over it (a menu, a field being written in) takes them first;
+  // Escape routes through `@sf.fullscreen_overlay_node` unless the hosted reader/player owns keys)
+  @sf.fullscreen_overlay_node(
+    n,
+    fn() {
+      if !vw.closing {
+        if marking.on {
+          marks_back()
+        } else {
+          vw.shut_tree()
+        }
       }
-    }
-  })
+    },
+    inert=fn() { !live() },
+    on_key=fn(k, dismiss_escape) {
+      if k.code == @ui.key_escape && k.mods == 0 {
+        if vw.closing || vf_reads(vw) || vw.played() {
+          return false
+        }
+        return dismiss_escape()
+      }
+      vw.key_on(src, k)
+    },
+  )
   |> ignore
   // (its layer made again for another tier of the window, this one let go of after it as what is shared in it is
   // let go of as the change is committed: only the one it is in now says it is out of the tree)

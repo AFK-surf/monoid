@@ -338,6 +338,11 @@ impl @hostapi.Host for Native with glyphs_ahead(_, keys, n) {
 }
 
 ///|
+impl @hostapi.Host for Native with glyphs_ahead_able(_) {
+  true
+}
+
+///|
 impl @hostapi.Host for Native with face_add(_, face, path, weight) {
   face_add(face, path, weight)
 }

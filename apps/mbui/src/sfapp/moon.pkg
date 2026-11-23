@@ -9,7 +9,6 @@ import {
   "ui/ui",
   "ui/signals",
   "ui/view",
-  "ui/kit",
   "ui/motion",
   "ui/controls" @sf,
   "ui/hostapi",
@@ -20,4 +19,4 @@ import {
   "stillfail/sffixture",
 }
 
-import { "stillfail/sfkept", "stillfail/sfscreens", "stillfail/core", "ui/dmath", "moonbitlang/core/cmp", "ui/player" } for "wbtest"
+import { "stillfail/sfkept", "stillfail/sfscreens", "stillfail/core", "ui/dmath", "ui/headless", "ui/kit", "moonbitlang/core/cmp", "ui/player" } for "wbtest"

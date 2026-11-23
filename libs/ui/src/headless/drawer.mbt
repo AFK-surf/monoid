@@ -379,7 +379,7 @@ pub fn drawer(
         on_close()
       }
     }
-    let (stack, entry) = overlay_join(v, fn(_) { close() }, fn() { !open() }, close_on_escape, close_on_outside, None)
+    let (stack, entry) = overlay_join(v, fn(_) { close() }, fn() { !open() }, close_on_escape, close_on_outside, None, modal~)
     let state : Drawer = {
       node_: v,
       edge_: edge,

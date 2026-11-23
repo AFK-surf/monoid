@@ -108,6 +108,24 @@ async function rig(o: { approval?: string; data?: string; store?: Store; quota?:
 }
 
 describe("the accounts routes", { concurrency: true }, () => {
+  test("a check that finds the same models keeps the hub's config; one that finds others makes it again", async () => {
+    let models = ["opus", "sonnet"];
+    const t = await rig({ check: async () => ({ state: "ok", detail: "fake", models: [...models], checkedAt: Date.now() }) });
+    try {
+      await t.accounts.check("cc");
+      const made = t.accounts.settings();
+      await t.accounts.check("cc");
+      assert.equal(t.accounts.settings(), made, "checked again, the same models found: the config is not made again");
+      models = ["opus", "sonnet", "haiku"];
+      await t.accounts.check("cc");
+      const again = t.accounts.settings();
+      assert.notEqual(again, made);
+      assert.ok(again.profiles.find((p) => p.id === "cc")!.models.includes("haiku"), "the model found runs on it");
+    } finally {
+      t.close();
+    }
+  });
+
   test("devices asking a profile's check at once share one probe; one asked after it ends probes again", async () => {
     let probes = 0;
     let release!: () => void;
