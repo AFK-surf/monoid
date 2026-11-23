@@ -30,19 +30,21 @@
 # Run in station/.
 s=${1:-0/1}
 i=${s%/*} n=${s#*/}
-# (rules-fork at 450 and mb-fault-replica-retire at 350, lock-roster4 at 55, lock-fork-choice 55, lock-moved-model 50
-# and hub 45: the 2026-11-23 seconds above were a 16-core pvg-office-2's, where the four workers of each lock model
-# had cores of their own, while a CI runner's 4 vCPUs share them with the slice's other files. Dealt at those seconds
-# with rules-fork and replica-retire left at their old floors (168, 210: 18% and 23% of slices of 901), check-station
-# (2) averaged 254 s over seven runs (45102424156, 45116462484, 45117959512, 45120290937, 45121410965, 45121909055,
-# 45122235646), 298 on main's 45116462484 and cut at its 5 minutes at 310 and 311 (45121909055, 45122235646), and
-# (0) 220 (up to 275), where (3) with lock-roster4 and lock-moved-model averaged 165 and (4) with lock-fork-choice
-# and hub 173: these are those runs' means at some 5.2 a second. Before that: rules-fork at no less than what CI made
-# of its model's workers; mb-fault-replica-retire two MoonBit stations over iroh three times, a 48 MiB hand-over cut
-# by a kill, 180-208 s on CI's Linux runners (#7780's 44757732573: 208))
-long="test/rules-fork.test.ts:450 test/mb-fault-replica-retire.test.ts:350 test/memory-sync-random.test.ts:168"
-long="$long test/mb-reader-usage-page.test.ts:94 test/move-accounts.test.ts:91 test/replica-retire.test.ts:91"
-long="$long test/mb-fault-adb-device-connects.test.ts:81 test/mb-fault-runtimes-and-lend.test.ts:80"
+# (rules-fork at 310, mb-fault-replica-retire 260, memory-sync-random 200, mb-fault-runtimes-and-lend 150, lock-roster4
+# 55, lock-fork-choice 55, lock-moved-model 50 and hub 45: the 2026-11-23 seconds above were a 16-core pvg-office-2's,
+# where the four workers of each lock model had cores of their own, while a CI runner's 4 vCPUs share them with the
+# slice's other files. Dealt at those seconds with rules-fork and replica-retire left at their old floors (168, 210: 18%
+# and 23% of slices of 901), check-station (2) averaged 254 s over seven runs (45102424156, 45116462484, 45117959512,
+# 45120290937, 45121410965, 45121909055, 45122235646), 298 on main's 45116462484 and cut at its 5 minutes at 310 and 311
+# (45121909055, 45122235646), and (0) 220 (up to 275), where (3) with lock-roster4 and lock-moved-model averaged 165 and
+# (4) with lock-fork-choice and hub 173: those runs' means at some 5.2 a second gave rules-fork 450 and replica-retire
+# 350, and dealt so (#8253's 45123508084) their slices took 144 and 129 s where memory-sync-random's took 207 and
+# mb-fault-runtimes-and-lend's 235 (264 s the job), so those four are set from that run. Before that: rules-fork at no
+# less than what CI made of its model's workers; mb-fault-replica-retire two MoonBit stations over iroh three times, a
+# 48 MiB hand-over cut by a kill, 180-208 s on CI's Linux runners (#7780's 44757732573: 208))
+long="test/rules-fork.test.ts:310 test/mb-fault-replica-retire.test.ts:260 test/memory-sync-random.test.ts:200"
+long="$long test/mb-fault-runtimes-and-lend.test.ts:150 test/mb-reader-usage-page.test.ts:94"
+long="$long test/move-accounts.test.ts:91 test/replica-retire.test.ts:91 test/mb-fault-adb-device-connects.test.ts:81"
 long="$long test/mb-fault-move-and-connects.test.ts:79 test/mb-fault-agents-and-pack.test.ts:73"
 long="$long test/replica-heap-bounded.test.ts:62 test/chat-handover-back.test.ts:59 test/chat-handover.test.ts:55"
 long="$long test/lock-fork-choice.test.ts:55 test/lock-roster4.test.ts:55 test/mb-reader-timeline.test.ts:51"
