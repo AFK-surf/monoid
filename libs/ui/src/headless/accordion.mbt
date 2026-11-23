@@ -27,7 +27,7 @@ pub struct Accordion[K] {
   priv is_open : (K) -> Bool
   priv on_toggle : (K) -> Unit
   priv off : () -> Bool
-  priv heads : Rove
+  priv heads : RovingFocus
 }
 
 ///|
@@ -45,10 +45,7 @@ pub fn[K] Accordion::is_open(self : Accordion[K], key : K) -> Bool {
 ///|
 /// The focus asked onto the first enabled header, shown where `visible`. Whether one took it.
 pub fn[K] Accordion::focus_first(self : Accordion[K], visible? : Bool = true) -> Bool {
-  match self.heads.live() {
-    [e, ..] => e.node.ask_focus(visible~)
-    [] => false
-  }
+  self.heads.focus_first(visible~)
 }
 
 ///|
@@ -71,16 +68,15 @@ pub fn[K] accordion(
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
-  let heads = Rove::new(false)
+  let heads = RovingFocus::new(axis=if vertical { Vertical } else { Horizontal }, roving=false, wraps~)
   let a : Accordion[K] = { kind, is_open, on_toggle, off: disabled, heads }
-  let (prev, next) = axis_keys(if vertical { Vertical } else { Horizontal })
   let setup = fn(v : @view.View) {
     look(v, a)
     v.on_key(fn(k) {
       if k.mods != 0 || disabled() {
         return false
       }
-      heads.step(k.code, prev, next, wraps) is Some(_)
+      heads.step(k.code) is Some(_)
     })
     |> ignore
   }
@@ -120,7 +116,7 @@ pub fn[K] Accordion::trigger(
     fn() { (self.is_open)(key) },
     press,
     fn(v, d) {
-      self.heads.add(v, off, fn() { false })
+      self.heads.add(v, disabled=off)
       look(v, d)
     },
     disabled=off,

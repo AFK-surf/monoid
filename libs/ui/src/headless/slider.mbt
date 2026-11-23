@@ -114,6 +114,7 @@ pub fn slider(
   value_text? : (Double) -> String,
   drag? : (@view.Drag) -> Unit,
   vertical? : Bool = false,
+  rtl? : Bool = false,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -161,9 +162,10 @@ pub fn slider(
         f(d)
       } else if !disabled() {
         match d.kind {
-          // (along its width, `min` at its left; `vertical`, up its height, `min` at its foot)
+          // (along its width, `min` at its left (or right when `rtl`); `vertical`, up its height, `min` at its foot)
           Down | Moved if !vertical && d.w > thumb_room => {
-            let frac = slider_clamp((d.x - thumb_room / 2.0) / (d.w - thumb_room), 0.0, 1.0)
+            let raw = slider_clamp((d.x - thumb_room / 2.0) / (d.w - thumb_room), 0.0, 1.0)
+            let frac = if rtl { 1.0 - raw } else { raw }
             go(min + frac * (max - min))
           }
           Down | Moved if vertical && d.h > thumb_room => {
@@ -180,10 +182,13 @@ pub fn slider(
       }
       let cur = value()
       // 3 Left, 4 Right, 5 Up, 6 Down, 8 Home, 9 End, 15 Page Up, 16 Page Down (ui/desktop.mbt key_code_*): a page ten
-      // steps, as kit's slider and Radix's
-      let to = if k.code == 3 || k.code == 6 {
+      // steps, as kit's slider and Radix's; horizontal rtl flips Left/Right
+      let flip_h = !vertical && rtl
+      let dec_h = if flip_h { 4 } else { 3 }
+      let inc_h = if flip_h { 3 } else { 4 }
+      let to = if k.code == dec_h || k.code == 6 {
         Some(cur - step_by)
-      } else if k.code == 4 || k.code == 5 {
+      } else if k.code == inc_h || k.code == 5 {
         Some(cur + step_by)
       } else if k.code == 15 {
         Some(cur + step_by * 10.0)

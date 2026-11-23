@@ -184,3 +184,63 @@ test "typeahead: letters within 500 ms of each other find together; the same let
   lb_type(k.t, 'r')
   assert_eq((b, ch, a1, a2, a3, lb_focus(k.t), k.told.copy()), ("Blueberry", "Cherry", "Apple", "Apricot", "Apple", "Apple", []))
 }
+
+///|
+test "multiple listbox with on_select_many: Shift+Arrow range selection, Shift+Click range selection, and Ctrl+A/Cmd+A select all skip disabled" {
+  let selected : @signals.Signal[Array[String]] = @signals.signal([])
+  let t = window(fn(root) {
+    @headless.listbox(
+      root,
+      fn() { "水果" },
+      fn(k) { selected.get().contains(k) },
+      fn(k) {
+        let now = selected.get()
+        if now.contains(k) {
+          selected.set(now.filter(fn(x) { x != k }))
+        } else {
+          selected.set(now + [k])
+        }
+      },
+      multiple=true,
+      on_select_many=fn(next) { selected.set(next) },
+      shift_held=fn() { (@ui.mods_held() & @ui.mod_shift_key) != 0 },
+      fn(v, lb) {
+        for e in lb_names {
+          let (key, name) = e
+          let disabled = if key == "banana" { fn() { true } } else { fn() { false } }
+          lb.option(v, key, fn() { name }, disabled~, fn(o, _) {
+            o.width(Is(Some(120.0))).height(Is(Some(24.0))) |> ignore
+          })
+          |> ignore
+        }
+      },
+    )
+    |> ignore
+  })
+  // Click Apple to set anchor, then Shift+ArrowDown twice (skips disabled Banana -> Blueberry)
+  t.act(Option, Focus, label="Apple")
+  t.enter()
+  t.key(@ui.key_code_down, mods=@ui.mod_shift_key)
+  let after_s1 = selected.get()
+  t.key(@ui.key_code_down, mods=@ui.mod_shift_key)
+  let after_s2 = selected.get()
+  // Shift+Click Cherry -> range from anchor Apple to Cherry skipping disabled Banana
+  t.hold_mods(@ui.mod_shift_key)
+  t.click(Option, label="Cherry")
+  t.hold_mods(0)
+  let after_sclick = selected.get()
+  // Clear and Ctrl+A -> selects all enabled options
+  selected.set([])
+  t.act(Option, Focus, label="Apple")
+  t.key(@ui.key_of_char('a'), mods=@ui.mod_ctrl)
+  let after_ctrl_a = selected.get()
+  assert_eq(
+    (after_s1, after_s2, after_sclick, after_ctrl_a),
+    (
+      ["apple", "apricot"],
+      ["apple", "apricot", "blueberry"],
+      ["apple", "apricot", "blueberry", "cherry"],
+      ["apple", "apricot", "blueberry", "cherry"],
+    ),
+  )
+}

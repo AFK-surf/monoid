@@ -83,12 +83,60 @@ fn OverlayStack::drop(self : OverlayStack, id : @view.NodeId) -> Unit {
   }
   self.changed.set(self.changed.untracked() + 1)
   if self.entries.is_empty() {
+    self.entries.shrink_to_fit()
     for i, s in overlay_stacks {
       if physical_equal(s, self) {
         overlay_stacks.remove(i) |> ignore
         break
       }
     }
+    if overlay_stacks.is_empty() {
+      overlay_stacks.shrink_to_fit()
+    }
+  }
+}
+
+///|
+/// Register `v` on its tree's `OverlayStack` (above all currently mounted layers) and unregister it on `View::owns`.
+fn overlay_join(
+  v : @view.View,
+  on_dismiss : (OverlayDismiss) -> Unit,
+  inert : () -> Bool,
+  escape : Bool,
+  outside : Bool,
+  anchor : @view.View?,
+) -> (OverlayStack, OverlayEntry) {
+  let stack = overlay_stack(v.tree)
+  let off = fn() { inert() || v.leaving() }
+  let entry : OverlayEntry = {
+    id: v.id(),
+    node: v,
+    dismiss: fn(how) { if !@signals.untracked(off) { on_dismiss(how) } },
+    inert: off,
+    escape,
+    outside,
+    anchor,
+  }
+  stack.entries.push(entry)
+  stack.changed.set(stack.changed.untracked() + 1)
+  v.owns(fn() { stack.drop(entry.id) }) |> ignore
+  (stack, entry)
+}
+
+///|
+/// Wire Escape, system Back, and outside window presses for `entry` onto `stack`.
+fn overlay_wire_dismiss(v : @view.View, stack : OverlayStack, entry : OverlayEntry) -> Unit {
+  let live = fn() { !(entry.inert)() }
+  if entry.escape {
+    v
+    .on_key(fn(k) { k.code == menu_key_escape && k.mods == 0 && stack.escape(Escape) })
+    .takes_back(fn() { stack.escape(Back) |> ignore })
+    |> ignore
+  }
+  if entry.outside {
+    window_downs_while(v, live, fn(x, y) {
+      stack.press(@signals.untracked(fn() { v.window_downs() }), x, y)
+    })
   }
 }
 
@@ -222,21 +270,9 @@ pub fn overlay(
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(loc~, made_for=made_for.unwrap_or(loc), fn(v) {
-    let stack = overlay_stack(v.tree)
-    let off = fn() { inert() || v.leaving() }
+    let (stack, entry) = overlay_join(v, on_dismiss, inert, dismiss_on_escape, dismiss_on_outside, anchor)
+    let off = entry.inert
     let live = fn() { !off() }
-    let entry = {
-      id: v.id(),
-      node: v,
-      dismiss: fn(how) { if !@signals.untracked(off) { on_dismiss(how) } },
-      inert: off,
-      escape: dismiss_on_escape,
-      outside: dismiss_on_outside,
-      anchor,
-    }
-    stack.entries.push(entry)
-    stack.changed.set(stack.changed.untracked() + 1)
-    v.owns(fn() { stack.drop(entry.id) }) |> ignore
     look(v, { stack, entry })
     // (the framework's layer focus: to what it holds as it opens, or left where it is; back as it goes)
     if auto_focus {
@@ -260,16 +296,6 @@ pub fn overlay(
     // (a press on the ground its look draws its own, no press outside it, nothing done by it)
     .on_drag(fn(_) {  })
     |> ignore
-    if dismiss_on_escape {
-      v
-      .on_key(fn(k) { k.code == menu_key_escape && k.mods == 0 && stack.escape(Escape) })
-      .takes_back(fn() { stack.escape(Back) |> ignore })
-      |> ignore
-    }
-    if dismiss_on_outside {
-      window_downs_while(v, live, fn(x, y) {
-        stack.press(@signals.untracked(fn() { v.window_downs() }), x, y)
-      })
-    }
+    overlay_wire_dismiss(v, stack, entry)
   })
 }

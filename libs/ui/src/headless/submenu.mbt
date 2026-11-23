@@ -23,6 +23,7 @@ pub struct Submenu {
   priv set : (Bool) -> Unit
   priv open_delay_ms : Double
   priv close_delay_ms : Double
+  priv rtl : Bool
   /// (what is waited for: its opening or its closing, called off by whatever supersedes it)
   priv waiting : Ref[() -> Unit]
   /// (its trigger's node and its menu's node, while each is made)
@@ -36,18 +37,21 @@ pub struct Submenu {
 
 ///|
 /// A submenu open while `open` says so, `set_open` told what it is to be; opening `open_delay_ms` after the pointer came
-/// onto its trigger, closing `close_delay_ms` after it left the trigger and the submenu.
+/// onto its trigger, closing `close_delay_ms` after it left the trigger and the submenu. When `rtl` is true, default
+/// open/close arrow keys flip (`←` opens, `→` closes).
 pub fn Submenu::new(
   open : () -> Bool,
   set_open : (Bool) -> Unit,
   open_delay_ms? : Double = 180.0,
   close_delay_ms? : Double = 150.0,
+  rtl? : Bool = false,
 ) -> Submenu {
   {
     now: open,
     set: set_open,
     open_delay_ms,
     close_delay_ms,
+    rtl,
     waiting: Ref(fn() {  }),
     // (nodes, kept by their ids: a node is no value to compare)
     opener: @signals.signal_by(None, same=same_node),
@@ -159,11 +163,16 @@ pub fn Menu::sub_trigger(
   label : () -> String,
   look : (@view.View, MenuItem) -> Unit,
   disabled? : () -> Bool = fn() { false },
-  open_key? : Int = group_key_right,
+  open_key? : Int,
+  rtl? : Bool,
   in_node? : Bool = false,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
+  let key_open = match open_key {
+    Some(k) => k
+    None => if rtl.unwrap_or(sub.rtl) { group_key_left } else { group_key_right }
+  }
   let off = fn() { (self.off)() || disabled() }
   // (pressed: by Enter or Space the keys go into it, as they came; by the pointer they stay where they are)
   let node = self.part(
@@ -181,7 +190,7 @@ pub fn Menu::sub_trigger(
   )
   sub.opener.set(Some(node))
   node.on_key(fn(k) {
-    if k.mods == 0 && k.code == open_key && !off() && node.focused() {
+    if k.mods == 0 && k.code == key_open && !off() && node.focused() {
       sub.open_now(true)
       true
     } else {
@@ -228,12 +237,17 @@ pub fn Submenu::menu(
   parent : @view.View,
   look : (@view.View, Menu) -> Unit,
   label? : () -> String,
-  close_key? : Int = group_key_left,
+  close_key? : Int,
+  rtl? : Bool,
   wraps? : Bool = true,
   typeahead? : Bool = true,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
+  let key_close = match close_key {
+    Some(k) => k
+    None => if rtl.unwrap_or(self.rtl) { group_key_right } else { group_key_left }
+  }
   let v = menu(
     parent,
     fn(v, m) {
@@ -256,7 +270,7 @@ pub fn Submenu::menu(
         None => ()
       }
     },
-    close_key~,
+    close_key=key_close,
     wraps~,
     typeahead~,
     made_for=made_for.unwrap_or(loc),

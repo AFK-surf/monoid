@@ -27,7 +27,7 @@ pub struct ToggleGroup[K] {
   priv is_on : (K) -> Bool
   priv turn : (K, Bool) -> Unit
   priv off : () -> Bool
-  priv items : Rove
+  priv items : RovingFocus
 }
 
 ///|
@@ -45,9 +45,9 @@ pub fn[K] ToggleGroup::single(self : ToggleGroup[K]) -> Bool {
 ///|
 /// A toggle group in `parent`, called `label`, its items on as `is_on` says, `turn` told the key of one pressed and what
 /// it is to be; `kind` at most one on or each its own; `axis` which arrow keys go along it; `wraps`: the keys go round
-/// its ends; `disabled` while none of it takes a press or the focus. `look` is given its node and the
-/// `ToggleGroup[K]` its items are made by (directly or inside `View::each`), once as it is made: all that is drawn of it
-/// and how it is laid out. Its node.
+/// its ends; `rtl`: flip horizontal arrow keys (`←`/`→`); `disabled` while none of it takes a press or the focus.
+/// `look` is given its node and the `ToggleGroup[K]` its items are made by (directly or inside `View::each`), once as
+/// it is made: all that is drawn of it and how it is laid out. Its node.
 #callsite(autofill(loc))
 pub fn[K] toggle_group(
   parent : @view.View,
@@ -58,13 +58,13 @@ pub fn[K] toggle_group(
   kind? : ToggleGroupKind = Multiple,
   axis? : GroupAxis = Horizontal,
   wraps? : Bool = true,
+  rtl? : Bool = false,
   disabled? : () -> Bool = fn() { false },
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
-  let items = Rove::new(true)
+  let items = RovingFocus::new(axis~, roving=true, wraps~, rtl~)
   let g : ToggleGroup[K] = { kind, is_on, turn, off: disabled, items }
-  let (prev, next) = axis_keys(axis)
   parent.box(loc~, made_for=made_for.unwrap_or(loc), fn(v) {
     look(v, g)
     v
@@ -73,7 +73,7 @@ pub fn[K] toggle_group(
       if k.mods != 0 || disabled() {
         return false
       }
-      items.step(k.code, prev, next, wraps) is Some(_)
+      items.step(k.code) is Some(_)
     })
     |> ignore
   })
@@ -108,6 +108,6 @@ pub fn[K] ToggleGroup::item(
     loc~,
   )
   // (its Tab stop the group's, said after the toggle's focusable)
-  self.items.add(v, off, on)
+  self.items.add(v, disabled=off, preferred=on)
   v
 }

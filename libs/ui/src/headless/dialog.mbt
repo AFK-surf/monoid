@@ -113,6 +113,7 @@ pub fn dialog(
         on_close()
       }
     }
+    let (stack, entry) = overlay_join(v, fn(_) { close() }, fn() { !open() }, close_on_escape, close_on_outside, None)
     look(v, { node: v, now: open, close })
     // (the framework's layer focus: to what it holds as it opens, back as it goes)
     v.focus_opens_first(takes?=first_takes) |> ignore
@@ -137,26 +138,7 @@ pub fn dialog(
     // (a press on the ground its look draws its own, no press outside it: the pointer's there taken (Tree::target_at
     // finds what is drawn), and nothing done by it)
     .on_drag(fn(_) {  })
-    .on_key(fn(k) {
-      if k.code == menu_key_escape && k.mods == 0 && close_on_escape && open() && focus_in(v, true) {
-        close()
-        true
-      } else {
-        false
-      }
-    })
-    .takes_back(fn() {
-      if close_on_escape {
-        close()
-      }
-    })
     |> ignore
-    if close_on_outside {
-      window_downs_while(v, open, fn(x, y) {
-        if !press_on(v, x, y) {
-          close()
-        }
-      })
-    }
+    overlay_wire_dismiss(v, stack, entry)
   })
 }

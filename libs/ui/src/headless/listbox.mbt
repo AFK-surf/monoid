@@ -4,7 +4,9 @@
 //
 // Which are selected is its caller's (`is_selected`), told the key of an option pressed (`pick`: the pointer, Enter or
 // Space with the focus on it, a screen reader's Activate; never a disabled one): one of one at a time, chosen where it is
-// not chosen already (nothing told where it is); of `multiple`, every press, the caller turning it.
+// not chosen already (nothing told where it is); of `multiple`, every press, the caller turning it. When `multiple` is
+// true and `on_select_many` is provided, Shift+ArrowDown/Up/Home/End and Shift+Click extend a contiguous range from the
+// anchor (skipping disabled options) via `SelectionModel`, and Ctrl+A / Cmd+A selects all enabled options.
 //
 // Keys (WAI-ARIA's listbox): Tab stops on one of its options (the last that had the focus while it is still enabled,
 // else the first selected, else the first enabled), and while one has the focus ↓ and ↑ go to the enabled option after
@@ -15,9 +17,11 @@
 // option passed by.
 
 ///|
-/// One option of a list box as typeahead finds it: its node, and its words.
-priv struct ListboxEntry {
+/// One option of a list box: its node, key, disabled predicate, and searchable text.
+priv struct ListboxEntry[K] {
   node : @view.View
+  key : K
+  off : () -> Bool
   text : () -> String
 }
 
@@ -26,12 +30,14 @@ priv struct ListboxEntry {
 pub struct Listbox[K] {
   priv is_selected : (K) -> Bool
   priv pick : (K) -> Unit
+  priv on_select_many : ((Array[K]) -> Unit)?
+  priv shift_held : () -> Bool
   priv multiple : Bool
   priv off : () -> Bool
-  priv options : Rove
-  priv entries : Array[ListboxEntry]
-  /// (what was typed together, and the moment of its last letter)
-  priv typed : Ref[(String, Double)]
+  priv options : RovingFocus
+  priv entries : Array[ListboxEntry[K]]
+  priv typeahead : Typeahead
+  priv selection : SelectionModel[@view.NodeId]
 }
 
 ///|
@@ -50,14 +56,7 @@ pub fn[K] Listbox::multiple(self : Listbox[K]) -> Bool {
 /// The focus asked onto the option Tab stops on (the last that had it, else the first selected, else the first
 /// enabled), shown where `visible`. Whether one took it.
 pub fn[K] Listbox::focus_stop(self : Listbox[K], visible? : Bool = true) -> Bool {
-  match @signals.untracked(fn() { self.options.stop_at() }) {
-    Some(id) =>
-      match self.options.items.iter().find_first(fn(e) { e.node.id() == id }) {
-        Some(e) => e.node.ask_focus(visible~)
-        None => false
-      }
-    None => false
-  }
+  self.options.focus_stop(visible~)
 }
 
 ///|
@@ -105,91 +104,55 @@ pub fn ListOption::pressed(self : ListOption) -> Bool {
 }
 
 ///|
-/// The key code of a typed character's key (`ui`'s `key_of_char`: its code past this), and Space's.
-let listbox_key_char : Int = 1000
+/// Key code for Select All (`ui`'s `key_code_select_all`).
+let listbox_key_select_all : Int = 12
 
 ///|
-let listbox_key_space : Int = 1032
-
-///|
-/// `s` with its letters A to Z made small, as typeahead matches them.
-fn listbox_small(s : String) -> String {
-  let b = StringBuilder()
-  for c in s {
-    if c >= 'A' && c <= 'Z' {
-      b.write_char((c.to_int() + 32).unsafe_to_char())
-    } else {
-      b.write_char(c)
+/// Map a list of option NodeIds back to their caller keys in order.
+fn[K] Listbox::keys_of(self : Listbox[K], ids : Array[@view.NodeId]) -> Array[K] {
+  let out : Array[K] = []
+  for id in ids {
+    match self.entries.iter().find_first(fn(e) { e.node.id() == id }) {
+      Some(e) => out.push(e.key)
+      None => ()
     }
   }
-  b.to_string()
+  out
 }
 
 ///|
-/// Whether every character of `s` is `c`.
-fn listbox_all(s : String, c : Char) -> Bool {
-  s.iter().all(fn(x) { x == c })
-}
-
-///|
-/// A typed character `c` at `at` among parts the keys go to (`live`, in order; `words` the words of the `i`th): what
-/// was typed together (`typed`, with the moment of its last letter) grown by it (or begun anew, past `window_ms` since
-/// the letter before), and the focus asked onto the next whose words begin with it, from the one with the focus (from
-/// after it, where a letter is typed alone or again), around the end. Whether one was found. A list box's and a
-/// menu's typeahead.
-fn type_ahead(
-  typed : Ref[(String, Double)],
-  c : Char,
-  at : Double,
-  window_ms : Double,
-  live : Array[@view.View],
-  words : (Int) -> String,
-) -> Bool {
-  let small = listbox_small(c.to_string())
-  let (was, last) = typed.val
-  let now = if was != "" && at - last <= window_ms { was + small } else { small }
-  typed.val = (now, at)
-  let n = live.length()
-  if n == 0 {
-    return false
-  }
-  // (the same letter again: the next that begins with it; else what was typed whole, from the one it is on)
-  let first = small.get_char(0).unwrap_or(' ')
-  let (find, from_next) = if listbox_all(now, first) { (small, true) } else { (now, false) }
-  let start = match live.search_by(fn(v) { v.focused() }) {
-    Some(i) => if from_next { i + 1 } else { i }
-    None => 0
-  }
-  for d in 0..<n {
-    let i = (start + d) % n
-    if listbox_small(words(i)).has_prefix(find) {
-      live[i].ask_focus(visible=true) |> ignore
-      return true
+/// All living option NodeIds in registration order, currently selected IDs, and a disabled predicate on NodeId.
+fn[K] Listbox::selection_inputs(
+  self : Listbox[K],
+) -> (Array[@view.NodeId], Array[@view.NodeId], (@view.NodeId) -> Bool) {
+  let all_ids : Array[@view.NodeId] = []
+  let cur_ids : Array[@view.NodeId] = []
+  for e in self.entries {
+    if e.node.alive() {
+      let id = e.node.id()
+      all_ids.push(id)
+      if @signals.untracked(fn() { (self.is_selected)(e.key) }) {
+        cur_ids.push(id)
+      }
     }
   }
-  false
-}
-
-///|
-/// A typed character `c` at `at`: the focus on the next enabled option whose words begin with what was typed together
-/// (type_ahead). Whether one was found.
-fn[K] Listbox::typeahead(self : Listbox[K], c : Char, at : Double, window_ms : Double) -> Bool {
-  let live = self.options.live()
-  type_ahead(self.typed, c, at, window_ms, live.map(fn(e) { e.node }), fn(i) {
-    let id = live[i].node.id()
-    match self.entries.iter().find_first(fn(x) { x.node.id() == id }) {
-      Some(x) => (x.text)()
-      None => ""
+  let is_off = fn(id : @view.NodeId) -> Bool {
+    match self.entries.iter().find_first(fn(e) { e.node.id() == id }) {
+      Some(e) => !e.node.takes_input() || @signals.untracked(e.off)
+      None => true
     }
-  })
+  }
+  (all_ids, cur_ids, is_off)
 }
 
 ///|
 /// A list box in `parent`, called `label`, its options selected as `is_selected` says, `pick` told the key of one
-/// pressed; `multiple`: several may be selected (each press told); `wraps`: ↓ past the last comes to the first, ↑
-/// before the first to the last; `typeahead_ms`: how long after a letter the next is typed with it; `disabled` while
-/// none of it takes a press or the focus. `look` is given its node and the `Listbox[K]` its options are made by
-/// (directly or inside `View::each`), once as it is made: all that is drawn of it and how it is laid out. Its node.
+/// pressed; `multiple`: several may be selected (each press told); `on_select_many`: when provided with `multiple=true`,
+/// receives the new selection array on Shift+Arrow range selection, Shift+Click range selection (using `shift_held`), and
+/// Ctrl+A / Cmd+A select-all; `wraps`: ↓ past the last comes to the first, ↑ before the first to the last;
+/// `typeahead_ms`: how long after a letter the next is typed with it; `disabled` while none of it takes a press or the
+/// focus. `look` is given its node and the `Listbox[K]` its options are made by (directly or inside `View::each`), once
+/// as it is made: all that is drawn of it and how it is laid out. Its node.
 #callsite(autofill(loc))
 pub fn[K] listbox(
   parent : @view.View,
@@ -198,6 +161,8 @@ pub fn[K] listbox(
   pick : (K) -> Unit,
   look : (@view.View, Listbox[K]) -> Unit,
   multiple? : Bool = false,
+  on_select_many? : (Array[K]) -> Unit,
+  shift_held? : () -> Bool = fn() { false },
   wraps? : Bool = false,
   typeahead_ms? : Double = 500.0,
   disabled? : () -> Bool = fn() { false },
@@ -207,11 +172,14 @@ pub fn[K] listbox(
   let lb : Listbox[K] = {
     is_selected,
     pick,
+    on_select_many,
+    shift_held,
     multiple,
     off: disabled,
-    options: Rove::new(true),
+    options: RovingFocus::new(axis=Vertical, roving=true, wraps~),
     entries: [],
-    typed: Ref(("", 0.0)),
+    typeahead: Typeahead::new(window_ms=typeahead_ms),
+    selection: SelectionModel::new(multiple~),
   }
   parent.box(loc~, made_for=made_for.unwrap_or(loc), fn(v) {
     look(v, lb)
@@ -221,23 +189,48 @@ pub fn[K] listbox(
       if disabled() || !focus_in(v, false) {
         return false
       }
-      if k.mods == 0 && lb.options.step(k.code, [group_key_up], [group_key_down], wraps) is Some(_) {
+      if multiple && on_select_many is Some(many) {
+        // Ctrl+A / Cmd+A / SelectAll
+        let is_select_all = (k.code == listbox_key_select_all && (k.mods == 0 || k.mods == mod_ctrl || k.mods == mod_cmd)) ||
+          ((k.mods == mod_ctrl || k.mods == mod_cmd) &&
+            (k.code == typeahead_key_char + 'a'.to_int() || k.code == typeahead_key_char + 'A'.to_int()))
+        if is_select_all {
+          let (all_ids, _, is_off) = lb.selection_inputs()
+          let next_ids = lb.selection.select_all(all_ids, disabled=is_off)
+          many(lb.keys_of(next_ids))
+          return true
+        }
+        // Shift+ArrowDown/Up/Home/End range extension
+        if k.mods == mod_shift &&
+          (k.code == group_key_down || k.code == group_key_up || k.code == group_key_home || k.code == group_key_end) {
+          if lb.selection.anchor() is None {
+            if v.tree.focused_now().0 is Some(f) {
+              lb.selection.set_anchor(Some(f))
+            }
+          }
+          if lb.options.step(k.code) is Some(target) {
+            let (all_ids, cur_ids, is_off) = lb.selection_inputs()
+            let next_ids = lb.selection.select_range(all_ids, cur_ids, target.id(), disabled=is_off)
+            many(lb.keys_of(next_ids))
+            return true
+          }
+        }
+      }
+      if k.mods == 0 && lb.options.step(k.code) is Some(_) {
         return true
       }
-      // (a character typed, Space aside (it presses what has the focus); with Shift as without)
-      if k.code > listbox_key_char && k.code != listbox_key_space && (k.mods == 0 || k.mods == shift_mod) {
-        let c = (k.code - listbox_key_char).unsafe_to_char()
-        return lb.typeahead(c, k.at, typeahead_ms)
-      }
-      false
+      let live = lb.options.live()
+      lb.typeahead.handle_key(k, live, fn(i) {
+        let id = live[i].id()
+        match lb.entries.iter().find_first(fn(x) { x.node.id() == id }) {
+          Some(x) => (x.text)()
+          None => ""
+        }
+      })
     })
     |> ignore
   })
 }
-
-///|
-/// The mods a key carries with Shift held (`ui`'s `mod_shift_key`).
-let shift_mod : Int = 1
 
 ///|
 /// An option of `key` in `parent` (the list box's node, a part of it, or `parent` itself where `in_node`: the row a
@@ -260,20 +253,36 @@ pub fn[K] Listbox::option(
     let off = fn() { (self.off)() || disabled() }
     let able = fn() { !off() }
     let on = fn() { (self.is_selected)(key) }
-    self.entries.push({ node: v, text: text.unwrap_or(label) })
-    v.owns(fn() { self.entries.retain(fn(e) { e.node.id() != v.id() }) }) |> ignore
+    self.entries.push({ node: v, key, off, text: text.unwrap_or(label) })
+    v.owns(fn() {
+      self.entries.retain(fn(e) { e.node.id() != v.id() })
+      if self.entries.is_empty() {
+        self.entries.shrink_to_fit()
+      }
+    })
+    |> ignore
     look(v, { node: v, on, off })
     v
     .presses(By(able))
     .focusable(By(able), tab=false)
     .says(By(fn() { Some(@view.said(@view.Role::Option, label=label(), selected=on())) }))
     .on_press(fn() {
-      if !off() && (self.multiple || !on()) {
+      if off() {
+        return
+      }
+      if self.multiple && self.on_select_many is Some(many) && (self.shift_held)() {
+        let (all_ids, cur_ids, is_off) = self.selection_inputs()
+        let next_ids = self.selection.select_range(all_ids, cur_ids, v.id(), disabled=is_off)
+        many(self.keys_of(next_ids))
+        return
+      }
+      self.selection.set_anchor(Some(v.id()))
+      if self.multiple || !on() {
         (self.pick)(key)
       }
     })
     |> ignore
-    self.options.add(v, off, on)
+    self.options.add(v, disabled=off, preferred=on)
   }
   if in_node {
     setup(parent)

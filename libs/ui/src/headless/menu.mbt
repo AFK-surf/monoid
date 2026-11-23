@@ -29,20 +29,11 @@
 // they came), focus shown (they came by the keys), checked (a check's or a radio's), open (a submenu's trigger's).
 
 ///|
-/// One item of a `Menu` as the keys go among them.
+/// One item of a `Menu` as typeahead finds it.
 priv struct MenuEntry {
   node : @view.View
-  off : () -> Bool
   /// (its words, as typeahead finds it: its label)
   text : () -> String
-}
-
-///|
-/// Where Tab stops among a roving menu's items: the last of them that had the focus (none yet), and a count of the
-/// items made and let go, each a change of it (what a stop reads to follow them).
-priv struct MenuStop {
-  last : @signals.Signal[@view.NodeId?]
-  made : @signals.Signal[Int]
 }
 
 ///|
@@ -50,10 +41,9 @@ priv struct MenuStop {
 pub struct Menu {
   priv node : @view.View
   priv off : () -> Bool
-  priv items : Array[MenuEntry]
-  priv stop : MenuStop?
-  /// (what was typed together, and the moment of its last letter)
-  priv typed : Ref[(String, Double)]
+  priv rove : RovingFocus
+  priv entries : Array[MenuEntry]
+  priv typeahead : Typeahead
 }
 
 ///|
@@ -71,48 +61,30 @@ pub fn Menu::disabled(self : Menu) -> Bool {
 ///|
 /// Its enabled items that take input now (living, not leaving: an item a structure lets go of goes its way out still
 /// living), in the order they were made.
-fn Menu::live(self : Menu) -> Array[MenuEntry] {
+fn Menu::live(self : Menu) -> Array[@view.View] {
   if (self.off)() {
     return []
   }
-  self.items.filter(fn(e) { e.node.takes_input() && !(e.off)() })
-}
-
-///|
-/// The item Tab stops on in a roving menu: the last that had the focus while it is still enabled, else the first
-/// enabled; none in a menu not roving, or with none enabled. Followed where a binding reads it.
-fn Menu::stop_at(self : Menu) -> @view.NodeId? {
-  guard self.stop is Some(st) else { return None }
-  st.made.get() |> ignore
-  // (an item still leaving, made another kind or let go as the menu stays open, is none to stop on)
-  let live = self.items.filter(fn(e) { e.node.takes_input() && !(e.off)() })
-  match st.last.get() {
-    Some(id) if live.iter().any(fn(e) { e.node.id() == id }) => Some(id)
-    _ =>
-      match live {
-        [first, ..] => Some(first.node.id())
-        [] => None
-      }
-  }
+  self.rove.live()
 }
 
 ///|
 /// The focus asked onto its first enabled item, shown where `visible` (it came by the keys). Whether one took it.
 /// Called from a handler (what opens it, a key, a moment), never as something is drawn.
 pub fn Menu::focus_first(self : Menu, visible? : Bool = true) -> Bool {
-  match self.live() {
-    [first, ..] => first.node.ask_focus(visible~)
-    [] => false
+  if (self.off)() {
+    return false
   }
+  self.rove.focus_first(visible~)
 }
 
 ///|
 /// The focus asked onto its last enabled item (Menu::focus_first's).
 pub fn Menu::focus_last(self : Menu, visible? : Bool = true) -> Bool {
-  match self.live() {
-    [.., last] => last.node.ask_focus(visible~)
-    [] => false
+  if (self.off)() {
+    return false
   }
+  self.rove.focus_last(visible~)
 }
 
 ///|
@@ -225,8 +197,13 @@ pub fn menu(
   loc~ : SourceLoc,
 ) -> @view.View {
   let setup = fn(v : @view.View) {
-    let stop : MenuStop? = if roving { Some({ last: @signals.signal(None), made: @signals.signal(0) }) } else { None }
-    let m : Menu = { node: v, off: disabled, items: [], stop, typed: Ref(("", 0.0)) }
+    let m : Menu = {
+      node: v,
+      off: disabled,
+      rove: RovingFocus::new(axis=Vertical, roving~, wraps~),
+      entries: [],
+      typeahead: Typeahead::new(window_ms=typeahead_ms),
+    }
     look(v, m)
     if takes_focus {
       v.focusable(Is(true), keys=0) |> ignore
@@ -245,21 +222,26 @@ pub fn menu(
       // (a character typed, Space aside (it presses what has the focus); with Shift as without; the keys the menu's as
       // its arrows' are)
       if typeahead &&
-        k.code > listbox_key_char &&
-        k.code != listbox_key_space &&
-        (k.mods == 0 || k.mods == shift_mod) {
+        k.code > typeahead_key_char &&
+        k.code != typeahead_key_space &&
+        (k.mods == 0 || k.mods == mod_shift) {
         // (the keys on one of its items, on itself, or nowhere where it takes no focus itself: never on what else it
         // holds (a field in it, whose letters are its own))
         let ours = match v.tree.focused_now().0 {
-          Some(f) => f == v.id() || m.items.iter().any(fn(e) { e.node.id() == f })
+          Some(f) => f == v.id() || m.entries.iter().any(fn(e) { e.node.id() == f })
           None => !takes_focus
         }
         if !ours {
           return false
         }
         let live = m.live()
-        let c = (k.code - listbox_key_char).unsafe_to_char()
-        return type_ahead(m.typed, c, k.at, typeahead_ms, live.map(fn(e) { e.node }), fn(i) { (live[i].text)() })
+        return m.typeahead.handle_key(k, live, fn(i) {
+          let id = live[i].id()
+          match m.entries.iter().find_first(fn(e) { e.node.id() == id }) {
+            Some(e) => (e.text)()
+            None => ""
+          }
+        })
       }
       if k.mods != 0 {
         return false
@@ -280,37 +262,16 @@ pub fn menu(
       if !focus_in(v, !takes_focus) {
         return false
       }
-      let live = m.live()
-      let n = live.length()
-      if n == 0 {
-        return false
+      if m.rove.step(k.code) is Some(_) {
+        return true
       }
-      let at = live.search_by(fn(e) { e.node.focused() })
-      let to = if k.code == menu_key_down {
-        match at {
-          None => Some(0)
-          Some(i) if i + 1 < n => Some(i + 1)
-          Some(_) => if wraps { Some(0) } else { Some(n - 1) }
-        }
-      } else if k.code == menu_key_up {
-        match at {
-          None => Some(n - 1)
-          Some(i) if i > 0 => Some(i - 1)
-          Some(_) => if wraps { Some(n - 1) } else { Some(0) }
-        }
-      } else if k.code == menu_key_home {
-        Some(0)
-      } else if k.code == menu_key_end {
-        Some(n - 1)
+      // (no item has focus yet: ↓/Home enters first item, ↑/End enters last item)
+      if k.code == menu_key_down || k.code == menu_key_home {
+        m.focus_first()
+      } else if k.code == menu_key_up || k.code == menu_key_end {
+        m.focus_last()
       } else {
-        None
-      }
-      match to {
-        Some(j) => {
-          live[j].node.ask_focus(visible=true) |> ignore
-          true
-        }
-        None => false
+        false
       }
     })
     |> ignore
@@ -347,17 +308,12 @@ fn Menu::part(
       Some(f) => f
       None => fn() { false }
     }
-    self.items.push({ node: v, off, text: label })
-    let made = fn() {
-      match self.stop {
-        Some(st) => st.made.set(st.made.untracked() + 1)
-        None => ()
-      }
-    }
-    made()
+    self.entries.push({ node: v, text: label })
     v.owns(fn() {
-      self.items.retain(fn(e) { e.node.id() != v.id() })
-      made()
+      self.entries.retain(fn(e) { e.node.id() != v.id() })
+      if self.entries.is_empty() {
+        self.entries.shrink_to_fit()
+      }
     })
     |> ignore
     look(v, { node: v, on, off, open: expanded.unwrap_or(fn() { false }) })
@@ -378,13 +334,7 @@ fn Menu::part(
     })
     |> ignore
     // (roving: Tab's one stop among the items, the last with the focus; said after `focusable`, which lets a stop go)
-    match self.stop {
-      Some(st) => {
-        v.tab_stop(By(fn() { self.stop_at() == Some(v.id()) })) |> ignore
-        v.reacts(fn() { v.focused() }, fn(f) { if f { st.last.set(Some(v.id())) } })
-      }
-      None => ()
-    }
+    self.rove.add(v, disabled=off)
   }
   if in_node {
     setup(parent)

@@ -112,16 +112,18 @@ pub fn Popover::content(
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(loc~, made_for=made_for.unwrap_or(loc), fn(v) {
+    let (stack, entry) = overlay_join(
+      v,
+      fn(_) { self.close() },
+      fn() { !(self.now)() },
+      self.esc,
+      self.outside,
+      self.opener.val,
+    )
     look(v)
     v.focus_opens_first() |> ignore
     if self.opener.val is Some(o) {
       v.opened_by(ByNode(o.id())) |> ignore
-    }
-    let on_trigger = fn() {
-      match self.opener.val {
-        Some(o) => o.focused()
-        None => false
-      }
     }
     v
     .says(By(fn() { Some(@view.said(Dialog, label=label())) }))
@@ -130,30 +132,8 @@ pub fn Popover::content(
     .focusable(By(self.now), keys=0, tab=false)
     // (a press on its own ground its own, no press outside it)
     .on_drag(fn(_) {  })
-    .on_key(fn(k) {
-      if k.code == menu_key_escape &&
-        k.mods == 0 &&
-        self.esc &&
-        (self.now)() &&
-        (focus_in(v, true) || on_trigger()) {
-        (self.set)(false)
-        true
-      } else {
-        false
-      }
-    })
     |> ignore
-    if self.outside {
-      window_downs_while(v, self.now, fn(x, y) {
-        let on_opener = match self.opener.val {
-          Some(o) => press_on(o, x, y)
-          None => false
-        }
-        if !press_on(v, x, y) && !on_opener {
-          (self.set)(false)
-        }
-      })
-    }
+    overlay_wire_dismiss(v, stack, entry)
   })
 }
 

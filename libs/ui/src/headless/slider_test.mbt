@@ -82,3 +82,37 @@ test "slider_snap holds a value between its ends, on the nearest step from min" 
   assert_eq(@headless.slider_snap(98.0, 3.0, 100.0, 10.0), 100.0)
   assert_eq(@headless.slider_snap(12.5, 0.0, 100.0, 0.0), 12.5)
 }
+
+///|
+test "an RTL horizontal slider flips ←/→ stepping and horizontal drag mapping" {
+  let val = @signals.signal(50.0, same=fn(a : Double, b : Double) { a == b })
+  let told : Array[Double] = []
+  let t = window(fn(root) {
+    @headless.slider(
+      root,
+      fn() { "进度" },
+      fn() { val.get() },
+      min=0.0,
+      max=100.0,
+      step=10.0,
+      thumb_room=20.0,
+      rtl=true,
+      fn(next) {
+        told.push(next)
+        val.set(next)
+      },
+      fn(v, _) { v.width(Is(Some(220.0))).height(Is(Some(30.0))).ground(Is(c_rest)) |> ignore },
+    )
+    |> ignore
+  })
+  t.act(Slider, Focus, label="进度")
+  // Left increments (+10 -> 60), Right decrements (-10 -> 50)
+  t.key(@ui.key_code_left)
+  t.key(@ui.key_code_right)
+  // Press near left edge (x=30 -> raw=0.1 -> rtl=0.9 -> 90), near right edge (x=190 -> raw=0.9 -> rtl=0.1 -> 10)
+  t.press_at(30.0, 15.0)
+  t.release(30.0, 15.0)
+  t.press_at(190.0, 15.0)
+  t.release(190.0, 15.0)
+  assert_eq(told, [60.0, 50.0, 90.0, 10.0])
+}

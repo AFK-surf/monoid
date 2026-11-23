@@ -191,3 +191,73 @@ test "return_focus: closed, the focus goes to the node it names, not to what ope
   k.t.key(@ui.key_escape)
   assert_eq((k.closes.val, dialog_focus(k.t)), (1, "别处"))
 }
+
+///|
+test "nested Dialog + Popover on unified overlay stack: 1st Escape closes Popover alone, 2nd closes Dialog; clicking Dialog ground closes Popover alone" {
+  let dlg_open = @signals.signal(false)
+  let pop_open = @signals.signal(false)
+  let dlg_closes = Ref(0)
+  let pop = @headless.Popover::new(fn() { pop_open.get() }, fn(v) { pop_open.set(v) })
+  let size = fn(v : @view.View) { v.width(Is(Some(100.0))).height(Is(Some(36.0))) |> ignore }
+  let t = window(fn(root) {
+    @headless.button(root, fn() { "打开弹窗" }, fn(_) { dlg_open.set(true) }, fn(v, _) { size(v) }) |> ignore
+    root.show(fn() { dlg_open.get() }, leave=dialog_leave_ms, fn(s) {
+      @headless.dialog(
+        s,
+        fn() { "外层弹窗" },
+        fn() { dlg_open.get() },
+        fn() {
+          dlg_closes.val += 1
+          dlg_open.set(false)
+        },
+        fn(v, _) {
+          v
+          .over(Is(true))
+          .offset(Is((120.0, 20.0)))
+          .width(Is(Some(240.0)))
+          .height(Is(Some(220.0)))
+          .ground(Is(c_rest))
+          |> ignore
+          pop.trigger(v, fn() { "内层筛选" }, fn(b, _) { size(b) }) |> ignore
+          v.show(fn() { pop_open.get() }, leave=dialog_leave_ms, fn(ps) {
+            pop.content(ps, fn() { "内层浮层" }, fn(pv) {
+              pv
+              .over(Is(true))
+              .offset(Is((0.0, 44.0)))
+              .width(Is(Some(140.0)))
+              .height(Is(Some(80.0)))
+              .ground(Is(c_rest))
+              |> ignore
+              @headless.button(pv, fn() { "浮层项" }, fn(_) {  }, fn(b, _) { size(b) }) |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  // Open Dialog, then open Popover inside Dialog
+  t.click(Button, label="打开弹窗")
+  t.click(Button, label="内层筛选")
+  assert_eq((dlg_open.get(), pop_open.get()), (true, true))
+  // 1st Escape closes Popover ONLY; Dialog stays open
+  t.key(@ui.key_escape)
+  let after_esc1 = (pop_open.get(), dlg_open.get(), dlg_closes.val)
+  // 2nd Escape closes Dialog
+  t.key(@ui.key_escape)
+  let after_esc2 = (pop_open.get(), dlg_open.get(), dlg_closes.val)
+  t.run_for(dialog_leave_ms)
+  // Reopen both, then click on Dialog's own ground (outside Popover and its trigger) -> closes Popover ONLY
+  t.click(Button, label="打开弹窗")
+  t.click(Button, label="内层筛选")
+  let (dx, dy, dw, dh) = t.get(Dialog, label="外层弹窗").rect
+  t.tap(dx + dw - 10.0, dy + dh - 10.0)
+  let after_ground = (pop_open.get(), dlg_open.get(), dlg_closes.val)
+  assert_eq(
+    (after_esc1, after_esc2, after_ground),
+    ((false, true, 0), (false, false, 1), (false, true, 1)),
+  )
+}

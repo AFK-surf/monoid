@@ -51,6 +51,7 @@ pub struct RadioGroup[K] {
   priv choose : (K) -> Unit
   priv off : () -> Bool
   priv items : Array[GroupEntry[K]]
+  priv rove : RovingFocus
   priv building : Ref[Bool]
   priv stops : Array[(@view.View, () -> Unit)]
   // (the tab closed while the keyboard was on it and its key, the keyboard waiting to be handed on)
@@ -159,6 +160,7 @@ pub fn[K : Eq] radio_group(
   look : (@view.View, RadioGroup[K]) -> Unit,
   kind? : GroupKind = Radio,
   axis? : GroupAxis = Horizontal,
+  rtl? : Bool = false,
   shown? : () -> Bool = fn() { true },
   selected? : Bool = false,
   in_node? : Bool = false,
@@ -169,10 +171,11 @@ pub fn[K : Eq] radio_group(
 ) -> @view.View {
   let setup = fn(v : @view.View) {
     let items : Array[GroupEntry[K]] = []
+    let rove = RovingFocus::new(axis~, roving=false, wraps=true, rtl~)
     let building = Ref(true)
     let stops : Array[(@view.View, () -> Unit)] = []
     let refocus : Ref[(@view.View, K)?] = Ref(None)
-    let rg : RadioGroup[K] = { kind, selected, now: chosen, choose, off: disabled, items, building, stops, refocus }
+    let rg : RadioGroup[K] = { kind, selected, now: chosen, choose, off: disabled, items, rove, building, stops, refocus }
     look(v, rg)
     // (the keyboard handed on as the tab chosen after a close comes: its node made by then)
     if kind is Tab {
@@ -201,42 +204,19 @@ pub fn[K : Eq] radio_group(
       if disabled() || k.mods != 0 {
         return false
       }
-      let live = items.filter(fn(e) { e.node.alive() && !(e.off)() })
-      let n = live.length()
-      if n == 0 {
-        return false
-      }
-      let at = live.search_by(fn(e) { e.node.focused() })
-      guard at is Some(i) else { return false }
-      let prev = match axis {
-        Horizontal => k.code == group_key_left
-        Vertical => k.code == group_key_up
-        Both => k.code == group_key_left || k.code == group_key_up
-      }
-      let next = match axis {
-        Horizontal => k.code == group_key_right
-        Vertical => k.code == group_key_down
-        Both => k.code == group_key_right || k.code == group_key_down
-      }
-      let to = if prev {
-        Some((i + n - 1) % n)
-      } else if next {
-        Some((i + 1) % n)
-      } else if k.code == group_key_home {
-        Some(0)
-      } else if k.code == group_key_end {
-        Some(n - 1)
-      } else {
-        None
-      }
-      match to {
-        Some(j) => {
-          let target = live[j]
-          let next_key = (target.key)()
-          if !manual && next_key != chosen() {
-            choose(next_key)
+      match rove.step(k.code) {
+        Some(target_node) => {
+          if !manual {
+            match items.iter().find_first(fn(e) { e.node.id() == target_node.id() }) {
+              Some(target) => {
+                let next_key = (target.key)()
+                if next_key != chosen() {
+                  choose(next_key)
+                }
+              }
+              None => ()
+            }
           }
-          target.node.ask_focus(visible=true) |> ignore
           true
         }
         None => false
@@ -304,6 +284,7 @@ pub fn[K : Eq] RadioGroup::item(
     let able = fn() { !off() }
     let on = fn() { (self.now)() == key() }
     self.items.push({ node: v, key, off: disabled })
+    self.rove.add(v, disabled=off)
     v.owns(fn() {
       self.items.retain(fn(e) { e.node.id() != v.id() })
       self.stops.retain(fn(s) { s.0.id() != v.id() })

@@ -16,20 +16,23 @@ pub struct Tabs[K] {
   priv choose : (K) -> Unit
   priv manual : Bool
   priv axis : GroupAxis
+  priv rtl : Bool
   priv off : () -> Bool
 }
 
 ///|
 /// Tabs whose chosen tab is `chosen`'s, `choose` told the key chosen; `manual`: the keys move the focus alone, Space
-/// or Enter choosing; `axis` which arrow keys go along its list; `disabled` while none of its tabs takes a press.
+/// or Enter choosing; `axis` which arrow keys go along its list; `rtl`: flip horizontal arrow keys (`←`/`→`);
+/// `disabled` while none of its tabs takes a press.
 pub fn[K] Tabs::new(
   chosen : () -> K,
   choose : (K) -> Unit,
   manual? : Bool = false,
   axis? : GroupAxis = Horizontal,
+  rtl? : Bool = false,
   disabled? : () -> Bool = fn() { false },
 ) -> Tabs[K] {
-  { chosen, choose, manual, axis, off: disabled }
+  { chosen, choose, manual, axis, rtl, off: disabled }
 }
 
 ///|
@@ -58,6 +61,7 @@ pub fn[K : Eq] Tabs::list(
     look,
     kind=Tab,
     axis=self.axis,
+    rtl=self.rtl,
     disabled=self.off,
     manual=self.manual,
     made_for=made_for.unwrap_or(loc),
