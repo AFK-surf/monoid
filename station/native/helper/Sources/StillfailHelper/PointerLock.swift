@@ -5,9 +5,10 @@
 //   - the pointer jumped 8 points or more as it was hidden, with no move event (the app warped it to its centre);
 //   - it stays within a point of one place, inside a display, while move events keep coming (the app pulls it back);
 //   - the viewer's own moves keep coming while it stays hidden (what this view posts, the moves above cannot tell).
-// Looked at every 50 ms on the main thread with public calls only (whether the pointer is shown, the session's move
-// count, where it is, the frontmost app); why it is hidden is not had (macOS says it nowhere public), so it is
-// unknown, which counts as hidden. The detectors are pure (tests: PointerLockTests.swift).
+// Looked at every 50 ms on the main thread (whether the pointer is shown and why, the session's move count, where it
+// is, the frontmost app): SkyLight's scoreboard tells an app hiding the pointer (`NSCursor.hide`,
+// `CGDisplayHideCursor`) apart from typing obscuring it (`NSCursor.setHiddenUntilMouseMoves(true)`, which posted
+// `CGEvent`s never clear). The detectors are pure (tests: PointerLockTests.swift).
 import AppKit
 import CoreGraphics
 import Foundation
@@ -77,7 +78,7 @@ struct PointerLockDetector {
     if !effective { warped = false }
     if !stationary || !effective || !s.interior {
       stillSince = at
-      anchor = (s.x, s.y)
+      anchor = effective && s.interior ? (s.x, s.y) : nil
       moves = 0
     } else if let p = last, p.motionSerial != s.motionSerial {
       moves += 1
@@ -103,6 +104,7 @@ struct PointerLockDetector {
 /// where the person's pointer is (an app pulling it back is undone by the next of them).
 struct RemoteMoveDetector {
   private(set) var locked = false
+  private var lastHidden = false
   private var firstMove: Double?
   private var moves = 0
   private var releaseSince: Double?
@@ -114,6 +116,7 @@ struct RemoteMoveDetector {
 
   /// One of the viewer's moves posted (non-zero, finite), at `at` ms.
   mutating func moved(at: Double) {
+    guard lastHidden else { return }
     if firstMove == nil { firstMove = at }
     moves += 1
   }
@@ -130,11 +133,13 @@ struct RemoteMoveDetector {
     }
     self.foreground = foreground
     if !hidden || appHidden == false {
+      lastHidden = false
       physical()
       if releaseSince == nil { releaseSince = at }
       if locked && at - releaseSince! >= PointerLockDetector.exitMs { locked = false }
       return locked
     }
+    lastHidden = true
     releaseSince = nil
     if let first = firstMove, moves >= 1, at - first >= PointerLockDetector.enterMs { locked = true }
     return locked
@@ -144,11 +149,46 @@ struct RemoteMoveDetector {
 /// A view's watch of the pointer: sampled every 50 ms on the main thread while the view lasts, said as it changes.
 final class PointerLockWatch {
   static let interval = 0.05
-  /// The pointer's visibility as Core Graphics says it (deprecated, with no public replacement; found at run time so
-  /// the build says nothing of it): nil where it is not had.
-  private static let cursorIsVisible: (@convention(c) () -> Int32)? = {
+  /// What `CGCursorIsVisible` reads in SkyLight's shared scoreboard: the first byte is 1 while an app hides the
+  /// pointer (`NSCursor.hide`, `CGDisplayHideCursor`), the second while typing obscures it until a physical mouse
+  /// moves (`NSCursor.setHiddenUntilMouseMoves(true)`, which posted `CGEvent`s never clear). Decoded from
+  /// `CGCursorIsVisible` itself so its offsets follow the system's; nil where `CGCursorIsVisible` is not had.
+  private static let cursorState: (() -> (hidden: Bool, appHidden: Bool?))? = {
     guard let f = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGCursorIsVisible") else { return nil }
-    return unsafeBitCast(f, to: (@convention(c) () -> Int32).self)
+    let visible = unsafeBitCast(f, to: (@convention(c) () -> Int32).self)
+    #if arch(arm64)
+    let base = Int(bitPattern: f)
+    let insns = UnsafePointer<UInt32>(OpaquePointer(f))
+    var target: Int?
+    var offsets: [Int] = []
+    for i in 0..<20 {
+      let insn = insns[i]
+      if target == nil, (insn & 0xfc00_0000) == 0x9400_0000 {
+        let imm = Int32(bitPattern: (insn & 0x03ff_ffff) << 6) >> 4
+        target = base + i * 4 + Int(imm)
+      }
+      if (insn & 0xffc0_0000) == 0x3940_0000 {
+        offsets.append(Int((insn >> 10) & 0xfff))
+      }
+      if insn == 0xd65f_03c0 || insn == 0xd65f_0fff { break }
+    }
+    if let target, offsets.count == 2, offsets[0] != offsets[1],
+      let p = UnsafeRawPointer(bitPattern: target)
+    {
+      let scoreboard = unsafeBitCast(p, to: (@convention(c) () -> UnsafePointer<UnsafePointer<UInt8>>?).self)
+      let appOff = offsets[0], typingOff = offsets[1]
+      if scoreboard() != nil {
+        return {
+          guard let sb = scoreboard() else { return (visible() == 0, nil) }
+          let sh = sb.pointee
+          let byApp = (sh[appOff] & 1) != 0
+          let byTyping = (sh[typingOff] & 1) != 0
+          return (byApp || byTyping, byApp ? true : (byTyping ? false : nil))
+        }
+      }
+    }
+    #endif
+    return { (visible() == 0, nil) }
   }()
 
   let channel: Channel
@@ -173,7 +213,7 @@ final class PointerLockWatch {
   }
 
   func begin() {
-    guard Self.cursorIsVisible != nil else { return }
+    guard Self.cursorState != nil else { return }
     let t = DispatchSource.makeTimerSource(queue: .main)
     t.schedule(deadline: .now() + Self.interval, repeating: Self.interval, leeway: .milliseconds(5))
     t.setEventHandler { [weak self] in self?.look() }
@@ -188,7 +228,8 @@ final class PointerLockWatch {
 
   /// What the pointer is now.
   static func sample() -> PointerSample? {
-    guard let visible = cursorIsVisible, let at = CGEvent(source: nil)?.location else { return nil }
+    guard let state = cursorState, let at = CGEvent(source: nil)?.location else { return nil }
+    let (hidden, appHidden) = state()
     let types: [CGEventType] = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
     let serial = types.reduce(UInt32(0)) { $0 &+ CGEventSource.counterForEventType(.combinedSessionState, eventType: $1) }
     var count: UInt32 = 0
@@ -199,7 +240,7 @@ final class PointerLockWatch {
       return at.x > b.minX + 8 && at.x < b.maxX - 8 && at.y > b.minY + 8 && at.y < b.maxY - 8
     }
     let front = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
-    return PointerSample(hidden: visible() == 0, appHidden: nil, x: at.x, y: at.y, motionSerial: serial, foreground: front, interior: interior)
+    return PointerSample(hidden: hidden, appHidden: appHidden, x: at.x, y: at.y, motionSerial: serial, foreground: front, interior: interior)
   }
 
   private func look() {

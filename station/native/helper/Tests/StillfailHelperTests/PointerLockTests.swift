@@ -131,10 +131,33 @@ func theViewersOwnMovesWhileHiddenHoldIt() {
   // hidden only by typing: never
   r.moved(at: 700)
   #expect(!r.take(hidden: true, appHidden: false, foreground: 1, at: 900))
+  // a move while shown or hidden only by typing never counts once an app hides it later
+  r.moved(at: 920)
+  #expect(!r.take(hidden: true, appHidden: nil, foreground: 1, at: 950))
+  #expect(!r.take(hidden: true, appHidden: nil, foreground: 1, at: 1100))
   // another app in front: forgotten
-  r.moved(at: 950)
-  _ = r.take(hidden: true, appHidden: nil, foreground: 1, at: 960)
-  #expect(!r.take(hidden: true, appHidden: nil, foreground: 2, at: 1100))
+  r.moved(at: 1110)
+  #expect(!r.take(hidden: true, appHidden: nil, foreground: 2, at: 1250))
+}
+
+@Test
+func aMoveBeforeHidingCountsForNothingWhenHeldStillAfter() {
+  let d = Passive()
+  #expect(!d.take(s(hidden: false, x: 500, y: 400, serial: 5), eligible: true, at: 0))
+  // moved slightly while still shown, then hidden (as typing hides it after the pointer stops): no move while hidden
+  for t in stride(from: 50.0, through: 500, by: 50) {
+    #expect(!d.take(s(hidden: true, x: 500.5, y: 400, serial: 6), eligible: true, at: t))
+  }
+}
+
+@Test
+func sampleReadsCursorVisibilityAndTypingObscureState() {
+  if let sample = PointerLockWatch.sample() {
+    // When hidden on macOS, SkyLight's scoreboard says whether an app hid it (true) or typing obscured it (false).
+    if sample.hidden {
+      #expect(sample.appHidden != nil)
+    }
+  }
 }
 
 @Test
