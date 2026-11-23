@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [21a57831d](https://github.com/AFK-surf/monoid/commit/21a57831d4729563cfc2cc9930d433fdb581e2a4) perf(ui,mbui): reduce side-panel slide frame cost  | 2.73 | 3.68 | 14.91 | 37.08 | 56.8 | 32.48 | 65.96 | 100.42 | 137.83 |
 | [84566e834](https://github.com/AFK-surf/monoid/commit/84566e834def6737fddc28b5d8ea9b85e2a00fe8) fix(station): include check-discovered models in M | 2.73 | 3.68 | 14.91 | 37.08 | 56.79 | 32.48 | 65.96 | 100.19 | 110.17 |
 | [8ac524d7f](https://github.com/AFK-surf/monoid/commit/8ac524d7f847da4e3ed251be1524f9e3d826cd18) feat(pion-rules): add #verify and zero-sorry Lean  | 2.73 | 3.68 | 14.9 | 37.06 | 56.76 | 32.47 | 65.92 | 100.45 | 122.88 |
 | [d1826a13e](https://github.com/AFK-surf/monoid/commit/d1826a13e087adc3687732c639f2f0221eb26167) fix(e2e): end the fake claude's turn on a remote t | 2.73 | 3.68 | 14.9 | 37.06 | 56.76 | 32.47 | 65.92 | 101.02 | 121.62 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7d9e74f86](https://github.com/AFK-surf/monoid/commit/7d9e74f862354a8966b26d7e03319dca6adbf84a) fix(ui): draw every divider as one faint hairline  | 2.72 | 3.66 | 14.83 | 36.98 | 56.52 | 32.4 | 65.72 | 100.32 | 122.22 |
 | [1bf564378](https://github.com/AFK-surf/monoid/commit/1bf56437819de805cda39e0c38e189ece698ab19) fix(station): keep agents running when the MoonBit | 2.72 | 3.66 | 14.84 | 36.98 | 56.53 | 32.4 | 65.72 | 100.37 | 133.56 |
 | [f3b71325f](https://github.com/AFK-surf/monoid/commit/f3b71325fba232cdf905c5f5bd291f53433d44fc) fix(station): see swapping on macOS, queue agents' | 2.72 | 3.66 | 14.84 | 36.98 | 56.53 | 32.4 | 65.72 | 100.37 | 133.56 |
-| [173adaba9](https://github.com/AFK-surf/monoid/commit/173adaba94fd90ee090d487867c2ace8bd4fe610) fix(core): keep every endpoint's credential and as | 2.72 | 3.66 | 14.84 | 36.98 | 56.53 | 32.4 | 65.72 | 100.37 | 133.56 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [21a57831d](https://github.com/AFK-surf/monoid/commit/21a57831d4729563cfc2cc9930d433fdb581e2a4) perf(ui,mbui): reduce side-panel slide frame cost  | 0.49 | 0.64 | 2.45 | 3.51 | 5.83 | 1.8 | 4.85 | 55.2 |
 | [84566e834](https://github.com/AFK-surf/monoid/commit/84566e834def6737fddc28b5d8ea9b85e2a00fe8) fix(station): include check-discovered models in M | 0.49 | 0.64 | 2.45 | 3.51 | 5.83 | 1.8 | 4.85 | 55.58 |
 | [8ac524d7f](https://github.com/AFK-surf/monoid/commit/8ac524d7f847da4e3ed251be1524f9e3d826cd18) feat(pion-rules): add #verify and zero-sorry Lean  | 0.49 | 0.64 | 2.45 | 3.5 | 5.81 | 1.79 | 4.83 | 55.22 |
 | [d1826a13e](https://github.com/AFK-surf/monoid/commit/d1826a13e087adc3687732c639f2f0221eb26167) fix(e2e): end the fake claude's turn on a remote t | 0.49 | 0.64 | 2.45 | 3.51 | 5.83 | 1.8 | 4.85 | 55.1 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7d9e74f86](https://github.com/AFK-surf/monoid/commit/7d9e74f862354a8966b26d7e03319dca6adbf84a) fix(ui): draw every divider as one faint hairline  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.17 |
 | [1bf564378](https://github.com/AFK-surf/monoid/commit/1bf56437819de805cda39e0c38e189ece698ab19) fix(station): keep agents running when the MoonBit | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.07 |
 | [f3b71325f](https://github.com/AFK-surf/monoid/commit/f3b71325fba232cdf905c5f5bd291f53433d44fc) fix(station): see swapping on macOS, queue agents' | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.18 |
-| [173adaba9](https://github.com/AFK-surf/monoid/commit/173adaba94fd90ee090d487867c2ace8bd4fe610) fix(core): keep every endpoint's credential and as | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.12 |
