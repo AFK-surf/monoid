@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fa4a7932a](https://github.com/AFK-surf/monoid/commit/fa4a7932a21a20eed0491f0ac22d7aefdc87cb97) fix(ui): anchor incoming list blocks at viewport t | 2.72 | 3.66 | 14.83 | 36.98 | 56.52 | 32.4 | 65.72 | 100.35 | 125.34 |
 | [7d9e74f86](https://github.com/AFK-surf/monoid/commit/7d9e74f862354a8966b26d7e03319dca6adbf84a) fix(ui): draw every divider as one faint hairline  | 2.72 | 3.66 | 14.83 | 36.98 | 56.52 | 32.4 | 65.72 | 100.32 | 122.22 |
 | [1bf564378](https://github.com/AFK-surf/monoid/commit/1bf56437819de805cda39e0c38e189ece698ab19) fix(station): keep agents running when the MoonBit | 2.72 | 3.66 | 14.84 | 36.98 | 56.53 | 32.4 | 65.72 | 100.37 | 133.56 |
 | [f3b71325f](https://github.com/AFK-surf/monoid/commit/f3b71325fba232cdf905c5f5bd291f53433d44fc) fix(station): see swapping on macOS, queue agents' | 2.72 | 3.66 | 14.84 | 36.98 | 56.53 | 32.4 | 65.72 | 100.37 | 133.56 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [02f41fec5](https://github.com/AFK-surf/monoid/commit/02f41fec50cc59a564b150a7c47cecc848edc501) feat(sf-ui): align segmented and slider liquid gla | 2.71 | 3.65 | 14.81 | 36.92 | 56.41 | 32.35 | 65.64 | 99.6 | 128.73 |
 | [ba6e9abbf](https://github.com/AFK-surf/monoid/commit/ba6e9abbfd3cc643cc3d6ee825df237c528e61f5) fix(cloud): give the web.json put its Cloudflare a | 2.71 | 3.65 | 14.81 | 36.93 | 56.42 | 32.36 | 65.64 | 99.63 | 131.04 |
 | [f43ce757d](https://github.com/AFK-surf/monoid/commit/f43ce757d63053878134d6c1218711955822c7da) refactor(sf-ui): move the bottom bar's glass onto  | 2.7 | 3.64 | 14.76 | 36.86 | 56.21 | 32.3 | 65.46 | 99.53 | 117.37 |
-| [3e63fed71](https://github.com/AFK-surf/monoid/commit/3e63fed71c7e6870293138e275744584ccdbdbb4) fix(mbui): run switches tests through a core-sized | 2.7 | 3.64 | 14.76 | 36.86 | 56.21 | 32.3 | 65.46 | 99.45 | 122.56 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fa4a7932a](https://github.com/AFK-surf/monoid/commit/fa4a7932a21a20eed0491f0ac22d7aefdc87cb97) fix(ui): anchor incoming list blocks at viewport t | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.18 |
 | [7d9e74f86](https://github.com/AFK-surf/monoid/commit/7d9e74f862354a8966b26d7e03319dca6adbf84a) fix(ui): draw every divider as one faint hairline  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.17 |
 | [1bf564378](https://github.com/AFK-surf/monoid/commit/1bf56437819de805cda39e0c38e189ece698ab19) fix(station): keep agents running when the MoonBit | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.07 |
 | [f3b71325f](https://github.com/AFK-surf/monoid/commit/f3b71325fba232cdf905c5f5bd291f53433d44fc) fix(station): see swapping on macOS, queue agents' | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.18 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [02f41fec5](https://github.com/AFK-surf/monoid/commit/02f41fec50cc59a564b150a7c47cecc848edc501) feat(sf-ui): align segmented and slider liquid gla | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
 | [ba6e9abbf](https://github.com/AFK-surf/monoid/commit/ba6e9abbfd3cc643cc3d6ee825df237c528e61f5) fix(cloud): give the web.json put its Cloudflare a | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
 | [f43ce757d](https://github.com/AFK-surf/monoid/commit/f43ce757d63053878134d6c1218711955822c7da) refactor(sf-ui): move the bottom bar's glass onto  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
-| [3e63fed71](https://github.com/AFK-surf/monoid/commit/3e63fed71c7e6870293138e275744584ccdbdbb4) fix(mbui): run switches tests through a core-sized | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
