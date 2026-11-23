@@ -44,7 +44,7 @@ pub fn InlineEdit::new(
   cancel_if_empty? : Bool = false,
   cancel_if_unchanged? : Bool = false,
   start_editing? : Bool = false,
-  commit_on_outside_press? : Bool = true,
+  commit_on_outside_press? : Bool = false,
 ) -> InlineEdit {
   {
     value_: value,
@@ -246,7 +246,7 @@ pub fn InlineEdit::editor(self : InlineEdit, v : @view.View) -> Unit {
   if self.commit_on_outside_press_ {
     window_downs_while(v, fn() { self.editing_.get() }, fn(x, y) {
       let (left, top, w, h) = v.placed_window_now()
-      if x < left || x >= left + w || y < top || y >= top + h {
+      if w > 0.0 && h > 0.0 && (x < left || x >= left + w || y < top || y >= top + h) {
         v.focus_let_go()
         if self.editing_.untracked() {
           if self.submit_on_blur_ {

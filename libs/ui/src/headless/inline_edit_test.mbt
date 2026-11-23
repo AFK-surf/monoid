@@ -220,4 +220,33 @@ test "InlineEdit: trim, cancel_if_empty, cancel_if_unchanged, start_editing, out
   assert_eq(after_empty, (false, [], 1))
   assert_eq(after_unchanged, (false, [], 2))
   assert_eq(after_outside, (false, "新名", ["新名"], 2))
+
+  // Default commit_on_outside_press=false with submit_on_blur=false: tapping blank area does NOT cancel via
+  // window_downs_while (isolate from node blur by making editor wrapper non-focusable, as when a child field owns focus).
+  let val3 = @signals.signal("保留")
+  let cancels3 = Ref(0)
+  let ie3 = @headless.InlineEdit::new(
+    fn() { val3.get() },
+    fn(v) { val3.set(v) },
+    on_cancel=fn() { cancels3.val += 1 },
+    submit_on_blur=false,
+  )
+  let t3 = window(fn(root) {
+    root.box(fn(v) {
+      v
+      .width(Is(Some(160.0)))
+      .height(Is(Some(32.0)))
+      .ground(Is(c_rest))
+      .says(By(fn() { Some(@view.said(TextField, label="默认外点不取消", value=ie3.draft())) }))
+      |> ignore
+      ie3.editor(v)
+      v.focusable(Is(false)) |> ignore
+    })
+    |> ignore
+  })
+  ie3.start()
+  t3.draw()
+  ie3.set_draft("草稿中")
+  t3.tap(300.0, 200.0)
+  assert_eq((ie3.editing(), ie3.draft(), cancels3.val), (true, "草稿中", 0))
 }

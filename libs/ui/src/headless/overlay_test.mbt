@@ -285,7 +285,6 @@ test "overlay: before_dismiss, keeps, initial_focus, in_node, and bring_to_top o
     })
     |> ignore
     root.box(fn(layer2) {
-      let second_target : Ref[@view.View?] = Ref(None)
       @headless.overlay(
         layer2,
         fn(how) { ov2_dismissed.push(how) },
@@ -307,10 +306,10 @@ test "overlay: before_dismiss, keeps, initial_focus, in_node, and bring_to_top o
             b.width(Is(Some(80.0))).height(Is(Some(30.0))) |> ignore
           })
           |> ignore
-          let b2 = @headless.button(v, fn() { "按钮乙" }, fn(_) {  }, fn(b, _) {
+          @headless.button(v, fn() { "按钮乙" }, fn(_) {  }, fn(b, _) {
             b.width(Is(Some(80.0))).height(Is(Some(30.0))) |> ignore
           })
-          second_target.val = Some(b2)
+          |> ignore
         },
       )
       |> ignore
@@ -344,15 +343,43 @@ test "overlay: before_dismiss, keeps, initial_focus, in_node, and bring_to_top o
 
 ///|
 test "overlay: initial_focus targets specific child and dialog forwards before_dismiss" {
+  // Part 1: overlay with explicit initial_focus focuses the second button instead of the first.
+  let ov_open = @signals.signal(false)
+  let t0 = window(fn(root) {
+    @headless.button(root, fn() { "打开层" }, fn(_) { ov_open.set(true) }, fn(v, _) {
+      v.width(Is(Some(100.0))).height(Is(Some(32.0))) |> ignore
+    })
+    |> ignore
+    root.show(at_once=true, fn() { ov_open.get() }, fn(layer) {
+      layer.over(Is(true)).width(Is(Some(180.0))).height(Is(Some(120.0))).ground(Is(c_rest)) |> ignore
+      @headless.button(layer, fn() { "第一按钮" }, fn(_) {  }, fn(b, _) {
+        b.width(Is(Some(80.0))).height(Is(Some(30.0))) |> ignore
+      })
+      |> ignore
+      let second = @headless.button(layer, fn() { "第二按钮" }, fn(_) {  }, fn(b, _) {
+        b.width(Is(Some(80.0))).height(Is(Some(30.0))) |> ignore
+      })
+      @headless.overlay(
+        layer,
+        fn(_) { ov_open.set(false) },
+        modal=true,
+        initial_focus=second,
+        in_node=true,
+        label=fn() { "定点焦点层" },
+        fn(_, _) {  },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t0.click(Button, label="打开层")
+  assert_eq(ov_focus(t0), "第二按钮")
+
+  // Part 2: dialog forwards before_dismiss and leaves_typing.
   let open = @signals.signal(true)
   let blocked = Ref(true)
   let dlg_closes = Ref(0)
-  let target_ref : Ref[@view.View?] = Ref(None)
   let t = window(fn(root) {
-    let b = @headless.button(root, fn() { "指定焦点" }, fn(_) {  }, fn(v, _) {
-      v.width(Is(Some(100.0))).height(Is(Some(32.0))) |> ignore
-    })
-    target_ref.val = Some(b)
     root.show(at_once=true, fn() { open.get() }, fn(s) {
       @headless.dialog(
         s,

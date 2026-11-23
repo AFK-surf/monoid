@@ -308,7 +308,7 @@ pub fn overlay(
   before_dismiss? : (OverlayDismiss) -> Bool,
   keeps? : () -> Array[@view.View],
   leaves_typing? : Bool = false,
-  held_back_goes_on? : Bool = true,
+  held_back_goes_on? : Bool = false,
   first_takes? : (@view.Said) -> Bool,
   initial_focus? : @view.View,
   in_node? : Bool = false,
