@@ -321,22 +321,34 @@ switch ("$($a[0]) $($a[1])".Trim()) {
     exit 0
   }
   { $a[0] -eq 'admin' } {
+    # As bin/stillfail's: Node's admin CLI (station\admin-cli.js in a release, bin\admin-cli.ts in a clone), which reads
+    # STILLFAIL_DATA and takes no --data; the MoonBit reader's port only with STILLFAIL_ADMIN_ENGINE=moonbit, or where
+    # there is no Node or no admin CLI.
     $env:STILLFAIL_DATA = $data
+    $env:STILLFAIL_CMD = (Split-Path -Leaf $own).TrimStart('.')
     $rest = if ($a.Count -gt 1) { $a[1..($a.Count - 1)] } else { @() }
     $reader = if ($env:STILLFAIL_MB_READER) { $env:STILLFAIL_MB_READER } else { Join-Path $here 'station\stillfail-reader.exe' }
+    $engine = if ($env:STILLFAIL_ADMIN_ENGINE) { $env:STILLFAIL_ADMIN_ENGINE } else { '' }
+    if ($engine -notin '', 'node', 'moonbit') { [Console]::Error.WriteLine("stillfail admin: STILLFAIL_ADMIN_ENGINE must be node or moonbit, not $engine"); exit 2 }
+    if ($engine -ne 'moonbit') {
+      $node = if ($env:STILLFAIL_NODE) { $env:STILLFAIL_NODE } else { Join-Path $here 'node\node.exe' }
+      if (-not (Test-Path -LiteralPath $node)) { $cmd = Get-Command node -ErrorAction SilentlyContinue; $node = if ($cmd) { $cmd.Source } else { $null } }
+      $built = Join-Path $here 'station\admin-cli.js'
+      $src = Join-Path $here 'bin\admin-cli.ts'
+      $entry = if (Test-Path -LiteralPath $built) { $built } elseif (Test-Path -LiteralPath $src) { $src } else { $null }
+      if ($node -and $entry) {
+        & $node $entry @rest
+        exit $LASTEXITCODE
+      }
+      if ($engine -eq 'node') { [Console]::Error.WriteLine("stillfail admin: STILLFAIL_ADMIN_ENGINE=node, but no Node with admin-cli in $here\station or $here\bin (unset it to use $reader)"); exit 1 }
+    }
     if (Test-Path -LiteralPath $reader) {
       & $reader admin @rest --data $data
       exit $LASTEXITCODE
     }
-    $node = if ($env:STILLFAIL_NODE) { $env:STILLFAIL_NODE } else { Join-Path $here 'node\node.exe' }
-    if (-not (Test-Path -LiteralPath $node)) { $cmd = Get-Command node -ErrorAction SilentlyContinue; $node = if ($cmd) { $cmd.Source } else { $null } }
-    if (-not $node) { [Console]::Error.WriteLine('stillfail admin: node not found'); exit 1 }
-    $built = Join-Path $here 'station\admin-cli.js'
-    $src = Join-Path $here 'bin\admin-cli.ts'
-    $entry = if (Test-Path -LiteralPath $built) { $built } elseif (Test-Path -LiteralPath $src) { $src } else { $null }
-    if (-not $entry) { [Console]::Error.WriteLine("stillfail admin: admin-cli not found in $here\station or $here\bin"); exit 1 }
-    & $node $entry @rest
-    exit $LASTEXITCODE
+    if ($engine -eq 'moonbit') { [Console]::Error.WriteLine("stillfail admin: STILLFAIL_ADMIN_ENGINE=moonbit, but $reader is not there (unset it to use Node's admin-cli)") }
+    else { [Console]::Error.WriteLine("stillfail admin: neither Node with admin-cli (in $here\station or $here\bin) nor $reader is here; reinstall still.fail") }
+    exit 1
   }
   default { [Console]::Error.WriteLine($usage); exit 2 }
 }
