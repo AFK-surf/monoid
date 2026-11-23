@@ -8,7 +8,25 @@ fn init {
 }
 
 ///|
-let rk_reply : String = "为啥不做成大圆角"
+let rk_reply : String = "发布前再看一眼签名"
+
+///|
+let rk_settle_extra_ms : Double = 300.0
+
+///|
+let rk_wheel_step_ms : Double = 50.0
+
+///|
+let rk_core_echo_ms : Double = 1.0
+
+///|
+let rk_post_ack_ms : Double = 111.0
+
+///|
+let rk_overlap_gap_ms : Double = 17.0
+
+///|
+let rk_scroll_step_ms : Double = 30.0
 
 ///|
 let rk_replied : String = "你 回复了"
@@ -200,10 +218,10 @@ fn rk_open(last_turn_id : String) -> (@ui.Tester, RkHeld) {
     { "path": ["messages"], "key": ["seq", "outgoing"], "put": rk_m337_json(false) },
     { "path": ["agents"], "set": Json::array([rk_agent_json("idle", last_turn_id)]) },
   ])
-  t.run_for(@ui.move_most_ms + 300.0)
+  t.run_for(@ui.move_most_ms + rk_settle_extra_ms)
   for _ in 0..<25 {
     t.wheel(700.0, 400.0, 600.0)
-    t.run_for(50.0)
+    t.run_for(rk_wheel_step_ms)
   }
   t.run_for(@ui.move_most_ms)
   (t, held)
@@ -236,7 +254,7 @@ test "reply stays drawn once after outbox/messages overlap and scroll remount" {
   t.tap(fx + fw / 2.0, fy + fh / 2.0)
   t.type_text(rk_reply)
   t.key(@ui.key_code_enter)
-  t.run_for(1.0)
+  t.run_for(rk_core_echo_ms)
   rk_change(held, [
     { "path": ["outbox"], "set": Json::array([rk_out1_json(Json::null())]) },
     { "path": ["agents"], "set": Json::array([rk_agent_json("queued", "")]) },
@@ -251,26 +269,26 @@ test "reply stays drawn once after outbox/messages overlap and scroll remount" {
     },
   ])
   t.draw()
-  t.run_for(111.0)
+  t.run_for(rk_post_ack_ms)
   rk_change(held, [{ "path": ["outbox"], "set": Json::array([rk_out1_json(Json::number(338.0))]) }])
   t.draw()
-  t.run_for(1.0)
+  t.run_for(rk_core_echo_ms)
   // Same-frame overlap: m338 enters messages while out-1 is still in outbox
   rk_change(held, [{ "path": ["messages"], "key": ["seq", "outgoing"], "put": rk_m338_json() }])
   t.draw()
-  t.run_for(17.0)
+  t.run_for(rk_overlap_gap_ms)
   // Next frame: outbox clears
   rk_change(held, [{ "path": ["outbox"], "set": Json::array([]) }])
   t.draw()
-  t.run_for(@ui.move_most_ms + 300.0)
+  t.run_for(@ui.move_most_ms + rk_settle_extra_ms)
   // Scroll far up and back to bottom to force slot unmount + remount
   for _ in 0..<15 {
     t.wheel(700.0, 400.0, -800.0)
-    t.run_for(30.0)
+    t.run_for(rk_scroll_step_ms)
   }
   for _ in 0..<25 {
     t.wheel(700.0, 400.0, 800.0)
-    t.run_for(30.0)
+    t.run_for(rk_scroll_step_ms)
   }
   t.run_for(@ui.move_most_ms)
   let seen = rk_reply_drawn()
@@ -290,7 +308,7 @@ test "agent working row stays visible when replying after an ending turn (with o
     // t=0ms: reply row + optimistic working row (before_count + 2)
     let c0 = rk_chat_list().unwrap().count
     assert_eq(c0, before_count + 2, msg="turn=\{turn_id} t=0ms: expected reply + working row")
-    t.run_for(1.0)
+    t.run_for(rk_core_echo_ms)
     // t=1ms: core sends outbox + agent queued with unchanged lastTurn
     rk_change(held, [
       { "path": ["outbox"], "set": Json::array([rk_out1_json(Json::null())]) },
@@ -308,7 +326,7 @@ test "agent working row stays visible when replying after an ending turn (with o
     t.draw()
     let c1 = rk_chat_list().unwrap().count
     assert_eq(c1, before_count + 2, msg="turn=\{turn_id} t=1ms: working row vanished when status became queued")
-    t.run_for(500.0)
+    t.run_for(@ui.move_most_ms)
     let c500 = rk_chat_list().unwrap().count
     assert_eq(c500, before_count + 2, msg="turn=\{turn_id} t=500ms: working row vanished")
   }
