@@ -108,6 +108,35 @@ async function rig(o: { approval?: string; data?: string; store?: Store; quota?:
 }
 
 describe("the accounts routes", { concurrency: true }, () => {
+  test("devices asking a profile's check at once share one probe; one asked after it ends probes again", async () => {
+    let probes = 0;
+    let release!: () => void;
+    let gate = new Promise<void>((r) => (release = r));
+    const t = await rig({ check: async () => { probes++; await gate; return { state: "ok", detail: "fake", models: [], checkedAt: 0 }; } });
+    try {
+      await settle();
+      const before = probes;
+      const asked = Array.from({ length: 20 }, () => t.call("POST", "/profiles/cc/check"));
+      await until(() => probes > before, "the probe started");
+      release();
+      const answers = await Promise.all(asked);
+      assert.deepEqual(new Set(answers.map((a) => a[0])), new Set([200]));
+      assert.equal(probes - before, 1, "20 devices asking at once probe the provider once");
+      assert.equal((await t.call("POST", "/profiles/cc/check"))[0], 200);
+      assert.equal(probes - before, 2, "asked again after it ended, it is probed again");
+      // A station's own checks (after a sign-in, a refusal) never take the answer of one a device asked.
+      gate = new Promise<void>((r) => (release = r));
+      const device = t.call("POST", "/profiles/cc/check");
+      await until(() => probes - before === 3, "the device's probe started");
+      const own = t.accounts.check("cc");
+      await until(() => probes - before === 4, "the station's own probe started apart");
+      release();
+      await Promise.all([device, own]);
+    } finally {
+      t.close();
+    }
+  });
+
   test("an API key can be disabled and re-enabled without losing the key or its settings", async () => {
     const moved: string[] = [];
     let checks = 0;

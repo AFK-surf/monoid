@@ -284,7 +284,7 @@ fn P53Accounts::attach(self : P53Accounts) -> Unit {
       meth: "POST",
       path: "/profiles/:id/check",
       answer: async fn(r) {
-        let res = a(r).0.check(id_of(r), lang_of(r))
+        let res = a(r).0.asked_check(id_of(r), lang_of(r))
         if !bus.as_rig() {
           bus.hub_refresh_config() catch {
             _ => ()

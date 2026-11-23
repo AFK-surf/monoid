@@ -143,7 +143,7 @@ export const routes = ({ accounts, sharing, overview, policies }: AccountsRouteD
     ),
     // Each account's last hours, as the Profile overview draws them (accounts/pace.ts): read as it is shown.
     route("GET", /^\/*profiles\/+pace\/*$/, (r) => answer((a) => ok(a.paceView(r.viewer)))),
-    route("POST", /^\/*profiles\/+([^/]+)\/+check(?:\/.*)?$/, (r, [id]) => answer(async (a) => ok(await a.check(segment(id!), r.lang)))),
+    route("POST", /^\/*profiles\/+([^/]+)\/+check(?:\/.*)?$/, (r, [id]) => answer(async (a) => ok(await a.askedCheck(segment(id!), r.lang)))),
     route("GET", /^\/*profiles\/+([^/]+)\/+fusion(?:\/.*)?$/, (_r, [id]) => answer((a) => ok({ fusion: a.fusionView(segment(id!)) }))),
     route("POST", /^\/*profiles\/+([^/]+)\/+reset-quota(?:\/.*)?$/, (r, [id]) =>
       answer(async (a) => {

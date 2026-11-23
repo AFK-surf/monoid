@@ -257,6 +257,8 @@ export class Accounts {
   private checks = new Map<string, ProfileCheck>();
   private quotas = new Map<string, ProfileQuota>();
   private quotaBusy = new Map<string, Promise<void>>();
+  /// The checks devices asked that are under way, by what was asked (`askedCheck`).
+  private checksAsked = new Map<string, Promise<ProfileCheck>>();
   /// The profiles whose allowance was last asked without an answer while the one read before stood: what was said of
   /// it (told to a person who asks it again: askedQuota) and when (it is not asked again before the next round).
   private quotaUnanswered = new Map<string, { detail: string; at: number }>();
@@ -1495,6 +1497,24 @@ export class Accounts {
     }
   }
 
+  /// `check` as a device asks it (POST /profiles/:id/check): asked again while the same is under way for the same
+  /// profile and sign-in, the answer is that one's. Every device that sees a profile not checked yet asks at once
+  /// (core-ts choose-calls.ts): 20 probes, 20 stored checks and 20 overviews read again for one (2026-11-23).
+  async askedCheck(id: string, lang: Lang = stationLang()): Promise<ProfileCheck> {
+    const profile = this.profile(id);
+    if (!profile || profile.enabled === false) return this.check(id, lang);
+    const key = JSON.stringify([id, lang, this.loginGeneration.get(id) ?? 0, fingerprint(profile)]);
+    const asked = this.checksAsked.get(key);
+    if (asked !== undefined) return asked;
+    const now = this.check(id, lang);
+    this.checksAsked.set(key, now);
+    try {
+      return await now;
+    } finally {
+      if (this.checksAsked.get(key) === now) this.checksAsked.delete(key);
+    }
+  }
+
   /// POST /profiles/:id/check: asks the provider or runtime whether the profile works, its models, its reasoning levels
   /// (Codex) and what it can decide with.
   /// `recheck`: asked again after a runtime on it was refused (profiles.ts `CheckOptions.recheck`).
@@ -2127,9 +2147,14 @@ export class Accounts {
       const check = this.checks.get(p.id);
       let checkView: Json = null;
       if (check) {
-        checkView = structuredClone(check);
-        delete checkView.fusion;
-        if (isObject(checkView.decision)) delete checkView.decision.fingerprint;
+        // A copy of its top alone, what is left out taken off it (made for each viewer each time the overview is: a deep
+        // copy of every profile's models held the main thread, 2026-11-23); what it shares is never written in place.
+        const { fusion: _, ...shown } = check as Json;
+        checkView = shown;
+        if (isObject(checkView.decision)) {
+          const { fingerprint: _fingerprint, ...decision } = checkView.decision;
+          checkView.decision = decision;
+        }
         if (check.decision && check.decision.fingerprint !== fingerprint(p)) checkView.decision = { state: "pending", detail: "Profile 已修改，等待自动检查", reason: "changed" };
       }
       return {

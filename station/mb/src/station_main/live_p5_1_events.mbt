@@ -437,12 +437,18 @@ fn P51::events_live(self : P51) -> EventsLive {
   bus.events_send_live.val = (event, data, to) => events.send_live(event, to_jv(data), to_jv(to))
   bus.overview_changed.val = () => events.overview_changed()
   bus.overview_soon.val = () => events.overview_soon()
-  // config.json changed: the overview and every chat row told again; cloud.json changed: the overview (agents.ts
-  // `config.listen(() => (events.overviewChanged(), events.rowsChanged(null)))`, `cloud.listen(() => events.overviewChanged())`).
+  // config.json changed: the overview told again, and every chat row only where what the chat list is made with
+  // (views_config: the connects' names, the reviews) changed; cloud.json changed: the overview (agents.ts
+  // `config.listen`, `cloud.listen(() => events.overviewChanged())`).
+  let rows_made_with = Ref(@ops_platform.views_config((bus.config_raw.val)()).stringify())
   self.stops.push(
-    (bus.config_listen.val)(_ => {
+    (bus.config_listen.val)(raw => {
       events.overview_changed()
-      events.rows_changed(None)
+      let now = @ops_platform.views_config(raw).stringify()
+      if now != rows_made_with.val {
+        rows_made_with.val = now
+        events.rows_changed(None)
+      }
     }),
   )
   self.stops.push((bus.cloud_listen.val)(_ => events.overview_changed()))

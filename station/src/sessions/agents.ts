@@ -80,6 +80,7 @@ import { channelOf } from "../updates/versions.ts";
 import { allowedIn, type Connect, type HubConfig, hubConfig, runtimeTitle } from "./config.ts";
 import type { TailState } from "../read/transcript.ts";
 import { followLatestThreadRequests } from "../read/latest-thread-requests.ts";
+import { rowsMadeWith } from "../read/views.ts";
 import { ColdRooms } from "./cold.ts";
 import { Hub } from "./hub.ts";
 import { LiveLocator } from "./live-locator.ts";
@@ -807,12 +808,23 @@ export const AgentsLive = (control: Control) =>
       // Take the initial profile scopes once the hub's dependencies are ready, before listening for edits.
       hub.profilesChanged();
       // What the overview shows changes: told on the event streams.
+      let rowsSaid = rowsMadeWith(config.raw());
       const unlistenOverview = [
         accounts.onChange(() => events.overviewSoon()),
         updates.changes(() => events.overviewChanged()),
         // macOS's grants to still.fail Helper (the station's page shows them as they change).
         grants?.onChange(() => events.overviewChanged()) ?? (() => {}),
-        config.listen(() => (hub.profilesChanged(), events.overviewChanged(), events.rowsChanged(null))),
+        config.listen((raw) => {
+          hub.profilesChanged();
+          events.overviewChanged();
+          // Every chat row told again only where what the chat list is made with changed (read/views.ts `configOf`):
+          // a profile shared or checked rewrites config.json, and `chat-changed` sent every device to read the whole
+          // chat list again at once (40+ of them in the same second, 2026-11-23).
+          const now = rowsMadeWith(raw);
+          if (now === rowsSaid) return;
+          rowsSaid = now;
+          events.rowsChanged(null);
+        }),
         cloud.listen(() => events.overviewChanged()),
       ];
 

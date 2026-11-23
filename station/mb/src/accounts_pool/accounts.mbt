@@ -303,6 +303,8 @@ pub struct Accounts {
   checks : Map[String, JV]
   quotas : Map[String, JV]
   quota_busy : Map[String, @effect.Deferred[Unit]]
+  /// The checks devices asked that are under way, by what was asked (`asked_check`).
+  checks_asked : Map[String, @effect.Deferred[JV]]
   quota_unanswered : Map[String, (String, Double)]
   reset_details_asked : Map[String, (Double, Double)]
   login_generation : Map[String, Int]
@@ -392,6 +394,7 @@ pub async fn Accounts::new(
     checks: Map::new(),
     quotas: Map::new(),
     quota_busy: Map::new(),
+    checks_asked: Map::new(),
     quota_unanswered: Map::new(),
     reset_details_asked: Map::new(),
     login_generation: Map::new(),

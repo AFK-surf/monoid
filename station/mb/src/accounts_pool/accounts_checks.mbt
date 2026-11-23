@@ -374,6 +374,36 @@ fn via_jv(v : Via) -> JV {
 }
 
 ///|
+/// `askedCheck`: `check` as a device asks it (POST /profiles/:id/check): asked again while the same is under way for
+/// the same profile and sign-in, the answer is that one's. Every device that sees a profile not checked yet asks at
+/// once (core-ts choose-calls.ts): 20 probes, 20 stored checks and 20 overviews read again for one (2026-11-23).
+pub async fn Accounts::asked_check(self : Accounts, id : String, lang : String) -> JV {
+  guard self.profile(id) is Some(profile) && profile.enabled else { return self.check(id, lang) }
+  let generation = self.login_generation.get(id).unwrap_or(0)
+  let key = "\{id}\u{0}\{lang}\u{0}\{generation}\u{0}\{self.fingerprint(profile)}"
+  match self.checks_asked.get(key) {
+    Some(asked) => return asked.wait()
+    None => ()
+  }
+  let now : @effect.Deferred[JV] = @effect.Deferred::new()
+  self.checks_asked[key] = now
+  let forget = () => match self.checks_asked.get(key) {
+    Some(d) if physical_equal(d, now) => self.checks_asked.remove(key)
+    _ => ()
+  }
+  let check = self.check(id, lang) catch {
+    e => {
+      forget()
+      ignore(now.fail(e))
+      raise e
+    }
+  }
+  forget()
+  ignore(now.succeed(check))
+  check
+}
+
+///|
 /// `check`: POST /profiles/:id/check: asks the provider or runtime whether the profile works, its models, its
 /// reasoning levels and what it can decide with.
 /// `recheck`: asked again after a runtime on it was refused (profiles.ts `CheckOptions.recheck`).

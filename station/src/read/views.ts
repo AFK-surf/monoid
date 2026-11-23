@@ -58,6 +58,10 @@ export function configOf(raw: Json): Config {
   return config;
 }
 
+/// What the shared chat list is made with of a config.json (`configOf`), as text to be compared: a change of anything
+/// else in it (profiles, their checks, shares) changes no chat row.
+export const rowsMadeWith = (raw: Json): string => JSON.stringify(configOf(raw));
+
 /// What the views are made with: the store, the config's connects, and who a platform's person is (slack-known.ts).
 export type Api = { store: Store; connects: Connect[]; reviews: boolean; person: (connect: string, user: string) => Person | null };
 /// The views' `Api` from the config the station holds in memory and the names it knows (`KnownNames`): no file read.
