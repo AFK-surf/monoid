@@ -4701,6 +4701,25 @@ fn View::scrolls_window_ids(
       }
       let g_near = @signals.untracked(fn() { self.tree.rows_grid_now() })
       let near = if g_near > 0.0 { 1.0 / g_near } else { 0.0 }
+      // (when off-foot and not jumping to foot at this moment, scroll_off_now may already have moved ahead of the last
+      // drawn scroll_shown (mid-drag/wheel/fling before repaint); placed_window_now() uses scroll_shown while
+      // laid_window_now() after flush uses scroll_off_now, so align `before` into the scroll_off_now frame to avoid
+      // turning the user's live scroll step into a backward FLIP offset)
+      let scroll_pre_dy = if held_node.val >= 0 &&
+        held_node.val < self.tree.nodes.length() &&
+        !@signals.untracked(fn() { s.at_foot() }) &&
+        jumped_at.val != at {
+        let scroll_node = self.tree.nodes[held_node.val]
+        match scroll_node.scroll_shown {
+          Some((_, sy_shown)) => {
+            let (_, sy_now) = self.tree.scroll_off_now(scroll_node)
+            sy_now - sy_shown
+          }
+          None => 0.0
+        }
+      } else {
+        0.0
+      }
       let before : Map[Int, (Double, Double, Double, Double)] = Map([])
       let mut before_list_y = 0.0
       let mut before_list_h = 0.0
@@ -4721,7 +4740,7 @@ fn View::scrolls_window_ids(
           let near_k = if d > 0.0 && flip_new.contains(k) { 0.0 } else { near }
           let a = if a.abs() < near_k { 0.0 } else { a }
           let b = if b.abs() < near_k { 0.0 } else { b }
-          before[k] = (x + a, y + b, w - c, h - d)
+          before[k] = (x + a, y + scroll_pre_dy + b, w - c, h - d)
         }
       }
       // (and how fast: what is left of the way's speed then; none along an axis already at its rest on the grid)

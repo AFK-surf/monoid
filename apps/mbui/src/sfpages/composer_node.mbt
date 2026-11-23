@@ -1067,8 +1067,8 @@ fn composer_box_node(
     reshaped_at.val = foot.cause_at()
     // (a chat's kept to its foot as it grows; elsewhere to its top, as a card is)
     match made.val {
-      Some(b) => b.resizes(foot=spec.chat, spec?=way) |> ignore
-      None => foot.resizes(foot=spec.chat, spec?=way) |> ignore
+      Some(b) => b.resizes(foot=spec.chat, spec?=way, uncut=true) |> ignore
+      None => foot.resizes(foot=spec.chat, spec?=way, uncut=true) |> ignore
     }
     true
   }
