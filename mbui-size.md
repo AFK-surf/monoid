@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c1073d009](https://github.com/AFK-surf/monoid/commit/c1073d0090201275e1e6767f3c16507e201a962e) perf(ui,mbui): eliminate O(N^2) FLIP diff, full-tr | 2.74 | 3.68 | 14.93 | 37.1 | 56.85 | 32.5 | 65.99 | 100.93 | 118.87 |
 | [589f169b6](https://github.com/AFK-surf/monoid/commit/589f169b6531ea5217dcf19380b123bd393c7ccc) fix(mbui,ui,core): keep replied bubble and working | 2.74 | 3.68 | 14.92 | 37.1 | 56.85 | 32.5 | 65.99 | 101.24 | 119.54 |
 | [da8a0a85d](https://github.com/AFK-surf/monoid/commit/da8a0a85dc969d1444a0ae7104d2453c760ad3b5) fix(helper): decode the cursor scoreboard strictly | 2.74 | 3.68 | 14.92 | 37.1 | 56.85 | 32.5 | 65.99 | 101.24 | 119.54 |
 | [c2e203d5f](https://github.com/AFK-surf/monoid/commit/c2e203d5f86217782a1aa8b450f320d9ac1b9a25) feat(pion): add prefs.set, doing tracker, and SSE  | 2.74 | 3.68 | 14.92 | 37.1 | 56.85 | 32.5 | 65.99 | 101.24 | 119.54 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0cf13ac28](https://github.com/AFK-surf/monoid/commit/0cf13ac287d0fbbfef92ced562f04efb36ce4596) feat(core,mbui): support multi-workspace tasks-onl | 2.73 | 3.67 | 14.88 | 37.04 | 56.71 | 32.45 | 65.87 | 100.3 | 127.89 |
 | [8126680e5](https://github.com/AFK-surf/monoid/commit/8126680e52043bc4a5e191b5b5fc756224a9266f) fix(mbui): phase 3a chat motion fixes for composer | 2.73 | 3.67 | 14.88 | 37.04 | 56.71 | 32.45 | 65.87 | 100.3 | 127.89 |
 | [551800b38](https://github.com/AFK-surf/monoid/commit/551800b3882f2df7d3ba12ede9e9ebd23890bf3a) feat(station): add STILLFAIL_RULES_MODE shadow/pio | 2.73 | 3.67 | 14.88 | 37.04 | 56.71 | 32.45 | 65.87 | 100.44 | 120.31 |
-| [41d65bb04](https://github.com/AFK-surf/monoid/commit/41d65bb04308fa74537c8f669305f48353bf3b9b) feat(cloud,station): support multi-workspace and m | 2.73 | 3.67 | 14.88 | 37.03 | 56.71 | 32.44 | 65.86 | 100.19 | 125.63 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c1073d009](https://github.com/AFK-surf/monoid/commit/c1073d0090201275e1e6767f3c16507e201a962e) perf(ui,mbui): eliminate O(N^2) FLIP diff, full-tr | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 57.84 |
 | [589f169b6](https://github.com/AFK-surf/monoid/commit/589f169b6531ea5217dcf19380b123bd393c7ccc) fix(mbui,ui,core): keep replied bubble and working | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 58.03 |
 | [da8a0a85d](https://github.com/AFK-surf/monoid/commit/da8a0a85dc969d1444a0ae7104d2453c760ad3b5) fix(helper): decode the cursor scoreboard strictly | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 57.79 |
 | [c2e203d5f](https://github.com/AFK-surf/monoid/commit/c2e203d5f86217782a1aa8b450f320d9ac1b9a25) feat(pion): add prefs.set, doing tracker, and SSE  | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 57.79 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0cf13ac28](https://github.com/AFK-surf/monoid/commit/0cf13ac287d0fbbfef92ced562f04efb36ce4596) feat(core,mbui): support multi-workspace tasks-onl | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 54.99 |
 | [8126680e5](https://github.com/AFK-surf/monoid/commit/8126680e52043bc4a5e191b5b5fc756224a9266f) fix(mbui): phase 3a chat motion fixes for composer | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.25 |
 | [551800b38](https://github.com/AFK-surf/monoid/commit/551800b3882f2df7d3ba12ede9e9ebd23890bf3a) feat(station): add STILLFAIL_RULES_MODE shadow/pio | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.02 |
-| [41d65bb04](https://github.com/AFK-surf/monoid/commit/41d65bb04308fa74537c8f669305f48353bf3b9b) feat(cloud,station): support multi-workspace and m | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.35 |
