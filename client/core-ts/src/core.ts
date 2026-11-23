@@ -101,6 +101,13 @@ export const CREDENTIAL_OTHERS = "others";
 /// `lan`, `tailnet`, each fence), so none pushes out another's and sends it to the cloud again on its next dial (production
 /// 2026-11-23: 16 of them on 8 kept, 112 asks refused for too many in 25 minutes).
 export const CREDENTIAL_OTHERS_KEPT = 32;
+/// How many of an account's credential asks are out at once: a device dialling every endpoint of every workspace's
+/// stations asked them all together (production 2026-11-23: 379 refused in 4 minutes, and the account's other requests
+/// with them).
+export const CREDENTIAL_ASK_CONCURRENCY = 4;
+/// How long an account asks no credential after the cloud refused one for too many (429): what was asked again at once
+/// only used up the next minute too.
+export const CREDENTIAL_429_COOLDOWN_MS = 15_000;
 /// Where this device's push registration is kept.
 export const PUSH_KEY = "push";
 

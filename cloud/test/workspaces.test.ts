@@ -253,6 +253,33 @@ test("the locks kept for the stations from before use up none of an account's re
   }
 });
 
+test("members' credentials have a minute of their own: asking them uses up none of the account's requests, and the account's used up keeps none from being asked", async () => {
+  // (2026-11-23: a person's devices asking one for each endpoint of each workspace's stations were refused 379 times in
+  // 4 minutes, and with them `GET /v1/workspaces/:id`, its feedback and the sessions, sharing the account's 120)
+  const h = await harness();
+  try {
+    const alice = h.as(await h.login("alice"));
+    const ws = (await (await alice("POST", "/v1/workspaces", { name: "Home" })).json() as any).id as string;
+    const device = await key();
+    const ask = () => alice("POST", `/v1/workspaces/${ws}/credential`, { device: device.id });
+    const statuses: number[] = [];
+    for (let i = 0; i < 361; i++) statuses.push((await ask()).status);
+    assert.deepEqual([statuses.slice(0, 360).every((s) => s === 200), statuses[360]], [true, 429]);
+    const over = await ask();
+    assert.deepEqual([over.status, await over.json()], [429, { error: "rate_limited" }]);
+    assert.deepEqual([(await alice("GET", "/v1/me")).status, (await alice("GET", `/v1/workspaces/${ws}`)).status], [200, 200]);
+
+    const bob = h.as(await h.login("bob"));
+    const home = (await (await bob("POST", "/v1/workspaces", { name: "Bob's" })).json() as any).id as string;
+    let last = await bob("GET", "/v1/me");
+    for (let i = 0; i < 130 && last.status === 200; i++) last = await bob("GET", "/v1/me");
+    assert.equal(last.status, 429);
+    assert.equal((await bob("POST", `/v1/workspaces/${home}/credential`, { device: device.id })).status, 200);
+  } finally {
+    await h.close();
+  }
+});
+
 test("an account over its requests a minute still signs in a new device: its other devices' asking keeps no one out", async () => {
   // (the locks' end to end, 2026-11-10: a person's devices reading their workspaces again as they changed used up the
   // minute, and the next device's sign-in was refused, 429)

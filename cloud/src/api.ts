@@ -107,9 +107,18 @@ const said = new WeakMap<Request, Promise<Live>>();
  * what they serve.
  */
 const LOCK_ROUTE = /^\/v1\/(me\/personal-lock|workspaces\/[^/]+\/(lock(\/.*)?|devices))$/;
+/**
+ * A member's credential: a device asks one for each endpoint of each workspace's stations, so it is counted on a minute
+ * of its own (account.ts `charge`, 360), not to use up the account system's requests, as `LOCK_ROUTE`.
+ */
+const CREDENTIAL_ROUTE = /^\/v1\/workspaces\/[^/]+\/credential$/;
 export function liveOf(request: Request, env: Env, claims: Claims): Promise<Live> {
   let live = said.get(request);
-  if (!live) said.set(request, (live = env.ACCOUNTS.getByName(claims.sub).live(claims, onTestChannel.has(request), LOCK_ROUTE.test(new URL(request.url).pathname))));
+  if (!live) {
+    const pathname = new URL(request.url).pathname;
+    const quota = request.method === "POST" && CREDENTIAL_ROUTE.test(pathname) ? "credential" : LOCK_ROUTE.test(pathname);
+    said.set(request, (live = env.ACCOUNTS.getByName(claims.sub).live(claims, onTestChannel.has(request), quota)));
+  }
   return live;
 }
 
