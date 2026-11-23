@@ -14,6 +14,13 @@ import "sql"
 import "store"
 import "views"
 
+struct MarksWanted {
+  mut in_flight : Bool
+  mut whole : Bool
+  sessions : Array[String]
+  threads : Array[Int]
+}
+
 pub struct ClientCore {
   pub workspace : String
   pub station : String
@@ -24,8 +31,10 @@ pub struct ClientCore {
   pub events : StationEvents
   pub local_outbox : LocalOutbox
   pub sync : SyncScheduler
+  pub doing : DoingTracker
   extra_events : Map[String, StationEvents]
   extra_sync : Map[String, SyncScheduler]
+  marks_wanted : Map[String, MarksWanted]
   mut live : Bool
   pub router : protocol::Slice1Router
   pub mut rows_memo : views::RowsMemo
@@ -42,6 +51,21 @@ pub struct ClientCore {
   pub stars_held : Array[views::StarEntry]
   pub board_drafts_held : Array[views::BoardDraftRecord]
   pub downloads_held : Array[views::DownloadEntry]
+  pub status_waits : Array[views::StatusWaitEntry]
+  pub status_downs : Array[views::StatusDownSocket]
+  pub status_db_notes : Array[views::StatusDbNote]
+  pub notices_held : Array[views::NoticeItemInput]
+  pub lock_pairing_prompts : Array[views::LockPairingPromptInput]
+  pub vault_key_asks : Array[views::VaultKeyAskInput]
+  pub mut notify_on : Bool
+  pub mut notify_asked : Bool
+  pub mut notify_push : Bool
+  pub mut notify_preview : Bool
+  pub mut notify_permission : String
+  pub mut notify_in_front : Bool
+  pub notify_muted : Array[String]
+  pub mut notify_kinds : views::NotifyKindsInput
+  pub mut lang : String
   mut auth_seq : Int
   mut lock_state : Option[lock::LockState]
   mut lock_root : Option[String]
@@ -84,8 +108,10 @@ pub fn ClientCore::new(
     events: events,
     local_outbox: local_outbox,
     sync: sync,
+    doing: DoingTracker::new(),
     extra_events: Map::new(),
     extra_sync: Map::new(),
+    marks_wanted: Map::new(),
     live: false,
     router: router,
     rows_memo: views::RowsMemo::new(),
@@ -102,6 +128,27 @@ pub fn ClientCore::new(
     stars_held: [],
     board_drafts_held: [],
     downloads_held: [],
+    status_waits: [],
+    status_downs: [],
+    status_db_notes: [],
+    notices_held: [],
+    lock_pairing_prompts: [],
+    vault_key_asks: [],
+    notify_on: true,
+    notify_asked: false,
+    notify_push: true,
+    notify_preview: true,
+    notify_permission: "unknown",
+    notify_in_front: false,
+    notify_muted: [],
+    notify_kinds: views::NotifyKindsInput::{
+      wait: true,
+      failed: true,
+      done: "away",
+      message: true,
+      billed: false,
+    },
+    lang: "zh",
     auth_seq: 0,
     lock_state: None,
     lock_root: None,
@@ -188,11 +235,7 @@ fn ClientCore::wire_station_hooks(
         k(effect::Exit::Succeeded(()))
       })
     })
-    let _ = rt.fork_quiet_named("missed-marks:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-      sync.fetch_marks_k(effect::priority_shown(), fn(_ex : effect::Exit[Array[String]]) -> Unit {
-        k(effect::Exit::Succeeded(()))
-      })
-    })
+    self.schedule_marks_read(station, sync, [], [], true)
     let _ = rt.fork_quiet_named("missed-lock:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
       sync.fetch_lock_k(effect::priority_shown(), fn(_ex : effect::Exit[Bool]) -> Unit {
         k(effect::Exit::Succeeded(()))
@@ -246,16 +289,8 @@ fn ClientCore::wire_station_hooks(
       }
       None => ()
     }
-    let _ = rt.fork_quiet_named("marks-reread:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-      sync.fetch_marks_k(
-        effect::priority_shown(),
-        fn(_ex : effect::Exit[Array[String]]) -> Unit {
-          k(effect::Exit::Succeeded(()))
-        },
-        sessions=scoped_sessions,
-        threads=scoped_threads,
-      )
-    })
+    let want_whole = scoped_sessions.length() == 0 && scoped_threads.length() == 0
+    self.schedule_marks_read(station, sync, scoped_sessions, scoped_threads, want_whole)
   })
   events.set_thread_dirty_hook(fn(th : Int) -> Unit {
     let _ = rt.fork_quiet_named("dirty-thread:" + station + ":" + th.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
@@ -263,6 +298,115 @@ fn ClientCore::wire_station_hooks(
         k(effect::Exit::Succeeded(()))
       })
     })
+  })
+}
+
+fn push_unique_str_cc(xs : Array[String], v : String) -> Unit {
+  if v.length() == 0 {
+    return
+  }
+  for i in 0..<xs.length() {
+    if xs[i] == v {
+      return
+    }
+  }
+  xs.push(v)
+}
+
+fn push_unique_int_cc(xs : Array[Int], v : Int) -> Unit {
+  for i in 0..<xs.length() {
+    if xs[i] == v {
+      return
+    }
+  }
+  xs.push(v)
+}
+
+fn str_arrays_equal_cc(a : Array[String], b : Array[String]) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+/// Coalesce concurrent `marksDirty` / `missed` requests per station into a single in-flight
+/// `GET /chats?marks=1&own=1` (`client/core-ts/src/station/sync.ts #marksRead`).
+fn ClientCore::schedule_marks_read(
+  self : ClientCore,
+  station : String,
+  sync : SyncScheduler,
+  sessions : Array[String],
+  threads : Array[Int],
+  whole : Bool,
+) -> Unit {
+  let mw = match self.marks_wanted.get(station) {
+    Some(existing) => existing
+    None => {
+      let created = MarksWanted::{ in_flight: false, whole: false, sessions: [], threads: [] }
+      self.marks_wanted.set(station, created)
+      created
+    }
+  }
+  if whole {
+    mw.whole = true
+  }
+  for i in 0..<sessions.length() {
+    push_unique_str_cc(mw.sessions, sessions[i])
+  }
+  for i in 0..<threads.length() {
+    push_unique_int_cc(mw.threads, threads[i])
+  }
+  if mw.in_flight {
+    return
+  }
+  mw.in_flight = true
+  self.drain_marks_wanted(station, sync, mw)
+}
+
+fn ClientCore::drain_marks_wanted(
+  self : ClientCore,
+  station : String,
+  sync : SyncScheduler,
+  mw : MarksWanted,
+) -> Unit {
+  let _ = self.rt.fork_quiet_named("marks-reread:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    let want_whole = mw.whole
+    let batch_sessions : Array[String] = []
+    let batch_threads : Array[Int] = []
+    if !want_whole {
+      for i in 0..<mw.sessions.length() {
+        batch_sessions.push(mw.sessions[i])
+      }
+      for i in 0..<mw.threads.length() {
+        batch_threads.push(mw.threads[i])
+      }
+    }
+    mw.whole = false
+    mw.sessions.clear()
+    mw.threads.clear()
+    if !want_whole && batch_sessions.length() == 0 && batch_threads.length() == 0 {
+      mw.in_flight = false
+      k(effect::Exit::Succeeded(()))
+      return
+    }
+    sync.fetch_marks_k(
+      effect::priority_shown(),
+      fn(_ex : effect::Exit[Array[String]]) -> Unit {
+        if mw.whole || mw.sessions.length() > 0 || mw.threads.length() > 0 {
+          self.drain_marks_wanted(station, sync, mw)
+        } else {
+          mw.in_flight = false
+        }
+        k(effect::Exit::Succeeded(()))
+      },
+      sessions=batch_sessions,
+      threads=batch_threads,
+    )
   })
 }
 
@@ -460,7 +604,7 @@ fn ClientCore::sync_viewer_marks_from_payload(
           _ => ()
         }
       }
-      if next_selves.length() > 0 {
+      if next_selves.length() > 0 && !str_arrays_equal_cc(self.viewer_marks.selves, next_selves) {
         let prev = self.viewer_marks
         self.viewer_marks = views::ViewerMarks::{
           me: prev.me,
@@ -472,6 +616,14 @@ fn ClientCore::sync_viewer_marks_from_payload(
           muted: prev.muted,
           dismissed: prev.dismissed,
           quoted_threads: prev.quoted_threads,
+        }
+        self.events.set_viewer_selves(next_selves)
+        let eks = self.extra_events.keys()
+        for i in 0..<eks.length() {
+          match self.extra_events.get(eks[i]) {
+            Some(ev) => ev.set_viewer_selves(next_selves)
+            None => ()
+          }
         }
       }
     }
@@ -760,28 +912,45 @@ pub fn ClientCore::set_viewer(
   device_id : String = "",
   device_kind : String = "app",
   device_sign_key : Option[String] = None,
+  selves : Option[Array[String]] = None,
 ) -> Unit {
-  if email.length() > 0 && self.viewer_marks.me != email {
-    self.events.set_viewer_email(email)
-    if sub.length() > 0 {
-      self.events.set_viewer_selves([sub])
+  let mut viewer_changed = false
+  let next_me = if email.length() > 0 { email } else { self.viewer_marks.me }
+  if next_me != self.viewer_marks.me {
+    viewer_changed = true
+  }
+  let next_selves = match selves {
+    Some(xs) => {
+      let copy : Array[String] = []
+      for i in 0..<xs.length() {
+        if xs[i].length() > 0 {
+          copy.push(xs[i])
+        }
+      }
+      copy
     }
+    None => if sub.length() > 0 && self.viewer_marks.selves.length() == 0 { [sub] } else { self.viewer_marks.selves }
+  }
+  if !str_arrays_equal_cc(self.viewer_marks.selves, next_selves) {
+    viewer_changed = true
+  }
+  if viewer_changed {
+    self.events.set_viewer_email(next_me)
+    self.events.set_viewer_selves(next_selves)
     let eks = self.extra_events.keys()
     for i in 0..<eks.length() {
       match self.extra_events.get(eks[i]) {
         Some(ev) => {
-          ev.set_viewer_email(email)
-          if sub.length() > 0 {
-            ev.set_viewer_selves([sub])
-          }
+          ev.set_viewer_email(next_me)
+          ev.set_viewer_selves(next_selves)
         }
         None => ()
       }
     }
     let prev = self.viewer_marks
     self.viewer_marks = views::ViewerMarks::{
-      me: email,
-      selves: prev.selves,
+      me: next_me,
+      selves: next_selves,
       reads: prev.reads,
       pins: prev.pins,
       kept: prev.kept,
@@ -790,6 +959,9 @@ pub fn ClientCore::set_viewer(
       dismissed: prev.dismissed,
       quoted_threads: prev.quoted_threads,
     }
+    // Full row cache invalidation whenever viewer identity or Slack selves change.
+    self.rows_memo = views::RowsMemo::new()
+    self.pending_dirty_rows.clear()
   }
   if sub.length() > 0 {
     self.viewer_sub = sub
@@ -1000,7 +1172,47 @@ pub fn ClientCore::current_safe_mode_view(self : ClientCore) -> views::SafeModeV
     online_stations: online_stations,
     pending: self.lock_pending,
   }
-  views::project_safe_mode(self.lock_effective, inp)
+  views::project_safe_mode(self.lock_effective, inp, lock_corrupt=self.lock_corrupt)
+}
+
+/// Build current `views::NotifyStateInput` from live `ClientCore` notification preferences.
+pub fn ClientCore::current_notify_state(self : ClientCore) -> views::NotifyStateInput {
+  let muted_copy : Array[String] = []
+  for i in 0..<self.notify_muted.length() {
+    muted_copy.push(self.notify_muted[i])
+  }
+  views::NotifyStateInput::{
+    on: self.notify_on,
+    asked: self.notify_asked,
+    push: self.notify_push,
+    kinds: self.notify_kinds,
+    preview: self.notify_preview,
+    muted: muted_copy,
+    permission: self.notify_permission,
+    in_front: self.notify_in_front,
+  }
+}
+
+/// Project `doing` topic items from `self.doing` into `views::DoingItemInput`.
+pub fn ClientCore::current_doing_inputs(self : ClientCore) -> Array[views::DoingItemInput] {
+  let raw = self.doing.entries_snapshot()
+  let out : Array[views::DoingItemInput] = []
+  for i in 0..<raw.length() {
+    let e = raw[i]
+    let stage = match e.failed {
+      Some(_) => "failed"
+      None => "running"
+    }
+    out.push(views::DoingItemInput::{
+      call: e.call,
+      params: e.params,
+      since: e.since,
+      stage: stage,
+      error: e.failed,
+      note: None,
+    })
+  }
+  out
 }
 
 /// Configure the cloud origin used by `auth.begin` (e.g. `"https://app.still.fail"`).
@@ -1082,12 +1294,34 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { self.station }
       _ => self.station
     }
-    let th = match topic.param("thread") {
-      Some(base_codec::Json::Num(n, _)) => n.to_int()
-      _ => return Some(protocol::CoreEvent::Waiting(id))
+    let th_opt : Option[Int] = match topic.param("thread") {
+      Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+      _ => None
     }
-    let md = if st == self.md_store.station { self.md_store } else { store::MdStore::new(self.db, st) }
-    match views::project_chat(self.db, md, st, th, self.viewer_marks.me, self.rt.now()) {
+    let sess_opt : Option[String] = match topic.param("session") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+      _ => match topic.param("key") {
+        Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+        _ => None
+      }
+    }
+    if th_opt.is_none() && sess_opt.is_none() {
+      return Some(protocol::CoreEvent::Waiting(id))
+    }
+    let compact = match topic.param("compact") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    match views::project_chat_by_params(
+      self.db,
+      st,
+      th_opt,
+      sess_opt,
+      compact,
+      self.viewer_marks.me,
+      self.rt.now(),
+      lang=self.lang,
+    ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -1428,6 +1662,41 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
+  }
+  // ── W28a runtime topic projectors (zero static empty stubs) ──
+  if topic.name == "status" {
+    let j = views::project_status(
+      self.status_waits,
+      self.status_downs,
+      self.status_db_notes,
+      0L,
+      views::status_rate_window_ms(),
+      self.rt.now(),
+      lang=self.lang,
+    )
+    return Some(protocol::CoreEvent::Value(id, j, None))
+  }
+  if topic.name == "lockPrompts" {
+    let j = views::project_lock_prompts(self.lock_pairing_prompts, self.vault_key_asks, self.rt.now())
+    return Some(protocol::CoreEvent::Value(id, j, None))
+  }
+  if topic.name == "notices" {
+    let ws_filter : Option[String] = match topic.param("workspace") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+      _ => None
+    }
+    let j = views::project_notices(self.notices_held, workspace_filter=ws_filter, lang=self.lang)
+    return Some(protocol::CoreEvent::Value(id, j, None))
+  }
+  if topic.name == "notify" {
+    match views::project_notify(self.db, self.current_notify_state(), self.notices_held, lang=self.lang) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "doing" {
+    let j = views::project_doing(self.current_doing_inputs())
+    return Some(protocol::CoreEvent::Value(id, j, None))
   }
   None
 }
@@ -2066,6 +2335,9 @@ fn ClientCore::handle_lock_event(self : ClientCore, payload : base_codec::Json) 
     Some(base_codec::Json::Arr(xs)) => xs
     _ => return
   }
+  if raw_entries.length() == 0 {
+    return
+  }
   let form_entries : Array[form::Json] = []
   for i in 0..<raw_entries.length() {
     form_entries.push(codec_to_form(raw_entries[i]))
@@ -2452,13 +2724,18 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
         ]), None))
       }
       if call_name == "auth.complete" {
-        let cb_state = match proto_str(params, "state") {
-          Some(s) => s
-          None => ""
+        let outcome = match proto_str(params, "query") {
+          Some(q) => self.login_flow.complete_oauth_query(q)
+          None => {
+            let cb_state = match proto_str(params, "state") {
+              Some(s) => s
+              None => ""
+            }
+            let code = proto_str(params, "code")
+            let err_opt = proto_str(params, "error")
+            self.login_flow.complete_oauth_callback(cb_state, code, err_opt)
+          }
         }
-        let code = proto_str(params, "code")
-        let err_opt = proto_str(params, "error")
-        let outcome = self.login_flow.complete_oauth_callback(cb_state, code, err_opt)
         if !outcome.ok {
           return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{
             code: outcome.error_code,

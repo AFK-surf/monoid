@@ -14,8 +14,23 @@ extern "C" fn rules_in_copy(dst : Ptr) -> Unit
 extern "C" fn rules_out_set(src : Ptr, len : Int) -> Unit
 extern "C" fn rules_cb_copy(dst : Ptr) -> Unit
 
-extern "C" fn rules_sha256_hex(ptr : Ptr, len : Int) -> Int
+extern "C" fn rules_sha256_hex_into(ptr : Ptr, len : Int, dst : Ptr) -> Int
 extern "C" fn rules_sig_valid(
+  sig_ptr : Ptr,
+  sig_len : Int,
+  hash_ptr : Ptr,
+  hash_len : Int,
+  origins_ptr : Ptr,
+  origins_len : Int,
+  rp_ptr : Ptr,
+  rp_len : Int,
+  passkey : Int,
+) -> Int
+extern "C" fn rules_sig_valid_ed(
+  key_ptr : Ptr,
+  key_len : Int,
+  alg_ptr : Ptr,
+  alg_len : Int,
   sig_ptr : Ptr,
   sig_len : Int,
   hash_ptr : Ptr,
@@ -88,19 +103,61 @@ fn write_out_json(j : form::Json) -> Int {
 fn host_lock_crypto() -> lock::Crypto {
   lock::Crypto::{
     sha256_hex: fn(s : String) -> String {
-      let n = rules_sha256_hex(s.as_cstr(), s.length())
-      read_cb_str(n)
+      let out = Bytes::new(64).to_string()
+      let n = rules_sha256_hex_into(s.as_cstr(), s.length(), out.as_cstr())
+      if n == 64 {
+        out
+      } else if n < 0 {
+        read_cb_str(0 - n - 1)
+      } else {
+        read_cb_str(n)
+      }
     },
     sig_valid: fn(sig : form::Json, hash : String, origins : Array[String], rp_id : String, passkey : Bool) -> Bool {
-      let sig_s = form::json_stringify(sig)
-      let orig_arr : Array[form::Json] = []
-      let mut i = 0
-      while i < origins.length() {
-        orig_arr.push(form::Json::Str(origins[i]))
-        i = i + 1
+      let orig_s = if origins.length() == 0 {
+        ""
+      } else {
+        let orig_arr : Array[form::Json] = []
+        let mut i = 0
+        while i < origins.length() {
+          orig_arr.push(form::Json::Str(origins[i]))
+          i = i + 1
+        }
+        form::json_stringify(form::Json::Arr(orig_arr))
       }
-      let orig_s = form::json_stringify(form::Json::Arr(orig_arr))
       let pk = if passkey { 1 } else { 0 }
+      match sig {
+        form::Json::Obj(entries) => {
+          if entries.length() == 3 {
+            match (
+              form::json_obj_get(entries, "key"),
+              form::json_obj_get(entries, "alg"),
+              form::json_obj_get(entries, "sig"),
+            ) {
+              (Some(form::Json::Str(k)), Some(form::Json::Str(a)), Some(form::Json::Str(sg))) => {
+                return rules_sig_valid_ed(
+                  k.as_cstr(),
+                  k.length(),
+                  a.as_cstr(),
+                  a.length(),
+                  sg.as_cstr(),
+                  sg.length(),
+                  hash.as_cstr(),
+                  hash.length(),
+                  orig_s.as_cstr(),
+                  orig_s.length(),
+                  rp_id.as_cstr(),
+                  rp_id.length(),
+                  pk,
+                ) != 0
+              }
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+      let sig_s = form::json_stringify(sig)
       rules_sig_valid(sig_s.as_cstr(), sig_s.length(), hash.as_cstr(), hash.length(), orig_s.as_cstr(), orig_s.length(), rp_id.as_cstr(), rp_id.length(), pk) != 0
     },
     valid_key_id: fn(id : String) -> Bool { rules_valid_key_id(id.as_cstr(), id.length()) != 0 },

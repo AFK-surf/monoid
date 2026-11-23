@@ -53,24 +53,33 @@ fn parse_person_device(v : Option[form::Json], c : Crypto) -> Result[PersonDevic
   Ok(PersonDevice::{ key: key, id: id, label: label, sign_key: sign_key, sign_keys: sign_keys })
 }
 
-pub fn fold_person(entries : Array[form::Json], sub : String, c : Crypto) -> Result[Person, LockError] {
+fn fold_person_with_hashes(entries : Array[form::Json], sub : String, c : Crypto) -> Result[(Person, Array[String]), LockError] {
   if entries.length() == 0 {
     return Err(LockError::Refused("no lock"))
   }
+  let hashes : Array[String] = []
   let mut p : Option[Person] = None
   let mut i = 0
   while i < entries.length() {
-    match person_step(p, entries[i], sub, c) {
-      Ok(next) => {
+    match person_step_hashed(p, entries[i], sub, c, None, true) {
+      Ok((next, h)) => {
         p = Some(next)
+        hashes.push(h)
       }
       Err(err) => return Err(err)
     }
     i = i + 1
   }
   match p {
-    Some(res) => Ok(res)
+    Some(res) => Ok((res, hashes))
     None => Err(LockError::Refused("no lock"))
+  }
+}
+
+pub fn fold_person(entries : Array[form::Json], sub : String, c : Crypto) -> Result[Person, LockError] {
+  match fold_person_with_hashes(entries, sub, c) {
+    Ok((res, _)) => Ok(res)
+    Err(err) => Err(err)
   }
 }
 
@@ -89,6 +98,20 @@ fn keys_only(keys : Array[String], want : Array[String]) -> Bool {
 }
 
 fn person_step(was : Option[Person], e : form::Json, sub : String, c : Crypto) -> Result[Person, LockError] {
+  match person_step_hashed(was, e, sub, c, None, false) {
+    Ok((p, _)) => Ok(p)
+    Err(err) => Err(err)
+  }
+}
+
+fn person_step_hashed(
+  was : Option[Person],
+  e : form::Json,
+  sub : String,
+  c : Crypto,
+  known_hash : Option[String],
+  in_place : Bool,
+) -> Result[(Person, String), LockError] {
   let v = Some(e)
   if !opt_num_eq(safe_num(field(v, "v")), 1.0) || !opt_str_eq(text_of(field(v, "ws")), person_ws(sub)) {
     return Err(LockError::Refused("an entry of another lock"))
@@ -120,13 +143,18 @@ fn person_step(was : Option[Person], e : form::Json, sub : String, c : Crypto) -
     Some(k) => k
     None => ""
   }
-  let hash = match entry_hash(e, c) {
-    Ok(h) => h
-    Err(err) => return Err(err)
+  let hash = match known_hash {
+    Some(h) => h
+    None => {
+      match entry_hash(e, c) {
+        Ok(h) => h
+        Err(err) => return Err(err)
+      }
+    }
   }
-  let devices : form::OrderedMap[PersonDevice] = match was {
+  let mut devices : form::OrderedMap[PersonDevice] = match was {
     None => form::OrderedMap::new()
-    Some(w) => copy_map(w.devices)
+    Some(w) => w.devices
   }
   let mut webs : form::OrderedMap[PersonWeb] = match was {
     None => form::OrderedMap::new()
@@ -176,6 +204,9 @@ fn person_step(was : Option[Person], e : form::Json, sub : String, c : Crypto) -
           }
           None => had
         }
+        if !in_place {
+          devices = copy_map(devices)
+        }
         devices.set(d.key, PersonDevice::{ key: d.key, id: d.id, label: d.label, sign_key: d.sign_key, sign_keys: sign_keys })
       } else if kind == "device.remove" {
         let gone = match text_of(field(b, "key")) {
@@ -189,6 +220,9 @@ fn person_step(was : Option[Person], e : form::Json, sub : String, c : Crypto) -
         }
         if !role::person_changes(devices.contains(key), devices.length() == 1) {
           return Err(LockError::Refused("not signed by a device on the lock, or its last"))
+        }
+        if !in_place {
+          devices = copy_map(devices)
         }
         devices.remove(gone)
       } else if kind == "ws" || kind == "web" || kind == "web.remove" {
@@ -224,7 +258,9 @@ fn person_step(was : Option[Person], e : form::Json, sub : String, c : Crypto) -
           if exp > at + web_device_secs {
             return Err(LockError::Refused("a web device lasts 31 days at most"))
           }
-          webs = copy_map(webs)
+          if !in_place {
+            webs = copy_map(webs)
+          }
           let id = match text_of(field(b, "id")) {
             Some(s) => s
             None => ""
@@ -234,7 +270,9 @@ fn person_step(was : Option[Person], e : form::Json, sub : String, c : Crypto) -
           if !(keys_only(keys, ["id"]) && is_id(field(b, "id"))) {
             return Err(LockError::Refused("a web device is taken off by its id"))
           }
-          webs = copy_map(webs)
+          if !in_place {
+            webs = copy_map(webs)
+          }
           match text_of(field(b, "id")) {
             Some(id) => webs.remove(id)
             None => ()
@@ -249,8 +287,8 @@ fn person_step(was : Option[Person], e : form::Json, sub : String, c : Crypto) -
     return Err(LockError::Refused("signature invalid"))
   }
   match was {
-    None => Ok(Person::{ sub: sub, genesis: hash, head: hash, seq: 0.0, devices: devices, webs: webs })
-    Some(w) => Ok(Person::{ sub: sub, genesis: w.genesis, head: hash, seq: w.seq + 1.0, devices: devices, webs: webs })
+    None => Ok((Person::{ sub: sub, genesis: hash, head: hash, seq: 0.0, devices: devices, webs: webs }, hash))
+    Some(w) => Ok((Person::{ sub: sub, genesis: w.genesis, head: hash, seq: w.seq + 1.0, devices: devices, webs: webs }, hash))
   }
 }
 
