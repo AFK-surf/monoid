@@ -360,7 +360,11 @@ final class Streams {
             if ((cmd.startsWith("latch ") || cmd.startsWith("drop ")) && s.surfaces != surf) return;
             s.video.command(cmd, data);
         });
-        if (cmd.startsWith("latch ") && throwShow != null && throwShow.equals(String.valueOf(++shows))) throw new RuntimeException("MBUI_STREAM_THROW_SHOW: show " + shows);
+        if (cmd.startsWith("latch ")) {
+            String throwShow = env("MBUI_STREAM_THROW_SHOW");
+            if (throwShow != null && throwShow.equals(String.valueOf(++shows)))
+                throw new RuntimeException("MBUI_STREAM_THROW_SHOW: show " + shows);
+        }
     }
 
     static void jpeg(int id, byte[] data, double ts) {
@@ -380,19 +384,23 @@ final class Streams {
         return s.own != null ? s.own.toldDirect() : "";
     }
 
+    // Read test env vars on demand via Os.getenv (not static final System.getenv) so class initialization
+    // order (e.g. WarmUp calling h264Here() before MainActivity applies intent env) cannot freeze stale values.
+    private static String env(String name) {
+        return android.system.Os.getenv(name);
+    }
+
     // MBUI_STREAM_THROW_SHOW=N (a test's, android-streams.sh thrown): the Nth show() throws, for the host to clear
-    private static final String throwShow = System.getenv("MBUI_STREAM_THROW_SHOW");
     private static int shows;
 
     // A host contract injects a synchronous codec failure, which MediaCodec can throw instead of calling onError.
-    private static final String failInput = System.getenv("MBUI_STREAM_FAIL_INPUT");
-    private static final String failStart = System.getenv("MBUI_STREAM_FAIL_START");
     private static int inputCalls, startCalls;
 
     static void show(int id, double ts) {
         Stream s = streams.get(id);
         if (s != null && s.own != null) s.own.show(ts);
         else if (s != null) onGl(() -> s.show(ts));
+        String throwShow = env("MBUI_STREAM_THROW_SHOW");
         if (throwShow != null && throwShow.equals(String.valueOf(++shows))) throw new RuntimeException("MBUI_STREAM_THROW_SHOW: show " + shows);
     }
 
@@ -406,11 +414,11 @@ final class Streams {
     // MBUI_STREAM_HOLD_DECODER=MS (a test's, android-streams.sh anew): as the context is lost each decoder's thread held
     // that long first, as on a CPU it does not get, so the GL thread's frames after the new context come before
     // anything the decoder does about it
-    private static final int hold = holdDecoder();
-
     private static int holdDecoder() {
+        String v = env("MBUI_STREAM_HOLD_DECODER");
+        if (v == null || v.isEmpty()) return 0;
         try {
-            return Integer.parseInt(System.getenv("MBUI_STREAM_HOLD_DECODER"));
+            return Integer.parseInt(v);
         } catch (Exception e) {
             return 0;
         }
@@ -419,6 +427,7 @@ final class Streams {
     /** The GL context was lost (android_host.c images_lost): every stream's textures made anew in the new one. */
     static void lost() {
         blitLost();
+        int hold = holdDecoder();
         for (Stream s : streams.values()) {
             if (hold > 0 && s.video != null) s.video.hold(hold);
             s.lost();
@@ -714,7 +723,9 @@ final class Streams {
         private int lengthSize;
         private int width, height;
         private boolean released;
-        private static final boolean scripted = "script".equals(System.getenv("MBUI_STREAM_CODEC"));
+        private static boolean scripted() {
+            return "script".equals(env("MBUI_STREAM_CODEC"));
+        }
         /** The SurfaceTexture it draws on and its number (GL thread sets them; its frames arrive on this thread). */
         private volatile SurfaceTexture st;
         private int surfaceNo;
@@ -809,6 +820,7 @@ final class Streams {
                         }
                         buffer.clear();
                         buffer.put(b);
+                        String failInput = env("MBUI_STREAM_FAIL_INPUT");
                         if (failInput != null && failInput.equals(String.valueOf(++inputCalls))) throw new IllegalStateException("MBUI_STREAM_FAIL_INPUT: input " + inputCalls);
                         c.queue(index, b.length, (long) ts, w[4].equals("1") ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0);
                     } catch (Exception e) {
@@ -851,8 +863,9 @@ final class Streams {
                 stream.say("c nostart " + g);
                 return;
             }
-            if (scripted) {
+            if (scripted()) {
                 // (the scripted decoder: what it says in an order of its own, a frame drawn for each it is told to show)
+                String failStart = env("MBUI_STREAM_FAIL_START");
                 if (failStart != null && failStart.equals(String.valueOf(++startCalls))) {
                     Host.log("stream " + stream.id + ": no H.264 decoder: java.lang.IllegalStateException: MBUI_STREAM_FAIL_START: start " + startCalls);
                     stream.say("c nostart " + g);
@@ -883,6 +896,7 @@ final class Streams {
                     format.setInteger("vendor.qti-ext-dec-picture-order.enable", 1);
                     format.setInteger("vendor.qti-ext-dec-low-latency.enable", 1);
                 }
+                String failStart = env("MBUI_STREAM_FAIL_START");
                 if (failStart != null && failStart.equals(String.valueOf(++startCalls))) throw new IllegalStateException("MBUI_STREAM_FAIL_START: start " + startCalls);
                 made.setCallback(callback(g), handler);
                 made.configure(format, surface, null, 0);

@@ -268,6 +268,82 @@ int main(void) {
   target_fb = surface;
   CHECK(offscreen == 0);
 
+  // Perf-35: lazy shader compilation, ONE_KIND #if pruning, scissor glClear partial-redraw ground, and kind==9 own prog.
+  {
+    CHECK(progs[5].p == 0 && progs[6].p == 0 && progs[7].p == 0 && progs[8].p == 0 &&
+          progs[13].p == 0 && progs[MB_KINDS].p == 0 && post == 0 && ad_prog == 0);
+
+    // Seed a 4x4 glyph cell in atlas (unit 0) and a temporary 2x2 RGBA image for kind 4 and kind 9.
+    static const unsigned char glyph_px[16] = {
+        255, 255, 255, 255, 255, 200, 200, 255, 255, 200, 200, 255, 255, 255, 255, 255};
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, atlas);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 4, 4, GL_RED, GL_UNSIGNED_BYTE, glyph_px);
+
+    static const unsigned char img_px[16] = {
+        220, 40, 60, 255, 40, 210, 80, 255, 50, 90, 230, 255, 240, 220, 40, 255};
+    glGenTextures(1, &picture_one);
+    glBindTexture(GL_TEXTURE_2D, picture_one);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, img_px);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    double ng[4 * MB_INST];
+    // 0: kind 0 rect
+    rect_at(ng, 6, 8, 22, 18, 0, 0.85, 0.25, 0.15, 0);
+    ng[36] = ng[37] = ng[38] = ng[39] = 4.0;
+    // 1: kind 4 image
+    rect_at(ng + 1 * MB_INST, 34, 8, 24, 18, 4, 1.0, 1.0, 1.0, 1);
+    ng[1 * MB_INST + 12] = 0.0; ng[1 * MB_INST + 13] = 0.0;
+    ng[1 * MB_INST + 14] = 1.0; ng[1 * MB_INST + 15] = 1.0;
+    // 2: kind 1 glyph
+    rect_at(ng + 2 * MB_INST, 66, 10, 16, 16, 1, 0.12, 0.22, 0.88, 0);
+    ng[2 * MB_INST + 12] = 0.0; ng[2 * MB_INST + 13] = 0.0;
+    ng[2 * MB_INST + 14] = 4.0; ng[2 * MB_INST + 15] = 4.0;
+    // 3: kind 9 native view picture
+    rect_at(ng + 3 * MB_INST, 12, 36, 40, 24, 9, 1.0, 1.0, 1.0, 1);
+    ng[3 * MB_INST + 12] = 0.0; ng[3 * MB_INST + 13] = 0.0;
+    ng[3 * MB_INST + 14] = 1.0; ng[3 * MB_INST + 15] = 1.0;
+    ng[3 * MB_INST + 36] = ng[3 * MB_INST + 37] = ng[3 * MB_INST + 38] = ng[3 * MB_INST + 39] = 6.0;
+
+    for (int oo = 0; oo <= 1; oo++) {
+      over_other = oo;
+      // Whole-screen draw
+      ng[0] = 6;
+      gl_present(ng, 4, 0.12, 0.22, 0.32);
+      CHECK(surface_as_whole(surface));
+      // Prime canvas with dirty rect, then trigger partial redraw (cut_on == 1)
+      ng[0] = 8;
+      mb_host_render_dirty(4, 6, 28, 22);
+      gl_present(ng, 4, 0.12, 0.22, 0.32);
+      CHECK(canvas_ok == 1);
+      CHECK(surface_as_whole(surface));
+      ng[0] = 10;
+      ng[3 * MB_INST + 0] = 16;
+      mb_host_render_dirty(6, 6, 30, 22);
+      mb_host_render_dirty(10, 34, 48, 28);
+      gl_present(ng, 4, 0.12, 0.22, 0.32);
+      CHECK(canvas_ok == 1);
+      CHECK(surface_as_whole(surface));
+    }
+
+    CHECK(progs[5].p == 0 && progs[6].p == 0 && progs[7].p == 0 && progs[8].p == 0 &&
+          progs[13].p == 0 && progs[MB_KINDS].p == 0 && post == 0 && ad_prog == 0);
+    CHECK(progs[0].p != 0 && progs[1].p != 0 && progs[4].p != 0 && progs[9].p != 0);
+
+    // Restore clean state for subsequent tests (which assert canvas_fb == 0 and picture_one == 0).
+    over_other = 0;
+    glDeleteTextures(1, &picture_one);
+    picture_one = 0;
+    if (canvas_fb) {
+      glDeleteFramebuffers(1, &canvas_fb);
+      glDeleteTextures(1, &canvas_tex);
+      canvas_lost();
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, surface);
+  }
+
   // A frame drawn whole goes straight onto the surface: no canvas made, none holding a frame.
   double two[2 * MB_INST];
   rect_at(two, 10, 10, 20, 20, 0, 0.9, 0.2, 0.1, 0);
@@ -867,7 +943,6 @@ int main(void) {
   // interior (inward >= 23), non-zero bevel/refraction/chroma/rim: must be byte-for-byte identical; and zero-copy
   // slot swap across frames + glass_free() must preserve identical pixels.
   {
-    CHECK(progs[5].p != 0 && progs[6].p != 0 && progs[MB_KIND_LIQUID_SINGLE].p != 0);
     double lp[3 * MB_INST];
     rect_at(lp, 0, 0, W, H, 0, 0.12, 0.24, 0.48, 0);
     rect_at(lp + MB_INST, 20, 15, 60, 50, 0, 0.92, 0.35, 0.18, 0);
@@ -890,6 +965,7 @@ int main(void) {
     glass_forget();
     gl_present(lp, 3, 0.12, 0.24, 0.48);
     unsigned char *px_merged = pixels_of_fb(surface);
+    CHECK(progs[5].p != 0 && progs[6].p != 0 && progs[MB_KIND_LIQUID_SINGLE].p != 0);
     CHECK(memcmp(px_single, px_merged, (size_t)fb_w * fb_h * 4) == 0);
     free(px_merged);
 
@@ -2208,6 +2284,36 @@ int main(void) {
     glBindFramebuffer(GL_FRAMEBUFFER, surface);
     canvas_ok = 0;
     glass_free();
+  }
+
+  // Verify every specialized ONE_KIND (-1, 0..11, 13) and auxiliary program (prog_flat, post, ad_prog) compiles and links cleanly.
+  {
+    while (glGetError() != GL_NO_ERROR) {
+    }
+    for (int k = 0; k <= MB_KINDS; k++) {
+      if (k != MB_KINDS && !has_own_prog(k)) continue;
+      use_prog(k == MB_KINDS ? -1 : k);
+      GLint linked = 0;
+      CHECK(progs[k].p != 0);
+      glGetProgramiv(progs[k].p, GL_LINK_STATUS, &linked);
+      if (linked != GL_TRUE) {
+        char log[1024];
+        glGetProgramInfoLog(progs[k].p, sizeof log, NULL, log);
+        fprintf(stderr, "gles_render: program kind %d link failed: %s\n", k == MB_KINDS ? -1 : k, log);
+      }
+      CHECK(linked == GL_TRUE);
+    }
+    ensure_prog_flat();
+    ensure_post();
+    ensure_ad_prog();
+    GLuint aux[3] = {prog_flat, post, ad_prog};
+    for (int i = 0; i < 3; i++) {
+      GLint linked = 0;
+      CHECK(aux[i] != 0);
+      glGetProgramiv(aux[i], GL_LINK_STATUS, &linked);
+      CHECK(linked == GL_TRUE);
+    }
+    CHECK(glGetError() == GL_NO_ERROR);
   }
 
   if (!failed) printf("gles_render: ok\n");
