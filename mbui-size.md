@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2aba0c6e4](https://github.com/AFK-surf/monoid/commit/2aba0c6e4985ae0f16e6bf62b6a8798fa0301f27) fix(ui): fix adaptive liquid glass pill hover wash | 2.73 | 3.68 | 14.9 | 37.06 | 56.76 | 32.47 | 65.92 | 101.02 | 121.62 |
 | [48b7e7c70](https://github.com/AFK-surf/monoid/commit/48b7e7c70512d20285343222ff81cd14f5285221) fix(mbui): align model picker details to the name  | 2.73 | 3.68 | 14.9 | 37.06 | 56.76 | 32.47 | 65.92 | 101.02 | 121.62 |
 | [f350f6162](https://github.com/AFK-surf/monoid/commit/f350f6162b1051720cdebd6f75ada97727680a12) feat(station,client,mbui): add local station repla | 2.73 | 3.68 | 14.9 | 37.07 | 56.76 | 32.47 | 65.92 | 100.52 | 113.6 |
 | [2404366b0](https://github.com/AFK-surf/monoid/commit/2404366b025c3ddd751494997dc1eb64090a3c1a) feat(station): say how short of CPU and memory the | 2.73 | 3.68 | 14.9 | 37.06 | 56.75 | 32.46 | 65.91 | 100.45 | 124.75 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9c09bdb1e](https://github.com/AFK-surf/monoid/commit/9c09bdb1ee983a252d2068ec0dcc4e0fe3a0c274) feat(core): open Comma Tasks by link across platfo | 2.72 | 3.66 | 14.84 | 36.98 | 56.53 | 32.4 | 65.72 | 100.03 | 112.45 |
 | [9f7c26cf2](https://github.com/AFK-surf/monoid/commit/9f7c26cf2fd53ab5693f92a2967fa59430ea493e) fix(ci): recalibrate multi-worker anchor weights i | 2.72 | 3.66 | 14.83 | 36.98 | 56.52 | 32.4 | 65.72 | 100.21 | 127.78 |
 | [77d6110de](https://github.com/AFK-surf/monoid/commit/77d6110deb1a373c8df80b1d665541e632731aa7) fix(ui): tell the host when a field drops an open  | 2.72 | 3.66 | 14.83 | 36.98 | 56.52 | 32.4 | 65.72 | 100.21 | 127.78 |
-| [330a4d5ac](https://github.com/AFK-surf/monoid/commit/330a4d5ac3c92923931750bbbd083f195bc0f3f2) feat(mbui): add generic ListStage scheduler and ex | 2.72 | 3.66 | 14.83 | 36.98 | 56.52 | 32.4 | 65.72 | 100.21 | 127.78 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2aba0c6e4](https://github.com/AFK-surf/monoid/commit/2aba0c6e4985ae0f16e6bf62b6a8798fa0301f27) fix(ui): fix adaptive liquid glass pill hover wash | 0.49 | 0.64 | 2.45 | 3.5 | 5.81 | 1.79 | 4.83 | 55.26 |
 | [48b7e7c70](https://github.com/AFK-surf/monoid/commit/48b7e7c70512d20285343222ff81cd14f5285221) fix(mbui): align model picker details to the name  | 0.49 | 0.64 | 2.45 | 3.5 | 5.81 | 1.79 | 4.83 | 55 |
 | [f350f6162](https://github.com/AFK-surf/monoid/commit/f350f6162b1051720cdebd6f75ada97727680a12) feat(station,client,mbui): add local station repla | 0.49 | 0.64 | 2.45 | 3.5 | 5.81 | 1.79 | 4.83 | 54.92 |
 | [2404366b0](https://github.com/AFK-surf/monoid/commit/2404366b025c3ddd751494997dc1eb64090a3c1a) feat(station): say how short of CPU and memory the | 0.49 | 0.64 | 2.45 | 3.5 | 5.81 | 1.79 | 4.83 | 54.64 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9c09bdb1e](https://github.com/AFK-surf/monoid/commit/9c09bdb1ee983a252d2068ec0dcc4e0fe3a0c274) feat(core): open Comma Tasks by link across platfo | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.2 |
 | [9f7c26cf2](https://github.com/AFK-surf/monoid/commit/9f7c26cf2fd53ab5693f92a2967fa59430ea493e) fix(ci): recalibrate multi-worker anchor weights i | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.2 |
 | [77d6110de](https://github.com/AFK-surf/monoid/commit/77d6110deb1a373c8df80b1d665541e632731aa7) fix(ui): tell the host when a field drops an open  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.18 |
-| [330a4d5ac](https://github.com/AFK-surf/monoid/commit/330a4d5ac3c92923931750bbbd083f195bc0f3f2) feat(mbui): add generic ListStage scheduler and ex | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.12 |
