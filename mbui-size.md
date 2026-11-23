@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2e080a421](https://github.com/AFK-surf/monoid/commit/2e080a421b8050968fdabe36bb82370f22840c2f) fix(mbui): invert adaptive glass ink locally over  | 2.72 | 3.66 | 14.83 | 36.95 | 56.5 | 32.38 | 65.71 | 100.07 | 121.9 |
 | [2346b90bb](https://github.com/AFK-surf/monoid/commit/2346b90bb670992e634f127e736f30c02e116cc0) feat(cloud): trace cron tasks, slow, rate-limited  | 2.72 | 3.66 | 14.83 | 36.95 | 56.5 | 32.38 | 65.71 | 99.68 | 109.58 |
 | [cbb992816](https://github.com/AFK-surf/monoid/commit/cbb9928169cca710826d0540c72d1112b5eed0de) perf(mbui): lazy-compile pruned GLES shaders and f | 2.72 | 3.66 | 14.83 | 36.95 | 56.5 | 32.38 | 65.71 | 99.68 | 109.58 |
 | [bc2520fb4](https://github.com/AFK-surf/monoid/commit/bc2520fb4e4851f33a4130b42ab2c773a2f0f316) feat(sf-ui,mbui): upgrade remote screen/terminal f | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.55 | 124.51 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [dd573a706](https://github.com/AFK-surf/monoid/commit/dd573a706239ec1ae450b59bff9fef8f5d839ce3) refactor(sf-ui): delegate controls, capsules, lens | 2.7 | 3.63 | 14.73 | 36.82 | 56.09 | 32.25 | 65.38 | 99.32 | 125.45 |
 | [f70cbae6f](https://github.com/AFK-surf/monoid/commit/f70cbae6f66c4022f8d655a311a01a188ebc1ae9) fix(mbui,sf-ui): let the wheel scroll the page und | 2.7 | 3.64 | 14.73 | 36.82 | 56.11 | 32.25 | 65.39 | 99.12 | 119.8 |
 | [085d7c0a8](https://github.com/AFK-surf/monoid/commit/085d7c0a84130648707d7f09f68058f82a90c5a0) fix(mbui): unbind blur levels before glass draws i | 2.7 | 3.64 | 14.73 | 36.82 | 56.11 | 32.25 | 65.39 | 99.12 | 119.8 |
-| [d94818248](https://github.com/AFK-surf/monoid/commit/d948182484b4d401de1f16ae9323305032a147c8) feat(mbui): polish multi-touch scrolling velocity, | 2.7 | 3.64 | 14.73 | 36.82 | 56.1 | 32.25 | 65.39 | 99.26 | 126.73 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2e080a421](https://github.com/AFK-surf/monoid/commit/2e080a421b8050968fdabe36bb82370f22840c2f) fix(mbui): invert adaptive glass ink locally over  | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.83 | 55.22 |
 | [2346b90bb](https://github.com/AFK-surf/monoid/commit/2346b90bb670992e634f127e736f30c02e116cc0) feat(cloud): trace cron tasks, slow, rate-limited  | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.67 |
 | [cbb992816](https://github.com/AFK-surf/monoid/commit/cbb9928169cca710826d0540c72d1112b5eed0de) perf(mbui): lazy-compile pruned GLES shaders and f | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.38 |
 | [bc2520fb4](https://github.com/AFK-surf/monoid/commit/bc2520fb4e4851f33a4130b42ab2c773a2f0f316) feat(sf-ui,mbui): upgrade remote screen/terminal f | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.49 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [dd573a706](https://github.com/AFK-surf/monoid/commit/dd573a706239ec1ae450b59bff9fef8f5d839ce3) refactor(sf-ui): delegate controls, capsules, lens | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.85 |
 | [f70cbae6f](https://github.com/AFK-surf/monoid/commit/f70cbae6f66c4022f8d655a311a01a188ebc1ae9) fix(mbui,sf-ui): let the wheel scroll the page und | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.85 |
 | [085d7c0a8](https://github.com/AFK-surf/monoid/commit/085d7c0a84130648707d7f09f68058f82a90c5a0) fix(mbui): unbind blur levels before glass draws i | 0.48 | 0.63 | 2.44 | 3.49 | 5.79 | 1.78 | 4.82 | 54.79 |
-| [d94818248](https://github.com/AFK-surf/monoid/commit/d948182484b4d401de1f16ae9323305032a147c8) feat(mbui): polish multi-touch scrolling velocity, | 0.48 | 0.63 | 2.44 | 3.49 | 5.79 | 1.78 | 4.82 | 54.56 |
