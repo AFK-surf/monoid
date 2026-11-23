@@ -331,12 +331,22 @@ switch ("$($a[0]) $($a[1])".Trim()) {
     $reader = if ($env:STILLFAIL_MB_READER) { $env:STILLFAIL_MB_READER } else { Join-Path $here 'station\stillfail-reader.exe' }
     $engine = if ($env:STILLFAIL_ADMIN_ENGINE) { $env:STILLFAIL_ADMIN_ENGINE } else { '' }
     if ($engine -cnotin '', 'node', 'moonbit') { [Console]::Error.WriteLine("stillfail admin: STILLFAIL_ADMIN_ENGINE must be node or moonbit, not $engine"); exit 2 }
-    # Its exit code is the command's, its stderr passed on as it is: under Stop, PowerShell 5.1 makes a native
-    # command's stderr an error when it is redirected, and exits 1.
-    function RunNative([string] $file, [object[]] $argv) {
-      $ErrorActionPreference = 'Continue'
-      & $file @argv
-      exit $LASTEXITCODE
+    # Started by .NET, not `&`: PowerShell 5.1 drops an empty argument and the quotes inside one, and under Stop makes a
+    # redirected stderr an error. Each argument quoted as CommandLineToArgvW reads it back; the child has this
+    # process's stdin, stdout and stderr, and its exit code is the command's.
+    function QuoteArg([string] $s) {
+      if ($s -ne '' -and $s -notmatch '[\s"]') { return $s }
+      $s = [regex]::Replace($s, '(\\*)"', { param($m) $m.Groups[1].Value * 2 + '\"' })
+      $s = [regex]::Replace($s, '(\\+)$', { param($m) $m.Groups[1].Value * 2 })
+      return '"' + $s + '"'
+    }
+    function RunNative([string] $file, [string[]] $argv) {
+      $start = New-Object System.Diagnostics.ProcessStartInfo $file
+      $start.UseShellExecute = $false
+      $start.Arguments = (@($argv) | ForEach-Object { QuoteArg $_ }) -join ' '
+      $child = [System.Diagnostics.Process]::Start($start)
+      $child.WaitForExit()
+      exit $child.ExitCode
     }
     if ($engine -cne 'moonbit') {
       # Node: STILLFAIL_NODE, else the release's own, else the PATH's.

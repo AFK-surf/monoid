@@ -396,7 +396,7 @@ test("bin/stillfail.ps1's admin branch takes Node's admin CLI before the reader,
   const cmd = at("if (-not $env:STILLFAIL_CMD) { $env:STILLFAIL_CMD = ");
   const rest = at("$rest = @(if ($a.Count -gt 1)");
   const refuse = at("if ($engine -cnotin '', 'node', 'moonbit')");
-  const native = at("$ErrorActionPreference = 'Continue'");
+  const native = at("$start.UseShellExecute = $false");
   const nodeOnly = at("if ($engine -cne 'moonbit') {");
   const nodeOrder = at("@($env:STILLFAIL_NODE, (Join-Path $here 'node\\node.exe'))");
   const byPath = at("Get-Command node");
@@ -410,15 +410,19 @@ test("bin/stillfail.ps1's admin branch takes Node's admin CLI before the reader,
   assert.doesNotMatch(block, /-(notin|ne|eq) '(node|moonbit)'/, "the engine is matched by case, as bin/stillfail does");
 });
 
-const powershells = process.platform === "win32" ? ["powershell.exe", "pwsh.exe"] : [];
+const onWindows = process.platform === "win32";
 
-test("bin/stillfail.ps1 admin under each PowerShell", { skip: process.platform === "win32" ? false : "PowerShell's paths (station\\admin-cli.js) are Windows'" }, async (t) => {
+// A PowerShell literal: single-quoted, its quotes doubled.
+const psLiteral = (s: string) => `'${s.replace(/'/g, "''")}'`;
+
+test("bin/stillfail.ps1 admin under Windows PowerShell 5.1 and PowerShell 7", { skip: onWindows ? false : "PowerShell's paths (station\\admin-cli.js) are Windows'" }, async (t) => {
   const base = mkdtempSync(join(tmpdir(), "sf-admin-wrapper-ps-"));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const app = join(base, "app");
   mkdirSync(join(app, "bin"), { recursive: true });
   mkdirSync(join(app, "station"), { recursive: true });
-  copyFileSync(join(root, "bin", "stillfail.ps1"), join(app, "bin", "stillfail.ps1"));
+  const script = join(app, "bin", "stillfail.ps1");
+  copyFileSync(join(root, "bin", "stillfail.ps1"), script);
   const adminJs = join(app, "station", "admin-cli.js");
   writeFileSync(adminJs, reportJs("admin-cli.js"));
   // The reader: a .cmd that runs Node on what reports what it was given.
@@ -430,37 +434,56 @@ test("bin/stillfail.ps1 admin under each PowerShell", { skip: process.platform =
   // (Windows' own variables kept, cmd.exe's among them; none of the station's)
   const env: Record<string, string> = Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined && !/^STILLFAIL_|^FAKE_/i.test(e[0])));
   Object.assign(env, { STILLFAIL_DATA: data, STILLFAIL_NODE: process.execPath, STILLFAIL_MB_READER: reader });
-  let ran = 0;
-  for (const ps of powershells) {
-    const probe = await run(ps, ["-NoProfile", "-Command", "exit 0"], env).catch(() => null);
-    if (!probe || probe.code !== 0) {
-      assert.notEqual(ps, "powershell.exe", "Windows PowerShell is on every Windows");
-      continue;
-    }
-    ran++;
-    const admin = (argv: string[], more: Record<string, string> = {}) =>
-      run(ps, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", join(app, "bin", "stillfail.ps1"), "admin", ...argv], { ...env, ...more });
-    for (const argv of [[], ["whoami"], ["--help"], ["whoami", "--json", "a b"]]) {
-      const r = await admin(argv);
-      assert.equal(r.code, 0, `${ps} ${argv.join(" ")}: ${r.stderr}`);
-      assert.deepEqual(parseReport(r.stdout), { who: "admin-cli.js", args: argv, cmd: "stillfail", data }, `${ps} ${argv.join(" ")}`);
-    }
-    const kept = await admin(["whoami"], { STILLFAIL_CMD: "monoid" });
-    assert.equal(parseReport(kept.stdout).cmd, "monoid", ps);
-    const failed = await admin(["whoami"], { FAKE_EXIT: "3" });
-    assert.equal(failed.code, 3, `${ps}: ${failed.stderr}`);
-    assert.equal(failed.stderr.trim(), "to stderr from admin-cli.js", ps);
-    const moonbit = await admin(["whoami"], { STILLFAIL_ADMIN_ENGINE: "moonbit", FAKE_EXIT: "4" });
-    assert.equal(moonbit.code, 4, `${ps}: ${moonbit.stderr}`);
-    assert.deepEqual(parseReport(moonbit.stdout), { who: "reader", args: ["admin", "--data", data, "whoami"], cmd: "stillfail", data }, ps);
-    const cased = await admin(["whoami"], { STILLFAIL_ADMIN_ENGINE: "MoonBit" });
-    assert.equal(cased.code, 2, ps);
-    assert.equal(cased.stderr.trim(), "stillfail admin: STILLFAIL_ADMIN_ENGINE must be node or moonbit, not MoonBit", ps);
-    rmSync(adminJs);
-    const fallback = await admin(["whoami"]);
-    assert.equal(fallback.code, 0, `${ps}: ${fallback.stderr}`);
-    assert.equal(parseReport(fallback.stdout).who, "reader", ps);
-    writeFileSync(adminJs, reportJs("admin-cli.js"));
+
+  const shells: { exe: string; version: string }[] = [];
+  for (const exe of ["powershell.exe", "pwsh.exe"]) {
+    const probe = await run(exe, ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], env).catch(() => null);
+    if (probe && probe.code === 0) shells.push({ exe, version: probe.stdout.trim() });
   }
-  assert.ok(ran > 0, "a PowerShell ran");
+  assert.ok(shells.some((s) => s.exe === "powershell.exe" && s.version.startsWith("5.1")), `Windows PowerShell 5.1 is on every Windows: ${JSON.stringify(shells)}`);
+  // CI's Windows has both: neither is let off there.
+  if (process.env.CI) assert.ok(shells.some((s) => s.exe === "pwsh.exe" && Number(s.version.split(".")[0]) >= 7), `PowerShell 7 is on CI's Windows: ${JSON.stringify(shells)}`);
+
+  for (const { exe, version } of shells) {
+    await t.test(`${exe} (${version})`, async () => {
+      // As stillfail.cmd runs it.
+      const byFile = (argv: string[], more: Record<string, string> = {}) =>
+        run(exe, ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "admin", ...argv], { ...env, ...more });
+      // Each argument exactly as PowerShell holds it (no command line of powershell.exe's own in between).
+      const byCall = (argv: string[], more: Record<string, string> = {}) => {
+        const command = `& ${psLiteral(script)} admin ${argv.map(psLiteral).join(" ")}; exit $LASTEXITCODE`;
+        return run(exe, ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")], { ...env, ...more });
+      };
+      for (const argv of [[], ["whoami"], ["--help"], ["whoami", "--json", "a b"]]) {
+        const r = await byFile(argv);
+        assert.equal(r.code, 0, `${argv.join(" ")}: ${r.stderr}`);
+        assert.deepEqual(parseReport(r.stdout), { who: "admin-cli.js", args: argv, cmd: "stillfail", data }, argv.join(" "));
+      }
+      const exact = ["pre", "", "post", 'a"b', 'say "hi there"', "C:\\dir with space\\", "back\\\\\"slash", "tab\there", "--json"];
+      for (const argv of [[], ["whoami"], exact]) {
+        const r = await byCall(argv);
+        assert.equal(r.code, 0, `${JSON.stringify(argv)}: ${r.stderr}`);
+        assert.deepEqual(parseReport(r.stdout).args, argv);
+      }
+      const kept = await byFile(["whoami"], { STILLFAIL_CMD: "monoid" });
+      assert.equal(parseReport(kept.stdout).cmd, "monoid");
+      const failed = await byFile(["whoami"], { FAKE_EXIT: "3" });
+      assert.equal(failed.code, 3, failed.stderr);
+      assert.equal(failed.stderr.trim(), "to stderr from admin-cli.js");
+      const moonbit = await byCall(["whoami", "pre", "", "post"], { STILLFAIL_ADMIN_ENGINE: "moonbit", FAKE_EXIT: "4" });
+      assert.equal(moonbit.code, 4, moonbit.stderr);
+      assert.deepEqual(parseReport(moonbit.stdout), { who: "reader", args: ["admin", "--data", data, "whoami", "pre", "", "post"], cmd: "stillfail", data });
+      const cased = await byFile(["whoami"], { STILLFAIL_ADMIN_ENGINE: "MoonBit" });
+      assert.equal(cased.code, 2);
+      assert.equal(cased.stderr.trim(), "stillfail admin: STILLFAIL_ADMIN_ENGINE must be node or moonbit, not MoonBit");
+      rmSync(adminJs);
+      try {
+        const fallback = await byFile(["whoami"]);
+        assert.equal(fallback.code, 0, fallback.stderr);
+        assert.equal(parseReport(fallback.stdout).who, "reader");
+      } finally {
+        writeFileSync(adminJs, reportJs("admin-cli.js"));
+      }
+    });
+  }
 });
