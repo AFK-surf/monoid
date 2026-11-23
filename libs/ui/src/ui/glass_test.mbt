@@ -509,3 +509,119 @@ test "Wave 7 adaptive liquid glass encodes negative slot 14, propagates ink to v
   assert_true(shapes2.iter().any(fn(a) { a[23] > 0.0 }))
   assert_true(shapes2.iter().any(fn(a) { a[23] == 0.0 }))
 }
+
+///|
+test "adaptive glass slots 6-7 encode center-relative short-word/line/icon offsets; plain stays zero" {
+  // Retained View tree path:
+  // - short ASCII words (2..=12 chars, e.g. "Gemini", "Neon") share word_cx in slot 6 (center-relative);
+  // - long ASCII words (> 12 chars, e.g. "Supercalifragili") and CJK ("发消息") keep slot 6 == 0.0;
+  // - all adaptive glyphs on the same line share exact line_cy in slot 7 (center-relative);
+  // - non-adaptive glyphs and shapes keep slots 6-7 at exact 0.0.
+  let t = @ui.Tester::tree(fn(root) {
+    root.box(fn(col) {
+      col.box(fn(gl) {
+        gl
+        .width(Is(Some(480.0)))
+        .height(Is(Some(44.0)))
+        .radius(Is(22.0))
+        .glass(Is(Some(@ui.Glass::liquid(adaptive=true))))
+        |> ignore
+        gl.box(fn(lbl) { lbl.words(Is("Gemini-4-Neon Supercalifragili 发消息")) |> ignore }) |> ignore
+      })
+      |> ignore
+      col.box(fn(plain) {
+        plain
+        .width(Is(Some(320.0)))
+        .height(Is(Some(44.0)))
+        .radius(Is(22.0))
+        .glass(Is(Some(@ui.Glass::liquid(adaptive=false))))
+        |> ignore
+        plain.box(fn(lbl) { lbl.words(Is("Host")) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let ad = t.drawn_instances().filter(fn(a) { a[5] == 7.0 })
+  let pl = t.drawn_instances().filter(fn(a) { a[5] == 1.0 })
+  // "Gemini"(0..5) "-"(6) "4"(7) "-"(8) "Neon"(9..12) "Supercalifragili"(13..28) "发消息"(29..31) = 32 glyphs
+  assert_eq(ad.length(), 32)
+  // All adaptive glyphs on the same line share exact line_cy = g[1] + g[3]*0.5 + g[7]
+  let line_cy = ad[0][1] + ad[0][3] * 0.5 + ad[0][7]
+  for g in ad {
+    assert_true((g[1] + g[3] * 0.5 + g[7] - line_cy).abs() < 1.0e-6)
+  }
+  // "Gemini" (0..5): 6-char ASCII word shares exact word_cx = g[0] + g[2]*0.5 + g[6]
+  let gem_cx = ad[0][0] + ad[0][2] * 0.5 + ad[0][6]
+  for i in 1..<6 {
+    assert_true((ad[i][0] + ad[i][2] * 0.5 + ad[i][6] - gem_cx).abs() < 1.0e-6)
+  }
+  // "Neon" (9..12): 4-char ASCII word shares its own word_cx, distinct from "Gemini"
+  let neon_cx = ad[9][0] + ad[9][2] * 0.5 + ad[9][6]
+  assert_true((neon_cx - gem_cx).abs() > 1.0)
+  for i in 10..<13 {
+    assert_true((ad[i][0] + ad[i][2] * 0.5 + ad[i][6] - neon_cx).abs() < 1.0e-6)
+  }
+  // "Supercalifragili" (13..28, 16 chars > 12): keeps slot 6 == 0.0 (own horizontal center)
+  for i in 13..<29 {
+    assert_eq(ad[i][6], 0.0)
+  }
+  // "发消息" (29..31, CJK): keeps slot 6 == 0.0 (no fake CJK word segmentation)
+  for i in 29..<32 {
+    assert_eq(ad[i][6], 0.0)
+  }
+  // Plain non-adaptive glyphs keep slots 6-7 at exact 0.0
+  assert_eq(pl.length(), 4)
+  for g in pl {
+    assert_eq(g[6], 0.0)
+    assert_eq(g[7], 0.0)
+  }
+
+  // Multi-band kind-11 vector shapes inside adaptive glass share exact joint icon center in slots 6-7
+  // (center-relative); outside adaptive glass, slots 6-7 stay exact 0.0.
+  let plus_icon : Array[@ui.Shape] = [
+    @ui.shape_of([([8.0, 1.0, 8.0, 15.0], false)], stroke=0x111111FFL, width=1.6),
+    @ui.shape_of([([1.0, 8.0, 15.0, 8.0], false)], stroke=0x111111FFL, width=1.6),
+  ]
+  let ts = @ui.Tester::tree(fn(root) {
+    root.box(fn(col) {
+      col.box(fn(gl) {
+        gl
+        .width(Is(Some(320.0)))
+        .height(Is(Some(44.0)))
+        .radius(Is(22.0))
+        .glass(Is(Some(@ui.Glass::liquid(adaptive=true))))
+        |> ignore
+        gl.box(fn(ico) { ico.width(Is(Some(16.0))).height(Is(Some(16.0))).shapes(Is(plus_icon)) |> ignore }) |> ignore
+      })
+      |> ignore
+      col.box(fn(plain) {
+        plain
+        .width(Is(Some(320.0)))
+        .height(Is(Some(44.0)))
+        .radius(Is(22.0))
+        .glass(Is(Some(@ui.Glass::liquid(adaptive=false))))
+        |> ignore
+        plain.box(fn(ico) { ico.width(Is(Some(16.0))).height(Is(Some(16.0))).shapes(Is(plus_icon)) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  ts.draw()
+  let sh_ad = ts.drawn_instances().filter(fn(a) { a[5] == 11.0 && a[23] > 0.0 })
+  let sh_pl = ts.drawn_instances().filter(fn(a) { a[5] == 11.0 && a[23] == 0.0 })
+  assert_true(sh_ad.length() >= 3)
+  let icx = sh_ad[0][0] + sh_ad[0][2] * 0.5 + sh_ad[0][6]
+  let icy = sh_ad[0][1] + sh_ad[0][3] * 0.5 + sh_ad[0][7]
+  for b in sh_ad {
+    assert_true((b[0] + b[2] * 0.5 + b[6] - icx).abs() < 1.0e-6)
+    assert_true((b[1] + b[3] * 0.5 + b[7] - icy).abs() < 1.0e-6)
+  }
+  assert_true(sh_pl.length() >= 3)
+  for b in sh_pl {
+    assert_eq(b[6], 0.0)
+    assert_eq(b[7], 0.0)
+  }
+}

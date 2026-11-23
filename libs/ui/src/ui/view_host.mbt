@@ -2603,9 +2603,12 @@ fn Ctx::view_drawn(
       let prev_origin_x = glyph_origin_x.val
       glyph_origin_x.val = ux
       let saved_ink_r = glass_paint.ink_r
+      let saved_ink_line = glass_paint.ink_line
       glass_paint.ink_r = 0.0
+      glass_paint.ink_line = saved_ink_r > 0.0
       let b = self.view_made(tree, c, edge_after~)
       glass_paint.ink_r = saved_ink_r
+      glass_paint.ink_line = saved_ink_line
       glyph_origin_x.val = prev_origin_x
       pop_clip()
       view_blocks[c.id] = b
@@ -3495,13 +3498,18 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
         @pixels.tinted(color, Some(c.tint))
       }
     }
+    let ink_center = if glass_paint.ink_r > 0.0 || glass_paint.ink_line {
+      shape_bands_center(bands)
+    } else {
+      None
+    }
     for k, s in shapes {
       let piece_from = self.ninst
       if s.fill != 0L {
-        self.emit_bands(0.0, 0.0, bands.fills[k], 0.0, ink(k, s.fill), 1.0)
+        self.emit_bands(0.0, 0.0, bands.fills[k], 0.0, ink(k, s.fill), 1.0, ink_center~)
       }
       if s.stroke != 0L && s.width > 0.0 {
-        self.emit_bands(0.0, 0.0, bands.strokes[k], s.width / 2.0, ink(k, s.stroke), 1.0)
+        self.emit_bands(0.0, 0.0, bands.strokes[k], s.width / 2.0, ink(k, s.stroke), 1.0, ink_center~)
       }
       // (an icon or a line by the whole shape its pieces are of, not by a piece, nor by what else its node draws)
       let (sw, sh) = shape_extent(s)
