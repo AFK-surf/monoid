@@ -277,6 +277,38 @@ test "agent_bridge: ambiguous label rejected, exact ref_id succeeds" {
 }
 
 ///|
+test "agent_bridge: empty target never matches unlabeled controls" {
+  let unlabeled_clicked = Ref(false)
+  let t = Tester::tree(
+    fn(root) {
+      ab_box(root, 200.0, 80.0, fn(row) {
+        ab_box(row, 40.0, 32.0, fn(icon_btn) {
+          icon_btn
+          .presses(Is(true))
+          .says(Is(Some(@view.said(Button, label=""))))
+          .on_press(fn() { unlabeled_clicked.val = true })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+    w=240.0,
+    h=120.0,
+    unnamed_press_held=false,
+  )
+  let snap = t.agent_snapshot()
+  assert_eq(snap.length(), 1)
+  assert_eq(snap[0].label, "")
+  assert_eq(t.agent_act({ target: "", action: Press }), Err(NotFound("")))
+  assert_eq(unlabeled_clicked.val, false)
+  // Targeting by explicit ref_id still works.
+  assert_true(t.agent_act({ target: snap[0].ref_id, action: Press }) is Ok(_))
+  assert_eq(unlabeled_clicked.val, true)
+  t.assert_idle()
+}
+
+///|
 test "agent_bridge: full actions, query filters, agent_act_all short-circuit, and unmount cleanup" {
   let toggled = @signals.signal(false)
   let volume = @signals.signal(50.0)

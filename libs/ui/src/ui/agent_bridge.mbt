@@ -423,6 +423,9 @@ pub fn agent_query(
 
 ///|
 fn agent_resolve_target(entries : Array[AgentEntry], target : String) -> Result[AgentEntry, AgentActError] {
+  if target == "" {
+    return Err(NotFound(""))
+  }
   for e in entries {
     if e.ref_id == target {
       return Ok(e)
