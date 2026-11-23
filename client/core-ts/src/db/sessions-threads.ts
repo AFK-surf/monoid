@@ -42,8 +42,11 @@ export class SessionsThreadsStore {
 
   #readDetailRaw(station: string, key: string): string | null {
     if (this.#detailTable) {
-      const r = this.#env.sql.all("SELECT detail FROM session_detail WHERE station = ? AND key = ?", [station, key])[0];
-      if (r && r[0] !== null) return String(r[0]);
+      const r = this.#env.sql.all(
+        "SELECT coalesce(s.detail, d.detail) FROM session s LEFT JOIN session_detail d ON d.station = s.station AND d.key = s.key WHERE s.station = ? AND s.key = ?",
+        [station, key],
+      )[0];
+      return r && r[0] !== null ? String(r[0]) : null;
     }
     const r = this.#env.sql.all("SELECT detail FROM session WHERE station = ? AND key = ?", [station, key])[0];
     return r && r[0] !== null ? String(r[0]) : null;
@@ -183,7 +186,7 @@ export class SessionsThreadsStore {
       if (r && r[1] === json && r[2] === listed) return;
       // Move any legacy inline detail out of the session row once so this and future summary updates stay small.
       if (hasLegacy && this.#detailTable) {
-        if (!hasTable) this.#env.run("INSERT OR IGNORE INTO session_detail (station, key, detail) SELECT station, key, detail FROM session WHERE station = ? AND key = ? AND detail IS NOT NULL", [station, key]);
+        this.#env.run("INSERT OR REPLACE INTO session_detail (station, key, detail) SELECT station, key, detail FROM session WHERE station = ? AND key = ? AND detail IS NOT NULL", [station, key]);
         this.#env.run("UPDATE session SET detail = NULL WHERE station = ? AND key = ? AND detail IS NOT NULL", [station, key]);
       }
       // Its detail shows it as it is now too (`detail`).
@@ -242,7 +245,12 @@ export class SessionsThreadsStore {
 
   /// Whether a session's detail is held.
   hasDetail(station: string, key: string): boolean {
-    if (this.#detailTable && this.#env.sql.all("SELECT 1 FROM session_detail WHERE station = ? AND key = ?", [station, key]).length > 0) return true;
+    if (this.#detailTable) {
+      return this.#env.sql.all(
+        "SELECT 1 FROM session s LEFT JOIN session_detail d ON d.station = s.station AND d.key = s.key WHERE s.station = ? AND s.key = ? AND (s.detail IS NOT NULL OR d.detail IS NOT NULL)",
+        [station, key],
+      ).length > 0;
+    }
     return this.#env.sql.all("SELECT 1 FROM session WHERE station = ? AND key = ? AND detail IS NOT NULL", [station, key]).length > 0;
   }
 
@@ -307,7 +315,7 @@ export class SessionsThreadsStore {
     if (keys?.length === 0) return [];
     const only = keys === undefined ? "" : ` AND s.key IN (${keys.map(() => "?").join(", ")})`;
     const join = this.#detailTable ? " LEFT JOIN session_detail d ON d.station = s.station AND d.key = s.key" : "";
-    const detailExpr = this.#detailTable ? "coalesce(d.detail, s.detail)" : "s.detail";
+    const detailExpr = this.#detailTable ? "coalesce(s.detail, d.detail)" : "s.detail";
     return this.#env.sql.all(
       `SELECT s.key, s.summary, ${detailExpr} IS NOT NULL,
          CASE WHEN json_type(${detailExpr}, '$.turns') = 'array' THEN json_array_length(${detailExpr}, '$.turns') ELSE 0 END,

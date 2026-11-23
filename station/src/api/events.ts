@@ -63,12 +63,14 @@ const USAGE_EVERY_MS = 60_000;
 /// Background overview changes (process state, profile checks, backup progress, decision checks) coalesce so bursts
 /// emit one full overview at most this often; direct `overviewChanged()` calls remain immediate.
 const OVERVIEW_SOON_MS = 10_000;
-/// Disk free space above this floor is normalized in `overviewComparable` so ordinary station writes do not defeat
-/// overview deduplication while low-disk warnings stay exact.
-const DISK_FREE_FLOOR = 5 * 1024 * 1024 * 1024;
+/// Low-disk warning threshold matching client/core-ts/src/views/models.ts (`<= 10 GiB` or `<= 10%` of totalBytes).
+const LOW_DISK_BYTES = 10 * 1024 * 1024 * 1024;
+/// Bucket size for free-disk bytes while in the low-disk warning zone so displayed space updates without per-write churn.
+const LOW_DISK_STEP = 128 * 1024 * 1024;
 
 /// Comparable snapshot of an overview for `overviewTold` deduplication: omits volatile machine telemetry and process
-/// RSS drift, and normalizes ample free-disk bytes. The emitted event still carries the exact overview.
+/// RSS drift, and normalizes ample free-disk bytes while preserving low-disk warning transitions. The emitted event
+/// still carries the exact overview.
 export function overviewComparable(value: unknown): string {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return JSON.stringify(value);
   const src = value as Record<string, unknown>;
@@ -76,9 +78,12 @@ export function overviewComparable(value: unknown): string {
   delete out.machine;
   const disk = src.disk;
   if (disk !== null && typeof disk === "object" && !Array.isArray(disk)) {
-    const free = (disk as Record<string, unknown>).freeBytes;
-    if (typeof free === "number" && free > DISK_FREE_FLOOR) {
-      out.disk = { ...(disk as Record<string, unknown>), freeBytes: DISK_FREE_FLOOR };
+    const d = disk as Record<string, unknown>;
+    const free = d.freeBytes;
+    if (typeof free === "number") {
+      const total = typeof d.totalBytes === "number" ? d.totalBytes : 0;
+      const low = total > 0 ? free * 10 <= total || free <= LOW_DISK_BYTES : free <= LOW_DISK_BYTES;
+      out.disk = { ...d, freeBytes: low ? Math.floor(free / LOW_DISK_STEP) : "ok" };
     }
   }
   if (Array.isArray(src.processes)) {

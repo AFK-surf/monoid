@@ -748,9 +748,44 @@ function dropSaidIndex(sql: Sql): void {
   }
 }
 
+const sessionDetailTriggers = (): [string, string][] => [
+  ["session_detail_sync_ins", `CREATE TRIGGER session_detail_sync_ins AFTER INSERT ON session WHEN new.detail IS NOT NULL
+      BEGIN
+        DELETE FROM session_detail WHERE station = new.station AND key = new.key;
+      END`],
+  ["session_detail_sync_upd", `CREATE TRIGGER session_detail_sync_upd AFTER UPDATE OF detail ON session WHEN new.detail IS NOT NULL
+      BEGIN
+        DELETE FROM session_detail WHERE station = new.station AND key = new.key;
+      END`],
+  ["session_detail_sync_del", `CREATE TRIGGER session_detail_sync_del AFTER DELETE ON session
+      BEGIN
+        DELETE FROM session_detail WHERE station = old.station AND key = old.key;
+      END`],
+];
+
 /// Keeps each session's large detail JSON out of the `session` row so summary upserts never rewrite its overflow pages.
+/// Triggers invalidate `session_detail` if an older core writes `session.detail` or deletes the parent `session` row.
 export function ensureSessionDetail(sql: Sql): void {
-  sql.exec("CREATE TABLE IF NOT EXISTS session_detail (station TEXT NOT NULL, key TEXT NOT NULL, detail TEXT NOT NULL, PRIMARY KEY (station, key))");
+  sql.exec("BEGIN IMMEDIATE");
+  try {
+    sql.exec("CREATE TABLE IF NOT EXISTS session_detail (station TEXT NOT NULL, key TEXT NOT NULL, detail TEXT NOT NULL, PRIMARY KEY (station, key))");
+    const had = new Map(sql.all("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'session'").map((r) => [String(r[0]), String(r[1])]));
+    const want = sessionDetailTriggers();
+    const same = want.every(([name, body]) => had.has(name) && spaced(had.get(name)!) === spaced(body));
+    if (!same) {
+      for (const [name] of want) sql.exec(`DROP TRIGGER IF EXISTS ${name}`);
+      sql.exec("DELETE FROM session_detail WHERE NOT EXISTS (SELECT 1 FROM session s WHERE s.station = session_detail.station AND s.key = session_detail.key AND s.detail IS NULL)");
+      for (const [, body] of want) sql.exec(body);
+    }
+    sql.exec("COMMIT");
+  } catch (e) {
+    try {
+      sql.exec("ROLLBACK");
+    } catch {
+      // Rolled back already.
+    }
+    throw e;
+  }
 }
 
 /// How many free pages `giveBackRoomStep` returns to the OS at once (about 1 MB at SQLite's 4 KB page size).

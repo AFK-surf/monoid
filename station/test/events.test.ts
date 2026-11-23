@@ -1261,11 +1261,34 @@ test("background overview changes coalesce into one trailing push and volatile t
   await settle();
   assert.equal(stream.got.filter((e) => e.event === "overview").length, 2, "volatile telemetry drift suppressed");
 
-  // Crossing below the 5 GiB low-disk floor still emits immediately.
-  state.disk.freeBytes = 2_000_000_000;
+  // Crossing into and out of the 10 GiB low-disk threshold on a 100 GiB disk emits both ways.
+  const GiB = 1024 ** 3;
+  state.disk = { freeBytes: 20 * GiB, totalBytes: 100 * GiB };
   events.overviewChanged();
   await settle();
-  assert.equal(stream.got.filter((e) => e.event === "overview").length, 3, "low-disk change emits");
+  const beforeWarn100 = stream.got.filter((e) => e.event === "overview").length;
+  state.disk = { freeBytes: 8 * GiB, totalBytes: 100 * GiB };
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, beforeWarn100 + 1, "100 GiB disk entering <= 10 GiB warning emits");
+  state.disk = { freeBytes: 20 * GiB, totalBytes: 100 * GiB };
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, beforeWarn100 + 2, "100 GiB disk leaving warning emits");
+
+  // Crossing into and out of the 10% low-disk threshold on a 1000 GiB disk emits both ways.
+  state.disk = { freeBytes: 120 * GiB, totalBytes: 1000 * GiB };
+  events.overviewChanged();
+  await settle();
+  const beforeWarn1000 = stream.got.filter((e) => e.event === "overview").length;
+  state.disk = { freeBytes: 80 * GiB, totalBytes: 1000 * GiB };
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, beforeWarn1000 + 1, "1000 GiB disk entering <= 10% warning emits");
+  state.disk = { freeBytes: 120 * GiB, totalBytes: 1000 * GiB };
+  events.overviewChanged();
+  await settle();
+  assert.equal(stream.got.filter((e) => e.event === "overview").length, beforeWarn1000 + 2, "1000 GiB disk leaving warning emits");
 
   await stream.close();
 });

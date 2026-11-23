@@ -19,11 +19,14 @@ let usage_every_ms : Double = 60_000.0
 let overview_soon_ms : Double = 10_000.0
 
 ///|
-let disk_free_floor : Double = 5368709120.0
+let low_disk_bytes : Double = 10737418240.0
+
+///|
+let low_disk_step : Double = 134217728.0
 
 ///|
 /// events.ts `overviewComparable`: omits volatile machine telemetry and process RSS drift, and normalizes ample
-/// free-disk bytes so ordinary writes do not defeat overview deduplication.
+/// free-disk bytes while preserving low-disk warning transitions (`<= 10 GiB` or `<= 10%` of `totalBytes`).
 fn overview_comparable(value : J) -> String {
   match value {
     Obj(entries) => {
@@ -36,12 +39,31 @@ fn overview_comparable(value : J) -> String {
         if k == "disk" {
           match v {
             Obj(de) => {
+              let mut total = 0.0
+              for d in de {
+                if d.0 == "totalBytes" {
+                  match d.1 {
+                    Num(t) => total = t
+                    _ => ()
+                  }
+                }
+              }
               let dout : Array[(String, J)] = []
               for d in de {
                 if d.0 == "freeBytes" {
                   match d.1 {
-                    Num(free) if free > disk_free_floor =>
-                      dout.push((d.0, jn(disk_free_floor)))
+                    Num(free) => {
+                      let low = if total > 0.0 {
+                        free * 10.0 <= total || free <= low_disk_bytes
+                      } else {
+                        free <= low_disk_bytes
+                      }
+                      if low {
+                        dout.push((d.0, jn((free / low_disk_step).floor())))
+                      } else {
+                        dout.push((d.0, Str("ok")))
+                      }
+                    }
                     _ => dout.push(d)
                   }
                 } else {

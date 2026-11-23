@@ -1602,3 +1602,79 @@ test("kept_eviction_backs_off_when_non_evictable_tables_exceed_cap", async () =>
     assert.equal(data.evicted("transcript", "w/a", "k2"), true, "eviction resumes after backoff");
   } finally { runner.shutdown(); }
 });
+
+test("session_detail_invalidates_when_older_core_writes_or_deletes_session", async () => {
+  const host = new FakeHost();
+  const raw = new DatabaseSync(":memory:");
+  const makeData = () => {
+    const runner = new Runner(host.time.clock);
+    host.openDbHook = () => new NodeSql(raw, true);
+    const data = new Data(host, runner, { owner: () => "s1" });
+    return { data, runner };
+  };
+
+  // 1. New core writes detail v1 into session_detail (session.detail is NULL).
+  const first = makeData();
+  await run(first.data.open(["s1"]));
+  try {
+    first.data.set({ topic: "session", station: "w/a", key: "k1" }, { session: { key: "k1", turns: 1 }, turns: [{ id: "v1" }], threads: [] });
+    await run(first.data.written);
+    assert.equal(raw.prepare("SELECT detail FROM session WHERE station = 'w/a' AND key = 'k1'").get()?.detail, null);
+    assert.equal(raw.prepare("SELECT count(*) AS n FROM session_detail WHERE station = 'w/a' AND key = 'k1'").get()?.n, 1);
+  } finally { first.runner.shutdown(); }
+
+  // 2. Older core updates session.detail to v2 directly on the same database.
+  raw.prepare("UPDATE session SET detail = ? WHERE station = 'w/a' AND key = 'k1'").run(JSON.stringify({ turns: [{ id: "v2" }], threadIds: [] }));
+  assert.equal(raw.prepare("SELECT count(*) AS n FROM session_detail WHERE station = 'w/a' AND key = 'k1'").get()?.n, 0, "trigger clears stale session_detail on legacy UPDATE");
+
+  // 3. New core reopens and must read v2, not stale v1.
+  const second = makeData();
+  await run(second.data.open(["s1"]));
+  try {
+    const got = second.data.get({ topic: "session", station: "w/a", key: "k1" }) as J;
+    assert.equal(got.turns[0].id, "v2", "new core reads legacy v2");
+    assert.equal(second.data.hasDetail("w/a", "k1"), true);
+    // Write v3 from new core into session_detail again.
+    second.data.set({ topic: "session", station: "w/a", key: "k1" }, { session: { key: "k1", turns: 3 }, turns: [{ id: "v3" }], threads: [] });
+    await run(second.data.written);
+    assert.equal(raw.prepare("SELECT count(*) AS n FROM session_detail WHERE station = 'w/a' AND key = 'k1'").get()?.n, 1);
+  } finally { second.runner.shutdown(); }
+
+  // 4. Older core deletes the session row directly.
+  raw.prepare("DELETE FROM session WHERE station = 'w/a' AND key = 'k1'").run();
+  assert.equal(raw.prepare("SELECT count(*) AS n FROM session_detail WHERE station = 'w/a' AND key = 'k1'").get()?.n, 0, "trigger clears session_detail on legacy DELETE");
+
+  // 5. New core reopens and must report no detail.
+  const third = makeData();
+  await run(third.data.open(["s1"]));
+  try {
+    assert.equal(third.data.hasDetail("w/a", "k1"), false, "deleted session has no detail");
+    assert.equal(third.data.get({ topic: "session", station: "w/a", key: "k1" }), undefined);
+  } finally { third.runner.shutdown(); }
+});
+
+test("closing_last_view_of_shown_transcript_clears_kept_backoff_for_next_write", async () => {
+  const host = new FakeHost();
+  const runner = new Runner(host.time.clock);
+  const sql = new NodeSql(new DatabaseSync(":memory:"), true);
+  host.openDbHook = () => sql;
+  const data = new Data(host, runner, { owner: () => "s1", kept: 128 * 1024 });
+  await run(data.open(["s1"]));
+  try {
+    const big = "字".repeat(4000);
+    // Open the only large transcript so it exceeds the cap while shown and triggers backoff.
+    data.opened("transcript", "w/a", "big", true);
+    data.putItems("transcript", "w/a", "big", Array.from({ length: 30 }, (_, i) => [i, { text: `${i} ${big}` }] as [number, J]));
+    await run(data.written);
+    await flush();
+    assert.equal(data.evicted("transcript", "w/a", "big"), false, "shown transcript is kept");
+    // Close the last view of that transcript well within the 10 min backoff window.
+    host.advance(5_000);
+    data.opened("transcript", "w/a", "big", false);
+    // The very next log write must evict the closed transcript instead of staying backed off for 10 min.
+    data.putItems("entry", "w/a", "1", [[1, { n: 1, kind: "message", text: "ping", at: 1 }]]);
+    await run(data.written);
+    await flush();
+    assert.equal(data.evicted("transcript", "w/a", "big"), true, "closing last view clears backoff and allows immediate eviction");
+  } finally { runner.shutdown(); }
+});

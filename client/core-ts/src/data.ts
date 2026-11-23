@@ -1700,6 +1700,8 @@ export class Data {
     else this.#shown.delete(key);
     const db = this.of(station);
     if (db === undefined || db.readOnly) return false;
+    // Closing the last view of a transcript can unlock eviction after a cap-full backoff.
+    if (!open && count <= 0 && kind === "transcript" && this.#keptUntil.delete(db)) this.#keptAt = -Infinity;
     // (when it was opened written after what pages wait for, as what showing it reads of Markdown is: `flushMd`)
     const was = db.openedHere(kind, station, id);
     const at = this.#host.nowMs();
