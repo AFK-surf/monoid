@@ -35,6 +35,8 @@ export type Head = {
   batches: string[];
   files: Record<string, number>;
   transcriptFiles?: Record<string, number>;
+  /// Put before the transcripts it lacks were sent (places.ts `partialHead`): naming only those the place held then.
+  partial?: true;
   chats: number;
   messages: number;
   bytes: number;

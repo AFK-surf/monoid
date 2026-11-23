@@ -664,7 +664,8 @@ test "level with a hundred-thousand-scale head: lacking files sent from their fi
   assert_eq(sent.length(), 107)
   assert_true(sent.contains(("f0", "/src/f0")))
   assert_false(sent.contains(("f0", "/second/f0")))
-  assert_eq(put, ["batch:" + b1, "head:head.json"])
+  // (a partial head once the chats' files are in, the whole one after the transcripts)
+  assert_eq(put, ["batch:" + b1, "head:head.json", "head:head.json"])
   // (nothing named by an older generation goes)
   assert_eq(dropped.length(), 0)
   assert_true(k.files.contains("other"))
@@ -691,6 +692,70 @@ test "level with a hundred-thousand-scale head: lacking files sent from their fi
   assert_false(k.files.contains("t0"))
   assert_true(k.files.contains("other"))
   assert_true(k.files.contains("t2"))
+}
+
+///|
+test "level puts the chats' head before the transcripts it lacks, partial, and the whole head after them" {
+  let gen = "lz5x0-0123abcd"
+  let b1 = "0000000001-0000000004-00000000.ndjson.zst"
+  let transcripts = ["t0", "t1", "t2", "t3"]
+  let held_files = ["t0"]
+  let heads : Array[J] = []
+  let put = []
+  let sent = []
+  let fail_at : Ref[String?] = Ref(Some("t2"))
+  let place_held : Ref[Held] = Ref({ gens: [], files: held_files })
+  let place : Place = {
+    held: fn(_, _) { place_held.val },
+    put: fn(_, _, _, kind, name, bytes) {
+      put.push("\{kind}:\{name}")
+      if kind == "head" {
+        heads.push(@jsjson.parse(@utf8.decode_lossy(bytes)))
+      }
+    },
+    put_file: fn(_, _, hash, _) {
+      if fail_at.val == Some(hash) {
+        fail("connection lost")
+      }
+      sent.push(hash)
+    },
+    drop: fn(_, _, _, _, _) { () },
+  }
+  let own = {
+    head: head_naming(gen, 4, [b1], ["f0"], transcripts),
+    batch: fn(b) { @utf8.encode(b) },
+    sources: async fn(hs : Array[String]) { hs.map(h => (h, "/src/\{h}")) },
+  }
+  let rt = @effect.Runtime::new()
+  let failed = Ref(false)
+  ignore(
+    rt.fork(async fn() {
+      try ignore(level(place, "W1", own)) catch {
+        _ => failed.val = true
+      }
+    }),
+  )
+  rt.advance(1)
+  // The chat's file and batch went, then a head naming only the transcripts held, then the sending failed.
+  assert_true(failed.val)
+  assert_eq(put, ["batch:" + b1, "head:head.json"])
+  assert_eq(sent, ["f0", "t1"])
+  assert_eq(head_transcript_files(heads[0]), ["t0"])
+  assert_eq(head_files(heads[0]), ["f0"])
+  assert_eq(head_to(heads[0]), 4.0)
+  assert_true(at(heads[0], "partial") is Some(Bool(true)))
+  // Asked again: the place holds the partial head at the same `to`, so the whole head still goes once all is sent.
+  place_held.val = { gens: [{ gen, head: Some(heads[0]), batches: [b1] }], files: ["t0", "f0", "t1"] }
+  fail_at.val = None
+  put.clear()
+  let got : Ref[Levelled?] = Ref(None)
+  ignore(rt.fork(async fn() { got.val = Some(level(place, "W1", own)) }))
+  rt.advance(1)
+  guard got.val is Some(Level(to, 0, _)) else { fail("not level") }
+  assert_eq(to, 4.0)
+  assert_eq(put, ["head:head.json"])
+  assert_eq(head_transcript_files(heads[1]), transcripts)
+  assert_true(at(heads[1], "partial") is None)
 }
 
 ///|

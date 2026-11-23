@@ -641,3 +641,62 @@ test("level treats putFile ENOENT for an ordinary attachment as missing, while r
     (e: unknown) => (e as { code?: unknown } | null)?.code === "ENOENT",
   );
 });
+
+test("level puts the chats' head before the transcripts it lacks, partial, and the whole head after them", async () => {
+  const origin = id("a");
+  const fileHash = "1".repeat(64);
+  const t = ["2", "3", "4", "5"].map((c) => c.repeat(64));
+  const batch = "0000000001-0000000004-00000000.ndjson.zst";
+  const head: Head = {
+    v: 1,
+    origin,
+    workspace: HOME,
+    name: "a",
+    dataDir: "",
+    gen: "lz5x0-0123abcd",
+    to: 4,
+    made: 40,
+    chats: 1,
+    messages: 1,
+    bytes: 10,
+    batches: [batch],
+    files: { [fileHash]: 10 },
+    transcriptFiles: Object.fromEntries(t.map((h) => [h, 1])),
+    runs: [{ run: "r1", from: 1 }],
+  };
+  const puts: string[] = [];
+  const heads: Head[] = [];
+  const sent: string[] = [];
+  let failAt: string | null = t[2]!;
+  let held = { gens: [] as { gen: string; head: Head | null; batches: string[] }[], files: [t[0]!] };
+  const place: Place = {
+    held: async () => held,
+    put: async (_ws, _origin, _gen, kind, name, bytes) => {
+      puts.push(`${kind}:${name}`);
+      if (kind === "head") heads.push(JSON.parse(Buffer.from(bytes).toString("utf8")) as Head);
+    },
+    putFile: async (_ws, _origin, hash) => {
+      if (hash === failAt) throw new Error("connection lost");
+      sent.push(hash);
+    },
+    drop: async () => {},
+  };
+  const own = { head, batch: async () => Buffer.from("b"), sources: async (hs: string[]) => new Map(hs.map((h) => [h, `/src/${h}`])) };
+  await assert.rejects(level(place, HOME, own), /connection lost/);
+  // The chat's file and batch went, then a head naming only the transcripts held, then the sending failed.
+  assert.deepEqual(puts, [`batch:${batch}`, "head:head.json"]);
+  assert.deepEqual(sent, [fileHash, t[1]]);
+  assert.deepEqual(Object.keys(heads[0]!.transcriptFiles!), [t[0]]);
+  assert.deepEqual(heads[0]!.files, head.files);
+  assert.equal(heads[0]!.to, 4);
+  assert.equal(heads[0]!.partial, true);
+  // Asked again: the place holds the partial head at the same `to`, so the whole head still goes once all is sent.
+  held = { gens: [{ gen: head.gen, head: heads[0]!, batches: [batch] }], files: [t[0]!, fileHash, t[1]!] };
+  failAt = null;
+  puts.length = 0;
+  const done = await level(place, HOME, own);
+  assert.equal(done.behind, false);
+  if (!done.behind) assert.equal(done.missing, 0);
+  assert.deepEqual(puts, ["head:head.json"]);
+  assert.deepEqual(heads[1], head);
+});

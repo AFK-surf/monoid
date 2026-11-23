@@ -253,8 +253,17 @@ function headFileHashes(head: Head, includeTranscripts: boolean): string[] {
   return [...out];
 }
 
-/// Brings `place` level with this station's own copy of `ws`: its batches and files first, its head, then what is not
-/// named any more goes. `known`: what the place held after it was levelled last (null: asked of it now).
+/// `head` naming only the transcripts `held` (`partial`): what a place holds once the chats are sent and before the
+/// transcripts are, a whole copy for a restorer as far as it goes.
+function partialHead(head: Head, held: Set<string>): Head {
+  const transcriptFiles: Record<string, number> = {};
+  for (const [h, n] of Object.entries(head.transcriptFiles ?? {})) if (held.has(h) || h in head.files) transcriptFiles[h] = n;
+  return { ...head, transcriptFiles, partial: true };
+}
+
+/// Brings `place` level with this station's own copy of `ws`: its batches and the chats' files first, a partial head
+/// while transcripts are lacking (`partialHead`), the transcripts, its head, then what is not named any more goes.
+/// `known`: what the place held after it was levelled last (null: asked of it now).
 export async function level(place: Place, ws: string, own: Own, known: Known | null = null, opts: { includeTranscripts?: boolean } = {}): Promise<Levelled> {
   const includeTranscripts = opts.includeTranscripts !== false;
   const origin = own.head.origin;
@@ -265,7 +274,7 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
     const holding = held.gens.find((g) => g.gen === own.head.gen);
     const others = new Set<string>();
     for (const g of held.gens) if (g.gen !== own.head.gen && g.head !== null) for (const h of headFileHashes(g.head, includeTranscripts)) others.add(h);
-    k = { gen: own.head.gen, batches: new Set(holding?.batches ?? []), files: new Set(held.files), others, to: holding?.head?.to ?? -1, made: holding?.head?.made ?? -1 };
+    k = { gen: own.head.gen, batches: new Set(holding?.batches ?? []), files: new Set(held.files), others, to: holding?.head?.to ?? -1, made: holding?.head?.partial === true ? -1 : (holding?.head?.made ?? -1) };
   }
   for (const b of own.head.batches) {
     if (k.batches.has(b)) continue;
@@ -278,12 +287,16 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
   const transcriptSet = includeTranscripts && own.head.transcriptFiles !== undefined
     ? new Set(Object.keys(own.head.transcriptFiles))
     : new Set<string>();
+  // (the chats' own files first, then the transcripts: a transcript a file also names is the chat's)
+  const chatFiles = new Set(Object.keys(own.head.files));
+  const lackingTranscripts = lacking.filter((h) => !chatFiles.has(h));
+  const toSendTranscripts = lackingTranscripts.some((h) => sources.has(h));
   let missing = 0;
-  for (const hash of lacking) {
+  const send = async (hash: string): Promise<void> => {
     const source = sources.get(hash);
     if (source === undefined) {
       missing++;
-      continue;
+      return;
     }
     try {
       await place.putFile(ws, origin, hash, source);
@@ -291,12 +304,22 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
       const enoent = (e as { code?: unknown } | null)?.code === "ENOENT" || (e instanceof Error && e.message.startsWith("ENOENT:"));
       if (enoent && !transcriptSet.has(hash)) {
         missing++;
-        continue;
+        return;
       }
       throw e;
     }
     k.files.add(hash);
+  };
+  for (const hash of lacking) if (chatFiles.has(hash)) await send(hash);
+  // The chats as far as they go now, before the transcripts still to send: a first copy of a station's transcripts is
+  // hundreds of thousands of files, and its chats waited behind them for a day (2026-11-23). This head names only the
+  // transcripts the place holds, and says it is partial, so that the whole one is put after them.
+  if (toSendTranscripts && k.to !== own.head.to) {
+    await place.put(ws, origin, own.head.gen, "head", "head.json", Buffer.from(JSON.stringify(partialHead(own.head, k.files), null, 1)));
+    k.to = own.head.to;
+    k.made = -1;
   }
+  for (const hash of lackingTranscripts) await send(hash);
   if (k.to !== own.head.to || k.made !== own.head.made) {
     await place.put(ws, origin, own.head.gen, "head", "head.json", Buffer.from(JSON.stringify(own.head, null, 1)));
     k.to = own.head.to;

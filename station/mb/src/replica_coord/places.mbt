@@ -420,6 +420,29 @@ pub fn behind(own : J, held : Held) -> Bool {
 }
 
 ///|
+/// `head` naming only the transcripts `held` (`partial`), as places.ts `partialHead`.
+fn partial_head(head : J, held : Map[String, Bool]) -> J {
+  let files = set_of(head_files(head))
+  let kept = entries(at(head, "transcriptFiles")).filter(e => held.contains(e.0) || files.contains(e.0))
+  guard head is Obj(fields) else { return head }
+  let out : Array[(String, J)] = []
+  let mut named = false
+  for f in fields {
+    if f.0 == "transcriptFiles" {
+      out.push((f.0, Obj(kept)))
+      named = true
+    } else if f.0 != "partial" {
+      out.push(f)
+    }
+  }
+  if !named {
+    out.push(("transcriptFiles", Obj(kept)))
+  }
+  out.push(("partial", Bool(true)))
+  Obj(out)
+}
+
+///|
 /// Brings `place` level with this station's own copy of `ws`: its batches and files first, its head, then what is not
 /// named any more goes. `known`: what the place held after it was levelled last (None: asked of it now).
 pub async fn level(place : Place, ws : String, own : Own, known? : Known? = None, include_transcripts? : Bool = true) -> Levelled {
@@ -447,7 +470,8 @@ pub async fn level(place : Place, ws : String, own : Own, known? : Known? = None
         files[f] = true
       }
       let (to, made) = match holding {
-        Some({ head: Some(h), .. }) => (head_to(h), num_at(h, "made").unwrap_or(-1.0))
+        Some({ head: Some(h), .. }) =>
+          (head_to(h), if at(h, "partial") is Some(Bool(true)) { -1.0 } else { num_at(h, "made").unwrap_or(-1.0) })
         _ => (-1.0, -1.0)
       }
       {
@@ -487,8 +511,12 @@ pub async fn level(place : Place, ws : String, own : Own, known? : Known? = None
   } else {
     {}
   }
+  // (the chats' own files first, then the transcripts: a transcript a file also names is the chat's)
+  let chat_files = set_of(head_files(own.head))
+  let lacking_transcripts = lacking.filter(h => !chat_files.contains(h))
+  let to_send_transcripts = lacking_transcripts.iter().any(h => source_map.contains(h))
   let mut missing = 0
-  for hash in lacking {
+  async fn send(hash : String) -> Unit {
     match source_map.get(hash) {
       None => missing += 1
       Some(source) => {
@@ -504,6 +532,21 @@ pub async fn level(place : Place, ws : String, own : Own, known? : Known? = None
         }
       }
     }
+  }
+  for hash in lacking {
+    if chat_files.contains(hash) {
+      send(hash)
+    }
+  }
+  // The chats as far as they go now, before the transcripts still to send (places.ts `level`): a head naming only the
+  // transcripts the place holds, partial, so that the whole one is put after them.
+  if to_send_transcripts && k.to != head_to(own.head) {
+    (place.put)(ws, origin, gen, "head", "head.json", @utf8.encode(@jsjson.stringify_indent(partial_head(own.head, k.files), 1)))
+    k.to = head_to(own.head)
+    k.made = -1.0
+  }
+  for hash in lacking_transcripts {
+    send(hash)
   }
   if k.to != head_to(own.head) || k.made != head_made(own.head) {
     (place.put)(ws, origin, gen, "head", "head.json", @utf8.encode(@jsjson.stringify_indent(own.head, 1)))
