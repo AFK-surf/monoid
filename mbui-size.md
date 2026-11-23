@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [db2b6cdf5](https://github.com/AFK-surf/monoid/commit/db2b6cdf503a0fb378b372704da3c95cdf18c266) fix(pion-client-core): enforce lock genesis pinnin | 2.74 | 3.69 | 14.95 | 37.14 | 56.95 | 32.52 | 66.07 | 100.48 | 127.55 |
 | [c4160616f](https://github.com/AFK-surf/monoid/commit/c4160616f52038080e27860eed80bdc1eab6592e) perf(station): keep the hub's config when a check  | 2.74 | 3.69 | 14.95 | 37.14 | 56.94 | 32.52 | 66.06 | 101.3 | 131.39 |
 | [cabc742d9](https://github.com/AFK-surf/monoid/commit/cabc742d9fa13e6f7852c7ed5cb67dc16b6f5e99) perf(mbui): prewarm offscreen home chat row text a | 2.74 | 3.69 | 14.95 | 37.14 | 56.94 | 32.52 | 66.06 | 101.3 | 131.39 |
 | [f32384c6d](https://github.com/AFK-surf/monoid/commit/f32384c6dbc05992d004ddb2b4e03375664f5820) feat(ui): calibrate pressed liquid glass lens and  | 2.74 | 3.69 | 14.95 | 37.14 | 56.93 | 32.51 | 66.04 | 101.09 | 118.55 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [21a57831d](https://github.com/AFK-surf/monoid/commit/21a57831d4729563cfc2cc9930d433fdb581e2a4) perf(ui,mbui): reduce side-panel slide frame cost  | 2.73 | 3.68 | 14.91 | 37.08 | 56.8 | 32.48 | 65.96 | 100.42 | 137.83 |
 | [84566e834](https://github.com/AFK-surf/monoid/commit/84566e834def6737fddc28b5d8ea9b85e2a00fe8) fix(station): include check-discovered models in M | 2.73 | 3.68 | 14.91 | 37.08 | 56.79 | 32.48 | 65.96 | 100.19 | 110.17 |
 | [8ac524d7f](https://github.com/AFK-surf/monoid/commit/8ac524d7f847da4e3ed251be1524f9e3d826cd18) feat(pion-rules): add #verify and zero-sorry Lean  | 2.73 | 3.68 | 14.9 | 37.06 | 56.76 | 32.47 | 65.92 | 100.45 | 122.88 |
-| [d1826a13e](https://github.com/AFK-surf/monoid/commit/d1826a13e087adc3687732c639f2f0221eb26167) fix(e2e): end the fake claude's turn on a remote t | 2.73 | 3.68 | 14.9 | 37.06 | 56.76 | 32.47 | 65.92 | 101.02 | 121.62 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [db2b6cdf5](https://github.com/AFK-surf/monoid/commit/db2b6cdf503a0fb378b372704da3c95cdf18c266) fix(pion-client-core): enforce lock genesis pinnin | 0.55 | 0.72 | 2.8 | 3.81 | 6.9 | 2.04 | 5.68 | 57.31 |
 | [c4160616f](https://github.com/AFK-surf/monoid/commit/c4160616f52038080e27860eed80bdc1eab6592e) perf(station): keep the hub's config when a check  | 0.55 | 0.72 | 2.8 | 3.81 | 6.9 | 2.04 | 5.68 | 57.85 |
 | [cabc742d9](https://github.com/AFK-surf/monoid/commit/cabc742d9fa13e6f7852c7ed5cb67dc16b6f5e99) perf(mbui): prewarm offscreen home chat row text a | 0.55 | 0.72 | 2.8 | 3.81 | 6.89 | 2.04 | 5.66 | 57.85 |
 | [f32384c6d](https://github.com/AFK-surf/monoid/commit/f32384c6dbc05992d004ddb2b4e03375664f5820) feat(ui): calibrate pressed liquid glass lens and  | 0.55 | 0.72 | 2.8 | 3.81 | 6.9 | 2.04 | 5.68 | 57.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [21a57831d](https://github.com/AFK-surf/monoid/commit/21a57831d4729563cfc2cc9930d433fdb581e2a4) perf(ui,mbui): reduce side-panel slide frame cost  | 0.49 | 0.64 | 2.45 | 3.51 | 5.83 | 1.8 | 4.85 | 55.2 |
 | [84566e834](https://github.com/AFK-surf/monoid/commit/84566e834def6737fddc28b5d8ea9b85e2a00fe8) fix(station): include check-discovered models in M | 0.49 | 0.64 | 2.45 | 3.51 | 5.83 | 1.8 | 4.85 | 55.58 |
 | [8ac524d7f](https://github.com/AFK-surf/monoid/commit/8ac524d7f847da4e3ed251be1524f9e3d826cd18) feat(pion-rules): add #verify and zero-sorry Lean  | 0.49 | 0.64 | 2.45 | 3.5 | 5.81 | 1.79 | 4.83 | 55.22 |
-| [d1826a13e](https://github.com/AFK-surf/monoid/commit/d1826a13e087adc3687732c639f2f0221eb26167) fix(e2e): end the fake claude's turn on a remote t | 0.49 | 0.64 | 2.45 | 3.51 | 5.83 | 1.8 | 4.85 | 55.1 |
