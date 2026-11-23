@@ -7,7 +7,8 @@
 // 1. Non-blocking 4-slot D3D11 timestamp disjoint query ring produces valid GPU ms (or degrades cleanly on WARP)
 //    and recycles slots across multiple frames and gpu_q_free() without leaking or stalling.
 // 2. win_count_dropped_step() accurately counts drops during continuous animation, ignores idle pauses
-//    (>= 2.5 * display_period), clamps spikes to MB_WIN_DROPPED_CLAMP, and guards non-monotonic counters.
+//    (>= 2.5 * display_period between the samples' sync times), counts in frames of `beats` refreshes (240Hz/360Hz
+//    paced to 120fps), clamps spikes to MB_WIN_DROPPED_CLAMP, and guards non-monotonic counters and missing times.
 #define MB_NO_MOONBIT_H 1
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
@@ -72,22 +73,40 @@ static void test_dropped_step_logic(void) {
   const int64_t freq = 10000000;  // 10 MHz QPC (10000 ticks = 1 ms)
   const double p60 = 1000.0 / 60.0;
   // First sample (has_prev = 0): never counts drops.
-  CHECK(win_count_dropped_step(0, 0, 0, 0, 10, 20, 100000, freq, p60) == 0);
+  CHECK(win_count_dropped_step(0, 0, 0, 0, 10, 20, 100000, freq, p60, 1) == 0);
   // Continuous 60Hz (dt = 16.67ms < 41.67ms), no drops (d_sync == d_present == 1).
-  CHECK(win_count_dropped_step(10, 100, 100000, 1, 11, 101, 266700, freq, p60) == 0);
+  CHECK(win_count_dropped_step(10, 100, 100000, 1, 11, 101, 266700, freq, p60, 1) == 0);
   // Continuous animation (dt = 33.3ms < 41.67ms), 2 sync refreshes missed (d_sync=3, d_present=1).
-  CHECK(win_count_dropped_step(10, 100, 100000, 1, 11, 103, 433000, freq, p60) == 2);
+  CHECK(win_count_dropped_step(10, 100, 100000, 1, 11, 103, 433000, freq, p60, 1) == 2);
   // Idle pause (dt = 50ms >= 2.5 * 16.67ms): ignored even if d_sync > d_present.
-  CHECK(win_count_dropped_step(10, 100, 100000, 1, 11, 104, 600000, freq, p60) == 0);
+  CHECK(win_count_dropped_step(10, 100, 100000, 1, 11, 104, 600000, freq, p60, 1) == 0);
   // Huge spike within continuous window: clamped to MB_WIN_DROPPED_CLAMP (10).
-  CHECK(win_count_dropped_step(10, 100, 100000, 1, 11, 150, 300000, freq, p60) == MB_WIN_DROPPED_CLAMP);
+  CHECK(win_count_dropped_step(10, 100, 100000, 1, 11, 150, 300000, freq, p60, 1) == MB_WIN_DROPPED_CLAMP);
   // Non-monotonic QPC or PresentCount: 0.
-  CHECK(win_count_dropped_step(10, 100, 200000, 1, 11, 103, 100000, freq, p60) == 0);
-  CHECK(win_count_dropped_step(10, 100, 100000, 1, 10, 103, 200000, freq, p60) == 0);
+  CHECK(win_count_dropped_step(10, 100, 200000, 1, 11, 103, 100000, freq, p60, 1) == 0);
+  CHECK(win_count_dropped_step(10, 100, 100000, 1, 10, 103, 200000, freq, p60, 1) == 0);
   // 120Hz continuous (period = 8.33ms, 2.5x = 20.83ms): dt = 16.67ms counts 1 drop, dt = 22ms ignored.
   const double p120 = 1000.0 / 120.0;
-  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 12, 266700, freq, p120) == 1);
-  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 13, 320000, freq, p120) == 0);
+  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 12, 266700, freq, p120, 1) == 1);
+  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 13, 320000, freq, p120, 1) == 0);
+
+  // 240Hz paced to 120fps (beats = 2, period = 8.33ms per frame, 2.5x = 20.83ms): each present expects 2 syncs.
+  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 12, 183300, freq, p120, 2) == 0);   // normal frame
+  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 13, 225000, freq, p120, 2) == 0);   // one-beat phase jitter
+  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 14, 266700, freq, p120, 2) == 1);   // one 120fps frame dropped
+  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 16, 300000, freq, p120, 2) == 2);   // two dropped
+  CHECK(win_count_dropped_step(1, 10, 100000, 1, 3, 16, 300000, freq, p120, 2) == 1);   // two presents, one dropped
+  // 360Hz paced to 120fps (beats = 3).
+  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 13, 183300, freq, p120, 3) == 0);   // normal frame
+  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 16, 266700, freq, p120, 3) == 1);   // one dropped
+  // Waking from a 500ms idle: the samples' own sync times are 500ms apart, so the long sync gap is not a drop.
+  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 130, 5100000, freq, p120, 2) == 0);
+  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 130, 5100000, freq, p60, 1) == 0);
+  // A sample without a sync time, or no beats: 0.
+  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 14, 0, freq, p120, 2) == 0);
+  CHECK(win_count_dropped_step(1, 10, 0, 1, 2, 14, 166700, freq, p120, 2) == 0);
+  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 14, 266700, freq, p120, 0) == 0);
+  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 14, 266700, freq, p120, -1) == 0);
 }
 
 int main(void) {

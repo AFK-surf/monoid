@@ -3099,20 +3099,24 @@ static void gpu_q_end(int idx) {
 }
 
 #define MB_WIN_DROPPED_CLAMP 10
-// Pure logic for counting dropped frames from consecutive DXGI_FRAME_STATISTICS samples:
-// counts drops only when consecutive presents are within 2.5 * period_ms (continuous animation/scroll, not idle pauses).
+// Pure logic for counting dropped frames from consecutive DXGI_FRAME_STATISTICS samples. The timestamps are the
+// samples' own SyncQPCTime (DWM's statistics lag the present by a frame or more, so the CPU's time now would pair a
+// short gap with a sync count that spans a whole idle pause). Drops count only when the two syncs are within
+// 2.5 * period_ms (continuous animation or scroll, not idle pauses); a frame is `beats` refreshes (mb_frame_beats:
+// 2 at 240Hz, 3 at 360Hz paced to 120fps), so a present expects `beats` syncs and a drop is a whole frame's worth.
 static int32_t win_count_dropped_step(UINT prev_present, UINT prev_sync, int64_t prev_qpc, int has_prev,
                                       UINT cur_present, UINT cur_sync, int64_t cur_qpc,
-                                      int64_t qpc_freq, double period_ms) {
-  if (!has_prev || qpc_freq <= 0 || period_ms <= 0.0) return 0;
-  if (cur_qpc <= prev_qpc) return 0;
+                                      int64_t qpc_freq, double period_ms, int beats) {
+  if (!has_prev || qpc_freq <= 0 || period_ms <= 0.0 || beats <= 0) return 0;
+  if (prev_qpc <= 0 || cur_qpc <= 0 || cur_qpc <= prev_qpc) return 0;
   double dt_ms = (double)(cur_qpc - prev_qpc) * 1000.0 / (double)qpc_freq;
   if (dt_ms >= 2.5 * period_ms) return 0;
   if (cur_present <= prev_present || cur_sync <= prev_sync) return 0;
   UINT d_present = cur_present - prev_present;
   UINT d_sync = cur_sync - prev_sync;
-  if (d_sync <= d_present) return 0;
-  UINT dropped = d_sync - d_present;
+  uint64_t expected_sync = (uint64_t)d_present * (uint64_t)beats;
+  if ((uint64_t)d_sync <= expected_sync) return 0;
+  uint64_t dropped = ((uint64_t)d_sync - expected_sync) / (uint64_t)beats;
   if (dropped > MB_WIN_DROPPED_CLAMP) dropped = MB_WIN_DROPPED_CLAMP;
   return (int32_t)dropped;
 }
@@ -3317,19 +3321,25 @@ int mb_render_present(const double *inst, int32_t count, double r, double g, dou
   commit_presented();
   if (SUCCEEDED(hr) && hr != DXGI_STATUS_OCCLUDED) {
     DXGI_FRAME_STATISTICS fs = {};
-    if (SUCCEEDED(chain->GetFrameStatistics(&fs)) && fs.PresentCount > 0) {
-      LARGE_INTEGER now_qpc, freq_qpc;
-      QueryPerformanceCounter(&now_qpc);
-      QueryPerformanceFrequency(&freq_qpc);
-      double period_ms = win_display_period_ms(freq_qpc.QuadPart);
-      present_dropped += win_count_dropped_step(rw->last_present_count, rw->last_sync_refresh,
-                                                rw->last_present_qpc, rw->has_frame_stats,
-                                                fs.PresentCount, fs.SyncRefreshCount,
-                                                now_qpc.QuadPart, freq_qpc.QuadPart, period_ms);
-      rw->last_present_count = fs.PresentCount;
-      rw->last_sync_refresh = fs.SyncRefreshCount;
-      rw->last_present_qpc = now_qpc.QuadPart;
-      rw->has_frame_stats = 1;
+    if (SUCCEEDED(chain->GetFrameStatistics(&fs)) && fs.PresentCount > 0 && fs.SyncQPCTime.QuadPart > 0) {
+      // DWM may hand back the same lagging sample again before it takes the next present: keep the last one
+      if (!rw->has_frame_stats || fs.PresentCount != rw->last_present_count) {
+        LARGE_INTEGER freq_qpc;
+        QueryPerformanceFrequency(&freq_qpc);
+        int beats = mb_frame_beats();
+        double period_ms = win_display_period_ms(freq_qpc.QuadPart);
+        present_dropped += win_count_dropped_step(rw->last_present_count, rw->last_sync_refresh,
+                                                  rw->last_present_qpc, rw->has_frame_stats,
+                                                  fs.PresentCount, fs.SyncRefreshCount,
+                                                  fs.SyncQPCTime.QuadPart, freq_qpc.QuadPart, period_ms, beats);
+        rw->last_present_count = fs.PresentCount;
+        rw->last_sync_refresh = fs.SyncRefreshCount;
+        rw->last_present_qpc = fs.SyncQPCTime.QuadPart;
+        rw->has_frame_stats = 1;
+      }
+    } else {
+      // no sample, or one the driver left without a sync time: count nothing until a whole one comes
+      rw->has_frame_stats = 0;
     }
   } else {
     rw->has_frame_stats = 0;
