@@ -1157,19 +1157,20 @@ jobs:
   # files doubled in five days (271 to 581). Measured on these runners (2026-11-10): six slices, 57 to 99 s of tests
   # each, the same whatever else runs; every test passes here as on a Mac (including the Rust station's archive command,
   # archive-rs:linux-x64). More files: more slices (here, in `shard` and in
-  # STILLFAIL_STATION_SHARD), not a longer job.
+  # STILLFAIL_STATION_SHARD), not a longer job. Seven since 2026-11-23: six slices of some 260 s of tests each left a
+  # job's setting up no room in its five minutes (check-station (4) cut at 5m0s after its tests passed).
   check-station:
     needs: [plan, natives, natives-harness]
     if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-harness.result) && needs.plan.outputs.station_tests == 'true' }}
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5]
+        shard: [0, 1, 2, 3, 4, 5, 6]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       STILLFAIL_CHECK_PART: station-tests
-      STILLFAIL_STATION_SHARD: ${{ matrix.shard }}/6
+      STILLFAIL_STATION_SHARD: ${{ matrix.shard }}/7
       # (four files at a time on its four vCPUs, not Node's three (availableParallelism - 1): much of a slice's time is
       # its files waiting on the MoonBit reader's processes and the model runners' workers, a slot held idle)
       STILLFAIL_NODE_TEST_JOBS: 4
