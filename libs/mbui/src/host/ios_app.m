@@ -2114,11 +2114,18 @@ static void network_start(void) {
   network_monitor = nw_path_monitor_create();
   nw_path_monitor_set_queue(network_monitor, dispatch_get_main_queue());
   static NSString *was;
+  static int was_cellular = -1;
   nw_path_monitor_set_update_handler(network_monitor, ^(nw_path_t path) {
     NSMutableString *now = [NSMutableString string];
-    if (nw_path_get_status(path) == nw_path_status_satisfied) {
+    __block BOOL has_cell = NO;
+    __block BOOL has_non_cell = NO;
+    BOOL satisfied = nw_path_get_status(path) == nw_path_status_satisfied;
+    if (satisfied) {
       nw_path_enumerate_interfaces(path, ^bool(nw_interface_t i) {
-        [now appendFormat:@"%s/%d,", nw_interface_get_name(i), (int)nw_interface_get_type(i)];
+        nw_interface_type_t kind = nw_interface_get_type(i);
+        if (kind == nw_interface_type_cellular) has_cell = YES;
+        else if (kind == nw_interface_type_wifi || kind == nw_interface_type_wired) has_non_cell = YES;
+        [now appendFormat:@"%s/%d,", nw_interface_get_name(i), (int)kind];
         return true;
       });
     }
@@ -2145,6 +2152,13 @@ static void network_start(void) {
     if (changed) {
       say([NSString stringWithFormat:@"ios: network now %@", now]);
       say_system(@{@"network" : @YES});
+    }
+    if (satisfied) {
+      int cell = (has_cell && !has_non_cell) ? 1 : 0;
+      if (cell != was_cellular) {
+        was_cellular = cell;
+        say_system(@{@"cellular" : @(cell == 1)});
+      }
     }
   });
   nw_path_monitor_start(network_monitor);

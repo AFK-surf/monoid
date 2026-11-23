@@ -175,8 +175,10 @@ export class StationsSync {
   readonly #searches = new Map<string, Topic>();
   /// A usage preparation can take many bounded batches; it has its own cancellable stream, outside the sync lane.
   readonly #usageReading = new Map<string, { link: Link; fiber: Fiber.Fiber<void, never> | null }>();
-  /// What the station topics want of a stream beyond what the sync wants (host samples, logs, sessions shown).
-  wanted: (address: string) => { host: boolean; logs: [string, number][]; logins?: string[] } = () => ({ host: false, logs: [] });
+  /// Whether the device is on a cellular network and spares live events for chats not currently shown.
+  #sparing = false;
+  /// What the station topics want of a stream beyond what the sync wants (host samples, logs, logins, open sessions, rates).
+  wanted: (address: string) => { host: boolean; logs: [string, number][]; logins?: string[]; open?: string[]; rates?: boolean } = () => ({ host: false, logs: [] });
   /// What a station holds beyond the records (link, live views, host, logs), as its readers see it change.
   readonly seen = new Seen();
   /// Told when what a station holds beyond the records changed, after its readers (`seen`).
@@ -218,7 +220,11 @@ export class StationsSync {
     this.#core = core;
     this.requests = new Requests(core, wire);
     this.#links = new Links(core, this.requests, {
-      wanted: (address) => this.wanted(address),
+      wanted: (address) => {
+        const w = this.wanted(address);
+        const spare = this.#sparing && !w.rates ? [...new Set(w.open ?? [])].sort() : null;
+        return { host: w.host, logs: w.logs, logins: w.logins, spare };
+      },
       afresh: (address, ctx) => this.snapshot(address, ctx),
       goesOn: (address, how) => this.#goesOn(address, how),
       event: (address, name, raw, again) => this.onEvent(address, name, raw, again),
@@ -242,7 +248,7 @@ export class StationsSync {
     this.requests.onAnswered = (station) => this.#links.answered(station.toString());
     this.relays = new Relays(core);
     this.relays.onChange = (station) => this.onChange(station, "logins");
-    this.channels = new Channels(heldIn(core.data), {
+    this.channels = new Channels(heldIn(core.data, (station, key) => this.#transcriptSpared(station, key)), {
       read: (station, path, options) => Effect.suspend(() => this.requests.call(this.#links.get(station)?.addr ?? StationAddr.parse(station), "GET", path, null, options)),
       reached: (station) => this.#links.has(station) && this.reachable(station),
       enqueue: (station, task, priority, work) => this.#enqueue(station, task, priority, work),
@@ -302,6 +308,29 @@ export class StationsSync {
   /// Opens the station's stream for what it is wanted for now, unless the one open gives that (or `anew`).
   openEvents(address: string, anew: boolean): void {
     this.#links.openEvents(address, anew);
+  }
+
+  /// Whether live events for unopened chats are spared (cellular network).
+  isSparing(): boolean {
+    return this.#sparing;
+  }
+
+  /// Switches cellular live-event sparing on or off, replacing open streams and sweeping transcripts on return to full.
+  spare(on: boolean): void {
+    if (this.#sparing === on) return;
+    this.#sparing = on;
+    for (const link of this.#links.values()) {
+      this.openEvents(link.address, false);
+      if (!on && this.reachable(link.address)) this.#historyStart(link.address);
+    }
+  }
+
+  #transcriptSpared(address: string, key: string): boolean {
+    return this.#sparing && !this.#core.store.inUse({ topic: "live", station: address, key });
+  }
+
+  #transcriptLetGo(address: string, key: string): boolean {
+    return this.#core.data.evicted("transcript", address, key) || this.#transcriptSpared(address, key);
   }
 
   /// A stream opened going on from where the device was in its station's events: nothing is read again but the
@@ -2740,8 +2769,8 @@ export class StationsSync {
       }
       const now = core.host.nowMs();
       const kind = str(get(message, "type")) ?? "";
-      if (kind === "timeline" && core.data.evicted("transcript", address, key)) {
-        // Let go for room and not opened since: its items are read when it is opened.
+      if (kind === "timeline" && this.#transcriptLetGo(address, key)) {
+        // Let go for room or spared on cellular: its items are read when opened or when leaving cellular.
       } else if (kind === "timeline") {
         const start = u64(get(message, "start")) ?? 0;
         const entries = (get(message, "entries") as unknown[] | undefined) ?? [];

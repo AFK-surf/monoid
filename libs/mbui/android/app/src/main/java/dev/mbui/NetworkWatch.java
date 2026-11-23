@@ -4,12 +4,14 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
+import android.net.NetworkCapabilities;
 
 /**
  * The default network, followed: said to the app when it becomes
- * another one than before (Wi-Fi to mobile data, back online after none: src/hostapi/system.mbt `network`). Every
+ * another one than before (Wi-Fi to mobile data, back online after none: src/hostapi/system.mbt `network`), and
+ * whether it is cellular (`cellular`, said as first seen and whenever it changes). Every
  * connection the app had was on the old one and is dead with nothing said. The first network seen is the one the app
- * started on, so nothing is said of it. Only with ACCESS_NETWORK_STATE in the app's manifest. One for the process, however
+ * started on, so nothing is said of `network` for it. Only with ACCESS_NETWORK_STATE in the app's manifest. One for the process, however
  * many activities are alive (MainActivity and OverActivity both, a share sheet over another app while the app is in
  * the background): the first one made starts it, the last one gone stops it, so a change is said once.
  */
@@ -17,6 +19,7 @@ final class NetworkWatch extends ConnectivityManager.NetworkCallback {
     private final ConnectivityManager connectivity;
     private Network current;
     private boolean seen;
+    private Boolean cellular;
 
     private NetworkWatch(ConnectivityManager connectivity) {
         this.connectivity = connectivity;
@@ -70,6 +73,20 @@ final class NetworkWatch extends ConnectivityManager.NetworkCallback {
         }
         if (changed) {
             Native.post("system", "{\"network\":true}");
+        }
+    }
+
+    @Override
+    public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
+        boolean now = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR);
+        boolean tell;
+        synchronized (this) {
+            if (current != null && !network.equals(current)) return;
+            tell = cellular == null || cellular != now;
+            cellular = now;
+        }
+        if (tell) {
+            Native.post("system", now ? "{\"cellular\":true}" : "{\"cellular\":false}");
         }
     }
 

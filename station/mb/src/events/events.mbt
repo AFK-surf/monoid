@@ -30,6 +30,10 @@ pub let follows_header : String = "stillfail-follows"
 pub let live_rates_header : String = "stillfail-live-rates"
 
 ///|
+/// events.ts SPARED: `running=1&spare=1` sends `live` events only for the open sessions named.
+pub let spared_header : String = "stillfail-spared"
+
+///|
 /// A login's terminal as it is now (events.ts `loginScreen`'s screen).
 pub(all) struct Screen {
   rows : Array[String]
@@ -132,6 +136,7 @@ struct Client {
   lang : String
   host : Bool
   running : Bool
+  spare : Map[String, Unit]?
   /// What is told of the sessions at work it is told as they are now meanwhile (`heldNow`), by its making.
   mut held_waits : (Int32, Map[String, Array[J]])?
   stream : Stream
@@ -592,6 +597,9 @@ pub fn Events::held_told(self : Events, key : String, message : J) -> Unit {
     if !c.running || !self.seen_by(c, Session(key)) {
       continue
     }
+    if c.spare is Some(open) && !open.contains(key) {
+      continue
+    }
     match c.held_waits {
       Some((_, waits)) if waits.get(key) is Some(w) => w.push(message)
       _ => c.send("live", keyed(message, key))
@@ -737,6 +745,7 @@ pub(all) struct Asked {
   brief : Bool
   logins : Array[String]
   running : Bool
+  spare : Array[String]?
 }
 
 ///|
@@ -789,6 +798,20 @@ fn Events::opened(
   shared_history : Bool,
   done : (Result[Answer, String]) -> Unit,
 ) -> Unit {
+  let spared : Map[String, Unit]? = if follows {
+    match asked.spare {
+      Some(keys) => {
+        let m : Map[String, Unit] = Map([])
+        for key in keys {
+          m[key] = ()
+        }
+        Some(m)
+      }
+      None => None
+    }
+  } else {
+    None
+  }
   let stream = { queue: [], closed: false, carried: None, remove: () => (), }
   let client = {
     id: self.next,
@@ -796,6 +819,7 @@ fn Events::opened(
     lang,
     host: asked.host,
     running: follows,
+    spare: spared,
     held_waits: None,
     stream,
     stops: [],
@@ -819,7 +843,11 @@ fn Events::opened(
   }
   if follows && self.deps.held_now is Some(held_now) {
     let keys = self.deps.held.unwrap()().filter(key => {
-      self.seen_by(client, Session(key))
+      self.seen_by(client, Session(key)) &&
+      (match spared {
+        None => true
+        Some(open) => open.contains(key)
+      })
     })
     if keys.length() > 0 {
       self.held_making += 1
@@ -973,6 +1001,9 @@ fn Events::opened(
     headers.push((follows_header, "running"))
     if self.deps.held_now is Some(_) {
       headers.push((live_rates_header, "1"))
+    }
+    if spared is Some(_) {
+      headers.push((spared_header, "1"))
     }
   }
   done(Ok({ headers, stream, }))

@@ -6,7 +6,8 @@
 //
 // The sessions at work are the station's to follow: a stream asked `running=1` is told what every one its viewer sees
 // does as it does it (sessions/live.ts `running`), from where each stood as the stream opened, and a session starting
-// asks nothing of any client (FOLLOWS). Nothing of before is told: a device reads what it lacks of a transcript as it
+// asks nothing of any client (FOLLOWS). With `spare=1` and `open=<key>` (cellular networks), only those open sessions'
+// live events are sent (SPARED). Nothing of before is told: a device reads what it lacks of a transcript as it
 // reads anything it lacks, knowing from a session's summary how far its transcript goes (`transcriptLength`).
 //
 // A client's stream is replaced by another whenever what it follows changes (a client from before, naming the sessions
@@ -72,6 +73,8 @@ export const HEAD = "stillfail-head";
 export const FOLLOWS = "stillfail-follows";
 /// A running-session snapshot includes each current output rate, and a quiet rate is cleared.
 export const LIVE_RATES = "stillfail-live-rates";
+/// A stream's answer when it was asked `running=1&spare=1` and is told `live` events only for the open sessions it named.
+export const SPARED = "stillfail-spared";
 
 /// Where what is told goes over to the next process at a handover (`handOver`), in the data directory: beside the hub's
 /// sessions (sessions/hub.ts `handoverFile`).
@@ -187,6 +190,8 @@ type Client = {
   host: boolean;
   /// Told what every session at work its viewer sees does (`running=1`, FOLLOWS).
   running: boolean;
+  /// When non-null (`spare=1`), only these open session keys receive `live` events.
+  spare: Set<string> | null;
   /// What is told of those it is told as they are now meanwhile, until it is (`heldNow`): then, after it.
   heldWaits?: Map<string, unknown[]>;
   send(event: string, data: unknown): void;
@@ -416,6 +421,7 @@ export class Events {
   heldTold(key: string, message: unknown) {
     for (const c of this.clients) {
       if (!c.running || !this.sees(c, { session: key })) continue;
+      if (c.spare !== null && !c.spare.has(key)) continue;
       const waits = c.heldWaits?.get(key);
       if (waits !== undefined) waits.push(message);
       else c.send("live", { ...(message as object), key });
@@ -476,10 +482,11 @@ export class Events {
   /// told after it is told first, and their sidebar and overview as they are now (RESUMED says so), or `missed`.
   /// `brief`: the sessions followed have their transcript entries in brief (read/transcript.ts `brief`).
   /// `logins`: those logins' terminals, each a `login-screen` event (all its rows first, then the rows that changed).
-  async open(viewer: Viewer, lang: Lang, host: boolean, live: [string, number, number | null][], logs: [string, number][], since: string | null = null, brief = false, logins: string[] = [], running = false): Promise<Answer> {
+  async open(viewer: Viewer, lang: Lang, host: boolean, live: [string, number, number | null][], logs: [string, number][], since: string | null = null, brief = false, logins: string[] = [], running = false, spare: string[] | null = null): Promise<Answer> {
     // Following the sessions at work itself, it follows none by name: a client that asks both is one that does not know
     // yet whether this station does (an older one follows those it names).
     const follows = running && this.deps.held !== undefined;
+    const spared = follows && spare !== null ? new Set(spare) : null;
     if (follows) live = [];
     // What the process before this one told goes on here, ids and all: not before it is taken up.
     if (this.taking !== null) await this.taking;
@@ -506,6 +513,7 @@ export class Events {
       lang,
       host,
       running: follows,
+      spare: spared,
       // Its own (a session's steps, a log, a host sample, `missed`): not of the log, and without an id (event-log.ts).
       send: (event, data) => push(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
       raw: push,
@@ -527,7 +535,7 @@ export class Events {
     if (!resumes) this.overviewTold.delete(k);
     // The sessions at work its viewer sees, as each is now: from here on what each does comes as it does it (heldTold).
     if (follows && this.deps.heldNow !== undefined) {
-      const keys = this.deps.held!().filter((key) => this.sees(client, { session: key }));
+      const keys = this.deps.held!().filter((key) => this.sees(client, { session: key }) && (spared === null || spared.has(key)));
       if (keys.length > 0) {
         const waits = new Map(keys.map((key) => [key, [] as unknown[]]));
         client.heldWaits = waits;
@@ -617,7 +625,7 @@ export class Events {
     };
     return {
       status: 200,
-      headers: { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no", ...(head !== null ? { [RESUMED]: "1", [HEAD]: head } : {}), ...(follows ? { [FOLLOWS]: "running", ...(this.deps.heldNow !== undefined ? { [LIVE_RATES]: "1" } : {}) } : {}) },
+      headers: { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no", ...(head !== null ? { [RESUMED]: "1", [HEAD]: head } : {}), ...(follows ? { [FOLLOWS]: "running", ...(this.deps.heldNow !== undefined ? { [LIVE_RATES]: "1" } : {}), ...(spared !== null ? { [SPARED]: "1" } : {}) } : {}) },
       body,
     };
   }

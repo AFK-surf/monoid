@@ -321,6 +321,10 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
           _ => []
         },
         running: arg(8) is True,
+        spare: match arg(9) {
+          Array(l) => Some(l.filter_map(x => match x { String(s) => Some(s); _ => None }))
+          _ => None
+        },
       }
       let (headers, id) = events.open(arg(0), text(1), asked)
       a.next_stream += 1

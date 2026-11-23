@@ -398,6 +398,34 @@ test "back on screen after a while, the core is told how long it was away; anoth
   assert_eq(again.length(), 2)
   assert_eq(number(Some(again[1].params), "away"), 0.0)
   assert_true(flag(Some(again[1].params), "network"))
+  t.post(@hostapi.system_channel, "{\"cellular\":true}")
+  t.frame()
+  t.post(@hostapi.system_channel, "{\"cellular\":false}")
+  t.frame()
+  let net = named(calls, "client.network")
+  assert_eq(net.length(), 2)
+  assert_true(flag(Some(net[0].params), "cellular"))
+  assert_false(flag(Some(net[1].params), "cellular"))
+}
+
+///|
+test "cellular state posted before the first frame is sent once attend sets the source" {
+  let calls : Array[Made] = []
+  new_run()
+  let base = fixture("home")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      (base.call)(name, params, done)
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.post(@hostapi.system_channel, "{\"cellular\":true}")
+  t.frame()
+  let net = named(calls, "client.network")
+  assert_eq(net.length(), 1)
+  assert_true(flag(Some(net[0].params), "cellular"))
 }
 
 ///|

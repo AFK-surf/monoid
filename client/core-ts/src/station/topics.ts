@@ -131,13 +131,15 @@ export class StationTopics implements Owner {
     return STATION_TOPICS.has(topic.topic);
   }
 
-  /// What the station topics shown want of each station's stream: host samples, the logs shown.
-  #wanted(address: string): { host: boolean; logs: [string, number][]; logins: string[] } {
+  /// What the station topics shown want of each station's stream: host samples, the logs shown, open live sessions, and rates.
+  #wanted(address: string): { host: boolean; logs: [string, number][]; logins: string[]; open: string[]; rates: boolean } {
     const topics = this.#core.store.liveTopics().filter((t) => t.station === address);
     return {
       host: topics.some((t) => t.topic === "host"),
       logs: topics.filter((t) => t.topic === "jobLog").map((t) => [t.job as string, t.lines as number] as [string, number]),
       logins: [...new Set(topics.filter((t) => t.topic === "machineLoginScreen").map((t) => t.id as string))],
+      open: [...new Set(topics.filter((t) => t.topic === "live" && this.#core.store.inUse(t)).map((t) => t.key as string))].sort(),
+      rates: this.#core.store.inUse({ topic: "stationRates", station: address }),
     };
   }
 
@@ -228,7 +230,7 @@ export class StationTopics implements Owner {
     this.resume(topic);
     // A job's log: what it is now read once; from then on the station says how it grows, on its stream.
     if (topic.topic === "jobLog") this.#sync.readLog(station, topic.job as string, topic.lines as number);
-    if (["host", "live", "jobLog", "machineLoginScreen"].includes(topic.topic)) this.#sync.openEvents(station, false);
+    if (["host", "live", "jobLog", "machineLoginScreen", "stationRates"].includes(topic.topic)) this.#sync.openEvents(station, false);
   }
 
   /// Shown, as it starts or again while kept after the last showed it: what is read only while shown is brought up to
@@ -259,10 +261,19 @@ export class StationTopics implements Owner {
     if (topic.topic === "filePeek") this.#sync.filePeekShown(station, topic.key as string, topic.path as string, typeof topic.line === "number" ? topic.line : null);
     // One message of a chat a link names: read each time its card shows, the same.
     if (topic.topic === "messagePeek") this.#sync.messagePeekShown(station, topic.thread as number, topic.seq as number);
+    if (topic.topic === "live") {
+      if (this.#sync.isSparing()) this.#sync.channels.bring(transcriptOf(station, topic.key as string), Priority.shown, "latest");
+      this.#sync.openEvents(station, false);
+    }
+    if (topic.topic === "stationRates") this.#sync.openEvents(station, false);
   }
 
   idle(topic: Topic): void {
     if (topic.topic === "stationSearch") this.#sync.searchPaused(topic);
+    if (topic.topic === "live" || topic.topic === "stationRates") {
+      const station = this.#stationOf(topic);
+      if (station !== null) this.#sync.openEvents(station, false);
+    }
   }
 
   stop(topic: Topic): void {
@@ -286,7 +297,7 @@ export class StationTopics implements Owner {
       this.#core.runner.interrupt(sampler as Fiber.Fiber<unknown, unknown>);
       this.#samplers.delete(key);
     }
-    if (["host", "live", "jobLog", "machineLoginScreen"].includes(topic.topic)) this.#sync.openEvents(station, false);
+    if (["host", "live", "jobLog", "machineLoginScreen", "stationRates"].includes(topic.topic)) this.#sync.openEvents(station, false);
   }
 
   /// Whether a topic with no value yet waits on its station for what it shows (store.ts `waits`): a chat's messages

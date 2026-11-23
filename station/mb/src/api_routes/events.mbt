@@ -64,6 +64,28 @@ fn Admin::events_routes(self : Admin) -> Array[Route] {
       } else {
         r.params("login").filter(id => re("^[0-9a-z]{1,40}$").matches(id))
       }
+      let running = r.param("running") == Some("1")
+      let spare = if running && r.param("spare") == Some("1") {
+        let seen : Map[String, Unit] = Map([])
+        let open : Array[String] = []
+        for key in r.params("open") {
+          if open.length() >= 16 {
+            break
+          }
+          if seen.contains(key) {
+            continue
+          }
+          seen[key] = ()
+          let exists = self.setup.has("store") &&
+            !nullish(self.store("getSession", [js(key)]))
+          if exists && self.session_seen(r.viewer, key) {
+            open.push(key)
+          }
+        }
+        jstrs(open)
+      } else {
+        Null
+      }
       let said = self.backend.ask("events.open", [
         r.viewer,
         js(r.lang),
@@ -73,7 +95,8 @@ fn Admin::events_routes(self : Admin) -> Array[Route] {
         jopt(r.param("since")),
         jbool(r.param("brief") == Some("1")),
         jstrs(logins),
-        jbool(r.param("running") == Some("1")),
+        jbool(running),
+        spare,
       ])
       self.answer_from(said)
     }),

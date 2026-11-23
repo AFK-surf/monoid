@@ -42,6 +42,8 @@
 // - `{"network": true}`: the device's default network became another one than the one before (Wi-Fi to mobile data,
 //   back online after none: ConnectivityManager's default network callback, with ACCESS_NETWORK_STATE in the app's
 //   manifest). Not for the first one seen.
+// - `{"cellular": true|false}`: whether the device's default network is cellular (mobile data, not Wi-Fi or wired);
+//   said as it is first seen and whenever it changes.
 // - `{"install": {"name": …, "allow": true}}`: a package handed to the installer (@hostapi.install_package) was not, as
 //   the app may not install apps yet: the system's page for that leave was opened instead.
 // - `{"install": {"name": …, "error": …}}`: a package handed to the system's installer could not be installed
@@ -84,6 +86,8 @@ pub(all) enum SystemSaid {
   Fold(hinge~ : Hinge, divisions~ : Array[(Double, Double, Double, Double)])
   /// the device's default network became another one
   Network
+  /// whether the device's default network is cellular
+  Cellular(Bool)
   /// a package handed to the installer was not, the system's page for that leave opened instead
   InstallAllow(name~ : String)
   /// a package could not be installed
@@ -210,6 +214,11 @@ pub fn system_said(json : String) -> Array[SystemSaid] {
   }
   if m.get("network") is Some(True) {
     out.push(Network)
+  }
+  match m.get("cellular") {
+    Some(True) => out.push(Cellular(true))
+    Some(False) => out.push(Cellular(false))
+    _ => ()
   }
   match m.get("menu") {
     Some(String(action)) => out.push(Menu(action))

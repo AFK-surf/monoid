@@ -95,6 +95,27 @@ pub fn asked_of(
   } else {
     all_of(query, "login").filter(login_id)
   }
+  let running = param(query, "running") == Some("1")
+  let spare : Array[String]? = if running && param(query, "spare") == Some("1") {
+    let seen : Map[String, Unit] = Map([])
+    let open : Array[String] = []
+    for key in all_of(query, "open") {
+      if open.length() >= 16 {
+        break
+      }
+      if seen.contains(key) {
+        continue
+      }
+      seen[key] = ()
+      if session_exists(key) &&
+        (store is None || session_seen(store.unwrap(), viewer, key)) {
+        open.push(key)
+      }
+    }
+    Some(open)
+  } else {
+    None
+  }
   (
     {
       host: param(query, "host") == Some("1"),
@@ -103,7 +124,8 @@ pub fn asked_of(
       since: param(query, "since"),
       brief: param(query, "brief") == Some("1"),
       logins,
-      running: param(query, "running") == Some("1"),
+      running,
+      spare,
     },
     None,
   )

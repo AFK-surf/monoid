@@ -120,12 +120,18 @@ export const lockRefusal = (e: { code: string }) => e.code === "lock_unconfirmed
 export const LOCK_ENDED = "lock_unconfirmed";
 
 /// What a station's `/events` stream is opened for beyond the sessions at work (which every station since 0.1.6968
-/// follows itself, FOLLOWS): host samples, the jobs' logs, the logins' terminals.
-export type EventsFor = { host: boolean; logs: [string, number][]; logins?: string[] };
+/// follows itself, FOLLOWS): host samples, the jobs' logs, the logins' terminals, and when sparing cellular traffic
+/// (`spare !== null`), only the open sessions' live events.
+export type EventsFor = { host: boolean; logs: [string, number][]; logins?: string[]; spare?: string[] | null };
 
-/// Whether a stream opened for `open` gives what `wants` asks: the same host samples, logs and logins.
+/// Whether a stream opened for `open` gives what `wants` asks: the same host samples, logs, logins and spare filter.
 function covers(open: EventsFor, wants: EventsFor): boolean {
-  return open.host === wants.host && equal(open.logs, wants.logs) && equal(open.logins ?? [], wants.logins ?? []);
+  return (
+    open.host === wants.host &&
+    equal(open.logs, wants.logs) &&
+    equal(open.logins ?? [], wants.logins ?? []) &&
+    equal(open.spare ?? null, wants.spare ?? null)
+  );
 }
 
 /// A read of a station's history (sync.ts `#history`): its path, how much of a batch it takes, and what its answer
@@ -553,10 +559,16 @@ export class Links {
 
   // ── the events stream ──
 
-  /// What the stream is to be opened for now: host samples while shown; the logs and logins' terminals shown.
+  /// What the stream is to be opened for now: host samples while shown; the logs and logins' terminals shown; on a
+  /// cellular network, the open sessions to receive live events for.
   #wants(address: string): EventsFor {
     const shown = this.#told.wanted(address);
-    return { host: shown.host, logs: [...shown.logs].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1])), logins: [...(shown.logins ?? [])].sort() };
+    return {
+      host: shown.host,
+      logs: [...shown.logs].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1])),
+      logins: [...(shown.logins ?? [])].sort(),
+      spare: shown.spare === undefined || shown.spare === null ? null : [...new Set(shown.spare)].sort(),
+    };
   }
 
   /// Opens the station's stream for what it is wanted for now, unless the one open gives that (or `anew`): the new one
@@ -591,6 +603,10 @@ export class Links {
     for (const [job, lines] of wants.logs) query.push(`job=${encode(job)}&lines=${lines}`);
     // The logins' terminals shown.
     for (const id of wants.logins ?? []) query.push(`login=${encode(id)}`);
+    if (wants.spare !== undefined && wants.spare !== null) {
+      query.push("spare=1");
+      for (const key of wants.spare) query.push(`open=${encode(key)}`);
+    }
     if (since !== null) query.push(`since=${encode(since)}`);
     return `/events?${query.join("&")}`;
   }

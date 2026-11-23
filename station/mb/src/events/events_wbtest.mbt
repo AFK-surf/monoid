@@ -149,6 +149,94 @@ test "viewer visibility, seen_of, and asked_of query parsing" {
   assert_true(asked.brief)
   assert_true(asked.running)
   assert_eq(asked.since, Some("ab.1"))
+  assert_eq(asked.spare, None)
+
+  let (spared, _) = asked_of(
+    [
+      ("running", "1"),
+      ("spare", "1"),
+      ("open", "s1"),
+      ("open", "s1"),
+      ("open", "s2"),
+      ("open", "missing"),
+    ],
+    viewer,
+    k => k == "s1" || k == "s2",
+    Some(store),
+  )
+  assert_eq(spared.spare, Some(["s1"]))
+
+  let (no_run, _) = asked_of(
+    [("spare", "1"), ("open", "s1")],
+    viewer,
+    k => k == "s1",
+    Some(store),
+  )
+  assert_eq(no_run.spare, None)
+
+  // Events::open + held_told spare filtering and stillfail-spared header
+  let ev = Events::new(
+    {
+      read: (_, _, cb) => cb(Ok("{\"rows\":[]}")),
+      said: (_, entries, _) => Ok(entries),
+      host: cb => cb(None),
+      job_log: _ => None,
+      log_now: (_, _, cb) => cb(None),
+      live: None,
+      held: Some(() => ["s1", "s3"]),
+      held_now: Some((keys, cb) => {
+        let pairs = keys.map(k => (k, ja([jo([("type", js("timeline")), ("start", jn(5.0)), ("entries", ja([]))])])))
+        cb(Ok(jo(pairs)))
+      }),
+      session_exists: k => k == "s1" || k == "s3",
+      live_seen: None,
+      overview: None,
+      process_state: None,
+      followed: None,
+      seen: None,
+      login_screen: None,
+      in_vault: None,
+      now: () => 1000.0,
+      after: (_, _) => () => (),
+      every: (_, _) => () => (),
+      immediate: f => f(),
+      watch: (_, _) => None,
+      warn: (_, _) => (),
+    },
+    "sp",
+  )
+  let open_stream = (spare : Array[String]?) => {
+    let out : Array[String] = []
+    let hdrs : Array[(String, String)] = []
+    ev.open(
+      viewer,
+      "zh",
+      { host: false, live: [], logs: [], since: None, brief: true, logins: [], running: true, spare },
+      r => match r {
+        Ok(ans) => {
+          for kv in ans.headers {
+            hdrs.push(kv)
+          }
+          ans.stream.relay(t => out.push(t), () => ())
+        }
+        Err(e) => abort(e)
+      },
+    )
+    (hdrs, out)
+  }
+  let (h_a, out_a) = open_stream(Some(["s1"]))
+  let (h_empty, out_empty) = open_stream(Some([]))
+  let (h_full, out_full) = open_stream(None)
+  assert_true(h_a.iter().any(kv => kv.0 == spared_header && kv.1 == "1"))
+  assert_true(h_empty.iter().any(kv => kv.0 == spared_header && kv.1 == "1"))
+  assert_false(h_full.iter().any(kv => kv.0 == spared_header))
+  ev.held_told("s1", jo([("type", js("step")), ("n", jn(1.0))]))
+  ev.held_told("s3", jo([("type", js("step")), ("n", jn(2.0))]))
+  let live_of = (chunks : Array[String]) => chunks.filter(t => t.contains("event: live\n"))
+  assert_true(live_of(out_a).iter().all(t => t.contains("\"key\":\"s1\"")))
+  assert_eq(live_of(out_a).length(), 2)
+  assert_eq(live_of(out_empty).length(), 0)
+  assert_eq(live_of(out_full).length(), 4)
 }
 
 ///|

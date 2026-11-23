@@ -39,9 +39,16 @@ export const routes = ({ events, sessionExists, store }: Tools): Route[] => [
       // `login=<id>`, repeated: those logins' terminals as they change; not for a read-only member.
       const logins = readOnly(r.viewer) ? [] : all(r, "login").filter((id) => /^[0-9a-z]{1,40}$/.test(id));
       // `running=1`: every session at work the viewer sees, as it runs, the station's to follow (no `live` named then).
+      // With `spare=1` and repeated `open=<key>` (at most 16), only those open sessions' live events are sent.
       // Every core makes its rows of the shared chat list and a thread's summary itself (`views=1`, `rows=1`,
       // `shared=1`, which it still says; older ones are refused, api/oldest.ts).
-      return events.open(r.viewer, r.lang, param(r, "host") === "1", live, logs, param(r, "since") ?? null, param(r, "brief") === "1", logins, param(r, "running") === "1");
+      const running = param(r, "running") === "1";
+      const spare = running && param(r, "spare") === "1"
+        ? [...new Set(all(r, "open"))]
+            .filter((key) => sessionExists(key) && (store === undefined || sessionSeen(store, r.viewer, key)))
+            .slice(0, 16)
+        : null;
+      return events.open(r.viewer, r.lang, param(r, "host") === "1", live, logs, param(r, "since") ?? null, param(r, "brief") === "1", logins, running, spare);
     },
   },
 ];

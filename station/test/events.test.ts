@@ -1073,3 +1073,110 @@ test("a host sample that fails is no rejection, as a stream joins or on the beat
   }
   assert.deepEqual(unhandled, []);
 });
+
+test("spare=1 filters live snapshots and heldTold events to open sessions, sets stillfail-spared, and cuts live traffic", async () => {
+  const { events } = setup(testClock().clock);
+  const keys = ["A", "B", "C", "D", "E"];
+  const heldNowAsked: string[][] = [];
+  events.follow({
+    held: () => keys,
+    heldNow: async (asked) => {
+      heldNowAsked.push([...asked]);
+      return Object.fromEntries(asked.map((key) => [key, [{ type: "timeline", start: 10, entries: [], usage: null }, { type: "steps", steps: [], phase: null }]]));
+    },
+  });
+  const spareA = await events.open(viewer("a@x"), "zh", false, [], [], null, true, [], true, ["A"]);
+  const spareNone = await events.open(viewer("a@x"), "zh", false, [], [], null, true, [], true, []);
+  const full = await events.open(viewer("a@x"), "zh", false, [], [], null, true, [], true, null);
+  assert.equal(spareA.headers?.["stillfail-spared"], "1");
+  assert.equal(spareNone.headers?.["stillfail-spared"], "1");
+  assert.equal(full.headers?.["stillfail-spared"], undefined);
+
+  const rawBytes = (body: AsyncIterable<Buffer>) => {
+    let bytes = 0;
+    const got: { event: string; data: any }[] = [];
+    const it = body[Symbol.asyncIterator]();
+    let buf = "";
+    const loop = (async () => {
+      for (;;) {
+        const next = await it.next();
+        if (next.done) break;
+        bytes += next.value.length;
+        buf += next.value.toString("utf8");
+        for (let at = buf.indexOf("\n\n"); at >= 0; at = buf.indexOf("\n\n")) {
+          const block = buf.slice(0, at);
+          buf = buf.slice(at + 2);
+          const ev = /^event:\s*(.+)$/m.exec(block)?.[1];
+          const data = /^data:\s*(.+)$/m.exec(block)?.[1];
+          if (ev && data) got.push({ event: ev, data: JSON.parse(data) });
+        }
+      }
+    })();
+    return { got, bytes: () => bytes, close: async () => { await it.return?.(); await loop; } };
+  };
+
+  const rA = rawBytes(spareA.body as AsyncIterable<Buffer>);
+  const rNone = rawBytes(spareNone.body as AsyncIterable<Buffer>);
+  const rFull = rawBytes(full.body as AsyncIterable<Buffer>);
+  await settle();
+
+  // heldNow snapshot only requested for A on spareA, none on spareNone, all 5 on full
+  assert.deepEqual(heldNowAsked, [["A"], keys]);
+
+  // Same workload across all 5 running sessions (20 steps each)
+  for (let i = 0; i < 20; i++) {
+    for (const k of keys) {
+      events.heldTold(k, {
+        type: "timeline",
+        start: 10 + i,
+        entries: [{ kind: "tool", name: "read_file", summary: `step ${i} of session ${k} with payload` }],
+        usage: { input: 1000 + i, output: 200 + i },
+      });
+    }
+  }
+  await settle();
+
+  const liveA = rA.got.filter((e) => e.event === "live");
+  const liveNone = rNone.got.filter((e) => e.event === "live");
+  const liveFull = rFull.got.filter((e) => e.event === "live");
+
+  // (a) spare=1&open=A: only A's live events (2 snapshot + 20 timeline = 22), 0 from B..E
+  assert.ok(liveA.every((e) => e.data.key === "A"));
+  assert.equal(liveA.length, 22);
+  assert.equal(liveA.filter((e) => e.data.key !== "A").length, 0);
+  // (b) spare=1 with no open: 0 live events
+  assert.equal(liveNone.length, 0);
+  // (c) without spare: all 5 sessions (5*2 snapshot + 5*20 timeline = 110)
+  assert.equal(liveFull.length, 110);
+
+  console.log(`[spare-live stats] full: ${liveFull.length} live events, ${rFull.bytes()} bytes | spare(open=A): ${liveA.length} live events, ${rA.bytes()} bytes | spare(no open): ${liveNone.length} live events, ${rNone.bytes()} bytes`);
+
+  await rA.close();
+  await rNone.close();
+  await rFull.close();
+});
+
+test("events route parses spare=1 and repeated open=<key> (deduped, filtered, capped at 16, only with running=1)", async () => {
+  const { routes } = await import("../src/api/routes/events.ts");
+  const calls: { running: boolean; spare: string[] | null }[] = [];
+  const open = async (_v: any, _l: any, _h: any, _live: any, _logs: any, _s: any, _b: any, _lo: any, running: boolean, spare: string[] | null) => {
+    calls.push({ running, spare });
+    return { status: 200, headers: {}, body: "" };
+  };
+  const existing = new Set(Array.from({ length: 20 }, (_, i) => `s${i}`));
+  const [route] = routes({ events: { open } as any, sessionExists: (k: string) => existing.has(k) } as any);
+  const ask = (query: [string, string][]) => route!.handle({ viewer: viewer("a@x"), lang: "zh", query } as any, [] as any);
+
+  await ask([["running", "1"], ["spare", "1"], ["open", "s1"], ["open", "s1"], ["open", "missing"], ...Array.from({ length: 20 }, (_, i): [string, string] => ["open", `s${i}`])]);
+  await ask([["spare", "1"], ["open", "s1"]]);
+  await ask([["running", "1"]]);
+  await ask([["running", "1"], ["spare", "1"]]);
+
+  assert.equal(calls[0]!.running, true);
+  assert.equal(calls[0]!.spare?.length, 16);
+  assert.equal(new Set(calls[0]!.spare).size, 16);
+  assert.ok(!calls[0]!.spare!.includes("missing"));
+  assert.deepEqual(calls[1], { running: false, spare: null });
+  assert.deepEqual(calls[2], { running: true, spare: null });
+  assert.deepEqual(calls[3], { running: true, spare: [] });
+});

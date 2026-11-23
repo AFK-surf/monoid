@@ -155,6 +155,11 @@ priv struct Attention {
 }
 
 ///|
+/// The latest cellular network state told by the system before a source was available (flushed on attend).
+// kept across runs: put back as a run begins (app_frame_reset)
+let cellular_pending : Ref[Bool?] = Ref(None)
+
+///|
 let attention : Attention = {
   told: false,
   visible: false,
@@ -191,6 +196,10 @@ pub fn attend(src : Source, workspace : String, new_chat : Bool) -> Unit {
     })
   }
   attention.src = Some(src)
+  if !src.read_only && cellular_pending.val is Some(on) {
+    cellular_pending.val = None
+    (src.call)("client.network", { "cellular": Json::boolean(on) }, answer_unread)
+  }
   let visible = @ui.app_visible()
   let focused = @ui.app_focused()
   if attention.told &&
@@ -254,6 +263,8 @@ fn system_said(json : String) -> Unit {
         taps.push(id)
         nav_tapped.set(taps)
       }
+      // whether the default network is cellular: kept so startup reports before attend are sent once a source exists
+      Cellular(on) => cellular_pending.val = Some(on)
       // (how far the bars reach in over the view: mbui keeps it, @ui.system_bars, bars.mbt)
       _ => ()
     }
@@ -264,6 +275,10 @@ fn system_said(json : String) -> Unit {
   }
   if src.read_only {
     return
+  }
+  if cellular_pending.val is Some(on) {
+    cellular_pending.val = None
+    (src.call)("client.network", { "cellular": Json::boolean(on) }, answer_unread)
   }
   for s in said {
     match s {
@@ -388,6 +403,7 @@ fn app_frame_reset() -> Unit {
   attention.workspace = ""
   attention.new_chat = false
   attention.src = None
+  cellular_pending.val = None
   share_over.set(false)
 }
 

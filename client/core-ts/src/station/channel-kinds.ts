@@ -101,7 +101,7 @@ export const transcriptOf = (station: string, session: string): Channel => ({ ki
 /// Where the channels' items are held: the logs of the core's database, by number (data.ts), let go for room where a
 /// chat was not opened for long (KEPT). How far a thread goes is its summary's `last` there; a transcript, its session's
 /// summary's `transcriptLength`, or further as a stream or a read said.
-export function heldIn(data: Data): Held {
+export function heldIn(data: Data, transcriptSpared?: (station: string, key: string) => boolean): Held {
   const table = (c: Channel) => (c.kind === ENTRIES ? "entry" : c.kind === LETTERS ? "letter" : "transcript");
   // (how far a thread's letters go, as told since its summary: a letter told before its summary is read again)
   const lettersRaised = new Map<string, number>();
@@ -114,7 +114,7 @@ export function heldIn(data: Data): Held {
     span: (c) => data.logSpan(table(c), c.station, c.id),
     count: (c, from, to) => data.logCount(table(c), c.station, c.id, from, to),
     put: (c, items, cutAfter) => data.putItems(table(c), c.station, c.id, items, cutAfter),
-    letGo: (c) => data.evicted(table(c), c.station, c.id),
+    letGo: (c) => data.evicted(table(c), c.station, c.id) || (c.kind === TRANSCRIPT && transcriptSpared?.(c.station, c.id) === true),
     head: (c) => (c.kind === ENTRIES ? data.threadLast(c.station, Number(c.id)) : c.kind === LETTERS ? lettersHead(c) : data.transcriptHead(c.station, c.id)),
     raise: (c, n) => {
       if (c.kind === ENTRIES) data.raiseLast(c.station, Number(c.id), n);
