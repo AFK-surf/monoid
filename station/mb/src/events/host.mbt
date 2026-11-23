@@ -64,6 +64,9 @@ pub(all) struct HostDeps {
   /// The GPUs (jobs/gpu.ts): a read (none: it failed), and what they said last (none: nothing yet).
   gpus_read : ((J?) -> Unit) -> Unit
   gpus_cached : (() -> J?)?
+  /// Where its traffic was last seen leaving for the internet (api/egress.ts `EgressLook.now`: `{country, colo}`; none:
+  /// not known yet, or not looked at).
+  egress : () -> J?
 }
 
 ///|
@@ -372,6 +375,11 @@ pub fn Host::sample(self : Host, done : (J) -> Unit) -> Unit {
   let both = () => {
     guard info.val is Some(i) && gpus.val is Some(g) else { return }
     let out = with_prop(i, "gpus", g)
+    // (host.ts: where it leaves said as it is now, not kept with the machine's ten-second reading)
+    let out = match (self.deps.egress)() {
+      Some(e) if !(self.deps.test_host)() => with_prop(out, "egress", e)
+      _ => out
+    }
     self.sampling = None
     for w in waiters {
       w(out)
@@ -497,4 +505,39 @@ fn Host::fresh(self : Host, done : (J) -> Unit) -> Unit {
       _ => finish(info, seen)
     }
   })
+}
+
+// ── where its traffic leaves (api/egress.ts) ──
+
+///|
+/// egress.ts TRACE_URL, EVERY_MS, WAIT_MS: Cloudflare's trace, looked at again every 30 minutes, given 10 s.
+pub let egress_trace_url : String = "https://www.cloudflare.com/cdn-cgi/trace"
+
+///|
+pub let egress_every_ms : Int = 30 * 60_000
+
+///|
+pub let egress_wait_ms : Int = 10_000
+
+///|
+/// egress.ts `egressOf`: what a trace's answer says of where it came from, `{country, colo}` (its country two letters,
+/// `XX` and `T1` (Tor) not one; the data centre three letters, else null); none where it says no country.
+pub fn egress_of(trace : String) -> J? {
+  let field = (name : String) => {
+    let prefix = name + "="
+    for line in trace.split("\n") {
+      if line.has_prefix(prefix) {
+        return line[prefix.length():].trim().to_owned().to_upper()
+      }
+    }
+    ""
+  }
+  let letters = (s : String, n : Int) => s.length() == n &&
+    s.iter().all(c => c >= 'A' && c <= 'Z')
+  let country = field("loc")
+  if !letters(country, 2) || country == "XX" || country == "T1" {
+    return None
+  }
+  let colo = field("colo")
+  Some(jo([("country", js(country)), ("colo", if letters(colo, 3) { js(colo) } else { Null })]))
 }

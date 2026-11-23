@@ -129,11 +129,46 @@ async fn host_sample(host : @host.Host) -> Json {
 }
 
 ///|
+/// api/egress.ts `EgressLook.look` and `traceNow`: Cloudflare's trace asked as the agents' requests go out (ops/agent-env.ts
+/// `profileFetch`: through the proxy config.json's `agentEnv` names, HTTPS_PROXY, else ALL_PROXY, unless its NO_PROXY
+/// names the trace's host; else straight), and what it says: Some(what it says, none where it names no country), or
+/// none where it was not answered (what was seen before stands).
+async fn egress_look(host : @host.Host, config : Json) -> @jsjson.JValue?? {
+  let env = @ops_platform.agent_env(config)
+  let either = (name : String) => {
+    let named = (n : String) => env.iter().find_first(kv => kv.0 == n && kv.1 != "").map(kv => kv.1)
+    match named(name) {
+      Some(v) => Some(v)
+      None => named(name.to_lower())
+    }
+  }
+  let proxy = match either("HTTPS_PROXY") {
+    Some(p) => Some(p)
+    None => either("ALL_PROXY")
+  }
+  let proxy = match proxy {
+    Some(p) if !admin_is_no_proxy(admin_url_hostname(@events.egress_trace_url), either("NO_PROXY")) => Some(p)
+    _ => None
+  }
+  let answer = host.fetch(
+    @events.egress_trace_url,
+    timeout_ms=@events.egress_wait_ms,
+    redirect="follow",
+    proxy?=proxy,
+  ) catch {
+    _ => return None
+  }
+  guard answer.status >= 200 && answer.status < 300 else { return None }
+  Some(@events.egress_of(answer.text()))
+}
+
+///|
 /// services.ts AdminHost: the machine's state (api/host.ts `Host`), its CPUs followed while the station runs; the bus's
 /// `host_sample` from now on.
 fn P51::admin_host_live(self : P51) -> AdminHostLive {
   let host = self.host
   let gpus = make_gpus(host)
+  let egress : Ref[@jsjson.JValue?] = { val: None }
   let deps : @events.HostDeps = {
     test_host: () => env_get("STILLFAIL_TEST_HOST") == Some("1"),
     now: () => wall_ms().to_double(),
@@ -160,9 +195,25 @@ fn P51::admin_host_live(self : P51) -> AdminHostLive {
       k(gpus.read().map(g => to_jv(gpus_to_json(g))))
     }),
     gpus_cached: Some(() => gpus.cached().map(g => to_jv(gpus_to_json(g)))),
+    egress: () => egress.val,
   }
   let h = @events.Host::new(deps, self.bus.data)
   let l : AdminHostLive = { host: h }
+  // api/egress.ts `EgressLook.follow`: where its traffic leaves looked at now and every EVERY_MS (none on the recording
+  // station's fixed sample, as services.ts gives none there)
+  if env_get("STILLFAIL_TEST_HOST") != Some("1") {
+    let bus = self.bus
+    let looking = host.rt.fork_daemon("egress", on_error=e => @host.note("egress failed: \{e}"), async fn() {
+      while true {
+        match egress_look(host, (bus.config_raw.val)()) {
+          Some(seen) => egress.val = seen
+          None => ()
+        }
+        @effect.sleep(@events.egress_every_ms) // timer: an external system without push (Cloudflare's trace)
+      }
+    })
+    self.stops.push(() => looking.interrupt())
+  }
   // timer: a sample of this machine (its CPUs every 15 s: api/host.ts CPU_EVERY_MS)
   let stop = h.follow((ms, f) => {
     let fiber = host.rt.fork(name="cpu follow", async fn() {

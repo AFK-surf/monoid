@@ -28,6 +28,14 @@ pub fn cpu_share(Ticks, Ticks) -> Double?
 
 pub let cpu_span_ms : Double
 
+pub let egress_every_ms : Int32
+
+pub fn egress_of(String) -> @jsjson.JValue?
+
+pub let egress_trace_url : String
+
+pub let egress_wait_ms : Int32
+
 pub fn elsewhere(SeenStore, String, Viewer) -> String?
 
 pub fn entries_view(@jsjson.JValue, Map[String, Unit]) -> @jsjson.JValue
@@ -299,6 +307,7 @@ pub(all) struct HostDeps {
   os : () -> String
   gpus_read : ((@jsjson.JValue?) -> Unit) -> Unit
   gpus_cached : (() -> @jsjson.JValue?)?
+  egress : () -> @jsjson.JValue?
 }
 
 pub(all) struct JsonAnswer {
