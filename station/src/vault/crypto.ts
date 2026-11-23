@@ -4,8 +4,7 @@
 // formats as client/core-ts/src/vault/crypto.ts, tested on the same values (test/fixtures/vault-vectors.json).
 import { createCipheriv, createDecipheriv, createHash, createPrivateKey, createPublicKey, diffieHellman, hkdfSync, randomBytes } from "node:crypto";
 import { canonical, publicKey, signatureOk, type LockState } from "../../../shared/lock.ts";
-// @ts-ignore: the MoonBit build's JS, untyped
-import * as rules from "../../../rules/js/rules.js";
+import * as rules from "../../../shared/rules-runtime.ts";
 
 /// A signature as the lock's (no passkeys here): Ed25519 in hex, ES256 as base64url P1363.
 export type Sig = { key: string; alg: "Ed25519" | "ES256"; sig: string };
