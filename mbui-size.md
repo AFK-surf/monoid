@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c37b4165c](https://github.com/AFK-surf/monoid/commit/c37b4165c270850041448958f0030387fd4b7bf7) fix(ui): show composer words in the text loupe and | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 100.83 | 127.46 |
 | [b45e9603f](https://github.com/AFK-surf/monoid/commit/b45e9603f6c253d97a5cc5e8961df091ad741cea) fix(station): add explicit string type to enum-onl | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 100.44 | 132.06 |
 | [dfcde34c0](https://github.com/AFK-surf/monoid/commit/dfcde34c089d4df139ef20f962ff5fa96f34e632) test(pion): add L1/L2 TS-vs-Pion differential pari | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 100.44 | 132.06 |
 | [7ba6b7030](https://github.com/AFK-surf/monoid/commit/7ba6b7030c6551a6974b32fe1dc1796955ec35d2) feat(ui): add runtime Agent Bridge protocol on vie | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 100.44 | 132.06 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f4342853d](https://github.com/AFK-surf/monoid/commit/f4342853d40855e4a1a6239128d2bad362eb447a) fix(mbui): keep the iOS 27 action tab's accent was | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.34 | 126.46 |
 | [283b75d55](https://github.com/AFK-surf/monoid/commit/283b75d55ec1fd956b32de7f7b80d2868883d467) feat(mesh): a switch for the DHT, on by default (# | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.34 | 126.46 |
 | [ce60a1ea9](https://github.com/AFK-surf/monoid/commit/ce60a1ea96cdc634e515fb6e0a755ed70a14ca5d) feat(ui,mbui): tint Windows window controls with t | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.74 | 100.29 | 124.88 |
-| [934faffca](https://github.com/AFK-surf/monoid/commit/934faffca6785d00328d49383125062c3d80b96e) feat(ui,mbui): unify transient overlay coordinatio | 2.72 | 3.66 | 14.84 | 36.99 | 56.56 | 32.4 | 65.72 | 100.19 | 114.81 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c37b4165c](https://github.com/AFK-surf/monoid/commit/c37b4165c270850041448958f0030387fd4b7bf7) fix(ui): show composer words in the text loupe and | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.87 | 55.64 |
 | [b45e9603f](https://github.com/AFK-surf/monoid/commit/b45e9603f6c253d97a5cc5e8961df091ad741cea) fix(station): add explicit string type to enum-onl | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.85 | 55.2 |
 | [dfcde34c0](https://github.com/AFK-surf/monoid/commit/dfcde34c089d4df139ef20f962ff5fa96f34e632) test(pion): add L1/L2 TS-vs-Pion differential pari | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.85 | 55.07 |
 | [7ba6b7030](https://github.com/AFK-surf/monoid/commit/7ba6b7030c6551a6974b32fe1dc1796955ec35d2) feat(ui): add runtime Agent Bridge protocol on vie | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.85 | 55.26 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f4342853d](https://github.com/AFK-surf/monoid/commit/f4342853d40855e4a1a6239128d2bad362eb447a) fix(mbui): keep the iOS 27 action tab's accent was | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.07 |
 | [283b75d55](https://github.com/AFK-surf/monoid/commit/283b75d55ec1fd956b32de7f7b80d2868883d467) feat(mesh): a switch for the DHT, on by default (# | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.23 |
 | [ce60a1ea9](https://github.com/AFK-surf/monoid/commit/ce60a1ea96cdc634e515fb6e0a755ed70a14ca5d) feat(ui,mbui): tint Windows window controls with t | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.15 |
-| [934faffca](https://github.com/AFK-surf/monoid/commit/934faffca6785d00328d49383125062c3d80b96e) feat(ui,mbui): unify transient overlay coordinatio | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.3 |
