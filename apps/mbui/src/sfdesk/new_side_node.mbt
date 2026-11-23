@@ -30,16 +30,12 @@ fn new_side_node(col : @view.View, src : Source, w : Workspace, key : String, ti
     .min_height(Is(Some(0.0)))
     .width(By(fn() { Some(side_whole(src, p)) }))
     .offset(By(fn() { (if over() { -at() } else { 0.0 }, 0.0) }))
-    .ground(By(fn() { @sf.theme().p.bg }))
-    .shadow(By(fn() {
-      if over() {
-        let (blur, fall) = @ui.Shadow::Xl.blur_y()
-        (blur, fall, @ui.tree_theme().shadow)
-      } else {
-        (0.0, 0.0, 0L)
-      }
-    }))
+    .ground(By(fn() { if over() { 0L } else { @sf.theme().p.bg } }))
     |> ignore
+    p.show(at_once=true, over, fn(bg) {
+      bg.over(Is(true)) |> ignore
+      @sf.drawer_surface_decorate(bg, solid=fn() { @sf.theme().p.bg }, clips=false) |> ignore
+    })
     // (panel.close: the panel closed, at its key's moment)
     p.on_action("panel.close", fn(_) {
       close()

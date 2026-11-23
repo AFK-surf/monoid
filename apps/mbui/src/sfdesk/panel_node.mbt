@@ -372,16 +372,12 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
       .min_height(Is(Some(0.0)))
       .width(By(fn() { Some(whole()) }))
       .offset(By(fn() { (if over() { -at() } else { 0.0 }, 0.0) }))
-      .ground(By(fn() { @sf.theme().p.bg }))
-      .shadow(By(fn() {
-        if over() {
-          let (blur, fall) = @ui.Shadow::Xl.blur_y()
-          (blur, fall, @ui.tree_theme().shadow)
-        } else {
-          (0.0, 0.0, 0L)
-        }
-      }))
+      .ground(By(fn() { if over() { 0L } else { @sf.theme().p.bg } }))
       |> ignore
+      p.show(at_once=true, over, fn(bg) {
+        bg.over(Is(true)) |> ignore
+        @sf.drawer_surface_decorate(bg, solid=fn() { @sf.theme().p.bg }, clips=false) |> ignore
+      })
       // its bar over whatever tab is in front, the tree's; none where what is in front has its own (side_own_bar_node)
       p.show(at_once=true, fn() {
         let (tabs, front) = side_shown(src, r)

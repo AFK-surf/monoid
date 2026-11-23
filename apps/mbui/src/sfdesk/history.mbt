@@ -33,9 +33,9 @@ fn history_reset() -> Unit {
 }
 
 ///|
-/// The history's top: across the panel, on its ground.
+/// The history's top: across the panel.
 // kept across runs: a value (no field of it changes)
-let history_top_box : @ui.Style = @ui.css("w=Full bg=Bg")
+let history_top_box : @ui.Style = @ui.css("w=Full")
 
 ///|
 /// Agent `key`'s history's head in chat `r`'s panel, made once in `v` (under the panel's bar), as the chat says the

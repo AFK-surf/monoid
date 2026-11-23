@@ -219,3 +219,35 @@ test "drawer_node closed-form slide motion is FPS-invariant across 60/120/24/7 f
   @ui.set_glass_solid(None)
   set_dark(None)
 }
+
+///|
+test "drawer_surface_decorate gates glass, shadow, and solid-mode hairline by active()" {
+  let active = @signals.signal(false)
+  let t = @ui.Tester::new(fn(_) { () }, w=800.0, h=600.0, dark=false, platform=0)
+  set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  @ui.set_view_app(
+    fn(root) {
+      root.box(fn(v) {
+        v.width(Is(Some(240.0))).height(Is(Some(400.0))) |> ignore
+        drawer_surface_decorate(v, active=fn() { active.get() }, solid=fn() { theme().p.bg }, clips=false) |> ignore
+      })
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t.draw()
+  // Inactive: zero glass, zero outside shadow
+  assert_eq((t.drawn_glass().length(), outside_shadows(t)), (0, []))
+  // Active in GPU glass mode: 1 liquid glass layer (kind == 6) + glass_overlay_shadow outside
+  active.set(true)
+  t.draw()
+  let glass = t.drawn_glass()
+  assert_eq((glass.length(), glass.filter(fn(g) { g.4 == 6 }).length(), outside_shadows(t)), (1, 1, [glass_overlay_shadow()]))
+  // Active in MBUI_GLASS=solid mode: zero glass, zero outside shadow
+  @ui.set_glass_solid(Some(true))
+  t.draw()
+  assert_eq((t.drawn_glass().length(), outside_shadows(t)), (0, []))
+  @ui.set_glass_solid(None)
+  set_dark(None)
+}

@@ -240,6 +240,30 @@ pub fn panel_surface_decorate(
 }
 
 ///|
+/// Thin `@sf` floating side-drawer surface decorator delegating to `@glass.liquid_drawer_surface_decorate` with
+/// `panel_ground()`, `glass_overlay_shadow`, and 1pt `panel_edge()` fallback under `MBUI_GLASS=solid`.
+pub fn drawer_surface_decorate(
+  v : @view.View,
+  radius? : Double,
+  solid? : () -> Int64,
+  active? : () -> Bool = fn() { true },
+  clips? : Bool = false,
+) -> @view.View {
+  @glass.liquid_drawer_surface_decorate(
+    v,
+    radius?,
+    active~,
+    solid=match solid {
+      Some(f) => f
+      None => panel_ground
+    },
+    shadow=glass_overlay_shadow,
+    solid_edge=fn() { (1.0, panel_edge()) },
+    clips~,
+  )
+}
+
+///|
 /// Thin `@sf` search capsule decorator delegating to `@glass.liquid_capsule_decorate` with `search_capsule_glass`,
 /// `glass_overlay_shadow`, `overlay_solid_edge`, and `active` gating (zero hidden glass when inactive).
 pub fn search_capsule_decorate(
