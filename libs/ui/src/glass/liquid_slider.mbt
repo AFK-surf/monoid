@@ -9,7 +9,7 @@
 // The catalog's lens also sees the track scaled under it (a combined backdrop): mbui's glass sees the track as it is.
 
 ///|
-/// The thumb's glass, held `p` (Native iOS 27.0 clear droplet loupe: zoom=1.0, concave moat pinch in shader).
+/// The thumb's glass, held `p` (Native iOS 27.0 clear droplet loupe: paraxial bevel refraction, pinchWeight == 0).
 fn slider_glass(p : Double) -> @paint.Glass {
   let p = clamp(p, 0.0, 1.0)
   @paint.Glass::liquid(
@@ -18,9 +18,9 @@ fn slider_glass(p : Double) -> @paint.Glass {
     solid=white,
     saturation=1.0,
     rim=1.0 * p,
-    bezel=9.0 * p,
-    refraction=9.0 * p,
-    chroma=0.10 * p,
+    bezel=8.0 * p,
+    refraction=3.0 * p,
+    chroma=0.0,
     merge=0.0,
     adaptive=false,
     zoom=1.0,

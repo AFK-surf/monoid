@@ -127,7 +127,7 @@ pub fn seg_lens_shadow(press : Double) -> (Double, Double, Int64) {
 // Sizes (dp, mbui's points).
 
 ///|
-/// LiquidToggle: its track 64 × 28, its thumb 40 × 24, 2 in, 1.58 times as large held (63.2 × 37.9pt).
+/// LiquidToggle: its track 64 × 28, its thumb 40 × 24, 2 in; held 58.0 × 38.4pt (1.45× wide, 1.60× tall, matching iOS 27).
 pub let toggle_w : Double = 64.0
 
 ///|
@@ -143,7 +143,11 @@ pub let thumb_h : Double = 24.0
 pub let toggle_pad : Double = 2.0
 
 ///|
-pub let thumb_held_scale : Double = 1.58
+pub let thumb_held_scale : Double = 1.60
+
+///|
+/// Horizontal held scale for LiquidToggle's asymmetric iOS 27 droplet (40 -> 58.0pt).
+let thumb_held_scale_x : Double = 1.45
 
 ///|
 /// LiquidSlider: held thumb scale (40 × 24 -> 60 × 36pt).

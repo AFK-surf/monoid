@@ -10,7 +10,7 @@
 // under it, the track as it is.
 
 ///|
-/// The thumb's glass, held `p` (Native iOS 27.0 clear droplet loupe: zoom=1.0, concave moat pinch in shader).
+/// The thumb's glass, held `p` (Native iOS 27.0 clear droplet loupe: zoom=1.0, chroma=0, concave moat pinch in shader).
 fn toggle_glass(p : Double) -> @paint.Glass {
   let p = clamp(p, 0.0, 1.0)
   @paint.Glass::liquid(
@@ -21,7 +21,7 @@ fn toggle_glass(p : Double) -> @paint.Glass {
     rim=1.0 * p,
     bezel=9.0 * p,
     refraction=9.0 * p,
-    chroma=0.10 * p,
+    chroma=0.0,
     merge=0.0,
     adaptive=false,
     zoom=1.0,
@@ -144,7 +144,7 @@ pub fn liquid_toggle_node(
       .ground(By(fn() {
         let off_c = match track_color {
           Some(f) => f()
-          None => colors().track
+          None => if is_dark() { colors().track } else { 0x78788052L }
         }
         let on_c = match on_color {
           Some(f) => f()
@@ -159,7 +159,7 @@ pub fn liquid_toggle_node(
       let thumb_shape = fn(n : @view.View, with_velocity : Bool) -> @view.GroundShape {
         let p = clamp(lens(n), 0.0, 1.0)
         let (sx, sy) = if no_lens() { (1.0, 1.0) } else { dd.jelly(n, 50.0) }
-        let base_w = tw * sx
+        let base_w = tw * sx * lerp(1.0, thumb_held_scale_x / thumb_held_scale, p)
         let base_h = th * sy
         let x = lerp(pad, pad + drag_dist, dd.value(n))
         let (w, h) = if with_velocity && !@ui.reduced_motion() {
