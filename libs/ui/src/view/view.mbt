@@ -895,6 +895,8 @@ pub struct Tree {
   measure_runs_least : (Array[@text.Run], WordsLook, RunsLook, Double) -> Double
   /// `words_tabular` override of the node currently being measured (Tree::measuring_tabular)
   mut measuring_tabular : Bool?
+  /// estimated horizontal origin (points) of the node currently being measured (Tree::measuring_origin_x)
+  mut measuring_origin_x : Double
   /// whether each node keeps where in the source it was made and its properties said (source.mbt): a Tester's tree
   sources : Bool
   nodes : Array[Node]
@@ -1637,6 +1639,7 @@ pub fn Tree::new(
     measure_runs_kept: measure_runs_kept.unwrap_or(measure_runs),
     measure_runs_least,
     measuring_tabular: None,
+    measuring_origin_x: 0.0,
     sources,
     nodes: [],
     free: [],
@@ -7752,7 +7755,9 @@ pub fn View::words(
     // (at its own size of words: View::words_scale's)
     let scale = if nd.words_as_said { 1.0 } else { (tree.env.words_scale)() }
     let prev_tabular = tree.measuring_tabular
+    let prev_origin_x = tree.measuring_origin_x
     tree.measuring_tabular = look.words_tabular
+    tree.measuring_origin_x = tree.estimate_origin_x(at)
     // (its line breaks kept where it says so, View::words_breaks: measured on their lines as written)
     let (mw, mh) = if look.runs.is_empty() {
       (if look.words_breaks { tree.measure_kept } else { tree.measure })(look.words, look.words_look, offered, scale)
@@ -7783,6 +7788,7 @@ pub fn View::words(
       mw
     }
     tree.measuring_tabular = prev_tabular
+    tree.measuring_origin_x = prev_origin_x
     match wm {
       Exactly => (w, mh)
       _ => (mw, mh)

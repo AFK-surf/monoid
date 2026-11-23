@@ -612,6 +612,131 @@ pub fn Tree::measuring_tabular(self : Tree) -> Bool? {
 }
 
 ///|
+/// Estimated horizontal origin (in points) of the node currently being measured by `Tree`'s measure callbacks (`0.0`
+/// outside measure), matching `ux` in `Tree::each_drawn_in_order` so `laid_ahead` warms the exact subpixel phase
+/// painted by `view_made` at non-integer device scales.
+pub fn Tree::measuring_origin_x(self : Tree) -> Double {
+  self.measuring_origin_x
+}
+
+///|
+/// Accumulate widths, `Pt` horizontal margins, and `gap_col` of visible preceding siblings of `target` in a `Row`
+/// container, expanding `slot` nodes inline. Returns `true` once `target` is reached.
+fn Tree::estimate_row_before(
+  self : Tree,
+  kids : Array[Int],
+  target : Int,
+  gap_col : Double,
+  acc : Ref[Double],
+  count : Ref[Int],
+) -> Bool {
+  for k in kids {
+    if k == target {
+      return true
+    }
+    let s = self.nodes[k]
+    if !s.live || s.out {
+      continue
+    }
+    if s.slot {
+      if self.estimate_row_before(s.kids, target, gap_col, acc, count) {
+        return true
+      }
+      continue
+    }
+    let st = s.flex.style
+    if st.position is @flex.Absolute || st.display is @flex.DisplayNone {
+      continue
+    }
+    let w_opt : Double? = if s.placed {
+      Some(s.lw)
+    } else if st.width_kind() == @flex.LEN_PT {
+      Some(st.width_value())
+    } else {
+      None
+    }
+    match w_opt {
+      Some(w) => {
+        if count.val > 0 {
+          acc.val = acc.val + gap_col
+        }
+        let ml = if st.margin_left_kind() == @flex.LEN_PT { st.margin_left_value() } else { 0.0 }
+        let mr = if st.margin_right_kind() == @flex.LEN_PT { st.margin_right_value() } else { 0.0 }
+        acc.val = acc.val + ml + w + mr
+        count.val = count.val + 1
+      }
+      None => ()
+    }
+  }
+  false
+}
+
+///|
+/// Estimate node `at`'s unscaled horizontal origin `ux` (in points) during layout measurement without allocating:
+/// sums already-placed `lx` + horizontal `scroll_off` once a placed ancestor is reached, and below that adds `Pt`
+/// margins, padding, border, and preceding `Row` siblings with `gap_col`.
+fn Tree::estimate_origin_x(self : Tree, at : Int) -> Double {
+  if at < 0 || at >= self.nodes.length() {
+    return 0.0
+  }
+  let mut x = 0.0
+  let mut placed_seen = false
+  let n = self.nodes[at]
+  if n.placed {
+    x = x + n.lx
+    if n.scroll_off is Some(_) {
+      x = x + self.scroll_off_now(n).0
+    }
+    placed_seen = true
+  } else if n.flex.style.margin_left_kind() == @flex.LEN_PT {
+    x = x + n.flex.style.margin_left_value()
+  }
+  let mut child = at
+  let mut cur = n.parent
+  while cur >= 0 && cur < self.nodes.length() {
+    let m = self.nodes[cur]
+    if m.slot {
+      cur = m.parent
+      continue
+    }
+    if !placed_seen {
+      let st = m.flex.style
+      if st.padding_left_kind() == @flex.LEN_PT {
+        x = x + st.padding_left_value()
+      }
+      if st.border_left_kind() == @flex.LEN_PT {
+        x = x + st.border_left_value()
+      }
+      if st.direction is @flex.Row {
+        let gap_col = if st.gap_col_kind() == @flex.LEN_PT { st.gap_col_value() } else { 0.0 }
+        let acc : Ref[Double] = Ref(0.0)
+        let count : Ref[Int] = Ref(0)
+        if self.estimate_row_before(m.kids, child, gap_col, acc, count) && count.val > 0 {
+          x = x + acc.val + gap_col
+        }
+      }
+      if m.placed {
+        x = x + m.lx
+        if m.scroll_off is Some(_) {
+          x = x + self.scroll_off_now(m).0
+        }
+        placed_seen = true
+      } else if st.margin_left_kind() == @flex.LEN_PT {
+        x = x + st.margin_left_value()
+      }
+    } else {
+      x = x + m.lx
+      if m.scroll_off is Some(_) {
+        x = x + self.scroll_off_now(m).0
+      }
+    }
+    child = cur
+    cur = m.parent
+  }
+  x
+}
+
+///|
 /// A last-resort ellipsis is intended without changing the words' layout sizing (as Ctx::text's allow_ellipsis).
 #callsite(autofill(loc))
 pub fn View::allow_ellipsis(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {

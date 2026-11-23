@@ -367,6 +367,26 @@ pub fn set_view_app(make : (@view.View) -> Unit, around? : (Ctx) -> Unit, theme?
 }
 
 ///|
+/// Run a `(Double, Double)` measure callback with `measuring_origin_x` set to `origin_x` and restored afterward.
+fn with_measuring_origin_pair(origin_x : Double, f : () -> (Double, Double)) -> (Double, Double) {
+  let prev = measuring_origin_x.val
+  measuring_origin_x.val = origin_x
+  let r = f()
+  measuring_origin_x.val = prev
+  r
+}
+
+///|
+/// Run a `Double` measure callback with `measuring_origin_x` set to `origin_x` and restored afterward.
+fn with_measuring_origin_double(origin_x : Double, f : () -> Double) -> Double {
+  let prev = measuring_origin_x.val
+  measuring_origin_x.val = origin_x
+  let r = f()
+  measuring_origin_x.val = prev
+  r
+}
+
+///|
 /// The window's tree made by `make`, now.
 fn view_made_now(make : (@view.View) -> Unit) -> Unit {
   // (the window of the run it is made in: what it marks due asks that window's frame, whichever is in place then)
@@ -377,6 +397,12 @@ fn view_made_now(make : (@view.View) -> Unit) -> Unit {
     match made.val {
       Some(tree) => tree.measuring_tabular()
       None => None
+    }
+  }
+  let measuring_ox = fn() {
+    match made.val {
+      Some(tree) => tree.measuring_origin_x()
+      None => 0.0
     }
   }
   let t = @view.Tree::new(
@@ -406,12 +432,36 @@ fn view_made_now(make : (@view.View) -> Unit) -> Unit {
         }
       })
     },
-    measure=fn(words, look, width, scale) { view_words_measure(words, look, width, scale, tabular=measuring_tab()) },
-    measure_runs=fn(runs, look, set, width, scale) { view_runs_measure(runs, look, set, width, scale, tabular=measuring_tab()) },
-    measure_kept=fn(words, look, width, scale) { view_words_measure_kept(words, look, width, scale, tabular=measuring_tab()) },
-    measure_runs_kept=fn(runs, look, set, width, scale) { view_runs_measure_kept(runs, look, set, width, scale, tabular=measuring_tab()) },
-    measure_runs_least=fn(runs, look, set, scale) { view_runs_least(runs, look, set, scale, tabular=measuring_tab()) },
-    measure_shorter=fn(words, shorter, look, width, scale) { view_shorter_measure(words, shorter, look, width, scale, tabular=measuring_tab()) },
+    measure=fn(words, look, width, scale) {
+      with_measuring_origin_pair(measuring_ox(), fn() {
+        view_words_measure(words, look, width, scale, tabular=measuring_tab())
+      })
+    },
+    measure_runs=fn(runs, look, set, width, scale) {
+      with_measuring_origin_pair(measuring_ox(), fn() {
+        view_runs_measure(runs, look, set, width, scale, tabular=measuring_tab())
+      })
+    },
+    measure_kept=fn(words, look, width, scale) {
+      with_measuring_origin_pair(measuring_ox(), fn() {
+        view_words_measure_kept(words, look, width, scale, tabular=measuring_tab())
+      })
+    },
+    measure_runs_kept=fn(runs, look, set, width, scale) {
+      with_measuring_origin_pair(measuring_ox(), fn() {
+        view_runs_measure_kept(runs, look, set, width, scale, tabular=measuring_tab())
+      })
+    },
+    measure_runs_least=fn(runs, look, set, scale) {
+      with_measuring_origin_double(measuring_ox(), fn() {
+        view_runs_least(runs, look, set, scale, tabular=measuring_tab())
+      })
+    },
+    measure_shorter=fn(words, shorter, look, width, scale) {
+      with_measuring_origin_double(measuring_ox(), fn() {
+        view_shorter_measure(words, shorter, look, width, scale, tabular=measuring_tab())
+      })
+    },
     time=fn() { h_event_time() },
     sources=@hostapi.keeps_sources(),
   )

@@ -1360,13 +1360,14 @@ fn glyph_drawn_any_sub(k : Int) -> Bool {
 fn laid_ahead(keys : Array[Int], x : (Int) -> Double) -> Unit {
   let sc = g().scale
   let z = words_zoom.val
+  let ox = measuring_origin_x.val
   for c in 0..<keys.length() {
     if glyphs_laid.length() >= glyphs_ahead_most {
       break
     }
     let k = keys[c]
     if k >= 0 && !glyph_drawn_any_sub(k) {
-      glyphs_laid.push(glyph_sub_at(k, x(c), sc, z))
+      glyphs_laid.push(glyph_sub_at(k, ox + x(c), sc, z))
     }
   }
   if glyphs_laid.length() >= glyphs_ahead_batch {
@@ -1505,6 +1506,12 @@ fn glyph_full_keys() -> Map[String, Int] {
 /// rounds from as `lx`), 0 outside `view_made`.
 // kept across runs: set and put back around view_made
 let glyph_origin_x : Ref[Double] = Ref(0.0)
+
+///|
+/// The estimated horizontal origin (in points) of the View node being measured during tree layout
+/// (`Tree::measuring_origin_x`), 0 outside tree measure callbacks.
+// kept across runs: set and put back around measure callbacks
+let measuring_origin_x : Ref[Double] = Ref(0.0)
 
 ///|
 /// How far (device pixels) a glyph drawn at horizontal subpixel phase `sub` (bits 26..27 of its key: glyph_sub_at) is

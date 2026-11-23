@@ -179,7 +179,7 @@ pub struct RichLayout {
 
 ///|
 fn RichLayout::hard_end(self : RichLayout, i : Int) -> Bool {
-  is_nl(self.cu[i]) && (i + 1 >= self.starts.length() || self.brk[i + 1] == 2)
+  is_nl(self.cu[i]) && !(self.cu[i] == 13 && i + 1 < self.starts.length() && self.cu[i + 1] == 10)
 }
 
 ///|
@@ -361,13 +361,14 @@ fn rich_kept_of(r : Rich) -> RichKept {
 /// ground of its own (a file's chip) is one piece, as rich_lines keeps it whole: an inline block's min-content.
 fn rich_least_w(r : Rich) -> Double {
   let p = rich_kept_of(r).prep
+  let brk = p.breaks()
   let n = p.starts.length()
   let mut widest = 0.0
   let mut w = 0.0
   // (the piece so far without the blanks it ends in)
   let mut inked = 0.0
   for i in 0..<n {
-    if i > 0 && p.brk[i] != 0 && !rich_within_ground(r, p, i) {
+    if i > 0 && brk[i] != 0 && !rich_within_ground(r, p, i) {
       widest = dmax(widest, inked)
       w = 0.0
       inked = 0.0
@@ -409,13 +410,31 @@ priv struct RichPrep {
   pre : Array[Double]
   keys : Array[Int]
   cu : Array[Int]
-  brk : Array[Int]
+  mut brk : Array[Int]
   run_of : Array[Int]
   len : Int
   base_asc : Double
   base_desc : Double
   extra : Double
   bidi : @text.Bidi?
+}
+
+///|
+/// UAX #14 line-break opportunities before each cluster of `self`, computed once on demand and kept on `self`.
+fn RichPrep::breaks(self : RichPrep) -> Array[Int] {
+  let n = self.starts.length()
+  if self.brk.length() == n {
+    return self.brk
+  }
+  let brk = Array::make(n, 0)
+  if n > 1 {
+    let b = @text.line_breaks(self.text)
+    for i in 1..<n {
+      brk[i] = b[self.starts[i]]
+    }
+  }
+  self.brk = brk
+  brk
 }
 
 ///|
@@ -499,10 +518,27 @@ fn rich_spaced_run(r : Rich, run : Run, style : Int) -> Bool {
 }
 
 ///|
+/// Whether `run` in paragraph `r` (with resolved `style`) can be concatenated with adjacent mono/code runs sharing the
+/// same `(size, weight, style)` for batched shaping: no inline drawing, no background room, no cross-run CJK/Latin
+/// spacing, and no digit-dependent `style_tabular` toggle.
+fn rich_can_batch_mono(r : Rich, run : Run, style : Int) -> Bool {
+  run.drawing is None &&
+  !run.code &&
+  run.ground is None &&
+  r.run_bg(run) == 0L &&
+  ((style & @hostapi.style_mono) != 0 ||
+  (@hostapi.face_of_style(style) == @hostapi.face_code && (style & @hostapi.style_tabular) == 0))
+}
+
+///|
+/// Target UTF-16 code-unit budget per batched mono `shape()` call (well below `text_cache.buf`'s 8192-cluster cap).
+let rich_mono_batch_budget : Int = 1024
+
+///|
 /// What of paragraph `r` any width shares (RichPrep).
 /// (`one`: a paragraph of one run of words made as rich_prep_one makes it; false only in a test, which holds the two the
 /// same)
-fn rich_prep(r : Rich, one? : Bool = true) -> RichPrep {
+fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
   let sc = g().scale
   let (_, _, own0) = font_metrics(r.size, r.weight)
   // Chinese in it: measured by the CJK font's too (taller), as Android measures a line by the fonts it draws in (as a
@@ -541,39 +577,10 @@ fn rich_prep(r : Rich, one? : Bool = true) -> RichPrep {
   // an em may part it from this run's first (rich_spaced_run): each run is shaped on its own, so neither the host's
   // shaper nor words_spaced_in sees where two runs meet
   let mut spaced_before : (Int, Int, Double)? = None
-  for k, run in r.runs {
+  fn push_single(k : Int) {
+    let run = r.runs[k]
     let size = r.run_size(run)
-    match run.drawing {
-      Some(d) => {
-        run_start.push(off)
-        run_size.push(size)
-        run_a.push(d.baseline * size)
-        run_d.push((d.height - d.baseline) * size)
-        run_lasc.push(dmax(base_asc, d.baseline * size))
-        run_ldesc.push(dmax(base_desc, (d.height - d.baseline) * size))
-        run_c0.push(starts.length())
-        starts.push(off)
-        lens.push(run.text.length())
-        adv.push(d.width * size)
-        pre.push(0.0)
-        keys.push(-2)
-        cu.push(0xFFFC)
-        run_of.push(k)
-        run_c1.push(starts.length())
-        sb.write_string(run.text)
-        off = off + run.text.length()
-        drawings.push(Some(({
-          width: d.width * size,
-          height: d.height * size,
-          baseline: d.baseline * size,
-          paths: d.paths.map(fn(path) { path.map(fn(p) { (p.0.map(fn(v) { v * size }), p.1) }) }),
-          words: d.words.map(fn(w) { (w.0, w.1 * size, w.2 * size, w.3 * size) }),
-        } : InlineDrawing)))
-        spaced_before = None
-        continue
-      }
-      None => drawings.push(None)
-    }
+    drawings.push(None)
     let weight = r.run_weight(run)
     let style = r.run_style(run)
     let s = shape(run.text, size, weight, style~, spacing=r.spacing)
@@ -621,14 +628,174 @@ fn rich_prep(r : Rich, one? : Bool = true) -> RichPrep {
     sb.write_string(run.text)
     off = off + run.text.length()
   }
+
+  let total_runs = r.runs.length()
+  let mut k = 0
+  while k < total_runs {
+    let run = r.runs[k]
+    let size = r.run_size(run)
+    match run.drawing {
+      Some(d) => {
+        run_start.push(off)
+        run_size.push(size)
+        run_a.push(d.baseline * size)
+        run_d.push((d.height - d.baseline) * size)
+        run_lasc.push(dmax(base_asc, d.baseline * size))
+        run_ldesc.push(dmax(base_desc, (d.height - d.baseline) * size))
+        run_c0.push(starts.length())
+        starts.push(off)
+        lens.push(run.text.length())
+        adv.push(d.width * size)
+        pre.push(0.0)
+        keys.push(-2)
+        cu.push(0xFFFC)
+        run_of.push(k)
+        run_c1.push(starts.length())
+        sb.write_string(run.text)
+        off = off + run.text.length()
+        drawings.push(Some(({
+          width: d.width * size,
+          height: d.height * size,
+          baseline: d.baseline * size,
+          paths: d.paths.map(fn(path) { path.map(fn(p) { (p.0.map(fn(v) { v * size }), p.1) }) }),
+          words: d.words.map(fn(w) { (w.0, w.1 * size, w.2 * size, w.3 * size) }),
+        } : InlineDrawing)))
+        spaced_before = None
+        k = k + 1
+        continue
+      }
+      None => ()
+    }
+    let weight = r.run_weight(run)
+    let style = r.run_style(run)
+    if batch && rich_can_batch_mono(r, run, style) && run.text.length() <= rich_mono_batch_budget {
+      let mut k1 = k + 1
+      let mut chunk_len = run.text.length()
+      let mut last_nl_k1 = if has_nl(run.text) { k1 } else { -1 }
+      while k1 < total_runs {
+        let next = r.runs[k1]
+        if next.drawing is Some(_) || r.run_size(next) != size || r.run_weight(next) != weight {
+          break
+        }
+        let next_style = r.run_style(next)
+        if next_style != style || !rich_can_batch_mono(r, next, next_style) {
+          break
+        }
+        let nlen = next.text.length()
+        if chunk_len + nlen > rich_mono_batch_budget {
+          if last_nl_k1 >= k + 2 {
+            k1 = last_nl_k1
+          }
+          break
+        }
+        chunk_len = chunk_len + nlen
+        k1 = k1 + 1
+        if has_nl(next.text) {
+          last_nl_k1 = k1
+        }
+      }
+      if k1 - k >= 2 {
+        let count = k1 - k
+        let chunk_sb = StringBuilder()
+        let local_start = Array::make(count, 0)
+        let local_end = Array::make(count, 0)
+        let mut loff = 0
+        for j in 0..<count {
+          let t = r.runs[k + j].text
+          local_start[j] = loff
+          chunk_sb.write_string(t)
+          loff = loff + t.length()
+          local_end[j] = loff
+        }
+        let chunk = chunk_sb.to_string()
+        let s = shape(chunk, size, weight, style~, spacing=r.spacing)
+        let batch_c0 = Array::make(count, 0)
+        let batch_c1 = Array::make(count, 0)
+        let m = s.starts.length()
+        let mut ci = 0
+        let mut aligned = true
+        for j in 0..<count {
+          let ls = local_start[j]
+          let le = local_end[j]
+          batch_c0[j] = ci
+          if ls < le {
+            if ci >= m || s.starts[ci] != ls {
+              aligned = false
+              break
+            }
+            while ci < m && s.starts[ci] < le {
+              if s.starts[ci] + s.lens[ci] > le {
+                aligned = false
+                break
+              }
+              ci = ci + 1
+            }
+            if !aligned || ci == batch_c0[j] || s.starts[ci - 1] + s.lens[ci - 1] != le {
+              aligned = false
+              break
+            }
+          }
+          batch_c1[j] = ci
+        }
+        if ci != m {
+          aligned = false
+        }
+        if aligned {
+          for j in 0..<count {
+            let rk = k + j
+            let rrun = r.runs[rk]
+            let (a, d) = line_metrics(size, weight, words_cjk(rrun.text), style~)
+            let (l, lasc, _) = set_line(lh * size / r.size, a, d, sc, px)
+            drawings.push(None)
+            run_start.push(off + local_start[j])
+            run_size.push(size)
+            run_a.push(a)
+            run_d.push(d)
+            run_lasc.push(lasc)
+            run_ldesc.push(l - lasc)
+            run_c0.push(starts.length())
+            for c in batch_c0[j]..<batch_c1[j] {
+              starts.push(s.starts[c] + off)
+              lens.push(s.lens[c])
+              adv.push(s.adv[c])
+              pre.push(s.pad)
+              keys.push(s.keys[c])
+              cu.push(s.cu[c])
+              run_of.push(rk)
+            }
+            run_c1.push(starts.length())
+          }
+          if m > 0 {
+            spaced_before = None
+          }
+          sb.write_string(chunk)
+          off = off + chunk.length()
+          k = k1
+          continue
+        }
+        for rk in k..<k1 {
+          push_single(rk)
+        }
+        k = k1
+        continue
+      }
+    }
+    push_single(k)
+    k = k + 1
+  }
   let text = sb.to_string()
   let n = starts.length()
-  let brk = Array::make(n, 0)
-  if n > 1 {
-    let b = @text.line_breaks(text)
-    for i in 1..<n {
-      brk[i] = b[starts[i]]
+  let brk = if r.wrap {
+    let brk = Array::make(n, 0)
+    if n > 1 {
+      let b = @text.line_breaks(text)
+      for i in 1..<n {
+        brk[i] = b[starts[i]]
+      }
     }
+    brk
+  } else {
+    []
   }
   // a label (a run on a ground of its own shape) is one thing, as CSS's inline-block is: a line breaks before it
   // (right to left: each line's clusters put in their visual order, rich_lines)
@@ -711,7 +878,7 @@ fn rich_prep_one(
     pre,
     keys: s.keys,
     cu: s.cu,
-    brk: s.breaks(run.text),
+    brk: if r.wrap { s.breaks(run.text) } else { [] },
     run_of: Array::make(n, 0),
     len: run.text.length(),
     base_asc,
@@ -740,7 +907,7 @@ fn rich_lines(r : Rich, p : RichPrep, max_w : Double) -> RichLayout {
   let pre = p.pre
   let keys = p.keys
   let cu = p.cu
-  let brk = p.brk
+  let brk = if r.wrap { p.breaks() } else { [] }
   let run_of = p.run_of
   let base_asc = p.base_asc
   let base_desc = p.base_desc
@@ -835,7 +1002,7 @@ fn rich_lines(r : Rich, p : RichPrep, max_w : Double) -> RichLayout {
       last_break = -1
       continue
     }
-    if i > ls && brk[i] != 0 {
+    if r.wrap && i > ls && brk[i] != 0 {
       last_break = i
     }
     let a = adv[i]

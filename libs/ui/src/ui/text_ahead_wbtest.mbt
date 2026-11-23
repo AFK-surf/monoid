@@ -214,3 +214,181 @@ test "heavy single-frame layout flushes glyphs_laid mid-layout without touching 
     seen[k] = true
   }
 }
+
+///|
+/// A page with non-integer-pixel padding, nested code blocks, blockquotes, and list items to verify
+/// `measuring_origin_x` predicts exact subpixel phases at non-integer device scales.
+fn ahead_non_int_dpi_page(root : @view.View) -> Unit {
+  root.box(fn(p) {
+    p.width(Is(Some(351.0))).padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
+    // 1. Padding 16pt plain text
+    p.box(fn(v) {
+      v
+      .width(Is(Some(319.0)))
+      .words(
+        Is("非整数 DPI 下的正文段落，padding=16pt，验证首帧预热相位完全命中。"),
+        look={ ..@view.words_plain, size: 15.3, line: 22.0, wrap: true },
+      )
+      |> ignore
+    })
+    |> ignore
+    // 2. Nested code block: 16 + 14 = 30pt horizontal origin
+    p.box(fn(code_box) {
+      code_box.width(Is(Some(319.0))).padding(Is((14.0, 14.0, 14.0, 14.0))) |> ignore
+      code_box.box(fn(v) {
+        v
+        .words_breaks(Is(true))
+        .words_runs(
+          Is([
+            @text.span("fn ", mono=true, color=0xFFCF222EL),
+            @text.span("render_code", mono=true, color=0xFF0550AEL),
+            @text.span("(dpi: Double) {\n  let x = 30.0\n}", mono=true, color=0xFF1D1D1FL),
+          ]),
+          look={ ..@view.words_plain, size: 13.0, line: 19.0, wrap: false },
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    // 3. Blockquote: Row(2pt bar + 10pt pad/gap) -> 16 + 2 + 10 = 28pt
+    p.box(fn(bq) {
+      bq.row(Is(true)).width(Is(Some(319.0))).gap(Is(10.0)) |> ignore
+      bq.box(fn(bar) { bar.width(Is(Some(2.0))).height(Is(Some(20.0))) |> ignore }) |> ignore
+      bq.box(fn(v) {
+        v
+        .width(Is(Some(307.0)))
+        .words(
+          Is("引用块里的文字在非整数缩放下同样应保持 100% 相位命中。"),
+          look={ ..@view.words_plain, size: 14.5, line: 21.0, wrap: true },
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    // 4. List item: Row(20pt marker + 8pt gap) -> 16 + 20 + 8 = 44pt
+    p.box(fn(item) {
+      item.row(Is(true)).width(Is(Some(319.0))).gap(Is(8.0)) |> ignore
+      item.box(fn(marker) { marker.width(Is(Some(20.0))).height(Is(Some(20.0))) |> ignore }) |> ignore
+      item.box(fn(v) {
+        v
+        .width(Is(Some(291.0)))
+        .words_runs(
+          Is([
+            @view.words_run("列表项"),
+            @view.words_run("加粗前缀 ", weight=700),
+            @view.words_run("followed by body text at 44pt origin."),
+          ]),
+          look={ ..@view.words_plain, size: 15.0, line: 22.0, wrap: true },
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+test "non-integer DPI first-frame layout hits 100% of painted subpixel glyph phases" {
+  for sc in [3.6, 4.1, 2.625, 1.25, 2.75] {
+    let asked : Array[Int] = []
+    fake_ahead.val = Some(asked)
+    let t = Tester::new(fn(_c) {  }, w=351.0, h=600.0, scale=sc)
+    t.latin_advances(
+      FixedArray::makei(95, fn(i) { 0.45 + (i % 7).to_double() * 0.037 }),
+      FixedArray::makei(95, fn(i) { 0.48 + (i % 5).to_double() * 0.041 }),
+    )
+    set_view_app(ahead_non_int_dpi_page)
+    t.draw()
+    fake_ahead.val = None
+    let (placed, hit, _) = ahead_hits(asked)
+    assert_true(placed > 80, msg="scale \{sc}: expected > 80 placed glyphs, got \{placed}")
+    assert_eq(hit, placed, msg="scale \{sc}: \{hit} of \{placed} glyphs hit predicted subpixel phase")
+    let seen : Map[Int, Bool] = Map([])
+    for k in asked {
+      assert_true(!seen.contains(k), msg="scale \{sc}: duplicate (key, phase) dispatched: \{k}")
+      seen[k] = true
+    }
+  }
+}
+
+///|
+test "non-integer DPI between-frame nodes under placed ancestors hit 100% of painted subpixel phases" {
+  for sc in [3.6, 4.1, 2.625, 1.25, 2.75] {
+    let asked : Array[Int] = []
+    let show = @signals.signal(false)
+    let t = Tester::new(fn(_c) {  }, w=351.0, h=600.0, scale=sc)
+    t.latin_advances(
+      FixedArray::makei(95, fn(i) { 0.45 + (i % 7).to_double() * 0.037 }),
+      FixedArray::makei(95, fn(i) { 0.48 + (i % 5).to_double() * 0.041 }),
+    )
+    set_view_app(fn(root) {
+      root.laid_before_causes()
+      root.box(fn(p) {
+        p.width(Is(Some(351.0))).padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
+        // Placed outer container with padding 14pt
+        p.box(fn(code_box) {
+          code_box.width(Is(Some(319.0))).padding(Is((14.0, 14.0, 14.0, 14.0))) |> ignore
+          code_box.show(
+            fn() { show.get() },
+            fn(v) {
+              v
+              .width(Is(Some(291.0)))
+              .words(
+                Is("帧间在已放置容器内新增代码与中文段落，验证 30pt 原点相位预测。"),
+                look={ ..@view.words_plain, size: 15.3, line: 22.0, wrap: true },
+              )
+              |> ignore
+            },
+            at_once=true,
+          )
+          |> ignore
+        })
+        |> ignore
+        // Placed Row with 20pt marker + 8pt gap
+        p.box(fn(item) {
+          item.row(Is(true)).width(Is(Some(319.0))).gap(Is(8.0)) |> ignore
+          item.box(fn(marker) { marker.width(Is(Some(20.0))).height(Is(Some(20.0))) |> ignore }) |> ignore
+          item.show(
+            fn() { show.get() },
+            fn(v) {
+              v
+              .width(Is(Some(291.0)))
+              .words_runs(
+                Is([
+                  @view.words_run("新增行内"),
+                  @view.words_run("高亮片段 ", weight=700),
+                  @view.words_run("under placed row at 44pt."),
+                ]),
+                look={ ..@view.words_plain, size: 15.0, line: 22.0, wrap: true },
+              )
+              |> ignore
+            },
+            at_once=true,
+          )
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    t.draw()
+    fake_ahead.val = Some(asked)
+    view_event(fn() { show.set(true) })
+    let before_draw = asked.length()
+    assert_true(before_draw > 20, msg="scale \{sc}: expected glyphs_ahead during event, got \{before_draw}")
+    t.draw()
+    fake_ahead.val = None
+    let seen : Map[Int, Bool] = Map([])
+    for k in asked {
+      assert_true(!seen.contains(k), msg="scale \{sc}: duplicate (key, phase) across event + draw: \{k}")
+      seen[k] = true
+    }
+    let (placed, hit, _) = ahead_hits(asked)
+    assert_true(placed > 20, msg="scale \{sc}: expected > 20 placed glyphs, got \{placed}")
+    assert_eq(hit, placed, msg="scale \{sc}: \{hit} of \{placed} glyphs hit predicted subpixel phase")
+  }
+}

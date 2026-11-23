@@ -174,6 +174,7 @@ fn reset_globals() -> Unit {
   text_cache.fonts.clear()
   text_cache.metrics.clear()
   glyphs_forget()
+  measuring_origin_x.val = 0.0
   halos_forget()
   halos.none = false
   halos.blurred = 0

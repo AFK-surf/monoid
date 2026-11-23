@@ -454,7 +454,17 @@ impl @hostapi.Host for FakeHost with words_spaced(self) {
 /// Fake shaping: one cluster per extended grapheme cluster, as real hosts
 /// make them; Latin half an em wide (0.6 in the code face; ASCII as a real face where the test says:
 /// Tester::latin_advances), everything else a full em.
+///|
+/// Optional counter of `FakeHost::shape` invocations for white-box tests.
+// kept across runs: set and cleared within a single test
+let fake_shape_calls : Ref[Int?] = Ref(None)
+
+///|
 impl @hostapi.Host for FakeHost with shape(self, text, size, weight, style, out) {
+  match fake_shape_calls.val {
+    Some(n) => fake_shape_calls.val = Some(n + 1)
+    None => ()
+  }
   if self.live is Some(l) {
     return l.host.shape(text, size, weight, style, out)
   }
