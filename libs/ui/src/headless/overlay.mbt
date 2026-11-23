@@ -41,6 +41,7 @@ priv struct OverlayEntry {
   dismiss : (OverlayDismiss) -> Unit
   before_dismiss : (OverlayDismiss) -> Bool
   inert : () -> Bool
+  modal : Bool
   escape : Bool
   outside : Bool
   anchor : @view.View?
@@ -123,6 +124,7 @@ fn overlay_join(
   escape : Bool,
   outside : Bool,
   anchor : @view.View?,
+  modal? : Bool = false,
   before_dismiss? : (OverlayDismiss) -> Bool = fn(_) { false },
   keeps? : () -> Array[@view.View] = fn() { [] },
 ) -> (OverlayStack, OverlayEntry) {
@@ -134,6 +136,7 @@ fn overlay_join(
     dismiss: fn(how) { if !@signals.untracked(off) { on_dismiss(how) } },
     before_dismiss,
     inert: off,
+    modal,
     escape,
     outside,
     anchor,
@@ -204,7 +207,8 @@ fn OverlayStack::press(self : OverlayStack, count : Int, x : Double, y : Double)
   guard i >= 0 else { return }
   let top = self.entries[i]
   for j in i..<self.entries.length() {
-    if press_on(self.entries[j].node, x, y) {
+    let e = self.entries[j]
+    if press_on(e.node, x, y) || (j > i && e.modal && !(e.inert)()) {
       return
     }
   }
@@ -323,6 +327,7 @@ pub fn overlay(
       dismiss_on_escape,
       dismiss_on_outside,
       anchor,
+      modal~,
       before_dismiss?,
       keeps?,
     )
@@ -357,9 +362,11 @@ pub fn overlay(
     v
     .hides(By(off))
     .presses(By(live))
-    // (a press on the ground its look draws its own, no press outside it, nothing done by it)
-    .on_drag(fn(_) {  })
     |> ignore
+    if dismiss_on_outside {
+      // (a press on the ground its look draws its own, no press outside it, nothing done by it)
+      v.on_drag(fn(_) {  }) |> ignore
+    }
     overlay_wire_dismiss(v, stack, entry)
   }
   if in_node {

@@ -414,3 +414,49 @@ test "overlay: initial_focus targets specific child and dialog forwards before_d
   assert_eq(after_second_esc, (false, 1))
 }
 
+///|
+test "overlay: modal dismiss_on_outside=false over dismiss_on_outside=true blocks outside press without hijacking drag" {
+  let lower_open = @signals.signal(true)
+  let lower_dismissed = Ref(0)
+  let upper_open = @signals.signal(true)
+  let t = window(fn(root) {
+    root.show(at_once=true, fn() { lower_open.get() }, fn(s) {
+      @headless.overlay(
+        s,
+        fn(_) {
+          lower_dismissed.val += 1
+          lower_open.set(false)
+        },
+        modal=false,
+        dismiss_on_outside=true,
+        label=fn() { "下层浮层" },
+        fn(v, _) {
+          v.over(Is(true)).offset(Is((10.0, 10.0))).width(Is(Some(80.0))).height(Is(Some(60.0))).ground(Is(c_rest))
+          |> ignore
+        },
+      )
+      |> ignore
+    })
+    root.show(at_once=true, fn() { upper_open.get() }, fn(s) {
+      @headless.overlay(
+        s,
+        fn(_) { upper_open.set(false) },
+        modal=true,
+        dismiss_on_outside=false,
+        auto_focus=false,
+        label=fn() { "上层全屏模态" },
+        fn(v, _) {
+          v.over(Is(true)).width(Is(Some(320.0))).height(Is(Some(240.0))).ground(Is(c_rest)) |> ignore
+        },
+      )
+      |> ignore
+    })
+  })
+  // Pressing blank ground on the upper modal layer must not dismiss the lower layer.
+  t.tap(200.0, 150.0)
+  assert_eq((lower_open.get(), lower_dismissed.val, upper_open.get()), (true, 0, true))
+  // Blank ground on a dismiss_on_outside=false overlay does not register a drag target, keeping text selection free.
+  let tree = @ui.view_tree().unwrap()
+  assert_true(tree.target_at(200.0, 150.0) is Nothing)
+}
+

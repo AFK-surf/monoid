@@ -122,6 +122,7 @@ pub fn dialog(
       close_on_escape,
       close_on_outside,
       None,
+      modal~,
       before_dismiss?,
     )
     look(v, { node: v, now: open, close })
