@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fab977045](https://github.com/AFK-surf/monoid/commit/fab977045e7869d0f1cbfa5296a51294edbdc119) fix(ui): space a long pick's search off its first  | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [90e217a8e](https://github.com/AFK-surf/monoid/commit/90e217a8e273ca102c9676f1c3372b4291ae3dd1) fix(station): a new session on the MoonBit station | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.58 | 121.18 |
 | [a9ed054f1](https://github.com/AFK-surf/monoid/commit/a9ed054f13fee12ad7b7aa5bf2f1a8019e6ef72a) feat(pion-core): native event wake, pure-C screen/ | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.58 | 121.18 |
 | [576b3c3bf](https://github.com/AFK-surf/monoid/commit/576b3c3bfa187f50f42b5d062bfce9f291aba37b) feat(pion-core): W28a merged stations roster, lock | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.58 | 121.18 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [65b57cfa2](https://github.com/AFK-surf/monoid/commit/65b57cfa229678239b35658828e33fcec0fd2fcf) test(pion): add L4 TS-vs-Pion deep domain behavior | 2.74 | 3.68 | 14.92 | 37.1 | 56.84 | 32.49 | 65.97 | 101.12 | 127.44 |
 | [4bee15bee](https://github.com/AFK-surf/monoid/commit/4bee15bee67ed648e94cbf0a85aba610553e65bd) feat(mbui): add opt-in STILLFAIL_CORE=pion macOS b | 2.74 | 3.68 | 14.92 | 37.1 | 56.84 | 32.49 | 65.97 | 100.96 | 120.36 |
 | [b9ba82a65](https://github.com/AFK-surf/monoid/commit/b9ba82a65257adc5889f61cf930ed1e698b150a6) fix(core,station): reduce sqlite disk writes durin | 2.74 | 3.68 | 14.92 | 37.1 | 56.84 | 32.49 | 65.97 | 100.96 | 120.36 |
-| [9fe8e5978](https://github.com/AFK-surf/monoid/commit/9fe8e597874d74064c2c723ba4891a5b32af080e) refactor(mbui): zero out remaining old-list, old-s | 2.74 | 3.68 | 14.92 | 37.1 | 56.84 | 32.49 | 65.97 | 100.98 | 127.63 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fab977045](https://github.com/AFK-surf/monoid/commit/fab977045e7869d0f1cbfa5296a51294edbdc119) fix(ui): space a long pick's search off its first  | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.3 |
 | [90e217a8e](https://github.com/AFK-surf/monoid/commit/90e217a8e273ca102c9676f1c3372b4291ae3dd1) fix(station): a new session on the MoonBit station | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.54 |
 | [a9ed054f1](https://github.com/AFK-surf/monoid/commit/a9ed054f13fee12ad7b7aa5bf2f1a8019e6ef72a) feat(pion-core): native event wake, pure-C screen/ | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.54 |
 | [576b3c3bf](https://github.com/AFK-surf/monoid/commit/576b3c3bfa187f50f42b5d062bfce9f291aba37b) feat(pion-core): W28a merged stations roster, lock | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.25 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [65b57cfa2](https://github.com/AFK-surf/monoid/commit/65b57cfa229678239b35658828e33fcec0fd2fcf) test(pion): add L4 TS-vs-Pion deep domain behavior | 0.55 | 0.71 | 2.79 | 3.8 | 6.87 | 2.04 | 5.64 | 57.87 |
 | [4bee15bee](https://github.com/AFK-surf/monoid/commit/4bee15bee67ed648e94cbf0a85aba610553e65bd) feat(mbui): add opt-in STILLFAIL_CORE=pion macOS b | 0.55 | 0.71 | 2.79 | 3.8 | 6.87 | 2.04 | 5.64 | 57.95 |
 | [b9ba82a65](https://github.com/AFK-surf/monoid/commit/b9ba82a65257adc5889f61cf930ed1e698b150a6) fix(core,station): reduce sqlite disk writes durin | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.87 | 55.69 |
-| [9fe8e5978](https://github.com/AFK-surf/monoid/commit/9fe8e597874d74064c2c723ba4891a5b32af080e) refactor(mbui): zero out remaining old-list, old-s | 0.55 | 0.71 | 2.79 | 3.8 | 6.87 | 2.04 | 5.64 | 57.87 |
