@@ -286,6 +286,10 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     @Override
     public void onSurfaceCreated(GL10 gl, EGLConfig config) {
         drawingThread();
+        java.io.File cacheDir = getContext().getCacheDir();
+        if (cacheDir != null) {
+            Native.setShaderCacheDir(new java.io.File(cacheDir, "mbui_gl_cache").getAbsolutePath());
+        }
         boolean lost = Native.surfaceCreated();
         NativeViews.textureMostRead();
         mine = ++setUp;

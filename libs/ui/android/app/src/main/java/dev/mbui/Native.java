@@ -13,6 +13,8 @@ final class Native {
     static native void start();
     /** MoonBit on a thread of its own, the frames handed over to the GL thread (MBView, before start). */
     static native void twoThreads();
+    /** Directory for cached GLES program binaries (GL thread, before surfaceCreated). */
+    static native void setShaderCacheDir(String path);
     /** Drawing set up in the GL context now current; whether one was set up before (its textures lost). */
     static native boolean surfaceCreated();
     static native void resize(int w, int h);

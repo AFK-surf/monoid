@@ -401,6 +401,16 @@ static int image_new(void) {
 #define MB_HOST_THREADS 1
 #include "gles_render.h"
 
+// (GL thread) directory where compiled GLES program binaries are cached on disk (MBView.onSurfaceCreated)
+JNIEXPORT void JNICALL Java_dev_mbui_Native_setShaderCacheDir(JNIEnv *env, jclass c, jstring path) {
+  if (!path) return;
+  const char *s = (*env)->GetStringUTFChars(env, path, NULL);
+  if (s) {
+    gl_set_prog_cache_dir(s);
+    (*env)->ReleaseStringUTFChars(env, path, s);
+  }
+}
+
 // (GL thread) whether the context was made anew under a drawing set up before (its textures lost: the app's thread
 // told by MBView, MBText.reset and Native.imagesUntold)
 JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_surfaceCreated(JNIEnv *env, jclass c) {

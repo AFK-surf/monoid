@@ -64,9 +64,14 @@ static void feedback_seen(void) {
 static int vbo_uploads;
 static int instanced_draws;
 static int instanced_total;
+static int program_binds;
 static void checked_buffer_data(GLenum target, GLsizeiptr size, const void *data, GLenum usage) {
   if (target == GL_ARRAY_BUFFER) vbo_uploads++;
   epoxy_glBufferData(target, size, data, usage);
+}
+static void checked_use_program(GLuint p) {
+  program_binds++;
+  epoxy_glUseProgram(p);
 }
 static void checked_draw_arrays(GLenum mode, GLint first, GLsizei count) {
   feedback_seen();
@@ -80,6 +85,8 @@ static void checked_draw_arrays_instanced(GLenum mode, GLint first, GLsizei coun
 }
 #undef glBufferData
 #define glBufferData checked_buffer_data
+#undef glUseProgram
+#define glUseProgram checked_use_program
 #undef glDrawArrays
 #define glDrawArrays checked_draw_arrays
 #undef glDrawArraysInstanced
@@ -268,10 +275,11 @@ int main(void) {
   target_fb = surface;
   CHECK(offscreen == 0);
 
-  // Perf-35: lazy shader compilation, ONE_KIND #if pruning, scissor glClear partial-redraw ground, and kind==9 own prog.
+  // Perf-35 / Perf-37: lazy shader compilation, compact program groups, scissor glClear partial-redraw ground.
   {
-    CHECK(progs[5].p == 0 && progs[6].p == 0 && progs[7].p == 0 && progs[8].p == 0 &&
-          progs[13].p == 0 && progs[MB_KINDS].p == 0 && post == 0 && ad_prog == 0);
+    CHECK(progs[MB_PROG_FROSTED].p == 0 && progs[MB_PROG_LIQUID_MERGED].p == 0 &&
+          progs[MB_PROG_LIQUID_SINGLE].p == 0 && progs[MB_PROG_LENS].p == 0 &&
+          post == 0 && ad_prog == 0);
 
     // Seed a 4x4 glyph cell in atlas (unit 0) and a temporary 2x2 RGBA image for kind 4 and kind 9.
     static const unsigned char glyph_px[16] = {
@@ -328,9 +336,10 @@ int main(void) {
       CHECK(surface_as_whole(surface));
     }
 
-    CHECK(progs[5].p == 0 && progs[6].p == 0 && progs[7].p == 0 && progs[8].p == 0 &&
-          progs[13].p == 0 && progs[MB_KINDS].p == 0 && post == 0 && ad_prog == 0);
-    CHECK(progs[0].p != 0 && progs[1].p != 0 && progs[4].p != 0 && progs[9].p != 0);
+    CHECK(progs[MB_PROG_FROSTED].p == 0 && progs[MB_PROG_LIQUID_MERGED].p == 0 &&
+          progs[MB_PROG_LIQUID_SINGLE].p == 0 && progs[MB_PROG_LENS].p == 0 &&
+          post == 0 && ad_prog == 0);
+    CHECK(progs[MB_PROG_UI].p != 0);
 
     // Restore clean state for subsequent tests (which assert canvas_fb == 0 and picture_one == 0).
     over_other = 0;
@@ -965,7 +974,7 @@ int main(void) {
     glass_forget();
     gl_present(lp, 3, 0.12, 0.24, 0.48);
     unsigned char *px_merged = pixels_of_fb(surface);
-    CHECK(progs[5].p != 0 && progs[6].p != 0 && progs[MB_KIND_LIQUID_SINGLE].p != 0);
+    CHECK(progs[MB_PROG_FROSTED].p != 0 && progs[MB_PROG_LIQUID_MERGED].p != 0 && progs[MB_PROG_LIQUID_SINGLE].p != 0);
     CHECK(memcmp(px_single, px_merged, (size_t)fb_w * fb_h * 4) == 0);
     free(px_merged);
 
@@ -2660,20 +2669,19 @@ int main(void) {
     glass_free();
   }
 
-  // Verify every specialized ONE_KIND (-1, 0..11, 13) and auxiliary program (prog_flat, post, ad_prog) compiles and links cleanly.
+  // Verify every program group (MB_PROG_*) and auxiliary program (prog_flat, post, ad_prog) compiles and links cleanly.
   {
     while (glGetError() != GL_NO_ERROR) {
     }
-    for (int k = 0; k <= MB_KINDS; k++) {
-      if (k != MB_KINDS && !has_own_prog(k)) continue;
-      use_prog(k == MB_KINDS ? -1 : k);
+    for (int g = 0; g < MB_PROGS; g++) {
+      use_prog(g);
       GLint linked = 0;
-      CHECK(progs[k].p != 0);
-      glGetProgramiv(progs[k].p, GL_LINK_STATUS, &linked);
+      CHECK(progs[g].p != 0);
+      glGetProgramiv(progs[g].p, GL_LINK_STATUS, &linked);
       if (linked != GL_TRUE) {
         char log[1024];
-        glGetProgramInfoLog(progs[k].p, sizeof log, NULL, log);
-        fprintf(stderr, "gles_render: program kind %d link failed: %s\n", k == MB_KINDS ? -1 : k, log);
+        glGetProgramInfoLog(progs[g].p, sizeof log, NULL, log);
+        fprintf(stderr, "gles_render: program group %d link failed: %s\n", g, log);
       }
       CHECK(linked == GL_TRUE);
     }
@@ -2688,6 +2696,135 @@ int main(void) {
       CHECK(linked == GL_TRUE);
     }
     CHECK(glGetError() == GL_NO_ERROR);
+  }
+
+  // Perf-37: mixed UI primitives (rect/text/shadow/line/icon) with tid==0 batch into a single instanced draw
+  // without redundant glUseProgram switches.
+  {
+    double batch[12 * MB_INST];
+    for (int i = 0; i < 3; i++) {
+      double y = 4.0 + i * 22.0;
+      // shadow (kind 2)
+      rect_at(batch + (i * 4 + 0) * MB_INST, 4, y, 80, 18, 2, 0.0, 0.0, 0.0, 0);
+      batch[(i * 4 + 0) * MB_INST + 7] = 2.0;
+      batch[(i * 4 + 0) * MB_INST + 11] = 0.2;
+      // rect (kind 0, small so bands.h does not split)
+      rect_at(batch + (i * 4 + 1) * MB_INST, 4, y, 20, 16, 0, 0.2, 0.4, 0.8, 0);
+      // glyph (kind 1)
+      rect_at(batch + (i * 4 + 2) * MB_INST, 28, y + 2, 10, 10, 1, 0.1, 0.1, 0.1, 0);
+      batch[(i * 4 + 2) * MB_INST + 12] = 16; batch[(i * 4 + 2) * MB_INST + 13] = 16;
+      batch[(i * 4 + 2) * MB_INST + 14] = 16; batch[(i * 4 + 2) * MB_INST + 15] = 16;
+      // line (kind 10)
+      rect_at(batch + (i * 4 + 3) * MB_INST, 44, y + 2, 20, 10, 10, 0.9, 0.2, 0.1, 0);
+      batch[(i * 4 + 3) * MB_INST + 4] = 2.0;
+      batch[(i * 4 + 3) * MB_INST + 12] = 0.1; batch[(i * 4 + 3) * MB_INST + 13] = 0.5;
+      batch[(i * 4 + 3) * MB_INST + 14] = 0.9; batch[(i * 4 + 3) * MB_INST + 15] = 0.5;
+    }
+    int d0 = instanced_draws, b0 = program_binds;
+    gl_present(batch, 12, 1.0, 1.0, 1.0);
+    int d_used = instanced_draws - d0, b_used = program_binds - b0;
+    printf("gles_render: Perf-37 mixed batch (12 mixed inst): draws=%d prog_binds=%d\n", d_used, b_used);
+    CHECK(d_used == 1);
+    CHECK(b_used == 1);
+  }
+
+  // Perf-37: GLES 3.0 program binary disk cache (miss -> store -> warm hit -> corrupt fallback).
+  {
+    char cdir[256];
+    snprintf(cdir, sizeof cdir, "/tmp/mbui_gl_cache_test_%ld", (long)getpid());
+    prog_cache_hits = prog_cache_misses = prog_cache_stores = 0;
+    gl_set_prog_cache_dir(cdir);
+    // Clean any stale files from previous runs
+    char rmcmd[320];
+    snprintf(rmcmd, sizeof rmcmd, "rm -rf %s", cdir);
+    (void)system(rmcmd);
+
+    GLint nfmt = 0;
+    glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &nfmt);
+    printf("gles_render: program_binary_formats=%d\n", (int)nfmt);
+
+    // Cold pass: reset GL objects (simulating fresh context), compile all programs -> miss + store
+    for (int g = 0; g < MB_PROGS; g++) { if (progs[g].p) glDeleteProgram(progs[g].p); progs[g].p = 0; }
+    if (prog_flat) { glDeleteProgram(prog_flat); prog_flat = 0; }
+    if (post) { glDeleteProgram(post); post = 0; }
+    if (ad_prog) { glDeleteProgram(ad_prog); ad_prog = 0; }
+    if (vs_main) { glDeleteShader(vs_main); vs_main = 0; }
+    if (vs_main_ad) { glDeleteShader(vs_main_ad); vs_main_ad = 0; }
+    if (vs_post) { glDeleteShader(vs_post); vs_post = 0; }
+    prog_now = 0;
+    prog_bin_checked = 0;
+
+    for (int g = 0; g < MB_PROGS; g++) use_prog(g);
+    ensure_prog_flat();
+    ensure_post();
+    ensure_ad_prog();
+    int total_progs = MB_PROGS + 3;
+    if (nfmt > 0) {
+      CHECK(prog_cache_misses == total_progs);
+      CHECK(prog_cache_stores == total_progs);
+      CHECK(prog_cache_hits == 0);
+
+      // Warm pass: reset GL objects, reload all programs from disk cache -> all hits, zero shader compiles
+      for (int g = 0; g < MB_PROGS; g++) { glDeleteProgram(progs[g].p); progs[g].p = 0; }
+      glDeleteProgram(prog_flat); prog_flat = 0;
+      glDeleteProgram(post); post = 0;
+      glDeleteProgram(ad_prog); ad_prog = 0;
+      if (vs_main) { glDeleteShader(vs_main); vs_main = 0; }
+      if (vs_main_ad) { glDeleteShader(vs_main_ad); vs_main_ad = 0; }
+      if (vs_post) { glDeleteShader(vs_post); vs_post = 0; }
+      prog_now = 0;
+      prog_cache_hits = prog_cache_misses = prog_cache_stores = 0;
+
+      for (int g = 0; g < MB_PROGS; g++) {
+        use_prog(g);
+        GLint linked = 0;
+        glGetProgramiv(progs[g].p, GL_LINK_STATUS, &linked);
+        CHECK(linked == GL_TRUE);
+      }
+      ensure_prog_flat();
+      ensure_post();
+      ensure_ad_prog();
+      CHECK(prog_cache_hits == total_progs);
+      CHECK(prog_cache_misses == 0);
+      CHECK(vs_main == 0 && vs_main_ad == 0 && vs_post == 0);
+      CHECK(glGetError() == GL_NO_ERROR);
+
+      // Corrupt-file fallback: overwrite every .glbin with garbage, verify clean fallback recompile & restore
+      char corcmd[400];
+      snprintf(corcmd, sizeof corcmd, "for f in %s/*.glbin; do printf 'BADDATA' > \"$f\"; done", cdir);
+      (void)system(corcmd);
+      for (int g = 0; g < MB_PROGS; g++) { glDeleteProgram(progs[g].p); progs[g].p = 0; }
+      glDeleteProgram(prog_flat); prog_flat = 0;
+      glDeleteProgram(post); post = 0;
+      glDeleteProgram(ad_prog); ad_prog = 0;
+      prog_now = 0;
+      prog_cache_hits = prog_cache_misses = prog_cache_stores = 0;
+
+      for (int g = 0; g < MB_PROGS; g++) {
+        use_prog(g);
+        GLint linked = 0;
+        glGetProgramiv(progs[g].p, GL_LINK_STATUS, &linked);
+        CHECK(linked == GL_TRUE);
+      }
+      ensure_prog_flat();
+      ensure_post();
+      ensure_ad_prog();
+      CHECK(prog_cache_hits == 0);
+      CHECK(prog_cache_misses == total_progs);
+      CHECK(prog_cache_stores == total_progs);
+      CHECK(glGetError() == GL_NO_ERROR);
+
+      // Verify rendering still works after binary-loaded programs
+      double smoke[MB_INST];
+      rect_at(smoke, 10, 10, 20, 20, 0, 0.2, 0.7, 0.3, 0);
+      gl_present(smoke, 1, 0.0, 0.0, 0.0);
+      unsigned char *px = pixels_of_fb(surface);
+      unsigned char *p = px + ((fb_h - 1 - 40) * fb_w + 40) * 4;
+      CHECK(p[1] > 150 && p[0] < 80);
+      free(px);
+    }
+    gl_set_prog_cache_dir(NULL);
+    (void)system(rmcmd);
   }
 
   if (!failed) printf("gles_render: ok\n");

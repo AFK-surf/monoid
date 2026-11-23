@@ -17,7 +17,10 @@
 // What is drawn where is the host's to say: the frame's size in points and its scale (cur_w, cur_h, cur_scale), the
 // surface's in pixels (fb_w, fb_h), the framebuffer drawn into (target_fb); gl_setup once its context is current.
 #define MB_GLES_RENDER 1  // (frame_mail.h, included after it, keeps its frames in it: fm_keep)
+#include <stdint.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 #include "contained.h"
 #include "bands.h"
 // the groups of instances the host keeps, drawn out as gl_present takes a frame
@@ -54,6 +57,113 @@ static const char *VS =
     "uniform vec2 u_vp;\n"
     "uniform vec2 u_origin;\n"
     "uniform vec4 u_gb;\n"
+    "#if MB_VS_ADAPTIVE\n"
+    "uniform highp sampler2D u_bd;\n"
+    "uniform vec4 u_map;\n"
+    "uniform vec4 u_uvc;\n"
+    "uniform highp sampler2D u_ad;\n"
+    "uniform vec4 u_ad_box[16];\n"
+    "uniform int u_ad_n;\n"
+    "vec3 vs_backdrop(vec2 p) {\n"
+    "  return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0).rgb;\n"
+    "}\n"
+    "float vs_luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }\n"
+    "float vs_ink_luma(vec3 c) { return dot(c * c, vec3(0.2126, 0.7152, 0.0722)); }\n"
+    "float vs_backdrop_luma_rect(vec2 c, vec2 h) {\n"
+    "  float sum = 0.0;\n"
+    "  float mx1 = -1.0, mx2 = -1.0;\n"
+    "  float mn1 = 2.0, mn2 = 2.0;\n"
+    "  for (int iy = -1; iy <= 1; iy++) {\n"
+    "    float py = c.y + float(iy) * (h.y * 0.60);\n"
+    "    for (int ix = -2; ix <= 2; ix++) {\n"
+    "      float px = c.x + float(ix) * (h.x * 0.38);\n"
+    "      float y = vs_ink_luma(vs_backdrop(vec2(px, py)));\n"
+    "      sum += y;\n"
+    "      if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }\n"
+    "      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
+    "    }\n"
+    "  }\n"
+    "  return (sum - mx1 - mx2 - mn1 - mn2) / 11.0;\n"
+    "}\n"
+    "float vs_unpack16(vec2 rg) {\n"
+    "  float hi = floor(clamp(rg.x, 0.0, 1.0) * 255.0 + 0.5);\n"
+    "  float lo = floor(clamp(rg.y, 0.0, 1.0) * 255.0 + 0.5);\n"
+    "  return (hi * 256.0 + lo) / 65535.0;\n"
+    "}\n"
+    "vec2 vs_ad_sample_ink(vec2 ac, float fallback_r, out vec2 capCenter, out vec2 capHalf) {\n"
+    "  if (u_ad_n > 0) {\n"
+    "    int best = -1;\n"
+    "    float best_d = 1e9;\n"
+    "    for (int i = 0; i < 16; i++) {\n"
+    "      if (i >= u_ad_n) break;\n"
+    "      float d = length(ac - u_ad_box[i].xy);\n"
+    "      if (d <= 2.0 && d < best_d) { best = i; best_d = d; }\n"
+    "    }\n"
+    "    if (best < 0) {\n"
+    "      best_d = 1e9;\n"
+    "      for (int i = 0; i < 16; i++) {\n"
+    "        if (i >= u_ad_n) break;\n"
+    "        vec2 diff = abs(ac - u_ad_box[i].xy);\n"
+    "        if (diff.x <= u_ad_box[i].z + 2.0 && diff.y <= u_ad_box[i].w + 2.0) {\n"
+    "          float d = length(diff);\n"
+    "          if (d < best_d) { best = i; best_d = d; }\n"
+    "        }\n"
+    "      }\n"
+    "    }\n"
+    "    if (best >= 0) {\n"
+    "      vec4 px = texelFetch(u_ad, ivec2(best, 0), 0);\n"
+    "      capCenter = u_ad_box[best].xy;\n"
+    "      capHalf = u_ad_box[best].zw;\n"
+    "      return vec2(vs_unpack16(px.rg), px.a);\n"
+    "    }\n"
+    "  }\n"
+    "  capCenter = ac;\n"
+    "  capHalf = vec2(0.0);\n"
+    "  float bgL = vs_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));\n"
+    "  return vec2(1.0 - smoothstep(0.30, 0.42, bgL), bgL);\n"
+    "}\n"
+    "vec3 vs_adaptive_ink_at(vec3 rgb, vec2 ac, float fallback_r, vec4 rect, vec2 sample_off, bool is_icon) {\n"
+    "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
+    "  float origL = vs_luma(rgb);\n"
+    "  if (ch > 0.08 || origL >= 0.5) return rgb;\n"
+    "  vec2 capCenter, capHalf;\n"
+    "  vec2 cap = vs_ad_sample_ink(ac, fallback_r, capCenter, capHalf);\n"
+    "  float capsuleDarkT = cap.x;\n"
+    "  float capsuleBgL = cap.y;\n"
+    "  float darkT = capsuleDarkT;\n"
+    "  float localBoost = 0.0;\n"
+    "  bool is_large = (capHalf.x >= 140.0 && capHalf.y >= 19.0);\n"
+    "  if (is_large && capsuleDarkT < 0.999) {\n"
+    "    vec2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;\n"
+    "    if (capHalf.y <= 28.0) samplePos.y = capCenter.y;\n"
+    "    vec2 guv = samplePos * u_map.xy + u_map.zw;\n"
+    "    if (u_uvc.z > u_uvc.x && u_uvc.w > u_uvc.y && guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {\n"
+    "      vec2 sampleH;\n"
+    "      if (is_icon) {\n"
+    "        sampleH = vec2(10.0, 8.0);\n"
+    "      } else {\n"
+    "        float edgeDist = min(samplePos.x - (capCenter.x - capHalf.x + 8.0), (capCenter.x + capHalf.x - 8.0) - samplePos.x);\n"
+    "        float rx = clamp(edgeDist / 0.76, 10.0, 20.0);\n"
+    "        float ry = clamp(capHalf.y * 0.55, 8.0, 14.0);\n"
+    "        sampleH = vec2(rx, ry);\n"
+    "      }\n"
+    "      float localL = vs_backdrop_luma_rect(samplePos, sampleH);\n"
+    "      float localDarkT = 1.0 - smoothstep(0.22, 0.28, localL);\n"
+    "      float localW = max(smoothstep(0.35, 0.44, capsuleBgL), smoothstep(0.08, 0.20, capsuleBgL - localL));\n"
+    "      float localEff = localDarkT * localW;\n"
+    "      if (localEff > darkT) {\n"
+    "        localBoost = clamp(localEff - capsuleDarkT, 0.0, 1.0);\n"
+    "        darkT = localEff;\n"
+    "      }\n"
+    "    }\n"
+    "  }\n"
+    "  float inkT = smoothstep(0.0, 1.0, darkT);\n"
+    "  float baseLightL = clamp(1.06 - origL, 0.68, 0.98);\n"
+    "  float localLightL = clamp(1.14 - origL * 0.60, 0.86, 0.99);\n"
+    "  float lightL = mix(baseLightL, localLightL, localBoost);\n"
+    "  return mix(rgb, vec3(lightL), inkT);\n"
+    "}\n"
+    "#endif\n"
     "out vec2 v_pos; out vec2 v_cpos;\n"
     "flat out vec4 v_rect; flat out vec4 v_p; flat out vec4 v_color; flat out vec4 v_c2; flat out vec4 v_clip; flat out vec4 v_pad;\n"
     "flat out vec4 v_rc; flat out vec4 v_rs; flat out vec4 v_rr; flat out vec4 v_oclip; flat out vec4 v_orc; flat out vec4 v_ors;\n"
@@ -77,6 +187,24 @@ static const char *VS =
     "  vec2 rel = at - u_origin;\n"
     "  gl_Position = vec4(rel.x / u_vp.x * 2.0 - 1.0, 1.0 - rel.y / u_vp.y * 2.0, 0.0, 1.0);\n"
     "  v_pos = pos; v_cpos = a_rot.w > 0.5 ? at : pos; v_rect = a_rect; v_p = a_p; v_color = a_color; v_c2 = a_c2; v_clip = a_clip; v_pad = a_pad; v_rc = a_rc; v_rs = a_rs; v_rr = a_rr;\n"
+    "#if MB_VS_ADAPTIVE\n"
+    "  if (kind == 7) {\n"
+    "    v_color.rgb = vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, a_p.zw, false);\n"
+    "  } else if ((kind == 10 || kind == 11) && a_pad.w > 0.0) {\n"
+    "    v_color.rgb = vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, kind == 10 ? vec2(0.0) : a_p.zw, true);\n"
+    "  } else if (kind == 0 && a_pad.w < 0.0) {\n"
+    "    float ch = max(max(a_color.r, a_color.g), a_color.b) - min(min(a_color.r, a_color.g), a_color.b);\n"
+    "    vec2 capCenter, capHalf;\n"
+    "    float darkT = vs_ad_sample_ink(a_pad.yz, -a_pad.w * 0.5, capCenter, capHalf).x;\n"
+    "    if (ch <= 0.08 && vs_luma(a_color.rgb) < 0.5) {\n"
+    "      v_color.rgb = mix(a_color.rgb, vec3(1.0), darkT);\n"
+    "      v_color.a = mix(a_color.a, min(a_color.a * 1.45, 0.28), darkT);\n"
+    "    } else if (ch > 0.08 && vs_luma(a_color.rgb) < 0.35) {\n"
+    "      v_color.rgb = mix(a_color.rgb, min(a_color.rgb * 1.65 + vec3(0.28, 0.20, 0.18), vec3(1.0)), darkT);\n"
+    "      v_color.a = mix(a_color.a, min(a_color.a * 1.45, 0.36), darkT);\n"
+    "    }\n"
+    "  }\n"
+    "#endif\n"
     "  if (kind == 4 && a_pad.z > 0.5) v_pad.x = a_rot.w;\n"
     "  // (a glyph's p.x, which it has no use for: how it is turned, for its texels taken whole where it is not)\n"
     "  if (kind == 1 || kind == 3 || kind == 7) v_p.x = a_rot.x;\n"
@@ -111,7 +239,7 @@ static const char *FS =
     "uniform vec4 u_uvc;\n"
     "#endif\n"
     "// a liquid group's bounds (as the vertex shader has them)\n"
-    "#if ONE_KIND < 0 || ONE_KIND == 6\n"
+    "#if MB_HAS_GROUP\n"
     "uniform vec4 u_gb;\n"
     "uniform vec4 u_shape[8];\n"
     "uniform vec4 u_rad[8];\n"
@@ -151,7 +279,7 @@ static const char *FS =
     "  return min(-f, max(d, b)) + length(u);\n"
     "}\n"
     "#endif\n"
-    "#if ONE_KIND < 0 || ONE_KIND == 6\n"
+    "#if MB_HAS_GROUP\n"
     "float smin_k(float a, float b, float k) {\n"
     "  if (k <= 0.0) return min(a, b);\n"
     "  float h = max(k - abs(a - b), 0.0) / k;\n"
@@ -230,81 +358,6 @@ static const char *FS =
     "  return is_dark_glass ? smoothstep(0.35, 0.85, bgL) : (1.0 - smoothstep(0.30, 0.42, bgL));\n"
     "}\n"
     "#endif\n"
-    "#if MB_HAS(7) || MB_HAS(10) || MB_HAS(11)\n"
-    "vec2 ad_sample_ink(vec2 ac, float fallback_r, out vec2 capCenter, out vec2 capHalf) {\n"
-    "  if (u_ad_n > 0) {\n"
-    "    int best = -1;\n"
-    "    float best_d = 1e9;\n"
-    "    for (int i = 0; i < 16; i++) {\n"
-    "      if (i >= u_ad_n) break;\n"
-    "      float d = length(ac - u_ad_box[i].xy);\n"
-    "      if (d <= 2.0 && d < best_d) { best = i; best_d = d; }\n"
-    "    }\n"
-    "    if (best < 0) {\n"
-    "      best_d = 1e9;\n"
-    "      for (int i = 0; i < 16; i++) {\n"
-    "        if (i >= u_ad_n) break;\n"
-    "        vec2 diff = abs(ac - u_ad_box[i].xy);\n"
-    "        if (diff.x <= u_ad_box[i].z + 2.0 && diff.y <= u_ad_box[i].w + 2.0) {\n"
-    "          float d = length(diff);\n"
-    "          if (d < best_d) { best = i; best_d = d; }\n"
-    "        }\n"
-    "      }\n"
-    "    }\n"
-    "    if (best >= 0) {\n"
-    "      vec4 px = texelFetch(u_ad, ivec2(best, 0), 0);\n"
-    "      capCenter = u_ad_box[best].xy;\n"
-    "      capHalf = u_ad_box[best].zw;\n"
-    "      return vec2(mb_unpack16(px.rg), px.a);\n"
-    "    }\n"
-    "  }\n"
-    "  capCenter = ac;\n"
-    "  capHalf = vec2(0.0);\n"
-    "  float bgL = mb_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));\n"
-    "  return vec2(1.0 - smoothstep(0.30, 0.42, bgL), bgL);\n"
-    "}\n"
-    "vec3 mb_adaptive_ink_at(vec3 rgb, vec2 ac, float fallback_r, vec4 rect, vec2 sample_off, bool is_icon) {\n"
-    "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
-    "  float origL = luma(rgb);\n"
-    "  if (ch > 0.08 || origL >= 0.5) return rgb;\n"
-    "  vec2 capCenter, capHalf;\n"
-    "  vec2 cap = ad_sample_ink(ac, fallback_r, capCenter, capHalf);\n"
-    "  float capsuleDarkT = cap.x;\n"
-    "  float capsuleBgL = cap.y;\n"
-    "  float darkT = capsuleDarkT;\n"
-    "  float localBoost = 0.0;\n"
-    "  bool is_large = (capHalf.x >= 140.0 && capHalf.y >= 19.0);\n"
-    "  if (is_large && capsuleDarkT < 0.999) {\n"
-    "    vec2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;\n"
-    "    if (capHalf.y <= 28.0) samplePos.y = capCenter.y;\n"
-    "    vec2 guv = samplePos * u_map.xy + u_map.zw;\n"
-    "    if (u_uvc.z > u_uvc.x && u_uvc.w > u_uvc.y && guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {\n"
-    "      vec2 sampleH;\n"
-    "      if (is_icon) {\n"
-    "        sampleH = vec2(10.0, 8.0);\n"
-    "      } else {\n"
-    "        float edgeDist = min(samplePos.x - (capCenter.x - capHalf.x + 8.0), (capCenter.x + capHalf.x - 8.0) - samplePos.x);\n"
-    "        float rx = clamp(edgeDist / 0.76, 10.0, 20.0);\n"
-    "        float ry = clamp(capHalf.y * 0.55, 8.0, 14.0);\n"
-    "        sampleH = vec2(rx, ry);\n"
-    "      }\n"
-    "      float localL = mb_backdrop_luma_rect(samplePos, sampleH);\n"
-    "      float localDarkT = 1.0 - smoothstep(0.22, 0.28, localL);\n"
-    "      float localW = max(smoothstep(0.35, 0.44, capsuleBgL), smoothstep(0.08, 0.20, capsuleBgL - localL));\n"
-    "      float localEff = localDarkT * localW;\n"
-    "      if (localEff > darkT) {\n"
-    "        localBoost = clamp(localEff - capsuleDarkT, 0.0, 1.0);\n"
-    "        darkT = localEff;\n"
-    "      }\n"
-    "    }\n"
-    "  }\n"
-    "  float inkT = smoothstep(0.0, 1.0, darkT);\n"
-    "  float baseLightL = clamp(1.06 - origL, 0.68, 0.98);\n"
-    "  float localLightL = clamp(1.14 - origL * 0.60, 0.86, 0.99);\n"
-    "  float lightL = mix(baseLightL, localLightL, localBoost);\n"
-    "  return mix(rgb, vec3(lightL), inkT);\n"
-    "}\n"
-    "#endif\n"
     "// how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth\n"
     "// each is), its edge covered as a box's own (0.5 - d * scale), so what it cuts meets the ground of the box that cuts it\n"
     "float clip_cover(vec2 p, vec4 c, vec4 r, vec4 s, float scale) {\n"
@@ -313,7 +366,7 @@ static const char *FS =
     "}\n"
     "// what it shows at p, as if uncut\n"
     "void shade(vec2 p, float fade_r) {\n"
-    "  int kind = ONE_KIND == 13 ? 6 : (ONE_KIND >= 0 ? ONE_KIND : int(v_p.y + 0.5));\n"
+    "  int kind = (MB_LIQUID_SINGLE != 0) ? 6 : (ONE_KIND >= 0 ? ONE_KIND : int(v_p.y + 0.5));\n"
     "#if MB_HAS(9)\n"
     "  // where a native view shows: its picture (NativeViews.Picture), the part of it c2 says, cut to its corners\n"
     "  if (kind == 9) { vec2 hh = v_rect.zw * 0.5; float rr = min(mb_corner_of(p - v_rect.xy - hh, v_rr), min(hh.x, hh.y)); vec2 q = abs(p - v_rect.xy - hh) - hh + rr; float a = clamp(0.5 - (length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rr) * u_scale, 0.0, 1.0); if (a <= 0.0) discard; vec2 uv = v_c2.xy + clamp((p - v_rect.xy) / v_rect.zw, 0.0, 1.0) * v_c2.zw; if (uv.y < 0.0 || uv.y > 1.0) discard; o = texture(u_img, uv) * a; return; }\n"
@@ -335,7 +388,6 @@ static const char *FS =
     "      for (int i = first; i < first + n; i++) { int t = (i / 6) * 15 + mb_seg_slot(i); w += mb_path_rows(texelFetch(u_segs, ivec2(t % 2040, t / 2040), 0), v_rect, p, u_scale); }\n"
     "      a = mb_path_cover(w, v_c2.z);\n"
     "    }\n"
-    "    if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink_at(col.rgb, v_pad.yz, v_pad.w * 0.5, v_rect, v_p.zw, true);\n"
     "    o = vec4(col.rgb, 1.0) * col.a * a;\n"
     "    return;\n"
     "  }\n"
@@ -346,7 +398,6 @@ static const char *FS =
     "    vec2 a = v_rect.xy + v_c2.xy * v_rect.zw, ab = v_rect.xy + v_c2.zw * v_rect.zw - a;\n"
     "    float h = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-8), 0.0, 1.0);\n"
     "    float d = length(p - a - ab * h) - v_p.x;\n"
-    "    if (v_pad.w > 0.0) col.rgb = mb_adaptive_ink_at(col.rgb, v_pad.yz, v_pad.w * 0.5, v_rect, vec2(0.0), true);\n"
     "    o = vec4(col.rgb, 1.0) * col.a * clamp(0.5 - d * u_scale, 0.0, 1.0);\n"
     "    return;\n"
     "  }\n"
@@ -369,15 +420,7 @@ static const char *FS =
     "    vec2 uv = clamp(at + tex, at + 0.5, at + v_c2.zw - 0.5);\n"
     "    vec4 t = colour ? textureLod(u_catlas, uv / vec2(textureSize(u_catlas, 0)), 0.0)\n"
     "                    : vec4(textureLod(u_atlas, uv / vec2(textureSize(u_atlas, 0)), 0.0).r);\n"
-    "#if MB_HAS(7)\n"
-    "    if (kind == 7) {\n"
-    "      // inked by how light what is under its glass is, looked at round the glass's middle and locally\n"
-    "      vec3 ink = mb_adaptive_ink_at(col.rgb, v_pad.yz, v_pad.w * 0.5, v_rect, v_p.zw, false);\n"
-    "      o = vec4(ink, 1.0) * (t.a * col.a);\n"
-    "      return;\n"
-    "    }\n"
-    "#endif\n"
-    "    o = kind == 1 ? vec4(col.rgb, 1.0) * (t.a * col.a) : t * col.a;\n"
+    "    o = (kind == 1 || kind == 7) ? vec4(col.rgb, 1.0) * (t.a * col.a) : t * col.a;\n"
     "    return;\n"
     "  }\n"
     "#endif\n"
@@ -389,7 +432,7 @@ static const char *FS =
     "    vec4 s_rr = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? v_rr : vec4(v_p.x);\n"
     "    float d;\n"
     "    float halfMinor = 1e9;\n"
-    "#if ONE_KIND == 13\n"
+    "#if MB_LIQUID_SINGLE\n"
     "    d = sd_rr(p, v_rect, s_rr);\n"
     "    halfMinor = min(v_rect.z, v_rect.w) * 0.5;\n"
     "#else\n"
@@ -443,7 +486,7 @@ static const char *FS =
     "    bool need_grad = (inward < max(bevel, 23.0)) || (ext_cov > 0.0);\n"
     "    if (need_grad) {\n"
     "      float e = 0.5;\n"
-    "#if ONE_KIND == 13\n"
+    "#if MB_LIQUID_SINGLE\n"
     "      vec2 grad = vec2(\n"
     "          sd_rr(p + vec2(e, 0.0), v_rect, s_rr) - sd_rr(p - vec2(e, 0.0), v_rect, s_rr),\n"
     "          sd_rr(p + vec2(0.0, e), v_rect, s_rr) - sd_rr(p - vec2(0.0, e), v_rect, s_rr)\n"
@@ -471,7 +514,7 @@ static const char *FS =
     "    float lensZoom = (v_p.w < 0.0) ? clamp(1.0 - v_p.w, 1.0, 3.0) : 1.0;\n"
     "    vec2 sampleBase = p;\n"
     "    if (lensZoom > 1.0001) {\n"
-    "#if ONE_KIND == 13\n"
+    "#if MB_LIQUID_SINGLE\n"
     "      vec2 zoomC = v_rect.xy + v_rect.zw * 0.5;\n"
     "#else\n"
     "      vec2 zoomC = (k <= 0.0) ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);\n"
@@ -516,7 +559,7 @@ static const char *FS =
     "      glintFaceGain = mix(0.0, 0.25, clearVeil);\n"
     "      glintVib = mix(2.85, 1.5, clearVeil);\n"
     "    } else if (is_adaptive) {\n"
-    "#if ONE_KIND == 13\n"
+    "#if MB_LIQUID_SINGLE\n"
     "      vec2 ac = v_rect.xy + v_rect.zw * 0.5;\n"
     "      float ar = max(min(v_rect.z, v_rect.w) * 0.5, 1.0) * 0.5;\n"
     "#else\n"
@@ -777,20 +820,6 @@ static const char *FS =
     "  }\n"
     "#endif\n"
     "#if MB_HAS(0)\n"
-    "#if MB_HAS_ADAPTIVE\n"
-    "  if (v_pad.w < 0.0) {\n"
-    "    float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
-    "    vec2 capCenter, capHalf;\n"
-    "    float darkT = ad_sample_ink(v_pad.yz, -v_pad.w * 0.5, capCenter, capHalf).x;\n"
-    "    if (ch <= 0.08 && luma(col.rgb) < 0.5) {\n"
-    "      col.rgb = mix(col.rgb, vec3(1.0), darkT);\n"
-    "      col.a = mix(col.a, min(col.a * 1.45, 0.28), darkT);\n"
-    "    } else if (ch > 0.08 && luma(col.rgb) < 0.35) {\n"
-    "      col.rgb = mix(col.rgb, min(col.rgb * 1.65 + vec3(0.28, 0.20, 0.18), vec3(1.0)), darkT);\n"
-    "      col.a = mix(col.a, min(col.a * 1.45, 0.36), darkT);\n"
-    "    }\n"
-    "  }\n"
-    "#endif\n"
     "  vec4 fill = vec4(col.rgb, 1.0) * col.a;\n"
     "  if (v_p.z > 0.0) {\n"
     "    float inner = clamp(0.5 - (d + v_p.z) * u_scale, 0.0, 1.0);\n"
@@ -1064,32 +1093,249 @@ static const char *AD_FS =
     "}\n";
 
 static GLuint vao, vbo, atlas, catlas, post, ad_prog;
-static GLuint vs_main, vs_post;
+static GLuint vs_main, vs_main_ad, vs_post;
 // a ground's flat middle (bands.h mb_pieces), and where its window's size goes
 static GLuint prog_flat;
 static GLint uf_vp;
 static GLint pu_src, pu_lv1, pu_lv2, pu_lv3, pu_a, pu_b, pu_c;
 static GLint adu_bd, adu_prev, adu_map, adu_uvc, adu_box, adu_param;
 
-// The kinds drawn by a program of their own: the shader with its kind fixed (ONE_KIND), so each is compiled to its
-// kind's branch alone and a pixel of it is shaded with the registers that branch needs, not the most any kind's does
-// (as Metal's: apple_render.m kind_pipe says what it saved there), what it draws the same to the byte. Every drawable
-// kind (0..11 and 13) has its own specialized program compiled on first use; progs[MB_KINDS] (ONE_KIND=-1) is only
-// compiled if an unknown kind is requested. Each program's uniforms set as it is first used after they change
-// (prog_gen); prog_now the one in use.
-#define MB_KIND_LIQUID_SINGLE 13
-#define MB_KINDS 14
-static int has_own_prog(int kind) {
-  return (kind >= 0 && kind <= 11) || kind == MB_KIND_LIQUID_SINGLE;
+// Compact program groups: all regular UI primitives (rect, text, shadow, colour glyph, image, adaptive text,
+// native-view hole, line) share one lean FS (zero glass/backdrop/adaptive/path-loop code; adaptive ink runs
+// per-instance in the VS), keeping draw calls batched across mixed kinds while isolating the path-segment loop
+// (kind 11) and heavy glass/lens shaders in their own specialized programs.
+enum {
+  MB_PROG_UI = 0,
+  MB_PROG_PATH = 1,
+  MB_PROG_FROSTED = 2,
+  MB_PROG_LIQUID_MERGED = 3,
+  MB_PROG_LIQUID_SINGLE = 4,
+  MB_PROG_LENS = 5,
+  MB_PROGS = 6
+};
+
+static int prog_group_of(int kind, float pad_w) {
+  if (kind == 11) return MB_PROG_PATH;
+  if (kind == 5) return MB_PROG_FROSTED;
+  if (kind == 6) return pad_w > 0.0f ? MB_PROG_LIQUID_MERGED : MB_PROG_LIQUID_SINGLE;
+  if (kind == 13) return MB_PROG_LIQUID_SINGLE;
+  if (kind == 8) return MB_PROG_LENS;
+  return MB_PROG_UI;
 }
+
 typedef struct {
   GLuint p;
   GLint vp, origin, scale, map, uvc, gb, shape, rad, n, glight, ad_box, ad_n;
   unsigned gen;
 } kprog;
-static kprog progs[MB_KINDS + 1];
+static kprog progs[MB_PROGS];
 static unsigned prog_gen;
 static GLuint prog_now;
+
+// Optional on-disk GLES 3.0 program binary cache (glGetProgramBinary / glProgramBinary), keyed by driver strings,
+// program group, and full VS/FS source SHA-256 so driver updates or shader edits invalidate automatically.
+static char prog_cache_dir[512];
+static int prog_bin_checked;
+static int prog_bin_ok;
+static int prog_cache_hits;
+static int prog_cache_misses;
+static int prog_cache_stores;
+
+static void gl_set_prog_cache_dir(const char *dir) {
+  if (!dir || !dir[0]) {
+    prog_cache_dir[0] = '\0';
+    return;
+  }
+  snprintf(prog_cache_dir, sizeof prog_cache_dir, "%s", dir);
+}
+
+static int prog_bin_capable(void) {
+  if (!prog_bin_checked) {
+    GLint nfmt = 0;
+    glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &nfmt);
+    prog_bin_ok = nfmt > 0;
+    prog_bin_checked = 1;
+  }
+  return prog_bin_ok;
+}
+
+typedef struct {
+  uint32_t h[8];
+  uint64_t len;
+  uint8_t buf[64];
+  size_t fill;
+} mb_sha256_ctx;
+
+static uint32_t mb_rotr32(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
+
+static void mb_sha256_block(mb_sha256_ctx *c, const uint8_t b[64]) {
+  static const uint32_t k[64] = {
+      0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+      0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+      0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu, 0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+      0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u, 0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+      0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u, 0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+      0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u, 0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+      0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u, 0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+      0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u, 0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u};
+  uint32_t w[64];
+  for (int i = 0; i < 16; i++)
+    w[i] = ((uint32_t)b[i * 4] << 24) | ((uint32_t)b[i * 4 + 1] << 16) | ((uint32_t)b[i * 4 + 2] << 8) | b[i * 4 + 3];
+  for (int i = 16; i < 64; i++) {
+    uint32_t s0 = mb_rotr32(w[i - 15], 7) ^ mb_rotr32(w[i - 15], 18) ^ (w[i - 15] >> 3);
+    uint32_t s1 = mb_rotr32(w[i - 2], 17) ^ mb_rotr32(w[i - 2], 19) ^ (w[i - 2] >> 10);
+    w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+  }
+  uint32_t a = c->h[0], bb = c->h[1], cc = c->h[2], d = c->h[3];
+  uint32_t e = c->h[4], f = c->h[5], g = c->h[6], hh = c->h[7];
+  for (int i = 0; i < 64; i++) {
+    uint32_t S1 = mb_rotr32(e, 6) ^ mb_rotr32(e, 11) ^ mb_rotr32(e, 25);
+    uint32_t ch = (e & f) ^ ((~e) & g);
+    uint32_t t1 = hh + S1 + ch + k[i] + w[i];
+    uint32_t S0 = mb_rotr32(a, 2) ^ mb_rotr32(a, 13) ^ mb_rotr32(a, 22);
+    uint32_t maj = (a & bb) ^ (a & cc) ^ (bb & cc);
+    uint32_t t2 = S0 + maj;
+    hh = g; g = f; f = e; e = d + t1;
+    d = cc; cc = bb; bb = a; a = t1 + t2;
+  }
+  c->h[0] += a; c->h[1] += bb; c->h[2] += cc; c->h[3] += d;
+  c->h[4] += e; c->h[5] += f; c->h[6] += g; c->h[7] += hh;
+}
+
+static void mb_sha256_init(mb_sha256_ctx *c) {
+  c->h[0] = 0x6a09e667u; c->h[1] = 0xbb67ae85u; c->h[2] = 0x3c6ef372u; c->h[3] = 0xa54ff53au;
+  c->h[4] = 0x510e527fu; c->h[5] = 0x9b05688cu; c->h[6] = 0x1f83d9abu; c->h[7] = 0x5be0cd19u;
+  c->len = 0;
+  c->fill = 0;
+}
+
+static void mb_sha256_update(mb_sha256_ctx *c, const void *data, size_t n) {
+  const uint8_t *p = (const uint8_t *)data;
+  c->len += n;
+  while (n > 0) {
+    size_t take = 64 - c->fill;
+    if (take > n) take = n;
+    memcpy(c->buf + c->fill, p, take);
+    c->fill += take;
+    p += take;
+    n -= take;
+    if (c->fill == 64) {
+      mb_sha256_block(c, c->buf);
+      c->fill = 0;
+    }
+  }
+}
+
+static void mb_sha256_str(mb_sha256_ctx *c, const char *s) {
+  if (!s) s = "";
+  mb_sha256_update(c, s, strlen(s) + 1);
+}
+
+static void mb_sha256_hex(mb_sha256_ctx *c, char out[65]) {
+  uint64_t bits = c->len * 8;
+  uint8_t pad = 0x80;
+  mb_sha256_update(c, &pad, 1);
+  uint8_t zero = 0;
+  while (c->fill != 56) mb_sha256_update(c, &zero, 1);
+  uint8_t be[8];
+  for (int i = 0; i < 8; i++) be[i] = (uint8_t)(bits >> (56 - i * 8));
+  mb_sha256_update(c, be, 8);
+  static const char hex[] = "0123456789abcdef";
+  for (int i = 0; i < 8; i++) {
+    for (int j = 0; j < 8; j++) out[i * 8 + j] = hex[(c->h[i] >> (28 - j * 4)) & 0xfu];
+  }
+  out[64] = '\0';
+}
+
+#define MB_GLBIN_MAGIC 0x4D424742u
+#define MB_GLBIN_MAX_BYTES (16u * 1024u * 1024u)
+
+static void prog_cache_path(char *out, size_t out_sz, const char *tag, const char *vs_head, const char *vs_body,
+                            const char *fs_head, const char *fs_body) {
+  mb_sha256_ctx ctx;
+  mb_sha256_init(&ctx);
+  mb_sha256_str(&ctx, "mbui-glbin-v1");
+  mb_sha256_str(&ctx, (const char *)glGetString(GL_VENDOR));
+  mb_sha256_str(&ctx, (const char *)glGetString(GL_RENDERER));
+  mb_sha256_str(&ctx, (const char *)glGetString(GL_VERSION));
+  mb_sha256_str(&ctx, tag);
+  mb_sha256_str(&ctx, vs_head);
+  mb_sha256_str(&ctx, vs_body);
+  mb_sha256_str(&ctx, fs_head);
+  mb_sha256_str(&ctx, fs_body);
+  char digest[65];
+  mb_sha256_hex(&ctx, digest);
+  snprintf(out, out_sz, "%s/%s.glbin", prog_cache_dir, digest);
+}
+
+static GLuint prog_cache_load(const char *path) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return 0;
+  uint32_t hdr[3] = {0, 0, 0};
+  if (fread(hdr, sizeof(uint32_t), 3, f) != 3 || hdr[0] != MB_GLBIN_MAGIC || hdr[2] == 0 ||
+      hdr[2] > MB_GLBIN_MAX_BYTES) {
+    fclose(f);
+    unlink(path);
+    return 0;
+  }
+  uint8_t *buf = (uint8_t *)malloc(hdr[2]);
+  if (!buf) {
+    fclose(f);
+    return 0;
+  }
+  size_t got = fread(buf, 1, hdr[2], f);
+  int extra = fgetc(f);
+  fclose(f);
+  if (got != hdr[2] || extra != EOF) {
+    free(buf);
+    unlink(path);
+    return 0;
+  }
+  GLuint p = glCreateProgram();
+  glProgramBinary(p, (GLenum)hdr[1], buf, (GLsizei)hdr[2]);
+  free(buf);
+  GLint ok = 0;
+  glGetProgramiv(p, GL_LINK_STATUS, &ok);
+  while (glGetError() != GL_NO_ERROR) {
+  }
+  if (ok != GL_TRUE) {
+    glDeleteProgram(p);
+    unlink(path);
+    return 0;
+  }
+  prog_cache_hits++;
+  return p;
+}
+
+static void prog_cache_save(const char *path, GLuint p) {
+  GLint blen = 0;
+  glGetProgramiv(p, GL_PROGRAM_BINARY_LENGTH, &blen);
+  if (blen <= 0 || (uint32_t)blen > MB_GLBIN_MAX_BYTES) return;
+  uint8_t *buf = (uint8_t *)malloc((size_t)blen);
+  if (!buf) return;
+  GLsizei got = 0;
+  GLenum fmt = 0;
+  glGetProgramBinary(p, blen, &got, &fmt, buf);
+  if (got <= 0 || (uint32_t)got > MB_GLBIN_MAX_BYTES) {
+    free(buf);
+    return;
+  }
+  mkdir(prog_cache_dir, 0700);
+  char tmp[700];
+  snprintf(tmp, sizeof tmp, "%s.%ld.tmp", path, (long)getpid());
+  FILE *f = fopen(tmp, "wb");
+  if (f) {
+    uint32_t hdr[3] = {MB_GLBIN_MAGIC, (uint32_t)fmt, (uint32_t)got};
+    int ok = fwrite(hdr, sizeof(uint32_t), 3, f) == 3 && fwrite(buf, 1, (size_t)got, f) == (size_t)got;
+    if (fclose(f) == 0 && ok && rename(tmp, path) == 0) {
+      prog_cache_stores++;
+    } else {
+      unlink(tmp);
+    }
+  }
+  free(buf);
+}
+
 static float *fbuf;
 // the pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), for the shader
 // to read (u_segs): a float texture of SEGS_ROW fours a row (136 instances' 15), as many rows as they take
@@ -1113,56 +1359,143 @@ static void canvas_lost(void);
 // Native.overOther).
 static volatile int over_other;
 
-static GLuint compile(GLenum type, const char *src) {
+static GLuint compile2(GLenum type, const char *head, const char *body, const char *label) {
   GLuint s = glCreateShader(type);
-  glShaderSource(s, 1, &src, NULL);
+  if (head) {
+    const char *srcs[2] = {head, body + strlen("#version 300 es\n")};
+    glShaderSource(s, 2, srcs, NULL);
+  } else {
+    glShaderSource(s, 1, &body, NULL);
+  }
   glCompileShader(s);
   GLint ok = 0;
   glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
   if (!ok) {
     char log[2048];
     glGetShaderInfoLog(s, sizeof log, NULL, log);
-    LOG("shader: %s", log);
+    LOG("shader (%s): %s", label, log);
   }
   return s;
 }
 
-static void ensure_vs_main(void) {
-  if (!vs_main) vs_main = compile(GL_VERTEX_SHADER, VS);
-}
-
-static void ensure_vs_post(void) {
-  if (!vs_post) vs_post = compile(GL_VERTEX_SHADER, PVS);
-}
-
-// The program that draws only instances of `kind` (-1 any) with the vertex shader `vs`, its textures' units set.
-static kprog make_prog(GLuint vs, int kind) {
-  char head[1024];
-  snprintf(head, sizeof head,
-           "#version 300 es\n"
-           "#define ONE_KIND %d\n"
-           "#define MB_HAS(K) (ONE_KIND < 0 || ONE_KIND == (K))\n"
-           "#define MB_HAS_LIQUID (ONE_KIND < 0 || ONE_KIND == 6 || ONE_KIND == 13)\n"
-           "#define MB_HAS_ADAPTIVE (ONE_KIND < 0 || ONE_KIND == 6 || ONE_KIND == 13 || ONE_KIND == 7 || ONE_KIND == 10 || ONE_KIND == 11)\n"
-           "#define MB_HAS_BACKDROP (ONE_KIND < 0 || ONE_KIND == 5 || ONE_KIND == 6 || ONE_KIND == 13 || ONE_KIND == 8 || MB_HAS_ADAPTIVE)\n"
-           "#define MB_HAS_BOX (ONE_KIND < 0 || ONE_KIND == 0 || ONE_KIND == 2 || ONE_KIND == 4 || ONE_KIND == 5)\n",
-           kind);
-  const char *srcs[2] = {head, FS + strlen("#version 300 es\n")};
-  GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
-  glShaderSource(fs, 2, srcs, NULL);
-  glCompileShader(fs);
-  GLint ok = 0;
-  glGetShaderiv(fs, GL_COMPILE_STATUS, &ok);
-  if (!ok) {
-    char log[2048];
-    glGetShaderInfoLog(fs, sizeof log, NULL, log);
-    LOG("shader (kind %d): %s", kind, log);
+static GLuint link_prog_cached(const char *tag, GLuint *vs_slot, const char *vs_head, const char *vs_body,
+                               const char *fs_head, const char *fs_body) {
+  char path[640];
+  int use_cache = prog_cache_dir[0] != '\0' && prog_bin_capable();
+  if (use_cache) {
+    prog_cache_path(path, sizeof path, tag, vs_head, vs_body, fs_head, fs_body);
+    GLuint cached = prog_cache_load(path);
+    if (cached) return cached;
+    prog_cache_misses++;
   }
-  kprog k = {glCreateProgram()};
-  glAttachShader(k.p, vs);
-  glAttachShader(k.p, fs);
-  glLinkProgram(k.p);
+  if (!*vs_slot) *vs_slot = compile2(GL_VERTEX_SHADER, vs_head, vs_body, tag);
+  GLuint fs = compile2(GL_FRAGMENT_SHADER, fs_head, fs_body, tag);
+  GLuint p = glCreateProgram();
+  if (use_cache) glProgramParameteri(p, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+  glAttachShader(p, *vs_slot);
+  glAttachShader(p, fs);
+  glLinkProgram(p);
   glDeleteShader(fs);
+  if (use_cache) {
+    GLint ok = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (ok == GL_TRUE) prog_cache_save(path, p);
+  }
+  return p;
+}
+
+// The program for `group` (MB_PROG_*), compiled (or loaded from binary cache) on first use, its textures' units set.
+static kprog make_prog(int group) {
+  const char *vs_head = "#version 300 es\n#define MB_VS_ADAPTIVE 0\n";
+  GLuint *vs_slot = &vs_main;
+  const char *tag = "ui";
+  char fs_head[1024];
+  switch (group) {
+    case MB_PROG_FROSTED:
+      tag = "frosted";
+      snprintf(fs_head, sizeof fs_head,
+               "#version 300 es\n"
+               "#define ONE_KIND 5\n"
+               "#define MB_HAS(K) ((K) == 5)\n"
+               "#define MB_HAS_LIQUID 0\n"
+               "#define MB_HAS_ADAPTIVE 0\n"
+               "#define MB_HAS_BACKDROP 1\n"
+               "#define MB_HAS_BOX 1\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+    case MB_PROG_LIQUID_MERGED:
+      tag = "liquid_merged";
+      snprintf(fs_head, sizeof fs_head,
+               "#version 300 es\n"
+               "#define ONE_KIND 6\n"
+               "#define MB_HAS(K) ((K) == 6)\n"
+               "#define MB_HAS_LIQUID 1\n"
+               "#define MB_HAS_ADAPTIVE 1\n"
+               "#define MB_HAS_BACKDROP 1\n"
+               "#define MB_HAS_BOX 0\n"
+               "#define MB_HAS_GROUP 1\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+    case MB_PROG_LIQUID_SINGLE:
+      tag = "liquid_single";
+      snprintf(fs_head, sizeof fs_head,
+               "#version 300 es\n"
+               "#define ONE_KIND 13\n"
+               "#define MB_HAS(K) ((K) == 6)\n"
+               "#define MB_HAS_LIQUID 1\n"
+               "#define MB_HAS_ADAPTIVE 1\n"
+               "#define MB_HAS_BACKDROP 1\n"
+               "#define MB_HAS_BOX 0\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 1\n");
+      break;
+    case MB_PROG_LENS:
+      tag = "lens";
+      snprintf(fs_head, sizeof fs_head,
+               "#version 300 es\n"
+               "#define ONE_KIND 8\n"
+               "#define MB_HAS(K) ((K) == 8)\n"
+               "#define MB_HAS_LIQUID 0\n"
+               "#define MB_HAS_ADAPTIVE 0\n"
+               "#define MB_HAS_BACKDROP 1\n"
+               "#define MB_HAS_BOX 0\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+    case MB_PROG_PATH:
+      tag = "path";
+      vs_head = "#version 300 es\n#define MB_VS_ADAPTIVE 1\n";
+      vs_slot = &vs_main_ad;
+      snprintf(fs_head, sizeof fs_head,
+               "#version 300 es\n"
+               "#define ONE_KIND 11\n"
+               "#define MB_HAS(K) ((K) == 11)\n"
+               "#define MB_HAS_LIQUID 0\n"
+               "#define MB_HAS_ADAPTIVE 0\n"
+               "#define MB_HAS_BACKDROP 0\n"
+               "#define MB_HAS_BOX 0\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+    case MB_PROG_UI:
+    default:
+      tag = "ui";
+      vs_head = "#version 300 es\n#define MB_VS_ADAPTIVE 1\n";
+      vs_slot = &vs_main_ad;
+      snprintf(fs_head, sizeof fs_head,
+               "#version 300 es\n"
+               "#define ONE_KIND -1\n"
+               "#define MB_HAS(K) ((K) == 0 || (K) == 1 || (K) == 2 || (K) == 3 || (K) == 4 || (K) == 7 || (K) == 9 || (K) == 10)\n"
+               "#define MB_HAS_LIQUID 0\n"
+               "#define MB_HAS_ADAPTIVE 0\n"
+               "#define MB_HAS_BACKDROP 0\n"
+               "#define MB_HAS_BOX 1\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+  }
+  kprog k = {link_prog_cached(tag, vs_slot, vs_head, VS, fs_head, FS)};
   k.vp = glGetUniformLocation(k.p, "u_vp");
   k.origin = glGetUniformLocation(k.p, "u_origin");
   k.scale = glGetUniformLocation(k.p, "u_scale");
@@ -1175,6 +1508,7 @@ static kprog make_prog(GLuint vs, int kind) {
   k.glight = glGetUniformLocation(k.p, "u_glight");
   k.ad_box = glGetUniformLocation(k.p, "u_ad_box");
   k.ad_n = glGetUniformLocation(k.p, "u_ad_n");
+  prog_now = k.p;
   glUseProgram(k.p);
   GLint loc;
   if ((loc = glGetUniformLocation(k.p, "u_atlas")) >= 0) glUniform1i(loc, 0);
@@ -1188,25 +1522,13 @@ static kprog make_prog(GLuint vs, int kind) {
 
 static void ensure_prog_flat(void) {
   if (prog_flat) return;
-  ensure_vs_main();
-  GLuint fs = compile(GL_FRAGMENT_SHADER, FS_FLAT);
-  prog_flat = glCreateProgram();
-  glAttachShader(prog_flat, vs_main);
-  glAttachShader(prog_flat, fs);
-  glLinkProgram(prog_flat);
-  glDeleteShader(fs);
+  prog_flat = link_prog_cached("flat", &vs_main, "#version 300 es\n#define MB_VS_ADAPTIVE 0\n", VS, NULL, FS_FLAT);
   uf_vp = glGetUniformLocation(prog_flat, "u_vp");
 }
 
 static void ensure_post(void) {
   if (post) return;
-  ensure_vs_post();
-  GLuint fs = compile(GL_FRAGMENT_SHADER, PFS);
-  post = glCreateProgram();
-  glAttachShader(post, vs_post);
-  glAttachShader(post, fs);
-  glLinkProgram(post);
-  glDeleteShader(fs);
+  post = link_prog_cached("post", &vs_post, NULL, PVS, NULL, PFS);
   pu_src = glGetUniformLocation(post, "u_src");
   pu_lv1 = glGetUniformLocation(post, "u_lv1");
   pu_lv2 = glGetUniformLocation(post, "u_lv2");
@@ -1218,13 +1540,7 @@ static void ensure_post(void) {
 
 static void ensure_ad_prog(void) {
   if (ad_prog) return;
-  ensure_vs_post();
-  GLuint fs = compile(GL_FRAGMENT_SHADER, AD_FS);
-  ad_prog = glCreateProgram();
-  glAttachShader(ad_prog, vs_post);
-  glAttachShader(ad_prog, fs);
-  glLinkProgram(ad_prog);
-  glDeleteShader(fs);
+  ad_prog = link_prog_cached("adaptive", &vs_post, NULL, PVS, NULL, AD_FS);
   adu_bd = glGetUniformLocation(ad_prog, "u_bd");
   adu_prev = glGetUniformLocation(ad_prog, "u_prev");
   adu_map = glGetUniformLocation(ad_prog, "u_map");
@@ -1236,13 +1552,15 @@ static void ensure_ad_prog(void) {
 // The instances' buffer and the glyphs' atlases made in the context now current; programs are compiled on first use
 // (a new context has none of the old: handles are cleared here, as glass_lost and canvas_lost do).
 static void gl_setup(void) {
-  vs_main = vs_post = 0;
+  vs_main = vs_main_ad = vs_post = 0;
   memset(progs, 0, sizeof progs);
   prog_flat = 0;
   uf_vp = -1;
   post = 0;
   ad_prog = 0;
   prog_now = 0;
+  prog_bin_checked = 0;
+  prog_bin_ok = 0;
   prog_gen++;
   segs_tex = 0;
   segs_rows = 0;
@@ -2660,18 +2978,19 @@ static int capture(const float *f, int32_t start, int32_t end, int32_t count, in
   return shows;
 }
 
-// The program that draws instances of `kind` (-1 any) used, compiled on first use, its uniforms set if they changed
-// since it was last.
-static void use_prog(int kind) {
-  int idx = kind >= 0 && has_own_prog(kind) ? kind : MB_KINDS;
+// The program for `group` (MB_PROG_*) used, compiled on first use, its uniforms set if they changed since it was last.
+static void use_prog(int group) {
+  int idx = (group >= 0 && group < MB_PROGS) ? group : MB_PROG_UI;
   kprog *k = &progs[idx];
   if (!k->p) {
-    ensure_vs_main();
-    *k = make_prog(vs_main, idx == MB_KINDS ? -1 : idx);
+    *k = make_prog(idx);
     k->gen = prog_gen - 1;
   }
-  prog_now = k->p;
-  glUseProgram(k->p);
+  if (prog_now == k->p && k->gen == prog_gen) return;
+  if (prog_now != k->p) {
+    prog_now = k->p;
+    glUseProgram(k->p);
+  }
   if (k->gen == prog_gen) return;
   k->gen = prog_gen;
   if (k->vp >= 0) glUniform2f(k->vp, cur_vpw > 0.0f ? cur_vpw : (float)cur_w, cur_vph > 0.0f ? cur_vph : (float)cur_h);
@@ -3338,13 +3657,12 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
             cs++;
             continue;
           }
-          int cown = has_own_prog(ck) && !(ck == 0 && fbuf[cs * MB_INST + 23] < 0.0f);
+          int cgrp = prog_group_of(ck, fbuf[cs * MB_INST + 23]);
           int32_t ce = cs + 1;
           while (ce < cend_all && (int)fbuf[ce * MB_INST + 20] == ctid) {
             int kk = (int)(fbuf[ce * MB_INST + 5] + 0.5f);
             if (kk == 5 || kk == 6 || kk == 8 || kk == 9 || kk == 12) break;
-            int kown = has_own_prog(kk) && !(kk == 0 && fbuf[ce * MB_INST + 23] < 0.0f);
-            if (cown ? (kk != ck || !kown) : kown) break;
+            if (prog_group_of(kk, fbuf[ce * MB_INST + 23]) != cgrp) break;
             ce++;
           }
           GLuint ct = ctid ? image_tex(ctid) : atlas;
@@ -3352,7 +3670,7 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
           if (ctid > 0 && ctid <= MB_STREAM_TEX && !ct) encode_missing = 1;
           glActiveTexture(GL_TEXTURE1);
           glBindTexture(GL_TEXTURE_2D, ct ? ct : atlas);
-          use_prog(cown ? ck : -1);
+          use_prog(cgrp);
           draw_run(cs, ce - cs);
           cs = ce;
         }
@@ -3375,7 +3693,7 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
         guvc[0] = 0.5f / W; guvc[1] = 0.5f / H;
         guvc[2] = ((float)pw - 0.5f) / W; guvc[3] = ((float)ph - 0.5f) / H;
         main_state();
-        use_prog(8);
+        use_prog(MB_PROG_LENS);
         draw_run(start, 1);
         bd_tex = prev_bd;
         glActiveTexture(GL_TEXTURE2);
@@ -3384,13 +3702,17 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
         start += 1 + child_n;
         continue;
       }
-      // (kinds without their own program one run, as before)
-      int own = tid >= 0 && has_own_prog(kind) && !(kind == 0 && fbuf[start * MB_INST + 23] < 0.0f);
+      if (kind == 12) {
+        start++;
+        continue;
+      }
+      // Consecutive instances sharing `tid` and `prog_group_of` draw in one batched instanced run.
+      int grp = prog_group_of(kind, fbuf[start * MB_INST + 23]);
       int32_t end = start + 1;
       while (end < count && (int)fbuf[end * MB_INST + 20] == tid) {
         int k = (int)(fbuf[end * MB_INST + 5] + 0.5f);
-        int kown = tid >= 0 && has_own_prog(k) && !(k == 0 && fbuf[end * MB_INST + 23] < 0.0f);
-        if (k == 8 || (own ? (k != kind || !kown) : kown)) break;
+        if (k == 8 || k == 12) break;
+        if (tid >= 0 && prog_group_of(k, fbuf[end * MB_INST + 23]) != grp) break;
         end++;
       }
       if (tid < 0) {
@@ -3437,8 +3759,7 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
         if (shows) {
           // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
           int merged_liquid = kind == 6 && fbuf[start * MB_INST + 23] > 0.0f;
-          int gkind = kind == 5 ? 5 : (kind == 6 ? (merged_liquid ? 6 : MB_KIND_LIQUID_SINGLE) : -1);
-          use_prog(gkind);
+          use_prog(prog_group_of(kind, fbuf[start * MB_INST + 23]));
           for (int i = 0; i < MB_INST / 4; i++)
             glVertexAttribPointer(i, 4, GL_FLOAT, GL_FALSE, MB_INST * 4, (void *)(intptr_t)(start * MB_INST * 4 + i * 16));
           glDrawArraysInstanced(GL_TRIANGLES, 0, 6, merged_liquid ? 1 : end - start);
@@ -3451,7 +3772,7 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
       if (t) {  // 0: lost with the context, decoding again; a stream's or a view's with no picture yet
         if (tid > MB_VIEW_TEX) {
           view_parts_in(tid, start, end);
-          use_prog(own ? kind : -1);
+          use_prog(grp);
           glActiveTexture(GL_TEXTURE1);
           glBindTexture(GL_TEXTURE_2D, t);
 #ifdef MB_VIEWS_UNDER
@@ -3466,7 +3787,7 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
           if (under) glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 #endif
         } else if (!cut_on) {
-          use_prog(own ? kind : -1);
+          use_prog(grp);
           glActiveTexture(GL_TEXTURE1);
           glBindTexture(GL_TEXTURE_2D, t);
           if (tid == 0) draw_banded(start, end, count);
@@ -3488,7 +3809,7 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
               j++;
             }
             if (!bound_run) {
-              use_prog(own ? kind : -1);
+              use_prog(grp);
               glActiveTexture(GL_TEXTURE1);
               glBindTexture(GL_TEXTURE_2D, t);
               bound_run = 1;
