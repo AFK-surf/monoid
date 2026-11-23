@@ -1,0 +1,44 @@
+// Deterministic headless tests for `sf_desktop` CLI parsing and dual-thread `ui::Worker` bridge
+// using `ui::Worker::inline` and `ui::Tester` (zero OS threads, zero sleep, zero `#render_thread` IO).
+
+import "lg"
+import "ui"
+import "view"
+
+test "sf_desktop_1_parse_args_demo_and_data_dir" {
+  let cfg_default = parse_desktop_args([])
+  debug_assert(cfg_default.demo_mode, "empty args defaults to demo_mode=true")
+  debug_assert(cfg_default.data_dir == "", "default data_dir is empty")
+
+  let cfg_demo = parse_desktop_args(["--demo", "--workspace", "ws-demo"])
+  debug_assert(cfg_demo.demo_mode, "--demo sets demo_mode=true")
+  debug_assert(cfg_demo.workspace == "ws-demo", "--workspace parsed")
+
+  let cfg_real = parse_desktop_args(["--data-dir", "/tmp/sf-data", "--station", "ws-prod/tokyo"])
+  debug_assert(!cfg_real.demo_mode, "--data-dir without --demo sets demo_mode=false")
+  debug_assert(cfg_real.data_dir == "/tmp/sf-data", "--data-dir parsed")
+  debug_assert(cfg_real.station == "ws-prod/tokyo", "--station parsed")
+}
+
+test "sf_desktop_2_worker_bridge_mounts_sf_app_root_and_passes_apple_ui" {
+  let cfg = default_desktop_config()
+  let ctrl = create_desktop_controller(cfg)
+  let worker = ui::Worker::inline(handle_desktop_cmd_pure)
+
+  let t = ui::Tester::tree(
+    fn(root : view::View) -> Unit { mount_desktop_root(root, ctrl, worker) },
+    width=1280.0,
+    height=820.0,
+    theme=lg::ui_theme,
+  )
+  let _ = worker.send(DesktopCmd::Boot(cfg.demo_mode, cfg.data_dir))
+  t.run_shown(100.0)
+
+  debug_assert(ctrl.connection_sig.untracked() == "Local Demo", "worker Booted event updated connection_sig")
+  debug_assert(t.scroll_faults().length() == 0, "sf_desktop must have 0 scroll faults")
+  lg::assert_no_nested_glass(t, label="sf_desktop_root")
+  lg::assert_apple_ui(t, label="sf_desktop_root")
+
+  worker.close()
+  t.dispose()
+}

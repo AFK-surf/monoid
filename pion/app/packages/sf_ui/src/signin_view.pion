@@ -1,0 +1,214 @@
+// Minimal Apple HIG centered Sign-In view (`SignInView`, max_width = 400pt).
+// Connects directly to `ClientCore` `auth.begin` / `auth.cancel` / Passkey challenge
+// through `app_state::AppController`:
+// - Official Apple capsule buttons (`<lg::Button flat prominent>` / `<lg::Button flat>`)
+// - Strictly sanitized OAuth PKCE status display (NEVER exposes `verifier` or tokens)
+// - Clear recovery guidance on cancellation or failure
+
+import "app_state"
+import "icons"
+import "lg"
+import "ui"
+import "view"
+
+fn sanitize_url_host(url : String) -> String {
+  if url.length() == 0 {
+    return "https://app.still.fail/v1/auth/google/start"
+  }
+  let q_idx = url.index_of("?")
+  if q_idx > 0 {
+    url.slice(0, q_idx)
+  } else {
+    url
+  }
+}
+
+/// Render the centered Apple HIG Sign-In canvas when `ctrl.signed_in_sig` is `false`.
+pub fn render_signin_view(parent : view::View, ctrl : app_state::AppController) -> Unit {
+  let _ = parent.box(fn(page : view::View) -> Unit {
+    let _ = page
+    .fill()
+    .ground(view::Live::By(fn() { lg::surface().grouped_bg }))
+    .lines_up(view::Live::Is(Some(view::Along::Middle)))
+    .lies_along(view::Live::Is(view::Lies::Middle))
+    .padding(view::Live::Is((24.0, 32.0, 24.0, 32.0)))
+
+    let _ = page.box(fn(col : view::View) -> Unit {
+      let _ = col
+      .width_share(view::Live::Is(1.0))
+      .max_width(view::Live::Is(Some(400.0)), within=true)
+      .gap(view::Live::Is(20.0))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+
+      // Brand mark + title + quiet subtitle
+      let _ = <ui::Col in={col} align={.Middle} gap={10.0} rigid>
+        <ui::Box
+          width={56.0}
+          height={56.0}
+          radius={16.0}
+          bg_by=>{lg::surface().card}
+          align={.Middle}
+          along={.Middle}
+          rigid
+        >
+          <icons::Icon name="shield" size={26.0} color_by=>{lg::surface().accent} />
+        </ui::Box>
+        <ui::Text
+          size={24.0}
+          weight={600}
+          lines={1}
+          color_by=>{lg::surface().ink}
+          text="登录 still.fail"
+        />
+        <ui::Text
+          size={14.0}
+          weight={400}
+          wrap
+          color_by=>{lg::surface().ink_secondary}
+          text="使用端到端加密工作区账号连接你的站点与密钥库"
+        />
+      </ui::Col>
+
+      // Centered Apple SurfaceCard with official capsule buttons
+      let _ = <lg::SurfaceCard in={col} radius={20.0} pad={20.0} gap={12.0} label="账号登录">
+        <ui::Col gap={10.0} min_width={0.0}>
+          <lg::Button
+            label="使用浏览器登录（OAuth PKCE）"
+            flat
+            prominent
+            height={40.0}
+            pad_x={20.0}
+            on_press=>{ let _ = ctrl.begin_auth() }
+          />
+          <lg::Button
+            label="使用通行密钥（Passkey）"
+            flat
+            height={40.0}
+            pad_x={20.0}
+            on_press=>{ let _ = ctrl.begin_passkey() }
+          />
+        </ui::Col>
+
+        // Pending OAuth PKCE status (sanitized endpoint only, zero verifier/token exposure)
+        <ui::Show when=>{ctrl.auth_flow_sig.get().phase == "pending_oauth"} at_once>
+          <ui::Col
+            pad={14.0}
+            gap={8.0}
+            radius={12.0}
+            bg_by=>{lg::surface().grouped_bg}
+            min_width={0.0}
+          >
+            <ui::Row align={.Middle} gap={8.0} rigid>
+              <icons::Icon name="globe" size={15.0} color_by=>{lg::surface().accent} />
+              <ui::Text
+                size={13.5}
+                weight={600}
+                lines={1}
+                color_by=>{lg::surface().ink}
+                text="等待浏览器完成授权"
+              />
+            </ui::Row>
+            <ui::Text
+              size={12.5}
+              wrap
+              color_by=>{lg::surface().ink_secondary}
+              text_by=>{
+                let f = ctrl.auth_flow_sig.get()
+                "已生成 PKCE S256 授权会话（" + sanitize_url_host(f.authorize_url) + "），请在打开的浏览器中确认登录。"
+              }
+            />
+            <ui::Row along={.End} rigid>
+              <lg::Button
+                label="取消登录"
+                flat
+                height={32.0}
+                pad_x={14.0}
+                on_press=>{ ctrl.cancel_auth() }
+              />
+            </ui::Row>
+          </ui::Col>
+        </ui::Show>
+
+        // Pending Passkey challenge status
+        <ui::Show when=>{ctrl.auth_flow_sig.get().phase == "pending_passkey"} at_once>
+          <ui::Col
+            pad={14.0}
+            gap={8.0}
+            radius={12.0}
+            bg_by=>{lg::surface().grouped_bg}
+            min_width={0.0}
+          >
+            <ui::Row align={.Middle} gap={8.0} rigid>
+              <icons::Icon name="lock" size={15.0} color_by=>{lg::surface().accent} />
+              <ui::Text
+                size={13.5}
+                weight={600}
+                lines={1}
+                color_by=>{lg::surface().ink}
+                text="等待通行密钥验证"
+              />
+            </ui::Row>
+            <ui::Text
+              size={12.5}
+              wrap
+              color_by=>{lg::surface().ink_secondary}
+              text_by=>{
+                let rp = ctrl.auth_flow_sig.get().rp_id
+                let host = if rp.length() > 0 { rp } else { "app.still.fail" }
+                "请在系统安全提示中使用通行密钥验证身份（" + host + "）。"
+              }
+            />
+            <ui::Row along={.End} rigid>
+              <lg::Button
+                label="取消登录"
+                flat
+                height={32.0}
+                pad_x={14.0}
+                on_press=>{ ctrl.cancel_auth() }
+              />
+            </ui::Row>
+          </ui::Col>
+        </ui::Show>
+
+        // Failed / Cancelled clear recovery guidance
+        <ui::Show when=>{ctrl.auth_flow_sig.get().phase == "failed"} at_once>
+          <ui::Col
+            pad={14.0}
+            gap={6.0}
+            radius={12.0}
+            bg_by=>{lg::surface().danger_bg}
+            min_width={0.0}
+          >
+            <ui::Text
+              size={13.5}
+              weight={600}
+              lines={1}
+              color_by=>{lg::surface().danger}
+              text_by=>{
+                let m = ctrl.auth_flow_sig.get().message
+                if m.length() > 0 { m } else { "登录未完成" }
+              }
+            />
+            <ui::Text
+              size={12.5}
+              wrap
+              color_by=>{lg::surface().ink_secondary}
+              text_by=>{
+                let h = ctrl.auth_flow_sig.get().recovery_hint
+                if h.length() > 0 { h } else { "请重新发起登录或更换登录方式" }
+              }
+            />
+          </ui::Col>
+        </ui::Show>
+      </lg::SurfaceCard>
+
+      // Subtle footer note
+      let _ = <ui::Text
+        in={col}
+        size={12.0}
+        color_by=>{lg::surface().ink_tertiary}
+        text="所有工作区消息与密钥均仅经由端到端加密 Mesh 通道传输"
+      />
+    })
+  })
+}

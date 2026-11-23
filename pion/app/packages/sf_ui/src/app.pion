@@ -19,15 +19,30 @@ pub fn sf_app_root(root : view::View, ctrl : app_state::AppController) -> Unit {
 
   let _ = root.fill().ground(view::Live::By(fn() { lg::surface().canvas }))
 
-  let _ = <lg::SplitShell
-    in={root}
-    sidebar_width={296.0}
-    breakpoint={760.0}
-    show_detail_by=>{ctrl.show_detail_sig.get()}
-    sidebar={fn(sb : view::View) -> Unit { render_sidebar(sb, ctrl) }}
-    detail={fn(dt : view::View) -> Unit { render_chat_pane(dt, ctrl, composer_field) }}
-  />
+  root.show(
+    fn() { ctrl.signed_in_sig.get() },
+    fn(main_host : view::View) -> Unit {
+      let _ = main_host.fill()
+      let _ = <lg::SplitShell
+        in={main_host}
+        sidebar_width={296.0}
+        breakpoint={760.0}
+        show_detail_by=>{ctrl.show_detail_sig.get()}
+        sidebar={fn(sb : view::View) -> Unit { render_sidebar(sb, ctrl) }}
+        detail={fn(dt : view::View) -> Unit { render_chat_pane(dt, ctrl, composer_field) }}
+      />
+      render_settings_sheet(main_host, ctrl)
+      render_search_sheet(main_host, ctrl)
+    },
+    at_once=true,
+  )
 
-  render_settings_sheet(root, ctrl)
-  render_search_sheet(root, ctrl)
+  root.show(
+    fn() { !ctrl.signed_in_sig.get() },
+    fn(auth_host : view::View) -> Unit {
+      let _ = auth_host.fill()
+      render_signin_view(auth_host, ctrl)
+    },
+    at_once=true,
+  )
 }

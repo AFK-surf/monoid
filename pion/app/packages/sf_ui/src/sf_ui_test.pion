@@ -217,3 +217,200 @@ test "sf_ui_3_metal_offscreen_4_shots" {
   )
   debug_assert(ok4, "sf-settings-sheet-light.png Metal snapshot must succeed")
 }
+
+test "sf_ui_4_stage3b_pages_interactive_and_apple_ui_gates" {
+  // 1. Settings -> Models & Profiles tab: sanitized profiles + star toggle closed loop
+  let env_m = make_real_sf_env(dark=false)
+  env_m.ctrl.set_sheet(app_state::ActiveSheet::Settings)
+  env_m.ctrl.set_settings_tab(1)
+  let t_m = ui::Tester::tree(
+    fn(root : view::View) -> Unit { sf_app_root(root, env_m.ctrl) },
+    width=1280.0,
+    height=820.0,
+    theme=lg::ui_theme,
+  )
+  t_m.run_shown(120.0)
+  debug_assert(t_m.find("已接入账号与额度").is_some(), "profiles section rendered")
+  debug_assert(t_m.find("alice@afk.surf").is_some(), "sanitized profile email rendered")
+  debug_assert(t_m.find("sk-secret-must-be-stripped").is_none(), "API key MUST NEVER leak into UI")
+  debug_assert(t_m.find("tok-secret-must-be-stripped").is_none(), "token MUST NEVER leak into UI")
+  debug_assert(t_m.find("个人锁").is_none(), "zero personal-lock wording")
+  debug_assert(t_m.scroll_faults().length() == 0, "models tab must have 0 scroll faults")
+  lg::assert_no_nested_glass(t_m, label="sf_3b_models", allow_large_overlay=true)
+  lg::assert_apple_ui(t_m, label="sf_3b_models", allow_large_overlay=true)
+
+  // Toggle star on an unstarred model (`openai/gpt-6.2-sol`)
+  let mut was_starred = true
+  let ms_before = env_m.ctrl.models_sig.untracked()
+  for i in 0..<ms_before.length() {
+    if ms_before[i].id == "openai/gpt-6.2-sol" {
+      was_starred = ms_before[i].starred
+    }
+  }
+  debug_assert(!was_starred, "gpt-6.2-sol starts unstarred")
+  let toggled_on = env_m.ctrl.toggle_model_star("openai/gpt-6.2-sol")
+  debug_assert(toggled_on, "toggle_model_star returns true")
+  t_m.run_shown(80.0)
+  let mut now_starred = false
+  let ms_after = env_m.ctrl.models_sig.untracked()
+  for i in 0..<ms_after.length() {
+    if ms_after[i].id == "openai/gpt-6.2-sol" {
+      now_starred = ms_after[i].starred
+    }
+  }
+  debug_assert(now_starred, "gpt-6.2-sol is now starred in models_sig")
+  t_m.dispose()
+
+  // 2. Settings -> Fleet & Stations tab: workspace summary + online/offline stations + downloads
+  let env_f = make_real_sf_env(dark=false)
+  env_f.ctrl.set_sheet(app_state::ActiveSheet::Settings)
+  env_f.ctrl.set_settings_tab(2)
+  let t_f = ui::Tester::tree(
+    fn(root : view::View) -> Unit { sf_app_root(root, env_f.ctrl) },
+    width=1280.0,
+    height=820.0,
+    theme=lg::ui_theme,
+  )
+  t_f.run_shown(120.0)
+  debug_assert(t_f.find("工作区概览").is_some(), "fleet overview section rendered")
+  debug_assert(t_f.find("站点状态").is_some(), "stations status section rendered")
+  debug_assert(t_f.find("Tokyo Mac Studio").is_some(), "online station rendered")
+  debug_assert(t_f.find("SGP Standby Node").is_some(), "offline station rendered")
+  debug_assert(t_f.find("文件下载").is_some(), "active downloads section rendered")
+  debug_assert(t_f.find("metal-frame-trace.gputrace.zip").is_some(), "download title stripped of prefix")
+  debug_assert(t_f.scroll_faults().length() == 0, "fleet tab must have 0 scroll faults")
+  lg::assert_no_nested_glass(t_f, label="sf_3b_fleet", allow_large_overlay=true)
+  lg::assert_apple_ui(t_f, label="sf_3b_fleet", allow_large_overlay=true)
+  t_f.dispose()
+
+  // 3. SearchSheet -> Search / Archive (only archived=1) / Presets (`copy_preset`)
+  let env_s = make_real_sf_env(dark=false)
+  env_s.ctrl.set_sheet(app_state::ActiveSheet::Search)
+  let t_s = ui::Tester::tree(
+    fn(root : view::View) -> Unit { sf_app_root(root, env_s.ctrl) },
+    width=1280.0,
+    height=820.0,
+    theme=lg::ui_theme,
+  )
+  t_s.run_shown(120.0)
+  debug_assert(t_s.find("搜索与归档").is_some(), "search modal header rendered")
+  debug_assert(t_s.find("Invar 原生客户端架构迁移").is_some(), "active chat found in search")
+  debug_assert(t_s.scroll_faults().length() == 0, "search tab must have 0 scroll faults")
+  lg::assert_no_nested_glass(t_s, label="sf_3b_search", allow_large_overlay=true)
+  lg::assert_apple_ui(t_s, label="sf_3b_search", allow_large_overlay=true)
+
+  // Switch to Archive tab (only archived=1 chats)
+  env_s.ctrl.set_search_tab(1)
+  t_s.run_shown(80.0)
+  debug_assert(t_s.find("阶段 2 协议边界冻结复盘").is_some(), "archived chat rendered in Archive tab")
+  debug_assert(t_s.find("Invar 原生客户端架构迁移").is_none() || env_s.ctrl.archive_sig.untracked().total == 2, "archive strictly contains only archived=1 chats")
+  debug_assert(env_s.ctrl.archive_sig.untracked().total == 2, "exactly 2 archived chats")
+
+  // Switch to Presets tab -> click `复制为个人预设`
+  env_s.ctrl.set_search_tab(2)
+  t_s.run_shown(80.0)
+  debug_assert(t_s.find("Invar Apple HIG 严审助手").is_some(), "own preset rendered")
+  debug_assert(t_s.find("Mesh 弱网压测与回归套件").is_some(), "team shared preset rendered")
+  debug_assert(env_s.ctrl.presets_sig.untracked().own.length() == 1, "starts with 1 own preset")
+  t_s.press("复制为个人预设")
+  t_s.run_shown(80.0)
+  debug_assert(env_s.ctrl.presets_sig.untracked().own.length() == 2, "copy_preset added preset to viewer own presets")
+  t_s.dispose()
+
+  // 4. SignInView -> OAuth PKCE `auth.begin` (zero verifier exposure) + `auth.cancel` recovery
+  let env_a = make_real_sf_env(dark=false)
+  env_a.ctrl.set_signed_in(false)
+  let t_a = ui::Tester::tree(
+    fn(root : view::View) -> Unit { sf_app_root(root, env_a.ctrl) },
+    width=1280.0,
+    height=820.0,
+    theme=lg::ui_theme,
+  )
+  t_a.run_shown(120.0)
+  debug_assert(t_a.find("登录 still.fail").is_some(), "sign-in title rendered")
+  debug_assert(t_a.find("使用浏览器登录（OAuth PKCE）").is_some(), "OAuth PKCE capsule button rendered")
+  debug_assert(t_a.find("使用通行密钥（Passkey）").is_some(), "Passkey capsule button rendered")
+  debug_assert(t_a.scroll_faults().length() == 0, "sign-in view must have 0 scroll faults")
+  lg::assert_no_nested_glass(t_a, label="sf_3b_signin")
+  lg::assert_apple_ui(t_a, label="sf_3b_signin")
+
+  t_a.press("使用浏览器登录（OAuth PKCE）")
+  t_a.run_shown(80.0)
+  debug_assert(env_a.ctrl.auth_flow_sig.untracked().phase == "pending_oauth", "auth.begin transitioned to pending_oauth")
+  debug_assert(t_a.find("等待浏览器完成授权").is_some(), "pending OAuth status displayed")
+  debug_assert(t_a.find("code_verifier").is_none(), "PKCE verifier must NEVER appear in UI")
+  debug_assert(t_a.find("verifier").is_none(), "verifier wording must NEVER appear in UI")
+
+  t_a.press("取消登录")
+  t_a.run_shown(80.0)
+  debug_assert(env_a.ctrl.auth_flow_sig.untracked().phase == "failed", "auth.cancel transitioned to failed/cancelled")
+  debug_assert(t_a.find("登录已取消").is_some(), "cancel message displayed")
+  debug_assert(t_a.find("可随时重新发起登录").is_some(), "recovery hint displayed")
+  t_a.dispose()
+}
+
+test "sf_ui_5_stage3b_metal_offscreen_4_shots" {
+  debug_assert(film::is_supported(), "Apple macOS Metal offscreen rendering must be supported")
+
+  // Shot 1: Settings -> Models & Profiles (1280x820 @2x)
+  let env1 = make_real_sf_env(dark=false)
+  env1.ctrl.set_sheet(app_state::ActiveSheet::Settings)
+  env1.ctrl.set_settings_tab(1)
+  let ok1 = film::picture(
+    fn(root : view::View) -> Unit { sf_app_root(root, env1.ctrl) },
+    path="/tmp/sf_ui_shots_3b/sf-3b-models-light.png",
+    w=1280.0,
+    h=820.0,
+    scale=2.0,
+    dark=false,
+    at=150.0,
+    theme=lg::ui_theme,
+  )
+  debug_assert(ok1, "sf-3b-models-light.png Metal snapshot must succeed")
+
+  // Shot 2: Settings -> Fleet & Stations (1280x820 @2x)
+  let env2 = make_real_sf_env(dark=false)
+  env2.ctrl.set_sheet(app_state::ActiveSheet::Settings)
+  env2.ctrl.set_settings_tab(2)
+  let ok2 = film::picture(
+    fn(root : view::View) -> Unit { sf_app_root(root, env2.ctrl) },
+    path="/tmp/sf_ui_shots_3b/sf-3b-fleet-light.png",
+    w=1280.0,
+    h=820.0,
+    scale=2.0,
+    dark=false,
+    at=150.0,
+    theme=lg::ui_theme,
+  )
+  debug_assert(ok2, "sf-3b-fleet-light.png Metal snapshot must succeed")
+
+  // Shot 3: Search / Archive / Presets Modal (1280x820 @2x)
+  let env3 = make_real_sf_env(dark=false)
+  env3.ctrl.set_sheet(app_state::ActiveSheet::Search)
+  let ok3 = film::picture(
+    fn(root : view::View) -> Unit { sf_app_root(root, env3.ctrl) },
+    path="/tmp/sf_ui_shots_3b/sf-3b-search-light.png",
+    w=1280.0,
+    h=820.0,
+    scale=2.0,
+    dark=false,
+    at=150.0,
+    theme=lg::ui_theme,
+  )
+  debug_assert(ok3, "sf-3b-search-light.png Metal snapshot must succeed")
+
+  // Shot 4: Minimal Apple Sign-In View (1280x820 @2x)
+  let env4 = make_real_sf_env(dark=false)
+  env4.ctrl.set_signed_in(false)
+  let ok4 = film::picture(
+    fn(root : view::View) -> Unit { sf_app_root(root, env4.ctrl) },
+    path="/tmp/sf_ui_shots_3b/sf-3b-signin-light.png",
+    w=1280.0,
+    h=820.0,
+    scale=2.0,
+    dark=false,
+    at=150.0,
+    theme=lg::ui_theme,
+  )
+  debug_assert(ok4, "sf-3b-signin-light.png Metal snapshot must succeed")
+}

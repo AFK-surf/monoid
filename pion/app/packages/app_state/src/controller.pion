@@ -72,6 +72,14 @@ pub struct AppController {
   pub profiles_sig : signals::Signal[Array[ProfileViewItem]]
   pub models_sig : signals::Signal[Array[ModelViewItem]]
   pub fleet_summary_sig : signals::Signal[FleetSummaryState]
+  pub downloads_sig : signals::Signal[Array[DownloadViewItem]]
+  pub search_tab_sig : signals::Signal[Int]
+  pub search_query_sig : signals::Signal[String]
+  pub search_results_sig : signals::Signal[SearchResultsState]
+  pub archive_sig : signals::Signal[ArchiveViewState]
+  pub presets_sig : signals::Signal[PresetsViewState]
+  pub signed_in_sig : signals::Signal[Bool]
+  pub auth_flow_sig : signals::Signal[AuthFlowState]
   pub chat_filter_sig : signals::Signal[ChatFilter]
   pub sheet_sig : signals::Signal[ActiveSheet]
   pub settings_tab_sig : signals::Signal[Int]
@@ -215,6 +223,29 @@ pub fn AppController::new(
     fleet_summary_sig: signals::signal_by(
       empty_fleet_summary(workspace),
       fn(_a : FleetSummaryState, _b : FleetSummaryState) -> Bool { false },
+    ),
+    downloads_sig: signals::signal_by(
+      [],
+      fn(_a : Array[DownloadViewItem], _b : Array[DownloadViewItem]) -> Bool { false },
+    ),
+    search_tab_sig: signals::signal(0),
+    search_query_sig: signals::signal(""),
+    search_results_sig: signals::signal_by(
+      empty_search_results(),
+      fn(_a : SearchResultsState, _b : SearchResultsState) -> Bool { false },
+    ),
+    archive_sig: signals::signal_by(
+      empty_archive_view(),
+      fn(_a : ArchiveViewState, _b : ArchiveViewState) -> Bool { false },
+    ),
+    presets_sig: signals::signal_by(
+      empty_presets_view(),
+      fn(_a : PresetsViewState, _b : PresetsViewState) -> Bool { false },
+    ),
+    signed_in_sig: signals::signal(true),
+    auth_flow_sig: signals::signal_by(
+      empty_auth_flow(),
+      fn(_a : AuthFlowState, _b : AuthFlowState) -> Bool { false },
     ),
     chat_filter_sig: signals::signal_by(ChatFilter::All, fn(a : ChatFilter, b : ChatFilter) -> Bool { a == b }),
     sheet_sig: signals::signal_by(ActiveSheet::None, fn(a : ActiveSheet, b : ActiveSheet) -> Bool { a == b }),
@@ -699,7 +730,60 @@ pub fn AppController::refresh_fleet_summary(self : AppController) -> Unit {
   }
 }
 
-/// Enable live `packages/views` projection sync and refresh all 8 view signals immediately.
+/// Refresh `downloads_sig` from real `views::project_downloads` via `ClientCore`.
+pub fn AppController::refresh_downloads(self : AppController) -> Unit {
+  match self.query_view_topic("downloads", []) {
+    Some(j) => self.downloads_sig.set(decode_downloads(j))
+    None => ()
+  }
+}
+
+/// Refresh `search_results_sig` from real `views::project_search` via `ClientCore`.
+pub fn AppController::refresh_search(self : AppController) -> Unit {
+  let q = self.search_query_sig.untracked()
+  match self.query_view_topic(
+    "search",
+    [
+      ("scope", base_codec::json_str(self.core.workspace)),
+      ("query", base_codec::json_str(q)),
+      ("limit", base_codec::json_int(20)),
+    ],
+  ) {
+    Some(j) => self.search_results_sig.set(decode_search_results(q, j))
+    None => ()
+  }
+}
+
+/// Refresh `archive_sig` from real `views::project_archive` (`archived = 1` only) via `ClientCore`.
+pub fn AppController::refresh_archive(self : AppController) -> Unit {
+  let q = self.search_query_sig.untracked()
+  match self.query_view_topic(
+    "archive",
+    [
+      ("scope", base_codec::json_str(self.core.workspace)),
+      ("query", base_codec::json_str(q)),
+      ("limit", base_codec::json_int(50)),
+    ],
+  ) {
+    Some(j) => self.archive_sig.set(decode_archive_view(j))
+    None => ()
+  }
+}
+
+/// Refresh `presets_sig` from real `views::project_own_presets` & `views::project_other_presets`.
+pub fn AppController::refresh_presets(self : AppController) -> Unit {
+  let own = match self.query_view_topic("presets", []) {
+    Some(j) => decode_presets_list(j)
+    None => []
+  }
+  let others = match self.query_view_topic("otherPresets", []) {
+    Some(j) => decode_presets_list(j)
+    None => []
+  }
+  self.presets_sig.set(PresetsViewState::{ own: own, others: others })
+}
+
+/// Enable live `packages/views` projection sync and refresh all view signals immediately.
 pub fn AppController::refresh_all_views(self : AppController) -> Unit {
   self.views_enabled = true
   self.refresh_chats_days()
@@ -710,6 +794,10 @@ pub fn AppController::refresh_all_views(self : AppController) -> Unit {
   self.refresh_profiles()
   self.refresh_models()
   self.refresh_fleet_summary()
+  self.refresh_downloads()
+  self.refresh_search()
+  self.refresh_archive()
+  self.refresh_presets()
   self.bump()
 }
 
@@ -859,4 +947,190 @@ pub fn AppController::set_show_detail(self : AppController, show : Bool) -> Unit
 pub fn AppController::set_workspace_name(self : AppController, name : String) -> Unit {
   self.workspace_name_sig.set(name)
   self.bump()
+}
+
+/// Toggle starred state for `model_id` in `ClientCore.stars_held` and re-project `models_sig`.
+pub fn AppController::toggle_model_star(self : AppController, model_id : String) -> Bool {
+  let now = self.core.rt.now()
+  let mut found = false
+  let mut next_on = true
+  for i in 0..<self.core.stars_held.length() {
+    let cur = self.core.stars_held[i]
+    if cur.key == model_id {
+      next_on = !cur.on
+      self.core.stars_held[i] = views::StarEntry::{
+        key: cur.key,
+        on: next_on,
+        rev: cur.rev + 1,
+        at: now,
+      }
+      found = true
+      break
+    }
+  }
+  if !found {
+    self.core.stars_held.push(views::StarEntry::{
+      key: model_id,
+      on: true,
+      rev: 1,
+      at: now,
+    })
+  }
+  self.refresh_models()
+  self.bump()
+  next_on
+}
+
+/// Switch active tab in `SearchSheet` (`0` = 搜索对话, `1` = 已归档, `2` = 个人预设).
+pub fn AppController::set_search_tab(self : AppController, tab : Int) -> Unit {
+  let clamped = if tab < 0 { 0 } else if tab > 2 { 2 } else { tab }
+  self.search_tab_sig.set(clamped)
+  if self.views_enabled {
+    if clamped == 0 {
+      self.refresh_search()
+    } else if clamped == 1 {
+      self.refresh_archive()
+    } else {
+      self.refresh_presets()
+    }
+  }
+  self.bump()
+}
+
+/// Update search query string and re-project `search` & `archive` views via `ClientCore`.
+pub fn AppController::set_search_query(self : AppController, query : String) -> Unit {
+  self.search_query_sig.set(query)
+  if self.views_enabled {
+    self.refresh_search()
+    self.refresh_archive()
+  }
+  self.bump()
+}
+
+/// Copy a preset (`preset.copy`) into the viewer's own presets and refresh `presets_sig`.
+pub fn AppController::copy_preset(self : AppController, preset_id : String) -> Bool {
+  self.sub_seq = self.sub_seq + 1.to_int64()
+  let res = self.core.handle_request(protocol::CoreRequest::Call(
+    self.sub_seq,
+    "preset.copy",
+    base_codec::json_obj([("id", base_codec::json_str(preset_id))]),
+    None,
+  ))
+  let ok = match res {
+    Some(protocol::CoreEvent::Ok(_, _, _)) => true
+    _ => false
+  }
+  if ok {
+    self.refresh_presets()
+    self.bump()
+  }
+  ok
+}
+
+/// Toggle signed-in state (when `false`, UI mounts `SignInView`).
+pub fn AppController::set_signed_in(self : AppController, signed_in : Bool) -> Unit {
+  self.signed_in_sig.set(signed_in)
+  self.bump()
+}
+
+/// Begin OAuth PKCE sign-in via real `ClientCore` `auth.begin` (NEVER exposes PKCE `verifier`).
+pub fn AppController::begin_auth(
+  self : AppController,
+  device_name~ : String = "still.fail Desktop",
+) -> Bool {
+  self.sub_seq = self.sub_seq + 1.to_int64()
+  let res = self.core.handle_request(protocol::CoreRequest::Call(
+    self.sub_seq,
+    "auth.begin",
+    base_codec::json_obj([("device_name", base_codec::json_str(device_name))]),
+    None,
+  ))
+  match res {
+    Some(protocol::CoreEvent::Ok(_, j, _)) => {
+      let st = match base_codec::json_get(j, "state") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => ""
+      }
+      self.auth_flow_sig.set(decode_auth_flow(self.core.login_flow.to_json(), oauth_state=st))
+      self.bump()
+      true
+    }
+    _ => {
+      self.auth_flow_sig.set(decode_auth_flow(self.core.login_flow.to_json()))
+      self.bump()
+      false
+    }
+  }
+}
+
+/// Begin Passkey sign-in challenge on `ClientCore.login_flow`.
+pub fn AppController::begin_passkey(
+  self : AppController,
+  rp_id~ : String = "app.still.fail",
+) -> Bool {
+  let ch = "pk-" + self.core.rt.now().to_string()
+  self.core.login_flow.begin_passkey(ch, rp_id)
+  self.auth_flow_sig.set(decode_auth_flow(self.core.login_flow.to_json()))
+  self.bump()
+  true
+}
+
+/// Cancel an active OAuth/Passkey login via real `ClientCore` `auth.cancel`.
+pub fn AppController::cancel_auth(self : AppController) -> Unit {
+  self.sub_seq = self.sub_seq + 1.to_int64()
+  let _ = self.core.handle_request(protocol::CoreRequest::Call(
+    self.sub_seq,
+    "auth.cancel",
+    base_codec::json_obj([]),
+    None,
+  ))
+  self.auth_flow_sig.set(decode_auth_flow(self.core.login_flow.to_json()))
+  self.bump()
+}
+
+/// Complete OAuth callback via real `ClientCore` `auth.complete`.
+pub fn AppController::complete_auth(
+  self : AppController,
+  state : String,
+  code : Option[String],
+  error~ : Option[String] = None,
+  sub~ : String = "",
+  email~ : String = "",
+  name~ : String = "",
+) -> Bool {
+  self.sub_seq = self.sub_seq + 1.to_int64()
+  let fields : Array[(String, base_codec::Json)] = [("state", base_codec::json_str(state))]
+  match code {
+    Some(c) => fields.push(("code", base_codec::json_str(c)))
+    None => ()
+  }
+  match error {
+    Some(e) => fields.push(("error", base_codec::json_str(e)))
+    None => ()
+  }
+  if sub.length() > 0 {
+    fields.push(("sub", base_codec::json_str(sub)))
+  }
+  if email.length() > 0 {
+    fields.push(("email", base_codec::json_str(email)))
+  }
+  if name.length() > 0 {
+    fields.push(("name", base_codec::json_str(name)))
+  }
+  let res = self.core.handle_request(protocol::CoreRequest::Call(
+    self.sub_seq,
+    "auth.complete",
+    base_codec::json_obj(fields),
+    None,
+  ))
+  self.auth_flow_sig.set(decode_auth_flow(self.core.login_flow.to_json()))
+  let ok = match res {
+    Some(protocol::CoreEvent::Ok(_, _, _)) => {
+      self.signed_in_sig.set(true)
+      true
+    }
+    _ => false
+  }
+  self.bump()
+  ok
 }

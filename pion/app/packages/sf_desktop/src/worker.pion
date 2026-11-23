@@ -1,0 +1,189 @@
+// Dual-thread desktop worker protocol and render-thread mount bridge for `sf_desktop`.
+// Strictly upholds Invar Red Line 1:
+// - Render thread (`mount_desktop_root`) takes ZERO `World` capability and performs ZERO blocking IO.
+// - Background OS thread (`handle_desktop_cmd`) holds `World`, runs `WorkerCtx::run_loop`,
+//   and wakes the render thread via `emit` (`EventQueue::emit` -> `ui::wake_now()`).
+// - Deterministic headless tests share `handle_desktop_cmd_pure` via `ui::Worker::inline`.
+
+import "app_state"
+import "base_codec"
+import "effect"
+import "sf_ui"
+import "shell"
+import "sql"
+import "sync"
+import "ui"
+import "view"
+
+pub struct DesktopConfig {
+  pub demo_mode : Bool
+  pub data_dir : String
+  pub workspace : String
+  pub station : String
+}
+
+pub fn default_desktop_config() -> DesktopConfig {
+  DesktopConfig::{
+    demo_mode: true,
+    data_dir: "",
+    workspace: "ws-afk",
+    station: "ws-afk/tokyo-studio",
+  }
+}
+
+/// Parse desktop CLI flags (`--demo`, `--data-dir <path>`, `--workspace <ws>`, `--station <st>`).
+pub fn parse_desktop_args(argv : Array[String]) -> DesktopConfig {
+  let mut demo = false
+  let mut data_dir = ""
+  let mut workspace = "ws-afk"
+  let mut station = "ws-afk/tokyo-studio"
+  let mut i = 0
+  while i < argv.length() {
+    let a = argv[i]
+    if a == "--demo" {
+      demo = true
+    } else if a == "--data-dir" && i + 1 < argv.length() {
+      i += 1
+      data_dir = argv[i]
+    } else if a == "--workspace" && i + 1 < argv.length() {
+      i += 1
+      workspace = argv[i]
+    } else if a == "--station" && i + 1 < argv.length() {
+      i += 1
+      station = argv[i]
+    }
+    i += 1
+  }
+  if !demo && data_dir.length() == 0 {
+    demo = true
+  }
+  DesktopConfig::{
+    demo_mode: demo,
+    data_dir: data_dir,
+    workspace: workspace,
+    station: station,
+  }
+}
+
+/// Immutable `Send` commands sent from the render thread to the background IO worker thread.
+pub enum DesktopCmd {
+  Boot(Bool, String)
+  RefreshAll
+  BeginAuth
+  Shutdown
+}
+
+/// Immutable `Send` events emitted from the background IO worker thread back to the render thread.
+pub enum DesktopEv {
+  Booted(String, Int64)
+  Refreshed(Int64)
+  AuthReady(String)
+  Stopped
+}
+
+/// Pure deterministic command handler shared by `ui::Worker::inline` in `ui::Tester` suites.
+pub fn handle_desktop_cmd_pure(cmd : DesktopCmd, emit : (DesktopEv) -> Unit) -> Unit {
+  match cmd {
+    DesktopCmd::Boot(demo, data_dir) => {
+      let label = if demo { "Local Demo" } else { "Data: " + data_dir }
+      emit(DesktopEv::Booted(label, 0.to_int64()))
+    }
+    DesktopCmd::RefreshAll => emit(DesktopEv::Refreshed(0.to_int64()))
+    DesktopCmd::BeginAuth => emit(DesktopEv::AuthReady("oauth_pkce"))
+    DesktopCmd::Shutdown => emit(DesktopEv::Stopped)
+  }
+}
+
+/// Native background-thread handler holding `World` capability (zero IO on `#render_thread`).
+pub fn handle_desktop_cmd(world : World, cmd : DesktopCmd, emit : (DesktopEv) -> Unit) -> Unit {
+  match cmd {
+    DesktopCmd::Boot(demo, data_dir) => {
+      let now = clock_now_ms(world)
+      let label = if demo { "Local Demo" } else { "Data: " + data_dir }
+      emit(DesktopEv::Booted(label, now))
+    }
+    DesktopCmd::RefreshAll => {
+      let now = clock_now_ms(world)
+      emit(DesktopEv::Refreshed(now))
+    }
+    DesktopCmd::BeginAuth => emit(DesktopEv::AuthReady("oauth_pkce"))
+    DesktopCmd::Shutdown => emit(DesktopEv::Stopped)
+  }
+}
+
+fn desktop_noop_transport() -> sync::StationTransport {
+  sync::StationTransport::{
+    request_k: fn(
+      _m : String,
+      _p : String,
+      _h : Array[(String, String)],
+      _b : Bytes,
+      k : (effect::Exit[sync::HttpReply]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Succeeded(sync::HttpReply::{ status: 200, headers: [], body: "{}".to_bytes() }))
+    },
+    stream_k: fn(
+      _p : String,
+      _h : Array[(String, String)],
+      _on_chunk : (Bytes) -> Unit,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    },
+  }
+}
+
+/// Create a real `AppController` + `ClientCore` configured from `DesktopConfig`.
+pub fn create_desktop_controller(cfg : DesktopConfig) -> app_state::AppController {
+  let rt = effect::Runtime::new()
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(_ : Int64, _ : String, _ : base_codec::Json, _ : Option[Bytes]) -> Unit {},
+    fn(op : String, _args : base_codec::Json) -> shell::AskResult {
+      if op == "sql.open" {
+        shell::AskResult::Ok(base_codec::json_obj([("id", base_codec::json_int(1))]))
+      } else if op == "sql.run" {
+        shell::AskResult::Ok(base_codec::json_int(0))
+      } else if op == "sql.all" {
+        shell::AskResult::Ok(base_codec::json_arr([]))
+      } else {
+        shell::AskResult::Ok(base_codec::json_null())
+      }
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db_name = if cfg.data_dir.length() > 0 { cfg.data_dir } else { "desktop-demo" }
+  let db = match sql::Sql::open(sh, db_name) {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic("sf_desktop sql open failed: " + e.to_string())
+  }
+  let ctrl = app_state::AppController::new(cfg.workspace, cfg.station, rt, db, desktop_noop_transport())
+  ctrl.set_workspace_name(if cfg.demo_mode { "AFK Engineering" } else { cfg.workspace })
+  ctrl.refresh_all_views()
+  ctrl
+}
+
+/// Mount `sf_ui::sf_app_root` onto `root` and bind the background `ui::Worker` event bridge.
+/// Takes ZERO `World` capability — strictly render-thread safe.
+pub fn mount_desktop_root(
+  root : view::View,
+  ctrl : app_state::AppController,
+  worker : ui::Worker[DesktopCmd, DesktopEv],
+) -> Unit {
+  worker.bind(fn(ev : DesktopEv) -> Unit {
+    match ev {
+      DesktopEv::Booted(label, _ts) => {
+        ctrl.connection_sig.set(label)
+        ctrl.refresh_all_views()
+      }
+      DesktopEv::Refreshed(_ts) => {
+        ctrl.refresh_all_views()
+      }
+      DesktopEv::AuthReady(_mode) => {
+        let _ = ctrl.begin_auth()
+      }
+      DesktopEv::Stopped => ()
+    }
+  })
+  sf_ui::sf_app_root(root, ctrl)
+}

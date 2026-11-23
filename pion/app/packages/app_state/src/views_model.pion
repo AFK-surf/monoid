@@ -140,6 +140,7 @@ pub struct StationViewItem {
   pub state_text : String
   pub version : String
   pub os : String
+  pub egress_text : String
   pub sessions_count : Int
   pub running_count : Int
 }
@@ -177,6 +178,7 @@ pub struct ProfileViewItem {
   pub look : Bool
   pub quota_left_pct : Int
   pub quota_label : String
+  pub quota_reset_text : String
   pub used_count : Int
 }
 
@@ -203,6 +205,86 @@ pub struct FleetSummaryState {
   pub where_text : String
   pub remote_tasks : Int
   pub tiles : Array[FleetTile]
+}
+
+pub struct DownloadViewItem {
+  pub id : String
+  pub station : String
+  pub name : String
+  pub title : String
+  pub size : Int64
+  pub loaded : Int64
+  pub progress : Double
+  pub state : String
+  pub active : Bool
+  pub error : Option[String]
+}
+
+pub struct SearchChatHit {
+  pub station : String
+  pub station_name : String
+  pub id : String
+  pub thread : Option[Int]
+  pub title : String
+  pub last_active : Int64
+  pub archived : Bool
+}
+
+pub struct SearchMessageHit {
+  pub station : String
+  pub thread : Int
+  pub seq : Int
+  pub n : Int
+  pub text : String
+}
+
+pub struct SearchResultsState {
+  pub query : String
+  pub chats : Array[SearchChatHit]
+  pub messages : Array[SearchMessageHit]
+  pub note : Option[String]
+}
+
+pub struct ArchiveChatItem {
+  pub station : String
+  pub station_name : String
+  pub id : String
+  pub thread : Option[Int]
+  pub title : String
+  pub last_text : String
+  pub how : String
+  pub at : Int64
+}
+
+pub struct ArchiveViewState {
+  pub items : Array[ArchiveChatItem]
+  pub total : Int
+  pub note : Option[String]
+}
+
+pub struct PresetViewItem {
+  pub id : String
+  pub name : String
+  pub home : String
+  pub whose : String
+  pub mine : Bool
+  pub editable : Bool
+  pub copyable : Bool
+}
+
+pub struct PresetsViewState {
+  pub own : Array[PresetViewItem]
+  pub others : Array[PresetViewItem]
+}
+
+pub struct AuthFlowState {
+  pub phase : String
+  pub authorize_url : String
+  pub oauth_state : String
+  pub rp_id : String
+  pub error_code : String
+  pub message : String
+  pub recovery_hint : String
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +339,42 @@ pub fn empty_fleet_summary(ws : String) -> FleetSummaryState {
     where_text: "0 台设备",
     remote_tasks: 0,
     tiles: [],
+  }
+}
+
+pub fn empty_search_results() -> SearchResultsState {
+  SearchResultsState::{
+    query: "",
+    chats: [],
+    messages: [],
+    note: None,
+  }
+}
+
+pub fn empty_archive_view() -> ArchiveViewState {
+  ArchiveViewState::{
+    items: [],
+    total: 0,
+    note: None,
+  }
+}
+
+pub fn empty_presets_view() -> PresetsViewState {
+  PresetsViewState::{
+    own: [],
+    others: [],
+  }
+}
+
+pub fn empty_auth_flow() -> AuthFlowState {
+  AuthFlowState::{
+    phase: "idle",
+    authorize_url: "",
+    oauth_state: "",
+    rp_id: "",
+    error_code: "",
+    message: "",
+    recovery_hint: "",
   }
 }
 
@@ -530,9 +648,9 @@ pub fn decode_stations(j : base_codec::Json) -> Array[StationViewItem] {
   let out : Array[StationViewItem] = []
   for i in 0..<xs.length() {
     let s = xs[i]
-    let os_str = match base_codec::json_get(s, "host") {
-      Some(h) => vm_str(h, "os")
-      None => ""
+    let (os_str, egress_str) = match base_codec::json_get(s, "host") {
+      Some(h) => (vm_str(h, "os"), vm_str(h, "egressText"))
+      None => ("", "")
     }
     let (sess_n, run_n) = match base_codec::json_get(s, "overview") {
       Some(ov) =>
@@ -552,6 +670,7 @@ pub fn decode_stations(j : base_codec::Json) -> Array[StationViewItem] {
       state_text: vm_str(s, "stateText"),
       version: vm_str(s, "version"),
       os: os_str,
+      egress_text: egress_str,
       sessions_count: sess_n,
       running_count: run_n,
     })
@@ -599,13 +718,26 @@ pub fn decode_profiles(j : base_codec::Json) -> Array[ProfileViewItem] {
     }
     let mut left_pct = 100
     let mut q_label = "充足"
+    let mut q_reset = ""
     match base_codec::json_get(prof, "quota") {
       Some(q) => {
+        let det = vm_str(q, "detail")
+        if det.length() > 0 {
+          q_reset = det
+        }
         let wins = vm_arr(q, "windows")
         if wins.length() > 0 {
           left_pct = vm_int(wins[0], "left")
           let lbl = vm_str(wins[0], "label")
           q_label = if lbl.length() > 0 { lbl } else { "\{left_pct}%" }
+          if q_reset.length() == 0 {
+            let resets_at = vm_int64(wins[0], "resetsAt")
+            if resets_at > 0.to_int64() {
+              q_reset = lbl + "刷新"
+            } else if lbl.length() > 0 {
+              q_reset = lbl
+            }
+          }
         }
       }
       None => ()
@@ -623,6 +755,7 @@ pub fn decode_profiles(j : base_codec::Json) -> Array[ProfileViewItem] {
       look: vm_bool(it, "look"),
       quota_left_pct: left_pct,
       quota_label: q_label,
+      quota_reset_text: q_reset,
       used_count: vm_int(it, "usedCount"),
     })
   }
@@ -665,5 +798,129 @@ pub fn decode_fleet_summary(j : base_codec::Json) -> FleetSummaryState {
     where_text: vm_str(j, "where"),
     remote_tasks: vm_int(j, "tasks"),
     tiles: tiles,
+  }
+}
+
+fn vm_double(j : base_codec::Json, k : String) -> Double {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, _)) => n
+    _ => 0.0
+  }
+}
+
+pub fn decode_downloads(j : base_codec::Json) -> Array[DownloadViewItem] {
+  let raw = vm_arr(j, "downloads")
+  let out : Array[DownloadViewItem] = []
+  for i in 0..<raw.length() {
+    let d = raw[i]
+    let title = {
+      let t = vm_str(d, "title")
+      if t.length() > 0 { t } else { vm_str(d, "name") }
+    }
+    out.push(DownloadViewItem::{
+      id: vm_str(d, "id"),
+      station: vm_str(d, "station"),
+      name: vm_str(d, "name"),
+      title: title,
+      size: vm_int64(d, "size"),
+      loaded: vm_int64(d, "loaded"),
+      progress: vm_double(d, "progress"),
+      state: vm_str(d, "state"),
+      active: vm_bool(d, "active"),
+      error: vm_opt_str(d, "error"),
+    })
+  }
+  out
+}
+
+pub fn decode_search_results(query : String, j : base_codec::Json) -> SearchResultsState {
+  let raw_items = vm_arr(j, "items")
+  let chats : Array[SearchChatHit] = []
+  for i in 0..<raw_items.length() {
+    let it = raw_items[i]
+    chats.push(SearchChatHit::{
+      station: vm_str(it, "station"),
+      station_name: vm_str(it, "stationName"),
+      id: vm_str(it, "id"),
+      thread: vm_opt_int(it, "thread"),
+      title: vm_str(it, "title"),
+      last_active: vm_int64(it, "lastActiveAt"),
+      archived: vm_bool(it, "archived"),
+    })
+  }
+  let raw_msgs = vm_arr(j, "messages")
+  let msgs : Array[SearchMessageHit] = []
+  for i in 0..<raw_msgs.length() {
+    let m = raw_msgs[i]
+    msgs.push(SearchMessageHit::{
+      station: vm_str(m, "station"),
+      thread: vm_int(m, "thread"),
+      seq: vm_int(m, "seq"),
+      n: vm_int(m, "n"),
+      text: vm_str(m, "text"),
+    })
+  }
+  SearchResultsState::{
+    query: query,
+    chats: chats,
+    messages: msgs,
+    note: vm_opt_str(j, "note"),
+  }
+}
+
+pub fn decode_archive_view(j : base_codec::Json) -> ArchiveViewState {
+  let raw = vm_arr(j, "items")
+  let items : Array[ArchiveChatItem] = []
+  for i in 0..<raw.length() {
+    let it = raw[i]
+    items.push(ArchiveChatItem::{
+      station: vm_str(it, "station"),
+      station_name: vm_str(it, "stationName"),
+      id: vm_str(it, "id"),
+      thread: vm_opt_int(it, "thread"),
+      title: vm_str(it, "title"),
+      last_text: vm_str(it, "last"),
+      how: vm_str(it, "how"),
+      at: vm_int64(it, "at"),
+    })
+  }
+  ArchiveViewState::{
+    items: items,
+    total: vm_int(j, "total"),
+    note: vm_opt_str(j, "note"),
+  }
+}
+
+pub fn decode_presets_list(j : base_codec::Json) -> Array[PresetViewItem] {
+  let raw = vm_arr(j, "presets")
+  let out : Array[PresetViewItem] = []
+  for i in 0..<raw.length() {
+    let p = raw[i]
+    out.push(PresetViewItem::{
+      id: vm_str(p, "id"),
+      name: vm_str(p, "name"),
+      home: vm_str(p, "home"),
+      whose: vm_str(p, "whose"),
+      mine: vm_bool(p, "mine"),
+      editable: vm_bool(p, "editable"),
+      copyable: vm_bool(p, "copyable"),
+    })
+  }
+  out
+}
+
+pub fn decode_auth_flow(j : base_codec::Json, oauth_state~ : String = "") -> AuthFlowState {
+  let phase = {
+    let p = vm_str(j, "phase")
+    if p.length() > 0 { p } else { "idle" }
+  }
+  AuthFlowState::{
+    phase: phase,
+    authorize_url: vm_str(j, "authorizeUrl"),
+    oauth_state: oauth_state,
+    rp_id: vm_str(j, "rpId"),
+    error_code: vm_str(j, "code"),
+    message: vm_str(j, "message"),
+    recovery_hint: vm_str(j, "recoveryHint"),
   }
 }

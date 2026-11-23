@@ -1,0 +1,31 @@
+[package]
+name = "sf_desktop"
+version = "0.1.0"
+
+[dependencies]
+app_state = { path = "../app_state" }
+sf_ui = { path = "../sf_ui" }
+base_codec = { workspace = true }
+effect = { workspace = true }
+host = { workspace = true }
+lg = { workspace = true }
+shell = { workspace = true }
+sql = { workspace = true }
+sync = { workspace = true }
+ui = { workspace = true }
+view = { workspace = true }
+
+[link.macos]
+frameworks = [
+  "Foundation",
+  "Cocoa",
+  "Metal",
+  "QuartzCore",
+  "CoreText",
+  "CoreGraphics",
+  "ImageIO",
+  "AVFoundation",
+  "CoreMedia",
+  "CoreVideo",
+  "WebKit",
+]

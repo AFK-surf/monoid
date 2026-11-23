@@ -455,6 +455,92 @@ fn SfSimDb::answer(self : SfSimDb, op : String, args : base_codec::Json) -> shel
       self.changing_rows.push(next[i])
     }
     changed = 1
+  } else if stmt == store::sql_search_chats() {
+    let in_ord = sf_p_str(p, 0)
+    let q = sf_p_str(p, 1)
+    let limit = sf_p_int(p, 2)
+    let mut matched_n = 0
+    for i in 0..<self.chats.length() {
+      let c = self.chats[i]
+      if c.archived != 0 { continue }
+      if sf_station_pos(in_ord, c.station) == 0 { continue }
+      if q.length() > 0 && !c.json.contains(q) && !c.id.contains(q) { continue }
+      let th_j = match c.thread { Some(v) => base_codec::json_int(v); None => base_codec::json_null() }
+      rows.push(base_codec::json_arr([
+        base_codec::json_str(c.station),
+        base_codec::json_int(c.archived),
+        base_codec::json_str(c.id),
+        th_j,
+        base_codec::json_int64(c.last_active),
+        base_codec::json_str(c.json),
+      ]))
+      matched_n += 1
+      if limit > 0 && matched_n >= limit { break }
+    }
+  } else if stmt == store::sql_search_messages_all() {
+    let q = sf_p_str(p, 0)
+    let limit = sf_p_int(p, 1)
+    let mut matched_n = 0
+    if q.length() > 0 {
+      for i in 0..<self.chats.length() {
+        let c = self.chats[i]
+        match c.thread {
+          Some(th) => {
+            match self.entries.get(c.station + " " + th.to_string()) {
+              Some(all) => {
+                for ei in 0..<all.length() {
+                  let (en, ej) = all[ei]
+                  match base_codec::json_parse(ej) {
+                    base_codec::JsonParseResult::Ok(doc) => {
+                      let txt = match base_codec::json_get(doc, "text") {
+                        Some(base_codec::Json::Str(s)) => s
+                        _ => ""
+                      }
+                      if txt.length() > 0 && txt.contains(q) {
+                        rows.push(base_codec::json_arr([
+                          base_codec::json_str(c.station),
+                          base_codec::json_int(th),
+                          base_codec::json_int(en),
+                          base_codec::json_int(en),
+                          base_codec::json_int64(c.last_active),
+                          base_codec::json_str(txt),
+                        ]))
+                        matched_n += 1
+                        if limit > 0 && matched_n >= limit { break }
+                      }
+                    }
+                    _ => ()
+                  }
+                }
+              }
+              None => ()
+            }
+          }
+          None => ()
+        }
+        if limit > 0 && matched_n >= limit { break }
+      }
+    }
+  } else if stmt == "SELECT station, archived, id, thread, last_active, json FROM chat WHERE station = ? AND archived = 1 ORDER BY last_active DESC LIMIT ?" {
+    let st = sf_p_str(p, 0)
+    let limit = sf_p_int(p, 1)
+    let mut matched_n = 0
+    for i in 0..<self.chats.length() {
+      let c = self.chats[i]
+      if c.station == st && c.archived == 1 {
+        let th_j = match c.thread { Some(v) => base_codec::json_int(v); None => base_codec::json_null() }
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(c.station),
+          base_codec::json_int(c.archived),
+          base_codec::json_str(c.id),
+          th_j,
+          base_codec::json_int64(c.last_active),
+          base_codec::json_str(c.json),
+        ]))
+        matched_n += 1
+        if limit > 0 && matched_n >= limit { break }
+      }
+    }
   } else if stmt == sync::sql_session_upsert() || stmt == sync::sql_job_upsert() ||
   stmt == sync::sql_pending_put() || stmt == sync::sql_pending_delete() {
     changed = 1
@@ -773,8 +859,33 @@ fn make_real_sf_env(dark~ : Bool = false) -> SfTestEnv {
     ])),
   ])
 
+  let st3 = "ws-afk/sgp-standby-1"
+  let st3_overview = base_codec::json_obj([
+    ("id", base_codec::json_str("sgp-standby-1")),
+    ("name", base_codec::json_str("SGP Standby Node")),
+    ("online", base_codec::json_bool(false)),
+    ("stateText", base_codec::json_str("离线")),
+    ("summary", base_codec::json_str("休眠待机节点，按需唤醒")),
+    ("version", base_codec::json_str("v0.9.3")),
+    ("host", base_codec::json_obj([
+      ("identity", base_codec::json_str("sgp-standby-1")),
+      ("os", base_codec::json_str("Debian 12")),
+      ("meters", base_codec::json_arr([])),
+      ("egressText", base_codec::json_str("未连接")),
+    ])),
+    ("overview", base_codec::json_obj([
+      ("counts", base_codec::json_obj([
+        ("sessions", base_codec::json_int(0)),
+        ("running", base_codec::json_int(0)),
+        ("warm", base_codec::json_int(0)),
+      ])),
+    ])),
+    ("profiles", base_codec::json_arr([])),
+  ])
+
   sim_db.stations_docs.push((st1, "overview", base_codec::json_stringify(st1_overview)))
   sim_db.stations_docs.push((st2, "overview", base_codec::json_stringify(st2_overview)))
+  sim_db.stations_docs.push((st3, "overview", base_codec::json_stringify(st3_overview)))
   sim_db.stations_docs.push((st1, "usage", base_codec::json_stringify(usage_doc)))
 
   // 2. Seed day-grouped real chats across Today & Yesterday
@@ -870,6 +981,69 @@ fn make_real_sf_env(dark~ : Bool = false) -> SfTestEnv {
     led: 0,
     watched: 0,
     json: c3_json,
+  })
+
+  // Archived chats (strictly `archived = 1`, surfaced ONLY in Archive view)
+  let arch1_json = base_codec::json_stringify(base_codec::json_obj([
+    ("id", base_codec::json_str("c-arch-1")),
+    ("session", base_codec::json_str("c-arch-1")),
+    ("thread", base_codec::json_int(201)),
+    ("title", base_codec::json_str("阶段 2 协议边界冻结复盘")),
+    ("state", base_codec::json_str("done")),
+    ("archived", base_codec::json_obj([
+      ("at", base_codec::json_int64(now_ms - day_ms * 2.to_int64())),
+      ("by", base_codec::json_str("person")),
+    ])),
+    ("last", base_codec::json_obj([
+      ("seq", base_codec::json_int(12)),
+      ("text", base_codec::json_str("所有 FrameOutbox 零序列化单测已合入 main")),
+    ])),
+  ]))
+  sim_db.put_chat(SfChatRow::{
+    station: st1,
+    archived: 1,
+    id: "c-arch-1",
+    ord: 4.0,
+    thread: Some(201),
+    session: Some("c-arch-1"),
+    pinned_at: None,
+    last_active: now_ms - day_ms * 2.to_int64(),
+    mine: 1,
+    hidden: 0,
+    led: 0,
+    watched: 0,
+    json: arch1_json,
+  })
+
+  let arch2_json = base_codec::json_stringify(base_codec::json_obj([
+    ("id", base_codec::json_str("c-arch-2")),
+    ("session", base_codec::json_str("c-arch-2")),
+    ("thread", base_codec::json_int(202)),
+    ("title", base_codec::json_str("iOS Metal 着色器暖机优化")),
+    ("state", base_codec::json_str("done")),
+    ("archived", base_codec::json_obj([
+      ("at", base_codec::json_int64(now_ms - day_ms * 4.to_int64())),
+      ("by", base_codec::json_str("auto")),
+    ])),
+    ("last", base_codec::json_obj([
+      ("seq", base_codec::json_int(8)),
+      ("text", base_codec::json_str("首帧编译耗时从 42ms 降至 6ms")),
+    ])),
+  ]))
+  sim_db.put_chat(SfChatRow::{
+    station: st1,
+    archived: 1,
+    id: "c-arch-2",
+    ord: 5.0,
+    thread: Some(202),
+    session: Some("c-arch-2"),
+    pinned_at: None,
+    last_active: now_ms - day_ms * 4.to_int64(),
+    mine: 1,
+    hidden: 0,
+    led: 0,
+    watched: 0,
+    json: arch2_json,
   })
 
   // 3. Seed thread metadata & rich real entries (Markdown, CodeBlock, toolGroups, interactive card, blue bubbles)
@@ -1044,6 +1218,42 @@ fn make_real_sf_env(dark~ : Bool = false) -> SfTestEnv {
   // Starred models
   ctrl.core.stars_held.push(views::StarEntry::{ key: "google/gemini-4-neon", on: true, rev: 1, at: now_ms })
   ctrl.core.stars_held.push(views::StarEntry::{ key: "anthropic/claude-opus-5-5", on: true, rev: 1, at: now_ms })
+
+  // Active file downloads (shown in Fleet tab `<lg::SurfaceSection header="文件下载">`)
+  ctrl.core.downloads_held.push(views::DownloadEntry::{
+    id: "dl-metal-trace",
+    station: st1,
+    name: "2026-11-23T12-30-00-a1b2c3-metal-frame-trace.gputrace.zip",
+    size: (48 * 1024 * 1024).to_int64(),
+    loaded: (34 * 1024 * 1024).to_int64(),
+    state: "going",
+    error: None,
+    started_at: now_ms - 12000.to_int64(),
+  })
+
+  // Personal presets & read-only team presets (for SearchSheet Presets tab + `preset.copy`)
+  ctrl.core.presets_held.push(views::PresetRecord::live(
+    "preset-invar-hig",
+    "alice",
+    1,
+    now_ms - 3600000.to_int64(),
+    now_ms - 7200000.to_int64(),
+    "alice@afk.surf",
+    "Tokyo Mac Studio",
+    "Invar Apple HIG 严审助手",
+    instructions="严格遵循 Apple HIG 与两层液态玻璃规范",
+  ))
+  ctrl.core.other_presets_held.push(views::PresetRecord::live(
+    "preset-mesh-audit",
+    "bob",
+    2,
+    now_ms - 1800000.to_int64(),
+    now_ms - 5400000.to_int64(),
+    "bob@afk.surf",
+    "PVG Linux Builder",
+    "Mesh 弱网压测与回归套件",
+    instructions="执行 55 项双通道 QUIC 回归验证",
+  ))
 
   // Pending vault approval requests
   ctrl.core.vault_approvals.enqueue(views::VaultApprovalRequest::{

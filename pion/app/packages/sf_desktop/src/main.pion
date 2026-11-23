@@ -1,0 +1,31 @@
+// Native macOS/desktop entry point for the pure-Pion `still.fail` client (`sf_desktop`).
+// Render thread runs `ui::run` (zero `World` IO); background OS thread runs `WorkerCtx::run_loop`
+// and wakes the render loop via `ui::wake_now()`.
+
+import "host"
+import "lg"
+import "ui"
+import "view"
+
+pub fn main(world : World) -> Int {
+  let cfg = parse_desktop_args(world_args(world))
+  host::install()
+  let ctrl = create_desktop_controller(cfg)
+  let (worker, ctx) : (ui::Worker[DesktopCmd, DesktopEv], ui::WorkerCtx[DesktopCmd, DesktopEv]) = ui::Worker::pair()
+  scope(world, fn(s : Scope) -> Unit {
+    spawn(s, fn() -> Unit {
+      ctx.run_loop(fn(cmd : DesktopCmd, emit : (DesktopEv) -> Unit) -> Unit {
+        handle_desktop_cmd(world, cmd, emit)
+      })
+    })
+    let _ = worker.send(DesktopCmd::Boot(cfg.demo_mode, cfg.data_dir))
+    ui::run(
+      "still.fail",
+      fn(root : view::View) -> Unit { mount_desktop_root(root, ctrl, worker) },
+      theme=lg::ui_theme,
+    )
+    let _ = worker.send(DesktopCmd::Shutdown)
+    worker.close()
+  })
+  0
+}

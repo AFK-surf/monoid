@@ -262,96 +262,477 @@ fn SafeModeVaultTab(parent : view::View, ctrl~ : app_state::AppController) -> vi
   </ui::Col>
 }
 
-fn ModelsProfilesTab(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
-  let profs = ctrl.profiles_sig.untracked()
-  let ms = ctrl.models_sig.untracked()
-  <ui::Col in={parent} gap={18.0} min_width={0.0}>
-    <lg::SurfaceSection header="已连接账号与额度（脱敏）" radius={14.0}>
-      for i in 0..<profs.length() {
-        let p = profs[i]
-        if i > 0 {
-          <HairlineSep />
-        }
-        <ui::Col pad_x={16.0} pad_y={12.0} gap={6.0} min_width={0.0}>
-          <ui::Row align={.Middle} gap={8.0} rigid>
-            <ui::Text size={14.0} weight={500} color_by=>{lg::surface().ink} text={p.title} />
-            <ui::Text size={12.0} color_by=>{lg::surface().ink_tertiary} text={p.group_title} />
-            <ui::Spacer />
-            <ui::Text
-              size={12.5}
-              weight={500}
-              color_by=>{if p.usable { lg::surface().positive } else { lg::surface().warning }}
-              text={"剩余 \{p.quota_left_pct}%"}
-            />
-          </ui::Row>
-          <lg::ProgressBar value={p.quota_left_pct.to_double() / 100.0} label={p.title} />
-        </ui::Col>
-      }
-    </lg::SurfaceSection>
+fn join_runtimes_str(xs : Array[String]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<xs.length() {
+    if i > 0 {
+      sb.write_string(" / ")
+    }
+    sb.write_string(xs[i])
+  }
+  sb.to_string()
+}
 
-    <lg::SurfaceSection header="可用模型" radius={14.0}>
-      for i in 0..<ms.length() {
-        let m = ms[i]
-        if i > 0 {
-          <HairlineSep />
+fn find_profile_by_key(
+  profs : Array[app_state::ProfileViewItem],
+  key : String,
+) -> Option[(Int, app_state::ProfileViewItem)] {
+  for i in 0..<profs.length() {
+    if profs[i].key == key {
+      return Some((i, profs[i]))
+    }
+  }
+  None
+}
+
+fn find_model_by_id(
+  ms : Array[app_state::ModelViewItem],
+  id : String,
+) -> Option[(Int, app_state::ModelViewItem)] {
+  for i in 0..<ms.length() {
+    if ms[i].id == id {
+      return Some((i, ms[i]))
+    }
+  }
+  None
+}
+
+fn find_station_by_key(
+  sts : Array[app_state::StationViewItem],
+  key : String,
+) -> Option[(Int, app_state::StationViewItem)] {
+  for i in 0..<sts.length() {
+    if sts[i].station == key {
+      return Some((i, sts[i]))
+    }
+  }
+  None
+}
+
+fn ModelStarButton(
+  parent : view::View,
+  ctrl~ : app_state::AppController,
+  model_id~ : String,
+  model_name~ : String,
+  starred_by~ : () -> Bool,
+) -> view::View {
+  let _ = headless::button(
+    parent,
+    fn() { if starred_by() { "取消收藏 " + model_name } else { "收藏 " + model_name } },
+    fn(_e) -> Unit { let _ = ctrl.toggle_model_star(model_id) },
+    fn(b : view::View, btn : headless::Button) -> Unit {
+      let hover_t = motion::hover_fade(b, fn() { btn.hovered() })
+      let _ = b
+      .width(view::Live::Is(Some(36.0)))
+      .height(view::Live::Is(Some(36.0)))
+      .shrink(view::Live::Is(0.0))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .lies_along(view::Live::Is(view::Lies::Middle))
+      let _ = b.box(fn(circle : view::View) -> Unit {
+        let _ = circle
+        .width(view::Live::Is(Some(30.0)))
+        .height(view::Live::Is(Some(30.0)))
+        .radius(view::Live::Is(15.0))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::Is(view::Lies::Middle))
+        .ground(view::Live::By(fn() {
+          if hover_t() > 0.001 { lg::alpha(lg::surface().row_hover, hover_t()) } else { lg::clear }
+        }))
+        circle.show(
+          starred_by,
+          fn(on_slot : view::View) -> Unit {
+            let _ = icons::icon_node(on_slot, "star-filled", size=15.0, ink=fn() { lg::surface().warning })
+          },
+          at_once=true,
+        )
+        circle.show(
+          fn() { !starred_by() },
+          fn(off_slot : view::View) -> Unit {
+            let _ = icons::icon_node(off_slot, "star", size=15.0, ink=fn() { lg::surface().ink_tertiary })
+          },
+          at_once=true,
+        )
+      })
+    },
+  )
+  parent
+}
+
+fn ProfileListRows(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  let _ = parent.box(fn(list_box : view::View) -> Unit {
+    let _ = list_box.min_width(view::Live::Is(Some(0.0)))
+    list_box.each(
+      fn() -> Array[String] {
+        let ps = ctrl.profiles_sig.get()
+        let ks : Array[String] = []
+        for i in 0..<ps.length() {
+          ks.push(ps[i].key)
         }
-        <ui::Row pad_x={16.0} pad_y={11.0} align={.Middle} gap={8.0} rigid>
-          <icons::Icon
-            name={if m.starred { "star-filled" } else { "star" }}
-            size={14.0}
-            color_by=>{if m.starred { lg::surface().warning } else { lg::surface().ink_tertiary }}
-          />
-          <ui::Text size={14.0} weight={400} color_by=>{lg::surface().ink} text={m.name} />
-          <ui::Spacer />
+        ks
+      },
+      fn(k : String) -> String { k },
+      fn(row_slot : view::View, key_sig : signals::Signal[String]) -> Unit {
+        let key = key_sig.untracked()
+        let found = find_profile_by_key(ctrl.profiles_sig.untracked(), key)
+        let (idx, p) = match found {
+          Some(pair) => pair
+          None => return
+        }
+        if idx > 0 {
+          let _ = HairlineSep(row_slot)
+        }
+        let primary_label = if p.email.length() > 0 { p.email } else { p.title }
+        let plan_label = if p.plan_text.length() > 0 { p.plan_text } else { p.runtime }
+        let sub_label = if p.group_title.length() > 0 && plan_label.length() > 0 {
+          p.group_title + "（" + plan_label + "）"
+        } else if p.group_title.length() > 0 {
+          p.group_title
+        } else {
+          plan_label
+        }
+        let refresh_label = if p.quota_reset_text.length() > 0 { p.quota_reset_text } else { p.quota_label }
+        let _ = <ui::Col in={row_slot} pad_x={16.0} pad_y={12.0} gap={8.0} min_width={0.0}>
+          <ui::Row align={.Start} gap={8.0} rigid>
+            <ui::Col grow={1.0} min_width={0.0} gap={2.0}>
+              <ui::Text size={14.0} weight={500} lines={1} color_by=>{lg::surface().ink} text={primary_label} />
+              <ui::Text size={12.0} lines={1} color_by=>{lg::surface().ink_secondary} text={sub_label} />
+            </ui::Col>
+            <ui::Col align={.End} gap={2.0} rigid>
+              <ui::Text
+                size={12.5}
+                weight={500}
+                lines={1}
+                color_by=>{if p.usable { lg::surface().positive } else { lg::surface().warning }}
+                text={"剩余 \{p.quota_left_pct}%"}
+              />
+              <ui::Text size={11.5} lines={1} color_by=>{lg::surface().ink_tertiary} text={refresh_label} />
+            </ui::Col>
+          </ui::Row>
+          <lg::ProgressBar value={p.quota_left_pct.to_double() / 100.0} label="" />
+        </ui::Col>
+      },
+      at_once=true,
+    )
+  })
+  parent
+}
+
+fn ModelListRows(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  let _ = parent.box(fn(list_box : view::View) -> Unit {
+    let _ = list_box.min_width(view::Live::Is(Some(0.0)))
+    list_box.each(
+      fn() -> Array[String] {
+        let ms = ctrl.models_sig.get()
+        let ks : Array[String] = []
+        for i in 0..<ms.length() {
+          ks.push(ms[i].id)
+        }
+        ks
+      },
+      fn(k : String) -> String { k },
+      fn(row_slot : view::View, id_sig : signals::Signal[String]) -> Unit {
+        let mid = id_sig.untracked()
+        let found = find_model_by_id(ctrl.models_sig.untracked(), mid)
+        let (idx, m) = match found {
+          Some(pair) => pair
+          None => return
+        }
+        if idx > 0 {
+          let _ = HairlineSep(row_slot)
+        }
+        let rt_str = join_runtimes_str(m.runtimes)
+        let starred_fn = fn() -> Bool {
+          match find_model_by_id(ctrl.models_sig.get(), mid) {
+            Some((_, cur)) => cur.starred
+            None => false
+          }
+        }
+        let _ = <ui::Row in={row_slot} pad_x={16.0} pad_y={10.0} align={.Middle} gap={10.0} rigid>
+          <ui::Col grow={1.0} min_width={0.0} gap={2.0}>
+            <ui::Text size={14.0} weight={500} lines={1} color_by=>{lg::surface().ink} text={m.name} />
+            <ui::Text
+              size={12.0}
+              lines={1}
+              color_by=>{lg::surface().ink_secondary}
+              text={if rt_str.length() > 0 { rt_str } else { m.id }}
+            />
+          </ui::Col>
           <ui::Text
-            size={12.5}
+            size={12.0}
+            lines={1}
             color_by=>{if m.availability == "here" { lg::surface().positive } else { lg::surface().ink_tertiary }}
             text={if m.availability == "here" { "在线可用" } else { "离线" }}
           />
+          <ModelStarButton ctrl={ctrl} model_id={mid} model_name={m.name} starred_by={starred_fn} />
         </ui::Row>
-      }
+      },
+      at_once=true,
+    )
+  })
+  parent
+}
+
+fn ModelsProfilesTab(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  <ui::Col in={parent} gap={18.0} min_width={0.0}>
+    <lg::SurfaceSection header="已接入账号与额度" radius={14.0}>
+      <ui::Show when=>{ctrl.profiles_sig.get().length() == 0} at_once>
+        <ui::Row pad_x={16.0} pad_y={14.0} align={.Middle} gap={8.0}>
+          <ui::Text size={13.5} color_by=>{lg::surface().ink_secondary} text="暂未接入模型账号" />
+        </ui::Row>
+      </ui::Show>
+      <ProfileListRows ctrl={ctrl} />
+    </lg::SurfaceSection>
+
+    <lg::SurfaceSection header="可用模型" radius={14.0}>
+      <ui::Show when=>{ctrl.models_sig.get().length() == 0} at_once>
+        <ui::Row pad_x={16.0} pad_y={14.0} align={.Middle} gap={8.0}>
+          <ui::Text size={13.5} color_by=>{lg::surface().ink_secondary} text="暂无可用模型" />
+        </ui::Row>
+      </ui::Show>
+      <ModelListRows ctrl={ctrl} />
     </lg::SurfaceSection>
   </ui::Col>
 }
 
+fn StationStatusRows(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  let _ = parent.box(fn(list_box : view::View) -> Unit {
+    let _ = list_box.min_width(view::Live::Is(Some(0.0)))
+    list_box.each(
+      fn() -> Array[String] {
+        let sts = ctrl.stations_sig.get()
+        let ks : Array[String] = []
+        for i in 0..<sts.length() {
+          ks.push(sts[i].station)
+        }
+        ks
+      },
+      fn(k : String) -> String { k },
+      fn(row_slot : view::View, key_sig : signals::Signal[String]) -> Unit {
+        let key = key_sig.untracked()
+        let found = find_station_by_key(ctrl.stations_sig.untracked(), key)
+        let (idx, st) = match found {
+          Some(pair) => pair
+          None => return
+        }
+        if idx > 0 {
+          let _ = HairlineSep(row_slot)
+        }
+        let _ = row_slot.box(fn(item : view::View) -> Unit {
+          let _ = item
+          .row(view::Live::Is(true))
+          .lines_up(view::Live::Is(Some(view::Along::Start)))
+          .padding(view::Live::Is((16.0, 12.0, 16.0, 12.0)))
+          .gap(view::Live::Is(10.0))
+          .min_width(view::Live::Is(Some(0.0)))
+
+          // First-line aligned 6pt status dot (matches 14pt * 1.4 = 19.6pt first line height)
+          let _ = item.box(fn(dot_wrap : view::View) -> Unit {
+            let _ = dot_wrap
+            .width(view::Live::Is(Some(8.0)))
+            .height(view::Live::Is(Some(19.6)))
+            .shrink(view::Live::Is(0.0))
+            .lines_up(view::Live::Is(Some(view::Along::Middle)))
+            .lies_along(view::Live::Is(view::Lies::Middle))
+            let _ = dot_wrap.box(fn(dot : view::View) -> Unit {
+              let _ = dot
+              .width(view::Live::Is(Some(6.0)))
+              .height(view::Live::Is(Some(6.0)))
+              .radius(view::Live::Is(3.0))
+              .ground(view::Live::By(fn() {
+                if st.online { lg::surface().positive } else { lg::surface().ink_tertiary }
+              }))
+            })
+          })
+
+          let _ = item.box(fn(col : view::View) -> Unit {
+            let _ = col
+            .grow(view::Live::Is(1.0))
+            .basis(view::Live::Is(Some(0.0)))
+            .shrink(view::Live::Is(1.0))
+            .min_width(view::Live::Is(Some(0.0)))
+            .gap(view::Live::Is(3.0))
+
+            let _ = col.box(fn(top_row : view::View) -> Unit {
+              let _ = top_row
+              .row(view::Live::Is(true))
+              .lines_up(view::Live::Is(Some(view::Along::Start)))
+              .gap(view::Live::Is(8.0))
+              .min_width(view::Live::Is(Some(0.0)))
+              let _ = top_row.box(fn(nm : view::View) -> Unit {
+                let _ = nm
+                .shrink(view::Live::Is(1.0))
+                .min_width(view::Live::Is(Some(0.0)))
+                .words(view::Live::Is(st.name), look=lg::words_at(14.0, weight=500, lines=1))
+                .ink(view::Live::By(fn() { lg::surface().ink }))
+              })
+              if st.version.length() > 0 {
+                let _ = top_row.box(fn(ver : view::View) -> Unit {
+                  let _ = ver
+                  .padding(view::Live::Is((0.0, 1.5, 0.0, 0.0)))
+                  .shrink(view::Live::Is(0.0))
+                  .words(view::Live::Is(st.version), look=lg::words_at(12.0, weight=400, lines=1))
+                  .ink(view::Live::By(fn() { lg::surface().ink_tertiary }))
+                })
+              }
+              let _ = <ui::Spacer in={top_row} />
+              let _ = top_row.box(fn(meta_row : view::View) -> Unit {
+                let _ = meta_row
+                .row(view::Live::Is(true))
+                .lines_up(view::Live::Is(Some(view::Along::Middle)))
+                .padding(view::Live::Is((0.0, 1.5, 0.0, 0.0)))
+                .gap(view::Live::Is(10.0))
+                .shrink(view::Live::Is(0.0))
+                if st.egress_text.length() > 0 {
+                  let _ = meta_row.box(fn(eg : view::View) -> Unit {
+                    let _ = eg
+                    .words(view::Live::Is(st.egress_text), look=lg::words_at(12.0, weight=400, lines=1))
+                    .ink(view::Live::By(fn() { lg::surface().ink_tertiary }))
+                  })
+                }
+                let _ = meta_row.box(fn(rc : view::View) -> Unit {
+                  let _ = rc
+                  .words(view::Live::Is("\{st.running_count} 运行中"), look=lg::words_at(12.0, weight=400, lines=1))
+                  .ink(view::Live::By(fn() { lg::surface().ink_tertiary }))
+                })
+                let _ = meta_row.box(fn(stt : view::View) -> Unit {
+                  let _ = stt
+                  .words(view::Live::Is(st.state_text), look=lg::words_at(12.5, weight=500, lines=1))
+                  .ink(view::Live::By(fn() { if st.online { lg::surface().positive } else { lg::surface().ink_tertiary } }))
+                })
+              })
+            })
+
+            let _ = col.box(fn(sum_v : view::View) -> Unit {
+              let _ = sum_v
+              .min_width(view::Live::Is(Some(0.0)))
+              .words(view::Live::Is(st.summary), look=lg::words_at(12.5, weight=400, lines=1))
+              .ink(view::Live::By(fn() { lg::surface().ink_secondary }))
+            })
+          })
+        })
+      },
+      at_once=true,
+    )
+  })
+  parent
+}
+
+fn DownloadProgressRows(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  let _ = parent.box(fn(list_box : view::View) -> Unit {
+    let _ = list_box.min_width(view::Live::Is(Some(0.0)))
+    list_box.each(
+      fn() -> Array[String] {
+        let ds = ctrl.downloads_sig.get()
+        let ks : Array[String] = []
+        for i in 0..<ds.length() {
+          ks.push(ds[i].id)
+        }
+        ks
+      },
+      fn(k : String) -> String { k },
+      fn(row_slot : view::View, id_sig : signals::Signal[String]) -> Unit {
+        let did = id_sig.untracked()
+        let ds = ctrl.downloads_sig.untracked()
+        let mut idx = -1
+        for i in 0..<ds.length() {
+          if ds[i].id == did {
+            idx = i
+            break
+          }
+        }
+        if idx < 0 {
+          return
+        }
+        let d = ds[idx]
+        if idx > 0 {
+          let _ = HairlineSep(row_slot)
+        }
+        let pct = (d.progress * 100.0 + 0.5).to_int()
+        let st_lbl = if d.state == "going" {
+          "下载中"
+        } else if d.state == "waiting" {
+          "等待中"
+        } else if d.state == "failed" {
+          "失败"
+        } else {
+          "已完成"
+        }
+        let _ = <ui::Col in={row_slot} pad_x={16.0} pad_y={12.0} gap={8.0} min_width={0.0}>
+          <ui::Row align={.Middle} gap={8.0} rigid>
+            <icons::Icon name="download" size={14.0} color_by=>{lg::surface().accent} />
+            <ui::Text size={13.5} weight={500} lines={1} color_by=>{lg::surface().ink} text={d.title} />
+            <ui::Spacer />
+            <ui::Text size={12.0} lines={1} color_by=>{lg::surface().ink_secondary} text={st_lbl + " \{pct}%"} />
+          </ui::Row>
+          <lg::ProgressBar value={d.progress} label="" />
+        </ui::Col>
+      },
+      at_once=true,
+    )
+  })
+  parent
+}
+
 fn FleetStationsTab(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
-  let fleet = ctrl.fleet_summary_sig.untracked()
-  let sts = ctrl.stations_sig.untracked()
   <ui::Col in={parent} gap={18.0} min_width={0.0}>
-    <lg::SurfaceSection header="站群运行概览" radius={14.0}>
-      <InsetKeyValueRow label="在线设备" value={fleet.where_text} value_color_by=>{lg::surface().positive} />
+    <lg::SurfaceSection header="工作区概览" radius={14.0}>
+      <InsetKeyValueRow
+        label="在线站点"
+        value_by=>{
+          let sts = ctrl.stations_sig.get()
+          let mut on_n = 0
+          for i in 0..<sts.length() {
+            if sts[i].online {
+              on_n += 1
+            }
+          }
+          "\{on_n} / \{sts.length()} 台"
+        }
+        value_color_by=>{lg::surface().positive}
+      />
       <HairlineSep />
-      <InsetKeyValueRow label="运行中会话" value={fleet.chats_text} />
-      if fleet.tiles.length() > 0 {
-        <HairlineSep />
-        <InsetKeyValueRow label="近 7 天折合费用" value={fleet.tiles[0].value} />
-      }
+      <InsetKeyValueRow
+        label="运行中会话"
+        value_by=>{ctrl.fleet_summary_sig.get().chats_text}
+      />
+      <HairlineSep />
+      <InsetKeyValueRow
+        label="24h 费用"
+        value_by=>{
+          let ts = ctrl.fleet_summary_sig.get().tiles
+          if ts.length() > 0 { ts[0].value } else { "$0.00" }
+        }
+      />
+      <HairlineSep />
+      <InsetKeyValueRow
+        label="待处理下载"
+        value_by=>{
+          let ds = ctrl.downloads_sig.get()
+          let mut n = 0
+          for i in 0..<ds.length() {
+            if ds[i].active {
+              n += 1
+            }
+          }
+          "\{n} 项"
+        }
+      />
     </lg::SurfaceSection>
 
-    <lg::SurfaceSection header="工作区站点" radius={14.0}>
-      for i in 0..<sts.length() {
-        let st = sts[i]
-        if i > 0 {
-          <HairlineSep />
-        }
-        <ui::Col pad_x={16.0} pad_y={12.0} gap={3.0} min_width={0.0}>
-          <ui::Row align={.Middle} gap={8.0} rigid>
-            <ui::Text size={14.0} weight={500} color_by=>{lg::surface().ink} text={st.name} />
-            if st.version.length() > 0 {
-              <ui::Text size={12.0} color_by=>{lg::surface().ink_tertiary} text={st.version} />
-            }
-            <ui::Spacer />
-            <ui::Text
-              size={12.5}
-              weight={500}
-              color_by=>{if st.online { lg::surface().positive } else { lg::surface().warning }}
-              text={st.state_text}
-            />
-          </ui::Row>
-          <ui::Text size={12.5} color_by=>{lg::surface().ink_secondary} text={st.summary} />
-        </ui::Col>
-      }
+    <lg::SurfaceSection header="站点状态" radius={14.0}>
+      <ui::Show when=>{ctrl.stations_sig.get().length() == 0} at_once>
+        <ui::Row pad_x={16.0} pad_y={14.0} align={.Middle} gap={8.0}>
+          <ui::Text size={13.5} color_by=>{lg::surface().ink_secondary} text="当前工作区暂无站点" />
+        </ui::Row>
+      </ui::Show>
+      <StationStatusRows ctrl={ctrl} />
     </lg::SurfaceSection>
+
+    <ui::Show when=>{ctrl.downloads_sig.get().length() > 0} at_once>
+      <lg::SurfaceSection header="文件下载" radius={14.0}>
+        <DownloadProgressRows ctrl={ctrl} />
+      </lg::SurfaceSection>
+    </ui::Show>
   </ui::Col>
 }
 
@@ -505,44 +886,484 @@ pub fn render_settings_sheet(parent : view::View, ctrl : app_state::AppControlle
   })
 }
 
-/// Mount the lightweight Quick Search Sheet.
-pub fn render_search_sheet(parent : view::View, ctrl : app_state::AppController) -> Unit {
-  let days = ctrl.chats_days_sig.untracked().days
-  let _ = <lg::Sheet
-    in={parent}
-    open_by=>{ctrl.sheet_sig.get() == app_state::ActiveSheet::Search}
-    on_close=>{ctrl.set_sheet(app_state::ActiveSheet::None)}
-    title="快速跳转对话"
-    subtitle_by=>{ctrl.workspace_name_sig.get()}
-    width={520.0}
-    max_height={440.0}
-  >
-    <lg::SurfaceSection radius={14.0}>
-      for i in 0..<days.length() {
-        let items = days[i].items
-        for k in 0..<items.length() {
-          let it = items[k]
-          let st = it.station
-          let th = it.thread
-          if i > 0 || k > 0 {
-            <HairlineSep />
-          }
-          <ui::Row pad_x={14.0} pad_y={10.0} align={.Middle} gap={8.0}>
-            <ui::Text size={13.5} weight={500} color_by=>{lg::surface().ink} text={it.title} />
-            <ui::Spacer />
-            <lg::Button
-              label="打开"
-              flat
-              height={32.0}
-              pad_x={14.0}
-              on_press=>{
-                let _ = ctrl.select_station_chat(st, th)
-                ctrl.set_sheet(app_state::ActiveSheet::None)
-              }
-            />
-          </ui::Row>
+fn SearchChatResultRows(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  let _ = parent.box(fn(list_box : view::View) -> Unit {
+    let _ = list_box.min_width(view::Live::Is(Some(0.0)))
+    list_box.each(
+      fn() -> Array[String] {
+        let cs = ctrl.search_results_sig.get().chats
+        let ks : Array[String] = []
+        for i in 0..<cs.length() {
+          ks.push(cs[i].station + ":" + cs[i].id)
         }
-      }
+        ks
+      },
+      fn(k : String) -> String { k },
+      fn(row_slot : view::View, key_sig : signals::Signal[String]) -> Unit {
+        let key = key_sig.untracked()
+        let cs = ctrl.search_results_sig.untracked().chats
+        let mut idx = -1
+        for i in 0..<cs.length() {
+          if cs[i].station + ":" + cs[i].id == key {
+            idx = i
+            break
+          }
+        }
+        if idx < 0 {
+          return
+        }
+        let it = cs[idx]
+        let st = it.station
+        let th_opt = it.thread
+        if idx > 0 {
+          let _ = HairlineSep(row_slot)
+        }
+        let _ = <ui::Row in={row_slot} pad_x={16.0} pad_y={10.0} align={.Middle} gap={10.0} rigid>
+          <ui::Col grow={1.0} min_width={0.0} gap={2.0}>
+            <ui::Text size={14.0} weight={500} lines={1} color_by=>{lg::surface().ink} text={it.title} />
+            <ui::Text size={12.0} lines={1} color_by=>{lg::surface().ink_secondary} text={it.station_name} />
+          </ui::Col>
+          <lg::Button
+            label="打开"
+            flat
+            height={32.0}
+            pad_x={14.0}
+            on_press=>{
+              match th_opt {
+                Some(th) => {
+                  let _ = ctrl.select_station_chat(st, th)
+                  ctrl.set_sheet(app_state::ActiveSheet::None)
+                }
+                None => ()
+              }
+            }
+          />
+        </ui::Row>
+      },
+      at_once=true,
+    )
+  })
+  parent
+}
+
+fn SearchMessageResultRows(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  let _ = parent.box(fn(list_box : view::View) -> Unit {
+    let _ = list_box.min_width(view::Live::Is(Some(0.0)))
+    list_box.each(
+      fn() -> Array[String] {
+        let ms = ctrl.search_results_sig.get().messages
+        let ks : Array[String] = []
+        for i in 0..<ms.length() {
+          ks.push("\{ms[i].station}:\{ms[i].thread}:\{ms[i].seq}")
+        }
+        ks
+      },
+      fn(k : String) -> String { k },
+      fn(row_slot : view::View, key_sig : signals::Signal[String]) -> Unit {
+        let key = key_sig.untracked()
+        let ms = ctrl.search_results_sig.untracked().messages
+        let mut idx = -1
+        for i in 0..<ms.length() {
+          if "\{ms[i].station}:\{ms[i].thread}:\{ms[i].seq}" == key {
+            idx = i
+            break
+          }
+        }
+        if idx < 0 {
+          return
+        }
+        let m = ms[idx]
+        let st = m.station
+        let th = m.thread
+        if idx > 0 {
+          let _ = HairlineSep(row_slot)
+        }
+        let _ = <ui::Row in={row_slot} pad_x={16.0} pad_y={10.0} align={.Middle} gap={10.0} rigid>
+          <ui::Col grow={1.0} min_width={0.0} gap={2.0}>
+            <ui::Text size={13.5} weight={400} lines={1} color_by=>{lg::surface().ink} text={m.text} />
+            <ui::Text size={11.5} lines={1} color_by=>{lg::surface().ink_tertiary} text={"对话 #\{th}"} />
+          </ui::Col>
+          <lg::Button
+            label="跳转"
+            flat
+            height={32.0}
+            pad_x={14.0}
+            on_press=>{
+              let _ = ctrl.select_station_chat(st, th)
+              ctrl.set_sheet(app_state::ActiveSheet::None)
+            }
+          />
+        </ui::Row>
+      },
+      at_once=true,
+    )
+  })
+  parent
+}
+
+fn SearchChatsTab(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  let _ = <ui::Col in={parent} gap={18.0} min_width={0.0}>
+    <lg::SurfaceSection header="对话结果" radius={14.0}>
+      <ui::Show when=>{ctrl.search_results_sig.get().chats.length() == 0} at_once>
+        <ui::Row pad_x={16.0} pad_y={14.0} align={.Middle} gap={8.0}>
+          <ui::Text size={13.5} color_by=>{lg::surface().ink_secondary} text="没有匹配的对话，尝试输入其他关键词" />
+        </ui::Row>
+      </ui::Show>
+      <SearchChatResultRows ctrl={ctrl} />
     </lg::SurfaceSection>
-  </lg::Sheet>
+
+    <ui::Show when=>{ctrl.search_results_sig.get().messages.length() > 0} at_once>
+      <lg::SurfaceSection header="消息命中" radius={14.0}>
+        <SearchMessageResultRows ctrl={ctrl} />
+      </lg::SurfaceSection>
+    </ui::Show>
+  </ui::Col>
+  parent
+}
+
+fn ArchiveRows(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  let _ = parent.box(fn(list_box : view::View) -> Unit {
+    let _ = list_box.min_width(view::Live::Is(Some(0.0)))
+    list_box.each(
+      fn() -> Array[String] {
+        let items = ctrl.archive_sig.get().items
+        let ks : Array[String] = []
+        for i in 0..<items.length() {
+          ks.push(items[i].station + ":" + items[i].id)
+        }
+        ks
+      },
+      fn(k : String) -> String { k },
+      fn(row_slot : view::View, key_sig : signals::Signal[String]) -> Unit {
+        let key = key_sig.untracked()
+        let items = ctrl.archive_sig.untracked().items
+        let mut idx = -1
+        for i in 0..<items.length() {
+          if items[i].station + ":" + items[i].id == key {
+            idx = i
+            break
+          }
+        }
+        if idx < 0 {
+          return
+        }
+        let it = items[idx]
+        let st = it.station
+        let th_opt = it.thread
+        if idx > 0 {
+          let _ = HairlineSep(row_slot)
+        }
+        let _ = <ui::Row in={row_slot} pad_x={16.0} pad_y={11.0} align={.Middle} gap={10.0} rigid>
+          <ui::Col grow={1.0} min_width={0.0} gap={3.0}>
+            <ui::Row align={.Middle} gap={8.0} rigid>
+              <ui::Text size={14.0} weight={500} lines={1} color_by=>{lg::surface().ink} text={it.title} />
+              <ui::Text size={11.5} lines={1} color_by=>{lg::surface().ink_tertiary} text={it.how} />
+            </ui::Row>
+            <ui::Text
+              size={12.0}
+              lines={1}
+              color_by=>{lg::surface().ink_secondary}
+              text={if it.last_text.length() > 0 { it.last_text } else { it.station_name }}
+            />
+          </ui::Col>
+          <lg::Button
+            label="查看"
+            flat
+            height={32.0}
+            pad_x={14.0}
+            on_press=>{
+              match th_opt {
+                Some(th) => {
+                  let _ = ctrl.select_station_chat(st, th)
+                  ctrl.set_sheet(app_state::ActiveSheet::None)
+                }
+                None => ()
+              }
+            }
+          />
+        </ui::Row>
+      },
+      at_once=true,
+    )
+  })
+  parent
+}
+
+fn ArchiveTab(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  let _ = <ui::Col in={parent} gap={18.0} min_width={0.0}>
+    <lg::SurfaceSection header="已归档对话" radius={14.0}>
+      <ui::Show when=>{ctrl.archive_sig.get().items.length() == 0} at_once>
+        <ui::Row pad_x={16.0} pad_y={14.0} align={.Middle} gap={8.0}>
+          <ui::Text size={13.5} color_by=>{lg::surface().ink_secondary} text="暂无已归档对话" />
+        </ui::Row>
+      </ui::Show>
+      <ArchiveRows ctrl={ctrl} />
+    </lg::SurfaceSection>
+  </ui::Col>
+  parent
+}
+
+fn OwnPresetRows(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  let _ = parent.box(fn(list_box : view::View) -> Unit {
+    let _ = list_box.min_width(view::Live::Is(Some(0.0)))
+    list_box.each(
+      fn() -> Array[String] {
+        let ps = ctrl.presets_sig.get().own
+        let ks : Array[String] = []
+        for i in 0..<ps.length() {
+          ks.push(ps[i].id)
+        }
+        ks
+      },
+      fn(k : String) -> String { k },
+      fn(row_slot : view::View, id_sig : signals::Signal[String]) -> Unit {
+        let pid = id_sig.untracked()
+        let ps = ctrl.presets_sig.untracked().own
+        let mut idx = -1
+        for i in 0..<ps.length() {
+          if ps[i].id == pid {
+            idx = i
+            break
+          }
+        }
+        if idx < 0 {
+          return
+        }
+        let p = ps[idx]
+        if idx > 0 {
+          let _ = HairlineSep(row_slot)
+        }
+        let _ = <ui::Row in={row_slot} pad_x={16.0} pad_y={10.0} align={.Middle} gap={10.0} rigid>
+          <ui::Col grow={1.0} min_width={0.0} gap={2.0}>
+            <ui::Text size={14.0} weight={500} lines={1} color_by=>{lg::surface().ink} text={p.name} />
+            <ui::Text
+              size={12.0}
+              lines={1}
+              color_by=>{lg::surface().ink_secondary}
+              text={if p.home.length() > 0 { p.home } else { "个人预设" }}
+            />
+          </ui::Col>
+          <lg::Button
+            label="复制副本"
+            flat
+            height={32.0}
+            pad_x={14.0}
+            on_press=>{ let _ = ctrl.copy_preset(pid) }
+          />
+        </ui::Row>
+      },
+      at_once=true,
+    )
+  })
+  parent
+}
+
+fn OtherPresetRows(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  let _ = parent.box(fn(list_box : view::View) -> Unit {
+    let _ = list_box.min_width(view::Live::Is(Some(0.0)))
+    list_box.each(
+      fn() -> Array[String] {
+        let ps = ctrl.presets_sig.get().others
+        let ks : Array[String] = []
+        for i in 0..<ps.length() {
+          ks.push(ps[i].id)
+        }
+        ks
+      },
+      fn(k : String) -> String { k },
+      fn(row_slot : view::View, id_sig : signals::Signal[String]) -> Unit {
+        let pid = id_sig.untracked()
+        let ps = ctrl.presets_sig.untracked().others
+        let mut idx = -1
+        for i in 0..<ps.length() {
+          if ps[i].id == pid {
+            idx = i
+            break
+          }
+        }
+        if idx < 0 {
+          return
+        }
+        let p = ps[idx]
+        if idx > 0 {
+          let _ = HairlineSep(row_slot)
+        }
+        let _ = <ui::Row in={row_slot} pad_x={16.0} pad_y={10.0} align={.Middle} gap={10.0} rigid>
+          <ui::Col grow={1.0} min_width={0.0} gap={2.0}>
+            <ui::Text size={14.0} weight={500} lines={1} color_by=>{lg::surface().ink} text={p.name} />
+            <ui::Text
+              size={12.0}
+              lines={1}
+              color_by=>{lg::surface().ink_secondary}
+              text={if p.whose.length() > 0 { "来自 " + p.whose } else { "工作区共享预设" }}
+            />
+          </ui::Col>
+          <lg::Button
+            label="复制为个人预设"
+            flat
+            prominent
+            height={32.0}
+            pad_x={14.0}
+            on_press=>{ let _ = ctrl.copy_preset(pid) }
+          />
+        </ui::Row>
+      },
+      at_once=true,
+    )
+  })
+  parent
+}
+
+fn PresetsTab(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  let _ = <ui::Col in={parent} gap={18.0} min_width={0.0}>
+    <lg::SurfaceSection header="我的个人预设" radius={14.0}>
+      <ui::Show when=>{ctrl.presets_sig.get().own.length() == 0} at_once>
+        <ui::Row pad_x={16.0} pad_y={14.0} align={.Middle} gap={8.0}>
+          <ui::Text size={13.5} color_by=>{lg::surface().ink_secondary} text="暂未创建个人预设，可从下方团队预设复制" />
+        </ui::Row>
+      </ui::Show>
+      <OwnPresetRows ctrl={ctrl} />
+    </lg::SurfaceSection>
+
+    <ui::Show when=>{ctrl.presets_sig.get().others.length() > 0} at_once>
+      <lg::SurfaceSection header="工作区其他预设（只读，可复制）" radius={14.0}>
+        <OtherPresetRows ctrl={ctrl} />
+      </lg::SurfaceSection>
+    </ui::Show>
+  </ui::Col>
+  parent
+}
+
+/// Mount the Apple HIG Search / Archive / Personal Presets Modal Sheet.
+/// Uses flat SearchBar + flat full-width Segmented (zero nested glass, no mobile grabber on desktop).
+pub fn render_search_sheet(parent : view::View, ctrl : app_state::AppController) -> Unit {
+  let open_fn = fn() -> Bool { ctrl.sheet_sig.get() == app_state::ActiveSheet::Search }
+  let on_close = fn() -> Unit { ctrl.set_sheet(app_state::ActiveSheet::None) }
+  let search_field = ui::Field::new()
+
+  let _ = parent.box(fn(host : view::View) -> Unit {
+    let _ = host.over(view::Live::Is(true)).points(view::Live::By(open_fn))
+    host.show(
+      open_fn,
+      fn(overlay : view::View) -> Unit {
+        let is_wide = fn() -> Bool {
+          let ww = overlay.window_w()
+          ww <= 0.0 || ww >= 760.0
+        }
+        let _ = overlay
+        .over(view::Live::Is(true))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::By(fn() { if is_wide() { view::Lies::Middle } else { view::Lies::End } }))
+
+        let _ = overlay.box(fn(scrim : view::View) -> Unit {
+          let _ = scrim
+          .over(view::Live::Is(true))
+          .ground(view::Live::By(fn() { lg::colors().scrim }))
+        })
+
+        let _ = headless::dialog(
+          overlay,
+          fn() { "搜索与归档" },
+          open_fn,
+          on_close,
+          fn(dlg : view::View, _d : headless::Dialog) -> Unit {
+            let _ = dlg
+            .width(view::Live::By(fn() { if is_wide() { Some(600.0) } else { Some(overlay.window_w() - 16.0) } }))
+            .max_width(view::Live::Is(Some(600.0)), within=true)
+            .max_height(view::Live::Is(Some(680.0)))
+            .clips(view::Live::Is(true))
+            .ground(view::Live::By(fn() { lg::surface().grouped_bg }))
+            let _ = lg::liquid_sheet_surface_decorate(
+              dlg,
+              radius=lg::r_sheet,
+              active=open_fn,
+              solid=fn() { lg::surface().grouped_bg },
+            )
+
+            // Mobile-only top grabber
+            dlg.show(
+              fn() { !is_wide() },
+              fn(grab_wrap : view::View) -> Unit {
+                let _ = grab_wrap
+                .padding(view::Live::Is((0.0, 8.0, 0.0, 0.0)))
+                .lines_up(view::Live::Is(Some(view::Along::Middle)))
+                .rigid()
+                let _ = grab_wrap.box(fn(bar : view::View) -> Unit {
+                  let _ = bar
+                  .width(view::Live::Is(Some(36.0)))
+                  .height(view::Live::Is(Some(4.5)))
+                  .radius(view::Live::Is(2.25))
+                  .ground(view::Live::By(fn() { lg::surface().separator_strong }))
+                })
+              },
+              at_once=true,
+            )
+
+            // Header bar + flat SearchBar + full-width flat Segmented
+            let _ = dlg.box(fn(hdr_col : view::View) -> Unit {
+              let _ = hdr_col
+              .padding(view::Live::Is((16.0, 14.0, 16.0, 12.0)))
+              .gap(view::Live::Is(12.0))
+              .rigid()
+              let _ = <ui::Row in={hdr_col} align={.Middle} gap={10.0} rigid>
+                <ui::Col grow={1.0} min_width={0.0} gap={2.0}>
+                  <ui::Text size={18.0} weight={600} lines={1} color_by=>{lg::surface().ink} text="搜索与归档" />
+                  <ui::Text size={12.5} lines={1} color_by=>{lg::surface().ink_secondary} text_by=>{ctrl.workspace_name_sig.get()} />
+                </ui::Col>
+                <SheetCloseBtn on_close={on_close} />
+              </ui::Row>
+              let _ = lg::liquid_search_bar_node(
+                hdr_col,
+                search_field,
+                placeholder="搜索对话、消息或归档记录…",
+                height_by=fn() { 36.0 },
+                label=fn() { "搜索" },
+                edited=fn(s : String) -> Unit { ctrl.set_search_query(s) },
+                submitted=fn(s : String) -> Unit { ctrl.set_search_query(s) },
+                on_clear=fn() -> Unit { ctrl.set_search_query("") },
+                flat=true,
+              )
+              let _ = <lg::Segmented
+                in={hdr_col}
+                flat
+                labels={["搜索对话", "已归档", "个人预设"]}
+                selected_by=>{ctrl.search_tab_sig.get()}
+                on_select={fn(i : Int) -> Unit { ctrl.set_search_tab(i) }}
+                width={568.0}
+                height={32.0}
+              />
+            })
+
+            // Scrollable Inset Grouped content
+            let _ = dlg.box(fn(body_wrap : view::View) -> Unit {
+              let _ = body_wrap
+              .grow(view::Live::Is(1.0))
+              .shrink(view::Live::Is(1.0))
+              .min_height(view::Live::Is(Some(0.0)))
+              let sc = ui::scroll_box(
+                body_wrap,
+                fn(inner : view::View) -> Unit {
+                  let _ = inner
+                  .width_share(view::Live::Is(1.0))
+                  .padding(view::Live::Is((16.0, 2.0, 16.0, 16.0)))
+                  let _ = <ui::Show in={inner} when=>{ctrl.search_tab_sig.get() == 0} at_once>
+                    <SearchChatsTab ctrl={ctrl} />
+                  </ui::Show>
+                  let _ = <ui::Show in={inner} when=>{ctrl.search_tab_sig.get() == 1} at_once>
+                    <ArchiveTab ctrl={ctrl} />
+                  </ui::Show>
+                  let _ = <ui::Show in={inner} when=>{ctrl.search_tab_sig.get() == 2} at_once>
+                    <PresetsTab ctrl={ctrl} />
+                  </ui::Show>
+                },
+                fill=true,
+              )
+              let _ = sc.min_height(view::Live::Is(Some(0.0)))
+            })
+          },
+        )
+      },
+      at_once=true,
+    )
+  })
 }

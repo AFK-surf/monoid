@@ -2,6 +2,7 @@
 members = [
   "packages/app_state",
   "packages/sf_ui",
+  "packages/sf_desktop",
 ]
 
 [workspace.dependencies]
