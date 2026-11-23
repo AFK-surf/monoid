@@ -1716,6 +1716,8 @@ pub fn View::max_height(Self, Live[Double?], loc~ : SourceLoc) -> Self
 pub fn View::max_width(Self, Live[Double?], within? : Bool, loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn[K : Eq] View::measured(Self, Live[K], (K, Double?) -> (Double, Double), loc~ : SourceLoc) -> Self
+#callsite(autofill(loc))
+pub fn[T : Eq] View::memo(Self, () -> T, same? : (T, T) -> Bool, loc~ : SourceLoc) -> () -> T
 pub fn View::menu_behind(Self, Menu) -> Unit
 #callsite(autofill(loc))
 pub fn View::min_height(Self, Live[Double?], loc~ : SourceLoc) -> Self

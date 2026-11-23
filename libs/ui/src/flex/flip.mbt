@@ -29,6 +29,10 @@ pub struct FlipWay {
   far : Double
   v : Double
   said : (Double, (Double) -> Double)?
+  mut cached : Bool
+  mut cache_now : Double
+  mut cache_k : Double
+  mut cache_kv : Double
 }
 
 ///|
@@ -49,36 +53,44 @@ pub fn FlipWay::new(at : Double, items : Array[FlipItem], said? : (Double, (Doub
   }
   // (the share's speed: d(share)/dt fitted, in points a ms of `far`)
   let v = if sq > 0.0 { dot / sq * far } else { 0.0 }
-  { at, far, v, said }
+  { at, far, v, said, cached: false, cache_now: 0.0, cache_k: 0.0, cache_kv: 0.0 }
 }
 
 ///|
 /// How much of each item's offset is left `now`, 1 as it sets out, 0 at its end and after, and how fast that goes (a
 /// ms).
 pub fn FlipWay::left(self : FlipWay, now : Double) -> (Double, Double) {
+  if self.cached && self.cache_now == now {
+    return (self.cache_k, self.cache_kv)
+  }
   let t = time_gone(now, self.at)
-  if self.far <= 0.0 {
-    return (0.0, 0.0)
-  }
-  if t <= 0.0 {
-    return (1.0, self.v / self.far)
-  }
-  match self.said {
-    Some((ms, curve)) if ms > 0.0 => {
-      if t >= ms {
-        return (0.0, 0.0)
+  let (k, kv) = if self.far <= 0.0 {
+    (0.0, 0.0)
+  } else if t <= 0.0 {
+    (1.0, self.v / self.far)
+  } else {
+    match self.said {
+      Some((ms, curve)) if ms > 0.0 =>
+        if t >= ms {
+          (0.0, 0.0)
+        } else {
+          let x = t / ms
+          let dx = 1.0e-4
+          let p = curve(x)
+          let slope = (curve(fmin(x + dx, 1.0)) - p) / (fmin(x + dx, 1.0) - x) / ms
+          (1.0 - p, -slope)
+        }
+      _ => {
+        let (x, xv) = come_way(self.far, self.v, 0.0, t)
+        (x / self.far, xv / self.far)
       }
-      let x = t / ms
-      let dx = 1.0e-4
-      let p = curve(x)
-      let slope = (curve(fmin(x + dx, 1.0)) - p) / (fmin(x + dx, 1.0) - x) / ms
-      (1.0 - p, -slope)
-    }
-    _ => {
-      let (x, xv) = come_way(self.far, self.v, 0.0, t)
-      (x / self.far, xv / self.far)
     }
   }
+  self.cached = true
+  self.cache_now = now
+  self.cache_k = k
+  self.cache_kv = kv
+  (k, kv)
 }
 
 ///|

@@ -776,12 +776,12 @@ fn pane_chat_narrower(src : Source, n : @view.View, serial : Int) -> @sfbase.Col
     _ => false
   }
   if side_active {
-    return side_narrower(src, n, serial)
+    return side_narrower(src, n, serial, pane)
   }
   if app.nav.page_of(serial) is Some((Chat(_), _)) && fold_going(fold_drawn_at(n)) {
     return pane_fold_held(src, n, serial)
   }
-  side_narrower(src, n, serial)
+  side_narrower(src, n, serial, pane)
 }
 
 ///|

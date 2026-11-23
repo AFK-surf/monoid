@@ -9,7 +9,10 @@
 pub let move_k : Double = 7.4
 
 ///|
-pub let move_end : Double = 1.0 - (1.0 + move_k) * @dmath.exp(-move_k)
+let move_k_exp : Double = @dmath.exp(-move_k)
+
+///|
+pub let move_end : Double = 1.0 - (1.0 + move_k) * move_k_exp
 
 ///|
 /// What a Move's length is a whole number of: three frames at 60 Hz, six at 120.
@@ -71,16 +74,15 @@ pub fn move_path(d : Double, v : Double, t : Double, dur : Double) -> (Double, D
   }
   let w = move_k / dur
   let b = v + w * d
-  let at = fn(t : Double) {
-    let e = @dmath.exp(-w * t)
-    ((d + b * t) * e, (b - w * (d + b * t)) * e)
-  }
-  let (x, xv) = at(t)
-  let (xt, _) = at(dur)
+  let s = w * t
+  let e = @dmath.exp(-s)
+  let db = d + b * t
+  let x = db * e
+  let xv = (b - w * db) * e
+  let xt = (d + b * dur) * move_k_exp
   // a Move's way and speed at t (per ms)
-  let s = move_k * t / dur
-  let m = (1.0 - (1.0 + s) * @dmath.exp(-s)) / move_end
-  let mv = s * @dmath.exp(-s) * move_k / dur / move_end
+  let m = (1.0 - (1.0 + s) * e) / move_end
+  let mv = s * e * w / move_end
   (x - xt * m, xv - xt * mv)
 }
 
@@ -197,7 +199,7 @@ fn come_turned(v : Double, far : Double, along : ComeWith?) -> ComeTurn {
 /// How much more than ω²·d a Move from rest gains as it sets out, d off its end (move_path's, what is left at its end
 /// taken off gaining too: (1 + move_k)·e^(−move_k)/move_end more): what a turn at rest sets out gaining, so that its way
 /// back is that Move to the bit (come_back_path).
-let move_start_gain : Double = 1.0 + (1.0 + move_k) * @dmath.exp(-move_k) / move_end
+let move_start_gain : Double = 1.0 + (1.0 + move_k) * move_k_exp / move_end
 
 ///|
 /// How many times come_turned works out its slowing and its way back again from each other: enough for both to stand
@@ -253,29 +255,26 @@ pub fn come_back_path(d : Double, a : Double, w : Double, t : Double, dur : Doub
   let k = wm * move_k + (1.0 - wm) * come_back_k
   let om = k / dur
   let c1 = om * d
-  let x = k * t / dur
+  let x = om * t
   let e = @dmath.exp(-x)
-  let end2 = 1.0 - (1.0 + k) * @dmath.exp(-k)
-  let end3 = 1.0 - (1.0 + k + k * k / 2.0) * @dmath.exp(-k)
+  let left = @dmath.exp(-k)
+  let end2 = 1.0 - (1.0 + k) * left
+  let end3 = 1.0 - (1.0 + k + k * k / 2.0) * left
   // (what is taken off to rest at its end: a Move's from rest as far as w to the fourth says, all of it at rest and all
   // but none once it is going at all, so it is a Move from rest there to the bit's worth; one set out still and not
   // gaining for the rest)
   let m = wm * (1.0 - (1.0 + x) * e) / end2 + (1.0 - wm) * (1.0 - (1.0 + x + x * x / 2.0) * e) / end3
-  let mv = wm * x * e * k / dur / end2 + (1.0 - wm) * x * x / 2.0 * e * k / dur / end3
+  let mv = wm * x * e * om / end2 + (1.0 - wm) * x * x / 2.0 * e * om / end3
   // (c so that it sets out gaining `a` toward its end, what is taken off with it: its gain at the start 2c − ω²d less
   // what is left at its end times a Move's gain at the start, ω²/move_end, as much as wm of it; what is left at its end
   // (d + c1·dur + c·dur²)·e^(−move_k), so c of a line's: c = (ω²d − a + A·M)/(2 − B·M))
-  let left = @dmath.exp(-k)
   let mm = wm * om * om / end2
   let a_to = if d >= 0.0 { a } else { -a }
   let c2 = (om * om * d - a_to + (d + c1 * dur) * left * mm) / (2.0 - dur * dur * left * mm)
-  let at = fn(t : Double) {
-    let e = @dmath.exp(-om * t)
-    let p = d + c1 * t + c2 * t * t
-    (p * e, (c1 + 2.0 * c2 * t - om * p) * e)
-  }
-  let (y, yv) = at(t)
-  let (yt, _) = at(dur)
+  let p = d + c1 * t + c2 * t * t
+  let y = p * e
+  let yv = (c1 + 2.0 * c2 * t - om * p) * e
+  let yt = (d + c1 * dur + c2 * dur * dur) * left
   (y - yt * m, yv - yt * mv)
 }
 

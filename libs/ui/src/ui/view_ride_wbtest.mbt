@@ -229,3 +229,113 @@ test "a page's list holding pictures drawn again as kept where they draw what th
   fresh.frame_at(fresh.time() + 500.0)
   assert_eq(kept, fresh.drawn_text(), msg="as drawn anew")
 }
+
+///|
+fn drawn_off_list_tester(at : @view.Scroll, off : @signals.Signal[Double], text_id : Ref[@view.NodeId?]) -> Tester {
+  let t = Tester::new(fn(_c) {  }, w=320.0, h=400.0, scale=2.0)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    root.box(fn(wrap) {
+      wrap.width(Is(Some(240.0))).height(Is(Some(300.0))).drawn_off(By(fn() { (off.get(), 0.0) })) |> ignore
+      wrap.box(fn(o) {
+        o.width(Is(Some(240.0))).height(Is(Some(300.0))).clips(Is(true)) |> ignore
+        o.scrolls(at, fn(s) {
+          for i in 0..<12 {
+            s.box(fn(r) {
+              r.width(Is(Some(240.0))).height(Is(Some(50.0))).ground(Is(0xEEF0F4FFL)) |> ignore
+              r.box(fn(w) {
+                if i == 0 {
+                  text_id.val = Some(w.id())
+                }
+                w.offset(Is((12.0, 15.0))).words(Is("row \{i} sliding smoothly"), ink=0x222222FFL) |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
+          }
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t
+}
+
+///|
+test "scrolls list under View::drawn_off hits list_kept_for with zero rephase and matches fresh draw" {
+  let at = @view.Scroll::list()
+  let off = @signals.signal(0.0, same=fn(a, b) { a == b })
+  let text_id : Ref[@view.NodeId?] = Ref(None)
+  let t = drawn_off_list_tester(at, off, text_id)
+  assert_true(!list_heads.is_empty(), msg="list kept as group initially")
+  let made0 = ride_groups_made.val
+  let blocks0 = view_paint_work.made
+  let kept0 = view_blocks.get(text_id.val.unwrap()).unwrap().kept.map(fn(k) { k.0 })
+  let steps = [3.17, 11.43, 24.89, 39.25]
+  let kept_texts : Array[String] = []
+  for step in steps {
+    off.set(step)
+    t.frame()
+    assert_eq(ride_groups_made.val, made0, msg="step \{step}: list group rebuilt instead of hitting list_kept_for")
+    assert_eq(view_paint_work.made, blocks0, msg="step \{step}: text block rebuilt under drawn_off")
+    let kept1 = view_blocks.get(text_id.val.unwrap()).unwrap().kept.map(fn(k) { k.0 })
+    assert_eq(kept1, kept0, msg="step \{step}: glyph phases changed under drawn_off")
+    kept_texts.push(t.drawn_text())
+  }
+  for i, step in steps {
+    let fresh_id : Ref[@view.NodeId?] = Ref(None)
+    let fresh = drawn_off_list_tester(@view.Scroll::list(), @signals.signal(step), fresh_id)
+    assert_eq(kept_texts[i], fresh.drawn_text(), msg="step \{step}: drawn_off list must match fresh draw")
+  }
+}
+
+///|
+fn drawn_off_row_tester(off : @signals.Signal[Double], third : @signals.Signal[String]) -> Tester {
+  let t = Tester::new(fn(_c) {  }, w=320.0, h=400.0, scale=2.0)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    root.box(fn(wrap) {
+      wrap.width(Is(Some(240.0))).height(Is(Some(300.0))).drawn_off(By(fn() { (off.get(), 0.0) })) |> ignore
+      wrap.box(fn(o) {
+        o.width(Is(Some(240.0))).height(Is(Some(300.0))).clips(Is(true)) |> ignore
+        o.scrolls(@view.Scroll::list(), fn(s) {
+          for i in 0..<8 {
+            s.box(fn(row) {
+              row.width(Is(Some(240.0))).height(Is(Some(50.0))).ground(Is(0xDDEEFFL)) |> ignore
+              row.box(fn(w) {
+                let words : @view.Live[String] = if i == 2 { By(fn() { third.get() }) } else { Is("retained row \{i}") }
+                w.offset(Is((10.0, 14.0))).words(words, ink=0x111111FFL) |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
+          }
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t
+}
+
+///|
+test "retained row under View::drawn_off hits ride_kept_for and matches fresh draw" {
+  let off = @signals.signal(0.0, same=fn(a, b) { a == b })
+  let third = @signals.signal("row 2", same=fn(a, b) { a == b })
+  let t = drawn_off_row_tester(off, third)
+  let rides0 = ride_drawn.val
+  // Mutate one row while shifting the ancestor via drawn_off: the list redraws and unchanged rows must hit ride_kept_for.
+  third.set("row 2 updated")
+  off.set(17.33)
+  t.frame()
+  assert_true(ride_drawn.val > rides0, msg="retained rows must hit ride_kept_for under drawn_off")
+  let kept = t.drawn_text()
+  let fresh = drawn_off_row_tester(@signals.signal(17.33), @signals.signal("row 2 updated"))
+  assert_eq(kept, fresh.drawn_text(), msg="drawn_off rows must match fresh draw")
+}

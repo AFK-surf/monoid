@@ -187,6 +187,7 @@ pub let board_feature : @signals.Signal[Bool] = @signals.signal(false, same=fn(a
 /// drawn as at `laid` (`toward_by`, 1 … 0): what is arranged otherwise at the two widths (a message's picture out in the
 /// margin or over its head, chat_narrow_w) drawn that much of the way to how it is at `toward`, never stepping where the
 /// column is laid out anew. None at rest but the width.
+#derive(Eq)
 pub(all) struct ColumnLaid {
   by : Double
   across : Double
@@ -372,29 +373,36 @@ pub fn chat_page_made(
           // (on the page's way to another width, laid out as at the narrower end the whole way, at its left, and
           // moved across as its rows' words would be: the shell's to say, `narrower`, read as it is drawn; none at
           // rest)
-          match narrower {
-            Some(by) => {
+          let col_narrower = narrower.map(fn(by) {
+            let laid = col.memo(fn() { by(col) })
+            fn(_n : @view.View) { laid() }
+          })
+          match col_narrower {
+            Some(memo_by) => {
               // (what of it stands at its right, or by the width it is drawn at, read by its parts: column_laid)
               let chat = r.station + "\u{1}" + r.session
-              columns_laid[chat] = by
-              col.owns(fn() { if columns_laid.get(chat) is Some(f) && physical_equal(f, by) { columns_laid.remove(chat) } })
+              columns_laid[chat] = memo_by
+              col.owns(fn() { if columns_laid.get(chat) is Some(f) && physical_equal(f, memo_by) { columns_laid.remove(chat) } })
               |> ignore
               // (laid out narrower than drawn: room at its right; wider (on its way to where the panel is gone):
               // past its right, cut there by what holds it)
               // (none of that at rest, by none: bound once a column has first set off on such a way, at that cause)
               col
-              .offset(By(fn() { (by(col).across + aside_of(col), 0.0) }))
-              .lays_anew(By(fn() { by(col).laid }))
+              .drawn_off(By(fn() { (memo_by(col).across, 0.0) }))
+              .lays_anew(By(fn() { memo_by(col).laid }))
               |> ignore
+              if aside is Some(_) {
+                col.offset(By(fn() { (aside_of(col), 0.0) })) |> ignore
+              }
               let bound = Ref(false)
               col.reacts(fn() { column_set_off_count() > 0 }, fn(going) {
                 if going && !bound.val && col.alive() {
                   bound.val = true
                   col
-                  .padding(By(fn() { (0.0, 0.0, @sf.dmax(0.0, by(col).by), 0.0) }))
-                  .margin(By(fn() { (0.0, 0.0, @sf.dmin(0.0, by(col).by), 0.0) }))
+                  .padding(By(fn() { (0.0, 0.0, @sf.dmax(0.0, memo_by(col).by), 0.0) }))
+                  .margin(By(fn() { (0.0, 0.0, @sf.dmin(0.0, memo_by(col).by), 0.0) }))
                   |> ignore
-                  v.clips(By(fn() { by(v).by < -0.5 })) |> ignore
+                  v.clips(By(fn() { memo_by(v).by < -0.5 })) |> ignore
                 }
               })
             }
@@ -439,7 +447,7 @@ pub fn chat_page_made(
             .box(fn(at) {
               // (and the width its column is laid out at on the page's way, the narrower end: none at rest)
               foot_node(at, retained, r, fn() { drawn(serial) }, fn() {
-                match narrower {
+                match col_narrower {
                   Some(by) => {
                     let c = by(n)
                     if c.by == 0.0 && c.across == 0.0 {
@@ -456,7 +464,7 @@ pub fn chat_page_made(
             // (the composer as wide as the column is drawn, where it is drawn, whatever the column is laid out
             // at: its own way to another width with_side's)
             // (none of it at rest: bound once a column has first set off on such a way, at that cause)
-            match narrower {
+            match col_narrower {
               Some(by) => {
                 let bound = Ref(false)
                 n.reacts(fn() { column_set_off_count() > 0 }, fn(going) {

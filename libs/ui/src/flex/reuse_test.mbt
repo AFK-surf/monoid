@@ -451,3 +451,48 @@ test "reused: a root placed absolutely, offered another height" {
   check_reuse(root, 100.0, 400.0, "400")
   assert_eq(root.children[0].height, 100.0)
 }
+
+///|
+test "reused: fixed-width subtree hits cache despite 1-ULP subtraction noise from width minus padding_right" {
+  let fixed = 540.37
+  let measures = Ref(0)
+  let root = @flex.Node::new()
+  root.style.direction = Column
+  root.style.set_height(Pt(600.0))
+  let child = @flex.Node::new()
+  child.style.direction = Column
+  child.style.grow = 1.0
+  let leaf = @flex.Node::new()
+  leaf.measure = Some(fn(w, wm, _h, _hm) {
+    measures.val += 1
+    let width = match wm {
+      Exactly => w
+      AtMost => if w < 300.0 { w } else { 300.0 }
+      Undefined => 300.0
+    }
+    (width, 40.0)
+  })
+  child.add(leaf)
+  root.add(child)
+
+  let widths = [900.1, 900.3, 900.7, 901.13, 812.73, 745.19]
+  root.style.set_width(Pt(widths[0]))
+  root.style.set_padding_right(Pt(widths[0] - fixed))
+  @flex.compute(root, width=widths[0], height=600.0, round=false, reuse=true)
+  let initial_measures = measures.val
+  assert_true(initial_measures > 0, msg="initial layout measures leaf")
+
+  for i in 1..<widths.length() {
+    let w = widths[i]
+    root.style.set_width(Pt(w))
+    root.style.set_padding_right(Pt(w - fixed))
+    root.dirty = true
+    @flex.compute(root, width=w, height=600.0, round=false, reuse=true)
+    assert_eq(
+      measures.val,
+      initial_measures,
+      msg="step \{i} (w=\{w}): fixed-width subtree must hit reuse cache without re-measuring leaf",
+    )
+    assert_true((child.width - fixed).abs() < 1.0e-6, msg="step \{i}: child.width=\{child.width} expected \{fixed}")
+  }
+}

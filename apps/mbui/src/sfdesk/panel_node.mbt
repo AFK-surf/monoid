@@ -175,7 +175,7 @@ fn side_setting_off(key : String, open : Bool) -> Bool {
 ///|
 /// How wide page `key`'s panel's column is as node `n` is drawn: where its way has it while it goes, where it sets off
 /// from as it is about to (side_setting_off), else all of it open (`open`), none closed.
-fn side_col(src : Source, n : @view.View, key : String, open : Bool) -> Double {
+fn side_col(src : Source, n : @view.View, key : String, open : Bool, pane? : Double) -> Double {
   match panel_own.goes.get(key) {
     Some(way) => {
       way.said()
@@ -190,7 +190,10 @@ fn side_col(src : Source, n : @view.View, key : String, open : Bool) -> Double {
     None => ()
   }
   if open {
-    side_whole(src, n)
+    match pane {
+      Some(p) => if p < side_both_least { dmin(side_over_w, p) } else { side_width(p) }
+      None => side_whole(src, n)
+    }
   } else {
     0.0
   }
@@ -204,8 +207,7 @@ fn side_col(src : Source, n : @view.View, key : String, open : Bool) -> Double {
 /// off, going with the page to where they stand once it is there; laid out at the narrower end all the way it was
 /// narrow at once and wide at once as the panel was gone, the user, 2026-11-09: 「打开关闭右侧面板，中间的变化不对」);
 /// at rest, and over a page too narrow for both (the page as wide as it is), none, laid out as wide as it is.
-fn side_narrower(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLaid {
-  let pane = pane_w_at(src, n)
+fn side_narrower(src : Source, n : @view.View, serial : Int, pane : Double) -> @sfbase.ColumnLaid {
   // (a chat's; or the new chat's made as nodes beside its Station 文件 (new_side_node), its column centred in what it
   // is drawn in all the way, as it is at rest: by half of how much narrower it is laid out)
   let (key, open, centred) = match app.nav.page_of(serial) {
@@ -225,7 +227,7 @@ fn side_narrower(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLa
   }
   if t == @double.infinity || !way.goes_at(t) {
     let open = open()
-    let to = if open { side_whole(src, n) } else { 0.0 }
+    let to = if open { side_width(pane) } else { 0.0 }
     // (about to set off: as it is still, where the column is (side_setting_off), laid out anew only as the way sets off,
     // its rows told then: side_slides)
     if side_setting_off(key, open) {
@@ -342,12 +344,21 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
         @sfbase.tab_players_pause(chat=tabs_key(r))
       }
     })
-    let over = fn() { pane_w_at(src, col) < side_both_least }
-    let at = fn() { side_col(src, col, key, open()) }
+    let pane = col.memo(fn() { pane_w_at(src, col) })
+    let over = fn() { pane() < side_both_least }
+    let whole = fn() {
+      let w = pane()
+      if w < side_both_least {
+        dmin(side_over_w, w)
+      } else {
+        side_width(w)
+      }
+    }
+    let at = col.memo(fn() { side_col(src, col, key, open(), pane=pane()) })
     col
     .shrink(Is(0.0))
     .width(By(fn() { Some(if over() { 0.0 } else { at() }) }))
-    .clips(By(fn() { !over() && at() < side_whole(src, col) }))
+    .clips(By(fn() { !over() && at() < whole() }))
     .offset(By(fn() { (pane_aside_at(src, col), 0.0) }))
     .key_context("Chat")
     .on_action("panel.tab.close", fn(_) { side_close_front(src, r) })
@@ -359,7 +370,7 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
       p
       .grow(Is(1.0))
       .min_height(Is(Some(0.0)))
-      .width(By(fn() { Some(side_whole(src, p)) }))
+      .width(By(fn() { Some(whole()) }))
       .offset(By(fn() { (if over() { -at() } else { 0.0 }, 0.0) }))
       .ground(By(fn() { @sf.theme().p.bg }))
       .shadow(By(fn() {

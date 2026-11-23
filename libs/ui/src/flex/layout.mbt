@@ -584,7 +584,7 @@ pub let counters : FixedArray[Int] = FixedArray::make(3, 0)
 
 ///|
 fn same(a : Double, b : Double) -> Bool {
-  a == b || (!known(a) && !known(b))
+  a == b || (!known(a) && !known(b)) || (known(a) && known(b) && (a - b).abs() < 1.0e-9)
 }
 
 ///|
@@ -601,7 +601,7 @@ fn reusable(
   result : Double,
 ) -> Bool {
   if known(k) {
-    return (known(old_k) && old_k == k) || (result - k).abs() < 0.0001
+    return (known(old_k) && (old_k == k || (old_k - k).abs() < 1.0e-9)) || (result - k).abs() < 0.0001
   }
   if known(old_k) {
     return false
@@ -610,7 +610,7 @@ fn reusable(
     if !known(old_a) {
       return result <= a + 0.0001
     }
-    return old_a == a || (old_a > a && result <= a + 0.0001)
+    return old_a == a || (old_a - a).abs() < 1.0e-9 || (old_a > a && result <= a + 0.0001)
   }
   !known(old_a)
 }

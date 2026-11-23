@@ -30,12 +30,12 @@ priv struct RideSpot {
 priv struct RideKept {
   /// the tree's count of changes as it was drawn (Tree::drawn_rev_taken): kept while its own is no more
   rev : Int
-  /// where its root was drawn, how opaque, and where it is laid out off that (where its glyphs are set)
+  /// where its root was drawn, how opaque, and where it is laid out (where its glyphs are set)
   x : Double
   y : Double
   a : Double
-  off_x : Double
-  off_y : Double
+  ux : Double
+  uy : Double
   /// the frame's pixels a point, words' zoom, the glyphs let go before it (ride_glyphs_gone), whether who drew what
   /// was kept: drawn again only as they were
   scale : Double
@@ -111,8 +111,8 @@ priv struct ListRiding {
   x : Double
   y : Double
   a : Double
-  off_x : Double
-  off_y : Double
+  ux : Double
+  uy : Double
   /// how big the window draws it: what the column's offset is multiplied by
   s : Double
   /// how far the window has it drawn off where it is placed, as it is drawn (its header's 0, 1), and the column's clip
@@ -187,8 +187,8 @@ priv struct Riding {
   x : Double
   y : Double
   a : Double
-  off_x : Double
-  off_y : Double
+  ux : Double
+  uy : Double
   /// where in clip_stack the clip it is drawn in is
   clip_at : Int
   spots : Array[RideSpot]
@@ -638,8 +638,8 @@ fn Ctx::ride_begin(
     x,
     y,
     a,
-    off_x: ux - x,
-    off_y: uy - y,
+    ux,
+    uy,
     clip_at: clip_top(),
     spots: [],
     spoiled: false,
@@ -735,8 +735,8 @@ fn Ctx::ride_end(self : Ctx) -> Unit {
     x: r.x,
     y: r.y,
     a: r.a,
-    off_x: r.off_x,
-    off_y: r.off_y,
+    ux: r.ux,
+    uy: r.uy,
     scale: self.scale,
     zoom: words_zoom.val,
     glyphs: ride_glyphs_gone.val,
@@ -879,8 +879,8 @@ fn Ctx::ride_kept_for(
   }
   let fits = s == 1.0 &&
     a == k.a &&
-    ux - x == k.off_x &&
-    uy - y == k.off_y &&
+    ride_whole(ux - k.ux, self.scale) &&
+    ride_whole(uy - k.uy, self.scale) &&
     self.scale == k.scale &&
     words_zoom.val == k.zoom &&
     ride_glyphs_gone.val == k.glyphs &&
@@ -1460,8 +1460,8 @@ fn Ctx::list_ride_begin(
     x,
     y,
     a,
-    off_x: ux - x,
-    off_y: uy - y,
+    ux,
+    uy,
     s,
     dx,
     dy,
@@ -1616,8 +1616,8 @@ fn Ctx::list_ride_end(self : Ctx) -> Unit {
     x: l.x,
     y: l.y,
     a: l.a,
-    off_x: l.off_x,
-    off_y: l.off_y,
+    ux: l.ux,
+    uy: l.uy,
     // (the frame's pixels a point of the list's own: as big as it was drawn, list_kept_for)
     scale: self.scale * l.s,
     zoom: words_zoom.val,
@@ -1900,8 +1900,8 @@ fn Ctx::list_kept_for(
   let fits = k.group >= 0 &&
     !k.anew &&
     a == k.a &&
-    ux - x == k.off_x &&
-    uy - y == k.off_y &&
+    ride_whole(ux - k.ux, self.scale) &&
+    ride_whole(uy - k.uy, self.scale) &&
     self.scale * s == k.scale &&
     words_zoom.val == k.zoom &&
     ride_glyphs_gone.val == k.glyphs &&

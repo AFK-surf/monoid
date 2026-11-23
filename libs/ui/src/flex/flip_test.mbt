@@ -56,3 +56,34 @@ test "nothing off: there at once" {
   assert_eq(w.ends(), 5.0)
   assert_eq(w.left(5.0).0, 0.0)
 }
+
+///|
+test "FlipWay::left caches same now and invalidates on new now" {
+  let w = @flex.FlipWay::new(100.0, [fl_item(80.0, vy=-0.2)])
+  let ends = w.ends()
+  for t in [90.0, 100.0, 140.0, 210.0, ends, ends + 50.0] {
+    let r1 = w.left(t)
+    let r2 = w.left(t)
+    assert_eq(r1, r2, msg="repeat call at \{t} must match cached value")
+  }
+  let a = w.left(130.0)
+  let b = w.left(180.0)
+  assert_true(a.0 > b.0, msg="cache must invalidate when now advances: \{a.0} vs \{b.0}")
+  let c = w.left(130.0)
+  assert_eq(a, c, msg="returning to earlier now recomputes identically")
+}
+
+///|
+test "move_path matches move_at from rest and boundary values" {
+  let dur = 300.0
+  assert_eq(@flex.move_path(120.0, -0.5, 0.0, dur), (120.0, -0.5))
+  assert_eq(@flex.move_path(120.0, -0.5, -10.0, dur), (120.0, -0.5))
+  assert_eq(@flex.move_path(120.0, -0.5, dur, dur), (0.0, 0.0))
+  assert_eq(@flex.move_path(120.0, -0.5, dur + 5.0, dur), (0.0, 0.0))
+  for t in [15.0, 60.0, 150.0, 240.0, 295.0] {
+    let (off, vel) = @flex.move_path(-100.0, 0.0, t, dur)
+    let expected = -100.0 * (1.0 - @flex.move_at(t / dur))
+    assert_true((off - expected).abs() < 1.0e-11, msg="at \{t}: off=\{off} expected=\{expected}")
+    assert_true(vel > 0.0, msg="at \{t}: positive velocity toward 0, got \{vel}")
+  }
+}
