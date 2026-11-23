@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [10a0c2b8f](https://github.com/AFK-surf/monoid/commit/10a0c2b8fce2642bdf8ae2f8295396bec0914be3) feat(ui,mbui): Phase 3B explicit StageOrigin, clea | 2.74 | 3.69 | 14.95 | 37.13 | 56.92 | 32.51 | 66.04 | 100.96 | 117.5 |
 | [e038a5c0b](https://github.com/AFK-surf/monoid/commit/e038a5c0b698b0b6a3394a6e2da695bef8f89b83) feat(station): cap default remote browser screenca | 2.74 | 3.69 | 14.94 | 37.13 | 56.92 | 32.51 | 66.04 | 101.22 | 120.35 |
 | [a8b332d2f](https://github.com/AFK-surf/monoid/commit/a8b332d2f3eeaa44a1fabefd96f5af2913772a35) test(e2e): serialize fake claude turns, send held  | 2.74 | 3.69 | 14.94 | 37.13 | 56.92 | 32.51 | 66.04 | 101.17 | 144.6 |
 | [e4c4c5abc](https://github.com/AFK-surf/monoid/commit/e4c4c5abc0fbcde0da13426e38aa22c8bd3d35be) feat(pion-core): wake the core worker natively and | 2.74 | 3.69 | 14.94 | 37.13 | 56.92 | 32.51 | 66.04 | 101.17 | 144.6 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f350f6162](https://github.com/AFK-surf/monoid/commit/f350f6162b1051720cdebd6f75ada97727680a12) feat(station,client,mbui): add local station repla | 2.73 | 3.68 | 14.9 | 37.07 | 56.76 | 32.47 | 65.92 | 100.52 | 113.6 |
 | [2404366b0](https://github.com/AFK-surf/monoid/commit/2404366b025c3ddd751494997dc1eb64090a3c1a) feat(station): say how short of CPU and memory the | 2.73 | 3.68 | 14.9 | 37.06 | 56.75 | 32.46 | 65.91 | 100.45 | 124.75 |
 | [883168f18](https://github.com/AFK-surf/monoid/commit/883168f18fe1ca56393cd0c157cc1dc2faa44398) fix(ui): flip adaptive glass ink to white over App | 2.73 | 3.67 | 14.89 | 37.06 | 56.73 | 32.46 | 65.91 | 100.45 | 124.75 |
-| [176fd2214](https://github.com/AFK-surf/monoid/commit/176fd2214c057552f53402dbe77bc28280a641af) feat(ui,mbui): extend liquid glass morphing to pan | 2.73 | 3.67 | 14.89 | 37.06 | 56.73 | 32.46 | 65.91 | 100.58 | 113.28 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [10a0c2b8f](https://github.com/AFK-surf/monoid/commit/10a0c2b8fce2642bdf8ae2f8295396bec0914be3) feat(ui,mbui): Phase 3B explicit StageOrigin, clea | 0.55 | 0.72 | 2.8 | 3.81 | 6.89 | 2.04 | 5.66 | 57.9 |
 | [e038a5c0b](https://github.com/AFK-surf/monoid/commit/e038a5c0b698b0b6a3394a6e2da695bef8f89b83) feat(station): cap default remote browser screenca | 0.55 | 0.72 | 2.8 | 3.81 | 6.89 | 2.04 | 5.66 | 57.9 |
 | [a8b332d2f](https://github.com/AFK-surf/monoid/commit/a8b332d2f3eeaa44a1fabefd96f5af2913772a35) test(e2e): serialize fake claude turns, send held  | 0.55 | 0.72 | 2.8 | 3.81 | 6.89 | 2.04 | 5.66 | 57.93 |
 | [e4c4c5abc](https://github.com/AFK-surf/monoid/commit/e4c4c5abc0fbcde0da13426e38aa22c8bd3d35be) feat(pion-core): wake the core worker natively and | 0.55 | 0.72 | 2.8 | 3.81 | 6.89 | 2.04 | 5.66 | 57.85 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f350f6162](https://github.com/AFK-surf/monoid/commit/f350f6162b1051720cdebd6f75ada97727680a12) feat(station,client,mbui): add local station repla | 0.49 | 0.64 | 2.45 | 3.5 | 5.81 | 1.79 | 4.83 | 54.92 |
 | [2404366b0](https://github.com/AFK-surf/monoid/commit/2404366b025c3ddd751494997dc1eb64090a3c1a) feat(station): say how short of CPU and memory the | 0.49 | 0.64 | 2.45 | 3.5 | 5.81 | 1.79 | 4.83 | 54.64 |
 | [883168f18](https://github.com/AFK-surf/monoid/commit/883168f18fe1ca56393cd0c157cc1dc2faa44398) fix(ui): flip adaptive glass ink to white over App | 0.49 | 0.64 | 2.45 | 3.5 | 5.81 | 1.79 | 4.83 | 55.05 |
-| [176fd2214](https://github.com/AFK-surf/monoid/commit/176fd2214c057552f53402dbe77bc28280a641af) feat(ui,mbui): extend liquid glass morphing to pan | 0.49 | 0.64 | 2.45 | 3.5 | 5.81 | 1.79 | 4.83 | 55.18 |
