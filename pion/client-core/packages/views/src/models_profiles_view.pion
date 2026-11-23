@@ -135,90 +135,114 @@ fn group_title_mpv(g : String) -> String {
   }
 }
 
-/// Strictly sanitize `access` object: keep ONLY safe metadata (`kind`, `provider`, `login`,
-/// `service`, `endpoint`), stripping `key`, `token`, `apiKey`, `secret`, `accessToken`,
-/// `refreshToken`, `password`, `cookie`, `credential`, `headers`, `env`.
+/// Strictly sanitize `access` object to match `shapes/profiles.ts ListedAccess` (`kind`, `service?`),
+/// stripping `key`, `token`, `apiKey`, `secret`, `accessToken`, `refreshToken`, `password`, `cookie`, `credential`, `headers`, `env`.
 fn conform_access_mpv(raw : base_codec::Json) -> base_codec::Json {
   match raw {
     base_codec::Json::Obj(_) => {
-      let out : Array[(String, base_codec::Json)] = []
-      push_opt_str(out, "kind", j_opt_str(raw, "kind"))
-      push_opt_str(out, "provider", j_opt_str(raw, "provider"))
-      push_opt_bool(out, "login", j_opt_bool(raw, "login"))
+      let kind_raw = j_str(raw, "kind")
+      let kind_s = if kind_raw == "subscription" || kind_raw == "opencode-go" || kind_raw == "anthropic-api" || kind_raw == "env" || kind_raw == "api-provider" || kind_raw == "service" {
+        kind_raw
+      } else {
+        "api-provider"
+      }
+      let out : Array[(String, base_codec::Json)] = [("kind", base_codec::json_str(kind_s))]
       push_opt_str(out, "service", j_opt_str(raw, "service"))
-      push_opt_str(out, "endpoint", j_opt_str(raw, "endpoint"))
       base_codec::json_obj(out)
     }
-    _ => base_codec::json_null()
+    _ => base_codec::json_obj([("kind", base_codec::json_str("api-provider"))])
   }
 }
 
 fn conform_quota_mpv(raw : base_codec::Json) -> base_codec::Json {
   match raw {
     base_codec::Json::Obj(_) => {
-      let out : Array[(String, base_codec::Json)] = []
-      push_opt_str(out, "state", j_opt_str(raw, "state"))
+      let state_s = match j_opt_str(raw, "state") { Some(s) => s; None => "ok" }
+      let wins = j_arr(raw, "windows")
+      let w_out : Array[base_codec::Json] = []
+      for i in 0..<wins.length() {
+        let w = wins[i]
+        let lbl = match j_opt_str(w, "label") { Some(s) => s; None => "" }
+        let left_i : Int64 = match j_opt_num_mpv(w, "left") {
+          Some(l) => l.to_int64()
+          None =>
+          match j_opt_num_mpv(w, "usedPercent") {
+            Some(u) => {
+              let l = if u >= 100.0 { 0.0 } else if u <= 0.0 { 100.0 } else { 100.0 - u }
+              l.to_int64()
+            }
+            None => 100.to_int64()
+          }
+        }
+        let mark_s = match j_opt_str(w, "mark") {
+          Some(m) => m
+          None => left_i.to_string() + "%"
+        }
+        let lvl_raw = j_str(w, "level")
+        let lvl_s = if lvl_raw == "ok" || lvl_raw == "amber" || lvl_raw == "red" {
+          lvl_raw
+        } else if left_i <= 10.to_int64() {
+          "red"
+        } else if left_i <= 25.to_int64() {
+          "amber"
+        } else {
+          "ok"
+        }
+        let wf : Array[(String, base_codec::Json)] = [
+          ("label", base_codec::json_str(lbl)),
+          ("mark", base_codec::json_str(mark_s)),
+          ("left", base_codec::json_int64(left_i)),
+          ("level", base_codec::json_str(lvl_s)),
+        ]
+        push_opt_str(wf, "scope", j_opt_str(w, "scope"))
+        push_opt_str(wf, "refills", j_opt_str(w, "refills"))
+        push_opt_str(wf, "refillShort", j_opt_str(w, "refillShort"))
+        w_out.push(base_codec::json_obj(wf))
+      }
+      let out : Array[(String, base_codec::Json)] = [
+        ("state", base_codec::json_str(state_s)),
+        ("windows", base_codec::json_arr(w_out)),
+      ]
       push_opt_str(out, "detail", j_opt_str(raw, "detail"))
       push_opt_str(out, "creditsText", j_opt_str(raw, "creditsText"))
-      let wins = j_arr(raw, "windows")
-      if wins.length() > 0 {
-        let w_out : Array[base_codec::Json] = []
-        for i in 0..<wins.length() {
-          let w = wins[i]
-          let wf : Array[(String, base_codec::Json)] = []
-          push_opt_str(wf, "label", j_opt_str(w, "label"))
-          push_opt_str(wf, "scope", j_opt_str(w, "scope"))
-          push_opt_str(wf, "mark", j_opt_str(w, "mark"))
-          match j_opt_num_mpv(w, "left") {
-            Some(l) => wf.push(("left", base_codec::json_num(l)))
-            None =>
-            match j_opt_num_mpv(w, "usedPercent") {
-              Some(u) => {
-                let left = if u >= 100.0 { 0.0 } else if u <= 0.0 { 100.0 } else { 100.0 - u }
-                wf.push(("left", base_codec::json_num(left)))
-              }
-              None => ()
-            }
-          }
-          push_opt_str(wf, "level", j_opt_str(w, "level"))
-          push_opt_int64(wf, "resetsAt", j_opt_int64(w, "resetsAt"))
-          w_out.push(base_codec::json_obj(wf))
-        }
-        out.push(("windows", base_codec::json_arr(w_out)))
-      }
       base_codec::json_obj(out)
     }
     _ => base_codec::json_null()
   }
 }
 
-/// Project one profile object strictly by `PROFILE_ROW_FIELDS`, stripping ALL secrets/keys/tokens.
+/// Project one profile object strictly conforming to `shapes/profiles.ts RowProfile`, stripping ALL secrets/keys/tokens.
 pub fn conform_profile_row(raw : base_codec::Json) -> base_codec::Json {
-  let out : Array[(String, base_codec::Json)] = []
-  for i in 0..<profile_row_fields_mpv.length() {
-    let k = profile_row_fields_mpv[i]
-    match base_codec::json_get(raw, k) {
-      None => ()
-      Some(v) => {
-        if k == "access" {
-          out.push(("access", conform_access_mpv(v)))
-        } else if k == "trouble" {
-          match v {
-            base_codec::Json::Obj(_) => {
-              let tf : Array[(String, base_codec::Json)] = []
-              push_opt_str(tf, "title", j_opt_str(v, "title"))
-              push_opt_str(tf, "action", j_opt_str(v, "action"))
-              out.push(("trouble", base_codec::json_obj(tf)))
-            }
-            _ => ()
-          }
-        } else if k == "quota" {
-          out.push(("quota", conform_quota_mpv(v)))
-        } else {
-          out.push((k, v))
-        }
-      }
+  let check_tone_raw = j_str(raw, "checkTone")
+  let check_tone = if check_tone_raw == "accent" || check_tone_raw == "green" || check_tone_raw == "blue" || check_tone_raw == "red" || check_tone_raw == "amber" || check_tone_raw == "neutral" {
+    check_tone_raw
+  } else {
+    "neutral"
+  }
+  let access_j = match base_codec::json_get(raw, "access") {
+    Some(v) => conform_access_mpv(v)
+    None => base_codec::json_obj([("kind", base_codec::json_str("api-provider"))])
+  }
+  let out : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(j_str(raw, "id"))),
+    ("name", base_codec::json_str(j_str(raw, "name"))),
+    ("access", access_j),
+    ("checkText", base_codec::json_str(j_str(raw, "checkText"))),
+    ("checkTone", base_codec::json_str(check_tone)),
+    ("usesText", base_codec::json_str(j_str(raw, "usesText"))),
+    ("kindText", base_codec::json_str(j_str(raw, "kindText"))),
+    ("planText", base_codec::json_str(j_str(raw, "planText"))),
+  ]
+  push_opt_str(out, "runtime", j_opt_str(raw, "runtime"))
+  push_opt_str(out, "service", j_opt_str(raw, "service"))
+  push_opt_str(out, "providerMark", j_opt_str(raw, "providerMark"))
+  match base_codec::json_get(raw, "quota") {
+    Some(q) =>
+    match q {
+      base_codec::Json::Obj(_) => out.push(("quota", conform_quota_mpv(q)))
+      _ => ()
     }
+    None => ()
   }
   base_codec::json_obj(out)
 }
@@ -535,13 +559,13 @@ pub fn project_profiles(
       let conformed = conform_profile_row(raw_p)
       let p_id = j_str(conformed, "id")
       let p_name = j_str(conformed, "name")
-      let p_email = j_str(conformed, "email")
-      let enabled = match j_opt_bool(conformed, "enabled") {
+      let p_email = j_str(raw_p, "email")
+      let enabled = match j_opt_bool(raw_p, "enabled") {
         Some(b) => b
         None => true
       }
       let p_usable = st_online && enabled
-      let has_trouble = match base_codec::json_get(conformed, "trouble") {
+      let has_trouble = match base_codec::json_get(raw_p, "trouble") {
         Some(base_codec::Json::Obj(_)) => true
         _ => false
       }
@@ -550,9 +574,9 @@ pub fn project_profiles(
         None => "neutral"
       }
       let p_look = !p_usable || has_trouble || check_tone == "red"
-      let used_n = j_arr(conformed, "usedBy").length()
-      let grp = profile_group_of_mpv(conformed)
-      let acct_key = profile_account_key_mpv(r.address, conformed)
+      let used_n = j_arr(raw_p, "usedBy").length()
+      let grp = profile_group_of_mpv(raw_p)
+      let acct_key = profile_account_key_mpv(r.address, raw_p)
       let title = if p_email.length() > 0 {
         p_email
       } else if p_name.length() > 0 {
@@ -647,21 +671,25 @@ pub fn project_profiles(
       ("group", base_codec::json_str(b.group)),
       ("groupTitle", base_codec::json_str(group_title_mpv(b.group))),
       ("station", base_codec::json_str(b.station)),
-      ("stationId", base_codec::json_str(b.station_id)),
-      ("stationName", base_codec::json_str(b.station_name)),
-      ("title", base_codec::json_str(b.title)),
       ("profile", b.profile),
+      ("title", base_codec::json_str(b.title)),
       ("usable", base_codec::json_bool(b.usable)),
       ("look", base_codec::json_bool(b.look)),
-      ("members", base_codec::json_arr(b.members)),
+      ("where", base_codec::json_str(b.station_name)),
       ("several", base_codec::json_bool(b.members.length() > 1)),
       ("usedCount", base_codec::json_int(b.used_count)),
     ]))
   }
+  let wait_obj = base_codec::json_obj([
+    ("reading", base_codec::json_bool(false)),
+    ("failing", base_codec::json_arr([])),
+    ("empty", base_codec::json_bool(items_out.length() == 0)),
+  ])
   sql::SqlResult::Ok(base_codec::json_obj([
-    ("workspace", base_codec::json_str(ws_scope)),
     ("items", base_codec::json_arr(items_out)),
     ("attention", base_codec::json_int(attention)),
+    ("wait", wait_obj),
+    ("machineLogins", base_codec::json_arr([])),
   ]))
 }
 
@@ -786,22 +814,20 @@ pub fn project_profiles_overview(
           ("ready", base_codec::json_int(agg.ready)),
           ("total", base_codec::json_int(agg.total)),
           ("nowPct", base_codec::json_int(now_pct)),
-          ("exhaustHours", base_codec::json_null()),
-          ("currentBurnPerHour", base_codec::json_num(0.0)),
-          ("sustainablePerHour", base_codec::json_num(sustain)),
           ("netPerHour", base_codec::json_num(sustain)),
           ("overPace", base_codec::json_bool(false)),
-          ("neededAccounts", base_codec::json_null()),
+          ("traj", base_codec::json_arr([base_codec::json_int(now_pct)])),
+          ("starveSpans", base_codec::json_arr([])),
+          ("hourlyNet", base_codec::json_arr([])),
         ]))
       }
     }
   }
 
+  let _ = now_ms
+  let _ = total_accounts
+  let _ = ready_accounts
   sql::SqlResult::Ok(base_codec::json_obj([
-    ("workspace", base_codec::json_str(ws_scope)),
-    ("at", base_codec::json_int64(now_ms)),
-    ("totalAccounts", base_codec::json_int(total_accounts)),
-    ("readyAccounts", base_codec::json_int(ready_accounts)),
     ("pools", base_codec::json_arr(pools_out)),
   ]))
 }

@@ -1,0 +1,948 @@
+// Layer 3 differential parity RPC handlers for `parity_cli`:
+// - Sub-suite 1: `store.*` (SQLite schema DDLs + `md_key` + `older_md_keys`)
+// - Sub-suite 2: `lock.*` (`links_valid`, `keep_entries`, `again_of`, `vouchers_in`, `approved_in`, `effective_state`)
+// - Sub-suite 3: `views.projectAll` (all 26 topics projected from real `views::*` + `ClientCore`)
+// - Sub-suite 4: `core.*` (stateful `sync::ClientCore` + `ParitySimDb` wire session driver)
+
+import "base_codec"
+import "effect"
+import "form"
+import "lock"
+import "protocol"
+import "sql"
+import "store"
+import "sync"
+import "views"
+
+pub struct ParityCoreSession {
+  pub mut rt : effect::Runtime
+  pub mut sim : ParitySimDb
+  pub mut db : sql::Sql
+  pub mut core : sync::ClientCore
+}
+
+pub fn ParityCoreSession::new(workspace : String, station : String) -> ParityCoreSession {
+  let rt = effect::Runtime::new()
+  let sim = ParitySimDb::new(rt)
+  let db = match sql::Sql::open(sim.sh, "parity") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => panic("failed to open ParitySimDb")
+  }
+  let core = sync::ClientCore::new(workspace, station, rt, db, make_noop_transport(), fn() -> Unit {})
+  ParityCoreSession::{ rt: rt, sim: sim, db: db, core: core }
+}
+
+fn j_s(j : base_codec::Json, k : String) -> String {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+}
+
+fn j_os(j : base_codec::Json, k : String) -> Option[String] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn j_b(j : base_codec::Json, k : String) -> Bool {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => false
+  }
+}
+
+fn j_i(j : base_codec::Json, k : String) -> Int {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, _)) => n.to_int()
+    _ => 0
+  }
+}
+
+fn j_i64(j : base_codec::Json, k : String) -> Int64 {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, _)) => n.to_int64()
+    _ => 0.to_int64()
+  }
+}
+
+fn j_oi(j : base_codec::Json, k : String) -> Option[Int] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+    _ => None
+  }
+}
+
+fn j_oi64(j : base_codec::Json, k : String) -> Option[Int64] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, _)) => Some(n.to_int64())
+    _ => None
+  }
+}
+
+fn j_onum(j : base_codec::Json, k : String) -> Option[Double] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, _)) => Some(n)
+    _ => None
+  }
+}
+
+fn j_arr_l3(j : base_codec::Json, k : String) -> Array[base_codec::Json] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Arr(a)) => a
+    _ => []
+  }
+}
+
+fn parse_form_entries(arr : Array[base_codec::Json]) -> Array[form::Json] {
+  let out : Array[form::Json] = []
+  for i in 0..<arr.length() {
+    out.push(base_to_form(arr[i]))
+  }
+  out
+}
+
+fn form_entries_to_base(arr : Array[form::Json]) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<arr.length() {
+    out.push(form_to_base(arr[i]))
+  }
+  base_codec::json_arr(out)
+}
+
+fn parse_own_standings(j : base_codec::Json) -> views::OwnStandings {
+  let devs : Map[String, views::OwnDevice] = Map::new()
+  let ids : Array[String] = []
+  let arr = j_arr_l3(j, "devices")
+  for i in 0..<arr.length() {
+    let d = arr[i]
+    let id = j_s(d, "id")
+    ids.push(id)
+    devs.set(id, views::OwnDevice::{
+      id: id,
+      sub: j_s(d, "sub"),
+      label: j_s(d, "label"),
+      sign_key: j_os(d, "sign_key"),
+      said: j_os(d, "said"),
+      by: j_os(d, "by"),
+      by_sub: j_os(d, "bySub"),
+      by_key: j_os(d, "byKey"),
+      since: j_i(d, "since"),
+    })
+  }
+  views::OwnStandings::{ devices: devs, device_ids: ids }
+}
+
+fn str_set_from_arr(arr : Array[base_codec::Json]) -> Map[String, Bool] {
+  let m : Map[String, Bool] = Map::new()
+  for i in 0..<arr.length() {
+    match arr[i] {
+      base_codec::Json::Str(s) => m.set(s, true)
+      _ => ()
+    }
+  }
+  m
+}
+
+/// Subject extractor matching `client/core-ts/src/views/lock.ts` / `personal-lock.ts`.
+fn lock_entry_subject(e : form::Json) -> Option[String] {
+  let kind = match form::json_field(Some(e), "kind") {
+    Some(form::Json::Str(k)) => k
+    _ => return None
+  }
+  let body = form::json_field(Some(e), "body")
+  if kind == "device" || kind == "remove_device" || kind == "renew_device" || kind == "device.add" || kind == "device.remove" {
+    match form::json_field(body, "id") {
+      Some(form::Json::Str(id)) => Some("device:" + id)
+      _ => None
+    }
+  } else if kind == "member" || kind == "remove_member" || kind == "role" || kind == "member.add" || kind == "member.remove" {
+    match form::json_field(body, "sub") {
+      Some(form::Json::Str(s)) => Some("member:" + s)
+      _ => None
+    }
+  } else if kind == "station" || kind == "remove_station" || kind == "station.add" || kind == "station.remove" {
+    match form::json_field(body, "key") {
+      Some(form::Json::Str(k)) => Some("station:" + k)
+      _ => None
+    }
+  } else if kind == "disable" || kind == "moved" {
+    Some("lock")
+  } else {
+    None
+  }
+}
+
+/// Seed a rich realistic dataset into `sess` covering all 26 topics for strict TOPIC_SHAPES check.
+fn seed_all_views_fixture(sess : ParityCoreSession, now_ms : Int64) -> Unit {
+  let ws = sess.core.workspace
+  let st = sess.core.station
+  let sim = sess.sim
+
+  sess.core.set_viewer(
+    "alice@example.com",
+    sub="user-alice",
+    role="owner",
+    device_id="dev-mac-1",
+    device_kind="app",
+    device_sign_key=Some("ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+  )
+
+  // 1. Accounts (with sensitive tokens that MUST be stripped)
+  sim.account_docs.set(
+    "accounts",
+    base_codec::json_stringify(base_codec::json_obj([
+      ("active", base_codec::json_str("user-alice")),
+      ("accounts", base_codec::json_arr([
+        base_codec::json_obj([
+          ("id", base_codec::json_str("user-alice")),
+          ("email", base_codec::json_str("alice@example.com")),
+          ("name", base_codec::json_str("Alice")),
+          ("provider", base_codec::json_str("stillfail")),
+          ("accessToken", base_codec::json_str("SECRET_ACCESS_TOKEN")),
+          ("refreshToken", base_codec::json_str("SECRET_REFRESH_TOKEN")),
+        ]),
+      ])),
+    ])),
+  )
+  sim.account_docs.set("active_account", "\"user-alice\"")
+
+  // 2. Workspace
+  sim.put_workspace(
+    ws,
+    base_codec::json_stringify(base_codec::json_obj([
+      ("id", base_codec::json_str(ws)),
+      ("name", base_codec::json_str("Acme Lab")),
+      ("role", base_codec::json_str("owner")),
+      ("locked", base_codec::json_bool(false)),
+      ("emoji", base_codec::json_str("🚀")),
+      ("stations", base_codec::json_arr([base_codec::json_str("s1")])),
+      ("members", base_codec::json_arr([
+        base_codec::json_obj([
+          ("sub", base_codec::json_str("user-alice")),
+          ("email", base_codec::json_str("alice@example.com")),
+          ("name", base_codec::json_str("Alice")),
+          ("role", base_codec::json_str("owner")),
+          ("accessToken", base_codec::json_str("LEAK_CHECK")),
+        ]),
+      ])),
+    ])),
+  )
+
+  // 3. Station overview (including profiles with secret keys, software updates, automaticDecisions)
+  let stale_built = now_ms - (10 * 86400 * 1000).to_int64()
+  sim.put_station_doc(
+    st,
+    "overview",
+    base_codec::json_stringify(base_codec::json_obj([
+      ("id", base_codec::json_str("s1")),
+      ("name", base_codec::json_str("Mac Studio")),
+      ("online", base_codec::json_bool(true)),
+      ("reconnecting", base_codec::json_bool(false)),
+      ("stateText", base_codec::json_str("在线")),
+      ("summary", base_codec::json_str("在线")),
+      ("joined", base_codec::json_bool(true)),
+      ("mine", base_codec::json_bool(true)),
+      ("acceptAutoChats", base_codec::json_bool(true)),
+      ("version", base_codec::json_str("0.1.90")),
+      ("software", base_codec::json_obj([
+        ("version", base_codec::json_str("0.1.90")),
+        ("latest", base_codec::json_str("0.1.95")),
+        ("newer", base_codec::json_bool(true)),
+        ("channel", base_codec::json_str("beta")),
+        ("auto", base_codec::json_bool(false)),
+        ("updatable", base_codec::json_bool(true)),
+        ("state", base_codec::json_str("idle")),
+        ("builtAt", base_codec::json_int64(stale_built)),
+      ])),
+      ("automaticDecisions", base_codec::json_obj([
+        ("settings", base_codec::json_obj([
+          ("completion", base_codec::json_obj([("enabled", base_codec::json_bool(true))])),
+          ("archiveReview", base_codec::json_obj([("enabled", base_codec::json_bool(false))])),
+        ])),
+      ])),
+      ("profiles", base_codec::json_arr([
+        base_codec::json_obj([
+          ("id", base_codec::json_str("prof-1")),
+          ("name", base_codec::json_str("Claude Pro")),
+          ("email", base_codec::json_str("alice@example.com")),
+          ("runtime", base_codec::json_str("claude")),
+          ("enabled", base_codec::json_bool(true)),
+          ("access", base_codec::json_obj([
+            ("kind", base_codec::json_str("subscription")),
+            ("provider", base_codec::json_str("anthropic")),
+            ("apiKey", base_codec::json_str("sk-ant-SECRET")),
+            ("token", base_codec::json_str("SECRET_TOK")),
+          ])),
+          ("models", base_codec::json_arr([base_codec::json_str("claude-opus-5-5")])),
+          ("runtimes", base_codec::json_arr([base_codec::json_str("claude")])),
+          ("apiKey", base_codec::json_str("sk-top-SECRET")),
+          ("quota", base_codec::json_obj([
+            ("state", base_codec::json_str("ok")),
+            ("windows", base_codec::json_arr([
+              base_codec::json_obj([
+                ("label", base_codec::json_str("5h")),
+                ("left", base_codec::json_num(75.0)),
+              ]),
+            ])),
+          ])),
+        ]),
+      ])),
+    ])),
+  )
+
+  // 4. Usage & rates docs
+  sim.put_station_doc(
+    st,
+    "usage",
+    base_codec::json_stringify(base_codec::json_obj([
+      ("rows", base_codec::json_arr([
+        base_codec::json_obj([
+          ("day", base_codec::json_str("2026-11-23")),
+          ("person", base_codec::json_str("alice@example.com")),
+          ("chat", base_codec::json_str("c-1")),
+          ("chatTitle", base_codec::json_str("Build parity")),
+          ("profile", base_codec::json_str("prof-1")),
+          ("model", base_codec::json_str("claude-opus-5-5")),
+          ("cost", base_codec::json_num(1.25)),
+          ("calls", base_codec::json_int(12)),
+          ("input", base_codec::json_int(10000)),
+          ("cacheRead", base_codec::json_int(6000)),
+          ("cacheWrite", base_codec::json_int(1000)),
+          ("output", base_codec::json_int(2500)),
+        ]),
+      ])),
+    ])),
+  )
+  sim.put_station_doc(
+    st,
+    "rates",
+    base_codec::json_stringify(base_codec::json_obj([
+      ("items", base_codec::json_arr([
+        base_codec::json_obj([
+          ("key", base_codec::json_str("sess-1")),
+          ("title", base_codec::json_str("Build parity")),
+          ("model", base_codec::json_str("claude-opus-5-5")),
+          ("chat", base_codec::json_str("c-1")),
+          ("rate", base_codec::json_num(48.5)),
+        ]),
+      ])),
+    ])),
+  )
+
+  // 5. Active & archived chats + thread + entries + outbox
+  sim.put_chat_row(ParityChatRow::{
+    station: st,
+    archived: 0,
+    id: "c-1",
+    ord: 1.0,
+    thread: Some(10),
+    session: Some("sess-1"),
+    pinned_at: None,
+    last_active: now_ms - 1000.to_int64(),
+    json: base_codec::json_stringify(base_codec::json_obj([
+      ("id", base_codec::json_str("c-1")),
+      ("session", base_codec::json_str("sess-1")),
+      ("thread", base_codec::json_int(10)),
+      ("title", base_codec::json_str("Build parity")),
+      ("lastActiveAt", base_codec::json_int64(now_ms - 1000.to_int64())),
+      ("unread", base_codec::json_bool(true)),
+      ("mine", base_codec::json_bool(true)),
+      ("agents", base_codec::json_arr([])),
+    ])),
+  })
+  sim.put_chat_row(ParityChatRow::{
+    station: st,
+    archived: 1,
+    id: "c-arch-1",
+    ord: 2.0,
+    thread: Some(11),
+    session: Some("sess-2"),
+    pinned_at: None,
+    last_active: now_ms - 86400000.to_int64(),
+    json: base_codec::json_stringify(base_codec::json_obj([
+      ("id", base_codec::json_str("c-arch-1")),
+      ("session", base_codec::json_str("sess-2")),
+      ("thread", base_codec::json_int(11)),
+      ("title", base_codec::json_str("Archived chat")),
+      ("lastActiveAt", base_codec::json_int64(now_ms - 86400000.to_int64())),
+      ("archived", base_codec::json_obj([
+        ("at", base_codec::json_int64(now_ms - 3600000.to_int64())),
+        ("by", base_codec::json_str("user")),
+      ])),
+      ("agents", base_codec::json_arr([])),
+    ])),
+  })
+  sim.threads.set(st + ":10", base_codec::json_stringify(base_codec::json_obj([
+    ("id", base_codec::json_int(10)),
+    ("title", base_codec::json_str("Build parity")),
+    ("surface", base_codec::json_str("chat")),
+  ])))
+  sim.thread_reads.set(st + ":10", (1, 1))
+  sim.put_entry_row(st, 10, 1, base_codec::json_stringify(base_codec::json_obj([
+    ("kind", base_codec::json_str("message")),
+    ("ts", base_codec::json_str("1000.1")),
+    ("at", base_codec::json_int64(now_ms - 5000.to_int64())),
+    ("authorKind", base_codec::json_str("person")),
+    ("author", base_codec::json_str("alice@example.com")),
+    ("authorName", base_codec::json_str("Alice")),
+    ("text", base_codec::json_str("Hello parity world")),
+    ("clientKey", base_codec::json_str("ck-confirmed")),
+  ])))
+  sim.put_entry_row(st, 10, 2, base_codec::json_stringify(base_codec::json_obj([
+    ("kind", base_codec::json_str("tool_call")),
+    ("callId", base_codec::json_str("tc-1")),
+    ("name", base_codec::json_str("read_file")),
+    ("args", base_codec::json_str("{\"path\":\"a.ts\"}")),
+  ])))
+  sim.put_entry_row(st, 10, 3, base_codec::json_stringify(base_codec::json_obj([
+    ("kind", base_codec::json_str("tool_result")),
+    ("callId", base_codec::json_str("tc-1")),
+    ("result", base_codec::json_str("ok")),
+  ])))
+  sim.put_entry_row(st, 10, 4, base_codec::json_stringify(base_codec::json_obj([
+    ("kind", base_codec::json_str("message")),
+    ("ts", base_codec::json_str("1000.4")),
+    ("at", base_codec::json_int64(now_ms - 2000.to_int64())),
+    ("authorKind", base_codec::json_str("agent")),
+    ("author", base_codec::json_str("claude")),
+    ("text", base_codec::json_str("Choose next step")),
+    ("card", base_codec::json_obj([
+      ("type", base_codec::json_str("options")),
+      ("assignee", base_codec::json_str("alice@example.com")),
+      ("options", base_codec::json_arr([
+        base_codec::json_obj([("label", base_codec::json_str("Ship")), ("recommended", base_codec::json_bool(true))]),
+        base_codec::json_obj([("label", base_codec::json_str("Hold"))]),
+      ])),
+    ])),
+  ])))
+  sim.outbox_rows.set(st + ":10", base_codec::json_stringify(base_codec::json_arr([
+    base_codec::json_obj([
+      ("id", base_codec::json_str("ob-1")),
+      ("clientKey", base_codec::json_str("ck-confirmed")),
+      ("text", base_codec::json_str("Hello parity world")),
+      ("createdAt", base_codec::json_int64(now_ms - 5000.to_int64())),
+    ]),
+    base_codec::json_obj([
+      ("id", base_codec::json_str("ob-2")),
+      ("clientKey", base_codec::json_str("ck-pending")),
+      ("text", base_codec::json_str("Still sending")),
+      ("createdAt", base_codec::json_int64(now_ms - 500.to_int64())),
+    ]),
+  ])))
+
+  // 6. Vaults doc
+  sim.account_docs.set(
+    "vaults:" + ws,
+    base_codec::json_stringify(base_codec::json_obj([
+      ("vaults", base_codec::json_arr([
+        base_codec::json_obj([
+          ("id", base_codec::json_str("v-1")),
+          ("name", base_codec::json_str("Alice Vault")),
+          ("owner", base_codec::json_str("user-alice")),
+          ("ownerName", base_codec::json_str("Alice")),
+          ("mine", base_codec::json_bool(true)),
+          ("members", base_codec::json_arr([])),
+          ("station", base_codec::json_str(st)),
+          ("stationName", base_codec::json_str("Mac Studio")),
+          ("items", base_codec::json_int(2)),
+          ("devices", base_codec::json_int(1)),
+          ("open", base_codec::json_bool(true)),
+          ("keyed", base_codec::json_bool(true)),
+          ("missing", base_codec::json_int(0)),
+          ("recoverable", base_codec::json_bool(false)),
+          ("scope", base_codec::json_str("personal")),
+          ("secretBlob", base_codec::json_str("MUST_BE_STRIPPED")),
+        ]),
+      ])),
+      ("requests", base_codec::json_arr([])),
+      ("refused", base_codec::json_arr([])),
+    ])),
+  )
+
+  // 7. Presets, otherPresets, stars, boardDrafts, downloads
+  sess.core.presets_held.push(views::PresetRecord::{
+    id: "pre-1",
+    owner: "user-alice",
+    rev: 1,
+    updated_at: now_ms,
+    gone: false,
+    name: "Default Agent",
+    instructions: "Be helpful",
+    dirs: [],
+    stations: [st],
+    auto_station: false,
+    model: None,
+    created_by: "alice@example.com",
+    created_at: now_ms - 10000.to_int64(),
+    home: "s1",
+  })
+  sess.core.other_presets_held.push(views::PresetRecord::{
+    id: "pre-other-1",
+    owner: "user-bob",
+    rev: 1,
+    updated_at: now_ms,
+    gone: false,
+    name: "Bob Preset",
+    instructions: "",
+    dirs: [],
+    stations: [st],
+    auto_station: false,
+    model: None,
+    created_by: "bob@example.com",
+    created_at: now_ms - 5000.to_int64(),
+    home: "s1",
+  })
+  sess.core.stars_held.push(views::StarEntry::{
+    key: "claude-opus-5-5",
+    on: true,
+    rev: 1,
+    at: now_ms,
+  })
+  sess.core.board_drafts_held.push(views::BoardDraftRecord::{
+    id: "bd-1",
+    owner: "user-alice",
+    rev: 1,
+    updated_at: now_ms,
+    gone: false,
+    at: now_ms,
+    title: "Draft ticket",
+    station: st,
+    station_name: "Mac Studio",
+    files: [views::DraftAttachment::{ id: "f-1", name: "spec.md", size: 128.to_int64() }],
+  })
+  sess.core.downloads_held.push(views::DownloadEntry::{
+    id: "dl-1",
+    station: st,
+    name: "2026-11-23T10-00-00-abcdef-report.pdf",
+    size: 1000.to_int64(),
+    loaded: 500.to_int64(),
+    state: "going",
+    error: None,
+    started_at: now_ms - 2000.to_int64(),
+  })
+}
+
+pub fn handle_l3_op(
+  op : String,
+  args : base_codec::Json,
+  sess : ParityCoreSession,
+) -> Option[String] {
+  // ── Sub-suite 1: Store schema & mdKey ──
+  if op == "store.schemaVersion" {
+    return Some(ok_resp(base_codec::json_int(store::schema_version())))
+  }
+  if op == "store.migrations" {
+    let migs = store::migrations()
+    let arr : Array[base_codec::Json] = []
+    for i in 0..<migs.length() {
+      arr.push(base_codec::json_str(migs[i]))
+    }
+    return Some(ok_resp(base_codec::json_arr(arr)))
+  }
+  if op == "store.ensureSaidDdl" {
+    return Some(ok_resp(base_codec::json_str(store::sql_ensure_said_ddl())))
+  }
+  if op == "store.ensureMdKeptDdl" {
+    return Some(ok_resp(base_codec::json_str(store::sql_ensure_md_kept())))
+  }
+  if op == "store.ensureKeptDdl" {
+    return Some(ok_resp(base_codec::json_str(store::sql_ensure_kept())))
+  }
+  if op == "store.ensureMovedDdl" {
+    return Some(ok_resp(base_codec::json_str(store::sql_ensure_moved())))
+  }
+  if op == "store.mdKey" {
+    return Some(ok_resp(base_codec::json_str(store::md_key(j_s(args, "text")))))
+  }
+  if op == "store.olderMdKeys" {
+    let from_v = match j_oi(args, "from") { Some(v) => v; None => 1 }
+    let ks = store::older_md_keys(j_s(args, "key"), from=from_v)
+    let out : Array[base_codec::Json] = []
+    for i in 0..<ks.length() {
+      out.push(base_codec::json_str(ks[i]))
+    }
+    return Some(ok_resp(base_codec::json_arr(out)))
+  }
+
+  // ── Sub-suite 2: Lock Fork Choice / againOf / vouchersIn / approvedIn / effectiveState ──
+  if op == "lock.linksValid" {
+    let entries = parse_form_entries(j_arr_l3(args, "entries"))
+    let c = views::views_lock_crypto()
+    return Some(ok_resp(base_codec::json_bool(views::links_valid(entries, c))))
+  }
+  if op == "lock.keepEntries" {
+    let c = views::views_lock_crypto()
+    let was_entries = parse_form_entries(j_arr_l3(args, "entries"))
+    let was_aside = parse_form_entries(j_arr_l3(args, "aside"))
+    let brought = parse_form_entries(j_arr_l3(args, "brought"))
+    let root_hash = j_s(args, "rootHash")
+    let is_person = j_b(args, "isPerson")
+    let now_opt = j_onum(args, "now")
+    let was_head = if was_entries.length() > 0 {
+      match lock::entry_hash(was_entries[was_entries.length() - 1], c) {
+        Ok(h) => h
+        Err(_) => ""
+      }
+    } else {
+      ""
+    }
+    let was_gen = if was_entries.length() > 0 {
+      match lock::entry_hash(was_entries[0], c) {
+        Ok(h) => h
+        Err(_) => root_hash
+      }
+    } else {
+      root_hash
+    }
+    let was = views::KeptLog::{
+      entries: was_entries,
+      aside: was_aside,
+      head: was_head,
+      genesis: was_gen,
+    }
+    match views::keep_entries(was, brought, root_hash, is_person, now_opt, c) {
+      Err(e) => return Some(err_resp(e))
+      Ok(out) => {
+        let active_hashes : Array[base_codec::Json] = []
+        for i in 0..<out.kept.entries.length() {
+          match lock::entry_hash(out.kept.entries[i], c) {
+            Ok(h) => active_hashes.push(base_codec::json_str(h))
+            Err(_) => ()
+          }
+        }
+        let aside_hashes : Array[base_codec::Json] = []
+        for i in 0..<out.kept.aside.length() {
+          match lock::entry_hash(out.kept.aside[i], c) {
+            Ok(h) => aside_hashes.push(base_codec::json_str(h))
+            Err(_) => ()
+          }
+        }
+        return Some(ok_resp(base_codec::json_obj([
+          ("entries", form_entries_to_base(out.kept.entries)),
+          ("aside", form_entries_to_base(out.kept.aside)),
+          ("activeHashes", base_codec::json_arr(active_hashes)),
+          ("asideHashes", base_codec::json_arr(aside_hashes)),
+          ("head", base_codec::json_str(out.kept.head)),
+          ("moved", base_codec::json_bool(out.moved_head)),
+          ("changed", base_codec::json_bool(out.changed)),
+          ("rejected", base_codec::json_int(out.rejected)),
+        ])))
+      }
+    }
+  }
+  if op == "lock.againOf" {
+    let c = views::views_lock_crypto()
+    let chain = parse_form_entries(j_arr_l3(args, "chain"))
+    let aside = parse_form_entries(j_arr_l3(args, "aside"))
+    let lost = base_to_form(get_json(args, "lost"))
+    let tries = j_i(args, "tries")
+    let dec = views::again_of(chain, aside, lost, lock_entry_subject, tries, c)
+    let dec_str = match dec {
+      views::AgainDecision::Done => "done"
+      views::AgainDecision::Otherwise => "otherwise"
+      views::AgainDecision::Unmoved => "unmoved"
+      views::AgainDecision::ReSign => "sign"
+      views::AgainDecision::Exhausted => "exhausted"
+    }
+    return Some(ok_resp(base_codec::json_str(dec_str)))
+  }
+  if op == "lock.vouchersIn" {
+    let raw_locks = j_arr_l3(args, "locks")
+    let locks : Array[views::OwnStandings] = []
+    for i in 0..<raw_locks.length() {
+      locks.push(parse_own_standings(raw_locks[i]))
+    }
+    let res = views::vouchers_in(locks, j_s(args, "sub"), j_s(args, "base"))
+    let out : Array[base_codec::Json] = []
+    for i in 0..<res.length() {
+      out.push(base_codec::json_str(res[i]))
+    }
+    return Some(ok_resp(base_codec::json_arr(out)))
+  }
+  if op == "lock.approvedIn" {
+    let raw_locks = j_arr_l3(args, "locks")
+    let locks : Array[views::OwnStandings] = []
+    for i in 0..<raw_locks.length() {
+      locks.push(parse_own_standings(raw_locks[i]))
+    }
+    let res = views::approved_in(
+      locks,
+      j_s(args, "sub"),
+      j_os(args, "meId"),
+      j_os(args, "meSignKey"),
+      str_set_from_arr(j_arr_l3(args, "chainSigners")),
+      str_set_from_arr(j_arr_l3(args, "chainSigned")),
+      str_set_from_arr(j_arr_l3(args, "everIds")),
+      str_set_from_arr(j_arr_l3(args, "everKeys")),
+    )
+    let out : Array[base_codec::Json] = []
+    for i in 0..<res.length() {
+      let d = res[i]
+      let fs : Array[(String, base_codec::Json)] = [
+        ("key", base_codec::json_str(d.key)),
+        ("id", base_codec::json_str(d.id)),
+        ("label", base_codec::json_str(d.label)),
+      ]
+      match d.sign_key {
+        Some(sk) => fs.push(("sign_key", base_codec::json_str(sk)))
+        None => fs.push(("sign_key", base_codec::json_null()))
+      }
+      out.push(base_codec::json_obj(fs))
+    }
+    return Some(ok_resp(base_codec::json_arr(out)))
+  }
+  if op == "lock.effectiveState" {
+    let c = views::views_lock_crypto()
+    let ws = j_s(args, "ws")
+    let chain = parse_form_entries(j_arr_l3(args, "chain"))
+    let raw_pcs = j_arr_l3(args, "personChains")
+    let pcs : Array[Array[form::Json]] = []
+    for i in 0..<raw_pcs.length() {
+      match raw_pcs[i] {
+        base_codec::Json::Arr(a) => pcs.push(parse_form_entries(a))
+        _ => ()
+      }
+    }
+    let bodies = parse_form_entries(j_arr_l3(args, "bodies"))
+    let now_s = match j_onum(args, "now") { Some(v) => v; None => 0.0 }
+    match views::effective_state(ws, chain, pcs, bodies, now_s, c) {
+      Err(e) => return Some(err_resp(e))
+      Ok(ef) => {
+        let member_subs = ef.state.members.keys()
+        let members_j : Array[base_codec::Json] = []
+        for i in 0..<member_subs.length() {
+          members_j.push(base_codec::json_str(member_subs[i]))
+        }
+        let dev_ids = ef.state.devices.keys()
+        let devs_j : Array[base_codec::Json] = []
+        for i in 0..<dev_ids.length() {
+          devs_j.push(base_codec::json_str(dev_ids[i]))
+        }
+        return Some(ok_resp(base_codec::json_obj([
+          ("ws", base_codec::json_str(ef.ws)),
+          ("moved", base_codec::json_bool(ef.moved)),
+          ("on", base_codec::json_str(ef.on)),
+          ("safeMode", base_codec::json_bool(ef.safe_mode)),
+          ("rootIn", base_codec::json_bool(ef.root_in)),
+          ("members", base_codec::json_arr(members_j)),
+          ("devices", base_codec::json_arr(devs_j)),
+        ])))
+      }
+    }
+  }
+
+  // ── Sub-suite 3: All 26 topic projections ──
+  if op == "views.projectAll" {
+    let now_ms = match j_oi64(args, "nowMs") { Some(v) => v; None => 1795442000000.to_int64() }
+    let fresh = ParityCoreSession::new("ws1", "ws1/s1")
+    seed_all_views_fixture(fresh, now_ms)
+    let ws = "ws1"
+    let st = "ws1/s1"
+    let briefs = [
+      views::StationBrief::{
+        address: st,
+        id: "s1",
+        name: "Mac Studio",
+        emoji: None,
+        icon: None,
+        online: true,
+        updating: false,
+        offline_text: None,
+        reconnecting_text: None,
+        running: 1,
+      },
+    ]
+    let open_jobs = [
+      base_codec::json_obj([
+        ("id", base_codec::json_str("job-1")),
+        ("name", base_codec::json_str("Dev server")),
+        ("station", base_codec::json_str(st)),
+        ("chat", base_codec::json_str("10")),
+        ("thread", base_codec::json_int(10)),
+        ("state", base_codec::json_str("running")),
+        ("port", base_codec::json_int(3000)),
+        ("startedAt", base_codec::json_int64(now_ms - 7200000.to_int64())),
+        ("mine", base_codec::json_bool(true)),
+      ]),
+    ]
+
+    let safe_mode = fresh.core.current_safe_mode_view()
+    let out : Array[(String, base_codec::Json)] = []
+
+    match views::project_accounts(fresh.db) {
+      sql::SqlResult::Ok(v) => out.push(("accounts", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("accounts: " + e.to_string()))
+    }
+    match views::project_workspaces(fresh.db) {
+      sql::SqlResult::Ok(v) => out.push(("workspaces", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("workspaces: " + e.to_string()))
+    }
+    match views::project_workspace(fresh.db, ws) {
+      sql::SqlResult::Ok(Some(v)) => out.push(("workspace", v))
+      _ => return Some(err_resp("workspace missing"))
+    }
+    match views::project_stations(fresh.db, ws) {
+      sql::SqlResult::Ok(v) => out.push(("stations", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("stations: " + e.to_string()))
+    }
+    match views::project_chats(fresh.db, ws, briefs, now_ms, fresh.core.rows_memo, fresh.core.viewer_marks) {
+      sql::SqlResult::Ok(v) => out.push(("chats", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("chats: " + e.to_string()))
+    }
+    match views::project_chat(fresh.db, fresh.core.md_store, st, 10, "alice@example.com", now_ms) {
+      sql::SqlResult::Ok(v) => out.push(("chat", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("chat: " + e.to_string()))
+    }
+    out.push(("lock", safe_mode.to_json()))
+    match views::project_vaults(fresh.db, ws, safe_mode, true, true) {
+      sql::SqlResult::Ok(v) => out.push(("vaults", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("vaults: " + e.to_string()))
+    }
+    out.push(("presets", views::project_own_presets(fresh.core.presets_held, "user-alice")))
+    out.push(("otherPresets", views::project_other_presets([fresh.core.other_presets_held], fresh.core.presets_held, "user-alice", false)))
+    out.push(("boardDrafts", views::project_board_drafts(fresh.core.board_drafts_held, "user-alice")))
+    out.push(("downloads", views::project_downloads(fresh.core.downloads_held)))
+    match views::project_archive(fresh.db, ws, briefs, now_ms) {
+      sql::SqlResult::Ok(v) => out.push(("archive", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("archive: " + e.to_string()))
+    }
+    match views::project_search(fresh.db, ws, briefs, "parity") {
+      sql::SqlResult::Ok(v) => out.push(("search", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("search: " + e.to_string()))
+    }
+    match views::project_chat_search(fresh.db, ws, briefs, "parity") {
+      sql::SqlResult::Ok(v) => out.push(("chatSearch", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("chatSearch: " + e.to_string()))
+    }
+    match views::project_profiles(fresh.db, ws) {
+      sql::SqlResult::Ok(v) => out.push(("profiles", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("profiles: " + e.to_string()))
+    }
+    match views::project_profiles_overview(fresh.db, ws, now_ms) {
+      sql::SqlResult::Ok(v) => out.push(("profilesOverview", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("profilesOverview: " + e.to_string()))
+    }
+    match views::project_models(fresh.db, ws, fresh.core.stars_held) {
+      sql::SqlResult::Ok(v) => out.push(("models", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("models: " + e.to_string()))
+    }
+    match views::project_fleet(fresh.db, ws, briefs, now_ms, running_chats=1, open_jobs=open_jobs) {
+      sql::SqlResult::Ok(v) => out.push(("fleet", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("fleet: " + e.to_string()))
+    }
+    match views::project_usage(fresh.db, ws, briefs, now_ms) {
+      sql::SqlResult::Ok(v) => out.push(("usage", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("usage: " + e.to_string()))
+    }
+    match views::project_agent_rates(fresh.db, ws, briefs) {
+      sql::SqlResult::Ok(v) => out.push(("agentRates", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("agentRates: " + e.to_string()))
+    }
+    match views::project_settings(fresh.db, ws) {
+      sql::SqlResult::Ok(v) => out.push(("settings", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("settings: " + e.to_string()))
+    }
+    match views::project_station_updates(fresh.db, ws, now_ms) {
+      sql::SqlResult::Ok(v) => out.push(("stationUpdates", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("stationUpdates: " + e.to_string()))
+    }
+    match views::project_rail_card(fresh.db, ws, "chats", briefs, 1, fresh.core.viewer_marks, now_ms) {
+      sql::SqlResult::Ok(v) => out.push(("railCard", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("railCard: " + e.to_string()))
+    }
+    match views::project_chat_jobs(fresh.db, st, 10, open_jobs, now_ms) {
+      sql::SqlResult::Ok(v) => out.push(("chatJobs", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("chatJobs: " + e.to_string()))
+    }
+    match views::project_long_jobs(fresh.db, ws, briefs, open_jobs, now_ms) {
+      sql::SqlResult::Ok(v) => out.push(("longJobs", v))
+      sql::SqlResult::Err(e) => return Some(err_resp("longJobs: " + e.to_string()))
+    }
+
+    return Some(ok_resp(base_codec::json_obj(out)))
+  }
+
+  // ── Sub-suite 4: Stateful `ClientCore` wire session driver ──
+  if op == "core.reset" {
+    let ws = match j_os(args, "workspace") { Some(s) => s; None => "ws1" }
+    let st = match j_os(args, "station") { Some(s) => s; None => ws + "/s1" }
+    let fresh = ParityCoreSession::new(ws, st)
+    sess.rt = fresh.rt
+    sess.sim = fresh.sim
+    sess.db = fresh.db
+    sess.core = fresh.core
+    if j_b(args, "seedDefault") {
+      let now_ms = match j_oi64(args, "nowMs") { Some(v) => v; None => 1795442000000.to_int64() }
+      seed_all_views_fixture(sess, now_ms)
+      sess.sim.writes = 0
+    }
+    return Some(ok_resp(base_codec::json_bool(true)))
+  }
+  if op == "core.wire" {
+    let raw_str = match base_codec::json_get(args, "rawText") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => base_codec::json_stringify(get_json(args, "msg"))
+    }
+    match sess.core.handle_wire(raw_str) {
+      None => return Some(ok_resp(base_codec::json_null()))
+      Some((resp_json, _bytes)) => {
+        match base_codec::json_parse(resp_json) {
+          base_codec::JsonParseResult::Ok(j) => return Some(ok_resp(j))
+          base_codec::JsonParseResult::Err(e) => return Some(err_resp("bad wire json: " + e))
+        }
+      }
+    }
+  }
+  if op == "core.refreshTopic" {
+    let evs = sess.core.router.refresh_topic_name(j_s(args, "topic"))
+    let out : Array[base_codec::Json] = []
+    for i in 0..<evs.length() {
+      let (s, _) = protocol::encode_core_event(evs[i])
+      match base_codec::json_parse(s) {
+        base_codec::JsonParseResult::Ok(j) => out.push(j)
+        base_codec::JsonParseResult::Err(_) => ()
+      }
+    }
+    return Some(ok_resp(base_codec::json_arr(out)))
+  }
+  if op == "core.mutateChat" {
+    let st = match j_os(args, "station") { Some(s) => s; None => sess.core.station }
+    let id = j_s(args, "id")
+    let arch = j_i(args, "archived")
+    let key = st + ":" + arch.to_string() + ":" + id
+    let raw_doc = get_json(args, "doc")
+    let doc_str = base_codec::json_stringify(raw_doc)
+    let pin = j_oi64(args, "pinnedAt")
+    let last_act = j_i64(args, "lastActiveAt")
+    let th = j_oi(args, "thread")
+    let ses = j_os(args, "session")
+    // If archiving an active chat, remove its archived=0 row so list drops it.
+    if arch == 1 {
+      sess.sim.chats.remove(st + ":0:" + id)
+    }
+    sess.sim.put_chat_row(ParityChatRow::{
+      station: st,
+      archived: arch,
+      id: id,
+      ord: 1.0,
+      thread: th,
+      session: ses,
+      pinned_at: pin,
+      last_active: last_act,
+      json: doc_str,
+    })
+    let _ = key
+    return Some(ok_resp(base_codec::json_bool(true)))
+  }
+  if op == "core.sqlWrites" {
+    let w = sess.sim.writes
+    if j_b(args, "reset") {
+      sess.sim.writes = 0
+    }
+    return Some(ok_resp(base_codec::json_int(w)))
+  }
+
+  None
+}

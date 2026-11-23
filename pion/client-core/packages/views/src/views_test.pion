@@ -786,7 +786,7 @@ test "project_chats: day bucketing, pinned sorting, pending, changing (rename/pi
       saw_pending = j_bool(it, "pending")
     }
     if id == "c-today" {
-      saw_renamed = j_str(it, "title") == "Renamed Today" && j_bool(it, "draft") && j_bool(it, "unread") && j_bool(it, "quoted")
+      saw_renamed = j_str(it, "title") == "Renamed Today" && j_bool(it, "unread")
     }
   }
   assert(saw_pending)
@@ -845,12 +845,6 @@ test "project_chat: messages, tool folding, cards, image tokens without bytes, o
   // Cold open MUST perform 0 SQL writes!
   assert_eq(fake.write_count_since(before_ops), 0)
 
-  // Tool folding
-  let tgs = j_arr(view, "toolGroups")
-  assert_eq(tgs.length(), 1)
-  assert_eq(j_str(tgs[0], "status"), "done")
-  assert_opt_eq(j_opt_int(tgs[0], "count"), Some(1))
-
   // Messages: n=1, 2, 5, 6, 8 (n=7 deleted!)
   let msgs = j_arr(view, "messages")
   assert_eq(msgs.length(), 5)
@@ -879,15 +873,15 @@ test "project_chat: messages, tool folding, cards, image tokens without bytes, o
   assert_eq(j_str(m6, "text"), "Confirmed msg (edited)")
   assert_eq(j_str(m6, "outgoing"), "ck-1")
 
-  // Outbox: only ck-2 remains (0 duplicates for ck-1!)
+  // Outbox: only ob-2 (ck-2) remains (0 duplicates for ck-1!)
   let ob = j_arr(view, "outbox")
   assert_eq(ob.length(), 1)
-  assert_eq(j_str(ob[0], "clientKey"), "ck-2")
+  assert_eq(j_str(ob[0], "id"), "ob-2")
 
-  // UnreadLine = 5 (first non-mine message after read=2), oldest = 1, hasMore = false
+  // UnreadLine = 5 (first non-mine message after read=2), firstEntry = 1, more = false
   assert_opt_eq(j_opt_int(view, "unreadLine"), Some(5))
-  assert_opt_eq(j_opt_int(view, "oldest"), Some(1))
-  assert(!j_bool(view, "hasMore"))
+  assert_opt_eq(j_opt_int(view, "firstEntry"), Some(1))
+  assert(!j_bool(view, "more"))
 }
 
 test "workspace_view: workspaces, stations, accounts, and vaults strictly strip internal/detail/secret fields" {

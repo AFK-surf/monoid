@@ -400,19 +400,19 @@ test "presets_view: strictly newer merge, forward, gone_kept trim, ownerless cla
   b2_assert(!has_g1)
   b2_assert(has_g2)
 
-  // Default shows own presets only; `other_presets` shows bob's read-only + copyable, never editable.
+  // Default shows own presets only (StationPresets shape); `other_presets` shows bob's (OtherPresetsView shape).
   let own_view = project_own_presets(merged.records, "alice")
   b2_assert_eq(j_arr(own_view, "presets").length(), 1)
   b2_assert_eq(j_str(j_arr(own_view, "presets")[0], "id"), "p-1")
-  b2_assert(j_bool(j_arr(own_view, "presets")[0], "editable"))
+  b2_assert_eq(j_str(j_arr(own_view, "presets")[0], "createdBy"), "alice@ex.com")
 
   let bob_v2 = PresetRecord::live("p-bob", "bob", 2, 300.to_int64(), 70.to_int64(), "bob@ex.com", "st-2", "Bob Preset v2")
   let others_view = project_other_presets([[bob_preset, p1_v2], [bob_v2]], merged.records, "alice", false)
   let other_items = j_arr(others_view, "presets")
   b2_assert_eq(other_items.length(), 1)
   b2_assert_eq(j_str(other_items[0], "name"), "Bob Preset v2")
-  b2_assert(!j_bool(other_items[0], "editable"))
-  b2_assert(j_bool(other_items[0], "copyable"))
+  b2_assert_eq(j_str(other_items[0], "whose"), "bob@ex.com")
+  b2_assert_eq(j_str(other_items[0], "station"), "st-2")
   b2_assert(!can_edit_preset(bob_v2, "alice"))
   let copied = copy_preset(bob_v2, "p-copy", "alice", "alice@ex.com", "st-1", 999.to_int64())
   b2_assert(can_edit_preset(copied, "alice"))

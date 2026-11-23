@@ -144,7 +144,11 @@ fn opt_str_json(o : Option[String]) -> base_codec::Json {
   }
 }
 
-fn handle_op(op : String, args : base_codec::Json) -> String {
+fn handle_op(op : String, args : base_codec::Json, sess : ParityCoreSession) -> String {
+  match handle_l3_op(op, args, sess) {
+    Some(r) => return r
+    None => ()
+  }
   // ── Module A: delta.ts ──
   if op == "delta.diff" {
     let ops = protocol::diff(get_json(args, "old"), get_json(args, "next"))
@@ -455,6 +459,7 @@ fn handle_op(op : String, args : base_codec::Json) -> String {
 }
 
 fn main(world : World) -> Unit {
+  let sess = ParityCoreSession::new("ws1", "ws1/s1")
   while true {
     match io_read_line(world) {
       None => break
@@ -464,7 +469,7 @@ fn main(world : World) -> Unit {
         }
         let resp = match base_codec::json_parse(line) {
           base_codec::JsonParseResult::Err(e) => err_resp("json parse error: " + e)
-          base_codec::JsonParseResult::Ok(req) => handle_op(get_str(req, "op"), get_json(req, "args"))
+          base_codec::JsonParseResult::Ok(req) => handle_op(get_str(req, "op"), get_json(req, "args"), sess)
         }
         io_println(world, resp)
       }

@@ -132,13 +132,9 @@ fn encode_usage_list_fuv(
     out.push(base_codec::json_obj([
       ("key", base_codec::json_str(a.key)),
       ("title", base_codec::json_str(a.title)),
-      ("cost", base_codec::json_num(a.cost)),
       ("costText", base_codec::json_str(format_money_fuv(a.cost))),
       ("share", base_codec::json_num(share)),
       ("shareText", base_codec::json_str(pct)),
-      ("calls", base_codec::json_int64(a.calls)),
-      ("callsText", base_codec::json_str(format_count_fuv(a.calls))),
-      ("tokens", base_codec::json_int64(a.tokens)),
       ("tokensText", base_codec::json_str(format_count_fuv(a.tokens))),
     ]))
   }
@@ -264,14 +260,15 @@ pub fn project_usage(
     if c > max_cost {
       max_cost = c
     }
-    let dc = match day_calls_map.get(d) { Some(v) => v; None => 0.to_int64() }
+    let _ = match day_calls_map.get(d) { Some(v) => v; None => 0.to_int64() }
     daily_out.push(base_codec::json_obj([
       ("day", base_codec::json_str(d)),
       ("label", base_codec::json_str(d)),
-      ("today", base_codec::json_bool(i == day_order.length() - 1)),
       ("cost", base_codec::json_num(c)),
       ("costText", base_codec::json_str(format_money_fuv(c))),
-      ("calls", base_codec::json_int64(dc)),
+      ("name", base_codec::json_str(d)),
+      ("tick", base_codec::json_str(d)),
+      ("shares", base_codec::json_arr([])),
     ]))
   }
 
@@ -308,21 +305,25 @@ pub fn project_usage(
       ("key", base_codec::json_str("people")),
       ("title", base_codec::json_str("按成员")),
       ("items", base_codec::json_arr(encode_usage_list_fuv(people_map, people_order, total_cost, total_calls))),
+      ("parts", base_codec::json_arr([])),
     ]),
     base_codec::json_obj([
       ("key", base_codec::json_str("chats")),
       ("title", base_codec::json_str("按对话")),
       ("items", base_codec::json_arr(encode_usage_list_fuv(chats_map, chats_order, total_cost, total_calls))),
+      ("parts", base_codec::json_arr([])),
     ]),
     base_codec::json_obj([
       ("key", base_codec::json_str("profiles")),
       ("title", base_codec::json_str("按账号")),
       ("items", base_codec::json_arr(encode_usage_list_fuv(profiles_map, profiles_order, total_cost, total_calls))),
+      ("parts", base_codec::json_arr([])),
     ]),
     base_codec::json_obj([
       ("key", base_codec::json_str("models")),
       ("title", base_codec::json_str("按模型")),
       ("items", base_codec::json_arr(encode_usage_list_fuv(models_map, models_order, total_cost, total_calls))),
+      ("parts", base_codec::json_arr([])),
     ]),
   ])
 
@@ -336,18 +337,28 @@ pub fn project_usage(
       notes.push(base_codec::json_str(briefs[i].name + " 离线"))
     }
   }
-
+  let is_empty = total_calls == 0.to_int64()
+  let _ = now_ms
+  let wait_obj = base_codec::json_obj([
+    ("reading", base_codec::json_bool(false)),
+    ("failing", base_codec::json_arr([])),
+    ("empty", base_codec::json_bool(is_empty)),
+  ])
   sql::SqlResult::Ok(base_codec::json_obj([
-    ("workspace", base_codec::json_str(ws_scope)),
-    ("at", base_codec::json_int64(now_ms)),
-    ("days", base_codec::json_int(days)),
     ("split", base_codec::json_str(chosen_split)),
-    ("empty", base_codec::json_bool(total_calls == 0.to_int64())),
-    ("max", base_codec::json_num(max_cost)),
+    ("wait", wait_obj),
+    ("empty", base_codec::json_bool(is_empty)),
     ("tiles", tiles),
+    ("versus", base_codec::json_str("")),
+    ("period", base_codec::json_str("近 " + days.to_string() + " 天")),
+    ("series", base_codec::json_arr([])),
     ("daily", base_codec::json_arr(daily_out)),
+    ("many", base_codec::json_bool(false)),
+    ("top", base_codec::json_num(max_cost)),
     ("lists", lists),
     ("notes", base_codec::json_arr(notes)),
+    ("basis", base_codec::json_str("按 API 价格估算")),
+    ("detailsPreparing", base_codec::json_bool(false)),
   ]))
 }
 
@@ -388,21 +399,41 @@ pub fn project_fleet(
     if j_str(u_lists[i], "key") == "models" {
       let ms = j_arr(u_lists[i], "items")
       for mi in 0..<ms.length() {
-        spent_items.push(ms[mi])
+        let m = ms[mi]
+        let m_name = j_str(m, "title")
+        let m_share = j_num_fuv(m, "share")
+        let m_cost_txt = j_str(m, "costText")
+        let m_tok_txt = j_str(m, "tokensText")
+        spent_items.push(base_codec::json_obj([
+          ("kind", base_codec::json_str("model")),
+          ("name", base_codec::json_str(m_name)),
+          ("accounts", base_codec::json_int(1)),
+          ("accountsText", base_codec::json_str("1 个账号")),
+          ("tokens", base_codec::json_int(0)),
+          ("share", base_codec::json_num(m_share)),
+          ("lead", base_codec::json_str(m_cost_txt)),
+          ("models", base_codec::json_arr([
+            base_codec::json_obj([
+              ("name", base_codec::json_str(m_name)),
+              ("tokens", base_codec::json_int(0)),
+              ("tokensText", base_codec::json_str(m_tok_txt)),
+              ("costText", base_codec::json_str(m_cost_txt)),
+              ("lineText", base_codec::json_str(m_name + " · " + m_cost_txt)),
+              ("of", base_codec::json_str("model")),
+            ]),
+          ])),
+        ]))
       }
     }
   }
   let out : Array[(String, base_codec::Json)] = [
-    ("workspace", base_codec::json_str(ws_scope)),
-    ("at", base_codec::json_int64(now_ms)),
+    ("at", base_codec::json_str("刚刚")),
+    ("spent", base_codec::json_arr(spent_items)),
     ("chats", base_codec::json_int(total_running)),
     ("chatsText", base_codec::json_str(total_running.to_string() + " 个会话运行中")),
-    ("devices", base_codec::json_int(online_devices)),
     ("where", base_codec::json_str(online_devices.to_string() + " 台设备")),
-    ("spent", base_codec::json_arr(spent_items)),
+    ("devices", base_codec::json_int(online_devices)),
     ("tasks", base_codec::json_int(remote_tasks)),
-    ("tiles", match base_codec::json_get(usage, "tiles") { Some(t) => t; None => base_codec::json_arr([]) }),
-    ("daily", match base_codec::json_get(usage, "daily") { Some(d) => d; None => base_codec::json_arr([]) }),
   ]
   sql::SqlResult::Ok(base_codec::json_obj(out))
 }
@@ -485,7 +516,6 @@ pub fn project_agent_rates(
       ("title", base_codec::json_str(r.title)),
       ("sub", base_codec::json_str(sub)),
       ("rate", base_codec::json_str(format_count_fuv(r.rate.to_int64()) + " tok/s")),
-      ("rateNum", base_codec::json_num(r.rate)),
       ("station", base_codec::json_str(r.station)),
     ]
     push_opt_str(rf, "chat", r.chat)
@@ -507,8 +537,8 @@ pub fn project_agent_rates(
   } else {
     ""
   }
+  let _ = ws_scope
   sql::SqlResult::Ok(base_codec::json_obj([
-    ("workspace", base_codec::json_str(ws_scope)),
     ("title", base_codec::json_str("实时输出速率")),
     ("total", base_codec::json_str(if present_n == 0 && briefs.length() > 0 { "—" } else { format_count_fuv(total_rate.to_int64()) + " tok/s" })),
     ("status", base_codec::json_str(status)),
@@ -536,7 +566,6 @@ pub fn project_rail_card(
     }
     if j_bool(u, "empty") {
       return sql::SqlResult::Ok(base_codec::json_obj([
-        ("place", base_codec::json_str("usage")),
         ("head", base_codec::json_str("近 7 天暂无用量")),
         ("stats", base_codec::json_arr([])),
         ("rows", base_codec::json_arr([])),
@@ -563,7 +592,6 @@ pub fn project_rail_card(
       }
     }
     return sql::SqlResult::Ok(base_codec::json_obj([
-      ("place", base_codec::json_str("usage")),
       ("head", base_codec::json_str("近 7 天共 " + total_cost)),
       ("stats", base_codec::json_arr([
         base_codec::json_obj([("value", base_codec::json_str(today_cost)), ("label", base_codec::json_str("今天"))]),
@@ -587,7 +615,6 @@ pub fn project_rail_card(
     "当前无运行中对话"
   }
   sql::SqlResult::Ok(base_codec::json_obj([
-    ("place", base_codec::json_str("chats")),
     ("head", base_codec::json_str(head)),
     ("stats", base_codec::json_arr([
       base_codec::json_obj([("value", base_codec::json_str("0")), ("label", base_codec::json_str("待处理")), ("go", base_codec::json_str("attention"))]),
@@ -706,14 +733,17 @@ pub fn project_chat_jobs(
       }
     }
     if !summary {
-      let started = match j_opt_int64(job, "startedAt") { Some(t) => t; None => now_ms }
+      let _ = now_ms
       let jf : Array[(String, base_codec::Json)] = [
         ("id", base_codec::json_str(j_str(job, "id"))),
+        ("session", base_codec::json_str(j_str(job, "session"))),
         ("name", base_codec::json_str(match j_opt_str(job, "name") { Some(nm) => nm; None => j_str(job, "id") })),
         ("state", base_codec::json_str(if st.length() > 0 { st } else { "running" })),
+        ("command", base_codec::json_str(j_str(job, "command"))),
+        ("restarts", base_codec::json_int(match j_opt_int(job, "restarts") { Some(n) => n; None => 0 })),
+        ("notices", base_codec::json_arr([])),
         ("tone", base_codec::json_str(tn)),
         ("service", base_codec::json_bool(svc)),
-        ("startedAt", base_codec::json_int64(started)),
       ]
       push_opt_int(jf, "port", j_opt_int(job, "port"))
       jobs_out.push(base_codec::json_obj(jf))
@@ -724,8 +754,6 @@ pub fn project_chat_jobs(
   let jobs_note = if live_jobs > 0 { live_jobs.to_string() + " 个后台任务" } else { "" }
   let total_cur = (if has_services { up_svcs } else { 0 }) + background_count
   let out : Array[(String, base_codec::Json)] = [
-    ("station", base_codec::json_str(station)),
-    ("thread", base_codec::json_int(thread)),
     ("hasJobs", base_codec::json_bool(has_services || background_count > 0)),
     ("hasServices", base_codec::json_bool(has_services)),
     ("backgroundCount", base_codec::json_int(background_count)),
@@ -790,11 +818,14 @@ pub fn project_long_jobs(
     let age_mins = (now_ms - started) / 60000.to_int64()
     let row = base_codec::json_obj([
       ("id", base_codec::json_str(jid)),
+      ("session", base_codec::json_str(j_str(j, "session"))),
       ("name", base_codec::json_str(match j_opt_str(j, "name") { Some(nm) => nm; None => jid })),
       ("state", base_codec::json_str(match j_opt_str(j, "state") { Some(s) => s; None => "running" })),
+      ("command", base_codec::json_str(j_str(j, "command"))),
+      ("restarts", base_codec::json_int(match j_opt_int(j, "restarts") { Some(n) => n; None => 0 })),
+      ("notices", base_codec::json_arr([])),
       ("tone", base_codec::json_str(job_tone_fuv(j))),
       ("service", base_codec::json_bool(svc)),
-      ("startedAt", base_codec::json_int64(started)),
       ("age", base_codec::json_str((age_mins / 60.to_int64()).to_string() + " 小时")),
       ("station", base_codec::json_str(st)),
       ("stationName", base_codec::json_str(sname)),
@@ -855,9 +886,9 @@ pub fn project_long_jobs(
       lit = true
     }
   }
+  let _ = ws_scope
   let other_count = other_svcs.length() + other_jobs.length()
   let out : Array[(String, base_codec::Json)] = [
-    ("workspace", base_codec::json_str(ws_scope)),
     ("groups", base_codec::json_arr(groups)),
     ("lit", base_codec::json_bool(lit)),
     ("ids", base_codec::json_arr(ids_j)),

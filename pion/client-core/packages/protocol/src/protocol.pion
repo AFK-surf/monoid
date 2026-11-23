@@ -1600,13 +1600,19 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
             last_value: Some(payload),
             last_token: Some(tok),
           })
-          // 1. `have` negotiation: return `same: true` or `delta + kept: true`.
+          // 1. Take & consume any kept value for this topic (`store.ts #first`).
+          let kept_opt = self.kept.get(tk)
+          if kept_opt.is_some() {
+            self.kept.remove(tk)
+          }
+          // 2. `have` exact match -> `same: true`, or diff against kept == 0 -> `same: true`.
+          let mut kept_ops_opt : Option[Array[base_codec::Json]] = None
           match have {
             Some(h) => {
               if h == tok {
                 return Some(CoreEvent::Same(id))
               }
-              match self.kept.get(tk) {
+              match kept_opt {
                 Some(k) => {
                   if k.token == h {
                     let spec = if keyed { spec_for_topic(topic.name) } else { None }
@@ -1614,7 +1620,7 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
                     if ops.length() == 0 {
                       return Some(CoreEvent::Same(id))
                     }
-                    return Some(CoreEvent::Delta(id, ops, None, true))
+                    kept_ops_opt = Some(ops)
                   }
                 }
                 None => ()
@@ -1622,21 +1628,39 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
             }
             None => ()
           }
-          // 2. `from` negotiation (keyed delta from another live subscription).
+          // 3. `from` negotiation (keyed delta from another live subscription of same topic).
           match from_id {
             Some(fid) => {
               if keyed {
                 match self.subs.get(fid) {
                   Some(base_sub) =>
-                  match base_sub.last_value {
-                    Some(base_val) => {
-                      let ops = diff_keyed(base_val, payload, spec_for_topic(topic.name))
-                      return Some(CoreEvent::Delta(id, ops, Some(fid), false))
+                  if base_sub.topic.name == topic.name {
+                    match base_sub.last_value {
+                      Some(base_val) => {
+                        let ops = diff_keyed(base_val, payload, spec_for_topic(topic.name))
+                        if !heavier(ops, payload) {
+                          return Some(CoreEvent::Delta(id, ops, Some(fid), false))
+                        }
+                      }
+                      None => ()
                     }
-                    None => ()
                   }
                   None => ()
                 }
+              }
+            }
+            None => ()
+          }
+          // 4. `kept` delta if not heavier than whole value (`store.ts #first`).
+          match kept_ops_opt {
+            Some(ops) => {
+              let spec = if keyed { spec_for_topic(topic.name) } else { None }
+              let too_big = match spec {
+                Some(_) => heavier(ops, payload)
+                None => larger_than(ops, payload)
+              }
+              if !too_big {
+                return Some(CoreEvent::Delta(id, ops, None, true))
               }
             }
             None => ()
@@ -1679,18 +1703,48 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
         None
       }
     }
-    CoreRequest::Cancel(id, _cancel) => {
-      Some(CoreEvent::Ok(id, base_codec::json_bool(true), None))
+    CoreRequest::Cancel(_id, _cancel) => {
+      // Matches `client/core-ts/src/core.ts` `case "cancel"`: silent interrupt, emits nothing.
+      None
     }
   }
 }
 
+/// Extract a valid non-negative integer `id` from a raw JSON object (`core.ts receiveRaw`).
+pub fn wire_error_id(raw : base_codec::Json) -> Option[Int64] {
+  match raw {
+    base_codec::Json::Obj(_) =>
+    match base_codec::json_get(raw, "id") {
+      Some(base_codec::Json::Num(n, _)) =>
+      if n >= 0.0 && n == n.floor() && n <= 9007199254740991.0 {
+        Some(n.to_int64())
+      } else {
+        None
+      }
+      _ => None
+    }
+    _ => None
+  }
+}
+
 /// End-to-end wire handler: JSON + optional bytes in -> optional JSON + bytes out.
+/// Matches `client/core-ts/src/core.ts` `receiveJson` / `receiveRaw`:
+/// - Invalid JSON syntax is silently dropped (`None`).
+/// - Invalid `ClientMessage` emits `{id, error: {code: "bad_message", message}}` ONLY when
+///   `raw` is an object carrying a valid non-negative integer `id`; otherwise `None`.
 pub fn Slice1Router::handle_wire(self : Slice1Router, json_text : String, bytes : Option[Bytes] = None) -> Option[(String, Option[Bytes])] {
-  match decode_client_message(json_text, bytes=bytes) {
-    ParseRequestResult::Invalid(msg) => {
-      let ev = CoreEvent::Err(0.to_int64(), CoreError::{ code: "bad_message", message: msg })
-      Some(encode_core_event(ev))
+  let raw = match base_codec::json_parse(json_text) {
+    base_codec::JsonParseResult::Err(_) => return None
+    base_codec::JsonParseResult::Ok(j) => j
+  }
+  match parse_client_message(raw, bytes=bytes) {
+    ParseRequestResult::Invalid(msg) =>
+    match wire_error_id(raw) {
+      Some(id) => {
+        let ev = CoreEvent::Err(id, CoreError::{ code: "bad_message", message: msg })
+        Some(encode_core_event(ev))
+      }
+      None => None
     }
     ParseRequestResult::Ok(req) =>
     match self.handle(req) {

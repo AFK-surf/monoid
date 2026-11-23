@@ -4,6 +4,14 @@ version = "0.1.0"
 
 [dependencies]
 base_codec = { workspace = true }
+crypto = { workspace = true }
+effect = { workspace = true }
 form = { workspace = true }
+lock = { workspace = true }
+mesh = { workspace = true }
 protocol = { workspace = true }
+shell = { workspace = true }
+sql = { workspace = true }
+store = { workspace = true }
+sync = { workspace = true }
 views = { workspace = true }

@@ -388,7 +388,24 @@ test "keyed delta diff/apply round-trip and have/keep token negotiation (same, d
     None => debug_assert(false, "expected same:true")
   }
 
-  // Add row c2 -> refresh active sub 101 emits delta sending only c2 (not c1)
+  // Unsubscribe sub 101 with `keep: true` before adding c2 (kept entries are consumed on first use per `store.ts #first`)
+  let mut kept_tok2 = ""
+  match router.handle_wire("{\"id\":101,\"unsubscribe\":true,\"keep\":true}") {
+    Some((txt, _)) => {
+      let j = match base_codec::json_parse(txt) {
+        base_codec::JsonParseResult::Ok(v) => v
+        _ => panic("bad unsub2 json")
+      }
+      match base_codec::json_get(j, "v") {
+        Some(base_codec::Json::Str(v)) => {
+          kept_tok2 = v
+        }
+        _ => panic("missing v token")
+      }
+    }
+    None => panic("expected unsub2 response")
+  }
+  // Add row c2 -> re-subscribe with `have: kept_tok2` -> returns `delta` + `kept: true`!
   fake.chat_rows.push(base_codec::json_arr([
     base_codec::json_str("s1"),
     base_codec::json_int(0),
@@ -397,16 +414,7 @@ test "keyed delta diff/apply round-trip and have/keep token negotiation (same, d
     base_codec::json_int(1500),
     base_codec::json_num(2.0),
   ]))
-  match router.refresh_sub(101.to_int64()) {
-    Some(ev) => {
-      let (dj, _) = encode_core_event(ev)
-      debug_assert(dj.contains("\"delta\"") && (dj.contains("\"put\"") || dj.contains("\"append\"")) && dj.contains("\"c2\"") && !dj.contains("\"c1\""), "delta sends only c2")
-    }
-    None => debug_assert(false, "expected delta on refresh")
-  }
-
-  // Re-subscribe with old `have: kept_tok` -> returns `delta` + `kept: true`!
-  let resub2 = "{\"id\":102,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-1\"},\"keyed\":true,\"have\":\"" + kept_tok + "\"}"
+  let resub2 = "{\"id\":102,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-1\"},\"keyed\":true,\"have\":\"" + kept_tok2 + "\"}"
   match router.handle_wire(resub2) {
     Some((txt, _)) => debug_assert(txt.contains("\"delta\"") && txt.contains("\"kept\":true") && txt.contains("\"c2\""), "changed have returns delta+kept")
     None => debug_assert(false, "expected delta+kept")

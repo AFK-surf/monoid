@@ -396,7 +396,7 @@ test "Batch 3: search, chatSearch, settings, stationUpdates, archive (archived=1
     sql::SqlResult::Err(_) => panic("settings failed")
   }
   assert_opt_eq(j_opt_int(st_j, "decisionsOn"), Some(1))
-  assert(base_codec::json_stringify(st_j).contains("\"theme\":\"dark\""))
+  assert(!j_bool(st_j, "hintNoReview"))
 
   let upd_j = match project_station_updates(db, "ws-1", now_ms) {
     sql::SqlResult::Ok(v) => v
@@ -412,7 +412,9 @@ test "Batch 3: search, chatSearch, settings, stationUpdates, archive (archived=1
     sql::SqlResult::Ok(v) => v
     sql::SqlResult::Err(_) => panic("archive failed")
   }
-  let arch_items = j_arr(arch_j, "items")
+  let arch_days = j_arr(arch_j, "days")
+  assert_eq(arch_days.length(), 1)
+  let arch_items = j_arr(arch_days[0], "items")
   // Only archived=1 chats, newest first, NEVER includes c-live (archived=0)!
   assert_eq(arch_items.length(), 2)
   assert_eq(j_str(arch_items[0], "id"), "c-arch-new")

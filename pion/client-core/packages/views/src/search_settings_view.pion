@@ -161,23 +161,28 @@ pub fn project_search(
             Some(t) => t
             None => h.id
           }
+          let session = match j_opt_str(doc, "session") {
+            Some(s) => s
+            None => h.id
+          }
           let sname = match station_name_map.get(h.station) {
             Some(nm) => nm
             None => h.station
           }
-          let th_j = match h.thread {
-            Some(t) => base_codec::json_int(t)
-            None => base_codec::json_null()
-          }
-          items_out.push(base_codec::json_obj([
+          let cf : Array[(String, base_codec::Json)] = [
+            ("id", base_codec::json_str(h.id)),
+            ("session", base_codec::json_str(session)),
+            ("title", base_codec::json_str(title)),
+            ("agents", base_codec::json_arr(j_arr(doc, "agents"))),
+            ("unread", base_codec::json_bool(j_bool(doc, "unread"))),
             ("station", base_codec::json_str(h.station)),
             ("stationName", base_codec::json_str(sname)),
-            ("id", base_codec::json_str(h.id)),
-            ("thread", th_j),
-            ("title", base_codec::json_str(title)),
-            ("lastActiveAt", base_codec::json_int64(h.last_active)),
-            ("archived", base_codec::json_bool(h.archived != 0)),
-          ]))
+          ]
+          push_opt_int(cf, "thread", h.thread)
+          if h.archived != 0 {
+            cf.push(("archived", base_codec::json_bool(true)))
+          }
+          items_out.push(base_codec::json_obj(cf))
         }
       }
     }
@@ -202,18 +207,31 @@ pub fn project_search(
             messages_more = true
             break
           }
-          let at_j = match m.at {
-            Some(ts) => base_codec::json_int64(ts)
-            None => base_codec::json_null()
+          let sname = match station_name_map.get(m.station) {
+            Some(nm) => nm
+            None => m.station
           }
-          messages_out.push(base_codec::json_obj([
+          let chat_item = base_codec::json_obj([
+            ("id", base_codec::json_str("t:" + m.thread.to_string())),
+            ("session", base_codec::json_str("t:" + m.thread.to_string())),
+            ("thread", base_codec::json_int(m.thread)),
+            ("title", base_codec::json_str("对话 #" + m.thread.to_string())),
+            ("agents", base_codec::json_arr([])),
+            ("unread", base_codec::json_bool(false)),
+            ("station", base_codec::json_str(m.station)),
+            ("stationName", base_codec::json_str(sname)),
+          ])
+          let mf : Array[(String, base_codec::Json)] = [
             ("station", base_codec::json_str(m.station)),
             ("thread", base_codec::json_int(m.thread)),
             ("seq", base_codec::json_int(m.seq)),
-            ("n", base_codec::json_int(m.n)),
-            ("at", at_j),
+            ("chat", chat_item),
+            ("by", base_codec::json_str("")),
             ("text", base_codec::json_str(m.text)),
-          ]))
+            ("marks", base_codec::json_arr([])),
+          ]
+          push_opt_int64(mf, "createdAt", m.at)
+          messages_out.push(base_codec::json_obj(mf))
         }
       }
     }
@@ -231,8 +249,8 @@ pub fn project_search(
           ("station", base_codec::json_str(b.address)),
           ("stationName", base_codec::json_str(b.name)),
           ("title", base_codec::json_str(b.name)),
-          ("online", base_codec::json_bool(station_on(b))),
           ("text", base_codec::json_str(if station_on(b) { "" } else { "离线" })),
+          ("marks", base_codec::json_arr([])),
         ]))
       }
     }
@@ -263,7 +281,11 @@ pub fn project_search(
             mem_items.push(base_codec::json_obj([
               ("kind", base_codec::json_str("member")),
               ("key", base_codec::json_str("member:" + email)),
+              ("station", base_codec::json_str("")),
+              ("stationName", base_codec::json_str("")),
               ("title", base_codec::json_str(name)),
+              ("text", base_codec::json_str(email)),
+              ("marks", base_codec::json_arr([])),
               ("email", base_codec::json_str(email)),
             ]))
           }
@@ -281,20 +303,25 @@ pub fn project_search(
     }
   }
 
+  let wait_obj = base_codec::json_obj([
+    ("reading", base_codec::json_bool(false)),
+    ("failing", base_codec::json_arr([])),
+    ("empty", base_codec::json_bool(items_out.length() == 0 && messages_out.length() == 0 && groups_out.length() == 0)),
+  ])
   let out : Array[(String, base_codec::Json)] = [
-    ("query", base_codec::json_str(query)),
-    ("words", base_codec::json_arr(words_j)),
     ("items", base_codec::json_arr(items_out)),
     ("chatsMore", base_codec::json_bool(chats_more)),
+    ("words", base_codec::json_arr(words_j)),
     ("messages", base_codec::json_arr(messages_out)),
     ("messagesMore", base_codec::json_bool(messages_more)),
     ("groups", base_codec::json_arr(groups_out)),
+    ("wait", wait_obj),
   ]
   push_opt_str(out, "note", station_offline_note_ssv(briefs))
   sql::SqlResult::Ok(base_codec::json_obj(out))
 }
 
-/// Project `chatSearch` topic: scoped chat & message search over local SQLite.
+/// Project `chatSearch` topic (`ChatSearchView`): strictly `{ items, words, messages }`.
 pub fn project_chat_search(
   db : sql::Sql,
   ws_scope : String,
@@ -302,7 +329,15 @@ pub fn project_chat_search(
   query : String,
   limit : Int = 20,
 ) -> sql::SqlResult[base_codec::Json] {
-  project_search(db, ws_scope, briefs, query, limit=limit)
+  let full = match project_search(db, ws_scope, briefs, query, limit=limit) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(v) => v
+  }
+  sql::SqlResult::Ok(base_codec::json_obj([
+    ("items", base_codec::json_arr(j_arr(full, "items"))),
+    ("words", base_codec::json_arr(j_arr(full, "words"))),
+    ("messages", base_codec::json_arr(j_arr(full, "messages"))),
+  ]))
 }
 
 /// Project `settings` topic (`settings.ts` + `workspace_pref`):
@@ -380,17 +415,12 @@ pub fn project_settings(
   } else {
     (false, "已开启：" + join_names_ssv(review_on, "、") + "；未开启：" + join_names_ssv(review_off, "、"))
   }
-  let pref_fields : Array[(String, base_codec::Json)] = []
-  for i in 0..<prefs.length() {
-    pref_fields.push((prefs[i].key, parse_json_or_null(prefs[i].json)))
-  }
+  let _ = prefs
   sql::SqlResult::Ok(base_codec::json_obj([
-    ("workspace", base_codec::json_str(ws_scope)),
     ("decisionsOn", base_codec::json_int(decisions_on)),
     ("decisionsText", base_codec::json_str(decisions_text)),
     ("hintNoReview", base_codec::json_bool(hint_no_review)),
     ("hintReviewText", base_codec::json_str(hint_review_text)),
-    ("settings", base_codec::json_obj(pref_fields)),
   ]))
 }
 
@@ -541,6 +571,7 @@ struct ArchiveRowSsv {
   station : String
   station_name : String
   id : String
+  session : String
   thread : Option[Int]
   title : String
   last_text : String
@@ -604,10 +635,15 @@ pub fn project_archive(
           if words.length() > 0 && !contains_all_words_ssv(title + " " + last_text, words) {
             continue
           }
+          let session = match j_opt_str(doc, "session") {
+            Some(s) => s
+            None => cid
+          }
           collected.push(ArchiveRowSsv::{
             station: b.address,
             station_name: b.name,
             id: cid,
+            session: session,
             thread: th,
             title: title,
             last_text: last_text,
@@ -641,22 +677,19 @@ pub fn project_archive(
     let r = collected[i]
     let days_ago = today_day - local_day_index(r.at, tz_offset_ms)
     let label = day_bucket_label(days_ago)
-    let th_j = match r.thread {
-      Some(t) => base_codec::json_int(t)
-      None => base_codec::json_null()
-    }
-    let item = base_codec::json_obj([
+    let af : Array[(String, base_codec::Json)] = [
       ("station", base_codec::json_str(r.station)),
-      ("stationName", base_codec::json_str(r.station_name)),
       ("id", base_codec::json_str(r.id)),
-      ("thread", th_j),
+      ("session", base_codec::json_str(r.session)),
       ("title", base_codec::json_str(r.title)),
       ("last", base_codec::json_str(r.last_text)),
       ("at", base_codec::json_int64(r.at)),
+      ("clock", base_codec::json_str("")),
       ("how", base_codec::json_str(r.how)),
-      ("archived", base_codec::json_bool(true)),
-    ])
-    flat_items.push(item)
+      ("deletable", base_codec::json_bool(true)),
+    ]
+    push_opt_int(af, "thread", r.thread)
+    let item = base_codec::json_obj(af)
     match day_buckets.get(label) {
       Some(xs) => xs.push(item)
       None => {
@@ -687,11 +720,17 @@ pub fn project_archive(
     None
   }
 
+  let _ = ws_scope
+  let _ = flat_items
+  let wait_obj = base_codec::json_obj([
+    ("reading", base_codec::json_bool(false)),
+    ("failing", base_codec::json_arr([])),
+    ("empty", base_codec::json_bool(total == 0)),
+  ])
   let out : Array[(String, base_codec::Json)] = [
-    ("workspace", base_codec::json_str(ws_scope)),
     ("days", base_codec::json_arr(days_out)),
-    ("items", base_codec::json_arr(flat_items)),
     ("errors", base_codec::json_arr([])),
+    ("wait", wait_obj),
     ("total", base_codec::json_int(total)),
     ("more", base_codec::json_bool(shown_n < total)),
   ]

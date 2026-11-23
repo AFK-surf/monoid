@@ -506,6 +506,17 @@ pub fn project_downloads(entries : Array[DownloadEntry]) -> base_codec::Json {
     } else {
       1.0
     }
+    let status_text = if d.state == "failed" {
+      match d.error { Some(e) => e; None => "下载失败" }
+    } else if d.state == "ready" {
+      "已完成"
+    } else if d.state == "saving" {
+      "正在保存"
+    } else if d.state == "waiting" {
+      "等待中"
+    } else {
+      "下载中"
+    }
     let fields : Array[(String, base_codec::Json)] = [
       ("id", base_codec::json_str(d.id)),
       ("station", base_codec::json_str(d.station)),
@@ -516,6 +527,7 @@ pub fn project_downloads(entries : Array[DownloadEntry]) -> base_codec::Json {
       ("progress", base_codec::json_num(prog)),
       ("state", base_codec::json_str(d.state)),
       ("active", base_codec::json_bool(d.state != "failed")),
+      ("statusText", base_codec::json_str(status_text)),
       ("startedAt", base_codec::json_int64(d.started_at)),
     ]
     match d.error {
@@ -524,5 +536,8 @@ pub fn project_downloads(entries : Array[DownloadEntry]) -> base_codec::Json {
     }
     out.push(base_codec::json_obj(fields))
   }
-  base_codec::json_obj([("downloads", base_codec::json_arr(out))])
+  base_codec::json_obj([
+    ("downloads", base_codec::json_arr(out)),
+    ("keeping", base_codec::json_arr([])),
+  ])
 }

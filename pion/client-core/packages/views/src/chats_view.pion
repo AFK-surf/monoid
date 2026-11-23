@@ -563,9 +563,9 @@ fn build_listed_chat(
     ("stationName", base_codec::json_str(station_brief.name)),
     ("title", base_codec::json_str(title)),
     ("unread", base_codec::json_bool(unread)),
-    ("mine", base_codec::json_bool(mine)),
     ("agents", base_codec::json_arr(j_arr(raw, "agents"))),
   ]
+  let _ = mine
   push_opt_int(out, "thread", thread)
   push_opt_str(out, "clientKey", client_key)
   if multi_station {
@@ -593,12 +593,8 @@ fn build_listed_chat(
   if is_pinned {
     out.push(("pinned", base_codec::json_bool(true)))
   }
-  if has_draft {
-    out.push(("draft", base_codec::json_bool(true)))
-  }
-  if quoted {
-    out.push(("quoted", base_codec::json_bool(true)))
-  }
+  let _ = has_draft
+  let _ = quoted
   if station_brief.online {
     out.push(("swipeArchive", base_codec::json_bool(true)))
   }
@@ -944,7 +940,6 @@ pub fn project_chats(
         ("stationName", base_codec::json_str(st_brief.name)),
         ("title", base_codec::json_str(p_title)),
         ("unread", base_codec::json_bool(false)),
-        ("mine", base_codec::json_bool(true)),
         ("pending", base_codec::json_bool(true)),
         ("agents", base_codec::json_arr([])),
       ]

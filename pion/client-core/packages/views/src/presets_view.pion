@@ -515,17 +515,45 @@ pub fn project_own_presets(
   let items : Array[base_codec::Json] = []
   for i in 0..<live.length() {
     let r = live[i]
-    items.push(base_codec::json_obj([
+    let dirs_j : Array[base_codec::Json] = []
+    for di in 0..<r.dirs.length() {
+      let d = r.dirs[di]
+      let df : Array[(String, base_codec::Json)] = [("path", base_codec::json_str(d.path))]
+      match d.repo {
+        Some(rp) => if rp.length() > 0 { df.push(("repo", base_codec::json_str(rp))) }
+        None => ()
+      }
+      if d.station.length() > 0 {
+        df.push(("station", base_codec::json_str(d.station)))
+      }
+      dirs_j.push(base_codec::json_obj(df))
+    }
+    let pf : Array[(String, base_codec::Json)] = [
       ("id", base_codec::json_str(r.id)),
       ("name", base_codec::json_str(r.name)),
-      ("home", base_codec::json_str(r.home)),
-      ("rev", base_codec::json_int(r.rev)),
-      ("mine", base_codec::json_bool(true)),
-      ("editable", base_codec::json_bool(true)),
-      ("copyable", base_codec::json_bool(true)),
-    ]))
+      ("dirs", base_codec::json_arr(dirs_j)),
+      ("instructions", base_codec::json_str(r.instructions)),
+      ("createdBy", base_codec::json_str(r.created_by)),
+      ("createdAt", base_codec::json_int64(r.created_at)),
+      ("updatedAt", base_codec::json_int64(r.updated_at)),
+    ]
+    if r.auto_station {
+      pf.push(("autoStation", base_codec::json_bool(true)))
+    }
+    if r.stations.length() > 0 {
+      let sts_j : Array[base_codec::Json] = []
+      for si in 0..<r.stations.length() {
+        sts_j.push(base_codec::json_str(r.stations[si]))
+      }
+      pf.push(("stations", base_codec::json_arr(sts_j)))
+    }
+    items.push(base_codec::json_obj(pf))
   }
-  base_codec::json_obj([("presets", base_codec::json_arr(items))])
+  base_codec::json_obj([
+    ("presets", base_codec::json_arr(items)),
+    ("candidates", base_codec::json_arr([])),
+    ("clones", base_codec::json_arr([])),
+  ])
 }
 
 /// On-demand `other_presets` view: merges newest record per id across stations, excludes own presets,
@@ -577,14 +605,14 @@ pub fn project_other_presets(
   let items : Array[base_codec::Json] = []
   for i in 0..<merged.length() {
     let r = merged[i]
+    let st_addr = if r.stations.length() > 0 { r.stations[0] } else { r.home }
+    let st_name = if r.home.length() > 0 { r.home } else { st_addr }
     items.push(base_codec::json_obj([
       ("id", base_codec::json_str(r.id)),
       ("name", base_codec::json_str(r.name)),
       ("whose", base_codec::json_str(if r.created_by.length() > 0 { r.created_by } else { r.owner })),
-      ("home", base_codec::json_str(r.home)),
-      ("mine", base_codec::json_bool(false)),
-      ("editable", base_codec::json_bool(false)),
-      ("copyable", base_codec::json_bool(true)),
+      ("station", base_codec::json_str(st_addr)),
+      ("stationName", base_codec::json_str(st_name)),
     ]))
   }
   base_codec::json_obj([
@@ -1020,7 +1048,6 @@ pub fn project_board_drafts(
         fs.push(base_codec::json_obj([
           ("id", base_codec::json_str(f.id)),
           ("name", base_codec::json_str(f.name)),
-          ("size", base_codec::json_int64(f.size)),
         ]))
       }
       fields.push(("files", base_codec::json_arr(fs)))

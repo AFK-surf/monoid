@@ -567,7 +567,6 @@ pub fn project_chat(
     }
     let ob_fields : Array[(String, base_codec::Json)] = [
       ("id", base_codec::json_str(ob_id)),
-      ("clientKey", base_codec::json_str(ck)),
       ("text", base_codec::json_str(j_str(item, "text"))),
       ("attachments", base_codec::json_arr(sanitize_attachments(item))),
       ("quotes", base_codec::json_arr(j_arr(item, "quotes"))),
@@ -589,24 +588,27 @@ pub fn project_chat(
     None => "新对话"
   }
 
+  let _ = tool_groups
   let out : Array[(String, base_codec::Json)] = [
     ("archived", base_codec::json_bool(false)),
     ("me", base_codec::json_obj([("email", base_codec::json_str(viewer_email))])),
     ("title", base_codec::json_str(title)),
+    ("cc", base_codec::json_arr([])),
     ("people", base_codec::json_arr([])),
     ("agents", base_codec::json_arr([])),
     ("messages", base_codec::json_arr(messages)),
-    ("toolGroups", base_codec::json_arr(tool_groups)),
+    ("elsewhere", base_codec::json_arr([])),
     ("outbox", base_codec::json_arr(outbox_out)),
+    ("screens", base_codec::json_arr([])),
     ("asks", base_codec::json_arr(asks)),
+    ("openers", base_codec::json_arr([])),
+    ("opened", base_codec::json_arr([])),
     ("more", base_codec::json_bool(has_more)),
-    ("hasMore", base_codec::json_bool(has_more)),
     ("newer", base_codec::json_bool(false)),
     ("offline", base_codec::json_bool(false)),
     ("pending", base_codec::json_bool(false)),
     ("link", base_codec::json_obj([("state", base_codec::json_str("online"))])),
   ]
-  push_opt_int(out, "oldest", oldest_opt)
   push_opt_int(out, "firstEntry", oldest_opt)
   push_opt_int(out, "lastEntry", newest_opt)
   push_opt_int(out, "unreadLine", unread_line)

@@ -972,25 +972,31 @@ pub struct ApprovedDevice {
   pub sign_key : Option[String]
 }
 
-/// Walk `by` ancestor lineage for `base` within `own` (cycle-safe, `views/lock.ts ancestors`).
+/// Walk strict `by` ancestor lineage for `base` within `own` (cycle-safe, `views/lock.ts ancestors`).
+/// Never includes `base` itself (`passed = new Set([id])`).
 pub fn ancestors_of(own : OwnStandings, base : String) -> Array[OwnDevice] {
   let out : Array[OwnDevice] = []
-  let seen : Map[String, Bool] = Map::new()
-  let mut cur : Option[String] = Some(base)
+  let passed : Map[String, Bool] = Map::new()
+  passed.set(base, true)
+  let mut cur : Option[OwnDevice] = own.devices.get(base)
   while true {
     match cur {
       None => break
-      Some(id) => {
-        if seen.get(id).is_some() {
-          break
-        }
-        seen.set(id, true)
-        match own.devices.get(id) {
-          Some(d) => {
-            out.push(d)
-            cur = d.by
+      Some(d) =>
+      match d.by {
+        None => break
+        Some(by_id) => {
+          if passed.get(by_id).is_some() {
+            break
           }
-          None => break
+          passed.set(by_id, true)
+          match own.devices.get(by_id) {
+            Some(anc) => {
+              out.push(anc)
+              cur = Some(anc)
+            }
+            None => break
+          }
         }
       }
     }

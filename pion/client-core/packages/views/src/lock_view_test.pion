@@ -399,8 +399,10 @@ test "ownLockFor invariants (vouchers_in & approved_in): signer key only, never 
   })
 
   let standings = OwnStandings::{ devices: devs, device_ids: ["d1", "d2", "d3", "d4"] }
+  // Strict ancestors only (never includes `d2` itself, matching `views/lock.ts ancestors`).
   let vs = vouchers_in([standings], "u1", "d2")
-  assert_eq(vs.length(), 2)
+  assert_eq(vs.length(), 1)
+  assert_eq(vs[0], "ed25519:p1")
 
   let chain_signers : Map[String, Bool] = Map::new()
   chain_signers.set("ed25519:key1", true)

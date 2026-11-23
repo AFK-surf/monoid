@@ -2009,7 +2009,7 @@ test "E2E 12: ClientCore wired to packages/views projects chats, chat, workspace
   // 3. chat view: 0 SQL writes on cold open, outbox clientKey dedup, and <= 4KB keyed delta on SSE arrival
   let ran_before = sim_db.ran.length()
   match core.handle_wire("{\"id\":108,\"subscribe\":{\"topic\":\"chat\",\"station\":\"st1\",\"thread\":7},\"keyed\":true}") {
-    Some((txt, _)) => debug_assert(txt.contains("\"messages\"") && txt.contains("\"outbox\"") && txt.contains("\"toolGroups\""), "ChatView shape")
+    Some((txt, _)) => debug_assert(txt.contains("\"messages\"") && txt.contains("\"outbox\"") && txt.contains("\"asks\""), "ChatView shape")
     None => debug_assert(false, "expected chat")
   }
   let (_, writes_on_open, _) = sim_db.counts_since(ran_before)

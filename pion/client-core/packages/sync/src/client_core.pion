@@ -1381,11 +1381,20 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
 }
 
 /// Thin JSON wire adapter compatible with `core_api.h` (`mb_core_send` -> callback).
+/// Matches `client/core-ts/src/core.ts` `receiveJson` / `receiveRaw`.
 pub fn ClientCore::handle_wire(self : ClientCore, json_text : String, bytes : Option[Bytes] = None) -> Option[(String, Option[Bytes])] {
-  match protocol::decode_client_message(json_text, bytes=bytes) {
-    protocol::ParseRequestResult::Invalid(msg) => {
-      let ev = protocol::CoreEvent::Err(0.to_int64(), protocol::CoreError::{ code: "bad_message", message: msg })
-      Some(protocol::encode_core_event(ev))
+  let raw = match base_codec::json_parse(json_text) {
+    base_codec::JsonParseResult::Err(_) => return None
+    base_codec::JsonParseResult::Ok(j) => j
+  }
+  match protocol::parse_client_message(raw, bytes=bytes) {
+    protocol::ParseRequestResult::Invalid(msg) =>
+    match protocol::wire_error_id(raw) {
+      Some(id) => {
+        let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_message", message: msg })
+        Some(protocol::encode_core_event(ev))
+      }
+      None => None
     }
     protocol::ParseRequestResult::Ok(req) =>
     match self.handle_request(req) {
