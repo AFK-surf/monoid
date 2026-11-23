@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [cbb992816](https://github.com/AFK-surf/monoid/commit/cbb9928169cca710826d0540c72d1112b5eed0de) perf(mbui): lazy-compile pruned GLES shaders and f | 2.72 | 3.66 | 14.83 | 36.95 | 56.5 | 32.38 | 65.71 | 99.68 | 109.58 |
 | [bc2520fb4](https://github.com/AFK-surf/monoid/commit/bc2520fb4e4851f33a4130b42ab2c773a2f0f316) feat(sf-ui,mbui): upgrade remote screen/terminal f | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.55 | 124.51 |
 | [769720911](https://github.com/AFK-surf/monoid/commit/76972091188326e83c3391d3e92ec7f71b97a51e) feat(sf-ui,mbui): adopt liquid glass on dialogs, m | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.6 | 123.22 |
 | [3d846babe](https://github.com/AFK-surf/monoid/commit/3d846babecb0760781dc2021dea320eee0a4d78c) fix(sf-ui,mbui): keep Small-screen panels as botto | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.58 | 121.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [085d7c0a8](https://github.com/AFK-surf/monoid/commit/085d7c0a84130648707d7f09f68058f82a90c5a0) fix(mbui): unbind blur levels before glass draws i | 2.7 | 3.64 | 14.73 | 36.82 | 56.11 | 32.25 | 65.39 | 99.12 | 119.8 |
 | [d94818248](https://github.com/AFK-surf/monoid/commit/d948182484b4d401de1f16ae9323305032a147c8) feat(mbui): polish multi-touch scrolling velocity, | 2.7 | 3.64 | 14.73 | 36.82 | 56.1 | 32.25 | 65.39 | 99.26 | 126.73 |
 | [b390c13c4](https://github.com/AFK-surf/monoid/commit/b390c13c494ec2029c85b8ebe3cdce0500af8507) feat(mbui): upgrade narrow sub-page back button an | 2.7 | 3.63 | 14.72 | 36.81 | 56.09 | 32.25 | 65.39 | 99.26 | 127.7 |
-| [69d36b777](https://github.com/AFK-surf/monoid/commit/69d36b77723412480ecb77f482f465e84d0cc226) feat(mbui): move archived and feedback notices to  | 2.7 | 3.63 | 14.72 | 36.81 | 56.09 | 32.25 | 65.39 | 99.26 | 127.7 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [cbb992816](https://github.com/AFK-surf/monoid/commit/cbb9928169cca710826d0540c72d1112b5eed0de) perf(mbui): lazy-compile pruned GLES shaders and f | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.38 |
 | [bc2520fb4](https://github.com/AFK-surf/monoid/commit/bc2520fb4e4851f33a4130b42ab2c773a2f0f316) feat(sf-ui,mbui): upgrade remote screen/terminal f | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.49 |
 | [769720911](https://github.com/AFK-surf/monoid/commit/76972091188326e83c3391d3e92ec7f71b97a51e) feat(sf-ui,mbui): adopt liquid glass on dialogs, m | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.61 |
 | [3d846babe](https://github.com/AFK-surf/monoid/commit/3d846babecb0760781dc2021dea320eee0a4d78c) fix(sf-ui,mbui): keep Small-screen panels as botto | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.63 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [085d7c0a8](https://github.com/AFK-surf/monoid/commit/085d7c0a84130648707d7f09f68058f82a90c5a0) fix(mbui): unbind blur levels before glass draws i | 0.48 | 0.63 | 2.44 | 3.49 | 5.79 | 1.78 | 4.82 | 54.79 |
 | [d94818248](https://github.com/AFK-surf/monoid/commit/d948182484b4d401de1f16ae9323305032a147c8) feat(mbui): polish multi-touch scrolling velocity, | 0.48 | 0.63 | 2.44 | 3.49 | 5.79 | 1.78 | 4.82 | 54.56 |
 | [b390c13c4](https://github.com/AFK-surf/monoid/commit/b390c13c494ec2029c85b8ebe3cdce0500af8507) feat(mbui): upgrade narrow sub-page back button an | 0.48 | 0.63 | 2.44 | 3.49 | 5.79 | 1.78 | 4.82 | 54.56 |
-| [69d36b777](https://github.com/AFK-surf/monoid/commit/69d36b77723412480ecb77f482f465e84d0cc226) feat(mbui): move archived and feedback notices to  | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
