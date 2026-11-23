@@ -403,7 +403,7 @@ test "words of the tree's a finger picked in a column it scrolls, then a finger 
 }
 
 ///|
-test "WordsPicked.within and strays: single message plus unowned paragraph reports strays > 0; hiding or destroying scope root clears selection and blocks copy" {
+test "WordsPicked.within and strays: single message plus unowned paragraph reports strays > 0; hiding or destroying scope root drops picked_now and scope copy while keeping released selection until click elsewhere" {
   let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
   t.check_looks(false)
   let look : @view.WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
@@ -458,22 +458,36 @@ test "WordsPicked.within and strays: single message plus unowned paragraph repor
   assert_eq(picked_now_in(rv), None)
   assert_eq(picked_words_in(rv), "")
   assert_true(picked_words_in(lv).contains("owned msg"))
-  // Hide scope root via laid_nowhere: next frame clears selection and ⌘C copies nothing
+  let kept1 = t.ctx().selected_text()
+  assert_true(kept1.contains("owned msg"))
+  // Hide scope root via laid_nowhere: drops picked_now and scope/point copy, keeps released selection until click elsewhere
   hide_scope.set(true)
   t.draw()
   assert_eq(picked_now(), None)
+  assert_eq(picked_now_in(lv), None)
+  assert_eq(picked_words_in(lv), "")
+  assert_eq(picked_words_at(50.0, 10.0), "")
+  assert_eq(t.ctx().selected_text(), kept1)
+  t.tap(300.0, 150.0)
+  t.draw()
   assert_eq(t.ctx().selected_text(), "")
-  t.key(key_copy)
-  assert_eq(t.clipboard(), "")
-  // Re-show, select again, then destroy scope root: selection clears immediately
+  // Re-show, select again, then destroy scope root: drops picked_now and scope/point copy, keeps released selection until click elsewhere
   hide_scope.set(false)
   t.draw()
   let next2 = dragged_at(t, 2.0, 10.0, 80.0, 10.0, t.time(), true)
   t.frame_at(next2)
   assert_true(picked_now() is Some(_))
+  let kept2 = t.ctx().selected_text()
+  assert_true(kept2.length() > 0)
   show_scope.set(false)
   t.draw()
   assert_eq(picked_now(), None)
+  assert_eq(picked_now_in(lv), None)
+  assert_eq(picked_words_in(lv), "")
+  assert_eq(picked_words_at(50.0, 10.0), "")
+  assert_eq(t.ctx().selected_text(), kept2)
+  t.tap(300.0, 150.0)
+  t.draw()
   assert_eq(t.ctx().selected_text(), "")
 }
 

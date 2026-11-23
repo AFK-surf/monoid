@@ -257,7 +257,7 @@ test "words picked held past a page's list's foot, the list shorter under a poin
 }
 
 ///|
-test "words picked in a page's list, let go, then the page laid out nowhere: invisible scope selection is cleared" {
+test "words picked in a page's list, let go, then the page laid out nowhere: what was picked kept whole, nothing picking on" {
   let height = @signals.signal(300.0)
   let hidden = @signals.signal(false)
   let (t, _) = picked_list_tester(height, hidden)
@@ -275,7 +275,7 @@ test "words picked in a page's list, let go, then the page laid out nowhere: inv
   hidden.set(true)
   t.frame_at(t.time() + input_step_ms)
   t.frame_at(t.time() + move_most_ms)
-  assert_eq(t.ctx().selected_text(), "", msg="laid out nowhere clears selection")
+  assert_eq(t.ctx().selected_text(), kept, msg="laid out nowhere")
 }
 
 ///|

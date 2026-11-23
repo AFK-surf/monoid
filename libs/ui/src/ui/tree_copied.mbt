@@ -45,7 +45,6 @@ priv struct CopiedPart {
 /// What is picked with the pointer of the window's tree's words as HTML (copied_html), each paragraph's shape what the
 /// part showing it says (words_shaped) and its pieces its runs'; "" where none of it is shaped.
 fn picked_html() -> String {
-  guard picked_scope_live_now() else { return "" }
   guard picked_in_order() is Some((spans, _)) else { return "" }
   let parts : Array[CopiedPart] = []
   for e in spans {

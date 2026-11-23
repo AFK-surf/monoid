@@ -950,7 +950,6 @@ fn tsv_cell_escape(s : String) -> String {
 /// table selections serialize as TSV (tabs between columns, padding skipped empty columns, quoting cells containing
 /// tabs/newlines/quotes), while single-cell selections output the raw substring.
 fn selected_words() -> String {
-  guard picked_scope_live_now() else { return "" }
   let spans : Array[SelSpan] = []
   picked.spans.each(fn(k, s) {
     if s.a < s.b {

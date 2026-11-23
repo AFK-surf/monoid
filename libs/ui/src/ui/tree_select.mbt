@@ -34,7 +34,15 @@ pub fn words_picked(v : @view.View, apart? : Bool = false) -> Unit {
   if existing is None {
     v.owns(fn() {
       match picked.layer {
-        TreeScope(_, id) if id == scope_id => select_none()
+        TreeScope(_, id) if id == scope_id => {
+          if picked.dragging {
+            picked.dragging = false
+            tree_edge_stop()
+          }
+          if picked_now_said.val.untracked() is Some(_) {
+            picked_now_tell()
+          }
+        }
         _ => ()
       }
     })
@@ -64,26 +72,20 @@ fn tree_scope_live(scope_id : @view.NodeId) -> Bool {
 }
 
 ///|
-/// Whether the current selection's scope (if any tree selection) is alive and visible.
-fn picked_scope_live_now() -> Bool {
+/// If the current tree selection belongs to a scope that was destroyed or hidden (`shown_nowhere`), stop any active
+/// drag and drop `picked_now` while keeping the released selection snapshot for ⌘C copy until a press elsewhere.
+fn sync_picked_scope_live() -> Unit {
   match picked.layer {
-    TreeScope(_, scope_id) => tree_scope_live(scope_id)
-    _ => true
-  }
-}
-
-///|
-/// If the current tree selection belongs to a scope that was destroyed or hidden (`shown_nowhere`), clear it.
-fn ensure_picked_scope_live() -> Bool {
-  match picked.layer {
-    TreeScope(_, scope_id) =>
-      if !tree_scope_live(scope_id) {
-        select_none()
-        false
-      } else {
-        true
+    TreeScope(_, scope_id) if !tree_scope_live(scope_id) => {
+      if picked.dragging {
+        picked.dragging = false
+        tree_edge_stop()
       }
-    _ => true
+      if picked_now_said.val.untracked() is Some(_) {
+        picked_now_tell()
+      }
+    }
+    _ => ()
   }
 }
 
@@ -102,6 +104,19 @@ let words_picker : (@view.View) -> @view.Live[(Int, Int)] = words_picked_span
 let picked_spans_said : Map[SelKey, @signals.Signal[(Int, Int)]] = Map([])
 
 ///|
+/// Whether a `scrolls_window` row `(tree_id, list, row_num)` currently holds any non-empty picked span, as a signal
+/// read by that row's shared memo (`row_picked_reader`, fanout <= 1).
+// kept across runs: said again from what is picked as that changes
+let picked_row_said : Map[(Int, @view.NodeId, Int), @signals.Signal[Bool]] = Map([])
+
+///|
+/// Per-row memo (`View::memo`) shared by all `words_runs` inside a mounted `rows_named` row: returns the row's
+/// number when that row holds any picked span, or `0` otherwise so reusing an unselected row cuts off downstream
+/// `RunsPicked` bindings.
+// kept across runs: removed by `View::owns` when the row node is disposed
+let row_picked_memos : Map[(Int, @view.NodeId), () -> Int] = Map([])
+
+///|
 /// Whether what is picked with the pointer was picked by a finger, as a signal (Ctx::selection_by_finger).
 // kept across runs: said again from what is picked as that changes
 let picked_finger_said : Ref[@signals.Signal[Bool]] = Ref(@signals.signal(false))
@@ -116,15 +131,87 @@ fn picked_span_of(k : SelKey) -> (Int, Int) {
 }
 
 ///|
+/// Whether `picked.spans` currently has any non-empty span in `(tree_id, list, row_num)`.
+fn picked_row_has_any(tree_id : Int, list : @view.NodeId, row_num : Int) -> Bool {
+  let found = Ref(false)
+  picked.spans.each(fn(k, s) {
+    if !found.val && s.a < s.b {
+      match k {
+        Words(t, r, place) if t == tree_id && r == list && place.length() > 0 && place[0] == row_num =>
+          found.val = true
+        _ => ()
+      }
+    }
+  })
+  found.val
+}
+
+///|
+/// Shared per-row memo reading `number()` and gating on `picked_row_said[(tree_id, list, n)]`: returns `n` when
+/// that row has an active selection, or `0` otherwise.
+fn row_picked_reader(row_v : @view.View, list : @view.NodeId, number : () -> Int) -> () -> Int {
+  let tree_id = view_tree_made.val
+  let mk = (tree_id, row_v.id())
+  match row_picked_memos.get(mk) {
+    Some(m) => m
+    None => {
+      let m = row_v.memo(fn() {
+        let n = number()
+        let rk = (tree_id, list, n)
+        let s = match picked_row_said.get(rk) {
+          Some(s) => s
+          None => {
+            if picked_row_said.length() >= 64 {
+              let gone : Array[(Int, @view.NodeId, Int)] = []
+              picked_row_said.each(fn(k, rs) {
+                if !rs.watched() && !picked_row_has_any(k.0, k.1, k.2) {
+                  gone.push(k)
+                }
+              })
+              for k in gone {
+                picked_row_said.remove(k)
+              }
+            }
+            let s = @signals.signal(picked_row_has_any(tree_id, list, n), same=fn(a, b) { a == b })
+            picked_row_said[rk] = s
+            s
+          }
+        }
+        if s.get() { n } else { 0 }
+      })
+      row_picked_memos[mk] = m
+      row_v.owns(fn() { row_picked_memos.remove(mk) }) |> ignore
+      m
+    }
+  }
+}
+
+///|
 /// What is picked with the pointer changed: told what follows it (each node's words of the window's tree: what of them
 /// is picked, words_picked_span), each paragraph whose span changed alone, at once.
 fn picked_told() -> Unit {
+  let active_rows : Set[(Int, @view.NodeId, Int)] = Set([])
+  picked.spans.each(fn(k, s) {
+    if s.a < s.b {
+      match k {
+        Words(t, r, place) if place.length() > 0 => active_rows.add((t, r, place[0]))
+        _ => ()
+      }
+    }
+  })
   @signals.start_batch()
   let unread : Array[SelKey] = []
   picked_spans_said.each(fn(k, s) {
     s.set(picked_span_of(k))
     if !s.watched() {
       unread.push(k)
+    }
+  })
+  let unread_rows : Array[(Int, @view.NodeId, Int)] = []
+  picked_row_said.each(fn(rk, s) {
+    s.set(active_rows.contains(rk))
+    if !s.watched() {
+      unread_rows.push(rk)
     }
   })
   picked_finger_said.val.set(picked.finger)
@@ -134,6 +221,11 @@ fn picked_told() -> Unit {
   if picked_spans_said.length() > 64 {
     for k in unread {
       picked_spans_said.remove(k)
+    }
+  }
+  if picked_row_said.length() > 64 {
+    for rk in unread_rows {
+      picked_row_said.remove(rk)
     }
   }
 }
@@ -148,8 +240,19 @@ fn tree_key(v : @view.View) -> SelKey {
 ///|
 /// What of node `v`'s words is picked with the pointer, followed as that changes (picked_told): View::runs_picker's.
 fn words_picked_span(v : @view.View) -> @view.Live[(Int, Int)] {
+  let row_read = v.row_named().map(fn(t) { (t.1, row_picked_reader(t.0, t.1, t.2)) })
   By(fn() {
-    let k = tree_key(v)
+    let k = match row_read {
+      Some((list, read)) => {
+        let row_num = read()
+        if row_num == 0 {
+          return (0, 0)
+        }
+        let (row, place) = v.row_place_with(list, row_num)
+        SelKey::Words(view_tree_made.val, row, place)
+      }
+      None => tree_key(v)
+    }
     let s = match picked_spans_said.get(k) {
       Some(s) => s
       None => {

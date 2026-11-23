@@ -147,6 +147,7 @@ pub fn picked_now_in(v : @view.View) -> WordsPicked? {
 /// otherwise.
 pub fn picked_words_in(v : @view.View) -> String {
   guard v.lent(words_picks) is Some(scope) else { return "" }
+  guard tree_scope_live(scope) else { return "" }
   match picked.layer {
     TreeScope(_, within) if within == scope => selected_words()
     _ => ""

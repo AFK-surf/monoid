@@ -241,6 +241,38 @@ pub fn View::row_place(self : View) -> (NodeId, Array[Int]) {
 }
 
 ///|
+/// The nearest enclosing `View::scrolls_window` row node (`rows_named`), along with its list id and reactive row
+/// number reader; `None` if `self` is not inside a named list row.
+pub fn View::row_named(self : View) -> (View, NodeId, () -> Int)? {
+  let mut at = self
+  while at.live() is Some(_) {
+    match self.tree.rows_named.get(at.at) {
+      Some((list, number, _)) => return Some((at, list, number))
+      None =>
+        match at.parent() {
+          Some(p) => at = p
+          None => return None
+        }
+    }
+  }
+  None
+}
+
+///|
+/// Like `View::row_place`, using an already-resolved `list` and `row_num` without re-reading the row's reactive
+/// number signal.
+pub fn View::row_place_with(self : View, list : NodeId, row_num : Int) -> (NodeId, Array[Int]) {
+  let up : Array[Int] = []
+  let mut at = self
+  while at.live() is Some(_) && !self.tree.rows_named.contains(at.at) && at.parent() is Some(p) {
+    up.push(p.kids().search_by(fn(k) { k.at == at.at }).unwrap_or(0))
+    at = p
+  }
+  up.push(row_num)
+  (list, up.rev())
+}
+
+///|
 /// Where a page's list's row (identified by its list `list` and stable `row_number` from `View::row_place`) stands
 /// among the list's keys now; `None` if the list is gone or no longer holds that row.
 pub fn Tree::row_order_of(self : Tree, list : NodeId, row_number : Int) -> Int? {
