@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ff2a4af05](https://github.com/AFK-surf/monoid/commit/ff2a4af05d73043c2eef064d0cb5645b47fe0c1b) fix(station): stop re-parsing config.json on every | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.24 | 123.25 |
 | [0d8cf668d](https://github.com/AFK-surf/monoid/commit/0d8cf668d6cddf351a0a72757ef7f03bc1cbe093) fix(station): show a restored chat when all its ag | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.24 | 123.25 |
 | [ff21deb09](https://github.com/AFK-surf/monoid/commit/ff21deb09232de3b0c86c469835cfffe4c306cf3) fix(station): do not treat own kill socket close a | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.4 | 117.69 |
 | [cdbb71b9f](https://github.com/AFK-surf/monoid/commit/cdbb71b9f8bca652c3fb932f99ba8f8661142d5b) fix(core): guard ensureBoxKey on able(inner) when  | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.4 | 117.69 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3dee04890](https://github.com/AFK-surf/monoid/commit/3dee04890ccda08bb2bbfff06b9049b3c4e0afec) feat(station,app): show where a station's traffic  | 2.72 | 3.66 | 14.83 | 36.95 | 56.5 | 32.37 | 65.71 | 99.8 | 126.71 |
 | [17fb8f5be](https://github.com/AFK-surf/monoid/commit/17fb8f5be8a5dc2c0eb0595624256bb7e15e4016) fix(mbui): skip pointer-off Tree::at withins layou | 2.71 | 3.66 | 14.83 | 36.94 | 56.49 | 32.37 | 65.71 | 99.58 | 123.17 |
 | [2e83ff5d4](https://github.com/AFK-surf/monoid/commit/2e83ff5d4f1a7ac17214417e10e508cf021d3733) fix(mbui): refresh page-seconds and rebalance app  | 2.72 | 3.66 | 14.83 | 36.94 | 56.49 | 32.37 | 65.71 | 99.62 | 124.9 |
-| [8c3c82085](https://github.com/AFK-surf/monoid/commit/8c3c82085e63fd332d5a3670cea5d94714a0e689) feat(mbui): merge composer-top controls into one c | 2.72 | 3.66 | 14.83 | 36.94 | 56.49 | 32.37 | 65.71 | 99.62 | 124.9 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ff2a4af05](https://github.com/AFK-surf/monoid/commit/ff2a4af05d73043c2eef064d0cb5645b47fe0c1b) fix(station): stop re-parsing config.json on every | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.17 |
 | [0d8cf668d](https://github.com/AFK-surf/monoid/commit/0d8cf668d6cddf351a0a72757ef7f03bc1cbe093) fix(station): show a restored chat when all its ag | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.05 |
 | [ff21deb09](https://github.com/AFK-surf/monoid/commit/ff21deb09232de3b0c86c469835cfffe4c306cf3) fix(station): do not treat own kill socket close a | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.03 |
 | [cdbb71b9f](https://github.com/AFK-surf/monoid/commit/cdbb71b9f8bca652c3fb932f99ba8f8661142d5b) fix(core): guard ensureBoxKey on able(inner) when  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.35 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3dee04890](https://github.com/AFK-surf/monoid/commit/3dee04890ccda08bb2bbfff06b9049b3c4e0afec) feat(station,app): show where a station's traffic  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.95 |
 | [17fb8f5be](https://github.com/AFK-surf/monoid/commit/17fb8f5be8a5dc2c0eb0595624256bb7e15e4016) fix(mbui): skip pointer-off Tree::at withins layou | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.56 |
 | [2e83ff5d4](https://github.com/AFK-surf/monoid/commit/2e83ff5d4f1a7ac17214417e10e508cf021d3733) fix(mbui): refresh page-seconds and rebalance app  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.58 |
-| [8c3c82085](https://github.com/AFK-surf/monoid/commit/8c3c82085e63fd332d5a3670cea5d94714a0e689) feat(mbui): merge composer-top controls into one c | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 55 |
