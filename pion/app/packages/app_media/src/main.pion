@@ -1,0 +1,94 @@
+// Native GPU offscreen renderer for `pion/app` (`app_ui`) using `film::picture` (2x scale).
+// Outputs PNGs to `MONOID_SHOTS_OUT` (default "../shots"), never committed to git:
+//   - invar-desktop.png  (1280x800 wide two-column shell)
+//   - invar-narrow.png   (390x844 narrow single-column chat view)
+//   - invar-settings.png (1280x800 settings & safe-mode sheet open)
+
+import "app_ui"
+import "film"
+import "host"
+import "lg"
+import "signals"
+import "ui"
+import "view"
+
+fn main() -> Unit {
+  host::install()
+  let env_dir = ui::env("MONOID_SHOTS_OUT")
+  let out_dir = if env_dir != "" { env_dir } else { "../shots" }
+  let mut failed = 0
+
+  // 1. Desktop wide two-column (1280x800 @ 2x)
+  lg::set_dark(Some(false))
+  ui::clear_frame_takes()
+  let demo_desktop = app_ui::DemoApp::new()
+  let ok_desktop = film::picture(
+    fn(root : view::View) -> Unit { app_ui::mount_monoid_app(root, demo_desktop.ctrl) },
+    path="\{out_dir}/invar-desktop.png",
+    w=1280.0,
+    h=800.0,
+    scale=2.0,
+    dark=false,
+    at=300.0,
+    theme=lg::ui_theme,
+  )
+  demo_desktop.ctrl.stop_live()
+  if !ok_desktop {
+    film::say("app_media: failed invar-desktop.png")
+    failed += 1
+  } else {
+    film::say("app_media: wrote \{out_dir}/invar-desktop.png")
+  }
+
+  // 2. Narrow mobile single-column (390x844 @ 2x)
+  lg::set_dark(Some(false))
+  ui::clear_frame_takes()
+  let demo_narrow = app_ui::DemoApp::new()
+  let show_detail = signals::signal(true)
+  let ok_narrow = film::picture(
+    fn(root : view::View) -> Unit {
+      app_ui::mount_monoid_app(root, demo_narrow.ctrl, show_detail=show_detail)
+    },
+    path="\{out_dir}/invar-narrow.png",
+    w=390.0,
+    h=844.0,
+    scale=2.0,
+    dark=false,
+    at=300.0,
+    theme=lg::ui_theme,
+  )
+  demo_narrow.ctrl.stop_live()
+  if !ok_narrow {
+    film::say("app_media: failed invar-narrow.png")
+    failed += 1
+  } else {
+    film::say("app_media: wrote \{out_dir}/invar-narrow.png")
+  }
+
+  // 3. Desktop with Settings & SafeMode Sheet open (1280x800 @ 2x)
+  lg::set_dark(Some(false))
+  ui::clear_frame_takes()
+  let demo_settings = app_ui::DemoApp::new()
+  demo_settings.ctrl.open_settings()
+  let ok_settings = film::picture(
+    fn(root : view::View) -> Unit { app_ui::mount_monoid_app(root, demo_settings.ctrl) },
+    path="\{out_dir}/invar-settings.png",
+    w=1280.0,
+    h=800.0,
+    scale=2.0,
+    dark=false,
+    at=500.0,
+    theme=lg::ui_theme,
+  )
+  demo_settings.ctrl.stop_live()
+  if !ok_settings {
+    film::say("app_media: failed invar-settings.png")
+    failed += 1
+  } else {
+    film::say("app_media: wrote \{out_dir}/invar-settings.png")
+  }
+
+  if failed > 0 {
+    panic("app_media: \{failed} shot(s) failed")
+  }
+}

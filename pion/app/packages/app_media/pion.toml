@@ -1,0 +1,29 @@
+[package]
+name = "app_media"
+version = "0.1.0"
+
+[dependencies]
+app_state = { path = "../app_state" }
+app_ui = { path = "../app_ui" }
+film = { workspace = true }
+host = { workspace = true }
+hostapi = { workspace = true }
+lg = { workspace = true }
+signals = { workspace = true }
+ui = { workspace = true }
+view = { workspace = true }
+
+[link.macos]
+frameworks = [
+  "Foundation",
+  "Cocoa",
+  "Metal",
+  "QuartzCore",
+  "CoreText",
+  "CoreGraphics",
+  "ImageIO",
+  "AVFoundation",
+  "CoreMedia",
+  "CoreVideo",
+  "WebKit",
+]

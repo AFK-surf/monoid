@@ -1,0 +1,257 @@
+// Full `ui::Tester` interactive + Apple Two-Layer UI audit tests for `app_ui`.
+// Verified across `INVAR_TEST_FPS=60 / 120 / 24 / 7`.
+
+import "app_state"
+import "lg"
+import "signals"
+import "ui"
+import "view"
+
+fn drawn_font_size_for(t : ui::Tester, needle : String) -> Option[Double] {
+  for d in t.drawn() {
+    if d.words.contains(needle) {
+      return Some(d.words_look.size)
+    }
+  }
+  None
+}
+
+test "ui_1_desktop_wide_apple_gates_and_switch_chat" {
+  ui::clear_frame_takes()
+  lg::set_dark(Some(false))
+  let demo = DemoApp::new()
+  let t = ui::Tester::tree(
+    fn(root : view::View) { mount_monoid_app(root, demo.ctrl) },
+    width=1280.0,
+    height=800.0,
+    theme=lg::ui_theme,
+  )
+  t.run_shown(200.0)
+
+  debug_assert(t.scroll_faults().length() == 0, "desktop wide must have 0 scroll faults")
+  lg::assert_no_nested_glass(t, label="desktop_wide")
+  lg::assert_apple_ui(t, label="desktop_wide")
+
+  debug_assert(t.find("原生客户端预览版发布").is_some(), "initial chat title visible")
+  debug_assert(t.find("以下为新消息").is_some(), "unread divider visible")
+  debug_assert(t.find("确认是否发布本次原生客户端预览版？").is_some(), "decision card visible")
+
+  let row = match t.find("跨站链路切换巡检") {
+    Some(r) => r
+    None => panic("chat row not found")
+  }
+  t.tap(row.0, row.1)
+  demo.rt.advance(30)
+  t.run_shown(200.0)
+
+  debug_assert(demo.ctrl.active_thread_sig.untracked() == 102, "clicked sidebar row switched active thread to 102")
+  debug_assert(
+    t.find("双活备用竞速 55 项基础测试全部通过，首包延迟稳定在 18ms 内。").is_some(),
+    "message stream updated to thread 102",
+  )
+  lg::assert_apple_ui(t, label="desktop_after_switch")
+  demo.ctrl.stop_live()
+  t.dispose()
+}
+
+test "ui_2_decision_card_click_uses_real_protocol_and_sse_reconcile" {
+  ui::clear_frame_takes()
+  lg::set_dark(Some(false))
+  let demo = DemoApp::new()
+  let t = ui::Tester::tree(
+    fn(root : view::View) { mount_monoid_app(root, demo.ctrl) },
+    width=1280.0,
+    height=800.0,
+    theme=lg::ui_theme,
+  )
+  t.run_shown(200.0)
+
+  let opt_btn = match t.find("立即发布预览版") {
+    Some(b) => b
+    None => panic("decision option button not found")
+  }
+  t.tap(opt_btn.0, opt_btn.1)
+  demo.rt.advance(30)
+  t.run_shown(200.0)
+
+  let is_decided = match demo.ctrl.decision_sig.untracked() {
+    app_state::DecisionState::Decided(_, choice) => choice == "立即发布预览版"
+    _ => false
+  }
+  debug_assert(is_decided, "decision card transitioned to Decided")
+  debug_assert(t.find("已决策").is_some(), "decided badge shown")
+
+  // Verify real decision.answer protocol (quotes:[{ts}], NEVER fake "Decision: " prefix)
+  debug_assert(demo.station.posted_message_bodies.length() == 1, "station received POST message for reply card")
+  let body = demo.station.posted_message_bodies[0]
+  debug_assert(body.contains("\"quotes\""), "decision.answer sent real quotes array")
+  debug_assert(body.contains("1795458000.000004"), "decision.answer quoted exact card ts")
+  debug_assert(!body.contains("Decision: "), "must never send fake Decision: prefix")
+
+  let msgs = demo.ctrl.messages_sig.untracked()
+  let last_ck = match msgs[msgs.length() - 1].client_key {
+    Some(k) => k
+    None => ""
+  }
+  let assigned_n = match demo.station.seen_client_keys.get(last_ck) {
+    Some(n) => n
+    None => 301
+  }
+  demo.station.push_entry_sse(
+    "Monoid Studio",
+    101,
+    assigned_n,
+    "person",
+    "alice@example.com",
+    "立即发布预览版",
+    client_key=Some(last_ck),
+  )
+  t.run_shown(200.0)
+
+  let after = demo.ctrl.messages_sig.untracked()
+  debug_assert(!after[after.length() - 1].sending, "decision message reconciled to confirmed")
+  lg::assert_apple_ui(t, label="decision_after_click")
+  demo.ctrl.stop_live()
+  t.dispose()
+}
+
+test "ui_3_composer_send_optimistic_and_sse_confirm" {
+  ui::clear_frame_takes()
+  lg::set_dark(Some(false))
+  let demo = DemoApp::new()
+  let composer = ui::Field::new()
+  let t = ui::Tester::tree(
+    fn(root : view::View) { mount_monoid_app(root, demo.ctrl, composer_field=composer) },
+    width=1280.0,
+    height=800.0,
+    theme=lg::ui_theme,
+  )
+  t.run_shown(200.0)
+
+  let before_count = demo.ctrl.messages_sig.untracked().length()
+  composer.set("确认进入下一阶段验证")
+  t.run_shown(120.0)
+
+  t.press("Send")
+  t.run_shown(150.0)
+
+  let after_send = demo.ctrl.messages_sig.untracked()
+  debug_assert(after_send.length() == before_count + 1, "optimistic send appended message")
+  debug_assert(after_send[after_send.length() - 1].sending, "new message starts in sending state")
+  debug_assert(composer.text() == "", "composer cleared after send")
+
+  demo.rt.advance(30)
+  let ck = match after_send[after_send.length() - 1].client_key {
+    Some(k) => k
+    None => ""
+  }
+  let assigned_n = match demo.station.seen_client_keys.get(ck) {
+    Some(n) => n
+    None => 302
+  }
+  demo.station.push_entry_sse(
+    "Monoid Studio",
+    101,
+    assigned_n,
+    "person",
+    "alice@example.com",
+    "确认进入下一阶段验证",
+    client_key=Some(ck),
+  )
+  t.run_shown(200.0)
+
+  let after_sse = demo.ctrl.messages_sig.untracked()
+  debug_assert(after_sse.length() == before_count + 1, "zero duplicate messages after SSE confirm")
+  debug_assert(!after_sse[after_sse.length() - 1].sending, "message confirmed in place")
+  lg::assert_apple_ui(t, label="composer_after_send")
+  demo.ctrl.stop_live()
+  t.dispose()
+}
+
+test "ui_4_settings_safemode_sheet_and_live_font_scale" {
+  ui::clear_frame_takes()
+  lg::set_dark(Some(false))
+  let demo = DemoApp::new()
+  let t = ui::Tester::tree(
+    fn(root : view::View) { mount_monoid_app(root, demo.ctrl) },
+    width=1280.0,
+    height=800.0,
+    theme=lg::ui_theme,
+  )
+  t.run_shown(200.0)
+
+  // Verify initial message bubble font size is 14.0pt (标准)
+  let sz_before = match drawn_font_size_for(t, "已完成桌面双栏与移动单栏适配") {
+    Some(s) => s
+    None => panic("agent message bubble not found in drawn frame")
+  }
+  debug_assert(sz_before == 14.0, "initial message bubble font size must be 14.0pt")
+
+  // Open settings sheet via top bar Settings button
+  t.press("打开设置")
+  t.run_shown(300.0)
+
+  debug_assert(demo.ctrl.settings_open_sig.untracked(), "settings sheet opened")
+  debug_assert(t.find("设置与安全模式").is_some(), "settings sheet title shown")
+  debug_assert(t.find("已验证").is_some(), "verified lock badge shown in sheet")
+  debug_assert(t.find("安全锁已验证（2 位成员）").is_some(), "natural Chinese lock status shown in sheet")
+  debug_assert(t.scroll_faults().length() == 0, "settings sheet has 0 scroll faults")
+  lg::assert_no_nested_glass(t, label="settings_sheet", allow_large_overlay=true)
+  lg::assert_apple_ui(t, label="settings_sheet", allow_large_overlay=true)
+
+  // Switch body font scale to 大号 (16.0pt) and verify drawn message bubbles actually update
+  let large_btn = match t.find("大号") {
+    Some(p) => p
+    None => panic("font scale 大号 segment not found")
+  }
+  t.tap(large_btn.0, large_btn.1)
+  t.run_shown(200.0)
+  debug_assert(demo.ctrl.font_scale_sig.untracked() == 2, "font_scale_sig updated to 2 (大号)")
+
+  // Close sheet and assert message bubble font size is now 16.0pt
+  let done_btn = match t.find("完成") {
+    Some(b) => b
+    None => panic("settings Done button not found")
+  }
+  t.tap(done_btn.0, done_btn.1)
+  t.run_shown(350.0)
+  debug_assert(!demo.ctrl.settings_open_sig.untracked(), "settings sheet closed")
+
+  let sz_after = match drawn_font_size_for(t, "已完成桌面双栏与移动单栏适配") {
+    Some(s) => s
+    None => panic("agent message bubble not found after font scale change")
+  }
+  debug_assert(sz_after == 16.0, "message bubble font size must reactively update to 16.0pt")
+  demo.ctrl.stop_live()
+  t.dispose()
+}
+
+test "ui_5_narrow_390x844_single_column_zero_truncation" {
+  ui::clear_frame_takes()
+  lg::set_dark(Some(false))
+  let demo = DemoApp::new()
+  let show_detail = signals::signal(true)
+  let t = ui::Tester::tree(
+    fn(root : view::View) { mount_monoid_app(root, demo.ctrl, show_detail=show_detail) },
+    width=390.0,
+    height=844.0,
+    theme=lg::ui_theme,
+  )
+  t.run_shown(200.0)
+
+  debug_assert(t.scroll_faults().length() == 0, "narrow detail must have 0 scroll faults")
+  lg::assert_no_nested_glass(t, label="narrow_detail")
+  lg::assert_apple_ui(t, label="narrow_detail")
+  debug_assert(t.find("确认是否发布本次原生客户端预览版？").is_some(), "decision card visible on narrow viewport")
+
+  t.press("Back")
+  t.run_shown(200.0)
+  debug_assert(!show_detail.untracked(), "switched to narrow sidebar")
+  debug_assert(t.find("Monoid Studio").is_some(), "workspace header visible on narrow sidebar")
+  debug_assert(t.scroll_faults().length() == 0, "narrow sidebar must have 0 scroll faults")
+  lg::assert_no_nested_glass(t, label="narrow_sidebar")
+  lg::assert_apple_ui(t, label="narrow_sidebar")
+
+  demo.ctrl.stop_live()
+  t.dispose()
+}

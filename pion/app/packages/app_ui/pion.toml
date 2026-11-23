@@ -1,0 +1,21 @@
+[package]
+name = "app_ui"
+version = "0.1.0"
+
+[dependencies]
+app_state = { path = "../app_state" }
+base_codec = { workspace = true }
+effect = { workspace = true }
+form = { workspace = true }
+lock = { workspace = true }
+shell = { workspace = true }
+sql = { workspace = true }
+store = { workspace = true }
+sync = { workspace = true }
+signals = { workspace = true }
+view = { workspace = true }
+headless = { workspace = true }
+motion = { workspace = true }
+ui = { workspace = true }
+kit = { workspace = true }
+lg = { workspace = true }

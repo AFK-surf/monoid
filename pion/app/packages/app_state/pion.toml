@@ -11,6 +11,8 @@ outbox = { workspace = true }
 shell = { workspace = true }
 sql = { workspace = true }
 store = { workspace = true }
+protocol = { workspace = true }
+views = { workspace = true }
 sync = { workspace = true }
 signals = { workspace = true }
 view = { workspace = true }

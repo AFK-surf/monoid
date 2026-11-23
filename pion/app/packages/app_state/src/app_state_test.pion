@@ -1,12 +1,15 @@
 // Headless `ui::Tester` end-to-end integration tests for `app_state`:
 // Uses a minimal `view::View` probe tree bound to `AppController`'s fine-grained
-// signals (zero visual skin) to verify all 5 closed loops across 60 / 120 / 24 / 7 fps:
+// signals (zero visual skin) to verify all 7 closed loops across 60 / 120 / 24 / 7 fps:
 // 1. Cold open (`open_initial`): 0 SQL writes, 0 network requests, first-frame signals ready
 // 2. Switch chat (`select_chat` -> `focus_chat`): foreground preempts running idle prefetch
 // 3. Optimistic send (`send_text`) + SSE reconciliation (`OutboxResolved` + `EntryAdded`, 0 duplicates)
 // 4. Station 403 refusal atomic rollback (`OverlayRolledBack`) + recovery notice signal
-// 5. Native `pion/rules` Ed25519 lock chain (`LockUpdated`) + decision card (`answer_decision`)
+// 5. Native `pion/rules` Ed25519 lock chain (`LockUpdated`)
+// 6. Empty `AppController::new` -> `SimStation` `chat-shared` SSE -> `views::project_chats` -> `chats_sig`
+// 7. Real `card` projection (`seq` + `ts` + `options`) -> `decision.answer` protocol (`quotes: [{ ts }]` and `decision.close`)
 
+import "base_codec"
 import "effect"
 import "sql"
 import "ui"
@@ -19,7 +22,54 @@ struct TestHarness {
   ctrl : AppController
 }
 
-fn new_harness() -> TestHarness {
+fn test_seed_chats() -> Array[ChatSummary] {
+  [
+    ChatSummary::{
+      id: "c-1",
+      thread: 101,
+      title: "Invar Vertical Slice",
+      preview: "Cached preview for thread 101",
+      unread: 2,
+      archived: false,
+      pinned: true,
+      day_group: "已固定",
+      agent_maker: "Gemini 4",
+      station_name: "st1",
+      state_text: "在线",
+      offline: false,
+    },
+    ChatSummary::{
+      id: "c-2",
+      thread: 102,
+      title: "Mesh Transport Audit",
+      preview: "Dual-mesh standby racing passed all 55 tests",
+      unread: 0,
+      archived: false,
+      pinned: false,
+      day_group: "今天",
+      agent_maker: "Claude Opus",
+      station_name: "st1",
+      state_text: "在线",
+      offline: false,
+    },
+    ChatSummary::{
+      id: "c-3",
+      thread: 103,
+      title: "Release Readiness",
+      preview: "Headless state bridge ready for unified shell",
+      unread: 0,
+      archived: false,
+      pinned: false,
+      day_group: "今天",
+      agent_maker: "Codex",
+      station_name: "st1",
+      state_text: "在线",
+      offline: false,
+    },
+  ]
+}
+
+fn new_harness(with_seed~ : Bool = true) -> TestHarness {
   ui::clear_frame_takes()
   let rt = effect::Runtime::new()
   let sim_db = SimAccountDb::new(rt)
@@ -28,8 +78,19 @@ fn new_harness() -> TestHarness {
     sql::SqlResult::Err(e) => panic("sql open failed: " + e.to_string())
   }
   let station = SimStation::new(rt)
-  seed_demo_data(sim_db, station, "st1")
-  let ctrl = AppController::new("ws-app", "st1", rt, db, station.transport())
+  if with_seed {
+    seed_demo_data(sim_db, station, "st1")
+  }
+  let init_chats = if with_seed { test_seed_chats() } else { [] }
+  let ctrl = AppController::new(
+    "ws-app",
+    "st1",
+    rt,
+    db,
+    station.transport(),
+    initial_chats=init_chats,
+    viewer="alice@example.com",
+  )
   TestHarness::{ rt, sim_db, station, ctrl }
 }
 
@@ -59,9 +120,21 @@ fn mount_probe_tree(root : view::View, ctrl : AppController) -> Unit {
     let _ = col.box(fn(dec_w : view::View) {
       let _ = dec_w.words(view::Live::By(fn() {
         match ctrl.decision_sig.get() {
-          DecisionState::Pending(p, _) => "DECISION:PENDING:" + p
+          DecisionState::None => "DECISION:NONE"
+          DecisionState::Pending(_, seq, _, p, _) => "DECISION:PENDING:\{seq}:" + p
           DecisionState::Decided(_, c) => "DECISION:DECIDED:" + c
         }
+      }))
+    })
+    let _ = col.box(fn(chats_w : view::View) {
+      let _ = chats_w.words(view::Live::By(fn() {
+        let cs = ctrl.chats_sig.get()
+        let sb = StringBuilder::new()
+        sb.write_string("CHATS:\{cs.length()}:")
+        for c in cs {
+          sb.write_string("[\{c.id}|\{c.title}]")
+        }
+        sb.to_string()
       }))
     })
     let _ = col.box(fn(msg_w : view::View) {
@@ -112,7 +185,6 @@ test "e2e_2_select_chat_preempts_idle_prefetch" {
   h.ctrl.start_live()
   h.rt.advance(30)
 
-  // Make background idle prefetch on thread 103 slow (500ms), foreground thread 102 fast (10ms)
   h.station.thread_delay_ms.set(103, 500)
   h.station.thread_delay_ms.set(102, 10)
 
@@ -122,9 +194,8 @@ test "e2e_2_select_chat_preempts_idle_prefetch" {
     height=600.0,
   )
   t.run_shown(100.0)
-  debug_assert(t.find("CONN:Connected").is_some(), "live connection reflected via FrameOutbox")
+  debug_assert(t.find("CONN:已连接").is_some(), "live connection reflected via FrameOutbox")
 
-  // Start a background idle prefetch fiber on thread 103
   let _ = h.rt.fork_quiet_named("idle-103", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     h.ctrl.core.sync.prefetch_idle_k(103, fn(_ex : effect::Exit[Int]) -> Unit {
       k(effect::Exit::Succeeded(()))
@@ -132,7 +203,6 @@ test "e2e_2_select_chat_preempts_idle_prefetch" {
   })
   h.rt.advance(20)
 
-  // Foreground chat switch to thread 102 must preempt idle prefetch and switch signals immediately
   let switched = h.ctrl.select_chat(102, 5100.to_int64())
   debug_assert(switched, "select_chat(102) succeeded")
   h.rt.advance(40)
@@ -162,7 +232,6 @@ test "e2e_3_optimistic_send_and_sse_reconcile_zero_duplicates" {
   )
   t.run_shown(100.0)
 
-  // Optimistic send -> OutboxQueued -> ui::wake_frame -> on_frame_take drains into signals
   let ck = h.ctrl.send_text("Ship headless bridge")
   debug_assert(ck.length() > 0, "client_key assigned")
   t.run_shown(100.0)
@@ -170,9 +239,9 @@ test "e2e_3_optimistic_send_and_sse_reconcile_zero_duplicates" {
   let after_send = h.ctrl.messages_sig.untracked()
   debug_assert(after_send.length() == 3, "optimistic send appends 3rd message immediately")
   debug_assert(after_send[2].sending, "3rd message is in Sending state")
+  debug_assert(after_send[2].author == "alice@example.com", "author comes from viewer_marks.me")
   debug_assert(t.find("[0|SENDING|Ship headless bridge]").is_some(), "probe tree shows SENDING state")
 
-  // Advance station POST ack + push SSE entry with same clientKey -> in-place dedup, 0 duplicates
   h.rt.advance(30)
   let assigned_n = match h.station.seen_client_keys.get(ck) {
     Some(n) => n
@@ -183,7 +252,7 @@ test "e2e_3_optimistic_send_and_sse_reconcile_zero_duplicates" {
     101,
     assigned_n,
     "person",
-    "Alice",
+    "alice@example.com",
     "Ship headless bridge",
     client_key=Some(ck),
   )
@@ -207,7 +276,7 @@ test "e2e_4_403_refusal_atomic_rollback_and_recovery_notice" {
   h.ctrl.start_live()
   h.rt.advance(30)
 
-  h.station.reject_path_prefix = Some("/chats/c-1/rename")
+  h.station.reject_path_prefix = Some("/sessions/c-1/title")
   h.station.reject_code = "read_only_member"
   h.station.reject_recovery = "Ask a workspace owner to upgrade your role before renaming."
 
@@ -218,12 +287,10 @@ test "e2e_4_403_refusal_atomic_rollback_and_recovery_notice" {
   )
   t.run_shown(100.0)
 
-  // Optimistic rename reflects immediately
   h.ctrl.rename_chat("c-1", "Unauthorized Title")
   t.run_shown(80.0)
   debug_assert(t.find("TITLE:Unauthorized Title").is_some(), "optimistic rename shown immediately")
 
-  // Station 403 refusal -> OverlayRolledBack -> atomic title restoration + recovery notice
   h.rt.advance(30)
   t.run_shown(100.0)
   debug_assert(t.find("TITLE:Invar Vertical Slice").is_some(), "original title restored atomically")
@@ -232,18 +299,16 @@ test "e2e_4_403_refusal_atomic_rollback_and_recovery_notice" {
     "recovery notice signal populated with exact code and recovery hint",
   )
 
-  // Dismiss notice clears recovery signal
   h.ctrl.dismiss_notice()
   t.run_shown(80.0)
   debug_assert(t.find("RECOVERY:NONE").is_some(), "dismiss_notice cleared recovery_sig")
 
-  // Also verify archive_chat 403 atomic rollback
-  h.station.reject_path_prefix = Some("/chats/c-1/archive")
+  h.station.reject_path_prefix = Some("/sessions/c-1/archive")
   h.station.reject_code = "archive_denied"
   h.station.reject_recovery = "Only workspace admins can archive pinned chats."
   h.ctrl.archive_chat("c-1")
   t.run_shown(80.0)
-  debug_assert(t.find("TITLE:Invar Vertical Slice (Archived)").is_some(), "optimistic archive shown")
+  debug_assert(t.find("TITLE:Invar Vertical Slice（已归档）").is_some(), "optimistic archive shown")
   h.rt.advance(30)
   t.run_shown(100.0)
   debug_assert(t.find("TITLE:Invar Vertical Slice").is_some(), "archive rolled back atomically")
@@ -258,7 +323,7 @@ test "e2e_4_403_refusal_atomic_rollback_and_recovery_notice" {
   t.dispose()
 }
 
-test "e2e_5_native_ed25519_lock_and_decision_card_loop" {
+test "e2e_5_native_ed25519_lock_verification" {
   let h = new_harness()
   let _ = h.ctrl.open_initial(101, 5000.to_int64())
   h.ctrl.start_live()
@@ -270,9 +335,8 @@ test "e2e_5_native_ed25519_lock_and_decision_card_loop" {
     height=600.0,
   )
   t.run_shown(100.0)
-  debug_assert(t.find("LOCK:Lock Unverified").is_some(), "lock starts unverified")
+  debug_assert(t.find("LOCK:安全锁未验证").is_some(), "lock starts unverified")
 
-  // Verify real Ed25519-signed workspace lock chain natively via `pion/rules`
   let (entries, root_hash) = build_demo_lock_chain("ws-app")
   match h.ctrl.core.apply_lock_chain(entries, root_hash) {
     Ok(v) => debug_assert(v.state.seq == 1.0, "lock chain verified at seq 1")
@@ -281,36 +345,132 @@ test "e2e_5_native_ed25519_lock_and_decision_card_loop" {
   t.run_shown(100.0)
   debug_assert(h.ctrl.lock_verified_sig.untracked(), "lock_verified_sig == true")
   debug_assert(
-    t.find("LOCK:Lock Verified (seq 1, 3 members)").is_some(),
+    t.find("LOCK:安全锁已验证（3 位成员）").is_some(),
     "probe tree updated to verified Ed25519 lock status",
   )
+  h.ctrl.stop_live()
+  t.dispose()
+}
 
-  // Answer decision card -> updates decision_sig + dispatches message via ClientCore::send_message
-  let ck = h.ctrl.answer_decision("Ship Pure-Pion Slice")
-  t.run_shown(80.0)
-  debug_assert(t.find("DECISION:DECIDED:Ship Pure-Pion Slice").is_some(), "decision_sig transitioned to Decided")
-  debug_assert(t.find("[0|SENDING|Decision: Ship Pure-Pion Slice]").is_some(), "decision message optimistically queued")
-
-  h.rt.advance(30)
-  let assigned_n = match h.station.seen_client_keys.get(ck) {
-    Some(n) => n
-    None => 201
+test "e2e_6_empty_controller_chat_shared_sse_populates_chats" {
+  let h = new_harness(with_seed=false)
+  // Production default MUST start with empty chat list and no fake decision card
+  debug_assert(h.ctrl.chats_sig.untracked().length() == 0, "AppController::new starts with empty chats_sig")
+  let starts_none = match h.ctrl.decision_sig.untracked() {
+    DecisionState::None => true
+    _ => false
   }
-  h.station.push_entry_sse(
-    "ws-app",
-    101,
-    assigned_n,
-    "person",
-    "Alice",
-    "Decision: Ship Pure-Pion Slice",
-    client_key=Some(ck),
+  debug_assert(starts_none, "AppController::new starts with DecisionState::None")
+
+  h.ctrl.start_live()
+  h.rt.advance(30)
+
+  let t = ui::Tester::tree(
+    fn(root : view::View) { mount_probe_tree(root, h.ctrl) },
+    width=800.0,
+    height=600.0,
   )
   t.run_shown(100.0)
-  debug_assert(h.ctrl.messages_sig.untracked().length() == 3, "decision message reconciled with 0 duplicates")
-  debug_assert(
-    t.find("[\{assigned_n}|OK|Decision: Ship Pure-Pion Slice]").is_some(),
-    "decision message confirmed in place",
+  debug_assert(t.find("CHATS:0:").is_some(), "initially zero chats rendered")
+
+  // Push real `chat-shared` SSE event from SimStation (with real `last: { text }` shape)
+  h.station.push_chat_shared_sse(base_codec::json_obj([
+    ("id", base_codec::json_str("c-live-1")),
+    ("thread", base_codec::json_int(501)),
+    ("title", base_codec::json_str("真实流同步会话")),
+    ("last", base_codec::json_obj([("text", base_codec::json_str("来自工作站实时推送"))])),
+    ("lastActive", base_codec::json_int64(h.rt.now())),
+  ]))
+  t.run_shown(120.0)
+
+  let chats = h.ctrl.chats_sig.untracked()
+  debug_assert(chats.length() == 1, "chat-shared SSE populated chats_sig via views::project_chats")
+  debug_assert(chats[0].id == "c-live-1", "projected chat id matches")
+  debug_assert(chats[0].title == "真实流同步会话", "projected chat title matches")
+  debug_assert(chats[0].preview == "来自工作站实时推送", "projected preview extracted from last.text")
+  debug_assert(t.find("CHATS:1:[c-live-1|真实流同步会话]").is_some(), "probe tree shows live projected chat")
+
+  h.ctrl.stop_live()
+  t.dispose()
+}
+
+test "e2e_7_real_card_projection_and_decision_answer_protocol" {
+  let h = new_harness(with_seed=false)
+  h.ctrl.start_live()
+  h.rt.advance(30)
+
+  let t = ui::Tester::tree(
+    fn(root : view::View) { mount_probe_tree(root, h.ctrl) },
+    width=800.0,
+    height=600.0,
   )
+  t.run_shown(100.0)
+
+  // Push a real chat-shared SSE with a real card (seq + ts + options)
+  h.station.push_chat_shared_sse(base_codec::json_obj([
+    ("id", base_codec::json_str("c-card-1")),
+    ("thread", base_codec::json_int(601)),
+    ("title", base_codec::json_str("发布审批")),
+    ("lastActive", base_codec::json_int64(h.rt.now())),
+    (
+      "card",
+      base_codec::json_obj([
+        ("seq", base_codec::json_int(12)),
+        ("ts", base_codec::json_str("1795458000.123456")),
+        ("prompt", base_codec::json_str("是否发布本次更新？")),
+        (
+          "card",
+          base_codec::json_obj([
+            ("type", base_codec::json_str("options")),
+            ("assignee", base_codec::json_str("alice@example.com")),
+            (
+              "options",
+              base_codec::json_arr([
+                base_codec::json_obj([
+                  ("label", base_codec::json_str("立即发布")),
+                  ("action", base_codec::json_str("reply")),
+                ]),
+                base_codec::json_obj([
+                  ("label", base_codec::json_str("暂不发布")),
+                  ("action", base_codec::json_str("close")),
+                ]),
+              ]),
+            ),
+          ]),
+        ),
+      ]),
+    ),
+  ]))
+  t.run_shown(120.0)
+
+  debug_assert(t.find("DECISION:PENDING:12:是否发布本次更新？").is_some(), "real card projected into decision_sig")
+
+  // Answer with action="reply" -> MUST dispatch real quotes:[{ts}] over POST /threads/601/messages, NEVER "Decision: ..."
+  let idem = h.ctrl.answer_decision("立即发布")
+  debug_assert(idem.length() > 0, "answer_decision succeeded via ClientCore::handle_request")
+  h.rt.advance(30)
+  t.run_shown(120.0)
+
+  debug_assert(t.find("DECISION:DECIDED:立即发布").is_some(), "decision_sig transitioned to Decided")
+  debug_assert(h.station.posted_message_bodies.length() == 1, "station received POST /threads/601/messages")
+  let body = h.station.posted_message_bodies[0]
+  debug_assert(body.contains("\"quotes\""), "request body contains real quotes array")
+  debug_assert(body.contains("1795458000.123456"), "request body quotes exact card ts")
+  debug_assert(!body.contains("Decision: "), "MUST NOT send fake 'Decision: ...' text")
+
+  // Also test action="close" -> dispatches real decision.close route
+  h.ctrl.refresh_decision_from_store(601)
+  let close_idem = h.ctrl.answer_decision("暂不发布")
+  debug_assert(close_idem.length() > 0, "close decision dispatched")
+  h.rt.advance(30)
+  let mut saw_close = false
+  for req_line in h.station.requests_seen {
+    if req_line.contains("/threads/601/card") || req_line.contains("/close") || req_line.contains("/decision") {
+      saw_close = true
+    }
+  }
+  debug_assert(saw_close, "action=close dispatched real decision.close station request")
+
   h.ctrl.stop_live()
   t.dispose()
 }

@@ -1,0 +1,988 @@
+// Pure Pion-JSX + `packages/lg` native Monoid client shell.
+// Strictly follows Apple Two-Layer Architecture (solid Content Layer via `lg::surface()` /
+// `<lg::SurfaceCard>` + single-layer floating Liquid Glass chrome via `<lg::PageShell>`,
+// `<lg::BarPillGroup>`, `<lg::ComposerBar>`, `<lg::BackButton>`, and `<lg::Sheet>`).
+// Zero hand-rolled liquid glass surfaces, zero JSON protocol, zero blocking IO on render thread.
+
+import "app_state"
+import "headless"
+import "lg"
+import "motion"
+import "signals"
+import "ui"
+import "view"
+
+fn body_font_size(ctrl : app_state::AppController) -> Double {
+  let s = ctrl.font_scale_sig.get()
+  if s == 2 {
+    16.0
+  } else if s == 1 {
+    15.0
+  } else {
+    14.0
+  }
+}
+
+fn find_chat_by_id(chats : Array[app_state::ChatSummary], id : String) -> Option[app_state::ChatSummary] {
+  for c in chats {
+    if c.id == id {
+      return Some(c)
+    }
+  }
+  None
+}
+
+fn chat_ids_in_group(ctrl : app_state::AppController, group : String) -> Array[String] {
+  let chats = ctrl.filtered_chats()
+  let ids : Array[String] = []
+  for c in chats {
+    if c.day_group == group {
+      ids.push(c.id)
+    }
+  }
+  ids
+}
+
+fn group_has_chats(ctrl : app_state::AppController, group : String) -> Bool {
+  chat_ids_in_group(ctrl, group).length() > 0
+}
+
+fn mount_chat_row(
+  parent : view::View,
+  ctrl : app_state::AppController,
+  chat_id : String,
+  show_detail : signals::Signal[Bool],
+) -> Unit {
+  let get_chat = fn() -> Option[app_state::ChatSummary] {
+    find_chat_by_id(ctrl.chats_sig.get(), chat_id)
+  }
+  let is_selected = fn() -> Bool {
+    match get_chat() {
+      Some(c) => ctrl.active_thread_sig.get() == c.thread
+      None => false
+    }
+  }
+  let label_fn = fn() -> String {
+    match get_chat() {
+      Some(c) => c.title
+      None => chat_id
+    }
+  }
+  let on_pick = fn(_e) -> Unit {
+    match get_chat() {
+      Some(c) => {
+        let _ = ctrl.select_chat(c.thread, ctrl.core.rt.now())
+        show_detail.set(true)
+      }
+      None => ()
+    }
+  }
+  let _ = headless::button(
+    parent,
+    label_fn,
+    on_pick,
+    fn(row : view::View, btn : headless::Button) -> Unit {
+      let hover_t = motion::hover_fade(row, fn() { btn.hovered() })
+      let press_t = motion::hover_fade(row, fn() { btn.pressed() }, duration_ms=motion::pointer_tap_ms)
+      let _ = row
+      .padding(view::Live::Is((12.0, 10.0, 12.0, 10.0)))
+      .gap(view::Live::Is(4.0))
+      .radius(view::Live::Is(lg::r_row))
+      .min_width(view::Live::Is(Some(0.0)))
+      .ground(view::Live::By(fn() {
+        let s = lg::surface()
+        if is_selected() {
+          s.row_selected
+        } else {
+          let h = hover_t()
+          let p = press_t()
+          let base = if h > 0.001 { lg::alpha(s.row_hover, h) } else { lg::clear }
+          if p > 0.001 { lg::over(base, lg::alpha(s.row_selected, p * 0.5)) } else { base }
+        }
+      }))
+
+      // Top line: title (first-line aligned) + unread count badge
+      <ui::Row in={row} align={.Start} along={.Between} gap={8.0} min_width={0.0}>
+        <ui::Box grow={1.0} shrink={1.0} min_width={0.0}>
+          <ui::Text
+            text_by=>{
+              match get_chat() {
+                Some(c) => c.title
+                None => ""
+              }
+            }
+            size={13.5}
+            weight={600}
+            lines={1}
+            color_by=>{lg::surface().ink}
+          />
+        </ui::Box>
+        <ui::Show
+          when=>{
+            match get_chat() {
+              Some(c) => c.unread > 0 && ctrl.show_badge_sig.get()
+              None => false
+            }
+          }
+          at_once
+        >
+          <lg::CountBadge
+            count_by=>{
+              match get_chat() {
+                Some(c) => c.unread
+                None => 0
+              }
+            }
+            tone={.Accent}
+          />
+        </ui::Show>
+      </ui::Row>
+
+      // Second line: preview text (wraps cleanly up to 2 lines)
+      <ui::Text
+        in={row}
+        text_by=>{
+          match get_chat() {
+            Some(c) => c.preview
+            None => ""
+          }
+        }
+        size={12.0}
+        lines={2}
+        color_by=>{lg::surface().ink_secondary}
+      />
+
+      // Third line: model chip + status badge (zero middle-dot concatenation)
+      <ui::Row in={row} align={.Middle} gap={6.0} wrap line_gap={4.0}>
+        <ui::Box
+          pad_x={7.0}
+          pad_y={2.0}
+          radius={lg::r_chip}
+          bg_by=>{lg::surface().card_secondary}
+        >
+          <ui::Text
+            text_by=>{
+              match get_chat() {
+                Some(c) => c.agent_maker
+                None => ""
+              }
+            }
+            size={11.0}
+            weight={500}
+            color_by=>{lg::surface().ink_secondary}
+          />
+        </ui::Box>
+        <ui::Box
+          pad_x={7.0}
+          pad_y={2.0}
+          radius={lg::r_chip}
+          bg_by=>{
+            let s = lg::surface()
+            match get_chat() {
+              Some(c) =>
+              if c.archived {
+                s.card_secondary
+              } else if c.offline {
+                s.warning_bg
+              } else if c.state_text == "待确认" {
+                s.accent_tint
+              } else {
+                s.positive_bg
+              }
+              None => s.card_secondary
+            }
+          }
+        >
+          <ui::Text
+            text_by=>{
+              match get_chat() {
+                Some(c) => if c.archived { "已归档" } else { c.state_text }
+                None => ""
+              }
+            }
+            size={11.0}
+            weight={500}
+            color_by=>{
+              let s = lg::surface()
+              match get_chat() {
+                Some(c) =>
+                if c.archived {
+                  s.ink_tertiary
+                } else if c.offline {
+                  s.warning
+                } else if c.state_text == "待确认" {
+                  s.accent
+                } else {
+                  s.positive
+                }
+                None => s.ink_tertiary
+              }
+            }
+          />
+        </ui::Box>
+      </ui::Row>
+    },
+  )
+}
+
+fn mount_chat_group(
+  parent : view::View,
+  ctrl : app_state::AppController,
+  group_title : String,
+  show_detail : signals::Signal[Bool],
+) -> Unit {
+  parent.show(
+    fn() { group_has_chats(ctrl, group_title) },
+    fn(sec : view::View) -> Unit {
+      let _ = sec.gap(view::Live::Is(4.0)).min_width(view::Live::Is(Some(0.0)))
+      <ui::Box in={sec} pad_x={8.0} pad_y={4.0}>
+        <ui::Text
+          text={group_title}
+          size={11.5}
+          weight={600}
+          color_by=>{lg::surface().ink_tertiary}
+        />
+      </ui::Box>
+      let _ = sec.box(fn(list_box : view::View) -> Unit {
+        let _ = list_box.gap(view::Live::Is(4.0)).min_width(view::Live::Is(Some(0.0)))
+        list_box.each_of(
+          fn() { chat_ids_in_group(ctrl, group_title) },
+          fn(slot : view::View, id : String) -> Unit {
+            mount_chat_row(slot, ctrl, id, show_detail)
+          },
+          at_once=true,
+        )
+      })
+    },
+    at_once=true,
+  )
+}
+
+fn mount_sidebar(
+  sb : view::View,
+  ctrl : app_state::AppController,
+  search_field : ui::Field,
+  show_detail : signals::Signal[Bool],
+) -> Unit {
+  <ui::Col in={sb} fill min_width={0.0} min_height={0.0}>
+    // Workspace header: title + station status + notification bell badge
+    <ui::Col pad_x={14.0} pad_y={14.0} gap={10.0} rigid>
+      <ui::Row align={.Middle} along={.Between} gap={8.0}>
+        <ui::Col gap={2.0} grow={1.0} shrink={1.0} min_width={0.0}>
+          <ui::Text
+            text_by=>{ctrl.workspace_name_sig.get()}
+            size={16.0}
+            weight={600}
+            lines={1}
+            color_by=>{lg::surface().ink}
+          />
+          <ui::Row align={.Start} gap={6.0} min_width={0.0}>
+            <ui::Box height={14.0} center rigid>
+              <ui::Box
+                width={7.0}
+                height={7.0}
+                radius={3.5}
+                rigid
+                bg_by=>{
+                  if ctrl.station_online_sig.get() {
+                    lg::surface().positive
+                  } else {
+                    lg::surface().warning
+                  }
+                }
+              />
+            </ui::Box>
+            <ui::Box grow={1.0} shrink={1.0} min_width={0.0}>
+              <ui::Text
+                text_by=>{
+                  let st = ctrl.station_name_sig.get()
+                  let status = if ctrl.station_online_sig.get() { "在线" } else { "离线缓存" }
+                  "\{st}  \{status}"
+                }
+                size={11.5}
+                wrap
+                color_by=>{lg::surface().ink_secondary}
+              />
+            </ui::Box>
+          </ui::Row>
+        </ui::Col>
+
+        <ui::Row align={.Middle} gap={6.0} rigid>
+          <ui::Show when=>{ctrl.show_badge_sig.get() && ctrl.notification_count_sig.get() > 0} at_once>
+            <lg::CountBadge count_by=>{ctrl.notification_count_sig.get()} tone={.Danger} />
+          </ui::Show>
+          <lg::Button
+            flat
+            ghost
+            height={36.0}
+            pad_x={10.5}
+            label="通知与设置"
+            on_press=>{ctrl.open_settings()}
+          >
+            <lg::Icon kind={.Bell} size={15.0} color_by=>{lg::surface().ink_secondary} />
+          </lg::Button>
+        </ui::Row>
+      </ui::Row>
+
+      // Solid recessed search field (zero liquid glass in sidebar content layer)
+      <ui::Box min_width={0.0} ref_view={fn(slot : view::View) -> Unit {
+        let _ = lg::liquid_text_field_node(
+          slot,
+          search_field,
+          placeholder="搜索会话、模型或工作站",
+          label=fn() { "搜索会话" },
+          flat=true,
+          radius=10.0,
+          show_label=false,
+          clearable=true,
+          lead=fn(ic_host : view::View, ink_fn : () -> Int64) -> Unit {
+            let _ = lg::icon_node(ic_host, lg::IconKind::Search, size=14.0, ink=ink_fn)
+          },
+          edited=fn(q : String) -> Unit { ctrl.set_search_query(q) },
+          on_clear=fn() -> Unit { ctrl.set_search_query("") },
+        )
+      }} />
+    </ui::Col>
+
+    // Scrollable grouped chat list (bounded by parent `.fill()` -> zero scroll faults)
+    <ui::Scroll>
+      <ui::Col pad_x={8.0} pad_y={6.0} gap={10.0} min_width={0.0}>
+        <ui::Box ref_view={fn(host : view::View) -> Unit {
+          mount_chat_group(host, ctrl, "已固定", show_detail)
+          mount_chat_group(host, ctrl, "今天", show_detail)
+          mount_chat_group(host, ctrl, "更早", show_detail)
+        }} />
+        <ui::Show when=>{ctrl.filtered_chats().length() == 0} at_once>
+          <ui::Col pad={20.0} center gap={6.0}>
+            <ui::Text text="未找到匹配的会话" size={13.0} weight={500} color_by=>{lg::surface().ink_secondary} />
+            <ui::Text text="尝试更换关键词或清空搜索框" size={12.0} color_by=>{lg::surface().ink_tertiary} />
+          </ui::Col>
+        </ui::Show>
+      </ui::Col>
+    </ui::Scroll>
+  </ui::Col>
+}
+
+fn mount_message_bubble(
+  parent : view::View,
+  ctrl : app_state::AppController,
+  idx : Int,
+) -> Unit {
+  let get_msg = fn() -> Option[app_state::ChatMessage] {
+    let msgs = ctrl.messages_sig.get()
+    if idx >= 0 && idx < msgs.length() {
+      Some(msgs[idx])
+    } else {
+      None
+    }
+  }
+
+  // Optional unread divider (never rendered before the very first message)
+  parent.show(
+    fn() -> Bool {
+      if idx <= 0 {
+        return false
+      }
+      let target_n = ctrl.unread_divider_before_sig.get()
+      if target_n <= 0 {
+        return false
+      }
+      match get_msg() {
+        Some(m) => m.entry_n == target_n
+        None => false
+      }
+    },
+    fn(div_row : view::View) -> Unit {
+      let _ = div_row
+      .row(view::Live::Is(true))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .gap(view::Live::Is(10.0))
+      .padding(view::Live::Is((4.0, 6.0, 4.0, 6.0)))
+      <ui::Box in={div_row} grow={1.0} height={0.5} bg_by=>{lg::surface().accent} alpha={0.45} />
+      <ui::Text in={div_row} text="以下为新消息" size={11.5} weight={600} color_by=>{lg::surface().accent} />
+      <ui::Box in={div_row} grow={1.0} height={0.5} bg_by=>{lg::surface().accent} alpha={0.45} />
+    },
+    at_once=true,
+  )
+
+  let _ = parent.box(fn(row : view::View) -> Unit {
+    let _ = row
+    .row(view::Live::Is(true))
+    .min_width(view::Live::Is(Some(0.0)))
+    .lies_along(view::Live::By(fn() {
+      match get_msg() {
+        Some(m) =>
+        match m.role {
+          app_state::MessageRole::Person => view::Lies::End
+          app_state::MessageRole::System => view::Lies::Middle
+          app_state::MessageRole::Agent => view::Lies::Start
+        }
+        None => view::Lies::Start
+      }
+    }))
+
+    // Person bubble (right-aligned solid Apple blue)
+    row.show(
+      fn() -> Bool {
+        match get_msg() {
+          Some(m) => match m.role { app_state::MessageRole::Person => true; _ => false }
+          None => false
+        }
+      },
+      fn(slot : view::View) -> Unit {
+        let _ = slot.max_width(view::Live::Is(Some(480.0))).min_width(view::Live::Is(Some(0.0)))
+        <ui::Col
+          in={slot}
+          pad_x={14.0}
+          pad_y={10.0}
+          gap={4.0}
+          radius={18.0}
+          bg_by=>{lg::surface().accent}
+          min_width={0.0}
+        >
+          <ui::Box min_width={0.0} ref_view={fn(tw : view::View) -> Unit {
+            let _ = tw
+            .words(
+              view::Live::By(fn() {
+                match get_msg() {
+                  Some(m) => m.text
+                  None => ""
+                }
+              }),
+              ink=lg::white,
+              look=view::WordsLook::of(14.0, wrap=true),
+            )
+            .words_look(view::Live::By(fn() { view::WordsLook::of(body_font_size(ctrl), wrap=true) }))
+          }} />
+          <ui::Show
+            when=>{
+              match get_msg() {
+                Some(m) => m.sending
+                None => false
+              }
+            }
+            at_once
+          >
+            <ui::Text text="发送中…" size={11.0} color={0xFFFFFFCCL} />
+          </ui::Show>
+        </ui::Col>
+      },
+      at_once=true,
+    )
+
+    // System message (centered calm notice pill)
+    row.show(
+      fn() -> Bool {
+        match get_msg() {
+          Some(m) => match m.role { app_state::MessageRole::System => true; _ => false }
+          None => false
+        }
+      },
+      fn(slot : view::View) -> Unit {
+        let _ = slot.max_width(view::Live::Is(Some(520.0))).min_width(view::Live::Is(Some(0.0)))
+        <ui::Row
+          in={slot}
+          align={.Start}
+          gap={6.0}
+          pad_x={12.0}
+          pad_y={7.0}
+          radius={12.0}
+          bg_by=>{lg::surface().card_secondary}
+          min_width={0.0}
+        >
+          <ui::Box pad_y={2.0} rigid>
+            <lg::Icon kind={.Lock} size={13.0} color_by=>{lg::surface().positive} />
+          </ui::Box>
+          <ui::Box grow={1.0} shrink={1.0} min_width={0.0}>
+            <ui::Text
+              text_by=>{
+                match get_msg() {
+                  Some(m) => m.text
+                  None => ""
+                }
+              }
+              size={12.5}
+              wrap
+              color_by=>{lg::surface().ink_secondary}
+            />
+          </ui::Box>
+        </ui::Row>
+      },
+      at_once=true,
+    )
+
+    // Agent message (left-aligned solid Apple SurfaceCard)
+    row.show(
+      fn() -> Bool {
+        match get_msg() {
+          Some(m) => match m.role { app_state::MessageRole::Agent => true; _ => false }
+          None => false
+        }
+      },
+      fn(slot : view::View) -> Unit {
+        let _ = slot.max_width(view::Live::Is(Some(560.0))).min_width(view::Live::Is(Some(0.0)))
+        <lg::SurfaceCard in={slot} pad={14.0} gap={6.0} radius={18.0}>
+          <ui::Row align={.Middle} gap={6.0}>
+            <lg::Icon kind={.Sparkles} size={13.0} color_by=>{lg::surface().accent} />
+            <ui::Text
+              text_by=>{
+                match get_msg() {
+                  Some(m) => m.author
+                  None => "Agent"
+                }
+              }
+              size={12.5}
+              weight={600}
+              color_by=>{lg::surface().ink_secondary}
+            />
+          </ui::Row>
+          <ui::Box min_width={0.0} ref_view={fn(tw : view::View) -> Unit {
+            let _ = tw
+            .words(
+              view::Live::By(fn() {
+                match get_msg() {
+                  Some(m) => m.text
+                  None => ""
+                }
+              }),
+              look=view::WordsLook::of(14.0, wrap=true),
+            )
+            .words_look(view::Live::By(fn() { view::WordsLook::of(body_font_size(ctrl), wrap=true) }))
+            .ink(view::Live::By(fn() { lg::surface().ink }))
+          }} />
+        </lg::SurfaceCard>
+      },
+      at_once=true,
+    )
+  })
+}
+
+fn mount_decision_card(parent : view::View, ctrl : app_state::AppController) -> Unit {
+  parent.show(
+    fn() -> Bool {
+      match ctrl.decision_sig.get() {
+        app_state::DecisionState::None => false
+        _ => true
+      }
+    },
+    fn(card_slot : view::View) -> Unit {
+      <lg::SurfaceCard in={card_slot} pad={12.0} gap={12.0} radius={28.0} label="待确认事项">
+        <ui::Row align={.Start} along={.Between} gap={10.0}>
+          <ui::Row align={.Start} gap={8.0} grow={1.0} shrink={1.0} min_width={0.0}>
+            <ui::Box pad_y={2.0} rigid>
+              <lg::Icon kind={.Check} size={16.0} color_by=>{lg::surface().accent} />
+            </ui::Box>
+            <ui::Col gap={3.0} grow={1.0} shrink={1.0} min_width={0.0}>
+              <ui::Text
+                text_by=>{
+                  match ctrl.decision_sig.get() {
+                    app_state::DecisionState::Pending(_, _, _, p, _) => p
+                    app_state::DecisionState::Decided(p, _) => p
+                    app_state::DecisionState::None => ""
+                  }
+                }
+                size={15.0}
+                weight={600}
+                wrap
+                color_by=>{lg::surface().ink}
+              />
+              <ui::Text
+                text_by=>{
+                  match ctrl.decision_sig.get() {
+                    app_state::DecisionState::Pending(_, _, _, _, _) => "请选择执行方案，确认后立即回复当前会话。"
+                    app_state::DecisionState::Decided(_, choice) => "已确认方案：\{choice}"
+                    app_state::DecisionState::None => ""
+                  }
+                }
+                size={12.5}
+                wrap
+                color_by=>{lg::surface().ink_secondary}
+              />
+            </ui::Col>
+          </ui::Row>
+          <ui::Show
+            when=>{
+              match ctrl.decision_sig.get() {
+                app_state::DecisionState::Pending(_, _, _, _, _) => true
+                _ => false
+              }
+            }
+            at_once
+          >
+            <lg::Badge label="待确认" tone={.Accent} dot />
+          </ui::Show>
+          <ui::Show
+            when=>{
+              match ctrl.decision_sig.get() {
+                app_state::DecisionState::Decided(_, _) => true
+                _ => false
+              }
+            }
+            at_once
+          >
+            <lg::Badge label="已决策" tone={.Success} dot />
+          </ui::Show>
+        </ui::Row>
+
+        // Decision action buttons when Pending (wraps cleanly on 390pt narrow viewports)
+        <ui::Show
+          when=>{
+            match ctrl.decision_sig.get() {
+              app_state::DecisionState::Pending(_, _, _, _, _) => true
+              _ => false
+            }
+          }
+          at_once
+        >
+          <ui::Box ref_view={fn(btn_host : view::View) -> Unit {
+            let _ = btn_host
+            .row(view::Live::Is(true))
+            .wraps(view::Live::Is(Some(8.0)))
+            .gap(view::Live::Is(8.0))
+            btn_host.each_of(
+              fn() -> Array[Int] {
+                match ctrl.decision_sig.get() {
+                  app_state::DecisionState::Pending(_, _, _, _, opts) => {
+                    let idxs : Array[Int] = []
+                    for i in 0..<opts.length() {
+                      idxs.push(i)
+                    }
+                    idxs
+                  }
+                  _ => []
+                }
+              },
+              fn(slot : view::View, opt_idx : Int) -> Unit {
+                let opt_label = fn() -> String {
+                  match ctrl.decision_sig.get() {
+                    app_state::DecisionState::Pending(_, _, _, _, opts) =>
+                    if opt_idx >= 0 && opt_idx < opts.length() { opts[opt_idx].label } else { "" }
+                    _ => ""
+                  }
+                }
+                let opt_action = fn() -> String {
+                  match ctrl.decision_sig.get() {
+                    app_state::DecisionState::Pending(_, _, _, _, opts) =>
+                    if opt_idx >= 0 && opt_idx < opts.length() { opts[opt_idx].action } else { "reply" }
+                    _ => "reply"
+                  }
+                }
+                <lg::Button
+                  in={slot}
+                  flat
+                  prominent={opt_idx == 0}
+                  height={32.0}
+                  pad_x={14.0}
+                  label_by={opt_label}
+                  on_press=>{
+                    let c = opt_label()
+                    if c.length() > 0 {
+                      let _ = ctrl.answer_decision(c, action=opt_action())
+                    }
+                  }
+                />
+              },
+              at_once=true,
+            )
+          }} />
+        </ui::Show>
+      </lg::SurfaceCard>
+    },
+    at_once=true,
+  )
+}
+
+fn mount_detail_pane(
+  dt : view::View,
+  ctrl : app_state::AppController,
+  composer_field : ui::Field,
+  show_detail : signals::Signal[Bool],
+) -> Unit {
+  let send_now = fn() -> Unit {
+    let txt = composer_field.text().trim()
+    if txt.length() > 0 {
+      let _ = ctrl.send_text(txt)
+      composer_field.set("")
+    }
+  }
+  let is_narrow = fn() -> Bool {
+    let w = dt.window_w()
+    w > 0.0 && w < 760.0
+  }
+
+  <lg::PageShell
+    in={dt}
+    title_by=>{ctrl.active_title_sig.get()}
+    subtitle_by=>{
+      let st = ctrl.station_name_sig.get()
+      if is_narrow() {
+        let online_txt = if ctrl.station_online_sig.get() { "在线" } else { "离线" }
+        "\{st}  \{online_txt}"
+      } else {
+        let conn = ctrl.connection_sig.get()
+        let lock_txt = if ctrl.lock_verified_sig.get() { "安全锁已验证" } else { "锁待验证" }
+        "\{st}  \{conn}  \{lock_txt}"
+      }
+    }
+    leading={fn(ld : view::View) -> Unit {
+      ld.show(is_narrow, fn(slot : view::View) -> Unit {
+        <lg::BackButton in={slot} on_press=>{show_detail.set(false)} />
+      }, at_once=true)
+    }}
+    trailing={fn(tr : view::View) -> Unit {
+      <lg::BarPillGroup in={tr} height={36.0} label="对话操作">
+        <lg::Button
+          flat
+          ghost
+          height={32.0}
+          pad_x={10.5}
+          label="安全锁状态"
+          on_press=>{ctrl.open_settings()}
+        >
+          <lg::Icon
+            kind={.Lock}
+            size={15.0}
+            color_by=>{
+              if ctrl.lock_verified_sig.get() {
+                lg::surface().positive
+              } else {
+                lg::surface().warning
+              }
+            }
+          />
+        </lg::Button>
+        <lg::Button
+          flat
+          ghost
+          height={32.0}
+          pad_x={10.5}
+          label="打开设置"
+          on_press=>{ctrl.open_settings()}
+        >
+          <lg::Icon kind={.Settings} size={15.0} color_by=>{lg::surface().ink} />
+        </lg::Button>
+      </lg::BarPillGroup>
+    }}
+    bottom={fn(bot : view::View) -> Unit {
+      bot.show(
+        fn() { !ctrl.settings_open_sig.get() },
+        fn(slot : view::View) -> Unit {
+          <lg::ComposerBar
+            in={slot}
+            field={composer_field}
+            on_send={send_now}
+            placeholder="输入消息…"
+            label="发送消息"
+            on_attach={fn() -> Unit { () }}
+          />
+        },
+        at_once=true,
+      )
+    }}
+  >
+    <ui::Col pad_x={16.0} pad_y={8.0} gap={12.0} min_width={0.0}>
+      // Recovery notice banner (mounted only when recovery_sig is Some)
+      <ui::Show when=>{ctrl.recovery_sig.get().is_some()} at_once>
+        <ui::Box
+          pad={14.0}
+          radius={lg::r_card}
+          bg_by=>{lg::surface().danger_bg}
+          border_color={0xFF3B3044L}
+          border_width={0.5}
+          min_width={0.0}
+        >
+          <ui::Row align={.Start} along={.Between} gap={10.0}>
+            <ui::Col gap={4.0} grow={1.0} shrink={1.0} min_width={0.0}>
+              <ui::Text
+                text_by=>{
+                  match ctrl.recovery_sig.get() {
+                    Some(r) => "操作已回滚（\{r.code}）"
+                    None => ""
+                  }
+                }
+                size={13.5}
+                weight={600}
+                color_by=>{lg::surface().danger}
+              />
+              <ui::Text
+                text_by=>{
+                  match ctrl.recovery_sig.get() {
+                    Some(r) => r.recovery
+                    None => ""
+                  }
+                }
+                size={12.5}
+                wrap
+                color_by=>{lg::surface().ink}
+              />
+            </ui::Col>
+            <lg::Button
+              flat
+              height={30.0}
+              pad_x={12.0}
+              label="关闭"
+              on_press=>{ctrl.dismiss_notice()}
+            />
+          </ui::Row>
+        </ui::Box>
+      </ui::Show>
+
+      // Message stream bound directly to `ctrl.messages_sig`
+      <ui::Box min_width={0.0} ref_view={fn(feed : view::View) -> Unit {
+        let _ = feed.gap(view::Live::Is(12.0))
+        feed.each_of(
+          fn() -> Array[Int] {
+            let n = ctrl.messages_sig.get().length()
+            let idxs : Array[Int] = []
+            for i in 0..<n {
+              idxs.push(i)
+            }
+            idxs
+          },
+          fn(slot : view::View, idx : Int) -> Unit {
+            mount_message_bubble(slot, ctrl, idx)
+          },
+          at_once=true,
+        )
+      }} />
+
+      // Interactive decision card
+      <ui::Box min_width={0.0} ref_view={fn(host : view::View) -> Unit {
+        mount_decision_card(host, ctrl)
+      }} />
+
+      // Small breathing spacer above floating composer
+      <ui::Spacer height={12.0} />
+    </ui::Col>
+  </lg::PageShell>
+}
+
+fn mount_settings_sheet(root : view::View, ctrl : app_state::AppController) -> Unit {
+  <lg::Sheet
+    in={root}
+    open_by=>{ctrl.settings_open_sig.get()}
+    on_close=>{ctrl.close_settings()}
+    title="设置与安全模式"
+    subtitle="工作区连接状态、安全锁校验与外观偏好"
+    width={460.0}
+    max_height={580.0}
+    footer={fn(ft : view::View) -> Unit {
+      <ui::Row in={ft} along={.End} gap={8.0}>
+        <lg::Button
+          flat
+          prominent
+          height={32.0}
+          pad_x={16.0}
+          label="完成"
+          on_press=>{ctrl.close_settings()}
+        />
+      </ui::Row>
+    }}
+  >
+    <ui::Col gap={14.0} min_width={0.0}>
+      // Safe Mode & Lock status section
+      <lg::SurfaceSection header="安全模式与连接" radius={26.0} pad={10.0}>
+        <ui::Col gap={10.0} min_width={0.0}>
+          <ui::Row align={.Middle} along={.Between} gap={8.0}>
+            <ui::Text text="工作区安全锁" size={14.0} weight={500} color_by=>{lg::surface().ink} />
+            <ui::Show when=>{ctrl.lock_verified_sig.get()} at_once>
+              <lg::Badge label="已验证" tone={.Success} dot />
+            </ui::Show>
+            <ui::Show when=>{!ctrl.lock_verified_sig.get()} at_once>
+              <lg::Badge label="未验证" tone={.Warning} dot />
+            </ui::Show>
+          </ui::Row>
+          <ui::Text
+            text_by=>{ctrl.lock_status_sig.get()}
+            size={12.5}
+            wrap
+            color_by=>{lg::surface().ink_secondary}
+          />
+          <ui::Box height={0.5} bg_by=>{lg::surface().separator} />
+          <ui::Row align={.Middle} along={.Between} gap={8.0}>
+            <ui::Text text="工作站连接" size={14.0} weight={500} color_by=>{lg::surface().ink} />
+            <ui::Text
+              text_by=>{
+                let st = ctrl.station_name_sig.get()
+                let c = ctrl.connection_sig.get()
+                "\{st}  \{c}"
+              }
+              size={13.0}
+              color_by=>{lg::surface().ink_secondary}
+            />
+          </ui::Row>
+        </ui::Col>
+      </lg::SurfaceSection>
+
+      // Appearance & Typography section (flat controls inside glass sheet -> zero nested glass)
+      <lg::SurfaceSection header="外观与字号" radius={26.0} pad={10.0}>
+        <ui::Col gap={12.0} min_width={0.0}>
+          <ui::Row align={.Middle} along={.Between} gap={10.0} wrap line_gap={8.0}>
+            <ui::Text text="主题外观" size={14.0} weight={500} color_by=>{lg::surface().ink} />
+            <lg::Segmented
+              flat
+              labels={["浅色", "深色"]}
+              selected_by=>{ctrl.appearance_sig.get()}
+              on_select={fn(i : Int) -> Unit {
+                ctrl.set_appearance(i)
+                lg::set_dark(Some(i == 1))
+              }}
+              width={160.0}
+            />
+          </ui::Row>
+          <ui::Box height={0.5} bg_by=>{lg::surface().separator} />
+          <ui::Row align={.Middle} along={.Between} gap={10.0} wrap line_gap={8.0}>
+            <ui::Text text="正文字号" size={14.0} weight={500} color_by=>{lg::surface().ink} />
+            <lg::Segmented
+              flat
+              labels={["标准", "舒适", "大号"]}
+              selected_by=>{ctrl.font_scale_sig.get()}
+              on_select={fn(i : Int) -> Unit { ctrl.set_font_scale(i) }}
+              width={210.0}
+            />
+          </ui::Row>
+          <ui::Box height={0.5} bg_by=>{lg::surface().separator} />
+          <ui::Row align={.Middle} along={.Between} gap={10.0}>
+            <ui::Col gap={2.0} grow={1.0} shrink={1.0} min_width={0.0}>
+              <ui::Text text="通知角标" size={14.0} weight={500} color_by=>{lg::surface().ink} />
+              <ui::Text
+                text="在侧边栏与未读会话行展示未读计数"
+                size={12.0}
+                wrap
+                color_by=>{lg::surface().ink_tertiary}
+              />
+            </ui::Col>
+            <lg::Toggle
+              on_by=>{ctrl.show_badge_sig.get()}
+              on_change={fn(v : Bool) -> Unit { ctrl.set_show_badge(v) }}
+              label="通知角标"
+            />
+          </ui::Row>
+        </ui::Col>
+      </lg::SurfaceSection>
+    </ui::Col>
+  </lg::Sheet>
+}
+
+/// Mount the complete Monoid native Invar client shell onto `root`,
+/// directly bound to `AppController`'s fine-grained signals.
+pub fn mount_monoid_app(
+  root : view::View,
+  ctrl : app_state::AppController,
+  composer_field~ : ui::Field = ui::Field::new(),
+  search_field~ : ui::Field = ui::Field::new(),
+  show_detail~ : signals::Signal[Bool] = signals::signal(true),
+) -> Unit {
+  ui::set_tree_theme(lg::ui_theme)
+  ctrl.mount()
+  let _ = root.fill().clips(view::Live::Is(true))
+  <lg::SplitShell
+    in={root}
+    breakpoint={760.0}
+    sidebar_width={276.0}
+    show_detail_by=>{show_detail.get()}
+    sidebar={fn(sb : view::View) -> Unit { mount_sidebar(sb, ctrl, search_field, show_detail) }}
+    detail={fn(dt : view::View) -> Unit { mount_detail_pane(dt, ctrl, composer_field, show_detail) }}
+  />
+  mount_settings_sheet(root, ctrl)
+}

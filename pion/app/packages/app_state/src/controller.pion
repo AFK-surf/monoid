@@ -5,12 +5,15 @@
 // Decoupled from all visual skins so the unified `invar` PageShell & components
 // can bind directly to these signals without touching core logic.
 
+import "base_codec"
 import "effect"
+import "protocol"
 import "signals"
 import "sql"
 import "store"
 import "sync"
 import "ui"
+import "views"
 
 pub struct ChatSummary {
   pub id : String
@@ -19,6 +22,12 @@ pub struct ChatSummary {
   pub preview : String
   pub unread : Int
   pub archived : Bool
+  pub pinned : Bool
+  pub day_group : String
+  pub agent_maker : String
+  pub station_name : String
+  pub state_text : String
+  pub offline : Bool
 }
 
 pub enum MessageRole {
@@ -43,57 +52,79 @@ pub struct RecoveryNotice {
   pub recovery : String
 }
 
+pub struct DecisionOption {
+  pub label : String
+  pub action : String
+}
+
 pub enum DecisionState {
-  Pending(String, Array[String])
+  None
+  Pending(Int, Int, String, String, Array[DecisionOption])
   Decided(String, String)
 }
 
 pub struct AppController {
   pub core : sync::ClientCore
+  pub workspace_name_sig : signals::Signal[String]
+  pub station_name_sig : signals::Signal[String]
+  pub station_online_sig : signals::Signal[Bool]
+  pub notification_count_sig : signals::Signal[Int]
   pub chats_sig : signals::Signal[Array[ChatSummary]]
+  pub search_query_sig : signals::Signal[String]
   pub active_thread_sig : signals::Signal[Int]
   pub active_title_sig : signals::Signal[String]
   pub messages_sig : signals::Signal[Array[ChatMessage]]
+  pub unread_divider_before_sig : signals::Signal[Int]
   pub connection_sig : signals::Signal[String]
   pub lock_verified_sig : signals::Signal[Bool]
   pub lock_status_sig : signals::Signal[String]
   pub recovery_sig : signals::Signal[Option[RecoveryNotice]]
   pub decision_sig : signals::Signal[DecisionState]
+  pub settings_open_sig : signals::Signal[Bool]
+  pub appearance_sig : signals::Signal[Int]
+  pub font_scale_sig : signals::Signal[Int]
+  pub show_badge_sig : signals::Signal[Bool]
   pub version_sig : signals::Signal[Int]
   pub mut live_sync : Bool
   pub mut drained_events : Int
   mut send_seq : Int
+  mut req_seq : Int64
   prev_chat_titles : Map[String, String]
   prev_chat_archived : Map[String, Bool]
 }
 
-pub fn default_demo_chats() -> Array[ChatSummary] {
-  [
-    ChatSummary::{
-      id: "c-1",
-      thread: 101,
-      title: "Invar Vertical Slice",
-      preview: "Zero-serialization FrameOutbox wired to signals",
-      unread: 2,
-      archived: false,
-    },
-    ChatSummary::{
-      id: "c-2",
-      thread: 102,
-      title: "Mesh Transport Audit",
-      preview: "Dual-mesh standby racing passed all 55 tests",
-      unread: 0,
-      archived: false,
-    },
-    ChatSummary::{
-      id: "c-3",
-      thread: 103,
-      title: "Release Readiness",
-      preview: "Headless state bridge ready for unified shell",
-      unread: 0,
-      archived: false,
-    },
-  ]
+fn total_unread(chats : Array[ChatSummary]) -> Int {
+  let mut n = 0
+  for c in chats {
+    if !c.archived && c.unread > 0 {
+      n += c.unread
+    }
+  }
+  n
+}
+
+fn ascii_lower(s : String) -> String {
+  let sb = StringBuilder::new()
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    let ch = s.code_unit_at(i)
+    if ch >= 65 && ch <= 90 {
+      sb.write_char((ch + 32).unsafe_to_char())
+    } else {
+      sb.write_char(ch.unsafe_to_char())
+    }
+    i += 1
+  }
+  sb.to_string()
+}
+
+fn contains_ignore_case(haystack : String, needle : String) -> Bool {
+  let q = needle.trim()
+  if q.length() == 0 {
+    return true
+  }
+  ascii_lower(haystack).contains(ascii_lower(q))
 }
 
 fn role_of_author_kind(kind : String) -> MessageRole {
@@ -111,10 +142,109 @@ fn entry_to_message(e : store::Entry, client_key : Option[String]) -> ChatMessag
     entry_n: e.n,
     client_key: client_key,
     role: role_of_author_kind(e.author_kind),
-    author: if e.author.length() > 0 { e.author } else { "Agent" },
+    author: if e.author.length() > 0 { e.author } else { "助手" },
     text: e.text,
     sending: false,
   }
+}
+
+fn j_str(j : base_codec::Json, k : String) -> String {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+}
+
+fn j_int(j : base_codec::Json, k : String) -> Int {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, repr)) => {
+      if repr.length() > 0 {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => return v.to_int()
+          None => ()
+        }
+      }
+      n.to_int()
+    }
+    _ => 0
+  }
+}
+
+fn j_bool(j : base_codec::Json, k : String) -> Bool {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => false
+  }
+}
+
+fn j_arr(j : base_codec::Json, k : String) -> Array[base_codec::Json] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
+}
+
+fn normalize_day_group(label : String, pinned : Bool) -> String {
+  if pinned || label == "已固定" {
+    "已固定"
+  } else if label == "今天" {
+    "今天"
+  } else {
+    "更早"
+  }
+}
+
+fn parse_card_to_decision(thread : Int, card_obj : base_codec::Json) -> Option[DecisionState] {
+  let seq = j_int(card_obj, "seq")
+  if seq <= 0 {
+    return None
+  }
+  let ts = j_str(card_obj, "ts")
+  let mut prompt = j_str(card_obj, "prompt")
+  if prompt.length() == 0 {
+    match base_codec::json_get(card_obj, "message") {
+      Some(m) => {
+        prompt = j_str(m, "text")
+      }
+      None => ()
+    }
+  }
+  if prompt.length() == 0 {
+    prompt = j_str(card_obj, "text")
+  }
+  if prompt.length() == 0 {
+    prompt = "请选择下一步方案"
+  }
+  let inner_card = match base_codec::json_get(card_obj, "card") {
+    Some(c) => c
+    None => card_obj
+  }
+  let raw_opts = j_arr(inner_card, "options")
+  let opts : Array[DecisionOption] = []
+  for o in raw_opts {
+    match o {
+      base_codec::Json::Str(s) => {
+        if s.length() > 0 {
+          opts.push(DecisionOption::{ label: s, action: "reply" })
+        }
+      }
+      base_codec::Json::Obj(_) => {
+        let lbl = j_str(o, "label")
+        let act = j_str(o, "action")
+        if lbl.length() > 0 {
+          opts.push(DecisionOption::{
+            label: lbl,
+            action: if act.length() > 0 { act } else { "reply" },
+          })
+        }
+      }
+      _ => ()
+    }
+  }
+  if opts.length() == 0 {
+    return None
+  }
+  Some(DecisionState::Pending(thread, seq, ts, prompt, opts))
 }
 
 pub fn AppController::new(
@@ -123,7 +253,8 @@ pub fn AppController::new(
   rt : effect::Runtime,
   db : sql::Sql,
   transport : sync::StationTransport,
-  initial_chats~ : Array[ChatSummary] = default_demo_chats(),
+  initial_chats~ : Array[ChatSummary] = [],
+  viewer~ : String = "",
 ) -> AppController {
   let core = sync::ClientCore::new(
     workspace,
@@ -133,40 +264,60 @@ pub fn AppController::new(
     transport,
     fn() -> Unit { ui::wake_frame() },
   )
+  if viewer.length() > 0 {
+    core.set_viewer(viewer)
+  }
   let init_title = if initial_chats.length() > 0 { initial_chats[0].title } else { "" }
   let init_thread = if initial_chats.length() > 0 { initial_chats[0].thread } else { 0 }
+  let init_unread = total_unread(initial_chats)
   AppController::{
     core: core,
+    workspace_name_sig: signals::signal(workspace),
+    station_name_sig: signals::signal(station),
+    station_online_sig: signals::signal(false),
+    notification_count_sig: signals::signal(init_unread),
     chats_sig: signals::signal_by(
       initial_chats,
       fn(_a : Array[ChatSummary], _b : Array[ChatSummary]) -> Bool { false },
     ),
+    search_query_sig: signals::signal(""),
     active_thread_sig: signals::signal(init_thread),
     active_title_sig: signals::signal(init_title),
     messages_sig: signals::signal_by(
       [],
       fn(_a : Array[ChatMessage], _b : Array[ChatMessage]) -> Bool { false },
     ),
-    connection_sig: signals::signal("Local Cache"),
+    unread_divider_before_sig: signals::signal(0),
+    connection_sig: signals::signal("本地缓存"),
     lock_verified_sig: signals::signal(false),
-    lock_status_sig: signals::signal("Lock Unverified"),
+    lock_status_sig: signals::signal("安全锁未验证"),
     recovery_sig: signals::signal_by(
       None,
       fn(_a : Option[RecoveryNotice], _b : Option[RecoveryNotice]) -> Bool { false },
     ),
     decision_sig: signals::signal_by(
-      DecisionState::Pending(
-        "Approve Vertical Slice Cutover",
-        ["Ship Pure-Pion Slice", "Keep Transition Adapter"],
-      ),
+      DecisionState::None,
       fn(_a : DecisionState, _b : DecisionState) -> Bool { false },
     ),
+    settings_open_sig: signals::signal(false),
+    appearance_sig: signals::signal(0),
+    font_scale_sig: signals::signal(0),
+    show_badge_sig: signals::signal(true),
     version_sig: signals::signal(0),
     live_sync: false,
     drained_events: 0,
     send_seq: 0,
+    req_seq: 1.to_int64(),
     prev_chat_titles: Map::new(),
     prev_chat_archived: Map::new(),
+  }
+}
+
+fn AppController::default_author(self : AppController) -> String {
+  if self.core.viewer_marks.me.length() > 0 {
+    self.core.viewer_marks.me
+  } else {
+    "我"
   }
 }
 
@@ -179,11 +330,221 @@ fn AppController::refresh_active_title(self : AppController) -> Unit {
   let chats = self.chats_sig.untracked()
   for c in chats {
     if c.thread == th {
-      let title = if c.archived { c.title + " (Archived)" } else { c.title }
+      let title = if c.archived { c.title + "（已归档）" } else { c.title }
       self.active_title_sig.set(title)
       return
     }
   }
+}
+
+/// Project the active thread's pending decision card directly from the stored
+/// `chat` record in `ClientCore.db` via `views::card_of_row`.
+pub fn AppController::refresh_decision_from_store(self : AppController, thread : Int) -> Unit {
+  if thread <= 0 {
+    self.decision_sig.set(DecisionState::None)
+    return
+  }
+  match store::get_chat_by_thread(self.core.db, self.core.station, thread) {
+    sql::SqlResult::Ok(Some(rec)) => {
+      match base_codec::json_parse(rec.json) {
+        base_codec::JsonParseResult::Ok(row_j) => {
+          let card_opt = if self.core.viewer_marks.me.length() > 0 {
+            let me_s = self.core.viewer_marks.me
+            let me_j = if me_s.contains("@") {
+              base_codec::json_obj([("email", base_codec::json_str(me_s))])
+            } else {
+              base_codec::json_obj([("sub", base_codec::json_str(me_s))])
+            }
+            views::decision_for_viewer(row_j, me_j)
+          } else {
+            views::card_of_row(row_j)
+          }
+          match card_opt {
+            Some(c) => {
+              match parse_card_to_decision(thread, c) {
+                Some(ds) => self.decision_sig.set(ds)
+                None => self.decision_sig.set(DecisionState::None)
+              }
+            }
+            None => self.decision_sig.set(DecisionState::None)
+          }
+        }
+        base_codec::JsonParseResult::Err(_) => self.decision_sig.set(DecisionState::None)
+      }
+    }
+    _ => self.decision_sig.set(DecisionState::None)
+  }
+}
+
+/// Project the real chat list from `ClientCore.db` via `views::project_chats`
+/// and update `chats_sig`, `notification_count_sig`, `active_title_sig`, and `decision_sig`.
+pub fn AppController::refresh_chats_from_store(self : AppController) -> Unit {
+  let online = self.station_online_sig.untracked()
+  let brief = views::StationBrief::{
+    address: self.core.station,
+    id: self.core.station,
+    name: self.core.station,
+    emoji: None,
+    icon: None,
+    online: online,
+    updating: false,
+    offline_text: None,
+    reconnecting_text: None,
+    running: 0,
+  }
+  match views::project_chats(
+    self.core.db,
+    self.core.workspace,
+    [brief],
+    self.core.rt.now(),
+    self.core.rows_memo,
+    self.core.viewer_marks,
+  ) {
+    sql::SqlResult::Ok(view_j) => {
+      let days = j_arr(view_j, "days")
+      let projected : Array[ChatSummary] = []
+      for d in days {
+        let day_label = j_str(d, "label")
+        let items = j_arr(d, "items")
+        for it in items {
+          let id = j_str(it, "id")
+          let th = j_int(it, "thread")
+          let title = j_str(it, "title")
+          let mut preview = ""
+          match base_codec::json_get(it, "last") {
+            Some(last_j) => {
+              preview = j_str(last_j, "preview")
+              if preview.length() == 0 {
+                preview = j_str(last_j, "text")
+              }
+            }
+            None => ()
+          }
+          if preview.length() == 0 {
+            preview = j_str(it, "preview")
+          }
+          if preview.length() == 0 {
+            preview = j_str(it, "lastMessage")
+          }
+          if preview.length() == 0 {
+            preview = j_str(it, "snippet")
+          }
+          let unread = j_int(it, "unread")
+          let archived = j_bool(it, "archived")
+          let pinned = j_bool(it, "pinned") || day_label == "已固定"
+          let mut maker = j_str(it, "agentMaker")
+          if maker.length() == 0 {
+            let agents = j_arr(it, "agents")
+            if agents.length() > 0 {
+              maker = j_str(agents[0], "model")
+              if maker.length() == 0 {
+                maker = j_str(agents[0], "runtime")
+              }
+            }
+          }
+          if maker.length() == 0 {
+            maker = "助手"
+          }
+          let st_name = j_str(it, "stationName")
+          let eff_station = if st_name.length() > 0 { st_name } else { self.core.station }
+          let offline = j_bool(it, "offline")
+          let mut state_txt = j_str(it, "stateText")
+          if state_txt.length() == 0 {
+            let st_code = j_str(it, "state")
+            if archived {
+              state_txt = "已归档"
+            } else if offline {
+              state_txt = "离线"
+            } else if st_code == "need_human" || st_code == "waiting_human" {
+              state_txt = "待确认"
+            } else if st_code == "running" || st_code == "working" {
+              state_txt = "运行中"
+            } else {
+              state_txt = "在线"
+            }
+          }
+          projected.push(ChatSummary::{
+            id: id,
+            thread: th,
+            title: if title.length() > 0 { title } else { id },
+            preview: preview,
+            unread: unread,
+            archived: archived,
+            pinned: pinned,
+            day_group: normalize_day_group(day_label, pinned),
+            agent_maker: maker,
+            station_name: eff_station,
+            state_text: state_txt,
+            offline: offline,
+          })
+        }
+      }
+      if projected.length() > 0 {
+        self.chats_sig.set(projected)
+        self.notification_count_sig.set(total_unread(projected))
+        if self.active_thread_sig.untracked() <= 0 {
+          self.active_thread_sig.set(projected[0].thread)
+        }
+        self.refresh_active_title()
+        self.refresh_decision_from_store(self.active_thread_sig.untracked())
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+}
+
+pub fn AppController::set_search_query(self : AppController, query : String) -> Unit {
+  self.search_query_sig.set(query)
+  self.bump()
+}
+
+pub fn AppController::filtered_chats(self : AppController) -> Array[ChatSummary] {
+  let chats = self.chats_sig.get()
+  let q = self.search_query_sig.get().trim()
+  if q.length() == 0 {
+    return chats
+  }
+  let out : Array[ChatSummary] = []
+  for c in chats {
+    if contains_ignore_case(c.title, q) ||
+    contains_ignore_case(c.preview, q) ||
+    contains_ignore_case(c.agent_maker, q) ||
+    contains_ignore_case(c.station_name, q) {
+      out.push(c)
+    }
+  }
+  out
+}
+
+pub fn AppController::open_settings(self : AppController) -> Unit {
+  self.settings_open_sig.set(true)
+  self.bump()
+}
+
+pub fn AppController::close_settings(self : AppController) -> Unit {
+  self.settings_open_sig.set(false)
+  self.bump()
+}
+
+pub fn AppController::toggle_settings(self : AppController) -> Unit {
+  let cur = self.settings_open_sig.untracked()
+  self.settings_open_sig.set(!cur)
+  self.bump()
+}
+
+pub fn AppController::set_appearance(self : AppController, mode : Int) -> Unit {
+  self.appearance_sig.set(mode)
+  self.bump()
+}
+
+pub fn AppController::set_font_scale(self : AppController, scale : Int) -> Unit {
+  self.font_scale_sig.set(scale)
+  self.bump()
+}
+
+pub fn AppController::set_show_badge(self : AppController, show : Bool) -> Unit {
+  self.show_badge_sig.set(show)
+  self.bump()
 }
 
 /// Register the zero-serialization `ui::on_frame_take` consumer.
@@ -227,7 +588,8 @@ pub fn AppController::open_initial(self : AppController, thread : Int, now : Int
 }
 
 /// Switch active chat, load cached entries immediately, clear unread badge,
-/// and invoke `ClientCore::focus_chat` (preempting any running idle prefetch).
+/// project its real decision card from SQLite, and invoke `ClientCore::focus_chat`
+/// (preempting any running idle prefetch).
 pub fn AppController::select_chat(self : AppController, thread : Int, now : Int64) -> Bool {
   let ok = self.open_initial(thread, now)
   let cur = self.chats_sig.untracked()
@@ -241,13 +603,22 @@ pub fn AppController::select_chat(self : AppController, thread : Int, now : Int6
         preview: c.preview,
         unread: 0,
         archived: c.archived,
+        pinned: c.pinned,
+        day_group: c.day_group,
+        agent_maker: c.agent_maker,
+        station_name: c.station_name,
+        state_text: c.state_text,
+        offline: c.offline,
       })
     } else {
       next.push(c)
     }
   }
   self.chats_sig.set(next)
+  self.notification_count_sig.set(total_unread(next))
+  self.unread_divider_before_sig.set(0)
   self.refresh_active_title()
+  self.refresh_decision_from_store(thread)
   self.core.focus_chat(thread, fetch=self.live_sync)
   self.bump()
   ok
@@ -258,7 +629,7 @@ pub fn AppController::select_chat(self : AppController, thread : Int, now : Int6
 pub fn AppController::send_text(
   self : AppController,
   text : String,
-  author~ : String = "Alice",
+  author~ : String = "",
 ) -> String {
   let trimmed = text.trim()
   if trimmed.length() == 0 {
@@ -267,24 +638,58 @@ pub fn AppController::send_text(
   self.send_seq += 1
   let ck = "ck-app-\{self.send_seq}"
   let th = self.active_thread_sig.untracked()
-  let _ = self.core.send_message(th, ck, author, trimmed, self.core.rt.now())
+  let eff_author = if author.length() > 0 { author } else { self.default_author() }
+  let _ = self.core.send_message(th, ck, eff_author, trimmed, self.core.rt.now())
   ck
 }
 
-/// Record a decision-card answer and dispatch it through `ClientCore::send_message`.
+/// Answer the active thread's pending decision card through `ClientCore::handle_request`
+/// (`decision.answer`), dispatching either `quotes: [{ ts }]` (action="reply") or
+/// `decision.close` (action="close") over the real station protocol.
 pub fn AppController::answer_decision(
   self : AppController,
   choice : String,
-  author~ : String = "Alice",
+  action~ : String = "",
 ) -> String {
-  let prompt = match self.decision_sig.untracked() {
-    DecisionState::Pending(p, _) => p
-    DecisionState::Decided(p, _) => p
+  let (th, seq, ts, prompt, eff_action) = match self.decision_sig.untracked() {
+    DecisionState::Pending(t, s, card_ts, p, opts) => {
+      let mut resolved_act = if action.length() > 0 { action } else { "reply" }
+      if action.length() == 0 {
+        for o in opts {
+          if o.label == choice && o.action.length() > 0 {
+            resolved_act = o.action
+            break
+          }
+        }
+      }
+      (t, s, card_ts, p, resolved_act)
+    }
+    _ => return ""
   }
-  self.decision_sig.set(DecisionState::Decided(prompt, choice))
-  let ck = self.send_text("Decision: " + choice, author=author)
-  self.bump()
-  ck
+  self.req_seq += 1.to_int64()
+  let req_id = self.req_seq
+  self.send_seq += 1
+  let idem = "ck-card-\{self.send_seq}"
+  let params : Array[(String, base_codec::Json)] = [
+    ("station", base_codec::json_str(self.core.station)),
+    ("thread", base_codec::json_int(th)),
+    ("seq", base_codec::json_int(seq)),
+    ("option", base_codec::json_str(choice)),
+    ("action", base_codec::json_str(eff_action)),
+    ("idem", base_codec::json_str(idem)),
+  ]
+  if ts.length() > 0 {
+    params.push(("ts", base_codec::json_str(ts)))
+  }
+  let req = protocol::CoreRequest::Call(req_id, "decision.answer", base_codec::json_obj(params), None)
+  match self.core.handle_request(req) {
+    Some(protocol::CoreEvent::Ok(_, _, _)) => {
+      self.decision_sig.set(DecisionState::Decided(prompt, choice))
+      self.bump()
+      idem
+    }
+    _ => ""
+  }
 }
 
 /// Optimistically rename a chat; rolled back automatically if station refuses with 403.
@@ -301,6 +706,12 @@ pub fn AppController::rename_chat(self : AppController, chat_id : String, new_ti
         preview: c.preview,
         unread: c.unread,
         archived: c.archived,
+        pinned: c.pinned,
+        day_group: c.day_group,
+        agent_maker: c.agent_maker,
+        station_name: c.station_name,
+        state_text: c.state_text,
+        offline: c.offline,
       })
     } else {
       next.push(c)
@@ -326,12 +737,19 @@ pub fn AppController::archive_chat(self : AppController, chat_id : String) -> Un
         preview: c.preview,
         unread: c.unread,
         archived: true,
+        pinned: c.pinned,
+        day_group: c.day_group,
+        agent_maker: c.agent_maker,
+        station_name: c.station_name,
+        state_text: "已归档",
+        offline: c.offline,
       })
     } else {
       next.push(c)
     }
   }
   self.chats_sig.set(next)
+  self.notification_count_sig.set(total_unread(next))
   self.refresh_active_title()
   let _ = self.core.archive_chat(chat_id)
   self.bump()
@@ -371,7 +789,7 @@ fn AppController::reconcile_outbox_queued(
       entry_n: 0,
       client_key: Some(ck),
       role: MessageRole::Person,
-      author: "Alice",
+      author: self.default_author(),
       text: text,
       sending: true,
     })
@@ -460,7 +878,7 @@ fn AppController::rollback_chat_overlay(
   let next : Array[ChatSummary] = []
   for c in cur {
     if c.id == target {
-      let restored_title = if kind == "rename" {
+      let restored_title = if kind == "rename" || kind == "chat.rename" {
         match self.prev_chat_titles.get(target) {
           Some(old_t) => old_t
           None => c.title
@@ -468,7 +886,7 @@ fn AppController::rollback_chat_overlay(
       } else {
         c.title
       }
-      let restored_arch = if kind == "archive" {
+      let restored_arch = if kind == "archive" || kind == "chat.archive" {
         match self.prev_chat_archived.get(target) {
           Some(old_a) => old_a
           None => false
@@ -483,12 +901,19 @@ fn AppController::rollback_chat_overlay(
         preview: c.preview,
         unread: c.unread,
         archived: restored_arch,
+        pinned: c.pinned,
+        day_group: c.day_group,
+        agent_maker: c.agent_maker,
+        station_name: c.station_name,
+        state_text: if restored_arch { "已归档" } else { c.state_text },
+        offline: c.offline,
       })
     } else {
       next.push(c)
     }
   }
   self.chats_sig.set(next)
+  self.notification_count_sig.set(total_unread(next))
   self.refresh_active_title()
   self.recovery_sig.set(Some(RecoveryNotice::{ target, kind, code, recovery }))
 }
@@ -501,9 +926,12 @@ pub fn AppController::drain_core_events(self : AppController) -> Unit {
     return
   }
   self.drained_events += evs.length()
+  let mut chats_dirty = false
   for ev in evs {
     match ev {
-      sync::CoreEvent::ChatsChanged(_st, _ids) => ()
+      sync::CoreEvent::ChatsChanged(_st, _ids) => {
+        chats_dirty = true
+      }
       sync::CoreEvent::EntryAdded(_st, th, entry, ck_opt) =>
       self.reconcile_entry_added(th, entry, ck_opt)
       sync::CoreEvent::OutboxQueued(_st, th, ck, text) =>
@@ -514,25 +942,28 @@ pub fn AppController::drain_core_events(self : AppController) -> Unit {
       sync::CoreEvent::OverlayRolledBack(_st, target, kind, code, recovery) =>
       self.rollback_chat_overlay(target, kind, code, recovery)
       sync::CoreEvent::ConnectionChanged(_st, state) => {
-        let label = match state {
-          sync::ConnectionState::Disconnected(_) => "Disconnected"
-          sync::ConnectionState::Connecting => "Connecting"
-          sync::ConnectionState::Connected => "Connected"
-          sync::ConnectionState::Reconnecting(n) => "Reconnecting (\{n})"
+        let (label, online) = match state {
+          sync::ConnectionState::Disconnected(_) => ("已断开", false)
+          sync::ConnectionState::Connecting => ("连接中…", false)
+          sync::ConnectionState::Connected => ("已连接", true)
+          sync::ConnectionState::Reconnecting(_) => ("重连中…", false)
         }
         self.connection_sig.set(label)
+        self.station_online_sig.set(online)
       }
-      sync::CoreEvent::LockUpdated(_ws, _head, seq, members) => {
-        let seq_i = seq.to_int()
+      sync::CoreEvent::LockUpdated(_ws, _head, _seq, members) => {
         self.lock_verified_sig.set(true)
-        self.lock_status_sig.set("Lock Verified (seq \{seq_i}, \{members} members)")
+        self.lock_status_sig.set("安全锁已验证（\{members} 位成员）")
       }
       sync::CoreEvent::LockRejected(_ws, why) => {
         self.lock_verified_sig.set(false)
-        self.lock_status_sig.set("Lock Rejected: " + why)
+        self.lock_status_sig.set("安全锁校验失败：" + why)
       }
       _ => ()
     }
+  }
+  if chats_dirty {
+    self.refresh_chats_from_store()
   }
   self.bump()
 }
