@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f3b71325f](https://github.com/AFK-surf/monoid/commit/f3b71325fba232cdf905c5f5bd291f53433d44fc) fix(station): see swapping on macOS, queue agents' | 2.72 | 3.66 | 14.84 | 36.98 | 56.53 | 32.4 | 65.72 | 100.37 | 133.56 |
 | [173adaba9](https://github.com/AFK-surf/monoid/commit/173adaba94fd90ee090d487867c2ace8bd4fe610) fix(core): keep every endpoint's credential and as | 2.72 | 3.66 | 14.84 | 36.98 | 56.53 | 32.4 | 65.72 | 100.37 | 133.56 |
 | [9c09bdb1e](https://github.com/AFK-surf/monoid/commit/9c09bdb1ee983a252d2068ec0dcc4e0fe3a0c274) feat(core): open Comma Tasks by link across platfo | 2.72 | 3.66 | 14.84 | 36.98 | 56.53 | 32.4 | 65.72 | 100.03 | 112.45 |
 | [9f7c26cf2](https://github.com/AFK-surf/monoid/commit/9f7c26cf2fd53ab5693f92a2967fa59430ea493e) fix(ci): recalibrate multi-worker anchor weights i | 2.72 | 3.66 | 14.83 | 36.98 | 56.52 | 32.4 | 65.72 | 100.21 | 127.78 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3e63fed71](https://github.com/AFK-surf/monoid/commit/3e63fed71c7e6870293138e275744584ccdbdbb4) fix(mbui): run switches tests through a core-sized | 2.7 | 3.64 | 14.76 | 36.86 | 56.21 | 32.3 | 65.46 | 99.45 | 122.56 |
 | [c442e4689](https://github.com/AFK-surf/monoid/commit/c442e468983462b7c71ed8eaee0ddf14fe76a0c6) fix(app): stop raising lifted media above composer | 2.7 | 3.64 | 14.76 | 36.86 | 56.21 | 32.28 | 65.46 | 99.55 | 115.86 |
 | [2787f032a](https://github.com/AFK-surf/monoid/commit/2787f032ab7824c096d7cc4222b5a4244a8378ff) refactor(sf-ui): merge production liquid glass lay | 2.7 | 3.64 | 14.75 | 36.85 | 56.2 | 32.28 | 65.46 | 99.55 | 126.47 |
-| [3a99f35e7](https://github.com/AFK-surf/monoid/commit/3a99f35e7d0e81f7a35027e8af34dd51c34e3f90) fix(station): leave Unix domain sockets out of arc | 2.7 | 3.64 | 14.75 | 36.85 | 56.19 | 32.28 | 65.46 | 99.19 | 121.69 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f3b71325f](https://github.com/AFK-surf/monoid/commit/f3b71325fba232cdf905c5f5bd291f53433d44fc) fix(station): see swapping on macOS, queue agents' | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.18 |
 | [173adaba9](https://github.com/AFK-surf/monoid/commit/173adaba94fd90ee090d487867c2ace8bd4fe610) fix(core): keep every endpoint's credential and as | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.12 |
 | [9c09bdb1e](https://github.com/AFK-surf/monoid/commit/9c09bdb1ee983a252d2068ec0dcc4e0fe3a0c274) feat(core): open Comma Tasks by link across platfo | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.2 |
 | [9f7c26cf2](https://github.com/AFK-surf/monoid/commit/9f7c26cf2fd53ab5693f92a2967fa59430ea493e) fix(ci): recalibrate multi-worker anchor weights i | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.2 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3e63fed71](https://github.com/AFK-surf/monoid/commit/3e63fed71c7e6870293138e275744584ccdbdbb4) fix(mbui): run switches tests through a core-sized | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
 | [c442e4689](https://github.com/AFK-surf/monoid/commit/c442e468983462b7c71ed8eaee0ddf14fe76a0c6) fix(app): stop raising lifted media above composer | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
 | [2787f032a](https://github.com/AFK-surf/monoid/commit/2787f032ab7824c096d7cc4222b5a4244a8378ff) refactor(sf-ui): merge production liquid glass lay | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.59 |
-| [3a99f35e7](https://github.com/AFK-surf/monoid/commit/3a99f35e7d0e81f7a35027e8af34dd51c34e3f90) fix(station): leave Unix domain sockets out of arc | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.59 |
