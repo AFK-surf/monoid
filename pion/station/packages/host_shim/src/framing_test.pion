@@ -1,0 +1,104 @@
+fn expect(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+test "LineReader splits LF, CRLF, chunks, and trailing flush" {
+  let r = LineReader::new()
+  let l1 = r.push("{\"id\":1}\n{\"id\":".to_bytes())
+  expect(l1.length() == 1, "expected 1 line")
+  expect(l1[0] == "{\"id\":1}", "expected first line")
+
+  let l2 = r.push("2}\r\npartial".to_bytes())
+  expect(l2.length() == 1, "expected 1 crlf line")
+  expect(l2[0] == "{\"id\":2}", "expected second line")
+
+  match r.flush() {
+    Some(s) => expect(s == "partial", "expected partial tail")
+    None => panic("expected trailing partial line")
+  }
+  match r.flush() {
+    None => ()
+    Some(_) => panic("expected empty flush")
+  }
+}
+
+test "split_nul_args splits NUL-separated UTF-8 argv" {
+  let raw = Bytes::new(14)
+  // "prog\0--ver\0ok\0"
+  let s1 = "prog".to_bytes()
+  for i in 0..<4 {
+    raw[i] = s1[i]
+  }
+  raw[4] = 0 as Byte
+  let s2 = "--ver".to_bytes()
+  for i in 0..<5 {
+    raw[5 + i] = s2[i]
+  }
+  raw[10] = 0 as Byte
+  let s3 = "ok".to_bytes()
+  for i in 0..<2 {
+    raw[11 + i] = s3[i]
+  }
+  raw[13] = 0 as Byte
+
+  let args = split_nul_args(raw)
+  expect(args.length() == 3, "expected 3 args")
+  expect(args[0] == "prog", "arg0")
+  expect(args[1] == "--ver", "arg1")
+  expect(args[2] == "ok", "arg2")
+}
+
+test "decode_event parses stdin data, eof, and shell done frames" {
+  // EOF frame: kind=2, id=0
+  let eof = Bytes::new(9)
+  eof[0] = 2 as Byte
+  match decode_event(eof) {
+    Some(HostEvent::StdinEof) => ()
+    _ => panic("expected StdinEof")
+  }
+
+  // StdinData frame: kind=1, id=0, payload="hi"
+  let data = Bytes::new(11)
+  data[0] = 1 as Byte
+  data[9] = 104 as Byte
+  data[10] = 105 as Byte
+  match decode_event(data) {
+    Some(HostEvent::StdinData(b)) => {
+      expect(b.length() == 2, "data len")
+      expect(b[0] == (104 as Byte), "data[0]")
+      expect(b[1] == (105 as Byte), "data[1]")
+    }
+    _ => panic("expected StdinData")
+  }
+
+  // ShellDone frame: kind=3, id=7, err_len=0, json="{}", has_bytes=1, body=[9, 8]
+  let done = Bytes::new(9 + 8 + 8 + 2 + 1 + 2)
+  done[0] = 3 as Byte
+  done[1] = 7 as Byte
+  // err_len = 0 (bytes 9..17)
+  // json_len = 2 (bytes 17..25)
+  done[17] = 2 as Byte
+  done[25] = 123 as Byte // '{'
+  done[26] = 125 as Byte // '}'
+  done[27] = 1 as Byte // has_bytes
+  done[28] = 9 as Byte
+  done[29] = 8 as Byte
+  match decode_event(done) {
+    Some(HostEvent::ShellDone(d)) => {
+      expect(d.id == 7.to_int64(), "done id")
+      expect(d.error == "", "done error")
+      expect(d.json == "{}", "done json")
+      match d.bytes {
+        Some(body) => {
+          expect(body.length() == 2, "body len")
+          expect(body[0] == (9 as Byte), "body[0]")
+          expect(body[1] == (8 as Byte), "body[1]")
+        }
+        None => panic("expected binary body")
+      }
+    }
+    _ => panic("expected ShellDone")
+  }
+}

@@ -1,0 +1,361 @@
+// Pion wrapper over `packages/host_shim/native/station_host.c` plus pure-Pion
+// `mb-reader` stdio framing helpers (`MbSaid` line + binary tail protocol).
+
+import "base_codec"
+
+extern "C" fn sth_start(shell_dir : Ptr, start_stdin : Int) -> Int
+extern "C" fn sth_stop() -> Unit
+extern "C" fn sth_shell_active() -> Int
+extern "C" fn sth_wait(ms : Int64, out_len : Ptr) -> Ptr
+extern "C" fn sth_write_stdout(data : Ptr, len : Int64) -> Int
+extern "C" fn sth_shell_call(
+  id : Int64,
+  op : Ptr,
+  json : Ptr,
+  json_len : Int64,
+  bytes : Ptr,
+  bytes_len : Int64,
+  has_bytes : Int,
+) -> Unit
+extern "C" fn sth_shell_sync(op : Ptr, json : Ptr, json_len : Int64, out_len : Ptr) -> Ptr
+extern "C" fn sth_args(out_len : Ptr) -> Ptr
+extern "C" fn sth_pid() -> Int
+extern "C" fn sth_exit(code : Int) -> Unit
+extern "C" fn sth_now_ms() -> Int64
+extern "C" fn sth_wall_ms() -> Int64
+extern "C" fn sth_rss_bytes() -> Int64
+extern "C" fn sth_open_fd_count() -> Int
+extern "C" fn sth_build_info(out_len : Ptr) -> Ptr
+extern "C" fn sth_free(ptr : Ptr) -> Unit
+
+pub struct ShellDone {
+  pub id : Int64
+  pub error : String
+  pub json : String
+  pub bytes : Option[Bytes]
+}
+
+pub enum HostEvent {
+  StdinData(Bytes)
+  StdinEof
+  ShellDone(ShellDone)
+  Sys(Int64, Bytes)
+}
+
+fn bytes_to_str(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+fn slice_bytes(b : Bytes, start : Int, len : Int) -> Bytes {
+  if len <= 0 || start < 0 || start >= b.length() {
+    return Bytes::new(0)
+  }
+  let end = if start + len > b.length() { b.length() } else { start + len }
+  let actual = end - start
+  let out = Bytes::new(actual)
+  for i in 0..<actual {
+    out[i] = b[start + i]
+  }
+  out
+}
+
+fn read_u64_le(b : Bytes, off : Int) -> Int64 {
+  let mut v : Int64 = 0.to_int64()
+  for i in 0..<8 {
+    let byte_val = b[off + i].to_int().to_int64() & 0xFF.to_int64()
+    v = v | (byte_val << (i * 8).to_int64())
+  }
+  v
+}
+
+pub fn start(shell_dir : String, start_stdin : Bool) -> Bool {
+  let ok = sth_start(shell_dir.as_cstr(), if start_stdin { 1 } else { 0 })
+  let _ = shell_dir.length()
+  ok != 0
+}
+
+pub fn stop() -> Unit {
+  sth_stop()
+}
+
+pub fn shell_active() -> Bool {
+  sth_shell_active() != 0
+}
+
+pub fn decode_event(frame : Bytes) -> Option[HostEvent] {
+  if frame.length() < 9 {
+    return None
+  }
+  let kind = frame[0].to_int()
+  let id = read_u64_le(frame, 1)
+  let payload_len = frame.length() - 9
+  if kind == 1 {
+    Some(HostEvent::StdinData(slice_bytes(frame, 9, payload_len)))
+  } else if kind == 2 {
+    Some(HostEvent::StdinEof)
+  } else if kind == 3 {
+    if payload_len < 17 {
+      return None
+    }
+    let err_len = read_u64_le(frame, 9).to_int()
+    let err_start = 17
+    let json_len_off = err_start + err_len
+    if json_len_off + 9 > frame.length() {
+      return None
+    }
+    let json_len = read_u64_le(frame, json_len_off).to_int()
+    let json_start = json_len_off + 8
+    let has_off = json_start + json_len
+    if has_off >= frame.length() {
+      return None
+    }
+    let has_bytes = frame[has_off].to_int() != 0
+    let err_str = bytes_to_str(slice_bytes(frame, err_start, err_len))
+    let json_str = bytes_to_str(slice_bytes(frame, json_start, json_len))
+    let body = if has_bytes {
+      let body_start = has_off + 1
+      Some(slice_bytes(frame, body_start, frame.length() - body_start))
+    } else {
+      None
+    }
+    Some(
+      HostEvent::ShellDone(ShellDone::{
+        id: id,
+        error: err_str,
+        json: json_str,
+        bytes: body,
+      }),
+    )
+  } else if kind == 4 {
+    Some(HostEvent::Sys(id, slice_bytes(frame, 9, payload_len)))
+  } else {
+    None
+  }
+}
+
+pub fn wait(ms : Int64) -> Option[HostEvent] {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sth_wait(ms, out_len)
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sth_free(out_len)
+  if ptr_is_null(p) || n <= 0.to_int64() {
+    if !ptr_is_null(p) {
+      sth_free(p)
+    }
+    return None
+  }
+  let frame = bytes_from_ptr(p, n.to_int())
+  sth_free(p)
+  decode_event(frame)
+}
+
+pub fn write_stdout(data : Bytes) -> Bool {
+  if data.length() == 0 {
+    return true
+  }
+  let ok = sth_write_stdout(bytes_data_ptr(data), data.length().to_int64())
+  let _ = data.length()
+  ok != 0
+}
+
+pub fn write_stdout_line(line : String) -> Bool {
+  write_stdout((line + "\n").to_bytes())
+}
+
+/// Write a `mb-reader` framed JSON header followed by exact raw binary tail bytes.
+pub fn write_stdout_frame(head_fields : Array[(String, base_codec::Json)], body : Bytes) -> Bool {
+  let fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<head_fields.length() {
+    fields.push(head_fields[i])
+  }
+  fields.push(("bytes", base_codec::json_int(body.length())))
+  let header = base_codec::json_stringify(base_codec::json_obj(fields)) + "\n"
+  if !write_stdout(header.to_bytes()) {
+    return false
+  }
+  write_stdout(body)
+}
+
+pub fn shell_call(id : Int64, op : String, json : String, bytes : Option[Bytes]) -> Unit {
+  let jbytes = json.to_bytes()
+  match bytes {
+    Some(b) => {
+      sth_shell_call(
+        id,
+        op.as_cstr(),
+        bytes_data_ptr(jbytes),
+        jbytes.length().to_int64(),
+        bytes_data_ptr(b),
+        b.length().to_int64(),
+        1,
+      )
+      let _ = b.length()
+    }
+    None => {
+      let empty = Bytes::new(0)
+      sth_shell_call(
+        id,
+        op.as_cstr(),
+        bytes_data_ptr(jbytes),
+        jbytes.length().to_int64(),
+        bytes_data_ptr(empty),
+        0.to_int64(),
+        0,
+      )
+      let _ = empty.length()
+    }
+  }
+  let _ = op.length()
+  let _ = jbytes.length()
+}
+
+pub fn shell_sync(op : String, json : String) -> String {
+  let jbytes = json.to_bytes()
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sth_shell_sync(op.as_cstr(), bytes_data_ptr(jbytes), jbytes.length().to_int64(), out_len)
+  let _ = op.length()
+  let _ = jbytes.length()
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sth_free(out_len)
+  if ptr_is_null(p) || n <= 0.to_int64() {
+    if !ptr_is_null(p) {
+      sth_free(p)
+    }
+    return ""
+  }
+  let raw = bytes_from_ptr(p, n.to_int())
+  sth_free(p)
+  bytes_to_str(raw)
+}
+
+pub fn args() -> Array[String] {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sth_args(out_len)
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sth_free(out_len)
+  if ptr_is_null(p) || n <= 0.to_int64() {
+    if !ptr_is_null(p) {
+      sth_free(p)
+    }
+    return []
+  }
+  let raw = bytes_from_ptr(p, n.to_int())
+  sth_free(p)
+  split_nul_args(raw)
+}
+
+pub fn split_nul_args(raw : Bytes) -> Array[String] {
+  let out : Array[String] = []
+  let mut sb = StringBuilder::new()
+  let mut has_chars = false
+  for i in 0..<raw.length() {
+    let b = raw[i]
+    if b.to_int() == 0 {
+      out.push(sb.to_string())
+      sb = StringBuilder::new()
+      has_chars = false
+    } else {
+      sb.write_byte(b)
+      has_chars = true
+    }
+  }
+  if has_chars {
+    out.push(sb.to_string())
+  }
+  out
+}
+
+pub fn pid() -> Int {
+  sth_pid()
+}
+
+pub fn exit_process(code : Int) -> Unit {
+  sth_exit(code)
+}
+
+pub fn now_ms() -> Int64 {
+  sth_now_ms()
+}
+
+pub fn wall_ms() -> Int64 {
+  sth_wall_ms()
+}
+
+pub fn rss_bytes() -> Int64 {
+  sth_rss_bytes()
+}
+
+pub fn open_fd_count() -> Int {
+  sth_open_fd_count()
+}
+
+pub fn build_info() -> String {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sth_build_info(out_len)
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sth_free(out_len)
+  if ptr_is_null(p) || n <= 0.to_int64() {
+    if !ptr_is_null(p) {
+      sth_free(p)
+    }
+    return "stillfail-pion 0.1.0"
+  }
+  let raw = bytes_from_ptr(p, n.to_int())
+  sth_free(p)
+  bytes_to_str(raw)
+}
+
+/// Incremental `\n`-delimited line splitter for stdin chunks (matching `mb-reader` protocol).
+pub struct LineReader {
+  mut carry : Array[Byte]
+}
+
+pub fn LineReader::new() -> LineReader {
+  LineReader::{ carry: [] }
+}
+
+pub fn LineReader::push(self : LineReader, chunk : Bytes) -> Array[String] {
+  let lines : Array[String] = []
+  for i in 0..<chunk.length() {
+    let b = chunk[i]
+    if b.to_int() == 10 {
+      let sb = StringBuilder::new()
+      let mut end = self.carry.length()
+      if end > 0 && self.carry[end - 1].to_int() == 13 {
+        end = end - 1
+      }
+      for j in 0..<end {
+        sb.write_byte(self.carry[j])
+      }
+      self.carry = []
+      lines.push(sb.to_string())
+    } else {
+      self.carry.push(b)
+    }
+  }
+  lines
+}
+
+pub fn LineReader::flush(self : LineReader) -> Option[String] {
+  if self.carry.length() == 0 {
+    return None
+  }
+  let sb = StringBuilder::new()
+  let mut end = self.carry.length()
+  if end > 0 && self.carry[end - 1].to_int() == 13 {
+    end = end - 1
+  }
+  for j in 0..<end {
+    sb.write_byte(self.carry[j])
+  }
+  self.carry = []
+  Some(sb.to_string())
+}

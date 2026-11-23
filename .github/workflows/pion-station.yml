@@ -1,0 +1,208 @@
+name: pion-station
+
+on:
+  push:
+    paths:
+      - "pion/station/**"
+      - "pion/base/**"
+      - ".github/workflows/pion-station.yml"
+  pull_request:
+    paths:
+      - "pion/station/**"
+      - "pion/base/**"
+      - ".github/workflows/pion-station.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: pion-station-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  c-shims:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate toolchain pin and scripts
+        run: |
+          sha="$(sed -n 's/[[:space:]]*#.*$//; /^[[:space:]]*$/d; p; q' pion/station/TOOLCHAIN | tr -d '[:space:]')"
+          test "${#sha}" -eq 40
+          sh -n pion/station/scripts/ensure-pionc.sh
+          bash -n pion/station/scripts/build.sh
+
+      - name: C shims strict compile, ASan/UBSan, and TSan
+        run: |
+          cc -std=c11 -O2 -Wall -Wextra -Werror -fsyntax-only \
+            pion/station/packages/sqlite_ffi/native/station_sqlite.c
+
+          cc -std=c11 -O2 -Wall -Wextra -Werror \
+            pion/station/packages/host_shim/native/station_host.c \
+            pion/station/packages/host_shim/native/host_shim_test.c \
+            -lpthread -o "$RUNNER_TEMP/host_shim_test"
+          "$RUNNER_TEMP/host_shim_test"
+
+          cc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+            pion/station/packages/host_shim/native/station_host.c \
+            pion/station/packages/host_shim/native/host_shim_test.c \
+            -lpthread -o "$RUNNER_TEMP/host_shim_test_asan"
+          "$RUNNER_TEMP/host_shim_test_asan"
+
+          cc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=thread -fno-omit-frame-pointer \
+            pion/station/packages/host_shim/native/station_host.c \
+            pion/station/packages/host_shim/native/host_shim_test.c \
+            -lpthread -o "$RUNNER_TEMP/host_shim_test_tsan"
+          "$RUNNER_TEMP/host_shim_test_tsan"
+
+  verify-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/node
+
+      - name: Check access to AFK-surf/pion
+        id: access
+        env:
+          PION_DEPLOY_KEY: ${{ secrets.PION_DEPLOY_KEY }}
+          PION_TOKEN: ${{ secrets.PION_TOKEN }}
+        run: |
+          if [ -n "${PION_DEPLOY_KEY:-}" ] || [ -n "${PION_TOKEN:-}" ]; then
+            echo "can_fetch=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code https://github.com/AFK-surf/pion.git HEAD >/dev/null 2>&1; then
+            echo "can_fetch=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::AFK-surf/pion is private and neither PION_TOKEN nor PION_DEPLOY_KEY is configured in repository secrets; skipping pionc bootstrap and smoke steps."
+            echo "can_fetch=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cache pinned Pion toolchain
+        if: steps.access.outputs.can_fetch == 'true'
+        id: pion-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pion-station-toolchain
+          key: pion-station-toolchain-linux-x64-v1-${{ hashFiles('pion/station/TOOLCHAIN') }}
+
+      - name: Cache Zig 0.16.0
+        if: steps.access.outputs.can_fetch == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pion-station-zig/0.16.0
+          key: pion-station-zig-linux-x64-0.16.0
+
+      - name: Cache Zig compilation artifacts
+        if: steps.access.outputs.can_fetch == 'true'
+        id: zig-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/zig
+          key: pion-station-zig-cache-linux-x64-0.16.0-${{ hashFiles('pion/station/**') }}
+          restore-keys: pion-station-zig-cache-linux-x64-0.16.0-
+
+      - name: Configure git credentials for private AFK-surf/pion-packages
+        if: steps.access.outputs.can_fetch == 'true'
+        env:
+          PION_TOKEN: ${{ secrets.PION_TOKEN }}
+        run: |
+          if [ -n "${PION_TOKEN:-}" ]; then
+            auth_b64="$(printf 'x-access-token:%s' "$PION_TOKEN" | base64 | tr -d '\n\r')"
+            git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $auth_b64"
+          fi
+
+      - name: Ensure pinned pionc toolchain
+        if: steps.access.outputs.can_fetch == 'true'
+        env:
+          PION_DEPLOY_KEY: ${{ secrets.PION_DEPLOY_KEY }}
+          PION_TOKEN: ${{ secrets.PION_TOKEN }}
+        run: |
+          sh pion/station/scripts/ensure-pionc.sh --print-env > "$RUNNER_TEMP/pion.env"
+          eval "$(cat "$RUNNER_TEMP/pion.env")"
+          echo "$(dirname "$PIONC")" >> "$GITHUB_PATH"
+          echo "PIONC=$PIONC" >> "$GITHUB_ENV"
+          echo "PION_TOOLCHAIN_DIR=$PION_TOOLCHAIN_DIR" >> "$GITHUB_ENV"
+          echo "PION_RT_DIR=$PION_RT_DIR" >> "$GITHUB_ENV"
+          "$PIONC" --version
+
+      - name: Pion fmt, check, and unit tests
+        if: steps.access.outputs.can_fetch == 'true'
+        run: |
+          pionc fmt --check pion/station
+          pionc check --json pion/station
+          pionc test --json pion/station
+
+      - name: Build linux-x64 with real libstillfail_shell.a and run smoke suite
+        if: steps.access.outputs.can_fetch == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BIN="$RUNNER_TEMP/stillfail-pion-linux-x64"
+          bash pion/station/scripts/build.sh linux-x64 "$BIN"
+          ls -lh "$BIN"
+          ldd "$BIN"
+          max_glibc="$(objdump -T "$BIN" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -n 1 || true)"
+          echo "max_glibc=${max_glibc:-none}"
+          if [ -n "$max_glibc" ]; then
+            ver="${max_glibc#GLIBC_}"
+            top="$(printf '%s\n2.28\n' "$ver" | sort -V | tail -n 1)"
+            if [ "$top" != "2.28" ]; then
+              echo "FAIL: binary requires $max_glibc (> GLIBC_2.28)" >&2
+              exit 1
+            fi
+          fi
+
+          "$BIN" --version
+
+          node -e '
+            const { spawnSync } = require("node:child_process");
+            const input = [
+              JSON.stringify({ id: 1, op: "echo", text: "hello-pion" }),
+              JSON.stringify({ id: 2, op: "binary", size: 16, byte: 65 }),
+              JSON.stringify({ id: 3, op: "cancel", target: 4 }),
+              JSON.stringify({ id: 4, op: "echo", text: "should-cancel" }),
+              JSON.stringify({ id: 5, op: "quit" }),
+            ].join("\n") + "\n";
+            const res = spawnSync(process.argv[1], ["--smoke-stdio"], { input });
+            if (res.status !== 0) { console.error(res.stderr.toString()); process.exit(1); }
+            const out = res.stdout;
+            let at = 0;
+            const frames = [];
+            while (at < out.length) {
+              const nl = out.indexOf(10, at);
+              if (nl < 0) break;
+              const obj = JSON.parse(out.subarray(at, nl).toString("utf8"));
+              at = nl + 1;
+              if (typeof obj.bytes === "number") {
+                obj.body = out.subarray(at, at + obj.bytes);
+                at += obj.bytes;
+              }
+              frames.push(obj);
+            }
+            if (frames.length !== 5) throw new Error("expected 5 frames, got " + frames.length);
+            if (frames[0].text !== "hello-pion") throw new Error("echo mismatch");
+            if (frames[1].body.length !== 16 || frames[1].body[0] !== 65 || frames[1].body[15] !== 80) throw new Error("binary tail mismatch");
+            if (frames[2].cancelled !== 4) throw new Error("cancel ack mismatch");
+            if (frames[3].cancelled !== true) throw new Error("cancelled req mismatch");
+            if (frames[4].bye !== true) throw new Error("quit mismatch");
+            console.log("smoke-stdio ok:", frames.length, "frames");
+          ' "$BIN"
+
+          "$BIN" --smoke-sqlite "$RUNNER_TEMP/smoke.db"
+          "$BIN" --smoke-shell "$RUNNER_TEMP/shell-dir"
+          "$BIN" --smoke-rc-soak 50000
+
+      - name: Save Zig cache
+        if: always() && steps.access.outputs.can_fetch == 'true' && steps.zig-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: ~/.cache/zig
+          key: pion-station-zig-cache-linux-x64-0.16.0-${{ hashFiles('pion/station/**') }}

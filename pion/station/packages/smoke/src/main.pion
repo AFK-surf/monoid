@@ -1,0 +1,488 @@
+// Minimal Pion station smoke binary (`stillfail-pion`) verifying:
+//   --version                prints version, target arch, and pinned pion SHA
+//   --smoke-stdio            mb-reader line JSON + binary tail framing, cancel, clean EOF
+//   --smoke-sqlite <path>    direct sqlite3_* WAL table, int64/blob, PASSIVE/TRUNCATE ckpt, 0 fd leak
+//   --smoke-shell [dir]      real libstillfail_shell.a start, sync + async ops, clean stop
+//   --smoke-rc-soak [iters]  RC soak over Map/closure/String/Bytes with staged RSS curve
+
+import "base_codec"
+import "host_shim"
+import "sqlite_ffi"
+
+fn json_int_field(j : base_codec::Json, key : String, fallback : Int) -> Int {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(v, _)) => v.to_int()
+    _ => fallback
+  }
+}
+
+fn json_str_field(j : base_codec::Json, key : String, fallback : String) -> String {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Str(s)) => s
+    _ => fallback
+  }
+}
+
+fn parse_positive_int(s : String, fallback : Int) -> Int {
+  let b = s.to_bytes()
+  if b.length() == 0 {
+    return fallback
+  }
+  let mut acc = 0
+  for i in 0..<b.length() {
+    let c = b[i].to_int()
+    if c < 48 || c > 57 {
+      return fallback
+    }
+    acc = acc * 10 + (c - 48)
+  }
+  if acc <= 0 { fallback } else { acc }
+}
+
+fn run_version(world : World) -> Unit {
+  io_println(world, host_shim::build_info())
+}
+
+fn run_smoke_stdio() -> Unit {
+  if !host_shim::start("", true) {
+    host_shim::exit_process(1)
+  }
+  let reader = host_shim::LineReader::new()
+  let cancelled : Map[Int, Bool] = Map::new()
+  let mut running = true
+
+  while running {
+    match host_shim::wait(5000.to_int64()) {
+      None => ()
+      Some(host_shim::HostEvent::StdinEof) => {
+        match reader.flush() {
+          Some(last) => {
+            if last.length() > 0 {
+              running = handle_stdio_line(last, cancelled)
+            }
+          }
+          None => ()
+        }
+        running = false
+      }
+      Some(host_shim::HostEvent::StdinData(chunk)) => {
+        let lines = reader.push(chunk)
+        for i in 0..<lines.length() {
+          if !running {
+            break
+          }
+          let line = lines[i]
+          if line.length() > 0 {
+            running = handle_stdio_line(line, cancelled)
+          }
+        }
+      }
+      Some(_) => ()
+    }
+  }
+}
+
+fn handle_stdio_line(line : String, cancelled : Map[Int, Bool]) -> Bool {
+  let parsed = match base_codec::json_parse(line) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(err) => {
+      let msg = base_codec::json_stringify(
+        base_codec::json_obj([
+          ("ok", base_codec::json_bool(false)),
+          ("error", base_codec::json_str("invalid json: " + err)),
+        ]),
+      )
+      let _ = host_shim::write_stdout_line(msg)
+      return true
+    }
+  }
+  let id = json_int_field(parsed, "id", 0)
+  let op = json_str_field(parsed, "op", "")
+
+  if op == "quit" {
+    let msg = base_codec::json_stringify(
+      base_codec::json_obj([
+        ("id", base_codec::json_int(id)),
+        ("ok", base_codec::json_bool(true)),
+        ("bye", base_codec::json_bool(true)),
+      ]),
+    )
+    let _ = host_shim::write_stdout_line(msg)
+    return false
+  }
+
+  if op == "cancel" {
+    let target = json_int_field(parsed, "target", 0)
+    cancelled.set(target, true)
+    let msg = base_codec::json_stringify(
+      base_codec::json_obj([
+        ("id", base_codec::json_int(id)),
+        ("ok", base_codec::json_bool(true)),
+        ("cancelled", base_codec::json_int(target)),
+      ]),
+    )
+    let _ = host_shim::write_stdout_line(msg)
+    return true
+  }
+
+  match cancelled.get(id) {
+    Some(true) => {
+      let msg = base_codec::json_stringify(
+        base_codec::json_obj([
+          ("id", base_codec::json_int(id)),
+          ("ok", base_codec::json_bool(false)),
+          ("cancelled", base_codec::json_bool(true)),
+        ]),
+      )
+      let _ = host_shim::write_stdout_line(msg)
+      return true
+    }
+    _ => ()
+  }
+
+  if op == "echo" {
+    let text = json_str_field(parsed, "text", "")
+    let msg = base_codec::json_stringify(
+      base_codec::json_obj([
+        ("id", base_codec::json_int(id)),
+        ("ok", base_codec::json_bool(true)),
+        ("text", base_codec::json_str(text)),
+      ]),
+    )
+    let _ = host_shim::write_stdout_line(msg)
+    return true
+  }
+
+  if op == "binary" {
+    let size = json_int_field(parsed, "size", 0)
+    let fill = json_int_field(parsed, "byte", 65) & 0xFF
+    let n = if size < 0 { 0 } else { size }
+    let body = Bytes::new(n)
+    for i in 0..<n {
+      body[i] = ((fill + i) & 0xFF) as Byte
+    }
+    let _ = host_shim::write_stdout_frame(
+      [
+        ("id", base_codec::json_int(id)),
+        ("ok", base_codec::json_bool(true)),
+      ],
+      body,
+    )
+    return true
+  }
+
+  let msg = base_codec::json_stringify(
+    base_codec::json_obj([
+      ("id", base_codec::json_int(id)),
+      ("ok", base_codec::json_bool(false)),
+      ("error", base_codec::json_str("unknown op: " + op)),
+    ]),
+  )
+  let _ = host_shim::write_stdout_line(msg)
+  true
+}
+
+fn run_smoke_sqlite(world : World, db_path : String) -> Unit {
+  let fd_before = host_shim::open_fd_count()
+  let flags = sqlite_ffi::OPEN_READWRITE | sqlite_ffi::OPEN_CREATE | sqlite_ffi::OPEN_FULLMUTEX
+  let db = match sqlite_ffi::Db::open(db_path, flags, busy_timeout_ms=5000) {
+    Ok(d) => d
+    Err(e) => panic("sqlite open failed (" + e.code.to_string() + "): " + e.message)
+  }
+
+  match db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;") {
+    Ok(_) => ()
+    Err(e) => panic("sqlite WAL pragma failed: " + e.message)
+  }
+  match db.exec("CREATE TABLE IF NOT EXISTS kv (id INTEGER PRIMARY KEY, big INTEGER NOT NULL, label TEXT NOT NULL, payload BLOB NOT NULL); DELETE FROM kv;") {
+    Ok(_) => ()
+    Err(e) => panic("sqlite schema failed: " + e.message)
+  }
+
+  // Test 64-bit integer beyond IEEE-754 2^53-1 (9007199254740993 = (1 << 53) + 1)
+  // and binary BLOB with embedded NUL bytes.
+  let big_val : Int64 = (1.to_int64() << 53.to_int64()) + 1.to_int64()
+  let label_val = "pion-station-wal-utf8"
+  let blob_val = Bytes::new(8)
+  blob_val[0] = 0 as Byte
+  blob_val[1] = 1 as Byte
+  blob_val[2] = 0 as Byte
+  blob_val[3] = 255 as Byte
+  blob_val[4] = 42 as Byte
+  blob_val[5] = 0 as Byte
+  blob_val[6] = 127 as Byte
+  blob_val[7] = 128 as Byte
+
+  let ins = match db.prepare("INSERT INTO kv (id, big, label, payload) VALUES (?1, ?2, ?3, ?4)") {
+    Ok(s) => s
+    Err(e) => panic("sqlite prepare insert failed: " + e.message)
+  }
+  let _ = ins.bind_int64(1, 1.to_int64())
+  let _ = ins.bind_int64(2, big_val)
+  let _ = ins.bind_text(3, label_val)
+  let _ = ins.bind_blob(4, blob_val)
+  let ins_rc = ins.step()
+  let fin_ins = ins.finalize()
+  if ins_rc != sqlite_ffi::SQLITE_DONE || fin_ins != sqlite_ffi::SQLITE_OK {
+    panic("sqlite insert failed: step=" + ins_rc.to_string() + " fin=" + fin_ins.to_string())
+  }
+
+  let sel = match db.prepare("SELECT big, label, payload FROM kv WHERE id = ?1") {
+    Ok(s) => s
+    Err(e) => panic("sqlite prepare select failed: " + e.message)
+  }
+  let _ = sel.bind_int64(1, 1.to_int64())
+  let sel_rc = sel.step()
+  if sel_rc != sqlite_ffi::SQLITE_ROW {
+    let _ = sel.finalize()
+    panic("sqlite select returned rc=" + sel_rc.to_string())
+  }
+  let got_big = sel.column_int64(0)
+  let got_label = sel.column_text(1)
+  let got_blob = sel.column_blob(2)
+  let fin_sel = sel.finalize()
+  if fin_sel != sqlite_ffi::SQLITE_OK {
+    panic("sqlite select finalize failed: " + fin_sel.to_string())
+  }
+
+  if got_big != big_val {
+    panic("sqlite int64 mismatch: got=" + got_big.to_string() + " want=" + big_val.to_string())
+  }
+  if got_label != label_val {
+    panic("sqlite text mismatch: got=" + got_label)
+  }
+  if got_blob.length() != blob_val.length() {
+    panic("sqlite blob length mismatch: got=" + got_blob.length().to_string())
+  }
+  for i in 0..<blob_val.length() {
+    if got_blob[i] != blob_val[i] {
+      panic("sqlite blob byte mismatch at index " + i.to_string())
+    }
+  }
+
+  let ckpt_passive = db.wal_checkpoint(sqlite_ffi::CKPT_PASSIVE)
+  let ckpt_truncate = db.wal_checkpoint(sqlite_ffi::CKPT_TRUNCATE)
+  if ckpt_passive.rc != sqlite_ffi::SQLITE_OK || ckpt_truncate.rc != sqlite_ffi::SQLITE_OK {
+    panic(
+      "sqlite wal_checkpoint failed: passive=" +
+      ckpt_passive.rc.to_string() +
+      " truncate=" +
+      ckpt_truncate.rc.to_string(),
+    )
+  }
+
+  let close_rc = db.close()
+  if close_rc != sqlite_ffi::SQLITE_OK {
+    panic("sqlite close failed: rc=" + close_rc.to_string())
+  }
+
+  let fd_after = host_shim::open_fd_count()
+  if fd_before >= 0 && fd_after > fd_before {
+    panic(
+      "sqlite fd leak detected: before=" +
+      fd_before.to_string() +
+      " after=" +
+      fd_after.to_string(),
+    )
+  }
+
+  let summary = base_codec::json_stringify(
+    base_codec::json_obj([
+      ("ok", base_codec::json_bool(true)),
+      ("int64", base_codec::json_int64(got_big)),
+      ("blob_len", base_codec::json_int(got_blob.length())),
+      ("ckpt_passive_rc", base_codec::json_int(ckpt_passive.rc)),
+      ("ckpt_truncate_rc", base_codec::json_int(ckpt_truncate.rc)),
+      ("fd_before", base_codec::json_int(fd_before)),
+      ("fd_after", base_codec::json_int(fd_after)),
+    ]),
+  )
+  io_println(world, summary)
+}
+
+fn run_smoke_shell(world : World, dir : String) -> Unit {
+  if !host_shim::start(dir, false) {
+    panic("shell start failed for dir: " + dir)
+  }
+  if !host_shim::shell_active() {
+    panic("expected shell_active() == true after start")
+  }
+
+  // 1. Sync shell call: crypto.random
+  let sync_raw = host_shim::shell_sync("crypto.random", "{\"bytes\":16}")
+  if sync_raw.length() == 0 {
+    host_shim::stop()
+    panic("shell_sync crypto.random returned empty response")
+  }
+  let sync_parsed = match base_codec::json_parse(sync_raw) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => {
+      host_shim::stop()
+      panic("shell_sync returned malformed json: " + e)
+    }
+  }
+  match base_codec::json_get(sync_parsed, "error") {
+    Some(err_v) => {
+      host_shim::stop()
+      panic("shell_sync crypto.random error: " + base_codec::json_stringify(err_v))
+    }
+    None => ()
+  }
+
+  // 2. Async shell round-trip: storage.set -> storage.get
+  host_shim::shell_call(1.to_int64(), "storage.set", "{\"key\":\"smoke\",\"value\":\"pion-ok\"}", None)
+  let mut got_set = false
+  let t0 = host_shim::now_ms()
+  while !got_set && host_shim::now_ms() - t0 < 5000.to_int64() {
+    match host_shim::wait(200.to_int64()) {
+      Some(host_shim::HostEvent::ShellDone(done)) => {
+        if done.id == 1.to_int64() {
+          if done.error.length() > 0 {
+            host_shim::stop()
+            panic("storage.set failed: " + done.error)
+          }
+          got_set = true
+        }
+      }
+      _ => ()
+    }
+  }
+  if !got_set {
+    host_shim::stop()
+    panic("storage.set timed out")
+  }
+
+  host_shim::shell_call(2.to_int64(), "storage.get", "{\"key\":\"smoke\"}", None)
+  let mut got_val = ""
+  let t1 = host_shim::now_ms()
+  while got_val.length() == 0 && host_shim::now_ms() - t1 < 5000.to_int64() {
+    match host_shim::wait(200.to_int64()) {
+      Some(host_shim::HostEvent::ShellDone(done)) => {
+        if done.id == 2.to_int64() {
+          if done.error.length() > 0 {
+            host_shim::stop()
+            panic("storage.get failed: " + done.error)
+          }
+          got_val = done.json
+        }
+      }
+      _ => ()
+    }
+  }
+  if got_val.length() == 0 {
+    host_shim::stop()
+    panic("storage.get timed out")
+  }
+
+  host_shim::stop()
+  if host_shim::shell_active() {
+    panic("expected shell_active() == false after stop")
+  }
+
+  let summary = base_codec::json_stringify(
+    base_codec::json_obj([
+      ("ok", base_codec::json_bool(true)),
+      ("sync_len", base_codec::json_int(sync_raw.length())),
+      ("storage_get", base_codec::json_str(got_val)),
+    ]),
+  )
+  io_println(world, summary)
+}
+
+fn soak_one_step(i : Int) -> Int {
+  let m : Map[String, String] = Map::new()
+  let k1 = "chat-" + i.to_string()
+  let k2 = "thread-" + (i & 255).to_string()
+  let v1 = "payload-" + k1 + "-" + k2
+  m.set(k1, v1)
+  m.set(k2, "val-" + i.to_string())
+
+  let buf = Bytes::new(256)
+  buf[0] = (i & 0xFF) as Byte
+  buf[255] = ((i >> 8) & 0xFF) as Byte
+
+  let captured = [k1, v1]
+  let closure = fn(x : Int) -> Int {
+    let base_len = captured[0].length() + captured[1].length() + buf.length()
+    match m.get(k1) {
+      Some(s) => base_len + s.length() + x
+      None => base_len + x
+    }
+  }
+  closure(i & 7)
+}
+
+fn run_smoke_rc_soak(world : World, total_iters : Int) -> Unit {
+  let stages = 5
+  let step = if total_iters / stages > 0 { total_iters / stages } else { 1 }
+  let rss0 = host_shim::rss_bytes()
+  io_println(
+    world,
+    "stage=0/" +
+    stages.to_string() +
+    " iter=0 rss_bytes=" +
+    rss0.to_string() +
+    " rss_kib=" +
+    (rss0 / 1024.to_int64()).to_string(),
+  )
+
+  let mut checksum : Int64 = 0.to_int64()
+  let mut stage = 1
+  for i in 1..<(total_iters + 1) {
+    checksum = checksum + soak_one_step(i).to_int64()
+    if i == stage * step || i == total_iters {
+      let rss = host_shim::rss_bytes()
+      io_println(
+        world,
+        "stage=" +
+        stage.to_string() +
+        "/" +
+        stages.to_string() +
+        " iter=" +
+        i.to_string() +
+        " rss_bytes=" +
+        rss.to_string() +
+        " rss_kib=" +
+        (rss / 1024.to_int64()).to_string(),
+      )
+      stage = stage + 1
+    }
+  }
+  io_println(
+    world,
+    "rc_soak ok iters=" + total_iters.to_string() + " checksum=" + checksum.to_string(),
+  )
+}
+
+fn main(world : World) -> Unit {
+  let argv = host_shim::args()
+  if argv.length() < 2 {
+    run_version(world)
+    return
+  }
+  let cmd = argv[1]
+  if cmd == "--version" {
+    run_version(world)
+  } else if cmd == "--smoke-stdio" {
+    run_smoke_stdio()
+  } else if cmd == "--smoke-sqlite" {
+    let db_path = if argv.length() >= 3 { argv[2] } else { "/tmp/stillfail-pion-smoke.db" }
+    run_smoke_sqlite(world, db_path)
+  } else if cmd == "--smoke-shell" {
+    let dir = if argv.length() >= 3 {
+      argv[2]
+    } else {
+      "/tmp/stillfail-pion-shell-" + host_shim::pid().to_string()
+    }
+    run_smoke_shell(world, dir)
+  } else if cmd == "--smoke-rc-soak" {
+    let iters = if argv.length() >= 3 { parse_positive_int(argv[2], 50000) } else { 50000 }
+    run_smoke_rc_soak(world, iters)
+  } else {
+    io_println(
+      world,
+      "usage: stillfail-pion [--version | --smoke-stdio | --smoke-sqlite <db> | --smoke-shell [dir] | --smoke-rc-soak [iters]]",
+    )
+    host_shim::exit_process(2)
+  }
+}

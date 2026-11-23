@@ -1,0 +1,238 @@
+// Direct SQLite FFI wrapper calling `sqlite3_*` exported by `libstillfail_shell.a`
+// through `packages/sqlite_ffi/native/station_sqlite.c`.
+
+extern "C" fn stq_open(path : Ptr, flags : Int, busy_timeout_ms : Int) -> Int64
+extern "C" fn stq_close(db : Int64) -> Int
+extern "C" fn stq_errmsg(db : Int64, out_len : Ptr) -> Ptr
+extern "C" fn stq_errstr(rc : Int, out_len : Ptr) -> Ptr
+extern "C" fn stq_exec(db : Int64, sql : Ptr) -> Int
+extern "C" fn stq_changes(db : Int64) -> Int
+extern "C" fn stq_autocommit(db : Int64) -> Int
+extern "C" fn stq_wal_checkpoint(db : Int64, mode : Int, out_log : Ptr, out_ckpt : Ptr) -> Int
+extern "C" fn stq_prepare(db : Int64, sql : Ptr, sql_len : Int) -> Int64
+extern "C" fn stq_finalize(stmt : Int64) -> Int
+extern "C" fn stq_reset(stmt : Int64) -> Int
+extern "C" fn stq_clear_bindings(stmt : Int64) -> Int
+extern "C" fn stq_step(stmt : Int64) -> Int
+extern "C" fn stq_bind_null(stmt : Int64, index : Int) -> Int
+extern "C" fn stq_bind_int64(stmt : Int64, index : Int, value : Int64) -> Int
+extern "C" fn stq_bind_double(stmt : Int64, index : Int, value : Double) -> Int
+extern "C" fn stq_bind_text(stmt : Int64, index : Int, data : Ptr, len : Int) -> Int
+extern "C" fn stq_bind_blob(stmt : Int64, index : Int, data : Ptr, len : Int) -> Int
+extern "C" fn stq_column_count(stmt : Int64) -> Int
+extern "C" fn stq_column_name(stmt : Int64, index : Int, out_len : Ptr) -> Ptr
+extern "C" fn stq_column_type(stmt : Int64, index : Int) -> Int
+extern "C" fn stq_column_int64(stmt : Int64, index : Int) -> Int64
+extern "C" fn stq_column_double(stmt : Int64, index : Int) -> Double
+extern "C" fn stq_column_text(stmt : Int64, index : Int, out_len : Ptr) -> Ptr
+extern "C" fn stq_column_blob(stmt : Int64, index : Int, out_len : Ptr) -> Ptr
+extern "C" fn stq_free(ptr : Ptr) -> Unit
+
+pub let SQLITE_OK : Int = 0
+pub let SQLITE_ROW : Int = 100
+pub let SQLITE_DONE : Int = 101
+
+pub let OPEN_READONLY : Int = 1
+pub let OPEN_READWRITE : Int = 2
+pub let OPEN_CREATE : Int = 4
+pub let OPEN_URI : Int = 64
+pub let OPEN_FULLMUTEX : Int = 65536
+
+pub let COL_INTEGER : Int = 1
+pub let COL_FLOAT : Int = 2
+pub let COL_TEXT : Int = 3
+pub let COL_BLOB : Int = 4
+pub let COL_NULL : Int = 5
+
+pub let CKPT_PASSIVE : Int = 0
+pub let CKPT_FULL : Int = 1
+pub let CKPT_RESTART : Int = 2
+pub let CKPT_TRUNCATE : Int = 3
+
+pub struct SqliteError {
+  pub code : Int
+  pub message : String
+}
+
+pub struct CheckpointResult {
+  pub rc : Int
+  pub log_frames : Int
+  pub checkpointed_frames : Int
+}
+
+pub struct Db {
+  pub handle : Int64
+}
+
+pub struct Stmt {
+  pub handle : Int64
+}
+
+fn bytes_to_str(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+fn take_c_bytes(p : Ptr, out_len : Ptr) -> Bytes {
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  stq_free(out_len)
+  if ptr_is_null(p) || n <= 0.to_int64() {
+    if !ptr_is_null(p) {
+      stq_free(p)
+    }
+    return Bytes::new(0)
+  }
+  let out = bytes_from_ptr(p, n.to_int())
+  stq_free(p)
+  out
+}
+
+pub fn errstr(rc : Int) -> String {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = stq_errstr(rc, out_len)
+  bytes_to_str(take_c_bytes(p, out_len))
+}
+
+pub fn Db::open(path : String, flags : Int, busy_timeout_ms : Int = 5000) -> Result[Db, SqliteError] {
+  let h = stq_open(path.as_cstr(), flags, busy_timeout_ms)
+  let _ = path.length()
+  if h <= 0.to_int64() {
+    let rc = (0.to_int64() - h).to_int()
+    return Err(SqliteError::{ code: rc, message: errstr(rc) })
+  }
+  Ok(Db::{ handle: h })
+}
+
+pub fn Db::close(self : Db) -> Int {
+  stq_close(self.handle)
+}
+
+pub fn Db::errmsg(self : Db) -> String {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = stq_errmsg(self.handle, out_len)
+  bytes_to_str(take_c_bytes(p, out_len))
+}
+
+pub fn Db::exec(self : Db, sql : String) -> Result[Unit, SqliteError] {
+  let rc = stq_exec(self.handle, sql.as_cstr())
+  let _ = sql.length()
+  if rc != SQLITE_OK {
+    return Err(SqliteError::{ code: rc, message: self.errmsg() })
+  }
+  Ok(())
+}
+
+pub fn Db::changes(self : Db) -> Int {
+  stq_changes(self.handle)
+}
+
+pub fn Db::autocommit(self : Db) -> Bool {
+  stq_autocommit(self.handle) != 0
+}
+
+pub fn Db::wal_checkpoint(self : Db, mode : Int) -> CheckpointResult {
+  let log_buf = ptr_alloc(4.to_int64())
+  let ckpt_buf = ptr_alloc(4.to_int64())
+  ptr_write_i32(log_buf, 0.to_int64(), 0)
+  ptr_write_i32(ckpt_buf, 0.to_int64(), 0)
+  let rc = stq_wal_checkpoint(self.handle, mode, log_buf, ckpt_buf)
+  let log_frames = ptr_read_i32(log_buf, 0.to_int64())
+  let ckpt_frames = ptr_read_i32(ckpt_buf, 0.to_int64())
+  stq_free(log_buf)
+  stq_free(ckpt_buf)
+  CheckpointResult::{
+    rc: rc,
+    log_frames: log_frames,
+    checkpointed_frames: ckpt_frames,
+  }
+}
+
+pub fn Db::prepare(self : Db, sql : String) -> Result[Stmt, SqliteError] {
+  let sbytes = sql.to_bytes()
+  let h = stq_prepare(self.handle, bytes_data_ptr(sbytes), sbytes.length())
+  let _ = sbytes.length()
+  if h == 0.to_int64() {
+    return Err(SqliteError::{ code: 1, message: self.errmsg() })
+  }
+  Ok(Stmt::{ handle: h })
+}
+
+pub fn Stmt::finalize(self : Stmt) -> Int {
+  stq_finalize(self.handle)
+}
+
+pub fn Stmt::reset(self : Stmt) -> Int {
+  let _ = stq_clear_bindings(self.handle)
+  stq_reset(self.handle)
+}
+
+pub fn Stmt::step(self : Stmt) -> Int {
+  stq_step(self.handle)
+}
+
+pub fn Stmt::bind_null(self : Stmt, index : Int) -> Int {
+  stq_bind_null(self.handle, index)
+}
+
+pub fn Stmt::bind_int64(self : Stmt, index : Int, value : Int64) -> Int {
+  stq_bind_int64(self.handle, index, value)
+}
+
+pub fn Stmt::bind_double(self : Stmt, index : Int, value : Double) -> Int {
+  stq_bind_double(self.handle, index, value)
+}
+
+pub fn Stmt::bind_text(self : Stmt, index : Int, value : String) -> Int {
+  let b = value.to_bytes()
+  let rc = stq_bind_text(self.handle, index, bytes_data_ptr(b), b.length())
+  let _ = b.length()
+  rc
+}
+
+pub fn Stmt::bind_blob(self : Stmt, index : Int, value : Bytes) -> Int {
+  let rc = stq_bind_blob(self.handle, index, bytes_data_ptr(value), value.length())
+  let _ = value.length()
+  rc
+}
+
+pub fn Stmt::column_count(self : Stmt) -> Int {
+  stq_column_count(self.handle)
+}
+
+pub fn Stmt::column_name(self : Stmt, index : Int) -> String {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = stq_column_name(self.handle, index, out_len)
+  bytes_to_str(take_c_bytes(p, out_len))
+}
+
+pub fn Stmt::column_type(self : Stmt, index : Int) -> Int {
+  stq_column_type(self.handle, index)
+}
+
+pub fn Stmt::column_int64(self : Stmt, index : Int) -> Int64 {
+  stq_column_int64(self.handle, index)
+}
+
+pub fn Stmt::column_double(self : Stmt, index : Int) -> Double {
+  stq_column_double(self.handle, index)
+}
+
+pub fn Stmt::column_text(self : Stmt, index : Int) -> String {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = stq_column_text(self.handle, index, out_len)
+  bytes_to_str(take_c_bytes(p, out_len))
+}
+
+pub fn Stmt::column_blob(self : Stmt, index : Int) -> Bytes {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = stq_column_blob(self.handle, index, out_len)
+  take_c_bytes(p, out_len)
+}

@@ -1,0 +1,863 @@
+// Native C11 host shim for Pion station workers (POSIX + _WIN32).
+// Mirrors station/mb/src/host/host.c with generation-guarded shell lifecycle and
+// strict single-threaded Pion ownership: foreign threads (stdin reader, Rust shell
+// tokio workers, sys threads) NEVER call Pion callbacks; they only enqueue native
+// events into the mutex-protected queue and signal the event loop condvar.
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+#define _POSIX_C_SOURCE 200809L
+#endif
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#endif
+
+#include "station_host.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define PSAPI_VERSION 2
+#include <windows.h>
+#include <psapi.h>
+#include <shellapi.h>
+typedef SRWLOCK sth_lock_t;
+typedef CONDITION_VARIABLE sth_cond_t;
+#define STH_LOCK_INIT SRWLOCK_INIT
+#define STH_COND_INIT CONDITION_VARIABLE_INIT
+static void sth_lock(sth_lock_t *l) { AcquireSRWLockExclusive(l); }
+static void sth_unlock(sth_lock_t *l) { ReleaseSRWLockExclusive(l); }
+static void sth_signal(sth_cond_t *c) { WakeConditionVariable(c); }
+static void sth_broadcast(sth_cond_t *c) { WakeAllConditionVariable(c); }
+static void sth_cond_wait(sth_cond_t *c, sth_lock_t *l) { SleepConditionVariableSRW(c, l, INFINITE, 0); }
+#else
+#include <dirent.h>
+#include <errno.h>
+#include <pthread.h>
+#include <signal.h>
+#include <sys/resource.h>
+#include <time.h>
+#include <unistd.h>
+#ifdef __APPLE__
+#include <crt_externs.h>
+#include <mach/mach.h>
+#endif
+typedef pthread_mutex_t sth_lock_t;
+typedef pthread_cond_t sth_cond_t;
+#define STH_LOCK_INIT PTHREAD_MUTEX_INITIALIZER
+#define STH_COND_INIT PTHREAD_COND_INITIALIZER
+static void sth_lock(sth_lock_t *l) { pthread_mutex_lock(l); }
+static void sth_unlock(sth_lock_t *l) { pthread_mutex_unlock(l); }
+static void sth_signal(sth_cond_t *c) { pthread_cond_signal(c); }
+static void sth_broadcast(sth_cond_t *c) { pthread_cond_broadcast(c); }
+static void sth_cond_wait(sth_cond_t *c, sth_lock_t *l) { pthread_cond_wait(c, l); }
+#endif
+
+#ifndef STH_TARGET_NAME
+#define STH_TARGET_NAME "unknown"
+#endif
+#ifndef STH_PION_SHA
+#define STH_PION_SHA "unknown"
+#endif
+
+// Rust client/shell C ABI (client/shell/src/ffi.rs).
+typedef void (*sf_complete)(
+    void *ctx,
+    uint64_t id,
+    const uint8_t *json,
+    size_t json_len,
+    const uint8_t *error,
+    size_t error_len,
+    const uint8_t *bytes,
+    size_t bytes_len,
+    uint8_t has_bytes);
+extern void *sf_shell_start(const char *data_dir, sf_complete complete, void *ctx);
+extern void sf_shell_stop(void *shell);
+extern void sf_shell_call(
+    const void *shell,
+    uint64_t id,
+    const char *op,
+    const uint8_t *json,
+    size_t json_len,
+    const uint8_t *bytes,
+    size_t bytes_len,
+    uint8_t has_bytes);
+extern uint8_t *sf_shell_call_sync(
+    const void *shell,
+    const char *op,
+    const uint8_t *json,
+    size_t json_len,
+    size_t *out_len);
+extern void sf_free(uint8_t *ptr, size_t len);
+
+typedef struct sth_event {
+    struct sth_event *next;
+    uint8_t kind;
+    uint8_t bounded;
+    uint64_t id;
+    size_t len;
+    uint8_t data[];
+} sth_event_t;
+
+static sth_lock_t g_life = STH_LOCK_INIT;
+static sth_lock_t g_lock = STH_LOCK_INIT;
+static sth_cond_t g_queue_cond = STH_COND_INIT;
+static sth_cond_t g_stdin_cond = STH_COND_INIT;
+static sth_cond_t g_sys_cond = STH_COND_INIT;
+static sth_cond_t g_inflight_cond = STH_COND_INIT;
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+static pthread_once_t g_cond_once = PTHREAD_ONCE_INIT;
+static void init_queue_cond(void) {
+    pthread_condattr_t attr;
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    pthread_cond_init(&g_queue_cond, &attr);
+    pthread_condattr_destroy(&attr);
+}
+static void ensure_queue_cond(void) { pthread_once(&g_cond_once, init_queue_cond); }
+#else
+static void ensure_queue_cond(void) {}
+#endif
+
+static sth_event_t *g_head = NULL;
+static sth_event_t *g_tail = NULL;
+static size_t g_stdin_queued = 0;
+static size_t g_stdin_limit = STH_STDIN_MOST;
+static size_t g_sys_queued = 0;
+static size_t g_sys_waiters = 0;
+
+static void *g_shell = NULL;
+static int g_stopping = 0;
+static int g_in_flight = 0;
+static uintptr_t g_gen = 0;
+static uint64_t g_wait_epoch = 0;
+static int g_stdin_started = 0;
+
+static void put_u64_le(uint8_t *at, uint64_t v) {
+    for (int i = 0; i < 8; i++) {
+        at[i] = (uint8_t)(v >> (8 * i));
+    }
+}
+
+static sth_event_t *event_alloc(uint8_t kind, uint64_t id, size_t len) {
+    sth_event_t *e = (sth_event_t *)malloc(sizeof(*e) + (len ? len : 1));
+    if (e == NULL) {
+        abort();
+    }
+    e->next = NULL;
+    e->kind = kind;
+    e->bounded = 0;
+    e->id = id;
+    e->len = len;
+    return e;
+}
+
+static void enqueue_locked(sth_event_t *e) {
+    if (g_tail != NULL) {
+        g_tail->next = e;
+    } else {
+        g_head = e;
+    }
+    g_tail = e;
+    sth_signal(&g_queue_cond);
+}
+
+static void free_events(sth_event_t *list) {
+    while (list != NULL) {
+        sth_event_t *next = list->next;
+        free(list);
+        list = next;
+    }
+}
+
+static uintptr_t next_gen_locked(void) {
+    g_gen += 1;
+    if (g_gen == 0) {
+        g_gen = 1;
+    }
+    return g_gen;
+}
+
+static void *shell_enter(void) {
+    sth_lock(&g_lock);
+    void *sh = (g_shell != NULL && !g_stopping) ? g_shell : NULL;
+    if (sh != NULL) {
+        g_in_flight += 1;
+    }
+    sth_unlock(&g_lock);
+    return sh;
+}
+
+static void shell_leave(void) {
+    sth_lock(&g_lock);
+    g_in_flight -= 1;
+    if (g_in_flight == 0) {
+        sth_broadcast(&g_inflight_cond);
+    }
+    sth_unlock(&g_lock);
+}
+
+static void shell_completed(
+    void *ctx,
+    uint64_t id,
+    const uint8_t *json,
+    size_t json_len,
+    const uint8_t *error,
+    size_t error_len,
+    const uint8_t *bytes,
+    size_t bytes_len,
+    uint8_t has_bytes) {
+    ensure_queue_cond();
+    uintptr_t gen = (uintptr_t)ctx;
+    size_t carried = has_bytes ? bytes_len : 0;
+    size_t payload_len = 8 + error_len + 8 + json_len + 1 + carried;
+    sth_event_t *e = event_alloc(STH_EV_SHELL_DONE, id, payload_len);
+    uint8_t *at = e->data;
+    put_u64_le(at, (uint64_t)error_len);
+    at += 8;
+    if (error_len > 0 && error != NULL) {
+        memcpy(at, error, error_len);
+    }
+    at += error_len;
+    put_u64_le(at, (uint64_t)json_len);
+    at += 8;
+    if (json_len > 0 && json != NULL) {
+        memcpy(at, json, json_len);
+    }
+    at += json_len;
+    *at++ = has_bytes ? 1 : 0;
+    if (carried > 0 && bytes != NULL) {
+        memcpy(at, bytes, carried);
+    }
+
+    sth_lock(&g_lock);
+    int live = (gen == 0) || (!g_stopping && g_shell != NULL && gen == g_gen);
+    if (!live) {
+        sth_unlock(&g_lock);
+        free(e);
+        return;
+    }
+    enqueue_locked(e);
+    sth_unlock(&g_lock);
+}
+
+void sth_set_stdin_limit_for_test(size_t limit_bytes) {
+    sth_lock(&g_lock);
+    g_stdin_limit = limit_bytes > 0 ? limit_bytes : STH_STDIN_MOST;
+    sth_unlock(&g_lock);
+}
+
+void sth_push_stdin_chunk(const uint8_t *data, size_t len) {
+    if (len == 0) {
+        return;
+    }
+    ensure_queue_cond();
+    sth_event_t *e = event_alloc(STH_EV_STDIN_DATA, 0, len);
+    memcpy(e->data, data, len);
+    sth_lock(&g_lock);
+    while (g_stdin_queued >= g_stdin_limit) {
+        sth_cond_wait(&g_stdin_cond, &g_lock);
+    }
+    g_stdin_queued += len;
+    enqueue_locked(e);
+    sth_unlock(&g_lock);
+}
+
+void sth_push_stdin_eof(void) {
+    ensure_queue_cond();
+    sth_event_t *e = event_alloc(STH_EV_STDIN_EOF, 0, 0);
+    sth_lock(&g_lock);
+    enqueue_locked(e);
+    sth_unlock(&g_lock);
+}
+
+void sth_push_sys(uint64_t id, const uint8_t *data, size_t len) {
+    ensure_queue_cond();
+    sth_event_t *e = event_alloc(STH_EV_SYS, id, len);
+    if (len > 0 && data != NULL) {
+        memcpy(e->data, data, len);
+    }
+    sth_lock(&g_lock);
+    enqueue_locked(e);
+    sth_unlock(&g_lock);
+}
+
+void sth_push_sys_bounded(uint64_t id, const uint8_t *data, size_t len) {
+    ensure_queue_cond();
+    sth_event_t *e = event_alloc(STH_EV_SYS, id, len);
+    e->bounded = 1;
+    if (len > 0 && data != NULL) {
+        memcpy(e->data, data, len);
+    }
+    sth_lock(&g_lock);
+    while (g_sys_queued >= STH_SYS_DATA_MOST) {
+        g_sys_waiters += 1;
+        sth_cond_wait(&g_sys_cond, &g_lock);
+        g_sys_waiters -= 1;
+    }
+    g_sys_queued += len;
+    enqueue_locked(e);
+    sth_unlock(&g_lock);
+}
+
+#ifdef _WIN32
+static DWORD WINAPI read_stdin_thread(LPVOID arg) {
+    (void)arg;
+    HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+    uint8_t buf[65536];
+    DWORD n = 0;
+    while (ReadFile(in, buf, (DWORD)sizeof(buf), &n, NULL) && n > 0) {
+        sth_push_stdin_chunk(buf, (size_t)n);
+    }
+    sth_push_stdin_eof();
+    return 0;
+}
+#else
+static void *read_stdin_thread(void *arg) {
+    (void)arg;
+    uint8_t buf[65536];
+    for (;;) {
+        ssize_t n = read(0, buf, sizeof(buf));
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n <= 0) {
+            break;
+        }
+        sth_push_stdin_chunk(buf, (size_t)n);
+    }
+    sth_push_stdin_eof();
+    return NULL;
+}
+
+static void raise_nofile(void) {
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_NOFILE, &limit) != 0) {
+        return;
+    }
+    rlim_t most = 65536;
+    rlim_t cap = (limit.rlim_max == RLIM_INFINITY || limit.rlim_max > most) ? most : limit.rlim_max;
+    rlim_t targets[3] = {
+        cap,
+        cap < 10240 ? cap : 10240,
+        cap < 4096 ? cap : 4096,
+    };
+    for (int i = 0; i < 3; i++) {
+        if (targets[i] <= limit.rlim_cur) {
+            return;
+        }
+        struct rlimit next = { targets[i], limit.rlim_max };
+        if (setrlimit(RLIMIT_NOFILE, &next) == 0) {
+            return;
+        }
+    }
+}
+#endif
+
+static void stop_shell_held(void) {
+    sth_lock(&g_lock);
+    g_stopping = 1;
+    (void)next_gen_locked();
+    sth_event_t *dropped = g_head;
+    g_head = NULL;
+    g_tail = NULL;
+    g_stdin_queued = 0;
+    g_sys_queued = 0;
+    g_wait_epoch += 1;
+    sth_broadcast(&g_queue_cond);
+    sth_broadcast(&g_stdin_cond);
+    sth_broadcast(&g_sys_cond);
+    while (g_in_flight > 0) {
+        sth_cond_wait(&g_inflight_cond, &g_lock);
+    }
+    void *owned = g_shell;
+    g_shell = NULL;
+    sth_unlock(&g_lock);
+
+    free_events(dropped);
+    if (owned != NULL) {
+        sf_shell_stop(owned);
+    }
+
+    sth_lock(&g_lock);
+    g_stopping = 0;
+    sth_unlock(&g_lock);
+}
+
+int32_t sth_start(const char *shell_dir, int32_t start_stdin) {
+    ensure_queue_cond();
+#ifndef _WIN32
+    raise_nofile();
+    signal(SIGPIPE, SIG_IGN);
+#endif
+    sth_lock(&g_life);
+    if (shell_dir != NULL && shell_dir[0] != '\0') {
+        sth_lock(&g_lock);
+        int had = g_shell != NULL;
+        sth_unlock(&g_lock);
+        if (had) {
+            stop_shell_held();
+        }
+        sth_lock(&g_lock);
+        uintptr_t gen = next_gen_locked();
+        sth_unlock(&g_lock);
+
+        void *started = sf_shell_start(shell_dir, shell_completed, (void *)gen);
+        if (started == NULL) {
+            sth_unlock(&g_life);
+            return 0;
+        }
+        sth_lock(&g_lock);
+        g_shell = started;
+        sth_unlock(&g_lock);
+    }
+
+    if (start_stdin) {
+        sth_lock(&g_lock);
+        int need_stdin = !g_stdin_started;
+        if (need_stdin) {
+            g_stdin_started = 1;
+        }
+        sth_unlock(&g_lock);
+        if (need_stdin) {
+#ifdef _WIN32
+            HANDLE t = CreateThread(NULL, 0, read_stdin_thread, NULL, 0, NULL);
+            if (t == NULL) {
+                sth_lock(&g_lock);
+                g_stdin_started = 0;
+                sth_unlock(&g_lock);
+                sth_unlock(&g_life);
+                return 0;
+            }
+            CloseHandle(t);
+#else
+            pthread_t t;
+            if (pthread_create(&t, NULL, read_stdin_thread, NULL) != 0) {
+                sth_lock(&g_lock);
+                g_stdin_started = 0;
+                sth_unlock(&g_lock);
+                sth_unlock(&g_life);
+                return 0;
+            }
+            pthread_detach(t);
+#endif
+        }
+    }
+    sth_unlock(&g_life);
+    return 1;
+}
+
+void sth_stop(void) {
+    sth_lock(&g_life);
+    stop_shell_held();
+    sth_unlock(&g_life);
+}
+
+int32_t sth_shell_active(void) {
+    sth_lock(&g_lock);
+    int32_t active = (g_shell != NULL && !g_stopping) ? 1 : 0;
+    sth_unlock(&g_lock);
+    return active;
+}
+
+void *sth_wait(int64_t ms, int64_t *out_len) {
+    ensure_queue_cond();
+    sth_lock(&g_lock);
+    uint64_t epoch = g_wait_epoch;
+    if (g_head == NULL && ms != 0) {
+#ifdef _WIN32
+        if (ms < 0) {
+            while (g_head == NULL && epoch == g_wait_epoch) {
+                SleepConditionVariableSRW(&g_queue_cond, &g_lock, INFINITE, 0);
+            }
+        } else {
+            int64_t capped = ms > 86400000LL ? 86400000LL : ms;
+            int64_t deadline = sth_now_ms() + capped;
+            while (g_head == NULL && epoch == g_wait_epoch) {
+                int64_t left = deadline - sth_now_ms();
+                if (left <= 0) {
+                    break;
+                }
+                if (!SleepConditionVariableSRW(&g_queue_cond, &g_lock, (DWORD)left, 0)) {
+                    break;
+                }
+            }
+        }
+#elif defined(__APPLE__)
+        if (ms < 0) {
+            while (g_head == NULL && epoch == g_wait_epoch) {
+                pthread_cond_wait(&g_queue_cond, &g_lock);
+            }
+        } else {
+            int64_t capped = ms > 86400000LL ? 86400000LL : ms;
+            int64_t deadline = sth_now_ms() + capped;
+            while (g_head == NULL && epoch == g_wait_epoch) {
+                int64_t left = deadline - sth_now_ms();
+                if (left <= 0) {
+                    break;
+                }
+                struct timespec rel;
+                rel.tv_sec = (time_t)(left / 1000);
+                rel.tv_nsec = (long)((left % 1000) * 1000000);
+                if (pthread_cond_timedwait_relative_np(&g_queue_cond, &g_lock, &rel) != 0) {
+                    break;
+                }
+            }
+        }
+#else
+        if (ms < 0) {
+            while (g_head == NULL && epoch == g_wait_epoch) {
+                pthread_cond_wait(&g_queue_cond, &g_lock);
+            }
+        } else {
+            int64_t capped = ms > 86400000LL ? 86400000LL : ms;
+            struct timespec at;
+            clock_gettime(CLOCK_MONOTONIC, &at);
+            at.tv_sec += (time_t)(capped / 1000);
+            at.tv_nsec += (long)((capped % 1000) * 1000000);
+            if (at.tv_nsec >= 1000000000L) {
+                at.tv_sec += 1;
+                at.tv_nsec -= 1000000000L;
+            }
+            while (g_head == NULL && epoch == g_wait_epoch) {
+                if (pthread_cond_timedwait(&g_queue_cond, &g_lock, &at) != 0) {
+                    break;
+                }
+            }
+        }
+#endif
+    }
+    sth_event_t *e = (epoch == g_wait_epoch) ? g_head : NULL;
+    if (e != NULL) {
+        g_head = e->next;
+        if (g_head == NULL) {
+            g_tail = NULL;
+        }
+        if (e->kind == STH_EV_STDIN_DATA) {
+            g_stdin_queued -= e->len;
+            if (g_stdin_queued < g_stdin_limit) {
+                sth_signal(&g_stdin_cond);
+            }
+        }
+        if (e->bounded) {
+            g_sys_queued -= e->len;
+            if (g_sys_waiters > 0 && g_sys_queued < STH_SYS_DATA_MOST) {
+                sth_broadcast(&g_sys_cond);
+            }
+        }
+    }
+    sth_unlock(&g_lock);
+
+    if (e == NULL) {
+        if (out_len != NULL) {
+            *out_len = 0;
+        }
+        return NULL;
+    }
+
+    size_t total = 9 + e->len;
+    uint8_t *out = (uint8_t *)malloc(total);
+    if (out == NULL) {
+        abort();
+    }
+    out[0] = e->kind;
+    put_u64_le(out + 1, e->id);
+    if (e->len > 0) {
+        memcpy(out + 9, e->data, e->len);
+    }
+    free(e);
+    if (out_len != NULL) {
+        *out_len = (int64_t)total;
+    }
+    return out;
+}
+
+int32_t sth_write_stdout(const uint8_t *data, int64_t len) {
+    if (len <= 0) {
+        return 1;
+    }
+    if (data == NULL) {
+        return 0;
+    }
+    size_t total = (size_t)len;
+    size_t done = 0;
+    while (done < total) {
+#ifdef _WIN32
+        DWORD n = 0;
+        DWORD chunk = (total - done) > 0x7fffffffU ? 0x7fffffffU : (DWORD)(total - done);
+        if (!WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), data + done, chunk, &n, NULL) || n == 0) {
+            return 0;
+        }
+        done += (size_t)n;
+#else
+        ssize_t n = write(1, data + done, total - done);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n <= 0) {
+            return 0;
+        }
+        done += (size_t)n;
+#endif
+    }
+    return 1;
+}
+
+void sth_shell_call(
+    int64_t id,
+    const char *op,
+    const uint8_t *json,
+    int64_t json_len,
+    const uint8_t *bytes,
+    int64_t bytes_len,
+    int32_t has_bytes) {
+    void *sh = shell_enter();
+    if (sh == NULL) {
+        static const char none[] = "no shell";
+        shell_completed(NULL, (uint64_t)id, NULL, 0, (const uint8_t *)none, sizeof(none) - 1, NULL, 0, 0);
+        return;
+    }
+    const char *cop = op != NULL ? op : "";
+    size_t jlen = json_len > 0 ? (size_t)json_len : 0;
+    size_t blen = bytes_len > 0 ? (size_t)bytes_len : 0;
+    sf_shell_call(sh, (uint64_t)id, cop, json, jlen, bytes, blen, has_bytes ? 1 : 0);
+    shell_leave();
+}
+
+void *sth_shell_sync(
+    const char *op,
+    const uint8_t *json,
+    int64_t json_len,
+    int64_t *out_len) {
+    void *sh = shell_enter();
+    if (sh == NULL) {
+        static const char none[] = "{\"error\":\"no shell\"}";
+        size_t n = sizeof(none) - 1;
+        uint8_t *out = (uint8_t *)malloc(n);
+        if (out == NULL) {
+            abort();
+        }
+        memcpy(out, none, n);
+        if (out_len != NULL) {
+            *out_len = (int64_t)n;
+        }
+        return out;
+    }
+    const char *cop = op != NULL ? op : "";
+    size_t jlen = json_len > 0 ? (size_t)json_len : 0;
+    size_t n = 0;
+    uint8_t *answer = sf_shell_call_sync(sh, cop, json, jlen, &n);
+    shell_leave();
+    if (answer == NULL || n == 0) {
+        if (answer != NULL) {
+            sf_free(answer, n);
+        }
+        if (out_len != NULL) {
+            *out_len = 0;
+        }
+        return NULL;
+    }
+    uint8_t *out = (uint8_t *)malloc(n);
+    if (out == NULL) {
+        abort();
+    }
+    memcpy(out, answer, n);
+    sf_free(answer, n);
+    if (out_len != NULL) {
+        *out_len = (int64_t)n;
+    }
+    return out;
+}
+
+void *sth_args(int64_t *out_len) {
+    size_t len = 0;
+    char *all = NULL;
+#if defined(_WIN32)
+    int argc = 0;
+    LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    for (int i = 0; argv != NULL && i < argc; i++) {
+        int n = WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, NULL, 0, NULL, NULL);
+        if (n <= 0) {
+            continue;
+        }
+        char *next = (char *)realloc(all, len + (size_t)n);
+        if (next == NULL) {
+            free(all);
+            LocalFree(argv);
+            abort();
+        }
+        all = next;
+        WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, all + len, n, NULL, NULL);
+        len += (size_t)n;
+    }
+    if (argv != NULL) {
+        LocalFree(argv);
+    }
+#elif defined(__APPLE__)
+    int argc = *_NSGetArgc();
+    char **argv = *_NSGetArgv();
+    for (int i = 0; i < argc; i++) {
+        size_t n = strlen(argv[i]) + 1;
+        char *next = (char *)realloc(all, len + n);
+        if (next == NULL) {
+            free(all);
+            abort();
+        }
+        all = next;
+        memcpy(all + len, argv[i], n);
+        len += n;
+    }
+#else
+    FILE *f = fopen("/proc/self/cmdline", "rb");
+    if (f != NULL) {
+        char buf[4096];
+        size_t n = 0;
+        while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+            char *next = (char *)realloc(all, len + n);
+            if (next == NULL) {
+                free(all);
+                fclose(f);
+                abort();
+            }
+            all = next;
+            memcpy(all + len, buf, n);
+            len += n;
+        }
+        fclose(f);
+    }
+#endif
+    if (out_len != NULL) {
+        *out_len = (int64_t)len;
+    }
+    return all;
+}
+
+int32_t sth_pid(void) {
+#ifdef _WIN32
+    return (int32_t)GetCurrentProcessId();
+#else
+    return (int32_t)getpid();
+#endif
+}
+
+void sth_exit(int32_t code) {
+    exit((int)code);
+}
+
+int64_t sth_now_ms(void) {
+#ifdef _WIN32
+    return (int64_t)GetTickCount64();
+#else
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+#endif
+}
+
+int64_t sth_wall_ms(void) {
+#ifdef _WIN32
+    FILETIME t;
+    GetSystemTimePreciseAsFileTime(&t);
+    uint64_t v = ((uint64_t)t.dwHighDateTime << 32) | t.dwLowDateTime;
+    return (int64_t)((v - 116444736000000000ULL) / 10000ULL);
+#else
+    struct timespec t;
+    clock_gettime(CLOCK_REALTIME, &t);
+    return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+#endif
+}
+
+int64_t sth_rss_bytes(void) {
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS pmc;
+    memset(&pmc, 0, sizeof(pmc));
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        return (int64_t)pmc.WorkingSetSize;
+    }
+    return -1;
+#elif defined(__APPLE__)
+    struct mach_task_basic_info info;
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count) == KERN_SUCCESS) {
+        return (int64_t)info.resident_size;
+    }
+    return -1;
+#else
+    FILE *f = fopen("/proc/self/statm", "r");
+    if (f == NULL) {
+        return -1;
+    }
+    unsigned long size_pages = 0;
+    unsigned long resident_pages = 0;
+    int got = fscanf(f, "%lu %lu", &size_pages, &resident_pages);
+    fclose(f);
+    if (got != 2) {
+        return -1;
+    }
+    long ps = sysconf(_SC_PAGESIZE);
+    if (ps <= 0) {
+        ps = 4096;
+    }
+    return (int64_t)resident_pages * (int64_t)ps;
+#endif
+}
+
+int32_t sth_open_fd_count(void) {
+#if defined(_WIN32)
+    return -1;
+#else
+#if defined(__APPLE__)
+    const char *dir_path = "/dev/fd";
+#else
+    const char *dir_path = "/proc/self/fd";
+#endif
+    DIR *d = opendir(dir_path);
+    if (d == NULL) {
+        return -1;
+    }
+    int32_t count = 0;
+    struct dirent *ent = NULL;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+            continue;
+        }
+        count += 1;
+    }
+    closedir(d);
+    // Subtract 1 for the directory stream fd opened above.
+    return count > 0 ? count - 1 : 0;
+#endif
+}
+
+void *sth_build_info(int64_t *out_len) {
+    char buf[256];
+    int n = snprintf(
+        buf,
+        sizeof(buf),
+        "stillfail-pion 0.1.0 (target=%s, pion=%s)",
+        STH_TARGET_NAME,
+        STH_PION_SHA);
+    if (n < 0) {
+        if (out_len != NULL) {
+            *out_len = 0;
+        }
+        return NULL;
+    }
+    size_t len = (size_t)n < sizeof(buf) ? (size_t)n : sizeof(buf) - 1;
+    char *out = (char *)malloc(len);
+    if (out == NULL) {
+        abort();
+    }
+    memcpy(out, buf, len);
+    if (out_len != NULL) {
+        *out_len = (int64_t)len;
+    }
+    return out;
+}
+
+void sth_free(void *ptr) {
+    free(ptr);
+}
