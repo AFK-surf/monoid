@@ -530,10 +530,12 @@ static const char *FS =
     "    }\n"
     "    float dropHairline = 0.0;\n"
     "    float isPlatter = 0.0;\n"
+    "    float isBarTab = 0.0;\n"
     "    if (is_drop) {\n"
     "      float pressAmt = clamp(v_c2.x, 0.0, 1.0);\n"
     "      float pinchWeight = smoothstep(4.5, 6.5, rawAmount);\n"
     "      isPlatter = smoothstep(39.0, 41.5, v_rect.w);\n"
+    "      isBarTab = smoothstep(54.0, 58.0, v_rect.w);\n"
     "      vec2 lensCenter = v_rect.xy + v_rect.zw * 0.5;\n"
     "      vec2 centered = (p - lensCenter) / max(v_rect.zw, vec2(1.0));\n"
     "      vec2 absC = abs(centered) * 2.0;\n"
@@ -563,9 +565,15 @@ static const char *FS =
     "      vec2 platterMeniscus = -surfaceNormal * pMenReach * pMenBand;\n"
     "      float capPinchBand = smoothstep(1.35, 4.40, inward) * (1.0 - smoothstep(5.40, 7.80, inward));\n"
     "      vec2 capOutward = vec2(surfaceNormal.x, surfaceNormal.y * 0.45) * (2.8 * capPinchBand * endCapX);\n"
+    "      vec2 barCapOutward = vec2(surfaceNormal.x, surfaceNormal.y * 0.62) * (2.6 * capPinchBand * endCapX);\n"
+    "      float tabPinchHoriz = 1.0 - smoothstep(0.20, 0.96, capAbsX);\n"
+    "      float tabPinchVert = smoothstep(0.42, 0.74, absC.y) * smoothstep(1.35, 5.2, inward);\n"
+    "      vec2 tabPinch = vec2(0.0, centered.y * tabPinchHoriz * tabPinchVert * (0.245 * v_rect.w) * 0.28);\n"
     "      dropHairline = (1.0 - smoothstep(0.25, 0.68, inward)) * pressAmt;\n"
-    "      vec2 iosPinch = mix(compactPinch, platterPinch, isPlatter) * (pressAmt * pinchWeight) * (1.0 - dropHairline);\n"
-    "      vec2 iosMen = mix(compactMeniscus, platterMeniscus + capOutward, isPlatter);\n"
+    "      vec2 widePinch = mix(platterPinch, tabPinch, isBarTab);\n"
+    "      vec2 iosPinch = mix(compactPinch, widePinch, isPlatter) * (pressAmt * pinchWeight) * (1.0 - dropHairline);\n"
+    "      vec2 wideMen = mix(platterMeniscus + capOutward, (platterMeniscus + barCapOutward) * (1.0 - dropHairline), isBarTab);\n"
+    "      vec2 iosMen = mix(compactMeniscus, wideMen, isPlatter);\n"
     "      vec2 dropDisp = mix(paraxialDisp, iosMen, pressAmt * pinchWeight);\n"
     "      dropDisp = mix(dropDisp, surfaceNormal * 0.85, dropHairline * (1.0 - isPlatter));\n"
     "      float dLen = length(dropDisp);\n"
@@ -678,6 +686,7 @@ static const char *FS =
     "      glintFaceGain = mix(0.25, glintFaceGain, regMix);\n"
     "      glintVib = mix(1.5, glintVib, regMix);\n"
     "    }\n"
+    "    contourStr *= (1.0 - regMix);\n"
     "    if (fogT > 0.001) {\n"
     "      float r1 = fogT * 2.6;\n"
     "      float r2 = fogT * 3.6;\n"
@@ -693,6 +702,10 @@ static const char *FS =
     "    float transLum = clamp(Y * (1.0 + lift * (1.0 - Y)), 0.0, 1.0);\n"
     "    vec3 transmittedColor = vec3(transLum * transmittance) + (refractColor - vec3(Y)) * (chromaGain * v_p.z);\n"
     "    vec3 baseColor = clamp(emission + transmittedColor, 0.0, 1.0);\n"
+    "    if (is_dark && regMix > 0.001) {\n"
+    "      float sl = luma(baseColor);\n"
+    "      baseColor *= 1.0 - 0.28 * regMix * sl * sl;\n"
+    "    }\n"
     "    // Honor explicit chromatic tints (non-neutral) if a caller requests colored liquid glass\n"
     "    float colChroma = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
     "    if (colChroma > 0.08 && col.a > 0.001) {\n"
@@ -734,17 +747,41 @@ static const char *FS =
     "      float bevelShadow = clamp(bevelLeading * bevelFalloff * bevelDir * bevelShadowStr, 0.0, 1.0);\n"
     "      result = max(result - transmittedColor * bevelShadow, vec3(0.0));\n"
     "    }\n"
-    "    // (b) Glint (1.2pt ramp + 0.21 * 4.8pt bleed, both top & bottom walls, recolors face)\n"
-    "    if (v_c2.x > 0.01 && inward < 4.8) {\n"
+    "    // (b) Glint (clear glass diagonal glint + Native iOS 27 vertical 1pt rimLight & 0.5pt inner hairline for Regular Glass)\n"
+    "    if (v_c2.x > 0.01 && inward < 4.8 && regMix < 0.999) {\n"
     "      float glintProfile = clamp(1.0 - inward / 1.2, 0.0, 1.0)\n"
     "                         + 0.21 * clamp(1.0 - inward / 4.8, 0.0, 1.0);\n"
     "      float dirLobe = pow(max(1.0 - tangency, 0.0), 0.85);\n"
     "      float lobe = mix(is_clear ? 0.30 : 0.18, 1.0, dirLobe);\n"
     "      float glintGain = is_clear ? (0.34 * clearVeil) : 0.28;\n"
-    "      float glint = clamp(v_c2.x * glintGain * lobe * glintProfile + spot * 0.08 * glintProfile, 0.0, 1.0);\n"
+    "      float glint = clamp(v_c2.x * glintGain * lobe * glintProfile + spot * 0.08 * glintProfile, 0.0, 1.0) * (1.0 - regMix);\n"
     "      float resLum = luma(result);\n"
     "      vec3 glintTarget = vec3(glintLum) + result * glintFaceGain + (result - vec3(resLum)) * glintVib;\n"
     "      result = clamp(mix(result, glintTarget, glint), 0.0, 1.0);\n"
+    "    }\n"
+    "    if (regMix > 0.001) {\n"
+    "      float regHairline = (1.0 - smoothstep(0.25, 0.70, inward)) * step(0.01, materialAlpha) * regMix;\n"
+    "      float regAcross = pow(max(1.0 - rn.y * rn.y, 0.0), 1.75);\n"
+    "      float regShadeMask = is_dark ? regAcross : mix(0.20, 1.0, regAcross);\n"
+    "      if (inward < 10.0) {\n"
+    "        float along = is_dark ? rn.y : -rn.y;\n"
+    "        float lit = max(along, 0.0);\n"
+    "        float opp = max(-along, 0.0);\n"
+    "        float lit2 = lit * lit;\n"
+    "        float opp2 = opp * opp;\n"
+    "        float regLobe = (is_dark ? 0.95 : 1.0) * (lit2 * lit2) + (is_dark ? 0.95 : 0.85) * (opp2 * opp2) + 0.06;\n"
+    "        float regInset = max(0.0, inward - 0.55);\n"
+    "        float regCore = exp(-regInset / 0.50);\n"
+    "        float regTail = exp(-regInset / 2.67);\n"
+    "        float regEase = pow(max(1.0 - luma(result), 0.0), 0.3);\n"
+    "        float regRimGain = (is_dark ? 1.15 : 1.0) * clamp(v_c2.x / 0.6, 0.0, 1.5);\n"
+    "        float regRim = (regRimGain * regLobe * regEase * (0.185 * regCore + 0.035 * regTail) * (1.0 - regHairline * regShadeMask) + spot * 0.10 * regCore) * regMix;\n"
+    "        result = clamp(result + vec3(regRim), 0.0, 1.0);\n"
+    "      }\n"
+    "      if (regHairline > 0.001) {\n"
+    "        float regShade = (is_dark ? 0.24 : 0.22) * regShadeMask;\n"
+    "        result = max(result - vec3(regShade * regHairline), vec3(0.0));\n"
+    "      }\n"
     "    }\n"
     "    if (is_drop) {\n"
     "      float pressAmt = clamp(v_c2.x, 0.0, 1.0);\n"
@@ -753,7 +790,7 @@ static const char *FS =
     "      float topTrough = exp(-tt * tt)\n"
     "                      * smoothstep(0.3, 0.85, -surfaceNormal.y)\n"
     "                      * smoothstep(1.5, 3.5, inward);\n"
-    "      float liftGain = mix(0.105, 0.085, isPlatter);\n"
+    "      float liftGain = mix(mix(0.105, 0.085, isPlatter), 0.035, isBarTab);\n"
     "      float lensLift = liftGain * (1.0 - 0.45 * topTrough) * pressAmt * (1.0 - backdropLuma) * (1.0 - dropHairline);\n"
     "      result = clamp(result + vec3(lensLift), 0.0, 1.0);\n"
     "      float keyShade = 0.025 * topTrough * backdropLuma * pressAmt * (1.0 - dropHairline);\n"
@@ -3617,6 +3654,7 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
       levels_sized = 1;
       if (max_w > lv_w || max_h > lv_h) {
         ensure_levels(max_w, max_h);
+        main_state();
       } else if (ad_mode > 0 && lv[0].t && all_max_w > 0 && all_max_h > 0) {
         if (all_max_w > lv_frame_max_w) lv_frame_max_w = all_max_w;
         if (all_max_h > lv_frame_max_h) lv_frame_max_h = all_max_h;
@@ -3871,7 +3909,10 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
             }
             s0 = e0;
           }
-          if (max_w > lv_w || max_h > lv_h) ensure_levels(max_w, max_h);
+          if (max_w > lv_w || max_h > lv_h) {
+            ensure_levels(max_w, max_h);
+            main_state();
+          }
         }
         if (tid != bound) {
           int in_cut = 1;

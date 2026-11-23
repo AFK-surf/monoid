@@ -57,19 +57,96 @@ function frame(text: string, supported: Set<string>, supportsServices: boolean):
   return lines.join("\n");
 }
 
-async function* events(body: AsyncIterable<Buffer>, supported: Set<string>, supportsServices: boolean) {
+/// The event a frame names (`event: `), read from its head alone: none once its data begins.
+function eventOf(text: string): string | undefined {
+  for (let at = 0; ;) {
+    const end = text.indexOf("\n", at);
+    const line = end < 0 ? text.slice(at) : text.slice(at, end);
+    if (line.startsWith("data: ")) return undefined;
+    if (line.startsWith("event: ")) return line.slice(7);
+    if (end < 0) return undefined;
+    at = end + 1;
+  }
+}
+/// Whether `frame` changes a frame at all: the rest (live rates, shared chats, jobs, pings) goes out as it came.
+const projected = (text: string) => {
+  const event = eventOf(text);
+  return event === "thread" || (event !== undefined && Object.hasOwn(EVENTS, event));
+};
+
+/// What older clients of the same vocabulary are told of one event is the same text: made once for all their streams,
+/// and the same string, so the program carrying them is handed it once (mesh/served.ts `#piece`). Every event went
+/// through `frame` again for each such stream (a JSON parse, the view, a stringify), and a station with dozens of them
+/// spent seconds of its thread on each burst of events (mm2, 0.1.11070). Only frames `frame` changes are kept, the
+/// latest of them within FRAMES_KEPT and FRAME_BYTES_KEPT: a burst tells its streams one after another.
+const FRAMES_KEPT = 64;
+const FRAME_BYTES_KEPT = 4 * 1024 * 1024;
+const framed = new Map<string, string>();
+let framedBytes = 0;
+function frameOnce(vocabulary: string, text: string, supported: Set<string>, supportsServices: boolean): string {
+  if (!projected(text)) return text + "\n\n";
+  const key = `${vocabulary}\0${text}`;
+  const had = framed.get(key);
+  if (had !== undefined) return had;
+  const made = frame(text, supported, supportsServices) + "\n\n";
+  framed.set(key, made);
+  framedBytes += key.length + made.length;
+  while (framed.size > FRAMES_KEPT || (framedBytes > FRAME_BYTES_KEPT && framed.size > 1)) {
+    const [oldKey, oldMade] = framed.entries().next().value!;
+    framed.delete(oldKey);
+    framedBytes -= oldKey.length + oldMade.length;
+  }
+  return made;
+}
+
+/// A piece of the stream, whole events each ending with a blank line (events.ts `raw`), as an older client is told it:
+/// one event (nearly every piece) is the kept string itself, one `frame` leaves as it is the piece itself; a last
+/// event with no blank line after it (none told so) is made apart, not kept.
+function piece(vocabulary: string, text: string, supported: Set<string>, supportsServices: boolean): string {
+  const first = text.indexOf("\n\n");
+  if (first >= 0 && first === text.length - 2) return projected(text) ? frameOnce(vocabulary, text.slice(0, first), supported, supportsServices) : text;
+  let out = "";
+  let at = 0;
+  for (let end; (end = text.indexOf("\n\n", at)) >= 0; at = end + 2) out += frameOnce(vocabulary, text.slice(at, end), supported, supportsServices);
+  return at < text.length ? out + frame(text.slice(at), supported, supportsServices) : out;
+}
+
+async function* events(body: AsyncIterable<Buffer>, vocabulary: string, supported: Set<string>, supportsServices: boolean) {
   const decoder = new StringDecoder("utf8");
   let pending = "";
   for await (const chunk of body) {
     pending += decoder.write(chunk);
     let end;
     while ((end = pending.indexOf("\n\n")) >= 0) {
-      yield Buffer.from(frame(pending.slice(0,end), supported, supportsServices) + "\n\n");
+      yield Buffer.from(frameOnce(vocabulary, pending.slice(0,end), supported, supportsServices));
       pending = pending.slice(end+2);
     }
   }
   pending += decoder.end();
   if (pending) yield Buffer.from(frame(pending, supported, supportsServices));
+}
+
+type Relayed = AsyncIterableIterator<Buffer> & { relay?: (send: (text: string) => void, ended: () => void) => void };
+
+/// The event stream as an older client is told it. Where the stream is carried piece by piece (`relay`: events.ts, the
+/// MoonBit program writing it), each piece goes as it is told, so the program is given one text for every stream told
+/// it alike; ending the stream ends the one it reads.
+function compatStream(inner: Relayed, supported: Set<string>, supportsServices: boolean): Relayed {
+  const vocabulary = `${[...supported].sort().join(",")}|${supportsServices ? 1 : 0}`;
+  const read = events(inner, vocabulary, supported, supportsServices);
+  const body: Relayed = {
+    [Symbol.asyncIterator]: () => body,
+    next: () => read.next(),
+    return: async () => {
+      await inner.return?.();
+      return read.return(undefined);
+    },
+  };
+  const relay = inner.relay;
+  if (typeof relay === "function") {
+    body.relay = (send, ended) => relay.call(inner, (text) => send(piece(vocabulary, text, supported, supportsServices)), ended);
+  }
+  return body;
 }
 
 export function runtimeCompatible(r: Request, answer: Answer): Answer {
@@ -78,7 +155,7 @@ export function runtimeCompatible(r: Request, answer: Answer): Answer {
   const supportsServices = clientProfileServices(r.headers);
   if (RUNTIME_KINDS.every(k => supported.has(k)) && supportsServices) return answer;
   const path = r.path.replace(/\/+$/, "");
-  if (path === "/events" && !Buffer.isBuffer(answer.body)) return { ...answer, body: events(answer.body, supported, supportsServices) };
+  if (path === "/events" && !Buffer.isBuffer(answer.body)) return { ...answer, body: compatStream(answer.body as Relayed, supported, supportsServices) };
   if (!Buffer.isBuffer(answer.body) || !(answer.headers["content-type"] ?? "").startsWith("application/json")) return answer;
   // Project after idempotent response caching, including each answer in a batch. Reusing a write key from a
   // different client must neither repeat the write nor reuse the previous client's filtered view.

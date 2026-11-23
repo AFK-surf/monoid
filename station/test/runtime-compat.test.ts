@@ -65,6 +65,43 @@ test("SSE replay and live frames are projected per reader, preserving IDs and sp
   assert.equal(first.profiles.length,1);
 });
 
+test("relayed events are projected piece by piece, one text for every older stream told the same, and their end reaches the stream", async () => {
+  const told = `id: run.7\nevent: session\ndata: {"key":"hm","runtime":"hermes"}\n\nid: run.8\nevent: thread\ndata: {"id":1,"entries":[{"authorRuntime":"hermes","text":"hi"}]}\n\n`;
+  const stream = () => {
+    const sends: ((text: string) => void)[] = [];
+    let returned = false;
+    const body: any = {
+      [Symbol.asyncIterator]: () => body,
+      next: async () => ({ done: true, value: undefined }),
+      return: async () => { returned = true; return { done: true, value: undefined }; },
+      relay: (send: (text: string) => void) => { sends.push(send); },
+    };
+    return { body, tell: (text: string) => sends.forEach((s) => s(text)), returned: () => returned };
+  };
+  const a = stream(), b = stream();
+  const got: string[][] = [[], []];
+  const ra = runtimeCompatible(request("/events"), { status: 200, headers: { "content-type": "text/event-stream" }, body: a.body }).body as any;
+  const rb = runtimeCompatible(request("/events"), { status: 200, headers: { "content-type": "text/event-stream" }, body: b.body }).body as any;
+  ra.relay((t: string) => got[0]!.push(t), () => {});
+  rb.relay((t: string) => got[1]!.push(t), () => {});
+  a.tell(told);
+  b.tell(told);
+  assert.equal(got[0]!.length, 1);
+  assert.ok(got[0]![0]!.includes("id: run.7\nevent: session-removed\ndata: {\"key\":\"hm\"}\n\n"));
+  assert.ok(!got[0]![0]!.includes('"authorRuntime":"hermes"'));
+  assert.ok(got[0]![0]!.endsWith("\n\n"));
+  assert.equal(got[1]![0], got[0]![0], "the same event told two older streams alike");
+  const session = `id: run.9\nevent: session\ndata: {"key":"cc","runtime":"claude"}\n\n`;
+  a.tell(session);
+  b.tell(session);
+  assert.ok(got[0]![1] === got[1]![1], "one event's piece is the one kept string");
+  const live = `id: run.10\nevent: live\ndata: {"runtime":"hermes"}\n\n`;
+  a.tell(live);
+  assert.equal(got[0]![2], live, "what frame leaves as it is goes out as it came");
+  await ra.return();
+  assert.ok(a.returned(), "ending the projected stream ends the one it reads");
+});
+
 test("Admin applies compatibility to initial reads, account responses, batches and digest refreshes", async () => {
   const sessions = [{key:"cc",runtime:"claude"},{key:"hm",runtime:"hermes"}];
   let held: unknown;

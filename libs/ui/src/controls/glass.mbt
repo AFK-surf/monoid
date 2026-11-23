@@ -138,9 +138,18 @@ pub fn tab_lens_surface_decorate(
 }
 
 ///|
-/// The shadow under the bottom bar's lens (blur sigma 12, 4 down, black at 10%): the lens's look fades it in with
-/// the lens as it is pressed.
-pub let tab_lens_raised : Raised = { sigma: 12.0, dy: 4.0, color: 0x0000001AL }
+/// The shadow under the bottom bar's lens in Light mode (blur sigma 8, 4 down, black at ~9.4%).
+pub let tab_lens_raised : Raised = { sigma: 8.0, dy: 4.0, color: 0x00000018L }
+
+///|
+/// Theme-aware outer shadow under the bottom bar's pressed lens: Light `(8, 4, 0x18)` / Dark `(10, 4, 0x3C)`.
+pub fn tab_lens_raised_for(dark : Bool) -> Raised {
+  if dark {
+    { sigma: 10.0, dy: 4.0, color: 0x0000003CL }
+  } else {
+    tab_lens_raised
+  }
+}
 
 ///|
 fn track_glass_ink() -> Int64 {
