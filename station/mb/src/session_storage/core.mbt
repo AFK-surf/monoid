@@ -3,6 +3,11 @@
 // paths said to be left alone), one `Storage` a station.
 
 ///|
+/// Workspaces larger than this after cleaning rebuildable directories are left unpacked on archive (marked `cold` so
+/// expiry and low-disk reclamation still apply, and transcripts are still packed).
+pub let max_pack_workspace_bytes : Double = 2.0 * 1024.0 * 1024.0 * 1024.0
+
+///|
 pub struct Storage {
   st : Station
   fs : Files
@@ -28,10 +33,20 @@ pub struct Storage {
   going : Array[@effect.Fiber[Unit]]
   /// The paths being followed in the background (`followed_now`): one fiber a path at once.
   priv following : Set[String]
+  /// Upper bound on workspace size eligible for tar.zst compression (defaults to `max_pack_workspace_bytes`).
+  max_pack_workspace_bytes : Double
+  /// Active `cold_pack` runs by session key: `(aborted_flag, active_workspace_dir)`.
+  priv packing : Map[String, Array[(Ref[Bool], Ref[String?])]]
+  /// Background `cold_restore_bg` fibers by session key.
+  priv restores : Map[String, Array[@effect.Fiber[Unit]]]
 }
 
 ///|
-pub fn Storage::new(st : Station, fs : Files) -> Storage {
+pub fn Storage::new(
+  st : Station,
+  fs : Files,
+  max_pack_workspace_bytes? : Double = max_pack_workspace_bytes,
+) -> Storage {
   {
     st,
     fs,
@@ -46,6 +61,9 @@ pub fn Storage::new(st : Station, fs : Files) -> Storage {
     left_alone: Set::new(),
     going: [],
     following: Set([]),
+    max_pack_workspace_bytes,
+    packing: {},
+    restores: {},
   }
 }
 

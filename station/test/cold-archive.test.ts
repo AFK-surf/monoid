@@ -563,3 +563,68 @@ test("archive cleanup keeps tracked files in generated directories", async () =>
   assert.ok(await safeToRemove(join(p, "scratch/node_modules")));
   rmSync(p, { recursive: true });
 });
+
+test("aborting packWorkspaceIf via AbortSignal cancels isolated workspace.pack, cleans temp, unlocks worktrees, and keeps originals", async () => {
+  const root = temp();
+  const repo = join(root, "repo");
+  mkdirSync(repo);
+  const git = (dir: string, args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+  git(repo, ["init", "-q"]);
+  write(join(repo, "source.rs"), "committed");
+  git(repo, ["add", "."]);
+  git(repo, ["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"]);
+
+  const room = join(root, "chat");
+  const ws = join(room, "workspace");
+  mkdirSync(ws, { recursive: true });
+  const worktree = join(ws, "project");
+  git(repo, ["worktree", "add", "--detach", worktree]);
+  // Write enough incompressible-ish data so abort hits cleanly or pre-aborted signal works deterministically.
+  write(join(ws, "data.bin"), Buffer.alloc(512 * 1024, 0x55));
+  const gitdir = readFileSync(join(worktree, ".git"), "utf8").trim().slice("gitdir: ".length);
+
+  // Pre-aborted signal returns immediately with no side effects.
+  const preAborted = new AbortController();
+  preAborted.abort();
+  await packWorkspaceIf(room, () => true, { signal: preAborted.signal });
+  assert.ok(!existsSync(workspaceArchive(room)));
+  assert.ok(!existsSync(join(room, "workspace.tar.zst.writing")));
+  assert.ok(!existsSync(join(gitdir, "locked")));
+  assert.ok(existsSync(join(ws, "data.bin")));
+
+  // Mid-flight abort kills the isolated workspace.pack process, unlocks worktree, removes .writing, keeps originals.
+  const ac = new AbortController();
+  const packing = packWorkspaceIf(room, () => true, { signal: ac.signal });
+  // Wait for worktree lock file to appear or abort immediately on next turn.
+  ac.abort();
+  await packing;
+  assert.ok(!existsSync(workspaceArchive(room)), "aborted pack must not produce workspace.tar.zst");
+  assert.ok(!existsSync(join(room, "workspace.tar.zst.writing")), ".writing temp removed");
+  assert.ok(!existsSync(join(gitdir, "locked")), "worktree unlocked after abort");
+  assert.ok(!existsSync(join(room, "workspace-locks.json")), "workspace-locks.json removed after abort");
+  assert.ok(existsSync(join(ws, "data.bin")), "original workspace files intact");
+
+  rmSync(root, { recursive: true });
+});
+
+test("workspace.pack in isolated process does not block concurrent workspaceFile/restoreWorkspace on packedProgram", async () => {
+  const roomA = temp();
+  const roomB = temp();
+  try {
+    write(join(roomB, "workspace/uploads/note.txt"), "from-b");
+    await packWorkspace(roomB);
+    assert.ok(existsSync(workspaceArchive(roomB)));
+
+    // Create a multi-MB workspace in roomA and pack it concurrently with reading from roomB.
+    write(join(roomA, "workspace/blob.bin"), Buffer.from(Array.from({ length: 4 << 20 }, (_, i) => (i * 131) & 0xff)));
+    const packA = packWorkspace(roomA);
+    const readB = workspaceFile(roomB, "uploads/note.txt");
+    const gotB = await readB;
+    assert.deepEqual(gotB, Buffer.from("from-b"));
+    await packA;
+    assert.ok(existsSync(workspaceArchive(roomA)));
+  } finally {
+    rmSync(roomA, { recursive: true, force: true });
+    rmSync(roomB, { recursive: true, force: true });
+  }
+});

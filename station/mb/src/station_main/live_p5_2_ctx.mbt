@@ -15,6 +15,8 @@ priv struct P52 {
   cwords : @session_chats.Words
   rwords : @api_routes.Words
   files : @session_storage.Files
+  /// Cached storage instance (one per station, holding active pack cancel tokens and background restore fibers).
+  mut storage_inst : @session_storage.Storage?
   /// The hub's config (config.ts `hubConfig`), worked out again as config.json changes.
   mut config : Json
   mut hub : @session_hub.Hub?

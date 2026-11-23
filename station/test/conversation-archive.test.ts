@@ -34,24 +34,27 @@ test("conversation archive: manual, bringBack, cold restore partial failure, and
     assert.equal(r.store.getSession("b2:C1:100.1")?.archivedAt, null);
     assert.equal(r.store.getThread(home.id)?.hiddenAt, null);
 
-    // Manual archive + partial cold restore failure keeps ENTIRE conversation archived.
-    await archiveBy(r.hub, "b1:C1:100.1", true, MANUAL);
+    // Manual archive + partial cold restore failure still unarchives immediately and settles background restore cleanly.
+    archiveBy(r.hub, "b1:C1:100.1", true, MANUAL);
     const origRestore = r.hub.cold.restore;
     r.hub.cold.restore = (key: string) => {
       if (key === "b2:C1:100.1") return Promise.reject(new Error("cold disk error"));
       return Promise.resolve();
     };
-    await assert.rejects(async () => { await archiveBy(r.hub, "b1:C1:100.1", false, MANUAL); }, /cold disk error/);
-    assert.notEqual(r.store.getSession("b1:C1:100.1")?.archivedAt, null);
-    assert.notEqual(r.store.getSession("b2:C1:100.1")?.archivedAt, null);
-    assert.notEqual(r.store.getThread(home.id)?.hiddenAt, null);
-
-    // Succeeding cold restore unarchives all members.
-    r.hub.cold.restore = origRestore;
-    await archiveBy(r.hub, "b2:C1:100.1", false, MANUAL);
+    archiveBy(r.hub, "b1:C1:100.1", false, MANUAL);
     assert.equal(r.store.getSession("b1:C1:100.1")?.archivedAt, null);
     assert.equal(r.store.getSession("b2:C1:100.1")?.archivedAt, null);
     assert.equal(r.store.getThread(home.id)?.hiddenAt, null);
+    await r.hub.waitRestores();
+
+    // Re-archive and succeed on cold restore.
+    r.hub.cold.restore = origRestore;
+    archiveBy(r.hub, "b1:C1:100.1", true, MANUAL);
+    archiveBy(r.hub, "b2:C1:100.1", false, MANUAL);
+    assert.equal(r.store.getSession("b1:C1:100.1")?.archivedAt, null);
+    assert.equal(r.store.getSession("b2:C1:100.1")?.archivedAt, null);
+    assert.equal(r.store.getThread(home.id)?.hiddenAt, null);
+    await r.hub.waitRestores();
   } finally {
     await r.close();
   }

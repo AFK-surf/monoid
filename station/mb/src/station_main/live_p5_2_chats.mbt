@@ -146,17 +146,24 @@ fn P52::peers_callback(self : P52) -> J {
 ///|
 /// The conversations' storage parts (session_storage `Storage`), their station's calls answered here.
 fn P52::storage(self : P52) -> @session_storage.Storage raise LiveError {
-  @session_storage.Storage::new(
-    @session_storage.Station::new(
-      self.bus.store,
-      self.threads,
-      self.the_hub(),
-      path([self.data, "archive"]),
-      () => told_threads(self.bus, self.threads),
-      async fn(name, args) { self.storage_call(name, args) },
-    ),
-    self.files,
-  )
+  match self.storage_inst {
+    Some(s) => s
+    None => {
+      let s = @session_storage.Storage::new(
+        @session_storage.Station::new(
+          self.bus.store,
+          self.threads,
+          self.the_hub(),
+          path([self.data, "archive"]),
+          () => told_threads(self.bus, self.threads),
+          async fn(name, args) { self.storage_call(name, args) },
+        ),
+        self.files,
+      )
+      self.storage_inst = Some(s)
+      s
+    }
+  }
 }
 
 ///|

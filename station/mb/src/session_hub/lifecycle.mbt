@@ -512,12 +512,9 @@ pub async fn Hub::archive_by(self : Hub, key : String, archived : Bool, by : Str
   let found = self.store.members_of(anchor)
   let members = if found.is_empty() { [key] } else { found }
   if !archived {
-    for m in members {
-      ignore((self.world.ask)("cold.restore", Json::string(m)))
-    }
     self.store.set_archived(key, false, by)
     for m in members {
-      ignore((self.world.ask)("fs.rm", { "path": Json::string(self.transcript_copy(m)) }))
+      (self.world.tell)("cold.restoreBg", Json::string(m))
     }
     return
   }
@@ -587,9 +584,11 @@ pub async fn Hub::delete_session(self : Hub, key : String) -> Unit {
     Some(r) => r
     None => raise Refused("unknown session \{key}")
   }
+  (self.world.tell)("cold.cancelPack", Json::string(key))
   if self.drop_actor(key) {
     ignore(self.ask_actor(key, "dispose"))
   }
+  ignore((self.world.ask)("cold.waitRestore", Json::string(key)))
   // Flush any unread transcript tail into usage statistics before deleting the session row and its transcripts.
   match self.counter {
     Some(c) => ignore(c.read(Some([key])))

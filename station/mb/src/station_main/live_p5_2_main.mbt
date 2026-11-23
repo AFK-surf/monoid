@@ -83,6 +83,7 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
     cwords: @session_chats.Words::new(to_jv(zh), to_jv(en)),
     rwords: @api_routes.Words::new(to_jv(zh), to_jv(en)),
     files: p52_cold_files(bus),
+    storage_inst: None,
     config: Json::object({
       "dataDir": jstr(bus.data),
       "profiles": Json::array([]),
@@ -555,6 +556,24 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
           }
         }),
       )
+    "cold.restoreBg" => {
+      let key = match args {
+        String(k) => k
+        _ => jtext(args, "key").unwrap_or("")
+      }
+      if (try { Some(self.storage()) } catch { _ => None }) is Some(st) {
+        st.cold_restore_bg(key)
+      }
+    }
+    "cold.cancelPack" => {
+      let key = match args {
+        String(k) => k
+        _ => jtext(args, "key").unwrap_or("")
+      }
+      if (try { Some(self.storage()) } catch { _ => None }) is Some(st) {
+        st.cancel_pack(key)
+      }
+    }
     "taking" => (self.bus.control_say)({ "taking": jb(true) })
     _ =>
       if what.has_prefix("usageCheck.") || what.has_prefix("live.") {
@@ -1023,6 +1042,17 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
       )
       Json::null()
     }
+    "cold.waitRestore" => {
+      self
+      .storage()
+      .wait_restore(
+        match args {
+          String(k) => k
+          _ => s("key")
+        },
+      )
+      Json::null()
+    }
     // (agents.ts `relieving`'s mark, `diskLow`, the one upkeep asks relieveArchived under; a lower one here left the hub
     // finding the disk not low and emptying no archived workspace until 2 GiB were left)
     "disk.low" =>
@@ -1275,6 +1305,9 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
             }
           }
         None => ()
+      }
+      if self.storage_inst is Some(st) {
+        st.wait_restores() catch { _ => () }
       }
       self.drivers_shut_down()
       if self.actors_program is Some(p) { p.close() }

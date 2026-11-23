@@ -385,9 +385,9 @@ export async function configure(hub: Hub, key: string, change: SessionChange, la
 const transcriptCopy = (hub: Hub, key: string) => join(hub.store.archiveDir(), "transcripts", `${key}.jsonl.zst`);
 
 /// Hides a session from lists, or shows it again; `by` is MANUAL or AUTO. Archiving also ends its idle process and
-/// hands its files to cold storage once it is idle; they are restored before the next runtime starts, and before it is
-/// shown again (a promise then, when cold storage takes its time: the session is shown once they are back).
-export function archiveBy(hub: Hub, key: string, archived: boolean, by: string, known?: SessionRow, knownMembers?: string[]): void | Promise<void> {
+/// hands its files to cold storage once it is idle; unarchiving shows the session immediately, cancels any in-flight
+/// workspace pack, and restores its files in the background (with `openAgent` waiting on restore if a turn starts first).
+export function archiveBy(hub: Hub, key: string, archived: boolean, by: string, known?: SessionRow, knownMembers?: string[]): void {
   const row = known ?? hub.store.getSession(key);
   if (!row) throw new Error(`unknown session ${key}`);
   const members = knownMembers !== undefined && knownMembers.length > 0
@@ -398,16 +398,22 @@ export function archiveBy(hub: Hub, key: string, archived: boolean, by: string, 
         return found.length > 0 ? found : [key];
       })();
   if (!archived) {
-    const shown = async () => {
-      hub.store.setArchived(key, false, by);
-      for (const m of members) await rm(transcriptCopy(hub, m), { force: true });
-    };
-    const restoring: Promise<void>[] = [];
+    hub.store.setArchived(key, false, by);
     for (const m of members) {
-      const r = hub.cold.restore(m);
-      if (r) restoring.push(r);
+      hub.cold.cancelPack?.(m);
+      const work = (async () => {
+        try {
+          await hub.cold.restore(m, { onlyIfUnarchived: true });
+          if (hub.store.getSession(m)?.archivedAt === null) {
+            await rm(transcriptCopy(hub, m), { force: true });
+          }
+        } catch (error) {
+          log.warn("hub", "an archived session's files not restored in background", { session: m, error: (error as Error).message });
+        }
+      })();
+      hub.trackRestore(m, work);
     }
-    return restoring.length > 0 ? Promise.all(restoring).then(shown) : shown();
+    return;
   }
   hub.store.setArchived(key, archived, by);
   for (const m of members) {
@@ -1306,8 +1312,10 @@ export function startAutoArchiveTimer(hub: Hub, time: { after(ms: number, run: (
 export async function deleteSession(hub: Hub, key: string) {
   const row = hub.store.getSession(key);
   if (!row) throw new Error(`unknown session ${key}`);
+  hub.cold.cancelPack?.(key);
   const actor = hub.dropActor(key);
   await actor?.dispose();
+  await hub.waitRestore(key);
   // Flush any unread transcript tail into usage statistics before removing the session row and its transcripts.
   await hub.live.flushUsage(key).catch((error) => log.warn("hub", "flushing usage before session delete failed", { session: key, error: (error as Error).message }));
   hub.live.forget(key);

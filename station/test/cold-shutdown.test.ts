@@ -85,3 +85,50 @@ test("an archive that fails while closing does not make disposal fail", async ()
     await rig.close();
   }
 });
+
+test("hub shutdown waits for in-flight background restores before removing its directory", async () => {
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), written = Promise.withResolvers<void>();
+  let rig!: Rig;
+  let began = false;
+  const cold = {
+    isCold: async () => false,
+    pack: () => {},
+    restore: async () => {
+      began = true;
+      started.resolve();
+      await release.promise;
+      try {
+        mkdirSync(rig.dir, { recursive: true });
+        writeFileSync(join(rig.dir, "restore-writing"), "restore");
+      } finally {
+        written.resolve();
+      }
+    },
+  };
+  rig = new Rig({ cold });
+  let closing: Promise<void> | undefined;
+  try {
+    rig.store.insertSession({
+      key: "s", connect: "cl", runtime: "claude", profile: "cc", workspace: rig.dir,
+      token: "s", createdAt: 1, lastActiveAt: 1,
+    });
+    const { archive } = await import("../src/sessions/lifecycle.ts");
+    archive(rig.hub, "s", true);
+    archive(rig.hub, "s", false);
+    await started.promise;
+    let closed = false;
+    closing = rig.close().then(() => { closed = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const closedBeforeWrite = closed;
+    release.resolve();
+    await written.promise;
+    await closing;
+    assert.equal(closedBeforeWrite, false);
+    assert.equal(existsSync(rig.dir), false, "no background restore write recreates the directory after shutdown");
+  } finally {
+    release.resolve();
+    if (began) await written.promise;
+    if (closing) await closing; else await rig.close();
+    rmSync(rig.dir, { recursive: true, force: true });
+  }
+});

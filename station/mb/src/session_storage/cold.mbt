@@ -492,8 +492,8 @@ fn is_incomplete_walk(walk_complete : Bool, walk_reason : String?, freed : Doubl
 }
 
 ///|
-/// footprint.ts `measureRoom`: what can be made again in a chat's directory, each with its size, plus walk completion.
-async fn Files::rebuild_of(self : Files, dir : String) -> (Array[(String, Double)], Bool, String?) {
+/// footprint.ts `measureRoom`: total bytes, rebuildable directories with sizes, walk completion, and cut-short reason.
+async fn Files::measure_room_full(self : Files, dir : String) -> (Double, Array[(String, Double)], Bool, String?) {
   let ask = jo([
     ("path", js(dir)),
     ("base", js(self.join([dir]))),
@@ -509,7 +509,34 @@ async fn Files::rebuild_of(self : Files, dir : String) -> (Array[(String, Double
   if str(said, "error") is Some(e) {
     raise Thrown("Error", jo([("message", js(e)), ("code", get(said, "code").unwrap_or(Json::null()))]))
   }
-  parse_rebuild_result(said)
+  let bytes = num(said, "size").unwrap_or(0.0)
+  let (rebuild, complete, reason) = parse_rebuild_result(said)
+  (bytes, rebuild, complete, reason)
+}
+
+///|
+/// footprint.ts `measuredUpTo`: bounded size check up to `limit` (MEASURE_UP_TO budget).
+async fn Files::measured_up_to(self : Files, dir : String, limit : Double, strict? : Bool = true) -> (Double, Bool) {
+  let ask = jo([
+    ("path", js(dir)),
+    ("base", js(self.join([dir]))),
+    ("finding", jb(false)),
+    ("strict", jb(strict)),
+    ("stopAfter", jn(limit)),
+    ("maxEntries", ji(100000)),
+    ("maxDurationMs", ji(15000)),
+  ])
+  let said = match self.footprint_by {
+    Some(measure) => measure(ask.stringify())
+    None => @footprint.answer(ask.stringify(), self.sep)
+  }
+  if str(said, "error") is Some(e) {
+    raise Thrown("Error", jo([("message", js(e)), ("code", get(said, "code").unwrap_or(Json::null()))]))
+  }
+  let bytes = num(said, "size").unwrap_or(0.0)
+  let enough = get(said, "enough") is Some(True)
+  let complete = !enough && !(get(said, "complete") is Some(False))
+  (bytes, complete)
 }
 
 ///|
@@ -524,10 +551,14 @@ async fn Storage::still_cleanable(self : Storage, key : String, require_archived
 }
 
 ///|
-async fn Storage::clean_rebuildable_in(self : Storage, key : String, require_archived~ : Bool) -> (Double, Bool)? {
+async fn Storage::clean_rebuildable_in(
+  self : Storage,
+  key : String,
+  require_archived~ : Bool,
+) -> (Double, Bool, Double, Bool)? {
   self.find_room(key)
   guard self.cleanable_room(key, require_archived~) is Some(dir) else { return None }
-  let (rebuild, walk_complete, walk_reason) = self.fs.rebuild_of(dir)
+  let (room_bytes, rebuild, walk_complete, walk_reason) = self.fs.measure_room_full(dir)
   let mut freed = 0.0
   let mut interrupted = false
   for pair in rebuild {
@@ -555,14 +586,15 @@ async fn Storage::clean_rebuildable_in(self : Storage, key : String, require_arc
     self.log("info", "hub", msg, jo([("session", js(key)), ("freed", jn(freed))]))
   }
   let incomplete_walk = is_incomplete_walk(walk_complete, walk_reason, freed)
-  Some((freed, !interrupted && !incomplete_walk))
+  let remaining = if room_bytes > freed { room_bytes - freed } else { 0.0 }
+  Some((freed, !interrupted && !incomplete_walk, remaining, walk_complete))
 }
 
 ///|
 /// Removes what a build or an install makes again from an archived session's own directory: the bytes removed.
 pub async fn Storage::clean_rebuildable(self : Storage, key : String) -> Double {
   match self.clean_rebuildable_in(key, require_archived=true) {
-    Some((freed, _)) => freed
+    Some((freed, _, _, _)) => freed
     None => 0.0
   }
 }
@@ -572,7 +604,7 @@ pub async fn Storage::clean_rebuildable(self : Storage, key : String) -> Double 
 /// marking cold, or touching transcripts: Some(bytes) when completed, None when skipped, interrupted, or incomplete.
 pub async fn Storage::clean_idle_rebuildable(self : Storage, key : String) -> Double? {
   match self.clean_rebuildable_in(key, require_archived=false) {
-    Some((freed, true)) => Some(freed)
+    Some((freed, true, _, _)) => Some(freed)
     _ => None
   }
 }
@@ -620,8 +652,25 @@ pub async fn Storage::history_files(self : Storage, key : String, packing : Bool
 }
 
 ///|
+/// Cancels any in-flight `cold_pack` for `key` and kills its `workspace.pack` subprocess if running.
+pub fn Storage::cancel_pack(self : Storage, key : String) -> Unit {
+  if self.packing.get(key) is Some(active) {
+    for entry in active {
+      let (aborted, target) = entry
+      aborted.val = true
+      if target.val is Some(dir) {
+        self.fs.cancel_packed(dir)
+      }
+    }
+  }
+}
+
+///|
 /// Whether an archived session's directory or transcripts are put away.
 pub async fn Storage::is_cold(self : Storage, key : String) -> Bool {
+  if self.restores.get(key) is Some(fibers) && fibers.iter().any(f => !f.is_done()) {
+    return true
+  }
   let fs = self.fs
   let room = match self.session(key) {
     Some(row) => self.room_of(str(row, "workspace").unwrap_or(""))
@@ -652,17 +701,115 @@ pub async fn Storage::is_cold(self : Storage, key : String) -> Bool {
 }
 
 ///|
-pub async fn Storage::cold_restore(self : Storage, key : String) -> Unit {
+pub async fn Storage::cold_restore(
+  self : Storage,
+  key : String,
+  only_if_unarchived? : Bool = false,
+) -> Unit {
+  self.cancel_pack(key)
   let fs = self.fs
   guard self.session(key) is Some(row) else { raise failed("unknown session \{key}") }
   guard self.room_of(str(row, "workspace").unwrap_or("")) is Some(room) else { return }
   fs.with_lock(room, async fn() {
+    if only_if_unarchived {
+      match self.session(key) {
+        Some(r) if !nullish(get(r, "archivedAt")) => return
+        _ => ()
+      }
+    }
     fs.restore_workspace(room)
     for path in self.history_files(key, false) {
       fs.restore_file(path)
     }
     fs.unlink(fs.join([room, "cold"])) catch { _ => () }
   })
+}
+
+///|
+/// Cancels any active pack and starts a background restore for `key` (removing its legacy transcript copy if still
+/// unarchived), tracked in `self.restores` and `self.going`.
+pub fn Storage::cold_restore_bg(self : Storage, key : String) -> Unit {
+  self.cancel_pack(key)
+  let f = self.fs.host.rt.fork(name="cold restore", async fn() {
+    try {
+      self.cold_restore(key, only_if_unarchived=true)
+      let unarchived = match self.session(key) {
+        Some(r) => nullish(get(r, "archivedAt"))
+        None => false
+      }
+      if unarchived {
+        self.fs.gone(self.fs.legacy_copy(self.st.archive_dir, key))
+      }
+    } catch {
+      e =>
+        self.log(
+          "warn",
+          "hub",
+          "an archived session's files not restored in background",
+          jo([("session", js(key)), ("error", js(message_of(e)))]),
+        )
+    }
+  })
+  let list = match self.restores.get(key) {
+    Some(xs) => {
+      xs.retain(x => !x.is_done())
+      xs
+    }
+    None => {
+      let xs : Array[@effect.Fiber[Unit]] = []
+      self.restores[key] = xs
+      xs
+    }
+  }
+  list.push(f)
+  self.track_going(f)
+}
+
+///|
+/// Cancels any active pack for `key` and waits for all background restores of `key` to finish.
+pub async fn Storage::wait_restore(self : Storage, key : String) -> Unit {
+  self.cancel_pack(key)
+  while true {
+    let pending = match self.restores.get(key) {
+      Some(xs) => xs.filter(x => !x.is_done())
+      None => []
+    }
+    if pending.is_empty() {
+      self.restores.remove(key)
+      return
+    }
+    for f in pending {
+      ignore(f.join() catch { _ => () })
+    }
+  }
+}
+
+///|
+/// Waits for all background restores across all sessions to finish.
+pub async fn Storage::wait_restores(self : Storage) -> Unit {
+  while true {
+    let pending : Array[@effect.Fiber[Unit]] = []
+    let empty_keys : Array[String] = []
+    for key, xs in self.restores {
+      xs.retain(x => !x.is_done())
+      if xs.is_empty() {
+        empty_keys.push(key)
+      } else {
+        for f in xs {
+          pending.push(f)
+        }
+      }
+    }
+    for k in empty_keys {
+      self.restores.remove(k)
+    }
+    if pending.is_empty() {
+      return
+    }
+    for f in pending {
+      ignore(f.join() catch { _ => () })
+    }
+  }
 }
 
 ///|
@@ -706,28 +853,109 @@ pub async fn Storage::cold_holds_more(self : Storage, key : String) -> Bool {
 
 ///|
 pub async fn Storage::cold_pack(self : Storage, key : String) -> Unit {
-  let fs = self.fs
-  self.find_room(key)
-  guard self.archive_room(key) is Some(room) else { return }
-  let ready = async fn() { self.archive_room(key) is Some(_) }
-  fs.with_lock(room, async fn() {
-    if !ready() {
+  let aborted : Ref[Bool] = Ref::new(false)
+  let target : Ref[String?] = Ref::new(None)
+  let entry = (aborted, target)
+  let active = match self.packing.get(key) {
+    Some(xs) => xs
+    None => {
+      let xs : Array[(Ref[Bool], Ref[String?])] = []
+      self.packing[key] = xs
+      xs
+    }
+  }
+  active.push(entry)
+  ensure(async fn() {
+    let fs = self.fs
+    self.find_room(key)
+    if aborted.val {
       return
     }
-    self.stop_strays(key, fs.join([room, "workspace"]))
-    if !ready() {
-      return
+    guard self.archive_room(key) is Some(room) else { return }
+    let ready = async fn() { !aborted.val && self.archive_room(key) is Some(_) }
+    fs.with_lock(room, async fn() {
+      if !ready() {
+        return
+      }
+      self.stop_strays(key, fs.join([room, "workspace"]))
+      if !ready() {
+        return
+      }
+      guard self.clean_rebuildable_in(key, require_archived=true) is Some((freed, _, remaining, walk_complete)) else {
+        return
+      }
+      if !ready() {
+        return
+      }
+      fs.write_text(fs.join([room, "cold"]), "workspace and history may be compressed\n")
+      let limit = self.max_pack_workspace_bytes
+      let mut should_pack_workspace = false
+      if remaining > limit {
+        self.log(
+          "info",
+          "hub",
+          "archived workspace too large to compress; left unpacked",
+          jo([("session", js(key)), ("bytes", jn(remaining)), ("limit", jn(limit))]),
+        )
+      } else if !walk_complete {
+        if freed == 0.0 {
+          self.log(
+            "info",
+            "hub",
+            "archived workspace too large to compress; left unpacked",
+            jo([("session", js(key)), ("bytes", jn(remaining)), ("limit", jn(limit)), ("incomplete", jb(true))]),
+          )
+        } else {
+          let check : (Double, Bool)? = try {
+            Some(fs.measured_up_to(fs.join([room, "workspace"]), limit, strict=false))
+          } catch {
+            e => {
+              if aborted.val {
+                None
+              } else {
+                self.log(
+                  "warn",
+                  "hub",
+                  "re-measuring archived workspace failed; leaving unpacked",
+                  jo([("session", js(key)), ("error", js(message_of(e)))]),
+                )
+                Some((remaining, false))
+              }
+            }
+          }
+          guard check is Some((bytes, complete)) else { return }
+          if !ready() {
+            return
+          }
+          if complete && bytes <= limit {
+            should_pack_workspace = true
+          } else {
+            self.log(
+              "info",
+              "hub",
+              "archived workspace too large to compress; left unpacked",
+              jo([("session", js(key)), ("bytes", jn(bytes)), ("limit", jn(limit)), ("incomplete", jb(!complete))]),
+            )
+          }
+        }
+      } else {
+        should_pack_workspace = true
+      }
+      if should_pack_workspace {
+        fs.pack_workspace_if(room, ready, aborted~, on_pack_dir=d => target.val = d)
+      }
+      if !ready() {
+        return
+      }
+      ignore(self.pack_history(key, ready))
+    })
+  }, async fn() {
+    if self.packing.get(key) is Some(xs) {
+      xs.retain(x => !physical_equal(x.0, aborted))
+      if xs.is_empty() {
+        self.packing.remove(key)
+      }
     }
-    ignore(self.clean_rebuildable(key))
-    if !ready() {
-      return
-    }
-    fs.write_text(fs.join([room, "cold"]), "workspace and history may be compressed\n")
-    fs.pack_workspace_if(room, ready)
-    if !ready() {
-      return
-    }
-    ignore(self.pack_history(key, ready))
   })
 }
 
