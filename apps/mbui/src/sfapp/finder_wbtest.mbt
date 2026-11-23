@@ -515,12 +515,11 @@ test "⌘K at its end leaves its last result as far from the foot as from the si
     t.wheel(list.x + list.w / 2.0, list.y + list.h / 2.0, 3000.0)
     t.run_for(@ui.move_most_ms)
     let children = switcher_blocks(t, list)
-    assert_true(children.length() >= 2, msg="\{width}: last row and its foot")
-    let last = children[children.length() - 2]
-    let blank = children[children.length() - 1]
+    assert_true(children.length() >= 1, msg="\{width}: last row")
+    let last = children[children.length() - 1]
     let inset = list.x - px
+    // (the room under it the list's own foot, under what it scrolls, no block of it)
     assert_true(((last.y + last.h) - (py + ph - inset)).abs() < 0.5, msg="\{width}: last result ends at \{last.y + last.h}, panel at \{py + ph}")
-    assert_true((blank.h - inset).abs() < 0.5, msg="\{width}: foot room \{blank.h}, side room \{inset}")
   }
 }
 
@@ -779,7 +778,7 @@ fn switcher_lists(t : @ui.Tester, panel : (Double, Double, Double, Double)) -> A
 }
 
 ///|
-/// What ⌘K's list `list` holds in its order, as it scrolls: its lines and the room under its last (the blocks of what
+/// What ⌘K's list `list` holds in its order, as it scrolls: its lines (the blocks of what
 /// it scrolls, none of what stands for those not made: View::scrolls_window's spacers, as tall as nothing at its ends).
 fn switcher_blocks(t : @ui.Tester, list : @ui.Laid) -> Array[@ui.Laid] {
   let boxes = t.boxes_held()

@@ -719,15 +719,7 @@ pub fn finder_list_node(
       finder.chosen.set(if n > 0 { n - 1 } else { 0 })
     }
   })
-  let keys = @signals.computed(fn(_) {
-    let ks = lines.get().map(finder_key)
-    // (the room under the last line only once there is one: alone in the list as the lines are first told, it would
-    // be what holds what shows, and they would come in over it, the list at its end)
-    if foot_in > 0.0 && !ks.is_empty() {
-      ks.push(finder_foot)
-    }
-    ks
-  })
+  let keys = @signals.computed(fn(_) { lines.get().map(finder_key) })
   let of_key = @signals.computed_by(
     fn(_) {
       let m : Map[String, (FindLine, Int)] = Map([])
@@ -832,12 +824,13 @@ pub fn finder_list_node(
     combo.list_node(l)
     let lit = l.selected(fn() { chosen_key.get() })
     // (a line's block taken by the next line of its make to show as it no more does, or as the words typed bring
-    // others, its key that one's: finder_line_shape; the room under its last line made once)
+    // others, its key that one's: finder_line_shape; the room under its last line the list's own foot, under what it
+    // holds and no block of it: never what holds what shows, so lines told after it shows come in under the list's top)
     l.scrolls_reused(
       @view.Scroll::list(),
       fn() { keys.get() },
       shape=fn(k) { finder_line_shape(of_key.untracked().get(k)) },
-      reuses=fn(k) { k != finder_foot && of_key.untracked().get(k) is Some(_) },
+      reuses=fn(k) { of_key.untracked().get(k) is Some(_) },
       est=@signals.untracked(fn() { theme().found.row_h }),
       slop=@ui.touch_slop(),
       bar=@ui.tree_scroll_bar(),
@@ -846,12 +839,8 @@ pub fn finder_list_node(
       // line making its way in or out under the hand at each key)
       comes=fn(_) { false },
       goes=fn(_) { false },
+      foot?=if foot_in > 0.0 { Some(fn(f) { f.height(Is(Some(foot_in))) |> ignore }) } else { None },
       fn(b, k) {
-        // (the room under its last line: never taken, so its key is the one it was made for)
-        if @signals.untracked(k) == finder_foot {
-          b.height(Is(Some(foot_in))) |> ignore
-          return
-        }
         let held = @signals.computed_by(fn(_) { of_key.get().get(k()) }, same=fn(a, b) {
           match (a, b) {
             (Some(x), Some(y)) => physical_equal(x.0, y.0) && x.1 == y.1
@@ -900,10 +889,6 @@ fn finder_line_shape(held : (FindLine, Int)?) -> Int {
     None => 13
   }
 }
-
-///|
-/// The key of the room under the search's last line (finder_list_node's `foot_in`).
-let finder_foot : String = "\u{2}foot"
 
 ///|
 /// What `commands.find` is asked for `query` of `offered` (by name, id or other words, part by part; with nothing typed

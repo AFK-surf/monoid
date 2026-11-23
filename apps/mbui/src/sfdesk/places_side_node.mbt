@@ -706,43 +706,28 @@ fn place_list_node(
 ) -> Unit {
   let est = est.unwrap_or_else(fn() { @signals.untracked(fn() { @sf.theme().chat_list.row_h }) })
   let held = l.keyed_by(lines, fn(p) { p.key })
-  let keys = @signals.computed(fn(_) {
-    let ks = held.keys().copy()
-    // (the room under the last line only once there is one: alone in the list as the lines are first told, it would
-    // be what holds what shows, and they would come in over it, the list at its end)
-    if !ks.is_empty() {
-      ks.push(place_list_foot)
-    }
-    ks
-  })
+  let keys = @signals.computed(fn(_) { held.keys().copy() })
   l.scrolls_reused(
     @view.Scroll::list(),
     fn() { keys.get() },
     shape~,
-    reuses=fn(k) { k != place_list_foot },
     est~,
     slop=@ui.touch_slop(),
     bar=@ui.tree_scroll_bar(),
+    // (the room under its last: the list's own foot, under what it holds and no block of it, so lines told after it
+    // shows come in under its top, never over a block of room alone in it)
+    foot=fn(f) { f.height(By(fn() { Some(@sf.list_foot_in(list_at)) })) |> ignore },
     fn(b, k) {
       b.box(fn(back) {
         back.margin(Is((-side_into_rail, 0.0, 0.0, 0.0))) |> ignore
-        // (the room under its last: never taken, so its key is the one it was made for)
-        if @signals.untracked(k) == place_list_foot {
-          back.height(Is(Some(@sf.list_foot_in(list_at)))) |> ignore
-        } else {
-          @sf.style_node(back, fn() { @sf.theme().chat_list.side_list.then(@ui.style(h=Hug)) })
-          make(back, k, fn() { held.get(k()) })
-        }
+        @sf.style_node(back, fn() { @sf.theme().chat_list.side_list.then(@ui.style(h=Hug)) })
+        make(back, k, fn() { held.get(k()) })
       })
       |> ignore
     },
   )
   |> ignore
 }
-
-///|
-/// The key of the room under a place's sidebar's last line (place_list_node's).
-let place_list_foot : String = "\u{2}foot"
 
 ///|
 /// A heading line's words, as its line holds them (place_list_node's `data`: its words alone).
