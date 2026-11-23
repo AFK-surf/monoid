@@ -96,9 +96,10 @@ const cancelled = () => new HttpError(503, "read cancelled");
 /// The scoped reads on the path to showing a chat, and those a device's lists are made of, each of a few rows and the
 /// statistics kept of them (the sidebar, a session's detail and summary, a chat's latest messages). Other page reads,
 /// including new kinds not yet classified, leave room for these, and these go before them: a slow transcript or resource
-/// snapshot can block just as a slow aggregate can. A machine sample (api/host.ts), one job, and the jobs up without
-/// their chats are interactive too; jobs with their chats (an older device's, the sidebar made for it) are a bulk read.
-const INTERACTIVE = new Set(["thread", "chats", "sharedChats", "chatMarks", "session", "summary", "latestMessages", "openedChatSaid", "chatHistoryMessages", "historyPendingCard", "stateQuestion", "statePendingCard", "deliveryCardState", "job"]);
+/// snapshot can block just as a slow aggregate can. A machine sample (api/host.ts), one job, the jobs up without
+/// their chats, and a session's messages waiting for it (`pendingDeliveries`, on the way of a message to its agent) are
+/// interactive too; jobs with their chats (an older device's, the sidebar made for it) are a bulk read.
+const INTERACTIVE = new Set(["thread", "chats", "sharedChats", "chatMarks", "session", "summary", "latestMessages", "openedChatSaid", "chatHistoryMessages", "historyPendingCard", "stateQuestion", "statePendingCard", "deliveryCardState", "pendingDeliveries", "job"]);
 
 /// One thread's current or older page is interactive. An `after` or explicit range can ask for an unbounded amount on
 /// older clients, so it remains in the background until that request is paged end to end.
@@ -127,11 +128,14 @@ function filling(op: string, args: unknown): boolean {
 const PAGES = new Set(["timeline", "machineSessions"]);
 /// A session's history, read by the MoonBit reader (station/mb src/history's transcripts.mbt) where its program is
 /// there, on the pages' readers still: both its pages and where its reading stands (`transcriptState`, its live view's
-/// start), so that each reads on from what the reader it was read in last keeps (`homes`).
-const HISTORY = new Set(["timeline", "transcriptState"]);
+/// start), so that each reads on from what the reader it was read in last keeps (`homes`); and what a watched transcript
+/// gains (`tailRead`, sessions/live.ts), a file read as theirs are: on the readers of the database's reads, one bulk
+/// slot among every bulk read, 34 of them queued up to 5 s at once on a busy station and the reads behind them too
+/// (mm2, 2026-11-23).
+const HISTORY = new Set(["timeline", "transcriptState", "tailRead"]);
 /// The reads the MoonBit reader answers itself (station/mb src/readops), on readers of their own (`moved`): with HISTORY
 /// and the checkpoint, every read there is.
-const MOVED = new Set(["job", "jobLog", "historyPendingCard", "statePendingCard", "deliveryCardState", "reviewPendingCard", "stateQuestion", "pendingDeliveries", "latestMessages", "chatHistoryMessages", "openedChatSaid", "widgetState", "transcriptFile", "memory", "machineSessions", "machineSession", "sessionsAtWork", "policyChecks", "recentConnectPeople", "usageTurns", "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage", "outflowUsage", "sessionPlace", "changed", "tailRead", "internalCardEditPage", "internalCardMessagePage", "internalMeshControl"]);
+const MOVED = new Set(["job", "jobLog", "historyPendingCard", "statePendingCard", "deliveryCardState", "reviewPendingCard", "stateQuestion", "pendingDeliveries", "latestMessages", "chatHistoryMessages", "openedChatSaid", "widgetState", "transcriptFile", "memory", "machineSessions", "machineSession", "sessionsAtWork", "policyChecks", "recentConnectPeople", "usageTurns", "usageCalls", "outflowMessages", "archiveLook", "recentChatList", "searchChatList", "threadList", "sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage", "outflowUsage", "sessionPlace", "changed", "internalCardEditPage", "internalCardMessagePage", "internalMeshControl"]);
 /// The reads of this machine's own Claude Code and Codex sessions: the MoonBit reader is told where they are kept, from
 /// this process's environment (read/machine.ts `roots`).
 const MACHINE = new Set(["machineSessions", "machineSession"]);
