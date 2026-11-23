@@ -120,24 +120,52 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
         return Effect.succeed({});
       }
       case "clientError": {
+        if (!inner.reporting) return Effect.succeed({});
         // A UI fault's text can hold editor keys made from file paths: only its category leaves (ui-faults.ts), whatever
         // an app sends, an older one's original text too.
-        const message = call.source === "ui_fault" && !UI_FAULT_CATEGORIES.includes(call.message) ? UI_FAULT_OTHER : call.message;
-        const key = `${call.source}\u0000${message}`;
+        const source = [...call.source].slice(0, 64).join("").replace(/[\r\n\u0000-\u001f]/g, " ");
+        const raw = source === "ui_fault" && !UI_FAULT_CATEGORIES.includes(call.message) ? UI_FAULT_OTHER : call.message;
+        const limit = source === "ui_hang" ? 256 : 1000;
+        const message = [...raw].slice(0, limit).join("").replace(/[\r\n\u0000-\u001f]/g, " ");
+        const key = `${source}\u0000${message}`;
         const now = inner.host.nowMs();
         const was = inner.reported.get(key);
         if (was === undefined || now - was > 60_000) {
           inner.reported.set(key, now);
           const span = inner.tracer.always("client.error", Kind.Internal);
-          span.set("stillfail.source", call.source);
+          span.set("stillfail.source", source);
+          span.set("stillfail.message", message);
           span.set("error.type", "client");
-          span.set("exception.message", [...message].slice(0, 1000).join(""));
+          span.set("exception.message", message);
           span.fail();
           span.end();
         }
         return Effect.succeed({});
       }
+      case "clientMetric": {
+        if (!inner.reporting) return Effect.succeed(null);
+        if (call.metricKind === "bar_switch") {
+          const n = inner.barSwitchCount++;
+          const emit = call.attrs.cut === true || call.attrs.failed === true || call.durationMs >= 250 || n % 5 === 0;
+          if (!emit) return Effect.succeed(null);
+          const span = inner.tracer.always("bar.switch", Kind.Internal);
+          span.set("stillfail.duration_ms", Math.round(call.durationMs));
+          for (const [k, v] of Object.entries(call.attrs)) span.set(`stillfail.${k}`, v);
+          span.end();
+          return Effect.succeed(null);
+        }
+        const stalls = typeof call.attrs.stalls === "number" ? call.attrs.stalls : 0;
+        const hangs = typeof call.attrs.hangs === "number" ? call.attrs.hangs : 0;
+        if (stalls > 0 || hangs >= 3) {
+          const span = inner.tracer.always("ui.hang_summary", Kind.Internal);
+          span.set("stillfail.duration_ms", Math.round(call.durationMs));
+          for (const [k, v] of Object.entries(call.attrs)) span.set(`stillfail.${k}`, v);
+          span.end();
+        }
+        return Effect.succeed(null);
+      }
       case "clientReports":
+        inner.reporting = call.on;
         inner.useCounts.setOn(call.on);
         return Effect.succeed({});
       case "clientShown":

@@ -57,7 +57,7 @@ export async function cc(hub: Hub, thread: number, who: string, email: string, s
       hub.store.insertMessage({ thread: o.thread.id, ts, authorKind: STATION_AUTHOR, author: STATION_AUTHOR, text, attachments: files });
     } catch (error) {
       log.warn("hub", "a message was not copied to a thread of its chat", { thread, to: o.thread.id, error: (error as Error).message });
-      const place = o.thread.surface.startsWith("feishu:") ? "Feishu" : o.thread.surface.startsWith("group:") ? "group" : "Slack";
+      const place = o.thread.surface.startsWith("feishu:") ? "Feishu" : o.thread.surface.startsWith("comma:") ? "Comma" : o.thread.surface.startsWith("group:") ? "group" : "Slack";
       await sayFailure(hub, thread, place, error instanceof Error ? error : new Error(String(error)));
     }
   }));

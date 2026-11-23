@@ -38,6 +38,7 @@ export type Call =
   | { kind: "profileFlow"; topic: Topic; action: string; patch: unknown }
   | { kind: "slackTokens"; topic: Topic; action: string; patch: unknown }
   | { kind: "clientError"; source: string; message: string }
+  | { kind: "clientMetric"; metricKind: "bar_switch" | "ui_hang_summary"; durationMs: number; attrs: Record<string, string | number | boolean> }
   | { kind: "clientReports"; on: boolean }
   | { kind: "clientShown"; page: string }
   | { kind: "clientNetwork"; cellular: boolean }
@@ -346,6 +347,22 @@ export const LOCK_CALLS = ["state", "open", "toggle", "dismiss", "pendingDismiss
 /// The calls on a new device showing this one's code (views/pair.ts, `lockPrompts`).
 export const LOCK_PROMPT_CALLS = ["deny", "hide", "state"];
 
+/// Strict allowlist of flat attributes accepted by `client.metric` (never user text, paths, or session IDs).
+const METRIC_ATTR_ALLOWLIST = new Set([
+  "from",
+  "to",
+  "first",
+  "cut",
+  "topics_count",
+  "composed_ms",
+  "bytes",
+  "failed",
+  "hangs",
+  "stalls",
+  "shown_s",
+  "max_ms",
+]);
+
 function form(name: string, params: unknown, prefix: string, actions: string[]): { topic: Topic; action: string; patch: unknown } | null {
   if (!name.startsWith(prefix)) return null;
   const action = name.slice(prefix.length);
@@ -480,6 +497,28 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
         ["message", S, "req"],
       ]);
       return { kind: "clientError", source: p.source as string, message: p.message as string };
+    }
+    case "client.metric": {
+      const p = read(params, [
+        ["kind", S, "req"],
+        ["duration_ms", "f64", "default"],
+        ["attrs", "value", "opt"],
+      ]);
+      const metricKind = p.kind as string;
+      if (metricKind !== "bar_switch" && metricKind !== "ui_hang_summary") {
+        throw CoreError.invalid(t("core-misc.params.invalid", { error: `invalid metric kind: ${metricKind}` }));
+      }
+      const durationMs = Number.isFinite(p.duration_ms as number) && (p.duration_ms as number) >= 0 ? (p.duration_ms as number) : 0;
+      const attrs: Record<string, string | number | boolean> = {};
+      if (isObject(p.attrs)) {
+        for (const [k, v] of Object.entries(p.attrs)) {
+          if (!METRIC_ATTR_ALLOWLIST.has(k)) continue;
+          if (typeof v === "boolean") attrs[k] = v;
+          else if (typeof v === "number" && Number.isFinite(v)) attrs[k] = v;
+          else if (typeof v === "string") attrs[k] = [...v].slice(0, 64).join("");
+        }
+      }
+      return { kind: "clientMetric", metricKind, durationMs, attrs };
     }
     // whether what people use is counted and sent from this device (use-counts.ts), as the app's settings say
     case "client.reports":

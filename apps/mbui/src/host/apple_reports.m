@@ -868,6 +868,9 @@ static void sf_mem_watch_start(void) {
     dispatch_source_cancel(mem_watch_timer);
     mem_watch_timer = nil;
     if (!sf_reporting()) return;
+    state_change(^(NSMutableDictionary *state) {
+      state[@"memory_runaway_pending"] = @YES;
+    });
     NSDictionary *statsBefore = sf_shell_stats_dict();
     int64_t t0 = sf_monotonic_ms();
     NSString *tmpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:
@@ -989,6 +992,36 @@ static void sf_hang(NSString *json, NSString *name) {
   });
 }
 
+static _Atomic int sf_crash_pending_read = 0;
+
+/// Scans kept crash/watchdog/MetricKit hang files (read-only, without touching PostHog delivery) and any persisted
+/// MemoryRunaway marker, returning a bitmask once per process: 1=crash, 2=watchdog_hang, 4=memory_runaway, 8=metric_hang.
+static int32_t sf_scan_crash_pending_mask(void) {
+  if (!sf_has_key() || !sf_reporting()) return 0;
+  if (atomic_exchange(&sf_crash_pending_read, 1) != 0) return 0;
+  int32_t mask = 0;
+  NSString *dir = sf_kept_dir();
+  for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil]) {
+    if (![name hasSuffix:@".json"]) continue;
+    NSString *path = [dir stringByAppendingPathComponent:name];
+    NSData *d = [NSData dataWithContentsOfFile:path];
+    NSDictionary *k = d ? sf_dict([NSJSONSerialization JSONObjectWithData:d options:0 error:nil]) : nil;
+    if (!k) continue;
+    NSString *kind = sf_string(k[@"kind"]);
+    if ([kind isEqual:@"crash"]) mask |= 1;
+    else if ([kind isEqual:@"watchdog_hang"]) mask |= 2;
+    else if ([kind isEqual:@"memory_runaway"]) mask |= 4;
+    else if ([kind isEqual:@"hang"]) mask |= 8;
+  }
+  if ([state_read()[@"memory_runaway_pending"] boolValue]) {
+    mask |= 4;
+    state_change(^(NSMutableDictionary *state) {
+      [state removeObjectForKey:@"memory_runaway_pending"];
+    });
+  }
+  return mask;
+}
+
 static NSString *sf_ns_string(moonbit_string_t s) {
   return [NSString stringWithCharacters:(const unichar *)s length:(NSUInteger)Moonbit_array_length(s)];
 }
@@ -1055,6 +1088,7 @@ int32_t mb_stillfail_tell(moonbit_string_t what_, moonbit_string_t a_, moonbit_s
     sf_hang(sf_ns_string(a_), @"bar_switch");
     return 0;
   }
+  if ([what isEqual:@"crash_pending"]) return sf_scan_crash_pending_mask();
   return 0;
 }
 #endif

@@ -4208,12 +4208,12 @@ export class Views implements Owner {
     const atEnd = (seq: number) => view.newer !== true && (seq === view.stateAsk || (seq === lastSeq && arr(outbox).length === 0 && view.stateText === undefined));
     if (view.asks.some((a: J) => !atEnd(a.seq))) view.askClear = true;
     if (letters > 0) view.letters = letters;
-    // Its Slack and Feishu threads, where what is sent can be copied (`chat.cc`), each ticked or not.
+    // Its Slack, Feishu, Comma and group threads, where what is sent can be copied (`chat.cc`), each ticked or not.
     const ccTo = arr(get(thread, "cc")).flatMap((o) => {
       const to = u64(get(o, "thread"));
       const place = format.placeName(strOf(o, "surface"), strOf(o, "channel"), strOf(o, "channelName"));
       if (to === null || place === null) return [];
-      const via = strOf(o, "surface").startsWith("feishu:") || format.isFeishuChat(strOf(o, "channel")) ? "feishu" : "slack";
+      const via = format.placeKind(strOf(o, "surface"), strOf(o, "channel"));
       return [{ thread: to, place, via, on: this.ccOn(station, id, to) }];
     });
     if (ccTo.length > 0) view.cc = ccTo;
@@ -4729,7 +4729,7 @@ export class Views implements Owner {
           const channel = s.to.split("/")[0]!;
           const named = threads.find((th) => get(th, "channel") === channel && typeof get(th, "channelName") === "string");
           const surface = str(get(named, "surface")) || "slack";
-          place = { name: format.placeName(surface, channel, str(get(named, "channelName")) ?? "") ?? `#${channel}`, surface: surface.startsWith("feishu:") || format.isFeishuChat(channel) ? "feishu" : "slack" };
+          place = { name: format.placeName(surface, channel, str(get(named, "channelName")) ?? "") ?? `#${channel}`, surface: format.placeKind(surface, channel) };
         }
         // (a bot is said as its mention, `<@U…>`)
         const picture = s.out || s.user === null ? undefined : pictures.get(s.user.replace(/^<@(.+)>$/, "$1"));

@@ -1855,7 +1855,18 @@ export class StationsSync {
         const was = this.#core.data.of(address)?.thread(address, id);
         const before = isObject(was) ? { ...was } : undefined;
         // As it happened: it comes in with a motion; told again on resuming, it was said before and is caught up on.
-        if (!again) this.onTold(address, id, entries);
+        if (!again) {
+          this.onTold(address, id, entries);
+          if (entries.some((e) => {
+            const authorKind = str(get(e, "authorKind"));
+            const role = str(get(e, "role"));
+            const from = str(get(e, "from"));
+            const kind = str(get(e, "kind"));
+            return authorKind === "agent" || role === "assistant" || from === "agent" || kind === "assistant";
+          })) {
+            this.#core.sendTrace.onThreadReply(address, id);
+          }
+        }
         // Its rows, as what was said makes them (told again on top of a read asked before it, as the station's own were).
         this.#retold.told(address, "said", data);
         this.#held(address, "said", data);
@@ -2811,6 +2822,7 @@ export class StationsSync {
           view.steps = view.steps.filter((s) => stepShown(s, held));
         }
       } else return;
+      if (kind !== "clear") this.#core.sendTrace.onLive(address, key);
       this.onChange(address, "live", key);
     }
   }

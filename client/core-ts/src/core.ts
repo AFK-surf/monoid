@@ -47,6 +47,7 @@ import { install as installTerminals } from "./terminals.ts";
 import { install as installFarview } from "./farview.ts";
 import { Composers, install as installComposer } from "./composer.ts";
 import { StationsSync } from "./station/sync.ts";
+import { SendTrace } from "./station/send-trace.ts";
 import { StationTopics } from "./station/topics.ts";
 import type { StationWire } from "./station/wire.ts";
 import type { Mesh } from "./mesh.ts";
@@ -128,6 +129,12 @@ export class Inner {
   useCounts!: UseCounts;
   /// What app the UI said it is (`client.device`'s `app`): the counts' `app`.
   deviceApp = "";
+  /// Whether client telemetry (error/metric/send-trace spans) is enabled; controlled by `client.reports`.
+  reporting = true;
+  /// Counter for deterministic 20% `bar.switch` sampling.
+  barSwitchCount = 0;
+  /// End-to-end `chat.send` -> first live event tracer.
+  sendTrace!: SendTrace;
   /// Client errors recorded lately, by source and message, and when.
   reported = new Map<string, number>();
   /// The control plane the accounts are with, and the accounts.
@@ -208,6 +215,7 @@ export class Core {
       brand.setCloud(inner.host.cloudOrigin());
       fonts.setOrigin(inner.host.cloudOrigin(), inner.host.testChannel());
       inner.tracer = new Tracer(inner.host, inner.runner, options.sample ?? SAMPLE, TRACES);
+      inner.sendTrace = new SendTrace(inner.tracer, inner.runner, () => inner.host.monotonicMs(), () => inner.reporting);
       inner.useCounts = new UseCounts(inner.host, inner.runner, options.usage === undefined ? builtSink() : options.usage, () => inner.accounts.list()[0]?.sub ?? null, () => ({
         app: inner.deviceApp !== "" ? inner.deviceApp : service.os === "browser" ? "web" : "",
         os: service.os,
@@ -732,6 +740,7 @@ export class Core {
     if (this.#closing) return this.#closing;
     const { runner, data } = this.inner;
     // (the trees read and not yet written, and what is written and not yet committed: kept for the core that follows)
+    this.inner.sendTrace.close();
     data.closing();
     runner.shutdown();
     this.#closing = runner.run(data.device.close());

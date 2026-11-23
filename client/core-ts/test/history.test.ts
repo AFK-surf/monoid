@@ -85,6 +85,23 @@ test("a_feishu_place_is_named_by_its_chat_and_opens_in_feishu_or_lark", () => {
   assert.equal(format.threadName(threads, "oc_a1b2", "om_x1", 480)[1], format.threadName([{ channel: "C1", threadTs: "1790000000" }], "C1", "1790000000", 480)[1]);
 });
 
+test("a_comma_task_or_group_place_is_named_and_marked_as_its_own_never_as_a_slack_channel", () => {
+  const threads = [
+    { surface: "comma:cm1", channel: "TASK", threadTs: "699841874.641752", sessions: [{ session: "s1" }] },
+    { surface: "group:g1", channel: "G1", threadTs: "1700000001.000100", channelName: "发布小组", sessions: [] },
+    { surface: "group:g1", channel: "G2", threadTs: "1700000002.000100", sessions: [] },
+  ];
+  const task = format.place(threads, "TASK/699841874.641752", 480, new Map()) as J;
+  assert.deepEqual([task.name, task.surface, task.session, task.url, task.app], ["Comma", "comma", "s1", undefined, undefined]);
+  const group = format.place(threads, "G1/1700000001.000100", 480, new Map()) as J;
+  assert.deepEqual([group.name, group.surface, group.url], ["发布小组", "group", undefined]);
+  assert.equal((format.place(threads, "G2/1700000002.000100", 480, new Map()) as J).name, "Group");
+  // The same name and mark where a chat's message can be copied to (its composer's 抄送) and before a post's ts is known.
+  assert.deepEqual([format.placeName("comma:cm1", "TASK", ""), format.placeKind("comma:cm1", "TASK")], ["Comma", "comma"]);
+  assert.deepEqual([format.placeName("group:g1", "G1", "发布小组"), format.placeKind("group:g1", "G1")], ["发布小组", "group"]);
+  assert.deepEqual([format.placeKind("feishu:bot", "oc_a1"), format.placeKind("slack:T1", "C1"), format.placeKind("", "oc_a1")], ["feishu", "slack", "feishu"]);
+});
+
 test("a_stillfail_place_is_its_title_or_the_agents_or_new_chat_never_its_first_message", () => {
   // Named as the station's titleOf names it: its first message, links and all, is never its name.
   const first = "看 [一起排查 lab-node 图片加载](https://app.still.fail/w/01TEST/s/example/chats/chat%3Ac-abcd) 要排队";
