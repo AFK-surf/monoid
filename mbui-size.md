@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ac5672f84](https://github.com/AFK-surf/monoid/commit/ac5672f843714a2096df49c0980cf525fd100980) feat(station): add Google Vertex AI account for An | 2.73 | 3.67 | 14.88 | 37.06 | 56.72 | 32.45 | 65.87 | 100.42 | 127.1 |
 | [a8a14a344](https://github.com/AFK-surf/monoid/commit/a8a14a344e856480c9715f797eb82215bc57c77d) feat(client-core): add pure-Pion views package and | 2.73 | 3.67 | 14.88 | 37.06 | 56.72 | 32.45 | 65.87 | 100.42 | 127.1 |
 | [0cf13ac28](https://github.com/AFK-surf/monoid/commit/0cf13ac287d0fbbfef92ced562f04efb36ce4596) feat(core,mbui): support multi-workspace tasks-onl | 2.73 | 3.67 | 14.88 | 37.04 | 56.71 | 32.45 | 65.87 | 100.3 | 127.89 |
 | [8126680e5](https://github.com/AFK-surf/monoid/commit/8126680e52043bc4a5e191b5b5fc756224a9266f) fix(mbui): phase 3a chat motion fixes for composer | 2.73 | 3.67 | 14.88 | 37.04 | 56.71 | 32.45 | 65.87 | 100.3 | 127.89 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [15e4bd88f](https://github.com/AFK-surf/monoid/commit/15e4bd88f4e1d5d313e9187ee46950e1f1e6dfad) refactor(ui): merge libs/mbui and libs/sf-ui into  | 2.71 | 3.66 | 14.82 | 36.95 | 56.48 | 32.38 | 65.71 | 100.07 | 123.65 |
 | [2e080a421](https://github.com/AFK-surf/monoid/commit/2e080a421b8050968fdabe36bb82370f22840c2f) fix(mbui): invert adaptive glass ink locally over  | 2.72 | 3.66 | 14.83 | 36.95 | 56.5 | 32.38 | 65.71 | 100.07 | 121.9 |
 | [2346b90bb](https://github.com/AFK-surf/monoid/commit/2346b90bb670992e634f127e736f30c02e116cc0) feat(cloud): trace cron tasks, slow, rate-limited  | 2.72 | 3.66 | 14.83 | 36.95 | 56.5 | 32.38 | 65.71 | 99.68 | 109.58 |
-| [cbb992816](https://github.com/AFK-surf/monoid/commit/cbb9928169cca710826d0540c72d1112b5eed0de) perf(mbui): lazy-compile pruned GLES shaders and f | 2.72 | 3.66 | 14.83 | 36.95 | 56.5 | 32.38 | 65.71 | 99.68 | 109.58 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ac5672f84](https://github.com/AFK-surf/monoid/commit/ac5672f843714a2096df49c0980cf525fd100980) feat(station): add Google Vertex AI account for An | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.48 |
 | [a8a14a344](https://github.com/AFK-surf/monoid/commit/a8a14a344e856480c9715f797eb82215bc57c77d) feat(client-core): add pure-Pion views package and | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 54.92 |
 | [0cf13ac28](https://github.com/AFK-surf/monoid/commit/0cf13ac287d0fbbfef92ced562f04efb36ce4596) feat(core,mbui): support multi-workspace tasks-onl | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 54.99 |
 | [8126680e5](https://github.com/AFK-surf/monoid/commit/8126680e52043bc4a5e191b5b5fc756224a9266f) fix(mbui): phase 3a chat motion fixes for composer | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.25 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [15e4bd88f](https://github.com/AFK-surf/monoid/commit/15e4bd88f4e1d5d313e9187ee46950e1f1e6dfad) refactor(ui): merge libs/mbui and libs/sf-ui into  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.02 |
 | [2e080a421](https://github.com/AFK-surf/monoid/commit/2e080a421b8050968fdabe36bb82370f22840c2f) fix(mbui): invert adaptive glass ink locally over  | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.83 | 55.22 |
 | [2346b90bb](https://github.com/AFK-surf/monoid/commit/2346b90bb670992e634f127e736f30c02e116cc0) feat(cloud): trace cron tasks, slow, rate-limited  | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.67 |
-| [cbb992816](https://github.com/AFK-surf/monoid/commit/cbb9928169cca710826d0540c72d1112b5eed0de) perf(mbui): lazy-compile pruned GLES shaders and f | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.38 |
