@@ -58,10 +58,67 @@ fn classify_flip_quiet(
 }
 
 ///|
+/// Builds a hash set of list keys in O(N) for FLIP diff checks.
+fn flip_key_set(ks : Array[Int]) -> Map[Int, Unit] {
+  let m : Map[Int, Unit] = Map([], capacity=ks.length())
+  for k in ks {
+    m[k] = ()
+  }
+  m
+}
+
+///|
+/// Whether `ks` is a strict subset of `was` (at least one key removed, none added), in O(N) with an O(1) same-array
+/// fast path.
+fn flip_steady_left(was : Array[Int], ks : Array[Int]) -> Bool {
+  if physical_equal(was, ks) {
+    return false
+  }
+  let ks_set = flip_key_set(ks)
+  if !was.iter().any(fn(k) { !ks_set.contains(k) }) {
+    return false
+  }
+  let was_set = flip_key_set(was)
+  !ks.iter().any(fn(k) { !was_set.contains(k) })
+}
+
+///|
+/// Whether the relative order of keys present in both `was` and `ks` changed, in O(N) using prebuilt key sets.
+fn flip_order_changed(
+  was : Array[Int],
+  ks : Array[Int],
+  was_set : Map[Int, Unit],
+  ks_set : Map[Int, Unit],
+) -> Bool {
+  if physical_equal(was, ks) {
+    return false
+  }
+  was.filter(fn(k) { ks_set.contains(k) }) != ks.filter(fn(k) { was_set.contains(k) })
+}
+
+///|
+/// Keys appended at the tail of `ks` after the last key that was already in `base_was`, in O(N).
+fn flip_tail_added(base_was : Array[Int], ks : Array[Int]) -> Array[Int] {
+  if physical_equal(base_was, ks) || ks.is_empty() {
+    return []
+  }
+  let was_set = flip_key_set(base_was)
+  let mut kept = ks.length()
+  while kept > 0 && !was_set.contains(ks[kept - 1]) {
+    kept = kept - 1
+  }
+  ks[kept:].to_owned()
+}
+
+///|
 /// Keys removed from the tail of `was` after the last key still present in `ks`.
 fn flip_tail_removed(was : Array[Int], ks : Array[Int]) -> Array[Int] {
+  if physical_equal(was, ks) {
+    return []
+  }
+  let was_set = flip_key_set(was)
   let mut kept_step = ks.length()
-  while kept_step > 0 && !was.contains(ks[kept_step - 1]) {
+  while kept_step > 0 && !was_set.contains(ks[kept_step - 1]) {
     kept_step = kept_step - 1
   }
   let at_end = if kept_step > 0 {
@@ -71,7 +128,11 @@ fn flip_tail_removed(was : Array[Int], ks : Array[Int]) -> Array[Int] {
   } else {
     was
   }
-  at_end.filter(fn(k) { !ks.contains(k) })
+  if at_end.is_empty() {
+    return []
+  }
+  let ks_set = flip_key_set(ks)
+  at_end.filter(fn(k) { !ks_set.contains(k) })
 }
 
 ///|

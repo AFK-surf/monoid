@@ -16697,23 +16697,31 @@ fn Tree::bar_near_at(self : Tree) -> Int? {
   // (of the columns whose bars come out so, the last drawn the pointer is in, found there within what holds it and
   // taking input: the innermost of those holding one another, the upper of those over one another; nothing else drawn
   // counts, its bar's own room over it none of it)
-  let top : Ref[Int] = Ref(-1)
-  self.each_drawn_scaled(fn(c, cx, cy, _, s) {
-    let n = self.nodes[c.id.at]
-    if n.bar_near > 0.0 &&
-      n.bar_near_cell is Some(_) &&
-      !self.pressless_at(c.id.at) &&
-      px >= cx &&
-      py >= cy &&
-      px < cx + c.w * s &&
-      py < cy + c.h * s {
-      let (bx0, by0, bx1, by1) = self.input_bounds(c.id)
-      if px >= bx0 && py >= by0 && px < bx1 && py < by1 {
-        top.val = c.id.at
-      }
+  let mut top = -1
+  let mut top_ord = -1
+  for e in self.bar_cols {
+    let (at, gen) = e
+    guard at >= 0 && at < self.nodes.length() else { continue }
+    let n = self.nodes[at]
+    guard n.live && n.gen == gen && n.bar_near > 0.0 && n.bar_near_cell is Some(_) && !self.pressless_at(at) else {
+      continue
     }
-  })
-  let i = top.val
+    match self.drawn_one({ at, gen }) {
+      Some((c, cx, cy, _, s, _, _, ord)) if ord > top_ord &&
+        px >= cx &&
+        py >= cy &&
+        px < cx + c.w * s &&
+        py < cy + c.h * s => {
+        let (bx0, by0, bx1, by1) = self.input_bounds({ at, gen })
+        if px >= bx0 && py >= by0 && px < bx1 && py < by1 {
+          top = at
+          top_ord = ord
+        }
+      }
+      _ => ()
+    }
+  }
+  let i = top
   if i >= 0 {
     let n = self.nodes[i]
     let (x, y, sc) = self.placed(i)

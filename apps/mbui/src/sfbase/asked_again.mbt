@@ -7,13 +7,49 @@
 /// Topic `name` with `params` as `src` reads it, its value: what it last was while it is asked again (no value, no
 /// error), read as it changes.
 pub fn topic_value_held(src : Source, name : String, params : Map[String, Json]) -> @signals.Computed[Json?] {
-  @signals.computed(fn(was) {
-    let t = src.topic(name, params).get()
-    match (t.value, t.error, was) {
-      (None, None, Some(Some(v))) => Some(v)
-      _ => t.value
-    }
-  })
+  @signals.computed(
+    fn(was) {
+      let t = src.topic(name, params).get()
+      match (t.value, t.error, was) {
+        (None, None, Some(Some(v))) => Some(v)
+        _ => t.value
+      }
+    },
+    // (fast-path same reference when held across (None, None) re-asks; fall back to structural equality for small topics)
+    same=fn(a, b) {
+      match (a, b) {
+        (Some(x), Some(y)) => physical_equal(x, y) || x == y
+        (None, None) => true
+        _ => false
+      }
+    },
+  )
+}
+
+///|
+/// Chat `r`'s head JSON (`chat_head_json`, without `messages`): what it last was while the `chat` topic is asked again
+/// (no value, no error), read as it changes.
+pub fn chat_head_json_held(src : Source, r : ChatRef) -> @signals.Computed[Json?] {
+  @signals.computed(
+    fn(was) {
+      match chat_head_json(src, r) {
+        Some(v) => Some(v)
+        None =>
+          match (src.topic("chat", chat_params(r)).get().error, was) {
+            (None, Some(Some(prev))) => Some(prev)
+            _ => None
+          }
+      }
+    },
+    // (chat_head_json preserves object identity when head fields are unchanged; compare by reference)
+    same=fn(a, b) {
+      match (a, b) {
+        (Some(x), Some(y)) => physical_equal(x, y)
+        (None, None) => true
+        _ => false
+      }
+    },
+  )
 }
 
 ///|

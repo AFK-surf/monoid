@@ -4672,14 +4672,10 @@ fn View::scrolls_window_ids(
           }
         }
         // (what came at its end takes the room as it is measured: in the set-out, before where each rests is read)
-        let mut kept = ks.length()
-        while kept > 0 && !base_was.contains(ks[kept - 1]) {
-          kept = kept - 1
-        }
-        flip_takes.val = ks[kept:].to_owned()
+        flip_takes.val = flip_tail_added(base_was, ks)
       }
       guard !@signals.untracked(self.tree.motion_reduced) else {
-        steady_left.val = base_was.iter().any(fn(k) { !ks.contains(k) }) && !ks.iter().any(fn(k) { !base_was.contains(k) })
+        steady_left.val = flip_steady_left(base_was, ks)
         return
       }
       if pending_at.val == at {
@@ -4793,12 +4789,39 @@ fn View::scrolls_window_ids(
             fade_settled_once.val = pending_fade_settled.val
             pending_fade_settled.val = false
             pending_at.val = -1.0
-            steady_left.val = snap_was.val.iter().any(fn(k) { !snap_ks.val.contains(k) }) &&
-              !snap_ks.val.iter().any(fn(k) { !snap_was.val.contains(k) })
+            steady_left.val = flip_steady_left(snap_was.val, snap_ks.val)
           }
           let was = snap_was.val
           let ks = snap_ks.val
           let inner = snap_inner.val
+          let same_keys = physical_equal(was, ks)
+          let ks_set_ref : Ref[Map[Int, Unit]?] = Ref(None)
+          let was_set_ref : Ref[Map[Int, Unit]?] = Ref(None)
+          let get_ks_set = fn() -> Map[Int, Unit] {
+            match ks_set_ref.val {
+              Some(m) => m
+              None => {
+                let m = flip_key_set(ks)
+                ks_set_ref.val = Some(m)
+                if same_keys {
+                  was_set_ref.val = Some(m)
+                }
+                m
+              }
+            }
+          }
+          let get_was_set = fn() -> Map[Int, Unit] {
+            match was_set_ref.val {
+              Some(m) => m
+              None => {
+                let m = if same_keys { get_ks_set() } else { flip_key_set(was) }
+                was_set_ref.val = Some(m)
+                m
+              }
+            }
+          }
+          let ks_has = fn(k : Int) -> Bool { get_ks_set().contains(k) }
+          let was_has = fn(k : Int) -> Bool { get_was_set().contains(k) }
           // (set out: what its blocks hold may tell it again from here, at this same moment)
           inner_at.val = -1.0
           // (told outside a transition where only one moves the list: classify QuietReset vs QuietDelta;
@@ -4891,8 +4914,8 @@ fn View::scrolls_window_ids(
             let mut down = 0.0
             for k, b in before {
               match after.get(k) {
-                Some(a) if ks.contains(k) &&
-                  was.contains(k) &&
+                Some(a) if ks_has(k) &&
+                  was_has(k) &&
                   b.1 + b.3 > before_list_y &&
                   b.1 < before_list_y + before_list_h => down = dmax(down, a.1 - b.1)
                 _ => ()
@@ -4920,15 +4943,16 @@ fn View::scrolls_window_ids(
               // (or one that showed put elsewhere among them: those that stay in another order; a key that goes only
               // where its page says it closes its way (`goes`), one that is simply gone (a row saying more come before)
               // none of it)
-              let kept_was = was.filter(fn(k) { ks.contains(k) })
-              let kept_now = ks.filter(fn(k) { kept_was.contains(k) })
               let c = if quiet {
                 false
+              } else if inner || came_keys.val.length() > 0 {
+                true
+              } else if same_keys {
+                false
               } else {
-                inner ||
-                came_keys.val.length() > 0 ||
-                was.iter().any(fn(k) { !ks.contains(k) && before.contains(k) && @signals.untracked(fn() { goes(k) }) }) ||
-                kept_was != kept_now
+                let ks_s = get_ks_set()
+                was.iter().any(fn(k) { !ks_s.contains(k) && before.contains(k) && @signals.untracked(fn() { goes(k) }) }) ||
+                flip_order_changed(was, ks, get_was_set(), ks_s)
               }
               came_once.val = Some(c)
               c
@@ -4963,7 +4987,7 @@ fn View::scrolls_window_ids(
                 }
               }
               None =>
-                if was.contains(k) || !came_keys.val.contains(k) {
+                if !came_keys.val.contains(k) || was_has(k) {
                   ()
                 } else {
                   // (come by this change, its page saying it comes (`comes` -> `came_keys`): from none tall where it

@@ -45,7 +45,7 @@ fn history_head_node(v : @view.View, src : Source, r : ChatRef, key : String, ti
   let (src, v_park) = src.owned_by_parkable(v)
   v.on_rest(fn() { v_park(true) }, wake=fn() { v_park(false) }) |> ignore
   let station = r.station
-  let chat_held = @sfbase.topic_value_held(src, "chat", chat_params(r))
+  let chat_held = @sfbase.chat_head_json_held(src, r)
   let a = fn() { agent_json(chat_held.get(), key) }
   v.box(fn(top) {
     @sf.style_node(top, fn() { history_top_box })
