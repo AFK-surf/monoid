@@ -914,7 +914,9 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-decisions": (490, 390, 50),
   "wide settings-completion": (710, 539, 78),
   "wide settings-bars": (626, 514, 85),
-  "wide settings-about": (629, 491, 71),
+  // (2026-11-23: 关于's 网络 section, its switch to find stations through the DHT (sfpages about.mbt); before it (629,
+  // 491, 71))
+  "wide settings-about": (658, 498, 79),
   "wide settings-changelog": (701, 555, 139),
   "wide settings-prices": (636, 531, 166),
   "wide settings-notify-off": (591, 460, 68),
