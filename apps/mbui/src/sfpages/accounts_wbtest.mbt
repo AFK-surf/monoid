@@ -1481,3 +1481,49 @@ test "profiles list aggregates Google Colab under Google group and add profile f
   assert_eq(field(Some(login_calls[0]), "runtime"), None, msg="login.new omits runtime for service")
   assert_eq(t_conn.audit(), [])
 }
+
+///|
+test "a key's profile with no allowance shown, wide: the connect using it sits in the middle of its card" {
+  // (k2 shows no allowance; one connect uses it here)
+  let t = setting_tester(Profile("ws1/st1", "k2"), 1280.0, over=fn(s) {
+    fn inject(v : Json) -> Json {
+      match v {
+        Object(o) => {
+          let copy = o.copy()
+          for k, val in o {
+            copy[k] = inject(val)
+          }
+          if o.get("id") == Some(Json::string("k2")) && o.contains("usedBy") {
+            copy["usedBy"] = ["k1"]
+          }
+          Json::object(copy)
+        }
+        Array(a) => Json::array(a.map(inject))
+        _ => v
+      }
+    }
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let r = s.topic(name, params).get().snapshot()
+        { ..r, value: r.value.map(inject) }
+      },
+    }
+  })
+  scrolled_to(t, 1280.0, "星火助手")
+  guard t.find("星火助手") is Some((x, y)) else { fail("no connect row: \{Repr(t.words().map(fn(w) { w.0 }))}") }
+  // (the card it is on: the least drawn ground round its name as tall as a row and its padding at least)
+  let card = t
+    .drawn_rects()
+    .filter(fn(r) { r.0 <= x && x <= r.0 + r.2 && r.1 <= y && y <= r.1 + r.3 && r.3 >= 40.0 && r.3 < 120.0 })
+    .fold(init=None, fn(a : (Double, Double, Double, Double, Int64)?, r) {
+      match a {
+        Some(b) if b.2 * b.3 <= r.2 * r.3 => a
+        _ => Some(r)
+      }
+    })
+  guard card is Some(c) else { fail("no card round 星火助手") }
+  let off = y - (c.1 + c.3 / 2.0)
+  assert_true(off.abs() < 0.5, msg="its name \{off} off its card's middle: \{Repr(c)}, at \{y}")
+  assert_eq(t.audit(), [])
+}

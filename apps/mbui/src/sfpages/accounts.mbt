@@ -1301,93 +1301,97 @@ fn profile_quota_node(
     },
     fn(sec) {
       @sf.group_node(sec, fn(g) {
-        g.pick(at_once=true, what, fn(x, w) {
-          if w == 0 {
-            @sf.link_row_node(
-              x,
-              fn() {
-                if refreshing() {
-                  @sf.t("android-settings.quota.checking")
-                } else {
-                  @sf.t("web-main.quota.unchecked")
-                }
-              },
-              fn() {  },
-              chevron=false,
-              goes=false,
-              tail=fn(rt) {
-                doing_mark_node(rt, refreshing, fn() { failed_of(core, ["profile.quota", "profile.check"], on) }, tips?)
-              },
-              tail_shown=fn() { refreshing() || failed_of(core, ["profile.quota", "profile.check"], on) is Some(_) },
-            )
-          } else if w == 1 {
-            @sf.link_row_node(
-              x,
-              fn() {
-                if refreshing() && opt_text(quota(), "detail").unwrap_or("") == "" {
-                  @sf.t("android-settings.quota.checking")
-                } else {
+        // (a show round it, not a pick of nothing: a structure's box that made nothing still takes a list's gap, the
+        // card's first row 2 lower than its padding where no allowance is shown)
+        g.show(at_once=true, fn() { what() >= 0 }, fn(s) {
+          s.pick(at_once=true, what, fn(x, w) {
+            if w == 0 {
+              @sf.link_row_node(
+                x,
+                fn() {
+                  if refreshing() {
+                    @sf.t("android-settings.quota.checking")
+                  } else {
+                    @sf.t("web-main.quota.unchecked")
+                  }
+                },
+                fn() {  },
+                chevron=false,
+                goes=false,
+                tail=fn(rt) {
+                  doing_mark_node(rt, refreshing, fn() { failed_of(core, ["profile.quota", "profile.check"], on) }, tips?)
+                },
+                tail_shown=fn() { refreshing() || failed_of(core, ["profile.quota", "profile.check"], on) is Some(_) },
+              )
+            } else if w == 1 {
+              @sf.link_row_node(
+                x,
+                fn() {
+                  if refreshing() && opt_text(quota(), "detail").unwrap_or("") == "" {
+                    @sf.t("android-settings.quota.checking")
+                  } else {
+                    let q = quota()
+                    let st = text(q, "state")
+                    if st == "blocked" {
+                      @sf.t("web-main.profile.blocked")
+                    } else if st == "unavailable" {
+                      @sf.t("android-settings.quota.unavailable")
+                    } else if st == "unsupported" || opt_text(q, "detail").unwrap_or("") != "" {
+                      @sf.t("android-settings.quota.none")
+                    } else {
+                      @sf.t("web-main.quota.unknown")
+                    }
+                  }
+                },
+                fn() {  },
+                note=fn() {
                   let q = quota()
                   let st = text(q, "state")
-                  if st == "blocked" {
-                    @sf.t("web-main.profile.blocked")
-                  } else if st == "unavailable" {
-                    @sf.t("android-settings.quota.unavailable")
-                  } else if st == "unsupported" || opt_text(q, "detail").unwrap_or("") != "" {
-                    @sf.t("android-settings.quota.none")
-                  } else {
-                    @sf.t("web-main.quota.unknown")
-                  }
+                  // (without the link it gives: the trouble's card over it has it, to copy and open)
+                  let detail = trouble_words(opt_text(q, "detail").unwrap_or(""))
+                  join(
+                    [
+                      detail,
+                      if refreshing() && detail != "" {
+                        @sf.t("android-settings.quota.checking")
+                      } else if !refreshing() && st != "unsupported" {
+                        text(field(q, "checkedAt"), "ago")
+                      } else {
+                        ""
+                      },
+                    ],
+                    " · ",
+                  )
+                },
+                chevron=false,
+                goes=false,
+                tail=fn(rt) {
+                  doing_mark_node(rt, refreshing, fn() { failed_of(core, ["profile.quota", "profile.check"], on) }, tips?)
+                },
+                tail_shown=fn() { refreshing() || failed_of(core, ["profile.quota", "profile.check"], on) is Some(_) },
+              )
+            } else if w == 2 {
+              @sf.block_node(x, fn(bl) {
+                @sf.dials_node(bl, fn() { quota_dials_of(windows()) }, lines=2)
+                // (`read_under`: when it was read, 12 under its dials, being read said so; quota_section's, where no head
+                // says it, as on an account on several stations' page)
+                if read_under {
+                  let read = fn() { @settings.stamp(quota(), "checkedAt", "ago") }
+                  bl.show(fn() { refreshing() || read() != "" }, fn(r) {
+                    @sf.style_node(r, fn() { pq_read_room })
+                    @sf.words_node(r, fn() {
+                      if refreshing() {
+                        @sf.t("android-settings.quota.checking")
+                      } else {
+                        @sf.t("android-settings.quota.checkedAt", args=[("ago", read())])
+                      }
+                    }, fn() { pq_read_words })
+                    |> ignore
+                  })
                 }
-              },
-              fn() {  },
-              note=fn() {
-                let q = quota()
-                let st = text(q, "state")
-                // (without the link it gives: the trouble's card over it has it, to copy and open)
-                let detail = trouble_words(opt_text(q, "detail").unwrap_or(""))
-                join(
-                  [
-                    detail,
-                    if refreshing() && detail != "" {
-                      @sf.t("android-settings.quota.checking")
-                    } else if !refreshing() && st != "unsupported" {
-                      text(field(q, "checkedAt"), "ago")
-                    } else {
-                      ""
-                    },
-                  ],
-                  " · ",
-                )
-              },
-              chevron=false,
-              goes=false,
-              tail=fn(rt) {
-                doing_mark_node(rt, refreshing, fn() { failed_of(core, ["profile.quota", "profile.check"], on) }, tips?)
-              },
-              tail_shown=fn() { refreshing() || failed_of(core, ["profile.quota", "profile.check"], on) is Some(_) },
-            )
-          } else if w == 2 {
-            @sf.block_node(x, fn(bl) {
-              @sf.dials_node(bl, fn() { quota_dials_of(windows()) }, lines=2)
-              // (`read_under`: when it was read, 12 under its dials, being read said so; quota_section's, where no head
-              // says it, as on an account on several stations' page)
-              if read_under {
-                let read = fn() { @settings.stamp(quota(), "checkedAt", "ago") }
-                bl.show(fn() { refreshing() || read() != "" }, fn(r) {
-                  @sf.style_node(r, fn() { pq_read_room })
-                  @sf.words_node(r, fn() {
-                    if refreshing() {
-                      @sf.t("android-settings.quota.checking")
-                    } else {
-                      @sf.t("android-settings.quota.checkedAt", args=[("ago", read())])
-                    }
-                  }, fn() { pq_read_words })
-                  |> ignore
-                })
-              }
-            })
-          }
+              })
+            }
+          })
         })
         g.show(at_once=true, fn() { credits() != "" }, fn(x) {
           @sf.link_row_node(
