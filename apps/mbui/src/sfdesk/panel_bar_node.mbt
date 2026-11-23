@@ -103,8 +103,14 @@ fn side_bar_look_node(on_tape : Bool) -> @ui.Style {
     let roots = @ui.tree_corner_roots_now()
     side_bar_tape_in(beside_column(tape_pane_corners(Panel, true), tape_room_now().under), roots)
   } else {
+    let over = @sf.window_keys_bar_over_now()
+    let bar_h = @ui.Space::px(S11) + over
     side_bar_look.then(
-      @ui.style(pr=@sf.room_of(@sf.window_end_in(side_bar_end, roots=@ui.tree_corner_roots_now()))),
+      @ui.style(
+        h=Fixed(bar_h),
+        pt=@sf.room_of(over),
+        pr=@sf.room_of(@sf.window_end_in(side_bar_end, roots=@ui.tree_corner_roots_now())),
+      ),
     )
   }
 }

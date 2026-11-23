@@ -743,10 +743,10 @@ fn farview_bar_node(
     match pads {
       Some(at) =>
         bar
-        .height(Is(Some(@sf.wide_bar_h)))
+        .height(By(fn() { Some(@sf.wide_bar_h + @sf.window_keys_bar_over_now()) }))
         .padding(By(fn() {
           let (s, e) = at()
-          (s, 0.0, e, 1.0)
+          (s, @sf.window_keys_bar_over_now(), e, 1.0)
         }))
         .moves_window(By(@ui.window_inset_now))
         |> ignore

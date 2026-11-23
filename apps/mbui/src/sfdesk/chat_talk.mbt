@@ -6,7 +6,7 @@
 /// the panel's corner concentric with it: chat_bar_box_tape; `in_pane` as the page built now is), and the list's room
 /// under it over its first row (24).
 fn chat_bar_room(in_pane? : Bool = @sf.in_pane()) -> Double {
-  @sf.wide_bar_h + (if in_pane { @sf.tape_bar_over() } else { 0.0 })
+  @sf.wide_bar_h + (if in_pane { @sf.tape_bar_over() } else { @sf.window_keys_bar_over_now() })
 }
 
 ///|

@@ -48,7 +48,7 @@ fn pane_gate_node(g : @view.View, src : Source) -> Unit {
     p.show(fn() { @ui.window_inset() }, fn(t) {
       t
       .over(Is(true))
-      .height(Is(Some(@sf.wide_bar_h)))
+      .height(By(fn() { Some(@sf.wide_bar_h + @sf.window_keys_bar_over_now()) }))
       .presses(Is(true))
       .moves_window(Is(true))
       |> ignore
@@ -582,7 +582,7 @@ fn pane_made(
                         b.show(fn() { @ui.window_inset() }, fn(t) {
                           t
                           .over(Is(true))
-                          .height(Is(Some(@sf.wide_bar_h)))
+                          .height(By(fn() { Some(@sf.wide_bar_h + @sf.window_keys_bar_over_now()) }))
                           .presses(Is(true))
                           .moves_window(Is(true))
                           |> ignore
@@ -624,7 +624,7 @@ fn pane_chat_bar_ends(
     }
   }
   {
-    over: fn() { 0.0 },
+    over: fn() { @sf.window_keys_bar_over_now() },
     // (as the old view's were, drawn in the page moved aside: page_one's `aside`, which the bar over it is not)
     margins: fn() {
       match look() {
@@ -719,7 +719,7 @@ fn pane_made_host(p : @view.View, src : Source, k : Int) -> Unit {
   p.show(fn() { @ui.window_inset() }, fn(t) {
     t
     .over(Is(true))
-    .height(Is(Some(@sf.wide_bar_h)))
+    .height(By(fn() { Some(@sf.wide_bar_h + @sf.window_keys_bar_over_now()) }))
     .presses(Is(true))
     .moves_window(Is(true))
     |> ignore

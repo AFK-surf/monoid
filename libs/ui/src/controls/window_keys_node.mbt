@@ -9,12 +9,12 @@
 /// tracked corner `roots`: (its top from the window's top, its side from the window's right).
 fn window_keys_at_roots(width : Double, whole : Bool, roots : @ui.CornerRoots) -> (Double, Double) {
   if whole {
-    return (bar_keys_top() - window_keys_pill_pad, window_keys_side(roots~))
+    return (bar_keys_top() - window_keys_pill_pad + window_keys_bar_extra, window_keys_side(roots~))
   }
   match layout(width) {
     Small => ((window_keys_band - window_keys_pill_h) / 2.0, window_keys_side(roots~))
     Medium => (window_in + tape_line - window_keys_pill_pad, window_keys_side_tape(roots~))
-    Large => (bar_keys_top() - window_keys_pill_pad, window_keys_side(roots~))
+    Large => (bar_keys_top() - window_keys_pill_pad + window_keys_bar_extra, window_keys_side(roots~))
   }
 }
 

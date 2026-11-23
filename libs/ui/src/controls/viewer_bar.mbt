@@ -61,7 +61,7 @@ pub let viewer_bar_h : Double = 45.0
 /// How far down from the window's top what is under the bar starts: the bar, and the status bar over it where the
 /// system's bars are over the window (a tablet's).
 pub fn viewer_bar_under() -> Double {
-  viewer_bar_h + (viewer_host().room)().0
+  viewer_bar_h + window_keys_bar_over() + (viewer_host().room)().0
 }
 
 ///|

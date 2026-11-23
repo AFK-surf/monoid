@@ -38,16 +38,16 @@ fn past_rule(t : @ui.Tester, x : Double) -> String? {
 }
 
 ///|
-test "a Windows window laid out Large: its own buttons at the top row's right, 4 in and on the bars' line, the page's keys before their pill" {
+test "a Windows window laid out Large: its own buttons at the top row's right, 9 in and aligned with the top-left rail, the page's keys before their pill" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, mode="chat", platform=3, window_corner=8.0, window_inset=true)
   t.run_for(@ui.move_most_ms)
-  // in a liquid glass pill 4 in (symmetric with its 4pt top inset on Windows 11's 8pt corner), its
-  // buttons 2 in and 2 apart, 6 under the top
+  // in a liquid glass pill 9 in (symmetric 9pt top/right inset, 32pt buttons at y=11 centered at y=27 with the top-left
+  // rail), its buttons 2 in and 2 apart
   guard named_at(t, "关闭窗口") is Some((cx, cy, cw, ch)) else { fail("no close button") }
-  assert_eq((cx + cw, cy, cw, ch), (1274.0, 6.0, 32.0, 32.0))
+  assert_eq((cx + cw, cy, cw, ch), (1269.0, 11.0, 32.0, 32.0))
   guard named_at(t, "最大化") is Some((zx, zy, _, _)) else { fail("no maximize button") }
-  assert_eq((zx, zy), (cx - 34.0, 6.0))
+  assert_eq((zx, zy), (cx - 34.0, 11.0))
   guard named_at(t, "最小化") is Some((mx, _, _, _)) else { fail("no minimize button") }
   assert_eq(mx, zx - 34.0)
   // the maximize one's place, the host's (the pointer there is its)
@@ -105,11 +105,11 @@ test "a Windows window laid out Small: its buttons in the band over the page; on
   let t = wide_tester(calls, w=390.0, h=844.0, platform=3, window_corner=8.0, window_inset=true)
   t.run_for(@ui.move_most_ms)
   guard named_at(t, "关闭窗口") is Some((cx, cy, cw, _)) else { fail("no close button") }
-  assert_eq((cx + cw, cy), (384.0, 6.0))
-  // nothing of the page's in the band (44) under them
+  assert_eq((cx + cw, cy), (379.0, 11.0))
+  // nothing of the page's in the band (54) under them
   for s in t.semantics() {
     let (_, sy, _, sh) = s.rect
-    if !s.hidden && s.label != "" && !window_key_names.contains(s.label) && sy + sh > 0.0 && sy < 44.0 {
+    if !s.hidden && s.label != "" && !window_key_names.contains(s.label) && sy + sh > 0.0 && sy < 54.0 {
       fail("\{s.label} in the band of the window's buttons")
     }
   }
@@ -492,7 +492,7 @@ test "window_keys_node: inset toggle, window resize, and lone_window_tree update
   )
   t2.run_for(@ui.move_most_ms)
   guard named_at(t2, "关闭窗口") is Some((cx, cy, cw, ch)) else { fail("lone: no close button") }
-  assert_eq((cx + cw, cy, cw, ch), (594.0, 6.0, 32.0, 32.0))
+  assert_eq((cx + cw, cy, cw, ch), (589.0, 11.0, 32.0, 32.0))
   guard named_at(t2, "最大化") is Some((zx, zy, zw, zh)) else { fail("lone: no maximize button") }
   assert_eq(t2.window_snap_rect(), (zx, zy, 32.0, 32.0))
   guard named_at(t2, "最小化") is Some((mx, my, mw, mh)) else { fail("lone: no minimize button") }
@@ -612,7 +612,7 @@ test "a Windows window's buttons pressed, maximize held down as the host says: t
 }
 
 ///|
-test "a Windows window in Light mode: window_keys_node uses adaptive glass and adaptive icon ink with symmetric 4pt top/right margin across chat, previews, and player" {
+test "a Windows window in Light mode: window_keys_node uses adaptive glass and adaptive icon ink with symmetric 9pt top/right margin across chat, previews, and player" {
   for mode in ["chat", "chat-preview-video", "chat-preview-image", "player-video"] {
     let t = if mode == "chat-preview-image" {
       desk_tester(mode, platform=3, window_corner=8.0, window_inset=true)
@@ -628,7 +628,7 @@ test "a Windows window in Light mode: window_keys_node uses adaptive glass and a
       .filter(fn(g) { g.0 <= cx && g.0 + g.2 >= cx + cw && g.1 <= cy && g.1 + g.3 >= cy + ch && g.4 == 6 })
     guard pills is [(gx, gy, gw, gh, kind, _)] else { fail("\{mode}: expected 1 liquid pill round close, got \{Repr(pills)}") }
     assert_eq((kind, gw, gh), (6, 104.0, 36.0), msg=mode)
-    assert_eq((gy, 1280.0 - (gx + gw)), (4.0, 4.0), msg=mode)
+    assert_eq((gy, 1280.0 - (gx + gw)), (9.0, 9.0), msg=mode)
     let has_adaptive_glass = t
       .drawn_instances()
       .iter()

@@ -140,7 +140,7 @@ fn subchats_pop_room(host : @view.View, own : @view.View?) -> Double {
     Some(o) if o.alive() => {
       // (up to under the chat's bar over the page, never over its buttons)
       let (_, y, _, _) = o.placed_window_now()
-      y - top - @sf.wide_bar_h - gaps
+      y - top - (@sf.wide_bar_h + @sf.window_keys_bar_over_now()) - gaps
     }
     _ => wh - top - foot - 2.0 * gaps
   }

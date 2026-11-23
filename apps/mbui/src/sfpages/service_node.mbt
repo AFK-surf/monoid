@@ -206,7 +206,7 @@ fn service_page_bar_node(
         w
         .row(Is(true))
         .lines_up(Is(Some(Middle)))
-        .height(Is(Some(@sf.wide_bar_h)))
+        .height(By(fn() { Some(@sf.wide_bar_h + @sf.window_keys_bar_over_now()) }))
         .shrink(Is(0.0))
         .moves_window(By(@ui.window_inset_now))
         .padding(By(fn() {
@@ -220,7 +220,7 @@ fn service_page_bar_node(
           } else {
             @sf.window_corner_past(window_bar_in, roots~)
           }
-          (dmax(0.0, start - pad), 0.0, dmax(0.0, end - pad), 0.0)
+          (dmax(0.0, start - pad), @sf.window_keys_bar_over_now(), dmax(0.0, end - pad), 0.0)
         }))
         |> ignore
       })

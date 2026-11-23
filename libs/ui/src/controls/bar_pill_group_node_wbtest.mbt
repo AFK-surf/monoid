@@ -245,12 +245,13 @@ test "window_keys_node: one 104x36 liquid glass pill, its outside shadow, no rul
         let (gx, gy, gw, gh, kind, _) = glass[0]
         assert_eq((kind, gw, gh), (6, 104.0, 36.0), msg="\{at}")
         assert_true((gx + gw - (w - side)).abs() < 1.0e-6 && (gy - top).abs() < 1.0e-6, msg="\{at}: pill at \{gx},\{gy}")
-        // (Large, Small and a window of its own's: symmetric 4pt top and side inset when the window corner is smaller
-        // than the pill's half-height 18; the buttons on the bars' line, 6 under the top. Medium: on the tape's line)
-        let expect_top = if name == "medium" { window_in + tape_line - 2.0 } else { 4.0 }
+        // (Large, Small and a window of its own's: symmetric 9pt top and side inset when the window corner is smaller
+        // than the pill's half-height 18; the buttons 11 under the top, centered at y=27pt to match the top-left rail.
+        // Medium: on the tape's line)
+        let expect_top = if name == "medium" { window_in + tape_line - 2.0 } else { 9.0 }
         assert_eq(top, expect_top, msg="\{at}")
         if name != "medium" {
-          assert_eq(side, 4.0, msg="\{at}")
+          assert_eq(side, 9.0, msg="\{at}")
         } else if corner <= 8.0 {
           assert_eq(side, expect_top, msg="\{at}")
         }
@@ -282,6 +283,39 @@ test "window_keys_node: one 104x36 liquid glass pill, its outside shadow, no rul
       }
     }
   }
+  set_dark(None)
+}
+
+///|
+test "window_keys_node: glass tint follows the current theme accent in light and dark across built-in and custom hues" {
+  let (t, _) = window_keys_tester(1280.0, 8.0, false, false, false)
+  let keys = ["", "blue", "teal", "purple", "pink", "custom:0", "custom:60", "custom:120", "custom:180", "custom:240", "custom:300"]
+  let seen_light : Array[Int64] = []
+  for dark in [false, true] {
+    set_dark(Some(dark))
+    for key in keys {
+      set_accent(key)
+      t.frame()
+      let tint = window_keys_glass_tint()
+      let a = (tint & 0xFFL).to_double() / 255.0
+      let r = ((tint >> 24) & 0xFFL).to_double() / 255.0
+      let g = ((tint >> 16) & 0xFFL).to_double() / 255.0
+      let b = ((tint >> 8) & 0xFFL).to_double() / 255.0
+      let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+      let chroma = dmax(r, dmax(g, b)) - dmin(r, dmin(g, b))
+      let at = "dark=\{dark} accent=\{key}"
+      assert_true(a <= 0.41, msg="\{at}: alpha \{a}")
+      assert_true(if dark { luma < 0.35 } else { luma >= 0.35 }, msg="\{at}: luma \{luma}")
+      assert_true(chroma > 0.08, msg="\{at}: chroma \{chroma}")
+      assert_eq(window_pill_tint_rgb(t), Some(tint >> 8), msg=at)
+      if !dark {
+        seen_light.push(tint >> 8)
+      }
+    }
+  }
+  // Distinct theme accents produce distinct pill tints
+  assert_true(seen_light[0] != seen_light[1] && seen_light[1] != seen_light[2] && seen_light[2] != seen_light[3])
+  set_accent("")
   set_dark(None)
 }
 

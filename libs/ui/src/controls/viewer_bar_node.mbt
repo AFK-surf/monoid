@@ -49,9 +49,10 @@ pub fn viewer_bar_node(
     room.over(Is(true)) |> ignore
     room.reacts(hidden, fn(off) { gone.go_ms(room, if off { 1.0 } else { 0.0 }, viewer_bar_ms) })
     let b = room.box(fn(b) {
+      let bar_over = fn() { window_keys_bar_over_now() }
       b
       .alpha(By(fn() { (1.0 - gone.shown(b)) * shown(b) }))
-      .offset(By(fn() { (0.0, -(viewer_bar_h + top()) * gone.shown(b)) }))
+      .offset(By(fn() { (0.0, -(viewer_bar_h + bar_over() + top()) * gone.shown(b)) }))
       // (gone or going, it takes no press: what is under it does)
       .presses(By(fn() { !hidden() }))
       |> ignore
@@ -62,7 +63,7 @@ pub fn viewer_bar_node(
         if hidden() && !gone.goes(s) {
           0.0
         } else {
-          viewer_bar_h + top() + 12.0
+          viewer_bar_h + bar_over() + top() + 12.0
         }
       }
       @glass.liquid_scroll_edge_node(
@@ -88,9 +89,9 @@ pub fn viewer_bar_node(
         row
         .row(Is(true))
         .lines_up(Is(Some(Middle)))
-        .height(Is(Some(viewer_bar_h)))
+        .height(By(fn() { Some(viewer_bar_h + bar_over()) }))
         .gap(Is(@ui.Space::px(S4)))
-        .padding(By(fn() { (bar_start_in(), 0.0, bar_end_in(width(), capsule_end || capsule_now()), hairline_h) }))
+        .padding(By(fn() { (bar_start_in(), bar_over(), bar_end_in(width(), capsule_end || capsule_now()), hairline_h) }))
         |> ignore
         // clear of the window's buttons at its left, the system's (not in full screen)
         row.show(@ui.window_keys_left_now, fn(k) { k.width(Is(Some(viewer_buttons_w))) |> ignore })

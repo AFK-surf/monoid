@@ -425,7 +425,7 @@ pub fn terminal_pane_node(
       0.0
     } else if in_tab {
       let strip = if may() && !types() && !ended() { terminal_strip_h } else { 0.0 }
-      (if bar_pads is Some(_) { @sf.wide_bar_h } else { terminal_tab_bar_h }) + strip
+      (if bar_pads is Some(_) { @sf.wide_bar_h + @sf.window_keys_bar_over_now() } else { terminal_tab_bar_h }) + strip
     } else {
       let bar = top() + (if wide { @sf.viewer_bar_h } else { terminal_narrow_bar_h })
       let strip = if may() && !types() && !ended() { terminal_strip_h } else { 0.0 }
@@ -1129,12 +1129,12 @@ pub fn terminal_pane_node(
             .gap(Is(6.0))
             .lines_up(Is(Some(Middle)))
             .ground(By(fn() { @sf.theme().p.bg }))
-            .height(Is(Some(@sf.wide_bar_h)))
+            .height(By(fn() { Some(@sf.wide_bar_h + @sf.window_keys_bar_over_now()) }))
             // (its folder's capsule, a ground of its own at its start, as far in as the last key's icon is seen from its
             // end: what the bar holds seen as far in from both sides)
             .padding(By(fn() {
               let (s, e) = pads()
-              (dmax(s, e + terminal_key_icon_in), 0.0, e, 1.0)
+              (dmax(s, e + terminal_key_icon_in), @sf.window_keys_bar_over_now(), e, 1.0)
             }))
             .moves_window(By(@ui.window_inset_now))
             |> ignore

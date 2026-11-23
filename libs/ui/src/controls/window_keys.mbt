@@ -8,14 +8,41 @@
 // rests there), lit as the host says the pointer stands on it, which the app does not see (@ui.window_snap_state).
 
 ///|
-/// The band laid out Small over the page where the window's buttons are the app's (the app's status_top): the bar
-/// keys' 32 with 6 over and under, a bar's line's.
-pub let window_keys_band : Double = 44.0
+/// The band laid out Small over the page where the window's buttons are the app's (the app's status_top): the 36pt
+/// pill with 9pt over and under, matching its symmetric 9pt top/right inset on Large.
+pub let window_keys_band : Double = 54.0
 
 ///|
-/// How far in from the window's side the pill holding the buttons stands when symmetric with its top inset (`4.0`,
-/// matching `bar_keys_top() - window_keys_pill_pad` and Small's `(window_keys_band - window_keys_pill_h) / 2.0`).
-pub let window_keys_in : Double = 4.0
+/// Extra top padding applied to wide top bars when the window draws its own buttons (Windows / Linux), shifting the
+/// 45pt bar's centerline from 22pt down to 27pt to align with the top-left rail and give the 36pt window-controls
+/// pill a symmetric 9pt top and right inset.
+pub let window_keys_bar_extra : Double = 5.0
+
+///|
+/// Extra top padding for wide top bars: `window_keys_bar_extra` where the window's buttons are the app's, else `0.0`.
+pub fn window_keys_bar_over() -> Double {
+  if @ui.window_keys_own() {
+    window_keys_bar_extra
+  } else {
+    0.0
+  }
+}
+
+///|
+/// Signal-tracked version of `window_keys_bar_over` for window tree nodes.
+pub fn window_keys_bar_over_now() -> Double {
+  if @ui.window_keys_own_now() {
+    window_keys_bar_extra
+  } else {
+    0.0
+  }
+}
+
+///|
+/// How far in from the window's side the pill holding the buttons stands when symmetric with its top inset (`9.0`,
+/// matching `bar_keys_top() - window_keys_pill_pad + window_keys_bar_extra` and Small's
+/// `(window_keys_band - window_keys_pill_h) / 2.0`).
+pub let window_keys_in : Double = 9.0
 
 ///|
 /// How far in the buttons stand from the edges of the liquid glass pill holding them (bar_pill_group_node's): a 32
@@ -30,15 +57,17 @@ let window_keys_pill_h : Double = bar_key_side + 2.0 * window_keys_pill_pad
 let window_keys_gap : Double = 2.0
 
 ///|
-/// Cool mineral-slate tint for the window controls liquid glass pill, distinguishing OS window chrome from adjacent
+/// Theme-accented tint for the window controls liquid glass pill, distinguishing OS window chrome from adjacent
 /// neutral app bar pills while keeping alpha <= 0.41 (full 0.30 liquid translucency), Light luma >= 0.35 (ios27Light),
 /// Dark luma < 0.35 (ios27Dark), and colChroma > 0.08 so the kind == 6 shader applies chromatic tinting.
 fn window_keys_glass_tint() -> Int64 {
-  if theme().dark {
-    0x244B7A67L
+  let t = theme()
+  let base = if t.dark {
+    mix(t.p.accent, 0.42, 0x18181BFFL)
   } else {
-    0x78A8DE67L
+    mix(t.p.accent, 0.50, 0xFDFCFDFFL)
   }
+  (base & 0xFFFFFF00L) | 0x67L
 }
 
 ///|
@@ -57,18 +86,18 @@ pub fn window_keys_w() -> Double {
 /// band over it.
 pub fn window_keys_at(width : Double, whole? : Bool = false) -> (Double, Double) {
   if whole {
-    return (bar_keys_top() - window_keys_pill_pad, window_keys_side())
+    return (bar_keys_top() - window_keys_pill_pad + window_keys_bar_extra, window_keys_side())
   }
   match layout(width) {
     Small => ((window_keys_band - window_keys_pill_h) / 2.0, window_keys_side())
     Medium => (window_in + tape_line - window_keys_pill_pad, window_keys_side_tape())
-    Large => (bar_keys_top() - window_keys_pill_pad, window_keys_side())
+    Large => (bar_keys_top() - window_keys_pill_pad + window_keys_bar_extra, window_keys_side())
   }
 }
 
 ///|
-/// In a window's whole, how far in from the window's side the pill holding the buttons stands: `4.0` (`window_keys_in`,
-/// matching its top inset) for square windows and corners smaller than the pill's half-height (`18.0`, including
+/// In a window's whole, how far in from the window's side the pill holding the buttons stands: `9.0` (`window_keys_in`,
+/// symmetric with its top inset) for square windows and corners smaller than the pill's half-height (`18.0`, including
 /// Windows 11's `8.0`); past the window's corner (`window_corner_past`) for rounder windows (`>= 18.0`). The window's
 /// corner is worked out from `roots` (the old views', as they ask it; a node's, followed: @ui.tree_corner_roots_now).
 fn window_keys_side(roots? : @ui.CornerRoots = @ui.corner_roots()) -> Double {
