@@ -63,7 +63,7 @@ function makeApp(
   } = {},
 ) {
   const base = mkdtempSync(join(tmpdir(), "sf-shim-"));
-  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const app = join(base, opts.appName ?? "app");
   mkdirSync(join(app, "station"), { recursive: true });
   const bin = join(app, "station", readerFilename());
@@ -367,4 +367,12 @@ setInterval(() => {}, 1000);
   // Detached grandchild must survive via JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
   await new Promise((r) => setTimeout(r, 400));
   assert.equal(pidAlive(grandPid), true, `detached grandchild (pid ${grandPid}) died when shim was force-killed`);
+
+  // Terminate the detached grandchild and wait for Windows to release the executable handle before t.after rmSync runs.
+  try { process.kill(grandPid, "SIGKILL"); } catch {}
+  const grandDead = Date.now() + 5_000;
+  while (Date.now() < grandDead && pidAlive(grandPid)) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.equal(pidAlive(grandPid), false, `detached grandchild (pid ${grandPid}) did not exit after cleanup kill`);
 });
