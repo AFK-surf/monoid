@@ -2272,17 +2272,15 @@ fn Actors::emit_turn_trace(self : Actors, a : Actor, t : Turn, outcome : String)
     attrs["stillfail.ttft_ms"] = jnum((fl - t.started_at).floor())
   }
   let failed = outcome == "failed" || outcome == "cap"
-  self.tell(a.key, "trace", [
-    {
-      "name": jstr("turn.run"),
-      "startMs": jnum(t.started_at),
-      "endMs": jnum(self.now),
-      "attributes": Json::object(attrs),
-      "failed": jbool(failed),
-      "alwaysKeep": jbool(true),
-      "slowMs": jnum(-1.0),
-    },
-  ])
+  self.tell_trace(a.key, {
+    "name": jstr("turn.run"),
+    "startMs": jnum(t.started_at),
+    "endMs": jnum(self.now),
+    "attributes": Json::object(attrs),
+    "failed": jbool(failed),
+    "alwaysKeep": jbool(true),
+    "slowMs": jnum(-1.0),
+  })
 }
 
 ///|
@@ -2367,17 +2365,15 @@ async fn Actors::ensure_agent(self : Actors, a : Actor) -> Agent raise {
         if is_timeout {
           attrs["stillfail.open_timeout"] = jbool(true)
         }
-        self.tell(a.key, "trace", [
-          {
-            "name": jstr("agent.open"),
-            "startMs": jnum(open_start),
-            "endMs": jnum(self.now),
-            "attributes": Json::object(attrs),
-            "failed": jbool(true),
-            "alwaysKeep": jbool(true),
-            "slowMs": jnum(-1.0),
-          },
-        ])
+        self.tell_trace(a.key, {
+          "name": jstr("agent.open"),
+          "startMs": jnum(open_start),
+          "endMs": jnum(self.now),
+          "attributes": Json::object(attrs),
+          "failed": jbool(true),
+          "alwaysKeep": jbool(true),
+          "slowMs": jnum(-1.0),
+        })
         raise e
       }
     }
@@ -2390,17 +2386,15 @@ async fn Actors::ensure_agent(self : Actors, a : Actor) -> Agent raise {
     if opened.value("identity") is Some(Object(ident)) && str_of(ident.get("model")) is Some(m) && m != "" {
       open_attrs["stillfail.model"] = jstr(m)
     }
-    self.tell(a.key, "trace", [
-      {
-        "name": jstr("agent.open"),
-        "startMs": jnum(open_start),
-        "endMs": jnum(self.now),
-        "attributes": Json::object(open_attrs),
-        "failed": jbool(false),
-        "alwaysKeep": jbool(true),
-        "slowMs": jnum(-1.0),
-      },
-    ])
+    self.tell_trace(a.key, {
+      "name": jstr("agent.open"),
+      "startMs": jnum(open_start),
+      "endMs": jnum(self.now),
+      "attributes": Json::object(open_attrs),
+      "failed": jbool(false),
+      "alwaysKeep": jbool(true),
+      "slowMs": jnum(-1.0),
+    })
     a.force_session_cap = false
     a.paused_cap = false
     a.cap_wait_notified = false

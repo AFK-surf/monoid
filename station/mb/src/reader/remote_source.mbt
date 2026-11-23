@@ -361,17 +361,15 @@ async fn Actors::settle(self : Actors, path : String, entry : Json, got : Json) 
       if exit_code is Number(n, ..) {
         attrs["stillfail.task.exit_code"] = jnum(n.floor())
       }
-      self.tell(remote_key, "trace", [
-        {
-          "name": jstr("station.task"),
-          "startMs": jnum(since),
-          "endMs": jnum(now),
-          "attributes": Json::object(attrs),
-          "failed": jbool(failed),
-          "alwaysKeep": jbool(true),
-          "slowMs": jnum(-1.0),
-        },
-      ])
+      self.tell_trace(remote_key, {
+        "name": jstr("station.task"),
+        "startMs": jnum(since),
+        "endMs": jnum(now),
+        "attributes": Json::object(attrs),
+        "failed": jbool(failed),
+        "alwaysKeep": jbool(true),
+        "slowMs": jnum(-1.0),
+      })
     }
     let message = "Remote task \{text_of(entry, "key")} on \{text_of(entry, "station")}: \{js_text(result)}"
     self.told_then_written(path, text_of(entry, "session"), message, with_field(with_field(entry, "notices", notices), "delivered", jbool(finished))) catch {

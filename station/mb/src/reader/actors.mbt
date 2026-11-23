@@ -286,6 +286,12 @@ fn Actors::tell(self : Actors, key : String, f : String, args : Array[Json]) -> 
 }
 
 ///|
+/// Emits a side-channel telemetry trace span without mirroring intermediate actor state to Node.
+fn Actors::tell_trace(self : Actors, key : String, payload : Json) -> Unit {
+  self.say_node({ "tell": Json::string("trace"), "actor": Json::string(key), "args": Json::array([payload]) })
+}
+
+///|
 /// A wait of Node's clock (`after`): `then` once its time comes; the function given back lets it go.
 fn Actors::after(self : Actors, ms : Double, then : () -> Unit, on? : String) -> () -> Unit {
   self.next += 1

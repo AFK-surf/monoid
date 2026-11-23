@@ -84,6 +84,8 @@ pub(all) struct LiveBus {
   /// Records an internal business span on the active Traces instance (no-op when disabled or no mesh).
   /// (name, start_wall_ms, end_wall_ms, attributes, failed, always_keep, slow_ms)
   emit_span : Ref[(String, Int64, Int64, Array[(String, Json)], Bool, Bool, Int) -> Unit]
+  /// Generation counter for `emit_span` so stopping one workspace's traces does not clear another active workspace's.
+  emit_span_gen : Ref[Int]
   // ── Agents / Hub / MCP / Handover / Drain / Status (owned by P5-2) ──
   /// Custom `/mcp` HTTP handler (when `Some`, handles auth, `LISTINGS`, `OUTWARD` gating, `station_tool`, `SPEAKS`).
   mcp_handle : Ref[(async (Request) -> Reply)?]
@@ -258,6 +260,7 @@ pub fn LiveBus::new(
     runtimes_available: Ref(() => []),
     here_device: Ref(async fn(_ask, _conn) { () }),
     emit_span: Ref(fn(_name, _start, _end, _attrs, _failed, _always_keep, _slow_ms) { () }),
+    emit_span_gen: Ref(0),
     mcp_handle: Ref(None),
     hub_ask: Ref(async fn(_op, _arg) { Json::null() }),
     hub_models_for: Ref(_connect => []),

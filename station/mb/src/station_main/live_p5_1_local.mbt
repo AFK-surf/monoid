@@ -317,6 +317,8 @@ fn P51::member_traces(self : P51, plane : Plane) -> @gate.Traces? {
   }
   let traces = @mesh_runtime.Traces::new(true, self.host.rt, () => @host.now() * 1000000L, (level, words, with_) => p51_log(level.to_upper(), "traces", words, fields=with_), tail_only~)
   traces.export_to(async fn(spans) { plane.control.traces(spans) })
+  let gen = self.bus.emit_span_gen.val + 1
+  self.bus.emit_span_gen.val = gen
   self.bus.emit_span.val = fn(name, start_ms, end_ms, attrs, failed, always_keep, slow_ms) {
     let end_ns = (if end_ms < start_ms { start_ms } else { end_ms }) * 1_000_000L
     traces.record_internal(
@@ -332,7 +334,9 @@ fn P51::member_traces(self : P51, plane : Plane) -> @gate.Traces? {
     )
   }
   self.stops.push(() => {
-    self.bus.emit_span.val = fn(_n, _s, _e, _a, _f, _k, _m) { () }
+    if self.bus.emit_span_gen.val == gen {
+      self.bus.emit_span.val = fn(_n, _s, _e, _a, _f, _k, _m) { () }
+    }
     traces.close()
   })
   let span_of = (j : Json) => match j {
