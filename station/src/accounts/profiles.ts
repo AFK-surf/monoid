@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import type { Env } from "../agents/machine-logins.ts";
 import { linkCodexAuthSoon, parseClaudeCredentials } from "../agents/machine-logins.ts";
 import { fileCredentialsSoon, takeBack } from "../agents/no-keychain.ts";
-import { type AccessKind, OPENCODE, profileRuntimes, type Runtime, type Via } from "../agents/profiles.ts";
+import { type AccessKind, OPENCODE, profileRuntimes, type Runtime, vertexAccount, type Via } from "../agents/profiles.ts";
 import { type Endpoints, endpoints, find, type Source } from "../agents/providers.ts";
 import type { Capability } from "../sessions/decision.ts";
 import { claudeUserAgent, type QuotaReset } from "./claude-reset.ts";
@@ -290,6 +290,10 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
     if (!at) return check("failed", t("station.profile.addressNeeded"), null);
     // Signed in to Kimi: a sign-in no longer renewed, or a token refused, is one to sign in again.
     if (o.login === true && o.key === "") return check("login", t("station.profile.kimiSignedOut"), null);
+    if (source.id === "google-vertex") {
+      if (vertexAccount(o.key) === null) return check("failed", t("station.profile.vertexKeyInvalid"), null);
+      return check("unknown", t("station.profile.vertexUnchecked"), null);
+    }
     const done = await checkApi(source, at, o.key, lang);
     return o.login === true && done.state === "failed" ? check("login", t("station.profile.kimiSignedOut"), null) : done;
   }

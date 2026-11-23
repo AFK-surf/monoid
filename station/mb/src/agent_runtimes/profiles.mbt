@@ -99,6 +99,29 @@ pub fn key_file(p : J) -> String? {
 }
 
 ///|
+/// `vertexKeyFile`: where a Google Vertex AI profile's service account JSON is written for `agy`.
+pub fn vertex_key_file(home : String) -> String {
+  join([home, "agy", "vertex-credentials.json"])
+}
+
+///|
+/// `vertexAccount`: parses a Google Cloud service account JSON key; returns its project id when valid.
+pub fn vertex_account(key : String) -> String? {
+  guard parse(key) is Some(parsed) && is_object(Some(parsed)) else { return None }
+  if !is_s(get(Some(parsed), "type"), "service_account") {
+    return None
+  }
+  let filled = (field : String) => match str_of(get(Some(parsed), field)) {
+    Some(s) if trim(s) != "" => Some(trim(s))
+    _ => None
+  }
+  guard filled("project_id") is Some(project) else { return None }
+  guard filled("client_email") is Some(_) else { return None }
+  guard filled("private_key") is Some(_) else { return None }
+  Some(project)
+}
+
+///|
 pub fn profile_model(p : J) -> String? {
   nonempty(get(Some(p), "model"))
 }
@@ -434,6 +457,9 @@ pub fn profile_runtimes(p : J) -> Array[String] {
     if kimi_signed_in(p) {
       return ["claude"]
     }
+    if source.id == "google-vertex" {
+      return ["agy"]
+    }
     let out = runtimes_of(at)
     if source.id == "xai" {
       out.push("grok")
@@ -466,7 +492,16 @@ pub fn profile_env(p : J, runtime : String) -> Fields {
     return Fields::new()
   }
   let key = trim(str_of(get(access(p), "key")).unwrap_or(""))
-  let env = access_env(runtime, access_kind(p), key, profile_model(p), profile_via(p))
+  let via = profile_via(p)
+  let env = access_env(runtime, access_kind(p), key, profile_model(p), via)
+  if runtime == "agy" && access_kind(p) == "api-provider" && via.provider is Some("google-vertex") {
+    if vertex_account(key) is Some(project) {
+      env.set_str("AGY_ADC_AUTH", "1")
+      env.set_str("GOOGLE_CLOUD_PROJECT", project)
+      env.set_str("GOOGLE_CLOUD_LOCATION", "global")
+      env.set_str("GOOGLE_APPLICATION_CREDENTIALS", vertex_key_file(home_of(p)))
+    }
+  }
   if key_file(p) is Some(_) {
     env.delete("ANTHROPIC_AUTH_TOKEN")
     env.delete("ANTHROPIC_API_KEY")

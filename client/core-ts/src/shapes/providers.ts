@@ -50,6 +50,13 @@ export const SOURCES: Source[] = [
   "auth": "bearer"
  },
  {
+  "id": "google-vertex",
+  "name": "Google Vertex AI",
+  "group": "labs",
+  "mark": "gemini",
+  "auth": "bearer"
+ },
+ {
   "id": "xai",
   "name": "xAI",
   "group": "labs",
@@ -415,7 +422,7 @@ export type Uses = { claude: boolean; codex: boolean; dsh: boolean; grok: boolea
 export function uses(e: Endpoints, source?: string): Uses {
   const dsh = e.chat !== null || e.responses !== null || e.anthropic !== null;
   const grok = source === "xai" && e.responses !== null;
-  const agy = source === "google" && e.chat !== null;
+  const agy = (source === "google" && e.chat !== null) || source === "google-vertex";
   return { claude: e.anthropic !== null, codex: e.responses !== null, dsh, grok, agy, pi: dsh, decision: e.chat !== null || e.decision !== null };
 }
 

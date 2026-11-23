@@ -93,15 +93,19 @@ pub async fn Accounts::new_keyed_profile(
     _ => None
   }
   let runtimes = match src {
-    Some(s) =>
-      runtimes_of_endpoints(
-        endpoints(s, endpoint, protocol).unwrap_or({
-          chat: None,
-          responses: None,
-          anthropic: None,
-          decision: None,
-        }),
-      )
+    Some(s) => {
+      let a = [
+        ("kind", js(kind)),
+        ("provider", js(s.id)),
+      ]
+      if endpoint is Some(e) {
+        a.push(("endpoint", js(e)))
+      }
+      if protocol is Some(p) {
+        a.push(("protocol", js(p)))
+      }
+      runtimes_for(Some(jobj(a)), None)
+    }
     None => runtimes_of_kind(kind, runtime_kind(input.get("runtime")))
   }
   if (runtimes.length() == 0 && src is None) ||

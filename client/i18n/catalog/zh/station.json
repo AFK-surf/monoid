@@ -750,6 +750,8 @@
   "station.notice.blocked": "模型服务的防火墙拦截了此 station 的网络出口，换一个出口后重试",
   "station.failure.blocked": "网络出口被模型服务拦截",
   "station.profile.agyFailed": "无法启动 Antigravity CLI：{error}",
+  "station.profile.vertexKeyInvalid": "请粘贴有效的 Google Cloud 服务账号 JSON 密钥（需包含 type、project_id、client_email 和 private_key）",
+  "station.profile.vertexUnchecked": "密钥格式正确，需要 Antigravity CLI 才能确认可用",
   "station.move.card.title": "把这台 station 的全部内容逐项迁到「{to}」（共 {n} 项）：每个聊天迁移时只暂停几秒，之后也能迁回来。",
   "station.move.card.confirm": "全部迁走",
   "station.move.card.confirmDetail": "聊天、后台任务、账号和连接依次迁过去；迁不了的会说明原因",

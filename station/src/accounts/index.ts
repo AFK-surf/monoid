@@ -29,7 +29,7 @@ import { join } from "node:path";
 import type { Env, MachineToken } from "../agents/machine-logins.ts";
 import { linkCodexAuthSoon } from "../agents/machine-logins.ts";
 import { type AccessKind, accessKind, KIMI_CODE, kimiSignedIn, profileVia, type Runtime, takesFast, fastNeedsCredits, type Via } from "../agents/profiles.ts";
-import { cleanEndpoint, endpoints, find, groupOf, LEGACY, runtimesOf as runtimesOfEndpoints, SOURCES } from "../agents/providers.ts";
+import { cleanEndpoint, endpoints, find, groupOf, LEGACY, SOURCES } from "../agents/providers.ts";
 import { type Viewer, managesStation } from "../mesh/credential.ts";
 import { maskValue, startEnv } from "../ops/agent-env.ts";
 import type { ConfigFile } from "../ops/config.ts";
@@ -802,7 +802,7 @@ export class Accounts {
     // Of one at the reader's own address: the protocol it speaks there (the one chosen, else its first).
     const protocol = source?.endpointRequired ? (source.protocols.find((p) => p === givenProtocol) ?? source.protocols[0]) : undefined;
     // A key runs every runtime it can; custom variables are for the runtime given.
-    const runtimes: Runtime[] = source ? runtimesOfEndpoints(endpoints(source, endpoint, protocol) ?? {}) : runtimesOf(kind, runtimeOf(input.runtime));
+    const runtimes: Runtime[] = source ? runtimesFor({ kind, provider: source.id, endpoint, protocol }, undefined) : runtimesOf(kind, runtimeOf(input.runtime));
     if ((runtimes.length === 0 && !source) || !runtimes.every((r) => accessKinds(r).includes(kind))) throw new Refusal(400, `unknown access ${kind}`);
     const runtime = runtimes[0] ?? "claude";
     const key = typeof access?.key === "string" ? access.key.trim() : "";

@@ -180,7 +180,7 @@ const update = (u) => say({ method: 'session/update', params: { sessionId, updat
 const dir = args[args.indexOf('--gemini-dir') + 1];
 const conversations = join(dir, 'antigravity-cli', 'conversations');
 mkdirSync(conversations, { recursive: true });
-if (dump) appendFileSync(dump, JSON.stringify({ args, key: process.env.GEMINI_API_KEY ?? null, updates: process.env.AGY_CLI_DISABLE_AUTO_UPDATE ?? null, fileTokens: process.env.SSH_CLIENT ?? null }) + '\n');
+if (dump) appendFileSync(dump, JSON.stringify({ args, key: process.env.GEMINI_API_KEY ?? null, adcAuth: process.env.AGY_ADC_AUTH ?? null, project: process.env.GOOGLE_CLOUD_PROJECT ?? null, location: process.env.GOOGLE_CLOUD_LOCATION ?? null, credentials: process.env.GOOGLE_APPLICATION_CREDENTIALS ?? null, updates: process.env.AGY_CLI_DISABLE_AUTO_UPDATE ?? null, fileTokens: process.env.SSH_CLIENT ?? null }) + '\n');
 const models = process.env.FAKE_AGY_SUBSCRIPTION
   ? {
       currentModelId: 'gemini-4-carbon-high',
@@ -213,7 +213,8 @@ for await (const line of createInterface({ input: process.stdin })) {
   if (!m.method) continue;
   const p = m.params;
   if (m.method === 'initialize' && process.env.FAKE_AGY_SILENT) continue;
-  if (m.method === 'initialize') reply(m.id, { protocolVersion: 1, agentCapabilities: { loadSession: true, _meta: { antigravity: { tier: true, systemPrompt: { append: true } } } }, agentInfo: { name: 'Antigravity ACP Server', version: '1.4.12' } });
+  if (m.method === 'initialize') reply(m.id, { protocolVersion: 1, authMethods: [{ id: 'oauth-personal' }, { id: 'oauth-business' }, { id: 'gemini-api-key' }, { id: 'agent-platform' }], agentCapabilities: { loadSession: true, _meta: { antigravity: { tier: true, systemPrompt: { append: true } } } }, agentInfo: { name: 'Antigravity ACP Server', version: '1.4.12' } });
+  else if (m.method === 'authenticate') reply(m.id, {});
   else if (m.method === 'session/new') {
     if (process.env.FAKE_AGY_SIGNED_OUT) { say({ id: m.id, error: { code: -32000, message: 'Authentication required' } }); continue; }
     sessionId = randomUUID();
@@ -241,6 +242,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     }
     if (text === 'expired') { say({ id: m.id, error: { code: -32603, message: 'Authentication expired. Please log back in.' } }); held = null; continue; }
     if (text === 'verification-required') { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '⚠ Verification Required' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
+    if (text === 'vertex-iam-denied') { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: "⚠ Permission 'aiplatform.endpoints.predict' denied on resource '//aiplatform.googleapis.com/projects/demo-project/locations/global/publishers/google/models/gemini-4-carbon' (or it may not exist)." } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
     if (text === 'verification-required-mid-turn') { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'partial ' } }); update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ Verification Required\n' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
     if (loaded && Number(process.env.FAKE_AGY_LOAD_REPLAY ?? 0) > loadReplayCount) {
       loadReplayCount++;

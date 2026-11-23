@@ -762,6 +762,8 @@
   "station.notice.blocked": "The provider's firewall blocked this station's network; retry from another one",
   "station.failure.blocked": "Blocked by the provider's firewall",
   "station.profile.agyFailed": "Couldn’t start the Antigravity CLI: {error}",
+  "station.profile.vertexKeyInvalid": "Paste a valid Google Cloud service account JSON key (with type, project_id, client_email, and private_key)",
+  "station.profile.vertexUnchecked": "The key is well-formed; Antigravity CLI is needed to confirm it works",
   "station.move.card.title": "Move everything of this station to “{to}” ({n} items), one item after another: each chat pauses for seconds as it goes, and can be moved back.",
   "station.move.card.confirm": "Move everything",
   "station.move.card.confirmDetail": "Each chat, its jobs, accounts and connects go to that station in turn; one that cannot move is said",

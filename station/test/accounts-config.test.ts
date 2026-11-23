@@ -4,9 +4,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkConfig } from "../src/accounts/check.ts";
 import { needsKey, runtimesOf } from "../src/accounts/profiles.ts";
-import { accessEnv, codexOverrides, OPENCODE } from "../src/agents/profiles.ts";
+import { accessEnv, billedPerUse, codexOverrides, OPENCODE, profileEnv, profileRuntimes, vertexAccount, vertexKeyFile } from "../src/agents/profiles.ts";
 import { hubConfig } from "../src/sessions/config.ts";
-import { profileEnv } from "../src/agents/profiles.ts";
 import { ConfigFile } from "../src/ops/config.ts";
 import { temp } from "./accounts-fakes.ts";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -148,4 +147,44 @@ test("a profile on the machine's login loses the 「本机」 it was named with;
     { ...sub, id: "other", name: "a@x.com（本机）" },
   ] };
   assert.deepEqual(hubConfig(raw, "/x").profiles.map((p) => p.name), ["b@x.com", "Claude Code", "a@x.com（本机）"]);
+});
+
+test("google-vertex profile passes checkConfig with a key, runs agy only, is billedPerUse, and builds ADC env with custom overrides", () => {
+  const sa = JSON.stringify({
+    type: "service_account",
+    project_id: "demo-project",
+    client_email: "bot@demo-project.iam.gserviceaccount.com",
+    private_key: "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----\n",
+  });
+  assert.equal(err({ profiles: [{ id: "vx", home: "homes/vx", access: { kind: "api-provider", provider: "google-vertex", key: sa } }] }), "accepted");
+  assert.equal(err({ profiles: [{ id: "vx", home: "homes/vx", access: { kind: "api-provider", provider: "google-vertex" } }] }), "profile vx: access api-provider needs a key");
+  assert.deepEqual(vertexAccount(sa), { project: "demo-project" });
+  assert.equal(vertexAccount("{}"), null);
+  assert.equal(vertexAccount("not json"), null);
+
+  const profile = hubConfig(
+    { profiles: [{ id: "vx", home: "homes/vx", access: { kind: "api-provider", provider: "google-vertex", key: sa } }] },
+    "/data",
+  ).profiles[0]!;
+  assert.deepEqual(profileRuntimes(profile), ["agy"]);
+  assert.deepEqual(profile.runtimes, ["agy"]);
+  assert.equal(profile.runtime, "agy");
+  assert.equal(billedPerUse(profile), true);
+
+  const env = profileEnv(profile, "agy");
+  assert.deepEqual(env, {
+    AGY_ADC_AUTH: "1",
+    GOOGLE_CLOUD_PROJECT: "demo-project",
+    GOOGLE_CLOUD_LOCATION: "global",
+    GOOGLE_APPLICATION_CREDENTIALS: vertexKeyFile(profile.home),
+  });
+  assert.equal("GEMINI_API_KEY" in env, false);
+  assert.deepEqual(profileEnv(profile, "claude"), {});
+
+  const overridden = profileEnv({ ...profile, env: { GOOGLE_CLOUD_LOCATION: "us-central1", GOOGLE_CLOUD_PROJECT: "other-proj" } }, "agy");
+  assert.equal(overridden.GOOGLE_CLOUD_LOCATION, "us-central1");
+  assert.equal(overridden.GOOGLE_CLOUD_PROJECT, "other-proj");
+  assert.equal(overridden.AGY_ADC_AUTH, "1");
+  assert.equal(overridden.GOOGLE_APPLICATION_CREDENTIALS, vertexKeyFile(profile.home));
+  assert.equal(overridden.GEMINI_API_KEY, undefined);
 });
