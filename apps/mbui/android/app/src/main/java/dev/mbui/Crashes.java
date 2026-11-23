@@ -31,6 +31,9 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -69,6 +72,33 @@ final class Crashes {
     /** Ensures pendingCrashMask returns non-zero at most once per process. */
     private static final java.util.concurrent.atomic.AtomicBoolean crashPendingRead = new java.util.concurrent.atomic.AtomicBoolean(false);
 
+    private static final ThreadPoolExecutor telemetryExecutor = new ThreadPoolExecutor(
+            1, 1, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(128),
+            new ThreadFactory() {
+                @Override
+                public Thread newThread(Runnable r) {
+                    Thread t = new Thread(() -> {
+                        try {
+                            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+                        } catch (RuntimeException ignored) {
+                        }
+                        r.run();
+                    }, "stillfail-telemetry");
+                    t.setDaemon(true);
+                    t.setPriority(Thread.MIN_PRIORITY);
+                    return t;
+                }
+            },
+            new ThreadPoolExecutor.DiscardPolicy());
+
+    static void runTelemetry(Runnable r) {
+        telemetryExecutor.execute(r);
+    }
+
+    private static volatile String cachedAccount;
+    private static volatile boolean accountLoaded;
+    private static volatile Boolean cachedReporting;
+
     private static SharedPreferences prefs(Context context) {
         return context.getSharedPreferences("stillfail", Context.MODE_PRIVATE);
     }
@@ -99,8 +129,14 @@ final class Crashes {
         own = "1".equals(Push.env(context, "MBUI_OWN"));
         beta = "1".equals(Push.env(context, "MBUI_BETA"));
         Thread.UncaughtExceptionHandler before = Thread.getDefaultUncaughtExceptionHandler();
-        if (before instanceof Keeper) return;
-        Thread.setDefaultUncaughtExceptionHandler(new Keeper(new File(context.getFilesDir(), DIR), before));
+        if (!(before instanceof Keeper)) {
+            Thread.setDefaultUncaughtExceptionHandler(new Keeper(new File(context.getFilesDir(), DIR), before));
+        }
+        Context app = context.getApplicationContext();
+        runTelemetry(() -> {
+            account(app);
+            reporting(app);
+        });
     }
 
     private static final class Keeper implements Thread.UncaughtExceptionHandler {
@@ -274,11 +310,12 @@ final class Crashes {
      *  the account the last report went as, or android-anonymous before one. */
     static void hang(Context context, String json, String name) {
         if (!hasKey()) return;
-        String known = account(context);
-        String account = known != null ? known : "android-anonymous";
         long at = System.currentTimeMillis();
-        new Thread(() -> {
+        Context app = context.getApplicationContext();
+        runTelemetry(() -> {
             try {
+                String known = account(app);
+                String account = known != null ? known : "android-anonymous";
                 JSONObject p = new JSONObject(json);
                 JSONObject d = device();
                 for (Iterator<String> k = d.keys(); k.hasNext(); ) {
@@ -288,21 +325,22 @@ final class Crashes {
                 List<JSONObject> batch = new ArrayList<>();
                 batch.add(new JSONObject().put("event", name).put("distinct_id", account)
                         .put("uuid", UUID.randomUUID().toString()).put("timestamp", iso(at)).put("properties", p));
-                send(context, batch);
+                send(app, batch);
             } catch (Exception ignored) {
             }
-        }, "stillfail-hangs").start();
+        });
     }
 
     /** An error the app got past, sent at once as {@code type} with {@code value}, {@code reason} and {@code facts}. */
     private static void handled(Context context, String type, String value, String reason, JSONObject facts) {
         if (!hasKey()) return;
-        String known = account(context);
-        String account = known != null ? known : "android-anonymous";
         long at = System.currentTimeMillis();
         int pid = android.os.Process.myPid();
-        new Thread(() -> {
+        Context app = context.getApplicationContext();
+        runTelemetry(() -> {
             try {
+                String known = account(app);
+                String account = known != null ? known : "android-anonymous";
                 JSONArray ex = new JSONArray().put(new JSONObject().put("type", type).put("value", value)
                         .put("mechanism", new JSONObject().put("handled", true).put("synthetic", false).put("type", "generic")));
                 JSONObject f = new JSONObject().put("reason", reason);
@@ -312,24 +350,33 @@ final class Crashes {
                 }
                 List<JSONObject> batch = new ArrayList<>();
                 batch.add(event(new Report(at, pid, ex, null, null, f, null), account, "error"));
-                send(context, batch);
+                send(app, batch);
             } catch (Exception ignored) {
             }
-        }).start();
+        });
     }
 
     static boolean reporting(Context context) {
-        return prefs(context).getBoolean(REPORTING, true);
+        Boolean v = cachedReporting;
+        if (v != null) return v;
+        boolean on = prefs(context).getBoolean(REPORTING, true);
+        cachedReporting = on;
+        return on;
     }
 
     /** Turned on or off on this device (the settings' 「发送使用统计和错误报告」: src/sfapp/settings/home.mbt). */
     static void setReporting(Context context, boolean on) {
+        cachedReporting = on;
         prefs(context).edit().putBoolean(REPORTING, on).apply();
     }
 
     /** The account the last report went as (the signed-in one's id): what the app's other events go as (BarTiming). */
     static String account(Context context) {
-        return prefs(context).getString(ACCOUNT, null);
+        if (accountLoaded) return cachedAccount;
+        String v = prefs(context).getString(ACCOUNT, null);
+        cachedAccount = v;
+        accountLoaded = true;
+        return v;
     }
 
     /** What every event of the app carries: its build, and the device. */
@@ -353,10 +400,13 @@ final class Crashes {
      *  id), off the calling thread; what fails to go (offline) goes at the next start. */
     static void report(Context context, String account) {
         if (!hasKey()) return;
-        SharedPreferences prefs = prefs(context);
+        cachedAccount = account;
+        accountLoaded = true;
+        Context app = context.getApplicationContext();
+        SharedPreferences prefs = prefs(app);
         prefs.edit().putString(ACCOUNT, account).apply();
-        new Thread(() -> {
-            List<Report> reports = gather(context, prefs.getLong(SINCE, System.currentTimeMillis() - LOOK_BACK));
+        runTelemetry(() -> {
+            List<Report> reports = gather(app, prefs.getLong(SINCE, System.currentTimeMillis() - LOOK_BACK));
             if (reports.isEmpty()) return;
             long last = 0;
             try {
@@ -365,13 +415,13 @@ final class Crashes {
                     batch.add(event(r, account, "fatal"));
                     last = Math.max(last, r.at);
                 }
-                send(context, batch);
+                send(app, batch);
             } catch (Exception e) {
                 return;
             }
             prefs.edit().putLong(SINCE, last).apply();
             for (Report r : reports) if (r.kept != null) r.kept.delete();
-        }, "stillfail-crashes").start();
+        });
     }
 
     private static JSONObject event(Report r, String account, String level) throws Exception {

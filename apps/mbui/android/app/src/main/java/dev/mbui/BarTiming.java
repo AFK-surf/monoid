@@ -230,7 +230,7 @@ final class BarTiming {
         List<Double> gaps = new ArrayList<>();
         for (int i = 1; i < frames.size(); i++) gaps.add(Math.round((frames.get(i) - frames.get(i - 1)) / 100_000.0) / 10.0);
         long at = System.currentTimeMillis() - (System.nanoTime() - s.tap) / 1_000_000L;
-        new Thread(() -> {
+        Crashes.runTelemetry(() -> {
             try {
                 JSONObject e = new JSONObject();
                 e.put("from", s.from != null ? s.from : JSONObject.NULL);
@@ -269,7 +269,7 @@ final class BarTiming {
                 send(at, e);
             } catch (Exception ignored) {
             }
-        }).start();
+        });
     }
 
     private static void put(JSONObject o, String k, Double v) throws Exception {
@@ -312,12 +312,12 @@ final class BarTiming {
             batch = new ArrayList<>(waiting);
             waiting.clear();
         }
-        if (!batch.isEmpty()) new Thread(() -> {
+        if (!batch.isEmpty()) Crashes.runTelemetry(() -> {
             try {
                 Crashes.send(c, batch);
             } catch (Exception ignored) {
             }
-        }).start();
+        });
     }
 
     /** The activity's window's callback, the touches seen on their way (Android's MainActivity.dispatchTouchEvent). */

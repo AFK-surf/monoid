@@ -1378,15 +1378,18 @@ static GLuint compile2(GLenum type, const char *head, const char *body, const ch
   return s;
 }
 
-static GLuint link_prog_cached(const char *tag, GLuint *vs_slot, const char *vs_head, const char *vs_body,
-                               const char *fs_head, const char *fs_body) {
+static GLuint link_prog_impl(const char *tag, GLuint *vs_slot, const char *vs_head, const char *vs_body,
+                             const char *fs_head, const char *fs_body, int cache_only) {
   char path[640];
   int use_cache = prog_cache_dir[0] != '\0' && prog_bin_capable();
   if (use_cache) {
     prog_cache_path(path, sizeof path, tag, vs_head, vs_body, fs_head, fs_body);
     GLuint cached = prog_cache_load(path);
     if (cached) return cached;
+    if (cache_only) return 0;
     prog_cache_misses++;
+  } else if (cache_only) {
+    return 0;
   }
   if (!*vs_slot) *vs_slot = compile2(GL_VERTEX_SHADER, vs_head, vs_body, tag);
   GLuint fs = compile2(GL_FRAGMENT_SHADER, fs_head, fs_body, tag);
@@ -1404,8 +1407,13 @@ static GLuint link_prog_cached(const char *tag, GLuint *vs_slot, const char *vs_
   return p;
 }
 
+static GLuint link_prog_cached(const char *tag, GLuint *vs_slot, const char *vs_head, const char *vs_body,
+                               const char *fs_head, const char *fs_body) {
+  return link_prog_impl(tag, vs_slot, vs_head, vs_body, fs_head, fs_body, 0);
+}
+
 // The program for `group` (MB_PROG_*), compiled (or loaded from binary cache) on first use, its textures' units set.
-static kprog make_prog(int group) {
+static kprog make_prog_impl(int group, int cache_only) {
   const char *vs_head = "#version 300 es\n#define MB_VS_ADAPTIVE 0\n";
   GLuint *vs_slot = &vs_main;
   const char *tag = "ui";
@@ -1495,7 +1503,12 @@ static kprog make_prog(int group) {
                "#define MB_LIQUID_SINGLE 0\n");
       break;
   }
-  kprog k = {link_prog_cached(tag, vs_slot, vs_head, VS, fs_head, FS)};
+  GLuint p = link_prog_impl(tag, vs_slot, vs_head, VS, fs_head, FS, cache_only);
+  if (!p) {
+    kprog empty = {0};
+    return empty;
+  }
+  kprog k = {p};
   k.vp = glGetUniformLocation(k.p, "u_vp");
   k.origin = glGetUniformLocation(k.p, "u_origin");
   k.scale = glGetUniformLocation(k.p, "u_scale");
@@ -1508,6 +1521,7 @@ static kprog make_prog(int group) {
   k.glight = glGetUniformLocation(k.p, "u_glight");
   k.ad_box = glGetUniformLocation(k.p, "u_ad_box");
   k.ad_n = glGetUniformLocation(k.p, "u_ad_n");
+  k.gen = prog_gen - 1;
   prog_now = k.p;
   glUseProgram(k.p);
   GLint loc;
@@ -1520,15 +1534,23 @@ static kprog make_prog(int group) {
   return k;
 }
 
-static void ensure_prog_flat(void) {
+static kprog make_prog(int group) { return make_prog_impl(group, 0); }
+
+static void ensure_prog_flat_impl(int cache_only) {
   if (prog_flat) return;
-  prog_flat = link_prog_cached("flat", &vs_main, "#version 300 es\n#define MB_VS_ADAPTIVE 0\n", VS, NULL, FS_FLAT);
+  GLuint p = link_prog_impl("flat", &vs_main, "#version 300 es\n#define MB_VS_ADAPTIVE 0\n", VS, NULL, FS_FLAT, cache_only);
+  if (!p) return;
+  prog_flat = p;
   uf_vp = glGetUniformLocation(prog_flat, "u_vp");
 }
 
-static void ensure_post(void) {
+static void ensure_prog_flat(void) { ensure_prog_flat_impl(0); }
+
+static void ensure_post_impl(int cache_only) {
   if (post) return;
-  post = link_prog_cached("post", &vs_post, NULL, PVS, NULL, PFS);
+  GLuint p = link_prog_impl("post", &vs_post, NULL, PVS, NULL, PFS, cache_only);
+  if (!p) return;
+  post = p;
   pu_src = glGetUniformLocation(post, "u_src");
   pu_lv1 = glGetUniformLocation(post, "u_lv1");
   pu_lv2 = glGetUniformLocation(post, "u_lv2");
@@ -1538,15 +1560,34 @@ static void ensure_post(void) {
   pu_c = glGetUniformLocation(post, "u_c");
 }
 
-static void ensure_ad_prog(void) {
+static void ensure_post(void) { ensure_post_impl(0); }
+
+static void ensure_ad_prog_impl(int cache_only) {
   if (ad_prog) return;
-  ad_prog = link_prog_cached("adaptive", &vs_post, NULL, PVS, NULL, AD_FS);
+  GLuint p = link_prog_impl("adaptive", &vs_post, NULL, PVS, NULL, AD_FS, cache_only);
+  if (!p) return;
+  ad_prog = p;
   adu_bd = glGetUniformLocation(ad_prog, "u_bd");
   adu_prev = glGetUniformLocation(ad_prog, "u_prev");
   adu_map = glGetUniformLocation(ad_prog, "u_map");
   adu_uvc = glGetUniformLocation(ad_prog, "u_uvc");
   adu_box = glGetUniformLocation(ad_prog, "u_box");
   adu_param = glGetUniformLocation(ad_prog, "u_param");
+}
+
+static void ensure_ad_prog(void) { ensure_ad_prog_impl(0); }
+
+// Preload any already-cached .glbin program binaries on context setup without compiling or counting misses.
+static void gl_preload_cached_progs(void) {
+  if (prog_cache_dir[0] == '\0' || !prog_bin_capable()) return;
+  for (int g = 0; g < MB_PROGS; g++) {
+    if (!progs[g].p) progs[g] = make_prog_impl(g, 1);
+  }
+  ensure_prog_flat_impl(1);
+  ensure_post_impl(1);
+  ensure_ad_prog_impl(1);
+  prog_now = 0;
+  glUseProgram(0);
 }
 
 // The instances' buffer and the glyphs' atlases made in the context now current; programs are compiled on first use
@@ -1590,6 +1631,7 @@ static void gl_setup(void) {
   }
   glEnable(GL_BLEND);
   glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+  gl_preload_cached_progs();
 }
 
 // ---------------------------------------------------------------------------

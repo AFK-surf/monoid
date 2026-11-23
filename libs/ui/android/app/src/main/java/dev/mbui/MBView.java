@@ -763,11 +763,12 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     }
 
     private void wakeHints() {
+        boolean created = false;
         if (ONE) {
-            if (lastGlTid > 0) hintsFor(new int[] {lastGlTid});
+            if (lastGlTid > 0) created = hintsFor(new int[] {lastGlTid});
         } else if (logicTid > 0) {
             int gl = lastGlTid;
-            hintsFor(gl > 0 && glAlive ? new int[] {logicTid, gl} : new int[] {logicTid});
+            created = hintsFor(gl > 0 && glAlive ? new int[] {logicTid, gl} : new int[] {logicTid});
         }
         if (android.os.Build.VERSION.SDK_INT >= 31 && hints != null) {
             long target = pacer.framePeriod * 7 / 10;
@@ -775,15 +776,23 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
                 hintTarget = target;
                 hints.updateTargetWorkDuration(target);
             }
-            if (hintTarget > 0) {
+            if (!created && hintTarget > 0) {
                 hints.reportActualWorkDuration(hintTarget);
             }
         }
     }
 
+    private void boostOnTouch() {
+        if (paused) return;
+        long now = System.nanoTime();
+        if (lastFrameWorkedNs != 0L && now - lastFrameWorkedNs < 250_000_000L) return;
+        wakeHints();
+        lastFrameWorkedNs = now;
+    }
+
     /** One session of the threads {@code tids} (a session per thread set: GLSurfaceView starts another GL thread as the view is shown again). */
-    private void hintsFor(int[] tids) {
-        if (android.os.Build.VERSION.SDK_INT < 31 || java.util.Arrays.equals(tids, hintTids)) return;
+    private boolean hintsFor(int[] tids) {
+        if (android.os.Build.VERSION.SDK_INT < 31 || java.util.Arrays.equals(tids, hintTids)) return false;
         if (hints != null) hints.close();
         hints = null;
         hintTids = tids;
@@ -795,12 +804,18 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             Host.log("drawing thread: hints: " + e);
         }
         hintTarget = target;
+        if (hints != null && target > 0) {
+            hints.reportActualWorkDuration(target);
+            return true;
+        }
+        return false;
     }
 
     /** The system told what the drawing threads' work over a frame (null: Android before 12, or a phone without ADPF). */
     private android.os.PerformanceHintManager.Session hints;
     private int[] hintTids;
     private long hintTarget;
+    private long lastFrameWorkedNs;
     private volatile int lastGlTid;
     /** The display's frame, ms (FramePacer's framePeriod). */
     double framePeriodMs() {
@@ -909,6 +924,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
      * does (its frames' targets are 70% of their time).
      */
     private void frameWorked(long nanos, long gl) {
+        lastFrameWorkedNs = System.nanoTime();
         if (hints == null) return;
         nanos = Math.max(nanos, gl);
         long target = pacer.framePeriod * 7 / 10;
@@ -1093,7 +1109,10 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             case MotionEvent.ACTION_DOWN:
                 // (the display's highest from a finger going down: what it moves moves at it from its first frame)
                 pacer.touching = true;
-                onApp(() -> pacer.sayRate(true));
+                onApp(() -> {
+                    pacer.sayRate(true);
+                    boostOnTouch();
+                });
                 requestFocus();
                 break;
             case MotionEvent.ACTION_UP: Host.lifts++; pacer.touching = false; break;

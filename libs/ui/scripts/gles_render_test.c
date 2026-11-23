@@ -2827,6 +2827,101 @@ int main(void) {
     (void)system(rmcmd);
   }
 
+  // Wave 1: gl_setup() preloads only existing valid .glbin cache hits (zero shader compiles on empty/partial/warm).
+  {
+    char pdir[256];
+    snprintf(pdir, sizeof pdir, "/tmp/mbui_gl_preload_test_%ld", (long)getpid());
+    char rmcmd[320];
+    snprintf(rmcmd, sizeof rmcmd, "rm -rf %s", pdir);
+    (void)system(rmcmd);
+
+    GLint nfmt = 0;
+    glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &nfmt);
+    int total_progs = MB_PROGS + 3;
+
+    // 1) Empty cache dir: gl_setup() compiles nothing, loads nothing, records zero hits and zero misses.
+    gl_set_prog_cache_dir(pdir);
+    prog_cache_hits = prog_cache_misses = prog_cache_stores = 0;
+    gl_setup();
+    for (int g = 0; g < MB_PROGS; g++) CHECK(progs[g].p == 0);
+    CHECK(prog_flat == 0 && post == 0 && ad_prog == 0);
+    CHECK(vs_main == 0 && vs_main_ad == 0 && vs_post == 0);
+    CHECK(prog_cache_hits == 0 && prog_cache_misses == 0 && prog_now == 0);
+
+    if (nfmt > 0) {
+      // 2) Warm cache dir: populate all MB_PROGS + 3 .glbin files, then verify gl_setup() preloads all of them.
+      for (int g = 0; g < MB_PROGS; g++) use_prog(g);
+      ensure_prog_flat();
+      ensure_post();
+      ensure_ad_prog();
+      CHECK(prog_cache_stores == total_progs);
+
+      prog_cache_hits = prog_cache_misses = prog_cache_stores = 0;
+      gl_setup();
+      CHECK(prog_cache_hits == total_progs);
+      CHECK(prog_cache_misses == 0);
+      CHECK(vs_main == 0 && vs_main_ad == 0 && vs_post == 0);
+      CHECK(prog_now == 0);
+      for (int g = 0; g < MB_PROGS; g++) {
+        GLint linked = 0;
+        CHECK(progs[g].p != 0);
+        glGetProgramiv(progs[g].p, GL_LINK_STATUS, &linked);
+        CHECK(linked == GL_TRUE);
+      }
+      CHECK(prog_flat != 0 && post != 0 && ad_prog != 0);
+      CHECK(glGetError() == GL_NO_ERROR);
+
+      glBindFramebuffer(GL_FRAMEBUFFER, surface);
+      double smoke[MB_INST];
+      rect_at(smoke, 10, 10, 20, 20, 0, 0.2, 0.7, 0.3, 0);
+      gl_present(smoke, 1, 0.0, 0.0, 0.0);
+      unsigned char *px = pixels_of_fb(surface);
+      unsigned char *p = px + ((fb_h - 1 - 40) * fb_w + 40) * 4;
+      CHECK(p[1] > 150 && p[0] < 80);
+      free(px);
+      CHECK(glGetError() == GL_NO_ERROR);
+
+      // 3) Partial cache dir: keep only MB_PROG_UI and post .glbin files, verify gl_setup() loads only those two
+      //    with zero shader compilation, and remaining programs still compile lazily on demand.
+      (void)system(rmcmd);
+      prog_cache_hits = prog_cache_misses = prog_cache_stores = 0;
+      gl_setup();
+      use_prog(MB_PROG_UI);
+      ensure_post();
+      CHECK(prog_cache_stores == 2);
+
+      prog_cache_hits = prog_cache_misses = prog_cache_stores = 0;
+      gl_setup();
+      CHECK(prog_cache_hits == 2);
+      CHECK(prog_cache_misses == 0);
+      CHECK(vs_main == 0 && vs_main_ad == 0 && vs_post == 0);
+      CHECK(prog_now == 0);
+      CHECK(progs[MB_PROG_UI].p != 0 && post != 0);
+      CHECK(progs[MB_PROG_PATH].p == 0 && progs[MB_PROG_FROSTED].p == 0 &&
+            progs[MB_PROG_LIQUID_MERGED].p == 0 && progs[MB_PROG_LIQUID_SINGLE].p == 0 &&
+            progs[MB_PROG_LENS].p == 0 && prog_flat == 0 && ad_prog == 0);
+
+      // Draw a frosted glass scene (small rect so bands.h does not invoke prog_flat):
+      // triggers lazy compile for MB_PROG_FROSTED alone (MB_PROG_UI and post are already preloaded).
+      glBindFramebuffer(GL_FRAMEBUFFER, surface);
+      double fg[2 * MB_INST];
+      rect_at(fg, 25, 25, 10, 10, 0, 0.9, 0.1, 0.1, 0);
+      rect_at(fg + MB_INST, 20, 20, 40, 30, 5, 1, 1, 1, -2);
+      fg[MB_INST + 7] = 4;
+      fg[MB_INST + 11] = 0.5;
+      gl_present(fg, 2, 0.1, 0.2, 0.3);
+      CHECK(progs[MB_PROG_FROSTED].p != 0);
+      CHECK(prog_cache_misses == 1 && prog_cache_stores == 1);
+      CHECK(progs[MB_PROG_LIQUID_MERGED].p == 0 && progs[MB_PROG_LIQUID_SINGLE].p == 0 &&
+            progs[MB_PROG_LENS].p == 0 && progs[MB_PROG_PATH].p == 0 && prog_flat == 0 && ad_prog == 0);
+      CHECK(glGetError() == GL_NO_ERROR);
+    }
+
+    printf("gles_render: gl_setup cache preload ok (nfmt=%d)\n", (int)nfmt);
+    gl_set_prog_cache_dir(NULL);
+    (void)system(rmcmd);
+  }
+
   if (!failed) printf("gles_render: ok\n");
   return failed;
 }
