@@ -259,7 +259,7 @@ test("failed native scope application retries once and a healthy scope does not 
   const scopes = workspaceScope(origin, workspace);
   const listeners = new Set<() => void>();
   const cloud = { data, peersCurrent: true, state: { origin, station: node }, relays: () => [], waysSaid: () => null,
-    memberships: () => [{ workspace, peers: [] }], membership: (ws: string) => ws === workspace ? { workspace, peers: [] } : null, listen: (f: () => void) => { listeners.add(f); return () => { listeners.delete(f); }; },
+    memberships: () => [{ workspace, peers: [] }], fullMemberships: () => [{ workspace, peers: [] }], membership: (ws: string) => ws === workspace ? { workspace, peers: [] } : null, listen: (f: () => void) => { listeners.add(f); return () => { listeners.delete(f); }; },
   } as unknown as import("../src/cloud/state.ts").Cloud;
   let retry!: () => void;
   let tellRetry!: () => void;
@@ -320,7 +320,7 @@ for (const launcher of [true, false]) test(`a front from before meshConfigure ${
   const workspace = "ws", origin = "https://example.test";
   const scopes = workspaceScope(origin, workspace);
   const cloud = { data, peersCurrent: true, state: { origin, station: node }, relays: () => [], waysSaid: () => null,
-    memberships: () => [{ workspace, peers: [] }], membership: (ws: string) => ws === workspace ? { workspace, peers: [] } : null, listen: () => () => {},
+    memberships: () => [{ workspace, peers: [] }], fullMemberships: () => [{ workspace, peers: [] }], membership: (ws: string) => ws === workspace ? { workspace, peers: [] } : null, listen: () => () => {},
   } as unknown as import("../src/cloud/state.ts").Cloud;
   const said: string[] = [];
   let tellSaid!: () => void;
@@ -362,7 +362,7 @@ test("a front from before meshConfigure is not retried by a peer's directory exc
   const scopes = workspaceScope(origin, workspace);
   const membership = { workspace, peers: [{ id: peer }] };
   const cloud = { data, peersCurrent: true, state: { origin, station: node }, relays: () => [], waysSaid: () => null,
-    memberships: () => [membership], membership: (ws: string) => ws === workspace ? membership : null, listen: () => () => {},
+    memberships: () => [membership], fullMemberships: () => [membership], membership: (ws: string) => ws === workspace ? membership : null, listen: () => () => {},
   } as unknown as import("../src/cloud/state.ts").Cloud;
   // the peer's announcement, then a newer one it tells of when this station's exchange asks
   const kept = new Announcements(theirs);
@@ -413,7 +413,7 @@ async function peerExchange(answer: (request: any) => Promise<unknown>, meshConf
   const scopes = workspaceScope(origin, workspace);
   const membership = { workspace, peers: [{ id: peer }] };
   const cloud = { data, peersCurrent: true, state: { origin, station: node }, relays: () => [], waysSaid: () => null,
-    memberships: () => [membership], membership: (ws: string) => ws === workspace ? membership : null, listen: () => () => {},
+    memberships: () => [membership], fullMemberships: () => [membership], membership: (ws: string) => ws === workspace ? membership : null, listen: () => () => {},
   } as unknown as import("../src/cloud/state.ts").Cloud;
   const said: { level: string; message: string }[] = [];
   hearLines((l) => { if (l.at === "mesh") said.push({ level: l.level, message: l.message }); });
@@ -514,7 +514,7 @@ test("remote relay revocation verifies the issuing station and exact target befo
   const scoped = workspaceScope(origin, workspace);
   const membership = { workspace, peers: [{ id: remote }] };
   const cloud = { data, peersCurrent: true, state: { origin, station: node }, relays: () => [], waysSaid: () => null,
-    memberships: () => [membership], membership: (ws: string) => ws === workspace ? membership : null, listen: () => () => {},
+    memberships: () => [membership], fullMemberships: () => [membership], membership: (ws: string) => ws === workspace ? membership : null, listen: () => () => {},
   } as unknown as import("../src/cloud/state.ts").Cloud;
   const endpoint = { meshConfigure: async () => descriptor(1234, { node, privateKey }, scoped), meshRemove: async () => {} } as unknown as import("../src/mesh/endpoint.ts").Endpoint;
   const record = { scope: scoped, node: relay, issuer: remote, generation: 1, name: "edge", made_by: "test", revoked: 0 };

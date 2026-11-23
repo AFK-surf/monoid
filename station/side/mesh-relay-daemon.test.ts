@@ -35,7 +35,7 @@ test("Rust relay enrolls through Node, receives its directory and obeys revocati
   const workspace = "ws", origin = "https://example.test", scope = workspaceScope(origin,workspace);
   const membership = { workspace, peers:[] };
   const cloud = { data, peersCurrent:true, state:{ origin, station:issuer.id }, relays:()=>[], waysSaid:()=>null,
-    memberships:()=>[membership], membership:(ws:string)=>ws===workspace?membership:null, listen:()=>()=>{},
+    memberships:()=>[membership], fullMemberships:()=>[membership], membership:(ws:string)=>ws===workspace?membership:null, listen:()=>()=>{},
   } as unknown as import("../src/cloud/state.ts").Cloud;
   const generation = Buffer.alloc(8); generation.writeBigUInt64BE(1n);
   const binding = { policy:[...Buffer.alloc(32)], scope:[...Buffer.from(scope,"hex")], endpoint:[...Buffer.from(issuer.id,"hex")], neighbor:[...Buffer.from(neighbor.id,"hex")], generation:1, transit:true, signature:[] as number[] };
