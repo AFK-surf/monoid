@@ -197,9 +197,12 @@ export class FakeSession implements AgentSession {
     this.busyNow = true;
     this.prompts.push(text);
   }
+  /// What the test runs as it is steered, after the text is written and before the steer is answered.
+  whileSteered?: (text: string) => Promise<void>;
   async steer(text: string) {
     if (!this.busyNow || this.unsteerable) return false;
     this.steers.push(text);
+    await this.whileSteered?.(text);
     return true;
   }
   async backgroundTools() {

@@ -2085,3 +2085,38 @@ test("a chat an agent opens told no effort runs the one its starter uses most wi
   assert.equal(r.session(r.store.openedBy(keyA)[3]!.child).effort ?? null, null);
   await r.close();
 });
+
+test("a message steered into the turn and read before the steer is answered does not hold the agent's post", async () => {
+  const r = new Rig();
+  try {
+    const [key, thread] = await newSession(r.hub, web());
+    const to = `CHAT/${thread.threadTs}`;
+    sayIn(r.hub, thread.id, "ada@x.com", "做这个");
+    await settle();
+    const agent = r.claude.last();
+    // The runtime has the steered text and its model reads it (`requesting`) before the steer is answered.
+    const steered = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<void>();
+    agent.whileSteered = async () => {
+      steered.resolve();
+      await answer.promise;
+    };
+    sayIn(r.hub, thread.id, "ada@x.com", "顺便看一下测试");
+    await steered.promise;
+    agent.reads();
+    // The post goes up while the steer is still unanswered; what it then tells the turn (`postedNow`) waits for the
+    // actor, which the steer holds, so the steer is answered once the post is in the thread or was held back.
+    const posting = r.call(key, "chat_post", { to, text: "看过了，都通过。" });
+    let held: string | null = null;
+    void posting.then((t) => { if (t.startsWith("Not posted")) held = t; });
+    while (held === null && r.said(thread.id).at(-1)?.text !== "看过了，都通过。") await new Promise((done) => setImmediate(done));
+    assert.equal(held, null, held ?? "");
+    answer.resolve();
+    const posted = await posting;
+    assert.ok(!posted.startsWith("Not posted"), posted);
+    await settle();
+    assert.deepEqual(r.store.pendingBefore(key, thread.id, Number.MAX_SAFE_INTEGER), [], "delivered once the steer is answered");
+  } finally {
+    await r.close();
+  }
+});
