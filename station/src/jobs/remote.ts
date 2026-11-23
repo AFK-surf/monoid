@@ -23,6 +23,7 @@ import { portableComponent, relativeParts } from "../ops/paths.ts";
 import { PlaceRefused, Places } from "../ops/places.ts";
 import { platform } from "../platform/index.ts";
 import { Clock, Duration, Effect, Exit, FiberSet, Schedule, Scope } from "effect";
+import { recordTracePayload, type Traces } from "../mesh/traces.ts";
 import { log } from "../ops/log.ts";
 import { wall } from "../ops/fibers.ts";
 import { type Cloud, UNPROTECTED } from "../cloud/state.ts";
@@ -86,6 +87,8 @@ export type RemoteOptions = {
   backTidy?: { read: () => Promise<number | null>; write: (at: number) => Promise<void> };
   /// Whether this station is opted into automatic new-chat assignment (`acceptAutoChats` in config.json).
   acceptAutoChats?: () => boolean;
+  /// Active OTLP traces batcher for internal `station.task` spans.
+  traces?: () => Traces | null;
 };
 
 /// A start that syncs a directory answers within this, synced or not (the sync goes on): an agent's tool call is given
@@ -335,6 +338,7 @@ export class Remote {
   private removeMirror: (path: string) => Promise<void>;
   private described: ((peer: string, workspace: string) => Json) | null = null;
   private acceptAutoChats: (() => boolean) | null = null;
+  private traces: (() => Traces | null) | null = null;
   private version: string;
   private rigs: ((workspace: string, session: string, rig: Json, described: Json | null) => Promise<Json>) | null = null;
   /// This station's sandboxes (config.json's `sandboxes` + default Colab sandboxes, agents/sandbox.ts): stations of a
@@ -362,6 +366,7 @@ export class Remote {
     this.data = options.data;
     this.version = options.version ?? runningVersion();
     this.acceptAutoChats = options.acceptAutoChats ?? null;
+    this.traces = options.traces ?? null;
     this.store = options.store;
     this.workspaceReader = new WorkspaceReader(() => this.store.now());
     this.jobs = options.jobs;
@@ -619,6 +624,10 @@ export class Remote {
     if (f === "log") {
       const [level, message, fields] = args;
       (level === "warn" ? log.warn : level === "error" ? log.error : log.info)("remote", message, fields ?? {});
+      return;
+    }
+    if (f === "trace") {
+      recordTracePayload(this.traces?.(), args[0]);
     }
   }
 

@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { Clock, Effect, Fiber } from "effect";
 import { liveClock, wall, within } from "../ops/fibers.ts";
+import { recordTracePayload, type Traces } from "../mesh/traces.ts";
 import { RUNTIME_KINDS, type AgentDriver, type AgentSession, type RuntimeKind } from "../agents/runtime.ts";
 import { billedPerUse } from "../agents/profiles.ts";
 import { endRunner, runnerId } from "../agents/process.ts";
@@ -172,6 +173,8 @@ export type HubOptions = {
   readUpkeepState?: (dataDir: string) => Promise<UpkeepState>;
   /// Called when a session automatically falls back to a pay-as-you-go profile while subscriptions exist.
   onBilledFallback?: (info: BilledFallback) => void;
+  /// Active OTLP traces batcher for internal spans (`agent.open`, `turn.run`).
+  traces?: () => Traces | null;
 };
 
 /// The handover file, in the data directory.
@@ -1996,6 +1999,7 @@ export class Hub {
   private sessionDeps(): SessionDeps {
     return {
       store: this.store,
+      emitTrace: (payload) => recordTracePayload(this.options.traces?.(), payload),
       // (its workspace's agent home made first where it is a joined one's not made yet: its memory and skills)
       linkSkills: async (row) => {
         await workspaceAgentHome(this.config().agentHome, this.wsOf(row.key), this.workspaces()[0] ?? null);

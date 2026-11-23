@@ -298,6 +298,7 @@ export const AgentsLive = (control: Control) =>
       // What the deployment adds to every session's instructions (STILLFAIL_SITE_INSTRUCTIONS), read once, as it starts.
       const siteInstructions = yield* Effect.promise(() => readSiteInstructions());
       if (siteInstructions !== "") log.info("agents", "the deployment's instructions are told to every session", { path: process.env.STILLFAIL_SITE_INSTRUCTIONS, chars: siteInstructions.length });
+      const meshSide = yield* MeshSide;
       const hub = new Hub({
         config: settings,
         siteInstructions,
@@ -341,6 +342,7 @@ export const AgentsLive = (control: Control) =>
         stationName: (id) => stationMarksOf(cloud).record(id)?.name ?? (nameOf(cloud, id) !== id ? nameOf(cloud, id) : null),
         cold,
         places,
+        traces: () => meshSide.traces ?? null,
       });
       const workspaceActivity = yield* Effect.acquireRelease(
         Effect.sync(() => buildWorkspaceActivity(store, previous)),
@@ -383,7 +385,7 @@ export const AgentsLive = (control: Control) =>
         },
       });
       const meshBus = yield* Peers;
-      const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus, acceptAutoChats: () => config.raw()?.acceptAutoChats === true });
+      const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus, acceptAutoChats: () => config.raw()?.acceptAutoChats === true, traces: () => meshSide.traces ?? null });
       // Its sandboxes (config.json's `sandboxes` + default Colab sandboxes when Colab profiles exist): wired once `accounts` is created below.
       // Measure only working chats, and only station-owned workspaces. A chat's remote workspaces are measured on the
       // machines that hold them; an offline or older station supplies no reading until it can answer.
@@ -431,7 +433,6 @@ export const AgentsLive = (control: Control) =>
       hub.setJobs(jobs);
       // Ports of other stations forwarded here (mesh/peer-forward.ts), each its session's: through the mesh's way, once
       // it is up (`peers`, below).
-      const meshSide = yield* MeshSide;
       const peers = meshSide.peers;
       const forwards = new Forwards({
         route: () => peers.route,
@@ -632,6 +633,7 @@ export const AgentsLive = (control: Control) =>
           const runtime = runtimeKind(row?.runtime);
           return runtime === undefined ? undefined : listingFor(runtime, row?.tui === true);
         },
+        { traces: () => meshSide.traces ?? null, runtimeOf: (session) => store.getSession(session)?.runtime ?? undefined },
       );
 
       let taken = false;

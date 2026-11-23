@@ -405,6 +405,7 @@ fn P53Remote::told(self : P53Remote, f : String, args : Array[Json]) -> Unit {
       }
     }
     "log" => slice_log(arg_str(args, 0), "remote", arg_str(args, 1), arg_at(args, 2))
+    "trace" => self.bus.emit_trace_json(arg_at(args, 0))
     "used" => self.used[arg_str(args, 0)] = arg_at(args, 1)
     "usedReady" => self.used_ready = true
     // (a chat's use record as the program has it now: read through it when asked)

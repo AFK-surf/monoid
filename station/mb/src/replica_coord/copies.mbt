@@ -489,6 +489,74 @@ pub struct Copies {
 }
 
 ///|
+fn export_reason(told : J) -> String {
+  if yes_at(told, "transcripts") {
+    "transcripts"
+  } else if items(at(told, "sessions")).length() > 0 ||
+    items(at(told, "threads")).length() > 0 ||
+    items(at(told, "marks")).length() > 0 ||
+    items(at(told, "removedSessions")).length() > 0 ||
+    items(at(told, "removedThreads")).length() > 0 {
+    "demand"
+  } else {
+    "pass"
+  }
+}
+
+///|
+fn export_error_type(e : Error) -> String {
+  let msg = message_of(e).to_lower()
+  if msg.contains("locked") || msg.contains("busy") {
+    "locked"
+  } else if msg.contains("enoent") || msg.contains("no such") {
+    "enoent"
+  } else {
+    "export"
+  }
+}
+
+///|
+fn level_error_type(reason : String, e : Error) -> String {
+  let msg = message_of(e).to_lower()
+  if msg.contains("enoent") || msg.contains("no such") {
+    "enoent"
+  } else if reason == "offline" || msg.contains("network") || msg.contains("timeout") || msg.contains("unreached") || msg.contains("reset") {
+    "network"
+  } else if reason == "old" {
+    "old"
+  } else {
+    "other"
+  }
+}
+
+///|
+fn Copies::emit_trace(
+  self : Copies,
+  name : String,
+  start_ms : Double,
+  end_ms : Double,
+  attrs : Array[(String, J)],
+  failed : Bool,
+  always_keep : Bool,
+  slow_ms : Int,
+) -> Unit {
+  (self.w.tell)(
+    "trace",
+    [
+      jo([
+        ("name", js(name)),
+        ("startMs", jn(start_ms)),
+        ("endMs", jn(end_ms)),
+        ("attributes", jo(attrs)),
+        ("failed", jb(failed)),
+        ("alwaysKeep", jb(always_keep)),
+        ("slowMs", jn(slow_ms.to_double())),
+      ]),
+    ],
+  )
+}
+
+///|
 fn Copies::eloop(self : Copies) -> ExportLoop {
   match self.export_loop {
     Some(l) => l
@@ -496,7 +564,37 @@ fn Copies::eloop(self : Copies) -> ExportLoop {
       let l = ExportLoop::new(
         (ms, f) => self.w.after(ms, f),
         f => self.w.go(f),
-        told => (self.d.runner.pass)(told),
+        told => {
+          let start_ms = self.w.now()
+          let reason = export_reason(told)
+          try {
+            let passed = (self.d.runner.pass)(told)
+            let changed = num_at(passed, "wrote").unwrap_or(0.0).to_int()
+            self.emit_trace(
+              "replica.export",
+              start_ms,
+              self.w.now(),
+              [("stillfail.reason", js(reason)), ("stillfail.changed", jn(changed.to_double()))],
+              false,
+              true,
+              -1,
+            )
+            passed
+          } catch {
+            e => {
+              self.emit_trace(
+                "replica.export",
+                start_ms,
+                self.w.now(),
+                [("stillfail.reason", js(reason)), ("error.type", js(export_error_type(e)))],
+                true,
+                true,
+                -1,
+              )
+              raise e
+            }
+          }
+        },
         passed => {
           self.passed = Some(passed)
           for e in entries(at(passed, "heads")) {
@@ -1130,6 +1228,7 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
   let was_error = k.error
   let prev_reason = k.reason
   let run = self.w.run(async fn() {
+    let start_ms = self.w.now()
     try {
       let place = peer_place(self.w, peer)
       let (head, first) = level_newest(head, async fn(cur) { self.newest_head(ws, cur) }, async fn(h) {
@@ -1192,12 +1291,30 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
             None,
             None,
           )
+          self.emit_trace(
+            "replica.level",
+            start_ms,
+            at,
+            [("stillfail.target_kind", js("station")), ("stillfail.missing", jn(missing.to_double()))],
+            false,
+            false,
+            500,
+          )
         }
         Behind => ()
       }
     } catch {
       e => {
         let reason = self.reason(peer, e)
+        self.emit_trace(
+          "replica.level",
+          start_ms,
+          self.w.now(),
+          [("stillfail.target_kind", js("station")), ("error.type", js(level_error_type(reason, e)))],
+          true,
+          false,
+          500,
+        )
         // (one from before copies, which knows no `replica.*`: nothing to say or retry until it says it is up)
         if reason == "old" {
           self.old[peer] = true
@@ -1302,6 +1419,7 @@ fn Copies::level_s3(self : Copies, ws : String, target : S3TargetConfig, now : B
   let target_id = target.id
   let target_name = if target.name != "" { target.name } else { target.bucket }
   let run = self.w.run(async fn() {
+    let start_ms = self.w.now()
     try {
       let s3 = self.s3_place(target)
       let place = s3.place()
@@ -1365,12 +1483,30 @@ fn Copies::level_s3(self : Copies, ws : String, target : S3TargetConfig, now : B
             None,
             None,
           )
+          self.emit_trace(
+            "replica.level",
+            start_ms,
+            at,
+            [("stillfail.target_kind", js("s3")), ("stillfail.missing", jn(missing.to_double()))],
+            false,
+            false,
+            500,
+          )
         }
         Behind => ()
       }
     } catch {
       e => {
         let reason = if kind_of(e) == "S3HttpError" { "error" } else { "offline" }
+        self.emit_trace(
+          "replica.level",
+          start_ms,
+          self.w.now(),
+          [("stillfail.target_kind", js("s3")), ("error.type", js(level_error_type(reason, e)))],
+          true,
+          false,
+          500,
+        )
         if k.error is None {
           self.w.warn("copies", "an S3 place not brought level", jo([("ws", js(ws)), ("s3", js(target_id)), ("error", js(message_of(e)))]))
         }

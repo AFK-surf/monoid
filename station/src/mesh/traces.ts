@@ -99,6 +99,17 @@ export class Traces {
     return { parent, id: randomBytes(8).toString("hex"), wallNs: BigInt(wall.now()) * 1_000_000n, started: process.hrtime.bigint() };
   }
 
+  /// A root internal span when traces are on: `parent.span` is empty so OTLP omits `parentSpanId`.
+  startRoot(): Span | null {
+    if (!this.enabled) return null;
+    return {
+      parent: { trace: randomBytes(16).toString("hex"), span: "", sampled: true },
+      id: randomBytes(8).toString("hex"),
+      wallNs: BigInt(wall.now()) * 1_000_000n,
+      started: process.hrtime.bigint(),
+    };
+  }
+
   /// The `traceparent` for what this span asks of others.
   static traceparent(span: Span): string {
     return `00-${span.parent.trace}-${span.id}-01`;
@@ -118,6 +129,45 @@ export class Traces {
       endTimeUnixNano: String(end),
       attributes: attributes.map(([k, v]) => attribute(k, v)),
       status: { code: failed ? 2 : 1 },
+    });
+  }
+
+  /// Records an OTLP internal span (`kind: 1`) with explicit wall-clock start/end timestamps (ns).
+  /// Omits `parentSpanId` when absent or empty so Cloud Trace classifies it as a root span.
+  recordInternal(
+    startWallNs: bigint,
+    endWallNs: bigint,
+    name: string,
+    attributes: [string, unknown][],
+    failed: boolean,
+    opts?: { alwaysKeep?: boolean; slowMs?: number; traceId?: string; spanId?: string; parentSpanId?: string },
+  ) {
+    if (!this.enabled) return;
+    const alwaysKeep = opts?.alwaysKeep ?? false;
+    const thresholdMs = opts?.slowMs !== undefined && opts.slowMs >= 0 ? opts.slowMs : this.slowMs;
+    if (this.tailOnly && !alwaysKeep && !failed && endWallNs - startWallNs < BigInt(thresholdMs) * 1_000_000n) return;
+    const span: Record<string, unknown> = {
+      traceId: opts?.traceId ?? randomBytes(16).toString("hex"),
+      spanId: opts?.spanId ?? randomBytes(8).toString("hex"),
+      ...(opts?.parentSpanId ? { parentSpanId: opts.parentSpanId } : {}),
+      name,
+      kind: 1,
+      startTimeUnixNano: String(startWallNs),
+      endTimeUnixNano: String(endWallNs),
+      attributes: attributes.map(([k, v]) => attribute(k, v)),
+      status: { code: failed ? 2 : 1 },
+    };
+    this.record(span);
+  }
+
+  /// Ends `span` as an OTLP internal span (`kind: 1`), omitting `parentSpanId` for root spans.
+  endInternal(span: Span, name: string, attributes: [string, unknown][], failed: boolean, opts?: { alwaysKeep?: boolean; slowMs?: number }) {
+    const end = span.wallNs + (process.hrtime.bigint() - span.started);
+    this.recordInternal(span.wallNs, end, name, attributes, failed, {
+      ...opts,
+      traceId: span.parent.trace,
+      spanId: span.id,
+      parentSpanId: span.parent.span,
     });
   }
 
@@ -182,4 +232,25 @@ export function otlpBody(station: string, spans: unknown[], resource: [string, s
       },
     ],
   });
+}
+
+/// Records an internal span payload emitted by the MoonBit `--sessions` program (`told("trace", [payload])`).
+export function recordTracePayload(traces: Traces | null | undefined, payload: unknown): void {
+  if (!traces || !traces.enabled || payload === null || typeof payload !== "object") return;
+  const p = payload as Record<string, unknown>;
+  const name = typeof p.name === "string" ? p.name : "";
+  if (name === "") return;
+  const startMs = typeof p.startMs === "number" && Number.isFinite(p.startMs) ? Math.trunc(p.startMs) : wall.now();
+  const rawEndMs = typeof p.endMs === "number" && Number.isFinite(p.endMs) ? Math.trunc(p.endMs) : startMs;
+  const endMs = rawEndMs < startMs ? startMs : rawEndMs;
+  const attrs: [string, unknown][] = [];
+  if (p.attributes !== null && typeof p.attributes === "object" && !Array.isArray(p.attributes)) {
+    for (const [k, v] of Object.entries(p.attributes as Record<string, unknown>)) {
+      if (v !== null && v !== undefined) attrs.push([k, v]);
+    }
+  }
+  const failed = p.failed === true;
+  const alwaysKeep = p.alwaysKeep === true;
+  const slowMs = typeof p.slowMs === "number" && Number.isFinite(p.slowMs) ? Math.trunc(p.slowMs) : -1;
+  traces.recordInternal(BigInt(startMs) * 1_000_000n, BigInt(endMs) * 1_000_000n, name, attrs, failed, { alwaysKeep, slowMs });
 }

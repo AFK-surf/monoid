@@ -1151,9 +1151,23 @@ async fn P52::mcp(self : P52, r : Request) -> Reply {
       }
     }
   }
-  let endpoint = @mcp_tools.McpEndpoint::new(self.tools_backend(), () => {
-    self.tools()
-  })
+  let endpoint = @mcp_tools.McpEndpoint::new(
+    self.tools_backend(),
+    () => self.tools(),
+    now_ms=() => wall_ms(),
+    on_tool=(tool_name, session, start_ms, end_ms, failed, err_type) => {
+      let attrs : Array[(String, Json)] = [("stillfail.tool", jstr(tool_name))]
+      if jtext((self.bus.store.get_session(session) catch { _ => Json::null() }), "runtime") is Some(rt) && rt != "" {
+        attrs.push(("stillfail.runtime", jstr(rt)))
+      }
+      if failed {
+        if err_type is Some(et) {
+          attrs.push(("error.type", jstr(et)))
+        }
+      }
+      (self.bus.emit_span.val)("mcp.tool", start_ms, end_ms, attrs, failed, false, 500)
+    },
+  )
   let answered = endpoint.handle(r.meth, r.header("authorization"), r.body)
   if r.meth == "POST" && answered.status == 200 {
     match attempt(() => @json.parse(@utf8.decode_lossy(r.body))) {

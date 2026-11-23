@@ -204,6 +204,14 @@ pub fn Traces::start(self : Traces, parent : Parent?, id : String, wall_ms : Int
 }
 
 ///|
+/// A root internal span when traces are on: `trace_id` (16 random bytes in hex), `id` (8 random bytes in hex),
+/// `wall_ms` the wall clock now. `parent.span` is empty so OTLP omits `parentSpanId` (`root:<name>` in Cloud Trace).
+pub fn Traces::start_root(self : Traces, trace_id : String, id : String, wall_ms : Int64) -> Span? {
+  guard self.enabled else { return None }
+  Some({ parent: { trace: trace_id, span: "", sampled: true }, id, wall_ns: wall_ms * 1_000_000L, started: (self.hr_now)() })
+}
+
+///|
 /// The `traceparent` for what this span asks of others.
 pub fn traceparent(span : Span) -> String {
   "00-\{span.parent.trace}-\{span.id}-01"
@@ -229,6 +237,74 @@ pub fn Traces::end(self : Traces, span : Span, name : String, attributes : Array
       ("attributes", Json::array(attributes.map(a => attribute(a.0, a.1)))),
       ("status", jobj([("code", jnum(if failed { 2.0 } else { 1.0 }))])),
     ]),
+  )
+}
+
+///|
+/// Records an OTLP internal span (`kind = 1`) with explicit wall-clock start/end timestamps (ns).
+/// Omits `parentSpanId` when `parent_span_id` is empty so Cloud Trace classifies it as a root span.
+pub fn Traces::record_internal(
+  self : Traces,
+  trace_id : String,
+  id : String,
+  start_wall_ns : Int64,
+  end_wall_ns : Int64,
+  name : String,
+  attributes : Array[(String, Json)],
+  failed : Bool,
+  always_keep? : Bool = false,
+  slow_ms? : Int = -1,
+  parent_span_id? : String = "",
+) -> Unit {
+  if !self.enabled {
+    return
+  }
+  let dur_ns = end_wall_ns - start_wall_ns
+  if self.tail_only && !always_keep && !failed {
+    let threshold_ms = if slow_ms >= 0 { slow_ms } else { self.slow_ms }
+    if dur_ns < threshold_ms.to_int64() * 1_000_000L {
+      return
+    }
+  }
+  let fields : Array[(String, Json)] = [
+    ("traceId", jstr(trace_id)),
+    ("spanId", jstr(id)),
+  ]
+  if parent_span_id != "" {
+    fields.push(("parentSpanId", jstr(parent_span_id)))
+  }
+  fields.push(("name", jstr(name)))
+  fields.push(("kind", jnum(1.0)))
+  fields.push(("startTimeUnixNano", jstr(start_wall_ns.to_string())))
+  fields.push(("endTimeUnixNano", jstr(end_wall_ns.to_string())))
+  fields.push(("attributes", Json::array(attributes.map(a => attribute(a.0, a.1)))))
+  fields.push(("status", jobj([("code", jnum(if failed { 2.0 } else { 1.0 }))])))
+  self.record(jobj(fields))
+}
+
+///|
+/// Ends `span` as an OTLP internal span (`kind = 1`), omitting `parentSpanId` for root spans.
+pub fn Traces::end_internal(
+  self : Traces,
+  span : Span,
+  name : String,
+  attributes : Array[(String, Json)],
+  failed : Bool,
+  always_keep? : Bool = false,
+  slow_ms? : Int = -1,
+) -> Unit {
+  let end = span.wall_ns + ((self.hr_now)() - span.started)
+  self.record_internal(
+    span.parent.trace,
+    span.id,
+    span.wall_ns,
+    end,
+    name,
+    attributes,
+    failed,
+    always_keep~,
+    slow_ms~,
+    parent_span_id=span.parent.span,
   )
 }
 

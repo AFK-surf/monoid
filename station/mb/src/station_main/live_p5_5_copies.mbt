@@ -121,9 +121,11 @@ async fn P55::start_copies(self : P55) -> Unit {
   let bus = self.bus
   let data = bus.data
   let here = () => Some(bus.key.id)
-  let w = self.replica_world(async fn(name, _args) { raise BusError("copies: nothing answers \{name} here") }, (name, _args) => {
+  let w = self.replica_world(async fn(name, _args) { raise BusError("copies: nothing answers \{name} here") }, (name, args) => {
     if name == "changed" {
       (bus.overview_changed.val)()
+    } else if name == "trace" && args.length() > 0 {
+      bus.emit_trace_json(of_jv(args[0]))
     }
   })
   let runner = self.export_runner(path([data, "stillfail.db"]), path([data, "replica"]), data, bus.key.id)
