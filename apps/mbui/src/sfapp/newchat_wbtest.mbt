@@ -602,11 +602,11 @@ test "a new chat's stations on every screen: a row each under its title, Willow 
       assert_false(t.ime().0, msg="\{at}: the input method up")
       guard ns_seen(t, "选择运行的 station") is Some(title) else { fail("\{at}: no title") }
       assert_true(rows[0].rect.1 > title.1 && rows[1].rect.1 > rows[0].rect.1 + rows[0].rect.3 - 0.5, msg="\{at}: \{Repr(rows.map(fn(r) { r.rect }))}")
-      // (Willow: 2 at work on its name's line, its figures and 直连 · 38 ms under it; Maple: 未连接)
-      for w in ["2 个运行中", "直连 · 38 ms", "未连接", "CPU", "内存", "磁盘"] {
+      // (Willow: 2 at work on its name's line, its figures and 直连 38ms under it; Maple: 未连接)
+      for w in ["2 个运行中", "直连 38ms", "未连接", "CPU 72%", "内存 5.8G", "磁盘 380G"] {
         assert_true(ns_seen(t, w) is Some(_), msg="\{at}: \{w}")
       }
-      guard (ns_seen(t, "2 个运行中"), ns_seen(t, "直连 · 38 ms")) is (Some(busy), Some(net)) else { fail(at) }
+      guard (ns_seen(t, "2 个运行中"), ns_seen(t, "直连 38ms")) is (Some(busy), Some(net)) else { fail(at) }
       assert_true(busy.1 < rows[0].rect.1 + 30.0 && net.1 > busy.1 && net.1 < rows[1].rect.1, msg="\{at}: \{Repr(busy)} \{Repr(net)}")
     }
   })
@@ -639,7 +639,7 @@ test "a new chat's stations on every screen, Maple pressed: picked (newChat.pick
           }
           None => ()
         }
-        for w in ["2 个运行中", "未连接", "直连 · 38 ms"] {
+        for w in ["2 个运行中", "未连接", "直连 38ms"] {
           assert_true(drawn(w) || !drawn("选择运行的 station"), msg="\{at}: frame \{n} on its way out: \{w} not drawn")
         }
         t.frame()
@@ -652,19 +652,20 @@ test "a new chat's stations on every screen, Maple pressed: picked (newChat.pick
 }
 
 ///|
-/// What is wrong with each station's row of where a new chat runs as `t` shows it (`at` says where): its name's line as
-/// high as its words, so the row's padding is as much over its name as under its last line (the old panel's), and its
-/// machine's chips in the middle of their line, between the name's foot and the line under them, their words inside
-/// them; "" where nothing is.
+/// What is wrong with each station's compact two-line row as `t` shows it (`at` says where): audit is clean, the
+/// second line sits below the station name and aligns with its left edge, and no metric figure is truncated.
 fn ns_rows_wrong(t : @ui.Tester, at : String) -> String {
+  let wrong : Array[String] = []
+  let audit = t.audit()
+  if audit.length() > 0 {
+    wrong.push("\{at}: audit: \{audit.join("; ")}")
+  }
   let all = t.words().filter(fn(w) { w.5 > 0.0 })
   let title = @sf.t("android-chat.new.station.pick")
-  // (the panel's own words, painted after its title over the page's controls underneath)
   let words = match all.search_by(fn(w) { w.0 == title }) {
     Some(i) => all[i + 1:].to_owned()
     None => all
   }
-  let wrong : Array[String] = []
   for name in ["Willow", "Maple"] {
     guard t.semantics().filter(fn(n) { n.role == @ui.Role::Button && n.label == name && n.check is Some(_) && !n.hidden }).last() is Some(r) else {
       wrong.push("\{at}: no row of \{name}")
@@ -676,35 +677,26 @@ fn ns_rows_wrong(t : @ui.Tester, at : String) -> String {
       wrong.push("\{at}: no \{name} in its row")
       continue
     }
-    let foot = n.2 + n.4
     let under = inside.filter(fn(w) { w.2 > n.2 + 0.5 })
-    guard under.iter().find_first(fn(w) { w.0 == "CPU" }) is Some(chip) else {
-      wrong.push("\{at}: no chips under \{name}")
+    if under.is_empty() {
+      wrong.push("\{at}: no second line under \{name}")
       continue
     }
-    let last = under.fold(init=chip, fn(a, w) { if w.2 > a.2 { w } else { a } })
-    let over_name = n.2 - ry
-    let under_last = ry + rh - (last.2 + last.4)
-    if (over_name - under_last).abs() > 0.01 {
-      wrong.push("\{at}: \{name}'s row \{over_name} over its name, \{under_last} under 「\{last.0}」")
+    let left_most = under.fold(init=under[0], fn(a, w) { if w.1 < a.1 { w } else { a } })
+    if (left_most.1 - n.1).abs() > 0.5 {
+      wrong.push("\{at}: \{name} second line x=\{left_most.1} != name x=\{n.1}")
     }
-    let (above, below) = (chip.2 - foot, last.2 - (chip.2 + chip.4))
-    if above < -0.01 || (above - below).abs() > 0.01 {
-      wrong.push("\{at}: \{name}'s chips \{above} under its name's foot, \{below} over 「\{last.0}」")
-    }
-    // (its chip: the ground under its words, no taller than a line, the one round them where any is)
-    let ground = t
-      .drawn_rects()
-      .filter(fn(g) { g.3 < 30.0 && g.0 <= chip.1 && chip.1 < g.0 + g.2 && g.1 <= chip.2 + chip.4 && chip.2 < g.1 + g.3 })
-    if ground.is_empty() || ground.iter().all(fn(g) { chip.2 < g.1 - 0.01 || chip.2 + chip.4 > g.1 + g.3 + 0.01 }) {
-      wrong.push("\{at}: \{name}'s 「CPU」 \{chip.2}..\{chip.2 + chip.4} outside its chip (\{Repr(ground)})")
+    for w in under {
+      if w.0.has_suffix("…") {
+        wrong.push("\{at}: \{name} truncated metric/net: \{w.0}")
+      }
     }
   }
   wrong.join("\n")
 }
 
 ///|
-test "where a new chat runs, on every screen at the default size of words and on a phone at 1.3: each station's name's line as high as its words, its chips in the middle of their line and their words inside them" {
+test "where a new chat runs, on every screen at the default size of words and on a phone at 1.3: compact two-line rows align cleanly with zero audit faults" {
   both_pages(fn() raise {
     for s in ns_screens {
       let (platform, wide) = s
@@ -721,7 +713,7 @@ test "where a new chat runs, on every screen at the default size of words and on
 }
 
 ///|
-test "wide: a new chat's stations under a mouse have concentric corners in the panel and stay lit over a row's meter chips" {
+test "wide: a new chat's stations under a mouse have concentric corners in the panel and stay lit over a row's meter text" {
   both_pages(fn() raise {
     let t = ns_open([], platform=0, wide=true)
     t.host_says_finger(Some(false))
@@ -738,14 +730,177 @@ test "wide: a new chat's stations under a mouse have concentric corners in the p
     assert_eq(t.corner_faults(), [])
     let lit_maple = t.boxes_held().filter(fn(b) { same_box(b, (mx, my, mw, mh)) })
     assert_true(lit_maple.length() == 1 && (lit_maple[0].radius - @sf.row_corner).abs() < 0.5, msg="\{lit_maple.length()} maple lit")
-    // Pointer moved onto the CPU meter chip inside Willow: Willow's own hover ground stays lit across the whole row.
-    guard t.words().iter().find_first(fn(w) { w.0 == "CPU" && w.5 > 0.0 && w.2 >= wy && w.2 + w.4 <= wy + wh }) is Some((_, cx, cy, cw, ch, _)) else {
-      fail("no CPU chip in Willow")
+    // Pointer moved onto the CPU meter inside Willow: Willow's own hover ground stays lit across the whole row.
+    guard t.words().iter().find_first(fn(w) { w.0 == "CPU 72%" && w.5 > 0.0 && w.2 >= wy && w.2 + w.4 <= wy + wh }) is Some((_, cx, cy, cw, ch, _)) else {
+      fail("no CPU 72% in Willow")
     }
     t.move_to(cx + cw / 2.0, cy + ch / 2.0)
     t.run_for(@sf.dur_ms)
     assert_eq(t.corner_faults(), [])
     let lit_willow = t.boxes_held().filter(fn(b) { same_box(b, (wx, wy, ww, wh)) })
     assert_true(lit_willow.length() == 1 && (lit_willow[0].radius - @sf.row_corner).abs() < 0.5, msg="\{lit_willow.length()} willow lit")
+  })
+}
+
+///|
+/// Open `newchat-station-many` at `w` × `h` with `platform`, capturing core calls in `calls`.
+fn ns_many_open(calls : Array[String], platform~ : Int, w~ : Double, h~ : Double) -> @ui.Tester {
+  new_run()
+  @sf.presenters_reset()
+  let base = fixture("newchat-station-many")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push(name + " " + params.stringify())
+      (base.call)(name, params, done)
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+  open_mode("newchat-station-many")
+  t.draw()
+  presented_rested(t)
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+test "many stations on wide screen: centered table auto-focuses search, filters by name and network, supports arrow+Enter, Esc, column sorting, and auto-assign" {
+  both_pages(fn() raise {
+    // 1. Search by name + ↓ + Enter picks second match and closes.
+    let calls : Array[String] = []
+    let t = ns_many_open(calls, platform=0, w=1280.0, h=800.0)
+    assert_eq(t.audit(), [])
+    let dlg = t.get(@ui.Role::Dialog)
+    assert_true(dlg.rect.2 >= 720.0, msg="expected wide modal, got w=\{dlg.rect.2}")
+    assert_true(t.focused() is Some(f) && f.role == @ui.Role::TextField, msg="search should auto-focus on wide modal")
+    let before = calls.length()
+    t.type_text("hyper")
+    t.frame()
+    let matched = t.semantics().filter(fn(n) { n.role == @ui.Role::Button && n.check is Some(_) && !n.hidden && n.label != "自动分配 (11)" })
+    assert_eq(matched.map(fn(n) { n.label }), ["pvg-office-hyper-build-node-01", "sgp-edge-hyper-worker-04"])
+    t.key(@ui.key_code_down)
+    t.frame()
+    t.key(@ui.key_code_enter)
+    presented_rested(t)
+    t.run_for(@ui.move_most_ms)
+    assert_false(@sf.presenter_visible())
+    assert_eq(calls[before:].to_owned().filter(fn(c) { c.has_prefix("newChat.pick") }), ["newChat.pick {\"station\":\"st8\",\"scope\":\"ws1\"}"])
+
+    // 2. Search by network path ("香港"), Esc clears search first, second Esc closes.
+    let t2 = ns_many_open([], platform=0, w=1280.0, h=800.0)
+    t2.type_text("香港")
+    t2.frame()
+    let hk = t2.semantics().filter(fn(n) { n.role == @ui.Role::Button && n.check is Some(_) && !n.hidden && n.label != "自动分配 (11)" })
+    assert_eq(hk.map(fn(n) { n.label }), ["pvg-office-hyper-build-node-01", "hkg-relay-build-station-prod"])
+    t2.key(@ui.key_escape)
+    t2.frame()
+    assert_true(@sf.presenter_visible(), msg="first Esc clears search without closing")
+    let all_back = t2.semantics().filter(fn(n) { n.role == @ui.Role::Button && n.check is Some(_) && !n.hidden && n.label != "自动分配 (11)" })
+    assert_eq(all_back.length(), 12)
+    t2.key(@ui.key_escape)
+    presented_rested(t2)
+    t2.run_for(@ui.move_most_ms)
+    assert_false(@sf.presenter_visible(), msg="second Esc closes modal")
+
+    // 3. Column sorting (CPU, Memory, Running, Network) + reverse toggle + Auto-assign button.
+    let calls3 : Array[String] = []
+    let t3 = ns_many_open(calls3, platform=0, w=1280.0, h=800.0)
+    let row_names = fn() {
+      t3.semantics()
+      .filter(fn(n) { n.role == @ui.Role::Button && n.check is Some(_) && !n.hidden && n.label != "自动分配 (11)" })
+      .map(fn(n) { n.label })
+    }
+    let tap_col = fn(col : String) {
+      guard t3.semantics().iter().find_first(fn(n) { n.role == @ui.Role::Button && n.label == col && !n.hidden }) is Some(b) else {
+        @halt.saying("missing column header " + col)
+      }
+      t3.tap(b.rect.0 + b.rect.2 / 2.0, b.rect.1 + b.rect.3 / 2.0)
+      t3.frame()
+    }
+    // CPU ascending (lowest load / highest idle first), offline last
+    tap_col("CPU")
+    let cpu_asc = row_names()
+    assert_eq(cpu_asc[0], "pvg-office-2")
+    assert_eq(cpu_asc[cpu_asc.length() - 1], "lab-mac-mini-offline")
+    // CPU descending (highest load first), offline still last
+    tap_col("CPU")
+    let cpu_desc = row_names()
+    assert_eq(cpu_desc[0], "afk-ap-pool-gpu-render-cluster-alpha-tokyo-01")
+    assert_eq(cpu_desc[cpu_desc.length() - 1], "lab-mac-mini-offline")
+    // Memory descending (most GB free first)
+    tap_col("内存")
+    let mem_desc = row_names()
+    assert_eq(mem_desc[0], "studio-m4-max-ultrawide-devbox")
+    // Running ascending (idle 0 first)
+    tap_col("运行中")
+    let run_asc = row_names()
+    assert_eq(run_asc[0], "Maple")
+    // Network ascending (lowest RTT first, disconnected/offline at bottom)
+    tap_col("连接")
+    let net_asc = row_names()
+    assert_eq(net_asc[0], "Office-Host-2")
+    // Auto-assign pill button
+    let before3 = calls3.length()
+    guard t3.semantics().iter().find_first(fn(n) { n.role == @ui.Role::Button && n.label == "自动分配 (11)" && !n.hidden }) is Some(ab) else {
+      fail("no auto-assign pill")
+    }
+    t3.tap(ab.rect.0 + ab.rect.2 / 2.0, ab.rect.1 + ab.rect.3 / 2.0)
+    presented_rested(t3)
+    t3.run_for(@ui.move_most_ms)
+    assert_false(@sf.presenter_visible())
+    assert_eq(calls3[before3:].to_owned().filter(fn(c) { c.has_prefix("newChat.pick") }), ["newChat.pick {\"autoStation\":true,\"scope\":\"ws1\"}"])
+  })
+}
+
+///|
+test "many stations on small screen: drawer has search without auto-focus or IME, passes audit at 1.0x and 1.3x zh/en" {
+  both_pages(fn() raise {
+    let t = ns_many_open([], platform=2, w=390.0, h=844.0)
+    assert_false(t.ime().0, msg="small drawer must not raise IME on open")
+    assert_eq(t.audit(), [])
+    guard corner_windows.search_by(w => w.0 == "phone") is Some(i) else { fail("no phone window in corner_windows") }
+    for lang in ["zh", "en"] {
+      for scale in [1.0, 1.3] {
+        let tw = screen_in("newchat-station-many", corner_windows[i], lang, font_scale=scale)
+        assert_eq(tw.audit(), [], msg="newchat-station-many phone \{lang} \{scale}")
+      }
+    }
+  })
+}
+
+///|
+test "long station name shows full-name tooltip on hover in picker and on closed composer capsule; short name does not" {
+  both_pages(fn() raise {
+    let long_name = "afk-ap-pool-gpu-render-cluster-alpha-tokyo-01"
+    let t = ns_many_open([], platform=0, w=1280.0, h=800.0)
+    t.host_says_finger(Some(false))
+    // Hover truncated long name row -> tooltip displays full untruncated name.
+    guard t.semantics().iter().find_first(fn(n) { n.role == @ui.Role::Button && n.label == long_name && n.check is Some(_) && !n.hidden }) is Some(lr) else {
+      fail("missing long station row")
+    }
+    // Name sits on the left side of the row (after 18pt mark + gaps).
+    t.move_to(lr.rect.0 + 80.0, lr.rect.1 + lr.rect.3 / 2.0)
+    t.run_for(@sf.tip_delay_ms + @sf.dur_ms)
+    assert_true(t.words().iter().any(fn(w) { w.0 == long_name && w.5 > 0.0 }), msg="expected full-name tooltip for truncated long name")
+    // Hover short name ("Willow") -> no tooltip appears (only 1 copy of "Willow" in the row itself, plus capsule/sub).
+    let before_willow = t.words().filter(fn(w) { w.0 == "Willow" && w.5 > 0.0 }).length()
+    guard t.semantics().iter().find_first(fn(n) { n.role == @ui.Role::Button && n.label == "Willow" && n.check is Some(_) && !n.hidden }) is Some(wr) else {
+      fail("missing Willow row")
+    }
+    t.move_to(wr.rect.0 + 48.0, wr.rect.1 + wr.rect.3 / 2.0)
+    t.run_for(@sf.tip_delay_ms + @sf.dur_ms)
+    let after_willow = t.words().filter(fn(w) { w.0 == "Willow" && w.5 > 0.0 }).length()
+    assert_eq(after_willow, before_willow, msg="short untruncated name should not show tooltip")
+    // Pick the long-name station, close panel, then hover closed composer capsule -> full-name tooltip appears.
+    t.tap(lr.rect.0 + 80.0, lr.rect.1 + lr.rect.3 / 2.0)
+    presented_rested(t)
+    t.run_for(@ui.move_most_ms)
+    assert_false(@sf.presenter_visible())
+    guard t.semantics().iter().find_first(fn(n) { n.role == @ui.Role::Button && n.label == long_name && !n.hidden }) is Some(cap) else {
+      fail("missing closed station capsule for long name")
+    }
+    t.move_to(cap.rect.0 + cap.rect.2 / 2.0, cap.rect.1 + cap.rect.3 / 2.0)
+    t.run_for(@sf.tip_delay_ms + @sf.dur_ms)
+    assert_true(t.words().iter().any(fn(w) { w.0 == long_name && w.5 > 0.0 }), msg="expected full-name tooltip on closed station capsule")
   })
 }

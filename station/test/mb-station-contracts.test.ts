@@ -202,6 +202,7 @@ const MATCHED: Record<string, [string, RegExp]> = {
   "POST ^/rigs/([0-9a-f]{64})/devices$": ["rigs_mode/rigs.mbt", /hex64\(parts\[2\]\) && \(parts\[3\] == "settings" \|\| parts\[3\] == "devices"\)/],
   "POST ^/rigs/([0-9a-f]{64})/add$": ["rigs_mode/rigs.mbt", /hex64\(parts\[2\]\) && parts\[3\] == "add"/],
   "POST ^/rigs/([0-9a-f]{64})/full$": ["rigs_mode/rigs.mbt", /hex64\(parts\[2\]\) && parts\[3\] == "full"/],
+  "POST ^/rigs/([0-9a-f]{64})/join$": ["rigs_mode/rigs.mbt", /hex64\(parts\[2\]\) && parts\[3\] == "join"/],
   "POST ^/mode$": ["rigs_mode/rigs.mbt", /meth == "POST" && path == "\/mode"/],
 };
 

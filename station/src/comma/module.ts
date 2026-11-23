@@ -34,7 +34,7 @@ export const CommaLive = Layer.effectDiscard(
     const cloud = (yield* ControlPlane).state;
     // The station's workspaces, its home one first: what each connect's index and Router are of. Any change of them
     // moves `scopeVersion`, so that what was read or written before it is not used after.
-    const workspaces = () => JSON.stringify([cloud.home(), ...cloud.memberships().map((m) => m.workspace).sort()]);
+    const workspaces = () => JSON.stringify([cloud.home(), ...cloud.fullMemberships().map((m) => m.workspace).sort()]);
     const within = (workspace: string) => cloud.membership(workspace) !== null;
     let indexed = workspaces(), scopeVersion = 0;
     yield* Effect.acquireRelease(
@@ -139,7 +139,7 @@ export const CommaLive = Layer.effectDiscard(
           notifyPeers = wall.after(FAST_SETTLE_MS, () => { // timer: burst debouncing
             notifyPeers = null;
             const seen = new Set<string>();
-            for (const ws of [cloud.home(), ...cloud.memberships().map((m) => m.workspace).sort()]) {
+            for (const ws of [cloud.home(), ...cloud.fullMemberships().map((m) => m.workspace).sort()]) {
               if (typeof ws !== "string" || ws === "" || seen.has(ws) || !within(ws)) continue;
               seen.add(ws);
               const active = activity.localPayload(workspaceViewers(ws));

@@ -60,7 +60,7 @@ export const DevicesLive = Layer.effectDiscard(
     const phones = (ws: string): Json[] => sources.phones?.shown?.(ws) ?? [];
     const tell = (ws: string) => events.tell("devices", { workspace: ws, devices: listed(ws), phones: phones(ws) }, `devices\0${ws}`, { workspace: ws });
     sources.changed = (ws) => {
-      for (const w of ws === null ? cloud.memberships().map((m) => m.workspace) : [ws]) tell(w);
+      for (const w of ws === null ? cloud.fullMemberships().map((m) => m.workspace) : [ws]) tell(w);
     };
 
     // Another station's chat reaching a device here: a whole station's devices are its workspace's every chat's.

@@ -165,6 +165,7 @@ pub(all) struct Keeper {
   peers_current : async () -> Bool
   has_state : async () -> Bool
   is_rig : async () -> Bool
+  is_rig_in : async (String) -> Bool
   /// A workspace this station is in, as the roster says it (`{workspace, name, home, peers, revocations}`), None: none.
   member_of : async (String) -> Json?
   members_all : async () -> Array[Json]

@@ -1905,6 +1905,9 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
     "chat" => fixture_with_tabs(f, params, value)
     "stationNet" => {
       let address = text(Some(Json::object(params)), "station")
+      if new_fix.station_many {
+        return { value: Some(fix_station_many_net(address).unwrap_or(Json::null())), error: None, version }
+      }
       let ws = match address.find("/") {
         Some(i) => address.exact_view(end=i).to_owned()
         None => address
@@ -2971,6 +2974,9 @@ pub fn fixture(mode : String) -> Source {
     new_fix.presets.clear()
     new_fix.presets.push_iter(fix_preset_many().iter())
     new_fix.preset = "p-arch"
+  }
+  if mode == "newchat-station-many" {
+    new_fix.station_many = true
   }
   let f = made_fixture(mode)
   if f.mode == "drive-motion" {

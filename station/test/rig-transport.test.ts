@@ -115,7 +115,8 @@ test("a station asks a rig as a station; what starts or writes something there n
     await assert.rejects(w.toRig(w.rig.id(), "ws", prepare), (e) => e instanceof Refused && /no grant of this station, which only runs tasks: ask for one with station_use/.test(e.message));
     await assert.rejects(w.toRig(w.rig.id(), "ws", { method: "file.put", session: "s1", key: "k" }), Refused);
     await assert.rejects(w.toRig(w.rig.id(), "ws", { method: "vault.run", session: "s1", id: "x", command: "deploy" }), Refused);
-    await assert.rejects(w.toRig(w.rig.id(), "ws", { method: "session.create" }), (e) => e instanceof Refused && /no session named/.test(e.message));
+    await assert.rejects(w.toRig(w.rig.id(), "ws", { method: "session.create" }), (e) => e instanceof Refused && /a rig does not answer session\.create/.test(e.message));
+    await assert.rejects(w.toRig(w.rig.id(), "ws", { method: "task.prepare" }), (e) => e instanceof Refused && /no session named/.test(e.message));
     assert.deepEqual(w.ran, [], "nothing reached its tasks");
 
     // The grant its person signed, brought by the chat's station with that person's lock.
@@ -179,5 +180,112 @@ test("in security mode a rig the control plane names is asked only what its pers
     assert.deepEqual(await w.toStation(w.station.id(), "ws", { method: "rig.hello" }), { ok: true });
   } finally {
     await w.close();
+  }
+});
+
+test("mixed-mode station: full in ws-full and rig in ws-rig enforces per-ws allowlist, grants, and peer classification", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "rig-mixed-"));
+  const mesh = memoryMesh();
+  const bind = () => mesh.bind({ secretKey: randomBytes(32), alpns: [PEER_BYTES_ALPN, PEER_ALPN], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" });
+  const [peer, mixed] = await Promise.all([bind(), bind()]);
+  const owner = person("pat");
+  const mixedCloud = cloudOf(mixed.id(), [peer.id()], {
+    workspace: "ws-full",
+    workspace_name: "Full",
+    joined: [{
+      workspace: "ws-rig",
+      workspace_name: "Rig",
+      name: "box",
+      peers: [{ id: peer.id() }],
+      revocations: [],
+      rig: { owner: "pat", owner_email: "pat@example.com", owner_name: "Pat", person: owner.genesis },
+    }],
+  });
+  const peerCloud = cloudOf(peer.id(), [mixed.id()], {
+    workspace: "ws-full",
+    workspace_name: "Full",
+    joined: [{
+      workspace: "ws-rig",
+      workspace_name: "Rig",
+      name: "host",
+      peers: [],
+      revocations: [],
+      rigs: [{ id: mixed.id(), name: "box", owner: "pat", owner_email: "pat@example.com", owner_name: "Pat" }],
+    }],
+  });
+  const sleep = () => new Promise<void>(() => {});
+  const mixedBus = new PeerBus({ sleep });
+  const peerBus = new PeerBus({ sleep });
+  let joinCalled: { token: string; person: string; lock?: string; expectedWorkspace?: string } | null = null;
+  const made = new Rig({
+    data: dir,
+    cloud: mixedCloud,
+    bus: mixedBus,
+    busy: () => false,
+    stop: () => {},
+    running: () => [],
+    join: async (token, personHash, lock, expectedWorkspace) => {
+      joinCalled = { token, person: personHash, lock, expectedWorkspace };
+      return { workspace: "ws-new", workspace_name: "New", name: "box" };
+    },
+  });
+  mixedBus.on("describe", async (_p, _req, ws) => ({ protocol: 1, tasks: true, sessions: true, ...made.described(ws) }));
+  mixedBus.otherwise(async (_p, req) => ({ ok: req.method }));
+  peerBus.otherwise(async (_p, req) => ({ answered: req.method }));
+
+  const serve = (endpoint: typeof peer, cloud: any, bus: PeerBus) =>
+    void (async () => {
+      for (;;) {
+        const conn = await endpoint.accept();
+        if (!conn) return;
+        void servePeer(conn, cloud, bus).catch(() => conn.close(0, "refused"));
+      }
+    })();
+  serve(mixed, mixedCloud, mixedBus);
+  serve(peer, peerCloud, peerBus);
+  const at = (endpoint: typeof peer) => (id: string) => ({ id, ips: [`127.0.0.1:${endpoint.sockets()[0]!.split(":").at(-1)}`] });
+  const toMixed = peerCall(peer, peerCloud, at(mixed));
+  const toPeer = peerCall(mixed, mixedCloud, at(peer));
+  try {
+    // In ws-full, mixed behaves as a full station (no rig field, sessions: true, session.create allowed without grant).
+    const fullDesc = await toMixed(mixed.id(), "ws-full", { method: "describe" });
+    assert.equal(fullDesc.sessions, true);
+    assert.equal(fullDesc.rig, undefined);
+    assert.deepEqual(await toMixed(mixed.id(), "ws-full", { method: "session.create" }), { ok: "session.create" });
+
+    // In ws-rig, mixed enforces rig allowlist and grants.
+    const rigDesc = await toMixed(mixed.id(), "ws-rig", { method: "describe" });
+    assert.equal(rigDesc.sessions, false);
+    assert.equal(rigDesc.rig.owner, "pat");
+    await assert.rejects(toMixed(mixed.id(), "ws-rig", { method: "session.create", session: "s1" }), (e) => e instanceof Refused && /a rig does not answer session\.create/.test(e.message));
+    await assert.rejects(toMixed(mixed.id(), "ws-rig", { method: "task.prepare", session: "s1", key: "k", spec: { command: "echo hi" } }), (e) => e instanceof Refused && /no grant/.test(e.message));
+
+    // Mixed station calling peer in ws-full is NOT misclassified as a rig!
+    assert.deepEqual(await toPeer(peer.id(), "ws-full", { method: "session.read", session: "s1" }), { answered: "session.read" });
+    // Mixed station calling peer in ws-rig IS treated as a rig (cannot call session.read).
+    await assert.rejects(toPeer(peer.id(), "ws-rig", { method: "session.read", session: "s1" }), (e) => e instanceof Refused && /a rig asks nothing of a station/.test(e.message));
+
+    // rig.join works over peer transport with signed body targeting ws-new (not ws-rig) and no person field.
+    const now = Math.floor(Date.now() / 1000);
+    const key = ed();
+    const e0 = { v: 1, ws: "person:pat", seq: 0, prev: null, at: 1000, kind: "genesis", body: { sub: "pat", device: { key: key.id, id: ed().hex, label: "k" } } } as Omit<Entry, "sig">;
+    const chain2 = [{ ...e0, sig: { key: key.id, alg: "Ed25519", sig: key.sign(entryBytes(entryHash(e0 as Entry))) } } as Entry];
+    mixedCloud.state.joined[0].rig.person = entryHash(chain2[0]!);
+    const sameWsJoin = {
+      body: { v: 1 as const, sub: "pat", ws: "ws-rig", rig: mixed.id(), token: "join-tok-same", at: now },
+      sig: { key: key.id, sig: key.sign(signedBytes("join", { v: 1, sub: "pat", ws: "ws-rig", rig: mixed.id(), token: "join-tok-same", at: now }, sha256)) },
+    };
+    await assert.rejects(toMixed(mixed.id(), "ws-rig", { method: "rig.join", signed: sameWsJoin, chain: chain2 }), (e) => e instanceof Refused && /already a rig in that workspace/.test(e.message));
+    const signedJoin = {
+      body: { v: 1 as const, sub: "pat", ws: "ws-new", rig: mixed.id(), token: "join-tok-1", at: now },
+      sig: { key: key.id, sig: key.sign(signedBytes("join", { v: 1, sub: "pat", ws: "ws-new", rig: mixed.id(), token: "join-tok-1", at: now }, sha256)) },
+    };
+    const joinedRes = await toMixed(mixed.id(), "ws-rig", { method: "rig.join", signed: signedJoin, chain: chain2 });
+    assert.equal(joinedRes.workspace, "ws-new");
+    assert.deepEqual(joinCalled, { token: "join-tok-1", person: entryHash(chain2[0]!), lock: undefined, expectedWorkspace: "ws-new" });
+  } finally {
+    await made.close();
+    await Promise.all([peer.close(), mixed.close()]);
+    rmSync(dir, { recursive: true, force: true });
   }
 });

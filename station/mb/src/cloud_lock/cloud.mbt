@@ -510,11 +510,7 @@ pub fn Cloud::given_to(self : Cloud, ws : String?, key : String) -> Given {
     return All
   }
   let ws_id = self.id_of(ws)
-  let not_rig = match self.state {
-    Some(s) => !s.fields.contains("rig")
-    None => true
-  }
-  if not_rig &&
+  if self.rig_in(ws_id) is None &&
     self.rigs_named(ws_id).iter().any(r => text_at(r, "id") == Some(key) && (self.rig_vouched)(ws_id, r)) {
     return All
   }
@@ -871,11 +867,33 @@ pub fn Cloud::left_joined(self : Cloud, ws : String) -> Unit {
 ///|
 /// A workspace it joined takes over as its home one (state.ts `succeed`): refused while the home one is locked and
 /// that workspace's lock is not pinned here.
-pub fn Cloud::succeed(self : Cloud, ws : String) -> Bool {
+pub fn Cloud::succeed(self : Cloud, ws : String, demote_old_home? : Bool = false) -> Bool {
   if self.chain() is Some(_) && self.chain(ws=Some(ws)) is None {
     return false
   }
-  for pair in [(joined_lock_path(self.data, ws), lock_path(self.data)), (joined_pending_path(self.data, ws), pending_lock_path(self.data))] {
+  let old_home = match self.state {
+    Some(s) => s.text("workspace")
+    None => ""
+  }
+  if demote_old_home && old_home != "" && old_home != ws {
+    (try Ok(self.disk.mkdir(dirname(joined_lock_path(self.data, old_home)))) catch { e => Err(e) }) |> ignore
+    for pair in [
+      (lock_path(self.data), joined_lock_path(self.data, old_home)),
+      (turned_off_path(lock_path(self.data)), turned_off_path(joined_lock_path(self.data, old_home))),
+      (pending_lock_path(self.data), joined_pending_path(self.data, old_home)),
+    ] {
+      if self.disk.exists(pair.0) {
+        (try Ok(self.disk.rename(pair.0, pair.1)) catch { e => Err(e) }) |> ignore
+      } else {
+        self.disk.remove(pair.1)
+      }
+    }
+  }
+  for pair in [
+    (joined_lock_path(self.data, ws), lock_path(self.data)),
+    (turned_off_path(joined_lock_path(self.data, ws)), turned_off_path(lock_path(self.data))),
+    (joined_pending_path(self.data, ws), pending_lock_path(self.data)),
+  ] {
     if self.disk.exists(pair.0) {
       (try Ok(self.disk.rename(pair.0, pair.1)) catch { e => Err(e) }) |> ignore
     } else {
@@ -884,6 +902,10 @@ pub fn Cloud::succeed(self : Cloud, ws : String) -> Bool {
   }
   self.lock = read_lock(self.disk, self.crypto, self.data, None)
   self.joined_locks.remove(ws)
+  if demote_old_home && old_home != "" && old_home != ws {
+    self.joined_locks.remove(old_home)
+  }
+  self.off_logs.clear()
   self.plane_lock_seqs.remove(ws)
   true
 }
@@ -1271,8 +1293,43 @@ fn home_membership(s : CloudState) -> Json {
       out[k] = v
     }
   }
+  if s.get("rig") is Some(r) {
+    out["rig"] = r
+  }
   out["home"] = Json::boolean(true)
   Json::object(out)
+}
+
+///|
+/// Whether this station is a rig in `ws`, and whose it is (state.ts `rigIn`).
+pub fn Cloud::rig_in(self : Cloud, ws : String) -> Json? {
+  guard self.state is Some(s) && truthy(s.get("workspace")) && !self.removed() else { return None }
+  if ws == s.text("workspace") {
+    return s.get("rig")
+  }
+  match s.joined().search_by(j => text_at(j, "workspace") == Some(ws)) {
+    Some(i) => get(s.joined()[i], "rig")
+    None => None
+  }
+}
+
+///|
+/// Whether this machine is in at least one workspace and every workspace it is in is tasks-only (state.ts `isRigOnly`).
+pub fn Cloud::is_rig_only(self : Cloud) -> Bool {
+  let all = self.memberships()
+  all.length() > 0 && all.iter().all(m => get(m, "rig") is Some(_))
+}
+
+///|
+/// The full (non-rig) workspaces this station is in (state.ts `fullMemberships`).
+pub fn Cloud::full_memberships(self : Cloud) -> Array[Json] {
+  self.memberships().filter(m => get(m, "rig") is None)
+}
+
+///|
+/// The tasks-only (rig) workspaces this station is in (state.ts `rigMemberships`).
+pub fn Cloud::rig_memberships(self : Cloud) -> Array[Json] {
+  self.memberships().filter(m => get(m, "rig") is Some(_))
 }
 
 ///|
@@ -1327,7 +1384,9 @@ pub fn Cloud::left_out(self : Cloud, ws : String) -> String? {
   if get(j, "locked") is Some(True) && self.chain(ws=Some(ws)) is None {
     return Some("unpinned")
   }
-  if self.locked() is Some(_) {
+  let any_locked = self.locked() is Some(_) ||
+    s.joined().iter().any(x => text_at(x, "workspace") != Some(ws) && self.locked(ws=text_at(x, "workspace")) is Some(_))
+  if any_locked {
     Some("home")
   } else {
     None
@@ -1348,7 +1407,7 @@ fn named_rigs(s : CloudState, workspace : String) -> Array[Json] {
 ///|
 /// The rigs of `workspace` this station sends work to (state.ts `rigs`).
 pub fn Cloud::rigs(self : Cloud, workspace : String) -> Array[Json] {
-  guard self.state is Some(s) && !s.fields.contains("rig") && self.membership(workspace) is Some(_) else { return [] }
+  guard self.state is Some(s) && self.rig_in(workspace) is None && self.membership(workspace) is Some(_) else { return [] }
   let me = s.text("station")
   let mine = named_rigs(s, workspace).filter(r => text_at(r, "id") != Some(me))
   if self.locked(ws=Some(workspace)) is None {
@@ -1361,7 +1420,7 @@ pub fn Cloud::rigs(self : Cloud, workspace : String) -> Array[Json] {
 ///|
 /// The rigs of `workspace` as the control plane names them, signed for or not (state.ts `rigsNamed`).
 pub fn Cloud::rigs_named(self : Cloud, workspace : String) -> Array[Json] {
-  guard self.state is Some(s) && !s.fields.contains("rig") && self.membership(workspace) is Some(_) else { return [] }
+  guard self.state is Some(s) && self.rig_in(workspace) is None && self.membership(workspace) is Some(_) else { return [] }
   let me = s.text("station")
   named_rigs(s, workspace).filter(r => text_at(r, "id") != Some(me))
 }
@@ -1369,7 +1428,7 @@ pub fn Cloud::rigs_named(self : Cloud, workspace : String) -> Array[Json] {
 ///|
 /// The workspace `id` is a rig of, of those this station is in (state.ts `rigOf`).
 pub fn Cloud::rig_of(self : Cloud, id : String, workspace? : String? = None) -> (String, Json)? {
-  for m in self.memberships() {
+  for m in self.full_memberships() {
     let ws = text_at(m, "workspace").unwrap_or("")
     if workspace is Some(w) && w != ws {
       continue

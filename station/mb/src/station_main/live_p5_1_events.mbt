@@ -327,6 +327,7 @@ fn P51::events_live(self : P51) -> EventsLive {
     process_state: None,
     followed: None,
     seen: Some((viewer, of) => @events.seen_of(seen, viewer, of)),
+    seer: Some(of => @events.seer_of(seen, of)),
     login_screen: None,
     in_vault: None,
     now: () => wall_ms().to_double(),

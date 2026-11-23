@@ -46,6 +46,7 @@ fn tag_of(kind : String) -> String {
     "add" => "stillfail-rig-add/1"
     "full" => "stillfail-rig-full/1"
     "device" => "stillfail-rig-device/1"
+    "join" => "stillfail-rig-join/1"
     _ => "undefined"
   }
 }
@@ -276,6 +277,10 @@ pub fn well_formed(kind : String, signed : Json?) -> Bool {
     // (`lock`: an entry of the workspace's lock to pin, rig-form.ts `AddBody`)
     "add" => get(b, "lock") is None || hex32_at(get(b, "lock"))
     "full" => true
+    "join" =>
+      text_ok(get(b, "token"), max=256) &&
+      str_at(b, "token") != Some("") &&
+      (get(b, "lock") is None || hex32_at(get(b, "lock")))
     _ => false
   }
 }

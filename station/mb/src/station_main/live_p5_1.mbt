@@ -235,7 +235,7 @@ pub async fn start_live_p5_1(bus : LiveBus) -> Unit {
   p.admin_host = Some(admin_host)
   p.awake_live()
   if as_rig {
-    // A rig (rig/main.ts): only what another station asks of it.
+    // A pure rig (rig/main.ts): only what another station asks of it.
     p.rig_live()
   } else {
     let events = p.events_live()
@@ -243,6 +243,7 @@ pub async fn start_live_p5_1(bus : LiveBus) -> Unit {
     p.admin = Some(p.admin_live())
     ignore(p.forwards_live())
     p.rigs_live()
+    p.rig_side_live()
     p.became_rig_live()
   }
   p.mesh = Some(p.mesh_live())

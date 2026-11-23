@@ -9,7 +9,7 @@ import { Admin } from "./api/admin.ts";
 import { Events as EventStreams, eventsHandoverFile } from "./api/events.ts";
 import { Host } from "./api/host.ts";
 import { EgressLook } from "./api/egress.ts";
-import { jobSeen, sessionSeen, threadSeen } from "./api/seen.ts";
+import { jobSeen, seerOf, sessionSeen, threadSeen } from "./api/seen.ts";
 import { Store as StationStore } from "./store/store.ts";
 import { sees } from "./store/rows.ts";
 import { buildLegacyEntryLookups } from "./store/legacy-said-builder.ts";
@@ -26,6 +26,7 @@ import { makeStore } from "./read/store.ts";
 import { apiOf, entryViews, spokenIn } from "./read/views.ts";
 import { KnownNames } from "./read/slack-known.ts";
 import type { AgentsParts } from "./sessions/agents.ts";
+import type { Rig } from "./rig/module.ts";
 import { platform } from "./platform/index.ts";
 import { ScreenHub } from "./screens/hub.ts";
 import { Desktop } from "./screens/desktop.ts";
@@ -285,6 +286,7 @@ export class Events extends Context.Service<Events, EventStreams>()("stillfail/E
         sessionExists: (key) => store.getSession(key) !== null,
         liveSeen: (viewer, key) => { const ws = store.sessionWs(key); return ws !== undefined && sees(viewer, ws); },
         seen: (viewer, of) => ("session" in of ? sessionSeen(store, viewer, of.session) : "thread" in of ? threadSeen(store, viewer, of.thread) : jobSeen(store, viewer, of.job)),
+        seer: (of) => seerOf(store, of),
         handover: { file: eventsHandoverFile(data), previous },
       });
       // Handed over as the station stops, after the parts made on it (the agents' side has handed over its sessions,
@@ -452,6 +454,11 @@ export class StationDrive extends Context.Service<StationDrive, Drive>()("stillf
 /// request comes; nothing of the platform waits on it.
 export class AgentsSide extends Context.Service<AgentsSide, { current: AgentsParts | null }>()("stillfail/AgentsSide") {
   static readonly layer = Layer.sync(AgentsSide, () => ({ current: null }));
+}
+
+/// The rig, once made: what the mesh asks of it (pure rig or mixed-mode station).
+export class RigSide extends Context.Service<RigSide, { current: Rig | null }>()("stillfail/RigSide") {
+  static readonly layer = Layer.sync(RigSide, () => ({ current: null }));
 }
 
 /// The admin API: the platform's routes, the agents' side's as a request comes (AgentsSide), the parts' (parts.ts).

@@ -304,7 +304,7 @@ export class DirectorySockets {
   /** A station's state frame (#sendState); null for one in no workspace. */
   frame(station: string): string | null {
     const found = this.#db.rows(`SELECT m.workspace, w.name AS workspace_name, w.emoji AS workspace_emoji, w.icon AS workspace_icon, m.name, w.relays, w.ways_off, m.rig, m.enrolled_by FROM station_members m JOIN workspaces w ON w.id = m.workspace
-      WHERE m.station = ? ORDER BY m.enrolled_at, m.rowid`, station);
+      WHERE m.station = ? ORDER BY (m.rig IS NOT NULL), m.enrolled_at, m.rowid`, station);
     if (!found.length) return null;
     const since = nowSeconds() - REVOCATION_DAYS * 86400;
     // The rigs apart from the stations (`rigs`): a station from before them reads no such field and so takes no rig

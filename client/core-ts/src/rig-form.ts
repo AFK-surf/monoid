@@ -44,8 +44,8 @@ export type AddBody = { v: 1; sub: string; ws: string; rig: string; at: number; 
 export type FullBody = { v: 1; sub: string; ws: string; rig: string; at: number };
 export const FULL_FOR = 3600;
 
-/// The rig added to another workspace (tasks-only) by its person: the enrollment token and optional workspace lock
-/// head to pin there, signed with a key on their own lock.
+/// The rig asked by its owner to join another workspace as a rig, carrying that workspace's rig enrollment token and
+/// optional workspace lock hash. Good for `FULL_FOR` seconds from `at`.
 export type JoinBody = { v: 1; sub: string; ws: string; rig: string; token: string; lock?: string; at: number };
 
 /// A device the rig's person attached to it (设备, 2026-11-10: a phone or a board on its USB, a camera or a router on

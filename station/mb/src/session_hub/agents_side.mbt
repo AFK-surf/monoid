@@ -30,8 +30,8 @@ pub(all) struct Place {
   home : String?
   first : String?
   removed : Bool
-  /// Due to only run tasks (`rig_due`), and what its owner asked (`rig_pending`; None: nothing asked).
-  rig_due : Bool
+  /// Workspaces due to only run tasks (`rig_due`), and what each owner asked (`rig_pending` map ws -> pending).
+  rig_due : Array[String]
   rig_pending : Json?
 }
 
@@ -54,20 +54,45 @@ pub fn AgentsSide::new(hub : Hub, place : Place) -> AgentsSide {
 pub async fn AgentsSide::follow(self : AgentsSide, place : Place) -> Unit {
   let hub = self.hub
   let world = hub.world
-  if place.rig_due {
-    match place.rig_pending {
-      None => {
-        (world.tell)("agents.rigDueDropped", Json::null())
-        return
+  if place.rig_due.length() > 0 {
+    let mut became_any = false
+    let remaining_full = place.joined
+      .filter(w => !place.rig_due.contains(w))
+      .length() +
+      (match place.home {
+        Some(h) if !place.rig_due.contains(h) => 1
+        _ => 0
+      })
+    for ws in place.rig_due {
+      let due = match place.rig_pending {
+        Some(Object(m)) => m.get(ws)
+        _ => None
       }
-      Some(due) => {
-        hub.hold("unbound")
-        hub.suspend_all()
-        ignore((world.ask)("agents.along", "left"))
-        ignore((world.ask)("agents.jobsStopAll", "this station only runs tasks now"))
-        ignore((world.ask)("agents.becomeRig", due))
-        return
+      match due {
+        None => (world.tell)("agents.rigDueDropped", { "ws": Json::string(ws) })
+        Some(due_val) => {
+          became_any = true
+          // If no full workspace remains besides those becoming rigs, suspend everything and hand over to RigLive.
+          if remaining_full == 0 {
+            hub.hold("unbound")
+            hub.suspend_all()
+            ignore((world.ask)("agents.along", "left"))
+            ignore((world.ask)("agents.jobsStopAll", "this station only runs tasks now"))
+            ignore((world.ask)("agents.becomeRig", { "ws": Json::string(ws), "due": due_val }))
+            return
+          } else {
+            if Some(ws) == self.home_now {
+              self.hub.store.set_sessions_ws(Json::null(), Json::string(ws))
+            }
+            hub.left_workspace(ws)
+            ignore((world.ask)("agents.becomeRig", { "ws": Json::string(ws), "due": due_val }))
+          }
+        }
       }
+    }
+    if became_any {
+      ignore((world.ask)("agents.along", "changed"))
+      return
     }
   }
   let now = place.bound
@@ -147,7 +172,7 @@ pub async fn AgentsSide::start(self : AgentsSide, place : Place) -> Unit {
   } else if place.removed {
     ignore((world.ask)("agents.jobsStopAll", "the station was removed from its workspace"))
   }
-  if place.rig_due {
+  if place.rig_due.length() > 0 {
     self.follow(place)
   }
 }

@@ -240,7 +240,7 @@ fn P55::memberships(self : P55) -> Array[(String, String, Bool, Array[Json], Str
   }
   let out = []
   let home = jtext_or_empty(state, "workspace")
-  if home != "" && !(jfield(state, "removed_at") is Number(_, ..)) {
+  if home != "" && !(jfield(state, "removed_at") is Number(_, ..)) && !(jfield(state, "rig") is Object(_)) {
     out.push(
       (
         home,
@@ -257,7 +257,7 @@ fn P55::memberships(self : P55) -> Array[(String, String, Bool, Array[Json], Str
     Array(xs) =>
       for j in xs {
         let ws = jtext_or_empty(j, "workspace")
-        if ws != "" && ws != home {
+        if ws != "" && ws != home && !(jfield(j, "rig") is Object(_)) {
           out.push(
             (
               ws,

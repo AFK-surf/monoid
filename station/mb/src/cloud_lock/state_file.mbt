@@ -346,6 +346,9 @@ pub fn joined_of(raw : Json?) -> Array[Json] {
     if ways_said_of(get(j, "ways")) is Some(w) {
       out.push(("ways", w))
     }
+    if rig_self_of(get(j, "rig")) is Some(r) {
+      out.push(("rig", r))
+    }
     Some(jobj(out))
   })
 }
@@ -400,21 +403,72 @@ pub fn read_state(disk : Disk, data : String) -> CloudState? raise Failure {
     Some(Number(n, ..)) => safe_int(n)
     _ => false
   }
-  match rig_self_of(get(raw, "rig_pending")) {
-    Some(Object(p)) if at_ok(get(raw, "rig_pending")) => {
-      let q = p.copy()
-      q["at"] = field(get(raw, "rig_pending"), "at").unwrap()
-      m["rig_pending"] = Json::object(q)
-    }
-    _ => m.remove("rig_pending")
+  let home_ws = match m.get("workspace") {
+    Some(String(w)) => w
+    _ => ""
   }
-  if !(get(raw, "rig_due") is Some(True)) || !m.contains("rig_pending") {
+  let rig_pending : Map[String, Json] = Map([])
+  match rig_self_of(get(raw, "rig_pending")) {
+    Some(Object(p)) if at_ok(get(raw, "rig_pending")) =>
+      if home_ws != "" {
+        let q = p.copy()
+        q["at"] = field(get(raw, "rig_pending"), "at").unwrap()
+        rig_pending[home_ws] = Json::object(q)
+      }
+    _ =>
+      for kv in entries_of_obj(get(raw, "rig_pending")) {
+        if kv.0 != "" && at_ok(Some(kv.1)) {
+          if rig_self_of(Some(kv.1)) is Some(Object(p)) {
+            let q = p.copy()
+            q["at"] = field(Some(kv.1), "at").unwrap()
+            rig_pending[kv.0] = Json::object(q)
+          }
+        }
+      }
+  }
+  if rig_pending.is_empty() {
+    m.remove("rig_pending")
+  } else {
+    m["rig_pending"] = Json::object(rig_pending)
+  }
+  let rig_due : Array[Json] = []
+  match get(raw, "rig_due") {
+    Some(True) =>
+      if home_ws != "" && rig_pending.contains(home_ws) {
+        rig_due.push(jstr(home_ws))
+      }
+    Some(Array(xs)) =>
+      for x in xs {
+        if x is String(ws) &&
+          ws != "" &&
+          rig_pending.contains(ws) &&
+          !rig_due.contains(jstr(ws)) {
+          rig_due.push(jstr(ws))
+        }
+      }
+    _ => ()
+  }
+  if rig_due.length() > 0 {
+    m["rig_due"] = jarr(rig_due)
+  } else {
     m.remove("rig_due")
   }
+  let full_pending : Map[String, Json] = Map([])
   if at_ok(get(raw, "full_pending")) {
-    m["full_pending"] = jobj([("at", field(get(raw, "full_pending"), "at").unwrap())])
+    if home_ws != "" {
+      full_pending[home_ws] = jobj([("at", field(get(raw, "full_pending"), "at").unwrap())])
+    }
   } else {
+    for kv in entries_of_obj(get(raw, "full_pending")) {
+      if kv.0 != "" && at_ok(Some(kv.1)) {
+        full_pending[kv.0] = jobj([("at", field(Some(kv.1), "at").unwrap())])
+      }
+    }
+  }
+  if full_pending.is_empty() {
     m.remove("full_pending")
+  } else {
+    m["full_pending"] = Json::object(full_pending)
   }
   Some({ fields: m })
 }
@@ -449,11 +503,15 @@ pub fn state_text(s : CloudState) -> String {
   }
   put("ways")
   put("rig")
-  put("rig_pending")
-  if s.fields.get("rig_due") is Some(True) {
-    out["rig_due"] = Json::boolean(true)
+  if s.fields.get("rig_pending") is Some(Object(rp)) && !rp.is_empty() {
+    out["rig_pending"] = Json::object(rp)
   }
-  put("full_pending")
+  if s.fields.get("rig_due") is Some(Array(xs)) && xs.length() > 0 {
+    out["rig_due"] = jarr(xs)
+  }
+  if s.fields.get("full_pending") is Some(Object(fp)) && !fp.is_empty() {
+    out["full_pending"] = Json::object(fp)
+  }
   stringify_pretty(Json::object(out))
 }
 

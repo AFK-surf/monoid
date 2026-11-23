@@ -86,15 +86,21 @@ export function nameOf(cloud: Cloud, id: string): string {
 /// one is in, and the workspace it is asked in (its first one with this station, the home one first). The door knows no
 /// chat, so it does not know whose workspace a request is for: a name more than one station has is refused (the id
 /// tells them apart), as is this station itself.
-export function peerNamed(cloud: Cloud, given: string): { id: string; workspace: string } {
+export function peerNamed(cloud: Cloud, given: string, workspace?: string | null): { id: string; workspace: string } {
   if (!cloud.peersCurrent) throw new HttpRefusal(503, "the workspace's stations are not known right now (still.fail cloud not reached); try again shortly");
   const all = cloud.memberships();
+  const preferred = workspace ? all.filter((m) => m.workspace === workspace) : [];
+  const scope = preferred.length > 0 ? preferred : all;
   const self = cloud.state?.station;
   const lower = given.toLowerCase();
-  // The workspace's rigs among them (a station that only runs tasks): a service a task started there is reached as one on a station is.
-  const stations = all.flatMap((m) => [...m.peers.filter((p) => typeof p?.id === "string"), ...cloud.rigs(m.workspace)]);
-  let ids = [...new Set(stations.filter((p) => p.id === given).map((p) => p.id as string))];
-  if (ids.length === 0) ids = [...new Set(stations.filter((p) => typeof p.name === "string" && p.name.toLowerCase() === lower).map((p) => p.id as string))];
+  const findIn = (ms: typeof all) => {
+    const stations = ms.flatMap((m) => [...m.peers.filter((p) => typeof p?.id === "string"), ...cloud.rigs(m.workspace)]);
+    let ids = [...new Set(stations.filter((p) => p.id === given).map((p) => p.id as string))];
+    if (ids.length === 0) ids = [...new Set(stations.filter((p) => typeof p.name === "string" && p.name.toLowerCase() === lower).map((p) => p.id as string))];
+    return { stations, ids };
+  };
+  let { stations, ids } = findIn(scope);
+  if (ids.length === 0 && preferred.length > 0) ({ stations, ids } = findIn(all));
   if (ids.length === 0 && (given === self || all.some((m) => m.name.toLowerCase() === lower))) ids = [self!];
   if (ids.length > 1) throw new HttpRefusal(409, `${given} names ${ids.length} stations (${ids.join(", ")}): give the id of the one meant`);
   if (ids.length === 0) {
@@ -103,6 +109,11 @@ export function peerNamed(cloud: Cloud, given: string): { id: string; workspace:
   }
   if (ids[0] === self) throw new HttpRefusal(400, `${given} is this station: reach its services at http://localhost:<port>/ directly`);
   try {
+    if (workspace) {
+      if (cloud.membership(workspace)?.peers.some((p) => p?.id === ids[0])) return { id: ids[0]!, workspace };
+      const rigInWs = cloud.rigOf(ids[0]!, workspace);
+      if (rigInWs !== null) return { id: ids[0]!, workspace: rigInWs.workspace };
+    }
     const rig = cloud.rigOf(ids[0]!);
     return { id: ids[0]!, workspace: rig !== null ? rig.workspace : member(cloud, ids[0]!, null) };
   } catch (error) {

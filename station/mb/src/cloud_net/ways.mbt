@@ -735,10 +735,13 @@ fn follow_peers(
   }
   and look = fn() -> Unit {
     guard (cloud.station)() is Some(me) else { return }
-    if stopped.val || !(cloud.peers_current)() || (skip_rig && (cloud.is_rig)()) {
+    if stopped.val || !(cloud.peers_current)() {
       return
     }
     for m in (cloud.memberships)() {
+      if skip_rig && (cloud.rig_in)(m.workspace) {
+        continue
+      }
       for p in m.peers {
         match peer_id(p) {
           Some(id) if id != me => bring(id, m.workspace, m.home)

@@ -283,26 +283,43 @@ fn P52::place(self : P52) -> @session_hub.Place {
       jitems(jfield(s, "joined")).filter_map(j => {
         match j {
           String(w) => Some(w)
-          Object(_) => jtext(j, "workspace")
+          Object(_) =>
+            if jfield(j, "rig") is Object(_) {
+              None
+            } else {
+              jtext(j, "workspace")
+            }
           _ => None
         }
       })
     None => []
   }
+  let home_is_rig = match state {
+    Some(s) => jfield(s, "rig") is Object(_)
+    None => false
+  }
+  let full_home = if home_is_rig { None } else { home }
+  let bound = match state {
+    Some(s) if jfield(s, "removed_at") == Json::null() => full_home is Some(_) || joined.length() > 0
+    _ => false
+  }
   {
-    bound: self.bound(),
+    bound,
     joined,
-    home,
-    first: home,
+    home: full_home,
+    first: full_home,
     removed: match state {
       Some(s) => jfield(s, "removed_at") != Json::null()
       None => false
     },
-    // (cloud/state.ts `rig_due`: listed as a rig now, as its owner's device asked of this station; `rig_pending` what
-    // it asked)
     rig_due: match state {
-      Some(s) => jfield(s, "rig_due") is True
-      None => false
+      Some(s) =>
+        match jfield(s, "rig_due") {
+          Array(xs) => xs.filter_map(x => match x { String(w) => Some(w); _ => None })
+          True => match home { Some(h) => [h]; None => [] }
+          _ => []
+        }
+      None => []
     },
     rig_pending: match state {
       Some(s) =>
@@ -551,7 +568,7 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
     "agents.rigDueDropped" =>
       ignore(
         self.host.rt.fork_quiet(name="rig due dropped", async fn() {
-          ignore((self.bus.cloud_call.val)("dropRigDue", Json::null())) catch {
+          ignore((self.bus.cloud_call.val)("dropRigDue", args)) catch {
             _ => ()
           }
         }),
@@ -1076,7 +1093,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
     "agents.along" => (self.bus.coord_ask.val)("agents.along", args)
     "agents.jobsRelaunch" => self.bus.jobs_relaunch(args)
     "agents.jobsStopAll" => self.bus.jobs_stop_all(args)
-    "agents.becomeRig" => (self.bus.cloud_call.val)("becomeRig", { "due": args })
+    "agents.becomeRig" => (self.bus.cloud_call.val)("becomeRig", args)
     "agents.openDoor" => {
       let url = (self.bus.open_door.val)()
       self.door_url = url

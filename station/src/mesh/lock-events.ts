@@ -18,7 +18,7 @@ export function tellLocks(cloud: Cloud, chains: PersonChains, tell: Tell): () =>
   // How far each workspace's lock went when last looked at.
   const last = new Map<string, string>();
   const look = () => {
-    for (const m of cloud.memberships()) {
+    for (const m of cloud.fullMemberships()) {
       const ws = m.home ? null : m.workspace;
       const head = lockHead(cloud, ws);
       const now = head === null ? "" : `${head.seq}:${head.hash}:${cloud.forceWord(ws)}`;

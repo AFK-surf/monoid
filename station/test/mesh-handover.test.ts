@@ -8,7 +8,7 @@ import { Clock, Effect, Fiber, Layer, Stream, SubscriptionRef } from "effect";
 import { MeshLive } from "../src/mesh/mesh.ts";
 import { StationKey } from "../src/cloud/key.ts";
 import { Net } from "../src/jobs/load.ts";
-import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Paths, Peers, Previous, ScreenRegistry, StationConfig, Store, Up } from "../src/services.ts";
+import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Paths, Peers, Previous, RigSide, ScreenRegistry, StationConfig, Store, Up } from "../src/services.ts";
 import type { Endpoint, Mesh } from "../src/mesh/native.ts";
 import { ALPN } from "../src/mesh/serve.ts";
 import { hearLines, type Line } from "../src/ops/log.ts";
@@ -41,7 +41,7 @@ function startup(t: TestContext, bindAddr: string | undefined, congestion?: "cub
   let boundCongestion: string | undefined;
   // The cloud's state as the mesh reads it once bound: a workspace, no relays, no other stations.
   // (`data`: where it keeps what the mesh keeps of the locks, mesh/person-chains.ts)
-  const cloud = { state: { workspace_name: "ws" }, data: mkdtempSync(join(tmpdir(), "mesh-handover-")), relays: () => [], memberships: () => [], peersCurrent: false, listen: () => () => {}, toolCalls: null, removed: () => false };
+  const cloud = { state: { workspace_name: "ws" }, data: mkdtempSync(join(tmpdir(), "mesh-handover-")), relays: () => [], memberships: () => [], fullMemberships: () => [], rigIn: () => null, peersCurrent: false, listen: () => () => {}, toolCalls: null, removed: () => false };
   // The mesh it is bound on: what a test binds there too reaches it.
   const mesh = memoryMesh();
   const store = scenario.store ?? DbStore.open(":memory:");
@@ -82,6 +82,7 @@ function startup(t: TestContext, bindAddr: string | undefined, congestion?: "cub
     } } as unknown as Mesh),
     Layer.succeed(Store)(store), Layer.succeed(AdminApi)(null!), Layer.succeed(Events)({ tell: () => {} } as never),
     Layer.succeed(Up)(Effect.runSync(SubscriptionRef.make(true))), Layer.succeed(ScreenRegistry)(null!),
+    RigSide.layer,
   );
   const run = Effect.scoped(Effect.gen(function* () {
     yield* Layer.build(MeshLive.pipe(Layer.provide(inputs)));

@@ -48,6 +48,7 @@ pub fn fixture_reset() -> Unit {
   new_fix.station_models = false
   new_fix.other_stations = false
   new_fix.station_empty = false
+  new_fix.station_many = false
   preset_model_cleared.val = false
   fix_presets_said.val = 0
   fix_job_more.val = 0

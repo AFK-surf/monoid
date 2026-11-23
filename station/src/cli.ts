@@ -5,7 +5,7 @@ import { ConfigFile } from "./ops/config.ts";
 import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { loadKey } from "./cloud/key.ts";
-import { Cloud, joinedLockPath, joinedPendingPath, pendingLockPath, readLock, readState, writeState, type CloudState } from "./cloud/state.ts";
+import { Cloud, joinedLockPath, joinedPendingPath, lockPath, pendingLockPath, readLock, readState, writeState, type CloudState, type RigSelf } from "./cloud/state.ts";
 import { nowSecs, writePrivate } from "./ops/files.ts";
 import { entryHash, shortCode } from "../../shared/lock.ts";
 import { rmSync } from "node:fs";
@@ -64,41 +64,109 @@ export function staysIn(data: string): boolean {
   return state !== null && !!state.workspace && state.removed_at === undefined;
 }
 
-/// Whether this machine is a rig now (in a workspace as one).
+/// Whether this machine is rig-only now (in at least one workspace and every workspace is tasks-only).
 export function isRig(data: string): boolean {
   const state = readState(data);
-  return state !== null && !!state.workspace && state.removed_at === undefined && state.rig !== undefined;
+  return state !== null && !!state.workspace && state.removed_at === undefined && state.rig !== undefined && (state.joined ?? []).every((j) => j.rig !== undefined);
 }
 
 /// Joins one more workspace with its one-time token, staying in those the station is in:
 /// at the control plane it is enrolled with, which then names it in its `state` frames. Kept in cloud.json's `joined`
-/// at once, so `status` says it before the running station hears. A locked station joins none: its lock is one
-/// workspace's. What it joined. `atMachine`: asked on this machine (the command line), whose person may set aside a lock
-/// kept here for that workspace by naming another (nameJoinedLock); asked over the mesh, where who asks is the control
-/// plane's word unless the home is locked, a kept lock not holding `lock` stays and the join throws KeptLock once done.
-export async function joinWorkspace(data: string, token: string, lock?: string, { atMachine = false, cloud }: { atMachine?: boolean; cloud?: Cloud } = {}): Promise<{ workspace: string; workspace_name: string; name: string }> {
+/// (or promoted to home if a rig-only machine joins a full workspace) at once, so `status` says it before the running
+/// station hears. `rig`: join as a tasks-only station (owner's personal lock 64-hex hash).
+export async function joinWorkspace(
+  data: string,
+  token: string,
+  lock?: string,
+  { atMachine = false, cloud, rig, expectedWorkspace }: { atMachine?: boolean; cloud?: Cloud; rig?: string; expectedWorkspace?: string } = {},
+): Promise<{ workspace: string; workspace_name: string; name: string; owner?: string }> {
   const state = readState(data);
   if (state === null || !state.workspace || state.removed_at !== undefined) throw new Error("this station is in no workspace: enroll it first");
-  if (state.rig !== undefined) throw new Error(tr(stationLang(), "station.cli.rig.isRig", { workspace: state.workspace_name || state.workspace }));
-  // A locked station joins locked workspaces only: an unlocked one's members are the control plane's word, which its
-  // home's lock took away. Which lock to pin is the joining device's word (`lock`, the head it has), as `enroll --lock`.
-  // A home whose chain moved is locked as its root's log says now (off or on: Cloud.locked), never as the chain alone
-  // (`cloud`: the running station's, asked over the mesh; else this machine's files read here).
-  const home = readLock(data);
-  const on = home !== null && !home.state?.disabled && (home.state?.moved === undefined || (cloud ?? new Cloud(data, false)).locked() !== null);
-  if (on && lock === undefined) throw new Error("this station's workspace is locked: it joins only a workspace with a lock of its own");
+  // A station with any locked workspace joins locked workspaces only: an unlocked one's members are the control plane's
+  // word, which the pinned lock took away.
+  const checker = cloud ?? new Cloud(data, false);
+  const anyOn = [null, ...(state.joined ?? []).map((j) => j.workspace)].some((ws) => {
+    const l = readLock(data, ws);
+    return l !== null && !l.state?.disabled && (l.state?.moved === undefined || checker.locked(ws) !== null);
+  });
+  if (anyOn && lock === undefined) throw new Error("this station's workspace is locked: it joins only a workspace with a lock of its own");
   const provider = state.provider ?? "stillfail";
-  const body = await redeem(data, state.origin, token, provider, specOf(provider).joinPath);
+  const body = await redeem(data, state.origin, token, provider, specOf(provider).joinPath, rig !== undefined);
+  if (rig !== undefined && typeof body.rig?.owner !== "string") throw new Error(`${specOf(provider).name} did not say whose rig this is`);
   const text = (k: string) => (typeof body[k] === "string" ? body[k] : "");
-  const joined = { workspace: text("workspace"), workspace_name: text("workspace_name"), name: text("name") };
+  const rigSelf: RigSelf | undefined = rig !== undefined
+    ? { owner: body.rig.owner, owner_email: typeof body.rig.owner_email === "string" ? body.rig.owner_email : "", owner_name: typeof body.rig.owner_name === "string" ? body.rig.owner_name : "", person: rig }
+    : undefined;
+  const joined = {
+    workspace: text("workspace"),
+    workspace_name: text("workspace_name"),
+    name: text("name"),
+    ...(rigSelf !== undefined ? { owner: rigSelf.owner_email || rigSelf.owner } : {}),
+  };
   if (joined.workspace === "") throw new Error(`${specOf(provider).name} did not say which workspace was joined`);
+  if (expectedWorkspace !== undefined && joined.workspace !== expectedWorkspace) {
+    throw new Error(`enrollment token is for workspace ${joined.workspace}, not ${expectedWorkspace}`);
+  }
+  const newHome = text("home");
+  const becomesHome = newHome !== "" && newHome === joined.workspace && joined.workspace !== state.workspace;
+  if (becomesHome) {
+    const now = readState(data) ?? state;
+    if (now.workspace !== joined.workspace) {
+      const oldHome = now.workspace;
+      mkdirSync(dirname(joinedLockPath(data, oldHome)), { recursive: true });
+      for (const [from, to] of [
+        [lockPath(data), joinedLockPath(data, oldHome)],
+        [`${lockPath(data)}.off`, `${joinedLockPath(data, oldHome)}.off`],
+        [pendingLockPath(data), joinedPendingPath(data, oldHome)],
+      ] as const) {
+        if (existsSync(from)) renameSync(from, to);
+        else rmSync(to, { force: true });
+      }
+      rmSync(pendingLockPath(data), { force: true });
+      if (lock !== undefined) writePrivate(pendingLockPath(data), JSON.stringify({ hash: lock }));
+      const demoted = {
+        workspace: oldHome,
+        workspace_name: now.workspace_name,
+        ...(now.workspace_emoji ? { workspace_emoji: now.workspace_emoji } : {}),
+        ...(now.workspace_icon ? { workspace_icon: now.workspace_icon } : {}),
+        name: now.name,
+        peers: now.peers,
+        revocations: now.revocations,
+        ...(now.rig !== undefined ? { rig: now.rig } : {}),
+        ...(now.rigs !== undefined && now.rig === undefined ? { rigs: now.rigs } : {}),
+        ...(now.ways !== undefined ? { ways: now.ways } : {}),
+      };
+      now.joined = [demoted, ...(now.joined ?? []).filter((j) => j.workspace !== oldHome && j.workspace !== joined.workspace)];
+      now.workspace = joined.workspace;
+      now.workspace_name = joined.workspace_name;
+      now.name = joined.name;
+      now.peers = [];
+      now.revocations = [];
+      delete now.workspace_emoji;
+      delete now.workspace_icon;
+      delete now.rigs;
+      delete now.ways;
+      if (rigSelf !== undefined) now.rig = rigSelf;
+      else delete now.rig;
+      writeState(data, now);
+    } else if (lock !== undefined) {
+      writePrivate(pendingLockPath(data), JSON.stringify({ hash: lock }));
+    }
+    return joined;
+  }
   const named = lock !== undefined && joined.workspace !== state.workspace ? nameJoinedLock(data, joined.workspace, lock, atMachine) : "pending";
   const now = readState(data) ?? state;
   // The plane's `state` frame may have named it already (it tells the station before it answers): that is kept, its
   // roster and whether it is locked with it, not put back to none until the next frame.
-  if (joined.workspace !== now.workspace && !(now.joined ?? []).some((j) => j.workspace === joined.workspace)) {
-    now.joined = [...(now.joined ?? []), { ...joined, peers: [], revocations: [] }];
-    writeState(data, now);
+  if (joined.workspace !== now.workspace) {
+    const existing = (now.joined ?? []).find((j) => j.workspace === joined.workspace);
+    if (existing === undefined) {
+      now.joined = [...(now.joined ?? []), { workspace: joined.workspace, workspace_name: joined.workspace_name, name: joined.name, peers: [], revocations: [], ...(rigSelf !== undefined ? { rig: rigSelf } : {}) }];
+      writeState(data, now);
+    } else if (rigSelf !== undefined && existing.rig === undefined) {
+      existing.rig = rigSelf;
+      writeState(data, now);
+    }
   }
   // Joined all the same (the token is spent): the one asking is told the station goes by the lock it keeps there.
   if (named === "kept another") throw new KeptLock(joined.workspace);

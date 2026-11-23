@@ -11,7 +11,7 @@ import { closePeerRelays } from "./peer-relays.ts";
 import { Cause, Effect, FiberSet, Layer, Option, Schedule, Scope, Stream } from "effect";
 import { log } from "../ops/log.ts";
 import { stationLog } from "../ops/log-export.ts";
-import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Paths, Peers, Previous, ScreenRegistry, StationConfig, Store, Up } from "../services.ts";
+import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Paths, Peers, Previous, RigSide, ScreenRegistry, StationConfig, Store, Up } from "../services.ts";
 import { DeviceTools, accessOf } from "../device/tools.ts";
 import { TOOLS_ALPN, adminSessions, presenceTools, serveTools } from "./tools.ts";
 import { PEER_ALPN, PEER_BYTES_ALPN, STOPPING, peerCall, servePeer } from "./peer.ts";
@@ -55,6 +55,7 @@ export const MeshLive = Layer.effectDiscard(
     const config = yield* StationConfig;
     const screens = yield* ScreenRegistry;
     const events = yield* Events;
+    const rigSide = yield* RigSide;
     const { restartFront } = yield* Paths;
     const run = Effect.gen(function* () {
       // Not in a workspace yet: on the mesh once `enroll` writes cloud.json.
@@ -266,7 +267,7 @@ export const MeshLive = Layer.effectDiscard(
       );
       const relayRecords = new RelayRecords(store.db);
       const enrollment = new EnrollmentDoor(new RelayEnrollment(store.db, key.id, wall.now),
-        (scope) => cloud.state.memberships().some((m) => workspaceScope(cloud.state.state!.origin, m.workspace) === scope),
+        (scope) => cloud.state.fullMemberships().some((m) => workspaceScope(cloud.state.state!.origin, m.workspace) === scope),
         (text) => key.sign(text),
         async (scope, node) => JSON.parse(await admin.readers.read("internalMeshControl", { kind: "registration", scope, node, issuer: key.id }, "en")),
         async (signed) => {
@@ -289,8 +290,12 @@ export const MeshLive = Layer.effectDiscard(
         serve: (conn) =>
           conn.alpn().equals(PEER_BYTES_ALPN) || conn.alpn().equals(PEER_ALPN) ? servePeer(conn, cloud.state, peers, meshDirectory ? (peer, workspace, request) => meshDirectory.answer(peer, workspace, request) : undefined)
           : conn.alpn().equals(PEER_HTTP_ALPN) ? serveHttp(conn, cloud.state, {
+              allowed: (peer, workspace) => cloud.state.rigIn(workspace) !== null ? (rigSide.current?.stationRefusal(peer, workspace) ?? "the rig is starting") : null,
               forwarded: (port) => side.forwarded(port),
-              device: (peer, workspace, session, device, probe) => side.device == null ? Promise.reject(new DeviceRefused(404, "no devices here yet")) : side.device(peer, workspace, session, device, probe),
+              device: (peer, workspace, session, device, probe) =>
+                cloud.state.rigIn(workspace) !== null
+                  ? (rigSide.current === null ? Promise.reject(new DeviceRefused(503, "the rig is starting")) : rigSide.current.device(peer, workspace, session, device, probe))
+                  : (side.device == null ? Promise.reject(new DeviceRefused(404, "no devices here yet")) : side.device(peer, workspace, session, device, probe)),
             })
           : conn.alpn().equals(ENROLLMENT_ALPN) ? enrollment.serve(conn)
           : conn.alpn().equals(TOOLS_ALPN) ? serveTools(gateways, conn)

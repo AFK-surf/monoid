@@ -475,7 +475,7 @@ pub fn Rigs::look(self : Rigs) -> Unit {
     return
   }
   let now : Array[String] = []
-  for m in self.d.cloud.memberships() {
+  for m in self.d.cloud.full_memberships() {
     let ws = js_string_of(get(Some(m), "workspace"))
     for rig in self.d.cloud.rigs_named(ws) {
       let k = rig_key(ws, str_at(Some(rig), "id").unwrap_or(""))
@@ -1195,19 +1195,54 @@ pub async fn Rigs::route(
       }),
     )
   }
+  if meth == "POST" && n == 4 && parts[1] == "rigs" && hex64(parts[2]) && parts[3] == "join" {
+    let id = parts[2]
+    return Some(
+      refusing(async fn() {
+        let op = Some(body_of(body))
+        if size > signed_max {
+          return error_answer(413, "too large")
+        }
+        let rig = self.named(ws, id)
+        let rig_id = str_at(Some(rig), "id").unwrap_or("")
+        if str_at(Some(rig), "owner") != Some(viewer.sub) {
+          return error_answer(403, "only its owner adds this rig to another workspace")
+        }
+        let sb = get(get(op, "signed"), "body")
+        if !well_formed("join", get(op, "signed")) ||
+          str_at(sb, "rig") != Some(rig_id) ||
+          str_at(sb, "ws") == Some(ws) ||
+          str_at(sb, "sub") != Some(viewer.sub) {
+          return error_answer(422, "not signed for this station")
+        }
+        let request = jobj([
+          ("method", jstr("rig.join")),
+          ("workspace", jstr(ws)),
+          ("signed", get(op, "signed").unwrap()),
+          ("chain", chain_or_null(op)),
+        ])
+        let joined = (self.d.within)(
+          ask_ms,
+          async fn() { self.d.world.ask("remote.ask", [jstr(rig_id), request]).unwrap_or(Json::null()) },
+          "it did not answer",
+        ) catch {
+          Refused(m) => raise Refused(m)
+          e => return error_answer(504, error_message(e))
+        }
+        answered(match joined { Null => jobj([("ok", jbool(true))]); other => other })
+      }),
+    )
+  }
   if meth == "POST" && path == "/mode" {
-    // This station to run only tasks from now on (`{mode: "tasks", person}`), asked of it by a member's device:
-    // `person` their own lock's hash, which it will pin. Whose a station is (who added it) the machine does not know:
-    // the control plane does, and lets only that member list it so (cloud/src/directory.ts `setStationMode`). So the
-    // ask is kept as theirs until the control plane lists it as that same person's rig (the app asks that next;
-    // cloud/presence.ts): neither alone makes it one. A station in one workspace only, as a rig is.
+    // This station to run only tasks in this workspace from now on (`{mode: "tasks", person}`), asked of it by a
+    // member's device: `person` their own lock's hash, which it will pin.
     let op = Some(body_of(body))
     let person = str_at(op, "person")
     if str_at(op, "mode") != Some("tasks") || !(person is Some(p) && hex64(p)) {
       return Some(error_answer(400, "mode tasks, with its person's own lock"))
     }
-    if self.d.cloud.home() != Some(viewer.workspace) || self.d.cloud.memberships().length() != 1 {
-      return Some(error_answer(409, "a station in several workspaces stays a whole one: take it out of the others first"))
+    if self.d.cloud.membership(viewer.workspace) is None || self.d.cloud.rig_in(viewer.workspace) is Some(_) {
+      return Some(error_answer(409, "this station is not a whole station in this workspace"))
     }
     let at = ((self.d.now)() / 1000.0).floor()
     let pending = [("owner", jstr(viewer.sub))]
@@ -1216,8 +1251,22 @@ pub async fn Rigs::route(
     pending.push(("person", jstr(person.unwrap())))
     pending.push(("at", jnum(at)))
     self.d.cloud.update(st => {
-      st.fields["rig_pending"] = jobj(pending)
-      st.fields.remove("rig_due")
+      let rp = match st.fields.get("rig_pending") {
+        Some(Object(m)) => m.copy()
+        _ => Map([])
+      }
+      rp[viewer.workspace] = jobj(pending)
+      st.fields["rig_pending"] = Json::object(rp)
+      if st.fields.get("rig_due") is Some(Array(xs)) {
+        let rest = xs.filter(x => x != jstr(viewer.workspace))
+        if rest.length() > 0 {
+          st.fields["rig_due"] = jarr(rest)
+        } else {
+          st.fields.remove("rig_due")
+        }
+      } else {
+        st.fields.remove("rig_due")
+      }
     })
     return Some(answered(jobj([("ok", jbool(true))])))
   }

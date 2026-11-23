@@ -44,9 +44,9 @@ export class DirectoryDb {
     return this.rows("SELECT station FROM station_members WHERE workspace = ?", workspace).map((r) => r.station as string);
   }
 
-  /** The workspaces a station is in, its home first: the one it joined first (the earliest row of the earliest second). */
+  /** The workspaces a station is in, its home first: the earliest full workspace, or earliest rig workspace if rig-only. */
   memberships(station: string): string[] {
-    return this.rows("SELECT workspace FROM station_members WHERE station = ? ORDER BY enrolled_at, rowid", station).map((r) => r.workspace as string);
+    return this.rows("SELECT workspace FROM station_members WHERE station = ? ORDER BY (rig IS NOT NULL), enrolled_at, rowid", station).map((r) => r.workspace as string);
   }
 
   /** Accounts signed in with this email (invitations are addressed by email). */
@@ -65,7 +65,7 @@ export class DirectoryDb {
    */
   stationViews(workspace: string | null): (StationView & { workspace: string })[] {
     return this.rows(`SELECT m.workspace, m.station AS id, m.name, m.emoji, m.icon, m.enrolled_at, m.enrolled_by, s.last_seen, s.version,
-        EXISTS (SELECT 1 FROM station_members o WHERE o.station = m.station AND (o.enrolled_at < m.enrolled_at OR (o.enrolled_at = m.enrolled_at AND o.rowid < m.rowid))) AS joined
+        EXISTS (SELECT 1 FROM station_members o WHERE o.station = m.station AND o.rig IS NULL AND (o.enrolled_at < m.enrolled_at OR (o.enrolled_at = m.enrolled_at AND o.rowid < m.rowid))) AS joined
       FROM station_members m LEFT JOIN stations s ON s.id = m.station WHERE (? IS NULL OR m.workspace = ?) AND m.rig IS NULL ORDER BY m.enrolled_at, m.rowid`, workspace, workspace)
       .map(({ joined, ...row }) => ({ ...row, ...(joined ? { joined: true } : {}) })) as unknown as (StationView & { workspace: string })[];
   }

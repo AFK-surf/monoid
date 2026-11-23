@@ -403,7 +403,7 @@ export class Sharing {
     if (!cloud.peersCurrent || cloud.state === null) return null;
     const me = this.me();
     const out = new Map<string, string[]>();
-    for (const m of cloud.memberships()) {
+    for (const m of cloud.fullMemberships()) {
       for (const p of m.peers) if (typeof p?.id === "string" && p.id !== me) out.set(p.id, [...(out.get(p.id) ?? []), m.workspace]);
     }
     return out;
@@ -418,7 +418,7 @@ export class Sharing {
 
   /// The workspaces of this station's a profile is shared in (what its copies may serve, sessions/config.ts `allowedIn`).
   private sharedIn(profile: Json): string[] {
-    return this.deps.cloud.memberships().flatMap((m) => (this.servesIn({ kind: "profile", profile }, m.workspace) ? [m.workspace] : []));
+    return this.deps.cloud.fullMemberships().flatMap((m) => (this.servesIn({ kind: "profile", profile }, m.workspace) ? [m.workspace] : []));
   }
 
   /// What a shared profile is, hashed: where it is shared too (its copies serve those workspaces only).
@@ -2017,7 +2017,7 @@ export class Sharing {
       const l: Lang = lang === "zh" || lang === "en" ? lang : stationLang();
       throw new Refused(tr(l, "station.share.moveHome", { workspaces: served.join(", ") }));
     }
-    return this.deps.cloud.memberships().map((m) => m.workspace).filter((w) => w !== home && !served.includes(w));
+    return this.deps.cloud.fullMemberships().map((m) => m.workspace).filter((w) => w !== home && !served.includes(w));
   }
 
   /// The login files handed over with a profile, written in its home here (only those its runtime signs in with).

@@ -11,7 +11,6 @@ import { stationAddr } from "../mesh/relays.ts";
 import { COLAB_REAP_MS, allColabAccounts, colabAccountsFor, effectiveSandboxes, reapColab } from "../agents/sandbox.ts";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { rm } from "node:fs/promises";
 import { Context, Effect, Layer, Schedule, Stream, SubscriptionRef } from "effect";
 import { Fibers, wall } from "../ops/fibers.ts";
 import { CLAUDE_TOOL_LOADED, CLAUDE_TURN_ENDED, ClaudeDriver } from "../agents/claude.ts";
@@ -36,12 +35,12 @@ import { sweepRunners } from "../agents/runner.ts";
 import type { Control } from "../ops/launcher.ts";
 import { log } from "../ops/log.ts";
 import { mcpPortFile, ownData, portsToTry, rememberedMcpPort } from "../ops/files.ts";
-import { AdminHost, ControlPlane, Events, Grants, HelperFolders, Key, Own, Parts, Paths, Peers, Previous, Readers, ScreenRegistry, StationConfig, Store, Up, AgentsSide, MeshSide } from "../services.ts";
+import { AdminHost, ControlPlane, Events, Grants, HelperFolders, Key, Own, Parts, Paths, Peers, Previous, Readers, RigSide, ScreenRegistry, StationConfig, Store, Up, AgentsSide, MeshSide } from "../services.ts";
 import { claudeCredentialsFile, codexAuthFile } from "../agents/machine-logins.ts";
 import { permissionsView } from "../api/routes/permissions.ts";
 import { Net, measure } from "../jobs/load.ts";
 import { BilledCooldown, Notifier, ProfileLoginCooldown } from "../cloud/notify.ts";
-import { type Cloud as CloudState, rigGrantsPath } from "../cloud/state.ts";
+import { type Cloud as CloudState } from "../cloud/state.ts";
 import { screenTools } from "../tools/screen.ts";
 import { permissionTools } from "../tools/permissions.ts";
 import { HelperFiles } from "../helper/files.ts";
@@ -78,7 +77,7 @@ import type { Viewer } from "../mesh/credential.ts";
 import { stationLang, tr, type Lang } from "../ops/i18n.ts";
 import { type Updates, makeUpdates } from "../updates/updates.ts";
 import { channelOf } from "../updates/versions.ts";
-import { allowedIn, type Connect, hubConfig, runtimeTitle } from "./config.ts";
+import { allowedIn, type Connect, type HubConfig, hubConfig, runtimeTitle } from "./config.ts";
 import type { TailState } from "../read/transcript.ts";
 import { followLatestThreadRequests } from "../read/latest-thread-requests.ts";
 import { ColdRooms } from "./cold.ts";
@@ -233,9 +232,9 @@ export const AgentsLive = (control: Control) =>
       readAgentEnvFrom(() => config.raw());
       const place = () => {
         const s = cloud.state;
-        return s && s.workspace && !cloud.removed() ? s : null;
+        return s && s.workspace && !cloud.removed() && cloud.fullMemberships().length > 0 ? s : null;
       };
-      const bound = () => place() !== null;
+      const bound = () => cloud.fullMemberships().length > 0;
       // Session pages are still.fail cloud's (`<origin>/o/…`); other control planes have none to link to.
       // In the workspace its chat is in.
       const pages = (): PageBase | null => {
@@ -250,14 +249,15 @@ export const AgentsLive = (control: Control) =>
         return s && (ws === s.workspace || cloud.membership(ws!) !== null) ? sessionPage(s, ws!, key) : undefined;
       };
 
-      // Each profile running the models its last check found besides those config.json names (the accounts, once made).
-      let found = (_: string): readonly string[] | null => null;
+      // config.json as the hub reads it: the accounts' (each profile running the models its last check found besides
+      // those config.json names, made again only as either changes), once they are made.
+      let read = (): HubConfig => hubConfig(config.raw(), data);
       // config.json's connects and those of other stations whose chats run here (connects/remote.ts), said by the parts.
       const moreConnects: (() => Connect[])[] = [];
       const settings = () => {
-        const read = hubConfig(config.raw(), data, (id) => found(id));
-        for (const more of moreConnects) read.connects.push(...more());
-        return read;
+        const made = read();
+        const more = moreConnects.flatMap((m) => m());
+        return more.length === 0 ? made : { ...made, connects: [...made.connects, ...more] };
       };
       // The folders macOS protects (Documents, Desktop, Downloads, disks) through still.fail Helper: the drive's and
       // the directories people and agents name (ops/places.ts), never touched on the station's thread.
@@ -336,7 +336,7 @@ export const AgentsLive = (control: Control) =>
         toolsHeard: (session) => mcp.heard(session),
         internal: new InternalChat(),
         link: pageOf,
-        workspaces: () => cloud.memberships().map((m) => m.workspace),
+        workspaces: () => cloud.fullMemberships().map((m) => m.workspace),
         station: () => cloud.state?.station ?? null,
         // (a preset's folder on another station told by that station's name: its own mark's, else the roster's)
         stationName: (id) => stationMarksOf(cloud).record(id)?.name ?? (nameOf(cloud, id) !== id ? nameOf(cloud, id) : null),
@@ -385,6 +385,7 @@ export const AgentsLive = (control: Control) =>
         },
       });
       const meshBus = yield* Peers;
+      const rigSide = yield* RigSide;
       const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus, acceptAutoChats: () => config.raw()?.acceptAutoChats === true, traces: () => meshSide.traces ?? null });
       // Its sandboxes (config.json's `sandboxes` + default Colab sandboxes when Colab profiles exist): wired once `accounts` is created below.
       // Measure only working chats, and only station-owned workspaces. A chat's remote workspaces are measured on the
@@ -619,7 +620,11 @@ export const AgentsLive = (control: Control) =>
       // So are those of a session of a workspace the station has left.
       const inItsWorkspace = (session: string) => {
         const ws = store.sessionWs(session) ?? null;
-        return ws === null || cloud.membership(ws) !== null;
+        if (ws === null) {
+          const home = cloud.home();
+          return home !== null && cloud.rigIn(home) === null;
+        }
+        return cloud.membership(ws) !== null && cloud.rigIn(ws) === null;
       };
       // The agents' tools, and those the station's parts add as they are made (parts.ts).
       // A runtime that declares only so many bytes of tools to its model is given those that fit (Antigravity CLI); one
@@ -642,7 +647,7 @@ export const AgentsLive = (control: Control) =>
       // (As the first of the station's workspaces it is in calls it, the home one first.)
       const hostName = (p: any) => {
         const host = p?.share?.host;
-        return cloud.memberships().flatMap((m) => m.peers).find((x) => x?.id === host)?.name ?? host ?? null;
+        return cloud.fullMemberships().flatMap((m) => m.peers).find((x) => x?.id === host)?.name ?? host ?? null;
       };
       // (told once the notifier is made, below)
       let loginLost: ((lost: LoginLost) => void) | null = null;
@@ -655,7 +660,7 @@ export const AgentsLive = (control: Control) =>
         loginBack: (id) => loginBack?.(id),
         shared: { status: (p, recheck) => sharing!.status(p, recheck === true), lendCodex: (p, rejected) => sharing!.lendCodex(p, rejected), lendAgy: (p, rejected) => sharing!.lendAgy(p, rejected), lendClaude: (p, rejected) => sharing!.lendClaude(p, rejected), quotaReset: (p, key) => sharing!.quotaReset(p.id, key), loginUpdated: (id) => { sharing?.loginUpdated(id); }, view: (p, ws) => sharing?.profileView(p, ws) ?? null, hostName },
       });
-      found = accounts.found;
+      read = () => accounts.settings();
       accounts.start();
       const homeWorkspace = () => cloud.state?.workspace ?? null;
       const colabFor = (workspace?: string) => colabAccountsFor(accounts.profiles(), workspace ?? null, homeWorkspace());
@@ -813,35 +818,65 @@ export const AgentsLive = (control: Control) =>
 
       // In a workspace, or out of it, as cloud.json says, from now on; and in which of them.
       let inWorkspace = bound();
-      let joinedNow = new Set(cloud.memberships().filter((m) => !m.home).map((m) => m.workspace));
+      let joinedNow = new Set(cloud.fullMemberships().filter((m) => !m.home).map((m) => m.workspace));
       let homeNow = cloud.home();
       const follow = async () => {
-        // Listed as a rig now, as its owner's device asked of this station (cloud/state.ts `rig_due`): it ends what it
-        // runs as a station (the agents' runtimes, the connects, the chats' jobs and services), then says it is one,
-        // at which this process ends for the rig's (main.ts). Its chats stay in its database, unseen until it is a
-        // whole station again.
-        if (cloud.state?.rig_due === true) {
-          const due = cloud.state.rig_pending;
-          if (due === undefined) {
-            cloud.update((st) => void delete st.rig_due);
-            return;
+        // Listed as a rig in one or more workspaces now (cloud/state.ts `rig_due`): stop full-station work for each
+        // such workspace, clear any stale rig grants for it, and apply its `rig` entry. If no full workspaces remain,
+        // stop all connects/jobs so BecameRig hands over to RigLive; otherwise keep StationLive running in mixed mode.
+        const dueList = cloud.state?.rig_due;
+        if (dueList !== undefined && dueList.length > 0) {
+          for (const ws of [...dueList]) {
+            const due = cloud.state?.rig_pending?.[ws];
+            if (due === undefined) {
+              cloud.update((st) => {
+                if (st.rig_due) st.rig_due = st.rig_due.filter((w) => w !== ws);
+                if (st.rig_due?.length === 0) delete st.rig_due;
+              });
+              continue;
+            }
+            const remainingFull = cloud.fullMemberships().filter((m) => m.workspace !== ws);
+            const onlyFull = remainingFull.length === 0;
+            log.warn("station", "this station only runs tasks in workspace from now on", { workspace: ws, owner: due.owner, rigOnly: onlyFull });
+            if (onlyFull) {
+              hub.hold("unbound");
+              await hub.suspendAll();
+              for (const a of along) await a.left?.();
+              await jobs.stopAll("this station only runs tasks now");
+            } else {
+              if (ws === homeNow) store.setSessionsWs(null, ws);
+              await hub.leftWorkspace(ws);
+            }
+            rigSide.current?.grants.clearWorkspace(ws);
+            cloud.update((st) => {
+              const rigSelf = { owner: due.owner, owner_email: due.owner_email, owner_name: due.owner_name, person: due.person };
+              if (ws === st.workspace) {
+                st.rig = rigSelf;
+                delete st.rigs;
+              } else {
+                const j = (st.joined ?? []).find((x) => x.workspace === ws);
+                if (j !== undefined) {
+                  j.rig = rigSelf;
+                  delete j.rigs;
+                }
+              }
+              if (st.rig_pending) {
+                delete st.rig_pending[ws];
+                if (Object.keys(st.rig_pending).length === 0) delete st.rig_pending;
+              }
+              if (st.rig_due) {
+                st.rig_due = st.rig_due.filter((w) => w !== ws);
+                if (st.rig_due.length === 0) delete st.rig_due;
+              }
+            });
+            if (!onlyFull) {
+              for (const a of along) await a.changed?.();
+            }
           }
-          log.warn("station", "this station only runs tasks from now on: ending the agents' runtimes, stopping jobs and services", { owner: due.owner });
-          hub.hold("unbound");
-          await hub.suspendAll();
-          for (const a of along) await a.left?.();
-          await jobs.stopAll("this station only runs tasks now");
-          await rm(rigGrantsPath(data), { force: true });
-          cloud.update((st) => {
-            st.rig = { owner: due.owner, owner_email: due.owner_email, owner_name: due.owner_name, person: due.person };
-            delete st.rig_pending;
-            delete st.rig_due;
-            delete st.rigs;
-          });
-          return;
+          if (cloud.isRigOnly()) return;
         }
         const now = bound();
-        const joined = new Set(cloud.memberships().filter((m) => !m.home).map((m) => m.workspace));
+        const joined = new Set(cloud.fullMemberships().filter((m) => !m.home).map((m) => m.workspace));
         // A new home workspace. One it had joined took over from a home it was taken out of: the old home's chats
         // (those that say no workspace) are said to be that one's, so they stay out of the new home's sight. Moved
         // (enrolled again elsewhere): its chats of the old home go along, as they always did.
@@ -851,7 +886,7 @@ export const AgentsLive = (control: Control) =>
           else store.setSessionsWs(homeNow, null);
         }
         if (home !== null) homeNow = home;
-        const left = [...joinedNow].filter((w) => !joined.has(w) && cloud.memberships()[0]?.workspace !== w);
+        const left = [...joinedNow].filter((w) => !joined.has(w) && cloud.fullMemberships()[0]?.workspace !== w);
         const back = [...joined].filter((w) => !joinedNow.has(w));
         joinedNow = joined;
         if (now && now === inWorkspace) {
@@ -962,7 +997,7 @@ export const AgentsLive = (control: Control) =>
           await jobs.stopAll("the station was removed from its workspace");
         }
         // (due to become a rig when it stopped, before it had: now)
-        if (cloud.state?.rig_due === true) await follow();
+        if ((cloud.state?.rig_due?.length ?? 0) > 0) await follow();
       };
       yield* Effect.forkScoped(Effect.promise(() => start().catch((e) => {
         log.error("hub", "the agents' side did not start", { error: (e as Error).message });
@@ -978,7 +1013,7 @@ export const AgentsLive = (control: Control) =>
       loginLost = ({ id, profile, station }) => {
         if (cloud.provider() !== "stillfail") return;
         const home = cloud.home();
-        const workspaces = cloud.memberships().map((m) => m.workspace).filter((ws) => allowedIn(profile, ws, home));
+        const workspaces = cloud.fullMemberships().map((m) => m.workspace).filter((ws) => allowedIn(profile, ws, home));
         const runtime = profile.runtime;
         const stationName = station ?? cloud.state?.name ?? "still.fail";
         notifier.notifyProfileLogin({ workspaces, profileId: id, profile: profile.name, runtimeTitle: runtime === undefined ? "" : runtimeTitle(runtime), stationName, at: hub.now() }, profileLoginCooldown);

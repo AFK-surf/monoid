@@ -8,7 +8,7 @@
 import { closePeerRelays } from "../mesh/peer-relays.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Context, Effect, Layer, Option, Stream, SubscriptionRef } from "effect";
+import { Effect, Layer, Option, Stream, SubscriptionRef } from "effect";
 import { Jobs, notifyEndpoint, screenEndpoint } from "../jobs/jobs.ts";
 import { measure } from "../jobs/load.ts";
 import { liveMemory } from "../jobs/memory.ts";
@@ -30,18 +30,13 @@ import type { Control } from "../ops/launcher.ts";
 import { log } from "../ops/log.ts";
 import { becomeOther } from "../ops/restart.ts";
 import { stationLog } from "../ops/log-export.ts";
-import { AdminHost, ControlPlane, Key, MeshNative, MeshSide, Paths, Peers, Previous, StationConfig, Store, Up } from "../services.ts";
+import { AdminHost, AgentsSide, ControlPlane, Key, MeshNative, MeshSide, Paths, Peers, Previous, RigSide, StationConfig, Store, Up } from "../services.ts";
 import { type AgentsDoor, openAgentsDoor } from "../tools/http.ts";
 import { McpEndpoint } from "../tools/mcp.ts";
 import { makeUpdates } from "../updates/updates.ts";
 import { Incoming } from "../vault/incoming.ts";
 import { Proxy } from "../vault/proxy.ts";
 import { Rig } from "./module.ts";
-
-/// The rig, once made: what the mesh asks of it.
-export class RigSide extends Context.Service<RigSide, { current: Rig | null }>()("stillfail/RigSide") {
-  static readonly layer = Layer.sync(RigSide, () => ({ current: null }));
-}
 
 /// `remote:<workspace>:<station>:<session>`: whose a task's job is (jobs/remote.ts `owner`). A session's key has
 /// colons of its own; a workspace's id and a station's have none.
@@ -50,6 +45,40 @@ function owned(sessionKey: string): { workspace: string; station: string; sessio
   const m = /^remote:([^:]*):([^:]*):(.*)$/s.exec(sessionKey);
   return m === null ? null : { workspace: m[1]!, station: m[2]!, session: m[3]! };
 }
+
+/// Rig-side part for a mixed-mode station (at least one full workspace, plus zero or more rig-mode workspaces).
+/// Mounted as a station part after `AgentsLive` so platform and agents layers do not import `rig/` at runtime.
+export const MixedRigLive = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const { data } = yield* Paths;
+    const store = yield* Store;
+    const plane = yield* ControlPlane;
+    const bus = yield* Peers;
+    const side = yield* RigSide;
+    const agents = (yield* AgentsSide).current;
+    const rig = new Rig({
+      data,
+      cloud: plane.state,
+      bus,
+      fibers: new Fibers("rig", agents?.hub.clock),
+      busy: (workspace, station, session) => store.runningJobsAtLeast(ownerOf(workspace, station, session), 1),
+      stop: async (workspace, station, session) => {
+        for (const id of store.upJobIds(ownerOf(workspace, station, session))) {
+          await agents?.jobs.stop(id).catch((error) => log.warn("rig", "a task of a chat that lost this rig was not stopped", { job: id, error: (error as Error).message }));
+        }
+      },
+      running: () => store.jobsRunning().flatMap((j) => owned(j.sessionKey) ?? []),
+    });
+    side.current = rig;
+    agents?.remote.setDescribed((_peer, ws) => rig.described(ws));
+    yield* Effect.addFinalizer(() =>
+      Effect.promise(async () => {
+        if (side.current === rig) side.current = null;
+        await rig.close();
+      }),
+    );
+  }),
+);
 
 /// What a rig runs and answers: the jobs, other stations' tasks, its grants, its own updates, and the door its jobs
 /// reach it by (`stillfail-job`).
@@ -88,7 +117,7 @@ export const RigLive = (control: Control) =>
         running: () => store.jobsRunning().flatMap((j) => owned(j.sessionKey) ?? []),
       });
       side.current = rig;
-      remote.setDescribed(() => rig.described());
+      remote.setDescribed((_peer, ws) => rig.described(ws));
       const gpus = host.gpus;
       void gpus.read().catch(() => null);
       remote.setLoad(() =>
@@ -143,14 +172,13 @@ export const RigLive = (control: Control) =>
       control.on("hup", () => void updates.answerChannelAsk());
 
       // In its workspace or out of it, as cloud.json says: out of it, what it runs for the stations stops.
-      const bound = () => rig.self() !== null;
+      const bound = () => cloud.rigMemberships().length > 0;
       let inWorkspace = bound();
       let giving = false;
       const follow = async () => {
-        // No longer a rig (enrolled again as a station, from another process): this process ends, and the launcher
-        // starts the station's in its place.
-        if (cloud.state !== null && cloud.state.rig === undefined && cloud.state.workspace && !cloud.removed()) {
-          log.warn("rig", "this machine is a station now: the rig's process gives way to the station's");
+        // No longer rig-only (has at least one full workspace now): hand over to StationLive.
+        if (cloud.fullMemberships().length > 0) {
+          log.warn("rig", "this machine has a full workspace now: the rig's process gives way to the station's");
           if (!giving) becomeOther(data);
           giving = true;
           return;

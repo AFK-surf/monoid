@@ -19,6 +19,8 @@ priv struct Plane {
   http : @cloud_net.Http
   /// What the presence socket asks the mesh's device tools (Comma's), once the mesh is up.
   tool_calls : Ref[((Json, (Result[Json, String]) -> Unit) -> Unit)?]
+  /// Clear a workspace's rig grants/devices when that workspace changes mode.
+  clear_rig_ws : Ref[(String) -> Unit]
   listeners : Array[(Int, (Json?) -> Unit)]
   mut next : Int
   mut reached_said : Bool
@@ -86,7 +88,7 @@ fn lock_hooks(cloud : @cloud_lock.Cloud, crypto : @cloud_lock.Crypto, station : 
       Some(w) if ws is Some(_) => cloud.disk().remove(@cloud_lock.joined_pending_path(cloud.data, w))
       _ => cloud.disk().remove(@cloud_lock.pending_lock_path(cloud.data))
     },
-    succeed: ws => cloud.succeed(ws),
+    succeed: (ws, demote) => cloud.succeed(ws, demote_old_home=demote),
     filtered: (peers, gateways) => {
       cloud.set_plane_lists(
         peers,
@@ -109,7 +111,23 @@ fn lock_hooks(cloud : @cloud_lock.Cloud, crypto : @cloud_lock.Crypto, station : 
         None => (peers, gateways)
       }
     },
-    locked: () => cloud.locked() is Some(_),
+    locked: () => {
+      let home = cloud.home()
+      cloud
+      .memberships()
+      .iter()
+      .any(m => {
+        let w = match m {
+          { "workspace": String(s), .. } => s
+          _ => ""
+        }
+        if w == "" {
+          false
+        } else {
+          cloud.locked(ws=if Some(w) == home { None } else { Some(w) }) is Some(_)
+        }
+      })
+    },
   }
 }
 
@@ -191,6 +209,7 @@ fn P51::plane_live(self : P51) -> Plane {
     transport,
     http,
     tool_calls,
+    clear_rig_ws: Ref(_ => ()),
     listeners: [],
     next: 0,
     reached_said: false,
@@ -372,26 +391,93 @@ async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
     // and the rigs it listed dropped, the grants of before it removed; this process then gives way to the rig's)
     // (agents.ts `follow`: due to be a rig with nothing its owner asked, `rig_due` let go)
     "dropRigDue" => {
-      self.state.update(st => st.remove("rig_due"))
+      let ws = text("ws").unwrap_or("")
+      self.state.update(st => {
+        if ws == "" {
+          st.remove("rig_due")
+        } else if st.get("rig_due") is Some(Array(xs)) {
+          let rest = xs.filter(x => x != Json::string(ws))
+          if rest.length() > 0 {
+            st["rig_due"] = Json::array(rest)
+          } else {
+            st.remove("rig_due")
+          }
+        } else {
+          st.remove("rig_due")
+        }
+      })
       Json::null()
     }
     "becomeRig" => {
+      let ws = text("ws").unwrap_or(self.cloud.home().unwrap_or(""))
       let due = match arg {
         Object(m) if m.get("due") is Some(d) => d
         other => other
       }
-      self.cloud.disk().remove(@cloud_lock.rig_grants_path(self.data))
+      let rig_obj : Json = {
+        "owner": jfield(due, "owner"),
+        "owner_email": jfield(due, "owner_email"),
+        "owner_name": jfield(due, "owner_name"),
+        "person": jfield(due, "person"),
+      }
       self.state.update(st => {
-        st["rig"] = {
-          "owner": jfield(due, "owner"),
-          "owner_email": jfield(due, "owner_email"),
-          "owner_name": jfield(due, "owner_name"),
-          "person": jfield(due, "person"),
+        let home_ws = match st.get("workspace") {
+          Some(String(w)) => w
+          _ => ""
         }
-        st.remove("rig_pending")
-        st.remove("rig_due")
-        st.remove("rigs")
+        if ws == "" || ws == home_ws {
+          st["rig"] = rig_obj
+        } else if st.get("joined") is Some(Array(xs)) {
+          let updated : Array[Json] = []
+          for j in xs {
+            match j {
+              Object(jm) if jm.get("workspace") == Some(Json::string(ws)) => {
+                let copy = jm.copy()
+                copy["rig"] = rig_obj
+                updated.push(Json::object(copy))
+              }
+              other => updated.push(other)
+            }
+          }
+          st["joined"] = Json::array(updated)
+        }
+        if st.get("rig_pending") is Some(Object(rp)) {
+          let copy = rp.copy()
+          copy.remove(ws)
+          if copy.is_empty() {
+            st.remove("rig_pending")
+          } else {
+            st["rig_pending"] = Json::object(copy)
+          }
+        } else {
+          st.remove("rig_pending")
+        }
+        if st.get("rig_due") is Some(Array(xs)) {
+          let rest = xs.filter(x => x != Json::string(ws))
+          if rest.length() > 0 {
+            st["rig_due"] = Json::array(rest)
+          } else {
+            st.remove("rig_due")
+          }
+        } else {
+          st.remove("rig_due")
+        }
+        // Only drop `rigs` list if no full workspaces remain.
+        let home_is_rig = st.get("rig") is Some(Object(_))
+        let all_joined_rig = match st.get("joined") {
+          Some(Array(xs)) => xs.iter().all(j => j is { "rig": Object(_), .. })
+          _ => true
+        }
+        if home_is_rig && all_joined_rig {
+          st.remove("rigs")
+        }
       })
+      if ws != "" {
+        (self.clear_rig_ws.val)(ws)
+      }
+      if self.cloud.is_rig_only() {
+        self.cloud.disk().remove(@cloud_lock.rig_grants_path(self.data))
+      }
       Json::null()
     }
     // (the relays tool's: still.fail's own relays; a workspace's own added or taken away, mesh/ways.ts)
@@ -434,9 +520,8 @@ async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
 fn P51::became_rig_live(self : P51) -> Unit {
   let bus = self.bus
   let asked = Ref(false)
-  let off = (bus.cloud_listen.val)(s => {
-    guard s is Some(Object(m)) && m.get("rig") is Some(_) && !asked.val else { return }
-    guard m.get("workspace") is Some(String(w)) && w != "" && m.get("removed_at") is None else { return }
+  let off = (bus.cloud_listen.val)(_ => {
+    guard self.plane is Some(plane) && plane.cloud.is_rig_only() && !asked.val else { return }
     asked.val = true
     p51_log("WARN", "station", "this machine is a rig now: the station's process gives way to the rig's")
     self.fork("become a rig", async fn() { become_other(bus) })

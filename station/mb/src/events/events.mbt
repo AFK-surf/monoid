@@ -63,6 +63,9 @@ pub(all) struct Deps {
   mut process_state : ((String) -> String?)?
   mut followed : (() -> Unit)?
   seen : ((Viewer, Of) -> Bool)?
+  /// `seen` of every viewer, what it names looked up once (seen.mbt `seer_of`): asked once for what is told to every
+  /// stream.
+  seer : ((Of) -> (Viewer) -> Bool)?
   mut login_screen : ((String, (Screen) -> Unit) -> (() -> Unit)?)?
   mut in_vault : ((Viewer, String) -> Bool)?
   /// The clock: its time, a function after so long, one every so long (each gives how to stop it), and one after
@@ -544,8 +547,9 @@ pub fn Events::send_live(
   if self.handed {
     return
   }
+  let whose = self.whose()
   for c in self.clients {
-    if self.reaches(c, to) {
+    if is_for(to, c.viewer, c.lang, whose, self.deps.in_vault) {
       c.send(event, data)
     }
   }
@@ -597,8 +601,11 @@ fn keyed(message : J, key : String) -> J {
 ///|
 /// events.ts `heldTold`: what a session at work did, to every stream that follows them and sees it.
 pub fn Events::held_told(self : Events, key : String, message : J) -> Unit {
+  let whose = self.whose()
+  // Made once for every stream it is told to (each stream's `send` made it again).
+  let text : Ref[String?] = Ref(None)
   for c in self.clients {
-    if !c.running || !self.seen_by(c, Session(key)) {
+    if !c.running || (whose is Some(f) && !f(c.viewer, Session(key))) {
       continue
     }
     if c.spare is Some(open) && !open.contains(key) {
@@ -606,7 +613,17 @@ pub fn Events::held_told(self : Events, key : String, message : J) -> Unit {
     }
     match c.held_waits {
       Some((_, waits)) if waits.get(key) is Some(w) => w.push(message)
-      _ => c.send("live", keyed(message, key))
+      _ => {
+        let t = match text.val {
+          Some(t) => t
+          None => {
+            let t = "event: live\ndata: \{stringify(keyed(message, key))}\n\n"
+            text.val = Some(t)
+            t
+          }
+        }
+        c.raw(t)
+      }
     }
   }
 }
@@ -1184,11 +1201,31 @@ fn Events::emit(
     (self.deps.now)(),
     of?,
   )
+  let whose = self.whose()
   for c in self.clients {
-    if self.reaches(c, to) {
+    if is_for(to, c.viewer, c.lang, whose, self.deps.in_vault) {
       c.raw(logged.text)
     }
   }
+}
+
+///|
+/// events.ts `whose`: `seen` for one event told to every stream, the session, thread or job it names looked up once
+/// (`seer`), when a stream first asks, not once a stream.
+fn Events::whose(self : Events) -> ((Viewer, Of) -> Bool)? {
+  guard self.deps.seer is Some(seer) else { return self.deps.seen }
+  let seen : Ref[((Viewer) -> Bool)?] = Ref(None)
+  Some((viewer, of) => {
+    let f = match seen.val {
+      Some(f) => f
+      None => {
+        let f = seer(of)
+        seen.val = Some(f)
+        f
+      }
+    }
+    f(viewer)
+  })
 }
 
 ///|

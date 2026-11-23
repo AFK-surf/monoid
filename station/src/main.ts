@@ -34,7 +34,7 @@ import { ErrorReports, builtKey } from "./ops/telemetry.ts";
 import { answer, langOfBrowser } from "./ops/loopback.ts";
 import { ownPorts } from "./ops/own.ts";
 import { version } from "./ops/version.ts";
-import { AdminApi, AgentsSide, AdminHost, CheckpointsLive, ControlPlane, DeviceSources, Events, Grants, Helper, HelperFolders, Key, MeshNative, MeshSide, Own, Parts, Paths, Peers, Previous, Readers, ReadersAndStore, ScreenRegistry, StationConfig, StationDrive, Up } from "./services.ts";
+import { AdminApi, AgentsSide, AdminHost, CheckpointsLive, ControlPlane, DeviceSources, Events, Grants, Helper, HelperFolders, Key, MeshNative, MeshSide, Own, Parts, Paths, Peers, Previous, Readers, ReadersAndStore, RigSide, ScreenRegistry, StationConfig, StationDrive, Up } from "./services.ts";
 import { VaultLive } from "./vault/module.ts";
 import { AdbLive } from "./adb/module.ts";
 import { TerminalsLive } from "./terminals/module.ts";
@@ -69,7 +69,7 @@ import { takeQueries } from "./store/timed.ts";
 import { platform } from "./platform/index.ts";
 import { keepRunnerIn } from "./platform/processes.ts";
 import { becomeOther } from "./ops/restart.ts";
-import { RigLive, RigMeshLive, RigSide } from "./rig/main.ts";
+import { MixedRigLive, RigLive, RigMeshLive } from "./rig/main.ts";
 import { RigsLive } from "./rigs/module.ts";
 import { DevicesLive } from "./devices/module.ts";
 import { StatusLive } from "./api/status.ts";
@@ -165,8 +165,8 @@ const BecameRig = Layer.effectDiscard(
     const { data } = yield* Paths;
     let asked = false;
     yield* Effect.acquireRelease(
-      Effect.sync(() => cloud.listen((s) => {
-        if (s?.rig === undefined || !s.workspace || cloud.removed() || asked) return;
+      Effect.sync(() => cloud.listen(() => {
+        if (!cloud.isRigOnly() || asked) return;
         asked = true;
         log.warn("station", "this machine is a rig now: the station's process gives way to the rig's");
         becomeOther(data);
@@ -189,9 +189,9 @@ function run() {
   // defaults when another program has made config.json unreadable.
   const settings = new ConfigFile(data);
   settings.watch();
-  // A rig (a station that only runs tasks: cloud.json's `rig`, written by `enroll --rig`): what a machine is, is read
-  // once, as it starts (`rigStation` below).
-  const asRig = readState(data)?.rig !== undefined;
+  // A rig-only station (tasks-only in every workspace): read once as it starts (`rigStation` below); mixed mode
+  // (at least one full workspace) runs `station` with `Rig` mounted beside `AgentsLive`.
+  const asRig = isRig(data);
   const control = launcher(args);
   // What brings the process down said in its log first: an exception nobody caught, or a promise's rejection nobody
   // handled, which Node ends the process with as well (a monitor, so it still ends as it did). The log's upload has no
@@ -254,9 +254,10 @@ function run() {
   );
   const station = Layer.mergeAll(MeshLive, Loopback(control), StatusLive, AwakeLive, CheckpointsLive, BecameRig).pipe(
     // The station's parts in its own process (parts.ts), made before the mesh answers anyone: each says what it adds.
-    Layer.provideMerge(Layer.mergeAll(VaultLive, AdbLive, BrowserLive, LinksLive, FeedbackLive, AgentHomeLive, LoginsLive, DriveTransfersLive, UsageLive, ElevationLive, ScreenServiceLive, ResourcesLive, SearchLive, SlackLive, FeishuLive, CommaLive, GroupLive, WorkspaceConnectsLive, ModelsLive, RigsLive, DevicesLive, CopiesLive, MovesLive, TerminalsLive, FeaturesLive)),
+    Layer.provideMerge(Layer.mergeAll(VaultLive, AdbLive, BrowserLive, LinksLive, FeedbackLive, AgentHomeLive, LoginsLive, DriveTransfersLive, UsageLive, ElevationLive, ScreenServiceLive, ResourcesLive, SearchLive, SlackLive, FeishuLive, CommaLive, GroupLive, WorkspaceConnectsLive, ModelsLive, RigsLive, MixedRigLive, DevicesLive, CopiesLive, MovesLive, TerminalsLive, FeaturesLive)),
     Layer.provideMerge(AdminApi.layer),
     Layer.provideMerge(AgentsLive(control)),
+    Layer.provideMerge(RigSide.layer),
     // The drive, the admin API's: the platform's, before the agents.
     Layer.provideMerge(StationDrive.layer),
     Layer.provideMerge(HelperFolders.layer),
@@ -449,21 +450,22 @@ switch (command) {
     // is enrolled with whatever host the command names (the test channel's app.youdid.wtf is still.fail's API too), a
     // token that plane does not know refused there.
     // (a rig is in one workspace: it enrolls, which refuses a machine that is a station now, and the other way round)
-    const stay = rig === undefined && !isRig(data) && !args.includes("--join") && args.includes("--stay") && staysIn(data);
-    if (rig === undefined && (args.includes("--join") || stay)) {
+    const stay = !args.includes("--join") && args.includes("--stay") && staysIn(data);
+    if (args.includes("--join") || stay) {
       const now = readState(data);
       if (!stay && now !== null && now.origin !== origin.replace(/\/+$/, "")) {
         console.error(`this station is enrolled at ${now.origin}; it joins workspaces there only`);
         process.exit(1);
       }
       // On this machine: its person may set aside a lock kept here for that workspace by naming another.
-      const joined = await joinWorkspace(data, token, lock, { atMachine: true }).catch((error) => {
+      const joined = await joinWorkspace(data, token, lock, { atMachine: true, rig }).catch((error) => {
         if (stay) console.error(`this station is in workspace ${now?.workspace_name || now?.workspace} (${now?.origin}): it was to join this one beside it, which did not go through. To move it here instead, remove it from that workspace first.`);
         throw error;
       });
-      console.log(tr(stationLang(), "station.cli.joined", { workspace: joined.workspace_name, name: joined.name, id: loadKey(data).id.slice(0, 12) }));
+      if (rig !== undefined) console.log(tr(stationLang(), "station.cli.rig.joined", { workspace: joined.workspace_name, name: joined.name, id: loadKey(data).id.slice(0, 12), owner: joined.owner ?? "" }));
+      else console.log(tr(stationLang(), "station.cli.joined", { workspace: joined.workspace_name, name: joined.name, id: loadKey(data).id.slice(0, 12) }));
       // A locked workspace: its owner confirms this station by its code, as one enrolled with `--lock`.
-      if (lock !== undefined) console.log(tr(stationLang(), "station.cli.lock.pending", { code: shortCode(loadKey(data).id) }));
+      if (lock !== undefined) console.log(tr(stationLang(), rig !== undefined ? "station.cli.rig.pending" : "station.cli.lock.pending", { code: shortCode(loadKey(data).id) }));
       break;
     }
     await enroll(data, origin.replace(/\/+$/, ""), token, provider, lock, rig);

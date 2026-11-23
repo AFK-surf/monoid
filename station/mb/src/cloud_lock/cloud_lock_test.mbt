@@ -71,14 +71,14 @@ test "an entry's shape and hash" {
 test "cloud.json's text, its fields in the Rust struct's order" {
   let s : @cloud_lock.CloudState = {
     fields: Map([
-      ("rig_due", Json::boolean(true)),
+      ("rig_due", Json::array([Json::string("ws1")])),
       ("peers", Json::array([])),
       ("origin", Json::string("o")),
       ("joined", Json::array([])),
       ("station", Json::string("s")),
     ]),
   }
-  assert_eq(@cloud_lock.state_text(s), "{\n  \"origin\": \"o\",\n  \"station\": \"s\",\n  \"peers\": [],\n  \"rig_due\": true\n}")
+  assert_eq(@cloud_lock.state_text(s), "{\n  \"origin\": \"o\",\n  \"station\": \"s\",\n  \"peers\": [],\n  \"rig_due\": [\n    \"ws1\"\n  ]\n}")
   assert_eq(@cloud_lock.joined_of(Some(@cloud_lock.parse("[{\"workspace\":\"J\",\"locked\":true},{\"workspace\":\"\"}]").unwrap())).length(), 1)
 }
 

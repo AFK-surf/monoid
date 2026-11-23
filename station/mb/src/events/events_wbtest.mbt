@@ -194,6 +194,7 @@ test "viewer visibility, seen_of, and asked_of query parsing" {
       process_state: None,
       followed: None,
       seen: None,
+      seer: None,
       login_screen: None,
       in_vault: None,
       now: () => 1000.0,

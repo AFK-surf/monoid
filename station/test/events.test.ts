@@ -1200,3 +1200,25 @@ test("a stream that comes back has its own viewer's overview made again, not eve
   await back.close();
   await otherStream.close();
 });
+
+test("what is told to every stream looks up the session or thread it names once, and a live step is made once", async () => {
+  const { events, change } = setup(testClock().clock);
+  events.follow({ held: () => [], heldNow: async () => ({}) });
+  const looked: string[] = [];
+  // Session k is a@x's and c@x's to see, not b@x's.
+  (events as any).deps.seer = (of: any) => (looked.push(JSON.stringify(of)), (v: any) => v.email !== "b@x");
+  const streams = await Promise.all(["a@x", "b@x", "c@x"].map(async (who) => reader((await events.open(viewer(who), "zh", false, [], [], null, true, [], true)).body as AsyncIterable<Buffer>)));
+  await settle();
+  looked.length = 0;
+  events.heldTold("k", { type: "rate", tokensPerSecond: 3 });
+  change({ type: "thread", id: 9, entries: [] });
+  await settle();
+  assert.deepEqual(looked, [JSON.stringify({ session: "k" }), JSON.stringify({ thread: 9 })]);
+  const told = streams.map((s) => s.got.filter((e) => e.event === "live").map((e) => e.raw));
+  assert.deepEqual(told[1], []);
+  assert.equal(told[0]!.length, 1);
+  assert.deepEqual(told[2], told[0]);
+  assert.deepEqual(JSON.parse(/data: (.*)\n/.exec(told[0]![0]!)![1]!), { type: "rate", tokensPerSecond: 3, key: "k" });
+  assert.deepEqual(streams.map((s) => s.got.some((e) => e.event === "chat-changed")), [true, false, true]);
+  await Promise.all(streams.map((s) => s.close()));
+});

@@ -574,8 +574,7 @@ pub async fn cmd_enroll(host : @host.Host, args : Array[String], data : String, 
     Some(s) => s.text("workspace") != "" && s.get("removed_at") is (None | Some(Null))
     None => false
   }
-  let is_rig = in_one && state.map(s => s.get("rig") is Some(Object(_))).unwrap_or(false)
-  let stay = rig is None && !is_rig && !args.contains("--join") && args.contains("--stay") && in_one
+  let stay = !args.contains("--join") && args.contains("--stay") && in_one
   let key = @cloud_lock.load_key(host, data) catch {
     e => {
       err_write("\{e}\n")
@@ -588,7 +587,7 @@ pub async fn cmd_enroll(host : @host.Host, args : Array[String], data : String, 
   } else {
     ("still.fail cloud", "/v1/stations/enroll", "/v1/stations/join", ["stillfail"])
   }
-  let joining = rig is None && (args.contains("--join") || stay)
+  let joining = args.contains("--join") || stay
   if joining {
     if !in_one {
       err_write("Error: this station is in no workspace: enroll it first\n")
@@ -630,19 +629,100 @@ pub async fn cmd_enroll(host : @host.Host, args : Array[String], data : String, 
       return 1
     }
     guard state is Some(s) else { return 1 }
+    let rig_entry : Json? = match rig {
+      Some(person) => {
+        let rig_obj = match body {
+          { "rig": Object(rm), .. } => rm
+          _ => {
+            err_write("Error: \{plane_name} did not return rig ownership\n")
+            return 1
+          }
+        }
+        let owner = opt_str(rig_obj.get("owner")).unwrap_or("")
+        if owner == "" {
+          err_write("Error: \{plane_name} did not return rig ownership\n")
+          return 1
+        }
+        let m : Map[String, Json] = {
+          "owner": Json::string(owner),
+          "person": Json::string(person),
+        }
+        if opt_str(rig_obj.get("owner_email")) is Some(e) && e != "" {
+          m["owner_email"] = Json::string(e)
+        }
+        if opt_str(rig_obj.get("owner_name")) is Some(n) && n != "" {
+          m["owner_name"] = Json::string(n)
+        }
+        Some(Json::object(m))
+      }
+      None => None
+    }
+    let promoted = match body {
+      { "home": String(h), .. } => h == ws && ws != s.text("workspace")
+      _ => false
+    }
     if ws != s.text("workspace") {
       let joined = match s.get("joined") {
-        Some(Array(xs)) => xs
+        Some(Array(xs)) => xs.copy()
         _ => []
       }
-      if !joined.iter().any(j => j is { "workspace": String(w), .. } && w == ws) {
-        joined.push({
+      if promoted {
+        let old_ws = s.text("workspace")
+        if old_ws != "" && !joined.iter().any(j => j is { "workspace": String(w), .. } && w == old_ws) {
+          let demoted : Map[String, Json] = {
+            "workspace": Json::string(old_ws),
+            "workspace_name": Json::string(s.text("workspace_name")),
+            "name": Json::string(s.text("name")),
+            "peers": s.get("peers").unwrap_or(Json::array([])),
+            "revocations": s.get("revocations").unwrap_or(Json::array([])),
+          }
+          if s.get("rig") is Some(r) {
+            demoted["rig"] = r
+          }
+          joined.push(Json::object(demoted))
+        }
+        // Move old home's lock files aside into locks/<old_ws>.* so the promoted workspace owns home lock paths.
+        let move_pair = (src : String, dst : String) => match disk.read(src) {
+          Some(text) => {
+            disk.mkdir(@cloud_lock.dirname(dst))
+            ignore(attempt(() => disk.write(dst, text)))
+            disk.remove(src)
+          }
+          None => ()
+        }
+        if old_ws != "" {
+          move_pair(@cloud_lock.lock_path(data), @cloud_lock.joined_lock_path(data, old_ws))
+          move_pair(@cloud_lock.lock_path(data) + ".off", @cloud_lock.joined_lock_path(data, old_ws) + ".off")
+          move_pair(@cloud_lock.pending_lock_path(data), @cloud_lock.joined_pending_path(data, old_ws))
+        }
+        s.fields["workspace"] = Json::string(ws)
+        s.fields["workspace_name"] = Json::string(field("workspace_name"))
+        s.fields["name"] = Json::string(field("name"))
+        s.fields["peers"] = Json::array([])
+        s.fields["revocations"] = Json::array([])
+        match rig_entry {
+          Some(r) => s.fields["rig"] = r
+          None => s.fields.remove("rig")
+        }
+        s.fields["joined"] = Json::array(joined.filter(j => !(j is { "workspace": String(w), .. } && w == ws)))
+        @cloud_lock.write_state(disk, data, s) catch {
+          e => {
+            err_write("Error: \{e}\n")
+            return 1
+          }
+        }
+      } else if !joined.iter().any(j => j is { "workspace": String(w), .. } && w == ws) {
+        let entry : Map[String, Json] = {
           "workspace": Json::string(ws),
           "workspace_name": Json::string(field("workspace_name")),
           "name": Json::string(field("name")),
           "peers": Json::array([]),
           "revocations": Json::array([]),
-        })
+        }
+        if rig_entry is Some(r) {
+          entry["rig"] = r
+        }
+        joined.push(Json::object(entry))
         s.fields["joined"] = Json::array(joined)
         @cloud_lock.write_state(disk, data, s) catch {
           e => {
@@ -653,8 +733,13 @@ pub async fn cmd_enroll(host : @host.Host, args : Array[String], data : String, 
       }
       match lock {
         Some(h) => {
-          disk.mkdir(@cloud_lock.dirname(@cloud_lock.joined_pending_path(data, ws)))
-          ignore(attempt(() => disk.write(@cloud_lock.joined_pending_path(data, ws), ({ "hash": Json::string(h) } : Json).stringify())))
+          let pending_path = if promoted {
+            @cloud_lock.pending_lock_path(data)
+          } else {
+            @cloud_lock.joined_pending_path(data, ws)
+          }
+          disk.mkdir(@cloud_lock.dirname(pending_path))
+          ignore(attempt(() => disk.write(pending_path, ({ "hash": Json::string(h) } : Json).stringify())))
         }
         None => ()
       }
@@ -852,23 +937,28 @@ pub async fn join_workspace(
   lock : String?,
   version : String,
   home_locked : () -> Bool,
+  rig? : String? = None,
+  expected_workspace? : String? = None,
 ) -> Json raise {
-  let lang = station_lang(data)
   let disk : @cloud_lock.Disk = { host, }
   let state = @cloud_lock.read_state(disk, data) catch { _ => None }
   guard state is Some(s) && s.text("workspace") != "" && s.get("removed_at") is (None | Some(Null)) else {
     raise JoinRefused("Error", "this station is in no workspace: enroll it first")
   }
-  if s.get("rig") is Some(Object(_)) {
-    let ws = if s.text("workspace_name") != "" { s.text("workspace_name") } else { s.text("workspace") }
-    raise JoinRefused("Error", tr(lang, "station.cli.rig.isRig", args=[("workspace", ws)]))
-  }
   let crypto = @cloud_lock.Crypto::of_host(host)
-  let home = @cloud_lock.read_lock(disk, crypto, data, None)
-  let on = match home {
+  let lock_on = (ws : String?) => match @cloud_lock.read_lock(disk, crypto, data, ws) {
     None => false
     Some({ state: Some(st), .. }) => !st.disabled && (st.moved is None || home_locked())
     Some(_) => true
+  }
+  let mut on = lock_on(None)
+  if !on {
+    for j in s.joined() {
+      match j {
+        { "workspace": String(w), .. } if w != "" => if lock_on(Some(w)) { on = true }
+        _ => ()
+      }
+    }
   }
   if on && lock is None {
     raise JoinRefused("Error", "this station's workspace is locked: it joins only a workspace with a lock of its own")
@@ -880,7 +970,7 @@ pub async fn join_workspace(
     ("still.fail cloud", "/v1/stations/join", ["stillfail"])
   }
   let key = @cloud_lock.load_key(host, data)
-  let body = redeem(host, key, s.text("origin"), token, plane_name, join_path, prefixes, version, locks=true, rig=false)
+  let body = redeem(host, key, s.text("origin"), token, plane_name, join_path, prefixes, version, locks=true, rig=rig is Some(_))
   let field = (k : String) => match body {
     Object(m) =>
       opt_str(m.get(k)).unwrap_or("")
@@ -890,19 +980,71 @@ pub async fn join_workspace(
   if ws == "" {
     raise JoinRefused("Error", "\{plane_name} did not say which workspace was joined")
   }
+  if expected_workspace is Some(exp) && exp != "" && ws != exp {
+    raise JoinRefused("Error", "enrollment token is for workspace \{ws}, not \{exp}")
+  }
+  let rig_entry : Json? = match rig {
+    Some(person) => {
+      let rig_obj = match body {
+        { "rig": Object(rm), .. } => rm
+        _ => raise JoinRefused("Error", "\{plane_name} did not return rig ownership")
+      }
+      let owner = opt_str(rig_obj.get("owner")).unwrap_or("")
+      if owner == "" {
+        raise JoinRefused("Error", "\{plane_name} did not return rig ownership")
+      }
+      let m : Map[String, Json] = {
+        "owner": Json::string(owner),
+        "person": Json::string(person),
+      }
+      if opt_str(rig_obj.get("owner_email")) is Some(e) && e != "" {
+        m["owner_email"] = Json::string(e)
+      }
+      if opt_str(rig_obj.get("owner_name")) is Some(n) && n != "" {
+        m["owner_name"] = Json::string(n)
+      }
+      Some(Json::object(m))
+    }
+    None => None
+  }
+  let promoted = match body {
+    { "home": String(h), .. } => h == ws && ws != s.text("workspace")
+    _ => false
+  }
+  let move_pair = (src : String, dst : String) => match disk.read(src) {
+    Some(text) => {
+      disk.mkdir(@cloud_lock.dirname(dst))
+      ignore(attempt(() => disk.write(dst, text)))
+      disk.remove(src)
+    }
+    None => ()
+  }
+  // When a full workspace join promotes over a rig-only home, move old home's lock files aside FIRST
+  // so writing the new home's pending lock below cannot overwrite the old home's lock-pending.json.
+  let old_home_ws = s.text("workspace")
+  if promoted && old_home_ws != "" {
+    move_pair(@cloud_lock.lock_path(data), @cloud_lock.joined_lock_path(data, old_home_ws))
+    move_pair(@cloud_lock.lock_path(data) + ".off", @cloud_lock.joined_lock_path(data, old_home_ws) + ".off")
+    move_pair(@cloud_lock.pending_lock_path(data), @cloud_lock.joined_pending_path(data, old_home_ws))
+  }
   // nameJoinedLock asked over the mesh: pinned once the plane brings a lock holding it; one kept here that does not stays.
   let named = match lock {
     Some(h) if ws != s.text("workspace") => {
       let kept = @cloud_lock.read_lock(disk, crypto, data, Some(ws))
+      let pending_path = if promoted {
+        @cloud_lock.pending_lock_path(data)
+      } else {
+        @cloud_lock.joined_pending_path(data, ws)
+      }
       match kept {
         Some(k) if k.entries.iter().any(e => (try { @cloud_lock.entry_hash(e) } catch { _ => "" }) == h) => {
-          disk.remove(@cloud_lock.joined_pending_path(data, ws))
+          disk.remove(pending_path)
           "kept"
         }
         Some(_) => "kept another"
         None => {
-          disk.mkdir(@cloud_lock.dirname(@cloud_lock.joined_pending_path(data, ws)))
-          disk.write(@cloud_lock.joined_pending_path(data, ws), ({ "hash": Json::string(h) } : Json).stringify())
+          disk.mkdir(@cloud_lock.dirname(pending_path))
+          disk.write(pending_path, ({ "hash": Json::string(h) } : Json).stringify())
           "pending"
         }
       }
@@ -913,17 +1055,47 @@ pub async fn join_workspace(
   let now = (@cloud_lock.read_state(disk, data) catch { _ => None }).unwrap_or(s)
   if ws != now.text("workspace") {
     let joined = match now.get("joined") {
-      Some(Array(xs)) => xs
+      Some(Array(xs)) => xs.copy()
       _ => []
     }
-    if !joined.iter().any(j => j is { "workspace": String(w), .. } && w == ws) {
-      joined.push({
+    if promoted {
+      let old_ws = now.text("workspace")
+      if old_ws != "" && !joined.iter().any(j => j is { "workspace": String(w), .. } && w == old_ws) {
+        let demoted : Map[String, Json] = {
+          "workspace": Json::string(old_ws),
+          "workspace_name": Json::string(now.text("workspace_name")),
+          "name": Json::string(now.text("name")),
+          "peers": now.get("peers").unwrap_or(Json::array([])),
+          "revocations": now.get("revocations").unwrap_or(Json::array([])),
+        }
+        if now.get("rig") is Some(r) {
+          demoted["rig"] = r
+        }
+        joined.push(Json::object(demoted))
+      }
+      now.fields["workspace"] = Json::string(ws)
+      now.fields["workspace_name"] = Json::string(field("workspace_name"))
+      now.fields["name"] = Json::string(field("name"))
+      now.fields["peers"] = Json::array([])
+      now.fields["revocations"] = Json::array([])
+      match rig_entry {
+        Some(r) => now.fields["rig"] = r
+        None => now.fields.remove("rig")
+      }
+      now.fields["joined"] = Json::array(joined.filter(j => !(j is { "workspace": String(w), .. } && w == ws)))
+      @cloud_lock.write_state(disk, data, now)
+    } else if !joined.iter().any(j => j is { "workspace": String(w), .. } && w == ws) {
+      let entry : Map[String, Json] = {
         "workspace": Json::string(ws),
         "workspace_name": Json::string(field("workspace_name")),
         "name": Json::string(field("name")),
         "peers": Json::array([]),
         "revocations": Json::array([]),
-      })
+      }
+      if rig_entry is Some(r) {
+        entry["rig"] = r
+      }
+      joined.push(Json::object(entry))
       now.fields["joined"] = Json::array(joined)
       @cloud_lock.write_state(disk, data, now)
     }

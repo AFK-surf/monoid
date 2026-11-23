@@ -35,8 +35,10 @@ pub(all) struct CloudView {
   station : () -> String?
   /// Its control plane's origin; None before it is enrolled.
   origin : () -> String?
-  /// Whether this machine is a rig (only runs tasks).
+  /// Whether this machine is rig-only (tasks-only in every workspace).
   is_rig : () -> Bool
+  /// Whether this machine is a rig in the given workspace.
+  rig_in : (String) -> Bool
   /// still.fail's own relays as the plane says them apart (`stillfail_relays`); None from a plane of before.
   stillfail_relays : () -> Array[String]?
   /// still.fail's relays (`Cloud.relays`: `relay_urls`, else `relay_url`; what is no URL left out).
@@ -328,9 +330,27 @@ pub fn StateCloud::membership(self : StateCloud, ws : String) -> Membership? {
 }
 
 ///|
+pub fn StateCloud::rig_in(self : StateCloud, ws : String) -> Bool {
+  guard self.state is Some(m) && !self.removed() else { return false }
+  let home = text_of(m.get("workspace")).unwrap_or("")
+  if home == "" {
+    return false
+  }
+  if ws == home {
+    return m.get("rig") is Some(Object(_))
+  }
+  for j in StateCloud::joined(m) {
+    if text_of(field(j, "workspace")) == Some(ws) {
+      return field(j, "rig") is Some(Object(_))
+    }
+  }
+  false
+}
+
+///|
 pub fn StateCloud::rigs(self : StateCloud, ws : String) -> Array[String] {
   guard self.state is Some(m) else { return [] }
-  if m.get("rig") is Some(_) || self.membership(ws) is None {
+  if self.rig_in(ws) || self.membership(ws) is None {
     return []
   }
   let station = text_of(m.get("station")).unwrap_or("")
@@ -407,10 +427,11 @@ pub fn StateCloud::view(self : StateCloud) -> CloudView {
       Some(m) => Some(text_of(m.get("origin")).unwrap_or(""))
       None => None
     },
-    is_rig: () => match self.state {
-      Some(m) => m.get("rig") is Some(_)
-      None => false
+    is_rig: () => {
+      let all = self.memberships()
+      all.length() > 0 && all.iter().all(m => self.rig_in(m.workspace))
     },
+    rig_in: ws => self.rig_in(ws),
     stillfail_relays: () => match self.state {
       Some(m) =>
         match m.get("stillfail_relays") {

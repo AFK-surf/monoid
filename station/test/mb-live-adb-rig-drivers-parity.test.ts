@@ -671,7 +671,7 @@ test("Rig mode & signed grants dual-station mesh closed loop: station_list, refu
 
   await given("rig B persisted full_pending", () => {
     const c = JSON.parse(readFileSync(join(dataB, "mesh", "cloud.json"), "utf8"));
-    return c.full_pending !== undefined;
+    return c.full_pending?.[WS] !== undefined;
   });
   plane.push(idB, {
     type: "state",
@@ -698,7 +698,7 @@ test("Rig mode & signed grants dual-station mesh closed loop: station_list, refu
 
   await given("station A persisted rig_pending", () => {
     const c = JSON.parse(readFileSync(join(dataA, "mesh", "cloud.json"), "utf8"));
-    return c.rig_pending?.owner === "pat";
+    return c.rig_pending?.[WS]?.owner === "pat";
   });
   plane.push(idA, {
     type: "state",

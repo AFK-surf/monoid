@@ -685,13 +685,8 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
       "forceWord" => Json::string(cloud.force_word(ws))
       "peersCurrent" => Json::boolean(self.plane.state.peers_current)
       "hasState" => Json::boolean(cloud.state is Some(_))
-      "isRig" =>
-        Json::boolean(
-          match cloud.state {
-            Some(s) => s.get("rig") is Some(_)
-            None => false
-          },
-        )
+      "isRig" => Json::boolean(cloud.is_rig_only())
+      "isRigIn" => Json::boolean(cloud.rig_in(ws.unwrap_or("")) is Some(_))
       "joined" =>
         Json::array(
           match cloud.state {
@@ -1165,13 +1160,13 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
   let storms = @gate.Storms::new(@host.now)
   let storms_fiber = host.rt.fork(name="storms", async fn() { storms.start() })
   scope_stops.push(() => storms_fiber.interrupt())
-  let here : @gate.HereLocal = match self.rig {
-    Some(r) =>
-      {
-        ..self.here_local(),
-        allowed: Some((peer, workspace) => r.station_refusal(peer, workspace)),
-      }
-    None => self.here_local()
+  let here : @gate.HereLocal = {
+    ..self.here_local(),
+    allowed: Some((peer, workspace) => if plane.cloud.rig_in(workspace) is Some(_) {
+      @rigs_mode.mesh_allowed(self.rig, peer, workspace)
+    } else {
+      None
+    }),
   }
   // Its connections, each served by its protocol's own, closed (code 0) once serving it ends.
   while !bus.stopped.is_done() {
@@ -1329,7 +1324,7 @@ fn P51::lock_source(self : P51, plane : Plane) -> @mesh_runtime.LockSource {
     memberships: () => {
       let home = cloud.home()
       cloud
-      .memberships()
+      .full_memberships()
       .filter_map(m => match m {
         { "workspace": String(w), .. } => Some((w, Some(w) == home))
         _ => None

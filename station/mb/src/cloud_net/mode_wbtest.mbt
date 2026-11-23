@@ -59,7 +59,7 @@ test "whole to tasks: asked of the machine and listed so by the plane as the sam
 }
 
 ///|
-test "whole to tasks: not while it is in a joined workspace, nor once the hour is over" {
+test "whole to tasks: allowed in multi-workspace (mixed mode), not once the hour is over" {
   let pending = object_copy(pending_self)
   pending["at"] = Json::number(99_990.0)
   let (c, p, _) = mode_cloud({ "rig_pending": Json::object(pending) })
@@ -70,7 +70,7 @@ test "whole to tasks: not while it is in a joined workspace, nor once the hour i
     "workspaces": [{ "workspace": "w2" }],
   }
   apply_frame(p, joined, _ => ())
-  assert_false(has(c, "rig_due"))
+  assert_true(has(c, "rig_due"))
   let old = object_copy(pending_self)
   old["at"] = Json::number((100_000 - 3601).to_double())
   let (c2, p2, _) = mode_cloud({ "rig_pending": Json::object(old) })
@@ -99,7 +99,7 @@ test "the plane's word alone makes no rig, and a rig's own word alone makes it n
 }
 
 ///|
-test "tasks to whole: its person signed it and the plane lists it whole; its grants go" {
+test "tasks to whole: its person signed it and the plane lists it whole; its grants go and same-frame rigs are kept" {
   let (c, p, gone) = mode_cloud({
     "rig": pending_self,
     "full_pending": { "at": 99_000 },
@@ -107,9 +107,11 @@ test "tasks to whole: its person signed it and the plane lists it whole; its gra
   apply_frame(p, listed(Some("u1")), _ => ())
   assert_true(has(c, "rig"))
   assert_true(has(c, "full_pending"))
-  apply_frame(p, listed(None), _ => ())
+  let peer_rig : Json = { "id": Json::string("dd".repeat(32)), "owner": "u1", "name": "other" }
+  apply_frame(p, { "type": "state", "peers": [], "rig": Json::null(), "rigs": [peer_rig] }, _ => ())
   assert_false(has(c, "rig"))
   assert_false(has(c, "full_pending"))
+  assert_true(has(c, "rigs"))
   assert_eq(gone.val, 1)
   let (c2, p2, gone2) = mode_cloud({
     "rig": pending_self,
@@ -119,6 +121,43 @@ test "tasks to whole: its person signed it and the plane lists it whole; its gra
   assert_true(has(c2, "rig"))
   assert_false(has(c2, "full_pending"))
   assert_eq(gone2.val, 0)
+}
+
+///|
+test "skipped rig workspace: never admitted as full before local RigSelf, replayed once written" {
+  let (c, p, _) = mode_cloud({})
+  let peer : Json = { "id": Json::string("bb".repeat(32)), "name": "peer", "ips": ["127.0.0.1:41641"] }
+  let frame : Json = {
+    "type": "state",
+    "peers": [],
+    "workspaces": [{
+      "workspace": "w2",
+      "workspace_name": "W2",
+      "name": "here",
+      "peers": [peer],
+      "rig": { "owner": "u1" },
+    }],
+  }
+  apply_frame(p, frame, _ => ())
+  // Not admitted as full workspace!
+  assert_false(has(c, "joined"))
+  assert_eq(p.skipped_rig_ws, ["w2"])
+  // Once local join writes RigSelf for w2, replay restores it with peers
+  c.update(st => {
+    st["joined"] = Json::array([{
+      "workspace": "w2",
+      "workspace_name": "W2",
+      "name": "here",
+      "peers": [],
+      "revocations": [],
+      "rig": pending_self,
+    }])
+  })
+  assert_true(replay_skipped_rig_frame(p, _ => ()))
+  let joined = c.state.unwrap().get("joined").unwrap().stringify()
+  assert_true(joined.contains("bb".repeat(32)))
+  assert_true(joined.contains("\"rig\""))
+  assert_eq(p.skipped_rig_ws, [])
 }
 
 ///|

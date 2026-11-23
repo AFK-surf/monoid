@@ -43,9 +43,13 @@ pub let unprotected_words : String = "that station is in this workspace but not 
 ///|
 /// What a station is answered while this machine waits for what a moved chain's state is made of (peer.ts
 /// `heardWaiting`).
-pub async fn heard_waiting(k : Keeper, verb : Json?) -> Bool {
+pub async fn heard_waiting(k : Keeper, verb : Json?, workspace? : String? = None) -> Bool {
   guard verb is Some(String(m)) else { return false }
-  m.has_prefix("lock.") || ((k.is_rig)() && (m == "rig.added" || m == "rig.proof"))
+  let local_rig = match workspace {
+    Some(ws) if ws != "" => (k.is_rig_in)(ws)
+    _ => (k.is_rig)()
+  }
+  m.has_prefix("lock.") || (local_rig && (m == "rig.added" || m == "rig.proof"))
 }
 
 ///|
@@ -248,8 +252,14 @@ pub type Outside = (String, String) -> Bool
 ///|
 /// The workspace a request to `target` goes to (peer.ts `workspaceFor`).
 async fn workspace_for(k : Keeper, target : String, workspace : String?, outside : Outside?) -> String {
-  if (k.peers_current)() && (k.rig_of)(target, workspace) is Some(rig) {
-    return str_of(field(rig, "workspace")).unwrap_or("")
+  if (k.peers_current)() {
+    let in_peers = match workspace {
+      Some(w) => match (k.member_of)(w) { Some(m) => peers_of(m).contains(target); None => false }
+      None => (k.members_all)().iter().any(m => peers_of(m).contains(target))
+    }
+    if !in_peers && (k.rig_of)(target, workspace) is Some(rig) {
+      return str_of(field(rig, "workspace")).unwrap_or("")
+    }
   }
   match (workspace, outside) {
     (None, _) | (_, None) => return peer_member(k, target, workspace)
@@ -825,19 +835,22 @@ async fn answer_peer_stream(
       incoming.val = Some(inc)
       body = Some(inc.body())
     }
-    let is_rig = rig()
-    let as_rig = if is_rig { (k.rig_of)(peer, Some(workspace)) } else { None }
-    if is_rig && as_rig is None {
+    let in_peers = match (k.member_of)(workspace) {
+      Some(m) => peers_of(m).contains(peer)
+      None => false
+    }
+    let as_rig = if !in_peers && (k.peers_current)() { (k.rig_of)(peer, Some(workspace)) } else { None }
+    if !in_peers && as_rig is None && rig() {
       raise Refused("a rig asks nothing of a station")
     }
     let ours = as_rig is None && inside()
-    let there = ours &&
-      (match (k.member_of)(workspace) {
-        Some(m) => peers_of(m).contains(peer)
-        None => false
-      })
+    let there = ours && in_peers
+    let local_is_rig = workspace != "" && (k.is_rig_in)(workspace)
     let verb = field(request, "method")
     let (result, out) = if as_rig is Some(_) {
+      if local_is_rig {
+        raise Refused("a rig asks nothing of a station")
+      }
       match verb {
         Some(String(m)) if m == "task.changed" || rig_tells.contains(m) => ()
         _ => raise Refused("a rig asks nothing of a station")
@@ -846,14 +859,19 @@ async fn answer_peer_stream(
     } else if there || (ours && !remote.hears_outside()) {
       ignore(peer_member(k, peer, Some(workspace)))
       let w = if workspace != "" && Some(workspace) != (k.home)() { Some(workspace) } else { None }
-      if (k.waiting)(w) && !heard_waiting(k, verb) {
+      if (k.waiting)(w) && !heard_waiting(k, verb, workspace=Some(workspace)) {
         raise Refused(not_given)
       }
       let named = if workspace != "" { workspace } else { (k.home)().unwrap_or("") }
       let r = match verb {
         Some(String(m)) if m.has_prefix("lock.") => (answer_lock(k, request, Some(workspace), Some(peer)), None)
         Some(String(m)) if m.has_prefix("ways.") => ((k.answer_ways)(request, named), None)
-        Some(String(m)) if m.has_prefix("stationMarks.") => ((k.answer_marks)(request, named), None)
+        Some(String(m)) if m.has_prefix("stationMarks.") => {
+          if local_is_rig {
+            raise Refused("unknown peer method: \{m}")
+          }
+          ((k.answer_marks)(request, named), None)
+        }
         _ => remote.handle(workspace, peer, request, body)
       }
       if verb == Some(Json::string("lock.person.put")) || verb == Some(Json::string("lock.person.offer")) {
@@ -861,6 +879,9 @@ async fn answer_peer_stream(
       }
       r
     } else {
+      if local_is_rig {
+        raise Refused("station is outside this workspace")
+      }
       if (k.member_of)(workspace) is None {
         raise Refused("station is outside this workspace")
       }

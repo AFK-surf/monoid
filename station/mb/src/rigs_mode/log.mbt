@@ -107,7 +107,12 @@ pub async fn CommandLog::written(self : CommandLog) -> Unit {
 
 ///|
 /// Its last `limit` lines, newest first (those asked for before it among them).
-pub async fn CommandLog::last(self : CommandLog, limit : Int) -> Array[Json] {
+pub async fn CommandLog::last(
+  self : CommandLog,
+  limit : Int,
+  workspace? : String? = None,
+  include_legacy? : Bool = false,
+) -> Array[Json] {
   self.written()
   let size = match (try self.host.shell_sync("fs.meta", jobj([("path", jstr(self.path))])) catch { _ => Json::null() }) {
     { "size": Number(n, ..), "dir": False, .. } => n
@@ -132,7 +137,17 @@ pub async fn CommandLog::last(self : CommandLog, limit : Int) -> Array[Json] {
   while i >= 0 && out.length() < limit {
     if lines[i] != "" {
       if parse(lines[i]) is Some(v) {
-        out.push(v)
+        let keep = match workspace {
+          None => true
+          Some(ws) =>
+            match str_at(Some(v), "workspace") {
+              Some(w) => w == ws
+              None => include_legacy
+            }
+        }
+        if keep {
+          out.push(v)
+        }
       }
     }
     i -= 1
