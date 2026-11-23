@@ -131,8 +131,10 @@ fn Accounts::keep_check(self : Accounts, id : String, check : JV, forced? : Bool
   }
   let before_found = self.found(id)
   self.checks[id] = check
-  self.hub_cache = None
+  // The hub's config takes only the models a check found (`found`): a check that found the same keeps it, as one
+  // stamped anew on every round made every profile's config again for each overview and pick (0.1.11070).
   if self.found(id) != before_found {
+    self.hub_cache = None
     if self.on_checks_changed is Some(f) {
       f()
     }
