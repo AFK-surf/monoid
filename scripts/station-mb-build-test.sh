@@ -229,6 +229,19 @@ fresh; bash "$t/root/station/mb/build.sh" --harness darwin-arm64 "$t/out/harness
 grep -q 'station_main/sys.c' "$t/log/extras" || fail "--harness extras missing station_main/sys.c"
 grep -q 'drive/drive.c' "$t/log/extras" || fail "--harness extras missing drive/drive.c"
 
+# 5c. Changing libs/ui/tools/mbc/csplit.mbt invalidates both reader and harness gen_key.
+mkdir -p "$t/root/libs/ui/tools/mbc"
+echo '// csplit v1' > "$t/root/libs/ui/tools/mbc/csplit.mbt"
+fresh; run mbc1 || fail "reader with mbc v1: $(cat "$t/log/build-mbc1.out")"
+[ "$(cat "$t/log/moon-builds")" = reader ] || fail "reader did not rebuild when libs/ui/tools/mbc/csplit.mbt appeared"
+fresh; bash "$t/root/station/mb/build.sh" --harness darwin-arm64 "$t/out/harness-mbc1" > "$t/log/build-hmbc1.out" 2>&1 || fail "harness with mbc v1: $(cat "$t/log/build-hmbc1.out")"
+[ "$(cat "$t/log/moon-builds")" = reader_harness ] || fail "harness did not rebuild when libs/ui/tools/mbc/csplit.mbt appeared"
+echo '// csplit v2' > "$t/root/libs/ui/tools/mbc/csplit.mbt"
+fresh; run mbc2 || fail "reader with mbc v2: $(cat "$t/log/build-mbc2.out")"
+[ "$(cat "$t/log/moon-builds")" = reader ] || fail "editing libs/ui/tools/mbc/csplit.mbt did not invalidate reader gen_key"
+fresh; bash "$t/root/station/mb/build.sh" --harness darwin-arm64 "$t/out/harness-mbc2" > "$t/log/build-hmbc2.out" 2>&1 || fail "harness with mbc v2: $(cat "$t/log/build-hmbc2.out")"
+[ "$(cat "$t/log/moon-builds")" = reader_harness ] || fail "editing libs/ui/tools/mbc/csplit.mbt did not invalidate harness gen_key"
+
 # 6. ~/stillfail-ci/reader-mbc-prepped self-pruning: stale locks/tmps (>30m), old prepared C (>180m), and cap at newest 16.
 prepped_ci="$t/ci-home/stillfail-ci/reader-mbc-prepped"
 mkdir -p "$prepped_ci"

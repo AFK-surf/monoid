@@ -158,12 +158,13 @@ const READER_PKGS = [
   "cursor", "dsh", "footprint", "front", "history", "host", "jobs", "jscase", "jsjson", "legacy",
   "letters", "live_wire", "locate", "lookups", "marks", "memory", "nodepath", "outflow", "packed", "pi",
   "pieces", "posts", "reader", "readops", "recent", "replica", "said", "search", "searchscope", "sessions",
-  "signin", "sql", "turns", "upjobs", "usage", "usagecount", "usagefill", "vaultuses", "widgets", "wire",
+  "shim_plan", "signin", "sql", "turns", "upjobs", "usage", "usagecount", "usagefill", "vaultuses", "widgets", "wire",
 ];
 const READER_COMMON_INPUTS = [
   "station/mb/moon.mod", "station/mb/moon.work", "station/mb/build.sh",
   "libs/base/src", "libs/base/moon.mod",
-  "libs/ui/src/effect", "libs/ui/src/halt", "libs/ui/moon.mod", "libs/ui/scripts/mbc-stub.sh",
+  "libs/ui/src/effect", "libs/ui/src/halt", "libs/ui/moon.mod",
+  "libs/ui/scripts/mbc", "libs/ui/scripts/mbc-stub.sh", "libs/ui/tools/mbc",
   ":(exclude,glob)**/*_test.mbt", ":(exclude,glob)**/*_wbtest.mbt", ":(exclude,glob)**/pkg.generated.mbti",
 ];
 /// Shipped `stillfail-reader`: only its transitive packages, `cprep`, and common MoonBit workspace files.

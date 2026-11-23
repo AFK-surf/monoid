@@ -647,7 +647,7 @@ function httpGet(port: number, path: string): Promise<{ status: number; body: st
   });
 }
 
-test("old launcher hot-upgrade: config.json engine=moonbit + slimmed stillfail-reader execs Node in place keeping PID, fds 3/4/5, events, job PGID, and clean SIGTERM exit", { skip, timeout: 180_000 }, async () => {
+test("simulated un-renewed old launcher hot-upgrade: config.json engine=moonbit + direct slimmed stillfail-reader execs Node in place keeping PID, fds 3/4/5, events, job PGID, and clean stop/SIGTERM", { skip, timeout: 180_000 }, async () => {
   const twins = new Twins();
   let at = "setup";
   let oldChild: ChildProcess | null = null;
@@ -844,6 +844,112 @@ test("old launcher hot-upgrade: config.json engine=moonbit + slimmed stillfail-r
     for (const srv of openServers) {
       try { srv.close(); } catch {}
     }
+    await twins.stop();
+  }
+});
+
+test("real new launcher with config.json engine=moonbit and full release layout selects Node directly, logs retirement, and survives two SIGUSR2 handovers on the same ports", { skip, timeout: 180_000 }, async () => {
+  const twins = new Twins();
+  let at = "setup";
+  try {
+    twins.plane = await controlPlane();
+    twins.client = await addon!.bind({ secretKey: randomBytes(32), alpns: [Buffer.from("client/1")], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" });
+    closers.push(() => void twins.client.close().catch(() => undefined));
+    twins.scripts = fresh("scripts-new-launcher");
+    writeFileSync(join(twins.scripts, "nudge.sh"), script([["nudge", mcp(1, "chat_post", { to: "$TO", text: "named it", title: "NewLauncher", kind: "all_done", done: "named the chat" })]]));
+
+    // Full release layout: slimmed stillfail-reader + station/main.js + stillfail-runner
+    const app = fresh("app-new-launcher");
+    Twins.layOut(app, "node");
+    const bin = fresh("bin-new-launcher");
+    fakeClaude(bin);
+    const out = fresh("out-new-launcher");
+    const data = fresh("data-new-launcher");
+    const madeId = spawnSync(stationBinary!, ["id", "--data", data], { env: { PATH: "/usr/bin:/bin", HOME: data }, encoding: "utf8" });
+    const id = madeId.stdout.trim();
+    assert.match(id, /^[0-9a-f]{64}$/, madeId.stderr);
+    writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({
+      origin: twins.plane.origin, station: id, workspace: "w1", workspace_name: "团队", name: "mac", relay_url: "", relay_urls: [], grant_keys: { keys: [twins.grant.jwk] }, peers: [], revocations: [],
+    }));
+    mkdirSync(join(data, "homes", "cc"), { recursive: true });
+    writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+    writeFileSync(join(data, "config.json"), JSON.stringify({
+      engine: "moonbit",
+      language: "en",
+      profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }],
+      maxNudges: 1,
+    }));
+
+    at = "launch";
+    const s = new Station({ kind: "node", app, data, out, id, bin });
+    twins.stations = [s];
+    await twins.launch(s);
+
+    // Verify the new launcher logged retirement and launched Node main.js directly
+    assert.match(s.said, /config\.json sets "engine": "moonbit", which is retired; starting Node instead/);
+    const firstPid = s.takenOver()[0]!;
+    assert.ok(commandOf(firstPid).includes("main.js"), `new launcher should start Node directly: ${commandOf(firstPid)}`);
+    const ports0 = readJson(join(data, "run", "ports.json")) as { admin: number };
+    const mcp0 = readJson(join(data, "run", "mcp.json")) as { port: number };
+    assert.ok(ports0?.admin > 0 && mcp0?.port > 0);
+    assert.equal((await httpGet(ports0.admin, "/healthz")).status, 200);
+    assert.equal((await httpGet(mcp0.port, "/health")).status, 200);
+
+    // Start a session + lasting job + event stream
+    at = "session";
+    const created = await s.ask("POST", "/sessions", { runtime: "claude", profile: "cc" });
+    assert.equal(created.status, 200, created.text);
+    const made: Made = { key: created.json.key, thread: created.json.thread?.id ?? created.json.thread?.thread?.id };
+    await turn(twins, [made], "nl-start", [
+      ["start", mcp(1, "job_start", { name: "nl-lasting", command: "echo started; exec sleep 600" })],
+      ["post", mcp(2, "chat_post", { to: "$TO", text: "started", title: "NL", kind: "all_done", done: "started lasting job" })],
+    ]);
+    const jobRow = () => {
+      const db = s.db();
+      try { return db.prepare("SELECT id, state, pgid FROM jobs").get() as { id: string; state: string; pgid: number | null }; } finally { db.close(); }
+    };
+    const job = await until("job running with pgid", () => {
+      const j = jobRow();
+      return j?.state === "running" && j.pgid !== null ? j : null;
+    }, s.tail);
+    let stream = await events(s);
+    await until("event stream first id", () => stream.ids().length > 0, () => stream.text().slice(0, 400));
+
+    // Perform two consecutive SIGUSR2 handovers on the same launcher-owned listening ports
+    for (let hop = 1; hop <= 2; hop++) {
+      at = `SIGUSR2 handover #${hop}`;
+      const beforePid = s.takenOver().at(-1)!;
+      const seen = s.takenOver().length;
+      const seenMesh = s.meshPorts().length;
+      const lastId = stream.ids().at(-1)!;
+      s.child.kill("SIGUSR2");
+      const nextPid = await until(`hop #${hop}: taken over`, () => s.takenOver()[seen], s.tail, 60_000, s.exited);
+      assert.notEqual(nextPid, beforePid);
+      await until(`hop #${hop}: previous gone`, () => !alive(beforePid), s.tail, 30_000, s.exited);
+      assert.ok(commandOf(nextPid).includes("main.js"), `hop #${hop}: must stay on Node: ${commandOf(nextPid)}`);
+      // Same launcher-held listening ports throughout
+      assert.deepEqual(readJson(join(data, "run", "ports.json")), ports0);
+      assert.deepEqual(readJson(join(data, "run", "mcp.json")), mcp0);
+      assert.equal((await httpGet(ports0.admin, "/healthz")).status, 200);
+      assert.equal((await httpGet(mcp0.port, "/health")).status, 200);
+
+      s.meshPort = await until(`hop #${hop}: mesh listening`, () => s.meshPorts()[seenMesh], s.tail, 30_000, s.exited);
+      await twins.connect(s);
+      stream = await events(s, lastId);
+      await until(`hop #${hop}: resumed stream id`, () => stream.ids().length > 0, () => stream.text().slice(0, 400), 10_000);
+      assert.ok(!stream.names().includes("missed"), `hop #${hop}: missed events: ${stream.text().slice(0, 600)}`);
+      const j = jobRow();
+      assert.equal(j.state, "running");
+      assert.equal(j.pgid, job.pgid);
+      assert.ok(alive(job.pgid!), `hop #${hop}: job pgid ${job.pgid} alive`);
+    }
+
+    at = "SIGTERM stop";
+    s.child.kill("SIGTERM");
+    assert.equal(await withTimeout(s.ended, 30_000, "launcher SIGTERM exit"), 0, s.tail());
+  } catch (e) {
+    throw new Error(`[at ${at}] ${(e as Error).message}`, { cause: e });
+  } finally {
     await twins.stop();
   }
 });

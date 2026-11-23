@@ -29,18 +29,34 @@ fn main {
     (Some("harness-leaf"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => harness_leaf(host))
     _ => {
-      let args = argv[1:].to_array()
+      let args = argv[1:].to_owned()
       if args.contains("--builder") || args.contains("--sessions") || args.contains("--serve") || args.contains("--data") {
-        if find_shipped_reader(argv) is Some(reader_bin) {
-          let child_argv : Array[String] = [reader_bin]
-          for a in args {
-            child_argv.push(a)
+        if @host.env_get("STILLFAIL_HARNESS_DELEGATED") == Some("1") {
+          @host.note("stillfail-reader-harness: delegation loop detected (STILLFAIL_HARNESS_DELEGATED=1); refusing recursive exec")
+          1
+        } else {
+          let self_path = @host.exe_path().unwrap_or(if argv.length() > 0 { argv[0] } else { "" })
+          match find_shipped_reader(argv, self_path) {
+            Some(reader_bin) => {
+              if self_path != "" && @host.same_file(reader_bin, self_path) {
+                @host.note("stillfail-reader-harness: STILLFAIL_MB_READER (\{reader_bin}) points to stillfail-reader-harness itself; refusing recursive exec")
+                1
+              } else {
+                ignore(@host.env_set("STILLFAIL_HARNESS_DELEGATED", "1"))
+                let child_argv : Array[String] = [reader_bin]
+                for a in args {
+                  child_argv.push(a)
+                }
+                @host.exit(@host.exec_replace(reader_bin, child_argv))
+                return
+              }
+            }
+            None => {
+              @host.note("stillfail-reader-harness: cannot delegate reader/builder invocation; set STILLFAIL_MB_READER or place stillfail-reader beside stillfail-reader-harness")
+              1
+            }
           }
-          @host.exit(@host.exec_replace(reader_bin, child_argv))
-          return
         }
-        @host.note("stillfail-reader-harness: cannot delegate reader/builder invocation; set STILLFAIL_MB_READER or place stillfail-reader beside stillfail-reader-harness")
-        1
       } else {
         @host.note("usage: stillfail-reader-harness --builder harness-<package> [--shell-dir <dir> | --db <file>]")
         2
@@ -51,32 +67,32 @@ fn main {
 }
 
 ///|
-fn find_shipped_reader(argv : Array[String]) -> String? {
+fn find_shipped_reader(argv : Array[String], self_path : String) -> String? {
   if @host.env_get("STILLFAIL_MB_READER") is Some(p) && @host.is_executable_file(p) {
     return Some(p)
   }
-  let self_path = @host.exe_path().unwrap_or(if argv.length() > 0 { argv[0] } else { "" })
-  if self_path == "" {
+  let base_path = if self_path != "" { self_path } else if argv.length() > 0 { argv[0] } else { "" }
+  if base_path == "" {
     return None
   }
-  let slash = self_path.rev_find("/").unwrap_or(-1)
-  let back = self_path.rev_find("\\").unwrap_or(-1)
+  let slash = base_path.rev_find("/").unwrap_or(-1)
+  let back = base_path.rev_find("\\").unwrap_or(-1)
   let cut = if slash > back { slash } else { back }
   let (dir, sep, base) = if cut < 0 {
-    (".", "/", self_path)
+    (".", "/", base_path)
   } else {
     let s = if back > slash { "\\" } else { "/" }
-    (self_path.exact_view(end=cut).to_owned(), s, self_path.exact_view(start=cut + 1).to_owned())
+    (base_path.exact_view(end=cut).to_owned(), s, base_path.exact_view(start=cut + 1).to_owned())
   }
   if base.contains("-harness") {
     let sibling = dir + sep + base.replace(old="-harness", new="")
-    if @host.is_executable_file(sibling) {
+    if @host.is_executable_file(sibling) && (self_path == "" || !@host.same_file(sibling, self_path)) {
       return Some(sibling)
     }
   }
   for name in ["stillfail-reader", "stillfail-reader.exe"] {
     let cand = dir + sep + name
-    if cand != self_path && @host.is_executable_file(cand) {
+    if @host.is_executable_file(cand) && (self_path == "" || !@host.same_file(cand, self_path)) {
       return Some(cand)
     }
   }

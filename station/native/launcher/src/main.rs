@@ -75,7 +75,8 @@ impl Station {
 
 /// What runs the station of the data directory `data` from the release at `app`: `"engine": "moonbit"` is retired,
 /// so when the release has `station/main.js` we log and start Node directly (while `stillfail-reader`'s `station_shim`
-/// handles older launchers that have not yet renewed). Releases without `station/main.js` still run `stillfail-reader`.
+/// handles older un-renewed launchers during live upgrades). Fallback to `stillfail-reader` applies only to legacy
+/// Node-less rollback releases or `stillfail-reader-harness` test layouts that omit `station/main.js`.
 pub fn station_of(app: &Path, data: &Path) -> Station {
     let script = main_js(app);
     if data::Config::read(data).is_ok_and(|c| c.moonbit) {

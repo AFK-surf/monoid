@@ -47,6 +47,7 @@ import {
   "station/pi",
   "station/pieces",
   "station/nodepath",
+  "station/shim_plan",
   "station/admit",
   "moonbitlang/core/encoding/base64",
   "moonbitlang/core/encoding/hex",

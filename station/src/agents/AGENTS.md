@@ -3,7 +3,7 @@
 ## Runtime drivers and MoonBit output parsing
 
 - All runtimes sit behind one driver seam (`station/src/agents/runtime.ts`), and each driver owns its child's stdin:
-  - Claude Code runs one `claude -p` process per session, or a PTY with lifecycle hooks in `station/assets/agents/claude-tui.mjs` when TUI mode is selected (chat sessions only, while Node-less releases use `station/mb/src/station_main/claude_tui.mbt`).
+  - Claude Code runs one `claude -p` process per session, or a PTY with lifecycle hooks in `station/assets/agents/claude-tui.mjs` when TUI mode is selected (chat sessions only; `station/mb/src/station_main/claude_tui.mbt` is frozen in `stillfail-reader-harness` only, while shipped `stillfail-reader` hands `claude-tui` / `claude-tui.mjs` off to Node via `station_shim`).
   - Codex runs one app-server per account with one thread per session. Pass per-session settings in `thread/start` config, never process env. Shut down idle app-servers after `WARM_MS` and reopen threads on the next turn.
   - Other runtimes live in `station/src/agents/`.
 - One shared MoonBit program parses every runtime's output off the main thread on every platform (including Windows runner named pipes), with no TypeScript fallback:

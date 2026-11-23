@@ -630,10 +630,11 @@ PLAN
   "lock status"|"lock reset") what=$2; shift 2; exec "$station" lock "$what" "$@" --data "$data" ;;
   "heap "*) exec "$station" heap --data "$data" ;;
   "admin "*)
-    # Node's admin CLI (station/admin-cli.js in a release, bin/admin-cli.ts in a clone). The MoonBit reader's port
-    # (station/mb/src/station_main/admin_cli.mbt) only when STILLFAIL_ADMIN_ENGINE=moonbit says so, or where there is no
-    # Node or no admin CLI (a release without Node). Both are told the data as $STILLFAIL_DATA (the reader as --data
-    # too); a --data of the person's own, after it, wins in either.
+    # Node's admin CLI (station/admin-cli.js in a release, bin/admin-cli.ts in a clone). The reader binary is only
+    # invoked when STILLFAIL_ADMIN_ENGINE=moonbit says so or where Node / admin-cli is absent (note: the slimmed
+    # shipped stillfail-reader hands `admin` back off to Node via station_shim; only older whole-station readers
+    # or stillfail-reader-harness carry the frozen MoonBit port). Both are told the data as $STILLFAIL_DATA
+    # (the reader as --data too); a --data of the person's own, after it, wins in either.
     shift
     cmd=${STILLFAIL_CMD:-$(basename "$0")}
     reader=${STILLFAIL_MB_READER:-$here/station/stillfail-reader}

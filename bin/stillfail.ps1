@@ -321,9 +321,11 @@ switch ("$($a[0]) $($a[1])".Trim()) {
     exit 0
   }
   { $a[0] -eq 'admin' } {
-    # As bin/stillfail's: Node's admin CLI (station\admin-cli.js in a release, bin\admin-cli.ts in a clone); the MoonBit
-    # reader's port only with STILLFAIL_ADMIN_ENGINE=moonbit, or where there is no Node or no admin CLI. Both are told
-    # the data as STILLFAIL_DATA (the reader as --data too); a --data of the person's own, after it, wins in either.
+    # As bin/stillfail's: Node's admin CLI (station\admin-cli.js in a release, bin\admin-cli.ts in a clone); the reader
+    # binary is only invoked with STILLFAIL_ADMIN_ENGINE=moonbit or where Node / admin-cli is absent (note: the slimmed
+    # shipped stillfail-reader.exe hands `admin` back off to Node via station_shim; only older whole-station readers
+    # carry the frozen MoonBit port). Both are told the data as STILLFAIL_DATA (the reader as --data too); a --data of
+    # the person's own, after it, wins in either.
     $env:STILLFAIL_DATA = $data
     if (-not $env:STILLFAIL_CMD) { $env:STILLFAIL_CMD = (Split-Path -Leaf $own).TrimStart('.') }
     # (always an array: one argument alone would be splatted a character at a time)

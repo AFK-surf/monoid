@@ -105,8 +105,9 @@ pub struct Config {
     pub port: u16,
     pub named: bool,
     pub english: bool,
-    /// Whether this station runs the release's MoonBit station alone where the release has Node's too
-    /// (`"engine": "moonbit"`): a switch of one station's own, read at each start of its process (`crate::station_of`).
+    /// Legacy `"engine": "moonbit"` flag in config.json (retired; `crate::station_of` logs and starts Node
+    /// directly whenever `station/main.js` is present, falling back to `stillfail-reader` only on Node-less
+    /// rollback releases or harness test layouts).
     pub moonbit: bool,
 }
 

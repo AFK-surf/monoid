@@ -8,5 +8,5 @@ import {
 }
 
 options(
-  "native-stub": ["host.c"],
+  "native-stub": ["host.c", "exec.c"],
 )

@@ -943,6 +943,9 @@ jobs:
       # `stillfail admin` under Windows PowerShell 5.1 and PowerShell 7 (bin/stillfail.ps1).
       - name: stillfail admin on Windows
         run: node --test test/stillfail-admin-wrapper.test.ts
+      # `stillfail-reader.exe` station_shim + Job Object orphan-free kill / detached-grandchild survival on Windows.
+      - name: stillfail-reader station_shim on Windows
+        run: cd station && node ../scripts/native.ts run reader -- node --test test/mb-station-shim.test.ts
       # What the job started that is still running as it ends: the runner's clean-up of them took 52-237 s after the
       # last step of some runs (the rest 2-9 s), the release's job at 282 of its 300 (main 08c83003, 41537791777).
       - name: What it left running

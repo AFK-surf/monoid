@@ -99,14 +99,15 @@ echo "$$" > "$lock/pid"
     cursor dsh footprint front history host jobs jscase jsjson legacy
     letters live_wire locate lookups marks memory nodepath outflow packed pi
     pieces posts reader readops recent replica said search searchscope sessions
-    signin sql turns upjobs usage usagecount usagefill vaultuses widgets wire
+    shim_plan signin sql turns upjobs usage usagecount usagefill vaultuses widgets wire
   )
   gen_inputs=(
     "$D/moon.mod" "$D/moon.work" "$D/build.sh"
-    "$ROOT/libs/ui/moon.mod" "$ROOT/libs/ui/scripts/mbc-stub.sh"
+    "$ROOT/libs/ui/moon.mod" "$ROOT/libs/ui/scripts/mbc" "$ROOT/libs/ui/scripts/mbc-stub.sh"
     "$ROOT/libs/base/moon.mod" "$ROOT/libs/base/src"
     "$ROOT/libs/ui/src/effect" "$ROOT/libs/ui/src/halt"
   )
+  [ -d "$ROOT/libs/ui/tools/mbc" ] && gen_inputs+=("$ROOT/libs/ui/tools/mbc")
   if [ "$pkg" = reader ]; then
     for p in "${READER_SRC_PKGS[@]}" cprep; do
       [ -d "$D/src/$p" ] && gen_inputs+=("$D/src/$p")

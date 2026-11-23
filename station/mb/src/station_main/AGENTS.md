@@ -11,9 +11,7 @@
   (known and taken, the lead 2026-11-17); the proxy speaks no HelloRetryRequest, resumption or early data.
 - What can be tested without the shell is in `media/` (the images' codecs, local links): `moon test` links no shell
   (scripts/check.sh's station MoonBit step), and this package, which imports the host package (station/mb/src/host), links only into the
-  reader. The rest is held by station/test/mb-station-e2e.test.ts through the program (`--builder
-  harness-station-main` of the tests' program, `stillfail-reader-harness`; the commands and `run` under a launcher of
-  the test's of the reader), each part to itself and to what does not move (node:os, Date), never to the living
+  tests' `stillfail-reader-harness` binary (never the shipped `stillfail-reader`). The rest is held by `station/test/mb-station-e2e.test.ts` through `stillfail-reader-harness` (`--builder harness-station-main` and the frozen commands/`run` via `mbStationBinary()`), each part to itself and to what does not move (node:os, Date), never to the living
   TypeScript, its hooks or the mesh addon: the program is frozen for new TypeScript features (station/AGENTS.md).
 - `words_catalog.mbt` is client/i18n/catalog's station.json, zh and en, as it was when the program was frozen: a change
   to the catalog does not write it again, and no test holds it to the catalog.
@@ -38,8 +36,7 @@
   (live_bus.mbt `hub_notify`, `jobs_stop`, …), its fields named once there. station/test/mb-station-contracts.test.ts holds every `Ref` of the bus
   given by a slice, every name asked on a `*_ask` to one its slice's dispatcher answers, and every method session_hub
   asks of an actor to one reader/actor_run.mbt answers. It no longer holds this program to what the TypeScript adds.
-  This program is frozen for new TypeScript features and runs only when a release omits `main.js` or `config.json`
-  sets `"engine": "moonbit"` (station/AGENTS.md). It is held by station/test/mb-live-station.test.ts whole, under the
+  This program is frozen and detached from the shipped `stillfail-reader` binary (compiled only into `stillfail-reader-harness` for frozen tests, and retained by the launcher only for legacy Node-less rollback releases; station/AGENTS.md). It is held by `station/test/mb-live-station.test.ts` whole, under the
   real launcher, and each slice by its own test:
   - P5-1 (`live_p5_1_*.mbt`), the platform: config.json, the log and error reports, the machine kept awake, a lost
     station's chats taken back before the store opens, the control plane and its presence, the readers and their
