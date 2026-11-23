@@ -368,8 +368,20 @@ fn Moves::set_off(self : Moves, spec : Spec, carries : Bool) -> Unit {
       }
     }
   }
-  // (as long as the furthest goes: a Move said for one way as long as that, any other spec as it is)
-  let spec = if spec.way_said() { spec } else { spec.over(most) }
+  // (as long as the furthest goes: a Move said for one way as long as that, any other spec as it is;
+  // when a part-only group rides an active owner.resizes() height transition, lock parts to that duration so
+  // horizontal reflow and vertical resize land on the same curve without Y dip)
+  let way_said = spec.way_said()
+  let spec = if way_said { spec } else { spec.over(most) }
+  let owner_ms = self.owner.comes_end(laid=false) - at
+  let spec_part = if self.shapes.is_empty() && !way_said && owner_ms > 0.0 {
+    match spec {
+      Moved(_, _, delay) => Tween(owner_ms, @ui.Ease::Move, delay)
+      _ => spec
+    }
+  } else {
+    spec
+  }
   for e in set {
     let (s, g, laid) = e
     // (each edge from where it was drawn, as fast as it went then, to where it is laid out; its corners from none of
@@ -385,7 +397,7 @@ fn Moves::set_off(self : Moves, spec : Spec, carries : Bool) -> Unit {
   }
   for m in moving {
     let (p, fx, fy) = m
-    p.x.put_at(p.v, fx, 0.0, spec, at)
-    p.y.put_at(p.v, fy, 0.0, spec, at)
+    p.x.put_at(p.v, fx, 0.0, spec_part, at)
+    p.y.put_at(p.v, fy, 0.0, spec_part, at)
   }
 }

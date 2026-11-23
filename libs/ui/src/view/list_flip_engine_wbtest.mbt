@@ -495,3 +495,94 @@ test "list_flip_engine: quiet insert inside visible span triggers QuietReset wit
     tree.dispose()
   }
 }
+
+///|
+test "list_flip_engine: off-foot scroll before repaint plus tail insert has zero backward pullback" {
+  for fps in [7.0, 24.0, 60.0, 120.0] {
+    let period = 1000.0 / fps
+    let clock = Ref(0.0)
+    let init_keys : Array[Int] = []
+    for i in 10..<30 {
+      init_keys.push(i)
+    }
+    let keys = @signals.signal(init_keys, same=fn(a, b) { a == b })
+    let scroll = Scroll::list()
+    let tree = Tree::new(time=fn() { clock.val }, fn(root) {
+      root.transitions_only() |> ignore
+      root.box(fn(p) {
+        p.width(Is(Some(390.0))).height(Is(Some(200.0))) |> ignore
+        p.scrolls_window(
+          scroll,
+          fn() { keys.get() },
+          est=40.0,
+          flips=true,
+          follows=fn() { true },
+          comes=fn(_) { true },
+          fn(slot, k) {
+            slot.box(fn(b) { b.height(Is(Some(40.0))).words(Is("item-\{k}")) |> ignore }) |> ignore
+          },
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    tree.frame(390.0, 200.0, now=0.0) |> ignore
+    flip_step_to(tree, clock, 60.0, period)
+
+    // Scroll well above the foot and let it settle.
+    clock.val = 60.0
+    tree.wheel_at(150.0, 100.0, 0.0, -240.0, 0, 60.0) |> ignore
+    flip_step_to(tree, clock, 120.0, period)
+    // Pick a currently visible row near the middle of the viewport.
+    let mut track_label = ""
+    let mut y_before = 0.0
+    for d in tree.drawn() {
+      if d.words.has_prefix("item-") && d.y >= 40.0 && d.y <= 120.0 {
+        track_label = d.words
+        y_before = d.y
+        break
+      }
+    }
+    assert_true(track_label != "", msg="at \{fps}fps: no visible row found off-foot")
+
+    // In the same event tick before the next repaint:
+    // 1. Scroll further up (changing scroll_off_now ahead of scroll_shown),
+    // 2. Append a new tail row via transition.
+    let next_t = clock.val + period
+    clock.val = next_t
+    tree.wheel_at(150.0, 100.0, 0.0, -24.0, 0, next_t) |> ignore
+    let with_30 = init_keys.copy()
+    with_30.push(30)
+    tree.event(next_t, fn() { transition(fn() { keys.set(with_30) }) })
+
+    // Paint the frame at next_t and subsequent frames through 700ms:
+    // the tracked row must immediately reflect the +24pt user scroll with zero backward pullback or jump.
+    tree.frame(390.0, 200.0, now=next_t) |> ignore
+    let y_first = flip_drawn_info(tree, track_label).unwrap().0
+    let expected = y_before + 24.0
+    assert_true(
+      (y_first - expected).abs() < 1.0,
+      msg="at \{fps}fps: \{track_label} pulled back on first frame after off-foot scroll+insert: got \{y_first}, expected \{expected} (before=\{y_before})",
+    )
+    let mut prev_y = y_first
+    let mut t = next_t
+    while t < 700.0 {
+      let step_t = dmin(700.0, t + dmax(period, 16.0))
+      flip_step_to(tree, clock, step_t, period)
+      let cur_y = flip_drawn_info(tree, track_label).unwrap().0
+      assert_true(
+        (cur_y - expected).abs() < 1.0,
+        msg="at \{fps}fps t=\{step_t}: \{track_label} drifted to \{cur_y}, expected \{expected}",
+      )
+      assert_true(
+        (cur_y - prev_y).abs() < 1.0,
+        msg="at \{fps}fps t=\{step_t}: \{track_label} jumped from \{prev_y} to \{cur_y}",
+      )
+      prev_y = cur_y
+      t = step_t
+    }
+    assert_true(!answer_marks_left(), msg="at \{fps}fps: marks left set")
+    assert_true(!transition_now(), msg="at \{fps}fps: transition left active")
+    tree.dispose()
+  }
+}

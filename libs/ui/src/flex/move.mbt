@@ -654,14 +654,18 @@ fn come_height(s : Style, natural : Double) -> Double {
   s.come_goal = goal
   s.come_whole = natural
   if !known(s.come_ends) {
-    s.come_ends = s.come_at + (match (s.come_spec, s.come_group) {
-        (Some((ms, _)), g) if !(g is Some(g) && g.set) => ms
-        _ =>
-          match come_style_turn(s, goal) {
-            Some(tr) => tr.t1 + tr.dur
-            None => come_way_ms(s.come_from, s.come_v, goal)
-          }
-      })
+    if s.come_v == 0.0 && (goal - s.come_from).abs() < 1.0e-9 {
+      s.come_ends = s.come_at
+    } else {
+      s.come_ends = s.come_at + (match (s.come_spec, s.come_group) {
+          (Some((ms, _)), g) if !(g is Some(g) && g.set) => ms
+          _ =>
+            match come_style_turn(s, goal) {
+              Some(tr) => tr.t1 + tr.dur
+              None => come_way_ms(s.come_from, s.come_v, goal)
+            }
+        })
+    }
     s.come_plan = goal
   }
   let dur = s.come_ends - s.come_at

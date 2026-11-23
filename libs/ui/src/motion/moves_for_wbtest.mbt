@@ -744,3 +744,116 @@ test "a button that goes for its words given another colour, then its words chan
     (0, 1, 1, true, true),
   )
 }
+
+///|
+test "moves_for: bottom-anchored owner.resizes 2->1 row shrink keeps reflowing child Y dip-free and synchronized, while zero height change keeps move_ms(most)" {
+  let rates = if @ui.test_at_a_rate() { [60.0] } else { [7.0, 24.0, 60.0, 120.0] }
+  for fps in rates {
+    let items : @signals.Signal[Array[Int]] = @signals.signal([1, 2, 3, 4], same=fn(a, b) { a == b })
+    let owner_ref : Ref[@view.View?] = Ref(None)
+    let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=300.0)
+    t.check_looks(false)
+    @ui.set_view_app(fn(root) {
+      root.box(fn(col) {
+        col.width(Is(Some(400.0))).height(Is(Some(300.0))).lies_along(Is(End)) |> ignore
+        let owner = col.box(fn(fs_room) {
+          let f_moves : Ref[Moves?] = Ref(None)
+          let f_first : Array[@view.View] = []
+          fs_room.box(fn(fs) {
+            fs.width(Is(Some(400.0))).row(Is(true)).wraps(Is(Some(7.0))).gap(Is(7.0)) |> ignore
+            fs.each(
+              fn() { items.get() },
+              fn(id) { id },
+              at_once=true,
+              fn(v, id_get) {
+                let id = id_get.get()
+                let color = if id == 4 { 0x22AA55FFL } else { 0x3366CCFFL }
+                v.width(Is(Some(120.0))).height(Is(Some(60.0))).ground(Is(color)) |> ignore
+                match f_moves.val {
+                  Some(m) => m.moves_with(v)
+                  None => f_first.push(v)
+                }
+              },
+            )
+          })
+          |> ignore
+          let fm = moves_for(fs_room, fn() { items.get() })
+          for p in f_first {
+            fm.moves_with(p)
+          }
+          f_first.clear()
+          f_moves.val = Some(fm)
+        })
+        owner_ref.val = Some(owner)
+      })
+      |> ignore
+    })
+    t.draw()
+    let rect4 = fn() -> (Double, Double) {
+      match t.drawn_rects().iter().find_first(fn(r) { r.4 == 0x22AA55FFL }) {
+        Some(r) => (r.0, r.1)
+        None => (-1.0, -1.0)
+      }
+    }
+    let (x0, y0) = rect4()
+    assert_true(y0 > 200.0, msg="at \{fps}fps: item 4 not at bottom row initially: (\{x0}, \{y0})")
+    let owner = owner_ref.val.unwrap()
+    let tree = @ui.view_tree().unwrap()
+    let t0 = t.time()
+    // Remove item 2 on row 1: owner shrinks 127->60 (-67pt) while item 4 reflows from row 2 col 0 to row 1 col 2 (+254pt X, same window Y).
+    tree.event(t0, fn() {
+      @view.transition(fn() {
+        owner.resizes(foot=true, uncut=true) |> ignore
+        items.set([1, 3, 4])
+      })
+    })
+    let owner_end = owner.comes_end(laid=false)
+    let step = 1000.0 / fps
+    let mut max_dip = 0.0
+    let mut at = t0 + step
+    let mut at_owner_end : (Double, Double)? = None
+    while at <= t0 + 450.0 {
+      t.frame_at(at)
+      let (x, y) = rect4()
+      let dip = y - y0
+      if dip > max_dip {
+        max_dip = dip
+      }
+      if at_owner_end is None && at >= owner_end + 1.0 {
+        at_owner_end = Some((x, y))
+      }
+      at = at + step
+    }
+    assert_true(
+      max_dip < 1.0,
+      msg="at \{fps}fps: reflowing child dipped downward by \{max_dip}pt during 2->1 row shrink (start y=\{y0})",
+    )
+    t.run_for(past_all_ms)
+    let (x_rest, y_rest) = rect4()
+    match at_owner_end {
+      Some((x_at_end, y_at_end)) =>
+        assert_true(
+          (x_at_end - x_rest).abs() < 1.0 && (y_at_end - y_rest).abs() < 1.0,
+          msg="at \{fps}fps: item 4 did not finish with owner.resizes: at owner_end (\{x_at_end}, \{y_at_end}) vs rest (\{x_rest}, \{y_rest})",
+        )
+      None => fail("at \{fps}fps: never sampled past owner_end=\{owner_end}")
+    }
+    // Zero-height-change case (1->1 row, ΔH = 0): calling owner.resizes must NOT shorten moves_for's move_ms(most).
+    let t1 = t.time()
+    let (x_before_flat, _) = rect4()
+    tree.event(t1, fn() {
+      @view.transition(fn() {
+        owner.resizes(foot=true, uncut=true) |> ignore
+        items.set([3, 4])
+      })
+    })
+    t.frame_at(t1 + 80.0)
+    let (x_mid_flat, _) = rect4()
+    t.run_for(past_all_ms)
+    let (x_after_flat, _) = rect4()
+    assert_true(
+      x_mid_flat < x_before_flat - 5.0 && x_mid_flat > x_after_flat + 5.0,
+      msg="at \{fps}fps: ΔH=0 shrink broke horizontal slide: before=\{x_before_flat}, mid@80ms=\{x_mid_flat}, after=\{x_after_flat}",
+    )
+  }
+}
