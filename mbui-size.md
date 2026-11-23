@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [23141833b](https://github.com/AFK-surf/monoid/commit/23141833bf54ccf314abe6579cf3289eab5f91e2) fix(cloud,core): give member credentials their own | 2.72 | 3.66 | 14.85 | 37.01 | 56.58 | 32.42 | 65.77 | 100.21 | 120.4 |
 | [8587041df](https://github.com/AFK-surf/monoid/commit/8587041df4a6bf24fc8f3ebe00155420a48c6a8c) feat(ui): extract list_flip helpers, remap QuietDe | 2.72 | 3.66 | 14.85 | 37.01 | 56.58 | 32.42 | 65.77 | 100.21 | 120.4 |
 | [a1d43e42e](https://github.com/AFK-surf/monoid/commit/a1d43e42e0ca2d45b906edc8695fe33f2b0d738f) perf(station): parse the config once for the hub a | 2.72 | 3.66 | 14.85 | 37.01 | 56.58 | 32.42 | 65.77 | 100.21 | 120.4 |
 | [325eea565](https://github.com/AFK-surf/monoid/commit/325eea565468095b067c87ce37a38a628efb2db7) feat(mbui): redesign new-chat station picker with  | 2.72 | 3.66 | 14.85 | 37.01 | 56.58 | 32.42 | 65.77 | 100.21 | 120.4 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3d846babe](https://github.com/AFK-surf/monoid/commit/3d846babecb0760781dc2021dea320eee0a4d78c) fix(sf-ui,mbui): keep Small-screen panels as botto | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.58 | 121.83 |
 | [67422c4f0](https://github.com/AFK-surf/monoid/commit/67422c4f02d6ea87761e22f360c3ea8cfd4a8cda) fix(station): count a timed-out warm as a failed s | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.53 | 126.63 |
 | [62d0ee807](https://github.com/AFK-surf/monoid/commit/62d0ee80739d6256b3cabb8aee4c3cd1c6a2c2b0) fix(station): handle ENOENT races during replica l | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.53 | 126.63 |
-| [cfe9b1739](https://github.com/AFK-surf/monoid/commit/cfe9b17397e8a6986472d8b28e361497c06a94e1) fix(ci): refresh station-slice.sh weights and sort | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.53 | 126.63 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [23141833b](https://github.com/AFK-surf/monoid/commit/23141833bf54ccf314abe6579cf3289eab5f91e2) fix(cloud,core): give member credentials their own | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.12 |
 | [8587041df](https://github.com/AFK-surf/monoid/commit/8587041df4a6bf24fc8f3ebe00155420a48c6a8c) feat(ui): extract list_flip helpers, remap QuietDe | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.22 |
 | [a1d43e42e](https://github.com/AFK-surf/monoid/commit/a1d43e42e0ca2d45b906edc8695fe33f2b0d738f) perf(station): parse the config once for the hub a | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.41 |
 | [325eea565](https://github.com/AFK-surf/monoid/commit/325eea565468095b067c87ce37a38a628efb2db7) feat(mbui): redesign new-chat station picker with  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.12 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3d846babe](https://github.com/AFK-surf/monoid/commit/3d846babecb0760781dc2021dea320eee0a4d78c) fix(sf-ui,mbui): keep Small-screen panels as botto | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.63 |
 | [67422c4f0](https://github.com/AFK-surf/monoid/commit/67422c4f02d6ea87761e22f360c3ea8cfd4a8cda) fix(station): count a timed-out warm as a failed s | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.72 |
 | [62d0ee807](https://github.com/AFK-surf/monoid/commit/62d0ee80739d6256b3cabb8aee4c3cd1c6a2c2b0) fix(station): handle ENOENT races during replica l | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.41 |
-| [cfe9b1739](https://github.com/AFK-surf/monoid/commit/cfe9b17397e8a6986472d8b28e361497c06a94e1) fix(ci): refresh station-slice.sh weights and sort | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.72 |
