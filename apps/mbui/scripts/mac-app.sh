@@ -45,7 +45,7 @@ load_variant() {
   # there python3 reads mbui.json as tools/pack/manifest.mbt does (the variant deep-merged over the top level, the
   # same defaults, env sorted into k=v;k=v, schemes joined by commas), for the fields read below
   if [ -n "${MBUI_REAL_MOON:-}" ]; then
-    meta=$("$MBUI_DIR/scripts/mbui" meta "$A/mbui.json" --variant "$VARIANT" --format sh)
+    meta=$("$MBUI_DIR/scripts/ui" meta "$A/mbui.json" --variant "$VARIANT" --format sh)
   else
     meta=$(python3 - "$A/mbui.json" "$VARIANT" <<'PY'
 import json, shlex, sys

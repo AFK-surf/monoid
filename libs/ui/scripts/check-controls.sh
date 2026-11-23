@@ -18,14 +18,20 @@ for t in native js; do
   moon check --target $t --output-json 2>&1 | "$A/scripts/chk" errs
   [ "${PIPESTATUS[0]}" = 0 ] || exit 1
 done
-# (the kinds of test program this package has none of, not built; and its test programs compiled without optimising, as
+# (the kinds of test program each package has none of, not built; and its test programs compiled without optimising, as
 # apps/mbui/scripts/test.sh and ui's test_native.sh compile the library's tests)
 empty=""
-[ -n "$(ls src/controls/*.mbt 2>/dev/null | grep -vE '_(wb)?test\.mbt$' | xargs grep -l '^test ' 2>/dev/null)" ] || empty="$empty controls/controls.internal_test"
-[ -n "$(ls src/controls/*_test.mbt 2>/dev/null | grep -v '_wbtest\.mbt$')" ] || empty="$empty controls/controls.blackbox_test"
-[ -n "$(ls src/controls/*_wbtest.mbt 2>/dev/null)" ] || empty="$empty controls/controls.whitebox_test"
+light=""
+for p in controls glass studio_pages; do
+  d="src/$p"
+  [ -d "$d" ] || continue
+  [ -n "$(ls "$d"/*.mbt 2>/dev/null | grep -vE '_(wb)?test\.mbt$' | xargs grep -l '^test ' 2>/dev/null)" ] || empty="$empty $p/$p.internal_test"
+  [ -n "$(ls "$d"/*_test.mbt 2>/dev/null | grep -v '_wbtest\.mbt$')" ] || empty="$empty $p/$p.blackbox_test"
+  [ -n "$(ls "$d"/*_wbtest.mbt 2>/dev/null)" ] || empty="$empty $p/$p.whitebox_test"
+  light="$light $p/$p.internal_test $p/$p.blackbox_test $p/$p.whitebox_test"
+done
 export MBC_EMPTY_TESTS="$empty"
-export MBC_LIGHT_TESTS="controls/controls.internal_test controls/controls.blackbox_test controls/controls.whitebox_test glass/glass.whitebox_test studio_pages/studio_pages.whitebox_test"
+export MBC_LIGHT_TESTS="$light"
 out=$(mktemp)
 trap 'rm -f "$out"' EXIT
 moon_test_native -p ui/controls -p ui/glass -p ui/studio_pages > "$out" 2>&1

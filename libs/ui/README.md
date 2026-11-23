@@ -29,13 +29,13 @@ curl -fsSL https://ui.monoid.build/install.sh | sh
 mbui version
 ```
 
-Or run directly from a local checkout via `scripts/mbui`.
+Or run directly from a local checkout via `scripts/ui`.
 
 ### Scaffold, Check, and Pack an App
 
 ```sh
 # 1. Create a new standalone project (optionally pass --ui /path/to/ui-lib)
-scripts/mbui init ./my-app --name "My App" --id dev.example.myapp
+scripts/ui init ./my-app --name "My App" --id dev.example.myapp
 
 # 2. Type-check for native and Web targets
 cd ./my-app
@@ -43,8 +43,8 @@ moon check --target native
 moon check --target js
 
 # 3. Validate mbui.json and build a production Web bundle
-../scripts/mbui check mbui.json
-../scripts/mbui pack mbui.json --target web --out dist
+../scripts/ui check mbui.json
+../scripts/ui pack mbui.json --target web --out dist
 ```
 
 See [`docs/PACKAGING.md`](docs/PACKAGING.md) for full `mbui.json` configuration, 6-target signing/packaging, prebuilt `mbui-runtime` shells, and auto-updates.

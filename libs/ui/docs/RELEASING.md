@@ -21,10 +21,10 @@ TARGETS="native js" moon check --target js --output-json 2>&1 | scripts/chk errs
 (cd tools && env -u MOON_CC moon test --target native pack)
 
 # 4. End-to-end scaffold smoke test
-scripts/mbui init /tmp/mbui-smoke --name "Smoke App" --id dev.monoid.smoke
+scripts/ui init /tmp/mbui-smoke --name "Smoke App" --id dev.monoid.smoke
 (cd /tmp/mbui-smoke && moon check --target native && moon check --target js)
-scripts/mbui check /tmp/mbui-smoke/mbui.json
-scripts/mbui pack /tmp/mbui-smoke/mbui.json --target web --web-no-compress --out /tmp/mbui-smoke/dist
+scripts/ui check /tmp/mbui-smoke/mbui.json
+scripts/ui pack /tmp/mbui-smoke/mbui.json --target web --web-no-compress --out /tmp/mbui-smoke/dist
 rm -rf /tmp/mbui-smoke
 ```
 

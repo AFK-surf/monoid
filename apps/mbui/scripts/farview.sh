@@ -7,7 +7,7 @@ set -eu
 A=$(cd "$(dirname "$0")/.." && pwd)
 pin=$(tr -d ' \n' < "$A/farview.pin")
 d=$A/deps/farview
-[ "$(cat "$d/.pin" 2>/dev/null || true)" = "$pin" ] && [ -f "$d/client/moon.mod" ] && exit 0
+[ "$(cat "$d/.pin" 2>/dev/null || true)" = "${pin}-ui" ] && [ -f "$d/client/moon.mod" ] && exit 0
 tmp=$A/deps/farview.tmp
 rm -rf "$tmp"
 mkdir -p "$tmp"
@@ -36,5 +36,9 @@ git -C "$tmp/git" checkout -q FETCH_HEAD
 rm -rf "$d"
 mkdir -p "$d"
 mv "$tmp/git/client" "$d/client"
-printf '%s\n' "$pin" > "$d/.pin"
+for f in "$d/client/moon.mod" "$d/client"/src/*/moon.pkg "$d/client"/src/*/pkg.generated.mbti; do
+  [ -f "$f" ] || continue
+  sed -e 's|"mbui@0\.1\.0"|"ui@0.1.0"|g' -e 's|"mbui/|"ui/|g' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+done
+printf '%s-ui\n' "$pin" > "$d/.pin"
 rm -rf "$tmp"
