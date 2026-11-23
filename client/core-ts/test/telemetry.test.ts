@@ -221,6 +221,64 @@ test("SendTrace covers ack->live, failed POST, superseded, 30s timeout, and repo
   }
 });
 
+test("SendTrace bindStation re-indexes after MOVED and onEnd fires once on every termination", async () => {
+  const host = new FakeHost();
+  const runner = new Runner(host.time.clock);
+  const tracer = new Tracer(host, runner, 1);
+  const bodies: unknown[] = [];
+  tracer.setExport((b) => Effect.sync(() => void bodies.push(parseJson(b))));
+  const st = new SendTrace(tracer, runner, () => host.monotonicMs(), () => true);
+
+  try {
+    let endedMoved = 0;
+    const hMoved = st.start("ws/st-1", { session: "sess-m", thread: 10, onEnd: () => { endedMoved++; } });
+    assert.ok(hMoved);
+    await host.time.pass(40, 10);
+    hMoved.bindStation("ws/st-2");
+    hMoved.bindThread(20);
+    hMoved.acked();
+    // Old station live event must not resolve the moved trace.
+    st.onLive("ws/st-1", "sess-m");
+    assert.equal(endedMoved, 0);
+    await host.time.pass(110, 10);
+    // New station live event resolves it cleanly.
+    st.onLive("ws/st-2", "sess-m");
+    assert.equal(endedMoved, 1);
+
+    // onEnd fires on failed, superseded, timeout, and close.
+    let endedFailed = 0;
+    let endedSuperseded = 0;
+    let endedTimeout = 0;
+    let endedClosed = 0;
+
+    const hf = st.start("ws/st-1", { session: "sess-f", onEnd: () => { endedFailed++; } });
+    hf!.failed();
+    assert.equal(endedFailed, 1);
+
+    st.start("ws/st-1", { session: "sess-s", onEnd: () => { endedSuperseded++; } });
+    const hs2 = st.start("ws/st-1", { session: "sess-s", onEnd: () => { endedTimeout++; } });
+    assert.ok(hs2);
+    assert.equal(endedSuperseded, 1);
+    await host.time.pass(SEND_TRACE_TIMEOUT_MS + 100, 500);
+    assert.equal(endedTimeout, 1);
+
+    st.start("ws/st-1", { session: "sess-c", onEnd: () => { endedClosed++; } });
+    st.close();
+    assert.equal(endedClosed, 1);
+
+    await host.time.pass(EXPORT_MS + 100, 100);
+    const spans = exportedSpans(bodies).filter((s) => s.name === "chat.send.e2e");
+    const movedAttrs = attrsOf(spans[0]!);
+    assert.equal(movedAttrs["stillfail.station"], "st-2");
+    assert.equal(movedAttrs["stillfail.outcome"], "live");
+    assert.equal(movedAttrs["stillfail.ack_ms"], 40);
+    assert.equal(movedAttrs["stillfail.first_live_ms"], 150);
+  } finally {
+    st.close();
+    runner.shutdown();
+  }
+});
+
 test("chat.send integration emits chat.send.e2e when live event arrives on station stream", async () => {
   const s = await started({ ...base(), "POST /threads/7/messages": { n: 4 } }, 1, undefined, (f) => {
     f.gate.marks = true;
