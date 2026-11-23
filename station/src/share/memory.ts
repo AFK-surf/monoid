@@ -707,7 +707,7 @@ export class MemorySync {
     // (a station that only runs tasks keeps no memory and asks nothing of the others)
     if (this.#stopped || this.#deps.still || !st || !cloud.peersCurrent || st.rig !== undefined) return;
     this.#follow();
-    for (const m of cloud.memberships()) {
+    for (const m of cloud.fullMemberships()) {
       const peers = m.peers.filter((p: Json) => typeof p?.id === "string" && HEX64.test(p.id) && p.id !== st.station);
       if (peers.length === 0) continue;
       if (!this.#kept.has(m.workspace)) {
@@ -819,7 +819,7 @@ export class MemorySync {
   /// cannot be reached is passed over.
   async levelNow(): Promise<void> {
     const cloud = this.#deps.cloud;
-    for (const m of cloud.memberships()) {
+    for (const m of cloud.fullMemberships()) {
       await this.#lane(m.workspace, () => this.#look(m.workspace));
       for (const p of m.peers) {
         if (typeof p?.id !== "string" || p.id === this.#me) continue;

@@ -502,6 +502,7 @@ async fn Admin::workspaces_view(self : Admin, r : Request) -> JV {
         ("workspaceName", m.get("workspace_name").unwrap_or(jundef)),
         ("name", m.get("name").unwrap_or(jundef)),
         ("home", m.get("home").unwrap_or(jundef)),
+        ("mode", js(if m.get("rig") is Some(Obj(_)) { "tasks" } else { "full" })),
       ]).filter_undef()
     })
   jobj([("workspaces", jarr(listed)), ("canJoin", jbool(manages))])
@@ -525,6 +526,8 @@ fn Admin::workspaces_routes(self : Admin) -> Array[Route] {
       }
       let token = field_of(Some(given), "token")
       let lock = field_of(Some(given), "lock")
+      let rig_flag = field_of(Some(given), "rig")
+      let person = field_of(Some(given), "person")
       guard token is Some(Str(token)) && token != "" else {
         return error(400, "token is required")
       }
@@ -533,7 +536,19 @@ fn Admin::workspaces_routes(self : Admin) -> Array[Route] {
         Some(Str(l)) if re("^[0-9a-f]{64}$").matches(l) => ()
         _ => return error(400, "lock: a lock's hash")
       }
+      let rig_person = match rig_flag {
+        Some(Bool(true)) =>
+          match person {
+            Some(Str(p)) if re("^[0-9a-f]{64}$").matches(p) => Some(p)
+            _ => return error(400, "person: a person lock's hash is required for rig mode")
+          }
+        _ => None
+      }
       try {
+        let opts = match rig_person {
+          Some(p) => jobj([("cloud", jref("cloud")), ("rig", js(p))])
+          None => jobj([("cloud", jref("cloud"))])
+        }
         let joined = self.backend.ask("cli.joinWorkspace", [
           js(self.setup.data.unwrap_or("")),
           js(token),
@@ -541,7 +556,7 @@ fn Admin::workspaces_routes(self : Admin) -> Array[Route] {
             Some(Str(_) as l) => l
             _ => jundef
           },
-          jobj([("cloud", jref("cloud"))]),
+          opts,
         ])
         self.backend.tell("cloud.reload", [jbool(true)])
         self.overview_changed()

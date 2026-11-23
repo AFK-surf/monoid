@@ -90,6 +90,7 @@ pub(all) struct LiveBus {
   /// Custom `/mcp` HTTP handler (when `Some`, handles auth, `LISTINGS`, `OUTWARD` gating, `station_tool`, `SPEAKS`).
   mcp_handle : Ref[(async (Request) -> Reply)?]
   hub_ask : Ref[async (String, Json) -> Json]
+  rig_described : Ref[((String) -> Json)?]
   hub_models_for : Ref[(String) -> Array[Json]]
   handover_sessions : Ref[async () -> Array[Json]]
   take_handover : Ref[async (Json?) -> Unit]
@@ -263,6 +264,7 @@ pub fn LiveBus::new(
     emit_span_gen: Ref(0),
     mcp_handle: Ref(None),
     hub_ask: Ref(async fn(_op, _arg) { Json::null() }),
+    rig_described: Ref(None),
     hub_models_for: Ref(_connect => []),
     handover_sessions: Ref(async fn() { [] }),
     take_handover: Ref(async fn(_h) { () }),
@@ -540,10 +542,21 @@ pub fn station_features(raw : Json, app : String) -> Array[String] {
 }
 
 ///|
-/// Whether this station only runs tasks (a rig, rig/main.ts): `run --rig`, or the control plane's state naming its
-/// grants' owner. What P5-1 makes and which slices `run` starts go by it.
+/// Whether this station only runs tasks across every workspace it belongs to (pure rig, rig/main.ts).
 pub fn LiveBus::as_rig(self : LiveBus) -> Bool {
-  self.args.contains("--rig") || (self.cloud_state.val)() is Some({ "rig": Object(_), .. })
+  if self.args.contains("--rig") {
+    return true
+  }
+  match (self.cloud_state.val)() {
+    Some({ "workspace": String(w), "rig": Object(_), .. } as s) if w != "" => {
+      let joined = match s {
+        { "joined": Array(xs), .. } => xs
+        _ => []
+      }
+      joined.iter().all(j => j is { "rig": Object(_), .. })
+    }
+    _ => false
+  }
 }
 
 // ── What one slice asks of another, typed ──
@@ -812,9 +825,12 @@ async fn LiveBus::hub_codex_renew_running(self : LiveBus, profile : String) -> B
 }
 
 ///|
-/// A rig as the agents' side describes it to `peer` of `workspace`.
-async fn LiveBus::hub_rig_described(self : LiveBus, peer : String, workspace : String) -> Json {
-  (self.hub_ask.val)("rig.described", { "peer": Json::string(peer), "workspace": Json::string(workspace) })
+/// A rig as the station describes it to `peer` of `workspace` (`{}` when full in `workspace`).
+async fn LiveBus::hub_rig_described(self : LiveBus, _peer : String, workspace : String) -> Json {
+  match self.rig_described.val {
+    Some(f) => f(workspace)
+    None => Json::object(Map([]))
+  }
 }
 
 ///|

@@ -189,7 +189,7 @@ export const RigsLive = Layer.effectDiscard(
     const look = () => {
       if (!cloud.peersCurrent) return;
       const now = new Set<string>();
-      for (const m of cloud.memberships()) {
+      for (const m of cloud.fullMemberships()) {
         for (const rig of cloud.rigsNamed(m.workspace)) {
           const k = key(m.workspace, rig.id);
           now.add(k);
@@ -501,21 +501,40 @@ export const RigsLive = Layer.effectDiscard(
         }),
       },
       {
-        // This station to run only tasks from now on (`{mode: "tasks", person}`), asked of it by a member's device:
-        // `person` their own lock's hash, which it will pin. Whose a station is (who added it) the machine does not
-        // know: the control plane does, and lets only that member or a workspace owner or admin list it so, as the rig
-        // of whoever does (cloud/src/directory/stations.ts `setStationMode`). So the ask is kept as theirs until the control plane lists it as that same person's rig
-        // (the app asks that next; cloud/presence.ts): neither alone makes it one. A station in one workspace only, as
-        // a rig is.
+        // A rig asked by its owner to join another workspace as a rig: `{signed, chain}`, forwarded to the rig.
+        method: "POST", pattern: /^\/rigs\/([0-9a-f]{64})\/join$/,
+        handle: (r, [id]) => refusing(async () => {
+          const op = body(r);
+          const ws = r.viewer.workspace;
+          if (r.body.length > SIGNED_MAX) return error(413, "too large");
+          const rig = named(ws, id!);
+          if (rig.owner !== r.viewer.sub) return error(403, "only its owner adds it to another workspace");
+          if (!wellFormed("join", op.signed) || op.signed.body.rig !== rig.id || op.signed.body.sub !== r.viewer.sub || op.signed.body.ws === ws) return error(422, "not signed for this station");
+          try {
+            const got = await wall.within(ASK_MS, ask(rig.id, { method: "rig.join", workspace: ws, signed: op.signed, chain: op.chain ?? null }), "it did not answer");
+            return answered(got ?? { ok: true });
+          } catch (e) {
+            if (e instanceof PeerRefused) throw new Refused(e.message);
+            return error(504, (e as Error).message);
+          }
+        }),
+      },
+      {
+        // This station to run only tasks in `r.viewer.workspace` from now on (`{mode: "tasks", person}`), asked of it by a member's device:
+        // `person` their own lock's hash, which it will pin.
         method: "POST", pattern: /^\/mode$/,
         handle: async (r) => {
           const op = body(r);
           if (op.mode !== "tasks" || typeof op.person !== "string" || !/^[0-9a-f]{64}$/.test(op.person)) return error(400, "mode tasks, with its person's own lock");
-          if (cloud.home() !== r.viewer.workspace || cloud.memberships().length !== 1) return error(409, "a station in several workspaces stays a whole one: take it out of the others first");
+          const ws = r.viewer.workspace;
+          if (cloud.membership(ws) === null || cloud.rigIn(ws) !== null) return error(409, "this station is not a whole station in this workspace");
           const sub = r.viewer.sub;
           cloud.update((st) => {
-            st.rig_pending = { owner: sub, owner_email: r.viewer.email, owner_name: r.viewer.name ?? "", person: op.person, at: Math.floor(wall.now() / 1000) };
-            delete st.rig_due;
+            st.rig_pending = { ...(st.rig_pending ?? {}), [ws]: { owner: sub, owner_email: r.viewer.email, owner_name: r.viewer.name ?? "", person: op.person, at: Math.floor(wall.now() / 1000) } };
+            if (st.rig_due) {
+              st.rig_due = st.rig_due.filter((w) => w !== ws);
+              if (st.rig_due.length === 0) delete st.rig_due;
+            }
           });
           return answered({ ok: true });
         },

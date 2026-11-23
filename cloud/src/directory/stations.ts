@@ -157,20 +157,21 @@ export class DirectoryStations {
     const row = this.#db.one("SELECT workspace, name, created_by, rig FROM enrollments WHERE token_hash = ? AND expires_at > ?", hash, nowSeconds());
     if (!row) fail(404, "enrollment_not_found");
     if ((row!.rig === 1) !== rig) fail(409, row!.rig === 1 ? "rig_enrollment" : "station_enrollment");
-    if (rig && join) fail(409, "rig_enrollment");
     const workspace = row!.workspace as string;
     // A token kept by a Directory from before #rigsGone took unused tokens must not bring a departed person's rig back.
     if (rig && !this.#db.one("SELECT 1 AS x FROM members WHERE workspace = ? AND sub = ?", workspace, row!.created_by)) fail(404, "enrollment_not_found");
     const was = this.#db.memberships(station);
-    // A rig stays one, a station a station, where it is: its kind changes only by removing it first.
-    if (join && this.#db.one("SELECT 1 AS x FROM station_members WHERE station = ? AND rig = 1", station)) fail(409, "rig_enrollment");
     const member = was.includes(workspace);
-    // Across a lock: a locked home into an unlocked workspace; or into a locked one, by a station that would not pin it.
+    if (join && member) {
+      const existing = this.#db.one("SELECT rig FROM station_members WHERE workspace = ? AND station = ?", workspace, station);
+      if ((existing?.rig === 1) !== rig) fail(409, row!.rig === 1 ? "rig_enrollment" : "station_enrollment");
+    }
+    // Across a lock: any locked workspace into an unlocked workspace; or into a locked one, by a station that would not pin it.
     // A chain moved is on or off by its root's log, which this cloud never reads: into one as into a locked one; out
     // of one as the home, no refusal on a guess (the asker's own check comes first, the station's own after: it takes
-    // no members of a workspace that is off while its home is on, station/src/cloud/state.ts `leftOut`).
-    const homeOn = was.length > 0 && this.#host.locked(was[0]!) && !this.#host.moved(was[0]!);
-    if (join && !member && was.length > 0 && (homeOn ? !this.#host.locked(workspace) : this.#host.locked(workspace) && !locks)) fail(409, "locked_workspace");
+    // no members of a workspace that is off while any workspace is on, station/src/cloud/state.ts `leftOut`).
+    const anyLockedOn = was.some((w) => this.#host.locked(w) && !this.#host.moved(w));
+    if (join && !member && was.length > 0 && (anyLockedOn ? !this.#host.locked(workspace) : this.#host.locked(workspace) && !locks)) fail(409, "locked_workspace");
     // Several tokens may be out at once: the last free place goes to the first redeemed.
     if (!member && this.#stationsFull(workspace)) fail(429, "too_many_stations");
     const left = join ? [] : was.filter((w) => w !== workspace);
@@ -187,11 +188,12 @@ export class DirectoryStations {
       }
     });
     const w = this.#db.one("SELECT name FROM workspaces WHERE id = ?", workspace)!;
+    const home = this.#db.memberships(station)[0]!;
     this.#host.changed(workspace, true);
     for (const other of left) this.#host.changed(other, true);
+    if (join && was.length > 0 && home !== was[0] && was[0] !== workspace) this.#host.changed(was[0]!, true);
     // Already connected (re-enrolled while running): it learns where it is now, before the answer when it left some.
-    this.#host.sendState(station, left.length > 0);
-    const home = this.#db.memberships(station)[0]!;
+    this.#host.sendState(station, left.length > 0 || (was.length > 0 && home !== was[0]));
     const owner = rig ? this.#db.one("SELECT email, name FROM users WHERE sub = ?", row!.created_by) : undefined;
     await this.#host.delivered();
     return {
@@ -229,10 +231,10 @@ export class DirectoryStations {
     if (mode !== "full" && mode !== "tasks") fail(400, "invalid_name");
     const row = this.#db.one("SELECT rig, enrolled_by FROM station_members WHERE station = ? AND workspace = ?", station, workspace) ?? fail(404, "station_not_found");
     if ((row.rig === 1) !== (mode === "tasks")) {
+      const oldHome = this.#db.memberships(station)[0];
       const mine = row.enrolled_by === sub;
       if (mode === "tasks") {
         if (!mine && !MANAGERS.includes(role)) fail(403, "forbidden");
-        if (this.#db.memberships(station).length !== 1) fail(409, "station_in_others");
         if (!this.#db.one("SELECT 1 AS x FROM station_members WHERE workspace = ? AND rig IS NULL AND station != ?", workspace, station)) fail(409, "last_station");
         // Theirs already, or (an owner's or admin's doing) theirs now: the rig's owner is who made it one.
         this.#db.run("UPDATE station_members SET rig = 1, enrolled_by = ? WHERE station = ? AND workspace = ?", sub, station, workspace);
@@ -240,7 +242,12 @@ export class DirectoryStations {
         if (!mine || !MANAGERS.includes(role)) fail(403, "forbidden");
         this.#db.run("UPDATE station_members SET rig = NULL WHERE station = ? AND workspace = ?", station, workspace);
       }
+      const newHome = this.#db.memberships(station)[0];
       this.#host.changed(workspace, true);
+      if (newHome !== oldHome) {
+        if (oldHome && oldHome !== workspace) this.#host.changed(oldHome, true);
+        if (newHome && newHome !== workspace) this.#host.changed(newHome, true);
+      }
       this.#host.sendState(station, true);
       await this.#host.delivered();
     }

@@ -250,7 +250,8 @@ test("a rig's grants given and taken back: kept in memory at once, written off t
   const dir = made("main-thread-rig");
   const make = () => new RigGrants({
     path: join(dir, "grants.json"),
-    self: () => ({ id: RIG, workspace: WS, owner: "pat", person: entryHash(chain[0]!) }),
+    selfFor: (ws) => ws === WS ? { id: RIG, workspace: WS, owner: "pat", person: entryHash(chain[0]!) } : null,
+    workspaces: () => [{ id: RIG, workspace: WS, owner: "pat", person: entryHash(chain[0]!) }],
     busy: () => false, stop: () => {}, running: () => [], ended: () => {}, changed: () => {}, fibers,
   });
   try {
@@ -259,10 +260,10 @@ test("a rig's grants given and taken back: kept in memory at once, written off t
     const timeout = { kind: "idle" as const, seconds: 3600 };
     const grant = says("grant", { v: 1, sub: "pat", ws: WS, rig: RIG, station: STATION, session: "s1", chat: "CHAT/s1", request: "r1", title: "chat s1", by: "lee@example.com", timeout, at, exp: latest(at, timeout) } as GrantBody);
     assert.deepEqual(await syncCalls(async () => {
-      rig.grant(STATION, grant, chain);
+      rig.grant(WS, STATION, grant, chain);
       assert.equal(rig.refusal(WS, STATION, "s1"), null, "in force at once");
       await rig.written();
-      rig.revoke(says("revoke", { v: 1 as const, sub: "pat", ws: WS, rig: RIG, request: "r1", at }));
+      rig.revoke(WS, says("revoke", { v: 1 as const, sub: "pat", ws: WS, rig: RIG, request: "r1", at }));
       assert.match(rig.refusal(WS, STATION, "s1")!, /no grant/);
       await rig.close();
       await rig.written();

@@ -577,17 +577,17 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
         Err(e) => raise e
       }
     "rigs.list" | "rigs.use" | "rigs.done" => bus.rigs_call(name, args)
-    // the control plane's workspaces
-    "cloud.memberships" => Json::array(self.cloud.memberships)
+    // the control plane's full-mode workspaces
+    "cloud.memberships" => Json::array(self.cloud.memberships.filter(m => !(jfield(m, "rig") is Object(_))))
     "cloud.peers" =>
-      match self.cloud.memberships.iter().find_first(m => jtext(m, "workspace") == Some(s(0))) {
+      match self.cloud.memberships.filter(m => !(jfield(m, "rig") is Object(_))).iter().find_first(m => jtext(m, "workspace") == Some(s(0))) {
         Some(m) => opt_field(Some(m), "peers").unwrap_or(Json::array([]))
         None => Json::array([])
       }
     "cloud.nameOf" => {
       let id = s(0)
       let mut named = id
-      for m in self.cloud.memberships {
+      for m in self.cloud.memberships.filter(m => !(jfield(m, "rig") is Object(_))) {
         match opt_field(Some(m), "peers") {
           Some(Array(ps)) =>
             for p in ps {

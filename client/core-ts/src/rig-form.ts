@@ -44,6 +44,10 @@ export type AddBody = { v: 1; sub: string; ws: string; rig: string; at: number; 
 export type FullBody = { v: 1; sub: string; ws: string; rig: string; at: number };
 export const FULL_FOR = 3600;
 
+/// The rig asked by its owner to join another workspace as a rig, carrying that workspace's rig enrollment token and
+/// optional workspace lock hash. Good for `FULL_FOR` seconds from `at`.
+export type JoinBody = { v: 1; sub: string; ws: string; rig: string; token: string; lock?: string; at: number };
+
 /// A device the rig's person attached to it (设备, 2026-11-10: a phone or a board on its USB, a camera or a router on
 /// its network, anything an agent reaches that runs no station), or, `removed`, taken off it again. What a chat reaches
 /// of it is `target`: an adb serial on the rig's own adb (`adb`), an address and port its network reaches (`tcp`), or a
@@ -53,10 +57,10 @@ export type DeviceKind = "adb" | "tcp" | "serial";
 export const DEVICE_KINDS: DeviceKind[] = ["adb", "tcp", "serial"];
 export type DeviceBody = { v: 1; sub: string; ws: string; rig: string; device: Device; removed: boolean; at: number };
 
-export type Kind = "grant" | "revoke" | "settings" | "add" | "full" | "device";
+export type Kind = "grant" | "revoke" | "settings" | "add" | "full" | "device" | "join";
 export type Signed<B> = { body: B; sig: { key: string; sig: string } };
 
-const TAGS: Record<Kind, string> = { grant: "stillfail-rig-grant/1", revoke: "stillfail-rig-revoke/1", settings: "stillfail-rig-settings/1", add: "stillfail-rig-add/1", full: "stillfail-rig-full/1", device: "stillfail-rig-device/1" };
+const TAGS: Record<Kind, string> = { grant: "stillfail-rig-grant/1", revoke: "stillfail-rig-revoke/1", settings: "stillfail-rig-settings/1", add: "stillfail-rig-add/1", full: "stillfail-rig-full/1", device: "stillfail-rig-device/1", join: "stillfail-rig-join/1" };
 
 /// What is signed for a statement of `kind`: its tag, a NUL, then the SHA-256 of its body's canonical JSON (as a
 /// phone's grant is signed), so a signature for one kind is none for another.
@@ -110,6 +114,8 @@ export function wellFormed(kind: Kind, signed: unknown): boolean {
       return b.lock === undefined || (typeof b.lock === "string" && HEX32.test(b.lock));
     case "full":
       return true;
+    case "join":
+      return text(b.token, 256) && b.token !== "" && (b.lock === undefined || (typeof b.lock === "string" && HEX32.test(b.lock)));
   }
 }
 

@@ -2,16 +2,16 @@
 
 ## Whole vs. rig mode
 
-- A station runs either whole or task-only (只执行任务, `rig` in `station/src/rig/` and `station/src/rigs/`). A rig runs no agents, keeps no chats in sight, serves no devices, and runs only tasks sent by workspace stations.
-- Both modes share one release and one station list. Enroll directly as a rig with `enroll --rig <owner personal lock hash>`, or switch modes in the app without reinstalling. Apps do not connect to rigs directly: workspace stations report rig status (`station/src/rigs/`).
+- A station can be whole (`full`), task-only (`tasks` / `rig`), or mixed across multiple workspaces (e.g., whole in WS A and task-only in WS B). A pure-rig process (`RigLive`) runs only when every workspace the machine belongs to is task-only; a mixed-mode station runs `StationLive` with `RigSide` mounted so rig-mode workspaces enforce rig grants, explicit peer method allowlists, and refuse member HTTP connections while full-mode workspaces operate normally.
+- Both modes share one release and one station list. Enroll directly as a rig with `enroll --rig <owner personal lock hash>`, join additional workspaces as a rig (`enroll --join --rig <hash>`, `POST /workspaces/join`, or `rig.join`), or switch modes per workspace in the app without reinstalling. Apps do not connect to rigs directly: workspace stations report rig status (`station/src/rigs/`).
 
 ## Ownership and mode switching
 
-- A whole station may be converted to a rig by the member who added it or by any workspace owner or admin; whoever converts it becomes the rig's owner. An existing rig is never taken over: only its owner changes its grants, settings, devices, or converts it back to whole, and converting back also requires workspace owner or admin permission (regular members cannot add a whole station). `cloud/src/directory/stations.ts` `setStationMode` enforces this because the machine does not know who added it.
-- Changing mode requires two matching signals, never one alone:
+- A whole station may be converted to a rig in a workspace by the member who added it or by any workspace owner or admin; whoever converts it becomes the rig's owner in that workspace. An existing rig is never taken over: only its owner changes its grants, settings, devices, or converts it back to whole, and converting back also requires workspace owner or admin permission (regular members cannot add a whole station). `cloud/src/directory/stations.ts` `setStationMode` enforces this per workspace because the machine does not know who added it.
+- Changing mode requires two matching signals per workspace, never one alone:
   1. An out-of-band machine request (kept for 1 hour): whole to rig via `POST /mode` from a member's device carrying their lock hash to pin, or rig to whole via the owner's signed `rig.full`.
   2. The control plane listing the new mode under that same owner (`station/src/cloud/presence.ts`).
-- Before switching whole to rig, stop all agents, connects, and jobs (`station/src/sessions/agents.ts`). Keep existing chats in the database, hidden until the station becomes whole again.
+- Before switching a workspace from whole to rig, stop agents for that workspace (or all agents, connects, and jobs if no full workspaces remain) (`station/src/sessions/agents.ts`). Keep existing chats in the database, hidden until the station becomes whole in that workspace again.
 
 ## Signed grants and moved workspaces
 

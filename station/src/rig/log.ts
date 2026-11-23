@@ -5,7 +5,7 @@ import { appendFile, mkdir, open, rename, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 
 /// `device`: a chat's connection to one of the rig's devices (`name` the device's, `command` how it was reached).
-export type Command = { at: number; station: string; session: string; key: string; name: string; command: string; kind: "task" | "secret" | "device" };
+export type Command = { at: number; workspace?: string; station: string; session: string; key: string; name: string; command: string; kind: "task" | "secret" | "device" };
 
 /// The file goes to `.1` past this, the one before it gone.
 const FILE_MAX = 4 * 1024 * 1024;
@@ -45,8 +45,9 @@ export class CommandLog {
     return this.#queue;
   }
 
-  /// Its last `limit` lines, newest first (those asked for before it among them).
-  async last(limit: number): Promise<Command[]> {
+  /// Its last `limit` lines, newest first (those asked for before it among them). When `workspace` is given, only lines
+  /// of that workspace (and legacy lines without `workspace` when `includeLegacy` is true).
+  async last(limit: number, workspace?: string, includeLegacy = false): Promise<Command[]> {
     await this.#queue;
     let fh: Awaited<ReturnType<typeof open>>;
     try {
@@ -66,7 +67,9 @@ export class CommandLog {
       for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
         if (lines[i] === "") continue;
         try {
-          out.push(JSON.parse(lines[i]!));
+          const parsed = JSON.parse(lines[i]!) as Command;
+          if (workspace !== undefined && parsed.workspace !== workspace && !(includeLegacy && parsed.workspace === undefined)) continue;
+          out.push(parsed);
         } catch {}
       }
       return out;

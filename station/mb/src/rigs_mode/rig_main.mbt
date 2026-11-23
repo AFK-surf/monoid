@@ -165,7 +165,7 @@ pub struct RigFollow {
 
 ///|
 pub fn RigFollow::new(cloud : @cloud_lock.Cloud) -> RigFollow {
-  { cloud, in_workspace: rig_self(cloud) is Some(_), giving: false }
+  { cloud, in_workspace: cloud.rig_memberships().length() > 0, giving: false }
 }
 
 ///|
@@ -176,15 +176,14 @@ pub fn RigFollow::in_workspace(self : RigFollow) -> Bool {
 ///|
 /// What to do now the control plane changed something.
 pub fn RigFollow::step(self : RigFollow) -> Follow {
-  let s = cloud_state(self.cloud)
-  if s is Some(_) && get(s, "rig") is None && truthy(get(s, "workspace")) && !self.cloud.removed() {
+  if self.cloud.full_memberships().length() > 0 && !self.cloud.removed() {
     if !self.giving {
       self.giving = true
       return BecomeOther
     }
     return Stay
   }
-  let now = rig_self(self.cloud) is Some(_)
+  let now = self.cloud.rig_memberships().length() > 0
   if now == self.in_workspace {
     return Stay
   }

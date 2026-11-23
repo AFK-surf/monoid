@@ -272,7 +272,7 @@ export function followMarks(marks: StationMarks, call: PeerCall, after: (ms: num
     const st = cloud.state;
     // (a station that only runs tasks asks nothing of the others, peer.ts: it keeps none)
     if (stopped || !st || !cloud.peersCurrent || st.rig !== undefined) return;
-    for (const m of cloud.memberships()) for (const p of m.peers) if (typeof p?.id === "string" && p.id !== st.station) bring(p.id, m.workspace, m.home);
+    for (const m of cloud.fullMemberships()) for (const p of m.peers) if (typeof p?.id === "string" && p.id !== st.station) bring(p.id, m.workspace, m.home);
   };
   look();
   const unlistenCloud = cloud.listen(look);
@@ -294,6 +294,6 @@ export type Tell = (event: string, data: unknown, of: string, to: { workspace: s
 /// they read `GET /station-marks` again.
 export function tellMarks(marks: StationMarks, tell: Tell): () => void {
   return marks.listen((station) => {
-    for (const m of marks.cloud.memberships()) if (marks.stationsOf(m.workspace).includes(station)) tell("stationMarks", { workspace: m.workspace }, `stationMarks\0${m.workspace}`, { workspace: m.workspace });
+    for (const m of marks.cloud.fullMemberships()) if (marks.stationsOf(m.workspace).includes(station)) tell("stationMarks", { workspace: m.workspace }, `stationMarks\0${m.workspace}`, { workspace: m.workspace });
   });
 }

@@ -478,10 +478,8 @@ fn rig_owned(key : String) -> (String, String, String)? {
 }
 
 ///|
-/// rig/main.ts RigLive: the rig's grants and what it tells the stations, its door its jobs reach it by (the agents'
-/// door `run` opens), its jobs (the jobs' side's, the bus's `jobs_ask`) followed as the control plane changes, room made
-/// as its disk fills.
-fn P51::rig_live(self : P51) -> Unit {
+/// Mount the rig-side handler (`Rig`) in both pure-rig and mixed whole-station processes.
+fn P51::rig_side_live(self : P51) -> Unit {
   let bus = self.bus
   let host = self.host
   let plane = self.plane.unwrap()
@@ -523,6 +521,27 @@ fn P51::rig_live(self : P51) -> Unit {
       })
     },
     reach: async fn(device) { bus_rig_reach(bus, device) },
+    join: Some(async fn(token, person, lock, expected_workspace) {
+      let any_locked = () => {
+        let home = cloud.home()
+        cloud
+        .memberships()
+        .iter()
+        .any(m => {
+          let w = match m {
+            { "workspace": String(s), .. } => s
+            _ => ""
+          }
+          w != "" && cloud.locked(ws=if Some(w) == home { None } else { Some(w) }) is Some(_)
+        })
+      }
+      let joined = join_workspace(host, bus.data, token, lock, bus.version, any_locked, rig=Some(person), expected_workspace~) catch {
+        JoinRefused(_, m) => raise @rigs_mode.Refused(m)
+        e => raise @rigs_mode.Refused("\{e}")
+      }
+      cloud.reload()
+      joined
+    }),
     spawn: spawn_,
     clock,
     files: @rigs_mode.Files::of_host(host),
@@ -530,17 +549,26 @@ fn P51::rig_live(self : P51) -> Unit {
     host,
   })
   self.rig = Some(rig)
-  // A rig has no hub: what the jobs' side asks of one here is the rig's (`describe`'s signed `rig`).
-  let hub_before = bus.hub_ask.val
-  bus.hub_ask.val = async fn(op, arg) {
-    match op {
-      "rig.described" => rig.described()
-      _ => hub_before(op, arg)
-    }
-  }
+  plane.clear_rig_ws.val = ws => rig.grants.clear_workspace(ws)
+  bus.rig_described.val = Some(ws => rig.described(workspace=Some(ws)))
   self.stops.push(() => fork_bg(host, "rig close", async fn() { rig.close() }))
-  // What a station asks of it: through its grants first, its own `rig.` asked of it.
   bus.on_peer_prefix("rig.", async fn(peer, ws, _meth, params, _) { (rig.heard(peer, params, ws.unwrap_or(cloud.home().unwrap_or(""))), None) })
+}
+
+///|
+/// rig/main.ts RigLive: the rig's grants and what it tells the stations, its door its jobs reach it by (the agents'
+/// door `run` opens), its jobs (the jobs' side's, the bus's `jobs_ask`) followed as the control plane changes, room made
+/// as its disk fills.
+fn P51::rig_live(self : P51) -> Unit {
+  self.rig_side_live()
+  let bus = self.bus
+  let host = self.host
+  let plane = self.plane.unwrap()
+  let cloud = plane.cloud
+  let store = bus.store
+  let clock : @rigs_mode.Clock = { now: () => wall_ms().to_double(), after: (ms, f) => self.after(ms.to_int(), f) }
+  let spawn_ = (f : async () -> Unit) => ignore(host.rt.fork_quiet(name="rig", async fn() { f() catch { e => p51_log("WARN", "rig", "\{e}") } }))
+  let jobs_ask = async fn(op : String, arg : Json) -> Json { (bus.jobs_ask.val)(op, arg) }
   let main = @rigs_mode.RigMain::new(
     {
       jobs: {

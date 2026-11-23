@@ -48,7 +48,7 @@ export const CopiesLive = Layer.effectDiscard(
     const copies = new Copies({
       data,
       here: () => key.id,
-      places: () => ({ home: cloud.home(), workspaces: cloud.memberships().map((m) => ({ workspace: m.workspace, name: m.name })) }),
+      places: () => ({ home: cloud.home(), workspaces: cloud.fullMemberships().map((m) => ({ workspace: m.workspace, name: m.name })) }),
       roster: (ws) => {
         const m = cloud.membership(ws);
         if (m === null || !cloud.peersCurrent) return null;
@@ -174,7 +174,7 @@ export const CopiesLive = Layer.effectDiscard(
     yield* Effect.acquireRelease(Effect.sync(() => store.subscribe((c) => copies.told(c))), (off) => Effect.sync(off));
     // (the workspaces, or their stations, changed: what this station keeps and whom it tells, worked out again)
     let roster = "";
-    const rosterNow = () => JSON.stringify(cloud.memberships().map((m) => [m.workspace, m.peers.map((p: Json) => p?.id)]).concat([[String(cloud.peersCurrent)]]));
+    const rosterNow = () => JSON.stringify(cloud.fullMemberships().map((m) => [m.workspace, m.peers.map((p: Json) => p?.id)]).concat([[String(cloud.peersCurrent)]]));
     yield* Effect.acquireRelease(
       Effect.sync(() => cloud.listen(() => {
         const now = rosterNow();

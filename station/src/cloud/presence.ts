@@ -11,7 +11,7 @@ import WebSocket from "ws";
 import { log } from "../ops/log.ts";
 import { nowSecs } from "../ops/files.ts";
 import { version } from "../ops/version.ts";
-import { type Cloud as CloudState, MODE_PENDING_S, isRevocation, joinedOf, joinedPendingPath, pendingLockPath, rigGrantsPath, rigsOf, waysSaidOf } from "./state.ts";
+import { type Cloud as CloudState, type RigSelf, MODE_PENDING_S, isRevocation, joinedOf, joinedPendingPath, pendingLockPath, rigGrantsPath, rigsOf, waysSaidOf } from "./state.ts";
 import { type Entry, asEntry, entryHash, fold } from "../../../shared/lock.ts";
 import { hashOf } from "../../../shared/log-keep.ts";
 import type { StationKey } from "./key.ts";
@@ -205,6 +205,7 @@ const connect = (s: CloudState, key: StationKey, plane: ProviderSpec, said: ((ev
       const tellWays = plane.provider === "stillfail" ? waysTeller(s, waysOf(s), send, open) : () => {};
       tell();
       unlisten = s.listen(() => {
+        replaySkippedRigFrame(s, (frame) => open() && send(frame));
         tell();
         tellWays();
       });
@@ -338,8 +339,8 @@ export function planeTeller(s: CloudState, send: (frame: unknown) => void, open:
 export function waysTeller(s: CloudState, ways: Ways, send: (frame: unknown) => void, open: () => boolean): () => void {
   const told = new Map<string, string>();
   return () => {
-    if (!open() || s.state?.rig !== undefined) return;
-    for (const m of s.memberships()) {
+    if (!open()) return;
+    for (const m of s.fullMemberships()) {
       const r = ways.record(m.workspace);
       if (r === null || told.get(m.workspace) === `${r.at}:${r.station}`) continue;
       told.set(m.workspace, `${r.at}:${r.station}`);
@@ -382,6 +383,30 @@ function takenBack(s: CloudState, plane: ProviderSpec) {
   });
 }
 
+/// Workspaces listed as rig-mode by the plane's last `state` frame that had no local `RigSelf` yet (e.g. the frame
+/// arrived during `joinWorkspace` before `cloud.json` was written). Kept per `CloudState` so that as soon as
+/// `cloud.json` gains `RigSelf` for one of them, the saved frame is replayed and its peers/lock take effect without
+/// waiting for the next cloud frame.
+const skippedRigState = new WeakMap<CloudState, { skipped: Set<string>; frame: any }>();
+
+/// Replay the last `state` frame if `cloud.json` now has local `RigSelf` for any workspace that was skipped because
+/// it was listed as rig-mode before its local `RigSelf` was written.
+export function replaySkippedRigFrame(s: CloudState, send: (frame: unknown) => unknown = () => {}): boolean {
+  const saved = skippedRigState.get(s);
+  if (!saved || saved.skipped.size === 0) return false;
+  let ready = false;
+  for (const ws of saved.skipped) {
+    if (s.rigIn(ws) !== null) {
+      ready = true;
+      break;
+    }
+  }
+  if (!ready) return false;
+  skippedRigState.delete(s);
+  applyFrame(s, saved.frame, send);
+  return true;
+}
+
 /// What the cloud pushes: where the station is and what it is called, its relays, roster and grant keys, what it
 /// takes back; the workspace lock's head, and its entries when asked (`send` answers on the socket). Once a lock is
 /// pinned, the station stays in its workspace and at its origin whatever the frame says, and the roster and gateways
@@ -404,22 +429,30 @@ function applyFrame(s: CloudState, body: any, send: (frame: unknown) => unknown)
     // one joining named, listed now or not, its old home gone or not: else that lock, joined workspaces' only, would
     // be left behind and the workspace taken as the plane says.
     const was = s.state;
+    const incomingJoined = joinedOf(body.workspaces);
     const moved = was !== null && typeof body.workspace === "string" && body.workspace !== was.workspace;
+    const oldHomeStillIn = moved && incomingJoined.some((j) => j.workspace === was.workspace);
     const keptThere = moved && s.chain() === null && (s.chain(body.workspace) !== null || s.pendingLock(body.workspace) !== null);
-    const took = moved
-      && (keptThere || ((was.joined ?? []).some((j) => j.workspace === body.workspace) && !joinedOf(body.workspaces).some((j) => j.workspace === was.workspace)))
-      && s.succeed(body.workspace);
+    const took = moved && (oldHomeStillIn
+      ? s.succeed(body.workspace, true)
+      : (keptThere || (was.joined ?? []).some((j) => j.workspace === body.workspace)) && s.succeed(body.workspace, false));
     const locked = s.chain() !== null;
     const wrongHome = locked && s.state !== null && typeof body.workspace === "string" && body.workspace !== s.state.workspace && !took;
     if (locked && s.state && ((typeof body.workspace === "string" && body.workspace !== s.state.workspace && !took) || (typeof body.origin === "string" && body.origin !== s.state.origin))) {
       log.warn("lock", "the control plane moves this station; the workspace lock keeps it where it is", { workspace: body.workspace, origin: body.origin });
+    }
+    const wasRigByWs = new Map<string, RigSelf>();
+    if (was !== null) {
+      if (was.workspace && was.rig !== undefined) wasRigByWs.set(was.workspace, was.rig);
+      for (const j of was.joined ?? []) if (j.rig !== undefined) wasRigByWs.set(j.workspace, j.rig);
     }
     s.setPlaneLists(Array.isArray(body.peers) ? body.peers : [], Array.isArray(body.gateway_keys) ? body.gateway_keys.filter((k: unknown): k is string => typeof k === "string") : undefined);
     // Current before it is told, so whoever hears of the new roster reads it as current.
     s.peersCurrent = Array.isArray(body.peers);
     s.reached = s.peersCurrent;
     s.rostersSaid = (s.rostersSaid ?? 0) + 1;
-    let fullAgain = false;
+    const clearedRigWorkspaces: string[] = [];
+    const skippedRigWs = new Set<string>();
     s.update((st) => {
       for (const k of ["workspace", "workspace_name", "name", "origin", "relay_url"] as const) {
         if (locked && (k === "origin" || (k === "workspace" && !took))) continue;
@@ -442,10 +475,62 @@ function applyFrame(s: CloudState, body: any, send: (frame: unknown) => unknown)
       // Kept as said; once locked, credentials are checked with the lock's keys instead (cloud/state.ts `grantKeys`).
       if (body.grant_keys && typeof body.grant_keys === "object" && !Array.isArray(body.grant_keys)) st.grant_keys = body.grant_keys;
       if (Array.isArray(body.revocations) && body.revocations.every(isRevocation)) st.revocations = body.revocations;
-      // The workspaces it joined besides its home one: none from planes of before them. One it is no longer in: not
-      // served, its lock kept (the plane's word alone undoes no lock: cloud/state.ts `leftJoined`).
-      const joined = joinedOf(body.workspaces);
-      for (const was of st.joined ?? []) if (!joined.some((j) => j.workspace === was.workspace)) s.leftJoined(was.workspace);
+      // Prune stale pending mode requests first so we know which workspaces are authorised to transition.
+      const listedRigOf = (raw: any): string | null => (raw !== null && typeof raw === "object" && typeof raw.owner === "string" ? (raw.owner as string) : null);
+      const fresh = (at: number) => nowSecs() - at <= MODE_PENDING_S;
+      if (st.rig_pending !== undefined) {
+        for (const [ws, entry] of Object.entries(st.rig_pending)) if (!fresh(entry.at)) delete st.rig_pending[ws];
+        if (Object.keys(st.rig_pending).length === 0) delete st.rig_pending;
+      }
+      if (st.rig_due !== undefined) {
+        st.rig_due = st.rig_due.filter((ws) => st.rig_pending?.[ws] !== undefined);
+        if (st.rig_due.length === 0) delete st.rig_due;
+      }
+      if (st.full_pending !== undefined) {
+        for (const [ws, entry] of Object.entries(st.full_pending)) if (!fresh(entry.at)) delete st.full_pending[ws];
+        if (Object.keys(st.full_pending).length === 0) delete st.full_pending;
+      }
+      const listedByWs = new Map<string, string | null>();
+      const rawRigsByWs = new Map<string, ReturnType<typeof rigsOf>>();
+      if (!wrongHome && st.workspace) {
+        listedByWs.set(st.workspace, listedRigOf(body.rig));
+        rawRigsByWs.set(st.workspace, rigsOf(body.rigs));
+      }
+      if (Array.isArray(body.workspaces)) {
+        for (const j of body.workspaces) {
+          if (typeof j?.workspace === "string" && j.workspace !== "") {
+            listedByWs.set(j.workspace, listedRigOf(j.rig));
+            rawRigsByWs.set(j.workspace, rigsOf(j.rigs));
+          }
+        }
+      }
+      // Preserve local RigSelf per workspace ID (never changed by control-plane frames alone, nor lost when home/joined swap).
+      const homeRig = wasRigByWs.get(st.workspace);
+      if (homeRig !== undefined) st.rig = homeRig;
+      else delete st.rig;
+      // The workspaces it joined besides its home one: never duplicate `st.workspace`, and never admit a rig-listed
+      // workspace as a full workspace before local `RigSelf` (or matching `rig_pending`) is recorded on disk.
+      const joined: typeof incomingJoined = [];
+      for (const j of incomingJoined) {
+        if (j.workspace === st.workspace) continue;
+        const jRig = wasRigByWs.get(j.workspace);
+        const listedRig = listedByWs.get(j.workspace) ?? null;
+        if (jRig !== undefined) {
+          const { rigs: _, ...rest } = j;
+          joined.push({ ...rest, rig: jRig });
+        } else if (listedRig !== null) {
+          if (st.rig_pending?.[j.workspace]?.owner === listedRig) {
+            const { rig: _, ...rest } = j;
+            joined.push(rest);
+          } else {
+            skippedRigWs.add(j.workspace);
+          }
+        } else {
+          const { rig: _, ...rest } = j;
+          joined.push(rest);
+        }
+      }
+      for (const prev of st.joined ?? []) if (!joined.some((j) => j.workspace === prev.workspace)) s.leftJoined(prev.workspace);
       if (joined.length > 0) st.joined = joined;
       else delete st.joined;
       // Missing roster means an old cloud: never keep peers from another binding. Who may call the device tools
@@ -453,30 +538,44 @@ function applyFrame(s: CloudState, body: any, send: (frame: unknown) => unknown)
       const { peers, gateways } = s.filtered(st);
       st.peers = Array.isArray(body.peers) ? peers : [];
       if (Array.isArray(body.gateway_keys)) st.gateway_keys = gateways;
-      // The home workspace's rigs (a plane from before them names none). Whether this machine is one is what
-      // `enroll --rig` wrote, never the plane's to change: a rig made a station by its word would take every
-      // station's requests with no grant, a station made a rig would stop serving its chats.
-      const rigs = rigsOf(body.rigs);
-      if (rigs.length > 0 && st.rig === undefined) st.rigs = rigs;
+      // Mode transitions per workspace, run BEFORE assigning `rigs` so a `rig -> full` frame keeps that frame's `rigs`.
+      const checkMode = (ws: string, hasRig: boolean, clearRig: () => void) => {
+        if (!listedByWs.has(ws)) return;
+        const listedRig = listedByWs.get(ws)!;
+        if (!hasRig) {
+          const pend = st.rig_pending?.[ws];
+          if (pend !== undefined && listedRig === pend.owner) {
+            st.rig_due = [...(st.rig_due ?? []).filter((w) => w !== ws), ws];
+          }
+        } else {
+          const fullPend = st.full_pending?.[ws];
+          if (fullPend !== undefined && listedRig === null) {
+            log.warn("presence", "this rig is listed as a whole station, as its person signed: it becomes one", { workspace: ws });
+            clearRig();
+            delete st.full_pending![ws];
+            if (Object.keys(st.full_pending!).length === 0) delete st.full_pending;
+            clearedRigWorkspaces.push(ws);
+          }
+        }
+      };
+      if (st.workspace) checkMode(st.workspace, st.rig !== undefined, () => { delete st.rig; });
+      for (const j of st.joined ?? []) checkMode(j.workspace, j.rig !== undefined, () => { delete j.rig; });
+      // Assign `rigs` per workspace after mode transitions so `rig -> full` retains this frame's `rigs`.
+      const homeRigs = rawRigsByWs.get(st.workspace) ?? rigsOf(body.rigs);
+      if (homeRigs.length > 0 && st.rig === undefined) st.rigs = homeRigs;
       else delete st.rigs;
-      // A change of what this machine is, asked of it over a way the plane has no part in (a device of whose it will be
-      // that reached it; its person's signature) and waiting here: done once the plane lists it so. The plane's word alone
-      // changes nothing, and what waited too long is forgotten.
-      const listedRig = body.rig !== null && typeof body.rig === "object" && typeof body.rig.owner === "string" ? (body.rig.owner as string) : null;
-      const fresh = (at: number) => nowSecs() - at <= MODE_PENDING_S;
-      if (st.rig_pending !== undefined && !fresh(st.rig_pending.at)) delete st.rig_pending;
-      if (st.full_pending !== undefined && !fresh(st.full_pending.at)) delete st.full_pending;
-      if (st.rig === undefined && st.rig_pending !== undefined && listedRig === st.rig_pending.owner && joined.length === 0) st.rig_due = true;
-      if (st.rig !== undefined && st.full_pending !== undefined && listedRig === null) {
-        log.warn("presence", "this rig is listed as a whole station, as its person signed: it becomes one");
-        delete st.rig;
-        delete st.full_pending;
-        fullAgain = true;
+      for (const j of st.joined ?? []) {
+        const jr = rawRigsByWs.get(j.workspace) ?? [];
+        if (jr.length > 0 && j.rig === undefined) j.rigs = jr;
+        else delete j.rigs;
       }
     });
-    // Its grants as a rig go with it, off the thread: a whole station reads none, and one made a rig again removes them
-    // first (sessions/agents.ts `follow`).
-    if (fullAgain) void rm(rigGrantsPath(s.data), { force: true }).catch((error) => log.warn("presence", "the grants of this station as a rig were not removed", { error: (error as Error).message }));
+    if (skippedRigWs.size > 0) skippedRigState.set(s, { skipped: skippedRigWs, frame: body });
+    else skippedRigState.delete(s);
+    // When no rig workspaces remain at all, remove grants.json; otherwise Rig's cloud listener clears each workspace's grants individually.
+    if (clearedRigWorkspaces.length > 0 && s.rigMemberships().length === 0) {
+      void rm(rigGrantsPath(s.data), { force: true }).catch((error) => log.warn("presence", "the grants of this station as a rig were not removed", { error: (error as Error).message }));
+    }
     syncLock(s, body.lock, send);
     // Each joined workspace's lock too, level with the plane's.
     if (Array.isArray(body.workspaces)) {

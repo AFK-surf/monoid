@@ -73,7 +73,6 @@ test("a member adds a rig of their own: listed apart from the stations, told to 
     assert.deepEqual(await enroll(h, rig, made.token), { status: 409, body: { error: "rig_enrollment" } }, "a station's program from before rigs does not serve under a rig's name");
     const other = ((await (await alice("POST", `/v1/workspaces/${home}/enrollments`, { name: "nas" })).json()) as any).token as string;
     assert.deepEqual(await enroll(h, rig, other, { rig: true }), { status: 409, body: { error: "station_enrollment" } });
-    assert.deepEqual(await enroll(h, rig, made.token, { rig: true }, true), { status: 409, body: { error: "rig_enrollment" } }, "a rig joins no second workspace");
     const joined = await enroll(h, rig, made.token, { rig: true });
     assert.equal(joined.status, 200);
     assert.deepEqual(joined.body.rig, { owner: bobSub, owner_email: "bob@example.test", owner_name: "Name of bob" });
@@ -230,11 +229,77 @@ test("a whole station its adder or any owner or admin makes one that only runs t
     assert.equal((await mode(alice, box, "tasks")).status, 200);
     assert.deepEqual((await view(alice, home)).rigs.map((r: any) => [r.id, r.owner]), [[box.id, bobSub]]);
 
-    // A station in a second workspace stays a whole one.
+    // A station in a second workspace may switch to tasks-only in one workspace while staying whole in the other (mixed mode).
     const other = ((await (await carol("POST", "/v1/workspaces", { name: "Other" })).json()) as any).id as string;
     const join = ((await (await carol("POST", `/v1/workspaces/${other}/enrollments`, { name: "nas" })).json()) as any).token as string;
     assert.equal((await enroll(h, second, join, {}, true)).status, 200);
-    assert.deepEqual(await (await mode(carol, second, "tasks")).json(), { error: "station_in_others" });
+    assert.equal((await mode(carol, second, "tasks")).status, 200);
+    assert.deepEqual((await view(alice, home)).rigs.map((r: any) => [r.id, r.owner]), [[second.id, carolSub], [box.id, bobSub]]);
+    assert.deepEqual((await view(carol, other)).stations.map((s: any) => s.id), [second.id]);
+    assert.equal((await view(carol, other)).rigs, undefined);
+    // Home re-ordered to the full workspace (`other`), with `home` demoted to `workspaces` as a rig.
+    const mixedFrame = await b.state();
+    assert.equal(mixedFrame.workspace, other);
+    assert.equal(mixedFrame.rig, undefined);
+    const demotedHome = mixedFrame.workspaces?.find((w: any) => w.workspace === home);
+    assert.deepEqual(demotedHome?.rig, { owner: carolSub });
+    // `joined` flag in `other` is omitted because the station's only other membership (`home`) is tasks-only.
+    assert.equal((await view(carol, other)).stations.find((s: any) => s.id === second.id).joined, undefined);
+  } finally {
+    await h.close();
+  }
+});
+
+test("pure rig in 2 workspaces and pure rig promoted to mixed mode when joining a full workspace", async () => {
+  const h = await harness();
+  try {
+    const alice = h.as(await h.login("alice"));
+    const bob = h.as(await h.login("bob"));
+    const wsA = ((await (await alice("POST", "/v1/workspaces", { name: "WS-A" })).json()) as any).id as string;
+    const wsB = ((await (await alice("POST", "/v1/workspaces", { name: "WS-B" })).json()) as any).id as string;
+    const wsC = ((await (await alice("POST", "/v1/workspaces", { name: "WS-C" })).json()) as any).id as string;
+    assert.equal((await alice("POST", `/v1/workspaces/${wsA}/members`, { role: "member", emails: ["bob@example.test"] })).status, 200);
+    assert.equal((await alice("POST", `/v1/workspaces/${wsB}/members`, { role: "member", emails: ["bob@example.test"] })).status, 200);
+    const bobSub = (await view(alice, wsA)).members.find((m: any) => m.email === "bob@example.test").sub as string;
+
+    const rig = await key();
+    const tokA = ((await (await bob("POST", `/v1/workspaces/${wsA}/rigs/enrollments`, { name: "gpu-a" })).json()) as any).token as string;
+    assert.equal((await enroll(h, rig, tokA, { rig: true })).status, 200);
+
+    // Join WS-B as rig too.
+    const tokB = ((await (await bob("POST", `/v1/workspaces/${wsB}/rigs/enrollments`, { name: "gpu-b" })).json()) as any).token as string;
+    const joinB = await enroll(h, rig, tokB, { rig: true }, true);
+    assert.equal(joinB.status, 200);
+    assert.equal(joinB.body.home, wsA);
+    assert.deepEqual((await view(alice, wsA)).rigs.map((r: any) => r.id), [rig.id]);
+    assert.deepEqual((await view(alice, wsB)).rigs.map((r: any) => r.id), [rig.id]);
+
+    const r = await connect(h, rig);
+    const f1 = await r.state();
+    assert.equal(f1.workspace, wsA);
+    assert.deepEqual(f1.rig, { owner: bobSub });
+    assert.equal(f1.workspaces?.length, 1);
+    assert.equal(f1.workspaces[0].workspace, wsB);
+    assert.deepEqual(f1.workspaces[0].rig, { owner: bobSub });
+
+    // Join WS-C as a full station -> WS-C becomes home (full before rig), WS-A and WS-B are in `workspaces` as rigs.
+    const tokC = ((await (await alice("POST", `/v1/workspaces/${wsC}/enrollments`, { name: "host-c" })).json()) as any).token as string;
+    const joinC = await enroll(h, rig, tokC, {}, true);
+    assert.equal(joinC.status, 200);
+    assert.equal(joinC.body.home, wsC);
+    const f2 = await r.state();
+    assert.equal(f2.workspace, wsC);
+    assert.equal(f2.rig, undefined);
+    assert.deepEqual(f2.workspaces.map((w: any) => [w.workspace, w.rig?.owner]), [[wsA, bobSub], [wsB, bobSub]]);
+
+    // Removing bob from WS-A removes the rig from WS-A alone; WS-B and WS-C stay intact.
+    assert.equal((await alice("DELETE", `/v1/workspaces/${wsA}/members/${bobSub}`)).status, 200);
+    assert.equal((await view(alice, wsA)).rigs, undefined);
+    assert.deepEqual((await view(alice, wsB)).rigs.map((r: any) => r.id), [rig.id]);
+    assert.deepEqual((await view(alice, wsC)).stations.map((s: any) => s.id), [rig.id]);
+    const f3 = await r.state();
+    assert.equal(f3.workspace, wsC);
+    assert.deepEqual(f3.workspaces.map((w: any) => w.workspace), [wsB]);
   } finally {
     await h.close();
   }

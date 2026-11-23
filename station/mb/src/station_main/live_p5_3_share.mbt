@@ -60,9 +60,17 @@ fn P53Share::cloud(self : P53Share) -> @share_sync.Cloud {
   }
   let memberships = () => match state() {
     Some(s) if jtext_or_empty(s, "workspace") != "" && !removed() => {
-      let out = [p53_membership(s)]
+      let out = []
+      if !(jfield(s, "rig") is Object(_)) {
+        out.push(p53_membership(s))
+      }
       match jfield(s, "joined") {
-        Array(js) => for j in js { out.push(p53_membership(j)) }
+        Array(js) =>
+          for j in js {
+            if !(jfield(j, "rig") is Object(_)) {
+              out.push(p53_membership(j))
+            }
+          }
         _ => ()
       }
       out
@@ -73,7 +81,15 @@ fn P53Share::cloud(self : P53Share) -> @share_sync.Cloud {
     has_state: () => state() is Some(_),
     station: () => match state() { Some(s) => jtext(s, "station"); None => None },
     name: () => match state() { Some(s) => jtext(s, "name"); None => None },
-    rig: () => match state() { Some(s) => !(jfield(s, "rig") is Null); None => false },
+    rig: () => match state() {
+      Some(s) if jtext_or_empty(s, "workspace") != "" && !removed() =>
+        jfield(s, "rig") is Object(_) &&
+        (match jfield(s, "joined") {
+          Array(js) => js.iter().all(j => jfield(j, "rig") is Object(_))
+          _ => true
+        })
+      _ => false
+    },
     peers_current: () => state() is Some(_) && !removed() && (bus.cloud_reached.val)(),
     memberships,
     membership: ws => memberships().iter().find_first(m => m.workspace == ws),

@@ -124,7 +124,7 @@ export const MovesLive = Layer.effectDiscard(
       },
     });
     yield* Effect.addFinalizer(() => Effect.promise(() => moves.close()));
-    const inWorkspace = (peer: string) => cloud.memberships().some((m) => m.peers.some((p: Json) => p?.id === peer));
+    const inWorkspace = (peer: string) => cloud.fullMemberships().some((m) => m.peers.some((p: Json) => p?.id === peer));
     const answers = moves.answers(inWorkspace);
     bus.on("handover.", answers);
     // (a station heard from again: what is owed to it of a hand-over is told now)

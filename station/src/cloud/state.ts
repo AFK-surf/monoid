@@ -25,7 +25,7 @@ export type Revocation = { kind: string; id: string; at: number };
 /// stations there and what that workspace takes back.
 /// `locked`: that workspace is in security mode, as the control plane says (its lock is pinned here before any of its
 /// members is taken).
-export type Joined = { workspace: string; workspace_name: string; workspace_emoji?: string; workspace_icon?: string; name: string; peers: any[]; revocations: Revocation[]; locked?: true; rigs?: Rig[]; ways?: WaysSaid };
+export type Joined = { workspace: string; workspace_name: string; workspace_emoji?: string; workspace_icon?: string; name: string; peers: any[]; revocations: Revocation[]; locked?: true; rigs?: Rig[]; ways?: WaysSaid; rig?: RigSelf };
 
 /// A workspace's own relays and the ways its members' devices do not take to its stations (`lan`, `tailnet`, `direct`,
 /// a relay's URL), as still.fail cloud kept them before the stations did: what a station takes as its first of them
@@ -86,15 +86,14 @@ export type CloudState = {
   /// `rig_due` below; never by the control plane's word alone).
   rig?: RigSelf;
   /// A whole station asked to run only tasks from now on, by a member's device that reached it itself (rigs/module.ts
-  /// `POST /mode`): whose it will be (who asked; the control plane lets only its adder or a workspace owner or admin
-  /// list it so, as the asker's), and their own lock to pin. Good for `MODE_PENDING_S` from `at`.
-  rig_pending?: RigSelf & { at: number };
-  /// The control plane lists it as that person's rig now (cloud/presence.ts): it stops what it runs as a station and
-  /// becomes one (sessions/agents.ts).
-  rig_due?: true;
-  /// A rig its person signed whole again (rig/module.ts `rig.full`), at `at`: it becomes a station once the control
-  /// plane lists it as one.
-  full_pending?: { at: number };
+  /// `POST /mode`), keyed by workspace: whose it will be and their own lock to pin. Good for `MODE_PENDING_S` from `at`.
+  rig_pending?: Record<string, RigSelf & { at: number }>;
+  /// The workspaces where the control plane lists it as that person's rig now (cloud/presence.ts): it stops what it
+  /// runs as a station in each and becomes a rig there (sessions/agents.ts).
+  rig_due?: string[];
+  /// A rig its person signed whole again (rig/module.ts `rig.full`), keyed by workspace, at `at`: it becomes a whole
+  /// station in that workspace once the control plane lists it as one.
+  full_pending?: Record<string, { at: number }>;
 };
 
 /// How long a change of a station's mode asked of the machine waits for the control plane to list it so.
@@ -344,11 +343,37 @@ export function readState(data: string): CloudState | null {
   if (rig !== null) state.rig = rig;
   else delete state.rig;
   const at = (v: any) => Number.isSafeInteger(v?.at);
-  const pending = rigSelfOf(raw.rig_pending);
-  if (pending !== null && at(raw.rig_pending)) state.rig_pending = { ...pending, at: raw.rig_pending.at };
+  const rigPending: Record<string, RigSelf & { at: number }> = {};
+  const legacyPending = rigSelfOf(raw.rig_pending);
+  if (legacyPending !== null && at(raw.rig_pending)) {
+    if (state.workspace) rigPending[state.workspace] = { ...legacyPending, at: raw.rig_pending.at };
+  } else if (raw.rig_pending !== null && typeof raw.rig_pending === "object" && !Array.isArray(raw.rig_pending)) {
+    for (const [ws, v] of Object.entries(raw.rig_pending)) {
+      const p = rigSelfOf(v);
+      if (ws !== "" && p !== null && at(v)) rigPending[ws] = { ...p, at: (v as any).at };
+    }
+  }
+  if (Object.keys(rigPending).length > 0) state.rig_pending = rigPending;
   else delete state.rig_pending;
-  if (raw.rig_due !== true || state.rig_pending === undefined) delete state.rig_due;
-  if (at(raw.full_pending)) state.full_pending = { at: raw.full_pending.at };
+  const rigDue: string[] = [];
+  if (raw.rig_due === true) {
+    if (state.workspace && rigPending[state.workspace] !== undefined) rigDue.push(state.workspace);
+  } else if (Array.isArray(raw.rig_due)) {
+    for (const ws of raw.rig_due) {
+      if (typeof ws === "string" && ws !== "" && rigPending[ws] !== undefined && !rigDue.includes(ws)) rigDue.push(ws);
+    }
+  }
+  if (rigDue.length > 0) state.rig_due = rigDue;
+  else delete state.rig_due;
+  const fullPending: Record<string, { at: number }> = {};
+  if (at(raw.full_pending)) {
+    if (state.workspace) fullPending[state.workspace] = { at: raw.full_pending.at };
+  } else if (raw.full_pending !== null && typeof raw.full_pending === "object" && !Array.isArray(raw.full_pending)) {
+    for (const [ws, v] of Object.entries(raw.full_pending)) {
+      if (ws !== "" && at(v)) fullPending[ws] = { at: (v as any).at };
+    }
+  }
+  if (Object.keys(fullPending).length > 0) state.full_pending = fullPending;
   else delete state.full_pending;
   return state;
 }
@@ -396,9 +421,9 @@ function stateText(s: CloudState): string {
   if (s.rigs !== undefined && s.rigs.length > 0) out.rigs = s.rigs;
   if (s.ways !== undefined) out.ways = s.ways;
   if (s.rig !== undefined) out.rig = s.rig;
-  if (s.rig_pending !== undefined) out.rig_pending = s.rig_pending;
-  if (s.rig_due === true) out.rig_due = true;
-  if (s.full_pending !== undefined) out.full_pending = s.full_pending;
+  if (s.rig_pending !== undefined && Object.keys(s.rig_pending).length > 0) out.rig_pending = s.rig_pending;
+  if (s.rig_due !== undefined && s.rig_due.length > 0) out.rig_due = s.rig_due;
+  if (s.full_pending !== undefined && Object.keys(s.full_pending).length > 0) out.full_pending = s.full_pending;
   return JSON.stringify(out, null, 2);
 }
 
@@ -418,6 +443,7 @@ export function joinedOf(raw: unknown): Joined[] {
           ...(j.locked === true ? { locked: true as const } : {}),
           ...(Array.isArray(j.rigs) && j.rigs.length > 0 ? { rigs: rigsOf(j.rigs) } : {}),
           ...(waysSaidOf(j.ways) !== null ? { ways: waysSaidOf(j.ways)! } : {}),
+          ...(rigSelfOf(j.rig) !== null ? { rig: rigSelfOf(j.rig)! } : {}),
         }]
       : [],
   );
@@ -742,7 +768,7 @@ export class Cloud {
     // on or off (`rigVouched` itself, never `rigs`, which while off is the control plane's word alone: a key the plane
     // names a rig would be given every body of a workspace turned off).
     const wsId = this.idOf(ws);
-    if (this.state?.rig === undefined && this.rigsNamed(wsId).some((r) => r.id === key && this.rigVouched?.(wsId, r) === true)) return "all";
+    if (this.rigIn(wsId) === null && this.rigsNamed(wsId).some((r) => r.id === key && this.rigVouched?.(wsId, r) === true)) return "all";
     const l = this.chain(ws) as KeptLock;
     const root = l.state?.moved;
     if (root === undefined) return new Set();
@@ -950,11 +976,27 @@ export class Cloud {
   /// workspace's lock, pinned or named by joining, is the home one's now (lock.json, lock-pending.json), the old home's
   /// forgotten. Refused (false) while the home one is locked and that workspace's lock is not pinned here: the station
   /// stays where its lock keeps it.
-  succeed(ws: string): boolean {
+  succeed(ws: string, demoteOldHome = false): boolean {
     if (this.chain() !== null && this.chain(ws) === null) return false;
+    const oldHome = this.state?.workspace ?? null;
     this.writing = true;
     try {
-      for (const [from, to] of [[joinedLockPath(this.data, ws), lockPath(this.data)], [joinedPendingPath(this.data, ws), pendingLockPath(this.data)]] as const) {
+      if (demoteOldHome && oldHome !== null && oldHome !== "" && oldHome !== ws) {
+        mkdirSync(dirname(joinedLockPath(this.data, oldHome)), { recursive: true }); // sync: atomic lock handover beside cloud.json
+        for (const [from, to] of [
+          [lockPath(this.data), joinedLockPath(this.data, oldHome)],
+          [turnedOffPath(lockPath(this.data)), turnedOffPath(joinedLockPath(this.data, oldHome))],
+          [pendingLockPath(this.data), joinedPendingPath(this.data, oldHome)],
+        ] as const) {
+          if (existsSync(from)) renameSync(from, to); // sync: atomic lock handover beside cloud.json
+          else rmSync(to, { force: true }); // sync: atomic lock handover beside cloud.json
+        }
+      }
+      for (const [from, to] of [
+        [joinedLockPath(this.data, ws), lockPath(this.data)],
+        [turnedOffPath(joinedLockPath(this.data, ws)), turnedOffPath(lockPath(this.data))],
+        [joinedPendingPath(this.data, ws), pendingLockPath(this.data)],
+      ] as const) {
         if (existsSync(from)) renameSync(from, to);
         else rmSync(to, { force: true });
       }
@@ -963,8 +1005,10 @@ export class Cloud {
     }
     this.lock = readLock(this.data);
     this.joinedLocks.delete(ws);
+    if (demoteOldHome && oldHome !== null && oldHome !== "" && oldHome !== ws) this.joinedLocks.delete(oldHome);
+    this.offLogs?.clear();
     this.planeLockSeqs.delete(ws);
-    log.info("lock", "a workspace this station joined took over as its home one; its lock is the home one's now", { workspace: ws, locked: this.lock !== null });
+    log.info("lock", "a workspace this station joined took over as its home one; its lock is the home one's now", { workspace: ws, locked: this.lock !== null, demoted: demoteOldHome ? oldHome : undefined });
     return true;
   }
 
@@ -1236,8 +1280,33 @@ export class Cloud {
       name: s.name,
       peers: s.peers,
       revocations: s.revocations,
+      ...(s.rig !== undefined ? { rig: s.rig } : {}),
       home: true,
     };
+  }
+
+  /// Whether this station is a rig in `ws`, and whose it is.
+  rigIn(ws: string): RigSelf | null {
+    const s = this.state;
+    if (s === null || !s.workspace || this.removed()) return null;
+    if (ws === s.workspace) return s.rig ?? null;
+    return (s.joined ?? []).find((j) => j.workspace === ws)?.rig ?? null;
+  }
+
+  /// Whether this machine is in at least one workspace and every workspace it is in is tasks-only (rig).
+  isRigOnly(): boolean {
+    const all = this.memberships();
+    return all.length > 0 && all.every((m) => m.rig !== undefined);
+  }
+
+  /// The full (non-rig) workspaces this station is in.
+  fullMemberships(): Membership[] {
+    return this.memberships().filter((m) => m.rig === undefined);
+  }
+
+  /// The tasks-only (rig) workspaces this station is in.
+  rigMemberships(): (Membership & { rig: RigSelf })[] {
+    return this.memberships().filter((m): m is Membership & { rig: RigSelf } => m.rig !== undefined);
   }
 
   private joinedMembership(j: Joined, home: string): Membership | null {
@@ -1273,15 +1342,16 @@ export class Cloud {
     if (j === undefined || this.locked(ws) !== null) return null;
     if (this.pendingLock(ws) !== null) return "pending";
     if (j.locked === true && this.chain(ws) === null) return "unpinned";
-    return this.locked() !== null ? "home" : null;
+    const anyLocked = this.locked() !== null || (s.joined ?? []).some((x) => x.workspace !== ws && this.locked(x.workspace) !== null);
+    return anyLocked ? "home" : null;
   }
 
   /// The rigs of `workspace` this station sends work to: those the control plane names, in security mode only those
-  /// their person signed for (`rigVouched`). None while the roster is not current, none for a rig (it asks nothing of
-  /// another), none outside the workspace.
+  /// their person signed for (`rigVouched`). None while the roster is not current, none where this station is a rig in
+  /// `workspace`, none outside the workspace.
   rigs(workspace: string): Rig[] {
     const s = this.state;
-    if (s === null || s.rig !== undefined || this.membership(workspace) === null) return [];
+    if (s === null || this.rigIn(workspace) !== null || this.membership(workspace) === null) return [];
     const named = workspace === s.workspace ? (s.rigs ?? []) : ((s.joined ?? []).find((j) => j.workspace === workspace)?.rigs ?? []);
     const mine = named.filter((r) => r.id !== s.station);
     return this.locked(workspace) === null ? mine : mine.filter((r) => this.rigVouched?.(workspace, r) === true);
@@ -1290,13 +1360,13 @@ export class Cloud {
   /// The rigs of `workspace` as the control plane names them, signed for or not (what a person is shown to sign for).
   rigsNamed(workspace: string): Rig[] {
     const s = this.state;
-    if (s === null || s.rig !== undefined || this.membership(workspace) === null) return [];
+    if (s === null || this.rigIn(workspace) !== null || this.membership(workspace) === null) return [];
     return (workspace === s.workspace ? (s.rigs ?? []) : ((s.joined ?? []).find((j) => j.workspace === workspace)?.rigs ?? [])).filter((r) => r.id !== s.station);
   }
 
   /// The workspace `id` is a rig of, of those this station is in (`workspace`: that one alone); null when of none.
   rigOf(id: string, workspace: string | null = null): { workspace: string; rig: Rig } | null {
-    for (const m of this.memberships()) {
+    for (const m of this.fullMemberships()) {
       if (workspace !== null && m.workspace !== workspace) continue;
       const rig = this.rigs(m.workspace).find((r) => r.id === id);
       if (rig !== undefined) return { workspace: m.workspace, rig };

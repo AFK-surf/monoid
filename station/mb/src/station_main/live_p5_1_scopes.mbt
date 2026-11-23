@@ -48,6 +48,11 @@ fn P51::mesh_scopes(
   let crypto = p51_scopes_crypto(bus)
   let read = async fn(args : Json) -> Json { @readops.mesh_control_read(bus.db, args) }
   let now = () => wall_ms().to_double()
+  let full_cloud : @cloud_net.CloudView = {
+    ..plane.ways.cloud,
+    memberships: () => (plane.ways.cloud.memberships)().filter(ms => !(plane.ways.cloud.rig_in)(ms.workspace)),
+    membership: ws => if (plane.ways.cloud.rig_in)(ws) { None } else { (plane.ways.cloud.membership)(ws) },
+  }
   m.scopes = match endpoint.mesh {
     Some(ops) =>
       Some(
@@ -57,7 +62,7 @@ fn P51::mesh_scopes(
           crypto,
           bus.key.id,
           {
-            cloud: plane.ways.cloud,
+            cloud: full_cloud,
             ways: plane.ways,
             call: async fn(peer, ws, request) { (call.call)(peer, Some(ws), request, None).0 },
             read,
@@ -83,7 +88,7 @@ fn P51::mesh_scopes(
   }
   let allowed = (scope : String) => match (plane.ways.cloud.origin)() {
     Some(o) =>
-      (plane.ways.cloud.memberships)().iter().any(ms => @mesh_scopes.workspace_scope(crypto, o, ms.workspace) == scope)
+      (full_cloud.memberships)().iter().any(ms => @mesh_scopes.workspace_scope(crypto, o, ms.workspace) == scope)
     None => false
   }
   // The relays tool's asks (agents.ts `meshList`, `revoke`, `enroll`), the rest the plane's.

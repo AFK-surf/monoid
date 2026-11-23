@@ -29,7 +29,7 @@ function rigMesh(t: TestContext, failures: number, clock: Clock.Clock, ended = 0
   let closed = 0;
   let bound = 0;
   // The cloud's state as the rig's mesh reads it: a workspace, no relays, no stations.
-  const cloud = { state: { workspace_name: "ws" }, data, relays: () => [], memberships: () => [], peersCurrent: false, listen: () => () => {}, toolCalls: null, removed: () => false };
+  const cloud = { state: { workspace_name: "ws" }, data, relays: () => [], memberships: () => [], fullMemberships: () => [], rigIn: () => null, peersCurrent: false, listen: () => () => {}, toolCalls: null, removed: () => false };
   const inputs = Layer.mergeAll(
     Layer.succeed(MeshSide)({ net: new Net(), peers: { route: null }, outside: null, forwarded: () => false, runtimes: () => [], device: null }),
     Layer.succeed(Previous)({ pid: null, gone: Promise.resolve(), exited: Promise.resolve() }),

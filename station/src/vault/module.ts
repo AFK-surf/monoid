@@ -56,7 +56,7 @@ export const VaultLive = Layer.effectDiscard(
       titleIfReady: (session) => senderTitleIfReady(hub, session),
       // Commands with a secret on another station of the workspace ( 在另一台 station 上用).
       peer: (given) => {
-        if (given === cloud.state?.station || cloud.memberships().some((m) => m.name.toLowerCase() === given.toLowerCase())) return null;
+        if (given === cloud.state?.station || cloud.fullMemberships().some((m) => m.name.toLowerCase() === given.toLowerCase())) return null;
         const { id } = peerNamed(cloud, given);
         return { id, name: nameOf(cloud, id) };
       },

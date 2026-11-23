@@ -191,6 +191,22 @@ pub fn joined_of(raw : Json?) -> Array[Json] {
     if ways_said_of(field(j, "ways")) is Some(w) {
       m["ways"] = w.to_json()
     }
+    match field(j, "rig") {
+      Some(Object(r)) =>
+        match (text_of(r.get("owner")), text_of(r.get("person"))) {
+          (Some(owner), Some(person)) if owner != "" && hex64(person) => {
+            let rm : Map[String, Json] = {
+              "owner": Json::string(owner),
+              "owner_email": Json::string(text_of(r.get("owner_email")).unwrap_or("")),
+              "owner_name": Json::string(text_of(r.get("owner_name")).unwrap_or("")),
+              "person": Json::string(person),
+            }
+            m["rig"] = Json::object(rm)
+          }
+          _ => ()
+        }
+      _ => ()
+    }
     Some(Json::object(m))
   })
 }
@@ -220,8 +236,8 @@ pub(all) struct LockHooks {
   offer_moved : (String, Array[Json]) -> Unit
   /// What joining named to pin read no more (its file gone: pinned now).
   pending_taken : (String?) -> Unit
-  /// A joined workspace takes over as the home one; refused while the home is locked and it is not.
-  succeed : (String) -> Bool
+  /// A joined workspace takes over as the home one (`demote_old_home`: old home moves to joined instead of leaving).
+  succeed : (String, Bool) -> Bool
   /// The roster and gateways as the lock lets them, from what the plane said last.
   filtered : (Array[Json], Array[String]?) -> (Array[Json], Array[String]?)
   /// Whether the home workspace is locked (`locked() !== null`).
@@ -243,6 +259,9 @@ pub struct PlaneCloud {
   mut rosters_said : Int
   mut plane_peers : Array[Json]?
   mut plane_gateways : Array[String]?
+  /// Workspaces listed as rig-mode by the last `state` frame that had no local `RigSelf` yet (replayed once written).
+  skipped_rig_ws : Array[String]
+  mut last_skipped_frame : Json?
   /// The clock in seconds (`nowSecs`).
   now_secs : () -> Int64
   /// cloud.json read anew from its file (enroll from another process).
@@ -271,7 +290,7 @@ pub fn LockHooks::unlocked(plane_peers : () -> (Array[Json]?, Array[String]?)) -
     take: (_, _) => (),
     offer_moved: (_, _) => (),
     pending_taken: _ => (),
-    succeed: _ => true,
+    succeed: (_, _) => true,
     filtered: (peers, gateways) => {
       ignore(plane_peers)
       (peers, gateways)
@@ -305,12 +324,50 @@ pub fn PlaneCloud::new(
     rosters_said: 0,
     plane_peers: None,
     plane_gateways: None,
+    skipped_rig_ws: [],
+    last_skipped_frame: None,
     now_secs,
     reload,
     rig_grants_gone,
     tool_calls,
     log,
   }
+}
+
+///|
+/// Replay the last `state` frame if `cloud.json` now has local `RigSelf` for any workspace that was skipped because
+/// the plane listed it as rig-mode before local `RigSelf` was written.
+pub fn replay_skipped_rig_frame(p : PlaneCloud, send : (Json) -> Unit) -> Bool {
+  if p.skipped_rig_ws.length() == 0 {
+    return false
+  }
+  guard p.last_skipped_frame is Some(frame) else { return false }
+  let has_rig = (ws : String) => match p.cloud.state {
+    Some(st) =>
+      if text_of(st.get("workspace")) == Some(ws) {
+        st.get("rig") is Some(Object(_))
+      } else {
+        array_of(st.get("joined"))
+        .unwrap_or([])
+        .iter()
+        .any(j => text_of(field(j, "workspace")) == Some(ws) && field(j, "rig") is Some(Object(_)))
+      }
+    None => false
+  }
+  let mut ready = false
+  for ws in p.skipped_rig_ws {
+    if has_rig(ws) {
+      ready = true
+      break
+    }
+  }
+  if !ready {
+    return false
+  }
+  p.skipped_rig_ws.clear()
+  p.last_skipped_frame = None
+  apply_state_frame(p, frame, send)
+  true
 }
 
 ///|
@@ -447,6 +504,25 @@ fn apply_state_frame(p : PlaneCloud, body : Json, send : (Json) -> Unit) -> Unit
   let s = p.cloud
   let lock = p.lock
   let named_ws = text_of(field(body, "workspace"))
+  let incoming_joined = joined_of(field(body, "workspaces"))
+  let was_rig_by_ws : Map[String, Json] = Map([])
+  match s.state {
+    Some(was) => {
+      let was_home = text_of(was.get("workspace")).unwrap_or("")
+      if was_home != "" {
+        if was.get("rig") is Some(Object(_) as r) {
+          was_rig_by_ws[was_home] = r
+        }
+      }
+      for j in array_of(was.get("joined")).unwrap_or([]) {
+        match (text_of(field(j, "workspace")), field(j, "rig")) {
+          (Some(jws), Some(Object(_) as r)) if jws != "" => was_rig_by_ws[jws] = r
+          _ => ()
+        }
+      }
+    }
+    None => ()
+  }
   let took = match (s.state, named_ws) {
     (Some(was), Some(ws)) if Some(ws) != text_of(was.get("workspace")) => {
       let kept_there = !(lock.pinned)(None) &&
@@ -456,10 +532,14 @@ fn apply_state_frame(p : PlaneCloud, body : Json, send : (Json) -> Unit) -> Unit
         .unwrap_or([])
         .iter()
         .any(j => text_of(field(j, "workspace")) == Some(ws))
-      let still_named = joined_of(field(body, "workspaces"))
+      let still_named = incoming_joined
         .iter()
         .any(j => text_of(field(j, "workspace")) == Some(was_ws))
-      (kept_there || (joined_there && !still_named)) && (lock.succeed)(ws)
+      if still_named {
+        (lock.succeed)(ws, true)
+      } else {
+        (kept_there || joined_there) && (lock.succeed)(ws, false)
+      }
     }
     _ => false
   }
@@ -500,7 +580,8 @@ fn apply_state_frame(p : PlaneCloud, body : Json, send : (Json) -> Unit) -> Unit
   s.peers_current = peers_said is Some(_)
   p.reached = s.peers_current
   p.rosters_said += 1
-  let mut full_again = false
+  let cleared_rig_ws : Array[String] = []
+  let skipped_rig_ws : Array[String] = []
   s.update(st => {
     for k in ["workspace", "workspace_name", "name", "origin", "relay_url"] {
       if locked && (k == "origin" || (k == "workspace" && !took)) {
@@ -544,7 +625,132 @@ fn apply_state_frame(p : PlaneCloud, body : Json, send : (Json) -> Unit) -> Unit
         st["revocations"] = Json::array(rs)
       _ => ()
     }
-    let joined = joined_of(field(body, "workspaces"))
+    let home_ws = text_of(st.get("workspace")).unwrap_or("")
+    match was_rig_by_ws.get(home_ws) {
+      Some(r) => st["rig"] = r
+      None => st.remove("rig")
+    }
+    // Per-workspace mode transitions: normalize & prune pending maps before building `joined`,
+    // so we know whether a newly plane-listed rig workspace has a matching `rig_pending` or must be skipped.
+    let listed_rig_of = (raw : Json?) => match raw {
+      Some(Object(r)) => text_of(r.get("owner"))
+      _ => None
+    }
+    let now = (p.now_secs)()
+    let fresh = (at : Json?) => match safe_int(at) {
+      Some(a) => now - a <= mode_pending_s
+      None =>
+        match at {
+          Some(Number(n, ..)) => now.to_double() - n <= mode_pending_s.to_double()
+          _ => false
+        }
+    }
+    let rp_map : Map[String, Json] = Map([])
+    match st.get("rig_pending") {
+      Some(Object(m)) =>
+        if text_of(m.get("owner")) is Some(_) && m.get("at") is Some(_) {
+          if home_ws != "" && fresh(m.get("at")) {
+            rp_map[home_ws] = Json::object(m)
+          }
+        } else {
+          for ws, entry in m {
+            if ws != "" && fresh(field(entry, "at")) {
+              rp_map[ws] = entry
+            }
+          }
+        }
+      _ => ()
+    }
+    if rp_map.is_empty() {
+      st.remove("rig_pending")
+    } else {
+      st["rig_pending"] = Json::object(rp_map)
+    }
+    let due_list : Array[String] = []
+    match st.get("rig_due") {
+      Some(True) =>
+        if home_ws != "" && rp_map.contains(home_ws) {
+          due_list.push(home_ws)
+        }
+      Some(Array(xs)) =>
+        for x in xs {
+          if x is String(ws) && rp_map.contains(ws) && !due_list.contains(ws) {
+            due_list.push(ws)
+          }
+        }
+      _ => ()
+    }
+    let fp_map : Map[String, Json] = Map([])
+    match st.get("full_pending") {
+      Some(Object(m)) =>
+        if m.get("at") is Some(_) {
+          if home_ws != "" && fresh(m.get("at")) {
+            fp_map[home_ws] = Json::object(m)
+          }
+        } else {
+          for ws, entry in m {
+            if ws != "" && fresh(field(entry, "at")) {
+              fp_map[ws] = entry
+            }
+          }
+        }
+      _ => ()
+    }
+    // Collect listed rig owner and raw rigs list per workspace from the frame
+    let listed_by_ws : Map[String, String?] = Map([])
+    let raw_rigs_by_ws : Map[String, Array[Json]] = Map([])
+    if !wrong_home && home_ws != "" {
+      listed_by_ws[home_ws] = listed_rig_of(field(body, "rig"))
+      raw_rigs_by_ws[home_ws] = rigs_of(field(body, "rigs"))
+    }
+    match field(body, "workspaces") {
+      Some(Array(js)) =>
+        for j in js {
+          if text_of(field(j, "workspace")) is Some(jws) && jws != "" {
+            listed_by_ws[jws] = listed_rig_of(field(j, "rig"))
+            raw_rigs_by_ws[jws] = rigs_of(field(j, "rigs"))
+          }
+        }
+      _ => ()
+    }
+    let joined : Array[Json] = []
+    for j in incoming_joined {
+      match j {
+        Object(jm) => {
+          let jws = text_of(jm.get("workspace")).unwrap_or("")
+          if jws == "" || jws == home_ws {
+            continue
+          }
+          match was_rig_by_ws.get(jws) {
+            Some(r) => {
+              let out = jm.copy()
+              out["rig"] = r
+              out.remove("rigs")
+              joined.push(Json::object(out))
+            }
+            None => {
+              let listed_owner = listed_by_ws.get(jws).unwrap_or(None)
+              if listed_owner is Some(owner) {
+                let pending_matches = match rp_map.get(jws) {
+                  Some(rp) => text_of(field(rp, "owner")) == Some(owner)
+                  None => false
+                }
+                if !pending_matches {
+                  if !skipped_rig_ws.contains(jws) {
+                    skipped_rig_ws.push(jws)
+                  }
+                  continue
+                }
+              }
+              let out = jm.copy()
+              out.remove("rig")
+              joined.push(Json::object(out))
+            }
+          }
+        }
+        other => joined.push(other)
+      }
+    }
     for was in array_of(st.get("joined")).unwrap_or([]) {
       let ws = text_of(field(was, "workspace")).unwrap_or("")
       if !joined.iter().any(j => text_of(field(j, "workspace")) == Some(ws)) {
@@ -565,57 +771,109 @@ fn apply_state_frame(p : PlaneCloud, body : Json, send : (Json) -> Unit) -> Unit
         None => st.remove("gateway_keys")
       }
     }
-    let rigs = rigs_of(field(body, "rigs"))
-    if rigs.length() > 0 && st.get("rig") is None {
-      st["rigs"] = Json::array(rigs)
+    // Check home workspace mode transition BEFORE assigning `rigs` so rig -> full keeps this frame's `rigs`
+    if home_ws != "" && listed_by_ws.contains(home_ws) {
+      let listed_rig = listed_by_ws.get(home_ws).unwrap()
+      if st.get("rig") is None {
+        match rp_map.get(home_ws) {
+          Some(rp) if listed_rig is Some(_) && listed_rig == text_of(field(rp, "owner")) =>
+            if !due_list.contains(home_ws) {
+              due_list.push(home_ws)
+            }
+          _ => ()
+        }
+      } else if fp_map.contains(home_ws) && listed_rig is None {
+        (p.log)(
+          "this rig is listed as a whole station, as its person signed: it becomes one",
+        )
+        st.remove("rig")
+        fp_map.remove(home_ws)
+        cleared_rig_ws.push(home_ws)
+      }
+    }
+    // Check joined workspaces mode transition BEFORE assigning `rigs`
+    if st.get("joined") is Some(Array(js)) {
+      let updated_joined = js.map(j => match j {
+        Object(jm) => {
+          let jws = text_of(jm.get("workspace")).unwrap_or("")
+          if jws != "" && listed_by_ws.contains(jws) {
+            let listed_rig = listed_by_ws.get(jws).unwrap()
+            if jm.get("rig") is None {
+              match rp_map.get(jws) {
+                Some(rp) if listed_rig is Some(_) && listed_rig == text_of(field(rp, "owner")) =>
+                  if !due_list.contains(jws) {
+                    due_list.push(jws)
+                  }
+                _ => ()
+              }
+              Json::object(jm)
+            } else if fp_map.contains(jws) && listed_rig is None {
+              (p.log)(
+                "this rig is listed as a whole station, as its person signed: it becomes one",
+              )
+              let out = jm.copy()
+              out.remove("rig")
+              fp_map.remove(jws)
+              cleared_rig_ws.push(jws)
+              Json::object(out)
+            } else {
+              Json::object(jm)
+            }
+          } else {
+            Json::object(jm)
+          }
+        }
+        other => other
+      })
+      st["joined"] = Json::array(updated_joined)
+    }
+    if due_list.length() > 0 {
+      st["rig_due"] = Json::array(due_list.map(Json::string))
+    } else {
+      st.remove("rig_due")
+    }
+    if fp_map.is_empty() {
+      st.remove("full_pending")
+    } else {
+      st["full_pending"] = Json::object(fp_map)
+    }
+    // Assign `rigs` after mode transitions so a rig -> full workspace keeps this frame's `rigs`
+    let home_rigs = raw_rigs_by_ws.get(home_ws).unwrap_or(rigs_of(field(body, "rigs")))
+    if home_rigs.length() > 0 && st.get("rig") is None {
+      st["rigs"] = Json::array(home_rigs)
     } else {
       st.remove("rigs")
     }
-    // A change of what this machine is, asked of it over a way the plane has no part in and waiting here: done once
-    // the plane lists it so. The plane's word alone changes nothing, and what waited too long is forgotten.
-    let listed_rig = match field(body, "rig") {
-      Some(Object(r)) => text_of(r.get("owner"))
-      _ => None
-    }
-    let now = (p.now_secs)()
-    let fresh = (at : Json?) => match safe_int(at) {
-      Some(a) => now - a <= mode_pending_s
-      None =>
-        match at {
-          Some(Number(n, ..)) => now.to_double() - n <= mode_pending_s.to_double()
-          _ => false
+    if st.get("joined") is Some(Array(js)) {
+      let with_rigs = js.map(j => match j {
+        Object(jm) => {
+          let jws = text_of(jm.get("workspace")).unwrap_or("")
+          let jr = raw_rigs_by_ws.get(jws).unwrap_or([])
+          let out = jm.copy()
+          if jr.length() > 0 && out.get("rig") is None {
+            out["rigs"] = Json::array(jr)
+          } else {
+            out.remove("rigs")
+          }
+          Json::object(out)
         }
-    }
-    match st.get("rig_pending") {
-      Some(rp) if !fresh(field(rp, "at")) => st.remove("rig_pending")
-      _ => ()
-    }
-    match st.get("full_pending") {
-      Some(fp) if !fresh(field(fp, "at")) => st.remove("full_pending")
-      _ => ()
-    }
-    match (st.get("rig"), st.get("rig_pending")) {
-      (None, Some(rp)) =>
-        if listed_rig is Some(_) &&
-          listed_rig == text_of(field(rp, "owner")) &&
-          joined.length() == 0 {
-          st["rig_due"] = Json::boolean(true)
-        }
-      _ => ()
-    }
-    if st.get("rig") is Some(_) &&
-      st.get("full_pending") is Some(_) &&
-      listed_rig is None {
-      (p.log)(
-        "this rig is listed as a whole station, as its person signed: it becomes one",
-      )
-      st.remove("rig")
-      st.remove("full_pending")
-      full_again = true
+        other => other
+      })
+      st["joined"] = Json::array(with_rigs)
     }
   })
-  // Its grants as a rig go with it: a whole station reads none.
-  if full_again {
+  p.skipped_rig_ws.clear()
+  if skipped_rig_ws.length() > 0 {
+    for ws in skipped_rig_ws {
+      p.skipped_rig_ws.push(ws)
+    }
+    p.last_skipped_frame = Some(body)
+  } else {
+    p.last_skipped_frame = None
+  }
+  // When no rig workspaces remain at all, remove grants.json; otherwise per-ws clearing handles it.
+  if cleared_rig_ws.length() > 0 &&
+    !s.memberships().iter().any(m => s.rig_in(m.workspace)) {
     (p.rig_grants_gone)()
   }
   sync_lock(p, field(body, "lock"), send, None)
@@ -998,10 +1256,13 @@ pub fn ways_teller(
 ) -> () -> Unit {
   let told : Map[String, String] = Map([])
   fn() {
-    if !open() || (ways.cloud.is_rig)() {
+    if !open() {
       return
     }
     for m in (ways.cloud.memberships)() {
+      if (ways.cloud.rig_in)(m.workspace) {
+        continue
+      }
       guard ways.record(m.workspace) is Some(r) else { continue }
       if told.get(m.workspace) == Some(r.word()) {
         continue
@@ -1368,6 +1629,7 @@ async fn connect(
     )
     tell()
     unlisten = p.cloud.told.add(() => {
+      ignore(replay_skipped_rig_frame(p, frame => if open() { send(frame) }))
       tell()
       tell_ways()
     })

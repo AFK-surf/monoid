@@ -4,6 +4,7 @@
 ///|
 priv struct RigInstance {
   grants : @rigs_mode.RigGrants
+  ws : String
   ended : Array[String]
   now_ms : Ref[Double]
 }
@@ -57,19 +58,20 @@ async fn harness_rigs(host : @host.Host) -> Unit {
           let ended : Array[String] = []
           let grants = @rigs_mode.RigGrants::new({
             path: sn_str(ask, "path"),
-            self_: () => Some(rig_self),
-            busy: (_, _) => false,
-            stop: (_, _) => (),
+            self_for: ws => if ws == rig_self.workspace { Some(rig_self) } else { None },
+            workspaces: () => [rig_self.workspace],
+            busy: (_, _, _) => false,
+            stop: (_, _, _) => (),
             running: () => [],
-            ended: e => ended.push("\{sn_str(e, "request")} \{sn_str(e, "why")}"),
+            ended: (_, e) => ended.push("\{sn_str(e, "request")} \{sn_str(e, "why")}"),
             cut: None,
-            changed: () => (),
+            changed: _ => (),
             clock: { now: () => now_ms.val, after: (_, _) => () => () },
             files,
             crypto,
           })
           next_handle += 1
-          instances[next_handle] = { grants, ended, now_ms }
+          instances[next_handle] = { grants, ws: rig_self.workspace, ended, now_ms }
           Ok(Json::object({ "handle": Json::number(next_handle.to_double()) }))
         }
         "setNow" => {
@@ -82,6 +84,7 @@ async fn harness_rigs(host : @host.Host) -> Unit {
         "grant" => {
           let inst = get_inst(ask)
           let until = inst.grants.grant(
+            inst.ws,
             sn_str(ask, "station"),
             rig_opt_json(ask, "signed"),
             rig_opt_json(ask, "chain"),
@@ -115,25 +118,25 @@ async fn harness_rigs(host : @host.Host) -> Unit {
         }
         "settings" => {
           let inst = get_inst(ask)
-          inst.grants.take_settings(rig_opt_json(ask, "signed"), rig_opt_json(ask, "chain"))
+          inst.grants.take_settings(inst.ws, rig_opt_json(ask, "signed"), rig_opt_json(ask, "chain"))
           Ok(Json::boolean(true))
         }
         "open" => {
           let inst = get_inst(ask)
-          Ok(Json::boolean(inst.grants.open()))
+          Ok(Json::boolean(inst.grants.open(inst.ws)))
         }
         "revoke" => {
           let inst = get_inst(ask)
-          inst.grants.revoke(rig_opt_json(ask, "signed"), rig_opt_json(ask, "chain"))
+          inst.grants.revoke(inst.ws, rig_opt_json(ask, "signed"), rig_opt_json(ask, "chain"))
           Ok(Json::boolean(true))
         }
         "full" => {
           let inst = get_inst(ask)
-          Ok(inst.grants.full(rig_opt_json(ask, "signed"), rig_opt_json(ask, "chain")))
+          Ok(inst.grants.full(inst.ws, rig_opt_json(ask, "signed"), rig_opt_json(ask, "chain")))
         }
         "added" => {
           let inst = get_inst(ask)
-          let lock = inst.grants.added(rig_opt_json(ask, "signed"), pin=rig_opt_json(ask, "pin"), chain=rig_opt_json(ask, "chain"))
+          let lock = inst.grants.added(inst.ws, rig_opt_json(ask, "signed"), pin=rig_opt_json(ask, "pin"), chain=rig_opt_json(ask, "chain"))
           Ok(
             match lock {
               Some(l) => Json::string(l)
@@ -143,16 +146,16 @@ async fn harness_rigs(host : @host.Host) -> Unit {
         }
         "device" => {
           let inst = get_inst(ask)
-          inst.grants.device(rig_opt_json(ask, "signed"), rig_opt_json(ask, "chain"))
+          inst.grants.device(inst.ws, rig_opt_json(ask, "signed"), rig_opt_json(ask, "chain"))
           Ok(Json::boolean(true))
         }
         "devices" => {
           let inst = get_inst(ask)
-          Ok(Json::array(inst.grants.devices()))
+          Ok(Json::array(inst.grants.devices(inst.ws)))
         }
         "view" => {
           let inst = get_inst(ask)
-          Ok(inst.grants.view().unwrap_or(Json::null()))
+          Ok(inst.grants.view(inst.ws).unwrap_or(Json::null()))
         }
         "takeEnded" => {
           let inst = get_inst(ask)

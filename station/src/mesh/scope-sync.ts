@@ -73,7 +73,7 @@ export class ScopeSync {
     const jobs = new Map<string, { scope: string; workspace: string; peer: string }>();
     const workspaces = new Map<string, string>();
     try {
-    for (const m of this.#cloud.memberships()) {
+    for (const m of this.#cloud.fullMemberships()) {
       const scope = workspaceScope(this.#cloud.state.origin, m.workspace);
       const nodes = new Set<string>([this.directory.signer.id, ...m.peers.map((p) => p.id).filter((id): id is string => typeof id === "string")]);
       const ways = waysOf(this.#cloud);
@@ -188,7 +188,7 @@ export class ScopeSync {
     await this.#takeRegistrations(JSON.parse(signed.body).scope, [signed]);
   }
   async #takeRegistrations(scope: string, records: SignedRelayRecord[]): Promise<void> {
-    const membership = this.#cloud.memberships().find((m) => workspaceScope(this.#cloud.state!.origin, m.workspace) === scope);
+    const membership = this.#cloud.fullMemberships().find((m) => workspaceScope(this.#cloud.state!.origin, m.workspace) === scope);
     if (!membership || this.#closed) throw new Error("relay workspace removed");
     const issuers = new Set([this.directory.signer.id, ...membership.peers.map((p) => p.id)]);
     for (const signed of records) relayRecordOf(signed, scope, issuers);

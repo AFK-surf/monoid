@@ -191,14 +191,19 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
     let check = async fn(line : Json, verified : (String) -> Unit) -> (Admitted, String) {
       let keys : Map[String, Json] = Map([])
       let home = (k.home)()
+      let full_memberships : Array[Membership] = []
       for ms in (k.memberships)() {
+        if (k.is_rig_in)(ms.workspace) {
+          continue
+        }
+        full_memberships.push(ms)
         keys[ms.workspace] = (k.grant_keys)(if Some(ms.workspace) == home { None } else { Some(ms.workspace) })
       }
       let fallback = (k.grant_keys)(None)
       let admitted = verify_member_of(
         credential_of(line),
         ws => keys.get(ws).unwrap_or(fallback),
-        (k.memberships)(),
+        full_memberships,
         device,
         (k.now_secs)(),
         k.verify,
@@ -302,7 +307,7 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
     // takes the device away (or lowers its member's role).
     let gone = async fn() -> Bool {
       let of = (k.membership)(current.val.viewer.workspace)
-      if (k.removed)() || of is None {
+      if (k.removed)() || of is None || (k.is_rig_in)(current.val.viewer.workspace) {
         (conn.close)(2, "station_removed")
       } else if revoked(current.val, of.unwrap().1) {
         (conn.close)(3, "credential_revoked")

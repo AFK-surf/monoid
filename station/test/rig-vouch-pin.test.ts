@@ -59,7 +59,7 @@ test("checked by its person on their own lock: the rig names the workspace's loc
     assert.deepEqual(await t.added({ signed: says("add", t.body(lock), t.w.alice.app.key), chain: t.w.alice.entries }), { ok: true });
     assert.equal(pendingLock(t.data), lock, "named, as `enroll --lock` names one");
     assert.deepEqual(t.sent.filter((f) => f.type === "lock.get"), [{ type: "lock.get", after: -1 }], "asked for once, at once");
-    assert.deepEqual(t.made.grants.proof()?.body.lock, lock, "the add kept to show the stations");
+    assert.deepEqual(t.made.grants.proof(WS)?.body.lock, lock, "the add kept to show the stations");
     // The plane brings it: pinned, nothing named any more.
     applyState(t.cloud, JSON.stringify({ type: "lock", entries: [t.w.first] }));
     assert.equal(t.cloud.chain(null)?.state?.genesis, lock);
@@ -146,7 +146,7 @@ test("a lock pinned or named already is never replaced by an add, nor one named 
     try {
       assert.deepEqual(await t.added({ signed: says("add", t.body(null), t.w.alice.app.key), chain: t.w.alice.entries }), { ok: true });
       assert.equal(pendingLock(t.data), null);
-      assert.ok(t.made.grants.proof() !== null);
+      assert.ok(t.made.grants.proof(WS) !== null);
     } finally {
       await t.close();
     }

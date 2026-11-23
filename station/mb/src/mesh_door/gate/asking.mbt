@@ -298,6 +298,7 @@ pub fn Keeper::asking(
     peers_current: async fn() { ask("peersCurrent", Json::null()) == Json::boolean(true) },
     has_state: async fn() { ask("hasState", Json::null()) == Json::boolean(true) },
     is_rig: async fn() { ask("isRig", Json::null()) == Json::boolean(true) },
+    is_rig_in: async fn(ws) { ask("isRigIn", { "ws": Json::string(ws) }) == Json::boolean(true) },
     member_of: async fn(ws) {
       match ask("memberOf", { "ws": Json::string(ws) }) {
         Null => None

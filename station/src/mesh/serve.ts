@@ -125,6 +125,7 @@ const LEFT_OUT = {
 /// the workspaces this station is in).
 function leftOutFor(cloud: Cloud, hello: any, device: string, accepted?: Accepted): keyof typeof LEFT_OUT | null {
   const ws = claimed(hello);
+  if (ws !== "" && cloud.rigIn(ws) !== null) return null;
   const why = ws === "" ? null : cloud.leftOut(ws);
   if (why === null) return null;
   const revocations = cloud.state?.joined?.find((j) => j.workspace === ws)?.revocations ?? [];
@@ -787,8 +788,8 @@ function admission(m: Members, device: string): Admit {
     // workspace of this station whose lock refused the device). `verified`: told whose credential checked out, before
     // the lock is asked.
     const check = (line: any, verified?: (sub: string) => void): { admitted: Admitted; named: string } => {
-      // Of any workspace the station is in: the viewer's is the one its requests are answered for.
-      const admitted = verifyMemberOf(typeof line?.credential === "string" ? line.credential : "", (ws: string) => m.cloud.grantKeys(ws === m.cloud.home() ? null : ws), m.cloud.memberships(), device, m.accepted?.());
+      // Of any full workspace the station is in (never rig workspaces): the viewer's is the one its requests are answered for.
+      const admitted = verifyMemberOf(typeof line?.credential === "string" ? line.credential : "", (ws: string) => m.cloud.grantKeys(ws === m.cloud.home() ? null : ws), m.cloud.fullMemberships(), device, m.accepted?.());
       const named = admitted.viewer.role;
       verified?.(admitted.viewer.sub);
       if (proof) admitted.viewer.lockDevice = proof;
@@ -826,7 +827,7 @@ function admission(m: Members, device: string): Admit {
     // Or the lock takes the device away (or lowers its member's role: the next request goes with the role it has now).
     const gone = () => {
       const of = m.cloud.membership(current.viewer.workspace);
-      if (m.cloud.removed() || of === null) conn.close(2, "station_removed");
+      if (m.cloud.removed() || of === null || m.cloud.rigIn(current.viewer.workspace) !== null) conn.close(2, "station_removed");
       else if (revoked(current, of.revocations)) conn.close(3, "credential_revoked");
       else if (current.exp <= nowSecs()) conn.close(3, "credential_expired");
       else {

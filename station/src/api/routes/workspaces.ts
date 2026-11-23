@@ -15,7 +15,7 @@ const view = (cloud: Cloud, r: Request) => ({
   workspaces: cloud
     .memberships()
     .filter((m) => managesStation(r.viewer) || m.workspace === r.viewer.workspace)
-    .map((m) => ({ workspace: m.workspace, workspaceName: m.workspace_name, name: m.name, home: m.home })),
+    .map((m) => ({ workspace: m.workspace, workspaceName: m.workspace_name, name: m.name, home: m.home, mode: m.rig !== undefined ? "tasks" : "full" })),
   // Whether it may join more (a locked one: locked workspaces only).
   canJoin: managesStation(r.viewer),
 });
@@ -29,15 +29,18 @@ export const routes = ({ cloud, data, changed }: WorkspacesDeps): Route[] => [
       if (!managesStation(r.viewer)) return error(403, "only the owners and admins of this station's workspaces add it to another workspace");
       let token: unknown;
       let lock: unknown;
+      let rig: unknown;
+      let person: unknown;
       try {
-        ({ token, lock } = JSON.parse(r.body.toString("utf8") || "{}") ?? {});
+        ({ token, lock, rig, person } = JSON.parse(r.body.toString("utf8") || "{}") ?? {});
       } catch {
         return error(400, "invalid JSON");
       }
       if (typeof token !== "string" || token === "") return error(400, "token is required");
       if (lock !== undefined && lock !== null && (typeof lock !== "string" || !/^[0-9a-f]{64}$/.test(lock))) return error(400, "lock: a lock's hash");
+      if (rig === true && (typeof person !== "string" || !/^[0-9a-f]{64}$/.test(person))) return error(400, "person: owner's personal lock hash");
       try {
-        const joined = await joinWorkspace(data, token, typeof lock === "string" ? lock : undefined, { cloud });
+        const joined = await joinWorkspace(data, token, typeof lock === "string" ? lock : undefined, { cloud, ...(rig === true ? { rig: person as string } : {}) });
         cloud.reload(true);
         changed?.();
         return json(200, JSON.stringify({ joined: { workspace: joined.workspace, workspaceName: joined.workspace_name, name: joined.name }, ...view(cloud, r) }));

@@ -88,7 +88,7 @@ export const RigLive = (control: Control) =>
         running: () => store.jobsRunning().flatMap((j) => owned(j.sessionKey) ?? []),
       });
       side.current = rig;
-      remote.setDescribed(() => rig.described());
+      remote.setDescribed((_peer, ws) => rig.described(ws));
       const gpus = host.gpus;
       void gpus.read().catch(() => null);
       remote.setLoad(() =>
@@ -143,14 +143,13 @@ export const RigLive = (control: Control) =>
       control.on("hup", () => void updates.answerChannelAsk());
 
       // In its workspace or out of it, as cloud.json says: out of it, what it runs for the stations stops.
-      const bound = () => rig.self() !== null;
+      const bound = () => cloud.rigMemberships().length > 0;
       let inWorkspace = bound();
       let giving = false;
       const follow = async () => {
-        // No longer a rig (enrolled again as a station, from another process): this process ends, and the launcher
-        // starts the station's in its place.
-        if (cloud.state !== null && cloud.state.rig === undefined && cloud.state.workspace && !cloud.removed()) {
-          log.warn("rig", "this machine is a station now: the rig's process gives way to the station's");
+        // No longer rig-only (has at least one full workspace now): hand over to StationLive.
+        if (cloud.fullMemberships().length > 0) {
+          log.warn("rig", "this machine has a full workspace now: the rig's process gives way to the station's");
           if (!giving) becomeOther(data);
           giving = true;
           return;

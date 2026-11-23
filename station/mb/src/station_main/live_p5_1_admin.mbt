@@ -468,15 +468,35 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       to_jv({ "device": Json::object(d), "role": Json::string(role) })
     }
     "cli.joinWorkspace" => {
-      let home_locked = () => match self.plane {
-        Some(plane) => plane.cloud.locked() is Some(_)
+      let any_locked = () => match self.plane {
+        Some(plane) => {
+          let home = plane.cloud.home()
+          plane.cloud
+          .memberships()
+          .iter()
+          .any(m => {
+            let w = match m {
+              { "workspace": String(s), .. } => s
+              _ => ""
+            }
+            w != "" && plane.cloud.locked(ws=if Some(w) == home { None } else { Some(w) }) is Some(_)
+          })
+        }
         None => false
       }
       let lock = match args.get(2) {
         Some(Str(l)) => Some(l)
         _ => None
       }
-      let joined = join_workspace(self.host, text(0), text(1), lock, bus.version, home_locked) catch {
+      let rig = match args.get(3) {
+        Some(Obj(_) as opts) =>
+          match opts.get("rig") {
+            Some(Str(p)) if p != "" => Some(p)
+            _ => None
+          }
+        _ => None
+      }
+      let joined = join_workspace(self.host, text(0), text(1), lock, bus.version, any_locked, rig~) catch {
         JoinRefused(kind, m) => raise @api_routes.Thrown(kind, to_jv({ "message": Json::string(m) }))
         e => raise @api_routes.Thrown("Error", to_jv({ "message": Json::string("\{e}") }))
       }
