@@ -403,6 +403,8 @@ export class Rig {
     if (o.maxWarmClaude !== undefined) this.raw.maxWarmClaude = o.maxWarmClaude;
     if (o.maxConcurrentTurns !== undefined) this.raw.maxConcurrentTurns = o.maxConcurrentTurns;
     if (o.warmMinutes !== undefined) this.raw.warmMinutes = o.warmMinutes;
+    // The auto-archive leaves no conversation alone for being among the latest (a test of that sets it).
+    this.raw.autoArchiveKeep = 0;
     this.config = hubConfig(this.raw, this.dir);
     // In a file, as a station's: the sessions' actors read and write it themselves where they run in the MoonBit program
     // (sessions/mb-actor.ts), which one in memory would keep from them (`fileStore: false`: in memory all the same).

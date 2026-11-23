@@ -22,7 +22,7 @@ import { homesFirst, sessionPlaces, sharedTranscripts } from "../read/transcript
 import { transcriptPathsSoon, transcriptSourcesSoon } from "../read/transcript-soon.ts";
 import { forgetMarksSoon, marksDir } from "../read/transcripts.ts";
 import { walkBounded, yieldLoop } from "../ops/walk.ts";
-import { ARCHIVED_WORKSPACE_BATCH, AUTO, type ArchivedWorkspace, type Attachment, IDLE_UNARCHIVED_BATCH, MANUAL, type Quote, STILLFAIL_SURFACE, type ThreadRow, type WorkOf, type ArchiveLook, type SessionRow } from "../store/store.ts";
+import { ARCHIVED_WORKSPACE_BATCH, AUTO, type ArchivedWorkspace, type Attachment, IDLE_UNARCHIVED_BATCH, MANUAL, type Quote, STILLFAIL_SURFACE, type ThreadRow, type WorkOf, type ArchiveLook, type SessionRow, recentConversations } from "../store/store.ts";
 import { sessionBindingsReady } from "../store/session-bindings-index.ts";
 import { archiveMarksReady } from "../store/archive-mark-index.ts";
 import type { SessionChange } from "./accounts.ts";
@@ -1036,13 +1036,15 @@ export async function relieveRepos(
 /// it. Anything new said brings it back. Returns when the next one not idle long enough yet will have (null: none, or
 /// auto-archiving off): what is idle but not done by now is not on a clock, so it is looked at again after a while.
 /// A session heard only in Slack goes after slackArchiveMs even when stopped at a block: nobody answers it from here.
-/// With autoArchiveReviewed, the rest goes only once the archive review recommended each of its chats. Of a session, its
-/// recent chats (store `recentSessionThreads`) are what is looked at, as the review looks at them, however many it joined.
+/// The autoArchiveKeep most lately active conversations of each workspace never go this way
+/// (`recentConversations`). With autoArchiveReviewed, the rest goes only once the archive review recommended each of its
+/// chats. Of a session, its recent chats (store `recentSessionThreads`) are what is looked at, as the review looks at them,
+/// however many it joined.
 export function autoArchive(hub: Hub, now: number, prepareUnread?: (thread: number) => void, prepareBindings?: () => void,
   prepareJobs?: (session: string) => void, prepareMarks?: () => void, prepareLast?: (thread: number) => void,
   look?: ArchiveLook): number | null {
   const { store } = hub;
-  const { autoArchiveMs: after, slackArchiveMs, autoArchiveReviewed, automaticDecisions } = hub.config();
+  const { autoArchiveMs: after, slackArchiveMs, autoArchiveReviewed, autoArchiveKeep, automaticDecisions } = hub.config();
   if (after <= 0 && slackArchiveMs <= 0) return null;
   let next: number | null = null;
   const idle = (at: (number | null | undefined)[], wait = after) => {
@@ -1140,7 +1142,10 @@ export function autoArchive(hub: Hub, now: number, prepareUnread?: (thread: numb
     }
   }
   const livePassed = new Map<string, SessionRow>();
+  // The latest conversations of each workspace stay in the lists (a reader's look leaves them out already).
+  const recent = live.length > 0 ? recentConversations(store.db, hub.workspaces()[0] ?? null, autoArchiveKeep) : new Set<string>();
   for (const s of live) {
+    if (recent.has(s.conv ?? s.key)) continue;
     if (waitingForBindings || (bindingsReady ? store.preparedSessionBound(s.key) : oldBindings!.has(s.key)) || pinned(s.key)) continue;
     // Idle long enough by its times alone, before anything else of it is read.
     const quiet = idle([s.lastActiveAt, s.shownAt]);
@@ -1207,8 +1212,8 @@ export function startAutoArchiveTimer(hub: Hub, time: { after(ms: number, run: (
     if (read === undefined) return pass(undefined);
     if (reading) return;
     reading = true;
-    const { autoArchiveMs, slackArchiveMs } = hub.config();
-    void read.call(readers, "archiveLook", { now: hub.now(), after: autoArchiveMs, slackAfter: slackArchiveMs }, "zh").then((answer) => {
+    const { autoArchiveMs, slackArchiveMs, autoArchiveKeep } = hub.config();
+    void read.call(readers, "archiveLook", { now: hub.now(), after: autoArchiveMs, slackAfter: slackArchiveMs, home: hub.workspaces()[0] ?? null, keep: autoArchiveKeep }, "zh").then((answer) => {
       reading = false;
       if (!cancel.signal.aborted) pass(JSON.parse(answer) as ArchiveLook);
     }, (error) => {

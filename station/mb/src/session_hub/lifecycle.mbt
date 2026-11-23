@@ -871,8 +871,9 @@ fn bindings_ready(db : @sql.Db) -> Bool raise {
 
 ///|
 /// `autoArchive`: archives what has idled past autoArchiveMs and is done (and what is heard only on a platform after
-/// slackArchiveMs); `look`: what a reader read (`archiveLook`). When the next one will have idled long enough (None:
-/// none, or off), and what was found not prepared.
+/// slackArchiveMs), never the latest conversations of a workspace (`@readops.recent_conversations`); `look`: what a
+/// reader read (`archiveLook`). When the next one will have idled long enough (None: none, or off), and what was found
+/// not prepared.
 pub async fn Hub::auto_archive(self : Hub, now : Double, look? : Json, missing? : Unprepared = Unprepared::new()) -> Double? {
   let config = self.config()
   let after = num_of(config, "autoArchiveMs").unwrap_or(0.0)
@@ -1081,8 +1082,13 @@ pub async fn Hub::auto_archive(self : Hub, now : Double, look? : Json, missing? 
     None => ()
   }
   let live_passed : Map[String, Json] = Map([])
+  // The latest conversations of each workspace stay in the lists (a reader's look leaves them out already).
+  let recent = if live.length() > 0 { @readops.recent_conversations(self.store.db, self.home(), num_of(config, "autoArchiveKeep").unwrap_or(0.0).to_int()) } else { Map([]) }
   for s in live {
     let key = row_key(s)
+    if recent.contains(self.store.conversation_of(key)) {
+      continue
+    }
     if waiting_bindings || self.store.prepared_session_bound(Json::string(key)) || pinned(key) {
       continue
     }

@@ -835,7 +835,7 @@ test(
     // computes a ~1.7 s next-due wakeup instead of sleeping for 1 hour on an empty database.
     const st = await launchStation({
       tag: "policy-awake",
-      config: { autoArchiveDays: 0.00002, slackArchiveDays: 0, autoArchiveReviewed: false },
+      config: { autoArchiveDays: 0.00002, slackArchiveDays: 0, autoArchiveReviewed: false, autoArchiveKeep: 0 },
       withAwakeStub: true,
       preSeed: (s, data) => {
         seedSession(s, data, { key: "chat:c-policy", token: "tok-pol", ts: "1700000030.000001", title: "Policy Chat" });

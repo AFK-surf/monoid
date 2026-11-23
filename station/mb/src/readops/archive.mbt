@@ -112,6 +112,9 @@ fn session_json(r : Map[String, Json]) -> Json {
   put_col(out, "archivedAt", col(r, "archived_at"))
   put_col(out, "archivedBy", col(r, "archived_by"))
   put_col(out, "shownAt", col(r, "shown_at"))
+  if col(r, "conv") is Some(String(c)) && c != "" {
+    out["conv"] = Json::string(c)
+  }
   Json::object(out)
 }
 
@@ -391,7 +394,57 @@ fn num_arg(v : Json?) -> Double {
 }
 
 ///|
-/// store.ts `archiveLookOf`: one look of the auto-archive at `now`, sessions idle `after` (Slack ones `slackAfter`).
+/// store.ts `recentConversations`: the conversations (`conv`, else the session's key) among the sessions shown that are
+/// the `keep` most lately active of their workspace (`ws`, else `home`), as active as their latest member (last
+/// activity, or shown again by hand), ties by name.
+pub fn recent_conversations(db : @sql.Db, home : String?, keep : Int) -> Map[String, Unit] raise {
+  let recent : Map[String, Unit] = Map([])
+  if keep <= 0 {
+    return recent
+  }
+  let latest : Map[String, (String, Double)] = Map([])
+  for r in db.all("SELECT key, conv, ws, last_active_at, shown_at FROM sessions WHERE archived_at IS NULL ORDER BY key", []) {
+    guard field(r, "key") is String(key) else { continue }
+    let anchor = match field(r, "conv") {
+      String(c) if c != "" => c
+      _ => key
+    }
+    let mut at = 0.0
+    for c in ["last_active_at", "shown_at"] {
+      if field(r, c) is Number(n, ..) && n > at {
+        at = n
+      }
+    }
+    match latest.get(anchor) {
+      Some((ws, was)) => if at > was { latest[anchor] = (ws, at) }
+      None => {
+        let ws = match field(r, "ws") {
+          String(w) => w
+          _ => home.unwrap_or("")
+        }
+        latest[anchor] = (ws, at)
+      }
+    }
+  }
+  let by_ws : Map[String, Array[(String, Double)]] = Map([])
+  for anchor, v in latest {
+    match by_ws.get(v.0) {
+      Some(list) => list.push((anchor, v.1))
+      None => by_ws[v.0] = [(anchor, v.1)]
+    }
+  }
+  for _, list in by_ws {
+    list.sort_by((a, b) => if a.1 > b.1 { -1 } else if a.1 < b.1 { 1 } else { @jsjson.js_compare(a.0, b.0) })
+    for i in 0..<(if list.length() < keep { list.length() } else { keep }) {
+      recent[list[i].0] = ()
+    }
+  }
+  recent
+}
+
+///|
+/// store.ts `archiveLookOf`: one look of the auto-archive at `now`, sessions idle `after` (Slack ones `slackAfter`), those
+/// of the recent conversations of their workspace (`recent_conversations`, by `home` and `keep`) left out.
 pub fn archive_look(db : @sql.Db, args : Json) -> Json raise {
   let now = num_arg(args.value("now"))
   let after = num_arg(args.value("after"))
@@ -414,8 +467,26 @@ pub fn archive_look(db : @sql.Db, args : Json) -> Json raise {
     due <= now
   }
   let marks = archive_marks_ready(db)
+  let home = match args.value("home") {
+    Some(String(h)) => Some(h)
+    _ => None
+  }
+  let keep = match args.value("keep") {
+    Some(Number(n, ..)) if n > 0.0 => n.to_int()
+    Some(_) => 0
+    None => 20
+  }
+  let recent = recent_conversations(db, home, keep)
   let idle_sessions : Array[(Map[String, Json], Bool, Bool)] = []
   for r in db.all("SELECT * FROM sessions WHERE archived_at IS NULL ORDER BY last_active_at DESC", []) {
+    let anchor = match (field(r, "conv"), field(r, "key")) {
+      (String(c), _) if c != "" => c
+      (_, String(k)) => k
+      _ => ""
+    }
+    if recent.contains(anchor) {
+      continue
+    }
     let times = [field(r, "last_active_at"), field(r, "shown_at")]
     let quiet = idle(times, after)
     let quiet_long = idle(times, slack_after)

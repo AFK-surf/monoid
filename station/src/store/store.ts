@@ -248,8 +248,8 @@ export const workOfRow = (r: Json | undefined): WorkOf | undefined =>
 export type ArchiveFacts = { bound: boolean | null; pinned: boolean | null; threads: SessionThread[]; kept: number[] | null; work: WorkOf | null; upJob: boolean | null; convMembers?: string[] };
 
 /// What one look of the auto-archive reads (sessions/lifecycle.ts), a reader's: the sessions shown that are idle long
-/// enough by their times, each with its `ArchiveFacts`; the chats of their own idle long enough and not kept; when the
-/// next one comes due. `after` and `slackAfter` as hub.config() says them (`autoArchiveMs`, `slackArchiveMs`).
+/// enough by their times and not of the recent conversations (`recentConversations`), each with its `ArchiveFacts`; the
+/// chats of their own idle long enough and not kept; when the next one comes due. `after` and `slackAfter` as hub.config() says them (`autoArchiveMs`, `slackArchiveMs`).
 export type ArchiveLook = {
   next: number | null;
   sessions: { row: SessionRow; quiet: boolean; quietLong: boolean; facts: ArchiveFacts }[];
@@ -259,7 +259,36 @@ export type ArchiveLook = {
   marksReady: boolean;
 };
 
-export function archiveLookOf(db: DatabaseSync, now: number, after: number, slackAfter: number): ArchiveLook {
+/// The conversations (`conv`, else the session's key) among the sessions shown that are the `keep` most lately active of
+/// their workspace (`ws`, else `home`, the station's home one): what the auto-archive leaves alone (hub.config()
+/// `autoArchiveKeep`). A conversation is as active as its latest member (last activity, or shown again by hand); ties go
+/// by its name.
+export function recentConversations(db: DatabaseSync, home: string | null, keep: number): Set<string> {
+  const recent = new Set<string>();
+  if (keep <= 0) return recent;
+  const latest = new Map<string, { ws: string; at: number }>();
+  for (const r of db.prepare("SELECT key, conv, ws, last_active_at, shown_at FROM sessions WHERE archived_at IS NULL ORDER BY key").all() as Json[]) {
+    const anchor = typeof r.conv === "string" && r.conv !== "" ? r.conv : (r.key as string);
+    const at = Math.max(0, ...[r.last_active_at, r.shown_at].filter((x): x is number => typeof x === "number"));
+    const was = latest.get(anchor);
+    if (was === undefined) latest.set(anchor, { ws: typeof r.ws === "string" ? r.ws : (home ?? ""), at });
+    else if (at > was.at) was.at = at;
+  }
+  const byWs = new Map<string, [string, number][]>();
+  for (const [anchor, { ws, at }] of latest) {
+    const list = byWs.get(ws) ?? [];
+    list.push([anchor, at]);
+    byWs.set(ws, list);
+  }
+  for (const list of byWs.values()) {
+    list.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    for (const [anchor] of list.slice(0, keep)) recent.add(anchor);
+  }
+  return recent;
+}
+
+/// `home` and `keepRecent` (`keep`) as `recentConversations` takes them: the sessions shown of those conversations are left out.
+export function archiveLookOf(db: DatabaseSync, now: number, after: number, slackAfter: number, home: string | null = null, keepRecent = 0): ArchiveLook {
   let next: number | null = null;
   const idle = (at: (number | null | undefined)[], wait: number) => {
     if (wait <= 0) return false;
@@ -269,8 +298,10 @@ export function archiveLookOf(db: DatabaseSync, now: number, after: number, slac
   };
   const marksReady = archiveMarksReady(db);
   const idleSessions: { row: SessionRow; quiet: boolean; quietLong: boolean }[] = [];
+  const recent = recentConversations(db, home, keepRecent);
   for (const full of (db.prepare(LIVE_SESSIONS).all() as Json[]).map(toSession)) {
     const { profiles: _, ...row } = full;
+    if (recent.has(row.conv ?? row.key)) continue;
     const quiet = idle([row.lastActiveAt, row.shownAt], after);
     const quietLong = idle([row.lastActiveAt, row.shownAt], slackAfter);
     if (quiet || quietLong) idleSessions.push({ row, quiet, quietLong });

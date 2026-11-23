@@ -14,7 +14,7 @@ import { marksDir, stateOf } from "./reference/transcripts.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
 import { addToThread, autoArchive, archive, archiveBy, archiveChat, bindSingle, configure, deleteSession, newSession, openChat, say as sayIn } from "../src/sessions/lifecycle.ts";
-import { AUTO, MANUAL } from "../src/store/store.ts";
+import { AUTO, MANUAL, archiveLookOf } from "../src/store/store.ts";
 import { FakeDriver, Rig, given, matches, message, reply, say, settle, testClock } from "./hub-fakes.ts";
 
 const chat = (runtime: "claude" | "codex" = "claude") => ({ runtime, createdBy: "local" });
@@ -4863,5 +4863,39 @@ test("onBilledFallback fires only on automatic fallback to pay-as-you-go when su
   r.hub.accounts.runOn(s2);
   assert.equal(r.store.getSession(s2)?.profile, "sub");
   assert.equal(fallbacks.length, 2);
+  await r.close();
+});
+
+test("the auto-archive leaves the latest conversations of each workspace in the lists, however long they idle", async () => {
+  const r = new Rig();
+  const day = 86_400_000;
+  const session = (key: string, at: number, ws?: string) =>
+    r.store.insertSession({ key, connect: "cl", runtime: "claude", profile: "cc", workspace: `/w/${key}`, token: key, createdAt: at, lastActiveAt: at, ...(ws ? { ws } : {}) });
+  // In the home workspace: a conversation of two, as lately active as its latest member, then three alone.
+  session("conv", 100);
+  session("conv-member", 5000);
+  r.store.db.prepare("UPDATE sessions SET conv = 'conv' WHERE key = 'conv-member'").run();
+  session("third", 3000);
+  session("second", 2000);
+  session("first", 1000);
+  // Shown again by hand, it counts as active from then.
+  r.store.db.prepare("UPDATE sessions SET shown_at = 4000 WHERE key = 'first'").run();
+  // Alone in another workspace, oldest of all.
+  session("elsewhere", 500, "ws-other");
+  const now = 10 * day;
+  const archived = () => r.store.listSessions().filter((s) => s.archivedAt !== null).map((s) => s.key).sort();
+  // Off (0): every one idle long enough goes.
+  assert.deepEqual(archiveLookOf(r.store.db, now, day, 0, null, 0).sessions.map((s) => s.row.key).sort(), ["conv", "conv-member", "elsewhere", "first", "second", "third"]);
+  // Two kept: the conversation and the one shown again stay, as does the only one of the other workspace.
+  assert.deepEqual(archiveLookOf(r.store.db, now, day, 0, null, 2).sessions.map((s) => s.row.key).sort(), ["second", "third"]);
+  r.edit((raw) => { raw.autoArchiveKeep = 2; });
+  assert.equal(r.hub.config().autoArchiveKeep, 2);
+  autoArchive(r.hub, now);
+  assert.deepEqual(archived(), ["second", "third"]);
+  // The default keeps twenty: nothing more goes.
+  r.edit((raw) => { delete raw.autoArchiveKeep; });
+  assert.equal(r.hub.config().autoArchiveKeep, 20);
+  autoArchive(r.hub, now + day);
+  assert.deepEqual(archived(), ["second", "third"]);
   await r.close();
 });

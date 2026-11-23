@@ -81,6 +81,9 @@ export type HubConfig = {
   maxConcurrentTurns: number;
   /// Chats idle this long, and done (auto archive), are archived by the station; 0: never.
   autoArchiveMs: number;
+  /// How many conversations of each workspace, the most lately active, the auto archive leaves in the lists however long
+  /// they idle (store.ts `recentConversations`), so that it never thins a list below this many; 0: none.
+  autoArchiveKeep: number;
   /// Sessions heard only in Slack idle this long are archived even when stopped at a block for someone (nobody sees
   /// those in the station's lists); 0: never.
   slackArchiveMs: number;
@@ -187,6 +190,7 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
     maxWarmClaude: typeof raw?.maxWarmClaude === "number" ? raw.maxWarmClaude : 4,
     maxConcurrentTurns: typeof raw?.maxConcurrentTurns === "number" && Number.isFinite(raw.maxConcurrentTurns) ? Math.max(0, Math.trunc(raw.maxConcurrentTurns)) : 0,
     autoArchiveMs: Math.trunc(Math.max(0, typeof raw?.autoArchiveDays === "number" ? raw.autoArchiveDays : 1) * 86_400_000),
+    autoArchiveKeep: typeof raw?.autoArchiveKeep === "number" && Number.isFinite(raw.autoArchiveKeep) ? Math.max(0, Math.trunc(raw.autoArchiveKeep)) : 20,
     slackArchiveMs: Math.trunc(Math.max(0, typeof raw?.slackArchiveDays === "number" ? raw.slackArchiveDays : 3) * 86_400_000),
     autoArchiveReviewed: raw?.autoArchiveReviewed === true,
     archivedWorkspaceMs: Math.trunc(Math.max(0, typeof raw?.archivedWorkspaceDays === "number" ? raw.archivedWorkspaceDays : 7) * 86_400_000),

@@ -21,7 +21,7 @@ const viewer = { sub: "u", email: "ada@example.com", name: "Ada", role: "member"
 
 function setup() {
   const data = mkdtempSync(join(tmpdir(), "conv-lm-"));
-  const raw = { profiles: [{ id: "cc", runtime: "claude", home: "homes/cc", models: ["opus"] }, { id: "cx", runtime: "codex", home: "homes/cx" }] };
+  const raw = { profiles: [{ id: "cc", runtime: "claude", home: "homes/cc", models: ["opus"] }, { id: "cx", runtime: "codex", home: "homes/cx" }], autoArchiveKeep: 0 };
   const config = hubConfig(raw, data);
   const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
   const hub = new Hub({

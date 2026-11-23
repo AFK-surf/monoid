@@ -222,6 +222,10 @@ pub async fn hub_config(_w : World, raw : J, data_dir : String, found : (String)
     Some(Num(x)) if !x.is_nan() && !x.is_inf() && x >= 0.0 => x
     _ => 1.0
   }
+  let auto_archive_keep = match at(Some(raw), "autoArchiveKeep") {
+    Some(Num(x)) if !x.is_nan() && !x.is_inf() => @cmp.maximum(0.0, js_trunc(x))
+    _ => 20.0
+  }
   let max_concurrent_turns = match at(Some(raw), "maxConcurrentTurns") {
     Some(Num(x)) if !x.is_nan() && !x.is_inf() && x > 0.0 => js_trunc(x)
     _ => 0.0
@@ -249,6 +253,7 @@ pub async fn hub_config(_w : World, raw : J, data_dir : String, found : (String)
     ("maxWarmClaude", jn(num_or(at(Some(raw), "maxWarmClaude"), 4.0))),
     ("maxConcurrentTurns", jn(max_concurrent_turns)),
     ("autoArchiveMs", jn(days("autoArchiveDays", 1.0))),
+    ("autoArchiveKeep", jn(auto_archive_keep)),
     ("slackArchiveMs", jn(days("slackArchiveDays", 3.0))),
     ("autoArchiveReviewed", jb(at(Some(raw), "autoArchiveReviewed") is Some(Bool(true)))),
     ("archivedWorkspaceMs", jn(days("archivedWorkspaceDays", 7.0))),

@@ -35,6 +35,12 @@ test("the MoonBit reader reads a look of the auto-archive as the worker does", {
   session("pinned", 3000);
   store.setPin("me@x", "pinned", true);
   session("slack-one", 7000, { fast: true, model: "m" });
+  // Of other workspaces, and one of the home workspace by name; a conversation of two, as active as its latest.
+  session("other-a", 1000, { ws: "ws-other" });
+  session("other-b", 1100, { ws: "ws-other" });
+  session("home-named", 1200, { ws: "ws-home" });
+  session("conv-member", 8000);
+  db.prepare("UPDATE sessions SET conv = 'old' WHERE key = 'conv-member'").run();
   session("waiting", 1500);
   db.prepare("INSERT INTO turns(id,session_key,kind,started_at,ended_at,outcome,declared,need,about_thread,about_n,about_ts,wait_seconds,wait_for,wait_watch) VALUES ('w1','waiting','input',1400,1450,'completed','need_decision','a call',1,2,'3',60,'ci',1)").run();
   db.prepare("INSERT INTO turns(id,session_key,kind,started_at,ended_at,outcome,declared) VALUES ('o1','old','input',900,950,'completed','final')").run();
@@ -93,8 +99,10 @@ test("the MoonBit reader reads a look of the auto-archive as the worker does", {
   const read = (readers: Readers, op: string, args: unknown) => readers.read(op, args, "en").then((t) => JSON.parse(t), (e: Error & { status?: number }) => ({ error: e.message, status: e.status }));
   const all = async (readers: Readers) => {
     const out: unknown[] = [];
-    for (const [now, after, slackAfter] of [[10_000, 5000, 2000], [10_000, 0, 0], [10_000, 9000, -1], [10_000, 100_000, 3000], [2000, 1000, 500], ["10000", "5000", "2000"]])
-      out.push(await read(readers, "archiveLook", { now, after, slackAfter }));
+    for (const [now, after, slackAfter, keep, home] of [[10_000, 5000, 2000, 0], [10_000, 0, 0, 0], [10_000, 9000, -1, 0], [10_000, 100_000, 3000, 0], [2000, 1000, 500, 0], ["10000", "5000", "2000", 0],
+      // The latest conversations of each workspace left out: by default twenty, a few, all.
+      [10_000, 5000, 2000], [10_000, 5000, 2000, 4], [10_000, 5000, 2000, 4, "ws-home"], [10_000, 5000, 2000, 4.7, null], [10_000, 5000, 2000, -1]])
+      out.push(await read(readers, "archiveLook", { now, after, slackAfter, keep, home }));
     return out;
   };
   try {
@@ -110,6 +118,15 @@ test("the MoonBit reader reads a look of the auto-archive as the worker does", {
       assert.equal(threads.length, 20, key);
       assert.ok(threads.includes(releases.at(-1)!), key);
     }
+    const keys = (i: number) => (first[i] as { sessions: { row: { key: string } }[] }).sessions.map((s) => s.row.key);
+    assert.ok(["old", "conv-member", "slack-one", "home-named", "other-a", "other-b"].every((k) => keys(0).includes(k)));
+    assert.deepEqual(keys(6), [], "fewer than twenty in each workspace: none");
+    for (const [i, home] of [[7, null], [9, null], [8, "ws-home"]] as const) {
+      assert.ok(!keys(i).includes("old") && !keys(i).includes("conv-member") && !keys(i).includes("shown"), `${home}: the latest four stay (the running one, active now, among them)`);
+      assert.ok(keys(i).includes("slack-one") && !keys(i).includes("other-a") && !keys(i).includes("other-b"), `${home}: the fifth goes; the other workspace keeps its two`);
+      assert.equal(keys(i).includes("home-named"), home !== null, `${home}: the home workspace named`);
+    }
+    assert.deepEqual(first[10], first[0]);
     const prepared = look.sessions.find((s) => s.row.key === "releases-prepared")!.facts.threads.map((t) => t.thread.id);
     assert.equal(prepared[0], releases[5], "the one it heard from last first, where it has no chat of its own");
   } finally {

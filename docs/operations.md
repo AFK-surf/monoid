@@ -93,6 +93,7 @@ Claude Code 需要用该 profile 信任聊天的工作目录才能执行 hooks�
   "warmMinutes": 30,
   "maxWarmClaude": 4,
   "autoArchiveDays": 1,
+  "autoArchiveKeep": 20,
   "slackArchiveDays": 3,
   "archivedWorkspaceDays": 7,
   "telemetry": { "errors": false }
@@ -101,6 +102,7 @@ Claude Code 需要用该 profile 信任聊天的工作目录才能执行 hooks�
 
 - 连接的 `id` 是会话记录的一部分，创建后不要改。`bind.profile` 可省略：省略时由账号池在该运行时的账号里挑（只挑启用了这个模型的）。
 - `autoArchiveDays`：空闲且已结束的会话和对话多少天后自动归档，0 为不自动归档。
+- `autoArchiveKeep`：每个 workspace 最近活跃（最后活动或被手动重新显示）的多少个对话无论空闲多久都不自动归档（默认 20，0 为不保留）：列表里不到这么多时完全不自动归档，超出时只归档排在后面的；手动归档不受影响。
 - `slackArchiveDays`：只在 Slack 里说话的会话空闲多少天后自动归档，停在 block（等人）的也归档（默认 3，0 为不按这条归档）；在跑、有 job、被固定或保留的照旧不动，Slack 里有人再说话就回来。
 - `archivedWorkspaceDays`：会话归档多少天后清掉它的工作区（默认 7，0 为一直保留）：只留聊天里发过的文件（`uploads/`），其余的连同归档压缩包一起删掉，执行历史和聊天记录不动；再打开的会话从空工作区接着做。按归档时间算，再次归档重新计时；在跑、有 job 或别的会话还在用这个目录的不动。station 数据所在的盘剩不到 20G 时不等满天数：先删别的 station 的任务留下的、不在用的目录副本，还不够就按归档时间从早到晚提前清，直到剩够 20G；设成 0 的不清。
 - 账号的 `home` 相对数据目录。用订阅登录时，对这个目录登录一次：`CLAUDE_CONFIG_DIR=<home> claude`，或 `CODEX_HOME=<home> codex login`。

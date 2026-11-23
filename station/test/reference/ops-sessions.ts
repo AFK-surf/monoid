@@ -23,7 +23,7 @@ export const sessionOps: Record<string, ReadOp> = {
   policyChecks: (s, a) => policyChecksRead(s.db, a.since, a.viewer),
   /// One look of the auto-archive (sessions/lifecycle.ts): every session shown and chat of its own, and what it needs
   /// of those idle long enough. Read on the main thread at each look, it held it.
-  archiveLook: (s, a) => archiveLookOf(s.db, Number(a.now), Number(a.after), Number(a.slackAfter)),
+  archiveLook: (s, a) => archiveLookOf(s.db, Number(a.now), Number(a.after), Number(a.slackAfter), typeof a.home === "string" ? a.home : null, typeof a.keep === "number" ? a.keep : 20),
   /// The people of a connect's recent threads, learned as it connects (connects/part.ts).
   recentConnectPeople: (s, a) => recentConnectPeople(s.db, a.connect, a.limit),
   /// Every thread as chat_list has it; it does not use a viewer's unread count (sessions/others.ts).
