@@ -5,10 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "pion_rt.h"
-
 // Declarations from shell_pion.c
-extern int32_t bsh_start(void *dir_str);
+extern int32_t bsh_start(const char *dir_cstr);
 extern void bsh_attach(void *started, void (*woke)(void *), void *ctx);
 extern void bsh_on_wake(void (*woke)(void *), void *ctx);
 extern int32_t bsh_attached(void);
@@ -21,29 +19,19 @@ extern int32_t bsh_deliver(
     const uint8_t *bytes,
     size_t bytes_len,
     uint8_t has_bytes);
-extern void *bsh_wait(int64_t ms);
-extern void bsh_call(int64_t id, void *op_str, void *json_bytes, void *payload_bytes, int32_t has);
-extern void *bsh_ask(void *op_str, void *json_bytes);
+extern void bsh_free(void *ptr);
+extern void *bsh_wait(int64_t ms, int64_t *out_len);
+extern void bsh_call(
+    int64_t id,
+    const char *op_cstr,
+    const uint8_t *json_ptr,
+    int64_t json_len,
+    const uint8_t *payload_ptr,
+    int64_t payload_len,
+    int32_t has);
+extern void *bsh_ask(const char *op_cstr, const uint8_t *json_ptr, int64_t json_len, int64_t *out_len);
 extern int64_t bsh_now(void);
 extern void *bsh_random(int32_t n);
-
-// Minimal PionBytes runtime stubs for standalone C verification
-void *pion_bytes_new(int64_t len) {
-    PionBytes *b = (PionBytes *)calloc(1, sizeof(PionBytes));
-    assert(b != NULL);
-    b->len = len;
-    b->cap = len;
-    b->data = len > 0 ? (uint8_t *)calloc((size_t)len, 1) : NULL;
-    return (void *)b;
-}
-
-void *pion_bytes_from_ptr(void *p, int64_t len) {
-    PionBytes *b = (PionBytes *)pion_bytes_new(len);
-    if (len > 0 && p != NULL) {
-        memcpy(b->data, p, (size_t)len);
-    }
-    return (void *)b;
-}
 
 // Mock Rust shell C ABI
 typedef void (*sf_complete)(
@@ -111,39 +99,43 @@ static void on_wake_cb(void *ctx) {
 
 int main(void) {
     assert(bsh_attached() == 0);
-    PION_STATIC_STRING_DEF(dir_str, "/tmp");
-    PION_STATIC_STRING_DEF(op_str, "test.op");
-    assert(bsh_start(dir_str) == 1);
+    assert(bsh_start("/tmp/shell_pion_abi_test") == 1);
     assert(bsh_attached() == 1);
 
     bsh_on_wake(on_wake_cb, NULL);
-    PionBytes *j = (PionBytes *)pion_bytes_from_ptr((void *)"{}", 2);
-    PionBytes *p = (PionBytes *)pion_bytes_from_ptr((void *)"AB", 2);
-    bsh_call(7, op_str, j, p, 1);
+    bsh_call(7, "echo", (const uint8_t *)"{}", 2, (const uint8_t *)"AB", 2, 1);
     assert(g_wake_count == 1);
 
-    PionBytes *ans = (PionBytes *)bsh_wait(0);
-    assert(ans->len == 13 + 11 + 2);
-    assert(ans->data[0] == 7);
-    assert(ans->data[8] == 1);
+    int64_t ans_len = 0;
+    uint8_t *ans = (uint8_t *)bsh_wait(0, &ans_len);
+    assert(ans != NULL);
+    assert(ans_len == 13 + 11 + 2);
+    assert(ans[0] == 7 && ans[8] == 1 && ans[9] == 11);
+    bsh_free(ans);
 
-    PionBytes *sync_ans = (PionBytes *)bsh_ask(op_str, j);
-    assert(sync_ans->len == 13);
-    assert(memcmp(sync_ans->data, "{\"value\":123}", 13) == 0);
+    int64_t sync_len = 0;
+    uint8_t *sync_ans = (uint8_t *)bsh_ask("echo", (const uint8_t *)"{}", 2, &sync_len);
+    assert(sync_ans != NULL);
+    assert(sync_len == 13 && memcmp(sync_ans, "{\"value\":123}", 13) == 0);
+    bsh_free(sync_ans);
 
     // bsh_deliver filters ids <= 2^40 and queues ids > 2^40
     assert(bsh_deliver(100, (const uint8_t *)"{}", 2, NULL, 0, NULL, 0, 0) == 0);
     uint64_t high_id = (1ULL << 40) + 5;
     assert(bsh_deliver(high_id, (const uint8_t *)"{}", 2, NULL, 0, NULL, 0, 0) == 1);
-    PionBytes *ans2 = (PionBytes *)bsh_wait(0);
-    assert(ans2->len == 15);
+    int64_t ans2_len = 0;
+    uint8_t *ans2 = (uint8_t *)bsh_wait(0, &ans2_len);
+    assert(ans2 != NULL && ans2_len == 15);
+    bsh_free(ans2);
 
     assert(bsh_now() > 0);
-    PionBytes *rnd = (PionBytes *)bsh_random(32);
-    assert(rnd->len == 32);
+    uint8_t *rnd = (uint8_t *)bsh_random(32);
+    assert(rnd != NULL);
+    bsh_free(rnd);
 
     bsh_attach(&g_dummy_handle, NULL, NULL);
     assert(bsh_attached() == 1);
+
     printf("shell_abi_test: OK\n");
     return 0;
 }

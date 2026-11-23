@@ -199,6 +199,44 @@ pub fn ClientCore::current_lock(self : ClientCore) -> Option[lock::LockState] {
   self.lock_state
 }
 
+/// Build the structured `lock.status` JSON payload for this workspace.
+pub fn ClientCore::lock_status_json(self : ClientCore) -> base_codec::Json {
+  match self.lock_state {
+    None =>
+    base_codec::json_obj([
+      ("workspace", base_codec::json_str(self.workspace)),
+      ("locked", base_codec::json_bool(false)),
+    ])
+    Some(st) => {
+      let moved_j = match st.moved {
+        Some(m) => base_codec::json_str(m)
+        None => base_codec::json_null()
+      }
+      base_codec::json_obj([
+        ("workspace", base_codec::json_str(st.ws)),
+        ("locked", base_codec::json_bool(!st.disabled)),
+        ("disabled", base_codec::json_bool(st.disabled)),
+        ("genesis", base_codec::json_str(st.genesis)),
+        ("head", base_codec::json_str(st.head)),
+        ("seq", base_codec::json_num(st.seq)),
+        ("memberCount", base_codec::json_int(st.members.length())),
+        ("deviceCount", base_codec::json_int(st.devices.length())),
+        ("passkeyCount", base_codec::json_int(st.passkeys.length())),
+        ("stationCount", base_codec::json_int(st.stations.length())),
+        ("moved", moved_j),
+      ])
+    }
+  }
+}
+
+pub fn ClientCore::running_session_count(self : ClientCore) -> Int {
+  self.events.running_session_count()
+}
+
+pub fn ClientCore::open_job_count(self : ClientCore) -> Int {
+  self.events.open_job_count()
+}
+
 fn ClientCore::handle_lock_event(self : ClientCore, payload : base_codec::Json) -> Unit {
   let root = match base_codec::json_get(payload, "root") {
     Some(base_codec::Json::Str(r)) => r
@@ -291,6 +329,39 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           sql::SqlResult::Ok(op_id) => return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("opId", base_codec::json_int(op_id))]), None))
           sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
         }
+      }
+      if call_name == "lock.status" {
+        return Some(protocol::CoreEvent::Ok(id, self.lock_status_json(), None))
+      }
+      if call_name == "sessions.list" {
+        let all = self.events.all_sessions()
+        let items : Array[base_codec::Json] = []
+        for i in 0..<all.length() {
+          let s = all[i]
+          items.push(base_codec::json_obj([
+            ("key", base_codec::json_str(s.key)),
+            ("running", base_codec::json_bool(s.running)),
+            ("listed", base_codec::json_bool(s.listed)),
+          ]))
+        }
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("sessions", base_codec::json_arr(items))]), None))
+      }
+      if call_name == "jobs.open" {
+        let open_list = self.events.open_jobs()
+        let items : Array[base_codec::Json] = []
+        for i in 0..<open_list.length() {
+          let j = open_list[i]
+          let chat_j = match j.chat {
+            Some(c) => base_codec::json_str(c)
+            None => base_codec::json_null()
+          }
+          items.push(base_codec::json_obj([
+            ("id", base_codec::json_str(j.id)),
+            ("open", base_codec::json_bool(j.open)),
+            ("chat", chat_j),
+          ]))
+        }
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("jobs", base_codec::json_arr(items))]), None))
       }
       self.router.handle(req)
     }

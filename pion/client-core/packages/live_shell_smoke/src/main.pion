@@ -1,0 +1,410 @@
+// Live end-to-end smoke binary linking real Rust `libstillfail_shell` (`rusqlite` WAL on disk +
+// Tokio multi-threaded async IO) via `shell_native` + `shell_pion.c`.
+//
+// Verifies:
+// 1. Real SQLite WAL migration (`store::open_account_db`), `sql.inTransaction`, and `sql::Burst`
+//    atomic writes of chats, entries, and `md_kept`.
+// 2. Real SQLite zero-write cold chat open + close/reopen persistence + `MdStore::flush_turn`
+//    `last_opened` persistence across DB restarts.
+// 3. Real optimistic outbox persistence (`ClientCore::send_message`) across DB close/reopen.
+// 4. Real Tokio async IO round-trips (`fs.write` -> `fs.read` -> `fs.hash`, `storage.set` ->
+//    `storage.get`, `zstd.compress` -> `zstd.unpack`, and sync `crypto.random`).
+
+import "base_codec"
+import "crypto"
+import "effect"
+import "shell"
+import "shell_native"
+import "sql"
+import "store"
+import "sync"
+
+fn must_sql[T](r : sql::SqlResult[T], label : String) -> T {
+  match r {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic(label + ": " + e.to_string())
+  }
+}
+
+fn offline_transport() -> sync::StationTransport {
+  sync::StationTransport::{
+    request_k: fn(
+      _m : String,
+      _p : String,
+      _h : Array[(String, String)],
+      _b : Bytes,
+      k : (effect::Exit[sync::HttpReply]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Failed(effect::EffectError::Custom("offline")))
+    },
+    stream_k: fn(
+      _p : String,
+      _h : Array[(String, String)],
+      _on_chunk : (Bytes) -> Unit,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Failed(effect::EffectError::Custom("offline")))
+    },
+  }
+}
+
+fn run_async_call(
+  sh : shell::Shell,
+  op : String,
+  args : base_codec::Json,
+  payload : Option[Bytes] = None,
+) -> shell::Answer {
+  let done = [false]
+  let failed = [""]
+  let got : Array[Option[shell::Answer]] = [None]
+  let _ = sh.rt.fork_quiet_named("live:" + op, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sh.call_k(
+      op,
+      args,
+      fn(ex : effect::Exit[shell::Answer]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(ans) => {
+            got[0] = Some(ans)
+          }
+          effect::Exit::Failed(e) => {
+            failed[0] = match e {
+              effect::EffectError::Custom(m) => m
+              _ => "effect error"
+            }
+          }
+          effect::Exit::Interrupted => {
+            failed[0] = "interrupted"
+          }
+        }
+        done[0] = true
+        fk(effect::Exit::Succeeded(()))
+      },
+      bytes=payload,
+    )
+  })
+  let ok = shell_native::drain_until(sh, fn() -> Bool { done[0] }, timeout_ms=5000.to_int64())
+  if !ok {
+    panic("async op timed out: " + op)
+  }
+  if failed[0].length() > 0 {
+    panic("async op failed (" + op + "): " + failed[0])
+  }
+  match got[0] {
+    Some(a) => a
+    None => panic("async op returned no answer: " + op)
+  }
+}
+
+fn main(world : World) -> Unit {
+  let base_dir = "/tmp/pion_live_shell_smoke_" + shell_native::now_ms().to_string()
+  let rt = effect::Runtime::new()
+  let sh = match shell_native::open(rt, base_dir) {
+    Ok(s) => s
+    Err(e) => panic("shell_native::open failed: " + e)
+  }
+  if !shell_native::is_attached() {
+    panic("expected shell_native::is_attached() == true")
+  }
+  io_println(world, "[live_shell_smoke] started real Rust stillfail-shell at " + base_dir)
+
+  // ── Test 1: Real rusqlite WAL migration, sql.inTransaction, and Burst atomic writes ──
+  let acct = must_sql(store::open_account_db(sh, "acct-live"), "open_account_db #1")
+  if acct.read_only {
+    panic("expected writable account db")
+  }
+  must_sql(store::ensure_md_kept(acct.db), "ensure_md_kept")
+  if must_sql(acct.db.in_transaction(), "in_transaction before burst") {
+    panic("expected in_transaction == false before Burst")
+  }
+
+  let st = "st-live-1"
+  let msg_text = "Hello from real rusqlite WAL + Pion!"
+  let md_k = store::md_key(msg_text)
+  let md_tree = "[[\"p\",\"Hello from real rusqlite WAL + Pion!\"]]"
+  let mut saw_in_tx = false
+
+  let burst = sql::Burst::new(acct.db)
+  must_sql(
+    burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+      let chat_json = base_codec::json_stringify(base_codec::json_obj([
+        ("id", base_codec::json_str("c-live-1")),
+        ("title", base_codec::json_str("Live Smoke Chat")),
+        ("thread", base_codec::json_int(42)),
+      ]))
+      match b.run(sync::sql_chat_upsert(), params=[
+        base_codec::json_str(st),
+        base_codec::json_str("c-live-1"),
+        base_codec::json_int(0),
+        base_codec::json_num(1.0),
+        base_codec::json_int(42),
+        base_codec::json_null(),
+        base_codec::json_null(),
+        base_codec::json_int64(1700000000000.to_int64()),
+        base_codec::json_null(),
+        base_codec::json_int(0),
+        base_codec::json_int(1),
+        base_codec::json_int(0),
+        base_codec::json_null(),
+        base_codec::json_int(0),
+        base_codec::json_int(0),
+        base_codec::json_str(chat_json),
+      ]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+      // Verify real SQLite reports active transaction inside Burst
+      match acct.db.in_transaction() {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(in_tx) => {
+          saw_in_tx = in_tx
+        }
+      }
+      let entry_json = base_codec::json_stringify(base_codec::json_obj([
+        ("n", base_codec::json_int(1)),
+        ("kind", base_codec::json_str("message")),
+        ("authorKind", base_codec::json_str("agent")),
+        ("author", base_codec::json_str("assistant")),
+        ("text", base_codec::json_str(msg_text)),
+        ("at", base_codec::json_int64(1700000000000.to_int64())),
+      ]))
+      match b.run(sync::sql_entry_put(), params=[
+        base_codec::json_str(st),
+        base_codec::json_int(42),
+        base_codec::json_int(1),
+        base_codec::json_str(entry_json),
+      ]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+      match b.run(store::sql_md_put(), params=[
+        base_codec::json_str(st),
+        base_codec::json_str(md_k),
+        base_codec::json_str("entry:42:1"),
+        base_codec::json_int(md_tree.length()),
+        base_codec::json_int64(1700000000000.to_int64()),
+        base_codec::json_str(md_tree),
+      ]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+      sql::SqlResult::Ok(())
+    }),
+    "burst seed",
+  )
+  if !saw_in_tx {
+    panic("expected sql.inTransaction == true inside Burst")
+  }
+  if must_sql(acct.db.in_transaction(), "in_transaction after burst") {
+    panic("expected sql.inTransaction == false after Burst commit")
+  }
+  // Verify trigger `said_put` fired on real SQLite
+  let said_rows = must_sql(
+    acct.db.all("SELECT text FROM said WHERE station = ? AND thread = ?", params=[
+      base_codec::json_str(st),
+      base_codec::json_int(42),
+    ]),
+    "query said trigger",
+  )
+  if said_rows.length() != 1 || sql::col_text(said_rows[0], 0) != msg_text {
+    panic("expected said_put trigger to populate said table")
+  }
+  acct.db.close()
+  io_println(world, "[live_shell_smoke] PASS 1: real rusqlite WAL migration + sql.inTransaction + Burst + said_put trigger")
+
+  // ── Test 2: Real SQLite zero-write cold open + close/reopen persistence + flush_turn ──
+  let acct2 = must_sql(store::open_account_db(sh, "acct-live"), "open_account_db #2")
+  let core2 = sync::ClientCore::new("ws-live", st, rt, acct2.db, offline_transport(), fn() -> Unit {})
+  let dv_before = must_sql(acct2.db.all("PRAGMA data_version"), "PRAGMA data_version before")
+  let open_now = 1700000005555.to_int64()
+  let view = must_sql(core2.cold_open_chat(42, open_now), "cold_open_chat #1")
+  if view.entries.length() != 1 || view.entries[0].text != msg_text {
+    panic("cold_open_chat returned wrong entries")
+  }
+  if view.tree_keys.length() != 1 || view.tree_keys[0] != md_k {
+    panic("cold_open_chat did not preload md_kept tree")
+  }
+  if view.last_opened.is_some() {
+    panic("expected last_opened == None before flush_turn")
+  }
+  // Confirm zero writes happened during cold_open_chat (log_use still empty on disk)
+  let log_use_before = must_sql(acct2.db.all("SELECT count(*) FROM log_use"), "log_use count before flush")
+  if sql::col_int(log_use_before[0], 0) != 0 {
+    panic("expected 0 writes to log_use during cold_open_chat")
+  }
+  let _ = dv_before
+  let flushed = must_sql(core2.md_store.flush_turn(), "md_store.flush_turn")
+  if !flushed {
+    panic("expected flush_turn to write pending log_use")
+  }
+  acct2.db.close()
+
+  // Reopen DB a third time and confirm last_opened persisted on disk
+  let acct3 = must_sql(store::open_account_db(sh, "acct-live"), "open_account_db #3")
+  let core3 = sync::ClientCore::new("ws-live", st, rt, acct3.db, offline_transport(), fn() -> Unit {})
+  let view3 = must_sql(core3.cold_open_chat(42, open_now + 1000.to_int64()), "cold_open_chat #2")
+  match view3.last_opened {
+    Some(ts) => {
+      if ts != open_now {
+        panic("persisted last_opened mismatch: " + ts.to_string())
+      }
+    }
+    None => panic("expected persisted last_opened after reopen")
+  }
+  io_println(world, "[live_shell_smoke] PASS 2: zero-write cold_open_chat + MdStore::flush_turn last_opened persisted across reopen")
+
+  // ── Test 3: Real optimistic outbox persistence across DB close/reopen ──
+  must_sql(
+    core3.send_message(42, "ck-live-99", "alice", "offline optimistic message", 1700000010000.to_int64()),
+    "send_message offline",
+  )
+  acct3.db.close()
+
+  let acct4 = must_sql(store::open_account_db(sh, "acct-live"), "open_account_db #4")
+  let ob = must_sql(store::get_outbox(acct4.db, st, 42), "get_outbox after reopen")
+  match ob {
+    Some(row) => {
+      if !row.json.contains("ck-live-99") || !row.json.contains("offline optimistic message") {
+        panic("persisted outbox payload mismatch: " + row.json)
+      }
+    }
+    None => panic("expected persisted outbox row after DB reopen")
+  }
+  acct4.db.close()
+  io_println(world, "[live_shell_smoke] PASS 3: optimistic outbox persisted to real SQLite across close/reopen")
+
+  // ── Test 4: Real Tokio async IO (`fs.write`/`fs.read`/`fs.hash`, `storage.set`/`storage.get`, `zstd`, `crypto.random`) ──
+  let test_path = base_dir + "/async_roundtrip.txt"
+  let test_content = "Pion + Rust stillfail-shell live Tokio async IO round-trip!"
+  let expected_sha = crypto::sha256_hex(test_content.to_bytes())
+
+  let w_ans = run_async_call(
+    sh,
+    "fs.write",
+    base_codec::json_obj([
+      ("path", base_codec::json_str(test_path)),
+      ("text", base_codec::json_str(test_content)),
+    ]),
+  )
+  let w_sha = match base_codec::json_get(w_ans.json, "sha256") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => panic("fs.write missing sha256")
+  }
+  if w_sha != expected_sha {
+    panic("fs.write sha256 mismatch: " + w_sha + " vs " + expected_sha)
+  }
+
+  let r_ans = run_async_call(
+    sh,
+    "fs.read",
+    base_codec::json_obj([("path", base_codec::json_str(test_path))]),
+  )
+  match r_ans.json {
+    base_codec::Json::Str(s) => {
+      if s != test_content {
+        panic("fs.read content mismatch")
+      }
+    }
+    _ => panic("fs.read expected string")
+  }
+
+  let h_ans = run_async_call(
+    sh,
+    "fs.hash",
+    base_codec::json_obj([("path", base_codec::json_str(test_path))]),
+  )
+  match h_ans.json {
+    base_codec::Json::Str(s) => {
+      if s != expected_sha {
+        panic("fs.hash mismatch: " + s + " vs " + expected_sha)
+      }
+    }
+    _ => panic("fs.hash expected string")
+  }
+
+  // Async storage.set -> storage.get binary round-trip on the Rust disk thread
+  let bin_payload = "BIN\x01\x02\x03LIVE".to_bytes()
+  let _ = run_async_call(
+    sh,
+    "storage.set",
+    base_codec::json_obj([("key", base_codec::json_str("smoke/key"))]),
+    payload=Some(bin_payload),
+  )
+  let sg_ans = run_async_call(
+    sh,
+    "storage.get",
+    base_codec::json_obj([("key", base_codec::json_str("smoke/key"))]),
+  )
+  match sg_ans.bytes {
+    Some(got_b) => {
+      if got_b.length() != bin_payload.length() {
+        panic("storage.get length mismatch")
+      }
+      for i in 0..<bin_payload.length() {
+        if got_b[i] != bin_payload[i] {
+          panic("storage.get byte mismatch")
+        }
+      }
+    }
+    None => panic("storage.get expected bytes")
+  }
+
+  // Async zstd.compress -> zstd.unpack binary round-trip on Tokio blocking pool
+  let z_in = "The quick brown fox jumps over the lazy dog. ".to_bytes()
+  let z_comp = run_async_call(
+    sh,
+    "zstd.compress",
+    base_codec::json_obj([("level", base_codec::json_int(3))]),
+    payload=Some(z_in),
+  )
+  let compressed = match z_comp.bytes {
+    Some(b) => b
+    None => panic("zstd.compress returned no bytes")
+  }
+  let z_dec = run_async_call(
+    sh,
+    "zstd.unpack",
+    base_codec::json_obj([("most", base_codec::json_int(4096))]),
+    payload=Some(compressed),
+  )
+  match z_dec.bytes {
+    Some(out_b) => {
+      if out_b.length() != z_in.length() {
+        panic("zstd.unpack length mismatch")
+      }
+      for i in 0..<z_in.length() {
+        if out_b[i] != z_in[i] {
+          panic("zstd.unpack byte mismatch")
+        }
+      }
+    }
+    None => panic("zstd.unpack returned no bytes")
+  }
+
+  // Sync crypto.random via Rust shell + native OS random via bsh_random
+  match sh.ask("crypto.random", base_codec::json_obj([("bytes", base_codec::json_int(32))])) {
+    shell::AskResult::Ok(base_codec::Json::Str(hex_rnd)) => {
+      if hex_rnd.length() != 64 {
+        panic("crypto.random expected 64 hex chars, got " + hex_rnd.length().to_string())
+      }
+    }
+    _ => panic("crypto.random failed")
+  }
+  let os_rnd = sh.random(32)
+  let mut nonzero = false
+  for i in 0..<os_rnd.length() {
+    if os_rnd[i].to_int() != 0 {
+      nonzero = true
+    }
+  }
+  if os_rnd.length() != 32 || !nonzero {
+    panic("bsh_random returned invalid bytes")
+  }
+
+  io_println(
+    world,
+    "[live_shell_smoke] PASS 4: Tokio async fs.write/fs.read/fs.hash (sha256=" +
+    expected_sha +
+    ") + storage.set/get + zstd.compress/unpack + crypto.random",
+  )
+  io_println(world, "[live_shell_smoke] ALL 4 LIVE RUST SHELL CHECKS PASSED")
+}

@@ -20,8 +20,9 @@ Declared in `[workspace.dependencies]` in `pion.toml` via official Git tags:
 - `packages/base_codec`: thin Base64 / Base64URL / hex / IEEE CRC-32 adapters over `pion-packages/base64` & `flate`, plus insertion-ordered `Json` parser/stringifier preserving raw `Int64` numeric `repr` beyond 2^53-1.
 - `packages/wire`: stream line framing (`Carry`, `hello_line`, `head_line`, `reply_head`) and Monoid JS-compatible byte-exact SSE parser (`Sse`, `Event`, `TooLong`).
 - `packages/net`: `Socket`, `Listener`, and `pipe_duplex_k` with exactly-once close guarantees.
-- `packages/shell`: `Shell` interface (`Shell::stood_in` test stand-in, `call_k`, `tell`, `ask`, `give_up`, `random`, `pump`, `turn`) and native C bridge `packages/shell/native/shell_pion.c` targeting `pion_rt.h` and `sf_shell_*`.
-- `packages/sql`: `Sql`, `Burst`, `query_in_chunks`, and `col_*` readers over `Shell::ask("sql.*", ...)`.
+- `packages/shell`: `Shell` interface (`Shell::stood_in` test stand-in, `call_k`, `tell`, `ask`, `give_up`, `random`, `pump`, `turn`) and native C bridge `packages/shell/native/shell_pion.c` targeting `sf_shell_*` (zero `extern "C"` in `packages/shell` so `wasm32` builds stay pure).
+- `packages/shell_native`: native `extern "C" fn` binding (`open`, `now_ms`, `is_attached`, `random_bytes`, `drain_until`, `decode_ask_envelope`) linking `packages/shell/native/shell_pion.c` and Rust `libstillfail_shell`.
+- `packages/sql`: `Sql` (including `in_transaction`), `Burst`, `query_in_chunks`, and `col_*` readers over `Shell::ask("sql.*", ...)`.
 - `packages/mesh`: program-agnostic device-side mesh protocol stack (`Mesh`, `Link`, `Reply`, `Out`, `Inbound`, `Incoming`, `Outgoing`, Ed25519/SHA-512/SHA-256 delegated to `pion-packages/crypto`, multi-way scoring/promotion/pruning, health racing, wake/rebind, speed/daily tallies, tracing/recorder, and dual-Mesh simulated network tests).
 
 ## Rules

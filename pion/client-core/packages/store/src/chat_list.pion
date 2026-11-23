@@ -86,6 +86,34 @@ pub fn sql_account_doc_one() -> String {
   "SELECT json FROM account_doc WHERE name = ?"
 }
 
+pub fn sql_account_doc_put() -> String {
+  "INSERT OR REPLACE INTO account_doc (name, json, confirmed) VALUES (?, ?, ?)"
+}
+
+pub fn sql_workspace_put() -> String {
+  "INSERT OR REPLACE INTO workspace (id, json, confirmed) VALUES (?, ?, ?)"
+}
+
+pub fn sql_workspace_all() -> String {
+  "SELECT id, json, confirmed FROM workspace ORDER BY id"
+}
+
+pub fn sql_workspace_one() -> String {
+  "SELECT id, json, confirmed FROM workspace WHERE id = ?"
+}
+
+pub fn sql_station_doc_put() -> String {
+  "INSERT OR REPLACE INTO station (address, kind, json, confirmed) VALUES (?, ?, ?, ?)"
+}
+
+pub fn sql_station_doc_by_kind() -> String {
+  "SELECT address, kind, json, confirmed FROM station WHERE kind = ? ORDER BY address"
+}
+
+pub fn sql_station_doc_one() -> String {
+  "SELECT address, kind, json, confirmed FROM station WHERE address = ? AND kind = ?"
+}
+
 pub struct ChatWindowQuery {
   pub stations : Array[String]
   pub mine : Bool
@@ -297,6 +325,157 @@ pub fn get_account_doc(db : sql::Sql, name : String) -> sql::SqlResult[Option[St
     sql::SqlResult::Ok(rows) => {
       if rows.length() > 0 {
         sql::SqlResult::Ok(Some(sql::col_text(rows[0], 0)))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}
+
+pub struct WorkspaceRow {
+  pub id : String
+  pub json : String
+  pub confirmed : Option[Int64]
+}
+
+pub struct StationDocRow {
+  pub address : String
+  pub kind : String
+  pub json : String
+  pub confirmed : Option[Int64]
+}
+
+fn opt_i64_param(v : Option[Int64]) -> base_codec::Json {
+  match v {
+    Some(n) => base_codec::json_int64(n)
+    None => base_codec::json_null()
+  }
+}
+
+/// Upsert an `account_doc` row (`name`, `json`, optional `confirmed` timestamp).
+pub fn put_account_doc(
+  db : sql::Sql,
+  name : String,
+  json : String,
+  confirmed : Option[Int64] = None,
+) -> sql::SqlResult[Unit] {
+  match db.run(sql_account_doc_put(), params=[
+    base_codec::json_str(name),
+    base_codec::json_str(json),
+    opt_i64_param(confirmed),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+  }
+}
+
+/// Upsert a workspace roster record (`workspace` table).
+pub fn upsert_workspace(
+  db : sql::Sql,
+  id : String,
+  json : String,
+  confirmed : Option[Int64] = None,
+) -> sql::SqlResult[Unit] {
+  match db.run(sql_workspace_put(), params=[
+    base_codec::json_str(id),
+    base_codec::json_str(json),
+    opt_i64_param(confirmed),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+  }
+}
+
+/// List all workspaces ordered by `id`.
+pub fn list_workspaces(db : sql::Sql) -> sql::SqlResult[Array[WorkspaceRow]] {
+  match db.all(sql_workspace_all()) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[WorkspaceRow] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        out.push(WorkspaceRow::{
+          id: sql::col_text(r, 0),
+          json: sql::col_text(r, 1),
+          confirmed: sql::col_opt_int64(r, 2),
+        })
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
+}
+
+/// Fetch one workspace by `id`.
+pub fn get_workspace(db : sql::Sql, id : String) -> sql::SqlResult[Option[WorkspaceRow]] {
+  match db.all(sql_workspace_one(), params=[base_codec::json_str(id)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        let r = rows[0]
+        sql::SqlResult::Ok(Some(WorkspaceRow::{
+          id: sql::col_text(r, 0),
+          json: sql::col_text(r, 1),
+          confirmed: sql::col_opt_int64(r, 2),
+        }))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}
+
+/// Upsert a station roster/overview document (`station` table).
+pub fn upsert_station_doc(
+  db : sql::Sql,
+  address : String,
+  kind : String,
+  json : String,
+  confirmed : Option[Int64] = None,
+) -> sql::SqlResult[Unit] {
+  match db.run(sql_station_doc_put(), params=[
+    base_codec::json_str(address),
+    base_codec::json_str(kind),
+    base_codec::json_str(json),
+    opt_i64_param(confirmed),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+  }
+}
+
+/// List station documents of a given `kind` (e.g. `"overview"`, `"roster"`), ordered by `address`.
+pub fn list_stations(db : sql::Sql, kind : String = "overview") -> sql::SqlResult[Array[StationDocRow]] {
+  match db.all(sql_station_doc_by_kind(), params=[base_codec::json_str(kind)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[StationDocRow] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        out.push(StationDocRow::{
+          address: sql::col_text(r, 0),
+          kind: sql::col_text(r, 1),
+          json: sql::col_text(r, 2),
+          confirmed: sql::col_opt_int64(r, 3),
+        })
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
+}
+
+/// Fetch one station document by `(address, kind)`.
+pub fn get_station_doc(db : sql::Sql, address : String, kind : String = "overview") -> sql::SqlResult[Option[StationDocRow]] {
+  match db.all(sql_station_doc_one(), params=[base_codec::json_str(address), base_codec::json_str(kind)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        let r = rows[0]
+        sql::SqlResult::Ok(Some(StationDocRow::{
+          address: sql::col_text(r, 0),
+          kind: sql::col_text(r, 1),
+          json: sql::col_text(r, 2),
+          confirmed: sql::col_opt_int64(r, 3),
+        }))
       } else {
         sql::SqlResult::Ok(None)
       }

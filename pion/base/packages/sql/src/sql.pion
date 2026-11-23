@@ -57,6 +57,19 @@ pub fn Sql::is_closed(self : Sql) -> Bool {
   self.closed
 }
 
+pub fn Sql::in_transaction(self : Sql) -> SqlResult[Bool] {
+  let args = base_codec::json_obj([("id", base_codec::json_int(self.id))])
+  match self.shell.ask("sql.inTransaction", args) {
+    shell::AskResult::Err(e) => SqlResult::Err(e)
+    shell::AskResult::Ok(ans) =>
+    match ans {
+      base_codec::Json::Bool(b) => SqlResult::Ok(b)
+      base_codec::Json::Num(n, _) => SqlResult::Ok(n != 0.0)
+      _ => SqlResult::Ok(false)
+    }
+  }
+}
+
 pub fn Sql::exec(self : Sql, sql : String) -> SqlResult[Unit] {
   let args = base_codec::json_obj([("id", base_codec::json_int(self.id)), ("sql", base_codec::json_str(sql))])
   match self.shell.ask("sql.exec", args) {

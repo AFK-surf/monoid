@@ -1,0 +1,164 @@
+// Native C-ABI binding to `pion/base/packages/shell/native/shell_pion.c` and Rust `libstillfail_shell`.
+// Keeps `packages/shell` 100% pure and `wasm32`-compatible while giving native executables
+// real SQLite WAL persistence and Tokio async IO through `shell::Shell::with_hooks`.
+
+import "base_codec"
+import "effect"
+import "shell"
+
+extern "C" fn bsh_start(dir : Ptr) -> Int
+extern "C" fn bsh_attached() -> Int
+extern "C" fn bsh_free(ptr : Ptr) -> Unit
+extern "C" fn bsh_wait(ms : Int64, out_len : Ptr) -> Ptr
+extern "C" fn bsh_call(
+  id : Int64,
+  op : Ptr,
+  json : Ptr,
+  json_len : Int64,
+  payload : Ptr,
+  payload_len : Int64,
+  has : Int,
+) -> Unit
+extern "C" fn bsh_ask(op : Ptr, json : Ptr, json_len : Int64, out_len : Ptr) -> Ptr
+extern "C" fn bsh_now() -> Int64
+extern "C" fn bsh_random(n : Int) -> Ptr
+
+fn bytes_to_str(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+/// Monotonic native clock in milliseconds (`CLOCK_MONOTONIC`).
+pub fn now_ms() -> Int64 {
+  bsh_now()
+}
+
+/// Returns true if a native shell handle is currently started or attached.
+pub fn is_attached() -> Bool {
+  bsh_attached() != 0
+}
+
+/// Draw `n` bytes of OS cryptographic randomness (`getrandom` / `arc4random_buf`).
+pub fn random_bytes(n : Int) -> Bytes {
+  if n <= 0 {
+    return Bytes::new(0)
+  }
+  let p = bsh_random(n)
+  if ptr_is_null(p) {
+    return Bytes::new(0)
+  }
+  let out = bytes_from_ptr(p, n)
+  bsh_free(p)
+  out
+}
+
+/// Unwrap the Rust `sf_shell_call_sync` envelope `{"value": ...}` or `{"error": "..."}`.
+pub fn decode_ask_envelope(raw_json : String) -> shell::AskResult {
+  if raw_json.length() == 0 {
+    return shell::AskResult::Err(shell::ShellError::{ message: "empty shell ask response" })
+  }
+  let parsed = match base_codec::json_parse(raw_json) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) =>
+    return shell::AskResult::Err(shell::ShellError::{ message: "malformed shell ask json: " + e })
+  }
+  match base_codec::json_get(parsed, "error") {
+    Some(base_codec::Json::Str(err_msg)) => return shell::AskResult::Err(shell::ShellError::{ message: err_msg })
+    Some(other) =>
+    return shell::AskResult::Err(shell::ShellError::{ message: base_codec::json_stringify(other) })
+    None => ()
+  }
+  match base_codec::json_get(parsed, "value") {
+    Some(v) => shell::AskResult::Ok(v)
+    None => shell::AskResult::Ok(base_codec::json_null())
+  }
+}
+
+fn native_calls(id : Int64, op : String, args : base_codec::Json, payload : Option[Bytes]) -> Unit {
+  let json_bytes = base_codec::json_stringify(args).to_bytes()
+  let jptr = bytes_data_ptr(json_bytes)
+  let jlen = json_bytes.length().to_int64()
+  match payload {
+    Some(pb) => {
+      let pptr = bytes_data_ptr(pb)
+      let plen = pb.length().to_int64()
+      bsh_call(id, op.as_cstr(), jptr, jlen, pptr, plen, 1)
+      // Keep owned RC buffers alive across the foreign C call.
+      let _ = pb.length()
+    }
+    None => {
+      let empty = Bytes::new(0)
+      bsh_call(id, op.as_cstr(), jptr, jlen, bytes_data_ptr(empty), 0.to_int64(), 0)
+      let _ = empty.length()
+    }
+  }
+  let _ = json_bytes.length()
+}
+
+fn native_asks(op : String, args : base_codec::Json) -> shell::AskResult {
+  let json_bytes = base_codec::json_stringify(args).to_bytes()
+  let out_len_buf = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len_buf, 0.to_int64(), 0.to_int64())
+  let p = bsh_ask(op.as_cstr(), bytes_data_ptr(json_bytes), json_bytes.length().to_int64(), out_len_buf)
+  let _ = json_bytes.length()
+  let n = ptr_read_i64(out_len_buf, 0.to_int64())
+  bsh_free(out_len_buf)
+  if ptr_is_null(p) || n <= 0.to_int64() {
+    if !ptr_is_null(p) {
+      bsh_free(p)
+    }
+    return shell::AskResult::Err(shell::ShellError::{ message: "shell ask returned empty response" })
+  }
+  let raw = bytes_from_ptr(p, n.to_int())
+  bsh_free(p)
+  decode_ask_envelope(bytes_to_str(raw))
+}
+
+fn native_pump(ms : Int64) -> Option[Bytes] {
+  let out_len_buf = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len_buf, 0.to_int64(), 0.to_int64())
+  let p = bsh_wait(ms, out_len_buf)
+  let n = ptr_read_i64(out_len_buf, 0.to_int64())
+  bsh_free(out_len_buf)
+  if ptr_is_null(p) || n <= 0.to_int64() {
+    if !ptr_is_null(p) {
+      bsh_free(p)
+    }
+    return None
+  }
+  let raw = bytes_from_ptr(p, n.to_int())
+  bsh_free(p)
+  Some(raw)
+}
+
+/// Start the native Rust `stillfail-shell` on `data_dir` and return a `shell::Shell` wired to it.
+pub fn open(rt : effect::Runtime, data_dir : String) -> Result[shell::Shell, String] {
+  if bsh_start(data_dir.as_cstr()) == 0 {
+    return Err("bsh_start failed for data_dir: " + data_dir)
+  }
+  Ok(shell::Shell::with_hooks(rt, 0.to_int64(), native_calls, native_asks, random_bytes, native_pump))
+}
+
+/// Drive the native shell pump + `effect::Runtime` until `done()` returns true or `timeout_ms` elapses.
+pub fn drain_until(sh : shell::Shell, done : () -> Bool, timeout_ms : Int64 = 5000.to_int64()) -> Bool {
+  let start = bsh_now()
+  while !done() {
+    let _ = sh.pump(0.to_int64())
+    sh.rt.tick()
+    if done() {
+      return true
+    }
+    let elapsed = bsh_now() - start
+    if elapsed >= timeout_ms {
+      return false
+    }
+    let rem = timeout_ms - elapsed
+    let wait_ms = if rem > 25.to_int64() { 25.to_int64() } else { rem }
+    let _ = sh.pump(wait_ms)
+    sh.rt.tick()
+  }
+  true
+}

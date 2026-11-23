@@ -125,11 +125,142 @@ fn form_str_field(j : form::Json, key : String) -> Option[String] {
   }
 }
 
-/// Native `lock::Crypto` backed directly by `crypto::sha256_hex` and `mesh::ed25519_verify`.
+fn bytes_to_utf8_str_lb(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+fn bytes_eq_prefix(a : Bytes, b : Bytes, n : Int) -> Bool {
+  if a.length() < n || b.length() < n {
+    return false
+  }
+  for i in 0..<n {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn decode_p256_key_id(key_id : String) -> Option[Bytes] {
+  if !key_id.starts_with("p256:") {
+    return None
+  }
+  match base_codec::base64url_decode(key_id.slice(5, key_id.length())) {
+    Some(pt) => if pt.length() == 65 && pt[0].to_int() == 4 { Some(pt) } else { None }
+    None => None
+  }
+}
+
+fn str_in_array(xs : Array[String], target : String) -> Bool {
+  for i in 0..<xs.length() {
+    if xs[i] == target {
+      return true
+    }
+  }
+  false
+}
+
+/// Verify a WebAuthn / Passkey P-256 assertion matching `shared/lock.ts sigValid`.
+fn verify_webauthn_p256(
+  sig : form::Json,
+  entry_hash : String,
+  origins : Array[String],
+  rp_id : String,
+) -> Bool {
+  let key = match form_str_field(sig, "key") {
+    Some(k) => k
+    None => return false
+  }
+  let pk = match decode_p256_key_id(key) {
+    Some(p) => p
+    None => return false
+  }
+  if !is_lower_hex_64(entry_hash) {
+    return false
+  }
+  let hash_bytes = match base_codec::hex_decode(entry_hash) {
+    Some(b) => b
+    None => return false
+  }
+  let client_data_b64 = match form_str_field(sig, "client_data") {
+    Some(s) => s
+    None => return false
+  }
+  let auth_data_b64 = match form_str_field(sig, "authenticator_data") {
+    Some(s) => s
+    None => return false
+  }
+  let sig_b64 = match form_str_field(sig, "sig") {
+    Some(s) => s
+    None => return false
+  }
+  let client_bytes = match base_codec::base64url_decode(client_data_b64) {
+    Some(b) => b
+    None => return false
+  }
+  let client_json = match base_codec::json_parse(bytes_to_utf8_str_lb(client_bytes)) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return false
+  }
+  match base_codec::json_get(client_json, "type") {
+    Some(base_codec::Json::Str(t)) => if t != "webauthn.get" { return false }
+    _ => return false
+  }
+  let expected_challenge = base_codec::base64url_encode(hash_bytes)
+  match base_codec::json_get(client_json, "challenge") {
+    Some(base_codec::Json::Str(ch)) => if ch != expected_challenge { return false }
+    _ => return false
+  }
+  match base_codec::json_get(client_json, "origin") {
+    Some(base_codec::Json::Str(orig)) => if !str_in_array(origins, orig) { return false }
+    _ => return false
+  }
+  let auth_bytes = match base_codec::base64url_decode(auth_data_b64) {
+    Some(b) => b
+    None => return false
+  }
+  // rpIdHash (32 bytes) + flags (1 byte, UP bit 0x01) + signCount (4 bytes) = 37 bytes minimum.
+  if auth_bytes.length() < 37 {
+    return false
+  }
+  let rp_hash = crypto::sha256(rp_id.to_bytes())
+  if !bytes_eq_prefix(auth_bytes, rp_hash, 32) {
+    return false
+  }
+  if (auth_bytes[32].to_int() & 1) == 0 {
+    return false
+  }
+  let der_sig = match base_codec::base64url_decode(sig_b64) {
+    Some(b) => b
+    None => return false
+  }
+  let signed = concat_bytes(auth_bytes, crypto::sha256(client_bytes))
+  match crypto::p256_verify_der(pk, signed, der_sig) {
+    Ok(_) => true
+    Err(_) => false
+  }
+}
+
+/// Native `lock::Crypto` backed directly by `crypto::sha256_hex`, `mesh::ed25519_verify`,
+/// and `crypto::p256_verify_der` / `crypto::p256_verify_es256`.
 pub fn native_lock_crypto() -> lock::Crypto {
   lock::Crypto::{
     sha256_hex: fn(text : String) -> String { crypto::sha256_hex(text.to_bytes()) },
-    sig_valid: fn(sig : form::Json, entry_hash : String, _origins : Array[String], _rp_id : String, passkey : Bool) -> Bool {
+    sig_valid: fn(sig : form::Json, entry_hash : String, origins : Array[String], rp_id : String, passkey : Bool) -> Bool {
+      let alg = match form_str_field(sig, "alg") {
+        Some(a) => a
+        None => return false
+      }
+      if alg == "webauthn" {
+        if !passkey {
+          return false
+        }
+        return verify_webauthn_p256(sig, entry_hash, origins, rp_id)
+      }
       if passkey {
         return false
       }
@@ -137,20 +268,34 @@ pub fn native_lock_crypto() -> lock::Crypto {
         Some(k) => k
         None => return false
       }
-      let alg = match form_str_field(sig, "alg") {
-        Some(a) => a
-        None => return false
-      }
-      let sig_hex = match form_str_field(sig, "sig") {
+      let sig_str = match form_str_field(sig, "sig") {
         Some(s) => s
         None => return false
       }
-      if alg != "Ed25519" {
-        return false
-      }
-      match lock_signed_bytes(entry_hash) {
-        Some(msg) => verify_ed25519_key_id(key, msg, sig_hex)
-        None => false
+      if alg == "Ed25519" {
+        match lock_signed_bytes(entry_hash) {
+          Some(msg) => verify_ed25519_key_id(key, msg, sig_str)
+          None => false
+        }
+      } else if alg == "ES256" {
+        let pk = match decode_p256_key_id(key) {
+          Some(p) => p
+          None => return false
+        }
+        let raw_sig = match base_codec::base64url_decode(sig_str) {
+          Some(b) => b
+          None => return false
+        }
+        match lock_signed_bytes(entry_hash) {
+          Some(msg) =>
+          match crypto::p256_verify_es256(pk, msg, raw_sig) {
+            Ok(_) => true
+            Err(_) => false
+          }
+          None => false
+        }
+      } else {
+        false
       }
     },
     valid_key_id: valid_key_id,

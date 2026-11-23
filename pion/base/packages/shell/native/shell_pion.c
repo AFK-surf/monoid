@@ -1,4 +1,4 @@
-// Native C bridge between Pion (`pion_rt.h`) and the Rust shell C ABI (`sf_shell_*`).
+// Native C bridge between Pion (`extern "C"`) and the Rust shell C ABI (`sf_shell_*`).
 // Answers arrive on shell worker threads, are queued here under a mutex, and drained on
 // the Pion runtime's own thread via `bsh_wait` / `Shell::pump`. Nothing here invokes Pion
 // callbacks from foreign threads.
@@ -13,8 +13,6 @@
 #ifdef __linux__
 #include <sys/random.h>
 #endif
-
-#include "pion_rt.h"
 
 // Rust shell C ABI (client/shell/src/lib.rs).
 typedef void (*sf_complete)(
@@ -113,28 +111,21 @@ static void bsh_completed(
     }
 }
 
-// Start the shell with data directory `dir` (PionString*): returns 1 on success, 0 on failure.
-int32_t bsh_start(void *dir_str) {
-    if (g_shell != NULL) {
+// Start the shell with data directory `dir_cstr` (NUL-terminated UTF-8): returns 1 on success, 0 on failure.
+int32_t bsh_start(const char *dir_cstr) {
+    pthread_mutex_lock(&g_lock);
+    int already = g_shell != NULL;
+    pthread_mutex_unlock(&g_lock);
+    if (already) {
         return 1;
     }
-    const PionString *ps = (const PionString *)dir_str;
-    size_t len = (ps != NULL && ps->len > 0) ? (size_t)ps->len : 0;
-    char *cdir = (char *)malloc(len + 1);
-    if (cdir == NULL) {
-        return 0;
-    }
-    if (len > 0) {
-        memcpy(cdir, ps->data, len);
-    }
-    cdir[len] = '\0';
+    const char *cdir = dir_cstr != NULL ? dir_cstr : "";
     struct stat was;
     int made = stat(cdir, &was) != 0;
     void *started = sf_shell_start(cdir, bsh_completed, NULL);
     if (started != NULL && made) {
         (void)chmod(cdir, 0700);
     }
-    free(cdir);
     pthread_mutex_lock(&g_lock);
     g_shell = started;
     pthread_mutex_unlock(&g_lock);
@@ -187,8 +178,14 @@ int32_t bsh_deliver(
     return 1;
 }
 
-// Pop the next queued answer as PionBytes* (waiting at most `ms`; <0 blocks, 0 polls).
-void *bsh_wait(int64_t ms) {
+// Free a heap buffer returned by `bsh_wait`, `bsh_ask`, or `bsh_random`.
+void bsh_free(void *ptr) {
+    free(ptr);
+}
+
+// Pop the next queued answer as a malloc'd byte buffer (waiting at most `ms`; <0 blocks, 0 polls).
+// Writes byte length to `*out_len` and returns NULL when no answer is available.
+void *bsh_wait(int64_t ms, int64_t *out_len) {
     pthread_mutex_lock(&g_lock);
     if (g_first == NULL && ms != 0) {
         if (ms < 0) {
@@ -217,15 +214,32 @@ void *bsh_wait(int64_t ms) {
     }
     pthread_mutex_unlock(&g_lock);
     if (a == NULL) {
-        return pion_bytes_new(0);
+        if (out_len != NULL) {
+            *out_len = 0;
+        }
+        return NULL;
     }
-    void *out = pion_bytes_from_ptr(a->data, (int64_t)a->len);
+    void *out = malloc(a->len);
+    if (out == NULL) {
+        abort();
+    }
+    memcpy(out, a->data, a->len);
+    if (out_len != NULL) {
+        *out_len = (int64_t)a->len;
+    }
     free(a);
     return out;
 }
 
-// Issue an async shell call: `op_str` (PionString*), `json_bytes` (PionBytes*), `payload` (PionBytes*).
-void bsh_call(int64_t id, void *op_str, void *json_bytes, void *payload_bytes, int32_t has) {
+// Issue an async shell call using raw C-ABI pointers.
+void bsh_call(
+    int64_t id,
+    const char *op_cstr,
+    const uint8_t *json_ptr,
+    int64_t json_len,
+    const uint8_t *payload_ptr,
+    int64_t payload_len,
+    int32_t has) {
     pthread_mutex_lock(&g_lock);
     void *sh = g_shell;
     pthread_mutex_unlock(&g_lock);
@@ -234,60 +248,51 @@ void bsh_call(int64_t id, void *op_str, void *json_bytes, void *payload_bytes, i
         bsh_completed(NULL, (uint64_t)id, NULL, 0, (const uint8_t *)none, sizeof(none) - 1, NULL, 0, 0);
         return;
     }
-    const PionString *op = (const PionString *)op_str;
-    size_t op_len = (op != NULL && op->len > 0) ? (size_t)op->len : 0;
-    char *cop = (char *)malloc(op_len + 1);
-    if (cop == NULL) {
-        abort();
-    }
-    if (op_len > 0) {
-        memcpy(cop, op->data, op_len);
-    }
-    cop[op_len] = '\0';
-
-    const PionBytes *jb = (const PionBytes *)json_bytes;
-    const uint8_t *jptr = (jb != NULL) ? jb->data : NULL;
-    size_t jlen = (jb != NULL && jb->len > 0) ? (size_t)jb->len : 0;
-
-    const PionBytes *pb = (const PionBytes *)payload_bytes;
-    const uint8_t *pptr = (pb != NULL) ? pb->data : NULL;
-    size_t plen = (pb != NULL && pb->len > 0) ? (size_t)pb->len : 0;
-
-    sf_shell_call(sh, (uint64_t)id, cop, jptr, jlen, pptr, plen, has ? 1 : 0);
-    free(cop);
+    const char *cop = op_cstr != NULL ? op_cstr : "";
+    size_t jlen = json_len > 0 ? (size_t)json_len : 0;
+    size_t plen = payload_len > 0 ? (size_t)payload_len : 0;
+    sf_shell_call(sh, (uint64_t)id, cop, json_ptr, jlen, payload_ptr, plen, has ? 1 : 0);
 }
 
-// Issue a synchronous shell ask: returns PionBytes* holding JSON `{"value":...}` or `{"error":...}`.
-void *bsh_ask(void *op_str, void *json_bytes) {
+// Issue a synchronous shell ask: returns malloc'd JSON `{"value":...}` or `{"error":...}`
+// and writes its length into `*out_len`. Caller frees with `bsh_free`.
+void *bsh_ask(const char *op_cstr, const uint8_t *json_ptr, int64_t json_len, int64_t *out_len) {
     pthread_mutex_lock(&g_lock);
     void *sh = g_shell;
     pthread_mutex_unlock(&g_lock);
     if (sh == NULL) {
         static const char none[] = "{\"error\":\"the shell is not started\"}";
-        return pion_bytes_from_ptr((void *)none, (int64_t)(sizeof(none) - 1));
+        size_t n = sizeof(none) - 1;
+        void *out = malloc(n);
+        if (out == NULL) {
+            abort();
+        }
+        memcpy(out, none, n);
+        if (out_len != NULL) {
+            *out_len = (int64_t)n;
+        }
+        return out;
     }
-    const PionString *op = (const PionString *)op_str;
-    size_t op_len = (op != NULL && op->len > 0) ? (size_t)op->len : 0;
-    char *cop = (char *)malloc(op_len + 1);
-    if (cop == NULL) {
+    const char *cop = op_cstr != NULL ? op_cstr : "";
+    size_t jlen = json_len > 0 ? (size_t)json_len : 0;
+    size_t ans_len = 0;
+    uint8_t *answer = sf_shell_call_sync(sh, cop, json_ptr, jlen, &ans_len);
+    if (ans_len == 0 || answer == NULL) {
+        sf_free(answer, ans_len);
+        if (out_len != NULL) {
+            *out_len = 0;
+        }
+        return NULL;
+    }
+    void *out = malloc(ans_len);
+    if (out == NULL) {
         abort();
     }
-    if (op_len > 0) {
-        memcpy(cop, op->data, op_len);
+    memcpy(out, answer, ans_len);
+    sf_free(answer, ans_len);
+    if (out_len != NULL) {
+        *out_len = (int64_t)ans_len;
     }
-    cop[op_len] = '\0';
-
-    const PionBytes *jb = (const PionBytes *)json_bytes;
-    const uint8_t *jptr = (jb != NULL) ? jb->data : NULL;
-    size_t jlen = (jb != NULL && jb->len > 0) ? (size_t)jb->len : 0;
-
-    size_t out_len = 0;
-    uint8_t *answer = sf_shell_call_sync(sh, cop, jptr, jlen, &out_len);
-    free(cop);
-    void *out = (out_len > 0 && answer != NULL)
-        ? pion_bytes_from_ptr(answer, (int64_t)out_len)
-        : pion_bytes_new(0);
-    sf_free(answer, out_len);
     return out;
 }
 
@@ -298,16 +303,19 @@ int64_t bsh_now(void) {
     return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
 }
 
-// `n` bytes of OS cryptographic randomness returned as PionBytes*.
+// `n` bytes of OS cryptographic randomness returned as a malloc'd buffer (freed with `bsh_free`).
 void *bsh_random(int32_t n) {
     if (n <= 0) {
-        return pion_bytes_new(0);
+        return NULL;
     }
-    PionBytes *out = (PionBytes *)pion_bytes_new((int64_t)n);
+    uint8_t *out = (uint8_t *)malloc((size_t)n);
+    if (out == NULL) {
+        abort();
+    }
 #ifdef __linux__
     size_t done = 0;
     while (done < (size_t)n) {
-        ssize_t got = getrandom(out->data + done, (size_t)n - done, 0);
+        ssize_t got = getrandom(out + done, (size_t)n - done, 0);
         if (got < 0) {
             if (errno == EINTR) {
                 continue;
@@ -317,7 +325,7 @@ void *bsh_random(int32_t n) {
         done += (size_t)got;
     }
 #else
-    arc4random_buf(out->data, (size_t)n);
+    arc4random_buf(out, (size_t)n);
 #endif
     return (void *)out;
 }

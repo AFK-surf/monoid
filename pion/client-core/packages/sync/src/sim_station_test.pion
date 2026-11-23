@@ -3,6 +3,7 @@
 // `SimStation` (deterministic HTTP + SSE `/events` server on `effect::Runtime` virtual clock).
 
 import "base_codec"
+import "crypto"
 import "effect"
 import "form"
 import "lock"
@@ -36,6 +37,11 @@ struct SimAccountDb {
   outbox_rows : Map[String, String]
   pending_rows : Map[String, String]
   changing_rows : Map[String, String]
+  account_docs : Map[String, String]
+  workspaces : Map[String, (String, Option[Int64])]
+  workspace_order : Array[String]
+  station_docs : Map[String, (String, String, String, Option[Int64])]
+  station_doc_order : Array[String]
   log_use : Map[String, Int64]
   md : Map[String, (Int64, String)]
   ran : Array[String]
@@ -61,6 +67,11 @@ fn SimAccountDb::new(rt : effect::Runtime) -> SimAccountDb {
     outbox_rows: Map::new(),
     pending_rows: Map::new(),
     changing_rows: Map::new(),
+    account_docs: Map::new(),
+    workspaces: Map::new(),
+    workspace_order: [],
+    station_docs: Map::new(),
+    station_doc_order: [],
     log_use: Map::new(),
     md: Map::new(),
     ran: [],
@@ -250,6 +261,65 @@ fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Jso
   } else if stmt == sql_changing_delete() {
     self.changing_rows.remove(p_str(p, 0) + ":" + p_int(p, 1).to_string())
     changed = 1
+  } else if stmt == store::sql_account_doc_put() {
+    self.account_docs.set(p_str(p, 0), p_str(p, 1))
+    changed = 1
+  } else if stmt == store::sql_account_doc_one() {
+    match self.account_docs.get(p_str(p, 0)) {
+      Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(j)]))
+      None => ()
+    }
+  } else if stmt == store::sql_workspace_put() {
+    let wid = p_str(p, 0)
+    if self.workspaces.get(wid).is_none() {
+      self.workspace_order.push(wid)
+    }
+    self.workspaces.set(wid, (p_str(p, 1), p_opt_int64(p, 2)))
+    changed = 1
+  } else if stmt == store::sql_workspace_all() {
+    for i in 0..<self.workspace_order.length() {
+      let wid = self.workspace_order[i]
+      match self.workspaces.get(wid) {
+        Some((j, conf)) => {
+          let cj = match conf {
+            Some(ts) => base_codec::json_int64(ts)
+            None => base_codec::json_null()
+          }
+          rows.push(base_codec::json_arr([base_codec::json_str(wid), base_codec::json_str(j), cj]))
+        }
+        None => ()
+      }
+    }
+  } else if stmt == store::sql_station_doc_put() {
+    let addr = p_str(p, 0)
+    let kind = p_str(p, 1)
+    let k = addr + ":" + kind
+    if self.station_docs.get(k).is_none() {
+      self.station_doc_order.push(k)
+    }
+    self.station_docs.set(k, (addr, kind, p_str(p, 2), p_opt_int64(p, 3)))
+    changed = 1
+  } else if stmt == store::sql_station_doc_by_kind() {
+    let want_kind = p_str(p, 0)
+    for i in 0..<self.station_doc_order.length() {
+      match self.station_docs.get(self.station_doc_order[i]) {
+        Some((addr, kind, j, conf)) => {
+          if kind == want_kind {
+            let cj = match conf {
+              Some(ts) => base_codec::json_int64(ts)
+              None => base_codec::json_null()
+            }
+            rows.push(base_codec::json_arr([
+              base_codec::json_str(addr),
+              base_codec::json_str(kind),
+              base_codec::json_str(j),
+              cj,
+            ]))
+          }
+        }
+        None => ()
+      }
+    }
   } else {
     return shell::AskResult::Err(shell::ShellError::{ message: "SimAccountDb unknown SQL: " + stmt })
   }
@@ -1011,5 +1081,311 @@ test "E2E 6: ClientCore::handle_wire serves core_api.h JSON protocol and isolate
   }
   rt.advance(30)
   debug_assert(sim_db.entry_count("st1", 1) == 1, "wire message.send confirmed and persisted")
+  core.stop()
+}
+
+// ── Test 7: Real WebAuthn / Passkey P-256 verification (positive + negative cases) ──
+
+fn encode_der_uint(raw : Bytes, off : Int, len : Int) -> Array[Byte] {
+  let mut start = off
+  let end = off + len
+  while start < end - 1 && raw[start].to_int() == 0 {
+    start += 1
+  }
+  let body : Array[Byte] = []
+  if (raw[start].to_int() & 0x80) != 0 {
+    body.push(0 as Byte)
+  }
+  for i in start..<end {
+    body.push(raw[i])
+  }
+  let out : Array[Byte] = [0x02 as Byte, body.length() as Byte]
+  for i in 0..<body.length() {
+    out.push(body[i])
+  }
+  out
+}
+
+fn es256_raw_to_der(raw64 : Bytes) -> Bytes {
+  let r_der = encode_der_uint(raw64, 0, 32)
+  let s_der = encode_der_uint(raw64, 32, 32)
+  let total = r_der.length() + s_der.length()
+  let out = Bytes::new(2 + total)
+  out[0] = 0x30 as Byte
+  out[1] = total as Byte
+  let mut at = 2
+  for i in 0..<r_der.length() {
+    out[at] = r_der[i]
+    at += 1
+  }
+  for i in 0..<s_der.length() {
+    out[at] = s_der[i]
+    at += 1
+  }
+  out
+}
+
+fn make_auth_data(rp_id : String, flags : Int) -> Bytes {
+  let rp_hash = crypto::sha256(rp_id.to_bytes())
+  let out = Bytes::new(37)
+  for i in 0..<32 {
+    out[i] = rp_hash[i]
+  }
+  out[32] = flags as Byte
+  // signCount = 1 (big-endian)
+  out[36] = 1 as Byte
+  out
+}
+
+fn build_passkey_sig(
+  sk32 : Bytes,
+  pk65 : Bytes,
+  entry_hash_hex : String,
+  origin : String,
+  rp_id : String,
+  webauthn_type : String,
+  flags : Int,
+  tamper_der : Bool,
+) -> form::Json {
+  let hash_bytes = match base_codec::hex_decode(entry_hash_hex) {
+    Some(b) => b
+    None => panic("bad hex")
+  }
+  let challenge = base_codec::base64url_encode(hash_bytes)
+  let client_str = base_codec::json_stringify(base_codec::json_obj([
+    ("type", base_codec::json_str(webauthn_type)),
+    ("challenge", base_codec::json_str(challenge)),
+    ("origin", base_codec::json_str(origin)),
+  ]))
+  let client_bytes = client_str.to_bytes()
+  let auth_bytes = make_auth_data(rp_id, flags)
+  let signed = Bytes::new(auth_bytes.length() + 32)
+  let c_hash = crypto::sha256(client_bytes)
+  for i in 0..<auth_bytes.length() {
+    signed[i] = auth_bytes[i]
+  }
+  for i in 0..<32 {
+    signed[auth_bytes.length() + i] = c_hash[i]
+  }
+  let raw_sig = match crypto::p256_sign_es256(sk32, signed) {
+    Ok(s) => s
+    Err(_) => panic("p256_sign_es256 failed")
+  }
+  let der = es256_raw_to_der(raw_sig)
+  if tamper_der {
+    let last = der.length() - 1
+    der[last] = ((der[last].to_int() ^ 0xFF) & 0xFF) as Byte
+  }
+  let key_id = "p256:" + base_codec::base64url_encode(pk65)
+  form::Json::Obj([
+    ("key", form::Json::Str(key_id)),
+    ("alg", form::Json::Str("webauthn")),
+    ("authenticator_data", form::Json::Str(base_codec::base64url_encode(auth_bytes))),
+    ("client_data", form::Json::Str(base_codec::base64url_encode(client_bytes))),
+    ("sig", form::Json::Str(base_codec::base64url_encode(der))),
+  ])
+}
+
+test "E2E 7: Passkey P-256 WebAuthn verification accepts valid assertion and rejects all tampered cases" {
+  let sk = match base_codec::hex_decode("c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721") {
+    Some(b) => b
+    None => panic("bad sk")
+  }
+  let pk = match crypto::p256_public_key(sk) {
+    Ok(p) => p
+    Err(_) => panic("p256_public_key failed")
+  }
+  let key_id = "p256:" + base_codec::base64url_encode(pk)
+  debug_assert(valid_key_id(key_id), "p256 key id valid")
+
+  let c = native_lock_crypto()
+  let origins = ["https://app.still.fail", "https://still.fail"]
+  let rp_id = "still.fail"
+  let entry_hash = crypto::sha256_hex("lock-entry-canonical-body".to_bytes())
+  let other_hash = crypto::sha256_hex("different-entry-body".to_bytes())
+
+  // 1. Valid WebAuthn Passkey assertion -> ACCEPTED
+  let valid_sig = build_passkey_sig(sk, pk, entry_hash, "https://app.still.fail", rp_id, "webauthn.get", 1, false)
+  debug_assert((c.sig_valid)(valid_sig, entry_hash, origins, rp_id, true), "valid WebAuthn passkey accepted")
+
+  // 2. passkey=false with alg="webauthn" -> REJECTED
+  debug_assert(!(c.sig_valid)(valid_sig, entry_hash, origins, rp_id, false), "webauthn rejected when passkey=false")
+
+  // 3. Wrong origin -> REJECTED
+  let bad_origin = build_passkey_sig(sk, pk, entry_hash, "https://evil.example", rp_id, "webauthn.get", 1, false)
+  debug_assert(!(c.sig_valid)(bad_origin, entry_hash, origins, rp_id, true), "wrong origin rejected")
+
+  // 4. Wrong rpIdHash -> REJECTED
+  let bad_rp = build_passkey_sig(sk, pk, entry_hash, "https://app.still.fail", "evil.example", "webauthn.get", 1, false)
+  debug_assert(!(c.sig_valid)(bad_rp, entry_hash, origins, rp_id, true), "wrong rpIdHash rejected")
+
+  // 5. Wrong challenge (signed for other_hash, verified against entry_hash) -> REJECTED
+  let bad_chal = build_passkey_sig(sk, pk, other_hash, "https://app.still.fail", rp_id, "webauthn.get", 1, false)
+  debug_assert(!(c.sig_valid)(bad_chal, entry_hash, origins, rp_id, true), "wrong challenge rejected")
+
+  // 6. Tampered DER signature -> REJECTED
+  let bad_der = build_passkey_sig(sk, pk, entry_hash, "https://app.still.fail", rp_id, "webauthn.get", 1, true)
+  debug_assert(!(c.sig_valid)(bad_der, entry_hash, origins, rp_id, true), "tampered DER signature rejected")
+
+  // 7. UP flag = 0 -> REJECTED
+  let no_up = build_passkey_sig(sk, pk, entry_hash, "https://app.still.fail", rp_id, "webauthn.get", 0, false)
+  debug_assert(!(c.sig_valid)(no_up, entry_hash, origins, rp_id, true), "UP=0 rejected")
+
+  // 8. Wrong type ("webauthn.create") -> REJECTED
+  let bad_type = build_passkey_sig(sk, pk, entry_hash, "https://app.still.fail", rp_id, "webauthn.create", 1, false)
+  debug_assert(!(c.sig_valid)(bad_type, entry_hash, origins, rp_id, true), "wrong webauthn type rejected")
+}
+
+// ── Test 8: SessionChanged / JobChanged live tracking, account.doc / roster queries, and lock.status ──
+
+test "E2E 8: SessionChanged/JobChanged live sync, account.doc & workspace/station roster, and lock.status" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-8") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  let wakes = [0]
+  let core = ClientCore::new("ws-core", "st1", rt, db, station.transport(), fn() -> Unit {
+    wakes[0] += 1
+  })
+
+  // 1. lock.status before pinning
+  match core.handle_wire("{\"id\":1,\"call\":\"lock.status\",\"params\":{}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"locked\":false") && txt.contains("\"ws-core\""), "unlocked status")
+    None => debug_assert(false, "expected lock.status")
+  }
+
+  // 2. Pin a real Ed25519-signed genesis lock and query lock.status again
+  let owner_seed = make_seed(44)
+  let owner_key = ed25519_key_id(owner_seed)
+  let owner_dev_id = hex_64("4")
+  let gen_unsigned = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("ws-core")),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    (
+      "body",
+      form::Json::Obj([
+        ("owner", form::Json::Str("u-owner")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        (
+          "members",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("sub", form::Json::Str("u-owner")),
+              ("email", form::Json::Str("owner@example.com")),
+              ("role", form::Json::Str("owner")),
+            ]),
+          ]),
+        ),
+        (
+          "devices",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("id", form::Json::Str(owner_dev_id)),
+              ("sub", form::Json::Str("u-owner")),
+              ("kind", form::Json::Str("app")),
+              ("label", form::Json::Str("Mac")),
+              ("sign_key", form::Json::Str(owner_key)),
+            ]),
+          ]),
+        ),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ]),
+    ),
+  ])
+  let gen_signed = match sign_lock_entry(owner_seed, gen_unsigned) {
+    Ok(e) => e
+    Err(why) => panic("sign genesis failed: " + why)
+  }
+  let root_hash = match lock::entry_hash(gen_signed, native_lock_crypto()) {
+    Ok(h) => h
+    Err(_) => panic("entry_hash failed")
+  }
+  match core.apply_lock_chain([gen_signed], root_hash) {
+    Ok(_) => ()
+    Err(e) => panic("apply_lock_chain failed: " + e)
+  }
+  match core.handle_wire("{\"id\":2,\"call\":\"lock.status\",\"params\":{}}") {
+    Some((txt, _)) => {
+      debug_assert(txt.contains("\"locked\":true"), "locked=true")
+      debug_assert(txt.contains(root_hash), "genesis hash present")
+      debug_assert(txt.contains("\"memberCount\":1"), "memberCount=1")
+    }
+    None => debug_assert(false, "expected lock.status after pin")
+  }
+
+  // 3. Real-time SessionChanged & JobChanged via SSE -> FrameOutbox + sessions.list / jobs.open
+  core.start()
+  rt.advance(20)
+  let _ = core.drain_frame()
+  station.push_sse(
+    "id: s-1\nevent: session\ndata: {\"key\":\"sess-a\",\"running\":true,\"listed\":true,\"turns\":3}\n\n" +
+    "id: j-1\nevent: job\ndata: {\"id\":\"job-1\",\"session\":\"sess-a\",\"open\":true,\"chat\":\"c-1\"}\n\n",
+  )
+  debug_assert(core.running_session_count() == 1, "1 running session")
+  debug_assert(core.open_job_count() == 1, "1 open job")
+  let evs1 = core.drain_frame()
+  let mut saw_sess_ev = false
+  let mut saw_job_ev = false
+  for i in 0..<evs1.length() {
+    match evs1[i] {
+      CoreEvent::SessionChanged(s, k, r) => if s == "st1" && k == "sess-a" && r { saw_sess_ev = true }
+      CoreEvent::JobChanged(s, jid, o) => if s == "st1" && jid == "job-1" && o { saw_job_ev = true }
+      _ => ()
+    }
+  }
+  debug_assert(saw_sess_ev && saw_job_ev, "SessionChanged and JobChanged emitted to FrameOutbox")
+
+  match core.handle_wire("{\"id\":3,\"call\":\"sessions.list\",\"params\":{}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"sess-a\"") && txt.contains("\"running\":true"), "sessions.list")
+    None => debug_assert(false, "expected sessions.list")
+  }
+  match core.handle_wire("{\"id\":4,\"call\":\"jobs.open\",\"params\":{}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"job-1\"") && txt.contains("\"open\":true"), "jobs.open")
+    None => debug_assert(false, "expected jobs.open")
+  }
+
+  // Transition session to idle and job to closed
+  station.push_sse(
+    "id: s-2\nevent: session\ndata: {\"key\":\"sess-a\",\"running\":false,\"listed\":true,\"turns\":4}\n\n" +
+    "id: j-2\nevent: job\ndata: {\"id\":\"job-1\",\"session\":\"sess-a\",\"open\":false,\"chat\":\"c-1\"}\n\n",
+  )
+  debug_assert(core.running_session_count() == 0, "0 running sessions after idle")
+  debug_assert(core.open_job_count() == 0, "0 open jobs after close")
+
+  // 4. account.doc + workspace & station roster persistence & queries
+  let _ = store::put_account_doc(db, "me", "{\"email\":\"alice@still.fail\"}", confirmed=Some(1000.to_int64()))
+  let _ = store::upsert_workspace(db, "ws-core", "{\"name\":\"Core WS\"}", confirmed=Some(1000.to_int64()))
+  let _ = store::upsert_station_doc(db, "st1", "overview", "{\"name\":\"Studio\"}", confirmed=Some(1000.to_int64()))
+
+  match core.handle_wire("{\"id\":5,\"call\":\"account.doc\",\"params\":{\"name\":\"me\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("alice@still.fail"), "account.doc query")
+    None => debug_assert(false, "expected account.doc")
+  }
+  match core.handle_wire("{\"id\":6,\"call\":\"workspaces.list\",\"params\":{}}") {
+    Some((txt, _)) => debug_assert(txt.contains("ws-core") && txt.contains("Core WS"), "workspaces.list query")
+    None => debug_assert(false, "expected workspaces.list")
+  }
+  match core.handle_wire("{\"id\":7,\"call\":\"stations.list\",\"params\":{\"kind\":\"overview\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("st1") && txt.contains("Studio"), "stations.list query")
+    None => debug_assert(false, "expected stations.list")
+  }
+  match core.handle_wire("{\"id\":8,\"subscribe\":{\"topic\":\"workspaces\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"value\"") && txt.contains("ws-core"), "workspaces subscribe")
+    None => debug_assert(false, "expected workspaces subscribe")
+  }
   core.stop()
 }

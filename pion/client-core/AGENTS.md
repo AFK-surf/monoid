@@ -19,9 +19,10 @@ Pure-Pion client core workspace (`pion.toml`) on top of `pion/base` and official
   - `station_events.pion`: `StationEvents` (`mesh::Link` + `wire::Sse` `/events` consumer, zero polling, exponential virtual-clock reconnect backoff, single-transaction `sql::Burst` ingestion, typed `CoreEvent` pushed to `FrameOutbox[CoreEvent]`).
   - `sync_scheduler.pion`: `SyncScheduler` over `pion-packages/effect` (`effect::Scheduler`, `urgent_room`, `prioritize`, `Preempt`, Rule 4).
   - `local_outbox.pion`: `LocalOutbox` optimistic writes (`outbox`/`pending`/`changing`), exact `client_key` reconciliation, offline auto-flush on reconnect, and atomic rollback with recovery hint on station refusal (Rule 5).
-  - `lock_bridge.pion`: zero-JSON native `pion/rules` (`lock`, `vault`) crypto & verification bridge backed by `mesh::ed25519_verify` / `ed25519_sign` and `crypto::sha256_hex` / `crypto::sha256`.
-  - `client_core.pion`: unified `ClientCore` exposing both direct typed `FrameOutbox[CoreEvent]` commands for Invar UI and thin JSON `core_api.h` wire protocol via `packages/protocol`.
+  - `lock_bridge.pion`: zero-JSON native `pion/rules` (`lock`, `vault`) crypto & verification bridge backed by `mesh::ed25519_verify` / `ed25519_sign`, `crypto::p256_verify_der` (WebAuthn/Passkey) / `crypto::p256_verify_es256`, and `crypto::sha256_hex` / `crypto::sha256`.
+  - `client_core.pion`: unified `ClientCore` exposing both direct typed `FrameOutbox[CoreEvent]` commands for Invar UI and thin JSON `core_api.h` wire protocol via `packages/protocol` (including `lock.status`, `sessions.list`, `jobs.open`, `account.doc`, `workspaces.list`, `stations.list`).
   - `sim_station_test.pion`: deterministic `SimStation` + `SimAccountDb` E2E tests on `effect::Runtime` virtual clock.
+- `packages/live_shell_smoke` (standalone, excluded from default workspace tests): end-to-end native executable linking `shell_native` + `shell_pion.c` + real Rust `libstillfail_shell` (`rusqlite` WAL + Tokio async IO).
 
 ## Rules
 

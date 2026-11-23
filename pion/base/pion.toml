@@ -4,6 +4,7 @@ members = [
   "packages/wire",
   "packages/net",
   "packages/shell",
+  "packages/shell_native",
   "packages/sql",
   "packages/mesh",
 ]
@@ -21,5 +22,6 @@ base_codec = { path = "packages/base_codec" }
 wire = { path = "packages/wire" }
 net = { path = "packages/net" }
 shell = { path = "packages/shell" }
+shell_native = { path = "packages/shell_native" }
 sql = { path = "packages/sql" }
 mesh = { path = "packages/mesh" }

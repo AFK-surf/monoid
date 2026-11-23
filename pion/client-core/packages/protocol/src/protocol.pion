@@ -488,6 +488,73 @@ fn Slice1Router::handle_account_doc(self : Slice1Router, id : Int64, params : ba
   }
 }
 
+fn Slice1Router::handle_workspaces_list(self : Slice1Router, id : Int64, is_sub : Bool) -> CoreEvent {
+  match store::list_workspaces(self.db) {
+    sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+    sql::SqlResult::Ok(rows) => {
+      let items : Array[base_codec::Json] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        let doc = match base_codec::json_parse(r.json) {
+          base_codec::JsonParseResult::Ok(j) => j
+          base_codec::JsonParseResult::Err(_) => base_codec::json_str(r.json)
+        }
+        let conf = match r.confirmed {
+          Some(ts) => base_codec::json_int64(ts)
+          None => base_codec::json_null()
+        }
+        items.push(base_codec::json_obj([
+          ("id", base_codec::json_str(r.id)),
+          ("doc", doc),
+          ("confirmed", conf),
+        ]))
+      }
+      let payload = base_codec::json_obj([("workspaces", base_codec::json_arr(items))])
+      if is_sub {
+        CoreEvent::Value(id, payload, None)
+      } else {
+        CoreEvent::Ok(id, payload, None)
+      }
+    }
+  }
+}
+
+fn Slice1Router::handle_stations_list(self : Slice1Router, id : Int64, params : base_codec::Json, is_sub : Bool) -> CoreEvent {
+  let kind = match opt_str_field(params, "kind") {
+    Some(k) => k
+    None => "overview"
+  }
+  match store::list_stations(self.db, kind=kind) {
+    sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+    sql::SqlResult::Ok(rows) => {
+      let items : Array[base_codec::Json] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        let doc = match base_codec::json_parse(r.json) {
+          base_codec::JsonParseResult::Ok(j) => j
+          base_codec::JsonParseResult::Err(_) => base_codec::json_str(r.json)
+        }
+        let conf = match r.confirmed {
+          Some(ts) => base_codec::json_int64(ts)
+          None => base_codec::json_null()
+        }
+        items.push(base_codec::json_obj([
+          ("address", base_codec::json_str(r.address)),
+          ("kind", base_codec::json_str(r.kind)),
+          ("doc", doc),
+          ("confirmed", conf),
+        ]))
+      }
+      let payload = base_codec::json_obj([("stations", base_codec::json_arr(items))])
+      if is_sub {
+        CoreEvent::Value(id, payload, None)
+      } else {
+        CoreEvent::Ok(id, payload, None)
+      }
+    }
+  }
+}
+
 /// Dispatch one typed `CoreRequest` through the Slice 1 local read-only router.
 pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[CoreEvent] {
   match req {
@@ -500,6 +567,12 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
       }
       if call_name == "account.doc" {
         return Some(self.handle_account_doc(id, params))
+      }
+      if call_name == "workspaces.list" {
+        return Some(self.handle_workspaces_list(id, false))
+      }
+      if call_name == "stations.list" {
+        return Some(self.handle_stations_list(id, params, false))
       }
       if call_name == "echo.bytes" {
         return Some(CoreEvent::Ok(id, params, bytes))
@@ -514,6 +587,12 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
       }
       if topic.name == "chats" {
         return Some(self.handle_chats_window(id, topic.to_json(), true))
+      }
+      if topic.name == "workspaces" {
+        return Some(self.handle_workspaces_list(id, true))
+      }
+      if topic.name == "workspace" {
+        return Some(self.handle_stations_list(id, topic.to_json(), true))
       }
       if topic.name == "accounts" {
         return Some(CoreEvent::Value(id, base_codec::json_arr([]), None))
