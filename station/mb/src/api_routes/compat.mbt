@@ -144,9 +144,30 @@ fn frame(text : String, supported : Array[String], services : Bool) -> String ra
 }
 
 ///|
+/// Whether `frame` changes a frame at all, read from its head alone (runtime-compat.ts `projected`): the rest (live
+/// rates, shared chats, jobs, pings) goes out as it came.
+fn projected(text : String) -> Bool {
+  for line in text.split("\n") {
+    if line.has_prefix("data: ") {
+      return false
+    }
+    if line.has_prefix("event: ") {
+      let event = line.to_string()
+      return event == "event: overview" ||
+        event == "event: session" ||
+        event == "event: thread"
+    }
+  }
+  false
+}
+
+///|
 /// What older clients of the same vocabulary are told of one event is the same text: made once for all their streams
-/// (runtime-compat.ts `frameOnce`), the latest frames only.
+/// (runtime-compat.ts `frameOnce`). Only frames `frame` changes are kept, the latest within 64 and 4 MiB.
 let framed : Map[String, String] = Map::new()
+
+///|
+let framed_bytes : Ref[Int] = Ref(0)
 
 ///|
 fn frame_once(
@@ -155,15 +176,21 @@ fn frame_once(
   supported : Array[String],
   services : Bool,
 ) -> String raise {
+  if !projected(text) {
+    return text
+  }
   let key = "\{vocabulary}\u{0}\{text}"
   match framed.get(key) {
     Some(made) => made
     None => {
       let made = frame(text, supported, services)
-      if framed.length() >= 128 {
+      if framed.length() >= 64 ||
+        framed_bytes.val + key.length() + made.length() > 4 * 1024 * 1024 {
         framed.clear()
+        framed_bytes.val = 0
       }
       framed[key] = made
+      framed_bytes.val += key.length() + made.length()
       made
     }
   }

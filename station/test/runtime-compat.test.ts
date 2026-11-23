@@ -91,6 +91,13 @@ test("relayed events are projected piece by piece, one text for every older stre
   assert.ok(!got[0]![0]!.includes('"authorRuntime":"hermes"'));
   assert.ok(got[0]![0]!.endsWith("\n\n"));
   assert.equal(got[1]![0], got[0]![0], "the same event told two older streams alike");
+  const session = `id: run.9\nevent: session\ndata: {"key":"cc","runtime":"claude"}\n\n`;
+  a.tell(session);
+  b.tell(session);
+  assert.ok(got[0]![1] === got[1]![1], "one event's piece is the one kept string");
+  const live = `id: run.10\nevent: live\ndata: {"runtime":"hermes"}\n\n`;
+  a.tell(live);
+  assert.equal(got[0]![2], live, "what frame leaves as it is goes out as it came");
   await ra.return();
   assert.ok(a.returned(), "ending the projected stream ends the one it reads");
 });
