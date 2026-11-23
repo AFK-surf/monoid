@@ -30,7 +30,7 @@
 # Run in station/.
 s=${1:-0/1}
 i=${s%/*} n=${s#*/}
-# (rules-fork at 310, mb-fault-replica-retire 260, memory-sync-random 200, mb-fault-runtimes-and-lend 150, lock-roster4
+# (rules-fork at 480, mb-fault-replica-retire 310, memory-sync-random 200, mb-fault-runtimes-and-lend 150, lock-roster4
 # 55, lock-fork-choice 55, lock-moved-model 50 and hub 45: the 2026-11-23 seconds above were a 16-core pvg-office-2's,
 # where the four workers of each lock model had cores of their own, while a CI runner's 4 vCPUs share them with the
 # slice's other files. Dealt at those seconds with rules-fork and replica-retire left at their old floors (168, 210: 18%
@@ -41,8 +41,12 @@ i=${s%/*} n=${s#*/}
 # 350, and dealt so (#8253's 45123508084) their slices took 144 and 129 s where memory-sync-random's took 207 and
 # mb-fault-runtimes-and-lend's 235 (264 s the job), so those four are set from that run. Before that: rules-fork at no
 # less than what CI made of its model's workers; mb-fault-replica-retire two MoonBit stations over iroh three times, a
-# 48 MiB hand-over cut by a kill, 180-208 s on CI's Linux runners (#7780's 44757732573: 208))
-long="test/rules-fork.test.ts:310 test/mb-fault-replica-retire.test.ts:260 test/memory-sync-random.test.ts:200"
+# 48 MiB hand-over cut by a kill, 180-208 s on CI's Linux runners (#7780's 44757732573: 208). At #8253's 310 and 260,
+# check-station (0) was the slowest of seven runs (45178513923, 45207891181, 45214346959, 45216385339, 45218313109,
+# 45218801300, 45220418673), its tests 239-286 s and more: 293 and 294 s the job (45218313109, 45214346959), cut at its
+# 5 minutes at 308 (45218801300); (1) took 259 s of tests on a slower runner (289 the job), where (5) kept to 142-156
+# (176-187 the job). At 480 and 310 slice 0 sheds some 133 units and slice 1 15, slices 2-5 taking 35-38 each.)
+long="test/rules-fork.test.ts:480 test/mb-fault-replica-retire.test.ts:310 test/memory-sync-random.test.ts:200"
 long="$long test/mb-fault-runtimes-and-lend.test.ts:150 test/mb-reader-usage-page.test.ts:94"
 long="$long test/move-accounts.test.ts:91 test/replica-retire.test.ts:91 test/mb-fault-adb-device-connects.test.ts:81"
 long="$long test/mb-fault-move-and-connects.test.ts:79 test/mb-fault-agents-and-pack.test.ts:73"
