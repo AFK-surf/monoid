@@ -40,7 +40,22 @@ fn FocusRecovery::track_with(
     match @signals.untracked(fallback) {
       Some(next) if next.id() != v.id() &&
         @signals.untracked(fn() { next.takes_input() }) &&
-        next.tree.takes_keys(next.id()) => next.ask_focus(visible=true) |> ignore
+        next.tree.takes_keys(next.id()) =>
+        // Schedule at the current cause moment on `next`: if `next` is also being torn down in the same container
+        // unmount (e.g. a closing Menu), `next`'s own `owns_while` cancels this before it can spuriously move focus.
+        next.at_moment(next.cause_at(), fn() {
+          let moved = match next.tree.focused_now().0 {
+            Some(_) => true
+            None => false
+          }
+          if !moved &&
+            next.alive() &&
+            @signals.untracked(fn() { next.takes_input() }) &&
+            next.tree.takes_keys(next.id()) {
+            next.ask_focus(visible=true) |> ignore
+          }
+        })
+        |> ignore
       _ => ()
     }
   }
