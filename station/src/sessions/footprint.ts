@@ -5,6 +5,7 @@ import { basename, dirname, join, normalize, sep } from "node:path";
 import { log } from "../ops/log.ts";
 import { fileName, samePath, segments, within } from "../ops/paths.ts";
 import { MbProcess, readerBinary } from "../read/mb-reader.ts";
+import { resolveReaderEngine } from "../read/reader-select.ts";
 
 /// Path::starts_with: `path` is `dir` or under it.
 export { within };
@@ -203,6 +204,17 @@ type Ask = { finding: boolean; strict: boolean; stopAfter?: number };
 function measure(path: string, ask: Ask, budget: MeasureBudget, signal?: AbortSignal): Promise<Measured> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(signal.reason);
+    const selection = resolveReaderEngine("footprint", { hasPionBinary: false });
+    if (selection.fallback) {
+      log.warn("footprint", "reader engine fallback", {
+        mode: selection.mode,
+        engine: selection.engine,
+        requested: selection.requested,
+        source: selection.source,
+        reason: selection.reason,
+        detail: selection.detail,
+      });
+    }
     const binary = readerBinary();
     const p = new MbProcess(binary, ["--builder", "footprint", "--sep", sep], { background: true });
     let settled = false;
