@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6c6003fb0](https://github.com/AFK-surf/monoid/commit/6c6003fb081fea01448bcb2fbc3f99a905f9f707) feat(client-core): add batch 3 pure-Pion views, wi | 2.73 | 3.67 | 14.89 | 37.06 | 56.73 | 32.46 | 65.91 | 100.58 | 113.28 |
 | [1273b1fd4](https://github.com/AFK-surf/monoid/commit/1273b1fd443398b42169f28c2231cf258111722c) fix(ui): place popovers clear of the window's own  | 2.73 | 3.67 | 14.89 | 37.06 | 56.73 | 32.46 | 65.91 | 100.58 | 113.28 |
 | [9ce847dfe](https://github.com/AFK-surf/monoid/commit/9ce847dfebf3c9ceee104640eda346dce9efd4bf) feat(client-core): wire views projections into Cli | 2.73 | 3.67 | 14.89 | 37.06 | 56.73 | 32.46 | 65.91 | 100.42 | 124.6 |
 | [34df40aaa](https://github.com/AFK-surf/monoid/commit/34df40aaa4d4948a5be5ce4e194ad830405883bc) feat(station): a switch on Antigravity profiles fo | 2.73 | 3.67 | 14.89 | 37.06 | 56.73 | 32.45 | 65.89 | 100.52 | 128.2 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [834d58ac2](https://github.com/AFK-surf/monoid/commit/834d58ac27bab783e181bd7fca86a500f6881e6b) feat(client,mbui): mirror native crash/hang teleme | 2.72 | 3.66 | 14.82 | 36.96 | 56.49 | 32.39 | 65.71 | 100.14 | 122.51 |
 | [cc6c1ec4a](https://github.com/AFK-surf/monoid/commit/cc6c1ec4a9797a862376fe967c72f53cb2414241) fix(mbui): update edge_node.mbt audit filter path  | 2.71 | 3.66 | 14.82 | 36.95 | 56.48 | 32.38 | 65.69 | 100.17 | 127.86 |
 | [15e4bd88f](https://github.com/AFK-surf/monoid/commit/15e4bd88f4e1d5d313e9187ee46950e1f1e6dfad) refactor(ui): merge libs/mbui and libs/sf-ui into  | 2.71 | 3.66 | 14.82 | 36.95 | 56.48 | 32.38 | 65.69 | 100.27 | 120.76 |
-| [1f8abdffe](https://github.com/AFK-surf/monoid/commit/1f8abdffeaa46dc430ba0d87683d3809ebb4d56d) feat(station): add OTLP business trace spans acros | 2.71 | 3.66 | 14.82 | 36.95 | 56.48 | 32.38 | 65.69 | 100.24 | 121.17 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6c6003fb0](https://github.com/AFK-surf/monoid/commit/6c6003fb081fea01448bcb2fbc3f99a905f9f707) feat(client-core): add batch 3 pure-Pion views, wi | 0.49 | 0.64 | 2.45 | 3.51 | 5.81 | 1.79 | 4.83 | 55.02 |
 | [1273b1fd4](https://github.com/AFK-surf/monoid/commit/1273b1fd443398b42169f28c2231cf258111722c) fix(ui): place popovers clear of the window's own  | 0.49 | 0.64 | 2.45 | 3.51 | 5.81 | 1.79 | 4.83 | 55.28 |
 | [9ce847dfe](https://github.com/AFK-surf/monoid/commit/9ce847dfebf3c9ceee104640eda346dce9efd4bf) feat(client-core): wire views projections into Cli | 0.49 | 0.64 | 2.45 | 3.51 | 5.81 | 1.79 | 4.83 | 55.28 |
 | [34df40aaa](https://github.com/AFK-surf/monoid/commit/34df40aaa4d4948a5be5ce4e194ad830405883bc) feat(station): a switch on Antigravity profiles fo | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.26 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [834d58ac2](https://github.com/AFK-surf/monoid/commit/834d58ac27bab783e181bd7fca86a500f6881e6b) feat(client,mbui): mirror native crash/hang teleme | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.26 |
 | [cc6c1ec4a](https://github.com/AFK-surf/monoid/commit/cc6c1ec4a9797a862376fe967c72f53cb2414241) fix(mbui): update edge_node.mbt audit filter path  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.46 |
 | [15e4bd88f](https://github.com/AFK-surf/monoid/commit/15e4bd88f4e1d5d313e9187ee46950e1f1e6dfad) refactor(ui): merge libs/mbui and libs/sf-ui into  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.08 |
-| [1f8abdffe](https://github.com/AFK-surf/monoid/commit/1f8abdffeaa46dc430ba0d87683d3809ebb4d56d) feat(station): add OTLP business trace spans acros | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.26 |
