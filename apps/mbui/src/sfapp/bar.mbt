@@ -43,10 +43,10 @@ let act_gap : Double = 10.0
 ///|
 /// How much taller than the capsule its lens is lifted (TabBarLens.kt LIFTED_HEIGHT_RATIO), and how wide for that
 /// height, no wider than a share of a place (LIFTED_ASPECT, LIFTED_TAB_SHARE).
-let lens_lift_h : Double = 1.17
+let lens_lift_h : Double = 1.28
 
 ///|
-let lens_lift_aspect : Double = 1.45
+let lens_lift_aspect : Double = 1.50
 
 ///|
 /// How far the bar and its panel are drawn up while a finger has them. Give a taller window a little more room above
