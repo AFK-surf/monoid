@@ -408,8 +408,9 @@ fn lists_band_node(
           fn() { filter_glass_rows(shown()) },
         )
       })
-      // the filter: its menu (sfpages' filter_menu), a filter its list, 已归档 the archive's list
-      line.show(at_once=true, fn() { !@sf.native_on() && view().map(fn(v) { v.stations > 0 }).unwrap_or(false) }, fn(k) {
+      // the filter: its menu (sfpages' filter_menu), a filter its list, 已归档 the archive's list; coming and going
+      // along the row (a workspace switched to one with no stations: 新建对话 widening over its room, not at once)
+      line.show(along_row=true, fn() { !@sf.native_on() && view().map(fn(v) { v.stations > 0 }).unwrap_or(false) }, fn(k) {
         let shown = fn() {
           match workspace() {
             Some(w) => list_place(list_mode(src, w))
