@@ -128,6 +128,79 @@ pub fn subchat_row_state_text(o : @sfbase.OpenedChat) -> String {
 }
 
 ///|
+/// Secondary line for a search hit: shows message body excerpt (`found_text`) when present (including for archived
+/// rows), otherwise falls back to `subchat_row_state_text`.
+pub fn subchat_hit_row_text(hit : @sfbase.SubchatHit) -> String {
+  if hit.found_text != "" {
+    hit.found_text
+  } else {
+    subchat_row_state_text(hit.opened)
+  }
+}
+
+///|
+/// Local fallback filter over already-loaded `OpenedChat` items by title and state text (used when core has not yet
+/// answered `chatSubchats`, or in unit tests without a core `Source`).
+pub fn subchats_filter_local(items : Array[@sfbase.OpenedChat], q : String) -> Array[@sfbase.SubchatHit] {
+  let words : Array[String] = []
+  for part in q.trim().to_lower().split(" ") {
+    let w = part.to_owned()
+    if w != "" {
+      words.push(w)
+    }
+  }
+  if words.is_empty() {
+    return items.map(fn(o) { { opened: o, found_text: "", found_marks: [] } })
+  }
+  let titled : Array[@sfbase.SubchatHit] = []
+  let rest : Array[@sfbase.SubchatHit] = []
+  for o in items {
+    let tl = o.chat.title.to_lower()
+    if words.iter().all(fn(w) { tl.contains(w) }) {
+      titled.push({ opened: o, found_text: "", found_marks: [] })
+    } else {
+      let sl = o.state_text.to_lower()
+      if words.iter().all(fn(w) { sl.contains(w) }) {
+        rest.push({ opened: o, found_text: "", found_marks: [] })
+      }
+    }
+  }
+  for r in rest {
+    titled.push(r)
+  }
+  titled
+}
+
+///|
+/// Reads filtered sub-chats for a non-empty trimmed query `q`: subscribes to `chatSubchats` only when `q != ""` and
+/// `src`/`chat` are given, falling back to `subchats_filter_local` before the core answers so typing never flashes empty.
+pub fn subchats_search_results(
+  src : @sfbase.Source?,
+  chat : @sfbase.ChatRef?,
+  all_items : () -> Array[@sfbase.OpenedChat],
+  include_opened : Bool,
+  q : String,
+) -> (Array[@sfbase.SubchatHit], Bool) {
+  let trimmed = q.trim().to_owned()
+  if trimmed == "" {
+    return ([], false)
+  }
+  match (src, chat) {
+    (Some(s), Some(r)) => {
+      let t = s.topic("chatSubchats", @sfbase.subchats_search_params(r, trimmed)).get()
+      match @sfbase.subchats_search_view(t.value) {
+        Some(sv) => {
+          let hits = if include_opened { sv.items } else { sv.items.filter(fn(h) { h.opened.led }) }
+          (hits, sv.reading)
+        }
+        None => (subchats_filter_local(all_items(), trimmed), true)
+      }
+    }
+    _ => (subchats_filter_local(all_items(), trimmed), false)
+  }
+}
+
+///|
 /// Status mark kind for a sub-chat row: 0=run dot, 1=need dot, 2=fail dot, 3=archived icon, 4=done icon, 5=spawned icon.
 pub fn subchat_mark_kind(o : @sfbase.OpenedChat?) -> Int {
   match o {
@@ -195,10 +268,13 @@ pub fn subchats_counts_node(parent : @view.View, opened : () -> Array[@sfbase.Op
 pub fn subchats_list_node(
   v : @view.View,
   opened : () -> Array[@sfbase.OpenedChat],
+  src? : @sfbase.Source,
+  chat? : @sfbase.ChatRef,
   close? : () -> Unit,
   in_panel? : () -> Unit,
   show_head? : Bool = true,
   scroll_most? : () -> Double,
+  fills? : Bool = false,
   include_opened? : Bool = false,
 ) -> Unit {
   let led = fn() { led_subchats(opened()) }
@@ -225,10 +301,16 @@ pub fn subchats_list_node(
   let more_of = fn(kind : Int) { if kind == 2 { archived_more } else { done_more } }
   let more_open = fn() { lead_kind() != 0 && more_of(lead_kind()).get() }
   let lead = fn() { subchats_lead(subchats(), more_open()) }
-  let scroll : @view.Scroll? = match scroll_most {
-    Some(_) => Some(@view.Scroll::new())
-    None => None
+  let scroll : @view.Scroll? = if scroll_most is Some(_) || fills {
+    Some(@view.Scroll::new())
+  } else {
+    None
   }
+  let search_field = @ui.Field::new()
+  let query : @signals.Signal[String] = @signals.signal("")
+  let search_focused : @signals.Signal[Bool] = @signals.signal(false)
+  let query_trimmed = fn() { query.get().trim().to_owned() }
+  let search_active = fn() { query_trimmed() != "" || search_focused.get() }
   if show_head {
     v.box(fn(head) {
       @sf.style_node(head, fn() { subchats_head })
@@ -240,103 +322,168 @@ pub fn subchats_list_node(
       Some(sc) =>
         v.box(fn(l) {
           @sf.style_node(l, fn() { subchats_head_divider })
-          l.alpha(By(fn() { if sc.goes() { 1.0 } else { 0.0 } })) |> ignore
+          l.alpha(By(fn() { if sc.overflows_past_tuck() { 1.0 } else { 0.0 } })) |> ignore
         })
         |> ignore
       None => ()
     }
   }
   let render_body = fn(host : @view.View) {
-    host.pick(at_once=true, fn() { subchats().length() == 0 }, fn(body, empty) {
-      if empty {
-        body.box(fn(e) {
-          @sf.style_node(e, fn() { subchats_empty })
-          @sf.words_node(e, fn() { @sf.t("web-pages.chat.subchatsNone") }, fn() { subchats_empty_words }) |> ignore
-        })
-        |> ignore
-        return
-      }
-      let key_of = fn(o : @sfbase.OpenedChat) { o.chat.station + "\u{1}" + o.chat.session }
-      let by_key = body.keyed_by(all_items, key_of)
-      body.box(fn(list) {
-        @sf.style_node(list, fn() { subchats_list })
-        list.box(fn(g) {
-          @sf.style_node(g, fn() { subchats_group })
-          g.each(fn() { lead().0.map(key_of) }, fn(k) { k }, fn(row, k) {
-            let id = k.untracked()
-            subchat_row_node(row, fn() { by_key.get(id) }, close?=close)
-          })
-          // (the finished ones past the latest, shown or folded back in place)
-          g.show(at_once=true, fn() { lead().1 > 0 }, fn(m) {
-            subchats_more_node(m, fn() { lead().1 }, more_open, fn() {
-              let more = more_of(@signals.untracked(lead_kind))
-              let folding = more.untracked()
-              more.set(!folding)
-              // (folded back, what it shows is the latest again, from the top: the press, under the last of all of
-              // them, has nothing above it to stay beside)
-              match scroll {
-                Some(sc) if folding => sc.put(0.0)
-                _ => ()
+    match scroll {
+      Some(sc) =>
+        host.show(at_once=true, fn() { all_items().length() > 0 }, fn(sw) {
+          @sf.style_node(sw, fn() { subchats_search_wrap })
+          let field_view = @sf.search_input_node(
+            sw,
+            search_field,
+            fn() { @sf.t("web-pages.chat.subchatsSearch") },
+            at=Side,
+            edited=fn(s) { query.set(s) },
+            cleared=fn() { query.set("") },
+            escape=fn() {
+              if search_field.text() != "" {
+                search_field.set("")
+                query.set("")
+                true
+              } else {
+                false
               }
-            })
-          })
+            },
+          )
+          field_view.reacts(fn() { field_view.focused() }, fn(f) { search_focused.set(f) })
+          sc.tucks(sw, fn() { 0.0 }, kept=fn() { !search_active() })
         })
-        |> ignore
-        // (what it does not lead with, folded under it: 6 under what it leads with, the heads 2 apart as its rows are)
-        let folds_done = fn() { if lead_kind() == 0 { done() } else { [] } }
-        let folds_archived = fn() { if lead_kind() != 2 { archived() } else { [] } }
-        // (a hairline between what it leads with and what folds under it, only while something folds there)
-        list.show(
-          at_once=true,
-          fn() { folds_done().length() > 0 || folds_archived().length() > 0 || extra_other().length() > 0 },
-          fn(sec) {
-            @sf.style_node(sec, fn() { subchats_list })
-            sec.box(fn(l) { @sf.style_node(l, fn() { subchats_sec_line }) }) |> ignore
-            sec.box(fn(heads) {
-              @sf.style_node(heads, fn() { subchats_group })
-              subchats_collapsible_group_node(
-                heads,
-                fn() { @sf.t("web-pages.chat.subchatsDone") },
-                "check",
-                folds_done,
-                done_open,
-                fn() { false },
-                key_of,
-                by_key,
-                close?=close,
-              )
-              subchats_collapsible_group_node(
-                heads,
-                fn() { @sf.t("web-pages.chat.subchatsArchived") },
-                "archive",
-                folds_archived,
-                archived_open,
-                // (spaced only from an open 已完成 above it: under a folded one the two heads stand as rows of one list)
-                fn() { folds_done().length() > 0 && done_open.get() },
-                key_of,
-                by_key,
-                close?=close,
-              )
-              subchats_collapsible_group_node(
-                heads,
-                fn() { @sf.t("web-pages.chat.subchatsOther") },
-                "spawned",
-                extra_other,
-                other_open,
+      None => ()
+    }
+    host.pick(at_once=true, fn() { query_trimmed() != "" }, fn(zone, filtering) {
+      if filtering {
+        let hit_key = fn(h : @sfbase.SubchatHit) { h.opened.chat.station + "\u{1}" + h.opened.chat.session }
+        let res = @signals.computed(fn(_) { subchats_search_results(src, chat, all_items, include_opened, query_trimmed()) })
+        let hits = fn() { res.get().0 }
+        let reading = fn() { res.get().1 }
+        let by_hit = zone.keyed_by(hits, hit_key)
+        zone.pick(at_once=true, fn() { hits().length() == 0 }, fn(body, none_found) {
+          if none_found {
+            body.box(fn(e) {
+              @sf.style_node(e, fn() { subchats_empty })
+              @sf.words_node(
+                e,
                 fn() {
-                  (folds_done().length() > 0 && done_open.get()) ||
-                  (folds_archived().length() > 0 && archived_open.get())
+                  if reading() {
+                    @sf.t("web-pages.chat.subchatsSearching")
+                  } else {
+                    @sf.t("web-pages.chat.subchatsNoMatch")
+                  }
                 },
-                key_of,
-                by_key,
-                close?=close,
+                fn() { subchats_empty_words },
               )
+              |> ignore
             })
             |> ignore
-          },
-        )
+            return
+          }
+          body.box(fn(g) {
+            @sf.style_node(g, fn() { subchats_group })
+            g.each(fn() { hits().map(hit_key) }, fn(k) { k }, fn(row, k) {
+              let id = k.untracked()
+              subchat_hit_row_node(row, fn() { by_hit.get(id) }, close?=close)
+            })
+          })
+          |> ignore
+        })
+        return
+      }
+      zone.pick(at_once=true, fn() { subchats().length() == 0 }, fn(body, empty) {
+        if empty {
+          body.box(fn(e) {
+            @sf.style_node(e, fn() { subchats_empty })
+            @sf.words_node(e, fn() { @sf.t("web-pages.chat.subchatsNone") }, fn() { subchats_empty_words }) |> ignore
+          })
+          |> ignore
+          return
+        }
+        let key_of = fn(o : @sfbase.OpenedChat) { o.chat.station + "\u{1}" + o.chat.session }
+        let by_key = body.keyed_by(all_items, key_of)
+        body.box(fn(list) {
+          @sf.style_node(list, fn() { subchats_list })
+          list.box(fn(g) {
+            @sf.style_node(g, fn() { subchats_group })
+            g.each(fn() { lead().0.map(key_of) }, fn(k) { k }, fn(row, k) {
+              let id = k.untracked()
+              subchat_row_node(row, fn() { by_key.get(id) }, close?=close)
+            })
+            // (the finished ones past the latest, shown or folded back in place)
+            g.show(at_once=true, fn() { lead().1 > 0 }, fn(m) {
+              subchats_more_node(m, fn() { lead().1 }, more_open, fn() {
+                let more = more_of(@signals.untracked(lead_kind))
+                let folding = more.untracked()
+                more.set(!folding)
+                // (folded back, what it shows is the latest again, from the top: the press, under the last of all of
+                // them, has nothing above it to stay beside)
+                match scroll {
+                  Some(sc) if folding => sc.put(sc.tuck_height())
+                  _ => ()
+                }
+              })
+            })
+          })
+          |> ignore
+          // (what it does not lead with, folded under it: 6 under what it leads with, the heads 2 apart as its rows are)
+          let folds_done = fn() { if lead_kind() == 0 { done() } else { [] } }
+          let folds_archived = fn() { if lead_kind() != 2 { archived() } else { [] } }
+          // (a hairline between what it leads with and what folds under it, only while something folds there)
+          list.show(
+            at_once=true,
+            fn() { folds_done().length() > 0 || folds_archived().length() > 0 || extra_other().length() > 0 },
+            fn(sec) {
+              @sf.style_node(sec, fn() { subchats_list })
+              sec.box(fn(l) { @sf.style_node(l, fn() { subchats_sec_line }) }) |> ignore
+              sec.box(fn(heads) {
+                @sf.style_node(heads, fn() { subchats_group })
+                subchats_collapsible_group_node(
+                  heads,
+                  fn() { @sf.t("web-pages.chat.subchatsDone") },
+                  "check",
+                  folds_done,
+                  done_open,
+                  fn() { false },
+                  key_of,
+                  by_key,
+                  close?=close,
+                )
+                subchats_collapsible_group_node(
+                  heads,
+                  fn() { @sf.t("web-pages.chat.subchatsArchived") },
+                  "archive",
+                  folds_archived,
+                  archived_open,
+                  // (spaced only from an open 已完成 above it: under a folded one the two heads stand as rows of one list)
+                  fn() { folds_done().length() > 0 && done_open.get() },
+                  key_of,
+                  by_key,
+                  close?=close,
+                )
+                subchats_collapsible_group_node(
+                  heads,
+                  fn() { @sf.t("web-pages.chat.subchatsOther") },
+                  "spawned",
+                  extra_other,
+                  other_open,
+                  fn() {
+                    (folds_done().length() > 0 && done_open.get()) ||
+                    (folds_archived().length() > 0 && archived_open.get())
+                  },
+                  key_of,
+                  by_key,
+                  close?=close,
+                )
+              })
+              |> ignore
+            },
+          )
+        })
+        |> ignore
       })
-      |> ignore
     })
   }
   match (scroll_most, scroll) {
@@ -344,9 +491,22 @@ pub fn subchats_list_node(
       v.box(fn(wrap) {
         @sf.style_node(wrap, fn() { subchats_scroll_wrap })
         wrap.shrink(Is(1.0)).min_height(Is(Some(0.0))).max_height(By(fn() { Some(cap()) })) |> ignore
+        // (always keep clipping and input bounds active so a tucked search bar above top never leaks visually or accepts clicks)
         wrap.scrolls(sc, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) { render_body(s) })
-        .clips(By(fn() { sc.goes() }))
-        .bounds_input(By(fn() { sc.goes() }))
+        .clips(Is(true))
+        .bounds_input(Is(true))
+        |> ignore
+      })
+      |> ignore
+    (None, Some(sc)) =>
+      v.box(fn(wrap) {
+        @sf.style_node(wrap, fn() { subchats_scroll_wrap })
+        wrap.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+        wrap.scrolls(sc, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) { render_body(s) })
+        .grow(Is(1.0))
+        .min_height(Is(Some(0.0)))
+        .clips(Is(true))
+        .bounds_input(Is(true))
         |> ignore
       })
       |> ignore
@@ -480,17 +640,52 @@ fn subchats_more_node(m : @view.View, past : () -> Int, open : () -> Bool, press
 }
 
 ///|
+/// A single sub-chat search hit row: delegates to `subchat_row_node_with_text` using `subchat_hit_row_text`.
+fn subchat_hit_row_node(row : @view.View, hit : () -> @sfbase.SubchatHit?, close? : () -> Unit) -> Unit {
+  subchat_row_node_with_text(
+    row,
+    fn() {
+      match hit() {
+        Some(h) => Some(h.opened)
+        None => None
+      }
+    },
+    fn() {
+      match hit() {
+        Some(h) => subchat_hit_row_text(h)
+        None => ""
+      }
+    },
+    close?=close,
+  )
+}
+
+///|
 /// A single sub-chat row: first-line aligned status mark, title + optional state summary, first-line aligned chevron.
 fn subchat_row_node(row : @view.View, item : () -> @sfbase.OpenedChat?, close? : () -> Unit) -> Unit {
+  subchat_row_node_with_text(
+    row,
+    item,
+    fn() {
+      match item() {
+        Some(o) => subchat_row_state_text(o)
+        None => ""
+      }
+    },
+    close?=close,
+  )
+}
+
+///|
+fn subchat_row_node_with_text(
+  row : @view.View,
+  item : () -> @sfbase.OpenedChat?,
+  state_text : () -> String,
+  close? : () -> Unit,
+) -> Unit {
   let title = fn() {
     match item() {
       Some(o) => o.chat.title
-      None => ""
-    }
-  }
-  let state_text = fn() {
-    match item() {
-      Some(o) => subchat_row_state_text(o)
       None => ""
     }
   }
@@ -572,6 +767,10 @@ let subchats_head_divider : @ui.Style = @sf.rule_line
 ///|
 // kept across runs: a value (no field of it changes)
 let subchats_scroll_wrap : @ui.Style = @ui.css("w=Full")
+
+///|
+// kept across runs: a value (no field of it changes)
+let subchats_search_wrap : @ui.Style = @ui.css("w=Full pt=S1 pb=S1_5 px=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)

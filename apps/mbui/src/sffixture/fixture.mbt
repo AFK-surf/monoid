@@ -1905,6 +1905,82 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
     "chat" if f.mode.has_prefix("chat-opener") && params.get("session") is Some(String("s-c1")) =>
       fixture_with_tabs(f, params, with_opener(value))
     "chat" => fixture_with_tabs(f, params, value)
+    "chatSubchats" => {
+      let q = text(Some(Json::object(params)), "q").trim().to_owned()
+      let chat_p : Map[String, Json] = Map([])
+      match params.get("station") {
+        Some(v) => chat_p["station"] = v
+        None => ()
+      }
+      match params.get("session") {
+        Some(v) => chat_p["session"] = v
+        None => ()
+      }
+      match params.get("thread") {
+        Some(v) => chat_p["thread"] = v
+        None => ()
+      }
+      let parent = fixture_topic(f, "chat", chat_p).value
+      let opened = items(parent, "opened")
+      let words : Array[String] = []
+      for part in q.to_lower().split(" ") {
+        let w = part.to_owned()
+        if w != "" {
+          words.push(w)
+        }
+      }
+      let titled : Array[Json] = []
+      let body_hits : Array[Json] = []
+      for item in opened {
+        let o = Some(item)
+        if words.is_empty() {
+          titled.push(item)
+          continue
+        }
+        let title_low = text(o, "title").to_lower()
+        let state_low = text(o, "stateText").to_lower()
+        let sess = text(o, "session")
+        let body = match sess {
+          "s-c2" => "已验证 Vulkan 渲染管线与端到端冒烟用例全部通过"
+          "s-c3" => "测试机 /data 分区剩余空间不足，建议清理 gradle 缓存"
+          "s-c4" => "深色模式开关已接入主题 token，对比度检查通过"
+          "s-c12" => "旧版引导页归档前已导出 3x 高清截图与 Vulkan 基准数据"
+          "s-c9" => "产品评审议程与演示截图已同步给团队成员"
+          _ => "子会话执行日志：已完成回归验证与构建检查"
+        }
+        let body_low = body.to_lower()
+        if words.iter().all(fn(w) { title_low.contains(w) }) {
+          titled.push(item)
+        } else if words.iter().all(fn(w) { state_low.contains(w) }) {
+          body_hits.push(item)
+        } else if words.iter().all(fn(w) { body_low.contains(w) }) {
+          match item {
+            Object(m) => {
+              let out = m.copy()
+              out["foundText"] = Json::string(body)
+              let marks : Array[Json] = []
+              for w in words {
+                match body_low.find(w) {
+                  Some(idx) => marks.push({ "from": Json::number(idx.to_double()), "to": Json::number((idx + w.length()).to_double()) })
+                  None => ()
+                }
+              }
+              out["foundMarks"] = Json::array(marks)
+              body_hits.push(Json::object(out))
+            }
+            _ => body_hits.push(item)
+          }
+        }
+      }
+      for h in body_hits {
+        titled.push(h)
+      }
+      Some({
+        "items": Json::array(titled),
+        "words": Json::array(words.map(Json::string)),
+        "reading": false,
+      })
+    }
     "stationNet" => {
       let address = text(Some(Json::object(params)), "station")
       if new_fix.station_many {

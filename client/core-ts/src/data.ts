@@ -1684,6 +1684,25 @@ export class Data {
     return by.size > 1 ? found.sort((a, b) => (b.at ?? -Infinity) - (a.at ?? -Infinity)).slice(0, limit) : found;
   }
 
+  /// The latest matching message in each of `targets` whose latest text has every one of `terms`, across their databases.
+  findSaidInThreads(targets: readonly { station: string; thread: number }[], terms: string[]): ReturnType<AccountDb["findSaidInThreads"]> {
+    const out: ReturnType<AccountDb["findSaidInThreads"]> = new Map();
+    if (targets.length === 0 || terms.length === 0) return out;
+    const by = new Map<AccountDb, { station: string; thread: number }[]>();
+    for (const target of targets) {
+      this.#readQuery({ topic: "$log", table: "entry", station: target.station, id: String(target.thread) });
+      const db = this.of(target.station);
+      if (!db) continue;
+      const list = by.get(db);
+      if (list) list.push(target);
+      else by.set(db, [target]);
+    }
+    for (const [db, list] of by) {
+      for (const [k, v] of db.findSaidInThreads(list, terms)) out.set(k, v);
+    }
+    return out;
+  }
+
   // ── what is kept within the device's room ──
 
   /// Whether a log's items were let go for room and its chat is not shown: the sync leaves it as it is.

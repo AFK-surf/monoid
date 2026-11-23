@@ -36,9 +36,10 @@ export const COALESCE_MS = 50;
 export const EVICT_AFTER_MS = 60_000;
 /// Topics of words typed (the `@` menu's, a search's): one let go of before the last of its kind is not made again till
 /// it is asked again (#flushOf).
-export const ASKED_BY_WORDS: ReadonlySet<string> = new Set(["chatSearch", "search"]);
+export const ASKED_BY_WORDS: ReadonlySet<string> = new Set(["chatSearch", "search", "chatSubchats"]);
 /// A topic of words typed by its kind: its name and where it looks.
 function wordsKind(topic: Topic): string {
+  if (topic.topic === "chatSubchats") return `${topic.topic}\u0001${String(topic.station ?? "")}\u0001${String(topic.thread ?? "")}\u0001${String(topic.session ?? "")}`;
   return `${topic.topic}\u0001${String(topic.scope ?? "")}`;
 }
 /// How many values let go of keeping them (`keep`) are remembered for a client (#kept), the least recently let go of

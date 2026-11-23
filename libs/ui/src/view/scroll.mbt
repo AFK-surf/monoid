@@ -106,6 +106,9 @@ pub struct Scroll {
   priv tuck_at : @signals.Signal[Double?]
   priv mut tuck_owed : Bool
   priv tuck_room : @signals.Signal[Double]
+  /// whether the scroll viewport is given an exact main-axis height (`Exactly`): only then does a short list need
+  /// `tuck_room` at its foot; adaptive (`AtMost`/`Undefined`) containers size themselves without the tucked header
+  priv tuck_exact : @signals.Signal[Bool]
   /// how tall a page's list's foot is laid out (View::scrolls_window's `foot`: what is pinned over the foot of what
   /// shows), as it was last laid out: 0 where it holds none
   priv mut foot_tall : Double
@@ -321,6 +324,7 @@ fn Scroll::made(as_list : Bool, across? : Bool = false, rows_list? : Bool = fals
     tuck_at: @signals.signal(None, same=fn(a, b) { a == b }),
     tuck_owed: false,
     tuck_room: @signals.signal(0.0, same=fn(a, b) { a == b }),
+    tuck_exact: @signals.signal(false, same=fn(a, b) { a == b }),
     foot_tall: 0.0,
     tuck_in: None,
     tuck_kept: fn() { true },
@@ -614,6 +618,20 @@ fn Scroll::most_now(self : Scroll) -> Double {
 }
 
 ///|
+/// How far up the hand takes it, followed (0 when nothing is tucked or while pulled open / active): for top fade-out
+/// and overflow checks that should ignore a tucked header.
+pub fn Scroll::tuck_height(self : Scroll) -> Double {
+  self.top_now()
+}
+
+///|
+/// Whether what it holds overflows past its resting top (`top_now`), followed: false on short lists whose only scroll
+/// room is a tucked header.
+pub fn Scroll::overflows_past_tuck(self : Scroll) -> Bool {
+  self.most_now() - self.tuck_room.get() > self.top_now() + 0.5
+}
+
+///|
 /// How far up the hand takes it, followed: its top (0); where what is tucked over its top (Scroll::tucks) ends, once
 /// the hand took that out of sight, till it pulls on past there anew (Scroll::pulled): scrolled back up, what is tucked
 /// stays out of sight (asked 2026-11-15: 「往上滚动的时候不应该滚出搜索框，只有到顶了后再次下拉才出现搜索」).
@@ -651,6 +669,7 @@ fn Scroll::hand_anew(self : Scroll, t : Double) -> Unit {
 fn Scroll::pulled(self : Scroll) -> Unit {
   self.pull_free = false
   self.pull_open = true
+  self.tuck_owed = false
   self.tuck_shut.set(false)
 }
 
@@ -764,24 +783,51 @@ pub fn Scroll::tucks(self : Scroll, v : View, cover : () -> Double, kept? : () -
     _ => ()
   }
   self.tuck_in = Some(host)
+  let host_style = host.tree.nodes[host.at].flex.style
+  let adaptive_window = self.whole is Some(_) && !self.across && host_style.grow == 0.0 && host_style.height_kind() == @flex.LEN_AUTO
+  if self.whole is None {
+    host.reacts(at_start=false, fn() { (self.tuck_at.get(), (self.tuck_kept)()) }, fn(_) {
+      host.tree.layout_marked_at(host.at)
+    })
+  } else if adaptive_window {
+    // (adaptive virtualized lists (`s.whole is Some`, e.g. `hugs=true` sheets) subtract the tucked bar from
+    // `held.margin_bottom` via `host.reacts` so the effect survives `v` unmounting while scrolled off-screen)
+    let held_at = host.tree.nodes[host.at].scroll_held
+    if held_at >= 0 {
+      host.reacts(
+        at_start=false,
+        fn() {
+          match self.tuck_at.get() {
+            Some(at) if (self.tuck_kept)() => at
+            _ => 0.0
+          }
+        },
+        fn(tuck) {
+          host.tree.nodes[held_at].flex.style.set_margin_bottom(Pt(-tuck))
+          host.tree.layout_marked_at(host.at)
+        },
+      )
+    }
+  }
   // (as far as it goes with less than it is tall: its foot keeps the room it lacks to go there; put there again where it
-  // came short of it as it was laid out, till the hand is on it)
-  host.reacts(fn() { (self.tuck_at.get(), self.reach(), kept()) }, fn(now) {
+  // came short of it as it was laid out, till the hand is on it. Uses signed `(self.room)()` rather than clamped
+  // `self.reach()` so short lists inside fixed-height viewports reserve exact bottom room.)
+  host.reacts(fn() { (self.tuck_at.get(), (self.room)(), (self.tuck_kept)(), self.tuck_exact.get()) }, fn(now) {
     // (not kept tucked (what is tucked in use): held at no top for it, what shows of it as it is)
     if !now.2 {
       self.tuck_shut.set(false)
     }
     let had = self.tuck_room.untracked()
     let want = match now {
-      (Some(at), most, true) => dmax(0.0, at - (most - had))
+      (Some(at), Some(room), true, true) => dmax(0.0, at - (room - had))
       _ => 0.0
     }
     if (want - had).abs() >= 0.5 {
       self.tuck_room.set(want)
       return
     }
-    match now.0 {
-      Some(at) if self.tuck_owed && self.at(host.tree) < at - 0.5 && now.1 >= at - 0.5 => self.put(at)
+    match now {
+      (Some(at), Some(room), true, _) if self.tuck_owed && self.at(host.tree) < at - 0.5 && room >= at - 0.5 => self.put(at)
       _ => ()
     }
   })
@@ -1225,15 +1271,23 @@ pub fn View::scrolls(
   // it laid out again by it)
   let last_whole = Ref(0.0)
   let sized_by : Ref[(Int, Double, Double)?] = Ref(None)
-  // (how big what it holds comes to, and how big it shows it, given `w` by `h` so)
-  let sizes = fn(held : View, w : Double, wm : @flex.MeasureMode, h : Double, hm : @flex.MeasureMode) -> (Double, Double) {
+  let adaptive_gen : Ref[Int] = Ref(-1)
+  let tucked_h = fn() -> Double {
+    match s.tuck_at.get() {
+      Some(at) if (s.tuck_kept)() => at
+      _ => 0.0
+    }
+  }
+  // (how big what it holds comes to, its natural height without tucked header/padding, and how big it shows it, given
+  // `w` by `h` so)
+  let sizes = fn(held : View, w : Double, wm : @flex.MeasureMode, h : Double, hm : @flex.MeasureMode) -> (Double, Double, Double) {
     let hs = tree.nodes[held.at].flex.style
     let pt = fn(k : Int, x : Double) { if k == @flex.LEN_PT { x } else { 0.0 } }
     if across {
       let along = pt(hs.margin_left_kind(), hs.margin_left_value()) +
         pt(hs.margin_right_kind(), hs.margin_right_value())
       let size = @flex.measured_width(tree.nodes[held.at].flex, 0.0 / 0.0) + along
-      (size, if wm is Undefined { size } else if wm is AtMost { dmin(size, w) } else { w })
+      (size, size, if wm is Undefined { size } else if wm is AtMost { dmin(size, w) } else { w })
     } else {
       let side = pt(hs.margin_left_kind(), hs.margin_left_value()) +
         pt(hs.margin_right_kind(), hs.margin_right_value())
@@ -1243,8 +1297,12 @@ pub fn View::scrolls(
         Some(f) => f()
         None => @flex.measured_height(tree.nodes[held.at].flex, dmax(0.0, w - side))
       }
-      let size = held_h + along
-      (size, if hm is Undefined { size } else if hm is AtMost { dmin(size, h) } else { h })
+      let tuck = @signals.untracked(tucked_h)
+      // (`held.margin_bottom` subtracts `tuck` so flex sizes adaptive containers without the tucked header; add `tuck`
+      // back here for total scrollable `whole`, and subtract `tuck_room` + `tuck` for `natural` height)
+      let whole = held_h + along + tuck
+      let natural = dmax(0.0, whole - s.tuck_room.untracked() - tuck)
+      (whole, natural, if hm is Undefined { natural } else if hm is AtMost { dmin(natural, h) } else { h })
     }
   }
   // (a press in what it holds, down a column that is no page's list (a page's list holds its own: View::scrolls_window),
@@ -1336,20 +1394,24 @@ pub fn View::scrolls(
     }
   }
   let measure_reach = fn(held : View, w : Double, wm : @flex.MeasureMode, h : Double, hm : @flex.MeasureMode) -> Bool {
-    let (whole, shown) = {
-      let (whole, shown) = sizes(held, w, wm, h, hm)
+    let (whole, natural, shown) = {
+      let (whole, natural, shown) = sizes(held, w, wm, h, hm)
       // (the room under it for what was pressed changed: measured again with it)
       if !across && s.whole is None && press_held(whole, shown) {
         tree.room_bindings_run()
         sizes(held, w, wm, h, hm)
       } else {
-        (whole, shown)
+        (whole, natural, shown)
       }
     }
-    last_whole.val = whole
+    last_whole.val = natural
     let seen_now = Some(if across { (shown, h) } else { (w, shown) })
     let reach_now = Some(whole - shown)
-    let changed = @signals.untracked(fn() { s.seen.get() != seen_now || reach.get() != reach_now })
+    let exact_now = s.whole is None &&
+      s.tuck_at.untracked() is Some(_) &&
+      (if across { wm is Exactly } else { hm is Exactly }) &&
+      (adaptive_gen.val != @flex.computes() || tree.nodes[me].flex.style.grow > 0.0)
+    let changed = @signals.untracked(fn() { s.seen.get() != seen_now || reach.get() != reach_now || s.tuck_exact.get() != exact_now })
     // (told as one: where its fill puts it, how big it shows and how far it can go, so what follows where it is
     // scrolled to reads them together, never the one told and the other as it was (a list brought to an entry 969 down
     // read at its top, how far it could go none yet, and asked for the page before; a page come in over what shows
@@ -1360,6 +1422,7 @@ pub fn View::scrolls(
     put()
     s.seen.set(seen_now)
     reach.set(reach_now)
+    s.tuck_exact.set(exact_now)
     @signals.end_batch()
     tree.room_bindings_run()
     changed
@@ -1393,6 +1456,9 @@ pub fn View::scrolls(
           // room, a page's list then at its foot there taken to follow it (an agent's history beside its chat,
           // 2026-11-10: every move of the hand up from its foot undone as a row came to show))
           let told = performing || (across && !(wm is Undefined))
+          if !performing && !(if across { wm is Exactly } else { hm is Exactly }) {
+            adaptive_gen.val = @flex.computes()
+          }
           if told || !(hm is Undefined) {
             if told {
               // (what reads them may change what it holds (room kept at its foot for its bar, or for what is tucked
@@ -1407,7 +1473,7 @@ pub fn View::scrolls(
                 }
               }
             } else {
-              last_whole.val = sizes(held, w, wm, h, hm).0
+              last_whole.val = sizes(held, w, wm, h, hm).1
             }
             let (m, most) = if across { (wm, w) } else { (hm, h) }
             if !performing && !(m is Exactly) {
@@ -1482,9 +1548,11 @@ pub fn View::scrolls(
       }))
       |> ignore
     }
-    // (down a column that is no page's list: room under what it holds for what was pressed in it, press_stays.mbt)
+    // (down a column: room under what it holds for what was pressed in it (press_stays.mbt) and for a tucked header
+    // on short lists (`tuck_room`), less `tucked_h` so adaptive containers (`AtMost`/`Undefined`) size to the visible
+    // content without the tucked header)
     if !across && s.whole is None {
-      held.margin(By(fn() { (0.0, 0.0, 0.0, press_room.get()) })) |> ignore
+      held.margin(By(fn() { (0.0, 0.0, 0.0, press_room.get() + s.tuck_room.get() - tucked_h()) })) |> ignore
     }
     build(held)
   })
@@ -1530,8 +1598,9 @@ pub fn View::scrolls(
     self.fades(By(fn() {
       // (where it is as drawn, the time read while what it is on by itself has an end said: Scroll::rest_now)
       let x = s.where_at(if s.rest_now() is Some(_) { self.tree.drawn_said() } else { 0.0 })
+      let top = if across { 0.0 } else { s.top_now() }
       let most = s.most_now()
-      let (a, b) = (dclamp(x, 0.0, scroll_soft_most), dclamp(most - x, 0.0, scroll_soft_most))
+      let (a, b) = (dclamp(x - top, 0.0, scroll_soft_most), dclamp(most - x, 0.0, scroll_soft_most))
       // (across: towards its start and its end)
       if across {
         (a, 0.0, b, 0.0)

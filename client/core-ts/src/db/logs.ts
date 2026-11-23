@@ -157,6 +157,24 @@ export class LogsStore {
     return this.#env.sql.all(`SELECT s.seq, s.text FROM said s WHERE ${where.join(" AND ")} ORDER BY s.seq`, params).map((r) => ({ seq: Number(r[0]), text: String(r[1]) }));
   }
 
+  /// The latest matching message in each of `targets` whose latest text has every one of `terms` (case aside), keyed
+  /// by `${station}\u0001${thread}`. Queries each (station, thread) via `said`'s UNIQUE (station, thread, seq) index
+  /// so unrelated threads are never scanned.
+  findSaidInThreads(targets: readonly { station: string; thread: number }[], terms: string[]): Map<string, { seq: number; at: number | null; text: string }> {
+    const out = new Map<string, { seq: number; at: number | null; text: string }>();
+    if (!this.#said || targets.length === 0 || terms.length === 0) return out;
+    const where = ["s.station = ?", "s.thread = ?", ...terms.map(() => "s.text LIKE ? ESCAPE '\\'")];
+    const sql = `SELECT s.seq, s.at, s.text FROM said s WHERE ${where.join(" AND ")} ORDER BY s.seq DESC LIMIT 1`;
+    const termParams = terms.map(like);
+    for (const { station, thread } of targets) {
+      const key = `${station}\u0001${thread}`;
+      if (out.has(key)) continue;
+      const r = this.#env.sql.all(sql, [station, thread, ...termParams])[0];
+      if (r !== undefined) out.set(key, { seq: Number(r[0]), at: typeof r[1] === "number" ? r[1] : null, text: String(r[2]) });
+    }
+    return out;
+  }
+
   // ── what is kept within the device's room ──
 
   /// How much of the database is in use (its pages less the free ones), in bytes.

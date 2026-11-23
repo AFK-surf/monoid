@@ -752,24 +752,21 @@ fn side_own_node(
     @sf.floating_host_lend(s)
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
     if tab == "subchats" {
-      s
-      .scrolls(@view.Scroll::new(), fn(sc) {
-        sc.padding(Is((8.0, 8.0, 8.0, 12.0))) |> ignore
-        @sfpages.subchats_list_node(
-          sc,
-          fn() {
-            match @sfbase.chat_view_now(src, r) {
-              Some(cv) => cv.opened
-              None => []
-            }
-          },
-          show_head=true,
-          include_opened=true,
-        )
-      })
-      .grow(Is(1.0))
-      .min_height(Is(Some(0.0)))
-      |> ignore
+      s.padding(Is((8.0, 8.0, 8.0, 12.0))) |> ignore
+      @sfpages.subchats_list_node(
+        s,
+        fn() {
+          match @sfbase.chat_view_now(src, r) {
+            Some(cv) => cv.opened
+            None => []
+          }
+        },
+        src~,
+        chat=r,
+        show_head=true,
+        fills=true,
+        include_opened=true,
+      )
       return
     }
     if tab == "jobs" {

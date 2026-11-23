@@ -103,7 +103,7 @@ export const WINDOW_UNTOLD = 50;
 /// (`stationsWhole` is the core's own: a scope's stations, each its page with the models it can run, as `stations` was
 /// before its items were rows. choose.ts reads it for a model's choice and its borrowing; no UI asks it, and protocol.ts
 /// does not offer it.)
-const VIEW_TOPICS = new Set(["chats", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profilesOverview", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "stationDiag", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "imageNear", "longJobs", "usage", "agentRates", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
+const VIEW_TOPICS = new Set(["chats", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profilesOverview", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "stationDiag", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "chatSubchats", "imageNear", "longJobs", "usage", "agentRates", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
 
 /// What a chat row's columns say that the views find rows by (db/account.ts): how urgent it is for its person
 /// (workspace marks), whether it asks something of them, what its agents are doing as its list's row says it.
@@ -1213,7 +1213,7 @@ export class Views implements Owner {
   /// Shown again while it was kept: a search asks its stations again (what they hold changes; station/sync.ts
   /// `searchShown`), what they found before shown meanwhile.
   resume(view: Topic): void {
-    if (view.topic !== "search" && view.topic !== "archive") return;
+    if (view.topic !== "search" && view.topic !== "archive" && view.topic !== "chatSubchats") return;
     const live = this.#views.get(topicKey(view));
     for (const key of live?.watches.keys() ?? []) {
       const topic = JSON.parse(key) as Topic;
@@ -1222,7 +1222,7 @@ export class Views implements Owner {
   }
 
   idle(view: Topic): void {
-    if (view.topic !== "search" && view.topic !== "archive") return;
+    if (view.topic !== "search" && view.topic !== "archive" && view.topic !== "chatSubchats") return;
     const live = this.#views.get(topicKey(view));
     for (const key of live?.watches.keys() ?? []) {
       const topic = JSON.parse(key) as Topic;
@@ -1236,7 +1236,7 @@ export class Views implements Owner {
     if (this.#core.store.subscribed(topic)) return true;
     const key = topicKey(topic);
     for (const live of this.#views.values()) {
-      if ((live.topic.topic === "search" || live.topic.topic === "archive") && live.watches.has(key) && this.#core.store.subscribed(live.topic)) return true;
+      if ((live.topic.topic === "search" || live.topic.topic === "archive" || live.topic.topic === "chatSubchats") && live.watches.has(key) && this.#core.store.subscribed(live.topic)) return true;
     }
     return false;
   }
@@ -1503,6 +1503,31 @@ export class Views implements Owner {
       // (who its people are; its messages read as held, never asked for: `chat.bring` does)
       case "chatOutline":
         return [{ topic: "overview", station }, { topic: "workspace", workspace: ofAddress(station) }];
+      case "chatSubchats": {
+        const ws = ofAddress(station);
+        const out: Topic[] = [
+          { topic: "chatRows", station },
+          { topic: "archivedRows", station },
+          { topic: "link", station },
+          { topic: "workspace", workspace: ws },
+        ];
+        const parent = this.#parentRow(station, u64(view.thread), str(view.session));
+        const trimmed = String(view.q ?? "").trim();
+        const stationsSeen = new Set<string>();
+        for (const o of arr(get(parent, "opened"))) {
+          const there = str(get(o, "station"));
+          const at = there !== null && there !== "" ? `${ws}/${there}` : station;
+          if (stationsSeen.has(at)) continue;
+          stationsSeen.add(at);
+          if (at !== station) {
+            out.push({ topic: "chatRows", station: at }, { topic: "archivedRows", station: at }, { topic: "link", station: at });
+          }
+          if (trimmed !== "") {
+            out.push({ topic: "stationSearch", station: at, q: trimmed, kind: "chat,message", limit: 200 });
+          }
+        }
+        return out;
+      }
       case "chatLetters":
         return [
           { topic: "chat", station, thread: view.thread, session: null },
@@ -2099,6 +2124,8 @@ export class Views implements Owner {
         return this.#chatThings(view.station as string, view.thread as number, typeof view.q === "string" ? view.q : "");
       case "chatOutline":
         return timed("chat.outline", () => this.#chatOutline(view.station as string, view.thread as number));
+      case "chatSubchats":
+        return this.#chatSubchats(view.station as string, u64(view.thread), str(view.session), typeof view.q === "string" ? view.q : "");
       case "history":
         return this.#history(view.station as string, view.key as string);
       case "stationNet": {
@@ -3270,27 +3297,41 @@ export class Views implements Owner {
     return out;
   }
 
-  /// The chats a chat's agent opened (its station's row's `opened`), as their lists have them: each on its station, titled
-  /// as its row is (else as it was given), where it stands as its row's second line says it (what it needs of the viewer,
-  /// a card, done), its mark; one in its station's archive said so. Ordered by priority (failed, need/block, at work or
-  /// waiting on its own work, ended, archived), newest created first within the same priority. Ended is done and also
-  /// an agent stopped without saying so (idle, aborted): the app folds all of them away together (`subchat_is_done`).
-  #opened(station: string, raw: J): J[] {
-    const openedRank = (o: J): number => {
-      if (o.archived === true) return 4;
-      if (o.mark === "failed") return 0;
-      if (o.stateLead === "need" || o.stateLead === "decision" || o.mark === "block") return 1;
-      if (o.mark === "run" || o.stateLead === "wait" || o.stateLead === "watch") return 2;
-      return 3;
-    };
-    const items: { item: J; idx: number }[] = [];
+  /// Priority order for opened/sub-chats: failed, need/decision/block, active/waiting/watching, ended, archived.
+  #openedRank(o: J): number {
+    if (o.archived === true) return 4;
+    if (o.mark === "failed") return 0;
+    if (o.stateLead === "need" || o.stateLead === "decision" || o.mark === "block") return 1;
+    if (o.mark === "run" || o.stateLead === "wait" || o.stateLead === "watch") return 2;
+    return 3;
+  }
+
+  /// Resolves a parent chat's row by thread or session (including pending `new:` keys and archived chats).
+  #parentRow(station: string, thread: number | null, session: string | null): J | null | undefined {
+    const resolvedThread = thread !== null ? thread : session !== null ? (session.startsWith(PENDING_PREFIX) ? (this.local.pendingThread(station, session) ?? null) : this.boundThread(station, session)) : null;
+    if (resolvedThread !== null) {
+      const byThread = this.#row(station, { thread: resolvedThread });
+      if (isObject(byThread)) return byThread;
+    }
+    if (session !== null) {
+      const bySession = this.#row(station, { session });
+      if (isObject(bySession)) return bySession;
+      const named = this.#core.data.chatNamed(station, session);
+      if (isObject(named?.row)) return named.row;
+    }
+    return null;
+  }
+
+  #openedEntries(station: string, raw: J): { item: J; at: string; row: J | undefined; thread: number | null; idx: number }[] {
+    const items: { item: J; at: string; row: J | undefined; thread: number | null; idx: number }[] = [];
     const rawOpened = arr(get(raw, "opened"));
+    const ws = ofAddress(station);
     for (let idx = 0; idx < rawOpened.length; idx++) {
       const o = rawOpened[idx];
       const session = str(get(o, "session"));
       if (session === null) continue;
       const there = str(get(o, "station"));
-      const at = there !== null && there !== "" ? `${ofAddress(station)}/${there}` : station;
+      const at = there !== null && there !== "" ? `${ws}/${there}` : station;
       const found = this.#core.data.chatNamed(at, session);
       const row = found?.row as J | undefined;
       const title = str(get(row, "title")) || str(get(o, "title")) || t("core-views.new_chat");
@@ -3308,9 +3349,107 @@ export class Views implements Owner {
         out.note = t("core-views.search.archived");
       }
       if (get(o, "led") === true) out.led = true;
-      items.push({ item: out, idx });
+      items.push({ item: out, at, row, thread: u64(get(row, "thread")), idx });
     }
-    return items.sort((a, b) => openedRank(a.item) - openedRank(b.item) || b.idx - a.idx).map((x) => x.item);
+    return items;
+  }
+
+  /// The chats a chat's agent opened (its station's row's `opened`), as their lists have them: each on its station, titled
+  /// as its row is (else as it was given), where it stands as its row's second line says it (what it needs of the viewer,
+  /// a card, done), its mark; one in its station's archive said so. Ordered by priority (failed, need/block, at work or
+  /// waiting on its own work, ended, archived), newest created first within the same priority. Ended is done and also
+  /// an agent stopped without saying so (idle, aborted): the app folds all of them away together (`subchat_is_done`).
+  #opened(station: string, raw: J): J[] {
+    return this.#openedEntries(station, raw)
+      .sort((a, b) => this.#openedRank(a.item) - this.#openedRank(b.item) || b.idx - a.idx)
+      .map((x) => x.item);
+  }
+
+  /// Filtered sub-chats and opened chats of a chat (`chatSubchats` topic): matches title, state line, local SQLite
+  /// `said` messages (indexed per sub-chat thread), and online stations' `stationSearch` results.
+  #chatSubchats(station: string, thread: number | null, session: string | null, q: string): Value {
+    const words = refs.terms(q);
+    const parent = this.#parentRow(station, thread, session);
+    if (!isObject(parent)) return { ok: { items: [], words, reading: false } };
+    const entries = this.#openedEntries(station, parent);
+    if (words.length === 0) {
+      const items = entries
+        .sort((a, b) => this.#openedRank(a.item) - this.#openedRank(b.item) || b.idx - a.idx)
+        .map((x) => x.item);
+      return { ok: { items, words: [], reading: false } };
+    }
+    const targets: { station: string; thread: number }[] = [];
+    const subStations = new Set<string>();
+    for (const e of entries) {
+      subStations.add(e.at);
+      if (e.thread !== null) targets.push({ station: e.at, thread: e.thread });
+    }
+    const localHits = this.#core.data.findSaidInThreads(targets, words);
+    const trimmed = q.trim();
+    const remoteByThread = new Map<string, { text: string; msg: boolean }>();
+    const remoteBySession = new Map<string, { text: string; msg: boolean }>();
+    let reading = false;
+    for (const at of subStations) {
+      const st = this.stations(ofAddress(at))?.find((s) => s.address === at);
+      const online = st !== undefined ? st.online : this.link(at).state === "online";
+      if (!online) continue;
+      const answer = this.value({ topic: "stationSearch", station: at, q: trimmed, kind: "chat,message", limit: 200 });
+      if (answer === undefined) {
+        reading = true;
+        continue;
+      }
+      if ("err" in answer) continue;
+      for (const group of arr(get(answer.ok, "groups"))) {
+        const k = str(get(group, "kind"));
+        if (k !== "message" && k !== "chat") continue;
+        const isMsg = k === "message";
+        for (const hit of arr(get(group, "hits"))) {
+          const text = str(hit.text);
+          if (text === null || text === "") continue;
+          const hitThread = u64(hit.thread);
+          if (hitThread !== null) {
+            const tk = `${at}\u0001${hitThread}`;
+            const prev = remoteByThread.get(tk);
+            if (prev === undefined || (isMsg && !prev.msg)) remoteByThread.set(tk, { text, msg: isMsg });
+          }
+          const hitChat = str(hit.chat);
+          if (hitChat !== null && hitChat !== "") {
+            const sk = `${at}\u0001${hitChat}`;
+            const prev = remoteBySession.get(sk);
+            if (prev === undefined || (isMsg && !prev.msg)) remoteBySession.set(sk, { text, msg: isMsg });
+          }
+        }
+      }
+    }
+    const matched: { item: J; titleHit: boolean; idx: number }[] = [];
+    for (const e of entries) {
+      const titleLow = String(e.item.title ?? "").toLowerCase();
+      const titleHit = words.every((w) => titleLow.includes(w));
+      const stateText = typeof e.item.stateText === "string" ? e.item.stateText : null;
+      const stateHit = stateText !== null && words.every((w) => stateText.toLowerCase().includes(w));
+      const lastText = str(get(get(e.row, "last"), "text"));
+      const lastHit = lastText !== null && words.every((w) => lastText.toLowerCase().includes(w));
+      const localHit = e.thread !== null ? localHits.get(`${e.at}\u0001${e.thread}`) : undefined;
+      const remoteHit = (e.thread !== null ? remoteByThread.get(`${e.at}\u0001${e.thread}`) : undefined) ?? remoteBySession.get(`${e.at}\u0001${e.item.session}`);
+      const bodyText = localHit?.text ?? remoteHit?.text ?? (lastHit ? lastText! : undefined);
+      if (!titleHit && !stateHit && bodyText === undefined) continue;
+      const out: J = { ...e.item };
+      const explainText = !titleHit
+        ? stateHit && e.item.archived !== true
+          ? undefined
+          : bodyText ?? (stateHit ? stateText! : undefined)
+        : undefined;
+      if (explainText !== undefined) {
+        const ex = refs.excerpt(explainText, words);
+        if (ex.text !== "") {
+          out.foundText = ex.text;
+          out.foundMarks = ex.marks;
+        }
+      }
+      matched.push({ item: out, titleHit, idx: e.idx });
+    }
+    matched.sort((a, b) => Number(b.titleHit) - Number(a.titleHit) || this.#openedRank(a.item) - this.#openedRank(b.item) || b.idx - a.idx);
+    return { ok: { items: matched.map((m) => m.item), words, reading } };
   }
 
   /// Where a chat a chat's agent opened stands (#opened): its mark and its row's second line, made of its record alone

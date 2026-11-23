@@ -1993,6 +1993,9 @@ web-pages.chat.subchatsNone
 web-pages.chat.subchatsIdle
 web-pages.chat.subchatsMore
 web-pages.chat.subchatsLess
+web-pages.chat.subchatsSearch
+web-pages.chat.subchatsNoMatch
+web-pages.chat.subchatsSearching
 web-pages.chat.breadcrumbMore
 web-pages.chat.stopAsked
 web-pages.chat.stopTurn

@@ -116,6 +116,8 @@ fn chat_subchats_pop_node(host : @view.View, src : Source, r : ChatRef, view : (
             None => []
           }
         },
+        src~,
+        chat=r,
         close=fn() { chat_own.subchats_open.set(false) },
         in_panel=fn() {
           chat_own.subchats_open.set(false)

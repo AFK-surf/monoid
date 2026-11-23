@@ -82,8 +82,9 @@ pub fn[K : Hash + Eq] panel_list_node(
     // how far it can go read as its layout says it from then)
     room.fades(By(fn() {
       let at = scroll.drawn(room.tree)
+      let top = scroll.tuck_height()
       let reach = scroll.reach()
-      (0.0, dclamp(at, 0.0, panel_list_fade), 0.0, dclamp(reach - at, 0.0, panel_list_fade))
+      (0.0, dclamp(at - top, 0.0, panel_list_fade), 0.0, dclamp(reach - at, 0.0, panel_list_fade))
     }))
     |> ignore
   })

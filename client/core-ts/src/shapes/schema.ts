@@ -80,6 +80,7 @@ export const TOPIC_SHAPES: Record<string, Ty> = {
   chatFeedback: "ChatFeedbackView",
   chatThings: "ChatThingsView",
   chatOutline: "ChatOutlineView",
+  chatSubchats: "ChatSubchatsView",
   imageNear: "ImageNear",
   agentCard: "AgentCardView",
   stationNet: { opt: "StationNet" },

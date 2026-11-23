@@ -1671,9 +1671,21 @@ export function more(now: number): [Topic, unknown][] {
   // (the pull request its agent's words link, as the station's preview of it says it)
   out.push([{ topic: "linkPreview", station: CHAT.station, url: "https://github.com/acme/app/pull/5244" }, { kind: "github_pull_request", url: "https://github.com/acme/app/pull/5244", repository: "acme/app", number: 5244, title: "Android：列表行高首帧算好，滚动不再重新测量", state: "open", author: { login: "lina-park" }, additions: 412, deletions: 187, changedFiles: 14, comments: 6, labels: ["android", "performance", "needs-review"], updatedAt: now - HOUR, checks: { passed: 23, failed: 0, pending: 2 } }]);
   for (const [st, at] of UP.entries()) out.push([{ topic: "stationSearch", station: at, q: SEARCH, limit: 6 }, searchOf(now, st)]);
+  out.push([{ topic: "stationSearch", station: CHAT.station, q: SEARCH, kind: "chat,message", limit: 200 }, subchatSearchOf(now)]);
   for (const [topic, value] of peeks(now)) out.push([topic, value]);
   for (const asked of MOVES_ASKED) out.push([{ topic: "stationMove", station: CHAT.station, ...asked }, moveOf(now, asked)]);
   return out;
+}
+
+export function subchatSearchOf(now: number, seq = 2): J {
+  return {
+    groups: [
+      {
+        kind: "message",
+        hits: [{ chat: keyOf(0, 40), seq, text: seq === 2 ? `已按 ${SEARCH} 方案完成子会话回归验证` : `已按 ${SEARCH} 方案完成第 ${seq} 轮子会话回归`, at: now - HOUR }],
+      },
+    ],
+  };
 }
 
 /// The ways the app asks what of Maple moves (apps/mbui sfpages/station_move_node.mbt): its station's page (whether it

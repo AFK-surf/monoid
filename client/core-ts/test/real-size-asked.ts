@@ -14,7 +14,7 @@ import {
   CHANGELOG_DEVICE, CHANGELOG_SEEN, CHAT, PEOPLE, CHAT_MESSAGES, DRIVE, LETTERS_COUNT, JOB, JOB_LOG_LINES, OPENS, OTHER_WORKSPACE, OUTLINED, PEEKS, PLAIN_WORKSPACE, SEARCH, UP, VAULT_ITEM, cardCame, changelogFeed, changelogReleased,
   chatArchived, chatRenamed, devicesAdded, devicesSaid, driveAdded, fixture, hostReading, jobLogOf, jobsMoved, lettersHeld, listedOf, liveStepped, lockApproved, memberJoined, messageAdded, more,
   netOf, outlinedEdit, outlinedLog, outlinedSaid, outlinedWorking, overviewMoved, othersPresetsChanged, othersPresetsOf, presetRecordsChanged, boardDraftsChanged, presetsChanged, quotaChanged, records, resourcesOf, screensMoved, screensOf, sessionMade, thingSaid, transcriptOf,
-  usageRead, vaultAdded, vaultUsed, ownPendingOf, OWN_LOCK, PERSONAL_VAULT, VAULT_BOX, VAULT_SIGNER, STATIONS, MOVES_ASKED, moveOf,
+  usageRead, vaultAdded, vaultUsed, ownPendingOf, OWN_LOCK, PERSONAL_VAULT, VAULT_BOX, VAULT_SIGNER, STATIONS, MOVES_ASKED, moveOf, subchatSearchOf,
 } from "./real-size.ts";
 import { logged } from "../src/log-lines.ts";
 import type { Inner } from "../src/core.ts";
@@ -164,6 +164,7 @@ export const ASKED: Record<string, Record<string, unknown> & { topic: string }> 
   // (the person's drafts of 待派发, as the device carries them: views/board-drafts.ts; last, so that it moves none of
   // the others' times on the rig's clock)
   "boardDrafts": { topic: "boardDrafts", scope: "ws" },
+  "chatSubchats q": { topic: "chatSubchats", station, session: key, q: SEARCH },
 };
 
 /// The chats' lists' windows as the app first tells them (`chats.window`; apps/mbui sfbase/rows.mbt `first_window`): the
@@ -611,6 +612,12 @@ export const CAUSES: Record<string, Cause> = {
         { reads: new Map(), pins: new Map(), kept: new Set(), dismissed: new Set() },
         { me: PEOPLE[0]!.email, selves: [], lang: "zh", hiddenKnown: false, mutedKnown: false, noRouteBuild: null },
       );
+    },
+  },
+  // A sub-chat of the opened chat matches a newer remote message hit (`chatSubchats q`).
+  subchat: {
+    run: ({ t }) => {
+      t.set({ topic: "stationSearch", station, q: SEARCH, kind: "chat,message", limit: 200 }, subchatSearchOf(t.host.nowMs(), 3));
     },
   },
 };

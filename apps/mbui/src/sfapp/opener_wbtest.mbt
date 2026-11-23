@@ -940,3 +940,87 @@ test "small and wide: every sub-chats state passes audit at 1.0x and 1.3x, its f
     }
   }
 }
+
+///|
+test "wide popover, side panel, and small sheet: pull-down search hidden by default, revealed at top, filters title and message body" {
+  // 1. Wide popover (short list: chat-subchats-pop)
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat-subchats-pop")
+  t.draw()
+  t.click(Button, label="子会话")
+  t.run_for(@ui.move_most_ms)
+  let row = t.query(Button, label="安卓构建与冒烟测试").unwrap()
+  let row_y0 = row.rect.1
+  if t.find("搜索子会话") is Some((_, py0)) {
+    assert_true(py0 < row_y0, msg="popover search must be tucked above top on open")
+  }
+  t.wheel(row.rect.0 + row.rect.2 / 2.0, row.rect.1 + row.rect.3 / 2.0, -80.0)
+  t.draw()
+  guard t.find("搜索子会话") is Some((sx, sy)) else { fail("expected popover search after pull down") }
+  assert_true(sy >= row_y0, msg="popover search revealed inside viewport")
+  t.tap(sx, sy)
+  t.draw()
+  t.type_text("Vulkan")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="安卓构建与冒烟测试") is Some(_), msg="body match active sub-chat")
+  assert_true(t.query(Button, label="旧版引导页的截图") is Some(_), msg="body match archived sub-chat unfolded")
+  assert_true(t.find("旧版引导页归档前已导出") is Some(_), msg="body excerpt shown for archived hit")
+  assert_eq(t.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [], msg="popover filtered audit")
+
+  // 2. Wide right side-panel subchats tab (chat-subchats-panel)
+  let calls2 : Array[Made] = []
+  let t2 = wide_tester(calls2, mode="chat-subchats-panel")
+  t2.draw()
+  t2.run_for(@ui.move_most_ms)
+  guard t2.find_last("安卓构建与冒烟测试") is Some((prx, pry)) else {
+    fail("expected panel sub-chat row")
+  }
+  assert_true(prx > 700.0, msg="panel sub-chat row is in right side panel")
+  let ppy0 = match t2.find("搜索子会话") {
+    Some((_, y)) => {
+      assert_true(y < pry, msg="panel subchats search must be tucked above top on open")
+      y
+    }
+    None => -1000.0
+  }
+  t2.wheel(prx, pry, -80.0)
+  t2.draw()
+  guard t2.find("搜索子会话") is Some((px, py)) else { fail("expected panel search after pull down") }
+  assert_true(py > ppy0 + 20.0, msg="panel search revealed inside viewport")
+  t2.tap(px, py)
+  t2.draw()
+  t2.type_text("深色模式")
+  t2.run_for(@ui.move_most_ms)
+  assert_true(t2.query(Button, label="给设置页加一个深色模式开关") is Some(_), msg="title match done sub-chat in panel")
+  assert_eq(t2.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [], msg="panel filtered audit")
+
+  // 3. Small bottom sheet (chat-subchats-pop)
+  let calls3 : Array[Made] = []
+  let t3 = decide_core(calls3, "chat-subchats-pop")
+  t3.run_for(@ui.move_most_ms)
+  let srow = t3.query(Button, label="安卓构建与冒烟测试").unwrap()
+  let srow_y0 = srow.rect.1
+  let spy0 = match t3.find("搜索子会话") {
+    Some((_, y)) => {
+      assert_true(y < srow_y0, msg="small sheet search must be tucked above top on open")
+      y
+    }
+    None => -1000.0
+  }
+  t3.wheel(srow.rect.0 + srow.rect.2 / 2.0, srow.rect.1 + srow.rect.3 / 2.0, -80.0)
+  t3.run_for(@ui.move_most_ms)
+  guard t3.find("搜索子会话") is Some((bx, by)) else { fail("expected small sheet search after pull down") }
+  assert_true(by > spy0 + 20.0, msg="small sheet search revealed inside viewport")
+  t3.tap(bx, by)
+  t3.draw()
+  t3.type_text("Vulkan")
+  t3.run_for(@ui.move_most_ms)
+  guard t3.query(Button, label="旧版引导页的截图") is Some(hit3) else {
+    fail("body match archived sub-chat in small sheet")
+  }
+  assert_true(
+    hit3.rect.1 + hit3.rect.3 <= 844.0,
+    msg="filtered archived hit must fit inside small sheet viewport: hit=\{Repr(hit3.rect)} sheet=\{Repr(t3.all(Dialog).last().map(fn(d) { d.rect }))}",
+  )
+  assert_eq(t3.audit(), [], msg="small sheet filtered audit")
+}

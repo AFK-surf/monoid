@@ -181,3 +181,66 @@ test "the last at work finishing: the list turns to the latest 3 done, not all o
   assert_true(t.query(Button, label=done_label()) is None)
   assert_true(t.find(@sf.t("web-pages.chat.subchatsIdle")) is Some(_))
 }
+
+///|
+fn subchats_scroll_tester(opened : @signals.Signal[Array[@sfbase.OpenedChat]], cap? : Double = 320.0) -> @ui.Tester {
+  let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=800.0, platform=0)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(h) {
+      h.width(Is(Some(360.0))) |> ignore
+      subchats_list_node(h, fn() { opened.get() }, scroll_most=fn() { cap })
+    })
+    |> ignore
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+test "pull-down search: tucked by default, revealed by pulling at top, filters done and archived, Escape clears" {
+  let opened : @signals.Signal[Array[@sfbase.OpenedChat]] = @signals.signal([
+    subchat_of("run-alpha", mark="run"),
+    subchat_of("done-beta", lead="done"),
+    subchat_of("arch-gamma", archived=true),
+  ])
+  let t = subchats_scroll_tester(opened)
+  let ph = @sf.t("web-pages.chat.subchatsSearch")
+  let row0 = t.query(Button, label="子会话 run-alpha").unwrap()
+  let row0_y0 = row0.rect.1
+  // Search bar is tucked above the scroll viewport top (`row0_y0`) on open and cannot be clicked through
+  match t.find(ph) {
+    Some((px0, py0)) => {
+      assert_true(py0 < row0_y0, msg="search placeholder must be tucked above top on open: py0=\{py0} row0_y0=\{row0_y0}")
+      t.tap(px0, py0)
+      t.draw()
+      assert_true(t.focused() is None, msg="tucked search input must not accept focus/clicks")
+    }
+    None => ()
+  }
+  assert_true(shown(t, "run-alpha"))
+  assert_true(!shown(t, "done-beta") && !shown(t, "arch-gamma"))
+  // Pull down at top reveals the search bar inside the scroll viewport
+  let rx = row0.rect.0 + row0.rect.2 / 2.0
+  let ry = row0.rect.1 + row0.rect.3 / 2.0
+  t.wheel(rx, ry, -80.0)
+  t.draw()
+  guard t.find(ph) is Some((sx, sy)) else { fail("expected search box after pull down") }
+  assert_true(sy >= row0_y0, msg="pulled search must appear inside viewport: sy=\{sy} row0_y0=\{row0_y0}")
+  let row0_after = t.query(Button, label="子会话 run-alpha").unwrap()
+  assert_true(row0_after.rect.1 > row0_y0 + 24.0, msg="first row must shift down when search is revealed")
+  // Click search input and type to match archived item directly (unfolded)
+  t.tap(sx, sy)
+  t.draw()
+  t.type_text("gamma")
+  t.draw()
+  assert_true(shown(t, "arch-gamma"), msg="archived sub-chat shown directly when filtering")
+  assert_true(!shown(t, "run-alpha"))
+  // Escape clears text and restores folded structure
+  t.key(@ui.key_escape)
+  t.draw()
+  assert_true(shown(t, "run-alpha"))
+  assert_true(!shown(t, "arch-gamma"))
+  assert_eq(list_faults(t), [])
+}

@@ -156,20 +156,75 @@ pub(all) struct OpenedChat {
 }
 
 ///|
+/// A single `OpenedChat` object from JSON.
+pub fn opened_item_of(o : Json?) -> OpenedChat {
+  {
+    chat: { station: text(o, "station"), session: text(o, "session"), title: text(o, "title"), station_name: "" },
+    mark: text(o, "mark"),
+    state_lead: text(o, "stateLead"),
+    state_text: text(o, "stateText"),
+    archived: flag(o, "archived"),
+    note: text(o, "note"),
+    led: flag(o, "led"),
+  }
+}
+
+///|
 /// A chat's `opened`, as the core gives it.
 pub fn opened_of(v : Json?) -> Array[OpenedChat] {
-  items(v, "opened").map(fn(j) {
-    let o = Some(j)
-    {
-      chat: { station: text(o, "station"), session: text(o, "session"), title: text(o, "title"), station_name: "" },
-      mark: text(o, "mark"),
-      state_lead: text(o, "stateLead"),
-      state_text: text(o, "stateText"),
-      archived: flag(o, "archived"),
-      note: text(o, "note"),
-      led: flag(o, "led"),
+  items(v, "opened").map(fn(j) { opened_item_of(Some(j)) })
+}
+
+///|
+/// A sub-chat or opened chat matched by `chatSubchats`: its `OpenedChat` fields plus optional single-line message
+/// excerpt (`found_text` / `found_marks`) when matched by message body.
+#derive(Eq)
+pub(all) struct SubchatHit {
+  opened : OpenedChat
+  found_text : String
+  found_marks : Array[(Int, Int)]
+}
+
+///|
+/// Filtered sub-chats view (`chatSubchats` topic).
+#derive(Eq)
+pub(all) struct SubchatsSearchView {
+  items : Array[SubchatHit]
+  words : Array[String]
+  reading : Bool
+}
+
+///|
+/// Parameters for the `chatSubchats` topic: parent chat station/session and search query `q`.
+pub fn subchats_search_params(r : ChatRef, q : String) -> Map[String, Json] {
+  let m = chat_params(r)
+  m["q"] = Json::string(q)
+  m
+}
+
+///|
+/// Parses a `chatSubchats` topic value into `SubchatsSearchView`.
+pub fn subchats_search_view(v : Json?) -> SubchatsSearchView? {
+  match v {
+    Some(Object(_)) => {
+      let hits = items(v, "items").map(fn(j) {
+        let o = Some(j)
+        {
+          opened: opened_item_of(o),
+          found_text: text(o, "foundText"),
+          found_marks: marks_of(o, "foundMarks"),
+        }
+      })
+      let words = items(v, "words").map(fn(w) {
+        match w {
+          String(s) => s
+          _ => ""
+        }
+      })
+      Some({ items: hits, words, reading: flag(v, "reading") })
     }
-  })
+    _ => None
+  }
 }
 
 ///|

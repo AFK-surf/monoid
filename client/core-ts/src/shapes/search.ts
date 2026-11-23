@@ -114,4 +114,22 @@ export const SEARCH_SHAPES: Record<string, Shape> = {
     ["station", "String"],
     ["text", "String", { said: true }],
   ], { keepNone: true }),
+  ChatSubchatsView: struct([
+    ["items", vec("SubchatHit")],
+    ["words", vec("String"), { default: true, doc: "The words looked for." }],
+    ["reading", "bool", { default: true, doc: "Some sub-chat's online station has not answered its search yet." }],
+  ], { doc: "The sub-chats (and opened chats) of a chat filtered by title, state, and message text (`chatSubchats` topic).", keepNone: true }),
+  SubchatHit: struct([
+    ["station", "String", { doc: "Its station's address." }],
+    ["session", "String"],
+    ["title", "String", { said: true, doc: "As its list names it, else as it was given when opened." }],
+    ["mark", opt("Badge"), { doc: "Its agents' mark (run | block | failed). Absent when none." }],
+    ["stateText", opt("String"), { said: true, doc: "Where it stands, as its row's second line says it. Absent with nothing to say." }],
+    ["stateLead", opt("StateLead"), { doc: "What leads `stateText`, for a mark of a client's own." }],
+    ["archived", opt("bool"), { doc: "It is in its station's archive. Absent otherwise." }],
+    ["note", opt("String"), { said: true, doc: "With `archived`: 已归档." }],
+    ["led", opt("bool"), { doc: "This chat's agent leads it (chat_create for me): a sub-chat, shown in the bar's sub-chats entry. Absent for a chat opened for a person." }],
+    ["foundText", opt("String"), { said: true, doc: "Single-line excerpt of a matching message when matched by body text." }],
+    ["foundMarks", opt(vec("TextMark")), { doc: "UTF-16 highlight ranges of matched words within `foundText`." }],
+  ], { doc: "A sub-chat or opened chat matched by `chatSubchats`." }),
 };

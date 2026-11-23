@@ -42,7 +42,7 @@ function sameSaid(a: Value | undefined, b: Value | undefined): boolean {
 
 /// The topics a chat's page holds, named by its station and its thread (a chat's also by its session): where the chat
 /// went to another station (views/moved.ts), each is its copy's there (`#movedTo`), the page's own topic all along.
-const OF_A_CHAT = new Set(["chat", "thread", "letters", "chatLetters", "chatThings", "chatOutline", "chatJobs", "imageNear"]);
+const OF_A_CHAT = new Set(["chat", "thread", "letters", "chatLetters", "chatThings", "chatOutline", "chatJobs", "chatSubchats", "imageNear"]);
 
 /// The prefix of the keys of chats asked for here and not made yet (views/local.ts PENDING_PREFIX): none moved.
 const PENDING = "new:";
@@ -50,10 +50,10 @@ const PENDING = "new:";
 /// The topics named by a chat's session (`session`) that answer it only by the session its station made it under: a
 /// chat a new chat's page became is named by the key it was sent under (`new:…`) all along, so once its station made it
 /// each is that session's (`#madeTo`), the page's own topic all along. `chat` and what is made of it (`chatJobs`,
-/// `imageNear`) follow the key themselves (views.ts `pendingThread`); a topic of `TOPICS` named by `session` is one of
+/// `chatSubchats`, `imageNear`) follow the key themselves (views.ts `pendingThread`); a topic of `TOPICS` named by `session` is one of
 /// the two (test/made-key.test.ts).
 export const OF_A_SESSION = new Set(["chatRow", "chatFeedback"]);
-export const SESSION_FOLLOWS_KEY = new Set(["chat", "chatJobs", "imageNear"]);
+export const SESSION_FOLLOWS_KEY = new Set(["chat", "chatJobs", "chatSubchats", "imageNear"]);
 
 export class Router implements Source {
   readonly #core: Inner;

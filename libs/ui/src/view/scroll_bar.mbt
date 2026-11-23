@@ -287,7 +287,7 @@ fn View::scroll_bar(
   }
   // (whether it has a bar at all: what it holds more than a point past what shows, as ui's bar_drawn has it; drawn,
   // come out along its edge and pressed by that alone)
-  let has_bar = fn() { s.most_now() > 1.0 }
+  let has_bar = fn() { s.most_now() - s.tuck_room.get() > s.top_now() + 1.0 }
   // (how far it shows as it is drawn: by the time while it is not at rest)
   let level = fn() {
     if !(b.drawn)() || !has_bar() {

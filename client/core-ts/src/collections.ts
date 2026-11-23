@@ -30,6 +30,7 @@ const rows: Spec = { key: ["station", "id"] };
 const SPECS: Record<string, Spec> = {
   chats: { fields: { days: { key: ["daysAgo"], item: { fields: { items: rows } } } } },
   chatSearch: { fields: { items: rows, messages: { key: ["station", "thread", "seq"] } } },
+  chatSubchats: { fields: { items: { key: ["station", "session"] } } },
   search: { fields: { items: rows, messages: { key: ["station", "thread", "seq"] }, groups: { key: ["kind"], item: { fields: { items: items("key") } } } } },
   chat: { fields: { messages: { key: ["seq", "outgoing"] }, outbox: items("id") } },
   archive: { fields: { days: { key: ["label"], item: { fields: { items: rows } } } } },

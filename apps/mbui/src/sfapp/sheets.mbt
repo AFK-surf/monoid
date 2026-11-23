@@ -1814,7 +1814,10 @@ fn open_chat_jobs(src : Source, r : ChatRef, scope? : JobsScope = All) -> Unit {
 /// own (subchats_sheet_group_head_node).
 #derive(Eq, Hash)
 priv enum SubchatSheetRow {
+  SubchatsSearch
   SubchatsEmpty
+  SubchatsSearchEmpty
+  SubchatsSearchHit(String)
   SubchatsOne(Int, String)
   SubchatsMore
   SubchatsDoneHead
@@ -1832,10 +1835,23 @@ fn subchats_sheet_rows(
   done_open : Bool,
   archived_open : Bool,
   more : Bool,
+  filtering : Bool,
+  hits : Array[@sfbase.SubchatHit],
 ) -> Array[SubchatSheetRow] {
   let out : Array[SubchatSheetRow] = []
   if subchats.length() == 0 {
     out.push(SubchatsEmpty)
+    return out
+  }
+  out.push(SubchatsSearch)
+  if filtering {
+    if hits.is_empty() {
+      out.push(SubchatsSearchEmpty)
+    } else {
+      for h in hits {
+        out.push(SubchatsSearchHit(subchat_sheet_key(h.opened)))
+      }
+    }
     return out
   }
   let kind = @sfpages.subchats_lead_kind(subchats)
@@ -1870,7 +1886,8 @@ fn subchats_sheet_rows(
 
 ///|
 /// The chat's led sub-chats bottom sheet on Small screens (`open_subchats`): grouped cards in a virtualized
-/// `panel_list_node` with live running/waiting counts in `head_end` and collapsible done and archived groups.
+/// `panel_list_node` with live running/waiting counts in `head_end`, pull-down search bar, and collapsible done and
+/// archived groups.
 fn open_subchats(src : Source, r : ChatRef) -> Unit {
   let opened = fn() {
     match @sfbase.chat_view_now(src, r) {
@@ -1885,18 +1902,26 @@ fn open_subchats(src : Source, r : ChatRef) -> Unit {
     hugs=true,
     grows=true,
     head_end=fn(e) { @sfpages.subchats_counts_node(e, opened) },
-    fn(v, close) { subchats_sheet_node(v, opened, close) },
+    fn(v, close) { subchats_sheet_node(v, src, r, opened, close) },
   )
 }
 
 ///|
-fn subchats_sheet_node(v : @view.View, opened : () -> Array[@sfbase.OpenedChat], close : () -> Unit) -> Unit {
+fn subchats_sheet_node(v : @view.View, src : Source, r : ChatRef, opened : () -> Array[@sfbase.OpenedChat], close : () -> Unit) -> Unit {
   let subchats = @signals.computed(fn(_) { @sfpages.led_subchats(opened()) })
   // Folded until pressed; the finished ones led with, the latest until pressed (one each for done and archived)
   let done_open : @signals.Signal[Bool] = @signals.signal(false)
   let archived_open : @signals.Signal[Bool] = @signals.signal(false)
   let done_more : @signals.Signal[Bool] = @signals.signal(false)
   let archived_more : @signals.Signal[Bool] = @signals.signal(false)
+  let search_field = @ui.Field::new()
+  let query : @signals.Signal[String] = @signals.signal("")
+  let search_focused : @signals.Signal[Bool] = @signals.signal(false)
+  let query_trimmed = fn() { query.get().trim().to_owned() }
+  let search_active = fn() { query_trimmed() != "" || search_focused.get() }
+  let search_res = @signals.computed(fn(_) {
+    @sfpages.subchats_search_results(Some(src), Some(r), fn() { subchats.get() }, false, query_trimmed())
+  })
   let lead_kind = @signals.computed(fn(_) { @sfpages.subchats_lead_kind(subchats.get()) })
   let more_now = fn() {
     match lead_kind.get() {
@@ -1911,14 +1936,24 @@ fn subchats_sheet_node(v : @view.View, opened : () -> Array[@sfbase.OpenedChat],
   }
   let done_group = SubchatsGroupOpen::{ open: done_open }
   let archived_group = SubchatsGroupOpen::{ open: archived_open }
-  let rows = @signals.computed(fn(_) { subchats_sheet_rows(subchats.get(), done_open.get(), archived_open.get(), more_now()) })
-  v.reacts(at_start=false, fn() { rows.get().length() }, fn(_) { @sf.panel_reshaped_node(v) }) |> ignore
+  let rows = @signals.computed(fn(_) {
+    let filtering = query_trimmed() != ""
+    let hits = if filtering { search_res.get().0 } else { [] }
+    subchats_sheet_rows(subchats.get(), done_open.get(), archived_open.get(), more_now(), filtering, hits)
+  })
+  v.reacts(at_start=false, fn() { (rows.get().length(), search_active(), query_trimmed()) }, fn(_) { @sf.panel_reshaped_node(v) }) |> ignore
   // (已完成 folding under those at work, 已归档 under those or the done ones: both folded, they share one card)
   let folds_done = fn() { lead_kind.get() == 0 && subchats.get().iter().any(fn(o) { @sfpages.subchat_is_done(o) }) }
   let folds_archived = fn() { lead_kind.get() != 2 && subchats.get().iter().any(fn(o) { o.archived }) }
   let shared = fn() { folds_done() && !done_open.get() && folds_archived() }
   let sheet = SubchatsSheet::{
     subchats: fn() { subchats.get() },
+    hits: fn() { search_res.get().0 },
+    reading: fn() { search_res.get().1 },
+    search_field,
+    query,
+    search_focused,
+    search_active,
     more_now,
     toggle_more,
     done_group,
@@ -1929,9 +1964,14 @@ fn subchats_sheet_node(v : @view.View, opened : () -> Array[@sfbase.OpenedChat],
   @sf.panel_list_node(v, fn() { rows.get() }, fn(b, row) { subchats_sheet_row_node(b, row, sheet) }, est=subchats_row_est)
   |> ignore
   // (the last card's foot concentric with the sheet's: every row but the empty state's on a card)
-  v.show(at_once=true, fn() { !(rows.get().get(0) is Some(SubchatsEmpty)) }, fn(f) {
-    @sf.style_node(f, fn() { @sf.panel_card_last_node(f) })
-  })
+  v.show(
+    at_once=true,
+    fn() {
+      let rs = rows.get()
+      !(rs.get(0) is Some(SubchatsEmpty)) && !(rs.get(1) is Some(SubchatsSearchEmpty))
+    },
+    fn(f) { @sf.style_node(f, fn() { @sf.panel_card_last_node(f) }) },
+  )
 }
 
 ///|
@@ -1941,10 +1981,16 @@ priv struct SubchatsGroupOpen {
 }
 
 ///|
-/// What a row of the sheet reads: its sub-chats, whether the finished ones it leads with show past the latest and the
-/// press that turns that, its folding groups, and what closes it.
+/// What a row of the sheet reads: its sub-chats, search state/hits, whether the finished ones it leads with show past
+/// the latest and the press that turns that, its folding groups, and what closes it.
 priv struct SubchatsSheet {
   subchats : () -> Array[@sfbase.OpenedChat]
+  hits : () -> Array[@sfbase.SubchatHit]
+  reading : () -> Bool
+  search_field : @ui.Field
+  query : @signals.Signal[String]
+  search_focused : @signals.Signal[Bool]
+  search_active : () -> Bool
   more_now : () -> Bool
   toggle_more : () -> Unit
   done_group : SubchatsGroupOpen
@@ -2064,12 +2110,84 @@ fn subchats_sheet_more_node(b : @view.View, sheet : SubchatsSheet) -> Unit {
 fn subchats_sheet_row_node(b : @view.View, row : SubchatSheetRow, sheet : SubchatsSheet) -> Unit {
   let subchats = sheet.subchats
   match row {
+    SubchatsSearch =>
+      b.box(fn(sw) {
+        @sf.style_node(sw, fn() { subchats_sheet_search_wrap })
+        let field_view = @sf.search_input_node(
+          sw,
+          sheet.search_field,
+          fn() { tr("web-pages.chat.subchatsSearch") },
+          at=Side,
+          edited=fn(s) { sheet.query.set(s) },
+          cleared=fn() { sheet.query.set("") },
+          escape=fn() {
+            if sheet.search_field.text() != "" {
+              sheet.search_field.set("")
+              sheet.query.set("")
+              true
+            } else {
+              false
+            }
+          },
+        )
+        field_view.reacts(fn() { field_view.focused() }, fn(f) { sheet.search_focused.set(f) })
+        match b.scroll_holding() {
+          Some(sc) => sc.tucks(sw, fn() { 0.0 }, kept=fn() { !(sheet.search_active)() })
+          None => ()
+        }
+      })
+      |> ignore
     SubchatsEmpty =>
       b.box(fn(n) {
         @sf.style_node(n, fn() { @sf.panel_words_in_node(n).then(jobs_none) })
         @sf.words_node(n, fn() { tr("web-pages.chat.subchatsNone") }, fn() { jobs_none_words }) |> ignore
       })
       |> ignore
+    SubchatsSearchEmpty =>
+      b.box(fn(n) {
+        @sf.style_node(n, fn() { @sf.panel_words_in_node(n).then(jobs_none) })
+        @sf.words_node(
+          n,
+          fn() {
+            if (sheet.reading)() {
+              tr("web-pages.chat.subchatsSearching")
+            } else {
+              tr("web-pages.chat.subchatsNoMatch")
+            }
+          },
+          fn() { jobs_none_words },
+        )
+        |> ignore
+      })
+      |> ignore
+    SubchatsSearchHit(key) => {
+      let hit_now = @signals.computed(fn(_) { (sheet.hits)().iter().find_first(fn(h) { subchat_sheet_key(h.opened) == key }) })
+      let piece_now = @signals.computed(fn(_) {
+        let hs = (sheet.hits)()
+        match hs.search_by(fn(h) { subchat_sheet_key(h.opened) == key }) {
+          Some(i) => @sf.card_piece_of(i, hs.length())
+          None => @sf.CardWhole
+        }
+      })
+      @sf.card_piece_node(b, fn() { piece_now.get() }, fn(k) {
+        subchat_sheet_item_node(
+          k,
+          fn() {
+            match hit_now.get() {
+              Some(h) => Some(h.opened)
+              None => None
+            }
+          },
+          sheet.close,
+          found_text=fn() {
+            match hit_now.get() {
+              Some(h) => h.found_text
+              None => ""
+            }
+          },
+        )
+      })
+    }
     SubchatsMore => subchats_sheet_more_node(b, sheet)
     SubchatsDoneHead =>
       subchats_sheet_group_head_node(
@@ -2155,7 +2273,12 @@ fn subchats_sheet_row_node(b : @view.View, row : SubchatSheetRow, sheet : Subcha
 }
 
 ///|
-fn subchat_sheet_item_node(k : @view.View, item : () -> @sfbase.OpenedChat?, close : () -> Unit) -> Unit {
+fn subchat_sheet_item_node(
+  k : @view.View,
+  item : () -> @sfbase.OpenedChat?,
+  close : () -> Unit,
+  found_text? : () -> String = fn() { "" },
+) -> Unit {
   let title = fn() {
     match item() {
       Some(o) => o.chat.title
@@ -2163,9 +2286,14 @@ fn subchat_sheet_item_node(k : @view.View, item : () -> @sfbase.OpenedChat?, clo
     }
   }
   let state_text = fn() {
-    match item() {
-      Some(o) => @sfpages.subchat_row_state_text(o)
-      None => ""
+    let ft = found_text()
+    if ft != "" {
+      ft
+    } else {
+      match item() {
+        Some(o) => @sfpages.subchat_row_state_text(o)
+        None => ""
+      }
     }
   }
   let is_archived = fn() {
@@ -2241,6 +2369,10 @@ let subchats_sheet_state : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted
 ///|
 // kept across runs: a value (no field of it changes)
 let subchats_more_line : @ui.Style = @sf.rule_line.then(@ui.css("mx=S2_5 mb=S1"))
+
+///|
+// kept across runs: a value (no field of it changes)
+let subchats_sheet_search_wrap : @ui.Style = @ui.css("w=Full pb=S2").then(@ui.style(px=@sf.room_of(@sf.panel_card_in)))
 
 ///|
 // kept across runs: a value (no field of it changes)

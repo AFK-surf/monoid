@@ -451,6 +451,12 @@ pub let said_paths : Map[String, Array[String]] = {
     "messages.*.by",
     "messages.*.text",
   ],
+  "chatSubchats": [
+    "items.*.title",
+    "items.*.stateText",
+    "items.*.note",
+    "items.*.foundText",
+  ],
   "chatThings": [
     "title",
     "media.*.by",
