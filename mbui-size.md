@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [67422c4f0](https://github.com/AFK-surf/monoid/commit/67422c4f02d6ea87761e22f360c3ea8cfd4a8cda) fix(station): count a timed-out warm as a failed s | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.53 | 126.63 |
 | [62d0ee807](https://github.com/AFK-surf/monoid/commit/62d0ee80739d6256b3cabb8aee4c3cd1c6a2c2b0) fix(station): handle ENOENT races during replica l | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.53 | 126.63 |
 | [cfe9b1739](https://github.com/AFK-surf/monoid/commit/cfe9b17397e8a6986472d8b28e361497c06a94e1) fix(ci): refresh station-slice.sh weights and sort | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.53 | 126.63 |
 | [90b2506a3](https://github.com/AFK-surf/monoid/commit/90b2506a3adf95a64f48056797df9058cf4a2166) feat(core,station): follow only open chats' live e | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.53 | 126.63 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [35b23251f](https://github.com/AFK-surf/monoid/commit/35b23251f0cf9de43be53db39aa7c1a60519567a) feat(liquid-glass): add pill trigger scope, capsul | 2.7 | 3.63 | 14.71 | 36.81 | 56.07 | 32.25 | 65.36 | 99.22 | 122.29 |
 | [35b23251f](https://github.com/AFK-surf/monoid/commit/35b23251f0cf9de43be53db39aa7c1a60519567a) feat(liquid-glass): add pill trigger scope, capsul | 2.7 | 3.63 | 14.71 | 36.81 | 56.07 | 32.24 | 65.34 | 99.34 | 125.71 |
 | [4f0b0d29b](https://github.com/AFK-surf/monoid/commit/4f0b0d29bc4e0be898bbbc740f211c3b2b195ece) feat(liquid-glass): add overlay, drawer, and morph | 2.7 | 3.63 | 14.7 | 36.79 | 56.05 | 32.24 | 65.34 | 99.34 | 122.78 |
-| [c2a94eb4a](https://github.com/AFK-surf/monoid/commit/c2a94eb4a98da030645237dd6f56d5fe51faa614) perf(sf-ui): mount the offers overlay only when it | 2.7 | 3.63 | 14.7 | 36.79 | 56.05 | 32.24 | 65.34 | 99.27 | 124.04 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [67422c4f0](https://github.com/AFK-surf/monoid/commit/67422c4f02d6ea87761e22f360c3ea8cfd4a8cda) fix(station): count a timed-out warm as a failed s | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.72 |
 | [62d0ee807](https://github.com/AFK-surf/monoid/commit/62d0ee80739d6256b3cabb8aee4c3cd1c6a2c2b0) fix(station): handle ENOENT races during replica l | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.41 |
 | [cfe9b1739](https://github.com/AFK-surf/monoid/commit/cfe9b17397e8a6986472d8b28e361497c06a94e1) fix(ci): refresh station-slice.sh weights and sort | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.72 |
 | [90b2506a3](https://github.com/AFK-surf/monoid/commit/90b2506a3adf95a64f48056797df9058cf4a2166) feat(core,station): follow only open chats' live e | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 55.15 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [35b23251f](https://github.com/AFK-surf/monoid/commit/35b23251f0cf9de43be53db39aa7c1a60519567a) feat(liquid-glass): add pill trigger scope, capsul | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
 | [35b23251f](https://github.com/AFK-surf/monoid/commit/35b23251f0cf9de43be53db39aa7c1a60519567a) feat(liquid-glass): add pill trigger scope, capsul | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
 | [4f0b0d29b](https://github.com/AFK-surf/monoid/commit/4f0b0d29bc4e0be898bbbc740f211c3b2b195ece) feat(liquid-glass): add overlay, drawer, and morph | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
-| [c2a94eb4a](https://github.com/AFK-surf/monoid/commit/c2a94eb4a98da030645237dd6f56d5fe51faa614) perf(sf-ui): mount the offers overlay only when it | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
