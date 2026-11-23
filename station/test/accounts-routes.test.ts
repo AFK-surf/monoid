@@ -1663,3 +1663,24 @@ test("Claude askQuota strips recheck, triggers check once when ok, and recovers 
     await t.close();
   }
 });
+
+test("the profiles are made once until the config or a profile's check changes", async () => {
+  let models: string[] = [];
+  const r = await rig({ check: async () => ({ state: "ok", detail: "fake", models, checkedAt: Date.now() }) });
+  try {
+    const first = r.accounts.profiles();
+    // Asked again with nothing changed (the overview asks for every profile of every viewer): the same, not parsed again.
+    assert.equal(r.accounts.profiles(), first);
+    // A check finds another model: the profiles run it at once.
+    models = ["opus-x"];
+    await r.accounts.check("cc");
+    const checked = r.accounts.profiles();
+    assert.notEqual(checked, first);
+    assert.ok(checked.find((p) => p.id === "cc")?.models.includes("opus-x"));
+    // The config changes: the profiles are its.
+    await r.accounts.putProfile("cx", { enabled: false }, owner);
+    assert.equal(r.accounts.profiles().find((p) => p.id === "cx")?.enabled, false);
+  } finally {
+    await r.close();
+  }
+});

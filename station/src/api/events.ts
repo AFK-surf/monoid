@@ -225,7 +225,7 @@ export class Events {
   /// of the shared chat list to read again (`items`), or all of it (`whole`).
   private dirty = Events.clean();
   private static clean() {
-    return { sessions: new Set<string>(), overview: false, whole: false, items: { sessions: new Set<string>(), threads: new Set<number>() } };
+    return { sessions: new Set<string>(), overview: false, overviewOf: new Set<string>(), whole: false, items: { sessions: new Set<string>(), threads: new Set<number>() } };
   }
   /// The process state last told per session.
   private states = new Map<string, string>();
@@ -583,8 +583,12 @@ export class Events {
     // In the same turn as it joins: what was told since is told again, and what is told from now comes as to the rest.
     if (resumes) for (const told of this.log.after(since!)) if (this.reaches(client, told.to)) client.raw(told.text);
     const head = resumes ? this.log.at() : null;
-    // Coming back: their overview as it is now, against what their streams were told of it last.
-    if (resumes) this.overviewChanged();
+    // Coming back: their overview as it is now, against what their streams were told of it last. Theirs alone: every
+    // viewer's made again at each device that came back held the main thread for seconds on a station of many devices.
+    if (resumes) {
+      this.dirty.overviewOf.add(viewerKey(viewer, lang));
+      this.wake();
+    }
     if (this.clients.length === 1) {
       this.startTimers();
       this.deps.followed?.();
@@ -888,7 +892,7 @@ export class Events {
     this.flushing = new Promise<void>((resolve) => setImmediate(resolve)).then(() => this.flush()).finally(() => {
       this.flushing = null;
       const d = this.dirty;
-      if (d.sessions.size > 0 || d.whole || d.overview || d.items.sessions.size > 0 || d.items.threads.size > 0) this.wake();
+      if (d.sessions.size > 0 || d.whole || d.overview || d.overviewOf.size > 0 || d.items.sessions.size > 0 || d.items.threads.size > 0) this.wake();
     });
   }
 
@@ -921,10 +925,12 @@ export class Events {
         log.warn("events", "session event not sent", { session: key, error: (error as Error).message });
       }
     }
-    // The overview to each viewer, in each language their streams were asked in.
-    if (overview && this.deps.overview) {
+    // The overview to each viewer, in each language their streams were asked in (only to those that came back, where
+    // nothing else changed it).
+    if ((overview || dirty.overviewOf.size > 0) && this.deps.overview) {
       const seen = new Set<string>();
-      const viewers = this.clients.filter((c) => !seen.has(viewerKey(c.viewer, c.lang)) && seen.add(viewerKey(c.viewer, c.lang)));
+      const wanted = (k: string) => overview || dirty.overviewOf.has(k);
+      const viewers = this.clients.filter((c) => wanted(viewerKey(c.viewer, c.lang)) && !seen.has(viewerKey(c.viewer, c.lang)) && seen.add(viewerKey(c.viewer, c.lang)));
       await Promise.all(
         viewers.map(async ({ viewer, lang }) => {
           try {
