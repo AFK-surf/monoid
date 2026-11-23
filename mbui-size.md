@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [283b75d55](https://github.com/AFK-surf/monoid/commit/283b75d55ec1fd956b32de7f7b80d2868883d467) feat(mesh): a switch for the DHT, on by default (# | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.34 | 126.46 |
 | [ce60a1ea9](https://github.com/AFK-surf/monoid/commit/ce60a1ea96cdc634e515fb6e0a755ed70a14ca5d) feat(ui,mbui): tint Windows window controls with t | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.74 | 100.29 | 124.88 |
 | [934faffca](https://github.com/AFK-surf/monoid/commit/934faffca6785d00328d49383125062c3d80b96e) feat(ui,mbui): unify transient overlay coordinatio | 2.72 | 3.66 | 14.84 | 36.99 | 56.56 | 32.4 | 65.72 | 100.19 | 114.81 |
 | [579c8c48e](https://github.com/AFK-surf/monoid/commit/579c8c48ec22e0c60284fca5ae88fa3d4cb07d21) fix(station): look up collected jobs' ends in batc | 2.72 | 3.66 | 14.83 | 36.99 | 56.52 | 32.4 | 65.72 | 100.19 | 124.7 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4dcdd2a40](https://github.com/AFK-surf/monoid/commit/4dcdd2a40e05ee58cf7453db5422eeac18879dda) fix(mbui): track composed text for composer line r | 2.71 | 3.65 | 14.82 | 36.93 | 56.43 | 32.35 | 65.66 | 99.63 | 125.17 |
 | [1809b2751](https://github.com/AFK-surf/monoid/commit/1809b2751552f70b75a8dae34dcb50288db4591f) fix(station): drop O(N²) scans from MoonBit replic | 2.71 | 3.65 | 14.81 | 36.93 | 56.43 | 32.35 | 65.66 | 99.4 | 127.26 |
 | [063ac567f](https://github.com/AFK-surf/monoid/commit/063ac567f454ce7f1828c157a6bdd6fad8145610) feat(mbui,sf-ui): polish iOS 26/27 liquid glass pr | 2.71 | 3.65 | 14.81 | 36.93 | 56.43 | 32.35 | 65.66 | 99.71 | 127.72 |
-| [77aef8b6d](https://github.com/AFK-surf/monoid/commit/77aef8b6d7aff40a9bff79032a9a4553b570ac9b) perf(mbui): cut medium-screen tape drag frame cost | 2.71 | 3.65 | 14.81 | 36.93 | 56.43 | 32.35 | 65.64 | 99.55 | 127.72 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [283b75d55](https://github.com/AFK-surf/monoid/commit/283b75d55ec1fd956b32de7f7b80d2868883d467) feat(mesh): a switch for the DHT, on by default (# | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.23 |
 | [ce60a1ea9](https://github.com/AFK-surf/monoid/commit/ce60a1ea96cdc634e515fb6e0a755ed70a14ca5d) feat(ui,mbui): tint Windows window controls with t | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.15 |
 | [934faffca](https://github.com/AFK-surf/monoid/commit/934faffca6785d00328d49383125062c3d80b96e) feat(ui,mbui): unify transient overlay coordinatio | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.3 |
 | [579c8c48e](https://github.com/AFK-surf/monoid/commit/579c8c48ec22e0c60284fca5ae88fa3d4cb07d21) fix(station): look up collected jobs' ends in batc | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.26 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4dcdd2a40](https://github.com/AFK-surf/monoid/commit/4dcdd2a40e05ee58cf7453db5422eeac18879dda) fix(mbui): track composed text for composer line r | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.74 |
 | [1809b2751](https://github.com/AFK-surf/monoid/commit/1809b2751552f70b75a8dae34dcb50288db4591f) fix(station): drop O(N²) scans from MoonBit replic | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.53 |
 | [063ac567f](https://github.com/AFK-surf/monoid/commit/063ac567f454ce7f1828c157a6bdd6fad8145610) feat(mbui,sf-ui): polish iOS 26/27 liquid glass pr | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.81 |
-| [77aef8b6d](https://github.com/AFK-surf/monoid/commit/77aef8b6d7aff40a9bff79032a9a4553b570ac9b) perf(mbui): cut medium-screen tape drag frame cost | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.46 |
