@@ -1,7 +1,6 @@
 [workspace]
 members = [
   "packages/app_state",
-  "packages/sf_ui",
 ]
 
 [workspace.dependencies]
@@ -14,29 +13,11 @@ url = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "url-v0.1.0
 time = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "time-v0.1.0", subdir = "packages/time" }
 http1 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "http1-v0.1.0", subdir = "packages/http1" }
 json5 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "json5-v0.1.0", subdir = "packages/json5" }
-markdown = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "markdown-v0.2.1", subdir = "packages/markdown" }
 
-# Official AFK-surf/invar pinned baseline (368ff1b5)
-signals = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/signals" }
-view = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/view" }
-ui = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/ui" }
-lg = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/lg" }
-icons = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/icons" }
-paint = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/paint" }
-flex = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/flex" }
-text = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/text" }
-font = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/font" }
-dmath = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/dmath" }
-film = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/film" }
-pixels = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/pixels" }
-render = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/render" }
-codec = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/codec" }
-motion = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/motion" }
-headless = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/headless" }
-shape = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/shape" }
-svg = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/svg" }
-kit = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/kit" }
-host = { git = "https://github.com/AFK-surf/invar.git", rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce", subdir = "packages/host" }
+# Official AFK-surf/invar pinned main rev (headless reactive & frame-wake primitives only)
+signals = { git = "https://github.com/AFK-surf/invar.git", rev = "ae44931399a65d6ce68c59544216e359cc29b8db", subdir = "packages/signals" }
+view = { git = "https://github.com/AFK-surf/invar.git", rev = "ae44931399a65d6ce68c59544216e359cc29b8db", subdir = "packages/view" }
+ui = { git = "https://github.com/AFK-surf/invar.git", rev = "ae44931399a65d6ce68c59544216e359cc29b8db", subdir = "packages/ui" }
 
 # Local monoid pure-Pion workspaces
 base_codec = { path = "../base/packages/base_codec" }
@@ -53,5 +34,4 @@ vault = { path = "../rules/packages/vault" }
 outbox = { path = "../client-core/packages/outbox" }
 store = { path = "../client-core/packages/store" }
 protocol = { path = "../client-core/packages/protocol" }
-views = { path = "../client-core/packages/views" }
 sync = { path = "../client-core/packages/sync" }

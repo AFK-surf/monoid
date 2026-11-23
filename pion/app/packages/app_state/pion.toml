@@ -8,12 +8,10 @@ effect = { workspace = true }
 form = { workspace = true }
 lock = { workspace = true }
 outbox = { workspace = true }
-protocol = { workspace = true }
 shell = { workspace = true }
 sql = { workspace = true }
 store = { workspace = true }
 sync = { workspace = true }
-views = { workspace = true }
 signals = { workspace = true }
 view = { workspace = true }
 ui = { workspace = true }

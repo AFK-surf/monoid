@@ -5,15 +5,12 @@
 // Decoupled from all visual skins so the unified `invar` PageShell & components
 // can bind directly to these signals without touching core logic.
 
-import "base_codec"
 import "effect"
-import "protocol"
 import "signals"
 import "sql"
 import "store"
 import "sync"
 import "ui"
-import "views"
 
 pub struct ChatSummary {
   pub id : String
@@ -55,34 +52,17 @@ pub struct AppController {
   pub core : sync::ClientCore
   pub chats_sig : signals::Signal[Array[ChatSummary]]
   pub active_thread_sig : signals::Signal[Int]
-  pub active_station_sig : signals::Signal[String]
   pub active_title_sig : signals::Signal[String]
-  pub workspace_name_sig : signals::Signal[String]
   pub messages_sig : signals::Signal[Array[ChatMessage]]
   pub connection_sig : signals::Signal[String]
   pub lock_verified_sig : signals::Signal[Bool]
   pub lock_status_sig : signals::Signal[String]
   pub recovery_sig : signals::Signal[Option[RecoveryNotice]]
   pub decision_sig : signals::Signal[DecisionState]
-  pub chats_days_sig : signals::Signal[ChatsDaysState]
-  pub active_chat_sig : signals::Signal[ActiveChatView]
-  pub stations_sig : signals::Signal[Array[StationViewItem]]
-  pub safe_mode_sig : signals::Signal[views::SafeModeView]
-  pub vault_approvals_sig : signals::Signal[VaultApprovalsState]
-  pub profiles_sig : signals::Signal[Array[ProfileViewItem]]
-  pub models_sig : signals::Signal[Array[ModelViewItem]]
-  pub fleet_summary_sig : signals::Signal[FleetSummaryState]
-  pub chat_filter_sig : signals::Signal[ChatFilter]
-  pub sheet_sig : signals::Signal[ActiveSheet]
-  pub settings_tab_sig : signals::Signal[Int]
-  pub dark_sig : signals::Signal[Bool]
-  pub show_detail_sig : signals::Signal[Bool]
   pub version_sig : signals::Signal[Int]
   pub mut live_sync : Bool
-  pub mut views_enabled : Bool
   pub mut drained_events : Int
   mut send_seq : Int
-  mut sub_seq : Int64
   prev_chat_titles : Map[String, String]
   prev_chat_archived : Map[String, Bool]
 }
@@ -155,7 +135,6 @@ pub fn AppController::new(
   )
   let init_title = if initial_chats.length() > 0 { initial_chats[0].title } else { "" }
   let init_thread = if initial_chats.length() > 0 { initial_chats[0].thread } else { 0 }
-  let init_safe_mode = core.current_safe_mode_view()
   AppController::{
     core: core,
     chats_sig: signals::signal_by(
@@ -163,9 +142,7 @@ pub fn AppController::new(
       fn(_a : Array[ChatSummary], _b : Array[ChatSummary]) -> Bool { false },
     ),
     active_thread_sig: signals::signal(init_thread),
-    active_station_sig: signals::signal(station),
     active_title_sig: signals::signal(init_title),
-    workspace_name_sig: signals::signal(workspace),
     messages_sig: signals::signal_by(
       [],
       fn(_a : Array[ChatMessage], _b : Array[ChatMessage]) -> Bool { false },
@@ -184,49 +161,10 @@ pub fn AppController::new(
       ),
       fn(_a : DecisionState, _b : DecisionState) -> Bool { false },
     ),
-    chats_days_sig: signals::signal_by(
-      empty_chats_days(),
-      fn(_a : ChatsDaysState, _b : ChatsDaysState) -> Bool { false },
-    ),
-    active_chat_sig: signals::signal_by(
-      empty_active_chat(station, init_thread),
-      fn(_a : ActiveChatView, _b : ActiveChatView) -> Bool { false },
-    ),
-    stations_sig: signals::signal_by(
-      [],
-      fn(_a : Array[StationViewItem], _b : Array[StationViewItem]) -> Bool { false },
-    ),
-    safe_mode_sig: signals::signal_by(
-      init_safe_mode,
-      fn(_a : views::SafeModeView, _b : views::SafeModeView) -> Bool { false },
-    ),
-    vault_approvals_sig: signals::signal_by(
-      empty_vault_approvals(workspace),
-      fn(_a : VaultApprovalsState, _b : VaultApprovalsState) -> Bool { false },
-    ),
-    profiles_sig: signals::signal_by(
-      [],
-      fn(_a : Array[ProfileViewItem], _b : Array[ProfileViewItem]) -> Bool { false },
-    ),
-    models_sig: signals::signal_by(
-      [],
-      fn(_a : Array[ModelViewItem], _b : Array[ModelViewItem]) -> Bool { false },
-    ),
-    fleet_summary_sig: signals::signal_by(
-      empty_fleet_summary(workspace),
-      fn(_a : FleetSummaryState, _b : FleetSummaryState) -> Bool { false },
-    ),
-    chat_filter_sig: signals::signal_by(ChatFilter::All, fn(a : ChatFilter, b : ChatFilter) -> Bool { a == b }),
-    sheet_sig: signals::signal_by(ActiveSheet::None, fn(a : ActiveSheet, b : ActiveSheet) -> Bool { a == b }),
-    settings_tab_sig: signals::signal(0),
-    dark_sig: signals::signal(false),
-    show_detail_sig: signals::signal(true),
     version_sig: signals::signal(0),
     live_sync: false,
-    views_enabled: false,
     drained_events: 0,
     send_seq: 0,
-    sub_seq: 1000.to_int64(),
     prev_chat_titles: Map::new(),
     prev_chat_archived: Map::new(),
   }
@@ -596,267 +534,5 @@ pub fn AppController::drain_core_events(self : AppController) -> Unit {
       _ => ()
     }
   }
-  if self.views_enabled {
-    self.refresh_active_chat()
-    self.refresh_chats_days()
-    self.refresh_safe_mode()
-  }
-  self.bump()
-}
-
-// ---------------------------------------------------------------------------
-// Real `packages/views` reactive projection bridge & commands
-// ---------------------------------------------------------------------------
-
-fn AppController::query_view_topic(
-  self : AppController,
-  name : String,
-  params : Array[(String, base_codec::Json)],
-) -> Option[base_codec::Json] {
-  self.sub_seq = self.sub_seq + 1.to_int64()
-  let sid = self.sub_seq
-  let topic = protocol::Topic::{ name: name, params: params }
-  let res = self.core.handle_request(protocol::CoreRequest::Subscribe(sid, topic, false, None, None))
-  let _ = self.core.handle_request(protocol::CoreRequest::Unsubscribe(sid, true, false))
-  match res {
-    Some(protocol::CoreEvent::Value(_, j, _)) => Some(j)
-    _ => None
-  }
-}
-
-/// Refresh `chats_days_sig` from real `views::project_chats` via `ClientCore`.
-pub fn AppController::refresh_chats_days(self : AppController) -> Unit {
-  match self.query_view_topic("chats", [("scope", base_codec::json_str(self.core.workspace))]) {
-    Some(j) => self.chats_days_sig.set(decode_chats_days(j))
-    None => ()
-  }
-}
-
-/// Refresh `active_chat_sig` from real `views::project_chat` via `ClientCore`.
-pub fn AppController::refresh_active_chat(self : AppController) -> Unit {
-  let st = self.active_station_sig.untracked()
-  let th = self.active_thread_sig.untracked()
-  match self.query_view_topic(
-    "chat",
-    [
-      ("station", base_codec::json_str(st)),
-      ("thread", base_codec::json_int(th)),
-    ],
-  ) {
-    Some(j) => {
-      let view = decode_active_chat(st, th, j)
-      self.active_chat_sig.set(view)
-      if view.title.length() > 0 && view.title != "新对话" {
-        self.active_title_sig.set(view.title)
-      }
-    }
-    None => ()
-  }
-}
-
-/// Refresh `stations_sig` from real `views::project_stations` via `ClientCore`.
-pub fn AppController::refresh_stations(self : AppController) -> Unit {
-  match self.query_view_topic("stations", [("scope", base_codec::json_str(self.core.workspace))]) {
-    Some(j) => self.stations_sig.set(decode_stations(j))
-    None => ()
-  }
-}
-
-/// Refresh `safe_mode_sig` from real `ClientCore::current_safe_mode_view` (zero 「个人锁」).
-pub fn AppController::refresh_safe_mode(self : AppController) -> Unit {
-  self.safe_mode_sig.set(self.core.current_safe_mode_view())
-}
-
-/// Refresh `vault_approvals_sig` from real `views::project_vault_approvals` via `ClientCore`.
-pub fn AppController::refresh_vault_approvals(self : AppController) -> Unit {
-  match self.query_view_topic("vaultApprovals", [("workspace", base_codec::json_str(self.core.workspace))]) {
-    Some(j) => self.vault_approvals_sig.set(decode_vault_approvals(j))
-    None => ()
-  }
-}
-
-/// Refresh `profiles_sig` from real `views::project_profiles` (strictly sanitized, zero secrets).
-pub fn AppController::refresh_profiles(self : AppController) -> Unit {
-  match self.query_view_topic("profiles", [("scope", base_codec::json_str(self.core.workspace))]) {
-    Some(j) => self.profiles_sig.set(decode_profiles(j))
-    None => ()
-  }
-}
-
-/// Refresh `models_sig` from real `views::project_models` (with personal starred flags).
-pub fn AppController::refresh_models(self : AppController) -> Unit {
-  match self.query_view_topic("models", [("scope", base_codec::json_str(self.core.workspace))]) {
-    Some(j) => self.models_sig.set(decode_models(j))
-    None => ()
-  }
-}
-
-/// Refresh `fleet_summary_sig` from real `views::project_fleet` via `ClientCore`.
-pub fn AppController::refresh_fleet_summary(self : AppController) -> Unit {
-  match self.query_view_topic("fleet", [("scope", base_codec::json_str(self.core.workspace))]) {
-    Some(j) => self.fleet_summary_sig.set(decode_fleet_summary(j))
-    None => ()
-  }
-}
-
-/// Enable live `packages/views` projection sync and refresh all 8 view signals immediately.
-pub fn AppController::refresh_all_views(self : AppController) -> Unit {
-  self.views_enabled = true
-  self.refresh_chats_days()
-  self.refresh_active_chat()
-  self.refresh_stations()
-  self.refresh_safe_mode()
-  self.refresh_vault_approvals()
-  self.refresh_profiles()
-  self.refresh_models()
-  self.refresh_fleet_summary()
-  self.bump()
-}
-
-/// Switch active chat on `(station, thread)` and refresh `active_chat_sig` + `chats_days_sig`.
-pub fn AppController::select_station_chat(
-  self : AppController,
-  station : String,
-  thread : Int,
-  now~ : Int64 = 0.to_int64(),
-) -> Bool {
-  let ts = if now > 0.to_int64() { now } else { self.core.rt.now() }
-  if station.length() > 0 {
-    self.active_station_sig.set(station)
-  }
-  self.show_detail_sig.set(true)
-  let ok = self.select_chat(thread, ts)
-  if self.views_enabled {
-    self.refresh_active_chat()
-    self.refresh_chats_days()
-  }
-  ok
-}
-
-/// Optimistically send a message through `ClientCore::send_message` and refresh `active_chat_sig`.
-pub fn AppController::send_message(
-  self : AppController,
-  text : String,
-  author~ : String = "Alice",
-) -> String {
-  let ck = self.send_text(text, author=author)
-  if ck.length() > 0 && self.views_enabled {
-    self.refresh_active_chat()
-    self.refresh_chats_days()
-    self.bump()
-  }
-  ck
-}
-
-/// Answer an interactive decision card at `(thread, seq)` through `ClientCore::answer_card`
-/// and immediately refresh `active_chat_sig` + `chats_days_sig`.
-pub fn AppController::answer_card(
-  self : AppController,
-  thread : Int,
-  seq : Int,
-  option : String,
-  action~ : String = "reply",
-) -> Bool {
-  let ok = match self.core.answer_card(thread, seq, option, action, self.core.rt.now()) {
-    sql::SqlResult::Ok(_) => true
-    sql::SqlResult::Err(_) => false
-  }
-  if ok && self.views_enabled {
-    self.refresh_active_chat()
-    self.refresh_chats_days()
-    self.bump()
-  }
-  ok
-}
-
-/// Approve a pending vault approval request via `ClientCore` (`vault.approve`) and refresh `vault_approvals_sig`.
-pub fn AppController::approve_vault(
-  self : AppController,
-  req_id : String,
-  grant_scope~ : String = "once",
-) -> Bool {
-  self.sub_seq = self.sub_seq + 1.to_int64()
-  let res = self.core.handle_request(protocol::CoreRequest::Call(
-    self.sub_seq,
-    "vault.approve",
-    base_codec::json_obj([
-      ("request", base_codec::json_str(req_id)),
-      ("scope", base_codec::json_str(grant_scope)),
-    ]),
-    None,
-  ))
-  let ok = match res {
-    Some(protocol::CoreEvent::Ok(_, _, _)) => true
-    _ => false
-  }
-  if ok {
-    self.refresh_vault_approvals()
-    self.bump()
-  }
-  ok
-}
-
-/// Deny a pending vault approval request via `ClientCore` (`vault.deny`) and refresh `vault_approvals_sig`.
-pub fn AppController::deny_vault(
-  self : AppController,
-  req_id : String,
-  note~ : Option[String] = None,
-) -> Bool {
-  self.sub_seq = self.sub_seq + 1.to_int64()
-  let fields : Array[(String, base_codec::Json)] = [("request", base_codec::json_str(req_id))]
-  match note {
-    Some(n) => fields.push(("note", base_codec::json_str(n)))
-    None => ()
-  }
-  let res = self.core.handle_request(protocol::CoreRequest::Call(
-    self.sub_seq,
-    "vault.deny",
-    base_codec::json_obj(fields),
-    None,
-  ))
-  let ok = match res {
-    Some(protocol::CoreEvent::Ok(_, _, _)) => true
-    _ => false
-  }
-  if ok {
-    self.refresh_vault_approvals()
-    self.bump()
-  }
-  ok
-}
-
-pub fn AppController::set_chat_filter(self : AppController, filter : ChatFilter) -> Unit {
-  self.chat_filter_sig.set(filter)
-  self.bump()
-}
-
-pub fn AppController::set_sheet(self : AppController, sheet : ActiveSheet) -> Unit {
-  self.sheet_sig.set(sheet)
-  self.bump()
-}
-
-pub fn AppController::set_settings_tab(self : AppController, tab : Int) -> Unit {
-  let clamped = if tab < 0 { 0 } else if tab > 2 { 2 } else { tab }
-  self.settings_tab_sig.set(clamped)
-  self.bump()
-}
-
-pub fn AppController::toggle_dark(self : AppController) -> Unit {
-  self.dark_sig.set(!self.dark_sig.untracked())
-  self.bump()
-}
-
-pub fn AppController::set_dark_mode(self : AppController, dark : Bool) -> Unit {
-  self.dark_sig.set(dark)
-  self.bump()
-}
-
-pub fn AppController::set_show_detail(self : AppController, show : Bool) -> Unit {
-  self.show_detail_sig.set(show)
-  self.bump()
-}
-
-pub fn AppController::set_workspace_name(self : AppController, name : String) -> Unit {
-  self.workspace_name_sig.set(name)
   self.bump()
 }
