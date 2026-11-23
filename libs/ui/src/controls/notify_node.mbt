@@ -250,9 +250,8 @@ fn notify_banner_node(
     .gap(Is(notify_banner_gap))
     .lines_up(Is(Some(Start)))
     .radius(By(fn() { @ui.tree_theme().corner(Xl1_5) }))
-    .ground(By(fn() { @ui.tree_theme().color(Raised) }))
-    .shadow(By(fn() { (2.0, 1.0, @ui.tree_theme().shadow) }))
     |> ignore
+    panel_surface_decorate(b, clips=true) |> ignore
     if across {
       b.grow(Is(1.0)).max_width(Is(Some(notify_banner_across_most))) |> ignore
     } else {

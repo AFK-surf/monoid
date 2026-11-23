@@ -249,7 +249,7 @@ fn service_marks_over_node(parent : @view.View, p : ServicePage, site : @ui.Nati
                   p.tell()
                 }, fn(v) {
                   @sf.style_node(v, fn() { mark_said }, in_row=true)
-                  mark_bubble_node(v, @sf.pin_raised)
+                  mark_bubble_node(v)
                   v.max_width(By(fn() { Some(side(r).1) })) |> ignore
                   @sf.words_node(v, comment, fn() { mark_said_words }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
                 })
@@ -282,7 +282,7 @@ fn mark_note_node(
   let m = p.marks
   parent.box(fn(b) {
     @sf.style_node(b, fn() { mark_note })
-    mark_bubble_node(b, @sf.bubble_raised)
+    mark_bubble_node(b)
     let width = fn() { dmin(note_most, size().0 - 2.0 * note_clear) }
     b
     .over(Is(true))
@@ -338,15 +338,14 @@ fn mark_note_node(
 }
 
 ///|
-/// Node `v` casting shadow `r` (a style's shadow is no node's: @sf.style_node lays none).
-fn raised_node(v : @view.View, r : @sf.Raised) -> Unit {
-  v.shadow(Is((r.sigma, r.dy, r.color))) |> ignore
-}
-
-///|
-/// A bubble over the page in node `v` (what is said of a mark, its note): frosted, on the light theme's bubble or the
-/// dark's as the theme is (Preview.kt's bubble), casting shadow `r`.
-fn mark_bubble_node(v : @view.View, r : @sf.Raised) -> Unit {
-  v.ground(By(fn() { @ui.tree_theme().color(if @sf.theme().dark { @sf.mark_bubble_dark } else { @sf.mark_bubble }) })) |> ignore
-  raised_node(v, r)
+/// A bubble over the page in node `v` (what is said of a mark, its note): 75% panel liquid glass, with the light or
+/// dark bubble color as solid fallback so text and icons stay legible over any web page background.
+fn mark_bubble_node(v : @view.View) -> Unit {
+  @sf.glass_capsule_node(
+    v,
+    sharing=false,
+    panel=true,
+    solid=fn() { @ui.tree_theme().color(if @sf.theme().dark { @sf.mark_bubble_dark } else { @sf.mark_bubble }) },
+  )
+  |> ignore
 }
