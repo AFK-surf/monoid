@@ -169,7 +169,10 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // 121, 14, 307), its bar (174, 325, 184, 23, 332))
   // (+1 binding, 2026-11-22: the composer-top capsule's segment padding by its neighbours (sfdesk chat_bar_wide_node);
   // before it (149, 309, 119, 14, 306))
-  "wide again": (149, 309, 119, 14, 307),
+  // (+1 laid, 2026-11-23: what lives with a node hidden as its kept page is put by, shown again as it is woken (mbui
+  // View::lives_with): a holder in the window's layer laid again as the chat comes back; before it (149, 309, 119, 14,
+  // 307))
+  "wide again": (149, 309, 120, 14, 307),
   "phone up": (543, 354, 606, 87, 0),
   // (wide up 2 made and 1 laid more, 2026-11-18: a quote's source that leads somewhere is mbui's headless button, read
   // out and pressed as one (sf button_while_node), the pick that makes it a button only then and the button's own box
