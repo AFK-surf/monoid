@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f32384c6d](https://github.com/AFK-surf/monoid/commit/f32384c6dbc05992d004ddb2b4e03375664f5820) feat(ui): calibrate pressed liquid glass lens and  | 2.74 | 3.69 | 14.95 | 37.14 | 56.93 | 32.51 | 66.04 | 101.09 | 118.55 |
 | [95f976d6c](https://github.com/AFK-surf/monoid/commit/95f976d6c3688024ab1db21177b5246a5bd461d6) fix(ui): keep a flying container's shadow drawn on | 2.74 | 3.69 | 14.95 | 37.14 | 56.93 | 32.51 | 66.04 | 101.09 | 118.55 |
 | [714c5b362](https://github.com/AFK-surf/monoid/commit/714c5b362fa652cdab0dc3e615011a3a0de050c0) fix(ci): rebalance rules-fork and replica-retire s | 2.74 | 3.69 | 14.95 | 37.13 | 56.92 | 32.51 | 66.04 | 100.96 | 117.5 |
 | [10a0c2b8f](https://github.com/AFK-surf/monoid/commit/10a0c2b8fce2642bdf8ae2f8295396bec0914be3) feat(ui,mbui): Phase 3B explicit StageOrigin, clea | 2.74 | 3.69 | 14.95 | 37.13 | 56.92 | 32.51 | 66.04 | 100.96 | 117.5 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d1826a13e](https://github.com/AFK-surf/monoid/commit/d1826a13e087adc3687732c639f2f0221eb26167) fix(e2e): end the fake claude's turn on a remote t | 2.73 | 3.68 | 14.9 | 37.06 | 56.76 | 32.47 | 65.92 | 101.02 | 121.62 |
 | [2aba0c6e4](https://github.com/AFK-surf/monoid/commit/2aba0c6e4985ae0f16e6bf62b6a8798fa0301f27) fix(ui): fix adaptive liquid glass pill hover wash | 2.73 | 3.68 | 14.9 | 37.06 | 56.76 | 32.47 | 65.92 | 101.02 | 121.62 |
 | [48b7e7c70](https://github.com/AFK-surf/monoid/commit/48b7e7c70512d20285343222ff81cd14f5285221) fix(mbui): align model picker details to the name  | 2.73 | 3.68 | 14.9 | 37.06 | 56.76 | 32.47 | 65.92 | 101.02 | 121.62 |
-| [f350f6162](https://github.com/AFK-surf/monoid/commit/f350f6162b1051720cdebd6f75ada97727680a12) feat(station,client,mbui): add local station repla | 2.73 | 3.68 | 14.9 | 37.07 | 56.76 | 32.47 | 65.92 | 100.52 | 113.6 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f32384c6d](https://github.com/AFK-surf/monoid/commit/f32384c6dbc05992d004ddb2b4e03375664f5820) feat(ui): calibrate pressed liquid glass lens and  | 0.55 | 0.72 | 2.8 | 3.81 | 6.9 | 2.04 | 5.68 | 57.28 |
 | [95f976d6c](https://github.com/AFK-surf/monoid/commit/95f976d6c3688024ab1db21177b5246a5bd461d6) fix(ui): keep a flying container's shadow drawn on | 0.55 | 0.72 | 2.8 | 3.81 | 6.89 | 2.04 | 5.66 | 57.61 |
 | [714c5b362](https://github.com/AFK-surf/monoid/commit/714c5b362fa652cdab0dc3e615011a3a0de050c0) fix(ci): rebalance rules-fork and replica-retire s | 0.55 | 0.72 | 2.8 | 3.81 | 6.89 | 2.04 | 5.66 | 57.79 |
 | [10a0c2b8f](https://github.com/AFK-surf/monoid/commit/10a0c2b8fce2642bdf8ae2f8295396bec0914be3) feat(ui,mbui): Phase 3B explicit StageOrigin, clea | 0.55 | 0.72 | 2.8 | 3.81 | 6.89 | 2.04 | 5.66 | 57.9 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d1826a13e](https://github.com/AFK-surf/monoid/commit/d1826a13e087adc3687732c639f2f0221eb26167) fix(e2e): end the fake claude's turn on a remote t | 0.49 | 0.64 | 2.45 | 3.51 | 5.83 | 1.8 | 4.85 | 55.1 |
 | [2aba0c6e4](https://github.com/AFK-surf/monoid/commit/2aba0c6e4985ae0f16e6bf62b6a8798fa0301f27) fix(ui): fix adaptive liquid glass pill hover wash | 0.49 | 0.64 | 2.45 | 3.5 | 5.81 | 1.79 | 4.83 | 55.26 |
 | [48b7e7c70](https://github.com/AFK-surf/monoid/commit/48b7e7c70512d20285343222ff81cd14f5285221) fix(mbui): align model picker details to the name  | 0.49 | 0.64 | 2.45 | 3.5 | 5.81 | 1.79 | 4.83 | 55 |
-| [f350f6162](https://github.com/AFK-surf/monoid/commit/f350f6162b1051720cdebd6f75ada97727680a12) feat(station,client,mbui): add local station repla | 0.49 | 0.64 | 2.45 | 3.5 | 5.81 | 1.79 | 4.83 | 54.92 |
