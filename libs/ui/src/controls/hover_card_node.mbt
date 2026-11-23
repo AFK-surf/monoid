@@ -335,7 +335,7 @@ fn hover_surface_controller(
     hc_ref.val = None
   })
   |> ignore
-  { hold, close: fn() { hc.close() }, open: fn() { open.get() }, card: fn() { card.get() } }
+  { hold, close: fn() { close_explicit(); hc.close() }, open: fn() { open.get() }, card: fn() { card.get() } }
 }
 
 ///|
