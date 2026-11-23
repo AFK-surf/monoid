@@ -1217,6 +1217,7 @@ pub struct Tree {
 pub fn Tree::actions_here(Self, from? : NodeId?) -> Array[String]
 pub fn Tree::activate_at(Self, NodeId, Double) -> Bool
 pub fn Tree::acts_on(Self, NodeId) -> Bool
+pub fn Tree::after_event(Self, () -> Unit) -> Unit
 pub fn Tree::advance(Self, Double) -> Unit
 pub fn Tree::alive(Self) -> Int32
 pub fn Tree::allows(Self, NodeId) -> Bool

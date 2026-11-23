@@ -1255,12 +1255,13 @@ fn pointer_event_now(
   // (what the pointer is over, the tree brought to the event's moment for it: once a batch of moves, at its last, what
   // the samples before it did laid out with it, touches.mbt)
   let pointed = fn() { if !more { view_pointed() } }
+  let pointed_after = fn() { if !more { view_pointed_after() } }
   // (where a mouse points, said before the event is taken; what it is over told once it is: view_host.mbt)
   view_point_said(kind, x, y)
   // (what the tree made once routes elsewhere than to the old view (a press on a node of its own, one outside the old
   // view's island) is no input of the old view's: taped alone, view_host.mbt)
   if (kind <= 3 || view_holds()) && view_pointer(kind, x, y, button, brings=!batched) {
-    pointed()
+    pointed_after()
     input_taped("pointer", h_event_time(), args)
     // (a press the window's tree took is outside every layer of the old frame's: what it dismisses so, at its moment,
     // as one the old frame takes is: overlay.mbt)
@@ -1279,7 +1280,7 @@ fn pointer_event_now(
       view_old_moved(x, y)
       // (what the old view found under the pointer as it moved, by its own targets, told it again as the tree finds it
       // there: nothing of its where something of the tree's is pointed at over it, View::points)
-      pointed()
+      pointed_after()
     }
   }
   // (a finger or button down, wherever it went (a node of the tree's, the old view): a press of its own from here, a

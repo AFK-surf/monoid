@@ -6654,6 +6654,17 @@ fn view_pointed() -> Unit {
 }
 
 ///|
+/// `view_pointed` deferred until the enclosing event batch commits whole (`Tree::after_event`), so
+/// `tree.bring_to` / `tree_words_under` never pull property bindings and lay out / place the tree
+/// mid-batch before structural watches (`View::reacts`, `View::each`, `View::show`, `View::pick`) flush.
+fn view_pointed_after() -> Unit {
+  match view_app.val {
+    Some(tree) => tree.after_event(view_pointed)
+    None => ()
+  }
+}
+
+///|
 /// What the pointer is over, one of the tree's or the old views', as things are now: the one the old frame puts over all
 /// of it at its root there (a menu, a sheet) the old views'; else what of the tree takes a press there (Tree::point_at),
 /// or the old view in a node there, or, where nothing of the tree's is, the old frame where it is the whole window. The

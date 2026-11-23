@@ -12525,7 +12525,7 @@ fn Tree::settle_layout_at(self : Tree, at : Double) -> Unit {
 ///|
 /// `f` done once the event being taken now is committed whole (what it told brought about: nodes shown, gone, made anew,
 /// a modal layer opened), as a change of its own of that moment; taken in none, now.
-fn Tree::after_event(self : Tree, f : () -> Unit) -> Unit {
+pub fn Tree::after_event(self : Tree, f : () -> Unit) -> Unit {
   if self.cause_at >= 0.0 {
     self.afters.push(f)
   } else {

@@ -575,3 +575,126 @@ test "chat_page_nodes smoothness: 4-attachment 2->1 row reflow has zero Y dip an
     }
   }
 }
+
+///|
+test "chat_page_nodes smoothness: adding first quote with 4 attachments present animates Willow smoothly from frame 0 without -10pt snap" {
+  let (name, w, h, platform) = dk_screens[0]
+  new_run()
+  let src = fixture_app("chat")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, words_over_held=true)
+  t.set_rows_on_pixels(true)
+  if !@ui.test_at_a_rate() {
+    t.set_frame_period(1000.0 / 60.0)
+  }
+  let script =
+    #|timeout 25000
+    #|until 发消息
+    #|wait 300
+    #|tap 发消息
+    #|wait 200
+    #|picks 构建日志1.log:2000
+    #|key cmd+u
+    #|wait 350
+    #|picks 构建日志2.log:2000
+    #|key cmd+u
+    #|wait 350
+    #|picks 构建日志3.log:2000
+    #|key cmd+u
+    #|wait 350
+    #|picks 构建日志4.log:2000
+    #|key cmd+u
+    #|wait 450
+    #|dragon 120 0 120 做完了：列表
+    #|wait 200
+    #|tap 引用
+    #|wait 450
+    #|exit
+  let saw_quote_pill = Ref(false)
+  let quoting = Ref(false)
+  let base_willow = Ref(-1.0)
+  let base_log1 = Ref(-1.0)
+  let samples : Array[(Double, Double, Double)] = []
+  t.drive(script, each=fn(t) {
+    let mut has_log4 = false
+    let mut has_quote_pill = false
+    let mut willow_y : Double? = None
+    let mut log1_y : Double? = None
+    for wd in t.words() {
+      let (txt, _, y, _, _, a) = wd
+      if a <= 0.02 {
+        continue
+      }
+      if txt.contains("构建日志4") {
+        has_log4 = true
+      }
+      if txt == "引用" {
+        has_quote_pill = true
+      }
+      if willow_y is None && txt == "Willow" && y > 300.0 {
+        willow_y = Some(y)
+      }
+      if log1_y is None && txt.contains("构建日志1") {
+        log1_y = Some(y)
+      }
+    }
+    if has_log4 && has_quote_pill && !quoting.val {
+      saw_quote_pill.val = true
+      match (willow_y, log1_y) {
+        (Some(wy), Some(ly)) => {
+          base_willow.val = wy
+          base_log1.val = ly
+        }
+        _ => ()
+      }
+    } else if saw_quote_pill.val && !has_quote_pill {
+      quoting.val = true
+    }
+    if quoting.val {
+      match (willow_y, log1_y) {
+        (Some(wy), Some(ly)) => samples.push((t.time(), wy, ly))
+        _ => ()
+      }
+    }
+  })
+  |> ignore
+  assert_true(base_willow.val > 0.0 && base_log1.val > 0.0, msg="\{name}: failed to capture pre-quote baseline")
+  assert_true(samples.length() >= 4, msg="\{name}: insufficient post-quote samples (\{samples.length()})")
+  let end_willow = samples[samples.length() - 1].1
+  let total_up = base_willow.val - end_willow
+  assert_true(
+    total_up >= 65.0 && total_up <= 75.0,
+    msg="\{name}: expected Willow total upward shift in [65, 75], got \{total_up} (base=\{base_willow.val}, end=\{end_willow})",
+  )
+  for i, s in samples {
+    assert_true(
+      (s.2 - base_log1.val).abs() < 1.5,
+      msg="\{name}: 构建日志1.log shifted at sample \{i} (t=\{s.0}): \{s.2} vs base \{base_log1.val}",
+    )
+  }
+  if !@ui.test_at_a_rate() {
+    let f0_delta = (samples[0].1 - base_willow.val).abs()
+    assert_true(
+      f0_delta < 0.5,
+      msg="\{name}: Willow snapped on tap 引用 frame 0 by \{samples[0].1 - base_willow.val}pt (base=\{base_willow.val}, f0=\{samples[0].1})",
+    )
+    let mut mid_frames = 0
+    let mut max_up_step = 0.0
+    for i in 1..<samples.length() {
+      let dy = samples[i].1 - samples[i - 1].1
+      assert_true(
+        dy <= 0.5,
+        msg="\{name}: Willow reversed downward by \{dy}pt at sample \{i} (t=\{samples[i].0})",
+      )
+      if -dy > max_up_step {
+        max_up_step = -dy
+      }
+      if samples[i].1 < base_willow.val - 1.0 && samples[i].1 > end_willow + 1.0 {
+        mid_frames = mid_frames + 1
+      }
+    }
+    assert_true(
+      mid_frames >= 4 && max_up_step < 14.0,
+      msg="\{name}: first quote expansion snapped (mid=\{mid_frames}, max_up_step=\{max_up_step})",
+    )
+  }
+}

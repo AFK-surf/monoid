@@ -528,3 +528,165 @@ pub fn ListStage::has_held(self : ListStage) -> Bool {
 pub fn ListStage::held_plan(self : ListStage, k : String) -> StageHoldPlan? {
   self.held.get(k)
 }
+
+///|
+/// Explicit causal origin of a list key sequence update.
+#derive(Eq, Debug)
+pub(all) enum StageOrigin {
+  Initial
+  Reopen
+  PageOlder
+  PageNewer
+  CatchUp
+  LocalSend
+  LivePush
+  UserAct
+}
+
+///|
+/// Whether an update from this causal origin should animate list transitions.
+pub fn StageOrigin::animates(self : StageOrigin) -> Bool {
+  match self {
+    Initial | Reopen | PageOlder | PageNewer | CatchUp => false
+    LocalSend | LivePush | UserAct => true
+  }
+}
+
+///|
+/// Classification of a newly arrived tail item for causal origin detection.
+#derive(Eq, Debug)
+pub(all) enum StageArrivalKind {
+  ArrivalStructural
+  ArrivalLocalSend
+  ArrivalLive
+  ArrivalCatchUp
+  ArrivalQuietActivity
+}
+
+///|
+/// Pure-data causal origin tracker for list key updates without item-count cliff thresholds.
+pub struct StageOriginTracker {
+  priv is_anchor : (String) -> Bool
+  priv mut judged : Array[String]?
+  priv mut last_origin : StageOrigin
+  priv mut had : Array[String]
+  priv mut settled : Bool
+}
+
+///|
+/// Create a new `StageOriginTracker` with an anchor predicate `is_anchor`.
+pub fn StageOriginTracker::new(is_anchor? : (String) -> Bool = fn(_) { true }) -> StageOriginTracker {
+  { is_anchor, judged: None, last_origin: Initial, had: [], settled: false }
+}
+
+///|
+/// Classify the causal origin of `keys` against the previously observed key sequence.
+/// Idempotent on identical array references (`physical_equal`); only calls `classify_added` for newly arrived tail
+/// keys when `was_settled && !reopening && at_tail && first_kept >= 0`.
+pub fn StageOriginTracker::classify(
+  self : StageOriginTracker,
+  keys : Array[String],
+  settled : Bool,
+  reopening : Bool,
+  at_tail : Bool,
+  classify_added : (String) -> StageArrivalKind,
+  is_live_removable : (String) -> Bool,
+) -> StageOrigin {
+  match self.judged {
+    Some(j) if physical_equal(j, keys) => return self.last_origin
+    _ => ()
+  }
+  self.judged = Some(keys)
+  let was_settled = self.settled
+  self.settled = settled
+  let now : Array[String] = []
+  let seen : Map[String, Bool] = Map([])
+  for k in keys {
+    if !seen.contains(k) {
+      seen[k] = true
+      now.push(k)
+    }
+  }
+  let was = self.had
+  self.had = now
+  let in_was : Map[String, Bool] = Map([])
+  for k in was {
+    in_was[k] = true
+  }
+  let mut first_kept = -1
+  for i, k in was {
+    if seen.contains(k) && (self.is_anchor)(k) {
+      first_kept = i
+      break
+    }
+  }
+  let came : Array[String] = []
+  let mut prepended = false
+  if first_kept >= 0 {
+    match now.search(was[first_kept]) {
+      Some(from) => {
+        for i in 0..<from {
+          if !in_was.contains(now[i]) {
+            prepended = true
+            break
+          }
+        }
+        for i in (from + 1)..<now.length() {
+          if !in_was.contains(now[i]) {
+            came.push(now[i])
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  let origin : StageOrigin = if !was_settled {
+    Initial
+  } else if reopening {
+    Reopen
+  } else if !at_tail {
+    PageNewer
+  } else if first_kept < 0 {
+    CatchUp
+  } else {
+    let mut has_catch_up = false
+    let mut has_local_send = false
+    let mut has_live = false
+    for k in came {
+      match classify_added(k) {
+        ArrivalCatchUp => {
+          has_catch_up = true
+          break
+        }
+        ArrivalLocalSend => has_local_send = true
+        ArrivalLive => has_live = true
+        ArrivalStructural | ArrivalQuietActivity => ()
+      }
+    }
+    if has_catch_up {
+      CatchUp
+    } else if has_local_send {
+      LocalSend
+    } else if has_live {
+      LivePush
+    } else {
+      let mut has_live_removed = false
+      for i in (first_kept + 1)..<was.length() {
+        let k = was[i]
+        if !seen.contains(k) && is_live_removable(k) {
+          has_live_removed = true
+          break
+        }
+      }
+      if has_live_removed {
+        LivePush
+      } else if prepended {
+        PageOlder
+      } else {
+        CatchUp
+      }
+    }
+  }
+  self.last_origin = origin
+  origin
+}

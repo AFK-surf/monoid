@@ -479,3 +479,68 @@ test "come_share_of: with trailing bottom padding (r > 1), smoothly caps to 1.0 
     }
   }
 }
+
+///|
+test "resizes(uncut=true): mid-flush measured_now after padding change does not pollute come_from with 10pt snap" {
+  let looks = rc_looks(rc_at + 600.0)
+  let base : Array[Double] = []
+  for rate in rc_rates {
+    let pad_on = @signals.signal(false, same=fn(a, b) { a == b })
+    let item_on = @signals.signal(false, same=fn(a, b) { a == b })
+    let room_ref : Ref[@view.View?] = Ref(None)
+    let tree = @view.Tree::new(fn(root) {
+      root.box(fn(col) {
+        col.width(Is(Some(300.0))) |> ignore
+        col.box(fn(room) {
+          room_ref.val = Some(room)
+          room.shrink(Is(0.0)) |> ignore
+          room.box(fn(inner) {
+            inner
+            .padding(By(fn() { if pad_on.get() { (0.0, 0.0, 0.0, 10.0) } else { (0.0, 0.0, 0.0, 0.0) } }))
+            |> ignore
+            inner.box(fn(item) {
+              item.height(By(fn() { if item_on.get() { Some(60.0) } else { Some(0.0) } })).shrink(Is(0.0)).words(Is("卡")) |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        col.box(fn(b) { b.height(Is(Some(20.0))).shrink(Is(0.0)).words(Is("下")) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    tree.frame(390.0, 844.0) |> ignore
+    let room = room_ref.val.unwrap()
+    let got = rc_walk(
+      tree,
+      [
+        (
+          rc_at,
+          fn() {
+            pad_on.set(true)
+            // Triggers Tree::measured_now() mid-flush before sibling item mounts
+            room.laid_window_now() |> ignore
+            room.resizes(uncut=true) |> ignore
+            item_on.set(true)
+          },
+        ),
+      ],
+      looks,
+      rate,
+      fn() { room.rect().3 },
+    )
+    assert_true(got[0].abs() < 1.0e-6, msg="at \{rate} a second: frame-0 snapped to \{got[0]} instead of 0.0")
+    assert_true(got[1] > 0.0 && got[1] < 70.0, msg="at \{rate} a second: expected mid-flight height, got \{got[1]}")
+    assert_true(
+      (got[got.length() - 1] - 70.0).abs() < 1.0e-6,
+      msg="at \{rate} a second: expected final height 70.0, got \{got[got.length() - 1]}",
+    )
+    assert_eq(rc_turns(got), 0, msg="at \{rate} a second: non-monotonic height \{Repr(got)}")
+    if base.is_empty() {
+      base.append(got)
+    } else {
+      assert_true(rc_near(got, base), msg="at \{rate} a second: \{Repr(got)} vs \{Repr(base)}")
+    }
+  }
+}

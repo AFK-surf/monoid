@@ -37,8 +37,9 @@ pub fn View::resizes(
     None => ()
   }
   let st = n.flex.style
-  // (as tall as it was laid out last: where a way it is on has it now, View::comes takes that)
-  let from = n.flex.height
+  // (as tall as last actually placed on screen (n.lh), avoiding mid-flush Tree::measured_now() temporary layout
+  // pollution before sibling structural updates; unplaced nodes fall back to n.flex.height)
+  let from = if n.placed { n.lh } else { n.flex.height }
   // (its way and its foot said with it: told outside a change, what comes is measured and its end fixed in
   // View::comes itself)
   guard self.comes(self, from, 1.0, spec?, foot~, uncut~) else { return self }

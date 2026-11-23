@@ -2308,32 +2308,33 @@ fn chat_live_causes(
   reopening : Ref[Bool],
   unalias : (String) -> String,
 ) -> (Array[String]) -> Unit {
-  // (the pieces it had, in order, and what kind those at its end were: read of no row but the few that came or went
-  // there, so opening or paging reads no message more than the list shows)
-  let had : Ref[Array[String]] = Ref([])
-  let kinds : Map[String, Int] = Map([])
-  let settled = Ref(false)
-  let kind_of = fn(k : String) -> Int {
+  let tracker = @motion.StageOriginTracker::new(is_anchor=fn(k) { chat_key_hold_as_anchor(unalias(k)) })
+  let kinds : Map[String, @motion.StageArrivalKind] = Map([])
+  let kind_of = fn(k : String) -> @motion.StageArrivalKind {
     match kinds.get(k) {
       Some(e) => e
       None => {
-        let e = match @signals.untracked(fn() { (list.row)(k) }).map(fn(r) { r.entry }) {
+        let e : @motion.StageArrivalKind = match @signals.untracked(fn() { (list.row)(k) }).map(fn(r) { r.entry }) {
           Some(entry) =>
-            match chat_entry_policy(entry).live_role {
-              LiveWhenSaid =>
-                match entry {
-                  Said(m) if m.said => 1
-                  _ => 0
+            match entry {
+              Out(_) => ArrivalLocalSend
+              _ =>
+                match chat_entry_policy(entry).live_role {
+                  LiveWhenSaid =>
+                    match entry {
+                      Said(m) if m.said => ArrivalLive
+                      _ => ArrivalCatchUp
+                    }
+                  LiveAlways => ArrivalLive
+                  LiveWhenStarted =>
+                    match entry {
+                      Working(a) if a.started => ArrivalLive
+                      _ => ArrivalQuietActivity
+                    }
+                  LiveNever => ArrivalStructural
                 }
-              LiveAlways => 5
-              LiveWhenStarted =>
-                match entry {
-                  Working(a) if a.started => 3
-                  _ => 4
-                }
-              LiveNever => -1
             }
-          None => -1
+          None => ArrivalStructural
         }
         kinds[k] = e
         e
@@ -2349,78 +2350,26 @@ fn chat_live_causes(
     }
     judged.val = Some(ks)
     let view = @signals.untracked(here.view)
-    let was_settled = settled.val
-    settled.val = view.thread is Some(_)
-    let now : Array[String] = []
-    let seen : Map[String, Bool] = Map([])
-    for k in ks {
-      if !seen.contains(k) {
-        seen[k] = true
-        now.push(k)
+    let origin = tracker.classify(
+      ks,
+      view.thread is Some(_),
+      reopening.val,
+      !view.newer,
+      kind_of,
+      fn(k) { chat_key_live_removable(unalias(k)) },
+    )
+    if !kinds.is_empty() {
+      let present : Map[String, Bool] = Map([])
+      for k in ks {
+        present[k] = true
       }
-    }
-    let was = had.val
-    had.val = now
-    let in_was : Map[String, Bool] = Map([])
-    for k in was {
-      in_was[k] = true
-    }
-    // (where what it had and has now meet: the first of the keys kept, in the order they were)
-    let mut first_kept = -1
-    for i, k in was {
-      if seen.contains(k) && k != "older" {
-        if first_kept < 0 {
-          first_kept = i
+      for k in kinds.keys().to_array() {
+        if !present.contains(k) {
+          kinds.remove(k)
         }
       }
     }
-    let mut live = false
-    // (caught up on: what was said while it did not show come at its end; nothing of that change is a live cause)
-    let mut caught_up = false
-    // (come after the first it kept, at its foot or among the last (what is sent from here comes over an agent's line
-    // at work): what was said, sent or begun; a page read in comes many at once, before them, and is no live cause)
-    let came : Array[String] = []
-    if first_kept >= 0 {
-      match now.search(was[first_kept]) {
-        Some(from) =>
-          for i in (from + 1)..<now.length() {
-            if !in_was.contains(now[i]) {
-              came.push(now[i])
-            }
-          }
-        None => ()
-      }
-    }
-    if was_settled && came.length() > 0 && came.length() <= chat_live_tail_most && !view.newer {
-      for k in came {
-        match kind_of(k) {
-          1 | 3 | 5 => live = true
-          0 => caught_up = true
-          _ => ()
-        }
-      }
-    }
-    // (gone from between those it kept or from its end: taken out, an agent's work done, what was sent taken over;
-    // gone from before the first it kept, the window moved; structural rows like the unread line or paging/empty
-    // placeholders leaving are never a live cause)
-    if was_settled && !view.newer {
-      for i, k in was {
-        if !seen.contains(k) && first_kept >= 0 && i > first_kept && chat_key_live_removable(unalias(k)) {
-          live = true
-        }
-      }
-    }
-    for k in kinds.keys().to_array() {
-      if !seen.contains(k) {
-        kinds.remove(k)
-      }
-    }
-    guard !reopening.val && was_settled && live && !caught_up && @signals.untracked(shows) && @signals.untracked(@ui.app_visible) else { return }
+    guard origin.animates() && @signals.untracked(shows) && @signals.untracked(@ui.app_visible) else { return }
     @view.transition(within=v, fn() {  })
   }
 }
-
-///|
-/// The most pieces come at a chat list's end in one change that are judged a live cause (chat_live_causes): more is a
-/// page read in or what was said while it did not show, there at once.
-let chat_live_tail_most : Int = 4

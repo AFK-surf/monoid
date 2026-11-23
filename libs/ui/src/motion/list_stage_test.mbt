@@ -421,3 +421,203 @@ test "ListStage: deterministic out-of-order fuzz (240 rounds)" {
     assert_eq(unaliased, raw)
   }
 }
+
+///|
+test "StageOrigin: animates covers all 8 variants exhaustively" {
+  assert_false(@motion.StageOrigin::Initial.animates())
+  assert_false(@motion.StageOrigin::Reopen.animates())
+  assert_false(@motion.StageOrigin::PageOlder.animates())
+  assert_false(@motion.StageOrigin::PageNewer.animates())
+  assert_false(@motion.StageOrigin::CatchUp.animates())
+  assert_true(@motion.StageOrigin::LocalSend.animates())
+  assert_true(@motion.StageOrigin::LivePush.animates())
+  assert_true(@motion.StageOrigin::UserAct.animates())
+}
+
+///|
+test "StageOriginTracker: >4 concurrent live tail arrivals still animate as LivePush without count cliff" {
+  let tr = @motion.StageOriginTracker::new(is_anchor=fn(k) { k != "older" })
+  let init_calls = Ref(0)
+  let base = ["m:1", "m:2"]
+  let o0 = tr.classify(
+    base,
+    true,
+    false,
+    true,
+    fn(_) {
+      init_calls.val += 1
+      ArrivalLive
+    },
+    fn(_) { true },
+  )
+  assert_eq(o0, Initial)
+  assert_false(o0.animates())
+  assert_eq(init_calls.val, 0)
+
+  // Same reference is idempotent and does not re-invoke classify_added
+  let o0_again = tr.classify(
+    base,
+    true,
+    false,
+    true,
+    fn(_) {
+      init_calls.val += 1
+      ArrivalLive
+    },
+    fn(_) { true },
+  )
+  assert_eq(o0_again, Initial)
+  assert_eq(init_calls.val, 0)
+
+  // 6 concurrent live items arriving at the tail -> must still be LivePush (no <= 4 cliff)
+  let batch6 = ["m:1", "m:2", "m:3", "m:4", "m:5", "m:6", "m:7", "m:8"]
+  let o1 = tr.classify(batch6, true, false, true, fn(_) { ArrivalLive }, fn(_) { true })
+  assert_eq(o1, LivePush)
+  assert_true(o1.animates())
+}
+
+///|
+test "StageOriginTracker: ArrivalCatchUp poisons batch to CatchUp" {
+  let tr = @motion.StageOriginTracker::new()
+  let _ = tr.classify(["m:1", "m:2"], true, false, true, fn(_) { ArrivalLive }, fn(_) { true })
+  let mixed = ["m:1", "m:2", "m:3", "m:4", "m:5"]
+  let o = tr.classify(
+    mixed,
+    true,
+    false,
+    true,
+    fn(k) { if k == "m:4" { ArrivalCatchUp } else { ArrivalLive } },
+    fn(_) { true },
+  )
+  assert_eq(o, CatchUp)
+  assert_false(o.animates())
+}
+
+///|
+test "StageOriginTracker: Initial, Reopen, PageOlder, PageNewer, LocalSend, live removal, and disjoint jump" {
+  let tr = @motion.StageOriginTracker::new(is_anchor=fn(k) { k != "older" })
+  // Unsettled -> Initial, classify_added never called
+  let calls = Ref(0)
+  let o_init = tr.classify(
+    ["older", "m:10", "m:11"],
+    true,
+    false,
+    true,
+    fn(_) {
+      calls.val += 1
+      ArrivalLive
+    },
+    fn(_) { true },
+  )
+  assert_eq(o_init, Initial)
+  assert_eq(calls.val, 0)
+
+  // Prepend older items before first anchor -> PageOlder
+  let o_older = tr.classify(
+    ["older", "m:8", "m:9", "m:10", "m:11"],
+    true,
+    false,
+    true,
+    fn(_) {
+      calls.val += 1
+      ArrivalLive
+    },
+    fn(_) { true },
+  )
+  assert_eq(o_older, PageOlder)
+  assert_false(o_older.animates())
+  assert_eq(calls.val, 0)
+
+  // LocalSend at tail
+  let o_send = tr.classify(
+    ["older", "m:8", "m:9", "m:10", "m:11", "o:1"],
+    true,
+    false,
+    true,
+    fn(k) { if k == "o:1" { ArrivalLocalSend } else { ArrivalStructural } },
+    fn(_) { true },
+  )
+  assert_eq(o_send, LocalSend)
+  assert_true(o_send.animates())
+
+  // Live removal at tail
+  let o_rem = tr.classify(
+    ["older", "m:8", "m:9", "m:10", "m:11"],
+    true,
+    false,
+    true,
+    fn(_) { ArrivalStructural },
+    fn(k) { k == "o:1" },
+  )
+  assert_eq(o_rem, LivePush)
+  assert_true(o_rem.animates())
+
+  // Non-live-removable removal -> static CatchUp
+  let _ = tr.classify(
+    ["older", "m:8", "m:9", "m:10", "m:11", "line"],
+    true,
+    false,
+    true,
+    fn(_) { ArrivalStructural },
+    fn(_) { false },
+  )
+  let o_nonlive_rem = tr.classify(
+    ["older", "m:8", "m:9", "m:10", "m:11"],
+    true,
+    false,
+    true,
+    fn(_) { ArrivalStructural },
+    fn(k) { k != "line" },
+  )
+  assert_eq(o_nonlive_rem, CatchUp)
+  assert_false(o_nonlive_rem.animates())
+
+  // PageNewer when at_tail = false (must not invoke classify_added)
+  calls.val = 0
+  let o_newer = tr.classify(
+    ["older", "m:8", "m:9", "m:10", "m:11", "m:12"],
+    true,
+    false,
+    false,
+    fn(_) {
+      calls.val += 1
+      ArrivalLive
+    },
+    fn(_) { true },
+  )
+  assert_eq(o_newer, PageNewer)
+  assert_false(o_newer.animates())
+  assert_eq(calls.val, 0)
+
+  // Reopen (must not invoke classify_added)
+  let o_reopen = tr.classify(
+    ["older", "m:8", "m:9", "m:10", "m:11", "m:12", "m:13"],
+    true,
+    true,
+    true,
+    fn(_) {
+      calls.val += 1
+      ArrivalLive
+    },
+    fn(_) { true },
+  )
+  assert_eq(o_reopen, Reopen)
+  assert_false(o_reopen.animates())
+  assert_eq(calls.val, 0)
+
+  // Disjoint window jump (first_kept < 0) -> CatchUp (must not invoke classify_added)
+  let o_jump = tr.classify(
+    ["older", "m:200", "m:201"],
+    true,
+    false,
+    true,
+    fn(_) {
+      calls.val += 1
+      ArrivalLive
+    },
+    fn(_) { true },
+  )
+  assert_eq(o_jump, CatchUp)
+  assert_false(o_jump.animates())
+  assert_eq(calls.val, 0)
+}
