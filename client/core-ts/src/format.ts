@@ -368,6 +368,10 @@ export function place(threads: unknown[], address: string, offsetMin: number, wo
     const connect = surface?.startsWith("feishu:") ? workspaces.get(surface) : undefined;
     return { name: n, surface: "feishu", session, url: feishuChatUrl(connect?.url ?? feishuApplink(null), channel) };
   }
+  // A Comma Task is in no channel (`TASK`) and opens in no Slack: Comma by name and mark (originOf's rule).
+  if (surface?.startsWith("comma:")) return { name: "Comma", surface: "comma", session };
+  // A group connect's conversation: by its name, no #, Group's mark.
+  if (surface?.startsWith("group:")) return { name: str(get(thread, "channelName")) || tr(current(), "core-views.group"), surface: "group", session };
   const teamId = surface?.startsWith("slack:") ? surface.slice(6) : null;
   const team = teamId !== null ? workspaces.get(teamId) : undefined;
   const teamName = team && team.name !== "" ? team.name : null;
