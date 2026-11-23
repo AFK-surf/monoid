@@ -291,6 +291,14 @@ pub fn tip_node(
       @headless.tip_claim(owner)
     }
   })
+  // (when takes_input returns after a modal layer closes while visible keyboard focus is still on anchor, reopen)
+  anchor.reacts(fn() { anchor.takes_input() }, at_start=false, fn(takes) {
+    if takes &&
+      @signals.untracked(fn() { anchor.focus_shown() && label() != "" && hand.get() == Free && !shut.get() && !pressed_now() }) {
+      group_slot.set(Some(owner))
+      set_open(true)
+    }
+  })
   // (attached to a control that already has visible keyboard focus: show immediately)
   if @signals.untracked(fn() { anchor.focus_shown() && anchor.takes_input() && label() != "" }) {
     group_slot.set(Some(owner))
