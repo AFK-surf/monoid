@@ -151,3 +151,73 @@ test "InlineEdit: double-click activation mode and disabled guard" {
   ie.start()
   assert_eq((after_one, after_two, ie.editing()), (false, true, false))
 }
+
+///|
+test "InlineEdit: trim, cancel_if_empty, cancel_if_unchanged, start_editing, outside press, and deferred focus" {
+  let value = @signals.signal("原名")
+  let commits : Array[String] = []
+  let cancels = Ref(0)
+  let modal_open = @signals.signal(true)
+  let ie = @headless.InlineEdit::new(
+    fn() { value.get() },
+    fn(v) {
+      commits.push(v)
+      value.set(v)
+    },
+    on_cancel=fn() { cancels.val += 1 },
+    trim=true,
+    cancel_if_empty=true,
+    cancel_if_unchanged=true,
+    start_editing=true,
+    commit_on_outside_press=true,
+  )
+  let t = window(fn(root) {
+    root.show(at_once=true, fn() { modal_open.get() }, fn(s) {
+      s
+      .over(Is(true))
+      .modal(Is(true))
+      .width(Is(Some(100.0)))
+      .height(Is(Some(40.0)))
+      .ground(Is(c_rest))
+      |> ignore
+    })
+    |> ignore
+    root.box(fn(v) {
+      v
+      .width(Is(Some(160.0)))
+      .height(Is(Some(32.0)))
+      .ground(Is(c_rest))
+      .says(By(fn() { Some(@view.said(TextField, label="重命名", value=ie.draft())) }))
+      |> ignore
+      ie.editor(v)
+    })
+    |> ignore
+  })
+  // Started in editing mode while modal blocks takes_input(): editor cannot take focus yet.
+  let initial_editing = ie.editing()
+  let initial_draft = ie.draft()
+  // Closing modal restores takes_input(): deferred focus recovery focuses the editor automatically.
+  modal_open.set(false)
+  t.draw()
+  let recovered_focus = ie_focus(t)
+  // Whitespace-only draft cancels because trim=true & cancel_if_empty=true.
+  ie.set_draft("   ")
+  t.key(@ui.key_code_enter)
+  let after_empty = (ie.editing(), commits.copy(), cancels.val)
+  // Unchanged trimmed draft cancels because cancel_if_unchanged=true.
+  ie.start()
+  t.draw()
+  ie.set_draft("  原名  ")
+  t.key(@ui.key_code_enter)
+  let after_unchanged = (ie.editing(), commits.copy(), cancels.val)
+  // Outside press on non-focusable blank area commits trimmed new value.
+  ie.start()
+  t.draw()
+  ie.set_draft("  新名  ")
+  t.tap(300.0, 200.0)
+  let after_outside = (ie.editing(), value.get(), commits.copy(), cancels.val)
+  assert_eq((initial_editing, initial_draft, recovered_focus), (true, "原名", "重命名"))
+  assert_eq(after_empty, (false, [], 1))
+  assert_eq(after_unchanged, (false, [], 2))
+  assert_eq(after_outside, (false, "新名", ["新名"], 2))
+}

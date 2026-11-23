@@ -115,6 +115,8 @@ pub fn slider(
   drag? : (@view.Drag) -> Unit,
   vertical? : Bool = false,
   rtl? : Bool = false,
+  on_commit? : (Double) -> Unit,
+  focus_on_press? : Bool = true,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -138,6 +140,11 @@ pub fn slider(
       change(next)
     }
   }
+  let commit = fn() {
+    if on_commit is Some(f) {
+      f(slider_snap(@signals.untracked(value), min, max, step))
+    }
+  }
   let hand = Ref(false)
   parent.box(loc~, made_for=made_for.unwrap_or(loc), fn(v) {
     let able = fn() { !disabled() }
@@ -154,25 +161,35 @@ pub fn slider(
       if !disabled() {
         hand.val = false
         go(value() + by.to_double() * step_by)
+        commit()
       }
     })
     .on_drag(fn(d) {
       hand.val = true
-      if !disabled() && drag is Some(f) {
-        f(d)
-      } else if !disabled() {
-        match d.kind {
-          // (along its width, `min` at its left (or right when `rtl`); `vertical`, up its height, `min` at its foot)
-          Down | Moved if !vertical && d.w > thumb_room => {
-            let raw = slider_clamp((d.x - thumb_room / 2.0) / (d.w - thumb_room), 0.0, 1.0)
-            let frac = if rtl { 1.0 - raw } else { raw }
-            go(min + frac * (max - min))
+      if !disabled() {
+        if d.kind == Down && focus_on_press {
+          v.ask_focus() |> ignore
+        }
+        if drag is Some(f) {
+          f(d)
+          if d.kind == Up || d.kind == Off {
+            commit()
           }
-          Down | Moved if vertical && d.h > thumb_room => {
-            let frac = slider_clamp(1.0 - (d.y - thumb_room / 2.0) / (d.h - thumb_room), 0.0, 1.0)
-            go(min + frac * (max - min))
+        } else {
+          match d.kind {
+            // (along its width, `min` at its left (or right when `rtl`); `vertical`, up its height, `min` at its foot)
+            Down | Moved if !vertical && d.w > thumb_room => {
+              let raw = slider_clamp((d.x - thumb_room / 2.0) / (d.w - thumb_room), 0.0, 1.0)
+              let frac = if rtl { 1.0 - raw } else { raw }
+              go(min + frac * (max - min))
+            }
+            Down | Moved if vertical && d.h > thumb_room => {
+              let frac = slider_clamp(1.0 - (d.y - thumb_room / 2.0) / (d.h - thumb_room), 0.0, 1.0)
+              go(min + frac * (max - min))
+            }
+            Up | Off => commit()
+            _ => ()
           }
-          _ => ()
         }
       }
     }, captures=true)
@@ -205,6 +222,7 @@ pub fn slider(
         Some(t) => {
           hand.val = false
           go(t)
+          commit()
           true
         }
         None => false

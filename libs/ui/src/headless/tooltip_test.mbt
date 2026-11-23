@@ -374,3 +374,88 @@ test "a trigger let go is where no tip comes from: 丙's tip, 丙 let go, 甲's 
   k.onto("甲")
   assert_eq((open, k.shown.get(), k.group.glided_from()), (Some("丙"), Some("甲"), None))
 }
+
+///|
+test "TooltipGroup::trigger: within, repeats, takes_input guard, and touch_hold" {
+  let shown : @signals.Signal[String?] = @signals.signal(None)
+  let in_use = @signals.signal(true)
+  let group = @headless.TooltipGroup::new(
+    fn() { shown.get() },
+    fn(k) { shown.set(k) },
+    open_delay_ms=100.0,
+    warmup_ms=200.0,
+  )
+  let t = window(fn(root) {
+    // 1. within=true container with child button
+    root.box(fn(holder) {
+      holder
+      .width(Is(Some(140.0)))
+      .height(Is(Some(40.0)))
+      .presses(By(fn() { in_use.get() }))
+      .points(Is(true))
+      .ground(Is(c_rest))
+      |> ignore
+      @headless.button(holder, fn() { "子按钮" }, fn(_) {  }, fn(b, _) {
+        b.width(Is(Some(80.0))).height(Is(Some(32.0))).ground(Is(c_rest)) |> ignore
+      })
+      |> ignore
+      group.trigger(holder, "容器", within=true)
+    })
+    |> ignore
+    // 2. repeats=true on a wide box whose short words are NOT cut
+    root.box(fn(full) {
+      full
+      .width(Is(Some(200.0)))
+      .height(Is(Some(30.0)))
+      .points(Is(true))
+      .words(Is("短词"))
+      .ground(Is(c_rest))
+      |> ignore
+      group.trigger(full, "完整", repeats=true)
+    })
+    |> ignore
+    // 3. touch_hold=true trigger
+    root.box(fn(touch_btn) {
+      touch_btn
+      .width(Is(Some(100.0)))
+      .height(Is(Some(40.0)))
+      .presses(Is(true))
+      .ground(Is(c_rest))
+      .says(Is(Some(@view.said(Button, label="长按提示"))))
+      |> ignore
+      group.trigger(touch_btn, "长按", touch_hold=true)
+    })
+    |> ignore
+  })
+  let tip_open_ms = 100.0
+  let tip_past_ms = 300.0
+  let tip_hold_ms = 500.0
+  let tip_lift_check_ms = 200.0
+  // Hover child inside within=true container opens "容器" tooltip; takes_input=false closes it immediately.
+  t.move_to(40.0, 16.0)
+  t.run_for(tip_open_ms)
+  let opened_within = shown.get()
+  in_use.set(false)
+  t.draw()
+  let closed_no_input = shown.get()
+  in_use.set(true)
+  t.draw()
+  // Hover uncut repeats=true node does NOT open tooltip.
+  t.move_to(40.0, 55.0)
+  t.run_for(tip_past_ms)
+  let uncut_shown = shown.get()
+  // Long-press touch_hold trigger opens tip, stays open after lift for tooltip_lifted_ms, and closes on next press.
+  let (tx, ty, tw, th) = t.get(Button, label="长按提示").rect
+  t.press_at(tx + tw / 2.0, ty + th / 2.0)
+  t.run_for(tip_hold_ms)
+  let after_hold = shown.get()
+  t.release(tx + tw / 2.0, ty + th / 2.0)
+  t.run_for(tip_lift_check_ms)
+  let while_lifted = shown.get()
+  t.tap(350.0, 250.0)
+  let after_tap_dismiss = shown.get()
+  assert_eq(
+    (opened_within, closed_no_input, uncut_shown, after_hold, while_lifted, after_tap_dismiss),
+    (Some("容器"), None, None, Some("长按"), Some("长按"), None),
+  )
+}

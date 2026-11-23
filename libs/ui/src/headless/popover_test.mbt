@@ -274,3 +274,113 @@ test "HoverCard::opener exposes trigger node while mounted and None after trigge
   t.draw()
   assert_true(card.opener() is None)
 }
+
+///|
+test "HoverCard: held, close_on_outside, keeps, hold/close, yields_to, and takes_input guard" {
+  let open = @signals.signal(false)
+  let held = @signals.signal(false)
+  let trigger_in_use = @signals.signal(true)
+  let keep_ref : Ref[@view.View?] = Ref(None)
+  let card = @headless.HoverCard::new(
+    fn() { open.get() },
+    fn(v) { open.set(v) },
+    open_delay_ms=100.0,
+    close_delay_ms=100.0,
+    held=fn() { held.get() },
+    close_on_outside=true,
+    keeps=fn() {
+      match keep_ref.val {
+        Some(k) => [k]
+        None => []
+      }
+    },
+  )
+  let t = window(fn(root) {
+    root.box(fn(row) {
+      row.row(Is(true)) |> ignore
+      row.box(fn(trig) {
+        trig
+        .row(Is(true))
+        .width(Is(Some(160.0)))
+        .height(Is(Some(40.0)))
+        .presses(By(fn() { trigger_in_use.get() }))
+        .on_press(fn() {  })
+        .ground(Is(c_rest))
+        .says(Is(Some(@view.said(Button, label="触发器"))))
+        |> ignore
+        let yield_btn = @headless.button(trig, fn() { "让出区" }, fn(_) {  }, fn(v, _) {
+          v.width(Is(Some(60.0))).height(Is(Some(40.0))).ground(Is(c_rest)) |> ignore
+        })
+        card.trigger(trig, yields_to=yield_btn)
+      })
+      |> ignore
+      let kept = @headless.button(row, fn() { "豁免按钮" }, fn(_) {  }, fn(v, _) {
+        v.width(Is(Some(80.0))).height(Is(Some(40.0))).ground(Is(c_rest)) |> ignore
+      })
+      keep_ref.val = Some(kept)
+    })
+    |> ignore
+    root.show(at_once=true, fn() { open.get() }, fn(s) {
+      card.card(s, fn() { "预览卡" }, fn(cv) {
+        cv
+        .over(Is(true))
+        .offset(Is((60.0, 60.0)))
+        .width(Is(Some(160.0)))
+        .height(Is(Some(80.0)))
+        .ground(Is(c_rest))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  let hc_open_ms = 100.0
+  let hc_close_ms = 100.0
+  let hc_past_ms = 200.0
+  let hc_stay_ms = 300.0
+  let (yx, yy) = pop_middle(t, "让出区")
+  let (tx, ty, tw, th) = t.get(Button, label="触发器").rect
+  // Pointer on yields_to child inside trigger does not open hover card.
+  t.move_to(yx, yy)
+  t.run_for(hc_past_ms)
+  assert_eq(open.get(), false)
+  // Pointer on trigger outside yields_to opens after 100ms.
+  t.move_to(tx + tw - 20.0, ty + th / 2.0)
+  t.run_for(hc_open_ms)
+  assert_eq(open.get(), true)
+  // While held() is true: hover leave, Escape, and outside press do not close.
+  held.set(true)
+  t.move_to(350.0, 250.0)
+  t.run_for(hc_past_ms)
+  t.key(@ui.key_escape)
+  t.tap(350.0, 250.0)
+  assert_eq(open.get(), true)
+  // Release held(): closes after close_delay_ms.
+  held.set(false)
+  t.run_for(hc_close_ms)
+  assert_eq(open.get(), false)
+  // hold() opens and stays open without hover; pressing keeps() does not close; pressing outside closes.
+  card.hold()
+  t.draw()
+  t.run_for(hc_stay_ms)
+  assert_eq(open.get(), true)
+  let (kx, ky, kw, kh) = t.get(Button, label="豁免按钮").rect
+  t.tap(kx + kw / 2.0, ky + kh / 2.0)
+  assert_eq(open.get(), true)
+  t.tap(350.0, 250.0)
+  assert_eq(open.get(), false)
+  // takes_input() becoming false closes immediately when not held.
+  card.hold()
+  t.draw()
+  trigger_in_use.set(false)
+  t.draw()
+  assert_eq(open.get(), false)
+  // close() explicitly closes.
+  trigger_in_use.set(true)
+  t.draw()
+  card.hold()
+  t.draw()
+  card.close()
+  t.draw()
+  assert_eq(open.get(), false)
+}

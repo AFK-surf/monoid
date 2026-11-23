@@ -14,6 +14,16 @@ pub(all) enum DrawerEdge {
 }
 
 ///|
+/// Asymptotic rubber-band over-pull displacement when dragging past the maximum snap point.
+pub fn drawer_rubber_pull(over : Double, max_pull : Double) -> Double {
+  if over <= 0.0 || max_pull <= 0.0 {
+    0.0
+  } else {
+    max_pull * (1.0 - 1.0 / (1.0 + over / (max_pull * 2.0)))
+  }
+}
+
+///|
 /// A headless drawer as its look reads it and attaches its drag handle by (`Drawer::handle`).
 pub struct Drawer {
   priv node_ : @view.View
@@ -25,9 +35,12 @@ pub struct Drawer {
   priv on_snap_ : (Int) -> Unit
   priv dismiss_threshold : Double
   priv velocity_threshold : Double
+  priv overpull_max : Double
+  priv on_release_ : (Double, Double, Bool) -> Unit
   priv can_drag_ : () -> Bool
   priv drag_offset_ : @signals.Signal[Double]
   priv dragging_ : @signals.Signal[Bool]
+  priv last_velocity_ : Ref[Double]
 }
 
 ///|
@@ -59,6 +72,12 @@ pub fn Drawer::drag_offset(self : Drawer) -> Double {
 /// Whether the drawer handle is actively being dragged now. Followed.
 pub fn Drawer::dragging(self : Drawer) -> Bool {
   self.dragging_.get()
+}
+
+///|
+/// Most recent release velocity along the dismiss direction in points per second (`0.0` before any release or on cancel).
+pub fn Drawer::last_velocity(self : Drawer) -> Double {
+  self.last_velocity_.val
 }
 
 ///|
@@ -156,9 +175,16 @@ fn drawer_step_higher(snaps : Array[Double], cur_val : Double) -> Int? {
 ///|
 /// Bind edge-aware drag-to-dismiss and snap-point gesture handling to `v`.
 /// Respects `can_drag()` on press down so an inner scrollable list not yet at its scroll edge is not hijacked.
-/// `extent`: optional reference extent (points) for threshold/snap calculations; defaults to `d.h` (Top/Bottom) or
-/// `d.w` (Left/Right).
-pub fn Drawer::handle(self : Drawer, v : @view.View, extent? : Double) -> Unit {
+/// `extent_by`: optional dynamic reference extent (points), taking precedence over static `extent`; defaults to `d.h`
+/// (Top/Bottom) or `d.w` (Left/Right). `slop`: when `> 0.0`, uses `View::gesture(slop, ...)` so taps on inner buttons
+/// are not swallowed.
+pub fn Drawer::handle(
+  self : Drawer,
+  v : @view.View,
+  extent? : Double,
+  extent_by? : () -> Double,
+  slop? : Double = 0.0,
+) -> Unit {
   let start_wx = Ref(0.0)
   let start_wy = Ref(0.0)
   let active = Ref(false)
@@ -179,19 +205,33 @@ pub fn Drawer::handle(self : Drawer, v : @view.View, extent? : Double) -> Unit {
     }
   }
   let ref_extent = fn(d : @view.Drag) -> Double {
-    let raw = match extent {
-      Some(e) => e
+    let raw = match extent_by {
+      Some(f) => @signals.untracked(f)
       None =>
-        match self.edge_ {
-          Bottom | Top => d.h
-          Left | Right => d.w
+        match extent {
+          Some(e) => e
+          None =>
+            match self.edge_ {
+              Bottom | Top => d.h
+              Left | Right => d.w
+            }
         }
     }
     if raw > 0.0 { raw } else { 1.0 }
   }
-  v
-  .presses(By(self.now))
-  .on_drag(fn(d) {
+  let clamp_delta = fn(delta : Double, cur_val : Double) -> Double {
+    let (_, max_snap) = drawer_min_max(self.snaps)
+    if delta < 0.0 && cur_val >= max_snap {
+      if self.overpull_max > 0.0 {
+        -drawer_rubber_pull(-delta, self.overpull_max)
+      } else {
+        0.0
+      }
+    } else {
+      delta
+    }
+  }
+  let on_drag_event = fn(d : @view.Drag, use_press_origin : Bool) {
     if !@signals.untracked(self.now) {
       if active.val {
         active.val = false
@@ -203,11 +243,19 @@ pub fn Drawer::handle(self : Drawer, v : @view.View, extent? : Double) -> Unit {
     match d.kind {
       Down =>
         if @signals.untracked(self.can_drag_) {
-          start_wx.val = d.wx
-          start_wy.val = d.wy
+          if !use_press_origin {
+            start_wx.val = d.wx
+            start_wy.val = d.wy
+          }
           active.val = true
           self.dragging_.set(true)
-          self.drag_offset_.set(0.0)
+          if use_press_origin {
+            let delta = dismiss_delta(d)
+            let cur_val = @signals.untracked(fn() { self.snap_point() })
+            self.drag_offset_.set(clamp_delta(delta, cur_val))
+          } else {
+            self.drag_offset_.set(0.0)
+          }
         } else {
           active.val = false
         }
@@ -217,10 +265,7 @@ pub fn Drawer::handle(self : Drawer, v : @view.View, extent? : Double) -> Unit {
         }
         let delta = dismiss_delta(d)
         let cur_val = @signals.untracked(fn() { self.snap_point() })
-        let (_, max_snap) = drawer_min_max(self.snaps)
-        // Only allow negative (expand) offset when a higher snap point exists.
-        let clamped = if delta < 0.0 && cur_val >= max_snap { 0.0 } else { delta }
-        self.drag_offset_.set(clamped)
+        self.drag_offset_.set(clamp_delta(delta, cur_val))
       }
       Up => {
         if !active.val {
@@ -237,37 +282,65 @@ pub fn Drawer::handle(self : Drawer, v : @view.View, extent? : Double) -> Unit {
         let projected = cur_val - delta / full_ext
         let (min_snap, _) = drawer_min_max(self.snaps)
         let dismiss_floor = min_snap * (1.0 - self.dismiss_threshold)
-        self.drag_offset_.set(0.0)
+        let release_offset = clamp_delta(delta, cur_val)
+        let mut will_close = false
+        let mut next_snap : Int? = None
         if vel >= self.velocity_threshold {
           if projected <= dismiss_floor {
-            self.close()
+            will_close = true
           } else {
             match drawer_step_lower(self.snaps, cur_val) {
-              Some(lower_idx) => self.snap_to(lower_idx)
-              None => self.close()
+              Some(lower_idx) => next_snap = Some(lower_idx)
+              None => will_close = true
             }
           }
         } else if vel <= -self.velocity_threshold {
+          // Reverse fling toward expand direction never dismisses even if projected <= dismiss_floor.
           if drawer_step_higher(self.snaps, cur_val) is Some(higher_idx) {
-            self.snap_to(higher_idx)
+            next_snap = Some(higher_idx)
           }
         } else if projected <= dismiss_floor {
-          self.close()
+          will_close = true
         } else {
-          let nearest = drawer_nearest_snap(self.snaps, projected)
-          self.snap_to(nearest)
+          next_snap = Some(drawer_nearest_snap(self.snaps, projected))
+        }
+        self.last_velocity_.val = vel
+        (self.on_release_)(release_offset, vel, will_close)
+        self.drag_offset_.set(0.0)
+        if will_close {
+          self.close()
+        } else if next_snap is Some(idx) {
+          self.snap_to(idx)
         }
       }
       Off => {
         if active.val {
           active.val = false
           self.dragging_.set(false)
+          let release_offset = self.drag_offset_.untracked()
+          self.last_velocity_.val = 0.0
+          (self.on_release_)(release_offset, 0.0, false)
           self.drag_offset_.set(0.0)
         }
       }
     }
-  })
-  |> ignore
+  }
+  v.presses(By(self.now)) |> ignore
+  if slop > 0.0 {
+    v
+    .gesture(
+      slop,
+      press=fn(d) {
+        start_wx.val = d.wx
+        start_wy.val = d.wy
+        active.val = false
+      },
+      drag=fn(d) { on_drag_event(d, true) },
+    )
+    |> ignore
+  } else {
+    v.on_drag(fn(d) { on_drag_event(d, false) }) |> ignore
+  }
 }
 
 ///|
@@ -292,6 +365,8 @@ pub fn drawer(
   close_on_outside? : Bool = true,
   dismiss_threshold? : Double = 0.35,
   velocity_threshold? : Double = 500.0,
+  overpull_max? : Double = 0.0,
+  on_release? : (Double, Double, Bool) -> Unit = fn(_, _, _) {  },
   can_drag? : () -> Bool = fn() { true },
   return_focus? : @view.View,
   made_for? : SourceLoc,
@@ -315,9 +390,12 @@ pub fn drawer(
       on_snap_: on_snap,
       dismiss_threshold,
       velocity_threshold,
+      overpull_max,
+      on_release_: on_release,
       can_drag_: can_drag,
       drag_offset_: @signals.signal(0.0),
       dragging_: @signals.signal(false),
+      last_velocity_: Ref(0.0),
     }
     // Default ground drag absorber before `look` runs, so `look` may attach `Drawer::handle` directly to `v` if desired.
     v.on_drag(fn(_) {  }) |> ignore

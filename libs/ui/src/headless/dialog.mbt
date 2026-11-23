@@ -104,6 +104,8 @@ pub fn dialog(
   close_on_outside? : Bool = true,
   first_takes? : (@view.Said) -> Bool,
   return_focus? : @view.View,
+  before_dismiss? : (OverlayDismiss) -> Bool,
+  leaves_typing? : Bool = false,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -113,12 +115,23 @@ pub fn dialog(
         on_close()
       }
     }
-    let (stack, entry) = overlay_join(v, fn(_) { close() }, fn() { !open() }, close_on_escape, close_on_outside, None)
+    let (stack, entry) = overlay_join(
+      v,
+      fn(_) { close() },
+      fn() { !open() },
+      close_on_escape,
+      close_on_outside,
+      None,
+      before_dismiss?,
+    )
     look(v, { node: v, now: open, close })
     // (the framework's layer focus: to what it holds as it opens, back as it goes)
     v.focus_opens_first(takes?=first_takes) |> ignore
     if return_focus is Some(r) {
       v.opened_by(ByNode(r.id())) |> ignore
+    }
+    if leaves_typing {
+      v.leaves_typing() |> ignore
     }
     if modal {
       v.modal(By(open)) |> ignore

@@ -125,3 +125,89 @@ test "Drawer: multi-snap points, velocity flick, and can_drag scroll-handoff gua
   assert_eq(after_flick2, (false, 1))
   assert_eq(snaps_told, [0, 1, 0])
 }
+
+///|
+test "drawer_rubber_pull: asymptotic curve properties" {
+  assert_eq(@headless.drawer_rubber_pull(0.0, 16.0), 0.0)
+  assert_eq(@headless.drawer_rubber_pull(-10.0, 16.0), 0.0)
+  assert_eq(@headless.drawer_rubber_pull(10.0, 0.0), 0.0)
+  let p1 = @headless.drawer_rubber_pull(16.0, 16.0)
+  let p2 = @headless.drawer_rubber_pull(64.0, 16.0)
+  let p3 = @headless.drawer_rubber_pull(1000.0, 16.0)
+  assert_true(p1 > 0.0 && p1 < p2 && p2 < p3 && p3 < 16.0)
+}
+
+///|
+test "Drawer: overpull_max rubber band, on_release, last_velocity, reverse-fling guard, extent_by, and slop" {
+  let open = @signals.signal(true)
+  let closes = Ref(0)
+  let inner_clicks = Ref(0)
+  let dyn_extent = @signals.signal(200.0)
+  let releases : Array[(Double, Double, Bool)] = []
+  let offset_at_release : Ref[Double] = Ref(0.0)
+  let dr_ref : Ref[@headless.Drawer?] = Ref(None)
+  let t = window(fn(root) {
+    root.show(at_once=true, fn() { open.get() }, fn(s) {
+      @headless.drawer(
+        s,
+        fn() { "高级抽屉" },
+        fn() { open.get() },
+        fn() {
+          closes.val += 1
+          open.set(false)
+        },
+        edge=Bottom,
+        overpull_max=16.0,
+        dismiss_threshold=0.35,
+        velocity_threshold=500.0,
+        on_release=fn(off, vel, will_close) {
+          offset_at_release.val = dr_ref.val.unwrap().drag_offset()
+          releases.push((off, vel, will_close))
+        },
+        fn(v, d) {
+          dr_ref.val = Some(d)
+          v
+          .over(Is(true))
+          .offset(Is((0.0, 100.0)))
+          .width(Is(Some(400.0)))
+          .height(Is(Some(200.0)))
+          .ground(Is(c_rest))
+          |> ignore
+          d.handle(v, extent_by=fn() { dyn_extent.get() }, slop=8.0)
+          @headless.button(v, fn() { "内部按钮" }, fn(_) { inner_clicks.val += 1 }, fn(bv, _) {
+            bv.width(Is(Some(100.0))).height(Is(Some(36.0))) |> ignore
+          })
+          |> ignore
+        },
+      )
+      |> ignore
+    })
+  })
+  // Tap inner button with slop=8.0 is not swallowed by drawer handle.
+  t.click(Button, label="内部按钮")
+  assert_eq(inner_clicks.val, 1)
+  // Over-pull upward (negative delta) produces asymptotic rubber-band offset in (-16.0, 0.0).
+  t.press_at(200.0, 180.0)
+  t.move_to(200.0, 120.0)
+  let over_off = dr_ref.val.unwrap().drag_offset()
+  assert_true(over_off < 0.0 && over_off > -16.0)
+  t.release(200.0, 120.0)
+  assert_true(offset_at_release.val < 0.0)
+  assert_eq(open.get(), true)
+  assert_eq(releases.length(), 1)
+  assert_eq(releases[0].2, false)
+  // Reverse fling protection: drag down past dismiss_threshold (90 > 70), then flick rapidly upward.
+  t.press_at(200.0, 120.0)
+  t.hold_move(200.0, 140.0)
+  t.hold_move(200.0, 260.0)
+  t.hold_move(200.0, 230.0)
+  t.hold_move(200.0, 200.0)
+  t.release(200.0, 200.0)
+  assert_eq(open.get(), true)
+  assert_true(dr_ref.val.unwrap().last_velocity() <= -500.0)
+  // Dynamic extent_by: shrink extent to 100.0 so a 50px drag (> 35px) dismisses and reports will_close=true.
+  dyn_extent.set(100.0)
+  t.drag(200.0, 120.0, 200.0, 170.0, steps=20)
+  assert_eq((open.get(), closes.val), (false, 1))
+  assert_eq(releases[releases.length() - 1].2, true)
+}

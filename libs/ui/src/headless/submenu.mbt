@@ -17,12 +17,59 @@
 // by frames. Disabled (the trigger or its menu), it opens nothing, an open one closed as that comes.
 
 ///|
+/// Deterministic 2D point-in-triangle test (inclusive of edges) for the submenu aiming corridor.
+pub fn point_in_triangle(
+  px : Double,
+  py : Double,
+  ax : Double,
+  ay : Double,
+  bx : Double,
+  by : Double,
+  cx : Double,
+  cy : Double,
+) -> Bool {
+  let cross = fn(x1 : Double, y1 : Double, x2 : Double, y2 : Double, x3 : Double, y3 : Double) {
+    (x1 - x3) * (y2 - y3) - (x2 - x3) * (y1 - y3)
+  }
+  let d1 = cross(px, py, ax, ay, bx, by)
+  let d2 = cross(px, py, bx, by, cx, cy)
+  let d3 = cross(px, py, cx, cy, ax, ay)
+  let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0
+  let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0
+  !(has_neg && has_pos)
+}
+
+///|
+/// Whether pointer `(px, py)` lies inside the safe aiming triangle from leave point `(lx, ly)` to the near edge of
+/// submenu rect `(mx, my, mw, mh)`.
+pub fn submenu_in_aim_corridor(
+  px : Double,
+  py : Double,
+  lx : Double,
+  ly : Double,
+  mx : Double,
+  my : Double,
+  mw : Double,
+  mh : Double,
+) -> Bool {
+  if mw <= 0.0 || mh <= 0.0 {
+    return false
+  }
+  if (px - lx).abs() < 1.0 && (py - ly).abs() < 1.0 {
+    return false
+  }
+  let near_x = if mx >= lx { mx } else { mx + mw }
+  point_in_triangle(px, py, lx, ly, near_x, my, near_x, my + mh)
+}
+
+///|
 /// A submenu's trigger and menu, made once by its caller and handed to each (`Menu::sub_trigger`, `Submenu::menu`).
 pub struct Submenu {
   priv now : () -> Bool
   priv set : (Bool) -> Unit
   priv open_delay_ms : Double
   priv close_delay_ms : Double
+  priv corridor_ms : Double
   priv rtl : Bool
   /// (what is waited for: its opening or its closing, called off by whatever supersedes it)
   priv waiting : Ref[() -> Unit]
@@ -33,17 +80,23 @@ pub struct Submenu {
   priv inner : Ref[Menu?]
   /// (opened by the keys, its menu not made yet: the keys given to its first item as it is)
   priv enter : Ref[Bool]
+  /// (last pointer position observed on the trigger, used to form the aiming corridor on leave)
+  priv last_on_opener : Ref[(Double, Double)?]
+  /// (opened by touch tap: kept open without hover until outside press, selection, or Escape)
+  priv by_hand : Ref[Bool]
 }
 
 ///|
 /// A submenu open while `open` says so, `set_open` told what it is to be; opening `open_delay_ms` after the pointer came
-/// onto its trigger, closing `close_delay_ms` after it left the trigger and the submenu. When `rtl` is true, default
-/// open/close arrow keys flip (`←` opens, `→` closes).
+/// onto its trigger, closing `close_delay_ms` after it left the trigger and the submenu (`corridor_ms` while moving
+/// inside the aiming triangle toward the submenu panel). When `rtl` is true, default open/close arrow keys flip (`←`
+/// opens, `→` closes).
 pub fn Submenu::new(
   open : () -> Bool,
   set_open : (Bool) -> Unit,
   open_delay_ms? : Double = 180.0,
   close_delay_ms? : Double = 150.0,
+  corridor_ms? : Double = 300.0,
   rtl? : Bool = false,
 ) -> Submenu {
   {
@@ -51,6 +104,7 @@ pub fn Submenu::new(
     set: set_open,
     open_delay_ms,
     close_delay_ms,
+    corridor_ms,
     rtl,
     waiting: Ref(fn() {  }),
     // (nodes, kept by their ids: a node is no value to compare)
@@ -58,6 +112,8 @@ pub fn Submenu::new(
     shown: @signals.signal_by(None, same=same_node),
     inner: Ref(None),
     enter: Ref(false),
+    last_on_opener: Ref(None),
+    by_hand: Ref(false),
   }
 }
 
@@ -65,6 +121,27 @@ pub fn Submenu::new(
 /// Whether it is open now (as its caller says).
 pub fn Submenu::open(self : Submenu) -> Bool {
   (self.now)()
+}
+
+///|
+/// Whether the pointer is currently inside the safe aiming triangle from the trigger leave point toward the open
+/// submenu panel (for sibling submenu items to decide immediate 0 ms switching when outside the corridor).
+pub fn Submenu::in_corridor(self : Submenu) -> Bool {
+  match (self.last_on_opener.val, self.opener.untracked(), self.shown.untracked()) {
+    (Some((lx, ly)), Some(op), Some(mp)) if op.alive() && mp.alive() => {
+      let (mx, my, mw, mh) = mp.placed_window_now()
+      let (px, py) = op.tree.pointer_said()
+      submenu_in_aim_corridor(px, py, lx, ly, mx, my, mw, mh)
+    }
+    _ => false
+  }
+}
+
+///|
+/// Open by touch tap: opens immediately and stays open without hover until an outside press, selection, or Escape.
+pub fn Submenu::open_touch(self : Submenu) -> Unit {
+  self.by_hand.val = true
+  self.now_to(true)
 }
 
 ///|
@@ -86,6 +163,7 @@ fn Submenu::now_to(self : Submenu, on : Bool) -> Unit {
   self.call_off()
   if !on {
     self.enter.val = false
+    self.by_hand.val = false
   }
   if @signals.untracked(self.now) != on {
     (self.set)(on)
@@ -198,19 +276,37 @@ pub fn Menu::sub_trigger(
     }
   })
   |> ignore
+  // (record last pointer position on trigger so leaving toward the submenu forms an accurate aiming corridor)
+  node.on_pointer_moved(fn() { sub.last_on_opener.val = Some(node.tree.pointer_said()) }) |> ignore
+  node.reacts(fn() { node.pointed_in() }, at_start=false, fn(on_trigger) {
+    if on_trigger {
+      sub.last_on_opener.val = Some(node.tree.pointer_said())
+    }
+  })
   // (the pointer come over the trigger or the submenu, or gone from both: opened or closed after its wait)
   node.reacts(fn() { sub.hovered() }, at_start=false, fn(over) {
     if over {
       if !off() {
         sub.later_to(node, true, sub.open_delay_ms)
       }
-    } else if !sub.focus_inside() {
-      sub.later_to(node, false, sub.close_delay_ms)
+    } else if !sub.by_hand.val && !sub.focus_inside() {
+      let delay = if sub.in_corridor() { sub.corridor_ms } else { sub.close_delay_ms }
+      sub.later_to(node, false, delay)
+    }
+  })
+  // (reset touch-open state if caller closes the submenu externally)
+  node.reacts(sub.now, at_start=false, fn(is_open) {
+    if !is_open {
+      sub.by_hand.val = false
     }
   })
   // (the keys gone from the trigger, not into the submenu, the pointer on neither: closed at once)
   node.reacts(fn() { node.focused() }, at_start=false, fn(on) {
-    if !on && !sub.focus_inside() && !@signals.untracked(fn() { sub.hovered() }) && @signals.untracked(sub.now) {
+    if !on &&
+      !sub.by_hand.val &&
+      !sub.focus_inside() &&
+      !@signals.untracked(fn() { sub.hovered() }) &&
+      @signals.untracked(sub.now) {
       sub.now_to(false)
     }
   })
@@ -276,6 +372,16 @@ pub fn Submenu::menu(
     made_for=made_for.unwrap_or(loc),
     loc~,
   )
+  // (touch-opened submenu stays open without hover until an outside press, selection, or Escape)
+  window_downs_while(v, fn() { self.by_hand.val && (self.now)() }, fn(x, y) {
+    if press_on(v, x, y) {
+      return
+    }
+    if self.opener.untracked() is Some(o) && press_on(o, x, y) {
+      return
+    }
+    self.now_to(false)
+  })
   // (opened by the keys: they go to its first item once what it holds is made and committed, at this cause's moment)
   if self.enter.val {
     v.at_moment(v.cause_at(), fn() {

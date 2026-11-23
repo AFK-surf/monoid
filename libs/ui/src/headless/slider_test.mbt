@@ -116,3 +116,45 @@ test "an RTL horizontal slider flips ←/→ stepping and horizontal drag mappin
   t.release(190.0, 15.0)
   assert_eq(told, [60.0, 50.0, 90.0, 10.0])
 }
+
+///|
+test "slider: on_commit fires on drag release, keyboard step, and on_step; focus_on_press enables follow-up keys" {
+  let val = @signals.signal(50.0, same=fn(a : Double, b : Double) { a == b })
+  let changes : Array[Double] = []
+  let commits : Array[Double] = []
+  let state : Ref[@headless.Slider?] = Ref(None)
+  let t = window(fn(root) {
+    @headless.slider(
+      root,
+      fn() { "亮度" },
+      fn() { val.get() },
+      min=0.0,
+      max=100.0,
+      step=10.0,
+      thumb_room=20.0,
+      on_commit=fn(v) { commits.push(v) },
+      fn(next) {
+        changes.push(next)
+        val.set(next)
+      },
+      fn(v, s) {
+        state.val = Some(s)
+        v.width(Is(Some(220.0))).height(Is(Some(30.0))).ground(Is(c_rest)) |> ignore
+      },
+    )
+    |> ignore
+  })
+  // Press and move along slider: changes fire during drag, on_commit fires only on release.
+  t.press_at(50.0, 15.0)
+  t.move_to(150.0, 15.0)
+  let mid_commits = commits.copy()
+  let shown_ring = state.val.unwrap().focus_shown()
+  t.release(150.0, 15.0)
+  let after_release = commits.copy()
+  // Because focus_on_press=true (without visible focus ring), arrow key immediately adjusts value and commits.
+  t.key(@ui.key_code_right)
+  // Screen reader step also commits.
+  t.act(Slider, Decrement, label="亮度")
+  assert_eq((mid_commits, shown_ring, after_release, commits), ([], false, [70.0], [70.0, 80.0, 70.0]))
+  assert_true(changes.length() >= 3)
+}

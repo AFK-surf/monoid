@@ -244,6 +244,9 @@ pub fn field(
       None => st.limit = paste_limit
     }
     st.secret = secret
+    if secret {
+      agent_secret(f)
+    }
     st.words = words
     st.look = look
     st.looked = None

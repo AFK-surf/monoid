@@ -237,3 +237,153 @@ test "a layer that takes no Escape (a toast's) over the dialog lets Escape throu
   assert_eq((held, told, k.dialog.get(), ov_open(k.t)), (2, [Escape], false, 0))
 }
 
+///|
+test "overlay: before_dismiss, keeps, initial_focus, in_node, and bring_to_top on inert->live" {
+  let step = @signals.signal(2)
+  let ov1_inert = @signals.signal(false)
+  let ov1_dismissed : Array[@headless.OverlayDismiss] = []
+  let ov2_dismissed : Array[@headless.OverlayDismiss] = []
+  let ov1_state : Ref[@headless.Overlay?] = Ref(None)
+  let ov2_state : Ref[@headless.Overlay?] = Ref(None)
+  let keep_btn : Ref[@view.View?] = Ref(None)
+  let t = window(fn(root) {
+    let kept = @headless.button(root, fn() { "豁免区" }, fn(_) {  }, fn(v, _) {
+      v.width(Is(Some(100.0))).height(Is(Some(32.0))) |> ignore
+    })
+    keep_btn.val = Some(kept)
+    root.box(fn(layer1) {
+      layer1
+      .over(Is(true))
+      .offset(Is((150.0, 20.0)))
+      .width(Is(Some(160.0)))
+      .height(Is(Some(120.0)))
+      .ground(Is(c_rest))
+      |> ignore
+      @headless.overlay(
+        layer1,
+        fn(how) { ov1_dismissed.push(how) },
+        inert=fn() { ov1_inert.get() },
+        in_node=true,
+        keeps=fn() {
+          match keep_btn.val {
+            Some(k) => [k]
+            None => []
+          }
+        },
+        before_dismiss=fn(how) {
+          if how == Escape && step.untracked() > 1 {
+            step.set(step.untracked() - 1)
+            true
+          } else {
+            false
+          }
+        },
+        label=fn() { "层一" },
+        fn(_v, o) { ov1_state.val = Some(o) },
+      )
+      |> ignore
+    })
+    |> ignore
+    root.box(fn(layer2) {
+      let second_target : Ref[@view.View?] = Ref(None)
+      @headless.overlay(
+        layer2,
+        fn(how) { ov2_dismissed.push(how) },
+        modal=false,
+        leaves_typing=true,
+        held_back_goes_on=true,
+        in_node=true,
+        label=fn() { "层二" },
+        fn(v, o) {
+          ov2_state.val = Some(o)
+          v
+          .over(Is(true))
+          .offset(Is((180.0, 160.0)))
+          .width(Is(Some(160.0)))
+          .height(Is(Some(100.0)))
+          .ground(Is(c_rest))
+          |> ignore
+          @headless.button(v, fn() { "按钮甲" }, fn(_) {  }, fn(b, _) {
+            b.width(Is(Some(80.0))).height(Is(Some(30.0))) |> ignore
+          })
+          |> ignore
+          let b2 = @headless.button(v, fn() { "按钮乙" }, fn(_) {  }, fn(b, _) {
+            b.width(Is(Some(80.0))).height(Is(Some(30.0))) |> ignore
+          })
+          second_target.val = Some(b2)
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  // Initially layer2 is on top (depth 1), layer1 is below (depth 0).
+  let d0 = (ov1_state.val.unwrap().depth(), ov2_state.val.unwrap().depth())
+  // Transition layer1 inert -> live brings layer1 to top of stack.
+  ov1_inert.set(true)
+  t.draw()
+  ov1_inert.set(false)
+  t.draw()
+  let d1 = (ov1_state.val.unwrap().depth(), ov2_state.val.unwrap().depth(), ov1_state.val.unwrap().is_top())
+  // Clicking kept button does not dismiss layer1.
+  let (kx, ky, kw, kh) = t.get(Button, label="豁免区").rect
+  t.tap(kx + kw / 2.0, ky + kh / 2.0)
+  let after_kept = ov1_dismissed.copy()
+  // First Escape is consumed by before_dismiss (step 2 -> 1), not calling on_dismiss.
+  t.key(@ui.key_escape)
+  let after_esc1 = (step.get(), ov1_dismissed.copy())
+  // Second Escape passes through to on_dismiss.
+  t.key(@ui.key_escape)
+  let after_esc2 = (step.get(), ov1_dismissed.copy())
+  assert_eq(d0, (0, 1))
+  assert_eq(d1, (1, 0, true))
+  assert_eq(after_kept, [])
+  assert_eq(after_esc1, (1, []))
+  assert_eq(after_esc2, (1, [Escape]))
+}
+
+///|
+test "overlay: initial_focus targets specific child and dialog forwards before_dismiss" {
+  let open = @signals.signal(true)
+  let blocked = Ref(true)
+  let dlg_closes = Ref(0)
+  let target_ref : Ref[@view.View?] = Ref(None)
+  let t = window(fn(root) {
+    let b = @headless.button(root, fn() { "指定焦点" }, fn(_) {  }, fn(v, _) {
+      v.width(Is(Some(100.0))).height(Is(Some(32.0))) |> ignore
+    })
+    target_ref.val = Some(b)
+    root.show(at_once=true, fn() { open.get() }, fn(s) {
+      @headless.dialog(
+        s,
+        fn() { "多步弹窗" },
+        fn() { open.get() },
+        fn() {
+          dlg_closes.val += 1
+          open.set(false)
+        },
+        before_dismiss=fn(_) {
+          if blocked.val {
+            blocked.val = false
+            true
+          } else {
+            false
+          }
+        },
+        leaves_typing=true,
+        fn(v, _) {
+          v.over(Is(true)).width(Is(Some(160.0))).height(Is(Some(80.0))).ground(Is(c_rest)) |> ignore
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t.key(@ui.key_escape)
+  let after_first_esc = (open.get(), dlg_closes.val)
+  t.key(@ui.key_escape)
+  let after_second_esc = (open.get(), dlg_closes.val)
+  assert_eq(after_first_esc, (true, 0))
+  assert_eq(after_second_esc, (false, 1))
+}
+

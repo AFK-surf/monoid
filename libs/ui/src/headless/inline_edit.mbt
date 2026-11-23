@@ -22,6 +22,10 @@ pub struct InlineEdit {
   priv on_cancel_ : () -> Unit
   priv disabled_ : () -> Bool
   priv submit_on_blur_ : Bool
+  priv trim_ : Bool
+  priv cancel_if_empty_ : Bool
+  priv cancel_if_unchanged_ : Bool
+  priv commit_on_outside_press_ : Bool
   priv editing_ : @signals.Signal[Bool]
   priv draft_ : @signals.Signal[String]
   priv trigger_ : Ref[@view.View?]
@@ -36,6 +40,11 @@ pub fn InlineEdit::new(
   on_cancel? : () -> Unit = fn() {  },
   disabled? : () -> Bool = fn() { false },
   submit_on_blur? : Bool = true,
+  trim? : Bool = false,
+  cancel_if_empty? : Bool = false,
+  cancel_if_unchanged? : Bool = false,
+  start_editing? : Bool = false,
+  commit_on_outside_press? : Bool = true,
 ) -> InlineEdit {
   {
     value_: value,
@@ -43,8 +52,12 @@ pub fn InlineEdit::new(
     on_cancel_: on_cancel,
     disabled_: disabled,
     submit_on_blur_: submit_on_blur,
-    editing_: @signals.signal(false),
-    draft_: @signals.signal(""),
+    trim_: trim,
+    cancel_if_empty_: cancel_if_empty,
+    cancel_if_unchanged_: cancel_if_unchanged,
+    commit_on_outside_press_: commit_on_outside_press,
+    editing_: @signals.signal(start_editing),
+    draft_: @signals.signal(if start_editing { @signals.untracked(value) } else { "" }),
     trigger_: Ref(None),
   }
 }
@@ -89,7 +102,13 @@ fn InlineEdit::finish_commit(self : InlineEdit, refocus : Bool) -> Unit {
   if !self.editing_.untracked() {
     return
   }
-  let text = self.draft_.untracked()
+  let raw = self.draft_.untracked()
+  let text = if self.trim_ { raw.trim(chars=" \t\n\r").to_owned() } else { raw }
+  if (self.cancel_if_empty_ && text == "") ||
+    (self.cancel_if_unchanged_ && text == @signals.untracked(self.value_)) {
+    self.finish_cancel(refocus)
+    return
+  }
   self.editing_.set(false)
   (self.on_commit_)(text)
   if refocus {
@@ -193,16 +212,60 @@ pub fn InlineEdit::editor(self : InlineEdit, v : @view.View) -> Unit {
     }
   })
   |> ignore
+  let seen_focus = Ref(false)
+  let waiting_input = Ref(false)
   v.reacts(fn() { self.editing_.get() }, fn(ed) {
-    if ed && v.alive() && !@signals.untracked(self.disabled_) {
+    if ed {
+      seen_focus.val = false
+      waiting_input.val = false
+      if v.alive() && !@signals.untracked(self.disabled_) {
+        if @signals.untracked(fn() { v.takes_input() }) {
+          v.ask_focus() |> ignore
+        } else {
+          waiting_input.val = true
+        }
+      }
+    }
+  })
+  // Deferred focus recovery: if `v` could not take input when editing started (e.g. a closing menu was still modal),
+  // ask focus as soon as `takes_input()` becomes true and before focus has been seen.
+  v.reacts(fn() { v.takes_input() }, at_start=false, fn(takes) {
+    if !takes {
+      if self.editing_.untracked() && !seen_focus.val {
+        waiting_input.val = true
+      }
+    } else if waiting_input.val &&
+      !seen_focus.val &&
+      self.editing_.untracked() &&
+      !@signals.untracked(self.disabled_) &&
+      !@signals.untracked(fn() { v.focused() }) {
+      waiting_input.val = false
       v.ask_focus() |> ignore
     }
   })
+  if self.commit_on_outside_press_ {
+    window_downs_while(v, fn() { self.editing_.get() }, fn(x, y) {
+      let (left, top, w, h) = v.placed_window_now()
+      if x < left || x >= left + w || y < top || y >= top + h {
+        v.focus_let_go()
+        if self.editing_.untracked() {
+          if self.submit_on_blur_ {
+            self.finish_commit(false)
+          } else {
+            self.finish_cancel(false)
+          }
+        }
+      }
+    })
+  }
   let was_focused = Ref(false)
   v.reacts(fn() { v.focused() }, fn(now) {
     let prev = was_focused.val
     was_focused.val = now
-    if prev && !now && self.editing_.untracked() {
+    if now {
+      seen_focus.val = true
+      waiting_input.val = false
+    } else if prev && self.editing_.untracked() {
       if self.submit_on_blur_ {
         self.finish_commit(false)
       } else {

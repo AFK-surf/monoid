@@ -244,3 +244,86 @@ test "a menu that takes the focus and roves: given the focus it holds it, no ite
   let fallen_back = focus_name(t)
   assert_eq((own, first, menu_stop, item_stop, fallen_back), (("菜单", Some(@view.Role::Menu)), "甲", "菜单", "丙", "甲"))
 }
+
+///|
+test "menu: keep_field intercepts nav keys until item focused; captures_unfocused and handle_key work from outer layer" {
+  let closed = Ref(0)
+  let menu_ref : Ref[@headless.Menu?] = Ref(None)
+  let t1 = window(fn(root) {
+    @headless.button(root, fn() { "输入框" }, fn(_) {  }, fn(v, _) {
+      v.width(Is(Some(100.0))).height(Is(Some(30.0))) |> ignore
+    })
+    |> ignore
+    @headless.menu(
+      root,
+      label=fn() { "命令" },
+      keep_field=true,
+      on_close=fn() { closed.val += 1 },
+      fn(v, m) {
+        menu_ref.val = Some(m)
+        m.item(v, fn() { "复制" }, fn(_) {  }, fn(iv, _) {
+          iv.width(Is(Some(100.0))).height(Is(Some(30.0))) |> ignore
+        })
+        |> ignore
+        m.item(v, fn() { "粘贴" }, fn(_) {  }, fn(iv, _) {
+          iv.width(Is(Some(100.0))).height(Is(Some(30.0))) |> ignore
+        })
+        |> ignore
+      },
+    )
+    |> ignore
+  })
+  // Focus stays on "输入框"; Down key is intercepted by keep_field without moving focus into menu.
+  t1.act(Button, Focus, label="输入框")
+  t1.key(@ui.key_code_down)
+  let still_field = focus_name(t1)
+  // Once an item gains focus (e.g. via pointer hover), Down moves normally to next item.
+  t1.act(MenuItem, Focus, label="复制")
+  t1.key(@ui.key_code_down)
+  let after_item_nav = focus_name(t1)
+  // Escape closes even when focus returns to field.
+  t1.act(Button, Focus, label="输入框")
+  t1.key(@ui.key_escape)
+  assert_eq((still_field, after_item_nav, closed.val), ("输入框", "粘贴", 1))
+
+  // captures_unfocused=true + Menu::handle_key delegated from outer layer
+  let outer_closed = Ref(0)
+  let m2_ref : Ref[@headless.Menu?] = Ref(None)
+  let t2 = window(fn(root) {
+    root.box(fn(layer) {
+      layer.focusable(Is(true), keys=0).says(Is(Some(@view.said(Dialog, label="外层")))).on_key(fn(k) {
+        match m2_ref.val {
+          Some(m) => m.handle_key(k)
+          None => false
+        }
+      })
+      |> ignore
+      @headless.menu(
+        layer,
+        label=fn() { "快捷" },
+        captures_unfocused=true,
+        on_close=fn() { outer_closed.val += 1 },
+        fn(v, m) {
+          m2_ref.val = Some(m)
+          m.item(v, fn() { "Alpha" }, fn(_) {  }, fn(iv, _) {
+            iv.width(Is(Some(100.0))).height(Is(Some(30.0))) |> ignore
+          })
+          |> ignore
+          m.item(v, fn() { "Beta" }, fn(_) {  }, fn(iv, _) {
+            iv.width(Is(Some(100.0))).height(Is(Some(30.0))) |> ignore
+          })
+          |> ignore
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t2.act(Dialog, Focus, label="外层")
+  t2.key(@ui.key_code_down)
+  let entered = focus_name(t2)
+  t2.key(@ui.key_of_char('b'))
+  let typed = focus_name(t2)
+  t2.key(@ui.key_escape)
+  assert_eq((entered, typed, outer_closed.val), ("Alpha", "Beta", 1))
+}

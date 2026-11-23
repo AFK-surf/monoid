@@ -447,3 +447,39 @@ test "agent_bridge: full actions, query filters, agent_act_all short-circuit, an
   assert_true(!agent_writers.contains(eid))
   t.assert_idle()
 }
+
+///|
+test "agent_bridge: real field(secret=true) auto-registers agent_secret and prevents side-channel queries" {
+  let pw = Field::new(text="super-secret-pass-42")
+  let plain = Field::new(text="public-user-name")
+  let t = Tester::tree(
+    fn(root) {
+      ab_box(root, 360.0, 140.0, fn(form) {
+        field(form, pw, label="Password", secret=true) |> ignore
+        field(form, plain, label="Username", secret=false) |> ignore
+      })
+      |> ignore
+    },
+    w=400.0,
+    h=180.0,
+  )
+  let snap = t.agent_snapshot()
+  assert_eq(snap.length(), 2)
+  let pw_entry = snap.iter().find_first(fn(e) { e.label == "Password" }).unwrap()
+  let plain_entry = snap.iter().find_first(fn(e) { e.label == "Username" }).unwrap()
+  assert_eq(pw_entry.value, "[redacted]")
+  assert_eq(pw_entry.redacted, true)
+  assert_eq(plain_entry.value, "public-user-name")
+  assert_eq(plain_entry.redacted, false)
+  let json = agent_snapshot_json(snap)
+  assert_true(!json.contains("super-secret-pass-42"))
+  assert_true(json.contains("[redacted]"))
+  assert_true(json.contains("public-user-name"))
+  // Anti-side-channel: querying by plaintext secret or "[redacted]" returns nothing.
+  assert_eq(t.agent_query(text="super-secret-pass-42").length(), 0)
+  assert_eq(t.agent_query(text="pass-42").length(), 0)
+  assert_eq(t.agent_query(text="redacted").length(), 0)
+  // Querying by label still finds the password field.
+  assert_eq(t.agent_query(text="Password").length(), 1)
+  t.assert_idle()
+}

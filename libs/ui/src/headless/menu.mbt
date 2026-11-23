@@ -44,6 +44,12 @@ pub struct Menu {
   priv rove : RovingFocus
   priv entries : Array[MenuEntry]
   priv typeahead : Typeahead
+  priv on_close : (() -> Unit)?
+  priv close_key : Int?
+  priv takes_focus : Bool
+  priv use_typeahead : Bool
+  priv keep_field : Bool
+  priv captures_unfocused : Bool
 }
 
 ///|
@@ -85,6 +91,83 @@ pub fn Menu::focus_last(self : Menu, visible? : Bool = true) -> Bool {
     return false
   }
   self.rove.focus_last(visible~)
+}
+
+///|
+/// Handle a keyboard event for this menu (arrows, Home/End, typeahead, Escape, and `close_key`).
+/// Returns `true` when the key was consumed; reusable by an outer overlay layer delegating keys to the menu.
+pub fn Menu::handle_key(self : Menu, k : @view.Key) -> Bool {
+  if (self.off)() {
+    return false
+  }
+  let v = self.node
+  let closing = k.mods == 0 && (k.code == menu_key_escape || self.close_key == Some(k.code))
+  if closing {
+    match self.on_close {
+      Some(f) if self.captures_unfocused || self.keep_field || focus_in(v, k.code == menu_key_escape) => {
+        f()
+        return true
+      }
+      _ => return false
+    }
+  }
+  let on_item = match v.tree.focused_now().0 {
+    Some(f) => self.entries.iter().any(fn(e) { e.node.id() == f })
+    None => false
+  }
+  if self.keep_field && !on_item {
+    // Keep focus in the underlying field: intercept menu navigation keys without stealing focus until an item is focused.
+    return k.mods == 0 &&
+      (k.code == menu_key_up || k.code == menu_key_down || k.code == menu_key_home || k.code == menu_key_end)
+  }
+  // (a character typed, Space aside (it presses what has the focus); with Shift as without; the keys the menu's as
+  // its arrows' are)
+  if self.use_typeahead &&
+    k.code > typeahead_key_char &&
+    k.code != typeahead_key_space &&
+    (k.mods == 0 || k.mods == mod_shift) {
+    // (the keys on one of its items, on itself, or nowhere where it takes no focus itself: never on what else it
+    // holds (a field in it, whose letters are its own))
+    let ours = if self.captures_unfocused {
+      true
+    } else {
+      match v.tree.focused_now().0 {
+        Some(f) => f == v.id() || on_item
+        None => !self.takes_focus
+      }
+    }
+    if !ours {
+      return false
+    }
+    let live = self.live()
+    return self.typeahead.handle_key(k, live, fn(i) {
+      let id = live[i].id()
+      match self.entries.iter().find_first(fn(e) { e.node.id() == id }) {
+        Some(e) => (e.text)()
+        None => ""
+      }
+    })
+  }
+  if k.mods != 0 {
+    return false
+  }
+  // (from nowhere, the focus on no node of the tree's (one opened by the keys); never so for one that takes the
+  // focus itself, which has it while its keys are its: the focus elsewhere, held outside the tree (an old view's
+  // field kept as the menu opened beside it), the keys are that one's)
+  if !self.captures_unfocused && !focus_in(v, !self.takes_focus) {
+    return false
+  }
+  if self.rove.step(k.code) is Some(_) {
+    return true
+  }
+  // (no item has focus yet: ↓/Home enters first item, ↑/End enters last item)
+  if k.code == menu_key_down || k.code == menu_key_home {
+    self.focus_first()
+  } else if k.code == menu_key_up || k.code == menu_key_end {
+    self.focus_last()
+  } else {
+    false
+  }
 }
 
 ///|
@@ -192,6 +275,8 @@ pub fn menu(
   roving? : Bool = false,
   typeahead? : Bool = true,
   typeahead_ms? : Double = 500.0,
+  keep_field? : Bool = false,
+  captures_unfocused? : Bool = false,
   in_node? : Bool = false,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
@@ -203,6 +288,12 @@ pub fn menu(
       rove: RovingFocus::new(axis=Vertical, roving~, wraps~),
       entries: [],
       typeahead: Typeahead::new(window_ms=typeahead_ms),
+      on_close,
+      close_key,
+      takes_focus,
+      use_typeahead: typeahead,
+      keep_field,
+      captures_unfocused,
     }
     look(v, m)
     if takes_focus {
@@ -215,65 +306,7 @@ pub fn menu(
         None => Is(Some(@view.said(Menu)))
       },
     )
-    .on_key(fn(k) {
-      if disabled() {
-        return false
-      }
-      // (a character typed, Space aside (it presses what has the focus); with Shift as without; the keys the menu's as
-      // its arrows' are)
-      if typeahead &&
-        k.code > typeahead_key_char &&
-        k.code != typeahead_key_space &&
-        (k.mods == 0 || k.mods == mod_shift) {
-        // (the keys on one of its items, on itself, or nowhere where it takes no focus itself: never on what else it
-        // holds (a field in it, whose letters are its own))
-        let ours = match v.tree.focused_now().0 {
-          Some(f) => f == v.id() || m.entries.iter().any(fn(e) { e.node.id() == f })
-          None => !takes_focus
-        }
-        if !ours {
-          return false
-        }
-        let live = m.live()
-        return m.typeahead.handle_key(k, live, fn(i) {
-          let id = live[i].id()
-          match m.entries.iter().find_first(fn(e) { e.node.id() == id }) {
-            Some(e) => (e.text)()
-            None => ""
-          }
-        })
-      }
-      if k.mods != 0 {
-        return false
-      }
-      let closing = k.code == menu_key_escape || close_key == Some(k.code)
-      if closing {
-        match on_close {
-          Some(f) if focus_in(v, k.code == menu_key_escape) => {
-            f()
-            return true
-          }
-          _ => return false
-        }
-      }
-      // (from nowhere, the focus on no node of the tree's (one opened by the keys); never so for one that takes the
-      // focus itself, which has it while its keys are its: the focus elsewhere, held outside the tree (an old view's
-      // field kept as the menu opened beside it), the keys are that one's)
-      if !focus_in(v, !takes_focus) {
-        return false
-      }
-      if m.rove.step(k.code) is Some(_) {
-        return true
-      }
-      // (no item has focus yet: ↓/Home enters first item, ↑/End enters last item)
-      if k.code == menu_key_down || k.code == menu_key_home {
-        m.focus_first()
-      } else if k.code == menu_key_up || k.code == menu_key_end {
-        m.focus_last()
-      } else {
-        false
-      }
-    })
+    .on_key(fn(k) { m.handle_key(k) })
     |> ignore
   }
   if in_node {

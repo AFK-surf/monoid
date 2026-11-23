@@ -129,14 +129,20 @@ fn[K : Eq] TooltipGroup::close(self : TooltipGroup[K], key : K, now : Double) ->
 
 ///|
 /// `node` made a trigger of the group, its tip `key`'s; `disabled` while it opens none (one showing closed as that
-/// comes). Nothing is said of the node that is drawn, laid out or read out (its look and its component say those):
-/// the group follows its pointer, its press and its focus (View::reacts), and does `tooltip_close` for it
-/// (View::on_action); all of it let go with the node, its tip closed then.
+/// comes); `within`: read `node.pointed_in()` instead of `node.pointed()`; `repeats`: only open when
+/// `node.words_cut_now()` is true; `touch_hold`: long-press opens the tip and keeps it for `tooltip_lifted_ms` after
+/// release (or until the next press anywhere). Nothing is said of the node that is drawn, laid out or read out (its
+/// look and its component say those): the group follows its pointer, its press, its focus, and `takes_input()`
+/// (View::reacts), and does `tooltip_close` for it (View::on_action); all of it let go with the node, its tip closed
+/// then.
 pub fn[K : Eq] TooltipGroup::trigger(
   self : TooltipGroup[K],
   node : @view.View,
   key : K,
   disabled? : () -> Bool = fn() { false },
+  within? : Bool = false,
+  repeats? : Bool = false,
+  touch_hold? : Bool = false,
 ) -> Unit {
   // (what is waited for: the tip's opening, called off by whatever closes it)
   let waiting : Ref[() -> Unit] = Ref(fn() {  })
@@ -144,21 +150,38 @@ pub fn[K : Eq] TooltipGroup::trigger(
     (waiting.val)()
     waiting.val = fn() {  }
   }
+  let touch_held = Ref(false)
+  let touch_lifted = @signals.signal(false)
+  let lifted_cancel : Ref[() -> Unit] = Ref(fn() {  })
+  let stop_lifted = fn() {
+    (lifted_cancel.val)()
+    lifted_cancel.val = fn() {  }
+    touch_lifted.set(false)
+  }
   let close = fn() {
     call_off()
+    touch_held.val = false
+    stop_lifted()
     self.close(key, node.cause_at())
+  }
+  let may_open = fn() {
+    !disabled() &&
+    @signals.untracked(fn() { node.takes_input() }) &&
+    (!repeats || node.words_cut_now())
   }
   let open_now = fn() {
     call_off()
-    if !disabled() {
+    if may_open() {
       let now = node.cause_at()
       self.open(node, key, now, self.warm(now))
     }
   }
-  node.reacts(fn() { node.pointed() }, at_start=false, fn(over) {
+  node.reacts(fn() { if within { node.pointed_in() } else { node.pointed() } }, at_start=false, fn(over) {
     if !over {
-      close()
-    } else if !disabled() {
+      if !touch_held.val && !touch_lifted.untracked() {
+        close()
+      }
+    } else if !disabled() && @signals.untracked(fn() { node.takes_input() }) {
       let now = node.cause_at()
       if self.warm(now) {
         open_now()
@@ -166,7 +189,7 @@ pub fn[K : Eq] TooltipGroup::trigger(
         call_off()
         waiting.val = node.at_moment(now + self.open_delay_ms, fn() {
           waiting.val = fn() {  }
-          if !disabled() {
+          if may_open() {
             self.open(node, key, now + self.open_delay_ms, false)
           }
         })
@@ -181,7 +204,41 @@ pub fn[K : Eq] TooltipGroup::trigger(
       close()
     }
   })
+  node.reacts(fn() { node.takes_input() }, at_start=false, fn(takes) { if !takes { close() } })
   node.reacts(disabled, at_start=false, fn(off) { if off { close() } })
+  if touch_hold {
+    node
+    .gesture(
+      8.0,
+      hold=(
+        500.0,
+        fn(_) {
+          if may_open() {
+            stop_lifted()
+            touch_held.val = true
+            open_now()
+          }
+        },
+      ),
+      drag=fn(d) {
+        if touch_held.val && (d.kind == Up || d.kind == Off) {
+          touch_held.val = false
+          if d.kind == Up {
+            touch_lifted.set(true)
+            lifted_cancel.val = node.at_moment(node.cause_at() + tooltip_lifted_ms, fn() {
+              lifted_cancel.val = fn() {  }
+              touch_lifted.set(false)
+              self.close(key, node.cause_at())
+            })
+          } else {
+            close()
+          }
+        }
+      },
+    )
+    |> ignore
+    window_downs_while(node, fn() { touch_lifted.get() }, fn(_, _) { close() })
+  }
   node
   .on_action(
     tooltip_close,
@@ -193,6 +250,7 @@ pub fn[K : Eq] TooltipGroup::trigger(
   )
   .owns(fn() {
     call_off()
+    stop_lifted()
     self.close(key, node.cause_at())
     // (a trigger let go is where no tip comes from)
     if self.last.val == Some(node.id()) {

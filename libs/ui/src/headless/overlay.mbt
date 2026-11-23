@@ -39,10 +39,12 @@ priv struct OverlayEntry {
   id : @view.NodeId
   node : @view.View
   dismiss : (OverlayDismiss) -> Unit
+  before_dismiss : (OverlayDismiss) -> Bool
   inert : () -> Bool
   escape : Bool
   outside : Bool
   anchor : @view.View?
+  keeps : () -> Array[@view.View]
 }
 
 ///|
@@ -97,6 +99,22 @@ fn OverlayStack::drop(self : OverlayStack, id : @view.NodeId) -> Unit {
 }
 
 ///|
+/// Move layer `id` to the top of the stack (e.g. when a mounted overlay transitions from inert to live).
+fn OverlayStack::bring_to_top(self : OverlayStack, id : @view.NodeId) -> Unit {
+  let last = self.entries.length() - 1
+  for i, e in self.entries {
+    if e.id == id {
+      if i < last {
+        let moved = self.entries.remove(i)
+        self.entries.push(moved)
+        self.changed.set(self.changed.untracked() + 1)
+      }
+      break
+    }
+  }
+}
+
+///|
 /// Register `v` on its tree's `OverlayStack` (above all currently mounted layers) and unregister it on `View::owns`.
 fn overlay_join(
   v : @view.View,
@@ -105,6 +123,8 @@ fn overlay_join(
   escape : Bool,
   outside : Bool,
   anchor : @view.View?,
+  before_dismiss? : (OverlayDismiss) -> Bool = fn(_) { false },
+  keeps? : () -> Array[@view.View] = fn() { [] },
 ) -> (OverlayStack, OverlayEntry) {
   let stack = overlay_stack(v.tree)
   let off = fn() { inert() || v.leaving() }
@@ -112,13 +132,20 @@ fn overlay_join(
     id: v.id(),
     node: v,
     dismiss: fn(how) { if !@signals.untracked(off) { on_dismiss(how) } },
+    before_dismiss,
     inert: off,
     escape,
     outside,
     anchor,
+    keeps,
   }
   stack.entries.push(entry)
   stack.changed.set(stack.changed.untracked() + 1)
+  v.reacts(fn() { !off() }, at_start=false, fn(is_live) {
+    if is_live {
+      stack.bring_to_top(entry.id)
+    }
+  })
   v.owns(fn() { stack.drop(entry.id) }) |> ignore
   (stack, entry)
 }
@@ -159,13 +186,17 @@ fn OverlayStack::top_where(self : OverlayStack, takes : (OverlayEntry) -> Bool) 
 fn OverlayStack::escape(self : OverlayStack, how : OverlayDismiss) -> Bool {
   let i = self.top_where(fn(e) { e.escape })
   guard i >= 0 else { return false }
-  (self.entries[i].dismiss)(how)
+  let top = self.entries[i]
+  if @signals.untracked(fn() { (top.before_dismiss)(how) }) {
+    return true
+  }
+  (top.dismiss)(how)
   true
 }
 
 ///|
 /// Window press `count`, gone down at (`x`, `y`), decided once: the topmost layer a press outside closes told, where
-/// the press is on neither it, nor what is above it, nor its anchor.
+/// the press is on neither it, nor what is above it, nor its anchor or `keeps`.
 fn OverlayStack::press(self : OverlayStack, count : Int, x : Double, y : Double) -> Unit {
   guard self.down != count else { return }
   self.down = count
@@ -178,6 +209,14 @@ fn OverlayStack::press(self : OverlayStack, count : Int, x : Double, y : Double)
     }
   }
   if top.anchor is Some(a) && press_on(a, x, y) {
+    return
+  }
+  for k in @signals.untracked(top.keeps) {
+    if press_on(k, x, y) {
+      return
+    }
+  }
+  if @signals.untracked(fn() { (top.before_dismiss)(Outside) }) {
     return
   }
   (top.dismiss)(Outside)
@@ -266,25 +305,50 @@ pub fn overlay(
   auto_focus? : Bool = modal,
   return_focus? : Bool = true,
   label? : () -> String,
+  before_dismiss? : (OverlayDismiss) -> Bool,
+  keeps? : () -> Array[@view.View],
+  leaves_typing? : Bool = false,
+  held_back_goes_on? : Bool = true,
+  first_takes? : (@view.Said) -> Bool,
+  initial_focus? : @view.View,
+  in_node? : Bool = false,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
-  parent.box(loc~, made_for=made_for.unwrap_or(loc), fn(v) {
-    let (stack, entry) = overlay_join(v, on_dismiss, inert, dismiss_on_escape, dismiss_on_outside, anchor)
+  let setup = fn(v : @view.View) {
+    let (stack, entry) = overlay_join(
+      v,
+      on_dismiss,
+      inert,
+      dismiss_on_escape,
+      dismiss_on_outside,
+      anchor,
+      before_dismiss?,
+      keeps?,
+    )
     let off = entry.inert
     let live = fn() { !off() }
     look(v, { stack, entry })
     // (the framework's layer focus: to what it holds as it opens, or left where it is; back as it goes)
     if auto_focus {
-      v.focus_opens_first().focusable(By(live), keys=0, tab=false) |> ignore
+      match initial_focus {
+        Some(target) => v.focus_opens(target).focusable(By(live), keys=0, tab=false) |> ignore
+        None => v.focus_opens_first(takes?=first_takes).focusable(By(live), keys=0, tab=false) |> ignore
+      }
     } else {
       v.focus_returns() |> ignore
     }
     if return_focus && anchor is Some(a) {
       v.opened_by(ByNode(a.id())) |> ignore
     }
+    if leaves_typing {
+      v.leaves_typing() |> ignore
+    }
     if modal {
       v.modal(By(live)) |> ignore
+      if held_back_goes_on {
+        v.held_back_goes_on() |> ignore
+      }
     }
     // (its own words, said after its look: what it is while it is not inert, nothing of it once it is)
     if label is Some(name) {
@@ -297,5 +361,11 @@ pub fn overlay(
     .on_drag(fn(_) {  })
     |> ignore
     overlay_wire_dismiss(v, stack, entry)
-  })
+  }
+  if in_node {
+    setup(parent)
+    parent
+  } else {
+    parent.box(loc~, made_for=made_for.unwrap_or(loc), setup)
+  }
 }
