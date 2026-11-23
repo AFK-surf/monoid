@@ -1,0 +1,159 @@
+// Write bursts (`BEGIN IMMEDIATE` on first write, single commit, rollback on error)
+// and chunked IN-clause querying (`query_in_chunks`).
+
+import "base_codec"
+
+pub struct Burst {
+  pub db : Sql
+  mut open : Bool
+  mut begun_count : Int
+  mut committed_count : Int
+}
+
+pub fn Burst::new(db : Sql) -> Burst {
+  Burst::{ db: db, open: false, begun_count: 0, committed_count: 0 }
+}
+
+pub fn Burst::is_open(self : Burst) -> Bool {
+  self.open
+}
+
+pub fn Burst::begun(self : Burst) -> Int {
+  self.begun_count
+}
+
+pub fn Burst::committed(self : Burst) -> Int {
+  self.committed_count
+}
+
+fn Burst::begin(self : Burst) -> SqlResult[Unit] {
+  if self.open {
+    return SqlResult::Ok(())
+  }
+  match self.db.exec("BEGIN IMMEDIATE") {
+    SqlResult::Err(e) => SqlResult::Err(e)
+    SqlResult::Ok(_) => {
+      self.open = true
+      self.begun_count += 1
+      SqlResult::Ok(())
+    }
+  }
+}
+
+pub fn Burst::exec(self : Burst, sql : String) -> SqlResult[Unit] {
+  match self.begin() {
+    SqlResult::Err(e) => SqlResult::Err(e)
+    SqlResult::Ok(_) => self.db.exec(sql)
+  }
+}
+
+pub fn Burst::run(self : Burst, sql : String, params : Array[base_codec::Json] = []) -> SqlResult[Int] {
+  match self.begin() {
+    SqlResult::Err(e) => SqlResult::Err(e)
+    SqlResult::Ok(_) => self.db.run(sql, params=params)
+  }
+}
+
+pub fn Burst::all(self : Burst, sql : String, params : Array[base_codec::Json] = []) -> SqlResult[Array[Array[base_codec::Json]]] {
+  self.db.all(sql, params=params)
+}
+
+pub fn Burst::commit(self : Burst) -> SqlResult[Unit] {
+  if !self.open {
+    return SqlResult::Ok(())
+  }
+  self.open = false
+  match self.db.exec("COMMIT") {
+    SqlResult::Err(e) => SqlResult::Err(e)
+    SqlResult::Ok(_) => {
+      self.committed_count += 1
+      SqlResult::Ok(())
+    }
+  }
+}
+
+pub fn Burst::rollback(self : Burst) -> Unit {
+  if !self.open {
+    return
+  }
+  self.open = false
+  let _ = self.db.exec("ROLLBACK")
+}
+
+pub fn Burst::in_tx[T](self : Burst, f : (Burst) -> SqlResult[T]) -> SqlResult[T] {
+  match f(self) {
+    SqlResult::Err(e) => {
+      self.rollback()
+      SqlResult::Err(e)
+    }
+    SqlResult::Ok(out) =>
+    match self.commit() {
+      SqlResult::Err(e) => {
+        self.rollback()
+        SqlResult::Err(e)
+      }
+      SqlResult::Ok(_) => SqlResult::Ok(out)
+    }
+  }
+}
+
+pub fn chunk_most() -> Int { 200 }
+
+pub fn placeholders(n : Int) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<n {
+    if i > 0 {
+      sb.write_string(", ")
+    }
+    sb.write_byte(63 as Byte) // '?'
+  }
+  sb.to_string()
+}
+
+pub fn query_in_chunks[T](
+  db : Sql,
+  keys : Array[String],
+  make_sql : (String) -> String,
+  decode : (Array[base_codec::Json]) -> Option[T],
+  chunk_size : Int = 200,
+  extra_params : Array[base_codec::Json] = [],
+) -> SqlResult[Array[T]] {
+  let out : Array[T] = []
+  if keys.length() == 0 {
+    return SqlResult::Ok(out)
+  }
+  let seen : Map[String, Bool] = Map::new()
+  let unique : Array[String] = []
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    if seen.get(k).is_none() {
+      seen.set(k, true)
+      unique.push(k)
+    }
+  }
+  let size = if chunk_size < 1 { 1 } else { chunk_size }
+  let mut at = 0
+  while at < unique.length() {
+    let end = if at + size < unique.length() { at + size } else { unique.length() }
+    let params : Array[base_codec::Json] = []
+    for i in 0..<extra_params.length() {
+      params.push(extra_params[i])
+    }
+    for i in at..<end {
+      params.push(base_codec::json_str(unique[i]))
+    }
+    match db.all(make_sql(placeholders(end - at)), params=params) {
+      SqlResult::Err(e) => return SqlResult::Err(e)
+      SqlResult::Ok(rows) => {
+        for i in 0..<rows.length() {
+          match decode(rows[i]) {
+            Some(v) => out.push(v)
+            None => ()
+          }
+        }
+      }
+    }
+    at = end
+  }
+  SqlResult::Ok(out)
+}

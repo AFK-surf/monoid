@@ -1,0 +1,557 @@
+// Way speeds and daily byte tallies.
+
+import "effect"
+import "base_codec"
+import "wire"
+import "shell"
+
+pub let net_day_key : String = "net-day"
+pub let tally_every_ms : Int = 60000
+pub let speed_key : String = "relay-speed"
+pub let speed_min_bytes : Int = 524288
+pub let typical_bytes : Int = 262144
+pub let speed_kept_ms : Int = 21600000
+pub let speed_fresh_ms : Int = 600000
+pub let speed_said_ms : Int = 60000
+
+pub struct WallClock {
+  pub now_ms : () -> Int64
+  pub utc_offset_min : (Int64) -> Int
+}
+
+pub fn WallClock::of(rt : effect::Runtime) -> WallClock {
+  WallClock::{
+    now_ms: fn() -> Int64 { rt.now() },
+    utc_offset_min: fn(_ : Int64) -> Int { 0 },
+  }
+}
+
+pub fn local_day(ms : Int64, offset_min : Int) -> Int64 {
+  let at = ms + offset_min.to_int64() * 60000.to_int64()
+  let day = 86400000.to_int64()
+  let q = at / day
+  if at % day < 0.to_int64() {
+    q - 1.to_int64()
+  } else {
+    q
+  }
+}
+
+pub fn cost(ms : Double, bps : Option[Double]) -> Double {
+  match bps {
+    Some(b) =>
+    if b > 0.0 {
+      ms + typical_bytes.to_double() / b * 1000.0
+    } else {
+      ms
+    }
+    None => ms
+  }
+}
+
+struct Speed {
+  bps : Double
+  at : Int64
+}
+
+struct Day {
+  day : Int64
+  mut rx : Int64
+  mut tx : Int64
+}
+
+fn speeds_of(kept : Option[Bytes]) -> Map[String, Map[String, Speed]] {
+  let out : Map[String, Map[String, Speed]] = Map::new()
+  let bytes = match kept {
+    Some(b) => b
+    None => return out
+  }
+  let j = match base_codec::json_parse(wire::utf8_decode_lossy(bytes)) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => return out
+  }
+  let peers = match j {
+    base_codec::Json::Obj(fs) => fs
+    _ => return out
+  }
+  for i in 0..<peers.length() {
+    let (peer, rv) = peers[i]
+    let relays = match rv {
+      base_codec::Json::Obj(rfs) => rfs
+      _ => continue
+    }
+    let of : Map[String, Speed] = Map::new()
+    for k in 0..<relays.length() {
+      let (relay, sv) = relays[k]
+      match (json_get_num(sv, "bps"), json_get_num(sv, "at")) {
+        (Some(bps), Some(at)) => of.set(relay, Speed::{ bps: bps, at: at.to_int64() })
+        _ => ()
+      }
+    }
+    if of.length() > 0 {
+      out.set(peer, of)
+    }
+  }
+  out
+}
+
+fn speeds_bytes(speeds : Map[String, Map[String, Speed]]) -> Bytes {
+  let fields : Array[(String, base_codec::Json)] = []
+  let pks = speeds.keys()
+  for i in 0..<pks.length() {
+    let peer = pks[i]
+    match speeds.get(peer) {
+      Some(relays) => {
+        let rfs : Array[(String, base_codec::Json)] = []
+        let rks = relays.keys()
+        for j in 0..<rks.length() {
+          let r = rks[j]
+          match relays.get(r) {
+            Some(s) =>
+            rfs.push(
+              (r, base_codec::json_obj([("bps", base_codec::json_num(s.bps)), ("at", base_codec::json_num(s.at.to_double()))])),
+            )
+            None => ()
+          }
+        }
+        fields.push((peer, base_codec::json_obj(rfs)))
+      }
+      None => ()
+    }
+  }
+  base_codec::json_stringify(base_codec::json_obj(fields)).to_bytes()
+}
+
+fn days_of(kept : Option[Bytes]) -> Map[String, Day] {
+  let out : Map[String, Day] = Map::new()
+  let bytes = match kept {
+    Some(b) => b
+    None => return out
+  }
+  let j = match base_codec::json_parse(wire::utf8_decode_lossy(bytes)) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => return out
+  }
+  let peers = match j {
+    base_codec::Json::Obj(fs) => fs
+    _ => return out
+  }
+  for i in 0..<peers.length() {
+    let (peer, dv) = peers[i]
+    match (json_get_num(dv, "day"), json_get_num(dv, "rx"), json_get_num(dv, "tx")) {
+      (Some(day), Some(rx), Some(tx)) =>
+      out.set(peer, Day::{ day: day.to_int64(), rx: rx.to_int64(), tx: tx.to_int64() })
+      _ => ()
+    }
+  }
+  out
+}
+
+fn days_bytes(days : Map[String, Day]) -> Bytes {
+  let fields : Array[(String, base_codec::Json)] = []
+  let ks = days.keys()
+  for i in 0..<ks.length() {
+    let peer = ks[i]
+    match days.get(peer) {
+      Some(d) =>
+      fields.push(
+        (
+          peer,
+          base_codec::json_obj([
+            ("day", base_codec::json_num(d.day.to_double())),
+            ("rx", base_codec::json_num(d.rx.to_double())),
+            ("tx", base_codec::json_num(d.tx.to_double())),
+          ]),
+        ),
+      )
+      None => ()
+    }
+  }
+  base_codec::json_stringify(base_codec::json_obj(fields)).to_bytes()
+}
+
+fn Mesh::keep(self : Mesh, key : String, value : () -> Bytes) -> Unit {
+  let _ = self.fibers.fork_named("mesh kept", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    self.keeping.with_permit_k(
+      fn(pk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        let bytes = value()
+        let set_fn = self.store.set_k
+        set_fn(key, bytes, fn(ex : effect::Exit[Unit]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+            _ => pk(effect::Exit::Succeeded(()))
+          }
+        })
+      },
+      fk,
+    )
+  })
+}
+
+pub fn Mesh::speed(self : Mesh, peer : String, relay : String) -> Option[Double] {
+  let now_fn = self.clock.now_ms
+  match self.speeds.get(peer) {
+    None => None
+    Some(of) =>
+    match of.get(relay_key(relay)) {
+      Some(s) =>
+      if now_fn() - s.at < speed_kept_ms.to_int64() {
+        Some(s.bps)
+      } else {
+        None
+      }
+      None => None
+    }
+  }
+}
+
+pub fn Mesh::note_speed(self : Mesh, peer : String, relay : String, bytes : Int, ms : Int) -> Unit {
+  if bytes < speed_min_bytes || ms <= 0 {
+    return
+  }
+  let bps = bytes.to_double() / ms.to_double() * 1000.0
+  let now_fn = self.clock.now_ms
+  let now = now_fn()
+  self.say_speed(peer, relay, bytes, ms, now)
+  let key = relay_key(relay)
+  let of = match self.speeds.get(peer) {
+    Some(m) => m
+    None => {
+      let m : Map[String, Speed] = Map::new()
+      self.speeds.set(peer, m)
+      m
+    }
+  }
+  match of.get(key) {
+    Some(was) =>
+    if now - was.at < speed_fresh_ms.to_int64() && was.bps >= bps {
+      return
+    }
+    None => ()
+  }
+  let slower = match self.speed(peer, relay) {
+    None => true
+    Some(prev) => bps < prev
+  }
+  of.set(key, Speed::{ bps: bps, at: now })
+  let ids = self.speeds.keys()
+  for i in 0..<ids.length() {
+    let id = ids[i]
+    match self.speeds.get(id) {
+      Some(relays) => {
+        let rks = relays.keys()
+        for j in 0..<rks.length() {
+          let r = rks[j]
+          match relays.get(r) {
+            Some(s) =>
+            if now - s.at >= speed_kept_ms.to_int64() {
+              relays.remove(r)
+            }
+            None => ()
+          }
+        }
+        if relays.length() == 0 {
+          self.speeds.remove(id)
+        }
+      }
+      None => ()
+    }
+  }
+  self.keep(self.speeds_key, fn() -> Bytes { speeds_bytes(self.speeds) })
+  if !slower {
+    return
+  }
+  let lks = self.links.keys()
+  for i in 0..<lks.length() {
+    match self.links.get(lks[i]) {
+      Some(op) =>
+      if op.place.peer == peer {
+        match self.current(peer, link_scope=op.place.link_scope) {
+          Some(link) =>
+          match link.via() {
+            Some(via) =>
+            if relay_key(via) == key {
+              self.choose(op.place, Some("slow"))
+            }
+            None => ()
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+  }
+}
+
+fn Mesh::forget_speeds(self : Mesh) -> Unit {
+  if self.speeds.length() == 0 {
+    return
+  }
+  self.speeds.clear()
+  self.keep(self.speeds_key, fn() -> Bytes { speeds_bytes(self.speeds) })
+}
+
+struct TimedState {
+  mut first : Option[Int64]
+  mut from : Int
+  mut own : Int
+  mut told : Bool
+}
+
+pub fn Mesh::timed(self : Mesh, peer : String, relay : String, reply : Reply) -> Reply {
+  let key = peer + " " + relay_key(relay)
+  let st = TimedState::{ first: None, from: 0, own: 0, told: false }
+  reply.on_piece = Some(fn(chunk : Option[Bytes]) -> Unit {
+    let now = self.sh.rt.now()
+    let length = match chunk {
+      Some(piece) => piece.length()
+      None => 0
+    }
+    let prev = match self.came_by.get(key) {
+      Some(v) => v
+      None => 0
+    }
+    let came = prev + length
+    self.came_by.set(key, came)
+    match st.first {
+      None =>
+      if chunk.is_some() {
+        st.first = Some(now)
+        st.from = came
+      }
+      Some(at) => {
+        st.own += length
+        if st.own >= speed_min_bytes && (chunk.is_none() || !st.told) {
+          st.told = true
+          self.note_speed(peer, relay, came - st.from, (now - at).to_int())
+        }
+      }
+    }
+  })
+  reply
+}
+
+fn Mesh::local_day_now(self : Mesh) -> Int64 {
+  let now_fn = self.clock.now_ms
+  let off_fn = self.clock.utc_offset_min
+  let now = now_fn()
+  local_day(now, off_fn(now))
+}
+
+fn Mesh::count(self : Mesh, peer : String, link : Link) -> Unit {
+  let (rx, tx) = link.uncounted()
+  if rx == 0.to_int64() && tx == 0.to_int64() {
+    return
+  }
+  let today = self.local_day_now()
+  let d = match self.days.get(peer) {
+    Some(existing) =>
+    if existing.day == today {
+      existing
+    } else {
+      let nd = Day::{ day: today, rx: 0.to_int64(), tx: 0.to_int64() }
+      self.days.set(peer, nd)
+      nd
+    }
+    None => {
+      let nd = Day::{ day: today, rx: 0.to_int64(), tx: 0.to_int64() }
+      self.days.set(peer, nd)
+      nd
+    }
+  }
+  d.rx += rx
+  d.tx += tx
+  self.days_changed = true
+}
+
+fn Mesh::count_open(self : Mesh, peer : Option[String] = None) -> Unit {
+  let ks = self.links.keys()
+  for i in 0..<ks.length() {
+    match self.links.get(ks[i]) {
+      Some(opening) =>
+      match opening.result {
+        Some(Opened::Open(link)) => {
+          let matches = match peer {
+            None => true
+            Some(p) => p == opening.place.peer
+          }
+          if matches {
+            self.count(opening.place.peer, link)
+          }
+        }
+        _ => ()
+      }
+      None => ()
+    }
+  }
+}
+
+fn Mesh::keep_days(self : Mesh) -> Unit {
+  if !self.days_changed {
+    return
+  }
+  self.days_changed = false
+  let today = self.local_day_now()
+  let ks = self.days.keys()
+  for i in 0..<ks.length() {
+    let p = ks[i]
+    match self.days.get(p) {
+      Some(d) =>
+      if d.day != today {
+        self.days.remove(p)
+      }
+      None => ()
+    }
+  }
+  self.keep(self.days_key, fn() -> Bytes { days_bytes(self.days) })
+}
+
+pub fn Mesh::today(self : Mesh, peer : String) -> (Int64, Int64) {
+  self.count_open(peer=Some(peer))
+  match self.days.get(peer) {
+    Some(d) =>
+    if d.day == self.local_day_now() {
+      (d.rx, d.tx)
+    } else {
+      (0.to_int64(), 0.to_int64())
+    }
+    None => (0.to_int64(), 0.to_int64())
+  }
+}
+
+fn Mesh::tally_loop(self : Mesh, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  effect::sleep_later_k(tally_every_ms, true, fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => {
+        self.tallying = false
+        k(effect::Exit::Interrupted)
+      }
+      effect::Exit::Failed(e) => {
+        self.tallying = false
+        k(effect::Exit::Failed(e))
+      }
+      effect::Exit::Succeeded(_) => {
+        if self.closed || self.links.length() == 0 {
+          self.tallying = false
+          k(effect::Exit::Succeeded(()))
+          return
+        }
+        self.count_open()
+        self.keep_days()
+        self.tally_loop(k)
+      }
+    }
+  })
+}
+
+fn Mesh::tally_if(self : Mesh) -> Unit {
+  if self.tallying || self.closed {
+    return
+  }
+  self.tallying = true
+  let _ = self.fibers.fork_named("mesh tally", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    self.tally_loop(fk)
+  })
+}
+
+pub struct Packets {
+  pub path : String
+  pub sent : Int64
+  pub lost : Int64
+}
+
+pub fn Packets::eq(self : Packets, other : Packets) -> Bool {
+  self.path == other.path && self.sent == other.sent && self.lost == other.lost
+}
+
+pub struct LinkNet {
+  pub path : Option[String]
+  pub relay : Option[String]
+  pub rtt_ms : Option[Double]
+  pub rx_bytes : Int64
+  pub tx_bytes : Int64
+  pub packets : Option[Packets]
+}
+
+fn Link::stats(self : Link) -> (Int64, Int64) {
+  let j = match self.sh.ask("conn.stats", base_codec::json_obj([("id", self.conn)])) {
+    shell::AskResult::Ok(v) => v
+    shell::AskResult::Err(_) => return (0.to_int64(), 0.to_int64())
+  }
+  let rx = match json_get_num(j, "rxBytes") {
+    Some(n) => n.to_int64()
+    None => 0.to_int64()
+  }
+  let tx = match json_get_num(j, "txBytes") {
+    Some(n) => n.to_int64()
+    None => 0.to_int64()
+  }
+  (rx, tx)
+}
+
+fn Link::uncounted(self : Link) -> (Int64, Int64) {
+  let (rx, tx) = self.stats()
+  let drx = if rx > self.counted_rx { rx - self.counted_rx } else { 0.to_int64() }
+  let dtx = if tx > self.counted_tx { tx - self.counted_tx } else { 0.to_int64() }
+  self.counted_rx = rx
+  self.counted_tx = tx
+  (drx, dtx)
+}
+
+pub fn Link::net(self : Link) -> LinkNet {
+  let ps = self.paths()
+  let mut selected : Option[base_codec::Json] = None
+  for i in 0..<ps.length() {
+    match json_get_bool(ps[i], "selected") {
+      Some(true) => {
+        selected = Some(ps[i])
+        break
+      }
+      _ => ()
+    }
+  }
+  let (rx, tx) = self.stats()
+  match selected {
+    None =>
+    LinkNet::{
+      path: None,
+      relay: None,
+      rtt_ms: None,
+      rx_bytes: rx,
+      tx_bytes: tx,
+      packets: None,
+    }
+    Some(path) => {
+      let relay = json_get_str(path, "relay")
+      let id = path_id(path)
+      let p_kind = match relay {
+        Some(_) => "relay"
+        None =>
+        match self.pin {
+          Some(p) => if p == tailnet_name { tailnet_name } else { direct_name }
+          None => direct_name
+        }
+      }
+      let relay_h = match relay {
+        Some(r) => Some(relay_host(r))
+        None => None
+      }
+      let sent = match json_get_num(path, "txPackets") {
+        Some(n) => n.to_int64()
+        None => 0.to_int64()
+      }
+      let lost = match json_get_num(path, "lostPackets") {
+        Some(n) => n.to_int64()
+        None => 0.to_int64()
+      }
+      LinkNet::{
+        path: Some(p_kind),
+        relay: relay_h,
+        rtt_ms: json_get_num(path, "rttMs"),
+        rx_bytes: rx,
+        tx_bytes: tx,
+        packets: Some(Packets::{ path: id, sent: sent, lost: lost }),
+      }
+    }
+  }
+}

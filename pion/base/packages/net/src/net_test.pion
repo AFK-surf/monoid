@@ -1,0 +1,379 @@
+// Tests for net::Socket, net::Listener, and net::pipe_duplex_k
+// (ported from net_test.mbt & net_conformance_test.mbt).
+
+import "effect"
+
+enum Piece {
+  Chunk(Bytes)
+  End
+  Broken(String)
+}
+
+struct Wire {
+  incoming : effect::Queue[Piece]
+  written : Array[Bytes]
+  mut ended : Int
+  mut closes : Int
+  mut closed_whole : Int
+  mut read_calls : Int
+  mut fail_write : Bool
+  mut fail_write_after : Int
+  mut writes_seen : Int
+  mut fail_end : Bool
+  mut fail_close : Bool
+  mut gate : Option[effect::Deferred[Unit]]
+}
+
+fn Wire::new() -> Wire {
+  Wire::{
+    incoming: effect::Queue::unbounded(),
+    written: [],
+    ended: 0,
+    closes: 0,
+    closed_whole: 0,
+    read_calls: 0,
+    fail_write: false,
+    fail_write_after: -1,
+    writes_seen: 0,
+    fail_end: false,
+    fail_close: false,
+    gate: None,
+  }
+}
+
+fn Wire::send(self : Wire, p : Piece) -> Unit {
+  let _ = self.incoming.try_offer(p)
+}
+
+fn Wire::socket(self : Wire) -> Socket {
+  Socket::new(
+    fn(k : (effect::Exit[Option[Bytes]]) -> Unit) -> Unit {
+      self.read_calls += 1
+      self.incoming.take_k(fn(ex : effect::Exit[Piece]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(p) =>
+          match p {
+            Piece::Chunk(b) => k(effect::Exit::Succeeded(Some(b)))
+            Piece::End => k(effect::Exit::Succeeded(None))
+            Piece::Broken(msg) => k(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+          }
+        }
+      })
+    },
+    fn(b : Bytes, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.writes_seen += 1
+      if self.fail_write || (self.fail_write_after >= 0 && self.writes_seen > self.fail_write_after) {
+        k(effect::Exit::Failed(effect::EffectError::Custom("broken pipe")))
+        return
+      }
+      self.written.push(b)
+      k(effect::Exit::Succeeded(()))
+    },
+    fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      if self.fail_end {
+        k(effect::Exit::Failed(effect::EffectError::Custom("not connected")))
+        return
+      }
+      self.ended += 1
+      k(effect::Exit::Succeeded(()))
+    },
+    fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.closes += 1
+      self.incoming.shutdown()
+      match self.gate {
+        Some(g) =>
+        g.wait_k(fn(_ : effect::Exit[Unit]) -> Unit {
+          self.closed_whole += 1
+          if self.fail_close {
+            k(effect::Exit::Failed(effect::EffectError::Custom("EBADF")))
+          } else {
+            k(effect::Exit::Succeeded(()))
+          }
+        })
+        None => {
+          self.closed_whole += 1
+          if self.fail_close {
+            k(effect::Exit::Failed(effect::EffectError::Custom("EBADF")))
+          } else {
+            k(effect::Exit::Succeeded(()))
+          }
+        }
+      }
+    },
+  )
+}
+
+fn run_f(rt : effect::Runtime, f : ((effect::Exit[Unit]) -> Unit) -> Unit) -> effect::Fiber[Unit] {
+  let fiber = rt.fork(f)
+  let _ = rt.run_ready()
+  fiber
+}
+
+fn n_bytes_eq(a : Bytes, b : Bytes) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn read_all_k(s : Socket, acc : Array[Bytes], k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  s.read_k(fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(Some(b)) => {
+        acc.push(b)
+        read_all_k(s, acc, k)
+      }
+      effect::Exit::Succeeded(None) => k(effect::Exit::Succeeded(()))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+test "peer end read then own end sent: closed once" {
+  let rt = effect::Runtime::new()
+  let w = Wire::new()
+  let s = w.socket()
+  w.send(Piece::Chunk("hi".to_bytes()))
+  w.send(Piece::End)
+  let got : Array[Bytes] = []
+  let _ = run_f(rt, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { read_all_k(s, got, k) })
+  debug_assert(got.length() == 1 && n_bytes_eq(got[0], "hi".to_bytes()), "read hi")
+  debug_assert(w.closes == 0 && !s.is_closed(), "half closed")
+  let _ = run_f(rt, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    s.write_k("back".to_bytes(), fn(_ : effect::Exit[Unit]) -> Unit {
+      s.end_write_k(fn(_ : effect::Exit[Unit]) -> Unit {
+        s.end_write_k(k)
+      })
+    })
+  })
+  debug_assert(w.written.length() == 1 && n_bytes_eq(w.written[0], "back".to_bytes()), "written back")
+  debug_assert(w.ended == 1 && w.closes == 1 && s.is_closed(), "closed once")
+  let mut after_none = false
+  let _ = run_f(rt, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    s.destroy_k(fn(_ : effect::Exit[Unit]) -> Unit {
+      s.read_k(fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(None) => after_none = true
+          _ => ()
+        }
+        k(effect::Exit::Succeeded(()))
+      })
+    })
+  })
+  debug_assert(after_none && w.closes == 1 && rt.defects.length() == 0, "still closed once")
+}
+
+test "own end sent then peer end read, and write after close fails" {
+  let rt = effect::Runtime::new()
+  let w = Wire::new()
+  let s = w.socket()
+  let said : Array[String] = []
+  let _ = run_f(rt, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    s.end_write_k(fn(_ : effect::Exit[Unit]) -> Unit {
+      s.write_k("late".to_bytes(), fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Failed(e) => said.push(effect::effect_error_to_string(e))
+          _ => ()
+        }
+        k(effect::Exit::Succeeded(()))
+      })
+    })
+  })
+  debug_assert(w.ended == 1 && w.written.length() == 0 && w.closes == 0, "half closed write")
+  debug_assert(said.length() == 1 && said[0].contains("the socket is closed"), "SocketClosed")
+  let mut ended = false
+  let _ = run_f(rt, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    s.read_k(fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(None) => ended = true
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  debug_assert(!ended, "waiting for peer")
+  w.send(Piece::End)
+  let _ = rt.run_ready()
+  debug_assert(ended && w.closes == 1 && s.is_closed() && rt.defects.length() == 0, "closed on peer end")
+}
+
+test "read, write, or end_write failing closes once; destroy uninterruptible" {
+  let rt = effect::Runtime::new()
+  let rw = Wire::new()
+  let rs = rw.socket()
+  rw.send(Piece::Broken("connection reset"))
+  let ww = Wire::new()
+  let ws = ww.socket()
+  ww.fail_write = true
+  let ew = Wire::new()
+  let es = ew.socket()
+  ew.fail_end = true
+  let errs : Array[Int] = []
+  let _ = run_f(rt, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    rs.read_k(fn(e1 : effect::Exit[Option[Bytes]]) -> Unit {
+      match e1 {
+        effect::Exit::Failed(_) => errs.push(1)
+        _ => ()
+      }
+      ws.write_k("x".to_bytes(), fn(e2 : effect::Exit[Unit]) -> Unit {
+        match e2 {
+          effect::Exit::Failed(_) => errs.push(2)
+          _ => ()
+        }
+        es.end_write_k(fn(e3 : effect::Exit[Unit]) -> Unit {
+          match e3 {
+            effect::Exit::Failed(_) => errs.push(3)
+            _ => ()
+          }
+          k(effect::Exit::Succeeded(()))
+        })
+      })
+    })
+  })
+  debug_assert(errs.length() == 3 && rw.closes == 1 && ww.closes == 1 && ew.closes == 1, "all closed once")
+
+  // Destroy interrupted runs close whole
+  let dw = Wire::new()
+  let gate : effect::Deferred[Unit] = effect::Deferred::new()
+  dw.gate = Some(gate)
+  let ds = dw.socket()
+  let destroying = run_f(rt, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { ds.destroy_k(k) })
+  debug_assert(dw.closes == 1 && dw.closed_whole == 0, "waiting in close")
+  destroying.interrupt()
+  let _ = rt.run_ready()
+  debug_assert(dw.closed_whole == 0, "uninterruptible")
+  let _ = gate.succeed(())
+  let _ = rt.run_ready()
+  debug_assert(destroying.is_done() && dw.closes == 1 && dw.closed_whole == 1 && rt.defects.length() == 0, "closed whole")
+}
+
+test "Listener retries transient errors, stops on fatal or close" {
+  let rt = effect::Runtime::new()
+  let mut calls = 0
+  let coming : effect::Queue[Option[Int]] = effect::Queue::unbounded()
+  let listener : Listener[Int] = Listener::new(
+    fn(k : (effect::Exit[Option[Int]]) -> Unit) -> Unit {
+      calls += 1
+      if calls <= 3 {
+        k(effect::Exit::Failed(effect::EffectError::Custom("EMFILE")))
+        return
+      }
+      coming.take_k(k)
+    },
+    fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { k(effect::Exit::Succeeded(())) },
+  )
+  let errors : Array[String] = []
+  let served : Array[Int] = []
+  let serving = run_f(rt, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    listener.serve_k(
+      rt.root(),
+      fn(conn : Int, ck : (effect::Exit[Unit]) -> Unit) -> Unit {
+        if conn == 2 {
+          ck(effect::Exit::Failed(effect::EffectError::Custom("served badly")))
+        } else {
+          served.push(conn)
+          ck(effect::Exit::Succeeded(()))
+        }
+      },
+      k,
+      on_error=fn(e : effect::EffectError) -> Unit { errors.push(effect::effect_error_to_string(e)) },
+    )
+  })
+  debug_assert(errors.length() == 1 && calls == 1, "first err")
+  rt.advance(99)
+  let _ = rt.run_ready()
+  debug_assert(calls == 1, "not yet 100ms")
+  rt.advance(1)
+  let _ = rt.run_ready()
+  debug_assert(calls == 2, "retry 2")
+  rt.advance(100)
+  let _ = rt.run_ready()
+  rt.advance(100)
+  let _ = rt.run_ready()
+  debug_assert(calls == 4 && errors.length() == 3, "3 transient retries")
+  let _ = coming.try_offer(Some(1))
+  let _ = coming.try_offer(Some(2))
+  let _ = coming.try_offer(Some(3))
+  let _ = rt.run_ready()
+  debug_assert(served.length() == 2 && served[0] == 1 && served[1] == 3 && errors.length() == 4, "served 1 and 3")
+  let _ = coming.try_offer(None)
+  let _ = rt.run_ready()
+  debug_assert(serving.is_done() && rt.defects.length() == 0, "done on None")
+}
+
+test "pipe_duplex carries both ways, handles break, write failure, and interrupt across seeds" {
+  effect::for_seeds(20, fn(seed : Int) -> Option[String] {
+    let rt = effect::Runtime::new_seeded(seed)
+    let rng = effect::Rng::new(seed)
+    let wa = Wire::new()
+    let wb = Wire::new()
+    let pipe = run_f(rt, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      pipe_duplex_k(wa.socket(), wb.socket(), k)
+    })
+    let a_sends = [Piece::Chunk("a1".to_bytes()), Piece::Chunk("a2".to_bytes()), Piece::End]
+    let b_sends = [Piece::Chunk("b1".to_bytes()), Piece::End]
+    let mut i = 0
+    let mut j = 0
+    while i < a_sends.length() || j < b_sends.length() {
+      if j >= b_sends.length() || (i < a_sends.length() && rng.below(2) == 0) {
+        wa.send(a_sends[i])
+        i += 1
+      } else {
+        wb.send(b_sends[j])
+        j += 1
+      }
+      let _ = rt.run_ready()
+    }
+    if !pipe.is_done() || wb.written.length() != 2 || wa.written.length() != 1 ||
+    wa.ended != 1 || wb.ended != 1 || wa.closes != 1 || wb.closes != 1 || rt.defects.length() != 0 {
+      return Some("pipe normal failed")
+    }
+    None
+  })
+
+  // Mid-stream write failure and peer RST close both once
+  let rt2 = effect::Runtime::new()
+  let wa2 = Wire::new()
+  let wb2 = Wire::new()
+  wb2.fail_write_after = 2
+  let pipe2 = run_f(rt2, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    pipe_duplex_k(wa2.socket(), wb2.socket(), k)
+  })
+  wa2.send(Piece::Chunk("one".to_bytes()))
+  wa2.send(Piece::Chunk("two".to_bytes()))
+  wa2.send(Piece::Chunk("three".to_bytes()))
+  let _ = rt2.run_ready()
+  debug_assert(pipe2.is_done() && wb2.written.length() == 2 && wa2.closes == 1 && wb2.closes == 1 && rt2.defects.length() == 0, "epipe closes both")
+
+  // Interrupt closes both once
+  let rt3 = effect::Runtime::new()
+  let wa3 = Wire::new()
+  let wb3 = Wire::new()
+  let pipe3 = run_f(rt3, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    pipe_duplex_k(wa3.socket(), wb3.socket(), k)
+  })
+  wa3.send(Piece::Chunk("a1".to_bytes()))
+  wb3.send(Piece::Chunk("b1".to_bytes()))
+  wb3.send(Piece::End)
+  let _ = rt3.run_ready()
+  debug_assert(!pipe3.is_done(), "still running")
+  let mut interrupted = false
+  let _ = run_f(rt3, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    pipe3.interrupt_and_wait_k(fn(ex : effect::Exit[effect::Exit[Unit]]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(effect::Exit::Interrupted) => interrupted = true
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  debug_assert(interrupted && wa3.closes == 1 && wb3.closes == 1 && rt3.defects.length() == 0, "interrupt closes both")
+}

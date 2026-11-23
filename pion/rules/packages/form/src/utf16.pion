@@ -1,0 +1,202 @@
+///| UTF-16 / WTF-8 string utilities and MoonBit-compatible string ordering.
+
+///| Encode a code point (including lone surrogates 0xD800..0xDFFF as WTF-8) into a StringBuilder.
+pub fn write_wtf8(sb : StringBuilder, cp : Int) -> Unit {
+  if cp < 0x80 {
+    sb.write_byte(cp.to_byte())
+  } else if cp < 0x800 {
+    sb.write_byte((0xC0 | (cp >> 6)).to_byte())
+    sb.write_byte((0x80 | (cp & 0x3F)).to_byte())
+  } else if cp < 0x10000 {
+    sb.write_byte((0xE0 | (cp >> 12)).to_byte())
+    sb.write_byte((0x80 | ((cp >> 6) & 0x3F)).to_byte())
+    sb.write_byte((0x80 | (cp & 0x3F)).to_byte())
+  } else {
+    sb.write_byte((0xF0 | (cp >> 18)).to_byte())
+    sb.write_byte((0x80 | ((cp >> 12) & 0x3F)).to_byte())
+    sb.write_byte((0x80 | ((cp >> 6) & 0x3F)).to_byte())
+    sb.write_byte((0x80 | (cp & 0x3F)).to_byte())
+  }
+}
+
+///| Number of UTF-16 code units in a UTF-8/WTF-8 Pion String (matches JS `s.length`).
+pub fn utf16_len(s : String) -> Int {
+  let n = s.length()
+  let mut i = 0
+  let mut units = 0
+  while i < n {
+    let b = s.code_unit_at(i)
+    if b < 0x80 {
+      i = i + 1
+      units = units + 1
+    } else if b < 0xE0 {
+      i = i + 2
+      units = units + 1
+    } else if b < 0xF0 {
+      i = i + 3
+      units = units + 1
+    } else {
+      i = i + 4
+      units = units + 2
+    }
+  }
+  units
+}
+
+///| Decode a UTF-8/WTF-8 Pion String into an array of UTF-16 code units (0..=0xFFFF).
+pub fn utf16_units(s : String) -> Array[Int] {
+  let n = s.length()
+  let out : Array[Int] = []
+  let mut i = 0
+  while i < n {
+    let b0 = s.code_unit_at(i)
+    if b0 < 0x80 {
+      out.push(b0)
+      i = i + 1
+    } else if b0 < 0xE0 && i + 1 < n {
+      let b1 = s.code_unit_at(i + 1)
+      let cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F)
+      out.push(cp)
+      i = i + 2
+    } else if b0 < 0xF0 && i + 2 < n {
+      let b1 = s.code_unit_at(i + 1)
+      let b2 = s.code_unit_at(i + 2)
+      let cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)
+      out.push(cp)
+      i = i + 3
+    } else if i + 3 < n {
+      let b1 = s.code_unit_at(i + 1)
+      let b2 = s.code_unit_at(i + 2)
+      let b3 = s.code_unit_at(i + 3)
+      let cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
+      let v = cp - 0x10000
+      out.push(0xD800 + (v >> 10))
+      out.push(0xDC00 + (v & 0x3FF))
+      i = i + 4
+    } else {
+      out.push(b0)
+      i = i + 1
+    }
+  }
+  out
+}
+
+///| Lexicographical comparison by UTF-16 code unit (matches JS default sort and `form.mbt` `code_units`).
+pub fn utf16_cmp(a : String, b : String) -> Int {
+  let ua = utf16_units(a)
+  let ub = utf16_units(b)
+  let na = ua.length()
+  let nb = ub.length()
+  let n = if na < nb { na } else { nb }
+  let mut i = 0
+  while i < n {
+    let x = ua[i]
+    let y = ub[i]
+    if x != y {
+      return x - y
+    }
+    i = i + 1
+  }
+  na - nb
+}
+
+///| MoonBit `String::compare`: shorter UTF-16 length first, then UTF-16 code unit order.
+pub fn mbt_str_cmp(a : String, b : String) -> Int {
+  let la = utf16_len(a)
+  let lb = utf16_len(b)
+  if la != lb {
+    return if la < lb { -1 } else { 1 }
+  }
+  let c = utf16_cmp(a, b)
+  if c < 0 {
+    -1
+  } else if c > 0 {
+    1
+  } else {
+    0
+  }
+}
+
+///| MoonBit tuple2 string comparison.
+pub fn mbt_pair_cmp(a : (String, String), b : (String, String)) -> Int {
+  let c0 = mbt_str_cmp(a.0, b.0)
+  if c0 != 0 {
+    c0
+  } else {
+    mbt_str_cmp(a.1, b.1)
+  }
+}
+
+///| MoonBit tuple3 string comparison.
+pub fn mbt_triple_cmp(a : (String, String, String), b : (String, String, String)) -> Int {
+  let c0 = mbt_str_cmp(a.0, b.0)
+  if c0 != 0 {
+    return c0
+  }
+  let c1 = mbt_str_cmp(a.1, b.1)
+  if c1 != 0 {
+    c1
+  } else {
+    mbt_str_cmp(a.2, b.2)
+  }
+}
+
+///| In-place merge sort for `Array[String]` with a custom comparator.
+pub fn sort_strings_by(xs : Array[String], cmp : (String, String) -> Int) -> Unit {
+  let n = xs.length()
+  if n <= 1 {
+    return
+  }
+  let tmp : Array[String] = []
+  let mut k = 0
+  while k < n {
+    tmp.push(xs[k])
+    k = k + 1
+  }
+  let mut width = 1
+  while width < n {
+    let mut left = 0
+    while left < n {
+      let mid = if left + width < n { left + width } else { n }
+      let right = if left + width * 2 < n { left + width * 2 } else { n }
+      let mut i = left
+      let mut j = mid
+      let mut out = left
+      while i < mid && j < right {
+        if cmp(xs[i], xs[j]) <= 0 {
+          tmp[out] = xs[i]
+          i = i + 1
+        } else {
+          tmp[out] = xs[j]
+          j = j + 1
+        }
+        out = out + 1
+      }
+      while i < mid {
+        tmp[out] = xs[i]
+        i = i + 1
+        out = out + 1
+      }
+      while j < right {
+        tmp[out] = xs[j]
+        j = j + 1
+        out = out + 1
+      }
+      let mut p = left
+      while p < right {
+        xs[p] = tmp[p]
+        p = p + 1
+      }
+      left = left + width * 2
+    }
+    width = width * 2
+  }
+}
+
+pub fn sort_strings_utf16(xs : Array[String]) -> Unit {
+  sort_strings_by(xs, utf16_cmp)
+}
+
+pub fn sort_strings_mbt(xs : Array[String]) -> Unit {
+  sort_strings_by(xs, mbt_str_cmp)
+}

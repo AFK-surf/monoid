@@ -1,0 +1,296 @@
+// Peer-reported direct addresses (LAN / tailnet) and caller-supplied known addresses.
+
+import "effect"
+import "base_codec"
+import "wire"
+
+pub let addresses_key : String = "peer-addresses"
+
+let most_addrs : Int = 8
+
+struct Said {
+  lan : Array[String]
+  tailnet : Array[String]
+}
+
+struct Known {
+  peer : String
+  relays : Array[String]
+  ips : Array[String]
+}
+
+fn is_ip_port(text : String) -> Bool {
+  let n = text.length()
+  let mut part = 0
+  let mut digits = 0
+  for i in 0..<n {
+    let c = text.code_unit_at(i)
+    if c >= 48 && c <= 57 {
+      digits += 1
+      let limit = if part == 4 { 5 } else { 3 }
+      if digits > limit {
+        return false
+      }
+    } else if (c == 46 && part < 3) || (c == 58 && part == 3) {
+      if digits == 0 {
+        return false
+      }
+      part += 1
+      digits = 0
+    } else {
+      return false
+    }
+  }
+  part == 4 && digits > 0
+}
+
+fn addrs_of(j : base_codec::Json, key : String) -> Array[String] {
+  let items = match json_get_arr(j, key) {
+    Some(a) => a
+    None => return []
+  }
+  let out : Array[String] = []
+  for i in 0..<items.length() {
+    match items[i] {
+      base_codec::Json::Str(text) =>
+      if is_ip_port(text) {
+        out.push(text)
+        if out.length() == most_addrs {
+          break
+        }
+      }
+      _ => ()
+    }
+  }
+  out
+}
+
+fn said_of(kept : Option[Bytes]) -> Map[String, Said] {
+  let out : Map[String, Said] = Map::new()
+  let bytes = match kept {
+    Some(b) => b
+    None => return out
+  }
+  let text = wire::utf8_decode_lossy(bytes)
+  let j = match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => return out
+  }
+  let fields = match j {
+    base_codec::Json::Obj(fs) => fs
+    _ => return out
+  }
+  for i in 0..<fields.length() {
+    let (k, v) = fields[i]
+    let lan_a = addrs_of(v, "lan")
+    let tn_a = addrs_of(v, "tailnet")
+    if lan_a.length() > 0 || tn_a.length() > 0 {
+      out.set(k, Said::{ lan: lan_a, tailnet: tn_a })
+    }
+  }
+  out
+}
+
+fn said_bytes(said : Map[String, Said]) -> Bytes {
+  let fields : Array[(String, base_codec::Json)] = []
+  let ks = said.keys()
+  for i in 0..<ks.length() {
+    let k = ks[i]
+    match said.get(k) {
+      Some(one) =>
+      fields.push(
+        (k, base_codec::json_obj([("lan", json_strings(one.lan)), ("tailnet", json_strings(one.tailnet))])),
+      )
+      None => ()
+    }
+  }
+  base_codec::json_stringify(base_codec::json_obj(fields)).to_bytes()
+}
+
+fn Mesh::straight(self : Mesh, place : Place) -> Array[String] {
+  match self.said.get(place.key()) {
+    None => []
+    Some(s) => {
+      let out : Array[String] = []
+      if !self.is_off(place, "lan") {
+        for i in 0..<s.lan.length() {
+          out.push(s.lan[i])
+        }
+      }
+      if !self.is_off(place, "tailnet") {
+        for i in 0..<s.tailnet.length() {
+          out.push(s.tailnet[i])
+        }
+      }
+      out
+    }
+  }
+}
+
+fn Mesh::ips(self : Mesh, place : Place) -> Array[String] {
+  if self.options.relay_only {
+    []
+  } else {
+    self.straight(place)
+  }
+}
+
+pub fn Mesh::lan(self : Mesh, peer : String, link_scope : String = "") -> Array[String] {
+  match self.current(peer, link_scope=link_scope) {
+    Some(link) =>
+    if link.ended().is_none() && link.answer.is_some() {
+      return str_array_copy(link.lan_addrs)
+    }
+    None => ()
+  }
+  let p = Place::{ link_scope: link_scope, peer: peer }
+  match self.said.get(p.key()) {
+    Some(s) => str_array_copy(s.lan)
+    None => []
+  }
+}
+
+pub fn Mesh::tailnet(self : Mesh, peer : String, link_scope : String = "") -> Array[String] {
+  match self.current(peer, link_scope=link_scope) {
+    Some(link) =>
+    if link.ended().is_none() && link.answer.is_some() {
+      return str_array_copy(link.tailnet_addrs)
+    }
+    None => ()
+  }
+  let p = Place::{ link_scope: link_scope, peer: peer }
+  match self.said.get(p.key()) {
+    Some(s) => str_array_copy(s.tailnet)
+    None => []
+  }
+}
+
+fn Mesh::heard(self : Mesh, place : Place, link : Link) -> Unit {
+  if self.closed || !self.links.contains(place.map_key()) {
+    return
+  }
+  match link.pin {
+    Some(p) =>
+    if p == "lan" || p == "tailnet" {
+      return
+    }
+    None => ()
+  }
+  let ws = self.ways_at(place)
+  let mut found = false
+  for i in 0..<ws.all.length() {
+    if ws.all[i].link.uid == link.uid {
+      found = true
+      break
+    }
+  }
+  if !found {
+    return
+  }
+  let key = place.key()
+  let same = match self.said.get(key) {
+    Some(s) => str_array_eq(s.lan, link.lan_addrs) && str_array_eq(s.tailnet, link.tailnet_addrs)
+    None => link.lan_addrs.length() == 0 && link.tailnet_addrs.length() == 0
+  }
+  if !same {
+    if link.lan_addrs.length() > 0 || link.tailnet_addrs.length() > 0 {
+      self.said.set(key, Said::{ lan: str_array_copy(link.lan_addrs), tailnet: str_array_copy(link.tailnet_addrs) })
+    } else {
+      self.said.remove(key)
+    }
+    self.keep(self.addresses, fn() -> Bytes { said_bytes(self.said) })
+  }
+  if !self.main_on(place) {
+    self.dial_at_if(place, "lan", link.credentials)
+    self.dial_at_if(place, "tailnet", link.credentials)
+    return
+  }
+  let ips = self.ips(place)
+  if ips.length() > 0 && !self.rebinding {
+    self.tell_addr(self.endpoint, place.peer, self.relays_for(place), ips)
+  }
+}
+
+fn Mesh::tell_addr(
+  self : Mesh,
+  endpoint : base_codec::Json,
+  peer : String,
+  relays : Array[String],
+  ips : Array[String],
+) -> Unit {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(peer)),
+    ("relays", json_strings(relays)),
+  ]
+  if ips.length() > 0 {
+    fields.push(("ips", json_strings(ips)))
+  }
+  let _ = self.sh.ask("iroh.addAddr", base_codec::json_obj([("id", endpoint), ("addr", base_codec::json_obj(fields))]))
+}
+
+pub fn Mesh::add_addr(
+  self : Mesh,
+  peer : String,
+  relays : Array[String] = [],
+  ips : Array[String] = [],
+) -> Unit {
+  if self.closed {
+    return
+  }
+  let known = Known::{ peer: peer, relays: str_array_copy(relays), ips: str_array_copy(ips) }
+  let mut replaced = false
+  for i in 0..<self.known.length() {
+    if self.known[i].peer == peer {
+      self.known[i] = known
+      replaced = true
+      break
+    }
+  }
+  if !replaced {
+    self.known.push(known)
+  }
+  if !self.rebinding {
+    self.tell_known(self.endpoint, known)
+  }
+}
+
+fn Mesh::tell_known(self : Mesh, endpoint : base_codec::Json, known : Known) -> Unit {
+  let use_ips : Array[String] = if self.options.relay_only { [] } else { known.ips }
+  self.tell_addr(endpoint, known.peer, known.relays, use_ips)
+}
+
+fn Mesh::replay(self : Mesh, endpoint : base_codec::Json) -> Unit {
+  for i in 0..<self.known.length() {
+    self.tell_known(endpoint, self.known[i])
+  }
+}
+
+fn Mesh::note_dial(self : Mesh, place : Place, unanswered : Bool) -> Unit {
+  if !unanswered {
+    self.unanswered_at.remove(place.map_key())
+    return
+  }
+  let ips = self.ips(place)
+  if ips.length() > 0 {
+    self.unanswered_at.set(place.map_key(), str_join(ips, " "))
+  }
+}
+
+fn Mesh::unanswered_straight(self : Mesh, place : Place) -> Bool {
+  let ips = self.ips(place)
+  if ips.length() == 0 {
+    return false
+  }
+  match self.unanswered_at.get(place.map_key()) {
+    Some(s) => s == str_join(ips, " ")
+    None => false
+  }
+}
+
+pub fn Link::lan(self : Link) -> Array[String] {
+  str_array_copy(self.lan_addrs)
+}
+
+pub fn Link::tailnet(self : Link) -> Array[String] {
+  str_array_copy(self.tailnet_addrs)
+}

@@ -1,0 +1,34 @@
+// Pion-side bridge types and wire helpers paired with `native/core_pion.c`
+// (`apps/mbui/src/host/core_api.h` 6-function C ABI).
+
+import "base_codec"
+import "protocol"
+
+pub struct BridgeConfig {
+  pub data_dir : String
+  pub cloud_origin : String
+  pub beta : Bool
+}
+
+pub struct AbiFrame {
+  pub json : String
+  pub bytes : Option[Bytes]
+}
+
+pub fn make_fatal_frame(reason : String) -> AbiFrame {
+  let (json, bytes) = protocol::encode_core_event(protocol::CoreEvent::Fatal(reason))
+  AbiFrame::{ json: json, bytes: bytes }
+}
+
+pub fn frame_from_event(ev : protocol::CoreEvent) -> AbiFrame {
+  let (json, bytes) = protocol::encode_core_event(ev)
+  AbiFrame::{ json: json, bytes: bytes }
+}
+
+pub fn encode_config_json(cfg : BridgeConfig) -> String {
+  base_codec::json_stringify(base_codec::json_obj([
+    ("dataDir", base_codec::json_str(cfg.data_dir)),
+    ("cloudOrigin", base_codec::json_str(cfg.cloud_origin)),
+    ("beta", base_codec::json_bool(cfg.beta)),
+  ]))
+}

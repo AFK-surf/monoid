@@ -1,0 +1,831 @@
+// Endpoint binding, relay retuning, incoming connections, and Mesh::connect.
+
+import "effect"
+import "base_codec"
+import "wire"
+import "shell"
+
+pub struct RelayEntry {
+  pub entry : String
+  pub relay : String
+}
+
+pub fn RelayEntry::new(entry : String, relay : String) -> RelayEntry {
+  RelayEntry::{ entry: entry, relay: relay }
+}
+
+pub fn RelayEntry::eq(self : RelayEntry, other : RelayEntry) -> Bool {
+  self.entry == other.entry && self.relay == other.relay
+}
+
+fn relay_entries_eq(a : Array[RelayEntry], b : Array[RelayEntry]) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if !a[i].eq(b[i]) {
+      return false
+    }
+  }
+  true
+}
+
+fn relay_entries_copy(a : Array[RelayEntry]) -> Array[RelayEntry] {
+  let out : Array[RelayEntry] = []
+  for i in 0..<a.length() {
+    out.push(a[i])
+  }
+  out
+}
+
+pub struct Binding {
+  pub lookup : Bool
+  pub takes : Array[String]
+  pub entries : Array[RelayEntry]
+}
+
+pub fn Binding::none() -> Binding {
+  Binding::{ lookup: false, takes: [], entries: [] }
+}
+
+pub let first_ms : Int = 30000
+
+fn entries_json(entries : Array[RelayEntry]) -> base_codec::Json {
+  let arr : Array[base_codec::Json] = []
+  for i in 0..<entries.length() {
+    arr.push(
+      base_codec::json_obj([
+        ("entry", base_codec::json_str(entries[i].entry)),
+        ("relay", base_codec::json_str(entries[i].relay)),
+      ]),
+    )
+  }
+  base_codec::json_arr(arr)
+}
+
+fn bind_k(
+  sh : shell::Shell,
+  relays : Array[String],
+  relay_only : Bool,
+  binding : Binding,
+  entries : Array[RelayEntry],
+  secret : Bytes,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("relayUrls", json_strings(relays)),
+    ("relayOnly", base_codec::json_bool(relay_only)),
+    ("lookup", base_codec::json_bool(binding.lookup && !relay_only && relays.length() > 0)),
+  ]
+  if binding.takes.length() > 0 {
+    let alpns : Array[base_codec::Json] = []
+    for i in 0..<binding.takes.length() {
+      alpns.push(base_codec::json_str(hex_str(binding.takes[i])))
+    }
+    fields.push(("alpns", base_codec::json_arr(alpns)))
+  }
+  if entries.length() > 0 {
+    fields.push(("relayEntries", entries_json(entries)))
+  }
+  sh.call_k(
+    "iroh.bind",
+    base_codec::json_obj(fields),
+    fn(ex : effect::Exit[shell::Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(under("bind_failed", e)))
+        effect::Exit::Succeeded(ans) =>
+        match base_codec::json_get(ans.json, "id") {
+          Some(endpoint) => k(effect::Exit::Succeeded(endpoint))
+          None => k(effect::Exit::Failed(failed("bind_failed")))
+        }
+      }
+    },
+    bytes=Some(secret),
+  )
+}
+
+pub fn Mesh::retune(
+  self : Mesh,
+  relays : Array[String],
+  entries : Array[RelayEntry] = [],
+  reason : String = "closed",
+) -> Unit {
+  if self.closed {
+    return
+  }
+  let same = str_array_eq(self.relays, relays)
+  if same && relay_entries_eq(self.entries, entries) {
+    return
+  }
+  let next_entries = relay_entries_copy(entries)
+  self.entries = next_entries
+  self.entries_ver += 1
+  let ver = self.entries_ver
+  if !same {
+    self.relays = str_array_copy(relays)
+    self.relays_ver += 1
+    self.rehome(reason)
+    return
+  }
+  let _ = self.fibers.fork_named("mesh entries", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    self.tuning.with_permit_k(
+      fn(pk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        if self.closed || self.entries_ver != ver {
+          pk(effect::Exit::Succeeded(()))
+          return
+        }
+        if self.rebinding {
+          self.retuned = true
+          pk(effect::Exit::Succeeded(()))
+          return
+        }
+        let endpoint = self.endpoint
+        self.sh.call_k(
+          "iroh.setRelayEntries",
+          base_codec::json_obj([("id", endpoint), ("entries", entries_json(next_entries))]),
+          fn(ex : effect::Exit[shell::Answer]) -> Unit {
+            match ex {
+              effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(_) => pk(effect::Exit::Succeeded(()))
+              effect::Exit::Failed(_) => {
+                if !self.closed && self.entries_ver == ver && base_codec::json_eq(self.endpoint, endpoint) {
+                  self.rehome(reason)
+                }
+                pk(effect::Exit::Succeeded(()))
+              }
+            }
+          },
+        )
+      },
+      fk,
+    )
+  })
+}
+
+fn Mesh::rehome(self : Mesh, reason : String) -> Unit {
+  self.retuned = true
+  if self.rebinding {
+    return
+  }
+  let ends : Array[((effect::Exit[Unit]) -> Unit) -> Unit] = []
+  let live_copy : Array[Link] = []
+  for i in 0..<self.live.length() {
+    live_copy.push(self.live[i])
+  }
+  for i in 0..<live_copy.length() {
+    let link = live_copy[i]
+    if !self.is_current(link) {
+      link.close(reason=reason)
+    }
+    ends.push(fn(ek : (effect::Exit[Unit]) -> Unit) -> Unit {
+      link.gone.wait_k(fn(gex : effect::Exit[Closed]) -> Unit {
+        match gex {
+          effect::Exit::Interrupted => ek(effect::Exit::Interrupted)
+          _ => link.answered.wait_k(ek)
+        }
+      })
+    })
+  }
+  let ks = self.links.keys()
+  for i in 0..<ks.length() {
+    match self.links.get(ks[i]) {
+      Some(op) => self.let_go(op.place, reason)
+      None => ()
+    }
+  }
+  let inc_copy : Array[Incoming] = []
+  for i in 0..<self.incomings.length() {
+    inc_copy.push(self.incomings[i])
+  }
+  for i in 0..<inc_copy.length() {
+    let inc = inc_copy[i]
+    inc.close(reason=reason)
+    ends.push(fn(ek : (effect::Exit[Unit]) -> Unit) -> Unit {
+      inc.gone.wait_k(fn(gex : effect::Exit[Closed]) -> Unit {
+        match gex {
+          effect::Exit::Interrupted => ek(effect::Exit::Interrupted)
+          _ => ek(effect::Exit::Succeeded(()))
+        }
+      })
+    })
+  }
+  self.release_pinned()
+  self.rebind(after=ends)
+}
+
+enum Taken {
+  Came(base_codec::Json, String)
+  Ended
+  Failed(effect::EffectError)
+}
+
+struct ComingWait {
+  uid : Int
+  d : effect::Deferred[Taken]
+}
+
+pub struct Incoming {
+  pub uid : Int
+  pub peer : String
+  pub alpn : String
+  sh : shell::Shell
+  conn : base_codec::Json
+  gone : effect::Deferred[Closed]
+  mut asked : Bool
+  fibers : effect::EffectScope
+  accepting : Accepting
+}
+
+fn Mesh::incoming_loop(self : Mesh, k : (effect::Exit[Option[Incoming]]) -> Unit) -> Unit {
+  if self.closed {
+    k(effect::Exit::Succeeded(None))
+    return
+  }
+  if self.rebinding {
+    self.hold_k(None, fn(hex : effect::Exit[Unit]) -> Unit {
+      match hex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        _ => self.incoming_loop(k)
+      }
+    })
+    return
+  }
+  let cw = match self.coming {
+    Some(c) => c
+    None => self.await_coming()
+  }
+  cw.d.wait_k(fn(tex : effect::Exit[Taken]) -> Unit {
+    match tex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(taken) => self.incoming_after_wait(cw, taken, k)
+    }
+  })
+}
+
+fn Mesh::incoming_after_wait(
+  self : Mesh,
+  cw : ComingWait,
+  taken : Taken,
+  k : (effect::Exit[Option[Incoming]]) -> Unit,
+) -> Unit {
+  if !self.closed && self.rebinding {
+    self.hold_k(None, fn(hex : effect::Exit[Unit]) -> Unit {
+      match hex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        _ => self.incoming_after_wait(cw, taken, k)
+      }
+    })
+    return
+  }
+  let still = match self.coming {
+    Some(kept) => kept.uid == cw.uid
+    None => false
+  }
+  if !still {
+    self.incoming_loop(k)
+    return
+  }
+  self.coming = None
+  match taken {
+    Taken::Came(conn, alpn) => k(effect::Exit::Succeeded(Some(self.took(conn, alpn))))
+    Taken::Ended => k(effect::Exit::Succeeded(None))
+    Taken::Failed(e) => k(effect::Exit::Failed(MeshError::new("host", text_of(e), "").to_effect_error()))
+  }
+}
+
+pub fn Mesh::incoming_k(self : Mesh, k : (effect::Exit[Option[Incoming]]) -> Unit) -> Unit {
+  if self.binding.takes.length() == 0 {
+    k(effect::Exit::Succeeded(None))
+    return
+  }
+  self.taking.with_permit_k(fn(pk : (effect::Exit[Option[Incoming]]) -> Unit) -> Unit {
+    self.incoming_loop(pk)
+  }, k)
+}
+
+fn Mesh::await_coming(self : Mesh) -> ComingWait {
+  let uid = next_uid()
+  let d : effect::Deferred[Taken] = effect::Deferred::new()
+  let cw = ComingWait::{ uid: uid, d: d }
+  self.coming = Some(cw)
+  let _ = self.fibers.fork_named("mesh take", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    self.sh.call_k("iroh.accept", base_codec::json_obj([("id", self.endpoint)]), fn(ex : effect::Exit[shell::Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => {
+          let _ = d.succeed(Taken::Failed(e))
+          fk(effect::Exit::Succeeded(()))
+        }
+        effect::Exit::Succeeded(ans) => {
+          match (base_codec::json_get(ans.json, "id"), json_get_str(ans.json, "alpn")) {
+            (Some(conn), Some(alpn)) => {
+              let kept = match self.coming {
+                Some(now) => now.uid == uid
+                None => false
+              }
+              if kept {
+                let _ = d.succeed(Taken::Came(conn, alpn))
+              } else {
+                self.sh.tell(
+                  "conn.close",
+                  base_codec::json_obj([
+                    ("id", conn),
+                    ("code", base_codec::json_int(0)),
+                    ("reason", base_codec::json_str("closed")),
+                    ("forget", base_codec::json_bool(true)),
+                  ]),
+                )
+              }
+            }
+            _ => {
+              let _ = d.succeed(Taken::Ended)
+            }
+          }
+          fk(effect::Exit::Succeeded(()))
+        }
+      }
+    })
+  })
+  cw
+}
+
+fn Mesh::took(self : Mesh, conn : base_codec::Json, alpn_hex : String) -> Incoming {
+  let peer = match self.sh.ask("conn.remoteId", base_codec::json_obj([("id", conn)])) {
+    shell::AskResult::Ok(base_codec::Json::Str(id)) => id
+    _ => ""
+  }
+  let mut alpn = alpn_hex
+  for i in 0..<self.binding.takes.length() {
+    if hex_str(self.binding.takes[i]) == alpn_hex {
+      alpn = self.binding.takes[i]
+      break
+    }
+  }
+  self.took_conn(conn, peer, alpn)
+}
+
+fn Mesh::took_conn(self : Mesh, conn : base_codec::Json, peer : String, alpn : String) -> Incoming {
+  let sh = self.sh
+  let inc = Incoming::{
+    uid: next_uid(),
+    peer: peer,
+    alpn: alpn,
+    sh: sh,
+    conn: conn,
+    gone: effect::Deferred::new(),
+    asked: false,
+    fibers: self.fibers,
+    accepting: Accepting::new(),
+  }
+  self.incomings.push(inc)
+  let _ = self.fibers.fork_named("mesh taken", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sh.call_k("conn.closed", base_codec::json_obj([("id", conn)]), fn(ex : effect::Exit[shell::Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+        other => {
+          let closed = match other {
+            effect::Exit::Succeeded(ans) =>
+            match closed_of(ans.json) {
+              Some(c) => c
+              None => Closed::{ kind: "other", reason: "" }
+            }
+            effect::Exit::Failed(e) => Closed::{ kind: "other", reason: text_of(e) }
+            effect::Exit::Interrupted => Closed::{ kind: "other", reason: "" }
+          }
+          let _ = inc.gone.succeed(closed)
+          inc.accepting.drop_kept(sh)
+          sh.tell(
+            "conn.close",
+            base_codec::json_obj([
+              ("id", conn),
+              ("code", base_codec::json_int(0)),
+              ("reason", base_codec::json_str("closed")),
+              ("forget", base_codec::json_bool(true)),
+            ]),
+          )
+          let kept : Array[Incoming] = []
+          for i in 0..<self.incomings.length() {
+            if self.incomings[i].uid != inc.uid {
+              kept.push(self.incomings[i])
+            }
+          }
+          self.incomings = kept
+          fk(effect::Exit::Succeeded(()))
+        }
+      }
+    })
+  })
+  inc
+}
+
+fn Mesh::connect_loop_k(
+  self : Mesh,
+  peer : String,
+  alpn : String,
+  ips : Array[String],
+  within : Int,
+  k : (effect::Exit[Incoming]) -> Unit,
+) -> Unit {
+  if self.closed {
+    k(effect::Exit::Failed(failed("closed")))
+    return
+  }
+  if !self.rebinding && (self.stuck || self.retuned) && self.idle() && self.may_rebind() {
+    self.rebind()
+  }
+  if self.rebinding || ((self.stuck || self.retuned) && self.may_rebind() && self.settling()) {
+    self.hold_k(None, fn(hex : effect::Exit[Unit]) -> Unit {
+      match hex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => self.connect_loop_k(peer, alpn, ips, within, k)
+      }
+    })
+    return
+  }
+  let endpoint = self.endpoint
+  self.connect_on_k(endpoint, peer, alpn, ips, within, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      other => {
+        let moved = !self.closed && (self.rebinding || !base_codec::json_eq(self.endpoint, endpoint))
+        match other {
+          effect::Exit::Succeeded(conn) =>
+          if moved {
+            self.sh.tell(
+              "conn.close",
+              base_codec::json_obj([
+                ("id", conn),
+                ("code", base_codec::json_int(0)),
+                ("reason", base_codec::json_str("closed")),
+                ("forget", base_codec::json_bool(true)),
+              ]),
+            )
+            self.connect_loop_k(peer, alpn, ips, within, k)
+          } else {
+            k(effect::Exit::Succeeded(self.took_conn(conn, peer, alpn)))
+          }
+          effect::Exit::Failed(e) =>
+          if moved {
+            self.connect_loop_k(peer, alpn, ips, within, k)
+          } else {
+            k(effect::Exit::Failed(e))
+          }
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      }
+    }
+  })
+}
+
+pub fn Mesh::connect_k(
+  self : Mesh,
+  peer : String,
+  alpn : String,
+  k : (effect::Exit[Incoming]) -> Unit,
+  ips : Array[String] = [],
+  within : Int = connect_timeout_ms,
+) -> Unit {
+  if self.closed {
+    k(effect::Exit::Failed(failed("closed")))
+    return
+  }
+  if !is_id(peer) {
+    k(
+      effect::Exit::Failed(
+        MeshError::new("invalid_params", "a dial names an endpoint id (64 hex), not \"" + peer + "\"", "").to_effect_error(),
+      ),
+    )
+    return
+  }
+  if alpn == "" {
+    k(effect::Exit::Failed(MeshError::new("invalid_params", "a dial names its protocol", "").to_effect_error()))
+    return
+  }
+  self.connect_loop_k(peer, alpn, str_array_copy(ips), within, k)
+}
+
+fn Mesh::wait_onto_relay_k(
+  self : Mesh,
+  endpoint : base_codec::Json,
+  waited : Int,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if waited >= onto_max_ms || self.on_a_relay(endpoint) {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  effect::sleep_k(onto_recheck_ms, fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(_) => self.wait_onto_relay_k(endpoint, waited + onto_recheck_ms, k)
+      other => k(other)
+    }
+  })
+}
+
+fn Mesh::wait_closed_k(self : Mesh, k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+  if self.closed {
+    k(effect::Exit::Failed(failed("closed")))
+    return
+  }
+  self.change.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(_) => self.wait_closed_k(k)
+    }
+  })
+}
+
+struct DialState {
+  mut call : Option[Int64]
+  mut conn : Option[base_codec::Json]
+  mut abandoned : Bool
+}
+
+fn Mesh::connect_on_k(
+  self : Mesh,
+  endpoint : base_codec::Json,
+  peer : String,
+  alpn : String,
+  ips : Array[String],
+  within : Int,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  let sh = self.sh
+  let straight : Array[String] = []
+  let add = fn(more : Array[String]) -> Unit {
+    for i in 0..<more.length() {
+      if !str_array_contains(straight, more[i]) {
+        straight.push(more[i])
+      }
+    }
+  }
+  if !self.options.relay_only {
+    add(ips)
+  }
+  add(self.straight_to(peer))
+  let addr_fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(peer)),
+    ("relays", json_strings(self.relays)),
+  ]
+  if straight.length() > 0 {
+    addr_fields.push(("ips", json_strings(straight)))
+  }
+  let addr = base_codec::json_obj(addr_fields)
+  let st = DialState::{ call: None, conn: None, abandoned: false }
+  self.dialling_main += 1
+  let finish = fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    self.dialling_main -= 1
+    match ex {
+      effect::Exit::Succeeded(conn) =>
+      if self.closed {
+        st.abandoned = true
+        sh.tell(
+          "conn.close",
+          base_codec::json_obj([
+            ("id", conn),
+            ("code", base_codec::json_int(0)),
+            ("reason", base_codec::json_str("closed")),
+            ("forget", base_codec::json_bool(true)),
+          ]),
+        )
+        self.eased()
+        k(effect::Exit::Failed(failed("closed")))
+      } else {
+        self.eased()
+        k(effect::Exit::Succeeded(conn))
+      }
+      other => {
+        st.abandoned = true
+        match st.call {
+          Some(id) => sh.give_up(id)
+          None => ()
+        }
+        match st.conn {
+          Some(conn) =>
+          sh.tell(
+            "conn.close",
+            base_codec::json_obj([
+              ("id", conn),
+              ("code", base_codec::json_int(0)),
+              ("reason", base_codec::json_str("closed")),
+              ("forget", base_codec::json_bool(true)),
+            ]),
+          )
+          None => ()
+        }
+        self.eased()
+        k(other)
+      }
+    }
+  }
+  let dialled : effect::Deferred[base_codec::Json] = effect::Deferred::new()
+  let _ = self.fibers.fork_named("mesh connect", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    if st.abandoned {
+      fk(effect::Exit::Succeeded(()))
+      return
+    }
+    sh.call_k(
+      "iroh.connect",
+      base_codec::json_obj([("id", endpoint), ("addr", addr)]),
+      fn(ex : effect::Exit[shell::Answer]) -> Unit {
+        st.call = None
+        match ex {
+          effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => {
+            let _ = dialled.fail(unreached(e))
+            fk(effect::Exit::Succeeded(()))
+          }
+          effect::Exit::Succeeded(ans) => {
+            match base_codec::json_get(ans.json, "id") {
+              Some(conn) =>
+              if st.abandoned {
+                sh.tell(
+                  "conn.close",
+                  base_codec::json_obj([
+                    ("id", conn),
+                    ("code", base_codec::json_int(0)),
+                    ("reason", base_codec::json_str("closed")),
+                    ("forget", base_codec::json_bool(true)),
+                  ]),
+                )
+              } else {
+                st.conn = Some(conn)
+                let _ = dialled.succeed(conn)
+              }
+              None => {
+                let _ = dialled.fail(failed("unreached"))
+              }
+            }
+            fk(effect::Exit::Succeeded(()))
+          }
+        }
+      },
+      bytes=Some(alpn.to_bytes()),
+      called=fn(id : Int64) -> Unit { st.call = Some(id) },
+    )
+  })
+  effect::race_first_k(
+    fn(rk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit { dialled.wait_k(rk) },
+    fn(rk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      effect::race_first_k(
+        fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+          let after_onto = fn(oex : effect::Exit[Unit]) -> Unit {
+            match oex {
+              effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(_) =>
+              effect::sleep_k(within, fn(sex : effect::Exit[Unit]) -> Unit {
+                match sex {
+                  effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(_) => tk(effect::Exit::Failed(failed("no_answer")))
+                }
+              })
+            }
+          }
+          if straight.length() == 0 {
+            self.wait_onto_relay_k(endpoint, 0, after_onto)
+          } else {
+            after_onto(effect::Exit::Succeeded(()))
+          }
+        },
+        fn(ck : (effect::Exit[base_codec::Json]) -> Unit) -> Unit { self.wait_closed_k(ck) },
+        rk,
+      )
+    },
+    finish,
+  )
+}
+
+fn Mesh::forget_coming(self : Mesh) -> Unit {
+  let cw = match self.coming {
+    Some(c) => c
+    None => return
+  }
+  self.coming = None
+  match cw.d.poll() {
+    Some(effect::Exit::Succeeded(Taken::Came(conn, _))) =>
+    self.sh.tell(
+      "conn.close",
+      base_codec::json_obj([
+        ("id", conn),
+        ("code", base_codec::json_int(0)),
+        ("reason", base_codec::json_str("closed")),
+        ("forget", base_codec::json_bool(true)),
+      ]),
+    )
+    Some(_) => ()
+    None => {
+      let _ = cw.d.succeed(Taken::Ended)
+    }
+  }
+}
+
+pub fn Incoming::first_k(
+  self : Incoming,
+  k : (effect::Exit[(String, Inbound)]) -> Unit,
+  within : Int = first_ms,
+  most : Int = max_head,
+) -> Unit {
+  if self.asked {
+    k(
+      effect::Exit::Failed(
+        MeshError::new("invalid_params", "a connection's first stream is asked for once", "").to_effect_error(),
+      ),
+    )
+    return
+  }
+  self.asked = true
+  self.accepting.lock.with_permit_k(
+    fn(pk : (effect::Exit[(String, Inbound)]) -> Unit) -> Unit {
+      effect::timeout_k(
+        within,
+        fn(tk : (effect::Exit[(String, Stream, Bytes)]) -> Unit) -> Unit {
+          self.sh.call_k("conn.acceptBi", base_codec::json_obj([("id", self.conn)]), fn(ex : effect::Exit[shell::Answer]) -> Unit {
+            match ex {
+              effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => tk(effect::Exit::Failed(cut(e)))
+              effect::Exit::Succeeded(ans) =>
+              match base_codec::json_get(ans.json, "id") {
+                None => tk(effect::Exit::Failed(failed("cut")))
+                Some(id) => {
+                  let stream = Stream::{ sh: self.sh, id: id }
+                  let lines = Lines::{ stream: stream, carry: wire::Carry::new(), most: most }
+                  lines.next_k(fn(lex : effect::Exit[Option[String]]) -> Unit {
+                    match lex {
+                      effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                      effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                      effect::Exit::Succeeded(opt) =>
+                      match opt {
+                        None => tk(effect::Exit::Failed(failed("cut")))
+                        Some(line) => tk(effect::Exit::Succeeded((line, stream, lines.carry.take())))
+                      }
+                    }
+                  })
+                }
+              }
+            }
+          })
+        },
+        fn(res : effect::Exit[Option[(String, Stream, Bytes)]]) -> Unit {
+          match res {
+            effect::Exit::Succeeded(Some((line, stream, rest))) => {
+              let carry : Option[Bytes] = if rest.length() > 0 { Some(rest) } else { None }
+              pk(effect::Exit::Succeeded((line, inbound_of(stream, carry))))
+            }
+            effect::Exit::Succeeded(None) => {
+              self.close()
+              pk(effect::Exit::Failed(failed("no_answer")))
+            }
+            effect::Exit::Failed(e) => {
+              self.close()
+              pk(effect::Exit::Failed(e))
+            }
+            effect::Exit::Interrupted => {
+              self.close()
+              pk(effect::Exit::Interrupted)
+            }
+          }
+        },
+      )
+    },
+    k,
+  )
+}
+
+pub fn Incoming::accept_k(self : Incoming, k : (effect::Exit[Option[Inbound]]) -> Unit) -> Unit {
+  self.asked = true
+  accept_on_k(self.sh, self.conn, self.fibers, self.gone, self.accepting, k)
+}
+
+pub fn Incoming::open_k(self : Incoming, k : (effect::Exit[Inbound]) -> Unit) -> Unit {
+  if self.gone.is_done() {
+    k(effect::Exit::Failed(failed("cut")))
+    return
+  }
+  open_on_k(self.sh, self.conn, self.fibers, self.gone, fn(ex : effect::Exit[Stream]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(stream) => k(effect::Exit::Succeeded(inbound_of(stream, None)))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+pub fn Incoming::close(self : Incoming, reason : String = "closed") -> Unit {
+  if self.gone.is_done() {
+    return
+  }
+  self.sh.tell(
+    "conn.close",
+    base_codec::json_obj([("id", self.conn), ("code", base_codec::json_int(0)), ("reason", base_codec::json_str(reason))]),
+  )
+}
+
+pub fn Incoming::closed_k(self : Incoming, k : (effect::Exit[Closed]) -> Unit) -> Unit {
+  self.gone.wait_k(k)
+}

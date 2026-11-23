@@ -1,0 +1,533 @@
+// Spans and diagnostic recorder lines for the mesh.
+
+import "effect"
+import "base_codec"
+import "shell"
+
+pub enum SpanValue {
+  Str(String)
+  Int(Int64)
+  Num(Double)
+  Flag(Bool)
+}
+
+pub fn span_value_eq(a : SpanValue, b : SpanValue) -> Bool {
+  match a {
+    SpanValue::Str(x) =>
+    match b {
+      SpanValue::Str(y) => x == y
+      _ => false
+    }
+    SpanValue::Int(x) =>
+    match b {
+      SpanValue::Int(y) => x == y
+      _ => false
+    }
+    SpanValue::Num(x) =>
+    match b {
+      SpanValue::Num(y) => x == y
+      _ => false
+    }
+    SpanValue::Flag(x) =>
+    match b {
+      SpanValue::Flag(y) => x == y
+      _ => false
+    }
+  }
+}
+
+pub struct Span {
+  pub traceparent : Option[String]
+  pub set_fn : (String, SpanValue) -> Unit
+  pub own_fn : (String, SpanValue) -> Unit
+  pub fail_fn : () -> Unit
+  pub end_fn : () -> Unit
+}
+
+pub fn Span::none() -> Span {
+  Span::{
+    traceparent: None,
+    set_fn: fn(_ : String, _ : SpanValue) -> Unit {},
+    own_fn: fn(_ : String, _ : SpanValue) -> Unit {},
+    fail_fn: fn() -> Unit {},
+    end_fn: fn() -> Unit {},
+  }
+}
+
+pub struct Trace {
+  pub peer_key : String
+  pub start_fn : (String, Option[String]) -> Span
+}
+
+pub fn Trace::none() -> Trace {
+  Trace::{
+    peer_key: "peer",
+    start_fn: fn(_ : String, _ : Option[String]) -> Span { Span::none() },
+  }
+}
+
+/// W3C traceparent: `00-<32 hex>-<16 hex>-<01|00>`.
+pub fn format_traceparent(trace_id : Bytes, span_id : Bytes, sampled : Bool) -> String {
+  "00-" + hex_bytes(trace_id) + "-" + hex_bytes(span_id) + "-" + (if sampled { "01" } else { "00" })
+}
+
+pub struct Recorder {
+  pub on_fn : () -> Bool
+  pub line_fn : (String) -> Unit
+}
+
+pub fn Recorder::none() -> Recorder {
+  Recorder::{
+    on_fn: fn() -> Bool { false },
+    line_fn: fn(_ : String) -> Unit {},
+  }
+}
+
+fn Mesh::record(self : Mesh, what : String, fields : () -> String) -> Unit {
+  let on = self.recorder.on_fn
+  if on() {
+    let lf = self.recorder.line_fn
+    lf(what + ": " + fields())
+  }
+}
+
+fn Mesh::span(self : Mesh, name : String, peer : String, parent : Option[String] = None) -> Span {
+  let sf = self.trace.start_fn
+  let s = sf(name, parent)
+  let own = s.own_fn
+  own(self.trace.peer_key, SpanValue::Str(peer))
+  s
+}
+
+fn cut_to(text : String, most : Int) -> String {
+  if text.length() <= most {
+    text
+  } else {
+    text.slice(0, most)
+  }
+}
+
+fn peer_tag(place : Place) -> String {
+  let peer = cut_to(place.peer, 8)
+  if place.link_scope == "" {
+    peer
+  } else {
+    cut_to(place.link_scope, 6) + "/" + peer
+  }
+}
+
+fn said_short(message : String) -> String {
+  let sb = StringBuilder::new()
+  let mut space = false
+  let mut started = false
+  let n = message.length()
+  for i in 0..<n {
+    let c = message.code_unit_at(i)
+    if c == 32 || c == 10 || c == 9 || c == 13 {
+      space = started
+      continue
+    }
+    if space {
+      sb.write_byte(32 as Byte)
+      space = false
+    }
+    sb.write_byte(c as Byte)
+    started = true
+  }
+  let one = sb.to_string()
+  if one.length() > 120 {
+    cut_to(one, 117) + "…"
+  } else {
+    one
+  }
+}
+
+fn ms_of(x : Int) -> String {
+  if x < 0 {
+    "-"
+  } else {
+    x.to_string() + "ms"
+  }
+}
+
+fn Mesh::relay_status(self : Mesh, endpoint : base_codec::Json) -> String {
+  let relays = match self.sh.ask("iroh.relayStatus", base_codec::json_obj([("id", endpoint)])) {
+    shell::AskResult::Ok(base_codec::Json::Arr(a)) => a
+    _ => return "none"
+  }
+  if relays.length() == 0 {
+    return "none"
+  }
+  let parts : Array[String] = []
+  for i in 0..<relays.length() {
+    let r = relays[i]
+    match json_get_str(r, "url") {
+      Some(url) =>
+      match json_get_bool(r, "connected") {
+        Some(true) => parts.push(url + " up")
+        _ => parts.push(url + " down")
+      }
+      None => parts.push("? down")
+    }
+  }
+  str_join(parts, ", ")
+}
+
+fn round_ms(j : Option[base_codec::Json]) -> String {
+  match j {
+    Some(base_codec::Json::Num(n, _)) => round_i64(n).to_string() + "ms"
+    _ => "?"
+  }
+}
+
+fn path_id(path : base_codec::Json) -> String {
+  match base_codec::json_get(path, "id") {
+    Some(base_codec::Json::Str(id)) => id
+    Some(base_codec::Json::Num(n, _)) => n.to_int64().to_string()
+    _ => ""
+  }
+}
+
+fn path_where(path : base_codec::Json, host : Bool) -> String {
+  match json_get_str(path, "relay") {
+    Some(relay) => if host { relay_host(relay) } else { relay }
+    None =>
+    match json_get_str(path, "ip") {
+      Some(ip) => ip
+      None => direct_name
+    }
+  }
+}
+
+fn selected_mark(path : base_codec::Json) -> String {
+  match json_get_bool(path, "selected") {
+    Some(true) => "*"
+    _ => ""
+  }
+}
+
+pub fn Link::paths_line(self : Link) -> String {
+  let ps = self.paths()
+  let out : Array[String] = []
+  for i in 0..<ps.length() {
+    let p = ps[i]
+    out.push(
+      selected_mark(p) +
+      path_where(p, true) +
+      " " +
+      round_ms(base_codec::json_get(p, "rttMs")) +
+      " " +
+      int_of(base_codec::json_get(p, "txPackets")).to_string() +
+      "/" +
+      int_of(base_codec::json_get(p, "lostPackets")).to_string(),
+    )
+  }
+  str_join(out, "; ")
+}
+
+pub fn Link::path_shape(self : Link) -> String {
+  let ps = self.paths()
+  let out : Array[String] = []
+  for i in 0..<ps.length() {
+    let p = ps[i]
+    out.push(selected_mark(p) + path_id(p) + "@" + path_where(p, false))
+  }
+  str_join(out, ",")
+}
+
+fn Mesh::beside_of(self : Mesh, place : Place) -> String {
+  let out : Array[String] = []
+  let ks = self.links.keys()
+  for i in 0..<ks.length() {
+    match self.links.get(ks[i]) {
+      Some(opening) =>
+      if opening.place.peer == place.peer && opening.place.link_scope != place.link_scope {
+        match opening.result {
+          Some(Opened::Open(link)) =>
+          if link.ended().is_none() {
+            out.push(opening.place.link_scope + ": " + link.paths_line())
+          }
+          _ => ()
+        }
+      }
+      None => ()
+    }
+  }
+  str_join(out, " | ")
+}
+
+fn Mesh::record_dht(self : Mesh, every : Int) -> Unit {
+  let on = self.recorder.on_fn
+  if !on() {
+    if self.dht_kept {
+      self.dht_kept = false
+      let _ = self.sh.ask("dht.said", base_codec::json_obj([("keep", base_codec::json_bool(false))]))
+    }
+    return
+  }
+  let now_fn = self.clock.now_ms
+  let now = now_fn()
+  if self.dht_kept && now - self.dht_at < every.to_int64() {
+    return
+  }
+  self.dht_kept = true
+  self.dht_at = now
+  let said_j = match self.sh.ask("dht.said", base_codec::json_obj([("keep", base_codec::json_bool(true))])) {
+    shell::AskResult::Ok(j) => j
+    shell::AskResult::Err(_) => return
+  }
+  match json_get_arr(said_j, "lines") {
+    Some(lines) => {
+      for i in 0..<lines.length() {
+        let line = lines[i]
+        let text = match json_get_str(line, "text") {
+          Some(t) => t
+          None => ""
+        }
+        let before = now - int_of(base_codec::json_get(line, "at"))
+        let b_str = (if before < 0.to_int64() { 0.to_int64() } else { before }).to_string()
+        self.record("dht", fn() -> String { text + " (" + b_str + "ms before)" })
+      }
+    }
+    None => ()
+  }
+  let dropped = int_of(base_codec::json_get(said_j, "dropped"))
+  if dropped > 0.to_int64() {
+    self.record("dht", fn() -> String { dropped.to_string() + " line(s) dropped for want of room" })
+  }
+}
+
+fn Mesh::record_ways(self : Mesh, place : Place) -> Unit {
+  let on = self.recorder.on_fn
+  if !on() {
+    return
+  }
+  let parts : Array[String] = []
+  let ws = self.live_ways(place)
+  for i in 0..<ws.length() {
+    let link = ws[i].link
+    let (rx, tx) = link.stats()
+    let was_rx = link.rec_rx
+    let was_tx = link.rec_tx
+    let ps = link.paths()
+    let pstrs : Array[String] = []
+    for j in 0..<ps.length() {
+      let p = ps[j]
+      let id = path_id(p)
+      let (tx0, lost0) = match link.rec_paths.get(id) {
+        Some(pair) => pair
+        None => (0.to_int64(), 0.to_int64())
+      }
+      let sent = int_of(base_codec::json_get(p, "txPackets"))
+      let lost = int_of(base_codec::json_get(p, "lostPackets"))
+      link.rec_paths.set(id, (sent, lost))
+      pstrs.push(
+        selected_mark(p) +
+        path_where(p, true) +
+        " " +
+        round_ms(base_codec::json_get(p, "rttMs")) +
+        " +" +
+        (sent - tx0).to_string() +
+        "/" +
+        (lost - lost0).to_string(),
+      )
+    }
+    let pin_name = match link.pin {
+      Some(p) => p
+      None => "main"
+    }
+    parts.push(
+      pin_name +
+      " in=+" +
+      (rx - was_rx).to_string() +
+      "B out=+" +
+      (tx - was_tx).to_string() +
+      "B missed=" +
+      link.missed.to_string() +
+      " [" +
+      str_join(pstrs, "; ") +
+      "]",
+    )
+    link.rec_rx = rx
+    link.rec_tx = tx
+  }
+  if parts.length() > 0 {
+    self.record("conn ways", fn() -> String { peer_tag(place) + " " + str_join(parts, " | ") })
+  }
+}
+
+fn Mesh::watch_paths(self : Mesh, place : Place, way : Way) -> Unit {
+  let link = way.link
+  let shape = link.path_shape()
+  let paths = link.paths_line()
+  let changed = match way.shape {
+    None =>
+    match link.path() {
+      Some(p) => p == direct_name
+      None => false
+    }
+    Some(was) => was != shape
+  }
+  let missed = link.missed == 1
+  if changed || missed {
+    let sp = self.span("mesh.path", place.peer)
+    let own = sp.own_fn
+    let end = sp.end_fn
+    own("way", SpanValue::Str(way.key()))
+    let why = if changed && missed {
+      "paths missed"
+    } else if changed {
+      "paths"
+    } else {
+      "missed"
+    }
+    own("why", SpanValue::Str(why))
+    own("current", SpanValue::Flag(self.is_current(link)))
+    own("paths", SpanValue::Str(paths))
+    match way.saw {
+      Some(saw) => own("before.paths", SpanValue::Str(saw))
+      None => ()
+    }
+    end()
+  }
+  way.shape = Some(shape)
+  way.saw = Some(paths)
+}
+
+fn Mesh::observe(self : Mesh, place : Place) -> Unit {
+  let ws = self.live_ways(place)
+  for i in 0..<ws.length() {
+    self.watch_paths(place, ws[i])
+  }
+  self.record_ways(place)
+  self.record_dht(tick_ms)
+}
+
+fn Mesh::say_speed(self : Mesh, peer : String, relay : String, bytes : Int, ms : Int, now : Int64) -> Unit {
+  let said_k = peer + " " + relay_key(relay)
+  match self.speed_said.get(said_k) {
+    Some(at) =>
+    if now - at < speed_said_ms.to_int64() {
+      return
+    }
+    None => ()
+  }
+  self.speed_said.set(said_k, now)
+  let sp = self.span("mesh.speed", peer)
+  let own = sp.own_fn
+  let end = sp.end_fn
+  own("via", SpanValue::Str(relay_host(relay)))
+  own("bytes", SpanValue::Int(bytes.to_int64()))
+  own("ms", SpanValue::Int(ms.to_int64()))
+  own("bps", SpanValue::Int(round_i64(bytes.to_double() / ms.to_double() * 1000.0)))
+  let rk = relay_key(relay)
+  let ks = self.links.keys()
+  for i in 0..<ks.length() {
+    match self.links.get(ks[i]) {
+      Some(op) =>
+      if op.place.peer == peer {
+        let ws = self.live_ways(op.place)
+        let mut hit = false
+        for j in 0..<ws.length() {
+          if ws[j].key() == rk {
+            let link = ws[j].link
+            own("current", SpanValue::Flag(self.is_current(link)))
+            own("paths", SpanValue::Str(link.paths_line()))
+            hit = true
+            break
+          }
+        }
+        if hit {
+          break
+        }
+      }
+      None => ()
+    }
+  }
+  end()
+}
+
+fn Mesh::connect_said(self : Mesh, place : Place, opening : Opening, made : effect::Exit[Link], beside : Bool) -> Unit {
+  let sp = match opening.span {
+    Some(s) => s
+    None => return
+  }
+  opening.span = None
+  let own = sp.own_fn
+  let set = sp.set_fn
+  let fail = sp.fail_fn
+  let end = sp.end_fn
+  match made {
+    effect::Exit::Succeeded(link) => {
+      match link.path() {
+        Some(p) => own("path", SpanValue::Str(p))
+        None => ()
+      }
+      match link.via() {
+        Some(v) => own("via", SpanValue::Str(relay_host(v)))
+        None => ()
+      }
+      own("onto_ms", SpanValue::Int(link.opened_onto.to_int64()))
+      own("dialled_ms", SpanValue::Int(link.opened_dialled.to_int64()))
+      own("credential_ms", SpanValue::Int(link.opened_cred.to_int64()))
+      own("paths", SpanValue::Str(link.paths_line()))
+      if beside {
+        own("hedged", SpanValue::Flag(true))
+      }
+    }
+    effect::Exit::Failed(e) => {
+      fail()
+      let err_type = match opening_timeout_of(e) {
+        Some(_) => "mesh"
+        None => code_of(e)
+      }
+      set("error.type", SpanValue::Str(err_type))
+      match mesh_error_of(e) {
+        Some(me) =>
+        if me.cause != "" {
+          own("cause", SpanValue::Str(me.cause))
+        }
+        None => ()
+      }
+      own("relay", SpanValue::Str(self.relay_status(self.endpoint)))
+      let straight = self.ips(place)
+      if straight.length() > 0 {
+        own("ips", SpanValue::Str(str_join(straight, ", ")))
+      }
+      let bo = self.beside_of(place)
+      if bo != "" {
+        own("beside", SpanValue::Str(bo))
+      }
+    }
+    effect::Exit::Interrupted => ()
+  }
+  end()
+}
+
+struct Stages {
+  mut onto : Int
+  mut credential : Int
+  mut dialled : Int
+  mut open_bi : Int
+  mut sent : Int
+}
+
+fn Stages::new() -> Stages {
+  Stages::{ onto: -1, credential: -1, dialled: -1, open_bi: -1, sent: -1 }
+}
+
+fn outcome_of(e : effect::EffectError) -> String {
+  match opening_timeout_of(e) {
+    Some(_) => return "no-answer"
+    None => ()
+  }
+  match mesh_error_of(e) {
+    Some(me) =>
+    if me.code == "no_answer" {
+      "no-answer"
+    } else {
+      "error: " + said_short(me.message)
+    }
+    None => "error: " + said_short(said(e))
+  }
+}

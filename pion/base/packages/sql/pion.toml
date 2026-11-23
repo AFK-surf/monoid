@@ -1,0 +1,8 @@
+[package]
+name = "sql"
+version = "0.1.0"
+
+[dependencies]
+effect = { workspace = true }
+shell = { path = "../shell" }
+base_codec = { path = "../base_codec" }

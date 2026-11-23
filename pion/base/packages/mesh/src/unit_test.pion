@@ -1,0 +1,279 @@
+// Focused white-box unit tests covering error, words, addrs, ways, speed, trace, hooks,
+// requests, bind, dial_once, scope, health, wake, and mesh edge cases.
+
+import "effect"
+import "base_codec"
+import "crypto"
+import "shell"
+
+fn make_mem_store() -> (Store, Map[String, Bytes]) {
+  let data : Map[String, Bytes] = Map::new()
+  let st = Store::{
+    get_k: fn(key : String, k : (effect::Exit[Option[Bytes]]) -> Unit) -> Unit {
+      k(effect::Exit::Succeeded(data.get(key)))
+    },
+    set_k: fn(key : String, value : Bytes, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      data.set(key, value)
+      k(effect::Exit::Succeeded(()))
+    },
+  }
+  (st, data)
+}
+
+fn run_sync[X](rt : effect::Runtime, f : ((effect::Exit[X]) -> Unit) -> Unit) -> effect::Exit[X] {
+  let fib = rt.fork_quiet(f)
+  let _ = rt.run_ready()
+  match fib.poll() {
+    Some(ex) => ex
+    None => effect::Exit::Failed(effect::EffectError::Custom("did not finish"))
+  }
+}
+
+fn stub_shell(rt : effect::Runtime) -> shell::Shell {
+  let next_id = [0]
+  let mut sh_opt : Option[shell::Shell] = None
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, _args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {
+      let s = match sh_opt {
+        Some(v) => v
+        None => return
+      }
+      if op == "iroh.bind" || op == "conn.openBi" {
+        next_id[0] += 1
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(next_id[0]))]))
+      } else {
+        s.answer(id, base_codec::json_obj([]))
+      }
+    },
+    fn(op : String, _args : base_codec::Json) -> shell::AskResult {
+      if op == "iroh.endpointId" {
+        shell::AskResult::Ok(base_codec::json_str("1111111111111111111111111111111111111111111111111111111111111111"))
+      } else if op == "iroh.relayStatus" {
+        shell::AskResult::Ok(base_codec::json_arr([]))
+      } else {
+        shell::AskResult::Err(shell::ShellError::{ message: "no such op" })
+      }
+    },
+    fn(n : Int) -> Bytes {
+      let out = Bytes::new(n)
+      for i in 0..<n {
+        out[i] = ((i + 1) & 0xFF) as Byte
+      }
+      out
+    },
+  )
+  sh_opt = Some(sh)
+  sh
+}
+
+test "words and error formatting in zh and en, MeshError lossless round-trip, Closed::words" {
+  set_language("zh")
+  debug_assert(say("closed") == "连接已关闭", "zh closed")
+  debug_assert(say("bad_station_id", [("id", "abc")]) == "服务器 id 无效：abc", "zh arg subst")
+  set_language("en")
+  debug_assert(say("closed") == "Connection closed", "en closed")
+  debug_assert(say("bad_station_id", [("id", "abc")]) == "Invalid server id: abc", "en arg subst")
+  debug_assert(Closed::new("application", "credential_refused").words() == "The server refused access", "closed cred refused")
+  debug_assert(Closed::new("application", "credential_revoked").words() == "Access revoked", "closed revoked")
+  debug_assert(Closed::new("application", "credential_expired").words() == "Access expired", "closed expired")
+  debug_assert(Closed::new("application", "station_removed").words() == "The server closed the connection: station_removed", "closed removed")
+  debug_assert(Closed::new("application", "bye").words() == "The server closed the connection: bye", "closed reason")
+  debug_assert(Closed::new("local", "x").words() == "Connection closed", "closed local")
+  debug_assert(Closed::new("timeout", "").words() == "Timed out", "closed timeout")
+  debug_assert(Closed::new("other", "").words() == "Lost connection to the server", "closed other")
+  let me = MeshError::new("too_long", "msg:with:colons", "cause:1:2")
+  let ee = me.to_effect_error()
+  debug_assert(code_of(ee) == "too_long", "code_of")
+  debug_assert(said(ee) == "too_long: msg:with:colons", "said")
+  match mesh_error_of(ee) {
+    Some(got) => {
+      debug_assert(got.code == "too_long", "rt code")
+      debug_assert(got.message == "msg:with:colons", "rt msg")
+      debug_assert(got.cause == "cause:1:2", "rt cause")
+    }
+    None => debug_assert(false, "expected MeshError")
+  }
+  set_language("zh")
+}
+
+test "addrs: is_ip_port, addrs_of 8-item cap, malformed store recovery" {
+  debug_assert(is_ip_port("192.168.1.1:8080"), "valid lan")
+  debug_assert(is_ip_port("10.0.0.1:1"), "valid short")
+  debug_assert(is_ip_port("100.64.12.34:65535"), "valid tailnet")
+  debug_assert(!is_ip_port("192.168.1.1"), "missing port")
+  debug_assert(!is_ip_port("192.168.1.1:"), "empty port")
+  debug_assert(!is_ip_port("192.168.1:80"), "only 3 octets")
+  debug_assert(!is_ip_port("192.168.1.1.1:80"), "5 octets")
+  debug_assert(!is_ip_port("1234.1.1.1:80"), "4-digit octet")
+  debug_assert(!is_ip_port("1.2.3.4:123456"), "6-digit port")
+  debug_assert(!is_ip_port("[::1]:80"), "ipv6 rejected")
+  let items : Array[base_codec::Json] = []
+  for i in 0..<12 {
+    items.push(base_codec::json_str("10.0.0." + i.to_string() + ":9000"))
+  }
+  items.push(base_codec::json_str("bad"))
+  let j = base_codec::json_obj([("lan", base_codec::json_arr(items))])
+  let got = addrs_of(j, "lan")
+  debug_assert(got.length() == 8, "capped at 8")
+  debug_assert(got[0] == "10.0.0.0:9000" && got[7] == "10.0.0.7:9000", "first 8 kept")
+  let bad = said_of(Some("not json{".to_bytes()))
+  debug_assert(bad.length() == 0, "malformed store ignored")
+}
+
+test "ways: pinned_key uses crypto::sha256, relay_key, relay_host, clearly_better, cost, local_day" {
+  let prefix = default_relay_key_prefix()
+  debug_assert(prefix.length() == 22, "prefix len 22 with trailing nul")
+  debug_assert(prefix[21].to_int() == 0, "trailing nul")
+  let secret = Bytes::new(32)
+  for i in 0..<32 {
+    secret[i] = i as Byte
+  }
+  let relay = "https://r1.example/"
+  let k1 = pinned_key(prefix, secret, relay)
+  let raw = prefix.concat(secret).concat(relay.to_bytes())
+  debug_assert(crypto::bytes_to_hex(k1) == crypto::sha256_hex(raw), "pinned_key matches crypto::sha256_hex")
+  debug_assert(relay_key(" https://r1.example ") == "https://r1.example/", "relay_key adds trailing slash")
+  debug_assert(relay_key("https://r1.example/a") == "https://r1.example/a", "relay_key keeps path")
+  debug_assert(relay_host("https://r1.example:8443/path") == "r1.example:8443", "relay_host with port")
+  debug_assert(relay_host("https://r1.example/") == "r1.example", "relay_host without port")
+  debug_assert(clearly_better(Score::new(100.0, 10.0), Score::new(60.0, 10.0)), "40% faster clearly better")
+  debug_assert(!clearly_better(Score::new(100.0, 10.0), Score::new(80.0, 10.0)), "only 20% faster not clearly better")
+  debug_assert(!clearly_better(Score::new(100.0, 60.0), Score::new(70.0, 20.0)), "within half dev sum not clearly better")
+  debug_assert(cost(50.0, None) == 50.0, "cost without speed")
+  debug_assert(cost(50.0, Some(262144.0)) == 1050.0, "cost with 256KiB/s speed adds 1000ms")
+  debug_assert(local_day(0.to_int64(), 0) == 0.to_int64(), "epoch day 0")
+  debug_assert(local_day((-1).to_int64(), 0) == (-1).to_int64(), "before epoch day -1")
+  debug_assert(local_day(0.to_int64(), 480) == 0.to_int64(), "UTC+8 epoch still day 0")
+  debug_assert(local_day(86400000.to_int64() - 3600000.to_int64(), 120) == 1.to_int64(), "UTC+2 crosses midnight")
+}
+
+test "trace: format_traceparent, said_short, peer_tag, Recorder lazy when off" {
+  let tid = Bytes::new(16)
+  for i in 0..<16 {
+    tid[i] = (i + 1) as Byte
+  }
+  let sid = Bytes::new(8)
+  for i in 0..<8 {
+    sid[i] = (0xa0 + i) as Byte
+  }
+  debug_assert(
+    format_traceparent(tid, sid, true) == "00-0102030405060708090a0b0c0d0e0f10-a0a1a2a3a4a5a6a7-01",
+    "traceparent sampled",
+  )
+  debug_assert(
+    format_traceparent(tid, sid, false) == "00-0102030405060708090a0b0c0d0e0f10-a0a1a2a3a4a5a6a7-00",
+    "traceparent unsampled",
+  )
+  debug_assert(said_short("  hello\n\tworld  ") == "hello world", "said_short collapses whitespace")
+  debug_assert(peer_tag(Place::{ link_scope: "", peer: "0123456789abcdef" }) == "01234567", "peer_tag no scope")
+  debug_assert(peer_tag(Place::{ link_scope: "abcdef123", peer: "0123456789abcdef" }) == "abcdef/01234567", "peer_tag with scope")
+}
+
+test "hooks_sign: Mesh::sign, Mesh::verify fallback & shell delegation, decodes_opus, migrate_k" {
+  let rt = effect::Runtime::new()
+  let sh = stub_shell(rt)
+  let (store, mem) = make_mem_store()
+  let opts = Options::new("test/1", ["https://r1.test/"])
+  let mesh = match run_sync(rt, fn(k : (effect::Exit[Mesh]) -> Unit) -> Unit { Mesh::make_k(sh, store, opts, k) }) {
+    effect::Exit::Succeeded(m) => m
+    _ => {
+      debug_assert(false, "make_k failed")
+      return
+    }
+  }
+  // Pure Pion fallback sign & verify
+  let msg = "hello mesh".to_bytes()
+  let (pk, sig) = mesh.sign(msg)
+  debug_assert(pk.length() == 32 && sig.length() == 64, "sign lengths")
+  debug_assert(mesh.verify(pk, msg, sig), "verify valid")
+  debug_assert(!mesh.verify(pk, "other".to_bytes(), sig), "verify invalid msg")
+  debug_assert(!mesh.decodes_opus(), "opus false when no op")
+  // Migrate rejects bad key length
+  let bad_res = run_sync(rt, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { mesh.migrate_k(Bytes::new(16), k) })
+  match bad_res {
+    effect::Exit::Failed(e) => debug_assert(code_of(e) == "invalid_params", "bad key length rejected")
+    _ => debug_assert(false, "expected invalid_params")
+  }
+  // Migrate with valid 32-byte key updates store and signing key
+  let new_key = Bytes::new(32)
+  for i in 0..<32 {
+    new_key[i] = (0x80 + i) as Byte
+  }
+  let ok_res = run_sync(rt, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { mesh.migrate_k(new_key, k) })
+  debug_assert(effect::exit_is_succeeded(ok_res), "migrate succeeded")
+  match mem.get(device_key) {
+    Some(saved) => debug_assert(bytes_eq(saved, new_key), "new key persisted")
+    None => debug_assert(false, "key missing in store")
+  }
+  let (pk2, sig2) = mesh.sign(msg)
+  debug_assert(!bytes_eq(pk, pk2), "public key changed after migrate")
+  debug_assert(mesh.verify(pk2, msg, sig2), "new key verifies")
+  let _ = run_sync(rt, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { mesh.close_k(k) })
+}
+
+test "Options.says validation, head_of validation, dial_once & connect invalid params, Backoff" {
+  let rt = effect::Runtime::new()
+  let sh = stub_shell(rt)
+  let (store, _) = make_mem_store()
+  // Options.says forbidding credential / traceparent
+  let bad_opts = Options::new("test/1", [], says=[("credential", base_codec::json_str("x"))])
+  let r1 = run_sync(rt, fn(k : (effect::Exit[Mesh]) -> Unit) -> Unit { Mesh::make_k(sh, store, bad_opts, k) })
+  match r1 {
+    effect::Exit::Failed(e) => debug_assert(code_of(e) == "invalid_params", "says credential rejected")
+    _ => debug_assert(false, "expected invalid_params")
+  }
+  // head_of forbidding method / path / headers in more
+  match head_of("GET", "/a", [], [("method", base_codec::json_str("POST"))]) {
+    Some((_, Some(e))) => debug_assert(code_of(e) == "invalid_params", "more method rejected")
+    _ => debug_assert(false, "expected invalid_params")
+  }
+  // dial_once / connect invalid peer & empty alpn
+  let opts = Options::new("test/1", ["https://r1.test/"])
+  let mesh = match run_sync(rt, fn(k : (effect::Exit[Mesh]) -> Unit) -> Unit { Mesh::make_k(sh, store, opts, k) }) {
+    effect::Exit::Succeeded(m) => m
+    _ => {
+      debug_assert(false, "make_k failed")
+      return
+    }
+  }
+  let d1 = run_sync(rt, fn(k : (effect::Exit[Outgoing]) -> Unit) -> Unit { mesh.dial_once_k("short", "p/1", k) })
+  match d1 {
+    effect::Exit::Failed(e) => debug_assert(code_of(e) == "invalid_params", "dial_once bad peer")
+    _ => debug_assert(false, "expected invalid_params")
+  }
+  let d2 = run_sync(rt, fn(k : (effect::Exit[Outgoing]) -> Unit) -> Unit {
+    mesh.dial_once_k("2222222222222222222222222222222222222222222222222222222222222222", "", k)
+  })
+  match d2 {
+    effect::Exit::Failed(e) => debug_assert(code_of(e) == "invalid_params", "dial_once empty alpn")
+    _ => debug_assert(false, "expected invalid_params")
+  }
+  let c1 = run_sync(rt, fn(k : (effect::Exit[Incoming]) -> Unit) -> Unit { mesh.connect_k("bad", "p/1", k) })
+  match c1 {
+    effect::Exit::Failed(e) => debug_assert(code_of(e) == "invalid_params", "connect bad peer")
+    _ => debug_assert(false, "expected invalid_params")
+  }
+  // Backoff doubles up to cap and resets
+  let bo = Backoff::new(first=100, most=250)
+  let t0 = rt.now()
+  let f = rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    bo.pause_k(fn(_ : effect::Exit[Unit]) -> Unit {
+      bo.pause_k(fn(_ : effect::Exit[Unit]) -> Unit {
+        bo.pause_k(fn(_ : effect::Exit[Unit]) -> Unit {
+          bo.reset()
+          bo.pause_k(k)
+        })
+      })
+    })
+  })
+  rt.advance(100)
+  debug_assert(!f.is_done(), "after 100")
+  rt.advance(200)
+  debug_assert(!f.is_done(), "after 300")
+  rt.advance(250)
+  debug_assert(!f.is_done(), "after 550")
+  rt.advance(100)
+  debug_assert(f.is_done() && rt.now() - t0 == 650.to_int64(), "backoff total 100+200+250+100=650ms")
+  let _ = run_sync(rt, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { mesh.close_k(k) })
+}

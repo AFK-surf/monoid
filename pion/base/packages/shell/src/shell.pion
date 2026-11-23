@@ -1,0 +1,251 @@
+// Program-agnostic IO shell binding on `effect` and `base_codec::Json`.
+// Supports deterministic test stand-ins (`Shell::stood_in`) with zero native/FFI coupling,
+// and packs/unpacks the flat C ABI wire format of `native/shell_pion.c`.
+
+import "effect"
+import "base_codec"
+
+pub struct ShellError {
+  pub message : String
+}
+
+pub fn ShellError::to_string(self : ShellError) -> String {
+  self.message
+}
+
+pub enum AskResult {
+  Ok(base_codec::Json)
+  Err(ShellError)
+}
+
+pub struct Answer {
+  pub json : base_codec::Json
+  pub bytes : Option[Bytes]
+}
+
+pub enum TabState {
+  Held
+  Standby
+  Yielded
+}
+
+pub struct TabClaim {
+  take_fn : () -> Unit
+  release_fn : () -> Unit
+}
+
+pub fn TabClaim::take_over(self : TabClaim) -> Unit {
+  let f = self.take_fn
+  f()
+}
+
+pub fn TabClaim::release(self : TabClaim) -> Unit {
+  let f = self.release_fn
+  f()
+}
+
+/// Native tab claim: single-process directory ownership is immediately Held.
+pub fn claim_tab(_name : String, on_state : (TabState) -> Unit) -> TabClaim {
+  on_state(TabState::Held)
+  TabClaim::{
+    take_fn: fn() -> Unit {},
+    release_fn: fn() -> Unit {},
+  }
+}
+
+pub struct Shell {
+  pub rt : effect::Runtime
+  waiting : Map[Int64, effect::Deferred[Answer]]
+  mut next : Int64
+  calls_fn : (Int64, String, base_codec::Json, Option[Bytes]) -> Unit
+  asks_fn : (String, base_codec::Json) -> AskResult
+  draws_fn : (Int) -> Bytes
+  pump_fn : (Int64) -> Option[Bytes]
+}
+
+/// A deterministic test stand-in shell: every async call goes to `calls` and is settled
+/// by the test via `Shell::answer` or `Shell::refuse`; sync ops go to `asks`; randomness
+/// comes from `draws`.
+pub fn Shell::stood_in(
+  rt : effect::Runtime,
+  calls : (Int64, String, base_codec::Json, Option[Bytes]) -> Unit,
+  asks : (String, base_codec::Json) -> AskResult,
+  draws : (Int) -> Bytes,
+) -> Shell {
+  Shell::{
+    rt: rt,
+    waiting: Map::new(),
+    next: 0.to_int64(),
+    calls_fn: calls,
+    asks_fn: asks,
+    draws_fn: draws,
+    pump_fn: fn(_ms : Int64) -> Option[Bytes] { None },
+  }
+}
+
+/// Construct a shell backed by custom transport hooks (e.g. native C bridge or embedded host).
+pub fn Shell::with_hooks(
+  rt : effect::Runtime,
+  base : Int64,
+  calls : (Int64, String, base_codec::Json, Option[Bytes]) -> Unit,
+  asks : (String, base_codec::Json) -> AskResult,
+  draws : (Int) -> Bytes,
+  pump : (Int64) -> Option[Bytes],
+) -> Shell {
+  Shell::{
+    rt: rt,
+    waiting: Map::new(),
+    next: base,
+    calls_fn: calls,
+    asks_fn: asks,
+    draws_fn: draws,
+    pump_fn: pump,
+  }
+}
+
+pub fn Shell::answer(self : Shell, id : Int64, json : base_codec::Json, bytes : Option[Bytes] = None) -> Unit {
+  match self.waiting.get(id) {
+    Some(done) => {
+      self.waiting.remove(id)
+      let _ = done.succeed(Answer::{ json: json, bytes: bytes })
+    }
+    None => ()
+  }
+}
+
+pub fn Shell::refuse(self : Shell, id : Int64, why : String) -> Unit {
+  self.settle(id, 2, why, Bytes::new(0))
+}
+
+pub fn Shell::random(self : Shell, n : Int) -> Bytes {
+  let f = self.draws_fn
+  f(n)
+}
+
+pub fn Shell::call_k(
+  self : Shell,
+  op : String,
+  args : base_codec::Json,
+  k : (effect::Exit[Answer]) -> Unit,
+  bytes : Option[Bytes] = None,
+  called : (Int64) -> Unit = fn(_ : Int64) -> Unit {},
+) -> Unit {
+  self.next += 1.to_int64()
+  let id = self.next
+  called(id)
+  let done : effect::Deferred[Answer] = effect::Deferred::new()
+  self.waiting.set(id, done)
+  let f = self.calls_fn
+  f(id, op, args, bytes)
+  done.wait_k(k)
+}
+
+pub fn Shell::tell(self : Shell, op : String, args : base_codec::Json, bytes : Option[Bytes] = None) -> Unit {
+  self.next += 1.to_int64()
+  let f = self.calls_fn
+  f(self.next, op, args, bytes)
+}
+
+pub fn Shell::ask(self : Shell, op : String, args : base_codec::Json) -> AskResult {
+  let f = self.asks_fn
+  f(op, args)
+}
+
+pub fn Shell::give_up(self : Shell, id : Int64) -> Unit {
+  let _ = self.ask("fetch.cancel", base_codec::json_obj([("id", base_codec::json_int64(id))]))
+}
+
+pub fn Shell::settle(self : Shell, id : Int64, kind : Int, text : String, bytes : Bytes) -> Unit {
+  match self.waiting.get(id) {
+    None => ()
+    Some(done) => {
+      self.waiting.remove(id)
+      if kind == 2 {
+        let _ = done.fail(effect::EffectError::Custom(text))
+        return
+      }
+      let json = match base_codec::json_parse(text) {
+        base_codec::JsonParseResult::Ok(j) => j
+        base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+      }
+      let opt_bytes : Option[Bytes] = if kind == 1 { Some(bytes) } else { None }
+      let _ = done.succeed(Answer::{ json: json, bytes: opt_bytes })
+    }
+  }
+}
+
+fn read_le_i64(b : Bytes, at : Int, n : Int) -> Int64 {
+  let mut out = 0.to_int64()
+  let mut i = n - 1
+  while i >= 0 {
+    out = (out << 8) | b[at + i].to_int().to_int64()
+    i -= 1
+  }
+  out
+}
+
+fn bytes_to_utf8_str(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+/// Unpack one framed C-bridge answer `[id:u64_le][kind:u8][text_len:u32_le][text][bytes]`.
+pub fn Shell::answered(self : Shell, a : Bytes) -> Unit {
+  if a.length() < 13 {
+    return
+  }
+  let id = read_le_i64(a, 0, 8)
+  let kind = a[8].to_int()
+  let n = read_le_i64(a, 9, 4).to_int()
+  if 13 + n > a.length() {
+    return
+  }
+  let text = bytes_to_utf8_str(a.slice(13, 13 + n))
+  let payload = a.slice(13 + n, a.length())
+  self.settle(id, kind, text, payload)
+}
+
+/// Pump queued answers from the backing transport (wait at most `ms`, negative = block, 0 = poll).
+pub fn Shell::pump(self : Shell, ms : Int64) -> Bool {
+  let pf = self.pump_fn
+  match pf(ms) {
+    None => false
+    Some(first) => {
+      if first.length() == 0 {
+        return false
+      }
+      self.answered(first)
+      while true {
+        match pf(0.to_int64()) {
+          None => break
+          Some(more) => {
+            if more.length() == 0 {
+              break
+            }
+            self.answered(more)
+          }
+        }
+      }
+      true
+    }
+  }
+}
+
+/// Drive one non-blocking turn for a host run loop, returning when the next timer is due.
+pub fn Shell::turn_taking(self : Shell, take : () -> Bool) -> Option[Int64] {
+  let _ = take()
+  while true {
+    self.rt.tick()
+    if !take() && self.rt.idle() {
+      break
+    }
+  }
+  self.rt.next_timer()
+}
+
+pub fn Shell::turn(self : Shell) -> Option[Int64] {
+  self.turn_taking(fn() -> Bool { self.pump(0.to_int64()) })
+}

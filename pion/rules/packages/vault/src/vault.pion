@@ -1,0 +1,871 @@
+///| Vault rules (`rules/src/vault/vault.mbt`).
+
+import "role"
+import "form"
+import "history"
+
+pub struct Crypto {
+  record_sig_valid : (form::Json, String, String) -> Bool
+}
+
+pub struct Device {
+  sub : String
+  kind : String
+  sign_key : Option[String]
+  own : Bool
+}
+
+pub struct LockView {
+  ws : String
+  members : form::OrderedMap[Bool]
+  roles : form::OrderedMap[String]
+  devices : form::OrderedMap[Device]
+  sign_keys : form::OrderedMap[Array[String]]
+}
+
+let max_safe : Double = 9007199254740991.0
+
+fn is_admin(lock : LockView, sub : String) -> Bool {
+  match lock.roles.get(sub) {
+    Some(r) => r == "owner" || r == "admin"
+    None => false
+  }
+}
+
+fn str_in(xs : Array[String], s : String) -> Bool {
+  let n = xs.length()
+  let mut i = 0
+  while i < n {
+    if xs[i] == s {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn is_scope(s : String) -> Bool {
+  s == "once" || s == "hour" || s == "chat"
+}
+
+fn is_kind(s : String) -> Bool {
+  s == "token" || s == "ssh_key" || s == "login" || s == "file" || s == "browser"
+}
+
+fn is_mode(s : String) -> Bool {
+  s == "proxy" || s == "ssh" || s == "env" || s == "file" || s == "browser"
+}
+
+fn field(v : Option[form::Json], k : String) -> Option[form::Json] {
+  form::json_field(v, k)
+}
+
+fn is_object(v : Option[form::Json]) -> Bool {
+  match v {
+    Some(form::Json::Obj(_)) => true
+    _ => false
+  }
+}
+
+fn is_true(v : Option[form::Json]) -> Bool {
+  match v {
+    Some(form::Json::Bool(true)) => true
+    _ => false
+  }
+}
+
+fn is_num_one(v : Option[form::Json]) -> Bool {
+  match v {
+    Some(form::Json::Num(n)) => n == 1.0
+    _ => false
+  }
+}
+
+fn is_num(v : Option[form::Json]) -> Bool {
+  match v {
+    Some(form::Json::Num(_)) => true
+    _ => false
+  }
+}
+
+fn js_string(v : Option[form::Json]) -> String {
+  match v {
+    None => "undefined"
+    Some(form::Json::Str(s)) => s
+    Some(form::Json::Null) => "null"
+    Some(form::Json::Bool(true)) => "true"
+    Some(form::Json::Bool(false)) => "false"
+    Some(form::Json::Num(n)) => {
+      match form::canonical(form::Json::Num(n)) {
+        Ok(s) => s
+        Err(_) => "NaN"
+      }
+    }
+    Some(form::Json::Arr(xs)) => {
+      let sb = StringBuilder::new()
+      let n = xs.length()
+      let mut i = 0
+      while i < n {
+        if i > 0 {
+          sb.write_string(",")
+        }
+        match xs[i] {
+          form::Json::Null => ()
+          x => sb.write_string(js_string(Some(x)))
+        }
+        i = i + 1
+      }
+      sb.to_string()
+    }
+    Some(form::Json::Obj(_)) => "[object Object]"
+  }
+}
+
+fn is_whole(v : Option[form::Json]) -> Bool {
+  match v {
+    Some(form::Json::Num(n)) => n == n.floor() && n >= 0.0 && n <= max_safe
+    _ => false
+  }
+}
+
+fn num(v : Option[form::Json]) -> Double {
+  match v {
+    Some(form::Json::Num(n)) => n
+    _ => 0.0
+  }
+}
+
+fn text_max(v : Option[form::Json], max : Int) -> Bool {
+  match v {
+    Some(form::Json::Str(s)) => form::utf16_len(s) <= max
+    _ => false
+  }
+}
+
+fn text_of(v : Option[form::Json]) -> Option[String] {
+  match v {
+    Some(form::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn opt_str_eq(a : Option[String], b : String) -> Bool {
+  match a {
+    Some(s) => s == b
+    None => false
+  }
+}
+
+fn digit(c : Int) -> Bool {
+  c >= 48 && c <= 57
+}
+
+fn lower_ch(c : Int) -> Bool {
+  c >= 97 && c <= 122
+}
+
+fn upper_ch(c : Int) -> Bool {
+  c >= 65 && c <= 90
+}
+
+fn alnum(c : Int) -> Bool {
+  digit(c) || lower_ch(c) || upper_ch(c)
+}
+
+fn all_bytes(s : String, ok : (Int) -> Bool) -> Bool {
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    if !ok(s.code_unit_at(i)) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn b64(v : Option[form::Json], max : Int) -> Bool {
+  match v {
+    Some(form::Json::Str(s)) => {
+      if s.length() > max {
+        return false
+      }
+      all_bytes(s, fn(c : Int) -> Bool { alnum(c) || c == 95 || c == 45 })
+    }
+    _ => false
+  }
+}
+
+fn hex32(s : String) -> Bool {
+  s.length() == 64 && all_bytes(s, fn(c : Int) -> Bool { digit(c) || (c >= 97 && c <= 102) })
+}
+
+fn box_key(s : String) -> Bool {
+  s.starts_with("x25519:") && hex32(s.slice(7, s.length()))
+}
+
+fn ulid_id(s : String, prefix : String) -> Bool {
+  let plen = prefix.length()
+  if !s.starts_with(prefix) || s.length() != plen + 26 {
+    return false
+  }
+  let rest = s.slice(plen, s.length())
+  all_bytes(rest, fn(c : Int) -> Bool {
+    digit(c) || (upper_ch(c) && c != 73 && c != 76 && c != 79 && c != 85)
+  })
+}
+
+fn is_lc(c : Int) -> Bool {
+  lower_ch(c) || digit(c)
+}
+
+fn host_ok(s : String) -> Bool {
+  let name = if s.starts_with("*.") { s.slice(2, s.length()) } else { s }
+  let labels = name.split(".")
+  let n = labels.length()
+  let mut i = 0
+  while i < n {
+    let l = labels[i]
+    let ln = l.length()
+    if ln == 0 {
+      return false
+    }
+    let first = l.code_unit_at(0)
+    let last = l.code_unit_at(ln - 1)
+    if !is_lc(first) || !is_lc(last) || !all_bytes(l, fn(c : Int) -> Bool { is_lc(c) || c == 45 }) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn env_name(s : String) -> Bool {
+  s.length() > 0 && !digit(s.code_unit_at(0)) && all_bytes(s, fn(c : Int) -> Bool { alnum(c) || c == 95 })
+}
+
+fn arr_of(v : Option[form::Json]) -> Array[form::Json] {
+  match v {
+    Some(form::Json::Arr(xs)) => xs
+    _ => []
+  }
+}
+
+fn has_text(xs : Array[form::Json], s : String) -> Bool {
+  let n = xs.length()
+  let mut i = 0
+  while i < n {
+    match xs[i] {
+      form::Json::Str(t) => if t == s { return true }
+      _ => ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn unique(xs : Array[form::Json]) -> Bool {
+  let n = xs.length()
+  let mut i = 0
+  while i < n {
+    let mut j = 0
+    while j < i {
+      if form::json_eq(xs[i], xs[j]) {
+        match xs[i] {
+          form::Json::Str(_) | form::Json::Num(_) | form::Json::Null | form::Json::Bool(_) => return false
+          _ => ()
+        }
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn sig_shape(s : Option[form::Json]) -> Bool {
+  if !is_object(s) {
+    return false
+  }
+  let has_key = match text_of(field(s, "key")) {
+    Some(_) => true
+    None => false
+  }
+  let has_sig = match text_of(field(s, "sig")) {
+    Some(_) => true
+    None => false
+  }
+  let alg = text_of(field(s, "alg"))
+  has_key && has_sig && (opt_str_eq(alg, "Ed25519") || opt_str_eq(alg, "ES256"))
+}
+
+fn without_sig(o : form::Json) -> form::Json {
+  match o {
+    form::Json::Obj(entries) => {
+      let rest : Array[(String, form::Json)] = []
+      let n = entries.length()
+      let mut i = 0
+      while i < n {
+        if entries[i].0 != "sig" {
+          rest.push(entries[i])
+        }
+        i = i + 1
+      }
+      form::Json::Obj(rest)
+    }
+    _ => o
+  }
+}
+
+fn signed_ok(o : form::Json, tag : String, c : Crypto) -> Bool {
+  let sig = field(Some(o), "sig")
+  let sig_val = match sig {
+    Some(form::Json::Obj(_)) => {
+      match text_of(field(sig, "sig")) {
+        Some(_) => sig
+        None => return false
+      }
+    }
+    _ => return false
+  }
+  let text = match form::canonical(without_sig(o)) {
+    Ok(s) => s
+    Err(_) => return false
+  }
+  match sig_val {
+    Some(sv) => (c.record_sig_valid)(sv, tag, text)
+    None => false
+  }
+}
+
+fn whole(n : Double) -> String {
+  match form::canonical(form::Json::Num(n)) {
+    Ok(s) => s
+    Err(_) => "NaN"
+  }
+}
+
+pub fn signer_of(lock : LockView, key : String) -> Option[(String, String)] {
+  let es = lock.devices.entries()
+  let n = es.length()
+  let mut i = 0
+  while i < n {
+    let (id, d) = es[i]
+    if role::device_signs(d.kind == "app", opt_str_eq(d.sign_key, key), d.own, lock.members.contains(d.sub)) {
+      return Some((d.sub, id))
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn cert_ok(lock : LockView, cert : Option[form::Json], ever : Bool, c : Crypto) -> Option[String] {
+  let shape = "a box certificate is {v: 1, ws, device, box, at, sig} of this workspace"
+  if !is_object(cert) || num(field(cert, "v")) != 1.0 || !is_num(field(cert, "v")) || !opt_str_eq(text_of(field(cert, "ws")), lock.ws) {
+    return Some(shape)
+  }
+  let device = js_string(field(cert, "device"))
+  if !hex32(device) || !box_key(js_string(field(cert, "box"))) || !is_whole(field(cert, "at")) || !sig_shape(field(cert, "sig")) {
+    return Some(shape)
+  }
+  let d_opt = match field(cert, "device") {
+    Some(form::Json::Str(id)) => lock.devices.get(id)
+    _ => None
+  }
+  let d = match d_opt {
+    Some(dev) => {
+      if dev.kind != "app" || !lock.members.contains(dev.sub) {
+        return Some("the box certificate's device is not an app device in the lock")
+      }
+      dev
+    }
+    None => return Some("the box certificate's device is not an app device in the lock")
+  }
+  if !role::cert_device_ok(d.own, ever) {
+    return Some("the box certificate's device was put in the lock by someone else, not its person")
+  }
+  let key = match text_of(field(field(cert, "sig"), "key")) {
+    Some(k) => k
+    None => ""
+  }
+  let had = match lock.sign_keys.get(device) {
+    Some(xs) => xs
+    None => []
+  }
+  if !role::cert_key_ok(opt_str_eq(d.sign_key, key), ever, str_in(had, key)) {
+    return Some("a box certificate is signed by its own device's key")
+  }
+  match cert {
+    Some(cv) => {
+      if !signed_ok(cv, "stillfail-vault-box/1", c) {
+        return Some("the box certificate's signature is invalid")
+      }
+    }
+    None => return Some(shape)
+  }
+  None
+}
+
+pub fn vault_ok(lock : LockView, prev : Option[form::Json], next : form::Json, copy : Bool, c : Crypto) -> Option[String] {
+  let v = Some(next)
+  if !is_object(v) || !is_num_one(field(v, "v")) || !opt_str_eq(text_of(field(v, "ws")), lock.ws) {
+    return Some("a vault is {v: 1, ws, …} of this workspace")
+  }
+  let id = match text_of(field(v, "id")) {
+    Some(s) => {
+      if !ulid_id(s, "v_") {
+        return Some("a vault's id is v_<ULID>")
+      }
+      s
+    }
+    None => return Some("a vault's id is v_<ULID>")
+  }
+  if !is_whole(field(v, "seq")) || !is_whole(field(v, "epoch")) || !is_whole(field(v, "at")) {
+    return Some("seq, epoch and at are whole numbers")
+  }
+  let owner = match text_of(field(v, "owner")) {
+    Some(s) => {
+      if form::utf16_len(s) > 200 || s == "" || !text_max(field(v, "name"), 200) {
+        return Some("a vault has an owner and a name")
+      }
+      s
+    }
+    None => return Some("a vault has an owner and a name")
+  }
+  let members : Array[String] = []
+  match field(v, "members") {
+    Some(form::Json::Arr(xs)) => {
+      if xs.length() > 256 || !unique(xs) {
+        return Some("members are distinct subs")
+      }
+      let mut i = 0
+      while i < xs.length() {
+        match xs[i] {
+          form::Json::Str(s) => {
+            if form::utf16_len(s) > 200 || s == "" {
+              return Some("members are distinct subs")
+            }
+            members.push(s)
+          }
+          _ => return Some("members are distinct subs")
+        }
+        i = i + 1
+      }
+    }
+    _ => return Some("members are distinct subs")
+  }
+  if !str_in(members, owner) {
+    return Some("the owner is a member")
+  }
+  let keys = match field(v, "keys") {
+    Some(form::Json::Arr(xs)) => {
+      if xs.length() > 1024 {
+        return Some("keys is a list")
+      }
+      xs
+    }
+    _ => return Some("keys is a list")
+  }
+  match field(v, "recovery") {
+    Some(_) => {
+      if !b64(field(v, "recovery"), 200) {
+        return Some("recovery is a seal")
+      }
+    }
+    None => ()
+  }
+  match field(v, "lasts") {
+    Some(form::Json::Str(s)) => {
+      if !is_scope(s) {
+        return Some("lasts is once, hour or chat")
+      }
+    }
+    Some(_) => return Some("lasts is once, hour or chat")
+    None => ()
+  }
+  let is_workspace = match field(v, "scope") {
+    None => false
+    Some(form::Json::Str(s)) => {
+      if s == "workspace" {
+        true
+      } else {
+        return Some("scope is workspace")
+      }
+    }
+    Some(_) => return Some("scope is workspace")
+  }
+  let deleted = is_true(field(v, "deleted"))
+  match field(v, "deleted") {
+    Some(_) => {
+      let has_rec = match field(v, "recovery") {
+        Some(_) => true
+        None => false
+      }
+      if !deleted || keys.length() > 0 || has_rec {
+        return Some("a deleted vault is sealed to no one")
+      }
+    }
+    None => ()
+  }
+  if !sig_shape(field(v, "sig")) {
+    return Some("a vault is signed")
+  }
+  let seq = num(field(v, "seq"))
+  let epoch = num(field(v, "epoch"))
+  match prev {
+    None => {
+      if seq != 0.0 && !copy {
+        return Some("a vault's first version is seq 0")
+      }
+    }
+    Some(_) => {
+      if !opt_str_eq(text_of(field(prev, "id")), id) {
+        return Some("another vault")
+      }
+      if !form::opt_json_eq(field(prev, "scope"), field(v, "scope")) {
+        return Some("a vault's scope does not change")
+      }
+      let held = num(field(prev, "seq"))
+      if !history::follows(copy, held.to_int64(), seq.to_int64()) {
+        return Some(if copy { "a copy is later than seq " + whole(held) } else { "seq " + whole(held + 1.0) + " follows " + whole(held) })
+      }
+      if !opt_str_eq(text_of(field(prev, "owner")), owner) {
+        let key = match text_of(field(field(v, "sig"), "key")) {
+          Some(k) => k
+          None => ""
+        }
+        let takeover = is_workspace && match signer_of(lock, key) {
+          Some((sub, _)) => is_admin(lock, sub) && owner == sub
+          None => false
+        }
+        if !takeover {
+          return Some("a vault's owner does not change")
+        }
+      }
+      if !history::deletion_ok(is_true(field(prev, "deleted")), deleted) {
+        return Some("a deleted vault stays deleted")
+      }
+      let held_epoch = num(field(prev, "epoch")).to_int64()
+      if !history::epoch_ok(false, held_epoch, epoch.to_int64()) {
+        return Some("the epoch does not go back")
+      }
+      let devices : Array[Option[form::Json]] = []
+      let mut ki = 0
+      while ki < keys.length() {
+        devices.push(field(field(Some(keys[ki]), "cert"), "device"))
+        ki = ki + 1
+      }
+      let mut gone = false
+      let prev_members = arr_of(field(prev, "members"))
+      let mut mi = 0
+      while mi < prev_members.length() {
+        let ok = match prev_members[mi] {
+          form::Json::Str(s) => str_in(members, s)
+          _ => false
+        }
+        if !ok {
+          gone = true
+          break
+        }
+        mi = mi + 1
+      }
+      if !gone {
+        let prev_keys = arr_of(field(prev, "keys"))
+        let mut pki = 0
+        while pki < prev_keys.length() {
+          let pd = field(field(Some(prev_keys[pki]), "cert"), "device")
+          let mut found = false
+          let mut di = 0
+          while di < devices.length() {
+            if form::opt_json_eq(devices[di], pd) {
+              found = true
+              break
+            }
+            di = di + 1
+          }
+          if !found {
+            gone = true
+            break
+          }
+          pki = pki + 1
+        }
+      }
+      if !history::epoch_ok(gone, held_epoch, epoch.to_int64()) {
+        return Some("removing a member or device takes a new epoch (a new vault key)")
+      }
+    }
+  }
+  let mut mi2 = 0
+  while mi2 < members.length() {
+    let m = members[mi2]
+    if !lock.members.contains(m) {
+      return Some("member " + m + " is not in the lock")
+    }
+    mi2 = mi2 + 1
+  }
+  let seen : Map[String, Bool] = Map::new()
+  let mut ki2 = 0
+  while ki2 < keys.length() {
+    let k = Some(keys[ki2])
+    if !is_object(k) || !b64(field(k, "wrapped"), 200) {
+      return Some("a key is {cert, wrapped}")
+    }
+    match cert_ok(lock, field(k, "cert"), true, c) {
+      Some(why) => return Some(why)
+      None => ()
+    }
+    let device = match text_of(field(field(k, "cert"), "device")) {
+      Some(s) => s
+      None => ""
+    }
+    let dev_sub = match lock.devices.get(device) {
+      Some(d) => d.sub
+      None => ""
+    }
+    let member = str_in(members, dev_sub)
+    let is_seen = seen.contains(device)
+    if !role::key_ok(is_seen, member) {
+      return Some(if is_seen { "one key per device" } else { "a key is for a member's device" })
+    }
+    seen.set(device, true)
+    ki2 = ki2 + 1
+  }
+  let key = match text_of(field(field(v, "sig"), "key")) {
+    Some(k) => k
+    None => ""
+  }
+  let by = signer_of(lock, key)
+  let has_by = match by {
+    Some(_) => true
+    None => false
+  }
+  let prev_is_none = match prev {
+    None => true
+    Some(_) => false
+  }
+  let signer_ok = match by {
+    None => false
+    Some((sub, _)) => {
+      if is_workspace {
+        str_in(members, sub) && is_admin(lock, sub) && (if prev_is_none && seq == 0.0 { sub == owner } else { true })
+      } else {
+        sub == owner
+      }
+    }
+  }
+  if !role::signed_by(has_by, signer_ok) {
+    return Some(if is_workspace {
+      "a workspace vault is signed by a workspace owner or admin in the lock"
+    } else {
+      "a vault is signed by one of its owner's devices in the lock"
+    })
+  }
+  if !signed_ok(next, "stillfail-vault/1", c) {
+    return Some("the vault's signature is invalid")
+  }
+  None
+}
+
+pub fn browser_listing_ok(kind : String, modes : Array[String], hosts : Array[String]) -> Option[String] {
+  let sign = kind == "browser"
+  if sign != str_in(modes, "browser") || (sign && modes.length() != 1) {
+    return Some("a sign-in (kind browser) is given into a chat's browser (modes: [\"browser\"]), and only a sign-in is")
+  }
+  if sign {
+    if hosts.length() == 0 {
+      return Some("a sign-in names the sites it is for (github.com: its subdomains with it)")
+    }
+    let mut i = 0
+    while i < hosts.length() {
+      if hosts[i].starts_with("*.") {
+        return Some("a sign-in names the sites it is for (github.com: its subdomains with it)")
+      }
+      i = i + 1
+    }
+  }
+  None
+}
+
+fn listing_ok(l : Option[form::Json]) -> Option[String] {
+  if !is_object(l) || !text_max(field(l, "name"), 200) {
+    return Some("a listing is {name, kind, modes, hosts, env?}")
+  }
+  let kind = match text_of(field(l, "kind")) {
+    Some(k) => {
+      if !is_kind(k) {
+        return Some("a listing is {name, kind, modes, hosts, env?}")
+      }
+      k
+    }
+    None => return Some("a listing is {name, kind, modes, hosts, env?}")
+  }
+  let ms : Array[String] = []
+  match field(l, "modes") {
+    Some(form::Json::Arr(xs)) => {
+      if !unique(xs) {
+        return Some("modes are proxy, ssh, env, file or browser")
+      }
+      let mut i = 0
+      while i < xs.length() {
+        match xs[i] {
+          form::Json::Str(s) => {
+            if !is_mode(s) {
+              return Some("modes are proxy, ssh, env, file or browser")
+            }
+            ms.push(s)
+          }
+          _ => return Some("modes are proxy, ssh, env, file or browser")
+        }
+        i = i + 1
+      }
+    }
+    _ => return Some("modes are proxy, ssh, env, file or browser")
+  }
+  let hs : Array[String] = []
+  match field(l, "hosts") {
+    Some(form::Json::Arr(xs)) => {
+      if xs.length() > 64 {
+        return Some("hosts are domain names (*.example.com allowed)")
+      }
+      let mut i = 0
+      while i < xs.length() {
+        match xs[i] {
+          form::Json::Str(s) => {
+            if form::utf16_len(s) > 253 || !host_ok(s) {
+              return Some("hosts are domain names (*.example.com allowed)")
+            }
+            hs.push(s)
+          }
+          _ => return Some("hosts are domain names (*.example.com allowed)")
+        }
+        i = i + 1
+      }
+    }
+    _ => return Some("hosts are domain names (*.example.com allowed)")
+  }
+  match browser_listing_ok(kind, ms, hs) {
+    Some(why) => return Some(why)
+    None => ()
+  }
+  match field(l, "env") {
+    Some(form::Json::Str(s)) => {
+      if form::utf16_len(s) > 100 || !env_name(s) {
+        return Some("env is a variable name")
+      }
+    }
+    Some(_) => return Some("env is a variable name")
+    None => ()
+  }
+  match field(l, "lasts") {
+    Some(form::Json::Str(s)) => {
+      if !is_scope(s) {
+        return Some("lasts is once, hour or chat")
+      }
+    }
+    Some(_) => return Some("lasts is once, hour or chat")
+    None => ()
+  }
+  None
+}
+
+pub fn item_ok(lock : LockView, vault : form::Json, prev : Option[form::Json], next : form::Json, copy : Bool, c : Crypto) -> Option[String] {
+  let i = Some(next)
+  let v = Some(vault)
+  let vault_is_str = match field(i, "vault") {
+    Some(form::Json::Str(_)) => true
+    _ => false
+  }
+  if !is_object(i) || !is_num_one(field(i, "v")) || !opt_str_eq(text_of(field(i, "ws")), lock.ws) || !form::opt_json_eq(field(i, "vault"), field(v, "id")) || !vault_is_str {
+    return Some("an item is {v: 1, ws, vault, …} of this vault")
+  }
+  let id = match text_of(field(i, "id")) {
+    Some(s) => {
+      if !ulid_id(s, "i_") {
+        return Some("an item's id is i_<ULID>")
+      }
+      s
+    }
+    None => return Some("an item's id is i_<ULID>")
+  }
+  if !is_whole(field(i, "version")) || !is_whole(field(i, "epoch")) || !is_whole(field(i, "at")) {
+    return Some("version, epoch and at are whole numbers")
+  }
+  match field(i, "deleted") {
+    Some(form::Json::Bool(true)) => ()
+    Some(_) => return Some("deleted is true or absent")
+    None => ()
+  }
+  let deleted = is_true(field(i, "deleted"))
+  if !b64(field(i, "ct"), 1048576) {
+    return Some("ct is base64url")
+  }
+  let ct = match text_of(field(i, "ct")) {
+    Some(s) => s
+    None => ""
+  }
+  let has_listing = match field(i, "listing") {
+    Some(_) => true
+    None => false
+  }
+  if deleted && (ct != "" || has_listing) {
+    return Some("a deleted item has no ciphertext or listing")
+  }
+  if !deleted && ct.length() < 38 {
+    return Some("an item holds a ciphertext")
+  }
+  if has_listing {
+    match listing_ok(field(i, "listing")) {
+      Some(why) => return Some(why)
+      None => ()
+    }
+  }
+  if !sig_shape(field(i, "sig")) {
+    return Some("an item is signed")
+  }
+  let epoch = num(field(i, "epoch"))
+  let vault_epoch = num(field(v, "epoch"))
+  if !history::item_epoch_ok(deleted, copy, epoch.to_int64(), vault_epoch.to_int64()) {
+    return Some("an item is written under the vault's epoch " + whole(vault_epoch))
+  }
+  let version = num(field(i, "version"))
+  match prev {
+    None => {
+      if version != 0.0 && !copy {
+        return Some("an item's first version is 0")
+      }
+    }
+    Some(_) => {
+      if !opt_str_eq(text_of(field(prev, "id")), id) || !form::opt_json_eq(field(prev, "vault"), field(i, "vault")) {
+        return Some("another item")
+      }
+      if !history::item_open(is_true(field(prev, "deleted"))) {
+        return Some("the item was deleted")
+      }
+      let held = num(field(prev, "version"))
+      if !history::follows(copy, held.to_int64(), version.to_int64()) {
+        return Some(if copy { "a copy is later than version " + whole(held) } else { "version " + whole(held + 1.0) + " follows " + whole(held) })
+      }
+    }
+  }
+  let key = match text_of(field(field(i, "sig"), "key")) {
+    Some(k) => k
+    None => ""
+  }
+  let members = arr_of(field(v, "members"))
+  let by = signer_of(lock, key)
+  let has_by = match by {
+    Some(_) => true
+    None => false
+  }
+  let whose = match by {
+    Some((sub, _)) => has_text(members, sub)
+    None => false
+  }
+  if !role::signed_by(has_by, whose) {
+    return Some("an item is signed by a vault member's device in the lock")
+  }
+  if !signed_ok(next, "stillfail-vault-item/1", c) {
+    return Some("the item's signature is invalid")
+  }
+  None
+}

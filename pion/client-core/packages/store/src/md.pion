@@ -1,0 +1,617 @@
+// Kept Markdown trees (`md_kept`) and opened logs (`log_use`) for one station of an account database.
+// Exact port of `libs/client-core/src/store/md.mbt` and `client/core-ts/src/data.ts` (`mdStore`, `flushMd`).
+// Reading never writes: pending puts, touches, and log opens are buffered in memory and flushed in one
+// `sql::Burst` transaction via `MdStore::flush_turn` after the page's first view has rendered.
+
+import "base_codec"
+import "sql"
+
+/// Markdown reading version (markdown.ts `MD_READING`).
+pub fn md_reading() -> Int { 14 }
+
+/// Earliest drawable reading version (markdown.ts `MD_DRAWABLE_FROM`).
+pub fn md_drawable_from() -> Int { 1 }
+
+/// Minimum interval (ms) before noting a shown tree again (account.ts `MD_SHOWN_EVERY`).
+pub fn md_shown_every() -> Int64 { 86400000.to_int64() }
+
+/// Maximum total size of kept Markdown JSON before LRU eviction (account.ts `MD_KEPT`).
+pub fn md_kept_most() -> Int { 32 * 1024 * 1024 }
+
+fn md_kept_to_percent() -> Int { 80 }
+
+/// Decode UTF-8 Pion `String` into UTF-16 code units (matching JavaScript / MoonBit `String`).
+pub fn utf16_code_units(text : String) -> Array[Int] {
+  let raw = text.to_bytes()
+  let n = raw.length()
+  let out : Array[Int] = []
+  let mut i = 0
+  while i < n {
+    let b0 = raw[i].to_int()
+    if b0 < 0x80 {
+      out.push(b0)
+      i += 1
+    } else if (b0 & 0xE0) == 0xC0 && i + 1 < n {
+      let b1 = raw[i + 1].to_int()
+      let cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F)
+      out.push(cp)
+      i += 2
+    } else if (b0 & 0xF0) == 0xE0 && i + 2 < n {
+      let b1 = raw[i + 1].to_int()
+      let b2 = raw[i + 2].to_int()
+      let cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)
+      out.push(cp)
+      i += 3
+    } else if (b0 & 0xF8) == 0xF0 && i + 3 < n {
+      let b1 = raw[i + 1].to_int()
+      let b2 = raw[i + 2].to_int()
+      let b3 = raw[i + 3].to_int()
+      let cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
+      let adj = cp - 0x10000
+      out.push(0xD800 + (adj >> 10))
+      out.push(0xDC00 + (adj & 0x3FF))
+      i += 4
+    } else {
+      out.push(0xFFFD)
+      i += 1
+    }
+  }
+  out
+}
+
+fn u32_mask_md() -> Int64 {
+  (0xFFFF.to_int64() << 16) | 0xFFFF.to_int64()
+}
+
+fn u32_to_base36(v : Int64) -> String {
+  let u = v & u32_mask_md()
+  if u == 0.to_int64() {
+    return "0"
+  }
+  let digits : Array[Byte] = []
+  let base = 36.to_int64()
+  let mut cur = u
+  while cur > 0.to_int64() {
+    let rem = (cur % base).to_int()
+    let ch = if rem < 10 { (48 + rem) as Byte } else { (87 + rem) as Byte }
+    digits.push(ch)
+    cur = cur / base
+  }
+  let sb = StringBuilder::new()
+  let mut idx = digits.length() - 1
+  while idx >= 0 {
+    sb.write_byte(digits[idx])
+    idx -= 1
+  }
+  sb.to_string()
+}
+
+/// Byte-identical key to TypeScript `markdown.ts mdKey` and MoonBit `libs/client-core md_key`:
+/// `<MD_READING>.<utf16_len>.<fnv1a_a_base36>.<fnv1a_b_base36>`.
+pub fn md_key(text : String) -> String {
+  let units = utf16_code_units(text)
+  let ulen = units.length()
+  let mask = u32_mask_md()
+  let mut a : Int64 = (0x811C.to_int64() << 16) | 0x9DC5.to_int64()
+  let mut b : Int64 = (0x01000193.to_int64() ^ ulen.to_int64()) & mask
+  let pa = 0x01000193.to_int64()
+  let pb = 0x0100019D.to_int64()
+  for i in 0..<ulen {
+    let c = units[i].to_int64()
+    a = ((a ^ c) * pa) & mask
+    b = ((b ^ c) * pb) & mask
+  }
+  md_reading().to_string() + "." + ulen.to_string() + "." + u32_to_base36(a) + "." + u32_to_base36(b)
+}
+
+/// Older drawable reading keys for the same text, newest first (markdown.ts `olderMdKeys`).
+pub fn older_md_keys(key : String, from : Int = 1) -> Array[String] {
+  let out : Array[String] = []
+  let dot = key.index_of(".")
+  if dot < 0 {
+    return out
+  }
+  let suffix = key.slice(dot, key.length())
+  let mut reading = md_reading() - 1
+  while reading >= from {
+    out.push(reading.to_string() + suffix)
+    reading -= 1
+  }
+  out
+}
+
+// SQL statements run by MdStore (exported for test fake-DB verification).
+pub fn sql_md_one() -> String {
+  "SELECT used, json FROM md_kept WHERE station = ? AND key = ?"
+}
+
+pub fn sql_md_many_head() -> String {
+  "SELECT key, used, json FROM md_kept WHERE station = ? AND key IN ("
+}
+
+pub fn sql_opened() -> String {
+  "SELECT opened FROM log_use WHERE kind = ? AND station = ? AND id = ?"
+}
+
+pub fn sql_note_opened() -> String {
+  "INSERT INTO log_use (kind, station, id, opened, evicted) VALUES (?, ?, ?, ?, 0) ON CONFLICT (kind, station, id) DO UPDATE SET opened = excluded.opened, evicted = 0"
+}
+
+pub fn sql_md_make() -> String {
+  sql_ensure_md_kept()
+}
+
+pub fn sql_md_touch() -> String {
+  "UPDATE md_kept SET used = ? WHERE station = ? AND key = ?"
+}
+
+pub fn sql_md_total() -> String {
+  "SELECT coalesce(sum(size), 0) FROM md_kept"
+}
+
+pub fn sql_md_size() -> String {
+  "SELECT size FROM md_kept WHERE station = ? AND key = ?"
+}
+
+pub fn sql_md_drop() -> String {
+  "DELETE FROM md_kept WHERE station = ? AND key = ?"
+}
+
+pub fn sql_md_put() -> String {
+  "INSERT OR REPLACE INTO md_kept (station, key, of, size, used, json) VALUES (?, ?, ?, ?, ?, ?)"
+}
+
+pub fn sql_md_by_use() -> String {
+  "SELECT station, key, size FROM md_kept ORDER BY used"
+}
+
+pub struct Kept {
+  pub used : Int64
+  pub json : String
+}
+
+struct MdPut {
+  of_ : String
+  key : String
+  json : String
+  at : Int64
+  replaces : Option[String]
+}
+
+struct LogUsePending {
+  kind : String
+  id : String
+  at : Int64
+}
+
+pub struct MdStore {
+  pub db : sql::Sql
+  pub station : String
+  read : Map[String, Option[Kept]]
+  puts : Map[String, MdPut]
+  mut put_order : Array[String]
+  touches : Map[String, Int64]
+  mut touch_order : Array[String]
+  opened_at : Map[String, Int64]
+  uses : Map[String, LogUsePending]
+  mut use_order : Array[String]
+  mut kept_there : Bool
+  mut size : Option[Int]
+  later_fn : () -> Unit
+  mut asked_later : Bool
+}
+
+pub fn MdStore::new(
+  db : sql::Sql,
+  station : String,
+  later : () -> Unit = fn() -> Unit {},
+) -> MdStore {
+  MdStore::{
+    db: db,
+    station: station,
+    read: Map::new(),
+    puts: Map::new(),
+    put_order: [],
+    touches: Map::new(),
+    touch_order: [],
+    opened_at: Map::new(),
+    uses: Map::new(),
+    use_order: [],
+    kept_there: true,
+    size: None,
+    later_fn: later,
+    asked_later: false,
+  }
+}
+
+fn MdStore::pending_now(self : MdStore) -> Unit {
+  if self.asked_later {
+    return
+  }
+  self.asked_later = true
+  let f = self.later_fn
+  f()
+}
+
+pub fn MdStore::pending(self : MdStore) -> Bool {
+  self.put_order.length() > 0 || self.touch_order.length() > 0 || self.use_order.length() > 0
+}
+
+fn MdStore::kept_one(self : MdStore, key : String) -> Option[Kept] {
+  if !self.kept_there {
+    return None
+  }
+  let rows = match self.db.all(sql_md_one(), params=[base_codec::json_str(self.station), base_codec::json_str(key)]) {
+    sql::SqlResult::Err(_) => {
+      self.kept_there = false
+      return None
+    }
+    sql::SqlResult::Ok(r) => r
+  }
+  if rows.length() > 0 {
+    Some(Kept::{ used: sql::col_int64(rows[0], 0), json: sql::col_text(rows[0], 1) })
+  } else {
+    None
+  }
+}
+
+fn MdStore::kept_many(self : MdStore, keys : Array[String]) -> Map[String, Kept] {
+  let out : Map[String, Kept] = Map::new()
+  if !self.kept_there || keys.length() == 0 {
+    return out
+  }
+  let found = match sql::query_in_chunks(
+    self.db,
+    keys,
+    fn(ph : String) -> String { sql_md_many_head() + ph + ")" },
+    fn(r : Array[base_codec::Json]) -> Option[(String, Kept)] {
+      Some((sql::col_text(r, 0), Kept::{ used: sql::col_int64(r, 1), json: sql::col_text(r, 2) }))
+    },
+    extra_params=[base_codec::json_str(self.station)],
+  ) {
+    sql::SqlResult::Err(_) => {
+      self.kept_there = false
+      return out
+    }
+    sql::SqlResult::Ok(items) => items
+  }
+  for i in 0..<found.length() {
+    let (k, v) = found[i]
+    out.set(k, v)
+  }
+  out
+}
+
+/// Preload trees for `keys` in a single chunked statement (and one more for older readings if any miss).
+pub fn MdStore::preload(self : MdStore, keys : Array[String], older : Bool = true) -> Unit {
+  let rest : Array[String] = []
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    if self.puts.get(k).is_none() && self.read.get(k).is_none() {
+      rest.push(k)
+    }
+  }
+  if rest.length() == 0 {
+    return
+  }
+  let found = self.kept_many(rest)
+  for i in 0..<rest.length() {
+    let k = rest[i]
+    self.read.set(k, found.get(k))
+  }
+  if !older {
+    return
+  }
+  let olders : Array[String] = []
+  for i in 0..<rest.length() {
+    let k = rest[i]
+    if found.get(k).is_none() {
+      let cand = older_md_keys(k)
+      for j in 0..<cand.length() {
+        let o = cand[j]
+        if self.puts.get(o).is_none() && self.read.get(o).is_none() {
+          olders.push(o)
+        }
+      }
+    }
+  }
+  if olders.length() == 0 {
+    return
+  }
+  let old = self.kept_many(olders)
+  for i in 0..<olders.length() {
+    let k = olders[i]
+    self.read.set(k, old.get(k))
+  }
+}
+
+pub fn MdStore::has(self : MdStore, key : String) -> Bool {
+  if self.puts.get(key).is_some() {
+    return true
+  }
+  match self.read.get(key) {
+    Some(found) => found.is_some()
+    None => {
+      let found = self.kept_one(key)
+      self.read.set(key, found)
+      found.is_some()
+    }
+  }
+}
+
+pub fn MdStore::older_kept(self : MdStore, key : String) -> Option[String] {
+  let cand = older_md_keys(key)
+  for i in 0..<cand.length() {
+    let o = cand[i]
+    if self.has(o) {
+      return Some(o)
+    }
+  }
+  None
+}
+
+pub fn MdStore::get(self : MdStore, key : String, now : Int64) -> Option[String] {
+  match self.puts.get(key) {
+    Some(p) => return Some(p.json)
+    None => ()
+  }
+  let found = match self.read.get(key) {
+    Some(f) => f
+    None => {
+      let f = self.kept_one(key)
+      self.read.set(key, f)
+      f
+    }
+  }
+  let k = match found {
+    Some(v) => v
+    None => return None
+  }
+  if now - k.used >= md_shown_every() && self.touches.get(key).is_none() {
+    self.touches.set(key, now)
+    self.touch_order.push(key)
+    self.read.set(key, Some(Kept::{ used: now, json: k.json }))
+    self.pending_now()
+  }
+  Some(k.json)
+}
+
+pub fn MdStore::put_prepared(
+  self : MdStore,
+  key : String,
+  json : String,
+  of_ : String,
+  at : Int64,
+  replaces : Option[String] = None,
+) -> Unit {
+  if self.puts.get(key).is_none() {
+    self.put_order.push(key)
+  }
+  self.puts.set(key, MdPut::{ of_: of_, key: key, json: json, at: at, replaces: replaces })
+  self.touches.remove(key)
+  match replaces {
+    Some(r) => {
+      self.puts.remove(r)
+      self.read.set(r, None)
+    }
+    None => ()
+  }
+  self.read.set(key, Some(Kept::{ used: at, json: json }))
+  self.pending_now()
+}
+
+fn log_use_key(kind : String, id : String) -> String {
+  let sb = StringBuilder::new()
+  sb.write_string(kind)
+  sb.write_byte(1 as Byte)
+  sb.write_string(id)
+  sb.to_string()
+}
+
+pub fn MdStore::note_opened(self : MdStore, kind : String, id : String, at : Int64) -> Unit {
+  let k = log_use_key(kind, id)
+  self.opened_at.set(k, at)
+  if self.uses.get(k).is_none() {
+    self.use_order.push(k)
+  }
+  self.uses.set(k, LogUsePending::{ kind: kind, id: id, at: at })
+  self.pending_now()
+}
+
+pub fn MdStore::last_opened(self : MdStore, kind : String, id : String) -> sql::SqlResult[Option[Int64]] {
+  let k = log_use_key(kind, id)
+  match self.opened_at.get(k) {
+    Some(at) => return sql::SqlResult::Ok(Some(at))
+    None => ()
+  }
+  match self.db.all(sql_opened(), params=[
+    base_codec::json_str(kind),
+    base_codec::json_str(self.station),
+    base_codec::json_str(id),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        sql::SqlResult::Ok(sql::col_opt_int64(rows[0], 0))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}
+
+fn read_size_of(b : sql::Burst, station : base_codec::Json, key : String) -> sql::SqlResult[Int] {
+  match b.all(sql_md_size(), params=[station, base_codec::json_str(key)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        sql::SqlResult::Ok(sql::col_int(rows[0], 0))
+      } else {
+        sql::SqlResult::Ok(0)
+      }
+    }
+  }
+}
+
+/// Flush all pending `log_use`, touch, and `md_kept` writes in a single `Burst` transaction.
+pub fn MdStore::flush_turn(self : MdStore, burst : Option[sql::Burst] = None) -> sql::SqlResult[Bool] {
+  self.asked_later = false
+  if !self.pending() {
+    return sql::SqlResult::Ok(false)
+  }
+  let b_inst = match burst {
+    Some(b) => b
+    None => sql::Burst::new(self.db)
+  }
+  let station = base_codec::json_str(self.station)
+
+  let uses : Array[LogUsePending] = []
+  for i in 0..<self.use_order.length() {
+    match self.uses.get(self.use_order[i]) {
+      Some(u) => uses.push(u)
+      None => ()
+    }
+  }
+  let touches : Array[(String, Int64)] = []
+  for i in 0..<self.touch_order.length() {
+    let tk = self.touch_order[i]
+    match self.touches.get(tk) {
+      Some(tv) => touches.push((tk, tv))
+      None => ()
+    }
+  }
+  let puts : Array[MdPut] = []
+  let put_keys : Map[String, Bool] = Map::new()
+  for i in 0..<self.put_order.length() {
+    let pk = self.put_order[i]
+    match self.puts.get(pk) {
+      Some(pv) => {
+        puts.push(pv)
+        put_keys.set(pk, true)
+      }
+      None => ()
+    }
+  }
+
+  for i in 0..<self.use_order.length() {
+    self.uses.remove(self.use_order[i])
+  }
+  for i in 0..<self.touch_order.length() {
+    self.touches.remove(self.touch_order[i])
+  }
+  for i in 0..<self.put_order.length() {
+    self.puts.remove(self.put_order[i])
+  }
+  self.use_order = []
+  self.touch_order = []
+  self.put_order = []
+
+  let res = b_inst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+    for i in 0..<uses.length() {
+      let u = uses[i]
+      match b.run(sql_note_opened(), params=[
+        base_codec::json_str(u.kind),
+        station,
+        base_codec::json_str(u.id),
+        base_codec::json_int64(u.at),
+      ]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+    }
+    if touches.length() == 0 && puts.length() == 0 {
+      return sql::SqlResult::Ok(())
+    }
+    if !self.kept_there {
+      match b.exec(sql_md_make()) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => {
+          self.kept_there = true
+        }
+      }
+    }
+    for i in 0..<touches.length() {
+      let (tk, tat) = touches[i]
+      if put_keys.get(tk).is_none() {
+        match b.run(sql_md_touch(), params=[base_codec::json_int64(tat), station, base_codec::json_str(tk)]) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => ()
+        }
+      }
+    }
+    if puts.length() == 0 {
+      return sql::SqlResult::Ok(())
+    }
+    let mut size = match self.size {
+      Some(s) => s
+      None =>
+      match b.all(sql_md_total()) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(rows) => if rows.length() > 0 { sql::col_int(rows[0], 0) } else { 0 }
+      }
+    }
+    for i in 0..<puts.length() {
+      let p = puts[i]
+      let was = match read_size_of(b, station, p.key) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(s) => s
+      }
+      match p.replaces {
+        Some(r) => {
+          if r != p.key {
+            let old = match read_size_of(b, station, r) {
+              sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+              sql::SqlResult::Ok(s) => s
+            }
+            match b.run(sql_md_drop(), params=[station, base_codec::json_str(r)]) {
+              sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+              sql::SqlResult::Ok(_) => ()
+            }
+            size -= old
+          }
+        }
+        None => ()
+      }
+      let psize = p.json.length()
+      match b.run(sql_md_put(), params=[
+        station,
+        base_codec::json_str(p.key),
+        base_codec::json_str(p.of_),
+        base_codec::json_int(psize),
+        base_codec::json_int64(p.at),
+        base_codec::json_str(p.json),
+      ]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+      size += psize - was
+    }
+    if size > md_kept_most() {
+      let all_rows = match b.all(sql_md_by_use()) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(r) => r
+      }
+      let target = md_kept_most().to_int64() * md_kept_to_percent().to_int64()
+      for i in 0..<all_rows.length() {
+        if size.to_int64() * 100.to_int64() <= target {
+          break
+        }
+        let r = all_rows[i]
+        match b.run(sql_md_drop(), params=[r[0], r[1]]) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => ()
+        }
+        size -= sql::col_int(r, 2)
+        if sql::col_text(r, 0) == self.station {
+          self.read.remove(sql::col_text(r, 1))
+        }
+      }
+    }
+    self.size = Some(size)
+    sql::SqlResult::Ok(())
+  })
+  match res {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(true)
+  }
+}

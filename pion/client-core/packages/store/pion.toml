@@ -1,0 +1,9 @@
+[package]
+name = "store"
+version = "0.1.0"
+
+[dependencies]
+effect = { workspace = true }
+base_codec = { path = "../../../base/packages/base_codec" }
+shell = { path = "../../../base/packages/shell" }
+sql = { path = "../../../base/packages/sql" }

@@ -1,0 +1,428 @@
+///| Workspace LockState built from people's logs (`rules/src/lock/state4.mbt`).
+
+pub let web_skew_secs : Double = 600.0
+
+pub struct State4 {
+  on : String
+  lock : LockState
+  root_in : Bool
+}
+
+struct Carry {
+  apps : Array[Device]
+  webs : Array[Device]
+  sayless : Map[String, (String, Array[String])]
+}
+
+pub fn state4(
+  ws : String,
+  root : String,
+  chains : Array[Array[form::Json]],
+  bodies : Array[form::Json],
+  now : Double,
+  c : Crypto,
+) -> State4 {
+  state4_of(ws, root, chains, bodies, now, None, c)
+}
+
+pub fn state4_moved(
+  ws : String,
+  chain : Array[form::Json],
+  chains : Array[Array[form::Json]],
+  bodies : Array[form::Json],
+  now : Double,
+  c : Crypto,
+) -> State4 {
+  state4_carried(ws, moved_of(chain, c), chains, bodies, now, c)
+}
+
+pub fn state4_carried(
+  ws : String,
+  m : Moved,
+  chains : Array[Array[form::Json]],
+  bodies : Array[form::Json],
+  now : Double,
+  c : Crypto,
+) -> State4 {
+  state4_of(ws, m.root, chains, bodies, now, m.carried, c)
+}
+
+fn carry_of(
+  cr : Carried,
+  sub : String,
+  lock : String,
+  logs : form::OrderedMap[(Person, Array[form::Json])],
+  now : Double,
+  off : Map[String, Bool],
+) -> Carry {
+  let empty = Carry::{ apps: [], webs: [], sayless: Map::new() }
+  let bound = match cr.chain.persons.get(sub) {
+    Some(l) => l
+    None => ""
+  }
+  if !(cr.chain.members.contains(sub) && (bound == lock || bound == "")) {
+    return empty
+  }
+  let put : Map[String, Bool] = Map::new()
+  let said : Map[String, Bool] = Map::new()
+  if lock != "" {
+    let (p, chain) = match logs.get(lock) {
+      Some(pair) => pair
+      None => return empty
+    }
+    if p.sub != sub {
+      return empty
+    }
+    let mut ei = 0
+    while ei < chain.length() {
+      let e = Some(chain[ei])
+      let b = field(e, "body")
+      match text_of(field(e, "kind")) {
+        Some("genesis") => {
+          match text_of(field(field(b, "device"), "id")) {
+            Some(id) => put.set(id, true)
+            None => ()
+          }
+        }
+        Some("device") => {
+          match text_of(field(b, "id")) {
+            Some(id) => put.set(id, true)
+            None => ()
+          }
+        }
+        Some("web") | Some("web.remove") => {
+          match text_of(field(b, "id")) {
+            Some(id) => said.set(id, true)
+            None => ()
+          }
+        }
+        _ => ()
+      }
+      ei = ei + 1
+    }
+  }
+  let apps : Array[Device] = []
+  let webs : Array[Device] = []
+  let sayless : Map[String, (String, Array[String])] = Map::new()
+  let sub_devs = match cr.devices_of.get(sub) {
+    Some(ds) => ds
+    None => []
+  }
+  let mut di = 0
+  while di < sub_devs.length() {
+    let d = sub_devs[di]
+    if d.kind == "app" && d.own {
+      match d.sign_key {
+        Some(k) => {
+          if put.contains(d.id) {
+            let ks = match cr.chain.sign_keys.get(d.id) {
+              Some(xs) => xs
+              None => [k]
+            }
+            sayless.set(d.id, (k, ks))
+          } else if !off.contains(d.id) {
+            apps.push(d)
+          }
+        }
+        None => ()
+      }
+    } else if d.kind == "web" && !said.contains(d.id) {
+      match d.exp {
+        Some(exp) => {
+          if now < exp {
+            webs.push(d)
+          }
+        }
+        None => ()
+      }
+    }
+    di = di + 1
+  }
+  Carry::{ apps: apps, webs: webs, sayless: sayless }
+}
+
+fn cr_keys(carried : Option[Carried], id : String) -> Option[Array[String]] {
+  match carried {
+    Some(cr) => cr.chain.sign_keys.get(id)
+    None => None
+  }
+}
+
+fn state4_of(
+  ws : String,
+  root : String,
+  chains : Array[Array[form::Json]],
+  bodies : Array[form::Json],
+  now : Double,
+  carried : Option[Carried],
+  c : Crypto,
+) -> State4 {
+  let (r, logs, offs) = roster_of(ws, root, chains, bodies, [], carried, c)
+  let base = LockState::{
+    ws: ws,
+    seq: 0.0,
+    head: root,
+    genesis: root,
+    origins: [],
+    rp_id: "",
+    cloud_keys: form::Json::Null,
+    members: form::OrderedMap::new(),
+    devices: form::OrderedMap::new(),
+    sign_keys: form::OrderedMap::new(),
+    passkeys: form::OrderedMap::new(),
+    signed: form::OrderedMap::new(),
+    stations: form::OrderedMap::new(),
+    gateways: form::OrderedMap::new(),
+    persons: form::OrderedMap::new(),
+    disabled: false,
+    moved: None,
+  }
+  let rp = match logs.get(root) {
+    Some((p, _)) => {
+      if !r.rooted {
+        return State4::{ on: "no root", lock: base, root_in: false }
+      }
+      p
+    }
+    None => return State4::{ on: "no root", lock: base, root_in: false }
+  }
+  let set = r.settings
+  let by_chain : Option[LockState] = match (r.settings, carried) {
+    (None, Some(cr)) => Some(cr.chain)
+    _ => None
+  }
+  let s = match by_chain {
+    Some(ch) => {
+      LockState::{
+        ws: base.ws,
+        seq: rp.seq,
+        head: rp.head,
+        genesis: base.genesis,
+        origins: ch.origins,
+        rp_id: ch.rp_id,
+        cloud_keys: ch.cloud_keys,
+        members: base.members,
+        devices: base.devices,
+        sign_keys: base.sign_keys,
+        passkeys: base.passkeys,
+        signed: base.signed,
+        stations: base.stations,
+        gateways: base.gateways,
+        persons: base.persons,
+        disabled: opt_str_eq(r.newest, "off"),
+        moved: None,
+      }
+    }
+    None => {
+      let raw_origins = arr(field(set, "origins"))
+      let origins : Array[String] = []
+      let mut oi = 0
+      while oi < raw_origins.length() {
+        match text_of(Some(raw_origins[oi])) {
+          Some(o) => origins.push(o)
+          None => ()
+        }
+        oi = oi + 1
+      }
+      let rp_id = match text_of(field(set, "rp_id")) {
+        Some(x) => x
+        None => ""
+      }
+      let cloud_keys = match field(set, "cloud_keys") {
+        Some(x) => x
+        None => form::Json::Null
+      }
+      LockState::{
+        ws: base.ws,
+        seq: rp.seq,
+        head: rp.head,
+        genesis: base.genesis,
+        origins: origins,
+        rp_id: rp_id,
+        cloud_keys: cloud_keys,
+        members: base.members,
+        devices: base.devices,
+        sign_keys: base.sign_keys,
+        passkeys: base.passkeys,
+        signed: base.signed,
+        stations: base.stations,
+        gateways: base.gateways,
+        persons: base.persons,
+        disabled: opt_str_eq(r.newest, "off"),
+        moved: None,
+      }
+    }
+  }
+  let chain_email = fn(sub : String) -> Option[String] {
+    match carried {
+      Some(cr) => {
+        match cr.chain.members.get(sub) {
+          Some(m) => Some(m.email)
+          None => None
+        }
+      }
+      None => None
+    }
+  }
+  let forced : Map[String, String] = Map::new()
+  let mut fi = 0
+  while fi < r.in_force.length() {
+    forced.set(r.in_force[fi].0, r.in_force[fi].1)
+    fi = fi + 1
+  }
+  let bodies_by : Map[String, form::Json] = Map::new()
+  let mut bi = 0
+  while bi < bodies.length() {
+    match body_hash(bodies[bi], c) {
+      Ok(h) => bodies_by.set(h, bodies[bi])
+      Err(_) => ()
+    }
+    bi = bi + 1
+  }
+  let mut mi = 0
+  while mi < r.members.length() {
+    let m = r.members[mi]
+    let email_opt = match m.admit {
+      None => {
+        match set {
+          None => chain_email(m.sub)
+          Some(_) => text_of(field(set, "email"))
+        }
+      }
+      Some(x) => {
+        if x.starts_with("~") {
+          chain_email(m.sub)
+        } else {
+          match forced.get(x) {
+            Some(h) => text_of(field(bodies_by.get(h), "email"))
+            None => None
+          }
+        }
+      }
+    }
+    let email = match email_opt {
+      Some(e) => e
+      None => ""
+    }
+    s.members.set(m.sub, Member::{ sub: m.sub, email: email, role: m.role })
+    if m.lock != "" {
+      s.persons.set(m.sub, m.lock)
+    }
+    let has_admit = match m.admit {
+      Some(_) => true
+      None => false
+    }
+    let carry = match carried {
+      Some(cr) => {
+        if !(m.sub == rp.sub && has_admit) {
+          let sub_off = match offs.get(m.sub) {
+            Some(o) => o
+            None => Map::new()
+          }
+          carry_of(cr, m.sub, m.lock, logs, now, sub_off)
+        } else {
+          Carry::{ apps: [], webs: [], sayless: Map::new() }
+        }
+      }
+      None => Carry::{ apps: [], webs: [], sayless: Map::new() }
+    }
+    match logs.get(m.lock) {
+      Some((p, _)) => {
+        if p.sub == m.sub && p.devices.length() > 0 {
+          let pdevs = p.devices.values()
+          let mut di = 0
+          while di < pdevs.length() {
+            let d = pdevs[di]
+            let (sign_key, sign_keys) = match (d.sign_key, carry.sayless.get(d.id)) {
+              (None, Some((k, ks))) => {
+                let merged : Array[String] = []
+                let mut xi = 0
+                while xi < d.sign_keys.length() {
+                  merged.push(d.sign_keys[xi])
+                  xi = xi + 1
+                }
+                let mut yi = 0
+                while yi < ks.length() {
+                  if !str_in(d.sign_keys, ks[yi]) {
+                    merged.push(ks[yi])
+                  }
+                  yi = yi + 1
+                }
+                (Some(k), merged)
+              }
+              _ => (d.sign_key, d.sign_keys)
+            }
+            s.devices.set(d.id, Device::{ id: d.id, sub: m.sub, kind: "app", label: d.label, sign_key: sign_key, endpoints: None, exp: None, by: None, own: true })
+            if sign_keys.length() > 0 {
+              s.sign_keys.set(d.id, sign_keys)
+            }
+            match sign_key {
+              Some(_) => s.signed.set(m.sub, true)
+              None => ()
+            }
+            di = di + 1
+          }
+          let pwebs = p.webs.values()
+          let mut wi = 0
+          while wi < pwebs.length() {
+            let w = pwebs[wi]
+            if w.at <= now + web_skew_secs && now < w.exp {
+              s.devices.set(w.id, Device::{ id: w.id, sub: m.sub, kind: "web", label: w.label, sign_key: None, endpoints: None, exp: Some(w.exp), by: None, own: true })
+            }
+            wi = wi + 1
+          }
+        }
+      }
+      None => ()
+    }
+    let mut cai = 0
+    while cai < carry.apps.length() {
+      let d = carry.apps[cai]
+      if !s.devices.contains(d.id) {
+        s.devices.set(d.id, Device::{ id: d.id, sub: d.sub, kind: d.kind, label: d.label, sign_key: d.sign_key, endpoints: None, exp: d.exp, by: Some("chain"), own: true })
+        match cr_keys(carried, d.id) {
+          Some(ks) => s.sign_keys.set(d.id, ks)
+          None => ()
+        }
+        s.signed.set(m.sub, true)
+      }
+      cai = cai + 1
+    }
+    let mut cwi = 0
+    while cwi < carry.webs.length() {
+      let d = carry.webs[cwi]
+      if !s.devices.contains(d.id) {
+        s.devices.set(d.id, Device::{ id: d.id, sub: d.sub, kind: d.kind, label: d.label, sign_key: None, endpoints: None, exp: d.exp, by: Some("chain"), own: true })
+      }
+      cwi = cwi + 1
+    }
+    mi = mi + 1
+  }
+  let mut sti = 0
+  while sti < r.stations.length() {
+    let k = r.stations[sti]
+    s.stations.set(k, Station::{ key: k, name: "" })
+    sti = sti + 1
+  }
+  let on = match (r.newest, carried) {
+    (Some("off"), _) => "off"
+    (Some("open"), _) => "on"
+    (None, Some(_)) => "on"
+    _ => "not on"
+  }
+  let mut root_in = false
+  let mut rmi = 0
+  while rmi < r.members.length() {
+    let m = r.members[rmi]
+    let is_none = match m.admit {
+      None => true
+      Some(_) => false
+    }
+    if m.sub == rp.sub && is_none {
+      root_in = true
+      break
+    }
+    rmi = rmi + 1
+  }
+  State4::{ on: on, lock: s, root_in: root_in }
+}

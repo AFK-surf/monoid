@@ -1,0 +1,67 @@
+///| Version ordering and expiry rules (`rules/src/history/history.mbt`).
+
+pub fn follows(copy : Bool, held : Int64, next : Int64) -> Bool {
+  if copy {
+    next > held
+  } else {
+    next == held + 1.to_int64()
+  }
+}
+
+pub fn epoch_ok(gone : Bool, prev : Int64, next : Int64) -> Bool {
+  if next < prev {
+    false
+  } else if gone && next == prev {
+    false
+  } else {
+    true
+  }
+}
+
+pub fn deletion_ok(was : Bool, now : Bool) -> Bool {
+  !was || now
+}
+
+pub fn item_epoch_ok(deleted : Bool, copy : Bool, epoch : Int64, vault : Int64) -> Bool {
+  if epoch > vault {
+    false
+  } else if !deleted && !copy && epoch != vault {
+    false
+  } else {
+    true
+  }
+}
+
+pub fn unexpired(lasts : Bool, exp : Int64, now : Int64) -> Bool {
+  !lasts || exp > now
+}
+
+pub fn supersedes(
+  seq_a : Int64,
+  deleted_a : Bool,
+  epoch_a : Int64,
+  seq_b : Int64,
+  deleted_b : Bool,
+  epoch_b : Int64,
+  text : Int,
+) -> Bool {
+  if seq_a > seq_b {
+    true
+  } else if seq_a < seq_b {
+    false
+  } else if deleted_a && !deleted_b {
+    true
+  } else if deleted_b && !deleted_a {
+    false
+  } else if epoch_a > epoch_b {
+    true
+  } else if epoch_a < epoch_b {
+    false
+  } else {
+    text > 0
+  }
+}
+
+pub fn item_open(was : Bool) -> Bool {
+  !was
+}

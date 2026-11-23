@@ -1,0 +1,187 @@
+///| Workspace lock and vault role authorization rules (`rules/src/role/role.mbt`).
+
+pub enum Role {
+  Viewer
+  Member
+  Admin
+  Owner
+}
+
+pub enum Change {
+  MemberSet(Bool, Bool)
+  MemberRemove(Bool)
+  Own(Bool)
+  Roster
+  CloudKeys
+  Disable
+}
+
+pub enum Admission {
+  Admitted
+  Unknown
+  Others
+  RanOut
+  NoMember
+}
+
+pub fn rank(r : Role) -> Int {
+  match r {
+    Role::Viewer => 0
+    Role::Member => 1
+    Role::Admin => 2
+    Role::Owner => 3
+  }
+}
+
+pub fn lower(a : Role, b : Role) -> Role {
+  if rank(a) <= rank(b) {
+    a
+  } else {
+    b
+  }
+}
+
+pub fn may(who : Role, c : Change) -> Bool {
+  let managing = rank(who) >= 2
+  let owning = rank(who) == 3
+  match c {
+    Change::MemberSet(was, becomes) => managing && (owning || (!was && !becomes))
+    Change::MemberRemove(was) => managing && (owning || !was)
+    Change::Own(mine) => managing || mine
+    Change::Roster => managing
+    Change::CloudKeys => owning
+    Change::Disable => owning
+  }
+}
+
+pub fn own_device(by_them : Bool, kept : Bool, who : Role, had_own : Bool) -> Bool {
+  if by_them {
+    true
+  } else if kept {
+    true
+  } else if had_own {
+    false
+  } else {
+    rank(who) >= 2
+  }
+}
+
+pub fn one_if(b : Bool) -> Int {
+  if b {
+    1
+  } else {
+    0
+  }
+}
+
+pub fn keeps_owner(owners : Int, was : Bool, becomes : Bool) -> Bool {
+  if becomes {
+    true
+  } else if was {
+    owners >= 2
+  } else {
+    owners >= 1
+  }
+}
+
+pub fn takes_effect(own : Bool) -> Bool {
+  own
+}
+
+pub fn replaces(own_found : Bool, holds : Bool, live : Bool, member : Bool) -> Bool {
+  if own_found {
+    false
+  } else if !holds {
+    false
+  } else if !live {
+    false
+  } else {
+    member
+  }
+}
+
+pub fn admission(found : Bool, theirs : Bool, live : Bool, member : Bool) -> Admission {
+  if !found {
+    Admission::Unknown
+  } else if !theirs {
+    Admission::Others
+  } else if !live {
+    Admission::RanOut
+  } else if !member {
+    Admission::NoMember
+  } else {
+    Admission::Admitted
+  }
+}
+
+pub fn device_signs(app : Bool, holds : Bool, own : Bool, member : Bool) -> Bool {
+  if !app {
+    false
+  } else if !holds {
+    false
+  } else if !own {
+    false
+  } else {
+    member
+  }
+}
+
+pub fn signed_by(found : Bool, whose : Bool) -> Bool {
+  if found {
+    whose
+  } else {
+    false
+  }
+}
+
+pub fn cert_device_ok(own : Bool, ever : Bool) -> Bool {
+  if own {
+    true
+  } else {
+    ever
+  }
+}
+
+pub fn cert_key_ok(current : Bool, ever : Bool, had : Bool) -> Bool {
+  if current {
+    true
+  } else if ever {
+    had
+  } else {
+    false
+  }
+}
+
+pub fn key_ok(seen : Bool, member : Bool) -> Bool {
+  if seen {
+    false
+  } else {
+    member
+  }
+}
+
+pub fn binds(mine : Bool, own : Bool) -> Bool {
+  if !mine {
+    false
+  } else {
+    own
+  }
+}
+
+pub fn person_changes(held : Bool, lone : Bool) -> Bool {
+  if !held {
+    false
+  } else {
+    !lone
+  }
+}
+
+pub fn person_admits(pinned : Bool, proved : Bool, held : Bool) -> Bool {
+  if !pinned {
+    false
+  } else if !proved {
+    false
+  } else {
+    held
+  }
+}

@@ -1,0 +1,184 @@
+// End-to-end tests for protocol wire codec and Slice 1 local read-only router.
+
+import "base_codec"
+import "effect"
+import "shell"
+import "sql"
+import "store"
+
+struct ProtoFakeDb {
+  shell : shell::Shell
+  ran : Array[String]
+}
+
+fn ProtoFakeDb::new() -> ProtoFakeDb {
+  let holder : Array[ProtoFakeDb] = []
+  let sh = shell::Shell::stood_in(
+    effect::Runtime::new(),
+    fn(_ : Int64, _ : String, _ : base_codec::Json, _ : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if op == "sql.open" {
+        return shell::AskResult::Ok(base_codec::json_obj([("id", base_codec::json_int(1))]))
+      }
+      if op == "sql.close" {
+        return shell::AskResult::Ok(base_codec::json_null())
+      }
+      let stmt = match base_codec::json_get(args, "sql") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => ""
+      }
+      holder[0].ran.push(stmt)
+      if stmt == store::sql_window_end() {
+        let e1 = base_codec::json_stringify(base_codec::json_obj([
+          ("kind", base_codec::json_str("message")),
+          ("authorKind", base_codec::json_str("agent")),
+          ("author", base_codec::json_str("a1")),
+          ("text", base_codec::json_str("hello")),
+        ]))
+        return shell::AskResult::Ok(base_codec::json_arr([base_codec::json_arr([base_codec::json_int(1), base_codec::json_str(e1)])]))
+      }
+      if stmt.starts_with(store::sql_md_many_head()) {
+        let k = store::md_key("hello")
+        return shell::AskResult::Ok(base_codec::json_arr([
+          base_codec::json_arr([base_codec::json_str(k), base_codec::json_int(0), base_codec::json_str("[[\"p\"]]")]),
+        ]))
+      }
+      if stmt == store::sql_opened() {
+        return shell::AskResult::Ok(base_codec::json_arr([]))
+      }
+      if stmt == store::sql_chat_window() {
+        return shell::AskResult::Ok(base_codec::json_arr([
+          base_codec::json_arr([
+            base_codec::json_str("s1"),
+            base_codec::json_int(0),
+            base_codec::json_str("c1"),
+            base_codec::json_null(),
+            base_codec::json_int(999),
+            base_codec::json_num(1.0),
+          ]),
+        ]))
+      }
+      if stmt == store::sql_account_doc_one() {
+        return shell::AskResult::Ok(base_codec::json_arr([
+          base_codec::json_arr([base_codec::json_str("{\"email\":\"user@example.com\"}")]),
+        ]))
+      }
+      shell::AskResult::Err(shell::ShellError::{ message: "unexpected sql: " + stmt })
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = ProtoFakeDb::{ shell: sh, ran: [] }
+  holder.push(db)
+  db
+}
+
+fn unwrap_sql_p[T](r : sql::SqlResult[T]) -> T {
+  match r {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic("sql err: " + e.to_string())
+  }
+}
+
+test "wire codec round-trips call, subscribe, unsubscribe, cancel, delta, fatal, and binary bytes" {
+  let payload = "BIN!".to_bytes()
+  match decode_client_message("{\"id\":1,\"call\":\"echo.bytes\",\"params\":{\"a\":1}}", bytes=Some(payload)) {
+    ParseRequestResult::Ok(CoreRequest::Call(id, name, _, b)) => {
+      debug_assert(id == 1.to_int64() && name == "echo.bytes", "call parsed")
+      match b {
+        Some(raw) => debug_assert(raw.length() == 4 && raw[0].to_int() == 66, "bytes preserved")
+        None => debug_assert(false, "expected bytes")
+      }
+    }
+    _ => debug_assert(false, "expected Call")
+  }
+
+  match decode_client_message("{\"id\":2,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws/1\"},\"keyed\":true,\"from\":1,\"have\":\"tok\"}") {
+    ParseRequestResult::Ok(CoreRequest::Subscribe(id, topic, keyed, from_id, have)) => {
+      debug_assert(id == 2.to_int64() && topic.name == "chats" && keyed, "subscribe parsed")
+      let from_ok = match from_id {
+        Some(v) => v == 1.to_int64()
+        None => false
+      }
+      let have_ok = match have {
+        Some(h) => h == "tok"
+        None => false
+      }
+      debug_assert(from_ok && have_ok, "from & have")
+      debug_assert(topic.param("mine").is_some(), "default mine filled")
+    }
+    _ => debug_assert(false, "expected Subscribe")
+  }
+
+  match decode_client_message("{\"id\":3,\"unsubscribe\":true,\"keep\":true}") {
+    ParseRequestResult::Ok(CoreRequest::Unsubscribe(id, u, k)) => {
+      debug_assert(id == 3.to_int64() && u && k, "unsubscribe keep")
+    }
+    _ => debug_assert(false, "expected Unsubscribe")
+  }
+
+  match decode_client_message("{\"id\":-1,\"call\":\"x\"}") {
+    ParseRequestResult::Invalid(_) => ()
+    _ => debug_assert(false, "negative id rejected")
+  }
+
+  let (delta_s, _) = encode_core_event(CoreEvent::Delta(4.to_int64(), [base_codec::json_obj([("op", base_codec::json_str("put"))])], Some(2.to_int64()), true))
+  debug_assert(delta_s.contains("\"delta\"") && delta_s.contains("\"from\":2") && delta_s.contains("\"kept\":true"), "delta wire")
+
+  let (fatal_s, _) = encode_core_event(CoreEvent::Fatal("disk full"))
+  debug_assert(fatal_s == "{\"fatal\":\"disk full\"}", "fatal wire")
+}
+
+test "Slice1Router serves chat.open (0 writes), chats.window, account.doc, subscribe/unsubscribe, and bytes" {
+  let fake = ProtoFakeDb::new()
+  let db = unwrap_sql_p(sql::Sql::open(fake.shell, "acct"))
+  let md = store::MdStore::new(db, "s1")
+  let router = Slice1Router::new(db, md)
+
+  // 1. chat.open call
+  let from = fake.ran.length()
+  let open_out = router.handle_wire("{\"id\":10,\"call\":\"chat.open\",\"params\":{\"thread\":7,\"now\":1000}}")
+  match open_out {
+    Some((txt, _)) => {
+      debug_assert(txt.contains("\"id\":10") && txt.contains("\"ok\"") && txt.contains("\"hello\""), "chat.open ok")
+      debug_assert(txt.contains(store::md_key("hello")), "preloaded tree included")
+    }
+    None => debug_assert(false, "expected response")
+  }
+  for i in from..<fake.ran.length() {
+    let s = fake.ran[i]
+    debug_assert(!s.starts_with("INSERT") && !s.starts_with("UPDATE") && !s.starts_with("BEGIN"), "0 writes on chat.open")
+  }
+
+  // 2. chats.window call
+  match router.handle_wire("{\"id\":11,\"call\":\"chats.window\",\"params\":{\"stations\":[\"s1\"],\"limit\":10}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"id\":11") && txt.contains("\"c1\""), "chats.window ok")
+    None => debug_assert(false, "expected chats.window")
+  }
+
+  // 3. account.doc call
+  match router.handle_wire("{\"id\":12,\"call\":\"account.doc\",\"params\":{\"name\":\"me\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("user@example.com"), "account.doc ok")
+    None => debug_assert(false, "expected account.doc")
+  }
+
+  // 4. subscribe chat -> value, then unsubscribe with keep -> v token
+  match router.handle_wire("{\"id\":20,\"subscribe\":{\"topic\":\"chat\",\"station\":\"s1\",\"thread\":7}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"id\":20") && txt.contains("\"value\""), "subscribe value")
+    None => debug_assert(false, "expected value")
+  }
+  debug_assert(router.active_sub(20.to_int64()).is_some(), "sub tracked")
+  match router.handle_wire("{\"id\":20,\"unsubscribe\":true,\"keep\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"id\":20") && txt.contains("\"v\":"), "unsub keep token")
+    None => debug_assert(false, "expected unsub token")
+  }
+  debug_assert(router.active_sub(20.to_int64()).is_none(), "sub removed")
+
+  // 5. binary bytes pass-through
+  let bin = "PNG\x00".to_bytes()
+  match router.handle_wire("{\"id\":30,\"call\":\"echo.bytes\",\"params\":{\"ok\":1}}", bytes=Some(bin)) {
+    Some((txt, Some(out_b))) => {
+      debug_assert(txt.contains("\"id\":30") && out_b.length() == 4, "bytes echoed")
+    }
+    _ => debug_assert(false, "expected ok with bytes")
+  }
+}

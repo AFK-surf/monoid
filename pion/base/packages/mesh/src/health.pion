@@ -1,0 +1,546 @@
+// Place health tracking and suspect-link racing.
+
+import "effect"
+
+struct HealthWait {
+  uid : Int
+  place_key : String
+  was : Bool
+  d : effect::Deferred[Bool]
+}
+
+fn Mesh::ways(self : Mesh, place : Place) -> Array[Link] {
+  let out : Array[Link] = []
+  match self.links.get(place.map_key()) {
+    Some(op) =>
+    match op.result {
+      Some(Opened::Open(link)) =>
+      if link.usable() {
+        out.push(link)
+      }
+      _ => ()
+    }
+    None => ()
+  }
+  match self.ways_of.get(place.map_key()) {
+    Some(ws) => {
+      for i in 0..<ws.all.length() {
+        let l = ws.all[i].link
+        if l.usable() {
+          let mut seen = false
+          for j in 0..<out.length() {
+            if out[j].uid == l.uid {
+              seen = true
+              break
+            }
+          }
+          if !seen {
+            out.push(l)
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+pub fn Mesh::standing(self : Mesh, peer : String, link_scope : String = "") -> Bool {
+  let ws = self.ways(Place::{ link_scope: link_scope, peer: peer })
+  for i in 0..<ws.length() {
+    if ws[i].missed == 0 {
+      return true
+    }
+  }
+  false
+}
+
+pub fn Mesh::healthy(self : Mesh, peer : String, link_scope : String = "") -> Bool {
+  let ws = self.ways(Place::{ link_scope: link_scope, peer: peer })
+  for i in 0..<ws.length() {
+    if ws[i].missed < dead_pings {
+      return true
+    }
+  }
+  false
+}
+
+pub fn Mesh::health_change_k(
+  self : Mesh,
+  peer : String,
+  was : Bool,
+  k : (effect::Exit[Bool]) -> Unit,
+  link_scope : String = "",
+) -> Unit {
+  if self.closed {
+    k(effect::Exit::Failed(failed("closed")))
+    return
+  }
+  let place = Place::{ link_scope: link_scope, peer: peer }
+  let pk = place.map_key()
+  let now = match self.health.get(pk) {
+    Some(h) => h
+    None => self.healthy(peer, link_scope=link_scope)
+  }
+  if now != was {
+    k(effect::Exit::Succeeded(now))
+    return
+  }
+  let uid = next_uid()
+  let told : effect::Deferred[Bool] = effect::Deferred::new()
+  self.health_waits.push(HealthWait::{ uid: uid, place_key: pk, was: was, d: told })
+  told.wait_k(fn(ex : effect::Exit[Bool]) -> Unit {
+    let kept : Array[HealthWait] = []
+    for i in 0..<self.health_waits.length() {
+      if self.health_waits[i].uid != uid {
+        kept.push(self.health_waits[i])
+      }
+    }
+    self.health_waits = kept
+    k(ex)
+  })
+}
+
+fn Mesh::tell_health(self : Mesh, place : Place) -> Unit {
+  let pk = place.map_key()
+  let now = self.healthy(place.peer, link_scope=place.link_scope)
+  match self.health.get(pk) {
+    Some(prev) =>
+    if prev == now {
+      return
+    }
+    None => ()
+  }
+  self.health.set(pk, now)
+  for i in 0..<self.health_waits.length() {
+    let w = self.health_waits[i]
+    if w.place_key == pk && w.was != now {
+      let _ = w.d.succeed(now)
+    }
+  }
+}
+
+struct Race {
+  old : Link
+  mut fiber : Option[effect::Fiber[Unit]]
+  mut dial : Option[effect::Fiber[Unit]]
+  mut next : Option[Link]
+  mut probing : Bool
+  missed : Bool
+  span : Span
+}
+
+enum Won {
+  Old
+  New(Link)
+  Neither
+}
+
+enum First {
+  Probed(Bool)
+  Dialled(Option[Link])
+}
+
+enum Grace {
+  OldAnswered
+  SwitchNow
+  CandidateGone
+}
+
+fn Mesh::suspect(self : Mesh, place : Place, opening : Opening, link : Link) -> Unit {
+  if self.racing.contains(place.map_key()) {
+    return
+  }
+  if link.missed != 1 {
+    return
+  }
+  match link.answered_ms {
+    Some(took) =>
+    if took >= ping_timeout_ms / 2 {
+      return
+    }
+    None => return
+  }
+  let ws = self.ways(place)
+  for i in 0..<ws.length() {
+    if ws[i].uid != link.uid && ws[i].missed == 0 {
+      return
+    }
+  }
+  self.begin_race(place, opening, link, true)
+}
+
+fn Mesh::begin_race(self : Mesh, place : Place, opening : Opening, link : Link, missed : Bool) -> Unit {
+  let race = Race::{
+    old: link,
+    fiber: None,
+    dial: None,
+    next: None,
+    probing: true,
+    missed: missed,
+    span: self.span("mesh.race", place.peer),
+  }
+  self.racing.set(place.map_key(), race)
+  race.fiber = Some(
+    self.fibers.fork_named("mesh race", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.race_k(place, opening, race, fk)
+    }),
+  )
+}
+
+fn Mesh::race_k(
+  self : Mesh,
+  place : Place,
+  opening : Opening,
+  race : Race,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let old = race.old
+  let before = old.control.answers
+  let recovered = fn() -> Bool { race.missed && old.usable() && old.control.answers > before }
+  let dialled : effect::Deferred[Option[Link]] = effect::Deferred::new()
+  race.dial = Some(
+    self.fibers.fork_named("mesh race dial", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      let tp = match race.span.traceparent {
+        Some(s) => s
+        None => ""
+      }
+      self.dial_all_k(
+        place,
+        old.credentials,
+        false,
+        fn(ex : effect::Exit[Link]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(link) => {
+              race.next = Some(link)
+              let _ = dialled.succeed(Some(link))
+              fk(effect::Exit::Succeeded(()))
+            }
+            effect::Exit::Failed(_) => {
+              let _ = dialled.succeed(None)
+              fk(effect::Exit::Succeeded(()))
+            }
+          }
+        },
+        traceparent=tp,
+      )
+    }),
+  )
+  let answered : effect::Deferred[Bool] = effect::Deferred::new()
+  let _ = self.fibers.fork_named("mesh probe", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    old.lock.with_permit_k(
+      fn(pk : (effect::Exit[Bool]) -> Unit) -> Unit {
+        if !race.probing {
+          pk(effect::Exit::Succeeded(false))
+          return
+        }
+        old.control.send_k(old.credential, fn(sex : effect::Exit[Unit]) -> Unit {
+          match sex {
+            effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => pk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(_) =>
+            old.control.answer_k(fn(aex : effect::Exit[base_codec::Json]) -> Unit {
+              match aex {
+                effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => pk(effect::Exit::Failed(e))
+                effect::Exit::Succeeded(_) => {
+                  old.control.noted()
+                  pk(effect::Exit::Succeeded(true))
+                }
+              }
+            })
+          }
+        })
+      },
+      fn(ex : effect::Exit[Bool]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(true) => {
+            let _ = answered.succeed(true)
+            fk(effect::Exit::Succeeded(()))
+          }
+          _ => {
+            let _ = answered.succeed(false)
+            fk(effect::Exit::Succeeded(()))
+          }
+        }
+      },
+    )
+  })
+  let probed : effect::Deferred[Bool] = effect::Deferred::new()
+  let _ = self.fibers.fork_named("mesh probe time", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    effect::timeout_k(
+      probe_ms,
+      fn(tk : (effect::Exit[Bool]) -> Unit) -> Unit { answered.wait_k(tk) },
+      fn(ex : effect::Exit[Option[Bool]]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(Some(true)) => {
+            race.probing = false
+            let _ = probed.succeed(true)
+            fk(effect::Exit::Succeeded(()))
+          }
+          _ => {
+            race.probing = false
+            let _ = probed.succeed(false)
+            fk(effect::Exit::Succeeded(()))
+          }
+        }
+      },
+    )
+  })
+  let finish_won = fn(won : Won) -> Unit {
+    race.probing = false
+    self.racing.remove(place.map_key())
+    let own = race.span.own_fn
+    let end = race.span.end_fn
+    let label = match won {
+      Won::Old => "old"
+      Won::Neither => "neither"
+      Won::New(_) => "new"
+    }
+    own("race", SpanValue::Str(label))
+    end()
+    match won {
+      Won::Old => race.let_go()
+      Won::Neither =>
+      match self.links.get(place.map_key()) {
+        Some(cur) =>
+        if cur.uid == opening.uid {
+          old.close()
+          self.links.remove(place.map_key())
+          self.changed()
+          self.tell_health(place)
+        }
+        None => ()
+      }
+      Won::New(next) => {
+        race.next = None
+        self.switch(place, opening, old, next)
+      }
+    }
+    self.eased()
+    k(effect::Exit::Succeeded(()))
+  }
+  effect::race_first_k(
+    fn(rk : (effect::Exit[First]) -> Unit) -> Unit {
+      probed.wait_k(fn(ex : effect::Exit[Bool]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(b) => rk(effect::Exit::Succeeded(First::Probed(b)))
+          effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+        }
+      })
+    },
+    fn(rk : (effect::Exit[First]) -> Unit) -> Unit {
+      dialled.wait_k(fn(ex : effect::Exit[Option[Link]]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(l) => rk(effect::Exit::Succeeded(First::Dialled(l)))
+          effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+        }
+      })
+    },
+    fn(fex : effect::Exit[First]) -> Unit {
+      match fex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(first) =>
+        match first {
+          First::Probed(true) => finish_won(Won::Old)
+          First::Probed(false) =>
+          dialled.wait_k(fn(dex : effect::Exit[Option[Link]]) -> Unit {
+            match dex {
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(Some(link)) => finish_won(if recovered() { Won::Old } else { Won::New(link) })
+              effect::Exit::Succeeded(None) => finish_won(if recovered() { Won::Old } else { Won::Neither })
+            }
+          })
+          First::Dialled(None) =>
+          probed.wait_k(fn(pex : effect::Exit[Bool]) -> Unit {
+            match pex {
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(ok) => finish_won(if ok || recovered() { Won::Old } else { Won::Neither })
+            }
+          })
+          First::Dialled(Some(link)) =>
+          if recovered() {
+            finish_won(Won::Old)
+          } else if !race.missed || !old.usable() {
+            finish_won(Won::New(link))
+          } else {
+            effect::race_first_k(
+              fn(gk : (effect::Exit[Grace]) -> Unit) -> Unit {
+                probed.wait_k(fn(pex : effect::Exit[Bool]) -> Unit {
+                  match pex {
+                    effect::Exit::Interrupted => gk(effect::Exit::Interrupted)
+                    effect::Exit::Failed(e) => gk(effect::Exit::Failed(e))
+                    effect::Exit::Succeeded(ok) =>
+                    gk(effect::Exit::Succeeded(if ok || recovered() { Grace::OldAnswered } else { Grace::SwitchNow }))
+                  }
+                })
+              },
+              fn(gk : (effect::Exit[Grace]) -> Unit) -> Unit {
+                effect::race_first_k(
+                  fn(gk2 : (effect::Exit[Grace]) -> Unit) -> Unit {
+                    old.control.next_answer_k(before, fn(nex : effect::Exit[Unit]) -> Unit {
+                      match nex {
+                        effect::Exit::Interrupted => gk2(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => gk2(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(_) => gk2(effect::Exit::Succeeded(Grace::OldAnswered))
+                      }
+                    })
+                  },
+                  fn(gk2 : (effect::Exit[Grace]) -> Unit) -> Unit {
+                    effect::race_first_k(
+                      fn(gk3 : (effect::Exit[Grace]) -> Unit) -> Unit {
+                        old.gone.wait_k(fn(gex : effect::Exit[Closed]) -> Unit {
+                          match gex {
+                            effect::Exit::Interrupted => gk3(effect::Exit::Interrupted)
+                            _ => gk3(effect::Exit::Succeeded(Grace::SwitchNow))
+                          }
+                        })
+                      },
+                      fn(gk3 : (effect::Exit[Grace]) -> Unit) -> Unit {
+                        effect::race_first_k(
+                          fn(gk4 : (effect::Exit[Grace]) -> Unit) -> Unit {
+                            link.gone.wait_k(fn(gex : effect::Exit[Closed]) -> Unit {
+                              match gex {
+                                effect::Exit::Interrupted => gk4(effect::Exit::Interrupted)
+                                _ => gk4(effect::Exit::Succeeded(Grace::CandidateGone))
+                              }
+                            })
+                          },
+                          fn(gk4 : (effect::Exit[Grace]) -> Unit) -> Unit {
+                            effect::sleep_k(race_grace_ms, fn(sex : effect::Exit[Unit]) -> Unit {
+                              match sex {
+                                effect::Exit::Interrupted => gk4(effect::Exit::Interrupted)
+                                _ => gk4(effect::Exit::Succeeded(Grace::SwitchNow))
+                              }
+                            })
+                          },
+                          gk3,
+                        )
+                      },
+                      gk2,
+                    )
+                  },
+                  gk,
+                )
+              },
+              fn(gex : effect::Exit[Grace]) -> Unit {
+                match gex {
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(Grace::OldAnswered) =>
+                  if old.usable() {
+                    finish_won(Won::Old)
+                  } else if link.usable() {
+                    finish_won(Won::New(link))
+                  } else {
+                    finish_won(Won::Neither)
+                  }
+                  effect::Exit::Succeeded(Grace::CandidateGone) =>
+                  probed.wait_k(fn(pex : effect::Exit[Bool]) -> Unit {
+                    match pex {
+                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                      effect::Exit::Succeeded(ok) => finish_won(if ok || recovered() { Won::Old } else { Won::Neither })
+                    }
+                  })
+                  effect::Exit::Succeeded(Grace::SwitchNow) =>
+                  if link.usable() {
+                    finish_won(Won::New(link))
+                  } else {
+                    probed.wait_k(fn(pex : effect::Exit[Bool]) -> Unit {
+                      match pex {
+                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(ok) => finish_won(if ok || recovered() { Won::Old } else { Won::Neither })
+                      }
+                    })
+                  }
+                }
+              },
+            )
+          }
+        }
+      }
+    },
+  )
+}
+
+fn Race::let_go(self : Race) -> Unit {
+  match self.next {
+    Some(next) => {
+      self.next = None
+      next.close()
+    }
+    None =>
+    match self.dial {
+      Some(dial) => dial.interrupt()
+      None => ()
+    }
+  }
+}
+
+fn Mesh::end_race(self : Mesh, place : Place) -> Unit {
+  let pk = place.map_key()
+  let race = match self.racing.get(pk) {
+    Some(r) => r
+    None => return
+  }
+  self.racing.remove(pk)
+  race.probing = false
+  let end = race.span.end_fn
+  end()
+  match race.fiber {
+    Some(f) => f.interrupt()
+    None => ()
+  }
+  race.let_go()
+}
+
+fn Mesh::switch(self : Mesh, place : Place, opening : Opening, old : Link, next : Link) -> Unit {
+  let pk = place.map_key()
+  let still = match self.links.get(pk) {
+    Some(cur) => cur.uid == opening.uid
+    None => false
+  }
+  if self.closed || !still {
+    next.close()
+    return
+  }
+  let taken = Opening::new(place, next.credentials, false)
+  taken.result = Some(Opened::Open(next))
+  let _ = taken.done.succeed(next)
+  self.links.set(pk, taken)
+  match self.ways_of.get(pk) {
+    Some(ws) => {
+      let kept : Array[Way] = []
+      for i in 0..<ws.all.length() {
+        if ws.all[i].link.uid != old.uid {
+          kept.push(ws.all[i])
+        }
+      }
+      ws.all = kept
+    }
+    None => ()
+  }
+  self.changed()
+  self.adopt(place, taken, next)
+  let _ = self.fibers.fork_named("mesh retire", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    effect::sleep_later_k(retire_ms, true, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          old.close()
+          fk(effect::Exit::Succeeded(()))
+        }
+        other => fk(other)
+      }
+    })
+  })
+}

@@ -1,0 +1,188 @@
+// Human-readable mesh errors and lossless encoding inside `effect::EffectError`.
+
+import "effect"
+
+/// What the mesh fails with: `code` for programmatic checks ("mesh", "credential_refused",
+/// "too_long", "invalid_params", or a peer refusal code), `message` for people, and `cause`
+/// for logs.
+pub struct MeshError {
+  pub code : String
+  pub message : String
+  pub cause : String
+}
+
+pub fn MeshError::new(code : String, message : String, cause : String = "") -> MeshError {
+  MeshError::{ code: code, message: message, cause: cause }
+}
+
+/// Its words for people (`message`), never its constructor.
+pub fn MeshError::to_string(self : MeshError) -> String {
+  self.message
+}
+
+fn encode_len_field(sb : StringBuilder, s : String) -> Unit {
+  sb.write_string(s.length().to_string())
+  sb.write_string(":")
+  sb.write_string(s)
+}
+
+fn decode_len_field(raw : String, pos : Int) -> Option[(String, Int)] {
+  let n = raw.length()
+  let mut i = pos
+  let mut len = 0
+  let mut digits = 0
+  while i < n {
+    let c = raw.code_unit_at(i)
+    if c >= 48 && c <= 57 {
+      len = len * 10 + (c - 48)
+      digits += 1
+      i += 1
+    } else if c == 58 {
+      if digits == 0 {
+        return None
+      }
+      let start = i + 1
+      let end = start + len
+      if end > n {
+        return None
+      }
+      return Some((raw.slice(start, end), end))
+    } else {
+      return None
+    }
+  }
+  None
+}
+
+/// Encode a `MeshError` losslessly into an `effect::EffectError`.
+pub fn MeshError::to_effect_error(self : MeshError) -> effect::EffectError {
+  let sb = StringBuilder::new()
+  sb.write_byte(1 as Byte)
+  sb.write_string("mesh:")
+  encode_len_field(sb, self.code)
+  encode_len_field(sb, self.message)
+  encode_len_field(sb, self.cause)
+  effect::EffectError::Custom(sb.to_string())
+}
+
+/// Extract a `MeshError` from an `effect::EffectError`, if it is one.
+pub fn mesh_error_of(e : effect::EffectError) -> Option[MeshError] {
+  match e {
+    effect::EffectError::Custom(raw) => {
+      if raw.length() < 6 || raw.code_unit_at(0) != 1 || raw.slice(1, 6) != "mesh:" {
+        return None
+      }
+      match decode_len_field(raw, 6) {
+        None => None
+        Some((code, p1)) =>
+        match decode_len_field(raw, p1) {
+          None => None
+          Some((message, p2)) =>
+          match decode_len_field(raw, p2) {
+            None => None
+            Some((cause, p3)) =>
+            if p3 == raw.length() {
+              Some(MeshError::{ code: code, message: message, cause: cause })
+            } else {
+              None
+            }
+          }
+        }
+      }
+    }
+    _ => None
+  }
+}
+
+/// Internal opening timeout error encoding: whether the connection was already established.
+fn opening_timeout_err(connected : Bool) -> effect::EffectError {
+  let sb = StringBuilder::new()
+  sb.write_byte(1 as Byte)
+  sb.write_string(if connected { "timeout:1" } else { "timeout:0" })
+  effect::EffectError::Custom(sb.to_string())
+}
+
+fn opening_timeout_of(e : effect::EffectError) -> Option[Bool] {
+  match e {
+    effect::EffectError::Custom(raw) => {
+      if raw.length() == 10 && raw.code_unit_at(0) == 1 && raw.slice(1, 9) == "timeout:" {
+        let ch = raw.code_unit_at(9)
+        if ch == 49 {
+          Some(true)
+        } else if ch == 48 {
+          Some(false)
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+/// The code of what failed: a `MeshError`'s; "" of anything else.
+pub fn code_of(e : effect::EffectError) -> String {
+  match mesh_error_of(e) {
+    Some(me) => me.code
+    None => ""
+  }
+}
+
+/// What failed, said in a line: a `MeshError` as its code and its words, anything else as it says itself.
+pub fn said(e : effect::EffectError) -> String {
+  match mesh_error_of(e) {
+    Some(me) => me.code + ": " + me.message
+    None =>
+    match opening_timeout_of(e) {
+      Some(true) => "opening timed out (direct)"
+      Some(false) => "opening timed out"
+      None =>
+      match e {
+        effect::EffectError::Custom(m) => m
+        other => effect::effect_error_to_string(other)
+      }
+    }
+  }
+}
+
+fn text_of(e : effect::EffectError) -> String {
+  match mesh_error_of(e) {
+    Some(me) => me.message
+    None =>
+    match opening_timeout_of(e) {
+      Some(true) => "opening timed out (direct)"
+      Some(false) => "opening timed out"
+      None =>
+      match e {
+        effect::EffectError::Custom(m) => m
+        other => effect::effect_error_to_string(other)
+      }
+    }
+  }
+}
+
+/// Failed in the mesh's own words.
+fn failed(key : String, args : Array[(String, String)] = []) -> effect::EffectError {
+  MeshError::new("mesh", say(key, args), "").to_effect_error()
+}
+
+/// Failed under the mesh (the shell's error, a parser's), said as `key`, keeping underlying text as cause.
+fn under(key : String, e : effect::EffectError) -> effect::EffectError {
+  MeshError::new("mesh", say(key), text_of(e)).to_effect_error()
+}
+
+fn under_str(key : String, cause : String) -> effect::EffectError {
+  MeshError::new("mesh", say(key), cause).to_effect_error()
+}
+
+/// The connection failed once it was up.
+fn cut(e : effect::EffectError) -> effect::EffectError {
+  under("cut", e)
+}
+
+/// The peer was not reached.
+fn unreached(e : effect::EffectError) -> effect::EffectError {
+  under("unreached", e)
+}

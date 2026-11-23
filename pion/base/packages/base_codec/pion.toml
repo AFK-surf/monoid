@@ -1,0 +1,7 @@
+[package]
+name = "base_codec"
+version = "0.1.0"
+
+[dependencies]
+base64 = { workspace = true }
+flate = { workspace = true }

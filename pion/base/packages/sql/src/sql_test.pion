@@ -1,0 +1,272 @@
+// Tests for sql::Sql, sql::Burst, sql::query_in_chunks, and col_* readers
+// (ported from sql_wbtest.mbt & sql_conformance_wbtest.mbt).
+
+import "effect"
+import "shell"
+import "base_codec"
+
+struct Asked {
+  op : String
+  sql : String
+  params : Array[base_codec::Json]
+}
+
+struct Stand {
+  shell : shell::Shell
+  asked : Array[Asked]
+  mut rows : (String, Array[base_codec::Json]) -> Array[base_codec::Json]
+  mut fails : (String) -> Bool
+}
+
+fn Stand::new() -> Stand {
+  let asked : Array[Asked] = []
+  let holder : Array[Stand] = []
+  let sh = shell::Shell::stood_in(
+    effect::Runtime::new(),
+    fn(_ : Int64, _ : String, _ : base_codec::Json, _ : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      let sql = match base_codec::json_get(args, "sql") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => ""
+      }
+      let params = match base_codec::json_get(args, "params") {
+        Some(base_codec::Json::Arr(p)) => p
+        _ => []
+      }
+      asked.push(Asked::{ op: op, sql: sql, params: params })
+      let st = holder[0]
+      let fail_fn = st.fails
+      if fail_fn(sql) {
+        return shell::AskResult::Err(shell::ShellError::{ message: "SQLITE_ERROR: " + sql })
+      }
+      if op == "sql.open" || op == "sql.attach" {
+        shell::AskResult::Ok(base_codec::json_obj([("id", base_codec::json_int(7))]))
+      } else if op == "sql.run" {
+        shell::AskResult::Ok(base_codec::json_int(1))
+      } else if op == "sql.all" {
+        let rows_fn = st.rows
+        shell::AskResult::Ok(base_codec::json_arr(rows_fn(sql, params)))
+      } else {
+        shell::AskResult::Ok(base_codec::json_null())
+      }
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let s = Stand::{
+    shell: sh,
+    asked: asked,
+    rows: fn(_ : String, _ : Array[base_codec::Json]) -> Array[base_codec::Json] { [] },
+    fails: fn(_ : String) -> Bool { false },
+  }
+  holder.push(s)
+  s
+}
+
+fn Stand::statements(self : Stand) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<self.asked.length() {
+    let a = self.asked[i]
+    if a.op == "sql.exec" || a.op == "sql.run" || a.op == "sql.all" {
+      out.push(a.sql)
+    }
+  }
+  out
+}
+
+fn unwrap_sql[T](r : SqlResult[T]) -> T {
+  match r {
+    SqlResult::Ok(v) => v
+    SqlResult::Err(e) => panic("unexpected SqlResult::Err: " + e.to_string())
+  }
+}
+
+fn sql_strs_eq(a : Array[String], b : Array[String]) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+test "open, attach, run, read, close, delete_db" {
+  let stand = Stand::new()
+  stand.rows = fn(_ : String, _ : Array[base_codec::Json]) -> Array[base_codec::Json] {
+    [
+      base_codec::json_arr([base_codec::json_int(1), base_codec::json_str("a"), base_codec::json_null()]),
+      base_codec::json_arr([base_codec::json_int(2), base_codec::json_str("b"), base_codec::json_num(1.5)]),
+    ]
+  }
+  let db = unwrap_sql(Sql::open(stand.shell, "acct"))
+  debug_assert(db.id == 7, "id 7")
+  let _ = unwrap_sql(db.exec("CREATE TABLE t (k INTEGER, v TEXT, x REAL)"))
+  let changed = unwrap_sql(db.run("INSERT INTO t VALUES (?, ?, ?)", params=[base_codec::json_int(1), base_codec::json_str("a"), base_codec::json_null()]))
+  debug_assert(changed == 1, "1 changed")
+  let rows = unwrap_sql(db.all("SELECT k, v, x FROM t WHERE k > ?", params=[base_codec::json_int(0)]))
+  debug_assert(rows.length() == 2, "2 rows")
+  debug_assert(col_int(rows[0], 0) == 1 && col_text(rows[0], 1) == "a" && col_opt_text(rows[0], 2).is_none(), "row 0")
+  debug_assert(col_double(rows[1], 2) == 1.5 && col_int64(rows[1], 0) == 2.to_int64(), "row 1")
+  debug_assert(col_bool(rows[1], 0) && !col_bool(rows[0], 2) && col_text(rows[1], 0) == "2", "bool & text")
+  db.close()
+  db.close()
+  debug_assert(db.is_closed(), "closed")
+  let ops : Array[String] = []
+  for i in 0..<stand.asked.length() {
+    ops.push(stand.asked[i].op)
+  }
+  debug_assert(sql_strs_eq(ops, ["sql.open", "sql.exec", "sql.run", "sql.all", "sql.close"]), "ops")
+  let _ = unwrap_sql(delete_db(stand.shell, "acct"))
+  debug_assert(stand.asked[stand.asked.length() - 1].op == "sql.delete", "delete")
+
+  let stand2 = Stand::new()
+  let db2 = unwrap_sql(Sql::attach(stand2.shell, "/x/y.db", create=false, wait_ms=250))
+  debug_assert(db2.id == 7 && stand2.asked.length() == 1 && stand2.asked[0].op == "sql.attach", "attach")
+}
+
+test "Burst batches writes in one transaction, skips empty tx, rolls back on error" {
+  let stand = Stand::new()
+  let db = unwrap_sql(Sql::open(stand.shell, "acct"))
+  let burst = Burst::new(db)
+  let _ = unwrap_sql(burst.all("SELECT 1"))
+  debug_assert(!burst.is_open(), "read does not begin tx")
+  let _ = unwrap_sql(burst.run("INSERT INTO t VALUES (?)", params=[base_codec::json_int(1)]))
+  let _ = unwrap_sql(burst.run("INSERT INTO t VALUES (?)", params=[base_codec::json_int(2)]))
+  let _ = unwrap_sql(burst.exec("UPDATE t SET k = k + 1"))
+  let _ = unwrap_sql(burst.all("SELECT k FROM t"))
+  let _ = unwrap_sql(burst.commit())
+  debug_assert(
+    sql_strs_eq(
+      stand.statements(),
+      ["SELECT 1", "BEGIN IMMEDIATE", "INSERT INTO t VALUES (?)", "INSERT INTO t VALUES (?)", "UPDATE t SET k = k + 1", "SELECT k FROM t", "COMMIT"],
+    ),
+    "burst statements",
+  )
+  debug_assert(burst.begun() == 1 && burst.committed() == 1, "counts 1")
+
+  // Empty burst does nothing
+  let before = stand.asked.length()
+  let _ = unwrap_sql(burst.commit())
+  burst.rollback()
+  debug_assert(unwrap_sql(burst.in_tx(fn(_b : Burst) -> SqlResult[Int] { SqlResult::Ok(5) })) == 5, "empty in_tx")
+  debug_assert(stand.asked.length() == before && burst.begun() == 1, "no extra sql")
+
+  // Error inside in_tx triggers rollback and propagates error
+  let stand2 = Stand::new()
+  let db2 = unwrap_sql(Sql::open(stand2.shell, "acct"))
+  let burst2 = Burst::new(db2)
+  stand2.fails = fn(sql : String) -> Bool { sql.starts_with("INSERT INTO bad") }
+  let res = burst2.in_tx(fn(b : Burst) -> SqlResult[Unit] {
+    match b.run("INSERT INTO t VALUES (?)", params=[base_codec::json_int(1)]) {
+      SqlResult::Err(e) => return SqlResult::Err(e)
+      SqlResult::Ok(_) => ()
+    }
+    match b.run("INSERT INTO bad VALUES (?)", params=[base_codec::json_int(2)]) {
+      SqlResult::Err(e) => return SqlResult::Err(e)
+      SqlResult::Ok(_) => ()
+    }
+    SqlResult::Ok(())
+  })
+  match res {
+    SqlResult::Err(_) => ()
+    SqlResult::Ok(_) => debug_assert(false, "expected err")
+  }
+  debug_assert(!burst2.is_open(), "closed after rollback")
+  debug_assert(
+    sql_strs_eq(stand2.statements(), ["BEGIN IMMEDIATE", "INSERT INTO t VALUES (?)", "INSERT INTO bad VALUES (?)", "ROLLBACK"]),
+    "rolled back",
+  )
+  let _ = unwrap_sql(burst2.in_tx(fn(b : Burst) -> SqlResult[Int] {
+    b.run("INSERT INTO t VALUES (?)", params=[base_codec::json_int(4)])
+  }))
+  debug_assert(burst2.begun() == 2 && burst2.committed() == 1, "next tx committed")
+}
+
+test "query_in_chunks deduplicates, chunks at 200, and drops None rows" {
+  let stand = Stand::new()
+  stand.rows = fn(_ : String, params : Array[base_codec::Json]) -> Array[base_codec::Json] {
+    let out : Array[base_codec::Json] = []
+    for i in 1..<params.length() {
+      out.push(base_codec::json_arr([params[i], base_codec::json_str("tree")]))
+    }
+    out
+  }
+  let db = unwrap_sql(Sql::open(stand.shell, "acct"))
+  let make = fn(ph : String) -> String { "SELECT key, json FROM md_kept WHERE owner = ? AND key IN (" + ph + ")" }
+  let decode = fn(row : Array[base_codec::Json]) -> Option[String] { Some(col_text(row, 0)) }
+  let none = unwrap_sql(query_in_chunks(db, [], make, decode, extra_params=[base_codec::json_str("s1")]))
+  debug_assert(none.length() == 0, "empty")
+
+  let keys450 : Array[String] = []
+  for i in 0..<450 {
+    keys450.push("k" + i.to_string())
+    if i % 10 == 0 {
+      keys450.push("k" + i.to_string())
+    }
+  }
+  let many = unwrap_sql(query_in_chunks(db, keys450, make, decode, extra_params=[base_codec::json_str("s1")]))
+  debug_assert(many.length() == 450, "450 unique")
+  let all_ops : Array[Asked] = []
+  for i in 0..<stand.asked.length() {
+    if stand.asked[i].op == "sql.all" {
+      all_ops.push(stand.asked[i])
+    }
+  }
+  debug_assert(all_ops.length() == 3, "3 chunks: 200+200+50")
+  debug_assert(all_ops[0].params.length() == 201 && all_ops[1].params.length() == 201 && all_ops[2].params.length() == 51, "chunk sizes")
+  debug_assert(placeholders(0) == "" && placeholders(1) == "?" && placeholders(3) == "?, ?, ?", "placeholders")
+}
+
+test "conformance: Int64 precision beyond 2^53-1, col_* edges, and malformed shell answers" {
+  let raw = "[0, -1, 2147483647, -2147483648, 2147483648, -2147483649, 9007199254740991, -9007199254740991, 9007199254740993, -9007199254740993, 9223372036854775807, -9223372036854775808]"
+  let row = match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Arr(items)) => items
+    _ => panic("parse int64 array failed")
+  }
+  let expected_strs = [
+    "0", "-1", "2147483647", "-2147483648", "2147483648", "-2147483649",
+    "9007199254740991", "-9007199254740991", "9007199254740993", "-9007199254740993",
+    "9223372036854775807", "-9223372036854775808",
+  ]
+  for i in 0..<expected_strs.length() {
+    let want_v = match base_codec::parse_int64_str(expected_strs[i]) {
+      Some(v) => v
+      None => panic("bad expected")
+    }
+    debug_assert(col_int64(row, i) == want_v, "col_int64 exact")
+    match col_opt_int64(row, i) {
+      Some(v) => debug_assert(v == want_v, "col_opt_int64 exact")
+      None => debug_assert(false, "expected Some")
+    }
+    debug_assert(col_text(row, i) == expected_strs[i], "col_text exact")
+  }
+
+  let mixed = [
+    base_codec::json_null(),
+    base_codec::json_bool(true),
+    base_codec::json_bool(false),
+    base_codec::json_num(-0.0),
+    base_codec::json_num(3.25),
+    base_codec::json_str(""),
+    base_codec::json_arr([base_codec::json_int(1)]),
+  ]
+  debug_assert(col_text(mixed, 0) == "" && col_opt_text(mixed, 0).is_none() && col_int(mixed, 0) == 0 && !col_bool(mixed, 0), "null")
+  debug_assert(col_int(mixed, 1) == 1 && col_int64(mixed, 1) == 1.to_int64() && col_bool(mixed, 1), "true")
+  debug_assert(col_int(mixed, 2) == 0 && !col_bool(mixed, 2), "false")
+  debug_assert(col_double(mixed, 3) == 0.0 && !col_bool(mixed, 3), "-0.0")
+  debug_assert(col_double(mixed, 4) == 3.25 && col_bool(mixed, 4), "3.25")
+  debug_assert(col_text(mixed, 99) == "" && col_opt_int64(mixed, 99).is_none(), "oob")
+
+  let bad_shell = shell::Shell::stood_in(
+    effect::Runtime::new(),
+    fn(_ : Int64, _ : String, _ : base_codec::Json, _ : Option[Bytes]) -> Unit {},
+    fn(_ : String, _ : base_codec::Json) -> shell::AskResult { shell::AskResult::Ok(base_codec::json_obj([("nope", base_codec::json_bool(true))])) },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  match Sql::open(bad_shell, "broken") {
+    SqlResult::Err(e) => debug_assert(e.to_string().contains("sql.open answered no handle"), "bad open err")
+    SqlResult::Ok(_) => debug_assert(false, "expected err")
+  }
+}

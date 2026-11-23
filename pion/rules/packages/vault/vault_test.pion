@@ -1,0 +1,56 @@
+///| Unit tests for `vault`.
+
+test "browser_listing_ok rules" {
+  let ok = match browser_listing_ok("browser", ["browser"], ["github.com"]) {
+    None => true
+    Some(_) => false
+  }
+  debug_assert(ok, "valid browser listing")
+  let bad_wild = match browser_listing_ok("browser", ["browser"], ["*.github.com"]) {
+    Some(_) => true
+    None => false
+  }
+  debug_assert(bad_wild, "wildcard disallowed for browser")
+  let bad_modes = match browser_listing_ok("browser", ["browser", "proxy"], ["github.com"]) {
+    Some(_) => true
+    None => false
+  }
+  debug_assert(bad_modes, "extra mode disallowed for browser")
+  let bad_non = match browser_listing_ok("token", ["browser"], ["github.com"]) {
+    Some(_) => true
+    None => false
+  }
+  debug_assert(bad_non, "browser mode disallowed for token")
+}
+
+test "vault signer_of and cert_ok" {
+  let members : form::OrderedMap[Bool] = form::OrderedMap::new()
+  members.set("alice", true)
+  let roles : form::OrderedMap[String] = form::OrderedMap::new()
+  roles.set("alice", "owner")
+  let dev_id = "0000000000000000000000000000000000000000000000000000000000000001"
+  let key_id = "ed25519:0000000000000000000000000000000000000000000000000000000000000002"
+  let devices : form::OrderedMap[Device] = form::OrderedMap::new()
+  devices.set(dev_id, Device::{ sub: "alice", kind: "app", sign_key: Some(key_id), own: true })
+  let sign_keys : form::OrderedMap[Array[String]] = form::OrderedMap::new()
+  sign_keys.set(dev_id, [key_id])
+  let lock = LockView::{ ws: "ws1", members: members, roles: roles, devices: devices, sign_keys: sign_keys }
+  let ok_signer = match signer_of(lock, key_id) {
+    Some((sub, id)) => sub == "alice" && id == dev_id
+    None => false
+  }
+  debug_assert(ok_signer, "signer_of finds alice")
+  let crypto = Crypto::{ record_sig_valid: fn(_sig : form::Json, _tag : String, _text : String) -> Bool { true } }
+  let cert_json = match form::parse_json("{\"v\":1,\"ws\":\"ws1\",\"device\":\"" + dev_id + "\",\"box\":\"x25519:" + dev_id + "\",\"at\":1000,\"sig\":{\"key\":\"" + key_id + "\",\"alg\":\"Ed25519\",\"sig\":\"aa\"}}") {
+    Ok(j) => j
+    Err(_) => {
+      debug_assert(false, "parse cert")
+      return
+    }
+  }
+  let ok_cert = match cert_ok(lock, Some(cert_json), false, crypto) {
+    None => true
+    Some(_) => false
+  }
+  debug_assert(ok_cert, "cert_ok passes")
+}

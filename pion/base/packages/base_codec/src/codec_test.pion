@@ -1,0 +1,235 @@
+// Base64, Base64URL, hex, and CRC-32 tests (ported from codec_test.mbt & codec_conformance_test.mbt).
+
+fn c_bytes_eq(a : Bytes, b : Bytes) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn c_opt_bytes_eq(a : Option[Bytes], b : Option[Bytes]) -> Bool {
+  match a {
+    None =>
+    match b {
+      None => true
+      Some(_) => false
+    }
+    Some(ab) =>
+    match b {
+      None => false
+      Some(bb) => c_bytes_eq(ab, bb)
+    }
+  }
+}
+
+fn c_bytes_of(arr : Array[Int]) -> Bytes {
+  let out = Bytes::new(arr.length())
+  for i in 0..<arr.length() {
+    out[i] = arr[i] as Byte
+  }
+  out
+}
+
+fn c_u32(hi : Int, lo : Int) -> Int64 {
+  (hi.to_int64() << 16) | lo.to_int64()
+}
+
+fn strip_eq(s : String) -> String {
+  let mut end = s.length()
+  while end > 0 && s.code_unit_at(end - 1) == 61 {
+    end -= 1
+  }
+  s.slice(0, end)
+}
+
+test "base64 writes RFC 4648 vectors and every decoder reads them back" {
+  let inputs = ["", "f", "fo", "foo", "foob", "fooba", "foobar"]
+  let texts = ["", "Zg==", "Zm8=", "Zm9v", "Zm9vYg==", "Zm9vYmE=", "Zm9vYmFy"]
+  for i in 0..<inputs.length() {
+    let data = inputs[i].to_bytes()
+    let text = texts[i]
+    debug_assert(base64_encode(data) == text, "b64 encode")
+    debug_assert(c_opt_bytes_eq(base64_decode(text), Some(data)), "b64 decode")
+    debug_assert(c_opt_bytes_eq(base64_decode_strict(text), Some(data)), "b64 strict")
+    let bare = strip_eq(text)
+    debug_assert(base64url_encode(data) == bare, "b64url encode")
+    debug_assert(c_opt_bytes_eq(base64url_decode(bare), Some(data)), "b64url bare")
+    debug_assert(c_opt_bytes_eq(base64url_decode(text), Some(data)), "b64url padded")
+    debug_assert(c_opt_bytes_eq(base64_decode(bare), Some(data)), "b64 decode bare")
+  }
+}
+
+test "the two alphabets differ at 62 and 63" {
+  let b3 = c_bytes_of([0xfb, 0xff, 0xbf])
+  let b2 = c_bytes_of([0xfb, 0xff])
+  let b1 = c_bytes_of([0xfb])
+  debug_assert(base64_encode(b3) == "+/+/", "std 3")
+  debug_assert(base64url_encode(b3) == "-_-_", "url 3")
+  debug_assert(base64_encode(b2) == "+/8=", "std 2")
+  debug_assert(base64url_encode(b2) == "-_8", "url 2")
+  debug_assert(base64url_encode(b1) == "-w", "url 1")
+  debug_assert(c_opt_bytes_eq(base64_decode("+/+/"), Some(b3)), "dec std 3")
+  debug_assert(c_opt_bytes_eq(base64_decode("-_-_"), Some(b3)), "dec url 3")
+  debug_assert(c_opt_bytes_eq(base64_decode("-_8"), Some(b2)), "dec url 2")
+  debug_assert(c_opt_bytes_eq(base64_decode_strict("+/8="), Some(b2)), "strict std 2")
+  debug_assert(base64_decode_strict("-_8=").is_none(), "strict rejects url")
+  debug_assert(c_opt_bytes_eq(base64url_decode("-_8"), Some(b2)), "url dec 2")
+  debug_assert(base64url_decode("+/8=").is_none(), "url rejects std")
+}
+
+test "every byte value and length round-trips through each form" {
+  let all = Bytes::new(256)
+  for i in 0..<256 {
+    all[i] = i as Byte
+  }
+  for n in 0..<257 {
+    let data = all.slice(0, n)
+    let want = Some(data)
+    debug_assert(c_opt_bytes_eq(base64_decode(base64_encode(data)), want), "b64 rt")
+    debug_assert(c_opt_bytes_eq(base64_decode_strict(base64_encode(data)), want), "strict rt")
+    debug_assert(c_opt_bytes_eq(base64url_decode(base64url_encode(data)), want), "url rt")
+    debug_assert(c_opt_bytes_eq(base64_decode(base64url_encode(data)), want), "lenient url rt")
+    debug_assert(c_opt_bytes_eq(hex_decode(hex_encode(data)), want), "hex rt")
+    debug_assert(c_opt_bytes_eq(hex_decode(hex_encode_upper(data)), want), "hex upper rt")
+  }
+}
+
+test "lenient decoder leaves ASCII space out and takes padding or none" {
+  debug_assert(c_opt_bytes_eq(base64_decode(" Zm9v\r\nYmFy\t"), Some("foobar".to_bytes())), "space")
+  debug_assert(c_opt_bytes_eq(base64_decode("Zm9vYg"), Some("foob".to_bytes())), "no pad")
+  debug_assert(c_opt_bytes_eq(base64_decode("Zm9vYg =\n="), Some("foob".to_bytes())), "spaced pad")
+  debug_assert(c_opt_bytes_eq(base64_decode("Zh"), Some("f".to_bytes())), "trailing bits ignored")
+}
+
+test "each decoder refuses what is not its form" {
+  let bad_all = ["Zm9v!", "Zm9vé", "Zg==Zg==", "Zg=", "Zg===", "Zm8==", "Z", "Zm9vY", "Zm9vY===", "="]
+  for i in 0..<bad_all.length() {
+    debug_assert(base64_decode(bad_all[i]).is_none(), "lenient bad")
+    debug_assert(base64_decode_strict(bad_all[i]).is_none(), "strict bad")
+    debug_assert(base64url_decode(bad_all[i]).is_none(), "url bad")
+  }
+  let bad_strict = ["Zg", "Zm8", "Zm9v Yg==", "Zm9v\nYmFy", "Zh==", "Zm9=", "Zm9vYm-y"]
+  for i in 0..<bad_strict.length() {
+    debug_assert(base64_decode_strict(bad_strict[i]).is_none(), "strict specific bad")
+  }
+  debug_assert(base64url_decode("Zm9v Ymfy").is_none(), "url space")
+  debug_assert(base64url_decode("Zm9vYm+y").is_none(), "url plus")
+  debug_assert(base64url_decode("Zm9vYm/y").is_none(), "url slash")
+}
+
+test "hex writes either case and reads both" {
+  debug_assert(hex_encode("".to_bytes()) == "", "empty")
+  let raw = c_bytes_of([0x00, 0x01, 0x7f, 0x80, 0xab, 0xff])
+  debug_assert(hex_encode(raw) == "00017f80abff", "lower")
+  debug_assert(hex_encode_upper(raw) == "00017F80ABFF", "upper")
+  debug_assert(c_opt_bytes_eq(hex_decode("00017f80ABff"), Some(raw)), "mixed decode")
+  debug_assert(c_opt_bytes_eq(hex_decode(""), Some("".to_bytes())), "empty decode")
+  debug_assert(hex_decode("abc").is_none(), "odd")
+  debug_assert(hex_decode("0g").is_none(), "0g")
+  debug_assert(hex_decode("0x00").is_none(), "0x00")
+  debug_assert(hex_decode(" 00").is_none(), "space")
+}
+
+fn opt_int_eq(a : Option[Int], b : Int) -> Bool {
+  match a {
+    Some(v) => v == b
+    None => false
+  }
+}
+
+test "hex_digit is a digit worth in either case and nothing else" {
+  debug_assert(opt_int_eq(hex_digit(48), 0), "0")
+  debug_assert(opt_int_eq(hex_digit(57), 9), "9")
+  debug_assert(opt_int_eq(hex_digit(97), 10), "a")
+  debug_assert(opt_int_eq(hex_digit(70), 15), "F")
+  let bad = [47, 58, 64, 71, 96, 103, 32, -1, 0x660]
+  for i in 0..<bad.length() {
+    debug_assert(hex_digit(bad[i]).is_none(), "not hex")
+  }
+}
+
+test "crc32 gives IEEE check values and incremental invariance" {
+  debug_assert(crc32("".to_bytes()) == 0.to_int64(), "empty")
+  debug_assert(crc32("123456789".to_bytes()) == c_u32(0xCBF4, 0x3926), "123456789")
+  debug_assert(crc32("The quick brown fox jumps over the lazy dog".to_bytes()) == c_u32(0x414F, 0xA339), "fox")
+  debug_assert(crc32("a".to_bytes()) == c_u32(0xE8B7, 0xBE43), "a")
+  let data = Bytes::new(1000)
+  for i in 0..<1000 {
+    data[i] = ((i * 7 + 3) & 0xFF) as Byte
+  }
+  let whole = crc32(data)
+  let cuts = [0, 1, 3, 499, 999, 1000]
+  for ci in 0..<cuts.length() {
+    let cut = cuts[ci]
+    let c1 = crc32(data.slice(0, cut))
+    let c2 = crc32_update_slice(c1, data, cut, 1000)
+    debug_assert(c2 == whole, "split")
+  }
+  let mut crc = 0.to_int64()
+  for i in 0..<data.length() {
+    crc = crc32_update_slice(crc, data, i, i + 1)
+  }
+  debug_assert(crc == whole, "byte by byte")
+  debug_assert(crc32_update(whole, "".to_bytes()) == whole, "empty update")
+}
+
+test "base64_decode_loose matches Node Buffer.from leniency" {
+  debug_assert(c_bytes_eq(base64_decode_loose("SGVsbG8="), "Hello".to_bytes()), "hello")
+  debug_assert(c_bytes_eq(base64_decode_loose("SGVs!bG8?==ignored"), "Hello".to_bytes()), "garbage")
+  debug_assert(c_bytes_eq(base64_decode_loose("-_8="), c_bytes_of([0xfb, 0xff])), "url")
+  debug_assert(c_bytes_eq(base64_decode_loose("A"), "".to_bytes()), "single")
+  debug_assert(c_bytes_eq(base64_decode_loose("SGVsbG8A"), c_bytes_of([72, 101, 108, 108, 111, 0])), "nul")
+  debug_assert(c_bytes_eq(base64_decode_loose("SGVsbA"), "Hell".to_bytes()), "hell")
+  debug_assert(c_bytes_eq(base64_decode_loose("SGVsb"), "Hel".to_bytes()), "hel")
+}
+
+test "conformance: RFC 4648 §10 Base64 and Base16, §3.5 canonical pad bits, and CRC-32 vectors" {
+  let raw_s = ["", "f", "fo", "foo", "foob", "fooba", "foobar"]
+  let b64_s = ["", "Zg==", "Zm8=", "Zm9v", "Zm9vYg==", "Zm9vYmE=", "Zm9vYmFy"]
+  let hex_s = ["", "66", "666F", "666F6F", "666F6F62", "666F6F6261", "666F6F626172"]
+  for i in 0..<raw_s.length() {
+    let raw = raw_s[i].to_bytes()
+    debug_assert(base64_encode(raw) == b64_s[i], "vec b64")
+    debug_assert(c_opt_bytes_eq(base64_decode_strict(b64_s[i]), Some(raw)), "vec strict")
+    debug_assert(hex_encode_upper(raw) == hex_s[i], "vec hex upper")
+    debug_assert(c_opt_bytes_eq(hex_decode(hex_s[i]), Some(raw)), "vec hex dec")
+  }
+  let bad1 = ["Zh==", "Zi==", "Zj==", "Zv=="]
+  for i in 0..<bad1.length() {
+    debug_assert(base64_decode_strict(bad1[i]).is_none(), "non-zero pad1")
+    debug_assert(c_opt_bytes_eq(base64_decode(bad1[i]), Some("f".to_bytes())), "lenient pad1")
+  }
+  let bad2 = ["Zm9=", "Zm+=", "Zm/="]
+  for i in 0..<bad2.length() {
+    debug_assert(base64_decode_strict(bad2[i]).is_none(), "non-zero pad2")
+    debug_assert(c_opt_bytes_eq(base64_decode(bad2[i]), Some("fo".to_bytes())), "lenient pad2")
+  }
+  debug_assert(c_opt_bytes_eq(base64_decode("\t\r\n\x0c Zg== "), Some("f".to_bytes())), "ws")
+  debug_assert(c_opt_bytes_eq(base64_decode("+-/_"), Some(c_bytes_of([0xfb, 0xef, 0xff]))), "mixed alpha")
+  debug_assert(c_bytes_eq(base64_decode_loose("Zg==garbage"), "f".to_bytes()), "loose eq")
+  debug_assert(c_bytes_eq(base64_decode_loose("===="), "".to_bytes()), "loose only eq")
+
+  let z1 = Bytes::new(1)
+  let z32 = Bytes::new(32)
+  let ff32 = Bytes::new(32)
+  let seq32 = Bytes::new(32)
+  for i in 0..<32 {
+    ff32[i] = 0xff as Byte
+    seq32[i] = i as Byte
+  }
+  debug_assert(crc32(z1) == c_u32(0xD202, 0xEF8D), "z1")
+  debug_assert(crc32(z32) == c_u32(0x190A, 0x55AD), "z32")
+  debug_assert(crc32(ff32) == c_u32(0xFF6C, 0xAB0B), "ff32")
+  debug_assert(crc32(seq32) == c_u32(0x9126, 0x7E8A), "seq32")
+  let check_bytes = "123456789".to_bytes()
+  for split in 0..<10 {
+    let c1 = crc32(check_bytes.slice(0, split))
+    let c2 = crc32_update_slice(c1, check_bytes, split, 9)
+    debug_assert(c2 == c_u32(0xCBF4, 0x3926), "123456789 split")
+  }
+}

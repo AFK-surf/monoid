@@ -1,0 +1,1245 @@
+///| Workspace roster from people's logs (`rules/src/lock/roster.mbt`).
+
+struct Stmt {
+  hash : String
+  kind : String
+  body : Option[form::Json]
+  log : String
+  by : String
+}
+
+pub struct Bound {
+  sub : String
+  role : String
+  lock : String
+  admit : Option[String]
+  keys : Option[Array[String]]
+}
+
+pub struct Said {
+  hash : String
+  kind : String
+  log : String
+  by : String
+  label : String
+  why : Option[String]
+  decided : Option[String]
+}
+
+pub struct Carried {
+  moved : String
+  chain : LockState
+  devices_of : form::OrderedMap[Array[Device]]
+}
+
+pub struct Moved {
+  root : String
+  carried : Option[Carried]
+}
+
+pub struct Roster {
+  rooted : Bool
+  members : Array[Bound]
+  stations : Array[String]
+  pairs : Array[(String, String, String)]
+  undecided : Array[(String, String)]
+  cancelled : Array[String]
+  statements : Array[Said]
+  labels : Array[(String, String)]
+  refused : Array[(String, String)]
+  in_force : Array[(String, String)]
+  lacking : Array[String]
+  carried_keys : Array[(String, String)]
+  newest : Option[String]
+  settings : Option[form::Json]
+}
+
+pub let root_admit : String = "~root"
+pub let bind_tag : String = "stillfail-lock-bind/1"
+
+fn rank_of(r : String) -> Int {
+  role::rank(role_named(r))
+}
+
+fn is_mgr(r : Option[String]) -> Bool {
+  match r {
+    Some(s) => s == "owner" || s == "admin"
+    None => false
+  }
+}
+
+fn sort_by[T](xs : Array[T], cmp : (T, T) -> Int) -> Unit {
+  let n = xs.length()
+  if n <= 1 {
+    return
+  }
+  let tmp : Array[T] = []
+  let mut k = 0
+  while k < n {
+    tmp.push(xs[k])
+    k = k + 1
+  }
+  let mut width = 1
+  while width < n {
+    let mut left = 0
+    while left < n {
+      let mid = if left + width < n { left + width } else { n }
+      let right = if left + width * 2 < n { left + width * 2 } else { n }
+      let mut i = left
+      let mut j = mid
+      let mut out = left
+      while i < mid && j < right {
+        if cmp(xs[i], xs[j]) <= 0 {
+          tmp[out] = xs[i]
+          i = i + 1
+        } else {
+          tmp[out] = xs[j]
+          j = j + 1
+        }
+        out = out + 1
+      }
+      while i < mid {
+        tmp[out] = xs[i]
+        i = i + 1
+        out = out + 1
+      }
+      while j < right {
+        tmp[out] = xs[j]
+        j = j + 1
+        out = out + 1
+      }
+      let mut p = left
+      while p < right {
+        xs[p] = tmp[p]
+        p = p + 1
+      }
+      left = left + width * 2
+    }
+    width = width * 2
+  }
+}
+
+pub fn bind_form(ws : String, sub : String, log : String, moved : String) -> form::Json {
+  form::Json::Obj([
+    ("kind", form::Json::Str("bind")),
+    ("log", form::Json::Str(log)),
+    ("moved", form::Json::Str(moved)),
+    ("sub", form::Json::Str(sub)),
+    ("ws", form::Json::Str(ws)),
+  ])
+}
+
+pub fn bind_digest(ws : String, sub : String, log : String, moved : String, c : Crypto) -> String {
+  match form::canonical(bind_form(ws, sub, log, moved)) {
+    Ok(text) => (c.sha256_hex)(text)
+    Err(_) => ""
+  }
+}
+
+pub fn carried_of(chain : Array[form::Json], c : Crypto) -> (String, Option[Carried]) {
+  let s = match fold(chain, None, c) {
+    Ok(st) => st
+    Err(_) => return ("", None)
+  }
+  match s.moved {
+    Some(root) => {
+      let devices_of : form::OrderedMap[Array[Device]] = form::OrderedMap::new()
+      let devs = s.devices.values()
+      let mut i = 0
+      while i < devs.length() {
+        let d = devs[i]
+        match devices_of.get(d.sub) {
+          Some(ds) => ds.push(d)
+          None => devices_of.set(d.sub, [d])
+        }
+        i = i + 1
+      }
+      (root, Some(Carried::{ moved: s.head, chain: s, devices_of: devices_of }))
+    }
+    None => ("", None)
+  }
+}
+
+pub fn moved_of(chain : Array[form::Json], c : Crypto) -> Moved {
+  let (root, carried) = carried_of(chain, c)
+  Moved::{ root: root, carried: carried }
+}
+
+pub fn roster(ws : String, root : String, chains : Array[Array[form::Json]], bodies : Array[form::Json], c : Crypto) -> Roster {
+  roster_of(ws, root, chains, bodies, [], None, c).0
+}
+
+pub fn roster_without(
+  ws : String,
+  root : String,
+  chains : Array[Array[form::Json]],
+  bodies : Array[form::Json],
+  without : Array[String],
+  c : Crypto,
+) -> Roster {
+  roster_of(ws, root, chains, bodies, without, None, c).0
+}
+
+pub fn roster_carried(
+  ws : String,
+  m : Moved,
+  chains : Array[Array[form::Json]],
+  bodies : Array[form::Json],
+  without : Array[String],
+  c : Crypto,
+) -> Roster {
+  roster_of(ws, m.root, chains, bodies, without, m.carried, c).0
+}
+
+pub fn roster_moved(
+  ws : String,
+  chain : Array[form::Json],
+  chains : Array[Array[form::Json]],
+  bodies : Array[form::Json],
+  without : Array[String],
+  c : Crypto,
+) -> Roster {
+  roster_carried(ws, moved_of(chain, c), chains, bodies, without, c)
+}
+
+struct BindCand {
+  x : String
+  g : String
+  key : String
+  dev : Map[String, Bool]
+  off : Array[String]
+}
+
+fn binds_of(
+  ws : String,
+  cr : Carried,
+  root_sub : String,
+  in_force : Array[(String, String, form::Json, String)],
+  logs : form::OrderedMap[(Person, Array[form::Json])],
+  c : Crypto,
+) -> (Map[String, String], Map[String, Map[String, Bool]]) {
+  let cands : form::OrderedMap[Array[BindCand]] = form::OrderedMap::new()
+  let mut fi = 0
+  while fi < in_force.length() {
+    let (x, _, b, g) = in_force[fi]
+    fi = fi + 1
+    if !opt_str_eq(text_of(field(Some(b), "kind")), "bind") {
+      continue
+    }
+    let (p, chain) = match logs.get(g) {
+      Some(pair) => pair
+      None => continue
+    }
+    let sub = p.sub
+    if !(sub != root_sub && cr.chain.members.contains(sub) && !cr.chain.persons.contains(sub)) {
+      continue
+    }
+    let (key, sig) = match (text_of(field(Some(b), "key")), text_of(field(Some(b), "sig"))) {
+      (Some(k), Some(sg)) => (k, sg)
+      _ => continue
+    }
+    let own : Map[String, Bool] = Map::new()
+    let dev : Map[String, Bool] = Map::new()
+    let mut dev_count = 0
+    let sub_devs = match cr.devices_of.get(sub) {
+      Some(ds) => ds
+      None => []
+    }
+    let mut di = 0
+    while di < sub_devs.length() {
+      let d = sub_devs[di]
+      if d.kind == "app" && d.own {
+        match d.sign_key {
+          Some(k) => {
+            own.set(d.id, true)
+            if k == key {
+              dev.set(d.id, true)
+              dev_count = dev_count + 1
+            }
+          }
+          None => ()
+        }
+      }
+      di = di + 1
+    }
+    if dev_count == 0 || !(c.tagged_sig_valid)(key, sig, bind_tag, bind_digest(ws, sub, g, cr.moved, c)) {
+      continue
+    }
+    let off_set : Map[String, Bool] = Map::new()
+    let off_list : Array[String] = []
+    let p_devs = p.devices.values()
+    let mut ei = 0
+    while ei < chain.length() {
+      let e = Some(chain[ei])
+      let id_opt : Option[String] = match text_of(field(e, "kind")) {
+        Some("genesis") => text_of(field(field(field(e, "body"), "device"), "id"))
+        Some("device") => text_of(field(field(e, "body"), "id"))
+        _ => None
+      }
+      match id_opt {
+        Some(id) => {
+          if own.contains(id) {
+            let mut on_now = false
+            let mut pi = 0
+            while pi < p_devs.length() {
+              if p_devs[pi].id == id {
+                on_now = true
+                break
+              }
+              pi = pi + 1
+            }
+            if !on_now && !off_set.contains(id) {
+              off_set.set(id, true)
+              off_list.push(id)
+            }
+          }
+        }
+        None => ()
+      }
+      ei = ei + 1
+    }
+    let cand = BindCand::{ x: x, g: g, key: key, dev: dev, off: off_list }
+    match cands.get(sub) {
+      Some(cs) => cs.push(cand)
+      None => cands.set(sub, [cand])
+    }
+  }
+  let binds : Map[String, String] = Map::new()
+  let offs : Map[String, Map[String, Bool]] = Map::new()
+  let cand_entries = cands.entries()
+  let mut ci = 0
+  while ci < cand_entries.length() {
+    let (sub, cs) = cand_entries[ci]
+    let n = cs.length()
+    let attacks = fn(j : Int, i : Int) -> Bool {
+      if j == i || cs[j].g == cs[i].g {
+        return false
+      }
+      let off_j = cs[j].off
+      let mut oi = 0
+      while oi < off_j.length() {
+        if cs[i].dev.contains(off_j[oi]) {
+          return true
+        }
+        oi = oi + 1
+      }
+      false
+    }
+    let label : Array[Int] = []
+    let mut li = 0
+    while li < n {
+      label.push(0)
+      li = li + 1
+    }
+    let mut changed = true
+    while changed {
+      changed = false
+      let mut i = 0
+      while i < n {
+        if label[i] == 0 {
+          let mut any_in = false
+          let mut all_out = true
+          let mut j = 0
+          while j < n {
+            if attacks(j, i) {
+              if label[j] == 1 {
+                any_in = true
+              }
+              if label[j] != 2 {
+                all_out = false
+              }
+            }
+            j = j + 1
+          }
+          if any_in {
+            label[i] = 2
+            changed = true
+          } else if all_out {
+            label[i] = 1
+            changed = true
+          }
+        }
+        i = i + 1
+      }
+    }
+    let mut won : Option[BindCand] = None
+    let off : Map[String, Bool] = Map::new()
+    let mut i = 0
+    while i < n {
+      if label[i] == 1 {
+        let take = match won {
+          None => true
+          Some(w) => {
+            let ck = form::mbt_str_cmp(w.key, cs[i].key)
+            !(ck < 0 || (ck == 0 && form::mbt_str_cmp(w.x, cs[i].x) <= 0))
+          }
+        }
+        if take {
+          won = Some(cs[i])
+        }
+      }
+      if label[i] != 2 {
+        let off_i = cs[i].off
+        let mut oi = 0
+        while oi < off_i.length() {
+          off.set(off_i[oi], true)
+          oi = oi + 1
+        }
+      }
+      i = i + 1
+    }
+    match won {
+      Some(w) => binds.set(sub, w.g)
+      None => ()
+    }
+    offs.set(sub, off)
+    ci = ci + 1
+  }
+  (binds, offs)
+}
+
+fn roster_of(
+  ws : String,
+  root : String,
+  chains : Array[Array[form::Json]],
+  bodies : Array[form::Json],
+  without : Array[String],
+  carried : Option[Carried],
+  c : Crypto,
+) -> (Roster, form::OrderedMap[(Person, Array[form::Json])], Map[String, Map[String, Bool]]) {
+  let refused : Array[(String, String)] = []
+  let logs : form::OrderedMap[(Person, Array[form::Json])] = form::OrderedMap::new()
+  let mut ci = 0
+  while ci < chains.length() {
+    let chain = chains[ci]
+    ci = ci + 1
+    let g = if chain.length() > 0 {
+      match entry_hash(chain[0], c) {
+        Ok(h) => h
+        Err(_) => ""
+      }
+    } else {
+      ""
+    }
+    let sub = if chain.length() > 0 {
+      match text_of(field(field(Some(chain[0]), "body"), "sub")) {
+        Some(s) => s
+        None => ""
+      }
+    } else {
+      ""
+    }
+    let p = match fold_person(chain, sub, c) {
+      Ok(pr) => pr
+      Err(err) => {
+        refused.push((g, error_msg(err)))
+        continue
+      }
+    }
+    match logs.get(p.genesis) {
+      Some((q, _)) => {
+        refused.push((p.genesis, "another chain of the same log was taken"))
+        if !(q.seq > p.seq || (q.seq == p.seq && form::mbt_str_cmp(q.head, p.head) <= 0)) {
+          logs.set(p.genesis, (p, chain))
+        }
+      }
+      None => logs.set(p.genesis, (p, chain))
+    }
+  }
+  sort_by(refused, form::mbt_pair_cmp)
+  let kept : Map[String, form::Json] = Map::new()
+  let mut bi = 0
+  while bi < bodies.length() {
+    let b = bodies[bi]
+    match body_why(b) {
+      None => {
+        match body_hash(b, c) {
+          Ok(h) => kept.set(h, b)
+          Err(_) => ()
+        }
+      }
+      Some(_) => ()
+    }
+    bi = bi + 1
+  }
+  let whole = fn(b : form::Json) -> Bool {
+    let mut p = text_of(field(Some(b), "prev"))
+    let mut n = 0
+    while n < 10000 {
+      match p {
+        None => return true
+        Some(x) => {
+          match kept.get(x) {
+            None => return false
+            Some(q) => {
+              p = text_of(field(Some(q), "prev"))
+            }
+          }
+        }
+      }
+      n = n + 1
+    }
+    true
+  }
+  let gs = logs.keys()
+  form::sort_strings_mbt(gs)
+  let in_force_all : Array[(String, String, form::Json, String)] = []
+  let lacking : Array[String] = []
+  let mut gi = 0
+  while gi < gs.length() {
+    let g = gs[gi]
+    let (_, chain) = match logs.get(g) {
+      Some(pair) => pair
+      None => {
+        gi = gi + 1
+        continue
+      }
+    }
+    let t = ws_tag(ws, g, c)
+    let mut i = 1
+    while i < chain.length() {
+      let e = Some(chain[i])
+      if opt_str_eq(text_of(field(e, "kind")), "ws") && opt_str_eq(text_of(field(field(e, "body"), "t")), t) {
+        match entry_hash(chain[i], c) {
+          Ok(x) => {
+            let hb = match text_of(field(field(e, "body"), "h")) {
+              Some(s) => s
+              None => ""
+            }
+            match kept.get(hb) {
+              Some(b) => {
+                if opt_str_eq(text_of(field(Some(b), "ws")), ws) {
+                  if whole(b) {
+                    in_force_all.push((x, hb, b, g))
+                  }
+                } else {
+                  lacking.push(x)
+                }
+              }
+              None => lacking.push(x)
+            }
+          }
+          Err(_) => ()
+        }
+      }
+      i = i + 1
+    }
+    gi = gi + 1
+  }
+  form::sort_strings_mbt(lacking)
+  let in_force : Array[(String, String, form::Json, String)] = if without.length() == 0 {
+    in_force_all
+  } else {
+    let out : Array[(String, String, form::Json, String)] = []
+    let mut fi = 0
+    while fi < in_force_all.length() {
+      if !str_in(without, in_force_all[fi].1) {
+        out.push(in_force_all[fi])
+      }
+      fi = fi + 1
+    }
+    out
+  }
+  let forced : Array[(String, String)] = []
+  let mut ffi = 0
+  while ffi < in_force.length() {
+    forced.push((in_force[ffi].0, in_force[ffi].1))
+    ffi = ffi + 1
+  }
+  sort_by(forced, form::mbt_pair_cmp)
+  let open_off = fn(g : String) -> (Option[String], Option[form::Json]) {
+    let mut newest : Option[String] = None
+    let mut settings : Option[form::Json] = None
+    let mut fi = 0
+    while fi < in_force.length() {
+      let f = in_force[fi]
+      if f.3 == g {
+        match text_of(field(Some(f.2), "kind")) {
+          Some("open") => {
+            newest = Some("open")
+            settings = Some(f.2)
+          }
+          Some("off") => {
+            newest = Some("off")
+          }
+          _ => ()
+        }
+      }
+      fi = fi + 1
+    }
+    (newest, settings)
+  }
+  let (newest0, settings0) = open_off(root)
+  let offs : Map[String, Map[String, Bool]] = Map::new()
+  let root_person = match logs.get(root) {
+    Some((rp, _)) => rp
+    None => {
+      let empty = Roster::{
+        rooted: false,
+        members: [],
+        stations: [],
+        pairs: [],
+        undecided: [],
+        cancelled: [],
+        statements: [],
+        labels: [],
+        refused: refused,
+        in_force: forced,
+        lacking: lacking,
+        carried_keys: [],
+        newest: newest0,
+        settings: settings0,
+      }
+      return (empty, logs, offs)
+    }
+  }
+  let root_sub = root_person.sub
+  let root_pair = root_sub + "|" + root
+  let by_body : Map[String, Array[String]] = Map::new()
+  let mut bbi = 0
+  while bbi < in_force.length() {
+    let f = in_force[bbi]
+    match by_body.get(f.1) {
+      Some(xs) => xs.push(f.0)
+      None => by_body.set(f.1, [f.0])
+    }
+    bbi = bbi + 1
+  }
+  let carried_stmts : Array[Stmt] = []
+  let carried_ids : Map[String, String] = Map::new()
+  match carried {
+    Some(cr) => {
+      let (binds, off_map) = binds_of(ws, cr, root_sub, in_force, logs, c)
+      let off_keys = off_map.keys()
+      let mut oki = 0
+      while oki < off_keys.length() {
+        let k = off_keys[oki]
+        match off_map.get(k) {
+          Some(o) => offs.set(k, o)
+          None => ()
+        }
+        oki = oki + 1
+      }
+      let subs = cr.chain.members.keys()
+      form::sort_strings_mbt(subs)
+      let mut si = 0
+      while si < subs.length() {
+        let sub = subs[si]
+        si = si + 1
+        let m = match cr.chain.members.get(sub) {
+          Some(x) => x
+          None => continue
+        }
+        if !(sub != root_sub && is_role(Some(form::Json::Str(m.role)))) {
+          continue
+        }
+        let lock = match (cr.chain.persons.get(sub), binds.get(sub)) {
+          (Some(l), _) => l
+          (None, Some(g)) => g
+          _ => ""
+        }
+        let body = form::Json::Obj([
+          ("sub", form::Json::Str(sub)),
+          ("email", form::Json::Str(m.email)),
+          ("role", form::Json::Str(m.role)),
+          ("lock", form::Json::Str(lock)),
+        ])
+        let cid = "~" + cr.moved + "/m/" + sub
+        carried_ids.set("m/" + sub, cid)
+        carried_stmts.push(Stmt::{ hash: cid, kind: "ws.member", body: Some(body), log: root, by: root_sub })
+      }
+      let skeys = cr.chain.stations.keys()
+      form::sort_strings_mbt(skeys)
+      let mut ski = 0
+      while ski < skeys.length() {
+        let k = skeys[ski]
+        let cid = "~" + cr.moved + "/s/" + k
+        carried_ids.set("s/" + k, cid)
+        carried_stmts.push(Stmt::{
+          hash: cid,
+          kind: "ws.station",
+          body: Some(form::Json::Obj([("key", form::Json::Str(k))])),
+          log: root,
+          by: root_sub,
+        })
+        ski = ski + 1
+      }
+      let chashes : Array[String] = []
+      let mut chi = 0
+      while chi < carried_stmts.length() {
+        chashes.push(carried_stmts[chi].hash)
+        chi = chi + 1
+      }
+      by_body.set(cr.moved, chashes)
+    }
+    None => ()
+  }
+  by_body.set(root, [root_admit])
+  let root_stmt = Stmt::{
+    hash: root_admit,
+    kind: "ws.member",
+    body: Some(form::Json::Obj([
+      ("sub", form::Json::Str(root_sub)),
+      ("lock", form::Json::Str(root)),
+      ("role", form::Json::Str("owner")),
+    ])),
+    log: root,
+    by: root_sub,
+  }
+  let stmts : Array[Stmt] = []
+  let mut sfi = 0
+  while sfi < in_force.length() {
+    let (x, _, b, g) = in_force[sfi]
+    sfi = sfi + 1
+    let kind = match text_of(field(Some(b), "kind")) {
+      Some(k) => k
+      None => ""
+    }
+    if !(kind == "member" || kind == "member.remove" || kind == "station" || kind == "station.remove") {
+      continue
+    }
+    let body = match b {
+      form::Json::Obj(m) => {
+        let out : Array[(String, form::Json)] = []
+        let mut mi = 0
+        while mi < m.length() {
+          out.push(m[mi])
+          mi = mi + 1
+        }
+        match form::json_obj_get(m, "cancels") {
+          Some(form::Json::Arr(cs)) => {
+            let named : Array[String] = []
+            let mut yi = 0
+            while yi < cs.length() {
+              let y = match text_of(Some(cs[yi])) {
+                Some(s) => s
+                None => ""
+              }
+              match by_body.get(y) {
+                Some(zs) => {
+                  let mut zi = 0
+                  while zi < zs.length() {
+                    if !str_in(named, zs[zi]) {
+                      named.push(zs[zi])
+                    }
+                    zi = zi + 1
+                  }
+                }
+                None => ()
+              }
+              yi = yi + 1
+            }
+            let chains_own : Option[String] = if kind == "member.remove" {
+              match text_of(field(Some(b), "sub")) {
+                Some(sub) => carried_ids.get("m/" + sub)
+                None => None
+              }
+            } else if kind == "station.remove" {
+              match text_of(field(Some(b), "key")) {
+                Some(key) => carried_ids.get("s/" + key)
+                None => None
+              }
+            } else {
+              None
+            }
+            match chains_own {
+              Some(z) => {
+                if !str_in(named, z) {
+                  named.push(z)
+                }
+              }
+              None => ()
+            }
+            let jnamed : Array[form::Json] = []
+            let mut ni = 0
+            while ni < named.length() {
+              jnamed.push(form::Json::Str(named[ni]))
+              ni = ni + 1
+            }
+            form::json_obj_set(out, "cancels", form::Json::Arr(jnamed))
+          }
+          _ => ()
+        }
+        form::Json::Obj(out)
+      }
+      _ => b
+    }
+    let by_sub = match logs.get(g) {
+      Some((pr, _)) => pr.sub
+      None => ""
+    }
+    stmts.push(Stmt::{ hash: x, kind: "ws." + kind, body: Some(body), log: g, by: by_sub })
+  }
+  let mut csi = 0
+  while csi < carried_stmts.length() {
+    stmts.push(carried_stmts[csi])
+    csi = csi + 1
+  }
+  stmts.push(root_stmt)
+  let txt = fn(s : Stmt, k : String) -> String {
+    match text_of(field(s.body, k)) {
+      Some(v) => v
+      None => ""
+    }
+  }
+  let pair_of = fn(s : Stmt) -> String { s.by + "|" + s.log }
+  let admits : Array[Stmt] = []
+  let removes : Array[Stmt] = []
+  let admit_at : Map[String, Stmt] = Map::new()
+  let mut sti = 0
+  while sti < stmts.length() {
+    let s = stmts[sti]
+    if s.kind == "ws.member" {
+      admits.push(s)
+      admit_at.set(s.hash, s)
+    } else if s.kind == "ws.member.remove" {
+      removes.push(s)
+    }
+    sti = sti + 1
+  }
+  let attackers : form::OrderedMap[Array[String]] = form::OrderedMap::new()
+  let arg = fn(id : String) -> Array[String] {
+    match attackers.get(id) {
+      Some(xs) => xs
+      None => {
+        let xs : Array[String] = []
+        attackers.set(id, xs)
+        xs
+      }
+    }
+  }
+  let lacks : form::OrderedMap[(String, String)] = form::OrderedMap::new()
+  let lack = fn(s : Stmt, r : String) -> String {
+    let need = if r == "owner" { "owner" } else { "admin" }
+    let id = "n:" + pair_of(s) + "|" + need
+    let _ = arg(id)
+    lacks.set(id, (pair_of(s), need))
+    id
+  }
+  let mut ai = 0
+  while ai < admits.length() {
+    let a = admits[ai]
+    let id = "a:" + a.hash
+    let xs = arg(id)
+    if pair_of(a) != root_pair {
+      xs.push(lack(a, txt(a, "role")))
+    }
+    ai = ai + 1
+  }
+  let cancels_of : Map[String, Array[String]] = Map::new()
+  let mut ri = 0
+  while ri < removes.length() {
+    let r = removes[ri]
+    let ids : Array[String] = []
+    let cs = arr(field(r.body, "cancels"))
+    let mut xi = 0
+    while xi < cs.length() {
+      match text_of(Some(cs[xi])) {
+        Some(h) => {
+          match admit_at.get(h) {
+            Some(a) => {
+              if txt(a, "sub") == txt(r, "sub") {
+                let id = "c:" + r.hash + "|" + a.hash
+                let xs = arg(id)
+                if pair_of(r) != root_pair {
+                  xs.push(lack(r, txt(a, "role")))
+                }
+                arg("a:" + a.hash).push(id)
+                ids.push(id)
+              }
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+      xi = xi + 1
+    }
+    cancels_of.set(r.hash, ids)
+    ri = ri + 1
+  }
+  let lack_entries = lacks.entries()
+  let mut lki = 0
+  while lki < lack_entries.length() {
+    let (id, pr) = lack_entries[lki]
+    let (pair, r) = pr
+    let xs = arg(id)
+    let mut aj = 0
+    while aj < admits.length() {
+      let a = admits[aj]
+      if txt(a, "sub") + "|" + txt(a, "lock") == pair && rank_of(txt(a, "role")) >= rank_of(r) {
+        xs.push("a:" + a.hash)
+      }
+      aj = aj + 1
+    }
+    lki = lki + 1
+  }
+  let label : form::OrderedMap[String] = form::OrderedMap::new()
+  let atk_entries = attackers.entries()
+  let mut changed = true
+  while changed {
+    changed = false
+    let mut ei = 0
+    while ei < atk_entries.length() {
+      let (id, by) = atk_entries[ei]
+      if !label.contains(id) {
+        let mut any_in = false
+        let mut all_out = true
+        let mut bi2 = 0
+        while bi2 < by.length() {
+          match label.get(by[bi2]) {
+            Some("in") => {
+              any_in = true
+              all_out = false
+              break
+            }
+            Some("out") => ()
+            _ => {
+              all_out = false
+            }
+          }
+          bi2 = bi2 + 1
+        }
+        if any_in {
+          label.set(id, "out")
+          changed = true
+        } else if all_out {
+          label.set(id, "in")
+          changed = true
+        }
+      }
+      ei = ei + 1
+    }
+  }
+  let mut ei2 = 0
+  while ei2 < atk_entries.length() {
+    let id = atk_entries[ei2].0
+    if !label.contains(id) {
+      label.set(id, "undec")
+    }
+    ei2 = ei2 + 1
+  }
+  let pairs : form::OrderedMap[(String, String, String)] = form::OrderedMap::new()
+  let undecided : form::OrderedMap[(String, String)] = form::OrderedMap::new()
+  let cancelled : Array[String] = []
+  let counts = fn(r : Stmt, a : Stmt) -> Bool {
+    opt_str_eq(label.get("c:" + r.hash + "|" + a.hash), "in")
+  }
+  let mut ai2 = 0
+  while ai2 < admits.length() {
+    let a = admits[ai2]
+    let l = match label.get("a:" + a.hash) {
+      Some(s) => s
+      None => ""
+    }
+    let k = txt(a, "sub") + "|" + txt(a, "lock")
+    if l == "in" {
+      let take = match pairs.get(k) {
+        Some((_, _, was)) => rank_of(txt(a, "role")) > rank_of(was)
+        None => true
+      }
+      if take {
+        pairs.set(k, (txt(a, "sub"), txt(a, "lock"), txt(a, "role")))
+      }
+    } else if l == "undec" && is_mgr(Some(txt(a, "role"))) {
+      undecided.set(k, (txt(a, "sub"), txt(a, "lock")))
+    }
+    if l == "out" {
+      let mut rj = 0
+      while rj < removes.length() {
+        if counts(removes[rj], a) {
+          cancelled.push(a.hash)
+          break
+        }
+        rj = rj + 1
+      }
+    }
+    ai2 = ai2 + 1
+  }
+  pairs.set(root_pair, (root_sub, root, "owner"))
+  let pkeys = pairs.keys()
+  let mut pki = 0
+  while pki < pkeys.length() {
+    undecided.remove(pkeys[pki])
+    pki = pki + 1
+  }
+  let role_of_pair = fn(s : Stmt) -> Option[String] {
+    match pairs.get(pair_of(s)) {
+      Some((_, _, r)) => Some(r)
+      None => None
+    }
+  }
+  let hash_before = fn(a : String, b : String) -> Bool {
+    let ap = a.starts_with("~")
+    let bp = b.starts_with("~")
+    if !ap && bp {
+      true
+    } else if ap && !bp {
+      false
+    } else {
+      form::mbt_str_cmp(a, b) < 0
+    }
+  }
+  let root_in = !opt_str_eq(label.get("a:" + root_admit), "out")
+  let best : form::OrderedMap[(String, String, Option[String])] = form::OrderedMap::new()
+  if root_in {
+    best.set(root_sub, ("owner", root, None))
+  }
+  let mut ai3 = 0
+  while ai3 < admits.length() {
+    let a = admits[ai3]
+    ai3 = ai3 + 1
+    if !opt_str_eq(label.get("a:" + a.hash), "in") || a.hash == root_admit || (root_in && txt(a, "sub") == root_sub) {
+      continue
+    }
+    let r = txt(a, "role")
+    let sub = txt(a, "sub")
+    let takes = match best.get(sub) {
+      None => true
+      Some((was, _, admit)) => {
+        rank_of(r) > rank_of(was) || (r == was && match admit {
+          Some(x) => hash_before(a.hash, x)
+          None => false
+        })
+      }
+    }
+    if takes {
+      best.set(sub, (r, txt(a, "lock"), Some(a.hash)))
+    }
+  }
+  let (newest, settings) = match best.get(root_sub) {
+    Some((_, lock, Some(_))) => {
+      if lock != root {
+        match open_off(lock) {
+          (None, _) => (newest0, settings0)
+          (n, None) => (n, settings0)
+          (n, s) => (n, s)
+          _ => (newest0, settings0)
+        }
+      } else {
+        (newest0, settings0)
+      }
+    }
+    _ => (newest0, settings0)
+  }
+  let st_cancelled : Map[String, String] = Map::new()
+  let mut sri = 0
+  while sri < stmts.length() {
+    let r = stmts[sri]
+    if r.kind == "ws.station.remove" && is_mgr(role_of_pair(r)) {
+      let cs = arr(field(r.body, "cancels"))
+      let mut xi = 0
+      while xi < cs.length() {
+        match text_of(Some(cs[xi])) {
+          Some(h) => {
+            let k = h + "|" + txt(r, "key")
+            let take = match st_cancelled.get(k) {
+              Some(was) => form::mbt_str_cmp(was, r.hash) > 0
+              None => true
+            }
+            if take {
+              st_cancelled.set(k, r.hash)
+            }
+          }
+          None => ()
+        }
+        xi = xi + 1
+      }
+    }
+    sri = sri + 1
+  }
+  let stations : form::OrderedMap[Bool] = form::OrderedMap::new()
+  let mut ssi = 0
+  while ssi < stmts.length() {
+    let s = stmts[ssi]
+    if s.kind == "ws.station" && is_mgr(role_of_pair(s)) && !st_cancelled.contains(s.hash + "|" + txt(s, "key")) {
+      stations.set(txt(s, "key"), true)
+    }
+    ssi = ssi + 1
+  }
+  let undecided_pair = fn(s : Stmt) -> Bool { undecided.contains(pair_of(s)) }
+  let not_in = fn(s : Stmt) -> String {
+    if undecided_pair(s) {
+      "its signer is undecided (a circle of removals)"
+    } else {
+      "its signer is not in the list"
+    }
+  }
+  let said : Array[Said] = []
+  let mut sdi = 0
+  while sdi < stmts.length() {
+    let s = stmts[sdi]
+    sdi = sdi + 1
+    if s.hash.starts_with("~") {
+      continue
+    }
+    let mut l = "in"
+    let mut why : Option[String] = None
+    let mut decided : Option[String] = None
+    if s.kind == "ws.member" {
+      l = match label.get("a:" + s.hash) {
+        Some(x) => x
+        None => ""
+      }
+      if l == "undec" {
+        why = Some(if undecided_pair(s) { "its signer is undecided (a circle of removals)" } else { "the admit is undecided (named by an undecided removal)" })
+      } else if l == "out" {
+        let by : Array[String] = []
+        let mut rj = 0
+        while rj < removes.length() {
+          if counts(removes[rj], s) {
+            by.push(removes[rj].hash)
+          }
+          rj = rj + 1
+        }
+        form::sort_strings_mbt(by)
+        if by.length() > 0 {
+          why = Some("admit cancelled")
+          decided = Some(by[0])
+        } else if !is_mgr(role_of_pair(s)) {
+          why = Some(not_in(s))
+        } else {
+          why = Some("its signer may not give that role")
+        }
+      } else {
+        match best.get(txt(s, "sub")) {
+          Some((r, lock, admit)) => {
+            if r != txt(s, "role") || lock != txt(s, "lock") {
+              why = Some("another admit of the person outranks it (a lower role given later changes nothing)")
+              decided = admit
+            }
+          }
+          None => ()
+        }
+      }
+    } else if s.kind == "ws.member.remove" {
+      let cids = match cancels_of.get(s.hash) {
+        Some(xs) => xs
+        None => []
+      }
+      let cs : Array[String] = []
+      let mut ci2 = 0
+      while ci2 < cids.length() {
+        match label.get(cids[ci2]) {
+          Some(x) => cs.push(x)
+          None => ()
+        }
+        ci2 = ci2 + 1
+      }
+      if str_in(cs, "in") {
+        ()
+      } else if str_in(cs, "undec") {
+        l = "undec"
+        why = Some("its cancellations are undecided (a circle of removals)")
+      } else if cs.length() > 0 {
+        l = "out"
+        why = Some(if is_mgr(role_of_pair(s)) { "it may cancel none of what it names" } else { not_in(s) })
+      }
+    } else if s.kind == "ws.station" {
+      if !is_mgr(role_of_pair(s)) {
+        l = "out"
+        why = Some(not_in(s))
+      } else {
+        match st_cancelled.get(s.hash + "|" + txt(s, "key")) {
+          Some(r) => {
+            l = "out"
+            why = Some("station cancelled")
+            decided = Some(r)
+          }
+          None => ()
+        }
+      }
+    } else {
+      if !is_mgr(role_of_pair(s)) {
+        l = "out"
+        why = Some(not_in(s))
+      }
+    }
+    said.push(Said::{ hash: s.hash, kind: s.kind, log: s.log, by: s.by, label: l, why: why, decided: decided })
+  }
+  sort_by(said, fn(a : Said, b : Said) -> Int { form::mbt_str_cmp(a.hash, b.hash) })
+  let members : Array[Bound] = []
+  let subs = best.keys()
+  form::sort_strings_mbt(subs)
+  let mut msi = 0
+  while msi < subs.length() {
+    let sub = subs[msi]
+    match best.get(sub) {
+      Some((r, lock, admit)) => {
+        let keys : Option[Array[String]] = match logs.get(lock) {
+          Some((p, _)) => {
+            if p.sub == sub {
+              let ks = p.devices.keys()
+              form::sort_strings_mbt(ks)
+              Some(ks)
+            } else {
+              None
+            }
+          }
+          None => None
+        }
+        members.push(Bound::{ sub: sub, role: r, lock: lock, admit: admit, keys: keys })
+      }
+      None => ()
+    }
+    msi = msi + 1
+  }
+  let carried_keys : Array[(String, String)] = []
+  match carried {
+    Some(cr) => {
+      let mut mi = 0
+      while mi < members.length() {
+        let m = members[mi]
+        let has_admit = match m.admit {
+          Some(_) => true
+          None => false
+        }
+        if !(m.sub == root_sub && has_admit) {
+          let sub_off = match offs.get(m.sub) {
+            Some(o) => o
+            None => Map::new()
+          }
+          let carry = carry_of(cr, m.sub, m.lock, logs, 0.0, sub_off)
+          let mut di = 0
+          while di < carry.apps.length() {
+            let sk = match carry.apps[di].sign_key {
+              Some(k) => k
+              None => ""
+            }
+            carried_keys.push((sk, m.sub))
+            di = di + 1
+          }
+        }
+        mi = mi + 1
+      }
+    }
+    None => ()
+  }
+  sort_by(carried_keys, form::mbt_pair_cmp)
+  let sts = stations.keys()
+  form::sort_strings_mbt(sts)
+  let ps = pairs.values()
+  sort_by(ps, form::mbt_triple_cmp)
+  let us = undecided.values()
+  sort_by(us, form::mbt_pair_cmp)
+  form::sort_strings_mbt(cancelled)
+  let ls = label.entries()
+  sort_by(ls, fn(a : (String, String), b : (String, String)) -> Int { form::mbt_str_cmp(a.0, b.0) })
+  let res = Roster::{
+    rooted: true,
+    members: members,
+    stations: sts,
+    pairs: ps,
+    undecided: us,
+    cancelled: cancelled,
+    statements: said,
+    labels: ls,
+    refused: refused,
+    in_force: forced,
+    lacking: lacking,
+    carried_keys: carried_keys,
+    newest: newest,
+    settings: settings,
+  }
+  (res, logs, offs)
+}

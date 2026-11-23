@@ -1,0 +1,217 @@
+// Tests for Shell::stood_in, Shell::turn, framed C-bridge answer unpacking, and TabClaim
+// (ported from shell_turn_wbtest.mbt).
+
+import "effect"
+import "base_codec"
+
+struct Turned {
+  shell : Shell
+  asked : Array[(Int64, String)]
+  queue : Array[(Int64, base_codec::Json)]
+}
+
+fn Turned::new(rt : effect::Runtime, at_once : Bool = false) -> Turned {
+  let asked : Array[(Int64, String)] = []
+  let queue : Array[(Int64, base_codec::Json)] = []
+  let shell = Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, _args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {
+      asked.push((id, op))
+      if at_once {
+        queue.push((id, base_codec::json_obj([("op", base_codec::json_str(op))])))
+      }
+    },
+    fn(_op : String, _args : base_codec::Json) -> AskResult { AskResult::Ok(base_codec::json_null()) },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  Turned::{ shell: shell, asked: asked, queue: queue }
+}
+
+fn Turned::turn(self : Turned) -> Option[Int64] {
+  self.shell.turn_taking(fn() -> Bool {
+    if self.queue.length() == 0 {
+      return false
+    }
+    let came : Array[(Int64, base_codec::Json)] = []
+    for i in 0..<self.queue.length() {
+      came.push(self.queue[i])
+    }
+    self.queue.clear()
+    for i in 0..<came.length() {
+      let (id, j) = came[i]
+      self.shell.answer(id, j)
+    }
+    true
+  })
+}
+
+fn opt_i64_is(a : Option[Int64], want : Int64) -> Bool {
+  match a {
+    Some(v) => v == want
+    None => false
+  }
+}
+
+test "turn drives a fiber through timers and an answer, saying when it is next due" {
+  let mut clock = 1000.to_int64()
+  let rt = effect::Runtime::live(fn() -> Int64 { clock })
+  let t = Turned::new(rt)
+  let mut got : Option[base_codec::Json] = None
+  let fiber = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    effect::sleep_k(50, fn(_ : effect::Exit[Unit]) -> Unit {
+      t.shell.call_k(
+        "storage.get",
+        base_codec::json_obj([("key", base_codec::json_str("k"))]),
+        fn(ex : effect::Exit[Answer]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(ans) => {
+              got = Some(ans.json)
+              effect::sleep_k(200, k)
+            }
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          }
+        },
+      )
+    })
+  })
+  debug_assert(opt_i64_is(t.turn(), 1050.to_int64()), "due 1050")
+  debug_assert(t.asked.length() == 0, "not asked yet")
+  clock = 1020.to_int64()
+  debug_assert(opt_i64_is(t.turn(), 1050.to_int64()), "still 1050")
+  clock = 1050.to_int64()
+  debug_assert(t.turn().is_none(), "waiting for answer")
+  debug_assert(t.asked.length() == 1, "asked 1")
+  let (req_id, req_op) = t.asked[0]
+  debug_assert(req_op == "storage.get", "op storage.get")
+  t.queue.push((req_id, base_codec::json_obj([("value", base_codec::json_str("v"))])))
+  debug_assert(got.is_none(), "not delivered yet")
+  debug_assert(opt_i64_is(t.turn(), 1250.to_int64()), "due 1250")
+  match got {
+    Some(j) => debug_assert(base_codec::json_stringify(j) == "{\"value\":\"v\"}", "got value")
+    None => debug_assert(false, "expected answer")
+  }
+  debug_assert(!fiber.is_done(), "sleeping 200")
+  clock = 1250.to_int64()
+  debug_assert(t.turn().is_none(), "all done")
+  debug_assert(fiber.is_done() && rt.idle(), "idle")
+}
+
+test "turn takes in the same turn what is answered while it runs" {
+  let mut clock = 0.to_int64()
+  let rt = effect::Runtime::live(fn() -> Int64 { clock })
+  let t = Turned::new(rt, at_once=true)
+  let steps : Array[String] = []
+  let fiber = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    t.shell.call_k("a", base_codec::json_obj([]), fn(e1 : effect::Exit[Answer]) -> Unit {
+      match e1 {
+        effect::Exit::Succeeded(a1) => {
+          steps.push(base_codec::json_stringify(a1.json))
+          t.shell.call_k("b", base_codec::json_obj([]), fn(e2 : effect::Exit[Answer]) -> Unit {
+            match e2 {
+              effect::Exit::Succeeded(a2) => {
+                steps.push(base_codec::json_stringify(a2.json))
+                t.shell.call_k("c", base_codec::json_obj([]), fn(e3 : effect::Exit[Answer]) -> Unit {
+                  match e3 {
+                    effect::Exit::Succeeded(a3) => {
+                      steps.push(base_codec::json_stringify(a3.json))
+                      effect::sleep_k(0, fn(_ : effect::Exit[Unit]) -> Unit {
+                        steps.push("slept")
+                        let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                          steps.push("forked")
+                          fk(effect::Exit::Succeeded(()))
+                        })
+                        effect::sleep_k(30, k)
+                      })
+                    }
+                    _ => k(effect::Exit::Succeeded(()))
+                  }
+                })
+              }
+              _ => k(effect::Exit::Succeeded(()))
+            }
+          })
+        }
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  debug_assert(opt_i64_is(t.turn(), 30.to_int64()), "due 30")
+  debug_assert(t.asked.length() == 3, "3 calls")
+  debug_assert(steps.length() == 5, "5 steps")
+  debug_assert(steps[0] == "{\"op\":\"a\"}" && steps[1] == "{\"op\":\"b\"}" && steps[2] == "{\"op\":\"c\"}", "abc")
+  debug_assert(steps[3] == "slept" && steps[4] == "forked", "slept and forked")
+  debug_assert(t.queue.length() == 0, "queue drained")
+  clock = 30.to_int64()
+  debug_assert(t.turn().is_none() && fiber.is_done(), "done at 30")
+}
+
+test "framed C ABI answer unpacking (Shell::answered) and TabClaim and ShellError" {
+  let rt = effect::Runtime::new()
+  let sh = Shell::stood_in(
+    rt,
+    fn(_ : Int64, _ : String, _ : base_codec::Json, _ : Option[Bytes]) -> Unit {},
+    fn(_ : String, _ : base_codec::Json) -> AskResult { AskResult::Ok(base_codec::json_null()) },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let mut req_id = 0.to_int64()
+  let mut got_json = ""
+  let mut got_bytes_len = -1
+  let f = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sh.call_k(
+      "test.op",
+      base_codec::json_obj([]),
+      fn(ex : effect::Exit[Answer]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(ans) => {
+            got_json = base_codec::json_stringify(ans.json)
+            match ans.bytes {
+              Some(b) => got_bytes_len = b.length()
+              None => got_bytes_len = 0
+            }
+          }
+          _ => ()
+        }
+        k(effect::Exit::Succeeded(()))
+      },
+      called=fn(id : Int64) -> Unit { req_id = id },
+    )
+  })
+  let _ = rt.run_ready()
+  // Pack [id:8 le][kind=1][text_len:4 le]["{\"ok\":true}"][b"XYZ"]
+  let txt = "{\"ok\":true}".to_bytes()
+  let pay = "XYZ".to_bytes()
+  let pkt = Bytes::new(13 + txt.length() + pay.length())
+  for i in 0..<8 {
+    pkt[i] = ((req_id >> (8 * i)) & 0xFF.to_int64()).to_int() as Byte
+  }
+  pkt[8] = 1 as Byte
+  let tlen = txt.length()
+  pkt[9] = (tlen & 0xFF) as Byte
+  pkt[10] = ((tlen >> 8) & 0xFF) as Byte
+  pkt[11] = ((tlen >> 16) & 0xFF) as Byte
+  pkt[12] = ((tlen >> 24) & 0xFF) as Byte
+  for i in 0..<txt.length() {
+    pkt[13 + i] = txt[i]
+  }
+  for i in 0..<pay.length() {
+    pkt[13 + txt.length() + i] = pay[i]
+  }
+  sh.answered(pkt)
+  let _ = rt.run_ready()
+  debug_assert(f.is_done() && got_json == "{\"ok\":true}" && got_bytes_len == 3, "unpacked C frame")
+
+  let told : Array[Int] = []
+  let claim = claim_tab("one", fn(s : TabState) -> Unit {
+    match s {
+      TabState::Held => told.push(1)
+      TabState::Standby => told.push(2)
+      TabState::Yielded => told.push(3)
+    }
+  })
+  debug_assert(told.length() == 1 && told[0] == 1, "Held")
+  claim.take_over()
+  claim.release()
+  debug_assert(told.length() == 1, "no further events")
+  debug_assert(ShellError::{ message: "no such endpoint" }.to_string() == "no such endpoint", "error str")
+}

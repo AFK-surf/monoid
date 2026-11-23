@@ -1,0 +1,250 @@
+// Wake handling, hedged dials, and endpoint rebinding.
+
+import "effect"
+import "base_codec"
+import "shell"
+
+pub let rebind_ms : Int = 5000
+
+pub fn Mesh::wake(self : Mesh, network : Bool = false, retry : Bool = false, away_ms : Int64 = 0.to_int64()) -> Unit {
+  if self.closed {
+    return
+  }
+  if network {
+    self.forget_speeds()
+  }
+  if self.rebinding {
+    return
+  }
+  self.sh.tell("iroh.networkChange", base_codec::json_obj([("id", self.endpoint)]))
+  self.record_dht(0)
+  self.record("conn network-change", fn() -> String {
+    let why = if network {
+      "the network changed"
+    } else if retry {
+      "retry"
+    } else {
+      "the UI back after " + round_i64(away_ms.to_double() / 1000.0).to_string() + "s"
+    }
+    let mut open = 0
+    for i in 0..<self.live.length() {
+      if self.live[i].ended().is_none() {
+        open += 1
+      }
+    }
+    "told the main endpoint (" +
+    why +
+    "), " +
+    open.to_string() +
+    " link(s) open, " +
+    self.pinned.length().to_string() +
+    " relay endpoint(s) not told"
+  })
+  let wks = self.ways_of.keys()
+  for i in 0..<wks.length() {
+    match self.ways_of.get(wks[i]) {
+      Some(ws) => {
+        ws.tried.clear()
+        ws.tailnet_answered = false
+      }
+      None => ()
+    }
+  }
+  let lks = self.links.keys()
+  for i in 0..<lks.length() {
+    match self.links.get(lks[i]) {
+      Some(opening) =>
+      match opening.result {
+        Some(Opened::Open(link)) =>
+        if link.usable() && !self.racing.contains(opening.place.map_key()) {
+          self.begin_race(opening.place, opening, link, false)
+        }
+        None => self.hedge(opening.place, opening)
+        Some(Opened::Failed(_, _)) => ()
+      }
+      None => ()
+    }
+  }
+}
+
+fn Mesh::hedge(self : Mesh, place : Place, opening : Opening) -> Unit {
+  if opening.result.is_some() || opening.hedge.is_some() {
+    return
+  }
+  opening.dials += 1
+  opening.hedge = Some(
+    self.fibers.fork_named("mesh hedge", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      let sp = self.span("mesh.hedge", place.peer)
+      let own = sp.own_fn
+      let fail = sp.fail_fn
+      let end = sp.end_fn
+      own("relay", SpanValue::Str(self.relay_status(self.endpoint)))
+      let tp = match sp.traceparent {
+        Some(s) => s
+        None => ""
+      }
+      self.dial_all_k(
+        place,
+        opening.credentials,
+        opening.fresh,
+        fn(ex : effect::Exit[Link]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+            other => {
+              match other {
+                effect::Exit::Failed(_) => fail()
+                _ => ()
+              }
+              end()
+              self.dialled(place, opening, true, other)
+              fk(effect::Exit::Succeeded(()))
+            }
+          }
+        },
+        traceparent=tp,
+      )
+    }),
+  )
+}
+
+fn Mesh::idle(self : Mesh) -> Bool {
+  for i in 0..<self.live.length() {
+    if self.live[i].pin.is_none() {
+      return false
+    }
+  }
+  if self.dialling_main != 0 || self.racing.length() != 0 || self.incomings.length() != 0 {
+    return false
+  }
+  let ks = self.links.keys()
+  for i in 0..<ks.length() {
+    match self.links.get(ks[i]) {
+      Some(op) =>
+      if op.result.is_none() {
+        return false
+      }
+      None => ()
+    }
+  }
+  true
+}
+
+fn Mesh::settling(self : Mesh) -> Bool {
+  if self.idle() || self.incomings.length() != 0 {
+    return false
+  }
+  for i in 0..<self.live.length() {
+    if self.live[i].pin.is_none() && !self.live[i].gone.is_done() {
+      return false
+    }
+  }
+  true
+}
+
+fn Mesh::may_rebind(self : Mesh) -> Bool {
+  match self.rebound_at {
+    Some(at) => self.sh.rt.now() - at >= rebind_ms.to_int64()
+    None => true
+  }
+}
+
+fn run_after_seq_k(
+  after : Array[((effect::Exit[Unit]) -> Unit) -> Unit],
+  idx : Int,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if idx >= after.length() {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  let f = after[idx]
+  f(fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      _ => run_after_seq_k(after, idx + 1, k)
+    }
+  })
+}
+
+fn close_endpoints_seq_k(
+  sh : shell::Shell,
+  eps : Array[base_codec::Json],
+  idx : Int,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if idx >= eps.length() {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  sh.call_k(
+    "iroh.close",
+    base_codec::json_obj([("id", eps[idx]), ("forget", base_codec::json_bool(true))]),
+    fn(_ : effect::Exit[shell::Answer]) -> Unit { close_endpoints_seq_k(sh, eps, idx + 1, k) },
+  )
+}
+
+fn Mesh::rebind_loop_k(self : Mesh, gone : Array[base_codec::Json], k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  if self.closed {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  let relays = self.relays
+  let rver = self.relays_ver
+  let entries = self.entries
+  let ever = self.entries_ver
+  let why = if self.retuned { "relays retold" } else { "a dial unanswered, nothing open" }
+  bind_k(self.sh, relays, self.options.relay_only, self.binding, entries, self.secret, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    self.record("conn rebind", fn() -> String {
+      match ex {
+        effect::Exit::Succeeded(_) => why + " -> bound"
+        effect::Exit::Failed(e) => why + " -> failed: " + said_short(said(e))
+        effect::Exit::Interrupted => why + " -> interrupted"
+      }
+    })
+    match ex {
+      effect::Exit::Succeeded(endpoint) => {
+        if self.closed {
+          gone.push(endpoint)
+          k(effect::Exit::Succeeded(()))
+          return
+        }
+        gone.push(self.endpoint)
+        self.endpoint = endpoint
+        self.stuck = false
+        self.replay(endpoint)
+        self.forget_coming()
+        if self.relays_ver == rver && self.entries_ver == ever {
+          self.retuned = false
+          k(effect::Exit::Succeeded(()))
+        } else {
+          self.rebind_loop_k(gone, k)
+        }
+      }
+      _ => k(effect::Exit::Succeeded(()))
+    }
+  })
+}
+
+fn Mesh::rebind(self : Mesh, after : Array[((effect::Exit[Unit]) -> Unit) -> Unit] = []) -> Unit {
+  self.rebinding = true
+  self.rebound_at = Some(self.sh.rt.now())
+  let _ = self.fibers.fork_named("mesh rebind", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    run_after_seq_k(after, 0, fn(aex : effect::Exit[Unit]) -> Unit {
+      match aex {
+        effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+        _ =>
+        effect::uninterruptible_k(
+          fn(uk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            let gone : Array[base_codec::Json] = []
+            self.rebind_loop_k(gone, fn(_ : effect::Exit[Unit]) -> Unit {
+              self.rebinding = false
+              self.eased()
+              close_endpoints_seq_k(self.sh, gone, 0, uk)
+            })
+          },
+          fk,
+        )
+      }
+    })
+  })
+}

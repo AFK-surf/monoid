@@ -1,0 +1,349 @@
+// Connection halves (`Socket`), accept loop (`Listener`), and bidirectional `pipe_duplex_k`
+// over `effect` with no transport of its own. Guarantees every handle is closed exactly once.
+
+import "effect"
+
+pub fn socket_closed_error() -> effect::EffectError {
+  effect::EffectError::Custom("the socket is closed")
+}
+
+pub struct Socket {
+  read_of : ((effect::Exit[Option[Bytes]]) -> Unit) -> Unit
+  write_of : (Bytes, (effect::Exit[Unit]) -> Unit) -> Unit
+  end_write_of : ((effect::Exit[Unit]) -> Unit) -> Unit
+  close_of : ((effect::Exit[Unit]) -> Unit) -> Unit
+  mut read_over : Bool
+  mut sent_end : Bool
+  mut closed : Bool
+}
+
+pub fn Socket::new(
+  read : ((effect::Exit[Option[Bytes]]) -> Unit) -> Unit,
+  write : (Bytes, (effect::Exit[Unit]) -> Unit) -> Unit,
+  end_write : ((effect::Exit[Unit]) -> Unit) -> Unit,
+  close : ((effect::Exit[Unit]) -> Unit) -> Unit,
+) -> Socket {
+  Socket::{
+    read_of: read,
+    write_of: write,
+    end_write_of: end_write,
+    close_of: close,
+    read_over: false,
+    sent_end: false,
+    closed: false,
+  }
+}
+
+pub fn Socket::is_closed(self : Socket) -> Bool {
+  self.closed
+}
+
+pub fn Socket::destroy_k(self : Socket, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  if self.closed {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  self.closed = true
+  self.read_over = true
+  self.sent_end = true
+  let close_fn = self.close_of
+  effect::uninterruptible_k(
+    fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+      close_fn(fn(_ex : effect::Exit[Unit]) -> Unit {
+        done(effect::Exit::Succeeded(()))
+      })
+    },
+    fn(_ex : effect::Exit[Unit]) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    },
+  )
+}
+
+pub fn Socket::read_k(self : Socket, k : (effect::Exit[Option[Bytes]]) -> Unit) -> Unit {
+  if self.closed || self.read_over {
+    k(effect::Exit::Succeeded(None))
+    return
+  }
+  let read_fn = self.read_of
+  read_fn(fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) =>
+      self.destroy_k(fn(_d : effect::Exit[Unit]) -> Unit {
+        k(effect::Exit::Failed(e))
+      })
+      effect::Exit::Succeeded(got) =>
+      match got {
+        Some(b) => k(effect::Exit::Succeeded(Some(b)))
+        None => {
+          self.read_over = true
+          if self.sent_end {
+            self.destroy_k(fn(_d : effect::Exit[Unit]) -> Unit {
+              k(effect::Exit::Succeeded(None))
+            })
+          } else {
+            k(effect::Exit::Succeeded(None))
+          }
+        }
+      }
+    }
+  })
+}
+
+pub fn Socket::write_k(self : Socket, data : Bytes, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  if self.closed || self.sent_end {
+    k(effect::Exit::Failed(socket_closed_error()))
+    return
+  }
+  let write_fn = self.write_of
+  write_fn(data, fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) =>
+      self.destroy_k(fn(_d : effect::Exit[Unit]) -> Unit {
+        k(effect::Exit::Failed(e))
+      })
+    }
+  })
+}
+
+pub fn Socket::end_write_k(self : Socket, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  if self.sent_end || self.closed {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  self.sent_end = true
+  let end_fn = self.end_write_of
+  end_fn(fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) =>
+      self.destroy_k(fn(_d : effect::Exit[Unit]) -> Unit {
+        k(effect::Exit::Failed(e))
+      })
+      effect::Exit::Succeeded(_) =>
+      if self.read_over {
+        self.destroy_k(fn(_d : effect::Exit[Unit]) -> Unit {
+          k(effect::Exit::Succeeded(()))
+        })
+      } else {
+        k(effect::Exit::Succeeded(()))
+      }
+    }
+  })
+}
+
+pub struct Listener[C] {
+  accept_of : ((effect::Exit[Option[C]]) -> Unit) -> Unit
+  close_of : ((effect::Exit[Unit]) -> Unit) -> Unit
+  is_fatal : (effect::EffectError) -> Bool
+  retry_ms : Int
+  mut closed : Bool
+}
+
+pub fn Listener::new[C](
+  accept : ((effect::Exit[Option[C]]) -> Unit) -> Unit,
+  close : ((effect::Exit[Unit]) -> Unit) -> Unit,
+  is_fatal : (effect::EffectError) -> Bool = fn(_ : effect::EffectError) -> Bool { false },
+  retry_ms : Int = 100,
+) -> Listener[C] {
+  Listener::{
+    accept_of: accept,
+    close_of: close,
+    is_fatal: is_fatal,
+    retry_ms: retry_ms,
+    closed: false,
+  }
+}
+
+pub fn Listener::close_k[C](self : Listener[C], k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  if self.closed {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  self.closed = true
+  let close_fn = self.close_of
+  effect::uninterruptible_k(
+    fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+      close_fn(fn(_ex : effect::Exit[Unit]) -> Unit {
+        done(effect::Exit::Succeeded(()))
+      })
+    },
+    fn(_ex : effect::Exit[Unit]) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    },
+  )
+}
+
+fn Listener::serve_step[C](
+  self : Listener[C],
+  s : effect::EffectScope,
+  on_conn : (C, (effect::Exit[Unit]) -> Unit) -> Unit,
+  on_error : (effect::EffectError) -> Unit,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if self.closed {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  let accept_fn = self.accept_of
+  accept_fn(fn(ex : effect::Exit[Option[C]]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => {
+        on_error(e)
+        let fatal_fn = self.is_fatal
+        if self.closed || fatal_fn(e) {
+          k(effect::Exit::Succeeded(()))
+        } else {
+          effect::sleep_k(self.retry_ms, fn(sex : effect::Exit[Unit]) -> Unit {
+            match sex {
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              _ => self.serve_step(s, on_conn, on_error, k)
+            }
+          })
+        }
+      }
+      effect::Exit::Succeeded(got) =>
+      match got {
+        None => k(effect::Exit::Succeeded(()))
+        Some(conn) => {
+          let _ = s.fork_quiet(fn(ck : (effect::Exit[Unit]) -> Unit) -> Unit {
+            on_conn(conn, fn(cex : effect::Exit[Unit]) -> Unit {
+              match cex {
+                effect::Exit::Failed(e) => {
+                  on_error(e)
+                  ck(effect::Exit::Succeeded(()))
+                }
+                effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(_) => ck(effect::Exit::Succeeded(()))
+              }
+            })
+          })
+          self.serve_step(s, on_conn, on_error, k)
+        }
+      }
+    }
+  })
+}
+
+pub fn Listener::serve_k[C](
+  self : Listener[C],
+  s : effect::EffectScope,
+  on_conn : (C, (effect::Exit[Unit]) -> Unit) -> Unit,
+  k : (effect::Exit[Unit]) -> Unit,
+  on_error : (effect::EffectError) -> Unit = fn(_ : effect::EffectError) -> Unit {},
+) -> Unit {
+  self.serve_step(s, on_conn, on_error, k)
+}
+
+fn pump_k(from : Socket, to : Socket, k : (effect::Exit[Bool]) -> Unit) -> Unit {
+  from.read_k(fn(rex : effect::Exit[Option[Bytes]]) -> Unit {
+    match rex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(_) => k(effect::Exit::Succeeded(false))
+      effect::Exit::Succeeded(opt) =>
+      match opt {
+        Some(data) =>
+        to.write_k(data, fn(wex : effect::Exit[Unit]) -> Unit {
+          match wex {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(_) => k(effect::Exit::Succeeded(false))
+            effect::Exit::Succeeded(_) => pump_k(from, to, k)
+          }
+        })
+        None =>
+        to.end_write_k(fn(eex : effect::Exit[Unit]) -> Unit {
+          match eex {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(_) => k(effect::Exit::Succeeded(false))
+            effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(true))
+          }
+        })
+      }
+    }
+  })
+}
+
+pub fn pipe_duplex_k(a : Socket, b : Socket, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  effect::scoped_k(
+    fn(s : effect::EffectScope, done : (effect::Exit[Unit]) -> Unit) -> Unit {
+      s.add_finalizer(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        a.destroy_k(fn(_ : effect::Exit[Unit]) -> Unit {
+          b.destroy_k(fk)
+        })
+      })
+      let broke : effect::Deferred[Unit] = effect::Deferred::new()
+      let ab = s.fork_named("pipe a to b", fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        pump_k(a, b, fn(pex : effect::Exit[Bool]) -> Unit {
+          match pex {
+            effect::Exit::Succeeded(ok) =>
+            if !ok {
+              a.destroy_k(fn(_ : effect::Exit[Unit]) -> Unit {
+                b.destroy_k(fn(_ : effect::Exit[Unit]) -> Unit {
+                  let _ = broke.succeed(())
+                  wk(effect::Exit::Succeeded(()))
+                })
+              })
+            } else {
+              wk(effect::Exit::Succeeded(()))
+            }
+            effect::Exit::Interrupted => wk(effect::Exit::Interrupted)
+            effect::Exit::Failed(_) => wk(effect::Exit::Succeeded(()))
+          }
+        })
+      })
+      let ba = s.fork_named("pipe b to a", fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        pump_k(b, a, fn(pex : effect::Exit[Bool]) -> Unit {
+          match pex {
+            effect::Exit::Succeeded(ok) =>
+            if !ok {
+              a.destroy_k(fn(_ : effect::Exit[Unit]) -> Unit {
+                b.destroy_k(fn(_ : effect::Exit[Unit]) -> Unit {
+                  let _ = broke.succeed(())
+                  wk(effect::Exit::Succeeded(()))
+                })
+              })
+            } else {
+              wk(effect::Exit::Succeeded(()))
+            }
+            effect::Exit::Interrupted => wk(effect::Exit::Interrupted)
+            effect::Exit::Failed(_) => wk(effect::Exit::Succeeded(()))
+          }
+        })
+      })
+      effect::race_k(
+        fn(rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          ab.wait_k(fn(e1 : effect::Exit[effect::Exit[Unit]]) -> Unit {
+            match e1 {
+              effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+              _ =>
+              ba.wait_k(fn(e2 : effect::Exit[effect::Exit[Unit]]) -> Unit {
+                match e2 {
+                  effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+                  _ => rk(effect::Exit::Succeeded(()))
+                }
+              })
+            }
+          })
+        },
+        fn(rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          broke.wait_k(rk)
+        },
+        fn(rex : effect::Exit[Unit]) -> Unit {
+          match rex {
+            effect::Exit::Interrupted => done(effect::Exit::Interrupted)
+            _ => done(effect::Exit::Succeeded(()))
+          }
+        },
+      )
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    },
+  )
+}

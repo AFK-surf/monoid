@@ -1,0 +1,137 @@
+// Cold chat open: builds the first view with zero SQL writes, 1 `md_kept` preload query,
+// and constant statement count regardless of account chat count.
+// Ported from `libs/client-core/src/store/open.mbt`.
+
+import "base_codec"
+import "sql"
+
+pub fn window_read_most(rows : Int) -> Int {
+  rows * 3
+}
+
+pub fn sql_window_end() -> String {
+  "SELECT n, json FROM entry WHERE station = ? AND thread = ? ORDER BY n DESC LIMIT ?"
+}
+
+pub fn sql_window_at() -> String {
+  "SELECT n, json FROM entry WHERE station = ? AND thread = ? AND n BETWEEN ? AND ? ORDER BY n"
+}
+
+pub struct ChatOpenView {
+  pub station : String
+  pub thread : Int
+  pub entries : Array[Entry]
+  pub trees : Map[String, String]
+  pub tree_keys : Array[String]
+  pub unread : Array[String]
+  pub last_opened : Option[Int64]
+}
+
+/// Open `thread` on `store.station`: reads entries, preloads Markdown trees in one statement,
+/// reads `last_opened`, and buffers `note_opened` (zero SQL writes before returning).
+pub fn open_chat(
+  store : MdStore,
+  thread : Int,
+  now : Int64,
+  rows : Int = 30,
+  at : Option[Int] = None,
+) -> sql::SqlResult[ChatOpenView] {
+  let station = base_codec::json_str(store.station)
+  let id = base_codec::json_int(thread)
+  let read = match at {
+    Some(a) =>
+    match store.db.all(sql_window_at(), params=[
+      station,
+      id,
+      base_codec::json_int(a - rows),
+      base_codec::json_int(a + rows - 1),
+    ]) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(r) => r
+    }
+    None =>
+    match store.db.all(sql_window_end(), params=[
+      station,
+      id,
+      base_codec::json_int(window_read_most(rows)),
+    ]) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(back) => {
+        let rev : Array[Array[base_codec::Json]] = []
+        let mut i = back.length() - 1
+        while i >= 0 {
+          rev.push(back[i])
+          i -= 1
+        }
+        rev
+      }
+    }
+  }
+  let all : Array[Entry] = []
+  for i in 0..<read.length() {
+    let r = read[i]
+    let parsed = match base_codec::json_parse(sql::col_text(r, 1)) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+    }
+    all.push(Entry::of_json(sql::col_int(r, 0), parsed))
+  }
+  let (from, to) = first_shown_window(all, rows, at=at)
+  let entries : Array[Entry] = []
+  for i in from..<to {
+    entries.push(all[i])
+  }
+  let keyed : Map[String, String] = Map::new()
+  let keys : Array[String] = []
+  for i in 0..<entries.length() {
+    match entries[i].md_words() {
+      Some(text) => {
+        if keyed.get(text).is_none() {
+          let k = md_key(text)
+          keyed.set(text, k)
+          keys.push(k)
+        }
+      }
+      None => ()
+    }
+  }
+  store.preload(keys)
+  let trees : Map[String, String] = Map::new()
+  let tree_keys : Array[String] = []
+  let unread : Array[String] = []
+  for i in 0..<keys.length() {
+    let key = keys[i]
+    match store.get(key, now) {
+      Some(json) => {
+        trees.set(key, json)
+        tree_keys.push(key)
+      }
+      None =>
+      match store.older_kept(key) {
+        Some(old) =>
+        match store.get(old, now) {
+          Some(json) => {
+            trees.set(key, json)
+            tree_keys.push(key)
+          }
+          None => unread.push(key)
+        }
+        None => unread.push(key)
+      }
+    }
+  }
+  let last_opened = match store.last_opened("entry", thread.to_string()) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(v) => v
+  }
+  store.note_opened("entry", thread.to_string(), now)
+  sql::SqlResult::Ok(ChatOpenView::{
+    station: store.station,
+    thread: thread,
+    entries: entries,
+    trees: trees,
+    tree_keys: tree_keys,
+    unread: unread,
+    last_opened: last_opened,
+  })
+}

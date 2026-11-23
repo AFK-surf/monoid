@@ -1,0 +1,81 @@
+///| Unit tests for `form`.
+
+test "canonical sorts keys by utf-16 and escapes control + lone surrogates" {
+  let j = match parse_json("{\"b\":1,\"a\":\"hi\\n\\u0001\\ud800\\udc00\\ud800x\\udfff\"}") {
+    Ok(v) => v
+    Err(e) => {
+      debug_assert(false, "parse failed: " + e)
+      return
+    }
+  }
+  let c = match canonical(j) {
+    Ok(s) => s
+    Err(e) => {
+      debug_assert(false, "canonical failed: " + e)
+      return
+    }
+  }
+  // \ud800\udc00 is U+10000 (4-byte UTF-8), lone \ud800 and \udfff stay escaped
+  let expected_sb = StringBuilder::new()
+  expected_sb.write_string("{\"a\":\"hi\\n\\u0001")
+  write_wtf8(expected_sb, 0x10000)
+  expected_sb.write_string("\\ud800x\\udfff\",\"b\":1}")
+  debug_assert(c == expected_sb.to_string(), "canonical mismatch: " + c)
+}
+
+test "canonical rejects non-integers and unsafe ints" {
+  match canonical(Json::Num(1.5)) {
+    Err(why) => debug_assert(why == "lock entries hold integers only", "bad float msg")
+    Ok(_) => debug_assert(false, "float must fail")
+  }
+  match canonical(Json::Num(9007199254740992.0)) {
+    Err(why) => debug_assert(why == "lock entries hold integers only", "bad unsafe msg")
+    Ok(_) => debug_assert(false, "unsafe int must fail")
+  }
+  match canonical(Json::Num(9007199254740991.0)) {
+    Ok(s) => debug_assert(s == "9007199254740991", "max safe int")
+    Err(e) => debug_assert(false, "max safe should pass: " + e)
+  }
+}
+
+test "entry_text strips sig and unknown fields" {
+  let e = match parse_json("{\"sig\":{\"key\":\"k\"},\"extra\":1,\"v\":1,\"ws\":\"w\",\"seq\":0,\"prev\":null,\"at\":10,\"kind\":\"genesis\",\"body\":{}}") {
+    Ok(v) => v
+    Err(_) => {
+      debug_assert(false, "parse")
+      return
+    }
+  }
+  match entry_text(e) {
+    Ok(s) => debug_assert(s == "stillfail-lock/1\n{\"at\":10,\"body\":{},\"kind\":\"genesis\",\"prev\":null,\"seq\":0,\"v\":1,\"ws\":\"w\"}", "entry_text: " + s)
+    Err(why) => debug_assert(false, "entry_text err: " + why)
+  }
+  match entry_text(Json::Arr([])) {
+    Err(why) => debug_assert(why == "an entry is an object", "non-object err")
+    Ok(_) => debug_assert(false, "non-object must fail")
+  }
+}
+
+test "utf16_cmp vs mbt_str_cmp and OrderedMap" {
+  debug_assert(utf16_cmp("b", "aa") > 0, "utf16 lex: b > aa")
+  debug_assert(mbt_str_cmp("b", "aa") < 0, "mbt length-first: b < aa")
+  debug_assert(utf16_len("名字 😀") == 5, "utf16 len with emoji")
+  let m : OrderedMap[Int] = OrderedMap::new()
+  m.set("b", 1)
+  m.set("a", 2)
+  m.set("b", 3)
+  m.set("c", 4)
+  m.remove("a")
+  let ks = m.keys()
+  debug_assert(ks.length() == 2 && ks[0] == "b" && ks[1] == "c", "ordered keys")
+  let got_b = match m.get("b") {
+    Some(x) => x == 3
+    None => false
+  }
+  let got_a = match m.get("a") {
+    None => true
+    Some(_) => false
+  }
+  debug_assert(got_b, "updated value")
+  debug_assert(got_a, "removed key")
+}

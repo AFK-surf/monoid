@@ -1,0 +1,105 @@
+// Generated words table aligned with libs/base/src/mesh/words_made.mbt (core-logic.mesh.*).
+
+fn made_zh(key : String) -> Option[String] {
+  if key == "core-logic.mesh.bad_device_key" {
+    Some("设备密钥应为 32 字节")
+  } else if key == "core-logic.mesh.bad_station_id" {
+    Some("服务器 id 无效：{id}")
+  } else if key == "core-logic.mesh.bind_failed" {
+    Some("无法启动此设备的网络连接")
+  } else if key == "core-logic.mesh.closed" {
+    Some("连接已关闭")
+  } else if key == "core-logic.mesh.closed_by_station" {
+    Some("服务器断开了连接：{reason}")
+  } else if key == "core-logic.mesh.credential_closed" {
+    Some("服务器关闭了授权通道")
+  } else if key == "core-logic.mesh.credential_expired" {
+    Some("授权已过期")
+  } else if key == "core-logic.mesh.credential_refused" {
+    Some("服务器拒绝了授权")
+  } else if key == "core-logic.mesh.credential_refused_why" {
+    Some("服务器拒绝了授权：{reason}")
+  } else if key == "core-logic.mesh.credential_revoked" {
+    Some("授权已被撤销")
+  } else if key == "core-logic.mesh.cut" {
+    Some("与服务器的连接中断")
+  } else if key == "core-logic.mesh.credential_unreadable" {
+    Some("无法解析服务器的授权响应")
+  } else if key == "core-logic.mesh.head_too_long" {
+    Some("服务器返回的头部过长")
+  } else if key == "core-logic.mesh.no_answer" {
+    Some("无法连接服务器：无响应")
+  } else if key == "core-logic.mesh.no_reply" {
+    Some("服务器无响应")
+  } else if key == "core-logic.mesh.not_connected" {
+    Some("尚未连接服务器")
+  } else if key == "core-logic.mesh.all_off" {
+    Some("连接服务器的所有方式都已关闭")
+  } else if key == "core-logic.mesh.reply_cut" {
+    Some("服务器的响应在行中断开")
+  } else if key == "core-logic.mesh.reply_no_status" {
+    Some("服务器的响应缺少状态码")
+  } else if key == "core-logic.mesh.reply_unreadable" {
+    Some("无法解析服务器的响应")
+  } else if key == "core-logic.mesh.station_removed" {
+    Some("服务器断开了连接：station_removed")
+  } else if key == "core-logic.mesh.timed_out" {
+    Some("连接超时")
+  } else if key == "core-logic.mesh.unreached" {
+    Some("无法连接服务器")
+  } else {
+    None
+  }
+}
+
+fn made_en(key : String) -> Option[String] {
+  if key == "core-logic.mesh.bad_device_key" {
+    Some("Device key must be 32 bytes")
+  } else if key == "core-logic.mesh.bad_station_id" {
+    Some("Invalid server id: {id}")
+  } else if key == "core-logic.mesh.bind_failed" {
+    Some("Couldn't start this device's network connection")
+  } else if key == "core-logic.mesh.closed" {
+    Some("Connection closed")
+  } else if key == "core-logic.mesh.closed_by_station" {
+    Some("The server closed the connection: {reason}")
+  } else if key == "core-logic.mesh.credential_closed" {
+    Some("The server closed the access channel")
+  } else if key == "core-logic.mesh.credential_expired" {
+    Some("Access expired")
+  } else if key == "core-logic.mesh.credential_refused" {
+    Some("The server refused access")
+  } else if key == "core-logic.mesh.credential_refused_why" {
+    Some("The server refused access: {reason}")
+  } else if key == "core-logic.mesh.credential_revoked" {
+    Some("Access revoked")
+  } else if key == "core-logic.mesh.cut" {
+    Some("Lost connection to the server")
+  } else if key == "core-logic.mesh.credential_unreadable" {
+    Some("Unreadable access response from the server")
+  } else if key == "core-logic.mesh.head_too_long" {
+    Some("The server's header is too long")
+  } else if key == "core-logic.mesh.no_answer" {
+    Some("Can't reach the server: no response")
+  } else if key == "core-logic.mesh.no_reply" {
+    Some("The server didn't respond")
+  } else if key == "core-logic.mesh.not_connected" {
+    Some("Not connected to the server yet")
+  } else if key == "core-logic.mesh.all_off" {
+    Some("Every way to reach the server is turned off")
+  } else if key == "core-logic.mesh.reply_cut" {
+    Some("The server's response was cut off mid-line")
+  } else if key == "core-logic.mesh.reply_no_status" {
+    Some("The server's response has no status code")
+  } else if key == "core-logic.mesh.reply_unreadable" {
+    Some("Unreadable response from the server")
+  } else if key == "core-logic.mesh.station_removed" {
+    Some("The server closed the connection: station_removed")
+  } else if key == "core-logic.mesh.timed_out" {
+    Some("Timed out")
+  } else if key == "core-logic.mesh.unreached" {
+    Some("Couldn't reach the server")
+  } else {
+    None
+  }
+}

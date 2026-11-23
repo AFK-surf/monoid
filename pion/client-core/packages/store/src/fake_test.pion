@@ -1,0 +1,553 @@
+// In-memory stand-in database for `store` tests over `shell::Shell::stood_in`.
+// Ported from `libs/client-core/src/store/fake_wbtest.mbt` and extended for
+// schema migrations, `chat_list` indexed window/keyed lookups, local overlays, and `account_doc`.
+
+import "base_codec"
+import "effect"
+import "shell"
+import "sql"
+
+struct MdRow {
+  size : Int
+  used : Int64
+  json : String
+}
+
+struct FakeChatRow {
+  station : String
+  archived : Int
+  id : String
+  ord : Double
+  thread : Option[Int]
+  session : Option[String]
+  pinned_at : Option[Int64]
+  last_active : Int64
+  mine : Int
+  hidden : Int
+  led : Int
+  watched : Int
+  json : String
+}
+
+struct FakeDb {
+  shell : shell::Shell
+  entries : Map[String, Array[(Int, String)]]
+  md : Map[String, MdRow]
+  md_keys : Array[String]
+  log_use : Map[String, Int64]
+  chats : Array[FakeChatRow]
+  outbox : Map[String, String]
+  pending : Array[(String, String, String)]
+  draft : Map[String, String]
+  account_doc : Map[String, String]
+  ran : Array[String]
+  mut user_version : Int
+  mut has_said : Bool
+}
+
+fn FakeDb::new() -> FakeDb {
+  let holder : Array[FakeDb] = []
+  let sh = shell::Shell::stood_in(
+    effect::Runtime::new(),
+    fn(_ : Int64, _ : String, _ : base_codec::Json, _ : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      holder[0].answer(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let fake = FakeDb::{
+    shell: sh,
+    entries: Map::new(),
+    md: Map::new(),
+    md_keys: [],
+    log_use: Map::new(),
+    chats: [],
+    outbox: Map::new(),
+    pending: [],
+    draft: Map::new(),
+    account_doc: Map::new(),
+    ran: [],
+    user_version: 0,
+    has_said: false,
+  }
+  holder.push(fake)
+  fake
+}
+
+fn param_str(params : Array[base_codec::Json], i : Int) -> String {
+  if i < 0 || i >= params.length() {
+    return ""
+  }
+  sql::col_text(params, i)
+}
+
+fn param_int64(params : Array[base_codec::Json], i : Int) -> Int64 {
+  if i < 0 || i >= params.length() {
+    return 0.to_int64()
+  }
+  sql::col_int64(params, i)
+}
+
+fn param_int(params : Array[base_codec::Json], i : Int) -> Int {
+  param_int64(params, i).to_int()
+}
+
+fn str_contains_station(in_ord : String, st : String) -> Int {
+  let sb = StringBuilder::new()
+  sb.write_byte(1 as Byte)
+  sb.write_string(st)
+  sb.write_byte(1 as Byte)
+  let needle = sb.to_string()
+  let idx = in_ord.index_of(needle)
+  if idx < 0 { 0 } else { idx + 1 }
+}
+
+fn str_contains_apart(apart_str : String, st : String, key : String) -> Bool {
+  if apart_str.length() == 0 {
+    return false
+  }
+  let sb = StringBuilder::new()
+  sb.write_byte(1 as Byte)
+  sb.write_string(st)
+  sb.write_byte(2 as Byte)
+  sb.write_string(key)
+  sb.write_byte(1 as Byte)
+  apart_str.index_of(sb.to_string()) >= 0
+}
+
+fn chat_row_before(a : FakeChatRow, b : FakeChatRow, in_ord : String) -> Bool {
+  let ap = match a.pinned_at {
+    Some(v) => v
+    None => -1.to_int64()
+  }
+  let bp = match b.pinned_at {
+    Some(v) => v
+    None => -1.to_int64()
+  }
+  if ap != bp {
+    return ap > bp
+  }
+  if a.last_active != b.last_active {
+    return a.last_active > b.last_active
+  }
+  let apos = str_contains_station(in_ord, a.station)
+  let bpos = str_contains_station(in_ord, b.station)
+  if apos != bpos {
+    return apos < bpos
+  }
+  if a.ord != b.ord {
+    return a.ord < b.ord
+  }
+  a.id < b.id
+}
+
+fn FakeDb::answer(self : FakeDb, op : String, args : base_codec::Json) -> shell::AskResult {
+  if op == "sql.open" {
+    return shell::AskResult::Ok(base_codec::json_obj([("id", base_codec::json_int(1))]))
+  }
+  if op == "sql.close" {
+    return shell::AskResult::Ok(base_codec::json_null())
+  }
+  let stmt = match base_codec::json_get(args, "sql") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return shell::AskResult::Err(shell::ShellError::{ message: "no statement" })
+  }
+  let p = match base_codec::json_get(args, "params") {
+    Some(base_codec::Json::Arr(a)) => a
+    _ => []
+  }
+  self.ran.push(stmt)
+
+  if op == "sql.exec" {
+    if stmt == "BEGIN IMMEDIATE" || stmt == "COMMIT" || stmt == "ROLLBACK" || stmt == sql_md_make() || stmt == sql_ensure_kept() {
+      return shell::AskResult::Ok(base_codec::json_null())
+    }
+    if stmt == migrations()[0] {
+      return shell::AskResult::Ok(base_codec::json_null())
+    }
+    if stmt == sql_ensure_said_ddl() {
+      self.has_said = true
+      return shell::AskResult::Ok(base_codec::json_null())
+    }
+    if stmt == sql_ensure_said_backfill() {
+      return shell::AskResult::Ok(base_codec::json_null())
+    }
+    if stmt.starts_with("PRAGMA user_version = ") {
+      let rest = stmt.slice(22, stmt.length())
+      match base_codec::parse_int64_str(rest) {
+        Some(v) => {
+          self.user_version = v.to_int()
+        }
+        None => ()
+      }
+      return shell::AskResult::Ok(base_codec::json_null())
+    }
+    return shell::AskResult::Err(shell::ShellError::{ message: "the fake database does not know exec: " + stmt })
+  }
+
+  let rows : Array[base_codec::Json] = []
+  let mut changed = 0
+
+  if stmt == "PRAGMA user_version" {
+    rows.push(base_codec::json_arr([base_codec::json_int(self.user_version)]))
+  } else if stmt == "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'said'" {
+    if self.has_said {
+      rows.push(base_codec::json_arr([base_codec::json_int(1)]))
+    }
+  } else if stmt == "SELECT 1 FROM sqlite_master WHERE name = ?" {
+    // No legacy FTS5 said_index in fresh fake DB.
+    ()
+  } else if stmt == sql_window_end() {
+    let key = param_str(p, 0) + " " + param_str(p, 1)
+    let most = param_int(p, 2)
+    match self.entries.get(key) {
+      Some(all) => {
+        let mut i = all.length() - 1
+        while i >= 0 && rows.length() < most {
+          let (en, ej) = all[i]
+          rows.push(base_codec::json_arr([base_codec::json_int(en), base_codec::json_str(ej)]))
+          i -= 1
+        }
+      }
+      None => ()
+    }
+  } else if stmt == sql_window_at() {
+    let key = param_str(p, 0) + " " + param_str(p, 1)
+    let lo = param_int(p, 2)
+    let hi = param_int(p, 3)
+    match self.entries.get(key) {
+      Some(all) => {
+        for i in 0..<all.length() {
+          let (en, ej) = all[i]
+          if en >= lo && en <= hi {
+            rows.push(base_codec::json_arr([base_codec::json_int(en), base_codec::json_str(ej)]))
+          }
+        }
+      }
+      None => ()
+    }
+  } else if stmt.starts_with(sql_md_many_head()) {
+    let st = param_str(p, 0)
+    for i in 1..<p.length() {
+      let key = param_str(p, i)
+      match self.md.get(st + " " + key) {
+        Some(r) => {
+          rows.push(base_codec::json_arr([base_codec::json_str(key), base_codec::json_int64(r.used), base_codec::json_str(r.json)]))
+        }
+        None => ()
+      }
+    }
+  } else if stmt == sql_md_one() {
+    match self.md.get(param_str(p, 0) + " " + param_str(p, 1)) {
+      Some(r) => {
+        rows.push(base_codec::json_arr([base_codec::json_int64(r.used), base_codec::json_str(r.json)]))
+      }
+      None => ()
+    }
+  } else if stmt == sql_opened() {
+    match self.log_use.get(param_str(p, 0) + " " + param_str(p, 1) + " " + param_str(p, 2)) {
+      Some(at) => {
+        rows.push(base_codec::json_arr([base_codec::json_int64(at)]))
+      }
+      None => ()
+    }
+  } else if stmt == sql_note_opened() {
+    self.log_use.set(param_str(p, 0) + " " + param_str(p, 1) + " " + param_str(p, 2), param_int64(p, 3))
+    changed = 1
+  } else if stmt == sql_md_touch() {
+    let k = param_str(p, 1) + " " + param_str(p, 2)
+    match self.md.get(k) {
+      Some(r) => {
+        self.md.set(k, MdRow::{ size: r.size, used: param_int64(p, 0), json: r.json })
+        changed = 1
+      }
+      None => ()
+    }
+  } else if stmt == sql_md_total() {
+    let mut sum = 0
+    for i in 0..<self.md_keys.length() {
+      match self.md.get(self.md_keys[i]) {
+        Some(r) => {
+          sum += r.size
+        }
+        None => ()
+      }
+    }
+    rows.push(base_codec::json_arr([base_codec::json_int(sum)]))
+  } else if stmt == sql_md_size() {
+    match self.md.get(param_str(p, 0) + " " + param_str(p, 1)) {
+      Some(r) => {
+        rows.push(base_codec::json_arr([base_codec::json_int(r.size)]))
+      }
+      None => ()
+    }
+  } else if stmt == sql_md_drop() {
+    let k = param_str(p, 0) + " " + param_str(p, 1)
+    if self.md.get(k).is_some() {
+      self.md.remove(k)
+      changed = 1
+    }
+  } else if stmt == sql_md_put() {
+    let k = param_str(p, 0) + " " + param_str(p, 1)
+    if self.md.get(k).is_none() {
+      self.md_keys.push(k)
+    }
+    self.md.set(k, MdRow::{ size: param_int(p, 3), used: param_int64(p, 4), json: param_str(p, 5) })
+    changed = 1
+  } else if stmt == sql_md_by_use() {
+    let active : Array[(String, MdRow)] = []
+    for i in 0..<self.md_keys.length() {
+      let k = self.md_keys[i]
+      match self.md.get(k) {
+        Some(r) => active.push((k, r))
+        None => ()
+      }
+    }
+    // Insertion sort by used ASC
+    for i in 1..<active.length() {
+      let cur = active[i]
+      let mut j = i - 1
+      while j >= 0 && active[j].1.used > cur.1.used {
+        active[j + 1] = active[j]
+        j -= 1
+      }
+      active[j + 1] = cur
+    }
+    for i in 0..<active.length() {
+      let (k, r) = active[i]
+      let sp = k.index_of(" ")
+      if sp >= 0 {
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(k.slice(0, sp)),
+          base_codec::json_str(k.slice(sp + 1, k.length())),
+          base_codec::json_int(r.size),
+        ]))
+      }
+    }
+  } else if stmt == sql_chat_window() {
+    let in_ord = param_str(p, 0)
+    let mine = param_int(p, 1)
+    let hidden = param_int(p, 2)
+    let watching = param_int(p, 3)
+    let apart_threads = param_str(p, 4)
+    let apart_sessions = param_str(p, 5)
+    let limit = param_int(p, 6)
+    let matched : Array[FakeChatRow] = []
+    for i in 0..<self.chats.length() {
+      let c = self.chats[i]
+      if c.archived != 0 {
+        continue
+      }
+      if str_contains_station(in_ord, c.station) == 0 {
+        continue
+      }
+      if mine != 0 && c.mine != 1 {
+        continue
+      }
+      if hidden != 2 && c.hidden != hidden {
+        continue
+      }
+      if c.led != 0 {
+        continue
+      }
+      if watching != 0 && c.watched != 1 {
+        continue
+      }
+      let mut skip = false
+      match c.thread {
+        Some(t) => {
+          if str_contains_apart(apart_threads, c.station, t.to_string()) {
+            skip = true
+          }
+        }
+        None => ()
+      }
+      match c.session {
+        Some(s) => {
+          if str_contains_apart(apart_sessions, c.station, s) {
+            skip = true
+          }
+        }
+        None => ()
+      }
+      if !skip {
+        matched.push(c)
+      }
+    }
+    for i in 1..<matched.length() {
+      let cur = matched[i]
+      let mut j = i - 1
+      while j >= 0 && chat_row_before(cur, matched[j], in_ord) {
+        matched[j + 1] = matched[j]
+        j -= 1
+      }
+      matched[j + 1] = cur
+    }
+    let take_n = if limit < matched.length() { limit } else { matched.length() }
+    for i in 0..<take_n {
+      let c = matched[i]
+      let pj = match c.pinned_at {
+        Some(v) => base_codec::json_int64(v)
+        None => base_codec::json_null()
+      }
+      rows.push(base_codec::json_arr([
+        base_codec::json_str(c.station),
+        base_codec::json_int(c.archived),
+        base_codec::json_str(c.id),
+        pj,
+        base_codec::json_int64(c.last_active),
+        base_codec::json_num(c.ord),
+      ]))
+    }
+  } else if stmt == sql_chat_by_key() {
+    let st = param_str(p, 0)
+    let arch = param_int(p, 1)
+    let cid = param_str(p, 2)
+    for i in 0..<self.chats.length() {
+      let c = self.chats[i]
+      if c.station == st && c.archived == arch && c.id == cid {
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(c.station),
+          base_codec::json_int(c.archived),
+          base_codec::json_str(c.id),
+          base_codec::json_str(c.json),
+        ]))
+        break
+      }
+    }
+  } else if stmt == sql_chat_by_thread() {
+    let st = param_str(p, 0)
+    let th = param_int(p, 1)
+    for i in 0..<self.chats.length() {
+      let c = self.chats[i]
+      if c.station == st && c.archived == 0 {
+        match c.thread {
+          Some(t) => {
+            if t == th {
+              rows.push(base_codec::json_arr([
+                base_codec::json_str(c.station),
+                base_codec::json_int(c.archived),
+                base_codec::json_str(c.id),
+                base_codec::json_str(c.json),
+              ]))
+              break
+            }
+          }
+          None => ()
+        }
+      }
+    }
+  } else if stmt == sql_chat_by_session() {
+    let st = param_str(p, 0)
+    let sess = param_str(p, 1)
+    for i in 0..<self.chats.length() {
+      let c = self.chats[i]
+      if c.station == st && c.archived == 0 {
+        match c.session {
+          Some(s) => {
+            if s == sess {
+              rows.push(base_codec::json_arr([
+                base_codec::json_str(c.station),
+                base_codec::json_int(c.archived),
+                base_codec::json_str(c.id),
+                base_codec::json_str(c.json),
+              ]))
+              break
+            }
+          }
+          None => ()
+        }
+      }
+    }
+  } else if stmt == sql_outbox_one() {
+    let st = param_str(p, 0)
+    let th = param_int(p, 1)
+    match self.outbox.get(st + " " + th.to_string()) {
+      Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(st), base_codec::json_int(th), base_codec::json_str(j)]))
+      None => ()
+    }
+  } else if stmt == sql_pending_by_station() {
+    let st = param_str(p, 0)
+    for i in 0..<self.pending.length() {
+      let (pk, pst, pj) = self.pending[i]
+      if pst == st {
+        rows.push(base_codec::json_arr([base_codec::json_str(pk), base_codec::json_str(pst), base_codec::json_str(pj)]))
+      }
+    }
+  } else if stmt == sql_draft_one() {
+    let st = param_str(p, 0)
+    let ch = param_str(p, 1)
+    match self.draft.get(st + " " + ch) {
+      Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(st), base_codec::json_str(ch), base_codec::json_str(j)]))
+      None => ()
+    }
+  } else if stmt == sql_account_doc_one() {
+    match self.account_doc.get(param_str(p, 0)) {
+      Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(j)]))
+      None => ()
+    }
+  } else {
+    return shell::AskResult::Err(shell::ShellError::{ message: "the fake database does not know: " + stmt })
+  }
+
+  if op == "sql.run" {
+    shell::AskResult::Ok(base_codec::json_int(changed))
+  } else {
+    shell::AskResult::Ok(base_codec::json_arr(rows))
+  }
+}
+
+fn is_write_sql(stmt : String) -> Bool {
+  stmt.starts_with("INSERT") ||
+  stmt.starts_with("UPDATE") ||
+  stmt.starts_with("DELETE") ||
+  stmt.starts_with("CREATE") ||
+  stmt.starts_with("BEGIN") ||
+  stmt.starts_with("COMMIT") ||
+  stmt.starts_with("PRAGMA user_version =")
+}
+
+/// Counts since `from`: `(all, writes, md_reads, begun, committed)`.
+fn FakeDb::since(self : FakeDb, from : Int) -> (Int, Int, Int, Int, Int) {
+  let mut w = 0
+  let mut md = 0
+  let mut begun = 0
+  let mut committed = 0
+  for i in from..<self.ran.length() {
+    let s = self.ran[i]
+    if is_write_sql(s) {
+      w += 1
+    }
+    if s.starts_with("SELECT") && s.contains("FROM md_kept") {
+      md += 1
+    }
+    if s == "BEGIN IMMEDIATE" {
+      begun += 1
+    }
+    if s == "COMMIT" {
+      committed += 1
+    }
+  }
+  (self.ran.length() - from, w, md, begun, committed)
+}
+
+fn FakeDb::put_entry(self : FakeDb, station : String, thread : Int, n : Int, json : base_codec::Json) -> Unit {
+  let k = station + " " + thread.to_string()
+  let all = match self.entries.get(k) {
+    Some(a) => a
+    None => {
+      let a : Array[(Int, String)] = []
+      self.entries.set(k, a)
+      a
+    }
+  }
+  all.push((n, base_codec::json_stringify(json)))
+}
+
+fn FakeDb::put_tree(self : FakeDb, station : String, key : String, json : String, used : Int64) -> Unit {
+  let k = station + " " + key
+  if self.md.get(k).is_none() {
+    self.md_keys.push(k)
+  }
+  self.md.set(k, MdRow::{ size: json.length(), used: used, json: json })
+}
