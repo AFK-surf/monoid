@@ -1,0 +1,27 @@
+[workspace]
+members = [
+  "packages/base_codec",
+  "packages/wire",
+  "packages/net",
+  "packages/shell",
+  "packages/shell_native",
+  "packages/sql",
+  "packages/mesh",
+]
+
+[workspace.dependencies]
+base64 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "base64-v0.1.0", subdir = "packages/base64" }
+effect = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "effect-v0.1.0", subdir = "packages/effect" }
+crypto = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "crypto-v0.2.0", subdir = "packages/crypto" }
+flate = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "flate-v0.1.0", subdir = "packages/flate" }
+url = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "url-v0.1.0", subdir = "packages/url" }
+time = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "time-v0.1.0", subdir = "packages/time" }
+http1 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "http1-v0.1.0", subdir = "packages/http1" }
+json5 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "json5-v0.1.0", subdir = "packages/json5" }
+base_codec = { path = "packages/base_codec" }
+wire = { path = "packages/wire" }
+net = { path = "packages/net" }
+shell = { path = "packages/shell" }
+shell_native = { path = "packages/shell_native" }
+sql = { path = "packages/sql" }
+mesh = { path = "packages/mesh" }

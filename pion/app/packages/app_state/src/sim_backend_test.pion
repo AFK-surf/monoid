@@ -1,0 +1,707 @@
+// Deterministic in-memory `SimAccountDb`, `SimStation`, and signed Ed25519
+// workspace lock fixture over `effect::Runtime` virtual clock for headless
+// `app_state` end-to-end tests.
+
+import "base_codec"
+import "effect"
+import "form"
+import "lock"
+import "shell"
+import "sql"
+import "store"
+import "sync"
+
+pub struct SimChatRow {
+  pub station : String
+  pub archived : Int
+  pub id : String
+  pub ord : Double
+  pub thread : Option[Int]
+  pub session : Option[String]
+  pub pinned_at : Option[Int64]
+  pub last_active : Int64
+  pub json : String
+}
+
+pub struct SimAccountDb {
+  pub sh : shell::Shell
+  pub entries : Map[String, Array[(Int, String)]]
+  pub chats : Map[String, SimChatRow]
+  pub threads : Map[String, String]
+  pub sessions : Map[String, String]
+  pub jobs : Map[String, String]
+  pub outbox_rows : Map[String, String]
+  pub pending_rows : Map[String, String]
+  pub changing_rows : Map[String, String]
+  pub log_use : Map[String, Int64]
+  pub md : Map[String, (Int64, String)]
+  pub ran : Array[String]
+}
+
+pub fn SimAccountDb::new(rt : effect::Runtime) -> SimAccountDb {
+  let holder : Array[SimAccountDb] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(_ : Int64, _ : String, _ : base_codec::Json, _ : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      holder[0].answer(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = SimAccountDb::{
+    sh: sh,
+    entries: Map::new(),
+    chats: Map::new(),
+    threads: Map::new(),
+    sessions: Map::new(),
+    jobs: Map::new(),
+    outbox_rows: Map::new(),
+    pending_rows: Map::new(),
+    changing_rows: Map::new(),
+    log_use: Map::new(),
+    md: Map::new(),
+    ran: [],
+  }
+  holder.push(db)
+  db
+}
+
+fn p_str(params : Array[base_codec::Json], i : Int) -> String {
+  if i < 0 || i >= params.length() { "" } else { sql::col_text(params, i) }
+}
+
+fn p_int64(params : Array[base_codec::Json], i : Int) -> Int64 {
+  if i < 0 || i >= params.length() { 0.to_int64() } else { sql::col_int64(params, i) }
+}
+
+fn p_int(params : Array[base_codec::Json], i : Int) -> Int {
+  p_int64(params, i).to_int()
+}
+
+fn p_opt_int(params : Array[base_codec::Json], i : Int) -> Option[Int] {
+  if i < 0 || i >= params.length() {
+    None
+  } else {
+    match sql::col_opt_int64(params, i) {
+      Some(v) => Some(v.to_int())
+      None => None
+    }
+  }
+}
+
+fn p_opt_int64(params : Array[base_codec::Json], i : Int) -> Option[Int64] {
+  if i < 0 || i >= params.length() { None } else { sql::col_opt_int64(params, i) }
+}
+
+fn p_opt_str(params : Array[base_codec::Json], i : Int) -> Option[String] {
+  if i < 0 || i >= params.length() { None } else { sql::col_opt_text(params, i) }
+}
+
+pub fn SimAccountDb::put_entry_row(
+  self : SimAccountDb,
+  station : String,
+  thread : Int,
+  n : Int,
+  raw : String,
+) -> Unit {
+  let k = station + " " + thread.to_string()
+  let arr = match self.entries.get(k) {
+    Some(a) => a
+    None => {
+      let a : Array[(Int, String)] = []
+      self.entries.set(k, a)
+      a
+    }
+  }
+  let mut replaced = false
+  for i in 0..<arr.length() {
+    if arr[i].0 == n {
+      arr[i] = (n, raw)
+      replaced = true
+      break
+    }
+  }
+  if !replaced {
+    arr.push((n, raw))
+  }
+}
+
+pub fn SimAccountDb::entry_count(self : SimAccountDb, station : String, thread : Int) -> Int {
+  match self.entries.get(station + " " + thread.to_string()) {
+    Some(a) => a.length()
+    None => 0
+  }
+}
+
+fn SimAccountDb::answer(
+  self : SimAccountDb,
+  op : String,
+  args : base_codec::Json,
+) -> shell::AskResult {
+  if op == "sql.open" {
+    return shell::AskResult::Ok(base_codec::json_obj([("id", base_codec::json_int(1))]))
+  }
+  if op == "sql.close" {
+    return shell::AskResult::Ok(base_codec::json_null())
+  }
+  let stmt = match base_codec::json_get(args, "sql") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return shell::AskResult::Err(shell::ShellError::{ message: "missing sql" })
+  }
+  let p = match base_codec::json_get(args, "params") {
+    Some(base_codec::Json::Arr(a)) => a
+    _ => []
+  }
+  self.ran.push(stmt)
+  if op == "sql.exec" {
+    return shell::AskResult::Ok(base_codec::json_null())
+  }
+  let rows : Array[base_codec::Json] = []
+  let mut changed = 0
+  if stmt == store::sql_window_end() {
+    let k = p_str(p, 0) + " " + p_str(p, 1)
+    let most = p_int(p, 2)
+    match self.entries.get(k) {
+      Some(all) => {
+        let mut i = all.length() - 1
+        while i >= 0 && rows.length() < most {
+          let (en, ej) = all[i]
+          rows.push(base_codec::json_arr([base_codec::json_int(en), base_codec::json_str(ej)]))
+          i -= 1
+        }
+      }
+      None => ()
+    }
+  } else if stmt.starts_with(store::sql_md_many_head()) {
+    let st = p_str(p, 0)
+    for i in 1..<p.length() {
+      let key = p_str(p, i)
+      match self.md.get(st + " " + key) {
+        Some((used, j)) =>
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(key),
+          base_codec::json_int64(used),
+          base_codec::json_str(j),
+        ]))
+        None => ()
+      }
+    }
+  } else if stmt == store::sql_opened() {
+    match self.log_use.get(p_str(p, 0) + " " + p_str(p, 1) + " " + p_str(p, 2)) {
+      Some(at) => rows.push(base_codec::json_arr([base_codec::json_int64(at)]))
+      None => ()
+    }
+  } else if stmt == store::sql_note_opened() {
+    self.log_use.set(p_str(p, 0) + " " + p_str(p, 1) + " " + p_str(p, 2), p_int64(p, 3))
+    changed = 1
+  } else if stmt == sync::sql_entry_put() {
+    self.put_entry_row(p_str(p, 0), p_int(p, 1), p_int(p, 2), p_str(p, 3))
+    changed = 1
+  } else if stmt == sync::sql_chat_upsert() {
+    let st = p_str(p, 0)
+    let cid = p_str(p, 1)
+    let arch = p_int(p, 2)
+    let key = st + ":" + arch.to_string() + ":" + cid
+    self.chats.set(key, SimChatRow::{
+      station: st,
+      archived: arch,
+      id: cid,
+      ord: sql::col_double(p, 3),
+      thread: p_opt_int(p, 4),
+      session: p_opt_str(p, 5),
+      pinned_at: p_opt_int64(p, 8),
+      last_active: p_int64(p, 7),
+      json: p_str(p, 15),
+    })
+    changed = 1
+  } else if stmt == store::sql_chat_by_key() {
+    let key = p_str(p, 0) + ":" + p_int(p, 1).to_string() + ":" + p_str(p, 2)
+    match self.chats.get(key) {
+      Some(c) => rows.push(base_codec::json_arr([
+        base_codec::json_str(c.station),
+        base_codec::json_int(c.archived),
+        base_codec::json_str(c.id),
+        base_codec::json_str(c.json),
+      ]))
+      None => ()
+    }
+  } else if stmt == sync::sql_thread_upsert() {
+    self.threads.set(p_str(p, 0) + ":" + p_int(p, 1).to_string(), p_str(p, 10))
+    changed = 1
+  } else if stmt == sync::sql_session_upsert() {
+    self.sessions.set(p_str(p, 0) + ":" + p_str(p, 1), p_str(p, 9))
+    changed = 1
+  } else if stmt == sync::sql_job_upsert() {
+    self.jobs.set(p_str(p, 0) + ":" + p_str(p, 1), p_str(p, 6))
+    changed = 1
+  } else if stmt == sync::sql_outbox_put() {
+    self.outbox_rows.set(p_str(p, 0) + ":" + p_int(p, 1).to_string(), p_str(p, 2))
+    changed = 1
+  } else if stmt == sync::sql_outbox_delete() {
+    self.outbox_rows.remove(p_str(p, 0) + ":" + p_int(p, 1).to_string())
+    changed = 1
+  } else if stmt == store::sql_outbox_one() {
+    let st = p_str(p, 0)
+    let th = p_int(p, 1)
+    match self.outbox_rows.get(st + ":" + th.to_string()) {
+      Some(j) => rows.push(base_codec::json_arr([
+        base_codec::json_str(st),
+        base_codec::json_int(th),
+        base_codec::json_str(j),
+      ]))
+      None => ()
+    }
+  } else if stmt == sync::sql_pending_put() {
+    self.pending_rows.set(p_str(p, 1) + ":" + p_str(p, 0), p_str(p, 2))
+    changed = 1
+  } else if stmt == sync::sql_pending_delete() {
+    self.pending_rows.remove(p_str(p, 1) + ":" + p_str(p, 0))
+    changed = 1
+  } else if stmt == sync::sql_changing_put() {
+    self.changing_rows.set(p_str(p, 0) + ":" + p_int(p, 1).to_string(), p_str(p, 2))
+    changed = 1
+  } else if stmt == sync::sql_changing_delete() {
+    self.changing_rows.remove(p_str(p, 0) + ":" + p_int(p, 1).to_string())
+    changed = 1
+  } else {
+    return shell::AskResult::Err(shell::ShellError::{ message: "SimAccountDb unknown SQL: " + stmt })
+  }
+  if op == "sql.run" {
+    shell::AskResult::Ok(base_codec::json_int(changed))
+  } else {
+    shell::AskResult::Ok(base_codec::json_arr(rows))
+  }
+}
+
+fn sim_is_write(s : String) -> Bool {
+  s.starts_with("INSERT") || s.starts_with("UPDATE") || s.starts_with("DELETE") || s.starts_with("BEGIN") || s.starts_with("COMMIT")
+}
+
+/// Return `(statements, writes, transactions)` executed since index `from`.
+pub fn SimAccountDb::counts_since(self : SimAccountDb, from : Int) -> (Int, Int, Int) {
+  let mut writes = 0
+  let mut tx = 0
+  for i in from..<self.ran.length() {
+    let s = self.ran[i]
+    if sim_is_write(s) {
+      writes += 1
+    }
+    if s == "BEGIN IMMEDIATE" {
+      tx += 1
+    }
+  }
+  (self.ran.length() - from, writes, tx)
+}
+
+// ── Deterministic SimStation over effect::Runtime virtual clock ──
+
+fn bytes_to_str(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+fn sleep_reply_k[T](
+  delay : Int,
+  outcome : effect::Exit[T],
+  k : (effect::Exit[T]) -> Unit,
+) -> Unit {
+  effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
+    match sex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(_) => k(outcome)
+    }
+  })
+}
+
+pub struct SimStation {
+  pub rt : effect::Runtime
+  pub mut offline : Bool
+  pub mut reject_path_prefix : Option[String]
+  pub mut reject_code : String
+  pub mut reject_recovery : String
+  pub mut next_entry_n : Int
+  pub mut snapshot_json : base_codec::Json
+  pub thread_entries : Map[Int, base_codec::Json]
+  pub thread_delay_ms : Map[Int, Int]
+  pub seen_client_keys : Map[String, Int]
+  pub mut active_sse_chunk : Option[(Bytes) -> Unit]
+  pub mut active_sse_done : Option[effect::Deferred[Unit]]
+  pub requests_seen : Array[String]
+}
+
+pub fn SimStation::new(rt : effect::Runtime) -> SimStation {
+  SimStation::{
+    rt: rt,
+    offline: false,
+    reject_path_prefix: None,
+    reject_code: "forbidden",
+    reject_recovery: "Ask a workspace owner to grant permission and retry.",
+    next_entry_n: 200,
+    snapshot_json: base_codec::json_obj([
+      ("chats", base_codec::json_arr([])),
+      ("entries", base_codec::json_arr([])),
+    ]),
+    thread_entries: Map::new(),
+    thread_delay_ms: Map::new(),
+    seen_client_keys: Map::new(),
+    active_sse_chunk: None,
+    active_sse_done: None,
+    requests_seen: [],
+  }
+}
+
+pub fn SimStation::push_sse(self : SimStation, raw_sse : String) -> Unit {
+  match self.active_sse_chunk {
+    Some(cb) => cb(raw_sse.to_bytes())
+    None => ()
+  }
+}
+
+pub fn SimStation::push_entry_sse(
+  self : SimStation,
+  workspace : String,
+  thread : Int,
+  n : Int,
+  author_kind : String,
+  author : String,
+  text : String,
+  client_key~ : Option[String] = None,
+) -> Unit {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("workspace", base_codec::json_str(workspace)),
+    ("thread", base_codec::json_int(thread)),
+    ("n", base_codec::json_int(n)),
+    ("kind", base_codec::json_str("message")),
+    ("authorKind", base_codec::json_str(author_kind)),
+    ("author", base_codec::json_str(author)),
+    ("text", base_codec::json_str(text)),
+  ]
+  match client_key {
+    Some(ck) => fields.push(("clientKey", base_codec::json_str(ck)))
+    None => ()
+  }
+  let payload = base_codec::json_stringify(base_codec::json_obj(fields))
+  self.push_sse("id: ev-\{n}\nevent: entry\ndata: \{payload}\n\n")
+}
+
+pub fn SimStation::transport(self : SimStation) -> sync::StationTransport {
+  sync::StationTransport::{
+    request_k: fn(
+      method_name : String,
+      path : String,
+      _headers : Array[(String, String)],
+      body : Bytes,
+      k : (effect::Exit[sync::HttpReply]) -> Unit,
+    ) -> Unit {
+      self.requests_seen.push(method_name + " " + path)
+      if self.offline {
+        sleep_reply_k(10, effect::Exit::Failed(effect::EffectError::Custom("offline")), k)
+        return
+      }
+      match self.reject_path_prefix {
+        Some(prefix) => {
+          if path.starts_with(prefix) {
+            let err_body = base_codec::json_stringify(base_codec::json_obj([
+              ("code", base_codec::json_str(self.reject_code)),
+              ("error", base_codec::json_str("operation refused by station")),
+              ("recovery", base_codec::json_str(self.reject_recovery)),
+            ])).to_bytes()
+            sleep_reply_k(
+              10,
+              effect::Exit::Succeeded(sync::HttpReply::{ status: 403, headers: [], body: err_body }),
+              k,
+            )
+            return
+          }
+        }
+        None => ()
+      }
+      if method_name == "GET" && path == "/chats" {
+        let out = base_codec::json_stringify(self.snapshot_json).to_bytes()
+        sleep_reply_k(
+          10,
+          effect::Exit::Succeeded(sync::HttpReply::{ status: 200, headers: [], body: out }),
+          k,
+        )
+        return
+      }
+      if method_name == "GET" && path.starts_with("/threads/") && path.ends_with("/entries") {
+        let mid = path.slice(9, path.length() - 8)
+        let th = match base_codec::parse_int64_str(mid) {
+          Some(v) => v.to_int()
+          None => 0
+        }
+        let delay = match self.thread_delay_ms.get(th) {
+          Some(d) => d
+          None => 10
+        }
+        let payload = match self.thread_entries.get(th) {
+          Some(j) => j
+          None => base_codec::json_obj([("entries", base_codec::json_arr([]))])
+        }
+        let out = base_codec::json_stringify(payload).to_bytes()
+        sleep_reply_k(
+          delay,
+          effect::Exit::Succeeded(sync::HttpReply::{ status: 200, headers: [], body: out }),
+          k,
+        )
+        return
+      }
+      if method_name == "POST" && path.starts_with("/threads/") && path.ends_with("/messages") {
+        let parsed = base_codec::json_parse(bytes_to_str(body))
+        let ck = match parsed {
+          base_codec::JsonParseResult::Ok(j) =>
+          match base_codec::json_get(j, "clientKey") {
+            Some(base_codec::Json::Str(s)) => s
+            _ => ""
+          }
+          base_codec::JsonParseResult::Err(_) => ""
+        }
+        let assigned_n = match self.seen_client_keys.get(ck) {
+          Some(existing) => existing
+          None => {
+            self.next_entry_n += 1
+            let n = self.next_entry_n
+            if ck.length() > 0 {
+              self.seen_client_keys.set(ck, n)
+            }
+            n
+          }
+        }
+        let ack = base_codec::json_stringify(base_codec::json_obj([
+          ("n", base_codec::json_int(assigned_n)),
+          ("clientKey", base_codec::json_str(ck)),
+        ])).to_bytes()
+        sleep_reply_k(
+          10,
+          effect::Exit::Succeeded(sync::HttpReply::{ status: 200, headers: [], body: ack }),
+          k,
+        )
+        return
+      }
+      sleep_reply_k(
+        10,
+        effect::Exit::Succeeded(sync::HttpReply::{ status: 200, headers: [], body: "{}".to_bytes() }),
+        k,
+      )
+    },
+    stream_k: fn(
+      path : String,
+      _headers : Array[(String, String)],
+      on_chunk : (Bytes) -> Unit,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      self.requests_seen.push("SSE " + path)
+      if self.offline {
+        sleep_reply_k(10, effect::Exit::Failed(effect::EffectError::Custom("offline")), k)
+        return
+      }
+      let done : effect::Deferred[Unit] = effect::Deferred::new()
+      self.active_sse_chunk = Some(on_chunk)
+      self.active_sse_done = Some(done)
+      effect::sleep_k(5, fn(sex : effect::Exit[Unit]) -> Unit {
+        match sex {
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(_) => {
+            on_chunk(": connected\n\n".to_bytes())
+            done.wait_k(k)
+          }
+        }
+      })
+    },
+  }
+}
+
+// ── Real Ed25519 Signed Workspace Lock Fixture ──
+
+fn make_seed(byte_val : Int) -> Bytes {
+  let b = Bytes::new(32)
+  for i in 0..<32 {
+    b[i] = ((byte_val + i) & 0xFF) as Byte
+  }
+  b
+}
+
+fn hex_64(ch : String) -> String {
+  let sb = StringBuilder::new()
+  for _ in 0..<64 {
+    sb.write_string(ch)
+  }
+  sb.to_string()
+}
+
+pub fn build_demo_lock_chain(workspace : String) -> (Array[form::Json], String) {
+  let alice_seed = make_seed(11)
+  let bob_seed = make_seed(22)
+  let alice_key = sync::ed25519_key_id(alice_seed)
+  let bob_key = sync::ed25519_key_id(bob_seed)
+  let alice_dev_id = hex_64("1")
+  let bob_dev_id = hex_64("2")
+
+  let g_unsigned = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(workspace)),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1790000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    (
+      "body",
+      form::Json::Obj([
+        ("owner", form::Json::Str("alice")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("app.still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        (
+          "members",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("sub", form::Json::Str("alice")),
+              ("email", form::Json::Str("alice@example.com")),
+              ("role", form::Json::Str("owner")),
+            ]),
+            form::Json::Obj([
+              ("sub", form::Json::Str("bob")),
+              ("email", form::Json::Str("bob@example.com")),
+              ("role", form::Json::Str("admin")),
+            ]),
+          ]),
+        ),
+        (
+          "devices",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("id", form::Json::Str(alice_dev_id)),
+              ("sub", form::Json::Str("alice")),
+              ("kind", form::Json::Str("app")),
+              ("label", form::Json::Str("Alice Studio")),
+              ("sign_key", form::Json::Str(alice_key)),
+            ]),
+            form::Json::Obj([
+              ("id", form::Json::Str(bob_dev_id)),
+              ("sub", form::Json::Str("bob")),
+              ("kind", form::Json::Str("app")),
+              ("label", form::Json::Str("Bob Linux")),
+              ("sign_key", form::Json::Str(bob_key)),
+            ]),
+          ]),
+        ),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ]),
+    ),
+  ])
+  let g_signed = match sync::sign_lock_entry(alice_seed, g_unsigned) {
+    Ok(e) => e
+    Err(_) => form::Json::Null
+  }
+  let root_hash = match lock::entry_hash(g_signed, sync::native_lock_crypto()) {
+    Ok(h) => h
+    Err(_) => ""
+  }
+  let m1_unsigned = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(workspace)),
+    ("seq", form::Json::Num(1.0)),
+    ("prev", form::Json::Str(root_hash)),
+    ("at", form::Json::Num(1790000020.0)),
+    ("kind", form::Json::Str("member")),
+    (
+      "body",
+      form::Json::Obj([
+        ("sub", form::Json::Str("carol")),
+        ("email", form::Json::Str("carol@example.com")),
+        ("role", form::Json::Str("member")),
+      ]),
+    ),
+  ])
+  let m1_signed = match sync::sign_lock_entry(alice_seed, m1_unsigned) {
+    Ok(e) => e
+    Err(_) => form::Json::Null
+  }
+  ([g_signed, m1_signed], root_hash)
+}
+
+pub fn seed_demo_data(db : SimAccountDb, station : SimStation, st_name : String) -> Unit {
+  let e1 = base_codec::json_obj([
+    ("kind", base_codec::json_str("message")),
+    ("authorKind", base_codec::json_str("person")),
+    ("author", base_codec::json_str("Alice")),
+    ("text", base_codec::json_str("Cold-open cached prompt")),
+  ])
+  let e2 = base_codec::json_obj([
+    ("kind", base_codec::json_str("message")),
+    ("authorKind", base_codec::json_str("agent")),
+    ("author", base_codec::json_str("Builder")),
+    ("text", base_codec::json_str("Zero-JSON FrameOutbox bridge ready.")),
+  ])
+  db.put_entry_row(st_name, 101, 1, base_codec::json_stringify(e1))
+  db.put_entry_row(st_name, 101, 2, base_codec::json_stringify(e2))
+  let k2 = store::md_key("Zero-JSON FrameOutbox bridge ready.")
+  db.md.set(st_name + " " + k2, (1000.to_int64(), "{\"cached\":true}"))
+
+  let t2_e1 = base_codec::json_obj([
+    ("kind", base_codec::json_str("message")),
+    ("authorKind", base_codec::json_str("person")),
+    ("author", base_codec::json_str("Bob")),
+    ("text", base_codec::json_str("Check dual-mesh failover latency.")),
+  ])
+  let t2_e2 = base_codec::json_obj([
+    ("kind", base_codec::json_str("message")),
+    ("authorKind", base_codec::json_str("agent")),
+    ("author", base_codec::json_str("MeshBot")),
+    ("text", base_codec::json_str("Dual-mesh standby racing passed all 55 base tests.")),
+  ])
+  db.put_entry_row(st_name, 102, 1, base_codec::json_stringify(t2_e1))
+  db.put_entry_row(st_name, 102, 2, base_codec::json_stringify(t2_e2))
+
+  let t3_e1 = base_codec::json_obj([
+    ("kind", base_codec::json_str("message")),
+    ("authorKind", base_codec::json_str("agent")),
+    ("author", base_codec::json_str("Release")),
+    ("text", base_codec::json_str("Background thread 103 cached.")),
+  ])
+  db.put_entry_row(st_name, 103, 1, base_codec::json_stringify(t3_e1))
+
+  station.snapshot_json = base_codec::json_obj([
+    (
+      "chats",
+      base_codec::json_arr([
+        base_codec::json_obj([
+          ("id", base_codec::json_str("c-1")),
+          ("archived", base_codec::json_int(0)),
+          ("ord", base_codec::json_num(1.0)),
+          ("thread", base_codec::json_int(101)),
+          ("lastActive", base_codec::json_int64(3000.to_int64())),
+          ("mine", base_codec::json_bool(true)),
+          ("title", base_codec::json_str("Invar Vertical Slice")),
+        ]),
+        base_codec::json_obj([
+          ("id", base_codec::json_str("c-2")),
+          ("archived", base_codec::json_int(0)),
+          ("ord", base_codec::json_num(2.0)),
+          ("thread", base_codec::json_int(102)),
+          ("lastActive", base_codec::json_int64(2500.to_int64())),
+          ("mine", base_codec::json_bool(true)),
+          ("title", base_codec::json_str("Mesh Transport Audit")),
+        ]),
+        base_codec::json_obj([
+          ("id", base_codec::json_str("c-3")),
+          ("archived", base_codec::json_int(0)),
+          ("ord", base_codec::json_num(3.0)),
+          ("thread", base_codec::json_int(103)),
+          ("lastActive", base_codec::json_int64(2000.to_int64())),
+          ("mine", base_codec::json_bool(false)),
+          ("title", base_codec::json_str("Release Readiness")),
+        ]),
+      ]),
+    ),
+    ("entries", base_codec::json_arr([])),
+  ])
+}

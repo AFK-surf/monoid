@@ -1,0 +1,302 @@
+// Wire framing & SSE tests (ported from wire_test.mbt, sse_wbtest.mbt,
+// sse_conformance_test.mbt, and sse_upstream_test.mbt).
+
+import "base_codec"
+
+fn ev(name : String, data : String, id : Option[String]) -> Event {
+  Event::{ name: name, data: data, id: id }
+}
+
+fn evs_eq(a : Array[Event], b : Array[Event]) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if !a[i].eq(b[i]) {
+      return false
+    }
+  }
+  true
+}
+
+fn w_bytes_eq(a : Bytes, b : Bytes) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn w_hex(s : String) -> Bytes {
+  match base_codec::hex_decode(s) {
+    Some(b) => b
+    None => panic("bad hex")
+  }
+}
+
+fn feed_ok(sse : Sse, chunk : Bytes) -> Array[Event] {
+  match sse.feed(chunk) {
+    FeedResult::Ok(evs) => evs
+    FeedResult::Err(e) => panic("unexpected TooLong: " + e.to_string())
+  }
+}
+
+fn fed(stream : Bytes, cuts : Array[Int]) -> Array[Event] {
+  let sse = Sse::new()
+  let out : Array[Event] = []
+  let mut at = 0
+  for i in 0..<cuts.length() {
+    let cut = cuts[i]
+    let got = feed_ok(sse, stream.slice(at, cut))
+    for j in 0..<got.length() {
+      out.push(got[j])
+    }
+    at = cut
+  }
+  let tail = feed_ok(sse, stream.slice(at, stream.length()))
+  for j in 0..<tail.length() {
+    out.push(tail[j])
+  }
+  out
+}
+
+fn feed_step(raw : Bytes, step : Int) -> Array[Event] {
+  let sse = Sse::new()
+  let out : Array[Event] = []
+  let mut i = 0
+  while i < raw.length() {
+    let end = if i + step < raw.length() { i + step } else { raw.length() }
+    let got = feed_ok(sse, raw.slice(i, end))
+    for j in 0..<got.length() {
+      out.push(got[j])
+    }
+    i = end
+  }
+  out
+}
+
+fn assert_wpt(raw : Bytes, want : Array[Event]) -> Unit {
+  debug_assert(evs_eq(feed_ok(Sse::new(), raw), want), "wpt whole")
+  debug_assert(evs_eq(feed_step(raw, 1), want), "wpt step 1")
+  debug_assert(evs_eq(feed_step(raw, 3), want), "wpt step 3")
+}
+
+fn bounded(stream : Bytes, cuts : Array[Int], most : Int) -> (Array[Event], Bool) {
+  let sse = Sse::new(most=most)
+  let out : Array[Event] = []
+  let mut at = 0
+  let all_cuts : Array[Int] = []
+  for i in 0..<cuts.length() {
+    all_cuts.push(cuts[i])
+  }
+  all_cuts.push(stream.length())
+  all_cuts.push(stream.length())
+  for i in 0..<all_cuts.length() {
+    let cut = all_cuts[i]
+    match sse.feed(stream.slice(at, cut)) {
+      FeedResult::Ok(got) => {
+        for j in 0..<got.length() {
+          out.push(got[j])
+        }
+      }
+      FeedResult::Err(err) => {
+        if err.most != most {
+          return (out, false)
+        }
+        return (out, true)
+      }
+    }
+    at = cut
+  }
+  (out, false)
+}
+
+fn refused(sse : Sse, chunk : Bytes) -> Option[Int] {
+  match sse.feed(chunk) {
+    FeedResult::Ok(_) => None
+    FeedResult::Err(e) => Some(e.most)
+  }
+}
+
+test "control hello_line and request head_line" {
+  debug_assert(hello_line("t-alice") == "{\"credential\":\"t-alice\"}\n", "simple hello")
+  let says = [
+    ("client", base_codec::json_int(7)),
+    ("name", base_codec::json_str("a \"b\" \\ c\n\x01é/")),
+  ]
+  let also = [
+    ("claim", base_codec::json_obj([("k", base_codec::json_arr([base_codec::json_int(1), base_codec::json_bool(true), base_codec::json_null()]))])),
+    ("client", base_codec::json_int(8)),
+  ]
+  debug_assert(
+    hello_line("x", says=says, also=also, traceparent="00-ab-cd-01") ==
+    "{\"credential\":\"x\",\"client\":8,\"name\":\"a \\\"b\\\" \\\\ c\\n\\u0001é/\",\"claim\":{\"k\":[1,true,null]},\"traceparent\":\"00-ab-cd-01\"}\n",
+    "full hello",
+  )
+
+  debug_assert(
+    head_line("GET", "/events?since=r1.4", []) ==
+    "{\"method\":\"GET\",\"path\":\"/events?since=r1.4\",\"headers\":{}}\n",
+    "simple head",
+  )
+  debug_assert(
+    head_line("POST", "/a", [("x-a", "1"), ("x-b", "two")], more=[("socket", base_codec::json_bool(true))]) ==
+    "{\"method\":\"POST\",\"path\":\"/a\",\"headers\":{\"x-a\":\"1\",\"x-b\":\"two\"},\"socket\":true}\n",
+    "socket head",
+  )
+  debug_assert(
+    head_line("PUT", "/files/a b?x=1&y=é", [("content-type", "text/plain"), ("x-n", "1"), ("content-type", "application/json")]) ==
+    "{\"method\":\"PUT\",\"path\":\"/files/a b?x=1&y=é\",\"headers\":{\"content-type\":\"application/json\",\"x-n\":\"1\"}}\n",
+    "dup header order",
+  )
+  let zero = 0.0
+  let nonfinite = [
+    ("a", base_codec::json_num(zero / zero)),
+    ("b", base_codec::json_arr([base_codec::json_num(1.0 / zero), base_codec::json_obj([("c", base_codec::json_num(-1.0 / zero))]), base_codec::json_int(2)])),
+  ]
+  debug_assert(
+    head_line("GET", "/x", [], more=nonfinite) ==
+    "{\"method\":\"GET\",\"path\":\"/x\",\"headers\":{},\"a\":null,\"b\":[null,{\"c\":null},2]}\n",
+    "nonfinite head",
+  )
+  debug_assert(
+    hello_line("x", says=nonfinite) ==
+    "{\"credential\":\"x\",\"a\":null,\"b\":[null,{\"c\":null},2]}\n",
+    "nonfinite hello",
+  )
+}
+
+test "Carry lines and reply_head" {
+  let carry = Carry::new()
+  carry.push("{\"status\":20".to_bytes())
+  debug_assert(carry.line().is_none(), "incomplete")
+  carry.push("0}\nbody\nmore".to_bytes())
+  match carry.line() {
+    Some(l) => debug_assert(l == "{\"status\":200}", "first line")
+    None => debug_assert(false, "expected line")
+  }
+  debug_assert(carry.length() == 9, "rest len")
+  debug_assert(w_bytes_eq(carry.take(), "body\nmore".to_bytes()), "rest bytes")
+  debug_assert(carry.length() == 0, "empty after take")
+
+  match reply_head("{\"status\":201,\"headers\":{\"content-type\":\"application/json\",\"n\":3}}") {
+    Head::Head(status, headers) => {
+      debug_assert(status == 201, "status 201")
+      debug_assert(headers.length() == 2, "2 headers")
+      let (k0, v0) = headers[0]
+      let (k1, v1) = headers[1]
+      debug_assert(k0 == "content-type" && v0 == "application/json", "h0")
+      debug_assert(k1 == "n" && v1 == "3", "h1")
+    }
+    _ => debug_assert(false, "expected Head")
+  }
+  match reply_head("{\"status\":200}") {
+    Head::Head(s, h) => debug_assert(s == 200 && h.length() == 0, "200 empty")
+    _ => debug_assert(false, "expected 200")
+  }
+  let no_statuses = ["{\"status\":\"200\"}", "{\"status\":70000}", "{\"status\":1.5}", "null"]
+  for i in 0..<no_statuses.length() {
+    match reply_head(no_statuses[i]) {
+      Head::NoStatus => ()
+      _ => debug_assert(false, "expected NoStatus")
+    }
+  }
+  match reply_head("{\"status\":") {
+    Head::Unreadable(_) => ()
+    _ => debug_assert(false, "expected Unreadable")
+  }
+}
+
+test "grown doubles without Int32 wraparound" {
+  debug_assert(grown(4096, 5000) == 8192, "8192")
+  debug_assert(grown(4096, 10000) == 10000, "10000")
+  debug_assert(grown(0x20000000, 0x20000001) == 0x40000000, "1GiB")
+  debug_assert(grown(0x40000000, 0x40000001) == 0x7FFFFFFF, "cap1")
+  debug_assert(grown(0x70000000, 0x70000001) == 0x7FFFFFFF, "cap2")
+  debug_assert(TooLong::{ most: 16 }.to_string() == "event block exceeds 16 bytes", "TooLong str")
+}
+
+test "SSE basic, chunked, BOM, JS trim, invalid UTF-8, CR drop, and TooLong" {
+  let text = "id: r.0\n\nevent: message\r\nid: r.1\r\ndata: {\"n\":1}\r\n\r\nevent: missed\ndata: {}\n\ndata: a\ndata:b\n\n: a comment\n\nevent: late\ndata: x"
+  let expected = [
+    ev("", "", Some("r.0")),
+    ev("message", "{\"n\":1}", Some("r.1")),
+    ev("missed", "{}", None),
+    ev("message", "a\nb", None),
+  ]
+  debug_assert(evs_eq(feed_ok(Sse::new(), text.to_bytes()), expected), "whole")
+  let sse = Sse::new()
+  let raw = text.to_bytes()
+  let one : Array[Event] = []
+  for i in 0..<raw.length() {
+    let got = feed_ok(sse, raw.slice(i, i + 1))
+    for j in 0..<got.length() {
+      one.push(got[j])
+    }
+  }
+  debug_assert(evs_eq(one, expected), "byte by byte")
+  debug_assert(evs_eq(feed_ok(sse, "\n\n".to_bytes()), [ev("late", "x", None)]), "ended")
+
+  // JS trim & BOM & invalid UTF-8
+  let blank = "\u{000B}\u{000C}\u{00A0}\u{1680}\u{2000}\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}\u{FEFF}\t "
+  let trim_s = "event:" + blank + "a b" + blank + "\nid:" + blank + "7" + blank + "\ndata:  x \u{3000}\n\n"
+  debug_assert(evs_eq(feed_ok(Sse::new(), trim_s.to_bytes()), [ev("a b", " x \u{3000}", Some("7"))]), "js trim")
+  let kept = "event: \u{0085}a\u{200B}\u{180E}\ndata: 1\n\n"
+  debug_assert(evs_eq(feed_ok(Sse::new(), kept.to_bytes()), [ev("\u{0085}a\u{200B}\u{180E}", "1", None)]), "js non-ws")
+
+  // BOM stripping at block head, kept inside
+  let bom_s = w_hex("efbbbf646174613a20610a0aefbbbf6576656e743a20650a646174613a20620a0a")
+  debug_assert(evs_eq(feed_ok(Sse::new(), bom_s), [ev("message", "a", None), ev("e", "b", None)]), "bom head")
+
+  // Invalid UTF-8 WHATWG U+FFFD runs
+  let bad_utf8 = w_hex("646174613a20807ce6957cf09f987cc0af7ceda0807cff0a0a")
+  debug_assert(
+    evs_eq(feed_ok(Sse::new(), bad_utf8), [ev("message", "\u{FFFD}|\u{FFFD}|\u{FFFD}|\u{FFFD}\u{FFFD}|\u{FFFD}\u{FFFD}\u{FFFD}|\u{FFFD}", None)]),
+    "whatwg fffd",
+  )
+
+  // TooLong boundary
+  let stream_ok = "data: a\n\ndata: xxx\n\ndata: b\n\n".to_bytes()
+  let (evs_ok, over_ok) = bounded(stream_ok, [], 9)
+  debug_assert(!over_ok && evs_eq(evs_ok, [ev("message", "a", None), ev("message", "xxx", None), ev("message", "b", None)]), "exact bound")
+  let stream_over = "data: a\n\ndata: xxxx\n\ndata: b\n\n".to_bytes()
+  let (evs_ov, over_ov) = bounded(stream_over, [], 9)
+  debug_assert(over_ov && evs_eq(evs_ov, [ev("message", "a", None)]), "over bound")
+
+  let s4 = Sse::new(most=4)
+  debug_assert(evs_eq(feed_ok(s4, "abcd\n".to_bytes()), []), "4+nl")
+  debug_assert(evs_eq(feed_ok(s4, "\n".to_bytes()), []), "blank")
+  debug_assert(evs_eq(feed_ok(s4, "abcd".to_bytes()), []), "4")
+  debug_assert(evs_eq(feed_ok(s4, "e".to_bytes()), []), "5")
+  match refused(s4, "f".to_bytes()) {
+    Some(m) => debug_assert(m == 4, "refused 4")
+    None => debug_assert(false, "expected refused")
+  }
+  match refused(s4, "\n\ndata: late\n\n".to_bytes()) {
+    Some(m) => debug_assert(m == 4, "sticky 4")
+    None => debug_assert(false, "expected sticky")
+  }
+}
+
+test "SSE conformance and WPT upstream vectors" {
+  assert_wpt(w_hex("efbbbf646174613a310a0a646174613a320a0a646174613a330a0a"), [ev("message", "1", None), ev("message", "2", None), ev("message", "3", None)])
+  assert_wpt(w_hex("efbbbfefbbbf646174613a310a0a646174613a320a0a646174613a330a0a"), [ev("message", "2", None), ev("message", "3", None)])
+  assert_wpt("retry:1000\ndata:test1\n\nid:test\ndata:test2".to_bytes(), [ev("message", "test1", None)])
+  assert_wpt("data:\n\ndata\ndata\n\ndata:test\n\ndata: a:b:c\n\n".to_bytes(), [ev("message", "", None), ev("message", "test", None), ev("message", "a:b:c", None)])
+  assert_wpt("data: first\ndata:\ndata: third\n\n".to_bytes(), [ev("message", "first\n\nthird", None)])
+  assert_wpt("event: test\ndata: x\n\ndata: y\n\n".to_bytes(), [ev("test", "x", None), ev("message", "y", None)])
+  assert_wpt("event: \ndata: data\n\nevent:\ndata: data2\n\n".to_bytes(), [ev("", "data", None), ev("", "data2", None)])
+  assert_wpt("id: cursor-42\n\nid:\n\n".to_bytes(), [ev("", "", Some("cursor-42")), ev("", "", Some(""))])
+  assert_wpt("DATA: upper\nEvent: cap\nID: 9\nretry: 500\nfoo: bar\n: ignored\ndata: kept\n\n".to_bytes(), [ev("message", "kept", None)])
+  assert_wpt("data:\t\ndata: \ndata:  \ndata:   abc\ndata:\tdef\n\n".to_bytes(), [ev("message", "\t\n\n \n  abc\n\tdef", None)])
+  assert_wpt("data: test\r\n\r\ndata: test2\n\ndata: test3\r\n\n".to_bytes(), [ev("message", "test", None), ev("message", "test2", None), ev("message", "test3", None)])
+  assert_wpt("data: a\rb\n\n".to_bytes(), [ev("message", "ab", None)])
+  assert_wpt(
+    "event: événement\nid: 中文-1\ndata: ok … 🚀\ndata: αβγ\n\n".to_bytes(),
+    [ev("événement", "ok … 🚀\nαβγ", Some("中文-1"))],
+  )
+}

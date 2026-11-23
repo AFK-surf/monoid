@@ -1,0 +1,20 @@
+// Ed25519 (RFC 8032) and SHA-512 (FIPS 180-4) delegated to `AFK-surf/pion-packages` (`crypto-v0.1.0`).
+
+import "crypto"
+
+fn sha512(data : Bytes) -> Bytes {
+  crypto::sha512(data)
+}
+
+/// Sign `message` with a 32-byte Ed25519 `seed`, returning `(public_key, signature)`.
+pub fn ed25519_sign(seed : Bytes, message : Bytes) -> (Bytes, Bytes) {
+  match crypto::Ed25519KeyPair::from_seed(seed) {
+    Ok(kp) => (kp.public_key(), kp.sign(message))
+    Err(_) => (Bytes::new(0), Bytes::new(0))
+  }
+}
+
+/// Verify an Ed25519 signature strictly per RFC 8032.
+pub fn ed25519_verify(public_key : Bytes, message : Bytes, signature : Bytes) -> Bool {
+  crypto::ed25519_verify(public_key, message, signature)
+}

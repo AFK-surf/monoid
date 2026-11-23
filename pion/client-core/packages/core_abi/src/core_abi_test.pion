@@ -1,0 +1,25 @@
+// Unit tests for Pion-side core_abi helpers.
+
+import "base_codec"
+import "protocol"
+
+test "BridgeConfig and AbiFrame encoding match core_api.h wire contract" {
+  let cfg = BridgeConfig::{
+    data_dir: "/tmp/stillfail",
+    cloud_origin: "https://app.still.fail",
+    beta: true,
+  }
+  let encoded = encode_config_json(cfg)
+  debug_assert(encoded.contains("\"dataDir\":\"/tmp/stillfail\""), "dataDir")
+  debug_assert(encoded.contains("\"beta\":true"), "beta")
+
+  let fatal = make_fatal_frame("missing data_dir")
+  debug_assert(fatal.json == "{\"fatal\":\"missing data_dir\"}" && fatal.bytes.is_none(), "fatal frame")
+
+  let ok_frame = frame_from_event(protocol::CoreEvent::Ok(7.to_int64(), base_codec::json_int(42), Some("OK".to_bytes())))
+  debug_assert(ok_frame.json == "{\"id\":7,\"ok\":42}", "ok frame json")
+  match ok_frame.bytes {
+    Some(b) => debug_assert(b.length() == 2, "ok frame bytes")
+    None => debug_assert(false, "expected bytes")
+  }
+}

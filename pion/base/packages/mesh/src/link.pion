@@ -1,0 +1,1217 @@
+// Link, streams, control channel, requests, replies, duplex streams, and inbound streams.
+
+import "effect"
+import "base_codec"
+import "wire"
+import "shell"
+
+/// A reply head is a line of JSON; anything longer is not a peer talking.
+let max_head : Int = 65536
+
+/// How much of a reply's body `Reply::rest_k` keeps unless told otherwise (16 MiB).
+pub let max_body : Int = 16777216
+
+/// How much of a request's body goes at a time when `wrote` is provided (64 KiB).
+pub let body_step : Int = 65536
+
+struct Stream {
+  sh : shell::Shell
+  id : base_codec::Json
+}
+
+fn Stream::read_k(self : Stream, k : (effect::Exit[Option[Bytes]]) -> Unit) -> Unit {
+  self.sh.call_k(
+    "istream.read",
+    base_codec::json_obj([("id", self.id)]),
+    fn(ex : effect::Exit[shell::Answer]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(ans) => k(effect::Exit::Succeeded(ans.bytes))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+fn Stream::write_k(self : Stream, bytes : Bytes, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  self.sh.call_k(
+    "istream.write",
+    base_codec::json_obj([("id", self.id)]),
+    fn(ex : effect::Exit[shell::Answer]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+    bytes=Some(bytes),
+  )
+}
+
+fn Stream::finish_k(self : Stream, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  self.sh.call_k(
+    "istream.finish",
+    base_codec::json_obj([("id", self.id)]),
+    fn(ex : effect::Exit[shell::Answer]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+fn Stream::reset(self : Stream) -> Unit {
+  self.sh.tell("istream.reset", base_codec::json_obj([("id", self.id), ("code", base_codec::json_int(0))]))
+}
+
+struct Lines {
+  stream : Stream
+  carry : wire::Carry
+  most : Int
+}
+
+fn Lines::next_k(self : Lines, k : (effect::Exit[Option[String]]) -> Unit) -> Unit {
+  match self.carry.line() {
+    Some(line) => {
+      k(effect::Exit::Succeeded(Some(line)))
+      return
+    }
+    None => ()
+  }
+  if self.carry.length() > self.most {
+    k(effect::Exit::Failed(failed("head_too_long")))
+    return
+  }
+  self.stream.read_k(fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(cut(e)))
+      effect::Exit::Succeeded(chunk) =>
+      match chunk {
+        Some(bytes) => {
+          self.carry.push(bytes)
+          self.next_k(k)
+        }
+        None =>
+        if self.carry.length() == 0 {
+          k(effect::Exit::Succeeded(None))
+        } else {
+          k(effect::Exit::Failed(failed("reply_cut")))
+        }
+      }
+    }
+  })
+}
+
+struct ControlWait {
+  uid : Int
+  d : effect::Deferred[Unit]
+}
+
+struct Control {
+  stream : Stream
+  lines : Lines
+  says : Array[(String, base_codec::Json)]
+  refusal : Option[(base_codec::Json, String) -> Option[effect::EffectError]]
+  mut named : Bool
+  mut answers : Int
+  mut waiting : Array[ControlWait]
+}
+
+fn Control::noted(self : Control) -> Unit {
+  self.answers += 1
+  let waiting = self.waiting
+  self.waiting = []
+  for i in 0..<waiting.length() {
+    let _ = waiting[i].d.succeed(())
+  }
+}
+
+fn Control::next_answer_k(self : Control, after : Int, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  if self.answers > after {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  let uid = next_uid()
+  let d : effect::Deferred[Unit] = effect::Deferred::new()
+  self.waiting.push(ControlWait::{ uid: uid, d: d })
+  d.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
+    let kept : Array[ControlWait] = []
+    for i in 0..<self.waiting.length() {
+      if self.waiting[i].uid != uid {
+        kept.push(self.waiting[i])
+      }
+    }
+    self.waiting = kept
+    k(ex)
+  })
+}
+
+fn Control::send_k(
+  self : Control,
+  credential : String,
+  k : (effect::Exit[Unit]) -> Unit,
+  also : Array[(String, base_codec::Json)] = [],
+  traceparent : String = "",
+) -> Unit {
+  let line = wire::hello_line(credential, says=self.says, also=also, traceparent=traceparent)
+  self.stream.write_k(line.to_bytes(), fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(cut(e)))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn Control::answer_k(self : Control, k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+  self.lines.next_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(opt) =>
+      match opt {
+        None => k(effect::Exit::Failed(failed("credential_closed")))
+        Some(line) =>
+        match base_codec::json_parse(line) {
+          base_codec::JsonParseResult::Err(err) => k(effect::Exit::Failed(under_str("credential_unreadable", err)))
+          base_codec::JsonParseResult::Ok(answer) =>
+          match base_codec::json_get(answer, "error") {
+            None => k(effect::Exit::Succeeded(answer))
+            Some(err_v) => {
+              let reason = match err_v {
+                base_codec::Json::Str(s) => s
+                other => base_codec::json_stringify(other)
+              }
+              match json_get_str(answer, "code") {
+                Some(code) =>
+                if code == "client_upgrade_required" {
+                  k(effect::Exit::Failed(MeshError::new(code, reason, "").to_effect_error()))
+                  return
+                }
+                None => ()
+              }
+              match self.refusal {
+                Some(refusal_fn) =>
+                match refusal_fn(answer, reason) {
+                  Some(other_err) => {
+                    self.named = true
+                    k(effect::Exit::Failed(other_err))
+                    return
+                  }
+                  None => ()
+                }
+                None => ()
+              }
+              k(
+                effect::Exit::Failed(
+                  MeshError::new(
+                    "credential_refused",
+                    say("credential_refused_why", [("reason", reason)]),
+                    "",
+                  ).to_effect_error(),
+                ),
+              )
+            }
+          }
+        }
+      }
+    }
+  })
+}
+
+/// What a credential source provides: the credential and optional extra control-line fields.
+pub struct Presented {
+  pub credential : String
+  pub also : Array[(String, base_codec::Json)]
+}
+
+pub fn Presented::new(credential : String, also : Array[(String, base_codec::Json)] = []) -> Presented {
+  Presented::{ credential: credential, also: also }
+}
+
+/// Why a connection ended.
+pub struct Closed {
+  pub kind : String
+  pub reason : String
+}
+
+pub fn Closed::new(kind : String, reason : String) -> Closed {
+  Closed::{ kind: kind, reason: reason }
+}
+
+pub fn Closed::eq(self : Closed, other : Closed) -> Bool {
+  self.kind == other.kind && self.reason == other.reason
+}
+
+fn closed_of(j : base_codec::Json) -> Option[Closed] {
+  match json_get_str(j, "kind") {
+    None => None
+    Some(kind) => {
+      let reason = match json_get_str(j, "reason") {
+        Some(r) => r
+        None => ""
+      }
+      Some(Closed::{ kind: kind, reason: reason })
+    }
+  }
+}
+
+/// Human-readable description of why a connection ended.
+pub fn Closed::words(self : Closed) -> String {
+  if self.kind == "application" {
+    if self.reason == "credential_refused" {
+      say("credential_refused")
+    } else if self.reason == "credential_revoked" {
+      say("credential_revoked")
+    } else if self.reason == "credential_expired" {
+      say("credential_expired")
+    } else if self.reason == "station_removed" {
+      say("station_removed")
+    } else {
+      say("closed_by_station", [("reason", self.reason)])
+    }
+  } else if self.kind == "local" {
+    say("closed")
+  } else if self.kind == "timeout" {
+    say("timed_out")
+  } else {
+    say("cut")
+  }
+}
+
+struct Accepting {
+  lock : effect::Semaphore
+  mut coming : Option[effect::Deferred[Option[base_codec::Json]]]
+}
+
+fn Accepting::new() -> Accepting {
+  Accepting::{ lock: effect::Semaphore::new(1), coming: None }
+}
+
+fn Accepting::drop_kept(self : Accepting, sh : shell::Shell) -> Unit {
+  match self.coming {
+    None => ()
+    Some(coming) =>
+    match coming.poll() {
+      Some(effect::Exit::Succeeded(came)) => {
+        self.coming = None
+        match came {
+          Some(id) => sh.tell("istream.reset", base_codec::json_obj([("id", id), ("code", base_codec::json_int(0))]))
+          None => ()
+        }
+      }
+      _ => ()
+    }
+  }
+}
+
+pub struct Pings {
+  pub samples : Int
+  pub srtt : Double
+  pub dev : Double
+  pub missed : Int
+  pub answered_ms : Option[Int]
+}
+
+pub struct Link {
+  pub uid : Int
+  pub peer : String
+  pub link_scope : String
+  sh : shell::Shell
+  conn : base_codec::Json
+  control : Control
+  lock : effect::Semaphore
+  credentials : (String, Bool, (effect::Exit[Presented]) -> Unit) -> Unit
+  mut credential : String
+  mut renewal_failed : Bool
+  mut refused : Option[effect::EffectError]
+  mut answer : Option[base_codec::Json]
+  answered : effect::Deferred[Unit]
+  gone : effect::Deferred[Closed]
+  mut came : Int
+  mut missed : Int
+  mut pinging : Bool
+  mut pinged_at : Int64
+  mut rx : Int
+  mut samples : Int
+  mut srtt : Double
+  mut dev : Double
+  mut answered_ms : Option[Int]
+  mut warm : Bool
+  mut counted_rx : Int64
+  mut counted_tx : Int64
+  opened_onto : Int
+  opened_dialled : Int
+  opened_cred : Int
+  mut rec_rx : Int64
+  mut rec_tx : Int64
+  rec_paths : Map[String, (Int64, Int64)]
+  mut lan_addrs : Array[String]
+  mut tailnet_addrs : Array[String]
+  pin : Option[String]
+  fibers : effect::EffectScope
+  accepting : Accepting
+}
+
+pub fn Link::admitted_k(self : Link, k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+  self.answered.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(_) =>
+      match self.refused {
+        Some(r) => k(effect::Exit::Failed(r))
+        None =>
+        match self.answer {
+          Some(a) => k(effect::Exit::Succeeded(a))
+          None => k(effect::Exit::Succeeded(base_codec::json_null()))
+        }
+      }
+    }
+  })
+}
+
+pub fn Link::exchange_k(self : Link, credential : String, k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+  self.lock.with_permit_k(
+    fn(pk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      self.control.send_k(credential, fn(sex : effect::Exit[Unit]) -> Unit {
+        match sex {
+          effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => pk(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(_) =>
+          self.control.answer_k(fn(aex : effect::Exit[base_codec::Json]) -> Unit {
+            match aex {
+              effect::Exit::Succeeded(ans) => {
+                self.control.noted()
+                pk(effect::Exit::Succeeded(ans))
+              }
+              effect::Exit::Failed(e) => pk(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+            }
+          })
+        }
+      })
+    },
+    k,
+  )
+}
+
+pub struct Reply {
+  pub status : Int
+  pub headers : Array[(String, String)]
+  link : Link
+  stream : Stream
+  mut carry : Option[Bytes]
+  mut started : Bool
+  mut done : Bool
+  mut gone : Bool
+  went : effect::Deferred[Bool]
+  mut on_piece : Option[(Option[Bytes]) -> Unit]
+}
+
+pub fn Reply::header(self : Reply, name : String) -> Option[String] {
+  for i in 0..<self.headers.length() {
+    let (k, v) = self.headers[i]
+    if k == name {
+      return Some(v)
+    }
+  }
+  None
+}
+
+fn Reply::let_go(self : Reply, broke : Bool) -> Unit {
+  self.done = true
+  self.gone = true
+  self.carry = None
+  let _ = self.went.succeed(broke)
+  self.stream.reset()
+}
+
+pub fn Reply::cancel(self : Reply) -> Unit {
+  self.let_go(false)
+}
+
+fn Reply::taken_k(self : Reply, k : (effect::Exit[Option[Bytes]]) -> Unit) -> Unit {
+  self.started = true
+  match self.carry {
+    Some(c) => {
+      self.carry = None
+      k(effect::Exit::Succeeded(Some(c)))
+      return
+    }
+    None => ()
+  }
+  if self.done {
+    k(effect::Exit::Succeeded(None))
+    return
+  }
+  self.stream.read_k(fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => {
+        self.let_go(true)
+        k(effect::Exit::Failed(cut(e)))
+      }
+      effect::Exit::Succeeded(chunk) => {
+        match chunk {
+          Some(b) => self.link.came += b.length()
+          None => self.done = true
+        }
+        k(effect::Exit::Succeeded(chunk))
+      }
+    }
+  })
+}
+
+pub fn Reply::take_k(self : Reply, k : (effect::Exit[Option[Bytes]]) -> Unit) -> Unit {
+  self.taken_k(fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(chunk) => {
+        match self.on_piece {
+          Some(f) => f(chunk)
+          None => ()
+        }
+        k(effect::Exit::Succeeded(chunk))
+      }
+      other => k(other)
+    }
+  })
+}
+
+fn Reply::rest_loop(
+  self : Reply,
+  most : Int,
+  pieces : Array[Bytes],
+  length : Int,
+  k : (effect::Exit[Bytes]) -> Unit,
+) -> Unit {
+  self.take_k(fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(opt) =>
+      match opt {
+        None => k(effect::Exit::Succeeded(joined_bytes(pieces, length)))
+        Some(piece) => {
+          if piece.length() > most - length {
+            self.let_go(true)
+            k(
+              effect::Exit::Failed(
+                MeshError::new(
+                  "too_long",
+                  say("reply_unreadable"),
+                  "a reply's body is longer than the " + most.to_string() + " bytes kept of one",
+                ).to_effect_error(),
+              ),
+            )
+            return
+          }
+          pieces.push(piece)
+          self.rest_loop(most, pieces, length + piece.length(), k)
+        }
+      }
+    }
+  })
+}
+
+pub fn Reply::rest_k(self : Reply, k : (effect::Exit[Bytes]) -> Unit, most : Int = max_body) -> Unit {
+  self.rest_loop(most, [], 0, k)
+}
+
+pub fn Reply::tap_k(self : Reply, call : Int64, k : (effect::Exit[Bool]) -> Unit) -> Unit {
+  if self.started || self.done || self.gone || call < 0.to_int64() {
+    k(effect::Exit::Succeeded(false))
+    return
+  }
+  let prefix = match self.carry {
+    Some(c) => c
+    None => Bytes::new(0)
+  }
+  self.carry = None
+  self.stream.sh.call_k(
+    "istream.tap",
+    base_codec::json_obj([("id", self.stream.id), ("call", base_codec::json_num(call.to_double()))]),
+    fn(ex : effect::Exit[shell::Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(ans) => {
+          match json_get_bool(ans.json, "tapped") {
+            Some(true) => {
+              k(effect::Exit::Succeeded(true))
+              return
+            }
+            _ => ()
+          }
+          if prefix.length() > 0 && !self.started && !self.gone {
+            self.carry = Some(prefix)
+          }
+          k(effect::Exit::Succeeded(false))
+        }
+        effect::Exit::Failed(_) => {
+          if prefix.length() > 0 && !self.started && !self.gone {
+            self.carry = Some(prefix)
+          }
+          k(effect::Exit::Succeeded(false))
+        }
+      }
+    },
+    bytes=Some(prefix),
+  )
+}
+
+pub struct Out {
+  stream : Stream
+  let_go_fn : () -> Unit
+  is_gone_fn : () -> Bool
+  went : effect::Deferred[Bool]
+  is_read_fn : () -> Bool
+  mut finished : Bool
+}
+
+pub fn Out::write_k(self : Out, bytes : Bytes, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  let ig = self.is_gone_fn
+  if ig() {
+    k(effect::Exit::Failed(failed("cut")))
+    return
+  }
+  self.stream.write_k(bytes, fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      effect::Exit::Interrupted => {
+        let lg = self.let_go_fn
+        lg()
+        k(effect::Exit::Interrupted)
+      }
+      effect::Exit::Failed(e) => {
+        let lg = self.let_go_fn
+        lg()
+        k(effect::Exit::Failed(cut(e)))
+      }
+    }
+  })
+}
+
+pub fn Out::finish_k(self : Out, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  let ig = self.is_gone_fn
+  if ig() {
+    k(effect::Exit::Failed(failed("cut")))
+    return
+  }
+  if self.finished {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  self.finished = true
+  self.stream.finish_k(fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => {
+        self.finished = false
+        k(effect::Exit::Failed(cut(e)))
+      }
+    }
+  })
+}
+
+pub fn Out::stopped_k(self : Out, k : (effect::Exit[Option[Int]]) -> Unit) -> Unit {
+  let let_go_wait = fn(lk : (effect::Exit[Option[Int]]) -> Unit) -> Unit {
+    self.went.wait_k(fn(ex : effect::Exit[Bool]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(broke) =>
+        if broke {
+          lk(effect::Exit::Failed(failed("cut")))
+        } else {
+          lk(effect::Exit::Succeeded(None))
+        }
+      }
+    })
+  }
+  let ig = self.is_gone_fn
+  if ig() {
+    let_go_wait(k)
+    return
+  }
+  let ir = self.is_read_fn
+  if self.finished && ir() {
+    k(
+      effect::Exit::Failed(
+        MeshError::new(
+          "invalid_params",
+          "a stream read to its end and finished is let go of: whether its peer stopped it is asked before the last of the two",
+          "",
+        ).to_effect_error(),
+      ),
+    )
+    return
+  }
+  effect::race_first_k(
+    fn(rk : (effect::Exit[Option[Int]]) -> Unit) -> Unit {
+      self.stream.sh.call_k(
+        "istream.stopped",
+        base_codec::json_obj([("id", self.stream.id)]),
+        fn(ex : effect::Exit[shell::Answer]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => rk(effect::Exit::Failed(cut(e)))
+            effect::Exit::Succeeded(ans) =>
+            match json_get_num(ans.json, "code") {
+              Some(c) => rk(effect::Exit::Succeeded(Some(c.to_int())))
+              None => rk(effect::Exit::Succeeded(None))
+            }
+          }
+        },
+      )
+    },
+    let_go_wait,
+    k,
+  )
+}
+
+struct InboundState {
+  mut done : Bool
+  mut gone : Bool
+  mut carry : Option[Bytes]
+}
+
+pub struct Inbound {
+  pub out : Out
+  stream : Stream
+  st : InboundState
+  went : effect::Deferred[Bool]
+}
+
+fn inbound_of(stream : Stream, carry : Option[Bytes]) -> Inbound {
+  let st = InboundState::{ done: false, gone: false, carry: carry }
+  let went : effect::Deferred[Bool] = effect::Deferred::new()
+  let out = Out::{
+    stream: stream,
+    let_go_fn: fn() -> Unit {
+      st.done = true
+      st.gone = true
+      st.carry = None
+      let _ = went.succeed(true)
+      stream.reset()
+    },
+    is_gone_fn: fn() -> Bool { st.gone },
+    went: went,
+    is_read_fn: fn() -> Bool { st.done },
+    finished: false,
+  }
+  Inbound::{ out: out, stream: stream, st: st, went: went }
+}
+
+fn Inbound::let_go(self : Inbound, broke : Bool) -> Unit {
+  self.st.done = true
+  self.st.gone = true
+  self.st.carry = None
+  let _ = self.went.succeed(broke)
+  self.stream.reset()
+}
+
+pub fn Inbound::cancel(self : Inbound) -> Unit {
+  self.let_go(false)
+}
+
+pub fn Inbound::take_k(self : Inbound, k : (effect::Exit[Option[Bytes]]) -> Unit) -> Unit {
+  match self.st.carry {
+    Some(c) => {
+      self.st.carry = None
+      k(effect::Exit::Succeeded(Some(c)))
+      return
+    }
+    None => ()
+  }
+  if self.st.done {
+    k(effect::Exit::Succeeded(None))
+    return
+  }
+  self.stream.read_k(fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => {
+        self.let_go(true)
+        k(effect::Exit::Failed(cut(e)))
+      }
+      effect::Exit::Succeeded(chunk) => {
+        match chunk {
+          None => self.st.done = true
+          Some(_) => ()
+        }
+        k(effect::Exit::Succeeded(chunk))
+      }
+    }
+  })
+}
+
+fn head_of(
+  method_name : String,
+  path : String,
+  headers : Array[(String, String)],
+  more : Array[(String, base_codec::Json)],
+) -> Option[(String, Option[effect::EffectError])] {
+  for i in 0..<more.length() {
+    let (field, _) = more[i]
+    if field == "method" || field == "path" || field == "headers" {
+      let err = MeshError::new(
+        "invalid_params",
+        "a request's `more` names " + field + ": its head's own, which the link writes",
+        "",
+      ).to_effect_error()
+      return Some(("", Some(err)))
+    }
+  }
+  Some((wire::head_line(method_name, path, headers, more=more), None))
+}
+
+fn open_on_k(
+  sh : shell::Shell,
+  conn : base_codec::Json,
+  fibers : effect::EffectScope,
+  gone : effect::Deferred[Closed],
+  k : (effect::Exit[Stream]) -> Unit,
+) -> Unit {
+  let coming : effect::Deferred[base_codec::Json] = effect::Deferred::new()
+  let wanted = [true]
+  let _ = fibers.fork_named("mesh stream", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sh.call_k("conn.openBi", base_codec::json_obj([("id", conn)]), fn(ex : effect::Exit[shell::Answer]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => {
+          let _ = coming.fail(cut(e))
+          fk(effect::Exit::Succeeded(()))
+        }
+        effect::Exit::Succeeded(ans) => {
+          match base_codec::json_get(ans.json, "id") {
+            Some(id) =>
+            if wanted[0] {
+              let _ = coming.succeed(id)
+            } else {
+              sh.tell("istream.reset", base_codec::json_obj([("id", id), ("code", base_codec::json_int(0))]))
+            }
+            None => {
+              let _ = coming.fail(failed("cut"))
+            }
+          }
+          fk(effect::Exit::Succeeded(()))
+        }
+      }
+    })
+  })
+  effect::race_first_k(
+    fn(rk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit { coming.wait_k(rk) },
+    fn(rk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      gone.wait_k(fn(gex : effect::Exit[Closed]) -> Unit {
+        match gex {
+          effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(why) =>
+          rk(effect::Exit::Failed(MeshError::new("mesh", say("cut"), "connection closed: " + why.reason).to_effect_error()))
+        }
+      })
+    },
+    fn(rex : effect::Exit[base_codec::Json]) -> Unit {
+      match rex {
+        effect::Exit::Succeeded(id) => k(effect::Exit::Succeeded(Stream::{ sh: sh, id: id }))
+        other => {
+          wanted[0] = false
+          match coming.poll() {
+            Some(effect::Exit::Succeeded(id)) =>
+            sh.tell("istream.reset", base_codec::json_obj([("id", id), ("code", base_codec::json_int(0))]))
+            _ => ()
+          }
+          match other {
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            _ => k(effect::Exit::Interrupted)
+          }
+        }
+      }
+    },
+  )
+}
+
+fn accept_on_k(
+  sh : shell::Shell,
+  conn : base_codec::Json,
+  fibers : effect::EffectScope,
+  gone : effect::Deferred[Closed],
+  accepting : Accepting,
+  k : (effect::Exit[Option[Inbound]]) -> Unit,
+) -> Unit {
+  accepting.lock.with_permit_k(
+    fn(pk : (effect::Exit[Option[Inbound]]) -> Unit) -> Unit {
+      if gone.is_done() {
+        pk(effect::Exit::Succeeded(None))
+        return
+      }
+      let coming = match accepting.coming {
+        Some(c) => c
+        None => {
+          let c : effect::Deferred[Option[base_codec::Json]] = effect::Deferred::new()
+          accepting.coming = Some(c)
+          let _ = fibers.fork_named("mesh accept", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            sh.call_k("conn.acceptBi", base_codec::json_obj([("id", conn)]), fn(ex : effect::Exit[shell::Answer]) -> Unit {
+              match ex {
+                effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(ans) => {
+                  let came = match base_codec::json_get(ans.json, "id") {
+                    Some(id) =>
+                    if gone.is_done() {
+                      sh.tell("istream.reset", base_codec::json_obj([("id", id), ("code", base_codec::json_int(0))]))
+                      None
+                    } else {
+                      Some(id)
+                    }
+                    None => None
+                  }
+                  let _ = c.succeed(came)
+                  fk(effect::Exit::Succeeded(()))
+                }
+                effect::Exit::Failed(_) => {
+                  let _ = c.succeed(None)
+                  fk(effect::Exit::Succeeded(()))
+                }
+              }
+            })
+          })
+          c
+        }
+      }
+      effect::race_first_k(
+        fn(rk : (effect::Exit[Option[base_codec::Json]]) -> Unit) -> Unit { coming.wait_k(rk) },
+        fn(rk : (effect::Exit[Option[base_codec::Json]]) -> Unit) -> Unit {
+          gone.wait_k(fn(gex : effect::Exit[Closed]) -> Unit {
+            match gex {
+              effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+              _ => rk(effect::Exit::Succeeded(None))
+            }
+          })
+        },
+        fn(rex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+          match rex {
+            effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => pk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(opt) =>
+            match opt {
+              None => pk(effect::Exit::Succeeded(None))
+              Some(id) => {
+                accepting.coming = None
+                pk(effect::Exit::Succeeded(Some(inbound_of(Stream::{ sh: sh, id: id }, None))))
+              }
+            }
+          }
+        },
+      )
+    },
+    k,
+  )
+}
+
+fn write_body_steps_k(
+  stream : Stream,
+  body : Bytes,
+  at : Int,
+  wrote : (Int) -> Unit,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if at >= body.length() {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  let end = if at + body_step < body.length() { at + body_step } else { body.length() }
+  stream.write_k(body.slice(at, end), fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(_) => {
+        wrote(end)
+        write_body_steps_k(stream, body, end, wrote, k)
+      }
+      other => k(other)
+    }
+  })
+}
+
+fn Link::sent_k(
+  self : Link,
+  head : String,
+  body : Bytes,
+  finish : Bool,
+  wrote : Option[(Int) -> Unit],
+  k : (effect::Exit[Reply]) -> Unit,
+) -> Unit {
+  match self.ended_as_told() {
+    Some(why) => {
+      k(effect::Exit::Failed(MeshError::new("mesh", say("cut"), "connection closed: " + why.reason).to_effect_error()))
+      return
+    }
+    None => ()
+  }
+  open_on_k(self.sh, self.conn, self.fibers, self.gone, fn(sex : effect::Exit[Stream]) -> Unit {
+    match sex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(stream) => {
+        let on_fail = fn(ex : effect::Exit[Reply]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(r) => k(effect::Exit::Succeeded(r))
+            other => {
+              stream.reset()
+              k(other)
+            }
+          }
+        }
+        let after_write = fn(wex : effect::Exit[Unit]) -> Unit {
+          match wex {
+            effect::Exit::Interrupted => on_fail(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => on_fail(effect::Exit::Failed(cut(e)))
+            effect::Exit::Succeeded(_) => {
+              let read_head = fn() -> Unit {
+                let lines = Lines::{ stream: stream, carry: wire::Carry::new(), most: max_head }
+                lines.next_k(fn(lex : effect::Exit[Option[String]]) -> Unit {
+                  match lex {
+                    effect::Exit::Interrupted => on_fail(effect::Exit::Interrupted)
+                    effect::Exit::Failed(e) => on_fail(effect::Exit::Failed(e))
+                    effect::Exit::Succeeded(opt) =>
+                    match opt {
+                      None => on_fail(effect::Exit::Failed(failed("no_reply")))
+                      Some(line) =>
+                      match wire::reply_head(line) {
+                        wire::Head::Unreadable(why) =>
+                        on_fail(effect::Exit::Failed(MeshError::new("mesh", say("reply_unreadable"), why).to_effect_error()))
+                        wire::Head::NoStatus => on_fail(effect::Exit::Failed(failed("reply_no_status")))
+                        wire::Head::Head(status, headers) => {
+                          let with_head = lines.carry.take()
+                          let carry : Option[Bytes] = if with_head.length() > 0 { Some(with_head) } else { None }
+                          k(
+                            effect::Exit::Succeeded(
+                              Reply::{
+                                status: status,
+                                headers: headers,
+                                link: self,
+                                stream: stream,
+                                carry: carry,
+                                started: false,
+                                done: false,
+                                gone: false,
+                                went: effect::Deferred::new(),
+                                on_piece: None,
+                              },
+                            ),
+                          )
+                        }
+                      }
+                    }
+                  }
+                })
+              }
+              if finish {
+                stream.finish_k(fn(fex : effect::Exit[Unit]) -> Unit {
+                  match fex {
+                    effect::Exit::Interrupted => on_fail(effect::Exit::Interrupted)
+                    effect::Exit::Failed(e) => on_fail(effect::Exit::Failed(cut(e)))
+                    effect::Exit::Succeeded(_) => read_head()
+                  }
+                })
+              } else {
+                read_head()
+              }
+            }
+          }
+        }
+        stream.write_k(head.to_bytes(), fn(hex : effect::Exit[Unit]) -> Unit {
+          match hex {
+            effect::Exit::Interrupted => on_fail(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => on_fail(effect::Exit::Failed(cut(e)))
+            effect::Exit::Succeeded(_) =>
+            match wrote {
+              Some(wfn) => write_body_steps_k(stream, body, 0, wfn, after_write)
+              None =>
+              if body.length() > 0 {
+                stream.write_k(body, after_write)
+              } else {
+                after_write(effect::Exit::Succeeded(()))
+              }
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+fn Link::begin_k(
+  self : Link,
+  head : String,
+  body : Bytes,
+  finish : Bool,
+  wrote : Option[(Int) -> Unit],
+  k : (effect::Exit[Reply]) -> Unit,
+) -> Unit {
+  self.sent_k(head, body, finish, wrote, fn(ex : effect::Exit[Reply]) -> Unit {
+    match ex {
+      effect::Exit::Failed(e) =>
+      match self.refused {
+        Some(refused) => k(effect::Exit::Failed(refused))
+        None => k(effect::Exit::Failed(e))
+      }
+      other => k(other)
+    }
+  })
+}
+
+pub fn Link::request_k(
+  self : Link,
+  method_name : String,
+  path : String,
+  k : (effect::Exit[Reply]) -> Unit,
+  headers : Array[(String, String)] = [],
+  body : Bytes = Bytes::new(0),
+  more : Array[(String, base_codec::Json)] = [],
+  wrote : Option[(Int) -> Unit] = None,
+) -> Unit {
+  match head_of(method_name, path, headers, more) {
+    Some((_, Some(err))) => k(effect::Exit::Failed(err))
+    Some((head, None)) => self.begin_k(head, body, true, wrote, k)
+    None => k(effect::Exit::Failed(failed("cut")))
+  }
+}
+
+pub fn Link::duplex_k(
+  self : Link,
+  method_name : String,
+  path : String,
+  k : (effect::Exit[(Reply, Out)]) -> Unit,
+  headers : Array[(String, String)] = [],
+  more : Array[(String, base_codec::Json)] = [],
+) -> Unit {
+  match head_of(method_name, path, headers, more) {
+    Some((_, Some(err))) => k(effect::Exit::Failed(err))
+    Some((head, None)) =>
+    self.begin_k(head, Bytes::new(0), false, None, fn(ex : effect::Exit[Reply]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(reply) => {
+          let out = Out::{
+            stream: reply.stream,
+            let_go_fn: fn() -> Unit { reply.let_go(true) },
+            is_gone_fn: fn() -> Bool { reply.gone },
+            went: reply.went,
+            is_read_fn: fn() -> Bool { reply.done },
+            finished: false,
+          }
+          k(effect::Exit::Succeeded((reply, out)))
+        }
+      }
+    })
+    None => k(effect::Exit::Failed(failed("cut")))
+  }
+}
+
+pub fn Link::accept_k(self : Link, k : (effect::Exit[Option[Inbound]]) -> Unit) -> Unit {
+  accept_on_k(self.sh, self.conn, self.fibers, self.gone, self.accepting, k)
+}
+
+fn Link::ended_as_told(self : Link) -> Option[Closed] {
+  match self.gone.poll() {
+    Some(effect::Exit::Succeeded(why)) => Some(why)
+    _ => None
+  }
+}
+
+pub fn Link::ended(self : Link) -> Option[Closed] {
+  match self.ended_as_told() {
+    Some(why) => return Some(why)
+    None => ()
+  }
+  match self.sh.ask("conn.closeReason", base_codec::json_obj([("id", self.conn)])) {
+    shell::AskResult::Ok(j) => closed_of(j)
+    shell::AskResult::Err(_) => Some(Closed::{ kind: "other", reason: "" })
+  }
+}
+
+pub fn Link::closed_k(self : Link, k : (effect::Exit[Closed]) -> Unit) -> Unit {
+  self.gone.wait_k(k)
+}
+
+pub fn Link::close(self : Link, reason : String = "closed") -> Unit {
+  self.sh.tell(
+    "conn.close",
+    base_codec::json_obj([("id", self.conn), ("code", base_codec::json_int(0)), ("reason", base_codec::json_str(reason))]),
+  )
+}
+
+pub fn Link::usable(self : Link) -> Bool {
+  self.ended().is_none() && !self.renewal_failed
+}
+
+pub fn Link::paths(self : Link) -> Array[base_codec::Json] {
+  match self.sh.ask("conn.paths", base_codec::json_obj([("id", self.conn)])) {
+    shell::AskResult::Ok(base_codec::Json::Arr(paths)) => paths
+    _ => []
+  }
+}
+
+pub fn Link::path(self : Link) -> Option[String] {
+  let ps = self.paths()
+  for i in 0..<ps.length() {
+    let p = ps[i]
+    match json_get_bool(p, "selected") {
+      Some(true) =>
+      match json_get_str(p, "relay") {
+        Some(_) => return Some("relay")
+        None => return Some("direct")
+      }
+      _ => ()
+    }
+  }
+  None
+}
+
+pub fn Link::via(self : Link) -> Option[String] {
+  let ps = self.paths()
+  for i in 0..<ps.length() {
+    let p = ps[i]
+    match json_get_bool(p, "selected") {
+      Some(true) =>
+      match json_get_str(p, "relay") {
+        Some(r) => return Some(r)
+        None => ()
+      }
+      _ => ()
+    }
+  }
+  None
+}
+
+fn Link::brought(self : Link) -> Bool {
+  let more = self.came > self.rx
+  self.rx = self.came
+  more
+}
+
+pub fn Link::pings(self : Link) -> Pings {
+  Pings::{
+    samples: self.samples,
+    srtt: self.srtt,
+    dev: self.dev,
+    missed: self.missed,
+    answered_ms: self.answered_ms,
+  }
+}
+
+fn Link::note(self : Link, ms : Int) -> Unit {
+  let d = ms.to_double()
+  if self.samples == 0 {
+    self.srtt = d
+    self.dev = 0.0
+  } else {
+    self.dev = 0.75 * self.dev + 0.25 * abs_d(d - self.srtt)
+    self.srtt = 0.875 * self.srtt + 0.125 * d
+  }
+  self.samples += 1
+}

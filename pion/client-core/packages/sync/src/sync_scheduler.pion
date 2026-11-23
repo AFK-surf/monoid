@@ -1,0 +1,240 @@
+// Priority sync scheduler (Rule 4: one sync engine owns all network traffic;
+// UI subscriptions only read local SQLite and raise priority via `client.focus`).
+// Built directly on `AFK-surf/pion-packages` `effect` (`Scheduler`, `urgent_room`, `prioritize`, `Preempt`).
+
+import "base_codec"
+import "effect"
+import "sql"
+
+pub struct SyncScheduler {
+  pub workspace : String
+  pub station : String
+  pub lane : effect::Scheduler
+  pub events : StationEvents
+  pub transport : StationTransport
+  mut focused_thread : Option[Int]
+  mut idle_preempted_count : Int
+  mut completed_order : Array[String]
+}
+
+pub fn SyncScheduler::new(
+  workspace : String,
+  station : String,
+  events : StationEvents,
+  transport : StationTransport,
+  width : Int = 2,
+  urgent_room : Int = 2,
+) -> SyncScheduler {
+  SyncScheduler::{
+    workspace: workspace,
+    station: station,
+    lane: effect::Scheduler::new(width=width, urgent_room=urgent_room),
+    events: events,
+    transport: transport,
+    focused_thread: None,
+    idle_preempted_count: 0,
+    completed_order: [],
+  }
+}
+
+fn SyncScheduler::task_key(self : SyncScheduler, resource : String) -> String {
+  self.workspace + "/" + self.station + "/" + resource
+}
+
+pub fn SyncScheduler::idle_preemptions(self : SyncScheduler) -> Int {
+  self.idle_preempted_count
+}
+
+pub fn SyncScheduler::completed_tasks(self : SyncScheduler) -> Array[String] {
+  self.completed_order
+}
+
+/// Raise priority for the currently focused chat/thread (`client.focus`),
+/// immediately preempting any running `idle` prefetch task.
+pub fn SyncScheduler::focus_thread(self : SyncScheduler, thread : Option[Int]) -> Unit {
+  self.focused_thread = thread
+  match thread {
+    Some(th) => {
+      let prefix = self.task_key("thread:" + th.to_string())
+      self.lane.prioritize("focus", Some(prefix), boost=effect::priority_focused())
+    }
+    None => {
+      self.lane.prioritize("focus", None)
+    }
+  }
+}
+
+/// Schedule a snapshot fetch (`GET /chats`) at `priority_shown()` (or `priority_focused()`).
+pub fn SyncScheduler::fetch_snapshot_k(
+  self : SyncScheduler,
+  priority : Int,
+  k : (effect::Exit[Int]) -> Unit,
+) -> Unit {
+  let key = self.task_key("snapshot")
+  self.lane.run_k(
+    key,
+    priority,
+    fn(_preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
+      let req_fn = self.transport.request_k
+      req_fn("GET", "/chats", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(reply) => {
+            if reply.status < 200 || reply.status >= 300 {
+              tk(effect::Exit::Failed(effect::EffectError::Custom("snapshot status " + reply.status.to_string())))
+              return
+            }
+            match base_codec::json_parse(bytes_to_str(reply.body)) {
+              base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+              base_codec::JsonParseResult::Ok(j) =>
+              match self.events.apply_snapshot(j) {
+                sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
+                sql::SqlResult::Ok(n) => {
+                  self.completed_order.push("snapshot")
+                  tk(effect::Exit::Succeeded(n))
+                }
+              }
+            }
+          }
+        }
+      })
+    },
+    k,
+  )
+}
+
+/// Schedule a thread entry fetch (`GET /threads/<id>/entries`) at the given priority.
+/// When `is_foreground` is true (`client.focus`), holds a foreground token so `idle` work yields immediately.
+pub fn SyncScheduler::fetch_thread_k(
+  self : SyncScheduler,
+  thread : Int,
+  priority : Int,
+  is_foreground : Bool,
+  k : (effect::Exit[Int]) -> Unit,
+) -> Unit {
+  let key = self.task_key("thread:" + thread.to_string())
+  let end_fg = if is_foreground {
+    Some(self.lane.foreground_begin())
+  } else {
+    None
+  }
+  self.lane.run_k(
+    key,
+    priority,
+    fn(_preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
+      let req_fn = self.transport.request_k
+      let path = "/threads/" + thread.to_string() + "/entries"
+      req_fn("GET", path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(reply) => {
+            if reply.status < 200 || reply.status >= 300 {
+              tk(effect::Exit::Failed(effect::EffectError::Custom("thread fetch status " + reply.status.to_string())))
+              return
+            }
+            match base_codec::json_parse(bytes_to_str(reply.body)) {
+              base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+              base_codec::JsonParseResult::Ok(j) =>
+              match self.events.apply_snapshot(j) {
+                sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
+                sql::SqlResult::Ok(n) => {
+                  self.completed_order.push("thread:" + thread.to_string())
+                  tk(effect::Exit::Succeeded(n))
+                }
+              }
+            }
+          }
+        }
+      })
+    },
+    fn(ex : effect::Exit[Int]) -> Unit {
+      match end_fg {
+        Some(f) => f()
+        None => ()
+      }
+      k(ex)
+    },
+  )
+}
+
+/// Schedule an `idle` prefetch task for `thread` that cooperates with `Preempt`:
+/// if foreground `client.focus` arrives while the request is in flight, it yields immediately
+/// (recording a preemption) and reschedules itself at `priority_idle()` behind foreground work.
+pub fn SyncScheduler::prefetch_idle_k(
+  self : SyncScheduler,
+  thread : Int,
+  k : (effect::Exit[Int]) -> Unit,
+) -> Unit {
+  let key = self.task_key("idle:" + thread.to_string())
+  self.lane.run_k(
+    key,
+    effect::priority_idle(),
+    fn(preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
+      if preempt.is_preempted() {
+        self.idle_preempted_count += 1
+        tk(effect::Exit::Failed(effect::EffectError::Custom("preempted")))
+        return
+      }
+      let req_fn = self.transport.request_k
+      let path = "/threads/" + thread.to_string() + "/entries"
+      effect::race_first_k(
+        fn(rk : (effect::Exit[Option[HttpReply]]) -> Unit) -> Unit {
+          req_fn("GET", path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+            match ex {
+              effect::Exit::Succeeded(r) => rk(effect::Exit::Succeeded(Some(r)))
+              effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+            }
+          })
+        },
+        fn(rk : (effect::Exit[Option[HttpReply]]) -> Unit) -> Unit {
+          preempt.wait_k(fn(pex : effect::Exit[Unit]) -> Unit {
+            match pex {
+              effect::Exit::Succeeded(_) => rk(effect::Exit::Succeeded(None))
+              effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+            }
+          })
+        },
+        fn(rex : effect::Exit[Option[HttpReply]]) -> Unit {
+          match rex {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(None) => {
+              self.idle_preempted_count += 1
+              tk(effect::Exit::Failed(effect::EffectError::Custom("preempted")))
+            }
+            effect::Exit::Succeeded(Some(reply)) => {
+              if reply.status < 200 || reply.status >= 300 {
+                tk(effect::Exit::Failed(effect::EffectError::Custom("idle fetch status " + reply.status.to_string())))
+                return
+              }
+              match base_codec::json_parse(bytes_to_str(reply.body)) {
+                base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+                base_codec::JsonParseResult::Ok(j) =>
+                match self.events.apply_snapshot(j) {
+                  sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
+                  sql::SqlResult::Ok(n) => {
+                    self.completed_order.push("idle:" + thread.to_string())
+                    tk(effect::Exit::Succeeded(n))
+                  }
+                }
+              }
+            }
+          }
+        },
+      )
+    },
+    fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Failed(effect::EffectError::Custom("preempted")) => {
+          // Re-queue behind foreground work once the lane is idle again.
+          self.prefetch_idle_k(thread, k)
+        }
+        other => k(other)
+      }
+    },
+  )
+}

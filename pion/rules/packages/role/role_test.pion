@@ -1,0 +1,95 @@
+///| Unit tests for `role`.
+
+test "role rank and lower" {
+  debug_assert(rank(Role::Viewer) == 0, "viewer=0")
+  debug_assert(rank(Role::Member) == 1, "member=1")
+  debug_assert(rank(Role::Admin) == 2, "admin=2")
+  debug_assert(rank(Role::Owner) == 3, "owner=3")
+  debug_assert(rank(lower(Role::Owner, Role::Admin)) == 2, "lower(owner,admin)=admin")
+  debug_assert(rank(lower(Role::Member, Role::Owner)) == 1, "lower(member,owner)=member")
+  debug_assert(rank(lower(Role::Viewer, Role::Admin)) == 0, "lower(viewer,admin)=viewer")
+}
+
+test "role may" {
+  debug_assert(may(Role::Owner, Change::MemberSet(true, false)), "owner demotes owner")
+  debug_assert(!may(Role::Admin, Change::MemberSet(true, false)), "admin cannot demote owner")
+  debug_assert(!may(Role::Admin, Change::MemberSet(false, true)), "admin cannot promote owner")
+  debug_assert(may(Role::Admin, Change::MemberSet(false, false)), "admin sets member")
+  debug_assert(!may(Role::Member, Change::MemberSet(false, false)), "member cannot set member")
+  debug_assert(may(Role::Owner, Change::MemberRemove(true)), "owner removes owner")
+  debug_assert(!may(Role::Admin, Change::MemberRemove(true)), "admin cannot remove owner")
+  debug_assert(may(Role::Admin, Change::MemberRemove(false)), "admin removes non-owner")
+  debug_assert(may(Role::Member, Change::Own(true)), "member own device")
+  debug_assert(!may(Role::Member, Change::Own(false)), "member others device")
+  debug_assert(may(Role::Admin, Change::Own(false)), "admin others device")
+  debug_assert(may(Role::Admin, Change::Roster), "admin roster")
+  debug_assert(!may(Role::Member, Change::Roster), "member roster")
+  debug_assert(may(Role::Owner, Change::CloudKeys), "owner cloud_keys")
+  debug_assert(!may(Role::Admin, Change::CloudKeys), "admin cloud_keys")
+  debug_assert(may(Role::Owner, Change::Disable), "owner disable")
+  debug_assert(!may(Role::Admin, Change::Disable), "admin disable")
+}
+
+test "role own_device keeps_owner replaces admission" {
+  debug_assert(own_device(true, false, Role::Member, true), "by_them")
+  debug_assert(own_device(false, true, Role::Member, true), "kept")
+  debug_assert(!own_device(false, false, Role::Owner, true), "had_own blocks admin")
+  debug_assert(own_device(false, false, Role::Admin, false), "first by admin")
+  debug_assert(!own_device(false, false, Role::Member, false), "first by member")
+
+  debug_assert(keeps_owner(1, false, true), "becomes owner")
+  debug_assert(!keeps_owner(1, true, false), "cannot remove last owner")
+  debug_assert(keeps_owner(2, true, false), "keeps second owner")
+  debug_assert(keeps_owner(1, false, false), "non-owner change keeps owner")
+
+  debug_assert(!replaces(true, true, true, true), "own_found never replaced")
+  debug_assert(replaces(false, true, true, true), "replaces when live member holds")
+  debug_assert(!replaces(false, true, false, true), "expired never replaces")
+
+  let ok = match admission(true, true, true, true) {
+    Admission::Admitted => true
+    _ => false
+  }
+  debug_assert(ok, "admitted")
+  let unk = match admission(false, true, true, true) {
+    Admission::Unknown => true
+    _ => false
+  }
+  debug_assert(unk, "unknown")
+  let oth = match admission(true, false, true, true) {
+    Admission::Others => true
+    _ => false
+  }
+  debug_assert(oth, "others")
+  let ran = match admission(true, true, false, true) {
+    Admission::RanOut => true
+    _ => false
+  }
+  debug_assert(ran, "ran_out")
+  let nom = match admission(true, true, true, false) {
+    Admission::NoMember => true
+    _ => false
+  }
+  debug_assert(nom, "no_member")
+}
+
+test "role vault and person helpers" {
+  debug_assert(device_signs(true, true, true, true), "device_signs")
+  debug_assert(!device_signs(false, true, true, true), "not app")
+  debug_assert(signed_by(true, true), "signed_by")
+  debug_assert(!signed_by(false, true), "not found")
+  debug_assert(cert_device_ok(true, false), "own cert")
+  debug_assert(cert_device_ok(false, true), "ever cert")
+  debug_assert(!cert_device_ok(false, false), "neither")
+  debug_assert(cert_key_ok(true, false, false), "current")
+  debug_assert(cert_key_ok(false, true, true), "ever+had")
+  debug_assert(!cert_key_ok(false, true, false), "ever but not had")
+  debug_assert(key_ok(false, true), "key_ok")
+  debug_assert(!key_ok(true, true), "seen")
+  debug_assert(binds(true, true), "binds")
+  debug_assert(!binds(false, true), "not mine")
+  debug_assert(person_changes(true, false), "person_changes")
+  debug_assert(!person_changes(true, true), "lone")
+  debug_assert(person_admits(true, true, true), "person_admits")
+  debug_assert(!person_admits(true, false, true), "unproved")
+}

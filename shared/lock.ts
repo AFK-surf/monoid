@@ -4,8 +4,7 @@
 // what is kept and when it is told is cloud/state.ts's.
 import { createHash, createPublicKey, verify } from "node:crypto";
 import * as form from "../client/core-ts/src/lock-form.ts";
-// @ts-ignore: the MoonBit build's JS, untyped
-import * as rules from "../rules/js/rules.js";
+import * as rules from "./rules-runtime.ts";
 
 export type Sig =
   | { key: string; alg: "Ed25519" | "ES256"; sig: string }

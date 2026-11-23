@@ -9,8 +9,7 @@ import { test } from "node:test";
 import { type Entry, type LockState, admit as stationAdmit, endpointBytes, endpointProof, entryHash, fold as stationFold, signedBytes, sigValid, validKeyId } from "../../shared/lock.ts";
 import { WS, bases, genesisOf, nextOf, people, rng, spare } from "./lock-chains.ts";
 import { admit, fold } from "./lock-oracle.ts";
-// @ts-ignore: the MoonBit build's JS, untyped
-import * as rules from "../../rules/js/rules.js";
+import * as rules from "../../shared/rules-runtime.ts";
 
 const crypto = {
   sha256Hex: (s: string) => createHash("sha256").update(s).digest("hex"),

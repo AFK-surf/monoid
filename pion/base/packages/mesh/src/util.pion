@@ -1,0 +1,232 @@
+// Internal helpers for the mesh package.
+
+import "base_codec"
+import "crypto"
+
+struct UidBox {
+  mut next : Int
+}
+
+let uid_box : UidBox = UidBox::{ next: 0 }
+
+fn next_uid() -> Int {
+  uid_box.next += 1
+  uid_box.next
+}
+
+fn abs_d(x : Double) -> Double {
+  if x < 0.0 { -x } else { x }
+}
+
+fn floor_d(x : Double) -> Double {
+  let i = x.to_int64()
+  let d = i.to_double()
+  if x < d {
+    (i - 1.to_int64()).to_double()
+  } else {
+    d
+  }
+}
+
+fn round_i64(x : Double) -> Int64 {
+  if x >= 0.0 {
+    floor_d(x + 0.5).to_int64()
+  } else {
+    -floor_d(-x + 0.5).to_int64()
+  }
+}
+
+fn round_i32(x : Double) -> Int {
+  round_i64(x).to_int()
+}
+
+fn bytes_eq(a : Bytes, b : Bytes) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn joined_bytes(pieces : Array[Bytes], length : Int) -> Bytes {
+  if pieces.length() == 0 {
+    return Bytes::new(0)
+  }
+  if pieces.length() == 1 {
+    return pieces[0]
+  }
+  let out = Bytes::new(length)
+  let mut at = 0
+  for i in 0..<pieces.length() {
+    let p = pieces[i]
+    for j in 0..<p.length() {
+      out[at] = p[j]
+      at += 1
+    }
+  }
+  out
+}
+
+fn str_array_copy(a : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<a.length() {
+    out.push(a[i])
+  }
+  out
+}
+
+fn str_array_eq(a : Array[String], b : Array[String]) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn str_array_contains(a : Array[String], x : String) -> Bool {
+  for i in 0..<a.length() {
+    if a[i] == x {
+      return true
+    }
+  }
+  false
+}
+
+fn str_join(items : Array[String], sep : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<items.length() {
+    if i > 0 {
+      sb.write_string(sep)
+    }
+    sb.write_string(items[i])
+  }
+  sb.to_string()
+}
+
+fn str_trim(s : String) -> String {
+  let n = s.length()
+  let mut lo = 0
+  while lo < n {
+    let c = s.code_unit_at(lo)
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      lo += 1
+    } else {
+      break
+    }
+  }
+  let mut hi = n
+  while hi > lo {
+    let c = s.code_unit_at(hi - 1)
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      hi -= 1
+    } else {
+      break
+    }
+  }
+  s.slice(lo, hi)
+}
+
+fn str_contains(s : String, sub : String) -> Bool {
+  let sn = s.length()
+  let subn = sub.length()
+  if subn == 0 {
+    return true
+  }
+  if subn > sn {
+    return false
+  }
+  let mut i = 0
+  while i + subn <= sn {
+    if s.slice(i, i + subn) == sub {
+      return true
+    }
+    i += 1
+  }
+  false
+}
+
+fn str_has_suffix(s : String, suf : String) -> Bool {
+  let sn = s.length()
+  let sufn = suf.length()
+  if sufn > sn {
+    return false
+  }
+  s.slice(sn - sufn, sn) == suf
+}
+
+fn hex_bytes(data : Bytes) -> String {
+  crypto::bytes_to_hex(data)
+}
+
+fn hex_str(text : String) -> String {
+  crypto::bytes_to_hex(text.to_bytes())
+}
+
+fn bytes_of_hex(text : String) -> Bytes {
+  match crypto::hex_to_bytes(text) {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+}
+
+fn json_strings(items : Array[String]) -> base_codec::Json {
+  let arr : Array[base_codec::Json] = []
+  for i in 0..<items.length() {
+    arr.push(base_codec::json_str(items[i]))
+  }
+  base_codec::json_arr(arr)
+}
+
+fn json_get_str(j : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn json_get_num(j : base_codec::Json, key : String) -> Option[Double] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(n, _)) => Some(n)
+    _ => None
+  }
+}
+
+fn json_get_bool(j : base_codec::Json, key : String) -> Option[Bool] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+}
+
+fn json_get_arr(j : base_codec::Json, key : String) -> Option[Array[base_codec::Json]] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Arr(a)) => Some(a)
+    _ => None
+  }
+}
+
+fn number_of(j : Option[base_codec::Json]) -> Option[Double] {
+  match j {
+    Some(base_codec::Json::Num(n, _)) => Some(n)
+    _ => None
+  }
+}
+
+fn int_of(j : Option[base_codec::Json]) -> Int64 {
+  match j {
+    Some(base_codec::Json::Num(n, _)) => n.to_int64()
+    _ => 0.to_int64()
+  }
+}
+
+fn i64_max() -> Int64 {
+  (0x7FFF.to_int64() << 48) | (0xFFFF.to_int64() << 32) | (0xFFFF.to_int64() << 16) | 0xFFFF.to_int64()
+}

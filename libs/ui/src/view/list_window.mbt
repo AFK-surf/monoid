@@ -947,6 +947,7 @@ fn View::scrolls_window_ids(
   let fade_go : Ref[(Int) -> Unit] = Ref(fn(_) {  })
   let fade_undo : Ref[(Int) -> Unit] = Ref(fn(_) {  })
   let gone_quiet : Map[Int, Bool] = Map([])
+  let fade_settled : Map[Int, Bool] = Map([])
   let page_was : Ref[Array[Int]] = Ref([])
   // (its keys and its blocks' places let go of as its page was put by at rest (ListPlace::rest): worked out anew once
   // after, what is the same as it was kept the same, nothing after them told of it; else as ever)
@@ -968,18 +969,24 @@ fn View::scrolls_window_ids(
       }
       Some((k, _)) if came_at_foot() => {
         fading.val = None
-        gone_quiet[k] = false
+        if !flips {
+          gone_quiet[k] = false
+        }
+        @signals.after_flush(fn() { (fade_undo.val)(k) })
       }
       _ => ()
     }
     // (the last gone, said to leave its room, at its foot, as laid out once: fading, or gone at once where one came in
     // its place)
-    if fading.val is None && !at_once && !flips && was.length() > 0 && !physical_equal(ks, was) {
+    let can_fade = !flips || (self.tree.transition_gate(self.at) && !answering_now())
+    if fading.val is None && !at_once && can_fade && was.length() > 0 && !physical_equal(ks, was) {
       let k = was[was.length() - 1]
       if @signals.untracked(fn() { s.seen.get() is Some(_) && s.at_foot() && leaves_room(k) }) && !ks.contains(k) {
         // (one come in its place, or motion reduced: gone at once, its room left)
         if came_at_foot() || @signals.untracked(self.tree.motion_reduced) {
-          gone_quiet[k] = false
+          if !flips {
+            gone_quiet[k] = false
+          }
         } else {
           fading.val = Some((k, self.tree.cause_now()))
           @signals.after_flush(fn() { (fade_go.val)(k) })
@@ -4606,6 +4613,7 @@ fn View::scrolls_window_ids(
     // (whether what changed at this moment was told outside a transition where only one moves the list: set out
     // nowhere, all of it at once, transition.mbt; one change of the moment within one moves it all)
     let pending_quiet : Ref[Bool] = Ref(false)
+    let pending_fade_settled : Ref[Bool] = Ref(false)
     fn change(ks : Array[Int], was : Array[Int], inner : Bool) -> Unit {
       guard was.length() > 0 else { return }
       let at = self.tree.cause_now()
@@ -4613,6 +4621,7 @@ fn View::scrolls_window_ids(
       // (what a block holds or its foot changing inside it (`inner`) was judged where it changed (View::comes, View::resizes):
       // the list sets out what that told it as it comes)
       let quiet = !inner && !self.tree.transition_gate(self.at)
+      let mut had_settled = false
       // (at its foot what goes from its end said to leave its room (`leaves_room`) leaves it under the last block: what
       // is over it never comes down for it (the user, 2026-11-12: a turn that ends with no answer carries nothing up to
       // let it fall back); what comes at its end takes that room first, what is over it going up only by what it needs
@@ -4620,30 +4629,36 @@ fn View::scrolls_window_ids(
       // it coming down on the list's way: an agent's line its answer came in over, gone as that answer is out, its room
       // not left empty under the answer for good)
       if !inner && @signals.untracked(fn() { s.seen.get() is Some(_) && s.at_foot() && follows() }) {
+        let gone_end = flip_tail_removed(was, ks)
         if quiet {
-          gave_back.val = true
-        } else {
-          let mut kept_step = ks.length()
-          while kept_step > 0 && !was.contains(ks[kept_step - 1]) {
-            kept_step = kept_step - 1
-          }
-          let last_kept = if kept_step > 0 { Some(ks[kept_step - 1]) } else { None }
-          let at_end = match last_kept {
-            Some(l) => {
-              let i = was.search(l).unwrap_or(was.length() - 1)
-              was[i + 1:].to_owned()
+          let mut settled_gone = 0.0
+          for k in gone_end {
+            if fade_settled.contains(k) {
+              fade_settled.remove(k)
+              had_settled = true
+              settled_gone = settled_gone + heights.get(k).unwrap_or(0.0)
             }
-            None => was
           }
+          if had_settled {
+            gave_back.val = false
+            if settled_gone > 0.0 {
+              foot_room.set(foot_room.untracked() + settled_gone)
+            }
+          } else {
+            let active_ends = flip_way.untracked().map_or(-1.0, fn(w) { w.ends() })
+            if classify_flip_quiet(active_ends, at, answering_now(), showing, was, ks) is QuietReset {
+              gave_back.val = true
+            }
+          }
+        } else {
           let mut gone = 0.0
           gave_back.val = false
-          for k in at_end {
-            if !ks.contains(k) {
-              if @signals.untracked(fn() { leaves_room(k) }) {
-                gone = gone + heights.get(k).unwrap_or(0.0)
-              } else {
-                gave_back.val = true
-              }
+          for k in gone_end {
+            fade_settled.remove(k)
+            if @signals.untracked(fn() { leaves_room(k) }) {
+              gone = gone + heights.get(k).unwrap_or(0.0)
+            } else {
+              gave_back.val = true
             }
           }
           if gone > 0.0 {
@@ -4666,6 +4681,7 @@ fn View::scrolls_window_ids(
           pending_ks.val = ks
         }
         pending_quiet.val = pending_quiet.val && quiet
+        pending_fade_settled.val = pending_fade_settled.val || had_settled
         pending_inner.val = pending_inner.val || inner
         pending_builds.val = self.tree.old_builds_begun
         return
@@ -4676,6 +4692,7 @@ fn View::scrolls_window_ids(
       pending_inner.val = inner
       pending_builds.val = self.tree.old_builds_begun
       pending_quiet.val = quiet
+      pending_fade_settled.val = had_settled
       // (how far off its foot it was as the change came: brought to its foot at once by it (words sent read up the
       // list: a go-to, no motion), where each was is counted as it would have been there)
       let off_foot = @signals.untracked(fn() { if s.at_foot() { 0.0 } else { dmax(0.0, s.most() - s.at(self.tree)) } })
@@ -4738,6 +4755,7 @@ fn View::scrolls_window_ids(
           // set-out worked out again as it is first placed, flip_came emptied by then)
           let came_keys : Ref[Map[Int, Bool]] = Ref(Map([]))
           let quiet_once : Ref[Bool] = Ref(pending_quiet.val)
+          let fade_settled_once : Ref[Bool] = Ref(pending_fade_settled.val)
           let snap_was : Ref[Array[Int]] = Ref(pending_was.val)
           let snap_ks : Ref[Array[Int]] = Ref(pending_ks.val)
           let snap_inner : Ref[Bool] = Ref(pending_inner.val)
@@ -4747,6 +4765,8 @@ fn View::scrolls_window_ids(
             snap_ks.val = pending_ks.val
             snap_inner.val = pending_inner.val
             quiet_once.val = pending_quiet.val
+            fade_settled_once.val = pending_fade_settled.val
+            pending_fade_settled.val = false
             pending_at.val = -1.0
             steady_left.val = snap_was.val.iter().any(fn(k) { !snap_ks.val.contains(k) }) &&
               !snap_ks.val.iter().any(fn(k) { !snap_was.val.contains(k) })
@@ -4756,24 +4776,52 @@ fn View::scrolls_window_ids(
           let inner = snap_inner.val
           // (set out: what its blocks hold may tell it again from here, at this same moment)
           inner_at.val = -1.0
-          // (told outside a transition where only one moves the list: nothing set out for it, all of it laid out on
-          // the next frame where it rests, a way going let go of (transition.mbt); skip the synchronous laid_now()
-          // unless foot_room must deduct newly arrived tail heights)
-          if quiet_once.val && (foot_room.untracked() <= 0.0 || flip_takes.val.is_empty()) {
-            if !fix {
-              flip_takes.val = []
+          // (told outside a transition where only one moves the list: classify QuietReset vs QuietDelta;
+          // QuietDelta preserves the active FlipWay in-place when the visible span is untouched, while
+          // QuietReset skips synchronous laid_now() unless foot_room deduction or fade_settled handoff needs it)
+          if quiet_once.val {
+            let active_ends = flip_way.untracked().map_or(-1.0, fn(w) { w.ends() })
+            let quiet_kind = classify_flip_quiet(active_ends, at, answering_now(), showing, was, ks)
+            match (quiet_kind, flip_way.untracked()) {
+              (QuietDelta, Some(_)) => {
+                if !fix && foot_room.untracked() > 0.0 && flip_takes.val.length() > 0 {
+                  self.tree.laid_now() |> ignore
+                  let mut came = 0.0
+                  for k in flip_takes.val {
+                    came = came + heights.get(k).unwrap_or(est)
+                  }
+                  flip_takes.val = []
+                  let left = dmax(0.0, foot_room.untracked() - came)
+                  if left != foot_room.untracked() {
+                    foot_room.set(left)
+                    self.tree.laid_now() |> ignore
+                  }
+                } else if !fix {
+                  flip_takes.val = []
+                }
+                came_once.val = Some(false)
+                flip_came.clear()
+                moved_now.val = Map([])
+                return
+              }
+              _ =>
+                if !fade_settled_once.val && (foot_room.untracked() <= 0.0 || flip_takes.val.is_empty()) {
+                  if !fix {
+                    flip_takes.val = []
+                  }
+                  came_once.val = Some(false)
+                  flip_came.clear()
+                  moved_now.val = Map([])
+                  self.tree.answer_mark(self.at)
+                  (flip_end_off.val)()
+                  flip_items.clear()
+                  flip_new.clear()
+                  flip_whole.clear()
+                  flip_in_clear()
+                  flip_way.set(None)
+                  return
+                }
             }
-            came_once.val = Some(false)
-            flip_came.clear()
-            moved_now.val = Map([])
-            self.tree.answer_mark(self.at)
-            (flip_end_off.val)()
-            flip_items.clear()
-            flip_new.clear()
-            flip_whole.clear()
-            flip_in_clear()
-            flip_way.set(None)
-            return
           }
           // (laid out as the change ends before anything is read: one set out inside the change's flush (what a block
           // holds told it) runs before the frame lays out, its nodes just made none tall till then)
@@ -5541,6 +5589,15 @@ fn View::scrolls_window_ids(
   let fade_off = Ref(fn() {  })
   let faded : Array[View] = []
   fade_undo.val = fn(k) {
+    (fade_off.val)()
+    fade_off.val = fn() {  }
+    for v in faded {
+      if v.alive() {
+        v.alpha(Is(1.0)) |> ignore
+      }
+    }
+    faded.clear()
+    faded.shrink_to_fit()
     for b in blocks {
       if b.0.alive() && @signals.untracked(b.1) == k {
         b.0.alpha(Is(1.0)) |> ignore
@@ -5566,7 +5623,7 @@ fn View::scrolls_window_ids(
       }
     }
     // (as long as that, and as its way in has still to go)
-    let mut end = went + list_leaves_ms
+    let mut end = fade_end_with_flip(went, flips, flip_way.untracked())
     for w in ways {
       if w.1 == k && w.0.live() is Some(m) && m.coming {
         let e = m.flex.style.come_ends
@@ -5586,7 +5643,12 @@ fn View::scrolls_window_ids(
         }
       }
       faded.clear()
-      gone_quiet[k] = false
+      faded.shrink_to_fit()
+      if flips {
+        fade_settled[k] = true
+      } else {
+        gone_quiet[k] = false
+      }
       fade_rev.set(fade_rev.untracked() + 1)
     })
   }

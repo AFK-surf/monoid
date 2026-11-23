@@ -1,0 +1,8 @@
+[package]
+name = "shell_native"
+version = "0.1.0"
+
+[dependencies]
+effect = { workspace = true }
+base_codec = { path = "../base_codec" }
+shell = { path = "../shell" }

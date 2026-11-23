@@ -1,0 +1,41 @@
+///| Unit tests for `history`.
+
+fn i64(n : Int) -> Int64 {
+  n.to_int64()
+}
+
+test "history rules" {
+  debug_assert(follows(false, i64(0), i64(1)), "follows +1")
+  debug_assert(!follows(false, i64(0), i64(2)), "not +2")
+  debug_assert(follows(true, i64(0), i64(5)), "copy later")
+  debug_assert(!follows(true, i64(5), i64(5)), "copy equal")
+
+  debug_assert(epoch_ok(false, i64(2), i64(2)), "same epoch ok")
+  debug_assert(!epoch_ok(true, i64(2), i64(2)), "gone requires higher epoch")
+  debug_assert(epoch_ok(true, i64(2), i64(3)), "gone higher ok")
+  debug_assert(!epoch_ok(false, i64(2), i64(1)), "cannot go back")
+
+  debug_assert(deletion_ok(false, false), "keep")
+  debug_assert(deletion_ok(false, true), "delete")
+  debug_assert(deletion_ok(true, true), "stay deleted")
+  debug_assert(!deletion_ok(true, false), "undelete forbidden")
+
+  debug_assert(item_epoch_ok(false, false, i64(3), i64(3)), "same epoch")
+  debug_assert(!item_epoch_ok(false, false, i64(2), i64(3)), "old epoch non-copy")
+  debug_assert(item_epoch_ok(false, true, i64(2), i64(3)), "old epoch copy")
+  debug_assert(item_epoch_ok(true, false, i64(2), i64(3)), "old epoch deleted")
+  debug_assert(!item_epoch_ok(true, true, i64(4), i64(3)), "future epoch forbidden")
+
+  debug_assert(unexpired(false, i64(0), i64(100)), "no expiry")
+  debug_assert(unexpired(true, i64(101), i64(100)), "unexpired")
+  debug_assert(!unexpired(true, i64(100), i64(100)), "expired at boundary")
+
+  debug_assert(supersedes(i64(2), false, i64(0), i64(1), true, i64(9), -1), "seq wins")
+  debug_assert(supersedes(i64(1), true, i64(0), i64(1), false, i64(9), -1), "deleted wins")
+  debug_assert(supersedes(i64(1), false, i64(2), i64(1), false, i64(1), -1), "epoch wins")
+  debug_assert(supersedes(i64(1), false, i64(1), i64(1), false, i64(1), 1), "text wins")
+  debug_assert(!supersedes(i64(1), false, i64(1), i64(1), false, i64(1), 0), "equal does not supersede")
+
+  debug_assert(item_open(false), "open")
+  debug_assert(!item_open(true), "closed after delete")
+}

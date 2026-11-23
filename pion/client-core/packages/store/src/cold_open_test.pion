@@ -1,0 +1,495 @@
+// Cold-open budget, MdStore, schema migration, and indexed chat-list tests.
+// Ports all tests from `libs/client-core/src/store/cold_open_wbtest.mbt` plus
+// schema forward-version read-only protection and indexed `chat_list` overlay tests.
+
+import "base_codec"
+import "sql"
+
+fn test_station() -> String { "s1" }
+
+fn test_now() -> Int64 { 864000000.to_int64() }
+
+fn unwrap_s[T](r : sql::SqlResult[T]) -> T {
+  match r {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic("unexpected SqlResult::Err: " + e.to_string())
+  }
+}
+
+fn long_reply(i : Int) -> String {
+  let sb = StringBuilder::new()
+  for p in 0..<6 {
+    sb.write_string("Paragraph ")
+    sb.write_string(p.to_string())
+    sb.write_string(" of reply ")
+    sb.write_string(i.to_string())
+    sb.write_string(": the change reads every tree of the page in one statement and writes what showing noted once the first values went out.\n")
+  }
+  sb.write_string("```pion\nfn main() {\n  println(\"reply ")
+  sb.write_string(i.to_string())
+  sb.write_string("\")\n}\n```\nDone.")
+  sb.to_string()
+}
+
+fn notice_words(i : Int) -> String {
+  "Agent restarted (" + i.to_string() + ")"
+}
+
+fn make_account(chats : Int) -> FakeDb {
+  let db = FakeDb::new()
+  let st = test_station()
+  for t in 1..<(chats + 1) {
+    for n in 1..<41 {
+      let entry = if t == 7 {
+        if n % 2 == 0 {
+          base_codec::json_obj([
+            ("kind", base_codec::json_str("message")),
+            ("authorKind", base_codec::json_str("agent")),
+            ("author", base_codec::json_str("a1")),
+            ("text", base_codec::json_str(long_reply(t * 100 + n))),
+          ])
+        } else {
+          base_codec::json_obj([
+            ("kind", base_codec::json_str("message")),
+            ("authorKind", base_codec::json_str("person")),
+            ("author", base_codec::json_str("p1")),
+            ("text", base_codec::json_str("Why is it slow? (" + n.to_string() + ")")),
+          ])
+        }
+      } else if t == 3 {
+        base_codec::json_obj([
+          ("kind", base_codec::json_str("message")),
+          ("authorKind", base_codec::json_str(if n % 2 == 0 { "agent" } else { "person" })),
+          ("author", base_codec::json_str("x")),
+          ("text", base_codec::json_str("ok " + n.to_string())),
+        ])
+      } else {
+        let m = n % 5
+        if m == 0 {
+          base_codec::json_obj([
+            ("kind", base_codec::json_str("message")),
+            ("authorKind", base_codec::json_str("agent")),
+            ("author", base_codec::json_str("a1")),
+            ("text", base_codec::json_str(long_reply(t * 100 + n))),
+          ])
+        } else if m == 1 {
+          base_codec::json_obj([
+            ("kind", base_codec::json_str("message")),
+            ("authorKind", base_codec::json_str("station")),
+            ("author", base_codec::json_str("")),
+            ("text", base_codec::json_str("")),
+            ("notice", base_codec::json_obj([("words", base_codec::json_str(notice_words(n)))])),
+          ])
+        } else if m == 2 {
+          base_codec::json_obj([
+            ("kind", base_codec::json_str("edit")),
+            ("authorKind", base_codec::json_str("agent")),
+            ("author", base_codec::json_str("a1")),
+            ("text", base_codec::json_str("x")),
+            ("target", base_codec::json_int(n - 1)),
+          ])
+        } else if m == 3 {
+          base_codec::json_obj([
+            ("kind", base_codec::json_str("message")),
+            ("authorKind", base_codec::json_str("person")),
+            ("author", base_codec::json_str("p1")),
+            ("text", base_codec::json_str("See the file")),
+            ("attachments", base_codec::json_arr([base_codec::json_obj([("name", base_codec::json_str("a.png"))])])),
+          ])
+        } else {
+          base_codec::json_obj([
+            ("kind", base_codec::json_str("message")),
+            ("authorKind", base_codec::json_str("agent")),
+            ("author", base_codec::json_str("a1")),
+            ("text", base_codec::json_str("Short answer " + n.to_string() + ".")),
+          ])
+        }
+      }
+      db.put_entry(st, t, n, entry)
+      let e = Entry::of_json(n, entry)
+      match e.md_words() {
+        Some(text) => {
+          db.put_tree(st, md_key(text), "[[\"p\",[[0," + text.length().to_string() + "]]]]", 0.to_int64())
+        }
+        None => ()
+      }
+    }
+  }
+  db
+}
+
+fn opened_stats(
+  db : FakeDb,
+  store : MdStore,
+  thread : Int,
+  rows : Int = 30,
+  at : Option[Int] = None,
+) -> (ChatOpenView, Int, Int, Int) {
+  let from = db.ran.length()
+  let view = unwrap_s(open_chat(store, thread, test_now(), rows=rows, at=at))
+  let (all, w, md, _, _) = db.since(from)
+  (view, all, w, md)
+}
+
+fn repeat_str(s : String, n : Int) -> String {
+  let sb = StringBuilder::new()
+  for _ in 0..<n {
+    sb.write_string(s)
+  }
+  sb.to_string()
+}
+
+fn opt_i64_eq(a : Option[Int64], b : Int64) -> Bool {
+  match a {
+    Some(v) => v == b
+    None => false
+  }
+}
+
+fn opt_str_eq(a : Option[String], b : String) -> Bool {
+  match a {
+    Some(v) => v == b
+    None => false
+  }
+}
+
+fn opt_str_same(a : Option[String], b : Option[String]) -> Bool {
+  match a {
+    Some(va) =>
+    match b {
+      Some(vb) => va == vb
+      None => false
+    }
+    None => b.is_none()
+  }
+}
+
+fn strs_eq(a : Array[String], b : Array[String]) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+test "cold open writes nothing up to first view, preloads md_kept in 1 statement, constant at 5x chats" {
+  let sizes = [20, 100]
+  let totals : Array[Int] = []
+  for si in 0..<sizes.length() {
+    let db = make_account(sizes[si])
+    let store = MdStore::new(unwrap_s(sql::Sql::open(db.shell, "acct")), test_station())
+    let (view, all, w, md) = opened_stats(db, store, 7)
+    debug_assert(w == 0, "0 writes before first view")
+    debug_assert(md == 1, "1 md_kept preload statement")
+    totals.push(all)
+    debug_assert(
+      view.entries.length() >= first_shown_fewest() && view.entries.length() <= 10,
+      "long replies window bounded",
+    )
+    debug_assert(view.entries[view.entries.length() - 1].n == 40, "ends at entry 40")
+    debug_assert(view.unread.length() == 0, "all trees kept")
+    let mut agent_count = 0
+    for i in 0..<view.entries.length() {
+      if view.entries[i].author_kind == "agent" {
+        agent_count += 1
+      }
+    }
+    debug_assert(view.tree_keys.length() == agent_count, "trees match agent replies")
+    debug_assert(view.last_opened.is_none(), "never opened before")
+
+    // Short lines: full 30
+    let (short_v, _, w2, md2) = opened_stats(db, store, 3)
+    debug_assert(short_v.entries.length() == 30, "short lines 30 entries")
+    debug_assert(short_v.entries[0].n == 11, "starts at 11")
+    debug_assert(w2 == 0, "0 writes on short open")
+    debug_assert(md2 == 1, "1 md_kept preload on short open")
+
+    // Mixed chat: edits included in window, not counted as shown
+    let (mixed, _, w3, _) = opened_stats(db, store, 12)
+    debug_assert(w3 == 0, "0 writes on mixed open")
+    let mut has_edit = false
+    for i in 0..<mixed.entries.length() {
+      if mixed.entries[i].kind == "edit" {
+        has_edit = true
+      }
+    }
+    debug_assert(has_edit, "mixed window contains edit")
+    debug_assert(store.pending(), "store has pending flush")
+  }
+  debug_assert(totals.length() == 2 && totals[0] == 3 && totals[1] == 3, "5x scale constant 3 statements")
+}
+
+test "flush_turn writes all pending notes in one transaction and next open reads last_opened" {
+  let db = make_account(20)
+  let later = [0]
+  let store = MdStore::new(
+    unwrap_s(sql::Sql::open(db.shell, "acct")),
+    test_station(),
+    later=fn() -> Unit { later[0] = later[0] + 1 },
+  )
+  let (view, _, _, _) = opened_stats(db, store, 7)
+  let _ = opened_stats(db, store, 3)
+  debug_assert(later[0] == 1, "later notified once")
+  let from = db.ran.length()
+  debug_assert(unwrap_s(store.flush_turn()), "flush_turn wrote")
+  let (_, w, _, begun, committed) = db.since(from)
+  debug_assert(begun == 1 && committed == 1, "single transaction")
+  let touched = view.tree_keys.length() + 15
+  debug_assert(w == 2 + touched + 2, "expected write count")
+  debug_assert(opt_i64_eq(db.log_use.get("entry s1 7"), test_now()), "log_use updated")
+  for i in 0..<view.tree_keys.length() {
+    let k = view.tree_keys[i]
+    match db.md.get("s1 " + k) {
+      Some(r) => debug_assert(r.used == test_now(), "md_kept touched")
+      None => debug_assert(false, "md row missing")
+    }
+  }
+  let again = db.ran.length()
+  debug_assert(!unwrap_s(store.flush_turn()), "second flush is noop")
+  debug_assert(db.ran.length() == again, "no statements on empty flush")
+
+  let next = MdStore::new(unwrap_s(sql::Sql::open(db.shell, "acct")), test_station())
+  let (view2, _, w2, _) = opened_stats(db, next, 7)
+  debug_assert(w2 == 0, "0 writes on reopen")
+  debug_assert(opt_i64_eq(view2.last_opened, test_now()), "reads last_opened")
+  let from2 = db.ran.length()
+  debug_assert(unwrap_s(next.flush_turn()), "flushes log_use alone")
+  let (_, w3, _, _, _) = db.since(from2)
+  debug_assert(w3 == 3, "BEGIN + log_use + COMMIT")
+}
+
+test "open chat at a specific entry reads a screen of context on each side" {
+  let db = make_account(20)
+  let store = MdStore::new(unwrap_s(sql::Sql::open(db.shell, "acct")), test_station())
+  let (view, all, w, _) = opened_stats(db, store, 3, rows=10, at=Some(20))
+  debug_assert(view.entries.length() == 20, "20 entries around 20")
+  for i in 0..<20 {
+    debug_assert(view.entries[i].n == 10 + i, "entry n matches 10..29")
+  }
+  debug_assert(all == 3 && w == 0, "3 statements, 0 writes")
+}
+
+test "older reading fallback in one extra statement, then put_prepared and replaces" {
+  let db = make_account(20)
+  let last = "ok 40"
+  let before = "ok 38"
+  let key_last = md_key(last)
+  let key_before = md_key(before)
+  db.md.remove("s1 " + key_last)
+  db.md.remove("s1 " + key_before)
+  let old_key = older_md_keys(key_last)[0]
+  debug_assert(old_key.starts_with("13."), "older key starts with 13.")
+  db.put_tree(test_station(), old_key, "[\"old\"]", test_now())
+
+  let store = MdStore::new(unwrap_s(sql::Sql::open(db.shell, "acct")), test_station())
+  let (view, all, w, md) = opened_stats(db, store, 3)
+  debug_assert(w == 0 && md == 2 && all == 4, "0 writes, 2 md reads, 4 total")
+  debug_assert(opt_str_eq(view.trees.get(key_last), "[\"old\"]"), "fell back to older reading")
+  debug_assert(strs_eq(view.unread, [key_before]), "unread contains key_before")
+
+  store.put_prepared(key_before, "[\"new\"]", "t:3", test_now())
+  debug_assert(opt_str_eq(store.get(key_before, test_now()), "[\"new\"]"), "read back pending put")
+  debug_assert(store.has(key_before), "has pending put")
+  let _ = unwrap_s(store.flush_turn())
+  match db.md.get("s1 " + key_before) {
+    Some(r) => debug_assert(r.json == "[\"new\"]", "flushed new tree")
+    None => debug_assert(false, "expected new tree in db")
+  }
+
+  store.put_prepared(key_last, "[\"now\"]", "t:3", test_now(), replaces=Some(old_key))
+  let _ = unwrap_s(store.flush_turn())
+  debug_assert(db.md.get("s1 " + key_last).is_some(), "new key stored")
+  debug_assert(db.md.get("s1 " + old_key).is_none(), "old key dropped")
+  debug_assert(!store.has(old_key), "store no longer has old key")
+}
+
+test "after flush same store reads back with zero extra statements and no re-touch" {
+  let db = make_account(20)
+  let store = MdStore::new(unwrap_s(sql::Sql::open(db.shell, "acct")), test_station())
+  store.put_prepared("14.1.a.b", "[\"put\"]", "t:3", test_now())
+  debug_assert(unwrap_s(store.flush_turn()), "flushed put")
+  let from = db.ran.length()
+  debug_assert(opt_str_eq(store.get("14.1.a.b", test_now()), "[\"put\"]"), "cached hit")
+  debug_assert(store.has("14.1.a.b"), "has cached hit")
+  debug_assert(db.ran.length() == from, "0 statements")
+  debug_assert(!store.pending(), "not pending")
+
+  let (view, _, _, _) = opened_stats(db, store, 7)
+  debug_assert(unwrap_s(store.flush_turn()), "flushed open")
+  for i in 0..<view.tree_keys.length() {
+    let k = view.tree_keys[i]
+    debug_assert(opt_str_same(store.get(k, test_now() + 1.to_int64()), view.trees.get(k)), "same tree")
+  }
+  debug_assert(!store.pending(), "no re-touch within 24h")
+  let from2 = db.ran.length()
+  debug_assert(!unwrap_s(store.flush_turn()), "no flush needed")
+  debug_assert(db.ran.length() == from2, "0 statements")
+}
+
+test "md_key matches TypeScript markdown.ts mdKey byte-for-byte (ASCII, CJK, emoji)" {
+  debug_assert(md_key("") == "14.0.ztntfp.9zloz", "empty key")
+  debug_assert(md_key("hello") == "14.5.m3bicr.1nhy8oo", "hello key")
+  debug_assert(md_key("中文 **粗体**\n```js\nx\n```") == "14.21.1g3pc5c.13brcon", "cjk key")
+  debug_assert(md_key("😀 emoji") == "14.8.vhhzna.4gxozi", "emoji surrogate pair key")
+  debug_assert(
+    strs_eq(
+      older_md_keys("14.5.a.b"),
+      [
+        "13.5.a.b", "12.5.a.b", "11.5.a.b", "10.5.a.b", "9.5.a.b", "8.5.a.b", "7.5.a.b",
+        "6.5.a.b", "5.5.a.b", "4.5.a.b", "3.5.a.b", "2.5.a.b", "1.5.a.b",
+      ],
+    ),
+    "older_md_keys",
+  )
+}
+
+fn msg(
+  text : String,
+  files : Int = 0,
+  author_kind : String = "agent",
+  notice : Option[String] = None,
+) -> Entry {
+  Entry::{
+    n: 1,
+    kind: "message",
+    author_kind: author_kind,
+    author: "",
+    text: text,
+    notice: notice,
+    files: files,
+    letter: false,
+  }
+}
+
+test "entry_min_rows and first_shown_window match TypeScript topics.ts" {
+  debug_assert(entry_min_rows(msg("one line")) == 1, "one line")
+  debug_assert(entry_min_rows(msg("a\nb\nc")) == 2, "3 lines")
+  debug_assert(entry_min_rows(msg("a\n\n   \nb")) == 1, "blank lines ignored")
+  debug_assert(entry_min_rows(msg(repeat_str("x", 250))) == 2, "250 chars wrap")
+  debug_assert(entry_min_rows(msg("a", files=1)) == 3, "files +2")
+  debug_assert(entry_min_rows(msg(long_reply(1))) == 6, "max 6")
+  debug_assert(entry_min_rows(msg(long_reply(1), notice=Some("x"))) == 1, "notice 1")
+  debug_assert(entry_min_rows(msg(long_reply(1), author_kind="station")) == 1, "station 1")
+  debug_assert(entry_min_rows(msg(repeat_str("a\n", 5))) == 1 + 4 * 55 / 100, "trailing empty")
+
+  let entries : Array[Entry] = []
+  for i in 0..<40 {
+    entries.push(Entry::{
+      n: i + 1,
+      kind: "message",
+      author_kind: "agent",
+      author: "",
+      text: long_reply(i + 1),
+      notice: None,
+      files: 0,
+      letter: false,
+    })
+  }
+  let (f1, t1) = first_shown_window(entries, 30)
+  debug_assert(f1 == 34 && t1 == 40, "6 long replies fill 30 rows")
+  let (f2, t2) = first_shown_window(entries, 4)
+  debug_assert(f2 == 36 && t2 == 40, "fewer than fewest")
+  let (f3, t3) = first_shown_window([], 30)
+  debug_assert(f3 == 0 && t3 == 0, "empty")
+  entries[39] = Entry::{
+    n: 40,
+    kind: "message",
+    author_kind: "agent",
+    author: "",
+    text: long_reply(40),
+    notice: None,
+    files: 0,
+    letter: true,
+  }
+  let (f4, t4) = first_shown_window(entries, 30)
+  debug_assert(f4 == 33 && t4 == 40, "letter included, not counted")
+}
+
+test "open_account_db migrates v0 -> v1 and protects future schema versions as read-only" {
+  let db = FakeDb::new()
+  let h = unwrap_s(open_account_db(db.shell, "acct"))
+  debug_assert(!h.read_only && h.found_version == 0, "migrated from v0")
+  debug_assert(db.user_version == schema_version(), "user_version bumped to 1")
+  debug_assert(db.has_said, "said table ensured")
+
+  // Future schema version (> VERSION): opens read-only with 0 writes
+  let future_db = FakeDb::new()
+  future_db.user_version = 99
+  let from = future_db.ran.length()
+  let fh = unwrap_s(open_account_db(future_db.shell, "acct"))
+  let (_, writes, _, _, _) = future_db.since(from)
+  debug_assert(fh.read_only && fh.found_version == 99, "read-only for future version")
+  debug_assert(writes == 0, "0 writes on future version database")
+}
+
+test "chat_list indexed window, keyed lookups, local overlays, and account_doc" {
+  let db = FakeDb::new()
+  db.chats.push(FakeChatRow::{
+    station: "s1", archived: 0, id: "c1", ord: 1.0, thread: Some(1), session: Some("sess-1"),
+    pinned_at: None, last_active: 100.to_int64(), mine: 1, hidden: 0, led: 0, watched: 0,
+    json: "{\"id\":\"c1\",\"title\":\"Alpha\"}",
+  })
+  db.chats.push(FakeChatRow::{
+    station: "s1", archived: 0, id: "c2", ord: 2.0, thread: Some(2), session: Some("sess-2"),
+    pinned_at: Some(500.to_int64()), last_active: 50.to_int64(), mine: 1, hidden: 0, led: 0, watched: 1,
+    json: "{\"id\":\"c2\",\"title\":\"Pinned\"}",
+  })
+  db.chats.push(FakeChatRow::{
+    station: "s1", archived: 0, id: "c3", ord: 3.0, thread: Some(3), session: Some("sess-3"),
+    pinned_at: None, last_active: 200.to_int64(), mine: 0, hidden: 0, led: 1, watched: 0,
+    json: "{\"id\":\"c3\",\"title\":\"LedSubchat\"}",
+  })
+  db.chats.push(FakeChatRow::{
+    station: "s2", archived: 0, id: "c4", ord: 1.0, thread: Some(4), session: Some("sess-4"),
+    pinned_at: None, last_active: 300.to_int64(), mine: 1, hidden: 0, led: 0, watched: 0,
+    json: "{\"id\":\"c4\",\"title\":\"Beta\"}",
+  })
+  db.outbox.set("s1 1", "{\"items\":[{\"text\":\"queued\"}]}")
+  db.pending.push(("p-1", "s1", "{\"title\":\"Creating...\"}"))
+  db.draft.set("s1 c1", "{\"text\":\"drafting\"}")
+  db.account_doc.set("me", "{\"email\":\"a@b.com\"}")
+
+  let sqldb = unwrap_s(sql::Sql::open(db.shell, "acct"))
+  let from = db.ran.length()
+  let win = unwrap_s(query_chat_window(sqldb, ChatWindowQuery::{
+    stations: ["s1", "s2"],
+    mine: true,
+    hidden: 0,
+    watching: false,
+    apart_threads: [],
+    apart_sessions: [],
+    limit: 2,
+  }))
+  let (_, writes, _, _, _) = db.since(from)
+  debug_assert(writes == 0, "chat window writes nothing")
+  debug_assert(win.length() == 2, "limit 2")
+  debug_assert(win[0].id == "c2" && win[1].id == "c4", "pinned first then highest last_active; led excluded")
+
+  match unwrap_s(get_chat_by_key(sqldb, "s1", 0, "c1")) {
+    Some(rec) => debug_assert(rec.json.contains("Alpha"), "by key")
+    None => debug_assert(false, "expected c1")
+  }
+  match unwrap_s(get_chat_by_thread(sqldb, "s1", 2)) {
+    Some(rec) => debug_assert(rec.id == "c2", "by thread")
+    None => debug_assert(false, "expected c2")
+  }
+  match unwrap_s(get_chat_by_session(sqldb, "s2", "sess-4")) {
+    Some(rec) => debug_assert(rec.id == "c4", "by session")
+    None => debug_assert(false, "expected c4")
+  }
+  match unwrap_s(get_outbox(sqldb, "s1", 1)) {
+    Some(o) => debug_assert(o.json.contains("queued"), "outbox overlay")
+    None => debug_assert(false, "expected outbox")
+  }
+  let pend = unwrap_s(list_pending_for_station(sqldb, "s1"))
+  debug_assert(pend.length() == 1 && pend[0].key == "p-1", "pending overlay")
+  match unwrap_s(get_draft(sqldb, "s1", "c1")) {
+    Some(d) => debug_assert(d.json.contains("drafting"), "draft overlay")
+    None => debug_assert(false, "expected draft")
+  }
+  debug_assert(opt_str_eq(unwrap_s(get_account_doc(sqldb, "me")), "{\"email\":\"a@b.com\"}"), "account_doc")
+}

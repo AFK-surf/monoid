@@ -1,0 +1,1572 @@
+// Device-side mesh: endpoint lifecycle, scoped peer links, pings, renewal, and close.
+
+import "effect"
+import "base_codec"
+import "wire"
+import "shell"
+
+pub let device_key : String = "device"
+pub let renew_ms : Int = 300000
+pub let connect_timeout_ms : Int = 10000
+pub let onto_max_ms : Int = 30000
+let onto_recheck_ms : Int = 250
+pub let tick_ms : Int = 5000
+pub let ping_timeout_ms : Int = 3000
+let dead_pings : Int = 3
+pub let probe_ms : Int = 5000
+pub let race_grace_ms : Int = 1000
+pub let retire_ms : Int = 10000
+
+pub struct Store {
+  pub get_k : (String, (effect::Exit[Option[Bytes]]) -> Unit) -> Unit
+  pub set_k : (String, Bytes, (effect::Exit[Unit]) -> Unit) -> Unit
+}
+
+pub fn shell_store(sh : shell::Shell) -> Store {
+  Store::{
+    get_k: fn(key : String, k : (effect::Exit[Option[Bytes]]) -> Unit) -> Unit {
+      sh.call_k("storage.get", base_codec::json_obj([("key", base_codec::json_str(key))]), fn(ex : effect::Exit[shell::Answer]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(ans) => k(effect::Exit::Succeeded(ans.bytes))
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      })
+    },
+    set_k: fn(key : String, value : Bytes, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      sh.call_k(
+        "storage.set",
+        base_codec::json_obj([("key", base_codec::json_str(key))]),
+        fn(ex : effect::Exit[shell::Answer]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          }
+        },
+        bytes=Some(value),
+      )
+    },
+  }
+}
+
+pub struct Options {
+  pub alpn : String
+  pub relays : Array[String]
+  pub relay_only : Bool
+  pub says : Array[(String, base_codec::Json)]
+  pub refusal : Option[(base_codec::Json, String) -> Option[effect::EffectError]]
+}
+
+pub fn Options::new(
+  alpn : String,
+  relays : Array[String],
+  relay_only : Bool = false,
+  says : Array[(String, base_codec::Json)] = [],
+  refusal : Option[(base_codec::Json, String) -> Option[effect::EffectError]] = None,
+) -> Options {
+  Options::{
+    alpn: alpn,
+    relays: relays,
+    relay_only: relay_only,
+    says: says,
+    refusal: refusal,
+  }
+}
+
+enum Opened {
+  Open(Link)
+  Failed(effect::EffectError, Bool)
+}
+
+struct Place {
+  link_scope : String
+  peer : String
+}
+
+fn Place::key(self : Place) -> String {
+  if self.link_scope == "" {
+    self.peer
+  } else {
+    self.link_scope + "/" + self.peer
+  }
+}
+
+fn Place::map_key(self : Place) -> String {
+  let sb = StringBuilder::new()
+  sb.write_string(self.link_scope)
+  sb.write_byte(0 as Byte)
+  sb.write_string(self.peer)
+  sb.to_string()
+}
+
+struct Opening {
+  uid : Int
+  place : Place
+  done : effect::Deferred[Link]
+  mut result : Option[Opened]
+  credentials : (String, Bool, (effect::Exit[Presented]) -> Unit) -> Unit
+  fresh : Bool
+  mut first : Option[effect::Fiber[Unit]]
+  mut hedge : Option[effect::Fiber[Unit]]
+  mut dials : Int
+  mut failure : Option[effect::EffectError]
+  mut span : Option[Span]
+}
+
+fn Opening::new(
+  place : Place,
+  credentials : (String, Bool, (effect::Exit[Presented]) -> Unit) -> Unit,
+  fresh : Bool,
+) -> Opening {
+  Opening::{
+    uid: next_uid(),
+    place: place,
+    done: effect::Deferred::new(),
+    result: None,
+    credentials: credentials,
+    fresh: fresh,
+    first: None,
+    hedge: None,
+    dials: 0,
+    failure: None,
+    span: None,
+  }
+}
+
+struct HeldWait {
+  uid : Int
+  place_key : Option[String]
+  d : effect::Deferred[Unit]
+}
+
+pub struct Mesh {
+  sh : shell::Shell
+  options : Options
+  mut endpoint : base_codec::Json
+  mut id : String
+  mut secret : Bytes
+  mut relays : Array[String]
+  mut relays_ver : Int
+  mut entries : Array[RelayEntry]
+  mut entries_ver : Int
+  binding : Binding
+  mut retuned : Bool
+  tuning : effect::Semaphore
+  taking : effect::Semaphore
+  mut coming : Option[ComingWait]
+  mut incomings : Array[Incoming]
+  mut outgoings : Array[Outgoing]
+  mut stuck : Bool
+  mut rebound_at : Option[Int64]
+  mut rebinding : Bool
+  mut held : Array[HeldWait]
+  fibers : effect::EffectScope
+  links : Map[String, Opening]
+  mut live : Array[Link]
+  mut change : effect::Deferred[Unit]
+  racing : Map[String, Race]
+  health : Map[String, Bool]
+  mut health_waits : Array[HealthWait]
+  store : Store
+  addresses : String
+  said : Map[String, Said]
+  keeping : effect::Semaphore
+  known : Array[Known]
+  unanswered_at : Map[String, String]
+  ways_of : Map[String, Ways]
+  pinned : Map[String, Pinned]
+  mut dialing : Int
+  mut retiring : Array[Link]
+  mut dialling_main : Int
+  pinned_prefix : Bytes
+  clock : WallClock
+  speeds : Map[String, Map[String, Speed]]
+  speeds_key : String
+  came_by : Map[String, Int]
+  days : Map[String, Day]
+  days_key : String
+  mut days_changed : Bool
+  mut tallying : Bool
+  trace : Trace
+  recorder : Recorder
+  speed_said : Map[String, Int64]
+  mut dials_n : Int
+  mut dht_kept : Bool
+  mut dht_at : Int64
+  rebound_for : Map[String, Bool]
+  mut closed : Bool
+}
+
+pub fn Mesh::make_k(
+  sh : shell::Shell,
+  store : Store,
+  options : Options,
+  k : (effect::Exit[Mesh]) -> Unit,
+  binding : Binding = Binding::none(),
+  addresses : String = addresses_key,
+  pinned_prefix : Option[Bytes] = None,
+  clock : Option[WallClock] = None,
+  speeds_key_v : String = speed_key,
+  days_key_v : String = net_day_key,
+  trace : Trace = Trace::none(),
+  recorder : Recorder = Recorder::none(),
+) -> Unit {
+  for i in 0..<options.says.length() {
+    let (field, _) = options.says[i]
+    if field == "credential" || field == "traceparent" {
+      k(
+        effect::Exit::Failed(
+          MeshError::new(
+            "invalid_params",
+            "Options.says names " + field + ": a control line's own, which the mesh writes",
+            "",
+          ).to_effect_error(),
+        ),
+      )
+      return
+    }
+  }
+  let get_fn = store.get_k
+  let set_fn = store.set_k
+  let finish_make = fn(secret : Bytes) -> Unit {
+    get_fn(addresses, fn(aex : effect::Exit[Option[Bytes]]) -> Unit {
+      match aex {
+        effect::Exit::Interrupted => {
+          k(effect::Exit::Interrupted)
+          return
+        }
+        _ => ()
+      }
+      let said_bytes_opt = match aex {
+        effect::Exit::Succeeded(v) => v
+        _ => None
+      }
+      let said_map = said_of(said_bytes_opt)
+      get_fn(speeds_key_v, fn(spex : effect::Exit[Option[Bytes]]) -> Unit {
+        match spex {
+          effect::Exit::Interrupted => {
+            k(effect::Exit::Interrupted)
+            return
+          }
+          _ => ()
+        }
+        let sp_opt = match spex {
+          effect::Exit::Succeeded(v) => v
+          _ => None
+        }
+        let speeds_map = speeds_of(sp_opt)
+        get_fn(days_key_v, fn(dex : effect::Exit[Option[Bytes]]) -> Unit {
+          match dex {
+            effect::Exit::Interrupted => {
+              k(effect::Exit::Interrupted)
+              return
+            }
+            _ => ()
+          }
+          let d_opt = match dex {
+            effect::Exit::Succeeded(v) => v
+            _ => None
+          }
+          let days_map = days_of(d_opt)
+          let relays = str_array_copy(options.relays)
+          let entries = relay_entries_copy(binding.entries)
+          bind_k(sh, relays, options.relay_only, binding, entries, secret, fn(bex : effect::Exit[base_codec::Json]) -> Unit {
+            match bex {
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(endpoint) => {
+                let id = match sh.ask("iroh.endpointId", base_codec::json_obj([("id", endpoint)])) {
+                  shell::AskResult::Ok(base_codec::Json::Str(s)) => s
+                  shell::AskResult::Err(se) => {
+                    k(effect::Exit::Failed(under_str("bind_failed", se.message)))
+                    return
+                  }
+                  _ => {
+                    k(effect::Exit::Failed(failed("bind_failed")))
+                    return
+                  }
+                }
+                let pp = match pinned_prefix {
+                  Some(p) => p
+                  None => default_relay_key_prefix()
+                }
+                let clk = match clock {
+                  Some(c) => c
+                  None => WallClock::of(sh.rt)
+                }
+                k(
+                  effect::Exit::Succeeded(
+                    Mesh::{
+                      sh: sh,
+                      options: options,
+                      endpoint: endpoint,
+                      id: id,
+                      secret: secret,
+                      relays: relays,
+                      relays_ver: 0,
+                      entries: entries,
+                      entries_ver: 0,
+                      binding: binding,
+                      retuned: false,
+                      tuning: effect::Semaphore::new(1),
+                      taking: effect::Semaphore::new(1),
+                      coming: None,
+                      incomings: [],
+                      outgoings: [],
+                      stuck: false,
+                      rebound_at: None,
+                      rebinding: false,
+                      held: [],
+                      fibers: sh.rt.new_scope(),
+                      links: Map::new(),
+                      live: [],
+                      change: effect::Deferred::new(),
+                      racing: Map::new(),
+                      health: Map::new(),
+                      health_waits: [],
+                      store: store,
+                      addresses: addresses,
+                      said: said_map,
+                      keeping: effect::Semaphore::new(1),
+                      known: [],
+                      unanswered_at: Map::new(),
+                      ways_of: Map::new(),
+                      pinned: Map::new(),
+                      dialing: 0,
+                      retiring: [],
+                      dialling_main: 0,
+                      pinned_prefix: pp,
+                      clock: clk,
+                      speeds: speeds_map,
+                      speeds_key: speeds_key_v,
+                      came_by: Map::new(),
+                      days: days_map,
+                      days_key: days_key_v,
+                      days_changed: false,
+                      tallying: false,
+                      trace: trace,
+                      recorder: recorder,
+                      speed_said: Map::new(),
+                      dials_n: 0,
+                      dht_kept: false,
+                      dht_at: 0.to_int64(),
+                      rebound_for: Map::new(),
+                      closed: false,
+                    },
+                  ),
+                )
+              }
+            }
+          })
+        })
+      })
+    })
+  }
+  get_fn(device_key, fn(kex : effect::Exit[Option[Bytes]]) -> Unit {
+    match kex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(MeshError::new("host", text_of(e), "").to_effect_error()))
+      effect::Exit::Succeeded(kept) =>
+      match kept {
+        Some(secret) =>
+        if secret.length() == 32 {
+          finish_make(secret)
+        } else {
+          let drawn = sh.random(32)
+          set_fn(device_key, drawn, fn(sex : effect::Exit[Unit]) -> Unit {
+            match sex {
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(MeshError::new("host", text_of(e), "").to_effect_error()))
+              effect::Exit::Succeeded(_) => finish_make(drawn)
+            }
+          })
+        }
+        None => {
+          let drawn = sh.random(32)
+          set_fn(device_key, drawn, fn(sex : effect::Exit[Unit]) -> Unit {
+            match sex {
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(MeshError::new("host", text_of(e), "").to_effect_error()))
+              effect::Exit::Succeeded(_) => finish_make(drawn)
+            }
+          })
+        }
+      }
+    }
+  })
+}
+
+pub fn Mesh::device_id(self : Mesh) -> String {
+  self.id
+}
+
+fn is_id(id : String) -> Bool {
+  if id.length() != 64 {
+    return false
+  }
+  for i in 0..<64 {
+    let c = id.code_unit_at(i)
+    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) {
+      return false
+    }
+  }
+  true
+}
+
+pub fn Mesh::link_k(
+  self : Mesh,
+  peer : String,
+  credentials : (String, Bool, (effect::Exit[Presented]) -> Unit) -> Unit,
+  k : (effect::Exit[Link]) -> Unit,
+  link_scope : String = "",
+  theirs : Option[Array[String]] = None,
+  off : Option[Array[String]] = None,
+  asker : String = "",
+  traceparent : String = "",
+) -> Unit {
+  let place = Place::{ link_scope: link_scope, peer: peer }
+  if theirs.is_some() || off.is_some() {
+    self.set_ways(peer, link_scope=link_scope, theirs=theirs, off=off)
+  }
+  let mut fresh = false
+  match self.links.get(place.map_key()) {
+    Some(existing) =>
+    match existing.result {
+      None => {
+        let asked = self.sh.rt.now()
+        existing.done.wait_k(fn(jex : effect::Exit[Link]) -> Unit {
+          match jex {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(link) => k(effect::Exit::Succeeded(link))
+            effect::Exit::Failed(e) => {
+              let unanswered = match existing.result {
+                Some(Opened::Failed(_, true)) => true
+                _ => false
+              }
+              if !unanswered || self.sh.rt.now() - asked >= connect_timeout_ms.to_int64() {
+                k(effect::Exit::Failed(e))
+              } else {
+                self.link_k(peer, credentials, k, link_scope=link_scope, asker=asker, traceparent=traceparent)
+              }
+            }
+          }
+        })
+        return
+      }
+      Some(Opened::Open(link)) => {
+        if link.usable() {
+          k(effect::Exit::Succeeded(link))
+          return
+        }
+        fresh = link.refused.is_some() && !link.control.named
+        if !fresh {
+          let live = self.live_ways(place)
+          let up : Array[Way] = []
+          for i in 0..<live.length() {
+            if live[i].link.uid != link.uid && live[i].link.missed == 0 {
+              up.push(live[i])
+            }
+          }
+          match self.best_way(place, self.takeable(place, up)) {
+            Some(w) => {
+              self.promote(place, w, "lost")
+              k(effect::Exit::Succeeded(w.link))
+              return
+            }
+            None => ()
+          }
+        }
+      }
+      Some(Opened::Failed(e, _)) => fresh = code_of(e) == "credential_refused"
+    }
+    None => ()
+  }
+  if self.closed {
+    k(effect::Exit::Failed(failed("closed")))
+    return
+  }
+  let rebound = !self.rebinding && (self.stuck || self.retuned) && self.idle() && self.may_rebind()
+  if rebound {
+    self.rebind()
+    self.rebound_for.set(place.map_key(), true)
+  } else if self.stuck {
+    self.record("conn stuck", fn() -> String {
+      let mut open = 0
+      for i in 0..<self.live.length() {
+        if self.live[i].pin.is_none() && self.live[i].ended().is_none() {
+          open += 1
+        }
+      }
+      peer_tag(place) + " not rebound: " + open.to_string() + " link(s) open"
+    })
+  }
+  if self.rebinding || ((self.stuck || self.retuned) && self.may_rebind() && self.settling()) {
+    self.hold_k(Some(place), fn(hex : effect::Exit[Unit]) -> Unit {
+      match hex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) =>
+        self.link_k(peer, credentials, k, link_scope=link_scope, asker=asker, traceparent=traceparent)
+      }
+    })
+    return
+  }
+  self.dial(place, credentials, fresh, asker=asker, traceparent=traceparent).done.wait_k(k)
+}
+
+fn Mesh::hold_k(self : Mesh, place : Option[Place], k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  let uid = next_uid()
+  let pk = match place {
+    Some(p) => Some(p.map_key())
+    None => None
+  }
+  let turn : effect::Deferred[Unit] = effect::Deferred::new()
+  self.held.push(HeldWait::{ uid: uid, place_key: pk, d: turn })
+  turn.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
+    let kept : Array[HeldWait] = []
+    for i in 0..<self.held.length() {
+      if self.held[i].uid != uid {
+        kept.push(self.held[i])
+      }
+    }
+    self.held = kept
+    k(ex)
+  })
+}
+
+fn Mesh::eased(self : Mesh) -> Unit {
+  if self.held.length() == 0 {
+    return
+  }
+  let held = self.held
+  self.held = []
+  for i in 0..<held.length() {
+    let _ = held[i].d.succeed(())
+  }
+}
+
+fn Mesh::dial(
+  self : Mesh,
+  place : Place,
+  credentials : (String, Bool, (effect::Exit[Presented]) -> Unit) -> Unit,
+  fresh : Bool,
+  asker : String = "",
+  traceparent : String = "",
+) -> Opening {
+  let pk = place.map_key()
+  let rebound = self.rebound_for.contains(pk)
+  self.rebound_for.remove(pk)
+  self.end_race(place)
+  match self.links.get(pk) {
+    Some(op) =>
+    match op.result {
+      Some(Opened::Open(before)) => self.count(place.peer, before)
+      _ => ()
+    }
+    None => ()
+  }
+  let opening = Opening::new(place, credentials, fresh)
+  let parent_tp : Option[String] = if traceparent != "" { Some(traceparent) } else { None }
+  let sp = self.span("mesh.connect", place.peer, parent=parent_tp)
+  let own = sp.own_fn
+  if asker != "" {
+    own("asker", SpanValue::Str(asker))
+  }
+  if rebound {
+    own("rebound", SpanValue::Flag(true))
+  }
+  own("relay", SpanValue::Str(self.relay_status(self.endpoint)))
+  opening.span = Some(sp)
+  self.links.set(pk, opening)
+  self.changed()
+  opening.dials = 1
+  let tp = match sp.traceparent {
+    Some(s) => s
+    None => ""
+  }
+  opening.first = Some(
+    self.fibers.fork_named("mesh open", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.dial_all_k(
+        place,
+        credentials,
+        fresh,
+        fn(ex : effect::Exit[Link]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+            other => {
+              self.dialled(place, opening, false, other)
+              fk(effect::Exit::Succeeded(()))
+            }
+          }
+        },
+        traceparent=tp,
+      )
+    }),
+  )
+  opening
+}
+
+fn Mesh::dialled(self : Mesh, place : Place, opening : Opening, beside : Bool, made : effect::Exit[Link]) -> Unit {
+  opening.dials -= 1
+  match made {
+    effect::Exit::Succeeded(link) => {
+      if opening.result.is_some() {
+        link.close()
+        return
+      }
+      opening.result = Some(Opened::Open(link))
+      self.connect_said(place, opening, made, beside)
+      if link.pin.is_none() {
+        self.stuck = false
+        self.note_dial(place, false)
+      }
+      let other = if beside { opening.first } else { opening.hedge }
+      match other {
+        Some(f) => f.interrupt()
+        None => ()
+      }
+      self.adopt(place, opening, link)
+      let _ = opening.done.succeed(link)
+      self.eased()
+    }
+    effect::Exit::Failed(e) => {
+      if opening.result.is_some() {
+        return
+      }
+      if !beside {
+        opening.failure = Some(e)
+      }
+      if opening.dials != 0 {
+        return
+      }
+      let eff = match opening.failure {
+        Some(f) => f
+        None => e
+      }
+      self.connect_said(place, opening, effect::Exit::Failed(eff), beside)
+      match opening_timeout_of(eff) {
+        Some(connected) => {
+          if !connected {
+            self.stuck = true
+          }
+          self.note_dial(place, true)
+          let err = failed("no_answer")
+          opening.result = Some(Opened::Failed(err, true))
+          let _ = opening.done.fail(err)
+        }
+        None => {
+          opening.result = Some(Opened::Failed(eff, false))
+          let _ = opening.done.fail(eff)
+        }
+      }
+      self.eased()
+    }
+    effect::Exit::Interrupted => ()
+  }
+}
+
+fn Mesh::changed(self : Mesh) -> Unit {
+  let was = self.change
+  self.change = effect::Deferred::new()
+  let _ = was.succeed(())
+}
+
+pub fn Mesh::current(self : Mesh, peer : String, link_scope : String = "") -> Option[Link] {
+  match self.links.get(Place::{ link_scope: link_scope, peer: peer }.map_key()) {
+    Some(op) =>
+    match op.result {
+      Some(Opened::Open(link)) => Some(link)
+      _ => None
+    }
+    None => None
+  }
+}
+
+fn Mesh::is_current(self : Mesh, link : Link) -> Bool {
+  match self.current(link.peer, link_scope=link.link_scope) {
+    Some(now) => now.uid == link.uid
+    None => false
+  }
+}
+
+pub fn Mesh::replaced_k(self : Mesh, link : Link, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  if !self.is_current(link) {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  self.change.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(_) => self.replaced_k(link, k)
+      other => k(other)
+    }
+  })
+}
+
+pub fn Mesh::drop_link(self : Mesh, peer : String, link_scope : String = "", reason : String = "closed") -> Unit {
+  let place = Place::{ link_scope: link_scope, peer: peer }
+  let pk = place.map_key()
+  let kept : Array[HeldWait] = []
+  for i in 0..<self.held.length() {
+    let h = self.held[i]
+    let matches = match h.place_key {
+      Some(k) => k == pk
+      None => false
+    }
+    if matches {
+      let _ = h.d.fail(failed("closed"))
+    } else {
+      kept.push(h)
+    }
+  }
+  self.held = kept
+  self.let_go(place, reason)
+}
+
+fn Mesh::let_go(self : Mesh, place : Place, reason : String) -> Unit {
+  let pk = place.map_key()
+  let opening = match self.links.get(pk) {
+    Some(op) => op
+    None => return
+  }
+  let mut open_uid = -1
+  match opening.result {
+    None => {
+      match opening.span {
+        Some(sp) => {
+          opening.span = None
+          let end = sp.end_fn
+          end()
+        }
+        None => ()
+      }
+      let e = failed("closed")
+      opening.result = Some(Opened::Failed(e, false))
+      let _ = opening.done.fail(e)
+      match opening.first {
+        Some(f) => f.interrupt()
+        None => ()
+      }
+      match opening.hedge {
+        Some(f) => f.interrupt()
+        None => ()
+      }
+    }
+    Some(Opened::Open(link)) => {
+      open_uid = link.uid
+      self.count(place.peer, link)
+      link.close(reason=reason)
+    }
+    Some(Opened::Failed(_, _)) => ()
+  }
+  self.links.remove(pk)
+  match self.ways_of.get(pk) {
+    Some(ws) => {
+      for i in 0..<ws.all.length() {
+        if ws.all[i].link.uid != open_uid {
+          ws.all[i].link.close(reason=reason)
+        }
+      }
+      ws.all.clear()
+    }
+    None => ()
+  }
+  self.release_pinned()
+  self.end_race(place)
+  self.changed()
+  self.tell_health(place)
+  self.eased()
+}
+
+fn Mesh::on_a_relay(self : Mesh, endpoint : base_codec::Json) -> Bool {
+  let relays = match self.sh.ask("iroh.relayStatus", base_codec::json_obj([("id", endpoint)])) {
+    shell::AskResult::Ok(base_codec::Json::Arr(a)) => a
+    _ => return true
+  }
+  if relays.length() == 0 {
+    return true
+  }
+  for i in 0..<relays.length() {
+    match json_get_bool(relays[i], "connected") {
+      Some(true) => return true
+      _ => ()
+    }
+  }
+  false
+}
+
+fn Mesh::open_k(
+  self : Mesh,
+  place : Place,
+  credentials : (String, Bool, (effect::Exit[Presented]) -> Unit) -> Unit,
+  fresh : Bool,
+  k : (effect::Exit[Link]) -> Unit,
+  on : Option[(String, base_codec::Json)] = None,
+  traceparent : String = "",
+) -> Unit {
+  let peer = place.peer
+  self.dials_n += 1
+  let n = self.dials_n
+  let began = self.sh.rt.now()
+  let since = fn() -> Int { (self.sh.rt.now() - began).to_int() }
+  let stages = Stages::new()
+  self.record_dht(0)
+  if !is_id(peer) {
+    k(
+      effect::Exit::Failed(
+        MeshError::new("invalid_params", say("bad_station_id", [("id", peer)]), "").to_effect_error(),
+      ),
+    )
+    return
+  }
+  let sh = self.sh
+  let st = DialState::{ call: None, conn: None, abandoned: false }
+  let dialled : effect::Deferred[base_codec::Json] = effect::Deferred::new()
+  let mut pin : Option[String] = None
+  let mut endpoint : base_codec::Json = self.endpoint
+  let mut relays : Array[String] = []
+  let mut ips : Array[String] = []
+  match on {
+    None => {
+      pin = None
+      endpoint = self.endpoint
+      relays = self.relays_for(place)
+      ips = self.ips(place)
+    }
+    Some((kind, ep)) => {
+      pin = Some(kind)
+      endpoint = ep
+      if kind == lan_name || kind == tailnet_name {
+        relays = []
+        ips = self.said_at(place, kind)
+      } else {
+        relays = [kind]
+        ips = []
+      }
+    }
+  }
+  let addr_fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(peer)),
+    ("relays", json_strings(relays)),
+  ]
+  if ips.length() > 0 {
+    addr_fields.push(("ips", json_strings(ips)))
+  }
+  let addr = base_codec::json_obj(addr_fields)
+  let via = match pin {
+    None => if ips.length() > 0 { "main+addresses" } else { "main" }
+    Some(p) => if p == lan_name || p == tailnet_name { p } else { "relay:" + relay_host(p) }
+  }
+  let record_dial = fn(outcome : String) -> Unit {
+    self.record_dht(0)
+    self.record("conn dial", fn() -> String {
+      "#" +
+      n.to_string() +
+      " " +
+      peer_tag(place) +
+      " via=" +
+      via +
+      " onto=" +
+      ms_of(stages.onto) +
+      " credential=" +
+      ms_of(stages.credential) +
+      " dialled=" +
+      ms_of(stages.dialled) +
+      " openBi=" +
+      ms_of(stages.open_bi) +
+      " sent=" +
+      ms_of(stages.sent) +
+      " total=" +
+      since().to_string() +
+      "ms -> " +
+      outcome
+    })
+  }
+  let _ = self.fibers.fork_named("mesh dial", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    if st.abandoned {
+      fk(effect::Exit::Succeeded(()))
+      return
+    }
+    sh.call_k(
+      "iroh.connect",
+      base_codec::json_obj([("id", endpoint), ("addr", addr)]),
+      fn(ex : effect::Exit[shell::Answer]) -> Unit {
+        st.call = None
+        stages.dialled = since()
+        match ex {
+          effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => {
+            let _ = dialled.fail(unreached(e))
+            fk(effect::Exit::Succeeded(()))
+          }
+          effect::Exit::Succeeded(ans) => {
+            match base_codec::json_get(ans.json, "id") {
+              Some(conn) =>
+              if st.abandoned {
+                sh.tell(
+                  "conn.close",
+                  base_codec::json_obj([
+                    ("id", conn),
+                    ("code", base_codec::json_int(0)),
+                    ("reason", base_codec::json_str("opening ended")),
+                    ("forget", base_codec::json_bool(true)),
+                  ]),
+                )
+              } else {
+                st.conn = Some(conn)
+                let _ = dialled.succeed(conn)
+              }
+              None => {
+                let _ = dialled.fail(failed("unreached"))
+              }
+            }
+            fk(effect::Exit::Succeeded(()))
+          }
+        }
+      },
+      bytes=Some(self.options.alpn.to_bytes()),
+      called=fn(id : Int64) -> Unit { st.call = Some(id) },
+    )
+  })
+  effect::race_first_k(
+    fn(rk : (effect::Exit[Link]) -> Unit) -> Unit {
+      credentials(self.id, fresh, fn(cex : effect::Exit[Presented]) -> Unit {
+        match cex {
+          effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(presented) => {
+            stages.credential = since()
+            dialled.wait_k(fn(dex : effect::Exit[base_codec::Json]) -> Unit {
+              match dex {
+                effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+                effect::Exit::Succeeded(conn) =>
+                sh.call_k("conn.openBi", base_codec::json_obj([("id", conn)]), fn(bex : effect::Exit[shell::Answer]) -> Unit {
+                  match bex {
+                    effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+                    effect::Exit::Failed(e) => rk(effect::Exit::Failed(unreached(e)))
+                    effect::Exit::Succeeded(first) => {
+                      stages.open_bi = since()
+                      match base_codec::json_get(first.json, "id") {
+                        None => rk(effect::Exit::Failed(failed("unreached")))
+                        Some(stream_id) => {
+                          let stream = Stream::{ sh: sh, id: stream_id }
+                          let control = Control::{
+                            stream: stream,
+                            lines: Lines::{ stream: stream, carry: wire::Carry::new(), most: max_head },
+                            says: self.options.says,
+                            refusal: self.options.refusal,
+                            named: false,
+                            answers: 0,
+                            waiting: [],
+                          }
+                          control.send_k(
+                            presented.credential,
+                            fn(sex : effect::Exit[Unit]) -> Unit {
+                              match sex {
+                                effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+                                effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+                                effect::Exit::Succeeded(_) => {
+                                  stages.sent = since()
+                                  let link = Link::{
+                                    uid: next_uid(),
+                                    peer: peer,
+                                    link_scope: place.link_scope,
+                                    sh: sh,
+                                    conn: conn,
+                                    control: control,
+                                    lock: effect::Semaphore::new(1),
+                                    credentials: credentials,
+                                    credential: presented.credential,
+                                    renewal_failed: false,
+                                    refused: None,
+                                    answer: None,
+                                    answered: effect::Deferred::new(),
+                                    gone: effect::Deferred::new(),
+                                    came: 0,
+                                    missed: 0,
+                                    pinging: false,
+                                    pinged_at: 0.to_int64(),
+                                    rx: 0,
+                                    samples: 0,
+                                    srtt: 0.0,
+                                    dev: 0.0,
+                                    answered_ms: None,
+                                    warm: false,
+                                    counted_rx: 0.to_int64(),
+                                    counted_tx: 0.to_int64(),
+                                    opened_onto: if stages.onto < 0 { 0 } else { stages.onto },
+                                    opened_dialled: if stages.dialled < 0 { 0 } else { stages.dialled },
+                                    opened_cred: stages.credential,
+                                    rec_rx: 0.to_int64(),
+                                    rec_tx: 0.to_int64(),
+                                    rec_paths: Map::new(),
+                                    lan_addrs: [],
+                                    tailnet_addrs: [],
+                                    pin: pin,
+                                    fibers: self.fibers,
+                                    accepting: Accepting::new(),
+                                  }
+                                  rk(effect::Exit::Succeeded(link))
+                                }
+                              }
+                            },
+                            also=presented.also,
+                            traceparent=traceparent,
+                          )
+                        }
+                      }
+                    }
+                  }
+                })
+              }
+            })
+          }
+        }
+      })
+    },
+    fn(rk : (effect::Exit[Link]) -> Unit) -> Unit {
+      let after_onto = fn(oex : effect::Exit[Unit]) -> Unit {
+        match oex {
+          effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(_) => {
+            stages.onto = since()
+            effect::sleep_k(connect_timeout_ms, fn(sex : effect::Exit[Unit]) -> Unit {
+              match sex {
+                effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+                effect::Exit::Succeeded(_) => rk(effect::Exit::Failed(opening_timeout_err(st.conn.is_some())))
+              }
+            })
+          }
+        }
+      }
+      if ips.length() == 0 {
+        self.wait_onto_relay_k(endpoint, 0, after_onto)
+      } else {
+        after_onto(effect::Exit::Succeeded(()))
+      }
+    },
+    fn(rex : effect::Exit[Link]) -> Unit {
+      match rex {
+        effect::Exit::Succeeded(link) => {
+          record_dial("ok")
+          self.live.push(link)
+          let _ = self.fibers.fork_named("mesh closed", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            sh.call_k("conn.closed", base_codec::json_obj([("id", link.conn)]), fn(ex : effect::Exit[shell::Answer]) -> Unit {
+              match ex {
+                effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+                other => {
+                  let closed = match other {
+                    effect::Exit::Succeeded(ans) =>
+                    match closed_of(ans.json) {
+                      Some(c) => c
+                      None => Closed::{ kind: "other", reason: "" }
+                    }
+                    effect::Exit::Failed(e) => Closed::{ kind: "other", reason: text_of(e) }
+                    effect::Exit::Interrupted => Closed::{ kind: "other", reason: "" }
+                  }
+                  let _ = link.gone.succeed(closed)
+                  sh.tell(
+                    "conn.close",
+                    base_codec::json_obj([
+                      ("id", link.conn),
+                      ("code", base_codec::json_int(0)),
+                      ("reason", base_codec::json_str("closed")),
+                      ("forget", base_codec::json_bool(true)),
+                    ]),
+                  )
+                  self.said(link)
+                  fk(effect::Exit::Succeeded(()))
+                }
+              }
+            })
+          })
+          let _ = self.fibers.fork_named("mesh answer", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            link.lock.with_permit_k(
+              fn(pk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit { link.control.answer_k(pk) },
+              fn(aex : effect::Exit[base_codec::Json]) -> Unit {
+                match aex {
+                  effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+                  effect::Exit::Succeeded(ans) => {
+                    link.answer = Some(ans)
+                    link.lan_addrs = addrs_of(ans, "lan")
+                    link.tailnet_addrs = addrs_of(ans, "tailnet")
+                    self.heard(place, link)
+                    let _ = link.answered.succeed(())
+                    self.said(link)
+                    fk(effect::Exit::Succeeded(()))
+                  }
+                  effect::Exit::Failed(e) => {
+                    link.renewal_failed = true
+                    link.refused = Some(e)
+                    sh.tell(
+                      "conn.close",
+                      base_codec::json_obj([
+                        ("id", link.conn),
+                        ("code", base_codec::json_int(0)),
+                        ("reason", base_codec::json_str("credential refused")),
+                      ]),
+                    )
+                    let _ = link.answered.succeed(())
+                    self.said(link)
+                    fk(effect::Exit::Succeeded(()))
+                  }
+                }
+              },
+            )
+          })
+          let _ = self.fibers.fork_named("mesh renew", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            self.renew_k(link, fk)
+          })
+          k(effect::Exit::Succeeded(link))
+        }
+        other => {
+          st.abandoned = true
+          match st.call {
+            Some(id) => sh.give_up(id)
+            None => ()
+          }
+          match st.conn {
+            Some(conn) =>
+            sh.tell(
+              "conn.close",
+              base_codec::json_obj([
+                ("id", conn),
+                ("code", base_codec::json_int(0)),
+                ("reason", base_codec::json_str("opening ended")),
+                ("forget", base_codec::json_bool(true)),
+              ]),
+            )
+            None => ()
+          }
+          match other {
+            effect::Exit::Failed(e) => {
+              record_dial(outcome_of(e))
+              k(effect::Exit::Failed(e))
+            }
+            _ => {
+              record_dial("interrupted")
+              k(effect::Exit::Interrupted)
+            }
+          }
+        }
+      }
+    },
+  )
+}
+
+fn Mesh::said(self : Mesh, link : Link) -> Unit {
+  if link.answered.is_done() && link.gone.is_done() {
+    let kept : Array[Link] = []
+    for i in 0..<self.live.length() {
+      if self.live[i].uid != link.uid {
+        kept.push(self.live[i])
+      }
+    }
+    self.live = kept
+    self.eased()
+  }
+}
+
+fn Mesh::renew_k(self : Mesh, link : Link, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  effect::race_first_k(
+    fn(rk : (effect::Exit[Bool]) -> Unit) -> Unit {
+      effect::sleep_later_k(renew_ms, true, fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => rk(effect::Exit::Succeeded(false))
+          effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+        }
+      })
+    },
+    fn(rk : (effect::Exit[Bool]) -> Unit) -> Unit {
+      link.closed_k(fn(ex : effect::Exit[Closed]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+          _ => rk(effect::Exit::Succeeded(true))
+        }
+      })
+    },
+    fn(rex : effect::Exit[Bool]) -> Unit {
+      match rex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(true) => k(effect::Exit::Succeeded(()))
+        effect::Exit::Succeeded(false) => {
+          let cf = link.credentials
+          cf(self.id, false, fn(cex : effect::Exit[Presented]) -> Unit {
+            match cex {
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Failed(_) => {
+                link.renewal_failed = true
+                k(effect::Exit::Succeeded(()))
+              }
+              effect::Exit::Succeeded(presented) =>
+              link.exchange_k(presented.credential, fn(eex : effect::Exit[base_codec::Json]) -> Unit {
+                match eex {
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Failed(_) => {
+                    link.renewal_failed = true
+                    k(effect::Exit::Succeeded(()))
+                  }
+                  effect::Exit::Succeeded(_) => {
+                    link.credential = presented.credential
+                    self.renew_k(link, k)
+                  }
+                }
+              })
+            }
+          })
+        }
+      }
+    },
+  )
+}
+
+fn Mesh::adopt(self : Mesh, place : Place, opening : Opening, link : Link) -> Unit {
+  let still = match self.links.get(place.map_key()) {
+    Some(cur) => cur.uid == opening.uid
+    None => false
+  }
+  if self.closed || !still {
+    link.close()
+    return
+  }
+  self.tell_health(place)
+  let _ = self.fibers.fork_named("mesh pings", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    self.steer_k(place, opening, link, fk)
+  })
+  self.now_on(place, link)
+  self.tally_if()
+}
+
+fn Mesh::steer_k(self : Mesh, place : Place, opening : Opening, link : Link, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  effect::sleep_later_k(tick_ms, true, fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(_) => {
+        let pk = place.map_key()
+        let still = match self.links.get(pk) {
+          Some(cur) => cur.uid == opening.uid
+          None => false
+        }
+        if self.closed || !still || !link.usable() {
+          k(effect::Exit::Succeeded(()))
+          return
+        }
+        self.ping_k(link, fn(pex : effect::Exit[Unit]) -> Unit {
+          match pex {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(_) => {
+              self.tell_health(place)
+              let still_now = match self.links.get(pk) {
+                Some(cur) => cur.uid == opening.uid
+                None => false
+              }
+              if !self.closed && !self.ways_at(place).steering && still_now {
+                self.observe(place)
+              }
+              if !still_now {
+                if link.missed >= dead_pings {
+                  link.close()
+                }
+                k(effect::Exit::Succeeded(()))
+                return
+              }
+              if !link.usable() {
+                k(effect::Exit::Succeeded(()))
+                return
+              }
+              self.suspect(place, opening, link)
+              if link.missed >= dead_pings && !self.racing.contains(pk) {
+                let live = self.live_ways(place)
+                let up : Array[Way] = []
+                for i in 0..<live.length() {
+                  if live[i].link.uid != link.uid && live[i].link.missed == 0 {
+                    up.push(live[i])
+                  }
+                }
+                match self.best_way(place, self.takeable(place, up)) {
+                  Some(w) => {
+                    self.promote(place, w, "lost")
+                    k(effect::Exit::Succeeded(()))
+                    return
+                  }
+                  None => ()
+                }
+                link.close()
+                if link.pin.is_none() && self.main_on(place) {
+                  self.ways_at(place).lost_main = true
+                }
+                let _ = self.dial(place, link.credentials, false, asker="again")
+                k(effect::Exit::Succeeded(()))
+                return
+              }
+              self.steer_k(place, opening, link, k)
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+fn Mesh::ping_k(self : Mesh, link : Link, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  if link.pinging && self.sh.rt.now() - link.pinged_at < ping_timeout_ms.to_int64() {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  if link.pinging {
+    if !link.brought() {
+      link.missed += 1
+    }
+    link.note(ping_timeout_ms)
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  link.pinging = true
+  link.pinged_at = self.sh.rt.now()
+  let _ = link.brought()
+  let answered : effect::Deferred[Option[Int]] = effect::Deferred::new()
+  let late = [false]
+  let rt = self.sh.rt
+  let _ = self.fibers.fork_named("mesh ping", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    let started = rt.now()
+    link.exchange_k(link.credential, fn(eex : effect::Exit[base_codec::Json]) -> Unit {
+      let took = (rt.now() - started).to_int()
+      link.pinging = false
+      match eex {
+        effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(_) => {
+          if late[0] {
+            link.missed = 0
+            link.note(took)
+            link.answered_ms = Some(took)
+          }
+          let _ = answered.succeed(Some(took))
+          fk(effect::Exit::Succeeded(()))
+        }
+        effect::Exit::Failed(_) => {
+          let _ = answered.succeed(None)
+          fk(effect::Exit::Succeeded(()))
+        }
+      }
+    })
+  })
+  effect::timeout_k(
+    ping_timeout_ms,
+    fn(tk : (effect::Exit[Option[Int]]) -> Unit) -> Unit { answered.wait_k(tk) },
+    fn(tex : effect::Exit[Option[Option[Int]]]) -> Unit {
+      match tex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(Some(Some(took))) => {
+          link.missed = 0
+          link.answered_ms = Some(took)
+          if link.warm {
+            link.note(took)
+          }
+          link.warm = true
+          k(effect::Exit::Succeeded(()))
+        }
+        _ => {
+          late[0] = true
+          if !link.brought() {
+            link.missed += 1
+          }
+          link.note(ping_timeout_ms)
+          k(effect::Exit::Succeeded(()))
+        }
+      }
+    },
+  )
+}
+
+fn close_conns_seq_k(
+  sh : shell::Shell,
+  conns : Array[base_codec::Json],
+  idx : Int,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if idx >= conns.length() {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  sh.call_k(
+    "conn.close",
+    base_codec::json_obj([
+      ("id", conns[idx]),
+      ("code", base_codec::json_int(0)),
+      ("reason", base_codec::json_str("closed")),
+      ("forget", base_codec::json_bool(true)),
+    ]),
+    fn(_ : effect::Exit[shell::Answer]) -> Unit { close_conns_seq_k(sh, conns, idx + 1, k) },
+  )
+}
+
+fn close_outgoings_seq_k(
+  sh : shell::Shell,
+  outs : Array[Outgoing],
+  idx : Int,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if idx >= outs.length() {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  let one = outs[idx]
+  sh.call_k(
+    "conn.close",
+    base_codec::json_obj([
+      ("id", one.conn),
+      ("code", base_codec::json_int(0)),
+      ("reason", base_codec::json_str("closed")),
+      ("forget", base_codec::json_bool(true)),
+    ]),
+    fn(_ : effect::Exit[shell::Answer]) -> Unit {
+      sh.call_k(
+        "iroh.close",
+        base_codec::json_obj([("id", one.endpoint), ("forget", base_codec::json_bool(true))]),
+        fn(_ : effect::Exit[shell::Answer]) -> Unit { close_outgoings_seq_k(sh, outs, idx + 1, k) },
+      )
+    },
+  )
+}
+
+pub fn Mesh::close_k(self : Mesh, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  self.count_open()
+  self.keep_days()
+  self.closed = true
+  let lks = self.links.keys()
+  let openings : Array[Opening] = []
+  for i in 0..<lks.length() {
+    match self.links.get(lks[i]) {
+      Some(op) => openings.push(op)
+      None => ()
+    }
+  }
+  self.links.clear()
+  for i in 0..<openings.length() {
+    let op = openings[i]
+    match op.span {
+      Some(sp) => {
+        op.span = None
+        let end = sp.end_fn
+        end()
+      }
+      None => ()
+    }
+    if op.result.is_none() {
+      let e = failed("closed")
+      op.result = Some(Opened::Failed(e, false))
+      let _ = op.done.fail(e)
+    }
+  }
+  let open = self.live
+  self.live = []
+  for i in 0..<open.length() {
+    let link = open[i]
+    if !link.answered.is_done() {
+      link.renewal_failed = true
+      link.refused = Some(failed("closed"))
+      let _ = link.answered.succeed(())
+    }
+    let _ = link.gone.succeed(Closed::{ kind: "local", reason: "closed" })
+  }
+  self.racing.clear()
+  let pks = self.pinned.keys()
+  let pinned_eps : Array[base_codec::Json] = []
+  for i in 0..<pks.length() {
+    match self.pinned.get(pks[i]) {
+      Some(p) =>
+      match p.endpoint {
+        Some(ep) => pinned_eps.push(ep)
+        None => ()
+      }
+      None => ()
+    }
+  }
+  self.pinned.clear()
+  self.ways_of.clear()
+  self.retiring.clear()
+  let taken = self.incomings
+  self.incomings = []
+  for i in 0..<taken.length() {
+    let _ = taken[i].gone.succeed(Closed::{ kind: "local", reason: "closed" })
+  }
+  let dialled_once : Array[Outgoing] = []
+  for i in 0..<self.outgoings.length() {
+    if !self.outgoings[i].done {
+      self.outgoings[i].done = true
+      let _ = self.outgoings[i].gone.succeed(Closed::{ kind: "local", reason: "closed" })
+      dialled_once.push(self.outgoings[i])
+    }
+  }
+  self.outgoings = []
+  self.forget_coming()
+  let held = self.held
+  self.held = []
+  for i in 0..<held.length() {
+    let _ = held[i].d.fail(failed("closed"))
+  }
+  self.changed()
+  let waits = self.health_waits
+  self.health_waits = []
+  for i in 0..<waits.length() {
+    let _ = waits[i].d.fail(failed("closed"))
+  }
+  self.fibers.close_k(fn(_ : effect::Exit[Unit]) -> Unit {
+    self.rebinding = false
+    effect::uninterruptible_k(
+      fn(uk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        let conns : Array[base_codec::Json] = []
+        for i in 0..<open.length() {
+          conns.push(open[i].conn)
+        }
+        for i in 0..<taken.length() {
+          conns.push(taken[i].conn)
+        }
+        close_conns_seq_k(self.sh, conns, 0, fn(_ : effect::Exit[Unit]) -> Unit {
+          close_outgoings_seq_k(self.sh, dialled_once, 0, fn(_ : effect::Exit[Unit]) -> Unit {
+            let eps : Array[base_codec::Json] = [self.endpoint]
+            for i in 0..<pinned_eps.length() {
+              eps.push(pinned_eps[i])
+            }
+            close_endpoints_seq_k(self.sh, eps, 0, uk)
+          })
+        })
+      },
+      k,
+    )
+  })
+}
+
+pub struct Backoff {
+  pub first : Int
+  pub most : Int
+  mut wait : Int
+}
+
+pub fn Backoff::new(first : Int = 1000, most : Int = 30000) -> Backoff {
+  Backoff::{ first: first, most: most, wait: first }
+}
+
+pub fn Backoff::reset(self : Backoff) -> Unit {
+  self.wait = self.first
+}
+
+pub fn Backoff::pause_k(self : Backoff, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  effect::sleep_k(self.wait, fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(_) => {
+        let next = self.wait * 2
+        self.wait = if next > self.most { self.most } else { next }
+        k(effect::Exit::Succeeded(()))
+      }
+      other => k(other)
+    }
+  })
+}

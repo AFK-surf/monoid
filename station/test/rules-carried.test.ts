@@ -7,8 +7,7 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import { wall } from "../src/ops/fibers.ts";
 import { bring, dev, handover, station, world } from "./lock-moved-world.ts";
-// @ts-ignore: the MoonBit build's JS, untyped
-import * as rules from "../../rules/js/rules.js";
+import * as rules from "../../shared/rules-runtime.ts";
 
 const NOW = 2_000_000;
 mock.method(wall, "now", () => NOW * 1000);

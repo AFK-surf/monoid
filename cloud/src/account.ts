@@ -6,7 +6,7 @@ import { noted, type SpanNotes } from "./tracing";
 import { extendPersonal, extendPersonalKept, type PersonalEntry } from "./personal-lock";
 import { ACCESS_TTL_SEC, REFRESH_RETRY_SEC, SESSION_IDLE_SEC, SESSION_TTL_SEC, bearerToken, denied, digest, limited, nowSeconds, randomSecret, readJson, reply, seal, signToken, unseal, validId, verifyToken, type Claims, type Identity, type Tokens } from "./auth";
 
-const LIMITS = { sessions: 16, requestsPerMinute: 120 };
+const LIMITS = { sessions: 16, requestsPerMinute: 120, credentialsPerMinute: 360 };
 /** What of an account moves into another cloud (moveExport). */
 const MOVED_KEYS = ["account", "personal-lock", "personal-lock-aside", "beta"];
 type Retry = { hash: string; request: string; until: number; response: string };
@@ -71,13 +71,16 @@ export class Account extends DurableObject<Env> {
    * for the stations and devices from before (api.ts `LOCK_ROUTE`), apart from the account system's own: a device is
    * sent what it signs there without waiting on it, as many as a person's devices sign, and that used up the minute
    * their next change to a workspace (a member added) was refused in (the locks' end to end, 2026-11-10: 44 of an
-   * account's 123).
+   * account's 123). `quota-credential` is the minute of member credentials (api.ts `CREDENTIAL_ROUTE`): each device asks
+   * one for every endpoint of every workspace's stations, which used up the account system's minute (2026-11-23: 379
+   * refused in 4 minutes, starving `GET /v1/workspaces/:id`).
    */
-  private charge(of: "quota" | "quota-lock" = "quota"): boolean {
+  private charge(of: "quota" | "quota-lock" | "quota-credential" = "quota"): boolean {
     const minute = Math.floor(nowSeconds() / 60);
+    const limit = of === "quota-credential" ? LIMITS.credentialsPerMinute : LIMITS.requestsPerMinute;
     const old = this.ctx.storage.kv.get<{ minute: number; requests: number }>(of);
     const quota = old?.minute === minute ? old : { minute, requests: 0 };
-    if (quota.requests >= LIMITS.requestsPerMinute) return false;
+    if (quota.requests >= limit) return false;
     quota.requests++;
     this.ctx.storage.kv.put(of, quota);
     return true;
@@ -329,13 +332,15 @@ export class Account extends DurableObject<Env> {
 
   /**
    * Whether an access token's session is still live (not logged out, blocked or expired); `limited` when it is, but
-   * over its requests a minute (`lock`: the locks' minute, `charge`); on the test channel (`testChannel`), `not_beta`
-   * for an account not let in.
+   * over its requests a minute (`quota`: `true` the locks' minute, `"credential"` the credentials', `charge`); on the
+   * test channel (`testChannel`), `not_beta` for an account not let in. An object from before takes `"credential"` as
+   * the locks' minute, which still keeps the account system's.
    */
-  async live(claims: Claims, testChannel = false, lock = false): Promise<Live> {
+  async live(claims: Claims, testChannel = false, quota: boolean | "credential" = false): Promise<Live> {
     if (!this.session(this.data(), claims)) return false;
     if (testChannel && !(await this.beta(claims.sub))) return "not_beta";
-    return this.charge(lock ? "quota-lock" : "quota") ? true : "limited";
+    const bucket = quota === "credential" ? "quota-credential" : quota ? "quota-lock" : "quota";
+    return this.charge(bucket) ? true : "limited";
   }
 
   /** Whether an access token's session is still live, not charged to the account's requests a minute: for what has

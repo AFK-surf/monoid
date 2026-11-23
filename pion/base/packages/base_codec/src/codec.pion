@@ -1,0 +1,111 @@
+// Base64 (RFC 4648 §4, §5 URL-safe), hex, and IEEE CRC-32 (0xEDB88320).
+// Delegated to `AFK-surf/pion-packages` (`base64-v0.1.0`, `flate-v0.1.0`).
+
+import "base64"
+import "flate"
+
+pub fn base64_encode(data : Bytes) -> String {
+  base64::encode(data)
+}
+
+pub fn base64url_encode(data : Bytes) -> String {
+  base64::url_encode_no_pad(data)
+}
+
+fn is_ascii_space(c : Int) -> Bool {
+  c == 32 || c == 9 || c == 10 || c == 13 || c == 12 || c == 11
+}
+
+pub fn base64_decode(text : String) -> Option[Bytes] {
+  match base64::decode_loose(text) {
+    Ok(b) => Some(b)
+    Err(_) => None
+  }
+}
+
+pub fn base64_decode_strict(text : String) -> Option[Bytes] {
+  match base64::decode(text) {
+    Ok(b) => Some(b)
+    Err(_) => None
+  }
+}
+
+pub fn base64url_decode(text : String) -> Option[Bytes] {
+  let n = text.length()
+  for i in 0..<n {
+    let c = text.code_unit_at(i)
+    if c == 43 || c == 47 || is_ascii_space(c) {
+      return None
+    }
+  }
+  match base64::decode_loose(text) {
+    Ok(b) => Some(b)
+    Err(_) => None
+  }
+}
+
+pub fn base64_decode_loose(text : String) -> Bytes {
+  let kept = StringBuilder::new()
+  let n = text.length()
+  for i in 0..<n {
+    let c = text.code_unit_at(i)
+    if c == 61 {
+      break
+    }
+    if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) ||
+    c == 43 || c == 47 || c == 45 || c == 95 {
+      kept.write_byte(c as Byte)
+    }
+  }
+  let ks = kept.to_string()
+  let take_len = ks.length() - (if ks.length() % 4 == 1 { 1 } else { 0 })
+  let trimmed = ks.slice(0, take_len)
+  match base64_decode(trimmed) {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+}
+
+pub fn hex_encode(data : Bytes) -> String {
+  base64::hex_encode(data)
+}
+
+pub fn hex_encode_upper(data : Bytes) -> String {
+  base64::hex_encode_upper(data)
+}
+
+pub fn hex_digit(c : Int) -> Option[Int] {
+  if c >= 48 && c <= 57 {
+    Some(c - 48)
+  } else if c >= 97 && c <= 102 {
+    Some(c - 97 + 10)
+  } else if c >= 65 && c <= 70 {
+    Some(c - 65 + 10)
+  } else {
+    None
+  }
+}
+
+pub fn hex_decode(text : String) -> Option[Bytes] {
+  match base64::hex_decode(text) {
+    Ok(b) => Some(b)
+    Err(_) => None
+  }
+}
+
+pub fn crc32_update_slice(crc : Int64, data : Bytes, start : Int, end : Int) -> Int64 {
+  let mask = (0xFFFF.to_int64() << 16) | 0xFFFF.to_int64()
+  let u = flate::crc32_update_slice(crc.to_int().to_uint(), data, start, end)
+  u.to_int64() & mask
+}
+
+pub fn crc32_update(crc : Int64, data : Bytes) -> Int64 {
+  let mask = (0xFFFF.to_int64() << 16) | 0xFFFF.to_int64()
+  let u = flate::crc32_update(crc.to_int().to_uint(), data)
+  u.to_int64() & mask
+}
+
+pub fn crc32(data : Bytes) -> Int64 {
+  let mask = (0xFFFF.to_int64() << 16) | 0xFFFF.to_int64()
+  flate::crc32(data).to_int64() & mask
+}

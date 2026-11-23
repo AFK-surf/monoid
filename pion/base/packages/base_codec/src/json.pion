@@ -1,0 +1,527 @@
+// Insertion-ordered JSON value, parser (RFC 8259), and JS-compatible stringifier.
+// Preserves raw numeric representation (`repr`) so 64-bit integers beyond 2^53-1 round-trip cleanly.
+
+pub enum Json {
+  Null
+  Bool(Bool)
+  Num(Double, String)
+  Str(String)
+  Arr(Array[Json])
+  Obj(Array[(String, Json)])
+}
+
+pub enum JsonParseResult {
+  Ok(Json)
+  Err(String)
+}
+
+pub fn json_null() -> Json { Json::Null }
+pub fn json_bool(b : Bool) -> Json { Json::Bool(b) }
+pub fn json_int(n : Int) -> Json { Json::Num(n.to_double(), n.to_string()) }
+pub fn json_int64(n : Int64) -> Json { Json::Num(n.to_double(), n.to_string()) }
+pub fn json_num(n : Double) -> Json { Json::Num(n, "") }
+pub fn json_str(s : String) -> Json { Json::Str(s) }
+pub fn json_arr(items : Array[Json]) -> Json { Json::Arr(items) }
+pub fn json_obj(fields : Array[(String, Json)]) -> Json { Json::Obj(fields) }
+
+/// Update or append a field in an object's key-value list, preserving first-seen key order.
+pub fn json_obj_set(fields : Array[(String, Json)], key : String, value : Json) -> Unit {
+  for i in 0..<fields.length() {
+    let (k, _) = fields[i]
+    if k == key {
+      fields[i] = (key, value)
+      return
+    }
+  }
+  fields.push((key, value))
+}
+
+pub fn json_obj_get(fields : Array[(String, Json)], key : String) -> Option[Json] {
+  for i in 0..<fields.length() {
+    let (k, v) = fields[i]
+    if k == key {
+      return Some(v)
+    }
+  }
+  None
+}
+
+pub fn json_get(j : Json, key : String) -> Option[Json] {
+  match j {
+    Json::Obj(fields) => json_obj_get(fields, key)
+    _ => None
+  }
+}
+
+fn is_nan_or_inf(n : Double) -> Bool {
+  if n != n {
+    return true
+  }
+  let diff = n - n
+  diff != 0.0
+}
+
+fn json_hex_lower(v : Int) -> Byte {
+  if v < 10 { (48 + v) as Byte } else { (87 + v) as Byte }
+}
+
+fn write_json_string(sb : StringBuilder, s : String) -> Unit {
+  sb.write_byte(34 as Byte) // '"'
+  let raw = s.to_bytes()
+  let n = raw.length()
+  for i in 0..<n {
+    let b = raw[i].to_int()
+    if b == 34 {
+      sb.write_string("\\\"")
+    } else if b == 92 {
+      sb.write_string("\\\\")
+    } else if b == 8 {
+      sb.write_string("\\b")
+    } else if b == 12 {
+      sb.write_string("\\f")
+    } else if b == 10 {
+      sb.write_string("\\n")
+    } else if b == 13 {
+      sb.write_string("\\r")
+    } else if b == 9 {
+      sb.write_string("\\t")
+    } else if b < 0x20 {
+      sb.write_string("\\u00")
+      sb.write_byte(json_hex_lower((b >> 4) & 0xF))
+      sb.write_byte(json_hex_lower(b & 0xF))
+    } else {
+      sb.write_byte(b as Byte)
+    }
+  }
+  sb.write_byte(34 as Byte)
+}
+
+fn write_json(sb : StringBuilder, j : Json) -> Unit {
+  match j {
+    Json::Null => sb.write_string("null")
+    Json::Bool(b) => sb.write_string(if b { "true" } else { "false" })
+    Json::Num(n, repr) =>
+    if repr.length() > 0 {
+      sb.write_string(repr)
+    } else if is_nan_or_inf(n) {
+      sb.write_string("null")
+    } else {
+      sb.write_string(n.to_string())
+    }
+    Json::Str(s) => write_json_string(sb, s)
+    Json::Arr(items) => {
+      sb.write_byte(91 as Byte) // '['
+      for i in 0..<items.length() {
+        if i > 0 {
+          sb.write_byte(44 as Byte)
+        }
+        write_json(sb, items[i])
+      }
+      sb.write_byte(93 as Byte) // ']'
+    }
+    Json::Obj(fields) => {
+      sb.write_byte(123 as Byte) // '{'
+      for i in 0..<fields.length() {
+        if i > 0 {
+          sb.write_byte(44 as Byte)
+        }
+        let (k, v) = fields[i]
+        write_json_string(sb, k)
+        sb.write_byte(58 as Byte) // ':'
+        write_json(sb, v)
+      }
+      sb.write_byte(125 as Byte) // '}'
+    }
+  }
+}
+
+pub fn json_stringify(j : Json) -> String {
+  let sb = StringBuilder::new()
+  write_json(sb, j)
+  sb.to_string()
+}
+
+pub fn json_eq(a : Json, b : Json) -> Bool {
+  match a {
+    Json::Null =>
+    match b {
+      Json::Null => true
+      _ => false
+    }
+    Json::Bool(x) =>
+    match b {
+      Json::Bool(y) => x == y
+      _ => false
+    }
+    Json::Num(x, rx) =>
+    match b {
+      Json::Num(y, ry) => if rx.length() > 0 && ry.length() > 0 { rx == ry } else { x == y }
+      _ => false
+    }
+    Json::Str(x) =>
+    match b {
+      Json::Str(y) => x == y
+      _ => false
+    }
+    Json::Arr(xs) =>
+    match b {
+      Json::Arr(ys) => {
+        if xs.length() != ys.length() {
+          return false
+        }
+        for i in 0..<xs.length() {
+          if !json_eq(xs[i], ys[i]) {
+            return false
+          }
+        }
+        true
+      }
+      _ => false
+    }
+    Json::Obj(xs) =>
+    match b {
+      Json::Obj(ys) => {
+        if xs.length() != ys.length() {
+          return false
+        }
+        for i in 0..<xs.length() {
+          let (kx, vx) = xs[i]
+          let (ky, vy) = ys[i]
+          if kx != ky || !json_eq(vx, vy) {
+            return false
+          }
+        }
+        true
+      }
+      _ => false
+    }
+  }
+}
+
+// ── RFC 8259 JSON parser ──
+
+struct JsonParser {
+  s : String
+  n : Int
+  mut pos : Int
+}
+
+fn JsonParser::peek(self : JsonParser) -> Int {
+  if self.pos < self.n {
+    self.s.code_unit_at(self.pos)
+  } else {
+    -1
+  }
+}
+
+fn JsonParser::skip_ws(self : JsonParser) -> Unit {
+  while self.pos < self.n {
+    let c = self.s.code_unit_at(self.pos)
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      self.pos += 1
+    } else {
+      break
+    }
+  }
+}
+
+fn JsonParser::read_hex4(self : JsonParser) -> Option[Int] {
+  if self.pos + 4 > self.n {
+    return None
+  }
+  let mut v = 0
+  for _ in 0..<4 {
+    match hex_digit(self.s.code_unit_at(self.pos)) {
+      None => return None
+      Some(d) => {
+        v = (v << 4) | d
+        self.pos += 1
+      }
+    }
+  }
+  Some(v)
+}
+
+fn push_utf8_cp(sb : StringBuilder, cp : Int) -> Unit {
+  if cp < 0x80 {
+    sb.write_byte(cp as Byte)
+  } else if cp < 0x800 {
+    sb.write_byte((0xC0 | (cp >> 6)) as Byte)
+    sb.write_byte((0x80 | (cp & 0x3F)) as Byte)
+  } else if cp < 0x10000 {
+    sb.write_byte((0xE0 | (cp >> 12)) as Byte)
+    sb.write_byte((0x80 | ((cp >> 6) & 0x3F)) as Byte)
+    sb.write_byte((0x80 | (cp & 0x3F)) as Byte)
+  } else {
+    sb.write_byte((0xF0 | (cp >> 18)) as Byte)
+    sb.write_byte((0x80 | ((cp >> 12) & 0x3F)) as Byte)
+    sb.write_byte((0x80 | ((cp >> 6) & 0x3F)) as Byte)
+    sb.write_byte((0x80 | (cp & 0x3F)) as Byte)
+  }
+}
+
+fn JsonParser::parse_string(self : JsonParser) -> Option[String] {
+  if self.peek() != 34 {
+    return None
+  }
+  self.pos += 1
+  let sb = StringBuilder::new()
+  while self.pos < self.n {
+    let c = self.s.code_unit_at(self.pos)
+    self.pos += 1
+    if c == 34 {
+      return Some(sb.to_string())
+    }
+    if c < 0x20 {
+      return None
+    }
+    if c == 92 {
+      if self.pos >= self.n {
+        return None
+      }
+      let esc = self.s.code_unit_at(self.pos)
+      self.pos += 1
+      if esc == 34 {
+        sb.write_byte(34 as Byte)
+      } else if esc == 92 {
+        sb.write_byte(92 as Byte)
+      } else if esc == 47 {
+        sb.write_byte(47 as Byte)
+      } else if esc == 98 {
+        sb.write_byte(8 as Byte)
+      } else if esc == 102 {
+        sb.write_byte(12 as Byte)
+      } else if esc == 110 {
+        sb.write_byte(10 as Byte)
+      } else if esc == 114 {
+        sb.write_byte(13 as Byte)
+      } else if esc == 116 {
+        sb.write_byte(9 as Byte)
+      } else if esc == 117 {
+        let u = match self.read_hex4() {
+          Some(v) => v
+          None => return None
+        }
+        if u >= 0xD800 && u <= 0xDBFF {
+          if self.pos + 2 <= self.n && self.s.code_unit_at(self.pos) == 92 && self.s.code_unit_at(self.pos + 1) == 117 {
+            let saved = self.pos
+            self.pos += 2
+            match self.read_hex4() {
+              Some(lo) =>
+              if lo >= 0xDC00 && lo <= 0xDFFF {
+                let cp = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00)
+                push_utf8_cp(sb, cp)
+              } else {
+                self.pos = saved
+                push_utf8_cp(sb, 0xFFFD)
+              }
+              None => return None
+            }
+          } else {
+            push_utf8_cp(sb, 0xFFFD)
+          }
+        } else if u >= 0xDC00 && u <= 0xDFFF {
+          push_utf8_cp(sb, 0xFFFD)
+        } else {
+          push_utf8_cp(sb, u)
+        }
+      } else {
+        return None
+      }
+    } else {
+      sb.write_byte(c as Byte)
+    }
+  }
+  None
+}
+
+fn JsonParser::parse_number(self : JsonParser) -> JsonParseResult {
+  let start = self.pos
+  if self.peek() == 45 {
+    self.pos += 1
+  }
+  let c0 = self.peek()
+  if c0 == 48 {
+    self.pos += 1
+  } else if c0 >= 49 && c0 <= 57 {
+    self.pos += 1
+    while self.peek() >= 48 && self.peek() <= 57 {
+      self.pos += 1
+    }
+  } else {
+    return JsonParseResult::Err("invalid number")
+  }
+  if self.peek() == 46 {
+    self.pos += 1
+    if self.peek() < 48 || self.peek() > 57 {
+      return JsonParseResult::Err("invalid fraction")
+    }
+    while self.peek() >= 48 && self.peek() <= 57 {
+      self.pos += 1
+    }
+  }
+  let e = self.peek()
+  if e == 101 || e == 69 {
+    self.pos += 1
+    let sign = self.peek()
+    if sign == 43 || sign == 45 {
+      self.pos += 1
+    }
+    if self.peek() < 48 || self.peek() > 57 {
+      return JsonParseResult::Err("invalid exponent")
+    }
+    while self.peek() >= 48 && self.peek() <= 57 {
+      self.pos += 1
+    }
+  }
+  let raw = self.s.slice(start, self.pos)
+  match raw.to_double() {
+    Some(d) => JsonParseResult::Ok(Json::Num(d, raw))
+    None => JsonParseResult::Err("number out of range")
+  }
+}
+
+fn JsonParser::parse_value(self : JsonParser) -> JsonParseResult {
+  self.skip_ws()
+  let c = self.peek()
+  if c < 0 {
+    return JsonParseResult::Err("unexpected end of JSON")
+  }
+  if c == 110 {
+    if self.pos + 4 <= self.n && self.s.slice(self.pos, self.pos + 4) == "null" {
+      self.pos += 4
+      return JsonParseResult::Ok(Json::Null)
+    }
+    return JsonParseResult::Err("expected null")
+  }
+  if c == 116 {
+    if self.pos + 4 <= self.n && self.s.slice(self.pos, self.pos + 4) == "true" {
+      self.pos += 4
+      return JsonParseResult::Ok(Json::Bool(true))
+    }
+    return JsonParseResult::Err("expected true")
+  }
+  if c == 102 {
+    if self.pos + 5 <= self.n && self.s.slice(self.pos, self.pos + 5) == "false" {
+      self.pos += 5
+      return JsonParseResult::Ok(Json::Bool(false))
+    }
+    return JsonParseResult::Err("expected false")
+  }
+  if c == 34 {
+    match self.parse_string() {
+      Some(str_v) => return JsonParseResult::Ok(Json::Str(str_v))
+      None => return JsonParseResult::Err("invalid string")
+    }
+  }
+  if c == 91 {
+    self.pos += 1
+    self.skip_ws()
+    let items : Array[Json] = []
+    if self.peek() == 93 {
+      self.pos += 1
+      return JsonParseResult::Ok(Json::Arr(items))
+    }
+    while true {
+      match self.parse_value() {
+        JsonParseResult::Err(e) => return JsonParseResult::Err(e)
+        JsonParseResult::Ok(v) => items.push(v)
+      }
+      self.skip_ws()
+      let sep = self.peek()
+      if sep == 44 {
+        self.pos += 1
+      } else if sep == 93 {
+        self.pos += 1
+        return JsonParseResult::Ok(Json::Arr(items))
+      } else {
+        return JsonParseResult::Err("expected ',' or ']'")
+      }
+    }
+  }
+  if c == 123 {
+    self.pos += 1
+    self.skip_ws()
+    let fields : Array[(String, Json)] = []
+    if self.peek() == 125 {
+      self.pos += 1
+      return JsonParseResult::Ok(Json::Obj(fields))
+    }
+    while true {
+      self.skip_ws()
+      let key = match self.parse_string() {
+        Some(k) => k
+        None => return JsonParseResult::Err("expected object key")
+      }
+      self.skip_ws()
+      if self.peek() != 58 {
+        return JsonParseResult::Err("expected ':'")
+      }
+      self.pos += 1
+      match self.parse_value() {
+        JsonParseResult::Err(e) => return JsonParseResult::Err(e)
+        JsonParseResult::Ok(v) => json_obj_set(fields, key, v)
+      }
+      self.skip_ws()
+      let sep = self.peek()
+      if sep == 44 {
+        self.pos += 1
+      } else if sep == 125 {
+        self.pos += 1
+        return JsonParseResult::Ok(Json::Obj(fields))
+      } else {
+        return JsonParseResult::Err("expected ',' or '}'")
+      }
+    }
+  }
+  self.parse_number()
+}
+
+pub fn json_parse(text : String) -> JsonParseResult {
+  let p = JsonParser::{ s: text, n: text.length(), pos: 0 }
+  match p.parse_value() {
+    JsonParseResult::Err(e) => JsonParseResult::Err(e)
+    JsonParseResult::Ok(v) => {
+      p.skip_ws()
+      if p.pos != p.n {
+        JsonParseResult::Err("trailing characters after JSON")
+      } else {
+        JsonParseResult::Ok(v)
+      }
+    }
+  }
+}
+
+/// Parse an exact signed 64-bit decimal integer (supporting full Int64 range including -9223372036854775808).
+pub fn parse_int64_str(text : String) -> Option[Int64] {
+  let n = text.length()
+  if n == 0 {
+    return None
+  }
+  let mut i = 0
+  let mut neg = false
+  if text.code_unit_at(0) == 45 {
+    neg = true
+    i = 1
+  }
+  if i >= n {
+    return None
+  }
+  // Accumulate negative to handle INT64_MIN (-9223372036854775808) without overflow
+  let mut acc : Int64 = 0.to_int64()
+  let ten = 10.to_int64()
+  while i < n {
+    let c = text.code_unit_at(i)
+    if c < 48 || c > 57 {
+      return None
+    }
+    let d = (c - 48).to_int64()
+    acc = acc * ten - d
+    i += 1
+  }
+  if neg {
+    Some(acc)
+  } else {
+    Some(-acc)
+  }
+}

@@ -1,0 +1,18 @@
+[workspace]
+members = [
+  "packages/role",
+  "packages/form",
+  "packages/fork",
+  "packages/history",
+  "packages/lock",
+  "packages/vault",
+  "packages/wasm_entry",
+]
+
+[workspace.dependencies]
+role = { path = "packages/role" }
+form = { path = "packages/form" }
+fork = { path = "packages/fork" }
+history = { path = "packages/history" }
+lock = { path = "packages/lock" }
+vault = { path = "packages/vault" }

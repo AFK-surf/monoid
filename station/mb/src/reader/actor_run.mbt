@@ -1546,18 +1546,30 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
         ignore(a.unread.pop())
       }
     }
+    // (marked delivered before it is written, as a prompt's is: the model can read it and answer with `chat_post`
+    // before the steer answers, and a message still undelivered then is taken as one it has not read, holding the post)
+    let marked = d.pending.map(m => m.value("handed").unwrap_or(Json::null()))
+    if marked.length() > 0 {
+      ignore(self.store(a, "markDelivered", [jstr(a.key), Json::array(marked)]))
+    }
     let steered = truthy(self.agent_do(a, agent, "steer", [jstr(self.timed(a, handed))])) catch {
       e => {
         unsteer()
+        if marked.length() > 0 {
+          ignore(self.store(a, "markUndelivered", [jstr(a.key), Json::array(marked)])) catch { _ => () }
+        }
         raise e
       }
     }
     if !steered {
       unsteer()
+      if marked.length() > 0 {
+        ignore(self.store(a, "markUndelivered", [jstr(a.key), Json::array(marked)]))
+      }
     } else {
       self.told(a, told)
       self.work_for(a, d.pending)
-      self.delivered(a, d)
+      ignore(self.store(a, "markWidgetModelsTold", [jstr(a.key), d.widgets]))
       for m in d.pending {
         a.steered.push(m.value("handed").unwrap_or(Json::null()))
       }

@@ -1,0 +1,7 @@
+[package]
+name = "shell"
+version = "0.1.0"
+
+[dependencies]
+effect = { workspace = true }
+base_codec = { path = "../base_codec" }

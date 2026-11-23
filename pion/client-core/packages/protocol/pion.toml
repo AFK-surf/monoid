@@ -1,0 +1,11 @@
+[package]
+name = "protocol"
+version = "0.1.0"
+
+[dependencies]
+base_codec = { path = "../../../base/packages/base_codec" }
+crypto = { workspace = true }
+effect = { workspace = true }
+shell = { path = "../../../base/packages/shell" }
+sql = { path = "../../../base/packages/sql" }
+store = { path = "../store" }

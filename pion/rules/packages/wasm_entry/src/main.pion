@@ -1,0 +1,1292 @@
+///| WebAssembly (wasm32) entry point exporting all `rules/js/rules.js` functions.
+
+import "role"
+import "form"
+import "fork"
+import "history"
+import "lock"
+import "vault"
+
+// ── Host I/O and Crypto callbacks (provided by js/rules-wasm.mjs) ─────────────────────────────────────────────────
+
+extern "C" fn rules_in_len() -> Int
+extern "C" fn rules_in_copy(dst : Ptr) -> Unit
+extern "C" fn rules_out_set(src : Ptr, len : Int) -> Unit
+extern "C" fn rules_cb_copy(dst : Ptr) -> Unit
+
+extern "C" fn rules_sha256_hex(ptr : Ptr, len : Int) -> Int
+extern "C" fn rules_sig_valid(
+  sig_ptr : Ptr,
+  sig_len : Int,
+  hash_ptr : Ptr,
+  hash_len : Int,
+  origins_ptr : Ptr,
+  origins_len : Int,
+  rp_ptr : Ptr,
+  rp_len : Int,
+  passkey : Int,
+) -> Int
+extern "C" fn rules_valid_key_id(ptr : Ptr, len : Int) -> Int
+extern "C" fn rules_endpoint_proof(
+  ws_ptr : Ptr,
+  ws_len : Int,
+  base_ptr : Ptr,
+  base_len : Int,
+  ep_ptr : Ptr,
+  ep_len : Int,
+  proof_ptr : Ptr,
+  proof_len : Int,
+) -> Int
+extern "C" fn rules_tagged_sig_valid(
+  key_ptr : Ptr,
+  key_len : Int,
+  sig_ptr : Ptr,
+  sig_len : Int,
+  tag_ptr : Ptr,
+  tag_len : Int,
+  dig_ptr : Ptr,
+  dig_len : Int,
+) -> Int
+extern "C" fn rules_record_sig_valid(
+  sig_ptr : Ptr,
+  sig_len : Int,
+  tag_ptr : Ptr,
+  tag_len : Int,
+  text_ptr : Ptr,
+  text_len : Int,
+) -> Int
+
+fn read_in_str() -> String {
+  let n = rules_in_len()
+  if n <= 0 {
+    return ""
+  }
+  let s = Bytes::new(n).to_string()
+  rules_in_copy(s.as_cstr())
+  s
+}
+
+fn read_cb_str(n : Int) -> String {
+  if n <= 0 {
+    return ""
+  }
+  let s = Bytes::new(n).to_string()
+  rules_cb_copy(s.as_cstr())
+  s
+}
+
+fn write_out_str(s : String) -> Int {
+  let n = s.length()
+  rules_out_set(s.as_cstr(), n)
+  n
+}
+
+fn write_out_json(j : form::Json) -> Int {
+  write_out_str(form::json_stringify(j))
+}
+
+fn host_lock_crypto() -> lock::Crypto {
+  lock::Crypto::{
+    sha256_hex: fn(s : String) -> String {
+      let n = rules_sha256_hex(s.as_cstr(), s.length())
+      read_cb_str(n)
+    },
+    sig_valid: fn(sig : form::Json, hash : String, origins : Array[String], rp_id : String, passkey : Bool) -> Bool {
+      let sig_s = form::json_stringify(sig)
+      let orig_arr : Array[form::Json] = []
+      let mut i = 0
+      while i < origins.length() {
+        orig_arr.push(form::Json::Str(origins[i]))
+        i = i + 1
+      }
+      let orig_s = form::json_stringify(form::Json::Arr(orig_arr))
+      let pk = if passkey { 1 } else { 0 }
+      rules_sig_valid(sig_s.as_cstr(), sig_s.length(), hash.as_cstr(), hash.length(), orig_s.as_cstr(), orig_s.length(), rp_id.as_cstr(), rp_id.length(), pk) != 0
+    },
+    valid_key_id: fn(id : String) -> Bool { rules_valid_key_id(id.as_cstr(), id.length()) != 0 },
+    endpoint_proof: fn(ws : String, base : String, ep : String, proof : String) -> Bool {
+      rules_endpoint_proof(ws.as_cstr(), ws.length(), base.as_cstr(), base.length(), ep.as_cstr(), ep.length(), proof.as_cstr(), proof.length()) != 0
+    },
+    tagged_sig_valid: fn(key : String, sig : String, tag : String, digest : String) -> Bool {
+      rules_tagged_sig_valid(key.as_cstr(), key.length(), sig.as_cstr(), sig.length(), tag.as_cstr(), tag.length(), digest.as_cstr(), digest.length()) != 0
+    },
+  }
+}
+
+fn host_vault_crypto() -> vault::Crypto {
+  vault::Crypto::{
+    record_sig_valid: fn(sig : form::Json, tag : String, text : String) -> Bool {
+      let sig_s = form::json_stringify(sig)
+      rules_record_sig_valid(sig_s.as_cstr(), sig_s.length(), tag.as_cstr(), tag.length(), text.as_cstr(), text.length()) != 0
+    },
+  }
+}
+
+// ── Handle tables for opaque LockState and CarriedHandle ──────────────────────────────────────────────────────────
+
+struct CarriedHandle {
+  moved : Option[lock::Moved]
+  invalid : String
+}
+
+let lock_handles : Array[Option[lock::LockState]] = []
+let carried_handles : Array[Option[CarriedHandle]] = []
+
+fn alloc_lock_handle(s : lock::LockState) -> Int {
+  let id = lock_handles.length()
+  lock_handles.push(Some(s))
+  id
+}
+
+fn get_lock_handle(id : Int) -> Option[lock::LockState] {
+  if id < 0 || id >= lock_handles.length() {
+    None
+  } else {
+    lock_handles[id]
+  }
+}
+
+pub extern "C" fn free_lock_handle(id : Int) -> Unit {
+  if id >= 0 && id < lock_handles.length() {
+    lock_handles[id] = None
+  }
+}
+
+fn alloc_carried_handle(h : CarriedHandle) -> Int {
+  let id = carried_handles.length()
+  carried_handles.push(Some(h))
+  id
+}
+
+fn get_carried_handle(id : Int) -> Option[CarriedHandle] {
+  if id < 0 || id >= carried_handles.length() {
+    None
+  } else {
+    carried_handles[id]
+  }
+}
+
+pub extern "C" fn free_carried_handle(id : Int) -> Unit {
+  if id >= 0 && id < carried_handles.length() {
+    carried_handles[id] = None
+  }
+}
+
+// ── JSON conversion helpers ───────────────────────────────────────────────────────────────────────────────────────
+
+fn j_str(v : Option[form::Json]) -> String {
+  match v {
+    Some(form::Json::Str(s)) => s
+    _ => ""
+  }
+}
+
+fn j_opt_str(v : Option[form::Json]) -> Option[String] {
+  match v {
+    Some(form::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn j_opt_num(v : Option[form::Json]) -> Option[Double] {
+  match v {
+    Some(form::Json::Num(n)) => Some(n)
+    _ => None
+  }
+}
+
+fn j_num(v : Option[form::Json]) -> Double {
+  match v {
+    Some(form::Json::Num(n)) => n
+    _ => 0.0
+  }
+}
+
+fn j_bool(v : Option[form::Json]) -> Bool {
+  match v {
+    Some(form::Json::Bool(b)) => b
+    _ => false
+  }
+}
+
+fn j_arr(v : Option[form::Json]) -> Array[form::Json] {
+  match v {
+    Some(form::Json::Arr(xs)) => xs
+    _ => []
+  }
+}
+
+fn j_str_arr(v : Option[form::Json]) -> Array[String] {
+  let xs = j_arr(v)
+  let out : Array[String] = []
+  let mut i = 0
+  while i < xs.length() {
+    match xs[i] {
+      form::Json::Str(s) => out.push(s)
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn j_chains(v : Option[form::Json]) -> Array[Array[form::Json]] {
+  let xs = j_arr(v)
+  let out : Array[Array[form::Json]] = []
+  let mut i = 0
+  while i < xs.length() {
+    out.push(j_arr(Some(xs[i])))
+    i = i + 1
+  }
+  out
+}
+
+fn opt_str_json(s : Option[String]) -> form::Json {
+  match s {
+    Some(x) => form::Json::Str(x)
+    None => form::Json::Null
+  }
+}
+
+fn err_json(why : String) -> form::Json {
+  form::Json::Obj([("error", form::Json::Str(why))])
+}
+
+fn step_name(s : fork::Step) -> String {
+  match s {
+    fork::Step::Weight => "weight"
+    fork::Step::Removal => "removal"
+    fork::Step::Tie => "tie"
+    fork::Step::Hash => "hash"
+  }
+}
+
+fn state_json(s : lock::LockState) -> form::Json {
+  let j_origins : Array[form::Json] = []
+  let mut oi = 0
+  while oi < s.origins.length() {
+    j_origins.push(form::Json::Str(s.origins[oi]))
+    oi = oi + 1
+  }
+  let j_members : Array[form::Json] = []
+  let ms = s.members.entries()
+  let mut mi = 0
+  while mi < ms.length() {
+    let (k, m) = ms[mi]
+    j_members.push(form::Json::Arr([
+      form::Json::Str(k),
+      form::Json::Obj([
+        ("sub", form::Json::Str(m.sub)),
+        ("email", form::Json::Str(m.email)),
+        ("role", form::Json::Str(m.role)),
+      ]),
+    ]))
+    mi = mi + 1
+  }
+  let j_devices : Array[form::Json] = []
+  let ds = s.devices.entries()
+  let mut di = 0
+  while di < ds.length() {
+    let (k, d) = ds[di]
+    let dm : Array[(String, form::Json)] = [
+      ("id", form::Json::Str(d.id)),
+      ("sub", form::Json::Str(d.sub)),
+      ("kind", form::Json::Str(d.kind)),
+      ("label", form::Json::Str(d.label)),
+      ("own", form::Json::Bool(d.own)),
+    ]
+    match d.sign_key {
+      Some(sk) => dm.push(("sign_key", form::Json::Str(sk)))
+      None => ()
+    }
+    match d.endpoints {
+      Some(es) => {
+        let jes : Array[form::Json] = []
+        let mut ei = 0
+        while ei < es.length() {
+          jes.push(form::Json::Str(es[ei]))
+          ei = ei + 1
+        }
+        dm.push(("endpoints", form::Json::Arr(jes)))
+      }
+      None => ()
+    }
+    match d.exp {
+      Some(x) => dm.push(("exp", form::Json::Num(x)))
+      None => ()
+    }
+    match d.by {
+      Some(b) => dm.push(("by", form::Json::Str(b)))
+      None => ()
+    }
+    j_devices.push(form::Json::Arr([form::Json::Str(k), form::Json::Obj(dm)]))
+    di = di + 1
+  }
+  let j_sign_keys : Array[form::Json] = []
+  let sks = s.sign_keys.entries()
+  let mut ski = 0
+  while ski < sks.length() {
+    let (k, xs) = sks[ski]
+    let jxs : Array[form::Json] = []
+    let mut xi = 0
+    while xi < xs.length() {
+      jxs.push(form::Json::Str(xs[xi]))
+      xi = xi + 1
+    }
+    j_sign_keys.push(form::Json::Arr([form::Json::Str(k), form::Json::Arr(jxs)]))
+    ski = ski + 1
+  }
+  let j_passkeys : Array[form::Json] = []
+  let pks = s.passkeys.entries()
+  let mut pi = 0
+  while pi < pks.length() {
+    let (k, p) = pks[pi]
+    j_passkeys.push(form::Json::Arr([
+      form::Json::Str(k),
+      form::Json::Obj([
+        ("id", form::Json::Str(p.id)),
+        ("sub", form::Json::Str(p.sub)),
+        ("key", form::Json::Str(p.key)),
+        ("label", form::Json::Str(p.label)),
+        ("own", form::Json::Bool(p.own)),
+      ]),
+    ]))
+    pi = pi + 1
+  }
+  let j_signed : Array[form::Json] = []
+  let sgn = s.signed.keys()
+  let mut sgi = 0
+  while sgi < sgn.length() {
+    j_signed.push(form::Json::Str(sgn[sgi]))
+    sgi = sgi + 1
+  }
+  let j_stations : Array[form::Json] = []
+  let sts = s.stations.entries()
+  let mut sti = 0
+  while sti < sts.length() {
+    let (k, st) = sts[sti]
+    j_stations.push(form::Json::Arr([
+      form::Json::Str(k),
+      form::Json::Obj([("key", form::Json::Str(st.key)), ("name", form::Json::Str(st.name))]),
+    ]))
+    sti = sti + 1
+  }
+  let j_gateways : Array[form::Json] = []
+  let gws = s.gateways.keys()
+  let mut gi = 0
+  while gi < gws.length() {
+    j_gateways.push(form::Json::Str(gws[gi]))
+    gi = gi + 1
+  }
+  let j_persons : Array[form::Json] = []
+  let ps = s.persons.entries()
+  let mut psi = 0
+  while psi < ps.length() {
+    j_persons.push(form::Json::Arr([form::Json::Str(ps[psi].0), form::Json::Str(ps[psi].1)]))
+    psi = psi + 1
+  }
+  let out : Array[(String, form::Json)] = [
+    ("ws", form::Json::Str(s.ws)),
+    ("seq", form::Json::Num(s.seq)),
+    ("head", form::Json::Str(s.head)),
+    ("genesis", form::Json::Str(s.genesis)),
+    ("origins", form::Json::Arr(j_origins)),
+    ("rp_id", form::Json::Str(s.rp_id)),
+    ("cloud_keys", s.cloud_keys),
+    ("members", form::Json::Arr(j_members)),
+    ("devices", form::Json::Arr(j_devices)),
+    ("signKeys", form::Json::Arr(j_sign_keys)),
+    ("passkeys", form::Json::Arr(j_passkeys)),
+    ("signed", form::Json::Arr(j_signed)),
+    ("stations", form::Json::Arr(j_stations)),
+    ("gateways", form::Json::Arr(j_gateways)),
+    ("persons", form::Json::Arr(j_persons)),
+    ("disabled", form::Json::Bool(s.disabled)),
+  ]
+  match s.moved {
+    Some(root) => out.push(("moved", form::Json::Str(root)))
+    None => ()
+  }
+  form::Json::Obj(out)
+}
+
+fn person_json(p : lock::Person) -> form::Json {
+  let j_devs : Array[form::Json] = []
+  let ds = p.devices.values()
+  let mut di = 0
+  while di < ds.length() {
+    let d = ds[di]
+    let sks : Array[form::Json] = []
+    let mut si = 0
+    while si < d.sign_keys.length() {
+      sks.push(form::Json::Str(d.sign_keys[si]))
+      si = si + 1
+    }
+    let dm : Array[(String, form::Json)] = [
+      ("key", form::Json::Str(d.key)),
+      ("id", form::Json::Str(d.id)),
+      ("label", form::Json::Str(d.label)),
+      ("sign_keys", form::Json::Arr(sks)),
+    ]
+    match d.sign_key {
+      Some(k) => dm.push(("sign_key", form::Json::Str(k)))
+      None => ()
+    }
+    j_devs.push(form::Json::Obj(dm))
+    di = di + 1
+  }
+  let j_webs : Array[form::Json] = []
+  let ws = p.webs.values()
+  let mut wi = 0
+  while wi < ws.length() {
+    let w = ws[wi]
+    j_webs.push(form::Json::Obj([
+      ("id", form::Json::Str(w.id)),
+      ("label", form::Json::Str(w.label)),
+      ("at", form::Json::Num(w.at)),
+      ("exp", form::Json::Num(w.exp)),
+    ]))
+    wi = wi + 1
+  }
+  form::Json::Obj([
+    ("sub", form::Json::Str(p.sub)),
+    ("genesis", form::Json::Str(p.genesis)),
+    ("head", form::Json::Str(p.head)),
+    ("seq", form::Json::Num(p.seq)),
+    ("devices", form::Json::Arr(j_devs)),
+    ("webs", form::Json::Arr(j_webs)),
+  ])
+}
+
+fn chain_json(ch : lock::Chain) -> form::Json {
+  let j_at : Array[form::Json] = []
+  let mut ai = 0
+  while ai < ch.at.length() {
+    j_at.push(form::Json::Num(ch.at[ai].to_double()))
+    ai = ai + 1
+  }
+  let j_hashes : Array[form::Json] = []
+  let mut hi = 0
+  while hi < ch.hashes.length() {
+    j_hashes.push(form::Json::Str(ch.hashes[hi]))
+    hi = hi + 1
+  }
+  let j_off : Array[form::Json] = []
+  let mut oi = 0
+  while oi < ch.off.length() {
+    let (idx, o) = ch.off[oi]
+    let m : Array[(String, form::Json)] = [("at", form::Json::Num(idx.to_double()))]
+    match o {
+      lock::Off::NotValid(why) => {
+        m.push(("why", form::Json::Str("refused")))
+        m.push(("refusal", form::Json::Str(why)))
+      }
+      lock::Off::NoParent => m.push(("why", form::Json::Str("no parent")))
+      lock::Off::Beaten(winner, step) => {
+        m.push(("why", form::Json::Str("beaten")))
+        m.push(("winner", form::Json::Str(winner)))
+        m.push(("step", form::Json::Str(step_name(step))))
+      }
+      lock::Off::Below(top) => {
+        m.push(("why", form::Json::Str("below")))
+        m.push(("under", form::Json::Str(top)))
+      }
+      lock::Off::Again => m.push(("why", form::Json::Str("again")))
+    }
+    j_off.push(form::Json::Obj(m))
+    oi = oi + 1
+  }
+  form::Json::Obj([
+    ("at", form::Json::Arr(j_at)),
+    ("hashes", form::Json::Arr(j_hashes)),
+    ("off", form::Json::Arr(j_off)),
+  ])
+}
+
+fn roster_json(r : lock::Roster) -> form::Json {
+  let j_members : Array[form::Json] = []
+  let mut mi = 0
+  while mi < r.members.length() {
+    let m = r.members[mi]
+    let j_keys = match m.keys {
+      Some(ks) => {
+        let out : Array[form::Json] = []
+        let mut ki = 0
+        while ki < ks.length() {
+          out.push(form::Json::Str(ks[ki]))
+          ki = ki + 1
+        }
+        form::Json::Arr(out)
+      }
+      None => form::Json::Null
+    }
+    j_members.push(form::Json::Obj([
+      ("sub", form::Json::Str(m.sub)),
+      ("role", form::Json::Str(m.role)),
+      ("lock", form::Json::Str(m.lock)),
+      ("admit", opt_str_json(m.admit)),
+      ("keys", j_keys),
+    ]))
+    mi = mi + 1
+  }
+  let j_stations : Array[form::Json] = []
+  let mut si = 0
+  while si < r.stations.length() {
+    j_stations.push(form::Json::Str(r.stations[si]))
+    si = si + 1
+  }
+  let j_pairs : Array[form::Json] = []
+  let mut pi = 0
+  while pi < r.pairs.length() {
+    let p = r.pairs[pi]
+    j_pairs.push(form::Json::Obj([
+      ("sub", form::Json::Str(p.0)),
+      ("lock", form::Json::Str(p.1)),
+      ("role", form::Json::Str(p.2)),
+    ]))
+    pi = pi + 1
+  }
+  let j_undec : Array[form::Json] = []
+  let mut ui = 0
+  while ui < r.undecided.length() {
+    let u = r.undecided[ui]
+    j_undec.push(form::Json::Obj([("sub", form::Json::Str(u.0)), ("lock", form::Json::Str(u.1))]))
+    ui = ui + 1
+  }
+  let j_canc : Array[form::Json] = []
+  let mut ci = 0
+  while ci < r.cancelled.length() {
+    j_canc.push(form::Json::Str(r.cancelled[ci]))
+    ci = ci + 1
+  }
+  let j_stmts : Array[form::Json] = []
+  let mut sti = 0
+  while sti < r.statements.length() {
+    let x = r.statements[sti]
+    j_stmts.push(form::Json::Obj([
+      ("hash", form::Json::Str(x.hash)),
+      ("kind", form::Json::Str(x.kind)),
+      ("log", form::Json::Str(x.log)),
+      ("by", form::Json::Str(x.by)),
+      ("label", form::Json::Str(x.label)),
+      ("why", opt_str_json(x.why)),
+      ("decided", opt_str_json(x.decided)),
+    ]))
+    sti = sti + 1
+  }
+  let j_labels : Array[form::Json] = []
+  let mut li = 0
+  while li < r.labels.length() {
+    let l = r.labels[li]
+    j_labels.push(form::Json::Arr([form::Json::Str(l.0), form::Json::Str(l.1)]))
+    li = li + 1
+  }
+  let j_refused : Array[form::Json] = []
+  let mut ri = 0
+  while ri < r.refused.length() {
+    let x = r.refused[ri]
+    j_refused.push(form::Json::Obj([("genesis", form::Json::Str(x.0)), ("why", form::Json::Str(x.1))]))
+    ri = ri + 1
+  }
+  let j_inf : Array[form::Json] = []
+  let mut fi = 0
+  while fi < r.in_force.length() {
+    let x = r.in_force[fi]
+    j_inf.push(form::Json::Obj([("entry", form::Json::Str(x.0)), ("body", form::Json::Str(x.1))]))
+    fi = fi + 1
+  }
+  let j_lack : Array[form::Json] = []
+  let mut ki2 = 0
+  while ki2 < r.lacking.length() {
+    j_lack.push(form::Json::Str(r.lacking[ki2]))
+    ki2 = ki2 + 1
+  }
+  let j_ck : Array[form::Json] = []
+  let mut cki = 0
+  while cki < r.carried_keys.length() {
+    let x = r.carried_keys[cki]
+    j_ck.push(form::Json::Obj([("key", form::Json::Str(x.0)), ("sub", form::Json::Str(x.1))]))
+    cki = cki + 1
+  }
+  let j_settings = match r.settings {
+    Some(s) => s
+    None => form::Json::Null
+  }
+  form::Json::Obj([
+    ("rooted", form::Json::Bool(r.rooted)),
+    ("members", form::Json::Arr(j_members)),
+    ("stations", form::Json::Arr(j_stations)),
+    ("pairs", form::Json::Arr(j_pairs)),
+    ("undecided", form::Json::Arr(j_undec)),
+    ("cancelled", form::Json::Arr(j_canc)),
+    ("statements", form::Json::Arr(j_stmts)),
+    ("labels", form::Json::Arr(j_labels)),
+    ("refused", form::Json::Arr(j_refused)),
+    ("in_force", form::Json::Arr(j_inf)),
+    ("lacking", form::Json::Arr(j_lack)),
+    ("newest", opt_str_json(r.newest)),
+    ("settings", j_settings),
+    ("carried_keys", form::Json::Arr(j_ck)),
+  ])
+}
+
+fn parse_lock_view(v : Option[form::Json]) -> vault::LockView {
+  let ws = j_str(form::json_field(v, "ws"))
+  let members : form::OrderedMap[Bool] = form::OrderedMap::new()
+  let roles : form::OrderedMap[String] = form::OrderedMap::new()
+  let ms = j_arr(form::json_field(v, "members"))
+  let mut mi = 0
+  while mi < ms.length() {
+    let pair = j_arr(Some(ms[mi]))
+    if pair.length() >= 2 {
+      let sub = j_str(Some(pair[0]))
+      let r = j_str(Some(pair[1]))
+      members.set(sub, true)
+      roles.set(sub, r)
+    }
+    mi = mi + 1
+  }
+  let devices : form::OrderedMap[vault::Device] = form::OrderedMap::new()
+  let ds = j_arr(form::json_field(v, "devices"))
+  let mut di = 0
+  while di < ds.length() {
+    let pair = j_arr(Some(ds[di]))
+    if pair.length() >= 2 {
+      let id = j_str(Some(pair[0]))
+      let d = Some(pair[1])
+      devices.set(id, vault::Device::{
+        sub: j_str(form::json_field(d, "sub")),
+        kind: j_str(form::json_field(d, "kind")),
+        sign_key: j_opt_str(form::json_field(d, "sign_key")),
+        own: j_bool(form::json_field(d, "own")),
+      })
+    }
+    di = di + 1
+  }
+  let sign_keys : form::OrderedMap[Array[String]] = form::OrderedMap::new()
+  let sks = j_arr(form::json_field(v, "signKeys"))
+  let mut si = 0
+  while si < sks.length() {
+    let pair = j_arr(Some(sks[si]))
+    if pair.length() >= 2 {
+      sign_keys.set(j_str(Some(pair[0])), j_str_arr(Some(pair[1])))
+    }
+    si = si + 1
+  }
+  vault::LockView::{ ws: ws, members: members, roles: roles, devices: devices, sign_keys: sign_keys }
+}
+
+fn parse_in_json() -> Result[form::Json, String] {
+  form::parse_json(read_in_str())
+}
+
+// ── Exported wasm32 functions ─────────────────────────────────────────────────────────────────────────────────────
+
+pub extern "C" fn wasm_canonical_of() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => v
+    Err(e) => return write_out_str("!" + e)
+  }
+  match form::canonical(j) {
+    Ok(s) => write_out_str(s)
+    Err(why) => write_out_str("!" + why)
+  }
+}
+
+pub extern "C" fn wasm_entry_text_of() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => v
+    Err(e) => return write_out_str("!" + e)
+  }
+  match form::entry_text(j) {
+    Ok(s) => write_out_str(s)
+    Err(why) => write_out_str("!" + why)
+  }
+}
+
+fn role_of_str(s : String) -> role::Role {
+  if s == "owner" {
+    role::Role::Owner
+  } else if s == "admin" {
+    role::Role::Admin
+  } else if s == "member" {
+    role::Role::Member
+  } else {
+    role::Role::Viewer
+  }
+}
+
+fn role_to_str(r : role::Role) -> String {
+  match r {
+    role::Role::Owner => "owner"
+    role::Role::Admin => "admin"
+    role::Role::Member => "member"
+    role::Role::Viewer => "viewer"
+  }
+}
+
+pub extern "C" fn wasm_lower_role() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(_) => None
+  }
+  let a = j_str(form::json_field(j, "a"))
+  let b = j_str(form::json_field(j, "b"))
+  write_out_str(role_to_str(role::lower(role_of_str(a), role_of_str(b))))
+}
+
+pub extern "C" fn wasm_copied() -> Int {
+  lock::copied_count()
+}
+
+pub extern "C" fn wasm_stepped() -> Int {
+  lock::stepped_count()
+}
+
+pub extern "C" fn wasm_fold() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return write_out_json(err_json(e))
+  }
+  let entries = j_arr(form::json_field(j, "entries"))
+  let now = j_opt_num(form::json_field(j, "now"))
+  match lock::fold(entries, now, host_lock_crypto()) {
+    Ok(s) => write_out_json(form::Json::Obj([("state", state_json(s))]))
+    Err(e) => write_out_json(err_json(lock::error_msg(e)))
+  }
+}
+
+pub extern "C" fn wasm_fold_held() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return write_out_json(err_json(e))
+  }
+  let entries = j_arr(form::json_field(j, "entries"))
+  let now = j_opt_num(form::json_field(j, "now"))
+  match lock::fold(entries, now, host_lock_crypto()) {
+    Ok(s) => {
+      let h = alloc_lock_handle(s)
+      write_out_json(form::Json::Obj([("state", state_json(s)), ("handle", form::Json::Num(h.to_double()))]))
+    }
+    Err(e) => write_out_json(err_json(lock::error_msg(e)))
+  }
+}
+
+pub extern "C" fn wasm_genesis() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => v
+    Err(e) => return write_out_json(err_json(e))
+  }
+  match lock::genesis(j, host_lock_crypto()) {
+    Ok(s) => {
+      let h = alloc_lock_handle(s)
+      write_out_json(form::Json::Obj([("state", state_json(s)), ("handle", form::Json::Num(h.to_double()))]))
+    }
+    Err(e) => write_out_json(err_json(lock::error_msg(e)))
+  }
+}
+
+pub extern "C" fn wasm_apply(prev_h : Int) -> Int {
+  let prev = match get_lock_handle(prev_h) {
+    Some(s) => s
+    None => return write_out_json(err_json("invalid lock handle"))
+  }
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return write_out_json(err_json(e))
+  }
+  let entry = match form::json_field(j, "entry") {
+    Some(x) => x
+    None => form::Json::Null
+  }
+  let now = j_opt_num(form::json_field(j, "now"))
+  match lock::apply(prev, entry, now, host_lock_crypto()) {
+    Ok(s) => {
+      let h = alloc_lock_handle(s)
+      write_out_json(form::Json::Obj([("state", state_json(s)), ("handle", form::Json::Num(h.to_double()))]))
+    }
+    Err(e) => write_out_json(err_json(lock::error_msg(e)))
+  }
+}
+
+pub extern "C" fn wasm_signer(h : Int) -> Int {
+  let s = match get_lock_handle(h) {
+    Some(st) => st
+    None => return write_out_json(form::Json::Null)
+  }
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(_) => return write_out_json(form::Json::Null)
+  }
+  let key = j_str(form::json_field(j, "key"))
+  let now = j_opt_num(form::json_field(j, "now"))
+  match lock::signer(s, key, now) {
+    None => write_out_json(form::Json::Null)
+    Some(w) => {
+      write_out_json(form::Json::Obj([
+        ("sub", form::Json::Str(w.sub)),
+        ("role", form::Json::Str(w.role)),
+        ("passkey", form::Json::Bool(w.passkey)),
+        ("own", form::Json::Bool(w.own)),
+      ]))
+    }
+  }
+}
+
+pub extern "C" fn wasm_admit() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return write_out_json(err_json(e))
+  }
+  let entries = j_arr(form::json_field(j, "entries"))
+  let fold_now = j_opt_num(form::json_field(j, "fold_now"))
+  let queries = j_arr(form::json_field(j, "queries"))
+  let c = host_lock_crypto()
+  let s = match lock::fold(entries, fold_now, c) {
+    Ok(st) => st
+    Err(e) => return write_out_json(err_json(lock::error_msg(e)))
+  }
+  let out : Array[form::Json] = []
+  let mut i = 0
+  while i < queries.length() {
+    let q = Some(queries[i])
+    let ans = match lock::admit(s, j_str(form::json_field(q, "sub")), j_str(form::json_field(q, "endpoint")), j_opt_str(form::json_field(q, "base")), j_opt_str(form::json_field(q, "proof")), j_num(form::json_field(q, "now")), c) {
+      Ok((d, r)) => form::Json::Obj([("device", form::Json::Str(d.id)), ("role", form::Json::Str(r))])
+      Err(e) => form::Json::Obj([("refusal", form::Json::Str(lock::error_msg(e)))])
+    }
+    out.push(ans)
+    i = i + 1
+  }
+  write_out_json(form::Json::Arr(out))
+}
+
+pub extern "C" fn wasm_admit_one(h : Int) -> Int {
+  let s = match get_lock_handle(h) {
+    Some(st) => st
+    None => return write_out_json(form::Json::Obj([("refusal", form::Json::Str("invalid lock handle"))]))
+  }
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return write_out_json(form::Json::Obj([("refusal", form::Json::Str(e))]))
+  }
+  let who = form::json_field(j, "who")
+  let now = j_num(form::json_field(j, "now"))
+  let ans = match lock::admit(s, j_str(form::json_field(who, "sub")), j_str(form::json_field(who, "endpoint")), j_opt_str(form::json_field(who, "base")), j_opt_str(form::json_field(who, "proof")), now, host_lock_crypto()) {
+    Ok((d, r)) => form::Json::Obj([("device", form::Json::Str(d.id)), ("role", form::Json::Str(r))])
+    Err(e) => form::Json::Obj([("refusal", form::Json::Str(lock::error_msg(e)))])
+  }
+  write_out_json(ans)
+}
+
+pub extern "C" fn wasm_person_fold() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return write_out_json(err_json(e))
+  }
+  let entries = j_arr(form::json_field(j, "entries"))
+  let sub = j_str(form::json_field(j, "sub"))
+  match lock::fold_person(entries, sub, host_lock_crypto()) {
+    Ok(p) => write_out_json(person_json(p))
+    Err(e) => write_out_json(err_json(lock::error_msg(e)))
+  }
+}
+
+pub extern "C" fn wasm_admit_person(h : Int) -> Int {
+  let s = match get_lock_handle(h) {
+    Some(st) => st
+    None => return write_out_json(form::Json::Obj([("refusal", form::Json::Str("invalid lock handle"))]))
+  }
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return write_out_json(form::Json::Obj([("refusal", form::Json::Str(e))]))
+  }
+  let who = form::json_field(j, "who")
+  let entries = j_arr(form::json_field(j, "entries"))
+  let ans = match lock::admit_person(s, j_str(form::json_field(who, "sub")), j_str(form::json_field(who, "endpoint")), j_opt_str(form::json_field(who, "base")), j_opt_str(form::json_field(who, "proof")), entries, host_lock_crypto()) {
+    Ok((d, r, p)) => form::Json::Obj([("device", form::Json::Str(d.id)), ("role", form::Json::Str(r)), ("person", person_json(p))])
+    Err(e) => form::Json::Obj([("refusal", form::Json::Str(lock::error_msg(e)))])
+  }
+  write_out_json(ans)
+}
+
+pub extern "C" fn wasm_cert_ok() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(_) => return write_out_json(form::Json::Null)
+  }
+  let lv = parse_lock_view(form::json_field(j, "lock"))
+  let cert = form::json_field(j, "cert")
+  let ever = j_bool(form::json_field(j, "ever"))
+  write_out_json(opt_str_json(vault::cert_ok(lv, cert, ever, host_vault_crypto())))
+}
+
+pub extern "C" fn wasm_vault_ok() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(_) => return write_out_json(form::Json::Null)
+  }
+  let lv = parse_lock_view(form::json_field(j, "lock"))
+  let prev = match form::json_field(j, "prev") {
+    Some(form::Json::Null) => None
+    x => x
+  }
+  let next = match form::json_field(j, "next") {
+    Some(x) => x
+    None => form::Json::Null
+  }
+  let copy = j_bool(form::json_field(j, "copy"))
+  write_out_json(opt_str_json(vault::vault_ok(lv, prev, next, copy, host_vault_crypto())))
+}
+
+pub extern "C" fn wasm_item_ok() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(_) => return write_out_json(form::Json::Null)
+  }
+  let lv = parse_lock_view(form::json_field(j, "lock"))
+  let v = match form::json_field(j, "vault") {
+    Some(x) => x
+    None => form::Json::Null
+  }
+  let prev = match form::json_field(j, "prev") {
+    Some(form::Json::Null) => None
+    x => x
+  }
+  let next = match form::json_field(j, "next") {
+    Some(x) => x
+    None => form::Json::Null
+  }
+  let copy = j_bool(form::json_field(j, "copy"))
+  write_out_json(opt_str_json(vault::item_ok(lv, v, prev, next, copy, host_vault_crypto())))
+}
+
+pub extern "C" fn wasm_browser_listing_ok() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(_) => return write_out_json(form::Json::Null)
+  }
+  let kind = j_str(form::json_field(j, "kind"))
+  let modes = j_str_arr(form::json_field(j, "modes"))
+  let hosts = j_str_arr(form::json_field(j, "hosts"))
+  write_out_json(opt_str_json(vault::browser_listing_ok(kind, modes, hosts)))
+}
+
+pub extern "C" fn wasm_signer_of() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(_) => return write_out_json(form::Json::Null)
+  }
+  let lv = parse_lock_view(form::json_field(j, "lock"))
+  let key = j_str(form::json_field(j, "key"))
+  match vault::signer_of(lv, key) {
+    Some((sub, dev)) => write_out_json(form::Json::Obj([("sub", form::Json::Str(sub)), ("device", form::Json::Str(dev))]))
+    None => write_out_json(form::Json::Null)
+  }
+}
+
+fn supersedes_impl(a : form::Json, b : form::Json, number_field : String) -> Bool {
+  let get_n = fn(v : form::Json, k : String) -> Int64 {
+    match form::json_field(Some(v), k) {
+      Some(form::Json::Num(x)) => x.to_int64()
+      _ => 0.to_int64()
+    }
+  }
+  let is_del = fn(v : form::Json) -> Bool {
+    match form::json_field(Some(v), "deleted") {
+      Some(form::Json::Bool(true)) => true
+      _ => false
+    }
+  }
+  let ca = match form::canonical(a) {
+    Ok(s) => s
+    Err(_) => return false
+  }
+  let cb = match form::canonical(b) {
+    Ok(s) => s
+    Err(_) => return false
+  }
+  let cmp = form::mbt_str_cmp(ca, cb)
+  history::supersedes(get_n(a, number_field), is_del(a), get_n(a, "epoch"), get_n(b, number_field), is_del(b), get_n(b, "epoch"), cmp)
+}
+
+pub extern "C" fn wasm_vault_supersedes() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(_) => return 0
+  }
+  let a = match form::json_field(j, "a") {
+    Some(x) => x
+    None => return 0
+  }
+  let b = match form::json_field(j, "b") {
+    Some(x) => x
+    None => return 0
+  }
+  if supersedes_impl(a, b, "seq") { 1 } else { 0 }
+}
+
+pub extern "C" fn wasm_item_supersedes() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(_) => return 0
+  }
+  let a = match form::json_field(j, "a") {
+    Some(x) => x
+    None => return 0
+  }
+  let b = match form::json_field(j, "b") {
+    Some(x) => x
+    None => return 0
+  }
+  if supersedes_impl(a, b, "version") { 1 } else { 0 }
+}
+
+pub extern "C" fn wasm_tie_of() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(_) => return write_out_str("")
+  }
+  let parent = j_str(form::json_field(j, "parent"))
+  let key = j_str(form::json_field(j, "key"))
+  write_out_str(lock::tie_of(parent, key, host_lock_crypto()))
+}
+
+pub extern "C" fn wasm_fork_before() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(_) => return write_out_json(form::Json::Null)
+  }
+  let a = form::json_field(j, "a")
+  let b = form::json_field(j, "b")
+  let res = lock::before(
+    j_num(form::json_field(a, "weight")).to_int(),
+    j_bool(form::json_field(a, "removal")),
+    j_str(form::json_field(a, "tie")),
+    j_str(form::json_field(a, "hash")),
+    j_num(form::json_field(b, "weight")).to_int(),
+    j_bool(form::json_field(b, "removal")),
+    j_str(form::json_field(b, "tie")),
+    j_str(form::json_field(b, "hash")),
+  )
+  match res {
+    Some(s) => write_out_json(form::Json::Str(step_name(s)))
+    None => write_out_json(form::Json::Null)
+  }
+}
+
+pub extern "C" fn wasm_lock_chain() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return write_out_json(err_json(e))
+  }
+  let entries = j_arr(form::json_field(j, "entries"))
+  let genesis = j_str(form::json_field(j, "genesis"))
+  let votes_str = j_str(form::json_field(j, "votes"))
+  let votes = if votes_str == "flat" { lock::Votes::Flat } else { lock::Votes::Roles }
+  let now = j_opt_num(form::json_field(j, "now"))
+  match lock::lock_chain(entries, genesis, votes, now, host_lock_crypto()) {
+    Ok(ch) => write_out_json(chain_json(ch))
+    Err(e) => write_out_json(err_json(lock::error_msg(e)))
+  }
+}
+
+pub extern "C" fn wasm_person_chain() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return write_out_json(err_json(e))
+  }
+  let entries = j_arr(form::json_field(j, "entries"))
+  let genesis = j_str(form::json_field(j, "genesis"))
+  match lock::person_chain(entries, genesis, host_lock_crypto()) {
+    Ok(ch) => write_out_json(chain_json(ch))
+    Err(e) => write_out_json(err_json(lock::error_msg(e)))
+  }
+}
+
+pub extern "C" fn wasm_roster() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return write_out_json(err_json(e))
+  }
+  let ws = j_str(form::json_field(j, "ws"))
+  let root = j_str(form::json_field(j, "root"))
+  let chains = j_chains(form::json_field(j, "chains"))
+  let bodies = j_arr(form::json_field(j, "bodies"))
+  let without = j_str_arr(form::json_field(j, "without"))
+  write_out_json(roster_json(lock::roster_without(ws, root, chains, bodies, without, host_lock_crypto())))
+}
+
+pub extern "C" fn wasm_carried() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return alloc_carried_handle(CarriedHandle::{ moved: None, invalid: e })
+  }
+  match j_opt_str(form::json_field(j, "invalid")) {
+    Some(why) => return alloc_carried_handle(CarriedHandle::{ moved: None, invalid: why })
+    None => ()
+  }
+  let chain = j_arr(form::json_field(j, "chain"))
+  let m = lock::moved_of(chain, host_lock_crypto())
+  alloc_carried_handle(CarriedHandle::{ moved: Some(m), invalid: "" })
+}
+
+pub extern "C" fn wasm_roster_carried(h_id : Int) -> Int {
+  let h = match get_carried_handle(h_id) {
+    Some(x) => x
+    None => return write_out_json(err_json("invalid carried handle"))
+  }
+  let m = match h.moved {
+    Some(mv) => mv
+    None => return write_out_json(err_json(h.invalid))
+  }
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return write_out_json(err_json(e))
+  }
+  let ws = j_str(form::json_field(j, "ws"))
+  let chains = j_chains(form::json_field(j, "chains"))
+  let bodies = j_arr(form::json_field(j, "bodies"))
+  let without = j_str_arr(form::json_field(j, "without"))
+  write_out_json(roster_json(lock::roster_carried(ws, m, chains, bodies, without, host_lock_crypto())))
+}
+
+pub extern "C" fn wasm_roster_moved() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return write_out_json(err_json(e))
+  }
+  let ws = j_str(form::json_field(j, "ws"))
+  let chain = j_arr(form::json_field(j, "chain"))
+  let chains = j_chains(form::json_field(j, "chains"))
+  let bodies = j_arr(form::json_field(j, "bodies"))
+  let without = j_str_arr(form::json_field(j, "without"))
+  write_out_json(roster_json(lock::roster_moved(ws, chain, chains, bodies, without, host_lock_crypto())))
+}
+
+pub extern "C" fn wasm_state4() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return write_out_json(err_json(e))
+  }
+  let ws = j_str(form::json_field(j, "ws"))
+  let root = j_str(form::json_field(j, "root"))
+  let chains = j_chains(form::json_field(j, "chains"))
+  let bodies = j_arr(form::json_field(j, "bodies"))
+  let now = j_num(form::json_field(j, "now"))
+  let st = lock::state4(ws, root, chains, bodies, now, host_lock_crypto())
+  let h = alloc_lock_handle(st.lock)
+  write_out_json(form::Json::Obj([
+    ("on", form::Json::Str(st.on)),
+    ("state", state_json(st.lock)),
+    ("handle", form::Json::Num(h.to_double())),
+  ]))
+}
+
+pub extern "C" fn wasm_state4_carried(h_id : Int) -> Int {
+  let h = match get_carried_handle(h_id) {
+    Some(x) => x
+    None => return write_out_json(err_json("invalid carried handle"))
+  }
+  let m = match h.moved {
+    Some(mv) => mv
+    None => return write_out_json(err_json(h.invalid))
+  }
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return write_out_json(err_json(e))
+  }
+  let ws = j_str(form::json_field(j, "ws"))
+  let chains = j_chains(form::json_field(j, "chains"))
+  let bodies = j_arr(form::json_field(j, "bodies"))
+  let now = j_num(form::json_field(j, "now"))
+  let st = lock::state4_carried(ws, m, chains, bodies, now, host_lock_crypto())
+  let lh = alloc_lock_handle(st.lock)
+  write_out_json(form::Json::Obj([
+    ("on", form::Json::Str(st.on)),
+    ("state", state_json(st.lock)),
+    ("handle", form::Json::Num(lh.to_double())),
+    ("root_in", form::Json::Bool(st.root_in)),
+  ]))
+}
+
+pub extern "C" fn wasm_state4_moved() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return write_out_json(err_json(e))
+  }
+  let ws = j_str(form::json_field(j, "ws"))
+  let chain = j_arr(form::json_field(j, "chain"))
+  let chains = j_chains(form::json_field(j, "chains"))
+  let bodies = j_arr(form::json_field(j, "bodies"))
+  let now = j_num(form::json_field(j, "now"))
+  let st = lock::state4_moved(ws, chain, chains, bodies, now, host_lock_crypto())
+  let lh = alloc_lock_handle(st.lock)
+  write_out_json(form::Json::Obj([
+    ("on", form::Json::Str(st.on)),
+    ("state", state_json(st.lock)),
+    ("handle", form::Json::Num(lh.to_double())),
+    ("root_in", form::Json::Bool(st.root_in)),
+  ]))
+}
+
+pub extern "C" fn wasm_bind_digest() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(_) => return write_out_json(form::Json::Null)
+  }
+  let ws = j_str(form::json_field(j, "ws"))
+  let sub = j_str(form::json_field(j, "sub"))
+  let log = j_str(form::json_field(j, "log"))
+  let moved = j_str(form::json_field(j, "moved"))
+  let dig = lock::bind_digest(ws, sub, log, moved, host_lock_crypto())
+  write_out_json(form::Json::Obj([("tag", form::Json::Str(lock::bind_tag)), ("digest", form::Json::Str(dig))]))
+}
+
+pub extern "C" fn wasm_ws_tag() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(_) => return write_out_str("")
+  }
+  let ws = j_str(form::json_field(j, "ws"))
+  let genesis = j_str(form::json_field(j, "genesis"))
+  write_out_str(lock::ws_tag(ws, genesis, host_lock_crypto()))
+}
+
+pub extern "C" fn wasm_body_hash() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => v
+    Err(e) => return write_out_str("!" + e)
+  }
+  match lock::body_hash(j, host_lock_crypto()) {
+    Ok(h) => write_out_str(h)
+    Err(e) => write_out_str("!" + lock::error_msg(e))
+  }
+}
+
+pub extern "C" fn wasm_body_refusal() -> Int {
+  let j = match parse_in_json() {
+    Ok(v) => Some(v)
+    Err(e) => return write_out_json(form::Json::Str("a body is {ws, kind, …, salt}: " + e))
+  }
+  let ws = j_str(form::json_field(j, "ws"))
+  let body = match form::json_field(j, "body") {
+    Some(b) => b
+    None => form::Json::Null
+  }
+  let raw_commits = j_arr(form::json_field(j, "commits"))
+  let commits : Array[lock::Commit] = []
+  let mut i = 0
+  while i < raw_commits.length() {
+    let x = Some(raw_commits[i])
+    commits.push(lock::Commit::{
+      genesis: j_str(form::json_field(x, "genesis")),
+      chain: j_arr(form::json_field(x, "chain")),
+    })
+    i = i + 1
+  }
+  write_out_json(opt_str_json(lock::body_refusal(ws, body, commits, host_lock_crypto())))
+}
+
+fn main() -> Unit {
+  ()
+}

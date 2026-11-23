@@ -1,0 +1,34 @@
+[workspace]
+members = [
+  "packages/outbox",
+  "packages/store",
+  "packages/protocol",
+  "packages/core_abi",
+  "packages/sync",
+]
+
+[workspace.dependencies]
+base64 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "base64-v0.1.0", subdir = "packages/base64" }
+effect = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "effect-v0.1.0", subdir = "packages/effect" }
+crypto = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "crypto-v0.2.0", subdir = "packages/crypto" }
+flate = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "flate-v0.1.0", subdir = "packages/flate" }
+url = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "url-v0.1.0", subdir = "packages/url" }
+time = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "time-v0.1.0", subdir = "packages/time" }
+http1 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "http1-v0.1.0", subdir = "packages/http1" }
+json5 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "json5-v0.1.0", subdir = "packages/json5" }
+base_codec = { path = "../base/packages/base_codec" }
+wire = { path = "../base/packages/wire" }
+shell = { path = "../base/packages/shell" }
+sql = { path = "../base/packages/sql" }
+mesh = { path = "../base/packages/mesh" }
+form = { path = "../rules/packages/form" }
+fork = { path = "../rules/packages/fork" }
+history = { path = "../rules/packages/history" }
+role = { path = "../rules/packages/role" }
+lock = { path = "../rules/packages/lock" }
+vault = { path = "../rules/packages/vault" }
+outbox = { path = "packages/outbox" }
+store = { path = "packages/store" }
+protocol = { path = "packages/protocol" }
+core_abi = { path = "packages/core_abi" }
+sync = { path = "packages/sync" }

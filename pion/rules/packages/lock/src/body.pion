@@ -1,0 +1,218 @@
+///| Statement bodies and commitments (`rules/src/lock/body.mbt`).
+
+pub struct Commit {
+  genesis : String
+  chain : Array[form::Json]
+}
+
+pub fn ws_tag(ws : String, genesis : String, c : Crypto) -> String {
+  (c.sha256_hex)("stillfail/ws-tag/1\n" + ws + "\n" + genesis)
+}
+
+pub fn body_hash(b : form::Json, c : Crypto) -> Result[String, LockError] {
+  match form::canonical(b) {
+    Ok(text) => Ok((c.sha256_hex)(text))
+    Err(why) => Err(LockError::Refused(why))
+  }
+}
+
+fn is_role(v : Option[form::Json]) -> Bool {
+  match v {
+    Some(form::Json::Str(s)) => s == "owner" || s == "admin" || s == "member" || s == "viewer"
+    _ => false
+  }
+}
+
+fn is_salt(v : Option[form::Json]) -> Bool {
+  match v {
+    Some(form::Json::Str(s)) => is_hex_of(s, 32)
+    _ => false
+  }
+}
+
+fn is_hex_arr(v : Option[form::Json]) -> Bool {
+  match v {
+    Some(form::Json::Arr(xs)) => {
+      let mut i = 0
+      while i < xs.length() {
+        if !is_id(Some(xs[i])) {
+          return false
+        }
+        i = i + 1
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+fn has_str_field(v : Option[form::Json], k : String) -> Bool {
+  match text_of(field(v, k)) {
+    Some(_) => true
+    None => false
+  }
+}
+
+pub fn body_why(b : form::Json) -> Option[String] {
+  let v = Some(b)
+  let entries = match b {
+    form::Json::Obj(m) => m
+    _ => return Some("a body is {ws, kind, …, salt}")
+  }
+  if !has_str_field(v, "ws") || !is_salt(field(v, "salt")) {
+    return Some("a body is {ws, kind, …, salt}")
+  }
+  match form::json_obj_get(entries, "prev") {
+    Some(form::Json::Null) => ()
+    Some(form::Json::Str(s)) => {
+      if !is_hex32(s) {
+        return Some("a body names the statement before it")
+      }
+    }
+    _ => return Some("a body names the statement before it")
+  }
+  let keys : Array[String] = []
+  let mut i = 0
+  while i < entries.length() {
+    if entries[i].0 != "prev" {
+      keys.push(entries[i].0)
+    }
+    i = i + 1
+  }
+  match text_of(field(v, "kind")) {
+    Some("member") => {
+      if keys_only(keys, ["email", "kind", "lock", "role", "salt", "sub", "ws"]) && has_str_field(v, "sub") && has_str_field(v, "email") && is_id(field(v, "lock")) && is_role(field(v, "role")) {
+        None
+      } else {
+        Some("an admit names a person, their email, a lock and a role")
+      }
+    }
+    Some("member.remove") => {
+      if keys_only(keys, ["cancels", "kind", "salt", "sub", "ws"]) && has_str_field(v, "sub") && is_hex_arr(field(v, "cancels")) {
+        None
+      } else {
+        Some("a removal names whom and what it cancels")
+      }
+    }
+    Some("station") => {
+      if keys_only(keys, ["key", "kind", "salt", "ws"]) && is_id(field(v, "key")) {
+        None
+      } else {
+        Some("a station is named by its key")
+      }
+    }
+    Some("station.remove") => {
+      if keys_only(keys, ["cancels", "key", "kind", "salt", "ws"]) && is_id(field(v, "key")) && is_hex_arr(field(v, "cancels")) {
+        None
+      } else {
+        Some("a removal names whom and what it cancels")
+      }
+    }
+    Some("open") => {
+      let origins_ok = match field(v, "origins") {
+        Some(form::Json::Arr(xs)) => {
+          let mut ok = true
+          let mut oi = 0
+          while oi < xs.length() {
+            match xs[oi] {
+              form::Json::Str(_) => ()
+              _ => {
+                ok = false
+                break
+              }
+            }
+            oi = oi + 1
+          }
+          ok
+        }
+        _ => false
+      }
+      if keys_only(keys, ["cloud_keys", "email", "kind", "origins", "rp_id", "salt", "ws"]) && has_str_field(v, "email") && origins_ok && has_str_field(v, "rp_id") {
+        None
+      } else {
+        Some("open names the settings")
+      }
+    }
+    Some("off") => {
+      if keys_only(keys, ["kind", "salt", "ws"]) {
+        None
+      } else {
+        Some("off says nothing more")
+      }
+    }
+    Some("bind") => {
+      let sig_ok = match field(v, "sig") {
+        Some(form::Json::Str(x)) => is_hex_of(x, 128)
+        _ => false
+      }
+      if keys_only(keys, ["key", "kind", "salt", "sig", "ws"]) && has_str_field(v, "key") && sig_ok {
+        None
+      } else {
+        Some("a binding names the signer that proves it and its signature")
+      }
+    }
+    _ => Some("no such statement")
+  }
+}
+
+pub fn body_refusal(ws : String, b : form::Json, commits : Array[Commit], c : Crypto) -> Option[String] {
+  if !opt_str_eq(text_of(field(Some(b), "ws")), ws) {
+    return Some("it names no workspace this keeper keeps")
+  }
+  let h = match body_hash(b, c) {
+    Ok(x) => x
+    Err(_) => return Some("no entry it keeps commits to it")
+  }
+  let mine : Array[Commit] = []
+  let mut ci = 0
+  while ci < commits.length() {
+    let x = commits[ci]
+    if x.chain.length() > 0 {
+      let e = Some(x.chain[x.chain.length() - 1])
+      if opt_str_eq(text_of(field(e, "kind")), "ws") && opt_str_eq(text_of(field(field(e, "body"), "h")), h) {
+        mine.push(x)
+      }
+    }
+    ci = ci + 1
+  }
+  if mine.length() == 0 {
+    return Some("no entry it keeps commits to it")
+  }
+  let tagged : Array[(Commit, String)] = []
+  let mut mi = 0
+  while mi < mine.length() {
+    let x = mine[mi]
+    let t = ws_tag(ws, x.genesis, c)
+    let e = Some(x.chain[x.chain.length() - 1])
+    if opt_str_eq(text_of(field(field(e, "body"), "t")), t) {
+      tagged.push((x, t))
+    }
+    mi = mi + 1
+  }
+  if tagged.length() == 0 {
+    return Some("its entry's tag is not its workspace's in that log")
+  }
+  match body_why(b) {
+    Some(why) => return Some("its shape: " + why)
+    None => ()
+  }
+  let prev = match text_of(field(Some(b), "prev")) {
+    Some(p) => p
+    None => return None
+  }
+  let mut ti = 0
+  while ti < tagged.length() {
+    let (x, t) = tagged[ti]
+    let lim = x.chain.length() - 1
+    let mut i = 0
+    while i < lim {
+      let e = Some(x.chain[i])
+      if opt_str_eq(text_of(field(e, "kind")), "ws") && opt_str_eq(text_of(field(field(e, "body"), "t")), t) && opt_str_eq(text_of(field(field(e, "body"), "h")), prev) {
+        return None
+      }
+      i = i + 1
+    }
+    ti = ti + 1
+  }
+  Some("its prev is not a statement before it in that log")
+}

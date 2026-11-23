@@ -18,7 +18,10 @@ import { type Holder, V3, type V3v, drawSteps3, effect, spec, stationKeys3, v3Na
 import { type Body, type D4, type D4Member, type W4Options, WS2, World4, bodyHash, tagOf, d4Diff, d4Said, look4, m2, m5Clock, m6, m7, m8, m9, revoked, unsigned } from "./lock-roster4-model.ts";
 import { Rng, WS } from "./lock-world-sim.ts";
 // @ts-ignore: the MoonBit build's JS, untyped
-import * as rules from "../../rules/js/rules.js";
+import * as moonbit from "../../rules/js/rules.js";
+import * as routed from "../../shared/rules-runtime.ts";
+/// By STILLFAIL_RULES_MODE; rules.js itself by default, which pion/rules/test/parity.test.mjs puts both ports in for.
+const rules: Record<string, any> = routed.rulesShadowStats().mode === "moonbit" ? moonbit : routed;
 
 /// The stations' own cryptography, a signature's check kept by what it checked (a world checks the same ones again and
 /// again; Ed25519 says the same of the same bytes).
@@ -50,7 +53,7 @@ function shuffled<T>(xs: T[], r: Rng): T[] {
   return out;
 }
 
-export type Out = { worlds: number; checks: number; branched: number; refusedSeen: number; statements: number; differ: string[]; more: More };
+export type Out = { worlds: number; checks: number; branched: number; refusedSeen: number; statements: number; differ: string[]; more: More; rules?: { calls: number; mismatches: number } };
 const fresh = (): Out => ({ worlds: 0, checks: 0, branched: 0, refusedSeen: 0, statements: 0, differ: [], more: more0() });
 
 /// The rules' chain of `given` from `genesis`, against `active`; what it said of what is not on it, counted.
@@ -412,6 +415,10 @@ export const runJob = (j: Job): Out =>
 
 if (!isMainThread && (workerData as { rulesFork?: boolean } | null)?.rulesFork === true) {
   parentPort!.on("message", (m: { id: number; job: Job }) => {
-    parentPort!.postMessage({ id: m.id, out: runJob(m.job) });
+    // What this job asked the rules through shadow or Pion (STILLFAIL_RULES_MODE), for rules-fork.test.ts to say.
+    const before = routed.rulesShadowStats();
+    const out = runJob(m.job);
+    const after = routed.rulesShadowStats();
+    parentPort!.postMessage({ id: m.id, out: { ...out, rules: { calls: after.calls - before.calls, mismatches: after.mismatches - before.mismatches } } });
   });
 }

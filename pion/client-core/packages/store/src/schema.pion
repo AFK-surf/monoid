@@ -1,0 +1,306 @@
+// Account SQLite database schema, forward-only migrations, and trigger setup.
+// 100% table- and trigger-compatible with `client/core-ts/src/db/schema.ts`
+// (`databases/<account>.db`). A database written by a newer core (`user_version > VERSION`)
+// is opened read-only with zero writes.
+
+import "base_codec"
+import "shell"
+import "sql"
+
+/// The schema version this core writes (schema.ts `VERSION`).
+pub fn schema_version() -> Int { 1 }
+
+/// Forward-only migrations taking a database from version `i` to `i + 1` (schema.ts `MIGRATIONS`).
+pub fn migrations() -> Array[String] {
+  [
+    "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);\n" +
+    "CREATE TABLE IF NOT EXISTS account_doc (name TEXT PRIMARY KEY, json TEXT NOT NULL, confirmed INTEGER);\n" +
+    "CREATE TABLE IF NOT EXISTS workspace (id TEXT PRIMARY KEY, json TEXT NOT NULL, confirmed INTEGER);\n" +
+    "CREATE TABLE IF NOT EXISTS station (\n" +
+    "  address TEXT NOT NULL, kind TEXT NOT NULL, json TEXT NOT NULL, confirmed INTEGER,\n" +
+    "  PRIMARY KEY (address, kind)\n" +
+    ");\n" +
+    "CREATE TABLE IF NOT EXISTS slack_app (station TEXT NOT NULL, connect TEXT NOT NULL, json TEXT NOT NULL, confirmed INTEGER, PRIMARY KEY (station, connect));\n" +
+    "CREATE TABLE IF NOT EXISTS list (station TEXT NOT NULL, list TEXT NOT NULL, confirmed INTEGER, rev INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (station, list));\n" +
+    "CREATE TABLE IF NOT EXISTS chat (\n" +
+    "  station TEXT NOT NULL, id TEXT NOT NULL, archived INTEGER NOT NULL, ord REAL NOT NULL,\n" +
+    "  thread INTEGER, session TEXT, client_key TEXT,\n" +
+    "  last_active INTEGER NOT NULL DEFAULT 0, pinned_at INTEGER,\n" +
+    "  unread INTEGER, mine INTEGER NOT NULL DEFAULT 0, running INTEGER NOT NULL DEFAULT 0,\n" +
+    "  tone TEXT, asks INTEGER NOT NULL DEFAULT 0, desk INTEGER NOT NULL DEFAULT 0,\n" +
+    "  json TEXT NOT NULL,\n" +
+    "  PRIMARY KEY (station, archived, id)\n" +
+    ");\n" +
+    "CREATE INDEX IF NOT EXISTS chat_recent ON chat (archived, pinned_at DESC, last_active DESC);\n" +
+    "CREATE INDEX IF NOT EXISTS chat_ord ON chat (station, archived, ord);\n" +
+    "CREATE INDEX IF NOT EXISTS chat_thread ON chat (station, thread) WHERE thread IS NOT NULL;\n" +
+    "CREATE INDEX IF NOT EXISTS chat_session ON chat (station, session);\n" +
+    "CREATE INDEX IF NOT EXISTS chat_running ON chat (station) WHERE running = 1;\n" +
+    "CREATE INDEX IF NOT EXISTS chat_marked ON chat (station) WHERE archived = 0 AND (tone IS NOT NULL OR asks = 1);\n" +
+    "CREATE INDEX IF NOT EXISTS chat_desk ON chat (station) WHERE archived = 0 AND desk = 1;\n" +
+    "CREATE TABLE IF NOT EXISTS session (\n" +
+    "  station TEXT NOT NULL, key TEXT NOT NULL, listed INTEGER NOT NULL DEFAULT 0, ord REAL NOT NULL DEFAULT 0,\n" +
+    "  last_active INTEGER, process TEXT, connect TEXT, archived_at INTEGER, turns INTEGER,\n" +
+    "  summary TEXT, detail TEXT,\n" +
+    "  PRIMARY KEY (station, key)\n" +
+    ");\n" +
+    "CREATE INDEX IF NOT EXISTS session_listed ON session (station, listed, ord);\n" +
+    "CREATE TABLE IF NOT EXISTS thread (\n" +
+    "  station TEXT NOT NULL, id INTEGER NOT NULL, listed INTEGER NOT NULL DEFAULT 0,\n" +
+    "  last INTEGER, read INTEGER, unread INTEGER,\n" +
+    "  sort_at INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL DEFAULT 0,\n" +
+    "  surface TEXT, first_member TEXT,\n" +
+    "  json TEXT NOT NULL,\n" +
+    "  PRIMARY KEY (station, id)\n" +
+    ");\n" +
+    "CREATE INDEX IF NOT EXISTS thread_listed ON thread (station, listed, sort_at DESC, created_at DESC, id DESC);\n" +
+    "CREATE INDEX IF NOT EXISTS thread_first ON thread (station, first_member);\n" +
+    "CREATE TABLE IF NOT EXISTS thread_member (station TEXT NOT NULL, session TEXT NOT NULL, thread INTEGER NOT NULL, PRIMARY KEY (station, session, thread));\n" +
+    "CREATE INDEX IF NOT EXISTS thread_member_thread ON thread_member (station, thread);\n" +
+    "CREATE TABLE IF NOT EXISTS entry (station TEXT NOT NULL, thread INTEGER NOT NULL, n INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (station, thread, n)) WITHOUT ROWID;\n" +
+    "CREATE TABLE IF NOT EXISTS transcript (station TEXT NOT NULL, session TEXT NOT NULL, i INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (station, session, i)) WITHOUT ROWID;\n" +
+    "CREATE TABLE IF NOT EXISTS job (\n" +
+    "  station TEXT NOT NULL, id TEXT NOT NULL, session TEXT, open INTEGER NOT NULL DEFAULT 0, ord REAL NOT NULL DEFAULT 0,\n" +
+    "  chat TEXT, json TEXT NOT NULL,\n" +
+    "  PRIMARY KEY (station, id)\n" +
+    ");\n" +
+    "CREATE INDEX IF NOT EXISTS job_open ON job (station, open, ord);\n" +
+    "CREATE TABLE IF NOT EXISTS outbox (station TEXT NOT NULL, thread INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (station, thread));\n" +
+    "CREATE TABLE IF NOT EXISTS pending (key TEXT PRIMARY KEY, station TEXT NOT NULL, json TEXT NOT NULL);\n" +
+    "CREATE TABLE IF NOT EXISTS first (station TEXT NOT NULL, session TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (station, session));\n" +
+    "CREATE TABLE IF NOT EXISTS changing (station TEXT NOT NULL, id INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (station, id));\n" +
+    "CREATE TABLE IF NOT EXISTS draft (station TEXT NOT NULL, chat TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (station, chat));\n" +
+    "CREATE TABLE IF NOT EXISTS workspace_pref (workspace TEXT NOT NULL, key TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (workspace, key));",
+  ]
+}
+
+fn said_kind(e : String) -> String {
+  "json_extract(" + e + ".json, '$.kind')"
+}
+
+fn said_says(e : String) -> String {
+  "(" + said_kind(e) + " = 'message' OR (" + said_kind(e) + " = 'edit' AND json_type(" + e + ".json, '$.target') = 'integer'))"
+}
+
+fn said_seq(e : String) -> String {
+  "(CASE " + said_kind(e) + " WHEN 'message' THEN " + e + ".n ELSE json_extract(" + e + ".json, '$.target') END)"
+}
+
+fn said_at(e : String) -> String {
+  "(CASE " + said_kind(e) + " WHEN 'message' THEN json_extract(" + e + ".json, '$.at') END)"
+}
+
+fn said_text(e : String) -> String {
+  "coalesce(CASE json_type(" + e + ".json, '$.text') WHEN 'text' THEN json_extract(" + e + ".json, '$.text') END, '')"
+}
+
+fn said_upsert() -> String {
+  "ON CONFLICT (station, thread, seq) DO UPDATE SET\n" +
+  "  text = CASE WHEN excluded.n >= said.n THEN excluded.text ELSE said.text END,\n" +
+  "  n = max(said.n, excluded.n),\n" +
+  "  at = coalesce(excluded.at, said.at)"
+}
+
+/// DDL creating `said`, `entry_edit`, `entry_person`, and the `said_put` / `said_drop` triggers
+/// (schema.ts `ensureSaid`).
+pub fn sql_ensure_said_ddl() -> String {
+  "CREATE TABLE IF NOT EXISTS said (\n" +
+  "  id INTEGER PRIMARY KEY, station TEXT NOT NULL, thread INTEGER NOT NULL, seq INTEGER NOT NULL,\n" +
+  "  n INTEGER NOT NULL, at INTEGER, text TEXT NOT NULL,\n" +
+  "  UNIQUE (station, thread, seq)\n" +
+  ");\n" +
+  "CREATE INDEX IF NOT EXISTS entry_edit ON entry (station, thread, json_extract(json, '$.target')) WHERE json_extract(json, '$.kind') = 'edit';\n" +
+  "CREATE INDEX IF NOT EXISTS entry_person ON entry (station, thread, n) WHERE json_extract(json, '$.kind') = 'message' AND json_extract(json, '$.authorKind') = 'person';\n" +
+  "CREATE TRIGGER IF NOT EXISTS said_put AFTER INSERT ON entry WHEN " + said_says("new") + "\n" +
+  "BEGIN\n" +
+  "  INSERT INTO said (station, thread, seq, n, at, text) VALUES (new.station, new.thread, " + said_seq("new") + ", new.n, " + said_at("new") + ", " + said_text("new") + ")\n" +
+  "  " + said_upsert() + ";\n" +
+  "END;\n" +
+  "CREATE TRIGGER IF NOT EXISTS said_drop AFTER DELETE ON entry WHEN " + said_says("old") + "\n" +
+  "BEGIN\n" +
+  "  DELETE FROM said WHERE station = old.station AND thread = old.thread AND seq = " + said_seq("old") + " AND n = old.n;\n" +
+  "  INSERT INTO said (station, thread, seq, n, at, text)\n" +
+  "  SELECT * FROM (\n" +
+  "    SELECT e.station, e.thread, e.n AS seq, e.n, " + said_at("e") + ", " + said_text("e") + " FROM entry e\n" +
+  "    WHERE e.station = old.station AND e.thread = old.thread AND e.n = " + said_seq("old") + " AND " + said_kind("e") + " = 'message'\n" +
+  "    UNION ALL\n" +
+  "    SELECT e.station, e.thread, json_extract(e.json, '$.target'), e.n, NULL, " + said_text("e") + " FROM entry e\n" +
+  "    WHERE e.station = old.station AND e.thread = old.thread AND json_extract(e.json, '$.target') = " + said_seq("old") + " AND json_extract(e.json, '$.kind') = 'edit'\n" +
+  "  )\n" +
+  "  WHERE NOT EXISTS (SELECT 1 FROM said WHERE station = old.station AND thread = old.thread AND seq = " + said_seq("old") + ")\n" +
+  "  ORDER BY 4\n" +
+  "  " + said_upsert() + ";\n" +
+  "END;"
+}
+
+/// One-time backfill of `said` from existing `entry` rows when `said` did not exist yet.
+pub fn sql_ensure_said_backfill() -> String {
+  "INSERT INTO said (station, thread, seq, n, at, text)\n" +
+  "SELECT e.station, e.thread, " + said_seq("e") + ", e.n, " + said_at("e") + ", " + said_text("e") + " FROM entry e\n" +
+  "WHERE " + said_says("e") + "\n" +
+  "ORDER BY e.station, e.thread, e.n\n" +
+  said_upsert() + ";"
+}
+
+/// DDL for `log_use` (schema.ts `ensureKept`).
+pub fn sql_ensure_kept() -> String {
+  "CREATE TABLE IF NOT EXISTS log_use (kind TEXT NOT NULL, station TEXT NOT NULL, id TEXT NOT NULL, opened INTEGER, evicted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (kind, station, id))"
+}
+
+/// DDL for `md_kept` and its indexes (schema.ts `ensureMdKept`).
+pub fn sql_ensure_md_kept() -> String {
+  "CREATE TABLE IF NOT EXISTS md_kept (station TEXT NOT NULL, key TEXT NOT NULL, of TEXT NOT NULL, size INTEGER NOT NULL, used INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (station, key)) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS md_kept_used ON md_kept (used); CREATE INDEX IF NOT EXISTS md_kept_of ON md_kept (station, of);"
+}
+
+/// DDL adding derived `chat` columns and covering partial `chat_recent` index (schema.ts `ensureChatColumns`).
+pub fn sql_ensure_chat_window_indexes() -> String {
+  "DROP INDEX IF EXISTS chat_recent;\n" +
+  "CREATE INDEX IF NOT EXISTS chat_recent ON chat (archived, pinned_at DESC, last_active DESC, station, ord, id, mine, hidden, led, watched, thread, session) WHERE archived = 0;\n" +
+  "CREATE INDEX IF NOT EXISTS chat_client ON chat (station, client_key) WHERE client_key IS NOT NULL;"
+}
+
+pub fn ensure_kept(db : sql::Sql) -> sql::SqlResult[Unit] {
+  db.exec(sql_ensure_kept())
+}
+
+pub fn ensure_md_kept(db : sql::Sql) -> sql::SqlResult[Unit] {
+  db.exec(sql_ensure_md_kept())
+}
+
+fn drop_said_index(db : sql::Sql) -> Unit {
+  let triggers = ["said_index_put", "said_index_drop", "said_index_set"]
+  for i in 0..<triggers.length() {
+    match db.all("SELECT 1 FROM sqlite_master WHERE name = ?", params=[base_codec::json_str(triggers[i])]) {
+      sql::SqlResult::Ok(rows) => {
+        if rows.length() > 0 {
+          let _ = db.exec("DROP TRIGGER " + triggers[i])
+        }
+      }
+      sql::SqlResult::Err(_) => ()
+    }
+  }
+  match db.all("SELECT 1 FROM sqlite_master WHERE name = ?", params=[base_codec::json_str("said_index")]) {
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        let _ = db.exec("DROP TABLE said_index")
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+}
+
+/// Ensure `said` table, indexes, and triggers exist; backfill once if newly created.
+pub fn ensure_said(db : sql::Sql) -> sql::SqlResult[Unit] {
+  let had = match db.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'said'") {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => rows.length() > 0
+  }
+  let burst = sql::Burst::new(db)
+  let res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+    match b.exec(sql_ensure_said_ddl()) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => ()
+    }
+    if !had {
+      match b.exec(sql_ensure_said_backfill()) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+    }
+    sql::SqlResult::Ok(())
+  })
+  match res {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => {
+      drop_said_index(db)
+      sql::SqlResult::Ok(())
+    }
+  }
+}
+
+/// Read `PRAGMA user_version` from the database.
+pub fn version_of(db : sql::Sql) -> sql::SqlResult[Int] {
+  match db.all("PRAGMA user_version") {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        sql::SqlResult::Ok(sql::col_int(rows[0], 0))
+      } else {
+        sql::SqlResult::Ok(0)
+      }
+    }
+  }
+}
+
+/// Bring `db` forward to `schema_version()`, each migration in its own transaction.
+/// Returns `Ok(false)` when the database version is newer than this core (read-only protection).
+pub fn migrate(db : sql::Sql) -> sql::SqlResult[Bool] {
+  let mut version = match version_of(db) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(v) => v
+  }
+  let target = schema_version()
+  if version > target {
+    return sql::SqlResult::Ok(false)
+  }
+  let migs = migrations()
+  while version < target {
+    let sql_step = migs[version]
+    let next_v = version + 1
+    let burst = sql::Burst::new(db)
+    match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+      match b.exec(sql_step) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+      b.exec("PRAGMA user_version = " + next_v.to_string())
+    }) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => {
+        version = next_v
+      }
+    }
+  }
+  sql::SqlResult::Ok(true)
+}
+
+pub struct AccountDbHandle {
+  pub db : sql::Sql
+  pub name : String
+  pub found_version : Int
+  pub read_only : Bool
+}
+
+/// Open an account database (`databases/<name>.db`), running forward migrations when needed.
+/// If the database was written by a newer core (`user_version > VERSION`), opens read-only
+/// and executes zero write statements.
+pub fn open_account_db(sh : shell::Shell, name : String) -> sql::SqlResult[AccountDbHandle] {
+  let db = match sql::Sql::open(sh, name) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(d) => d
+  }
+  let found = match version_of(db) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(v) => v
+  }
+  let writable = match migrate(db) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(w) => w
+  }
+  if writable {
+    match ensure_kept(db) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => ()
+    }
+    match ensure_said(db) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => ()
+    }
+  }
+  sql::SqlResult::Ok(AccountDbHandle::{
+    db: db,
+    name: name,
+    found_version: found,
+    read_only: !writable,
+  })
+}

@@ -18,8 +18,7 @@ import { VARIANTS } from "./lock-fork-choice-model.ts";
 import { pool, print } from "./lock-fork-pool.ts";
 import { V3 } from "./lock-roster-model.ts";
 import type { Job, More, Out } from "./rules-fork-check.ts";
-// @ts-ignore: the MoonBit build's JS, untyped
-import * as rules from "../../rules/js/rules.js";
+import * as rules from "../../shared/rules-runtime.ts";
 
 const SEEDS = process.env.RULES_FORK_SEEDS === undefined ? null : Number(process.env.RULES_FORK_SEEDS);
 const LOCK_SEEDS = SEEDS ?? 32;
@@ -150,4 +149,14 @@ test("a person's log says each device's signer: the fold keeps it and those said
   assert.equal(rules.signer_js(out.rules, s1.id, null)?.sub, "alice");
   assert.equal(rules.signer_js(out.rules, log1.id, null), null);
   assert.equal(rules.signer_js(out.rules, s2a.id, null), null, "a signer said before signs no more");
+});
+
+test("under STILLFAIL_RULES_MODE shadow or pion, the worlds above went through it, with no difference between the ports", async () => {
+  const outs = [...await lockOut, ...await personOut, ...await scriptedOut];
+  const here = rules.rulesShadowStats();
+  const calls = here.calls + outs.reduce((n, o) => n + (o.rules?.calls ?? 0), 0);
+  const mismatches = here.mismatches + outs.reduce((n, o) => n + (o.rules?.mismatches ?? 0), 0);
+  print(`rules: ${here.mode}, ${calls} calls through it, ${mismatches} differ`);
+  assert.equal(mismatches, 0, here.first ?? "a worker's rules differed (logged there)");
+  if (here.mode !== "moonbit") assert.ok(calls > 0, "no call went through the rules' mode");
 });

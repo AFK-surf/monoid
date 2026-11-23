@@ -1,0 +1,187 @@
+///| Unit tests for `lock` (genesis, apply, fold, person, chain, roster, state4, D6, D7, bind, rootOut).
+
+fn hex_of(ch : String, n : Int) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    sb.write_string(ch)
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+fn fake_hash(s : String) -> String {
+  // Deterministic 64-hex pseudo-hash for pure native unit tests (no external crypto needed).
+  let mut h1 = 1469598103934665603
+  let mut h2 = 1099511628211
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    let b = s.code_unit_at(i)
+    h1 = (h1 ^ b) * 1099511628211
+    h2 = (h2 ^ (b + i)) * 6364136223846793005 + 1
+    i = i + 1
+  }
+  let hex = "0123456789abcdef"
+  let sb = StringBuilder::new()
+  let mut j = 0
+  while j < 16 {
+    let d1 = (h1 >> (j * 4)) & 15
+    sb.write_byte(hex.code_unit_at(d1).to_byte())
+    let d2 = (h2 >> (j * 4)) & 15
+    sb.write_byte(hex.code_unit_at(d2).to_byte())
+    j = j + 1
+  }
+  let half = sb.to_string()
+  half + half
+}
+
+fn mock_crypto() -> Crypto {
+  Crypto::{
+    sha256_hex: fake_hash,
+    sig_valid: fn(_sig : form::Json, _hash : String, _origins : Array[String], _rp : String, _pk : Bool) -> Bool { true },
+    valid_key_id: fn(id : String) -> Bool { id.starts_with("ed25519:") || id.starts_with("p256:") },
+    endpoint_proof: fn(_ws : String, _base : String, _ep : String, proof : String) -> Bool { proof == "ok" },
+    tagged_sig_valid: fn(key : String, sig : String, _tag : String, _dig : String) -> Bool { key.starts_with("ed25519:") && sig.length() == 128 },
+  }
+}
+
+fn parse_j(s : String) -> form::Json {
+  match form::parse_json(s) {
+    Ok(j) => j
+    Err(e) => {
+      debug_assert(false, "bad json: " + e)
+      form::Json::Null
+    }
+  }
+}
+
+test "person_fold keeps sign_key and sign_keys and state4 names app by sign_key" {
+  let c = mock_crypto()
+  let id1 = hex_of("1", 64)
+  let id2 = hex_of("2", 64)
+  let id3 = hex_of("3", 64)
+  let log1 = "ed25519:" + hex_of("a", 64)
+  let log2 = "ed25519:" + hex_of("b", 64)
+  let log3 = "ed25519:" + hex_of("c", 64)
+  let s1 = "ed25519:" + hex_of("d", 64)
+  let s2a = "ed25519:" + hex_of("e", 64)
+  let s2b = "ed25519:" + hex_of("f", 64)
+  let e0 = parse_j("{\"v\":1,\"ws\":\"person:alice\",\"seq\":0,\"prev\":null,\"at\":1790000000,\"kind\":\"genesis\",\"body\":{\"sub\":\"alice\",\"device\":{\"key\":\"" + log1 + "\",\"id\":\"" + id1 + "\",\"label\":\"app\",\"sign_key\":\"" + s1 + "\"}},\"sig\":{\"key\":\"" + log1 + "\",\"alg\":\"Ed25519\",\"sig\":\"aa\"}}")
+  let h0 = match entry_hash(e0, c) {
+    Ok(h) => h
+    Err(_) => ""
+  }
+  let e1 = parse_j("{\"v\":1,\"ws\":\"person:alice\",\"seq\":1,\"prev\":\"" + h0 + "\",\"at\":1790000000,\"kind\":\"device\",\"body\":{\"key\":\"" + log2 + "\",\"id\":\"" + id2 + "\",\"label\":\"phone\",\"sign_key\":\"" + s2a + "\"},\"sig\":{\"key\":\"" + log1 + "\",\"alg\":\"Ed25519\",\"sig\":\"aa\"}}")
+  let h1 = match entry_hash(e1, c) {
+    Ok(h) => h
+    Err(_) => ""
+  }
+  let e2 = parse_j("{\"v\":1,\"ws\":\"person:alice\",\"seq\":2,\"prev\":\"" + h1 + "\",\"at\":1790000000,\"kind\":\"device\",\"body\":{\"key\":\"" + log2 + "\",\"id\":\"" + id2 + "\",\"label\":\"phone\",\"sign_key\":\"" + s2b + "\"},\"sig\":{\"key\":\"" + log1 + "\",\"alg\":\"Ed25519\",\"sig\":\"aa\"}}")
+  let h2 = match entry_hash(e2, c) {
+    Ok(h) => h
+    Err(_) => ""
+  }
+  let e3 = parse_j("{\"v\":1,\"ws\":\"person:alice\",\"seq\":3,\"prev\":\"" + h2 + "\",\"at\":1790000000,\"kind\":\"device\",\"body\":{\"key\":\"" + log3 + "\",\"id\":\"" + id3 + "\",\"label\":\"old\"},\"sig\":{\"key\":\"" + log1 + "\",\"alg\":\"Ed25519\",\"sig\":\"aa\"}}")
+  let p = match fold_person([e0, e1, e2, e3], "alice", c) {
+    Ok(x) => x
+    Err(err) => {
+      debug_assert(false, "fold_person: " + error_msg(err))
+      return
+    }
+  }
+  match p.devices.get(log2) {
+    Some(d) => {
+      debug_assert(opt_str_eq(d.sign_key, s2b), "latest sign_key")
+      debug_assert(d.sign_keys.length() == 2 && d.sign_keys[0] == s2a && d.sign_keys[1] == s2b, "sign_keys history")
+    }
+    None => debug_assert(false, "log2 missing")
+  }
+  let open = parse_j("{\"ws\":\"ws\",\"kind\":\"open\",\"origins\":[\"https://stillfail.test\"],\"rp_id\":\"stillfail.test\",\"cloud_keys\":{},\"email\":\"a@x.com\",\"prev\":null,\"salt\":\"" + hex_of("7", 32) + "\"}")
+  let oh = match body_hash(open, c) {
+    Ok(h) => h
+    Err(_) => ""
+  }
+  let tag = ws_tag("ws", h0, c)
+  let h3 = match entry_hash(e3, c) {
+    Ok(h) => h
+    Err(_) => ""
+  }
+  let e4 = parse_j("{\"v\":1,\"ws\":\"person:alice\",\"seq\":4,\"prev\":\"" + h3 + "\",\"at\":1790000001,\"kind\":\"ws\",\"body\":{\"t\":\"" + tag + "\",\"h\":\"" + oh + "\"},\"sig\":{\"key\":\"" + log1 + "\",\"alg\":\"Ed25519\",\"sig\":\"aa\"}}")
+  let st = state4("ws", h0, [[e0, e1, e2, e3, e4]], [open], 1790000100.0, c)
+  debug_assert(st.on == "on", "state4 on")
+  debug_assert(st.root_in, "root_in")
+  let s1_signer = signer(st.lock, s1, None)
+  let log1_signer = signer(st.lock, log1, None)
+  let s2a_signer = signer(st.lock, s2a, None)
+  let ok_s1 = match s1_signer {
+    Some(w) => w.sub == "alice"
+    None => false
+  }
+  let no_log1 = match log1_signer {
+    None => true
+    Some(_) => false
+  }
+  let no_s2a = match s2a_signer {
+    None => true
+    Some(_) => false
+  }
+  debug_assert(ok_s1, "s1 signs")
+  debug_assert(no_log1, "log1 does not sign ws")
+  debug_assert(no_s2a, "old s2a does not sign ws")
+}
+
+test "D6 carried + bind + D7 rootOut" {
+  let c = mock_crypto()
+  let alice_id = hex_of("1", 64)
+  let bob_id = hex_of("2", 64)
+  let alice_sk = "ed25519:" + hex_of("a", 64)
+  let bob_sk = "ed25519:" + hex_of("b", 64)
+  let alice_logk = "ed25519:" + hex_of("3", 64)
+  let bob_logk = "ed25519:" + hex_of("4", 64)
+  // Alice's person log (root)
+  let ag0 = parse_j("{\"v\":1,\"ws\":\"person:alice\",\"seq\":0,\"prev\":null,\"at\":1000,\"kind\":\"genesis\",\"body\":{\"sub\":\"alice\",\"device\":{\"key\":\"" + alice_logk + "\",\"id\":\"" + alice_id + "\",\"label\":\"a\",\"sign_key\":\"" + alice_sk + "\"}},\"sig\":{\"key\":\"" + alice_logk + "\",\"alg\":\"Ed25519\",\"sig\":\"aa\"}}")
+  let a_root = match entry_hash(ag0, c) {
+    Ok(h) => h
+    Err(_) => ""
+  }
+  // Bob's person log (unbound on old chain, binds via `bind` statement)
+  let bg0 = parse_j("{\"v\":1,\"ws\":\"person:bob\",\"seq\":0,\"prev\":null,\"at\":1000,\"kind\":\"genesis\",\"body\":{\"sub\":\"bob\",\"device\":{\"key\":\"" + bob_logk + "\",\"id\":\"" + bob_id + "\",\"label\":\"b\",\"sign_key\":\"" + bob_sk + "\"}},\"sig\":{\"key\":\"" + bob_logk + "\",\"alg\":\"Ed25519\",\"sig\":\"aa\"}}")
+  let b_root = match entry_hash(bg0, c) {
+    Ok(h) => h
+    Err(_) => ""
+  }
+  // Old workspace chain: alice (owner) + bob (owner), then `moved` to a_root
+  let wg0 = parse_j("{\"v\":1,\"ws\":\"ws1\",\"seq\":0,\"prev\":null,\"at\":1000,\"kind\":\"genesis\",\"body\":{\"owner\":\"alice\",\"origins\":[\"https://x\"],\"rp_id\":\"x\",\"cloud_keys\":{},\"members\":[{\"sub\":\"alice\",\"email\":\"a@x\",\"role\":\"owner\"},{\"sub\":\"bob\",\"email\":\"b@x\",\"role\":\"owner\"}],\"devices\":[{\"id\":\"" + alice_id + "\",\"sub\":\"alice\",\"kind\":\"app\",\"label\":\"a\",\"sign_key\":\"" + alice_sk + "\"},{\"id\":\"" + bob_id + "\",\"sub\":\"bob\",\"kind\":\"app\",\"label\":\"b\",\"sign_key\":\"" + bob_sk + "\"}],\"passkeys\":[],\"stations\":[],\"gateways\":[]},\"sig\":{\"key\":\"" + alice_sk + "\",\"alg\":\"Ed25519\",\"sig\":\"aa\"}}")
+  let wh0 = match entry_hash(wg0, c) {
+    Ok(h) => h
+    Err(_) => ""
+  }
+  let wmoved = parse_j("{\"v\":1,\"ws\":\"ws1\",\"seq\":1,\"prev\":\"" + wh0 + "\",\"at\":1001,\"kind\":\"moved\",\"body\":{\"root\":\"" + a_root + "\"},\"sig\":{\"key\":\"" + alice_sk + "\",\"alg\":\"Ed25519\",\"sig\":\"aa\"}}")
+  // Bob binds his log via `bind` statement
+  let bind_body = parse_j("{\"ws\":\"ws1\",\"kind\":\"bind\",\"key\":\"" + bob_sk + "\",\"sig\":\"" + hex_of("9", 128) + "\",\"prev\":null,\"salt\":\"" + hex_of("5", 32) + "\"}")
+  let bh = match body_hash(bind_body, c) {
+    Ok(h) => h
+    Err(_) => ""
+  }
+  let btag = ws_tag("ws1", b_root, c)
+  let bg1 = parse_j("{\"v\":1,\"ws\":\"person:bob\",\"seq\":1,\"prev\":\"" + b_root + "\",\"at\":1002,\"kind\":\"ws\",\"body\":{\"t\":\"" + btag + "\",\"h\":\"" + bh + "\"},\"sig\":{\"key\":\"" + bob_logk + "\",\"alg\":\"Ed25519\",\"sig\":\"aa\"}}")
+  let bh1 = match entry_hash(bg1, c) {
+    Ok(h) => h
+    Err(_) => ""
+  }
+  let st1 = state4_moved("ws1", [wg0, wmoved], [[ag0], [bg0, bg1]], [bind_body], 1010.0, c)
+  debug_assert(st1.on == "on", "carried state4 on")
+  debug_assert(st1.root_in, "root_in before rootOut")
+  debug_assert(opt_str_eq(st1.lock.persons.get("bob"), b_root), "bob bound via bind")
+  // D7 rootOut: Bob (owner) cancels a_root
+  let rm_body = parse_j("{\"ws\":\"ws1\",\"kind\":\"member.remove\",\"sub\":\"alice\",\"cancels\":[\"" + a_root + "\"],\"prev\":\"" + bh + "\",\"salt\":\"" + hex_of("6", 32) + "\"}")
+  let rmh = match body_hash(rm_body, c) {
+    Ok(h) => h
+    Err(_) => ""
+  }
+  let bg2 = parse_j("{\"v\":1,\"ws\":\"person:bob\",\"seq\":2,\"prev\":\"" + bh1 + "\",\"at\":1003,\"kind\":\"ws\",\"body\":{\"t\":\"" + btag + "\",\"h\":\"" + rmh + "\"},\"sig\":{\"key\":\"" + bob_logk + "\",\"alg\":\"Ed25519\",\"sig\":\"aa\"}}")
+  let st2 = state4_moved("ws1", [wg0, wmoved], [[ag0], [bg0, bg1, bg2]], [bind_body, rm_body], 1010.0, c)
+  debug_assert(!st2.root_in, "D7 rootOut sets root_in=false")
+  debug_assert(!st2.lock.members.contains("alice"), "alice removed by rootOut")
+}

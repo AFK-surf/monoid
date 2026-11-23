@@ -1,0 +1,1731 @@
+// Multi-path ways to a place: scoring, promotion, pruning, exploration, pinned endpoints, and remeasurement.
+
+import "effect"
+import "base_codec"
+import "shell"
+
+pub let keep_ways : Int = 2
+pub let min_samples : Int = 3
+let better_ticks : Int = 6
+pub let min_stay_ms : Int = 180000
+pub let move_gain : Double = 0.3
+pub let explore_ms : Int = 300000
+pub let redial_main_ms : Int = 30000
+pub let direct_recall_ms : Int = 600000
+pub let lan_recall_ms : Int = 600000
+let flaky_losses : Int = 2
+pub let direct_hold_ms : Int = 120000
+pub let direct_hold_max_ms : Int = 1800000
+
+pub fn default_relay_key_prefix() -> Bytes {
+  "mesh/relay-endpoint/1".to_bytes().concat(Bytes::new(1))
+}
+
+let lan_name : String = "lan"
+let tailnet_name : String = "tailnet"
+let direct_name : String = "direct"
+
+pub struct Score {
+  pub cost : Double
+  pub dev : Double
+}
+
+pub fn Score::new(cost_v : Double, dev_v : Double) -> Score {
+  Score::{ cost: cost_v, dev: dev_v }
+}
+
+pub fn clearly_better(cur : Score, other : Score) -> Bool {
+  other.cost <= cur.cost * (1.0 - move_gain) && other.cost + (cur.dev + other.dev) / 2.0 < cur.cost
+}
+
+fn pinned_key(prefix : Bytes, secret : Bytes, relay : String) -> Bytes {
+  let rb = relay.to_bytes()
+  let out = Bytes::new(prefix.length() + secret.length() + rb.length())
+  let mut at = 0
+  for i in 0..<prefix.length() {
+    out[at] = prefix[i]
+    at += 1
+  }
+  for i in 0..<secret.length() {
+    out[at] = secret[i]
+    at += 1
+  }
+  for i in 0..<rb.length() {
+    out[at] = rb[i]
+    at += 1
+  }
+  sha256(out)
+}
+
+fn relay_key(relay : String) -> String {
+  let text = str_trim(relay)
+  let mut slashes = 0
+  for i in 0..<text.length() {
+    if text.code_unit_at(i) == 47 {
+      slashes += 1
+    }
+  }
+  if str_contains(text, "://") && slashes == 2 {
+    text + "/"
+  } else {
+    text
+  }
+}
+
+fn relay_host(relay : String) -> String {
+  let text = str_trim(relay)
+  let sb = StringBuilder::new()
+  let mut slashes = if str_contains(text, "://") { 0 } else { 2 }
+  for i in 0..<text.length() {
+    let c = text.code_unit_at(i)
+    if slashes < 2 {
+      if c == 47 {
+        slashes += 1
+      }
+      continue
+    }
+    if c == 47 {
+      break
+    }
+    sb.write_byte(c as Byte)
+  }
+  sb.to_string()
+}
+
+struct Way {
+  uid : Int
+  link : Link
+  mut better : Int
+  mut saw : Option[String]
+  mut shape : Option[String]
+}
+
+fn Way::new(link : Link) -> Way {
+  Way::{ uid: next_uid(), link: link, better: 0, saw: None, shape: None }
+}
+
+fn Way::key(self : Way) -> String {
+  match self.link.pin {
+    Some(pin) => if pin == lan_name || pin == tailnet_name { pin } else { relay_key(pin) }
+    None =>
+    match self.link.via() {
+      Some(relay) => relay_key(relay)
+      None =>
+      match self.link.path() {
+        Some(p) => if p == direct_name { direct_name } else { "main" }
+        None => "main"
+      }
+    }
+  }
+}
+
+fn Way::is_direct(self : Way) -> Bool {
+  match self.link.pin {
+    Some(p) => if p == lan_name { return true }
+    None => ()
+  }
+  self.key() == direct_name
+}
+
+struct Pinned {
+  uid : Int
+  ready : effect::Deferred[Option[base_codec::Json]]
+  mut endpoint : Option[base_codec::Json]
+}
+
+struct Ways {
+  mut all : Array[Way]
+  mut theirs : Array[String]
+  mut off : Array[String]
+  mut steering : Bool
+  mut exploring : Bool
+  mut explored_at : Option[Int64]
+  mut main_dialled_at : Option[Int64]
+  mut moved_at : Option[Int64]
+  mut moved_direct : Bool
+  mut losses : Int
+  mut held_until : Option[Int64]
+  mut lan_at : Option[Int64]
+  mut direct_at : Option[Int64]
+  mut lost_main : Bool
+  mut moves : Int
+  mut moved : Option[String]
+  mut tailnet_answered : Bool
+  tried : Map[String, String]
+  at_dialled_at : Map[String, Int64]
+  at_dialling : Map[String, Bool]
+}
+
+pub struct MeasuredWay {
+  pub way : String
+  pub kind : String
+  pub active : Bool
+  pub healthy : Bool
+  pub samples : Int
+  pub srtt : Double
+  pub dev : Double
+  pub missed : Int
+}
+
+fn Mesh::now_ms(self : Mesh) -> Int64 {
+  self.sh.rt.now()
+}
+
+fn Mesh::since(self : Mesh, at : Option[Int64]) -> Int64 {
+  match at {
+    Some(t) => self.now_ms() - t
+    None => i64_max()
+  }
+}
+
+fn Mesh::ways_at(self : Mesh, place : Place) -> Ways {
+  let pk = place.map_key()
+  match self.ways_of.get(pk) {
+    Some(ws) => ws
+    None => {
+      let ws = Ways::{
+        all: [],
+        theirs: [],
+        off: [],
+        steering: false,
+        exploring: false,
+        explored_at: None,
+        main_dialled_at: None,
+        moved_at: None,
+        moved_direct: false,
+        losses: 0,
+        held_until: None,
+        lan_at: None,
+        direct_at: None,
+        lost_main: false,
+        moves: 0,
+        moved: None,
+        tailnet_answered: false,
+        tried: Map::new(),
+        at_dialled_at: Map::new(),
+        at_dialling: Map::new(),
+      }
+      self.ways_of.set(pk, ws)
+      ws
+    }
+  }
+}
+
+fn Mesh::is_off(self : Mesh, place : Place, way : String) -> Bool {
+  if self.options.relay_only && (way == lan_name || way == tailnet_name) {
+    return true
+  }
+  let ws = match self.ways_of.get(place.map_key()) {
+    Some(w) => w
+    None => return false
+  }
+  let key = relay_key(way)
+  for i in 0..<ws.off.length() {
+    if ws.off[i] == way || ws.off[i] == key {
+      return true
+    }
+  }
+  false
+}
+
+fn Mesh::relays_for(self : Mesh, place : Place) -> Array[String] {
+  let out = str_array_copy(self.relays)
+  match self.ways_of.get(place.map_key()) {
+    Some(ws) => {
+      for i in 0..<ws.theirs.length() {
+        let r = ws.theirs[i]
+        let rk = relay_key(r)
+        let mut found = false
+        for j in 0..<out.length() {
+          if relay_key(out[j]) == rk {
+            found = true
+            break
+          }
+        }
+        if !found {
+          out.push(r)
+        }
+      }
+    }
+    None => ()
+  }
+  let filtered : Array[String] = []
+  for i in 0..<out.length() {
+    if !self.is_off(place, out[i]) {
+      filtered.push(out[i])
+    }
+  }
+  filtered
+}
+
+fn Mesh::ways_for(self : Mesh, place : Place) -> Array[String] {
+  let out = self.relays_for(place)
+  for i in 0..<self.relays.length() {
+    if self.is_off(place, self.relays[i]) {
+      return out
+    }
+  }
+  for i in 0..<self.entries.length() {
+    let e = self.entries[i].entry
+    let ek = relay_key(e)
+    let mut found = false
+    for j in 0..<out.length() {
+      if relay_key(out[j]) == ek {
+        found = true
+        break
+      }
+    }
+    if !found && !self.is_off(place, e) {
+      out.push(e)
+    }
+  }
+  out
+}
+
+fn Mesh::main_allowed(self : Mesh, place : Place) -> Bool {
+  if self.is_off(place, direct_name) {
+    return false
+  }
+  for i in 0..<self.relays.length() {
+    if self.is_off(place, self.relays[i]) {
+      return false
+    }
+  }
+  true
+}
+
+fn Mesh::direct_held(self : Mesh, place : Place) -> Bool {
+  match self.ways_of.get(place.map_key()) {
+    Some(ws) =>
+    match ws.held_until {
+      Some(until) => self.now_ms() < until
+      None => false
+    }
+    None => false
+  }
+}
+
+fn Mesh::main_on(self : Mesh, place : Place) -> Bool {
+  self.main_allowed(place) && !self.direct_held(place)
+}
+
+fn Mesh::pinnable(self : Mesh, place : Place) -> Array[String] {
+  let ws = self.ways_for(place)
+  if !self.main_on(place) {
+    return ws
+  }
+  if ws.length() < 2 {
+    return []
+  }
+  if self.relays.length() == 0 {
+    return ws
+  }
+  let own = relay_key(self.relays[0])
+  let out : Array[String] = []
+  for i in 0..<ws.length() {
+    if relay_key(ws[i]) != own {
+      out.push(ws[i])
+    }
+  }
+  out
+}
+
+fn Mesh::said_at(self : Mesh, place : Place, kind : String) -> Array[String] {
+  match self.said.get(place.key()) {
+    Some(s) => if kind == lan_name { s.lan } else { s.tailnet }
+    None => []
+  }
+}
+
+fn Mesh::way_off(self : Mesh, place : Place, link : Link) -> Bool {
+  match link.pin {
+    None => !self.main_allowed(place)
+    Some(pin) =>
+    if pin == lan_name || pin == tailnet_name {
+      self.is_off(place, pin)
+    } else {
+      let pk = relay_key(pin)
+      let ws = self.ways_for(place)
+      for i in 0..<ws.length() {
+        if relay_key(ws[i]) == pk {
+          return false
+        }
+      }
+      true
+    }
+  }
+}
+
+fn Mesh::avoided(self : Mesh, place : Place, way : Way) -> Bool {
+  if self.direct_held(place) && way.is_direct() {
+    return true
+  }
+  way.link.pin.is_none() && self.since(self.ways_at(place).lan_at) < lan_recall_ms.to_int64()
+}
+
+fn Mesh::takeable(self : Mesh, place : Place, ways : Array[Way]) -> Array[Way] {
+  let others : Array[Way] = []
+  for i in 0..<ways.length() {
+    if !self.avoided(place, ways[i]) {
+      others.push(ways[i])
+    }
+  }
+  if others.length() > 0 { others } else { ways }
+}
+
+fn Mesh::score_of(self : Mesh, place : Place, way : Way) -> Score {
+  let sp = match way.link.via() {
+    Some(via) => self.speed(place.peer, via)
+    None => None
+  }
+  Score::{ cost: cost(way.link.srtt, sp) + 2.0 * way.link.dev, dev: way.link.dev }
+}
+
+fn Mesh::best_way(self : Mesh, place : Place, ways : Array[Way]) -> Option[Way] {
+  let mut best : Option[Way] = None
+  for i in 0..<ways.length() {
+    let w = ways[i]
+    match best {
+      None => best = Some(w)
+      Some(b) =>
+      if w.link.samples > 0 && (b.link.samples == 0 || self.score_of(place, w).cost < self.score_of(place, b).cost) {
+        best = Some(w)
+      }
+    }
+  }
+  best
+}
+
+fn Mesh::live_ways(self : Mesh, place : Place) -> Array[Way] {
+  let ws = match self.ways_of.get(place.map_key()) {
+    Some(w) => w
+    None => return []
+  }
+  let live : Array[Way] = []
+  for i in 0..<ws.all.length() {
+    if ws.all[i].link.usable() {
+      live.push(ws.all[i])
+    }
+  }
+  if live.length() != ws.all.length() {
+    ws.all = live
+  }
+  live
+}
+
+fn Mesh::now_on(self : Mesh, place : Place, link : Link) -> Unit {
+  let ws = self.ways_at(place)
+  let mut has = false
+  for i in 0..<ws.all.length() {
+    if ws.all[i].link.uid == link.uid {
+      has = true
+      break
+    }
+  }
+  if !has {
+    ws.all.push(Way::new(link))
+  }
+  ws.moved_at = Some(self.now_ms())
+  ws.moved_direct = Way::new(link).is_direct()
+  if link.answer.is_some() {
+    self.heard(place, link)
+  }
+  self.steer_if(place)
+}
+
+fn Mesh::adopt_way(self : Mesh, place : Place, link : Link) -> Unit {
+  if self.closed || !self.links.contains(place.map_key()) || self.way_off(place, link) {
+    link.close()
+    self.release_pinned()
+    return
+  }
+  let ws = self.ways_at(place)
+  let _ = self.live_ways(place)
+  for i in 0..<ws.all.length() {
+    if ws.all[i].link.uid == link.uid {
+      return
+    }
+  }
+  ws.all.push(Way::new(link))
+  if link.answer.is_some() {
+    self.heard(place, link)
+  }
+  self.tell_health(place)
+  self.steer_if(place)
+}
+
+fn Mesh::many(self : Mesh, place : Place) -> Bool {
+  let live = self.live_ways(place)
+  if live.length() > 1 || !self.main_on(place) {
+    return true
+  }
+  for i in 0..<live.length() {
+    if live[i].link.pin.is_some() {
+      return true
+    }
+  }
+  false
+}
+
+fn Mesh::steer_if(self : Mesh, place : Place) -> Unit {
+  let ws = self.ways_at(place)
+  if ws.steering || self.closed || !self.links.contains(place.map_key()) || !self.many(place) {
+    return
+  }
+  ws.steering = true
+  let _ = self.fibers.fork_named("mesh ways", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    self.steer_ways_k(place, ws, fn(ex : effect::Exit[Unit]) -> Unit {
+      ws.steering = false
+      fk(ex)
+    })
+  })
+}
+
+fn Mesh::steer_ways_k(self : Mesh, place : Place, ws : Ways, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  effect::sleep_later_k(tick_ms, true, fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(_) => {
+        if self.closed || !self.links.contains(place.map_key()) {
+          k(effect::Exit::Succeeded(()))
+          return
+        }
+        let cur = self.current(place.peer, link_scope=place.link_scope)
+        let cur_usable = match cur {
+          Some(l) => l.usable()
+          None => false
+        }
+        if self.live_ways(place).length() == 0 && !cur_usable {
+          k(effect::Exit::Succeeded(()))
+          return
+        }
+        self.sample_k(place, false, fn(sex : effect::Exit[Unit]) -> Unit {
+          match sex {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(_) => {
+              if self.closed || !self.links.contains(place.map_key()) {
+                k(effect::Exit::Succeeded(()))
+                return
+              }
+              self.tell_health(place)
+              self.observe(place)
+              self.choose(place, None)
+              self.prune(place)
+              let now = self.now_ms()
+              if ws.moved_direct && self.since(ws.moved_at) >= min_stay_ms.to_int64() {
+                ws.losses = 0
+              }
+              let live = self.live_ways(place)
+              for i in 0..<live.length() {
+                let w = live[i]
+                if w.is_direct() {
+                  ws.direct_at = Some(now)
+                }
+                match w.link.pin {
+                  Some(p) => {
+                    if p == lan_name && w.link.missed == 0 && w.link.samples > 0 {
+                      ws.lan_at = Some(now)
+                    }
+                    if p == tailnet_name && w.link.missed == 0 && w.link.samples > 0 {
+                      ws.tailnet_answered = true
+                    }
+                  }
+                  None => ()
+                }
+              }
+              let creds : Option[(String, Bool, (effect::Exit[Presented]) -> Unit) -> Unit] = match self.current(
+                place.peer,
+                link_scope=place.link_scope,
+              ) {
+                Some(l) => Some(l.credentials)
+                None => if live.length() > 0 { Some(live[0].link.credentials) } else { None }
+              }
+              match creds {
+                None => {
+                  self.steer_ways_k(place, ws, k)
+                  return
+                }
+                Some(credentials) => {
+                  if !self.many(place) {
+                    k(effect::Exit::Succeeded(()))
+                    return
+                  }
+                  if !self.main_on(place) {
+                    self.dial_at_if(place, lan_name, credentials)
+                    self.dial_at_if(place, tailnet_name, credentials)
+                  }
+                  let mut has_main = false
+                  for i in 0..<live.length() {
+                    if live[i].link.pin.is_none() {
+                      has_main = true
+                      break
+                    }
+                  }
+                  if self.since(ws.explored_at) >= explore_ms.to_int64() {
+                    let _ = self.fibers.fork_named("mesh explore", fn(efk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                      self.explore_k(place, credentials, false, efk)
+                    })
+                  } else if self.main_on(place) &&
+                  !has_main &&
+                  self.since(ws.lan_at) >= lan_recall_ms.to_int64() &&
+                  !self.unanswered_straight(place) &&
+                  self.since(ws.main_dialled_at) >= redial_main_ms.to_int64() {
+                    let _ = self.fibers.fork_named("mesh explore", fn(efk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                      self.explore_k(place, credentials, true, efk)
+                    })
+                  }
+                  self.steer_ways_k(place, ws, k)
+                }
+              }
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+fn Mesh::sample_k(self : Mesh, place : Place, every : Bool, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  let cur = self.current(place.peer, link_scope=place.link_scope)
+  let live = self.live_ways(place)
+  let links : Array[Link] = []
+  for i in 0..<live.length() {
+    let l = live[i].link
+    let is_c = match cur {
+      Some(c) => c.uid == l.uid
+      None => false
+    }
+    if !l.pinging && (every || !is_c) {
+      links.push(l)
+    }
+  }
+  if links.length() == 0 {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  let left = [links.length()]
+  let done : effect::Deferred[Unit] = effect::Deferred::new()
+  for i in 0..<links.length() {
+    let link = links[i]
+    let _ = self.fibers.fork_named("mesh way ping", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.ping_k(link, fn(pex : effect::Exit[Unit]) -> Unit {
+        left[0] -= 1
+        if left[0] == 0 {
+          let _ = done.succeed(())
+        }
+        fk(pex)
+      })
+    })
+  }
+  done.wait_k(k)
+}
+
+fn Mesh::choose(self : Mesh, place : Place, asked : Option[String]) -> Unit {
+  match self.links.get(place.map_key()) {
+    Some(op) =>
+    if op.result.is_none() {
+      return
+    }
+    None => return
+  }
+  let cur = self.current(place.peer, link_scope=place.link_scope)
+  let ways = self.live_ways(place)
+  let up : Array[Way] = []
+  for i in 0..<ways.length() {
+    if ways[i].link.missed < dead_pings {
+      up.push(ways[i])
+    }
+  }
+  let mut mine : Option[Way] = None
+  match cur {
+    Some(c) => {
+      for i in 0..<ways.length() {
+        if ways[i].link.uid == c.uid {
+          mine = Some(ways[i])
+          break
+        }
+      }
+    }
+    None => ()
+  }
+  let cur_ok = match (cur, mine) {
+    (Some(c), Some(m)) => c.usable() && m.link.missed < dead_pings
+    _ => false
+  }
+  if !cur_ok {
+    let others : Array[Way] = []
+    for i in 0..<up.length() {
+      let same = match cur {
+        Some(c) => c.uid == up[i].link.uid
+        None => false
+      }
+      if !same {
+        others.push(up[i])
+      }
+    }
+    match self.best_way(place, self.takeable(place, others)) {
+      Some(w) => self.promote(place, w, "lost")
+      None => ()
+    }
+    return
+  }
+  let c = match cur {
+    Some(v) => v
+    None => return
+  }
+  let m = match mine {
+    Some(v) => v
+    None => return
+  }
+  let m_is_lan = match m.link.pin {
+    Some(p) => p == lan_name
+    None => false
+  }
+  if !self.direct_held(place) && m.link.samples > 0 && !m_is_lan {
+    for i in 0..<up.length() {
+      let w = up[i]
+      let w_is_lan = match w.link.pin {
+        Some(p) => p == lan_name
+        None => false
+      }
+      if w.link.uid != c.uid && w_is_lan && w.link.samples > 0 && w.link.missed == 0 {
+        if m.key() == direct_name || clearly_better(self.score_of(place, m), self.score_of(place, w)) {
+          self.promote(place, w, lan_name)
+          return
+        }
+        break
+      }
+    }
+    if m.key() != direct_name {
+      let directs : Array[Way] = []
+      for i in 0..<up.length() {
+        let w = up[i]
+        if w.link.uid != c.uid && w.link.samples > 0 && w.link.missed == 0 && w.key() == direct_name && !self.avoided(place, w) {
+          directs.push(w)
+        }
+      }
+      match self.best_way(place, directs) {
+        Some(w) =>
+        if clearly_better(self.score_of(place, m), self.score_of(place, w)) {
+          self.promote(place, w, direct_name)
+          return
+        }
+        None => ()
+      }
+    }
+  }
+  if m.link.samples < min_samples {
+    return
+  }
+  if asked.is_none() && self.since(self.ways_at(place).moved_at) < min_stay_ms.to_int64() {
+    return
+  }
+  let challengers : Array[Way] = []
+  for i in 0..<up.length() {
+    let w = up[i]
+    if w.link.uid != c.uid && w.link.samples >= min_samples && !self.avoided(place, w) {
+      challengers.push(w)
+    }
+  }
+  let top = self.best_way(place, challengers)
+  for i in 0..<ways.length() {
+    let is_top = match top {
+      Some(t) => t.uid == ways[i].uid
+      None => false
+    }
+    if !is_top {
+      ways[i].better = 0
+    }
+  }
+  let t = match top {
+    Some(v) => v
+    None => return
+  }
+  if !clearly_better(self.score_of(place, m), self.score_of(place, t)) {
+    t.better = 0
+    return
+  }
+  t.better += 1
+  match asked {
+    Some(why) => self.promote(place, t, why)
+    None =>
+    if t.better >= better_ticks {
+      self.promote(place, t, "better")
+    }
+  }
+}
+
+fn Mesh::promote(self : Mesh, place : Place, way : Way, why : String) -> Unit {
+  if self.closed {
+    return
+  }
+  let pk = place.map_key()
+  match self.links.get(pk) {
+    Some(op) =>
+    if op.result.is_none() {
+      return
+    }
+    None => return
+  }
+  match self.current(place.peer, link_scope=place.link_scope) {
+    Some(before) =>
+    if before.uid == way.link.uid {
+      return
+    }
+    None => ()
+  }
+  let ws = self.ways_at(place)
+  let held = if why == "lost" && ws.moved_direct { self.lost_direct(place, self.since(ws.moved_at)) } else { None }
+  let sp = self.span("mesh.route", place.peer)
+  let own = sp.own_fn
+  let end = sp.end_fn
+  own("why", SpanValue::Str(why))
+  match self.current(place.peer, link_scope=place.link_scope) {
+    Some(before) => {
+      for i in 0..<ws.all.length() {
+        if ws.all[i].link.uid == before.uid {
+          let was = ws.all[i]
+          own("from", SpanValue::Str(was.key()))
+          own("from.score", SpanValue::Int(round_i64(self.score_of(place, was).cost)))
+          own("from.missed", SpanValue::Int(was.link.missed.to_int64()))
+          own("from.paths", SpanValue::Str(was.link.paths_line()))
+          break
+        }
+      }
+    }
+    None => ()
+  }
+  own("to", SpanValue::Str(way.key()))
+  own("to.score", SpanValue::Int(round_i64(self.score_of(place, way).cost)))
+  own("to.paths", SpanValue::Str(way.link.paths_line()))
+  match held {
+    Some(ms) => own("direct_held_ms", SpanValue::Int(ms))
+    None => ()
+  }
+  end()
+  self.end_race(place)
+  match self.current(place.peer, link_scope=place.link_scope) {
+    Some(before) => self.count(place.peer, before)
+    None => ()
+  }
+  let taken = Opening::new(place, way.link.credentials, false)
+  taken.result = Some(Opened::Open(way.link))
+  let _ = taken.done.succeed(way.link)
+  self.links.set(pk, taken)
+  self.changed()
+  ws.moved_at = Some(self.now_ms())
+  ws.moved_direct = way.is_direct()
+  ws.moves += 1
+  ws.moved = Some(
+    match way.link.via() {
+      Some(via) => relay_host(via)
+      None => direct_name
+    },
+  )
+  for i in 0..<ws.all.length() {
+    ws.all[i].better = 0
+  }
+  self.tell_health(place)
+  let _ = self.fibers.fork_named("mesh pings", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    self.steer_k(place, taken, way.link, fk)
+  })
+}
+
+fn Mesh::lost_direct(self : Mesh, place : Place, stayed : Int64) -> Option[Int64] {
+  let ws = self.ways_at(place)
+  if stayed >= min_stay_ms.to_int64() {
+    ws.losses = 0
+    return None
+  }
+  ws.losses += 1
+  if ws.losses < flaky_losses {
+    return None
+  }
+  let mut hold = direct_hold_ms.to_int64()
+  let max_h = direct_hold_max_ms.to_int64()
+  let steps = ws.losses - flaky_losses
+  for _ in 0..<steps {
+    hold = hold * 2.to_int64()
+    if hold >= max_h {
+      break
+    }
+  }
+  if hold > max_h {
+    hold = max_h
+  }
+  ws.held_until = Some(self.now_ms() + hold)
+  Some(hold)
+}
+
+fn Mesh::retire(self : Mesh, place : Place, way : Way) -> Unit {
+  let ws = self.ways_at(place)
+  let kept : Array[Way] = []
+  for i in 0..<ws.all.length() {
+    if ws.all[i].uid != way.uid {
+      kept.push(ws.all[i])
+    }
+  }
+  ws.all = kept
+  let link = way.link
+  self.retiring.push(link)
+  let _ = self.fibers.fork_named("mesh retire", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    effect::sleep_later_k(retire_ms, true, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          let rkept : Array[Link] = []
+          for i in 0..<self.retiring.length() {
+            if self.retiring[i].uid != link.uid {
+              rkept.push(self.retiring[i])
+            }
+          }
+          self.retiring = rkept
+          if !self.is_current(link) {
+            self.count(place.peer, link)
+            link.close()
+          }
+          self.release_pinned()
+          fk(effect::Exit::Succeeded(()))
+        }
+        other => fk(other)
+      }
+    })
+  })
+}
+
+fn Mesh::prune(self : Mesh, place : Place) -> Unit {
+  let cur = self.current(place.peer, link_scope=place.link_scope)
+  let is_cur = fn(w : Way) -> Bool {
+    match cur {
+      Some(c) => c.uid == w.link.uid
+      None => false
+    }
+  }
+  let live1 = self.live_ways(place)
+  for i in 0..<live1.length() {
+    if !is_cur(live1[i]) && live1[i].link.missed >= dead_pings {
+      self.retire(place, live1[i])
+    }
+  }
+  let by_key : Map[String, Way] = Map::new()
+  let live2 = self.live_ways(place)
+  for i in 0..<live2.length() {
+    let w = live2[i]
+    if !is_cur(w) && w.link.samples < min_samples {
+      continue
+    }
+    let key = w.key()
+    match by_key.get(key) {
+      None => by_key.set(key, w)
+      Some(other) => {
+        let keep = if is_cur(other) {
+          other
+        } else if is_cur(w) {
+          w
+        } else if self.score_of(place, w).cost < self.score_of(place, other).cost {
+          w
+        } else {
+          other
+        }
+        let drop = if keep.uid == w.uid { other } else { w }
+        self.retire(place, drop)
+        by_key.set(key, keep)
+      }
+    }
+  }
+  let live3 = self.live_ways(place)
+  let others : Array[Way] = []
+  for i in 0..<live3.length() {
+    if !is_cur(live3[i]) && live3[i].link.samples >= min_samples {
+      others.push(live3[i])
+    }
+  }
+  // Insertion sort by (avoided, score.cost)
+  for i in 1..<others.length() {
+    let key_w = others[i]
+    let ka = if self.avoided(place, key_w) { 1 } else { 0 }
+    let kc = self.score_of(place, key_w).cost
+    let mut j = i - 1
+    while j >= 0 {
+      let ja = if self.avoided(place, others[j]) { 1 } else { 0 }
+      let jc = self.score_of(place, others[j]).cost
+      if ja > ka || (ja == ka && jc > kc) {
+        others[j + 1] = others[j]
+        j -= 1
+      } else {
+        break
+      }
+    }
+    others[j + 1] = key_w
+  }
+  let start = keep_ways - 1
+  if start < others.length() {
+    for i in start..<others.length() {
+      self.retire(place, others[i])
+    }
+  }
+}
+
+fn Mesh::explore_k(
+  self : Mesh,
+  place : Place,
+  credentials : (String, Bool, (effect::Exit[Presented]) -> Unit) -> Unit,
+  main_only : Bool,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let ws = self.ways_at(place)
+  if ws.exploring {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  ws.exploring = true
+  let now = self.now_ms()
+  ws.main_dialled_at = Some(now)
+  if !main_only {
+    ws.explored_at = Some(now)
+  }
+  let have : Map[String, Bool] = Map::new()
+  let live = self.live_ways(place)
+  for i in 0..<live.length() {
+    let pk = match live[i].link.pin {
+      Some(p) => p
+      None => "main"
+    }
+    have.set(pk, true)
+  }
+  let tries : Array[((effect::Exit[Link]) -> Unit) -> Unit] = []
+  let on_lan = self.since(ws.lan_at) < lan_recall_ms.to_int64()
+  if !have.contains("main") && !on_lan && self.main_on(place) && !self.rebinding {
+    tries.push(fn(tk : (effect::Exit[Link]) -> Unit) -> Unit { self.dial_main_way_k(place, credentials, tk) })
+  }
+  if !main_only {
+    let pins = self.pinnable(place)
+    for i in 0..<pins.length() {
+      let relay = pins[i]
+      if !have.contains(relay) {
+        tries.push(fn(tk : (effect::Exit[Link]) -> Unit) -> Unit {
+          self.dial_pinned_k(place, relay, credentials, false, tk)
+        })
+      }
+    }
+  }
+  self.each_adopted_k(place, tries, fn(ex : effect::Exit[Unit]) -> Unit {
+    ws.exploring = false
+    k(ex)
+  })
+}
+
+fn Mesh::each_adopted_k(
+  self : Mesh,
+  place : Place,
+  tries : Array[((effect::Exit[Link]) -> Unit) -> Unit],
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if tries.length() == 0 {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  let left = [tries.length()]
+  let done : effect::Deferred[Unit] = effect::Deferred::new()
+  for i in 0..<tries.length() {
+    let dial = tries[i]
+    let _ = self.fibers.fork_named("mesh way dial", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      dial(fn(ex : effect::Exit[Link]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(link) => self.adopt_way(place, link)
+          _ => ()
+        }
+        left[0] -= 1
+        if left[0] == 0 {
+          let _ = done.succeed(())
+        }
+        match ex {
+          effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+          _ => fk(effect::Exit::Succeeded(()))
+        }
+      })
+    })
+  }
+  done.wait_k(k)
+}
+
+fn Mesh::dial_main_way_k(
+  self : Mesh,
+  place : Place,
+  credentials : (String, Bool, (effect::Exit[Presented]) -> Unit) -> Unit,
+  k : (effect::Exit[Link]) -> Unit,
+) -> Unit {
+  self.dialling_main += 1
+  self.open_k(place, credentials, false, fn(ex : effect::Exit[Link]) -> Unit {
+    self.dialling_main -= 1
+    self.eased()
+    match ex {
+      effect::Exit::Failed(e) =>
+      match opening_timeout_of(e) {
+        Some(_) => k(effect::Exit::Failed(failed("no_answer")))
+        None => k(effect::Exit::Failed(e))
+      }
+      other => k(other)
+    }
+  })
+}
+
+fn Mesh::dial_main_raced_k(
+  self : Mesh,
+  place : Place,
+  credentials : (String, Bool, (effect::Exit[Presented]) -> Unit) -> Unit,
+  fresh : Bool,
+  k : (effect::Exit[Link]) -> Unit,
+  traceparent : String = "",
+) -> Unit {
+  self.dialling_main += 1
+  self.open_k(
+    place,
+    credentials,
+    fresh,
+    fn(ex : effect::Exit[Link]) -> Unit {
+      self.dialling_main -= 1
+      self.eased()
+      match ex {
+        effect::Exit::Succeeded(link) => {
+          self.stuck = false
+          self.note_dial(place, false)
+          k(effect::Exit::Succeeded(link))
+        }
+        effect::Exit::Failed(e) => {
+          match opening_timeout_of(e) {
+            Some(connected) => {
+              if !connected {
+                self.stuck = true
+              }
+              self.note_dial(place, true)
+            }
+            None => ()
+          }
+          k(effect::Exit::Failed(e))
+        }
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+    traceparent=traceparent,
+  )
+}
+
+fn Mesh::dial_pinned_k(
+  self : Mesh,
+  place : Place,
+  way : String,
+  credentials : (String, Bool, (effect::Exit[Presented]) -> Unit) -> Unit,
+  fresh : Bool,
+  k : (effect::Exit[Link]) -> Unit,
+  traceparent : String = "",
+) -> Unit {
+  self.dialing += 1
+  let finish = fn(ex : effect::Exit[Link]) -> Unit {
+    self.dialing -= 1
+    match ex {
+      effect::Exit::Succeeded(link) => k(effect::Exit::Succeeded(link))
+      effect::Exit::Interrupted => {
+        self.release_pinned()
+        k(effect::Exit::Interrupted)
+      }
+      effect::Exit::Failed(e) => {
+        self.release_pinned()
+        match opening_timeout_of(e) {
+          Some(_) => k(effect::Exit::Failed(failed("no_answer")))
+          None => k(effect::Exit::Failed(e))
+        }
+      }
+    }
+  }
+  self.pinned_endpoint_k(way, fn(pex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+    match pex {
+      effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(None) => finish(effect::Exit::Failed(failed("unreached")))
+      effect::Exit::Succeeded(Some(endpoint)) => {
+        if self.closed || !self.links.contains(place.map_key()) {
+          finish(effect::Exit::Failed(failed("closed")))
+          return
+        }
+        self.open_k(place, credentials, fresh, finish, on=Some((way, endpoint)), traceparent=traceparent)
+      }
+    }
+  })
+}
+
+fn Mesh::pinned_endpoint_k(self : Mesh, way : String, k : (effect::Exit[Option[base_codec::Json]]) -> Unit) -> Unit {
+  match self.pinned.get(way) {
+    Some(one) => {
+      one.ready.wait_k(k)
+      return
+    }
+    None => ()
+  }
+  let uid = next_uid()
+  let one = Pinned::{ uid: uid, ready: effect::Deferred::new(), endpoint: None }
+  self.pinned.set(way, one)
+  let at_address = way == lan_name || way == tailnet_name
+  let key = if at_address { self.sh.random(32) } else { pinned_key(self.pinned_prefix, self.secret, way) }
+  let relays : Array[String] = if at_address { [] } else { [way] }
+  effect::uninterruptible_k(
+    fn(uk : (effect::Exit[Option[base_codec::Json]]) -> Unit) -> Unit {
+      bind_k(self.sh, relays, !at_address, Binding::none(), [], key, fn(bex : effect::Exit[base_codec::Json]) -> Unit {
+        let ours = !self.closed && match self.pinned.get(way) {
+          Some(now) => now.uid == uid
+          None => false
+        }
+        match bex {
+          effect::Exit::Succeeded(endpoint) =>
+          if ours {
+            one.endpoint = Some(endpoint)
+            let _ = one.ready.succeed(Some(endpoint))
+            uk(effect::Exit::Succeeded(Some(endpoint)))
+          } else {
+            self.sh.tell("iroh.close", base_codec::json_obj([("id", endpoint), ("forget", base_codec::json_bool(true))]))
+            let _ = one.ready.succeed(None)
+            uk(effect::Exit::Succeeded(None))
+          }
+          _ => {
+            if ours {
+              self.pinned.remove(way)
+            }
+            let _ = one.ready.succeed(None)
+            uk(effect::Exit::Succeeded(None))
+          }
+        }
+      })
+    },
+    k,
+  )
+}
+
+fn Mesh::release_pinned(self : Mesh) -> Unit {
+  if self.dialing != 0 {
+    return
+  }
+  let used : Map[String, Bool] = Map::new()
+  let note = fn(link : Link) -> Unit {
+    match link.pin {
+      Some(p) =>
+      if link.usable() {
+        used.set(p, true)
+      }
+      None => ()
+    }
+  }
+  let wks = self.ways_of.keys()
+  for i in 0..<wks.length() {
+    match self.ways_of.get(wks[i]) {
+      Some(ws) => {
+        for j in 0..<ws.all.length() {
+          note(ws.all[j].link)
+        }
+      }
+      None => ()
+    }
+  }
+  let lks = self.links.keys()
+  for i in 0..<lks.length() {
+    match self.links.get(lks[i]) {
+      Some(op) =>
+      match op.result {
+        Some(Opened::Open(l)) => note(l)
+        _ => ()
+      }
+      None => ()
+    }
+  }
+  for i in 0..<self.retiring.length() {
+    note(self.retiring[i])
+  }
+  let pks = self.pinned.keys()
+  for i in 0..<pks.length() {
+    let way = pks[i]
+    if !used.contains(way) {
+      match self.pinned.get(way) {
+        Some(p) =>
+        match p.endpoint {
+          Some(ep) => {
+            self.pinned.remove(way)
+            self.sh.tell("iroh.close", base_codec::json_obj([("id", ep), ("forget", base_codec::json_bool(true))]))
+          }
+          None => ()
+        }
+        None => ()
+      }
+    }
+  }
+}
+
+fn Mesh::dial_at(
+  self : Mesh,
+  place : Place,
+  kind : String,
+  credentials : (String, Bool, (effect::Exit[Presented]) -> Unit) -> Unit,
+  fresh : Bool,
+  traceparent : String = "",
+) -> Option[((effect::Exit[Link]) -> Unit) -> Unit] {
+  let at = self.said_at(place, kind)
+  let ws = self.ways_at(place)
+  if at.length() == 0 || self.is_off(place, kind) || ws.at_dialling.contains(kind) {
+    return None
+  }
+  let live = self.live_ways(place)
+  for i in 0..<live.length() {
+    match live[i].link.pin {
+      Some(p) =>
+      if p == kind {
+        return None
+      }
+      None => ()
+    }
+  }
+  ws.tried.set(kind, str_join(at, " "))
+  ws.at_dialled_at.set(kind, self.now_ms())
+  ws.at_dialling.set(kind, true)
+  Some(fn(tk : (effect::Exit[Link]) -> Unit) -> Unit {
+    self.dial_pinned_k(
+      place,
+      kind,
+      credentials,
+      fresh,
+      fn(ex : effect::Exit[Link]) -> Unit {
+        ws.at_dialling.remove(kind)
+        tk(ex)
+      },
+      traceparent=traceparent,
+    )
+  })
+}
+
+fn Mesh::dial_at_if(
+  self : Mesh,
+  place : Place,
+  kind : String,
+  credentials : (String, Bool, (effect::Exit[Presented]) -> Unit) -> Unit,
+) -> Unit {
+  let at = self.said_at(place, kind)
+  if self.closed || !self.links.contains(place.map_key()) || at.length() == 0 {
+    return
+  }
+  let ws = self.ways_at(place)
+  let joined = str_join(at, " ")
+  match ws.tried.get(kind) {
+    Some(prev) =>
+    if prev == joined {
+      let last = ws.at_dialled_at.get(kind)
+      let again = if kind == lan_name {
+        self.since(ws.direct_at) < direct_recall_ms.to_int64() && self.since(last) >= redial_main_ms.to_int64()
+      } else {
+        ws.tailnet_answered && self.since(last) >= explore_ms.to_int64()
+      }
+      if !again {
+        return
+      }
+    }
+    None => ()
+  }
+  match self.dial_at(place, kind, credentials, false) {
+    Some(dial) => {
+      let _ = self.fibers.fork_named("mesh way dial", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        self.each_adopted_k(place, [dial], fk)
+      })
+    }
+    None => ()
+  }
+}
+
+struct DialAllState {
+  mut winner : Option[Link]
+  mut taken : Bool
+  mut left : Int
+  mut main_failure : Option[effect::EffectError]
+}
+
+fn Mesh::dial_all_k(
+  self : Mesh,
+  place : Place,
+  credentials : (String, Bool, (effect::Exit[Presented]) -> Unit) -> Unit,
+  fresh : Bool,
+  k : (effect::Exit[Link]) -> Unit,
+  traceparent : String = "",
+) -> Unit {
+  let ws = self.ways_at(place)
+  let now = self.now_ms()
+  ws.explored_at = Some(now)
+  let attempts : Array[(Bool, ((effect::Exit[Link]) -> Unit) -> Unit)] = []
+  if self.main_on(place) {
+    ws.main_dialled_at = Some(now)
+    let unanswered = self.unanswered_straight(place)
+    let lost = ws.lost_main
+    ws.lost_main = false
+    if !unanswered && !lost {
+      self.open_k(place, credentials, fresh, k, traceparent=traceparent)
+      return
+    }
+    attempts.push((true, fn(tk : (effect::Exit[Link]) -> Unit) -> Unit {
+      self.dial_main_raced_k(place, credentials, fresh, tk, traceparent=traceparent)
+    }))
+    let relays = if unanswered { self.ways_for(place) } else { self.pinnable(place) }
+    for i in 0..<relays.length() {
+      let r = relays[i]
+      attempts.push((false, fn(tk : (effect::Exit[Link]) -> Unit) -> Unit {
+        self.dial_pinned_k(place, r, credentials, fresh, tk, traceparent=traceparent)
+      }))
+    }
+  } else {
+    let pins = self.pinnable(place)
+    for i in 0..<pins.length() {
+      let r = pins[i]
+      attempts.push((false, fn(tk : (effect::Exit[Link]) -> Unit) -> Unit {
+        self.dial_pinned_k(place, r, credentials, fresh, tk, traceparent=traceparent)
+      }))
+    }
+    let kinds = [lan_name, tailnet_name]
+    for i in 0..<kinds.length() {
+      match self.dial_at(place, kinds[i], credentials, fresh, traceparent=traceparent) {
+        Some(dial) => attempts.push((false, dial))
+        None => ()
+      }
+    }
+  }
+  if attempts.length() == 0 {
+    k(effect::Exit::Failed(failed("all_off")))
+    return
+  }
+  if attempts.length() == 1 {
+    let (_, f) = attempts[0]
+    f(k)
+    return
+  }
+  let won : effect::Deferred[Link] = effect::Deferred::new()
+  let st = DialAllState::{ winner: None, taken: false, left: attempts.length(), main_failure: None }
+  for i in 0..<attempts.length() {
+    let (is_main, dial) = attempts[i]
+    let _ = self.fibers.fork_named("mesh way dial", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      dial(fn(ex : effect::Exit[Link]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(link) => {
+            if st.taken || st.winner.is_some() {
+              self.adopt_way(place, link)
+            } else {
+              st.winner = Some(link)
+              let _ = won.succeed(link)
+            }
+            fk(effect::Exit::Succeeded(()))
+          }
+          effect::Exit::Failed(e) => {
+            if is_main {
+              st.main_failure = Some(e)
+            }
+            st.left -= 1
+            if st.left == 0 {
+              let err = match st.main_failure {
+                Some(mf) => mf
+                None => e
+              }
+              let _ = won.fail(err)
+            }
+            fk(effect::Exit::Succeeded(()))
+          }
+        }
+      })
+    })
+  }
+  won.wait_k(fn(ex : effect::Exit[Link]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(link) => {
+        st.taken = true
+        k(effect::Exit::Succeeded(link))
+      }
+      other => {
+        if !st.taken {
+          st.taken = true
+          match st.winner {
+            Some(link) => self.adopt_way(place, link)
+            None => ()
+          }
+        }
+        k(other)
+      }
+    }
+  })
+}
+
+fn Mesh::turn_off(self : Mesh, place : Place, off : Array[String]) -> Unit {
+  let ws = self.ways_at(place)
+  let norm : Array[String] = []
+  for i in 0..<off.length() {
+    norm.push(relay_key(off[i]))
+  }
+  if str_array_eq(ws.off, norm) {
+    return
+  }
+  ws.off = norm
+  let cur = self.current(place.peer, link_scope=place.link_scope)
+  for i in 0..<ws.all.length() {
+    let l = ws.all[i].link
+    let is_c = match cur {
+      Some(c) => c.uid == l.uid
+      None => false
+    }
+    if !is_c && self.way_off(place, l) {
+      l.close(reason="way turned off")
+    }
+  }
+  let _ = self.live_ways(place)
+  match cur {
+    Some(c) =>
+    if c.usable() && self.way_off(place, c) {
+      c.close(reason="way turned off")
+      self.choose(place, None)
+      match self.current(place.peer, link_scope=place.link_scope) {
+        Some(now) =>
+        if now.uid == c.uid {
+          let _ = self.dial(place, c.credentials, false, asker="again")
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  self.release_pinned()
+  self.steer_if(place)
+}
+
+pub fn Mesh::set_ways(
+  self : Mesh,
+  peer : String,
+  link_scope : String = "",
+  theirs : Option[Array[String]] = None,
+  off : Option[Array[String]] = None,
+) -> Unit {
+  if self.closed {
+    return
+  }
+  let place = Place::{ link_scope: link_scope, peer: peer }
+  match theirs {
+    Some(ts) => {
+      let norm : Array[String] = []
+      for i in 0..<ts.length() {
+        norm.push(relay_key(ts[i]))
+      }
+      self.ways_at(place).theirs = norm
+    }
+    None => ()
+  }
+  match off {
+    Some(os) => self.turn_off(place, os)
+    None => ()
+  }
+}
+
+pub fn Mesh::measured(self : Mesh, peer : String, link_scope : String = "") -> Array[MeasuredWay] {
+  let place = Place::{ link_scope: link_scope, peer: peer }
+  let cur = self.current(peer, link_scope=link_scope)
+  let live = self.live_ways(place)
+  if live.length() == 0 {
+    return []
+  }
+  let sorted : Array[Way] = []
+  for i in 0..<live.length() {
+    sorted.push(live[i])
+  }
+  for i in 1..<sorted.length() {
+    let key_w = sorted[i]
+    let kp = if key_w.link.samples > 0 { 0 } else { 1 }
+    let ks = key_w.link.srtt
+    let mut j = i - 1
+    while j >= 0 {
+      let jp = if sorted[j].link.samples > 0 { 0 } else { 1 }
+      let js = sorted[j].link.srtt
+      if jp > kp || (jp == kp && js > ks) {
+        sorted[j + 1] = sorted[j]
+        j -= 1
+      } else {
+        break
+      }
+    }
+    sorted[j + 1] = key_w
+  }
+  let out : Array[MeasuredWay] = []
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<sorted.length() {
+    let w = sorted[i]
+    let link = w.link
+    let kind = match link.pin {
+      None => "main"
+      Some(p) => if p == lan_name || p == tailnet_name { p } else { "relay" }
+    }
+    let key = w.key()
+    seen.set(key, true)
+    let active = match cur {
+      Some(c) => c.uid == link.uid
+      None => false
+    }
+    out.push(
+      MeasuredWay::{
+        way: key,
+        kind: kind,
+        active: active,
+        healthy: link.missed < dead_pings,
+        samples: link.samples,
+        srtt: link.srtt,
+        dev: link.dev,
+        missed: link.missed,
+      },
+    )
+  }
+  let wf = self.ways_for(place)
+  for i in 0..<wf.length() {
+    let rk = relay_key(wf[i])
+    if !seen.contains(rk) {
+      out.push(
+        MeasuredWay::{
+          way: rk,
+          kind: "relay",
+          active: false,
+          healthy: false,
+          samples: 0,
+          srtt: 0.0,
+          dev: 0.0,
+          missed: 0,
+        },
+      )
+    }
+  }
+  out
+}
+
+pub fn Mesh::moves(self : Mesh, peer : String, link_scope : String = "") -> Int {
+  match self.ways_of.get(Place::{ link_scope: link_scope, peer: peer }.map_key()) {
+    Some(ws) => ws.moves
+    None => 0
+  }
+}
+
+pub fn Mesh::moved(self : Mesh, peer : String, link_scope : String = "") -> Option[String] {
+  match self.ways_of.get(Place::{ link_scope: link_scope, peer: peer }.map_key()) {
+    Some(ws) => ws.moved
+    None => None
+  }
+}
+
+pub fn Mesh::measuring(self : Mesh, peer : String, link_scope : String = "") -> Bool {
+  match self.ways_of.get(Place::{ link_scope: link_scope, peer: peer }.map_key()) {
+    Some(ws) => ws.exploring
+    None => false
+  }
+}
+
+fn Mesh::sample_rounds_k(self : Mesh, place : Place, left : Int, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  if left <= 0 {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  if self.closed || !self.links.contains(place.map_key()) {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  self.sample_k(place, true, fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(_) => self.sample_rounds_k(place, left - 1, k)
+      other => k(other)
+    }
+  })
+}
+
+pub fn Mesh::remeasure_peer_k(
+  self : Mesh,
+  peer : String,
+  k : (effect::Exit[Unit]) -> Unit,
+  link_scope : String = "",
+) -> Unit {
+  let place = Place::{ link_scope: link_scope, peer: peer }
+  let link = match self.current(peer, link_scope=link_scope) {
+    Some(l) =>
+    if !self.closed && l.usable() {
+      l
+    } else {
+      k(effect::Exit::Failed(failed("not_connected")))
+      return
+    }
+    None => {
+      k(effect::Exit::Failed(failed("not_connected")))
+      return
+    }
+  }
+  self.explore_k(place, link.credentials, false, fn(eex : effect::Exit[Unit]) -> Unit {
+    match eex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(_) =>
+      self.sample_rounds_k(place, min_samples + 1, fn(sex : effect::Exit[Unit]) -> Unit {
+        match sex {
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(_) => {
+            if !self.closed && self.links.contains(place.map_key()) {
+              self.choose(place, Some("asked"))
+              self.prune(place)
+            }
+            k(effect::Exit::Succeeded(()))
+          }
+        }
+      })
+    }
+  })
+}
+
+pub fn Mesh::remeasure(self : Mesh) -> Unit {
+  if self.closed {
+    return
+  }
+  let ks = self.links.keys()
+  for i in 0..<ks.length() {
+    match self.links.get(ks[i]) {
+      Some(op) =>
+      match op.result {
+        Some(Opened::Open(link)) =>
+        if link.usable() {
+          let place = op.place
+          let ws = self.ways_at(place)
+          ws.held_until = None
+          ws.losses = 0
+          for j in 0..<ws.all.length() {
+            ws.all[j].better = 0
+            ws.all[j].link.samples = 0
+            ws.all[j].link.srtt = 0.0
+            ws.all[j].link.dev = 0.0
+          }
+          let credentials = link.credentials
+          let _ = self.fibers.fork_named("mesh remeasure", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            self.explore_k(place, credentials, false, fn(eex : effect::Exit[Unit]) -> Unit {
+              match eex {
+                effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+                _ =>
+                self.sample_rounds_k(place, min_samples + 1, fn(sex : effect::Exit[Unit]) -> Unit {
+                  match sex {
+                    effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+                    _ => {
+                      if !self.closed && self.links.contains(place.map_key()) {
+                        self.choose(place, Some("asked"))
+                        self.prune(place)
+                      }
+                      fk(effect::Exit::Succeeded(()))
+                    }
+                  }
+                })
+              }
+            })
+          })
+        }
+        _ => ()
+      }
+      None => ()
+    }
+  }
+}

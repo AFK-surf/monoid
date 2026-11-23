@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect } from "effect";
 import { STORAGE_KEY } from "../src/accounts.ts";
-import { answer, Core, CREDENTIAL_KEY, relaysOf } from "../src/core.ts";
+import { answer, Core, CREDENTIAL_429_COOLDOWN_MS, CREDENTIAL_ASK_CONCURRENCY, CREDENTIAL_FOR_S, CREDENTIAL_KEY, relaysOf } from "../src/core.ts";
 import { SOCKET_IDLE_MS, SOCKET_RETRY_MS } from "../src/sync/cloud.ts";
 import { REREAD_WAIT_MS } from "../src/core/execute.ts";
 import { run } from "./run.ts";
@@ -277,6 +277,122 @@ test("every_endpoints_credential_is_kept_when_they_are_answered_together", async
   const again = await all();
   assert.deepEqual(again.map((c) => c.credential), endpoints.map((d) => `c-${d}`));
   assert.equal(asked.length, endpoints.length);
+  core.close();
+});
+
+test("credential_asks_are_paced_and_cool_down_after_429", async () => {
+  // (production 2026-11-23: a device dialling every endpoint at once was refused 379 times in 4 minutes, asking again
+  // the moment it was refused, and the account's other requests were refused with it)
+  const host = new FakeHost();
+  host.store(STORAGE_KEY, [account("s1", "a@x.com", "阿一", "a", "r", nowS(host) + 3600)]);
+  const asked: string[] = [];
+  let limited = true;
+  host.onFetch((req) => {
+    const path = req.url.replace("https://stillfail.test", "");
+    if (path === "/v1/me") return jsonResponse(200, { workspaces: [{ id: "ws", name: "W" }], invitations: [], relay_url: "https://relay.test" });
+    if (path === "/v1/workspaces/ws/credential") {
+      const device = (parseJson(req.body!) as { device: string }).device;
+      asked.push(device);
+      if (limited) return jsonResponse(429, { error: "rate_limited" });
+      return jsonResponse(200, { credential: `c-${device}`, issued_at: nowS(host), expires_at: nowS(host) + 30 * 86400, relay_url: "https://relay.test" });
+    }
+    return jsonResponse(404, { error: "not_found" });
+  });
+  const core = await Core.create(host, { clock: host.time.clock });
+  const inner = core.inner;
+  const endpoints = Array.from({ length: 12 }, (_, i) => `endpoint-${i}`);
+  const all = () => run(Effect.all(endpoints.map((d) => Effect.result(inner.cloudSync.credential("ws", d, false, "main"))), { concurrency: "unbounded" }));
+  // The first asks held out: only so many go at once.
+  const releases = Array.from({ length: CREDENTIAL_ASK_CONCURRENCY }, () => host.hold("/v1/workspaces/ws/credential"));
+  const first = all();
+  await host.settle();
+  assert.equal(asked.length, CREDENTIAL_ASK_CONCURRENCY, "only so many out at once");
+  for (const release of releases) release();
+  const refused = await first;
+  assert.deepEqual(refused.map((r) => (r._tag === "Failure" ? r.failure.status : 200)), endpoints.map(() => 429));
+  assert.equal(asked.length, CREDENTIAL_ASK_CONCURRENCY, "the rest waiting their turn ask nothing once refused");
+  // Within the cool-down: refused here, the cloud not asked.
+  const again = await run(Effect.result(inner.cloudSync.credential("ws", "endpoint-0", false, "main")));
+  assert.equal(again._tag === "Failure" ? again.failure.status : 200, 429);
+  assert.equal(asked.length, CREDENTIAL_ASK_CONCURRENCY);
+  // After it: asked again, and answered.
+  limited = false;
+  await host.time.pass(CREDENTIAL_429_COOLDOWN_MS);
+  const answered = await all();
+  assert.deepEqual(answered.map((r) => (r._tag === "Success" ? r.success.credential : r.failure.code)), endpoints.map((d) => `c-${d}`));
+  assert.equal(asked.length, CREDENTIAL_ASK_CONCURRENCY + endpoints.length);
+  core.close();
+});
+
+test("a_credential_answered_after_another_was_refused_keeps_the_cool_down", async () => {
+  // (asks out together across the cloud's limit: the one refused answers at once, the one let through later, from the
+  // Directory; its answer must not end the cool-down the refusal began)
+  const host = new FakeHost();
+  host.store(STORAGE_KEY, [account("s1", "a@x.com", "阿一", "a", "r", nowS(host) + 3600)]);
+  const asked: string[] = [];
+  host.onFetch((req) => {
+    const path = req.url.replace("https://stillfail.test", "");
+    if (path === "/v1/me") return jsonResponse(200, { workspaces: [{ id: "ws", name: "W" }], invitations: [], relay_url: "https://relay.test" });
+    if (path === "/v1/workspaces/ws/credential") {
+      const device = (parseJson(req.body!) as { device: string }).device;
+      asked.push(device);
+      if (device === "refused") return jsonResponse(429, { error: "rate_limited" });
+      return jsonResponse(200, { credential: `c-${device}`, issued_at: nowS(host), expires_at: nowS(host) + 30 * 86400, relay_url: "https://relay.test" });
+    }
+    return jsonResponse(404, { error: "not_found" });
+  });
+  const core = await Core.create(host, { clock: host.time.clock });
+  const inner = core.inner;
+  const release = host.hold("/v1/workspaces/ws/credential");
+  const through = run(inner.cloudSync.credential("ws", "through", false, "main"));
+  await host.settle();
+  const refused = await run(Effect.result(inner.cloudSync.credential("ws", "refused", false, "main")));
+  assert.equal(refused._tag === "Failure" ? refused.failure.status : 200, 429);
+  release();
+  assert.equal((await through).credential, "c-through");
+  assert.deepEqual(asked, ["through", "refused"]);
+  const next = await run(Effect.result(inner.cloudSync.credential("ws", "next", false, "main")));
+  assert.equal(next._tag === "Failure" ? next.failure.status : 200, 429, "still cooling down");
+  assert.deepEqual(asked, ["through", "refused"], "nothing asked of the cloud");
+  core.close();
+});
+
+test("stale_kept_credential_skips_background_renewal_during_429_cooldown", async () => {
+  const host = new FakeHost();
+  host.store(STORAGE_KEY, [account("s1", "a@x.com", "阿一", "a", "r", nowS(host) + 3 * 86400)]);
+  const asked: string[] = [];
+  let limited = false;
+  host.onFetch((req) => {
+    const path = req.url.replace("https://stillfail.test", "");
+    if (path === "/v1/me") return jsonResponse(200, { workspaces: [{ id: "ws", name: "W" }], invitations: [], relay_url: "https://relay.test" });
+    if (path === "/v1/workspaces/ws/credential") {
+      const device = (parseJson(req.body!) as { device: string }).device;
+      asked.push(device);
+      if (limited) return jsonResponse(429, { error: "rate_limited" });
+      return jsonResponse(200, { credential: `c-${asked.length}`, issued_at: nowS(host), expires_at: nowS(host) + 30 * 86400, relay_url: "https://relay.test" });
+    }
+    return jsonResponse(404, { error: "not_found" });
+  });
+  const core = await Core.create(host, { clock: host.time.clock });
+  const inner = core.inner;
+  assert.equal((await run(inner.cloudSync.credential("ws", "dev", false, null))).credential, "c-1");
+  host.advance((CREDENTIAL_FOR_S + 60) * 1000);
+  // Another endpoint's ask refused for too many: the account cools down.
+  limited = true;
+  const refused = await run(Effect.result(inner.cloudSync.credential("ws", "endpoint", false, "dev")));
+  assert.equal(refused._tag === "Failure" ? refused.failure.status : 200, 429);
+  assert.deepEqual(asked, ["dev", "endpoint"]);
+  // A day old, read meanwhile: it serves, and nothing is asked beside it.
+  limited = false;
+  assert.equal((await run(inner.cloudSync.credential("ws", "dev", false, null))).credential, "c-1");
+  await host.settle();
+  assert.deepEqual(asked, ["dev", "endpoint"]);
+  // Once cooled down: it still serves, and its renewal is asked beside it.
+  await host.time.pass(CREDENTIAL_429_COOLDOWN_MS);
+  assert.equal((await run(inner.cloudSync.credential("ws", "dev", false, null))).credential, "c-1");
+  await host.settle();
+  assert.deepEqual(asked, ["dev", "endpoint", "dev"]);
+  assert.equal((await run(inner.cloudSync.credential("ws", "dev", false, null))).credential, "c-3");
   core.close();
 });
 

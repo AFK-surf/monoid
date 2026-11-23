@@ -19,8 +19,7 @@ import {
   certOk, itemSupersedes, keyContext, newBoxPair, openSeal, recoveryPair, seal, sealWith, signedBytes, signedOk, signerOf, vaultOk, vaultSupersedes,
 } from "../src/vault/crypto.ts";
 import { VaultStore } from "../src/vault/store.ts";
-// @ts-ignore: the MoonBit build's JS, untyped
-import * as rules from "../../rules/js/rules.js";
+import * as rules from "../../shared/rules-runtime.ts";
 
 const WS = "01HZZZZZZZZZZZZZZZZZZZZZZZ";
 const VAULT = "v_01HZZZZZZZZZZZZZZZZZZZZZZZ";

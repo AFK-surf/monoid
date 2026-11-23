@@ -1,0 +1,236 @@
+// Program hooks: standby/hedging, signing/verifying, decodes_opus, and device key migration.
+
+import "effect"
+import "base_codec"
+import "shell"
+
+pub let hedge_floor_ms : Int = 1000
+
+fn Mesh::way_of(self : Mesh, link : Link) -> Option[(Place, Way)] {
+  let place = Place::{ link_scope: link.link_scope, peer: link.peer }
+  let ws = self.live_ways(place)
+  for i in 0..<ws.length() {
+    if ws[i].link.uid == link.uid {
+      return Some((place, ws[i]))
+    }
+  }
+  None
+}
+
+pub fn Mesh::standby(self : Mesh, link : Link) -> Option[Link] {
+  let place = Place::{ link_scope: link.link_scope, peer: link.peer }
+  let ws = self.live_ways(place)
+  let mut key : Option[String] = None
+  for i in 0..<ws.length() {
+    if ws[i].link.uid == link.uid {
+      key = Some(ws[i].key())
+      break
+    }
+  }
+  let others : Array[Way] = []
+  for i in 0..<ws.length() {
+    let w = ws[i]
+    let same_key = match key {
+      Some(k) => w.key() == k
+      None => false
+    }
+    if w.link.uid != link.uid && w.link.missed == 0 && !same_key {
+      others.push(w)
+    }
+  }
+  match self.best_way(place, others) {
+    Some(w) => Some(w.link)
+    None => None
+  }
+}
+
+pub fn Mesh::hedge_after(self : Mesh, link : Link) -> Int {
+  match self.way_of(link) {
+    None => hedge_floor_ms
+    Some((place, way)) => {
+      if way.link.samples <= 0 {
+        return hedge_floor_ms
+      }
+      let sc = self.score_of(place, way)
+      let ms = round_i32(sc.cost + 2.0 * sc.dev)
+      if ms > hedge_floor_ms { ms } else { hedge_floor_ms }
+    }
+  }
+}
+
+pub fn Mesh::outran(self : Mesh, slow : Link, ms : Int) -> Unit {
+  match self.way_of(slow) {
+    Some((_, way)) => way.link.note(ms)
+    None => ()
+  }
+}
+
+pub fn Mesh::sign(self : Mesh, message : Bytes) -> (Bytes, Bytes) {
+  let asked = match self.sh.ask(
+    "ed25519.sign",
+    base_codec::json_obj([
+      ("seed", base_codec::json_str(hex_bytes(self.secret))),
+      ("message", base_codec::json_str(hex_bytes(message))),
+    ]),
+  ) {
+    shell::AskResult::Ok(j) => j
+    shell::AskResult::Err(_) => base_codec::json_null()
+  }
+  match (json_get_str(asked, "publicKey"), json_get_str(asked, "signature")) {
+    (Some(pk_h), Some(sig_h)) => {
+      let pk = bytes_of_hex(pk_h)
+      let sig = bytes_of_hex(sig_h)
+      if pk.length() == 32 && sig.length() == 64 {
+        return (pk, sig)
+      }
+      ed25519_sign(self.secret, message)
+    }
+    _ => ed25519_sign(self.secret, message)
+  }
+}
+
+pub fn Mesh::verify(self : Mesh, public_key : Bytes, message : Bytes, signature : Bytes) -> Bool {
+  let asked = match self.sh.ask(
+    "crypto.verify",
+    base_codec::json_obj([
+      ("alg", base_codec::json_str("Ed25519")),
+      ("key", base_codec::json_str(hex_bytes(public_key))),
+      ("signature", base_codec::json_str(hex_bytes(signature))),
+      ("message", base_codec::json_str(hex_bytes(message))),
+    ]),
+  ) {
+    shell::AskResult::Ok(j) => j
+    shell::AskResult::Err(_) => base_codec::json_null()
+  }
+  match asked {
+    base_codec::Json::Bool(b) => b
+    _ => ed25519_verify(public_key, message, signature)
+  }
+}
+
+pub fn Mesh::decodes_opus(self : Mesh) -> Bool {
+  match self.sh.ask("tap.opus", base_codec::json_obj([])) {
+    shell::AskResult::Ok(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+}
+
+fn Mesh::migrate_wait_rebind_k(self : Mesh, secret : Bytes, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  if self.closed {
+    k(effect::Exit::Failed(failed("closed")))
+    return
+  }
+  if self.rebinding {
+    self.hold_k(None, fn(hex : effect::Exit[Unit]) -> Unit {
+      match hex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => self.migrate_wait_rebind_k(secret, k)
+      }
+    })
+    return
+  }
+  if bytes_eq(secret, self.secret) {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  bind_k(self.sh, self.relays, self.options.relay_only, self.binding, self.entries, secret, fn(bex : effect::Exit[base_codec::Json]) -> Unit {
+    match bex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(endpoint) => {
+        if self.closed || self.rebinding {
+          self.sh.tell("iroh.close", base_codec::json_obj([("id", endpoint), ("forget", base_codec::json_bool(true))]))
+          k(effect::Exit::Failed(failed("closed")))
+          return
+        }
+        let set_fn = self.store.set_k
+        set_fn(device_key, secret, fn(sex : effect::Exit[Unit]) -> Unit {
+          match sex {
+            effect::Exit::Interrupted => {
+              self.sh.tell("iroh.close", base_codec::json_obj([("id", endpoint), ("forget", base_codec::json_bool(true))]))
+              k(effect::Exit::Interrupted)
+            }
+            effect::Exit::Failed(e) => {
+              self.sh.tell("iroh.close", base_codec::json_obj([("id", endpoint), ("forget", base_codec::json_bool(true))]))
+              k(effect::Exit::Failed(MeshError::new("host", text_of(e), "").to_effect_error()))
+            }
+            effect::Exit::Succeeded(_) => {
+              if self.closed || self.rebinding {
+                self.sh.tell("iroh.close", base_codec::json_obj([("id", endpoint), ("forget", base_codec::json_bool(true))]))
+                k(effect::Exit::Failed(failed("closed")))
+                return
+              }
+              let id = match self.sh.ask("iroh.endpointId", base_codec::json_obj([("id", endpoint)])) {
+                shell::AskResult::Ok(base_codec::Json::Str(s)) => s
+                _ => self.id
+              }
+              self.replay(endpoint)
+              let reason = "device key replaced"
+              self.count_open()
+              let lks = self.links.keys()
+              for i in 0..<lks.length() {
+                match self.links.get(lks[i]) {
+                  Some(op) => self.let_go(op.place, reason)
+                  None => ()
+                }
+              }
+              let live_copy : Array[Link] = []
+              for i in 0..<self.live.length() {
+                live_copy.push(self.live[i])
+              }
+              for i in 0..<live_copy.length() {
+                live_copy[i].close(reason=reason)
+              }
+              for i in 0..<self.retiring.length() {
+                self.retiring[i].close(reason=reason)
+              }
+              self.retiring.clear()
+              let inc_copy : Array[Incoming] = []
+              for i in 0..<self.incomings.length() {
+                inc_copy.push(self.incomings[i])
+              }
+              for i in 0..<inc_copy.length() {
+                inc_copy[i].close(reason=reason)
+              }
+              self.forget_coming()
+              let pks = self.pinned.keys()
+              for i in 0..<pks.length() {
+                match self.pinned.get(pks[i]) {
+                  Some(p) =>
+                  match p.endpoint {
+                    Some(pe) => self.sh.tell("iroh.close", base_codec::json_obj([("id", pe), ("forget", base_codec::json_bool(true))]))
+                    None => ()
+                  }
+                  None => ()
+                }
+              }
+              self.pinned.clear()
+              let old = self.endpoint
+              self.secret = secret
+              self.endpoint = endpoint
+              self.id = id
+              self.stuck = false
+              self.changed()
+              self.eased()
+              self.sh.tell("iroh.close", base_codec::json_obj([("id", old), ("forget", base_codec::json_bool(true))]))
+              k(effect::Exit::Succeeded(()))
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+pub fn Mesh::migrate_k(self : Mesh, secret : Bytes, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  if secret.length() != 32 {
+    k(effect::Exit::Failed(MeshError::new("invalid_params", say("bad_device_key"), "").to_effect_error()))
+    return
+  }
+  if self.closed {
+    k(effect::Exit::Failed(failed("closed")))
+    return
+  }
+  self.migrate_wait_rebind_k(secret, k)
+}

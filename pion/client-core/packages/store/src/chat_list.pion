@@ -1,0 +1,484 @@
+// Indexed chat list window, keyed chat lookups, local overlays (`outbox`/`pending`/`draft`),
+// and `account_doc` reads aligned with `client/core-ts/src/db/chat-reads.ts`.
+// Never performs a full-table scan of `chat`.
+
+import "base_codec"
+import "sql"
+
+/// Encode ordered stations as `\x01s1\x01s2\x01` (chat-reads.ts `inOrder`).
+pub fn in_order(stations : Array[String]) -> String {
+  let sb = StringBuilder::new()
+  sb.write_byte(1 as Byte)
+  for i in 0..<stations.length() {
+    if i > 0 {
+      sb.write_byte(1 as Byte)
+    }
+    sb.write_string(stations[i])
+  }
+  sb.write_byte(1 as Byte)
+  sb.to_string()
+}
+
+/// Encode overlaid keys (`station\x01key`) as `\x01station\x02key\x01...` (chat-reads.ts `keyed`).
+pub fn keyed_apart(apart : Array[String]) -> String {
+  if apart.length() == 0 {
+    return ""
+  }
+  let sb = StringBuilder::new()
+  sb.write_byte(1 as Byte)
+  for i in 0..<apart.length() {
+    if i > 0 {
+      sb.write_byte(1 as Byte)
+    }
+    let item = apart[i]
+    let raw = item.to_bytes()
+    let mut replaced = false
+    for j in 0..<raw.length() {
+      let b = raw[j].to_int()
+      if b == 1 && !replaced {
+        sb.write_byte(2 as Byte)
+        replaced = true
+      } else {
+        sb.write_byte(b as Byte)
+      }
+    }
+  }
+  sb.write_byte(1 as Byte)
+  sb.to_string()
+}
+
+pub fn sql_chat_window() -> String {
+  "SELECT c.station, c.archived, c.id, c.pinned_at, c.last_active, c.ord " +
+  "FROM chat AS c " +
+  "WHERE c.archived = 0 AND instr(?1, char(1) || c.station || char(1)) > 0 " +
+  "AND (?2 = 0 OR c.mine = 1) AND (?3 = 2 OR coalesce(c.hidden, 0) = ?3) " +
+  "AND coalesce(c.led, 0) = 0 AND (?4 = 0 OR c.watched = 1) " +
+  "AND (?5 = '' OR c.thread IS NULL OR instr(?5, char(1) || c.station || char(2) || c.thread || char(1)) = 0) " +
+  "AND (?6 = '' OR c.session IS NULL OR instr(?6, char(1) || c.station || char(2) || c.session || char(1)) = 0) " +
+  "ORDER BY c.pinned_at DESC, c.last_active DESC, instr(?1, char(1) || c.station || char(1)), c.ord, c.id LIMIT ?7"
+}
+
+pub fn sql_chat_by_key() -> String {
+  "SELECT station, archived, id, json FROM chat WHERE station = ? AND archived = ? AND id = ?"
+}
+
+pub fn sql_chat_by_thread() -> String {
+  "SELECT station, archived, id, json FROM chat WHERE station = ? AND +archived = 0 AND thread = ? ORDER BY ord, id LIMIT 1"
+}
+
+pub fn sql_chat_by_session() -> String {
+  "SELECT station, archived, id, json FROM chat WHERE station = ? AND +archived = 0 AND session = ? ORDER BY ord, id LIMIT 1"
+}
+
+pub fn sql_outbox_one() -> String {
+  "SELECT station, thread, json FROM outbox WHERE station = ? AND thread = ?"
+}
+
+pub fn sql_pending_by_station() -> String {
+  "SELECT key, station, json FROM pending WHERE station = ? ORDER BY key"
+}
+
+pub fn sql_draft_one() -> String {
+  "SELECT station, chat, json FROM draft WHERE station = ? AND chat = ?"
+}
+
+pub fn sql_account_doc_one() -> String {
+  "SELECT json FROM account_doc WHERE name = ?"
+}
+
+pub fn sql_account_doc_put() -> String {
+  "INSERT OR REPLACE INTO account_doc (name, json, confirmed) VALUES (?, ?, ?)"
+}
+
+pub fn sql_workspace_put() -> String {
+  "INSERT OR REPLACE INTO workspace (id, json, confirmed) VALUES (?, ?, ?)"
+}
+
+pub fn sql_workspace_all() -> String {
+  "SELECT id, json, confirmed FROM workspace ORDER BY id"
+}
+
+pub fn sql_workspace_one() -> String {
+  "SELECT id, json, confirmed FROM workspace WHERE id = ?"
+}
+
+pub fn sql_station_doc_put() -> String {
+  "INSERT OR REPLACE INTO station (address, kind, json, confirmed) VALUES (?, ?, ?, ?)"
+}
+
+pub fn sql_station_doc_by_kind() -> String {
+  "SELECT address, kind, json, confirmed FROM station WHERE kind = ? ORDER BY address"
+}
+
+pub fn sql_station_doc_one() -> String {
+  "SELECT address, kind, json, confirmed FROM station WHERE address = ? AND kind = ?"
+}
+
+pub struct ChatWindowQuery {
+  pub stations : Array[String]
+  pub mine : Bool
+  pub hidden : Int
+  pub watching : Bool
+  pub apart_threads : Array[String]
+  pub apart_sessions : Array[String]
+  pub limit : Int
+}
+
+pub struct ChatWindowRow {
+  pub station : String
+  pub archived : Int
+  pub id : String
+  pub pinned_at : Option[Int64]
+  pub last_active : Int64
+  pub ord : Double
+}
+
+pub struct ChatRecord {
+  pub station : String
+  pub archived : Int
+  pub id : String
+  pub json : String
+}
+
+pub struct OutboxRow {
+  pub station : String
+  pub thread : Int
+  pub json : String
+}
+
+pub struct PendingRow {
+  pub key : String
+  pub station : String
+  pub json : String
+}
+
+pub struct DraftRow {
+  pub station : String
+  pub chat : String
+  pub json : String
+}
+
+/// Query the first `limit` listed chats across `stations` via the `chat_recent` index.
+pub fn query_chat_window(db : sql::Sql, q : ChatWindowQuery) -> sql::SqlResult[Array[ChatWindowRow]] {
+  if q.stations.length() == 0 || q.limit <= 0 {
+    return sql::SqlResult::Ok([])
+  }
+  let params = [
+    base_codec::json_str(in_order(q.stations)),
+    base_codec::json_int(if q.mine { 1 } else { 0 }),
+    base_codec::json_int(q.hidden),
+    base_codec::json_int(if q.watching { 1 } else { 0 }),
+    base_codec::json_str(keyed_apart(q.apart_threads)),
+    base_codec::json_str(keyed_apart(q.apart_sessions)),
+    base_codec::json_int(q.limit),
+  ]
+  match db.all(sql_chat_window(), params=params) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[ChatWindowRow] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        out.push(ChatWindowRow::{
+          station: sql::col_text(r, 0),
+          archived: sql::col_int(r, 1),
+          id: sql::col_text(r, 2),
+          pinned_at: sql::col_opt_int64(r, 3),
+          last_active: sql::col_int64(r, 4),
+          ord: sql::col_double(r, 5),
+        })
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
+}
+
+/// Fetch one chat record by primary key `(station, archived, id)`.
+pub fn get_chat_by_key(
+  db : sql::Sql,
+  station : String,
+  archived : Int,
+  id : String,
+) -> sql::SqlResult[Option[ChatRecord]] {
+  match db.all(sql_chat_by_key(), params=[
+    base_codec::json_str(station),
+    base_codec::json_int(archived),
+    base_codec::json_str(id),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        let r = rows[0]
+        sql::SqlResult::Ok(Some(ChatRecord::{
+          station: sql::col_text(r, 0),
+          archived: sql::col_int(r, 1),
+          id: sql::col_text(r, 2),
+          json: sql::col_text(r, 3),
+        }))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}
+
+/// Fetch one listed chat by `(station, thread)` via `chat_thread`.
+pub fn get_chat_by_thread(db : sql::Sql, station : String, thread : Int) -> sql::SqlResult[Option[ChatRecord]] {
+  match db.all(sql_chat_by_thread(), params=[base_codec::json_str(station), base_codec::json_int(thread)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        let r = rows[0]
+        sql::SqlResult::Ok(Some(ChatRecord::{
+          station: sql::col_text(r, 0),
+          archived: sql::col_int(r, 1),
+          id: sql::col_text(r, 2),
+          json: sql::col_text(r, 3),
+        }))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}
+
+/// Fetch one listed chat by `(station, session)` via `chat_session`.
+pub fn get_chat_by_session(db : sql::Sql, station : String, session : String) -> sql::SqlResult[Option[ChatRecord]] {
+  match db.all(sql_chat_by_session(), params=[base_codec::json_str(station), base_codec::json_str(session)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        let r = rows[0]
+        sql::SqlResult::Ok(Some(ChatRecord::{
+          station: sql::col_text(r, 0),
+          archived: sql::col_int(r, 1),
+          id: sql::col_text(r, 2),
+          json: sql::col_text(r, 3),
+        }))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}
+
+/// Read local unsent outbox overlay for `(station, thread)`.
+pub fn get_outbox(db : sql::Sql, station : String, thread : Int) -> sql::SqlResult[Option[OutboxRow]] {
+  match db.all(sql_outbox_one(), params=[base_codec::json_str(station), base_codec::json_int(thread)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        let r = rows[0]
+        sql::SqlResult::Ok(Some(OutboxRow::{
+          station: sql::col_text(r, 0),
+          thread: sql::col_int(r, 1),
+          json: sql::col_text(r, 2),
+        }))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}
+
+/// Read local pending-chat overlays for `station`.
+pub fn list_pending_for_station(db : sql::Sql, station : String) -> sql::SqlResult[Array[PendingRow]] {
+  match db.all(sql_pending_by_station(), params=[base_codec::json_str(station)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[PendingRow] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        out.push(PendingRow::{
+          key: sql::col_text(r, 0),
+          station: sql::col_text(r, 1),
+          json: sql::col_text(r, 2),
+        })
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
+}
+
+/// Read local draft overlay for `(station, chat)`.
+pub fn get_draft(db : sql::Sql, station : String, chat : String) -> sql::SqlResult[Option[DraftRow]] {
+  match db.all(sql_draft_one(), params=[base_codec::json_str(station), base_codec::json_str(chat)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        let r = rows[0]
+        sql::SqlResult::Ok(Some(DraftRow::{
+          station: sql::col_text(r, 0),
+          chat: sql::col_text(r, 1),
+          json: sql::col_text(r, 2),
+        }))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}
+
+/// Read an `account_doc` row by `name` (e.g. `"me"`, `"login_sessions"`).
+pub fn get_account_doc(db : sql::Sql, name : String) -> sql::SqlResult[Option[String]] {
+  match db.all(sql_account_doc_one(), params=[base_codec::json_str(name)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        sql::SqlResult::Ok(Some(sql::col_text(rows[0], 0)))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}
+
+pub struct WorkspaceRow {
+  pub id : String
+  pub json : String
+  pub confirmed : Option[Int64]
+}
+
+pub struct StationDocRow {
+  pub address : String
+  pub kind : String
+  pub json : String
+  pub confirmed : Option[Int64]
+}
+
+fn opt_i64_param(v : Option[Int64]) -> base_codec::Json {
+  match v {
+    Some(n) => base_codec::json_int64(n)
+    None => base_codec::json_null()
+  }
+}
+
+/// Upsert an `account_doc` row (`name`, `json`, optional `confirmed` timestamp).
+pub fn put_account_doc(
+  db : sql::Sql,
+  name : String,
+  json : String,
+  confirmed : Option[Int64] = None,
+) -> sql::SqlResult[Unit] {
+  match db.run(sql_account_doc_put(), params=[
+    base_codec::json_str(name),
+    base_codec::json_str(json),
+    opt_i64_param(confirmed),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+  }
+}
+
+/// Upsert a workspace roster record (`workspace` table).
+pub fn upsert_workspace(
+  db : sql::Sql,
+  id : String,
+  json : String,
+  confirmed : Option[Int64] = None,
+) -> sql::SqlResult[Unit] {
+  match db.run(sql_workspace_put(), params=[
+    base_codec::json_str(id),
+    base_codec::json_str(json),
+    opt_i64_param(confirmed),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+  }
+}
+
+/// List all workspaces ordered by `id`.
+pub fn list_workspaces(db : sql::Sql) -> sql::SqlResult[Array[WorkspaceRow]] {
+  match db.all(sql_workspace_all()) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[WorkspaceRow] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        out.push(WorkspaceRow::{
+          id: sql::col_text(r, 0),
+          json: sql::col_text(r, 1),
+          confirmed: sql::col_opt_int64(r, 2),
+        })
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
+}
+
+/// Fetch one workspace by `id`.
+pub fn get_workspace(db : sql::Sql, id : String) -> sql::SqlResult[Option[WorkspaceRow]] {
+  match db.all(sql_workspace_one(), params=[base_codec::json_str(id)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        let r = rows[0]
+        sql::SqlResult::Ok(Some(WorkspaceRow::{
+          id: sql::col_text(r, 0),
+          json: sql::col_text(r, 1),
+          confirmed: sql::col_opt_int64(r, 2),
+        }))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}
+
+/// Upsert a station roster/overview document (`station` table).
+pub fn upsert_station_doc(
+  db : sql::Sql,
+  address : String,
+  kind : String,
+  json : String,
+  confirmed : Option[Int64] = None,
+) -> sql::SqlResult[Unit] {
+  match db.run(sql_station_doc_put(), params=[
+    base_codec::json_str(address),
+    base_codec::json_str(kind),
+    base_codec::json_str(json),
+    opt_i64_param(confirmed),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+  }
+}
+
+/// List station documents of a given `kind` (e.g. `"overview"`, `"roster"`), ordered by `address`.
+pub fn list_stations(db : sql::Sql, kind : String = "overview") -> sql::SqlResult[Array[StationDocRow]] {
+  match db.all(sql_station_doc_by_kind(), params=[base_codec::json_str(kind)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[StationDocRow] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        out.push(StationDocRow::{
+          address: sql::col_text(r, 0),
+          kind: sql::col_text(r, 1),
+          json: sql::col_text(r, 2),
+          confirmed: sql::col_opt_int64(r, 3),
+        })
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
+}
+
+/// Fetch one station document by `(address, kind)`.
+pub fn get_station_doc(db : sql::Sql, address : String, kind : String = "overview") -> sql::SqlResult[Option[StationDocRow]] {
+  match db.all(sql_station_doc_one(), params=[base_codec::json_str(address), base_codec::json_str(kind)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        let r = rows[0]
+        sql::SqlResult::Ok(Some(StationDocRow::{
+          address: sql::col_text(r, 0),
+          kind: sql::col_text(r, 1),
+          json: sql::col_text(r, 2),
+          confirmed: sql::col_opt_int64(r, 3),
+        }))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}

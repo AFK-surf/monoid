@@ -1,0 +1,304 @@
+///| Person lock rules (`rules/src/lock/person.mbt`).
+
+pub struct PersonDevice {
+  key : String
+  id : String
+  label : String
+  sign_key : Option[String]
+  sign_keys : Array[String]
+}
+
+pub struct PersonWeb {
+  id : String
+  label : String
+  at : Double
+  exp : Double
+}
+
+pub struct Person {
+  sub : String
+  genesis : String
+  head : String
+  seq : Double
+  devices : form::OrderedMap[PersonDevice]
+  webs : form::OrderedMap[PersonWeb]
+}
+
+pub fn person_ws(sub : String) -> String {
+  "person:" + sub
+}
+
+fn parse_person_device(v : Option[form::Json], c : Crypto) -> Result[PersonDevice, LockError] {
+  let (key, id, label) = match (text_of(field(v, "key")), text_of(field(v, "id")), text_of(field(v, "label"))) {
+    (Some(k), Some(i), Some(l)) => (k, i, l)
+    _ => return Err(LockError::Refused("a person's device is {key, id, label}"))
+  }
+  if !(key.starts_with("ed25519:") && (c.valid_key_id)(key) && is_hex32(id)) {
+    return Err(LockError::Refused("a person's device signs with an ed25519 key, and goes by its base key"))
+  }
+  let sign_key : Option[String] = match text_of(field(v, "sign_key")) {
+    Some(k) => {
+      if k.starts_with("ed25519:") && (c.valid_key_id)(k) {
+        Some(k)
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+  let sign_keys : Array[String] = match sign_key {
+    Some(k) => [k]
+    None => []
+  }
+  Ok(PersonDevice::{ key: key, id: id, label: label, sign_key: sign_key, sign_keys: sign_keys })
+}
+
+pub fn fold_person(entries : Array[form::Json], sub : String, c : Crypto) -> Result[Person, LockError] {
+  if entries.length() == 0 {
+    return Err(LockError::Refused("no lock"))
+  }
+  let mut p : Option[Person] = None
+  let mut i = 0
+  while i < entries.length() {
+    match person_step(p, entries[i], sub, c) {
+      Ok(next) => {
+        p = Some(next)
+      }
+      Err(err) => return Err(err)
+    }
+    i = i + 1
+  }
+  match p {
+    Some(res) => Ok(res)
+    None => Err(LockError::Refused("no lock"))
+  }
+}
+
+fn keys_only(keys : Array[String], want : Array[String]) -> Bool {
+  if keys.length() != want.length() {
+    return false
+  }
+  let mut i = 0
+  while i < want.length() {
+    if !str_in(keys, want[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn person_step(was : Option[Person], e : form::Json, sub : String, c : Crypto) -> Result[Person, LockError] {
+  let v = Some(e)
+  if !opt_num_eq(safe_num(field(v, "v")), 1.0) || !opt_str_eq(text_of(field(v, "ws")), person_ws(sub)) {
+    return Err(LockError::Refused("an entry of another lock"))
+  }
+  let at = match safe_int(field(v, "at")) {
+    Some(n) => n
+    None => return Err(LockError::Refused("at is unix seconds"))
+  }
+  let follows = match (safe_int(field(v, "seq")), was) {
+    (Some(seq), None) => seq.to_int64() == 0.to_int64()
+    (Some(seq), Some(w)) => history::follows(false, w.seq.to_int64(), seq.to_int64())
+    _ => false
+  }
+  let kept_on = match was {
+    None => {
+      match field(v, "prev") {
+        Some(form::Json::Null) => true
+        _ => false
+      }
+    }
+    Some(w) => opt_str_eq(text_of(field(v, "prev")), w.head)
+  }
+  if !(follows && kept_on) {
+    return Err(LockError::Refused("the entry does not follow this lock's head"))
+  }
+  let key = sig_key(e)
+  let b = field(v, "body")
+  let kind = match text_of(field(v, "kind")) {
+    Some(k) => k
+    None => ""
+  }
+  let hash = match entry_hash(e, c) {
+    Ok(h) => h
+    Err(err) => return Err(err)
+  }
+  let devices : form::OrderedMap[PersonDevice] = match was {
+    None => form::OrderedMap::new()
+    Some(w) => copy_map(w.devices)
+  }
+  let mut webs : form::OrderedMap[PersonWeb] = match was {
+    None => form::OrderedMap::new()
+    Some(w) => w.webs
+  }
+  match was {
+    None => {
+      if kind != "genesis" || !opt_str_eq(text_of(field(b, "sub")), sub) {
+        return Err(LockError::Refused("a lock starts with its genesis"))
+      }
+      let first = match parse_person_device(field(b, "device"), c) {
+        Ok(d) => d
+        Err(err) => return Err(err)
+      }
+      if first.key != key {
+        return Err(LockError::Refused("the genesis is signed by the device it names"))
+      }
+      devices.set(first.key, first)
+    }
+    Some(_) => {
+      if kind == "device" {
+        if !role::person_changes(devices.contains(key), false) {
+          return Err(LockError::Refused("not signed by a device on the lock"))
+        }
+        let d = match parse_person_device(b, c) {
+          Ok(dev) => dev
+          Err(err) => return Err(err)
+        }
+        let had = match devices.get(d.key) {
+          Some(prev_d) => if prev_d.id == d.id { prev_d.sign_keys } else { [] }
+          None => []
+        }
+        let sign_keys = match d.sign_key {
+          Some(k) => {
+            if !str_in(had, k) {
+              let next : Array[String] = []
+              let mut i = 0
+              while i < had.length() {
+                next.push(had[i])
+                i = i + 1
+              }
+              next.push(k)
+              next
+            } else {
+              had
+            }
+          }
+          None => had
+        }
+        devices.set(d.key, PersonDevice::{ key: d.key, id: d.id, label: d.label, sign_key: d.sign_key, sign_keys: sign_keys })
+      } else if kind == "device.remove" {
+        let gone = match text_of(field(b, "key")) {
+          Some(g) => {
+            if !devices.contains(g) {
+              return Err(LockError::Refused("no such device"))
+            }
+            g
+          }
+          None => return Err(LockError::Refused("no such device"))
+        }
+        if !role::person_changes(devices.contains(key), devices.length() == 1) {
+          return Err(LockError::Refused("not signed by a device on the lock, or its last"))
+        }
+        devices.remove(gone)
+      } else if kind == "ws" || kind == "web" || kind == "web.remove" {
+        if !devices.contains(key) {
+          return Err(LockError::Refused("not signed by a device on the lock"))
+        }
+        let keys : Array[String] = match b {
+          Some(form::Json::Obj(entries)) => {
+            let ks : Array[String] = []
+            let mut i = 0
+            while i < entries.length() {
+              ks.push(entries[i].0)
+              i = i + 1
+            }
+            ks
+          }
+          _ => []
+        }
+        if kind == "ws" {
+          if !(keys_only(keys, ["t", "h"]) && is_id(field(b, "t")) && is_id(field(b, "h"))) {
+            return Err(LockError::Refused("a statement is {t, h}"))
+          }
+        } else if kind == "web" {
+          let (label, exp) = match (text_of(field(b, "label")), safe_int(field(b, "exp"))) {
+            (Some(l), Some(ex)) => {
+              if !(keys_only(keys, ["id", "label", "exp"]) && is_id(field(b, "id"))) {
+                return Err(LockError::Refused("a web device is {id, label, exp}"))
+              }
+              (l, ex)
+            }
+            _ => return Err(LockError::Refused("a web device is {id, label, exp}"))
+          }
+          if exp > at + web_device_secs {
+            return Err(LockError::Refused("a web device lasts 31 days at most"))
+          }
+          webs = copy_map(webs)
+          let id = match text_of(field(b, "id")) {
+            Some(s) => s
+            None => ""
+          }
+          webs.set(id, PersonWeb::{ id: id, label: label, at: at, exp: exp })
+        } else {
+          if !(keys_only(keys, ["id"]) && is_id(field(b, "id"))) {
+            return Err(LockError::Refused("a web device is taken off by its id"))
+          }
+          webs = copy_map(webs)
+          match text_of(field(b, "id")) {
+            Some(id) => webs.remove(id)
+            None => ()
+          }
+        }
+      } else {
+        return Err(LockError::Refused("unknown entry kind " + kind))
+      }
+    }
+  }
+  if !(c.sig_valid)(sig_of(e), hash, [], "", false) {
+    return Err(LockError::Refused("signature invalid"))
+  }
+  match was {
+    None => Ok(Person::{ sub: sub, genesis: hash, head: hash, seq: 0.0, devices: devices, webs: webs })
+    Some(w) => Ok(Person::{ sub: sub, genesis: w.genesis, head: hash, seq: w.seq + 1.0, devices: devices, webs: webs })
+  }
+}
+
+pub fn admit_person(
+  s : LockState,
+  sub : String,
+  endpoint : String,
+  base : Option[String],
+  proof : Option[String],
+  entries : Array[form::Json],
+  c : Crypto,
+) -> Result[(PersonDevice, String, Person), LockError] {
+  let member = match s.members.get(sub) {
+    Some(m) => m
+    None => return Err(LockError::Refusal("not a member in the workspace's lock"))
+  }
+  let person = match fold_person(entries, sub, c) {
+    Ok(p) => p
+    Err(err) => return Err(LockError::Refusal(error_msg(err)))
+  }
+  let pinned = opt_str_eq(s.persons.get(sub), person.genesis)
+  let base_str = match base {
+    Some(b) => b
+    None => ""
+  }
+  let proved = match proof {
+    Some(p) => base_str != "" && p != "" && is_hex32(base_str) && (c.endpoint_proof)(s.ws, base_str, endpoint, p)
+    None => false
+  }
+  let mut on : Option[PersonDevice] = None
+  let devs = person.devices.values()
+  let mut i = 0
+  while i < devs.length() {
+    if devs[i].id == base_str {
+      on = Some(devs[i])
+    }
+    i = i + 1
+  }
+  let held = match on {
+    Some(_) => true
+    None => false
+  }
+  if role::person_admits(pinned, proved, held) {
+    match on {
+      Some(dev) => Ok((dev, member.role, person))
+      None => Err(LockError::Refusal("this device is not on the lock its person bound in this workspace"))
+    }
+  } else {
+    Err(LockError::Refusal("this device is not on the lock its person bound in this workspace"))
+  }
+}

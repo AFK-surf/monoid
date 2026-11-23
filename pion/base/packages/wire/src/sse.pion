@@ -1,0 +1,271 @@
+// Server-Sent Events (text/event-stream) parser matching libs/base/src/wire/sse.mbt byte-for-byte.
+
+pub struct Event {
+  pub name : String
+  pub data : String
+  pub id : Option[String]
+}
+
+pub fn Event::eq(self : Event, other : Event) -> Bool {
+  if self.name != other.name || self.data != other.data {
+    return false
+  }
+  match self.id {
+    None =>
+    match other.id {
+      None => true
+      Some(_) => false
+    }
+    Some(a) =>
+    match other.id {
+      None => false
+      Some(b) => a == b
+    }
+  }
+}
+
+pub fn max_event() -> Int {
+  16 * 1024 * 1024
+}
+
+pub struct TooLong {
+  pub most : Int
+}
+
+pub fn TooLong::to_string(self : TooLong) -> String {
+  "event block exceeds " + self.most.to_string() + " bytes"
+}
+
+pub enum FeedResult {
+  Ok(Array[Event])
+  Err(TooLong)
+}
+
+pub struct Sse {
+  mut held : Bytes
+  mut start : Int
+  mut end : Int
+  mut looked : Int
+  most : Int
+  mut over : Bool
+}
+
+pub fn Sse::new(most : Int = 16777216) -> Sse {
+  Sse::{
+    held: Bytes::new(4096),
+    start: 0,
+    end: 0,
+    looked: 0,
+    most: most,
+    over: false,
+  }
+}
+
+pub fn grown(room : Int, need : Int) -> Int {
+  let twice = if room >= 0x40000000 { 0x7FFFFFFF } else { room * 2 }
+  if twice > need { twice } else { need }
+}
+
+fn Sse::append(self : Sse, chunk : Bytes) -> Unit {
+  let kept = self.end - self.start
+  let room = self.held.length()
+  let clen = chunk.length()
+  if self.end + clen > room {
+    if kept + clen > room {
+      let next_size = grown(room, kept + clen)
+      let to = Bytes::new(next_size)
+      for i in 0..<kept {
+        to[i] = self.held[self.start + i]
+      }
+      self.held = to
+    } else {
+      for i in 0..<kept {
+        self.held[i] = self.held[self.start + i]
+      }
+    }
+    self.looked = self.looked - self.start
+    self.start = 0
+    self.end = kept
+  }
+  let mut dst = self.end
+  for i in 0..<clen {
+    let b = chunk[i]
+    if b.to_int() != 13 {
+      self.held[dst] = b
+      dst += 1
+    }
+  }
+  self.end = dst
+}
+
+fn find_newline(buf : Bytes, from : Int, end : Int) -> Int {
+  for i in from..<end {
+    if buf[i].to_int() == 10 {
+      return i
+    }
+  }
+  -1
+}
+
+fn Sse::blank(self : Sse) -> Option[Int] {
+  let from = if self.looked > self.start { self.looked } else { self.start }
+  let mut i = find_newline(self.held, from, self.end)
+  while i >= 0 && i + 1 < self.end {
+    if self.held[i + 1].to_int() == 10 {
+      return Some(i)
+    }
+    i = find_newline(self.held, i + 1, self.end)
+  }
+  self.looked = if i >= 0 { i } else { self.end }
+  None
+}
+
+fn is_js_ws_cp(cp : Int) -> Bool {
+  if cp <= 0x20 {
+    cp == 0x20 || (cp >= 0x09 && cp <= 0x0D)
+  } else if cp < 0xA0 {
+    false
+  } else {
+    cp == 0xA0 ||
+    cp == 0x1680 ||
+    (cp >= 0x2000 && cp <= 0x200A) ||
+    cp == 0x2028 ||
+    cp == 0x2029 ||
+    cp == 0x202F ||
+    cp == 0x205F ||
+    cp == 0x3000 ||
+    cp == 0xFEFF
+  }
+}
+
+/// Decode one UTF-8 code point starting at byte index `at` in `s`, returning (cp, byte_len).
+fn utf8_cp_at(s : String, at : Int) -> (Int, Int) {
+  let b0 = s.code_unit_at(at)
+  if b0 < 0x80 {
+    return (b0, 1)
+  }
+  let n = s.length()
+  if (b0 & 0xE0) == 0xC0 && at + 1 < n {
+    let b1 = s.code_unit_at(at + 1)
+    return (((b0 & 0x1F) << 6) | (b1 & 0x3F), 2)
+  }
+  if (b0 & 0xF0) == 0xE0 && at + 2 < n {
+    let b1 = s.code_unit_at(at + 1)
+    let b2 = s.code_unit_at(at + 2)
+    return (((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F), 3)
+  }
+  if (b0 & 0xF8) == 0xF0 && at + 3 < n {
+    let b1 = s.code_unit_at(at + 1)
+    let b2 = s.code_unit_at(at + 2)
+    let b3 = s.code_unit_at(at + 3)
+    return (((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F), 4)
+  }
+  (b0, 1)
+}
+
+/// Trim ECMAScript WhiteSpace and LineTerminator from both ends of a valid UTF-8 string.
+fn js_trim(s : String) -> String {
+  let n = s.length()
+  let mut from = 0
+  while from < n {
+    let (cp, step) = utf8_cp_at(s, from)
+    if is_js_ws_cp(cp) {
+      from += step
+    } else {
+      break
+    }
+  }
+  let mut to = n
+  while to > from {
+    let mut prev = to - 1
+    while prev > from && (s.code_unit_at(prev) & 0xC0) == 0x80 {
+      prev -= 1
+    }
+    let (cp, _) = utf8_cp_at(s, prev)
+    if is_js_ws_cp(cp) {
+      to = prev
+    } else {
+      break
+    }
+  }
+  s.slice(from, to)
+}
+
+fn event_of(block : String) -> Option[Event] {
+  let mut name = "message"
+  let mut id : Option[String] = None
+  let data_lines : Array[String] = []
+  let n = block.length()
+  let mut pos = 0
+  while true {
+    let mut nl = -1
+    for i in pos..<n {
+      if block.code_unit_at(i) == 10 {
+        nl = i
+        break
+      }
+    }
+    let line = if nl >= 0 { block.slice(pos, nl) } else { block.slice(pos, n) }
+    if line.starts_with("data:") {
+      let from = if line.length() > 5 && line.code_unit_at(5) == 32 { 6 } else { 5 }
+      data_lines.push(line.slice(from, line.length()))
+    } else if line.starts_with("event:") {
+      name = js_trim(line.slice(6, line.length()))
+    } else if line.starts_with("id:") {
+      id = Some(js_trim(line.slice(3, line.length())))
+    }
+    if nl < 0 {
+      break
+    }
+    pos = nl + 1
+  }
+  if data_lines.length() > 0 {
+    Some(Event::{ name: name, data: data_lines.join("\n"), id: id })
+  } else {
+    match id {
+      Some(_) => Some(Event::{ name: "", data: "", id: id })
+      None => None
+    }
+  }
+}
+
+pub fn Sse::feed(self : Sse, chunk : Bytes) -> FeedResult {
+  if self.over {
+    return FeedResult::Err(TooLong::{ most: self.most })
+  }
+  self.append(chunk)
+  let events : Array[Event] = []
+  while true {
+    match self.blank() {
+      None => break
+      Some(end) => {
+        if end - self.start > self.most {
+          self.over = true
+          break
+        }
+        let block = utf8_decode_lossy(self.held.slice(self.start, end), ignore_bom=true)
+        self.start = end + 2
+        self.looked = self.start
+        match event_of(block) {
+          Some(ev) => events.push(ev)
+          None => ()
+        }
+      }
+    }
+  }
+  if self.over || self.end - self.start - 1 > self.most {
+    self.over = true
+    self.held = Bytes::new(0)
+    self.start = 0
+    self.end = 0
+    self.looked = 0
+    if events.length() == 0 {
+      return FeedResult::Err(TooLong::{ most: self.most })
+    }
+  } else if self.start == self.end {
+    self.start = 0
+    self.end = 0
+    self.looked = 0
+  }
+  FeedResult::Ok(events)
+}

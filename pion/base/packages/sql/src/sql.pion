@@ -1,0 +1,234 @@
+// Synchronous SQLite interface over `shell::Shell::ask("sql.*", ...)` plus `col_*` readers.
+
+import "shell"
+import "base_codec"
+
+pub enum SqlResult[T] {
+  Ok(T)
+  Err(shell::ShellError)
+}
+
+pub struct Sql {
+  pub shell : shell::Shell
+  pub id : Int
+  mut closed : Bool
+}
+
+fn handle_of(op : String, answer : base_codec::Json) -> SqlResult[Int] {
+  match base_codec::json_get(answer, "id") {
+    Some(base_codec::Json::Num(n, _)) => SqlResult::Ok(n.to_int())
+    _ => SqlResult::Err(shell::ShellError::{ message: op + " answered no handle: " + base_codec::json_stringify(answer) })
+  }
+}
+
+pub fn Sql::open(sh : shell::Shell, name : String) -> SqlResult[Sql] {
+  match sh.ask("sql.open", base_codec::json_obj([("name", base_codec::json_str(name))])) {
+    shell::AskResult::Err(e) => SqlResult::Err(e)
+    shell::AskResult::Ok(ans) =>
+    match handle_of("sql.open", ans) {
+      SqlResult::Err(e) => SqlResult::Err(e)
+      SqlResult::Ok(id) => SqlResult::Ok(Sql::{ shell: sh, id: id, closed: false })
+    }
+  }
+}
+
+pub fn Sql::attach(
+  sh : shell::Shell,
+  path : String,
+  create : Bool = true,
+  wait_ms : Int = 5000,
+) -> SqlResult[Sql] {
+  let args = base_codec::json_obj([
+    ("path", base_codec::json_str(path)),
+    ("create", base_codec::json_bool(create)),
+    ("wait", base_codec::json_int(wait_ms)),
+  ])
+  match sh.ask("sql.attach", args) {
+    shell::AskResult::Err(e) => SqlResult::Err(e)
+    shell::AskResult::Ok(ans) =>
+    match handle_of("sql.attach", ans) {
+      SqlResult::Err(e) => SqlResult::Err(e)
+      SqlResult::Ok(id) => SqlResult::Ok(Sql::{ shell: sh, id: id, closed: false })
+    }
+  }
+}
+
+pub fn Sql::is_closed(self : Sql) -> Bool {
+  self.closed
+}
+
+pub fn Sql::in_transaction(self : Sql) -> SqlResult[Bool] {
+  let args = base_codec::json_obj([("id", base_codec::json_int(self.id))])
+  match self.shell.ask("sql.inTransaction", args) {
+    shell::AskResult::Err(e) => SqlResult::Err(e)
+    shell::AskResult::Ok(ans) =>
+    match ans {
+      base_codec::Json::Bool(b) => SqlResult::Ok(b)
+      base_codec::Json::Num(n, _) => SqlResult::Ok(n != 0.0)
+      _ => SqlResult::Ok(false)
+    }
+  }
+}
+
+pub fn Sql::exec(self : Sql, sql : String) -> SqlResult[Unit] {
+  let args = base_codec::json_obj([("id", base_codec::json_int(self.id)), ("sql", base_codec::json_str(sql))])
+  match self.shell.ask("sql.exec", args) {
+    shell::AskResult::Err(e) => SqlResult::Err(e)
+    shell::AskResult::Ok(_) => SqlResult::Ok(())
+  }
+}
+
+pub fn Sql::run(self : Sql, sql : String, params : Array[base_codec::Json] = []) -> SqlResult[Int] {
+  let args = base_codec::json_obj([
+    ("id", base_codec::json_int(self.id)),
+    ("sql", base_codec::json_str(sql)),
+    ("params", base_codec::json_arr(params)),
+  ])
+  match self.shell.ask("sql.run", args) {
+    shell::AskResult::Err(e) => SqlResult::Err(e)
+    shell::AskResult::Ok(ans) =>
+    match ans {
+      base_codec::Json::Num(n, _) => SqlResult::Ok(n.to_int())
+      _ => SqlResult::Ok(0)
+    }
+  }
+}
+
+pub fn Sql::all(self : Sql, sql : String, params : Array[base_codec::Json] = []) -> SqlResult[Array[Array[base_codec::Json]]] {
+  let args = base_codec::json_obj([
+    ("id", base_codec::json_int(self.id)),
+    ("sql", base_codec::json_str(sql)),
+    ("params", base_codec::json_arr(params)),
+  ])
+  match self.shell.ask("sql.all", args) {
+    shell::AskResult::Err(e) => SqlResult::Err(e)
+    shell::AskResult::Ok(ans) =>
+    match ans {
+      base_codec::Json::Arr(rows) => {
+        let out : Array[Array[base_codec::Json]] = []
+        for i in 0..<rows.length() {
+          match rows[i] {
+            base_codec::Json::Arr(cols) => out.push(cols)
+            _ => out.push([])
+          }
+        }
+        SqlResult::Ok(out)
+      }
+      _ => SqlResult::Err(shell::ShellError::{ message: "sql.all answered no rows: " + base_codec::json_stringify(ans) })
+    }
+  }
+}
+
+pub fn Sql::close(self : Sql) -> Unit {
+  if self.closed {
+    return
+  }
+  self.closed = true
+  let _ = self.shell.ask("sql.close", base_codec::json_obj([("id", base_codec::json_int(self.id))]))
+}
+
+pub fn delete_db(sh : shell::Shell, name : String) -> SqlResult[Unit] {
+  match sh.ask("sql.delete", base_codec::json_obj([("name", base_codec::json_str(name))])) {
+    shell::AskResult::Err(e) => SqlResult::Err(e)
+    shell::AskResult::Ok(_) => SqlResult::Ok(())
+  }
+}
+
+// ── row column readers ──
+
+fn parse_json_int64(n : Double, repr : String) -> Int64 {
+  if repr.length() > 0 {
+    match base_codec::parse_int64_str(repr) {
+      Some(v) => return v
+      None => ()
+    }
+  }
+  n.to_int64()
+}
+
+pub fn col_text(row : Array[base_codec::Json], i : Int) -> String {
+  if i < 0 || i >= row.length() {
+    return ""
+  }
+  match row[i] {
+    base_codec::Json::Str(s) => s
+    base_codec::Json::Num(n, repr) => {
+      if repr.length() > 0 {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => return v.to_string()
+          None => ()
+        }
+      }
+      let iv = n.to_int64()
+      if iv.to_double() == n {
+        iv.to_string()
+      } else {
+        n.to_string()
+      }
+    }
+    _ => ""
+  }
+}
+
+pub fn col_opt_text(row : Array[base_codec::Json], i : Int) -> Option[String] {
+  if i < 0 || i >= row.length() {
+    return None
+  }
+  match row[i] {
+    base_codec::Json::Str(s) => Some(s)
+    _ => None
+  }
+}
+
+pub fn col_int(row : Array[base_codec::Json], i : Int) -> Int {
+  if i < 0 || i >= row.length() {
+    return 0
+  }
+  match row[i] {
+    base_codec::Json::Num(n, _) => n.to_int()
+    base_codec::Json::Bool(true) => 1
+    _ => 0
+  }
+}
+
+pub fn col_int64(row : Array[base_codec::Json], i : Int) -> Int64 {
+  if i < 0 || i >= row.length() {
+    return 0.to_int64()
+  }
+  match row[i] {
+    base_codec::Json::Num(n, repr) => parse_json_int64(n, repr)
+    base_codec::Json::Bool(true) => 1.to_int64()
+    _ => 0.to_int64()
+  }
+}
+
+pub fn col_opt_int64(row : Array[base_codec::Json], i : Int) -> Option[Int64] {
+  if i < 0 || i >= row.length() {
+    return None
+  }
+  match row[i] {
+    base_codec::Json::Num(n, repr) => Some(parse_json_int64(n, repr))
+    _ => None
+  }
+}
+
+pub fn col_double(row : Array[base_codec::Json], i : Int) -> Double {
+  if i < 0 || i >= row.length() {
+    return 0.0
+  }
+  match row[i] {
+    base_codec::Json::Num(n, _) => n
+    _ => 0.0
+  }
+}
+
+pub fn col_bool(row : Array[base_codec::Json], i : Int) -> Bool {
+  if i < 0 || i >= row.length() {
+    return false
+  }
+  match row[i] {
+    base_codec::Json::Num(n, _) => n != 0.0
+    base_codec::Json::Bool(true) => true
+    _ => false
+  }
+}

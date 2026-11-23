@@ -1,0 +1,1321 @@
+// Strongly typed CoreRequest / CoreEvent domain protocol plus removable thin JSON wire adapter
+// compatible with `client/core-ts/src/protocol.ts`, wired to Slice 1 local read-only store queries.
+
+import "base_codec"
+import "sql"
+import "store"
+
+pub struct Topic {
+  pub name : String
+  pub params : Array[(String, base_codec::Json)]
+}
+
+pub fn Topic::param(self : Topic, key : String) -> Option[base_codec::Json] {
+  base_codec::json_obj_get(self.params, key)
+}
+
+pub fn Topic::to_json(self : Topic) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [("topic", base_codec::json_str(self.name))]
+  for i in 0..<self.params.length() {
+    fields.push(self.params[i])
+  }
+  base_codec::json_obj(fields)
+}
+
+pub fn topic_key(t : Topic) -> String {
+  base_codec::json_stringify(t.to_json())
+}
+
+pub fn same_topic(a : Topic, b : Topic) -> Bool {
+  topic_key(a) == topic_key(b)
+}
+
+fn opt_str_field(j : base_codec::Json, k : String) -> Option[String] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn opt_bool_field(j : base_codec::Json, k : String) -> Option[Bool] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+}
+
+fn opt_nonneg_int64(j : base_codec::Json, k : String) -> Option[Int64] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, repr)) => {
+      if n < 0.0 || n.to_int64().to_double() != n {
+        return None
+      }
+      if repr.length() > 0 {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => if v >= 0.to_int64() { return Some(v) } else { return None }
+          None => ()
+        }
+      }
+      Some(n.to_int64())
+    }
+    _ => None
+  }
+}
+
+/// Parse and normalize a `Topic` object (`{topic, ...}`), filling defaults and rejecting malformed params.
+pub fn parse_topic(raw : base_codec::Json) -> Option[Topic] {
+  let name = match opt_str_field(raw, "topic") {
+    Some(s) => s
+    None => return None
+  }
+  let params : Array[(String, base_codec::Json)] = []
+  if name == "accounts" || name == "workspaces" || name == "prefs" || name == "doing" {
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "chats" {
+    let sc = match opt_str_field(raw, "scope") {
+      Some(s) => s
+      None => return None
+    }
+    let mine = match opt_bool_field(raw, "mine") {
+      Some(b) => b
+      None => false
+    }
+    params.push(("scope", base_codec::json_str(sc)))
+    params.push(("mine", base_codec::json_bool(mine)))
+    match opt_bool_field(raw, "watching") {
+      Some(true) => params.push(("watching", base_codec::json_bool(true)))
+      _ => ()
+    }
+    match opt_bool_field(raw, "hidden") {
+      Some(true) => params.push(("hidden", base_codec::json_bool(true)))
+      _ => ()
+    }
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "chat" {
+    let station = match opt_str_field(raw, "station") {
+      Some(s) => s
+      None => return None
+    }
+    params.push(("station", base_codec::json_str(station)))
+    match base_codec::json_get(raw, "thread") {
+      None => params.push(("thread", base_codec::json_null()))
+      Some(base_codec::Json::Null) => params.push(("thread", base_codec::json_null()))
+      Some(_) =>
+      match opt_nonneg_int64(raw, "thread") {
+        Some(th) => params.push(("thread", base_codec::json_int64(th)))
+        None => return None
+      }
+    }
+    match base_codec::json_get(raw, "session") {
+      None => params.push(("session", base_codec::json_null()))
+      Some(base_codec::Json::Null) => params.push(("session", base_codec::json_null()))
+      Some(base_codec::Json::Str(s)) => params.push(("session", base_codec::json_str(s)))
+      _ => return None
+    }
+    match opt_bool_field(raw, "compact") {
+      Some(true) => params.push(("compact", base_codec::json_bool(true)))
+      _ => ()
+    }
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "thread" {
+    let station = match opt_str_field(raw, "station") {
+      Some(s) => s
+      None => return None
+    }
+    let th = match opt_nonneg_int64(raw, "thread") {
+      Some(v) => v
+      None => return None
+    }
+    params.push(("station", base_codec::json_str(station)))
+    params.push(("thread", base_codec::json_int64(th)))
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "draft" {
+    let station = match opt_str_field(raw, "station") {
+      Some(s) => s
+      None => return None
+    }
+    let chat = match opt_str_field(raw, "chat") {
+      Some(s) => s
+      None => return None
+    }
+    params.push(("station", base_codec::json_str(station)))
+    params.push(("chat", base_codec::json_str(chat)))
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "workspace" || name == "lock" || name == "vaults" {
+    let ws = match opt_str_field(raw, "workspace") {
+      Some(s) => s
+      None => return None
+    }
+    params.push(("workspace", base_codec::json_str(ws)))
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "vaultItems" {
+    let ws = match opt_str_field(raw, "workspace") {
+      Some(s) => s
+      None => return None
+    }
+    let vault = match opt_str_field(raw, "vault") {
+      Some(s) => s
+      None => return None
+    }
+    params.push(("workspace", base_codec::json_str(ws)))
+    params.push(("vault", base_codec::json_str(vault)))
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "stations" || name == "settings" {
+    let sc = match opt_str_field(raw, "scope") {
+      Some(s) => s
+      None => return None
+    }
+    params.push(("scope", base_codec::json_str(sc)))
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "station" {
+    let sc = match opt_str_field(raw, "scope") {
+      Some(s) => s
+      None => return None
+    }
+    let st = match opt_str_field(raw, "station") {
+      Some(s) => s
+      None => return None
+    }
+    params.push(("scope", base_codec::json_str(sc)))
+    params.push(("station", base_codec::json_str(st)))
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "sessions" || name == "jobs" {
+    let st = match opt_str_field(raw, "station") {
+      Some(s) => s
+      None => return None
+    }
+    params.push(("station", base_codec::json_str(st)))
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "search" || name == "chatSearch" {
+    let sc = match opt_str_field(raw, "scope") {
+      Some(s) => s
+      None => return None
+    }
+    let q = match opt_str_field(raw, "query") {
+      Some(s) => s
+      None => ""
+    }
+    params.push(("scope", base_codec::json_str(sc)))
+    params.push(("query", base_codec::json_str(q)))
+    match opt_nonneg_int64(raw, "limit") {
+      Some(l) => params.push(("limit", base_codec::json_int64(l)))
+      None => ()
+    }
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "status" || name == "notices" {
+    match opt_str_field(raw, "workspace") {
+      Some(ws) => params.push(("workspace", base_codec::json_str(ws)))
+      None => ()
+    }
+    return Some(Topic::{ name: name, params: params })
+  }
+  None
+}
+
+pub enum CoreRequest {
+  Call(Int64, String, base_codec::Json, Option[Bytes])
+  Subscribe(Int64, Topic, Bool, Option[Int64], Option[String])
+  Unsubscribe(Int64, Bool, Bool)
+  Cancel(Int64, Bool)
+}
+
+pub struct CoreError {
+  pub code : String
+  pub message : String
+}
+
+pub enum CoreEvent {
+  Ok(Int64, base_codec::Json, Option[Bytes])
+  Err(Int64, CoreError)
+  Value(Int64, base_codec::Json, Option[Bytes])
+  Delta(Int64, Array[base_codec::Json], Option[Int64], Bool)
+  Waiting(Int64)
+  Same(Int64)
+  Unsubscribed(Int64, Option[String])
+  Fatal(String)
+}
+
+pub enum ParseRequestResult {
+  Ok(CoreRequest)
+  Invalid(String)
+}
+
+/// Thin JSON wire decoder matching `client/core-ts/src/protocol.ts parseClientMessage`.
+pub fn decode_client_message(json_text : String, bytes : Option[Bytes] = None) -> ParseRequestResult {
+  let bad = "data did not match any variant of untagged enum ClientMessage"
+  let raw = match base_codec::json_parse(json_text) {
+    base_codec::JsonParseResult::Err(e) => return ParseRequestResult::Invalid(e)
+    base_codec::JsonParseResult::Ok(j) => j
+  }
+  match raw {
+    base_codec::Json::Obj(_) => ()
+    _ => return ParseRequestResult::Invalid(bad)
+  }
+  let id = match opt_nonneg_int64(raw, "id") {
+    Some(v) => v
+    None => return ParseRequestResult::Invalid(bad)
+  }
+  match opt_str_field(raw, "call") {
+    Some(call_name) => {
+      let params = match base_codec::json_get(raw, "params") {
+        Some(p) => p
+        None => base_codec::json_null()
+      }
+      return ParseRequestResult::Ok(CoreRequest::Call(id, call_name, params, bytes))
+    }
+    None => ()
+  }
+  match base_codec::json_get(raw, "subscribe") {
+    Some(sub_raw) =>
+    match parse_topic(sub_raw) {
+      Some(topic) => {
+        let keyed = match opt_bool_field(raw, "keyed") {
+          Some(true) => true
+          _ => false
+        }
+        let have = opt_str_field(raw, "have")
+        let from_id = if keyed {
+          match opt_nonneg_int64(raw, "from") {
+            Some(f) => if f != id { Some(f) } else { None }
+            None => None
+          }
+        } else {
+          None
+        }
+        return ParseRequestResult::Ok(CoreRequest::Subscribe(id, topic, keyed, from_id, have))
+      }
+      None => return ParseRequestResult::Invalid(bad)
+    }
+    None => ()
+  }
+  match opt_bool_field(raw, "unsubscribe") {
+    Some(unsub) => {
+      let keep = match opt_bool_field(raw, "keep") {
+        Some(true) => true
+        _ => false
+      }
+      return ParseRequestResult::Ok(CoreRequest::Unsubscribe(id, unsub, keep))
+    }
+    None => ()
+  }
+  match opt_bool_field(raw, "cancel") {
+    Some(c) => return ParseRequestResult::Ok(CoreRequest::Cancel(id, c))
+    None => ()
+  }
+  ParseRequestResult::Invalid(bad)
+}
+
+/// Thin JSON wire encoder matching `client/core-ts/src/protocol.ts CoreMessage`.
+pub fn encode_core_event(ev : CoreEvent) -> (String, Option[Bytes]) {
+  match ev {
+    CoreEvent::Ok(id, v, bytes) => {
+      let j = base_codec::json_obj([("id", base_codec::json_int64(id)), ("ok", v)])
+      (base_codec::json_stringify(j), bytes)
+    }
+    CoreEvent::Err(id, err) => {
+      let ej = base_codec::json_obj([("code", base_codec::json_str(err.code)), ("message", base_codec::json_str(err.message))])
+      let j = base_codec::json_obj([("id", base_codec::json_int64(id)), ("error", ej)])
+      (base_codec::json_stringify(j), None)
+    }
+    CoreEvent::Value(id, v, bytes) => {
+      let j = base_codec::json_obj([("id", base_codec::json_int64(id)), ("value", v)])
+      (base_codec::json_stringify(j), bytes)
+    }
+    CoreEvent::Delta(id, ops, from_id, kept) => {
+      let fields : Array[(String, base_codec::Json)] = [
+        ("id", base_codec::json_int64(id)),
+        ("delta", base_codec::json_arr(ops)),
+      ]
+      match from_id {
+        Some(f) => fields.push(("from", base_codec::json_int64(f)))
+        None => ()
+      }
+      if kept {
+        fields.push(("kept", base_codec::json_bool(true)))
+      }
+      (base_codec::json_stringify(base_codec::json_obj(fields)), None)
+    }
+    CoreEvent::Waiting(id) => {
+      let j = base_codec::json_obj([("id", base_codec::json_int64(id)), ("waiting", base_codec::json_bool(true))])
+      (base_codec::json_stringify(j), None)
+    }
+    CoreEvent::Same(id) => {
+      let j = base_codec::json_obj([("id", base_codec::json_int64(id)), ("same", base_codec::json_bool(true))])
+      (base_codec::json_stringify(j), None)
+    }
+    CoreEvent::Unsubscribed(id, token) => {
+      let v = match token {
+        Some(t) => base_codec::json_str(t)
+        None => base_codec::json_null()
+      }
+      let j = base_codec::json_obj([("id", base_codec::json_int64(id)), ("v", v)])
+      (base_codec::json_stringify(j), None)
+    }
+    CoreEvent::Fatal(msg) => {
+      let j = base_codec::json_obj([("fatal", base_codec::json_str(msg))])
+      (base_codec::json_stringify(j), None)
+    }
+  }
+}
+
+// ── Slice 1 local read-only router ──
+
+fn encode_entry(e : store::Entry) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("n", base_codec::json_int(e.n)),
+    ("kind", base_codec::json_str(e.kind)),
+    ("authorKind", base_codec::json_str(e.author_kind)),
+    ("author", base_codec::json_str(e.author)),
+    ("text", base_codec::json_str(e.text)),
+    ("files", base_codec::json_int(e.files)),
+    ("letter", base_codec::json_bool(e.letter)),
+  ]
+  match e.notice {
+    Some(w) => fields.push(("notice", base_codec::json_str(w)))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+fn encode_open_view(v : store::ChatOpenView) -> base_codec::Json {
+  let entries : Array[base_codec::Json] = []
+  for i in 0..<v.entries.length() {
+    entries.push(encode_entry(v.entries[i]))
+  }
+  let tree_fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<v.tree_keys.length() {
+    let k = v.tree_keys[i]
+    match v.trees.get(k) {
+      Some(tj) => tree_fields.push((k, base_codec::json_str(tj)))
+      None => ()
+    }
+  }
+  let unread : Array[base_codec::Json] = []
+  for i in 0..<v.unread.length() {
+    unread.push(base_codec::json_str(v.unread[i]))
+  }
+  let last_opened = match v.last_opened {
+    Some(ts) => base_codec::json_int64(ts)
+    None => base_codec::json_null()
+  }
+  base_codec::json_obj([
+    ("station", base_codec::json_str(v.station)),
+    ("thread", base_codec::json_int(v.thread)),
+    ("entries", base_codec::json_arr(entries)),
+    ("trees", base_codec::json_obj(tree_fields)),
+    ("unread", base_codec::json_arr(unread)),
+    ("lastOpened", last_opened),
+  ])
+}
+
+fn encode_window_rows(rows : Array[store::ChatWindowRow]) -> base_codec::Json {
+  let items : Array[base_codec::Json] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let pinned = match r.pinned_at {
+      Some(ts) => base_codec::json_int64(ts)
+      None => base_codec::json_null()
+    }
+    items.push(base_codec::json_obj([
+      ("station", base_codec::json_str(r.station)),
+      ("archived", base_codec::json_int(r.archived)),
+      ("id", base_codec::json_str(r.id)),
+      ("pinnedAt", pinned),
+      ("lastActive", base_codec::json_int64(r.last_active)),
+      ("ord", base_codec::json_num(r.ord)),
+    ]))
+  }
+  base_codec::json_obj([("rows", base_codec::json_arr(items))])
+}
+
+pub struct ActiveSub {
+  pub id : Int64
+  pub topic : Topic
+  pub topic_key : String
+  pub keyed : Bool
+  pub mut last_value : Option[base_codec::Json]
+  pub mut last_token : Option[String]
+}
+
+struct KeptSub {
+  value : base_codec::Json
+  token : String
+}
+
+pub struct Slice1Router {
+  pub db : sql::Sql
+  pub md_store : store::MdStore
+  pub workspace : String
+  subs : Map[Int64, ActiveSub]
+  sub_ids : Array[Int64]
+  kept : Map[String, KeptSub]
+  kept_order : Array[String]
+}
+
+pub fn Slice1Router::new(db : sql::Sql, md_store : store::MdStore, workspace : String = "default") -> Slice1Router {
+  Slice1Router::{
+    db: db,
+    md_store: md_store,
+    workspace: workspace,
+    subs: Map::new(),
+    sub_ids: [],
+    kept: Map::new(),
+    kept_order: [],
+  }
+}
+
+pub fn Slice1Router::active_sub(self : Slice1Router, id : Int64) -> Option[String] {
+  match self.subs.get(id) {
+    Some(s) => Some(s.topic_key)
+    None => None
+  }
+}
+
+pub fn Slice1Router::kept_count(self : Slice1Router) -> Int {
+  self.kept_order.length()
+}
+
+fn Slice1Router::remember_kept(self : Slice1Router, tk : String, value : base_codec::Json, token : String) -> Unit {
+  if self.kept.get(tk).is_none() {
+    self.kept_order.push(tk)
+  }
+  self.kept.set(tk, KeptSub::{ value: value, token: token })
+  // Cap remembered values at 96 (matches store.ts kept_most_by).
+  while self.kept_order.length() > 96 {
+    let oldest = self.kept_order[0]
+    let next_order : Array[String] = []
+    for i in 1..<self.kept_order.length() {
+      next_order.push(self.kept_order[i])
+    }
+    self.kept_order.clear()
+    for i in 0..<next_order.length() {
+      self.kept_order.push(next_order[i])
+    }
+    self.kept.remove(oldest)
+  }
+}
+
+fn Slice1Router::remove_sub_id(self : Slice1Router, id : Int64) -> Unit {
+  let next : Array[Int64] = []
+  for i in 0..<self.sub_ids.length() {
+    if self.sub_ids[i] != id {
+      next.push(self.sub_ids[i])
+    }
+  }
+  self.sub_ids.clear()
+  for i in 0..<next.length() {
+    self.sub_ids.push(next[i])
+  }
+}
+
+fn parse_json_or_str(raw : String) -> base_codec::Json {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => base_codec::json_str(raw)
+  }
+}
+
+fn Slice1Router::read_accounts_payload(self : Slice1Router) -> Result[base_codec::Json, CoreError] {
+  let list_j = match store::get_account_doc(self.db, "accounts") {
+    sql::SqlResult::Err(e) => return Err(CoreError::{ code: "sql_error", message: e.to_string() })
+    sql::SqlResult::Ok(None) => base_codec::json_arr([])
+    sql::SqlResult::Ok(Some(raw)) => parse_json_or_str(raw)
+  }
+  let active_j = match store::get_account_doc(self.db, "active_account") {
+    sql::SqlResult::Err(e) => return Err(CoreError::{ code: "sql_error", message: e.to_string() })
+    sql::SqlResult::Ok(None) => base_codec::json_null()
+    sql::SqlResult::Ok(Some(raw)) => parse_json_or_str(raw)
+  }
+  Ok(base_codec::json_obj([
+    ("accounts", list_j),
+    ("active", active_j),
+  ]))
+}
+
+fn Slice1Router::handle_accounts(self : Slice1Router, id : Int64, is_sub : Bool) -> CoreEvent {
+  match self.read_accounts_payload() {
+    Err(err) => CoreEvent::Err(id, err)
+    Ok(payload) => if is_sub { CoreEvent::Value(id, payload, None) } else { CoreEvent::Ok(id, payload, None) }
+  }
+}
+
+fn Slice1Router::handle_account_switch(self : Slice1Router, id : Int64, params : base_codec::Json) -> CoreEvent {
+  let acct = match opt_str_field(params, "account") {
+    Some(s) => s
+    None =>
+    match opt_str_field(params, "id") {
+      Some(s) => s
+      None =>
+      match opt_str_field(params, "email") {
+        Some(s) => s
+        None => return CoreEvent::Err(id, CoreError::{ code: "bad_params", message: "missing account" })
+      }
+    }
+  }
+  if acct.length() == 0 {
+    return CoreEvent::Err(id, CoreError::{ code: "bad_params", message: "empty account" })
+  }
+  let raw = base_codec::json_stringify(base_codec::json_str(acct))
+  match store::put_account_doc(self.db, "active_account", raw) {
+    sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+    sql::SqlResult::Ok(_) =>
+    CoreEvent::Ok(id, base_codec::json_obj([
+      ("active", base_codec::json_str(acct)),
+      ("switched", base_codec::json_bool(true)),
+    ]), None)
+  }
+}
+
+fn Slice1Router::handle_vault_status(self : Slice1Router, id : Int64) -> CoreEvent {
+  match store::get_account_doc(self.db, "vault_status") {
+    sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+    sql::SqlResult::Ok(Some(raw)) => CoreEvent::Ok(id, parse_json_or_str(raw), None)
+    sql::SqlResult::Ok(None) =>
+    CoreEvent::Ok(id, base_codec::json_obj([
+      ("workspace", base_codec::json_str(self.workspace)),
+      ("enabled", base_codec::json_bool(false)),
+      ("unlocked", base_codec::json_bool(false)),
+      ("vaultCount", base_codec::json_int(0)),
+      ("secretCount", base_codec::json_int(0)),
+    ]), None)
+  }
+}
+
+fn Slice1Router::handle_vault_secrets(self : Slice1Router, id : Int64, params : base_codec::Json) -> CoreEvent {
+  let vault_filter = opt_str_field(params, "vault")
+  let query_filter = opt_str_field(params, "query")
+  let all_items = match store::get_account_doc(self.db, "vault_secrets") {
+    sql::SqlResult::Err(e) => return CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+    sql::SqlResult::Ok(None) => []
+    sql::SqlResult::Ok(Some(raw)) =>
+    match parse_json_or_str(raw) {
+      base_codec::Json::Arr(arr) => arr
+      base_codec::Json::Obj(_) =>
+      match base_codec::json_get(parse_json_or_str(raw), "secrets") {
+        Some(base_codec::Json::Arr(arr)) => arr
+        _ => []
+      }
+      _ => []
+    }
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<all_items.length() {
+    let item = all_items[i]
+    let mut ok = true
+    match vault_filter {
+      Some(vf) =>
+      if vf.length() > 0 {
+        match opt_str_field(item, "vault") {
+          Some(v) => if v != vf { ok = false }
+          None => ok = false
+        }
+      }
+      None => ()
+    }
+    match query_filter {
+      Some(qf) =>
+      if ok && qf.length() > 0 {
+        let nm = match opt_str_field(item, "name") {
+          Some(s) => s
+          None => ""
+        }
+        let ab = match opt_str_field(item, "about") {
+          Some(s) => s
+          None => ""
+        }
+        if !nm.contains(qf) && !ab.contains(qf) {
+          ok = false
+        }
+      }
+      None => ()
+    }
+    if ok {
+      out.push(item)
+    }
+  }
+  CoreEvent::Ok(id, base_codec::json_obj([("secrets", base_codec::json_arr(out))]), None)
+}
+
+fn Slice1Router::handle_search_chats(self : Slice1Router, id : Int64, params : base_codec::Json) -> CoreEvent {
+  let query = match opt_str_field(params, "query") {
+    Some(q) => q
+    None =>
+    match opt_str_field(params, "q") {
+      Some(q) => q
+      None => ""
+    }
+  }
+  let stations : Array[String] = []
+  match base_codec::json_get(params, "stations") {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        match arr[i] {
+          base_codec::Json::Str(s) => stations.push(s)
+          _ => ()
+        }
+      }
+    }
+    _ => {
+      match opt_str_field(params, "station") {
+        Some(st) => stations.push(st)
+        None => stations.push(self.md_store.station)
+      }
+    }
+  }
+  let limit = match opt_nonneg_int64(params, "limit") {
+    Some(l) => l.to_int()
+    None => 30
+  }
+  match store::search_chats(self.db, stations, query, limit=limit) {
+    sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+    sql::SqlResult::Ok(hits) => {
+      let items : Array[base_codec::Json] = []
+      for i in 0..<hits.length() {
+        let h = hits[i]
+        let th_j = match h.thread {
+          Some(t) => base_codec::json_int(t)
+          None => base_codec::json_null()
+        }
+        items.push(base_codec::json_obj([
+          ("station", base_codec::json_str(h.station)),
+          ("archived", base_codec::json_int(h.archived)),
+          ("id", base_codec::json_str(h.id)),
+          ("thread", th_j),
+          ("lastActive", base_codec::json_int64(h.last_active)),
+          ("doc", parse_json_or_str(h.json)),
+        ]))
+      }
+      CoreEvent::Ok(id, base_codec::json_obj([
+        ("query", base_codec::json_str(query)),
+        ("items", base_codec::json_arr(items)),
+      ]), None)
+    }
+  }
+}
+
+fn Slice1Router::handle_search_messages(self : Slice1Router, id : Int64, params : base_codec::Json) -> CoreEvent {
+  let query = match opt_str_field(params, "query") {
+    Some(q) => q
+    None =>
+    match opt_str_field(params, "q") {
+      Some(q) => q
+      None => return CoreEvent::Err(id, CoreError::{ code: "bad_params", message: "missing query" })
+    }
+  }
+  let station = opt_str_field(params, "station")
+  let limit = match opt_nonneg_int64(params, "limit") {
+    Some(l) => l.to_int()
+    None => 50
+  }
+  match store::search_messages(self.db, query, station=station, limit=limit) {
+    sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+    sql::SqlResult::Ok(hits) => {
+      let items : Array[base_codec::Json] = []
+      for i in 0..<hits.length() {
+        let h = hits[i]
+        let at_j = match h.at {
+          Some(ts) => base_codec::json_int64(ts)
+          None => base_codec::json_null()
+        }
+        items.push(base_codec::json_obj([
+          ("station", base_codec::json_str(h.station)),
+          ("thread", base_codec::json_int(h.thread)),
+          ("seq", base_codec::json_int(h.seq)),
+          ("n", base_codec::json_int(h.n)),
+          ("at", at_j),
+          ("text", base_codec::json_str(h.text)),
+        ]))
+      }
+      CoreEvent::Ok(id, base_codec::json_obj([
+        ("query", base_codec::json_str(query)),
+        ("messages", base_codec::json_arr(items)),
+      ]), None)
+    }
+  }
+}
+
+fn Slice1Router::handle_settings_get(self : Slice1Router, id : Int64, params : base_codec::Json, is_sub : Bool) -> CoreEvent {
+  let ws = match opt_str_field(params, "workspace") {
+    Some(w) => w
+    None =>
+    match opt_str_field(params, "scope") {
+      Some(sc) => sc
+      None => self.workspace
+    }
+  }
+  match opt_str_field(params, "key") {
+    Some(k) =>
+    match store::get_workspace_pref(self.db, ws, k) {
+      sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+      sql::SqlResult::Ok(None) => {
+        let payload = base_codec::json_obj([
+          ("workspace", base_codec::json_str(ws)),
+          ("key", base_codec::json_str(k)),
+          ("value", base_codec::json_null()),
+        ])
+        if is_sub { CoreEvent::Value(id, payload, None) } else { CoreEvent::Ok(id, payload, None) }
+      }
+      sql::SqlResult::Ok(Some(raw)) => {
+        let payload = base_codec::json_obj([
+          ("workspace", base_codec::json_str(ws)),
+          ("key", base_codec::json_str(k)),
+          ("value", parse_json_or_str(raw)),
+        ])
+        if is_sub { CoreEvent::Value(id, payload, None) } else { CoreEvent::Ok(id, payload, None) }
+      }
+    }
+    None =>
+    match store::list_workspace_prefs(self.db, ws) {
+      sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+      sql::SqlResult::Ok(rows) => {
+        let fields : Array[(String, base_codec::Json)] = []
+        for i in 0..<rows.length() {
+          fields.push((rows[i].key, parse_json_or_str(rows[i].json)))
+        }
+        let payload = base_codec::json_obj([
+          ("workspace", base_codec::json_str(ws)),
+          ("settings", base_codec::json_obj(fields)),
+        ])
+        if is_sub { CoreEvent::Value(id, payload, None) } else { CoreEvent::Ok(id, payload, None) }
+      }
+    }
+  }
+}
+
+fn Slice1Router::handle_settings_set(self : Slice1Router, id : Int64, params : base_codec::Json) -> CoreEvent {
+  let ws = match opt_str_field(params, "workspace") {
+    Some(w) => w
+    None =>
+    match opt_str_field(params, "scope") {
+      Some(sc) => sc
+      None => self.workspace
+    }
+  }
+  let k = match opt_str_field(params, "key") {
+    Some(s) => s
+    None => return CoreEvent::Err(id, CoreError::{ code: "bad_params", message: "missing key" })
+  }
+  let jval = match base_codec::json_get(params, "value") {
+    Some(v) => v
+    None => return CoreEvent::Err(id, CoreError::{ code: "bad_params", message: "missing value" })
+  }
+  let raw = base_codec::json_stringify(jval)
+  match store::put_workspace_pref(self.db, ws, k, raw) {
+    sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+    sql::SqlResult::Ok(_) =>
+    CoreEvent::Ok(id, base_codec::json_obj([
+      ("workspace", base_codec::json_str(ws)),
+      ("key", base_codec::json_str(k)),
+      ("value", jval),
+      ("saved", base_codec::json_bool(true)),
+    ]), None)
+  }
+}
+
+fn Slice1Router::handle_chat_draft(self : Slice1Router, id : Int64, params : base_codec::Json, is_sub : Bool) -> CoreEvent {
+  let st = match opt_str_field(params, "station") {
+    Some(s) => s
+    None => self.md_store.station
+  }
+  let chat_key = match opt_str_field(params, "chat") {
+    Some(c) => c
+    None =>
+    match opt_nonneg_int64(params, "thread") {
+      Some(t) => "thread:" + t.to_string()
+      None => return CoreEvent::Err(id, CoreError::{ code: "bad_params", message: "missing chat or thread" })
+    }
+  }
+  let clear = match opt_bool_field(params, "clear") {
+    Some(true) => true
+    _ => false
+  }
+  if clear {
+    match store::delete_draft(self.db, st, chat_key) {
+      sql::SqlResult::Err(e) => return CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+      sql::SqlResult::Ok(_) =>
+      return CoreEvent::Ok(id, base_codec::json_obj([
+        ("station", base_codec::json_str(st)),
+        ("chat", base_codec::json_str(chat_key)),
+        ("draft", base_codec::json_null()),
+        ("cleared", base_codec::json_bool(true)),
+      ]), None)
+    }
+  }
+  match base_codec::json_get(params, "text") {
+    Some(text_j) => {
+      let draft_obj = base_codec::json_obj([
+        ("text", text_j),
+        ("updatedAt", match opt_nonneg_int64(params, "updatedAt") {
+          Some(ts) => base_codec::json_int64(ts)
+          None => base_codec::json_int(0)
+        }),
+      ])
+      match store::put_draft(self.db, st, chat_key, base_codec::json_stringify(draft_obj)) {
+        sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+        sql::SqlResult::Ok(_) =>
+        CoreEvent::Ok(id, base_codec::json_obj([
+          ("station", base_codec::json_str(st)),
+          ("chat", base_codec::json_str(chat_key)),
+          ("draft", draft_obj),
+          ("saved", base_codec::json_bool(true)),
+        ]), None)
+      }
+    }
+    None =>
+    match store::get_draft(self.db, st, chat_key) {
+      sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+      sql::SqlResult::Ok(None) => {
+        let payload = base_codec::json_obj([
+          ("station", base_codec::json_str(st)),
+          ("chat", base_codec::json_str(chat_key)),
+          ("draft", base_codec::json_null()),
+        ])
+        if is_sub { CoreEvent::Value(id, payload, None) } else { CoreEvent::Ok(id, payload, None) }
+      }
+      sql::SqlResult::Ok(Some(row)) => {
+        let payload = base_codec::json_obj([
+          ("station", base_codec::json_str(row.station)),
+          ("chat", base_codec::json_str(row.chat)),
+          ("draft", parse_json_or_str(row.json)),
+        ])
+        if is_sub { CoreEvent::Value(id, payload, None) } else { CoreEvent::Ok(id, payload, None) }
+      }
+    }
+  }
+}
+
+fn Slice1Router::evaluate_topic_value(self : Slice1Router, id : Int64, topic : Topic) -> CoreEvent {
+  if topic.name == "chat" {
+    return self.handle_chat_open(id, topic.to_json(), true)
+  }
+  if topic.name == "chats" {
+    return self.handle_chats_window(id, topic.to_json(), true)
+  }
+  if topic.name == "workspaces" {
+    return self.handle_workspaces_list(id, true)
+  }
+  if topic.name == "workspace" || topic.name == "stations" {
+    return self.handle_stations_list(id, topic.to_json(), true)
+  }
+  if topic.name == "accounts" {
+    return self.handle_accounts(id, true)
+  }
+  if topic.name == "settings" {
+    return self.handle_settings_get(id, topic.to_json(), true)
+  }
+  if topic.name == "draft" {
+    return self.handle_chat_draft(id, topic.to_json(), true)
+  }
+  if topic.name == "search" || topic.name == "chatSearch" {
+    match self.handle_search_chats(id, topic.to_json()) {
+      CoreEvent::Ok(_, v, b) => return CoreEvent::Value(id, v, b)
+      other => return other
+    }
+  }
+  CoreEvent::Waiting(id)
+}
+
+/// Re-evaluate an active subscription and return an incremental keyed `CoreEvent::Delta`
+/// (or `None` when unchanged, eliminating redundant full-value resends).
+pub fn Slice1Router::refresh_sub(self : Slice1Router, id : Int64) -> Option[CoreEvent] {
+  let sub = match self.subs.get(id) {
+    Some(s) => s
+    None => return None
+  }
+  match self.evaluate_topic_value(id, sub.topic) {
+    CoreEvent::Value(_, next_val, bytes) => {
+      let next_tok = value_token(next_val)
+      match sub.last_value {
+        Some(prev_val) => {
+          match sub.last_token {
+            Some(prev_tok) => if prev_tok == next_tok { return None }
+            None => ()
+          }
+          let spec = if sub.keyed { spec_for_topic(sub.topic.name) } else { None }
+          let ops = diff_keyed(prev_val, next_val, spec)
+          sub.last_value = Some(next_val)
+          sub.last_token = Some(next_tok)
+          if ops.length() == 0 {
+            None
+          } else {
+            Some(CoreEvent::Delta(id, ops, None, false))
+          }
+        }
+        None => {
+          sub.last_value = Some(next_val)
+          sub.last_token = Some(next_tok)
+          Some(CoreEvent::Value(id, next_val, bytes))
+        }
+      }
+    }
+    CoreEvent::Err(_, err) => Some(CoreEvent::Err(id, err))
+    _ => None
+  }
+}
+
+/// Refresh all active subscriptions whose topic name matches `topic_name`.
+pub fn Slice1Router::refresh_topic_name(self : Slice1Router, topic_name : String) -> Array[CoreEvent] {
+  let out : Array[CoreEvent] = []
+  for i in 0..<self.sub_ids.length() {
+    let sid = self.sub_ids[i]
+    match self.subs.get(sid) {
+      Some(sub) => {
+        if sub.topic.name == topic_name {
+          match self.refresh_sub(sid) {
+            Some(ev) => out.push(ev)
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+fn Slice1Router::handle_chat_open(self : Slice1Router, id : Int64, params : base_codec::Json, is_sub : Bool) -> CoreEvent {
+  let thread = match opt_nonneg_int64(params, "thread") {
+    Some(t) => t.to_int()
+    None => return CoreEvent::Err(id, CoreError::{ code: "bad_params", message: "missing thread" })
+  }
+  let rows = match opt_nonneg_int64(params, "rows") {
+    Some(r) => r.to_int()
+    None => 30
+  }
+  let at = match opt_nonneg_int64(params, "at") {
+    Some(a) => Some(a.to_int())
+    None => None
+  }
+  let now = match opt_nonneg_int64(params, "now") {
+    Some(ts) => ts
+    None => 0.to_int64()
+  }
+  match store::open_chat(self.md_store, thread, now, rows=rows, at=at) {
+    sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+    sql::SqlResult::Ok(view) => {
+      let payload = encode_open_view(view)
+      if is_sub {
+        CoreEvent::Value(id, payload, None)
+      } else {
+        CoreEvent::Ok(id, payload, None)
+      }
+    }
+  }
+}
+
+fn Slice1Router::handle_chats_window(self : Slice1Router, id : Int64, params : base_codec::Json, is_sub : Bool) -> CoreEvent {
+  let stations : Array[String] = []
+  match base_codec::json_get(params, "stations") {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        match arr[i] {
+          base_codec::Json::Str(s) => stations.push(s)
+          _ => ()
+        }
+      }
+    }
+    _ => {
+      stations.push(self.md_store.station)
+    }
+  }
+  let mine = match opt_bool_field(params, "mine") {
+    Some(b) => b
+    None => false
+  }
+  let hidden = match opt_nonneg_int64(params, "hidden") {
+    Some(h) => h.to_int()
+    None => 0
+  }
+  let watching = match opt_bool_field(params, "watching") {
+    Some(b) => b
+    None => false
+  }
+  let limit = match opt_nonneg_int64(params, "limit") {
+    Some(l) => l.to_int()
+    None => 50
+  }
+  let q = store::ChatWindowQuery::{
+    stations: stations,
+    mine: mine,
+    hidden: hidden,
+    watching: watching,
+    apart_threads: [],
+    apart_sessions: [],
+    limit: limit,
+  }
+  match store::query_chat_window(self.db, q) {
+    sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+    sql::SqlResult::Ok(rows) => {
+      let payload = encode_window_rows(rows)
+      if is_sub {
+        CoreEvent::Value(id, payload, None)
+      } else {
+        CoreEvent::Ok(id, payload, None)
+      }
+    }
+  }
+}
+
+fn Slice1Router::handle_account_doc(self : Slice1Router, id : Int64, params : base_codec::Json) -> CoreEvent {
+  let name = match opt_str_field(params, "name") {
+    Some(s) => s
+    None => return CoreEvent::Err(id, CoreError::{ code: "bad_params", message: "missing name" })
+  }
+  match store::get_account_doc(self.db, name) {
+    sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+    sql::SqlResult::Ok(None) => CoreEvent::Ok(id, base_codec::json_null(), None)
+    sql::SqlResult::Ok(Some(raw)) => {
+      let parsed = match base_codec::json_parse(raw) {
+        base_codec::JsonParseResult::Ok(j) => j
+        base_codec::JsonParseResult::Err(_) => base_codec::json_str(raw)
+      }
+      CoreEvent::Ok(id, parsed, None)
+    }
+  }
+}
+
+fn Slice1Router::handle_workspaces_list(self : Slice1Router, id : Int64, is_sub : Bool) -> CoreEvent {
+  match store::list_workspaces(self.db) {
+    sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+    sql::SqlResult::Ok(rows) => {
+      let items : Array[base_codec::Json] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        let doc = match base_codec::json_parse(r.json) {
+          base_codec::JsonParseResult::Ok(j) => j
+          base_codec::JsonParseResult::Err(_) => base_codec::json_str(r.json)
+        }
+        let conf = match r.confirmed {
+          Some(ts) => base_codec::json_int64(ts)
+          None => base_codec::json_null()
+        }
+        items.push(base_codec::json_obj([
+          ("id", base_codec::json_str(r.id)),
+          ("doc", doc),
+          ("confirmed", conf),
+        ]))
+      }
+      let payload = base_codec::json_obj([("workspaces", base_codec::json_arr(items))])
+      if is_sub {
+        CoreEvent::Value(id, payload, None)
+      } else {
+        CoreEvent::Ok(id, payload, None)
+      }
+    }
+  }
+}
+
+fn Slice1Router::handle_stations_list(self : Slice1Router, id : Int64, params : base_codec::Json, is_sub : Bool) -> CoreEvent {
+  let kind = match opt_str_field(params, "kind") {
+    Some(k) => k
+    None => "overview"
+  }
+  match store::list_stations(self.db, kind=kind) {
+    sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
+    sql::SqlResult::Ok(rows) => {
+      let items : Array[base_codec::Json] = []
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        let doc = match base_codec::json_parse(r.json) {
+          base_codec::JsonParseResult::Ok(j) => j
+          base_codec::JsonParseResult::Err(_) => base_codec::json_str(r.json)
+        }
+        let conf = match r.confirmed {
+          Some(ts) => base_codec::json_int64(ts)
+          None => base_codec::json_null()
+        }
+        items.push(base_codec::json_obj([
+          ("address", base_codec::json_str(r.address)),
+          ("kind", base_codec::json_str(r.kind)),
+          ("doc", doc),
+          ("confirmed", conf),
+        ]))
+      }
+      let payload = base_codec::json_obj([("stations", base_codec::json_arr(items))])
+      if is_sub {
+        CoreEvent::Value(id, payload, None)
+      } else {
+        CoreEvent::Ok(id, payload, None)
+      }
+    }
+  }
+}
+
+/// Dispatch one typed `CoreRequest` through the Slice 1 local read-only router.
+pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[CoreEvent] {
+  match req {
+    CoreRequest::Call(id, call_name, params, bytes) => {
+      if call_name == "chat.open" {
+        return Some(self.handle_chat_open(id, params, false))
+      }
+      if call_name == "chats.window" {
+        return Some(self.handle_chats_window(id, params, false))
+      }
+      if call_name == "account.doc" {
+        return Some(self.handle_account_doc(id, params))
+      }
+      if call_name == "workspaces.list" {
+        return Some(self.handle_workspaces_list(id, false))
+      }
+      if call_name == "stations.list" {
+        return Some(self.handle_stations_list(id, params, false))
+      }
+      if call_name == "accounts" {
+        return Some(self.handle_accounts(id, false))
+      }
+      if call_name == "account.switch" {
+        return Some(self.handle_account_switch(id, params))
+      }
+      if call_name == "vault.status" {
+        return Some(self.handle_vault_status(id))
+      }
+      if call_name == "vault.secrets" {
+        return Some(self.handle_vault_secrets(id, params))
+      }
+      if call_name == "search.chats" {
+        return Some(self.handle_search_chats(id, params))
+      }
+      if call_name == "search.messages" {
+        return Some(self.handle_search_messages(id, params))
+      }
+      if call_name == "settings.get" {
+        return Some(self.handle_settings_get(id, params, false))
+      }
+      if call_name == "settings.set" {
+        return Some(self.handle_settings_set(id, params))
+      }
+      if call_name == "chat.draft" {
+        return Some(self.handle_chat_draft(id, params, false))
+      }
+      if call_name == "echo.bytes" {
+        return Some(CoreEvent::Ok(id, params, bytes))
+      }
+      Some(CoreEvent::Err(id, CoreError::{ code: "unknown_call", message: "unknown call: " + call_name }))
+    }
+    CoreRequest::Subscribe(id, topic, keyed, from_id, have) => {
+      let tk = topic_key(topic)
+      let ev = self.evaluate_topic_value(id, topic)
+      match ev {
+        CoreEvent::Value(_, payload, bytes) => {
+          let tok = value_token(payload)
+          if self.subs.get(id).is_none() {
+            self.sub_ids.push(id)
+          }
+          self.subs.set(id, ActiveSub::{
+            id: id,
+            topic: topic,
+            topic_key: tk,
+            keyed: keyed,
+            last_value: Some(payload),
+            last_token: Some(tok),
+          })
+          // 1. `have` negotiation: return `same: true` or `delta + kept: true`.
+          match have {
+            Some(h) => {
+              if h == tok {
+                return Some(CoreEvent::Same(id))
+              }
+              match self.kept.get(tk) {
+                Some(k) => {
+                  if k.token == h {
+                    let spec = if keyed { spec_for_topic(topic.name) } else { None }
+                    let ops = diff_keyed(k.value, payload, spec)
+                    if ops.length() == 0 {
+                      return Some(CoreEvent::Same(id))
+                    }
+                    return Some(CoreEvent::Delta(id, ops, None, true))
+                  }
+                }
+                None => ()
+              }
+            }
+            None => ()
+          }
+          // 2. `from` negotiation (keyed delta from another live subscription).
+          match from_id {
+            Some(fid) => {
+              if keyed {
+                match self.subs.get(fid) {
+                  Some(base_sub) =>
+                  match base_sub.last_value {
+                    Some(base_val) => {
+                      let ops = diff_keyed(base_val, payload, spec_for_topic(topic.name))
+                      return Some(CoreEvent::Delta(id, ops, Some(fid), false))
+                    }
+                    None => ()
+                  }
+                  None => ()
+                }
+              }
+            }
+            None => ()
+          }
+          Some(CoreEvent::Value(id, payload, bytes))
+        }
+        other => {
+          if self.subs.get(id).is_none() {
+            self.sub_ids.push(id)
+          }
+          self.subs.set(id, ActiveSub::{
+            id: id,
+            topic: topic,
+            topic_key: tk,
+            keyed: keyed,
+            last_value: None,
+            last_token: None,
+          })
+          Some(other)
+        }
+      }
+    }
+    CoreRequest::Unsubscribe(id, _unsub, keep) => {
+      let prev = self.subs.get(id)
+      self.subs.remove(id)
+      self.remove_sub_id(id)
+      if keep {
+        match prev {
+          Some(sub) =>
+          match (sub.last_value, sub.last_token) {
+            (Some(v), Some(tok)) => {
+              self.remember_kept(sub.topic_key, v, tok)
+              Some(CoreEvent::Unsubscribed(id, Some(tok)))
+            }
+            _ => Some(CoreEvent::Unsubscribed(id, None))
+          }
+          None => Some(CoreEvent::Unsubscribed(id, None))
+        }
+      } else {
+        None
+      }
+    }
+    CoreRequest::Cancel(id, _cancel) => {
+      Some(CoreEvent::Ok(id, base_codec::json_bool(true), None))
+    }
+  }
+}
+
+/// End-to-end wire handler: JSON + optional bytes in -> optional JSON + bytes out.
+pub fn Slice1Router::handle_wire(self : Slice1Router, json_text : String, bytes : Option[Bytes] = None) -> Option[(String, Option[Bytes])] {
+  match decode_client_message(json_text, bytes=bytes) {
+    ParseRequestResult::Invalid(msg) => {
+      let ev = CoreEvent::Err(0.to_int64(), CoreError::{ code: "bad_message", message: msg })
+      Some(encode_core_event(ev))
+    }
+    ParseRequestResult::Ok(req) =>
+    match self.handle(req) {
+      Some(ev) => Some(encode_core_event(ev))
+      None => None
+    }
+  }
+}

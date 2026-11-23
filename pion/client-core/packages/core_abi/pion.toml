@@ -1,0 +1,7 @@
+[package]
+name = "core_abi"
+version = "0.1.0"
+
+[dependencies]
+base_codec = { path = "../../../base/packages/base_codec" }
+protocol = { path = "../protocol" }

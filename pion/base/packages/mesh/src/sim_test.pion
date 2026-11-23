@@ -1,0 +1,2028 @@
+// End-to-end dual-Mesh simulation tests (`sim_wbtest` port):
+// Two full `Mesh` instances (`client` and `server`) communicating over a deterministic
+// virtual-clock simulated network (`SimNet`) with relays, direct addresses, latencies,
+// bandwidth limits, outages, handle leak checks, and full protocol coverage.
+
+import "effect"
+import "base_codec"
+import "crypto"
+import "wire"
+import "shell"
+
+let sim_idle_ms : Int = 30000
+let sim_alpn : String = "sim/1"
+let sim_r1 : String = "https://r1.sim/"
+let sim_r2 : String = "https://r2.sim/"
+
+struct SimWay {
+  name : String
+  relay : Bool
+  mut ms : Int
+  bps : Double
+  mut down : Bool
+  owner : Option[String]
+}
+
+struct SimEnd {
+  uid : Int
+  side : Int
+  id : String
+  relays : Array[String]
+  relay_only : Bool
+  alpns : Array[String]
+  mut closed : Bool
+  accepts : Array[Int64]
+  coming : Array[SimConn]
+  conns : Array[SimConn]
+}
+
+struct SimFlow {
+  came : Array[Option[Bytes]]
+  mut reader : Option[Int64]
+  mut reset : Bool
+  mut read_end : Bool
+  mut stopper : Option[Int64]
+}
+
+struct SimStream {
+  uid : Int
+  conn : SimConn
+  handles : Array[Int]
+  flows : Array[SimFlow]
+  finished : Array[Bool]
+  mut announced : Bool
+}
+
+struct SimConn {
+  uid : Int
+  ends : Array[SimEnd]
+  handles : Array[Int]
+  way : SimWay
+  alpn : String
+  ended : Array[Option[base_codec::Json]]
+  forgot : Array[Bool]
+  waits : Array[Array[Int64]]
+  rx : Array[Double]
+  tx : Array[Double]
+  busy : Array[Int64]
+  offered : Array[Array[SimStream]]
+  accepting : Array[Array[Int64]]
+  streams : Array[SimStream]
+}
+
+enum SimHandle {
+  End(SimEnd)
+  Conn(SimConn, Int)
+  Stream(SimStream, Int)
+}
+
+struct SimDialWait {
+  side : Int
+  call_id : Int64
+  end : SimEnd
+}
+
+struct SimNet {
+  rt : effect::Runtime
+  shells : Array[shell::Shell]
+  handles : Array[Map[Int, SimHandle]]
+  last : Array[Int]
+  ways : Map[String, SimWay]
+  mut dials : Array[SimDialWait]
+  said : Array[Array[String]]
+  mut taps : Option[Bool]
+  tapped : Array[String]
+  keys : Array[Array[Bytes]]
+  mut next_draw : Int
+}
+
+fn SimNet::new() -> SimNet {
+  let rt = effect::Runtime::new()
+  let net = SimNet::{
+    rt: rt,
+    shells: [],
+    handles: [Map::new(), Map::new()],
+    last: [0, 0],
+    ways: Map::new(),
+    dials: [],
+    said: [[], []],
+    taps: None,
+    tapped: [],
+    keys: [[], []],
+    next_draw: 0,
+  }
+  for side in 0..<2 {
+    let s = side
+    let sh = shell::Shell::stood_in(
+      rt,
+      fn(id : Int64, op : String, args : base_codec::Json, bytes : Option[Bytes]) -> Unit {
+        net.call(s, id, op, args, bytes)
+      },
+      fn(op : String, args : base_codec::Json) -> shell::AskResult { net.ask(s, op, args) },
+      fn(n : Int) -> Bytes {
+        net.next_draw += 1
+        let out = Bytes::new(n)
+        for i in 0..<n {
+          out[i] = ((0x40 + s * 16 + net.next_draw + i) & 0xFF) as Byte
+        }
+        out
+      },
+    )
+    net.shells.push(sh)
+  }
+  net
+}
+
+fn SimNet::relay(self : SimNet, url : String, ms : Int, bps : Double = 0.0) -> SimWay {
+  let w = SimWay::{ name: relay_key(url), relay: true, ms: ms, bps: bps, down: false, owner: None }
+  self.ways.set(w.name, w)
+  w
+}
+
+fn SimNet::direct(self : SimNet, addr : String, owner : String, ms : Int, bps : Double = 0.0) -> SimWay {
+  let w = SimWay::{ name: addr, relay: false, ms: ms, bps: bps, down: false, owner: Some(owner) }
+  self.ways.set(addr, w)
+  w
+}
+
+fn SimNet::give(self : SimNet, side : Int, h : SimHandle) -> Int {
+  self.last[side] += 1
+  let id = self.last[side]
+  self.handles[side].set(id, h)
+  id
+}
+
+fn SimNet::later(self : SimNet, ms : Int64, f : () -> Unit) -> Unit {
+  if ms <= 0.to_int64() {
+    f()
+  } else {
+    self.rt.after(ms.to_int(), f)
+  }
+}
+
+fn SimNet::ends(self : SimNet) -> Array[SimEnd] {
+  let out : Array[SimEnd] = []
+  for side in 0..<2 {
+    let ks = self.handles[side].keys()
+    for i in 0..<ks.length() {
+      match self.handles[side].get(ks[i]) {
+        Some(SimHandle::End(e)) => out.push(e)
+        _ => ()
+      }
+    }
+  }
+  out
+}
+
+fn SimNet::route(self : SimNet, end : SimEnd, addr : base_codec::Json) -> Option[(SimWay, SimEnd)] {
+  let id = match json_get_str(addr, "id") {
+    Some(s) => s
+    None => return None
+  }
+  let all_ends = self.ends()
+  let mut target : Option[SimEnd] = None
+  for i in 0..<all_ends.length() {
+    let e = all_ends[i]
+    if e.id == id && !e.closed && e.side != end.side {
+      target = Some(e)
+      break
+    }
+  }
+  let tgt = match target {
+    Some(t) => t
+    None => return None
+  }
+  if !end.relay_only {
+    match json_get_arr(addr, "ips") {
+      Some(ips) => {
+        let mut best : Option[SimWay] = None
+        for i in 0..<ips.length() {
+          match ips[i] {
+            base_codec::Json::Str(ip) =>
+            match self.ways.get(ip) {
+              Some(w) =>
+              if !w.down {
+                let owns = match w.owner {
+                  Some(o) => o == id
+                  None => false
+                }
+                if owns {
+                  match best {
+                    None => best = Some(w)
+                    Some(b) =>
+                    if w.ms < b.ms {
+                      best = Some(w)
+                    }
+                  }
+                }
+              }
+              None => ()
+            }
+            _ => ()
+          }
+        }
+        match best {
+          Some(w) => return Some((w, tgt))
+          None => ()
+        }
+      }
+      None => ()
+    }
+  }
+  let asked : Array[String] = []
+  match json_get_arr(addr, "relays") {
+    Some(rs) => {
+      for i in 0..<rs.length() {
+        match rs[i] {
+          base_codec::Json::Str(r) => asked.push(relay_key(r))
+          _ => ()
+        }
+      }
+    }
+    None => ()
+  }
+  for i in 0..<end.relays.length() {
+    let r = end.relays[i]
+    if str_array_contains(asked, r) && str_array_contains(tgt.relays, r) {
+      match self.ways.get(r) {
+        Some(w) =>
+        if !w.down {
+          return Some((w, tgt))
+        }
+        None => ()
+      }
+    }
+  }
+  None
+}
+
+fn sim_handle_id(args : base_codec::Json) -> Int {
+  match json_get_num(args, "id") {
+    Some(n) => n.to_int()
+    None => 0
+  }
+}
+
+fn SimNet::ask(self : SimNet, side : Int, op : String, args : base_codec::Json) -> shell::AskResult {
+  let h = sim_handle_id(args)
+  if op == "fetch.cancel" {
+    let cid = match json_get_num(args, "id") {
+      Some(n) => n.to_int64()
+      None => 0.to_int64()
+    }
+    let kept : Array[SimDialWait] = []
+    for i in 0..<self.dials.length() {
+      let d = self.dials[i]
+      if d.side == side && d.call_id == cid {
+        self.shells[side].refuse(cid, "cancelled")
+      } else {
+        kept.push(d)
+      }
+    }
+    self.dials = kept
+    return shell::AskResult::Ok(base_codec::json_obj([]))
+  }
+  if op == "iroh.endpointId" {
+    match self.handles[side].get(h) {
+      Some(SimHandle::End(e)) => return shell::AskResult::Ok(base_codec::json_str(e.id))
+      _ => return shell::AskResult::Err(shell::ShellError::{ message: "no endpoint" })
+    }
+  }
+  if op == "iroh.relayStatus" {
+    match self.handles[side].get(h) {
+      Some(SimHandle::End(e)) => {
+        let arr : Array[base_codec::Json] = []
+        for i in 0..<e.relays.length() {
+          let r = e.relays[i]
+          let up = match self.ways.get(r) {
+            Some(w) => !w.down
+            None => false
+          }
+          arr.push(base_codec::json_obj([("url", base_codec::json_str(r)), ("connected", base_codec::json_bool(up))]))
+        }
+        return shell::AskResult::Ok(base_codec::json_arr(arr))
+      }
+      _ => return shell::AskResult::Ok(base_codec::json_arr([]))
+    }
+  }
+  if op == "iroh.addAddr" {
+    return shell::AskResult::Ok(base_codec::json_obj([]))
+  }
+  if op == "conn.remoteId" {
+    match self.handles[side].get(h) {
+      Some(SimHandle::Conn(c, role)) => return shell::AskResult::Ok(base_codec::json_str(c.ends[1 - role].id))
+      _ => return shell::AskResult::Err(shell::ShellError::{ message: "no conn" })
+    }
+  }
+  if op == "conn.closeReason" {
+    match self.handles[side].get(h) {
+      Some(SimHandle::Conn(c, role)) =>
+      match c.ended[role] {
+        Some(j) => return shell::AskResult::Ok(j)
+        None => return shell::AskResult::Ok(base_codec::json_null())
+      }
+      _ => return shell::AskResult::Err(shell::ShellError::{ message: "no conn" })
+    }
+  }
+  if op == "conn.paths" {
+    match self.handles[side].get(h) {
+      Some(SimHandle::Conn(c, _)) => {
+        let fields : Array[(String, base_codec::Json)] = [
+          ("id", base_codec::json_str(c.way.name)),
+          ("selected", base_codec::json_bool(true)),
+          ("rttMs", base_codec::json_int(c.way.ms * 2)),
+          ("txPackets", base_codec::json_int(1)),
+          ("lostPackets", base_codec::json_int(0)),
+        ]
+        if c.way.relay {
+          fields.push(("relay", base_codec::json_str(c.way.name)))
+        } else {
+          fields.push(("ip", base_codec::json_str(c.way.name)))
+        }
+        return shell::AskResult::Ok(base_codec::json_arr([base_codec::json_obj(fields)]))
+      }
+      _ => return shell::AskResult::Ok(base_codec::json_arr([]))
+    }
+  }
+  if op == "conn.stats" {
+    match self.handles[side].get(h) {
+      Some(SimHandle::Conn(c, role)) =>
+      return shell::AskResult::Ok(
+        base_codec::json_obj([("rxBytes", base_codec::json_num(c.rx[role])), ("txBytes", base_codec::json_num(c.tx[role]))]),
+      )
+      _ => return shell::AskResult::Ok(base_codec::json_obj([("rxBytes", base_codec::json_int(0)), ("txBytes", base_codec::json_int(0))]))
+    }
+  }
+  shell::AskResult::Err(shell::ShellError::{ message: "no such op: " + op })
+}
+
+fn SimNet::deliver_at(self : SimNet, conn : SimConn, role : Int, n : Int) -> Int64 {
+  let now = self.rt.now()
+  let start = if conn.busy[role] > now { conn.busy[role] } else { now }
+  let xfer = if conn.way.bps > 0.0 && n > 0 {
+    round_i64(n.to_double() / conn.way.bps * 1000.0)
+  } else {
+    0.to_int64()
+  }
+  conn.busy[role] = start + xfer
+  (start + xfer - now) + conn.way.ms.to_int64()
+}
+
+fn SimNet::end_conn_side(self : SimNet, conn : SimConn, role : Int, why : base_codec::Json) -> Unit {
+  if conn.ended[role].is_some() {
+    return
+  }
+  conn.ended[role] = Some(why)
+  let side = conn.ends[role].side
+  let ws = conn.waits[role]
+  conn.waits[role] = []
+  for i in 0..<ws.length() {
+    self.shells[side].answer(ws[i], why)
+  }
+  let acc = conn.accepting[role]
+  conn.accepting[role] = []
+  for i in 0..<acc.length() {
+    self.shells[side].refuse(acc[i], "connection closed")
+  }
+  for i in 0..<conn.streams.length() {
+    let st = conn.streams[i]
+    let recv_flow = st.flows[1 - role]
+    match recv_flow.reader {
+      Some(rid) => {
+        recv_flow.reader = None
+        self.shells[side].refuse(rid, "connection closed")
+      }
+      None => ()
+    }
+    let send_flow = st.flows[role]
+    match send_flow.stopper {
+      Some(sid) => {
+        send_flow.stopper = None
+        self.shells[side].refuse(sid, "connection closed")
+      }
+      None => ()
+    }
+  }
+}
+
+fn SimNet::maybe_drop_stream(self : SimNet, st : SimStream, role : Int) -> Unit {
+  let h = st.handles[role]
+  if h == 0 {
+    return
+  }
+  let recv_done = st.flows[1 - role].read_end || st.flows[1 - role].reset
+  let send_done = st.finished[role] || st.flows[role].reset
+  if recv_done && send_done {
+    let side = st.conn.ends[role].side
+    self.handles[side].remove(h)
+    st.handles[role] = 0
+  }
+}
+
+fn SimNet::deliver_stream_chunk(self : SimNet, st : SimStream, from_role : Int, chunk : Option[Bytes]) -> Unit {
+  let to_role = 1 - from_role
+  if st.conn.ended[to_role].is_some() || st.flows[from_role].reset {
+    return
+  }
+  let to_side = st.conn.ends[to_role].side
+  if !st.announced {
+    st.announced = true
+    if st.conn.accepting[to_role].length() > 0 {
+      let cid = st.conn.accepting[to_role][0]
+      let rest : Array[Int64] = []
+      for i in 1..<st.conn.accepting[to_role].length() {
+        rest.push(st.conn.accepting[to_role][i])
+      }
+      st.conn.accepting[to_role] = rest
+      let shid = self.give(to_side, SimHandle::Stream(st, to_role))
+      st.handles[to_role] = shid
+      self.shells[to_side].answer(cid, base_codec::json_obj([("id", base_codec::json_int(shid))]))
+    } else {
+      st.conn.offered[to_role].push(st)
+    }
+  }
+  let flow = st.flows[from_role]
+  match chunk {
+    Some(b) => st.conn.rx[to_role] = st.conn.rx[to_role] + b.length().to_double()
+    None => ()
+  }
+  match flow.reader {
+    Some(rid) => {
+      flow.reader = None
+      match chunk {
+        Some(b) => self.shells[to_side].answer(rid, base_codec::json_obj([]), bytes=Some(b))
+        None => {
+          flow.read_end = true
+          self.shells[to_side].answer(rid, base_codec::json_obj([]), bytes=None)
+          match flow.stopper {
+            Some(sid) => {
+              flow.stopper = None
+              self.shells[st.conn.ends[from_role].side].answer(sid, base_codec::json_obj([]))
+            }
+            None => ()
+          }
+          self.maybe_drop_stream(st, to_role)
+        }
+      }
+    }
+    None => flow.came.push(chunk)
+  }
+}
+
+fn SimNet::call(self : SimNet, side : Int, id : Int64, op : String, args : base_codec::Json, bytes : Option[Bytes]) -> Unit {
+  let h = sim_handle_id(args)
+  self.said[side].push(op + " " + h.to_string())
+  if op == "iroh.bind" {
+    let key = match bytes {
+      Some(b) => b
+      None => Bytes::new(32)
+    }
+    self.keys[side].push(key)
+    let ep_id = crypto::sha256_hex(key)
+    let relays : Array[String] = []
+    match json_get_arr(args, "relayUrls") {
+      Some(rs) => {
+        for i in 0..<rs.length() {
+          match rs[i] {
+            base_codec::Json::Str(r) => relays.push(relay_key(r))
+            _ => ()
+          }
+        }
+      }
+      None => ()
+    }
+    let relay_only = match json_get_bool(args, "relayOnly") {
+      Some(b) => b
+      None => false
+    }
+    let alpns : Array[String] = []
+    match json_get_arr(args, "alpns") {
+      Some(as_) => {
+        for i in 0..<as_.length() {
+          match as_[i] {
+            base_codec::Json::Str(a) => alpns.push(a)
+            _ => ()
+          }
+        }
+      }
+      None => ()
+    }
+    let end = SimEnd::{
+      uid: next_uid(),
+      side: side,
+      id: ep_id,
+      relays: relays,
+      relay_only: relay_only,
+      alpns: alpns,
+      closed: false,
+      accepts: [],
+      coming: [],
+      conns: [],
+    }
+    let eid = self.give(side, SimHandle::End(end))
+    self.shells[side].answer(id, base_codec::json_obj([("id", base_codec::json_int(eid))]))
+    return
+  }
+  if op == "iroh.close" {
+    match self.handles[side].get(h) {
+      Some(SimHandle::End(end)) => {
+        end.closed = true
+        self.handles[side].remove(h)
+        let kept_dials : Array[SimDialWait] = []
+        for i in 0..<self.dials.length() {
+          let d = self.dials[i]
+          if d.end.uid == end.uid {
+            self.shells[d.side].refuse(d.call_id, "endpoint closed")
+          } else {
+            kept_dials.push(d)
+          }
+        }
+        self.dials = kept_dials
+        for i in 0..<end.accepts.length() {
+          self.shells[side].answer(end.accepts[i], base_codec::json_obj([("end", base_codec::json_bool(true))]))
+        }
+        end.accepts.clear()
+        for i in 0..<end.conns.length() {
+          let c = end.conns[i]
+          let role = if c.ends[0].uid == end.uid { 0 } else { 1 }
+          self.end_conn_side(c, role, base_codec::json_obj([("kind", base_codec::json_str("local")), ("reason", base_codec::json_str("closed"))]))
+          let ch = c.handles[role]
+          if ch != 0 {
+            self.handles[side].remove(ch)
+            c.handles[role] = 0
+          }
+        }
+      }
+      _ => ()
+    }
+    self.shells[side].answer(id, base_codec::json_obj([]))
+    return
+  }
+  if op == "iroh.networkChange" || op == "iroh.setRelayEntries" {
+    self.shells[side].answer(id, base_codec::json_obj([]))
+    return
+  }
+  if op == "iroh.accept" {
+    match self.handles[side].get(h) {
+      Some(SimHandle::End(end)) => {
+        if end.closed {
+          self.shells[side].answer(id, base_codec::json_obj([("end", base_codec::json_bool(true))]))
+          return
+        }
+        if end.coming.length() > 0 {
+          let c = end.coming[0]
+          let rest : Array[SimConn] = []
+          for i in 1..<end.coming.length() {
+            rest.push(end.coming[i])
+          }
+          end.coming.clear()
+          for i in 0..<rest.length() {
+            end.coming.push(rest[i])
+          }
+          self.shells[side].answer(
+            id,
+            base_codec::json_obj([("id", base_codec::json_int(c.handles[1])), ("alpn", base_codec::json_str(c.alpn))]),
+          )
+        } else {
+          end.accepts.push(id)
+        }
+      }
+      _ => self.shells[side].answer(id, base_codec::json_obj([("end", base_codec::json_bool(true))]))
+    }
+    return
+  }
+  if op == "iroh.connect" {
+    let end = match self.handles[side].get(h) {
+      Some(SimHandle::End(e)) => e
+      _ => {
+        self.shells[side].refuse(id, "no endpoint")
+        return
+      }
+    }
+    if end.closed {
+      self.shells[side].refuse(id, "endpoint closed")
+      return
+    }
+    let alpn_hex = match bytes {
+      Some(b) => hex_bytes(b)
+      None => ""
+    }
+    let addr = match base_codec::json_get(args, "addr") {
+      Some(a) => a
+      None => base_codec::json_null()
+    }
+    match self.route(end, addr) {
+      None => {
+        self.dials.push(SimDialWait::{ side: side, call_id: id, end: end })
+      }
+      Some((way, target)) => {
+        if !str_array_contains(target.alpns, alpn_hex) {
+          self.shells[side].refuse(id, "alpn not accepted")
+          return
+        }
+        let rtt = (way.ms * 2).to_int64()
+        let dw = SimDialWait::{ side: side, call_id: id, end: end }
+        self.dials.push(dw)
+        self.later(rtt, fn() -> Unit {
+          // Check if cancelled or closed meanwhile
+          let mut alive = false
+          let kept : Array[SimDialWait] = []
+          for i in 0..<self.dials.length() {
+            let d = self.dials[i]
+            if d.side == side && d.call_id == id {
+              alive = true
+            } else {
+              kept.push(d)
+            }
+          }
+          self.dials = kept
+          if !alive || end.closed || target.closed || way.down {
+            if alive {
+              self.shells[side].refuse(id, "unreached")
+            }
+            return
+          }
+          let c = SimConn::{
+            uid: next_uid(),
+            ends: [end, target],
+            handles: [0, 0],
+            way: way,
+            alpn: alpn_hex,
+            ended: [None, None],
+            forgot: [false, false],
+            waits: [[], []],
+            rx: [0.0, 0.0],
+            tx: [0.0, 0.0],
+            busy: [0.to_int64(), 0.to_int64()],
+            offered: [[], []],
+            accepting: [[], []],
+            streams: [],
+          }
+          let h0 = self.give(end.side, SimHandle::Conn(c, 0))
+          let h1 = self.give(target.side, SimHandle::Conn(c, 1))
+          c.handles[0] = h0
+          c.handles[1] = h1
+          end.conns.push(c)
+          target.conns.push(c)
+          if target.accepts.length() > 0 {
+            let aid = target.accepts[0]
+            let rest : Array[Int64] = []
+            for i in 1..<target.accepts.length() {
+              rest.push(target.accepts[i])
+            }
+            target.accepts.clear()
+            for i in 0..<rest.length() {
+              target.accepts.push(rest[i])
+            }
+            self.shells[target.side].answer(
+              aid,
+              base_codec::json_obj([("id", base_codec::json_int(h1)), ("alpn", base_codec::json_str(alpn_hex))]),
+            )
+          } else {
+            target.coming.push(c)
+          }
+          self.shells[end.side].answer(id, base_codec::json_obj([("id", base_codec::json_int(h0))]))
+        })
+      }
+    }
+    return
+  }
+  if op == "conn.closed" {
+    match self.handles[side].get(h) {
+      Some(SimHandle::Conn(c, role)) =>
+      match c.ended[role] {
+        Some(why) => self.shells[side].answer(id, why)
+        None => c.waits[role].push(id)
+      }
+      _ => self.shells[side].answer(id, base_codec::json_obj([("kind", base_codec::json_str("other")), ("reason", base_codec::json_str("no conn"))]))
+    }
+    return
+  }
+  if op == "conn.close" {
+    let reason = match json_get_str(args, "reason") {
+      Some(r) => r
+      None => "closed"
+    }
+    let forget = match json_get_bool(args, "forget") {
+      Some(b) => b
+      None => false
+    }
+    match self.handles[side].get(h) {
+      Some(SimHandle::Conn(c, role)) => {
+        self.end_conn_side(
+          c,
+          role,
+          base_codec::json_obj([("kind", base_codec::json_str("local")), ("reason", base_codec::json_str(reason))]),
+        )
+        let delay = if c.way.down { sim_idle_ms.to_int64() } else { c.way.ms.to_int64() }
+        let far_why = if c.way.down {
+          base_codec::json_obj([("kind", base_codec::json_str("timeout")), ("reason", base_codec::json_str(""))])
+        } else {
+          base_codec::json_obj([("kind", base_codec::json_str("application")), ("reason", base_codec::json_str(reason))])
+        }
+        self.later(delay, fn() -> Unit { self.end_conn_side(c, 1 - role, far_why) })
+        if forget {
+          c.forgot[role] = true
+          self.handles[side].remove(h)
+          c.handles[role] = 0
+          for i in 0..<c.streams.length() {
+            let shid = c.streams[i].handles[role]
+            if shid != 0 {
+              self.handles[side].remove(shid)
+              c.streams[i].handles[role] = 0
+            }
+          }
+        }
+      }
+      _ => ()
+    }
+    self.shells[side].answer(id, base_codec::json_obj([]))
+    return
+  }
+  if op == "conn.openBi" {
+    match self.handles[side].get(h) {
+      Some(SimHandle::Conn(c, role)) => {
+        if c.ended[role].is_some() {
+          self.shells[side].refuse(id, "connection closed")
+          return
+        }
+        let st = SimStream::{
+          uid: next_uid(),
+          conn: c,
+          handles: [0, 0],
+          flows: [
+            SimFlow::{ came: [], reader: None, reset: false, read_end: false, stopper: None },
+            SimFlow::{ came: [], reader: None, reset: false, read_end: false, stopper: None },
+          ],
+          finished: [false, false],
+          announced: false,
+        }
+        let shid = self.give(side, SimHandle::Stream(st, role))
+        st.handles[role] = shid
+        c.streams.push(st)
+        self.shells[side].answer(id, base_codec::json_obj([("id", base_codec::json_int(shid))]))
+      }
+      _ => self.shells[side].refuse(id, "no conn")
+    }
+    return
+  }
+  if op == "conn.acceptBi" {
+    match self.handles[side].get(h) {
+      Some(SimHandle::Conn(c, role)) => {
+        if c.ended[role].is_some() {
+          self.shells[side].refuse(id, "connection closed")
+          return
+        }
+        if c.offered[role].length() > 0 {
+          let st = c.offered[role][0]
+          let rest : Array[SimStream] = []
+          for i in 1..<c.offered[role].length() {
+            rest.push(c.offered[role][i])
+          }
+          c.offered[role] = rest
+          let shid = self.give(side, SimHandle::Stream(st, role))
+          st.handles[role] = shid
+          self.shells[side].answer(id, base_codec::json_obj([("id", base_codec::json_int(shid))]))
+        } else {
+          c.accepting[role].push(id)
+        }
+      }
+      _ => self.shells[side].refuse(id, "no conn")
+    }
+    return
+  }
+  if op == "istream.write" {
+    match self.handles[side].get(h) {
+      Some(SimHandle::Stream(st, role)) => {
+        if st.conn.ended[role].is_some() || st.flows[role].reset || st.finished[role] {
+          self.shells[side].refuse(id, "stream closed")
+          return
+        }
+        let data = match bytes {
+          Some(b) => b
+          None => Bytes::new(0)
+        }
+        st.conn.tx[role] = st.conn.tx[role] + data.length().to_double()
+        if !st.conn.way.down {
+          let delay = self.deliver_at(st.conn, role, data.length())
+          self.later(delay, fn() -> Unit { self.deliver_stream_chunk(st, role, Some(data)) })
+        }
+        self.shells[side].answer(id, base_codec::json_obj([]))
+      }
+      _ => self.shells[side].refuse(id, "no stream")
+    }
+    return
+  }
+  if op == "istream.finish" {
+    match self.handles[side].get(h) {
+      Some(SimHandle::Stream(st, role)) => {
+        if st.conn.ended[role].is_some() || st.flows[role].reset || st.finished[role] {
+          self.shells[side].refuse(id, "stream closed")
+          return
+        }
+        st.finished[role] = true
+        if !st.conn.way.down {
+          let delay = self.deliver_at(st.conn, role, 0)
+          self.later(delay, fn() -> Unit { self.deliver_stream_chunk(st, role, None) })
+        }
+        self.maybe_drop_stream(st, role)
+        self.shells[side].answer(id, base_codec::json_obj([]))
+      }
+      _ => self.shells[side].refuse(id, "no stream")
+    }
+    return
+  }
+  if op == "istream.read" {
+    match self.handles[side].get(h) {
+      Some(SimHandle::Stream(st, role)) => {
+        let flow = st.flows[1 - role]
+        if flow.reset {
+          self.shells[side].refuse(id, "stream reset")
+          return
+        }
+        if flow.came.length() > 0 {
+          let chunk = flow.came[0]
+          let rest : Array[Option[Bytes]] = []
+          for i in 1..<flow.came.length() {
+            rest.push(flow.came[i])
+          }
+          flow.came.clear()
+          for i in 0..<rest.length() {
+            flow.came.push(rest[i])
+          }
+          match chunk {
+            Some(b) => self.shells[side].answer(id, base_codec::json_obj([]), bytes=Some(b))
+            None => {
+              flow.read_end = true
+              self.shells[side].answer(id, base_codec::json_obj([]), bytes=None)
+              match flow.stopper {
+                Some(sid) => {
+                  flow.stopper = None
+                  self.shells[st.conn.ends[1 - role].side].answer(sid, base_codec::json_obj([]))
+                }
+                None => ()
+              }
+              self.maybe_drop_stream(st, role)
+            }
+          }
+        } else if st.conn.ended[role].is_some() {
+          self.shells[side].refuse(id, "connection closed")
+        } else {
+          flow.reader = Some(id)
+        }
+      }
+      _ => self.shells[side].refuse(id, "no stream")
+    }
+    return
+  }
+  if op == "istream.reset" {
+    let code = match json_get_num(args, "code") {
+      Some(n) => n.to_int()
+      None => 0
+    }
+    match self.handles[side].get(h) {
+      Some(SimHandle::Stream(st, role)) => {
+        st.flows[0].reset = true
+        st.flows[1].reset = true
+        self.handles[side].remove(h)
+        st.handles[role] = 0
+        let far_role = 1 - role
+        let far_side = st.conn.ends[far_role].side
+        let delay = if st.conn.way.down { sim_idle_ms.to_int64() } else { st.conn.way.ms.to_int64() }
+        self.later(delay, fn() -> Unit {
+          match st.flows[role].reader {
+            Some(rid) => {
+              st.flows[role].reader = None
+              self.shells[far_side].refuse(rid, "reset")
+            }
+            None => ()
+          }
+          match st.flows[far_role].stopper {
+            Some(sid) => {
+              st.flows[far_role].stopper = None
+              self.shells[far_side].answer(sid, base_codec::json_obj([("code", base_codec::json_int(code))]))
+            }
+            None => ()
+          }
+        })
+      }
+      _ => ()
+    }
+    self.shells[side].answer(id, base_codec::json_obj([]))
+    return
+  }
+  if op == "istream.stopped" {
+    match self.handles[side].get(h) {
+      Some(SimHandle::Stream(st, role)) => {
+        let flow = st.flows[role]
+        if flow.read_end {
+          self.shells[side].answer(id, base_codec::json_obj([]))
+        } else if flow.reset {
+          self.shells[side].answer(id, base_codec::json_obj([("code", base_codec::json_int(0))]))
+        } else {
+          flow.stopper = Some(id)
+        }
+      }
+      _ => self.shells[side].refuse(id, "no stream")
+    }
+    return
+  }
+  if op == "istream.tap" {
+    let call_n = match json_get_num(args, "call") {
+      Some(n) => n.to_int64()
+      None => 0.to_int64()
+    }
+    let pref = match bytes {
+      Some(b) => wire::utf8_decode_lossy(b)
+      None => ""
+    }
+    self.tapped.push(h.to_string() + " " + call_n.to_string() + " " + pref)
+    match self.taps {
+      Some(t) => self.shells[side].answer(id, base_codec::json_obj([("tapped", base_codec::json_bool(t))]))
+      None => self.shells[side].refuse(id, "no such op")
+    }
+    return
+  }
+  self.shells[side].refuse(id, "no such op: " + op)
+}
+
+// ── Simulated peer Door running on the server Mesh ──
+
+struct SimDoor {
+  mesh : Mesh
+  mut lan_addrs : Array[String]
+  mut tailnet_addrs : Array[String]
+  mut refuse_cred : Option[String]
+  mut quiet : Bool
+  mut handler : (String, String, Bytes) -> (Int, Bytes)
+  seen_creds : Array[String]
+  seen_paths : Array[String]
+  seen_close_reasons : Array[String]
+  conns : Array[Incoming]
+}
+
+fn SimDoor::new(mesh : Mesh) -> SimDoor {
+  SimDoor::{
+    mesh: mesh,
+    lan_addrs: [],
+    tailnet_addrs: [],
+    refuse_cred: None,
+    quiet: false,
+    handler: fn(_m : String, path : String, body : Bytes) -> (Int, Bytes) {
+      (200, ("echo:" + path + ":" + wire::utf8_decode_lossy(body)).to_bytes())
+    },
+    seen_creds: [],
+    seen_paths: [],
+    seen_close_reasons: [],
+    conns: [],
+  }
+}
+
+fn read_all_inbound_k(inb : Inbound, acc : Array[Bytes], len : Int, k : (effect::Exit[Bytes]) -> Unit) -> Unit {
+  inb.take_k(fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(Some(b)) => {
+        acc.push(b)
+        read_all_inbound_k(inb, acc, len + b.length(), k)
+      }
+      effect::Exit::Succeeded(None) => k(effect::Exit::Succeeded(joined_bytes(acc, len)))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn SimDoor::serve_control_k(self : SimDoor, ctrl : Inbound, carry : wire::Carry, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  match carry.line() {
+    Some(line) => {
+      match base_codec::json_parse(line) {
+        base_codec::JsonParseResult::Ok(j) =>
+        match json_get_str(j, "credential") {
+          Some(c) => self.seen_creds.push(c)
+          None => ()
+        }
+        _ => ()
+      }
+      if self.quiet {
+        self.serve_control_k(ctrl, carry, k)
+        return
+      }
+      let reply_json = match self.refuse_cred {
+        Some(why) => base_codec::json_obj([("error", base_codec::json_str(why))])
+        None => {
+          let fs : Array[(String, base_codec::Json)] = [("ok", base_codec::json_bool(true))]
+          if self.lan_addrs.length() > 0 {
+            fs.push(("lan", json_strings(self.lan_addrs)))
+          }
+          if self.tailnet_addrs.length() > 0 {
+            fs.push(("tailnet", json_strings(self.tailnet_addrs)))
+          }
+          base_codec::json_obj(fs)
+        }
+      }
+      let out_line = (base_codec::json_stringify(reply_json) + "\n").to_bytes()
+      ctrl.out.write_k(out_line, fn(wex : effect::Exit[Unit]) -> Unit {
+        match wex {
+          effect::Exit::Succeeded(_) => self.serve_control_k(ctrl, carry, k)
+          _ => k(effect::Exit::Succeeded(()))
+        }
+      })
+      return
+    }
+    None => ()
+  }
+  ctrl.take_k(fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(Some(b)) => {
+        carry.push(b)
+        self.serve_control_k(ctrl, carry, k)
+      }
+      _ => k(effect::Exit::Succeeded(()))
+    }
+  })
+}
+
+fn SimDoor::serve_request_k(self : SimDoor, s : Inbound, carry : wire::Carry, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  match carry.line() {
+    Some(line) => {
+      let (meth, path) = match base_codec::json_parse(line) {
+        base_codec::JsonParseResult::Ok(j) => {
+          let m = match json_get_str(j, "method") {
+            Some(v) => v
+            None => "GET"
+          }
+          let p = match json_get_str(j, "path") {
+            Some(v) => v
+            None => "/"
+          }
+          (m, p)
+        }
+        _ => ("GET", "/")
+      }
+      self.seen_paths.push(path)
+      if path == "/duplex" {
+        let head = (base_codec::json_stringify(base_codec::json_obj([("status", base_codec::json_int(200)), ("headers", base_codec::json_obj([]))])) + "\n").to_bytes()
+        s.out.write_k(head, fn(wex : effect::Exit[Unit]) -> Unit {
+          match wex {
+            effect::Exit::Succeeded(_) => {
+              let rest_first = carry.take()
+              let echo_loop = fn() -> Unit {
+                let rec_ref : Array[(Option[Bytes]) -> Unit] = []
+                let step = fn(initial : Option[Bytes]) -> Unit {
+                  let handle_chunk = fn(chunk : Option[Bytes]) -> Unit {
+                    match chunk {
+                      Some(b) =>
+                      s.out.write_k(b, fn(ex2 : effect::Exit[Unit]) -> Unit {
+                        match ex2 {
+                          effect::Exit::Succeeded(_) => s.take_k(fn(tex : effect::Exit[Option[Bytes]]) -> Unit {
+                            match tex {
+                              effect::Exit::Succeeded(c2) => (rec_ref[0])(c2)
+                              _ => k(effect::Exit::Succeeded(()))
+                            }
+                          })
+                          _ => k(effect::Exit::Succeeded(()))
+                        }
+                      })
+                      None => s.out.finish_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+                    }
+                  }
+                  handle_chunk(initial)
+                }
+                rec_ref.push(step)
+                if rest_first.length() > 0 {
+                  step(Some(rest_first))
+                } else {
+                  s.take_k(fn(tex : effect::Exit[Option[Bytes]]) -> Unit {
+                    match tex {
+                      effect::Exit::Succeeded(c) => step(c)
+                      _ => k(effect::Exit::Succeeded(()))
+                    }
+                  })
+                }
+              }
+              echo_loop()
+            }
+            _ => k(effect::Exit::Succeeded(()))
+          }
+        })
+        return
+      }
+      let rest0 = carry.take()
+      let pieces : Array[Bytes] = []
+      let mut len0 = 0
+      if rest0.length() > 0 {
+        pieces.push(rest0)
+        len0 = rest0.length()
+      }
+      read_all_inbound_k(s, pieces, len0, fn(bex : effect::Exit[Bytes]) -> Unit {
+        match bex {
+          effect::Exit::Succeeded(body) => {
+            let hf = self.handler
+            let (status, resp_body) = hf(meth, path, body)
+            let head = (base_codec::json_stringify(
+              base_codec::json_obj([
+                ("status", base_codec::json_int(status)),
+                ("headers", base_codec::json_obj([("x-sim", base_codec::json_str("1"))])),
+              ]),
+            ) + "\n").to_bytes()
+            s.out.write_k(head.concat(resp_body), fn(wex : effect::Exit[Unit]) -> Unit {
+              match wex {
+                effect::Exit::Succeeded(_) =>
+                s.out.finish_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+                _ => k(effect::Exit::Succeeded(()))
+              }
+            })
+          }
+          _ => k(effect::Exit::Succeeded(()))
+        }
+      })
+      return
+    }
+    None => ()
+  }
+  s.take_k(fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(Some(b)) => {
+        carry.push(b)
+        self.serve_request_k(s, carry, k)
+      }
+      _ => k(effect::Exit::Succeeded(()))
+    }
+  })
+}
+
+fn SimDoor::accept_streams_k(self : SimDoor, rt : effect::Runtime, inc : Incoming, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  inc.accept_k(fn(ex : effect::Exit[Option[Inbound]]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(Some(s)) => {
+        let _ = rt.fork_quiet(fn(sk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          self.serve_request_k(s, wire::Carry::new(), sk)
+        })
+        self.accept_streams_k(rt, inc, k)
+      }
+      _ => k(effect::Exit::Succeeded(()))
+    }
+  })
+}
+
+fn SimDoor::start(self : SimDoor, rt : effect::Runtime) -> effect::Fiber[Unit] {
+  rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    let rec_ref : Array[() -> Unit] = []
+    let next_conn = fn() -> Unit {
+      self.mesh.incoming_k(fn(ex : effect::Exit[Option[Incoming]]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(Some(inc)) => {
+            self.conns.push(inc)
+            let _ = rt.fork_quiet(fn(ck : (effect::Exit[Unit]) -> Unit) -> Unit {
+              inc.closed_k(fn(cex : effect::Exit[Closed]) -> Unit {
+                match cex {
+                  effect::Exit::Succeeded(c) => self.seen_close_reasons.push(c.reason)
+                  _ => ()
+                }
+                ck(effect::Exit::Succeeded(()))
+              })
+            })
+            if inc.alpn == sim_alpn {
+              let _ = rt.fork_quiet(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                inc.first_k(fn(fex : effect::Exit[(String, Inbound)]) -> Unit {
+                  match fex {
+                    effect::Exit::Succeeded((line, ctrl)) => {
+                      let carry = wire::Carry::new()
+                      carry.push((line + "\n").to_bytes())
+                      let _ = rt.fork_quiet(fn(ck : (effect::Exit[Unit]) -> Unit) -> Unit {
+                        self.serve_control_k(ctrl, carry, ck)
+                      })
+                      self.accept_streams_k(rt, inc, fk)
+                    }
+                    _ => fk(effect::Exit::Succeeded(()))
+                  }
+                })
+              })
+            }
+            (rec_ref[0])()
+          }
+          _ => k(effect::Exit::Succeeded(()))
+        }
+      })
+    }
+    rec_ref.push(next_conn)
+    next_conn()
+  })
+}
+
+fn opt_str_is(opt : Option[String], want : String) -> Bool {
+  match opt {
+    Some(s) => s == want
+    None => false
+  }
+}
+
+fn sim_creds(tag : String) -> (String, Bool, (effect::Exit[Presented]) -> Unit) -> Unit {
+  let count = [0]
+  fn(_dev : String, fresh : Bool, k : (effect::Exit[Presented]) -> Unit) -> Unit {
+    count[0] += 1
+    let suffix = if fresh { ":fresh" } else { "" }
+    k(effect::Exit::Succeeded(Presented::new(tag + "-" + count[0].to_string() + suffix)))
+  }
+}
+
+fn sim_make_pair(
+  net : SimNet,
+  client_relays : Array[String],
+  server_relays : Array[String],
+  extra_alpns : Array[String] = [],
+  trace : Trace = Trace::none(),
+  recorder : Recorder = Recorder::none(),
+) -> (Mesh, Mesh, SimDoor, Map[String, Bytes]) {
+  let (c_store, c_mem) = make_mem_store()
+  let (s_store, _) = make_mem_store()
+  let takes : Array[String] = [sim_alpn]
+  for i in 0..<extra_alpns.length() {
+    takes.push(extra_alpns[i])
+  }
+  let s_bind = Binding::{ lookup: false, takes: takes, entries: [] }
+  let server = match run_sync(net.rt, fn(k : (effect::Exit[Mesh]) -> Unit) -> Unit {
+    Mesh::make_k(net.shells[1], s_store, Options::new(sim_alpn, server_relays), k, binding=s_bind)
+  }) {
+    effect::Exit::Succeeded(m) => m
+    _ => {
+      debug_assert(false, "server make failed")
+      panic()
+    }
+  }
+  let client = match run_sync(net.rt, fn(k : (effect::Exit[Mesh]) -> Unit) -> Unit {
+    Mesh::make_k(
+      net.shells[0],
+      c_store,
+      Options::new(sim_alpn, client_relays),
+      k,
+      trace=trace,
+      recorder=recorder,
+    )
+  }) {
+    effect::Exit::Succeeded(m) => m
+    _ => {
+      debug_assert(false, "client make failed")
+      panic()
+    }
+  }
+  let door = SimDoor::new(server)
+  let _ = door.start(net.rt)
+  let _ = net.rt.run_ready()
+  (client, server, door, c_mem)
+}
+
+test "sim: end-to-end dual Mesh request, duplex, server-opened inbound stream, scoped links, and clean close" {
+  let net = SimNet::new()
+  let _ = net.relay(sim_r1, 20)
+  let (client, server, door, _) = sim_make_pair(net, [sim_r1], [sim_r1])
+  let peer = server.device_id()
+
+  // Open link in default scope and send a request with body + wrote callback
+  let wrote_steps : Array[Int] = []
+  let req_res : Array[Option[(Int, String, Option[String])]] = [None]
+  let link_box : Array[Option[Link]] = [None]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.link_k(peer, sim_creds("c"), fn(lex : effect::Exit[Link]) -> Unit {
+      match lex {
+        effect::Exit::Succeeded(link) => {
+          link_box[0] = Some(link)
+          link.request_k(
+            "POST",
+            "/hello",
+            fn(rex : effect::Exit[Reply]) -> Unit {
+              match rex {
+                effect::Exit::Succeeded(reply) => {
+                  let hdr = reply.header("x-sim")
+                  reply.rest_k(fn(bex : effect::Exit[Bytes]) -> Unit {
+                    match bex {
+                      effect::Exit::Succeeded(body) => {
+                        req_res[0] = Some((reply.status, wire::utf8_decode_lossy(body), hdr))
+                        k(effect::Exit::Succeeded(()))
+                      }
+                      _ => k(effect::Exit::Succeeded(()))
+                    }
+                  })
+                }
+                _ => k(effect::Exit::Succeeded(()))
+              }
+            },
+            body="world".to_bytes(),
+            wrote=Some(fn(n : Int) -> Unit { wrote_steps.push(n) }),
+          )
+        }
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  net.rt.advance(200)
+  match req_res[0] {
+    Some((st, body, hdr)) => {
+      debug_assert(st == 200, "status 200")
+      debug_assert(body == "echo:/hello:world", "echoed body")
+      debug_assert(opt_str_is(hdr, "1"), "header x-sim")
+    }
+    None => debug_assert(false, "expected reply")
+  }
+  debug_assert(wrote_steps.length() == 1 && wrote_steps[0] == 5, "wrote callback fired")
+  debug_assert(door.seen_creds.length() >= 1 && door.seen_creds[0] == "c-1", "server saw credential")
+
+  // Duplex request: write two chunks, read echoes, finish, and check Out::stopped_k == None
+  let link = match link_box[0] {
+    Some(l) => l
+    None => {
+      debug_assert(false, "no link")
+      return
+    }
+  }
+  let duplex_got : Array[String] = []
+  let stopped_res : Array[Option[Option[Int]]] = [None]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    link.duplex_k("POST", "/duplex", fn(dex : effect::Exit[(Reply, Out)]) -> Unit {
+      match dex {
+        effect::Exit::Succeeded((reply, out)) => {
+          let _ = net.rt.fork_quiet(fn(sk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            out.stopped_k(fn(sex : effect::Exit[Option[Int]]) -> Unit {
+              match sex {
+                effect::Exit::Succeeded(v) => stopped_res[0] = Some(v)
+                _ => ()
+              }
+              sk(effect::Exit::Succeeded(()))
+            })
+          })
+          out.write_k("ping1".to_bytes(), fn(_ : effect::Exit[Unit]) -> Unit {
+            reply.take_k(fn(t1 : effect::Exit[Option[Bytes]]) -> Unit {
+              match t1 {
+                effect::Exit::Succeeded(Some(b1)) => duplex_got.push(wire::utf8_decode_lossy(b1))
+                _ => ()
+              }
+              out.write_k("ping2".to_bytes(), fn(_ : effect::Exit[Unit]) -> Unit {
+                out.finish_k(fn(_ : effect::Exit[Unit]) -> Unit {
+                  reply.rest_k(fn(t2 : effect::Exit[Bytes]) -> Unit {
+                    match t2 {
+                      effect::Exit::Succeeded(b2) => duplex_got.push(wire::utf8_decode_lossy(b2))
+                      _ => ()
+                    }
+                    k(effect::Exit::Succeeded(()))
+                  })
+                })
+              })
+            })
+          })
+        }
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  net.rt.advance(300)
+  debug_assert(duplex_got.length() == 2 && duplex_got[0] == "ping1" && duplex_got[1] == "ping2", "duplex echoed both")
+  match stopped_res[0] {
+    Some(None) => ()
+    _ => debug_assert(false, "expected clean stopped None")
+  }
+
+  // Server opens an inbound stream to client; client accepts and reads it
+  let server_inc = door.conns[0]
+  let client_inb_got = [""]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    link.accept_k(fn(ex : effect::Exit[Option[Inbound]]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(Some(inb)) =>
+        inb.take_k(fn(tex : effect::Exit[Option[Bytes]]) -> Unit {
+          match tex {
+            effect::Exit::Succeeded(Some(b)) => client_inb_got[0] = wire::utf8_decode_lossy(b)
+            _ => ()
+          }
+          inb.cancel()
+          k(effect::Exit::Succeeded(()))
+        })
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    server_inc.open_k(fn(ex : effect::Exit[Inbound]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(s) =>
+        s.out.write_k("push-msg".to_bytes(), fn(_ : effect::Exit[Unit]) -> Unit {
+          s.out.finish_k(k)
+        })
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  net.rt.advance(200)
+  debug_assert(client_inb_got[0] == "push-msg", "client received server-pushed inbound stream")
+
+  // Scoped links: scope "s2" is independent from default scope ""
+  let replaced_default = [false]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.replaced_k(link, fn(_ : effect::Exit[Unit]) -> Unit {
+      replaced_default[0] = true
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let s2_link : Array[Option[Link]] = [None]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.link_k(peer, sim_creds("s2"), fn(ex : effect::Exit[Link]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(l) => s2_link[0] = Some(l)
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    }, link_scope="s2")
+  })
+  net.rt.advance(200)
+  debug_assert(s2_link[0].is_some(), "scoped link opened")
+  debug_assert(!replaced_default[0], "default scope untouched by s2")
+  client.drop_link(peer, link_scope="", reason="bye-default")
+  net.rt.advance(100)
+  debug_assert(replaced_default[0], "default link replaced on drop_link")
+  debug_assert(client.current(peer, link_scope="s2").is_some(), "s2 link still current")
+  debug_assert(str_array_contains(door.seen_close_reasons, "bye-default"), "peer saw drop reason")
+
+  // Close both meshes and verify zero leaked handles on both shells
+  let c_close = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { client.close_k(k) })
+  let s_close = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { server.close_k(k) })
+  net.rt.advance(200)
+  debug_assert(c_close.is_done() && s_close.is_done(), "both closed")
+  debug_assert(net.handles[0].length() == 0, "client shell zero leaked handles")
+  debug_assert(net.handles[1].length() == 0, "server shell zero leaked handles")
+}
+
+test "sim: pings, health_change, outage detection, and suspect race recovery" {
+  let net = SimNet::new()
+  let r1 = net.relay(sim_r1, 20)
+  let (client, server, door, _) = sim_make_pair(net, [sim_r1], [sim_r1])
+  let peer = server.device_id()
+
+  let link_box : Array[Option[Link]] = [None]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.link_k(peer, sim_creds("h"), fn(ex : effect::Exit[Link]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(l) => link_box[0] = Some(l)
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  net.rt.advance(100)
+  debug_assert(client.standing(peer) && client.healthy(peer), "healthy after open")
+
+  // Advance two ticks so pings warm up and record RTT (~40ms)
+  net.rt.advance(tick_ms * 2 + 200)
+  let l1 = match link_box[0] {
+    Some(l) => l
+    None => {
+      debug_assert(false, "missing link")
+      return
+    }
+  }
+  let p = l1.pings()
+  debug_assert(p.samples >= 1 && p.missed == 0, "pings sampled")
+
+  // Watch health_change(true) -> false when relay goes down
+  let health_events : Array[Bool] = []
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.health_change_k(peer, true, fn(ex : effect::Exit[Bool]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(now) => health_events.push(now)
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  r1.down = true
+  // Advance past 3 missed pings
+  net.rt.advance(tick_ms * 4 + ping_timeout_ms)
+  debug_assert(!client.healthy(peer), "unhealthy after outage")
+  debug_assert(health_events.length() == 1 && !health_events[0], "health_change notified false")
+
+  // Let the in-flight race dial time out so the dead link is dropped, then bring relay back up
+  net.rt.advance(onto_max_ms + connect_timeout_ms + 1000)
+  r1.down = false
+  let recovered = [false]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.link_k(peer, sim_creds("h2"), fn(ex : effect::Exit[Link]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => recovered[0] = true
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  net.rt.advance(1000)
+  debug_assert(recovered[0] && client.healthy(peer), "recovered after relay back up")
+
+  let _ = door
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { client.close_k(k) })
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { server.close_k(k) })
+  net.rt.advance(200)
+}
+
+test "sim: multi-way racing, LAN direct addresses, speed timing, today tally, tracing, and remeasure" {
+  let net = SimNet::new()
+  let _ = net.relay(sim_r1, 80, bps=200000.0)
+  let _ = net.relay(sim_r2, 15, bps=5000000.0)
+  let spans : Array[String] = []
+  let rec_lines : Array[String] = []
+  let tr = Trace::{
+    peer_key: "peer",
+    start_fn: fn(name : String, _parent : Option[String]) -> Span {
+      spans.push(name)
+      Span::none()
+    },
+  }
+  let rec = Recorder::{
+    on_fn: fn() -> Bool { true },
+    line_fn: fn(line : String) -> Unit { rec_lines.push(line) },
+  }
+  let (client, server, door, mem) = sim_make_pair(
+    net,
+    [sim_r1, sim_r2],
+    [sim_r1, sim_r2],
+    trace=tr,
+    recorder=rec,
+  )
+  let peer = server.device_id()
+  let _ = net.direct("192.168.1.50:9000", peer, 5)
+  door.lan_addrs = ["192.168.1.50:9000"]
+
+  // Open link on r1 first (main endpoint), server advertises LAN addr in hello answer
+  let link_box : Array[Option[Link]] = [None]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.link_k(peer, sim_creds("w"), fn(ex : effect::Exit[Link]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(l) => link_box[0] = Some(l)
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  net.rt.advance(400)
+  debug_assert(client.lan(peer).length() == 1 && client.lan(peer)[0] == "192.168.1.50:9000", "learned LAN addr")
+  debug_assert(mem.contains(addresses_key), "LAN addr persisted to store")
+
+  // Timed large reply (>= 512 KiB) records speed and today bytes
+  let big = Bytes::new(speed_min_bytes)
+  door.handler = fn(_m : String, _p : String, _b : Bytes) -> (Int, Bytes) { (200, big) }
+  let link = match link_box[0] {
+    Some(l) => l
+    None => {
+      debug_assert(false, "missing link")
+      return
+    }
+  }
+  let got_len = [0]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    link.request_k("GET", "/big", fn(rex : effect::Exit[Reply]) -> Unit {
+      match rex {
+        effect::Exit::Succeeded(reply) => {
+          let timed = client.timed(peer, sim_r1, reply)
+          timed.rest_k(fn(bex : effect::Exit[Bytes]) -> Unit {
+            match bex {
+              effect::Exit::Succeeded(b) => got_len[0] = b.length()
+              _ => ()
+            }
+            k(effect::Exit::Succeeded(()))
+          })
+        }
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  net.rt.advance(5000)
+  debug_assert(got_len[0] == speed_min_bytes, "received full 512KiB reply")
+  let (rx_today, tx_today) = client.today(peer)
+  debug_assert(rx_today >= speed_min_bytes.to_int64() && tx_today > 0.to_int64(), "today tallied rx and tx")
+  let ln = link.net()
+  debug_assert(opt_str_is(ln.path, "relay") && opt_str_is(ln.relay, "r1.sim"), "Link::net reports relay")
+
+  // Remeasure explores r2 (15ms << 80ms) and promotes it!
+  let rem_done = [false]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.remeasure_peer_k(peer, fn(ex : effect::Exit[Unit]) -> Unit {
+      rem_done[0] = effect::exit_is_succeeded(ex)
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  net.rt.advance(4000)
+  debug_assert(rem_done[0], "remeasure_peer completed")
+  debug_assert(client.moves(peer) >= 1, "promoted faster way r2")
+  debug_assert(opt_str_is(client.moved(peer), "r2.sim"), "moved to r2.sim")
+  let mw = client.measured(peer)
+  debug_assert(mw.length() >= 2, "measured lists multiple ways")
+  debug_assert(str_array_contains(spans, "mesh.connect"), "traced mesh.connect")
+  debug_assert(str_array_contains(spans, "mesh.route"), "traced mesh.route")
+  debug_assert(rec_lines.length() > 0, "recorder captured diagnostic lines")
+
+  // Wake + retune to r2 only
+  client.wake(network=true)
+  net.rt.advance(500)
+  client.retune([sim_r2], reason="switch-relay")
+  net.rt.advance(500)
+  debug_assert(client.current(peer).is_none(), "retune dropped old links")
+
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { client.close_k(k) })
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { server.close_k(k) })
+  net.rt.advance(200)
+}
+
+test "sim: Mesh::connect_k and Mesh::dial_once_k on custom protocol with Incoming::first_k" {
+  let net = SimNet::new()
+  let _ = net.relay(sim_r1, 10)
+  let (client, server, door, _) = sim_make_pair(net, [sim_r1], [sim_r1], extra_alpns=["pair/1"])
+  let peer = server.device_id()
+
+  // Server handles pair/1 incoming connections when they arrive
+  let seen_pair : Array[(String, String)] = []
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    effect::sleep_k(50, fn(_ : effect::Exit[Unit]) -> Unit {
+      for i in 0..<door.conns.length() {
+        let inc = door.conns[i]
+        if inc.alpn == "pair/1" {
+          let _ = net.rt.fork_quiet(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            inc.first_k(fn(fex : effect::Exit[(String, Inbound)]) -> Unit {
+              match fex {
+                effect::Exit::Succeeded((line, s)) => {
+                  seen_pair.push((inc.peer, line))
+                  s.out.write_k("ack\n".to_bytes(), fn(_ : effect::Exit[Unit]) -> Unit { s.out.finish_k(fk) })
+                }
+                _ => fk(effect::Exit::Succeeded(()))
+              }
+            })
+          })
+        }
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+
+  // 1) Mesh::connect_k proves device_id
+  let c_ack = [""]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.connect_k(peer, "pair/1", fn(cex : effect::Exit[Incoming]) -> Unit {
+      match cex {
+        effect::Exit::Succeeded(inc) =>
+        inc.open_k(fn(oex : effect::Exit[Inbound]) -> Unit {
+          match oex {
+            effect::Exit::Succeeded(s) =>
+            s.out.write_k("from-connect\n".to_bytes(), fn(_ : effect::Exit[Unit]) -> Unit {
+              s.take_k(fn(tex : effect::Exit[Option[Bytes]]) -> Unit {
+                match tex {
+                  effect::Exit::Succeeded(Some(b)) => c_ack[0] = wire::utf8_decode_lossy(b)
+                  _ => ()
+                }
+                inc.close()
+                k(effect::Exit::Succeeded(()))
+              })
+            })
+            _ => k(effect::Exit::Succeeded(()))
+          }
+        })
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+
+  // 2) Mesh::dial_once_k uses ephemeral key (peer != client.device_id())
+  let d_ack = [""]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.dial_once_k(peer, "pair/1", fn(dex : effect::Exit[Outgoing]) -> Unit {
+      match dex {
+        effect::Exit::Succeeded(outg) =>
+        outg.open_k(fn(oex : effect::Exit[Inbound]) -> Unit {
+          match oex {
+            effect::Exit::Succeeded(s) =>
+            s.out.write_k("from-dial-once\n".to_bytes(), fn(_ : effect::Exit[Unit]) -> Unit {
+              s.take_k(fn(tex : effect::Exit[Option[Bytes]]) -> Unit {
+                match tex {
+                  effect::Exit::Succeeded(Some(b)) => d_ack[0] = wire::utf8_decode_lossy(b)
+                  _ => ()
+                }
+                outg.close()
+                k(effect::Exit::Succeeded(()))
+              })
+            })
+            _ => k(effect::Exit::Succeeded(()))
+          }
+        })
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+
+  net.rt.advance(300)
+  debug_assert(c_ack[0] == "ack\n", "connect_k got ack")
+  debug_assert(d_ack[0] == "ack\n", "dial_once_k got ack")
+  debug_assert(seen_pair.length() == 2, "server saw both pair/1 connections")
+  let mut saw_device_id = false
+  let mut saw_ephemeral_id = false
+  for i in 0..<seen_pair.length() {
+    let (p, line) = seen_pair[i]
+    if line == "from-connect" {
+      debug_assert(p == client.device_id(), "connect_k proves device_id")
+      saw_device_id = true
+    } else if line == "from-dial-once" {
+      debug_assert(p != client.device_id() && p.length() == 64, "dial_once_k uses ephemeral key")
+      saw_ephemeral_id = true
+    }
+  }
+  debug_assert(saw_device_id && saw_ephemeral_id, "both connect and dial_once verified")
+
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { client.close_k(k) })
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { server.close_k(k) })
+  net.rt.advance(200)
+  debug_assert(net.handles[0].length() == 0, "client zero leaked handles")
+  debug_assert(net.handles[1].length() == 0, "server zero leaked handles")
+}
+
+test "sim: requests_wbtest — Reply::rest_k too_long bound, Reply::tap_k accept/decline carry, Out::stopped_k invalid_params" {
+  let net = SimNet::new()
+  let _ = net.relay(sim_r1, 10)
+  let (client, server, door, _) = sim_make_pair(net, [sim_r1], [sim_r1])
+  let peer = server.device_id()
+  door.handler = fn(_m : String, path : String, _b : Bytes) -> (Int, Bytes) {
+    if path == "/long" {
+      (200, "0123456789abcdef".to_bytes())
+    } else {
+      (200, "tap-payload".to_bytes())
+    }
+  }
+  let link_box : Array[Option[Link]] = [None]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.link_k(peer, sim_creds("req"), fn(ex : effect::Exit[Link]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(l) => link_box[0] = Some(l)
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  net.rt.advance(100)
+  let link = match link_box[0] {
+    Some(l) => l
+    None => {
+      debug_assert(false, "no link")
+      return
+    }
+  }
+  // 1) Reply::rest_k with most=8 fails with too_long
+  let too_long_code = [""]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    link.request_k("GET", "/long", fn(rex : effect::Exit[Reply]) -> Unit {
+      match rex {
+        effect::Exit::Succeeded(reply) =>
+        reply.rest_k(
+          fn(bex : effect::Exit[Bytes]) -> Unit {
+            match bex {
+              effect::Exit::Failed(e) => too_long_code[0] = code_of(e)
+              _ => ()
+            }
+            k(effect::Exit::Succeeded(()))
+          },
+          most=8,
+        )
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  net.rt.advance(100)
+  debug_assert(too_long_code[0] == "too_long", "Reply::rest_k enforces most bound")
+
+  // 2) Reply::tap_k declined restores carry so rest_k reads full body; accepted returns true
+  net.taps = Some(false)
+  let declined_body = [""]
+  let declined_tapped = [true]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    link.request_k("GET", "/tap1", fn(rex : effect::Exit[Reply]) -> Unit {
+      match rex {
+        effect::Exit::Succeeded(reply) =>
+        reply.tap_k(42.to_int64(), fn(tex : effect::Exit[Bool]) -> Unit {
+          match tex {
+            effect::Exit::Succeeded(b) => declined_tapped[0] = b
+            _ => ()
+          }
+          reply.rest_k(fn(bex : effect::Exit[Bytes]) -> Unit {
+            match bex {
+              effect::Exit::Succeeded(body) => declined_body[0] = wire::utf8_decode_lossy(body)
+              _ => ()
+            }
+            k(effect::Exit::Succeeded(()))
+          })
+        })
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  net.rt.advance(100)
+  debug_assert(!declined_tapped[0] && declined_body[0] == "tap-payload", "declined tap restores carry")
+
+  net.taps = Some(true)
+  let accepted_tapped = [false]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    link.request_k("GET", "/tap2", fn(rex : effect::Exit[Reply]) -> Unit {
+      match rex {
+        effect::Exit::Succeeded(reply) =>
+        reply.tap_k(99.to_int64(), fn(tex : effect::Exit[Bool]) -> Unit {
+          match tex {
+            effect::Exit::Succeeded(b) => accepted_tapped[0] = b
+            _ => ()
+          }
+          reply.cancel()
+          k(effect::Exit::Succeeded(()))
+        })
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  net.rt.advance(100)
+  debug_assert(accepted_tapped[0] && net.tapped.length() == 2, "accepted tap hands off carry")
+
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { client.close_k(k) })
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { server.close_k(k) })
+  net.rt.advance(200)
+}
+
+test "sim: peer_wbtest & mesh_wbtest — credential refusal triggers fresh=true, renew_ms renews, drop_link aborts pending" {
+  let net = SimNet::new()
+  let r1 = net.relay(sim_r1, 10)
+  let (client, server, door, _) = sim_make_pair(net, [sim_r1], [sim_r1])
+  let peer = server.device_id()
+
+  // 1) Credential refusal -> Link::admitted_k fails credential_refused, next link_k asks fresh=true
+  door.refuse_cred = Some("expired")
+  let fresh_flags : Array[Bool] = []
+  let creds = fn(_dev : String, fresh : Bool, k : (effect::Exit[Presented]) -> Unit) -> Unit {
+    fresh_flags.push(fresh)
+    k(effect::Exit::Succeeded(Presented::new(if fresh { "fresh-tok" } else { "old-tok" })))
+  }
+  let adm_code = [""]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.link_k(peer, creds, fn(lex : effect::Exit[Link]) -> Unit {
+      match lex {
+        effect::Exit::Succeeded(l) =>
+        l.admitted_k(fn(aex : effect::Exit[base_codec::Json]) -> Unit {
+          match aex {
+            effect::Exit::Failed(e) => adm_code[0] = code_of(e)
+            _ => ()
+          }
+          k(effect::Exit::Succeeded(()))
+        })
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  net.rt.advance(200)
+  debug_assert(adm_code[0] == "credential_refused", "admitted failed credential_refused")
+  debug_assert(fresh_flags.length() == 1 && !fresh_flags[0], "first link fresh=false")
+
+  // Allow credentials now and call link_k again -> must request fresh=true
+  door.refuse_cred = None
+  let l2_ok = [false]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.link_k(peer, creds, fn(lex : effect::Exit[Link]) -> Unit {
+      match lex {
+        effect::Exit::Succeeded(l) =>
+        l.admitted_k(fn(aex : effect::Exit[base_codec::Json]) -> Unit {
+          l2_ok[0] = effect::exit_is_succeeded(aex)
+          k(effect::Exit::Succeeded(()))
+        })
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  net.rt.advance(200)
+  debug_assert(l2_ok[0] && fresh_flags.length() == 2 && fresh_flags[1], "second link requested fresh=true")
+
+  // 2) Automatic renewal at renew_ms
+  let creds_before = fresh_flags.length()
+  net.rt.advance(renew_ms + 500)
+  debug_assert(fresh_flags.length() > creds_before, "renew_ms refreshed credential")
+
+  // 3) drop_link aborts pending opening when relay is down
+  client.drop_link(peer)
+  net.rt.advance(100)
+  r1.down = true
+  let drop_code = [""]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.link_k(peer, creds, fn(lex : effect::Exit[Link]) -> Unit {
+      match lex {
+        effect::Exit::Failed(e) => drop_code[0] = code_of(e)
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  net.rt.advance(100)
+  client.drop_link(peer)
+  net.rt.advance(100)
+  debug_assert(drop_code[0] == "mesh", "pending opening failed closed on drop_link")
+
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { client.close_k(k) })
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { server.close_k(k) })
+  net.rt.advance(200)
+}
+
+test "sim: ways_wbtest & wake_wbtest & bind_wbtest — set_ways off failover, standby/hedge_after/outran, wake hedge, entries-only retune" {
+  let net = SimNet::new()
+  let r1 = net.relay(sim_r1, 40)
+  let _ = net.relay(sim_r2, 20)
+  let (client, server, _, _) = sim_make_pair(net, [sim_r1, sim_r2], [sim_r1, sim_r2])
+  let peer = server.device_id()
+
+  // Turn off direct and r1 -> forces dial on pinned r2 endpoint
+  let link_box : Array[Option[Link]] = [None]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.link_k(
+      peer,
+      sim_creds("w2"),
+      fn(ex : effect::Exit[Link]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(l) => link_box[0] = Some(l)
+          _ => ()
+        }
+        k(effect::Exit::Succeeded(()))
+      },
+      off=Some(["direct", sim_r1]),
+    )
+  })
+  net.rt.advance(200)
+  let l_r2 = match link_box[0] {
+    Some(l) => l
+    None => {
+      debug_assert(false, "expected r2 link")
+      return
+    }
+  }
+  debug_assert(opt_str_is(l_r2.via(), sim_r2), "dialled via r2 when direct and r1 off")
+
+  // Turning off r2 too with no ways left -> next link fails all_off
+  client.set_ways(peer, off=Some(["direct", sim_r1, sim_r2]))
+  net.rt.advance(100)
+  let all_off_err = [""]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.link_k(peer, sim_creds("w3"), fn(ex : effect::Exit[Link]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => all_off_err[0] = text_of(e)
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  net.rt.advance(100)
+  debug_assert(all_off_err[0] == say("all_off"), "all ways off fails with all_off")
+
+  // Re-enable r1 & r2, test entries-only retune preserves live link, and hedge_after/outran
+  client.set_ways(peer, off=Some([]))
+  let l_main : Array[Option[Link]] = [None]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.link_k(peer, sim_creds("w4"), fn(ex : effect::Exit[Link]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(l) => l_main[0] = Some(l)
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  net.rt.advance(200)
+  let lm = match l_main[0] {
+    Some(l) => l
+    None => {
+      debug_assert(false, "expected main link")
+      return
+    }
+  }
+  client.retune([sim_r1, sim_r2], entries=[RelayEntry::new("https://e1.sim/", sim_r1)])
+  net.rt.advance(100)
+  match client.current(peer) {
+    Some(cur) => debug_assert(cur.uid == lm.uid, "entries-only retune keeps live link")
+    None => debug_assert(false, "link should stay open")
+  }
+  debug_assert(client.hedge_after(lm) == hedge_floor_ms, "hedge_after defaults to floor")
+  client.outran(lm, 2500)
+  debug_assert(client.hedge_after(lm) >= 2500, "outran updates hedge_after")
+
+  // Wake hedges a pending opening when r1 comes back during the dial
+  client.drop_link(peer)
+  net.rt.advance(100)
+  r1.down = true
+  client.retune([sim_r1])
+  net.rt.advance(100)
+  let hedged_ok = [false]
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    client.link_k(peer, sim_creds("w5"), fn(ex : effect::Exit[Link]) -> Unit {
+      hedged_ok[0] = effect::exit_is_succeeded(ex)
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  net.rt.advance(500)
+  r1.down = false
+  client.wake(retry=true)
+  net.rt.advance(300)
+  debug_assert(hedged_ok[0], "wake hedged dial succeeded immediately")
+
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { client.close_k(k) })
+  let _ = net.rt.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { server.close_k(k) })
+  net.rt.advance(200)
+}

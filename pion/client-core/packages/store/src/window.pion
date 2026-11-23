@@ -1,0 +1,176 @@
+// Initial chat window sizing (`entry_min_rows`, `first_shown_window`), ported from
+// `libs/client-core/src/store/window.mbt` and `client/core-ts/src/station/topics.ts`.
+
+import "base_codec"
+
+/// Fewest shown messages opened at the end of a chat regardless of length (topics.ts `FIRST_SHOWN_FEWEST`).
+pub fn first_shown_fewest() -> Int { 6 }
+
+fn is_station_author(author_kind : String) -> Bool {
+  author_kind == "station" || author_kind == "ember" || author_kind == "stillfail"
+}
+
+pub struct Entry {
+  pub n : Int
+  pub kind : String
+  pub author_kind : String
+  pub author : String
+  pub text : String
+  pub notice : Option[String]
+  pub files : Int
+  pub letter : Bool
+}
+
+fn json_str_field(j : base_codec::Json, k : String) -> String {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+}
+
+pub fn Entry::of_json(n : Int, json : base_codec::Json) -> Entry {
+  let notice = match base_codec::json_get(json, "notice") {
+    Some(base_codec::Json::Obj(_)) =>
+    match base_codec::json_get(json, "notice") {
+      Some(no) =>
+      match base_codec::json_get(no, "words") {
+        Some(base_codec::Json::Str(w)) => Some(w)
+        _ => Some("")
+      }
+      None => None
+    }
+    _ => None
+  }
+  let files = match base_codec::json_get(json, "attachments") {
+    Some(base_codec::Json::Arr(a)) => a.length()
+    _ => 0
+  }
+  let letter = match base_codec::json_get(json, "letter") {
+    Some(base_codec::Json::Obj(_)) => true
+    _ => false
+  }
+  Entry::{
+    n: n,
+    kind: json_str_field(json, "kind"),
+    author_kind: json_str_field(json, "authorKind"),
+    author: json_str_field(json, "author"),
+    text: json_str_field(json, "text"),
+    notice: notice,
+    files: files,
+    letter: letter,
+  }
+}
+
+pub fn Entry::shown(self : Entry) -> Bool {
+  self.kind == "message" && !self.letter
+}
+
+pub fn Entry::md_words(self : Entry) -> Option[String] {
+  match self.notice {
+    Some(w) => Some(w)
+    None => if self.author_kind == "person" { None } else { Some(self.text) }
+  }
+}
+
+fn is_js_space(c : Int) -> Bool {
+  c == 0x20 ||
+  (c >= 0x09 && c <= 0x0D) ||
+  c == 0xA0 ||
+  c == 0x1680 ||
+  (c >= 0x2000 && c <= 0x200A) ||
+  c == 0x2028 ||
+  c == 0x2029 ||
+  c == 0x202F ||
+  c == 0x205F ||
+  c == 0x3000 ||
+  c == 0xFEFF
+}
+
+fn trimmed_u16_len(units : Array[Int], from : Int, to : Int) -> Int {
+  let mut a = from
+  let mut b = to
+  while a < b && is_js_space(units[a]) {
+    a += 1
+  }
+  while b > a && is_js_space(units[b - 1]) {
+    b -= 1
+  }
+  b - a
+}
+
+/// Minimum visual rows a message occupies (topics.ts `entryMinRows`).
+pub fn entry_min_rows(e : Entry) -> Int {
+  if e.notice.is_some() || is_station_author(e.author_kind) {
+    return 1
+  }
+  let units = utf16_code_units(e.text)
+  let n = units.length()
+  let mut lines = 0
+  let mut start = 0
+  for i in 0..<(n + 1) {
+    if i == n || units[i] == 10 {
+      let length = trimmed_u16_len(units, start, i)
+      if length > 0 {
+        lines += 1 + length / 100
+      }
+      start = i + 1
+    }
+  }
+  let extra = (if lines > 1 { lines - 1 } else { 0 }) * 55 / 100
+  let files = if e.files > 0 { 2 } else { 0 }
+  let rows = 1 + extra + files
+  if rows < 6 { rows } else { 6 }
+}
+
+/// Slice `[from, to)` of `entries` a chat opens on (topics.ts `#firstShown`).
+pub fn first_shown_window(
+  entries : Array[Entry],
+  rows : Int,
+  at : Option[Int] = None,
+  page : Option[Int] = None,
+) -> (Int, Int) {
+  let pg = match page {
+    Some(p) => p
+    None => rows
+  }
+  match at {
+    Some(target) => {
+      let mut from = entries.length()
+      let mut to = 0
+      for i in 0..<entries.length() {
+        let e = entries[i]
+        if e.n >= target - pg && e.n <= target + pg - 1 {
+          if i < from {
+            from = i
+          }
+          to = i + 1
+        }
+      }
+      if from >= to {
+        (0, 0)
+      } else {
+        (from, to)
+      }
+    }
+    None => {
+      let fewest = if first_shown_fewest() < rows { first_shown_fewest() } else { rows }
+      let mut shown = 0
+      let mut weight = 0
+      let mut first = entries.length()
+      let mut i = entries.length() - 1
+      while i >= 0 {
+        first = i
+        let e = entries[i]
+        if e.shown() {
+          shown += 1
+          weight += entry_min_rows(e)
+          if shown >= rows || (shown >= fewest && weight >= rows) {
+            break
+          }
+        }
+        i -= 1
+      }
+      (first, entries.length())
+    }
+  }
+}

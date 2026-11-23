@@ -1,0 +1,76 @@
+///| Fork choice order (`rules/src/fork/fork.mbt`).
+
+pub enum Step {
+  Weight
+  Removal
+  Tie
+  Hash
+}
+
+pub fn ahead(
+  wa : Int,
+  ra : Bool,
+  ta : Int,
+  ha : Int,
+  wb : Int,
+  rb : Bool,
+  tb : Int,
+  hb : Int,
+) -> Bool {
+  if wa > wb {
+    true
+  } else if wa < wb {
+    false
+  } else if ra && !rb {
+    true
+  } else if rb && !ra {
+    false
+  } else if ta < tb {
+    true
+  } else if ta > tb {
+    false
+  } else {
+    ha < hb
+  }
+}
+
+pub fn step(
+  wa : Int,
+  ra : Bool,
+  ta : Int,
+  ha : Int,
+  wb : Int,
+  rb : Bool,
+  tb : Int,
+  hb : Int,
+) -> Option[Step] {
+  if !ahead(wa, ra, ta, ha, wb, rb, tb, hb) {
+    None
+  } else if wa != wb {
+    Some(Step::Weight)
+  } else if ra != rb {
+    Some(Step::Removal)
+  } else if ta != tb {
+    Some(Step::Tie)
+  } else {
+    Some(Step::Hash)
+  }
+}
+
+pub fn best(
+  ws : Array[Int],
+  rs : Array[Bool],
+  ts : Array[Int],
+  hs : Array[Int],
+) -> Int {
+  let mut b = 0
+  let n = ws.length()
+  let mut i = 1
+  while i < n {
+    if ahead(ws[i], rs[i], ts[i], hs[i], ws[b], rs[b], ts[b], hs[b]) {
+      b = i
+    }
+    i = i + 1
+  }
+  b
+}

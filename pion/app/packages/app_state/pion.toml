@@ -1,0 +1,17 @@
+[package]
+name = "app_state"
+version = "0.1.0"
+
+[dependencies]
+base_codec = { workspace = true }
+effect = { workspace = true }
+form = { workspace = true }
+lock = { workspace = true }
+outbox = { workspace = true }
+shell = { workspace = true }
+sql = { workspace = true }
+store = { workspace = true }
+sync = { workspace = true }
+signals = { workspace = true }
+view = { workspace = true }
+ui = { workspace = true }

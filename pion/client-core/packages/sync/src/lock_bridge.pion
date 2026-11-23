@@ -1,0 +1,571 @@
+// Native Pion bridge to `pion/rules` (`lock`, `vault`, `form`, `fork`, `role`) using
+// `mesh` Ed25519 + `hash` SHA-256 directly — zero Wasm or JSON serialization boundary.
+// Signing formats match `shared/lock.ts` and `station/src/vault/crypto.ts` byte-for-byte.
+
+import "base_codec"
+import "form"
+import "crypto"
+import "lock"
+import "mesh"
+import "vault"
+
+fn is_lower_hex_64(s : String) -> Bool {
+  if s.length() != 64 {
+    return false
+  }
+  for i in 0..<64 {
+    let c = s.code_unit_at(i)
+    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) {
+      return false
+    }
+  }
+  true
+}
+
+fn concat_bytes(a : Bytes, b : Bytes) -> Bytes {
+  let out = Bytes::new(a.length() + b.length())
+  for i in 0..<a.length() {
+    out[i] = a[i]
+  }
+  for i in 0..<b.length() {
+    out[a.length() + i] = b[i]
+  }
+  out
+}
+
+fn tagged_bytes(tag : String, payload : Bytes) -> Bytes {
+  let tb = tag.to_bytes()
+  let out = Bytes::new(tb.length() + 1 + payload.length())
+  for i in 0..<tb.length() {
+    out[i] = tb[i]
+  }
+  out[tb.length()] = 0 as Byte
+  for i in 0..<payload.length() {
+    out[tb.length() + 1 + i] = payload[i]
+  }
+  out
+}
+
+fn lock_signed_bytes(entry_hash : String) -> Option[Bytes] {
+  if !is_lower_hex_64(entry_hash) {
+    return None
+  }
+  match base_codec::hex_decode(entry_hash) {
+    Some(digest) => Some(tagged_bytes("stillfail-lock/1 sig", digest))
+    None => None
+  }
+}
+
+fn endpoint_signed_bytes(ws : String, endpoint : String) -> Bytes {
+  let prefix = "stillfail-lock-endpoint/1".to_bytes()
+  let ws_b = ws.to_bytes()
+  let ep_b = endpoint.to_bytes()
+  let out = Bytes::new(prefix.length() + 1 + ws_b.length() + 1 + ep_b.length())
+  let mut at = 0
+  for i in 0..<prefix.length() {
+    out[at] = prefix[i]
+    at += 1
+  }
+  out[at] = 0 as Byte
+  at += 1
+  for i in 0..<ws_b.length() {
+    out[at] = ws_b[i]
+    at += 1
+  }
+  out[at] = 0 as Byte
+  at += 1
+  for i in 0..<ep_b.length() {
+    out[at] = ep_b[i]
+    at += 1
+  }
+  out
+}
+
+/// Validate a lock/vault signing key id (`ed25519:<64hex>` or `p256:<base64url uncompressed point>`).
+pub fn valid_key_id(id : String) -> Bool {
+  if id.length() > 200 {
+    return false
+  }
+  if id.starts_with("ed25519:") {
+    return is_lower_hex_64(id.slice(8, id.length()))
+  }
+  if id.starts_with("p256:") {
+    match base_codec::base64url_decode(id.slice(5, id.length())) {
+      Some(pt) => pt.length() == 65 && pt[0].to_int() == 4
+      None => false
+    }
+  } else {
+    false
+  }
+}
+
+fn verify_ed25519_key_id(key_id : String, message : Bytes, sig_hex : String) -> Bool {
+  if !key_id.starts_with("ed25519:") {
+    return false
+  }
+  let pk_hex = key_id.slice(8, key_id.length())
+  if !is_lower_hex_64(pk_hex) {
+    return false
+  }
+  let pk = match base_codec::hex_decode(pk_hex) {
+    Some(b) => b
+    None => return false
+  }
+  let sig = match base_codec::hex_decode(sig_hex) {
+    Some(b) => b
+    None => return false
+  }
+  mesh::ed25519_verify(pk, message, sig)
+}
+
+fn form_str_field(j : form::Json, key : String) -> Option[String] {
+  match form::json_field(Some(j), key) {
+    Some(form::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn bytes_to_utf8_str_lb(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+fn bytes_eq_prefix(a : Bytes, b : Bytes, n : Int) -> Bool {
+  if a.length() < n || b.length() < n {
+    return false
+  }
+  for i in 0..<n {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn decode_p256_key_id(key_id : String) -> Option[Bytes] {
+  if !key_id.starts_with("p256:") {
+    return None
+  }
+  match base_codec::base64url_decode(key_id.slice(5, key_id.length())) {
+    Some(pt) => if pt.length() == 65 && pt[0].to_int() == 4 { Some(pt) } else { None }
+    None => None
+  }
+}
+
+fn str_in_array(xs : Array[String], target : String) -> Bool {
+  for i in 0..<xs.length() {
+    if xs[i] == target {
+      return true
+    }
+  }
+  false
+}
+
+/// Verify a WebAuthn / Passkey P-256 assertion matching `shared/lock.ts sigValid`.
+fn verify_webauthn_p256(
+  sig : form::Json,
+  entry_hash : String,
+  origins : Array[String],
+  rp_id : String,
+) -> Bool {
+  let key = match form_str_field(sig, "key") {
+    Some(k) => k
+    None => return false
+  }
+  let pk = match decode_p256_key_id(key) {
+    Some(p) => p
+    None => return false
+  }
+  if !is_lower_hex_64(entry_hash) {
+    return false
+  }
+  let hash_bytes = match base_codec::hex_decode(entry_hash) {
+    Some(b) => b
+    None => return false
+  }
+  let client_data_b64 = match form_str_field(sig, "client_data") {
+    Some(s) => s
+    None => return false
+  }
+  let auth_data_b64 = match form_str_field(sig, "authenticator_data") {
+    Some(s) => s
+    None => return false
+  }
+  let sig_b64 = match form_str_field(sig, "sig") {
+    Some(s) => s
+    None => return false
+  }
+  let client_bytes = match base_codec::base64url_decode(client_data_b64) {
+    Some(b) => b
+    None => return false
+  }
+  let client_json = match base_codec::json_parse(bytes_to_utf8_str_lb(client_bytes)) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return false
+  }
+  match base_codec::json_get(client_json, "type") {
+    Some(base_codec::Json::Str(t)) => if t != "webauthn.get" { return false }
+    _ => return false
+  }
+  let expected_challenge = base_codec::base64url_encode(hash_bytes)
+  match base_codec::json_get(client_json, "challenge") {
+    Some(base_codec::Json::Str(ch)) => if ch != expected_challenge { return false }
+    _ => return false
+  }
+  match base_codec::json_get(client_json, "origin") {
+    Some(base_codec::Json::Str(orig)) => if !str_in_array(origins, orig) { return false }
+    _ => return false
+  }
+  let auth_bytes = match base_codec::base64url_decode(auth_data_b64) {
+    Some(b) => b
+    None => return false
+  }
+  // rpIdHash (32 bytes) + flags (1 byte, UP bit 0x01) + signCount (4 bytes) = 37 bytes minimum.
+  if auth_bytes.length() < 37 {
+    return false
+  }
+  let rp_hash = crypto::sha256(rp_id.to_bytes())
+  if !bytes_eq_prefix(auth_bytes, rp_hash, 32) {
+    return false
+  }
+  if (auth_bytes[32].to_int() & 1) == 0 {
+    return false
+  }
+  let der_sig = match base_codec::base64url_decode(sig_b64) {
+    Some(b) => b
+    None => return false
+  }
+  let signed = concat_bytes(auth_bytes, crypto::sha256(client_bytes))
+  match crypto::p256_verify_der(pk, signed, der_sig) {
+    Ok(_) => true
+    Err(_) => false
+  }
+}
+
+/// Native `lock::Crypto` backed directly by `crypto::sha256_hex`, `mesh::ed25519_verify`,
+/// and `crypto::p256_verify_der` / `crypto::p256_verify_es256`.
+pub fn native_lock_crypto() -> lock::Crypto {
+  lock::Crypto::{
+    sha256_hex: fn(text : String) -> String { crypto::sha256_hex(text.to_bytes()) },
+    sig_valid: fn(sig : form::Json, entry_hash : String, origins : Array[String], rp_id : String, passkey : Bool) -> Bool {
+      let alg = match form_str_field(sig, "alg") {
+        Some(a) => a
+        None => return false
+      }
+      if alg == "webauthn" {
+        if !passkey {
+          return false
+        }
+        return verify_webauthn_p256(sig, entry_hash, origins, rp_id)
+      }
+      if passkey {
+        return false
+      }
+      let key = match form_str_field(sig, "key") {
+        Some(k) => k
+        None => return false
+      }
+      let sig_str = match form_str_field(sig, "sig") {
+        Some(s) => s
+        None => return false
+      }
+      if alg == "Ed25519" {
+        match lock_signed_bytes(entry_hash) {
+          Some(msg) => verify_ed25519_key_id(key, msg, sig_str)
+          None => false
+        }
+      } else if alg == "ES256" {
+        let pk = match decode_p256_key_id(key) {
+          Some(p) => p
+          None => return false
+        }
+        let raw_sig = match base_codec::base64url_decode(sig_str) {
+          Some(b) => b
+          None => return false
+        }
+        match lock_signed_bytes(entry_hash) {
+          Some(msg) =>
+          match crypto::p256_verify_es256(pk, msg, raw_sig) {
+            Ok(_) => true
+            Err(_) => false
+          }
+          None => false
+        }
+      } else {
+        false
+      }
+    },
+    valid_key_id: valid_key_id,
+    endpoint_proof: fn(ws : String, base : String, endpoint : String, proof : String) -> Bool {
+      if !is_lower_hex_64(base) {
+        return false
+      }
+      verify_ed25519_key_id("ed25519:" + base, endpoint_signed_bytes(ws, endpoint), proof)
+    },
+    tagged_sig_valid: fn(key : String, sig_hex : String, tag : String, digest_hex : String) -> Bool {
+      if !is_lower_hex_64(digest_hex) {
+        return false
+      }
+      match base_codec::hex_decode(digest_hex) {
+        Some(digest) => verify_ed25519_key_id(key, tagged_bytes(tag, digest), sig_hex)
+        None => false
+      }
+    },
+  }
+}
+
+/// Native `vault::Crypto` backed directly by `crypto::sha256` and `mesh::ed25519_verify`.
+pub fn native_vault_crypto() -> vault::Crypto {
+  vault::Crypto::{
+    record_sig_valid: fn(sig : form::Json, tag : String, canonical_text : String) -> Bool {
+      let key = match form_str_field(sig, "key") {
+        Some(k) => k
+        None => return false
+      }
+      let alg = match form_str_field(sig, "alg") {
+        Some(a) => a
+        None => return false
+      }
+      let sig_hex = match form_str_field(sig, "sig") {
+        Some(s) => s
+        None => return false
+      }
+      if alg != "Ed25519" {
+        return false
+      }
+      let digest = crypto::sha256(canonical_text.to_bytes())
+      verify_ed25519_key_id(key, tagged_bytes(tag, digest), sig_hex)
+    },
+  }
+}
+
+/// Convert `base_codec::Json` AST directly into `form::Json` AST with zero string serialization.
+pub fn codec_to_form(j : base_codec::Json) -> form::Json {
+  match j {
+    base_codec::Json::Null => form::Json::Null
+    base_codec::Json::Bool(b) => form::Json::Bool(b)
+    base_codec::Json::Num(n, _) => form::Json::Num(n)
+    base_codec::Json::Str(s) => form::Json::Str(s)
+    base_codec::Json::Arr(xs) => {
+      let out : Array[form::Json] = []
+      for i in 0..<xs.length() {
+        out.push(codec_to_form(xs[i]))
+      }
+      form::Json::Arr(out)
+    }
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, form::Json)] = []
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        out.push((k, codec_to_form(v)))
+      }
+      form::Json::Obj(out)
+    }
+  }
+}
+
+/// Compute the Ed25519 key id (`ed25519:<64hex>`) for a 32-byte seed.
+pub fn ed25519_key_id(seed : Bytes) -> String {
+  let (pk, _) = mesh::ed25519_sign(seed, Bytes::new(0))
+  "ed25519:" + base_codec::hex_encode(pk)
+}
+
+/// Sign a lock entry (without `sig`) using an Ed25519 32-byte seed and attach `sig`.
+pub fn sign_lock_entry(seed : Bytes, entry : form::Json) -> Result[form::Json, String] {
+  let c = native_lock_crypto()
+  let h = match lock::entry_hash(entry, c) {
+    Ok(x) => x
+    Err(e) => return Err(lock::error_msg(e))
+  }
+  let msg = match lock_signed_bytes(h) {
+    Some(m) => m
+    None => return Err("invalid entry hash")
+  }
+  let (pk, sig) = mesh::ed25519_sign(seed, msg)
+  let key_id = "ed25519:" + base_codec::hex_encode(pk)
+  let sig_obj = form::Json::Obj([
+    ("key", form::Json::Str(key_id)),
+    ("alg", form::Json::Str("Ed25519")),
+    ("sig", form::Json::Str(base_codec::hex_encode(sig))),
+  ])
+  match entry {
+    form::Json::Obj(fields) => {
+      let out : Array[(String, form::Json)] = []
+      for i in 0..<fields.length() {
+        if fields[i].0 != "sig" {
+          out.push(fields[i])
+        }
+      }
+      out.push(("sig", sig_obj))
+      Ok(form::Json::Obj(out))
+    }
+    _ => Err("lock entry must be an object")
+  }
+}
+
+/// Sign a vault record (box cert, vault, or item, without `sig`) under `tag` with an Ed25519 seed.
+pub fn sign_vault_record(seed : Bytes, tag : String, record : form::Json) -> Result[form::Json, String] {
+  let fields = match record {
+    form::Json::Obj(fs) => fs
+    _ => return Err("vault record must be an object")
+  }
+  let clean : Array[(String, form::Json)] = []
+  for i in 0..<fields.length() {
+    if fields[i].0 != "sig" {
+      clean.push(fields[i])
+    }
+  }
+  let canon = match form::canonical(form::Json::Obj(clean)) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let digest = crypto::sha256(canon.to_bytes())
+  let (pk, sig) = mesh::ed25519_sign(seed, tagged_bytes(tag, digest))
+  let key_id = "ed25519:" + base_codec::hex_encode(pk)
+  let sig_obj = form::Json::Obj([
+    ("key", form::Json::Str(key_id)),
+    ("alg", form::Json::Str("Ed25519")),
+    ("sig", form::Json::Str(base_codec::hex_encode(sig))),
+  ])
+  clean.push(("sig", sig_obj))
+  Ok(form::Json::Obj(clean))
+}
+
+pub struct VerifiedWorkspaceLock {
+  pub state : lock::LockState
+  pub chain : lock::Chain
+  pub rejected_count : Int
+  pub beaten_count : Int
+}
+
+/// Verify a workspace lock entry set natively via `lock::lock_chain` + fork choice,
+/// rejecting forged signatures and folding the winning active chain to `lock::LockState`.
+pub fn verify_workspace_lock(
+  entries : Array[form::Json],
+  root_hash : String,
+  votes : lock::Votes = lock::Votes::Roles,
+  now : Option[Double] = None,
+) -> Result[VerifiedWorkspaceLock, String] {
+  let c = native_lock_crypto()
+  let ch = match lock::lock_chain(entries, root_hash, votes, now, c) {
+    Ok(x) => x
+    Err(e) => return Err(lock::error_msg(e))
+  }
+  if ch.entries.length() == 0 {
+    return Err("empty lock chain")
+  }
+  let mut st = match lock::genesis(ch.entries[0], c) {
+    Ok(g) => g
+    Err(e) => return Err(lock::error_msg(e))
+  }
+  for i in 1..<ch.entries.length() {
+    st = match lock::apply(st, ch.entries[i], now, c) {
+      Ok(next) => next
+      Err(e) => return Err(lock::error_msg(e))
+    }
+  }
+  let mut rejected = 0
+  let mut beaten = 0
+  for i in 0..<ch.off.length() {
+    let (_, why) = ch.off[i]
+    match why {
+      lock::Off::NotValid(_) => {
+        rejected += 1
+      }
+      lock::Off::Beaten(_, _) => {
+        beaten += 1
+      }
+      lock::Off::Below(_) => {
+        beaten += 1
+      }
+      _ => ()
+    }
+  }
+  Ok(VerifiedWorkspaceLock::{
+    state: st,
+    chain: ch,
+    rejected_count: rejected,
+    beaten_count: beaten,
+  })
+}
+
+pub struct VerifiedPersonLock {
+  pub person : lock::Person
+  pub chain : lock::Chain
+  pub rejected_count : Int
+}
+
+/// Verify a person's own lock entry set natively via `lock::person_chain` + `lock::fold_person`.
+pub fn verify_person_lock(
+  entries : Array[form::Json],
+  sub : String,
+  root_hash : String,
+) -> Result[VerifiedPersonLock, String] {
+  let c = native_lock_crypto()
+  let ch = match lock::person_chain(entries, root_hash, c) {
+    Ok(x) => x
+    Err(e) => return Err(lock::error_msg(e))
+  }
+  let person = match lock::fold_person(ch.entries, sub, c) {
+    Ok(p) => p
+    Err(e) => return Err(lock::error_msg(e))
+  }
+  let mut rejected = 0
+  for i in 0..<ch.off.length() {
+    let (_, why) = ch.off[i]
+    match why {
+      lock::Off::NotValid(_) => {
+        rejected += 1
+      }
+      _ => ()
+    }
+  }
+  Ok(VerifiedPersonLock::{
+    person: person,
+    chain: ch,
+    rejected_count: rejected,
+  })
+}
+
+/// Project a native `lock::LockState` into a native `vault::LockView` (zero JSON).
+pub fn lock_view_of(state : lock::LockState) -> vault::LockView {
+  let members : form::OrderedMap[Bool] = form::OrderedMap::new()
+  let roles : form::OrderedMap[String] = form::OrderedMap::new()
+  let ms = state.members.entries()
+  for i in 0..<ms.length() {
+    let (sub, m) = ms[i]
+    members.set(sub, true)
+    roles.set(sub, m.role)
+  }
+  let devices : form::OrderedMap[vault::Device] = form::OrderedMap::new()
+  let ds = state.devices.entries()
+  for i in 0..<ds.length() {
+    let (id, d) = ds[i]
+    devices.set(id, vault::Device::{ sub: d.sub, kind: d.kind, sign_key: d.sign_key, own: d.own })
+  }
+  vault::LockView::{
+    ws: state.ws,
+    members: members,
+    roles: roles,
+    devices: devices,
+    sign_keys: state.sign_keys.copy(),
+  }
+}
+
+/// Verify a vault box certificate natively against `lock::LockState`. Returns `None` if valid.
+pub fn verify_vault_cert(state : lock::LockState, cert : form::Json, ever : Bool = false) -> Option[String] {
+  vault::cert_ok(lock_view_of(state), Some(cert), ever, native_vault_crypto())
+}
+
+/// Verify a vault record natively against `lock::LockState`. Returns `None` if valid.
+pub fn verify_vault_record(
+  state : lock::LockState,
+  prev : Option[form::Json],
+  next : form::Json,
+  copy : Bool = false,
+) -> Option[String] {
+  vault::vault_ok(lock_view_of(state), prev, next, copy, native_vault_crypto())
+}

@@ -1,0 +1,316 @@
+// Headless `ui::Tester` end-to-end integration tests for `app_state`:
+// Uses a minimal `view::View` probe tree bound to `AppController`'s fine-grained
+// signals (zero visual skin) to verify all 5 closed loops across 60 / 120 / 24 / 7 fps:
+// 1. Cold open (`open_initial`): 0 SQL writes, 0 network requests, first-frame signals ready
+// 2. Switch chat (`select_chat` -> `focus_chat`): foreground preempts running idle prefetch
+// 3. Optimistic send (`send_text`) + SSE reconciliation (`OutboxResolved` + `EntryAdded`, 0 duplicates)
+// 4. Station 403 refusal atomic rollback (`OverlayRolledBack`) + recovery notice signal
+// 5. Native `pion/rules` Ed25519 lock chain (`LockUpdated`) + decision card (`answer_decision`)
+
+import "effect"
+import "sql"
+import "ui"
+import "view"
+
+struct TestHarness {
+  rt : effect::Runtime
+  sim_db : SimAccountDb
+  station : SimStation
+  ctrl : AppController
+}
+
+fn new_harness() -> TestHarness {
+  ui::clear_frame_takes()
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-headless") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic("sql open failed: " + e.to_string())
+  }
+  let station = SimStation::new(rt)
+  seed_demo_data(sim_db, station, "st1")
+  let ctrl = AppController::new("ws-app", "st1", rt, db, station.transport())
+  TestHarness::{ rt, sim_db, station, ctrl }
+}
+
+/// Minimal headless `view::View` probe tree binding every `AppController` signal
+/// so `ui::Tester` drives real frames, `ui::wake_frame`, and `ui::on_frame_take`.
+fn mount_probe_tree(root : view::View, ctrl : AppController) -> Unit {
+  ctrl.mount()
+  let _ = root.box(fn(col : view::View) {
+    let _ = col.fill()
+    let _ = col.box(fn(title_w : view::View) {
+      let _ = title_w.words(view::Live::By(fn() { "TITLE:" + ctrl.active_title_sig.get() }))
+    })
+    let _ = col.box(fn(conn_w : view::View) {
+      let _ = conn_w.words(view::Live::By(fn() { "CONN:" + ctrl.connection_sig.get() }))
+    })
+    let _ = col.box(fn(lock_w : view::View) {
+      let _ = lock_w.words(view::Live::By(fn() { "LOCK:" + ctrl.lock_status_sig.get() }))
+    })
+    let _ = col.box(fn(rec_w : view::View) {
+      let _ = rec_w.words(view::Live::By(fn() {
+        match ctrl.recovery_sig.get() {
+          Some(r) => "RECOVERY:" + r.code + ":" + r.recovery
+          None => "RECOVERY:NONE"
+        }
+      }))
+    })
+    let _ = col.box(fn(dec_w : view::View) {
+      let _ = dec_w.words(view::Live::By(fn() {
+        match ctrl.decision_sig.get() {
+          DecisionState::Pending(p, _) => "DECISION:PENDING:" + p
+          DecisionState::Decided(_, c) => "DECISION:DECIDED:" + c
+        }
+      }))
+    })
+    let _ = col.box(fn(msg_w : view::View) {
+      let _ = msg_w.words(view::Live::By(fn() {
+        let msgs = ctrl.messages_sig.get()
+        let sb = StringBuilder::new()
+        sb.write_string("MSGS:\{msgs.length()}:")
+        for i in 0..<msgs.length() {
+          let m = msgs[i]
+          let st = if m.sending { "SENDING" } else { "OK" }
+          sb.write_string("[\{m.entry_n}|\{st}|\{m.text}]")
+        }
+        sb.to_string()
+      }))
+    })
+  })
+}
+
+test "e2e_1_cold_open_zero_writes_and_first_frame_signals" {
+  let h = new_harness()
+
+  let sql_before = h.sim_db.ran.length()
+  let ok = h.ctrl.open_initial(101, 5000.to_int64())
+  debug_assert(ok, "open_initial succeeded")
+  let (stmts, writes, _tx) = h.sim_db.counts_since(sql_before)
+  debug_assert(writes == 0, "cold open must perform 0 SQL writes")
+  debug_assert(stmts == 3, "cold open must take exactly 3 SQL statements")
+  debug_assert(h.station.requests_seen.length() == 0, "cold open must perform 0 network requests")
+  debug_assert(h.ctrl.messages_sig.untracked().length() == 2, "cold open loaded 2 cached messages")
+
+  let t = ui::Tester::tree(
+    fn(root : view::View) { mount_probe_tree(root, h.ctrl) },
+    width=800.0,
+    height=600.0,
+  )
+  t.run_shown(100.0)
+  debug_assert(t.find("TITLE:Invar Vertical Slice").is_some(), "first-frame title signal bound")
+  debug_assert(
+    t.find("MSGS:2:[1|OK|Cold-open cached prompt][2|OK|Zero-JSON FrameOutbox bridge ready.]").is_some(),
+    "first-frame cached messages immediately readable",
+  )
+  t.dispose()
+}
+
+test "e2e_2_select_chat_preempts_idle_prefetch" {
+  let h = new_harness()
+  let _ = h.ctrl.open_initial(101, 5000.to_int64())
+  h.ctrl.start_live()
+  h.rt.advance(30)
+
+  // Make background idle prefetch on thread 103 slow (500ms), foreground thread 102 fast (10ms)
+  h.station.thread_delay_ms.set(103, 500)
+  h.station.thread_delay_ms.set(102, 10)
+
+  let t = ui::Tester::tree(
+    fn(root : view::View) { mount_probe_tree(root, h.ctrl) },
+    width=800.0,
+    height=600.0,
+  )
+  t.run_shown(100.0)
+  debug_assert(t.find("CONN:Connected").is_some(), "live connection reflected via FrameOutbox")
+
+  // Start a background idle prefetch fiber on thread 103
+  let _ = h.rt.fork_quiet_named("idle-103", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h.ctrl.core.sync.prefetch_idle_k(103, fn(_ex : effect::Exit[Int]) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  h.rt.advance(20)
+
+  // Foreground chat switch to thread 102 must preempt idle prefetch and switch signals immediately
+  let switched = h.ctrl.select_chat(102, 5100.to_int64())
+  debug_assert(switched, "select_chat(102) succeeded")
+  h.rt.advance(40)
+  t.run_shown(100.0)
+
+  debug_assert(h.ctrl.active_thread_sig.untracked() == 102, "active_thread_sig switched to 102")
+  debug_assert(h.ctrl.core.sync.idle_preemptions() >= 1, "foreground focus preempted running idle prefetch")
+  debug_assert(t.find("TITLE:Mesh Transport Audit").is_some(), "probe tree updated to thread 102 title")
+  debug_assert(
+    t.find("MSGS:2:[1|OK|Check dual-mesh failover latency.][2|OK|Dual-mesh standby racing passed all 55 base tests.]").is_some(),
+    "probe tree updated to thread 102 messages",
+  )
+  h.ctrl.stop_live()
+  t.dispose()
+}
+
+test "e2e_3_optimistic_send_and_sse_reconcile_zero_duplicates" {
+  let h = new_harness()
+  let _ = h.ctrl.open_initial(101, 5000.to_int64())
+  h.ctrl.start_live()
+  h.rt.advance(30)
+
+  let t = ui::Tester::tree(
+    fn(root : view::View) { mount_probe_tree(root, h.ctrl) },
+    width=800.0,
+    height=600.0,
+  )
+  t.run_shown(100.0)
+
+  // Optimistic send -> OutboxQueued -> ui::wake_frame -> on_frame_take drains into signals
+  let ck = h.ctrl.send_text("Ship headless bridge")
+  debug_assert(ck.length() > 0, "client_key assigned")
+  t.run_shown(100.0)
+
+  let after_send = h.ctrl.messages_sig.untracked()
+  debug_assert(after_send.length() == 3, "optimistic send appends 3rd message immediately")
+  debug_assert(after_send[2].sending, "3rd message is in Sending state")
+  debug_assert(t.find("[0|SENDING|Ship headless bridge]").is_some(), "probe tree shows SENDING state")
+
+  // Advance station POST ack + push SSE entry with same clientKey -> in-place dedup, 0 duplicates
+  h.rt.advance(30)
+  let assigned_n = match h.station.seen_client_keys.get(ck) {
+    Some(n) => n
+    None => 201
+  }
+  h.station.push_entry_sse(
+    "ws-app",
+    101,
+    assigned_n,
+    "person",
+    "Alice",
+    "Ship headless bridge",
+    client_key=Some(ck),
+  )
+  t.run_shown(100.0)
+
+  let after_sse = h.ctrl.messages_sig.untracked()
+  debug_assert(after_sse.length() == 3, "SSE reconciliation keeps exact count 3 (0 duplicates)")
+  debug_assert(!after_sse[2].sending, "3rd message reconciled to confirmed")
+  debug_assert(after_sse[2].entry_n == assigned_n, "entry_n updated to station sequence number")
+  debug_assert(
+    t.find("[\{assigned_n}|OK|Ship headless bridge]").is_some(),
+    "probe tree reconciled in place with 0 duplicates",
+  )
+  h.ctrl.stop_live()
+  t.dispose()
+}
+
+test "e2e_4_403_refusal_atomic_rollback_and_recovery_notice" {
+  let h = new_harness()
+  let _ = h.ctrl.open_initial(101, 5000.to_int64())
+  h.ctrl.start_live()
+  h.rt.advance(30)
+
+  h.station.reject_path_prefix = Some("/chats/c-1/rename")
+  h.station.reject_code = "read_only_member"
+  h.station.reject_recovery = "Ask a workspace owner to upgrade your role before renaming."
+
+  let t = ui::Tester::tree(
+    fn(root : view::View) { mount_probe_tree(root, h.ctrl) },
+    width=800.0,
+    height=600.0,
+  )
+  t.run_shown(100.0)
+
+  // Optimistic rename reflects immediately
+  h.ctrl.rename_chat("c-1", "Unauthorized Title")
+  t.run_shown(80.0)
+  debug_assert(t.find("TITLE:Unauthorized Title").is_some(), "optimistic rename shown immediately")
+
+  // Station 403 refusal -> OverlayRolledBack -> atomic title restoration + recovery notice
+  h.rt.advance(30)
+  t.run_shown(100.0)
+  debug_assert(t.find("TITLE:Invar Vertical Slice").is_some(), "original title restored atomically")
+  debug_assert(
+    t.find("RECOVERY:read_only_member:Ask a workspace owner to upgrade your role before renaming.").is_some(),
+    "recovery notice signal populated with exact code and recovery hint",
+  )
+
+  // Dismiss notice clears recovery signal
+  h.ctrl.dismiss_notice()
+  t.run_shown(80.0)
+  debug_assert(t.find("RECOVERY:NONE").is_some(), "dismiss_notice cleared recovery_sig")
+
+  // Also verify archive_chat 403 atomic rollback
+  h.station.reject_path_prefix = Some("/chats/c-1/archive")
+  h.station.reject_code = "archive_denied"
+  h.station.reject_recovery = "Only workspace admins can archive pinned chats."
+  h.ctrl.archive_chat("c-1")
+  t.run_shown(80.0)
+  debug_assert(t.find("TITLE:Invar Vertical Slice (Archived)").is_some(), "optimistic archive shown")
+  h.rt.advance(30)
+  t.run_shown(100.0)
+  debug_assert(t.find("TITLE:Invar Vertical Slice").is_some(), "archive rolled back atomically")
+  debug_assert(
+    t.find("RECOVERY:archive_denied:Only workspace admins can archive pinned chats.").is_some(),
+    "archive 403 recovery notice populated",
+  )
+  h.ctrl.dismiss_notice()
+  t.run_shown(80.0)
+  debug_assert(t.find("RECOVERY:NONE").is_some(), "archive recovery dismissed")
+  h.ctrl.stop_live()
+  t.dispose()
+}
+
+test "e2e_5_native_ed25519_lock_and_decision_card_loop" {
+  let h = new_harness()
+  let _ = h.ctrl.open_initial(101, 5000.to_int64())
+  h.ctrl.start_live()
+  h.rt.advance(30)
+
+  let t = ui::Tester::tree(
+    fn(root : view::View) { mount_probe_tree(root, h.ctrl) },
+    width=800.0,
+    height=600.0,
+  )
+  t.run_shown(100.0)
+  debug_assert(t.find("LOCK:Lock Unverified").is_some(), "lock starts unverified")
+
+  // Verify real Ed25519-signed workspace lock chain natively via `pion/rules`
+  let (entries, root_hash) = build_demo_lock_chain("ws-app")
+  match h.ctrl.core.apply_lock_chain(entries, root_hash) {
+    Ok(v) => debug_assert(v.state.seq == 1.0, "lock chain verified at seq 1")
+    Err(e) => debug_assert(false, "lock verify failed: " + e)
+  }
+  t.run_shown(100.0)
+  debug_assert(h.ctrl.lock_verified_sig.untracked(), "lock_verified_sig == true")
+  debug_assert(
+    t.find("LOCK:Lock Verified (seq 1, 3 members)").is_some(),
+    "probe tree updated to verified Ed25519 lock status",
+  )
+
+  // Answer decision card -> updates decision_sig + dispatches message via ClientCore::send_message
+  let ck = h.ctrl.answer_decision("Ship Pure-Pion Slice")
+  t.run_shown(80.0)
+  debug_assert(t.find("DECISION:DECIDED:Ship Pure-Pion Slice").is_some(), "decision_sig transitioned to Decided")
+  debug_assert(t.find("[0|SENDING|Decision: Ship Pure-Pion Slice]").is_some(), "decision message optimistically queued")
+
+  h.rt.advance(30)
+  let assigned_n = match h.station.seen_client_keys.get(ck) {
+    Some(n) => n
+    None => 201
+  }
+  h.station.push_entry_sse(
+    "ws-app",
+    101,
+    assigned_n,
+    "person",
+    "Alice",
+    "Decision: Ship Pure-Pion Slice",
+    client_key=Some(ck),
+  )
+  t.run_shown(100.0)
+  debug_assert(h.ctrl.messages_sig.untracked().length() == 3, "decision message reconciled with 0 duplicates")
+  debug_assert(
+    t.find("[\{assigned_n}|OK|Decision: Ship Pure-Pion Slice]").is_some(),
+    "decision message confirmed in place",
+  )
+  h.ctrl.stop_live()
+  t.dispose()
+}

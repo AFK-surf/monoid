@@ -1,0 +1,112 @@
+///| Canonical JSON encoding and entry text (`rules/src/form/form.mbt`).
+
+let max_safe : Double = 9007199254740991.0
+
+fn write_canonical(sb : StringBuilder, v : Json) -> Result[Unit, String] {
+  match v {
+    Json::Null => {
+      sb.write_string("null")
+      Ok(())
+    }
+    Json::Bool(true) => {
+      sb.write_string("true")
+      Ok(())
+    }
+    Json::Bool(false) => {
+      sb.write_string("false")
+      Ok(())
+    }
+    Json::Num(n) => {
+      if !(n == n.floor() && n.abs() <= max_safe) {
+        return Err("lock entries hold integers only")
+      }
+      sb.write_string(n.to_int64().to_string())
+      Ok(())
+    }
+    Json::Str(s) => {
+      write_quoted(sb, s)
+      Ok(())
+    }
+    Json::Arr(xs) => {
+      sb.write_byte(91.to_byte())
+      let n = xs.length()
+      let mut i = 0
+      while i < n {
+        if i > 0 {
+          sb.write_byte(44.to_byte())
+        }
+        match write_canonical(sb, xs[i]) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        i = i + 1
+      }
+      sb.write_byte(93.to_byte())
+      Ok(())
+    }
+    Json::Obj(entries) => {
+      let keys : Array[String] = []
+      let n = entries.length()
+      let mut i = 0
+      while i < n {
+        keys.push(entries[i].0)
+        i = i + 1
+      }
+      sort_strings_utf16(keys)
+      sb.write_byte(123.to_byte())
+      let mut j = 0
+      while j < n {
+        if j > 0 {
+          sb.write_byte(44.to_byte())
+        }
+        let k = keys[j]
+        write_quoted(sb, k)
+        sb.write_byte(58.to_byte())
+        match json_obj_get(entries, k) {
+          Some(v2) => {
+            match write_canonical(sb, v2) {
+              Ok(_) => ()
+              Err(e) => return Err(e)
+            }
+          }
+          None => ()
+        }
+        j = j + 1
+      }
+      sb.write_byte(125.to_byte())
+      Ok(())
+    }
+  }
+}
+
+///| JSON with object keys sorted by UTF-16 code unit and no whitespace.
+pub fn canonical(v : Json) -> Result[String, String] {
+  let sb = StringBuilder::new()
+  match write_canonical(sb, v) {
+    Ok(_) => Ok(sb.to_string())
+    Err(e) => Err(e)
+  }
+}
+
+///| What an entry's hash is of: everything but its signature, tagged.
+pub fn entry_text(e : Json) -> Result[String, String] {
+  let entries = match e {
+    Json::Obj(m) => m
+    _ => return Err("an entry is an object")
+  }
+  let hashed : Array[(String, Json)] = []
+  let fields = ["v", "ws", "seq", "prev", "at", "kind", "body"]
+  let mut i = 0
+  while i < fields.length() {
+    let k = fields[i]
+    match json_obj_get(entries, k) {
+      Some(x) => hashed.push((k, x))
+      None => ()
+    }
+    i = i + 1
+  }
+  match canonical(Json::Obj(hashed)) {
+    Ok(s) => Ok("stillfail-lock/1\n" + s)
+    Err(why) => Err(why)
+  }
+}

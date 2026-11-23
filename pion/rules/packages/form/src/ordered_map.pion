@@ -1,0 +1,107 @@
+///| Insertion-ordered string map matching JS `Map` and MoonBit `Map` iteration order.
+
+pub struct OrderedMap[V] {
+  index : Map[String, Int]
+  keys_arr : Array[String]
+  vals_arr : Array[V]
+  alive : Array[Bool]
+  mut count : Int
+}
+
+pub fn OrderedMap::new[V]() -> OrderedMap[V] {
+  OrderedMap::{ index: Map::new(), keys_arr: [], vals_arr: [], alive: [], count: 0 }
+}
+
+pub fn OrderedMap::length[V](self : OrderedMap[V]) -> Int {
+  self.count
+}
+
+pub fn OrderedMap::contains[V](self : OrderedMap[V], k : String) -> Bool {
+  self.index.contains(k)
+}
+
+pub fn OrderedMap::get[V](self : OrderedMap[V], k : String) -> Option[V] {
+  match self.index.get(k) {
+    Some(idx) => Some(self.vals_arr[idx])
+    None => None
+  }
+}
+
+pub fn OrderedMap::set[V](self : OrderedMap[V], k : String, v : V) -> Unit {
+  match self.index.get(k) {
+    Some(idx) => {
+      self.vals_arr[idx] = v
+    }
+    None => {
+      let idx = self.keys_arr.length()
+      self.keys_arr.push(k)
+      self.vals_arr.push(v)
+      self.alive.push(true)
+      self.index.set(k, idx)
+      self.count = self.count + 1
+    }
+  }
+}
+
+pub fn OrderedMap::remove[V](self : OrderedMap[V], k : String) -> Unit {
+  match self.index.get(k) {
+    Some(idx) => {
+      self.alive[idx] = false
+      self.index.remove(k)
+      self.count = self.count - 1
+    }
+    None => ()
+  }
+}
+
+pub fn OrderedMap::keys[V](self : OrderedMap[V]) -> Array[String] {
+  let out : Array[String] = []
+  let n = self.keys_arr.length()
+  let mut i = 0
+  while i < n {
+    if self.alive[i] {
+      out.push(self.keys_arr[i])
+    }
+    i = i + 1
+  }
+  out
+}
+
+pub fn OrderedMap::values[V](self : OrderedMap[V]) -> Array[V] {
+  let out : Array[V] = []
+  let n = self.vals_arr.length()
+  let mut i = 0
+  while i < n {
+    if self.alive[i] {
+      out.push(self.vals_arr[i])
+    }
+    i = i + 1
+  }
+  out
+}
+
+pub fn OrderedMap::entries[V](self : OrderedMap[V]) -> Array[(String, V)] {
+  let out : Array[(String, V)] = []
+  let n = self.keys_arr.length()
+  let mut i = 0
+  while i < n {
+    if self.alive[i] {
+      out.push((self.keys_arr[i], self.vals_arr[i]))
+    }
+    i = i + 1
+  }
+  out
+}
+
+pub fn OrderedMap::copy[V](self : OrderedMap[V]) -> OrderedMap[V] {
+  let out : OrderedMap[V] = OrderedMap::new()
+  let n = self.keys_arr.length()
+  let mut i = 0
+  while i < n {
+    if self.alive[i] {
+      out.set(self.keys_arr[i], self.vals_arr[i])
+    }
+    i = i + 1
+  }
+  out
+}

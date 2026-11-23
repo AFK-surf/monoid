@@ -1,0 +1,11 @@
+[package]
+name = "wasm_entry"
+version = "0.1.0"
+
+[dependencies]
+role = { path = "../role" }
+form = { path = "../form" }
+fork = { path = "../fork" }
+history = { path = "../history" }
+lock = { path = "../lock" }
+vault = { path = "../vault" }

@@ -1,0 +1,889 @@
+// Real-time station `/events` SSE consumer & single-transaction `sql::Burst` ingestion.
+// Never polls on a timer: consumes pushed SSE streams over `mesh::Link` (or injected transport),
+// commits each batch atomically in one `sql::Burst` transaction, and emits strongly typed
+// `CoreEvent` notifications to `outbox::FrameOutbox[CoreEvent]` (coalesced into 1 wake per frame).
+
+import "base_codec"
+import "effect"
+import "mesh"
+import "outbox"
+import "sql"
+import "store"
+import "wire"
+
+pub enum ConnectionState {
+  Disconnected(String)
+  Connecting
+  Connected
+  Reconnecting(Int)
+}
+
+/// Strongly typed core-to-UI events pushed directly into `outbox::FrameOutbox[CoreEvent]`
+/// without JSON serialization.
+pub enum CoreEvent {
+  ChatsChanged(String, Array[String])
+  EntryAdded(String, Int, store::Entry, Option[String])
+  ThreadReadChanged(String, Int, Int, Int)
+  SessionChanged(String, String, Bool)
+  JobChanged(String, String, Bool)
+  ConnectionChanged(String, ConnectionState)
+  OutboxQueued(String, Int, String, String)
+  OutboxResolved(String, Int, String, Int)
+  OverlayApplied(String, String, String)
+  OverlayRolledBack(String, String, String, String, String)
+  LockUpdated(String, String, Double, Int)
+  LockRejected(String, String)
+}
+
+pub struct HttpReply {
+  pub status : Int
+  pub headers : Array[(String, String)]
+  pub body : Bytes
+}
+
+fn bytes_to_str(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+/// Pluggable station request & SSE stream transport. Production uses `StationTransport::from_link`
+/// backed by `mesh::Link`; deterministic tests inject `SimStation`.
+pub struct StationTransport {
+  pub request_k : (String, String, Array[(String, String)], Bytes, (effect::Exit[HttpReply]) -> Unit) -> Unit
+  pub stream_k : (String, Array[(String, String)], (Bytes) -> Unit, (effect::Exit[Unit]) -> Unit) -> Unit
+}
+
+fn read_reply_chunks_k(
+  reply : mesh::Reply,
+  on_chunk : (Bytes) -> Unit,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  reply.take_k(fn(ex : effect::Exit[Option[Bytes]]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => {
+        reply.cancel()
+        k(effect::Exit::Interrupted)
+      }
+      effect::Exit::Failed(e) => {
+        reply.cancel()
+        k(effect::Exit::Failed(e))
+      }
+      effect::Exit::Succeeded(opt) =>
+      match opt {
+        None => k(effect::Exit::Succeeded(()))
+        Some(chunk) => {
+          on_chunk(chunk)
+          read_reply_chunks_k(reply, on_chunk, k)
+        }
+      }
+    }
+  })
+}
+
+/// Build a `StationTransport` directly on top of a live `mesh::Link`.
+pub fn StationTransport::from_link(link : mesh::Link) -> StationTransport {
+  StationTransport::{
+    request_k: fn(
+      method_name : String,
+      path : String,
+      headers : Array[(String, String)],
+      body : Bytes,
+      k : (effect::Exit[HttpReply]) -> Unit,
+    ) -> Unit {
+      link.request_k(
+        method_name,
+        path,
+        fn(ex : effect::Exit[mesh::Reply]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(reply) => {
+              let status = reply.status
+              let resp_headers = reply.headers
+              reply.rest_k(fn(bex : effect::Exit[Bytes]) -> Unit {
+                match bex {
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(bytes) =>
+                  k(effect::Exit::Succeeded(HttpReply::{ status: status, headers: resp_headers, body: bytes }))
+                }
+              })
+            }
+          }
+        },
+        headers=headers,
+        body=body,
+      )
+    },
+    stream_k: fn(
+      path : String,
+      headers : Array[(String, String)],
+      on_chunk : (Bytes) -> Unit,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      link.request_k(
+        "GET",
+        path,
+        fn(ex : effect::Exit[mesh::Reply]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(reply) => {
+              if reply.status < 200 || reply.status >= 300 {
+                reply.cancel()
+                k(effect::Exit::Failed(effect::EffectError::Custom("events stream status " + reply.status.to_string())))
+                return
+              }
+              read_reply_chunks_k(reply, on_chunk, k)
+            }
+          }
+        },
+        headers=headers,
+      )
+    },
+  }
+}
+
+// SQL statements used by single-transaction `Burst` ingestion.
+pub fn sql_entry_put() -> String {
+  "INSERT OR REPLACE INTO entry (station, thread, n, json) VALUES (?, ?, ?, ?)"
+}
+
+pub fn sql_chat_upsert() -> String {
+  "INSERT OR REPLACE INTO chat (station, id, archived, ord, thread, session, client_key, last_active, pinned_at, unread, mine, running, tone, asks, desk, json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+}
+
+pub fn sql_thread_upsert() -> String {
+  "INSERT OR REPLACE INTO thread (station, id, listed, last, read, unread, sort_at, created_at, surface, first_member, json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+}
+
+pub fn sql_session_upsert() -> String {
+  "INSERT OR REPLACE INTO session (station, key, listed, ord, last_active, process, connect, archived_at, turns, summary, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+}
+
+pub fn sql_job_upsert() -> String {
+  "INSERT OR REPLACE INTO job (station, id, session, open, ord, chat, json) VALUES (?, ?, ?, ?, ?, ?, ?)"
+}
+
+fn j_str(j : base_codec::Json, k : String, fallback : String = "") -> String {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => s
+    _ => fallback
+  }
+}
+
+fn j_opt_str(j : base_codec::Json, k : String) -> Option[String] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn j_int64(j : base_codec::Json, k : String, fallback : Int64 = 0.to_int64()) -> Int64 {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, repr)) => {
+      if repr.length() > 0 {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => v
+          None => n.to_int64()
+        }
+      } else {
+        n.to_int64()
+      }
+    }
+    _ => fallback
+  }
+}
+
+fn j_opt_int64(j : base_codec::Json, k : String) -> Option[Int64] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, repr)) => {
+      if repr.length() > 0 {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => Some(v)
+          None => Some(n.to_int64())
+        }
+      } else {
+        Some(n.to_int64())
+      }
+    }
+    _ => None
+  }
+}
+
+fn j_int(j : base_codec::Json, k : String, fallback : Int = 0) -> Int {
+  j_int64(j, k, fallback=fallback.to_int64()).to_int()
+}
+
+fn j_bool(j : base_codec::Json, k : String, fallback : Bool = false) -> Bool {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => fallback
+  }
+}
+
+fn j_double(j : base_codec::Json, k : String, fallback : Double = 0.0) -> Double {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, _)) => n
+    _ => fallback
+  }
+}
+
+fn opt_str_json(v : Option[String]) -> base_codec::Json {
+  match v {
+    Some(s) => base_codec::json_str(s)
+    None => base_codec::json_null()
+  }
+}
+
+fn opt_i64_json(v : Option[Int64]) -> base_codec::Json {
+  match v {
+    Some(n) => base_codec::json_int64(n)
+    None => base_codec::json_null()
+  }
+}
+
+/// Exponential reconnect backoff capped at 30s (matches `client/core-ts/src/station/sync.ts`).
+pub fn reconnect_backoff_ms(attempt : Int) -> Int {
+  let clamped = if attempt < 0 { 0 } else if attempt > 5 { 5 } else { attempt }
+  let ms = 1000 << clamped
+  if ms > 30000 { 30000 } else { ms }
+}
+
+pub struct SessionStatus {
+  pub key : String
+  pub running : Bool
+  pub listed : Bool
+  pub last_active : Option[Int64]
+  pub process : Option[String]
+  pub connect : Option[String]
+  pub turns : Option[Int64]
+}
+
+pub struct JobStatus {
+  pub id : String
+  pub session : Option[String]
+  pub open : Bool
+  pub chat : Option[String]
+}
+
+pub struct StationEvents {
+  pub workspace : String
+  pub station : String
+  pub db : sql::Sql
+  pub outbox : outbox::FrameOutbox[CoreEvent]
+  pub transport : StationTransport
+  mut last_event_id : Option[String]
+  mut state : ConnectionState
+  mut attempts : Int
+  sessions : Map[String, SessionStatus]
+  session_order : Array[String]
+  jobs : Map[String, JobStatus]
+  job_order : Array[String]
+  mut on_entry_client_key : (sql::Burst, Int, Int, String) -> Unit
+  mut on_chat_client_key : (sql::Burst, String, String) -> Unit
+  mut on_connected : () -> Unit
+  mut on_lock_payload : (base_codec::Json) -> Unit
+  mut stream_fiber : Option[effect::Fiber[Unit]]
+}
+
+pub fn StationEvents::new(
+  workspace : String,
+  station : String,
+  db : sql::Sql,
+  frame_outbox : outbox::FrameOutbox[CoreEvent],
+  transport : StationTransport,
+) -> StationEvents {
+  StationEvents::{
+    workspace: workspace,
+    station: station,
+    db: db,
+    outbox: frame_outbox,
+    transport: transport,
+    last_event_id: None,
+    state: ConnectionState::Disconnected("initial"),
+    attempts: 0,
+    sessions: Map::new(),
+    session_order: [],
+    jobs: Map::new(),
+    job_order: [],
+    on_entry_client_key: fn(_b : sql::Burst, _th : Int, _n : Int, _ck : String) -> Unit {},
+    on_chat_client_key: fn(_b : sql::Burst, _cid : String, _ck : String) -> Unit {},
+    on_connected: fn() -> Unit {},
+    on_lock_payload: fn(_j : base_codec::Json) -> Unit {},
+    stream_fiber: None,
+  }
+}
+
+pub fn StationEvents::session_status(self : StationEvents, key : String) -> Option[SessionStatus] {
+  self.sessions.get(key)
+}
+
+pub fn StationEvents::all_sessions(self : StationEvents) -> Array[SessionStatus] {
+  let out : Array[SessionStatus] = []
+  for i in 0..<self.session_order.length() {
+    match self.sessions.get(self.session_order[i]) {
+      Some(s) => out.push(s)
+      None => ()
+    }
+  }
+  out
+}
+
+pub fn StationEvents::running_session_count(self : StationEvents) -> Int {
+  let mut n = 0
+  for i in 0..<self.session_order.length() {
+    match self.sessions.get(self.session_order[i]) {
+      Some(s) => if s.running { n += 1 }
+      None => ()
+    }
+  }
+  n
+}
+
+pub fn StationEvents::job_status(self : StationEvents, id : String) -> Option[JobStatus] {
+  self.jobs.get(id)
+}
+
+pub fn StationEvents::open_jobs(self : StationEvents) -> Array[JobStatus] {
+  let out : Array[JobStatus] = []
+  for i in 0..<self.job_order.length() {
+    match self.jobs.get(self.job_order[i]) {
+      Some(j) => if j.open { out.push(j) }
+      None => ()
+    }
+  }
+  out
+}
+
+pub fn StationEvents::open_job_count(self : StationEvents) -> Int {
+  let mut n = 0
+  for i in 0..<self.job_order.length() {
+    match self.jobs.get(self.job_order[i]) {
+      Some(j) => if j.open { n += 1 }
+      None => ()
+    }
+  }
+  n
+}
+
+fn StationEvents::track_session(self : StationEvents, s : SessionStatus) -> Unit {
+  if self.sessions.get(s.key).is_none() {
+    self.session_order.push(s.key)
+  }
+  self.sessions.set(s.key, s)
+}
+
+fn StationEvents::track_job(self : StationEvents, j : JobStatus) -> Unit {
+  if self.jobs.get(j.id).is_none() {
+    self.job_order.push(j.id)
+  }
+  self.jobs.set(j.id, j)
+}
+
+pub fn StationEvents::set_hooks(
+  self : StationEvents,
+  on_entry_client_key : (sql::Burst, Int, Int, String) -> Unit,
+  on_chat_client_key : (sql::Burst, String, String) -> Unit,
+  on_connected : () -> Unit,
+  on_lock_payload : (base_codec::Json) -> Unit,
+) -> Unit {
+  self.on_entry_client_key = on_entry_client_key
+  self.on_chat_client_key = on_chat_client_key
+  self.on_connected = on_connected
+  self.on_lock_payload = on_lock_payload
+}
+
+pub fn StationEvents::connection_state(self : StationEvents) -> ConnectionState {
+  self.state
+}
+
+pub fn StationEvents::last_id(self : StationEvents) -> Option[String] {
+  self.last_event_id
+}
+
+fn StationEvents::set_state(self : StationEvents, next : ConnectionState) -> Unit {
+  self.state = next
+  self.outbox.tell(CoreEvent::ConnectionChanged(self.station, next))
+}
+
+fn upsert_chat_in_burst(b : sql::Burst, station : String, payload : base_codec::Json) -> sql::SqlResult[String] {
+  let cid = j_str(payload, "id")
+  let archived = if j_bool(payload, "archived") { 1 } else { j_int(payload, "archived") }
+  let ord = j_double(payload, "ord")
+  let thread = j_opt_int64(payload, "thread")
+  let session = j_opt_str(payload, "session")
+  let client_key = j_opt_str(payload, "clientKey")
+  let last_active = j_int64(payload, "lastActive")
+  let pinned_at = j_opt_int64(payload, "pinnedAt")
+  let unread = j_opt_int64(payload, "unread")
+  let mine = if j_bool(payload, "mine") { 1 } else { j_int(payload, "mine") }
+  let running = if j_bool(payload, "running") { 1 } else { j_int(payload, "running") }
+  let tone = j_opt_str(payload, "tone")
+  let asks = if j_bool(payload, "asks") { 1 } else { j_int(payload, "asks") }
+  let desk = if j_bool(payload, "desk") { 1 } else { j_int(payload, "desk") }
+  let raw = base_codec::json_stringify(payload)
+  match b.run(sql_chat_upsert(), params=[
+    base_codec::json_str(station),
+    base_codec::json_str(cid),
+    base_codec::json_int(archived),
+    base_codec::json_num(ord),
+    opt_i64_json(thread),
+    opt_str_json(session),
+    opt_str_json(client_key),
+    base_codec::json_int64(last_active),
+    opt_i64_json(pinned_at),
+    opt_i64_json(unread),
+    base_codec::json_int(mine),
+    base_codec::json_int(running),
+    opt_str_json(tone),
+    base_codec::json_int(asks),
+    base_codec::json_int(desk),
+    base_codec::json_str(raw),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(cid)
+  }
+}
+
+/// Ingest an initial snapshot (`chats`, `threads`, `entries`) in a single `sql::Burst` transaction
+/// and emit coalesced `CoreEvent` notifications to `FrameOutbox`.
+pub fn StationEvents::apply_snapshot(self : StationEvents, snapshot : base_codec::Json) -> sql::SqlResult[Int] {
+  let changed_chats : Array[String] = []
+  let added_entries : Array[(Int, store::Entry, Option[String])] = []
+  let snap_events : Array[CoreEvent] = []
+  let burst = sql::Burst::new(self.db)
+  let res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Int] {
+    let mut count = 0
+    match base_codec::json_get(snapshot, "chats") {
+      Some(base_codec::Json::Arr(chats)) => {
+        for i in 0..<chats.length() {
+          match upsert_chat_in_burst(b, self.station, chats[i]) {
+            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(cid) => {
+              changed_chats.push(cid)
+              count += 1
+              match j_opt_str(chats[i], "clientKey") {
+                Some(ck) => {
+                  let cb = self.on_chat_client_key
+                  cb(b, cid, ck)
+                }
+                None => ()
+              }
+            }
+          }
+        }
+      }
+      _ => ()
+    }
+    match base_codec::json_get(snapshot, "entries") {
+      Some(base_codec::Json::Arr(entries)) => {
+        for i in 0..<entries.length() {
+          let item = entries[i]
+          let th = j_int(item, "thread")
+          let n = j_int(item, "n")
+          let raw = base_codec::json_stringify(item)
+          match b.run(sql_entry_put(), params=[
+            base_codec::json_str(self.station),
+            base_codec::json_int(th),
+            base_codec::json_int(n),
+            base_codec::json_str(raw),
+          ]) {
+            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(_) => {
+              let ck = j_opt_str(item, "clientKey")
+              match ck {
+                Some(key) => {
+                  let cb = self.on_entry_client_key
+                  cb(b, th, n, key)
+                }
+                None => ()
+              }
+              added_entries.push((th, store::Entry::of_json(n, item), ck))
+              count += 1
+            }
+          }
+        }
+      }
+      _ => ()
+    }
+    match base_codec::json_get(snapshot, "sessions") {
+      Some(base_codec::Json::Arr(sessions)) => {
+        for i in 0..<sessions.length() {
+          let payload = sessions[i]
+          let skey = j_str(payload, "key")
+          let listed_b = j_bool(payload, "listed", fallback=true)
+          let listed = if listed_b { 1 } else { 0 }
+          let ord = j_double(payload, "ord")
+          let last_active = j_opt_int64(payload, "lastActive")
+          let process = j_opt_str(payload, "process")
+          let connect = j_opt_str(payload, "connect")
+          let archived_at = j_opt_int64(payload, "archivedAt")
+          let turns = j_opt_int64(payload, "turns")
+          let summary = j_opt_str(payload, "summary")
+          let detail = j_opt_str(payload, "detail")
+          let running = j_bool(payload, "running")
+          match b.run(sql_session_upsert(), params=[
+            base_codec::json_str(self.station),
+            base_codec::json_str(skey),
+            base_codec::json_int(listed),
+            base_codec::json_num(ord),
+            opt_i64_json(last_active),
+            opt_str_json(process),
+            opt_str_json(connect),
+            opt_i64_json(archived_at),
+            opt_i64_json(turns),
+            opt_str_json(summary),
+            opt_str_json(detail),
+          ]) {
+            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(_) => {
+              self.track_session(SessionStatus::{
+                key: skey,
+                running: running,
+                listed: listed_b,
+                last_active: last_active,
+                process: process,
+                connect: connect,
+                turns: turns,
+              })
+              snap_events.push(CoreEvent::SessionChanged(self.station, skey, running))
+              count += 1
+            }
+          }
+        }
+      }
+      _ => ()
+    }
+    match base_codec::json_get(snapshot, "jobs") {
+      Some(base_codec::Json::Arr(jobs)) => {
+        for i in 0..<jobs.length() {
+          let payload = jobs[i]
+          let jid = j_str(payload, "id")
+          let sess = j_opt_str(payload, "session")
+          let open = j_bool(payload, "open")
+          let ord = j_double(payload, "ord")
+          let chat = j_opt_str(payload, "chat")
+          let raw = base_codec::json_stringify(payload)
+          match b.run(sql_job_upsert(), params=[
+            base_codec::json_str(self.station),
+            base_codec::json_str(jid),
+            opt_str_json(sess),
+            base_codec::json_int(if open { 1 } else { 0 }),
+            base_codec::json_num(ord),
+            opt_str_json(chat),
+            base_codec::json_str(raw),
+          ]) {
+            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(_) => {
+              self.track_job(JobStatus::{ id: jid, session: sess, open: open, chat: chat })
+              snap_events.push(CoreEvent::JobChanged(self.station, jid, open))
+              count += 1
+            }
+          }
+        }
+      }
+      _ => ()
+    }
+    sql::SqlResult::Ok(count)
+  })
+  match res {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(count) => {
+      if changed_chats.length() > 0 {
+        self.outbox.tell(CoreEvent::ChatsChanged(self.station, changed_chats))
+      }
+      for i in 0..<added_entries.length() {
+        let (th, entry, ck) = added_entries[i]
+        self.outbox.tell(CoreEvent::EntryAdded(self.station, th, entry, ck))
+      }
+      for i in 0..<snap_events.length() {
+        self.outbox.tell(snap_events[i])
+      }
+      sql::SqlResult::Ok(count)
+    }
+  }
+}
+
+/// Apply a batch of parsed SSE events in a SINGLE `sql::Burst` transaction,
+/// emitting all resulting `CoreEvent` notifications afterward (coalesced into 1 frame wake).
+pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire::Event]) -> sql::SqlResult[Int] {
+  if events.length() == 0 {
+    return sql::SqlResult::Ok(0)
+  }
+  let changed_chats : Array[String] = []
+  let pending_events : Array[CoreEvent] = []
+  let lock_payloads : Array[base_codec::Json] = []
+  let burst = sql::Burst::new(self.db)
+  let res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Int] {
+    let mut applied = 0
+    for i in 0..<events.length() {
+      let ev = events[i]
+      match ev.id {
+        Some(eid) => {
+          if eid.length() > 0 {
+            self.last_event_id = Some(eid)
+          }
+        }
+        None => ()
+      }
+      if ev.data.length() == 0 {
+        continue
+      }
+      let payload = match base_codec::json_parse(ev.data) {
+        base_codec::JsonParseResult::Ok(j) => j
+        base_codec::JsonParseResult::Err(_) => continue
+      }
+      // Strict workspace isolation: ignore events tagged for another workspace.
+      match j_opt_str(payload, "workspace") {
+        Some(ws) => {
+          if ws.length() > 0 && ws != self.workspace {
+            continue
+          }
+        }
+        None => ()
+      }
+      if ev.name == "entry" {
+        let th = j_int(payload, "thread")
+        let n = j_int(payload, "n")
+        let raw = base_codec::json_stringify(payload)
+        match b.run(sql_entry_put(), params=[
+          base_codec::json_str(self.station),
+          base_codec::json_int(th),
+          base_codec::json_int(n),
+          base_codec::json_str(raw),
+        ]) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => {
+            let ck = j_opt_str(payload, "clientKey")
+            match ck {
+              Some(key) => {
+                let cb = self.on_entry_client_key
+                cb(b, th, n, key)
+              }
+              None => ()
+            }
+            pending_events.push(CoreEvent::EntryAdded(self.station, th, store::Entry::of_json(n, payload), ck))
+            applied += 1
+          }
+        }
+      } else if ev.name == "chat" {
+        match upsert_chat_in_burst(b, self.station, payload) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(cid) => {
+            changed_chats.push(cid)
+            match j_opt_str(payload, "clientKey") {
+              Some(ck) => {
+                let cb = self.on_chat_client_key
+                cb(b, cid, ck)
+              }
+              None => ()
+            }
+            applied += 1
+          }
+        }
+      } else if ev.name == "thread" || ev.name == "read" {
+        let th = j_int(payload, "id", fallback=j_int(payload, "thread"))
+        let listed = if j_bool(payload, "listed", fallback=true) { 1 } else { 0 }
+        let last = j_opt_int64(payload, "last")
+        let read_n = j_int(payload, "read")
+        let unread_n = j_int(payload, "unread")
+        let sort_at = j_int64(payload, "sortAt")
+        let created_at = j_int64(payload, "createdAt")
+        let surface = j_opt_str(payload, "surface")
+        let first_member = j_opt_str(payload, "firstMember")
+        let raw = base_codec::json_stringify(payload)
+        match b.run(sql_thread_upsert(), params=[
+          base_codec::json_str(self.station),
+          base_codec::json_int(th),
+          base_codec::json_int(listed),
+          opt_i64_json(last),
+          base_codec::json_int(read_n),
+          base_codec::json_int(unread_n),
+          base_codec::json_int64(sort_at),
+          base_codec::json_int64(created_at),
+          opt_str_json(surface),
+          opt_str_json(first_member),
+          base_codec::json_str(raw),
+        ]) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => {
+            pending_events.push(CoreEvent::ThreadReadChanged(self.station, th, read_n, unread_n))
+            applied += 1
+          }
+        }
+      } else if ev.name == "session" {
+        let skey = j_str(payload, "key")
+        let listed_b = j_bool(payload, "listed", fallback=true)
+        let listed = if listed_b { 1 } else { 0 }
+        let ord = j_double(payload, "ord")
+        let last_active = j_opt_int64(payload, "lastActive")
+        let process = j_opt_str(payload, "process")
+        let connect = j_opt_str(payload, "connect")
+        let archived_at = j_opt_int64(payload, "archivedAt")
+        let turns = j_opt_int64(payload, "turns")
+        let summary = j_opt_str(payload, "summary")
+        let detail = j_opt_str(payload, "detail")
+        let running = j_bool(payload, "running")
+        match b.run(sql_session_upsert(), params=[
+          base_codec::json_str(self.station),
+          base_codec::json_str(skey),
+          base_codec::json_int(listed),
+          base_codec::json_num(ord),
+          opt_i64_json(last_active),
+          opt_str_json(process),
+          opt_str_json(connect),
+          opt_i64_json(archived_at),
+          opt_i64_json(turns),
+          opt_str_json(summary),
+          opt_str_json(detail),
+        ]) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => {
+            self.track_session(SessionStatus::{
+              key: skey,
+              running: running,
+              listed: listed_b,
+              last_active: last_active,
+              process: process,
+              connect: connect,
+              turns: turns,
+            })
+            pending_events.push(CoreEvent::SessionChanged(self.station, skey, running))
+            applied += 1
+          }
+        }
+      } else if ev.name == "job" {
+        let jid = j_str(payload, "id")
+        let sess = j_opt_str(payload, "session")
+        let open = j_bool(payload, "open")
+        let ord = j_double(payload, "ord")
+        let chat = j_opt_str(payload, "chat")
+        let raw = base_codec::json_stringify(payload)
+        match b.run(sql_job_upsert(), params=[
+          base_codec::json_str(self.station),
+          base_codec::json_str(jid),
+          opt_str_json(sess),
+          base_codec::json_int(if open { 1 } else { 0 }),
+          base_codec::json_num(ord),
+          opt_str_json(chat),
+          base_codec::json_str(raw),
+        ]) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => {
+            self.track_job(JobStatus::{ id: jid, session: sess, open: open, chat: chat })
+            pending_events.push(CoreEvent::JobChanged(self.station, jid, open))
+            applied += 1
+          }
+        }
+      } else if ev.name == "lock" {
+        lock_payloads.push(payload)
+        applied += 1
+      }
+    }
+    sql::SqlResult::Ok(applied)
+  })
+  match res {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(applied) => {
+      if changed_chats.length() > 0 {
+        self.outbox.tell(CoreEvent::ChatsChanged(self.station, changed_chats))
+      }
+      for i in 0..<pending_events.length() {
+        self.outbox.tell(pending_events[i])
+      }
+      for i in 0..<lock_payloads.length() {
+        let cb = self.on_lock_payload
+        cb(lock_payloads[i])
+      }
+      sql::SqlResult::Ok(applied)
+    }
+  }
+}
+
+fn StationEvents::stream_loop_k(self : StationEvents, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  if effect::is_interrupted() {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  self.set_state(ConnectionState::Connecting)
+  let headers : Array[(String, String)] = [("accept", "text/event-stream")]
+  let path = match self.last_event_id {
+    Some(eid) => {
+      headers.push(("last-event-id", eid))
+      "/events?after=" + eid
+    }
+    None => "/events"
+  }
+  let parser = wire::Sse::new()
+  let mut marked_connected = false
+  let stream_fn = self.transport.stream_k
+  stream_fn(
+    path,
+    headers,
+    fn(chunk : Bytes) -> Unit {
+      if !marked_connected {
+        marked_connected = true
+        self.attempts = 0
+        self.set_state(ConnectionState::Connected)
+        let on_conn = self.on_connected
+        on_conn()
+      }
+      match parser.feed(chunk) {
+        wire::FeedResult::Ok(evs) => {
+          let _ = self.apply_sse_batch(evs)
+        }
+        wire::FeedResult::Err(_) => ()
+      }
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          self.set_state(ConnectionState::Disconnected("stopped"))
+          k(effect::Exit::Interrupted)
+        }
+        effect::Exit::Succeeded(_) | effect::Exit::Failed(_) => {
+          // timer: failure retry backoff on dropped SSE stream (never periodic polling).
+          let delay = reconnect_backoff_ms(self.attempts)
+          self.attempts += 1
+          self.set_state(ConnectionState::Reconnecting(delay))
+          effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
+            match sex {
+              effect::Exit::Interrupted => {
+                self.set_state(ConnectionState::Disconnected("stopped"))
+                k(effect::Exit::Interrupted)
+              }
+              _ => self.stream_loop_k(k)
+            }
+          })
+        }
+      }
+    },
+  )
+}
+
+/// Start consuming `GET /events` on a scoped fiber of `rt`.
+pub fn StationEvents::start(self : StationEvents, rt : effect::Runtime) -> Unit {
+  match self.stream_fiber {
+    Some(_) => return
+    None => ()
+  }
+  let f = rt.fork_quiet_named("station-events:" + self.station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    self.stream_loop_k(k)
+  })
+  self.stream_fiber = Some(f)
+}
+
+/// Stop the `/events` stream fiber.
+pub fn StationEvents::stop(self : StationEvents) -> Unit {
+  match self.stream_fiber {
+    Some(f) => {
+      self.stream_fiber = None
+      f.interrupt()
+    }
+    None => ()
+  }
+}

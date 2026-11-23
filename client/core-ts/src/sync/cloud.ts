@@ -7,8 +7,8 @@ import { SignalMap } from "../reactive.ts";
 import { record, said } from "../record.ts";
 import { Deferred, Effect, Exit, Fiber, Scope, Semaphore } from "effect";
 import type { AccountView } from "../accounts.ts";
-import { NOT_BETA, notBetaText, readCredential, type Credential } from "../cloud.ts";
-import { CREDENTIAL_FOR_S, CREDENTIAL_KEY, CREDENTIAL_OTHERS, CREDENTIAL_OTHERS_KEPT, entriesOf, entryTargetsOf, PUSH_KEY, relaysOf, type Inner } from "../core.ts";
+import { NOT_BETA, cloudError, notBetaText, readCredential, type Credential } from "../cloud.ts";
+import { CREDENTIAL_429_COOLDOWN_MS, CREDENTIAL_ASK_CONCURRENCY, CREDENTIAL_FOR_S, CREDENTIAL_KEY, CREDENTIAL_OTHERS, CREDENTIAL_OTHERS_KEPT, entriesOf, entryTargetsOf, PUSH_KEY, relaysOf, type Inner } from "../core.ts";
 import { CoreError, asCoreError } from "../error.ts";
 import type { Pull } from "../host.ts";
 import { current, t } from "../i18n.ts";
@@ -93,6 +93,10 @@ export class CloudSync {
   /// How many times a workspace's kept credentials were removed (an account signed out), by key: an ask answered after
   /// keeps nothing.
   readonly #removed = new Map<string, number>();
+  /// An account's credential asks out at once, by account (`CREDENTIAL_ASK_CONCURRENCY`).
+  readonly #askTurn = new Map<string, ReturnType<typeof Semaphore.makeUnsafe>>();
+  /// Until when (ms) an account asks no credential, the cloud having refused one for too many (`CREDENTIAL_429_COOLDOWN_MS`).
+  readonly #credentialBackoff = new Map<string, number>();
 
   constructor(core: Inner) {
     this.#core = core;
@@ -491,6 +495,8 @@ export class CloudSync {
   /// An account signed out (its database goes with all it held): the credentials it had for its workspaces go too.
   signedOut(sub: string, me: unknown): void {
     const core = this.#core;
+    this.#askTurn.delete(sub);
+    this.#credentialBackoff.delete(sub);
     for (const w of isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []) {
       if (!isObject(w) || typeof w.id !== "string") continue;
       const key = `${CREDENTIAL_KEY}/${sub}/${w.id}`;
@@ -651,11 +657,30 @@ export class CloudSync {
       const said = claim === null ? undefined : { base: claim.device, proof: claim.proof, kind: core.host.appKeys ? "app" : "web", label: prefs.deviceName(core.data) ?? "" };
       const removed = this.#removed.get(key) ?? 0;
       const keeping = this.#keepingOf(key);
+      const turn = this.#askTurnOf(sub);
       const self = this;
+      const cooled = () => core.host.nowMs() < (this.#credentialBackoff.get(sub) ?? 0);
+      // (a few asks of the account's out at once, and none while the cloud said too many: the rest wait their turn, then
+      // fail as the cloud would have, asking nothing)
+      const asked = turn.withPermits(1)(
+        Effect.suspend(() => {
+          if (cooled()) return Effect.fail(cloudError("rate_limited", 429));
+          return core.provider.credential(sub, workspace, device, said).pipe(
+            // (one answered after another of the same turn was refused leaves its cool-down as it is: the minute is used up all
+            // the same)
+            Effect.tap(() => Effect.sync(() => {
+              if (!cooled()) self.#credentialBackoff.delete(sub);
+            })),
+            Effect.tapError((e) => Effect.sync(() => {
+              if (e.status === 429) self.#credentialBackoff.set(sub, core.host.nowMs() + CREDENTIAL_429_COOLDOWN_MS);
+            })),
+          );
+        }),
+      );
       const ask = Effect.gen(function* () {
-        const c = yield* core.provider.credential(sub, workspace, device, said);
+        const c = yield* asked;
         const k: KeptCredential = { device, ...c };
-        // (only the keeping takes turns, never the asks: each endpoint's first ask goes out at once)
+        // (the keeping takes turns of its own, apart from the asks': a write waits on no ask)
         yield* keeping.withPermits(1)(Effect.gen(function* () {
           if ((self.#removed.get(key) ?? 0) !== removed) return;
           if (other) {
@@ -684,12 +709,20 @@ export class CloudSync {
       });
       // A day old and still good: it serves now, and the new one is asked for beside it, for the next. Asked first, every
       // dial waited on still.fail cloud once a day, far from a phone in China (2026-10-30).
+      // While the cloud said too many, it serves alone.
       if (kept) {
-        if (!this.#asking.has(k)) core.runner.fork(Effect.ignore(once, { log: "Unhandled", message: "credential renewed" }));
+        if (!this.#asking.has(k) && !cooled()) core.runner.fork(Effect.ignore(once, { log: "Unhandled", message: "credential renewed" }));
         return kept;
       }
+      if (!this.#asking.has(k) && cooled()) return yield* Effect.fail(cloudError("rate_limited", 429));
       return yield* once;
     });
+  }
+
+  #askTurnOf(sub: string): ReturnType<typeof Semaphore.makeUnsafe> {
+    let turn = this.#askTurn.get(sub);
+    if (turn === undefined) this.#askTurn.set(sub, (turn = Semaphore.makeUnsafe(CREDENTIAL_ASK_CONCURRENCY)));
+    return turn;
   }
 
   #keepingOf(key: string): ReturnType<typeof Semaphore.makeUnsafe> {
@@ -745,7 +778,12 @@ export class CloudSync {
     this.recomputeOwners();
     this.forgetUnreachable();
     this.syncSockets();
-    void before;
+    // (an account gone takes its credential asks' turns and wait with it)
+    for (const sub of before) {
+      if (list.some((a) => a.sub === sub)) continue;
+      this.#askTurn.delete(sub);
+      this.#credentialBackoff.delete(sub);
+    }
     // Someone signed in: their devices hear pushes too.
     core.runner.fork(Effect.ignore(this.pushRegistered(), { log: "Unhandled", message: "push registration sent" }));
   }

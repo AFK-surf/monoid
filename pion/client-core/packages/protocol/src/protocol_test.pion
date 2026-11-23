@@ -1,0 +1,466 @@
+// End-to-end tests for protocol wire codec and Slice 1 local read-only router.
+
+import "base_codec"
+import "effect"
+import "shell"
+import "sql"
+import "store"
+
+struct ProtoFakeDb {
+  shell : shell::Shell
+  ran : Array[String]
+  mut chat_rows : Array[base_codec::Json]
+  account_docs : Map[String, String]
+  drafts : Map[String, String]
+  prefs : Map[String, String]
+  pref_order : Array[String]
+  said : Array[(String, Int, Int, Int, Int64, String)]
+}
+
+fn ProtoFakeDb::new() -> ProtoFakeDb {
+  let holder : Array[ProtoFakeDb] = []
+  let sh = shell::Shell::stood_in(
+    effect::Runtime::new(),
+    fn(_ : Int64, _ : String, _ : base_codec::Json, _ : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if op == "sql.open" {
+        return shell::AskResult::Ok(base_codec::json_obj([("id", base_codec::json_int(1))]))
+      }
+      if op == "sql.close" {
+        return shell::AskResult::Ok(base_codec::json_null())
+      }
+      let stmt = match base_codec::json_get(args, "sql") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => ""
+      }
+      let params = match base_codec::json_get(args, "params") {
+        Some(base_codec::Json::Arr(a)) => a
+        _ => []
+      }
+      let self_db = holder[0]
+      self_db.ran.push(stmt)
+      if stmt == store::sql_window_end() {
+        let e1 = base_codec::json_stringify(base_codec::json_obj([
+          ("kind", base_codec::json_str("message")),
+          ("authorKind", base_codec::json_str("agent")),
+          ("author", base_codec::json_str("a1")),
+          ("text", base_codec::json_str("hello")),
+        ]))
+        return shell::AskResult::Ok(base_codec::json_arr([base_codec::json_arr([base_codec::json_int(1), base_codec::json_str(e1)])]))
+      }
+      if stmt.starts_with(store::sql_md_many_head()) {
+        let k = store::md_key("hello")
+        return shell::AskResult::Ok(base_codec::json_arr([
+          base_codec::json_arr([base_codec::json_str(k), base_codec::json_int(0), base_codec::json_str("[[\"p\"]]")]),
+        ]))
+      }
+      if stmt == store::sql_opened() {
+        return shell::AskResult::Ok(base_codec::json_arr([]))
+      }
+      if stmt == store::sql_chat_window() {
+        return shell::AskResult::Ok(base_codec::json_arr(self_db.chat_rows))
+      }
+      if stmt == store::sql_account_doc_one() {
+        let name = sql::col_text(params, 0)
+        match self_db.account_docs.get(name) {
+          Some(v) => return shell::AskResult::Ok(base_codec::json_arr([base_codec::json_arr([base_codec::json_str(v)])]))
+          None => return shell::AskResult::Ok(base_codec::json_arr([]))
+        }
+      }
+      if stmt == store::sql_account_doc_put() {
+        self_db.account_docs.set(sql::col_text(params, 0), sql::col_text(params, 1))
+        return shell::AskResult::Ok(base_codec::json_int(1))
+      }
+      if stmt == store::sql_draft_put() {
+        self_db.drafts.set(sql::col_text(params, 0) + ":" + sql::col_text(params, 1), sql::col_text(params, 2))
+        return shell::AskResult::Ok(base_codec::json_int(1))
+      }
+      if stmt == store::sql_draft_delete() {
+        self_db.drafts.remove(sql::col_text(params, 0) + ":" + sql::col_text(params, 1))
+        return shell::AskResult::Ok(base_codec::json_int(1))
+      }
+      if stmt == store::sql_draft_one() {
+        let st = sql::col_text(params, 0)
+        let ch = sql::col_text(params, 1)
+        match self_db.drafts.get(st + ":" + ch) {
+          Some(j) =>
+          return shell::AskResult::Ok(base_codec::json_arr([
+            base_codec::json_arr([base_codec::json_str(st), base_codec::json_str(ch), base_codec::json_str(j)]),
+          ]))
+          None => return shell::AskResult::Ok(base_codec::json_arr([]))
+        }
+      }
+      if stmt == store::sql_pref_put() {
+        let k = sql::col_text(params, 0) + ":" + sql::col_text(params, 1)
+        if self_db.prefs.get(k).is_none() {
+          self_db.pref_order.push(k)
+        }
+        self_db.prefs.set(k, sql::col_text(params, 2))
+        return shell::AskResult::Ok(base_codec::json_int(1))
+      }
+      if stmt == store::sql_pref_get() {
+        let k = sql::col_text(params, 0) + ":" + sql::col_text(params, 1)
+        match self_db.prefs.get(k) {
+          Some(j) => return shell::AskResult::Ok(base_codec::json_arr([base_codec::json_arr([base_codec::json_str(j)])]))
+          None => return shell::AskResult::Ok(base_codec::json_arr([]))
+        }
+      }
+      if stmt == store::sql_pref_all() {
+        let ws_prefix = sql::col_text(params, 0) + ":"
+        let out : Array[base_codec::Json] = []
+        for i in 0..<self_db.pref_order.length() {
+          let full_k = self_db.pref_order[i]
+          if full_k.starts_with(ws_prefix) {
+            let key_only = full_k.slice(ws_prefix.length(), full_k.length())
+            match self_db.prefs.get(full_k) {
+              Some(j) => out.push(base_codec::json_arr([base_codec::json_str(key_only), base_codec::json_str(j)]))
+              None => ()
+            }
+          }
+        }
+        return shell::AskResult::Ok(base_codec::json_arr(out))
+      }
+      if stmt == store::sql_search_messages_station() || stmt == store::sql_search_messages_all() {
+        let filter_st = if stmt == store::sql_search_messages_station() { Some(sql::col_text(params, 0)) } else { None }
+        let q = if stmt == store::sql_search_messages_station() { sql::col_text(params, 1) } else { sql::col_text(params, 0) }
+        let out : Array[base_codec::Json] = []
+        for i in 0..<self_db.said.length() {
+          let (st, th, seq, n, at, txt) = self_db.said[i]
+          let st_ok = match filter_st {
+            Some(want) => st == want
+            None => true
+          }
+          if st_ok && txt.contains(q) {
+            out.push(base_codec::json_arr([
+              base_codec::json_str(st),
+              base_codec::json_int(th),
+              base_codec::json_int(seq),
+              base_codec::json_int(n),
+              base_codec::json_int64(at),
+              base_codec::json_str(txt),
+            ]))
+          }
+        }
+        return shell::AskResult::Ok(base_codec::json_arr(out))
+      }
+      if stmt == store::sql_search_chats() {
+        let q = sql::col_text(params, 1)
+        let out : Array[base_codec::Json] = []
+        for i in 0..<self_db.chat_rows.length() {
+          let row = match self_db.chat_rows[i] {
+            base_codec::Json::Arr(a) => a
+            _ => []
+          }
+          if row.length() >= 6 {
+            let cid = sql::col_text(row, 2)
+            if q.length() == 0 || cid.contains(q) {
+              out.push(base_codec::json_arr([
+                row[0],
+                row[1],
+                row[2],
+                base_codec::json_int(7),
+                row[4],
+                base_codec::json_str("{\"id\":\"" + cid + "\",\"title\":\"Chat " + cid + "\"}"),
+              ]))
+            }
+          }
+        }
+        return shell::AskResult::Ok(base_codec::json_arr(out))
+      }
+      shell::AskResult::Err(shell::ShellError::{ message: "unexpected sql: " + stmt })
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let docs : Map[String, String] = Map::new()
+  docs.set("me", "{\"email\":\"user@example.com\"}")
+  docs.set("accounts", "[{\"email\":\"user@example.com\"},{\"email\":\"bob@example.com\"}]")
+  docs.set("active_account", "\"user@example.com\"")
+  let db = ProtoFakeDb::{
+    shell: sh,
+    ran: [],
+    chat_rows: [
+      base_codec::json_arr([
+        base_codec::json_str("s1"),
+        base_codec::json_int(0),
+        base_codec::json_str("c1"),
+        base_codec::json_null(),
+        base_codec::json_int(999),
+        base_codec::json_num(1.0),
+      ]),
+    ],
+    account_docs: docs,
+    drafts: Map::new(),
+    prefs: Map::new(),
+    pref_order: [],
+    said: [
+      ("s1", 7, 1, 1, 1000.to_int64(), "hello pion search world"),
+      ("s1", 7, 2, 2, 2000.to_int64(), "another unrelated line"),
+    ],
+  }
+  holder.push(db)
+  db
+}
+
+fn unwrap_sql_p[T](r : sql::SqlResult[T]) -> T {
+  match r {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => panic("sql err: " + e.to_string())
+  }
+}
+
+test "wire codec round-trips call, subscribe, unsubscribe, cancel, delta, fatal, and binary bytes" {
+  let payload = "BIN!".to_bytes()
+  match decode_client_message("{\"id\":1,\"call\":\"echo.bytes\",\"params\":{\"a\":1}}", bytes=Some(payload)) {
+    ParseRequestResult::Ok(CoreRequest::Call(id, name, _, b)) => {
+      debug_assert(id == 1.to_int64() && name == "echo.bytes", "call parsed")
+      match b {
+        Some(raw) => debug_assert(raw.length() == 4 && raw[0].to_int() == 66, "bytes preserved")
+        None => debug_assert(false, "expected bytes")
+      }
+    }
+    _ => debug_assert(false, "expected Call")
+  }
+
+  match decode_client_message("{\"id\":2,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws/1\"},\"keyed\":true,\"from\":1,\"have\":\"tok\"}") {
+    ParseRequestResult::Ok(CoreRequest::Subscribe(id, topic, keyed, from_id, have)) => {
+      debug_assert(id == 2.to_int64() && topic.name == "chats" && keyed, "subscribe parsed")
+      let from_ok = match from_id {
+        Some(v) => v == 1.to_int64()
+        None => false
+      }
+      let have_ok = match have {
+        Some(h) => h == "tok"
+        None => false
+      }
+      debug_assert(from_ok && have_ok, "from & have")
+      debug_assert(topic.param("mine").is_some(), "default mine filled")
+    }
+    _ => debug_assert(false, "expected Subscribe")
+  }
+
+  match decode_client_message("{\"id\":3,\"unsubscribe\":true,\"keep\":true}") {
+    ParseRequestResult::Ok(CoreRequest::Unsubscribe(id, u, k)) => {
+      debug_assert(id == 3.to_int64() && u && k, "unsubscribe keep")
+    }
+    _ => debug_assert(false, "expected Unsubscribe")
+  }
+
+  match decode_client_message("{\"id\":-1,\"call\":\"x\"}") {
+    ParseRequestResult::Invalid(_) => ()
+    _ => debug_assert(false, "negative id rejected")
+  }
+
+  let (delta_s, _) = encode_core_event(CoreEvent::Delta(4.to_int64(), [base_codec::json_obj([("op", base_codec::json_str("put"))])], Some(2.to_int64()), true))
+  debug_assert(delta_s.contains("\"delta\"") && delta_s.contains("\"from\":2") && delta_s.contains("\"kept\":true"), "delta wire")
+
+  let (fatal_s, _) = encode_core_event(CoreEvent::Fatal("disk full"))
+  debug_assert(fatal_s == "{\"fatal\":\"disk full\"}", "fatal wire")
+}
+
+test "Slice1Router serves chat.open (0 writes), chats.window, account.doc, subscribe/unsubscribe, and bytes" {
+  let fake = ProtoFakeDb::new()
+  let db = unwrap_sql_p(sql::Sql::open(fake.shell, "acct"))
+  let md = store::MdStore::new(db, "s1")
+  let router = Slice1Router::new(db, md)
+
+  // 1. chat.open call
+  let from = fake.ran.length()
+  let open_out = router.handle_wire("{\"id\":10,\"call\":\"chat.open\",\"params\":{\"thread\":7,\"now\":1000}}")
+  match open_out {
+    Some((txt, _)) => {
+      debug_assert(txt.contains("\"id\":10") && txt.contains("\"ok\"") && txt.contains("\"hello\""), "chat.open ok")
+      debug_assert(txt.contains(store::md_key("hello")), "preloaded tree included")
+    }
+    None => debug_assert(false, "expected response")
+  }
+  for i in from..<fake.ran.length() {
+    let s = fake.ran[i]
+    debug_assert(!s.starts_with("INSERT") && !s.starts_with("UPDATE") && !s.starts_with("BEGIN"), "0 writes on chat.open")
+  }
+
+  // 2. chats.window call
+  match router.handle_wire("{\"id\":11,\"call\":\"chats.window\",\"params\":{\"stations\":[\"s1\"],\"limit\":10}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"id\":11") && txt.contains("\"c1\""), "chats.window ok")
+    None => debug_assert(false, "expected chats.window")
+  }
+
+  // 3. account.doc call
+  match router.handle_wire("{\"id\":12,\"call\":\"account.doc\",\"params\":{\"name\":\"me\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("user@example.com"), "account.doc ok")
+    None => debug_assert(false, "expected account.doc")
+  }
+
+  // 4. subscribe chat -> value, then unsubscribe with keep -> v token
+  match router.handle_wire("{\"id\":20,\"subscribe\":{\"topic\":\"chat\",\"station\":\"s1\",\"thread\":7}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"id\":20") && txt.contains("\"value\""), "subscribe value")
+    None => debug_assert(false, "expected value")
+  }
+  debug_assert(router.active_sub(20.to_int64()).is_some(), "sub tracked")
+  match router.handle_wire("{\"id\":20,\"unsubscribe\":true,\"keep\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"id\":20") && txt.contains("\"v\":"), "unsub keep token")
+    None => debug_assert(false, "expected unsub token")
+  }
+  debug_assert(router.active_sub(20.to_int64()).is_none(), "sub removed")
+
+  // 5. binary bytes pass-through
+  let bin = "PNG\x00".to_bytes()
+  match router.handle_wire("{\"id\":30,\"call\":\"echo.bytes\",\"params\":{\"ok\":1}}", bytes=Some(bin)) {
+    Some((txt, Some(out_b))) => {
+      debug_assert(txt.contains("\"id\":30") && out_b.length() == 4, "bytes echoed")
+    }
+    _ => debug_assert(false, "expected ok with bytes")
+  }
+}
+
+test "keyed delta diff/apply round-trip and have/keep token negotiation (same, delta+kept, from)" {
+  // 1. Direct diff_keyed + apply_keyed round-trip on `chats` (put, patch, drop, move)
+  let old_chats = base_codec::json_obj([
+    ("rows", base_codec::json_arr([
+      base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c1")), ("lastActive", base_codec::json_int(100))]),
+      base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c2")), ("lastActive", base_codec::json_int(200))]),
+      base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c3")), ("lastActive", base_codec::json_int(300))]),
+    ])),
+  ])
+  let next_chats = base_codec::json_obj([
+    ("rows", base_codec::json_arr([
+      base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c3")), ("lastActive", base_codec::json_int(350))]),
+      base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c1")), ("lastActive", base_codec::json_int(100))]),
+      base_codec::json_obj([("station", base_codec::json_str("s1")), ("id", base_codec::json_str("c4")), ("lastActive", base_codec::json_int(400))]),
+    ])),
+  ])
+  let ops = diff_keyed(old_chats, next_chats, spec_for_topic("chats"))
+  debug_assert(ops.length() > 0, "expected keyed ops")
+  let ops_str = base_codec::json_stringify(base_codec::json_arr(ops))
+  debug_assert(ops_str.contains("\"drop\"") && ops_str.contains("\"put\"") && ops_str.contains("\"patch\"") && ops_str.contains("\"move\""), "all keyed ops emitted")
+  let applied = apply_keyed(old_chats, ops)
+  debug_assert(json_equal(applied, next_chats), "apply_keyed reproduces next_chats exactly")
+
+  // 2. Router subscription keep -> v -> have (same: true) -> mutate -> have (delta + kept: true)
+  let fake = ProtoFakeDb::new()
+  let db = unwrap_sql_p(sql::Sql::open(fake.shell, "acct"))
+  let md = store::MdStore::new(db, "s1")
+  let router = Slice1Router::new(db, md, workspace="ws-1")
+
+  match router.handle_wire("{\"id\":100,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-1\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"value\"") && txt.contains("\"c1\""), "initial chats value")
+    None => debug_assert(false, "expected initial chats value")
+  }
+  // Unchanged refresh returns None (zero redundant sends)
+  debug_assert(router.refresh_sub(100.to_int64()).is_none(), "unchanged refresh emits nothing")
+
+  // Unsubscribe with keep: true -> returns token `v`
+  let kept_tok = match router.handle_wire("{\"id\":100,\"unsubscribe\":true,\"keep\":true}") {
+    Some((txt, _)) =>
+    match base_codec::json_parse(txt) {
+      base_codec::JsonParseResult::Ok(j) =>
+      match base_codec::json_get(j, "v") {
+        Some(base_codec::Json::Str(v)) => v
+        _ => panic("missing v token")
+      }
+      _ => panic("bad unsub json")
+    }
+    None => panic("expected unsub response")
+  }
+  debug_assert(kept_tok.length() == 64 && router.kept_count() == 1, "sha256 token kept")
+
+  // Re-subscribe with `have: kept_tok` while unchanged -> `same: true`
+  let resub1 = "{\"id\":101,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-1\"},\"keyed\":true,\"have\":\"" + kept_tok + "\"}"
+  match router.handle_wire(resub1) {
+    Some((txt, _)) => debug_assert(txt == "{\"id\":101,\"same\":true}", "unchanged have returns same:true")
+    None => debug_assert(false, "expected same:true")
+  }
+
+  // Add row c2 -> refresh active sub 101 emits keyed `put` delta (not full list!)
+  fake.chat_rows.push(base_codec::json_arr([
+    base_codec::json_str("s1"),
+    base_codec::json_int(0),
+    base_codec::json_str("c2"),
+    base_codec::json_null(),
+    base_codec::json_int(1500),
+    base_codec::json_num(2.0),
+  ]))
+  match router.refresh_sub(101.to_int64()) {
+    Some(ev) => {
+      let (dj, _) = encode_core_event(ev)
+      debug_assert(dj.contains("\"delta\"") && dj.contains("\"put\"") && dj.contains("\"c2\"") && !dj.contains("\"c1\""), "keyed delta sends only c2")
+    }
+    None => debug_assert(false, "expected keyed delta on refresh")
+  }
+
+  // Re-subscribe with old `have: kept_tok` -> returns `delta` + `kept: true`!
+  let resub2 = "{\"id\":102,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-1\"},\"keyed\":true,\"have\":\"" + kept_tok + "\"}"
+  match router.handle_wire(resub2) {
+    Some((txt, _)) => debug_assert(txt.contains("\"delta\"") && txt.contains("\"kept\":true") && txt.contains("\"c2\""), "changed have returns delta+kept")
+    None => debug_assert(false, "expected delta+kept")
+  }
+}
+
+test "Slice1Router serves accounts, account.switch, vault, search (said + chats), settings, and chat.draft" {
+  let fake = ProtoFakeDb::new()
+  fake.account_docs.set("vault_status", "{\"enabled\":true,\"unlocked\":true,\"vaultCount\":1,\"secretCount\":2}")
+  fake.account_docs.set(
+    "vault_secrets",
+    "[{\"id\":\"sec-1\",\"vault\":\"v1\",\"name\":\"GitHub PAT\",\"about\":\"CI token\"},{\"id\":\"sec-2\",\"vault\":\"v2\",\"name\":\"Stripe\",\"about\":\"Billing\"}]",
+  )
+  let db = unwrap_sql_p(sql::Sql::open(fake.shell, "acct"))
+  let md = store::MdStore::new(db, "s1")
+  let router = Slice1Router::new(db, md, workspace="ws-1")
+
+  // accounts + account.switch
+  match router.handle_wire("{\"id\":1,\"call\":\"accounts\",\"params\":{}}") {
+    Some((txt, _)) => debug_assert(txt.contains("user@example.com") && txt.contains("bob@example.com"), "accounts list")
+    None => debug_assert(false, "expected accounts")
+  }
+  match router.handle_wire("{\"id\":2,\"call\":\"account.switch\",\"params\":{\"account\":\"bob@example.com\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"switched\":true") && txt.contains("bob@example.com"), "account.switch")
+    None => debug_assert(false, "expected account.switch")
+  }
+
+  // vault.status + vault.secrets (with filter)
+  match router.handle_wire("{\"id\":3,\"call\":\"vault.status\",\"params\":{}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"secretCount\":2"), "vault.status")
+    None => debug_assert(false, "expected vault.status")
+  }
+  match router.handle_wire("{\"id\":4,\"call\":\"vault.secrets\",\"params\":{\"vault\":\"v1\",\"query\":\"GitHub\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("GitHub PAT") && !txt.contains("Stripe"), "vault.secrets filtered")
+    None => debug_assert(false, "expected vault.secrets")
+  }
+
+  // search.chats + search.messages (via said)
+  match router.handle_wire("{\"id\":5,\"call\":\"search.chats\",\"params\":{\"query\":\"c1\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"c1\"") && txt.contains("Chat c1"), "search.chats")
+    None => debug_assert(false, "expected search.chats")
+  }
+  match router.handle_wire("{\"id\":6,\"call\":\"search.messages\",\"params\":{\"query\":\"pion search\",\"station\":\"s1\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("hello pion search world") && !txt.contains("unrelated"), "search.messages said")
+    None => debug_assert(false, "expected search.messages")
+  }
+
+  // settings.set + settings.get (single + all)
+  match router.handle_wire("{\"id\":7,\"call\":\"settings.set\",\"params\":{\"key\":\"density\",\"value\":\"compact\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"saved\":true"), "settings.set")
+    None => debug_assert(false, "expected settings.set")
+  }
+  match router.handle_wire("{\"id\":8,\"call\":\"settings.get\",\"params\":{\"key\":\"density\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"value\":\"compact\""), "settings.get single")
+    None => debug_assert(false, "expected settings.get")
+  }
+  match router.handle_wire("{\"id\":9,\"call\":\"settings.get\",\"params\":{}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"density\":\"compact\""), "settings.get all")
+    None => debug_assert(false, "expected settings.get all")
+  }
+
+  // chat.draft put -> get -> clear
+  match router.handle_wire("{\"id\":10,\"call\":\"chat.draft\",\"params\":{\"chat\":\"c1\",\"text\":\"draft body\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"saved\":true"), "chat.draft put")
+    None => debug_assert(false, "expected chat.draft put")
+  }
+  match router.handle_wire("{\"id\":11,\"call\":\"chat.draft\",\"params\":{\"chat\":\"c1\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("draft body"), "chat.draft get")
+    None => debug_assert(false, "expected chat.draft get")
+  }
+  match router.handle_wire("{\"id\":12,\"call\":\"chat.draft\",\"params\":{\"chat\":\"c1\",\"clear\":true}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"cleared\":true"), "chat.draft clear")
+    None => debug_assert(false, "expected chat.draft clear")
+  }
+}

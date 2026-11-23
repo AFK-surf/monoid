@@ -1,0 +1,1809 @@
+// Deterministic end-to-end simulation tests for `pion/client-core/packages/sync`:
+// `SimAccountDb` (in-memory SQLite stand-in with statement/write/tx counters) +
+// `SimStation` (deterministic HTTP + SSE `/events` server on `effect::Runtime` virtual clock).
+
+import "base_codec"
+import "crypto"
+import "effect"
+import "form"
+import "lock"
+import "outbox"
+import "protocol"
+import "shell"
+import "sql"
+import "store"
+
+// ── In-memory SimAccountDb with SQL statement/write/Burst counters ──
+
+struct SimChatRow {
+  station : String
+  archived : Int
+  id : String
+  ord : Double
+  thread : Option[Int]
+  session : Option[String]
+  pinned_at : Option[Int64]
+  last_active : Int64
+  json : String
+}
+
+struct SimAccountDb {
+  sh : shell::Shell
+  entries : Map[String, Array[(Int, String)]]
+  chats : Map[String, SimChatRow]
+  chat_order : Array[String]
+  threads : Map[String, String]
+  thread_reads : Map[String, (Int, Int)]
+  sessions : Map[String, String]
+  jobs : Map[String, String]
+  outbox_rows : Map[String, String]
+  pending_rows : Map[String, String]
+  changing_rows : Map[String, String]
+  drafts : Map[String, String]
+  prefs : Map[String, String]
+  pref_order : Array[String]
+  said : Array[(String, Int, Int, Int, Int64, String)]
+  account_docs : Map[String, String]
+  workspaces : Map[String, (String, Option[Int64])]
+  workspace_order : Array[String]
+  station_docs : Map[String, (String, String, String, Option[Int64])]
+  station_doc_order : Array[String]
+  log_use : Map[String, Int64]
+  md : Map[String, (Int64, String)]
+  ran : Array[String]
+}
+
+fn SimAccountDb::new(rt : effect::Runtime) -> SimAccountDb {
+  let holder : Array[SimAccountDb] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(_ : Int64, _ : String, _ : base_codec::Json, _ : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      holder[0].answer(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = SimAccountDb::{
+    sh: sh,
+    entries: Map::new(),
+    chats: Map::new(),
+    chat_order: [],
+    threads: Map::new(),
+    thread_reads: Map::new(),
+    sessions: Map::new(),
+    jobs: Map::new(),
+    outbox_rows: Map::new(),
+    pending_rows: Map::new(),
+    changing_rows: Map::new(),
+    drafts: Map::new(),
+    prefs: Map::new(),
+    pref_order: [],
+    said: [],
+    account_docs: Map::new(),
+    workspaces: Map::new(),
+    workspace_order: [],
+    station_docs: Map::new(),
+    station_doc_order: [],
+    log_use: Map::new(),
+    md: Map::new(),
+    ran: [],
+  }
+  holder.push(db)
+  db
+}
+
+fn p_str(params : Array[base_codec::Json], i : Int) -> String {
+  if i < 0 || i >= params.length() { "" } else { sql::col_text(params, i) }
+}
+
+fn p_int64(params : Array[base_codec::Json], i : Int) -> Int64 {
+  if i < 0 || i >= params.length() { 0.to_int64() } else { sql::col_int64(params, i) }
+}
+
+fn p_int(params : Array[base_codec::Json], i : Int) -> Int {
+  p_int64(params, i).to_int()
+}
+
+fn p_opt_int(params : Array[base_codec::Json], i : Int) -> Option[Int] {
+  if i < 0 || i >= params.length() {
+    None
+  } else {
+    match sql::col_opt_int64(params, i) {
+      Some(v) => Some(v.to_int())
+      None => None
+    }
+  }
+}
+
+fn p_opt_int64(params : Array[base_codec::Json], i : Int) -> Option[Int64] {
+  if i < 0 || i >= params.length() { None } else { sql::col_opt_int64(params, i) }
+}
+
+fn p_opt_str(params : Array[base_codec::Json], i : Int) -> Option[String] {
+  if i < 0 || i >= params.length() { None } else { sql::col_opt_text(params, i) }
+}
+
+fn SimAccountDb::put_entry_row(self : SimAccountDb, station : String, thread : Int, n : Int, raw : String) -> Unit {
+  let k = station + " " + thread.to_string()
+  let arr = match self.entries.get(k) {
+    Some(a) => a
+    None => {
+      let a : Array[(Int, String)] = []
+      self.entries.set(k, a)
+      a
+    }
+  }
+  let mut replaced = false
+  for i in 0..<arr.length() {
+    if arr[i].0 == n {
+      arr[i] = (n, raw)
+      replaced = true
+      break
+    }
+  }
+  if !replaced {
+    arr.push((n, raw))
+  }
+}
+
+fn SimAccountDb::entry_count(self : SimAccountDb, station : String, thread : Int) -> Int {
+  match self.entries.get(station + " " + thread.to_string()) {
+    Some(a) => a.length()
+    None => 0
+  }
+}
+
+fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Json) -> shell::AskResult {
+  if op == "sql.open" {
+    return shell::AskResult::Ok(base_codec::json_obj([("id", base_codec::json_int(1))]))
+  }
+  if op == "sql.close" {
+    return shell::AskResult::Ok(base_codec::json_null())
+  }
+  let stmt = match base_codec::json_get(args, "sql") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return shell::AskResult::Err(shell::ShellError::{ message: "missing sql" })
+  }
+  let p = match base_codec::json_get(args, "params") {
+    Some(base_codec::Json::Arr(a)) => a
+    _ => []
+  }
+  self.ran.push(stmt)
+  if op == "sql.exec" {
+    if stmt == "BEGIN IMMEDIATE" || stmt == "COMMIT" || stmt == "ROLLBACK" {
+      return shell::AskResult::Ok(base_codec::json_null())
+    }
+    return shell::AskResult::Ok(base_codec::json_null())
+  }
+  let rows : Array[base_codec::Json] = []
+  let mut changed = 0
+  if stmt == store::sql_window_end() {
+    let k = p_str(p, 0) + " " + p_str(p, 1)
+    let most = p_int(p, 2)
+    match self.entries.get(k) {
+      Some(all) => {
+        let mut i = all.length() - 1
+        while i >= 0 && rows.length() < most {
+          let (en, ej) = all[i]
+          rows.push(base_codec::json_arr([base_codec::json_int(en), base_codec::json_str(ej)]))
+          i -= 1
+        }
+      }
+      None => ()
+    }
+  } else if stmt.starts_with(store::sql_md_many_head()) {
+    let st = p_str(p, 0)
+    for i in 1..<p.length() {
+      let key = p_str(p, i)
+      match self.md.get(st + " " + key) {
+        Some((used, j)) => rows.push(base_codec::json_arr([base_codec::json_str(key), base_codec::json_int64(used), base_codec::json_str(j)]))
+        None => ()
+      }
+    }
+  } else if stmt == store::sql_opened() {
+    match self.log_use.get(p_str(p, 0) + " " + p_str(p, 1) + " " + p_str(p, 2)) {
+      Some(at) => rows.push(base_codec::json_arr([base_codec::json_int64(at)]))
+      None => ()
+    }
+  } else if stmt == store::sql_note_opened() {
+    self.log_use.set(p_str(p, 0) + " " + p_str(p, 1) + " " + p_str(p, 2), p_int64(p, 3))
+    changed = 1
+  } else if stmt == sql_entry_put() {
+    let st = p_str(p, 0)
+    let th = p_int(p, 1)
+    let n = p_int(p, 2)
+    let raw = p_str(p, 3)
+    self.put_entry_row(st, th, n, raw)
+    // Mirror `said_put` SQLite trigger for message/edit entries
+    match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) => {
+        let kind = match base_codec::json_get(j, "kind") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+        if kind == "message" {
+          let txt = match base_codec::json_get(j, "text") {
+            Some(base_codec::Json::Str(s)) => s
+            _ => ""
+          }
+          let at = match base_codec::json_get(j, "at") {
+            Some(base_codec::Json::Num(v, _)) => v.to_int64()
+            _ => 0.to_int64()
+          }
+          self.said.push((st, th, n, n, at, txt))
+        }
+      }
+      base_codec::JsonParseResult::Err(_) => ()
+    }
+    changed = 1
+  } else if stmt == sql_chat_upsert() {
+    let st = p_str(p, 0)
+    let cid = p_str(p, 1)
+    let arch = p_int(p, 2)
+    let key = st + ":" + arch.to_string() + ":" + cid
+    if self.chats.get(key).is_none() {
+      self.chat_order.push(key)
+    }
+    self.chats.set(key, SimChatRow::{
+      station: st,
+      archived: arch,
+      id: cid,
+      ord: sql::col_double(p, 3),
+      thread: p_opt_int(p, 4),
+      session: p_opt_str(p, 5),
+      pinned_at: p_opt_int64(p, 8),
+      last_active: p_int64(p, 7),
+      json: p_str(p, 15),
+    })
+    changed = 1
+  } else if stmt == store::sql_chat_window() {
+    let limit = p_int(p, 6)
+    for i in 0..<self.chat_order.length() {
+      if rows.length() >= limit {
+        break
+      }
+      match self.chats.get(self.chat_order[i]) {
+        Some(c) => {
+          if c.archived == 0 {
+            let pj = match c.pinned_at {
+              Some(ts) => base_codec::json_int64(ts)
+              None => base_codec::json_null()
+            }
+            rows.push(base_codec::json_arr([
+              base_codec::json_str(c.station),
+              base_codec::json_int(c.archived),
+              base_codec::json_str(c.id),
+              pj,
+              base_codec::json_int64(c.last_active),
+              base_codec::json_num(c.ord),
+            ]))
+          }
+        }
+        None => ()
+      }
+    }
+  } else if stmt == store::sql_chat_by_key() {
+    let key = p_str(p, 0) + ":" + p_int(p, 1).to_string() + ":" + p_str(p, 2)
+    match self.chats.get(key) {
+      Some(c) => rows.push(base_codec::json_arr([
+        base_codec::json_str(c.station),
+        base_codec::json_int(c.archived),
+        base_codec::json_str(c.id),
+        base_codec::json_str(c.json),
+      ]))
+      None => ()
+    }
+  } else if stmt == sql_thread_upsert() {
+    self.threads.set(p_str(p, 0) + ":" + p_int(p, 1).to_string(), p_str(p, 10))
+    changed = 1
+  } else if stmt == sql_session_upsert() {
+    self.sessions.set(p_str(p, 0) + ":" + p_str(p, 1), p_str(p, 9))
+    changed = 1
+  } else if stmt == sql_job_upsert() {
+    self.jobs.set(p_str(p, 0) + ":" + p_str(p, 1), p_str(p, 6))
+    changed = 1
+  } else if stmt == sql_outbox_put() {
+    self.outbox_rows.set(p_str(p, 0) + ":" + p_int(p, 1).to_string(), p_str(p, 2))
+    changed = 1
+  } else if stmt == sql_outbox_delete() {
+    self.outbox_rows.remove(p_str(p, 0) + ":" + p_int(p, 1).to_string())
+    changed = 1
+  } else if stmt == store::sql_outbox_one() {
+    let st = p_str(p, 0)
+    let th = p_int(p, 1)
+    match self.outbox_rows.get(st + ":" + th.to_string()) {
+      Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(st), base_codec::json_int(th), base_codec::json_str(j)]))
+      None => ()
+    }
+  } else if stmt == sql_pending_put() {
+    self.pending_rows.set(p_str(p, 1) + ":" + p_str(p, 0), p_str(p, 2))
+    changed = 1
+  } else if stmt == sql_pending_delete() {
+    self.pending_rows.remove(p_str(p, 1) + ":" + p_str(p, 0))
+    changed = 1
+  } else if stmt == sql_changing_put() {
+    self.changing_rows.set(p_str(p, 0) + ":" + p_int(p, 1).to_string(), p_str(p, 2))
+    changed = 1
+  } else if stmt == sql_changing_delete() {
+    self.changing_rows.remove(p_str(p, 0) + ":" + p_int(p, 1).to_string())
+    changed = 1
+  } else if stmt == store::sql_account_doc_put() {
+    self.account_docs.set(p_str(p, 0), p_str(p, 1))
+    changed = 1
+  } else if stmt == store::sql_account_doc_one() {
+    match self.account_docs.get(p_str(p, 0)) {
+      Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(j)]))
+      None => ()
+    }
+  } else if stmt == store::sql_workspace_put() {
+    let wid = p_str(p, 0)
+    if self.workspaces.get(wid).is_none() {
+      self.workspace_order.push(wid)
+    }
+    self.workspaces.set(wid, (p_str(p, 1), p_opt_int64(p, 2)))
+    changed = 1
+  } else if stmt == store::sql_workspace_all() {
+    for i in 0..<self.workspace_order.length() {
+      let wid = self.workspace_order[i]
+      match self.workspaces.get(wid) {
+        Some((j, conf)) => {
+          let cj = match conf {
+            Some(ts) => base_codec::json_int64(ts)
+            None => base_codec::json_null()
+          }
+          rows.push(base_codec::json_arr([base_codec::json_str(wid), base_codec::json_str(j), cj]))
+        }
+        None => ()
+      }
+    }
+  } else if stmt == store::sql_station_doc_put() {
+    let addr = p_str(p, 0)
+    let kind = p_str(p, 1)
+    let k = addr + ":" + kind
+    if self.station_docs.get(k).is_none() {
+      self.station_doc_order.push(k)
+    }
+    self.station_docs.set(k, (addr, kind, p_str(p, 2), p_opt_int64(p, 3)))
+    changed = 1
+  } else if stmt == store::sql_station_doc_by_kind() {
+    let want_kind = p_str(p, 0)
+    for i in 0..<self.station_doc_order.length() {
+      match self.station_docs.get(self.station_doc_order[i]) {
+        Some((addr, kind, j, conf)) => {
+          if kind == want_kind {
+            let cj = match conf {
+              Some(ts) => base_codec::json_int64(ts)
+              None => base_codec::json_null()
+            }
+            rows.push(base_codec::json_arr([
+              base_codec::json_str(addr),
+              base_codec::json_str(kind),
+              base_codec::json_str(j),
+              cj,
+            ]))
+          }
+        }
+        None => ()
+      }
+    }
+  } else if stmt == store::sql_draft_put() {
+    self.drafts.set(p_str(p, 0) + ":" + p_str(p, 1), p_str(p, 2))
+    changed = 1
+  } else if stmt == store::sql_draft_delete() {
+    self.drafts.remove(p_str(p, 0) + ":" + p_str(p, 1))
+    changed = 1
+  } else if stmt == store::sql_draft_one() {
+    let st = p_str(p, 0)
+    let ch = p_str(p, 1)
+    match self.drafts.get(st + ":" + ch) {
+      Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(st), base_codec::json_str(ch), base_codec::json_str(j)]))
+      None => ()
+    }
+  } else if stmt == store::sql_thread_set_read() {
+    let read_seq = p_int(p, 0)
+    let unread = p_int(p, 1)
+    let st = p_str(p, 2)
+    let th = p_int(p, 3)
+    self.thread_reads.set(st + ":" + th.to_string(), (read_seq, unread))
+    changed = 1
+  } else if stmt == store::sql_chat_set_unread() {
+    changed = 1
+  } else if stmt == store::sql_pref_put() {
+    let k = p_str(p, 0) + ":" + p_str(p, 1)
+    if self.prefs.get(k).is_none() {
+      self.pref_order.push(k)
+    }
+    self.prefs.set(k, p_str(p, 2))
+    changed = 1
+  } else if stmt == store::sql_pref_get() {
+    match self.prefs.get(p_str(p, 0) + ":" + p_str(p, 1)) {
+      Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(j)]))
+      None => ()
+    }
+  } else if stmt == store::sql_pref_all() {
+    let ws_prefix = p_str(p, 0) + ":"
+    for i in 0..<self.pref_order.length() {
+      let fk = self.pref_order[i]
+      if fk.starts_with(ws_prefix) {
+        let key_only = fk.slice(ws_prefix.length(), fk.length())
+        match self.prefs.get(fk) {
+          Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(key_only), base_codec::json_str(j)]))
+          None => ()
+        }
+      }
+    }
+  } else if stmt == store::sql_search_messages_station() || stmt == store::sql_search_messages_all() {
+    let filter_st = if stmt == store::sql_search_messages_station() { Some(p_str(p, 0)) } else { None }
+    let q = if stmt == store::sql_search_messages_station() { p_str(p, 1) } else { p_str(p, 0) }
+    for i in 0..<self.said.length() {
+      let (st, th, seq, n, at, txt) = self.said[i]
+      let st_ok = match filter_st {
+        Some(want) => st == want
+        None => true
+      }
+      if st_ok && txt.contains(q) {
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(st),
+          base_codec::json_int(th),
+          base_codec::json_int(seq),
+          base_codec::json_int(n),
+          base_codec::json_int64(at),
+          base_codec::json_str(txt),
+        ]))
+      }
+    }
+  } else if stmt == store::sql_search_chats() {
+    let q = p_str(p, 1)
+    let limit = p_int(p, 2)
+    for i in 0..<self.chat_order.length() {
+      if rows.length() >= limit {
+        break
+      }
+      match self.chats.get(self.chat_order[i]) {
+        Some(c) => {
+          if c.archived == 0 && (q.length() == 0 || c.json.contains(q) || c.id.contains(q)) {
+            let th_j = match c.thread {
+              Some(t) => base_codec::json_int(t)
+              None => base_codec::json_null()
+            }
+            rows.push(base_codec::json_arr([
+              base_codec::json_str(c.station),
+              base_codec::json_int(c.archived),
+              base_codec::json_str(c.id),
+              th_j,
+              base_codec::json_int64(c.last_active),
+              base_codec::json_str(c.json),
+            ]))
+          }
+        }
+        None => ()
+      }
+    }
+  } else {
+    return shell::AskResult::Err(shell::ShellError::{ message: "SimAccountDb unknown SQL: " + stmt })
+  }
+  if op == "sql.run" {
+    shell::AskResult::Ok(base_codec::json_int(changed))
+  } else {
+    shell::AskResult::Ok(base_codec::json_arr(rows))
+  }
+}
+
+fn sim_is_write(s : String) -> Bool {
+  s.starts_with("INSERT") || s.starts_with("UPDATE") || s.starts_with("DELETE") || s.starts_with("BEGIN") || s.starts_with("COMMIT")
+}
+
+fn SimAccountDb::counts_since(self : SimAccountDb, from : Int) -> (Int, Int, Int) {
+  let mut writes = 0
+  let mut tx = 0
+  for i in from..<self.ran.length() {
+    let s = self.ran[i]
+    if sim_is_write(s) {
+      writes += 1
+    }
+    if s == "BEGIN IMMEDIATE" {
+      tx += 1
+    }
+  }
+  (self.ran.length() - from, writes, tx)
+}
+
+// ── Deterministic SimStation over effect::Runtime virtual clock ──
+
+struct SimStation {
+  rt : effect::Runtime
+  mut offline : Bool
+  mut reject_path_prefix : Option[String]
+  mut reject_code : String
+  mut reject_recovery : String
+  mut next_entry_n : Int
+  mut snapshot_json : base_codec::Json
+  thread_entries : Map[Int, base_codec::Json]
+  thread_delay_ms : Map[Int, Int]
+  seen_client_keys : Map[String, Int]
+  mut active_sse_chunk : Option[(Bytes) -> Unit]
+  mut active_sse_done : Option[effect::Deferred[Unit]]
+  requests_seen : Array[String]
+}
+
+fn SimStation::new(rt : effect::Runtime) -> SimStation {
+  SimStation::{
+    rt: rt,
+    offline: false,
+    reject_path_prefix: None,
+    reject_code: "forbidden",
+    reject_recovery: "Ask a workspace owner to grant permission and retry.",
+    next_entry_n: 100,
+    snapshot_json: base_codec::json_obj([("chats", base_codec::json_arr([])), ("entries", base_codec::json_arr([]))]),
+    thread_entries: Map::new(),
+    thread_delay_ms: Map::new(),
+    seen_client_keys: Map::new(),
+    active_sse_chunk: None,
+    active_sse_done: None,
+    requests_seen: [],
+  }
+}
+
+fn SimStation::push_sse(self : SimStation, raw_sse : String) -> Unit {
+  match self.active_sse_chunk {
+    Some(cb) => cb(raw_sse.to_bytes())
+    None => ()
+  }
+}
+
+fn SimStation::drop_stream(self : SimStation) -> Unit {
+  let done_opt = self.active_sse_done
+  self.active_sse_chunk = None
+  self.active_sse_done = None
+  match done_opt {
+    Some(d) => {
+      let _ = d.fail(effect::EffectError::Custom("network cut"))
+    }
+    None => ()
+  }
+}
+
+fn sleep_reply_k[T](delay : Int, outcome : effect::Exit[T], k : (effect::Exit[T]) -> Unit) -> Unit {
+  effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
+    match sex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(_) => k(outcome)
+    }
+  })
+}
+
+fn SimStation::transport(self : SimStation) -> StationTransport {
+  StationTransport::{
+    request_k: fn(
+      method_name : String,
+      path : String,
+      _headers : Array[(String, String)],
+      body : Bytes,
+      k : (effect::Exit[HttpReply]) -> Unit,
+    ) -> Unit {
+      self.requests_seen.push(method_name + " " + path)
+      if self.offline {
+        sleep_reply_k(10, effect::Exit::Failed(effect::EffectError::Custom("offline")), k)
+        return
+      }
+      match self.reject_path_prefix {
+        Some(prefix) => {
+          if path.starts_with(prefix) {
+            let err_body = base_codec::json_stringify(base_codec::json_obj([
+              ("code", base_codec::json_str(self.reject_code)),
+              ("error", base_codec::json_str("operation refused by station")),
+              ("recovery", base_codec::json_str(self.reject_recovery)),
+            ])).to_bytes()
+            sleep_reply_k(10, effect::Exit::Succeeded(HttpReply::{ status: 403, headers: [], body: err_body }), k)
+            return
+          }
+        }
+        None => ()
+      }
+      if method_name == "GET" && path == "/chats" {
+        let out = base_codec::json_stringify(self.snapshot_json).to_bytes()
+        sleep_reply_k(10, effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: out }), k)
+        return
+      }
+      if method_name == "GET" && path.starts_with("/threads/") && path.ends_with("/entries") {
+        let mid = path.slice(9, path.length() - 8)
+        let th = match base_codec::parse_int64_str(mid) {
+          Some(v) => v.to_int()
+          None => 0
+        }
+        let delay = match self.thread_delay_ms.get(th) {
+          Some(d) => d
+          None => 10
+        }
+        let payload = match self.thread_entries.get(th) {
+          Some(j) => j
+          None => base_codec::json_obj([("entries", base_codec::json_arr([]))])
+        }
+        let out = base_codec::json_stringify(payload).to_bytes()
+        sleep_reply_k(delay, effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: out }), k)
+        return
+      }
+      if method_name == "POST" && path.starts_with("/threads/") && path.ends_with("/messages") {
+        let parsed = base_codec::json_parse(bytes_to_str(body))
+        let ck = match parsed {
+          base_codec::JsonParseResult::Ok(j) =>
+          match base_codec::json_get(j, "clientKey") {
+            Some(base_codec::Json::Str(s)) => s
+            _ => ""
+          }
+          base_codec::JsonParseResult::Err(_) => ""
+        }
+        let assigned_n = match self.seen_client_keys.get(ck) {
+          Some(existing) => existing
+          None => {
+            self.next_entry_n += 1
+            let n = self.next_entry_n
+            if ck.length() > 0 {
+              self.seen_client_keys.set(ck, n)
+            }
+            n
+          }
+        }
+        let ack = base_codec::json_stringify(base_codec::json_obj([
+          ("n", base_codec::json_int(assigned_n)),
+          ("clientKey", base_codec::json_str(ck)),
+        ])).to_bytes()
+        sleep_reply_k(10, effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: ack }), k)
+        return
+      }
+      sleep_reply_k(10, effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{}".to_bytes() }), k)
+    },
+    stream_k: fn(
+      path : String,
+      _headers : Array[(String, String)],
+      on_chunk : (Bytes) -> Unit,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      self.requests_seen.push("SSE " + path)
+      if self.offline {
+        sleep_reply_k(10, effect::Exit::Failed(effect::EffectError::Custom("offline")), k)
+        return
+      }
+      let done : effect::Deferred[Unit] = effect::Deferred::new()
+      self.active_sse_chunk = Some(on_chunk)
+      self.active_sse_done = Some(done)
+      // Deliver SSE hello comment on virtual clock, then stay open until dropped or interrupted.
+      effect::sleep_k(5, fn(sex : effect::Exit[Unit]) -> Unit {
+        match sex {
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(_) => {
+            on_chunk(": connected\n\n".to_bytes())
+            done.wait_k(k)
+          }
+        }
+      })
+    },
+  }
+}
+
+fn make_seed(byte_val : Int) -> Bytes {
+  let b = Bytes::new(32)
+  for i in 0..<32 {
+    b[i] = ((byte_val + i) & 0xFF) as Byte
+  }
+  b
+}
+
+fn hex_64(ch : String) -> String {
+  let sb = StringBuilder::new()
+  for _ in 0..<64 {
+    sb.write_string(ch)
+  }
+  sb.to_string()
+}
+
+// ── Test 1: Cold open (0 writes, 3 statements) -> connect SimStation -> snapshot + SSE batch (1 wake) ──
+
+test "E2E 1: cold open writes nothing (3 stmts), then SimStation snapshot + SSE batch coalesces to 1 wake" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-1") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => {
+      debug_assert(false, e.to_string())
+      return
+    }
+  }
+  // Seed 2 cached messages + precomputed markdown tree in local SQLite before cold open.
+  let m1 = base_codec::json_obj([
+    ("kind", base_codec::json_str("message")),
+    ("authorKind", base_codec::json_str("agent")),
+    ("author", base_codec::json_str("bot")),
+    ("text", base_codec::json_str("cached hello")),
+  ])
+  sim_db.put_entry_row("st1", 7, 1, base_codec::json_stringify(m1))
+  let k1 = store::md_key("cached hello")
+  sim_db.md.set("st1 " + k1, (1000.to_int64(), "{\"tree\":1}"))
+
+  let station = SimStation::new(rt)
+  station.snapshot_json = base_codec::json_obj([
+    (
+      "chats",
+      base_codec::json_arr([
+        base_codec::json_obj([
+          ("id", base_codec::json_str("c-7")),
+          ("archived", base_codec::json_int(0)),
+          ("ord", base_codec::json_num(1.0)),
+          ("thread", base_codec::json_int(7)),
+          ("lastActive", base_codec::json_int64(2000.to_int64())),
+          ("mine", base_codec::json_bool(true)),
+          ("title", base_codec::json_str("Initial Chat")),
+        ]),
+      ]),
+    ),
+    ("entries", base_codec::json_arr([])),
+  ])
+
+  let wakes = [0]
+  let core = ClientCore::new("ws-1", "st1", rt, db, station.transport(), fn() -> Unit {
+    wakes[0] = wakes[0] + 1
+  })
+
+  // Step 1: Cold open chat 7 — must execute 0 writes and exactly 3 SQL statements, 0 network requests!
+  let before_open = sim_db.ran.length()
+  let view = match core.cold_open_chat(7, 5000.to_int64()) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(e) => {
+      debug_assert(false, e.to_string())
+      return
+    }
+  }
+  let (stmts, writes, _tx) = sim_db.counts_since(before_open)
+  debug_assert(writes == 0, "cold open must do 0 SQL writes")
+  debug_assert(stmts == 3, "cold open must take exactly 3 statements (entries, md_kept preload, last_opened)")
+  debug_assert(view.entries.length() == 1, "cold open loaded 1 cached entry")
+  debug_assert(station.requests_seen.length() == 0, "cold open must not touch network")
+
+  // Step 2: Connect to SimStation -> receives initial snapshot.
+  core.start()
+  rt.advance(30)
+  let snap_events = core.drain_frame()
+  debug_assert(snap_events.length() >= 2, "received connection + snapshot events")
+  match store::get_chat_by_key(db, "st1", 0, "c-7") {
+    sql::SqlResult::Ok(Some(rec)) => debug_assert(rec.id == "c-7", "snapshot persisted chat c-7")
+    _ => debug_assert(false, "chat c-7 missing after snapshot")
+  }
+
+  // Step 3: Push a multi-event SSE batch (2 entries + 1 read state) in one chunk ->
+  // must commit in 1 Burst transaction and trigger exactly 1 coalesced FrameOutbox wake!
+  let wakes_before = wakes[0]
+  let sql_before = sim_db.ran.length()
+  let batch_sse =
+  "id: ev-10\nevent: entry\ndata: {\"workspace\":\"ws-1\",\"thread\":7,\"n\":2,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"live 1\"}\n\n" +
+  "id: ev-11\nevent: entry\ndata: {\"workspace\":\"ws-1\",\"thread\":7,\"n\":3,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"live 2\"}\n\n" +
+  "id: ev-12\nevent: read\ndata: {\"workspace\":\"ws-1\",\"id\":7,\"read\":3,\"unread\":0}\n\n"
+  station.push_sse(batch_sse)
+  let (_s2, _w2, tx_count) = sim_db.counts_since(sql_before)
+  debug_assert(tx_count == 1, "multi-event SSE batch must commit in 1 Burst transaction")
+  debug_assert(wakes[0] - wakes_before == 1, "FrameOutbox must coalesce entire SSE batch into 1 frame wake")
+  let drained = core.drain_frame()
+  debug_assert(drained.length() == 3, "FrameOutbox drained 3 typed CoreEvents (2 EntryAdded + 1 ThreadReadChanged)")
+  debug_assert(sim_db.entry_count("st1", 7) == 3, "thread 7 now has 3 entries in SQLite")
+  core.stop()
+}
+
+// ── Test 2: Offline optimistic send -> immediate local outbox -> reconnect auto-flush -> exact client_key dedup ──
+
+test "E2E 2: offline optimistic send_message -> auto-flush on reconnect -> exact client_key reconciliation with 0 duplicates" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-2") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  station.offline = true
+  let core = ClientCore::new("ws-1", "st1", rt, db, station.transport(), fn() -> Unit {})
+
+  // Send message while offline -> immediately persisted to local `outbox` and pushed to FrameOutbox.
+  match core.send_message(42, "ck-offline-1", "alice", "hello while offline", 10000.to_int64()) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(e) => {
+      debug_assert(false, e.to_string())
+      return
+    }
+  }
+  debug_assert(core.local_outbox.pending_message_count() == 1, "1 message queued in local outbox")
+  match store::get_outbox(db, "st1", 42) {
+    sql::SqlResult::Ok(Some(row)) => debug_assert(row.json.contains("ck-offline-1"), "outbox SQLite row holds ck-offline-1")
+    _ => debug_assert(false, "outbox row missing in SQLite")
+  }
+  let queued_evs = core.drain_frame()
+  debug_assert(queued_evs.length() == 1, "OutboxQueued emitted immediately with zero network wait")
+
+  // Start stream while offline (enters Reconnecting backoff), then bring network back online.
+  core.start()
+  rt.advance(50)
+  station.offline = false
+  // Advance past first reconnect backoff (1000ms) + connect + POST flush.
+  rt.advance(1200)
+
+  // Verify auto-flush succeeded, outbox cleared, and entry stored once with exact client_key.
+  debug_assert(core.local_outbox.pending_message_count() == 0, "outbox reconciled after reconnect")
+  match store::get_outbox(db, "st1", 42) {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "SQLite outbox row must be deleted after exact client_key confirmation")
+  }
+  debug_assert(sim_db.entry_count("st1", 42) == 1, "confirmed entry stored once")
+
+  // Even if the station also replays the same entry over SSE with the same `n` & `clientKey`, no duplicate!
+  station.push_sse(
+    "id: ev-99\nevent: entry\ndata: {\"workspace\":\"ws-1\",\"thread\":42,\"n\":101,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice\",\"text\":\"hello while offline\",\"clientKey\":\"ck-offline-1\"}\n\n",
+  )
+  debug_assert(sim_db.entry_count("st1", 42) == 1, "replayed SSE entry with same n & clientKey produces 0 duplicates")
+  core.stop()
+}
+
+// ── Test 3: Station rejects mutation -> automatic rollback of local overlay + clear error & recovery hint ──
+
+test "E2E 3: station rejects send_message and rename_chat -> automatic rollback + FrameOutbox error with recovery" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-3") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  station.snapshot_json = base_codec::json_obj([
+    (
+      "chats",
+      base_codec::json_arr([
+        base_codec::json_obj([
+          ("id", base_codec::json_str("c-9")),
+          ("archived", base_codec::json_int(0)),
+          ("ord", base_codec::json_num(1.0)),
+          ("thread", base_codec::json_int(9)),
+          ("lastActive", base_codec::json_int64(500.to_int64())),
+          ("title", base_codec::json_str("Original Title")),
+        ]),
+      ]),
+    ),
+    ("entries", base_codec::json_arr([])),
+  ])
+
+  let core = ClientCore::new("ws-1", "st1", rt, db, station.transport(), fn() -> Unit {})
+  core.start()
+  rt.advance(30)
+  let _ = core.drain_frame()
+
+  // Configure station to reject chat rename with 403 + explicit recovery hint.
+  station.reject_path_prefix = Some("/chats/c-9/rename")
+  station.reject_code = "read_only_member"
+  station.reject_recovery = "Ask an owner to upgrade your role before renaming."
+
+  let _ = core.rename_chat("c-9", "Unauthorized Rename")
+  debug_assert(core.local_outbox.pending_overlay_count() == 1, "overlay persisted optimistically")
+  rt.advance(30)
+
+  // Overlay must be rolled back, changing row deleted, original chat intact, and OverlayRolledBack emitted.
+  debug_assert(core.local_outbox.pending_overlay_count() == 0, "overlay cleared on rollback")
+  debug_assert(sim_db.changing_rows.length() == 0, "changing table cleared on rollback")
+  match store::get_chat_by_key(db, "st1", 0, "c-9") {
+    sql::SqlResult::Ok(Some(rec)) => debug_assert(rec.json.contains("Original Title"), "original chat record preserved")
+    _ => debug_assert(false, "chat c-9 missing after rollback")
+  }
+  let evs = core.drain_frame()
+  let mut saw_rollback = false
+  for i in 0..<evs.length() {
+    match evs[i] {
+      CoreEvent::OverlayRolledBack(_st, target, kind, code, recovery) => {
+        if target == "c-9" && kind == "rename" && code == "read_only_member" && recovery.contains("upgrade") {
+          saw_rollback = true
+        }
+      }
+      _ => ()
+    }
+  }
+  debug_assert(saw_rollback, "FrameOutbox received OverlayRolledBack with exact code and recovery hint")
+  core.stop()
+}
+
+// ── Test 4: Native pion/rules lock verification (real Ed25519 + SHA-256), fork choice & vault cert ──
+
+test "E2E 4: SimStation pushes forked lock chain + forged entry -> lock_bridge rejects forgery, settles fork, verifies vault cert" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-4") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  let core = ClientCore::new("ws-lock", "st1", rt, db, station.transport(), fn() -> Unit {})
+
+  // Real Ed25519 keypairs for Owner (Alice), Admin (Bob), and an unauthorized Attacker (Eve).
+  let alice_seed = make_seed(11)
+  let bob_seed = make_seed(22)
+  let eve_seed = make_seed(33)
+  let alice_key = ed25519_key_id(alice_seed)
+  let bob_key = ed25519_key_id(bob_seed)
+  let alice_dev_id = hex_64("1")
+  let bob_dev_id = hex_64("2")
+
+  // Genesis entry signed by Alice (owner), naming both Alice (owner) and Bob (admin) + their signing keys.
+  let g_unsigned = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("ws-lock")),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1790000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    (
+      "body",
+      form::Json::Obj([
+        ("owner", form::Json::Str("alice")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("app.still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        (
+          "members",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("sub", form::Json::Str("alice")),
+              ("email", form::Json::Str("alice@example.com")),
+              ("role", form::Json::Str("owner")),
+            ]),
+            form::Json::Obj([
+              ("sub", form::Json::Str("bob")),
+              ("email", form::Json::Str("bob@example.com")),
+              ("role", form::Json::Str("admin")),
+            ]),
+          ]),
+        ),
+        (
+          "devices",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("id", form::Json::Str(alice_dev_id)),
+              ("sub", form::Json::Str("alice")),
+              ("kind", form::Json::Str("app")),
+              ("label", form::Json::Str("Alice Mac")),
+              ("sign_key", form::Json::Str(alice_key)),
+            ]),
+            form::Json::Obj([
+              ("id", form::Json::Str(bob_dev_id)),
+              ("sub", form::Json::Str("bob")),
+              ("kind", form::Json::Str("app")),
+              ("label", form::Json::Str("Bob Linux")),
+              ("sign_key", form::Json::Str(bob_key)),
+            ]),
+          ]),
+        ),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ]),
+    ),
+  ])
+  let g_signed = match sign_lock_entry(alice_seed, g_unsigned) {
+    Ok(e) => e
+    Err(e) => {
+      debug_assert(false, "sign genesis failed: " + e)
+      return
+    }
+  }
+  let root_hash = match lock::entry_hash(g_signed, native_lock_crypto()) {
+    Ok(h) => h
+    Err(_) => ""
+  }
+
+  // Fork A (seq=1): Bob (admin, weight=2) adds Carol.
+  let fork_bob = match sign_lock_entry(
+    bob_seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-lock")),
+      ("seq", form::Json::Num(1.0)),
+      ("prev", form::Json::Str(root_hash)),
+      ("at", form::Json::Num(1790000010.0)),
+      ("kind", form::Json::Str("member")),
+      (
+        "body",
+        form::Json::Obj([
+          ("sub", form::Json::Str("carol")),
+          ("email", form::Json::Str("carol@example.com")),
+          ("role", form::Json::Str("member")),
+        ]),
+      ),
+    ]),
+  ) {
+    Ok(e) => e
+    Err(_) => form::Json::Null
+  }
+
+  // Fork B (seq=1): Alice (owner, weight=3) adds Dave -> MUST WIN by role weight (3 > 2)!
+  let fork_alice = match sign_lock_entry(
+    alice_seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-lock")),
+      ("seq", form::Json::Num(1.0)),
+      ("prev", form::Json::Str(root_hash)),
+      ("at", form::Json::Num(1790000011.0)),
+      ("kind", form::Json::Str("member")),
+      (
+        "body",
+        form::Json::Obj([
+          ("sub", form::Json::Str("dave")),
+          ("email", form::Json::Str("dave@example.com")),
+          ("role", form::Json::Str("member")),
+        ]),
+      ),
+    ]),
+  ) {
+    Ok(e) => e
+    Err(_) => form::Json::Null
+  }
+
+  // Forged entry (seq=1): signed by Eve (not in lock) claiming Alice's key id -> MUST BE REJECTED!
+  let forged_eve = match sign_lock_entry(
+    eve_seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-lock")),
+      ("seq", form::Json::Num(1.0)),
+      ("prev", form::Json::Str(root_hash)),
+      ("at", form::Json::Num(1790000012.0)),
+      ("kind", form::Json::Str("member")),
+      (
+        "body",
+        form::Json::Obj([
+          ("sub", form::Json::Str("mallory")),
+          ("email", form::Json::Str("mallory@evil.test")),
+          ("role", form::Json::Str("owner")),
+        ]),
+      ),
+    ]),
+  ) {
+    Ok(e) => e
+    Err(_) => form::Json::Null
+  }
+
+  // Verify natively (zero JSON boundary) via ClientCore::apply_lock_chain!
+  let verified = match core.apply_lock_chain([g_signed, fork_bob, forged_eve, fork_alice], root_hash) {
+    Ok(v) => v
+    Err(e) => {
+      debug_assert(false, "verify_workspace_lock failed: " + e)
+      return
+    }
+  }
+  debug_assert(verified.rejected_count == 1, "forged Eve entry must be rejected as Off::NotValid")
+  debug_assert(verified.beaten_count == 1, "Bob's lower-weight fork must be beaten by Alice's owner fork")
+  debug_assert(verified.state.members.contains("dave"), "winning fork added dave")
+  debug_assert(!verified.state.members.contains("carol"), "losing fork carol is not in active LockState")
+  debug_assert(!verified.state.members.contains("mallory"), "forged mallory is not in active LockState")
+
+  // Validate a real Ed25519-signed vault box certificate against the converged LockState.
+  let box_cert = match sign_vault_record(
+    alice_seed,
+    "stillfail-vault-box/1",
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-lock")),
+      ("device", form::Json::Str(alice_dev_id)),
+      ("box", form::Json::Str("x25519:" + hex_64("a"))),
+      ("at", form::Json::Num(1790000020.0)),
+    ]),
+  ) {
+    Ok(c) => c
+    Err(_) => form::Json::Null
+  }
+  debug_assert(verify_vault_cert(verified.state, box_cert).is_none(), "valid Ed25519 vault box cert must pass")
+
+  // Tampered vault box cert signed by Eve must fail!
+  let bad_cert = match sign_vault_record(
+    eve_seed,
+    "stillfail-vault-box/1",
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-lock")),
+      ("device", form::Json::Str(alice_dev_id)),
+      ("box", form::Json::Str("x25519:" + hex_64("b"))),
+      ("at", form::Json::Num(1790000021.0)),
+    ]),
+  ) {
+    Ok(c) => c
+    Err(_) => form::Json::Null
+  }
+  debug_assert(verify_vault_cert(verified.state, bad_cert).is_some(), "forged vault box cert must be rejected")
+}
+
+// ── Test 5: Foreground client.focus preempts background idle prefetch ──
+
+test "E2E 5: foreground client.focus preempts running idle sync task and finishes first" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-5") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  // Thread 99 (idle prefetch) takes 500ms; Thread 5 (foreground focus) takes 20ms.
+  station.thread_delay_ms.set(99, 500)
+  station.thread_delay_ms.set(5, 20)
+  station.thread_entries.set(
+    99,
+    base_codec::json_obj([
+      (
+        "entries",
+        base_codec::json_arr([
+          base_codec::json_obj([
+            ("thread", base_codec::json_int(99)),
+            ("n", base_codec::json_int(1)),
+            ("kind", base_codec::json_str("message")),
+            ("authorKind", base_codec::json_str("agent")),
+            ("author", base_codec::json_str("bot")),
+            ("text", base_codec::json_str("idle prefetched")),
+          ]),
+        ]),
+      ),
+    ]),
+  )
+  station.thread_entries.set(
+    5,
+    base_codec::json_obj([
+      (
+        "entries",
+        base_codec::json_arr([
+          base_codec::json_obj([
+            ("thread", base_codec::json_int(5)),
+            ("n", base_codec::json_int(1)),
+            ("kind", base_codec::json_str("message")),
+            ("authorKind", base_codec::json_str("agent")),
+            ("author", base_codec::json_str("bot")),
+            ("text", base_codec::json_str("focused message")),
+          ]),
+        ]),
+      ),
+    ]),
+  )
+
+  let core = ClientCore::new("ws-1", "st1", rt, db, station.transport(), fn() -> Unit {})
+
+  // Start idle prefetch of thread 99.
+  let idle_done = [false]
+  let _ = rt.fork_quiet_named("idle-prefetch-99", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.prefetch_idle_k(99, fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          idle_done[0] = true
+        }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  // Advance 50ms so idle task is in-flight, then trigger foreground `client.focus` on thread 5.
+  rt.advance(50)
+  debug_assert(!idle_done[0], "idle task still in flight at 50ms")
+  core.focus_chat(5)
+
+  // Advance 40ms -> focused thread 5 completes while idle task 99 was preempted and requeued!
+  rt.advance(40)
+  debug_assert(core.sync.idle_preemptions() >= 1, "idle prefetch must be preempted by foreground client.focus")
+  debug_assert(sim_db.entry_count("st1", 5) == 1, "focused thread 5 finished immediately")
+  debug_assert(!idle_done[0], "preempted idle task waited behind foreground focus")
+
+  // Advance 600ms -> idle task resumes and finishes after foreground focus.
+  rt.advance(600)
+  debug_assert(idle_done[0], "idle task completed after foreground finished")
+  let order = core.sync.completed_tasks()
+  debug_assert(order.length() == 2 && order[0] == "thread:5" && order[1] == "idle:99", "focused thread:5 completed strictly before idle:99")
+}
+
+// ── Test 6: Dual-channel JSON core_api.h wire protocol + workspace isolation ──
+
+test "E2E 6: ClientCore::handle_wire serves core_api.h JSON protocol and isolates workspaces" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-6") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  let core = ClientCore::new("ws-alpha", "st1", rt, db, station.transport(), fn() -> Unit {})
+
+  // SSE event tagged for a DIFFERENT workspace (`ws-beta`) must be ignored!
+  core.start()
+  rt.advance(20)
+  station.push_sse(
+    "id: ev-other\nevent: entry\ndata: {\"workspace\":\"ws-beta\",\"thread\":1,\"n\":1,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"leak\"}\n\n",
+  )
+  debug_assert(sim_db.entry_count("st1", 1) == 0, "workspace isolation drops cross-workspace events")
+
+  // Send a message through the thin JSON `core_api.h` wire protocol (`message.send`).
+  let res = core.handle_wire("{\"id\":1,\"call\":\"message.send\",\"params\":{\"thread\":1,\"clientKey\":\"ck-wire-1\",\"author\":\"bob\",\"text\":\"via wire\"}}")
+  match res {
+    Some((reply_json, _)) => debug_assert(reply_json.contains("\"queued\":true"), "wire message.send queued optimistically")
+    None => debug_assert(false, "expected wire response")
+  }
+  rt.advance(30)
+  debug_assert(sim_db.entry_count("st1", 1) == 1, "wire message.send confirmed and persisted")
+  core.stop()
+}
+
+// ── Test 7: Real WebAuthn / Passkey P-256 verification (positive + negative cases) ──
+
+fn encode_der_uint(raw : Bytes, off : Int, len : Int) -> Array[Byte] {
+  let mut start = off
+  let end = off + len
+  while start < end - 1 && raw[start].to_int() == 0 {
+    start += 1
+  }
+  let body : Array[Byte] = []
+  if (raw[start].to_int() & 0x80) != 0 {
+    body.push(0 as Byte)
+  }
+  for i in start..<end {
+    body.push(raw[i])
+  }
+  let out : Array[Byte] = [0x02 as Byte, body.length() as Byte]
+  for i in 0..<body.length() {
+    out.push(body[i])
+  }
+  out
+}
+
+fn es256_raw_to_der(raw64 : Bytes) -> Bytes {
+  let r_der = encode_der_uint(raw64, 0, 32)
+  let s_der = encode_der_uint(raw64, 32, 32)
+  let total = r_der.length() + s_der.length()
+  let out = Bytes::new(2 + total)
+  out[0] = 0x30 as Byte
+  out[1] = total as Byte
+  let mut at = 2
+  for i in 0..<r_der.length() {
+    out[at] = r_der[i]
+    at += 1
+  }
+  for i in 0..<s_der.length() {
+    out[at] = s_der[i]
+    at += 1
+  }
+  out
+}
+
+fn make_auth_data(rp_id : String, flags : Int) -> Bytes {
+  let rp_hash = crypto::sha256(rp_id.to_bytes())
+  let out = Bytes::new(37)
+  for i in 0..<32 {
+    out[i] = rp_hash[i]
+  }
+  out[32] = flags as Byte
+  // signCount = 1 (big-endian)
+  out[36] = 1 as Byte
+  out
+}
+
+fn build_passkey_sig(
+  sk32 : Bytes,
+  pk65 : Bytes,
+  entry_hash_hex : String,
+  origin : String,
+  rp_id : String,
+  webauthn_type : String,
+  flags : Int,
+  tamper_der : Bool,
+) -> form::Json {
+  let hash_bytes = match base_codec::hex_decode(entry_hash_hex) {
+    Some(b) => b
+    None => panic("bad hex")
+  }
+  let challenge = base_codec::base64url_encode(hash_bytes)
+  let client_str = base_codec::json_stringify(base_codec::json_obj([
+    ("type", base_codec::json_str(webauthn_type)),
+    ("challenge", base_codec::json_str(challenge)),
+    ("origin", base_codec::json_str(origin)),
+  ]))
+  let client_bytes = client_str.to_bytes()
+  let auth_bytes = make_auth_data(rp_id, flags)
+  let signed = Bytes::new(auth_bytes.length() + 32)
+  let c_hash = crypto::sha256(client_bytes)
+  for i in 0..<auth_bytes.length() {
+    signed[i] = auth_bytes[i]
+  }
+  for i in 0..<32 {
+    signed[auth_bytes.length() + i] = c_hash[i]
+  }
+  let raw_sig = match crypto::p256_sign_es256(sk32, signed) {
+    Ok(s) => s
+    Err(_) => panic("p256_sign_es256 failed")
+  }
+  let der = es256_raw_to_der(raw_sig)
+  if tamper_der {
+    let last = der.length() - 1
+    der[last] = ((der[last].to_int() ^ 0xFF) & 0xFF) as Byte
+  }
+  let key_id = "p256:" + base_codec::base64url_encode(pk65)
+  form::Json::Obj([
+    ("key", form::Json::Str(key_id)),
+    ("alg", form::Json::Str("webauthn")),
+    ("authenticator_data", form::Json::Str(base_codec::base64url_encode(auth_bytes))),
+    ("client_data", form::Json::Str(base_codec::base64url_encode(client_bytes))),
+    ("sig", form::Json::Str(base_codec::base64url_encode(der))),
+  ])
+}
+
+test "E2E 7: Passkey P-256 WebAuthn verification accepts valid assertion and rejects all tampered cases" {
+  let sk = match base_codec::hex_decode("c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721") {
+    Some(b) => b
+    None => panic("bad sk")
+  }
+  let pk = match crypto::p256_public_key(sk) {
+    Ok(p) => p
+    Err(_) => panic("p256_public_key failed")
+  }
+  let key_id = "p256:" + base_codec::base64url_encode(pk)
+  debug_assert(valid_key_id(key_id), "p256 key id valid")
+
+  let c = native_lock_crypto()
+  let origins = ["https://app.still.fail", "https://still.fail"]
+  let rp_id = "still.fail"
+  let entry_hash = crypto::sha256_hex("lock-entry-canonical-body".to_bytes())
+  let other_hash = crypto::sha256_hex("different-entry-body".to_bytes())
+
+  // 1. Valid WebAuthn Passkey assertion -> ACCEPTED
+  let valid_sig = build_passkey_sig(sk, pk, entry_hash, "https://app.still.fail", rp_id, "webauthn.get", 1, false)
+  debug_assert((c.sig_valid)(valid_sig, entry_hash, origins, rp_id, true), "valid WebAuthn passkey accepted")
+
+  // 2. passkey=false with alg="webauthn" -> REJECTED
+  debug_assert(!(c.sig_valid)(valid_sig, entry_hash, origins, rp_id, false), "webauthn rejected when passkey=false")
+
+  // 3. Wrong origin -> REJECTED
+  let bad_origin = build_passkey_sig(sk, pk, entry_hash, "https://evil.example", rp_id, "webauthn.get", 1, false)
+  debug_assert(!(c.sig_valid)(bad_origin, entry_hash, origins, rp_id, true), "wrong origin rejected")
+
+  // 4. Wrong rpIdHash -> REJECTED
+  let bad_rp = build_passkey_sig(sk, pk, entry_hash, "https://app.still.fail", "evil.example", "webauthn.get", 1, false)
+  debug_assert(!(c.sig_valid)(bad_rp, entry_hash, origins, rp_id, true), "wrong rpIdHash rejected")
+
+  // 5. Wrong challenge (signed for other_hash, verified against entry_hash) -> REJECTED
+  let bad_chal = build_passkey_sig(sk, pk, other_hash, "https://app.still.fail", rp_id, "webauthn.get", 1, false)
+  debug_assert(!(c.sig_valid)(bad_chal, entry_hash, origins, rp_id, true), "wrong challenge rejected")
+
+  // 6. Tampered DER signature -> REJECTED
+  let bad_der = build_passkey_sig(sk, pk, entry_hash, "https://app.still.fail", rp_id, "webauthn.get", 1, true)
+  debug_assert(!(c.sig_valid)(bad_der, entry_hash, origins, rp_id, true), "tampered DER signature rejected")
+
+  // 7. UP flag = 0 -> REJECTED
+  let no_up = build_passkey_sig(sk, pk, entry_hash, "https://app.still.fail", rp_id, "webauthn.get", 0, false)
+  debug_assert(!(c.sig_valid)(no_up, entry_hash, origins, rp_id, true), "UP=0 rejected")
+
+  // 8. Wrong type ("webauthn.create") -> REJECTED
+  let bad_type = build_passkey_sig(sk, pk, entry_hash, "https://app.still.fail", rp_id, "webauthn.create", 1, false)
+  debug_assert(!(c.sig_valid)(bad_type, entry_hash, origins, rp_id, true), "wrong webauthn type rejected")
+}
+
+// ── Test 8: SessionChanged / JobChanged live tracking, account.doc / roster queries, and lock.status ──
+
+test "E2E 8: SessionChanged/JobChanged live sync, account.doc & workspace/station roster, and lock.status" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-8") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  let wakes = [0]
+  let core = ClientCore::new("ws-core", "st1", rt, db, station.transport(), fn() -> Unit {
+    wakes[0] += 1
+  })
+
+  // 1. lock.status before pinning
+  match core.handle_wire("{\"id\":1,\"call\":\"lock.status\",\"params\":{}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"locked\":false") && txt.contains("\"ws-core\""), "unlocked status")
+    None => debug_assert(false, "expected lock.status")
+  }
+
+  // 2. Pin a real Ed25519-signed genesis lock and query lock.status again
+  let owner_seed = make_seed(44)
+  let owner_key = ed25519_key_id(owner_seed)
+  let owner_dev_id = hex_64("4")
+  let gen_unsigned = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("ws-core")),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    (
+      "body",
+      form::Json::Obj([
+        ("owner", form::Json::Str("u-owner")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        (
+          "members",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("sub", form::Json::Str("u-owner")),
+              ("email", form::Json::Str("owner@example.com")),
+              ("role", form::Json::Str("owner")),
+            ]),
+          ]),
+        ),
+        (
+          "devices",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("id", form::Json::Str(owner_dev_id)),
+              ("sub", form::Json::Str("u-owner")),
+              ("kind", form::Json::Str("app")),
+              ("label", form::Json::Str("Mac")),
+              ("sign_key", form::Json::Str(owner_key)),
+            ]),
+          ]),
+        ),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ]),
+    ),
+  ])
+  let gen_signed = match sign_lock_entry(owner_seed, gen_unsigned) {
+    Ok(e) => e
+    Err(why) => panic("sign genesis failed: " + why)
+  }
+  let root_hash = match lock::entry_hash(gen_signed, native_lock_crypto()) {
+    Ok(h) => h
+    Err(_) => panic("entry_hash failed")
+  }
+  match core.apply_lock_chain([gen_signed], root_hash) {
+    Ok(_) => ()
+    Err(e) => panic("apply_lock_chain failed: " + e)
+  }
+  match core.handle_wire("{\"id\":2,\"call\":\"lock.status\",\"params\":{}}") {
+    Some((txt, _)) => {
+      debug_assert(txt.contains("\"locked\":true"), "locked=true")
+      debug_assert(txt.contains(root_hash), "genesis hash present")
+      debug_assert(txt.contains("\"memberCount\":1"), "memberCount=1")
+    }
+    None => debug_assert(false, "expected lock.status after pin")
+  }
+
+  // 3. Real-time SessionChanged & JobChanged via SSE -> FrameOutbox + sessions.list / jobs.open
+  core.start()
+  rt.advance(20)
+  let _ = core.drain_frame()
+  station.push_sse(
+    "id: s-1\nevent: session\ndata: {\"key\":\"sess-a\",\"running\":true,\"listed\":true,\"turns\":3}\n\n" +
+    "id: j-1\nevent: job\ndata: {\"id\":\"job-1\",\"session\":\"sess-a\",\"open\":true,\"chat\":\"c-1\"}\n\n",
+  )
+  debug_assert(core.running_session_count() == 1, "1 running session")
+  debug_assert(core.open_job_count() == 1, "1 open job")
+  let evs1 = core.drain_frame()
+  let mut saw_sess_ev = false
+  let mut saw_job_ev = false
+  for i in 0..<evs1.length() {
+    match evs1[i] {
+      CoreEvent::SessionChanged(s, k, r) => if s == "st1" && k == "sess-a" && r { saw_sess_ev = true }
+      CoreEvent::JobChanged(s, jid, o) => if s == "st1" && jid == "job-1" && o { saw_job_ev = true }
+      _ => ()
+    }
+  }
+  debug_assert(saw_sess_ev && saw_job_ev, "SessionChanged and JobChanged emitted to FrameOutbox")
+
+  match core.handle_wire("{\"id\":3,\"call\":\"sessions.list\",\"params\":{}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"sess-a\"") && txt.contains("\"running\":true"), "sessions.list")
+    None => debug_assert(false, "expected sessions.list")
+  }
+  match core.handle_wire("{\"id\":4,\"call\":\"jobs.open\",\"params\":{}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"job-1\"") && txt.contains("\"open\":true"), "jobs.open")
+    None => debug_assert(false, "expected jobs.open")
+  }
+
+  // Transition session to idle and job to closed
+  station.push_sse(
+    "id: s-2\nevent: session\ndata: {\"key\":\"sess-a\",\"running\":false,\"listed\":true,\"turns\":4}\n\n" +
+    "id: j-2\nevent: job\ndata: {\"id\":\"job-1\",\"session\":\"sess-a\",\"open\":false,\"chat\":\"c-1\"}\n\n",
+  )
+  debug_assert(core.running_session_count() == 0, "0 running sessions after idle")
+  debug_assert(core.open_job_count() == 0, "0 open jobs after close")
+
+  // 4. account.doc + workspace & station roster persistence & queries
+  let _ = store::put_account_doc(db, "me", "{\"email\":\"alice@still.fail\"}", confirmed=Some(1000.to_int64()))
+  let _ = store::upsert_workspace(db, "ws-core", "{\"name\":\"Core WS\"}", confirmed=Some(1000.to_int64()))
+  let _ = store::upsert_station_doc(db, "st1", "overview", "{\"name\":\"Studio\"}", confirmed=Some(1000.to_int64()))
+
+  match core.handle_wire("{\"id\":5,\"call\":\"account.doc\",\"params\":{\"name\":\"me\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("alice@still.fail"), "account.doc query")
+    None => debug_assert(false, "expected account.doc")
+  }
+  match core.handle_wire("{\"id\":6,\"call\":\"workspaces.list\",\"params\":{}}") {
+    Some((txt, _)) => debug_assert(txt.contains("ws-core") && txt.contains("Core WS"), "workspaces.list query")
+    None => debug_assert(false, "expected workspaces.list")
+  }
+  match core.handle_wire("{\"id\":7,\"call\":\"stations.list\",\"params\":{\"kind\":\"overview\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("st1") && txt.contains("Studio"), "stations.list query")
+    None => debug_assert(false, "expected stations.list")
+  }
+  match core.handle_wire("{\"id\":8,\"subscribe\":{\"topic\":\"workspaces\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"value\"") && txt.contains("ws-core"), "workspaces subscribe")
+    None => debug_assert(false, "expected workspaces subscribe")
+  }
+  core.stop()
+}
+
+test "E2E 9: message.edit, message.delete, card.answer, chat.read, chat.draft with optimistic dispatch & rollback" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-interact") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  let core = ClientCore::new("ws-core", "st1", rt, db, station.transport(), fn() -> Unit {})
+
+  core.start()
+  rt.advance(20)
+  let _ = core.drain_frame()
+
+  // 1. message.edit + message.delete + card.answer succeed online
+  match core.handle_wire("{\"id\":1,\"call\":\"message.edit\",\"params\":{\"thread\":42,\"target\":1,\"text\":\"updated text\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"opId\"") && txt.contains("\"target\":1"), "message.edit ok")
+    None => debug_assert(false, "expected message.edit")
+  }
+  match core.handle_wire("{\"id\":2,\"call\":\"message.delete\",\"params\":{\"thread\":42,\"target\":2}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"opId\"") && txt.contains("\"target\":2"), "message.delete ok")
+    None => debug_assert(false, "expected message.delete")
+  }
+  match core.handle_wire("{\"id\":3,\"call\":\"card.answer\",\"params\":{\"thread\":42,\"seq\":3,\"option\":\"Ship it\",\"action\":\"reply\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"option\":\"Ship it\""), "card.answer ok")
+    None => debug_assert(false, "expected card.answer")
+  }
+  rt.advance(30)
+  debug_assert(core.local_outbox.pending_overlay_count() == 0, "all 3 overlays confirmed and cleared")
+  let mut saw_edit_req = false
+  let mut saw_del_req = false
+  let mut saw_card_req = false
+  for i in 0..<station.requests_seen.length() {
+    let r = station.requests_seen[i]
+    if r == "POST /threads/42/messages/1/edit" { saw_edit_req = true }
+    if r == "DELETE /threads/42/messages/2" { saw_del_req = true }
+    if r == "POST /threads/42/cards/3/answer" { saw_card_req = true }
+  }
+  debug_assert(saw_edit_req && saw_del_req && saw_card_req, "station received edit, delete, card.answer")
+
+  // 2. Station 403 rejection on card.answer rolls back cleanly with recovery hint
+  station.reject_path_prefix = Some("/threads/42/cards/")
+  station.reject_code = "card_closed"
+  station.reject_recovery = "Card was already answered by another member."
+  let _ = core.drain_frame()
+  match core.handle_wire("{\"id\":4,\"call\":\"card.answer\",\"params\":{\"thread\":42,\"seq\":9,\"option\":\"Yes\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"opId\""), "optimistic card.answer accepted locally")
+    None => debug_assert(false, "expected optimistic ok")
+  }
+  rt.advance(30)
+  let evs = core.drain_frame()
+  let mut saw_rollback = false
+  for i in 0..<evs.length() {
+    match evs[i] {
+      CoreEvent::OverlayRolledBack(_, _, kind, code, rec) => {
+        if kind == "card_answer" && code == "card_closed" && rec.contains("already answered") {
+          saw_rollback = true
+        }
+      }
+      _ => ()
+    }
+  }
+  debug_assert(saw_rollback && core.local_outbox.pending_overlay_count() == 0, "card.answer rolled back cleanly")
+
+  // 3. chat.read updates local SQLite thread read cursor and emits ThreadReadChanged
+  station.reject_path_prefix = None
+  match core.handle_wire("{\"id\":5,\"call\":\"chat.read\",\"params\":{\"thread\":42,\"read\":12,\"unread\":0}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"read\":12") && txt.contains("\"unread\":0"), "chat.read ok")
+    None => debug_assert(false, "expected chat.read")
+  }
+  match sim_db.thread_reads.get("st1:42") {
+    Some((r, u)) => debug_assert(r == 12 && u == 0, "thread read cursor persisted")
+    None => debug_assert(false, "expected thread read cursor in DB")
+  }
+
+  // 4. chat.draft persists, reads back, and clears
+  match core.handle_wire("{\"id\":6,\"call\":\"chat.draft\",\"params\":{\"chat\":\"c-42\",\"text\":\"work in progress\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"saved\":true"), "draft saved")
+    None => debug_assert(false, "expected draft save")
+  }
+  match core.handle_wire("{\"id\":7,\"call\":\"chat.draft\",\"params\":{\"chat\":\"c-42\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("work in progress"), "draft read back")
+    None => debug_assert(false, "expected draft read")
+  }
+  match core.handle_wire("{\"id\":8,\"call\":\"chat.draft\",\"params\":{\"chat\":\"c-42\",\"clear\":true}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"cleared\":true"), "draft cleared")
+    None => debug_assert(false, "expected draft clear")
+  }
+  core.stop()
+}
+
+test "E2E 10: accounts, vault, said search, settings, and chats/chat keyed delta + have/keep token" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-biz") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  station.snapshot_json = base_codec::json_obj([
+    (
+      "chats",
+      base_codec::json_arr([
+        base_codec::json_obj([
+          ("id", base_codec::json_str("c-alpha")),
+          ("title", base_codec::json_str("Alpha Launch")),
+          ("thread", base_codec::json_int(10)),
+          ("lastActive", base_codec::json_int(1000)),
+        ]),
+      ]),
+    ),
+  ])
+  let core = ClientCore::new("ws-biz", "st1", rt, db, station.transport(), fn() -> Unit {})
+
+  // Seed account docs for accounts & vault
+  let _ = store::put_account_doc(db, "accounts", "[{\"email\":\"alice@still.fail\"},{\"email\":\"bob@still.fail\"}]")
+  let _ = store::put_account_doc(db, "active_account", "\"alice@still.fail\"")
+  let _ = store::put_account_doc(db, "vault_status", "{\"enabled\":true,\"unlocked\":true,\"vaultCount\":1,\"secretCount\":1}")
+  let _ = store::put_account_doc(db, "vault_secrets", "[{\"id\":\"s1\",\"vault\":\"personal\",\"name\":\"OpenAI Key\",\"about\":\"API\"}]")
+
+  core.start()
+  rt.advance(30)
+  // Push an SSE message so `said` trigger populates searchable text
+  station.push_sse(
+    "id: e-1\nevent: entry\ndata: {\"thread\":10,\"n\":1,\"kind\":\"message\",\"authorKind\":\"agent\",\"author\":\"bot\",\"text\":\"Pion Stage 2 core parity ready\",\"at\":1050}\n\n",
+  )
+
+  // 1. accounts + account.switch
+  match core.handle_wire("{\"id\":1,\"call\":\"accounts\",\"params\":{}}") {
+    Some((txt, _)) => debug_assert(txt.contains("alice@still.fail") && txt.contains("bob@still.fail"), "accounts")
+    None => debug_assert(false, "expected accounts")
+  }
+  match core.handle_wire("{\"id\":2,\"call\":\"account.switch\",\"params\":{\"account\":\"bob@still.fail\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"switched\":true") && txt.contains("bob@still.fail"), "account.switch")
+    None => debug_assert(false, "expected account.switch")
+  }
+
+  // 2. vault.status + vault.secrets
+  match core.handle_wire("{\"id\":3,\"call\":\"vault.status\",\"params\":{}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"enabled\":true") && txt.contains("\"secretCount\":1"), "vault.status")
+    None => debug_assert(false, "expected vault.status")
+  }
+  match core.handle_wire("{\"id\":4,\"call\":\"vault.secrets\",\"params\":{\"query\":\"OpenAI\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("OpenAI Key"), "vault.secrets")
+    None => debug_assert(false, "expected vault.secrets")
+  }
+
+  // 3. search.chats + search.messages (using `said` table)
+  match core.handle_wire("{\"id\":5,\"call\":\"search.chats\",\"params\":{\"query\":\"Alpha\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("c-alpha") && txt.contains("Alpha Launch"), "search.chats")
+    None => debug_assert(false, "expected search.chats")
+  }
+  match core.handle_wire("{\"id\":6,\"call\":\"search.messages\",\"params\":{\"query\":\"Stage 2\",\"station\":\"st1\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("Pion Stage 2 core parity ready"), "search.messages via said")
+    None => debug_assert(false, "expected search.messages")
+  }
+
+  // 4. settings.set + settings.get
+  match core.handle_wire("{\"id\":7,\"call\":\"settings.set\",\"params\":{\"key\":\"locale\",\"value\":\"zh-CN\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"saved\":true"), "settings.set")
+    None => debug_assert(false, "expected settings.set")
+  }
+  match core.handle_wire("{\"id\":8,\"call\":\"settings.get\",\"params\":{\"key\":\"locale\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"value\":\"zh-CN\""), "settings.get")
+    None => debug_assert(false, "expected settings.get")
+  }
+
+  // 5. Keyed `chats` subscription delta + keep/have token negotiation
+  match core.handle_wire("{\"id\":50,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-biz\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"value\"") && txt.contains("c-alpha"), "initial chats value")
+    None => debug_assert(false, "expected chats subscribe")
+  }
+  // Push a second chat over SSE -> refresh_topic("chats") emits keyed `put` delta containing ONLY c-beta
+  station.push_sse(
+    "id: c-2\nevent: chat\ndata: {\"id\":\"c-beta\",\"title\":\"Beta Review\",\"thread\":11,\"lastActive\":2000}\n\n",
+  )
+  let deltas = core.refresh_topic("chats")
+  debug_assert(deltas.length() == 1, "one chats delta emitted")
+  let (delta_json, _) = protocol::encode_core_event(deltas[0])
+  debug_assert(delta_json.contains("\"delta\"") && delta_json.contains("\"put\"") && delta_json.contains("c-beta") && !delta_json.contains("c-alpha"), "incremental keyed delta only carries c-beta")
+
+  // Unsubscribe with keep: true -> get `v` token -> re-subscribe with `have: v` -> `same: true`
+  let v_tok = match core.handle_wire("{\"id\":50,\"unsubscribe\":true,\"keep\":true}") {
+    Some((txt, _)) =>
+    match base_codec::json_parse(txt) {
+      base_codec::JsonParseResult::Ok(j) =>
+      match base_codec::json_get(j, "v") {
+        Some(base_codec::Json::Str(v)) => v
+        _ => panic("missing v token")
+      }
+      _ => panic("bad json")
+    }
+    None => panic("expected unsub v")
+  }
+  let resub = "{\"id\":51,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-biz\"},\"keyed\":true,\"have\":\"" + v_tok + "\"}"
+  match core.handle_wire(resub) {
+    Some((txt, _)) => debug_assert(txt == "{\"id\":51,\"same\":true}", "resubscribe with matching have returns same:true")
+    None => debug_assert(false, "expected same:true")
+  }
+  core.stop()
+}
+
+test "E2E 11: offline edit_message, delete_message, card.answer flush_offline dispatches exact thread routes" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-offline-mut") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  station.offline = true
+  let core = ClientCore::new("ws-off", "st1", rt, db, station.transport(), fn() -> Unit {})
+
+  // Queue edit_message, delete_message, and card.answer while offline
+  match core.edit_message(42, 1, "offline edit", 1000.to_int64()) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(_) => debug_assert(false, "offline edit_message failed")
+  }
+  match core.delete_message(42, 2, 1001.to_int64()) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(_) => debug_assert(false, "offline delete_message failed")
+  }
+  match core.answer_card(42, 3, "Approve", "reply", 1002.to_int64()) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(_) => debug_assert(false, "offline answer_card failed")
+  }
+  debug_assert(core.local_outbox.pending_overlay_count() == 3, "3 overlays queued offline")
+  debug_assert(station.requests_seen.length() == 0, "0 requests while offline")
+
+  // Come back online -> flush_offline must route to exact /threads/... endpoints, never /chats/thread:...
+  station.offline = false
+  core.set_online(true)
+  rt.advance(40)
+
+  let mut saw_edit = false
+  let mut saw_del = false
+  let mut saw_card = false
+  let mut saw_bad_chats_route = false
+  for i in 0..<station.requests_seen.length() {
+    let r = station.requests_seen[i]
+    if r == "POST /threads/42/messages/1/edit" { saw_edit = true }
+    if r == "DELETE /threads/42/messages/2" { saw_del = true }
+    if r == "POST /threads/42/cards/3/answer" { saw_card = true }
+    if r.contains("/chats/thread:") { saw_bad_chats_route = true }
+  }
+  debug_assert(saw_edit && saw_del && saw_card, "exact thread mutation routes dispatched on reconnect")
+  debug_assert(!saw_bad_chats_route, "never misrouted to /chats/thread:...")
+  debug_assert(core.local_outbox.pending_overlay_count() == 0, "all 3 overlays cleared from changing after confirmation")
+}

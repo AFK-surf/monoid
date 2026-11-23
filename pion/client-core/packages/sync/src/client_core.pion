@@ -1,0 +1,540 @@
+// Dual-channel unified `ClientCore` facade combining:
+// 1. Zero-serialization strongly typed `FrameOutbox[CoreEvent]` + typed commands for Invar UI;
+// 2. Thin JSON `packages/protocol` wire adapter compatible with `apps/mbui/src/host/core_api.h`.
+
+import "base_codec"
+import "effect"
+import "form"
+import "lock"
+import "outbox"
+import "protocol"
+import "sql"
+import "store"
+
+pub struct ClientCore {
+  pub workspace : String
+  pub station : String
+  pub rt : effect::Runtime
+  pub db : sql::Sql
+  pub md_store : store::MdStore
+  pub outbox : outbox::FrameOutbox[CoreEvent]
+  pub events : StationEvents
+  pub local_outbox : LocalOutbox
+  pub sync : SyncScheduler
+  pub router : protocol::Slice1Router
+  mut lock_state : Option[lock::LockState]
+  mut lock_root : Option[String]
+}
+
+pub fn ClientCore::new(
+  workspace : String,
+  station : String,
+  rt : effect::Runtime,
+  db : sql::Sql,
+  transport : StationTransport,
+  on_frame_wake : () -> Unit,
+) -> ClientCore {
+  let frame_outbox : outbox::FrameOutbox[CoreEvent] = outbox::FrameOutbox::new(on_frame_wake)
+  let md_store = store::MdStore::new(db, station)
+  let events = StationEvents::new(workspace, station, db, frame_outbox, transport)
+  let local_outbox = LocalOutbox::new(station, db, frame_outbox, transport)
+  let sync = SyncScheduler::new(workspace, station, events, transport)
+  let router = protocol::Slice1Router::new(db, md_store, workspace=workspace)
+  let core = ClientCore::{
+    workspace: workspace,
+    station: station,
+    rt: rt,
+    db: db,
+    md_store: md_store,
+    outbox: frame_outbox,
+    events: events,
+    local_outbox: local_outbox,
+    sync: sync,
+    router: router,
+    lock_state: None,
+    lock_root: None,
+  }
+  events.set_hooks(
+    fn(b : sql::Burst, th : Int, n : Int, ck : String) -> Unit {
+      local_outbox.reconcile_entry_in_burst(b, th, n, ck)
+    },
+    fn(b : sql::Burst, cid : String, ck : String) -> Unit {
+      local_outbox.reconcile_pending_chat_in_burst(b, cid, ck)
+    },
+    fn() -> Unit {
+      local_outbox.set_online(true)
+      let _ = rt.fork_quiet_named("initial-snapshot:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+        sync.fetch_snapshot_k(effect::priority_shown(), fn(_ex : effect::Exit[Int]) -> Unit {
+          k(effect::Exit::Succeeded(()))
+        })
+      })
+      local_outbox.flush_offline(rt)
+    },
+    fn(lock_payload : base_codec::Json) -> Unit {
+      core.handle_lock_event(lock_payload)
+    },
+  )
+  core
+}
+
+/// Start live SSE `/events` consumption (never polls).
+pub fn ClientCore::start(self : ClientCore) -> Unit {
+  self.events.start(self.rt)
+}
+
+/// Stop live SSE `/events` consumption and mark outbox offline.
+pub fn ClientCore::stop(self : ClientCore) -> Unit {
+  self.local_outbox.set_online(false)
+  self.events.stop()
+}
+
+/// Explicitly set online/offline state (used on network drop / recovery).
+pub fn ClientCore::set_online(self : ClientCore, online : Bool) -> Unit {
+  self.local_outbox.set_online(online)
+  if online {
+    self.local_outbox.flush_offline(self.rt)
+  }
+}
+
+/// Cold-open a chat from local SQLite only: 0 SQL writes, constant statements, 0 network requests.
+pub fn ClientCore::cold_open_chat(
+  self : ClientCore,
+  thread : Int,
+  now : Int64,
+  rows : Int = 30,
+  at : Option[Int] = None,
+) -> sql::SqlResult[store::ChatOpenView] {
+  store::open_chat(self.md_store, thread, now, rows=rows, at=at)
+}
+
+/// Focus a chat (`client.focus`): raises sync priority and preempts any `idle` prefetch.
+pub fn ClientCore::focus_chat(
+  self : ClientCore,
+  thread : Int,
+  fetch : Bool = true,
+) -> Unit {
+  self.sync.focus_thread(Some(thread))
+  if fetch {
+    let _ = self.rt.fork_quiet_named("focus-thread:" + thread.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.sync.fetch_thread_k(thread, effect::priority_focused(), true, fn(_ex : effect::Exit[Int]) -> Unit {
+        k(effect::Exit::Succeeded(()))
+      })
+    })
+  }
+}
+
+/// Optimistically send a message (writes local `outbox` immediately, zero network wait).
+pub fn ClientCore::send_message(
+  self : ClientCore,
+  thread : Int,
+  client_key : String,
+  author : String,
+  text : String,
+  now : Int64,
+) -> sql::SqlResult[Unit] {
+  self.local_outbox.send_message(self.rt, thread, client_key, author, text, now)
+}
+
+/// Optimistically create a pending chat.
+pub fn ClientCore::create_pending_chat(
+  self : ClientCore,
+  client_key : String,
+  title : String,
+  now : Int64,
+) -> sql::SqlResult[Unit] {
+  self.local_outbox.create_pending_chat(self.rt, client_key, title, now)
+}
+
+/// Optimistically rename a chat (rolled back automatically if station refuses).
+pub fn ClientCore::rename_chat(self : ClientCore, chat_id : String, title : String) -> sql::SqlResult[Int] {
+  self.local_outbox.apply_chat_overlay(self.rt, chat_id, "rename", base_codec::json_obj([("title", base_codec::json_str(title))]))
+}
+
+/// Optimistically pin/unpin a chat (rolled back automatically if station refuses).
+pub fn ClientCore::pin_chat(self : ClientCore, chat_id : String, pinned_at : Option[Int64]) -> sql::SqlResult[Int] {
+  let v = match pinned_at {
+    Some(ts) => base_codec::json_int64(ts)
+    None => base_codec::json_null()
+  }
+  self.local_outbox.apply_chat_overlay(self.rt, chat_id, "pin", base_codec::json_obj([("pinnedAt", v)]))
+}
+
+/// Optimistically archive a chat (rolled back automatically if station refuses).
+pub fn ClientCore::archive_chat(self : ClientCore, chat_id : String) -> sql::SqlResult[Int] {
+  self.local_outbox.apply_chat_overlay(self.rt, chat_id, "archive", base_codec::json_obj([("archived", base_codec::json_bool(true))]))
+}
+
+/// Optimistically edit a message in `thread` at `target_seq`.
+pub fn ClientCore::edit_message(self : ClientCore, thread : Int, target_seq : Int, text : String, now : Int64) -> sql::SqlResult[Int] {
+  self.local_outbox.edit_message(self.rt, thread, target_seq, text, now)
+}
+
+/// Optimistically delete a message in `thread` at `target_seq`.
+pub fn ClientCore::delete_message(self : ClientCore, thread : Int, target_seq : Int, now : Int64) -> sql::SqlResult[Int] {
+  self.local_outbox.delete_message(self.rt, thread, target_seq, now)
+}
+
+/// Optimistically answer a decision card at `(thread, seq)`.
+pub fn ClientCore::answer_card(self : ClientCore, thread : Int, seq : Int, option : String, action : String, now : Int64) -> sql::SqlResult[Int] {
+  self.local_outbox.answer_card(self.rt, thread, seq, option, action, now)
+}
+
+/// Update read cursor locally in SQLite and notify station when online.
+pub fn ClientCore::mark_chat_read(self : ClientCore, thread : Int, read_seq : Int, unread_count : Int = 0) -> sql::SqlResult[Unit] {
+  self.local_outbox.mark_read(self.rt, thread, read_seq, unread_count)
+}
+
+/// Refresh an active subscription and emit incremental keyed `CoreEvent::Delta` if changed.
+pub fn ClientCore::refresh_subscription(self : ClientCore, id : Int64) -> Option[protocol::CoreEvent] {
+  self.router.refresh_sub(id)
+}
+
+/// Refresh all active subscriptions matching `topic_name` (`"chats"`, `"chat"`, etc.).
+pub fn ClientCore::refresh_topic(self : ClientCore, topic_name : String) -> Array[protocol::CoreEvent] {
+  self.router.refresh_topic_name(topic_name)
+}
+
+/// Verify and apply a workspace lock chain natively via `pion/rules` (0 JSON boundary).
+pub fn ClientCore::apply_lock_chain(
+  self : ClientCore,
+  entries : Array[form::Json],
+  root_hash : String,
+  now : Option[Double] = None,
+) -> Result[VerifiedWorkspaceLock, String] {
+  match verify_workspace_lock(entries, root_hash, votes=lock::Votes::Roles, now=now) {
+    Err(why) => {
+      self.outbox.tell(CoreEvent::LockRejected(self.workspace, why))
+      Err(why)
+    }
+    Ok(v) => {
+      if v.state.ws != self.workspace {
+        let msg = "lock workspace mismatch: expected " + self.workspace + ", got " + v.state.ws
+        self.outbox.tell(CoreEvent::LockRejected(self.workspace, msg))
+        return Err(msg)
+      }
+      self.lock_state = Some(v.state)
+      self.lock_root = Some(root_hash)
+      self.outbox.tell(CoreEvent::LockUpdated(
+        self.workspace,
+        v.state.head,
+        v.state.seq,
+        v.state.members.length(),
+      ))
+      Ok(v)
+    }
+  }
+}
+
+pub fn ClientCore::current_lock(self : ClientCore) -> Option[lock::LockState] {
+  self.lock_state
+}
+
+/// Build the structured `lock.status` JSON payload for this workspace.
+pub fn ClientCore::lock_status_json(self : ClientCore) -> base_codec::Json {
+  match self.lock_state {
+    None =>
+    base_codec::json_obj([
+      ("workspace", base_codec::json_str(self.workspace)),
+      ("locked", base_codec::json_bool(false)),
+    ])
+    Some(st) => {
+      let moved_j = match st.moved {
+        Some(m) => base_codec::json_str(m)
+        None => base_codec::json_null()
+      }
+      base_codec::json_obj([
+        ("workspace", base_codec::json_str(st.ws)),
+        ("locked", base_codec::json_bool(!st.disabled)),
+        ("disabled", base_codec::json_bool(st.disabled)),
+        ("genesis", base_codec::json_str(st.genesis)),
+        ("head", base_codec::json_str(st.head)),
+        ("seq", base_codec::json_num(st.seq)),
+        ("memberCount", base_codec::json_int(st.members.length())),
+        ("deviceCount", base_codec::json_int(st.devices.length())),
+        ("passkeyCount", base_codec::json_int(st.passkeys.length())),
+        ("stationCount", base_codec::json_int(st.stations.length())),
+        ("moved", moved_j),
+      ])
+    }
+  }
+}
+
+pub fn ClientCore::running_session_count(self : ClientCore) -> Int {
+  self.events.running_session_count()
+}
+
+pub fn ClientCore::open_job_count(self : ClientCore) -> Int {
+  self.events.open_job_count()
+}
+
+fn ClientCore::handle_lock_event(self : ClientCore, payload : base_codec::Json) -> Unit {
+  let root = match base_codec::json_get(payload, "root") {
+    Some(base_codec::Json::Str(r)) => r
+    _ =>
+    match self.lock_root {
+      Some(r) => r
+      None => return
+    }
+  }
+  let raw_entries = match base_codec::json_get(payload, "entries") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => return
+  }
+  let form_entries : Array[form::Json] = []
+  for i in 0..<raw_entries.length() {
+    form_entries.push(codec_to_form(raw_entries[i]))
+  }
+  let _ = self.apply_lock_chain(form_entries, root)
+}
+
+/// Drain strongly typed `CoreEvent`s for the UI render thread (zero serialization).
+pub fn ClientCore::drain_frame(self : ClientCore, most : Option[Int] = None) -> Array[CoreEvent] {
+  self.outbox.take(most=most)
+}
+
+// ── Thin JSON `core_api.h` protocol adapter ──
+
+fn proto_str(j : base_codec::Json, k : String) -> Option[String] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn proto_int(j : base_codec::Json, k : String) -> Option[Int] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+    _ => None
+  }
+}
+
+/// Handle a `protocol::CoreRequest` across both Slice 1 read-only queries and Slice 2 sync/outbox commands.
+pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest) -> Option[protocol::CoreEvent] {
+  match req {
+    protocol::CoreRequest::Call(id, call_name, params, _bytes) => {
+      if call_name == "client.focus" {
+        match proto_int(params, "thread") {
+          Some(th) => {
+            self.focus_chat(th)
+            return Some(protocol::CoreEvent::Ok(id, base_codec::json_bool(true), None))
+          }
+          None => {
+            self.sync.focus_thread(None)
+            return Some(protocol::CoreEvent::Ok(id, base_codec::json_bool(true), None))
+          }
+        }
+      }
+      if call_name == "message.send" {
+        let th = match proto_int(params, "thread") {
+          Some(t) => t
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing thread" }))
+        }
+        let ck = match proto_str(params, "clientKey") {
+          Some(s) => s
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing clientKey" }))
+        }
+        let author = match proto_str(params, "author") {
+          Some(s) => s
+          None => "me"
+        }
+        let text = match proto_str(params, "text") {
+          Some(s) => s
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing text" }))
+        }
+        match self.send_message(th, ck, author, text, self.rt.now()) {
+          sql::SqlResult::Ok(_) => return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("queued", base_codec::json_bool(true)), ("clientKey", base_codec::json_str(ck))]), None))
+          sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+        }
+      }
+      if call_name == "message.edit" {
+        let th = match proto_int(params, "thread") {
+          Some(t) => t
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing thread" }))
+        }
+        let target = match proto_int(params, "target") {
+          Some(t) => t
+          None =>
+          match proto_int(params, "seq") {
+            Some(s) => s
+            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing target" }))
+          }
+        }
+        let text = match proto_str(params, "text") {
+          Some(s) => s
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing text" }))
+        }
+        match self.edit_message(th, target, text, self.rt.now()) {
+          sql::SqlResult::Ok(op_id) =>
+          return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+            ("opId", base_codec::json_int(op_id)),
+            ("thread", base_codec::json_int(th)),
+            ("target", base_codec::json_int(target)),
+          ]), None))
+          sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+        }
+      }
+      if call_name == "message.delete" {
+        let th = match proto_int(params, "thread") {
+          Some(t) => t
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing thread" }))
+        }
+        let target = match proto_int(params, "target") {
+          Some(t) => t
+          None =>
+          match proto_int(params, "seq") {
+            Some(s) => s
+            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing target" }))
+          }
+        }
+        match self.delete_message(th, target, self.rt.now()) {
+          sql::SqlResult::Ok(op_id) =>
+          return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+            ("opId", base_codec::json_int(op_id)),
+            ("thread", base_codec::json_int(th)),
+            ("target", base_codec::json_int(target)),
+          ]), None))
+          sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+        }
+      }
+      if call_name == "card.answer" {
+        let th = match proto_int(params, "thread") {
+          Some(t) => t
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing thread" }))
+        }
+        let seq = match proto_int(params, "seq") {
+          Some(s) => s
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing seq" }))
+        }
+        let option = match proto_str(params, "option") {
+          Some(o) => o
+          None =>
+          match proto_str(params, "value") {
+            Some(v) => v
+            None =>
+            match proto_str(params, "text") {
+              Some(t) => t
+              None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing option" }))
+            }
+          }
+        }
+        let action = match proto_str(params, "action") {
+          Some(a) => a
+          None => "reply"
+        }
+        match self.answer_card(th, seq, option, action, self.rt.now()) {
+          sql::SqlResult::Ok(op_id) =>
+          return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+            ("opId", base_codec::json_int(op_id)),
+            ("thread", base_codec::json_int(th)),
+            ("seq", base_codec::json_int(seq)),
+            ("option", base_codec::json_str(option)),
+            ("action", base_codec::json_str(action)),
+          ]), None))
+          sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+        }
+      }
+      if call_name == "chat.read" {
+        let th = match proto_int(params, "thread") {
+          Some(t) => t
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing thread" }))
+        }
+        let read_seq = match proto_int(params, "read") {
+          Some(r) => r
+          None =>
+          match proto_int(params, "seq") {
+            Some(s) => s
+            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing read" }))
+          }
+        }
+        let unread = match proto_int(params, "unread") {
+          Some(u) => u
+          None => 0
+        }
+        match self.mark_chat_read(th, read_seq, unread_count=unread) {
+          sql::SqlResult::Ok(_) =>
+          return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+            ("thread", base_codec::json_int(th)),
+            ("read", base_codec::json_int(read_seq)),
+            ("unread", base_codec::json_int(unread)),
+          ]), None))
+          sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+        }
+      }
+      if call_name == "chat.rename" {
+        let cid = match proto_str(params, "id") {
+          Some(s) => s
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing id" }))
+        }
+        let title = match proto_str(params, "title") {
+          Some(s) => s
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing title" }))
+        }
+        match self.rename_chat(cid, title) {
+          sql::SqlResult::Ok(op_id) => return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("opId", base_codec::json_int(op_id))]), None))
+          sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+        }
+      }
+      if call_name == "lock.status" {
+        return Some(protocol::CoreEvent::Ok(id, self.lock_status_json(), None))
+      }
+      if call_name == "sessions.list" {
+        let all = self.events.all_sessions()
+        let items : Array[base_codec::Json] = []
+        for i in 0..<all.length() {
+          let s = all[i]
+          items.push(base_codec::json_obj([
+            ("key", base_codec::json_str(s.key)),
+            ("running", base_codec::json_bool(s.running)),
+            ("listed", base_codec::json_bool(s.listed)),
+          ]))
+        }
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("sessions", base_codec::json_arr(items))]), None))
+      }
+      if call_name == "jobs.open" {
+        let open_list = self.events.open_jobs()
+        let items : Array[base_codec::Json] = []
+        for i in 0..<open_list.length() {
+          let j = open_list[i]
+          let chat_j = match j.chat {
+            Some(c) => base_codec::json_str(c)
+            None => base_codec::json_null()
+          }
+          items.push(base_codec::json_obj([
+            ("id", base_codec::json_str(j.id)),
+            ("open", base_codec::json_bool(j.open)),
+            ("chat", chat_j),
+          ]))
+        }
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("jobs", base_codec::json_arr(items))]), None))
+      }
+      self.router.handle(req)
+    }
+    protocol::CoreRequest::Subscribe(_id, topic, _keyed, _from, _have) => {
+      // Rule 4: subscribing NEVER starts a network request; only reads local SQLite.
+      // If subscribing to a specific chat thread, only raises priority without opening a new fetch.
+      if topic.name == "chat" {
+        match topic.param("thread") {
+          Some(base_codec::Json::Num(n, _)) => self.sync.focus_thread(Some(n.to_int()))
+          _ => ()
+        }
+      }
+      self.router.handle(req)
+    }
+    _ => self.router.handle(req)
+  }
+}
+
+/// Thin JSON wire adapter compatible with `core_api.h` (`mb_core_send` -> callback).
+pub fn ClientCore::handle_wire(self : ClientCore, json_text : String, bytes : Option[Bytes] = None) -> Option[(String, Option[Bytes])] {
+  match protocol::decode_client_message(json_text, bytes=bytes) {
+    protocol::ParseRequestResult::Invalid(msg) => {
+      let ev = protocol::CoreEvent::Err(0.to_int64(), protocol::CoreError::{ code: "bad_message", message: msg })
+      Some(protocol::encode_core_event(ev))
+    }
+    protocol::ParseRequestResult::Ok(req) =>
+    match self.handle_request(req) {
+      Some(ev) => Some(protocol::encode_core_event(ev))
+      None => None
+    }
+  }
+}

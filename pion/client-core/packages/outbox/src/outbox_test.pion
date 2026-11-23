@@ -1,0 +1,91 @@
+// Tests for FrameOutbox[T] (ported from libs/client-core/src/outbox/outbox_wbtest.mbt).
+
+struct Patch {
+  key : String
+  rows : Array[Int]
+}
+
+fn ints_eq(a : Array[Int], b : Array[Int]) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn patch_eq(a : Patch, b : Patch) -> Bool {
+  a.key == b.key && ints_eq(a.rows, b.rows)
+}
+
+test "five changes between two frames ask for one frame, and it takes all five in order" {
+  let wakes = [0]
+  let outbox : FrameOutbox[Patch] = FrameOutbox::new(fn() -> Unit { wakes[0] = wakes[0] + 1 })
+  let told : Array[Patch] = []
+  for i in 0..<5 {
+    let p = Patch::{ key: "chat/" + i.to_string(), rows: [i, i + 1] }
+    told.push(p)
+    outbox.tell(p)
+  }
+  debug_assert(wakes[0] == 1, "one wake for five tells")
+  debug_assert(outbox.waiting() == 5, "five waiting")
+  let got = outbox.take()
+  debug_assert(got.length() == 5, "took five")
+  for i in 0..<5 {
+    debug_assert(patch_eq(got[i], told[i]), "same patch")
+  }
+  debug_assert(outbox.takes() == 1, "one take")
+  debug_assert(outbox.waiting() == 0, "empty after take")
+  // Nothing told: nothing asked
+  let empty = outbox.take()
+  debug_assert(empty.length() == 0, "empty take")
+  debug_assert(wakes[0] == 1, "still one wake")
+}
+
+test "what is told while a frame takes asks for the next frame" {
+  let wakes = [0]
+  let outbox : FrameOutbox[Int] = FrameOutbox::new(fn() -> Unit { wakes[0] = wakes[0] + 1 })
+  outbox.tell(1)
+  let first = outbox.take()
+  debug_assert(ints_eq(first, [1]), "first frame took 1")
+  // Told while that frame works with what it took
+  outbox.tell(2)
+  outbox.tell(3)
+  debug_assert(wakes[0] == 2, "second wake")
+  let second = outbox.take()
+  debug_assert(ints_eq(second, [2, 3]), "second frame took 2, 3")
+  debug_assert(outbox.wakes() == 2, "wakes count is 2")
+}
+
+test "a frame that takes some leaves the rest for the next, which it asks for" {
+  let wakes = [0]
+  let outbox : FrameOutbox[Int] = FrameOutbox::new(fn() -> Unit { wakes[0] = wakes[0] + 1 })
+  for i in 0..<7 {
+    outbox.tell(i)
+  }
+  debug_assert(ints_eq(outbox.take(most=Some(3)), [0, 1, 2]), "batch 1")
+  debug_assert(wakes[0] == 2, "re-woke for remainder")
+  outbox.tell(7)
+  debug_assert(wakes[0] == 2, "coalesced into pending wake")
+  debug_assert(ints_eq(outbox.take(most=Some(3)), [3, 4, 5]), "batch 2")
+  debug_assert(wakes[0] == 3, "re-woke again")
+  debug_assert(ints_eq(outbox.take(most=Some(3)), [6, 7]), "batch 3")
+  debug_assert(wakes[0] == 3, "no more remainder")
+  debug_assert(outbox.waiting() == 0, "all drained")
+}
+
+test "most <= 0 leaves all items queued and re-wakes" {
+  let wakes = [0]
+  let outbox : FrameOutbox[Int] = FrameOutbox::new(fn() -> Unit { wakes[0] = wakes[0] + 1 })
+  outbox.tell(10)
+  outbox.tell(20)
+  debug_assert(wakes[0] == 1, "initial wake")
+  let none = outbox.take(most=Some(-1))
+  debug_assert(none.length() == 0, "took 0")
+  debug_assert(outbox.waiting() == 2, "still 2 waiting")
+  debug_assert(wakes[0] == 2, "re-woke")
+  debug_assert(ints_eq(outbox.take(), [10, 20]), "drained all")
+}

@@ -1,0 +1,1133 @@
+///| Workspace lock rules (`rules/src/lock/lock.mbt`).
+
+import "role"
+import "form"
+import "fork"
+import "history"
+
+pub struct Crypto {
+  sha256_hex : (String) -> String
+  sig_valid : (form::Json, String, Array[String], String, Bool) -> Bool
+  valid_key_id : (String) -> Bool
+  endpoint_proof : (String, String, String, String) -> Bool
+  tagged_sig_valid : (String, String, String, String) -> Bool
+}
+
+pub enum LockError {
+  Refused(String)
+  Refusal(String)
+}
+
+pub fn error_msg(e : LockError) -> String {
+  match e {
+    LockError::Refused(why) => why
+    LockError::Refusal(why) => why
+  }
+}
+
+pub struct Member {
+  sub : String
+  email : String
+  role : String
+}
+
+pub struct Device {
+  id : String
+  sub : String
+  kind : String
+  label : String
+  sign_key : Option[String]
+  endpoints : Option[Array[String]]
+  exp : Option[Double]
+  by : Option[String]
+  own : Bool
+}
+
+pub struct Passkey {
+  id : String
+  sub : String
+  key : String
+  label : String
+  own : Bool
+}
+
+pub struct Station {
+  key : String
+  name : String
+}
+
+pub struct LockState {
+  ws : String
+  seq : Double
+  head : String
+  genesis : String
+  origins : Array[String]
+  rp_id : String
+  cloud_keys : form::Json
+  members : form::OrderedMap[Member]
+  devices : form::OrderedMap[Device]
+  sign_keys : form::OrderedMap[Array[String]]
+  passkeys : form::OrderedMap[Passkey]
+  signed : form::OrderedMap[Bool]
+  stations : form::OrderedMap[Station]
+  gateways : form::OrderedMap[Bool]
+  persons : form::OrderedMap[String]
+  disabled : Bool
+  moved : Option[String]
+}
+
+pub struct Signer {
+  sub : String
+  role : String
+  passkey : Bool
+  own : Bool
+}
+
+pub let web_device_secs : Double = 2678400.0
+let max_safe : Double = 9007199254740991.0
+
+let copied_box : Array[Int] = [0]
+let stepped_box : Array[Int] = [0]
+
+pub fn copied_count() -> Int {
+  copied_box[0]
+}
+
+pub fn stepped_count() -> Int {
+  stepped_box[0]
+}
+
+fn copy_map[V](m : form::OrderedMap[V]) -> form::OrderedMap[V] {
+  copied_box[0] = copied_box[0] + m.length()
+  m.copy()
+}
+
+fn field(v : Option[form::Json], k : String) -> Option[form::Json] {
+  form::json_field(v, k)
+}
+
+fn text_of(v : Option[form::Json]) -> Option[String] {
+  match v {
+    Some(form::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn opt_str_eq(a : Option[String], b : String) -> Bool {
+  match a {
+    Some(s) => s == b
+    None => false
+  }
+}
+
+fn str_max(v : Option[form::Json], max : Int) -> Option[String] {
+  match v {
+    Some(form::Json::Str(s)) => {
+      if form::utf16_len(s) <= max {
+        Some(s)
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+fn safe_int(v : Option[form::Json]) -> Option[Double] {
+  match v {
+    Some(form::Json::Num(n)) => {
+      if n == n.floor() && n.abs() <= max_safe {
+        Some(n)
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+fn safe_num(v : Option[form::Json]) -> Option[Double] {
+  match v {
+    Some(form::Json::Num(n)) => Some(n)
+    _ => None
+  }
+}
+
+fn opt_num_eq(v : Option[Double], target : Double) -> Bool {
+  match v {
+    Some(n) => n == target
+    None => false
+  }
+}
+
+fn arr(v : Option[form::Json]) -> Array[form::Json] {
+  match v {
+    Some(form::Json::Arr(xs)) => xs
+    _ => []
+  }
+}
+
+fn is_hex_of(s : String, n : Int) -> Bool {
+  if s.length() != n {
+    return false
+  }
+  let mut i = 0
+  while i < n {
+    let c = s.code_unit_at(i)
+    if !((c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66)) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn is_hex32(s : String) -> Bool {
+  is_hex_of(s, 64)
+}
+
+fn is_id(v : Option[form::Json]) -> Bool {
+  match v {
+    Some(form::Json::Str(s)) => is_hex32(s)
+    _ => false
+  }
+}
+
+fn str_in(xs : Array[String], s : String) -> Bool {
+  let n = xs.length()
+  let mut i = 0
+  while i < n {
+    if xs[i] == s {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn role_of(v : Option[form::Json]) -> Option[role::Role] {
+  match v {
+    Some(form::Json::Str("owner")) => Some(role::Role::Owner)
+    Some(form::Json::Str("admin")) => Some(role::Role::Admin)
+    Some(form::Json::Str("member")) => Some(role::Role::Member)
+    Some(form::Json::Str("viewer")) => Some(role::Role::Viewer)
+    _ => None
+  }
+}
+
+fn role_named(s : String) -> role::Role {
+  if s == "owner" {
+    role::Role::Owner
+  } else if s == "admin" {
+    role::Role::Admin
+  } else if s == "member" {
+    role::Role::Member
+  } else {
+    role::Role::Viewer
+  }
+}
+
+fn parse_member(v : Option[form::Json]) -> Result[Member, LockError] {
+  let sub = str_max(field(v, "sub"), 200)
+  let email = str_max(field(v, "email"), 320)
+  let r_json = field(v, "role")
+  match (sub, email, role_of(r_json)) {
+    (Some(s), Some(em), Some(_)) => {
+      if s != "" {
+        let r_str = match text_of(r_json) {
+          Some(x) => x
+          None => ""
+        }
+        Ok(Member::{ sub: s, email: em, role: r_str })
+      } else {
+        Err(LockError::Refused("a member is {sub, email, role}"))
+      }
+    }
+    _ => Err(LockError::Refused("a member is {sub, email, role}"))
+  }
+}
+
+fn parse_device(v : Option[form::Json], at : Double, c : Crypto) -> Result[Device, LockError] {
+  let id_opt = field(v, "id")
+  let sub_opt = str_max(field(v, "sub"), 200)
+  let label = match str_max(field(v, "label"), 200) {
+    Some(s) => s
+    None => ""
+  }
+  let kind_opt = text_of(field(v, "kind"))
+  let (sub, kind) = match (sub_opt, kind_opt) {
+    (Some(s), Some(k)) => {
+      if is_id(id_opt) && s != "" && (k == "app" || k == "web") {
+        (s, k)
+      } else {
+        return Err(LockError::Refused("a device is {id, sub, kind, label}"))
+      }
+    }
+    _ => return Err(LockError::Refused("a device is {id, sub, kind, label}"))
+  }
+  let sign_key : Option[String] = match field(v, "sign_key") {
+    None => None
+    Some(form::Json::Str(k)) => {
+      if kind == "app" && form::utf16_len(k) <= 200 && (c.valid_key_id)(k) {
+        Some(k)
+      } else {
+        return Err(LockError::Refused("only an app's device signs, with an ed25519 or p256 key"))
+      }
+    }
+    Some(_) => return Err(LockError::Refused("only an app's device signs, with an ed25519 or p256 key"))
+  }
+  let endpoints : Option[Array[String]] = match field(v, "endpoints") {
+    None => None
+    Some(form::Json::Arr(xs)) => {
+      if xs.length() > 64 {
+        return Err(LockError::Refused("endpoints are iroh ids"))
+      }
+      let out : Array[String] = []
+      let mut i = 0
+      while i < xs.length() {
+        if !is_id(Some(xs[i])) {
+          return Err(LockError::Refused("endpoints are iroh ids"))
+        }
+        match text_of(Some(xs[i])) {
+          Some(s) => out.push(s)
+          None => return Err(LockError::Refused("endpoints are iroh ids"))
+        }
+        i = i + 1
+      }
+      Some(out)
+    }
+    Some(_) => return Err(LockError::Refused("endpoints are iroh ids"))
+  }
+  let exp : Option[Double] = match field(v, "exp") {
+    None => None
+    Some(_) => {
+      match safe_int(field(v, "exp")) {
+        Some(n) => Some(n)
+        None => return Err(LockError::Refused("exp is unix seconds"))
+      }
+    }
+  }
+  if kind == "web" && at > 0.0 {
+    let bad_exp = match exp {
+      None => true
+      Some(e) => e > at + web_device_secs
+    }
+    if bad_exp {
+      return Err(LockError::Refused("a web page's device lasts 30 days at most"))
+    }
+  }
+  let id_str = match text_of(id_opt) {
+    Some(s) => s
+    None => ""
+  }
+  Ok(Device::{ id: id_str, sub: sub, kind: kind, label: label, sign_key: sign_key, endpoints: endpoints, exp: exp, by: None, own: false })
+}
+
+fn parse_passkey(v : Option[form::Json], c : Crypto) -> Result[Passkey, LockError] {
+  let id = str_max(field(v, "id"), 1400)
+  let sub = str_max(field(v, "sub"), 200)
+  let key = text_of(field(v, "key"))
+  let label = match str_max(field(v, "label"), 200) {
+    Some(s) => s
+    None => ""
+  }
+  match (id, sub, key) {
+    (Some(i), Some(s), Some(k)) => {
+      if i != "" && s != "" && k.starts_with("p256:") && form::utf16_len(k) <= 200 && (c.valid_key_id)(k) {
+        Ok(Passkey::{ id: i, sub: s, key: k, label: label, own: false })
+      } else {
+        Err(LockError::Refused("a passkey is {id, sub, key: p256:…}"))
+      }
+    }
+    _ => Err(LockError::Refused("a passkey is {id, sub, key: p256:…}"))
+  }
+}
+
+fn parse_station(v : Option[form::Json]) -> Result[Station, LockError] {
+  if !is_id(field(v, "key")) {
+    return Err(LockError::Refused("a station is {key, name}"))
+  }
+  let key = match text_of(field(v, "key")) {
+    Some(s) => s
+    None => ""
+  }
+  let name = match str_max(field(v, "name"), 200) {
+    Some(s) => s
+    None => ""
+  }
+  Ok(Station::{ key: key, name: name })
+}
+
+fn with_role(s : LockState, sub : String, passkey : Bool, own : Bool) -> Option[Signer] {
+  match s.members.get(sub) {
+    Some(m) => Some(Signer::{ sub: sub, role: m.role, passkey: passkey, own: own })
+    None => None
+  }
+}
+
+pub fn signer(s : LockState, key : String, now : Option[Double]) -> Option[Signer] {
+  let mut found : Option[Signer] = None
+  let pks = s.passkeys.values()
+  let mut pi = 0
+  while pi < pks.length() {
+    let p = pks[pi]
+    if p.key == key {
+      match with_role(s, p.sub, true, p.own) {
+        Some(w) => {
+          found = Some(w)
+        }
+        None => ()
+      }
+    }
+    pi = pi + 1
+  }
+  let devs = s.devices.values()
+  let mut di = 0
+  while di < devs.length() {
+    let d = devs[di]
+    let live = match (d.exp, now) {
+      (Some(exp), Some(nw)) => exp > nw
+      _ => true
+    }
+    let own_found = match found {
+      Some(f) => f.own
+      None => false
+    }
+    if role::replaces(own_found, opt_str_eq(d.sign_key, key) && d.kind == "app", live, s.members.contains(d.sub)) {
+      found = with_role(s, d.sub, false, d.own)
+    }
+    di = di + 1
+  }
+  found
+}
+
+fn opt_str_same(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+fn own_of(s : LockState, sub : String, by : Signer, was : Option[Device], key : Option[String]) -> Bool {
+  let kept = match was {
+    Some(w) => w.own && opt_str_same(w.sign_key, key)
+    None => false
+  }
+  role::own_device(by.sub == sub, kept, role_named(by.role), s.signed.contains(sub))
+}
+
+fn owners_count(s : LockState) -> Int {
+  let mut n = 0
+  let ms = s.members.values()
+  let mut i = 0
+  while i < ms.length() {
+    if ms[i].role == "owner" {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+fn add_device(s : LockState, d : Device) -> Result[Unit, LockError] {
+  if !s.members.contains(d.sub) {
+    return Err(LockError::Refused("a device is a member's"))
+  }
+  s.devices.set(d.id, d)
+  match d.sign_key {
+    Some(k) => {
+      let had = match s.sign_keys.get(d.id) {
+        Some(xs) => xs
+        None => []
+      }
+      if !str_in(had, k) {
+        let next : Array[String] = []
+        let mut i = 0
+        while i < had.length() {
+          next.push(had[i])
+          i = i + 1
+        }
+        next.push(k)
+        s.sign_keys.set(d.id, next)
+      }
+      if d.own {
+        s.signed.set(d.sub, true)
+      }
+    }
+    None => ()
+  }
+  Ok(())
+}
+
+fn add_passkey(s : LockState, p : Passkey) -> Unit {
+  s.passkeys.set(p.key, p)
+  if p.own {
+    s.signed.set(p.sub, true)
+  }
+}
+
+pub fn entry_hash(e : form::Json, c : Crypto) -> Result[String, LockError] {
+  match form::entry_text(e) {
+    Ok(text) => Ok((c.sha256_hex)(text))
+    Err(why) => Err(LockError::Refused(why))
+  }
+}
+
+fn sig_key(e : form::Json) -> String {
+  match text_of(field(field(Some(e), "sig"), "key")) {
+    Some(s) => s
+    None => ""
+  }
+}
+
+fn sig_of(e : form::Json) -> form::Json {
+  match field(Some(e), "sig") {
+    Some(v) => v
+    None => form::Json::Null
+  }
+}
+
+fn copied_from(prev : LockState, hash : String) -> LockState {
+  LockState::{
+    ws: prev.ws,
+    seq: prev.seq + 1.0,
+    head: hash,
+    genesis: prev.genesis,
+    origins: prev.origins,
+    rp_id: prev.rp_id,
+    cloud_keys: prev.cloud_keys,
+    members: copy_map(prev.members),
+    devices: copy_map(prev.devices),
+    sign_keys: copy_map(prev.sign_keys),
+    passkeys: copy_map(prev.passkeys),
+    signed: copy_map(prev.signed),
+    stations: copy_map(prev.stations),
+    gateways: copy_map(prev.gateways),
+    persons: copy_map(prev.persons),
+    disabled: prev.disabled,
+    moved: prev.moved,
+  }
+}
+
+pub fn genesis(e : form::Json, c : Crypto) -> Result[LockState, LockError] {
+  let v = Some(e)
+  let ws = match text_of(field(v, "ws")) {
+    Some(s) => s
+    None => ""
+  }
+  let prev_is_null = match field(v, "prev") {
+    Some(form::Json::Null) => true
+    _ => false
+  }
+  if !opt_str_eq(text_of(field(v, "kind")), "genesis") || !opt_num_eq(safe_num(field(v, "seq")), 0.0) || !prev_is_null || !opt_num_eq(safe_num(field(v, "v")), 1.0) || ws == "" {
+    return Err(LockError::Refused("a lock starts with its genesis"))
+  }
+  let b = match field(v, "body") {
+    None | Some(form::Json::Null) => Some(form::Json::Obj([]))
+    x => x
+  }
+  let raw_origins = arr(field(b, "origins"))
+  let origins : Array[String] = []
+  let mut oi = 0
+  while oi < raw_origins.length() {
+    match text_of(Some(raw_origins[oi])) {
+      Some(s) => origins.push(s)
+      None => ()
+    }
+    oi = oi + 1
+  }
+  let hash = match entry_hash(e, c) {
+    Ok(h) => h
+    Err(err) => return Err(err)
+  }
+  let rp_id = match str_max(field(b, "rp_id"), 200) {
+    Some(s) => s
+    None => ""
+  }
+  let cloud_keys = match field(b, "cloud_keys") {
+    None => form::Json::Null
+    Some(k) => k
+  }
+  let s = LockState::{
+    ws: ws,
+    seq: 0.0,
+    head: hash,
+    genesis: hash,
+    origins: origins,
+    rp_id: rp_id,
+    cloud_keys: cloud_keys,
+    members: form::OrderedMap::new(),
+    devices: form::OrderedMap::new(),
+    sign_keys: form::OrderedMap::new(),
+    passkeys: form::OrderedMap::new(),
+    signed: form::OrderedMap::new(),
+    stations: form::OrderedMap::new(),
+    gateways: form::OrderedMap::new(),
+    persons: form::OrderedMap::new(),
+    disabled: false,
+    moved: None,
+  }
+  let ms = arr(field(b, "members"))
+  let mut mi = 0
+  while mi < ms.length() {
+    match parse_member(Some(ms[mi])) {
+      Ok(m) => s.members.set(m.sub, m)
+      Err(err) => return Err(err)
+    }
+    mi = mi + 1
+  }
+  let owner = str_max(field(b, "owner"), 200)
+  let ds = arr(field(b, "devices"))
+  let mut di = 0
+  while di < ds.length() {
+    match parse_device(Some(ds[di]), 0.0, c) {
+      Ok(d) => {
+        let d2 = Device::{ id: d.id, sub: d.sub, kind: d.kind, label: d.label, sign_key: d.sign_key, endpoints: d.endpoints, exp: d.exp, by: owner, own: true }
+        match add_device(s, d2) {
+          Ok(_) => ()
+          Err(err) => return Err(err)
+        }
+      }
+      Err(err) => return Err(err)
+    }
+    di = di + 1
+  }
+  let pks = arr(field(b, "passkeys"))
+  let mut pi = 0
+  while pi < pks.length() {
+    match parse_passkey(Some(pks[pi]), c) {
+      Ok(p) => add_passkey(s, Passkey::{ id: p.id, sub: p.sub, key: p.key, label: p.label, own: true })
+      Err(err) => return Err(err)
+    }
+    pi = pi + 1
+  }
+  let sts = arr(field(b, "stations"))
+  let mut si = 0
+  while si < sts.length() {
+    match parse_station(Some(sts[si])) {
+      Ok(st) => s.stations.set(st.key, st)
+      Err(err) => return Err(err)
+    }
+    si = si + 1
+  }
+  let gws = arr(field(b, "gateways"))
+  let mut gi = 0
+  while gi < gws.length() {
+    if is_id(Some(gws[gi])) {
+      match text_of(Some(gws[gi])) {
+        Some(g) => s.gateways.set(g, true)
+        None => ()
+      }
+    }
+    gi = gi + 1
+  }
+  let owner_raw = text_of(field(b, "owner"))
+  let owns = match owner_raw {
+    Some(o) => {
+      match s.members.get(o) {
+        Some(m) => m.role == "owner"
+        None => false
+      }
+    }
+    None => false
+  }
+  if !owns {
+    return Err(LockError::Refused("the genesis names its owner among its members"))
+  }
+  let at_val = match safe_num(field(v, "at")) {
+    Some(n) => n
+    None => 1.0 / 0.0
+  }
+  let by = signer(s, sig_key(e), Some(at_val))
+  let signed_by_owner = match (by, owner_raw) {
+    (Some(w), Some(o)) => w.sub == o && (c.sig_valid)(sig_of(e), s.head, s.origins, s.rp_id, w.passkey)
+    _ => false
+  }
+  if !signed_by_owner {
+    return Err(LockError::Refused("the genesis is not signed by its owner"))
+  }
+  Ok(s)
+}
+
+fn kind_text(v : Option[form::Json]) -> String {
+  match v {
+    None => "undefined"
+    Some(form::Json::Str(s)) => s
+    Some(form::Json::Null) => "null"
+    Some(form::Json::Bool(true)) => "true"
+    Some(form::Json::Bool(false)) => "false"
+    Some(form::Json::Num(n)) => {
+      match form::canonical(form::Json::Num(n)) {
+        Ok(s) => s
+        Err(_) => "NaN"
+      }
+    }
+    Some(form::Json::Arr(_)) => ""
+    Some(form::Json::Obj(_)) => "[object Object]"
+  }
+}
+
+pub fn apply(prev : LockState, e : form::Json, now : Option[Double], c : Crypto) -> Result[LockState, LockError] {
+  step(prev, e, now, c, false)
+}
+
+fn step(prev : LockState, e : form::Json, now : Option[Double], c : Crypto, in_place : Bool) -> Result[LockState, LockError] {
+  stepped_box[0] = stepped_box[0] + 1
+  let v = Some(e)
+  match prev.moved {
+    Some(_) => return Err(LockError::Refused("the lock moved to a person's own log: nothing follows it here"))
+    None => ()
+  }
+  if prev.disabled {
+    return Err(LockError::Refused("the lock is turned off"))
+  }
+  if !opt_num_eq(safe_num(field(v, "v")), 1.0) || !opt_str_eq(text_of(field(v, "ws")), prev.ws) {
+    return Err(LockError::Refused("an entry of another lock"))
+  }
+  let follows = match safe_int(field(v, "seq")) {
+    Some(seq) => history::follows(false, prev.seq.to_int64(), seq.to_int64())
+    None => false
+  }
+  if !follows || !opt_str_eq(text_of(field(v, "prev")), prev.head) {
+    return Err(LockError::Refused("the entry does not follow this lock's head"))
+  }
+  let at = match safe_int(field(v, "at")) {
+    Some(n) => n
+    None => return Err(LockError::Refused("at is unix seconds"))
+  }
+  let hash = match entry_hash(e, c) {
+    Ok(h) => h
+    Err(err) => return Err(err)
+  }
+  let by = match signer(prev, sig_key(e), now) {
+    Some(w) => w
+    None => return Err(LockError::Refused("not signed by a device or passkey in the lock"))
+  }
+  if !(c.sig_valid)(sig_of(e), hash, prev.origins, prev.rp_id, by.passkey) {
+    return Err(LockError::Refused("signature invalid"))
+  }
+  let s = if in_place && role::takes_effect(by.own) {
+    LockState::{
+      ws: prev.ws,
+      seq: prev.seq + 1.0,
+      head: hash,
+      genesis: prev.genesis,
+      origins: prev.origins,
+      rp_id: prev.rp_id,
+      cloud_keys: prev.cloud_keys,
+      members: prev.members,
+      devices: prev.devices,
+      sign_keys: prev.sign_keys,
+      passkeys: prev.passkeys,
+      signed: prev.signed,
+      stations: prev.stations,
+      gateways: prev.gateways,
+      persons: prev.persons,
+      disabled: prev.disabled,
+      moved: prev.moved,
+    }
+  } else {
+    copied_from(prev, hash)
+  }
+  let b = match field(v, "body") {
+    None | Some(form::Json::Null) => Some(form::Json::Obj([]))
+    x => x
+  }
+  let who = role_named(by.role)
+  let kind = match text_of(field(v, "kind")) {
+    Some(k) => k
+    None => ""
+  }
+  let mut out = s
+  if kind == "member" {
+    let m = match parse_member(b) {
+      Ok(x) => x
+      Err(err) => return Err(err)
+    }
+    let was_owner = match s.members.get(m.sub) {
+      Some(w) => w.role == "owner"
+      None => false
+    }
+    if !role::may(who, role::Change::MemberSet(was_owner, m.role == "owner")) {
+      return Err(LockError::Refused(if role::rank(who) >= 2 { "only owners make or change owners" } else { "only owners and admins change members" }))
+    }
+    let kept = role::keeps_owner(owners_count(s), was_owner, m.role == "owner")
+    s.members.set(m.sub, m)
+    if !kept {
+      return Err(LockError::Refused("a lock keeps an owner"))
+    }
+  } else if kind == "member.remove" {
+    let sub = match str_max(field(b, "sub"), 200) {
+      Some(x) => {
+        if !s.members.contains(x) {
+          return Err(LockError::Refused("no such member"))
+        }
+        x
+      }
+      None => return Err(LockError::Refused("no such member"))
+    }
+    let was_owner = match s.members.get(sub) {
+      Some(w) => w.role == "owner"
+      None => false
+    }
+    if !role::may(who, role::Change::MemberRemove(was_owner)) {
+      return Err(LockError::Refused("only owners and admins remove members, owners owners"))
+    }
+    if !role::keeps_owner(owners_count(s), was_owner, false) {
+      return Err(LockError::Refused("a lock keeps an owner"))
+    }
+    s.members.remove(sub)
+    let dks = s.devices.keys()
+    let mut di = 0
+    while di < dks.length() {
+      match s.devices.get(dks[di]) {
+        Some(d) => if d.sub == sub { s.devices.remove(dks[di]) }
+        None => ()
+      }
+      di = di + 1
+    }
+    let pks = s.passkeys.keys()
+    let mut pi = 0
+    while pi < pks.length() {
+      match s.passkeys.get(pks[pi]) {
+        Some(p) => if p.sub == sub { s.passkeys.remove(pks[pi]) }
+        None => ()
+      }
+      pi = pi + 1
+    }
+    s.signed.remove(sub)
+    s.persons.remove(sub)
+  } else if kind == "device" {
+    let d = match parse_device(b, at, c) {
+      Ok(x) => x
+      Err(err) => return Err(err)
+    }
+    if !role::may(who, role::Change::Own(d.sub == by.sub)) {
+      return Err(LockError::Refused("members add only their own devices"))
+    }
+    let own = own_of(prev, d.sub, by, prev.devices.get(d.id), d.sign_key)
+    let d2 = Device::{ id: d.id, sub: d.sub, kind: d.kind, label: d.label, sign_key: d.sign_key, endpoints: d.endpoints, exp: d.exp, by: Some(by.sub), own: own }
+    match add_device(s, d2) {
+      Ok(_) => ()
+      Err(err) => return Err(err)
+    }
+  } else if kind == "device.remove" {
+    let d = match text_of(field(b, "id")) {
+      Some(id) => {
+        match s.devices.get(id) {
+          Some(dev) => dev
+          None => return Err(LockError::Refused("no such device"))
+        }
+      }
+      None => return Err(LockError::Refused("no such device"))
+    }
+    if !role::may(who, role::Change::Own(d.sub == by.sub)) {
+      return Err(LockError::Refused("members remove only their own devices"))
+    }
+    s.devices.remove(d.id)
+  } else if kind == "passkey" {
+    let p = match parse_passkey(b, c) {
+      Ok(x) => x
+      Err(err) => return Err(err)
+    }
+    if !s.members.contains(p.sub) {
+      return Err(LockError::Refused("a passkey is a member's"))
+    }
+    if !role::may(who, role::Change::Own(p.sub == by.sub)) {
+      return Err(LockError::Refused("members add only their own passkeys"))
+    }
+    let own = own_of(prev, p.sub, by, None, None)
+    add_passkey(s, Passkey::{ id: p.id, sub: p.sub, key: p.key, label: p.label, own: own })
+  } else if kind == "passkey.remove" {
+    let p = match text_of(field(b, "key")) {
+      Some(k) => {
+        match s.passkeys.get(k) {
+          Some(pk) => pk
+          None => return Err(LockError::Refused("no such passkey"))
+        }
+      }
+      None => return Err(LockError::Refused("no such passkey"))
+    }
+    if !role::may(who, role::Change::Own(p.sub == by.sub)) {
+      return Err(LockError::Refused("members remove only their own passkeys"))
+    }
+    s.passkeys.remove(p.key)
+  } else if kind == "person" {
+    let sub = match text_of(field(b, "sub")) {
+      Some(x) => {
+        if !s.members.contains(x) {
+          return Err(LockError::Refused("a person's lock is a member's"))
+        }
+        x
+      }
+      None => return Err(LockError::Refused("a person's lock is a member's"))
+    }
+    let person = match text_of(field(b, "person")) {
+      Some(p) => {
+        if !is_hex32(p) {
+          return Err(LockError::Refused("a person's lock is named by its genesis's hash"))
+        }
+        p
+      }
+      None => return Err(LockError::Refused("a person's lock is named by its genesis's hash"))
+    }
+    if !role::binds(sub == by.sub, by.own) {
+      return Err(LockError::Refused("members bind only themselves to a lock of their own, from their own device"))
+    }
+    s.persons.set(sub, person)
+  } else if kind == "station" {
+    if !role::may(who, role::Change::Roster) {
+      return Err(LockError::Refused("only owners and admins add stations"))
+    }
+    let st = match parse_station(b) {
+      Ok(x) => x
+      Err(err) => return Err(err)
+    }
+    s.stations.set(st.key, st)
+  } else if kind == "station.remove" {
+    if !role::may(who, role::Change::Roster) {
+      return Err(LockError::Refused("only owners and admins remove stations"))
+    }
+    match text_of(field(b, "key")) {
+      Some(k) => s.stations.remove(k)
+      None => ()
+    }
+  } else if kind == "gateway" {
+    if !role::may(who, role::Change::Roster) || !is_id(field(b, "key")) {
+      return Err(LockError::Refused("only owners and admins add gateways, by iroh id"))
+    }
+    match text_of(field(b, "key")) {
+      Some(k) => s.gateways.set(k, true)
+      None => ()
+    }
+  } else if kind == "gateway.remove" {
+    if !role::may(who, role::Change::Roster) {
+      return Err(LockError::Refused("only owners and admins remove gateways"))
+    }
+    match text_of(field(b, "key")) {
+      Some(k) => s.gateways.remove(k)
+      None => ()
+    }
+  } else if kind == "cloud_keys" {
+    match field(b, "keys") {
+      Some(keys) => {
+        if !role::may(who, role::Change::CloudKeys) {
+          return Err(LockError::Refused("only owners change the control plane's keys"))
+        }
+        out = LockState::{
+          ws: s.ws,
+          seq: s.seq,
+          head: s.head,
+          genesis: s.genesis,
+          origins: s.origins,
+          rp_id: s.rp_id,
+          cloud_keys: keys,
+          members: s.members,
+          devices: s.devices,
+          sign_keys: s.sign_keys,
+          passkeys: s.passkeys,
+          signed: s.signed,
+          stations: s.stations,
+          gateways: s.gateways,
+          persons: s.persons,
+          disabled: s.disabled,
+          moved: s.moved,
+        }
+      }
+      None => return Err(LockError::Refused("only owners change the control plane's keys"))
+    }
+  } else if kind == "disable" {
+    if !role::may(who, role::Change::Disable) {
+      return Err(LockError::Refused("only owners turn the lock off"))
+    }
+    out = LockState::{
+      ws: s.ws,
+      seq: s.seq,
+      head: s.head,
+      genesis: s.genesis,
+      origins: s.origins,
+      rp_id: s.rp_id,
+      cloud_keys: s.cloud_keys,
+      members: s.members,
+      devices: s.devices,
+      sign_keys: s.sign_keys,
+      passkeys: s.passkeys,
+      signed: s.signed,
+      stations: s.stations,
+      gateways: s.gateways,
+      persons: s.persons,
+      disabled: true,
+      moved: s.moved,
+    }
+  } else if kind == "moved" {
+    if !(by.role == "owner" && by.own && !by.passkey) {
+      return Err(LockError::Refused("only an owner's own app device hands the lock over"))
+    }
+    let one = match b {
+      Some(form::Json::Obj(m)) => m.length() == 1
+      _ => false
+    }
+    let root = match text_of(field(b, "root")) {
+      Some(r) => {
+        if !one || !is_hex32(r) {
+          return Err(LockError::Refused("a handover names the person log it goes to, by its genesis's hash"))
+        }
+        r
+      }
+      None => return Err(LockError::Refused("a handover names the person log it goes to, by its genesis's hash"))
+    }
+    out = LockState::{
+      ws: s.ws,
+      seq: s.seq,
+      head: s.head,
+      genesis: s.genesis,
+      origins: s.origins,
+      rp_id: s.rp_id,
+      cloud_keys: s.cloud_keys,
+      members: s.members,
+      devices: s.devices,
+      sign_keys: s.sign_keys,
+      passkeys: s.passkeys,
+      signed: s.signed,
+      stations: s.stations,
+      gateways: s.gateways,
+      persons: s.persons,
+      disabled: s.disabled,
+      moved: Some(root),
+    }
+  } else {
+    return Err(LockError::Refused("unknown entry kind " + kind_text(field(v, "kind"))))
+  }
+  if role::takes_effect(by.own) {
+    Ok(out)
+  } else {
+    Ok(LockState::{
+      ws: prev.ws,
+      seq: prev.seq + 1.0,
+      head: hash,
+      genesis: prev.genesis,
+      origins: prev.origins,
+      rp_id: prev.rp_id,
+      cloud_keys: prev.cloud_keys,
+      members: prev.members,
+      devices: prev.devices,
+      sign_keys: prev.sign_keys,
+      passkeys: prev.passkeys,
+      signed: prev.signed,
+      stations: prev.stations,
+      gateways: prev.gateways,
+      persons: prev.persons,
+      disabled: prev.disabled,
+      moved: prev.moved,
+    })
+  }
+}
+
+pub fn fold(entries : Array[form::Json], now : Option[Double], c : Crypto) -> Result[LockState, LockError] {
+  if entries.length() == 0 {
+    return Err(LockError::Refused("no lock"))
+  }
+  let mut s = match genesis(entries[0], c) {
+    Ok(st) => st
+    Err(err) => return Err(err)
+  }
+  let mut i = 1
+  while i < entries.length() {
+    s = match step(s, entries[i], now, c, true) {
+      Ok(st) => st
+      Err(err) => return Err(err)
+    }
+    i = i + 1
+  }
+  Ok(s)
+}
+
+pub fn admit(
+  s : LockState,
+  sub : String,
+  endpoint : String,
+  base : Option[String],
+  proof : Option[String],
+  now : Double,
+  c : Crypto,
+) -> Result[(Device, String), LockError] {
+  let mut d : Option[Device] = None
+  match (base, proof) {
+    (Some(b), Some(p)) => {
+      if b != "" && p != "" && is_hex32(b) && (c.endpoint_proof)(s.ws, b, endpoint, p) {
+        d = s.devices.get(b)
+      }
+    }
+    _ => ()
+  }
+  match d {
+    None => {
+      d = s.devices.get(endpoint)
+    }
+    Some(_) => ()
+  }
+  match d {
+    None => {
+      let devs = s.devices.values()
+      let mut i = 0
+      while i < devs.length() {
+        let x = devs[i]
+        match x.endpoints {
+          Some(es) => {
+            if str_in(es, endpoint) {
+              d = Some(x)
+              break
+            }
+          }
+          None => ()
+        }
+        i = i + 1
+      }
+    }
+    Some(_) => ()
+  }
+  let found = match d {
+    Some(_) => true
+    None => false
+  }
+  let theirs = match d {
+    Some(dev) => dev.sub == sub
+    None => false
+  }
+  let live = match d {
+    Some(dev) => {
+      let (lasts, exp_v) = match dev.exp {
+        Some(e) => (true, e.to_int64())
+        None => (false, 0.to_int64())
+      }
+      history::unexpired(lasts, exp_v, now.to_int64())
+    }
+    None => false
+  }
+  let role_opt = match d {
+    Some(dev) => {
+      match s.members.get(dev.sub) {
+        Some(m) => Some(m.role)
+        None => None
+      }
+    }
+    None => None
+  }
+  let has_role = match role_opt {
+    Some(_) => true
+    None => false
+  }
+  match role::admission(found, theirs, live, has_role) {
+    role::Admission::Admitted => {
+      match (d, role_opt) {
+        (Some(dev), Some(r)) => Ok((dev, r))
+        _ => Err(LockError::Refusal("this device is not confirmed in the workspace's lock"))
+      }
+    }
+    role::Admission::Unknown => Err(LockError::Refusal("this device is not confirmed in the workspace's lock"))
+    role::Admission::Others => Err(LockError::Refusal("this device is someone else's in the workspace's lock"))
+    role::Admission::RanOut => Err(LockError::Refusal("this device's confirmation ran out"))
+    role::Admission::NoMember => Err(LockError::Refusal("not a member in the workspace's lock"))
+  }
+}

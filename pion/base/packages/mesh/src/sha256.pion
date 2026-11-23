@@ -1,0 +1,8 @@
+// SHA-256 (FIPS 180-4) delegated to `crypto::sha256` (`AFK-surf/pion-packages` `crypto-v0.1.0`).
+
+import "crypto"
+
+/// The SHA-256 digest of `data`: 32 bytes.
+pub fn sha256(data : Bytes) -> Bytes {
+  crypto::sha256(data)
+}

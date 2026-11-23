@@ -1,0 +1,10 @@
+[package]
+name = "mesh"
+version = "0.1.0"
+
+[dependencies]
+effect = { workspace = true }
+crypto = { workspace = true }
+base_codec = { path = "../base_codec" }
+wire = { path = "../wire" }
+shell = { path = "../shell" }

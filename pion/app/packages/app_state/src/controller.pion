@@ -1,0 +1,538 @@
+// Pure headless zero-serialization reactive state bridge (`AppController`)
+// connecting `sync::ClientCore` (`outbox::FrameOutbox[sync::CoreEvent]`) directly
+// to Invar `signals::Signal` via `ui::wake_frame` and `ui::on_frame_take`.
+//
+// Decoupled from all visual skins so the unified `invar` PageShell & components
+// can bind directly to these signals without touching core logic.
+
+import "effect"
+import "signals"
+import "sql"
+import "store"
+import "sync"
+import "ui"
+
+pub struct ChatSummary {
+  pub id : String
+  pub thread : Int
+  pub title : String
+  pub preview : String
+  pub unread : Int
+  pub archived : Bool
+}
+
+pub enum MessageRole {
+  Person
+  Agent
+  System
+}
+
+pub struct ChatMessage {
+  pub entry_n : Int
+  pub client_key : Option[String]
+  pub role : MessageRole
+  pub author : String
+  pub text : String
+  pub sending : Bool
+}
+
+pub struct RecoveryNotice {
+  pub target : String
+  pub kind : String
+  pub code : String
+  pub recovery : String
+}
+
+pub enum DecisionState {
+  Pending(String, Array[String])
+  Decided(String, String)
+}
+
+pub struct AppController {
+  pub core : sync::ClientCore
+  pub chats_sig : signals::Signal[Array[ChatSummary]]
+  pub active_thread_sig : signals::Signal[Int]
+  pub active_title_sig : signals::Signal[String]
+  pub messages_sig : signals::Signal[Array[ChatMessage]]
+  pub connection_sig : signals::Signal[String]
+  pub lock_verified_sig : signals::Signal[Bool]
+  pub lock_status_sig : signals::Signal[String]
+  pub recovery_sig : signals::Signal[Option[RecoveryNotice]]
+  pub decision_sig : signals::Signal[DecisionState]
+  pub version_sig : signals::Signal[Int]
+  pub mut live_sync : Bool
+  pub mut drained_events : Int
+  mut send_seq : Int
+  prev_chat_titles : Map[String, String]
+  prev_chat_archived : Map[String, Bool]
+}
+
+pub fn default_demo_chats() -> Array[ChatSummary] {
+  [
+    ChatSummary::{
+      id: "c-1",
+      thread: 101,
+      title: "Invar Vertical Slice",
+      preview: "Zero-serialization FrameOutbox wired to signals",
+      unread: 2,
+      archived: false,
+    },
+    ChatSummary::{
+      id: "c-2",
+      thread: 102,
+      title: "Mesh Transport Audit",
+      preview: "Dual-mesh standby racing passed all 55 tests",
+      unread: 0,
+      archived: false,
+    },
+    ChatSummary::{
+      id: "c-3",
+      thread: 103,
+      title: "Release Readiness",
+      preview: "Headless state bridge ready for unified shell",
+      unread: 0,
+      archived: false,
+    },
+  ]
+}
+
+fn role_of_author_kind(kind : String) -> MessageRole {
+  if kind == "person" {
+    MessageRole::Person
+  } else if kind == "system" {
+    MessageRole::System
+  } else {
+    MessageRole::Agent
+  }
+}
+
+fn entry_to_message(e : store::Entry, client_key : Option[String]) -> ChatMessage {
+  ChatMessage::{
+    entry_n: e.n,
+    client_key: client_key,
+    role: role_of_author_kind(e.author_kind),
+    author: if e.author.length() > 0 { e.author } else { "Agent" },
+    text: e.text,
+    sending: false,
+  }
+}
+
+pub fn AppController::new(
+  workspace : String,
+  station : String,
+  rt : effect::Runtime,
+  db : sql::Sql,
+  transport : sync::StationTransport,
+  initial_chats~ : Array[ChatSummary] = default_demo_chats(),
+) -> AppController {
+  let core = sync::ClientCore::new(
+    workspace,
+    station,
+    rt,
+    db,
+    transport,
+    fn() -> Unit { ui::wake_frame() },
+  )
+  let init_title = if initial_chats.length() > 0 { initial_chats[0].title } else { "" }
+  let init_thread = if initial_chats.length() > 0 { initial_chats[0].thread } else { 0 }
+  AppController::{
+    core: core,
+    chats_sig: signals::signal_by(
+      initial_chats,
+      fn(_a : Array[ChatSummary], _b : Array[ChatSummary]) -> Bool { false },
+    ),
+    active_thread_sig: signals::signal(init_thread),
+    active_title_sig: signals::signal(init_title),
+    messages_sig: signals::signal_by(
+      [],
+      fn(_a : Array[ChatMessage], _b : Array[ChatMessage]) -> Bool { false },
+    ),
+    connection_sig: signals::signal("Local Cache"),
+    lock_verified_sig: signals::signal(false),
+    lock_status_sig: signals::signal("Lock Unverified"),
+    recovery_sig: signals::signal_by(
+      None,
+      fn(_a : Option[RecoveryNotice], _b : Option[RecoveryNotice]) -> Bool { false },
+    ),
+    decision_sig: signals::signal_by(
+      DecisionState::Pending(
+        "Approve Vertical Slice Cutover",
+        ["Ship Pure-Pion Slice", "Keep Transition Adapter"],
+      ),
+      fn(_a : DecisionState, _b : DecisionState) -> Bool { false },
+    ),
+    version_sig: signals::signal(0),
+    live_sync: false,
+    drained_events: 0,
+    send_seq: 0,
+    prev_chat_titles: Map::new(),
+    prev_chat_archived: Map::new(),
+  }
+}
+
+fn AppController::bump(self : AppController) -> Unit {
+  self.version_sig.set(self.version_sig.untracked() + 1)
+}
+
+fn AppController::refresh_active_title(self : AppController) -> Unit {
+  let th = self.active_thread_sig.untracked()
+  let chats = self.chats_sig.untracked()
+  for c in chats {
+    if c.thread == th {
+      let title = if c.archived { c.title + " (Archived)" } else { c.title }
+      self.active_title_sig.set(title)
+      return
+    }
+  }
+}
+
+/// Register the zero-serialization `ui::on_frame_take` consumer.
+/// If `ClientCore` already queued events before mount, schedule a frame wake.
+pub fn AppController::mount(self : AppController) -> Unit {
+  ui::on_frame_take(fn() -> Unit { self.drain_core_events() })
+  if self.core.outbox.waiting() > 0 {
+    ui::wake_frame()
+  }
+}
+
+/// Start live SSE `/events` consumption on `ClientCore`.
+pub fn AppController::start_live(self : AppController) -> Unit {
+  self.live_sync = true
+  self.core.start()
+}
+
+/// Stop live SSE `/events` consumption.
+pub fn AppController::stop_live(self : AppController) -> Unit {
+  self.live_sync = false
+  self.core.stop()
+}
+
+/// Cold-open `thread` from local SQLite only (0 SQL writes, 0 network requests)
+/// and immediately populate first-frame signals.
+pub fn AppController::open_initial(self : AppController, thread : Int, now : Int64) -> Bool {
+  self.active_thread_sig.set(thread)
+  self.refresh_active_title()
+  match self.core.cold_open_chat(thread, now) {
+    sql::SqlResult::Ok(v) => {
+      let msgs : Array[ChatMessage] = []
+      for i in 0..<v.entries.length() {
+        msgs.push(entry_to_message(v.entries[i], None))
+      }
+      self.messages_sig.set(msgs)
+      self.bump()
+      true
+    }
+    sql::SqlResult::Err(_) => false
+  }
+}
+
+/// Switch active chat, load cached entries immediately, clear unread badge,
+/// and invoke `ClientCore::focus_chat` (preempting any running idle prefetch).
+pub fn AppController::select_chat(self : AppController, thread : Int, now : Int64) -> Bool {
+  let ok = self.open_initial(thread, now)
+  let cur = self.chats_sig.untracked()
+  let next : Array[ChatSummary] = []
+  for c in cur {
+    if c.thread == thread {
+      next.push(ChatSummary::{
+        id: c.id,
+        thread: c.thread,
+        title: c.title,
+        preview: c.preview,
+        unread: 0,
+        archived: c.archived,
+      })
+    } else {
+      next.push(c)
+    }
+  }
+  self.chats_sig.set(next)
+  self.refresh_active_title()
+  self.core.focus_chat(thread, fetch=self.live_sync)
+  self.bump()
+  ok
+}
+
+/// Optimistically send text in the active thread through `ClientCore::send_message`.
+/// Emits `OutboxQueued` -> `ui::wake_frame()` with zero network wait.
+pub fn AppController::send_text(
+  self : AppController,
+  text : String,
+  author~ : String = "Alice",
+) -> String {
+  let trimmed = text.trim()
+  if trimmed.length() == 0 {
+    return ""
+  }
+  self.send_seq += 1
+  let ck = "ck-app-\{self.send_seq}"
+  let th = self.active_thread_sig.untracked()
+  let _ = self.core.send_message(th, ck, author, trimmed, self.core.rt.now())
+  ck
+}
+
+/// Record a decision-card answer and dispatch it through `ClientCore::send_message`.
+pub fn AppController::answer_decision(
+  self : AppController,
+  choice : String,
+  author~ : String = "Alice",
+) -> String {
+  let prompt = match self.decision_sig.untracked() {
+    DecisionState::Pending(p, _) => p
+    DecisionState::Decided(p, _) => p
+  }
+  self.decision_sig.set(DecisionState::Decided(prompt, choice))
+  let ck = self.send_text("Decision: " + choice, author=author)
+  self.bump()
+  ck
+}
+
+/// Optimistically rename a chat; rolled back automatically if station refuses with 403.
+pub fn AppController::rename_chat(self : AppController, chat_id : String, new_title : String) -> Unit {
+  let cur = self.chats_sig.untracked()
+  let next : Array[ChatSummary] = []
+  for c in cur {
+    if c.id == chat_id {
+      self.prev_chat_titles.set(chat_id, c.title)
+      next.push(ChatSummary::{
+        id: c.id,
+        thread: c.thread,
+        title: new_title,
+        preview: c.preview,
+        unread: c.unread,
+        archived: c.archived,
+      })
+    } else {
+      next.push(c)
+    }
+  }
+  self.chats_sig.set(next)
+  self.refresh_active_title()
+  let _ = self.core.rename_chat(chat_id, new_title)
+  self.bump()
+}
+
+/// Optimistically archive a chat; rolled back automatically if station refuses with 403.
+pub fn AppController::archive_chat(self : AppController, chat_id : String) -> Unit {
+  let cur = self.chats_sig.untracked()
+  let next : Array[ChatSummary] = []
+  for c in cur {
+    if c.id == chat_id {
+      self.prev_chat_archived.set(chat_id, c.archived)
+      next.push(ChatSummary::{
+        id: c.id,
+        thread: c.thread,
+        title: c.title,
+        preview: c.preview,
+        unread: c.unread,
+        archived: true,
+      })
+    } else {
+      next.push(c)
+    }
+  }
+  self.chats_sig.set(next)
+  self.refresh_active_title()
+  let _ = self.core.archive_chat(chat_id)
+  self.bump()
+}
+
+/// Dismiss the current rollback recovery notice.
+pub fn AppController::dismiss_notice(self : AppController) -> Unit {
+  self.recovery_sig.set(None)
+  self.bump()
+}
+
+fn AppController::reconcile_outbox_queued(
+  self : AppController,
+  thread : Int,
+  ck : String,
+  text : String,
+) -> Unit {
+  if thread != self.active_thread_sig.untracked() {
+    return
+  }
+  let cur = self.messages_sig.untracked()
+  let next : Array[ChatMessage] = []
+  let mut found = false
+  for m in cur {
+    match m.client_key {
+      Some(existing) => {
+        if existing == ck {
+          found = true
+        }
+      }
+      None => ()
+    }
+    next.push(m)
+  }
+  if !found {
+    next.push(ChatMessage::{
+      entry_n: 0,
+      client_key: Some(ck),
+      role: MessageRole::Person,
+      author: "Alice",
+      text: text,
+      sending: true,
+    })
+  }
+  self.messages_sig.set(next)
+}
+
+fn AppController::reconcile_outbox_resolved(
+  self : AppController,
+  thread : Int,
+  ck : String,
+  assigned_n : Int,
+) -> Unit {
+  if thread != self.active_thread_sig.untracked() {
+    return
+  }
+  let cur = self.messages_sig.untracked()
+  let next : Array[ChatMessage] = []
+  for m in cur {
+    let matches_ck = match m.client_key {
+      Some(k) => k == ck
+      None => false
+    }
+    if matches_ck {
+      next.push(ChatMessage::{
+        entry_n: assigned_n,
+        client_key: m.client_key,
+        role: m.role,
+        author: m.author,
+        text: m.text,
+        sending: false,
+      })
+    } else {
+      next.push(m)
+    }
+  }
+  self.messages_sig.set(next)
+}
+
+fn AppController::reconcile_entry_added(
+  self : AppController,
+  thread : Int,
+  entry : store::Entry,
+  ck_opt : Option[String],
+) -> Unit {
+  if thread != self.active_thread_sig.untracked() {
+    return
+  }
+  let cur = self.messages_sig.untracked()
+  let next : Array[ChatMessage] = []
+  let mut replaced = false
+  for m in cur {
+    let same_ck = match (m.client_key, ck_opt) {
+      (Some(a), Some(b)) => a == b
+      _ => false
+    }
+    let same_n = entry.n > 0 && m.entry_n == entry.n
+    if !replaced && (same_ck || same_n) {
+      next.push(ChatMessage::{
+        entry_n: entry.n,
+        client_key: ck_opt,
+        role: role_of_author_kind(entry.author_kind),
+        author: if entry.author.length() > 0 { entry.author } else { m.author },
+        text: entry.text,
+        sending: false,
+      })
+      replaced = true
+    } else {
+      next.push(m)
+    }
+  }
+  if !replaced {
+    next.push(entry_to_message(entry, ck_opt))
+  }
+  self.messages_sig.set(next)
+}
+
+fn AppController::rollback_chat_overlay(
+  self : AppController,
+  target : String,
+  kind : String,
+  code : String,
+  recovery : String,
+) -> Unit {
+  let cur = self.chats_sig.untracked()
+  let next : Array[ChatSummary] = []
+  for c in cur {
+    if c.id == target {
+      let restored_title = if kind == "rename" {
+        match self.prev_chat_titles.get(target) {
+          Some(old_t) => old_t
+          None => c.title
+        }
+      } else {
+        c.title
+      }
+      let restored_arch = if kind == "archive" {
+        match self.prev_chat_archived.get(target) {
+          Some(old_a) => old_a
+          None => false
+        }
+      } else {
+        c.archived
+      }
+      next.push(ChatSummary::{
+        id: c.id,
+        thread: c.thread,
+        title: restored_title,
+        preview: c.preview,
+        unread: c.unread,
+        archived: restored_arch,
+      })
+    } else {
+      next.push(c)
+    }
+  }
+  self.chats_sig.set(next)
+  self.refresh_active_title()
+  self.recovery_sig.set(Some(RecoveryNotice::{ target, kind, code, recovery }))
+}
+
+/// Drain strongly typed `Array[sync::CoreEvent]` directly from `ClientCore`
+/// without any JSON serialization or deserialization.
+pub fn AppController::drain_core_events(self : AppController) -> Unit {
+  let evs = self.core.drain_frame()
+  if evs.length() == 0 {
+    return
+  }
+  self.drained_events += evs.length()
+  for ev in evs {
+    match ev {
+      sync::CoreEvent::ChatsChanged(_st, _ids) => ()
+      sync::CoreEvent::EntryAdded(_st, th, entry, ck_opt) =>
+      self.reconcile_entry_added(th, entry, ck_opt)
+      sync::CoreEvent::OutboxQueued(_st, th, ck, text) =>
+      self.reconcile_outbox_queued(th, ck, text)
+      sync::CoreEvent::OutboxResolved(_st, th, ck, assigned_n) =>
+      self.reconcile_outbox_resolved(th, ck, assigned_n)
+      sync::CoreEvent::OverlayApplied(_st, _target, _kind) => ()
+      sync::CoreEvent::OverlayRolledBack(_st, target, kind, code, recovery) =>
+      self.rollback_chat_overlay(target, kind, code, recovery)
+      sync::CoreEvent::ConnectionChanged(_st, state) => {
+        let label = match state {
+          sync::ConnectionState::Disconnected(_) => "Disconnected"
+          sync::ConnectionState::Connecting => "Connecting"
+          sync::ConnectionState::Connected => "Connected"
+          sync::ConnectionState::Reconnecting(n) => "Reconnecting (\{n})"
+        }
+        self.connection_sig.set(label)
+      }
+      sync::CoreEvent::LockUpdated(_ws, _head, seq, members) => {
+        let seq_i = seq.to_int()
+        self.lock_verified_sig.set(true)
+        self.lock_status_sig.set("Lock Verified (seq \{seq_i}, \{members} members)")
+      }
+      sync::CoreEvent::LockRejected(_ws, why) => {
+        self.lock_verified_sig.set(false)
+        self.lock_status_sig.set("Lock Rejected: " + why)
+      }
+      _ => ()
+    }
+  }
+  self.bump()
+}

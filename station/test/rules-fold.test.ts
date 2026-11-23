@@ -7,8 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type Entry, apply, entryHash, fold, lockChain } from "../../shared/lock.ts";
 import { ed, signed } from "./lock-moved-world.ts";
-// @ts-ignore: the MoonBit build's JS, untyped
-import * as rules from "../../rules/js/rules.js";
+import * as rules from "../../shared/rules-runtime.ts";
 
 const WS = "01HFOLDFOLDFOLDFOLDFOLDFOL";
 

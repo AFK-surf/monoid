@@ -1,0 +1,87 @@
+// Typed, zero-serialization hand-off from the client core to the UI frame thread.
+// Mirrors `libs/client-core/src/outbox/outbox.mbt`: multiple `tell` calls coalesce into
+// one `wake` callback; `take(most=...)` drains up to `most` items and schedules the next
+// frame if more remain. Nothing is polled when nothing is told.
+
+pub struct FrameOutbox[T] {
+  mut queue : Array[T]
+  wake_fn : () -> Unit
+  mut asked : Bool
+  mut wakes_count : Int
+  mut takes_count : Int
+}
+
+pub fn FrameOutbox::new[T](wake : () -> Unit) -> FrameOutbox[T] {
+  FrameOutbox::{
+    queue: [],
+    wake_fn: wake,
+    asked: false,
+    wakes_count: 0,
+    takes_count: 0,
+  }
+}
+
+fn FrameOutbox::ask[T](self : FrameOutbox[T]) -> Unit {
+  if self.asked {
+    return
+  }
+  self.asked = true
+  self.wakes_count += 1
+  let f = self.wake_fn
+  f()
+}
+
+/// Enqueue a typed change for the next frame, coalescing wake requests.
+pub fn FrameOutbox::tell[T](self : FrameOutbox[T], change : T) -> Unit {
+  self.queue.push(change)
+  self.ask()
+}
+
+/// Drain pending changes in FIFO order, taking at most `most` when specified.
+/// If items remain, immediately requests the next frame.
+pub fn FrameOutbox::take[T](self : FrameOutbox[T], most : Option[Int] = None) -> Array[T] {
+  self.asked = false
+  self.takes_count += 1
+  match most {
+    Some(raw_m) => {
+      if raw_m < self.queue.length() {
+        let m = if raw_m < 0 { 0 } else { raw_m }
+        let out : Array[T] = []
+        for i in 0..<m {
+          out.push(self.queue[i])
+        }
+        let rest : Array[T] = []
+        for i in m..<self.queue.length() {
+          rest.push(self.queue[i])
+        }
+        self.queue = rest
+        self.ask()
+        out
+      } else {
+        let out = self.queue
+        self.queue = []
+        out
+      }
+    }
+    None => {
+      let out = self.queue
+      self.queue = []
+      out
+    }
+  }
+}
+
+/// Number of changes waiting to be taken.
+pub fn FrameOutbox::waiting[T](self : FrameOutbox[T]) -> Int {
+  self.queue.length()
+}
+
+/// Total number of frame wakes requested so far.
+pub fn FrameOutbox::wakes[T](self : FrameOutbox[T]) -> Int {
+  self.wakes_count
+}
+
+/// Total number of frame takes performed so far.
+pub fn FrameOutbox::takes[T](self : FrameOutbox[T]) -> Int {
+  self.takes_count
+}

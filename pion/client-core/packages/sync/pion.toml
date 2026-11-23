@@ -1,0 +1,20 @@
+[package]
+name = "sync"
+version = "0.1.0"
+
+[dependencies]
+effect = { workspace = true }
+base_codec = { workspace = true }
+crypto = { workspace = true }
+wire = { workspace = true }
+shell = { workspace = true }
+sql = { workspace = true }
+mesh = { workspace = true }
+form = { workspace = true }
+fork = { workspace = true }
+role = { workspace = true }
+lock = { workspace = true }
+vault = { workspace = true }
+outbox = { workspace = true }
+store = { workspace = true }
+protocol = { workspace = true }

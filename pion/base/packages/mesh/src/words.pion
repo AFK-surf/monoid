@@ -1,0 +1,47 @@
+// Human-readable words for mesh errors (Chinese by default, or "en").
+
+struct LanguageBox {
+  mut lang : String
+}
+
+let language_box : LanguageBox = LanguageBox::{ lang: "zh" }
+
+/// `lang`: "en" or "zh". Chinese until told otherwise.
+pub fn set_language(lang : String) -> Unit {
+  language_box.lang = lang
+}
+
+fn str_replace_all(text : String, old : String, rep : String) -> String {
+  let old_len = old.length()
+  if old_len == 0 {
+    return text
+  }
+  let n = text.length()
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    if i + old_len <= n && text.slice(i, i + old_len) == old {
+      out.write_string(rep)
+      i += old_len
+    } else {
+      out.write_byte(text.code_unit_at(i) as Byte)
+      i += 1
+    }
+  }
+  out.to_string()
+}
+
+/// The words of `core-logic.mesh.<key>`, substituting `{name}` placeholders from `args`.
+pub fn say(key : String, args : Array[(String, String)] = []) -> String {
+  let full = "core-logic.mesh." + key
+  let opt = if language_box.lang == "en" { made_en(full) } else { made_zh(full) }
+  let mut text = match opt {
+    Some(s) => s
+    None => key
+  }
+  for i in 0..<args.length() {
+    let (name, value) = args[i]
+    text = str_replace_all(text, "{" + name + "}", value)
+  }
+  text
+}

@@ -1,0 +1,308 @@
+// Ed25519, SHA-512, and SHA-256 tests (ported from sign_wbtest.mbt, sha256_test.mbt, sha256_wbtest.mbt).
+
+import "crypto"
+
+fn u64_p(a : Int, b : Int, c : Int, d : Int) -> Int64 {
+  (a.to_int64() << 48) | (b.to_int64() << 32) | (c.to_int64() << 16) | d.to_int64()
+}
+
+fn ushr64(x : Int64, n : Int) -> Int64 {
+  if n == 0 {
+    x
+  } else {
+    (x >> n) & ((1.to_int64() << (64 - n)) - 1.to_int64())
+  }
+}
+
+fn order_l_table() -> Array[Int] {
+  [
+    0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58,
+    0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
+  ]
+}
+
+fn unhex(text : String) -> Bytes {
+  match crypto::hex_to_bytes(text) {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+}
+
+fn bytes_repeat_b(n : Int, b : Int) -> Bytes {
+  let out = Bytes::new(n)
+  for i in 0..<n {
+    out[i] = b as Byte
+  }
+  out
+}
+
+fn str_repeat(s : String, n : Int) -> String {
+  let sb = StringBuilder::new()
+  for _ in 0..<n {
+    sb.write_string(s)
+  }
+  sb.to_string()
+}
+
+fn flipped(bytes : Bytes, at : Int, bit : Int) -> Bytes {
+  let out = Bytes::new(bytes.length())
+  for i in 0..<bytes.length() {
+    out[i] = bytes[i]
+  }
+  out[at] = (out[at].to_int() ^ (1 << bit)) as Byte
+  out
+}
+
+fn bytes_eq_m(a : Bytes, b : Bytes) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+test "sha256 gives FIPS 180-4's digests, at the padding's edges too" {
+  let cases : Array[(Bytes, String)] = [
+    ("".to_bytes(), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+    ("abc".to_bytes(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
+    (bytes_repeat_b(55, 97), "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318"),
+    (bytes_repeat_b(56, 97), "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a"),
+    (bytes_repeat_b(64, 97), "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"),
+    (
+      "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq".to_bytes(),
+      "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+    ),
+    (
+      "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu".to_bytes(),
+      "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1",
+    ),
+    (bytes_repeat_b(1000, 97), "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3"),
+  ]
+  for i in 0..<cases.length() {
+    let (inp, want) = cases[i]
+    let d = sha256(inp)
+    debug_assert(d.length() == 32, "sha256 length 32")
+    debug_assert(crypto::bytes_to_hex(d) == want, "sha256 hex matches")
+    debug_assert(crypto::sha256_hex(inp) == want, "crypto::sha256_hex matches")
+  }
+}
+
+test "sha512 gives FIPS 180-4's digests, at the padding's edges too" {
+  let cases : Array[(Bytes, String)] = [
+    (
+      "".to_bytes(),
+      "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e",
+    ),
+    (
+      "abc".to_bytes(),
+      "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
+    ),
+    (
+      bytes_repeat_b(111, 97),
+      "fa9121c7b32b9e01733d034cfc78cbf67f926c7ed83e82200ef86818196921760b4beff48404df811b953828274461673c68d04e297b0eb7b2b4d60fc6b566a2",
+    ),
+    (
+      bytes_repeat_b(112, 97),
+      "c01d080efd492776a1c43bd23dd99d0a2e626d481e16782e75d54c2503b5dc32bd05f0f1ba33e568b88fd2d970929b719ecbb152f58f130a407c8830604b70ca",
+    ),
+    (
+      bytes_repeat_b(128, 97),
+      "b73d1929aa615934e61a871596b3f3b33359f42b8175602e89f7e06e5f658a243667807ed300314b95cacdd579f3e33abdfbe351909519a846d465c59582f321",
+    ),
+  ]
+  for i in 0..<cases.length() {
+    let (inp, want) = cases[i]
+    debug_assert(crypto::bytes_to_hex(sha512(inp)) == want, "sha512 digest matches")
+  }
+}
+
+fn rfc8032_vectors() -> Array[(String, String, String, String)] {
+  [
+    (
+      "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "",
+      "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+    ),
+    (
+      "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+      "72",
+      "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00",
+    ),
+    (
+      "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7",
+      "af82",
+      "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
+      "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a",
+    ),
+  ]
+}
+
+test "ed25519_sign gives RFC 8032's public keys and signatures" {
+  let vecs = rfc8032_vectors()
+  for i in 0..<vecs.length() {
+    let (seed, msg, want_pk, want_sig) = vecs[i]
+    let (pk, sig) = ed25519_sign(unhex(seed), unhex(msg))
+    debug_assert(crypto::bytes_to_hex(pk) == want_pk, "pk matches")
+    debug_assert(crypto::bytes_to_hex(sig) == want_sig, "sig matches")
+  }
+}
+
+test "ed25519_verify takes RFC 8032's signatures and rejects bit flips" {
+  let vecs = rfc8032_vectors()
+  for idx in 0..<vecs.length() {
+    let (_, msg_h, pk_h, sig_h) = vecs[idx]
+    let key = unhex(pk_h)
+    let message = unhex(msg_h)
+    let signature = unhex(sig_h)
+    debug_assert(ed25519_verify(key, message, signature), "valid vector")
+    let sig_ats = [0, 7, 31, 32, 45, 63]
+    for j in 0..<sig_ats.length() {
+      let at = sig_ats[j]
+      debug_assert(!ed25519_verify(key, message, flipped(signature, at, at % 8)), "sig bit flip")
+    }
+    let pk_ats = [0, 13, 31]
+    for j in 0..<pk_ats.length() {
+      let at = pk_ats[j]
+      debug_assert(!ed25519_verify(flipped(key, at, (at + 3) % 8), message, signature), "pk bit flip")
+    }
+    if message.length() > 0 {
+      debug_assert(!ed25519_verify(key, flipped(message, 0, 0), signature), "msg bit flip")
+    }
+    let pref = bytes_repeat_b(1, 0).concat(message)
+    debug_assert(!ed25519_verify(key, pref, signature), "prefixed msg")
+    let (_, _, other_pk_h, _) = vecs[(idx + 1) % 3]
+    debug_assert(!ed25519_verify(unhex(other_pk_h), message, signature), "other key")
+  }
+}
+
+test "ed25519_verify round-trips drawn keys and messages" {
+  let mut state = u64_p(0x2545, 0xF491, 0x4F6C, 0xDD1D)
+  let draw = fn(n : Int) -> Bytes {
+    let out = Bytes::new(n)
+    for i in 0..<n {
+      state = state ^ (state << 13)
+      state = state ^ ushr64(state, 7)
+      state = state ^ (state << 17)
+      out[i] = (ushr64(state, 24) & 0xFF.to_int64()).to_int() as Byte
+    }
+    out
+  }
+  for round in 0..<8 {
+    let seed = draw(32)
+    let message = draw(round * 37)
+    let (key, signature) = ed25519_sign(seed, message)
+    debug_assert(ed25519_verify(key, message, signature), "round-trip valid")
+    let at = (draw(1)[0].to_int() * 64) / 256
+    debug_assert(!ed25519_verify(key, message, flipped(signature, at, round % 8)), "flipped sig")
+    let (other, _) = ed25519_sign(draw(32), Bytes::new(0))
+    debug_assert(!ed25519_verify(other, message, signature), "other key")
+    if message.length() > 0 {
+      debug_assert(
+        !ed25519_verify(key, flipped(message, message.length() - 1, round % 8), signature),
+        "flipped msg",
+      )
+    }
+  }
+}
+
+test "ed25519_verify refuses bad lengths, S >= L, and non-canonical points" {
+  let vecs = rfc8032_vectors()
+  let (_, msg_h, pk_h, sig_h) = vecs[0]
+  let key = unhex(pk_h)
+  let message = unhex(msg_h)
+  let signature = unhex(sig_h)
+  let zero1 = bytes_repeat_b(1, 0)
+  debug_assert(!ed25519_verify(key.slice(0, 31), message, signature), "short key")
+  debug_assert(!ed25519_verify(key.concat(zero1), message, signature), "long key")
+  debug_assert(!ed25519_verify(key, message, signature.slice(0, 63)), "short sig")
+  debug_assert(!ed25519_verify(key, message, signature.concat(zero1)), "long sig")
+  debug_assert(!ed25519_verify(Bytes::new(0), Bytes::new(0), Bytes::new(0)), "empty")
+  // S + L
+  let order_l = order_l_table()
+  let s_plus = Bytes::new(64)
+  for i in 0..<64 {
+    s_plus[i] = signature[i]
+  }
+  let mut carry = 0
+  for i in 0..<32 {
+    let sum = s_plus[32 + i].to_int() + order_l[i].to_int() + carry
+    s_plus[32 + i] = (sum & 255) as Byte
+    carry = sum >> 8
+  }
+  debug_assert(carry == 0, "no carry")
+  debug_assert(!ed25519_verify(key, message, s_plus), "S + L refused")
+  // Identity key (y = 1, small-order torsion point): strictly rejected by `crypto-v0.1.0`
+  // (`CryptoError::SmallOrderPoint`, matching ed25519-dalek::verify_strict).
+  let base = unhex("58" + str_repeat("66", 31))
+  let s1 = unhex("01" + str_repeat("00", 31))
+  let id_pk = unhex("01" + str_repeat("00", 31))
+  let non_canon_1 = unhex("ee" + str_repeat("ff", 30) + "7f")
+  let neg_zero_1 = unhex("01" + str_repeat("00", 30) + "80")
+  debug_assert(!ed25519_verify(id_pk, message, base.concat(s1)), "identity small-order refused")
+  debug_assert(!ed25519_verify(non_canon_1, message, base.concat(s1)), "y = p + 1 refused")
+  debug_assert(!ed25519_verify(neg_zero_1, message, base.concat(s1)), "x = 0 sign set refused")
+  let s0 = bytes_repeat_b(32, 0)
+  debug_assert(!ed25519_verify(id_pk, message, id_pk.concat(s0)), "R=id S=0 small-order refused")
+  debug_assert(!ed25519_verify(id_pk, message, non_canon_1.concat(s0)), "R non-canonical refused")
+  // y >= p, S >= L, y = p - 1 with sign set
+  let sig_r = signature.slice(0, 32)
+  let sig_s = signature.slice(32, 64)
+  let prime = unhex("ed" + str_repeat("ff", 30) + "7f")
+  let top = unhex(str_repeat("ff", 31) + "7f")
+  let bad_ys = [prime, top, flipped(prime, 31, 7), flipped(top, 31, 7)]
+  for i in 0..<bad_ys.length() {
+    let y = bad_ys[i]
+    debug_assert(!ed25519_verify(y, message, signature), "bad y pk")
+    debug_assert(!ed25519_verify(key, message, y.concat(sig_s)), "bad y R")
+  }
+  let order_b = Bytes::new(32)
+  for i in 0..<32 {
+    order_b[i] = order_l[i].to_int() as Byte
+  }
+  let bad_ss = [order_b, bytes_repeat_b(32, 0xff), flipped(sig_s, 31, 7)]
+  for i in 0..<bad_ss.length() {
+    debug_assert(!ed25519_verify(key, message, sig_r.concat(bad_ss[i])), "bad S")
+  }
+  let pm1_neg = unhex("ec" + str_repeat("ff", 30) + "ff")
+  debug_assert(!ed25519_verify(pm1_neg, message, base.concat(s1)), "y=p-1 sign set pk")
+  debug_assert(!ed25519_verify(key, message, pm1_neg.concat(sig_s)), "y=p-1 sign set R")
+  debug_assert(ed25519_verify(key, message, signature), "original still valid")
+}
+
+test "ed25519_verify refuses every single bit flip of key, message, and signature" {
+  let vecs = rfc8032_vectors()
+  let (_, msg_h, pk_h, sig_h) = vecs[1]
+  let key = unhex(pk_h)
+  let message = unhex(msg_h)
+  let signature = unhex(sig_h)
+  let mut taken = 0
+  for at in 0..<64 {
+    for bit in 0..<8 {
+      if ed25519_verify(key, message, flipped(signature, at, bit)) {
+        taken += 1
+      }
+    }
+  }
+  for at in 0..<32 {
+    for bit in 0..<8 {
+      if ed25519_verify(flipped(key, at, bit), message, signature) {
+        taken += 1
+      }
+    }
+  }
+  for bit in 0..<8 {
+    if ed25519_verify(key, flipped(message, 0, bit), signature) {
+      taken += 1
+    }
+  }
+  debug_assert(taken == 0, "no bit flip accepted")
+  debug_assert(ed25519_verify(key, message, signature), "original valid")
+}
