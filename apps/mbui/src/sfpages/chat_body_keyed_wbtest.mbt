@@ -342,3 +342,68 @@ test "where it stood, the turn before's: gone in the frame words are sent from h
   faults.append(keyed_faults(offline, "state, sending offline", sending~))
   assert_eq(faults, [])
 }
+
+///|
+test "outbox and message sharing a sent_as key on the same frame never duplicate keys or lose the row once outbox clears" {
+  @sfbase.reset()
+  reset()
+  let base = scale_chat(3)
+  let list = keyed_of(base)
+  let head_sig = @signals.signal(@sfbase.chat_view_made(base), same=fn(a, b) { physical_equal(a, b) })
+  let initial_sending : Array[@sfbase.LocalSent] = [
+    {
+      row: { ..chat_body_no_out, id: "local:1", text: "为啥不做成大圆角", state: "sending" },
+      before: Map([]),
+      newest: 3.0,
+    },
+  ]
+  let sending_sig = @signals.signal_ref(initial_sending)
+  let msgs = @sfbase.chat_messages_of(list)
+  let kept : ChatBodyKept = { sent: {}, sent_as: {}, here: {} }
+  let era = @signals.computed(fn(_) { 0 })
+  let keyed = chat_body_keyed(kept, era, fn() { head_sig.get() }, msgs, sending=fn() { sending_sig.get() })
+  let watch = @signals.watch(fn() {  })
+  let mut keys1 : Array[String] = []
+  let mut keys2 : Array[String] = []
+  let mut keys3 : Array[String] = []
+  let mut row2 : ChatBodyRow? = None
+  let mut row3 : ChatBodyRow? = None
+  watch.read(fn() {
+    // Frame 1: out-1 arrives in outbox -> takes over o:local:1
+    let out1 = Json::array([
+      Json::object({
+        "id": Json::string("out-1"),
+        "seq": Json::number(4.0),
+        "text": Json::string("为啥不做成大圆角"),
+        "state": Json::string("sending"),
+        "createdAt": Json::number(0.0),
+      }),
+    ])
+    head_sig.set(@sfbase.chat_view_made(keyed_with(base, { "outbox": out1 })))
+    keys1 = (keyed.keys)()
+    sending_sig.set([])
+    // Frame 2: m4 (outgoing="out-1") enters messages while out-1 is STILL in outbox!
+    let m4 : Json = {
+      "seq": 4.0,
+      "ts": "t4",
+      "outgoing": "out-1",
+      "authorKind": "person",
+      "mine": true,
+      "text": "为啥不做成大圆角",
+    }
+    list.put(keyed_key(m4), m4)
+    keys2 = (keyed.keys)()
+    row2 = (keyed.row)("o:local:1")
+    // Frame 3: outbox clears to []
+    head_sig.set(@sfbase.chat_view_made(keyed_with(base, { "outbox": Json::array([]) })))
+    keys3 = (keyed.keys)()
+    row3 = (keyed.row)("o:local:1")
+  })
+  watch.stop()
+  // No duplicate o:local:1 in frame 2, and message wins over outbox
+  assert_eq(keys1.filter(fn(k) { k == "o:local:1" }).length(), 1)
+  assert_eq(keys2.filter(fn(k) { k == "o:local:1" }).length(), 1, msg="duplicate key in overlap frame: \{Repr(keys2)}")
+  assert_eq(keys3.filter(fn(k) { k == "o:local:1" }).length(), 1, msg="missing key after outbox clear: \{Repr(keys3)}")
+  assert_true(row2 is Some({ entry: Said(_), .. }), msg="expected Said row during overlap frame")
+  assert_true(row3 is Some({ entry: Said(_), .. }), msg="expected Said row after outbox clear, got None")
+}

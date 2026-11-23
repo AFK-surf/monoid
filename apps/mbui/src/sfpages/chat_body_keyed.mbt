@@ -451,9 +451,8 @@ fn chat_body_keyed(
       }
     }
   }
-  // (whose each row is: a message's key, or "" for the head's; each message's written as its rows' keys change, the
-  // head's as the keys are made, so a message come or gone writes its own alone)
-  let owner : Map[String, String] = Map([])
+  // (whose each message-owned row is: a message's key, maintained solely by keys_of; head rows over/under never write here)
+  let msg_owner : Map[String, String] = Map([])
   // (each message's rows' keys, worked out of its JSON's few fields that say them (chat_said_keys_raw), never of its
   // rows: so the list's keys read no message whole, and a message is read as a Message (parts_of, ChatMessages::get)
   // only as a row of it is asked, as it comes to show; told only as its keys change, not as a word comes into it)
@@ -478,11 +477,11 @@ fn chat_body_keyed(
               (None, None) => []
             }
             match was {
-              Some(w) => for k in w { if owner.get(k) == Some(mk) { owner.remove(k) } }
+              Some(w) => for k in w { if msg_owner.get(k) == Some(mk) { msg_owner.remove(k) } }
               None => ()
             }
             for k in now {
-              owner[k] = mk
+              msg_owner[k] = mk
             }
             now
           },
@@ -537,20 +536,12 @@ fn chat_body_keyed(
   let keys = @signals.computed(
     fn(was) {
       let (over, under) = ends.get()
-      let out = over.keys.copy()
-      for k in over.keys {
-        owner[k] = ""
-      }
       let order = msgs.keys()
+      let msg_ks : Array[Array[String]] = []
       for mk in order {
-        out.append(keys_of(mk).get())
+        msg_ks.push(keys_of(mk).get())
       }
-      for k in under.keys {
-        owner[k] = ""
-        out.push(k)
-      }
-      // (a message gone: its rows' computeds let go; its keys' made for every message, its rows' for those a row of
-      // which was asked)
+      // (a message gone: its rows' computeds let go before assembling out, so msg_owner reflects order alone)
       if part_keys.length() > order.length() || parts.length() > order.length() {
         let here : Map[String, Bool] = Map([])
         for mk in order {
@@ -571,6 +562,28 @@ fn chat_body_keyed(
         }
         for mk in slice_counts.keys().filter(fn(mk) { !here.contains(mk) }).collect() {
           slice_counts.remove(mk)
+        }
+      }
+      let out : Array[String] = []
+      let seen : Map[String, Bool] = Map([])
+      for k in over.keys {
+        if !msg_owner.contains(k) && !seen.contains(k) {
+          seen[k] = true
+          out.push(k)
+        }
+      }
+      for ks in msg_ks {
+        for k in ks {
+          if !seen.contains(k) {
+            seen[k] = true
+            out.push(k)
+          }
+        }
+      }
+      for k in under.keys {
+        if !msg_owner.contains(k) && !seen.contains(k) {
+          seen[k] = true
+          out.push(k)
         }
       }
       // (the same keys the same object as before: worked out anew as its page is woken from rest, what lays them out
@@ -619,24 +632,23 @@ fn chat_body_keyed(
     taken: fn() { taken.get().1 },
     row: fn(k) {
       keys.get() |> ignore
-      match owner.get(k) {
-        Some("") => {
+      match msg_owner.get(k) {
+        Some(mk) => parts_of(mk).get().rows.get(k)
+        None => {
           let (over, under) = ends.get()
           match over.rows.get(k) {
             Some(r) => Some(r)
             None => under.rows.get(k)
           }
         }
-        Some(mk) => parts_of(mk).get().rows.get(k)
-        None => None
       }
     },
     slices: fn(k) {
       // (a message's own row alone: its unread line and what went elsewhere after it are one each)
       guard k != "line" && !k.has_prefix("s:") else { return 1 }
-      match owner.get(k) {
-        Some("") | None => 1
+      match msg_owner.get(k) {
         Some(mk) => slices_of(mk).get()
+        None => 1
       }
     },
   }

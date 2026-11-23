@@ -3281,6 +3281,29 @@ test("a_sent_message_shows_until_the_chat_has_it", async () => {
   assert.equal(views.local.outboxGet("ws/b", 1, other), undefined);
 });
 
+test("outbox_settles_on_same_pass_when_station_trims_whitespace", async () => {
+  const t = setup();
+  const u = ui();
+  t.subscribe(1, chatTopic("ws/a", 7));
+  t.set(threads("ws/a"), [thread(7, [], t.host.nowMs())]);
+  t.set(pageOf("ws/a", 7), page(5, ["早"], null));
+  await t.read(u, 1);
+  const views = t.views;
+  // User sends text with leading/trailing whitespace; SSE arrives with station-trimmed text before POST returns seq.
+  const id = views.outboxAdd("ws/a", 7, { text: "  为啥不做成大圆角 \n", attachments: [], quotes: [] });
+  await t.read(u, 1);
+  assert.equal(u.value.outbox.length, 1);
+  t.store.update(pageOf("ws/a", 7), (p) => ({
+    ...(p as J),
+    entries: [...(p as J).entries, { ...entry(6, "为啥不做成大圆角"), author: "me@x.com" }],
+    last: 6,
+  }));
+  await t.read(u, 1);
+  assert.deepEqual(u.value.outbox, []);
+  const m6 = (u.value.messages as J[]).find((m) => m.seq === 6);
+  assert.equal(m6?.outgoing, id);
+});
+
 // An image sent before it was up showed as a file card that turned into its picture once up (mbui, 2026-10-26): it is
 // among the message's files from the first, in its shape, named by its upload; any other file going up stays a card.
 test("an_image_sent_while_going_up_is_among_its_messages_files_at_once", async () => {

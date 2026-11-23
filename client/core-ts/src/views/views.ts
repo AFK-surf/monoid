@@ -4050,7 +4050,7 @@ export class Views implements Owner {
       const after = Math.max(u64(m.after) ?? 0, past);
       m.after = after;
       const text = str(m.text) ?? "";
-      const found = mine.find(([s, said]) => s > after && said === text);
+      const found = mine.find(([s, said]) => s > after && said.trim() === text.trim());
       if (found) {
         past = found[0];
         this.local.remember(station, id, found[0], String(m.id));

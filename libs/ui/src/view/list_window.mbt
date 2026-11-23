@@ -5324,6 +5324,7 @@ fn View::scrolls_window_ids(
                 let was_whole = flip_whole.copy()
                 flip_whole.clear()
                 flip_whole[k] = true
+                flip_new.remove(k)
                 for prev, _ in was_whole {
                   if prev != k {
                     ever_whole[prev] = true

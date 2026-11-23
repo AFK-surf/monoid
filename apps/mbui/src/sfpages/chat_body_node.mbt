@@ -597,7 +597,7 @@ fn chat_agent_of(here : MessageNodeHere, m : Message) -> Agent? {
 /// picture (none held for it: chat_body_node's held keys): its agent's line goes at once, the answer taking its place on the list's
 /// one way (the old view's chat_tick: `answered`). One held goes as it comes out (chat_body_node's held keys, as it is let in).
 fn chat_turn_out(v : @view.View, here : MessageNodeHere, turns : ChatTurnsOut, m : Message) -> Unit {
-  guard chat_agent_of(here, m) is Some(a) else { return }
+  guard chat_agent_of(here, m) is Some(a) && a.last_turn != "" else { return }
   // (a live cause: its line going and its answer taking its place go their way, @view.transition)
   v.at_moment(v.cause_at(), fn() { @view.transition(within=v, fn() { turns.answered[a.key] = a.last_turn }) }) |> ignore
 }
@@ -648,7 +648,8 @@ fn chat_working_key_agent(k : String) -> String? {
 fn chat_working_kept(v : ChatView, turns : ChatTurnsOut) -> Array[Agent] {
   let out = []
   for a in v.agents {
-    if (a.status == "running" || a.status == "queued") && turns.answered.get(a.key) != Some(a.last_turn) {
+    if a.status == "queued" ||
+      (a.status == "running" && (a.last_turn == "" || turns.answered.get(a.key) != Some(a.last_turn))) {
       out.push(a)
     }
   }
@@ -664,7 +665,7 @@ fn chat_working_entries(all : Array[Entry], turns : ChatTurnsOut) -> Array[Entry
   }
   all.filter(fn(e) {
     match e {
-      Working(a) => turns.answered.get(a.key) != Some(a.last_turn)
+      Working(a) => a.status == "queued" || a.last_turn == "" || turns.answered.get(a.key) != Some(a.last_turn)
       _ => true
     }
   })
@@ -791,6 +792,27 @@ fn chat_body_node(
   // and each agent whose line stays while its answer comes out of its picture, its turn over meanwhile:
   // chat_working_kept's)
   let turns : ChatTurnsOut = { answered: @sf.LiveMap::new(), lingers: @sf.LiveMap::new() }
+  // (clear stale answered turn records once an agent leaves "running" or moves to a new turn: sfbase/chat_list.mbt)
+  v.reacts(
+    fn() {
+      guard !turns.answered.is_empty() else { return [] }
+      let agents = (here.view)().agents
+      let done : Array[String] = []
+      for kv in turns.answered.iter() {
+        let (k, recorded) = kv
+        match agents.iter().find_first(fn(a) { a.key == k }) {
+          Some(a) if a.status == "running" && a.last_turn == recorded => ()
+          _ => done.push(k)
+        }
+      }
+      done
+    },
+    fn(done) {
+      for k in done {
+        turns.answered.remove(k)
+      }
+    },
+  )
   // (worked out once as the view, its entries or what is on its way change, from what was worked out last where only
   // rows changed where they stand (chat_body_rows_again); the keys only change as rows come, go or are taken over)
   let made_last : Ref[ChatBodyMade?] = Ref(None)
@@ -1025,8 +1047,8 @@ fn chat_body_node(
                   Some((face, ends)) => {
                     held_by.remove(rk)
                     match ends {
-                      Some(a) => turns.answered[a.key] = a.last_turn
-                      None => ()
+                      Some(a) if a.last_turn != "" => turns.answered[a.key] = a.last_turn
+                      _ => ()
                     }
                     face.away.set(true)
                   }
@@ -1058,8 +1080,8 @@ fn chat_body_node(
         match held_by.get(k) {
           Some((face, ends)) => {
             match ends {
-              Some(a) => turns.answered[a.key] = a.last_turn
-              None => ()
+              Some(a) if a.last_turn != "" => turns.answered[a.key] = a.last_turn
+              _ => ()
             }
             face.last.val = None
             face.away.set(false)
@@ -1600,11 +1622,10 @@ fn chat_body_node(
         match chat_working_key_agent(stage.unalias(k)) {
           Some(a) if chat_entry_policy(Entry::Working(@sfbase.agent_of({}))).leaves_room =>
             match turns.answered.get(a) {
-              // (answered this turn: the turn it is at as the line goes, or the one before where it is over and none is
-              // said since)
-              Some(turn) =>
-                !(here.view)().agents.iter().any(fn(g) { g.key == a && (g.last_turn == turn || g.last_turn == "") })
-              None => true
+              // (answered this turn: the turn it is at as the line goes)
+              Some(turn) if turn != "" =>
+                !(here.view)().agents.iter().any(fn(g) { g.key == a && g.last_turn == turn })
+              _ => true
             }
           _ => false
         }
