@@ -2102,7 +2102,7 @@ fn layout_flex(
     let fw = if row { main_size + pbw } else { cross_size + pbw }
     fh = if row { cross_size + pbh } else { main_size + pbh }
     if s.gone_empty && !row {
-      gone_cut = 1.0 - gone_there(flow, pool)
+      gone_cut = 1.0 - gone_there(node, flow, pool)
       if gone_cut > 0.0 {
         // (given its height by what holds it, measured so: that, less than its padding as it may be)
         fh = if known(h0) { h0 } else { fmax(fh - gone_cut * (b.pad_t + b.pad_b), 0.0) }
@@ -2233,6 +2233,17 @@ fn layout_flex(
         if !(c.hidden_gen >= 0 && c.hidden_gen == c.laid_gen) {
           left_out(c)
           zero(c)
+          c.hidden_gen = c.laid_gen
+        }
+      } else if c.style.display == Flex && nothing_made(c) {
+        // (a structure's box that made nothing, on no way: in no row (flow_children), of no size, all it holds
+        // forgotten as one laid out nowhere is, but not left out: what it holds is in the scene as ever (its keys, back,
+        // focus), as display: contents' box is, Node::left_out false; once, as above)
+        if c.line < 0 {
+          c.line = 0
+        }
+        if !(c.hidden_gen >= 0 && c.hidden_gen == c.laid_gen) {
+          forget(c)
           c.hidden_gen = c.laid_gen
         }
       } else if c.line < 0 && c.style.position == Absolute {
@@ -3050,7 +3061,7 @@ fn flow_children(node : Node) -> Array[Node] {
   }
   let mut plain = true
   for c in node.children {
-    if c.style.display != Flex {
+    if c.style.display != Flex || nothing_made(c) {
       plain = false
       break
     }
@@ -3062,6 +3073,7 @@ fn flow_children(node : Node) -> Array[Node] {
   for c in node.children {
     match c.style.display {
       DisplayNone => ()
+      Flex if nothing_made(c) => ()
       Contents => {
         zero(c)
         for g in flow_children(c) {
@@ -3082,7 +3094,7 @@ fn flow_children_gone(node : Node) -> Array[Node] {
   for c in node.children {
     match c.style.display {
       DisplayNone => ()
-      Flex if c.style.gone_empty && holds_none(c) => ()
+      Flex if nothing_made(c) || (c.style.gone_empty && holds_none(c)) => ()
       Contents => {
         zero(c)
         for g in flow_children(c) {
@@ -3099,7 +3111,7 @@ fn flow_children_gone(node : Node) -> Array[Node] {
 /// How much of what a box that takes no room holding nothing (Style's gone_empty) holds is there, its items `flow` as
 /// `pool` has them laid out: the most of any (1 where one is not on a way from none or to none, come_fill; a box such
 /// as this in it as much as it is, its come_k); none, none.
-fn gone_there(flow : Array[Node], pool : Pool) -> Double {
+fn gone_there(node : Node, flow : Array[Node], pool : Pool) -> Double {
   let mut most = 0.0
   for k in 0..<pool.count {
     let c = flow.unsafe_get(pool.at.unsafe_get(k))
@@ -3114,21 +3126,34 @@ fn gone_there(flow : Array[Node], pool : Pool) -> Double {
     }
     most = fmax(most, here)
   }
-  if pool.count == 0 { 1.0 } else { most }
+  // (none in its flow: holding nothing laid out (a structure's box that made nothing is in no flow), none of it there;
+  // holding only what is laid out over the rest (Absolute), all of it)
+  if pool.count == 0 {
+    if holds_none(node) {
+      0.0
+    } else {
+      1.0
+    }
+  } else {
+    most
+  }
 }
 
 ///|
-/// Whether node `n` is laid out nowhere: so said (DisplayNone), or holding nothing laid out where it takes no room so
-/// (Style's gone_empty; `gone`: what holds it holds such, Node's holds_gone).
+/// Whether node `n` is laid out nowhere: so said (DisplayNone), a structure's box that made nothing and is on no way
+/// (nothing_made), or holding nothing laid out where it takes no room so (Style's gone_empty; `gone`: what holds it
+/// holds such, Node's holds_gone).
 fn laid_none(n : Node, gone : Bool) -> Bool {
-  n.style.display == DisplayNone || (gone && n.style.gone_empty && holds_none(n))
+  n.style.display == DisplayNone ||
+  nothing_made(n) ||
+  (gone && n.style.gone_empty && holds_none(n))
 }
 
 ///|
 /// Whether all node `n` holds is laid out nowhere (laid_none), or it holds nothing.
 fn holds_none(n : Node) -> Bool {
   for c in n.children {
-    if !laid_none(c, n.holds_gone) && !nothing_made(c) {
+    if !laid_none(c, n.holds_gone) {
       return false
     }
   }
@@ -3138,7 +3163,8 @@ fn holds_none(n : Node) -> Bool {
 ///|
 /// Whether node `n` is a structure's box that made nothing (Style's structural): holding no box but such as this or
 /// those laid out nowhere so said, and on no way (one closing or opening is there as much as its way has it, gone_there).
-/// To a box that takes no room holding nothing (Style's gone_empty) it is not there.
+/// In any box it is laid out nowhere (laid_none): in no row or column, no room, no gap before it. A box the app said
+/// itself holding nothing (not structural) is an item as any other, of its size, with its gap.
 fn nothing_made(n : Node) -> Bool {
   let s = n.style
   if !s.structural || s.come_now == s.come_now {
@@ -3451,7 +3477,7 @@ fn layout_static_absolute(cb : Node, node : Node, ox : Double, oy : Double) -> U
   let gone = node.holds_gone
   for c in node.children {
     let cs = c.style
-    if cs.display == DisplayNone || (gone && cs.gone_empty && holds_none(c)) {
+    if laid_none(c, gone) {
       continue
     }
     if cs.display == Contents {
@@ -3727,9 +3753,7 @@ fn first_in_pool(
       break
     }
     let c = flow.unsafe_get(pool.at.unsafe_get(k))
-    if c.style.position == Absolute ||
-      c.style.display == DisplayNone ||
-      (node.holds_gone && c.style.gone_empty && holds_none(c)) {
+    if c.style.position == Absolute || laid_none(c, node.holds_gone) {
       continue
     }
     if item_align(node.style, c.style) == want {

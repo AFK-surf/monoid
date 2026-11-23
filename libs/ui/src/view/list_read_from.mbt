@@ -70,7 +70,7 @@ fn Tree::start_in(self : Tree, mark : Int, block : Int, w : Double, laying : Boo
         }
         let ks = self.nodes[k].flex.style
         guard self.nodes[k].live &&
-          ks.display != @flex.Display::DisplayNone &&
+          !flex_laid_none(self.nodes[k].flex, self.nodes[p].flex) &&
           !(ks.position is @flex.PositionType::Absolute) else {
           continue
         }

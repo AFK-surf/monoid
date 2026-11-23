@@ -154,6 +154,7 @@ fn window_kept_ui_0() -> Array[WindowKept] {
     kept_ref(zoomed_said, zoomed_said_new),
     kept_ref(snap_said, snap_said_new),
     kept_by_node(tree_links),
+    kept_by_node(tree_height_tiles),
     kept_map(corner_scale_at),
     kept_set(tree_pictures),
     kept_map(tree_frame_ids),
