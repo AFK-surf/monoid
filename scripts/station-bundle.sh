@@ -10,7 +10,8 @@
 #   stillfail/mesh/target/release/stillfail-station       (the launcher, with the Rust station's command line and path:
 #                                                          what the installer, bin/stillfail, the desktop app and
 #                                                          services run)
-#   stillfail/station/{main.js, built workers and assets, mesh.node, stillfail-runner, stillfail-reader, package.json}
+#   stillfail/station/{main.js, built workers and assets, mesh.node, stillfail-runner, stillfail-reader, package.json,
+#                      pion-rules/ (pion/rules/js)}
 #                                                         (and on darwin-arm64 "still.fail Helper.app": the station's
 #                                                          macOS app for what macOS grants §4;
 #                                                          on win32-x64 stillfail-screen.exe: the desktop's screen,
@@ -94,6 +95,11 @@ fi
 # Copy all files produced by the station build, including workers in new directories. Naming individual workers here
 # left workspace activity, chat export and sign-in recovery without their programs in released stations.
 cp -R "$root/station/dist/." "$app/station/"
+# The lock's and vault's rules in Pion (pion/rules/js: its wrapper, runtime and Wasm), which main.js loads beside it
+# only under STILLFAIL_RULES_MODE shadow or pion (shared/rules-runtime.ts PION_RULES_AT): the whole directory, so a
+# file the wrapper comes to load beside it is never left out.
+mkdir -p "$app/station/pion-rules"
+cp -R "$root/pion/rules/js/." "$app/station/pion-rules/"
 case "$platform" in linux-*) ;; *) rm -f "$app/station/linux-portal.py" "$app/station/linux-x11.py" "$app/station/linux-gamepad.py" ;; esac
 # The bundle is an ES module: said, so Node neither guesses nor takes the type of a package.json above the release
 # (the Electron app had one around the station it carried: every command warned).
