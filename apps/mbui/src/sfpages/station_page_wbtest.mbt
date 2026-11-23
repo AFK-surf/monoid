@@ -394,8 +394,11 @@ test "backup tab and per-station backup page: sidebar row, unified apply with sh
     t.run_for(@ui.move_most_ms)
     assert_true(t.find("已备份到 Cedar 和 Cloudflare R2 · 2 分钟前") is Some(_), msg="summary: \{at}")
     assert_true(t.find("备份记录") is Some(_), msg="history heading: \{at}")
-    assert_true(t.find("同步成功 · R2 / S3 · 42 个聊天 · 3 批 · 18.4 MB") is Some(_), msg="history R2 ok: \{at}")
-    assert_true(t.find("同步成功 · Station · 42 个聊天 · 2 批 · 18.4 MB") is Some(_), msg="history Cedar ok: \{at}")
+    assert_true(t.find("同步成功 · 42 个聊天 · 18.4 MB") is Some(_), msg="history ok: \{at}")
+    // (each station that keeps its backups, a row under the line: how far what it holds goes)
+    assert_true(t.find("2 分钟前已备份到最新") is Some(_), msg="keeper Cedar: \{at}")
+    assert_true(t.find("聊天已备份到最新（1 分钟前），会话记录还差 33012 个文件") is Some(_), msg="keeper Elm: \{at}")
+    assert_true(t.find("Elm") is Some(_), msg="keeper Elm name: \{at}")
     assert_true(t.find("AWS S3") is Some(_), msg="history AWS S3 target: \{at}")
     assert_true(t.find("同步失败 · R2 / S3 · 无法连接") is Some(_), msg="history AWS S3 fail: \{at}")
     assert_true(t.find("备份方式") is Some(_), msg="mode label: \{at}")
@@ -1559,4 +1562,24 @@ test "the stations' list says each machine's CPU the way this device has turned 
     assert_true(said("空闲 72%") || said("72%"), msg="idle again: \{at}")
     assert_eq(t.audit(), [], msg=at)
   }
+}
+
+///|
+test "the backup history says each run of syncs that went well to one place once, by its newest" {
+  let r = (id : String, target : String, status : String) => @settings.obj([
+    ("id", Json::string(id)),
+    ("kind", Json::string("sync")),
+    ("target", Json::string(target)),
+    ("status", Json::string(status)),
+  ])
+  let runs = copies_history_runs([
+    r("1", "cedar", "ok"),
+    r("2", "r2", "ok"),
+    r("3", "cedar", "ok"),
+    r("4", "cedar", "error"),
+    r("5", "cedar", "ok"),
+    r("6", "cedar", "ok"),
+    r("7", "r2", "ok"),
+  ])
+  assert_eq(runs.map(x => text(Some(x), "id")), ["1", "2", "4", "5"])
 }

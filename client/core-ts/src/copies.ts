@@ -137,8 +137,10 @@ export function copiesShown(v: unknown, c: Clock): J | undefined {
   const backup = backupOf(v.backup, to, c);
   const keepers = arr(v.keepers).map((k) => ({ k, name: str(k?.name) || short(str(k?.station)) }));
   const s3List: J[] = backup ? backup.s3 : [];
-  // (those as far as this station, and when the last of them was brought level; then what is wrong, briefly)
-  const currentKeepers = keepers.filter(({ k }) => str(k?.error) === "" && typeof k?.at === "number" && num(k?.to) >= to);
+  // (those as far as this station, and when the last of them was brought level; then what is wrong, briefly: what a
+  // place holds counts, not whether the last try to it went, so one level a moment ago that missed a pass since is
+  // still up to date; a partial head there has the chats, its transcripts still going)
+  const currentKeepers = keepers.filter(({ k }) => typeof k?.at === "number" && num(k?.to) >= to);
   const currentS3 = s3List.filter((s) => s.error === null && s.at !== null && s.to >= to);
   const currentNames = [...currentKeepers.map((x) => x.name), ...currentS3.map((s) => s.name as string)];
   const last = Math.max(0, ...currentKeepers.map(({ k }) => num(k.at)), ...currentS3.map((s) => num(s.at)));
@@ -186,6 +188,7 @@ export function copiesShown(v: unknown, c: Clock): J | undefined {
   const out: J = {
     line,
     level,
+    keepers: keepers.map(({ k, name }) => keeperOf(k, name, to, c)),
     offers,
     canRestore: manage && !busy,
     formerly: arr(v.formerly).filter((f) => typeof f === "string"),
@@ -196,6 +199,29 @@ export function copiesShown(v: unknown, c: Clock): J | undefined {
   };
   if (backup !== undefined) out.backup = backup;
   return out;
+}
+
+/// A station that keeps this one's backups, a row on its 备份 page: how far what it holds goes, in words.
+function keeperOf(k: J, name: string, to: number, c: Clock): J {
+  const at = typeof k?.at === "number" && Number.isFinite(k.at) ? k.at : null;
+  const failing = str(k?.error) !== "";
+  const current = at !== null && num(k?.to) >= to;
+  let line: string;
+  let level: "ok" | "amber";
+  if (at === null) {
+    line = failing ? t("core-views.copies.keeper.firstWhy", { why: why(k?.reason) }) : t("core-views.copies.keeper.first");
+    level = "amber";
+  } else if (current && k?.partial === true) {
+    line = t("core-views.copies.keeper.partial", { ago: ago(at, c), n: num(k?.lacking) });
+    level = "ok";
+  } else if (current) {
+    line = t("core-views.copies.keeper.current", { ago: ago(at, c) });
+    level = "ok";
+  } else {
+    line = failing ? t("core-views.copies.keeper.behindWhy", { ago: ago(at, c), why: why(k?.reason) }) : t("core-views.copies.keeper.behind", { ago: ago(at, c) });
+    level = "amber";
+  }
+  return { station: str(k?.station), name, line, level };
 }
 
 /// Bytes in a few characters (1.2 GB).

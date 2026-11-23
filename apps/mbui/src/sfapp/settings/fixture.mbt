@@ -5983,6 +5983,19 @@ fn fixture_copies_config() -> Json {
   obj([
     ("line", str("已备份到 Cedar 和 Cloudflare R2 · 2 分钟前")),
     ("level", str("ok")),
+    // (Cedar up to date; Elm with the chats, its first copy of the transcripts still going)
+    (
+      "keepers",
+      Json::array([
+        obj([("station", str("st2")), ("name", str("Cedar")), ("line", str("2 分钟前已备份到最新")), ("level", str("ok"))]),
+        obj([
+          ("station", str("st5")),
+          ("name", str("Elm")),
+          ("line", str("聊天已备份到最新（1 分钟前），会话记录还差 33012 个文件")),
+          ("level", str("ok")),
+        ]),
+      ]),
+    ),
     ("offers", []),
     ("canRestore", Json::boolean(true)),
     ("formerly", []),
@@ -6058,12 +6071,89 @@ fn fixture_copies_maple() -> Json {
 }
 
 ///|
-/// Typical `copies.history` response for fixture previews and tests: 2 successful syncs (R2 + peer) and 1 failed S3 sync.
+/// Typical `copies.history` response for fixture previews and tests: a run of syncs to Cedar that went well, 2 more
+/// (R2 + peer) and 1 failed S3 sync.
 fn fixture_copies_history() -> Json {
   obj([
     (
       "records",
       Json::array([
+        // (Cedar brought level at every pass: a run of syncs that went well, a station from before saying each)
+        obj([
+          ("id", str("rec-c0")),
+          ("at", Json::number(1795358400000.0)),
+          ("kind", str("sync")),
+          ("targetKind", str("station")),
+          ("target", str("st2")),
+          ("targetName", str("Cedar")),
+          ("status", str("ok")),
+          ("chats", Json::number(42.0)),
+          ("messages", Json::number(1280.0)),
+          ("batches", Json::number(2.0)),
+          ("bytes", Json::number(18400000.0)),
+          ("reason", Json::null()),
+          ("error", Json::null()),
+        ]),
+        obj([
+          ("id", str("rec-c1")),
+          ("at", Json::number(1795358387000.0)),
+          ("kind", str("sync")),
+          ("targetKind", str("station")),
+          ("target", str("st2")),
+          ("targetName", str("Cedar")),
+          ("status", str("ok")),
+          ("chats", Json::number(42.0)),
+          ("messages", Json::number(1280.0)),
+          ("batches", Json::number(3.0)),
+          ("bytes", Json::number(18400000.0)),
+          ("reason", Json::null()),
+          ("error", Json::null()),
+        ]),
+        obj([
+          ("id", str("rec-c2")),
+          ("at", Json::number(1795358374000.0)),
+          ("kind", str("sync")),
+          ("targetKind", str("station")),
+          ("target", str("st2")),
+          ("targetName", str("Cedar")),
+          ("status", str("ok")),
+          ("chats", Json::number(42.0)),
+          ("messages", Json::number(1280.0)),
+          ("batches", Json::number(2.0)),
+          ("bytes", Json::number(18400000.0)),
+          ("reason", Json::null()),
+          ("error", Json::null()),
+        ]),
+        obj([
+          ("id", str("rec-c3")),
+          ("at", Json::number(1795358361000.0)),
+          ("kind", str("sync")),
+          ("targetKind", str("station")),
+          ("target", str("st2")),
+          ("targetName", str("Cedar")),
+          ("status", str("ok")),
+          ("chats", Json::number(42.0)),
+          ("messages", Json::number(1280.0)),
+          ("batches", Json::number(3.0)),
+          ("bytes", Json::number(18400000.0)),
+          ("reason", Json::null()),
+          ("error", Json::null()),
+        ]),
+        obj([
+          ("id", str("rec-c4")),
+          ("at", Json::number(1795358348000.0)),
+          ("kind", str("sync")),
+          ("targetKind", str("station")),
+          ("target", str("st2")),
+          ("targetName", str("Cedar")),
+          ("status", str("ok")),
+          ("chats", Json::number(42.0)),
+          ("messages", Json::number(1280.0)),
+          ("batches", Json::number(2.0)),
+          ("bytes", Json::number(18400000.0)),
+          ("reason", Json::null()),
+          ("error", Json::null()),
+        ]),
         obj([
           ("id", str("rec-1")),
           ("at", Json::number(1795357800000.0)),

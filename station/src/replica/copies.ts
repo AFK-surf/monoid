@@ -146,7 +146,9 @@ export type CopiesDeps = {
 
 /// How a place for this station's copies stands: how far it goes, when it was brought level last, what went wrong.
 /// `known`: what it holds, as this station left it (null: to be asked); `head`: the head it was brought level with.
-type Keeping = { to: number; at: number | null; error: string | null; reason: Reason | null; missing: number; busy: boolean; again: (() => void) | null; tries: number; asked: boolean; known: Known | null; head: string | null };
+/// How it stands at a place (`to`, `at`: as far as the place's head goes and when it went there): `partial` while that
+/// head is a partial one, the chats there and `lacking` transcripts still to send (places.ts `partialHead`).
+type Keeping = { to: number; at: number | null; error: string | null; reason: Reason | null; missing: number; busy: boolean; again: (() => void) | null; tries: number; asked: boolean; known: Known | null; head: string | null; partial: boolean; lacking: number };
 
 /// Why a station is not brought level, as the settings say it: it is not reached, it is from before copies (it answers
 /// none of `replica.*`), or something else (its words in the log).
@@ -706,7 +708,7 @@ export class Copies {
     const now = o.now === true;
     const key = `${ws}\n${peer}`;
     let k = this.#keeping.get(key);
-    if (k === undefined) this.#keeping.set(key, (k = { to: 0, at: null, error: null, reason: null, missing: 0, busy: false, again: null, tries: 0, asked: false, known: null, head: null }));
+    if (k === undefined) this.#keeping.set(key, (k = { to: 0, at: null, error: null, reason: null, missing: 0, busy: false, again: null, tries: 0, asked: false, known: null, head: null, partial: false, lacking: 0 }));
     if (k.busy) {
       k.asked = true;
       return;
@@ -726,6 +728,14 @@ export class Copies {
     const keeping = k;
     const wasError = k.error;
     const prevReason = k.reason;
+    // (the chats there before the transcripts: said as they are, while those go on)
+    const onPartial = (to: number, lacking: number) => {
+      keeping.to = to;
+      keeping.at = this.#d.fibers.now();
+      keeping.partial = true;
+      keeping.lacking = lacking;
+      this.#changed(0);
+    };
     const run = (async () => {
       const traces = this.#d.traces?.() ?? null;
       const span = traces?.startRoot() ?? null;
@@ -734,7 +744,7 @@ export class Copies {
         let { head: syncedHead, done } = await levelNewest(
           head,
           (cur) => this.#newestHead(ws, cur),
-          (h) => level(place, ws, this.#own(h), keeping.known),
+          (h) => level(place, ws, this.#own(h), keeping.known, { onPartial }),
         );
         if (done.behind) {
           // This station's own copy is behind what that station keeps of it: its data was rolled back. A new
@@ -754,7 +764,7 @@ export class Copies {
           const next = this.#passed?.heads[ws];
           if (next === undefined) throw new Error("no copy of this workspace's");
           syncedHead = next;
-          done = await level(place, ws, this.#own(next));
+          done = await level(place, ws, this.#own(next), null, { onPartial });
           if (done.behind) throw new Error("that station keeps more of this station's than it has");
         }
         keeping.known = done.known;
@@ -765,6 +775,8 @@ export class Copies {
         keeping.at = this.#d.fibers.now();
         keeping.error = null;
         keeping.tries = 0;
+        keeping.partial = false;
+        keeping.lacking = 0;
         this.#record(ws, {
           at: keeping.at,
           kind: "sync",
@@ -842,7 +854,7 @@ export class Copies {
     if (k === undefined) {
       this.#keeping.set(
         key,
-        (k = { to: 0, at: null, error: null, reason: null, missing: 0, busy: false, again: null, tries: 0, asked: false, known: null, head: null }),
+        (k = { to: 0, at: null, error: null, reason: null, missing: 0, busy: false, again: null, tries: 0, asked: false, known: null, head: null, partial: false, lacking: 0 }),
       );
     }
     if (k.busy) {
@@ -1069,6 +1081,12 @@ export class Copies {
     const rec: BackupRecord = { id, ...entry };
     let list = this.#history.get(ws);
     if (list === undefined) this.#history.set(ws, (list = []));
+    // (a sync that went well after one that went well to the same place takes its place: a place brought level at
+    // every pass filled the history in minutes, 2026-11-23)
+    if (rec.kind === "sync" && rec.status === "ok") {
+      const i = list.findIndex((r) => r.kind === "sync" && r.target === rec.target);
+      if (i >= 0 && list[i]!.status === "ok") list.splice(i, 1);
+    }
     list.unshift(rec);
     list.sort((a, b) => b.at - a.at);
     if (list.length > HISTORY_MAX) list.length = HISTORY_MAX;
@@ -1169,7 +1187,7 @@ export class Copies {
       chats: head?.chats ?? 0,
       keepers: (here === null ? [] : this.#targets(ws)).map((station) => {
         const k = this.#keeping.get(`${ws}\n${station}`);
-        return { station, name: names.get(station) ?? "", to: k?.to ?? 0, at: k?.at ?? null, error: k?.error ?? null, reason: k?.reason ?? null };
+        return { station, name: names.get(station) ?? "", to: k?.to ?? 0, at: k?.at ?? null, error: k?.error ?? null, reason: k?.reason ?? null, partial: k?.partial ?? false, lacking: k?.lacking ?? 0 };
       }),
       backup: this.backupView(ws),
       // (the export not going: why, and since how many tries)

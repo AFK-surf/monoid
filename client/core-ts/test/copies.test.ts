@@ -17,8 +17,8 @@ const A = "a".repeat(64);
 const B = "b".repeat(64);
 const C = "c".repeat(64);
 
-const keeper = (station: string, name: string, o: { to?: number; at?: number | null; error?: string | null; reason?: string | null }) =>
-  ({ station, name, to: o.to ?? 7, at: o.at === undefined ? 8 * 60_000 : o.at, error: o.error ?? null, reason: o.reason ?? null });
+const keeper = (station: string, name: string, o: { to?: number; at?: number | null; error?: string | null; reason?: string | null; partial?: boolean; lacking?: number }) =>
+  ({ station, name, to: o.to ?? 7, at: o.at === undefined ? 8 * 60_000 : o.at, error: o.error ?? null, reason: o.reason ?? null, partial: o.partial ?? false, lacking: o.lacking ?? 0 });
 
 test("its backups in one row: the stations up to date and since when; one not reached or behind said briefly", () => {
   const both = copiesShown({ to: 7, chats: 12, keepers: [keeper(A, "Cedar", {}), keeper(B, "Aspen", { at: 9 * 60_000 })], empty: false, manage: true, formerly: [] }, c);
@@ -26,11 +26,29 @@ test("its backups in one row: the stations up to date and since when; one not re
   assert.equal(both.level, "ok");
   assert.deepEqual(both.offers, []);
   assert.ok("ok" in conform("StationCopies", both), JSON.stringify(conform("StationCopies", both)));
-  const one = copiesShown({ to: 7, chats: 12, keepers: [keeper(A, "Cedar", {}), keeper(B, "Aspen", { error: "station unreachable", reason: "offline" })], empty: false, formerly: [] }, c);
+  const one = copiesShown({ to: 7, chats: 12, keepers: [keeper(A, "Cedar", {}), keeper(B, "Aspen", { to: 5, error: "station unreachable", reason: "offline" })], empty: false, formerly: [] }, c);
   assert.equal(one.line, "已备份到 Cedar · 2 分钟前 · Aspen 连不上");
   assert.equal(one.level, "amber");
-  const behind = copiesShown({ to: 7, chats: 12, keepers: [keeper(A, "Cedar", { to: 3 }), keeper(B, "Aspen", { error: "x", reason: "old" })], empty: false, formerly: [] }, c);
+  const behind = copiesShown({ to: 7, chats: 12, keepers: [keeper(A, "Cedar", { to: 3 }), keeper(B, "Aspen", { to: 5, error: "x", reason: "old" })], empty: false, formerly: [] }, c);
   assert.equal(behind.line, "还没备份好 · Cedar 还没跟上 · Aspen 版本太旧");
+});
+
+test("a row for each station that keeps them: up to date by what it holds, not by whether the last try to it went; the chats there with transcripts still going; behind and why; not yet", () => {
+  // (Aspen holds all of it though the try after missed it; Birch has the chats, transcripts still going)
+  const v = copiesShown({ to: 7, chats: 12, keepers: [
+    keeper(A, "Cedar", { to: 5, error: "x", reason: "offline" }),
+    keeper(B, "Aspen", { error: "connection lost", reason: "offline" }),
+    keeper(C, "Birch", { at: 9 * 60_000, partial: true, lacking: 33_000 }),
+  ], empty: false, formerly: [] }, c);
+  assert.equal(v.line, "已备份到 Aspen 和 Birch · 1 分钟前 · Cedar 连不上");
+  assert.deepEqual(v.keepers.map((k: { name: string; line: string; level: string }) => [k.name, k.line, k.level]), [
+    ["Cedar", "2 分钟前备份过，之后连不上", "amber"],
+    ["Aspen", "2 分钟前已备份到最新", "ok"],
+    ["Birch", "聊天已备份到最新（1 分钟前），会话记录还差 33000 个文件", "ok"],
+  ]);
+  assert.ok("ok" in conform("StationCopies", v), JSON.stringify(conform("StationCopies", v)));
+  const fresh = copiesShown({ to: 7, chats: 12, keepers: [keeper(A, "Cedar", { at: null }), keeper(B, "Aspen", { at: null, error: "x", reason: "old" }), keeper(C, "Birch", { to: 3 })], empty: false, formerly: [] }, c);
+  assert.deepEqual(fresh.keepers.map((k: { line: string }) => k.line), ["正在第一次备份", "还没备份上：版本太旧", "2 分钟前备份过，正在跟上"]);
 });
 
 test("the only station of its workspace says another one backs it up; backups stopped say why", () => {

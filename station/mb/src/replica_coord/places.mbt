@@ -444,8 +444,16 @@ fn partial_head(head : J, held : Map[String, Bool]) -> J {
 
 ///|
 /// Brings `place` level with this station's own copy of `ws`: its batches and files first, its head, then what is not
-/// named any more goes. `known`: what the place held after it was levelled last (None: asked of it now).
-pub async fn level(place : Place, ws : String, own : Own, known? : Known? = None, include_transcripts? : Bool = true) -> Levelled {
+/// named any more goes. `known`: what the place held after it was levelled last (None: asked of it now). `on_partial`:
+/// told as the partial head is put, how far it goes and how many transcripts are still to send.
+pub async fn level(
+  place : Place,
+  ws : String,
+  own : Own,
+  known? : Known? = None,
+  include_transcripts? : Bool = true,
+  on_partial? : (Double, Int) -> Unit = fn(_, _) { () },
+) -> Levelled {
   let origin = text_at(own.head, "origin")
   let gen = head_gen(own.head)
   let k = match known {
@@ -544,6 +552,7 @@ pub async fn level(place : Place, ws : String, own : Own, known? : Known? = None
     (place.put)(ws, origin, gen, "head", "head.json", @utf8.encode(@jsjson.stringify_indent(partial_head(own.head, k.files), 1)))
     k.to = head_to(own.head)
     k.made = -1.0
+    on_partial(head_to(own.head), lacking_transcripts.filter(h => source_map.contains(h)).length())
   }
   for hash in lacking_transcripts {
     send(hash)

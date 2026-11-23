@@ -263,8 +263,9 @@ function partialHead(head: Head, held: Set<string>): Head {
 
 /// Brings `place` level with this station's own copy of `ws`: its batches and the chats' files first, a partial head
 /// while transcripts are lacking (`partialHead`), the transcripts, its head, then what is not named any more goes.
-/// `known`: what the place held after it was levelled last (null: asked of it now).
-export async function level(place: Place, ws: string, own: Own, known: Known | null = null, opts: { includeTranscripts?: boolean } = {}): Promise<Levelled> {
+/// `known`: what the place held after it was levelled last (null: asked of it now). `onPartial`: told as the partial
+/// head is put, how far it goes and how many transcripts are still to send.
+export async function level(place: Place, ws: string, own: Own, known: Known | null = null, opts: { includeTranscripts?: boolean; onPartial?: (to: number, lacking: number) => void } = {}): Promise<Levelled> {
   const includeTranscripts = opts.includeTranscripts !== false;
   const origin = own.head.origin;
   let k = known;
@@ -318,6 +319,7 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
     await place.put(ws, origin, own.head.gen, "head", "head.json", Buffer.from(JSON.stringify(partialHead(own.head, k.files), null, 1)));
     k.to = own.head.to;
     k.made = -1;
+    opts.onPartial?.(own.head.to, lackingTranscripts.filter((h) => sources.has(h)).length);
   }
   for (const hash of lackingTranscripts) await send(hash);
   if (k.to !== own.head.to || k.made !== own.head.made) {

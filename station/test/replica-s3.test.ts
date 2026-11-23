@@ -853,6 +853,11 @@ test("Backup history: peer & S3 sync persistence, error dedup & recovery, restor
   await mesh.settle();
   const okAfterRecovery = a.copies.history(HOME).filter((r) => r.target === B && r.status === "ok").length;
   assert.ok(okAfterRecovery >= 2, "recovery after failure should record a new ok entry");
+  // (and a sync that went well right after one that went well to the same place took its place: never two in a row)
+  for (const target of [B, s3Target.id]) {
+    const mine = a.copies.history(HOME).filter((r) => r.kind === "sync" && r.target === target);
+    for (let i = 1; i < mine.length; i++) assert.ok(!(mine[i - 1]!.status === "ok" && mine[i]!.status === "ok"), `two syncs that went well to ${target} in a row`);
+  }
 
   // Restart a fresh Copies instance on the same data dir + an outcomeFile -> reloads history & merges restore record
   const restoreAt = mesh.clock.currentTimeMillisUnsafe() + 5000;

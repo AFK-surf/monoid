@@ -82,6 +82,7 @@ export const STATION_SHAPES: Record<string, Shape> = {
   StationCopies: struct([
     ["line", "String", { doc: "Its 备份 row: the stations up to date with it and since when, one not reached or behind said briefly; that it is the only station; that backups stopped and why; or, just after a restore, what came of it." }],
     ["level", "Level", { doc: "ok: up to date somewhere; amber: a station not reached or behind, or none to back up to; red: backups stopped." }],
+    ["keepers", vec("CopyKeeper"), { default: true, doc: "The stations that keep its backups, a row each on its 备份 page: how far what each holds goes." }],
     ["offers", vec("CopyOffer"), { doc: "On a station with no chat of its own: a backup of each station no longer there that it could restore, a row each in place of its 备份 row." }],
     ["canRestore", "bool", { doc: "The viewer may restore one now (`copies.restore`): one of the workspace's owners and admins, none under way." }],
     ["formerly", vec("String"), { doc: "The stations it took the place of (their ids): a link that names one is to it." }],
@@ -90,6 +91,12 @@ export const STATION_SHAPES: Record<string, Shape> = {
     ["taking", vec("CopyTaking"), { default: true, doc: "Retired stations' chats being taken in here, a row each: its page's 迁移." }],
     ["backup", opt("CopyBackup"), { doc: "Configurable backup targets (stations and R2/S3 object storage). Absent from older stations." }],
   ], { doc: "A station's backups, as its 设置 shows them: one row; and its chats moved away as it is retired, or another's taken in." }),
+  CopyKeeper: struct([
+    ["station", "String"],
+    ["name", "String", { said: true }],
+    ["line", "String", { doc: "How far what it holds goes: up to date and since when; the chats up to date, transcripts still to send; behind, and why; or not backed up there yet." }],
+    ["level", "Level", { doc: "ok: up to date (the chats at least); amber: behind or not yet." }],
+  ], { doc: "A station that keeps another's backups, as that one's 备份 page shows it." }),
   CopyBackup: struct([
     ["mode", "String", { doc: "auto | manual" }],
     ["stations", vec("String"), { doc: "Selected peer station ids when mode is manual." }],

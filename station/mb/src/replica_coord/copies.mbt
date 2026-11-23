@@ -225,6 +225,9 @@ struct Keeping {
   mut asked : Bool
   mut known : Known?
   mut head : String?
+  /// While the place's head is a partial one (places.ts `partialHead`): the chats there, `lacking` transcripts to send.
+  mut partial : Bool
+  mut lacking : Int
 }
 
 ///|
@@ -1198,6 +1201,8 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
         asked: false,
         known: None,
         head: None,
+        partial: false,
+        lacking: 0,
       }
       self.keeping[key] = k
       k
@@ -1227,12 +1232,20 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
   k.busy = true
   let was_error = k.error
   let prev_reason = k.reason
+  // (the chats there before the transcripts: said as they are, while those go on)
+  let on_partial = fn(to : Double, lacking : Int) {
+    k.to = to
+    k.at = Some(self.w.now())
+    k.partial = true
+    k.lacking = lacking
+    self.changed(0.0)
+  }
   let run = self.w.run(async fn() {
     let start_ms = self.w.now()
     try {
       let place = peer_place(self.w, peer)
       let (head, first) = level_newest(head, async fn(cur) { self.newest_head(ws, cur) }, async fn(h) {
-        level(place, ws, self.own(h), known=k.known)
+        level(place, ws, self.own(h), known=k.known, on_partial~)
       })
       let mut synced_head = head
       let mut done = first
@@ -1260,7 +1273,7 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
         begun.wait()
         guard self.head_of_ws(ws) is Some(next) else { raise failed("no copy of this workspace's") }
         synced_head = next
-        done = level(place, ws, self.own(next))
+        done = level(place, ws, self.own(next), on_partial~)
         if done is Behind {
           raise failed("that station keeps more of this station's than it has")
         }
@@ -1276,6 +1289,8 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
           k.at = Some(at)
           k.error = None
           k.tries = 0
+          k.partial = false
+          k.lacking = 0
           self.record(
             ws,
             at,
@@ -1391,6 +1406,8 @@ fn Copies::level_s3(self : Copies, ws : String, target : S3TargetConfig, now : B
         asked: false,
         known: None,
         head: None,
+        partial: false,
+        lacking: 0,
       }
       self.keeping[key] = k
       k
@@ -1730,9 +1747,23 @@ fn append_history_record(
       xs
     }
   }
+  // (a sync that went well after one that went well to the same place takes its place, as copies.ts `#record`)
+  let mut drop = -1
+  if kind == "sync" && status == "ok" {
+    for i, item in list {
+      if item.kind == "sync" && item.target == target {
+        if item.status == "ok" {
+          drop = i
+        }
+        break
+      }
+    }
+  }
   let next : Array[BackupRecord] = [rec]
-  for item in list {
-    next.push(item)
+  for i, item in list {
+    if i != drop {
+      next.push(item)
+    }
   }
   next.sort_by((a, b) => if b.at > a.at { 1 } else if b.at < a.at { -1 } else { 0 })
   while next.length() > history_max {
@@ -1939,9 +1970,20 @@ pub fn Copies::overview(self : Copies, ws : String, manage? : Bool = false) -> J
           ("at", match k.at { Some(a) => jn(a); None => Null }),
           ("error", jopt(k.error)),
           ("reason", jopt(k.reason)),
+          ("partial", jb(k.partial)),
+          ("lacking", ji(k.lacking)),
         ])
       None =>
-        jo([("station", js(station)), ("name", js(name_of(station))), ("to", ji(0)), ("at", Null), ("error", Null), ("reason", Null)])
+        jo([
+          ("station", js(station)),
+          ("name", js(name_of(station))),
+          ("to", ji(0)),
+          ("at", Null),
+          ("error", Null),
+          ("reason", Null),
+          ("partial", jb(false)),
+          ("lacking", ji(0)),
+        ])
     }
   })
   let empty = match self.passed {

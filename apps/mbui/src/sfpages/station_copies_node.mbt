@@ -725,7 +725,6 @@ fn copies_history_detail(rv : Json?) -> String {
     @sf.t("web-pages.backup.station.historyKindStation")
   }
   let chats = number(rv, "chats").to_int()
-  let batches = number(rv, "batches").to_int()
   let bytes_text = copies_format_bytes(number(rv, "bytes"))
   let reason_text = fn() {
     match text(rv, "reason") {
@@ -757,12 +756,8 @@ fn copies_history_detail(rv : Json?) -> String {
     }
   } else if ok {
     parts.push(@sf.t("web-pages.backup.station.historySyncOk"))
-    parts.push(target_kind)
     if chats > 0 {
       parts.push(@sf.t("web-pages.backup.station.historyChats", args=[("n", chats.to_string())]))
-    }
-    if batches > 0 {
-      parts.push(@sf.t("web-pages.backup.station.historyBatches", args=[("n", batches.to_string())]))
     }
     if bytes_text != "" {
       parts.push(bytes_text)
@@ -773,6 +768,38 @@ fn copies_history_detail(rv : Json?) -> String {
     parts.push(reason_text())
   }
   parts.join(" · ")
+}
+
+///|
+/// A keeper's name, or the start of its id where the station did not say it.
+fn copies_keeper_name(kv : Json?) -> String {
+  match text(kv, "name") {
+    "" => {
+      let id = text(kv, "station")
+      if id.length() > 8 { id[:8].to_owned() } else { id }
+    }
+    name => name
+  }
+}
+
+///|
+/// The history newest first with each run of syncs that went well to one place said once, by its newest: a place
+/// brought level at every pass otherwise fills the page with the same row (a station from before the station says so
+/// itself, replica/copies.ts `#record`).
+fn copies_history_runs(records : Array[Json]) -> Array[Json] {
+  let last_ok : Map[String, Bool] = Map([])
+  let out : Array[Json] = []
+  for r in records {
+    let rv = Some(r)
+    let ok_sync = text(rv, "kind") != "restore" && text(rv, "status") == "ok"
+    let key = text(rv, "kind") + "/" + text(rv, "target")
+    if ok_sync && last_ok.get(key) == Some(true) {
+      continue
+    }
+    last_ok[key] = ok_sync
+    out.push(r)
+  }
+  out
 }
 
 ///|
@@ -888,6 +915,20 @@ pub fn station_backup_node(
                 })
               }
             })
+            // (each station that keeps its backups, how far what it holds goes: under the line, not in place of offers)
+            g.each(
+              fn() { if items(copies(), "offers").is_empty() { items(copies(), "keepers") } else { [] } },
+              fn(x) { text(Some(x), "station") },
+              fn(row, x) {
+                let kv = fn() { Some(x.get()) }
+                // (a row has one note: in amber while behind or not yet, made again as that changes)
+                row.pick(fn() { text(kv(), "level") != "ok" }, fn(r, behind) {
+                  @sf.row_box_node(r, fn() { copies_keeper_name(kv()) }, fn(s) {
+                    s.note(fn() { text(kv(), "line") }, tone=if behind { NoteWarn } else { NoteMuted })
+                  })
+                })
+              },
+            )
           })
         })
       "history" =>
@@ -919,7 +960,7 @@ pub fn station_backup_node(
                 said_row_node(r, fn() { @sf.t("web-pages.backup.station.historyEmpty") })
               })
               g.each(
-                fn() { history_records.get() },
+                fn() { copies_history_runs(history_records.get()) },
                 fn(x) {
                   let id = text(Some(x), "id")
                   if id != "" { id } else { text(Some(x), "target") + "/" + number(Some(x), "at").to_string() }

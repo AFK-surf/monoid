@@ -442,10 +442,14 @@ test "Copies history: record, dedup logic, 50-record cap, persistence reload, li
   assert_true(should_rec(Some("unreachable"), Some("offline"), "error"))
   ignore(add(3000.0, "sync", "station", peer_b, "Cedar", "error", 0, 0, 0, 0.0, Some("offline"), Some("station unreachable")))
   ignore(add(4000.0, "sync", "station", peer_b, "Cedar", "ok", 11, 85, 3, 5000.0, None, None))
+  // A sync that went well right after one that went well to the same place takes its place; one after a failure does not
+  ignore(add(4500.0, "sync", "station", peer_b, "Cedar", "ok", 12, 90, 3, 5100.0, None, None))
+  let cedar = hist[ws].filter(r => r.target == peer_b).map(r => (r.at, r.status))
+  assert_eq(cedar, [(4500.0, "ok"), (3000.0, "error"), (1000.0, "ok")])
 
   // Cap at 50 records per workspace (newest first)
   for i in 0..<60 {
-    ignore(add(5000.0 + i.to_double() * 100.0, "sync", "s3", "r2main", "Cloudflare R2", "ok", i, i * 2, 1, 1024.0, None, None))
+    ignore(add(5000.0 + i.to_double() * 100.0, "sync", "s3", "r2-\{i}", "Cloudflare R2", "ok", i, i * 2, 1, 1024.0, None, None))
   }
   assert_eq(hist[ws].length(), history_max)
   assert_eq(hist[ws][0].at, 10900.0)

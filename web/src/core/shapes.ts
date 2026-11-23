@@ -1373,6 +1373,16 @@ export interface StationScreenService {
 	canChange: boolean;
 }
 
+/** A station that keeps another's backups, as that one's 备份 page shows it. */
+export interface CopyKeeper {
+	station: string;
+	name: string;
+	/** How far what it holds goes: up to date and since when; the chats up to date, transcripts still to send; behind, and why; or not backed up there yet. */
+	line: string;
+	/** ok: up to date (the chats at least); amber: behind or not yet. */
+	level: Level;
+}
+
 /** A backup of a station no longer there that a station with no chats could restore. */
 export interface CopyOffer {
 	/** The lost station's id: `copies.restore`'s `origin`. */
@@ -1491,6 +1501,8 @@ export interface StationCopies {
 	line: string;
 	/** ok: up to date somewhere; amber: a station not reached or behind, or none to back up to; red: backups stopped. */
 	level: Level;
+	/** The stations that keep its backups, a row each on its 备份 page: how far what each holds goes. */
+	keepers?: CopyKeeper[];
 	/** On a station with no chat of its own: a backup of each station no longer there that it could restore, a row each in place of its 备份 row. */
 	offers: CopyOffer[];
 	/** The viewer may restore one now (`copies.restore`): one of the workspace's owners and admins, none under way. */
