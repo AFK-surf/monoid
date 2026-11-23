@@ -721,7 +721,9 @@ pub fn finder_list_node(
   })
   let keys = @signals.computed(fn(_) {
     let ks = lines.get().map(finder_key)
-    if foot_in > 0.0 {
+    // (the room under the last line only once there is one: alone in the list as the lines are first told, it would
+    // be what holds what shows, and they would come in over it, the list at its end)
+    if foot_in > 0.0 && !ks.is_empty() {
       ks.push(finder_foot)
     }
     ks

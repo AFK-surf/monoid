@@ -708,7 +708,11 @@ fn place_list_node(
   let held = l.keyed_by(lines, fn(p) { p.key })
   let keys = @signals.computed(fn(_) {
     let ks = held.keys().copy()
-    ks.push(place_list_foot)
+    // (the room under the last line only once there is one: alone in the list as the lines are first told, it would
+    // be what holds what shows, and they would come in over it, the list at its end)
+    if !ks.is_empty() {
+      ks.push(place_list_foot)
+    }
     ks
   })
   l.scrolls_reused(
