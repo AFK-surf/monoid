@@ -41,19 +41,29 @@ async function release(pion: boolean) {
   assert.match(bundleScript, /cp -R "\$root\/pion\/rules\/js\/\." "\$app\/station\/pion-rules\/"/, "station-bundle.sh copies pion/rules/js as pion-rules/");
   if (pion) cpSync(join(REPO, "pion", "rules", "js"), join(station, "pion-rules"), { recursive: true });
   writeFileSync(join(dir, "walk.json"), JSON.stringify(W));
-  const run = (mode: string) => JSON.parse(execFileSync(process.execPath, [join(station, "main.js"), join(dir, "walk.json")], {
-    cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, STILLFAIL_RULES_MODE: mode, STILLFAIL_RULES_SHADOW_STRICT: "1" },
-  }));
+  const run = (mode?: string) => {
+    const env: NodeJS.ProcessEnv = { ...process.env, STILLFAIL_RULES_SHADOW_STRICT: "1" };
+    if (mode === undefined) delete env.STILLFAIL_RULES_MODE;
+    else env.STILLFAIL_RULES_MODE = mode;
+    return JSON.parse(execFileSync(process.execPath, [join(station, "main.js"), join(dir, "walk.json")], {
+      cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env,
+    }));
+  };
   return { dir, station, run };
 }
 
-test("a release's main.js walks the rules alike in every mode, with the Pion port from pion-rules/ beside it", async () => {
+test("a release's main.js walks the rules alike in every mode, defaulting to pion from pion-rules/ beside it", async () => {
   const ref = JSON.parse(JSON.stringify(walk(rulesFor("moonbit"), W)));
   const r = await release(true);
   try {
     const bundled = readFileSync(join(r.station, "main.js"), "utf8");
     assert.doesNotMatch(bundled, /pion_wasm_rt|createPionRuntime/, "the Pion port is loaded beside main.js, never bundled in it");
+    const def = r.run();
+    assert.deepEqual(def.walk, ref, def.threw);
+    assert.deepEqual({ ...def.stats, calls: 0 }, { mode: "pion", calls: 0, mismatches: 0, first: null, pion: true });
+    assert.ok(def.stats.calls >= 14, JSON.stringify(def.stats));
+    assert.deepEqual([def.copied, def.stepped], [0, 0], "default mode uses pion and never steps rules.js");
+
     const moonbit = r.run("moonbit");
     assert.deepEqual(moonbit.walk, ref, moonbit.threw);
     assert.deepEqual(moonbit.stats, { mode: "moonbit", calls: 0, mismatches: 0, first: null, pion: false });
@@ -74,9 +84,10 @@ test("a release's main.js walks the rules alike in every mode, with the Pion por
   }
 });
 
-test("a release without pion-rules/ runs moonbit, and says where it looked for the Pion port in shadow or pion", async () => {
+test("a release without pion-rules/ falls back to moonbit by default, and says where it looked in explicit shadow or pion", async () => {
   const r = await release(false);
   try {
+    assert.deepEqual(r.run().stats, { mode: "moonbit", calls: 0, mismatches: 0, first: null, pion: false });
     assert.equal(r.run("moonbit").stats.pion, false);
     for (const mode of ["shadow", "pion"]) {
       const got = r.run(mode);

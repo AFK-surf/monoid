@@ -32,6 +32,31 @@ export function initWasm(wasmModuleOrBytes) {
   mem = null;
 }
 
+/**
+ * Eagerly read and compile `rules.wasm` in Node at startup so no synchronous `fs` I/O occurs
+ * during live request handling on the station's main thread. Performs zero RNG calls.
+ */
+export function preloadWasm() {
+  if (preloadedWasm === null) preloadedWasm = loadWasmModule();
+}
+
+/**
+ * Diagnostic handle-table & linear-memory stats (does not instantiate Wasm if not yet loaded).
+ */
+export function wasmMemoryStats() {
+  if (inst === null || mem === null) {
+    return { initialized: false, memoryBytes: 0, lockTableLen: 0, lockLive: 0, carriedTableLen: 0, carriedLive: 0 };
+  }
+  return {
+    initialized: true,
+    memoryBytes: mem.buffer.byteLength,
+    lockTableLen: inst.exports.lock_handle_table_len(),
+    lockLive: inst.exports.lock_handle_live_count(),
+    carriedTableLen: inst.exports.carried_handle_table_len(),
+    carriedLive: inst.exports.carried_handle_live_count(),
+  };
+}
+
 function readMemStr(ptr, len) {
   const n = Number(len);
   if (n <= 0) return "";

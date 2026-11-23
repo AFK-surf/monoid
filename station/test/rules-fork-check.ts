@@ -20,8 +20,8 @@ import { Rng, WS } from "./lock-world-sim.ts";
 // @ts-ignore: the MoonBit build's JS, untyped
 import * as moonbit from "../../rules/js/rules.js";
 import * as routed from "../../shared/rules-runtime.ts";
-/// By STILLFAIL_RULES_MODE; rules.js itself by default, which pion/rules/test/parity.test.mjs puts both ports in for.
-const rules: Record<string, any> = routed.rulesShadowStats().mode === "moonbit" ? moonbit : routed;
+/// By STILLFAIL_RULES_MODE (pion by default in Node); pion/rules/test/parity.test.mjs intercepts rules.js via __PION_RULES_DUAL__.
+const rules: Record<string, any> = "__PION_RULES_DUAL__" in globalThis || routed.rulesShadowStats().mode === "moonbit" ? moonbit : routed;
 
 /// The stations' own cryptography, a signature's check kept by what it checked (a world checks the same ones again and
 /// again; Ed25519 says the same of the same bytes).

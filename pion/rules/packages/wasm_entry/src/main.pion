@@ -130,12 +130,22 @@ struct CarriedHandle {
 }
 
 let lock_handles : Array[Option[lock::LockState]] = []
+let lock_free_ids : Array[Int] = []
 let carried_handles : Array[Option[CarriedHandle]] = []
+let carried_free_ids : Array[Int] = []
 
 fn alloc_lock_handle(s : lock::LockState) -> Int {
-  let id = lock_handles.length()
-  lock_handles.push(Some(s))
-  id
+  match lock_free_ids.pop() {
+    Some(id) => {
+      lock_handles[id] = Some(s)
+      id
+    }
+    None => {
+      let id = lock_handles.length()
+      lock_handles.push(Some(s))
+      id
+    }
+  }
 }
 
 fn get_lock_handle(id : Int) -> Option[lock::LockState] {
@@ -148,14 +158,36 @@ fn get_lock_handle(id : Int) -> Option[lock::LockState] {
 
 pub extern "C" fn free_lock_handle(id : Int) -> Unit {
   if id >= 0 && id < lock_handles.length() {
-    lock_handles[id] = None
+    match lock_handles[id] {
+      Some(_) => {
+        lock_handles[id] = None
+        lock_free_ids.push(id)
+      }
+      None => ()
+    }
   }
 }
 
+pub extern "C" fn lock_handle_table_len() -> Int {
+  lock_handles.length()
+}
+
+pub extern "C" fn lock_handle_live_count() -> Int {
+  lock_handles.length() - lock_free_ids.length()
+}
+
 fn alloc_carried_handle(h : CarriedHandle) -> Int {
-  let id = carried_handles.length()
-  carried_handles.push(Some(h))
-  id
+  match carried_free_ids.pop() {
+    Some(id) => {
+      carried_handles[id] = Some(h)
+      id
+    }
+    None => {
+      let id = carried_handles.length()
+      carried_handles.push(Some(h))
+      id
+    }
+  }
 }
 
 fn get_carried_handle(id : Int) -> Option[CarriedHandle] {
@@ -168,8 +200,22 @@ fn get_carried_handle(id : Int) -> Option[CarriedHandle] {
 
 pub extern "C" fn free_carried_handle(id : Int) -> Unit {
   if id >= 0 && id < carried_handles.length() {
-    carried_handles[id] = None
+    match carried_handles[id] {
+      Some(_) => {
+        carried_handles[id] = None
+        carried_free_ids.push(id)
+      }
+      None => ()
+    }
   }
+}
+
+pub extern "C" fn carried_handle_table_len() -> Int {
+  carried_handles.length()
+}
+
+pub extern "C" fn carried_handle_live_count() -> Int {
+  carried_handles.length() - carried_free_ids.length()
 }
 
 // ── JSON conversion helpers ───────────────────────────────────────────────────────────────────────────────────────

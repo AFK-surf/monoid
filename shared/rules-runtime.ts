@@ -1,14 +1,15 @@
 // The lock's and vault's rules as the station and the cloud call them (shared/lock.ts, station/src/vault/crypto.ts):
-// the MoonBit build (rules/js/rules.js) or its Pion port (pion/rules/js/rules-wasm.mjs; in a release, station/pion-rules/
-// beside main.js: PION_RULES_AT), by STILLFAIL_RULES_MODE.
-//   moonbit (default, and anywhere without process.env): rules.js's own functions, nothing in between.
+// the Pion port (pion/rules/js/rules-wasm.mjs; in a release, station/pion-rules/ beside main.js: PION_RULES_AT) or the
+// MoonBit build (rules/js/rules.js), by STILLFAIL_RULES_MODE.
+//   pion (default in Node when PION_RULES_AT has rules-wasm.mjs): the Pion port alone; rules.js is never called.
+//   moonbit (default in non-Node / Cloudflare Workers, or Node without Pion build, and instant rollback via
+//     STILLFAIL_RULES_MODE=moonbit): rules.js's own functions, nothing in between.
 //   shadow: rules.js answers; the Pion port is asked the same and every answer compared (canonical JSON, a thrown
 //     error's message, whether a handle came back). A difference is logged, or thrown with
 //     STILLFAIL_RULES_SHADOW_STRICT=1 (tests). Handles (a state's `rules`, `carried_js`'s) are pairs of both.
-//   pion: the Pion port alone; rules.js is never called.
-// The Pion port is loaded only in Node and only in shadow or pion, synchronously by require(esm): a Worker (cloud/)
-// or the default mode never reads a file, draws a random value or bundles it. The core (client/core-ts, in Hermes,
-// which has no WebAssembly) keeps importing rules/js/rules.js itself.
+// The Pion port is loaded only in Node and lazily on first call in shadow or pion, synchronously by require(esm): a
+// Worker (cloud/) or explicit moonbit mode never reads a file, draws a random value or bundles it. The core
+// (client/core-ts, in Hermes, which has no WebAssembly) keeps importing rules/js/rules.js itself.
 // @ts-ignore: the MoonBit build's JS, untyped
 import * as mb from "../rules/js/rules.js";
 
@@ -35,29 +36,54 @@ const OWN = new Set<string>(["copied_js", "stepped_js"]);
 const env = (k: string): string | undefined =>
   typeof process !== "undefined" && process.env !== undefined ? process.env[k] : undefined;
 
-function modeOf(v: string | undefined): RulesMode {
-  if (v === undefined || v === "" || v === "moonbit") return "moonbit";
-  if (v === "shadow" || v === "pion") return v;
-  throw new Error(`STILLFAIL_RULES_MODE is moonbit, shadow or pion, not ${JSON.stringify(v)}`);
-}
-
 /// Where the Pion port is, from this module's URL, in order: a release's (scripts/station-bundle.sh copies
 /// pion/rules/js beside the bundled station/main.js, which this module is part of), then the source tree's.
 export const PION_RULES_AT = ["./pion-rules/rules-wasm.mjs", "../pion/rules/js/rules-wasm.mjs"] as const;
 
+let pionLocationCache: { path: string | undefined; tried: string[] } | null = null;
+function pionRulesLocation(): { path: string | undefined; tried: string[] } {
+  if (pionLocationCache !== null) return pionLocationCache;
+  const getBuiltin = typeof process !== "undefined" ? (process as any).getBuiltinModule : undefined;
+  if (typeof getBuiltin !== "function" || typeof process.versions?.node !== "string") {
+    return { path: undefined, tried: [] };
+  }
+  if (typeof import.meta?.url !== "string" || !import.meta.url.startsWith("file:")) {
+    return { path: undefined, tried: [] };
+  }
+  const { fileURLToPath } = getBuiltin("node:url");
+  const { existsSync } = getBuiltin("node:fs");
+  const tried = PION_RULES_AT.map((at) => fileURLToPath(new URL(at, import.meta.url)));
+  const path = tried.find((p) => existsSync(p)); // sync: once a process, to locate the Pion rules beside main.js or the checkout
+  pionLocationCache = { path, tried };
+  return pionLocationCache;
+}
+
+/// Default rules mode when STILLFAIL_RULES_MODE is unset: `pion` in Node when `PION_RULES_AT` has `rules-wasm.mjs`,
+/// `moonbit` everywhere else (Cloudflare Workers / non-Node, with zero fs or RNG at load, or Node without Pion build).
+export function defaultMode(): RulesMode {
+  if (typeof process === "undefined" || typeof (process as any).getBuiltinModule !== "function") return "moonbit";
+  return pionRulesLocation().path !== undefined ? "pion" : "moonbit";
+}
+
+function modeOf(v: string | undefined): RulesMode {
+  if (v === undefined || v === "") return defaultMode();
+  if (v === "moonbit" || v === "shadow" || v === "pion") return v;
+  throw new Error(`STILLFAIL_RULES_MODE is moonbit, shadow or pion, not ${JSON.stringify(v)}`);
+}
+
 let pionLoaded: Rules | null = null;
-/// The Pion port, loaded once on first use (Node only).
+/// The Pion port, loaded once (Node only). When the Pion build is present at startup in `pion` or `shadow` mode,
+/// it is preloaded at module load so live station requests never trigger synchronous `fs` I/O on the main thread.
 function pion(): Rules {
   if (pionLoaded !== null) return pionLoaded;
   const getBuiltin = typeof process !== "undefined" ? (process as any).getBuiltinModule : undefined;
   if (typeof getBuiltin !== "function") throw new Error("the Pion rules are loaded only in Node");
   const { createRequire } = getBuiltin("node:module");
-  const { fileURLToPath } = getBuiltin("node:url");
-  const { existsSync } = getBuiltin("node:fs");
-  const tried = PION_RULES_AT.map((at) => fileURLToPath(new URL(at, import.meta.url)));
-  const path = tried.find((p) => existsSync(p)); // sync: once a process, on its first call through shadow or pion
+  const { path, tried } = pionRulesLocation();
   if (path === undefined) throw new Error(`the Pion rules (STILLFAIL_RULES_MODE shadow or pion) are at none of ${tried.join(", ")}`);
-  pionLoaded = createRequire(import.meta.url)(path) as Rules;
+  const mod = createRequire(import.meta.url)(path) as Rules & { preloadWasm?: () => void };
+  if (typeof mod.preloadWasm === "function") mod.preloadWasm();
+  pionLoaded = mod;
   return pionLoaded;
 }
 
@@ -170,7 +196,9 @@ export function rulesFor(mode: RulesMode, strict = false, warn: (line: string) =
   return Object.assign(api, { stats: statsOf });
 }
 
-const own = rulesFor(modeOf(env("STILLFAIL_RULES_MODE")), env("STILLFAIL_RULES_SHADOW_STRICT") === "1");
+const initialMode = modeOf(env("STILLFAIL_RULES_MODE"));
+if (initialMode !== "moonbit" && pionRulesLocation().path !== undefined) pion();
+const own = rulesFor(initialMode, env("STILLFAIL_RULES_SHADOW_STRICT") === "1");
 
 /// What this process's rules did: its mode, the calls through shadow or Pion, the differences found (the first of them).
 export const rulesShadowStats = (): RulesStats => own.stats();

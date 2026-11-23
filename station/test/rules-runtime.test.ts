@@ -25,8 +25,50 @@ test("moonbit is rules.js's own functions, the Pion port never loaded for it", (
   assert.deepEqual(Object.keys(mb).sort(), [...RULES_FUNCTIONS].sort(), "rules-runtime lists every function rules.js exports");
   const out = execFileSync(process.execPath, ["--input-type=module", "-e",
     `const r = await import(${JSON.stringify(new URL("../../shared/rules-runtime.ts", import.meta.url).href)}); r.canonical_of({a:1}); console.log(JSON.stringify(r.rulesShadowStats()))`],
-  { env: { ...process.env, STILLFAIL_RULES_MODE: "" }, encoding: "utf8" });
+  { env: { ...process.env, STILLFAIL_RULES_MODE: "moonbit" }, encoding: "utf8" });
   assert.deepEqual(JSON.parse(out), { mode: "moonbit", calls: 0, mismatches: 0, first: null, pion: false });
+});
+
+test("Node defaults to pion when STILLFAIL_RULES_MODE is unset, and non-Node/Worker falls back to moonbit with zero fs/RNG", () => {
+  const url = JSON.stringify(new URL("../../shared/rules-runtime.ts", import.meta.url).href);
+  const envNoMode = { ...process.env };
+  delete envNoMode.STILLFAIL_RULES_MODE;
+
+  // 1. Unset STILLFAIL_RULES_MODE in Node -> defaults to "pion", zero RNG at load, pion: true after first call.
+  const nodeOut = execFileSync(process.execPath, ["--input-type=module", "-e", `
+    const origRand = Math.random;
+    const origGetRand = globalThis.crypto?.getRandomValues?.bind(globalThis.crypto);
+    Math.random = () => { throw new Error("Math.random called at load"); };
+    if (globalThis.crypto) globalThis.crypto.getRandomValues = () => { throw new Error("crypto.getRandomValues called at load"); };
+    const r = await import(${url});
+    const before = r.rulesShadowStats();
+    Math.random = origRand;
+    if (globalThis.crypto && origGetRand) globalThis.crypto.getRandomValues = origGetRand;
+    r.canonical_of({ a: 1 });
+    console.log(JSON.stringify({ before, after: r.rulesShadowStats() }));
+  `], { env: envNoMode, encoding: "utf8" });
+  const nodeRes = JSON.parse(nodeOut);
+  assert.deepEqual(nodeRes.before, { mode: "pion", calls: 0, mismatches: 0, first: null, pion: true });
+  assert.deepEqual(nodeRes.after, { mode: "pion", calls: 1, mismatches: 0, first: null, pion: true });
+
+  // 2. Simulated Cloudflare Worker (no process.getBuiltinModule) -> defaults to "moonbit" with zero fs/RNG at module load.
+  const workerOut = execFileSync(process.execPath, ["--input-type=module", "-e", `
+    const origRand = Math.random;
+    const origGetRand = globalThis.crypto?.getRandomValues?.bind(globalThis.crypto);
+    Math.random = () => { throw new Error("Math.random called at Worker module load"); };
+    if (globalThis.crypto) globalThis.crypto.getRandomValues = () => { throw new Error("crypto.getRandomValues called at Worker module load"); };
+    Object.defineProperty(process, "getBuiltinModule", { value: undefined, configurable: true });
+    const r = await import(${url});
+    const before = r.rulesShadowStats();
+    Math.random = origRand;
+    if (globalThis.crypto && origGetRand) globalThis.crypto.getRandomValues = origGetRand;
+    const got = r.canonical_of({ b: 2, a: 1 });
+    console.log(JSON.stringify({ got, before, after: r.rulesShadowStats() }));
+  `], { env: envNoMode, encoding: "utf8" });
+  const workerRes = JSON.parse(workerOut);
+  assert.equal(workerRes.got, '{"a":1,"b":2}');
+  assert.deepEqual(workerRes.before, { mode: "moonbit", calls: 0, mismatches: 0, first: null, pion: false });
+  assert.deepEqual(workerRes.after, { mode: "moonbit", calls: 0, mismatches: 0, first: null, pion: false });
 });
 
 test("shadow answers as moonbit, with the Pion port asked every call and no difference, handles paired across calls", () => {
