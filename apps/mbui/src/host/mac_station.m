@@ -386,7 +386,7 @@ static NSString *local_uninstall(NSString *data) {
   NSString *to = [fm destinationOfSymbolicLinkAtPath:link error:nil];
   // (the release's own path and a slash: stringByAppendingPathComponent takes a trailing one off, and app.old/… is not it)
   if ([to hasPrefix:[[data stringByAppendingPathComponent:@"app"] stringByAppendingString:@"/"]]) [fm removeItemAtPath:link error:nil];
-  for (NSString *part in @[ @"app", @"app.old", @"app.failed", @"node", @"helper", @"run", @"stillfail.pid" ]) {
+  for (NSString *part in @[ @"app", @"app.old", @"app.failed", @"app.before-replace", @"node", @"helper", @"run", @"stillfail.pid" ]) {
     NSString *path = [data stringByAppendingPathComponent:part];
     NSError *e = nil;
     if ([fm fileExistsAtPath:path] && ![fm removeItemAtPath:path error:&e]) return e.localizedDescription ?: part;

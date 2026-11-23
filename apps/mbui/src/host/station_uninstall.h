@@ -68,7 +68,7 @@ static const char station_uninstall_ps[] =
     "    Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue\n"
     "    Write-Host \"stillfail: uninstalled, $full removed\"\n"
     "  } else {\n"
-    "    foreach ($part in @('app', 'app.failed', 'node', 'helper', 'run', 'windows.json')) {\n"
+    "    foreach ($part in @('app', 'app.failed', 'app.before-replace', 'node', 'helper', 'run', 'windows.json')) {\n"
     "      Remove-Item -LiteralPath (Join-Path $full $part) -Recurse -Force -ErrorAction SilentlyContinue\n"
     "    }\n"
     "    Get-ChildItem -LiteralPath $full -Directory -Filter 'app.old*' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue\n"

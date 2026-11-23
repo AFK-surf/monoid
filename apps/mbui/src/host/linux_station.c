@@ -385,7 +385,7 @@ static const char *local_uninstall_sh =
     "  for _ in 1 2 3 4 5; do case \"$(ps -o stat= -p \"$pid\" 2>/dev/null | tr -d ' ')\" in \"\"|Z*) break ;; esac; sleep 1; done\n"
     "done\n"
     "if [ -L \"$4\" ]; then case \"$(readlink \"$4\")\" in \"$1/app/\"*) rm -f \"$4\" ;; esac; fi\n"
-    "rm -rf \"$1/app\" \"$1/app.old\" \"$1/app.failed\" \"$1/node\" \"$1/helper\" \"$1/run\" \"$1/stillfail.pid\" || exit 1\n"
+    "rm -rf \"$1/app\" \"$1/app.old\" \"$1/app.failed\" \"$1/app.before-replace\" \"$1/node\" \"$1/helper\" \"$1/run\" \"$1/stillfail.pid\" || exit 1\n"
     "[ ! -d \"$1\" ] || : > \"$1/uninstalled\"\n";
 
 static void sf_station_act(moonbit_string_t action) {
