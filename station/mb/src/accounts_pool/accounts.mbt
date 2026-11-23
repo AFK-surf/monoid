@@ -1051,7 +1051,7 @@ pub async fn Accounts::put_profile(
     let existing = list.iter().find_first(p => p.get("id") == Some(Str(id)))
     let machine = jget(existing, "machine") == Some(Bool(true))
     let get = (key : String) => if machine &&
-      !["model", "models", "backgroundOnMessage", "fast", "maxConcurrentSessions", "newAccountProtection"].contains(key) {
+      !["model", "models", "backgroundOnMessage", "fast", "maxConcurrentSessions", "newAccountProtection", "directQuota"].contains(key) {
       None
     } else {
       match given.get(key) {
@@ -1180,6 +1180,16 @@ pub async fn Accounts::put_profile(
           _ => None
         }
     }
+    // An Antigravity CLI profile's quota asked of Google's API beside its CLI (agy_quota.mbt `agy_quota` `direct`).
+    let direct_quota = match get("directQuota") {
+      Some(Bool(b)) => Some(b)
+      Some(_) => raise refusal(400, "directQuota must be a boolean")
+      None =>
+        match jget(existing, "directQuota") {
+          Some(Bool(false)) => Some(false)
+          _ => None
+        }
+    }
     let given_max_sessions = get("maxConcurrentSessions")
     let max_concurrent_sessions : Int? = match given_max_sessions {
       None =>
@@ -1265,6 +1275,9 @@ pub async fn Accounts::put_profile(
     }
     if background == Some(false) {
       fields.push(("backgroundOnMessage", jbool(false)))
+    }
+    if direct_quota == Some(false) {
+      fields.push(("directQuota", jbool(false)))
     }
     match max_concurrent_sessions {
       Some(n) => {

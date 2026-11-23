@@ -148,6 +148,13 @@ describe("allowances and renewing", { concurrency: true }, () => {
         ["/v1internal:retrieveUserQuotaSummary", { project: "aicode-consumers" }],
       ]);
 
+      // Turned off on the profile (`directQuota: false`), only the CLI is asked: Gemini's week stays missing.
+      const cliOnly = { ...profile, directQuota: false };
+      quotaApi.asked.length = 0;
+      const notSupplemented = await checkQuota(cliOnly, partialEnv, undefined, apiUrls, "zh");
+      assert.deepEqual(notSupplemented.windows, q.windows.slice(1));
+      assert.deepEqual(quotaApi.asked, []);
+
       hasGeminiWeekly = false;
       const unavailable = await checkQuota(profile, partialEnv, undefined, apiUrls, "zh");
       assert.deepEqual(unavailable.windows, q.windows.slice(1));
@@ -287,6 +294,12 @@ describe("allowances and renewing", { concurrency: true }, () => {
       return { status: 404, body: {} };
     });
     try {
+      // Turned off on the profile, the CLI's refusal is said as it is and nothing is asked of Google's API.
+      const refused = await checkQuota({ ...profile, directQuota: false }, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      assert.equal(refused.state, "unavailable");
+      assert.ok(refused.detail?.includes("not currently available in your location"));
+      assert.deepEqual(agyApi.asked, []);
+
       const fallbackQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
       assert.equal(fallbackQ.state, "ok");
       assert.equal(fallbackQ.plan, "Ultra 5x");

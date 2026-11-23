@@ -2405,6 +2405,9 @@ web-pages.profiles.adding
 web-pages.profiles.background
 web-pages.profiles.backgroundOff
 web-pages.profiles.backgroundOn
+web-pages.profiles.directQuota
+web-pages.profiles.directQuotaOff
+web-pages.profiles.directQuotaOn
 web-pages.profiles.maxConcurrentSessions
 web-pages.profiles.maxConcurrentSessionsHint
 web-pages.profiles.maxConcurrentSessionsInvalid

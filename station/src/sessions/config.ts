@@ -28,6 +28,8 @@ export type Profile = RuntimeProfile & {
   model?: string;
   /// A message that reaches a running Claude Code turn first moves what it waits on to the background (absent: on).
   backgroundOnMessage: boolean;
+  /// An Antigravity CLI subscription's quota: false, asked of its CLI alone, never of Google's API beside it (absent: on).
+  directQuota?: boolean;
   /// A stopped profile keeps its credentials and models but cannot be chosen for work.
   enabled?: boolean;
   /// The joined workspaces kept from it: every workspace the station is in runs on it but these.

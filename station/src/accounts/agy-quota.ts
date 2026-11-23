@@ -367,7 +367,10 @@ export function clipKeepingLinks(text: string, most: number): string {
   return cut + /^\S*/.exec(text.slice(most))![0];
 }
 
-export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: Lang = stationLang(), command = "agy"): Promise<ProfileQuota> {
+/// `direct`: whether what `agy -p /usage` leaves out (Gemini's week; an account it refuses for its free tier's location) is
+/// asked of Google's Cloud Code API with the profile's token as the CLI would (the profile's `directQuota`, on unless
+/// false). Off, only the CLI is asked: nothing goes to Google but what `agy` itself sends.
+export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: Lang = stationLang(), command = "agy", direct = true): Promise<ProfileQuota> {
   // Before sign-in (no token file in the profile's, none to take back from the keychain: agents/agy.ts `agyTakeBack`),
   // return signed out immediately without spawning `agy`.
   if (!(await agyTakeBack(home))) {
@@ -393,7 +396,7 @@ export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: L
   const parsed = parseJsonLine(stdout);
   if (parsed !== null && parsed.status === "SUCCESS") {
     const { windows, scoped } = agyAllowance(parsed);
-    if (windows.length > 0 && !windows.some(isGeminiWeekly)) {
+    if (direct && windows.length > 0 && !windows.some(isGeminiWeekly)) {
       const production = agyBase(urls, AGY_PRODUCTION_URL);
       const project = await agyQuotaProject(home, agyBase(urls, AGY_CLOUD_CODE_URL));
       if (project !== null) {
@@ -417,9 +420,9 @@ export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: L
     const detail = verify !== "" ? tr(lang, "station.quota.agyVerifyAt", { url: verify }) : tr(lang, "station.quota.agyVerify");
     return { state: "blocked", windows: [], detail, checkedAt: 0 };
   }
-  if (agyLocationIneligible(said)) {
-    const direct = await agyDirectQuota(home, urls, lang);
-    if (direct !== null) return direct;
+  if (direct && agyLocationIneligible(said)) {
+    const read = await agyDirectQuota(home, urls, lang);
+    if (read !== null) return read;
   }
   const detail = clipKeepingLinks(said, 300);
   if (authFailure(detail)) {

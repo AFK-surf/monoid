@@ -304,7 +304,7 @@ export async function checkQuota(profile: Profile, env: Env, codexRateLimits: Co
     if (kind === "subscription" && profile.runtime === "cursor") return quota("unsupported", [], tr(lang, "station.quota.cursorUnsupported"));
     // Nor does the Devin CLI say its account's quota to a program (only its own /usage shows it).
     if (kind === "subscription" && profile.runtime === "devin") return quota("unsupported", [], tr(lang, "station.quota.devinUnsupported"));
-    if (kind === "subscription" && profile.runtime === "agy") return await agyQuota(profile.home, { ...env, ...(isObject(profile.env) ? profile.env : {}) }, urls, lang);
+    if (kind === "subscription" && profile.runtime === "agy") return await agyQuota(profile.home, { ...env, ...(isObject(profile.env) ? profile.env : {}) }, urls, lang, "agy", profile.directQuota !== false);
     if (kind === "subscription" && profile.runtime === "claude") {
       try {
         return await claudeWithRefresh(env, profile.machine === true ? null : profile.home, urls, lang, claudeVersion);

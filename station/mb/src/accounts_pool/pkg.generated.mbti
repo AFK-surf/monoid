@@ -22,7 +22,7 @@ pub fn agy_allowance(Ctx, @jsjson.JValue?) -> (Array[@jsjson.JValue], Array[@jsj
 
 pub fn agy_base_model(String) -> String
 
-pub async fn agy_quota(Ctx, String, @jsjson.JValue, String, command? : String) -> @jsjson.JValue
+pub async fn agy_quota(Ctx, String, @jsjson.JValue, String, command? : String, direct? : Bool) -> @jsjson.JValue
 
 pub fn agy_scope_for_model(String?) -> String
 
