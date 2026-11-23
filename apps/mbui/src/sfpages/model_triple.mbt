@@ -2514,9 +2514,8 @@ fn triple_model_row_node(
             nc.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
             nc.box(fn(nl) {
               @sf.style_node(nl, fn() { triple_model_name_line })
-              // (what goes with it on a line of its own where it does not fit beside the name, from the maker's mark)
-              // (in the middle of its name's line beside it, as what is at the row's end is; on a line of its own where it does not fit)
-              nl.min_width(Is(Some(0.0))).wraps(Is(Some(triple_wrap_gap))).lines_up(Is(Some(Middle))) |> ignore
+              // (on its name's baseline beside it; on a line of its own, from the maker's mark, where it does not fit)
+              nl.min_width(Is(Some(0.0))).wraps(Is(Some(triple_wrap_gap))) |> ignore
               // (its maker's mark in the middle of its name's line, the two the line's baseline's)
               nl.box(fn(hd) {
                 @sf.style_node(hd, fn() { triple_name_line }, in_row=true)
@@ -2533,7 +2532,7 @@ fn triple_model_row_node(
               // the name leaves no room)
               nl.show(fn() { usual() != "" }, fn(ur) {
                 @sf.style_node(ur, fn() { triple_usual_room }, in_row=true)
-                ur
+                @sf.on_baseline(ur, Ui, Xs2)
                 .shrink(Is(1.0))
                 .min_width(Is(Some(0.0)))
                 .clips(Is(true))
@@ -2678,8 +2677,8 @@ fn triple_combo_row_node(
             nc.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
             nc.box(fn(nl) {
               @sf.style_node(nl, fn() { triple_model_name_line })
-              // (in the middle of its name's line beside it, as what is at the row's end is; on a line of its own where it does not fit, from the maker's mark)
-              nl.min_width(Is(Some(0.0))).wraps(Is(Some(triple_wrap_gap))).lines_up(Is(Some(Middle))) |> ignore
+              // (on its name's baseline beside it; on a line of its own, from the maker's mark, where it does not fit)
+              nl.min_width(Is(Some(0.0))).wraps(Is(Some(triple_wrap_gap))) |> ignore
               // (its maker's mark in the middle of its name's line, the two the line's baseline's)
               nl.box(fn(hd) {
                 @sf.style_node(hd, fn() { triple_name_line }, in_row=true)
@@ -2696,7 +2695,7 @@ fn triple_combo_row_node(
               // own does not hold it)
               nl.show(fn() { how() != "" }, fn(cr) {
                 @sf.style_node(cr, fn() { triple_usual_room }, in_row=true)
-                cr.shrink(Is(1.0)).min_width(Is(Some(0.0))).clips(Is(true)) |> ignore
+                @sf.on_baseline(cr, Ui, Xs2).shrink(Is(1.0)).min_width(Is(Some(0.0))).clips(Is(true)) |> ignore
                 @sf.words_node(cr, how, fn() { triple_usual }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
               }, along_row=true)
             })

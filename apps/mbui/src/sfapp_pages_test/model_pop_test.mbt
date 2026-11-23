@@ -781,7 +781,7 @@ test "Claude run mode can be changed in the model settings on small and large sc
 }
 
 ///|
-test "a model row's usualText sits on the middle of its model name's line" {
+test "a model row's usualText and a frequent combination's configuration share their name's baseline" {
   for scale in [1.0, 1.3] {
     let flat = model_pop("newchat-model", font_scale=scale)
     let flat_runs = flat.text_runs()
@@ -790,8 +790,15 @@ test "a model row's usualText sits on the middle of its model name's line" {
     let gpt_usual = flat_runs.filter(fn(r) { r.x0 > gpt.x1 && (r.top - gpt.top).abs() < 10.0 && r.text == "中" })
     assert_true(!gpt_usual.is_empty(), msg="missing usualText beside GPT-6 at scale \{scale}: \{Repr(flat_runs)}")
     assert_true(
-      ((gpt.top + gpt.bottom) / 2.0 - (gpt_usual[0].top + gpt_usual[0].bottom) / 2.0).abs() < 0.5,
-      msg="GPT-6 \{Repr(gpt)} vs \{Repr(gpt_usual[0])} at scale \{scale}",
+      (gpt.base - gpt_usual[0].base).abs() < 0.01,
+      msg="GPT-6 baseline \{gpt.base} vs \{gpt_usual[0].text} baseline \{gpt_usual[0].base} at scale \{scale}",
+    )
+    let combo = flat_runs.filter(fn(r) { r.text == "GPT-6" }).last().unwrap()
+    let combo_how = flat_runs.filter(fn(r) { r.x0 > combo.x1 && (r.top - combo.top).abs() < 10.0 && r.text != "" })
+    assert_true(!combo_how.is_empty(), msg="missing configuration beside the GPT-6 combination at scale \{scale}: \{Repr(flat_runs)}")
+    assert_true(
+      (combo.base - combo_how[0].base).abs() < 0.01,
+      msg="GPT-6 combination baseline \{combo.base} vs \{combo_how[0].text} baseline \{combo_how[0].base} at scale \{scale}",
     )
 
     let t = model_pop("newchat-providers-model", font_scale=scale)
@@ -804,8 +811,8 @@ test "a model row's usualText sits on the middle of its model name's line" {
     let usual = runs.filter(fn(r) { r.x0 > astra.x1 && (r.top - astra.top).abs() < 10.0 && r.text.contains("Codex") })
     assert_true(!usual.is_empty(), msg="missing usualText beside GPT-6 Astra at scale \{scale}: \{Repr(runs)}")
     assert_true(
-      ((astra.top + astra.bottom) / 2.0 - (usual[0].top + usual[0].bottom) / 2.0).abs() < 0.5,
-      msg="GPT-6 Astra \{Repr(astra)} vs \{Repr(usual[0])} at scale \{scale}",
+      (astra.base - usual[0].base).abs() < 0.01,
+      msg="GPT-6 Astra baseline \{astra.base} vs \{usual[0].text} baseline \{usual[0].base} at scale \{scale}",
     )
   }
 }
