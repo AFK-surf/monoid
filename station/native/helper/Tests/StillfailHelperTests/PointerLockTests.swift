@@ -150,14 +150,103 @@ func aMoveBeforeHidingCountsForNothingWhenHeldStillAfter() {
   }
 }
 
+/// `CGCursorIsVisible` of macOS 27.2 as SkyLight has it, at `cgBase`.
+private let cgBase = 0x1_9931_8b2c
+private let cg: [UInt32] = [
+  0xd503237f, 0xa9bf7bfd, 0x910003fd, 0x97f3d4b5, 0xb40000c0, 0xf9400008, 0x3940bd08, 0x36000068, 0x52800000, 0x14000008,
+  0x97f3d4ae, 0xb40000a0, 0xf9400008, 0x3940c108, 0x52000100, 0x14000002, 0x52800020, 0xa8c17bfd, 0xd65f0fff,
+]
+private let cgLayout = PointerLockWatch.CursorScoreboardLayout(target: 0x1_9900_de0c, appOffset: 0x2f, typingOffset: 0x30)
+
+private func decode(_ insns: [UInt32], base: Int = cgBase) -> PointerLockWatch.CursorScoreboardLayout? {
+  PointerLockWatch.decodeCursorScoreboard(instructions: insns, base: base)
+}
+
+/// `cg` with instruction `i` replaced.
+private func cgWith(_ i: Int, _ insn: UInt32) -> [UInt32] {
+  var c = cg
+  c[i] = insn
+  return c
+}
+
 @Test
-func sampleReadsCursorVisibilityAndTypingObscureState() {
-  if let sample = PointerLockWatch.sample() {
-    // When hidden on macOS, SkyLight's scoreboard says whether an app hid it (true) or typing obscured it (false).
-    if sample.hidden {
-      #expect(sample.appHidden != nil)
+func cgCursorIsVisibleOfMacOS27DecodesToItsScoreboard() {
+  #expect(decode(cg) == cgLayout)
+  // what follows the return is never read
+  #expect(decode(cg + [0x9400_0010, 0x3940_0000, 0x3940_0000]) == cgLayout)
+}
+
+@Test
+func anotherCallBeforeTheScoreboardsIsNotDecoded() {
+  // `bl` in place of `mov x29, sp`, before the first `bl CGSScoreboard`
+  #expect(decode(cgWith(2, 0x9400_0010)) == nil)
+  // or put in before it, everything moved on
+  var more = cg
+  more.insert(0x9400_0010, at: 3)
+  #expect(decode(more) == nil)
+}
+
+@Test
+func callsToTwoPlacesAreNotDecoded() {
+  // the second `bl` one instruction further
+  #expect(decode(cgWith(10, 0x97f3_d4af)) == nil)
+}
+
+@Test
+func aByteNotReadThroughTheLoadedPointerIsNotDecoded() {
+  // `ldrb w8, [x9, #0x2f]` after `ldr x8, [x0]`
+  #expect(decode(cgWith(6, 0x3940_bd28)) == nil)
+  // `ldrb w8, [x9, #0x30]` after `ldr x8, [x0]`
+  #expect(decode(cgWith(13, 0x3940_c128)) == nil)
+  // `ldr xzr, [x0]`
+  #expect(decode(cgWith(5, 0xf940_001f)) == nil)
+}
+
+@Test
+func anotherTestOrResultIsNotDecoded() {
+  // `tbnz w8, #0` is as good as `tbz`
+  #expect(decode(cgWith(7, 0x3700_0068)) == cgLayout)
+  // `tbz w8, #1`
+  #expect(decode(cgWith(7, 0x3608_0068)) == nil)
+  // `tbz w9, #0`
+  #expect(decode(cgWith(7, 0x3600_0069)) == nil)
+  // `eor w0, w8, #2`
+  #expect(decode(cgWith(14, 0x521f_0100)) == nil)
+  // `eor w0, w9, #1`
+  #expect(decode(cgWith(14, 0x5200_0120)) == nil)
+  // `cbnz x0` for `cbz x0`
+  #expect(decode(cgWith(4, 0xb50000c0)) == nil)
+}
+
+@Test
+func oneByteForBothIsNotDecoded() {
+  // `ldrb w8, [x8, #0x2f]` both times
+  #expect(decode(cgWith(13, 0x3940_bd08)) == nil)
+}
+
+@Test
+func aReturnBeforeTheSequenceEndsIsNotDecoded() {
+  #expect(decode(cgWith(12, 0xd65f_03c0)) == nil)
+  #expect(decode(cgWith(14, 0xd65f_0fff)) == nil)
+  #expect(decode(cgWith(8, 0xd65f_0bff)) == nil)
+  // no return at all
+  #expect(decode(Array(cg.dropLast())) == nil)
+}
+
+@Test
+func anyRegisterIsDecodedNotX8Alone() {
+  // `ldr x9, [x0]`, `ldrb w9, [x9, #off]`, `tbz w9, #0`, `eor w0, w9, #1`
+  let x9 = cg.enumerated().map { i, insn -> UInt32 in
+    switch i {
+    case 5, 12: return 0xf940_0009
+    case 6: return 0x3940_bd29
+    case 7: return 0x3600_0069
+    case 13: return 0x3940_c129
+    case 14: return 0x5200_0120
+    default: return insn
     }
   }
+  #expect(decode(x9) == cgLayout)
 }
 
 @Test

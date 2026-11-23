@@ -149,41 +149,82 @@ struct RemoteMoveDetector {
 /// A view's watch of the pointer: sampled every 50 ms on the main thread while the view lasts, said as it changes.
 final class PointerLockWatch {
   static let interval = 0.05
-  /// What `CGCursorIsVisible` reads in SkyLight's shared scoreboard: the first byte is 1 while an app hides the
-  /// pointer (`NSCursor.hide`, `CGDisplayHideCursor`), the second while typing obscures it until a physical mouse
-  /// moves (`NSCursor.setHiddenUntilMouseMoves(true)`, which posted `CGEvent`s never clear). Decoded from
-  /// `CGCursorIsVisible` itself so its offsets follow the system's; nil where `CGCursorIsVisible` is not had.
+  /// Where `CGCursorIsVisible` reads SkyLight's shared scoreboard: `CGSScoreboard`'s address, the byte that is 1 while
+  /// an app hides the pointer (`NSCursor.hide`, `CGDisplayHideCursor`), and the one that is 1 while typing obscures it
+  /// until a physical mouse moves (`NSCursor.setHiddenUntilMouseMoves(true)`, which posted `CGEvent`s never clear).
+  struct CursorScoreboardLayout: Equatable {
+    let target: Int
+    let appOffset: Int
+    let typingOffset: Int
+  }
+
+  /// Decodes SkyLight's `CGCursorIsVisible` arm64 sequence:
+  ///   bl CGSScoreboard; cbz x0, ...; ldr Xn, [x0]; ldrb Wt, [Xn, #appOff]; tbz/tbnz Wt, #0, ...
+  ///   bl CGSScoreboard; cbz x0, ...; ldr Xm, [x0]; ldrb Wu, [Xm, #typingOff]; eor w0, Wu, #1
+  /// Returns nil if any instruction deviates so callers fall back to `CGCursorIsVisible()` alone.
+  static func decodeCursorScoreboard(instructions: [UInt32], base: Int) -> CursorScoreboardLayout? {
+    // What comes before the first return, at most 24 instructions; none returned: not this function.
+    let scanned = instructions.prefix(24)
+    guard let end = scanned.firstIndex(where: { $0 == 0xd65f_03c0 || $0 == 0xd65f_0bff || $0 == 0xd65f_0fff }) else { return nil }
+    let body = Array(scanned[..<end])
+    var calls: [(index: Int, target: Int)] = []
+    var loads = 0
+    for (i, insn) in body.enumerated() {
+      if (insn & 0xfc00_0000) == 0x9400_0000 {
+        let imm = Int32(bitPattern: (insn & 0x03ff_ffff) << 6) >> 4
+        calls.append((i, base + i * 4 + Int(imm)))
+      }
+      if (insn & 0xffc0_0000) == 0x3940_0000 { loads += 1 }
+    }
+    guard calls.count == 2, calls[0].target == calls[1].target, loads == 2 else { return nil }
+    // `bl` then `cbz x0`, `ldr Xn, [x0]`, `ldrb Wt, [Xn, #off]`: Wt and off, or nil.
+    func load(after i: Int) -> (rt: UInt32, offset: Int)? {
+      guard i + 4 < body.count else { return nil }
+      guard (body[i + 1] & 0xff00_001f) == 0xb400_0000 else { return nil }
+      guard (body[i + 2] & 0xffff_ffe0) == 0xf940_0000 else { return nil }
+      let reg = body[i + 2] & 0x1f
+      guard reg != 31 else { return nil }
+      let ldrb = body[i + 3]
+      guard (ldrb & 0xffc0_0000) == 0x3940_0000, ((ldrb >> 5) & 0x1f) == reg else { return nil }
+      return (ldrb & 0x1f, Int((ldrb >> 10) & 0xfff))
+    }
+    let i0 = calls[0].index, i1 = calls[1].index
+    guard i1 > i0 + 4, let app = load(after: i0), let typing = load(after: i1) else { return nil }
+    let test = body[i0 + 4] & 0xfff8_001f
+    guard test == (0x3600_0000 | app.rt) || test == (0x3700_0000 | app.rt) else { return nil }
+    guard body[i1 + 4] == (0x5200_0000 | (typing.rt << 5)) else { return nil }
+    guard app.offset != typing.offset else { return nil }
+    return CursorScoreboardLayout(target: calls[0].target, appOffset: app.offset, typingOffset: typing.offset)
+  }
+
+  /// Whether the pointer is hidden and why, read where `CGCursorIsVisible` reads it so its offsets follow the
+  /// system's; nil where `CGCursorIsVisible` is not had.
   private static let cursorState: (() -> (hidden: Bool, appHidden: Bool?))? = {
     guard let f = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGCursorIsVisible") else { return nil }
     let visible = unsafeBitCast(f, to: (@convention(c) () -> Int32).self)
     #if arch(arm64)
-    let base = Int(bitPattern: f)
+    // Only for a plain arm64 build (`scripts/native.ts --arch arm64`), not arm64e: its pointers here carry no PAC.
     let insns = UnsafePointer<UInt32>(OpaquePointer(f))
-    var target: Int?
-    var offsets: [Int] = []
-    for i in 0..<20 {
-      let insn = insns[i]
-      if target == nil, (insn & 0xfc00_0000) == 0x9400_0000 {
-        let imm = Int32(bitPattern: (insn & 0x03ff_ffff) << 6) >> 4
-        target = base + i * 4 + Int(imm)
-      }
-      if (insn & 0xffc0_0000) == 0x3940_0000 {
-        offsets.append(Int((insn >> 10) & 0xfff))
-      }
-      if insn == 0xd65f_03c0 || insn == 0xd65f_0fff { break }
-    }
-    if let target, offsets.count == 2, offsets[0] != offsets[1],
-      let p = UnsafeRawPointer(bitPattern: target)
+    let read = (0..<24).map { insns[$0] }
+    if let layout = decodeCursorScoreboard(instructions: read, base: Int(bitPattern: f)),
+      let p = UnsafeRawPointer(bitPattern: layout.target)
     {
-      let scoreboard = unsafeBitCast(p, to: (@convention(c) () -> UnsafePointer<UnsafePointer<UInt8>>?).self)
-      let appOff = offsets[0], typingOff = offsets[1]
-      if scoreboard() != nil {
-        return {
-          guard let sb = scoreboard() else { return (visible() == 0, nil) }
-          let sh = sb.pointee
-          let byApp = (sh[appOff] & 1) != 0
-          let byTyping = (sh[typingOff] & 1) != 0
-          return (byApp || byTyping, byApp ? true : (byTyping ? false : nil))
+      // The call's target must be `CGSScoreboard` itself, in SkyLight beside `CGCursorIsVisible`.
+      var fnInfo = Dl_info()
+      var targetInfo = Dl_info()
+      if dladdr(f, &fnInfo) != 0, dladdr(p, &targetInfo) != 0,
+        fnInfo.dli_fbase != nil, targetInfo.dli_fbase == fnInfo.dli_fbase,
+        targetInfo.dli_saddr.map({ UnsafeRawPointer($0) }) == p,
+        targetInfo.dli_sname.map({ String(cString: $0) }) == "CGSScoreboard"
+      {
+        let scoreboard = unsafeBitCast(p, to: (@convention(c) () -> UnsafePointer<UnsafePointer<UInt8>?>?).self)
+        if let sb = scoreboard(), sb.pointee != nil {
+          return {
+            guard let sb = scoreboard(), let sh = sb.pointee else { return (visible() == 0, nil) }
+            let byApp = (sh[layout.appOffset] & 1) != 0
+            let byTyping = (sh[layout.typingOffset] & 1) != 0
+            return (byApp || byTyping, byApp ? true : (byTyping ? false : nil))
+          }
         }
       }
     }
