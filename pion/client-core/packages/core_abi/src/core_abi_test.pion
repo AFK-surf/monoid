@@ -23,3 +23,11 @@ test "BridgeConfig and AbiFrame encoding match core_api.h wire contract" {
     None => debug_assert(false, "expected bytes")
   }
 }
+
+test "wake_delay_ms turns an absolute due time into the native wake driver's relative delay" {
+  let now = 1795447000000.to_int64()
+  debug_assert(wake_delay_ms(None, now) < 0.to_int64(), "no timer sleeps")
+  debug_assert(wake_delay_ms(Some(1795447000040.to_int64()), now) == 40.to_int64(), "due in 40 ms")
+  debug_assert(wake_delay_ms(Some(now), now) == 0.to_int64(), "due now")
+  debug_assert(wake_delay_ms(Some(1795446999990.to_int64()), now) == 0.to_int64(), "overdue fires now")
+}

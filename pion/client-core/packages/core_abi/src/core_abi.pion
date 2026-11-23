@@ -32,3 +32,15 @@ pub fn encode_config_json(cfg : BridgeConfig) -> String {
     ("beta", base_codec::json_bool(cfg.beta)),
   ]))
 }
+
+// Return value of the native wake driver (`mb_core_register_wake` in `native/core_pion.c`): a
+// relative delay in milliseconds. `-1` sleeps until the next message, `mb_core_wake()` or stop;
+// `0` runs the wake driver again at once; a positive value runs it again after that many
+// milliseconds. `next_at_ms` is when the earliest timer is due and `now_ms` the current time, both
+// on the same clock as `effect::Runtime` timers (absolute ms, e.g. epoch); `None` means no timer.
+pub fn wake_delay_ms(next_at_ms : Option[Int64], now_ms : Int64) -> Int64 {
+  match next_at_ms {
+    None => 0.to_int64() - 1.to_int64()
+    Some(at) => if at <= now_ms { 0.to_int64() } else { at - now_ms }
+  }
+}
