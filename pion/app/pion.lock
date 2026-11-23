@@ -9,11 +9,25 @@ rev = "bc974308dea0484bf571a03dbd68bb158577e8e0"
 subdir = "packages/base64"
 
 [[package]]
+name = "codec"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/codec"
+
+[[package]]
 name = "crypto"
 git = "https://github.com/AFK-surf/pion-packages.git"
 ref = "tag:crypto-v0.2.0"
 rev = "b14e5abe6451c18c887e6b65574b327e88655ebb"
 subdir = "packages/crypto"
+
+[[package]]
+name = "dmath"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/dmath"
 
 [[package]]
 name = "effect"
@@ -23,11 +37,46 @@ rev = "2d0d96166d60d67d5fb69e8f34a84bcdbbaee6b8"
 subdir = "packages/effect"
 
 [[package]]
+name = "film"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/film"
+
+[[package]]
 name = "flate"
 git = "https://github.com/AFK-surf/pion-packages.git"
 ref = "tag:flate-v0.1.0"
 rev = "4ce48156c89247768863a28d5d64f2df2feabee0"
 subdir = "packages/flate"
+
+[[package]]
+name = "flex"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/flex"
+
+[[package]]
+name = "font"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/font"
+
+[[package]]
+name = "headless"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/headless"
+
+[[package]]
+name = "host"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/host"
 
 [[package]]
 name = "http1"
@@ -37,6 +86,13 @@ rev = "7d169228bc3a43dc801a65655f70e9ccd96411ec"
 subdir = "packages/http1"
 
 [[package]]
+name = "icons"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/icons"
+
+[[package]]
 name = "json5"
 git = "https://github.com/AFK-surf/pion-packages.git"
 ref = "tag:json5-v0.1.0"
@@ -44,11 +100,81 @@ rev = "45bc3e471b522dce1e8461a3b5e6e6a1f97ca6b0"
 subdir = "packages/json5"
 
 [[package]]
+name = "kit"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/kit"
+
+[[package]]
+name = "lg"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/lg"
+
+[[package]]
+name = "markdown"
+git = "https://github.com/AFK-surf/pion-packages.git"
+ref = "tag:markdown-v0.2.1"
+rev = "f6c35c646a2a8115792a5c55966c2c198098f633"
+subdir = "packages/markdown"
+
+[[package]]
+name = "motion"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/motion"
+
+[[package]]
+name = "paint"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/paint"
+
+[[package]]
+name = "pixels"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/pixels"
+
+[[package]]
+name = "render"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/render"
+
+[[package]]
+name = "shape"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/shape"
+
+[[package]]
 name = "signals"
 git = "https://github.com/AFK-surf/invar.git"
-ref = "rev:ae44931399a65d6ce68c59544216e359cc29b8db"
-rev = "ae44931399a65d6ce68c59544216e359cc29b8db"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
 subdir = "packages/signals"
+
+[[package]]
+name = "svg"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/svg"
+
+[[package]]
+name = "text"
+git = "https://github.com/AFK-surf/invar.git"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+subdir = "packages/text"
 
 [[package]]
 name = "time"
@@ -60,8 +186,8 @@ subdir = "packages/time"
 [[package]]
 name = "ui"
 git = "https://github.com/AFK-surf/invar.git"
-ref = "rev:ae44931399a65d6ce68c59544216e359cc29b8db"
-rev = "ae44931399a65d6ce68c59544216e359cc29b8db"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
 subdir = "packages/ui"
 
 [[package]]
@@ -74,6 +200,6 @@ subdir = "packages/url"
 [[package]]
 name = "view"
 git = "https://github.com/AFK-surf/invar.git"
-ref = "rev:ae44931399a65d6ce68c59544216e359cc29b8db"
-rev = "ae44931399a65d6ce68c59544216e359cc29b8db"
+ref = "rev:368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
+rev = "368ff1b5652ed692786d34afffdfc9f1c0a4cdce"
 subdir = "packages/view"

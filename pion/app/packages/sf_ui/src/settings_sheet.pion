@@ -1,0 +1,548 @@
+// Apple Inset Grouped Settings / Safe Mode / Vault Approvals / Models & Profiles / Fleet Sheet
+// and lightweight Search Sheet.
+// Strictly follows Apple HIG (macOS Tahoe / iOS 26) & `packages/lg`:
+// - Centered desktop modal (no mobile grabber bar on wide viewports); bottom sheet with grabber on narrow
+// - Single-layer `lg::liquid_sheet_surface_decorate` shell + `surface().grouped_bg` inner canvas
+// - Full-width `<lg::Segmented flat=true>` (zero nested glass)
+// - `<lg::SurfaceSection>` Apple Inset Grouped rows with 0.5pt hairline dividers (zero dangling dividers)
+// - Official Apple capsule buttons (`<lg::Button flat ...>`) — zero hand-rolled square buttons
+// - Unified Safe Mode (NEVER mentions 「个人锁」!) and zero secret/token leakage in `profiles`
+
+import "app_state"
+import "headless"
+import "icons"
+import "lg"
+import "motion"
+import "signals"
+import "ui"
+import "view"
+
+fn HairlineSep(parent : view::View) -> view::View {
+  let _ = parent.box(fn(sep : view::View) -> Unit {
+    let _ = sep
+    .padding(view::Live::Is((16.0, 0.0, 0.0, 0.0)))
+    .rigid()
+    let _ = sep.box(fn(line : view::View) -> Unit {
+      let _ = line
+      .height(view::Live::Is(Some(lg::hairline_w)))
+      .ground(view::Live::By(fn() { lg::surface().separator }))
+    })
+  })
+  parent
+}
+
+fn InsetKeyValueRow(
+  parent : view::View,
+  label~ : String,
+  value~ : String = "",
+  value_by? : () -> String,
+  value_color_by? : () -> Int64,
+) -> view::View {
+  let val_live = match value_by {
+    Some(f) => view::Live::By(f)
+    None => view::Live::Is(value)
+  }
+  let ink_live = match value_color_by {
+    Some(f) => view::Live::By(f)
+    None => view::Live::By(fn() { lg::surface().ink_secondary })
+  }
+  let _ = parent.box(fn(row : view::View) -> Unit {
+    let _ = row
+    .row(view::Live::Is(true))
+    .lines_up(view::Live::Is(Some(view::Along::Middle)))
+    .lies_along(view::Live::Is(view::Lies::Between))
+    .min_height(view::Live::Is(Some(38.0)))
+    .padding(view::Live::Is((16.0, 8.0, 16.0, 8.0)))
+    .gap(view::Live::Is(12.0))
+    let _ = row.box(fn(l : view::View) -> Unit {
+      let _ = l
+      .words(view::Live::Is(label), look=lg::words_at(14.0, weight=400, lines=1))
+      .ink(view::Live::By(fn() { lg::surface().ink }))
+    })
+    let _ = row.box(fn(v : view::View) -> Unit {
+      let _ = v
+      .words(val_live, look=lg::words_at(13.5, weight=500, lines=1))
+      .ink(ink_live)
+    })
+  })
+  parent
+}
+
+fn VaultApprovalFooter(
+  parent : view::View,
+  ctrl~ : app_state::AppController,
+  req_id~ : String,
+) -> view::View {
+  // Reverse-wrapped official Apple capsule buttons (`r = h/2`)
+  let _ = parent.box(fn(footer : view::View) -> Unit {
+    let _ = footer
+    .row(view::Live::Is(true))
+    .wraps(view::Live::Is(Some(8.0)), reverse=true)
+    .lies_along(view::Live::Is(view::Lies::End))
+    .gap(view::Live::Is(8.0))
+    .min_width(view::Live::Is(Some(0.0)))
+    let _ = <lg::Button
+      in={footer}
+      label="拒绝"
+      flat
+      height={34.0}
+      pad_x={16.0}
+      surface={lg::surface().danger_bg}
+      on_press=>{ let _ = ctrl.deny_vault(req_id) }
+    >
+      <ui::Text size={13.5} weight={500} lines={1} color_by=>{lg::surface().danger} text="拒绝" />
+    </lg::Button>
+    let _ = <lg::Button
+      in={footer}
+      label="批准"
+      flat
+      prominent
+      height={34.0}
+      pad_x={18.0}
+      on_press=>{ let _ = ctrl.approve_vault(req_id, grant_scope="once") }
+    />
+  })
+  parent
+}
+
+fn VaultPendingRows(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  let _ = parent.box(fn(list_box : view::View) -> Unit {
+    let _ = list_box.min_width(view::Live::Is(Some(0.0)))
+    list_box.each(
+      fn() -> Array[String] {
+        let ps = ctrl.vault_approvals_sig.get().pending
+        let ks : Array[String] = []
+        for i in 0..<ps.length() {
+          ks.push(ps[i].id)
+        }
+        ks
+      },
+      fn(k : String) -> String { k },
+      fn(row_slot : view::View, id_sig : signals::Signal[String]) -> Unit {
+        let req_id = id_sig.untracked()
+        let ps = ctrl.vault_approvals_sig.untracked().pending
+        let mut idx = -1
+        for i in 0..<ps.length() {
+          if ps[i].id == req_id {
+            idx = i
+            break
+          }
+        }
+        if idx < 0 {
+          return
+        }
+        let req = ps[idx]
+        let hosts_str = {
+          let sb = StringBuilder::new()
+          for hi in 0..<req.hosts.length() {
+            if hi > 0 {
+              sb.write_string(", ")
+            }
+            sb.write_string(req.hosts[hi])
+          }
+          if req.hosts.length() > 0 { sb.to_string() } else { "仅限本机代理" }
+        }
+        let mode_text = if req.mode == "proxy" { "代理转发" } else { req.mode }
+        if idx > 0 {
+          let _ = HairlineSep(row_slot)
+        }
+        let _ = row_slot.box(fn(item : view::View) -> Unit {
+          let _ = item
+          .padding(view::Live::Is((16.0, 12.0, 16.0, 12.0)))
+          .gap(view::Live::Is(6.0))
+          .min_width(view::Live::Is(Some(0.0)))
+
+          let _ = item.box(fn(hdr : view::View) -> Unit {
+            let _ = hdr
+            .row(view::Live::Is(true))
+            .lines_up(view::Live::Is(Some(view::Along::Middle)))
+            .gap(view::Live::Is(8.0))
+            let _ = icons::icon_node(hdr, "lock", size=14.0, ink=fn() { lg::surface().warning })
+            let _ = hdr.box(fn(ttl : view::View) -> Unit {
+              let _ = ttl
+              .grow(view::Live::Is(1.0))
+              .basis(view::Live::Is(Some(0.0)))
+              .shrink(view::Live::Is(1.0))
+              .min_width(view::Live::Is(Some(0.0)))
+              .words(view::Live::Is(req.item_name), look=lg::words_at(14.0, weight=600, lines=1))
+              .ink(view::Live::By(fn() { lg::surface().ink }))
+            })
+            let _ = hdr.box(fn(md : view::View) -> Unit {
+              let _ = md
+              .shrink(view::Live::Is(0.0))
+              .words(view::Live::Is(mode_text), look=lg::words_at(12.0, weight=400, lines=1))
+              .ink(view::Live::By(fn() { lg::surface().ink_tertiary }))
+            })
+          })
+
+          let _ = item.box(fn(rsn : view::View) -> Unit {
+            let _ = rsn
+            .min_width(view::Live::Is(Some(0.0)))
+            .words(view::Live::Is(req.reason), look=lg::words_at(13.0, weight=400, wrap=true))
+            .ink(view::Live::By(fn() { lg::surface().ink_secondary }))
+          })
+
+          let _ = item.box(fn(h_row : view::View) -> Unit {
+            let _ = h_row
+            .row(view::Live::Is(true))
+            .lines_up(view::Live::Is(Some(view::Along::Middle)))
+            .gap(view::Live::Is(6.0))
+            let _ = icons::icon_node(h_row, "globe", size=12.5, ink=fn() { lg::surface().ink_tertiary })
+            let _ = h_row.box(fn(ht : view::View) -> Unit {
+              let _ = ht
+              .words(view::Live::Is("允许域名：" + hosts_str), look=lg::words_at(12.0, weight=400, lines=1))
+              .ink(view::Live::By(fn() { lg::surface().ink_tertiary }))
+            })
+          })
+
+          let _ = VaultApprovalFooter(item, ctrl=ctrl, req_id=req_id)
+        })
+      },
+      at_once=true,
+    )
+  })
+  parent
+}
+
+fn SafeModeVaultTab(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  <ui::Col in={parent} gap={18.0} min_width={0.0}>
+    // Apple Inset Grouped Safe Mode Section (zero colorful badge soup, zero 「个人锁」!)
+    <lg::SurfaceSection header="安全模式" radius={14.0}>
+      <InsetKeyValueRow
+        label="安全模式"
+        value_by=>{
+          if ctrl.safe_mode_sig.get().locked { "已开启" } else { "未开启" }
+        }
+        value_color_by=>{
+          if ctrl.safe_mode_sig.get().locked { lg::surface().positive } else { lg::surface().ink_secondary }
+        }
+      />
+      <HairlineSep />
+      <InsetKeyValueRow
+        label="本机状态"
+        value_by=>{
+          if ctrl.safe_mode_sig.get().me.confirmed { "受信任设备" } else { "等待批准" }
+        }
+      />
+      <HairlineSep />
+      <InsetKeyValueRow
+        label="签名设备"
+        value_by=>{"\{ctrl.safe_mode_sig.get().signers} 台"}
+      />
+      <HairlineSep />
+      <InsetKeyValueRow
+        label="受保护站点"
+        value_by=>{"\{ctrl.safe_mode_sig.get().protected_stations} 台"}
+      />
+      <HairlineSep />
+      <InsetKeyValueRow
+        label="密钥库"
+        value_by=>{
+          if !ctrl.vault_approvals_sig.get().plain_mode { "端到端加密" } else { "明文模式" }
+        }
+      />
+    </lg::SurfaceSection>
+
+    // Apple Inset Grouped Vault Approval Queue Section
+    <lg::SurfaceSection
+      header_by=>{
+        let n = ctrl.vault_approvals_sig.get().pending.length()
+        if n > 0 { "密钥使用审批（\{n} 项待审批）" } else { "密钥使用审批" }
+      }
+      radius={14.0}
+    >
+      <ui::Show when=>{ctrl.vault_approvals_sig.get().pending.length() == 0} at_once>
+        <ui::Row pad_x={16.0} pad_y={14.0} align={.Middle} gap={8.0}>
+          <icons::Icon name="check-circle" size={15.0} color_by=>{lg::surface().positive} />
+          <ui::Text size={13.5} color_by=>{lg::surface().ink_secondary} text="当前没有待处理的密钥审批请求" />
+        </ui::Row>
+      </ui::Show>
+      <VaultPendingRows ctrl={ctrl} />
+    </lg::SurfaceSection>
+  </ui::Col>
+}
+
+fn ModelsProfilesTab(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  let profs = ctrl.profiles_sig.untracked()
+  let ms = ctrl.models_sig.untracked()
+  <ui::Col in={parent} gap={18.0} min_width={0.0}>
+    <lg::SurfaceSection header="已连接账号与额度（脱敏）" radius={14.0}>
+      for i in 0..<profs.length() {
+        let p = profs[i]
+        if i > 0 {
+          <HairlineSep />
+        }
+        <ui::Col pad_x={16.0} pad_y={12.0} gap={6.0} min_width={0.0}>
+          <ui::Row align={.Middle} gap={8.0} rigid>
+            <ui::Text size={14.0} weight={500} color_by=>{lg::surface().ink} text={p.title} />
+            <ui::Text size={12.0} color_by=>{lg::surface().ink_tertiary} text={p.group_title} />
+            <ui::Spacer />
+            <ui::Text
+              size={12.5}
+              weight={500}
+              color_by=>{if p.usable { lg::surface().positive } else { lg::surface().warning }}
+              text={"剩余 \{p.quota_left_pct}%"}
+            />
+          </ui::Row>
+          <lg::ProgressBar value={p.quota_left_pct.to_double() / 100.0} label={p.title} />
+        </ui::Col>
+      }
+    </lg::SurfaceSection>
+
+    <lg::SurfaceSection header="可用模型" radius={14.0}>
+      for i in 0..<ms.length() {
+        let m = ms[i]
+        if i > 0 {
+          <HairlineSep />
+        }
+        <ui::Row pad_x={16.0} pad_y={11.0} align={.Middle} gap={8.0} rigid>
+          <icons::Icon
+            name={if m.starred { "star-filled" } else { "star" }}
+            size={14.0}
+            color_by=>{if m.starred { lg::surface().warning } else { lg::surface().ink_tertiary }}
+          />
+          <ui::Text size={14.0} weight={400} color_by=>{lg::surface().ink} text={m.name} />
+          <ui::Spacer />
+          <ui::Text
+            size={12.5}
+            color_by=>{if m.availability == "here" { lg::surface().positive } else { lg::surface().ink_tertiary }}
+            text={if m.availability == "here" { "在线可用" } else { "离线" }}
+          />
+        </ui::Row>
+      }
+    </lg::SurfaceSection>
+  </ui::Col>
+}
+
+fn FleetStationsTab(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  let fleet = ctrl.fleet_summary_sig.untracked()
+  let sts = ctrl.stations_sig.untracked()
+  <ui::Col in={parent} gap={18.0} min_width={0.0}>
+    <lg::SurfaceSection header="站群运行概览" radius={14.0}>
+      <InsetKeyValueRow label="在线设备" value={fleet.where_text} value_color_by=>{lg::surface().positive} />
+      <HairlineSep />
+      <InsetKeyValueRow label="运行中会话" value={fleet.chats_text} />
+      if fleet.tiles.length() > 0 {
+        <HairlineSep />
+        <InsetKeyValueRow label="近 7 天折合费用" value={fleet.tiles[0].value} />
+      }
+    </lg::SurfaceSection>
+
+    <lg::SurfaceSection header="工作区站点" radius={14.0}>
+      for i in 0..<sts.length() {
+        let st = sts[i]
+        if i > 0 {
+          <HairlineSep />
+        }
+        <ui::Col pad_x={16.0} pad_y={12.0} gap={3.0} min_width={0.0}>
+          <ui::Row align={.Middle} gap={8.0} rigid>
+            <ui::Text size={14.0} weight={500} color_by=>{lg::surface().ink} text={st.name} />
+            if st.version.length() > 0 {
+              <ui::Text size={12.0} color_by=>{lg::surface().ink_tertiary} text={st.version} />
+            }
+            <ui::Spacer />
+            <ui::Text
+              size={12.5}
+              weight={500}
+              color_by=>{if st.online { lg::surface().positive } else { lg::surface().warning }}
+              text={st.state_text}
+            />
+          </ui::Row>
+          <ui::Text size={12.5} color_by=>{lg::surface().ink_secondary} text={st.summary} />
+        </ui::Col>
+      }
+    </lg::SurfaceSection>
+  </ui::Col>
+}
+
+fn SheetCloseBtn(parent : view::View, on_close~ : () -> Unit) -> view::View {
+  let _ = headless::button(
+    parent,
+    fn() { "关闭" },
+    fn(_e) -> Unit { on_close() },
+    fn(b : view::View, btn : headless::Button) -> Unit {
+      let hover_t = motion::hover_fade(b, fn() { btn.hovered() })
+      let _ = b
+      .width(view::Live::Is(Some(36.0)))
+      .height(view::Live::Is(Some(36.0)))
+      .shrink(view::Live::Is(0.0))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .lies_along(view::Live::Is(view::Lies::Middle))
+      let _ = b.box(fn(circle : view::View) -> Unit {
+        let _ = circle
+        .width(view::Live::Is(Some(28.0)))
+        .height(view::Live::Is(Some(28.0)))
+        .radius(view::Live::Is(14.0))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::Is(view::Lies::Middle))
+        .ground(view::Live::By(fn() {
+          let base = if lg::is_dark() { 0xFFFFFF18L } else { 0x00000010L }
+          if hover_t() > 0.001 { lg::over(base, lg::alpha(lg::surface().row_hover, hover_t())) } else { base }
+        }))
+        let _ = icons::icon_node(circle, "close", size=14.0, ink=fn() { lg::surface().ink_secondary })
+      })
+    },
+  )
+  parent
+}
+
+/// Mount the Apple Inset Grouped Workspace Settings / Safe Mode / Vault Approvals Modal.
+/// Centered modal without mobile grabber on wide desktop; bottom sheet with grabber on narrow.
+pub fn render_settings_sheet(parent : view::View, ctrl : app_state::AppController) -> Unit {
+  let open_fn = fn() -> Bool { ctrl.sheet_sig.get() == app_state::ActiveSheet::Settings }
+  let on_close = fn() -> Unit { ctrl.set_sheet(app_state::ActiveSheet::None) }
+
+  let _ = parent.box(fn(host : view::View) -> Unit {
+    let _ = host.over(view::Live::Is(true)).points(view::Live::By(open_fn))
+    host.show(
+      open_fn,
+      fn(overlay : view::View) -> Unit {
+        let is_wide = fn() -> Bool {
+          let ww = overlay.window_w()
+          ww <= 0.0 || ww >= 760.0
+        }
+        let _ = overlay
+        .over(view::Live::Is(true))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::By(fn() { if is_wide() { view::Lies::Middle } else { view::Lies::End } }))
+
+        // Scrim backdrop (dismissal handled by `headless::dialog`, never a competing pressable button)
+        let _ = overlay.box(fn(scrim : view::View) -> Unit {
+          let _ = scrim
+          .over(view::Live::Is(true))
+          .ground(view::Live::By(fn() { lg::colors().scrim }))
+        })
+
+        // Modal dialog surface (official `lg::liquid_sheet_surface_decorate` + `grouped_bg` inner canvas)
+        let _ = headless::dialog(
+          overlay,
+          fn() { "工作区设置" },
+          open_fn,
+          on_close,
+          fn(dlg : view::View, _d : headless::Dialog) -> Unit {
+            let _ = dlg
+            .width(view::Live::By(fn() { if is_wide() { Some(600.0) } else { Some(overlay.window_w() - 16.0) } }))
+            .max_width(view::Live::Is(Some(600.0)), within=true)
+            .max_height(view::Live::Is(Some(720.0)))
+            .clips(view::Live::Is(true))
+            .ground(view::Live::By(fn() { lg::surface().grouped_bg }))
+            let _ = lg::liquid_sheet_surface_decorate(
+              dlg,
+              radius=lg::r_sheet,
+              active=open_fn,
+              solid=fn() { lg::surface().grouped_bg },
+            )
+
+            // Mobile-only top grabber (strictly omitted on desktop >= 760pt)
+            dlg.show(
+              fn() { !is_wide() },
+              fn(grab_wrap : view::View) -> Unit {
+                let _ = grab_wrap
+                .padding(view::Live::Is((0.0, 8.0, 0.0, 0.0)))
+                .lines_up(view::Live::Is(Some(view::Along::Middle)))
+                .rigid()
+                let _ = grab_wrap.box(fn(bar : view::View) -> Unit {
+                  let _ = bar
+                  .width(view::Live::Is(Some(36.0)))
+                  .height(view::Live::Is(Some(4.5)))
+                  .radius(view::Live::Is(2.25))
+                  .ground(view::Live::By(fn() { lg::surface().separator_strong }))
+                })
+              },
+              at_once=true,
+            )
+
+            // Header bar + full-width flat Segmented
+            let _ = <ui::Col in={dlg} pad_x={16.0} pad_y={14.0} gap={12.0} rigid>
+              <ui::Row align={.Middle} gap={10.0} rigid>
+                <ui::Col grow={1.0} min_width={0.0} gap={2.0}>
+                  <ui::Text size={18.0} weight={600} lines={1} color_by=>{lg::surface().ink} text="工作区设置" />
+                  <ui::Text size={12.5} lines={1} color_by=>{lg::surface().ink_secondary} text_by=>{ctrl.workspace_name_sig.get()} />
+                </ui::Col>
+                <SheetCloseBtn on_close={on_close} />
+              </ui::Row>
+              <lg::Segmented
+                flat
+                labels={["安全模式与密钥", "模型与账号", "站群概览"]}
+                selected_by=>{ctrl.settings_tab_sig.get()}
+                on_select={fn(i : Int) -> Unit { ctrl.set_settings_tab(i) }}
+                width={568.0}
+                height={32.0}
+              />
+            </ui::Col>
+
+            // Scrollable Inset Grouped content
+            let _ = dlg.box(fn(body_wrap : view::View) -> Unit {
+              let _ = body_wrap
+              .grow(view::Live::Is(1.0))
+              .shrink(view::Live::Is(1.0))
+              .min_height(view::Live::Is(Some(0.0)))
+              let sc = ui::scroll_box(
+                body_wrap,
+                fn(inner : view::View) -> Unit {
+                  let _ = inner
+                  .width_share(view::Live::Is(1.0))
+                  .padding(view::Live::Is((16.0, 2.0, 16.0, 16.0)))
+                  let _ = <ui::Show in={inner} when=>{ctrl.settings_tab_sig.get() == 0} at_once>
+                    <SafeModeVaultTab ctrl={ctrl} />
+                  </ui::Show>
+                  let _ = <ui::Show in={inner} when=>{ctrl.settings_tab_sig.get() == 1} at_once>
+                    <ModelsProfilesTab ctrl={ctrl} />
+                  </ui::Show>
+                  let _ = <ui::Show in={inner} when=>{ctrl.settings_tab_sig.get() == 2} at_once>
+                    <FleetStationsTab ctrl={ctrl} />
+                  </ui::Show>
+                },
+                fill=true,
+              )
+              let _ = sc.min_height(view::Live::Is(Some(0.0)))
+            })
+          },
+        )
+      },
+      at_once=true,
+    )
+  })
+}
+
+/// Mount the lightweight Quick Search Sheet.
+pub fn render_search_sheet(parent : view::View, ctrl : app_state::AppController) -> Unit {
+  let days = ctrl.chats_days_sig.untracked().days
+  let _ = <lg::Sheet
+    in={parent}
+    open_by=>{ctrl.sheet_sig.get() == app_state::ActiveSheet::Search}
+    on_close=>{ctrl.set_sheet(app_state::ActiveSheet::None)}
+    title="快速跳转对话"
+    subtitle_by=>{ctrl.workspace_name_sig.get()}
+    width={520.0}
+    max_height={440.0}
+  >
+    <lg::SurfaceSection radius={14.0}>
+      for i in 0..<days.length() {
+        let items = days[i].items
+        for k in 0..<items.length() {
+          let it = items[k]
+          let st = it.station
+          let th = it.thread
+          if i > 0 || k > 0 {
+            <HairlineSep />
+          }
+          <ui::Row pad_x={14.0} pad_y={10.0} align={.Middle} gap={8.0}>
+            <ui::Text size={13.5} weight={500} color_by=>{lg::surface().ink} text={it.title} />
+            <ui::Spacer />
+            <lg::Button
+              label="打开"
+              flat
+              height={32.0}
+              pad_x={14.0}
+              on_press=>{
+                let _ = ctrl.select_station_chat(st, th)
+                ctrl.set_sheet(app_state::ActiveSheet::None)
+              }
+            />
+          </ui::Row>
+        }
+      }
+    </lg::SurfaceSection>
+  </lg::Sheet>
+}

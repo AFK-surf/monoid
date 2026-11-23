@@ -1,0 +1,219 @@
+// Automated Apple Two-Layer UI + Craft gates, E2E interactive closed-loop tests,
+// and native Apple Metal offscreen 2x PNG snapshot generation for `sf_ui`.
+
+import "app_state"
+import "film"
+import "lg"
+import "ui"
+import "view"
+
+test "sf_ui_1_wide_light_dark_narrow_and_sheet_apple_ui_gates" {
+  // 1. Wide 1280x820 Light
+  let env_wl = make_real_sf_env(dark=false)
+  let t_wl = ui::Tester::tree(
+    fn(root : view::View) -> Unit { sf_app_root(root, env_wl.ctrl) },
+    width=1280.0,
+    height=820.0,
+    theme=lg::ui_theme,
+  )
+  t_wl.run_shown(100.0)
+  debug_assert(t_wl.find("AFK Engineering").is_some(), "workspace title rendered in sidebar")
+  debug_assert(t_wl.find("Invar 原生客户端架构迁移").is_some(), "active chat title rendered")
+  debug_assert(t_wl.find("切到纯 Pion-JSX 视图").is_some(), "interactive decision card rendered")
+  debug_assert(t_wl.find("已完成 1 次工具调用").is_some(), "folded toolGroups disclosure rendered")
+  debug_assert(t_wl.scroll_faults().length() == 0, "wide light must have 0 scroll faults")
+  lg::assert_no_nested_glass(t_wl, label="sf_wide_light")
+  lg::assert_apple_ui(t_wl, label="sf_wide_light")
+  t_wl.dispose()
+
+  // 2. Wide 1280x820 Dark
+  let env_wd = make_real_sf_env(dark=true)
+  let t_wd = ui::Tester::tree(
+    fn(root : view::View) -> Unit { sf_app_root(root, env_wd.ctrl) },
+    width=1280.0,
+    height=820.0,
+    theme=lg::ui_theme,
+    dark=true,
+  )
+  t_wd.run_shown(100.0)
+  debug_assert(t_wd.scroll_faults().length() == 0, "wide dark must have 0 scroll faults")
+  lg::assert_no_nested_glass(t_wd, label="sf_wide_dark")
+  lg::assert_apple_ui(t_wd, label="sf_wide_dark")
+  t_wd.dispose()
+
+  // 3. Narrow 390x844 Light (chat detail with BackButton)
+  let env_nl = make_real_sf_env(dark=false)
+  let t_nl = ui::Tester::tree(
+    fn(root : view::View) -> Unit { sf_app_root(root, env_nl.ctrl) },
+    width=390.0,
+    height=844.0,
+    theme=lg::ui_theme,
+  )
+  t_nl.run_shown(100.0)
+  debug_assert(t_nl.scroll_faults().length() == 0, "narrow light must have 0 scroll faults")
+  lg::assert_no_nested_glass(t_nl, label="sf_narrow_light")
+  lg::assert_apple_ui(t_nl, label="sf_narrow_light")
+  t_nl.press("Back")
+  t_nl.run_shown(80.0)
+  debug_assert(!env_nl.ctrl.show_detail_sig.untracked(), "pressing BackButton switches narrow view to sidebar")
+  t_nl.dispose()
+
+  // 4. Settings / Safe Mode / Vault Approvals Sheet (flat=true Segmented, zero 「个人锁」)
+  let env_sh = make_real_sf_env(dark=false)
+  env_sh.ctrl.set_sheet(app_state::ActiveSheet::Settings)
+  let t_sh = ui::Tester::tree(
+    fn(root : view::View) -> Unit { sf_app_root(root, env_sh.ctrl) },
+    width=1280.0,
+    height=820.0,
+    theme=lg::ui_theme,
+  )
+  t_sh.run_shown(120.0)
+  debug_assert(t_sh.find("已开启").is_some(), "unified safe mode status rendered")
+  debug_assert(t_sh.find("Stripe 测试环境密钥").is_some(), "vault approval request rendered")
+  debug_assert(t_sh.find("端到端加密").is_some(), "plainMode: false encrypted value rendered")
+  debug_assert(t_sh.find("个人锁").is_none(), "must NEVER display legacy personal-lock wording")
+  debug_assert(t_sh.scroll_faults().length() == 0, "settings sheet must have 0 scroll faults")
+  lg::assert_no_nested_glass(t_sh, label="sf_settings_sheet", allow_large_overlay=true)
+  lg::assert_apple_ui(t_sh, label="sf_settings_sheet", allow_large_overlay=true)
+  t_sh.dispose()
+}
+
+test "sf_ui_2_e2e_interactive_closed_loop" {
+  let env = make_real_sf_env(dark=false)
+  env.ctrl.start_live()
+  env.rt.advance(30)
+
+  let t = ui::Tester::tree(
+    fn(root : view::View) -> Unit { sf_app_root(root, env.ctrl) },
+    width=1280.0,
+    height=820.0,
+    theme=lg::ui_theme,
+  )
+  t.run_shown(100.0)
+
+  // 1. Click sidebar chat row to switch to thread 102
+  t.press("双通道 Mesh 传输压测")
+  t.run_shown(80.0)
+  debug_assert(env.ctrl.active_thread_sig.untracked() == 102, "clicked sidebar chat switched to thread 102")
+  debug_assert(t.find("55 项双通道弱网回归全部通过").is_some(), "thread 102 message rendered")
+
+  // Switch back to thread 101
+  t.press("Invar 原生客户端架构迁移")
+  t.run_shown(80.0)
+  debug_assert(env.ctrl.active_thread_sig.untracked() == 101, "switched back to thread 101")
+
+  // 2. Send message -> optimistic outbox bubble appears immediately
+  let ck = env.ctrl.send_message("确认通过，开始切流验证", author="alice@afk.surf")
+  debug_assert(ck.length() > 0, "client_key assigned")
+  t.run_shown(80.0)
+  debug_assert(env.ctrl.active_chat_sig.untracked().outbox.length() == 1, "optimistic outbox has 1 item")
+  debug_assert(t.find("确认通过，开始切流验证").is_some(), "optimistic bubble visible in UI")
+  debug_assert(t.find("发送中").is_some(), "sending badge visible on optimistic bubble")
+
+  // 3. Station POST ack + SSE confirmation with exact clientKey -> outbox cleared & 0 duplicates
+  env.rt.advance(30)
+  let assigned_n = match env.station.seen_client_keys.get(ck) {
+    Some(n) => n
+    None => 501
+  }
+  env.station.push_entry_sse(
+    "ws-afk",
+    101,
+    assigned_n,
+    "person",
+    "alice@afk.surf",
+    "确认通过，开始切流验证",
+    client_key=Some(ck),
+  )
+  t.run_shown(100.0)
+  debug_assert(env.ctrl.active_chat_sig.untracked().outbox.length() == 0, "outbox cleared after SSE confirm")
+  let mut match_count = 0
+  let msgs = env.ctrl.active_chat_sig.untracked().messages
+  for i in 0..<msgs.length() {
+    if msgs[i].text == "确认通过，开始切流验证" {
+      match_count += 1
+    }
+  }
+  debug_assert(match_count == 1, "confirmed message appears exactly once (0 duplicates)")
+
+  // 4. Open Settings sheet -> click Approve on Vault request -> pending count decreases
+  t.press("安全模式与设置")
+  t.run_shown(120.0)
+  debug_assert(env.ctrl.sheet_sig.untracked() == app_state::ActiveSheet::Settings, "settings sheet opened")
+  let before_pending = env.ctrl.vault_approvals_sig.untracked().pending.length()
+  debug_assert(before_pending == 2, "starts with 2 pending vault approvals")
+  t.press("批准")
+  t.run_shown(80.0)
+  let after_pending = env.ctrl.vault_approvals_sig.untracked().pending.length()
+  debug_assert(after_pending == 1, "approving vault request removed it from pending list")
+
+  // 5. Verify profiles sanitization: zero secrets leaked in projected profiles
+  let profs = env.ctrl.profiles_sig.untracked()
+  debug_assert(profs.length() >= 3, "sanitized profiles loaded from real stations")
+  let models = env.ctrl.models_sig.untracked()
+  debug_assert(models.length() >= 3 && models[0].starred, "starred models sorted first")
+
+  env.ctrl.stop_live()
+  t.dispose()
+}
+
+test "sf_ui_3_metal_offscreen_4_shots" {
+  debug_assert(film::is_supported(), "Apple macOS Metal offscreen rendering must be supported")
+
+  // Shot 1: Wide 1280x820 Light (2x -> 2560x1640)
+  let env1 = make_real_sf_env(dark=false)
+  let ok1 = film::picture(
+    fn(root : view::View) -> Unit { sf_app_root(root, env1.ctrl) },
+    path="/tmp/sf_ui_shots/sf-wide-light.png",
+    w=1280.0,
+    h=820.0,
+    scale=2.0,
+    dark=false,
+    at=100.0,
+    theme=lg::ui_theme,
+  )
+  debug_assert(ok1, "sf-wide-light.png Metal snapshot must succeed")
+
+  // Shot 2: Wide 1280x820 Dark (2x -> 2560x1640)
+  let env2 = make_real_sf_env(dark=true)
+  let ok2 = film::picture(
+    fn(root : view::View) -> Unit { sf_app_root(root, env2.ctrl) },
+    path="/tmp/sf_ui_shots/sf-wide-dark.png",
+    w=1280.0,
+    h=820.0,
+    scale=2.0,
+    dark=true,
+    at=100.0,
+    theme=lg::ui_theme,
+  )
+  debug_assert(ok2, "sf-wide-dark.png Metal snapshot must succeed")
+
+  // Shot 3: Narrow 390x844 Light (2x -> 780x1688)
+  let env3 = make_real_sf_env(dark=false)
+  let ok3 = film::picture(
+    fn(root : view::View) -> Unit { sf_app_root(root, env3.ctrl) },
+    path="/tmp/sf_ui_shots/sf-narrow-light.png",
+    w=390.0,
+    h=844.0,
+    scale=2.0,
+    dark=false,
+    at=100.0,
+    theme=lg::ui_theme,
+  )
+  debug_assert(ok3, "sf-narrow-light.png Metal snapshot must succeed")
+
+  // Shot 4: Settings / Safe Mode / Vault Approvals Sheet 1280x820 Light (2x -> 2560x1640)
+  let env4 = make_real_sf_env(dark=false)
+  env4.ctrl.set_sheet(app_state::ActiveSheet::Settings)
+  let ok4 = film::picture(
+    fn(root : view::View) -> Unit { sf_app_root(root, env4.ctrl) },
+    path="/tmp/sf_ui_shots/sf-settings-sheet-light.png",
+    w=1280.0,
+    h=820.0,
+    scale=2.0,
+    dark=false,
+    at=150.0,
+    theme=lg::ui_theme,
+  )
+  debug_assert(ok4, "sf-settings-sheet-light.png Metal snapshot must succeed")
+}

@@ -1,0 +1,360 @@
+// Pure-Pion Markdown renderer for `still.fail` chat messages using official
+// `markdown-v0.2.1` (`markdown::parse`), rich `text::Run` inline styling
+// (zero raw backticks for inline code; bold/italic supported), and `<lg::CodeBlock>`.
+
+import "lg"
+import "markdown"
+import "text"
+import "ui"
+import "view"
+
+enum MdSpanKind {
+  Plain
+  Strong
+  Emph
+  InlineCode
+}
+
+struct MdSpan {
+  kind : MdSpanKind
+  text : String
+}
+
+enum MdBlock {
+  Heading(Int, Array[MdSpan])
+  Paragraph(Array[MdSpan])
+  Bullet(Array[MdSpan])
+  Quote(Array[MdSpan])
+  Code(String, String)
+}
+
+fn spans_non_empty(spans : Array[MdSpan]) -> Bool {
+  for i in 0..<spans.length() {
+    if spans[i].text.trim().length() > 0 {
+      return true
+    }
+  }
+  false
+}
+
+fn parse_md_blocks(src : String) -> Array[MdBlock] {
+  let evs = markdown::parse(src, markdown::Options::gfm())
+  let blocks : Array[MdBlock] = []
+  let mut in_heading = 0
+  let mut in_code = false
+  let mut code_lang = ""
+  let mut in_quote = false
+  let mut in_item = false
+  let mut strong_depth = 0
+  let mut emph_depth = 0
+  let mut spans : Array[MdSpan] = []
+  let mut code_buf = StringBuilder::new()
+
+  let push_span = fn(kind : MdSpanKind, s : String) -> Unit {
+    if s.length() == 0 {
+      return
+    }
+    spans.push(MdSpan::{ kind: kind, text: s })
+  }
+
+  let flush_spans = fn() -> Unit {
+    if !spans_non_empty(spans) {
+      spans = []
+      return
+    }
+    let cur = spans
+    spans = []
+    if in_heading > 0 {
+      blocks.push(MdBlock::Heading(in_heading, cur))
+    } else if in_quote {
+      blocks.push(MdBlock::Quote(cur))
+    } else if in_item {
+      blocks.push(MdBlock::Bullet(cur))
+    } else {
+      blocks.push(MdBlock::Paragraph(cur))
+    }
+  }
+
+  for i in 0..<evs.length() {
+    match evs[i] {
+      markdown::Event::Start(tag) =>
+      match tag {
+        markdown::Tag::Heading(lvl) => {
+          flush_spans()
+          in_heading = lvl
+        }
+        markdown::Tag::Paragraph => {
+          if !in_item && !in_quote {
+            flush_spans()
+          }
+        }
+        markdown::Tag::BlockQuote => {
+          flush_spans()
+          in_quote = true
+        }
+        markdown::Tag::Item => {
+          flush_spans()
+          in_item = true
+        }
+        markdown::Tag::Strong => {
+          strong_depth += 1
+        }
+        markdown::Tag::Emphasis => {
+          emph_depth += 1
+        }
+        markdown::Tag::CodeBlock(kind) => {
+          flush_spans()
+          in_code = true
+          code_buf = StringBuilder::new()
+          code_lang = match kind {
+            markdown::CodeBlockKind::Fenced(info) => info.trim()
+            markdown::CodeBlockKind::Indented => "text"
+          }
+        }
+        _ => ()
+      }
+      markdown::Event::End(tag_end) =>
+      match tag_end {
+        markdown::TagEnd::Heading(_) => {
+          flush_spans()
+          in_heading = 0
+        }
+        markdown::TagEnd::Paragraph => {
+          flush_spans()
+        }
+        markdown::TagEnd::BlockQuote => {
+          flush_spans()
+          in_quote = false
+        }
+        markdown::TagEnd::Item => {
+          flush_spans()
+          in_item = false
+        }
+        markdown::TagEnd::Strong => {
+          if strong_depth > 0 {
+            strong_depth -= 1
+          }
+        }
+        markdown::TagEnd::Emphasis => {
+          if emph_depth > 0 {
+            emph_depth -= 1
+          }
+        }
+        markdown::TagEnd::CodeBlock => {
+          let code = code_buf.to_string()
+          code_buf = StringBuilder::new()
+          let trimmed = if code.ends_with("\n") {
+            code.slice(0, code.length() - 1)
+          } else {
+            code
+          }
+          blocks.push(MdBlock::Code(code_lang, trimmed))
+          in_code = false
+          code_lang = ""
+        }
+        _ => ()
+      }
+      markdown::Event::Text(t) =>
+      if in_code {
+        code_buf.write_string(t)
+      } else if strong_depth > 0 {
+        push_span(MdSpanKind::Strong, t)
+      } else if emph_depth > 0 {
+        push_span(MdSpanKind::Emph, t)
+      } else {
+        push_span(MdSpanKind::Plain, t)
+      }
+      markdown::Event::Code(c) => {
+        if in_code {
+          code_buf.write_string(c)
+        } else {
+          // Styled inline code run with zero raw backticks
+          push_span(MdSpanKind::InlineCode, c)
+        }
+      }
+      markdown::Event::SoftBreak => {
+        if in_code {
+          code_buf.write_string("\n")
+        } else {
+          push_span(MdSpanKind::Plain, " ")
+        }
+      }
+      markdown::Event::HardBreak => {
+        if in_code {
+          code_buf.write_string("\n")
+        } else {
+          push_span(MdSpanKind::Plain, "\n")
+        }
+      }
+      _ => ()
+    }
+  }
+  flush_spans()
+  if blocks.length() == 0 && src.trim().length() > 0 {
+    blocks.push(MdBlock::Paragraph([MdSpan::{ kind: MdSpanKind::Plain, text: src.trim() }]))
+  }
+  blocks
+}
+
+fn spans_to_runs(spans : Array[MdSpan], on_accent : Bool) -> Array[text::Run] {
+  let s = lg::surface()
+  let code_bg = if on_accent {
+    0xFFFFFF28L
+  } else if lg::is_dark() {
+    0xFFFFFF18L
+  } else {
+    0x0000000CL
+  }
+  let code_ink = if on_accent { lg::white } else { s.ink }
+  let out : Array[text::Run] = []
+  for i in 0..<spans.length() {
+    let sp = spans[i]
+    match sp.kind {
+      MdSpanKind::Plain => out.push(text::plain(sp.text))
+      MdSpanKind::Strong => out.push(text::Run::{ ..text::plain(sp.text), weight: 600 })
+      MdSpanKind::Emph => out.push(text::Run::{ ..text::plain(sp.text), italic: true })
+      MdSpanKind::InlineCode =>
+      out.push(text::Run::{
+        ..text::plain(" " + sp.text + " "),
+        code: true,
+        mono: true,
+        scale: 0.92,
+        color: code_ink,
+        bg: code_bg,
+      })
+    }
+  }
+  out
+}
+
+/// Render Markdown content inside a chat bubble or card.
+/// Uses `text::Run` for styled inline code (zero raw backticks), `lg::CodeBlock`
+/// for fenced code blocks, and first-line-aligned bullet markers for list items.
+pub fn MarkdownBody(
+  parent : view::View,
+  src~ : String,
+  on_accent~ : Bool = false,
+  code_radius~ : Double = 10.0,
+) -> view::View {
+  render_markdown_body(parent, src, on_accent=on_accent, code_radius=code_radius)
+  parent
+}
+
+pub fn render_markdown_body(
+  parent : view::View,
+  src : String,
+  on_accent~ : Bool = false,
+  code_radius~ : Double = 10.0,
+) -> Unit {
+  let blocks = parse_md_blocks(src)
+  let ink_fn = fn() -> Int64 {
+    if on_accent { lg::white } else { lg::surface().ink }
+  }
+  let sub_ink_fn = fn() -> Int64 {
+    if on_accent { 0xFFFFFFCCL } else { lg::surface().ink_secondary }
+  }
+
+  let _ = parent.box(fn(col : view::View) -> Unit {
+    let _ = col.gap(view::Live::Is(6.0)).min_width(view::Live::Is(Some(0.0)))
+    for i in 0..<blocks.length() {
+      match blocks[i] {
+        MdBlock::Heading(lvl, spans) => {
+          let sz = if lvl <= 1 { 16.5 } else if lvl == 2 { 15.0 } else { 14.0 }
+          let _ = col.box(fn(h : view::View) -> Unit {
+            let _ = h
+            .min_width(view::Live::Is(Some(0.0)))
+            .words_runs(
+              view::Live::By(fn() { spans_to_runs(spans, on_accent) }),
+              look=lg::words_at(sz, weight=600, wrap=true),
+            )
+            .ink(view::Live::By(ink_fn))
+          })
+        }
+        MdBlock::Paragraph(spans) => {
+          let _ = col.box(fn(p : view::View) -> Unit {
+            let _ = p
+            .min_width(view::Live::Is(Some(0.0)))
+            .words_runs(
+              view::Live::By(fn() { spans_to_runs(spans, on_accent) }),
+              look=lg::words_at(14.0, weight=400, wrap=true),
+            )
+            .ink(view::Live::By(ink_fn))
+          })
+        }
+        MdBlock::Bullet(spans) => {
+          // First-line aligned bullet dot: row aligns Start, dot sits inside 19.6pt first-line box.
+          let _ = col.box(fn(row : view::View) -> Unit {
+            let _ = row
+            .row(view::Live::Is(true))
+            .lines_up(view::Live::Is(Some(view::Along::Start)))
+            .gap(view::Live::Is(8.0))
+            .min_width(view::Live::Is(Some(0.0)))
+            let _ = row.box(fn(dot_slot : view::View) -> Unit {
+              let _ = dot_slot
+              .width(view::Live::Is(Some(10.0)))
+              .height(view::Live::Is(Some(19.6)))
+              .shrink(view::Live::Is(0.0))
+              .lines_up(view::Live::Is(Some(view::Along::Middle)))
+              .lies_along(view::Live::Is(view::Lies::Middle))
+              let _ = dot_slot.box(fn(dot : view::View) -> Unit {
+                let _ = dot
+                .width(view::Live::Is(Some(5.0)))
+                .height(view::Live::Is(Some(5.0)))
+                .radius(view::Live::Is(2.5))
+                .ground(view::Live::By(sub_ink_fn))
+              })
+            })
+            let _ = row.box(fn(body : view::View) -> Unit {
+              let _ = body
+              .grow(view::Live::Is(1.0))
+              .basis(view::Live::Is(Some(0.0)))
+              .shrink(view::Live::Is(1.0))
+              .min_width(view::Live::Is(Some(0.0)))
+              .words_runs(
+                view::Live::By(fn() { spans_to_runs(spans, on_accent) }),
+                look=lg::words_at(14.0, weight=400, wrap=true),
+              )
+              .ink(view::Live::By(ink_fn))
+            })
+          })
+        }
+        MdBlock::Quote(spans) => {
+          let _ = col.box(fn(q : view::View) -> Unit {
+            let _ = q
+            .row(view::Live::Is(true))
+            .gap(view::Live::Is(10.0))
+            .padding(view::Live::Is((0.0, 2.0, 0.0, 2.0)))
+            .min_width(view::Live::Is(Some(0.0)))
+            let _ = q.box(fn(bar : view::View) -> Unit {
+              let _ = bar
+              .width(view::Live::Is(Some(2.5)))
+              .shrink(view::Live::Is(0.0))
+              .radius(view::Live::Is(1.25))
+              .ground(view::Live::By(fn() { lg::surface().accent }))
+            })
+            let _ = q.box(fn(qt : view::View) -> Unit {
+              let _ = qt
+              .grow(view::Live::Is(1.0))
+              .basis(view::Live::Is(Some(0.0)))
+              .shrink(view::Live::Is(1.0))
+              .min_width(view::Live::Is(Some(0.0)))
+              .words_runs(
+                view::Live::By(fn() { spans_to_runs(spans, on_accent) }),
+                look=lg::words_at(13.5, weight=400, wrap=true),
+              )
+              .ink(view::Live::By(sub_ink_fn))
+            })
+          })
+        }
+        MdBlock::Code(lang, code) => {
+          let _ = <lg::CodeBlock
+            in={col}
+            lang={lang}
+            code={code}
+            radius={code_radius}
+          />
+        }
+      }
+    }
+  })
+}

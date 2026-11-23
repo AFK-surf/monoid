@@ -1,0 +1,669 @@
+// Strongly typed reactive ViewModel types decoded directly from real
+// `pion/client-core` `packages/views` projections (`ChatsView`, `ChatView`,
+// `stations`, `SafeModeView`, `vaultApprovals`, `profiles`, `models`, `fleet`).
+
+import "base_codec"
+
+#derive(Eq)
+pub enum ChatFilter {
+  All
+  Asks
+  Running
+}
+
+#derive(Eq)
+pub enum ActiveSheet {
+  None
+  Settings
+  Search
+}
+
+pub struct ChatsGlyph {
+  pub online : Int
+  pub dim : Int
+  pub working : Int
+  pub running : Int
+  pub summary : String
+  pub label : String
+}
+
+pub struct ListedChatItem {
+  pub id : String
+  pub session : String
+  pub station : String
+  pub station_name : String
+  pub thread : Int
+  pub title : String
+  pub preview : String
+  pub unread : Bool
+  pub pinned : Bool
+  pub mine : Bool
+  pub tone : String
+  pub state : String
+  pub state_text : String
+}
+
+pub struct ChatDayGroup {
+  pub days_ago : Int64
+  pub label : String
+  pub items : Array[ListedChatItem]
+}
+
+pub struct ChatsDaysState {
+  pub days : Array[ChatDayGroup]
+  pub glyph : ChatsGlyph
+  pub total_count : Int
+}
+
+pub struct ChatToolCall {
+  pub id : String
+  pub name : String
+  pub args : String
+  pub result : String
+  pub status : String
+}
+
+pub struct ChatToolGroup {
+  pub id : String
+  pub after_seq : Int
+  pub count : Int
+  pub status : String
+  pub collapsed : Bool
+  pub calls : Array[ChatToolCall]
+}
+
+pub struct CardOptionItem {
+  pub label : String
+  pub detail : String
+  pub recommended : Bool
+  pub closes : Bool
+}
+
+pub struct ChatCardData {
+  pub card_type : String
+  pub assignee : String
+  pub placeholder : String
+  pub options : Array[CardOptionItem]
+  pub resolved : Bool
+  pub answered_by : String
+  pub chosen : String
+  pub decision_text : String
+}
+
+pub struct ChatMessageView {
+  pub seq : Int
+  pub thread : Int
+  pub author_kind : String
+  pub author : String
+  pub agent_model : String
+  pub text : String
+  pub mine : Bool
+  pub system : Bool
+  pub outgoing : Option[String]
+  pub card : Option[ChatCardData]
+}
+
+pub struct ChatOutboxItem {
+  pub id : String
+  pub client_key : String
+  pub text : String
+  pub state : String
+  pub error : Option[String]
+}
+
+pub struct ChatAskItem {
+  pub seq : Int
+  pub mine : Bool
+  pub text : String
+}
+
+pub struct ActiveChatView {
+  pub station : String
+  pub thread : Int
+  pub title : String
+  pub messages : Array[ChatMessageView]
+  pub tool_groups : Array[ChatToolGroup]
+  pub outbox : Array[ChatOutboxItem]
+  pub asks : Array[ChatAskItem]
+  pub unread_line : Option[Int]
+  pub link_state : String
+  pub has_more : Bool
+}
+
+pub struct StationViewItem {
+  pub station : String
+  pub id : String
+  pub name : String
+  pub summary : String
+  pub online : Bool
+  pub reconnecting : Bool
+  pub state_text : String
+  pub version : String
+  pub os : String
+  pub sessions_count : Int
+  pub running_count : Int
+}
+
+pub struct VaultApprovalItem {
+  pub id : String
+  pub vault : String
+  pub item : String
+  pub item_name : String
+  pub kind : String
+  pub mode : String
+  pub reason : String
+  pub hosts : Array[String]
+  pub status : String
+  pub grant_scope : Option[String]
+}
+
+pub struct VaultApprovalsState {
+  pub workspace : String
+  pub plain_mode : Bool
+  pub pending : Array[VaultApprovalItem]
+  pub decided : Array[VaultApprovalItem]
+}
+
+pub struct ProfileViewItem {
+  pub key : String
+  pub group : String
+  pub group_title : String
+  pub station_name : String
+  pub title : String
+  pub email : String
+  pub runtime : String
+  pub plan_text : String
+  pub usable : Bool
+  pub look : Bool
+  pub quota_left_pct : Int
+  pub quota_label : String
+  pub used_count : Int
+}
+
+pub struct ModelViewItem {
+  pub id : String
+  pub name : String
+  pub runtimes : Array[String]
+  pub stations : Array[String]
+  pub starred : Bool
+  pub availability : String
+}
+
+pub struct FleetTile {
+  pub label : String
+  pub value : String
+  pub sub : String
+}
+
+pub struct FleetSummaryState {
+  pub workspace : String
+  pub chats_running : Int
+  pub chats_text : String
+  pub devices_online : Int
+  pub where_text : String
+  pub remote_tasks : Int
+  pub tiles : Array[FleetTile]
+}
+
+// ---------------------------------------------------------------------------
+// Empty defaults
+// ---------------------------------------------------------------------------
+
+pub fn empty_chats_days() -> ChatsDaysState {
+  ChatsDaysState::{
+    days: [],
+    glyph: ChatsGlyph::{
+      online: 0,
+      dim: 0,
+      working: 0,
+      running: 0,
+      summary: "0 台在线",
+      label: "暂无 agent 在运行",
+    },
+    total_count: 0,
+  }
+}
+
+pub fn empty_active_chat(station : String, thread : Int) -> ActiveChatView {
+  ActiveChatView::{
+    station: station,
+    thread: thread,
+    title: "新对话",
+    messages: [],
+    tool_groups: [],
+    outbox: [],
+    asks: [],
+    unread_line: None,
+    link_state: "online",
+    has_more: false,
+  }
+}
+
+pub fn empty_vault_approvals(ws : String) -> VaultApprovalsState {
+  VaultApprovalsState::{
+    workspace: ws,
+    plain_mode: false,
+    pending: [],
+    decided: [],
+  }
+}
+
+pub fn empty_fleet_summary(ws : String) -> FleetSummaryState {
+  FleetSummaryState::{
+    workspace: ws,
+    chats_running: 0,
+    chats_text: "0 个会话运行中",
+    devices_online: 0,
+    where_text: "0 台设备",
+    remote_tasks: 0,
+    tiles: [],
+  }
+}
+
+// ---------------------------------------------------------------------------
+// JSON decoders for `packages/views` projections
+// ---------------------------------------------------------------------------
+
+fn vm_str(j : base_codec::Json, k : String) -> String {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+}
+
+fn vm_opt_str(j : base_codec::Json, k : String) -> Option[String] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+    _ => None
+  }
+}
+
+fn vm_bool(j : base_codec::Json, k : String) -> Bool {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => false
+  }
+}
+
+fn vm_int(j : base_codec::Json, k : String) -> Int {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, _)) => n.to_int()
+    _ => 0
+  }
+}
+
+fn vm_opt_int(j : base_codec::Json, k : String) -> Option[Int] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+    _ => None
+  }
+}
+
+fn vm_int64(j : base_codec::Json, k : String) -> Int64 {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, repr)) => {
+      if repr.length() > 0 {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => return v
+          None => ()
+        }
+      }
+      n.to_int64()
+    }
+    _ => 0.to_int64()
+  }
+}
+
+fn vm_arr(j : base_codec::Json, k : String) -> Array[base_codec::Json] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
+}
+
+fn vm_str_arr(j : base_codec::Json, k : String) -> Array[String] {
+  let raw = vm_arr(j, k)
+  let out : Array[String] = []
+  for i in 0..<raw.length() {
+    match raw[i] {
+      base_codec::Json::Str(s) => out.push(s)
+      _ => ()
+    }
+  }
+  out
+}
+
+pub fn decode_chats_days(j : base_codec::Json) -> ChatsDaysState {
+  let g_obj = match base_codec::json_get(j, "glyph") {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+  let glyph = ChatsGlyph::{
+    online: vm_int(g_obj, "online"),
+    dim: vm_int(g_obj, "dim"),
+    working: vm_int(g_obj, "working"),
+    running: vm_int(g_obj, "running"),
+    summary: vm_str(g_obj, "summary"),
+    label: vm_str(g_obj, "label"),
+  }
+  let raw_days = vm_arr(j, "days")
+  let days : Array[ChatDayGroup] = []
+  let mut total = 0
+  for i in 0..<raw_days.length() {
+    let d = raw_days[i]
+    let raw_items = vm_arr(d, "items")
+    let items : Array[ListedChatItem] = []
+    for k in 0..<raw_items.length() {
+      let it = raw_items[k]
+      let preview = match base_codec::json_get(it, "last") {
+        Some(last_obj) => {
+          let t = vm_str(last_obj, "text")
+          if t.length() > 0 { t } else { vm_str(it, "stateText") }
+        }
+        None => vm_str(it, "stateText")
+      }
+      items.push(ListedChatItem::{
+        id: vm_str(it, "id"),
+        session: vm_str(it, "session"),
+        station: vm_str(it, "station"),
+        station_name: vm_str(it, "stationName"),
+        thread: vm_int(it, "thread"),
+        title: vm_str(it, "title"),
+        preview: preview,
+        unread: vm_bool(it, "unread"),
+        pinned: vm_bool(it, "pinned"),
+        mine: vm_bool(it, "mine"),
+        tone: vm_str(it, "tone"),
+        state: vm_str(it, "state"),
+        state_text: vm_str(it, "stateText"),
+      })
+      total += 1
+    }
+    days.push(ChatDayGroup::{
+      days_ago: vm_int64(d, "daysAgo"),
+      label: vm_str(d, "label"),
+      items: items,
+    })
+  }
+  ChatsDaysState::{ days: days, glyph: glyph, total_count: total }
+}
+
+pub fn decode_active_chat(station : String, thread : Int, j : base_codec::Json) -> ActiveChatView {
+  let raw_msgs = vm_arr(j, "messages")
+  let msgs : Array[ChatMessageView] = []
+  for i in 0..<raw_msgs.length() {
+    let m = raw_msgs[i]
+    let by_obj = match base_codec::json_get(m, "by") {
+      Some(b) => b
+      None => base_codec::json_null()
+    }
+    let author_name = {
+      let n = vm_str(by_obj, "name")
+      if n.length() > 0 { n } else { vm_str(m, "author") }
+    }
+    let agent_model = vm_str(by_obj, "agent")
+    let card_opt : Option[ChatCardData] = match base_codec::json_get(m, "card") {
+      Some(c_obj) =>
+      match c_obj {
+        base_codec::Json::Obj(_) => {
+          let raw_opts = vm_arr(c_obj, "options")
+          let opts : Array[CardOptionItem] = []
+          for oi in 0..<raw_opts.length() {
+            let o = raw_opts[oi]
+            opts.push(CardOptionItem::{
+              label: vm_str(o, "label"),
+              detail: vm_str(o, "detail"),
+              recommended: vm_bool(o, "recommended"),
+              closes: vm_bool(o, "closes"),
+            })
+          }
+          let dec_obj = match base_codec::json_get(m, "decision") {
+            Some(d) => d
+            None => base_codec::json_null()
+          }
+          Some(ChatCardData::{
+            card_type: vm_str(c_obj, "type"),
+            assignee: vm_str(c_obj, "assignee"),
+            placeholder: vm_str(c_obj, "placeholder"),
+            options: opts,
+            resolved: vm_bool(dec_obj, "resolved"),
+            answered_by: vm_str(dec_obj, "answeredBy"),
+            chosen: vm_str(dec_obj, "chosen"),
+            decision_text: vm_str(dec_obj, "text"),
+          })
+        }
+        _ => None
+      }
+      None => None
+    }
+    msgs.push(ChatMessageView::{
+      seq: vm_int(m, "seq"),
+      thread: vm_int(m, "thread"),
+      author_kind: vm_str(m, "authorKind"),
+      author: author_name,
+      agent_model: agent_model,
+      text: vm_str(m, "text"),
+      mine: vm_bool(m, "mine"),
+      system: vm_bool(m, "system"),
+      outgoing: vm_opt_str(m, "outgoing"),
+      card: card_opt,
+    })
+  }
+
+  let raw_tgs = vm_arr(j, "toolGroups")
+  let tgs : Array[ChatToolGroup] = []
+  for i in 0..<raw_tgs.length() {
+    let tg = raw_tgs[i]
+    let raw_calls = vm_arr(tg, "calls")
+    let calls : Array[ChatToolCall] = []
+    for ci in 0..<raw_calls.length() {
+      let c = raw_calls[ci]
+      calls.push(ChatToolCall::{
+        id: vm_str(c, "id"),
+        name: vm_str(c, "name"),
+        args: vm_str(c, "args"),
+        result: vm_str(c, "result"),
+        status: vm_str(c, "status"),
+      })
+    }
+    tgs.push(ChatToolGroup::{
+      id: vm_str(tg, "id"),
+      after_seq: vm_int(tg, "afterSeq"),
+      count: vm_int(tg, "count"),
+      status: vm_str(tg, "status"),
+      collapsed: vm_bool(tg, "collapsed"),
+      calls: calls,
+    })
+  }
+
+  let raw_ob = vm_arr(j, "outbox")
+  let outbox : Array[ChatOutboxItem] = []
+  for i in 0..<raw_ob.length() {
+    let o = raw_ob[i]
+    outbox.push(ChatOutboxItem::{
+      id: vm_str(o, "id"),
+      client_key: vm_str(o, "clientKey"),
+      text: vm_str(o, "text"),
+      state: vm_str(o, "state"),
+      error: vm_opt_str(o, "error"),
+    })
+  }
+
+  let raw_asks = vm_arr(j, "asks")
+  let asks : Array[ChatAskItem] = []
+  for i in 0..<raw_asks.length() {
+    let a = raw_asks[i]
+    asks.push(ChatAskItem::{
+      seq: vm_int(a, "seq"),
+      mine: vm_bool(a, "mine"),
+      text: vm_str(a, "text"),
+    })
+  }
+
+  let link_state = match base_codec::json_get(j, "link") {
+    Some(lo) => {
+      let s = vm_str(lo, "state")
+      if s.length() > 0 { s } else { "online" }
+    }
+    None => "online"
+  }
+
+  ActiveChatView::{
+    station: station,
+    thread: thread,
+    title: vm_str(j, "title"),
+    messages: msgs,
+    tool_groups: tgs,
+    outbox: outbox,
+    asks: asks,
+    unread_line: vm_opt_int(j, "unreadLine"),
+    link_state: link_state,
+    has_more: vm_bool(j, "hasMore"),
+  }
+}
+
+pub fn decode_stations(j : base_codec::Json) -> Array[StationViewItem] {
+  let xs = match j {
+    base_codec::Json::Arr(a) => a
+    _ => []
+  }
+  let out : Array[StationViewItem] = []
+  for i in 0..<xs.length() {
+    let s = xs[i]
+    let os_str = match base_codec::json_get(s, "host") {
+      Some(h) => vm_str(h, "os")
+      None => ""
+    }
+    let (sess_n, run_n) = match base_codec::json_get(s, "overview") {
+      Some(ov) =>
+      match base_codec::json_get(ov, "counts") {
+        Some(c) => (vm_int(c, "sessions"), vm_int(c, "running"))
+        None => (0, 0)
+      }
+      None => (0, 0)
+    }
+    out.push(StationViewItem::{
+      station: vm_str(s, "station"),
+      id: vm_str(s, "id"),
+      name: vm_str(s, "name"),
+      summary: vm_str(s, "summary"),
+      online: vm_bool(s, "online"),
+      reconnecting: vm_bool(s, "reconnecting"),
+      state_text: vm_str(s, "stateText"),
+      version: vm_str(s, "version"),
+      os: os_str,
+      sessions_count: sess_n,
+      running_count: run_n,
+    })
+  }
+  out
+}
+
+fn decode_vault_approval_list(xs : Array[base_codec::Json]) -> Array[VaultApprovalItem] {
+  let out : Array[VaultApprovalItem] = []
+  for i in 0..<xs.length() {
+    let r = xs[i]
+    out.push(VaultApprovalItem::{
+      id: vm_str(r, "id"),
+      vault: vm_str(r, "vault"),
+      item: vm_str(r, "item"),
+      item_name: vm_str(r, "itemName"),
+      kind: vm_str(r, "kind"),
+      mode: vm_str(r, "mode"),
+      reason: vm_str(r, "reason"),
+      hosts: vm_str_arr(r, "hosts"),
+      status: vm_str(r, "status"),
+      grant_scope: vm_opt_str(r, "scope"),
+    })
+  }
+  out
+}
+
+pub fn decode_vault_approvals(j : base_codec::Json) -> VaultApprovalsState {
+  VaultApprovalsState::{
+    workspace: vm_str(j, "workspace"),
+    plain_mode: vm_bool(j, "plainMode"),
+    pending: decode_vault_approval_list(vm_arr(j, "pending")),
+    decided: decode_vault_approval_list(vm_arr(j, "decided")),
+  }
+}
+
+pub fn decode_profiles(j : base_codec::Json) -> Array[ProfileViewItem] {
+  let xs = vm_arr(j, "items")
+  let out : Array[ProfileViewItem] = []
+  for i in 0..<xs.length() {
+    let it = xs[i]
+    let prof = match base_codec::json_get(it, "profile") {
+      Some(p) => p
+      None => base_codec::json_null()
+    }
+    let mut left_pct = 100
+    let mut q_label = "充足"
+    match base_codec::json_get(prof, "quota") {
+      Some(q) => {
+        let wins = vm_arr(q, "windows")
+        if wins.length() > 0 {
+          left_pct = vm_int(wins[0], "left")
+          let lbl = vm_str(wins[0], "label")
+          q_label = if lbl.length() > 0 { lbl } else { "\{left_pct}%" }
+        }
+      }
+      None => ()
+    }
+    out.push(ProfileViewItem::{
+      key: vm_str(it, "key"),
+      group: vm_str(it, "group"),
+      group_title: vm_str(it, "groupTitle"),
+      station_name: vm_str(it, "stationName"),
+      title: vm_str(it, "title"),
+      email: vm_str(prof, "email"),
+      runtime: vm_str(prof, "runtime"),
+      plan_text: vm_str(prof, "planText"),
+      usable: vm_bool(it, "usable"),
+      look: vm_bool(it, "look"),
+      quota_left_pct: left_pct,
+      quota_label: q_label,
+      used_count: vm_int(it, "usedCount"),
+    })
+  }
+  out
+}
+
+pub fn decode_models(j : base_codec::Json) -> Array[ModelViewItem] {
+  let xs = vm_arr(j, "models")
+  let out : Array[ModelViewItem] = []
+  for i in 0..<xs.length() {
+    let m = xs[i]
+    out.push(ModelViewItem::{
+      id: vm_str(m, "id"),
+      name: vm_str(m, "name"),
+      runtimes: vm_str_arr(m, "runtimes"),
+      stations: vm_str_arr(m, "stations"),
+      starred: vm_bool(m, "starred"),
+      availability: vm_str(m, "availability"),
+    })
+  }
+  out
+}
+
+pub fn decode_fleet_summary(j : base_codec::Json) -> FleetSummaryState {
+  let raw_tiles = vm_arr(j, "tiles")
+  let tiles : Array[FleetTile] = []
+  for i in 0..<raw_tiles.length() {
+    let t = raw_tiles[i]
+    tiles.push(FleetTile::{
+      label: vm_str(t, "label"),
+      value: vm_str(t, "value"),
+      sub: vm_str(t, "sub"),
+    })
+  }
+  FleetSummaryState::{
+    workspace: vm_str(j, "workspace"),
+    chats_running: vm_int(j, "chats"),
+    chats_text: vm_str(j, "chatsText"),
+    devices_online: vm_int(j, "devices"),
+    where_text: vm_str(j, "where"),
+    remote_tasks: vm_int(j, "tasks"),
+    tiles: tiles,
+  }
+}

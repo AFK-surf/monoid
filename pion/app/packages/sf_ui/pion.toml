@@ -1,0 +1,27 @@
+[package]
+name = "sf_ui"
+version = "0.1.0"
+
+[dependencies]
+app_state = { path = "../app_state" }
+base_codec = { workspace = true }
+effect = { workspace = true }
+film = { workspace = true }
+form = { workspace = true }
+headless = { workspace = true }
+icons = { workspace = true }
+lg = { workspace = true }
+lock = { workspace = true }
+markdown = { workspace = true }
+motion = { workspace = true }
+paint = { workspace = true }
+protocol = { workspace = true }
+shell = { workspace = true }
+signals = { workspace = true }
+sql = { workspace = true }
+store = { workspace = true }
+sync = { workspace = true }
+text = { workspace = true }
+ui = { workspace = true }
+view = { workspace = true }
+views = { workspace = true }

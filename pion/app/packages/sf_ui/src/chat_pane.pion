@@ -1,0 +1,563 @@
+// Main conversation pane built on `<lg::PageShell>` + `<lg::ComposerBar>`.
+// Follows Apple HIG + `still.fail` clean canvas typography:
+// - Centered 720pt reading column on wide viewports (never stretched 950px edge-to-edge)
+// - Agent replies sit directly on `surface().canvas` (zero card-inside-card nesting)
+// - Compact quiet inline disclosure row for folded `toolGroups`
+// - Standalone `<lg::SurfaceCard>` only for interactive decision prompts, using official
+//   Apple capsule buttons (`<lg::Button flat ...>`) with reverse-wrapped footer
+// - iMessage-style blue user bubbles aligned to the right edge of the reading column
+
+import "app_state"
+import "headless"
+import "icons"
+import "lg"
+import "motion"
+import "signals"
+import "ui"
+import "view"
+
+fn BarIconBtn(
+  parent : view::View,
+  icon_name~ : String,
+  label~ : String,
+  badge_dot_by? : () -> Bool,
+  on_press~ : () -> Unit,
+) -> view::View {
+  let _ = headless::button(
+    parent,
+    fn() { label },
+    fn(_e) -> Unit { on_press() },
+    fn(b : view::View, btn : headless::Button) -> Unit {
+      let hover_t = motion::hover_fade(b, fn() { btn.hovered() })
+      let _ = b
+      .width(view::Live::Is(Some(36.0)))
+      .height(view::Live::Is(Some(36.0)))
+      .shrink(view::Live::Is(0.0))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .lies_along(view::Live::Is(view::Lies::Middle))
+      let _ = b.box(fn(circle : view::View) -> Unit {
+        let _ = circle
+        .width(view::Live::Is(Some(32.0)))
+        .height(view::Live::Is(Some(32.0)))
+        .radius(view::Live::Is(16.0))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::Is(view::Lies::Middle))
+        .ground(view::Live::By(fn() {
+          if hover_t() > 0.001 { lg::alpha(lg::surface().row_hover, hover_t()) } else { lg::clear }
+        }))
+        let _ = icons::icon_node(circle, icon_name, size=15.5, ink=fn() { lg::colors().content })
+        match badge_dot_by {
+          Some(show_dot) =>
+          circle.show(
+            show_dot,
+            fn(dot_host : view::View) -> Unit {
+              let _ = dot_host
+              .over(view::Live::Is(true), edges=(None, Some(5.0), Some(5.0), None))
+              .points(view::Live::Is(false))
+              .width(view::Live::Is(Some(6.0)))
+              .height(view::Live::Is(Some(6.0)))
+              .radius(view::Live::Is(3.0))
+              .ground(view::Live::By(fn() { lg::surface().accent }))
+            },
+            at_once=true,
+          )
+          None => ()
+        }
+      })
+    },
+  )
+  parent
+}
+
+fn BarThemeIconBtn(
+  parent : view::View,
+  ctrl~ : app_state::AppController,
+) -> view::View {
+  let _ = headless::button(
+    parent,
+    fn() { if ctrl.dark_sig.get() { "切换浅色" } else { "切换深色" } },
+    fn(_e) -> Unit { ctrl.toggle_dark() },
+    fn(b : view::View, btn : headless::Button) -> Unit {
+      let hover_t = motion::hover_fade(b, fn() { btn.hovered() })
+      let _ = b
+      .width(view::Live::Is(Some(36.0)))
+      .height(view::Live::Is(Some(36.0)))
+      .shrink(view::Live::Is(0.0))
+      .lines_up(view::Live::Is(Some(view::Along::Middle)))
+      .lies_along(view::Live::Is(view::Lies::Middle))
+      let _ = b.box(fn(circle : view::View) -> Unit {
+        let _ = circle
+        .width(view::Live::Is(Some(32.0)))
+        .height(view::Live::Is(Some(32.0)))
+        .radius(view::Live::Is(16.0))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .lies_along(view::Live::Is(view::Lies::Middle))
+        .ground(view::Live::By(fn() {
+          if hover_t() > 0.001 { lg::alpha(lg::surface().row_hover, hover_t()) } else { lg::clear }
+        }))
+        circle.show(
+          fn() { ctrl.dark_sig.get() },
+          fn(s : view::View) -> Unit {
+            let _ = icons::icon_node(s, "sun", size=15.5, ink=fn() { lg::colors().content })
+          },
+          at_once=true,
+        )
+        circle.show(
+          fn() { !ctrl.dark_sig.get() },
+          fn(s : view::View) -> Unit {
+            let _ = icons::icon_node(s, "moon", size=15.5, ink=fn() { lg::colors().content })
+          },
+          at_once=true,
+        )
+      })
+    },
+  )
+  parent
+}
+
+fn StandaloneDecisionCard(
+  parent : view::View,
+  ctrl~ : app_state::AppController,
+  thread~ : Int,
+  seq~ : Int,
+  card~ : app_state::ChatCardData,
+) -> view::View {
+  let _ = <lg::SurfaceCard in={parent} radius={28.0} pad={12.0} gap={10.0} label="决策确认">
+    if card.resolved {
+      <ui::Row align={.Middle} gap={8.0}>
+        <icons::Icon name="check-circle" size={16.0} color_by=>{lg::surface().positive} />
+        <ui::Text
+          size={13.5}
+          weight={500}
+          wrap
+          color_by=>{lg::surface().positive}
+          text={if card.decision_text.length() > 0 { card.decision_text } else { "已选择：" + card.chosen }}
+        />
+      </ui::Row>
+    } else {
+      <ui::Row align={.Middle} gap={7.0} rigid>
+        <icons::Icon name="shield" size={15.0} color_by=>{lg::surface().warning} />
+        <ui::Text size={13.5} weight={600} lines={1} color_by=>{lg::surface().ink} text="需要你的确认" />
+      </ui::Row>
+      <DecisionButtonsRow ctrl={ctrl} thread={thread} seq={seq} options={card.options} />
+    }
+  </lg::SurfaceCard>
+  parent
+}
+
+fn DecisionButtonsRow(
+  parent : view::View,
+  ctrl~ : app_state::AppController,
+  thread~ : Int,
+  seq~ : Int,
+  options~ : Array[app_state::CardOptionItem],
+) -> view::View {
+  // Reverse-wrapped official Apple capsule buttons (`r = h/2`), recommended option pinned bottom-left on wrap
+  let _ = parent.box(fn(btns : view::View) -> Unit {
+    let _ = btns
+    .row(view::Live::Is(true))
+    .wraps(view::Live::Is(Some(8.0)), reverse=true)
+    .gap(view::Live::Is(8.0))
+    .min_width(view::Live::Is(Some(0.0)))
+    for i in 0..<options.length() {
+      let opt = options[i]
+      let lbl = opt.label
+      let is_rec = opt.recommended
+      let _ = <lg::Button
+        in={btns}
+        label={lbl}
+        flat
+        prominent={is_rec}
+        height={32.0}
+        pad_x={16.0}
+        on_press=>{ let _ = ctrl.answer_card(thread, seq, lbl) }
+      />
+    }
+  })
+  parent
+}
+
+fn render_compact_tool_group(parent : view::View, tg : app_state::ChatToolGroup) -> Unit {
+  let open_sig = signals::signal(!tg.collapsed)
+  let status_label = if tg.status == "done" {
+    "已完成 \{tg.count} 次工具调用"
+  } else {
+    "正在执行 \{tg.count} 次工具调用"
+  }
+  let first_name = if tg.calls.length() > 0 { tg.calls[0].name } else { "" }
+
+  let _ = parent.box(fn(wrap : view::View) -> Unit {
+    let _ = wrap.gap(view::Live::Is(6.0)).min_width(view::Live::Is(Some(0.0)))
+    let _ = headless::button(
+      wrap,
+      fn() { status_label },
+      fn(_e) -> Unit { open_sig.set(!open_sig.untracked()) },
+      fn(b : view::View, btn : headless::Button) -> Unit {
+        let hover_t = motion::hover_fade(b, fn() { btn.hovered() })
+        let _ = b
+        .row(view::Live::Is(true))
+        .lines_up(view::Live::Is(Some(view::Along::Middle)))
+        .height(view::Live::Is(Some(36.0)))
+        .padding(view::Live::Is((10.0, 0.0, 10.0, 0.0)))
+        .gap(view::Live::Is(8.0))
+        .radius(view::Live::Is(10.0))
+        .ground(view::Live::By(fn() {
+          if hover_t() > 0.001 { lg::alpha(lg::surface().row_hover, hover_t()) } else { lg::clear }
+        }))
+        let _ = icons::icon_node(b, "terminal", size=13.5, ink=fn() { lg::surface().ink_tertiary })
+        let _ = b.box(fn(lbl : view::View) -> Unit {
+          let _ = lbl
+          .words(view::Live::Is(status_label), look=lg::words_at(12.5, weight=500, lines=1))
+          .ink(view::Live::By(fn() { lg::surface().ink_secondary }))
+        })
+        if first_name.length() > 0 {
+          let _ = b.box(fn(sub : view::View) -> Unit {
+            let _ = sub
+            .words(view::Live::Is(first_name), look=lg::words_at(12.0, weight=400, lines=1))
+            .ink(view::Live::By(fn() { lg::surface().ink_tertiary }))
+          })
+        }
+        let _ = b.box(fn(sp : view::View) -> Unit {
+          let _ = sp.grow(view::Live::Is(1.0))
+        })
+        b.show(
+          fn() { open_sig.get() },
+          fn(ic : view::View) -> Unit {
+            let _ = icons::icon_node(ic, "chevron-down", size=13.0, ink=fn() { lg::surface().ink_tertiary })
+          },
+          at_once=true,
+        )
+        b.show(
+          fn() { !open_sig.get() },
+          fn(ic : view::View) -> Unit {
+            let _ = icons::icon_node(ic, "chevron-right", size=13.0, ink=fn() { lg::surface().ink_tertiary })
+          },
+          at_once=true,
+        )
+      },
+    )
+
+    wrap.show(
+      fn() { open_sig.get() },
+      fn(detail : view::View) -> Unit {
+        let _ = detail
+        .padding(view::Live::Is((24.0, 2.0, 8.0, 4.0)))
+        .gap(view::Live::Is(6.0))
+        .min_width(view::Live::Is(Some(0.0)))
+        for ci in 0..<tg.calls.length() {
+          let call = tg.calls[ci]
+          let _ = detail.box(fn(row : view::View) -> Unit {
+            let _ = row
+            .gap(view::Live::Is(2.0))
+            .min_width(view::Live::Is(Some(0.0)))
+            let _ = row.box(fn(nm : view::View) -> Unit {
+              let _ = nm
+              .words(view::Live::Is(call.name), look=lg::words_at(12.5, weight=500, lines=1))
+              .ink(view::Live::By(fn() { lg::surface().ink_secondary }))
+            })
+            if call.args.length() > 0 {
+              let _ = row.box(fn(ag : view::View) -> Unit {
+                let _ = ag
+                .words(view::Live::Is(call.args), look=lg::words_at(12.0, weight=400, wrap=true))
+                .ink(view::Live::By(fn() { lg::surface().ink_tertiary }))
+              })
+            }
+            if call.result.length() > 0 {
+              let _ = row.box(fn(rs : view::View) -> Unit {
+                let _ = rs
+                .words(view::Live::Is(call.result), look=lg::words_at(12.0, weight=400, wrap=true))
+                .ink(view::Live::By(fn() { lg::surface().ink_tertiary }))
+              })
+            }
+          })
+        }
+      },
+      at_once=true,
+    )
+  })
+}
+
+fn find_message_by_seq(
+  msgs : Array[app_state::ChatMessageView],
+  seq_str : String,
+) -> Option[app_state::ChatMessageView] {
+  for i in 0..<msgs.length() {
+    if msgs[i].seq.to_string() == seq_str {
+      return Some(msgs[i])
+    }
+  }
+  None
+}
+
+fn render_message_item(
+  parent : view::View,
+  ctrl : app_state::AppController,
+  msg : app_state::ChatMessageView,
+  tgs : Array[app_state::ChatToolGroup],
+) -> Unit {
+  let _ = parent.box(fn(slot : view::View) -> Unit {
+    let _ = slot.gap(view::Live::Is(10.0)).min_width(view::Live::Is(Some(0.0)))
+    if msg.mine {
+      // User bubble: right-aligned iMessage blue capsule inside the 720pt reading column
+      let _ = slot.box(fn(row : view::View) -> Unit {
+        let _ = row
+        .row(view::Live::Is(true))
+        .lies_along(view::Live::Is(view::Lies::End))
+        .min_width(view::Live::Is(Some(0.0)))
+        let _ = row.box(fn(bubble : view::View) -> Unit {
+          let _ = bubble
+          .max_width(view::Live::Is(Some(500.0)))
+          .min_width(view::Live::Is(Some(0.0)))
+          .padding(view::Live::Is((14.0, 10.0, 14.0, 10.0)))
+          .radius(view::Live::Is(18.0))
+          .ground(view::Live::By(fn() { lg::surface().accent }))
+          render_markdown_body(bubble, msg.text, on_accent=true, code_radius=12.0)
+        })
+      })
+    } else {
+      // Agent reply directly on clean `surface().canvas` (zero outer white box!)
+      let _ = slot.box(fn(reply : view::View) -> Unit {
+        let _ = reply
+        .gap(view::Live::Is(8.0))
+        .padding(view::Live::Is((2.0, 2.0, 2.0, 2.0)))
+        .min_width(view::Live::Is(Some(0.0)))
+        // Restrained author header: icon + bold name + plain tertiary model text (zero pill!)
+        let _ = reply.box(fn(hdr : view::View) -> Unit {
+          let _ = hdr
+          .row(view::Live::Is(true))
+          .lines_up(view::Live::Is(Some(view::Along::Middle)))
+          .gap(view::Live::Is(6.0))
+          let _ = icons::icon_node(hdr, "sparkles", size=14.0, ink=fn() { lg::surface().accent })
+          let _ = hdr.box(fn(nm : view::View) -> Unit {
+            let _ = nm
+            .words(view::Live::Is(msg.author), look=lg::words_at(13.0, weight=600, lines=1))
+            .ink(view::Live::By(fn() { lg::surface().ink }))
+          })
+          if msg.agent_model.length() > 0 {
+            let _ = hdr.box(fn(mdl : view::View) -> Unit {
+              let _ = mdl
+              .words(view::Live::Is(msg.agent_model), look=lg::words_at(12.0, weight=400, lines=1))
+              .ink(view::Live::By(fn() { lg::surface().ink_tertiary }))
+            })
+          }
+        })
+        // Markdown prose + `<lg::CodeBlock>` directly on canvas
+        render_markdown_body(reply, msg.text, on_accent=false, code_radius=14.0)
+      })
+      // Standalone interactive decision card (never nested inside an agent wrapper card!)
+      match msg.card {
+        Some(c) => {
+          let _ = StandaloneDecisionCard(slot, ctrl=ctrl, thread=msg.thread, seq=msg.seq, card=c)
+        }
+        None => ()
+      }
+    }
+    // Compact quiet disclosure row for folded tool groups
+    for i in 0..<tgs.length() {
+      if tgs[i].after_seq == msg.seq {
+        render_compact_tool_group(slot, tgs[i])
+      }
+    }
+  })
+}
+
+fn render_outbox_bubble(parent : view::View, ob : app_state::ChatOutboxItem) -> Unit {
+  let _ = parent.box(fn(row : view::View) -> Unit {
+    let _ = row
+    .row(view::Live::Is(true))
+    .lies_along(view::Live::Is(view::Lies::End))
+    .min_width(view::Live::Is(Some(0.0)))
+    let _ = row.box(fn(bubble : view::View) -> Unit {
+      let _ = bubble
+      .max_width(view::Live::Is(Some(500.0)))
+      .min_width(view::Live::Is(Some(0.0)))
+      .padding(view::Live::Is((14.0, 10.0, 14.0, 10.0)))
+      .gap(view::Live::Is(4.0))
+      .radius(view::Live::Is(18.0))
+      .ground(view::Live::By(fn() { lg::alpha(lg::surface().accent, 0.82) }))
+      let _ = bubble.box(fn(t : view::View) -> Unit {
+        let _ = t
+        .min_width(view::Live::Is(Some(0.0)))
+        .words(view::Live::Is(ob.text), look=lg::words_at(14.0, weight=400, wrap=true))
+        .ink(view::Live::Is(lg::white))
+      })
+      let _ = bubble.box(fn(st : view::View) -> Unit {
+        let _ = st
+        .words(view::Live::Is("发送中"), look=lg::words_at(11.0, weight=500, lines=1))
+        .ink(view::Live::Is(0xFFFFFFCCL))
+      })
+    })
+  })
+}
+
+fn ChatMessageStream(parent : view::View, ctrl~ : app_state::AppController) -> view::View {
+  // Centered 720pt reading column on wide screens; full width with 16pt side margins on narrow screens
+  let _ = parent.box(fn(center_wrap : view::View) -> Unit {
+    let _ = center_wrap
+    .width_share(view::Live::Is(1.0))
+    .lines_up(view::Live::Is(Some(view::Along::Middle)))
+    .padding(view::Live::Is((16.0, 8.0, 16.0, 16.0)))
+
+    let _ = center_wrap.box(fn(stream : view::View) -> Unit {
+      let _ = stream
+      .width_share(view::Live::Is(1.0))
+      .max_width(view::Live::Is(Some(720.0)), within=true)
+      .gap(view::Live::Is(16.0))
+      .min_width(view::Live::Is(Some(0.0)))
+
+      // Reactive message stream keyed by `(thread, seq, resolved_state)`
+      stream.each(
+        fn() -> Array[String] {
+          let chat = ctrl.active_chat_sig.get()
+          let out : Array[String] = []
+          for i in 0..<chat.messages.length() {
+            let m = chat.messages[i]
+            let card_tag = match m.card {
+              Some(c) => if c.resolved { ":R:" + c.chosen } else { ":P" }
+              None => ""
+            }
+            out.push("\{chat.thread}:\{m.seq}:\{m.text.length()}\{card_tag}")
+          }
+          out
+        },
+        fn(k : String) -> String { k },
+        fn(slot : view::View, key_sig : signals::Signal[String]) -> Unit {
+          let chat = ctrl.active_chat_sig.untracked()
+          let key = key_sig.untracked()
+          let mut c1 = -1
+          let mut c2 = -1
+          for i in 0..<key.length() {
+            if key.code_unit_at(i) == 58 {
+              if c1 < 0 {
+                c1 = i
+              } else {
+                c2 = i
+                break
+              }
+            }
+          }
+          if c1 >= 0 && c2 > c1 {
+            let seq_s = key.slice(c1 + 1, c2)
+            match find_message_by_seq(chat.messages, seq_s) {
+              Some(m) => render_message_item(slot, ctrl, m, chat.tool_groups)
+              None => ()
+            }
+          }
+        },
+        at_once=true,
+      )
+
+      // Optimistic outbox bubbles (disappear immediately once SSE confirms exact clientKey)
+      stream.each(
+        fn() -> Array[String] {
+          let obs = ctrl.active_chat_sig.get().outbox
+          let keys : Array[String] = []
+          for i in 0..<obs.length() {
+            keys.push(obs[i].client_key)
+          }
+          keys
+        },
+        fn(k : String) -> String { k },
+        fn(slot : view::View, ck_sig : signals::Signal[String]) -> Unit {
+          let obs = ctrl.active_chat_sig.untracked().outbox
+          let ck = ck_sig.untracked()
+          for i in 0..<obs.length() {
+            if obs[i].client_key == ck {
+              render_outbox_bubble(slot, obs[i])
+              break
+            }
+          }
+        },
+        at_once=true,
+      )
+    })
+  })
+  parent
+}
+
+/// Render the main conversation pane using `<lg::PageShell>` and `<lg::ComposerBar>`.
+pub fn render_chat_pane(
+  parent : view::View,
+  ctrl : app_state::AppController,
+  composer_field : ui::Field,
+) -> Unit {
+  let composer_inset_sig = signals::signal(88.0)
+  let chat_scroll = view::Scroll::new()
+  let on_send = fn() -> Unit {
+    let raw = composer_field.text()
+    if raw.trim().length() > 0 {
+      let _ = ctrl.send_message(raw)
+      composer_field.set("")
+    }
+  }
+
+  let _ = <lg::PageShell
+    in={parent}
+    scroll={chat_scroll}
+    title_by=>{ctrl.active_chat_sig.get().title}
+    subtitle_by=>{
+      let chat = ctrl.active_chat_sig.get()
+      let st_label = if chat.link_state == "online" { "在线" } else { chat.link_state }
+      "\{chat.station} \{st_label}"
+    }
+    bottom_inset_by=>{composer_inset_sig.get()}
+    leading={fn(l : view::View) -> Unit {
+      l.show(
+        fn() {
+          let w = l.window_w()
+          w > 0.0 && w < 760.0
+        },
+        fn(back_slot : view::View) -> Unit {
+          let _ = <lg::BackButton
+            in={back_slot}
+            on_press=>{ctrl.set_show_detail(false)}
+          />
+        },
+        at_once=true,
+      )
+    }}
+    trailing={fn(tr : view::View) -> Unit {
+      let _ = <lg::BarPillGroup in={tr} height={40.0} pad={2.0} gap={2.0} label="对话操作">
+        <BarIconBtn
+          icon_name="search"
+          label="搜索对话"
+          on_press=>{ctrl.set_sheet(app_state::ActiveSheet::Search)}
+        />
+        <BarIconBtn
+          icon_name="shield"
+          label="安全模式与设置"
+          badge_dot_by=>{ctrl.vault_approvals_sig.get().pending.length() > 0}
+          on_press=>{ctrl.set_sheet(app_state::ActiveSheet::Settings)}
+        />
+        <BarThemeIconBtn ctrl={ctrl} />
+      </lg::BarPillGroup>
+    }}
+    bottom={fn(bot : view::View) -> Unit {
+      bot.show(
+        fn() { ctrl.sheet_sig.get() == app_state::ActiveSheet::None },
+        fn(c_slot : view::View) -> Unit {
+          let _ = c_slot.box(fn(center_bar : view::View) -> Unit {
+            let _ = center_bar
+            .width_share(view::Live::Is(1.0))
+            .lines_up(view::Live::Is(Some(view::Along::Middle)))
+            let _ = center_bar.box(fn(inner_bar : view::View) -> Unit {
+              let _ = inner_bar
+              .width_share(view::Live::Is(1.0))
+              .max_width(view::Live::Is(Some(720.0)), within=true)
+              let _ = <lg::ComposerBar
+                in={inner_bar}
+                field={composer_field}
+                placeholder="向 Agent 发送消息..."
+                label="发送消息"
+                on_send={on_send}
+              />
+            })
+          })
+        },
+        at_once=true,
+      )
+    }}
+  >
+    <ChatMessageStream ctrl={ctrl} />
+  </lg::PageShell>
+}
