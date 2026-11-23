@@ -48,9 +48,9 @@ pub fn appearance_node(
     fn() { if wide() { ["settings"] } else { keys() } },
     fn(b, key) {
       if key == "settings" {
-        @sf.group_node(b, fn(g) { g.each(keys, fn(k) { k }, fn(r, k) { appearance_setting(r, core, k.untracked()) }) })
+        @sf.group_node(b, fn(g) { g.each(keys, fn(k) { k }, fn(r, k) { appearance_setting(r, core, k.untracked(), wide) }) })
       } else {
-        appearance_setting(b, core, key)
+        appearance_setting(b, core, key, wide)
       }
     },
   )
@@ -59,7 +59,7 @@ pub fn appearance_node(
 ///|
 /// One of 外观's settings, by its key: 主题, 主题色, 字体 (the faces chosen, opening their page), 动画, 震动, 语言, 缩放,
 /// 拖入的文件, 侧栏. Each choice the core's prefs (`prefs.set`), shown at once.
-fn appearance_setting(v : @view.View, core : Core, key : String) -> Unit {
+fn appearance_setting(v : @view.View, core : Core, key : String, wide : () -> Bool) -> Unit {
   let prefs = fn() { (core.topic)("prefs", Map([])).get().value }
   // a choice of a few (Segmented, Seg): the kept value, or the one just chosen while the core takes it
   let choice = fn(title : String, note : String, options : Array[(String, String)], now : () -> String) {
@@ -160,12 +160,14 @@ fn appearance_setting(v : @view.View, core : Core, key : String) -> Unit {
         fn() { @sf.t("web-pages.appearance.glass.title") },
         note=fn() { @sf.t("web-pages.appearance.glass.description") },
         fn(r) {
-          let is_wide = @sf.look_node(r) is Wide
           r.box(fn(row) {
-            row.row(Is(true)).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
-            if is_wide {
-              row.width(Is(Some(220.0))).shrink(Is(0.0)) |> ignore
-            }
+            row
+            .row(Is(true))
+            .gap(Is(12.0))
+            .lines_up(Is(Some(Middle)))
+            .width(By(fn() { if wide() { Some(220.0) } else { None } }))
+            .shrink(Is(0.0))
+            |> ignore
             @sf.value_slider_node(
               row,
               fn() { @sf.t("web-pages.appearance.glass.title") },
