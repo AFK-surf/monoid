@@ -548,7 +548,9 @@ export class HostedProcess {
     if (this.gone || this.#said !== null) return;
     // (the program keeps it till what it told before is taken: what was, was said before this on its stdin, and the
     // rest, held or let go here, is let go there with it)
-    if (pidAlive(this.info.runner)) {
+    // (being killed, `kill`: its socket closing before `exit` while the runner is still exiting is its end, not a
+    // takeover)
+    if (!this.#killing && pidAlive(this.info.runner)) {
       log.warn("agents::process", "another station took the runner over; letting go", { label: this.#options.label });
       this.#options.handed?.();
       this.#frozen = true;
@@ -667,5 +669,9 @@ export class HostedProcess {
     await Promise.race([this.exited, sleep(1000)]);
     this.done();
     for (let i = 0; i < 1000 && pidAlive(this.info.runner); i++) await sleep(10);
+    // (its runner gone with neither `exit` nor `closed` told: its end is settled here all the same)
+    if (!this.#frozen && !this.gone && this.#said === null && !pidAlive(this.info.runner)) {
+      this.inTurn(() => this.closed_());
+    }
   }
 }
