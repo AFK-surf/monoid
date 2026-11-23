@@ -74,7 +74,7 @@ pub fn move_path(d : Double, v : Double, t : Double, dur : Double) -> (Double, D
   }
   let w = move_k / dur
   let b = v + w * d
-  let s = w * t
+  let s = move_k * t / dur
   let e = @dmath.exp(-s)
   let db = d + b * t
   let x = db * e
@@ -255,7 +255,7 @@ pub fn come_back_path(d : Double, a : Double, w : Double, t : Double, dur : Doub
   let k = wm * move_k + (1.0 - wm) * come_back_k
   let om = k / dur
   let c1 = om * d
-  let x = om * t
+  let x = k * t / dur
   let e = @dmath.exp(-x)
   let left = @dmath.exp(-k)
   let end2 = 1.0 - (1.0 + k) * left

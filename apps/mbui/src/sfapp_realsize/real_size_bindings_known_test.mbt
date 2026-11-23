@@ -658,7 +658,7 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide chat-job chatJobs compact/job": 27,
   "wide chat-job jobLog lines=300/line": 17,
   "wide chat-jobs chat compact/thing": 94,
-  "wide chat-jobs chat compact/screen": 45,
+  "wide chat-jobs chat compact/screen": 37,
   "wide chat-jobs chat compact/message": 103,
   "wide chat-jobs chatJobs compact summary/job": 2,
   "wide chat-jobs job/job": 5,
