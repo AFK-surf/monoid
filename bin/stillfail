@@ -630,20 +630,39 @@ PLAN
   "lock status"|"lock reset") what=$2; shift 2; exec "$station" lock "$what" "$@" --data "$data" ;;
   "heap "*) exec "$station" heap --data "$data" ;;
   "admin "*)
+    # Node's admin CLI (station/admin-cli.js in a release, bin/admin-cli.ts in a clone). The MoonBit reader's port
+    # (station/mb/src/station_main/admin_cli.mbt) only when STILLFAIL_ADMIN_ENGINE=moonbit says so, or where there is no
+    # Node or no admin CLI (a release without Node). Both are told the data as $STILLFAIL_DATA (the reader as --data
+    # too); a --data of the person's own, after it, wins in either.
     shift
+    cmd=${STILLFAIL_CMD:-$(basename "$0")}
     reader=${STILLFAIL_MB_READER:-$here/station/stillfail-reader}
-    if [ -x "$reader" ]; then
-      STILLFAIL_CMD=$(basename "$0") STILLFAIL_DATA=$data exec "$reader" admin "$@" --data "$data"
+    engine=${STILLFAIL_ADMIN_ENGINE:-}
+    case "$engine" in ""|node|moonbit) ;; *) echo "stillfail admin: STILLFAIL_ADMIN_ENGINE must be node or moonbit, not $engine" >&2; exit 2 ;; esac
+    if [ "$engine" != moonbit ]; then
+      # Node: $STILLFAIL_NODE, else the release's own, else the PATH's.
+      node=""
+      for at in "${STILLFAIL_NODE:-}" "$here/node/bin/node"; do
+        [ -n "$at" ] && [ -x "$at" ] && [ ! -d "$at" ] && { node=$at; break; }
+      done
+      [ -n "$node" ] || node=$(command -v node 2>/dev/null || true)
+      entry=""
+      if [ -f "$here/station/admin-cli.js" ]; then entry=$here/station/admin-cli.js
+      elif [ -f "$here/bin/admin-cli.ts" ]; then entry=$here/bin/admin-cli.ts
+      fi
+      if [ -n "$node" ] && [ -n "$entry" ]; then
+        STILLFAIL_CMD=$cmd STILLFAIL_DATA=$data exec "$node" "$entry" "$@"
+      fi
+      [ "$engine" != node ] || { echo "stillfail admin: STILLFAIL_ADMIN_ENGINE=node, but no Node with admin-cli in $here/station or $here/bin (unset it to use $reader)" >&2; exit 1; }
     fi
-    node=${STILLFAIL_NODE:-$here/node/bin/node}
-    [ -x "$node" ] || node=$(command -v node 2>/dev/null || true)
-    [ -n "$node" ] || { echo "stillfail admin: node not found" >&2; exit 1; }
-    if [ -f "$here/station/admin-cli.js" ]; then
-      STILLFAIL_CMD=$(basename "$0") STILLFAIL_DATA=$data exec "$node" "$here/station/admin-cli.js" "$@"
-    elif [ -f "$here/bin/admin-cli.ts" ]; then
-      STILLFAIL_CMD=$(basename "$0") STILLFAIL_DATA=$data exec "$node" "$here/bin/admin-cli.ts" "$@"
+    if [ -x "$reader" ]; then
+      STILLFAIL_CMD=$cmd STILLFAIL_DATA=$data exec "$reader" admin --data "$data" "$@"
+    fi
+    if [ "$engine" = moonbit ]; then
+      echo "stillfail admin: STILLFAIL_ADMIN_ENGINE=moonbit, but $reader is not there (unset it to use Node's admin-cli)" >&2
     else
-      echo "stillfail admin: admin-cli not found in $here/station or $here/bin" >&2; exit 1
-    fi ;;
+      echo "stillfail admin: neither Node with admin-cli (in $here/station or $here/bin) nor $reader is here; reinstall still.fail" >&2
+    fi
+    exit 1 ;;
   *) echo "usage: stillfail start [--port N] | stillfail move <folder> | stillfail status | stillfail update [--beta|--stable] | stillfail station enroll <cloud-origin> <token> [--provider comma] [--lock <hash>] [--join | --stay] | stillfail station id | stillfail lock status | stillfail lock reset [--workspace <id>] | stillfail heap | stillfail admin <command>" >&2; exit 2 ;;
 esac

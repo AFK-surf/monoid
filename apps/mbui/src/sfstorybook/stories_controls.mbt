@@ -97,6 +97,7 @@ fn stories_controls(_tips : @sf.TipLayer) -> Array[Story] {
               @sf.choice("fable", "Fable 5.2", note="长文和故事", icon="text"),
               @sf.choice("gpt", "GPT-6.2 Sol", note="Codex 订阅", icon="terminal"),
               @sf.choice("gemini", "Gemini 4 Neon", note="Antigravity", icon="star"),
+              @sf.choice("qwen", "Qwen 4 Max", note="通义", icon="web"),
               @sf.choice("kimi", "Kimi K3", note="暂不可用", icon="other", disabled=true),
             ]
             side_by_side(card, fn(r) {

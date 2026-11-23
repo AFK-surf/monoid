@@ -795,6 +795,10 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       }
       None => ()
     }
+    let has_particles = match tree {
+      Some(tr) => tr.has_particle_flights()
+      None => false
+    }
     for i in 0..<k {
       let n = self.nodes[i]
       // (words the window's tree draws in a box of its own, laid out as that box, no size of their own (ident 0, width
@@ -835,7 +839,13 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
         Some(id) => old_placed.iter().any(fn(p) { p.0 == id })
         None => true
       }
+      let in_particle = has_particles &&
+        (match (tree, tree_frame_ids.get(i)) {
+          (Some(tr), Some(id)) => tr.in_particle_flight(id)
+          _ => false
+        })
       let shows = placed &&
+        !in_particle &&
         al[i] > 0.05 &&
         nw > 0.0 &&
         dmin(bot0, c_bot[i]) > dmax(top0, c_top[i]) &&

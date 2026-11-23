@@ -116,16 +116,43 @@ pub struct Serving {
   in_workspace : (String, String) -> Bool
   hello : (String, String, Array[String], Bool) -> Array[String]
   accept_others : (() -> Bool)?
+  guard_write : (async (String, String, async () -> Unit) -> Unit)?
 }
 
 ///|
-pub async fn serve(s : Serving, peer : String, request : J, body : Body?, workspace : String?) -> Answer {
-  let fs = s.place.fs
+priv struct ServePlace {
+  origins : async (String) -> Array[(String, Array[J])]
+  held : async (String, String) -> Held
+  path_of : async (String, String, String?, String) -> String?
+  stat_size : async (String) -> Double
+  put_file : async (String, String, String, Body) -> Unit
+  put : async (String, String, String, String, String, Body) -> Unit
+  drop : async (String, String, String, Array[String], Array[String]) -> Unit
+}
+
+///|
+async fn serve_place(
+  place : ServePlace,
+  in_workspace : (String, String) -> Bool,
+  hello : (String, String, Array[String], Bool) -> Array[String],
+  accept_others : (() -> Bool)?,
+  guard_write : (async (String, String, async () -> Unit) -> Unit)?,
+  peer : String,
+  request : J,
+  body : Body?,
+  workspace : String?,
+) -> Answer {
   let ws = str_at(request, "workspace").unwrap_or("")
-  if !is_workspace(ws) || (workspace is Some(w) && w != ws) || !(s.in_workspace)(peer, ws) {
+  if !is_workspace(ws) || (workspace is Some(w) && w != ws) || !in_workspace(peer, ws) {
     raise refused("not a station of this workspace")
   }
   let origin = str_at(request, "origin").unwrap_or("")
+  let run_write = async fn(f : async () -> Unit) -> Unit {
+    match guard_write {
+      Some(g) => g(ws, origin, f)
+      None => f()
+    }
+  }
   let text = (v : J) => {
     let b = @utf8.encode(stringify(v))
     { value: jo([("size", ji(b.length()))]), body: Some(Whole(b)) }
@@ -137,18 +164,18 @@ pub async fn serve(s : Serving, peer : String, request : J, body : Body?, worksp
         Some(Bool(false)) => false
         _ => true
       }
-      let my_accepts = match s.accept_others {
+      let my_accepts = match accept_others {
         Some(f) => f()
         None => true
       }
-      { value: jo([("formerly", jstrs((s.hello)(peer, ws, formerly, peer_accepts))), ("acceptCopies", jb(my_accepts))]), body: None }
+      { value: jo([("formerly", jstrs(hello(peer, ws, formerly, peer_accepts))), ("acceptCopies", jb(my_accepts))]), body: None }
     }
-    Some("replica.list") => text(origins_json(s.place.origins(ws)))
+    Some("replica.list") => text(origins_json((place.origins)(ws)))
     Some("replica.held") => {
       if !is_station(origin) {
         raise refused("not a station")
       }
-      text(s.place.held(ws, origin).to_json())
+      text((place.held)(ws, origin).to_json())
     }
     Some("replica.get") => {
       let gen = match at(request, "gen") {
@@ -161,15 +188,12 @@ pub async fn serve(s : Serving, peer : String, request : J, body : Body?, worksp
       if !is_station(origin) || (gen is Some(g) && !is_gen(g)) {
         raise refused("not a copy's name")
       }
-      guard s.place.path_of(ws, origin, gen, name) is Some(path) else { raise refused("\{name} is not kept here") }
-      let size = match fs.stat(path) {
-        Some((_, n, _)) => n
-        None => 0.0
-      }
+      guard (place.path_of)(ws, origin, gen, name) is Some(path) else { raise refused("\{name} is not kept here") }
+      let size = (place.stat_size)(path)
       { value: jo([("size", jn(size))]), body: Some(File(path, 0.0, size)) }
     }
     Some("replica.put") => {
-      match s.accept_others {
+      match accept_others {
         Some(f) if !f() => raise refused("not accepting copies")
         _ => ()
       }
@@ -180,7 +204,7 @@ pub async fn serve(s : Serving, peer : String, request : J, body : Body?, worksp
         if !is_hash(name) {
           raise refused("not a file's hash")
         }
-        s.place.put_file_from(ws, origin, name, b.reader(fs))
+        run_write(async fn() { (place.put_file)(ws, origin, name, b) })
         return { value: jo([("ok", jb(true))]), body: None }
       }
       let gen = str_at(request, "gen").unwrap_or("")
@@ -190,7 +214,7 @@ pub async fn serve(s : Serving, peer : String, request : J, body : Body?, worksp
       if kind != "batch" && kind != "head" {
         raise refused("not a kind of copy")
       }
-      s.place.put(ws, origin, gen, kind, name, b.whole(fs, most=peer_most))
+      run_write(async fn() { (place.put)(ws, origin, gen, kind, name, b) })
       { value: jo([("ok", jb(true))]), body: None }
     }
     Some("replica.drop") => {
@@ -198,9 +222,29 @@ pub async fn serve(s : Serving, peer : String, request : J, body : Body?, worksp
       if peer != origin {
         raise refused("only the station a copy is of folds it")
       }
-      s.place.drop(ws, origin, text_at(request, "gen"), strings_of(at(request, "batches")), strings_of(at(request, "files")))
+      run_write(async fn() { (place.drop)(ws, origin, text_at(request, "gen"), strings_of(at(request, "batches")), strings_of(at(request, "files"))) })
       { value: jo([("ok", jb(true))]), body: None }
     }
     _ => raise refused("no such replica request")
   }
+}
+
+///|
+pub async fn serve(s : Serving, peer : String, request : J, body : Body?, workspace : String?) -> Answer {
+  let fs = s.place.fs
+  let place : ServePlace = {
+    origins: async fn(ws) { s.place.origins(ws) },
+    held: async fn(ws, origin) { s.place.held(ws, origin) },
+    path_of: async fn(ws, origin, gen, name) { s.place.path_of(ws, origin, gen, name) },
+    stat_size: async fn(path) {
+      match fs.stat(path) {
+        Some((_, n, _)) => n
+        None => 0.0
+      }
+    },
+    put_file: async fn(ws, origin, name, b) { s.place.put_file_from(ws, origin, name, b.reader(fs)) },
+    put: async fn(ws, origin, gen, kind, name, b) { s.place.put(ws, origin, gen, kind, name, b.whole(fs, most=peer_most)) },
+    drop: async fn(ws, origin, gen, batches, files) { s.place.drop(ws, origin, gen, batches, files) },
+  }
+  serve_place(place, s.in_workspace, s.hello, s.accept_others, s.guard_write, peer, request, body, workspace)
 }

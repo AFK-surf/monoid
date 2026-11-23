@@ -1,15 +1,15 @@
-// The station as the MoonBit program runs it itself, with no Node and no main.js (station/mb src/station_main, run by
-// stillfail-reader as `stillfail-reader <command>`): its commands held to the TypeScript's (cli.ts) on the same data,
-// the hooks to the .mjs files they are written from (agents/repo-rules-hook.mjs, agents/subagent-hook.mjs) on the same
-// input, local links and the images' codecs to the mesh addon's (native/mesh), what sys.c says of the machine to
-// node:os, the words it carries to the catalog, and `run` under a launcher of the test's (ops/launcher.ts's channel on
-// a descriptor): ready, serving, its heartbeat, the loopback port, the status socket, the agents' door, a handover to a
-// second process with what it carries, and a stop that leaves no process behind. Every program is run with a PATH that
-// names no directory with a Node in it.
+// The whole station as the MoonBit program runs it itself, with no Node and no main.js (station/mb/src/station_main,
+// run by stillfail-reader as `stillfail-reader <command>`). station_main is frozen for new TypeScript features
+// (station/AGENTS.md), so nothing here holds it to the living TypeScript, its hooks, the mesh addon or the catalog:
+// only to itself and to what does not move (node:os, Date). Its parts' registry, its channel, its previews, what
+// sys.c says of the machine, its children and locks, and `run` under a launcher of the test's (ops/launcher.ts's channel
+// on a descriptor): ready, serving, its heartbeat, the loopback port, the status socket, the agents' door, a handover to
+// a second process with what it carries, and a stop that leaves no process behind. Every program is run with a PATH
+// that names no directory with a Node in it.
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { type AddressInfo, createServer, type Server } from "node:net";
 import { createServer as httpServer, request } from "node:http";
 import os, { tmpdir } from "node:os";
@@ -18,13 +18,6 @@ import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { deflateSync } from "node:zlib";
-import zhStation from "../../client/i18n/catalog/zh/station.json" with { type: "json" };
-import enStation from "../../client/i18n/catalog/en/station.json" with { type: "json" };
-import { enroll as tsEnroll, id as tsId, joinWorkspace, lockCommand, status as tsStatus } from "../src/cli.ts";
-import { loadKey } from "../src/cloud/key.ts";
-import { loadMesh } from "../src/mesh/native.ts";
-import { launcherEventOf, reportLauncherEvents } from "../src/ops/launcher-events.ts";
-import { answer as loopbackAnswer } from "../src/ops/loopback.ts";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { mbHarnessBinary } from "./mb-harness.ts";
 import { Store } from "../src/store/store.ts";
@@ -59,19 +52,6 @@ const noNode = (more: Record<string, string> = {}) => ({ PATH: fresh("path"), HO
 function run(args: string[], o: { env?: Record<string, string>; input?: string } = {}) {
   const r = spawnSync(binary!, args, { env: o.env ?? noNode(), input: o.input ?? "", encoding: "utf8", timeout: 60_000 });
   return { code: r.status, out: r.stdout, err: r.stderr };
-}
-
-/// What console.log would have printed of `f`.
-function logged(f: () => void): string {
-  const lines: string[] = [];
-  const was = console.log;
-  console.log = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
-  try {
-    f();
-  } finally {
-    console.log = was;
-  }
-  return lines.join("\n") + (lines.length > 0 ? "\n" : "");
 }
 
 // ── the harness ──
@@ -111,40 +91,6 @@ const ok = async (op: string, a: Record<string, unknown> = {}) => {
 
 // ── the commands ──
 
-test("id, lock status and status, as cli.ts says them, on the same data", { skip }, () => {
-  const data = fresh("data");
-  const first = run(["id", "--data", data]);
-  assert.equal(first.code, 0, first.err);
-  assert.equal(first.out, logged(() => tsId(data)), "the key the program made is the one cli.ts reads");
-  assert.equal(run(["id", "--data", data]).out, first.out, "made once");
-  assert.equal(first.out.trim(), loadKey(data).id);
-  // no lock, no workspace, nothing running
-  assert.equal(run(["lock", "status", "--data", data]).out, `${lockCommand(data, "status")}\n`);
-  assert.equal(run(["lock", "reset", "--data", data]).out, `${lockCommand(data, "reset")}\n`);
-  assert.equal(run(["lock", "reset", "--workspace", "w9", "--data", data]).out, `${lockCommand(data, "reset", "w9")}\n`);
-  assert.equal(run(["lock", "nonsense", "--data", data]).code, 2);
-  const offline = run(["status", "--data", data]);
-  assert.equal(offline.code, 0);
-  assert.equal(offline.out, `${tsStatus(data)}\n`);
-  // in a workspace, removed from one, a rig's: as cli.ts reads the same cloud.json
-  const state = { origin: "https://app.still.fail", station: loadKey(data).id, workspace: "w1", workspace_name: "团队", name: "mac", relay_url: "", relay_urls: [], grant_keys: null, peers: [], revocations: [] };
-  for (const s of [state, { ...state, removed_at: 1_794_900_000, removed_code: 4004 }, { ...state, removed_at: 1_794_900_000, removed_code: 404 }, { ...state, rig: { owner: "u1", owner_email: "a@b.c", owner_name: "A", person: "ab".repeat(32) } }]) {
-    writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify(s));
-    assert.equal(run(["status", "--data", data]).out, `${tsStatus(data)}\n`, JSON.stringify(s));
-    // (its security code where it is in a workspace, FB-45; waiting for a lock named, the code to check)
-    assert.equal(run(["lock", "status", "--data", data]).out, `${lockCommand(data, "status")}\n`, JSON.stringify(s));
-    writeFileSync(join(data, "mesh", "lock-pending.json"), JSON.stringify({ hash: "cd".repeat(32) }));
-    assert.equal(run(["lock", "status", "--data", data]).out, `${lockCommand(data, "status")}\n`, `pending ${JSON.stringify(s)}`);
-    assert.equal(run(["status", "--data", data]).out, `${tsStatus(data)}\n`, `pending ${JSON.stringify(s)}`);
-    rmSync(join(data, "mesh", "lock-pending.json"));
-  }
-  // in English, as config.json says
-  writeFileSync(join(data, "config.json"), JSON.stringify({ language: "en" }));
-  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify(state));
-  const en = run(["status", "--data", data]).out;
-  assert.match(en, /^Data directory/m);
-});
-
 /// A control plane of the test's (cloud/provider.ts's paths): each enroll and join answered as `answer` says, what was
 /// asked of it kept.
 async function plane(answer: (path: string, body: any) => { status: number; body: unknown }) {
@@ -183,98 +129,30 @@ function runSoon(args: string[]): Promise<{ code: number | null; out: string; er
   });
 }
 
-/// What console.log printed of an async `f`.
-async function loggedSoon(f: () => Promise<unknown>): Promise<string> {
-  const lines: string[] = [];
-  const was = console.log;
-  console.log = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
-  try {
-    await f();
-  } finally {
-    console.log = was;
-  }
-  return lines.join("\n") + (lines.length > 0 ? "\n" : "");
-}
-
-test("enroll, with --lock, --rig, --join and --stay, as cli.ts enrolls: the same proof asked, the same cloud.json written, the same words", { skip }, async () => {
+test("enroll and --join: the proof the plane is asked for is the station's own Ed25519 signature, and its place is written", { skip }, async () => {
   const p = await plane((path, body) => {
-    if (body.token === "refused") return { status: 400, body: { error: "token_not_found" } };
     if (path.endsWith("/join")) return { status: 200, body: { workspace: `w-${body.token}`, workspace_name: `团队 ${body.token}`, name: "mac" } };
-    return { status: 200, body: { workspace: "w1", workspace_name: "团队", name: "mac", relay_url: "https://relay.example", relay_urls: ["https://relay.example"], grant_keys: { k: 1 }, ...(body.rig ? { rig: { owner: "u1", owner_email: "a@b.c", owner_name: "A" } } : {}) } };
+    return { status: 200, body: { workspace: "w1", workspace_name: "团队", name: "mac", relay_url: "", relay_urls: [], grant_keys: null } };
   });
-  const lock = "ab".repeat(32);
-  const rig = "cd".repeat(32);
-  // each command on two data directories of one key: the program's, and cli.ts's
-  const pair = () => {
-    const mb = fresh("enroll-mb");
-    const ts = fresh("enroll-ts");
-    run(["id", "--data", mb]);
-    mkdirSync(join(ts, "mesh"), { recursive: true });
-    copyFileSync(join(mb, "mesh", "secret.key"), join(ts, "mesh", "secret.key"));
-    return { mb, ts, id: loadKey(mb).id };
-  };
-  const same = (d: { mb: string; ts: string }, what: string) => {
-    const read = (dir: string, ...p: string[]) => (existsSync(join(dir, ...p)) ? readFileSync(join(dir, ...p), "utf8") : null);
-    assert.deepEqual(JSON.parse(read(d.mb, "mesh", "cloud.json")!), JSON.parse(read(d.ts, "mesh", "cloud.json")!), `${what}: cloud.json`);
-    for (const f of ["lock-pending.json"]) assert.equal(read(d.mb, "mesh", f), read(d.ts, "mesh", f), `${what}: ${f}`);
-  };
-  const lastTwo = () => {
-    const [a, b] = p.asked.slice(-2);
-    return [a!, b!];
-  };
-  const proofs = (d: { id: string }, token: string) => {
-    const [a, b] = lastTwo();
-    assert.equal(a.path, b.path);
-    assert.deepEqual({ ...a.body, signature: "" }, { ...b.body, signature: "" }, "the same asked of the plane");
-    for (const x of [a, b]) assert.ok(signedBy(d.id, `stillfail-station-enroll-v1:${p.origin}:${token}:${d.id}`, x.body.signature), "its proof the station's");
-    return a;
-  };
-  // a station
-  const one = pair();
-  const said = await runSoon(["enroll", `${p.origin}/`, "t1", "--data", one.mb]);
+  const data = fresh("enroll");
+  const id = run(["id", "--data", data]).out.trim();
+  assert.match(id, /^[0-9a-f]{64}$/);
+  const said = await runSoon(["enroll", `${p.origin}/`, "t1", "--data", data]);
   assert.equal(said.code, 0, said.err);
-  assert.equal(said.out, await loggedSoon(() => tsEnroll(one.ts, p.origin, "t1")));
-  assert.equal(proofs(one, "t1").path, "/v1/stations/enroll");
-  same(one, "enrolled");
-  // one more workspace, beside it (--join), and --stay (the installers'), which joins where it is in one
-  for (const [flag, token] of [["--join", "t2"], ["--stay", "t3"]] as const) {
-    const out = await runSoon(["enroll", p.origin, token, flag, "--data", one.mb]);
-    assert.equal(out.code, 0, out.err);
-    const joined = await joinWorkspace(one.ts, token, undefined, { atMachine: true });
-    assert.equal(joined.workspace, `w-${token}`);
-    assert.equal(proofs(one, token).path, "/v1/stations/join");
-    assert.equal(lastTwo()[0].body.locks, true);
-    same(one, flag);
-  }
-  // with a lock's hash: pinned once the plane brings it, its code said
-  const locked = pair();
-  const lockedSaid = await runSoon(["enroll", p.origin, "t4", "--lock", lock, "--data", locked.mb]);
-  assert.equal(lockedSaid.out, await loggedSoon(() => tsEnroll(locked.ts, p.origin, "t4", "stillfail", lock)));
-  same(locked, "--lock");
-  // a rig, its person's lock's hash
-  const rigged = pair();
-  const rigSaid = await runSoon(["enroll", p.origin, "t5", "--rig", rig, "--data", rigged.mb]);
-  assert.equal(rigSaid.out, await loggedSoon(() => tsEnroll(rigged.ts, p.origin, "t5", "stillfail", undefined, rig)));
-  assert.equal(proofs(rigged, "t5").body.rig, true);
-  same(rigged, "--rig");
-  // a rig is not made a station, nor a station a rig, while it is in its workspace
-  const turned = await runSoon(["enroll", p.origin, "t6", "--data", rigged.mb]);
-  assert.equal(turned.code, 1);
-  await assert.rejects(() => tsEnroll(rigged.ts, p.origin, "t6"), (e: Error) => turned.err.includes(e.message));
-  // refused by the plane, its words said
-  const refused = await runSoon(["enroll", p.origin, "refused", "--data", pair().mb]);
-  assert.equal(refused.code, 1);
-  assert.match(refused.err, /still\.fail cloud answered 400: \{"error":"token_not_found"\}/);
-  // usage: no token, a provider not known, a lock's hash not one
-  for (const args of [["enroll", p.origin], ["enroll", p.origin, "t", "--provider", "nobody"], ["enroll", p.origin, "t", "--lock", "xyz"]]) assert.equal((await runSoon([...args, "--data", fresh("u")])).code, 2);
-  // its version, its release's (`--app`'s BUILD), as ops/version.ts says it
-  const app = fresh("app");
-  writeFileSync(join(app, "BUILD"), "9412\n");
-  assert.equal((await runSoon(["enroll", p.origin, "t7", "--app", app, "--data", pair().mb])).code, 0);
-  assert.equal(p.asked.at(-1)!.body.version, "0.1.9412");
+  const asked = p.asked.at(-1)!;
+  assert.equal(asked.path, "/v1/stations/enroll");
+  assert.ok(signedBy(id, `stillfail-station-enroll-v1:${p.origin}:t1:${id}`, asked.body.signature), "its proof is the station's");
+  assert.ok(!signedBy(id, `stillfail-station-enroll-v1:${p.origin}:t2:${id}`, asked.body.signature), "over its own token alone");
+  const place = JSON.parse(readFileSync(join(data, "mesh", "cloud.json"), "utf8"));
+  assert.deepEqual([place.station, place.workspace, place.origin], [id, "w1", p.origin]);
+  const joined = await runSoon(["enroll", p.origin, "t2", "--join", "--data", data]);
+  assert.equal(joined.code, 0, joined.err);
+  const join_ = p.asked.at(-1)!;
+  assert.equal(join_.path, "/v1/stations/join");
+  assert.ok(signedBy(id, `stillfail-station-enroll-v1:${p.origin}:t2:${id}`, join_.body.signature), "its join's proof is the station's");
 });
 
-test("the parts' registry (parts.mbt) as parts.ts keeps it: tools offered, what is carried over and taken up, door places, cards, streams", { skip }, async () => {
+test("the parts' registry (parts.mbt): tools offered, what is carried over and taken up, door places, cards, streams", { skip }, async () => {
   assert.deepEqual(await ok("parts"), {
     tools: ["always", "offered"],
     toolsOff: ["always"],
@@ -306,172 +184,18 @@ test("channel: said, set on the config when no station takes the ask, said again
   assert.equal(bad.code, 1);
   assert.match(bad.err, /nightly/);
   assert.equal(run(["channel", "a", "b", "--data", data]).code, 2);
-  // update: in no workspace, refused as cli.ts refuses it
+  // update: in no workspace, refused with its words
   const update = run(["update", "--app", app, "--data", data]);
   assert.equal(update.code, 1);
-  assert.equal(update.err.trim(), `Error: ${(zhStation as Record<string, string>)["station.updates.notJoined"]}`);
+  assert.match(update.err, /^Error: \S/);
   assert.equal(run(["update", "--data", data]).code, 2);
 });
 
-/// station_main/words_catalog.mbt as the catalog makes it.
-function wordsCatalog(): string {
-  const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  return `// The station's words (client/i18n/catalog/{zh,en}/station.json), as the program carries them: what the TypeScript
-// station bundles with itself (ops/i18n.ts). Written from the catalog as it is; station/test/mb-station-e2e.test.ts
-// holds it to the catalog (a change there writes this again: the test says how).
-
-///|
-pub let station_zh : String = "${esc(JSON.stringify(zhStation))}"
-
-///|
-pub let station_en : String = "${esc(JSON.stringify(enStation))}"
-`;
-}
-
-test("the words the program carries are the catalog's", { skip }, async () => {
-  // station_main/words_catalog.mbt is written from the catalog: STILLFAIL_WRITE_WORDS=1 writes it again, after a
-  // change there (the program built again after it).
-  const file = join(import.meta.dirname, "..", "mb", "src", "station_main", "words_catalog.mbt");
-  if (process.env.STILLFAIL_WRITE_WORDS === "1") writeFileSync(file, wordsCatalog());
-  assert.equal(readFileSync(file, "utf8"), wordsCatalog(), "words_catalog.mbt is the catalog's: STILLFAIL_WRITE_WORDS=1 writes it again");
-  const words = await ok("words");
-  assert.deepEqual(words.zh, zhStation);
-  assert.deepEqual(words.en, enStation);
+test("the program's times in ISO 8601, as Date says them", { skip }, async () => {
   for (const ms of [0, 1_794_925_142_744, 951_782_400_000, -86_400_001]) assert.equal(await ok("iso", { ms }), new Date(ms).toISOString());
 });
 
-test("the loopback port says what ops/loopback.ts says", { skip }, async () => {
-  const place = { origin: "https://app.still.fail/", workspace: "w1", workspace_name: "团队", station: "s1" };
-  const cases: [string, string | null, boolean, unknown, "zh" | "en"][] = [
-    ["/healthz", null, true, null, "zh"],
-    ["/healthz", null, false, null, "zh"],
-    ["/admin/api/x", null, true, place, "en"],
-    ["/admin/chats/c1", "a=1", true, place, "zh"],
-    ["/admin/settings/accounts/p1", null, true, place, "zh"],
-    ["/admin/settings/memory", null, true, place, "zh"],
-    ["/admin/bots/b", null, true, place, "zh"],
-    ["/", null, true, place, "zh"],
-    ["/admin", null, true, null, "en"],
-    ["/admin", null, true, { ...place, removed_at: 1_794_900_000 }, "zh"],
-    ["/elsewhere", null, true, place, "zh"],
-  ];
-  for (const [path, query, ready, p, lang] of cases) {
-    const ts = loopbackAnswer(path, query, ready, p as any, lang);
-    const mb = await ok("loopback", { path, query, ready, place: p, lang });
-    assert.deepEqual({ status: mb.status, body: mb.body, location: mb.headers.location }, { status: ts.status, body: ts.body, location: ts.headers.location }, `${path} ${JSON.stringify(p)}`);
-  }
-});
-
-// ── the hooks ──
-
-/// A repository with rules at its root and below.
-function repository(): string {
-  const repo = fresh("repo");
-  mkdirSync(join(repo, ".git"));
-  mkdirSync(join(repo, "app", "deep"), { recursive: true });
-  writeFileSync(join(repo, "AGENTS.md"), "# Root rules\n\n- one\n- two\n");
-  writeFileSync(join(repo, "app", "CLAUDE.md"), "@AGENTS.md\n");
-  writeFileSync(join(repo, "app", "AGENTS.md"), `# App\n\n${"A paragraph of the app's rules, long enough to be cut between paragraphs.\n\n".repeat(220)}`);
-  writeFileSync(join(repo, "app", "deep", "x.ts"), "x");
-  return repo;
-}
-
-test("the hooks: subagent-hook.mjs and repo-rules-hook.mjs, as Node runs them, run by the program itself", { skip }, () => {
-  const hooks = join(import.meta.dirname, "..", "assets", "agents");
-  const subagent = join(hooks, "subagent-hook.mjs");
-  for (const [input, writes] of [
-    [{ agent_id: "a1", tool_name: "mcp__stillfail__chat_post" }, undefined],
-    [{ agent_id: "", tool_name: "mcp__stillfail__chat_post" }, undefined],
-    [{ tool_name: "mcp__stillfail__chat_state" }, undefined],
-    [{ agent_id: "a2", tool_name: "mcp__stillfail__slack_api", tool_input: { method: " chat.postMessage " } }, "chat.,reactions.add"],
-    [{ agent_id: "a2", tool_name: "mcp__stillfail__slack_api", tool_input: { method: "conversations.history" } }, "chat.,reactions.add"],
-    [{ agent_id: "a3", tool_name: "mcp__stillfail__slack_api", tool_input: { method: "chat.update" } }, undefined],
-    [{ agent_id: "a4" }, undefined],
-  ] as const) {
-    const args = writes === undefined ? [] : [writes];
-    const node = spawnSync(process.execPath, [subagent, ...args], { input: JSON.stringify(input), encoding: "utf8" });
-    const mb = run([subagent, ...args], { input: JSON.stringify(input) });
-    assert.equal(mb.code, 0);
-    assert.equal(mb.out, node.stdout, JSON.stringify(input));
-  }
-  assert.equal(run([subagent], { input: "not json" }).out, "");
-
-  const rules = join(hooks, "repo-rules-hook.mjs");
-  const repo = repository();
-  // each side its own temporary directory (where the hook keeps what it told): compared after each call
-  const nodeTmp = fresh("tmp-node");
-  const mbTmp = fresh("tmp-mb");
-  const steps: Record<string, unknown>[] = [
-    { hook_event_name: "PostToolUse", session_id: "s1", cwd: repo, tool_input: { file_path: join(repo, "app", "deep", "x.ts") } },
-    { hook_event_name: "PostToolUse", session_id: "s1", cwd: repo, tool_input: { command: "ls app/deep" } },
-    { hook_event_name: "PostToolUse", session_id: "s1", cwd: repo, tool_input: { command: "echo hi" } },
-    { hook_event_name: "PostToolUse", session_id: "s1", cwd: repo, tool_input: { file_path: join(repo, "AGENTS.md") } },
-    { hook_event_name: "SessionStart", session_id: "s1", source: "compact" },
-    { hook_event_name: "PostToolUse", session_id: "s1", agent_id: "sub/1", cwd: join(repo, "app"), tool_input: { path: "deep" } },
-    { hookEventName: "PostToolUse", conversationId: "c1", toolCall: { args: { TargetFile: join(repo, "app", "deep", "x.ts") } } },
-    { hookEventName: "PostInvocation", conversationId: "c1" },
-    { hook_event_name: "PostToolUse", session_id: "s2", cwd: tmpdir(), tool_input: { file_path: "/nowhere/at/all" } },
-  ];
-  for (const [i, step] of steps.entries()) {
-    const node = spawnSync(process.execPath, [rules], { input: JSON.stringify(step), encoding: "utf8", env: { ...process.env, TMPDIR: nodeTmp } });
-    const mb = run([rules], { input: JSON.stringify(step), env: noNode({ TMPDIR: mbTmp }) });
-    assert.equal(mb.code, 0, mb.err);
-    assert.equal(mb.out, node.stdout, `step ${i}: ${JSON.stringify(step)}`);
-    const kept = (dir: string) => {
-      const d = join(dir, "stillfail-repo-rules");
-      return existsSync(d) ? Object.fromEntries(spawnSync("ls", [d], { encoding: "utf8" }).stdout.split("\n").filter(Boolean).map((f) => [f, JSON.parse(readFileSync(join(d, f), "utf8"))])) : {};
-    };
-    assert.deepEqual(kept(mbTmp), kept(nodeTmp), `what step ${i} kept`);
-  }
-  assert.equal(run([rules], { input: "{", env: noNode({ TMPDIR: mbTmp }) }).out, "");
-  assert.equal(run([rules], { input: JSON.stringify({ hookEventName: "PostToolUse" }), env: noNode({ TMPDIR: mbTmp, STILLFAIL_REPO_RULES: "0" }) }).out, "{}");
-});
-
-// ── local links and the images ──
-
-test("local links made into attachments, as the mesh addon (local.rs) makes them, its refusals in its words", { skip }, async () => {
-  const dir = fresh("links");
-  mkdirSync(join(dir, "films"));
-  mkdirSync(join(dir, "other"));
-  writeFileSync(join(dir, "films/新建对话-手机.mp4"), "film");
-  writeFileSync(join(dir, "report.pdf"), "report");
-  writeFileSync(join(dir, "a b.txt"), "space");
-  writeFileSync(join(dir, "other/report.pdf"), "two");
-  writeFileSync(join(dir, "code.rs"), "fn main() {}");
-  const file = join(dir, "report.pdf");
-  const cases: [string, string[]][] = [
-    ["[手机](films/新建对话-手机.mp4)\n[网页](https://example.com/a) [节](#a) <a@b.co>", []],
-    ["[报告](report.pdf)", [file]],
-    ["[手机](films/missing.mp4)", []],
-    ["[站点](www.example.com)", []],
-    [`[report](${file}) and ![img](${file})`, []],
-    [`[report](file://${file})`, []],
-    [`[bad](file://host${file})`, []],
-    [`[spaces](<${join(dir, "a b.txt")}>)`, []],
-    [`[code](${join(dir, "code.rs")}:12:3)`, []],
-    [`[code](${join(dir, "code.rs")}:12:x)`, []],
-    ["[missing](/tmp/stillfail-no-such-report.txt)", []],
-    [`[report](${join(dir, "other/report.pdf")})`, [file]],
-    [`[report][r]\n\n[r]: ${file}`, []],
-    [`\`[report](${file})\`\n\n\`\`\`\n[report](${file})\n\`\`\``, []],
-    [`[esc](${file.replace("report", "rep\\ort")})`, []],
-    [`[nested [inner](${file})](https://x.y)`, []],
-    [`<file://${file}>`, []],
-    ["/o/route and [route](/o/w/s/k) [proto](//cdn.example.com/x)", []],
-    [`[t](${file} "a title")`, []],
-  ];
-  for (const [text, paths] of cases) {
-    let ts: unknown;
-    try {
-      ts = { ok: loadMesh().prepareLocalLinks(text, [...paths], dir) };
-    } catch (e) {
-      ts = { error: (e as Error).message };
-    }
-    const said = await harness().send("prepareLocalLinks", { text, paths, workspace: dir });
-    const mb = said.error !== undefined ? { error: said.error } : { ok: said.ok };
-    assert.deepEqual(mb, ts, text);
-  }
-});
+// ── the images ──
 
 /// A PNG of `w`×`h` (RGBA), stripes and a gradient, clear on its left third where `clear`.
 function png(w: number, h: number, clear = false): Buffer {
@@ -510,54 +234,9 @@ function png(w: number, h: number, clear = false): Buffer {
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw, { level: 0 })), chunk("IEND", Buffer.alloc(0))]);
 }
 
-test("what the launcher kept of its recoveries, said as launcher-events.ts says it: once, its own fields, at its level", { skip }, async () => {
-  const lines = [
-    JSON.stringify({ at: 1795091426000, kind: "node_hung_killed", level: "error", pid: 4242, version: "0.1.1000", uptimeMs: 3600000, heartbeatTimeoutMs: 90000, healthAgeMs: 92000, rssBytes: 734003200, openFds: 812, heldMaxMs: 1200, front: "ok", presenceOnline: true, relayConflict: false }),
-    JSON.stringify({ at: 2, kind: "node_crashed", pid: 7, how: "was ended by signal 9", taken: true, failures: 0, home: "/Users/someone", nested: { a: 1 } }),
-    JSON.stringify({ at: 3, kind: "front_gone", level: "error", retries: 2 }),
-    JSON.stringify({ at: 4, kind: "retiring_killed", level: "info", pid: 9, version: "0.1.9", exitTimeoutMs: 30000 }),
-    JSON.stringify({ at: 5, kind: "handoff_failed", reason: "the new station exited with 1 before it was ready" }),
-    "{\"at\":1,\"kind\":\"node_cra",
-    "",
-    "[1,2]",
-    "null",
-    "{\"at\":6}",
-    "{\"at\":7,\"kind\":\"\"}",
-  ];
-  for (const line of lines) assert.deepEqual(await ok("launcherEventLine", { line }), launcherEventOf(line), line);
-  const mb = fresh("data");
-  const ts = fresh("data");
-  for (const data of [mb, ts]) {
-    mkdirSync(join(data, "run"));
-    writeFileSync(join(data, "run", "launcher-events.jsonl"), lines.join("\n") + "\n");
-  }
-  const said: { level: string; message: string; fields: Record<string, unknown> }[] = [];
-  const n = await reportLauncherEvents(ts, (level, message, fields) => void said.push({ level, message, fields }));
-  assert.equal(n, 5);
-  assert.deepEqual(await ok("launcherEvents", { data: mb }), { n, said });
-  assert.deepEqual(readdirSync(join(mb, "run")), [], "the file taken and removed");
-  assert.deepEqual(await ok("launcherEvents", { data: mb }), { n: 0, said: [] }, "said once");
-  assert.deepEqual(await ok("launcherEvents", { data: join(mb, "none") }), { n: 0, said: [] }, "no run/ at all");
-});
-
-test("the images' thumbnails and ThumbHashes, as the mesh addon (thumbs.rs) makes them: the same choices and sizes", { skip }, async () => {
+test("the program's previews: none for a small image, a JPEG of a large one kept and asked again, a kept WebP taken", { skip }, async () => {
   const dir = fresh("thumbs");
-  const files: [string, Buffer][] = [["photo.png", png(1600, 900)], ["clear.png", png(1000, 800, true)], ["small.png", png(10, 10)], ["moving.gif", png(400, 400)], ["broken.jpg", Buffer.alloc(40_000, 0x11)], ["tall.png", png(300, 2000)]];
-  for (const [name, bytes] of files) writeFileSync(join(dir, name), bytes);
   const size = (b: Buffer) => (b[0] === 0x89 ? [b.readUInt32BE(16), b.readUInt32BE(20)] : jpegSize(b));
-  for (const [name] of files) {
-    const image = join(dir, name);
-    const ts = await loadMesh().thumbnail(image, join(dir, "ts"));
-    const mb = await ok("thumbnail", { image, dir: join(dir, "mb") });
-    assert.equal(mb === null, ts === null, `${name}: made or not`);
-    if (ts === null) continue;
-    assert.equal(mb.type, ts.type, name);
-    assert.deepEqual(size(readFileSync(mb.path)), size(readFileSync(ts.path)), `${name}'s size`);
-    assert.equal(mb.path, join(dir, "mb", `${createHash("sha256").update(image).digest("hex").slice(0, 32)}.${ts.type === "image/png" ? "png" : "jpg"}`));
-    assert.ok(readFileSync(mb.path).length < readFileSync(image).length);
-    // kept: asked again, the same
-    assert.deepEqual(await ok("thumbnail", { image, dir: join(dir, "mb") }), mb);
-  }
   // preview: <= 300 KiB returns null; large PNG makes <id>.p.jpg and hits cache; pre-existing <id>.p.webp hits cache
   const smallPreview = join(dir, "small-preview.png");
   writeFileSync(smallPreview, png(200, 200));
@@ -584,24 +263,6 @@ test("the images' thumbnails and ThumbHashes, as the mesh addon (thumbs.rs) make
   const webpPath = join(previewDir, `${webpId}.p.webp`);
   writeFileSync(webpPath, Buffer.from("RIFF0000WEBP"));
   assert.deepEqual(await ok("preview", { image: webpCached, dir: previewDir }), { path: webpPath, type: "image/webp" });
-  for (const [name] of files) {
-    const image = join(dir, name);
-    const ts = await loadMesh().thumbhash(image, null);
-    const mb = await ok("thumbhash", { image, dir: null });
-    assert.equal(mb === null, ts === null, `${name}: hashed or not`);
-    if (ts === null) continue;
-    assert.deepEqual([mb.width, mb.height], [ts.width, ts.height], name);
-    // the same bytes as thumbhash 0.1 makes of image's `thumbnail` (both ported in f32): its header whole, each
-    // varying factor's nibble within one (f32's cos is libm's here and Rust's there, an ulp apart at most)
-    const a = Buffer.from(mb.hash, "base64");
-    const b = Buffer.from(ts.hash, "base64");
-    assert.equal(a.length, b.length, `${name}'s hash's length`);
-    const head = (b[2]! & 0x80) !== 0 ? 6 : 5;
-    assert.deepEqual([...a.subarray(0, head)], [...b.subarray(0, head)], `${name}'s header`);
-    for (let i = head; i < a.length; i++) {
-      for (const shift of [0, 4]) assert.ok(Math.abs(((a[i]! >> shift) & 15) - ((b[i]! >> shift) & 15)) <= 1, `${name}'s factor at ${i}: ${mb.hash} ${ts.hash}`);
-    }
-  }
 });
 
 function jpegSize(b: Buffer): [number, number] {
@@ -820,7 +481,6 @@ test("run: ready, serving, its heartbeat, the loopback port, the status socket, 
   assert.equal((await get(admin.port, "/healthz")).status, 200);
   const unjoined = await get(admin.port, "/admin");
   assert.equal(unjoined.status, 404);
-  assert.equal(unjoined.body, loopbackAnswer("/admin", null, true, null, "zh").body);
   // the agents' door: a session's bearer token or nothing (tools/mcp.ts `McpEndpoint`)
   const anonymous = await get(mcp.port, "/mcp", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }));
   assert.equal(anonymous.status, 401);
@@ -847,7 +507,9 @@ test("run: ready, serving, its heartbeat, the loopback port, the status socket, 
   store.close();
   // `stillfail status` while it runs (the launcher's station.json, as the launcher writes it)
   writeFileSync(join(data, "run", "station.json"), JSON.stringify({ pid: a.child.pid, version: "0.1.9400" }));
-  assert.equal(run(["status", "--data", data]).out, `${tsStatus(data)}\n`);
+  const running_ = run(["status", "--data", data]);
+  assert.equal(running_.code, 0, running_.err);
+  assert.match(running_.out, /0\.1\.9400/);
   // a second process of its own, no launcher: refused, the station held
   const second = run(["run", "--app", app, "--data", data]);
   assert.equal(second.code, 3);

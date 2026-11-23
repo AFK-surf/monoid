@@ -482,13 +482,13 @@ fn new_ws_owner(src : Source) -> (Array[Json], String) {
 
 ///|
 /// Made, if it can be (a name, an account, nothing being made).
-fn new_ws_create(src : Source, close : () -> Unit) -> Unit {
+fn new_ws_create(v : @view.View, src : Source, close : () -> Unit) -> Unit {
   let (_, owner) = new_ws_owner(src)
   let name = new_ws.name.text().trim(chars=" \n\t").to_owned()
   let code = new_ws.code.text().trim(chars=" \n\t").to_owned()
   if name != "" && owner != "" && !new_ws.creating.get() {
     new_ws.close = close
-    make_workspace(src, owner, name, code)
+    make_workspace(v, src, owner, name, code)
   }
 }
 
@@ -502,7 +502,7 @@ fn new_workspace_body(v : @view.View, src : Source, close : () -> Unit) -> Unit 
   let code = fn() { new_ws.code.text().trim(chars=" \n\t").to_owned() }
   @sf.field_node(v, fn() { @sf.t("web-pages.settings.workspace.name") }, fn(b) {
     let f = @sf.input_node(b, new_ws.name, placeholder=@sf.t("web-pages.workspace.namePlaceholder"), submitted=fn(_) {
-      new_ws_create(src, close)
+      new_ws_create(v, src, close)
     })
     // (its first field: it has the keys as it opens, however it is shown, as the old one asked for them till it had them)
     @sf.panel_opens_in_node(f)
@@ -525,7 +525,7 @@ fn new_workspace_body(v : @view.View, src : Source, close : () -> Unit) -> Unit 
       fn(b) {
         @sf.input_node(b, new_ws.code, placeholder="XXXX-XXXX-XXXX", submitted=fn(_) {
           if code() != "" {
-            new_ws_create(src, close)
+            new_ws_create(v, src, close)
           }
         })
         |> ignore
@@ -551,7 +551,7 @@ fn new_workspace_foot(v : @view.View, src : Source, close : () -> Unit) -> Unit 
   @sf.button_node(
     v,
     fn() { @sf.t("web-pages.workspace.createAction") },
-    fn() { new_ws_create(src, close) },
+    fn() { new_ws_create(v, src, close) },
     tone=Primary,
     busy=fn() { new_ws.creating.get() },
     disabled=fn() { name() == "" },
@@ -567,7 +567,7 @@ let new_ws_failed : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger, w=Fu
 ///|
 /// Makes it (`workspace.create`): the one in view once made, what showed it closed; else why, and the code's field
 /// once one is wanted (sent every time: still.fail cloud looks at it only for an account not let in yet).
-fn make_workspace(src : Source, owner : String, name : String, code : String) -> Unit {
+fn make_workspace(view : @view.View, src : Source, owner : String, name : String, code : String) -> Unit {
   if src.read_only {
     toast_later(read_only_words)
     return
@@ -588,10 +588,17 @@ fn make_workspace(src : Source, owner : String, name : String, code : String) ->
         switch_workspace(src, text(Some(v), "id"), closes=close)
       }
       Err(e) => {
-        new_ws.error_code.set(text(Some(e), "code"))
-        new_ws.error.set(landing_error_words(e))
-        if invite_error_key(new_ws.error_code.get()) is Some(_) {
-          new_ws.asked.set(true)
+        let apply = fn() {
+          new_ws.error_code.set(text(Some(e), "code"))
+          new_ws.error.set(landing_error_words(e))
+          if invite_error_key(new_ws.error_code.get()) is Some(_) {
+            new_ws.asked.set(true)
+          }
+        }
+        if view.alive() {
+          @view.transition(within=view.transitions_root(), apply)
+        } else {
+          apply()
         }
       }
     }

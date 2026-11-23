@@ -406,21 +406,14 @@ fn roster_of(
   without : Array[String],
   carried : Option[Carried],
   c : Crypto,
-) -> (Roster, form::OrderedMap[(Person, Array[form::Json])], Map[String, Map[String, Bool]]) {
+) -> (Roster, form::OrderedMap[(Person, Array[form::Json])], Map[String, Map[String, Bool]], Map[String, form::Json]) {
   let refused : Array[(String, String)] = []
   let logs : form::OrderedMap[(Person, Array[form::Json])] = form::OrderedMap::new()
+  let log_hashes : Map[String, Array[String]] = Map::new()
   let mut ci = 0
   while ci < chains.length() {
     let chain = chains[ci]
     ci = ci + 1
-    let g = if chain.length() > 0 {
-      match entry_hash(chain[0], c) {
-        Ok(h) => h
-        Err(_) => ""
-      }
-    } else {
-      ""
-    }
     let sub = if chain.length() > 0 {
       match text_of(field(field(Some(chain[0]), "body"), "sub")) {
         Some(s) => s
@@ -429,9 +422,17 @@ fn roster_of(
     } else {
       ""
     }
-    let p = match fold_person(chain, sub, c) {
-      Ok(pr) => pr
+    let (p, ehashes) = match fold_person_with_hashes(chain, sub, c) {
+      Ok(pair) => pair
       Err(err) => {
+        let g = if chain.length() > 0 {
+          match entry_hash(chain[0], c) {
+            Ok(h) => h
+            Err(_) => ""
+          }
+        } else {
+          ""
+        }
         refused.push((g, error_msg(err)))
         continue
       }
@@ -441,9 +442,13 @@ fn roster_of(
         refused.push((p.genesis, "another chain of the same log was taken"))
         if !(q.seq > p.seq || (q.seq == p.seq && form::mbt_str_cmp(q.head, p.head) <= 0)) {
           logs.set(p.genesis, (p, chain))
+          log_hashes.set(p.genesis, ehashes)
         }
       }
-      None => logs.set(p.genesis, (p, chain))
+      None => {
+        logs.set(p.genesis, (p, chain))
+        log_hashes.set(p.genesis, ehashes)
+      }
     }
   }
   sort_by(refused, form::mbt_pair_cmp)
@@ -495,31 +500,40 @@ fn roster_of(
         continue
       }
     }
+    let chain_hashes = match log_hashes.get(g) {
+      Some(hs) => hs
+      None => []
+    }
     let t = ws_tag(ws, g, c)
     let mut i = 1
     while i < chain.length() {
       let e = Some(chain[i])
       if opt_str_eq(text_of(field(e, "kind")), "ws") && opt_str_eq(text_of(field(field(e, "body"), "t")), t) {
-        match entry_hash(chain[i], c) {
-          Ok(x) => {
-            let hb = match text_of(field(field(e, "body"), "h")) {
-              Some(s) => s
-              None => ""
-            }
-            match kept.get(hb) {
-              Some(b) => {
-                if opt_str_eq(text_of(field(Some(b), "ws")), ws) {
-                  if whole(b) {
-                    in_force_all.push((x, hb, b, g))
-                  }
-                } else {
-                  lacking.push(x)
-                }
-              }
-              None => lacking.push(x)
-            }
+        let x = if i < chain_hashes.length() {
+          chain_hashes[i]
+        } else {
+          match entry_hash(chain[i], c) {
+            Ok(h) => h
+            Err(_) => ""
           }
-          Err(_) => ()
+        }
+        if x != "" {
+          let hb = match text_of(field(field(e, "body"), "h")) {
+            Some(s) => s
+            None => ""
+          }
+          match kept.get(hb) {
+            Some(b) => {
+              if opt_str_eq(text_of(field(Some(b), "ws")), ws) {
+                if whole(b) {
+                  in_force_all.push((x, hb, b, g))
+                }
+              } else {
+                lacking.push(x)
+              }
+            }
+            None => lacking.push(x)
+          }
         }
       }
       i = i + 1
@@ -590,7 +604,7 @@ fn roster_of(
         newest: newest0,
         settings: settings0,
       }
-      return (empty, logs, offs)
+      return (empty, logs, offs, kept)
     }
   }
   let root_sub = root_person.sub
@@ -1241,5 +1255,5 @@ fn roster_of(
     newest: newest,
     settings: settings,
   }
-  (res, logs, offs)
+  (res, logs, offs, kept)
 }

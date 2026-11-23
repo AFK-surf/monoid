@@ -128,8 +128,10 @@ pub fn pick_node(
           if is_morph {
             popover_content_motion(p, cv, words_in)
           }
-          // (its search, a capsule in its top corners, the library's line: Enter in it picks the active one)
+          // (its search, a capsule in its top corners, the library's line: Enter in it picks the active one; as far over
+          // its rows as a field over a panel's rows stands, a sheet's search's S2_5, its capsule never on a row's ground)
           cv.box(fn(s) {
+            s.padding(Is((0.0, 0.0, 0.0, @ui.Space::px(S2_5)))) |> ignore
             // (as far in as all else it holds, past the panel's own ground: Look's `words`)
             if !is_morph {
               s.alpha(By(words_in)) |> ignore

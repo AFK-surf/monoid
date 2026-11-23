@@ -88,6 +88,7 @@ export type Serving = {
   inWorkspace: (peer: string, ws: string) => boolean;
   hello: (peer: string, ws: string, formerly: string[], acceptCopies: boolean) => string[];
   acceptOthers?: () => boolean;
+  guardWrite?: <T>(ws: string, origin: string, fn: () => Promise<T>) => Promise<T>;
 };
 
 export function serve(s: Serving) {
@@ -96,6 +97,7 @@ export function serve(s: Serving) {
     if (!WORKSPACE.test(ws) || (workspace !== undefined && workspace !== ws) || !s.inWorkspace(peer, ws)) throw new Refused("not a station of this workspace");
     const origin = typeof request?.origin === "string" ? request.origin : "";
     const bytes = bytesOf(request);
+    const runWrite = <T>(fn: () => Promise<T>): Promise<T> => (s.guardWrite !== undefined ? s.guardWrite(ws, origin, fn) : fn());
     try {
       switch (request?.method) {
         case "replica.hello": {
@@ -132,20 +134,20 @@ export function serve(s: Serving) {
           const name = String(request.name ?? "");
           if (request.kind === "file") {
             if (!HASH.test(name)) throw new Refused("not a file's hash");
-            await s.place.putFileFrom(ws, origin, name, bytes);
+            await runWrite(() => s.place.putFileFrom(ws, origin, name, bytes));
             return { ok: true };
           }
           const gen = String(request.gen ?? "");
           if (request.kind === "batch" && !BATCH.test(name)) throw new Refused("not a batch's name");
           if (request.kind !== "batch" && request.kind !== "head") throw new Refused("not a kind of copy");
-          await s.place.put(ws, origin, gen, request.kind, name, await readBytes(bytes, MOST));
+          await runWrite(async () => s.place.put(ws, origin, gen, request.kind, name, await readBytes(bytes, MOST)));
           return { ok: true };
         }
         case "replica.drop": {
           // Only the station a copy is of says what of it goes; the rest only add to it.
           if (peer !== origin) throw new Refused("only the station a copy is of folds it");
           const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
-          await s.place.drop(ws, origin, String(request.gen ?? ""), list(request.batches), list(request.files));
+          await runWrite(() => s.place.drop(ws, origin, String(request.gen ?? ""), list(request.batches), list(request.files)));
           return { ok: true };
         }
       }

@@ -1164,3 +1164,49 @@ test "choose_run_on_profile takes a Google Vertex AI session back to a subscript
   assert_eq(run_on(false).id, "ag2")
   assert_eq(asked_elsewhere, 2)
 }
+
+///|
+test "Google Colab's sign-in: PKCE, its page, the code pasted or read off the station's browser, the file it keeps" {
+  let n = Ref(0)
+  let pkce = colab_pkce(k => {
+    n.val += 1
+    Bytes::make(k, n.val.to_byte())
+  })
+  assert_eq(pkce.state, base64url(Bytes::make(24, b'\x01')))
+  assert_eq(pkce.verifier, base64url(Bytes::make(32, b'\x02')))
+  // S256 of the verifier's text, as node:crypto makes it
+  assert_eq(pkce.challenge, base64url(@hash.sha256(@utf8.encode(pkce.verifier))))
+  let urls : ColabUrls = { auth: "https://g.example/auth", token: "", userinfo: "", colab: "" }
+  let url = colab_authorize_url(urls, { state: "st", verifier: "v", challenge: "ch" }, Some(" a@b.c "))
+  assert_true(url.has_prefix("https://g.example/auth?response_type=code&redirect_uri=https%3A%2F%2Fsdk.cloud.google.com%2Fapplicationdefaultauthcode.html&client_id="))
+  assert_true(url.contains("&scope=openid+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.profile+"))
+  assert_true(url.has_suffix("&state=st&code_challenge=ch&code_challenge_method=S256&login_hint=a%40b.c"))
+  let words = Words::new(Obj([]), Obj([]))
+  assert_eq(colab_code_of(words, "  4/abc  ", "st", "en"), Ok("4/abc"))
+  assert_eq(colab_code_of(words, "https://sdk.cloud.google.com/applicationdefaultauthcode.html?state=st&code=4%2Fabc&scope=x", "st", "en"), Ok("4/abc"))
+  assert_true(colab_code_of(words, "https://sdk.cloud.google.com/applicationdefaultauthcode.html?state=other&code=4", "st", "en") is Err(_))
+  assert_true(colab_code_of(words, "https://sdk.cloud.google.com/applicationdefaultauthcode.html?error=access_denied", "st", "en") is Err(_))
+  assert_true(colab_code_of(words, " ", "st", "en") is Err(_))
+  assert_eq(colab_callback_code(Some("https://sdk.cloud.google.com/applicationdefaultauthcode.html?state=st&code=4%2Fabc"), "st"), Some("4/abc"))
+  assert_eq(colab_callback_code(Some("https://sdk.cloud.google.com/applicationdefaultauthcode.html/?code=c&state=st#x"), "st"), Some("c"))
+  assert_eq(colab_callback_code(Some("https://sdk.cloud.google.com/applicationdefaultauthcode.html?state=no&code=c"), "st"), None)
+  assert_eq(colab_callback_code(Some("https://accounts.google.com/o/oauth2/auth?code=c&state=st"), "st"), None)
+  assert_eq(colab_callback_code(None, "st"), None)
+  let auth : ColabAuth = {
+    token: "t", refresh_token: "r", token_uri: "https://oauth2.googleapis.com/token", client_id: colab_client_id,
+    client_secret: colab_client_secret, scopes: ["openid", colab_required_scope], expiry: None, email: Some("a@b.c"),
+  }
+  let text = stringify_pretty(auth.to_jv())
+  assert_true(text.has_prefix("{\n  \"token\": \"t\",\n  \"refresh_token\": \"r\",\n"))
+  assert_true(text.contains("\"expiry\": null"))
+  let back = colab_auth_in(text).unwrap()
+  assert_eq(back.scopes, auth.scopes)
+  assert_eq(back.email, Some("a@b.c"))
+  assert_eq(back.expiry, None)
+  assert_eq(colab_auth_in("{\"token\":\"\",\"refresh_token\":\"\"}") is None, true)
+  assert_eq(colab_auth_in("not json") is None, true)
+  assert_eq(colab_fixed2(2500.0), "2500.00")
+  assert_eq(colab_fixed2(10.05), "10.05")
+  assert_eq(colab_fixed2(0.004), "0.00")
+  assert_eq(colab_strip_xssi(")]}'\n{\"a\":1}"), "{\"a\":1}")
+}

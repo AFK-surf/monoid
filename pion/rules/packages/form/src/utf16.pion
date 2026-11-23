@@ -81,8 +81,7 @@ pub fn utf16_units(s : String) -> Array[Int] {
   out
 }
 
-///| Lexicographical comparison by UTF-16 code unit (matches JS default sort and `form.mbt` `code_units`).
-pub fn utf16_cmp(a : String, b : String) -> Int {
+fn utf16_cmp_slow(a : String, b : String) -> Int {
   let ua = utf16_units(a)
   let ub = utf16_units(b)
   let na = ua.length()
@@ -94,6 +93,26 @@ pub fn utf16_cmp(a : String, b : String) -> Int {
     let y = ub[i]
     if x != y {
       return x - y
+    }
+    i = i + 1
+  }
+  na - nb
+}
+
+///| Lexicographical comparison by UTF-16 code unit (matches JS default sort and `form.mbt` `code_units`).
+pub fn utf16_cmp(a : String, b : String) -> Int {
+  let na = a.length()
+  let nb = b.length()
+  let n = if na < nb { na } else { nb }
+  let mut i = 0
+  while i < n {
+    let ba = a.code_unit_at(i)
+    let bb = b.code_unit_at(i)
+    if ba >= 0x80 || bb >= 0x80 {
+      return utf16_cmp_slow(a, b)
+    }
+    if ba != bb {
+      return ba - bb
     }
     i = i + 1
   }
@@ -141,10 +160,24 @@ pub fn mbt_triple_cmp(a : (String, String, String), b : (String, String, String)
   }
 }
 
-///| In-place merge sort for `Array[String]` with a custom comparator.
+///| In-place merge sort for `Array[String]` with a custom comparator (insertion sort for small arrays).
 pub fn sort_strings_by(xs : Array[String], cmp : (String, String) -> Int) -> Unit {
   let n = xs.length()
   if n <= 1 {
+    return
+  }
+  if n <= 16 {
+    let mut i = 1
+    while i < n {
+      let cur = xs[i]
+      let mut j = i - 1
+      while j >= 0 && cmp(xs[j], cur) > 0 {
+        xs[j + 1] = xs[j]
+        j = j - 1
+      }
+      xs[j + 1] = cur
+      i = i + 1
+    }
     return
   }
   let tmp : Array[String] = []

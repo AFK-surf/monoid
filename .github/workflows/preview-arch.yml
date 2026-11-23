@@ -36,6 +36,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
       MBUI_FRESH: 1
       MBUI_CACHE: ${{ github.workspace }}/.ci/release
       MBC_STORE: ${{ github.workspace }}/.ci/mbc-store
@@ -105,6 +106,7 @@ jobs:
       run:
         shell: bash
     env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
       MSYS: winsymlinks:nativestrict
       HBC_CACHE: ${{ github.workspace }}/.ci/hbc
       MBC_STORE: ${{ github.workspace }}/.ci/mbc-store

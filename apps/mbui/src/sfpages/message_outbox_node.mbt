@@ -195,7 +195,7 @@ fn outbox_unsent_node(v : @view.View, src : Source, here : MessageNodeHere, o : 
           fn() {
             let now = @signals.untracked(o)
             outbox_edit(src, here.station + ":" + here.session, now, fn() {
-              outbox_node_call(src, here, "chat.discard", now.id)
+              outbox_node_call(p, src, here, "chat.discard", now.id)
             })
           },
         )
@@ -208,7 +208,7 @@ fn outbox_unsent_node(v : @view.View, src : Source, here : MessageNodeHere, o : 
           fn() { !locked() && !busy() },
           retrying,
           fn() { core_failed(src, ["chat.retry"], on()) },
-          fn() { outbox_node_call(src, here, "chat.retry", @signals.untracked(o).id) },
+          fn() { outbox_node_call(p, src, here, "chat.retry", @signals.untracked(o).id) },
         )
       }
     })
@@ -222,7 +222,7 @@ fn outbox_unsent_node(v : @view.View, src : Source, here : MessageNodeHere, o : 
         fn() { !busy() },
         dropping,
         fn() { core_failed(src, ["chat.discard"], on()) },
-        fn() { outbox_node_call(src, here, "chat.discard", @signals.untracked(o).id) },
+        fn() { outbox_node_call(d, src, here, "chat.discard", @signals.untracked(o).id) },
       )
     })
     |> ignore
@@ -238,7 +238,7 @@ fn outbox_take_back_node(v : @view.View, src : Source, here : MessageNodeHere, o
   let dropping = fn() { core_doing(src, ["chat.discard"], on()) }
   unsent_button_node(v, here.tips, "edit", @sf.t("common.edit"), fn() { !dropping() }, fn() { false }, fn() { None }, fn() {
     let now = @signals.untracked(o)
-    outbox_edit(src, here.station + ":" + here.session, now, fn() { outbox_node_call(src, here, "chat.discard", now.id) })
+    outbox_edit(src, here.station + ":" + here.session, now, fn() { outbox_node_call(v, src, here, "chat.discard", now.id) })
   })
   unsent_button_node(
     v,
@@ -248,13 +248,13 @@ fn outbox_take_back_node(v : @view.View, src : Source, here : MessageNodeHere, o
     fn() { !dropping() },
     dropping,
     fn() { core_failed(src, ["chat.discard"], on()) },
-    fn() { outbox_node_call(src, here, "chat.discard", @signals.untracked(o).id) },
+    fn() { outbox_node_call(v, src, here, "chat.discard", @signals.untracked(o).id) },
   )
 }
 
 ///|
 /// What is asked of the core of an entry of the outbox (outbox_call's): by the chat's thread, else its session.
-fn outbox_node_call(src : Source, here : MessageNodeHere, call : String, id : String) -> Unit {
+fn outbox_node_call(v : @view.View, src : Source, here : MessageNodeHere, call : String, id : String) -> Unit {
   let p : Map[String, Json] = { "station": Json::string(here.station), "id": Json::string(id) }
   match (here.view)().thread {
     Some(th) => p["thread"] = Json::number(th)
@@ -267,7 +267,7 @@ fn outbox_node_call(src : Source, here : MessageNodeHere, call : String, id : St
     @sf.t("android-chat.chat.delete.verb")
   }
   @ui.haptic(Confirm)
-  act(src, what, "", call, Json::object(p))
+  @view.transition(within=v.transitions_root(), fn() { act(src, what, "", call, Json::object(p)) })
 }
 
 ///|

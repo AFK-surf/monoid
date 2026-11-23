@@ -200,7 +200,7 @@ test "pick, long, 大屏 keyboard and mouse: the message field focused, opened: 
 }
 
 ///|
-test "pick, long, 大屏 keyboard and mouse: at a point, its panel 6 under it; 8 choices fitting, 12 scrolling (rows 36, its list 320 at most: 336, 368)" {
+test "pick, long, 大屏 keyboard and mouse: at a point, its panel 6 under it; 8 choices fitting, 12 scrolling (rows 36, its list 320 at most, its search 10 over it: 346, 378)" {
   let out = []
   for n in [8, 12] {
     let t = menu_tester(1280.0, 800.0, 0)
@@ -209,7 +209,7 @@ test "pick, long, 大屏 keyboard and mouse: at a point, its panel 6 under it; 8
     let (x, y, w, h) = t.get(Dialog, label="选一个").rect
     out.push((x, y, w, (h * 10.0).round() / 10.0))
   }
-  assert_eq(out, [(600.0, 306.0, 220.0, 336.0), (600.0, 306.0, 220.0, 368.0)])
+  assert_eq(out, [(600.0, 306.0, 220.0, 346.0), (600.0, 306.0, 220.0, 378.0)])
 }
 
 ///|
@@ -262,25 +262,25 @@ test "pick, long, 大屏 keyboard and mouse: its last row whole at its list's fo
 }
 
 ///|
-test "pick, long, 大屏 keyboard and mouse: a choice's words 20 a line (第2项 86 under the panel's top, 22 in: the panel's 6 and a row's words' 16, rows 36 high)" {
+test "pick, long, 大屏 keyboard and mouse: a choice's words 20 a line (第2项 96 under the panel's top, 22 in: the panel's 6 and a row's words' 16, rows 36 high)" {
   let t = menu_tester(1280.0, 800.0, 0)
   @sf.pick("选一个", Array::makei(12, fn(i) { @sf.choice("c\{i}", "第\{i + 1}项") }), "c0", fn(_) {  }, from=@sf.at_point(600.0, 300.0))
   t.run_for(@ui.move_most_ms)
   let (dx, dy, _, _) = t.get(Dialog, label="选一个").rect
   let tree = @ui.view_tree().unwrap()
   let at = tree.drawn().filter(fn(d) { d.words == "第2项" }).map(fn(d) { (d.x - dx, ((d.y - dy) * 10.0).round() / 10.0, d.h) })
-  assert_eq(at, [(22.0, 86.0, 20.0)])
+  assert_eq(at, [(22.0, 96.0, 20.0)])
 }
 
 ///|
-test "pick, long, 大屏 keyboard and mouse: a choice's value at its row's end (3 条新消息, 138 in, 123.6 under the panel's top, 16.8 high: its words 16 in from its row's end, rows 36 high)" {
+test "pick, long, 大屏 keyboard and mouse: a choice's value at its row's end (3 条新消息, 138 in, 133.6 under the panel's top, 16.8 high: its words 16 in from its row's end, rows 36 high)" {
   let t = menu_tester(1280.0, 800.0, 0)
   @sf.pick("选一个", Array::makei(12, fn(i) { @sf.choice("c\{i}", "第\{i + 1}项", value=if i == 2 { "3 条新消息" } else { "" }) }), "c0", fn(_) {  }, from=@sf.at_point(600.0, 300.0))
   t.run_for(@ui.move_most_ms)
   let (dx, dy, _, _) = t.get(Dialog, label="选一个").rect
   let tree = @ui.view_tree().unwrap()
   let at = tree.drawn().filter(fn(d) { d.words == "3 条新消息" }).map(fn(d) { (d.x - dx, ((d.y - dy) * 10.0).round() / 10.0, (d.h * 10.0).round() / 10.0) })
-  assert_eq(at, [(138.0, 123.6, 16.8)])
+  assert_eq(at, [(138.0, 133.6, 16.8)])
 }
 
 ///|

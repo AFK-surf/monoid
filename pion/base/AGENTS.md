@@ -8,7 +8,7 @@ Declared in `[workspace.dependencies]` in `pion.toml` via official Git tags:
 
 - `base64` (`base64-v0.1.0`): RFC 4648 Base64 / Base64URL and hex codecs.
 - `effect` (`effect-v0.1.0`): single-threaded cooperative fiber runtime (`Runtime`, `Fiber`, `Deferred`, `EffectScope`, `Queue`, `Semaphore`, `Rng`, deterministic `TestClock`, interruption) plus built-in priority lane `Scheduler` / `Preempt` / `priority_*`.
-- `crypto` (`crypto-v0.2.0`): SHA-256, SHA-512, SHA-1, HMAC-SHA-256, strict RFC 8032 Ed25519 signing/verification, and P-256 ECDSA DER verification (`p256_verify_der`).
+- `crypto` (`crypto-v0.4.1`): SHA-256, SHA-512, SHA-1, HMAC-SHA-256, strict RFC 8032 Ed25519 signing/verification, and P-256 ECDSA/SEC1 verification (`p256_validate_pubkey`, `p256_verify_der`, `p256_verify_es256`).
 - `flate` (`flate-v0.1.0`): RFC 1951/1950/1952 deflate/zlib/gzip and IEEE CRC-32 / Adler-32 checksums.
 - `url` (`url-v0.1.0`): WHATWG URL parsing and percent-encoding.
 - `time` (`time-v0.1.0`): Gregorian calendar and ISO 8601 / RFC 3339 formatting/parsing.

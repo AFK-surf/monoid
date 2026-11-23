@@ -7,7 +7,6 @@
 fn init {
   @ui.sizes_across_known([
     ("src/sfapp/board_wbtest.mbt", 1),
-    ("src/sfapp/desk_composer_wbtest.mbt", 1),
     ("src/sfapp/duo_wbtest.mbt", 14),
     ("src/sfapp/home_wbtest.mbt", 2),
     ("src/sfapp/newchat_crowded_wbtest.mbt", 2),
@@ -21,7 +20,6 @@ fn init {
     ("src/sfapp/tape.mbt", 1),
     ("src/sfapp/tape_wbtest.mbt", 12),
     ("src/sfapp/whole_row_wbtest.mbt", 3),
-    ("src/sfapp/wide_wbtest.mbt", 1),
     ("src/sfapp/desk_profile_wbtest.mbt", 1),
   ])
 }

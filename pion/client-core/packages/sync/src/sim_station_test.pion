@@ -753,8 +753,42 @@ fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Jso
       }
       None => ()
     }
-  } else if stmt.starts_with("INSERT OR REPLACE INTO shared_sidecar") || stmt.starts_with("DELETE FROM shared_sidecar") || stmt.starts_with("SELECT ord, unread, mine, pinned_at, running, tone, asks, desk, json FROM chat") || stmt.starts_with("DELETE FROM chat WHERE station = ? AND archived = 0 AND id = ?") {
+  } else if stmt.starts_with("INSERT OR REPLACE INTO shared_sidecar") || stmt.starts_with("DELETE FROM shared_sidecar") || stmt.starts_with("SELECT ord, unread, mine, pinned_at, running, tone, asks, desk, json FROM chat") || stmt.starts_with("DELETE FROM chat WHERE station = ? AND archived = 0 AND id = ?") || stmt.contains("FROM moved") {
     ()
+  } else if stmt == store::sql_chat_by_thread() {
+    let st = p_str(p, 0)
+    let th = p_int(p, 1)
+    for i in 0..<self.chat_order.length() {
+      match self.chats.get(self.chat_order[i]) {
+        Some(c) => if c.station == st && c.archived == 0 {
+          match c.thread {
+            Some(t) => if t == th {
+              rows.push(base_codec::json_arr([base_codec::json_str(c.station), base_codec::json_int(c.archived), base_codec::json_str(c.id), base_codec::json_str(c.json)]))
+              break
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+    }
+  } else if stmt == store::sql_chat_by_session() {
+    let st = p_str(p, 0)
+    let sk = p_str(p, 1)
+    for i in 0..<self.chat_order.length() {
+      match self.chats.get(self.chat_order[i]) {
+        Some(c) => if c.station == st && c.archived == 0 {
+          match c.session {
+            Some(s) => if s == sk {
+              rows.push(base_codec::json_arr([base_codec::json_str(c.station), base_codec::json_int(c.archived), base_codec::json_str(c.id), base_codec::json_str(c.json)]))
+              break
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+    }
   } else if stmt == store::sql_workspace_one() {
     let wid = p_str(p, 0)
     match self.workspaces.get(wid) {

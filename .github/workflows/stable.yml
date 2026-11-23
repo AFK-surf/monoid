@@ -45,6 +45,8 @@ jobs:
     runs-on: [self-hosted, macos-ci]
     environment: production
     timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
     steps:
       # (when the job is cut, less its setting up: monoid's below ends before it)
       - run: echo "JOB_END=$(( $(date +%s) + 10 * 60 - 15 ))" >> "$GITHUB_ENV"
@@ -89,6 +91,8 @@ jobs:
     runs-on: [self-hosted, macos-ci]
     environment: production
     timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
     steps:
       - uses: actions/checkout@v5
         with: { ref: '${{ needs.plan.outputs.sha }}', fetch-depth: 0 }

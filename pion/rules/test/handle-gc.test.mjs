@@ -61,16 +61,18 @@ test("double-free guard: freeing the same lock/carried handle twice never causes
   rt.imports.pion_rt.rules_out_set = (ptr, len) => {
     outStr = len > 0 ? decoder.decode(new Uint8Array(mem.buffer, Number(ptr), Number(len))) : "";
   };
-  rt.imports.pion_rt.rules_sha256_hex = (ptr, len) => {
+  rt.imports.pion_rt.rules_sha256_hex_into = (ptr, len, dst) => {
     const s = len > 0 ? decoder.decode(new Uint8Array(mem.buffer, Number(ptr), Number(len))) : "";
-    cbBytes = encoder.encode(createHash("sha256").update(s).digest("hex"));
-    return cbBytes.length;
+    const hex = createHash("sha256").update(s).digest("hex");
+    new Uint8Array(mem.buffer, Number(dst), 64).set(encoder.encode(hex));
+    return 64;
   };
   let cbBytes = new Uint8Array(0);
   rt.imports.pion_rt.rules_cb_copy = (dst) => {
     if (cbBytes.length > 0) new Uint8Array(mem.buffer, Number(dst), cbBytes.length).set(cbBytes);
   };
   rt.imports.pion_rt.rules_sig_valid = () => 1;
+  rt.imports.pion_rt.rules_sig_valid_ed = () => 1;
   rt.imports.pion_rt.rules_valid_key_id = () => 1;
   rt.imports.pion_rt.rules_endpoint_proof = () => 1;
   rt.imports.pion_rt.rules_record_sig_valid = () => 1;

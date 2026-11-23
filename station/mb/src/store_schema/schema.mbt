@@ -1595,6 +1595,9 @@ fn add_tell_indexes(db : @sql.Db) -> Unit raise {
   add_said_index(db)
   add_agent_index(db)
   db.exec("CREATE INDEX IF NOT EXISTS turns_by_end ON turns (session_key, ended_at)")
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS turns_waiting ON turns (ended_at) WHERE declared IN ('block', 'need_help', 'need_human', 'need_decision')",
+  )
   db.exec("CREATE INDEX IF NOT EXISTS sessions_put_away ON sessions (archived_at, key) WHERE archived_at IS NOT NULL")
   db.exec("CREATE INDEX IF NOT EXISTS threads_put_away ON threads (hidden_at, id) WHERE hidden_at IS NOT NULL")
   db.exec("CREATE INDEX IF NOT EXISTS sessions_models ON sessions (created_by, created_at, runtime, model)")

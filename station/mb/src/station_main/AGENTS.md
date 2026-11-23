@@ -18,10 +18,10 @@
   (scripts/check.sh's station MoonBit step), and this package, which imports the host package (station/mb/src/host), links only into the
   reader. The rest is held by station/test/mb-station-e2e.test.ts through the program (`--builder
   harness-station-main` of the tests' program, `stillfail-reader-harness`; the commands and `run` under a launcher of
-  the test's of the reader), each part to the TypeScript, the
-  .mjs hooks or the mesh addon it replaces.
-- `words_catalog.mbt` is client/i18n/catalog's station.json, zh and en, as the program carries them: a change to the
-  catalog writes it again (the e2e test fails until it is: `STILLFAIL_WRITE_WORDS=1` on that test writes it).
+  the test's of the reader), each part to itself and to what does not move (node:os, Date), never to the living
+  TypeScript, its hooks or the mesh addon: the program is frozen for new TypeScript features (station/AGENTS.md).
+- `words_catalog.mbt` is client/i18n/catalog's station.json, zh and en, as it was when the program was frozen: a change
+  to the catalog does not write it again, and no test holds it to the catalog.
 - `run` (run.mbt) is the composition root: the data directory held, its files read before ready, the launcher's
   channel (ops/launcher.ts's lines), its key and store, the loopback port, the status socket, the agents' door (`/mcp`:
   its tools and door places the parts', parts.mbt), health.json and the heartbeat, `heap`, a handover (what the parts
@@ -41,10 +41,10 @@
   `register_pids`). What is asked often across slices or by named fields, and every `$…` handler a slice asks of this
   station's own (`call_peer("self", …)`: `admin_called`, `forwards_call`, …), is a typed method of the bus
   (live_bus.mbt `hub_notify`, `jobs_stop`, …), its fields named once there. station/test/mb-station-contracts.test.ts holds every `Ref` of the bus
-  given by a slice, every name asked on a `*_ask` to one its slice's dispatcher answers, every method session_hub asks
-  of an actor to one reader/actor_run.mbt answers, and every `parts.carry`, `plane.told` and `events.follow` hook of the
-  TypeScript's given here; station/test/mb-live-hooks-parity.test.ts holds them live.
-  A release runs this program alone (station/AGENTS.md); held by station/test/mb-live-station.test.ts whole, under the
+  given by a slice, every name asked on a `*_ask` to one its slice's dispatcher answers, and every method session_hub
+  asks of an actor to one reader/actor_run.mbt answers. It no longer holds this program to what the TypeScript adds.
+  This program is frozen for new TypeScript features and runs only when a release omits `main.js` or `config.json`
+  sets `"engine": "moonbit"` (station/AGENTS.md). It is held by station/test/mb-live-station.test.ts whole, under the
   real launcher, and each slice by its own test:
   - P5-1 (`live_p5_1_*.mbt`), the platform: config.json, the log and error reports, the machine kept awake, a lost
     station's chats taken back before the store opens, the control plane and its presence, the readers and their

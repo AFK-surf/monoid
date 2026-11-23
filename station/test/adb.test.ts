@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Clock, Duration, Effect, Exit, Scope } from "effect";
 import { TestClock } from "effect/testing";
-import { GRACE, PORTS, RETRY, SETTLE, SILENT_MS, Shares, answerAdb, bind, isPackage, keepTcp, text } from "../src/adb/link.ts";
+import { GRACE, PORTS, RETRY, SETTLE, SILENT_MS, Shares, answerAdb, bind, isPackage, keepTcp, text, usualPort } from "../src/adb/link.ts";
 import type { Viewer } from "../src/mesh/credential.ts";
 import type { Connection, Stream } from "../src/mesh/native.ts";
 import { Reader, writeLine } from "../src/mesh/serve.ts";
@@ -23,6 +23,24 @@ const viewer: Viewer = { sub: "u1", email: "pat@example.com", name: "Pat", role:
 // A phone of this run's own: its offers listen on its usual port (`bind`, from its key), which another run of these
 // tests at once on this machine would otherwise share, each one's adb and tunnels reaching the other's.
 const PHONE = randomBytes(32).toString("hex");
+
+/// A phone of this run's own whose usual port nothing on this machine holds now: other test processes' ephemeral ports
+/// fall in `PORTS` too (Linux gives 32768-60999), and `bind` then waits 5 x 500 ms and takes a port outside it.
+async function freePhone(): Promise<string> {
+  for (let i = 0; i < 64; i++) {
+    const candidate = randomBytes(32).toString("hex");
+    const server = net.createServer();
+    const free = await new Promise<boolean>((resolve) => {
+      server.once("error", () => resolve(false));
+      server.listen({ host: "127.0.0.1", port: usualPort(candidate), exclusive: true }, () => resolve(true));
+    });
+    if (free) {
+      await new Promise((r) => server.close(r));
+      return candidate;
+    }
+  }
+  return randomBytes(32).toString("hex");
+}
 
 /// The fake adb always answers: it is given as long as it takes, so what it says never turns on the machine's speed.
 const UNLIMITED = { quick: null, long: null };
@@ -162,10 +180,11 @@ test("takes only plain package names", () => {
 });
 
 test("gives a phone its usual port while it is free", async () => {
-  // A phone of this run's own (another run at once would hold the same usual port).
-  const phone = randomBytes(8).toString("hex");
+  // A phone of this run's own whose usual port is free (another run at once would hold the same usual port).
+  const phone = await freePhone();
   const first = await bind(phone);
   const port = (first.address() as net.AddressInfo).port;
+  assert.equal(port, usualPort(phone));
   assert.ok(port >= PORTS.start && port < PORTS.end);
   await new Promise((r) => first.close(r));
   const again = await bind(phone);
@@ -538,8 +557,9 @@ test("a phone offered over the mesh: adb connects through its tunnel, asks reach
   const time = testClock();
   const shares = new Shares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
   const mesh = await link(shares);
+  const phone = await freePhone();
   try {
-    const offer = { op: "share", phone: PHONE, device: "Pixel\n8", android: "14", package: "fail.still.android", adbd: true, pair: true };
+    const offer = { op: "share", phone, device: "Pixel\n8", android: "14", package: "fail.still.android", adbd: true, pair: true };
     const { stream: offered, reader } = await mesh.ask(offer);
     assert.deepEqual(await reader.line(), { status: 200, headers: { "content-type": "application/x-ndjson" } });
     let state;
@@ -548,7 +568,7 @@ test("a phone offered over the mesh: adb connects through its tunnel, asks reach
     assert.deepEqual(Object.keys(state), ["serial", "adb", "message"]);
     const serial: string = state.serial;
     const port = Number(serial.split(":")[1]);
-    assert.ok(serial.startsWith("127.0.0.1:") && port >= PORTS.start && port < PORTS.end);
+    assert.ok(serial.startsWith("127.0.0.1:") && port >= PORTS.start && port < PORTS.end, `serial ${serial}`);
     // adb was told, and its connection reached the phone as a tunnel stream, bytes both ways.
     assert.deepEqual(adb.calls().slice(0, 3), [["-s", serial, "get-state"], ["disconnect", serial], ["connect", serial]]);
     assert.deepEqual(adb.dialed(), ["phone:CNXN"]);
@@ -564,7 +584,7 @@ test("a phone offered over the mesh: adb connects through its tunnel, asks reach
     // adb said paired, the phone never had the station's key.
     let reads!: () => void;
     mesh.phoneSide.hold = new Promise((r) => (reads = r));
-    const paired = await mesh.answer({ op: "pair", code: "12 34 56", phone: PHONE });
+    const paired = await mesh.answer({ op: "pair", code: "12 34 56", phone });
     assert.deepEqual(paired, { head: { status: 200, headers: { "content-type": "application/json" } }, body: { message: "已配对" } });
     reads();
     await until(() => mesh.phoneSide.heard.includes("PEER"));
@@ -582,18 +602,18 @@ test("a phone offered over the mesh: adb connects through its tunnel, asks reach
     assert.ok(adb.calls().some((c) => c.join(" ") === `-s ${serial} shell STILLFAIL_ADB_KEEP=1 pm grant fail.still.android android.permission.WRITE_SECURE_SETTINGS`));
     // and adbd's plain port is turned on, once a boot, for the phone to be held on off Wi-Fi
     await until(() => adb.calls().some((c) => c.join(" ") === `-s ${serial} tcpip 5555`));
-    const wrong = await mesh.answer({ op: "pair", code: "12345", phone: PHONE }, { "stillfail-lang": "en", "stillfail-build": "0.1.0" });
+    const wrong = await mesh.answer({ op: "pair", code: "12345", phone }, { "stillfail-lang": "en", "stillfail-build": "0.1.0" });
     assert.deepEqual(wrong, { head: { status: 422, headers: { "content-type": "application/json" } }, body: { message: "The pairing code is 6 digits" } });
-    const granted = await mesh.answer({ op: "grant", phone: PHONE });
+    const granted = await mesh.answer({ op: "grant", phone });
     assert.deepEqual(granted.body, { message: "app 现在可以自行开启无线调试" });
     assert.ok(adb.calls().some((c) => c.join(" ") === `-s ${serial} shell pm grant fail.still.android android.permission.WRITE_SECURE_SETTINGS`));
     // ColorOS (an OPPO, 2026-10-17) and MIUI refuse the shell's grant with a page of stack: said as the switch to turn
     // on, with the code the app goes by; anything else by its first line, no code.
     adb.say("grant-says", "Exception occurred while executing 'grant':\njava.lang.SecurityException: grantRuntimePermission: Neither user 2000 nor current process has android.permission.GRANT_RUNTIME_PERMISSIONS.\n  at android.app.ContextImpl.enforce(ContextImpl.java:2493)");
-    const refused = await mesh.answer({ op: "grant", phone: PHONE });
+    const refused = await mesh.answer({ op: "grant", phone });
     assert.deepEqual(refused.body, { message: "手机不允许 adb 授权：请在开发者选项中开启「禁止权限监控」（ColorOS）或「USB 调试（安全设置）」（MIUI）后重试", code: "adb_grant_refused" });
     adb.say("grant-says", "Error: Unknown permission\n  at something");
-    const failed = await mesh.answer({ op: "grant", phone: PHONE });
+    const failed = await mesh.answer({ op: "grant", phone });
     assert.deepEqual(failed.body, { message: "授权失败：Error: Unknown permission" });
 
     // The phone stops reading the offer: the phone is kept for GRACE, then adb lets it go and its port closes.

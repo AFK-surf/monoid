@@ -170,7 +170,12 @@ fn recent_reads_node(v : @view.View, src : Source) -> Unit {
     fn(_) {
       guard recent.reading is Some(read) && read.photos() is Some(all) else { return }
       recent.reading = None
-      recent.photos.replace(latest_photos(all, ((src.now)() / 1000.0).to_int64(), recent_most))
+      let next = latest_photos(all, ((src.now)() / 1000.0).to_int64(), recent_most)
+      if v.was_placed() && !recent.photos.is_empty() {
+        @view.transition(within=v.transitions_root(), fn() { recent.photos.replace(next) })
+      } else {
+        recent.photos.replace(next)
+      }
       // Keep selections for photos that are still in the gallery.
       recent.chosen.retain(fn(s) { recent.photos.iter().any(fn(p) { p.src == s }) })
       @hostapi.log("recent photos: \{recent.photos.length()} of \{all.length()}")
@@ -257,7 +262,7 @@ fn recent_strip_node(v : @view.View, tapped : (Int) -> Unit) -> Unit {
           fn() { recent.photos.map(fn(p) { (p.src, p.video) }) },
           fn(p) { p.0 },
           fn(t, p) { recent_photo_node(t, p, small, corner, tapped) },
-          at_once=true,
+          along_row=true,
         )
         // the tile that asks for the gallery
         held.show(fn() { ask() is Some(_) }, fn(s) {

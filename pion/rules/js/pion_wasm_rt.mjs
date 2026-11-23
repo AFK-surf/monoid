@@ -9,6 +9,8 @@
 //   PionMap     (32B):    len:i64@0, cap:i64@8, val_is_obj:i32@16, key_is_int:i32@20, entries_ptr:i64@24
 //   PionMapEntry(32B):    key:i64@0, hash:u64@8, val:i64@16, state:u8@24
 
+export const PION_WASM_RT_ABI = 2;
+
 const TAG_STRING  = 1;
 const TAG_BYTES   = 2;
 const TAG_ARRAY   = 3;
@@ -206,6 +208,14 @@ export function createPionRuntime(options = {}) {
     heapEnd = memory.buffer.byteLength;
     const sc = exp.__pion_slab_ctl;
     slabCtl = typeof sc === "number" ? sc : (sc && typeof sc.value === "number" ? sc.value : 0);
+    const ra = exp.__pion_wasm_rt_abi;
+    const modAbi = typeof ra === "number" ? ra : (ra && typeof ra.value === "number" ? ra.value : 0);
+    if ((slabCtl > 0 || ra !== undefined) && modAbi !== PION_WASM_RT_ABI) {
+      throw new Error(
+        `Pion Wasm runtime ABI mismatch: runtime expects v${PION_WASM_RT_ABI}, module exports v${modAbi}. ` +
+        `Sync runtime/pion_wasm_rt*.mjs with the pionc version that built this .wasm.`
+      );
+    }
     if (isNode && typeof process !== "undefined" && process.env && process.env.PION_HASH_SEED !== undefined && process.env.PION_HASH_SEED !== "") {
       hashSeed = BigInt.asUintN(64, BigInt(process.env.PION_HASH_SEED));
       hashSeed2 = splitmix64(hashSeed ^ 0x9e3779b97f4a7c15n);
@@ -261,8 +271,11 @@ export function createPionRuntime(options = {}) {
 
   // Raw allocation: stores 8-byte block header (size:u32 @ base, magic:u32 @ base+4) at ptr - 8.
   function rawAlloc(size) {
+    if (!Number.isFinite(size) || size < 0 || size > 0x7FFFFFE8) {
+      pionDie("allocation size exceeds wasm32 limit");
+    }
     syncViews();
-    const need = ((size + 7) & ~7) + 8;
+    const need = Math.ceil(size / 8) * 8 + 8;
     const cls = sizeClassIndex(need);
     if (cls >= 0) {
       if (slabCtl > 0 && cls < 9) {
@@ -295,6 +308,7 @@ export function createPionRuntime(options = {}) {
       }
     }
     const hp = getHeapPtr();
+    if (hp + allocSz > 0xFFFF0000) pionDie("wasm32 out of memory");
     if (hp + allocSz > heapEnd) {
       const missing = hp + allocSz - heapEnd;
       const curPages = heapEnd >>> 16;
@@ -1199,6 +1213,7 @@ export function createPionRuntime(options = {}) {
     const elemIsObj = f > 2 ? (f >>> 8) : (f === 1 ? 1 : 0);
     const elemStride = f === 2 ? 1 : (f > 2 ? (f & 0xFF) : 0);
     const esz = elemStride || 8;
+    if (cb * BigInt(esz) > 0x7FFFFFE8n) pionDie("container byte size exceeds wasm32 limit");
     const obj = pion_alloc_uninit(32, TAG_ARRAY, 0n);
     const dp = c > 0 ? rawAlloc(c * esz) : 0;
     const p = pNum(obj);
@@ -2105,6 +2120,7 @@ export function createPionRuntime(options = {}) {
 
   const imports = {
     pion_rt: {
+      __pion_rt_abi_v2: () => {},
       pion_cur_tid, pion_alloc, pion_alloc_uninit,
       pion_rc_inc, pion_rc_dec, pion_rc_dec_slow, pion_rc_freeze, pion_rc_immortalize,
       pion_panic, pion_panic_oob, pion_debug_assert,

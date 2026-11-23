@@ -23,7 +23,7 @@ extern int mb_core_deliver_media(
     const uint8_t *bytes,
     size_t len);
 
-#define MAX_MSGS 64
+#define MAX_MSGS 128
 
 typedef struct recorded_msg {
     char *json;
@@ -289,6 +289,82 @@ int main(void) {
     printf("[core_runtime_e2e] #26 workspaceMarks live delta -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":26") != NULL && strstr(m->json, "\"delta\"") != NULL && strstr(m->json, "\"badgeKinds\"") != NULL && strstr(m->json, "\"set\":false") != NULL);
     send_json("{\"id\":26,\"unsubscribe\":true}");
+
+    // 5c. W28a real runtime topic projectors (status, lockPrompts, notices, notify, doing, lock),
+    // `chat {session, compact}`, and `auth.complete {query}` (zero verifier/code/error_description leak)
+    send_json("{\"id\":50,\"subscribe\":{\"topic\":\"status\"},\"keyed\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #50 subscribe status -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":50") != NULL && strstr(m->json, "\"items\":[]") != NULL && strstr(m->json, "\"lines\":[]") != NULL);
+    send_json("{\"id\":50,\"unsubscribe\":true}");
+
+    send_json("{\"id\":51,\"subscribe\":{\"topic\":\"lockPrompts\"},\"keyed\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #51 subscribe lockPrompts -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":51") != NULL && strstr(m->json, "\"pairing\":[]") != NULL && strstr(m->json, "\"asks\":[]") != NULL);
+    send_json("{\"id\":51,\"unsubscribe\":true}");
+
+    send_json("{\"id\":52,\"subscribe\":{\"topic\":\"notices\"},\"keyed\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #52 subscribe notices -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":52") != NULL && strstr(m->json, "\"items\":[]") != NULL);
+    send_json("{\"id\":52,\"unsubscribe\":true}");
+
+    send_json("{\"id\":53,\"subscribe\":{\"topic\":\"doing\"},\"keyed\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #53 subscribe doing -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":53") != NULL && strstr(m->json, "\"doing\":[]") != NULL);
+    send_json("{\"id\":53,\"unsubscribe\":true}");
+
+    send_json("{\"id\":54,\"subscribe\":{\"topic\":\"notify\"},\"keyed\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #54 subscribe notify -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":54") != NULL && strstr(m->json, "\"permission\":\"unknown\"") != NULL && strstr(m->json, "\"workspaces\":") != NULL);
+
+    send_json("{\"id\":55,\"call\":\"notify.permission\",\"params\":{\"state\":\"granted\"}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    assert(strstr(m->json, "\"id\":55") != NULL && strstr(m->json, "\"error\"") == NULL);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #54 notify live delta -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":54") != NULL && strstr(m->json, "\"delta\"") != NULL && strstr(m->json, "\"granted\"") != NULL);
+    send_json("{\"id\":54,\"unsubscribe\":true}");
+
+    send_json("{\"id\":56,\"subscribe\":{\"topic\":\"chat\",\"station\":\"st-local\",\"session\":\"new:chat-e2e-compact\",\"compact\":true},\"keyed\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #56 subscribe chat {session, compact} -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":56") != NULL && strstr(m->json, "\"pending\":true") != NULL && strstr(m->json, "\"messages\":[]") != NULL);
+    send_json("{\"id\":56,\"unsubscribe\":true}");
+
+    send_json("{\"id\":57,\"call\":\"auth.begin\",\"params\":{}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #57 auth.begin -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":57") != NULL && strstr(m->json, "\"verifier\"") == NULL);
+    const char *st_pos = strstr(m->json, "\"state\":\"");
+    assert(st_pos != NULL);
+    st_pos += 9;
+    char auth_state[128];
+    size_t si = 0;
+    while (st_pos[si] != '\0' && st_pos[si] != '"' && si + 1 < sizeof(auth_state)) {
+        auth_state[si] = st_pos[si];
+        si++;
+    }
+    auth_state[si] = '\0';
+    assert(si > 0);
+    char auth_complete_req[384];
+    snprintf(auth_complete_req, sizeof(auth_complete_req),
+             "{\"id\":58,\"call\":\"auth.complete\",\"params\":{\"query\":\"?state=%s&code=e2e_secret_code_99\"}}",
+             auth_state);
+    send_json(auth_complete_req);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #58 auth.complete {query} -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":58") != NULL && strstr(m->json, "\"ok\":true") != NULL);
+    assert(strstr(m->json, "e2e_secret_code_99") == NULL && strstr(m->json, "verifier") == NULL);
+
+    send_json("{\"id\":59,\"call\":\"auth.complete\",\"params\":{\"query\":\"?error=access_denied&error_description=UNVERIFIED_XSS_LEAK\"}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #59 auth.complete error query -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":59") != NULL && strstr(m->json, "\"error\"") != NULL);
+    assert(strstr(m->json, "UNVERIFIED_XSS_LEAK") == NULL);
 
     // 6. Binary payload round-trip + screen_ack / screen_input / route_media
     static const uint8_t bin[4] = {'P', 'I', 'O', 'N'};

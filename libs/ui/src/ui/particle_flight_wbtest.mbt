@@ -515,3 +515,65 @@ test "particle flight: file card container=true keeps 236pt takeoff width, emits
     )
   }
 }
+
+///|
+test "particle flight: sizes_steady and sizes_across skip particle-flight nodes while still catching non-particle size snaps" {
+  // 1) particle=true flight changing box size 236x56 -> 137.5x52 must report zero sizes_steady / sizes_across faults at 60 & 120 fps.
+  for fps in [60.0, 120.0] {
+    let sent = @signals.signal(false)
+    let t = Tester::new(fn(_c) {  }, w=400.0, h=400.0, words_over_held=false)
+    t.check_looks(false)
+    t.set_frame_period(1000.0 / fps)
+    set_view_app(fn(root) {
+      root.lines_up(Is(Some(Start))) |> ignore
+      root.show(fn() { sent.get() }, at_once=true, fn(slot) {
+        slot.box(fn(b) {
+          b
+          .margin(Is((60.0, 60.0, 0.0, 0.0)))
+          .width(Is(Some(137.5)))
+          .height(Is(Some(52.0)))
+          .ground(Is(0x336699FFL))
+          .flies_in(
+            pf_flight,
+            fn(to) { Some((to.0, to.1 + 240.0, 236.0, 56.0)) },
+            particle=true,
+          )
+          |> ignore
+          b.box(fn(w) { w.words(Is("notes")) |> ignore }) |> ignore
+        })
+        |> ignore
+      })
+    })
+    t.draw()
+    sent.set(true)
+    let steps = if fps > 90.0 { 56 } else { 28 }
+    let (down, across) = across_frames(t, steps)
+    assert_eq(down, [], msg="particle flight @\{fps}fps reported false sizes_steady: \{Repr(down)}")
+    assert_eq(across, [], msg="particle flight @\{fps}fps reported false sizes_across: \{Repr(across)}")
+  }
+  // 2) A non-particle box snapping 236x56 -> 137.5x52 in one frame must still be caught by both sizes_steady and sizes_across.
+  let bw = @signals.signal(236.0)
+  let bh = @signals.signal(56.0)
+  let t2 = Tester::new(fn(_c) {  }, w=400.0, h=400.0, words_over_held=false)
+  t2.check_looks(false)
+  t2.set_frame_period(1000.0 / 60.0)
+  set_view_app(fn(root) {
+    root.lines_up(Is(Some(Start))) |> ignore
+    root.box(fn(b) {
+      b
+      .margin(Is((60.0, 60.0, 0.0, 0.0)))
+      .width(By(fn() { Some(bw.get()) }))
+      .height(By(fn() { Some(bh.get()) }))
+      .ground(Is(0x336699FFL))
+      |> ignore
+    })
+    |> ignore
+  })
+  t2.draw()
+  let _ = across_frames(t2, 3)
+  bw.set(137.5)
+  bh.set(52.0)
+  let (down2, across2) = across_frames(t2, 4)
+  assert_true(down2.length() > 0, msg="non-particle height snap was not caught by sizes_steady")
+  assert_true(across2.length() > 0, msg="non-particle width snap was not caught by sizes_across")
+}

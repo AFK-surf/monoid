@@ -17,6 +17,5 @@ fn init {
     // (the board: a chat's card flying to the column its chat goes on to (View::shared), its words as they were over
     // its words as they are now where the two meet on the way)
     ("src/sfapp/board_wbtest.mbt", 2),
-    ("src/sfapp/composer_wbtest.mbt", 2),
   ])
 }

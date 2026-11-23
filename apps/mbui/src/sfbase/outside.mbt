@@ -97,8 +97,10 @@ pub fn send_sharing(src : Source, key : String, station : String, words : String
       // (nothing to ask the viewer: it goes now, as the answer comes, the asking let go first; where it was let go of
       // meanwhile (the app begun again), nothing goes)
       if outside_is(s) {
+        @signals.start_batch()
         outside_ask.set(None)
         (s.send)()
+        @signals.end_batch()
       }
     } else {
       s.chats.replace(chats)
@@ -141,10 +143,12 @@ fn outside_goes(s : OutsideAsk) -> Unit {
   // (whether it is still the one asked, read before its asking closes: closing it lets go of it at once where its page
   // reads `open` as it changes, the composer made as nodes, outside_gone)
   let go = outside_is(s)
+  @signals.start_batch()
   s.open.set(false)
   if go {
     (s.send)()
   }
+  @signals.end_batch()
 }
 
 ///|

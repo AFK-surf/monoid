@@ -1,5 +1,6 @@
 // Admin CLI (`stillfail admin …`): talks to still.fail cloud's `/v1/admin/*` endpoints with an Admin API key (`sfa_…`).
 // Zero external dependencies; natively supports HTTPS_PROXY CONNECT tunnels + custom CA bundles (`secret_run` proxy mode).
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import * as http from "node:http";
 import * as https from "node:https";
@@ -7,7 +8,7 @@ import { isIP } from "node:net";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import * as tls from "node:tls";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export interface CliIo {
   stdout: (text: string) => void;
@@ -253,12 +254,15 @@ function parseArgs(argv: string[]): {
   help: boolean;
   origin?: string | undefined;
   key?: string | undefined;
+  data?: string | undefined;
   rest: string[];
 } {
   let json = false;
   let help = false;
   let origin: string | undefined;
   let key: string | undefined;
+  // The station's data directory, whose mesh/cloud.json names the cloud: what `stillfail admin` ran by the reader took.
+  let data: string | undefined;
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
@@ -270,11 +274,14 @@ function parseArgs(argv: string[]): {
     } else if (a === "--key") {
       key = argv[++i];
       if (!key) throw new CliError("--key requires a value", 2);
+    } else if (a === "--data") {
+      data = argv[++i];
+      if (!data) throw new CliError("--data requires a value", 2);
     } else {
       rest.push(a);
     }
   }
-  return { json, help, origin, key, rest };
+  return { json, help, origin, key, data, rest };
 }
 
 function takeFlags(args: string[], valueFlags: Set<string>, boolFlags: Set<string>, multiFlags = new Set<string>()): {
@@ -331,7 +338,7 @@ export async function runAdminCli(argv: string[], io: CliIo): Promise<number> {
   }
 
   const cmdName = basename(io.argv0 || "stillfail");
-  const origin = await resolveOrigin(parsed.origin, io.env, cmdName);
+  const origin = await resolveOrigin(parsed.origin, parsed.data ? { ...io.env, STILLFAIL_DATA: parsed.data } : io.env, cmdName);
 
   const call = async <T = any>(method: string, path: string, body?: unknown): Promise<T> => {
     const payload = body !== undefined ? JSON.stringify(body) : null;
@@ -787,6 +794,15 @@ async function main(): Promise<void> {
   process.exitCode = code;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Run as a program, also through a link to it (Node runs a linked entry by its real path).
+function realPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+if (process.argv[1] && realPath(process.argv[1]) === realPath(fileURLToPath(import.meta.url))) {
   void main();
 }

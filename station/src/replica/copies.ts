@@ -3,6 +3,7 @@
 // that keep this one's copies, the copies this station keeps of others handed over where they are not its to keep any
 // more, and a lost station's copy brought back into a new one (restore.ts). Nothing here reads stillfail.db; what it does
 // on this thread is a few messages per change and the files' bytes passed to the mesh as they are read.
+import { randomBytes } from "node:crypto";
 import { mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -30,6 +31,8 @@ export const TRANSCRIPT_GATHER_MS = 30_000;
 /// A place that could not be brought level is tried again after this, twice as long each time, up to RETRY_MOST_MS.
 export const RETRY_MS = 5_000;
 export const RETRY_MOST_MS = 10 * 60_000;
+/// Quiet period after the last incoming `replica.put`/`replica.drop` before handing over and removing a non-keeper copy.
+export const HANDOVER_QUIET_MS = 15_000;
 /// How often at most the station's settings are told the copies went further (a pass a second while agents work);
 /// what went wrong or came right, at once; a restore's progress, every second.
 export const TELL_MS = 30_000;
@@ -265,6 +268,11 @@ export class Copies {
   #handing: Promise<void> | null = null;
   #handAgain: (() => void) | null = null;
   #handTries = 0;
+  /// Per `(ws, origin)` incoming write tracking and atomic rename gate for safe handover removal.
+  readonly #activeWrites = new Map<string, number>();
+  readonly #writeSeq = new Map<string, number>();
+  readonly #lastWriteAt = new Map<string, number>();
+  readonly #removing = new Map<string, Promise<void>>();
   #restoring: Restoring | null = null;
   /// Why the export is not going (its thread ended, a pass failing), and how many times in a row.
   #exportError: string | null = null;
@@ -642,6 +650,22 @@ export class Copies {
     return this.#d.places().workspaces.some((w) => w.workspace === ws) && (this.#d.roster(ws) ?? []).some((s) => s.id === peer);
   }
 
+  async #guardWrite<T>(ws: string, origin: string, fn: () => Promise<T>): Promise<T> {
+    const key = `${ws}\n${origin}`;
+    while (this.#removing.has(key)) await this.#removing.get(key);
+    this.#activeWrites.set(key, (this.#activeWrites.get(key) ?? 0) + 1);
+    this.#writeSeq.set(key, (this.#writeSeq.get(key) ?? 0) + 1);
+    this.#lastWriteAt.set(key, this.#d.fibers.now());
+    try {
+      return await fn();
+    } finally {
+      const left = (this.#activeWrites.get(key) ?? 1) - 1;
+      if (left <= 0) this.#activeWrites.delete(key);
+      else this.#activeWrites.set(key, left);
+      this.#lastWriteAt.set(key, this.#d.fibers.now());
+    }
+  }
+
   /// What this station answers of the copies it keeps (`replica.*`).
   answers() {
     return serve({
@@ -649,6 +673,7 @@ export class Copies {
       inWorkspace: (peer, ws) => this.inWorkspace(peer, ws),
       hello: (peer, ws, formerly, acceptCopies) => this.heard(peer, ws, formerly, acceptCopies),
       acceptOthers: () => this.#backup().acceptOthers,
+      guardWrite: (ws, origin, fn) => this.#guardWrite(ws, origin, fn),
     });
   }
 
@@ -777,6 +802,7 @@ export class Copies {
         keeping.tries = 0;
         keeping.partial = false;
         keeping.lacking = 0;
+        this.#pruneNonTargets(ws);
         this.#record(ws, {
           at: keeping.at,
           kind: "sync",
@@ -822,11 +848,12 @@ export class Copies {
             error: keeping.error,
           });
         }
-        if (reason !== "old") {
+        if (reason !== "old" && this.#targets(ws).includes(peer)) {
           const wait = Math.min(RETRY_MS * 2 ** keeping.tries, RETRY_MOST_MS);
           keeping.tries++;
           if (!this.#closed) keeping.again = this.#d.fibers.after(wait, () => { // timer: a retry after a failure
             keeping.again = null;
+            if (!this.#targets(ws).includes(peer)) return;
             this.#level(ws, peer, { now: true, fresh: true });
           });
         }
@@ -842,9 +869,26 @@ export class Copies {
       if (this.#levelling.get(key) === run) this.#levelling.delete(key);
       if (keeping.asked && !this.#closed) {
         keeping.asked = false;
-        this.#level(ws, peer, { now: keeping.error === null });
+        if (this.#targets(ws).includes(peer)) this.#level(ws, peer, { now: keeping.error === null });
+      }
+      if (!keeping.busy && keeping.again === null && !this.#targets(ws).includes(peer)) {
+        if (this.#keeping.get(key) === keeping) this.#keeping.delete(key);
       }
     });
+  }
+
+  /// Cancels pending retries and drops idle keeping state for peers no longer targeted in `ws` (e.g. overflow keepers
+  /// after a primary keeper recovers). Never touches other workspaces or `s3:` targets.
+  #pruneNonTargets(ws: string): void {
+    const active = new Set(this.#targets(ws));
+    for (const [k, v] of [...this.#keeping.entries()]) {
+      const [w, dest] = k.split("\n");
+      if (w !== ws || dest === undefined || dest.startsWith("s3:") || active.has(dest)) continue;
+      v.again?.();
+      v.again = null;
+      v.asked = false;
+      if (!v.busy) this.#keeping.delete(k);
+    }
   }
 
   #levelS3(ws: string, target: NormalizedS3Target, o: { now?: boolean; fresh?: boolean }): void {
@@ -1032,13 +1076,30 @@ export class Copies {
       const roster = this.#d.roster(ws);
       if (roster === null) continue;
       const taking = this.#d.taking?.() ?? new Set<string>();
-      for (const origin of await readdir(join(keptDir(this.#d.data), ws)).catch(() => [] as string[])) {
+      const wsDir = join(keptDir(this.#d.data), ws);
+      for (const origin of await readdir(wsDir).catch(() => [] as string[])) {
+        if (origin.startsWith(".dropping-")) {
+          await rm(join(wsDir, origin), { recursive: true, force: true }).catch(() => {});
+          continue;
+        }
         if (!STATION.test(origin) || origin === here || taking.has(origin)) continue;
-        const eligible = this.#backup().acceptOthers
+        const acceptOthers = this.#backup().acceptOthers;
+        const eligible = acceptOthers
           ? roster.map((s) => s.id)
           : roster.filter((s) => s.id !== here && this.#peerAccepts.get(s.id) !== false).map((s) => s.id);
         const should = keepers(ws, origin, eligible);
         if (should.includes(here)) continue;
+        const key = `${ws}\n${origin}`;
+        if ((this.#activeWrites.get(key) ?? 0) > 0) {
+          left = true;
+          continue;
+        }
+        const lastWrite = this.#lastWriteAt.get(key);
+        if (acceptOthers && lastWrite !== undefined && this.#d.fibers.now() - lastWrite < HANDOVER_QUIET_MS) {
+          left = true;
+          continue;
+        }
+        const seqBefore = this.#writeSeq.get(key) ?? 0;
         const mine = await this.kept.held(ws, origin);
         let all = should.length > 0;
         for (const peer of should) {
@@ -1052,7 +1113,29 @@ export class Copies {
           // (each of them holds as much as this one did: asked again just before it goes)
           const still = await Promise.all(should.map((p) => new PeerPlace(p, this.#d.ask).held(ws, origin).then((h) => holdsAll(mine, h), () => false)));
           if (still.every((x) => x)) {
-            await rm(join(keptDir(this.#d.data), ws, origin), { recursive: true, force: true });
+            if ((this.#activeWrites.get(key) ?? 0) > 0 || (this.#writeSeq.get(key) ?? 0) !== seqBefore) {
+              left = true;
+              continue;
+            }
+            const dropping = join(wsDir, `.dropping-${origin}-${randomBytes(4).toString("hex")}`);
+            let release!: () => void;
+            this.#removing.set(key, new Promise<void>((r) => { release = r; }));
+            let renamed = false;
+            try {
+              await rename(join(wsDir, origin), dropping);
+              renamed = true;
+              this.#lastWriteAt.delete(key);
+            } catch (e) {
+              if (!isEnoent(e)) throw e;
+            } finally {
+              this.#removing.delete(key);
+              release();
+            }
+            if (renamed) {
+              await rm(dropping, { recursive: true, force: true }).catch((e) => {
+                log.warn("copies", "dropping directory not removed", { ws, origin, error: (e as Error).message });
+              });
+            }
             log.info("copies", "a station's copies handed over", { ws, origin, to: should });
             continue;
           }
