@@ -12,16 +12,32 @@ import "shell_native"
 import "sql"
 import "store"
 import "sync"
+import "views"
 
 extern "C" fn mb_core_emit(json : Ptr, len : Int64, bytes : Ptr, blen : Int64) -> Int
+extern "C" fn pion_core_wall_now_ms() -> Int64
+
+struct AccountInfo {
+  sub : String
+  email : String
+  name : String
+  picture : String
+}
 
 struct RuntimeSession {
   sh : shell::Shell
   db : sql::Sql
   core : sync::ClientCore
+  accounts : Array[AccountInfo]
+  prefs : Map[String, base_codec::Json]
   mut cloud : Option[sync::CloudSync]
   mut origin : String
   mut live_sync_enabled : Bool
+  mut device_app : String
+  mut device_locale : String
+  mut notify_asked : Bool
+  mut notify_on : Bool
+  mut notify_permission : String
   mut last_ack_call : Double
   mut last_ack_ts : Double
   mut screen_inputs : Int
@@ -211,6 +227,445 @@ fn drain_and_emit(sess : RuntimeSession) -> Unit {
   }
 }
 
+fn hex_digit(n : Int) -> String {
+  let chars = "0123456789abcdef"
+  chars.slice(n, n + 1)
+}
+
+/// Match `client/core-ts/src/data.ts` `dbName(sub)`: `"account-"` + UTF-8 bytes
+/// keeping `[A-Za-z0-9-]` and escaping others as `_xx`.
+fn encode_account_db_name(sub : String) -> String {
+  let bs = sub.to_bytes()
+  let sb = StringBuilder::new()
+  sb.write_string("account-")
+  for i in 0..<bs.length() {
+    let b = bs[i].to_int()
+    let ok = (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b == 45
+    if ok {
+      sb.write_byte(bs[i])
+    } else {
+      sb.write_string("_")
+      sb.write_string(hex_digit((b / 16) % 16))
+      sb.write_string(hex_digit(b % 16))
+    }
+  }
+  sb.to_string()
+}
+
+/// Read one JSON document from host storage (`storage.get`) synchronously during startup.
+fn read_storage_json(sh : shell::Shell, key : String) -> Option[base_codec::Json] {
+  let done_flag : Array[Bool] = [false]
+  let raw_out : Array[Option[Bytes]] = [None]
+  let _ = sh.rt.fork_quiet_named("startup:storage.get", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sh.call_k(
+      "storage.get",
+      base_codec::json_obj([("key", base_codec::json_str(key))]),
+      fn(ex : effect::Exit[shell::Answer]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(ans) => {
+            raw_out[0] = ans.bytes
+          }
+          _ => ()
+        }
+        done_flag[0] = true
+        fk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  let _ = shell_native::drain_until(sh, fn() -> Bool { done_flag[0] }, timeout_ms=2000.to_int64())
+  match raw_out[0] {
+    Some(bs) => {
+      if bs.length() == 0 {
+        return None
+      }
+      match base_codec::json_parse(bytes_to_str(bs)) {
+        base_codec::JsonParseResult::Ok(j) => Some(j)
+        base_codec::JsonParseResult::Err(_) => None
+      }
+    }
+    None => None
+  }
+}
+
+fn parse_stored_accounts(raw : base_codec::Json) -> Array[AccountInfo] {
+  let out : Array[AccountInfo] = []
+  match raw {
+    base_codec::Json::Arr(xs) => {
+      for i in 0..<xs.length() {
+        let a = xs[i]
+        let sub = match opt_str_param(a, "sub") {
+          Some(s) => s
+          None => match opt_str_param(a, "id") {
+            Some(s) => s
+            None => ""
+          }
+        }
+        if sub.length() == 0 {
+          continue
+        }
+        let email = match opt_str_param(a, "email") {
+          Some(s) => s
+          None => ""
+        }
+        let name = match opt_str_param(a, "name") {
+          Some(s) => s
+          None => email
+        }
+        let picture = match opt_str_param(a, "picture") {
+          Some(s) => s
+          None => ""
+        }
+        out.push(AccountInfo::{ sub: sub, email: email, name: name, picture: picture })
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn account_view_json(a : AccountInfo) -> base_codec::Json {
+  base_codec::json_obj([
+    ("sub", base_codec::json_str(a.sub)),
+    ("email", base_codec::json_str(a.email)),
+    ("name", base_codec::json_str(a.name)),
+    ("picture", base_codec::json_str(a.picture)),
+  ])
+}
+
+fn build_accounts_topic_json(sess : RuntimeSession) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<sess.accounts.length() {
+    out.push(account_view_json(sess.accounts[i]))
+  }
+  base_codec::json_arr(out)
+}
+
+fn list_workspaces_briefs(db : sql::Sql) -> Array[base_codec::Json] {
+  let out : Array[base_codec::Json] = []
+  match store::list_workspaces(db) {
+    sql::SqlResult::Ok(rows) => {
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        let j = match base_codec::json_parse(r.json) {
+          base_codec::JsonParseResult::Ok(v) => v
+          base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+        }
+        let name = match opt_str_param(j, "name") {
+          Some(n) => n
+          None => r.id
+        }
+        let fields : Array[(String, base_codec::Json)] = [
+          ("id", base_codec::json_str(r.id)),
+          ("name", base_codec::json_str(name)),
+        ]
+        match opt_str_param(j, "emoji") {
+          Some(e) => if e.length() > 0 { fields.push(("emoji", base_codec::json_str(e))) }
+          None => ()
+        }
+        match opt_str_param(j, "icon") {
+          Some(ic) => if ic.length() > 0 { fields.push(("icon", base_codec::json_str(ic))) }
+          None => ()
+        }
+        out.push(base_codec::json_obj(fields))
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+  out
+}
+
+fn build_workspaces_topic_json(sess : RuntimeSession) -> base_codec::Json {
+  if sess.accounts.length() == 0 {
+    return base_codec::json_arr([])
+  }
+  let ws_list = list_workspaces_briefs(sess.db)
+  let out : Array[base_codec::Json] = []
+  for i in 0..<sess.accounts.length() {
+    let a = sess.accounts[i]
+    let wss = if i == 0 { ws_list } else { [] }
+    out.push(base_codec::json_obj([
+      ("account", account_view_json(a)),
+      ("workspaces", base_codec::json_arr(wss)),
+      ("invitations", base_codec::json_arr([])),
+      ("loaded", base_codec::json_bool(true)),
+    ]))
+  }
+  base_codec::json_arr(out)
+}
+
+fn build_rail_view(lang : String) -> base_codec::Json {
+  let en = lang == "en"
+  let place_j = fn(id : String, zh_label : String, en_label : String, kind : String, list_opt : Option[String]) -> base_codec::Json {
+    let fs : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(id)),
+      ("label", base_codec::json_str(if en { en_label } else { zh_label })),
+      ("kind", base_codec::json_str(kind)),
+    ]
+    match list_opt {
+      Some(l) => fs.push(("list", base_codec::json_str(l)))
+      None => ()
+    }
+    base_codec::json_obj(fs)
+  }
+  let places = base_codec::json_arr([
+    place_j("chats", "对话", "Chats", "lists", Some("all")),
+    place_j("mine", "我参与的", "Mine", "lists", Some("mine")),
+    place_j("watching", "监控中", "Watching", "lists", Some("watching")),
+    place_j("hidden", "已隐藏", "Hidden", "lists", Some("hidden")),
+    place_j("archive", "已归档", "Archived", "lists", Some("archive")),
+    place_j("attention", "待处理", "Attention", "attention", None),
+    place_j("files", "文件", "Files", "places", None),
+    place_j("remote", "远程", "Remote", "places", None),
+    place_j("stations", "Station", "Station", "places", None),
+    place_j("profiles", "Profile", "Profile", "places", None),
+    place_j("connects", "连接", "Connects", "places", None),
+    place_j("usage", "用量", "Usage", "places", None),
+  ])
+  let strs = fn(xs : Array[String]) -> base_codec::Json {
+    let arr : Array[base_codec::Json] = []
+    for i in 0..<xs.length() {
+      arr.push(base_codec::json_str(xs[i]))
+    }
+    base_codec::json_arr(arr)
+  }
+  let groups = base_codec::json_arr([
+    base_codec::json_obj([
+      ("kind", base_codec::json_str("places")),
+      ("label", base_codec::json_str(if en { "Pages" } else { "页面" })),
+      ("places", strs(["files", "remote", "stations", "profiles", "connects", "usage"])),
+    ]),
+    base_codec::json_obj([
+      ("kind", base_codec::json_str("lists")),
+      ("label", base_codec::json_str(if en { "Chat lists" } else { "对话列表" })),
+      ("places", strs(["chats", "mine", "watching", "hidden", "archive"])),
+    ]),
+    base_codec::json_obj([
+      ("kind", base_codec::json_str("attention")),
+      ("label", base_codec::json_str(if en { "Attention" } else { "待处理" })),
+      ("places", strs(["attention"])),
+    ]),
+  ])
+  let def_items = ["attention", "chats", "files", "remote", "stations", "profiles", "connects", "usage"]
+  let hidden_items = ["mine", "watching", "hidden", "archive"]
+  base_codec::json_obj([
+    ("places", places),
+    ("groups", groups),
+    ("default", strs(def_items)),
+    (
+      "all",
+      base_codec::json_obj([
+        ("items", strs(def_items)),
+        ("hidden", strs(hidden_items)),
+        ("changed", base_codec::json_bool(false)),
+      ]),
+    ),
+    ("by", base_codec::json_obj([])),
+  ])
+}
+
+fn build_prefs_view(sess : RuntimeSession) -> base_codec::Json {
+  let lang_val = match sess.prefs.get("lang") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => "zh"
+  }
+  let app_kind = if sess.device_app.length() > 0 { sess.device_app } else { "desktop" }
+  let dev_fields : Array[(String, base_codec::Json)] = [
+    ("app", base_codec::json_str(app_kind)),
+    ("phone", base_codec::json_bool(false)),
+    ("handoff", base_codec::json_bool(false)),
+  ]
+  if sess.device_locale.length() > 0 {
+    dev_fields.push(("locale", base_codec::json_str(sess.device_locale)))
+  }
+  let empty_face = fn(mono : Bool) -> base_codec::Json {
+    base_codec::json_obj([
+      ("id", base_codec::json_str("")),
+      ("name", base_codec::json_str("")),
+      ("mono", base_codec::json_bool(mono)),
+      ("family", base_codec::json_str("")),
+      ("files", base_codec::json_arr([])),
+      ("bytes", base_codec::json_int(0)),
+    ])
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("onlyMine", base_codec::json_bool(false)),
+    ("onlyWatching", base_codec::json_bool(false)),
+    ("boardViews", base_codec::json_obj([])),
+    ("boardGroups", base_codec::json_obj([])),
+    ("boardShowEmpty", base_codec::json_obj([])),
+    ("boardDrafts", base_codec::json_obj([])),
+    ("listFilter", base_codec::json_obj([])),
+    ("appearance", base_codec::json_str("system")),
+    ("rowPicture", base_codec::json_str("auto")),
+    ("absoluteTime", base_codec::json_bool(false)),
+    ("lang", base_codec::json_str(lang_val)),
+    ("keys", base_codec::json_obj([])),
+    ("lastChat", base_codec::json_obj([])),
+    ("moveTo", base_codec::json_obj([])),
+    ("openChat", base_codec::json_obj([])),
+    ("chatTabs", base_codec::json_obj([])),
+    ("dropFiles", base_codec::json_obj([])),
+    ("driveViews", base_codec::json_obj([])),
+    ("filesTabs", base_codec::json_obj([])),
+    ("remoteTabs", base_codec::json_obj([])),
+    ("driveFavorites", base_codec::json_obj([])),
+    ("driveFavoritesHidden", base_codec::json_obj([])),
+    ("previewSizes", base_codec::json_obj([])),
+    ("sidebars", base_codec::json_obj([])),
+    ("trouble", base_codec::json_obj([])),
+    ("jobsSeen", base_codec::json_obj([])),
+    ("failsGone", base_codec::json_obj([])),
+    ("resume", base_codec::json_obj([])),
+    ("stationUpdatesDismissed", base_codec::json_obj([])),
+    ("device", base_codec::json_obj(dev_fields)),
+    ("productName", base_codec::json_str("still.fail")),
+    ("product", base_codec::json_str("still.fail")),
+    (
+      "reader",
+      base_codec::json_obj([
+        ("size", base_codec::json_int(16)),
+        ("line", base_codec::json_num(1.7)),
+        ("margin", base_codec::json_int(22)),
+        ("face", base_codec::json_str("sans")),
+        ("indent", base_codec::json_bool(true)),
+        ("paper", base_codec::json_str("follow")),
+      ]),
+    ),
+    ("rails", base_codec::json_obj([])),
+    (
+      "bars",
+      base_codec::json_obj([
+        (
+          "sets",
+          base_codec::json_arr([
+            base_codec::json_arr([
+              base_codec::json_str("chats"),
+              base_codec::json_str("files"),
+              base_codec::json_str("profiles"),
+              base_codec::json_str("stations"),
+            ]),
+          ]),
+        ),
+        ("current", base_codec::json_int(0)),
+      ]),
+    ),
+    ("barsBy", base_codec::json_obj([])),
+    ("fonts", base_codec::json_obj([])),
+    (
+      "faces",
+      base_codec::json_obj([
+        ("ui", empty_face(false)),
+        ("text", empty_face(false)),
+        ("code", empty_face(true)),
+        ("list", base_codec::json_arr([])),
+      ]),
+    ),
+    ("railView", build_rail_view(lang_val)),
+    ("experimental", base_codec::json_obj([])),
+    ("features", base_codec::json_obj([])),
+    ("experimentalItems", base_codec::json_arr([])),
+  ]
+  match sess.prefs.get("workspace") {
+    Some(base_codec::Json::Str(ws)) => if ws.length() > 0 { fields.push(("workspace", base_codec::json_str(ws))) }
+    _ => if sess.core.workspace.length() > 0 && sess.core.workspace != "ws-default" {
+      fields.push(("workspace", base_codec::json_str(sess.core.workspace)))
+    }
+  }
+  base_codec::json_obj(fields)
+}
+
+fn build_notify_view(sess : RuntimeSession) -> base_codec::Json {
+  let ws_briefs = list_workspaces_briefs(sess.db)
+  let ws_out : Array[base_codec::Json] = []
+  for i in 0..<ws_briefs.length() {
+    let w = ws_briefs[i]
+    let id = match opt_str_param(w, "id") { Some(s) => s; None => "" }
+    let name = match opt_str_param(w, "name") { Some(s) => s; None => id }
+    ws_out.push(base_codec::json_obj([
+      ("id", base_codec::json_str(id)),
+      ("name", base_codec::json_str(name)),
+      ("on", base_codec::json_bool(true)),
+    ]))
+  }
+  base_codec::json_obj([
+    ("on", base_codec::json_bool(sess.notify_on)),
+    ("asked", base_codec::json_bool(sess.notify_asked)),
+    ("push", base_codec::json_bool(true)),
+    (
+      "kinds",
+      base_codec::json_obj([
+        ("wait", base_codec::json_bool(true)),
+        ("failed", base_codec::json_bool(true)),
+        ("done", base_codec::json_str("away")),
+        ("message", base_codec::json_bool(true)),
+        ("billed", base_codec::json_bool(false)),
+      ]),
+    ),
+    ("preview", base_codec::json_bool(true)),
+    ("muted", base_codec::json_arr([])),
+    ("workspaces", base_codec::json_arr(ws_out)),
+    ("permission", base_codec::json_str(sess.notify_permission)),
+    ("show", base_codec::json_arr([])),
+  ])
+}
+
+fn build_workspace_marks_view(sess : RuntimeSession) -> base_codec::Json {
+  let ws_briefs = list_workspaces_briefs(sess.db)
+  let ws_map : Array[(String, base_codec::Json)] = []
+  for i in 0..<ws_briefs.length() {
+    let w = ws_briefs[i]
+    let id = match opt_str_param(w, "id") { Some(s) => s; None => "" }
+    let name = match opt_str_param(w, "name") { Some(s) => s; None => id }
+    if id.length() > 0 {
+      ws_map.push((
+        id,
+        base_codec::json_obj([
+          ("alert", base_codec::json_int(0)),
+          ("unread", base_codec::json_int(0)),
+          ("badge", base_codec::json_int(0)),
+          ("workspaceName", base_codec::json_str(name)),
+          ("items", base_codec::json_arr([])),
+        ]),
+      ))
+    }
+  }
+  base_codec::json_obj([
+    ("workspaces", base_codec::json_obj(ws_map)),
+    ("badge", base_codec::json_int(0)),
+    (
+      "badgeKinds",
+      base_codec::json_obj([
+        ("on", base_codec::json_bool(true)),
+        ("wait", base_codec::json_bool(true)),
+        ("failed", base_codec::json_bool(true)),
+        ("done", base_codec::json_bool(true)),
+        ("message", base_codec::json_bool(true)),
+        ("services", base_codec::json_bool(true)),
+      ]),
+    ),
+  ])
+}
+
+fn build_new_chat_view() -> base_codec::Json {
+  base_codec::json_obj([
+    ("kept", base_codec::json_str("")),
+    ("next", base_codec::json_str("new:chat-pion")),
+    ("stations", base_codec::json_arr([])),
+    ("any", base_codec::json_bool(true)),
+    ("down", base_codec::json_bool(false)),
+    ("waiting", base_codec::json_bool(false)),
+    ("preset", base_codec::json_str("")),
+    ("presetStation", base_codec::json_str("")),
+    ("presetName", base_codec::json_str("")),
+    ("presets", base_codec::json_arr([])),
+    ("presetMarks", base_codec::json_arr([])),
+    ("presetModel", base_codec::json_bool(false)),
+    ("presetStations", base_codec::json_bool(false)),
+    ("autoStation", base_codec::json_bool(false)),
+    ("autoPoolCount", base_codec::json_int(0)),
+  ])
+}
+
 /// Start the Pion `ClientCore` + real Rust `stillfail-shell` on `data_dir` (called on core thread).
 pub extern "C" fn pion_core_runtime_start(
   data_dir : Ptr,
@@ -226,7 +681,7 @@ pub extern "C" fn pion_core_runtime_start(
     emit_fatal("missing data_dir")
     return 0
   }
-  let rt = effect::Runtime::live(fn() -> Int64 { shell_native::now_ms() })
+  let rt = effect::Runtime::live(fn() -> Int64 { pion_core_wall_now_ms() })
   let sh = match shell_native::open(rt, dir) {
     Ok(s) => s
     Err(e) => {
@@ -234,7 +689,36 @@ pub extern "C" fn pion_core_runtime_start(
       return 0
     }
   }
-  let acct = match store::open_account_db(sh, "default") {
+  // Load signed-in accounts and device prefs from host storage (matching `client/core-ts`).
+  let accounts : Array[AccountInfo] = match read_storage_json(sh, "accounts") {
+    Some(j) => parse_stored_accounts(j)
+    None => []
+  }
+  let prefs_map : Map[String, base_codec::Json] = Map::new()
+  match read_storage_json(sh, "device/prefs") {
+    Some(j) => {
+      let dev_obj = match base_codec::json_get(j, "device") {
+        Some(d) => d
+        None => j
+      }
+      match dev_obj {
+        base_codec::Json::Obj(pairs) => {
+          for i in 0..<pairs.length() {
+            let (k, v) = pairs[i]
+            prefs_map.set(k, v)
+          }
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+  let db_name = if accounts.length() > 0 {
+    encode_account_db_name(accounts[0].sub)
+  } else {
+    "default"
+  }
+  let acct = match store::open_account_db(sh, db_name) {
     sql::SqlResult::Ok(a) => a
     sql::SqlResult::Err(e) => {
       emit_fatal("open_account_db failed: " + e.to_string())
@@ -291,6 +775,36 @@ pub extern "C" fn pion_core_runtime_start(
     }
     sql::SqlResult::Err(_) => ()
   }
+  let mut default_ws = match prefs_map.get("workspace") {
+    Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { "" }
+    _ => ""
+  }
+  if default_ws.length() == 0 {
+    match store::list_workspaces(acct.db) {
+      sql::SqlResult::Ok(ws_rows) => {
+        if ws_rows.length() > 0 {
+          default_ws = ws_rows[0].id
+        }
+      }
+      sql::SqlResult::Err(_) => ()
+    }
+  }
+  if default_ws.length() == 0 {
+    default_ws = "ws-default"
+  }
+  let mut default_st = "st-local"
+  match store::list_stations(acct.db, kind="overview") {
+    sql::SqlResult::Ok(st_rows) => {
+      let prefix = default_ws + "/"
+      for i in 0..<st_rows.length() {
+        if st_rows[i].address.starts_with(prefix) {
+          default_st = st_rows[i].address
+          break
+        }
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
   let transport = if origin.length() > 0 {
     sync::shell_http_transport(sh, origin)
   } else {
@@ -301,17 +815,40 @@ pub extern "C" fn pion_core_runtime_start(
   } else {
     None
   }
-  let core = sync::ClientCore::new("ws-default", "st-local", rt, acct.db, transport, fn() -> Unit {})
+  let core = sync::ClientCore::new(default_ws, default_st, rt, acct.db, transport, fn() -> Unit {})
   if origin.length() > 0 {
     core.set_cloud_origin(origin)
+  }
+  if accounts.length() > 0 {
+    let a0 = accounts[0]
+    core.set_viewer(a0.email, sub=a0.sub, role="owner")
+    for i in 0..<accounts.length() {
+      let ai = accounts[i]
+      core.auth_store.register_account(views::StoredAccount::{
+        sub: ai.sub,
+        email: ai.email,
+        name: ai.name,
+        picture: ai.picture,
+        access: "",
+        refresh: "",
+        access_expires: 0.to_int64(),
+      })
+    }
   }
   g_session[0] = Some(RuntimeSession::{
     sh: sh,
     db: acct.db,
     core: core,
+    accounts: accounts,
+    prefs: prefs_map,
     cloud: cloud_opt,
     origin: origin,
     live_sync_enabled: false,
+    device_app: "desktop",
+    device_locale: "",
+    notify_asked: false,
+    notify_on: true,
+    notify_permission: "unknown",
     last_ack_call: 0.0,
     last_ack_ts: 0.0,
     screen_inputs: 0,
@@ -444,6 +981,83 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
   })
 }
 
+fn handle_runtime_subscribe(sess : RuntimeSession, id : Int64, topic : protocol::Topic) -> Bool {
+  let tname = topic.name
+  let val_opt : Option[base_codec::Json] = if tname == "accounts" {
+    Some(build_accounts_topic_json(sess))
+  } else if tname == "workspaces" {
+    Some(build_workspaces_topic_json(sess))
+  } else if tname == "prefs" {
+    Some(build_prefs_view(sess))
+  } else if tname == "doing" {
+    Some(base_codec::json_obj([("doing", base_codec::json_arr([]))]))
+  } else if tname == "lockPrompts" {
+    Some(base_codec::json_obj([
+      ("pairing", base_codec::json_arr([])),
+      ("asks", base_codec::json_arr([])),
+    ]))
+  } else if tname == "workspaceMarks" {
+    Some(build_workspace_marks_view(sess))
+  } else if tname == "status" {
+    Some(base_codec::json_obj([
+      ("items", base_codec::json_arr([])),
+      ("lines", base_codec::json_arr([])),
+    ]))
+  } else if tname == "notify" {
+    Some(build_notify_view(sess))
+  } else if tname == "notices" {
+    Some(base_codec::json_obj([("items", base_codec::json_arr([]))]))
+  } else if tname == "driveTransfers" {
+    Some(base_codec::json_obj([
+      ("supported", base_codec::json_bool(false)),
+      ("loaded", base_codec::json_bool(false)),
+      ("transfers", base_codec::json_arr([])),
+    ]))
+  } else if tname == "newChat" {
+    Some(build_new_chat_view())
+  } else if tname == "composer" {
+    Some(base_codec::json_obj([
+      ("text", base_codec::json_str("")),
+      ("rev", base_codec::json_int(0)),
+      ("quotes", base_codec::json_arr([])),
+      ("files", base_codec::json_arr([])),
+      ("uploading", base_codec::json_bool(false)),
+      ("ready", base_codec::json_bool(false)),
+      ("starting", base_codec::json_bool(false)),
+      ("version", base_codec::json_int(0)),
+    ]))
+  } else if tname == "adbShare" {
+    Some(base_codec::json_obj([
+      ("sharing", base_codec::json_bool(false)),
+      ("phase", base_codec::json_str("off")),
+      ("tunnels", base_codec::json_int(0)),
+      ("on", base_codec::json_bool(false)),
+      ("grants", base_codec::json_arr([])),
+      ("wanted", base_codec::json_arr([])),
+      ("known", base_codec::json_bool(true)),
+      ("lends", base_codec::json_arr([])),
+      ("screens", base_codec::json_arr([])),
+      ("personal", base_codec::json_arr([])),
+      ("toConfirm", base_codec::json_int(0)),
+    ]))
+  } else if tname == "releases" {
+    Some(base_codec::json_obj([("told", base_codec::json_int(0))]))
+  } else if tname == "decisions" {
+    Some(base_codec::json_obj([("items", base_codec::json_arr([]))]))
+  } else {
+    None
+  }
+  match val_opt {
+    Some(v) => {
+      let ev = protocol::CoreEvent::Value(id, v, None)
+      let (out_j, out_b) = protocol::encode_core_event(ev)
+      emit_wire(out_j, payload=out_b)
+      true
+    }
+    None => false
+  }
+}
+
 /// Dispatch one JSON + optional binary message from `mb_core_send` on the core thread.
 pub extern "C" fn pion_core_runtime_send(
   json : Ptr,
@@ -464,17 +1078,91 @@ pub extern "C" fn pion_core_runtime_send(
   } else {
     None
   }
-  let parsed = protocol::decode_client_message(json_text, bytes=payload)
+  let raw = match base_codec::json_parse(json_text) {
+    base_codec::JsonParseResult::Err(_) => return
+    base_codec::JsonParseResult::Ok(j) => j
+  }
+  let parsed = protocol::parse_client_message(raw, bytes=payload)
   match parsed {
     protocol::ParseRequestResult::Invalid(msg) => {
-      let ev = protocol::CoreEvent::Err(0.to_int64(), protocol::CoreError::{ code: "bad_message", message: msg })
-      let (out_j, out_b) = protocol::encode_core_event(ev)
-      emit_wire(out_j, payload=out_b)
+      match protocol::wire_error_id(raw) {
+        Some(err_id) => {
+          let ev = protocol::CoreEvent::Err(err_id, protocol::CoreError::{ code: "bad_message", message: msg })
+          let (out_j, out_b) = protocol::encode_core_event(ev)
+          emit_wire(out_j, payload=out_b)
+        }
+        None => ()
+      }
     }
     protocol::ParseRequestResult::Ok(req) => {
       match req {
+        protocol::CoreRequest::Subscribe(id, topic, _, _, _) => {
+          if handle_runtime_subscribe(sess, id, topic) {
+            drain_and_emit(sess)
+            return
+          }
+        }
         protocol::CoreRequest::Call(id, call_name, params, _) => {
           if call_name == "__shell.pump" {
+            drain_and_emit(sess)
+            return
+          }
+          if call_name == "client.device" {
+            match opt_str_param(params, "app") {
+              Some(a) => sess.device_app = a
+              None => ()
+            }
+            match opt_str_param(params, "locale") {
+              Some(l) => sess.device_locale = l
+              None => ()
+            }
+            let (out_j, out_b) = protocol::encode_core_event(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
+            emit_wire(out_j, payload=out_b)
+            drain_and_emit(sess)
+            return
+          }
+          if call_name == "notify.permission" {
+            match opt_str_param(params, "state") {
+              Some(st) => sess.notify_permission = st
+              None => ()
+            }
+            let (out_j, out_b) = protocol::encode_core_event(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
+            emit_wire(out_j, payload=out_b)
+            drain_and_emit(sess)
+            return
+          }
+          if call_name == "notify.set" {
+            match base_codec::json_get(params, "asked") {
+              Some(base_codec::Json::Bool(b)) => sess.notify_asked = b
+              _ => ()
+            }
+            match base_codec::json_get(params, "on") {
+              Some(base_codec::Json::Bool(b)) => sess.notify_on = b
+              _ => ()
+            }
+            let (out_j, out_b) = protocol::encode_core_event(protocol::CoreEvent::Ok(id, build_notify_view(sess), None))
+            emit_wire(out_j, payload=out_b)
+            drain_and_emit(sess)
+            return
+          }
+          if call_name == "prefs.get" {
+            let (out_j, out_b) = protocol::encode_core_event(protocol::CoreEvent::Ok(id, build_prefs_view(sess), None))
+            emit_wire(out_j, payload=out_b)
+            drain_and_emit(sess)
+            return
+          }
+          if call_name == "prefs.set" {
+            match params {
+              base_codec::Json::Obj(pairs) => {
+                for i in 0..<pairs.length() {
+                  let (k, v) = pairs[i]
+                  sess.prefs.set(k, v)
+                }
+              }
+              _ => ()
+            }
+            let (out_j, out_b) = protocol::encode_core_event(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
+            emit_wire(out_j, payload=out_b)
             drain_and_emit(sess)
             return
           }
