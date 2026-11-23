@@ -272,7 +272,8 @@ test "bar places today: each switch's nodes made and let go, the stack's entry, 
   // the profiles' list was, kept as the others, slimmed fill_chip_node + single-branch pooled quota lowering it to 224
   // (+1 each place for place_top_bar_glass wrapping settings in bar_pill_group_node, +2 for narrow_bar_scrim_node);
   // 用量's controls that are a button only while they filter, its rank rows and its legend, each over action_box_while_node's pick)
-  let works = [(134, 0), (0, 1), (450, 0), (0, 0), (0, 0), (0, 1), (227, 0), (0, 0), (0, 0), (0, 0), (0, 1)]
+  // (连接 -3 made, 用量 -2, 额度 -3: their pages' and its list's room under the last block their list's end_room, no block of it)
+  let works = [(131, 0), (0, 1), (448, 0), (0, 0), (0, 0), (0, 1), (224, 0), (0, 0), (0, 0), (0, 0), (0, 1)]
   let mut from_place = "chats"
   for k, place in walk {
     let i = today_bar.search(place).unwrap()

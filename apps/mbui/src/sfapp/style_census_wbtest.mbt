@@ -99,10 +99,13 @@ test "styles: how many values of each kind the app's screens use" {
   // radius 22 to 20, color 83 to 81.
   // One more once 小屏's compact 50pt bar uses a 25pt capsule radius and 21pt concentric pill radius: radius 20 to 21.
   // One more once top bar action pill groups (`bar_pill_group_node`) add 19pt/17pt concentric capsule radii: radius 21 to 22.
+  // Two more once a page's room under its last block is its list's end_room (padding under what it scrolls) in place of
+  // a block that tall (a block's height is not counted): pg_foot's 30 and desk_foot_h's 80, no new spacing token:
+  // space 20 to 22.
   inspect(counts.to_string(), content=(
     #|text 31
     #|weight 4
-    #|space 20
+    #|space 22
     #|radius 22
     #|color 81
     #|
