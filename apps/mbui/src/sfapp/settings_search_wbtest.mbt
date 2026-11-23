@@ -272,7 +272,7 @@ test "settings search's results hold every rule on each screen, in each language
       // (the sidebar's list over the pane's edge, there at rest too, is said by the words it starts with)
       let faults = t
         .audit()
-        .filter(fn(f) { !before.map(aw_plain).contains(aw_plain(f)) && !f.contains("sf/src/edge_node.mbt:37") })
+        .filter(fn(f) { !before.map(aw_plain).contains(aw_plain(f)) && !f.contains("ui/src/controls/edge_node.mbt:37") })
       assert_eq(faults, [], msg="\{at}: \{words}: \{faults.join(" | ")}")
     }
   }
