@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [934faffca](https://github.com/AFK-surf/monoid/commit/934faffca6785d00328d49383125062c3d80b96e) feat(ui,mbui): unify transient overlay coordinatio | 2.72 | 3.66 | 14.84 | 36.99 | 56.56 | 32.4 | 65.72 | 100.19 | 114.81 |
 | [579c8c48e](https://github.com/AFK-surf/monoid/commit/579c8c48ec22e0c60284fca5ae88fa3d4cb07d21) fix(station): look up collected jobs' ends in batc | 2.72 | 3.66 | 14.83 | 36.99 | 56.52 | 32.4 | 65.72 | 100.19 | 124.7 |
 | [f40ab04c2](https://github.com/AFK-surf/monoid/commit/f40ab04c2a1041e1fabf8b6d60ae6cacc1d3dfb3) fix(mbui,ui): open ⌘K, place sidebars and named pa | 2.72 | 3.66 | 14.83 | 36.99 | 56.52 | 32.4 | 65.72 | 100.19 | 124.7 |
 | [fa4a7932a](https://github.com/AFK-surf/monoid/commit/fa4a7932a21a20eed0491f0ac22d7aefdc87cb97) fix(ui): anchor incoming list blocks at viewport t | 2.72 | 3.66 | 14.83 | 36.98 | 56.52 | 32.4 | 65.72 | 100.35 | 125.34 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [063ac567f](https://github.com/AFK-surf/monoid/commit/063ac567f454ce7f1828c157a6bdd6fad8145610) feat(mbui,sf-ui): polish iOS 26/27 liquid glass pr | 2.71 | 3.65 | 14.81 | 36.93 | 56.43 | 32.35 | 65.66 | 99.71 | 127.72 |
 | [77aef8b6d](https://github.com/AFK-surf/monoid/commit/77aef8b6d7aff40a9bff79032a9a4553b570ac9b) perf(mbui): cut medium-screen tape drag frame cost | 2.71 | 3.65 | 14.81 | 36.93 | 56.43 | 32.35 | 65.64 | 99.55 | 127.72 |
 | [40807fa89](https://github.com/AFK-surf/monoid/commit/40807fa892485f932200ffe2772f7acb2b9caa24) refactor(sf-ui,website): unify ui.monoid live stud | 2.71 | 3.65 | 14.81 | 36.92 | 56.41 | 32.35 | 65.64 | 99.63 | 126.38 |
-| [02f41fec5](https://github.com/AFK-surf/monoid/commit/02f41fec50cc59a564b150a7c47cecc848edc501) feat(sf-ui): align segmented and slider liquid gla | 2.71 | 3.65 | 14.81 | 36.92 | 56.41 | 32.35 | 65.64 | 99.6 | 128.73 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [934faffca](https://github.com/AFK-surf/monoid/commit/934faffca6785d00328d49383125062c3d80b96e) feat(ui,mbui): unify transient overlay coordinatio | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.3 |
 | [579c8c48e](https://github.com/AFK-surf/monoid/commit/579c8c48ec22e0c60284fca5ae88fa3d4cb07d21) fix(station): look up collected jobs' ends in batc | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.26 |
 | [f40ab04c2](https://github.com/AFK-surf/monoid/commit/f40ab04c2a1041e1fabf8b6d60ae6cacc1d3dfb3) fix(mbui,ui): open ⌘K, place sidebars and named pa | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.1 |
 | [fa4a7932a](https://github.com/AFK-surf/monoid/commit/fa4a7932a21a20eed0491f0ac22d7aefdc87cb97) fix(ui): anchor incoming list blocks at viewport t | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.18 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [063ac567f](https://github.com/AFK-surf/monoid/commit/063ac567f454ce7f1828c157a6bdd6fad8145610) feat(mbui,sf-ui): polish iOS 26/27 liquid glass pr | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.81 |
 | [77aef8b6d](https://github.com/AFK-surf/monoid/commit/77aef8b6d7aff40a9bff79032a9a4553b570ac9b) perf(mbui): cut medium-screen tape drag frame cost | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.46 |
 | [40807fa89](https://github.com/AFK-surf/monoid/commit/40807fa892485f932200ffe2772f7acb2b9caa24) refactor(sf-ui,website): unify ui.monoid live stud | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
-| [02f41fec5](https://github.com/AFK-surf/monoid/commit/02f41fec50cc59a564b150a7c47cecc848edc501) feat(sf-ui): align segmented and slider liquid gla | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.69 |
