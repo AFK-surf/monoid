@@ -65,11 +65,13 @@ pub fn secret_value_row_node(
       if one_line {
         // (on one line: its words in a box of their own, as wide as they are)
         w.box(fn(o) {
+          @ui.agent_secret(o)
           let look = fn() { @ui.style_words(secret_value) }
           o
           .words_runs(By(fn() { [@ui.span(value(), mono=mono())] }), look=@signals.untracked(look))
           .words_look(By(look))
           .ink(By(fn() { @ui.style_ink(secret_value) }))
+          .says(By(fn() { Some(@view.said(Text, label=label(), value=value())) }))
           |> ignore
         })
         |> ignore
@@ -77,6 +79,7 @@ pub fn secret_value_row_node(
         // (its look as the theme's is now: followed, the system's size of words changed)
         let look = fn() { @ui.style_words(secret_value_lines) }
         w.box(fn(v) {
+          @ui.agent_secret(v)
           v
           .words_runs(By(fn() {
             let words = if shown() { value() } else { secret_mask(value()) }
@@ -84,6 +87,10 @@ pub fn secret_value_row_node(
           }), look=@signals.untracked(look))
           .words_look(By(look))
           .ink(By(fn() { @ui.style_ink(secret_value) }))
+          .says(By(fn() {
+            let words = if shown() { value() } else { secret_mask(value()) }
+            Some(@view.said(Text, label=label(), value=words))
+          }))
           |> ignore
         })
         |> ignore

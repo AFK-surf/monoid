@@ -413,132 +413,77 @@ fn slider_node(
   let_go : (Double) -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
-  let span = if max > min { max - min } else { 1.0 }
-  let at = fn() { dmin(desk_whole, dmax(desk_none, (now() - min) / span)) }
-  let held = @signals.signal(false)
-  let snap = fn(v : Double) { @headless.slider_snap(v, min, max, step) }
-  let along = fn(d : @view.Drag) {
-    if d.w > slider_thumb_room {
-      moved(snap(min + dmin(desk_whole, dmax(desk_none, (d.x - slider_thumb_room / 2.0) / (d.w - slider_thumb_room))) * span))
-    }
-  }
-  let stepped = fn(v : Double) {
-    let v = snap(v)
-    moved(v)
-    let_go(v)
-  }
-  parent.box(made_for=loc, fn(s) {
-    s
-    .height(Is(Some(slider_thumb_d + slider_room)))
-    .lies_along(Is(Middle))
-    .focusable(Is(true))
-    .presses(Is(true))
-    .says(By(fn() {
-      let v = now()
-      let said = if step >= 1.0 && step.floor() == step { v.to_int().to_string() } else { v.to_string() }
-      Some(@view.said(Slider, label=label(), value=said, range=(min, v, max), actions=[Increment, Decrement]))
-    }))
-    .on_step(fn(by) { stepped(@signals.untracked(now) + by.to_double() * step) })
-    .on_drag(fn(d) {
-      match d.kind {
-        Down => {
-          // (the keyboard's focus taken as it is pressed, not shown: @kit.slider's focus_on_press)
-          s.ask_focus() |> ignore
-          held.set(true)
-          along(d)
-        }
-        Moved => along(d)
-        Up => {
-          along(d)
-          held.set(false)
-          let_go(@signals.untracked(now))
-        }
-        Off => {
-          held.set(false)
-          let_go(@signals.untracked(now))
-        }
-      }
-    })
-    .on_key(fn(k) {
-      if !s.focused() || k.mods != 0 {
-        return false
-      }
-      let v = @signals.untracked(now)
-      let to = if k.code == @ui.key_code_right || k.code == @ui.key_code_up {
-        Some(v + step)
-      } else if k.code == @ui.key_code_left || k.code == @ui.key_code_down {
-        Some(v - step)
-      } else if k.code == @ui.key_code_page_up {
-        Some(v + step * 10.0)
-      } else if k.code == @ui.key_code_page_down {
-        Some(v - step * 10.0)
-      } else if k.code == @ui.key_code_home {
-        Some(min)
-      } else if k.code == @ui.key_code_end {
-        Some(max)
-      } else {
-        None
-      }
-      match to {
-        Some(x) => {
-          stepped(x)
-          true
-        }
-        None => false
-      }
-    })
-    |> ignore
-    // its line: the accent up to the knob, the ink at 16% after it
-    s.box(fn(line) {
-      line
-      .row(Is(true))
-      .height(Is(Some(slider_track_h)))
-      .margin(Is((slider_thumb_d / 2.0, 0.0, slider_thumb_d / 2.0, 0.0)))
+  @headless.slider(
+    parent,
+    label,
+    now,
+    min~,
+    max~,
+    step~,
+    moved,
+    fn(s, sl) {
+      let at = fn() { sl.part() }
+      s
+      .height(Is(Some(slider_thumb_d + slider_room)))
+      .lies_along(Is(Middle))
       |> ignore
-      line.box(fn(f) {
-        f.grow(By(at)).basis(Is(Some(0.0))).ground(By(fn() { p().accent })) |> ignore
-      })
-      |> ignore
-      line.box(fn(f) {
-        f.grow(By(fn() { desk_whole - at() })).basis(Is(Some(0.0))).ground(By(fn() { alpha(p().ink, slider_rest) })) |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
-    // its knob, over the line where the value is along it
-    s.box(fn(o) {
-      o.over(Is(true)).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
-      o.box(fn(b) { b.grow(By(at)).basis(Is(Some(0.0))) |> ignore }) |> ignore
-      o.box(fn(k) {
-        k.width(Is(Some(slider_thumb_d))).height(Is(Some(slider_thumb_d))).lines_up(Is(Some(Middle))).lies_along(Is(Middle))
+      // its line: the accent up to the knob, the ink at 16% after it
+      s.box(fn(line) {
+        line
+        .row(Is(true))
+        .height(Is(Some(slider_track_h)))
+        .margin(Is((slider_thumb_d / 2.0, 0.0, slider_thumb_d / 2.0, 0.0)))
         |> ignore
-        let side = fn() { if held.get() { slider_thumb_d + slider_held_more } else { slider_thumb_d } }
-        k.box(fn(dot) {
-          dot
-          .width(By(fn() { Some(side()) }))
-          .height(By(fn() { Some(side()) }))
-          .radius(By(fn() { side() / 2.0 }))
-          .ground(By(fn() { p().accent }))
-          .edge(By(fn() { (slider_ring, p().ground) }))
-          .ring(
-            By(fn() {
-              if s.focus_shown() {
-                let t = @ui.tree_theme()
-                (t.focus_w, t.focus_gap, t.focus)
-              } else {
-                (0.0, 0.0, 0L)
-              }
-            }),
-          )
-          |> ignore
+        line.box(fn(f) {
+          f.grow(By(at)).basis(Is(Some(0.0))).ground(By(fn() { p().accent })) |> ignore
+        })
+        |> ignore
+        line.box(fn(f) {
+          f.grow(By(fn() { desk_whole - at() })).basis(Is(Some(0.0))).ground(By(fn() { alpha(p().ink, slider_rest) })) |> ignore
         })
         |> ignore
       })
       |> ignore
-      o.box(fn(b) { b.grow(By(fn() { desk_whole - at() })).basis(Is(Some(0.0))) |> ignore }) |> ignore
-    })
-    |> ignore
-  })
+      // its knob, over the line where the value is along it
+      s.box(fn(o) {
+        o.over(Is(true)).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+        o.box(fn(b) { b.grow(By(at)).basis(Is(Some(0.0))) |> ignore }) |> ignore
+        o.box(fn(k) {
+          k.width(Is(Some(slider_thumb_d))).height(Is(Some(slider_thumb_d))).lines_up(Is(Some(Middle))).lies_along(Is(Middle))
+          |> ignore
+          let side = fn() { if sl.pressed() { slider_thumb_d + slider_held_more } else { slider_thumb_d } }
+          k.box(fn(dot) {
+            dot
+            .width(By(fn() { Some(side()) }))
+            .height(By(fn() { Some(side()) }))
+            .radius(By(fn() { side() / 2.0 }))
+            .ground(By(fn() { p().accent }))
+            .edge(By(fn() { (slider_ring, p().ground) }))
+            .ring(
+              By(fn() {
+                if sl.focus_shown() {
+                  let t = @ui.tree_theme()
+                  (t.focus_w, t.focus_gap, t.focus)
+                } else {
+                  (0.0, 0.0, 0L)
+                }
+              }),
+            )
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        o.box(fn(b) { b.grow(By(fn() { desk_whole - at() })).basis(Is(Some(0.0))) |> ignore }) |> ignore
+      })
+      |> ignore
+    },
+    thumb_room=slider_thumb_room,
+    on_commit=let_go,
+    focus_on_press=true,
+    made_for=loc,
+    loc~,
+  )
   |> ignore
 }
 

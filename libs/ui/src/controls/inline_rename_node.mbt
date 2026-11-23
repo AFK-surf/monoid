@@ -39,15 +39,16 @@ pub fn inline_rename_node(
   },
   loc~ : SourceLoc,
 ) -> @view.View {
-  let done = Ref(false)
-  let finish = fn(keep : String?) {
-    guard !done.val else { return }
-    done.val = true
-    match keep.map(fn(w) { w.trim(chars=" \t\n").to_owned() }) {
-      Some(w) if w != "" && w != was => commit(w)
-      _ => cancel()
-    }
-  }
+  let ie = @headless.InlineEdit::new(
+    fn() { was },
+    commit,
+    on_cancel=cancel,
+    trim=true,
+    cancel_if_empty=true,
+    cancel_if_unchanged=true,
+    start_editing=true,
+    commit_on_outside_press=true,
+  )
   match picks {
     NameWhole => field.pick(0, field.text().length())
     NameStem => {
@@ -63,16 +64,6 @@ pub fn inline_rename_node(
   let made : Ref[@view.View?] = Ref(None)
   parent.box(made_for=loc, fn(b) {
     frame(b)
-    // (Escape lets it be before the field sees it)
-    b.on_key(fn(k) {
-      if k.code == @ui.key_escape && k.mods == 0 {
-        finish(None)
-        true
-      } else {
-        false
-      }
-    })
-    |> ignore
     let typed = @ui.field(
       b,
       field,
@@ -82,44 +73,16 @@ pub fn inline_rename_node(
       max_lines=1,
       enter_sends=true,
       colors_by~,
-      submitted=fn(words) { finish(Some(words)) },
+      submitted=fn(words) {
+        ie.set_draft(words)
+        ie.commit()
+      },
     )
     typed.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    made.val = Some(typed)
-    // (the focus to it as it comes, once what opened it has given back what it took)
+    typed.reacts(fn() { field.text() }, fn(words) { ie.set_draft(words) })
+    ie.editor(typed)
     b.focus_opens(typed) |> ignore
-    // (where it cannot have it then, under what is still going over it (the menu that asked for it, as it closes):
-    // as soon as it takes input, till it has had it once. Where it takes input as it is made, focus_opens gives it)
-    let seen = Ref(false)
-    let under = Ref(false)
-    typed.reacts(fn() { typed.takes_input() }, fn(takes) {
-      if !takes {
-        under.val = true
-      } else if under.val && !seen.val && !done.val && !@signals.untracked(fn() { typed.focused() }) {
-        typed.ask_focus() |> ignore
-      }
-    })
-    // (a press outside it ends it, even where what it went down on takes no focus; that press still reaches what it
-    // went down on. The press that opened it came before it, so only later ones count)
-    let opened = @signals.untracked(fn() { b.window_downs() })
-    b.reacts(fn() { b.window_downs() }, fn(count) {
-      if count > opened && !done.val {
-        let (x, y) = b.window_down_point()
-        let (left, top, w, h) = b.placed_window_now()
-        if x < left || x >= left + w || y < top || y >= top + h {
-          b.focus_let_go()
-          finish(Some(field.text()))
-        }
-      }
-    })
-    // (left once it had the focus: kept as a press outside keeps it)
-    typed.reacts(fn() { typed.focused() }, fn(on) {
-      if on {
-        seen.val = true
-      } else if seen.val {
-        finish(Some(field.text()))
-      }
-    })
+    made.val = Some(typed)
   })
   |> ignore
   made.val.unwrap()

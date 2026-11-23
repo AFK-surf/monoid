@@ -65,29 +65,6 @@ fn same_view(a : @view.View?, b : @view.View?) -> Bool {
 }
 
 ///|
-/// Deterministic 2D point-in-triangle check (inclusive of edges) for the submenu aiming corridor.
-fn point_in_triangle(
-  px : Double,
-  py : Double,
-  ax : Double,
-  ay : Double,
-  bx : Double,
-  by : Double,
-  cx : Double,
-  cy : Double,
-) -> Bool {
-  let cross = fn(x1 : Double, y1 : Double, x2 : Double, y2 : Double, x3 : Double, y3 : Double) {
-    (x1 - x3) * (y2 - y3) - (x2 - x3) * (y1 - y3)
-  }
-  let d1 = cross(px, py, ax, ay, bx, by)
-  let d2 = cross(px, py, bx, by, cx, cy)
-  let d3 = cross(px, py, cx, cy, ax, ay)
-  let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0
-  let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0
-  !(has_neg && has_pos)
-}
-
-///|
 /// Whether visible keyboard focus currently resides inside `holder`.
 fn submenu_key_focus_in(holder : @view.View) -> Bool {
   let (fid, visible) = holder.tree.focused_now()
@@ -150,21 +127,13 @@ pub fn submenu_row_node(
     match (last_on_row.val, menu_panel_ref.val) {
       (Some((lx, ly)), Some(mp)) if mp.alive() => {
         let (mx, my, mw, mh) = mp.placed_window_now()
-        if mw > 0.0 && mh > 0.0 {
-          let (px, py) = r.tree.pointer_said()
-          if (px - lx).abs() < 1.0 && (py - ly).abs() < 1.0 {
-            false
-          } else {
-            let near_x = if mx >= lx { mx } else { mx + mw }
-            point_in_triangle(px, py, lx, ly, near_x, my, near_x, my + mh)
-          }
-        } else {
-          false
-        }
+        let (px, py) = r.tree.pointer_said()
+        @headless.submenu_in_aim_corridor(px, py, lx, ly, mx, my, mw, mh)
       }
       _ => false
     }
   }
+  let row_ref : Ref[@view.View?] = Ref(None)
   // (closed, where it is this one's open: another's opened at that moment stays)
   let close = fn(r : @view.View) {
     stop_open()
@@ -196,18 +165,48 @@ pub fn submenu_row_node(
     aim_slot.val = Some(fn() { in_aim_corridor(r) })
     open_row.set(Some(r))
   }
+  let sub = @headless.Submenu::new(
+    fn() {
+      match row_ref.val {
+        Some(r) => same_view(open_row.get(), Some(r))
+        None => false
+      }
+    },
+    fn(on) {
+      match row_ref.val {
+        Some(r) =>
+          if on {
+            open(r, false, true)
+          } else {
+            close(r)
+          }
+        None => ()
+      }
+    },
+    open_delay_ms=submenu_open_ms,
+    close_delay_ms=submenu_close_ms,
+    corridor_ms=submenu_corridor_ms,
+    rtl=side == Left,
+  )
   let toward = if side == Left { @ui.key_code_left } else { @ui.key_code_right }
   panel_row_by(
     loc~,
     parent,
     label,
-    fn(r) { open(r, r.focus_shown(), @ui.pointing() is Finger) },
+    fn(r) {
+      if @ui.pointing() is Finger && !small() {
+        sub.open_touch()
+      } else {
+        open(r, r.focus_shown(), false)
+      }
+    },
     icon,
     fn() { "" },
     if side == Left { "chevron-left" } else { "chevron-right" },
     false,
     plain=true,
     made=fn(r) {
+      row_ref.val = Some(r)
       // (its menu made as it opens, as it was opened then: by the keyboard or not; let go at once as it closes; made in
       // the panel's layer, in what lives as long as its row does (View::lives_with: its scope the row's, as a tip's in
       // its layer): out of sight as its row starts leaving, back as that comes back, gone with it)

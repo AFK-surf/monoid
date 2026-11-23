@@ -22,12 +22,21 @@ pub struct TipLayer {
   layer : () -> @view.View?
   mut went_at : Double
   priv hands : @motion.Handoff
+  priv active : @signals.Signal[@headless.TipOwner?]
+  priv group : @headless.TooltipGroup[@headless.TipOwner]
 }
 
 ///|
 /// The tips' layer of a window, drawn in what `layer` gives (the node it is first shown in).
 pub fn TipLayer::new(layer : () -> @view.View?) -> TipLayer {
-  { layer, went_at: -1.0e18, hands: @motion.Handoff::new(within=@headless.tooltip_skip_ms) }
+  let active : @signals.Signal[@headless.TipOwner?] = @signals.signal(None, same=fn(a, b) { a == b })
+  let group = @headless.TooltipGroup::new(
+    fn() { active.get() },
+    fn(k) { active.set(k) },
+    open_delay_ms=tip_delay_ms,
+    warmup_ms=@headless.tooltip_skip_ms,
+  )
+  { layer, went_at: -1.0e18, hands: @motion.Handoff::new(within=@headless.tooltip_skip_ms), active, group }
 }
 
 ///|
@@ -86,8 +95,6 @@ pub fn tip_node(
   // press, wherever it lands; Free otherwise)
   let hand : @signals.Signal[TipHeld] = @signals.signal(Free, same=fn(a, b) { a == b })
   let lifted_end : Ref[() -> Unit] = Ref(fn() {  })
-  let shut = Ref(false)
-  let rest : Ref[(() -> Unit)?] = Ref(None)
   // (how it comes in, this time it is shown: from when, from how far in it was (shown again as it went: as far as it
   // had gone), whether it is in whole yet, and the moment that says so: this showing's own, let go as it goes)
   let fade = TipFade::new()
@@ -104,6 +111,51 @@ pub fn tip_node(
     },
     tag=tip_hand_tag(side, at_pointer),
   )
+  // (pointer hover / warmup / repeats / takes_input / focus driven by @headless.TooltipGroup)
+  let own_active : @signals.Signal[@headless.TipOwner?] = @signals.signal(None, same=fn(a, b) { a == b })
+  let (group, group_slot) = if delay == tip_delay_ms && skip {
+    (tips.group, tips.active)
+  } else if skip {
+    (
+      @headless.TooltipGroup::new(
+        fn() { tips.active.get() },
+        fn(k) { tips.active.set(k) },
+        open_delay_ms=delay,
+        warmup_ms=@headless.tooltip_skip_ms,
+      ),
+      tips.active,
+    )
+  } else {
+    (
+      @headless.TooltipGroup::new(
+        fn() { own_active.get() },
+        fn(k) { own_active.set(k) },
+        open_delay_ms=delay,
+        warmup_ms=-1.0,
+      ),
+      own_active,
+    )
+  }
+  let shut = @signals.signal(false, same=fn(a, b) { a == b })
+  let over_now = fn() { @ui.pointing() is Mouse && (if within { anchor.pointed_in() } else { anchor.pointed() }) }
+  let pressed_now = fn() {
+    match pressed {
+      Some(p) => p()
+      None => anchor.pressed()
+    }
+  }
+  anchor.reacts(fn() { (pressed_now(), over_now(), anchor.focus_shown()) }, at_start=false, fn(st) {
+    let (down, over, focused) = st
+    if down {
+      shut.set(true)
+    } else if !over && !focused {
+      shut.set(false)
+    }
+  })
+  let group_disabled = fn() {
+    label() == "" || hand.get() != Free || shut.get() || pressed_now()
+  }
+  group.trigger(anchor, owner, disabled=group_disabled, within~, repeats~)
   // (made in its layer as it is first shown where there is one then (none yet: shown the next time it is, as there is
   // one), held there for its control, let go with it)
   let made = Ref(false)
@@ -126,16 +178,13 @@ pub fn tip_node(
     })
     |> ignore
     holder.show(fn() { open.get() }, leave=@motion.pop_out_ms, fn(t) {
-      tip_look_node(t, anchor_id, side, label, shortcut, fade, glide, gap, at_pointer, owner)
+      t.over(Is(true)) |> ignore
+      @headless.tooltip_bubble(t, label, fn(b) {
+        tip_look_node(b, anchor_id, side, label, shortcut, fade, glide, gap, at_pointer, owner)
+      })
+      |> ignore
     })
     true
-  }
-  let stop_rest = fn() {
-    match rest.val {
-      Some(s) => s()
-      None => ()
-    }
-    rest.val = None
   }
   let set_open = fn(on : Bool) {
     if on == open.untracked() {
@@ -181,38 +230,31 @@ pub fn tip_node(
   }
   // (opened on its control (TipHand::open): the window's taps then, shut by the one after it)
   let opened_at = Ref(0)
-  // (what decides it, as of each cause: the pointer over it (a mouse's), a press on it, the keyboard's focus shown on it,
-  // whether it takes input at all, whether there is anything to say, how a finger holds it and, while that is let go
-  // (Lifted) or tapped open (Opened), the window's presses or taps (View::window_downs, window_taps): read only then,
-  // so a tip a finger holds not is woken by no press or tap elsewhere in the window)
-  let state = fn() {
+  let hand_state = fn() {
     let held = hand.get()
-    (
-      @ui.pointing() is Mouse && (if within { anchor.pointed_in() } else { anchor.pointed() }),
-      match pressed {
-        Some(f) => f()
-        None => anchor.pressed()
-      },
-      anchor.focus_shown(),
-      anchor.takes_input(),
-      label() != "",
-      held,
-      match held {
-        Lifted => anchor.window_downs()
-        Opened => anchor.window_taps()
-        _ => 0
-      },
-    )
+    if held == Free {
+      (Free, 0, true, true)
+    } else {
+      (
+        held,
+        match held {
+          Lifted => anchor.window_downs()
+          Opened => anchor.window_taps()
+          _ => 0
+        },
+        anchor.takes_input(),
+        label() != "",
+      )
+    }
   }
-  let before = Ref((false, false, Free, 0))
-  anchor.reacts(state, fn(s) {
-    let (over, pressed, focused, takes, says, held, n) = s
-    let (was_over, was_focused, was_held, was_n) = before.val
-    before.val = (over, focused, held, n)
-    // (let go by a finger that held it open: shown on a while, gone at the next press wherever it lands, or then;
-    // opened on its control: shown till the next tap, wherever it lands (a press let go without dragging, as about's
-    // tapped_anywhere; a finger's tap that opened it told after its control took it, so the one after that), a press
-    // held, dragged or called off shutting it not)
+  let hand_before = Ref((Free, 0))
+  anchor.reacts(hand_state, at_start=false, fn(s) {
+    let (held, n, takes, says) = s
+    let (was_held, was_n) = hand_before.val
+    hand_before.val = (held, n)
+    if held == Free {
+      return
+    }
     if held == was_held && n != was_n {
       if held == Lifted {
         (lifted_end.val)()
@@ -224,67 +266,54 @@ pub fn tip_node(
         return
       }
     }
-    if made.val && open.untracked() && takes && says &&
-      (held != Free || (!pressed && !shut.val)) &&
-      ((over && !was_over) || (focused && !was_focused) || (held != Free && was_held == Free)) {
-      @headless.tip_claim(owner)
-    }
-    let at = anchor.cause_at()
-    stop_rest()
-    // (held open by a finger: shown at once, as long as there is something to say and it takes input; taking none, this
-    // holding over, not shown again as it takes input again)
-    if held != Free {
-      if says && takes {
-        set_open(true)
-      } else {
-        (lifted_end.val)()
-        hand.set(Free)
-        set_open(false)
-      }
-      return
-    }
-    // (a press on it shuts it till the hand and the focus have left it: neither over it nor shown on it)
-    if pressed {
-      shut.val = true
-    } else if !over && !focused {
-      shut.val = false
-    }
-    if !says || !takes || shut.val || (!over && !focused) {
-      set_open(false)
-    } else if focused || open.untracked() {
-      set_open(true)
-    } else if skip && (at < tips.went_at + @headless.tooltip_skip_ms || glide.other_near(at)) {
-      // (another of the layer's went a moment ago, or shows still (the hand come from it to this one, that one told it
-      // left after this one is told it came): at once)
-      set_open(true)
-    } else {
-      // (rested on a while from now: shown then, as it is then, a pointer over it carrying no press, taking input)
-      rest.val = Some(
-        anchor.at_moment(at + delay, fn() {
-          let (over, pressed, _, takes, says, _, _) = @signals.untracked(state)
-          if over && !pressed && takes && says && !shut.val {
-            set_open(true)
-          }
-        }),
-      )
+    if !says || !takes {
+      (lifted_end.val)()
+      hand.set(Free)
     }
   })
+  anchor.reacts(
+    fn() { group.is_open(owner) || (hand.get() != Free && anchor.takes_input() && label() != "") },
+    at_start=false,
+    fn(want) {
+      if want && made.val && open.untracked() {
+        @headless.tip_claim(owner)
+      }
+      set_open(want)
+    },
+  )
+  // (a new cause on a still-open anchor reclaims the shared window tip slot, e.g. after an old view displaced it)
+  anchor.reacts(fn() { (over_now(), anchor.focus_shown()) }, at_start=false, fn(st) {
+    let (over, focused) = st
+    if (over || focused) &&
+      made.val &&
+      open.untracked() &&
+      @signals.untracked(fn() { anchor.takes_input() && label() != "" && !pressed_now() && !shut.get() }) {
+      @headless.tip_claim(owner)
+    }
+  })
+  // (attached to a control that already has visible keyboard focus: show immediately)
+  if @signals.untracked(fn() { anchor.focus_shown() && anchor.takes_input() && label() != "" }) {
+    group_slot.set(Some(owner))
+    set_open(true)
+  }
   close_tip.val = fn() {
+    if group_slot.untracked() == Some(owner) {
+      group_slot.set(None)
+    }
+    if hand.untracked() != Free {
+      (lifted_end.val)()
+      hand.set(Free)
+    }
     if open.untracked() {
-      stop_rest()
       set_open(false)
     }
   }
   escaped.val = fn() {
-    shut.val = true
-    (lifted_end.val)()
-    hand.set(Free)
-    set_open(false)
+    (close_tip.val)()
   }
   // (its control let go: nothing of it left pending; escaped/close_tip let go of last, as they name themselves through
   // set_open's make, a ring native's counting never frees)
   anchor.owns(fn() {
-    stop_rest()
     fade.stop()
     glide.gone()
     transient_tip_release(tip_id.val)
@@ -485,7 +514,6 @@ fn tip_look_node(
       1.0
     }
   }))
-  .says(By(fn() { Some(@view.said(Tooltip, label=label())) }))
   .hides(By(fn() { !@headless.tip_owns(owner) }))
   |> ignore
   let words_look = fn(wrap : Bool) -> @view.WordsLook {

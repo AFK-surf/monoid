@@ -12,6 +12,7 @@ pub fn progress_spinner_node(
   coming : () -> Double?,
   size? : Double = 14.0,
   stroke? : Double = spin_stroke,
+  label? : () -> String = fn() { "" },
   loc~ : SourceLoc,
 ) -> @view.View {
   // (its points worked out once, SpinRing's: only the part come and the colours change as it lives)
@@ -22,31 +23,40 @@ pub fn progress_spinner_node(
   let first = @signals.untracked(coming)
   let at = @motion.NodeWay::new(first.map(spin_part).unwrap_or(0.0))
   let told = Ref(first is Some(_))
-  parent.box(made_for=loc, fn(v) {
-    v
-    .width(Is(Some(size)))
-    .height(Is(Some(size)))
-    .lines(By(fn() {
-      let p = theme().p
-      match coming() {
-        None => [@ui.line(round, width=stroke, color=p.line_strong), @ui.line(quarter, width=stroke, color=p.accent)]
-        Some(_) => ring.come_lines(round, at.shown(v), p)
-      }
-    }))
-    // (turning only while not known, about the middle of its ring, as spinner_node's)
-    .turn(By(fn() { if coming() is None { v.cycle(spinner_turn_ms) * 2.0 * spin_pi } else { 0.0 } }), drawn=true)
-    |> ignore
-    v.reacts(coming, fn(c) {
-      match c {
-        Some(k) =>
-          if told.val {
-            at.go_ms(v, spin_part(k), @motion.progress_ms, ease=Out)
-          } else {
-            told.val = true
-            at.put(spin_part(k))
-          }
-        None => ()
-      }
-    })
-  })
+  @headless.progress(
+    parent,
+    coming,
+    fn(v, _p) {
+      v
+      .width(Is(Some(size)))
+      .height(Is(Some(size)))
+      .lines(By(fn() {
+        let p = theme().p
+        match coming() {
+          None => [@ui.line(round, width=stroke, color=p.line_strong), @ui.line(quarter, width=stroke, color=p.accent)]
+          Some(_) => ring.come_lines(round, at.shown(v), p)
+        }
+      }))
+      // (turning only while not known, about the middle of its ring, as spinner_node's)
+      .turn(By(fn() { if coming() is None { v.cycle(spinner_turn_ms) * 2.0 * spin_pi } else { 0.0 } }), drawn=true)
+      |> ignore
+      v.reacts(coming, fn(c) {
+        match c {
+          Some(k) =>
+            if told.val {
+              at.go_ms(v, spin_part(k), @motion.progress_ms, ease=Out)
+            } else {
+              told.val = true
+              at.put(spin_part(k))
+            }
+          None => ()
+        }
+      })
+    },
+    min=0.0,
+    max=1.0,
+    label~,
+    made_for=loc,
+    loc~,
+  )
 }

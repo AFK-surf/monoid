@@ -71,6 +71,274 @@ pub struct HoverHand {
 /// opens (lit_within_node's). `owner`: what it is made
 /// and let go with (a card of a piece of `anchor`, as that piece comes and goes), `anchor` where not said. The hand
 /// the card is opened and closed by.
+///|
+/// Shared controller for `hover_card_node` and `hover_panel_node`, delegating Escape, outside-press (`close_on_outside`
+/// + `keeps`), `hold()`, `close()`, and card semantics to `@headless.HoverCard`.
+#callsite(autofill(loc))
+fn hover_surface_controller(
+  layer : TipLayer,
+  anchor : @view.View,
+  owner : @view.View,
+  open_delay_ms : Double,
+  close_delay_ms : Double,
+  held : () -> Bool,
+  held_blocks_dismiss : Bool,
+  wheel_passes : Bool,
+  pointed : (() -> Bool)?,
+  yields_to : @view.View?,
+  build_card : (
+    @view.View,
+    @view.View,
+    @motion.NodeWay,
+    Ref[OpenGate],
+    @signals.Signal[@view.View?],
+    Int,
+    () -> Unit,
+  ) -> Unit,
+  post_card? : (@view.View) -> Unit = fn(_) {  },
+  loc~ : SourceLoc,
+) -> HoverHand {
+  let row_open : @signals.Signal[@view.View?] = @signals.signal_by(None, same=same_view)
+  let hover_id = Ref(0)
+  let open : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+  let by_hand = Ref(false)
+  let card : @signals.Signal[@view.View?] = @signals.signal_by(None, same=fn(a, b) {
+    match (a, b) {
+      (None, None) => true
+      (Some(x), Some(y)) => x.id() == y.id()
+      _ => false
+    }
+  })
+  let way = @motion.NodeWay::new(0.0)
+  let gate : Ref[OpenGate] = Ref(OpenGate::new())
+  let due : Ref[(() -> Unit)?] = Ref(None)
+  let recheck_gen = Ref(0)
+  let stop_due = fn() {
+    recheck_gen.val += 1
+    match due.val {
+      Some(s) => s()
+      None => ()
+    }
+    due.val = None
+  }
+  let made = Ref(false)
+  let dismissed = Ref(false)
+  let holder_v : Ref[@view.View?] = Ref(None)
+  let set_open : Ref[(Bool) -> Unit] = Ref(fn(_) {  })
+  let hc_ref : Ref[@headless.HoverCard?] = Ref(None)
+  let takes = fn() { anchor.takes_input() }
+  let state = fn() {
+    let mouse = @ui.pointing() is Mouse
+    let keep = held()
+    if !mouse && !keep && !open.get() {
+      return (false, false, false, true, false)
+    }
+    let on_anchor = mouse &&
+      (
+        match pointed {
+          Some(p) => p()
+          None => anchor.pointed_in()
+        }
+      ) &&
+      !yielded(yields_to)
+    let on_card = mouse &&
+      (
+        match (card.get(), holder_v.val) {
+          (Some(_), Some(h)) => h.pointed_in()
+          _ => false
+        }
+      )
+    (on_anchor, on_card, anchor.window_held(), takes(), keep)
+  }
+  let close_explicit = fn() {
+    if !held_blocks_dismiss {
+      let (on_a, _, _, _, _) = @signals.untracked(state)
+      if on_a {
+        dismissed.val = true
+      }
+    }
+    (set_open.val)(false)
+  }
+  let hc = @headless.HoverCard::new(
+    fn() { open.get() },
+    fn(on) {
+      if !on {
+        close_explicit()
+      } else {
+        dismissed.val = false
+        (set_open.val)(true)
+      }
+    },
+    open_delay_ms~,
+    close_delay_ms~,
+    held=if held_blocks_dismiss { held } else { fn() { false } },
+    close_on_outside=true,
+    keeps=fn() {
+      let ks : Array[@view.View] = []
+      if holder_v.val is Some(h) && h.alive() {
+        ks.push(h)
+      }
+      match pointed {
+        Some(p) => if @signals.untracked(p) && anchor.alive() { ks.push(anchor) }
+        None => if anchor.alive() { ks.push(anchor) }
+      }
+      ks
+    },
+  )
+  hc_ref.val = Some(hc)
+  let make = fn() -> Bool {
+    guard transient_resolve_layer(layer, anchor) is Some(l) else { return false }
+    let holder = l.box(made_for=loc, fn(h) { h.transitions_only().over(Is(true)) |> ignore }).lives_with(owner)
+    if wheel_passes {
+      holder.wheel_passes() |> ignore
+    }
+    holder_v.val = Some(holder)
+    holder.show(fn() { open.get() }, leave=hover_card_out_ms, fn(t) {
+      t.over(Is(true)).carries_until(fn() { way.ends_at() }) |> ignore
+      let v = hc.card(
+        t,
+        fn() { "" },
+        fn(v) {
+          v.owns(fn() {
+            match card.untracked() {
+              Some(c) if c.id() == v.id() => card.set(None)
+              _ => ()
+            }
+          })
+          |> ignore
+          build_card(v, holder, way, gate, row_open, hover_id.val, fn() { hc.close() })
+        },
+        made_for=loc,
+      )
+      post_card(v)
+      card.set(Some(v))
+    })
+    true
+  }
+  set_open.val = fn(on : Bool) {
+    stop_due()
+    if !on {
+      by_hand.val = false
+      transient_release(hover_id.val)
+      row_open.set(None)
+    }
+    if on == open.untracked() {
+      return
+    }
+    if on && hover_id.val == 0 {
+      hover_id.val = transient_next_id()
+    }
+    if on && !made.val {
+      made.val = make()
+      guard made.val else { return }
+    }
+    if on {
+      transient_claim(hover_id.val, fn() { holder_v.val }, held, fn() { (set_open.val)(false) })
+      if card.untracked() is None {
+        gate.val = OpenGate::new()
+      }
+      gate.val.go(anchor, fn() { way.go_ms(anchor, 1.0, hover_card_in_ms, ease=Out) })
+    } else {
+      gate.val.stop()
+      way.go_ms(anchor, 0.0, hover_card_out_ms, ease=@signals.untracked(fn() { pop_out_ease_for(anchor) }))
+    }
+    match holder_v.val {
+      Some(h) if h.alive() => @view.transition(within=h, fn() { open.set(on) })
+      _ => open.set(on)
+    }
+  }
+  let rests_was = Ref(false)
+  let keep_was = Ref(false)
+  let takes_was = Ref(true)
+  owner.reacts(state, fn(s) {
+    let (on_anchor, on_card, pressed, takes_now, keep) = s
+    let at = owner.cause_at()
+    if !held_blocks_dismiss {
+      if !on_anchor && takes_now && takes_was.val {
+        dismissed.val = false
+      }
+      takes_was.val = takes_now
+    }
+    let rests = on_anchor && !pressed && !dismissed.val
+    let rests_now = rests && !rests_was.val
+    rests_was.val = rests
+    let released = keep_was.val && !keep
+    keep_was.val = keep
+    if !takes_now && (!held_blocks_dismiss || !keep) {
+      if !held_blocks_dismiss && on_anchor {
+        dismissed.val = true
+      }
+      if held_blocks_dismiss && released && open.untracked() {
+        stop_due()
+        let gen = recheck_gen.val
+        @ui.after_frame(fn() {
+          guard recheck_gen.val == gen && owner.alive() && open.untracked() else { return }
+          let (a, c, _, t, k) = @signals.untracked(state)
+          if !t && !k {
+            (set_open.val)(false)
+          } else if !(by_hand.val || k || a || c) && due.val is None {
+            due.val = Some(
+              owner.at_moment(at + close_delay_ms, fn() {
+                due.val = None
+                let (a2, c2, _, _, k2) = @signals.untracked(state)
+                if !(a2 || c2 || k2 || by_hand.val) {
+                  (set_open.val)(false)
+                }
+              }),
+            )
+          }
+        })
+      } else {
+        (set_open.val)(false)
+      }
+      return
+    }
+    if open.untracked() {
+      if by_hand.val || keep || on_anchor || on_card {
+        stop_due()
+      } else if due.val is None {
+        due.val = Some(
+          owner.at_moment(at + close_delay_ms, fn() {
+            due.val = None
+            let (a, c, _, _, k) = @signals.untracked(state)
+            if !(a || c || k || by_hand.val) {
+              (set_open.val)(false)
+            }
+          }),
+        )
+      }
+    } else if rests_now {
+      stop_due()
+      due.val = Some(
+        owner.at_moment(at + open_delay_ms, fn() {
+          due.val = None
+          let (a, _, p, t, _) = @signals.untracked(state)
+          if a && !p && t && !dismissed.val {
+            (set_open.val)(true)
+          }
+        }),
+      )
+    } else if !rests {
+      stop_due()
+    }
+  })
+  let hold = fn() {
+    dismissed.val = false
+    by_hand.val = true
+    hc.hold()
+  }
+  owner.owns(fn() {
+    stop_due()
+    transient_release(hover_id.val)
+    way.put(0.0)
+    set_open.val = fn(_) {  }
+    hc_ref.val = None
+  })
+  |> ignore
+  { hold, close: fn() { hc.close() }, open: fn() { open.get() }, card: fn() { card.get() } }
+}
+
+///|
 #callsite(autofill(loc))
 pub fn hover_card_node(
   layer : TipLayer,
@@ -91,95 +359,18 @@ pub fn hover_card_node(
   loc~ : SourceLoc,
 ) -> HoverHand {
   let owner = owner.unwrap_or(anchor)
-  // (a row of it opening a menu beside it (submenu_row_node): its menu is mounted in `holder` via submenu_layer_lent,
-  // so `holder.pointed_in()` covers both card and submenu, and closing the card clears `row_open` to close its submenu)
-  let row_open : @signals.Signal[@view.View?] = @signals.signal_by(None, same=same_view)
-  let hover_id = Ref(0)
-  let open : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
-  // (opened by a finger's hold: stays till a press outside, Escape, or its anchor takes no input)
-  let by_hand = Ref(false)
-  // (the card's panel while it is made: what the pointer may be on)
-  let card : @signals.Signal[@view.View?] = @signals.signal_by(None, same=fn(a, b) {
-    match (a, b) {
-      (None, None) => true
-      (Some(x), Some(y)) => x.id() == y.id()
-      _ => false
-    }
-  })
-  // (how far it is in, and which way it goes: in as hover_card_in, out as hover_card_out)
-  let way = @motion.NodeWay::new(0.0)
-  // (what the card it opens holds made first, what it reads then waited for before it comes in: OpenGate; a card
-  // made anew each time it opens from none)
-  let gate : Ref[OpenGate] = Ref(OpenGate::new())
-  // (the moment pending: its rest's end while closed, its leave's while open)
-  let due : Ref[(() -> Unit)?] = Ref(None)
-  // (which ask after the event is the one standing: each stop_due lets the one before go)
-  let recheck_gen = Ref(0)
-  let stop_due = fn() {
-    recheck_gen.val += 1
-    match due.val {
-      Some(s) => s()
-      None => ()
-    }
-    due.val = None
-  }
-  let made = Ref(false)
-  let holder_v : Ref[@view.View?] = Ref(None)
-  let set_open : Ref[(Bool) -> Unit] = Ref(fn(_) {  })
-  let make = fn() -> Bool {
-    guard transient_resolve_layer(layer, anchor) is Some(l) else { return false }
-    let holder = l.box(made_for=loc, fn(h) { h.transitions_only().over(Is(true)) |> ignore }).lives_with(owner)
-    // (a wheel on the card that moves nothing in it scrolls the page under the card)
-    holder.wheel_passes() |> ignore
-    holder_v.val = Some(holder)
-    holder.on_key(fn(k) {
-      if k.code == @ui.key_escape && open.untracked() && !@signals.untracked(held) && row_open.untracked() is None {
-        (set_open.val)(false)
-        true
-      } else {
-        false
-      }
-    })
-    |> ignore
-    // (a press anywhere in the window but on the card, its submenu or what it is of: closed as it goes down, the press what it
-    // lands on's as ever; the window's presses read only while it is open and not kept open, so a card shut again
-    // follows none of them, and its coming to be read is no press)
-    let downs_was : Ref[Int?] = Ref(None)
-    holder.reacts(fn() { if open.get() && !held() { Some(holder.window_downs()) } else { None } }, at_start=false, fn(
-      now,
-    ) {
-      let was = downs_was.val
-      downs_was.val = now
-      guard was is Some(_) && now is Some(_) else { return }
-      // (kept open by the app: what the press lands on is what was opened from it)
-      guard open.untracked() && !@signals.untracked(held) else { return }
-      let (x, y) = holder.window_down_point()
-      let on = fn(v : @view.View?) {
-        match v {
-          Some(p) =>
-            match p.tree.target_at(x, y) {
-              Pressed(id) | Dragged(id) => p.tree.holds(p.id(), id)
-              _ => false
-            }
-          None => false
-        }
-      }
-      let on_anchor = match pointed {
-        Some(p) => @signals.untracked(p)
-        None => on(Some(anchor))
-      }
-      if !(on(holder_v.val) || on_anchor) {
-        (set_open.val)(false)
-      }
-    })
-    holder.show(fn() { open.get() }, leave=hover_card_out_ms, fn(t) {
-      t.owns(fn() {
-        match card.untracked() {
-          Some(c) if c.id() == t.id() => card.set(None)
-          _ => ()
-        }
-      })
-      |> ignore
+  let hand = hover_surface_controller(
+    layer,
+    anchor,
+    owner,
+    hover_card_open_ms,
+    hover_card_close_ms,
+    held,
+    true,
+    true,
+    pointed,
+    yields_to,
+    fn(t, holder, way, gate, row_open, hover_id, _close) {
       let look = fn() {
         let p = way.shown(t)
         (if way.target() > 0.5 { pop_in_for(t) } else { pop_out_for(t) }).at(p, p)
@@ -203,7 +394,6 @@ pub fn hover_card_node(
       .alpha(By(fn() { look().alpha }))
       .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
       .carries_until(fn() { way.ends_at() })
-      .says(Is(Some(@view.said(Group))))
       // (closed with the focus in it: back to what it is of, not to what had it as it opened)
       .focus_returns()
       .opened_by(@view.ByNode(anchor.id()))
@@ -216,175 +406,34 @@ pub fn hover_card_node(
       t.lends(panel_submenus_lent, row_open) |> ignore
       t.lends(panel_submenu_aim_lent, Ref(None)) |> ignore
       t.lends(submenu_layer_lent, holder) |> ignore
-      t.lends(transient_parent_lent, hover_id.val) |> ignore
+      t.lends(transient_parent_lent, hover_id) |> ignore
       gate.val.collect(fn() {
-      t.box(fn(b) {
-        b.margin(Is((-panel_pad, 0.0, -panel_pad, 0.0))).alpha(By(fn() { look().words })) |> ignore
-        b.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) {
-          s.padding(Is((panel_pad, 0.0, panel_pad, 0.0))) |> ignore
-          s.box(fn(inner) {
-            inner.fills_across(Is(true)) |> ignore
-            if padded {
-              let p = @ui.Space::px(S2_5)
-              inner.padding(Is((p, p, p, p))).gap(Is(@ui.Space::px(S2))) |> ignore
-            }
-            body(inner)
+        t.box(fn(b) {
+          b.margin(Is((-panel_pad, 0.0, -panel_pad, 0.0))).alpha(By(fn() { look().words })) |> ignore
+          b.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) {
+            s.padding(Is((panel_pad, 0.0, panel_pad, 0.0))) |> ignore
+            s.box(fn(inner) {
+              inner.fills_across(Is(true)) |> ignore
+              if padded {
+                let p = @ui.Space::px(S2_5)
+                inner.padding(Is((p, p, p, p))).gap(Is(@ui.Space::px(S2))) |> ignore
+              }
+              body(inner)
+            })
+            |> ignore
           })
           |> ignore
         })
         |> ignore
       })
-      |> ignore
-      })
       gate.val.seal(t)
-      // (said once what it holds is made, as hover_panel_node does: state() then reads `held` as that made it)
-      card.set(Some(t))
-    })
-    true
-  }
-  set_open.val = fn(on : Bool) {
-    stop_due()
-    if !on {
-      by_hand.val = false
-      transient_release(hover_id.val)
-      row_open.set(None)
-    }
-    if on == open.untracked() {
-      return
-    }
-    if on && hover_id.val == 0 {
-      hover_id.val = transient_next_id()
-    }
-    if on && !made.val {
-      made.val = make()
-      guard made.val else { return }
-    }
-    if on {
-      transient_claim(hover_id.val, fn() { holder_v.val }, held, fn() { (set_open.val)(false) })
-      // (none made: made as it is opened, coming in once what it holds is: OpenGate; one still going, at once)
-      if card.untracked() is None {
-        gate.val = OpenGate::new()
-      }
-      gate.val.go(anchor, fn() { way.go_ms(anchor, 1.0, hover_card_in_ms, ease=Out) })
-    } else {
-      gate.val.stop()
-      way.go_ms(anchor, 0.0, hover_card_out_ms, ease=@signals.untracked(fn() { pop_out_ease_for(anchor) }))
-    }
-    match holder_v.val {
-      Some(h) if h.alive() => @view.transition(within=h, fn() { open.set(on) })
-      _ => open.set(on)
-    }
-  }
-  // (what decides it, as of each cause: a mouse's pointer on what it is of or on the card, a press held anywhere in
-  // the window (View::window_held: one carried onto it from elsewhere, or one on it that is not its, a bar's dragging
-  // the window, rests on nothing till it is let go, as kit's hover_card's `c.press().down`), whether it takes input, whether it is held open; one a mouse does not press (no `press`), by where the pointer is
-  // within it, what a press there is for being another's)
-  let takes = fn() { anchor.takes_input() }
-  let state = fn() {
-    let mouse = @ui.pointing() is Mouse
-    let keep = held()
-    // (closed, not kept open, no mouse's pointer to rest on it: nothing the window's presses or whether it takes input
-    // would change, so neither is read, and a finger's press anywhere in the window wakes none of its kind)
-    if !mouse && !keep && !open.get() {
-      return (false, false, false, true, false)
-    }
-    let on_anchor = mouse &&
-      (
-        match pointed {
-          Some(p) => p()
-          None => anchor.pointed_in()
-        }
-      ) &&
-      !yielded(yields_to)
-    let on_card = mouse &&
-      (
-        match (card.get(), holder_v.val) {
-          (Some(_), Some(h)) => h.pointed_in()
-          _ => false
-        }
-      )
-    (on_anchor, on_card, anchor.window_held(), takes(), keep)
-  }
-  let rests_was = Ref(false)
-  let keep_was = Ref(false)
-  owner.reacts(state, fn(s) {
-    let (on_anchor, on_card, pressed, takes, keep) = s
-    let at = owner.cause_at()
-    let rests = on_anchor && !pressed
-    let rests_now = rests && !rests_was.val
-    rests_was.val = rests
-    let released = keep_was.val && !keep
-    keep_was.val = keep
-    // (taking no input: closed, unless kept open by the app (what it opened, a modal panel beside it, over its anchor))
-    if !takes && !keep {
-      if released && open.untracked() {
-        // (let go by the modal it kept open closing: whether its anchor takes input and where the pointer is are told
-        // only once the event that closed it has settled its modal layers (an at_moment at this moment may come before
-        // that), so asked again at that event's end, then closed at once or as a leave's)
-        stop_due()
-        let gen = recheck_gen.val
-        @ui.after_frame(fn() {
-          guard recheck_gen.val == gen && owner.alive() && open.untracked() else { return }
-          let (a, c, _, t, k) = @signals.untracked(state)
-          if !t && !k {
-            (set_open.val)(false)
-          } else if !(by_hand.val || k || a || c) && due.val is None {
-            due.val = Some(
-              owner.at_moment(at + hover_card_close_ms, fn() {
-                due.val = None
-                let (a2, c2, _, _, k2) = @signals.untracked(state)
-                if !(a2 || c2 || k2 || by_hand.val) {
-                  (set_open.val)(false)
-                }
-              }),
-            )
-          }
-        })
-      } else {
-        (set_open.val)(false)
-      }
-      return
-    }
-    if open.untracked() {
-      // (opened by a finger, or kept open: none of the pointer's to close it)
-      if by_hand.val || keep || on_anchor || on_card {
-        stop_due()
-      } else if due.val is None {
-        // (left both: closed a while from now, the pointer as it is then)
-        due.val = Some(
-          owner.at_moment(at + hover_card_close_ms, fn() {
-            due.val = None
-            let (a, c, _, _, k) = @signals.untracked(state)
-            if !(a || c || k || by_hand.val) {
-              (set_open.val)(false)
-            }
-          }),
-        )
-      }
-    } else if rests_now {
-      // (rested on a while from now: opened then, the pointer as it is then)
-      stop_due()
-      due.val = Some(
-        owner.at_moment(at + hover_card_open_ms, fn() {
-          due.val = None
-          let (a, _, p, t, _) = @signals.untracked(state)
-          if a && !p && t {
-            (set_open.val)(true)
-          }
-        }),
-      )
-    } else if !rests {
-      stop_due()
-    }
-  })
-  let hold = fn() {
-    (set_open.val)(true)
-    by_hand.val = true
-  }
+    },
+    loc~,
+  )
   // (a finger held on it long_press_ms opens the card, on any anchor, as kit's hover_card's held_long)
   let on_held = fn(_d : @view.Drag) {
     if @ui.pointing() is Finger {
-      hold()
+      (hand.hold)()
     }
   }
   match (press, tapped) {
@@ -443,16 +492,7 @@ pub fn hover_card_node(
       |> ignore
     }
   }
-  // (let go: nothing of it left pending; set_open let go of last, as it names itself through make, a ring native's
-  // counting never frees)
-  owner.owns(fn() {
-    stop_due()
-    transient_release(hover_id.val)
-    way.put(0.0)
-    set_open.val = fn(_) {  }
-  })
-  |> ignore
-  { hold, close: fn() { (set_open.val)(false) }, open: fn() { open.get() }, card: fn() { card.get() } }
+  hand
 }
 
 ///|
@@ -620,81 +660,19 @@ pub fn hover_panel_node(
   loc~ : SourceLoc,
 ) -> HoverHand {
   let owner = owner.unwrap_or(anchor)
-  let row_open : @signals.Signal[@view.View?] = @signals.signal_by(None, same=same_view)
-  let hover_id = Ref(0)
-  let open : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
-  let by_hand = Ref(false)
-  let card : @signals.Signal[@view.View?] = @signals.signal_by(None, same=fn(a, b) {
-    match (a, b) {
-      (None, None) => true
-      (Some(x), Some(y)) => x.id() == y.id()
-      _ => false
-    }
-  })
-  let way = @motion.NodeWay::new(0.0)
-  let gate : Ref[OpenGate] = Ref(OpenGate::new())
-  let due : Ref[(() -> Unit)?] = Ref(None)
-  let stop_due = fn() {
-    match due.val {
-      Some(s) => s()
-      None => ()
-    }
-    due.val = None
-  }
-  let made = Ref(false)
-  let dismissed = Ref(false)
-  let holder_v : Ref[@view.View?] = Ref(None)
-  let set_open : Ref[(Bool) -> Unit] = Ref(fn(_) {  })
-  let close_explicit : Ref[() -> Unit] = Ref(fn() {  })
-  let make = fn() -> Bool {
-    guard transient_resolve_layer(layer, anchor) is Some(l) else { return false }
-    let holder = l.box(made_for=loc, fn(h) { h.transitions_only().over(Is(true)) |> ignore }).lives_with(owner)
-    holder_v.val = Some(holder)
-    holder.on_key(fn(k) {
-      if k.code == @ui.key_escape && open.untracked() && row_open.untracked() is None {
-        (close_explicit.val)()
-        true
-      } else {
-        false
-      }
-    })
-    |> ignore
-    let downs_was : Ref[Int?] = Ref(None)
-    holder.reacts(fn() { if open.get() { Some(holder.window_downs()) } else { None } }, at_start=false, fn(
-      now,
-    ) {
-      let was = downs_was.val
-      downs_was.val = now
-      guard was is Some(_) && now is Some(_) else { return }
-      guard open.untracked() else { return }
-      let (x, y) = holder.window_down_point()
-      let on = fn(v : @view.View?) {
-        match v {
-          Some(p) =>
-            match p.tree.target_at(x, y) {
-              Pressed(id) | Dragged(id) => p.tree.holds(p.id(), id)
-              _ => false
-            }
-          None => false
-        }
-      }
-      let on_anchor = match pointed {
-        Some(p) => @signals.untracked(p)
-        None => on(Some(anchor))
-      }
-      if !(on(holder_v.val) || on_anchor) {
-        (set_open.val)(false)
-      }
-    })
-    holder.show(fn() { open.get() }, leave=hover_card_out_ms, fn(t) {
-      t.owns(fn() {
-        match card.untracked() {
-          Some(c) if c.id() == t.id() => card.set(None)
-          _ => ()
-        }
-      })
-      |> ignore
-      t.lends(transient_parent_lent, hover_id.val) |> ignore
+  let hand = hover_surface_controller(
+    layer,
+    anchor,
+    owner,
+    spec.open_delay,
+    spec.close_delay,
+    held,
+    false,
+    false,
+    pointed,
+    None,
+    fn(t, holder, way, gate, row_open, hover_id, close) {
+      t.lends(transient_parent_lent, hover_id) |> ignore
       hover_panel_surface(
         t,
         holder,
@@ -706,144 +684,20 @@ pub fn hover_panel_node(
         way,
         gate,
         row_open,
-        fn() { (close_explicit.val)() },
+        close,
         loc~,
       )
-      card.set(Some(t))
-    })
-    true
-  }
-  set_open.val = fn(on : Bool) {
-    stop_due()
-    if !on {
-      by_hand.val = false
-      transient_release(hover_id.val)
-      row_open.set(None)
-    }
-    if on == open.untracked() {
-      return
-    }
-    if on && hover_id.val == 0 {
-      hover_id.val = transient_next_id()
-    }
-    if on && !made.val {
-      made.val = make()
-      guard made.val else { return }
-    }
-    if on {
-      transient_claim(hover_id.val, fn() { holder_v.val }, held, fn() { (set_open.val)(false) })
-      if card.untracked() is None {
-        gate.val = OpenGate::new()
-      }
-      gate.val.go(anchor, fn() { way.go_ms(anchor, 1.0, hover_card_in_ms, ease=Out) })
-    } else {
-      gate.val.stop()
-      way.go_ms(anchor, 0.0, hover_card_out_ms, ease=@signals.untracked(fn() { pop_out_ease_for(anchor) }))
-    }
-    match holder_v.val {
-      Some(h) if h.alive() => @view.transition(within=h, fn() { open.set(on) })
-      _ => open.set(on)
-    }
-  }
-  let takes = fn() { anchor.takes_input() }
-  let state = fn() {
-    let mouse = @ui.pointing() is Mouse
-    let keep = held()
-    if !mouse && !keep && !open.get() {
-      return (false, false, false, true, false)
-    }
-    let on_anchor = mouse &&
-      (
-        match pointed {
-          Some(p) => p()
-          None => anchor.pointed_in()
-        }
-      )
-    let on_card = mouse &&
-      (
-        match (card.get(), holder_v.val) {
-          (Some(_), Some(h)) => h.pointed_in()
-          _ => false
-        }
-      )
-    (on_anchor, on_card, anchor.window_held(), takes(), keep)
-  }
-  let rests_was = Ref(false)
-  let takes_was = Ref(true)
-  owner.reacts(state, fn(s) {
-    let (on_anchor, on_card, pressed, takes, keep) = s
-    let at = owner.cause_at()
-    if !on_anchor && takes && takes_was.val {
-      dismissed.val = false
-    }
-    takes_was.val = takes
-    let rests = on_anchor && !pressed && !dismissed.val
-    let rests_now = rests && !rests_was.val
-    rests_was.val = rests
-    if !takes {
-      if on_anchor {
-        dismissed.val = true
-      }
-      (set_open.val)(false)
-      return
-    }
-    if open.untracked() {
-      if by_hand.val || keep || on_anchor || on_card {
-        stop_due()
-      } else if due.val is None {
-        due.val = Some(
-          owner.at_moment(at + spec.close_delay, fn() {
-            due.val = None
-            let (a, c, _, _, k) = @signals.untracked(state)
-            if !(a || c || k || by_hand.val) {
-              (set_open.val)(false)
-            }
-          }),
-        )
-      }
-    } else if rests_now {
-      stop_due()
-      due.val = Some(
-        owner.at_moment(at + spec.open_delay, fn() {
-          due.val = None
-          let (a, _, p, t, _) = @signals.untracked(state)
-          if a && !p && t && !dismissed.val {
-            (set_open.val)(true)
-          }
-        }),
-      )
-    } else if !rests {
-      stop_due()
-    }
-  })
-  let hold = fn() {
-    dismissed.val = false
-    (set_open.val)(true)
-    by_hand.val = true
-  }
-  close_explicit.val = fn() {
-    let (on_a, _, _, _, _) = @signals.untracked(state)
-    if on_a {
-      dismissed.val = true
-    }
-    (set_open.val)(false)
-  }
+    },
+    post_card=fn(v) { v.says(Is(Some(@view.said(Dialog, label=title)))) |> ignore },
+    loc~,
+  )
   let on_held = fn(_d : @view.Drag) {
     if @ui.pointing() is Finger {
-      hold()
+      (hand.hold)()
     }
   }
   if pointed is None {
     anchor.points(Is(true)).gesture(@ui.touch_slop(), hold=(@ui.long_press_ms, on_held)) |> ignore
   }
-  // (set_open and close_explicit let go of last: each names itself through make, a ring native's counting never frees)
-  owner.owns(fn() {
-    stop_due()
-    transient_release(hover_id.val)
-    way.put(0.0)
-    set_open.val = fn(_) {  }
-    close_explicit.val = fn() {  }
-  })
-  |> ignore
-  { hold, close: fn() { (close_explicit.val)() }, open: fn() { open.get() }, card: fn() { card.get() } }
+  hand
 }

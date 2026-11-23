@@ -52,6 +52,10 @@ pub fn input_bar_node(
   secret? : Bool = false,
   placeholder_by? : () -> String,
   disabled? : () -> Bool = fn() { false },
+  description? : () -> String,
+  error? : () -> String,
+  invalid? : () -> Bool,
+  read_only? : () -> Bool,
   small? : Bool = false,
   high? : Double = menu_row_min,
   solid? : Bool = false,
@@ -64,6 +68,7 @@ pub fn input_bar_node(
 ) -> @view.View {
   let line = @signals.untracked(fn() { theme().t.body_line })
   let x = if card_words { card_foot_words_in(button_height()) } else { @ui.Space::px(S4) }
+  let has_tf = description is Some(_) || error is Some(_) || invalid is Some(_) || read_only is Some(_)
   field_frame(parent, disabled, row=true, solid~, fn(f) {
     f
     .padding(Is((x, @ui.Space::px(S1_5), x, @ui.Space::px(S1_5))))
@@ -104,6 +109,33 @@ pub fn input_bar_node(
     .grow(Is(1.0))
     .basis(Is(Some(0.0)))
     .shrink(Is(1.0))
+    if has_tf {
+      let tf_label = fn() {
+        if label != "" {
+          label
+        } else {
+          match placeholder_by {
+            Some(by) => by()
+            None => placeholder
+          }
+        }
+      }
+      let tf = @headless.TextField::new(
+        tf_label,
+        description?,
+        error?,
+        invalid?,
+        disabled~,
+        read_only?,
+      )
+      tf.control(
+        typed,
+        fn(_, _) {  },
+        value=fn() { if secret { "" } else { field.composed_said() } },
+        in_node=true,
+      )
+      |> ignore
+    }
     // (what stands at its end, after what is typed, kept whole)
     match end {
       Some(e) => f.box(fn(b) { b.shrink(Is(0.0)) |> ignore; e(b) }) |> ignore
@@ -130,11 +162,16 @@ pub fn textarea_node(
   corner? : Double,
   placeholder_by? : () -> String,
   disabled? : () -> Bool = fn() { false },
+  description? : () -> String,
+  error? : () -> String,
+  invalid? : () -> Bool,
+  read_only? : () -> Bool,
   edited? : (String) -> Unit,
   solid? : Bool = false,
   card_words? : Bool = false,
 ) -> @view.View {
   let x = if card_words { card_foot_words_in(button_height()) } else { @ui.Space::px(S4) }
+  let has_tf = description is Some(_) || error is Some(_) || invalid is Some(_) || read_only is Some(_)
   field_frame(parent, disabled, row=false, solid~, fn(f) {
     f
     .padding(Is((x, @ui.Space::px(S2), x, @ui.Space::px(S2))))
@@ -144,7 +181,7 @@ pub fn textarea_node(
       Some(k) => f.radius(Is(k)) |> ignore
       None => f.radius(By(fn() { field_round() })) |> ignore
     }
-    @ui.field(
+    let typed = @ui.field(
       f,
       field,
       placeholder~,
@@ -161,6 +198,34 @@ pub fn textarea_node(
         (p.text, p.subtle, p.accent)
       },
     )
+    if has_tf {
+      let tf_label = fn() {
+        if label != "" {
+          label
+        } else {
+          match placeholder_by {
+            Some(by) => by()
+            None => placeholder
+          }
+        }
+      }
+      let tf = @headless.TextField::new(
+        tf_label,
+        description?,
+        error?,
+        invalid?,
+        disabled~,
+        read_only?,
+      )
+      tf.control(
+        typed,
+        fn(_, _) {  },
+        value=fn() { field.composed_said() },
+        in_node=true,
+      )
+      |> ignore
+    }
+    typed
   })
 }
 

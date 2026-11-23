@@ -10,13 +10,23 @@ pub fn progress_ring_node(
   size : Double,
   part : () -> Double,
   color : () -> Int64,
+  label? : () -> String = fn() { "" },
   loc~ : SourceLoc,
 ) -> @view.View {
-  parent.box(made_for=loc, fn(v) {
-    v
-    .width(Is(Some(size)))
-    .height(Is(Some(size)))
-    .shapes(By(fn() { ring_shapes(size, part(), color()) }))
-    |> ignore
-  })
+  @headless.progress(
+    parent,
+    fn() { Some(part()) },
+    fn(v, _p) {
+      v
+      .width(Is(Some(size)))
+      .height(Is(Some(size)))
+      .shapes(By(fn() { ring_shapes(size, part(), color()) }))
+      |> ignore
+    },
+    min=0.0,
+    max=1.0,
+    label~,
+    made_for=loc,
+    loc~,
+  )
 }
