@@ -309,7 +309,7 @@ test "Bug B regression: State, CacheCold, Archived, and Feedback rekey on predec
   t.run_for(@ui.move_most_ms)
 
   // Insert a new message before all four trailers
-  let extra_msg : Message = { ..chat_body_none, ts: "999999.000", seq: 9999.0, text: "新来一条消息", said: true }
+  let extra_msg : Message = { ..chat_body_none, ts: "999999.000", seq: 9999.0, mine: true, text: "新来一条消息", said: true }
   let next_entries = base_entries.copy()
   next_entries.push(Entry::Said(extra_msg))
   next_entries.push(Entry::State("ok", "", ""))
