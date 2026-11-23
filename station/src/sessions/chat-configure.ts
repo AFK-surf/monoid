@@ -14,7 +14,7 @@ import { runs } from "./config.ts";
 import { contextAsked } from "./context-cap.ts";
 import type { Hub } from "./hub.ts";
 import { configure } from "./lifecycle.ts";
-import { sender } from "./messages.ts";
+import { given, spokenIn, titleOf } from "../read/views.ts";
 import { elsewhere, fromBefore, linkedSession, named, peersOf, scopeOf, sessionThreadOf, threadIn } from "./others.ts";
 
 type Json = any;
@@ -271,6 +271,28 @@ function ownTitle(row: SessionRow | null): string | null {
   return trimmed(row?.title ?? null);
 }
 
+/// The title a leading chat was given (by people or its agent), else its session's; null while it has none, so another
+/// station keeps none rather than a name of the moment.
+function leaderTitle(hub: Hub, key: string): string | null {
+  const chat = hub.store.sessionChat(key);
+  return (chat ? given(chat.thread) : null) ?? ownTitle(hub.store.getSession(key));
+}
+
+/// A leading chat as a notice names it: as its messages are headed (messages.ts `sender`), never by its session key.
+function leaderName(hub: Hub, key: string): string {
+  const titled = leaderTitle(hub, key);
+  if (titled !== null) return titled;
+  const chat = hub.store.sessionChat(key);
+  return chat ? spokenIn(stationLang(), () => titleOf(chat.thread, chat.firstText, null)) : untitledWord();
+}
+
+/// A leading chat on another station as a notice names it: the title it sent, else as an untitled chat is called.
+function remoteLeaderName(title: string | null): string {
+  return title || untitledWord();
+}
+
+const untitledWord = (): string => tr(stationLang(), "station.chat.untitled");
+
 function parsePeerLead(raw: Json, peer: string): LeadAction | null {
   if (raw === undefined || raw === null) return null;
   if (typeof raw !== "object" || Array.isArray(raw)) throw new Error("lead must be an object");
@@ -326,12 +348,7 @@ async function applyHere(
       const res = hub.store.setOpenedLed("", targetKey, false);
       leadChanged = res.changed;
       if (res.changed && res.prev) {
-        let from = res.prev.openerTitle || res.prev.parent;
-        if (res.prev.parentStation === "") {
-          try {
-            from = sender(hub, res.prev.parent)[0];
-          } catch {}
-        }
+        const from = res.prev.parentStation === "" ? leaderName(hub, res.prev.parent) : remoteLeaderName(res.prev.openerTitle);
         await sayLeadNotice(hub, targetKey, "station.session.handedToPerson", from);
         if (res.prev.parentStation !== "" && res.prev.parentStation !== skipMirrorStation) {
           await clearRemoteMirror(hub, mirrorCaller, res.prev.parentStation, targetKey);
@@ -349,12 +366,7 @@ async function applyHere(
       });
       leadChanged = res.changed;
       if (res.changed) {
-        let from = lead.parentTitle || lead.parent;
-        if (lead.parentStation === "") {
-          try {
-            from = sender(hub, lead.parent)[0];
-          } catch {}
-        }
+        const from = lead.parentStation === "" ? leaderName(hub, lead.parent) : remoteLeaderName(lead.parentTitle);
         await sayLeadNotice(hub, targetKey, "station.session.adoptedByAgent", from);
         if (res.prev && res.prev.parentStation !== "" && res.prev.parentStation !== skipMirrorStation && (res.prev.parentStation !== lead.parentStation || res.prev.parent !== lead.parent)) {
           await clearRemoteMirror(hub, mirrorCaller, res.prev.parentStation, targetKey);
@@ -406,7 +418,7 @@ export async function chatConfigure(hub: Hub, key: string, args: Args): Promise<
   if (forMode === "person") {
     leadPayload = { mode: "person" };
   } else if (forMode === "me") {
-    const fromTitle = ownTitle(hub.store.getSession(key));
+    const fromTitle = leaderTitle(hub, key);
     const ancestors = localAncestors(hub, key);
     const targetRef = linkedSession(targetChat)?.[0] ?? targetChat;
     if (ancestors.some((a) => a.station === station && a.session === targetRef)) {

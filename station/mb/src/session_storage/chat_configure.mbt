@@ -133,8 +133,47 @@ fn Storage::own_title(self : Storage, key : String) -> String? {
 }
 
 ///|
-fn Storage::chat_title_of(self : Storage, key : String) -> String {
-  self.own_title(key).unwrap_or(key)
+/// chat-configure.ts `leaderTitle`: the title a leading chat was given (by people or its agent), else its session's;
+/// None while it has none, so another station keeps none rather than a name of the moment.
+fn Storage::leader_title(self : Storage, key : String) -> String? {
+  let chat = self.with_threads(t => t.session_chat(js(key))) catch { _ => Json::null() }
+  let thread = get(chat, "thread").unwrap_or(Json::null())
+  match cfg_trimmed(get(thread, "title")) {
+    Some(t) => Some(t)
+    None =>
+      match cfg_trimmed(get(thread, "autoTitle")) {
+        Some(t) => Some(t)
+        None => self.own_title(key)
+      }
+  }
+}
+
+///|
+/// chat-configure.ts `leaderName`: a leading chat as a notice names it, never by its session key.
+async fn Storage::leader_name(self : Storage, key : String) -> String {
+  if self.leader_title(key) is Some(t) {
+    return t
+  }
+  let listed = as_str(Some(self.ask("policy.title", [js(key)]))) catch { _ => None }
+  match listed {
+    Some(t) if t != "" && t != key => t
+    _ => self.untitled_word()
+  }
+}
+
+///|
+/// chat-configure.ts `remoteLeaderName`: a leading chat on another station, by the title it sent.
+async fn Storage::remote_leader_name(self : Storage, title : String?) -> String {
+  match title {
+    Some(t) if t != "" => t
+    _ => self.untitled_word()
+  }
+}
+
+///|
+async fn Storage::untitled_word(self : Storage) -> String {
+  let lang = self.ask("fn.stationLang", []) catch { _ => js("en") }
+  as_str(Some(self.ask("fn.tr", [lang, js("station.chat.untitled"), jo([])]) catch { _ => js("") })).unwrap_or("")
 }
 
 ///|
@@ -512,9 +551,9 @@ async fn Storage::apply_configure_here(
         let prev_ps = str(prev, "parentStation").unwrap_or("")
         let prev_parent = str(prev, "parent").unwrap_or("")
         let from = if prev_ps == "" {
-          self.chat_title_of(prev_parent)
+          self.leader_name(prev_parent)
         } else {
-          str(prev, "openerTitle").unwrap_or(prev_parent)
+          self.remote_leader_name(str(prev, "openerTitle"))
         }
         self.say_lead_notice(target_key, "station.session.handedToPerson", from)
         if prev_ps != "" && prev_ps != skip_mirror_station {
@@ -536,9 +575,9 @@ async fn Storage::apply_configure_here(
       lead_changed = get(res, "changed") is Some(True)
       if lead_changed {
         let from = if parent_station == "" {
-          self.chat_title_of(parent)
+          self.leader_name(parent)
         } else {
-          parent_title.unwrap_or(parent)
+          self.remote_leader_name(parent_title)
         }
         self.say_lead_notice(target_key, "station.session.adoptedByAgent", from)
         let prev = get(res, "prev").unwrap_or(Json::null())
@@ -623,7 +662,7 @@ pub async fn Storage::chat_configure(self : Storage, key : String, args : Json) 
       req_fields.push(("lead", jo([
         ("mode", js("me")),
         ("parent", js(key)),
-        ("parentTitle", jopt(self.own_title(key))),
+        ("parentTitle", jopt(self.leader_title(key))),
         ("parentAncestors", ja(ancestors.map(a => jo([("station", js(a.0)), ("session", js(a.1))])))),
       ])))
     }

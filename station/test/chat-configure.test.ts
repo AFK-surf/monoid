@@ -6,6 +6,7 @@ import { archiveBy, newSession } from "../src/sessions/lifecycle.ts";
 import { settled } from "../src/sessions/opened.ts";
 import { LIST, listForPeer } from "../src/sessions/others.ts";
 import { MANUAL } from "../src/store/rows.ts";
+import { stationLang, tr } from "../src/ops/i18n.ts";
 import { Rig, settle } from "./hub-fakes.ts";
 
 const withModels = (r: Rig) => {
@@ -303,6 +304,46 @@ test("chat_configure reports led/leader, adopts user chats, transfers ownership,
     unsub();
   } finally {
     await r.close();
+  }
+});
+
+test("chat_configure names the leader in its notices by its chat's title, never its session key", async () => {
+  const near = withModels(new Rig({ link: true, place: { workspace: "w", station: "near" }, workspaces: ["w"] }));
+  const far = withModels(new Rig({ link: true, place: { workspace: "w", station: "far" }, workspaces: ["w"] }));
+  try {
+    near.hub.onPeer(async (_station, request) => configureForPeer(far.hub, request, "w", "near"));
+    const notices = (rig: Rig, thread: number) => rig.store.messagesBefore(thread, null, 20).filter((m) => m.authorKind === "station").map((m) => m.text);
+    const adopted = tr(stationLang(), "station.session.adoptedByAgent", { from: "\u0000" }).split("\u0000");
+    const named = (title: string) => `${adopted[0]}${title}${adopted[1]}`;
+    // A leader whose chat was given a title (as an agent's chat_post does) while its session has none.
+    const [leader, leaderThread] = await newSession(near.hub, web({ ws: "w" }));
+    near.store.setTitle(leader, null);
+    near.store.setThreadTitle(leaderThread.id, "Invar 差距评估");
+    const [child, childThread] = await newSession(near.hub, web({ ws: "w" }));
+    await near.call(leader, "chat_configure", { chat: child, for: "me" });
+    assert.deepEqual(notices(near, childThread.id).filter((t) => t.includes(leader)), []);
+    assert.ok(notices(near, childThread.id).some((t) => t.includes(named("Invar 差距评估"))), notices(near, childThread.id).join("\n"));
+    // On another station, by the title it sent.
+    const [remote, remoteThread] = await newSession(far.hub, web({ ws: "w" }));
+    await near.call(leader, "chat_configure", { chat: far.hub.link(remote)!, for: "me" });
+    assert.equal(far.store.openerOf(remote)!.openerTitle, "Invar 差距评估");
+    assert.ok(notices(far, remoteThread.id).some((t) => t.includes(named("Invar 差距评估"))), notices(far, remoteThread.id).join("\n"));
+    // A leader nobody titled yet: as an untitled chat is called, here and there.
+    const [untitled, untitledThread] = await newSession(near.hub, web({ ws: "w" }));
+    near.store.setTitle(untitled, null);
+    near.store.setThreadTitle(untitledThread.id, null);
+    const [child2, child2Thread] = await newSession(near.hub, web({ ws: "w" }));
+    await near.call(untitled, "chat_configure", { chat: child2, for: "me" });
+    const [remote2, remote2Thread] = await newSession(far.hub, web({ ws: "w" }));
+    await near.call(untitled, "chat_configure", { chat: far.hub.link(remote2)!, for: "me" });
+    const word = tr(stationLang(), "station.chat.untitled");
+    for (const said of [notices(near, child2Thread.id), notices(far, remote2Thread.id)]) {
+      assert.ok(said.some((t) => t.includes(named(word))), said.join("\n"));
+      assert.deepEqual(said.filter((t) => t.includes(untitled)), []);
+    }
+  } finally {
+    await near.close();
+    await far.close();
   }
 });
 
