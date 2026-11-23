@@ -423,6 +423,39 @@ fn[K] Places::first_past(self : Places[K], y : Double) -> Int {
 }
 
 ///|
+/// The first block at `y` (holding the top of what shows): the first whose foot is past `y`, or, before that, the
+/// first at or under `y` on its way in from none (`col.h > 0`); as many as there are where none is.
+fn[K] Places::first_at(self : Places[K], y : Double) -> Int {
+  let past = self.first_past(y)
+  if self.froms.is_empty() || past == 0 {
+    return past
+  }
+  let mut lo = 0
+  let mut hi = past
+  while lo < hi {
+    let mid = (lo + hi) / 2
+    if self.top(mid) >= y {
+      hi = mid
+    } else {
+      lo = mid + 1
+    }
+  }
+  for i in lo..<past {
+    if self.col.h(i) > 0.0 {
+      return i
+    }
+  }
+  past
+}
+
+///|
+/// Whether block `i` is not above `y`: its foot past `y`, or at or under `y` on its way in from none (`col.h > 0`).
+fn[K] Places::meets_top(self : Places[K], i : Int, y : Double) -> Bool {
+  let top = self.top(i)
+  top + self.h(i) > y || (!self.froms.is_empty() && top >= y && self.col.h(i) > 0.0)
+}
+
+///|
 /// A ground a page's list draws under its blocks (View::scrolls_window's `bands`), one whole: from the top of block
 /// `from` (`top` further down) to the foot of block `upto` (`foot` further down), its look its page's. What lights a
 /// thing the list holds in several blocks (a long message a block a piece) is drawn once, never a piece of it by each
@@ -1783,7 +1816,7 @@ fn View::scrolls_window_ids(
         }
       _ => ()
     }
-    let mut j = all.first_past(edge).min(all.length() - 1)
+    let mut j = all.first_at(edge).min(all.length() - 1)
     while j < all.length() && all.top(j) < foot {
       match in_sight(j) {
         Some(sj) => return Some((j, sj))
@@ -2585,7 +2618,15 @@ fn View::scrolls_window_ids(
     anchor.val = if read is Some((j, _)) {
       Some((all.key(j), top - all.top(j)))
     } else if all.length() > 0 {
-      let first = holding(all, all.first_past(top).min(all.length() - 1))
+      let raw = all.first_at(top)
+      let at0 = if raw < all.length() {
+        raw
+      } else if top <= all.top(0) || all.foot() <= all.top(0) {
+        0
+      } else {
+        all.length() - 1
+      }
+      let first = holding(all, at0)
       let mut j = first
       while j < all.length() && all.top(j) < top + vh && !(all.known(j) && holds(all.key(j))) {
         j = j + 1
@@ -2815,7 +2856,7 @@ fn View::scrolls_window_ids(
     }
     let (a, b) = if vh > 0.0 {
       (
-        all.first_past(top - slots_margin * vh).min(n - 1),
+        all.first_at(top - slots_margin * vh).min(n - 1),
         all.first_past(top + vh + slots_margin * vh).min(n - 1),
       )
     } else if hi >= 0 {
@@ -2919,14 +2960,14 @@ fn View::scrolls_window_ids(
     let now = []
     window_short.val = false
     // (whether `i` meets where it shows, as it is counted)
-    let meets = fn(i : Int) { i >= 0 && i < all.length() && all.top(i) + all.h(i) > top && all.top(i) < top + vh }
+    let meets = fn(i : Int) { i >= 0 && i < all.length() && all.meets_top(i, top) && all.top(i) < top + vh }
     // (showing none of it, a page under another: none made, the one it is held by neither, what it reads let go)
     if vh <= 0.0 {
       window_found.val = (now, 0, -1)
       return now
     }
     if lo > hi {
-      let first = all.first_past(top)
+      let first = all.first_at(top)
       let mut i = first
       let mut last = first - 1
       while i < all.length() && all.top(i) < top + vh {
@@ -2944,7 +2985,7 @@ fn View::scrolls_window_ids(
     let mut a = lo
     if all.known(lo) || up_first {
       let mut i = lo - 1
-      while i >= 0 && all.top(i) + all.h(i) > top {
+      while i >= 0 && all.meets_top(i, top) {
         a = i
         if !all.known(i) {
           window_short.val = meets(i - 1)
@@ -3220,9 +3261,11 @@ fn View::scrolls_window_ids(
     let start = {
       let all = places(laid.untracked())
       let fresh = fn() {
-        let i = all.first_past(x)
+        let i = all.first_at(x)
         if i < all.length() {
           (i, x - all.top(i))
+        } else if all.length() > 0 && (x <= all.top(0) || all.foot() <= all.top(0)) {
+          (0, dmin(0.0, x - all.top(0)))
         } else {
           (all.length() - 1, 0.0)
         }
@@ -3281,7 +3324,7 @@ fn View::scrolls_window_ids(
         if all.length() > 0 {
           let i = ai.min(all.length() - 1).max(0)
           let at_now = all.top(i) + aoff
-          let j = holding(all, all.first_past(at_now).min(all.length() - 1))
+          let j = holding(all, all.first_at(at_now).min(all.length() - 1))
           // (what was seen and still shows holding it, before one come to show: what comes in over it measured
           // otherwise than it was counted moves what was seen none, the column moved with it instead)
           let vh = match shows() {
@@ -3302,7 +3345,7 @@ fn View::scrolls_window_ids(
           // over it moves none of it)
           if !marks.is_empty() {
             let (cover, under) = @signals.untracked(fn() { (s.top_covered(), s.foot_covered_now()) })
-            let mut q = all.first_past(at_now + cover).min(all.length() - 1)
+            let mut q = all.first_at(at_now + cover).min(all.length() - 1)
             let mut got = false
             while !got && q < all.length() && all.top(q) < at_now + vh - under {
               if all.known(q) && holds(all.key(q)) {
@@ -3675,7 +3718,7 @@ fn View::scrolls_window_ids(
         // (and a block asked for not measured yet, counted at `est` alone: its foot may reach past `top` once it is
         // measured, as a long message brought deep into itself does, so it is made and measured in this pass first)
         (asked && !to_end && !all.known(ai)) ||
-        (all.top(ai) + all.h(ai) > top && all.top(ai) < top + vh) {
+        (all.meets_top(ai, top) && all.top(ai) < top + vh) {
         // (held by what was pressed in it, the block shows by that alone, where what is over that comes to now: what
         // shows goes out from it, never found by its place as counted at the last layout. As tall as it was then, what
         // it opened over the pressed grown since by more than a screen (no frame for 88 ms) put it off what shows: let
@@ -3683,7 +3726,7 @@ fn View::scrolls_window_ids(
         // found again by where it ends now)
         ai
       } else {
-        let past = all.first_past(top).min(all.length() - 1)
+        let past = all.first_at(top).min(all.length() - 1)
         // (asked to bring a block with the place under it as far down as past its own foot (a long message's first
         // piece and how far down the whole of it the reader was: a place kept whole, or the core's), and blocks between
         // it and where that comes to never measured: where that is, is known only once they are. From the first of them,
