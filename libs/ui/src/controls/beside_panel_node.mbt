@@ -29,46 +29,10 @@ pub fn beside_panel_node(
     open,
     fn(layer) {
       let (enter, exit) = @signals.untracked(fn() { (pop_in_for(layer), pop_out_for(layer)) })
-      let (look, live) = @motion.overlay_presence(layer, enter~, exit~)
-      let panel : Ref[@view.View?] = Ref(None)
-      layer
-      .over(Is(true))
-      // (leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
-      .on_key(fn(k) {
-        if k.code == @ui.key_escape && @signals.untracked(live) {
-          cancel()
-          true
-        } else {
-          false
-        }
-      })
-      .takes_back(fn() {
-        if @signals.untracked(live) {
-          cancel()
-        }
-      })
-      |> ignore
-      // (a press anywhere in the window outside it and what it keeps open: closed as it goes down, the press what it
-      // lands on's as ever, at that moment)
-      layer.reacts(fn() { layer.window_downs() }, at_start=false, fn(_) {
-        let (x, y) = layer.window_down_point()
-        let on = fn(v : @view.View?) {
-          match v {
-            Some(p) if p.alive() =>
-              match p.tree.target_at(x, y) {
-                Pressed(id) | Dragged(id) | Hosted(id) => p.tree.holds(p.id(), id)
-                _ => false
-              }
-            _ => false
-          }
-        }
-        if @signals.untracked(live) && !on(panel.val) && !on(keeps()) {
-          cancel()
-        }
-      })
+      let (look, _) = @motion.overlay_presence(layer, enter~, exit~)
+      layer.over(Is(true)) |> ignore
       let at = anchor(layer)
       layer.box(made_for=loc, fn(p) {
-        panel.val = Some(p)
         p
         .beside(at.id(), side~, along=view_along(along), offset~, padding=8.0, holds_side=true)
         .width(Is(Some(w)))
@@ -78,10 +42,8 @@ pub fn beside_panel_node(
         p
         .alpha(By(fn() { look().alpha }))
         .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
-        .says(By(fn() { Some(@view.said(Dialog, label=label())) }))
-        // (a press on it its own: not outside it)
-        |> ground_node
         |> ignore
+        let body_focus : Ref[@view.View?] = Ref(None)
         // (what it holds, as a small panel's body is: scrolling where the window leaves it short, out to its sides)
         p.box(fn(b) {
           let scroll = @view.Scroll::new()
@@ -104,8 +66,29 @@ pub fn beside_panel_node(
           .clips(By(fn() { scroll.goes() }))
           .bounds_input(By(fn() { scroll.goes() }))
           |> ignore
-          layer.focus_opens(b) |> ignore
+          body_focus.val = Some(b)
         })
+        |> ignore
+        @headless.overlay(
+          made_for=loc,
+          p,
+          fn(_) { cancel() },
+          modal=false,
+          dismiss_on_escape=true,
+          dismiss_on_outside=true,
+          inert=fn() { layer.leaving() },
+          keeps=fn() {
+            match keeps() {
+              Some(k) => [k]
+              None => []
+            }
+          },
+          auto_focus=true,
+          initial_focus=body_focus.val.unwrap(),
+          label~,
+          in_node=true,
+          fn(_, _) {  },
+        )
         |> ignore
       })
       |> ignore

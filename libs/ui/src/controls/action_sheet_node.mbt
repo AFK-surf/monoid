@@ -85,22 +85,6 @@ pub fn action_sheet_node(
         }
       }
       let live = fn() { !layer.leaving() }
-      let rows : Map[Int, @view.View] = Map([])
-      let lit = fn() {
-        let mut at = -1
-        for i, r in rows {
-          if r.focused() {
-            at = i
-          }
-        }
-        at
-      }
-      let light = fn(i : Int) {
-        match rows.get(i) {
-          Some(r) => r.ask_focus(visible=true) |> ignore
-          None => ()
-        }
-      }
       let picked = Ref(false)
       let run_pick = fn(i : Int) {
         if picked.val || !@signals.untracked(live) {
@@ -114,95 +98,41 @@ pub fn action_sheet_node(
           (act.on_pick)()
         }
       }
-      layer
-      .over(Is(true))
-      .modal(By(live))
-      .held_back_goes_on()
-      .presses(Is(true))
-      .on_drag(fn(d) {
-        if d.kind == Down && @signals.untracked(live) {
-          cancel()
-        }
-      })
-      .on_key(fn(k) {
-        if !@signals.untracked(live) {
-          return false
-        }
-        let n = @signals.untracked(actions).length()
-        let now = @signals.untracked(lit)
-        if k.code == @ui.key_escape {
-          cancel()
-          true
-        } else if k.mods != 0 {
-          false
-        } else if k.code == @ui.key_code_down || k.code == @ui.key_code_up {
-          if n > 0 {
-            let next = if now < 0 {
-              if k.code == @ui.key_code_down { 0 } else { n - 1 }
-            } else if k.code == @ui.key_code_down {
-              (now + 1) % n
-            } else {
-              (now + n - 1) % n
-            }
-            light(next)
-          }
-          true
-        } else if k.code == @ui.key_code_home || k.code == @ui.key_code_end {
-          if n > 0 {
-            light(if k.code == @ui.key_code_home { 0 } else { n - 1 })
-          }
-          true
-        } else if k.code == @ui.key_code_enter || k.code == @ui.key_of_char(' ') {
-          if now >= 0 {
-            run_pick(now)
-          }
-          true
-        } else {
-          false
-        }
-      })
-      .takes_back(fn() {
-        if @signals.untracked(live) {
-          cancel()
-        }
-      })
-      |> ignore
+      layer.over(Is(true)) |> ignore
       let at = anchor(layer)
       anchored_popover_bridge(loc~, layer, at, look, side=Bottom, along~, offset=panel_offset)
       layer.box(made_for=loc, fn(p) {
-        @headless.menu(
-          made_for=loc,
+        anchored_popover_shell(
           p,
-          label=fn() {
-            let s = title()
-            if s != "" { s } else { "Actions" }
-          },
-          on_close=fn() {
-            if @signals.untracked(live) {
-              cancel()
-            }
-          },
-          takes_focus=true,
-          roving=true,
-          in_node=true,
-          fn(p, menu) {
-            anchored_popover_shell(
-              p,
-              at.id(),
-              look,
-              side=Bottom,
-              along~,
-              offset=panel_offset,
-              holds_side=false,
-              concentric_inset=action_sheet_pad,
-            )
-            .min_width(By(fn() { Some(dmin(action_sheet_min_w, dmax(0.0, over_room(layer).0 - 16.0))) }))
-            .max_width(By(fn() { Some(dmin(action_sheet_max_w, dmax(0.0, over_room(layer).0 - 16.0))) }))
-            .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
-            .padding(Is((action_sheet_pad, action_sheet_pad, action_sheet_pad, action_sheet_pad)))
-            |> ignore
-            let inner_r = dmax(8.0, r_menu - action_sheet_pad)
-            p.box(fn(body) {
+          at.id(),
+          look,
+          side=Bottom,
+          along~,
+          offset=panel_offset,
+          holds_side=false,
+          concentric_inset=action_sheet_pad,
+        )
+        .min_width(By(fn() { Some(dmin(action_sheet_min_w, dmax(0.0, over_room(layer).0 - 16.0))) }))
+        .max_width(By(fn() { Some(dmin(action_sheet_max_w, dmax(0.0, over_room(layer).0 - 16.0))) }))
+        .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
+        .padding(Is((action_sheet_pad, action_sheet_pad, action_sheet_pad, action_sheet_pad)))
+        |> ignore
+        let inner_r = dmax(8.0, r_menu - action_sheet_pad)
+        p.box(fn(body) {
+          @headless.menu(
+            made_for=loc,
+            body,
+            label=fn() {
+              let s = title()
+              if s != "" { s } else { "Actions" }
+            },
+            wraps=true,
+            disabled=fn() { !live() },
+            takes_focus=false,
+            roving=true,
+            captures_unfocused=true,
+            in_node=true,
+            fn(body, menu) {
               popover_content_motion(p, body, fn() { look().words })
               let has_head = fn() { title() != "" || message() != "" }
               body.show(has_head, at_once=true, fn(hdr) {
@@ -271,7 +201,7 @@ pub fn action_sheet_node(
                       theme().p.text
                     }
                   }
-                  let row = menu.item(
+                  menu.item(
                     made_for=loc,
                     cell,
                     fn() { act().label },
@@ -315,14 +245,27 @@ pub fn action_sheet_node(
                       |> ignore
                     },
                   )
-                  rows[i] = row
-                  cell.owns(fn() { rows.remove(i) }) |> ignore
+                  |> ignore
                 },
               )
-            })
-            |> ignore
-            layer.focus_opens(p) |> ignore
-          },
+            },
+          )
+          |> ignore
+        })
+        |> ignore
+        @headless.overlay(
+          made_for=loc,
+          p,
+          fn(_) { cancel() },
+          modal=true,
+          held_back_goes_on=true,
+          dismiss_on_escape=true,
+          dismiss_on_outside=true,
+          inert=fn() { layer.leaving() },
+          auto_focus=true,
+          initial_focus=p,
+          in_node=true,
+          fn(_, _) {  },
         )
         |> ignore
       })

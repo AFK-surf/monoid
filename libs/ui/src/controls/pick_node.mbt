@@ -69,38 +69,7 @@ pub fn pick_node(
           choose(k)
         }
       }
-      layer
-      .over(Is(true))
-      .modal(By(live))
-      .held_back_goes_on()
-      // (a press outside its panel its own, nothing under it pressed: closing it as it goes down)
-      .presses(Is(true))
-      .on_drag(fn(d) {
-        if d.kind == Down && @signals.untracked(live) {
-          cancel()
-        }
-      })
-      .on_key(fn(k) {
-        if !@signals.untracked(live) {
-          return false
-        }
-        // (Escape: what is typed in its search cleared first, as a Mac's search field's; with nothing typed, closed)
-        if k.code == @ui.key_escape && line.text() != "" {
-          line.set("")
-          true
-        } else if k.code == @ui.key_escape {
-          cancel()
-          true
-        } else {
-          false
-        }
-      })
-      .takes_back(fn() {
-        if @signals.untracked(live) {
-          cancel()
-        }
-      })
-      |> ignore
+      layer.over(Is(true)) |> ignore
     // (what opened it, where it is drawn: what its panel goes beside)
     let at = anchor(layer)
     let reach = menu_row_reach(th.rows.pick)
@@ -122,7 +91,6 @@ pub fn pick_node(
       // corners, its last row at its foot, menu_item's at_foot)
       .padding(Is((panel_pad - reach, panel_pad - reach, panel_pad - reach, panel_pad)))
       .carries_until(fn() { way.ends_at() })
-      .says(Is(Some(@view.said(Dialog, label=title))))
       |> ignore
       // (which of what is found the keys are on: the one chosen as it opens, where it is found and to be chosen, else
       // the first found that is; ↓ ↑ moving it bring it into sight: `keyed`)
@@ -241,12 +209,30 @@ pub fn pick_node(
       )
       |> ignore
       // (the focus its search's as it opens on keyboard/mouse; on touch focus the panel so the soft keyboard stays down)
-      if native_input() is Finger {
-        p.focusable(Is(true), keys=0, tab=false) |> ignore
-        layer.focus_opens(p) |> ignore
-      } else {
-        layer.focus_opens(search.val.unwrap()) |> ignore
-      }
+      let init_focus = if native_input() is Finger { p } else { search.val.unwrap() }
+      @headless.overlay(
+        p,
+        fn(_) { cancel() },
+        modal=true,
+        held_back_goes_on=true,
+        dismiss_on_escape=true,
+        dismiss_on_outside=true,
+        inert=fn() { layer.leaving() },
+        auto_focus=true,
+        initial_focus=init_focus,
+        label=fn() { title },
+        before_dismiss=fn(how) {
+          if how == Escape && line.text() != "" {
+            line.set("")
+            true
+          } else {
+            false
+          }
+        },
+        in_node=true,
+        fn(_, _) {  },
+      )
+      |> ignore
     })
     |> ignore
     },

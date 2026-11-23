@@ -45,21 +45,12 @@ let drawer_close_share : Double = 0.32
 let drawer_close_speed : Double = 0.45
 
 ///|
-fn drawer_rubber_pull(over : Double) -> Double {
-  if over <= 0.0 {
-    0.0
-  } else {
-    drawer_rubber_max * (1.0 - 1.0 / (1.0 + over / (drawer_rubber_max * 2.0)))
-  }
-}
-
-///|
 /// A universal floating liquid-glass side drawer in `parent`, open while `open()` holds.
 ///
-/// Built once as nodes with `@headless.dialog` (focus management, Escape, `takes_back`, outside-press close),
-/// single-layer `glass_sheet()` with `.shadow_outside(Is(true))` (degrading cleanly to `panel_ground()` + 1pt
-/// `panel_edge()` under `MBUI_GLASS=solid`), continuous scrim fading, and 1:1 horizontal drag with velocity-continuous
-/// `@motion.move_damped` spring settle.
+/// Built once as nodes with `@headless.drawer` (focus management, Escape, `takes_back`, outside-press close,
+/// 1:1 horizontal drag-to-dismiss, rubber-band over-pull, and reverse-fling guard), single-layer `glass_sheet()`
+/// with `.shadow_outside(Is(true))` (degrading cleanly to `panel_ground()` + 1pt `panel_edge()` under
+/// `MBUI_GLASS=solid`), continuous scrim fading, and velocity-continuous `@motion.move_damped` spring settle.
 #callsite(autofill(loc))
 pub fn drawer_node(
   parent : @view.View,
@@ -77,14 +68,15 @@ pub fn drawer_node(
       Trailing => 1.0
     }
     let slide = @motion.NodeWay::new(1.0)
-    let held_dx : @signals.Signal[Double?] = @signals.signal(None)
     let leave_speed : Ref[Double] = Ref(0.0)
+    let drawer_ref : Ref[@headless.Drawer?] = Ref(None)
+    let card_ref : Ref[@view.View?] = Ref(None)
     let eff_w = fn() { dmin(spec.width, dmax(0.0, layer.window_w() - 2.0 * spec.inset)) }
     let travel = fn() { dmax(1.0, eff_w() + spec.inset) }
     let progress = fn(n : @view.View) {
-      match held_dx.get() {
-        Some(dx) => dclamp(dx / travel(), -1.0, 1.0)
-        None => slide.shown(n)
+      match drawer_ref.val {
+        Some(dr) if dr.dragging() => dclamp(dmin(dr.drag_offset(), travel()) / travel(), -1.0, 1.0)
+        _ => slide.shown(n)
       }
     }
     let dismiss = fn() {
@@ -116,15 +108,34 @@ pub fn drawer_node(
     if spec.side == Trailing {
       layer.box(fn(sp) { sp.grow(Is(1.0)) |> ignore }) |> ignore
     }
-    let from_x = Ref(-1.0)
-    let start_dx = Ref(0.0)
-    @headless.dialog(
+    @headless.drawer(
       made_for=loc,
       layer,
       label,
-      fn() { true },
+      fn() { !layer.leaving() && open() },
       dismiss,
-      fn(card, _) {
+      edge=if spec.side == Leading { Left } else { Right },
+      modal=true,
+      dismiss_threshold=drawer_close_share,
+      velocity_threshold=drawer_close_speed * 1000.0,
+      overpull_max=drawer_rubber_max,
+      on_release=fn(off, vel_ps, will_close) {
+        let tr = @signals.untracked(travel)
+        let dx = dmin(off, tr)
+        let vel_ratio = vel_ps / tr
+        if will_close {
+          slide.put(dclamp(dx / tr, 0.0, 1.0))
+          leave_speed.val = dmax(0.0, vel_ratio)
+        } else {
+          slide.put(dx / tr)
+          if card_ref.val is Some(card) {
+            slide.go(card, 0.0, @motion.move_damped, velocity=vel_ratio)
+          }
+        }
+      },
+      fn(card, dr) {
+        drawer_ref.val = Some(dr)
+        card_ref.val = Some(card)
         corner_card_node(card, fn() { spec.radius }, inset=fn() { spec.inset })
         card
         .width(By(fn() { Some(eff_w()) }))
@@ -140,61 +151,17 @@ pub fn drawer_node(
           clips=true,
         )
         .offset(By(fn() {
-          let dx = match held_dx.get() {
-            Some(d) => d
-            None => slide.shown(card) * travel()
+          let dx = if dr.dragging() {
+            dmin(dr.drag_offset(), travel())
+          } else {
+            slide.shown(card) * travel()
           }
           (dir * dx, 0.0)
         }))
         |> ignore
         card.box(fn(content) {
-          content
-          .grow(Is(1.0))
-          .cursor(Is(Some(Arrow)))
-          .as_ground()
-          .on_drag(fn(d) {
-            guard !layer.leaving() && @signals.untracked(open) else { return }
-            match d.kind {
-              Down => {
-                from_x.val = d.wx
-                start_dx.val = slide.value_at(layer.cause_at()) * @signals.untracked(travel)
-              }
-              Moved => {
-                guard from_x.val >= 0.0 else { return }
-                let raw = start_dx.val + dir * (d.wx - from_x.val)
-                let dx = if raw < 0.0 {
-                  -drawer_rubber_pull(-raw)
-                } else {
-                  dmin(raw, @signals.untracked(travel))
-                }
-                held_dx.set(Some(dx))
-              }
-              Up | Off => {
-                guard from_x.val >= 0.0 else { return }
-                let raw = start_dx.val + dir * (d.wx - from_x.val)
-                let tr = @signals.untracked(travel)
-                let w = @signals.untracked(eff_w)
-                let dx = if raw < 0.0 {
-                  -drawer_rubber_pull(-raw)
-                } else {
-                  dmin(raw, tr)
-                }
-                let v_close = if d.kind == Up { dir * d.vx() } else { 0.0 }
-                from_x.val = -1.0
-                if dx > w * drawer_close_share || v_close > drawer_close_speed {
-                  slide.put(dclamp(dx / tr, 0.0, 1.0))
-                  leave_speed.val = dmax(0.0, v_close * 1000.0 / tr)
-                  held_dx.set(None)
-                  dismiss()
-                } else {
-                  slide.put(dx / tr)
-                  held_dx.set(None)
-                  slide.go(card, 0.0, @motion.move_damped, velocity=v_close * 1000.0 / tr)
-                }
-              }
-            }
-          })
-          |> ignore
+          content.grow(Is(1.0)).cursor(Is(Some(Arrow))).as_ground() |> ignore
+          dr.handle(content, extent_by=eff_w)
           body(content)
         })
         |> ignore

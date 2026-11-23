@@ -657,31 +657,7 @@ fn sheet_node(
       // the sheet)
       .scrim_under()
       .margin(By(fn() { (0.0, 0.0, 0.0, -ime_under()) }))
-      // (modal while open: closing, what is under it its own again as it begins to go;
-      // leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
-      .modal(By(live))
-      .held_back_goes_on()
       .ground(By(fn() { @ui.alpha(sheet_scrim, if vanished() || !dims() { 0.0 } else { live_dim() }) }))
-      // (a press on what is above it its own, nothing under it pressed: closing it as it goes down)
-      .presses(Is(true))
-      .on_drag(fn(d) {
-        if d.kind == Down && @signals.untracked(live) {
-          cancel()
-        }
-      })
-      .on_key(fn(k) {
-        if k.code == @ui.key_escape && @signals.untracked(live) {
-          go_back()
-          true
-        } else {
-          false
-        }
-      })
-      .takes_back(fn() {
-        if @signals.untracked(live) {
-          go_back()
-        }
-      })
       |> ignore
       // (the room over it: what a press closes it on)
       layer.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
@@ -1368,10 +1344,46 @@ fn sheet_node(
       gate.seal(layer)
       // (the keys on the field it opens to be typed in, where it says one, given back as it goes; else, a search at
       // hand or none, the focus left where it is: Enter its foot's action)
-      match field.val {
-        Some(f) if f.keyed(true) => layer.focus_opens(f.field) |> ignore
-        _ => layer.focus_returns() |> ignore
+      let init_focus : @view.View? = match field.val {
+        Some(f) if f.keyed(true) => Some(f.field)
+        _ => None
       }
+      let ov_ref : Ref[@headless.Overlay?] = Ref(None)
+      @headless.overlay(
+        layer,
+        fn(how) {
+          match how {
+            Escape | Back =>
+              match step_back {
+                Some(f) => f()
+                None => cancel()
+              }
+            Outside => cancel()
+          }
+        },
+        modal=true,
+        held_back_goes_on=true,
+        dismiss_on_escape=true,
+        dismiss_on_outside=false,
+        inert=fn() { layer.leaving() },
+        auto_focus=init_focus is Some(_),
+        initial_focus?=init_focus,
+        before_dismiss=fn(how) {
+          match how {
+            Escape | Back => page_back()
+            Outside => false
+          }
+        },
+        in_node=true,
+        fn(_, ov) { ov_ref.val = Some(ov) },
+      )
+      |> ignore
+      layer.on_drag(fn(d) {
+        if d.kind == Down && ov_ref.val is Some(ov) && @signals.untracked(fn() { ov.is_top() }) {
+          ov.dismiss(Outside)
+        }
+      })
+      |> ignore
     },
     // (its scrim's fade; and its sinking away, which holds it: View::moved_by)
     leave=@motion.sheet_scrim_ms,

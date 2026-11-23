@@ -84,51 +84,13 @@ fn panel_node(
           pop_in_for(layer).at(p, p)
         }
       }
-      let live = fn() { !layer.leaving() }
       // (a submenu row's menu in what it holds made in it: submenu_layer_lent)
       submenu_layer_lend(layer)
       // (hover cards opened inside this panel live in its modal layer, above its body and below higher serials/tips)
       panel_hover_lend(layer)
       // (what its fields offer made in it: offers_layer_lent)
       offers_layer_lend(layer)
-      // (the focus left where it is as it opens (not `focus`): what is typed still that field's, its keys the layer's
-      // (kit's popover with its initial focus prevented, as menu_node's keep_field); said before it is modal, the
-      // field's focus kept as the layer takes what is under it)
-      if !x.focus && !(layout(layer.window_w()) is Small) {
-        layer.leaves_typing() |> ignore
-      }
-      layer
-      .over(Is(true))
-      // (modal while open: closing, what is under it its own again as it begins to go;
-      // leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
-      .modal(By(live))
-      .held_back_goes_on()
-      |> ignore
-      layer
-      // (a press outside its panel its own, nothing under it pressed: closing it as it goes down)
-      .presses(Is(true))
-      .on_drag(fn(d) {
-        if d.kind == Down && @signals.untracked(live) {
-          cancel()
-        }
-      })
-      // (Escape and back, a step further in from a panel: back to that one, back_under; else it closes)
-      .on_key(fn(k) {
-        if k.code == @ui.key_escape && @signals.untracked(live) {
-          if !back_under(keyed) {
-            cancel()
-          }
-          true
-        } else {
-          false
-        }
-      })
-      .takes_back(fn() {
-        if @signals.untracked(live) && !back_under(keyed) {
-          cancel()
-        }
-      })
-      |> ignore
+      layer.over(Is(true)) |> ignore
       // (what opened it, where it is drawn, or the small panel it stands flush with (`match_panel`): what its panel
       // goes beside)
       let matched = if x.match_panel > 0 { presented_popovers.get(x.match_panel) } else { None }
@@ -392,19 +354,47 @@ fn panel_node(
         } else {
           fill(p, true)
         }
-        // (the focus on the field it opens to be typed in, where it says one; else what holds its body's as it opens
-        // where it takes it, else where it was; back to what had it as it goes)
-        match (field.val, body_box.val) {
-          (Some(f), _) if f.keyed(false) => layer.focus_opens(f.field) |> ignore
-          // (a search at hand by touch: the focus left where it is, as on a sheet)
-          (Some(_), _) => layer.focus_returns() |> ignore
-          (None, Some(b)) if x.focus || layout(layer.window_w()) is Small => layer.focus_opens(b) |> ignore
-          _ => layer.focus_returns() |> ignore
-        }
       })
       |> ignore
       })
       gate.seal(layer)
+      // (the focus on the field it opens to be typed in, where it says one; else what holds its body's as it opens
+      // where it takes it, else where it was; back to what had it as it goes)
+      let init_focus : @view.View? = match (field.val, body_box.val) {
+        (Some(f), _) if f.keyed(false) => Some(f.field)
+        // (a search at hand by touch: the focus left where it is, as on a sheet)
+        (Some(_), _) => None
+        (None, Some(b)) if x.focus || layout(layer.window_w()) is Small => Some(b)
+        _ => None
+      }
+      let ov_ref : Ref[@headless.Overlay?] = Ref(None)
+      @headless.overlay(
+        layer,
+        fn(_) { cancel() },
+        modal=true,
+        held_back_goes_on=true,
+        dismiss_on_escape=true,
+        dismiss_on_outside=false,
+        inert=fn() { layer.leaving() },
+        leaves_typing=!x.focus && !(layout(layer.window_w()) is Small),
+        auto_focus=init_focus is Some(_),
+        initial_focus?=init_focus,
+        before_dismiss=fn(how) {
+          match how {
+            Escape | Back => back_under(keyed)
+            Outside => false
+          }
+        },
+        in_node=true,
+        fn(_, ov) { ov_ref.val = Some(ov) },
+      )
+      |> ignore
+      layer.on_drag(fn(d) {
+        if d.kind == Down && ov_ref.val is Some(ov) && @signals.untracked(fn() { ov.is_top() }) {
+          ov.dismiss(Outside)
+        }
+      })
+      |> ignore
     },
     leave=@motion.pop_out_ms,
   )

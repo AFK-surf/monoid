@@ -113,18 +113,11 @@ fn dialog_layer_node(
           come.at(p, p)
         }
       }
-      let live = fn() { !layer.leaving() }
       // (a submenu row's menu in what it holds made in it: submenu_layer_lent)
       submenu_layer_lend(layer)
       panel_hover_lend(layer)
       layer
       .over(Is(true))
-      // (modal while open: closing, what is under it its own again as it begins to go;
-      // leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
-      .modal(By(live))
-      // (a back gesture under way as it opens goes on to what it began on, as the old frame's layers let it: chosen as
-      // it began; the next its)
-      .held_back_goes_on()
       // (`night_with_ground`: as far in as what it shows' ground (its look's, ground first): the night whole as its words
       // begin, gone only after they have, never words over the page's seen through a night not yet in)
       .ground(By(fn() {
@@ -136,36 +129,8 @@ fn dialog_layer_node(
           confirm_faded(scrim(), dim.shown(layer))
         }
       }))
-      // (a press outside its panel its own, nothing under it pressed: closing it as it goes down where it is a dialog's,
-      // as the old frame's layer is dismissed then (Ctx::overlay's outside), whatever the finger does after; nothing
-      // where an alert's)
-      .presses(Is(true))
-      // (the focus its own as it opens: no key presses it)
-      .focusable(Is(true), keys=0, tab=false)
-      .on_drag(fn(d) {
-        if d.kind == Down && outside && @signals.untracked(live) {
-          cancel()
-        }
-      })
-      // (Escape and back a step back within it first, where it says it took them so: one that goes in steps)
-      .on_key(fn(k) {
-        if k.code == @ui.key_escape && @signals.untracked(live) {
-          if !within() {
-            cancel()
-          }
-          true
-        } else {
-          false
-        }
-      })
-      .takes_back(fn() {
-        if @signals.untracked(live) && !back_within.unwrap_or(within)() {
-          cancel()
-        }
-      })
-      |> ignore
       // (in its middle by its size as laid out: centered's; the middle of the room the system's bars leave, over_room's)
-      layer.padding(By(fn() {
+      .padding(By(fn() {
         let (top, right, foot, left) = layer.clear()
         (left, top, right, foot)
       }))
@@ -179,24 +144,51 @@ fn dialog_layer_node(
         }
       })
       |> ignore
+      let first_ref : Ref[@view.View?] = Ref(None)
       gate.collect(fn() {
       layer.box(fn(across) {
         across.row(Is(true)) |> ignore
         across.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
-        let first = panel(across, layer, look, veil)
-        // (the focus given as it opens; back to what had it as it goes: where `first_stop` and the panel gives it to the
-        // layer's own ground, to the first of what it holds that takes it instead, as an old trapping overlay's does)
-        if first_stop() && physical_equal(first, layer) {
-          layer.focus_opens_first(takes?=first_takes) |> ignore
-        } else {
-          layer.focus_opens(first) |> ignore
-        }
+        first_ref.val = Some(panel(across, layer, look, veil))
         across.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
       })
       |> ignore
       })
       gate.seal(layer)
       layer.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
+      let first = first_ref.val.unwrap()
+      let use_first_stop = first_stop() && physical_equal(first, layer)
+      let ov_ref : Ref[@headless.Overlay?] = Ref(None)
+      @headless.overlay(
+        layer,
+        fn(_) { cancel() },
+        modal=true,
+        held_back_goes_on=true,
+        dismiss_on_escape=true,
+        dismiss_on_outside=false,
+        inert=fn() { layer.leaving() },
+        auto_focus=true,
+        first_takes?=if use_first_stop { first_takes } else { None },
+        initial_focus?=if use_first_stop { None } else { Some(first) },
+        before_dismiss=fn(how) {
+          match how {
+            Escape => within()
+            Back => back_within.unwrap_or(within)()
+            Outside => false
+          }
+        },
+        in_node=true,
+        fn(_, ov) { ov_ref.val = Some(ov) },
+      )
+      |> ignore
+      if outside {
+        layer.on_drag(fn(d) {
+          if d.kind == Down && ov_ref.val is Some(ov) && @signals.untracked(fn() { ov.is_top() }) {
+            ov.dismiss(Outside)
+          }
+        })
+        |> ignore
+      }
     },
     leave=go_ms,
   )
