@@ -1720,7 +1720,6 @@ fn slack_name_node(
       p,
       fn() {
         let words = if bound { @sf.t("web-main.history.notMe") } else { @sf.t("web-main.history.isMe") }
-        let (x, y, w, h) = p.placed_window_now()
         @sf.menu(
           [
             Some(
@@ -1734,7 +1733,7 @@ fn slack_name_node(
               }),
             ),
           ],
-          from=At(x, y, w, h),
+          from=Node(p),
         )
       },
       on=fn() { !saying() },

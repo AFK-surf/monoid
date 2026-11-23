@@ -330,12 +330,11 @@ fn form_rows_node(
             let choices = @signals.untracked(fn() { items(field(d(), "pick"), "options") }).map(fn(o) {
               @sf.choice(text(Some(o), "model"), text(Some(o), "name"))
             })
-            let (x, y, w, h) = at.rect()
             @sf.pick(@sf.t("web-pages.automaticDecisions.model"), choices, now, fn(picked) {
               if picked != now {
                 call("edit", [("model", str(picked))])
               }
-            }, from=At(x, y, w, h))
+            }, from=Node(at))
           }
         },
         value=chosen,

@@ -3839,6 +3839,12 @@ fn View::scrolls_window_ids(
           let first = heights.get(k) is None
           heights[k] = bh
           heights_changed.push(k)
+          if first {
+            match s.host {
+              Some(hv) if hv.alive() => s.put_at = hv.tree.logic_said()
+              _ => ()
+            }
+          }
           if tall.get(k) is Some(c) {
             c.set(Some(bh))
           }

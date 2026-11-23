@@ -17,6 +17,7 @@ pub fn glass_capsule_node(
   solid? : () -> Int64,
   tint? : () -> Int64,
   active? : () -> Bool,
+  trigger? : Bool = false,
 ) -> @view.View {
   @glass.liquid_capsule_decorate(
     b,
@@ -36,5 +37,6 @@ pub fn glass_capsule_node(
     },
     shadow=glass_control_shadow,
     solid_edge=fn() { (control_edge_w, if dark { 0xFFFFFF26L } else { theme().p.line }) },
+    trigger~,
   )
 }

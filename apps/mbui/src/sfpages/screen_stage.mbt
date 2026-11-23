@@ -30,8 +30,8 @@ let screen_keep_margin : Double = 40.0
 
 ///|
 /// A floating capsule over the remote screen/terminal stage: single-layer 75% liquid glass via `@sf.glass_capsule_node(panel=true)`.
-fn floats_capsule_node(v : @view.View, active? : () -> Bool) -> Unit {
-  @sf.glass_capsule_node(v, sharing=false, panel=true, active?) |> ignore
+fn floats_capsule_node(v : @view.View, active? : () -> Bool, trigger? : Bool = false) -> Unit {
+  @sf.glass_capsule_node(v, sharing=false, panel=true, active?, trigger~) |> ignore
 }
 
 ///|

@@ -478,11 +478,12 @@ test "大屏, 中屏: the bar's 对话信息 opens the chat's info under it and 
     // (under its button, its right edge by the button's: bar_popovers' Bottom, End)
     let dialogs = t.all(Dialog)
     assert_true(dialogs.length() > 0, msg="\{win.0}: the info's popover")
-    let (dx, dy, dw, _) = dialogs[dialogs.length() - 1].rect
-    assert_true(dy >= b.1 + b.3, msg="\{win.0}: under its button: \{Repr((dx, dy, dw))} \{Repr(b)}")
-    assert_true((dx + dw - (b.0 + b.2)).abs() < 1.0, msg="\{win.0}: its end at its button's: \{Repr((dx, dy, dw))} \{Repr(b)}")
-    wide_bar_tap(t, b)
-    assert_eq(@sfdesk.chat_pops_open(), (false, false), msg="\{win.0}: pressed again, closed")
+    let (dx, dy, dw, dh) = dialogs[dialogs.length() - 1].rect
+    assert_true(wide_bar_under((dx, dy, dw, dh), b), msg="\{win.0}: under its button: \{Repr((dx, dy, dw, dh))} \{Repr(b)}")
+    // In-place liquid morph replaces the trigger capsule while open, so dismiss via outside press.
+    t.tap(win.1 / 2.0, 500.0)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(@sfdesk.chat_pops_open(), (false, false), msg="\{win.0}: closed by outside press")
     let jobs = @sf.t("web-main.jobs.services")
     guard wide_bar_button(t, jobs) is Some(j) else { fail("\{win.0}: no \{jobs}") }
     wide_bar_tap(t, j)
@@ -593,8 +594,15 @@ fn wide_bar_dialog(t : @ui.Tester) -> (Double, Double, Double, Double)? {
 /// Whether popover `d` stands beside button `b` (under for top-bar buttons, above for composer-bar buttons),
 /// its end at the button's.
 fn wide_bar_under(d : (Double, Double, Double, Double), b : (Double, Double, Double, Double)) -> Bool {
-  let vertical_ok = if b.1 < 90.0 { d.1 >= b.1 + b.3 } else { d.1 + d.3 <= b.1 + 1.0 }
-  vertical_ok && (d.0 + d.2 - (b.0 + b.2)).abs() < 1.0
+  // In-place liquid morph aligns top-bar popovers with the pill top (with pill_pad=2pt / viewport_pad=8pt)
+  // and composer-top popovers with the capsule bottom (strictly above the composer).
+  let vertical_ok = if b.1 < 90.0 {
+    d.1 >= b.1 - 4.0 && d.1 <= b.1 + b.3 + 12.0
+  } else {
+    d.1 < b.1 && d.1 + d.3 <= b.1 + b.3 + 1.0
+  }
+  let end_ok = d.0 + d.2 >= b.0 + b.2 - 1.0 && d.0 + d.2 <= b.0 + b.2 + 3.0
+  vertical_ok && end_ok
 }
 
 ///|

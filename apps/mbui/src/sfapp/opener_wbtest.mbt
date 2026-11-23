@@ -197,7 +197,11 @@ test "wide: sub-chats bar entry excludes non-led chats, opens popover, navigates
   let dialogs = t2.all(Dialog)
   assert_true(dialogs.length() > 0, msg="expected subchats popover dialog")
   let d = dialogs[dialogs.length() - 1].rect
-  assert_true(d.1 + d.3 <= sub_btn.rect.1 + 1.0, msg="wide subchats popover must open above composer pill: \{Repr(d)} vs \{Repr(sub_btn.rect)}")
+  // In-place liquid morph aligns the popover's bottom with the trigger capsule's bottom (still strictly above composer).
+  assert_true(
+    d.1 < sub_btn.rect.1 && d.1 + d.3 <= sub_btn.rect.1 + sub_btn.rect.3 + 1.0,
+    msg="wide subchats popover must open upward in-place from composer pill: \{Repr(d)} vs \{Repr(sub_btn.rect)}",
+  )
   assert_eq(t2.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [])
   // 2 active led sub-chats shown, done and archived collapsed by default, non-led chat excluded!
   assert_true(t2.query(Button, label="安卓构建与冒烟测试") is Some(_))
@@ -555,7 +559,10 @@ test "wide: tall subchats popover stands in the room above its pill, collapses d
   let dialogs = t.all(Dialog)
   assert_true(dialogs.length() > 0, msg="expected subchats popover dialog")
   let d = dialogs[dialogs.length() - 1].rect
-  assert_true(d.1 >= 0.0 && d.1 + d.3 <= pill.rect.1, msg="tall subchats popover must stand above its pill: \{Repr(d)}")
+  assert_true(
+    d.1 >= 0.0 && d.1 < pill.rect.1 && d.1 + d.3 <= pill.rect.1 + pill.rect.3 + 1.0,
+    msg="tall subchats popover must stand upward in-place from its pill: \{Repr(d)} vs \{Repr(pill.rect)}",
+  )
   // Folded, what it holds fits the room above the pill: nothing scrolls (the pinned head's line only shows scrolling).
   guard t.query(Button, label="已归档") is Some(arch_seen) else { fail("expected 已归档") }
   assert_true(arch_seen.rect.1 + arch_seen.rect.3 <= d.1 + d.3, msg="folded list must show whole: \{Repr(arch_seen.rect)} vs \{Repr(d)}")
@@ -580,7 +587,10 @@ test "wide: tall subchats popover stands in the room above its pill, collapses d
   t.run_for(@ui.move_most_ms)
   let dialogs2 = t.all(Dialog)
   let d2 = dialogs2[dialogs2.length() - 1].rect
-  assert_true(d2.1 >= 0.0 && d2.1 + d2.3 <= pill.rect.1, msg="expanded tall subchats popover must stay above its pill: \{Repr(d2)}")
+  assert_true(
+    d2.1 >= 0.0 && d2.1 < pill.rect.1 && d2.1 + d2.3 <= pill.rect.1 + pill.rect.3 + 1.0,
+    msg="expanded tall subchats popover must stay upward in-place from its pill: \{Repr(d2)} vs \{Repr(pill.rect)}",
+  )
   assert_eq(t.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [])
   assert_eq(t.query(Button, label="已完成").unwrap().expanded, Some(true))
   assert_true(t.query(Button, label="给设置页加一个深色模式开关") is Some(_))

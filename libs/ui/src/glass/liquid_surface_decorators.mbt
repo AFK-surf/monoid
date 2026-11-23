@@ -141,13 +141,18 @@ pub fn liquid_popover_surface_decorate(
   .shadow_outside(Is(true))
   |> ignore
   match morph {
-    Some(eval_morph) if !p.glass_solid() =>
+    Some(eval_morph) if !p.glass_solid() => {
+      let unlaid_opening = fn(t : Double, closing : Bool, w : Double, h : Double) {
+        !closing && t < lm_open_duration_ms / 1000.0 - 0.001 && (w <= 0.0 || h <= 0.0)
+      }
       p
       .alpha(
         By(fn() {
           match eval_morph() {
-            Some((_, closing, _, _, f)) =>
-              if !closing {
+            Some((t, closing, w, h, f)) =>
+              if unlaid_opening(t, closing, w, h) {
+                0.0
+              } else if !closing {
                 if f.raw_value <= 0.001 { 0.0 } else { 1.0 }
               } else if !f.platter_active {
                 0.0
@@ -166,8 +171,10 @@ pub fn liquid_popover_surface_decorate(
         By(fn() {
           let s = resolve_solid()
           match eval_morph() {
-            Some((t, closing, _, _, f)) =>
-              if !closing {
+            Some((t, closing, w, h, f)) =>
+              if unlaid_opening(t, closing, w, h) {
+                None
+              } else if !closing {
                 if f.raw_value <= 0.001 {
                   None
                 } else {
@@ -212,8 +219,10 @@ pub fn liquid_popover_surface_decorate(
       .content_lens(
         By(fn() {
           match eval_morph() {
-            Some((_, _, _, _, f)) =>
-              if f.content_opacity > 0.01 && f.content_blur > 0.05 {
+            Some((t, closing, w, h, f)) =>
+              if unlaid_opening(t, closing, w, h) {
+                @paint.ContentLens::none()
+              } else if f.content_opacity > 0.01 && f.content_blur > 0.05 {
                 {
                   blur: f.content_blur,
                   refraction: 6.0 * clamp(f.content_blur / 8.0, 0.0, 1.0),
@@ -230,8 +239,10 @@ pub fn liquid_popover_surface_decorate(
       .shadow(
         By(fn() {
           match eval_morph() {
-            Some((_, closing, _, _, f)) =>
-              if closing && !f.platter_active {
+            Some((t, closing, w, h, f)) =>
+              if unlaid_opening(t, closing, w, h) {
+                shadow_none
+              } else if closing && !f.platter_active {
                 shadow_none
               } else {
                 let ga = lm_smoothstep(0.25, 0.78, clamp(f.raw_value, 0.0, 1.0))
@@ -260,6 +271,7 @@ pub fn liquid_popover_surface_decorate(
           }
         }),
       )
+    }
     _ => {
       p.glass(By(fn() { Some(liquid_panel_glass(solid=resolve_solid())) })).shadow(By(shadow)) |> ignore
       match alpha {

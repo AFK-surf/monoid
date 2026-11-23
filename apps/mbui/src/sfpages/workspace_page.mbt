@@ -67,8 +67,7 @@ pub fn workspace_node(
     actions=fn(a) {
       a.show(manager, fn(s) {
         @sf.action_box_node(s, fn() { @sf.t("web-pages.settings.members.add") }, fn(k) {
-          let (x, y, w, h) = k.placed_window_now()
-          open_add_people(core, @signals.untracked(here), @signals.untracked(view), from=At(x, y, w, h))
+          open_add_people(core, @signals.untracked(here), @signals.untracked(view), from=Node(k))
         }, fn(k) {
           k
           .width(Is(Some(ws_add_side)))

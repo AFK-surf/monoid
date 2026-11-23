@@ -17,8 +17,11 @@
 ///|
 /// Shared pill-morph state lent from `anchored_popover_bridge` to `anchored_popover_shell` and `popover_content_motion`.
 priv struct PillMorphState {
+  side : @ui.Side
   along : @ui.Along
+  direction : @glass.PillDirection
   pill_layer : Int
+  aw : Double
   ah : Double
   pill_pad : Double
   pill_x : Double
@@ -26,10 +29,15 @@ priv struct PillMorphState {
   pill_w : Double
   pill_h : Double
   tx_win : Double
+  ty_win : Double
+  rest_glass : () -> @paint.Glass
+  has_press_scale : Bool
   is_closing : @signals.Signal[Bool]
   superseded : @signals.Signal[Bool]
   t_way : @motion.NodeWay
   shell_ref : Ref[@view.View?]
+  last_shell_bounds : Ref[(Double, Double, Double, Double)?]
+  close_start : Ref[Double]
 }
 
 ///|
@@ -45,11 +53,15 @@ fn pill_morph_eval(
   closing : Bool,
   t : Double,
 ) -> @glass.LiquidMorphFrame {
-  let align_x = match pm.along {
+  let horizontal_side = pm.side is (Left | Right)
+  let vertical = pm.direction == Vertical
+  let along_val = match pm.along {
     Start => -1.0
     End => 1.0
     Middle => 0.0
   }
+  let align_x = if horizontal_side { 0.0 } else { along_val }
+  let align_y = if horizontal_side { along_val } else { 0.0 }
   @glass.lm_eval_pill_morph(
     pm.pill_x,
     pm.pill_y,
@@ -64,20 +76,28 @@ fn pill_morph_eval(
     align_x,
     closing,
     t,
+    vertical~,
+    ty_win=pm.ty_win,
+    align_y~,
+    horizontal_side~,
+    close_start=pm.close_start.val,
   )
 }
 
 ///|
 fn pill_morph_shell_bounds(pm : PillMorphState) -> (Double, Double, Double, Double) {
   match pm.shell_ref.val {
-    Some(shell) => {
+    Some(shell) if shell.alive() => {
       let (px, py, w, h) = shell.placed_window_now()
       if w > 0.0 && h > 0.0 {
-        (px, py, w, h)
-      } else {
-        (pm.pill_x, pm.pill_y, dmax(pm.pill_w, 180.0), 220.0)
+        pm.last_shell_bounds.val = Some((px, py, w, h))
+        return (px, py, w, h)
       }
     }
+    _ => ()
+  }
+  match pm.last_shell_bounds.val {
+    Some(b) => b
     None => (pm.pill_x, pm.pill_y, dmax(pm.pill_w, 180.0), 220.0)
   }
 }
@@ -217,13 +237,13 @@ pub fn anchored_popover_bridge(
   side? : @ui.Side = Bottom,
   along? : @ui.Along = Start,
   offset? : Double = panel_offset,
+  start_open? : (() -> Unit) -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
   ignore(look)
-  ignore(side)
   ignore(offset)
-  let (ax, _, aw, ah) = anchor.placed_window_now()
-  if aw < 16.0 || ah < 16.0 || layer.glass_solid() {
+  let (ax, ay, aw, ah) = anchor.placed_window_now()
+  if aw < 16.0 || ah < 16.0 || layer.glass_solid() || @ui.reduced_motion() {
     return
   }
   match anchor.lent(@glass.liquid_pill_trigger_lent) {
@@ -235,21 +255,48 @@ pub fn anchored_popover_bridge(
       trig.morph_owner += 1
       let my_owner = trig.morph_owner
       let superseded = @signals.signal(false)
-      trig.morph_cancel = Some(fn() { superseded.set(true) })
+      let layer_leave_end = Ref(0.0)
+      let cancel_restore : Ref[(() -> Unit)?] = Ref(None)
+      let cancel_close_delay : Ref[(() -> Unit)?] = Ref(None)
+      trig.morph_cancel = Some(fn() {
+        superseded.set(true)
+        match cancel_close_delay.val {
+          Some(c) => {
+            cancel_close_delay.val = None
+            c()
+          }
+          None => ()
+        }
+        match cancel_restore.val {
+          Some(c) => {
+            cancel_restore.val = None
+            c()
+          }
+          None => ()
+        }
+      })
       let pill_h = trig.height
       let pill_pad = trig.pad
       let pill_layer = trig.pill.id().at + 100
       let (pill_x, pill_y, pill_w_raw, pill_h_raw) = trig.pill.placed_window_now()
-      let pill_h_eff = if pill_h_raw > 0.0 { pill_h_raw } else { pill_h }
-      let pill_w = dmax(pill_w_raw, pill_h_eff)
+      let pill_h_eff = if pill_h_raw > 0.0 { pill_h_raw } else if pill_h > 0.0 { pill_h } else { ah }
+      let pill_w = if pill_w_raw > 0.0 { pill_w_raw } else if pill_h > 0.0 { pill_h } else { aw }
+      let core = dmin(pill_w, pill_h_eff)
       let tx_win = ax + aw * 0.5
-      let tx_mid = dclamp(tx_win - pill_x, pill_h_eff * 0.5, dmax(pill_h_eff * 0.5, pill_w - pill_h_eff * 0.5))
+      let ty_win = ay + ah * 0.5
+      let tx_mid = dclamp(tx_win - pill_x, core * 0.5, dmax(core * 0.5, pill_w - core * 0.5))
+      let ty_mid = dclamp(ty_win - pill_y, core * 0.5, dmax(core * 0.5, pill_h_eff - core * 0.5))
       let is_closing = @signals.signal(false)
       let t_way = @motion.NodeWay::new(0.0)
       let shell_ref : Ref[@view.View?] = Ref(None)
+      let last_shell_bounds : Ref[(Double, Double, Double, Double)?] = Ref(None)
+      let horizontal_side = side is (Left | Right)
       let pm : PillMorphState = {
+        side,
         along,
+        direction: trig.direction,
         pill_layer,
+        aw,
         ah,
         pill_pad,
         pill_x,
@@ -257,10 +304,15 @@ pub fn anchored_popover_bridge(
         pill_w,
         pill_h: pill_h_eff,
         tx_win,
+        ty_win,
+        rest_glass: trig.rest_glass,
+        has_press_scale: trig.has_press_scale,
         is_closing,
         superseded,
         t_way,
         shell_ref,
+        last_shell_bounds,
+        close_start: Ref(1.0),
       }
       let eval_trig = fn() -> (Double, Bool, @glass.LiquidMorphFrame) {
         let t = t_way.shown(trig.pill)
@@ -286,7 +338,7 @@ pub fn anchored_popover_bridge(
             Some(glass_menu_morph(stage, layer=pill_layer, break_gap=48.0))
           }
         } else {
-          Some(@glass.liquid_bar_pill_glass(solid=panel_ground()))
+          Some((pm.rest_glass)())
         }
       })
       trig.morph_shadow.val = Some(fn() {
@@ -299,11 +351,12 @@ pub fn anchored_popover_bridge(
       })
       let (sp0, _) = trig.fx.get()
       trig.fx.set((sp0, pill_layer))
+      let prev_owner = @signals.set_owner(None)
       trig.pill.offset(
         By(fn() {
           let (_, closing, f) = eval_trig()
           if closing {
-            (0.0, f.push_dy)
+            (f.push_dx, f.push_dy)
           } else {
             (0.0, 0.0)
           }
@@ -314,9 +367,12 @@ pub fn anchored_popover_bridge(
         By(fn() {
           let (t, closing, f) = eval_trig()
           if closing {
-            @glass.lm_impact_scale(t, f.final_dy.abs())
-          } else {
+            let travel = if horizontal_side { f.final_dx.abs() } else { f.final_dy.abs() }
+            @glass.lm_impact_scale(t, travel)
+          } else if pm.has_press_scale {
             1.0 + 0.05 * trig.press_way.shown(trig.pill)
+          } else {
+            1.0
           }
         }),
         about=At(0.5, 0.5),
@@ -325,29 +381,57 @@ pub fn anchored_popover_bridge(
       trig.pill.ground_drawn(
         By(fn() {
           let (t, closing, f) = eval_trig()
-          if !closing {
-            let wp = @glass.lm_open_trigger_width(t)
-            let cw = @glass.lm_lerp(pill_h_eff, pill_w, wp)
-            let cx = @glass.lm_lerp(tx_mid, pill_w * 0.5, wp)
-            let r = dmin(cw, pill_h_eff) * 0.5
-            { dx: cx - cw * 0.5, dy: 0.0, dw: cw - pill_w, dh: 0.0, corners: Some((r, r, r, r)) }
-          } else if f.platter_active {
-            let wp = @glass.lm_delayed_close_width(t)
-            let cw = @glass.lm_lerp(pill_h_eff, pill_w, wp)
-            let cx = @glass.lm_lerp(tx_mid, pill_w * 0.5, dclamp(wp, 0.0, 1.0))
-            let r = dmin(cw, pill_h_eff) * 0.5
-            {
-              dx: cx - cw * 0.5,
-              dy: 0.0,
-              dw: cw - pill_w,
-              dh: 0.0,
-              corners: Some((r, r, r, r)),
-            }
-          } else {
-            let raw_scale = @glass.lm_lerp(pill_h_eff, pill_w, @glass.lm_close_trigger_width(t)) / pill_w
-            let cw = pill_w * dclamp(raw_scale, 0.90, 1.04)
-            let r = pill_h_eff * 0.5
-            { dx: (pill_w - cw) * 0.5, dy: 0.0, dw: cw - pill_w, dh: 0.0, corners: Some((r, r, r, r)) }
+          match trig.direction {
+            Horizontal =>
+              if !closing {
+                let wp = @glass.lm_open_trigger_width(t)
+                let cw = @glass.lm_lerp(core, pill_w, wp)
+                let cx = @glass.lm_lerp(tx_mid, pill_w * 0.5, wp)
+                let r = dmin(cw, pill_h_eff) * 0.5
+                { dx: cx - cw * 0.5, dy: 0.0, dw: cw - pill_w, dh: 0.0, corners: Some((r, r, r, r)) }
+              } else if f.platter_active {
+                let wp = @glass.lm_delayed_close_width(t)
+                let cw = @glass.lm_lerp(core, pill_w, wp)
+                let cx = @glass.lm_lerp(tx_mid, pill_w * 0.5, dclamp(wp, 0.0, 1.0))
+                let r = dmin(cw, pill_h_eff) * 0.5
+                {
+                  dx: cx - cw * 0.5,
+                  dy: 0.0,
+                  dw: cw - pill_w,
+                  dh: 0.0,
+                  corners: Some((r, r, r, r)),
+                }
+              } else {
+                let raw_scale = @glass.lm_lerp(core, pill_w, @glass.lm_close_trigger_width(t)) / pill_w
+                let cw = pill_w * dclamp(raw_scale, 0.90, 1.04)
+                let r = pill_h_eff * 0.5
+                { dx: (pill_w - cw) * 0.5, dy: 0.0, dw: cw - pill_w, dh: 0.0, corners: Some((r, r, r, r)) }
+              }
+            Vertical =>
+              if !closing {
+                let wp = @glass.lm_open_trigger_width(t)
+                let ch = @glass.lm_lerp(core, pill_h_eff, wp)
+                let cy = @glass.lm_lerp(ty_mid, pill_h_eff * 0.5, wp)
+                let r = dmin(pill_w, ch) * 0.5
+                { dx: 0.0, dy: cy - ch * 0.5, dw: 0.0, dh: ch - pill_h_eff, corners: Some((r, r, r, r)) }
+              } else if f.platter_active {
+                let wp = @glass.lm_delayed_close_width(t)
+                let ch = @glass.lm_lerp(core, pill_h_eff, wp)
+                let cy = @glass.lm_lerp(ty_mid, pill_h_eff * 0.5, dclamp(wp, 0.0, 1.0))
+                let r = dmin(pill_w, ch) * 0.5
+                {
+                  dx: 0.0,
+                  dy: cy - ch * 0.5,
+                  dw: 0.0,
+                  dh: ch - pill_h_eff,
+                  corners: Some((r, r, r, r)),
+                }
+              } else {
+                let raw_scale = @glass.lm_lerp(core, pill_h_eff, @glass.lm_close_trigger_width(t)) / pill_h_eff
+                let ch = pill_h_eff * dclamp(raw_scale, 0.90, 1.04)
+                let r = pill_w * 0.5
+                { dx: 0.0, dy: (pill_h_eff - ch) * 0.5, dw: 0.0, dh: ch - pill_h_eff, corners: Some((r, r, r, r)) }
+              }
           }
         }),
       )
@@ -365,12 +449,21 @@ pub fn anchored_popover_bridge(
         }),
       )
       |> ignore
-      let bound_children = trig.children.copy()
+      let bound_children = if !trig.children.is_empty() {
+        trig.children.copy()
+      } else if anchor.id() != trig.pill.id() {
+        [anchor]
+      } else {
+        []
+      }
       for child in bound_children {
-        let (cx0, _, cw0, _) = child.placed_window_now()
+        let (cx0, cy0, cw0, ch0) = child.placed_window_now()
         let child_cx_local = cx0 + cw0 * 0.5 - pill_x
         let child_cx_off = child_cx_local - pill_w * 0.5
         let child_to_tx = tx_mid - child_cx_local
+        let child_cy_local = cy0 + ch0 * 0.5 - pill_y
+        let child_cy_off = child_cy_local - pill_h_eff * 0.5
+        let child_to_ty = ty_mid - child_cy_local
         child.alpha(
           By(fn() {
             let t = t_way.shown(child)
@@ -385,69 +478,168 @@ pub fn anchored_popover_bridge(
         child.offset(
           By(fn() {
             let t = t_way.shown(child)
-            if !is_closing.get() {
-              let wp = @glass.lm_open_trigger_width(t)
-              (child_to_tx * (1.0 - wp) * 0.45, 0.0)
-            } else {
-              let raw = @glass.lm_close_progress(t)
-              if @glass.lm_close_platter_active(raw) {
-                let blob_a_w = @glass.lm_lerp(pill_h_eff, pill_w, @glass.lm_delayed_close_width(t))
-                (-child_cx_off * (1.0 - dclamp(blob_a_w / pill_w, 0.5, 1.0)), 0.0)
-              } else {
-                (0.0, 0.0)
-              }
+            match trig.direction {
+              Horizontal =>
+                if !is_closing.get() {
+                  let wp = @glass.lm_open_trigger_width(t)
+                  (child_to_tx * (1.0 - wp) * 0.45, 0.0)
+                } else {
+                  let w_prog = dclamp(@glass.lm_delayed_close_width(t), 0.0, 1.0)
+                  let blob_a_w = @glass.lm_lerp(core, pill_w, w_prog)
+                  (-child_cx_off * (1.0 - dclamp(blob_a_w / pill_w, 0.5, 1.0)), 0.0)
+                }
+              Vertical =>
+                if !is_closing.get() {
+                  let wp = @glass.lm_open_trigger_width(t)
+                  (0.0, child_to_ty * (1.0 - wp) * 0.45)
+                } else {
+                  let h_prog = dclamp(@glass.lm_delayed_close_width(t), 0.0, 1.0)
+                  let blob_a_h = @glass.lm_lerp(core, pill_h_eff, h_prog)
+                  (0.0, -child_cy_off * (1.0 - dclamp(blob_a_h / pill_h_eff, 0.5, 1.0)))
+                }
             }
           }),
         )
         |> ignore
       }
-      layer.owns(fn() {
-        if trig.morph_owner != my_owner {
+      @signals.set_owner(prev_owner) |> ignore
+      let restored = Ref(false)
+      let restore_trig = fn() {
+        if restored.val || trig.morph_owner != my_owner {
           return
         }
+        restored.val = true
         trig.morph_cancel = None
+        match cancel_close_delay.val {
+          Some(c) => {
+            cancel_close_delay.val = None
+            c()
+          }
+          None => ()
+        }
+        match cancel_restore.val {
+          Some(c) => {
+            cancel_restore.val = None
+            c()
+          }
+          None => ()
+        }
         let (sp, ly) = trig.fx.get()
         if ly == pill_layer || ly < 0 {
           trig.morph_glass.val = None
           trig.morph_shadow.val = None
           trig.fx.set((sp, 0))
         }
-        trig.pill.scale(By(fn() { 1.0 + 0.05 * trig.press_way.shown(trig.pill) }), about=At(0.5, 0.5)) |> ignore
-        trig.pill.offset(Is((0.0, 0.0))) |> ignore
-        trig.pill.ground_drawn(Is(@view.ground_as_laid)) |> ignore
-        trig.pill.alpha(Is(1.0)) |> ignore
+        if trig.pill.alive() {
+          if pm.has_press_scale {
+            let prev = @signals.set_owner(None)
+            trig.pill.scale(By(fn() { 1.0 + 0.05 * trig.press_way.shown(trig.pill) }), about=At(0.5, 0.5)) |> ignore
+            @signals.set_owner(prev) |> ignore
+          } else {
+            trig.pill.scale(Is(1.0), about=At(0.5, 0.5)) |> ignore
+          }
+          trig.pill.offset(Is((0.0, 0.0))) |> ignore
+          trig.pill.ground_drawn(Is(@view.ground_as_laid)) |> ignore
+          trig.pill.alpha(Is(1.0)) |> ignore
+        }
         for child in bound_children {
-          child.alpha(Is(1.0)) |> ignore
-          child.offset(Is((0.0, 0.0))) |> ignore
+          if child.alive() {
+            child.alpha(Is(1.0)) |> ignore
+            child.offset(Is((0.0, 0.0))) |> ignore
+          }
+        }
+      }
+      layer.owns(fn() {
+        if !is_closing.untracked() || superseded.untracked() || !trig.pill.alive() {
+          restore_trig()
         }
       })
       |> ignore
-      layer.reacts(fn() { layer.leaving() }, fn(leaving) {
+      let open_go = fn() {
+        if trig.morph_owner != my_owner || superseded.untracked() || layer.leaving() {
+          return
+        }
+        t_way.go_from(
+          layer,
+          0.0,
+          @glass.lm_open_duration_ms / 1000.0,
+          @motion.tween(@glass.lm_open_duration_ms, ease=@ui.Ease::Linear),
+        )
+      }
+      let start_close = fn(at_ms : Double) {
         if trig.morph_owner != my_owner || superseded.untracked() {
           return
         }
-        if leaving {
-          is_closing.set(true)
+        let t_open_now = t_way.value_at(at_ms)
+        let (_, _, mw, _) = pill_morph_shell_bounds(pm)
+        pm.close_start.val = if t_open_now >= @glass.lm_open_duration_ms / 1000.0 - 0.001 {
+          1.0
+        } else {
+          let u_open = @glass.lm_open_progress(t_open_now)
+          let open_w = @glass.lm_lerp(core, mw, @dmath.pow(dclamp(u_open, 0.0, 1.0), 0.44))
+          let target_w_ratio = if mw > 0.0 { dclamp(open_w / mw, 0.20, 1.0) } else { u_open }
+          let target_s = @dmath.pow(target_w_ratio, 1.0 / 0.82)
+          dclamp((target_s - 0.20) / 0.80, 0.05, 1.0)
+        }
+        is_closing.set(true)
+        if trig.pill.alive() {
           let (sp, _) = trig.fx.get()
           trig.fx.set((sp, pill_layer))
           t_way.go_from(
-            layer,
+            trig.pill,
             0.0,
             @glass.lm_close_duration_ms / 1000.0,
             @motion.tween(@glass.lm_close_duration_ms, ease=@ui.Ease::Linear),
+            at=at_ms,
+          )
+          cancel_restore.val = Some(
+            trig.pill.at_moment(at_ms + @glass.lm_close_duration_ms + 1.0, fn() { restore_trig() }),
           )
         } else {
           t_way.go_from(
             layer,
             0.0,
-            @glass.lm_open_duration_ms / 1000.0,
-            @motion.tween(@glass.lm_open_duration_ms, ease=@ui.Ease::Linear),
+            @glass.lm_close_duration_ms / 1000.0,
+            @motion.tween(@glass.lm_close_duration_ms, ease=@ui.Ease::Linear),
+            at=at_ms,
           )
+        }
+      }
+      layer.reacts(fn() { layer.leaving() }, fn(leaving) {
+        if trig.morph_owner != my_owner || superseded.untracked() {
+          return
+        }
+        if leaving {
+          let cause = layer.cause_at()
+          let t_open = t_way.value_at(cause)
+          let settle_delay_ms = if t_open < 0.23 {
+            dmin(180.0, (0.23 - t_open) * 1000.0)
+          } else {
+            0.0
+          }
+          layer_leave_end.val = cause + settle_delay_ms + 300.0
+          if settle_delay_ms <= 0.0 {
+            start_close(cause)
+          } else {
+            let start_at = cause + settle_delay_ms
+            let timer_host = if trig.pill.alive() { trig.pill } else { layer }
+            cancel_close_delay.val = Some(
+              timer_host.at_moment(start_at, fn() {
+                cancel_close_delay.val = None
+                start_close(start_at)
+              }),
+            )
+          }
+        } else {
+          match start_open {
+            Some(f) => f(open_go)
+            None => open_go()
+          }
         }
       })
       layer.lends(pill_morph_lent, pm) |> ignore
-      // Dynamic leave-hold sentinel so the full 610ms close recoil + horizontal splash completes before unmount,
-      // or yields immediately (0.0) if superseded by a newer menu taking ownership of the same trigger pill.
+      // Dynamic leave-hold sentinel: holds layer only through settle_delay + 300ms (after platter_active ends at ~285ms),
+      // while trig.pill continues the 300..610ms recoil return and splash independently before restore_trig().
       layer.box(made_for=loc, fn(hold) {
         hold
         .over(Is(true))
@@ -456,7 +648,15 @@ pub fn anchored_popover_bridge(
         .height(Is(Some(0.0)))
         .moved_by(
           fn(_, _, _) { (0.0, 0.0) },
-          fn(_, _) { if superseded.get() { 0.0 } else { t_way.ends_at() } },
+          fn(_, _) {
+            if superseded.get() {
+              0.0
+            } else if layer_leave_end.val > 0.0 {
+              layer_leave_end.val
+            } else {
+              t_way.ends_at()
+            }
+          },
           holds_leaving=true,
         )
         |> ignore
@@ -506,7 +706,7 @@ fn anchored_popover_shell_by(
       pm.shell_ref.val = Some(p)
       let off = match side {
         Bottom | Top => -(pm.ah + pm.pill_pad)
-        Left | Right => offset
+        Left | Right => -(pm.aw + pm.pill_pad)
       }
       let aoff = match along {
         End => pm.pill_pad
@@ -517,6 +717,7 @@ fn anchored_popover_shell_by(
     }
     _ => (offset, 0.0)
   }
+  let eff_host = if p.lent(pill_morph_lent) is Some(_) && !p.glass_solid() { None } else { host }
   p
   .beside(
     anchor_id,
@@ -526,7 +727,7 @@ fn anchored_popover_shell_by(
     along_offset=eff_along_offset,
     padding=floating_viewport_pad,
     holds_side~,
-    host?,
+    host?=eff_host,
   )
   |> ignore
   match p.lent(pill_morph_lent) {
@@ -556,10 +757,12 @@ fn anchored_popover_shell_by(
                   cur_h: 1.0,
                   radius: 0.0,
                   raw_value: 0.0,
+                  push_dx: 0.0,
                   push_dy: 0.0,
                   platter_active: false,
                   content_opacity: 0.0,
                   content_blur: 0.0,
+                  final_dx: 0.0,
                   final_dy: 0.0,
                   open_anchor_scale: 0.0,
                   blob_a_emerge: 0.0,

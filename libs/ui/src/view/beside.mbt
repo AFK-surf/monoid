@@ -167,6 +167,8 @@ pub(all) struct Beside {
   holds_side : Bool
   /// optional outer host container whose left/right edges are cleared when `side` is `Left` or `Right`
   host : NodeId?
+  /// whether to flip to the opposite side when `side` does not have room (default true)
+  flip : Bool
 }
 
 ///|
@@ -219,6 +221,7 @@ pub fn View::beside(
   along_offset? : Double = 0.0,
   holds_side? : Bool = false,
   host? : NodeId,
+  flip? : Bool = true,
 ) -> View {
   guard self.live() is Some(n) else { return self }
   n.beside_piece = piece
@@ -236,7 +239,7 @@ pub fn View::beside(
     }
     None => self.tree.beside_widths.remove(self.at)
   }
-  n.beside = Some({ anchor, side, along, offset, padding, at_pointer, width, along_offset, holds_side, host })
+  n.beside = Some({ anchor, side, along, offset, padding, at_pointer, width, along_offset, holds_side, host, flip })
   if !self.tree.besides_at.contains(self.at) {
     self.tree.besides_at.push(self.at)
   }
@@ -470,6 +473,7 @@ fn Tree::beside_laid(self : Tree, at : Int, seen : Array[Int]) -> (Double, Doubl
     offset=b.offset,
     along_offset=b.along_offset,
     padding=b.padding,
+    flip=b.flip,
     clear=self.clear.untracked(),
     away?=self.away,
   )
@@ -670,6 +674,7 @@ fn Tree::besides_placed(self : Tree) -> Unit {
       offset=b.offset,
       along_offset=b.along_offset * hs,
       padding=b.padding,
+      flip=b.flip,
       clear=self.clear.untracked(),
       away?=self.away,
     )

@@ -845,8 +845,7 @@ fn board_filter_key(bar : @view.View, own : BoardOwn) -> Unit {
   let src = own.src
   let open = fn(k : @view.View) {
     guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
-    let (x, y, wd, h) = k.placed_window_now()
-    filter_menu(At(x, y, wd, h), @sfbase.board_filter_of(src, w.id), fn(f) { board_filter_go(src, w, f, own.archived) }, in_board=true)
+    filter_menu(Node(k), @sfbase.board_filter_of(src, w.id), fn(f) { board_filter_go(src, w, f, own.archived) }, in_board=true)
   }
   bar.pick(fn() { @sfbase.board_filter_of(src, (own.ws)()) == "mine" }, at_once=true, fn(p, mine) {
     if mine {

@@ -505,7 +505,7 @@ fn new_capsule_node(
     made.val = Some(b)
     if floating {
       @sf.style_node(b, fn() { if marked() { glass_chooser_marked_box } else { glass_chooser_box } }, in_row=true)
-      @sf.glass_capsule_node(b, interactive=true) |> ignore
+      @sf.glass_capsule_node(b, interactive=true, trigger=true) |> ignore
     } else {
       @sf.style_node(b, fn() { new_capsule_in_row }, in_row=true)
       @sf.hover_ground_node(b, lit=Some(fn() { state.hovered() || state.pressed() || state.focus_shown() }))

@@ -155,6 +155,7 @@ test "大屏: a chat's 服务 pressed again with its popover open, then Escape a
   let open = fn() { @sfdesk.chat_pops_open().1 }
   let none = button_then_escape(wide_tester([], mode="chat-jobs"), "服务", open, false)
   let framed = button_then_escape(wide_tester([], mode="chat-jobs"), "服务", open, true)
+  // (in-place liquid morph covers the 服务 capsule, so pressing its rest coordinates hits the bottom service row to open the jobs side tab; Escape then clears it)
   assert_eq((none, framed), ([false, false, false], [false, false, false]))
 }
 
@@ -163,5 +164,6 @@ test "大屏: a chat's 对话信息 pressed again with its popover open, then Es
   let open = fn() { @sfdesk.chat_pops_open().0 }
   let none = button_then_escape(wide_tester([], mode="chat-jobs"), "对话信息", open, false)
   let framed = button_then_escape(wide_tester([], mode="chat-jobs"), "对话信息", open, true)
-  assert_eq((none, framed), ([false, false, false], [false, false, false]))
+  // (in-place liquid morph covers the trigger capsule, so pressing its rest coordinates hits inside the open panel; Escape closes it)
+  assert_eq((none, framed), ([true, false, false], [true, false, false]))
 }

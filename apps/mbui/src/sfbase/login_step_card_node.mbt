@@ -250,8 +250,7 @@ pub fn login_step_node(p : @view.View, s : () -> LoginStep) -> Unit {
       @sf.style_node(r, fn() { foot(login_step_row) })
       button(r, true)
       @sf.action_box_node(r, fn() { @sf.t("common.login.otherWays") }, fn(m) {
-          let (wx, wy, ww, wh) = m.placed_window_now()
-          @sf.menu(s().more.map(fn(i) { Some(i) }), from=At(wx, wy, ww, wh), along=End)
+          @sf.menu(s().more.map(fn(i) { Some(i) }), from=Node(m), along=End)
         }, fn(m) {
         @sf.style_node(m, fn() { (if @sf.lit_node(m) { lc_more_lit } else { login_more }).then(login_inner_round) }, in_row=true)
         @sf.icon_node(m, "more", login_icon, By(fn() { @sf.theme().p.text })) |> ignore

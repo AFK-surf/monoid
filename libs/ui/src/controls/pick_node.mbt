@@ -37,39 +37,53 @@ pub fn pick_node(
       shown()
       layer.owns(gone) |> ignore
       let th = theme()
-      // (how far in it is, from the moment it opened)
+      // (how far in it is, from the moment it opened; out from the moment it closed)
       let way = @motion.NodeWay::new(0.0)
-      way.go_ms(layer, 1.0, @motion.pop_ms)
       if layout(layer.window_w()) is Small {
         presented_sheet_rest(layer, fn(_) { way.end() })
       }
+      layer.reacts(fn() { layer.leaving() }, fn(going) {
+        if going {
+          way.go_ms(layer, 0.0, @motion.pop_out_ms, ease=@signals.untracked(fn() { pop_out_ease_for(layer) }))
+        } else {
+          way.go_ms(layer, 1.0, @motion.pop_ms)
+        }
+      })
       let look = fn() {
         let p = way.shown(layer)
-        pop_in_for(layer).at(p, p)
+        if layer.leaving() {
+          pop_out_for(layer).at(p, p)
+        } else {
+          pop_in_for(layer).at(p, p)
+        }
       }
+      let live = fn() { !layer.leaving() }
       let words_in = fn() { look().words }
       // (what is found by the words typed, as they are now)
       let found = fn() { pick_found(choices, line.text()) }
       // (said once: the first choice, or a close)
       let said = Ref(false)
       let go = fn(k : String) {
-        if !said.val {
+        if !said.val && @signals.untracked(live) {
           said.val = true
           choose(k)
         }
       }
       layer
       .over(Is(true))
-      .modal(Is(true))
+      .modal(By(live))
       .held_back_goes_on()
       // (a press outside its panel its own, nothing under it pressed: closing it as it goes down)
       .presses(Is(true))
       .on_drag(fn(d) {
-        if d.kind == Down {
+        if d.kind == Down && @signals.untracked(live) {
           cancel()
         }
       })
       .on_key(fn(k) {
+        if !@signals.untracked(live) {
+          return false
+        }
         // (Escape: what is typed in its search cleared first, as a Mac's search field's; with nothing typed, closed)
         if k.code == @ui.key_escape && line.text() != "" {
           line.set("")
@@ -81,12 +95,17 @@ pub fn pick_node(
           false
         }
       })
-      .takes_back(cancel)
+      .takes_back(fn() {
+        if @signals.untracked(live) {
+          cancel()
+        }
+      })
       |> ignore
     // (what opened it, where it is drawn: what its panel goes beside)
     let at = anchor(layer)
     let reach = menu_row_reach(th.rows.pick)
     let list = @view.Scroll::new()
+    anchored_popover_bridge(layer, at, look, side~, along~, offset~)
     layer.box(fn(p) {
       anchored_popover_shell(
         p,
@@ -137,10 +156,16 @@ pub fn pick_node(
         fn(cv, cb) {
           // (what it holds, as the panel held it: no room of its own)
           cv.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+          let is_morph = p.lent(pill_morph_lent) is Some(_) && !p.glass_solid()
+          if is_morph {
+            popover_content_motion(p, cv, words_in)
+          }
           // (its search, a capsule in its top corners, the library's line: Enter in it picks the active one)
           cv.box(fn(s) {
             // (as far in as all else it holds, past the panel's own ground: Look's `words`)
-            s.alpha(By(words_in)) |> ignore
+            if !is_morph {
+              s.alpha(By(words_in)) |> ignore
+            }
             search.val = Some(
               input_node(s, line, placeholder_by=fn() { t("common.search") }, small=true, submitted=fn(_) {
                 match @signals.untracked(fn() { cb.active() }) {
@@ -153,7 +178,9 @@ pub fn pick_node(
           |> ignore
           // (none found: said so)
           cv.show(fn() { found().is_empty() }, fn(e) {
-            e.alpha(By(words_in)) |> ignore
+            if !is_morph {
+              e.alpha(By(words_in)) |> ignore
+            }
             e.padding(Is((@ui.Space::px(S2_5) + reach, @ui.Space::px(S2), @ui.Space::px(S2_5) + reach, @ui.Space::px(S2)))) |> ignore
             e.box(fn(w) {
               w
@@ -173,8 +200,10 @@ pub fn pick_node(
             .max_height(Is(Some(pick_list_most)))
             .shrink(Is(1.0))
             .min_height(Is(Some(0.0)))
-            .alpha(By(words_in))
             |> ignore
+            if !is_morph {
+              l.alpha(By(words_in)) |> ignore
+            }
             // (a finger scrolling what is found keeps its search's keyboard: View::scrolls' `for_in`)
             l.scrolls(list, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), for_in?=search.val.map(fn(v) { v.id() }), fn(b) {
               b.padding(Is((side, 0.0, side, 0.0))) |> ignore
@@ -221,6 +250,7 @@ pub fn pick_node(
     })
     |> ignore
     },
+    leave=@motion.pop_out_ms,
   )
 }
 

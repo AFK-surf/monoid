@@ -45,9 +45,12 @@ fn panel_node(
       let leave_look = Ref(@signals.untracked(fn() { pop_in_for(layer) }).at(0.0, 0.0))
       // (what it holds made first, what it reads then waited for before it comes in: OpenGate)
       let gate = OpenGate::new()
+      let morph_open : Ref[(() -> Unit)?] = Ref(None)
+      let gate_fired : Ref[Bool] = Ref(false)
       layer.reacts(fn() { layer.leaving() }, fn(going) {
         if going {
           gate.stop()
+          morph_open.val = None
           if x.fade_out_together {
             // Keep the appearance reached if it is closed before its entrance finishes.
             let p = way.value_at(layer.cause_at())
@@ -56,7 +59,17 @@ fn panel_node(
           }
           way.go_ms(layer, 0.0, @motion.pop_out_ms, ease=@signals.untracked(fn() { pop_out_ease_for(layer) }))
         } else {
-          gate.go(layer, fn() { way.go_ms(layer, 1.0, @motion.pop_ms) })
+          gate.go(layer, fn() {
+            way.go_ms(layer, 1.0, @motion.pop_ms)
+            gate_fired.val = true
+            match morph_open.val {
+              Some(f) => {
+                morph_open.val = None
+                f()
+              }
+              None => ()
+            }
+          })
         }
       })
       let look = fn() {
@@ -123,6 +136,25 @@ fn panel_node(
         Some(v) => v
         None => anchor(layer)
       }
+      let (p_host, p_offset) = match matched {
+        Some(_) => (None, x.offset)
+        None => floating_anchor_beside(at, x.side, x.offset)
+      }
+      anchored_popover_bridge(
+        layer,
+        at,
+        look,
+        side=x.side,
+        along=x.along,
+        offset=p_offset,
+        start_open=fn(go) {
+          if gate_fired.val {
+            go()
+          } else {
+            morph_open.val = Some(go)
+          }
+        },
+      )
       // (what holds its body: what takes the focus as it opens)
       let body_box : Ref[@view.View?] = Ref(None)
       // (the field it opens to be typed in, where what it holds says one: panel_opens_in_node,
@@ -132,10 +164,6 @@ fn panel_node(
       gate.collect(fn() {
       layer.box(fn(p) {
         presented_popovers[keyed.serial] = p
-        let (p_host, p_offset) = match matched {
-          Some(_) => (None, x.offset)
-          None => floating_anchor_beside(at, x.side, x.offset)
-        }
         anchored_popover_shell_by(
           p,
           at.id(),
@@ -206,135 +234,163 @@ fn panel_node(
         let under = if !footed || ruled_foot { panel_pad } else { 0.0 }
         // (out to the panel's edge under it where nothing is under it; over a ruled foot, the room its own, in it)
         let out_under = if footed { 0.0 } else { panel_pad }
-        // (its title, panel_head's: out to the panel's edges over it, on `v`'s node, its words as faint as the panel's
-        // look says)
-        let head = fn(v : @view.View) {
-          v.box(fn(h) {
-            style_node(h, fn() { panel_part_in(panel_pad, 0.0) })
-            h.alpha(By(fn() { look().words })) |> ignore
-            h.box(fn(b) {
-              style_node(b, fn() { panel_head_box })
-              if !stepped {
-                words_node(b, title, fn() { panel_title }) |> ignore
-                return
+        let fill = fn(host : @view.View, own_alpha : Bool) {
+          // (its title, panel_head's: out to the panel's edges over it, on `v`'s node, its words as faint as the panel's
+          // look says)
+          let head = fn(v : @view.View) {
+            v.box(fn(h) {
+              style_node(h, fn() { panel_part_in(panel_pad, 0.0) })
+              if own_alpha {
+                h.alpha(By(fn() { look().words })) |> ignore
               }
-              // (its back key before its title, back to the panel it came from, concentric in its corner)
-              b.box(fn(line) {
-                style_node(line, fn() { panel_step_line })
-                line.box(fn(k) {
-                  style_node(k, fn() { step_back_out }, in_row=true)
-                  icon_button_node(k, "chevron-left", fn() { t("common.back") }, fn() { back_under(keyed) |> ignore }, size=step_back_side)
+              h.box(fn(b) {
+                style_node(b, fn() { panel_head_box })
+                if !stepped {
+                  words_node(b, title, fn() { panel_title }) |> ignore
+                  return
+                }
+                // (its back key before its title, back to the panel it came from, concentric in its corner)
+                b.box(fn(line) {
+                  style_node(line, fn() { panel_step_line })
+                  line.box(fn(k) {
+                    style_node(k, fn() { step_back_out }, in_row=true)
+                    icon_button_node(k, "chevron-left", fn() { t("common.back") }, fn() { back_under(keyed) |> ignore }, size=step_back_side)
+                    |> ignore
+                  })
                   |> ignore
+                  words_node(line, title, fn() { panel_title }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
                 })
                 |> ignore
-                words_node(line, title, fn() { panel_title }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
               })
               |> ignore
             })
-            |> ignore
-          })
-        }
-        match x.live {
-          // (there while it has a title as it is now, what holds what it holds the same as it comes and goes)
-          Some(_) =>
-            p.show(headed, fn(h) {
-              h.margin(Is((-panel_pad, -panel_pad, -panel_pad, 0.0))) |> ignore
-              head(h) |> ignore
-            })
-          None =>
-            if headed() {
-              head(p).margin(Is((-panel_pad, -panel_pad, -panel_pad, 0.0))) |> ignore
-            }
-        }
-        // (`tall`: what it holds fills the room it is given, laid out in it, scrolling as it does itself: panel_grows)
-        if x.tall > 0.0 {
-          p.box(fn(b) {
-            if x.nodes.hugs {
-              b.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-            } else {
-              // (the room under its head and no more, whatever it holds: grown from none, as what holds a list sized by
-              // what it holds would stand past the panel's foot, its last rows cut there)
-              b.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-            }
-            b.margin(By(fn() { (-panel_pad, -over(), -panel_pad, -out_under) })).focusable(Is(x.focus), keys=0, tab=false) |> ignore
-            body_box.val = Some(b)
-            // (what it holds: in a column, its words as far in as its look says)
-            b.box(fn(col) {
-              if x.nodes.hugs {
-                style_node(col, fn() { panel_part_in(over(), under) })
-                col.shrink(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { look().words })) |> ignore
-              } else {
-                style_node(col, fn() { panel_grows.then(panel_part_in(over(), under)) })
-                col.grow(Is(1.0)).alpha(By(fn() { look().words })) |> ignore
+          }
+          match x.live {
+            // (there while it has a title as it is now, what holds what it holds the same as it comes and goes)
+            Some(_) =>
+              host.show(headed, fn(h) {
+                h.margin(Is((-panel_pad, -panel_pad, -panel_pad, 0.0))) |> ignore
+                head(h) |> ignore
+              })
+            None =>
+              if headed() {
+                head(host).margin(Is((-panel_pad, -panel_pad, -panel_pad, 0.0))) |> ignore
               }
-              // (laid out as a small panel's body is: wide, its words a row's padding in)
-              panel_in_lend(col, Wide, text_in, sides=panel_pad, small=true)
-              (x.nodes.body)(col, close)
-            })
-            |> ignore
-          })
-          |> ignore
-        } else {
-          // (what it holds, as small_panel lays it out; scrolling where the window leaves the panel short of room, out to the
-          // panel's sides, what it holds as far in as without (held_reach, held_in: in_room's))
-          p.box(fn(b) {
-            let scroll = @view.Scroll::new()
-            b
-            .shrink(Is(1.0))
-            .min_height(Is(Some(0.0)))
-            // (`most`: what it holds that tall at most, scrolling past it, panel_nodes')
-            .max_height(
-              match x.nodes.most {
-                Some(m) => By(fn() { Some(m()) })
-                None => Is(None)
-              },
-            )
-            .margin(Is((-panel_pad, 0.0, -panel_pad, 0.0)))
-            // (the focus its own as it opens where it takes it (`focus`, kit's popover's: on what holds its body, said
-            // nothing of itself): no key presses it)
-            .focusable(Is(x.focus), keys=0, tab=false)
-            |> ignore
-            body_box.val = Some(b)
-            b.scrolls(scroll, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) {
+          }
+          // (`tall`: what it holds fills the room it is given, laid out in it, scrolling as it does itself: panel_grows)
+          if x.tall > 0.0 {
+            host.box(fn(b) {
+              if x.nodes.hugs {
+                b.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+              } else {
+                // (the room under its head and no more, whatever it holds: grown from none, as what holds a list sized by
+                // what it holds would stand past the panel's foot, its last rows cut there)
+                b.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+              }
+              b.margin(By(fn() { (-panel_pad, -over(), -panel_pad, -out_under) })).focusable(Is(x.focus), keys=0, tab=false) |> ignore
+              body_box.val = Some(b)
               // (what it holds: in a column, its words as far in as its look says)
-              s.box(fn(col) {
-                style_node(col, fn() { held_in().then(@ui.style(pt=room(over()), pb=room(under))) })
-                col.margin(By(fn() { (0.0, -over(), 0.0, -out_under) })).alpha(By(fn() { look().words })) |> ignore
+              b.box(fn(col) {
+                if x.nodes.hugs {
+                  style_node(col, fn() { panel_part_in(over(), under) })
+                  col.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+                } else {
+                  style_node(col, fn() { panel_grows.then(panel_part_in(over(), under)) })
+                  col.grow(Is(1.0)) |> ignore
+                }
+                if own_alpha {
+                  col.alpha(By(fn() { look().words })) |> ignore
+                }
                 // (laid out as a small panel's body is: wide, its words a row's padding in)
                 panel_in_lend(col, Wide, text_in, sides=panel_pad, small=true)
                 (x.nodes.body)(col, close)
               })
               |> ignore
             })
-            // (cut at its box while what it holds is taller than it, as @kit.in_room's held list (pick_node's): else what
-            // reaches past it drawn whole, in the panel's round corners; what it paints alone, nothing laid out by it)
-            .clips(By(fn() { scroll.goes() }))
-            // (and taking presses within its box alone then too)
-            .bounds_input(By(fn() { scroll.goes() }))
             |> ignore
-          })
-          |> ignore
-        }
-        // (its foot: its buttons in its foot corner, a line over them where `ruled`)
-        match x.nodes.foot {
-          // (its foot nodes, its words as far in as its look says)
-          Some(f) =>
-            p.box(fn(fv) {
-              style_node(fv, fn() { panel_part_in(0.0, panel_pad) })
-              fv.margin(Is((-panel_pad, 0.0, -panel_pad, -panel_pad))).alpha(By(fn() { look().words })) |> ignore
-              if x.ruled {
-                fv.box(fn(r) { style_node(r, fn() { foot_rule.then(@ui.style(mx=room(-panel_pad))) }) }) |> ignore
-              }
-              fv.box(fn(row) {
-                let at = if x.ruled { panel_corner_foot().then(@ui.style(pt=room(@ui.capsule_in(r_menu, button_height())))) } else { panel_corner_foot() }
-                style_node(row, fn() { panel_foot_at.then(at) }, in_row=false)
-                row.wraps(By(fn() { Some(ask_foot_lines()) })) |> ignore
-                f(row, close)
+          } else {
+            // (what it holds, as small_panel lays it out; scrolling where the window leaves the panel short of room, out to the
+            // panel's sides, what it holds as far in as without (held_reach, held_in: in_room's))
+            host.box(fn(b) {
+              let scroll = @view.Scroll::new()
+              b
+              .shrink(Is(1.0))
+              .min_height(Is(Some(0.0)))
+              // (`most`: what it holds that tall at most, scrolling past it, panel_nodes')
+              .max_height(
+                match x.nodes.most {
+                  Some(m) => By(fn() { Some(m()) })
+                  None => Is(None)
+                },
+              )
+              .margin(Is((-panel_pad, 0.0, -panel_pad, 0.0)))
+              // (the focus its own as it opens where it takes it (`focus`, kit's popover's: on what holds its body, said
+              // nothing of itself): no key presses it)
+              .focusable(Is(x.focus), keys=0, tab=false)
+              |> ignore
+              body_box.val = Some(b)
+              b.scrolls(scroll, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) {
+                // (what it holds: in a column, its words as far in as its look says)
+                s.box(fn(col) {
+                  style_node(col, fn() { held_in().then(@ui.style(pt=room(over()), pb=room(under))) })
+                  col.margin(By(fn() { (0.0, -over(), 0.0, -out_under) })) |> ignore
+                  if own_alpha {
+                    col.alpha(By(fn() { look().words })) |> ignore
+                  }
+                  // (laid out as a small panel's body is: wide, its words a row's padding in)
+                  panel_in_lend(col, Wide, text_in, sides=panel_pad, small=true)
+                  (x.nodes.body)(col, close)
+                })
+                |> ignore
               })
+              // (cut at its box while what it holds is taller than it, as @kit.in_room's held list (pick_node's): else what
+              // reaches past it drawn whole, in the panel's round corners; what it paints alone, nothing laid out by it)
+              .clips(By(fn() { scroll.goes() }))
+              // (and taking presses within its box alone then too)
+              .bounds_input(By(fn() { scroll.goes() }))
               |> ignore
             })
             |> ignore
-          None => ()
+          }
+          // (its foot: its buttons in its foot corner, a line over them where `ruled`)
+          match x.nodes.foot {
+            // (its foot nodes, its words as far in as its look says)
+            Some(f) =>
+              host.box(fn(fv) {
+                style_node(fv, fn() { panel_part_in(0.0, panel_pad) })
+                fv.margin(Is((-panel_pad, 0.0, -panel_pad, -panel_pad))) |> ignore
+                if own_alpha {
+                  fv.alpha(By(fn() { look().words })) |> ignore
+                }
+                if x.ruled {
+                  fv.box(fn(r) { style_node(r, fn() { foot_rule.then(@ui.style(mx=room(-panel_pad))) }) }) |> ignore
+                }
+                fv.box(fn(row) {
+                  let at = if x.ruled { panel_corner_foot().then(@ui.style(pt=room(@ui.capsule_in(r_menu, button_height())))) } else { panel_corner_foot() }
+                  style_node(row, fn() { panel_foot_at.then(at) }, in_row=false)
+                  row.wraps(By(fn() { Some(ask_foot_lines()) })) |> ignore
+                  f(row, close)
+                })
+                |> ignore
+              })
+              |> ignore
+            None => ()
+          }
+        }
+        if p.lent(pill_morph_lent) is Some(_) && !p.glass_solid() {
+          p.box(fn(content) {
+            let small_hugs = x.tall > 0.0 && x.nodes.hugs && layout(layer.window_w()) is Small
+            if x.tall > 0.0 && !small_hugs {
+              content.grow(Is(1.0)).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+            } else {
+              content.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+            }
+            popover_content_motion(p, content, fn() { look().words })
+            fill(content, false)
+          })
+          |> ignore
+        } else {
+          fill(p, true)
         }
         // (the focus on the field it opens to be typed in, where it says one; else what holds its body's as it opens
         // where it takes it, else where it was; back to what had it as it goes)

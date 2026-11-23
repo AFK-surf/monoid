@@ -564,12 +564,13 @@ fn note_cards_node(r : @view.View) -> Unit {
         },
         fn(_) {  },
         label=fn() { "+\{gone().length()}" },
-        press=fn() {
-          let (x, y, w, h) = more.rect()
+        press=fn() {  },
+        trigger=true,
+        on_card=fn(c) {
           let items : Array[@sf.MenuItem?] = gone().map(fn(x) {
             Some(@sf.menu_item_of("\{x.1}  " + note_said(x.0), fn() { marks_open_note(x.0) }))
           })
-          @sf.menu(items, from=At(x, y, w, h), along=End)
+          @sf.menu(items, from=Node(c), along=End)
         },
       )
     })
@@ -589,6 +590,8 @@ fn note_tray_card_node(
   body : (@view.View) -> Unit,
   label~ : () -> String,
   press~ : () -> Unit,
+  trigger? : Bool = false,
+  on_card? : (@view.View) -> Unit,
 ) -> Unit {
   let pin_in = @ui.capsule_in(note_card_corner, note_pin)
   @sf.action_box_node(
@@ -597,9 +600,14 @@ fn note_tray_card_node(
       marks_said()
       label()
     },
-    fn(_) { press() },
     fn(c) {
-      @sf.glass_capsule_node(c, radius=Some(note_card_corner), dark=true, sharing=false, solid=fn() { note_ground })
+      match on_card {
+        Some(f) => f(c)
+        None => press()
+      }
+    },
+    fn(c) {
+      @sf.glass_capsule_node(c, radius=Some(note_card_corner), dark=true, sharing=false, solid=fn() { note_ground }, trigger~)
       .width(Is(Some(w)))
       .padding(Is((pin_in, pin_in - (note_first_line - note_pin) / 2.0, note_card_end, note_card_foot)))
       .gap(Is(3.0))

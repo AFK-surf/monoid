@@ -751,7 +751,7 @@ fn bar_end_node(
 ///|
 /// Unified iOS 27 single-layer liquid glass floating capsule (30pt) for composer-top controls on Small screens.
 fn small_glass_capsule(b : @view.View) -> Unit {
-  @sf.glass_capsule_node(b, min_height=Some(30.0), radius=Some(999.0))
+  @sf.glass_capsule_node(b, min_height=Some(30.0), radius=Some(999.0), trigger=true)
   .row(Is(true))
   .lines_up(Is(Some(Middle)))
   .lies_along(Is(Middle))
@@ -795,8 +795,7 @@ fn station_chip_node(
 ) -> Unit {
   v.box(fn(k) {
     @sf.presses_node(k, fn() {
-      let (x, y, w, h) = k.placed_window_now()
-      @settings.open_station_peek(address, from=At(x, y, w, h), offline_note~)
+      @settings.open_station_peek(address, from=Node(k), offline_note~)
     })
     small_glass_capsule(k)
     k

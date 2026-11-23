@@ -280,8 +280,7 @@ let cd_switching : Map[String, Bool] = Map([])
 /// handed to another; deleted, asked first.
 fn cd_menu_node(a : @view.View, core : Core, here : () -> Here, station : String, cv : () -> Json?) -> Unit {
   @sf.icon_action_opens_node(a, "more", fn() { @sf.t("common.more") }, fn(m) {
-    let (x, y, w, h) = m.placed_window_now()
-    @sf.menu(cd_menu_items(core, @signals.untracked(here), station, @signals.untracked(cv)), from=At(x, y, w, h), along=End)
+    @sf.menu(cd_menu_items(core, @signals.untracked(here), station, @signals.untracked(cv)), from=Node(m), along=End)
   })
   |> ignore
 }

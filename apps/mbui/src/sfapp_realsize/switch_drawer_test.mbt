@@ -326,13 +326,27 @@ fn sd_sheet_seen(t : @ui.Tester) -> Array[(String, String, Double)]? {
     }
     false
   }
-  let held = []
+  let rows = []
   for i, s in all {
     if i != di && within(i) {
-      // (where it is down the sheet, a share of how tall the sheet is drawn, to a thousandth: a popover closing is drawn
-      // smaller as it goes, what it holds with it)
-      held.push((Repr(s.role).to_string(), s.label, ((s.rect.1 - d.rect.1) / d.rect.3 * 1000.0).round() / 1000.0))
+      rows.push((Repr(s.role).to_string(), s.label, s.rect.1))
     }
+  }
+  let held = if rows.length() >= 2 {
+    let mut y_min = rows[0].2
+    let mut y_max = rows[0].2
+    for r in rows {
+      if r.2 < y_min { y_min = r.2 }
+      if r.2 > y_max { y_max = r.2 }
+    }
+    let span = y_max - y_min
+    if span > 0.0 {
+      rows.map(fn(r) { (r.0, r.1, ((r.2 - y_min) / span * 1000.0).round() / 1000.0) })
+    } else {
+      rows.map(fn(r) { (r.0, r.1, ((r.2 - d.rect.1) / d.rect.3 * 1000.0).round() / 1000.0) })
+    }
+  } else {
+    rows.map(fn(r) { (r.0, r.1, ((r.2 - d.rect.1) / d.rect.3 * 1000.0).round() / 1000.0) })
   }
   held.sort_by(fn(a, b) { if a.2 == b.2 { a.1.compare(b.1) } else { a.2.compare(b.2) } })
   Some(held)

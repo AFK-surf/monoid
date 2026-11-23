@@ -87,6 +87,7 @@ pub fn liquid_capsule_decorate(
   with_edge? : Bool = true,
   with_shadow? : Bool = true,
   clips? : Bool = true,
+  trigger? : Bool = false,
 ) -> @view.View {
   if min_height is Some(h) {
     v.min_height(Is(Some(h))) |> ignore
@@ -103,11 +104,95 @@ pub fn liquid_capsule_decorate(
   if with_shadow {
     v.shadow_outside(Is(true)) |> ignore
   }
+  let resolve_base_glass = fn(spot : (Double, Double)?) -> @paint.Glass {
+    let base = match glass {
+      Some(gf) => gf(spot)
+      None => {
+        let sol = match solid {
+          Some(f) => f()
+          None => clear
+        }
+        let custom_tint = match tint {
+          Some(f) => f()
+          None => None
+        }
+        capsule_tone_glass(tone, spot, sol, custom_tint, sharing)
+      }
+    }
+    match extra_blur {
+      Some(bf) => {
+        let db = bf()
+        if db > 0.0 {
+          { ..base, blur: base.blur + db }
+        } else {
+          base
+        }
+      }
+      None => base
+    }
+  }
+  let resolve_shadow = fn() {
+    if with_shadow {
+      match shadow {
+        Some(f) => f()
+        None => shadow_default
+      }
+    } else {
+      shadow_none
+    }
+  }
+  let trig_opt : PillTriggerScope? = if trigger {
+    let fx_sig : @signals.Signal[((Double, Double)?, Int)] = @signals.signal((None, 0))
+    let morph_glass : Ref[(() -> @paint.Glass?)?] = Ref(None)
+    let morph_shadow : Ref[(() -> (Double, Double, Int64))?] = Ref(None)
+    let press_way = @motion.NodeWay::new(0.0)
+    let children : Array[@view.View] = []
+    let trig_scope : PillTriggerScope = {
+      pill: v,
+      fx: fx_sig,
+      press_way,
+      morph_glass,
+      morph_shadow,
+      morph_owner: 0,
+      morph_cancel: None,
+      children,
+      height: min_height.unwrap_or(0.0),
+      pad: 0.0,
+      direction: Horizontal,
+      has_press_scale: false,
+      rest_glass: fn() { resolve_base_glass(None) },
+    }
+    v.lends(liquid_pill_trigger_lent, trig_scope) |> ignore
+    Some(trig_scope)
+  } else {
+    None
+  }
   v
   .sets_together(
     fn() {
       if !is_active() {
         return (None, (0.0, clear), shadow_none)
+      }
+      match trig_opt {
+        Some(trig) => {
+          let (_, ly) = trig.fx.get()
+          if ly != 0 {
+            let g = match trig.morph_glass.val {
+              Some(mg) => mg()
+              None => if ly < 0 { None } else { Some(resolve_base_glass(None)) }
+            }
+            let s = if with_shadow {
+              match trig.morph_shadow.val {
+                Some(ms) => ms()
+                None => if ly < 0 { shadow_none } else { resolve_shadow() }
+              }
+            } else {
+              shadow_none
+            }
+            return (g, (0.0, clear), s)
+          }
+        }
+        None => ()
       }
       let spot = if interactive && v.pressed() && !v.glass_solid() {
         let (_, _, w, h) = v.placed_window_now()
@@ -119,31 +204,7 @@ pub fn liquid_capsule_decorate(
       } else {
         None
       }
-      let base = match glass {
-        Some(gf) => gf(spot)
-        None => {
-          let sol = match solid {
-            Some(f) => f()
-            None => clear
-          }
-          let custom_tint = match tint {
-            Some(f) => f()
-            None => None
-          }
-          capsule_tone_glass(tone, spot, sol, custom_tint, sharing)
-        }
-      }
-      let resolved = match extra_blur {
-        Some(bf) => {
-          let db = bf()
-          if db > 0.0 {
-            { ..base, blur: base.blur + db }
-          } else {
-            base
-          }
-        }
-        None => base
-      }
+      let resolved = resolve_base_glass(spot)
       let edge_val = if with_edge && v.glass_solid() {
         match solid_edge {
           Some(f) => f()
@@ -152,15 +213,7 @@ pub fn liquid_capsule_decorate(
       } else {
         (0.0, clear)
       }
-      let shadow_val = if with_shadow {
-        match shadow {
-          Some(f) => f()
-          None => shadow_default
-        }
-      } else {
-        shadow_none
-      }
-      (Some(resolved), edge_val, shadow_val)
+      (Some(resolved), edge_val, resolve_shadow())
     },
     fn(look) {
       let (g, e, s) = look

@@ -261,6 +261,9 @@ pub fn lm_closing_teardrop_geometry(
   push_dy : Double,
   t : Double,
   align_x : Double,
+  push_dx? : Double = 0.0,
+  align_y? : Double = 0.0,
+  horizontal_side? : Bool = false,
 ) -> (Double, Double, Double, Double, Double) {
   let u = clamp(raw_value, 0.0, 1.0)
   let min_side = if tw < th { tw } else { th }
@@ -281,26 +284,23 @@ pub fn lm_closing_teardrop_geometry(
   let tail_scale = if menu_w > 0.0 { clamp(0.56 * min_side / menu_w, 0.08, 0.20) } else { 0.20 }
   let close_size_p = clamp((close_glass_scale - tail_scale) / (1.0 - tail_scale), 0.0, 1.0)
   let radius = lm_close_corner_radius(base_w, base_h, menu_w, menu_h, target_r, close_size_p)
+  let recoil_catch_x = push_dx * (1.0 - u)
   let recoil_catch_y = push_dy * (1.0 - u)
-  let dir_y = if menu_h * 0.5 - trig_cy >= 0.0 { 1.0 } else { -1.0 }
-  let close_drift_y = dir_y * lm_close_drift(t, menu_h)
-  let raw_cy = base_cy + recoil_catch_y + close_drift_y
-  let converge_x = lm_smoothstep(0.0, 0.28, 0.36 - u)
-  let mut closed_cx = base_cx + (trig_cx - base_cx) * converge_x
-  if align_x < -0.1 {
-    let trig_left = trig_cx - tw * 0.5
-    let lim = trig_left + base_w * 0.5
-    if closed_cx < lim {
-      closed_cx = lim
-    }
-  } else if align_x > 0.1 {
-    let trig_right = trig_cx + tw * 0.5
-    let lim = trig_right - base_w * 0.5
-    if closed_cx > lim {
-      closed_cx = lim
-    }
+  if !horizontal_side {
+    let dir_y = if menu_h * 0.5 - trig_cy >= 0.0 { 1.0 } else { -1.0 }
+    let close_drift_y = dir_y * lm_close_drift(t, menu_h)
+    let raw_cy = base_cy + recoil_catch_y + close_drift_y
+    // base_left = trig_cx * (1 - w_scale) starts at 0.0 (u=1), converges smoothly to trig_cx (u->0),
+    // and keeps both left and right edges strictly monotonic with zero mid-close velocity spikes.
+    ignore(align_x)
+    (base_left + recoil_catch_x, raw_cy - base_h * 0.5, base_w, base_h, radius)
+  } else {
+    let dir_x = if menu_w * 0.5 - trig_cx >= 0.0 { 1.0 } else { -1.0 }
+    let close_drift_x = dir_x * lm_close_drift(t, menu_w)
+    let raw_cx = base_cx + recoil_catch_x + close_drift_x
+    ignore(align_y)
+    (raw_cx - base_w * 0.5, base_top + recoil_catch_y, base_w, base_h, radius)
   }
-  (closed_cx - base_w * 0.5, raw_cy - base_h * 0.5, base_w, base_h, radius)
 }
 
 ///|
@@ -387,10 +387,12 @@ pub(all) struct LiquidMorphFrame {
   cur_h : Double
   radius : Double
   raw_value : Double
+  push_dx : Double
   push_dy : Double
   platter_active : Bool
   content_opacity : Double
   content_blur : Double
+  final_dx : Double
   final_dy : Double
   open_anchor_scale : Double
   blob_a_emerge : Double
@@ -412,14 +414,23 @@ pub fn lm_eval_pill_morph(
   align_x : Double,
   closing : Bool,
   t : Double,
+  vertical? : Bool = false,
+  ty_win? : Double,
+  align_y? : Double = 0.0,
+  horizontal_side? : Bool = false,
+  close_start? : Double = 1.0,
 ) -> LiquidMorphFrame {
   let trig_cx = pill_x + pill_w * 0.5 - px_win
   let trig_cy = pill_y + pill_h * 0.5 - py_win
   let tx_local = tx_win - px_win
+  let ty_local = match ty_win {
+    Some(ty) => ty - py_win
+    None => trig_cy
+  }
+  let final_dx = menu_w * 0.5 - trig_cx
   let final_dy = menu_h * 0.5 - trig_cy
-  let raw_cap = pill_y - 4.0
-  let floor_cap = if raw_cap > 5.0 { raw_cap } else { 5.0 }
-  let max_up = if floor_cap < 10.0 { floor_cap } else { 10.0 }
+  let max_up = clamp(pill_y - 2.0, 0.0, 10.0)
+  let max_side = clamp(pill_x - 2.0, 0.0, 10.0)
   if !closing {
     let raw = lm_open_progress(t)
     let u = clamp(raw, 0.0, 1.0)
@@ -429,22 +440,30 @@ pub fn lm_eval_pill_morph(
     let cur_w = clamp(lm_lerp(core, menu_w, w_prog), core, menu_w)
     let cur_h = clamp(lm_lerp(core, menu_h, h_prog), core, menu_h)
     let pill_l = pill_x - px_win
-    let origin_cx = if pill_w >= core {
+    let pill_t = pill_y - py_win
+    let origin_cx = if !vertical && pill_w >= core {
       clamp(tx_local, pill_l + core * 0.5, pill_l + pill_w - core * 0.5)
     } else {
       trig_cx
     }
+    let origin_cy = if vertical && pill_h >= core {
+      clamp(ty_local, pill_t + core * 0.5, pill_t + pill_h - core * 0.5)
+    } else {
+      trig_cy
+    }
     let interp_cx = lm_lerp(origin_cx, menu_w * 0.5, w_prog)
-    let interp_cy = lm_lerp(trig_cy, menu_h * 0.5, h_prog)
-    let dir_y = if final_dy >= 0.0 { 1.0 } else { -1.0 }
-    let drift_y = dir_y * lm_open_drift(t, menu_h)
+    let interp_cy = lm_lerp(origin_cy, menu_h * 0.5, h_prog)
+    let drift_y = if !horizontal_side && final_dy >= 0.0 { lm_open_drift(t, menu_h) } else { 0.0 }
     let min_x_raw = origin_cx - cur_w * 0.5
     let min_x = if min_x_raw < 0.0 { min_x_raw } else { 0.0 }
     let max_x_raw = menu_w - cur_w
     let max_x = if max_x_raw > 0.0 { max_x_raw } else { 0.0 }
     let mx = clamp(interp_cx - cur_w * 0.5, min_x, max_x)
-    let my_raw = interp_cy + drift_y - cur_h * 0.5
-    let my = if my_raw > 0.0 { my_raw } else { 0.0 }
+    let min_y_raw = origin_cy - cur_h * 0.5
+    let min_y = if vertical && min_y_raw < 0.0 { min_y_raw } else { 0.0 }
+    let max_y_raw = menu_h - cur_h
+    let max_y = if max_y_raw > 0.0 { max_y_raw } else { 0.0 }
+    let my = clamp(interp_cy + drift_y - cur_h * 0.5, min_y, max_y)
     let radius = lm_open_corner_radius(cur_w, cur_h, menu_w, menu_h, target_r, t)
     let open_anchor_scale = 1.0 - clamp(t / 0.035, 0.0, 1.0)
     let settled = t >= lm_open_duration_ms / 1000.0 - 0.001
@@ -457,23 +476,39 @@ pub fn lm_eval_pill_morph(
       cur_h,
       radius,
       raw_value: raw,
+      push_dx: 0.0,
       push_dy: 0.0,
       platter_active: raw > 0.001 || settled,
       content_opacity,
       content_blur,
+      final_dx,
       final_dy,
       open_anchor_scale: if settled { 0.0 } else { open_anchor_scale },
       blob_a_emerge: 0.0,
     }
   } else {
-    let raw = lm_close_progress(t)
+    let raw = lm_close_progress(t, start=close_start)
     let platter_active = lm_close_platter_active(raw)
-    let push_dy = lm_recoil_offset_y(t, final_dy, max_up)
+    let push_dx = if horizontal_side { lm_recoil_offset_y(t, final_dx, max_side) } else { 0.0 }
+    let push_dy = if horizontal_side { 0.0 } else { lm_recoil_offset_y(t, final_dy, max_up) }
     let (mx, my, cur_w, cur_h, radius) = lm_closing_teardrop_geometry(
-      raw, trig_cx, trig_cy, pill_w, pill_h, menu_w, menu_h, target_r, push_dy, t, align_x,
+      raw,
+      trig_cx,
+      trig_cy,
+      pill_w,
+      pill_h,
+      menu_w,
+      menu_h,
+      target_r,
+      push_dy,
+      t,
+      align_x,
+      push_dx~,
+      align_y~,
+      horizontal_side~,
     )
     let emerge = if platter_active {
-      lm_close_blob_a_emergence(mx, my, cur_w, cur_h, radius, trig_cx, trig_cy + push_dy, raw)
+      lm_close_blob_a_emergence(mx, my, cur_w, cur_h, radius, trig_cx + push_dx, trig_cy + push_dy, raw)
     } else {
       1.0
     }
@@ -486,10 +521,12 @@ pub fn lm_eval_pill_morph(
       cur_h,
       radius,
       raw_value: raw,
+      push_dx,
       push_dy,
       platter_active,
       content_opacity,
       content_blur,
+      final_dx,
       final_dy,
       open_anchor_scale: 0.0,
       blob_a_emerge: emerge,

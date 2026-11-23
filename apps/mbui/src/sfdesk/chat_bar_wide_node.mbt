@@ -560,7 +560,7 @@ let wide_doing_mark : Double = 14.0
 ///|
 /// Unified iOS 27 single-layer liquid glass floating capsule (30pt) for composer-top controls on Medium/Large screens.
 fn wide_glass_capsule(b : @view.View) -> Unit {
-  @sf.glass_capsule_node(b, min_height=Some(30.0), radius=Some(999.0))
+  @sf.glass_capsule_node(b, min_height=Some(30.0), radius=Some(999.0), trigger=true)
   .row(Is(true))
   .lines_up(Is(Some(Middle)))
   .lies_along(Is(Middle))

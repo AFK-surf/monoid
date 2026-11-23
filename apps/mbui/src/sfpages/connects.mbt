@@ -601,8 +601,7 @@ fn cn_add_node(
       let station = text(Some(s), "station")
       Some(@sf.menu_item_of(text(Some(s), "name"), fn() { new_connect_dialog(src, core, h, station) }))
     })
-    let (x, y, w, hh) = b.placed_window_now()
-    @sf.menu(items, from=At(x, y, w, hh), title=@sf.t("web-pages.connects.whichStation"), along=if primary { Middle } else { End })
+    @sf.menu(items, from=Node(b), title=@sf.t("web-pages.connects.whichStation"), along=if primary { Middle } else { End })
   }
   if round {
     @sf.icon_button_opens_node(parent, "plus", label, press) |> ignore
@@ -916,8 +915,7 @@ fn cn_waiting_app_node(
 /// grown into the card's corner, concentric with it (row_corner_key_look: the corner rule's).
 fn cn_more_node(parent : @view.View, drop : () -> Unit) -> Unit {
   @sf.action_box_node(parent, fn() { @sf.t("web-pages.connects.removeHere") }, fn(m) {
-    let (x, y, w, h) = m.placed_window_now()
-    @sf.menu([Some(@sf.menu_item_of(@sf.t("web-pages.connects.removeHere"), drop, danger=true))], from=At(x, y, w, h), along=End)
+    @sf.menu([Some(@sf.menu_item_of(@sf.t("web-pages.connects.removeHere"), drop, danger=true))], from=Node(m), along=End)
   }, fn(m) {
     @sf.style_node(m, fn() { cn_more })
     @sf.row_corner_key_look(m, cn_more_w) |> ignore
@@ -954,7 +952,6 @@ fn mine_filter_node(parent : @view.View, key : String, of : String, mine : () ->
           set(m)
         }
       }
-      let (x, y, w, h) = b.placed_window_now()
       mine_filter_open[key] = true
       open.set(true)
       @sf.menu(
@@ -962,7 +959,7 @@ fn mine_filter_node(parent : @view.View, key : String, of : String, mine : () ->
           Some(@sf.menu_item_of(@sf.t("web-main.filter." + of + ".all"), fn() { pick(false) }, chosen=!now)),
           Some(@sf.menu_item_of(@sf.t("web-main.filter." + of + ".mine"), fn() { pick(true) }, chosen=now)),
         ],
-        from=At(x, y, w, h),
+        from=Node(b),
         along=End,
         gone=closed,
       )

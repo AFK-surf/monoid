@@ -1193,6 +1193,7 @@ fn chat_rail_node(
         along=Middle,
         offset=-(rail_press_w + @ui.scroll_bar_room),
         padding=0.0,
+        flip=false,
         piece=fn(w, h) {
           let t = bar()
           let under = match scroll {

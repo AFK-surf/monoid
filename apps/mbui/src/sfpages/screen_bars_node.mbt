@@ -575,7 +575,7 @@ fn full_tools_node(fill : @view.View, pg : ScreenPage) -> Unit {
     @sf.style_node(place, fn() { screen_corner_end(screen_top_end) })
     place.box(fn(cap) {
       @sf.style_node(cap, fn() { full_tools_box })
-      floats_capsule_node(cap)
+      floats_capsule_node(cap, trigger=true)
       // a round button 4 in from the capsule's edge: its corner 20 + 4
       let open = fn() { u.tools_open.get() }
       let b = screen_round_node(

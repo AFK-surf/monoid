@@ -166,13 +166,12 @@ fn appearance_setting(v : @view.View, core : Core, key : String) -> Unit {
         button.val = Some(
           @sf.button_node(r, fn() { if zoom() == "" { "100%" } else { zoom() + "%" } }, fn() {
             guard button.val is Some(b) else { return }
-            let (x, y, w, h) = b.placed_window_now()
             let choices = @sfbase.window_zoom_levels.map(fn(z) {
               @sf.choice(z.0, (if z.0 == "" { "100" } else { z.0 }) + "%")
             })
             @sf.pick(@sf.t("desktop.menu.zoom"), choices, @signals.untracked(zoom), fn(value) {
               @settings.set_pref(core, "windowZoom", value)
-            }, from=At(x, y, w, h), search=false)
+            }, from=Node(b), search=false)
           }),
         )
       })

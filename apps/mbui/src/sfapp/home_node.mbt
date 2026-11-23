@@ -216,7 +216,6 @@ fn home_top_bar_node(
           |> ignore
         }
         pill.show(keyed, fn(f) {
-          let key : Ref[@view.View?] = Ref(None)
           let opener = @sf.Opener::new()
           let shown = fn(w : Workspace) {
             if @sfbase.board_on_now(src) {
@@ -225,7 +224,6 @@ fn home_top_bar_node(
               filter_of(src, w.id)
             }
           }
-          key.val = Some(f)
           @sf.round_key_node(
             f,
             "filter",
@@ -250,9 +248,8 @@ fn home_top_bar_node(
             },
             fn() {
               guard @signals.untracked(workspace) is Some(w) else { return }
-              let (x, y, wd, h) = key.val.map(fn(k) { k.placed_window_now() }).unwrap_or((0.0, 0.0, 0.0, 0.0))
               let board = @sfbase.board_on_now(src)
-              @sfpages.filter_menu(At(x, y, wd, h), shown(w), fn(f) { home_filter_go(src, w, f, board~) }, in_board=board, along=Start)
+              @sfpages.filter_menu(Node(f), shown(w), fn(f) { home_filter_go(src, w, f, board~) }, in_board=board, along=Start)
               opener.mark()
             },
             icon_size=20.0,
@@ -310,14 +307,7 @@ fn home_top_bar_node(
         |> ignore
         // the workspace's switcher: its mark, its name, what the others have waiting
         let open = fn(s : @view.View) {
-          @sfpages.open_workspaces(
-            src,
-            {
-              let (x, y, w, h) = s.placed_window_now()
-              @sf.Anchor::At(x, y, w, h)
-            },
-            along=End,
-          )
+          @sfpages.open_workspaces(src, @sf.Anchor::Node(s), along=End)
         }
         @sf.bar_pill_group_node(end, height=40.0, pad=3.0, gap=0.0, fn(ws_pill) {
           @sf.action_box_node(ws_pill, fn() { workspace().map(fn(w) { w.name }).unwrap_or("") }, open, fn(s) {

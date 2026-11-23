@@ -967,8 +967,7 @@ pub fn login_steps_node(
         let j = @signals.untracked(job)
         let link = text(j, "url")
         let items = [Some(@sf.menu_item_of(@sf.t("common.link.copy"), fn() { @sfbase.copy_out(link, said=@sf.t("common.link.copied")) }))]
-        let (x, y, w, h) = k.placed_window_now()
-        @sf.menu(items, from=At(x, y, w, h))
+        @sf.menu(items, from=Node(k))
       })
       |> ignore
     })

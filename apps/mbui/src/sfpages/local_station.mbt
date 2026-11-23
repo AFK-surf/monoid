@@ -248,10 +248,9 @@ fn local_more_node(head : @view.View, s : () -> Json?, act : (String) -> Unit) -
         ),
       )
     }
-    let (x, y, w, h) = m.placed_window_now()
     local_menu.val = true
     open.set(true)
-    @sf.menu(items, from=At(x, y, w, h), along=End, gone=fn() {
+    @sf.menu(items, from=Node(m), along=End, gone=fn() {
       local_menu.val = false
       open.set(false)
     })

@@ -421,9 +421,8 @@ fn lists_band_node(
         let opener = @sf.Opener::new()
         @sf.action_box_node(k, fn() { @sf.t("web-main.filter.chats.named", args=[("named", filter_named(shown()))]) }, fn(f) {
           guard @signals.untracked(workspace) is Some(w) else { return }
-          let (x, y, wd, h) = f.placed_window_now()
           let now = @signals.untracked(shown)
-          @sfpages.filter_menu(At(x, y, wd, h), if now == "chats" { "all" } else { now }, fn(pick) {
+          @sfpages.filter_menu(Node(f), if now == "chats" { "all" } else { now }, fn(pick) {
             rail_go_told(src, w, if pick == "all" { "chats" } else { pick }, fn(_, g) { g() })
           })
           opener.mark()

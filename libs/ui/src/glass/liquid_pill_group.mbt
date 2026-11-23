@@ -38,6 +38,9 @@ pub(all) struct PillTriggerScope {
   children : Array[@view.View]
   height : Double
   pad : Double
+  direction : PillDirection
+  has_press_scale : Bool
+  rest_glass : () -> @paint.Glass
 }
 
 ///|
@@ -159,18 +162,6 @@ pub fn liquid_pill_group_node(
     let children : Array[@view.View] = []
     let press_way = @motion.NodeWay::new(0.0)
     let scope : PillPressScope = { pill: g, fx: fx_sig, press_way, count: 0 }
-    let trig_scope : PillTriggerScope = {
-      pill: g,
-      fx: fx_sig,
-      press_way,
-      morph_glass,
-      morph_shadow,
-      morph_owner: 0,
-      morph_cancel: None,
-      children,
-      height,
-      pad,
-    }
     let make_glass = fn(sp : (Double, Double)?, ly : Int) -> @paint.Glass {
       let eff_sharing = if ly > 0 { false } else { sharing }
       let sol = match solid {
@@ -226,6 +217,21 @@ pub fn liquid_pill_group_node(
       } else {
         base
       }
+    }
+    let trig_scope : PillTriggerScope = {
+      pill: g,
+      fx: fx_sig,
+      press_way,
+      morph_glass,
+      morph_shadow,
+      morph_owner: 0,
+      morph_cancel: None,
+      children,
+      height,
+      pad,
+      direction,
+      has_press_scale: true,
+      rest_glass: fn() { make_glass(None, 0) },
     }
     let rest_shadow = fn() {
       match shadow {

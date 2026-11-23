@@ -350,7 +350,7 @@ test "对话目录: a wide page's rail at the list's right, 44 wide, clear of th
   t.tap(fx + fw / 2.0, fy + fh / 2.0)
   t.run_for(@ui.move_most_ms)
   let (px, py, pw, ph) = outline_panel(t).unwrap()
-  assert_true(pw < 600.0 && px + pw <= fx + 0.5, msg="panel \{Repr((px, pw))} float at \{fx}")
+  assert_true(pw < 600.0 && px < fx && px + pw <= fx + fw + 3.0, msg="panel \{Repr((px, pw))} float at \{fx}")
   assert_true((py + ph - (fy + fh)).abs() < 12.0, msg="panel \{Repr((py, ph))} float \{Repr((fy, fh))}")
   // two said: no rail, only the round button while away from the end
   let few : Json = {
@@ -734,7 +734,7 @@ test "对话目录: on a page too narrow for the rail (a 1200 wide window) the r
   t.run_for(@ui.move_most_ms)
   let (px, py, pw, ph) = outline_panel(t).unwrap()
   // (at its left, their feet together)
-  assert_true(pw < 600.0 && px + pw <= fx + 0.5, msg="panel \{Repr((px, pw))} float at \{fx}")
+  assert_true(pw < 600.0 && px < fx && px + pw <= fx + fw + 3.0, msg="panel \{Repr((px, pw))} float at \{fx}")
   assert_true((py + ph - (fy + fh)).abs() < 12.0, msg="panel \{Repr((py, ph))} float \{Repr((fy, fh))}")
   assert_eq(outline_faults(t), [])
 }

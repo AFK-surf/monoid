@@ -724,8 +724,7 @@ fn station_actions_node(
     }, tips~)
     // its ⋯ (station_menu's), beside it
     @sf.icon_action_opens_node(a, "more", fn() { @sf.t("common.more") }, fn(m) {
-      let (x, y, w, h) = m.placed_window_now()
-      @sf.menu(station_menu_items(core, @signals.untracked(here), @signals.untracked(whole)), from=At(x, y, w, h), along=End)
+      @sf.menu(station_menu_items(core, @signals.untracked(here), @signals.untracked(whole)), from=Node(m), along=End)
     })
     |> ignore
   }
@@ -2354,13 +2353,12 @@ fn software_row_node(
         sw.show(fn() { software_earlier(v()).length() > 0 }, fn(l) {
           // (its chevron in the words' own ink: the link's default, the theme's blue, is not the Link words' colour here)
           @sf.link_opens_node(l, fn() { @sf.t("web-main.versions.back") }, chevron=true, ink=fn() { @ui.style_ink(@sf.link) }, on=fn() { !busy() }, fn(b) {
-            let (x, y, w, h) = b.placed_window_now()
             let now = @signals.untracked(v)
             @sf.menu(
               software_earlier(now).map(fn(version) {
                 Some(@sf.menu_item_of(version, further=true, fn() { software_back_ask(now, version, call) }))
               }),
-              from=At(x, y, w, h),
+              from=Node(b),
               title=@sf.t("web-main.versions.backTo"),
             )
           })

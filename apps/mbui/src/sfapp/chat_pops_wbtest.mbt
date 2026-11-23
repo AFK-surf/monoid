@@ -128,7 +128,7 @@ test "大屏: the info of a chat another's agent made says that chat, pressed it
 }
 
 ///|
-test "大屏, 中屏: the bar's popovers close by Escape, a press outside and their button again; the focus back on the button; Tab stays in them (Tab held to the popover alone)" {
+test "大屏, 中屏: the bar's popovers close by Escape and a press outside; the focus back on the button; Tab stays in them (Tab held to the popover alone)" {
   for win in pops_windows {
     for which in ["web-pages.chat.info", "web-main.jobs.services"] {
       let open = fn() {
@@ -139,10 +139,10 @@ test "大屏, 中屏: the bar's popovers close by Escape, a press outside and th
           j
         }
       }
+      // In-place liquid morph replaces the trigger capsule with the popover while open, so dismiss goes via Escape or outside press.
       let ways : Array[(String, (@ui.Tester, (Double, Double, Double, Double)) -> Unit)] = [
         ("Escape", fn(t, _) { t.key(@ui.key_escape) }),
         ("a press outside", fn(t, _) { t.tap(win.1 / 2.0, 500.0) }),
-        ("its button again", fn(t, b) { t.tap(b.0 + b.2 / 2.0, b.1 + b.3 / 2.0) }),
       ]
       // (one Tester for the three ways, in turn: each closes the popover and leaves nothing else open or presented, so
       // the popover opened again by its button is the one a Tester made anew opens; Escape first, the focus coming

@@ -504,3 +504,548 @@ test "tall 8-item pill menu clamps mid-open content scale to min(cur_w/w, cur_h/
   assert_true(scale_h < scale_w, msg="tall 8-item menu has cur_h/h < cur_w/w at 120ms: h=\{scale_h} w=\{scale_w}")
   assert_true(clamped <= scale_h + 1.0e-9, msg="content scale <= cur_h/h prevents top-row clipping: \{clamped} vs \{scale_h}")
 }
+
+///|
+test "bar_pill_group_node panel_node performs liquid morph with OpenGate, zero rest lens, upward recoil, and horizontal splash" {
+  defer {
+    @ui.set_glass_solid(None)
+    set_dark(None)
+    presenters_reset()
+  }
+  presenters_reset()
+  set_words(fn(key, _) { key })
+  let t = @ui.Tester::new(fn(_c) {  }, w=900.0, h=640.0, dark=false, platform=0)
+  set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  let info_ref : Ref[@view.View?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(page) {
+      page.grow(Is(1.0)).padding(Is((64.0, 24.0, 64.0, 64.0))).ground(By(fn() { theme().p.bg })) |> ignore
+      page.box(fn(bar) {
+        bar.row(Is(true)).gap(Is(6.0)).lies_along(Is(End)) |> ignore
+        bar_pill_group_node(bar, height=36.0, pad=2.0, gap=2.0, fn(k) {
+          icon_button_node(k, "archive", fn() { "Archive" }, fn() {  }) |> ignore
+        })
+        |> ignore
+        bar_pill_group_node(bar, height=36.0, pad=2.0, gap=2.0, fn(k) {
+          let info = icon_button_node(k, "info", fn() { "Info" }, fn() {
+            let anchor = info_ref.val.unwrap()
+            panel_nodes(
+              "Chat Info",
+              fn(body, _close) {
+                body.box(fn(w) {
+                  words_node(w, fn() { "Panel Body Content" }, fn() { paragraph }) |> ignore
+                })
+                |> ignore
+              },
+              from=Node(anchor),
+              along=End,
+            )
+          })
+          info_ref.val = Some(info)
+          icon_button_node(k, "more", fn() { "More" }, fn() {  }) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  let init_glass = t.drawn_glass()
+  assert_eq(init_glass.length(), 2, msg="2 resting pills before panel open")
+  let rest_pill_y = init_glass[1].1
+  let rest_pill_w = init_glass[1].2
+
+  let (ix, iy, iw, ih) = info_ref.val.unwrap().placed_window_now()
+  t.press_at(ix + iw * 0.5, iy + ih * 0.5)
+  t.release(ix + iw * 0.5, iy + ih * 0.5)
+  t.run_for(bridge_test_settle_ms)
+  assert_true(t.find("Panel Body Content") is Some(_), msg="panel body visible at rest")
+  let rest_glass = t.drawn_glass()
+  let rest_liq = bridge_liquid_instances(t)
+  assert_eq(rest_glass.length(), 2, msg="rest panel has 2 liquid instances (Archive + Panel)")
+  assert_eq(rest_liq.length(), 2, msg="rest panel has 2 raw liquid instances")
+  assert_true((rest_glass[1].1 - rest_glass[0].1).abs() <= 1.5, msg="panel top aligns with top bar pill top")
+  let rest_lens_n = t.drawn_instances().filter(fn(a) { a.length() > 5 && a[5] == 8.0 }).length()
+  assert_eq(rest_lens_n, 0, msg="resting panel emits 0 kind == 8 content_lens")
+  assert_eq(t.audit(), [], msg="panel rest audit clean")
+
+  t.key(@ui.key_escape)
+  t.draw()
+  let close_t0 = t.time()
+  t.run_for(bridge_test_recoil_ms)
+  let recoil_dt = t.time() - close_t0
+  if recoil_dt >= 140.0 && recoil_dt <= 260.0 {
+    let recoil_glass = t.drawn_glass()
+    if recoil_glass.length() >= 3 {
+      let trig_dy = recoil_glass[1].1 - rest_pill_y
+      assert_true(trig_dy <= -6.0 && trig_dy >= -11.5, msg="panel close trigger recoil upward at \{recoil_dt}ms: dy=\{trig_dy}")
+    }
+  }
+  t.run_for(bridge_test_splash_step_ms)
+  let splash_dt = t.time() - close_t0
+  if splash_dt >= 340.0 && splash_dt <= 460.0 {
+    let splash_glass = t.drawn_glass()
+    assert_eq(bridge_liquid_instances(t).length(), 2, msg="panel post-handoff has 2 liquid instances")
+    assert_true(splash_glass[1].2 > rest_pill_w + 0.1, msg="panel close horizontal splash: w=\{splash_glass[1].2} vs \{rest_pill_w}")
+  }
+  t.run_for(bridge_test_settle_ms)
+  let after_glass = t.drawn_glass()
+  assert_true(t.find("Panel Body Content") is None, msg="panel unmounted after close")
+  assert_eq(bridge_liquid_instances(t).length(), 2, msg="2 resting pills after panel close")
+  assert_true((after_glass[1].1 - rest_pill_y).abs() < 0.5, msg="pill returns to resting y")
+  assert_true((after_glass[1].2 - rest_pill_w).abs() < 0.5, msg="pill returns to resting width")
+  assert_eq(t.audit(), [], msg="post-close panel audit clean")
+}
+
+///|
+test "bar_pill_group_node pick_node performs liquid morph with smooth exit recoil and clean unmount" {
+  defer {
+    @ui.set_glass_solid(None)
+    set_dark(None)
+    presenters_reset()
+  }
+  presenters_reset()
+  set_words(fn(key, _) { key })
+  let t = @ui.Tester::new(fn(_c) {  }, w=900.0, h=640.0, dark=false, platform=0)
+  set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  let pick_ref : Ref[@view.View?] = Ref(None)
+  let choices = Array::makei(pick_search_from + 2, fn(i) { choice("c\{i}", "Option \{i}") })
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(page) {
+      page.grow(Is(1.0)).padding(Is((64.0, 24.0, 64.0, 64.0))).ground(By(fn() { theme().p.bg })) |> ignore
+      page.box(fn(bar) {
+        bar.row(Is(true)).gap(Is(6.0)).lies_along(Is(End)) |> ignore
+        bar_pill_group_node(bar, height=36.0, pad=2.0, gap=2.0, fn(k) {
+          icon_button_node(k, "archive", fn() { "Archive" }, fn() {  }) |> ignore
+        })
+        |> ignore
+        bar_pill_group_node(bar, height=36.0, pad=2.0, gap=2.0, fn(k) {
+          icon_button_node(k, "info", fn() { "Info" }, fn() {  }) |> ignore
+          let btn = icon_button_node(k, "more", fn() { "Choose" }, fn() {
+            let anchor = pick_ref.val.unwrap()
+            pick("Pick One", choices, "c0", fn(_) {  }, from=Node(anchor), along=End)
+          })
+          pick_ref.val = Some(btn)
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  let init_glass = t.drawn_glass()
+  let rest_pill_y = init_glass[1].1
+  let rest_pill_w = init_glass[1].2
+
+  let (px, py, pw, ph) = pick_ref.val.unwrap().placed_window_now()
+  t.press_at(px + pw * 0.5, py + ph * 0.5)
+  t.release(px + pw * 0.5, py + ph * 0.5)
+  t.run_for(bridge_test_settle_ms)
+  assert_true(t.find("Option 1") is Some(_), msg="pick_node options visible at rest")
+  let rest_glass = t.drawn_glass()
+  assert_eq(rest_glass.length(), 2, msg="rest pick_node has 2 liquid instances (Archive + Pick)")
+  assert_true((rest_glass[1].1 - rest_glass[0].1).abs() <= 1.5, msg="pick_node top aligns with top bar pill top")
+  let rest_lens_n = t.drawn_instances().filter(fn(a) { a.length() > 5 && a[5] == 8.0 }).length()
+  assert_eq(rest_lens_n, 0, msg="resting pick_node emits 0 kind == 8 content_lens")
+  assert_eq(t.audit(), [], msg="pick_node rest audit clean")
+
+  t.key(@ui.key_escape)
+  t.draw()
+  let close_t0 = t.time()
+  t.run_for(bridge_test_recoil_ms)
+  let recoil_dt = t.time() - close_t0
+  if recoil_dt >= 140.0 && recoil_dt <= 260.0 {
+    let recoil_glass = t.drawn_glass()
+    if recoil_glass.length() >= 3 {
+      let trig_dy = recoil_glass[1].1 - rest_pill_y
+      assert_true(trig_dy <= -6.0 && trig_dy >= -11.5, msg="pick_node close recoil upward at \{recoil_dt}ms: dy=\{trig_dy}")
+    }
+  }
+  t.run_for(bridge_test_settle_ms)
+  assert_true(t.find("Option 1") is None, msg="pick_node unmounted after close")
+  let after_glass = t.drawn_glass()
+  assert_eq(bridge_liquid_instances(t).length(), 2, msg="2 resting pills after pick_node close")
+  assert_true((after_glass[1].1 - rest_pill_y).abs() < 0.5, msg="pill returns to resting y after pick_node close")
+  assert_true((after_glass[1].2 - rest_pill_w).abs() < 0.5, msg="pill returns to resting width after pick_node close")
+  assert_eq(t.audit(), [], msg="post-close pick_node audit clean")
+}
+
+///|
+test "glass_capsule_node trigger=true menu_node side=Top morphs upward, recoils downward, and restores capsule material" {
+  defer {
+    @ui.set_glass_solid(None)
+    set_dark(None)
+    presenters_reset()
+  }
+  presenters_reset()
+  let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=600.0, dark=false, platform=0)
+  set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  let cap_ref : Ref[@view.View?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(page) {
+      page.grow(Is(1.0)).padding(Is((64.0, 24.0, 64.0, 64.0))).lies_along(Is(End)).ground(By(fn() { theme().p.bg })) |> ignore
+      page.box(fn(row) {
+        row.row(Is(true)).gap(Is(8.0)) |> ignore
+        let cap = action_box_node(row, fn() { "Model" }, fn(b) {
+          menu(
+            [
+              Some(menu_item_of("Gemini 4", fn() {  })),
+              Some(menu_item_of("Claude 5", fn() {  })),
+              Some(menu_item_of("GPT 6", fn() {  })),
+            ],
+            from=Node(b),
+            side=Top,
+            along=Start,
+          )
+        }, fn(b) {
+          glass_capsule_node(b, min_height=Some(32.0), radius=Some(999.0), trigger=true)
+          .row(Is(true))
+          .lines_up(Is(Some(Middle)))
+          .padding(Is((14.0, 0.0, 14.0, 0.0)))
+          |> ignore
+          b.box(fn(w) { w.words(Is("Gemini 4")).ink(By(fn() { theme().p.text })) |> ignore }) |> ignore
+        })
+        cap_ref.val = Some(cap)
+      })
+      |> ignore
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  let init_glass = t.drawn_glass()
+  assert_eq(init_glass.length(), 1, msg="1 resting trigger capsule")
+  let rest_cap_y = init_glass[0].1
+  let rest_cap_w = init_glass[0].2
+  let rest_cap_h = init_glass[0].3
+
+  let (cx, cy, cw, ch) = cap_ref.val.unwrap().placed_window_now()
+  t.press_at(cx + cw * 0.5, cy + ch * 0.5)
+  t.release(cx + cw * 0.5, cy + ch * 0.5)
+  t.run_for(bridge_test_settle_ms)
+  assert_true(t.find("Claude 5") is Some(_), msg="Top menu visible at rest")
+  let rest_glass = t.drawn_glass()
+  assert_eq(rest_glass.length(), 1, msg="rest Top menu replaces trigger capsule (1 liquid instance)")
+  assert_true(
+    (rest_glass[0].1 + rest_glass[0].3 - (rest_cap_y + rest_cap_h)).abs() <= 2.0,
+    msg="Top menu bottom aligns with capsule bottom",
+  )
+  let rest_lens_n = t.drawn_instances().filter(fn(a) { a.length() > 5 && a[5] == 8.0 }).length()
+  assert_eq(rest_lens_n, 0, msg="resting Top menu emits 0 kind == 8 content_lens")
+  assert_eq(t.audit(), [], msg="Top menu rest audit clean")
+
+  t.key(@ui.key_escape)
+  t.draw()
+  let close_t0 = t.time()
+  t.run_for(bridge_test_recoil_ms)
+  let recoil_dt = t.time() - close_t0
+  if recoil_dt >= 140.0 && recoil_dt <= 260.0 {
+    let recoil_glass = t.drawn_glass()
+    if recoil_glass.length() >= 2 {
+      let trig_dy = recoil_glass[0].1 - rest_cap_y
+      assert_true(trig_dy >= 4.0 && trig_dy <= 11.5, msg="Top menu close recoils downward at \{recoil_dt}ms: dy=\{trig_dy}")
+    }
+  }
+  t.run_for(bridge_test_settle_ms)
+  let after_glass = t.drawn_glass()
+  assert_true(t.find("Claude 5") is None, msg="Top menu unmounted after close")
+  assert_eq(after_glass.length(), 1, msg="trigger capsule restored after Top menu close")
+  assert_true((after_glass[0].1 - rest_cap_y).abs() < 0.5, msg="capsule returns to resting y")
+  assert_true((after_glass[0].2 - rest_cap_w).abs() < 0.5, msg="capsule returns to resting w")
+  assert_eq(t.audit(), [], msg="Top menu post-close audit clean")
+}
+
+///|
+test "vertical float_pill_group_node panel_node side=Left contracts vertically, recoils rightward, and splashes vertically" {
+  defer {
+    @ui.set_glass_solid(None)
+    set_dark(None)
+    presenters_reset()
+  }
+  presenters_reset()
+  set_words(fn(key, _) { key })
+  let t = @ui.Tester::new(fn(_c) {  }, w=900.0, h=640.0, dark=false, platform=0)
+  set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  let toc_ref : Ref[@view.View?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(page) {
+      page.grow(Is(1.0)).padding(Is((24.0, 64.0, 24.0, 64.0))).lines_up(Is(Some(End))).lies_along(Is(End)).ground(By(fn() { theme().p.bg })) |> ignore
+      float_pill_group_node(page, fn(g) {
+        float_pill_item_node(g, "inbox", fn() { "Inbox" }, fn() {  }) |> ignore
+        let toc = float_pill_item_node(g, "list", fn() { "Outline" }, fn() {
+          let anchor = toc_ref.val.unwrap()
+          panel_nodes(
+            "Outline",
+            fn(body, _close) {
+              body.box(fn(w) {
+                words_node(w, fn() { "Section One" }, fn() { paragraph }) |> ignore
+              })
+              |> ignore
+            },
+            from=Node(anchor),
+            side=Left,
+            along=End,
+          )
+        })
+        toc_ref.val = Some(toc)
+        float_pill_item_node(g, "arrow-down", fn() { "Bottom" }, fn() {  }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  let init_glass = t.drawn_glass()
+  assert_eq(init_glass.length(), 1, msg="1 vertical float_pill_group_node at rest")
+  let rest_pill_x = init_glass[0].0
+  let rest_pill_y = init_glass[0].1
+  let rest_pill_w = init_glass[0].2
+  let rest_pill_h = init_glass[0].3
+  assert_true(rest_pill_h > rest_pill_w * 2.0, msg="vertical pill is taller than wide: \{rest_pill_w}x\{rest_pill_h}")
+
+  let (tx, ty, tw, th) = toc_ref.val.unwrap().placed_window_now()
+  t.press_at(tx + tw * 0.5, ty + th * 0.5)
+  t.release(tx + tw * 0.5, ty + th * 0.5)
+  t.run_for(bridge_test_settle_ms)
+  assert_true(t.find("Section One") is Some(_), msg="Left panel visible at rest")
+  let rest_glass = t.drawn_glass()
+  assert_eq(rest_glass.length(), 1, msg="rest Left panel replaces vertical pill (1 liquid instance)")
+  let rest_lens_n = t.drawn_instances().filter(fn(a) { a.length() > 5 && a[5] == 8.0 }).length()
+  assert_eq(rest_lens_n, 0, msg="resting Left panel emits 0 kind == 8 content_lens")
+  assert_eq(t.audit(), [], msg="Left panel rest audit clean")
+
+  t.key(@ui.key_escape)
+  t.draw()
+  let close_t0 = t.time()
+  t.run_for(bridge_test_recoil_ms)
+  let recoil_dt = t.time() - close_t0
+  if recoil_dt >= 140.0 && recoil_dt <= 260.0 {
+    let recoil_glass = t.drawn_glass()
+    if recoil_glass.length() >= 2 {
+      let trig_dx = recoil_glass[0].0 - rest_pill_x
+      assert_true(trig_dx >= 4.0 && trig_dx <= 11.5, msg="Left panel close recoils rightward at \{recoil_dt}ms: dx=\{trig_dx}")
+    }
+  }
+  t.run_for(bridge_test_splash_step_ms)
+  let splash_dt = t.time() - close_t0
+  if splash_dt >= 340.0 && splash_dt <= 460.0 {
+    let splash_glass = t.drawn_glass()
+    assert_eq(bridge_liquid_instances(t).length(), 1, msg="vertical pill post-handoff has 1 liquid instance")
+    assert_true(splash_glass[0].3 > rest_pill_h + 0.1, msg="vertical splash exceeds resting height at \{splash_dt}ms: h=\{splash_glass[0].3} vs \{rest_pill_h}")
+  }
+  t.run_for(bridge_test_settle_ms)
+  let after_glass = t.drawn_glass()
+  assert_true(t.find("Section One") is None, msg="Left panel unmounted after close")
+  assert_eq(after_glass.length(), 1, msg="vertical pill restored after close")
+  assert_true((after_glass[0].0 - rest_pill_x).abs() < 0.5, msg="vertical pill returns to resting x")
+  assert_true((after_glass[0].1 - rest_pill_y).abs() < 0.5, msg="vertical pill returns to resting y")
+  assert_true((after_glass[0].3 - rest_pill_h).abs() < 0.5, msg="vertical pill returns to resting height")
+  assert_eq(t.audit(), [], msg="vertical pill post-close audit clean")
+}
+
+///|
+test "plain button panel/pick and glass_capsule_node trigger=false do not trigger pill_morph" {
+  defer {
+    @ui.set_glass_solid(None)
+    set_dark(None)
+    presenters_reset()
+  }
+  presenters_reset()
+  set_words(fn(key, _) { key })
+  let t = @ui.Tester::new(fn(_c) {  }, w=900.0, h=640.0, dark=false, platform=0)
+  set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  let cap_ref : Ref[@view.View?] = Ref(None)
+  let btn_ref : Ref[@view.View?] = Ref(None)
+  let choices = Array::makei(pick_search_from + 2, fn(i) { choice("c\{i}", "Plain \{i}") })
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(page) {
+      page.grow(Is(1.0)).padding(Is((64.0, 64.0, 64.0, 64.0))).gap(Is(16.0)).ground(By(fn() { theme().p.bg })) |> ignore
+      let cap = action_box_node(page, fn() { "NonTriggerCapsule" }, fn(b) {
+        menu([Some(menu_item_of("Cap Item", fn() {  }))], from=Node(b))
+      }, fn(b) {
+        glass_capsule_node(b, min_height=Some(32.0), radius=Some(999.0))
+        .row(Is(true))
+        .lines_up(Is(Some(Middle)))
+        .padding(Is((12.0, 0.0, 12.0, 0.0)))
+        |> ignore
+        b.box(fn(w) { w.words(Is("NonTriggerCapsule")).ink(By(fn() { theme().p.text })) |> ignore }) |> ignore
+      })
+      cap_ref.val = Some(cap)
+      let btn = button_node(page, fn() { "PlainPick" }, fn() {
+        pick("Plain Pick", choices, "c0", fn(_) {  }, from=Node(btn_ref.val.unwrap()))
+      })
+      btn_ref.val = Some(btn)
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  // 1. glass_capsule_node(trigger=false) keeps both capsule and menu glass (2 instances, no morph)
+  let (cx, cy, cw, ch) = cap_ref.val.unwrap().placed_window_now()
+  t.press_at(cx + cw * 0.5, cy + ch * 0.5)
+  t.release(cx + cw * 0.5, cy + ch * 0.5)
+  t.run_for(@motion.pop_ms)
+  assert_true(t.find("Cap Item") is Some(_), msg="non-trigger capsule menu opens")
+  assert_eq(t.drawn_glass().length(), 2, msg="trigger=false capsule stays visible beside menu (no morph)")
+  t.key(@ui.key_escape)
+  t.run_for(@motion.pop_out_ms)
+  assert_true(t.find("Cap Item") is None, msg="non-trigger capsule menu closes")
+
+  // 2. Plain button opening pick_node uses standard FromBeside without morph
+  let (bx, by, bw, bh) = btn_ref.val.unwrap().placed_window_now()
+  t.press_at(bx + bw * 0.5, by + bh * 0.5)
+  t.release(bx + bw * 0.5, by + bh * 0.5)
+  t.run_for(@motion.pop_ms * 0.3)
+  let mid_glass = t.drawn_glass()
+  assert_eq(mid_glass.length(), 2, msg="plain button pick emits capsule + 1 pick glass")
+  t.run_for(@motion.pop_ms)
+  let rest_glass = t.drawn_glass()
+  assert_true(mid_glass[1].3 / rest_glass[1].3 >= 0.96, msg="plain pick keeps FromBeside 0.97..1.0 scale")
+  t.key(@ui.key_escape)
+  t.run_for(@motion.pop_out_ms)
+  assert_true(t.find("Plain 1") is None, msg="plain pick closes after pop_out_ms")
+  assert_eq(t.audit(), [], msg="plain pick post-close audit clean")
+}
+
+///|
+test "MBUI_REDUCE_MOTION=1 skips pill_morph on bar_pill_group_node panel_node" {
+  defer {
+    @ui.set_glass_solid(None)
+    set_dark(None)
+    presenters_reset()
+  }
+  presenters_reset()
+  set_words(fn(key, _) { key })
+  let t = @ui.Tester::new(
+    fn(_c) {  },
+    w=900.0,
+    h=640.0,
+    dark=false,
+    platform=0,
+    env=[("MBUI_REDUCE_MOTION", "1")],
+  )
+  set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  let info_ref : Ref[@view.View?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(page) {
+      page.grow(Is(1.0)).padding(Is((64.0, 24.0, 64.0, 64.0))).ground(By(fn() { theme().p.bg })) |> ignore
+      page.box(fn(bar) {
+        bar.row(Is(true)).gap(Is(6.0)).lies_along(Is(End)) |> ignore
+        bar_pill_group_node(bar, height=36.0, pad=2.0, gap=2.0, fn(k) {
+          let info = icon_button_node(k, "info", fn() { "Info" }, fn() {
+            let anchor = info_ref.val.unwrap()
+            panel_nodes(
+              "Chat Info",
+              fn(body, _close) {
+                body.box(fn(w) {
+                  words_node(w, fn() { "Reduced Motion Panel" }, fn() { paragraph }) |> ignore
+                })
+                |> ignore
+              },
+              from=Node(anchor),
+              along=End,
+            )
+          })
+          info_ref.val = Some(info)
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  assert_eq(t.drawn_glass().length(), 1, msg="1 resting pill before open")
+  let (ix, iy, iw, ih) = info_ref.val.unwrap().placed_window_now()
+  t.press_at(ix + iw * 0.5, iy + ih * 0.5)
+  t.release(ix + iw * 0.5, iy + ih * 0.5)
+  t.draw()
+  assert_true(t.find("Reduced Motion Panel") is Some(_), msg="reduced-motion panel visible immediately")
+  assert_eq(t.drawn_glass().length(), 2, msg="reduced-motion keeps trigger pill + panel both visible (no morph hijack)")
+  assert_eq(t.audit(), [], msg="reduced-motion open audit clean")
+  t.key(@ui.key_escape)
+  t.run_for(@motion.pop_out_ms)
+  assert_true(t.find("Reduced Motion Panel") is None, msg="reduced-motion panel closes in pop_out_ms without 610ms hold")
+  assert_eq(t.drawn_glass().length(), 1, msg="1 resting pill after reduced-motion close")
+  assert_eq(t.audit(), [], msg="reduced-motion post-close audit clean")
+}
+
+///|
+test "popover closing after its trigger pill unmounted still enters is_closing and shrinks on the next frame" {
+  defer {
+    @ui.set_glass_solid(None)
+    set_dark(None)
+    presenters_reset()
+  }
+  presenters_reset()
+  set_words(fn(key, _) { key })
+  let t = @ui.Tester::new(fn(_c) {  }, w=900.0, h=640.0, dark=false, platform=0)
+  set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  let show_bar = @signals.signal(true)
+  let trig_ref : Ref[@view.View?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(page) {
+      page.grow(Is(1.0)).padding(Is((64.0, 24.0, 64.0, 64.0))).ground(By(fn() { theme().p.bg })) |> ignore
+      page.show(fn() { show_bar.get() }, at_once=true, fn(bar_wrap) {
+        bar_wrap.row(Is(true)).gap(Is(6.0)).lies_along(Is(End)) |> ignore
+        bar_pill_group_node(bar_wrap, height=36.0, pad=2.0, gap=2.0, fn(k) {
+          let btn = icon_button_node(k, "info", fn() { "Info" }, fn() {
+            let anchor = trig_ref.val.unwrap()
+            pick(
+              "Workspace",
+              [choice("ws1", "WS 1"), choice("ws2", "WS 2")],
+              "ws1",
+              fn(_) { show_bar.set(false) },
+              from=Node(anchor),
+              along=End,
+            )
+          })
+          trig_ref.val = Some(btn)
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  let (ix, iy, iw, ih) = trig_ref.val.unwrap().placed_window_now()
+  t.press_at(ix + iw * 0.5, iy + ih * 0.5)
+  t.release(ix + iw * 0.5, iy + ih * 0.5)
+  t.run_for(@ui.move_most_ms)
+  let open_glass = t.drawn_glass()
+  assert_true(open_glass.length() >= 1, msg="open pick has glass surface")
+  let open_h = open_glass[open_glass.length() - 1].3
+  // Clicking WS 2 unmounts the trigger pill (show_bar=false) in the same turn that pick_nodes begins leaving.
+  t.click(MenuItemRadio, label="WS 2")
+  t.run_for(@ui.frame_period_default * 2.0)
+  let closing_glass = t.drawn_glass()
+  assert_true(
+    closing_glass.length() == 0 || closing_glass[closing_glass.length() - 1].3 < open_h - 1.0,
+    msg="popover shrinks promptly even after trigger pill unmounted: open_h=\{open_h}, count=\{closing_glass.length()}",
+  )
+  t.run_for(@glass.lm_close_duration_ms)
+  assert_true(t.find("WS 2") is None, msg="popover unmounts cleanly after dead-trigger close")
+  assert_eq(t.audit(), [], msg="dead-trigger close audit clean")
+}
