@@ -77,10 +77,12 @@ test "a terminal typed into here: deck has Backspace, keyboard dismiss resets kb
     assert_true(tk.find("F12") is Some(_), msg="\{win.0}: no F12 in 按键")
   }
   for win in terminal_windows {
-    let te = screen_in("terminal-ended", win, "zh")
-    assert_true(te.find(tr("web-pages.terminal.ended")) is Some(_), msg="\{win.0}: no 已结束 on ended terminal")
-    te.get(Button, label=tr("web-pages.screen.again")) |> ignore
-    assert_true(te.drawn_glass().iter().any(fn(g) { g.4 == 6 }), msg="\{win.0}: ended card draws liquid glass")
-    assert_eq(te.audit(), [], msg="\{win.0}: ended card audit")
+    for dark in [false, true] {
+      let te = screen_in("terminal-ended", win, "zh", dark~)
+      assert_true(te.find(tr("web-pages.terminal.ended")) is Some(_), msg="\{win.0} dark=\{dark}: no 已结束 on ended terminal")
+      te.get(Button, label=tr("web-pages.screen.again")) |> ignore
+      assert_true(te.drawn_glass().iter().any(fn(g) { g.4 == 6 }), msg="\{win.0} dark=\{dark}: ended card draws liquid glass")
+      assert_eq(te.audit(), [], msg="\{win.0} dark=\{dark}: ended card audit")
+    }
   }
 }

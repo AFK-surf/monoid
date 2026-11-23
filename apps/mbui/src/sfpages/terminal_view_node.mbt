@@ -1762,12 +1762,11 @@ pub fn terminal_pane_node(
         })
         |> ignore
       })
-      // Centered liquid glass status card when the terminal session has ended or failed
+      // Centered theme-adaptive liquid glass status card when the terminal session has ended or failed
       k.show(ended, fn(ov) {
         ov
         .over(Is(true))
         .padding(Is((24.0, 24.0, 24.0, 24.0)))
-        .ground(Is(0x1011148CL))
         .lines_up(Is(Some(Middle)))
         .lies_along(Is(Middle))
         |> ignore
@@ -1778,7 +1777,7 @@ pub fn terminal_pane_node(
           .padding(Is((@sf.card_pad, @sf.card_pad, @sf.card_pad, @sf.card_pad)))
           .gap(Is(18.0))
           |> ignore
-          @sf.glass_capsule_node(card, radius=Some(@sf.card_corner), dark=true, sharing=false) |> ignore
+          @sf.panel_surface_decorate(card, radius=@sf.card_corner, clips=true) |> ignore
           card.box(fn(head) {
             head.gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
             head.box(fn(badge) {
@@ -1786,11 +1785,11 @@ pub fn terminal_pane_node(
               .width(Is(Some(40.0)))
               .height(Is(Some(40.0)))
               .radius(Is(20.0))
-              .ground(Is(0xFFFFFF18L))
+              .ground(By(fn() { @sf.alpha(@sf.theme().p.text, if @sf.theme().dark { 0.10 } else { 0.07 }) }))
               .lines_up(Is(Some(Middle)))
               .lies_along(Is(Middle))
               |> ignore
-              @sf.icon_node(badge, "terminal", 18.0, Is(0xFFFFFFDCL)) |> ignore
+              @sf.icon_node(badge, "terminal", 18.0, By(fn() { @sf.alpha(@sf.theme().p.text, 0.85) })) |> ignore
             })
             |> ignore
             head.box(fn(words) {
@@ -1812,7 +1811,7 @@ pub fn terminal_pane_node(
                   }
                 }))
                 .words_centered(Is(true))
-                .ink(Is(0xFFFFFFFFL))
+                .ink(By(fn() { @sf.theme().p.text }))
                 |> ignore
               })
               |> ignore
@@ -1838,7 +1837,7 @@ pub fn terminal_pane_node(
                 }))
                 .words_centered(Is(true))
                 .allow_ellipsis(Is(true))
-                .ink(Is(0xFFFFFFA6L))
+                .ink(By(fn() { @sf.alpha(@sf.theme().p.text, if @sf.theme().dark { 0.70 } else { 0.74 }) }))
                 |> ignore
               })
             })
@@ -1863,11 +1862,22 @@ pub fn terminal_pane_node(
                 .row(Is(true))
                 .lines_up(Is(Some(Middle)))
                 .lies_along(Is(Middle))
-                .ground(Is(0xFFFFFFEBL))
+                .ground(By(fn() {
+                  let p = @sf.theme().p
+                  if @sf.theme().dark { 0xFFFFFFEBL } else { p.primary }
+                }))
                 |> ignore
                 @sf.hover_ground_node(
                   b,
-                  color=fn() { if b.pressed() { 0x00000018L } else { 0xFFFFFF40L } },
+                  color=fn() {
+                    if @sf.theme().dark {
+                      if b.pressed() { 0x00000018L } else { 0xFFFFFF40L }
+                    } else if b.pressed() {
+                      0xFFFFFF24L
+                    } else {
+                      0xFFFFFF18L
+                    }
+                  },
                 )
                 b.box(fn(w) {
                   w
@@ -1884,7 +1894,7 @@ pub fn terminal_pane_node(
                       max_lines: 0,
                     }
                   }))
-                  .ink(Is(0x16171AFFL))
+                  .ink(By(fn() { if @sf.theme().dark { 0x16171AFFL } else { @sf.theme().p.on_primary } }))
                   |> ignore
                 })
                 |> ignore
