@@ -9,7 +9,8 @@
 //   holds (Claude Code's /limit-reset), asked as the installed Claude Code asks them: claude-reset.ts;
 // - Antigravity CLI (Google account): `agy -p /usage --output-format json` in the profile's Antigravity home (Gemini
 //   and Claude / GPT 5-hour and weekly windows): agy-quota.ts;
-// - Anthropic API keys and other providers bill per use and have no allowance to show.
+// - MiniMax Token Plan and GLM Coding Plan (China): provider usage endpoints.
+// - Other API providers use the generic allowance status.
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -297,6 +298,16 @@ export async function checkQuota(profile: Profile, env: Env, codexRateLimits: Co
       const key = kimiSignedIn(profile) ? ((await readKimi(profile.home))?.access ?? "") : String((profile.access as Json)?.key ?? "").trim();
       return await kimiQuota(urls, key, lang);
     }
+    if (kind === "api-provider") {
+      const provider = (profile.access as Json)?.provider;
+      const key = String((profile.access as Json)?.key ?? "").trim();
+      if (provider === "minimax-cn" && key.startsWith("sk-cp")) {
+        return await planQuota(urls.minimaxCnQuota ?? "https://www.minimaxi.com/v1/token_plan/remains", key, miniMaxWindows, lang);
+      }
+      if (provider === "zai-coding-cn") {
+        return await planQuota(urls.glmCodingCnQuota ?? "https://open.bigmodel.cn/api/monitor/usage/quota/limit", key, glmCodingWindows, lang);
+      }
+    }
     if (kind === "anthropic-api" || kind === "api-provider") return quota("unsupported", [], tr(lang, "station.quota.payAsYouGo"));
     if (kind === "env") return quota("unsupported", [], tr(lang, "station.quota.envUnsupported"));
     if (kind === "subscription" && profile.runtime === "grok") return await grokQuota(profile, env, lang);
@@ -334,6 +345,49 @@ export async function checkQuota(profile: Profile, env: Env, codexRateLimits: Co
   } catch (e) {
     return failed(e, lang);
   }
+}
+
+async function planQuota(url: string, key: string, windowsOf: (body: unknown) => QuotaWindow[], lang: Lang): Promise<ProfileQuota> {
+  const response = await profileFetch(url, {
+    headers: { authorization: `Bearer ${key}`, accept: "application/json" },
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  const body: unknown = response.ok ? await response.json().catch(() => null) : null;
+  return okOrUnavailable(windowsOf(body), tr(lang, "station.quota.planUnavailable"));
+}
+
+function isPercentage(value: unknown): value is number {
+  return typeof value === "number" && value >= 0 && value <= 100;
+}
+
+function miniMaxWindows(body: unknown): QuotaWindow[] {
+  if (!isObject(body) || body.base_resp?.status_code !== 0 || !Array.isArray(body.model_remains)) return [];
+  const general = body.model_remains.find((entry: unknown) => isObject(entry) && entry.model_name === "general");
+  if (!isObject(general)) return [];
+  const windows: QuotaWindow[] = [];
+  for (const { remaining, start, end } of [
+    { remaining: general.current_interval_remaining_percent, start: at(general.start_time), end: at(general.end_time) },
+    { remaining: general.current_weekly_remaining_percent, start: at(general.weekly_start_time), end: at(general.weekly_end_time) },
+  ]) {
+    if (!isPercentage(remaining) || start === null || end === null || end <= start) continue;
+    const minutes = (end - start) / 60_000;
+    windows.push({ label: windowLabel(minutes, "限额"), usedPercent: percent(100 - remaining), resetsAt: end, minutes });
+  }
+  return windows;
+}
+
+function glmCodingWindows(body: unknown): QuotaWindow[] {
+  if (!isObject(body) || body.code !== 200 || !Array.isArray(body.data?.limits)) return [];
+  const windows: QuotaWindow[] = [];
+  for (const entry of body.data.limits) {
+    if (!isObject(entry) || entry.type !== "TOKENS_LIMIT" || !isPercentage(entry.percentage)) continue;
+    if (typeof entry.number !== "number" || !Number.isFinite(entry.number) || entry.number <= 0) continue;
+    const unitMinutes = entry.unit === 3 ? 60 : entry.unit === 6 ? WEEK_MINUTES : null;
+    if (unitMinutes === null) continue;
+    const minutes = entry.number * unitMinutes;
+    windows.push({ label: windowLabel(minutes, "限额"), usedPercent: percent(entry.percentage), resetsAt: at(entry.nextResetTime), minutes });
+  }
+  return windows.sort((a, b) => (a.minutes ?? 0) - (b.minutes ?? 0));
 }
 
 /// Kimi Code's allowance: its answer's `usage` (the week) and `limits` (each with its window, 5 hours say), each as a

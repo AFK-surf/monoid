@@ -106,6 +106,8 @@ export type Urls = {
   /// ones when not given.
   kimi?: string;
   kimiApi?: string;
+  minimaxCnQuota?: string;
+  glmCodingCnQuota?: string;
   /// Google AI Code (an Antigravity CLI profile's allowance: agy-quota.ts); the real one when not given.
   agyQuota?: string;
   /// Google AI Code production endpoint override for tests; falls back to `agyQuota`, then production.
