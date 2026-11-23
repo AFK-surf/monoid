@@ -2318,24 +2318,19 @@ fn software_row_node(
         @sf.words_node(w, fn() { software_said(v()) }, fn() { sw_note }) |> ignore
       })
       u.show(fn() { text(v(), "note") != "" }, fn(w) { @sf.words_node(w, fn() { text(v(), "note") }, fn() { sw_note }) |> ignore })
-      // gone back to a release before: updating by itself held till a newer one than the release it left is out
-      u.show(fn() { text(v(), "autoAfter") != "" }, fn(w) {
-        @sf.words_node(w, fn() { @sf.t("web-main.versions.autoAfter", args=[("version", text(v(), "autoAfter"))]) }, fn() { sw_note })
-        |> ignore
-      })
-      u.show(fn() { text(v(), "overrideNote") != "" }, fn(w) {
-        @sf.words_node(w, fn() { text(v(), "overrideNote") }, fn() { sw_note }) |> ignore
-      })
-      u.show(fn() { software_auto_when(v()).length() > 0 }, fn(w) {
-        @sf.words_node(w, fn() {
-          let sep = if @sf.language() == "en" { ", " } else { "、" }
-          @sf.t("web-main.versions.autoWhen", args=[("conditions", software_auto_when(v()).join(sep))])
-        }, fn() { sw_note })
-        |> ignore
-      })
-      u.show(fn() { software_auto_when(v()).length() == 0 && flag(v(), "autoHeld") }, fn(w) {
-        @sf.words_node(w, fn() { @sf.t("web-main.versions.overrideHeld") }, fn() { sw_note }) |> ignore
-      })
+      // station-only update notes: held after rollback, local override note, and fix-gated/paused auto-update status
+      if own {
+        u.show(fn() { text(v(), "autoAfter") != "" }, fn(w) {
+          @sf.words_node(w, fn() { @sf.t("web-main.versions.autoAfter", args=[("version", text(v(), "autoAfter"))]) }, fn() { sw_note })
+          |> ignore
+        })
+        u.show(fn() { text(v(), "overrideNote") != "" }, fn(w) {
+          @sf.words_node(w, fn() { text(v(), "overrideNote") }, fn() { sw_note }) |> ignore
+        })
+        u.show(fn() { software_override_auto_note(v()) != "" }, fn(w) {
+          @sf.words_node(w, fn() { software_override_auto_note(v()) }, fn() { sw_note }) |> ignore
+        })
+      }
       u.show(fn() { text(v(), "state") == "failed" && text(v(), "message") != "" }, fn(w) {
         @sf.words_node(w, fn() { text(v(), "message") }, fn() { sw_note }) |> ignore
       })
@@ -2423,6 +2418,20 @@ fn software_auto_when(v : Json?) -> Array[String] {
       _ => None
     }
   })
+}
+
+///|
+/// Status note for an overridden station's conditional or paused auto-update.
+fn software_override_auto_note(v : Json?) -> String {
+  let when = software_auto_when(v)
+  if when.length() > 0 {
+    let sep = if @sf.language() == "en" { ", " } else { "、" }
+    @sf.t("web-main.versions.autoWhen", args=[("conditions", when.join(sep))])
+  } else if flag(v, "autoHeld") {
+    @sf.t("web-main.versions.overrideHeld")
+  } else {
+    ""
+  }
 }
 
 ///|

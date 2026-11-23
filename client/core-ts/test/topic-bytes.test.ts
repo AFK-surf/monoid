@@ -161,6 +161,7 @@ const EMPTY: Record<string, Record<string, string>> = {
     // retired station's chats being taken here, none retired; retire.steps: the station being retired, it is not)
     "overview.copies.offers": STATE, "overview.copies.formerly": NONE, "overview.copies.taking": STATE,
     "overview.copies.retire.steps": STATE,
+    "overview.updates[].autoWhen": STATE,
   },
   // (no module open: its items are the open one's alone, move.ts)
   "stationMove station": { "modules[].items": ASKED_SO },
@@ -168,6 +169,7 @@ const EMPTY: Record<string, Record<string, string>> = {
   "stationPart profiles": { "[].modelsSaving": SAVING, "[].quota.windows[].time": NEVER, "[].decisionModels": NONE, "[].workspaces": NONE },
   // (a sign-in under way: Willow's)
   "stationPart logins": { "(whole)": STATE },
+  "stationPart updates": { "[].autoWhen": STATE },
   "chats": { "note.failing": ERROR, interrupted: STATE },
   "chats mine": { "note.failing": ERROR, interrupted: STATE },
   // (foundMarks: a search's alone, views/search.ts foundChat; the chat weighed is shared with no other workspace)
