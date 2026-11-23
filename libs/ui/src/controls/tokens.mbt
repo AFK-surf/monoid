@@ -1741,6 +1741,14 @@ fn ui_theme_of(t : Theme) -> @ui.Theme {
     link: t.p.accent_text,
     // the accent itself the palette's (外观 › 主题色), what a style's Accent says
     accent: t.p.accent,
+    focus: {
+      let more = @ui.more_contrast()
+      if t.dark {
+        alpha(t.p.accent_text, if more { 0.92 } else { 0.78 })
+      } else {
+        alpha(t.p.accent, if more { 0.88 } else { 0.68 })
+      }
+    },
     // the grounds the palette's too (the same as mbui's still.fail theme's in the orange; a colour theme's in its hue):
     // what a style's Bg, Surface, Raised, Card and ListGround say
     bg: t.p.bg,

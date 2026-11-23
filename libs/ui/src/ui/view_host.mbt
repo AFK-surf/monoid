@@ -2880,7 +2880,8 @@ fn Ctx::emit_outer_ring(self : Ctx, c : @view.Content, x : Double, y : Double, a
   guard c.bones == 0L else { return -1 }
   let (rw, rgap, rc) = if c.ring.0 < 0.0 {
     let t = tree_theme()
-    (t.focus_w, if c.ring.1 != 0.0 { c.ring.1 } else { t.focus_gap }, t.focus)
+    let w = if c.ring.0 == -1.0 { t.focus_w } else { -c.ring.0 }
+    (w, if c.ring.1 != 0.0 { c.ring.1 } else { t.focus_gap }, t.focus)
   } else {
     c.ring
   }
@@ -3746,6 +3747,14 @@ fn Ctx::view_blit(
         s.unsafe_set(b + 21, glass_paint.ink_x)
         s.unsafe_set(b + 22, glass_paint.ink_y)
         s.unsafe_set(b + 23, glass_paint.ink_r)
+      } else if kind == 0.0 &&
+        s.unsafe_get(b + 6) <= 0.0 &&
+        s.unsafe_get(b + 22) <= 0.0 &&
+        s.unsafe_get(b + 11) > 0.0 &&
+        s.unsafe_get(b + 11) < 0.75 {
+        s.unsafe_set(b + 21, glass_paint.ink_x)
+        s.unsafe_set(b + 22, glass_paint.ink_y)
+        s.unsafe_set(b + 23, -glass_paint.ink_r)
       }
     }
     // (a box's, a shadow's, frosted glass's border colour, liquid glass's opacity: faded with it; a glyph's 12-15 are

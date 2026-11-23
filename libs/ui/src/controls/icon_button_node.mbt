@@ -64,6 +64,7 @@ fn icon_button_by(
   linked? : () -> @ui.CornerOf?,
   shortcut? : String = "",
   ink? : () -> Int64,
+  hover_bg? : () -> Int64,
   grounded? : Bool = true,
   on? : () -> Bool = fn() { false },
   lit? : () -> Bool = fn() { false },
@@ -97,6 +98,8 @@ fn icon_button_by(
       let is_lit = fn() { b.focus_shown() || b.hovered() || b.pressed() || (!disabled() && lit()) }
       let hand = @motion.NodeWay::new(0.0)
       v.reacts(is_lit, fn(on) { hand.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) })
+      let in_pill = @glass.in_liquid_pill(v)
+      let press_more = if in_pill { 0.45 } else { icon_button_press_more }
       bind_pill_press(v)
       let feel = @motion.press_feel(v, live=fn() { !disabled() }, hovers=false)
       feel_of.val = Some(feel)
@@ -108,12 +111,16 @@ fn icon_button_by(
         if pr <= 0.0 {
           hand.shown(v)
         } else {
-          hand.shown(v) * (1.0 + icon_button_press_more * pr)
+          hand.shown(v) * (1.0 + press_more * pr)
         }
       }
       let pad = (size - icon_size) / 2.0
+      if in_pill {
+        v.focus_ring(Is(Some((-1.5, -1.5, 0L)))) |> ignore
+      } else {
+        v.focus_ring_theme() |> ignore
+      }
       v
-      .focus_ring_theme()
       .width(Is(Some(size)))
       .height(Is(Some(size)))
       .padding(Is((pad, pad, pad, pad)))
@@ -145,10 +152,41 @@ fn icon_button_by(
       v.ground(By(fn() {
         if !grounded {
           0L
-        } else if on() {
-          alpha(lit_ink(), 0.08)
         } else {
-          alpha(lit_ink(), 0.065 * tint())
+          match hover_bg {
+            Some(bg_fn) =>
+              if on() {
+                bg_fn()
+              } else {
+                alpha(bg_fn(), dmin(1.0, tint()))
+              }
+            None =>
+              if in_pill {
+                let dark = theme().dark
+                match ink {
+                  Some(_) => {
+                    let base = lit_ink()
+                    if on() {
+                      alpha(base, if dark { 0.29 } else { 0.22 })
+                    } else {
+                      alpha(base, (if dark { 0.26 } else { 0.20 }) * tint())
+                    }
+                  }
+                  None => {
+                    let base = if dark { 0xFFFFFFFFL } else { 0x000000FFL }
+                    if on() {
+                      alpha(base, if dark { 0.18 } else { 0.12 })
+                    } else {
+                      alpha(base, (if dark { 0.16 } else { 0.11 }) * tint())
+                    }
+                  }
+                }
+              } else if on() {
+                alpha(lit_ink(), 0.08)
+              } else {
+                alpha(lit_ink(), 0.065 * tint())
+              }
+          }
         }
       }))
       |> ignore

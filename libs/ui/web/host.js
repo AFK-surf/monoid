@@ -1374,7 +1374,7 @@
     float rad = mb_corner_of(p - c, v_rr);
     float d = mb_sd_box(p - c, hs, rad, band);
     #if ONE_KIND < 0 || ONE_KIND == 0 || ONE_KIND == 5
-    if (kind == 0 || kind == 5) d = notch_cut(d, p, v_rect, v_pad);
+    if ((kind == 0 && v_pad.w >= 0.0) || kind == 5) d = notch_cut(d, p, v_rect, v_pad);
     #endif
     #if ONE_KIND < 0 || ONE_KIND == 4
     if (kind == 4) {
@@ -1446,6 +1446,18 @@
     }
     #endif
     #if ONE_KIND < 0 || ONE_KIND == 0
+    if (v_pad.w < 0.0) {
+      float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);
+      vec2 capCenter, capHalf;
+      float darkT = ad_sample_ink(v_pad.yz, -v_pad.w * 0.5, capCenter, capHalf).x;
+      if (ch <= 0.08 && luma(col.rgb) < 0.5) {
+        col.rgb = mix(col.rgb, vec3(1.0), darkT);
+        col.a = mix(col.a, min(col.a * 1.45, 0.28), darkT);
+      } else if (ch > 0.08 && luma(col.rgb) < 0.35) {
+        col.rgb = mix(col.rgb, min(col.rgb * 1.65 + vec3(0.28, 0.20, 0.18), vec3(1.0)), darkT);
+        col.a = mix(col.a, min(col.a * 1.45, 0.36), darkT);
+      }
+    }
     vec4 fill = vec4(col.rgb, 1.0) * col.a;
     if (v_p.z > 0.0) {
       float inner = clamp(0.5 - (d + v_p.z) * u_scale, 0.0, 1.0);
@@ -2814,7 +2826,7 @@
         if (!mbInside(b, 0, 0, scale, bandHole)) return -1;
       }
     } else if (kind === 0) {
-      if (f32[a + 22] > 0) return -1;
+      if (f32[a + 22] > 0 || f32[a + 23] < 0) return -1;
       if (f32[a + 11] > 0 && f32[a + 6] <= 0) return mbPieces(a, scale, toX0, toY0, toX1, toY1, out);
       if (f32[a + 11] !== 0 || f32[a + 6] <= 0) return -1;
       if (!mbInside(a, 0, f32[a + 6], scale, bandHole)) return -1;

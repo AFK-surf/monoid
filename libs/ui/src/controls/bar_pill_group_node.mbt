@@ -37,10 +37,11 @@ pub fn bar_pill_key_press_node(v : @view.View) -> Unit {
       if v.pressed() {
         bar_pill_press_ink(solid=v.glass_solid())
       } else {
-        @ui.tree_theme().color(Hover)
+        @glass.liquid_pill_hover_ink(solid=v.glass_solid())
       }
     },
   )
+  v.focus_ring(Is(Some((-1.5, -1.5, 0L)))) |> ignore
   bind_pill_press(v)
 }
 

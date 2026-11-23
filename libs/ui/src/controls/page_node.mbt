@@ -49,7 +49,11 @@ pub fn presses_node(v : @view.View, press : () -> Unit, on? : () -> Bool = fn() 
 ///|
 /// Marks `v` to draw the theme's outer concentric focus ring while keyboard focus is shown on it (`Is`, zero bindings).
 pub fn focus_ring_node(v : @view.View) -> Unit {
-  v.focus_ring_theme() |> ignore
+  if @glass.in_liquid_pill(v) {
+    v.focus_ring(Is(Some((-1.5, -1.5, 0L)))) |> ignore
+  } else {
+    v.focus_ring_theme() |> ignore
+  }
 }
 
 ///|
@@ -2413,7 +2417,12 @@ pub fn round_key_node(
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     |> ignore
-    hover_ground_node(k)
+    if @glass.in_liquid_pill(k) {
+      k.focus_ring(Is(Some((-1.5, -1.5, 0L)))) |> ignore
+      hover_ground_node(k, color=fn() { @glass.liquid_pill_hover_ink(solid=k.glass_solid()) })
+    } else {
+      hover_ground_node(k)
+    }
     rippled_look(loc~, k, Is(side / 2.0), go, ink=fn() { bar_pill_press_ink(solid=k.glass_solid()) }, pointer=true)
     bind_pill_press(k)
     icon_node(k, icon, icon_size, By(ink), name_now?=icon_now, weighed=true) |> ignore

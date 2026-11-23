@@ -451,3 +451,70 @@ test "window_keys_node: what goes beside a bar's key left of them (a menu morphi
     assert_true(px < kx, msg=name)
   }
 }
+
+///|
+test "window_keys_node: hovering minimize, maximize and close emits high-contrast pill hover wash with negative adaptive slot 23" {
+  for dark in [false, true] {
+    let (t, _) = window_keys_tester(1280.0, 8.0, false, dark, false)
+    for label in ["desktop.menu.minimize", "desktop.window.maximize", "desktop.menu.close"] {
+      let (x, y, kw, kh) = window_key_rect(t, label)
+      t.move_to(x + kw / 2.0, y + kh / 2.0)
+      t.run_for(dur_ms + 40.0)
+      let discs = t
+        .drawn_instances()
+        .filter(fn(a) {
+          a.length() > 23 &&
+          a[5] == 0.0 &&
+          (a[0] - x).abs() < 0.5 &&
+          (a[1] - y).abs() < 0.5 &&
+          (a[2] - kw).abs() < 0.5 &&
+          (a[3] - kh).abs() < 0.5 &&
+          a[11] > 0.0
+        })
+      let at = "dark=\{dark} \{label}"
+      assert_true(discs.length() >= 1, msg="\{at}: no hover disc emitted")
+      let d = discs[0]
+      if label == "desktop.menu.close" {
+        assert_true(d[11] >= 0.80, msg="\{at}: close hover alpha too weak \{d[11]}")
+        assert_true(d[8] > 0.85, msg="\{at}: close hover red channel too dim \{d[8]}")
+        assert_eq(d[23], 0.0, msg="\{at}: close high-opacity red disc must not flip via slot 23")
+      } else {
+        assert_true(d[23] < 0.0, msg="\{at}: expected negative adaptive slot 23, got \{d[23]}")
+        assert_true(d[11] >= (if dark { 0.14 } else { 0.10 }), msg="\{at}: neutral hover alpha too weak \{d[11]}")
+      }
+    }
+    t.move_to(10.0, 10.0)
+    t.run_for(@ui.move_most_ms)
+  }
+  set_dark(None)
+}
+
+///|
+test "window_keys_node: Tab focus renders unclipped concentric 1.5pt inset focus rings inside the pill with zero focus/audit faults" {
+  for dark in [false, true] {
+    let (t, _) = window_keys_tester(1280.0, 8.0, false, dark, false)
+    for label in ["desktop.menu.minimize", "desktop.window.maximize", "desktop.menu.close"] {
+      t.tab()
+      t.run_for(dur_ms + 40.0)
+      let (x, y, kw, kh) = window_key_rect(t, label)
+      let rings = t
+        .drawn_instances()
+        .filter(fn(a) {
+          a.length() > 15 &&
+          a[5] == 0.0 &&
+          a[11] == 0.0 &&
+          (a[6] - 1.5).abs() < 0.01 &&
+          a[15] > 0.5 &&
+          (a[0] - x).abs() < 0.01 &&
+          (a[1] - y).abs() < 0.01 &&
+          (a[2] - kw).abs() < 0.01 &&
+          (a[3] - kh).abs() < 0.01
+        })
+      let at = "dark=\{dark} \{label}"
+      assert_eq(rings.length(), 1, msg="\{at}: expected 1 concentric 1.5pt inset focus ring at button bounds")
+      assert_eq(t.focus_visible_faults(), [], msg="\{at}: focus_visible_faults")
+      assert_eq(t.audit(), [], msg="\{at}: audit")
+    }
+  }
+  set_dark(None)
+}

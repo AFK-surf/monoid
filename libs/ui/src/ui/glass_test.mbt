@@ -625,3 +625,63 @@ test "adaptive glass slots 6-7 encode center-relative short-word/line/icon offse
     assert_eq(b[7], 0.0)
   }
 }
+
+///|
+test "adaptive liquid glass encodes negative slot 23 on translucent borderless kind 0 fills only" {
+  let t = @ui.Tester::tree(fn(root) {
+    root.box(fn(gl) {
+      gl
+      .row(Is(true))
+      .width(Is(Some(200.0)))
+      .height(Is(Some(44.0)))
+      .radius(Is(22.0))
+      .glass(Is(Some(@ui.Glass::liquid(adaptive=true))))
+      |> ignore
+      // 1. Translucent borderless hover disc -> should encode negative slot 23
+      gl.box(fn(b) {
+        b.width(Is(Some(32.0))).height(Is(Some(32.0))).radius(Is(16.0)).ground(Is(0x0000001CL)) |> ignore
+      })
+      |> ignore
+      // 2. Opaque solid button (>= 0xC0) -> must NOT encode negative slot 23
+      gl.box(fn(b) {
+        b.width(Is(Some(32.0))).height(Is(Some(32.0))).radius(Is(16.0)).ground(Is(0x000000FFL)) |> ignore
+      })
+      |> ignore
+      // 3. Translucent bordered box -> must NOT encode negative slot 23
+      gl.box(fn(b) {
+        b
+        .width(Is(Some(32.0)))
+        .height(Is(Some(32.0)))
+        .radius(Is(16.0))
+        .ground(Is(0x0000001CL))
+        .edge(Is((1.0, 0x00000040L)))
+        |> ignore
+      })
+      |> ignore
+      // 4. Translucent notched box -> notch slot 22 > 0, must NOT encode negative slot 23
+      gl.box(fn(b) {
+        b
+        .width(Is(Some(32.0)))
+        .height(Is(Some(32.0)))
+        .radius(Is(16.0))
+        .ground(Is(0x0000001CL))
+        .notch(Is((0.0, 8.0, 2.0)))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let rects = t.drawn_instances().filter(fn(a) { a[5] == 0.0 && (a[2] - 32.0).abs() < 0.01 })
+  assert_eq(rects.length(), 4)
+  // 1. Translucent borderless: negative slot 23
+  assert_true(rects[0][23] < 0.0)
+  // 2. Opaque: slot 23 == 0.0
+  assert_eq(rects[1][23], 0.0)
+  // 3. Bordered: slot 23 == 0.0
+  assert_eq(rects[2][23], 0.0)
+  // 4. Notched: slot 22 > 0, slot 23 >= 0.0
+  assert_true(rects[3][22] > 0.0)
+  assert_true(rects[3][23] >= 0.0)
+}

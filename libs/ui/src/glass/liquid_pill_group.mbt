@@ -47,6 +47,12 @@ pub(all) struct PillTriggerScope {
 pub let liquid_pill_trigger_lent : @view.Lent[PillTriggerScope] = @view.Lent::new()
 
 ///|
+/// Whether `child` sits inside a `liquid_pill_group_node` (shared glass pill capsule).
+pub fn in_liquid_pill(child : @view.View) -> Bool {
+  child.lent(pill_press_lent) is Some(_)
+}
+
+///|
 /// Theme-adaptive press overlay ink for controls inside a liquid glass pill group.
 pub fn liquid_pill_press_ink(solid? : Bool = false) -> Int64 {
   liquid_press_ink(solid~)

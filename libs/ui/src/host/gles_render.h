@@ -704,7 +704,7 @@ static const char *FS =
     "  float rad = mb_corner_of(p - c, v_rr);\n"
     "  float d = mb_sd_box(p - c, hs, rad, band);\n"
     "#if MB_HAS(0) || MB_HAS(5)\n"
-    "  if (kind == 0 || kind == 5) d = notch_cut(d, p, v_rect, v_pad);\n"
+    "  if ((kind == 0 && v_pad.w >= 0.0) || kind == 5) d = notch_cut(d, p, v_rect, v_pad);\n"
     "#endif\n"
     "#if MB_HAS(4)\n"
     "  if (kind == 4) {\n"
@@ -777,6 +777,20 @@ static const char *FS =
     "  }\n"
     "#endif\n"
     "#if MB_HAS(0)\n"
+    "#if MB_HAS_ADAPTIVE\n"
+    "  if (v_pad.w < 0.0) {\n"
+    "    float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
+    "    vec2 capCenter, capHalf;\n"
+    "    float darkT = ad_sample_ink(v_pad.yz, -v_pad.w * 0.5, capCenter, capHalf).x;\n"
+    "    if (ch <= 0.08 && luma(col.rgb) < 0.5) {\n"
+    "      col.rgb = mix(col.rgb, vec3(1.0), darkT);\n"
+    "      col.a = mix(col.a, min(col.a * 1.45, 0.28), darkT);\n"
+    "    } else if (ch > 0.08 && luma(col.rgb) < 0.35) {\n"
+    "      col.rgb = mix(col.rgb, min(col.rgb * 1.65 + vec3(0.28, 0.20, 0.18), vec3(1.0)), darkT);\n"
+    "      col.a = mix(col.a, min(col.a * 1.45, 0.36), darkT);\n"
+    "    }\n"
+    "  }\n"
+    "#endif\n"
     "  vec4 fill = vec4(col.rgb, 1.0) * col.a;\n"
     "  if (v_p.z > 0.0) {\n"
     "    float inner = clamp(0.5 - (d + v_p.z) * u_scale, 0.0, 1.0);\n"
@@ -3324,12 +3338,13 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
             cs++;
             continue;
           }
-          int cown = has_own_prog(ck);
+          int cown = has_own_prog(ck) && !(ck == 0 && fbuf[cs * MB_INST + 23] < 0.0f);
           int32_t ce = cs + 1;
           while (ce < cend_all && (int)fbuf[ce * MB_INST + 20] == ctid) {
             int kk = (int)(fbuf[ce * MB_INST + 5] + 0.5f);
             if (kk == 5 || kk == 6 || kk == 8 || kk == 9 || kk == 12) break;
-            if (cown ? kk != ck : has_own_prog(kk)) break;
+            int kown = has_own_prog(kk) && !(kk == 0 && fbuf[ce * MB_INST + 23] < 0.0f);
+            if (cown ? (kk != ck || !kown) : kown) break;
             ce++;
           }
           GLuint ct = ctid ? image_tex(ctid) : atlas;
@@ -3370,11 +3385,12 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
         continue;
       }
       // (kinds without their own program one run, as before)
-      int own = tid >= 0 && has_own_prog(kind);
+      int own = tid >= 0 && has_own_prog(kind) && !(kind == 0 && fbuf[start * MB_INST + 23] < 0.0f);
       int32_t end = start + 1;
       while (end < count && (int)fbuf[end * MB_INST + 20] == tid) {
         int k = (int)(fbuf[end * MB_INST + 5] + 0.5f);
-        if (k == 8 || (own ? k != kind : tid >= 0 && has_own_prog(k))) break;
+        int kown = tid >= 0 && has_own_prog(k) && !(k == 0 && fbuf[end * MB_INST + 23] < 0.0f);
+        if (k == 8 || (own ? (k != kind || !kown) : kown)) break;
         end++;
       }
       if (tid < 0) {

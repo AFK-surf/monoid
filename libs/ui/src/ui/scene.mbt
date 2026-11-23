@@ -1091,6 +1091,15 @@ fn Ctx::emit_rect(
     ((bc >> 8) & 0xFFL).to_double() / 255.0,
     ba,
   )
+  if glass_paint.ink_r > 0.0 && bw <= 0.0 {
+    let b = (self.ninst - 1) * inst_size
+    let a = self.inst[b + 11]
+    if a > 0.0 && a < 0.75 {
+      self.inst[b + 21] = glass_paint.ink_x
+      self.inst[b + 22] = glass_paint.ink_y
+      self.inst[b + 23] = -glass_paint.ink_r
+    }
+  }
 }
 
 ///|

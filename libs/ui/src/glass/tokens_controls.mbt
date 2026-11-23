@@ -69,6 +69,19 @@ pub fn liquid_solid_edge() -> (Double, Int64) {
 }
 
 ///|
+/// Theme-adaptive hover overlay ink for controls inside a liquid glass pill group.
+/// Light mode uses a soft dark wash (~11%) that the GPU automatically flips to luminous white (~16%)
+/// when an adaptive glass capsule sits over dark or saturated backdrops.
+pub fn liquid_pill_hover_ink(solid? : Bool = false) -> Int64 {
+  ignore(solid)
+  if is_dark() {
+    0xFFFFFF29L
+  } else {
+    0x0000001CL
+  }
+}
+
+///|
 /// Theme-adaptive press overlay ink over translucent glass: luminous white highlight over real GPU liquid glass
 /// in both Light and Dark modes (matching Apple `.glassEffect(.interactive())` with zero grey veil), falling back
 /// to subtle dark contrast ink in Light mode when `MBUI_GLASS=solid` disables the GPU spot highlight.

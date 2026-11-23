@@ -1072,6 +1072,56 @@ int main(void) {
       free(px_ad);
     }
 
+    // Wave 7b: adaptive kind 0 translucent hover wash (pad.w < 0, 0x0000001C) inside adaptive=true light glass:
+    // 0: white (bg=1.0) -> stays darkened; 1: black (bg=0.0) -> flips luminous white; 2: Apple blue #007AFF -> flips luminous white.
+    {
+      double ahov[3 * MB_INST];
+      struct { double r, g, b; } hov_cases[3] = {
+        {1.0, 1.0, 1.0},
+        {0.0, 0.0, 0.0},
+        {0.0, 122.0 / 255.0, 1.0},
+      };
+      for (int ci = 0; ci < 3; ci++) {
+        double bg = hov_cases[ci].r, bg_g = hov_cases[ci].g, bg_b = hov_cases[ci].b;
+        rect_at(ahov, 0, 0, W, H, 0, bg, bg_g, bg_b, 0);
+        rect_at(ahov + MB_INST, 8, 6, 84, 68, 6,
+                253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -21);
+        ahov[MB_INST + 4] = 16;
+        ahov[MB_INST + 6] = 1.0;
+        ahov[MB_INST + 7] = 2.0;
+        ahov[MB_INST + 11] = 0x67 / 255.0;
+        ahov[MB_INST + 12] = 0.0;
+        ahov[MB_INST + 13] = 10.0;
+        ahov[MB_INST + 14] = -1.0;
+        ahov[MB_INST + 15] = 1.0;
+        ahov[MB_INST + 21] = 0.0;
+        ahov[MB_INST + 22] = 0.0;
+        ahov[MB_INST + 23] = 0.0;
+        // Adaptive kind 0 translucent dark hover disc (0x0000001C) on left half of glass
+        rect_at(ahov + 2 * MB_INST, 16, 22, 32, 32, 0, 0.0, 0.0, 0.0, 0);
+        ahov[2 * MB_INST + 4] = 16.0;
+        ahov[2 * MB_INST + 11] = 0x1C / 255.0;
+        ahov[2 * MB_INST + 21] = 50.0;
+        ahov[2 * MB_INST + 22] = 40.0;
+        ahov[2 * MB_INST + 23] = -34.0;
+        glass_forget();
+        gl_present(ahov, 3, bg, bg_g, bg_b);
+        unsigned char *px_h = pixels_of_fb(surface);
+        unsigned char *gp = px_h + ((fb_h - 1 - 80) * fb_w + 136) * 4;
+        double g_lum = (0.2126 * gp[0] + 0.7152 * gp[1] + 0.0722 * gp[2]) / 255.0;
+        unsigned char *hp = px_h + ((fb_h - 1 - 76) * fb_w + 64) * 4;
+        double h_lum = (0.2126 * hp[0] + 0.7152 * hp[1] + 0.0722 * hp[2]) / 255.0;
+        printf("gles_render: wave7b_hover case=%d glass=%.3f hover=%.3f delta=%+.3f\n",
+               ci, g_lum, h_lum, h_lum - g_lum);
+        if (ci == 0) {
+          CHECK(h_lum < g_lum - 0.03);
+        } else {
+          CHECK(h_lum > g_lum + 0.08);
+        }
+        free(px_h);
+      }
+    }
+
     // Smooth fogging on adaptive flip: thin bright stripe over black is softened by dual-ring fog blur + higher darkDens
     double fg[3 * MB_INST];
     double fog_peaks[2] = {0.0, 0.0};

@@ -117,7 +117,7 @@ fn window_keys_made(root : @view.View, whole : () -> Bool, made : (@view.View) -
           lit=fn() { @ui.window_snap_state() == 1 },
         )
         bind_pill_press_by(max_btn, fn() { @ui.window_snap_state() == 2 })
-        icon_button_by(
+        let close_btn = icon_button_by(
           loc~,
           r,
           "close",
@@ -128,9 +128,10 @@ fn window_keys_made(root : @view.View, whole : () -> Bool, made : (@view.View) -
           16.0,
           None,
           never_disabled,
-          ink=fn() { theme().p.red },
+          ink=fn() { 0xFFFFFFFFL },
+          hover_bg=fn() { if theme().dark { 0xFF453AD9L } else { 0xE53935D9L } },
         )
-        |> ignore
+        close_btn.focus_ring(Is(Some((1.5, -1.5, 0xFFFFFFD9L)))) |> ignore
       },
     )
     |> made
