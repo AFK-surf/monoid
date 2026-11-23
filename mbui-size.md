@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ad2fcd4e1](https://github.com/AFK-surf/monoid/commit/ad2fcd4e12a21f8631a7517709682220b1683971) fix(ci): prewarm monoid core.hbc and overlap setup | 2.72 | 3.66 | 14.83 | 36.95 | 56.5 | 32.37 | 65.71 | 99.8 | 126.71 |
 | [3dee04890](https://github.com/AFK-surf/monoid/commit/3dee04890ccda08bb2bbfff06b9049b3c4e0afec) feat(station,app): show where a station's traffic  | 2.72 | 3.66 | 14.83 | 36.95 | 56.5 | 32.37 | 65.71 | 99.8 | 126.71 |
 | [17fb8f5be](https://github.com/AFK-surf/monoid/commit/17fb8f5be8a5dc2c0eb0595624256bb7e15e4016) fix(mbui): skip pointer-off Tree::at withins layou | 2.71 | 3.66 | 14.83 | 36.94 | 56.49 | 32.37 | 65.71 | 99.58 | 123.17 |
 | [2e83ff5d4](https://github.com/AFK-surf/monoid/commit/2e83ff5d4f1a7ac17214417e10e508cf021d3733) fix(mbui): refresh page-seconds and rebalance app  | 2.72 | 3.66 | 14.83 | 36.94 | 56.49 | 32.37 | 65.71 | 99.62 | 124.9 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [05e4455a8](https://github.com/AFK-surf/monoid/commit/05e4455a883e2eec552185a7647e3a0603539908) perf(mbui): fix rotated glass cache invalidation a | 2.7 | 3.63 | 14.7 | 36.8 | 56.05 | 32.24 | 65.34 | 99.11 | 124.3 |
 | [54143d819](https://github.com/AFK-surf/monoid/commit/54143d8197007801c1b85fa22acfe3cb341e1f00) fix(mbui): keep frequent model names readable (#81 | 2.7 | 3.63 | 14.7 | 36.8 | 56.04 | 32.24 | 65.34 | 99.21 | 118.59 |
 | [005f1d100](https://github.com/AFK-surf/monoid/commit/005f1d100a6a15a0a4e86c7e96eb271e251570e2) fix(mbui): let two fingers take turns scrolling a  | 2.7 | 3.63 | 14.7 | 36.79 | 56.04 | 32.24 | 65.34 | 99.16 | 126.07 |
-| [e414d0eca](https://github.com/AFK-surf/monoid/commit/e414d0eca0b572035ccbd302232fb58e0555b445) perf(station): start the runtime when an app makes | 2.7 | 3.63 | 14.69 | 36.78 | 56.01 | 32.23 | 65.33 | 99.44 | 124.13 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ad2fcd4e1](https://github.com/AFK-surf/monoid/commit/ad2fcd4e12a21f8631a7517709682220b1683971) fix(ci): prewarm monoid core.hbc and overlap setup | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.9 |
 | [3dee04890](https://github.com/AFK-surf/monoid/commit/3dee04890ccda08bb2bbfff06b9049b3c4e0afec) feat(station,app): show where a station's traffic  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.95 |
 | [17fb8f5be](https://github.com/AFK-surf/monoid/commit/17fb8f5be8a5dc2c0eb0595624256bb7e15e4016) fix(mbui): skip pointer-off Tree::at withins layou | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.56 |
 | [2e83ff5d4](https://github.com/AFK-surf/monoid/commit/2e83ff5d4f1a7ac17214417e10e508cf021d3733) fix(mbui): refresh page-seconds and rebalance app  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.58 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [05e4455a8](https://github.com/AFK-surf/monoid/commit/05e4455a883e2eec552185a7647e3a0603539908) perf(mbui): fix rotated glass cache invalidation a | 0.48 | 0.63 | 2.43 | 3.49 | 5.78 | 1.78 | 4.8 | 54.63 |
 | [54143d819](https://github.com/AFK-surf/monoid/commit/54143d8197007801c1b85fa22acfe3cb341e1f00) fix(mbui): keep frequent model names readable (#81 | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.56 |
 | [005f1d100](https://github.com/AFK-surf/monoid/commit/005f1d100a6a15a0a4e86c7e96eb271e251570e2) fix(mbui): let two fingers take turns scrolling a  | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.56 |
-| [e414d0eca](https://github.com/AFK-surf/monoid/commit/e414d0eca0b572035ccbd302232fb58e0555b445) perf(station): start the runtime when an app makes | 0.48 | 0.63 | 2.43 | 3.49 | 5.77 | 1.78 | 4.8 | 54.56 |
