@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2ffb45884](https://github.com/AFK-surf/monoid/commit/2ffb45884ea1350138fb869aa6315722d9987e3e) feat(pion-core): W27e pion-packages crypto-v0.4.1/ | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [539a932fd](https://github.com/AFK-surf/monoid/commit/539a932fd288b0c2149ab25ca8866dceb0c7924a) fix(station): guard replica handover removal again | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [7d4a6e7fd](https://github.com/AFK-surf/monoid/commit/7d4a6e7fd254a4a22fab46851a89cf7c110b8d3b) fix(station): sign in Google Colab profiles on the | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [0137c6212](https://github.com/AFK-surf/monoid/commit/0137c6212710357ba77f919d775790e0ac96785e) perf(station): read the sessions waiting for a per | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [da8a0a85d](https://github.com/AFK-surf/monoid/commit/da8a0a85dc969d1444a0ae7104d2453c760ad3b5) fix(helper): decode the cursor scoreboard strictly | 2.74 | 3.68 | 14.92 | 37.1 | 56.85 | 32.5 | 65.99 | 101.24 | 119.54 |
 | [c2e203d5f](https://github.com/AFK-surf/monoid/commit/c2e203d5f86217782a1aa8b450f320d9ac1b9a25) feat(pion): add prefs.set, doing tracker, and SSE  | 2.74 | 3.68 | 14.92 | 37.1 | 56.85 | 32.5 | 65.99 | 101.24 | 119.54 |
 | [19c48cfb4](https://github.com/AFK-surf/monoid/commit/19c48cfb4574abbb4f542c5f4d8f516df90bf2b5) feat(ui): absorb control-layer behaviors into head | 2.74 | 3.68 | 14.92 | 37.1 | 56.85 | 32.5 | 65.99 | 101.24 | 119.54 |
-| [47e246545](https://github.com/AFK-surf/monoid/commit/47e2465454d6bed53eec810e2b2add228b2364fe) fix(helper): ignore typing cursor obscure in macOS | 2.74 | 3.68 | 14.92 | 37.1 | 56.85 | 32.5 | 65.99 | 101.24 | 119.54 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2ffb45884](https://github.com/AFK-surf/monoid/commit/2ffb45884ea1350138fb869aa6315722d9987e3e) feat(pion-core): W27e pion-packages crypto-v0.4.1/ | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.3 |
 | [539a932fd](https://github.com/AFK-surf/monoid/commit/539a932fd288b0c2149ab25ca8866dceb0c7924a) fix(station): guard replica handover removal again | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.41 |
 | [7d4a6e7fd](https://github.com/AFK-surf/monoid/commit/7d4a6e7fd254a4a22fab46851a89cf7c110b8d3b) fix(station): sign in Google Colab profiles on the | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.26 |
 | [0137c6212](https://github.com/AFK-surf/monoid/commit/0137c6212710357ba77f919d775790e0ac96785e) perf(station): read the sessions waiting for a per | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.51 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [da8a0a85d](https://github.com/AFK-surf/monoid/commit/da8a0a85dc969d1444a0ae7104d2453c760ad3b5) fix(helper): decode the cursor scoreboard strictly | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 57.79 |
 | [c2e203d5f](https://github.com/AFK-surf/monoid/commit/c2e203d5f86217782a1aa8b450f320d9ac1b9a25) feat(pion): add prefs.set, doing tracker, and SSE  | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 57.79 |
 | [19c48cfb4](https://github.com/AFK-surf/monoid/commit/19c48cfb4574abbb4f542c5f4d8f516df90bf2b5) feat(ui): absorb control-layer behaviors into head | 0.55 | 0.71 | 2.79 | 3.8 | 6.87 | 2.04 | 5.64 | 58.07 |
-| [47e246545](https://github.com/AFK-surf/monoid/commit/47e2465454d6bed53eec810e2b2add228b2364fe) fix(helper): ignore typing cursor obscure in macOS | 0.55 | 0.71 | 2.79 | 3.8 | 6.87 | 2.04 | 5.64 | 57.56 |
