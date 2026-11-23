@@ -877,7 +877,9 @@ fn HostedProcess::closed_(self : HostedProcess, stderr : String) -> @agent_drive
   if self.gone || self.exit_said is Some(_) {
     return @agent_drivers.done(lp)
   }
-  if pid_alive(self.info.runner()) {
+  // (being killed, `kill`: its socket closing before `exit` while the runner is still exiting is its end, not a
+  // takeover)
+  if !self.killing && pid_alive(self.info.runner()) {
     slice_log("warn", "agents::process", "another station took the runner over; letting go", { "label": jstr(self.options.label) })
     (self.options.handed)()
     self.frozen = true
@@ -968,6 +970,10 @@ async fn HostedProcess::kill(self : HostedProcess, grace_ms : Double) -> Unit {
   while j < 1000 && pid_alive(self.info.runner()) {
     @effect.sleep(10) // timer: a wait on another process's end
     j += 1
+  }
+  // (its runner gone with neither `exit` nor `closed` told: its end is settled here all the same)
+  if !self.frozen && !self.gone && self.exit_said is None && !pid_alive(self.info.runner()) {
+    self.in_turn(() => self.closed_(""))
   }
 }
 
