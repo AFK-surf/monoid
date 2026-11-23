@@ -451,7 +451,12 @@ test("Comma's socket refused with 409 says Comma's words in its state, asked aga
   assert.notEqual(refused.state, "connected", JSON.stringify(refused));
   const gaps = comma.upgrades.slice(1).map((u, i) => u.at - comma.upgrades[i]!.at);
   assert.ok(gaps[0]! >= 800, `the first retry ${gaps[0]} ms after the refusal: ${said()}`);
-  for (let i = 1; i < gaps.length; i++) assert.ok(gaps[i]! >= gaps[i - 1]! * 1.5, `retries backing off: ${JSON.stringify(gaps)}`);
+  // ConnectedSurface doubles backoff from 1s up to 60s (1s, 2s, 4s…); compare against the expected schedule
+  // rather than `gaps[i - 1] * 1.5` so startup scheduling jitter on an earlier retry (e.g. [1499, 2003]) cannot flake.
+  for (let i = 1; i < gaps.length; i++) {
+    const expectedMin = Math.min(60_000, 1_000 * 2 ** i) * 0.85;
+    assert.ok(gaps[i]! >= expectedMin, `retries backing off (expected >=${expectedMin}ms): ${JSON.stringify(gaps)}`);
+  }
   assert.equal((await http(s.door, "/admin-api/host")).status, 200, "the station serving while Comma refuses it");
 
   // ── taken once Comma lets it: connected, its requests answered ──
