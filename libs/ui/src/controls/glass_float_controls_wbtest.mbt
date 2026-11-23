@@ -63,7 +63,7 @@ test "pick_bar_node and float_button_node use single-layer liquid glass with sha
         )
         assert_eq(
           (dark, want.blur, want.tint & 0xFFL, want.bezel, want.refraction, want.adaptive),
-          (dark, 2.1, 0x67L, 20.0, 28.0, true),
+          (dark, 1.1, 0x67L, 20.0, 28.0, true),
         )
       }
       let has_shell_solid_fill = match glass.get(0) {

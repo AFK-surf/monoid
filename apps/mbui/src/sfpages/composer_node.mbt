@@ -1559,10 +1559,10 @@ fn composer_box_node(
       },
       extra_blur=fn() {
         // (frosted more as it opens, on its shape's way: words written over it read clear of what lies behind; as a
-        // capsule the bottom bar's 2.1, shared with the capsule over it)
+        // capsule the bottom bar's 1.1, shared with the capsule over it)
         let open = shape.shown(box)
         if open > 0.0 {
-          (composer_open_blur - 2.1) * open
+          (composer_open_blur - @sf.glass_floating().blur) * open
         } else {
           0.0
         }

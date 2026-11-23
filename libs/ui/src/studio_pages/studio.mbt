@@ -1200,6 +1200,7 @@ fn scene_glass(
             )
           },
           prominent=true,
+          high_contrast=true,
           icon="zap",
         )
         |> ignore

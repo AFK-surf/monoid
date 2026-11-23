@@ -46,7 +46,7 @@ pub(all) struct Colors {
 pub let light : Colors = {
   accent: 0x0088FFFFL,
   toggle_on: 0x34C759FFL,
-  track: 0x78787833L,
+  track: 0x7878802AL,
   container: 0xFAFAFA66L,
   content: 0x000000FFL,
   lens_idle: 0x0000001AL,
@@ -58,11 +58,22 @@ pub let light : Colors = {
 pub let dark : Colors = {
   accent: 0x0091FFFFL,
   toggle_on: 0x30D158FFL,
-  track: 0x7878805CL,
+  track: 0x78788037L,
   container: 0x12121266L,
   content: 0xFFFFFFFFL,
   lens_idle: 0xFFFFFF1AL,
   paper: 0x121212E6L,
+}
+
+///|
+/// Dedicated Switch Off default track colour (separate from Slider `colors().track`):
+/// Dark `0x787880ADL` (~90 over `#1C1C1E`), Light `0x78788068L` (~200 over white).
+pub fn toggle_off_track() -> Int64 {
+  if is_dark() {
+    0x787880ADL
+  } else {
+    0x78788068L
+  }
 }
 
 ///|

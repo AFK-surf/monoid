@@ -552,7 +552,7 @@ pub fn liquid_tab_bar_surface_decorate(
   v.glass(
     By(fn() {
       let (spot, merge) = glass_spec()
-      let g = liquid_tab_bar_glass(spot~, merge~)
+      let g = liquid_tab_bar_glass(spot~, merge~, adaptive=true)
       Some(if share_when_unmerged && !(merge > 0.0) { g.sharing() } else { g })
     }),
   )

@@ -54,39 +54,40 @@ test "styles: the lock's waiting page, every state, drawn as before" {
   }
   // Home narrow top bar only draws progressive scroll-edge glass over the status bar (skipped when status_top == 0).
   inspect(out.to_string(), content=(
-    #|waiting narrow 28665:5dc4e3a4
+    #|waiting narrow 28665:c3986e94
     #|waiting wide 66023:4112183f
-    #|waiting-dark narrow 28584:e366a494
+    #|waiting-dark narrow 28584:b4229d3c
     #|waiting-dark wide 65852:4a6a3989
-    #|finding narrow 46466:3af8309c
+    #|finding narrow 46466:1cc560f4
     #|finding wide 84907:723ded1c
-    #|finding-dark narrow 46520:920c442
+    #|finding-dark narrow 46520:1c9ec5a
     #|finding-dark wide 84871:17a7b16a
-    #|code narrow 32643:54763ce7
+    #|code narrow 32643:8af2e78f
     #|code wide 70141:42f542a3
-    #|code-dark narrow 32519:ccb1dd7
+    #|code-dark narrow 32519:3c7b659f
     #|code-dark wide 69927:72631d87
-    #|wrong narrow 28630:fdb5b42
+    #|wrong narrow 28630:15db3512
     #|wrong wide 66161:2649ae81
-    #|wrong-dark narrow 28733:9d6126eb
+    #|wrong-dark narrow 28733:7a0a0513
     #|wrong-dark wide 66174:f25a5808
-    #|checking narrow 35735:6fb738a8
+    #|checking narrow 35735:6a6a0268
     #|checking wide 74132:54bef3
-    #|checking-dark narrow 35828:ddc72c2d
+    #|checking-dark narrow 35828:dac7f845
     #|checking-dark wide 74135:1e5e7a12
-    #|none narrow 39501:cfa33761
+    #|none narrow 39501:5d91a5d1
     #|none wide 77132:a85cd953
-    #|none-dark narrow 39380:ef7ce5f6
+    #|none-dark narrow 39380:ab69561e
     #|none-dark wide 76921:427c396c
-    #|failed narrow 23892:399d0b24
+    #|failed narrow 23892:9f709614
     #|failed wide 60819:839fa92d
-    #|failed-dark narrow 23895:d6714ce2
+    #|failed-dark narrow 23895:4f898f4a
     #|failed-dark wide 60732:1a404b71
-    #|nocode narrow 28665:5dc4e3a4
+    #|nocode narrow 28665:c3986e94
     #|nocode wide 66023:4112183f
-    #|nocode-dark narrow 28584:e366a494
+    #|nocode-dark narrow 28584:b4229d3c
     #|nocode-dark wide 65852:4a6a3989
     #|
+
 
 
 
@@ -165,19 +166,20 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // Adaptive liquid-glass back button icon bands encode center-relative offsets in slots 6-7 (+16 bytes on narrow screens).
   // iOS 27 pressed-lens calibration updated resting Switch shadow/track and Segmented track ground on wide station pages.
   inspect(out.to_string(), content=(
-    #|settings narrow 102220:adfb6416
-    #|station narrow 97639:4ec63752
-    #|me-reading narrow 31622:b5ab61f6
+    #|settings narrow 102220:72854e83
+    #|station narrow 97639:5d9b51f
+    #|me-reading narrow 31622:782d9e95
     #|settings wide 204457:ab771352
-    #|station wide 275891:e8ea71b
+    #|station wide 275577:348fb345
     #|me-reading wide 199176:3c1c9ea
-    #|settings-dark narrow 102484:c51d3328
-    #|station-dark narrow 97531:4f3d0b28
-    #|me-reading-dark narrow 31755:e3a14c9d
+    #|settings-dark narrow 102484:974ec115
+    #|station-dark narrow 97531:3f89b703
+    #|me-reading-dark narrow 31755:f66fc5f2
     #|settings-dark wide 204349:32841efe
-    #|station-dark wide 275526:ee7f8c5e
+    #|station-dark wide 275167:12aaf9fc
     #|me-reading-dark wide 199134:f5de9219
     #|
+
 
 
 

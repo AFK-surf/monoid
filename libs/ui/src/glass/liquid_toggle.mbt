@@ -144,7 +144,7 @@ pub fn liquid_toggle_node(
       .ground(By(fn() {
         let off_c = match track_color {
           Some(f) => f()
-          None => if is_dark() { colors().track } else { 0x78788052L }
+          None => toggle_off_track()
         }
         let on_c = match on_color {
           Some(f) => f()

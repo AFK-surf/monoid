@@ -47,11 +47,7 @@ let ctrl_seg_thumb_idle_shadow : (Double, Double, Int64) = (2.0, 1.0, 0x0000001F
 
 ///|
 fn ctrl_seg_inactive_ink() -> Int64 {
-  if is_dark() {
-    0xC8C8CEFFL
-  } else {
-    0x3A3A3EFFL
-  }
+  colors().content
 }
 
 // ---------------------------------------------------------------------------
@@ -127,7 +123,7 @@ pub fn liquid_bar_pill_glass(
   }
   maybe_sharing(
     @paint.Glass::liquid(
-      blur=2.5,
+      blur=1.2,
       tint~,
       solid=sol,
       saturation=1.0,
@@ -165,7 +161,7 @@ pub fn liquid_floating_glass(
   }
   maybe_sharing(
     @paint.Glass::liquid(
-      blur=2.1,
+      blur=1.1,
       tint=glass_tint,
       solid=sol,
       saturation=1.0,
@@ -188,7 +184,7 @@ pub fn liquid_tab_bar_glass(
   merge? : Double = 0.0,
   solid? : Int64 = clear,
   sharing? : Bool = false,
-  adaptive? : Bool = false,
+  adaptive? : Bool = true,
 ) -> @paint.Glass {
   let d = is_dark()
   let tint = if d { 0x20202067L } else { 0xFDFCFD67L }
@@ -201,7 +197,7 @@ pub fn liquid_tab_bar_glass(
   }
   maybe_sharing(
     @paint.Glass::liquid(
-      blur=2.1,
+      blur=1.1,
       tint~,
       solid=sol,
       saturation=1.0,
@@ -229,7 +225,7 @@ pub fn liquid_prominent_glass(
   let sol = if solid != clear { solid } else { accent }
   maybe_sharing(
     @paint.Glass::liquid(
-      blur=2.1,
+      blur=1.1,
       tint=alpha(accent, 0.85),
       solid=sol,
       saturation=1.15,

@@ -19,7 +19,7 @@ pub fn liquid_segmented_node(
   selected : () -> Int,
   on_select : (Int) -> Unit,
   width? : Double,
-  height? : Double = 40.0,
+  height? : Double = 32.0,
   drag? : DampedDrag,
   glass_track? : Bool = true,
   pad? : Double = ctrl_seg_pad,
@@ -81,7 +81,7 @@ pub fn liquid_segmented_node(
         .edge(By(fn() { if g.glass_solid() { liquid_solid_edge() } else { (0.0, clear) } }))
         |> ignore
       } else {
-        g.ground(By(fn() { if is_dark() { 0x7878803DL } else { 0x7878801FL } })) |> ignore
+        g.ground(By(fn() { if is_dark() { 0xFFFFFF18L } else { 0x7878801FL } })) |> ignore
       }
       match width {
         Some(w) => g.width(Is(Some(w))).max_width(Is(Some(w)), within=true) |> ignore
@@ -335,11 +335,11 @@ pub fn liquid_segmented_node(
                             None => ctrl_type_seg
                           }
                           if glass_track {
-                            words_at(sz, weight=weight_medium)
+                            words_at(sz, weight=if it.chosen() { 600 } else { weight_medium })
                           } else {
                             {
                               size: sz,
-                              weight: if it.chosen() { 500 } else { 400 },
+                              weight: if it.chosen() { 600 } else { 500 },
                               line: -@ui.tree_theme().text_line,
                               wrap: false,
                               tracking: @view.letters_own,
@@ -353,7 +353,7 @@ pub fn liquid_segmented_node(
                           let (off_c, on_c) = if glass_track {
                             (ctrl_seg_inactive_ink(), colors().content)
                           } else {
-                            (@ui.tree_theme().muted, @ui.tree_theme().fg)
+                            (colors().content, colors().content)
                           }
                           if !glass_track && it.hovered() && lit < 0.5 {
                             on_c

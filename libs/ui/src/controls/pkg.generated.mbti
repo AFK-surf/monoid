@@ -968,7 +968,7 @@ pub fn fullscreen_overlay_node(@view.View, () -> Unit, inert? : () -> Bool, dism
 pub fn give_faces() -> Unit
 
 #callsite(autofill(loc))
-pub fn glass_button_node(@view.View, () -> String, () -> Unit, prominent? : Bool, icon? : String, disabled? : () -> Bool, tips? : TipLayer, loc~ : SourceLoc) -> @view.View
+pub fn glass_button_node(@view.View, () -> String, () -> Unit, prominent? : Bool, high_contrast? : Bool, icon? : String, disabled? : () -> Bool, tips? : TipLayer, loc~ : SourceLoc) -> @view.View
 
 pub fn glass_capsule_node(@view.View, min_height? : Double?, radius? : Double?, sharing? : Bool, interactive? : Bool, dark? : Bool, panel? : Bool, solid? : () -> Int64, tint? : () -> Int64, active? : () -> Bool, trigger? : Bool) -> @view.View
 

@@ -252,7 +252,7 @@ pub fn lm_close_drift(t : Double, menu_h : Double) -> Double {
 
 ///|
 /// Analytical close-phase teardrop geometry `(mx, my, cur_w, cur_h, radius)` in `p`'s local coordinates `(0, 0, menu_w, menu_h)`:
-/// width contracts slightly slower than height (`w_scale = pow(close_glass_scale, 0.82)`) so mid-close stays a plump
+/// width contracts slightly slower than height (`w_scale = pow(close_glass_scale, 0.92)`) so mid-close stays a plump
 /// droplet hugging the top bar rather than a thin vertical strip.
 pub fn lm_closing_teardrop_geometry(
   raw_value : Double,

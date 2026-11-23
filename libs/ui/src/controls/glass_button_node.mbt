@@ -15,9 +15,12 @@ let glass_button_padx : Double = 16.0
 let glass_button_gap : Double = 6.0
 
 ///|
-/// Ensures a `.glassProminent` accent fill achieves WCAG AA (`>= 4.6:1`) contrast against pure white
-/// `0xFFFFFFFFL` ink both in solid fallback and when composited at 85% alpha over `theme().p.card`.
-fn prominent_accent_fill(accent : Int64) -> Int64 {
+/// Returns the `.glassProminent` accent fill: native iOS 27 system accent by default (`high_contrast=false`),
+/// or WCAG AA (`>= 4.6:1`) darkened fill against pure white `0xFFFFFFFFL` ink when `high_contrast=true`.
+fn prominent_accent_fill(accent : Int64, high_contrast? : Bool = false) -> Int64 {
+  if !high_contrast {
+    return accent
+  }
   let card = theme().p.card
   let ok = fn(c : Int64) -> Bool {
     @ui.contrast_ratio(0xFFFFFFFFL, c) >= 4.6 &&
@@ -52,6 +55,7 @@ pub fn glass_button_node(
   label : () -> String,
   press : () -> Unit,
   prominent? : Bool = false,
+  high_contrast? : Bool = false,
   icon? : String = "",
   disabled? : () -> Bool = fn() { false },
   tips? : TipLayer,
@@ -105,8 +109,8 @@ pub fn glass_button_node(
         b,
         tone=Prominent,
         sharing=false,
-        tint=fn() { Some(prominent_accent_fill(theme().p.accent)) },
-        solid=fn() { prominent_accent_fill(theme().p.accent) },
+        tint=fn() { Some(prominent_accent_fill(theme().p.accent, high_contrast~)) },
+        solid=fn() { prominent_accent_fill(theme().p.accent, high_contrast~) },
         shadow=glass_control_shadow,
         solid_edge=fn() { (0.0, 0L) },
         with_scale=true,

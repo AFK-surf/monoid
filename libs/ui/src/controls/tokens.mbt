@@ -1362,6 +1362,17 @@ pub fn custom_hue(key : String) -> Int? {
 ///|
 /// The colour theme a key names: one of the five, or one of a hue's own; None for one not known.
 pub fn tone_of(key : String) -> AccentTone? {
+  if key == "ios-blue" {
+    return Some({
+      key: "ios-blue",
+      light: 0x0088FFFFL,
+      light_text: 0x0066CCFFL,
+      dark: 0x0091FFFFL,
+      dark_text: 0x40A9FFFFL,
+      light_grounds: None,
+      dark_grounds: None,
+    })
+  }
   match accents.search_by(fn(a) { a.key == key }) {
     Some(i) => Some(accents[i])
     None => custom_hue(key).map(custom_tone)

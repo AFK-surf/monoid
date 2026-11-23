@@ -1,0 +1,390 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "ui/glass"
+
+import {
+  "moonbitlang/core/debug",
+  "moonbitlang/core/ref",
+  "ui/headless",
+  "ui/motion",
+  "ui/paint",
+  "ui/signals",
+  "ui/ui",
+  "ui/view",
+}
+
+// Values
+pub fn alpha(Int64, Double) -> Int64
+
+pub fn bind_pill_press(@view.View) -> Unit
+
+pub fn bind_pill_press_by(@view.View, () -> Bool) -> Unit
+
+pub let black : Int64
+
+pub fn clamp(Double, Double, Double) -> Double
+
+pub let clear : Int64
+
+pub fn colors() -> Colors
+
+pub let dark : Colors
+
+#callsite(autofill(loc))
+pub fn glass_symbol_node(@view.View, String, Double, () -> Int64, loc~ : SourceLoc) -> @view.View
+
+pub fn glass_symbol_shapes(String, Double, Int64) -> Array[@paint.Shape]
+
+pub fn in_liquid_pill(@view.View) -> Bool
+
+pub fn is_dark() -> Bool
+
+pub fn lerp(Double, Double, Double) -> Double
+
+pub fn lerp_color(Int64, Int64, Double) -> Int64
+
+pub let light : Colors
+
+pub fn liquid_bar_pill_glass(spot? : (Double, Double)?, solid? : Int64, sharing? : Bool, adaptive? : Bool) -> @paint.Glass
+
+pub fn liquid_capsule_decorate(@view.View, tone? : LiquidCapsuleTone, min_height? : Double?, radius? : Double?, sharing? : Bool, interactive? : Bool, solid? : () -> Int64, tint? : () -> Int64?, glass? : ((Double, Double)?) -> @paint.Glass, extra_blur? : () -> Double, active? : () -> Bool, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64), with_edge? : Bool, with_shadow? : Bool, clips? : Bool, trigger? : Bool) -> @view.View
+
+pub fn liquid_capsule_glass(solid? : Int64) -> @paint.Glass
+
+#callsite(autofill(loc))
+pub fn liquid_capsule_node(@view.View, (@view.View) -> Unit, tone? : LiquidCapsuleTone, min_height? : Double?, radius? : Double?, sharing? : Bool, interactive? : Bool, solid? : () -> Int64, tint? : () -> Int64?, extra_blur? : () -> Double, active? : () -> Bool, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64), clips? : Bool, loc~ : SourceLoc) -> @view.View
+
+pub fn liquid_dialog_glass(solid? : Int64) -> @paint.Glass
+
+pub fn liquid_dialog_surface_decorate(@view.View, radius? : Double, solid? : () -> Int64, tint_light? : Int64, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64), clips? : Bool) -> @view.View
+
+pub fn liquid_drawer_glass(solid? : Int64) -> @paint.Glass
+
+pub fn liquid_drawer_surface_decorate(@view.View, radius? : Double, active? : () -> Bool, solid? : () -> Int64, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64), clips? : Bool) -> @view.View
+
+pub fn liquid_floating_glass(tint? : Int64?, solid? : Int64, spot? : (Double, Double)?, sharing? : Bool) -> @paint.Glass
+
+pub fn liquid_knob_glass(solid? : Int64) -> @paint.Glass
+
+#callsite(autofill(loc))
+pub fn liquid_lens_overlay_node(@view.View, () -> Double, () -> Double, rect? : () -> (Double, Double, Double, Double)?, ground_drawn? : (@view.View) -> @view.GroundShape, width? : () -> Double, radius? : Double, solid? : () -> Int64, shadow_color? : () -> Int64, shadow_blur? : Double, shadow_y? : Double, jelly? : (@view.View) -> (Double, Double), grow? : Double, overhang_x? : Double, overhang_y? : Double, active? : () -> Bool, loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn liquid_lift_shell_decorate(@view.View, () -> Double, flat_ground? : (() -> Int64)?, glass? : () -> @paint.Glass, solid? : () -> Int64, radius? : Double?, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64), loc~ : SourceLoc) -> Unit
+
+#callsite(autofill(loc))
+pub fn liquid_loupe_node(@view.View, () -> Bool, () -> (Double, Double)?, bg? : () -> Int64, solid? : () -> Int64, shadow_color? : () -> Int64, width? : Double, height? : Double, zoom? : Double, lift? : Double, side_inset? : Double, grow? : Double, shadow_blur? : Double, shadow_y? : Double, loc~ : SourceLoc) -> Unit
+
+pub fn liquid_menu_morph_glass(Double, solid? : Int64, dark? : Bool, merge? : Double, layer? : Int32, break_gap? : Double) -> @paint.Glass
+
+#callsite(autofill(loc))
+pub fn liquid_merge_node(@view.View, controller? : LiquidMerge, main_w? : Double, main_h? : Double, sat_size? : Double, arena_w? : Double, arena_h? : Double, arena? : () -> (Double, Double), main_label? : () -> String, sat_label? : () -> String, label? : () -> String, loc~ : SourceLoc) -> @view.View
+
+pub fn liquid_overlay_solid_edge() -> (Double, Int64)
+
+pub fn liquid_panel_glass(solid? : Int64) -> @paint.Glass
+
+#callsite(autofill(loc))
+pub fn liquid_panel_shell_node(@view.View, (@view.View) -> Unit, radius? : Double, solid? : () -> Int64, merge? : () -> Double, active? : () -> Bool, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64), clips? : Bool, loc~ : SourceLoc) -> @view.View
+
+pub fn liquid_panel_surface_decorate(@view.View, radius? : Double, solid? : () -> Int64, merge? : () -> Double, active? : () -> Bool, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64), clips? : Bool) -> @view.View
+
+#callsite(autofill(loc))
+pub fn liquid_pill_group_node(@view.View, (@view.View) -> Unit, height? : Double, pad? : Double, pad_y? : Double, gap? : Double, direction? : PillDirection, sharing? : Bool, solid? : () -> Int64, tint? : () -> Int64, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64), floating? : Bool, adaptive? : Bool, loc~ : SourceLoc) -> @view.View
+
+pub fn liquid_pill_hover_ink(solid? : Bool) -> Int64
+
+pub fn liquid_pill_press_ink(solid? : Bool) -> Int64
+
+pub let liquid_pill_trigger_lent : @view.Lent[PillTriggerScope]
+
+pub fn liquid_popover_surface_decorate(@view.View, radius? : Double, solid? : () -> Int64, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64), clips? : Bool, alpha? : () -> Double, scale? : () -> Double, scale_about? : @view.Pivot, max_shift? : Double, morph? : () -> (Double, Bool, Double, Double, LiquidMorphFrame)?, layer? : Int32, break_gap? : Double, close_break_gap? : Double) -> @view.View
+
+pub fn liquid_press_glass_decorate(@view.View, tone? : LiquidCapsuleTone, sharing? : Bool, solid? : () -> Int64, tint? : () -> Int64?, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64), clips? : Bool, with_scale? : Bool, highlight? : InteractiveHighlight) -> InteractiveHighlight
+
+pub fn liquid_press_ink(solid? : Bool) -> Int64
+
+pub fn liquid_prominent_glass(accent~ : Int64, spot? : (Double, Double)?, solid? : Int64, sharing? : Bool) -> @paint.Glass
+
+pub fn liquid_scroll_edge_fill_decorate(@view.View, () -> Int64, active? : () -> Bool) -> @view.View
+
+pub fn liquid_scroll_edge_glass(bg? : Int64) -> @paint.Glass
+
+#callsite(autofill(loc))
+pub fn liquid_scroll_edge_node(@view.View, (@view.View) -> Double, (@view.View) -> Double, side? : ScrollEdgeSide, bg? : () -> Int64, bg_by? : (@view.View) -> Int64, from_top? : Bool, shield? : Bool, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn liquid_segmented_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, width? : Double, height? : Double, drag? : DampedDrag, glass_track? : Bool, pad? : Double, gap? : Double, widths? : () -> Array[Double], height_by? : () -> Double, text_size? : () -> Double, kind? : @headless.GroupKind, said? : String, shown? : () -> Bool, in_node? : Bool, render_item? : (@view.View, Int32, () -> Bool) -> Unit, loc~ : SourceLoc) -> @view.View
+
+pub fn liquid_sheet_glass(solid? : Int64) -> @paint.Glass
+
+pub fn liquid_sheet_surface_decorate(@view.View, radius? : Double, active? : () -> Bool, solid? : () -> Int64, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64)) -> @view.View
+
+#callsite(autofill(loc))
+pub fn liquid_slider_node(@view.View, () -> Double, (Double) -> Unit, () -> String, least? : Double, most? : Double, step? : Double, threshold? : Double, disabled? : () -> Bool, track_h? : Double, track_held_grow? : Double, thumb_w_px? : Double, thumb_h_px? : Double, track_color? : () -> Int64, fill_color? : () -> Int64, stops? : Int32, thumb_label? : (Double) -> String, value_text? : (Double) -> String, flush? : Bool, value_bubble? : ((Double) -> String)?, drag? : DampedDrag, loc~ : SourceLoc) -> @view.View
+
+pub fn liquid_solid_edge() -> (Double, Int64)
+
+pub fn liquid_tab_bar_glass(spot? : (Double, Double)?, merge? : Double, solid? : Int64, sharing? : Bool, adaptive? : Bool) -> @paint.Glass
+
+pub fn liquid_tab_bar_surface_decorate(@view.View, () -> ((Double, Double)?, Double), share_when_unmerged? : Bool) -> @view.View
+
+pub fn liquid_tab_lens_glass(Double, solid? : Int64, sharing? : Bool) -> @paint.Glass
+
+pub fn liquid_tab_lens_surface_decorate(@view.View, () -> Double, solid? : () -> Int64, shadow? : (Double, Double, Int64)) -> @view.View
+
+pub fn liquid_toast_glass(solid? : Int64) -> @paint.Glass
+
+pub fn liquid_toast_surface_decorate(@view.View, radius? : Double, active? : () -> Bool, solid? : () -> Int64, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64)) -> @view.View
+
+#callsite(autofill(loc))
+pub fn liquid_toggle_node(@view.View, () -> Bool, (Bool) -> Unit, () -> String, disabled? : () -> Bool, width? : Double, height? : Double, track_color? : () -> Int64, on_color? : () -> Int64, finger_only_lens? : Bool, drag? : DampedDrag, loc~ : SourceLoc) -> @view.View
+
+pub fn liquid_tooltip_surface_decorate(@view.View, radius? : Double, active? : () -> Bool, solid? : () -> Int64, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64), panel? : Bool) -> @view.View
+
+pub fn liquid_viewer_clear_glass(spot? : (Double, Double)?, solid? : Int64, sharing? : Bool) -> @paint.Glass
+
+pub fn liquid_viewer_dark_glass(spot? : (Double, Double)?, solid? : Int64, sharing? : Bool) -> @paint.Glass
+
+pub fn lm_close_blend(Double) -> Double
+
+pub fn lm_close_blob_a_emergence(Double, Double, Double, Double, Double, Double, Double, Double) -> Double
+
+pub fn lm_close_content_blur(Double) -> Double
+
+pub fn lm_close_content_opacity(Double) -> Double
+
+pub fn lm_close_corner_radius(Double, Double, Double, Double, Double, Double) -> Double
+
+pub fn lm_close_drift(Double, Double) -> Double
+
+pub let lm_close_duration_ms : Double
+
+pub fn lm_close_glass_scale(Double, Double, Double) -> Double
+
+pub fn lm_close_height_envelope(Double, Double, Double) -> Double
+
+pub fn lm_close_platter_active(Double) -> Bool
+
+pub fn lm_close_progress(Double, start? : Double) -> Double
+
+pub fn lm_close_trigger_width(Double) -> Double
+
+pub fn lm_closing_teardrop_geometry(Double, Double, Double, Double, Double, Double, Double, Double, Double, Double, Double, push_dx? : Double, align_y? : Double, horizontal_side? : Bool) -> (Double, Double, Double, Double, Double)
+
+pub fn lm_delayed_close_width(Double) -> Double
+
+pub fn lm_eval_pill_morph(Double, Double, Double, Double, Double, Double, Double, Double, Double, Double, Double, Bool, Double, vertical? : Bool, ty_win? : Double, align_y? : Double, horizontal_side? : Bool, close_start? : Double) -> LiquidMorphFrame
+
+pub fn lm_impact_scale(Double, Double) -> Double
+
+pub fn lm_lerp(Double, Double, Double) -> Double
+
+pub fn lm_open_content_blur(Double) -> Double
+
+pub fn lm_open_content_opacity(Double) -> Double
+
+pub fn lm_open_corner_radius(Double, Double, Double, Double, Double, Double) -> Double
+
+pub fn lm_open_drift(Double, Double) -> Double
+
+pub let lm_open_duration_ms : Double
+
+pub fn lm_open_progress(Double, start? : Double) -> Double
+
+pub fn lm_open_size_progress(Double, Double) -> Double
+
+pub fn lm_open_trigger_width(Double) -> Double
+
+pub fn lm_recoil_offset_y(Double, Double, Double) -> Double
+
+pub fn lm_recoil_pulse(Double) -> Double
+
+pub fn lm_scale_delta(Double, Double, Double, Double) -> Double
+
+pub fn lm_smoothstep(Double, Double, Double) -> Double
+
+pub fn lm_step_response(Double, Double, Double) -> Double
+
+pub let merge_break_gap : Double
+
+pub let merge_contact_gap : Double
+
+pub let merge_k_max : Double
+
+pub let merge_main_h : Double
+
+pub let merge_main_w : Double
+
+pub let merge_max_gap : Double
+
+pub let merge_merged_gap : Double
+
+pub let merge_sat_size : Double
+
+pub let merge_separated_gap : Double
+
+pub fn over(Int64, Int64) -> Int64
+
+pub fn seg_lens_shadow(Double) -> (Double, Double, Int64)
+
+pub fn set_dark(Bool?) -> Unit
+
+pub let shadow_default : (Double, Double, Int64)
+
+pub let shadow_none : (Double, Double, Int64)
+
+pub let shadow_thumb : (Double, Double, Int64)
+
+pub let slider_thumb_held_scale : Double
+
+pub let slider_track_h : Double
+
+pub let thumb_h : Double
+
+pub let thumb_held_scale : Double
+
+pub fn thumb_lift_shadow(Double) -> (Double, Double, Int64)
+
+pub let thumb_w : Double
+
+pub let toggle_h : Double
+
+pub fn toggle_off_track() -> Int64
+
+pub let toggle_pad : Double
+
+pub let toggle_w : Double
+
+pub let type_body : Double
+
+pub fn ui_theme() -> @ui.Theme
+
+pub let weight_medium : Int32
+
+pub let white : Int64
+
+pub fn words_at(Double, weight? : Int32, wrap? : Bool, lines? : Int32) -> @view.WordsLook
+
+// Errors
+
+// Types and methods
+pub(all) struct Colors {
+  accent : Int64
+  toggle_on : Int64
+  track : Int64
+  container : Int64
+  content : Int64
+  lens_idle : Int64
+  paper : Int64
+}
+
+pub struct DampedDrag {
+  // private fields
+}
+pub fn DampedDrag::animate_to(Self, Double) -> Unit
+pub fn DampedDrag::attach(Self, @view.View) -> Unit
+pub fn DampedDrag::cancel_to(Self, Double) -> Unit
+pub fn DampedDrag::jelly(Self, @view.View, Double) -> (Double, Double)
+pub fn DampedDrag::new(Double, lo~ : Double, hi~ : Double, threshold? : Double, rest_scale? : Double, held_scale~ : Double) -> Self
+pub fn DampedDrag::press(Self) -> Unit
+pub fn DampedDrag::pressed(Self, @view.View) -> Double
+pub fn DampedDrag::pressing(Self) -> Bool
+pub fn DampedDrag::progress(Self, @view.View) -> Double
+pub fn DampedDrag::release(Self) -> Unit
+pub fn DampedDrag::set_bounds(Self, lo~ : Double, hi~ : Double) -> Unit
+pub fn DampedDrag::slide_to(Self, Double) -> Unit
+pub fn DampedDrag::target(Self) -> Double
+pub fn DampedDrag::update_value(Self, Double) -> Unit
+pub fn DampedDrag::value(Self, @view.View) -> Double
+pub fn DampedDrag::velocity(Self, @view.View) -> Double
+
+pub struct InteractiveHighlight {
+  // private fields
+}
+pub fn InteractiveHighlight::attach(Self, @view.View) -> Unit
+pub fn InteractiveHighlight::down(Self, Double, Double, Double, Double) -> Unit
+pub fn InteractiveHighlight::moved(Self, Double, Double) -> Unit
+pub fn InteractiveHighlight::new() -> Self
+pub fn InteractiveHighlight::offset(Self, @view.View) -> (Double, Double)
+pub fn InteractiveHighlight::pressed(Self, @view.View) -> Double
+pub fn InteractiveHighlight::spot(Self, @view.View, Double, Double) -> (Double, Double)
+pub fn InteractiveHighlight::stretch(Self, @view.View) -> (Double, Double, Double, Double)
+pub fn InteractiveHighlight::up(Self) -> Unit
+
+#derive(Eq, @debug.Debug)
+pub(all) enum LiquidCapsuleTone {
+  Floating
+  BarPill
+  ViewerClear
+  ViewerDark
+  Panel
+  Prominent
+}
+
+pub struct LiquidMerge {
+  // private fields
+}
+pub fn LiquidMerge::attach(Self, @view.View) -> Unit
+pub fn LiquidMerge::end(Self) -> Double
+pub fn LiquidMerge::gap_at(Self, Double) -> Double
+pub fn LiquidMerge::gap_on(Self, @view.View) -> Double
+pub fn LiquidMerge::is_bonded(Self) -> Bool
+pub fn LiquidMerge::is_separated(Self) -> Bool
+pub fn LiquidMerge::merge_at(Self, Double) -> Double
+pub fn LiquidMerge::merge_on(Self, @view.View) -> Double
+pub fn LiquidMerge::new(separated? : Bool, merge_max? : Double, break_gap? : Double, merged_gap? : Double, separated_gap? : Double, max_gap? : Double, auto_separate? : Bool) -> Self
+pub fn LiquidMerge::pos_at(Self, Double) -> (Double, Double)
+pub fn LiquidMerge::pos_on(Self, @view.View) -> (Double, Double)
+pub fn LiquidMerge::recoil_on(Self, @view.View) -> Double
+#callsite(autofill(loc))
+pub fn LiquidMerge::set_separated(Self, Bool, at~ : Double, loc~ : SourceLoc) -> Unit
+
+pub(all) struct LiquidMorphFrame {
+  mx : Double
+  my : Double
+  cur_w : Double
+  cur_h : Double
+  radius : Double
+  raw_value : Double
+  push_dx : Double
+  push_dy : Double
+  platter_active : Bool
+  content_opacity : Double
+  content_blur : Double
+  final_dx : Double
+  final_dy : Double
+  open_anchor_scale : Double
+  blob_a_emerge : Double
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum PillDirection {
+  Horizontal
+  Vertical
+}
+
+pub(all) struct PillTriggerScope {
+  pill : @view.View
+  fx : @signals.Signal[((Double, Double)?, Int32)]
+  press_way : @motion.NodeWay
+  morph_glass : @ref.Ref[(() -> @paint.Glass?)?]
+  morph_shadow : @ref.Ref[(() -> (Double, Double, Int64))?]
+  mut morph_owner : Int32
+  mut morph_cancel : (() -> Unit)?
+  children : Array[@view.View]
+  height : Double
+  pad : Double
+  direction : PillDirection
+  has_press_scale : Bool
+  rest_glass : () -> @paint.Glass
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum ScrollEdgeSide {
+  Top
+  Bottom
+}
+
+// Type aliases
+
+// Traits

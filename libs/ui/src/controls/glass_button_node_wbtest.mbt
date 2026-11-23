@@ -15,6 +15,7 @@ fn glass_button_tester(
   solid : Bool,
   disabled : @signals.Signal[Bool],
   clicks : Ref[Int],
+  high_contrast? : Bool = false,
 ) -> (@ui.Tester, Ref[@view.View?]) {
   presenters_reset()
   set_words(fn(key, _) { key })
@@ -37,6 +38,7 @@ fn glass_button_tester(
         fn() { if prominent { "Deploy" } else { "Cancel" } },
         fn() { clicks.val += 1 },
         prominent~,
+        high_contrast~,
         icon=if prominent { "zap" } else { "refresh" },
         disabled=fn() { disabled.get() },
       )
@@ -54,7 +56,7 @@ test "glass_button_node renders .glass and .glassProminent in light and dark wit
     for dark in [false, true] {
       let disabled = @signals.signal(false)
       let clicks = Ref(0)
-      let (t, _) = glass_button_tester(prominent, dark, false, disabled, clicks)
+      let (t, _) = glass_button_tester(prominent, dark, false, disabled, clicks, high_contrast=prominent)
       let glass = t.drawn_glass()
       let liquid_count = glass.filter(fn(g) { g.4 == 6 }).length()
       let audits = t.audit()
@@ -63,12 +65,21 @@ test "glass_button_node renders .glass and .glassProminent in light and dark wit
         (prominent, dark, 1, 1, []),
       )
 
-      let (ts, _) = glass_button_tester(prominent, dark, true, disabled, clicks)
+      let (ts, _) = glass_button_tester(prominent, dark, true, disabled, clicks, high_contrast=prominent)
       let solid_glass = ts.drawn_glass().length()
       let expected_ground = if prominent {
-        prominent_accent_fill(theme().p.accent)
+        prominent_accent_fill(theme().p.accent, high_contrast=true)
       } else {
         panel_ground()
+      }
+      if prominent {
+        // Default high_contrast=false preserves native system accent untouched
+        assert_eq(prominent_accent_fill(theme().p.accent), theme().p.accent)
+        assert_eq(prominent_accent_fill(0x0088FFFFL), 0x0088FFFFL)
+        let hc = prominent_accent_fill(0x0088FFFFL, high_contrast=true)
+        assert_true(@ui.contrast_ratio(0xFFFFFFFFL, hc) >= 4.6)
+        let hc_theme = prominent_accent_fill(theme().p.accent, high_contrast=true)
+        assert_true(@ui.contrast_ratio(0xFFFFFFFFL, hc_theme) >= 4.6)
       }
       let has_ground = ts.drawn_rects().iter().any(fn(r) { r.4 == expected_ground })
       let solid_audits = ts.audit()
@@ -77,6 +88,13 @@ test "glass_button_node renders .glass and .glassProminent in light and dark wit
         (prominent, dark, solid_glass, has_ground, solid_audits),
         (prominent, dark, 0, true, []),
       )
+      if prominent {
+        // Verify default glass_button_node (high_contrast=false) emits raw accent in solid fallback
+        let (ts_raw, _) = glass_button_tester(true, dark, true, disabled, clicks, high_contrast=false)
+        let has_raw = ts_raw.drawn_rects().iter().any(fn(r) { r.4 == theme().p.accent })
+        @ui.set_glass_solid(None)
+        assert_true(has_raw)
+      }
     }
   }
   set_dark(None)
