@@ -27,6 +27,8 @@
 # files came at 2, and check-station (0) and (3) neared their 5 minutes (p90 271 and 254 s, the others 212-222, main's
 # 34 runs of 2026-11-22). The list is dealt longest first whatever its order (the awk below sorts it), so a file added
 # at its end is dealt in its place; dealt by these, the six slices hold within a few seconds of each other.
+# STILLFAIL_SKIP_FROZEN_MB=1 (scripts/check.sh, for a change that leaves the frozen station_main alone) leaves out its
+# three files before they are dealt: mb-twin-station, mb-station-e2e and mb-station-contracts.
 # Run in station/.
 s=${1:-0/1}
 i=${s%/*} n=${s#*/}
@@ -123,7 +125,8 @@ long="$long test/cc.test.ts:5 test/farview.test.ts:5 test/hub-parts.test.ts:5 te
 long="$long test/mb-reader-open-jobs.test.ts:5 test/mb-search-history.test.ts:5 test/multi-workspace-agents.test.ts:5"
 long="$long test/pending-existence.test.ts:5 test/repo-rules-hook.test.ts:5 test/usage-chat-backfill.test.ts:5"
 long="$long test/usage-compact-write.test.ts:5 test/usage-retire.test.ts:5 test/usage-timing-bounded.test.ts:5"
-ls test/*.test.ts | awk -v i="$i" -v n="$n" -v long="$long" '
+frozen='^test/mb-(twin-station|station-e2e|station-contracts)\.test\.ts$'
+ls test/*.test.ts | if [ "${STILLFAIL_SKIP_FROZEN_MB:-}" = 1 ]; then grep -Ev "$frozen"; else cat; fi | awk -v i="$i" -v n="$n" -v long="$long" '
   function put(f, c,   g, b) { b = 0; for (g = 1; g < n; g++) if (load[g] < load[b]) b = g; load[b] += c; if (b == i) print f }
   BEGIN { k = split(long, l, " ") }
   { have[$0] = 1; all[NR] = $0 }
