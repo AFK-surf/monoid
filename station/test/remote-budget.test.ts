@@ -121,6 +121,45 @@ describe("remote's budget", { concurrency: true }, () => {
     await r.jobs.stop(running.id);
   });
 
+  test("expire batches store lookups across more than 500 incoming directories via jobsEnds", async () => {
+    const r = station();
+    const now = Date.now();
+    const incoming = join(r.remote.root, "incoming");
+    mkdirSync(incoming, { recursive: true });
+    const N = 550;
+    const expiredAt = now - TASKS_KEPT_MS - 60_000;
+    const keptAt = now - 60_000;
+    for (let i = 0; i < N; i++) {
+      const name = `task${i}`;
+      mkdirSync(join(incoming, name), { recursive: true });
+      writeFileSync(join(incoming, name, "task.json"), "{}");
+      r.store.insertJob({
+        id: `remote_${name}`, sessionKey: "remote:ws:peer-a:s", name, command: "true", cwd: r.dir,
+        port: null, token: `t-${i}`, state: "exited", pgid: null, exitCode: 0,
+        startedAt: expiredAt - 1000, endedAt: i < 10 ? expiredAt : keptAt,
+        restarts: 0, log: join(r.dir, `${name}.log`), watch: false,
+      });
+    }
+    let getJobCalls = 0;
+    const batchSizes: number[] = [];
+    const origGetJob = r.store.getJob.bind(r.store);
+    const origJobsEnds = r.store.jobsEnds.bind(r.store);
+    r.store.getJob = (id: string) => {
+      getJobCalls++;
+      return origGetJob(id);
+    };
+    r.store.jobsEnds = (ids: readonly string[]) => {
+      batchSizes.push(ids.length);
+      return origJobsEnds(ids);
+    };
+    const gone = await r.remote.expire(now);
+    assert.equal(gone, 10);
+    assert.equal(getJobCalls, 0, "expire uses jobsEnds rather than per-directory getJob");
+    assert.deepEqual(batchSizes.sort((a, b) => b - a), [500, 50]);
+    for (let i = 0; i < 10; i++) assert.equal(existsSync(join(incoming, `task${i}`)), false);
+    for (let i = 10; i < N; i++) assert.equal(existsSync(join(incoming, `task${i}`)), true);
+  });
+
   test("when a tree last changed is not looked for past its bound, nor on another disk", async () => {
     const dir = mkdtempSync(join(tmpdir(), "latest-"));
     dirs.push(dir);

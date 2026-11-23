@@ -114,6 +114,7 @@ pub fn Store::job_by_token(Self, @json.Json) -> @json.Json raise
 pub fn Store::job_ended(Self, @json.Json, @json.Json, @json.Json) -> Unit raise
 pub fn Store::job_notices(Self, @json.Json, @json.Json) -> Array[@json.Json] raise
 pub fn Store::job_started(Self, @json.Json, @json.Json, Bool) -> Unit raise
+pub fn Store::jobs_ends(Self, Array[@json.Json]) -> @json.Json raise
 pub fn Store::jobs_mark_of(Self, Array[@json.Json]) -> @json.Json raise
 pub fn Store::jobs_running(Self) -> Array[@json.Json] raise
 pub fn Store::jobs_up(Self) -> Array[@json.Json] raise

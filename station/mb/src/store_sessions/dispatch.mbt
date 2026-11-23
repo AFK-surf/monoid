@@ -149,6 +149,7 @@ pub fn Store::call(self : Store, name : String, x : Array[Json]) -> Json raise {
     "forgetProcess" => unit(self.forget_process(a(x, 0)))
     "jobEnded" => unit(self.job_ended(a(x, 0), a(x, 1), a(x, 2)))
     "getJob" => self.get_job(a(x, 0))
+    "jobsEnds" => self.jobs_ends(arr(a(x, 0)))
     "jobByToken" => self.job_by_token(a(x, 0))
     "jobsUp" => Json::array(self.jobs_up())
     "jobsUpOf" => Json::array(self.jobs_up_of(arr(a(x, 0))))

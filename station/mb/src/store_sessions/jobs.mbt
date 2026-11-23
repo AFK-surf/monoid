@@ -405,6 +405,25 @@ pub fn Store::get_job(self : Store, id : Json) -> Json raise {
 }
 
 ///|
+pub fn Store::jobs_ends(self : Store, ids : Array[Json]) -> Json raise {
+  if ids.length() == 0 {
+    return Json::object({})
+  }
+  let out : Map[String, Json] = {}
+  for
+    r in self.all(
+      "SELECT id, state, ended_at FROM jobs WHERE id IN (SELECT value FROM json_each(?1))",
+      [jstr(js(Json::array(ids)))],
+    ) {
+    out[js_string(col(r, "id"))] = {
+      "state": col(r, "state"),
+      "endedAt": col(r, "ended_at"),
+    }
+  }
+  Json::object(out)
+}
+
+///|
 pub fn Store::job_by_token(self : Store, token : Json) -> Json raise {
   match self.one("SELECT * FROM jobs WHERE token = ?", [token]) {
     Some(r) => to_job(r)

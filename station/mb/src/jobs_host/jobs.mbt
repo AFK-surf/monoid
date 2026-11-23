@@ -13,6 +13,12 @@ pub let job_logs_kept_ms : Double = 14.0 * 24.0 * 3600_000.0
 pub let job_files_orphan_ms : Double = 3600_000.0
 
 ///|
+pub let collect_yield_every : Int = 32
+
+///|
+pub let collect_batch_size : Int = 500
+
+///|
 pub let log_lines : Int = 50
 
 ///|
@@ -765,6 +771,187 @@ pub async fn JobsHost::cap_log(self : JobsHost, path : String) -> Bool {
 }
 
 ///|
+async fn collect_files(
+  dir : String,
+  now : Double,
+  up : Array[String],
+  list_dir : async (String) -> Array[String],
+  stat_file : async (String) -> Json?,
+  remove_file : async (String) -> Unit,
+  is_running : (String) -> Bool,
+  job_of : (String) -> Json?,
+  jobs_of? : ((Array[String]) -> Map[String, Json]?)? = None,
+  yield_turn? : async () -> Unit = async fn() {
+    @effect.sleep(1, later=true) // timer: yields a large upkeep sweep back to the host event loop
+  },
+) -> Array[String] {
+  let gone : Array[String] = []
+  let gone_set : Map[String, Bool] = {}
+  let up_ids : Map[String, Bool] = {}
+  for id in up {
+    up_ids[id] = true
+  }
+  // (each job read once, and none of one up: a log and an exit file of one id read it once, jobs.ts `jobOf`)
+  let looked : Map[String, Json?] = {}
+  match jobs_of {
+    Some(batch_lookup) => {
+      let mut processed_any = false
+      for sub in ["logs", "exit"] {
+        let sub_dir = pjoin([dir, sub])
+        let names = list_dir(sub_dir)
+        let mut offset = 0
+        while offset < names.length() {
+          if processed_any {
+            yield_turn()
+          }
+          processed_any = true
+          let end = if offset + collect_batch_size < names.length() {
+            offset + collect_batch_size
+          } else {
+            names.length()
+          }
+          let need : Array[String] = []
+          let seen_need : Map[String, Bool] = {}
+          for i in offset..<end {
+            guard job_file_id(names[i], sub) is Some(id) else { continue }
+            if up_ids.contains(id) || looked.contains(id) || seen_need.contains(id) {
+              continue
+            }
+            seen_need[id] = true
+            need.push(id)
+          }
+          if need.length() > 0 {
+            match batch_lookup(need) {
+              None => {
+                // DB error: safely skip this batch without recording misses or deleting files.
+                offset = end
+                continue
+              }
+              Some(found) =>
+                for id in need {
+                  match found.get(id) {
+                    Some(Null) | None => looked[id] = None
+                    Some(v) => looked[id] = Some(v)
+                  }
+                }
+            }
+          }
+          for i in offset..<end {
+            let name = names[i]
+            guard job_file_id(name, sub) is Some(id) else { continue }
+            // (one whose end the store keeps is not up, though `taken_in` has yet to let it go: jobs.ts `asked`'s
+            // `jobEnded`)
+            if up_ids.contains(id) {
+              continue
+            }
+            let job = match looked.get(id) {
+              Some(j) => j
+              None => continue
+            }
+            let file = pjoin([sub_dir, name])
+            match job {
+              None => {
+                if is_running(id) {
+                  continue
+                }
+                guard stat_file(file) is Some(st) else { continue }
+                if now - num(field(st, "mtimeMs")).unwrap_or(now) < job_files_orphan_ms {
+                  continue
+                }
+              }
+              Some(job) => {
+                let ended_at = num(field(job, "endedAt"))
+                if text(job, "state") == "running" ||
+                  ended_at is None ||
+                  now - ended_at.unwrap() < job_logs_kept_ms {
+                  continue
+                }
+              }
+            }
+            // (started again while the files were read)
+            if is_running(id) &&
+              (match job_of(id) {
+                None => true
+                Some(j) => text(j, "state") == "running"
+              }) {
+              continue
+            }
+            remove_file(file)
+            if !gone_set.contains(id) {
+              gone_set[id] = true
+              gone.push(id)
+            }
+          }
+          offset = end
+        }
+      }
+    }
+    None => {
+      let mut since = 0
+      for sub in ["logs", "exit"] {
+        let sub_dir = pjoin([dir, sub])
+        for name in list_dir(sub_dir) {
+          since += 1
+          if since >= collect_yield_every {
+            since = 0
+            yield_turn()
+          }
+          guard job_file_id(name, sub) is Some(id) else { continue }
+          // (one whose end the store keeps is not up, though `taken_in` has yet to let it go: jobs.ts `asked`'s
+          // `jobEnded`)
+          if up_ids.contains(id) {
+            continue
+          }
+          let file = pjoin([sub_dir, name])
+          let job = match looked.get(id) {
+            Some(j) => j
+            None => {
+              since += 1
+              let j = job_of(id)
+              looked[id] = j
+              j
+            }
+          }
+          match job {
+            None => {
+              if is_running(id) {
+                continue
+              }
+              guard stat_file(file) is Some(st) else { continue }
+              if now - num(field(st, "mtimeMs")).unwrap_or(now) < job_files_orphan_ms {
+                continue
+              }
+            }
+            Some(job) => {
+              let ended_at = num(field(job, "endedAt"))
+              if text(job, "state") == "running" ||
+                ended_at is None ||
+                now - ended_at.unwrap() < job_logs_kept_ms {
+                continue
+              }
+            }
+          }
+          // (started again while the files were read)
+          if is_running(id) &&
+            (match job_of(id) {
+              None => true
+              Some(j) => text(j, "state") == "running"
+            }) {
+            continue
+          }
+          remove_file(file)
+          if !gone_set.contains(id) {
+            gone_set[id] = true
+            gone.push(id)
+          }
+        }
+      }
+    }
+  }
+  gone
+}
+
+///|
 /// The files in jobs/logs and jobs/exit of a job the store no longer has (`job_of` None), unchanged for
 /// JOB_FILES_ORPHAN_MS, and those of a job that ended JOB_LOGS_KEPT_MS ago, removed; of one up (`up`) nothing. The job
 /// ids whose files went.
@@ -773,66 +960,19 @@ pub async fn JobsHost::collect(
   now : Double,
   up : Array[String],
   job_of : (String) -> Json?,
+  jobs_of? : ((Array[String]) -> Map[String, Json]?)? = None,
 ) -> Array[String] {
-  let gone = []
-  let up_ids : Map[String, Bool] = {}
-  for id in up {
-    up_ids[id] = true
-  }
-  // (each job read once, and none of one up: a log and an exit file of one id read it once, jobs.ts `jobOf`)
-  let looked : Map[String, Json?] = {}
-  for sub in ["logs", "exit"] {
-    let dir = pjoin([self.dir, sub])
-    for name in readdir(self.host, dir).unwrap_or([]) {
-      guard job_file_id(name, sub) is Some(id) else { continue }
-      // (one whose end the store keeps is not up, though `taken_in` has yet to let it go: jobs.ts `asked`'s
-      // `jobEnded`)
-      if up_ids.contains(id) {
-        continue
-      }
-      let file = pjoin([dir, name])
-      let job = match looked.get(id) {
-        Some(j) => j
-        None => {
-          let j = job_of(id)
-          looked[id] = j
-          j
-        }
-      }
-      match job {
-        None => {
-          if self.running.contains(id) {
-            continue
-          }
-          guard lstat(self.host, file) is Some(st) else { continue }
-          if now - num(field(st, "mtimeMs")).unwrap_or(now) < job_files_orphan_ms {
-            continue
-          }
-        }
-        Some(job) => {
-          let ended_at = num(field(job, "endedAt"))
-          if text(job, "state") == "running" ||
-            ended_at is None ||
-            now - ended_at.unwrap() < job_logs_kept_ms {
-            continue
-          }
-        }
-      }
-      // (started again while the files were read)
-      if self.running.contains(id) &&
-        (match job_of(id) {
-          None => true
-          Some(j) => text(j, "state") == "running"
-        }) {
-        continue
-      }
-      remove(self.host, file)
-      if !gone.contains(id) {
-        gone.push(id)
-      }
-    }
-  }
-  gone
+  collect_files(
+    self.dir,
+    now,
+    up,
+    async fn(dir) { readdir(self.host, dir).unwrap_or([]) },
+    async fn(file) { lstat(self.host, file) },
+    async fn(file) { remove(self.host, file) },
+    id => self.running.contains(id),
+    job_of,
+    jobs_of~,
+  )
 }
 
 ///|

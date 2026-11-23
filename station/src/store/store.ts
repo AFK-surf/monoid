@@ -4370,6 +4370,19 @@ export class Store {
     return r ? toJob(r) : null;
   }
 
+  /// Lightweight batch lookup of job state and end time by id (used by upkeep collect and remote expire).
+  jobsEnds(ids: readonly string[]): Record<string, { state: string; endedAt: number | null }> {
+    const out: Record<string, { state: string; endedAt: number | null }> = {};
+    if (ids.length === 0) return out;
+    for (const r of this.#all(
+      "SELECT id, state, ended_at FROM jobs WHERE id IN (SELECT value FROM json_each(?1))",
+      JSON.stringify(ids),
+    ) as { id: string; state: string; ended_at: number | null }[]) {
+      out[r.id] = { state: r.state, endedAt: r.ended_at };
+    }
+    return out;
+  }
+
   jobByToken(token: string): JobRow | null {
     const r = this.#one("SELECT * FROM jobs WHERE token = ?", token);
     return r ? toJob(r) : null;
