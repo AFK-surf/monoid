@@ -6,7 +6,7 @@ import {
   "station/ops_platform",
   "station/api_routes",
   "station/jscase",
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/cmp",
   "moonbitlang/core/buffer",
 }

@@ -1,7 +1,7 @@
 import {
-  "mbui/figure",
-  "mbui/ui",
-  "mbui/view",
+  "ui/figure",
+  "ui/ui",
+  "ui/view",
   "moonbitlang/core/json",
-  "stillfail/sf",
+  "ui/controls" @sf,
 }

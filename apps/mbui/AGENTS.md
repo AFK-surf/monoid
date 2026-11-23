@@ -1,6 +1,6 @@
 # Working on still.fail's apps (for agents)
 
-still.fail's single app on every platform (`apps/mbui/README.md`), in MoonBit on `libs/mbui` (unpinned, changed in the same PR). `libs/mbui/AGENTS.md` and `libs/sf-ui/AGENTS.md` apply here too.
+still.fail's single app on every platform (`apps/mbui/README.md`), in MoonBit on `libs/ui` (unpinned, changed in the same PR). `libs/ui/AGENTS.md` applies here too.
 
 Narrower rules:
 
@@ -24,8 +24,8 @@ Use these four terms in PR descriptions and user-facing text (never 电脑版, �
 
 ## The component library
 
-- Shared UI parts live once in `libs/sf-ui/src` (`stillfail/sf`, `libs/sf-ui/AGENTS.md`), which imports nothing from the app (detlint `library-import`).
-- Controls wrap `libs/mbui/src/headless` for behavior and add only styling: `@headless.button`, `@headless.toggle`, `@headless.disclosure`, `@headless.choice`, `@headless.combobox` (`combo_node`, `offers_node`, `pick_node`, `search_combo_node`), `@headless.menu` (`menu_node`), `@headless.toaster` (`toaster_node`), `@headless.radio_group`, `@headless.slider`, `@headless.split`, and `@headless.table`. Conditional buttons use `button_while_node`; a disabled button that fades stays disabled while hidden. Detlint `button-by-hand` forbids hand-rolled buttons. Pass long-press tips/ripples via `@headless.Hold` and switch holds via `hold_press`.
+- Shared UI parts live once in `libs/ui/src/controls` (`ui/controls`, `libs/ui/AGENTS.md`), which imports nothing from the app (detlint `library-import`).
+- Controls wrap `libs/ui/src/headless` for behavior and add only styling: `@headless.button`, `@headless.toggle`, `@headless.disclosure`, `@headless.choice`, `@headless.combobox` (`combo_node`, `offers_node`, `pick_node`, `search_combo_node`), `@headless.menu` (`menu_node`), `@headless.toaster` (`toaster_node`), `@headless.radio_group`, `@headless.slider`, `@headless.split`, and `@headless.table`. Conditional buttons use `button_while_node`; a disabled button that fades stays disabled while hidden. Detlint `button-by-hand` forbids hand-rolled buttons. Pass long-press tips/ripples via `@headless.Hold` and switch holds via `hold_press`.
 - Show components and states in `apps/mbui/src/sfstorybook` (`foundations.mbt`, `stories.mbt`, `apps/mbui/src/sfstories`), built by `apps/mbui/scripts/kit-web.sh` to `kit.monoid.zone` (`cloud/wrangler.kit.jsonc`). Show a part's states side by side with `state_matrix_node` (`apps/mbui/src/sfstorybook/matrix.mbt`, under the bar's 环境 panel: size of words, current input, language), and draw and compare them offscreen across theme, words, input and window with `apps/mbui/scripts/story-diff.sh`.
 - Beside a multi-line block, align icons, marks, chevrons, and one-line parts to the first line, never centered on block height (`Tester::first_line_faults`, `corners_first_line_known`). Below a line starting with a mark and words, start following lines at the mark or at those words, never in between (`Tester::line_start_faults`, `corners_line_start_known`).
 - Never end a label in `…` for a further step (menu, dialog, sub-page): use full words and a trailing chevron (`@sf.menu_item_of` `further=true`). `…` only marks ongoing work (`正在…`) and macOS menu bar items.
@@ -34,10 +34,10 @@ Use these four terms in PR descriptions and user-facing text (never 电脑版, �
 ## One app: tiers, input, pages, shell
 
 - Six principles: equal ease on both inputs, >= 44x44 non-overlapping press targets, bottom sheets by default on Small (anchored popovers only for upper-half short `Menu`, short `Pick`, and explicit `popover=true` switcher panels) and anchored popovers on Medium/Large, screen decides layout and input decides feedback and drawn scale, the same capabilities on every tier, actions near their targets.
-- Packages while legacy pages merge: `libs/sf-ui/src` (library), `apps/mbui/src/sfbase` (model, topics, `Source`, `Page`, `Shell`; imports no pages), `apps/mbui/src/sfdesk` (unmerged Medium/Large pages and frame), `apps/mbui/src/sfapp` (Small frame and pages, `pub using` `sfbase`), `apps/mbui/src/sfpages` (merged cross-screen pages).
-- Move shared code down to `sfbase` or `libs/sf-ui`. Keep business logic in the core and copy in `@sf.t`. Navigate via `@sfbase.open_page` and `@sfbase.open_detail`, never pushing onto `app.nav`.
+- Packages while legacy pages merge: `libs/ui/src/controls` (library), `apps/mbui/src/sfbase` (model, topics, `Source`, `Page`, `Shell`; imports no pages), `apps/mbui/src/sfdesk` (unmerged Medium/Large pages and frame), `apps/mbui/src/sfapp` (Small frame and pages, `pub using` `sfbase`), `apps/mbui/src/sfpages` (merged cross-screen pages).
+- Move shared code down to `sfbase` or `libs/ui`. Keep business logic in the core and copy in `@sf.t`. Navigate via `@sfbase.open_page` and `@sfbase.open_detail`, never pushing onto `app.nav`.
 - Never branch inside a page on `@sf.layout`, `@sf.native_input()`, or `@ui.pointing()`: adapt layout by page width, ask the library for input-aware parts, and use library primitives (`c.lit`, `c.menu_asked`, tips). Merged pages must be no worse on any screen than before.
-- Presenters (`libs/sf-ui/src/presenters.mbt`) own stepping deeper in overlays (弹层里往里走): pages call `close()` and open the next, with no step state or back buttons. On 小屏 chained panels, confirms, menus, and picks slide inside one `sheet_node` (`sheet_shows_node.mbt`) and keep the scrim.
+- Presenters (`libs/ui/src/controls/presenters.mbt`) own stepping deeper in overlays (弹层里往里走): pages call `close()` and open the next, with no step state or back buttons. On 小屏 chained panels, confirms, menus, and picks slide inside one `sheet_node` (`sheet_shows_node.mbt`) and keep the scrim.
 
 ## Made once, as nodes
 
@@ -48,7 +48,7 @@ Use these four terms in PR descriptions and user-facing text (never 电脑版, �
 
 ## Motion
 
-- Read `libs/sf-ui/src/motion.mbt` first. Every motion is one of its nine kinds with presets. Move position or size only from its cause frame, never from layout diffs or measured targets (window, sidebar, keyboard, or tier changes are not motions). Never use time windows as causes or read in logic whether a motion runs. Scale transitions keep full scale from origin and stay invisible at <= 0.5 scale (`@sf.seen_at(scale)`).
+- Read `libs/ui/src/controls/motion.mbt` first. Every motion is one of its nine kinds with presets. Move position or size only from its cause frame, never from layout diffs or measured targets (window, sidebar, keyboard, or tier changes are not motions). Never use time windows as causes or read in logic whether a motion runs. Scale transitions keep full scale from origin and stay invisible at <= 0.5 scale (`@sf.seen_at(scale)`).
 
 ## Running in development
 
@@ -59,15 +59,15 @@ Use these four terms in PR descriptions and user-facing text (never 电脑版, �
 ## Checks, host boundary, and where tests run
 
 - Check changed screens with `t.audit()`, `t.sources_of(words)`, and `t.sources_at(x, y)` after reading code logic.
-- App code calls the host through `@hostapi` or `@ui` and never imports `libs/mbui/src/host` (detlint `host-import`, only mains like `apps/mbui/src/stillfail` import it), so native tests run on Linux (`TARGETS=native apps/mbui/scripts/test.sh`).
-- `apps/mbui/scripts/test.sh` and `libs/mbui/scripts/test.sh` run in CI only (they refuse elsewhere: serial wasm-gc queues on shared Macs). Locally or on build stations run `check`, `libs/mbui/scripts/detlint` (which tracks per-package ceiling counts in `apps/mbui/detlint.counts/` referenced by `apps/mbui/detlint.json`), targeted test files (`moon test --target wasm-gc --release src/sfapp/<file>_wbtest.mbt`), and benchmarks for speed changes. Never ask an agent to run the full suite before opening a PR.
+- App code calls the host through `@hostapi` or `@ui` and never imports `libs/ui/src/host` (detlint `host-import`, only mains like `apps/mbui/src/stillfail` import it), so native tests run on Linux (`TARGETS=native apps/mbui/scripts/test.sh`).
+- `apps/mbui/scripts/test.sh` and `libs/ui/scripts/test.sh` run in CI only (they refuse elsewhere: serial wasm-gc queues on shared Macs). Locally or on build stations run `check`, `libs/ui/scripts/detlint` (which tracks per-package ceiling counts in `apps/mbui/detlint.counts/` referenced by `apps/mbui/detlint.json`), targeted test files (`moon test --target wasm-gc --release src/sfapp/<file>_wbtest.mbt`), and benchmarks for speed changes. Never ask an agent to run the full suite before opening a PR.
 - Measure speed with `apps/mbui/scripts/instrbench.sh` (`compare` side by side, numbers without pass/fail verdicts) and frame time with `apps/mbui/scripts/appbench.sh`. Build size and idle memory: `.github/workflows/mbui-size.yml` (`scripts/size.sh`, `scripts/idlemem.sh`, `mbui-size` branch; report before/after on size work).
 - Push only when ready to merge (`station_task` `dir` for remote checks). Watch PR CI with `ci-wait.sh` (`stillfail-github-ci`) and fix failures from logs.
 
 ## Warnings
 
-- Every compiler warning is an error or disabled (`warnings` in `apps/mbui/moon.mod`, `libs/mbui/moon.mod`, `libs/mbui/tools`, `apps/mbui/tools`, `libs/mbui/bench/signals`) so `moon check` skips unchanged packages. Always disabled: `33` (one-line asset data), `79` (`derive` on public types), `29` (side-effect/target imports).
-- Use `Repr(x)` or `#derive(Debug)` for debugging, `Show` for human-readable text, and `some_text`/`list_text`/`rect_text` (`libs/mbui/src/ui/shown_text.mbt`) for serialized values in keys or tests.
+- Every compiler warning is an error or disabled (`warnings` in `apps/mbui/moon.mod`, `libs/ui/moon.mod`, `libs/ui/tools`, `apps/mbui/tools`, `libs/ui/bench/signals`) so `moon check` skips unchanged packages. Always disabled: `33` (one-line asset data), `79` (`derive` on public types), `29` (side-effect/target imports).
+- Use `Repr(x)` or `#derive(Debug)` for debugging, `Show` for human-readable text, and `some_text`/`list_text`/`rect_text` (`libs/ui/src/ui/shown_text.mbt`) for serialized values in keys or tests.
 - Suppress intended unused items locally (`#warnings("-unused_value")`, `-unused_field`, `-unused_constructor`, `-struct_never_constructed`) with a comment giving the reason (and the field on structs). Delete all other unused code.
 - CI tracks the latest MoonBit hourly (`.github/workflows/mbui-moonbit.yml`): fix new warnings or deprecations forward with CI's `moon version --all`.
 

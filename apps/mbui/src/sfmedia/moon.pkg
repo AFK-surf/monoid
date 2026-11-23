@@ -1,8 +1,8 @@
 import {
-  "mbui/host",
-  "mbui/film",
-  "mbui/figure",
-  "mbui/media",
+  "ui/host",
+  "ui/film",
+  "ui/figure",
+  "ui/media",
 }
 
 options(

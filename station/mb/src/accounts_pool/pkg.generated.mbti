@@ -2,7 +2,7 @@
 package "station/accounts_pool"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/ref",
   "station/agent_runtimes",
   "station/host",

@@ -1,5 +1,5 @@
 // Whether this browser can draw the app, and what to do where it cannot. mbui's web host draws with WebGL 2 alone
-// (libs/mbui/web/host.js setupGL): with a browser's graphics acceleration off, `getContext("webgl2")` is null, the host
+// (libs/ui/web/host.js setupGL): with a browser's graphics acceleration off, `getContext("webgl2")` is null, the host
 // threw on it and the page stayed white after fetching megabytes of the app for nothing. So the page asks first
 // (start.ts), on a canvas of its own, never the app's `#c`: the context a canvas first gives is the only one it ever
 // gives, and the host asks `#c` for its own attributes (alpha, premultiplied, no antialias). Where there is none, the

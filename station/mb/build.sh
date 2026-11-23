@@ -87,7 +87,7 @@ echo "$$" > "$lock/pid"
 (
   held_gen=
   trap '[ -z "${held_gen:-}" ] || rm -rf "$held_gen"; rm -rf "$lock"' EXIT
-  "$ROOT/libs/mbui/scripts/mbc" path >/dev/null
+  "$ROOT/libs/ui/scripts/mbc" path >/dev/null
   cd "$D"
   # The prepared C is one for every target: a target built after another of the same sources and moon takes it as it
   # was made (prepped-$pkg.key, by content, not by git), not making it again (moon build and cprep, ~40 s each).
@@ -95,10 +95,10 @@ echo "$$" > "$lock/pid"
   # MOON_HOME): without it, the runners share reader-mbc-prepped and cprep.
   gen_key=$( {
     moon version --all | sed 's|)[[:space:]].*$|)|'
-    "$ROOT/libs/mbui/scripts/mbc" key
-    find "$D/moon.mod" "$D/moon.work" "$D/build.sh" "$ROOT/rules/moon.mod" "$ROOT/libs/mbui/moon.mod" \
-      "$ROOT/libs/mbui/scripts/mbc-stub.sh" "$ROOT/libs/base/moon.mod" "$D/src" "$ROOT/rules/src" "$ROOT/libs/base/src" "$ROOT/libs/mbui/src/effect" \
-      "$ROOT/libs/mbui/src/halt" -type f ! -name '*_test.mbt' ! -name '*_wbtest.mbt' ! -name pkg.generated.mbti \
+    "$ROOT/libs/ui/scripts/mbc" key
+    find "$D/moon.mod" "$D/moon.work" "$D/build.sh" "$ROOT/rules/moon.mod" "$ROOT/libs/ui/moon.mod" \
+      "$ROOT/libs/ui/scripts/mbc-stub.sh" "$ROOT/libs/base/moon.mod" "$D/src" "$ROOT/rules/src" "$ROOT/libs/base/src" "$ROOT/libs/ui/src/effect" \
+      "$ROOT/libs/ui/src/halt" -type f ! -name '*_test.mbt' ! -name '*_wbtest.mbt' ! -name pkg.generated.mbti \
       | LC_ALL=C sort | xargs shasum | sed "s|  $ROOT/|  |"
   } | shasum | awk '{print $1}')
   prepped="$D/_build/prepped-$pkg.c"
@@ -156,7 +156,7 @@ echo "$$" > "$lock/pid"
   # moon writes to a file of its own, shown only where it failed: the targets build at once on one stderr, which
   # another build leaves non-blocking, and moon aborts on the EAGAIN a full pipe gives as it writes a warning
   # (2026-11-15, CI's win32-x64 reader: "internal rendering error: Os { code: 35 }").
-  if ! MOON_CC="$ROOT/libs/mbui/scripts/mbc-stub.sh" MOON_AR="$ROOT/libs/mbui/scripts/mbc-stub.sh" \
+  if ! MOON_CC="$ROOT/libs/ui/scripts/mbc-stub.sh" MOON_AR="$ROOT/libs/ui/scripts/mbc-stub.sh" \
     moon build --target native --release "src/$pkg" >"$work/moon.log" 2>&1; then
     cat "$work/moon.log" >&2
     exit 1
@@ -241,7 +241,7 @@ for c in "$D"/src/*/*.c; do
   extras+=("--extra=$c")
 done
 
-"$ROOT/libs/mbui/scripts/mbc" compile \
+"$ROOT/libs/ui/scripts/mbc" compile \
   "--cc=${cc[*]}" \
   "--cflags=$cflags" \
   "--init-flags=$init_flags" \

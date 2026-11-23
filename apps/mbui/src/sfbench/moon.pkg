@@ -1,16 +1,16 @@
 import {
-  "mbui/host",
-  "mbui/film",
-  "stillfail/sf",
+  "ui/host",
+  "ui/film",
+  "ui/controls" @sf,
   "stillfail/sfkept",
   "stillfail/sfapp",
   "stillfail/sfbase",
   "stillfail/sffixture",
   "stillfail/sfrealsize",
-  "mbui/wasmrt",
-  "mbui/view",
-  "mbui/ui",
-  "mbui/signals",
+  "ui/wasmrt",
+  "ui/view",
+  "ui/ui",
+  "ui/signals",
 }
 
 options(

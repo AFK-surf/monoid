@@ -1,6 +1,6 @@
 import {
-  "mbui/ui",
-  "stillfail/sf",
+  "ui/ui",
+  "ui/controls" @sf,
   "stillfail/sfapp",
   "stillfail/sfbase",
   "stillfail/sffixture",

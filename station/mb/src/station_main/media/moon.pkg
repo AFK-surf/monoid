@@ -1,9 +1,9 @@
 import {
   "base/flate",
   "base/url",
-  "mbui/pixels",
-  "mbui/zip",
-  "mbui/codec",
+  "ui/pixels",
+  "ui/zip",
+  "ui/codec",
   "moonbitlang/core/buffer",
   "moonbitlang/core/math",
   "moonbitlang/core/encoding/utf8",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The fonts the app carries in itself: libs/sf-ui/src/font_assets.mbt holds, as its bytes (a Bytes literal: kept as they are,
+"""The fonts the app carries in itself: libs/ui/src/controls/font_assets.mbt holds, as its bytes (a Bytes literal: kept as they are,
 not in base64 nor UTF-16), assets/fonts/jetbrains_mono.ttf (JetBrains Mono, variable: the code face; SIL Open Font
 License), given to the hosts as the app starts (@sf.give_faces).
 
@@ -10,7 +10,7 @@ import os, sys
 A = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(os.path.dirname(A))
 FONTS = [("code_face_ttf", "apps/mbui/assets/fonts/jetbrains_mono.ttf")]
-OUT = os.path.join(ROOT, "libs/sf-ui/src/font_assets.mbt")
+OUT = os.path.join(ROOT, "libs/ui/src/controls/font_assets.mbt")
 
 
 def literal(b):
@@ -35,7 +35,7 @@ text = made()
 if "--check" in sys.argv:
     with open(OUT, encoding="utf-8") as f:
         if f.read() != text:
-            sys.exit("libs/sf-ui/src/font_assets.mbt is not what the fonts make: python3 scripts/fontassets.py")
+            sys.exit("libs/ui/src/controls/font_assets.mbt is not what the fonts make: python3 scripts/fontassets.py")
 else:
     with open(OUT, "w", encoding="utf-8") as f:
         f.write(text)

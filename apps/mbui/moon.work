@@ -1,6 +1,5 @@
 members = [
   ".",
-  "../../libs/mbui",
-  "../../libs/sf-ui",
+  "../../libs/ui",
   "deps/farview/client",
 ]

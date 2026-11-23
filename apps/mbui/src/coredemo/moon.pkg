@@ -1,8 +1,8 @@
 import {
   "stillfail/core",
-  "mbui/host",
-  "mbui/hostapi",
-  "mbui/ui",
+  "ui/host",
+  "ui/hostapi",
+  "ui/ui",
   "stillfail/sfcore",
 }
 

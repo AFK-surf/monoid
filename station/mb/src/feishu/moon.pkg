@@ -9,7 +9,7 @@ import {
   "station/nodepath",
   "station/session_chats",
   "station/cloud_net",
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/cmp",
   "moonbitlang/core/double",
   "moonbitlang/core/encoding/utf8",

@@ -2,7 +2,7 @@
 package "stillfail/sfcore"
 
 import {
-  "mbui/signals",
+  "ui/signals",
   "stillfail/core",
 }
 

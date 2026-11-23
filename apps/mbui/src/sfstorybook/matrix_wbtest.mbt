@@ -56,7 +56,7 @@ test "环境 switches the size of words, the input and the language at once, and
     t.run_for(@ui.move_most_ms)
     // (at 2× words the library's segmented draws its words taller than its track: its own, seg_node.mbt's, not the
     // workbench's, as the panel's three are)
-    let faults = page_faults(t).filter(fn(f) { !f.contains("stillfail/sf/src/seg_node.mbt") })
+    let faults = page_faults(t).filter(fn(f) { !f.contains("ui/src/controls/seg_node.mbt") })
     assert_true(faults.is_empty(), msg="\{w} at 2.0: \{faults.join("\n")}")
     assert_true(t.query(Button, label="2.0× · 触屏 · EN") is Some(_), msg="\{w}: \{t.semantics_dump()}")
     t.click(Button, label="2.0× · 触屏 · EN")

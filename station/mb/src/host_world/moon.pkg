@@ -1,6 +1,6 @@
 import {
   "base/codec",
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/json",
   "station/host",
   "station/wire",

@@ -1,0 +1,102 @@
+#!/bin/sh
+# Generic per-user Linux installer for an mbui app (no root required):
+# copies the binary, shared libraries (*.so*), VERSION, and any bundled resources into
+# $XDG_DATA_HOME/@APP_ID@/app (replacing any prior installation atomically), installs
+# icon.png into the hicolor icon theme, and writes a freedesktop .desktop entry
+# (including x-scheme-handler MIME types for URL schemes).
+#
+# Compatible with mbui's built-in updater (libs/ui/src/host/linux_update.h), which
+# unpacks a release archive and runs `sh install.sh` silently to replace the installed app.
+set -e
+from=$(cd "$(dirname "$0")" && pwd)
+data=${XDG_DATA_HOME:-$HOME/.local/share}
+
+id='@APP_ID@'
+app_name='@APP_NAME@'
+exe='@EXE@'
+categories='@CATEGORIES@'
+schemes='@SCHEMES@'
+update_feed_x64='@UPDATE_FEED_X64@'
+update_feed_arm64='@UPDATE_FEED_ARM64@'
+extra_env='@EXTRA_ENV@'
+
+[ -n "$id" ] || { echo "install.sh: APP_ID is not set" >&2; exit 1; }
+[ -n "$app_name" ] || app_name=$id
+[ -n "$exe" ] || { echo "install.sh: EXE is not set" >&2; exit 1; }
+[ -n "$categories" ] || categories='Utility;'
+
+app=$data/$id/app
+mkdir -p "$data/$id" "$data/applications" "$data/icons/hicolor/512x512/apps"
+rm -rf "$app.new"
+mkdir -p "$app.new"
+
+for item in "$from"/*; do
+  [ -e "$item" ] || continue
+  base=$(basename "$item")
+  case "$base" in
+    install.sh) continue ;;
+  esac
+  cp -R "$item" "$app.new/"
+done
+
+rm -rf "$app" && mv "$app.new" "$app"
+if [ -f "$from/icon.png" ]; then
+  cp "$from/icon.png" "$data/icons/hicolor/512x512/apps/$id.png"
+fi
+
+feed=$update_feed_x64
+case $(uname -m) in
+  aarch64 | arm64)
+    [ -n "$update_feed_arm64" ] && feed=$update_feed_arm64
+    ;;
+esac
+
+exec_env="MBUI_APP_ID=$id \"MBUI_APP_NAME=$app_name\""
+[ -n "$feed" ] && exec_env="$exec_env MBUI_UPDATE_FEED=$feed"
+[ -n "$extra_env" ] && exec_env="$exec_env $extra_env"
+
+mime_line=""
+if [ -n "$schemes" ]; then
+  mimes=""
+  old_ifs=$IFS
+  IFS=,
+  for s in $schemes; do
+    s=$(printf '%s' "$s" | tr -d ' \t')
+    [ -n "$s" ] && mimes="${mimes}x-scheme-handler/${s};"
+  done
+  IFS=$old_ifs
+  [ -n "$mimes" ] && mime_line="MimeType=$mimes"
+fi
+
+desktop="$data/applications/$id.desktop"
+cat > "$desktop" <<ENTRY
+[Desktop Entry]
+Type=Application
+Name=$app_name
+Comment=$app_name
+Exec=env $exec_env "$app/$exe" %u
+Icon=$id
+Terminal=false
+Categories=$categories
+StartupWMClass=$id
+ENTRY
+if [ -n "$mime_line" ]; then
+  printf '%s\n' "$mime_line" >> "$desktop"
+fi
+
+command -v update-desktop-database > /dev/null 2>&1 && update-desktop-database -q "$data/applications" || true
+command -v gtk-update-icon-cache > /dev/null 2>&1 && gtk-update-icon-cache -q -t "$data/icons/hicolor" 2> /dev/null || true
+
+ver=""
+[ -f "$app/VERSION" ] && ver=" $(cat "$app/VERSION")"
+echo "$app_name$ver installed: $app (in your applications as $app_name)"
+
+if command -v ldconfig > /dev/null 2>&1 || [ -x /sbin/ldconfig ]; then
+  { ldconfig -p || /sbin/ldconfig -p; } 2> /dev/null | grep -q "libwebkitgtk-6.0.so.4" ||
+    echo "Embedded web views need WebKitGTK 6.0: install libwebkitgtk-6.0-4 (Ubuntu, Debian) or webkitgtk6.0 (Fedora)"
+  { ldconfig -p || /sbin/ldconfig -p; } 2> /dev/null | grep -q "libpoppler-glib.so.8" ||
+    echo "PDF rendering needs poppler: install libpoppler-glib8t64 (Ubuntu, Debian) or poppler-glib (Fedora)"
+  plugins=$(ls /usr/lib*/gstreamer-1.0 /usr/lib/*/gstreamer-1.0 2> /dev/null || true)
+  { echo "$plugins" | grep -q "libgstplayback.so" && echo "$plugins" | grep -qE "libgst(libav|openh264)[.]so"; } ||
+    echo "Video playback needs GStreamer with an H.264 decoder: install gstreamer1.0-plugins-good and gstreamer1.0-libav (Ubuntu, Debian) or gstreamer1-plugins-good and gstreamer1-plugin-openh264 (Fedora)"
+fi

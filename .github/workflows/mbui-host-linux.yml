@@ -1,4 +1,4 @@
-# mbui (libs/mbui): the host's and the text's contracts on Linux ("What is compared, and
+# mbui (libs/ui): the host's and the text's contracts on Linux ("What is compared, and
 # where"; scripts/host_contract.sh), as mbui-host-windows.yml has Windows': kitdemo built for the GTK 4 host
 # (src/host/linux_*, scripts/linux.sh), its controls page run in a window of Xvfb's (Mesa's llvmpipe draws it: no GPU)
 # with its scripted taps, its tape made a Tester's test and run here (every frame the same), then the committed tape's
@@ -15,21 +15,21 @@ name: mbui-host-linux
 on:
   pull_request:
     paths: &paths
-      - "libs/mbui/src/ui/native.mbt"
-      - "libs/mbui/src/kitdemo/gallery/viewcheck.mbt"
-      - "libs/mbui/src/kitdemo/gallery/sitecheck.mbt"
-      - "libs/mbui/src/streamdemo/**"
-      - "libs/mbui/src/kitdemo/gallery/pdfcheck.mbt"
-      - "libs/mbui/src/kitdemo/gallery/imagecheck.mbt"
-      - "libs/mbui/src/ui/image.mbt"
-      - "libs/mbui/tools/chk/pictures.mbt"
-      - "libs/mbui/src/kitdemo/gallery/playcheck.mbt"
-      - "libs/mbui/src/kitdemo/gallery/badgecheck.mbt"
-      - "libs/mbui/src/kitdemo/gallery/a11ycheck.mbt"
-      - "libs/mbui/src/ui/a11y.mbt"
-      - "libs/mbui/src/host/linux*"
-      - "libs/mbui/src/host/mini_json.h"
-      - "libs/mbui/src/host/app_calls.h"
+      - "libs/ui/src/ui/native.mbt"
+      - "libs/ui/src/kitdemo/gallery/viewcheck.mbt"
+      - "libs/ui/src/kitdemo/gallery/sitecheck.mbt"
+      - "libs/ui/src/streamdemo/**"
+      - "libs/ui/src/kitdemo/gallery/pdfcheck.mbt"
+      - "libs/ui/src/kitdemo/gallery/imagecheck.mbt"
+      - "libs/ui/src/ui/image.mbt"
+      - "libs/ui/tools/chk/pictures.mbt"
+      - "libs/ui/src/kitdemo/gallery/playcheck.mbt"
+      - "libs/ui/src/kitdemo/gallery/badgecheck.mbt"
+      - "libs/ui/src/kitdemo/gallery/a11ycheck.mbt"
+      - "libs/ui/src/ui/a11y.mbt"
+      - "libs/ui/src/host/linux*"
+      - "libs/ui/src/host/mini_json.h"
+      - "libs/ui/src/host/app_calls.h"
       - "apps/mbui/src/host/linux_station.c"
       - "apps/mbui/src/host/station_install.h"
       - "apps/mbui/src/host/station_calls.h"
@@ -38,29 +38,29 @@ on:
       - "apps/mbui/scripts/station_uninstall_test.c"
       - "bin/stillfail.ps1"
       - "apps/mbui/scripts/linux_station_test.*"
-      - "libs/mbui/src/kitdemo/gallery/linkcheck.mbt"
-      - "libs/mbui/src/kitdemo/gallery/noticecheck.mbt"
-      - "libs/mbui/src/kitdemo/gallery/updatecheck.mbt"
-      - "libs/mbui/src/kitdemo/gallery/postcheck.mbt"
-      - "libs/mbui/src/kitdemo/gallery/dropcheck.mbt"
-      - "libs/mbui/src/ui/drop.mbt"
-      - "libs/mbui/src/ui/messages.mbt"
-      - "libs/mbui/src/host/gles_render.h"
-      - "libs/mbui/src/host/glass_damage.h"
-      - "libs/mbui/src/host/frame_mail.h"
-      - "libs/mbui/scripts/gles_render_test.c"
-      - "libs/mbui/src/host/corner_sl.h"
-      - "libs/mbui/src/host/done_watch.h"
-      - "libs/mbui/src/host/post.h"
-      - "libs/mbui/src/host/listen_api.h"
-      - "libs/mbui/src/ui/drive.mbt"
-      - "libs/mbui/scripts/done_runner.py"
-      - "libs/mbui/scripts/linux.sh"
-      - "libs/mbui/scripts/host_contract.sh"
-      - "libs/mbui/tools/chk/textrec.mbt"
-      - "libs/mbui/test/host/**"
-      - "libs/mbui/src/kitdemo/gallery/textcheck.mbt"
-      - "libs/mbui/src/kitdemo/gallery/textrec_linux_*"
+      - "libs/ui/src/kitdemo/gallery/linkcheck.mbt"
+      - "libs/ui/src/kitdemo/gallery/noticecheck.mbt"
+      - "libs/ui/src/kitdemo/gallery/updatecheck.mbt"
+      - "libs/ui/src/kitdemo/gallery/postcheck.mbt"
+      - "libs/ui/src/kitdemo/gallery/dropcheck.mbt"
+      - "libs/ui/src/ui/drop.mbt"
+      - "libs/ui/src/ui/messages.mbt"
+      - "libs/ui/src/host/gles_render.h"
+      - "libs/ui/src/host/glass_damage.h"
+      - "libs/ui/src/host/frame_mail.h"
+      - "libs/ui/scripts/gles_render_test.c"
+      - "libs/ui/src/host/corner_sl.h"
+      - "libs/ui/src/host/done_watch.h"
+      - "libs/ui/src/host/post.h"
+      - "libs/ui/src/host/listen_api.h"
+      - "libs/ui/src/ui/drive.mbt"
+      - "libs/ui/scripts/done_runner.py"
+      - "libs/ui/scripts/linux.sh"
+      - "libs/ui/scripts/host_contract.sh"
+      - "libs/ui/tools/chk/textrec.mbt"
+      - "libs/ui/test/host/**"
+      - "libs/ui/src/kitdemo/gallery/textcheck.mbt"
+      - "libs/ui/src/kitdemo/gallery/textrec_linux_*"
       - ".github/workflows/mbui-host-linux.yml"
       - ".github/actions/apt/**"
   push:
@@ -78,7 +78,7 @@ jobs:
     timeout-minutes: 5
     defaults:
       run:
-        working-directory: libs/mbui
+        working-directory: libs/ui
         shell: bash
     steps:
       - uses: actions/checkout@v4
@@ -98,7 +98,7 @@ jobs:
         working-directory: apps/mbui
         run: |
           mkdir -p out
-          cc -Wall -Werror -Isrc/host -I../../libs/mbui/src/host scripts/station_install_test.c -o out/station_install_test
+          cc -Wall -Werror -Isrc/host -I../../libs/ui/src/host scripts/station_install_test.c -o out/station_install_test
           out/station_install_test
           cc -Wall -Werror -Isrc/host scripts/station_uninstall_test.c -o out/station_uninstall_test
           out/station_uninstall_test
@@ -185,5 +185,5 @@ jobs:
         continue-on-error: true
         with:
           name: host-linux
-          path: libs/mbui/out/host/
+          path: libs/ui/out/host/
           if-no-files-found: ignore

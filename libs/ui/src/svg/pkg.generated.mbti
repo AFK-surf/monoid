@@ -1,0 +1,142 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "ui/svg"
+
+import {
+  "ui/font",
+  "ui/skia",
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn rasterize(Bytes, Int32, opt? : Options) -> (Int32, Int32, FixedArray[Byte])?
+
+pub fn render_svg(String, Options, @skia.Transform, @skia.Pixmap) -> Bool
+
+pub fn render_svg_to_width(String, Int32, Options) -> @skia.Pixmap?
+
+pub fn svg_size(String, Options) -> (Float, Float)?
+
+// Errors
+
+// Types and methods
+#derive(Eq, @debug.Debug)
+pub(all) enum Align {
+  AlignNone
+  XMinYMin
+  XMidYMin
+  XMaxYMin
+  XMinYMid
+  XMidYMid
+  XMaxYMid
+  XMinYMax
+  XMidYMax
+  XMaxYMax
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct AspectRatio {
+  deferred : Bool
+  align : Align
+  slice : Bool
+}
+pub fn AspectRatio::default() -> Self
+
+#derive(Eq, @debug.Debug)
+pub(all) enum FontFamily {
+  FSerif
+  FSansSerif
+  FCursive
+  FFantasy
+  FMonospace
+  FNamed(String)
+}
+pub impl Show for FontFamily
+
+#derive(Eq, @debug.Debug)
+pub(all) enum ImageRendering {
+  OptimizeQuality
+  IrOptimizeSpeed
+  Smooth
+  HighQuality
+  IrCrispEdges
+  Pixelated
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Length {
+  number : Double
+  unit : LengthUnit
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum LengthUnit {
+  LNone
+  Em
+  Ex
+  Px
+  In
+  Cm
+  Mm
+  Pt
+  Pc
+  Percent
+}
+
+pub(all) struct Options {
+  dpi : Float
+  font_family : String
+  font_size : Float
+  languages : Array[String]
+  shape_rendering : ShapeRendering
+  text_rendering : TextRendering
+  image_rendering : ImageRendering
+  default_width : Float
+  default_height : Float
+  style_sheet : String?
+  read_file : (String) -> Bytes?
+  fonts : @font.FontDb
+}
+pub fn Options::default() -> Self
+
+#derive(Eq, @debug.Debug)
+pub(all) enum PaintOrderKind {
+  OFill
+  OStroke
+  OMarkers
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct SColor {
+  red : Int32
+  green : Int32
+  blue : Int32
+  alpha : Int32
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum ShapeRendering {
+  OptimizeSpeed
+  CrispEdges
+  GeometricPrecision
+}
+pub fn ShapeRendering::use_shape_antialiasing(Self) -> Bool
+
+#derive(Eq, @debug.Debug)
+pub(all) enum SimpleSeg {
+  SMoveTo(Double, Double)
+  SLineTo(Double, Double)
+  SCurveTo(Double, Double, Double, Double, Double, Double)
+  SQuadTo(Double, Double, Double, Double)
+  SClose
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum TextRendering {
+  TrOptimizeSpeed
+  TrOptimizeLegibility
+  TrGeometricPrecision
+}
+
+// Type aliases
+
+// Traits

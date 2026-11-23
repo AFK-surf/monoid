@@ -2,7 +2,7 @@
 package "stillfail/core"
 
 import {
-  "mbui/signals",
+  "ui/signals",
   "moonbitlang/core/json",
   "moonbitlang/core/ref",
 }

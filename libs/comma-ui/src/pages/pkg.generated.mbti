@@ -2,7 +2,7 @@
 package "comma-ui/pages"
 
 import {
-  "mbui/view",
+  "ui/view",
 }
 
 // Values

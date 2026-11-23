@@ -3,7 +3,7 @@
 # main), built, signed and put in the releases bucket as .github/workflows/preview.yml does; and the released and beta
 # Android and Mac apps' builds for scripts/release.sh (MBUI_VARIANT=stable or beta):
 #   apps/mbui/scripts/beta.sh tools      MoonBit, its latest release (installed again only when cli.moonbitlang.com
-#                                        has a newer one: its ETag), mbui (libs/mbui), the core's packages
+#                                        has a newer one: its ETag), mbui (libs/ui), the core's packages
 #   apps/mbui/scripts/beta.sh build      the APK (scripts/android.sh, VARIANT=$MBUI_VARIANT: stable or beta, still.fail's
 #                                        Android app's own): versionCode the build (git rev-list --count HEAD), signed
 #                                        with ANDROID_DEBUG_KEYSTORE_B64 (every still.fail Android release's key;
@@ -39,7 +39,7 @@
 # MBUI_FRESH=1 (GitHub's runners, .github/workflows/preview.yml): the checkout built in place (WORK=apps/mbui), what stays
 # between runs the Actions cache's (MBC_STORE, MBC_LTO_CACHE, HBC_CACHE, the core's parts in out/core), the release in
 # MBUI_CACHE ($RUNNER_TEMP's).
-# Warm between runs on a machine of its own (WORK, MBUI_CACHE): the build runs in a copy of apps/mbui and of libs/mbui
+# Warm between runs on a machine of its own (WORK, MBUI_CACHE): the build runs in a copy of apps/mbui and of libs/ui
 # beside it, as the repository has them (MBUI_CACHE/tree), kept outside the job's checkout (which the other jobs' clean
 # takes), so moonc's and the compiler's outputs and the link stay; core.hbc is kept by its inputs
 # (HBC_CACHE), the APK's dex by its own (mbui's scripts/apk: APK_CACHE).
@@ -64,7 +64,7 @@ build_number() { git -C "$REPO" rev-list --count HEAD; }
 # new package: 2026-10-21). Not the four config files HBC_TREES ends with, on purpose (it says why): a change to one
 # alone is no new package, and goes out with the next, its core made anew.
 APP_SRC=(apps/mbui/src apps/mbui/core apps/mbui/android apps/mbui/ios apps/mbui/windows apps/mbui/engine
-  libs/mbui/src libs/mbui/android libs/mbui/moon.mod libs/sf-ui/src libs/sf-ui/moon.mod apps/mbui/moon.mod apps/mbui/moon.work apps/mbui/farview.pin client media vendor
+  libs/ui/src libs/ui/android libs/ui/moon.mod apps/mbui/moon.mod apps/mbui/moon.work apps/mbui/farview.pin client media vendor
   rules/js shared/release-keys.ts shared/moved-from.ts web/public/avatars/index.json
   ':(exclude,glob)**/test/**' ':(exclude,glob)**/tests/**' ':(exclude,glob)**/*_test.mbt' ':(exclude,glob)**/*_wbtest.mbt' ':(exclude,glob)**/*.test.*'
   ':(exclude,glob)**/*.md')
@@ -122,15 +122,14 @@ tools() {
   summary "- MoonBit $("$C/tools/moon/bin/moon" version | head -1); mbui $(git -C "$A" log -1 --format=%h -- "$mbui"); tools in $(secs $t0) s"
 }
 
-# apps/mbui into WORK as git has it, and libs/mbui and libs/sf-ui beside it where the app's paths
-# name them (../../libs/mbui, ../../libs/sf-ui), a file
+# apps/mbui into WORK as git has it, and libs/ui and libs/ui beside it where the app's paths
+# name them (../../libs/ui, ../../libs/ui), a file
 # gone going there too, by content: a file that did not change keeps its time, and moon sees it as it was; the build's
 # outputs (what git ignores) stay.
 copy() {
   [ "$WORK" != "$A" ] || return 0
   mirror "$A" "$WORK"
-  mirror "$(sh "$A/scripts/mbui.sh")" "$WORK/../../libs/mbui"
-  mirror "$REPO/libs/sf-ui" "$WORK/../../libs/sf-ui"
+  mirror "$(sh "$A/scripts/mbui.sh")" "$WORK/../../libs/ui"
 }
 
 # mirror SRC DST: SRC's files as git has them, into DST

@@ -438,7 +438,7 @@ fn aw_plain(f : String) -> String {
 /// What the audit finds now that it did not before (`before`, the window's as it was before the panel opened), at
 /// `at`: none but the old panel's own, which this left as they were, all three while its checklist shows (`open`), none
 /// once it is gone. Those, as the old panel (base, m2-11) said them:
-///   words "✓" 13/400 at 26,696 16×18 (in an old view made at mbui/src/view/view.mbt:10268) by "✓": #2f8f5b on #f7f7f7 3.78:1, under 4.5
+///   words "✓" 13/400 at 26,696 16×18 (in an old view made at ui/src/view/view.mbt:10268) by "✓": #2f8f5b on #f7f7f7 3.78:1, under 4.5
 ///   words "✓" 12/400 at 854,372 16×18 (…) by "✓": #2f8f5b on #ffffff 4.04:1, under 4.5 (a wide window's)
 ///   words "›" 13/400 at 26,736 16×18 (…) by "›": #cc5a34 on #f7f7f7 3.87:1, under 4.5
 /// (its checklist's marks of what is done and what is under way, the green and the accent on its ground: their colours

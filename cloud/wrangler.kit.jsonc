@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  // The component library's page (apps/mbui/src/sfstories: each part of libs/sf-ui/src beside its states), static,
+  // The component library's page (apps/mbui/src/sfstories: each part of libs/ui/src/controls beside its states), static,
   // built by apps/mbui/scripts/kit-web.sh into dist/kit. monoid's alone (the user, 2026-11-13: on monoid.zone): CI
   // deploys it with STILLFAIL_CLOUD=monoid, which names youdid.wtf's hosts monoid.zone's (deploy.py rehost), never to
   // still.fail's account.

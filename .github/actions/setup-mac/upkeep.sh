@@ -13,7 +13,7 @@ echo "disk before upkeep: $(df -h / | awk 'NR==2 {print $4 " free of " $2}')"
 find "$HOME/stillfail-ci" -mindepth 1 -maxdepth 1 -type d \( -name 'target*' -o -name 'check-*' -o -name 'linux*' \) -mmin +240 -exec rm -rf {} + 2>/dev/null || true
 
 # station/mb/build.sh writes compiled MoonBit units to ~/stillfail-ci/reader-mbc-store.
-# libs/mbui/tools/mbc/mbc.mbt touches each unit directory on use. Delete units unused for 12 hours.
+# libs/ui/tools/mbc/mbc.mbt touches each unit directory on use. Delete units unused for 12 hours.
 if [ -d "$HOME/stillfail-ci/reader-mbc-store" ]; then
   find "$HOME/stillfail-ci/reader-mbc-store" -name '*.lock' -mmin +120 -delete 2>/dev/null || true
   find "$HOME/stillfail-ci/reader-mbc-store" -mindepth 2 -maxdepth 2 -type d -mmin +720 -exec rm -rf {} + 2>/dev/null || true

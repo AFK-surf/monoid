@@ -2,7 +2,7 @@
 package "station/store_threads"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/json",
   "station/jsjson",
   "station/sql",

@@ -2,7 +2,7 @@
 package "station/adb_devices"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/set",
   "station/host",
   "station/host_world",

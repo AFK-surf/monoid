@@ -32,6 +32,6 @@ A face, and words with one orange dot (2026-10-29).
     pip install fonttools brotli uharfbuzz
     python3 design/brand/make.py [png]      (png: CHROME a headless Chrome, e.g. Playwright's chrome-headless-shell)
 
-After it: mbui's drawables (in apps/mbui, `scripts/drawables ../.. > ../../libs/sf-ui/src/drawable_data.mbt`) and, when
+After it: mbui's drawables (in apps/mbui, `scripts/drawables ../.. > ../../libs/ui/src/controls/drawable_data.mbt`) and, when
 mac-icon.swift changed, Windows' and Linux's icons (on a Mac, `swift apps/mbui/scripts/mac-icon.swift --ico
 apps/mbui/windows/AppIcon-<its hash>.ico` and `--png apps/mbui/linux/AppIcon-<its hash>.png`, the ones before removed).

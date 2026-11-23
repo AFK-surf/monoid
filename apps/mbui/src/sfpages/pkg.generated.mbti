@@ -2,14 +2,14 @@
 package "stillfail/sfpages"
 
 import {
-  "mbui/hostapi",
-  "mbui/motion",
-  "mbui/signals",
-  "mbui/ui",
-  "mbui/view",
+  "ui/hostapi",
+  "ui/motion",
+  "ui/signals",
+  "ui/ui",
+  "ui/view",
   "moonbitlang/core/json",
   "moonbitlang/core/ref",
-  "stillfail/sf",
+  "ui/controls",
   "stillfail/sfapp/settings",
   "stillfail/sfbase",
 }

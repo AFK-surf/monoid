@@ -8,7 +8,7 @@
 // browser of its own the same step there in a ⋯ beside it (seldom used: the step itself only where this device cannot
 // do it); while its agent answers the command or it is checked, how it stands. Ended, one quiet line saying how. What it shows is the core's
 // (`machineLogins`, `machineLogin`); what is done goes through its calls, under way on its button (the core's `doing`).
-// How it looks, made once as nodes, is the library's (libs/sf-ui login_step_card_node.mbt: its card, lines, code, step
+// How it looks, made once as nodes, is the library's (libs/ui login_step_card_node.mbt: its card, lines, code, step
 // and pasted code, and their looks, which the old view here draws with too): this file works out what it says and
 // does what is pressed.
 

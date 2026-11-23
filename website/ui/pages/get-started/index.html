@@ -36,19 +36,19 @@
         <small>Step 02</small>
         <h3 data-en="Scaffold &amp; check" data-zh="生成并校验">Scaffold &amp; check</h3>
         <p data-en="mbui init writes mbui.json, a moon.mod importing mbui, a moon.work naming your mbui checkout, and src/app with a first window. mbui check loads the manifest with every variant and override applied and prints what it resolved to." data-zh="mbui init 会生成 mbui.json、依赖 mbui 的 moon.mod、指向本地 mbui 的 moon.work，以及带第一个窗口的 src/app。mbui check 按所有 variant 与覆盖参数解析清单，并打印解析结果。">mbui init writes mbui.json, a moon.mod importing mbui, a moon.work naming your mbui checkout, and src/app with a first window. mbui check loads the manifest with every variant and override applied and prints what it resolved to.</p>
-        <div class="term"><button class="copy" data-copy="libs/mbui/scripts/mbui init ../my-app \&#10;    --name &quot;My App&quot; --id dev.example.myapp \&#10;    --mbui &quot;$PWD/libs/mbui&quot;&#10;libs/mbui/scripts/mbui check ../my-app/mbui.json \&#10;    --runtime wasm" data-en="Copy" data-zh="复制">Copy</button><span class="p">$ </span>libs/mbui/scripts/mbui init ../my-app \
+        <div class="term"><button class="copy" data-copy="libs/ui/scripts/ui init ../my-app \&#10;    --name &quot;My App&quot; --id dev.example.myapp \&#10;    --mbui &quot;$PWD/libs/ui&quot;&#10;libs/ui/scripts/ui check ../my-app/mbui.json \&#10;    --runtime wasm" data-en="Copy" data-zh="复制">Copy</button><span class="p">$ </span>libs/ui/scripts/ui init ../my-app \
     --name "My App" --id dev.example.myapp \
-    --mbui "$PWD/libs/mbui"
-<span class="p">$ </span>libs/mbui/scripts/mbui check ../my-app/mbui.json \
+    --mbui "$PWD/libs/ui"
+<span class="p">$ </span>libs/ui/scripts/ui check ../my-app/mbui.json \
     --runtime wasm</div>
       </div>
       <div class="step">
         <small>Step 03</small>
         <h3 data-en="Run &amp; pack" data-zh="运行与打包">Run &amp; pack</h3>
         <p data-en="Open the app in a macOS window, then pack it for the web: a static index.html, host.js and pre-compressed assets that draw on WebGL 2. Add more targets with a comma." data-zh="先在 macOS 窗口中打开应用，再打包成网页：静态 index.html、host.js 与预压缩资源，在 WebGL 2 上绘制。用逗号追加更多目标。">Open the app in a macOS window, then pack it for the web: a static index.html, host.js and pre-compressed assets that draw on WebGL 2. Add more targets with a comma.</p>
-        <div class="term"><button class="copy" data-copy="APP=app MBUI_APP_MOD=../my-app \&#10;    libs/mbui/scripts/mac.sh run&#10;libs/mbui/scripts/mbui pack ../my-app/mbui.json \&#10;    --target web --out ../my-app/dist" data-en="Copy" data-zh="复制">Copy</button><span class="p">$ </span>APP=app MBUI_APP_MOD=../my-app \
-    libs/mbui/scripts/mac.sh run
-<span class="p">$ </span>libs/mbui/scripts/mbui pack ../my-app/mbui.json \
+        <div class="term"><button class="copy" data-copy="APP=app MBUI_APP_MOD=../my-app \&#10;    libs/ui/scripts/mac.sh run&#10;libs/ui/scripts/ui pack ../my-app/mbui.json \&#10;    --target web --out ../my-app/dist" data-en="Copy" data-zh="复制">Copy</button><span class="p">$ </span>APP=app MBUI_APP_MOD=../my-app \
+    libs/ui/scripts/mac.sh run
+<span class="p">$ </span>libs/ui/scripts/ui pack ../my-app/mbui.json \
     --target web --out ../my-app/dist</div>
       </div>
     </div>
@@ -124,11 +124,11 @@ fn main {
       </details>
       <details>
         <summary data-en="How big is the WebGL 2 bundle?" data-zh="WebGL 2 的包有多大？">How big is the WebGL 2 bundle?</summary>
-        <p data-en="It depends on what your app includes, so measure it: libs/mbui/scripts/size.sh web reports app.js and host.js raw, gzip -9 and brotli -q 11, which is what a browser downloads. mbui pack minifies with esbuild and writes .gz and .br files next to each asset." data-zh="取决于应用包含了什么，所以请直接测：libs/mbui/scripts/size.sh web 会给出 app.js 与 host.js 的原始大小、gzip -9 与 brotli -q 11 后的大小，也就是浏览器实际下载的体积。mbui pack 会用 esbuild 压缩，并在每个资源旁写出 .gz 与 .br。">It depends on what your app includes, so measure it: libs/mbui/scripts/size.sh web reports app.js and host.js raw, gzip -9 and brotli -q 11, which is what a browser downloads. mbui pack minifies with esbuild and writes .gz and .br files next to each asset.</p>
+        <p data-en="It depends on what your app includes, so measure it: libs/ui/scripts/size.sh web reports app.js and host.js raw, gzip -9 and brotli -q 11, which is what a browser downloads. mbui pack minifies with esbuild and writes .gz and .br files next to each asset." data-zh="取决于应用包含了什么，所以请直接测：libs/ui/scripts/size.sh web 会给出 app.js 与 host.js 的原始大小、gzip -9 与 brotli -q 11 后的大小，也就是浏览器实际下载的体积。mbui pack 会用 esbuild 压缩，并在每个资源旁写出 .gz 与 .br。">It depends on what your app includes, so measure it: libs/ui/scripts/size.sh web reports app.js and host.js raw, gzip -9 and brotli -q 11, which is what a browser downloads. mbui pack minifies with esbuild and writes .gz and .br files next to each asset.</p>
       </details>
       <details>
         <summary data-en="Can I bring my own design system on top of @headless?" data-zh="能在 @headless 之上做自己的设计系统吗？">Can I bring my own design system on top of @headless?</summary>
-        <p data-en="Yes, that is what it is for. Each headless control takes a look function from its caller; ui.monoid (libs/sf-ui) is built the same way over the shared @headless behaviour. Write yours as a module beside mbui that imports only mbui." data-zh="可以，这正是它的用途。每个无头控件都从调用方接收一个外观函数；ui.monoid（libs/sf-ui）也是在同一套 @headless 行为之上构建的。把你的设计系统写成与 mbui 并列、只依赖 mbui 的模块即可。">Yes, that is what it is for. Each headless control takes a look function from its caller; ui.monoid (libs/sf-ui) is built the same way over the shared @headless behaviour. Write yours as a module beside mbui that imports only mbui.</p>
+        <p data-en="Yes, that is what it is for. Each headless control takes a look function from its caller; ui.monoid (libs/ui) is built the same way over the shared @headless behaviour. Write yours as a module beside mbui that imports only mbui." data-zh="可以，这正是它的用途。每个无头控件都从调用方接收一个外观函数；ui.monoid（libs/ui）也是在同一套 @headless 行为之上构建的。把你的设计系统写成与 mbui 并列、只依赖 mbui 的模块即可。">Yes, that is what it is for. Each headless control takes a look function from its caller; ui.monoid (libs/ui) is built the same way over the shared @headless behaviour. Write yours as a module beside mbui that imports only mbui.</p>
       </details>
       <details>
         <summary data-en="How does deterministic UI testing work?" data-zh="确定性 UI 测试是怎么做到的？">How does deterministic UI testing work?</summary>
@@ -136,7 +136,7 @@ fn main {
       </details>
       <details>
         <summary data-en="What are the licenses?" data-zh="采用什么许可证？">What are the licenses?</summary>
-        <p data-en="ui.monoid (libs/mbui and libs/sf-ui) is MIT. Its built-in @glass layer (libs/sf-ui/src/glass) carries Apache-2.0 attribution for ported interaction primitives from Kyant0/AndroidLiquidGlass and optical calibration crediting whynotmake-it/flutter_liquid_glass. Third-party data, tests and code keep their own licenses, listed in libs/sf-ui/THIRD_PARTY_NOTICES.md and THIRD_PARTY_NOTICES.md." data-zh="ui.monoid（libs/mbui 与 libs/sf-ui）采用 MIT 许可。内置的 @glass 层（libs/sf-ui/src/glass）保留 Apache-2.0 致谢，其中交互物理与控件原语致谢 Kyant0/AndroidLiquidGlass，Glass::liquid 光学模型致谢 whynotmake-it/flutter_liquid_glass。所有第三方数据、测试与代码均保留各自许可，列在 libs/sf-ui/THIRD_PARTY_NOTICES.md 与 THIRD_PARTY_NOTICES.md 中。">ui.monoid (libs/mbui and libs/sf-ui) is MIT. Its built-in @glass layer (libs/sf-ui/src/glass) carries Apache-2.0 attribution for ported interaction primitives from Kyant0/AndroidLiquidGlass and optical calibration crediting whynotmake-it/flutter_liquid_glass. Third-party data, tests and code keep their own licenses, listed in libs/sf-ui/THIRD_PARTY_NOTICES.md and THIRD_PARTY_NOTICES.md.</p>
+        <p data-en="ui.monoid (libs/ui and libs/ui) is MIT. Its built-in @glass layer (libs/ui/src/glass) carries Apache-2.0 attribution for ported interaction primitives from Kyant0/AndroidLiquidGlass and optical calibration crediting whynotmake-it/flutter_liquid_glass. Third-party data, tests and code keep their own licenses, listed in libs/ui/THIRD_PARTY_NOTICES.md and THIRD_PARTY_NOTICES.md." data-zh="ui.monoid（libs/ui 与 libs/ui）采用 MIT 许可。内置的 @glass 层（libs/ui/src/glass）保留 Apache-2.0 致谢，其中交互物理与控件原语致谢 Kyant0/AndroidLiquidGlass，Glass::liquid 光学模型致谢 whynotmake-it/flutter_liquid_glass。所有第三方数据、测试与代码均保留各自许可，列在 libs/ui/THIRD_PARTY_NOTICES.md 与 THIRD_PARTY_NOTICES.md 中。">ui.monoid (libs/ui and libs/ui) is MIT. Its built-in @glass layer (libs/ui/src/glass) carries Apache-2.0 attribution for ported interaction primitives from Kyant0/AndroidLiquidGlass and optical calibration crediting whynotmake-it/flutter_liquid_glass. Third-party data, tests and code keep their own licenses, listed in libs/ui/THIRD_PARTY_NOTICES.md and THIRD_PARTY_NOTICES.md.</p>
       </details>
     </div>
   </div>

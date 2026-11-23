@@ -66,7 +66,7 @@ Free for now. Agents use your own subscriptions or API keys.
 
 - A **station** (`station/`, TypeScript on Node, with a few prebuilt native parts and a reader in MoonBit) runs on a computer you choose. It starts and keeps the agent sessions, connects to Slack, Feishu and Comma, and stores conversations locally in SQLite. Nothing reaches it from outside except over the mesh.
 - A **workspace** groups people and stations. The cloud (`cloud/`, Cloudflare Workers) is the account system and nothing else: accounts, workspaces, member credentials and the relays. Conversation content never passes through it.
-- **Clients** are one app on every platform, written in MoonBit on the mbui UI framework (`apps/mbui/`, `libs/mbui`). They share one client core in TypeScript (`client/core-ts`), which caches the workspace's data and keeps it in sync with the stations.
+- **Clients** are one app on every platform, written in MoonBit on the mbui UI framework (`apps/mbui/`, `libs/ui`). They share one client core in TypeScript (`client/core-ts`), which caches the workspace's data and keeps it in sync with the stations.
 
 ## Build from source
 
@@ -91,7 +91,7 @@ Clients send operation traces (names, timings and errors, without message conten
 | --- | --- |
 | `station/` | The station: agent runtimes, Slack and Feishu, jobs, files, screens, vault; native parts in `station/native/` |
 | `client/` | Shared client core (`core-ts`), its native shell (`shell`, Rust), the browser's iroh (`iroh-wasm`) and translations (`i18n`) |
-| `apps/mbui/` | The apps (Android, iOS, macOS, Windows, Linux and the web), written in mbui (`libs/mbui`) |
+| `apps/mbui/` | The apps (Android, iOS, macOS, Windows, Linux and the web), written in mbui (`libs/ui`) |
 | `libs/` | mbui, the component libraries and the MoonBit base |
 | `web/` | The web's host of the app, and its sign-in, share and admin pages |
 | `website/` | The official site ([monoid.build](https://monoid.build)) and [ui.monoid.build](https://ui.monoid.build) |

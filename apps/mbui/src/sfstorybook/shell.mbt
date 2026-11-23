@@ -230,7 +230,7 @@ fn side_node(side : @view.View, all : Array[Story], chosen : @signals.Signal[Int
     // (where its parts are, and how many pages: two words side by side, not joined in one line)
     head.box(fn(r) {
       r.row(Is(true)).wraps(Is(Some(4.0))).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
-      @sf.words_node(r, fn() { "libs/sf-ui/src" }, fn() { @sf.meta }) |> ignore
+      @sf.words_node(r, fn() { "libs/ui/src/controls" }, fn() { @sf.meta }) |> ignore
       @sf.pill_node(r, fn() {
         if brand != "" && @sf.language() == "en" {
           "\{all.length()} stories"
@@ -377,7 +377,7 @@ fn bar_node(
 
 ///|
 /// Where the library's files are, as the bar names a part's.
-let library_path : String = "libs/sf-ui/src/"
+let library_path : String = "libs/ui/src/controls/"
 
 ///|
 /// The bar's file under the part's name: as the page's meta, on one line, cut short where the bar has not the room.
@@ -450,11 +450,11 @@ fn overview_node(page : @view.View, all : Array[Story], chosen : @signals.Signal
     page,
     fn() {
       if brand == "" {
-        "still.fail 的界面都由这些部件拼成（libs/sf-ui/src）。最前面是设计基石：色板、字阶、同心圆角、光影与动效；之后每个部件一页：它的各种状态、可调参数的 Playground、示例代码和 API。按 ⌘K 跳到任意一页。"
+        "still.fail 的界面都由这些部件拼成（libs/ui/src/controls）。最前面是设计基石：色板、字阶、同心圆角、光影与动效；之后每个部件一页：它的各种状态、可调参数的 Playground、示例代码和 API。按 ⌘K 跳到任意一页。"
       } else if @sf.language() == "en" {
-        "Production components built with mbui (libs/sf-ui/src). Design foundations, interactive playgrounds, and API examples. Press ⌘K to jump to any story."
+        "Production components built with mbui (libs/ui/src/controls). Design foundations, interactive playgrounds, and API examples. Press ⌘K to jump to any story."
       } else {
-        "基于 mbui 构建的生产级组件库（libs/sf-ui/src）。涵盖设计基石、可调参数 Playground 与 API 示例。按 ⌘K 快速跳转任意组件页。"
+        "基于 mbui 构建的生产级组件库（libs/ui/src/controls）。涵盖设计基石、可调参数 Playground 与 API 示例。按 ⌘K 快速跳转任意组件页。"
       }
     },
     fn() { @sf.lead },

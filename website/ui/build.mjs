@@ -417,13 +417,13 @@ function buildMbuiEmbeds(out, skipMbui) {
     .replace('load("app.js")', `load(${JSON.stringify(compAppSrc)})`);
   writeFileSync(kitIndexPath, kitHtml);
 
-  console.log("[ui.monoid] building unified Live Studio via libs/mbui/scripts/web.sh bundle ...");
-  execFileSync("bash", ["libs/mbui/scripts/web.sh", "bundle", studioAppDir], {
+  console.log("[ui.monoid] building unified Live Studio via libs/ui/scripts/web.sh bundle ...");
+  execFileSync("bash", ["libs/ui/scripts/web.sh", "bundle", studioAppDir], {
     cwd: REPO,
     env: {
       ...env,
       APP: "studio",
-      MBUI_APP_MOD: resolve(REPO, "libs/sf-ui"),
+      MBUI_APP_MOD: resolve(REPO, "libs/ui"),
       MBUI_WEB_BROTLI: "0",
     },
     stdio: "inherit",

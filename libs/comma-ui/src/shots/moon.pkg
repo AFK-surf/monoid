@@ -1,8 +1,8 @@
 import {
-  "mbui/film",
-  "mbui/host",
-  "mbui/hostapi",
-  "mbui/ui",
+  "ui/film",
+  "ui/host",
+  "ui/hostapi",
+  "ui/ui",
   "comma-ui/cm",
   "comma-ui/pages",
 }

@@ -2,7 +2,7 @@
 package "station/mcp_tools"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "station/api_routes",
   "station/jsjson",
 }

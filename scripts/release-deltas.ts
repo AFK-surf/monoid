@@ -755,13 +755,13 @@ class Run {
   private javaClasses(): string | null {
     if (this.classes !== undefined) return this.classes;
     const root = fileURLToPath(new URL("..", import.meta.url));
-    const jz = join(root, "libs/mbui/android/jzlib/src/com/jcraft/jzlib");
+    const jz = join(root, "libs/ui/android/jzlib/src/com/jcraft/jzlib");
     const out = join(this.work, "classes");
     const batchSrc = join(this.work, "java-src/dev/mbui/DeltaBatch.java");
     try {
       mkdirSync(dirname(batchSrc), { recursive: true });
       writeFileSync(batchSrc, DELTA_BATCH_JAVA);
-      const srcs = [join(root, "libs/mbui/android/app/src/main/java/dev/mbui/Delta.java"), batchSrc, ...readdirSync(jz).filter((f) => f.endsWith(".java")).map((f) => join(jz, f))];
+      const srcs = [join(root, "libs/ui/android/app/src/main/java/dev/mbui/Delta.java"), batchSrc, ...readdirSync(jz).filter((f) => f.endsWith(".java")).map((f) => join(jz, f))];
       const r = spawnSync("javac", ["-nowarn", "-encoding", "UTF-8", "-d", out, ...srcs], { encoding: "utf8" });
       if (r.status !== 0) throw new Error(r.error ? r.error.message : r.stderr.trim().split("\n").at(-1));
       return (this.classes = out);

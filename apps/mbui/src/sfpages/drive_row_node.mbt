@@ -118,7 +118,7 @@ pub fn drive_row_node(
   }
   parent.box(fn(room) {
     // (row-internal badges, progress and marks settle at once, isolated from the folder list's own slot and card-piece
-    // transitions: libs/mbui/src/view/transition.mbt)
+    // transitions: libs/ui/src/view/transition.mbt)
     room.transitions_only() |> ignore
     // (a row's room in the list: its 2 to the next, on a wide page; on a narrow card its rows meet; in a column, no card's,
     // always 2 apart)

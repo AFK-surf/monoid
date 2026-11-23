@@ -1,7 +1,7 @@
 // MathJax's TeX font split by who uses which half: the core lays formulas out with the
 // glyphs' sizes alone (src/math-font.ts: the font's tables, each outline in its place replaced by the outline's id);
 // the UIs draw the outlines, each once: font.json (the web's) and the app's packed copy
-// (libs/sf-ui/src/math_glyphs.mbt). Run from core-ts after a MathJax TeX font update: node scripts/math-font.ts [--check]
+// (libs/ui/src/controls/math_glyphs.mbt). Run from core-ts after a MathJax TeX font update: node scripts/math-font.ts [--check]
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { MathJaxTexFont } from "@mathjax/mathjax-tex-font/js/svg.js";
@@ -123,7 +123,7 @@ const native = (gz: Uint8Array) => nativeHead + literal(gz) + "\"\n";
 
 const coreTarget = new URL("../src/math-font.ts", import.meta.url);
 const jsonTarget = new URL("../../math/font.json", import.meta.url);
-const nativeTarget = new URL("../../../libs/sf-ui/src/math_glyphs.mbt", import.meta.url);
+const nativeTarget = new URL("../../../libs/ui/src/controls/math_glyphs.mbt", import.meta.url);
 if (process.argv.includes("--check")) {
   if (readFileSync(coreTarget, "utf8") !== core) throw new Error("The core's math font is stale; regenerate it");
   if (readFileSync(jsonTarget, "utf8") !== json) throw new Error("The bundled math alphabet is stale; regenerate it");

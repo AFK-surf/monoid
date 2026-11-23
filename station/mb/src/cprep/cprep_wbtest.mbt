@@ -122,7 +122,7 @@ test "a #line directive's path is relative from its checkout or moon on, never o
     "\t#line 10 \"/opt/moon/lib/core/builtin/array.mbt\"\n" +
     "  x = x + 2;\n" +
     "  #line 3 \"/abs/rules/src/lock/fork.mbt\"\n" +
-    "  #line 4 \"/abs/libs/mbui/src/effect/run.mbt\"\n" +
+    "  #line 4 \"/abs/libs/ui/src/effect/run.mbt\"\n" +
     "  #line 5 \"/abs/worktree/station/mb/src/rules/x.mbt\"\n" +
     "  #line 6 \"/elsewhere/a.mbt\"\n" +
     "  const char* s = \"#line 1 \\\"/abs/station/mb/x.mbt\\\"\";\n" +
@@ -135,7 +135,7 @@ test "a #line directive's path is relative from its checkout or moon on, never o
   assert_true(o.contains("\n  #line 152 \"station/mb/src/reader/actors.mbt\"\n"))
   assert_true(o.contains("\n\t#line 10 \"lib/core/builtin/array.mbt\"\n"))
   assert_true(o.contains("\n  #line 3 \"rules/src/lock/fork.mbt\"\n"))
-  assert_true(o.contains("\n  #line 4 \"libs/mbui/src/effect/run.mbt\"\n"))
+  assert_true(o.contains("\n  #line 4 \"libs/ui/src/effect/run.mbt\"\n"))
   assert_true(o.contains("\n  #line 5 \"station/mb/src/rules/x.mbt\"\n"))
   assert_true(o.contains("\n  #line 6 \"/elsewhere/a.mbt\"\n"))
   assert_true(o.contains("\n#line 8 \"station/mb/src/a.mbt\"\n"))

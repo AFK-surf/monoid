@@ -8,8 +8,8 @@
 ///|
 /// Each file: where its literal is (from the app module), the literal's name, and the file's name.
 let carried : Array[(String, String, String)] = [
-  ("../../libs/sf-ui/src/font_assets.mbt", "code_face_ttf", "jetbrains_mono.ttf"),
-  ("../../libs/sf-ui/src/math_glyphs.mbt", "math_glyphs_gz", "math_glyphs.gz"),
+  ("../../libs/ui/src/controls/font_assets.mbt", "code_face_ttf", "jetbrains_mono.ttf"),
+  ("../../libs/ui/src/controls/math_glyphs.mbt", "math_glyphs_gz", "math_glyphs.gz"),
   ("src/sfbase/share_face.mbt", "share_400_gz", "share_400.gz"),
   ("src/sfbase/share_face.mbt", "share_600_gz", "share_600.gz"),
 ]

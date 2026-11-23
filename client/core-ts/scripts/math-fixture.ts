@@ -27,7 +27,7 @@ Invalid \(\unknowncommand{x}\) stays readable. Code: \`$x$\`.
 const content = JSON.stringify({ text, md: markdown(text) }, null, 2) + "\n";
 // Native builds copy just the MoonBit module's sources into a platform-specific directory.
 // Keep its test input inside those sources, checked against the same core answer.
-const targets = ["../../fixtures/math.json", "../../../libs/sf-ui/src/math.json"];
+const targets = ["../../fixtures/math.json", "../../../libs/ui/src/controls/math.json"];
 for (const path of targets) {
   const target = new URL(path, import.meta.url);
   if (process.argv.includes("--check")) {

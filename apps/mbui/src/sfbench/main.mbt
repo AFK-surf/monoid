@@ -1,4 +1,4 @@
-// still.fail measured offscreen (mbui's film bench, mbui/src/film/bench.mbt): sffix's made-up chats (MBUI_FIXTURE)
+// still.fail measured offscreen (mbui's film bench, ui/src/film/bench.mbt): sffix's made-up chats (MBUI_FIXTURE)
 // in a Tester of this Mac's text and pictures, a scene's scripted run over them (MBUI_BENCH_DRIVE: one of
 // scripts/bench's), what each frame drawn did and how long it took said as one APPBENCH line. No window:
 // scripts/appbench.sh runs every scene and keeps what they said.

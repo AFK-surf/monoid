@@ -172,7 +172,7 @@ fn svc_corners(t : @ui.Tester, at : String, wide~ : Bool) -> Unit raise {
   // (made by the switch the panel's row of 移动页面 is made of)
   let s = t.get(Switch, label="移动页面").rect
   let made = t.sources_at(s.0 + s.2 / 2.0, s.1 + s.3 / 2.0)
-  assert_true(made.contains("stillfail/sf/src/page_node.mbt") && made.contains("stillfail/src/sfpages/service.mbt"), msg="\{at}: \{made}")
+  assert_true(made.contains("ui/src/controls/page_node.mbt") && made.contains("stillfail/src/sfpages/service.mbt"), msg="\{at}: \{made}")
 }
 
 ///|

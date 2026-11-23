@@ -2,7 +2,7 @@
 package "station/slack"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/ref",
   "station/host",
   "station/jsjson",

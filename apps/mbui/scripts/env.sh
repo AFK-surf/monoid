@@ -1,4 +1,4 @@
-# Sourced by apps/mbui's scripts: mbui (libs/mbui: scripts/mbui.sh says where) and its
+# Sourced by apps/mbui's scripts: mbui (libs/ui: scripts/mbui.sh says where) and its
 # toolchain setup (mbui's scripts/env.sh: MBUI_TOOLS, else MoonBit on PATH); then, for mbui's scripts, this module as
 # the app's (MBUI_APP_MOD) and this checkout as still.fail's sources the core is built from (SF_SRC).
 A=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)

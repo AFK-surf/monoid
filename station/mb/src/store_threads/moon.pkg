@@ -8,5 +8,5 @@ import {
   "station/readops",
   "station/store_schema",
   "moonbitlang/core/json",
-  "mbui/effect",
+  "ui/effect",
 }

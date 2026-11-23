@@ -1,4 +1,4 @@
-# mbui (libs/mbui, zzj3720/mbui merged in 2026-10-21): its own workflow, as it had it there, run in its directory.
+# mbui (libs/ui, zzj3720/mbui merged in 2026-10-21): its own workflow, as it had it there, run in its directory.
 # The renderer's pixels on Android ("Pixel references belong to one kind of machine"): a Tester's
 # draw list drawn offscreen by the app's GL renderer in an x86_64 emulator (SwiftShader) on GitHub's ubuntu-24.04
 # runner, twice in each of two jobs at once, against its reference (goldens/render/android-controls.png) to the byte,
@@ -20,7 +20,7 @@ jobs:
   offscreen:
     defaults:
       run:
-        working-directory: libs/mbui
+        working-directory: libs/ui
     strategy:
       fail-fast: false
       matrix:
@@ -47,7 +47,7 @@ jobs:
           name: render-android-${{ matrix.run }}
           # (a rerun's own: the attempt before's put by, so `same` compares this attempt's pictures)
           overwrite: true
-          path: libs/mbui/out/render/
+          path: libs/ui/out/render/
       - name: Against the reference, on the machine it was made on
         run: scripts/render_android.sh against
 

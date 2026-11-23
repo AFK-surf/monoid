@@ -2,7 +2,7 @@
 package "station/feishu"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/debug",
   "moonbitlang/core/json",
   "station/host",

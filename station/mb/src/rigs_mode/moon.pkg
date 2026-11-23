@@ -7,7 +7,7 @@ import {
   "station/sql",
   "station/cloud_lock",
   "stillfail/rules/lock",
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/buffer",
   "moonbitlang/core/encoding/utf8",
 }

@@ -1,5 +1,5 @@
 // The base in MoonBit knows no program (libs/base/AGENTS.md): not still.fail's app, station or cloud, nor the program
-// it was first written for outside this repository (an instant messenger). As mbui's own rule is held (libs/mbui's
+// it was first written for outside this repository (an instant messenger). As mbui's own rule is held (libs/ui's
 // detlint, `app-word`), and here over comments too, since none of these files needs the names even there. Refused:
 //   - a member of its workspace (moon.work) but itself and mbui, a module it imports (moon.mod) but mbui;
 //   - a package of it importing anything but its own packages, mbui's `effect` and MoonBit's core (`moonbitlang/core`),
@@ -26,9 +26,9 @@ import { fileURLToPath } from "node:url";
 const ROOT = fileURLToPath(new URL("../libs/base", import.meta.url));
 
 /// What a package here may import: the library's own packages, mbui's effect, MoonBit's core.
-const MAY = /^(base\/[a-z_]+|mbui\/effect|moonbitlang\/core\/.+)$/;
+const MAY = /^(base\/[a-z_]+|ui\/effect|moonbitlang\/core\/.+)$/;
 /// The workspace: the library and mbui, which it takes `effect` of.
-const MEMBERS = [".", "../mbui"];
+const MEMBERS = [".", "../ui"];
 /// The packages of mbui the base is built with: `effect`, and what `effect` imports of mbui, through any number of
 /// imports. scripts/check.sh type-checks and tests the base again for a change to any of them, and names them there.
 const OF_MBUI = ["effect", "halt"];
@@ -100,7 +100,7 @@ const escaped = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 const members = blocks(text("moon.work"), /\bmembers\s*=\s*\[/);
 if (members.join() !== MEMBERS.join()) wrong.push(`moon.work: its members are ${members.join(", ")}: the library and mbui alone (${MEMBERS.join(", ")})`);
 for (const imported of blocks(text("moon.mod"), /\bimport\s*\{/)) {
-  if (imported.replace(/@.*$/, "") !== "mbui") wrong.push(`moon.mod: imports the module ${imported}: of other modules the base takes mbui alone (its effect)`);
+  if (imported.replace(/@.*$/, "") !== "ui") wrong.push(`moon.mod: imports the module ${imported}: of other modules the base takes mbui alone (its effect)`);
 }
 
 // ── what it is built with of mbui ──
@@ -110,10 +110,10 @@ const reached = new Set<string>();
 for (let queue = ["effect"], taken = queue.pop(); taken !== undefined; taken = queue.pop()) {
   if (reached.has(taken)) continue;
   reached.add(taken);
-  for (const imported of blocks(text(`../mbui/src/${taken}/moon.pkg`), /\bimport\s*\{/)) if (imported.startsWith("mbui/")) queue.push(imported.slice("mbui/".length));
+  for (const imported of blocks(text(`../ui/src/${taken}/moon.pkg`), /\bimport\s*\{/)) if (imported.startsWith("ui/")) queue.push(imported.slice("ui/".length));
 }
-if ([...reached].sort().join() !== [...OF_MBUI].sort().join()) wrong.push(`libs/mbui/src/effect reaches ${[...reached].sort().join(", ")} of mbui, and OF_MBUI (scripts/mb-base.ts) says ${OF_MBUI.join(", ")}: say there what it reaches now, and in ${CHECK} where the base's moon step is run for a change to them`);
-const stepFor = `^libs/mbui/src/(${OF_MBUI.join("|")})/`;
+if ([...reached].sort().join() !== [...OF_MBUI].sort().join()) wrong.push(`libs/ui/src/effect reaches ${[...reached].sort().join(", ")} of mbui, and OF_MBUI (scripts/mb-base.ts) says ${OF_MBUI.join(", ")}: say there what it reaches now, and in ${CHECK} where the base's moon step is run for a change to them`);
+const stepFor = `^libs/ui/src/(${OF_MBUI.join("|")})/`;
 if (!text(`../../${CHECK}`).includes(stepFor)) wrong.push(`${CHECK} does not run the base's moon step for ${stepFor}: the base is built with those packages of mbui (OF_MBUI, scripts/mb-base.ts), and is checked again as one changes`);
 
 // ── the packages ──
@@ -124,7 +124,7 @@ for (const file of files) {
   const lines = source.split("\n");
   if (file.endsWith("moon.pkg")) {
     for (const imported of blocks(source, /\bimport\s*\{/)) {
-      if (!MAY.test(imported)) wrong.push(`${file}: imports ${imported}: a package of the base imports its own, mbui/effect and moonbitlang/core alone`);
+      if (!MAY.test(imported)) wrong.push(`${file}: imports ${imported}: a package of the base imports its own, ui/effect and moonbitlang/core alone`);
     }
     lines.forEach((line, i) => {
       if (/cc-link-flags|cc-flags|\.(a|o|so|dylib|lib|dll)\b/.test(line.replace(/\/\/.*$/, ""))) wrong.push(`${file}:${i + 1}: names what is linked or how: that is the linking program's to say`);

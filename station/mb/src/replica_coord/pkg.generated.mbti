@@ -2,7 +2,7 @@
 package "station/replica_coord"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/ref",
   "station/host",
   "station/jsjson",

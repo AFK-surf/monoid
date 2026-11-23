@@ -52,7 +52,7 @@ test "the foundations come first in the list, the parts after them" {
   let (_, button_y) = t.find("按钮 Button").unwrap()
   assert_true(palette_y < button_y, msg="palette \{palette_y}, button \{button_y}")
   // (where the parts are, said as the library's path, no · between it and their count)
-  assert_true(t.find("libs/sf-ui/src") is Some(_))
+  assert_true(t.find("libs/ui/src/controls") is Some(_))
   assert_true(t.find("apps/mbui/src/sf") is None, msg="the old path")
   // (each card's group and file side by side, not joined by ·)
   assert_true(t.words().iter().all(fn(w) { !w.0.contains(" · button_node.mbt") && !w.0.contains("src/sf · ") }), msg="no words joined by ·")

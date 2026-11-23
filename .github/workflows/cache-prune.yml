@@ -42,10 +42,10 @@ jobs:
         with:
           sparse-checkout: |
             .github/actions
-            libs/mbui/tools
-            libs/mbui/scripts
+            libs/ui/tools
+            libs/ui/scripts
       - uses: ./.github/actions/mbui-moonbit
-      - run: sh libs/mbui/scripts/chk cache-prune
+      - run: sh libs/ui/scripts/chk cache-prune
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

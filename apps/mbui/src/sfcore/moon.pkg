@@ -1,9 +1,9 @@
 import {
-  "mbui/halt",
+  "ui/halt",
   "stillfail/core",
-  "mbui/effect",
-  "mbui/hostapi",
-  "mbui/ui",
-  "mbui/signals",
+  "ui/effect",
+  "ui/hostapi",
+  "ui/ui",
+  "ui/signals",
   "moonbitlang/core/json",
 }

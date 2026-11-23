@@ -1,8 +1,8 @@
 import {
-  "mbui/host",
-  "mbui/hostapi",
-  "mbui/ui",
-  "stillfail/sf",
+  "ui/host",
+  "ui/hostapi",
+  "ui/ui",
+  "ui/controls" @sf,
   "stillfail/sfkept",
   "stillfail/sfstorybook",
 }

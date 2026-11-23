@@ -2,7 +2,7 @@
 package "station/browser"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "station/cloud_net",
   "station/host",
   "station/jsjson",

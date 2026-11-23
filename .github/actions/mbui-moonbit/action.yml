@@ -87,7 +87,7 @@ runs:
         echo "MOON_HOME=$m" >> "$GITHUB_ENV"
     - shell: bash
       run: |
-        [ ! -f libs/mbui/scripts/env.sh ] || . libs/mbui/scripts/env.sh
+        [ ! -f libs/ui/scripts/env.sh ] || . libs/ui/scripts/env.sh
         moon version --all
     # mbui's tools (scripts/mbc, chk, detlint, apk, and pack, the packager scripts/mbui runs: each built when there is none built from its own sources, by content)
     # kept here each by its own key, what its script says it is built from (`scripts/<tool> key`), the tool's program
@@ -100,8 +100,8 @@ runs:
       # (none in a checkout without mbui's tools: nothing kept. On ci-1's self-hosted Linux runners, kept on local disk
       # under ~/stillfail-ci/mbui-tools instead of five Actions cache round-trips per job)
       run: |
-        [ -d libs/mbui/tools ] || exit 0
-        . libs/mbui/scripts/env.sh
+        [ -d libs/ui/tools ] || exit 0
+        . libs/ui/scripts/env.sh
         if [ "${{ runner.environment }}" = self-hosted ] && [ "${{ runner.os }}" = Linux ]; then
           store="$HOME/stillfail-ci/mbui-tools"
           mkdir -p "$store"
@@ -125,10 +125,10 @@ runs:
           }
           for t in mbc chk detlint apk; do
             case " ${{ inputs.tools }} " in *" $t "*) ;; *) continue ;; esac
-            keep_tool "$t" "libs/mbui/scripts/$t" "libs/mbui/tools/_build/native/release/build/$t/$t.exe"
+            keep_tool "$t" "libs/ui/scripts/$t" "libs/ui/tools/_build/native/release/build/$t/$t.exe"
           done
           if [[ " ${{ inputs.tools }} " == *" pack "* ]]; then
-            keep_tool pack "libs/mbui/scripts/mbui" "libs/mbui/tools/_build/native/release/build/pack/pack.exe"
+            keep_tool pack "libs/ui/scripts/ui" "libs/ui/tools/_build/native/release/build/pack/pack.exe"
           fi
           if [[ " ${{ inputs.tools }} " == *" testexe "* ]] && [ -f apps/mbui/scripts/testexe ]; then
             keep_tool testexe "apps/mbui/scripts/testexe" "apps/mbui/tools/_build/native/release/build/sftools/testexe/testexe.exe"
@@ -137,17 +137,17 @@ runs:
           exit 0
         fi
         for t in mbc chk detlint apk; do
-          case " ${{ inputs.tools }} " in *" $t "*) echo "$t=$(sh libs/mbui/scripts/$t key)" >> "$GITHUB_OUTPUT" ;; esac
+          case " ${{ inputs.tools }} " in *" $t "*) echo "$t=$(sh libs/ui/scripts/$t key)" >> "$GITHUB_OUTPUT" ;; esac
         done
-        [[ " ${{ inputs.tools }} " != *" pack "* ]] || echo "pack=$(sh libs/mbui/scripts/mbui key)" >> "$GITHUB_OUTPUT"
+        [[ " ${{ inputs.tools }} " != *" pack "* ]] || echo "pack=$(sh libs/ui/scripts/ui key)" >> "$GITHUB_OUTPUT"
         # (the app's: scripts/testexe, a test program's runs for scripts/test.sh)
         [[ " ${{ inputs.tools }} " != *" testexe "* ]] || [ ! -f apps/mbui/scripts/testexe ] || echo "testexe=$(bash apps/mbui/scripts/testexe key)" >> "$GITHUB_OUTPUT"
     - if: steps.tools.outputs.mbc != ''
       uses: actions/cache@v4
       with:
         path: |
-          libs/mbui/tools/_build/native/release/build/mbc/mbc.exe
-          libs/mbui/tools/_build/native/release/build/mbc/mbc.exe.src
+          libs/ui/tools/_build/native/release/build/mbc/mbc.exe
+          libs/ui/tools/_build/native/release/build/mbc/mbc.exe.src
         key: mbui-tool-mbc-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools.outputs.mbc }}
     - if: steps.tools.outputs.testexe != ''
       uses: actions/cache@v4
@@ -160,41 +160,41 @@ runs:
       uses: actions/cache@v4
       with:
         path: |
-          libs/mbui/tools/_build/native/release/build/chk/chk.exe
-          libs/mbui/tools/_build/native/release/build/chk/chk.exe.src
+          libs/ui/tools/_build/native/release/build/chk/chk.exe
+          libs/ui/tools/_build/native/release/build/chk/chk.exe.src
         key: mbui-tool-chk-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools.outputs.chk }}
     - if: steps.tools.outputs.detlint != ''
       uses: actions/cache@v4
       with:
         path: |
-          libs/mbui/tools/_build/native/release/build/detlint/detlint.exe
-          libs/mbui/tools/_build/native/release/build/detlint/detlint.exe.src
+          libs/ui/tools/_build/native/release/build/detlint/detlint.exe
+          libs/ui/tools/_build/native/release/build/detlint/detlint.exe.src
         key: mbui-tool-detlint-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools.outputs.detlint }}
     - if: steps.tools.outputs.apk != ''
       uses: actions/cache@v4
       with:
         path: |
-          libs/mbui/tools/_build/native/release/build/apk/apk.exe
-          libs/mbui/tools/_build/native/release/build/apk/apk.exe.src
+          libs/ui/tools/_build/native/release/build/apk/apk.exe
+          libs/ui/tools/_build/native/release/build/apk/apk.exe.src
         key: mbui-tool-apk-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools.outputs.apk }}
     - if: steps.tools.outputs.pack != ''
       uses: actions/cache@v4
       with:
         path: |
-          libs/mbui/tools/_build/native/release/build/pack/pack.exe
-          libs/mbui/tools/_build/native/release/build/pack/pack.exe.src
+          libs/ui/tools/_build/native/release/build/pack/pack.exe
+          libs/ui/tools/_build/native/release/build/pack/pack.exe.src
         key: mbui-tool-pack-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools.outputs.pack }}
     # Put these in the cache's path before an app sets MBUI_TOOLS_OUT. A cold key is built once;
     # a restored key already has the matching .src and is returned without a build.
     - shell: bash
       run: |
-        [ -d libs/mbui/tools ] || exit 0
-        . libs/mbui/scripts/env.sh
+        [ -d libs/ui/tools ] || exit 0
+        . libs/ui/scripts/env.sh
         unset MBUI_TOOLS_OUT
         for t in mbc chk; do
-          case " ${{ inputs.tools }} " in *" $t "*) sh "libs/mbui/scripts/$t" path >/dev/null ;; esac
+          case " ${{ inputs.tools }} " in *" $t "*) sh "libs/ui/scripts/$t" path >/dev/null ;; esac
         done
-        [[ " ${{ inputs.tools }} " != *" pack "* ]] || sh libs/mbui/scripts/mbui path >/dev/null
+        [[ " ${{ inputs.tools }} " != *" pack "* ]] || sh libs/ui/scripts/ui path >/dev/null
     # Farview's client at the commit apps/mbui/farview.pin names (apps/mbui/scripts/farview.sh), where this checkout has
     # the app: the job's FARVIEW_DEPLOY_KEY (its workflow's env, from the repository's secret); none (a fork's run), the
     # app does not build, and what does not build it goes on. Not for a job that builds no app (`farview: 'false'`)

@@ -2,12 +2,12 @@
 package "stillfail/sfapp/settings"
 
 import {
-  "mbui/signals",
-  "mbui/text",
-  "mbui/ui",
+  "ui/signals",
+  "ui/text",
+  "ui/ui",
   "moonbitlang/core/json",
   "moonbitlang/core/ref",
-  "stillfail/sf",
+  "ui/controls",
 }
 
 // Values

@@ -2,7 +2,7 @@
 package "station/mesh_door/gate"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/json",
   "station/mesh_door/door",
 }

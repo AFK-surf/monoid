@@ -1,0 +1,115 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "ui/player"
+
+import {
+  "ui/codec",
+  "ui/ui",
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub let media_decode_wait_ms : Double
+
+pub let media_grab_wait_ms : Double
+
+pub let media_note_ms : Double
+
+pub let media_rest_ms : Double
+
+pub let media_sleep_ms : Double
+
+pub fn media_status(@ui.NativeView?) -> MediaStatus
+
+pub let media_wake_ms : Double
+
+// Errors
+
+// Types and methods
+pub struct Media {
+  // private fields
+}
+pub fn Media::close(Self) -> Unit
+pub fn Media::cue_now(Self) -> String
+pub fn Media::decode_given_up(Self) -> Unit
+pub fn Media::duration(Self) -> Double
+pub fn Media::fills(Self) -> Bool
+pub fn Media::is_sideways(Self) -> Bool
+pub fn Media::key(Self) -> String
+pub fn Media::native(Self) -> @ui.NativeView?
+pub fn Media::new(key? : String, speeds? : Array[Double], nudge_ms? : Double, double_tap_ms? : Double, note_ms? : Double, wake_ms? : Double, sleep_ms? : Double, wait_ms? : Double) -> Self
+pub fn Media::nudge_ms(Self) -> Double
+pub fn Media::open(Self, MediaTrack, start? : Double, play? : Bool) -> Unit
+pub fn Media::pause(Self) -> Unit
+pub fn Media::picture_rect(Self, MediaStatus, Double, Double) -> (Double, Double, Double, Double)
+pub fn Media::pin(Self, MediaStatus) -> Unit
+pub fn Media::play_pause(Self) -> Unit
+pub fn Media::position(Self) -> Double
+pub fn Media::retry(Self) -> Unit
+pub fn Media::scrub_done(Self, at? : Double) -> Unit
+pub fn Media::scrub_resumes(Self) -> Bool
+pub fn Media::scrub_to(Self, Double) -> Unit
+pub fn Media::scrubbing(Self) -> Double?
+pub fn Media::seek(Self, Double) -> Unit
+pub fn Media::seek_by(Self, Double) -> Unit
+pub fn Media::seek_near(Self, Double) -> Unit
+pub fn Media::set_speed(Self, Double) -> Unit
+pub fn Media::set_subtitle(Self, Bool, Array[@codec.Cue]) -> Unit
+pub fn Media::set_volume(Self, Double) -> Unit
+pub fn Media::speed(Self) -> Double
+pub fn Media::speeds(Self) -> Array[Double]
+pub fn Media::started(Self) -> Bool
+pub fn Media::status(Self) -> MediaStatus
+pub fn Media::step_speed(Self) -> Unit
+pub fn Media::subtitle(Self) -> (Bool, Bool)
+pub fn Media::take_ready(Self) -> Bool
+pub fn Media::times(Self) -> (Double, Double, Double, Double, Double)
+pub fn Media::toggle_fill(Self) -> Unit
+pub fn Media::toggle_mute(Self) -> Unit
+pub fn Media::toggle_sideways(Self) -> Unit
+pub fn Media::toggle_subtitle(Self) -> Unit
+pub fn Media::track(Self) -> MediaTrack?
+pub fn Media::upright(Self) -> Unit
+pub fn Media::volume(Self) -> (Double, Bool)
+
+#derive(Eq, @debug.Debug)
+pub(all) enum MediaNote {
+  Back(Double)
+  Ahead(Double)
+  Paused
+  Played
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum MediaPhase {
+  Opening
+  Buffering
+  Playing
+  Paused
+  Ended
+  Failed
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct MediaStatus {
+  state : Int32
+  duration : Double
+  position : Double
+  buffered : Double
+  playing : Bool
+  buffering : Bool
+  ended : Bool
+  width : Double
+  height : Double
+}
+
+pub(all) struct MediaTrack {
+  name : String
+  mime : String
+  audio : Bool
+  read : (Double, Int32, (Bytes, Double, Bool) -> Unit) -> () -> Unit
+  direct : String
+}
+
+// Type aliases
+
+// Traits

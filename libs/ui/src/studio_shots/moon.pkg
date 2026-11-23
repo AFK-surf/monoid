@@ -1,0 +1,17 @@
+import {
+  "ui/film",
+  "ui/host",
+  "ui/ui",
+  "ui/view",
+  "ui/controls" @sf,
+  "ui/studio_pages",
+}
+
+options(
+  "is-main": true,
+  link: {
+    "native": {
+      "cc-link-flags": "-framework Cocoa -framework Metal -framework QuartzCore -framework CoreText -framework CoreGraphics -framework ImageIO -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework WebKit",
+    },
+  },
+)

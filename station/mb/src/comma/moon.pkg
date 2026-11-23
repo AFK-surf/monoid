@@ -13,5 +13,5 @@ import {
   "moonbitlang/core/buffer",
   "moonbitlang/core/double",
   "moonbitlang/core/encoding/utf8",
-  "mbui/effect",
+  "ui/effect",
 }

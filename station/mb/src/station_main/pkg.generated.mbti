@@ -2,7 +2,7 @@
 package "station/station_main"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/json",
   "moonbitlang/core/ref",
   "station/cloud_lock",

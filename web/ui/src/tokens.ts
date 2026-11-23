@@ -1,6 +1,6 @@
 // still.fail's type scale, lines, corners, room and motion's length, the one place they are written: the web's pages
-// take them as CSS variables (web/src/styles/global.css.ts) and the app as its tokens (libs/sf-ui/src/tokens_data.mbt,
-// made from this by scripts/tokens.ts; libs/sf-ui/src/tokens.mbt reads it). Three layers, as the colours'
+// take them as CSS variables (web/src/styles/global.css.ts) and the app as its tokens (libs/ui/src/controls/tokens_data.mbt,
+// made from this by scripts/tokens.ts; libs/ui/src/controls/tokens.mbt reads it). Three layers, as the colours'
 // (palette.ts): the numbers (a size and its line), what each is for (a role: caption … display; a corner of a field,
 // a card …), and where that role is said (a CSS variable, a token of the app's). Only plain numbers here: what the
 // app works out of them (a corner concentric in another: card_corner, row_corner …) is worked out there.

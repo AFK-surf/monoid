@@ -2623,7 +2623,7 @@ test "a chat's 待处理, 对话目录 and the way back to the newest, on 小屏
       // (the side pane's edge over the sidebar and the page by 6 on 大屏, as wide_back_wbtest.mbt's)
       let faults = t
         .audit()
-        .filter(fn(f) { !(f.contains("stillfail/sf/src/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
+        .filter(fn(f) { !(f.contains("ui/src/controls/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
       assert_eq((at, faults), (at, []))
     }
   }
@@ -2732,7 +2732,7 @@ test "a chat's page while waiting: shows skeleton bones under the bar, then swit
     assert_true(bars >= 6, msg="\{name}: expected skeleton bars while waiting, got \{bars}")
     let faults = t
       .audit()
-      .filter(fn(f) { !(f.contains("stillfail/sf/src/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
+      .filter(fn(f) { !(f.contains("ui/src/controls/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
     assert_eq((name, faults), (name, []))
     // Focus composer and type while waiting, then let data arrive.
     t.tap(fx + fw / 2.0, fy + fh / 2.0)
@@ -2789,7 +2789,7 @@ test "a chat's page when unreadable: shows localized error pill below top bar ov
     t.assert_idle()
     let faults = t
       .audit()
-      .filter(fn(f) { !(f.contains("stillfail/sf/src/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
+      .filter(fn(f) { !(f.contains("ui/src/controls/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
     assert_eq((name, faults), (name, []))
   }
 }

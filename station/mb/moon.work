@@ -1,6 +1,6 @@
 members = [
   ".",
   "../../libs/base",
-  "../../libs/mbui",
+  "../../libs/ui",
   "../../rules",
 ]

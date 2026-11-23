@@ -2,7 +2,7 @@
 package "station/comma"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/json",
   "station/host",
   "station/jsjson",

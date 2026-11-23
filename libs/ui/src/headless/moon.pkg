@@ -1,0 +1,10 @@
+import {
+  "ui/signals",
+  "ui/view",
+}
+
+import {
+  "ui/ui",
+  "ui/signals",
+  "ui/view",
+} for "test"

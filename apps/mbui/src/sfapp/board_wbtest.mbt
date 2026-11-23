@@ -27,7 +27,7 @@ fn board_faults(t : @ui.Tester) -> Array[String] {
     (f.contains("board_node") || f.contains("sfdesk/board")) &&
     !f.contains("sfapp/bar.mbt") &&
     // (the edge of the chat beside the board, half over each side as a side panel's is: board_beside_faults')
-    !f.contains("stillfail/sf/src/edge_node.mbt:37, in what was asked for at stillfail/src/sfpages/board_node.mbt:")
+    !f.contains("ui/src/controls/edge_node.mbt:37, in what was asked for at stillfail/src/sfpages/board_node.mbt:")
   })
 }
 

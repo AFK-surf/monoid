@@ -2,7 +2,7 @@
 package "station/vault_service"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/debug",
   "moonbitlang/core/json",
   "moonbitlang/core/ref",

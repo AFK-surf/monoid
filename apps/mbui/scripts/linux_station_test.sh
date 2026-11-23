@@ -13,7 +13,7 @@ A="$D/.."
 O="$A/out/linux-station"
 MOON_HOME=${MOON_HOME:-$HOME/.moon}
 rm -rf "$O" && mkdir -p "$O"
-cc -Wall -Werror -Wno-unused-function -I "$A/../../libs/mbui/src/host" -I "$MOON_HOME/include" "$D/linux_station_test.c" "$MOON_HOME/lib/runtime/runtime.c" \
+cc -Wall -Werror -Wno-unused-function -I "$A/../../libs/ui/src/host" -I "$MOON_HOME/include" "$D/linux_station_test.c" "$MOON_HOME/lib/runtime/runtime.c" \
   $(pkg-config --cflags --libs gtk4) -lpthread -lm -o "$O/linux_station_test"
 
 # a home of the run's own: a station's data (~/.stillfail) whose run/station.json names a process of the run's, alive

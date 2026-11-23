@@ -1,9 +1,9 @@
 import {
-  "mbui/host",
-  "mbui/film",
+  "ui/host",
+  "ui/film",
   "stillfail/sfapp",
   "stillfail/sffilmscene",
-  "mbui/wasmrt",
+  "ui/wasmrt",
 }
 
 options(

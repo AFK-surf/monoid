@@ -1,0 +1,16 @@
+import {
+  "ui/ui",
+  "ui/view",
+  "ui/signals",
+  "ui/motion",
+  "ui/halt",
+  "ui/paint",
+  "ui/headless",
+  "ui/dmath",
+}
+
+import {
+  "ui/ui",
+  "ui/view",
+  "ui/signals",
+} for "wbtest"

@@ -2,7 +2,7 @@
 package "station/updates"
 
 import {
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/buffer",
   "moonbitlang/core/json",
   "station/host",

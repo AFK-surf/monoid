@@ -66,7 +66,7 @@ export const HAND_OVER_FIRST_SECS = 14 * 86400;
 
 /// Whether a device that said `build` (its highest, as a station saw it ask: -1, none said) takes a moved workspace: a
 /// release's (COUNTED_FROM on) from MOVED_FROM_BUILD on; one under COUNTED_FROM, a development build's or an iOS app's
-/// (its TestFlight number, libs/mbui/scripts/ios.sh), cannot be told apart and is taken as able (the tests' devices say
+/// (its TestFlight number, libs/ui/scripts/ios.sh), cannot be told apart and is taken as able (the tests' devices say
 /// such builds; the iOS app updates by TestFlight); none said is not.
 export const ableBuild = (build: number): boolean => build >= 0 && (build < COUNTED_FROM || build >= MOVED_FROM_BUILD);
 /// The same of a chain binding more than LOGS_BEFORE logs (station/src/api/moved-from.ts): from LOGS_ANY_FROM_BUILD on,

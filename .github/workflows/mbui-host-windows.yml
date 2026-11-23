@@ -1,4 +1,4 @@
-# mbui (libs/mbui, zzj3720/mbui merged in 2026-10-21): its own workflow, as it had it there, run in its directory.
+# mbui (libs/ui, zzj3720/mbui merged in 2026-10-21): its own workflow, as it had it there, run in its directory.
 # The host's and the text's contracts on Windows ("What is compared, and where"; scripts/
 # host_contract.sh): kitdemo's controls page run in a window with its scripted taps, its tape made a Tester's test and
 # run here (every frame the same), then the committed tape's text (windows_controls) asked of DirectWrite again (every
@@ -7,27 +7,27 @@ name: mbui-host-windows
 on:
   pull_request:
     paths: &paths
-      - "libs/mbui/src/ui/native.mbt"
-      - "libs/mbui/src/kitdemo/gallery/viewcheck.mbt"
-      - "libs/mbui/src/kitdemo/gallery/playcheck.mbt"
-      - "libs/mbui/src/kitdemo/gallery/secretcheck.mbt"
-      - "libs/mbui/src/kitdemo/gallery/a11ycheck.mbt"
-      - "libs/mbui/src/kitdemo/gallery/fontscalecheck.mbt"
-      - "libs/mbui/src/host/win_*"
-      - "libs/mbui/src/host/glass_damage.h"
-      - "libs/mbui/src/host/win.h"
-      - "libs/mbui/src/host/log_files.h"
-      - "libs/mbui/scripts/win_logs_test.c"
-      - "libs/mbui/scripts/win_stack_test.c"
-      - "libs/mbui/scripts/win_a11y_test.cpp"
-      - "libs/mbui/scripts/win_vbuf_test.cpp"
-      - "libs/mbui/scripts/win_gpu_test.cpp"
-      - "libs/mbui/scripts/win_atlas_test.cpp"
-      - "libs/mbui/scripts/win_text_test.cpp"
-      - "libs/mbui/scripts/win_keys_test.c"
-      - "libs/mbui/scripts/win_clip_test.c"
-      - "libs/mbui/scripts/win_sound_test.c"
-      - "libs/mbui/src/host/mini_json.h"
+      - "libs/ui/src/ui/native.mbt"
+      - "libs/ui/src/kitdemo/gallery/viewcheck.mbt"
+      - "libs/ui/src/kitdemo/gallery/playcheck.mbt"
+      - "libs/ui/src/kitdemo/gallery/secretcheck.mbt"
+      - "libs/ui/src/kitdemo/gallery/a11ycheck.mbt"
+      - "libs/ui/src/kitdemo/gallery/fontscalecheck.mbt"
+      - "libs/ui/src/host/win_*"
+      - "libs/ui/src/host/glass_damage.h"
+      - "libs/ui/src/host/win.h"
+      - "libs/ui/src/host/log_files.h"
+      - "libs/ui/scripts/win_logs_test.c"
+      - "libs/ui/scripts/win_stack_test.c"
+      - "libs/ui/scripts/win_a11y_test.cpp"
+      - "libs/ui/scripts/win_vbuf_test.cpp"
+      - "libs/ui/scripts/win_gpu_test.cpp"
+      - "libs/ui/scripts/win_atlas_test.cpp"
+      - "libs/ui/scripts/win_text_test.cpp"
+      - "libs/ui/scripts/win_keys_test.c"
+      - "libs/ui/scripts/win_clip_test.c"
+      - "libs/ui/scripts/win_sound_test.c"
+      - "libs/ui/src/host/mini_json.h"
       - "apps/mbui/src/host/station_install.h"
       - "apps/mbui/scripts/station_install_test.c"
       - "apps/mbui/src/host/station_uninstall.h"
@@ -35,18 +35,18 @@ on:
       - "apps/mbui/scripts/station_uninstall_win.ps1"
       - "bin/stillfail.ps1"
       - "bin/stillfail.cmd"
-      - "libs/mbui/src/host/done_watch.h"
-      - "libs/mbui/src/ui/drive.mbt"
-      - "libs/mbui/scripts/done_runner.py"
-      - "libs/mbui/scripts/win.sh"
-      - "libs/mbui/scripts/host_contract.sh"
-      - "libs/mbui/tools/chk/textrec.mbt"
-      - "libs/mbui/test/host/**"
-      - "libs/mbui/src/kitdemo/gallery/textcheck.mbt"
-      - "libs/mbui/src/kitdemo/gallery/textrec_windows_*"
-      - "libs/mbui/src/host/stream*"
-      - "libs/mbui/src/ui/stream*"
-      - "libs/mbui/src/streamdemo/**"
+      - "libs/ui/src/host/done_watch.h"
+      - "libs/ui/src/ui/drive.mbt"
+      - "libs/ui/scripts/done_runner.py"
+      - "libs/ui/scripts/win.sh"
+      - "libs/ui/scripts/host_contract.sh"
+      - "libs/ui/tools/chk/textrec.mbt"
+      - "libs/ui/test/host/**"
+      - "libs/ui/src/kitdemo/gallery/textcheck.mbt"
+      - "libs/ui/src/kitdemo/gallery/textrec_windows_*"
+      - "libs/ui/src/host/stream*"
+      - "libs/ui/src/ui/stream*"
+      - "libs/ui/src/streamdemo/**"
       - ".github/workflows/mbui-host-windows.yml"
       - ".github/actions/msvc/**"
   push:
@@ -66,7 +66,7 @@ jobs:
     timeout-minutes: 5
     defaults:
       run:
-        working-directory: libs/mbui
+        working-directory: libs/ui
         shell: bash
     steps:
       - run: git config --global core.autocrlf false
@@ -92,7 +92,7 @@ jobs:
         working-directory: apps/mbui
         run: |
           mkdir -p out/install
-          cl.exe -nologo -W3 -WX -D_CRT_SECURE_NO_WARNINGS -Isrc/host -I../../libs/mbui/src/host scripts/station_install_test.c -Foout/install/ -Feout/install/station_install_test.exe
+          cl.exe -nologo -W3 -WX -D_CRT_SECURE_NO_WARNINGS -Isrc/host -I../../libs/ui/src/host scripts/station_install_test.c -Foout/install/ -Feout/install/station_install_test.exe
           out/install/station_install_test.exe
       - name: "This machine's station taken away, for real: the app's 卸载本机 Station and stillfail uninstall [--purge] through its own stillfail.cmd (apps/mbui/src/host/station_uninstall.h, bin/stillfail.ps1)"
         working-directory: apps/mbui
@@ -146,7 +146,7 @@ jobs:
     timeout-minutes: 5
     defaults:
       run:
-        working-directory: libs/mbui
+        working-directory: libs/ui
         shell: bash
     steps:
       - run: git config --global core.autocrlf false
@@ -159,7 +159,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows-kitdemo
-          path: libs/mbui/out/win/mod/_build/native/release/build/kitdemo/kitdemo.exe
+          path: libs/ui/out/win/mod/_build/native/release/build/kitdemo/kitdemo.exe
 
   # The host's app built above; this job's time belongs to running its contracts and replaying its tape.
   contracts:
@@ -168,7 +168,7 @@ jobs:
     timeout-minutes: 5
     defaults:
       run:
-        working-directory: libs/mbui
+        working-directory: libs/ui
         shell: bash
     steps:
       - run: git config --global core.autocrlf false
@@ -179,7 +179,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: windows-kitdemo
-          path: libs/mbui/out/win/mod/_build/native/release/build/kitdemo/
+          path: libs/ui/out/win/mod/_build/native/release/build/kitdemo/
       - name: "The host's contract: a run's tape = a Tester's frames"
         run: scripts/host_contract.sh windows record
       - name: "The text's contract: windows_controls = DirectWrite's"
@@ -213,7 +213,7 @@ jobs:
         continue-on-error: true
         with:
           name: host-windows
-          path: libs/mbui/out/host/
+          path: libs/ui/out/host/
           if-no-files-found: ignore
 
   # A second app's build is independent of kitdemo's contracts; each gets its own five-minute job.
@@ -222,7 +222,7 @@ jobs:
     timeout-minutes: 5
     defaults:
       run:
-        working-directory: libs/mbui
+        working-directory: libs/ui
         shell: bash
     steps:
       - run: git config --global core.autocrlf false
@@ -249,5 +249,5 @@ jobs:
         continue-on-error: true
         with:
           name: host-windows-streams
-          path: libs/mbui/out/host/
+          path: libs/ui/out/host/
           if-no-files-found: ignore

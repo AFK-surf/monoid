@@ -1,13 +1,13 @@
-// Writes the app's palette (libs/sf-ui/src/palette_data.mbt) from still.fail's colours (web/ui/src/palette.ts), so
+// Writes the app's palette (libs/ui/src/controls/palette_data.mbt) from still.fail's colours (web/ui/src/palette.ts), so
 // the web's pages and the app have one set. `--check` fails when the file is not what the colours make.
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { PALETTE, TONE } from "../web/ui/src/palette.ts";
 
 const at = (p: string) => fileURLToPath(new URL(`../${p}`, import.meta.url));
-const out = at("libs/sf-ui/src/palette_data.mbt");
+const out = at("libs/ui/src/controls/palette_data.mbt");
 // the app's Palette's fields, in its order (tokens.mbt)
-const tokens = readFileSync(at("libs/sf-ui/src/tokens.mbt"), "utf8");
+const tokens = readFileSync(at("libs/ui/src/controls/tokens.mbt"), "utf8");
 const struct = tokens.slice(tokens.indexOf("pub(all) struct Palette {"), tokens.indexOf("\n}\n", tokens.indexOf("pub(all) struct Palette {")));
 const fields = [...struct.matchAll(/^\s+([a-z_0-9]+) : Int64$/gm)].map((m) => m[1]!);
 const hex = (c: string) => `0x${c.slice(1).toUpperCase().padEnd(8, "F")}L`;

@@ -1,4 +1,4 @@
-# mbui (libs/mbui, zzj3720/mbui merged in 2026-10-21): its own workflow, as it had it there, run in its directory.
+# mbui (libs/ui, zzj3720/mbui merged in 2026-10-21): its own workflow, as it had it there, run in its directory.
 # The host's and the text's contracts on iOS ("What is compared, and where"; scripts/
 # host_contract.sh), on macos-ci's simulator (mbui's runner there, label mbui-render; scripts/ios.sh's ios-mbui-sf):
 # kitdemo's controls page run with its scripted taps, its tape made a Tester's test and run here (every frame the
@@ -8,29 +8,29 @@ name: mbui-host-ios
 on:
   pull_request:
     paths: &paths
-      - "libs/mbui/src/ui/native.mbt"
-      - "libs/mbui/src/kitdemo/gallery/viewcheck.mbt"
-      - "libs/mbui/src/host/apple_*"
-      - "libs/mbui/src/host/apple.h"
-      - "libs/mbui/src/host/ios_app.m"
-      - "libs/mbui/ios/**"
-      - "libs/mbui/scripts/ios.sh"
-      - "libs/mbui/scripts/ios-terminate.sh"
-      - "libs/mbui/scripts/mbc"
-      - "libs/mbui/tools/**"
-      - "libs/mbui/scripts/host_contract.sh"
-      - "libs/mbui/tools/chk/textrec.mbt"
-      - "libs/mbui/test/host/**"
-      - "libs/mbui/src/kitdemo/gallery/textcheck.mbt"
-      - "libs/mbui/src/kitdemo/gallery/textrec_ios_*"
+      - "libs/ui/src/ui/native.mbt"
+      - "libs/ui/src/kitdemo/gallery/viewcheck.mbt"
+      - "libs/ui/src/host/apple_*"
+      - "libs/ui/src/host/apple.h"
+      - "libs/ui/src/host/ios_app.m"
+      - "libs/ui/ios/**"
+      - "libs/ui/scripts/ios.sh"
+      - "libs/ui/scripts/ios-terminate.sh"
+      - "libs/ui/scripts/mbc"
+      - "libs/ui/tools/**"
+      - "libs/ui/scripts/host_contract.sh"
+      - "libs/ui/tools/chk/textrec.mbt"
+      - "libs/ui/test/host/**"
+      - "libs/ui/src/kitdemo/gallery/textcheck.mbt"
+      - "libs/ui/src/kitdemo/gallery/textrec_ios_*"
       - ".github/workflows/mbui-host-ios.yml"
-      - "libs/mbui/src/host/marks.mbt"
-      - "libs/mbui/src/host/host_native.mbt"
-      - "libs/mbui/src/kitdemo/gallery/markscheck.mbt"
-      - "libs/mbui/src/kitdemo/main.mbt"
-      - "libs/mbui/test/marks/**"
-      - "libs/mbui/goldens/marks/ios*"
-      - "libs/mbui/src/host/moon.pkg"
+      - "libs/ui/src/host/marks.mbt"
+      - "libs/ui/src/host/host_native.mbt"
+      - "libs/ui/src/kitdemo/gallery/markscheck.mbt"
+      - "libs/ui/src/kitdemo/main.mbt"
+      - "libs/ui/test/marks/**"
+      - "libs/ui/goldens/marks/ios*"
+      - "libs/ui/src/host/moon.pkg"
   push:
     branches: [main]
     paths: *paths
@@ -49,7 +49,7 @@ jobs:
   contracts:
     defaults:
       run:
-        working-directory: libs/mbui
+        working-directory: libs/ui
     # (a machine of ours: never a fork's pull request)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, mbui-render]
@@ -143,5 +143,5 @@ jobs:
         continue-on-error: true
         with:
           name: host-ios
-          path: libs/mbui/out/host/
+          path: libs/ui/out/host/
           if-no-files-found: ignore

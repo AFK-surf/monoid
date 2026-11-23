@@ -2,8 +2,8 @@
 package "stillfail/sfreplay"
 
 import {
-  "mbui/ui",
-  "mbui/view",
+  "ui/ui",
+  "ui/view",
   "moonbitlang/core/json",
   "stillfail/core",
   "stillfail/sfbase",

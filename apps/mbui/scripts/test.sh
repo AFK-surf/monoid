@@ -139,10 +139,10 @@ for t in $targets; do
   # MBC_LIGHT_KEEP), which run in every frame of its tests, at -O0 2.5 times as long, 44243493008)
   if [ "$release_light" = 1 ]; then
     case " $light " in
-      *" sfapp/sfapp.whitebox_test "*) [ "$pkgs" = "-p stillfail/sfapp" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
-      *" sfapp_realsize/sfapp_realsize.blackbox_test "*) [ -n "${REALSIZE_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
-      *" sfapp_pages_test/sfapp_pages_test.blackbox_test "*) [ -n "${PAGES_TEST_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
-      *" sfreplay/flows/flows.blackbox_test "*) [ -n "${REPLAY_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
+      *" sfapp/sfapp.whitebox_test "*) [ "$pkgs" = "-p stillfail/sfapp" ] && export MBC_LIGHT_KEEP="ui_ stillfail_sfgraphic_" ;;
+      *" sfapp_realsize/sfapp_realsize.blackbox_test "*) [ -n "${REALSIZE_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="ui_ stillfail_sfgraphic_" ;;
+      *" sfapp_pages_test/sfapp_pages_test.blackbox_test "*) [ -n "${PAGES_TEST_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="ui_ stillfail_sfgraphic_" ;;
+      *" sfreplay/flows/flows.blackbox_test "*) [ -n "${REPLAY_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="ui_ stillfail_sfgraphic_" ;;
     esac
   fi
   # A test's functions (its *_test.mbt's, *_wbtest.mbt's) in units of their own (mbc's test.<unit>), compiled at -O1 in

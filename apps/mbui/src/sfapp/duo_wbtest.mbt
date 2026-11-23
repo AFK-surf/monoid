@@ -1676,7 +1676,7 @@ fn duo_panel_over(t : @ui.Tester) -> Unit raise {
 /// What the audit finds at rest with the panel in use, but for main's own (the tape's edge over the page's cover beside
 /// it, at the window's lead, with any panel in use on the Duo: not of this change).
 fn duo_panel_audit(t : @ui.Tester) -> Array[String] {
-  t.audit().filter(fn(f) { !(f.has_prefix("apart: 「") && f.contains("stillfail/sf/src/edge_node.mbt")) })
+  t.audit().filter(fn(f) { !(f.has_prefix("apart: 「") && f.contains("ui/src/controls/edge_node.mbt")) })
 }
 
 ///|

@@ -1,0 +1,21 @@
+import {
+  "ui/codec",
+  "ui/hostapi",
+  "ui/ui",
+  "ui/kit",
+  "ui/signals",
+  "moonbitlang/core/json",
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/string",
+}
+
+import {
+  "moonbitlang/core/env",
+  "ui/dmath",
+  "ui/runfs",
+} for "wbtest"
+
+options(
+  targets: { "dl_print_js_wbtest.mbt": [ "js" ], "dl_print_native_wbtest.mbt": [ "native" ], "dl_print_wasm_wbtest.mbt": [ "wasm-gc" ] },
+  "native-stub": [ "read_file.c" ],
+)

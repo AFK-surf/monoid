@@ -1,8 +1,0 @@
-import {
-  "mbui/halt",
-  "mbui/dmath",
-}
-
-import {
-  "moonbitlang/core/bench",
-} for "test"

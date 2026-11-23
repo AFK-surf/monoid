@@ -1,0 +1,33 @@
+#!/bin/sh
+# Unified ui.monoid app packager and scaffolding CLI (tools/pack, in MoonBit):
+#   ui version
+#   ui init <dir> [--name NAME] [--id APP_ID] [--mbui PATH] [--ui PATH]
+#   ui check [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [--runtime native|wasm] [--env K=V ...]
+#   ui meta [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [--runtime native|wasm] [--env K=V ...] [--format sh|json]
+#   ui icons [mbui.json] --out DIR [--platform all|mac|win|linux|android|ios|web] [--variant V]
+#   ui pack [mbui.json] --target <t1,t2,...> [--variant V] [--out DIR] [--version VER] [--build N]
+#             [--app-id ID] [--runtime native|wasm] [--runtime-dir DIR] [--wasm-aot] [--format ...] [--env K=V ...]
+#             [--sign-identity ID] [--keychain PATH] [--notarize-profile P] [--web-no-compress]
+#             [--ios-sdk ...] [--ios-profile ...]
+#             [--keystore ...] [--key-alias ...] [--ks-pass ...] [--key-pass ...] [--v3-signing] [--verify-cert ...]
+#             [--win-cert ...] [--win-cert-pass ...] [--win-timestamp ...] [--quick]
+#   ui repack [mbui.json] --target android --in IN.apk --out OUT.apk [--variant V] [--env K=V ...] [signing...]
+#   ui publish [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [release args...]
+# Built here only when there is none built from these very sources (by content).
+D=$(cd "$(dirname "$0")" && pwd)
+T=$D/../tools
+TOOLS_SCRIPTS=$D; . "$D/tooltarget.sh"
+B=$T/_build/$TT/release/build/pack/pack.$TX
+src=$(cd "$T" && find pack png sys rjson moon.mod moon.work -type f | LC_ALL=C sort | xargs cat | cksum)
+# (`key`: what it is built from, said: the key CI keeps the tool by, .github/actions/mbui-moonbit)
+[ "${1:-}" != key ] || { echo "$src" | tr ' ' -; exit 0; }
+# (MBUI_TOOLS_OUT: built there, mbui left as it is, when there is none built here from these sources: scripts/mbc)
+TD=; if [ -n "${MBUI_TOOLS_OUT:-}" ] && [ "$(cat "$B.src" 2>/dev/null)" != "$src" ]; then
+  TD=$(mkdir -p "$MBUI_TOOLS_OUT" && cd "$MBUI_TOOLS_OUT" && pwd) && B=$TD/$TT/release/build/pack/pack.$TX
+fi
+if [ ! -f "$B" ] || [ "$(cat "$B.src" 2>/dev/null)" != "$src" ]; then
+  (cd "$T" && env -u MOON_CC moon build ${TD:+--target-dir "$TD"} --target $TT --release pack >&2) || { echo "ui: tools/pack did not build" >&2; exit 1; }
+  echo "$src" > "$B.src"
+fi
+[ "${1:-}" != path ] || { echo "$B"; exit 0; }
+MBUI_HOME=$D tool_exec "$B" "$@"

@@ -12,7 +12,7 @@ import {
   "station/store_sessions",
   "station/store_threads",
   "station/session_hub",
-  "mbui/effect",
+  "ui/effect",
   "moonbitlang/core/json",
   "moonbitlang/core/double",
   "moonbitlang/core/encoding/base64",
