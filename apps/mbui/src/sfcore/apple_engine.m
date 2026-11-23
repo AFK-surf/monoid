@@ -170,3 +170,13 @@ __attribute__((constructor)) static void device_name(void) {
   CFRelease(name);
 }
 #endif
+
+// The device's language for the app's words until the core says, and the core's when none is chosen (signin.mbt
+// tell_device): MBUI_LOCALE, as Android's CoreHost.java and linux_engine.c put it, from the person's first preferred
+// language (en-US, zh-Hans-CN: a BCP 47 tag); not over one given (a scripted run's own).
+__attribute__((constructor)) static void device_locale(void) {
+  @autoreleasepool {
+    NSString *lang = NSLocale.preferredLanguages.firstObject;
+    if (lang.length) setenv("MBUI_LOCALE", lang.UTF8String, 0);
+  }
+}
