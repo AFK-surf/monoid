@@ -24,6 +24,7 @@ const frames = [];
 const waiters = [];
 let stderr = "";
 let fatalErr = null;
+let parseErr = null;
 let resolveClosed;
 const closed = new Promise((resolve) => {
   resolveClosed = resolve;
@@ -63,7 +64,9 @@ child.stdin.on("error", () => {
 });
 
 child.on("error", (err) => {
-  failAll(new Error(`child spawn error: ${err.message}`));
+  const e = new Error(`child spawn error: ${err.message}`);
+  if (!parseErr) parseErr = e;
+  failAll(e);
   resolveClosed({ code: -1, signal: null });
 });
 
@@ -111,7 +114,9 @@ child.stdout.on("data", (d) => {
       }
     }
   } catch (err) {
-    failAll(err instanceof Error ? err : new Error(String(err)));
+    const e = err instanceof Error ? err : new Error(String(err));
+    if (!parseErr) parseErr = e;
+    failAll(e);
     child.kill();
   }
 });
@@ -149,6 +154,9 @@ async function run() {
 
   child.stdin.end();
   const { code, signal } = await closed;
+  if (parseErr) {
+    throw parseErr;
+  }
   if (
     code !== 0 ||
     signal !== null ||

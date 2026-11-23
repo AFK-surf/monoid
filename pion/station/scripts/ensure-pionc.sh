@@ -225,98 +225,45 @@ if [ -z "${PION_TOOLCHAIN_DIR:-}" ] && check_verified_dir "$HOME/.pion"; then
   exit 0
 fi
 
-# Serialize concurrent bootstraps for the same TOOLCHAIN_DIR.
-# Prefer kernel-managed flock (flock CLI -> perl fcntl -> python3 fcntl) so OS kernel
-# automatically releases the lock on process exit/crash with zero stale-PID races.
+# Serialize concurrent bootstraps for the same TOOLCHAIN_DIR using kernel-managed flock.
+# In perl/python3 fallback modes, clear FD_CLOEXEC and exec directly into this script so the
+# bootstrap process itself owns the lock fd until exit (zero wrapper-kill or stale-PID races).
 mkdir -p "$(dirname "$TOOLCHAIN_DIR")"
 FLOCK_FILE="${TOOLCHAIN_DIR}.flock"
-LOCK_DIR="${TOOLCHAIN_DIR}.lock"
 
 if [ "${PION_ENSURE_UNDER_LOCK:-0}" != "1" ]; then
   if command -v flock >/dev/null 2>&1; then
     exec 9>"$FLOCK_FILE"
     flock 9
   elif command -v perl >/dev/null 2>&1; then
-    PION_ENSURE_UNDER_LOCK=1 exec perl -MFcntl=:flock -e '
+    PION_ENSURE_UNDER_LOCK=1 exec perl -MFcntl=:flock,F_SETFD -e '
       my $lf = shift @ARGV;
       open my $fh, ">>", $lf or die "open $lf: $!";
+      fcntl($fh, F_SETFD, 0) or die "fcntl F_SETFD $lf: $!";
       flock($fh, LOCK_EX) or die "flock $lf: $!";
-      my $rc = system(@ARGV);
-      exit($rc == -1 ? 127 : ($rc & 127) ? 128 + ($rc & 127) : ($rc >> 8));
+      exec @ARGV or die "exec $ARGV[0]: $!";
     ' "$FLOCK_FILE" sh "$0" ${MODE_ARG:+"$MODE_ARG"}
   elif command -v python3 >/dev/null 2>&1; then
     PION_ENSURE_UNDER_LOCK=1 exec python3 -c '
-import fcntl, subprocess, sys
-with open(sys.argv[1], "a+") as f:
-    fcntl.flock(f, fcntl.LOCK_EX)
-    sys.exit(subprocess.call(sys.argv[2:]))
+import fcntl, os, sys
+fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o666)
+fcntl.flock(fd, fcntl.LOCK_EX)
+os.set_inheritable(fd, True)
+os.execvp(sys.argv[2], sys.argv[2:])
 ' "$FLOCK_FILE" sh "$0" ${MODE_ARG:+"$MODE_ARG"}
+  else
+    echo "ensure-pionc.sh: flock, perl, or python3 is required to serialize toolchain bootstrap" >&2
+    exit 1
   fi
 fi
 
 WORK_DIR=""
 STAGE_DIR=""
-OWNER_TMP=""
-OWNER_TOKEN=""
-HELD_DIR_LOCK=0
 cleanup() {
   [ -n "$WORK_DIR" ] && rm -rf "$WORK_DIR" || true
   [ -n "$STAGE_DIR" ] && [ -e "$STAGE_DIR" ] && rm -rf "$STAGE_DIR" || true
-  [ -n "$OWNER_TMP" ] && rm -f "$OWNER_TMP" || true
-  if [ "$HELD_DIR_LOCK" -eq 1 ] && [ -n "$OWNER_TOKEN" ]; then
-    cur_owner="$(cat "$LOCK_DIR/owner" 2>/dev/null || true)"
-    if [ "$cur_owner" = "$OWNER_TOKEN" ]; then
-      rm -rf "$LOCK_DIR" || true
-    fi
-  fi
 }
 trap cleanup EXIT
-
-pid_gone() {
-  [ -n "${1:-}" ] && [ "$1" -gt 0 ] 2>/dev/null && ! kill -0 "$1" 2>/dev/null && ! ps -p "$1" >/dev/null 2>&1
-}
-
-# Last-resort lock fallback only when flock, perl, and python3 are all unavailable.
-if [ "${PION_ENSURE_UNDER_LOCK:-0}" != "1" ] && ! command -v flock >/dev/null 2>&1; then
-  OWNER_TOKEN="$$.$(date +%s 2>/dev/null || echo 0)"
-  OWNER_TMP="${TOOLCHAIN_DIR}.owner.$$"
-  printf '%s\n' "$OWNER_TOKEN" > "$OWNER_TMP"
-  empty_spins=0
-  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
-    cur_owner="$(cat "$LOCK_DIR/owner" 2>/dev/null || true)"
-    holder_pid="${cur_owner%%.*}"
-    if [ -n "$cur_owner" ]; then
-      empty_spins=0
-      if pid_gone "$holder_pid"; then
-        stale_dir="${LOCK_DIR}.stale.$$"
-        if mv "$LOCK_DIR" "$stale_dir" 2>/dev/null; then
-          moved_owner="$(cat "$stale_dir/owner" 2>/dev/null || true)"
-          if [ "$moved_owner" = "$cur_owner" ]; then
-            rm -rf "$stale_dir"
-          else
-            # Another owner raced in; restore if possible and retry.
-            mv "$stale_dir" "$LOCK_DIR" 2>/dev/null || rm -rf "$stale_dir"
-          fi
-        fi
-        continue
-      fi
-    else
-      empty_spins=$((empty_spins + 1))
-      if [ "$empty_spins" -ge 25 ]; then
-        stale_dir="${LOCK_DIR}.stale.$$"
-        if mv "$LOCK_DIR" "$stale_dir" 2>/dev/null; then
-          rm -rf "$stale_dir"
-        fi
-        empty_spins=0
-        continue
-      fi
-    fi
-    sleep 0.2
-  done
-  HELD_DIR_LOCK=1
-  mv -f "$OWNER_TMP" "$LOCK_DIR/owner"
-  OWNER_TMP=""
-fi
 
 # Re-check after acquiring lock: another process may have finished installing cleanly.
 if check_verified_dir "$TOOLCHAIN_DIR"; then

@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 typedef void (*sf_complete)(
@@ -272,23 +273,62 @@ static void test_sth_stop_preserves_stdin_and_eof(void) {
     sth_free(ev2);
 }
 
-static void *stop_after_waiter_blocks(void *arg) {
-    (void)arg;
-    assert(sth_wait_for_queue_waiter_for_test(5000) == 1);
-    sth_stop();
+typedef struct wake_waiter {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    int done;
+    void *ev;
+    int64_t len;
+} wake_waiter_t;
+
+static void *indefinite_waiter_thread(void *arg) {
+    wake_waiter_t *w = (wake_waiter_t *)arg;
+    int64_t len = -1;
+    void *ev = sth_wait(-1, &len);
+    pthread_mutex_lock(&w->mu);
+    w->ev = ev;
+    w->len = len;
+    w->done = 1;
+    pthread_cond_signal(&w->cv);
+    pthread_mutex_unlock(&w->mu);
     return NULL;
 }
 
 static void test_sth_stop_wakes_indefinite_wait_on_empty_queue(void) {
     assert(sth_start("/tmp/fake-shell-wake", 0) == 1);
-    pthread_t stopper;
-    assert(pthread_create(&stopper, NULL, stop_after_waiter_blocks, NULL) == 0);
+    wake_waiter_t w;
+    memset(&w, 0, sizeof(w));
+    w.len = -1;
+    assert(pthread_mutex_init(&w.mu, NULL) == 0);
+    assert(pthread_cond_init(&w.cv, NULL) == 0);
 
-    int64_t len = -1;
-    void *ev = sth_wait(-1, &len);
+    pthread_t waiter;
+    assert(pthread_create(&waiter, NULL, indefinite_waiter_thread, &w) == 0);
+
+    // Wait deterministically until waiter is inside sth_wait(-1), then stop shell.
+    assert(sth_wait_for_queue_waiter_for_test(5000) == 1);
+    sth_stop();
+
+    // Bounded 5000ms wait: a regression that drops stop-wake fails by assertion instead of hanging.
+    pthread_mutex_lock(&w.mu);
+    struct timespec dl;
+    clock_gettime(CLOCK_REALTIME, &dl);
+    dl.tv_sec += 5;
+    while (!w.done) {
+        if (pthread_cond_timedwait(&w.cv, &w.mu, &dl) != 0) {
+            break;
+        }
+    }
+    int finished = w.done;
+    void *ev = w.ev;
+    int64_t len = w.len;
+    pthread_mutex_unlock(&w.mu);
+
+    assert(finished == 1);
+    pthread_join(waiter, NULL);
+    pthread_cond_destroy(&w.cv);
+    pthread_mutex_destroy(&w.mu);
     assert(ev == NULL && len == 0);
-
-    pthread_join(stopper, NULL);
 }
 
 static void test_shell_lifecycle_and_foreign_thread_race(void) {

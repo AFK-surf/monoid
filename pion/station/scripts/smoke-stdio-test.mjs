@@ -86,7 +86,41 @@ function runDouble(script) {
   assert.match(res.stderr, /extraFrames=1/, `expected extraFrames=1 in stderr, got: ${res.stderr}`);
 }
 
-// (d) Valid test double -> must exit 0.
+// (d) Valid 4 frames plus invalid trailing JSON before immediate exit 0 -> must fail non-zero.
+{
+  const res = runDouble(`
+    let acc = "";
+    const cancelled = new Set();
+    process.stdin.on("data", (d) => {
+      acc += d.toString("utf8");
+      while (acc.includes("\\n")) {
+        const idx = acc.indexOf("\\n");
+        const msg = JSON.parse(acc.slice(0, idx));
+        acc = acc.slice(idx + 1);
+        if (msg.op === "cancel") {
+          cancelled.add(msg.target);
+          process.stdout.write(JSON.stringify({ id: msg.id, ok: true, cancelled: msg.target }) + "\\n");
+        } else if (cancelled.has(msg.id)) {
+          process.stdout.write(JSON.stringify({ id: msg.id, ok: false, cancelled: true }) + "\\n");
+        } else if (msg.op === "echo") {
+          process.stdout.write(JSON.stringify({ id: msg.id, ok: true, text: msg.text }) + "\\n");
+        } else if (msg.op === "binary") {
+          const b = Buffer.alloc(msg.size);
+          for (let i = 0; i < msg.size; i++) b[i] = (msg.byte + i) & 0xff;
+          process.stdout.write(JSON.stringify({ id: msg.id, ok: true, bytes: b.length }) + "\\n");
+          process.stdout.write(b);
+        }
+      }
+    });
+    process.stdin.on("end", () => {
+      process.stdout.write("not-json\\n");
+      process.exit(0);
+    });
+  `);
+  assert.notEqual(res.status, 0, "expected non-zero exit on trailing invalid JSON + exit 0");
+}
+
+// (e) Valid test double -> must exit 0.
 {
   const res = runDouble(`
     let acc = "";
@@ -116,4 +150,4 @@ function runDouble(script) {
   assert.equal(res.status, 0, `expected valid double to pass, got stderr: ${res.stderr}`);
 }
 
-console.log("smoke-stdio-test: ALL PASSED (3 negative + 1 positive)");
+console.log("smoke-stdio-test: ALL PASSED (4 negative + 1 positive)");
