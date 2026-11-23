@@ -2988,6 +2988,16 @@ web-main.newChat.autoStationHint
 web-main.newChat.autoEmptyTitle
 web-main.newChat.pickStation
 web-main.newChat.goStations
+web-main.newChat.stationSearch
+web-main.newChat.stationSearchWide
+web-main.newChat.stationAutoCount
+web-main.newChat.stationColStation
+web-main.newChat.stationColRunning
+web-main.newChat.stationColCpu
+web-main.newChat.stationColMemory
+web-main.newChat.stationColDisk
+web-main.newChat.stationColNetwork
+web-main.newChat.stationIdle
 web-main.preset.stationsCount
 web-main.preset.hasInstructions
 web-main.preset.moreItem

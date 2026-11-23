@@ -65,6 +65,8 @@ pub(all) struct NewFix {
   mut other_stations : Bool
   /// MBUI_FIXTURE=newchat-station-empty: no model available here, with the same way to the other station's.
   mut station_empty : Bool
+  /// MBUI_FIXTURE=newchat-station-many: 12 stations for the searchable sortable wide table / drawer picker.
+  mut station_many : Bool
   /// The other members' presets (the `otherPresets` topic, fix_others; `preset` of each), and whether the stations are
   /// still being asked for them (its `reading`)
   others : Array[Json]
@@ -108,6 +110,7 @@ pub let new_fix : NewFix = {
   station_models: false,
   other_stations: false,
   station_empty: false,
+  station_many: false,
   others: fix_others(),
   others_reading: false,
 }
@@ -521,6 +524,12 @@ pub fn fix_candidates() -> Json {
 /// (`overview`) and what is left of its machine (`host`); how this device reaches it is the `stationNet` view's (the
 /// made-up stations' `net`: Willow's, none of Maple's).
 pub fn fix_station(id : String) -> Json {
+  if new_fix.station_many {
+    match fix_station_many().iter().find_first(fn(s) { text(Some(s), "id") == id }) {
+      Some(s) => return s
+      None => ()
+    }
+  }
   match id {
     "st2" =>
       {
@@ -571,6 +580,116 @@ pub fn fix_meter(short : String, left : Int, level : String, big : String, unit 
     "remaining": Json::string(if unit == "%" { "空闲 " + big + "%" } else { "剩 " + big + " G" }),
     "big": Json::string(big),
     "unit": Json::string(unit),
+  }
+}
+
+///|
+/// Helper to build one station entry for `newchat-station-many`.
+fn fix_many_one(
+  id : String,
+  name : String,
+  icon : String,
+  online : Bool,
+  summary : String,
+  running : Int,
+  meters : Array[Json],
+) -> Json {
+  {
+    "station": Json::string("ws1/" + id),
+    "id": Json::string(id),
+    "name": Json::string(name),
+    "icon": Json::string(icon),
+    "summary": Json::string(summary),
+    "online": Json::boolean(online),
+    "acceptAutoChats": Json::boolean(online),
+    "host": { "meters": Json::array(meters) },
+    "overview": { "counts": { "running": Json::number(running.to_double()) } },
+  }
+}
+
+///|
+/// Twelve realistic stations for `newchat-station-many` (long names, varied load/memory/disk levels, varied relays,
+/// plus one offline station).
+pub fn fix_station_many() -> Array[Json] {
+  [
+    fix_many_one("st1", "Willow", "glyph:desktop", true, "2 个 agent 正在运行 · Apple M1 Pro · 32 GB", 2, [
+      fix_meter("CPU", 72, "ok", "72", "%"),
+      fix_meter("内存", 18, "amber", "5.8", "GB"),
+      fix_meter("磁盘", 41, "ok", "380", "GB"),
+    ]),
+    fix_many_one("st2", "Maple", "glyph:laptop", true, "空闲 · Apple M4 · 16 GB", 0, [
+      fix_meter("CPU", 91, "ok", "91", "%"),
+      fix_meter("内存", 9, "red", "1.4", "GB"),
+      fix_meter("磁盘", 12, "amber", "28", "GB"),
+    ]),
+    fix_many_one("st3", "tokyo-mac-studio-0", "glyph:desktop", true, "5 个 agent 正在运行 · Apple M5 Max · 64 GB", 5, [
+      fix_meter("CPU", 24, "amber", "24", "%"),
+      fix_meter("内存", 28, "ok", "18.2", "GB"),
+      fix_meter("磁盘", 23, "ok", "210", "GB"),
+    ]),
+    fix_many_one("st4", "pvg-office-hyper-build-node-01", "", true, "1 个 agent 正在运行 · 16 核 Linux", 1, [
+      fix_meter("CPU", 88, "ok", "88", "%"),
+      fix_meter("内存", 66, "ok", "42.0", "GB"),
+      fix_meter("磁盘", 64, "ok", "640", "GB"),
+    ]),
+    fix_many_one("st5", "pvg-office-2", "", true, "空闲 · 16 核 Linux", 0, [
+      fix_meter("CPU", 96, "ok", "96", "%"),
+      fix_meter("内存", 58, "ok", "14.5", "GB"),
+      fix_meter("磁盘", 64, "ok", "391", "GB"),
+    ]),
+    fix_many_one("st6", "afk-ap-pool-gpu-render-cluster-alpha-tokyo-01", "", true, "3 个 agent 正在运行 · 8 核 GPU", 3, [
+      fix_meter("CPU", 12, "red", "12", "%"),
+      fix_meter("内存", 16, "amber", "6.4", "GB"),
+      fix_meter("磁盘", 45, "ok", "185", "GB"),
+    ]),
+    fix_many_one("st7", "Office-Host-2", "glyph:desktop", true, "4 个 agent 正在运行 · Apple M4 · 16 GB", 4, [
+      fix_meter("CPU", 65, "ok", "65", "%"),
+      fix_meter("内存", 30, "amber", "4.9", "GB"),
+      fix_meter("磁盘", 14, "ok", "63.5", "GB"),
+    ]),
+    fix_many_one("st8", "sgp-edge-hyper-worker-04", "", true, "空闲 · 8 核 Linux", 0, [
+      fix_meter("CPU", 94, "ok", "94", "%"),
+      fix_meter("内存", 71, "ok", "28.4", "GB"),
+      fix_meter("磁盘", 72, "ok", "512", "GB"),
+    ]),
+    fix_many_one("st9", "hkg-relay-build-station-prod", "", true, "2 个 agent 正在运行 · 16 核 Linux", 2, [
+      fix_meter("CPU", 52, "ok", "52", "%"),
+      fix_meter("内存", 38, "ok", "9.1", "GB"),
+      fix_meter("磁盘", 35, "ok", "140", "GB"),
+    ]),
+    fix_many_one("st10", "studio-m4-max-ultrawide-devbox", "glyph:laptop", true, "1 个 agent 正在运行 · Apple M4 Max", 1, [
+      fix_meter("CPU", 81, "ok", "81", "%"),
+      fix_meter("内存", 75, "ok", "48.0", "GB"),
+      fix_meter("磁盘", 82, "ok", "820", "GB"),
+    ]),
+    fix_many_one("st11", "eu-frankfurt-ci-runner-02", "", true, "空闲 · 8 核 Linux", 0, [
+      fix_meter("CPU", 77, "ok", "77", "%"),
+      fix_meter("内存", 44, "ok", "11.2", "GB"),
+      fix_meter("磁盘", 19, "amber", "95", "GB"),
+    ]),
+    fix_many_one("st12", "lab-mac-mini-offline", "glyph:desktop", false, "3 小时前离线", 0, []),
+  ]
+}
+
+///|
+/// Network status (`stationNet` topic) for the stations in `newchat-station-many`.
+pub fn fix_station_many_net(address : String) -> Json? {
+  let make = fn(path : String, rtt : String) -> Json {
+    { "via": "direct", "path": Json::string(path), "rtt": { "text": Json::string(rtt), "level": "ok" } }
+  }
+  match address {
+    "ws1/st1" => Some(make("直连", "38 ms"))
+    "ws1/st2" => None
+    "ws1/st3" => Some(make("直连", "22 ms"))
+    "ws1/st4" => Some(make("香港中继", "459 ms"))
+    "ws1/st5" => Some(make("直连", "19 ms"))
+    "ws1/st6" => Some(make("新加坡中继", "118 ms"))
+    "ws1/st7" => Some(make("直连", "8 ms"))
+    "ws1/st8" => Some(make("新加坡中继", "84 ms"))
+    "ws1/st9" => Some(make("香港中继", "42 ms"))
+    "ws1/st10" => Some(make("直连", "15 ms"))
+    "ws1/st11" => Some(make("法兰克福中继", "214 ms"))
+    _ => None
   }
 }
 
@@ -1199,6 +1318,8 @@ fn fix_new_chat_of(f : Fixture) -> Json {
       } else {
         [lend(fix_station("st1")), lend(fix_station(n.station))]
       }
+    } else if n.station_many {
+      fix_station_many().map(lend)
     } else {
       [lend(fix_station("st1")), lend(fix_station("st2"))]
     },
@@ -1210,7 +1331,7 @@ fn fix_new_chat_of(f : Fixture) -> Json {
     },
     "presetStations": Json::boolean(n.preset != "" && n.bound),
     "autoStation": Json::boolean(n.auto_station),
-    "autoPoolCount": Json::number(2.0),
+    "autoPoolCount": Json::number(if n.station_many { 11.0 } else { 2.0 }),
     "any": true,
     "station": lend(fix_station(n.station)),
     "model": fix_model(n.model),

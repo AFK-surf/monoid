@@ -692,6 +692,10 @@ pub fn open_mode(mode : String) -> Unit {
     }
     match mode {
       "newchat-station" => @sfpages.new_chat_ask("station")
+      "newchat-station-many" => {
+        @sffixture.new_fix.station_many = true
+        @sfpages.new_chat_ask("station")
+      }
       "newchat-preset" | "newchat-preset-many" => @sfpages.new_chat_ask("preset")
       "newchat-preset-new" => @sfpages.new_chat_ask("preset-new")
       "newchat-preset-edit" => @sfpages.new_chat_ask("preset-edit")
@@ -999,7 +1003,7 @@ pub fn fixture_corner_modes() -> Array[String] {
     "history", "history-details", "drive", "drive-roots", "drive-download", "drive-empty", "drive-loading", "drive-sub", "drive-upload",
     "files", "files-add-folder", "files-clash", "files-columns", "files-list", "files-preview", "files-split", "files-transfers",
     "files-tree", "place-stations", "place-profiles", "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents", "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
-    "newchat-model", "newchat-borrow-model", "newchat-profiles", "newchat-reading", "newchat-station",
+    "newchat-model", "newchat-borrow-model", "newchat-profiles", "newchat-reading", "newchat-station", "newchat-station-many",
     "newchat-station-models", "newchat-station-empty",
     // (a preset's dialog and its steps further in: 添加目录, the folder picker at a station's home and in a folder of
     // repositories, 从 Git 克隆, a clone under way and one failed among its folders)

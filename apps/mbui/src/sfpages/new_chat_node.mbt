@@ -535,7 +535,7 @@ fn new_station_control_node(
   let fixed = fn() { flag(view(), "presetStations") && items(view(), "stations").length() <= 1 }
   let open = fn(b : @view.View) {
     let v = @signals.untracked(view)
-    @sf.panel_nodes(@sf.t("android-chat.new.station.pick"), fn(n, close) { station_rows_node(n, on.src, on.w, v, close) }, from=Node(b), side=choice_side(Node(b)))
+    open_station_picker(on.src, on.w, v, from=Node(b))
   }
   let auto_on = fn() { flag(view(), "autoStation") }
   let label = fn() {
@@ -557,6 +557,7 @@ fn new_station_control_node(
     }
   }, fn(b) {
     made.val = Some(b)
+    @sf.tip_node(on.tips, b, label, repeats=true) |> ignore
     // (a station of no mark of its own the server's, as in its pick: never a bare chevron)
     b.pick(fn() { if auto_on() { 2 } else if @sf.has_station_mark(text(station(), "emoji"), text(station(), "icon")) { 1 } else { 0 } }, fn(m, kind) {
       if kind == 2 {
@@ -890,7 +891,7 @@ fn new_auto_empty_node(
               Some(b) if b.alive() => @sf.Anchor::Node(b)
               _ => @sf.Anchor::Unanchored
             }
-            @sf.panel_nodes(@sf.t("android-chat.new.station.pick"), fn(n, close) { station_rows_node(n, src, w, v, close) }, from=anchor)
+            open_station_picker(src, w, v, from=anchor)
           }, tone=Primary)
           |> ignore
         })

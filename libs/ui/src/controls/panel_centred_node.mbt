@@ -1,7 +1,7 @@
 // A panel of the presenters' opened by nothing (panel_centred's: the library's dialog, a panel in the middle of the
 // window) as nodes of the window's tree: the presenters' dialog layer (dialog_layer_node: a press outside it closes it,
-// as a dialog's does), its frame as dialog draws it (dialog_w wide, dialog_wide_w where `wide`, the window less
-// dialog_margin at most, no taller than it less dialog_room; 24 in, a line round it, dialog_r round, the panel's ground
+// as a dialog's does), its frame as dialog draws it (dialog_w wide, or at least dialog_wide_w where `wide` while
+// respecting a larger `x.w`, the window less dialog_margin at most, no taller than it less dialog_room; 24 in, a line round it, dialog_r round, the panel's ground
 // and shadow); its head (its title and its close button, what it says under them, or its close button alone in its top
 // corner where it has no title), what it holds and its foot its nodes (panel_nodes), out to the dialog's edges they
 // stand by, the dialog's padding inside them, what it holds scrolling where the window leaves the dialog short of room. Escape, back, a press outside and its close button close it (its gone told); what it holds
@@ -81,7 +81,7 @@ fn panel_centred_node(
       let (title, step, _) = now()
       title == "" && step == ""
     }
-    let w = fn() { dmin(if x.wide { dialog_wide_w } else { dialog_w }, over_room(layer).0 - dialog_margin) }
+    let w = fn() { dmin(if x.wide { dmax(dialog_wide_w, x.w) } else { dialog_w }, over_room(layer).0 - dialog_margin) }
     // (what it holds and its head on the line of its words, a row's padding in: panel_centred's)
     let words_in = panel_words - dialog_pad
     // (what is at its foot)

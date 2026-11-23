@@ -78,7 +78,7 @@ let corners_tape_rail : Array[String] = [
   // (远程: its place, its tabs in the workbench, a chat's remote menu, a terminal in a chat's side panel)
   "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents",
   "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
-  "newchat-model", "newchat-borrow-model", "newchat-station-models", "newchat-station-empty", "newchat-profiles", "newchat-reading", "newchat-station",
+  "newchat-model", "newchat-borrow-model", "newchat-station-models", "newchat-station-empty", "newchat-profiles", "newchat-reading", "newchat-station", "newchat-station-many",
   // (a preset's dialog over 新对话 and its steps further in: the rail behind them, not the panel)
   "newchat-preset-new", "newchat-preset-new-add", "newchat-preset-new-browse", "newchat-preset-new-browse-repos",
   "newchat-preset-new-clone", "newchat-preset-new-clones",

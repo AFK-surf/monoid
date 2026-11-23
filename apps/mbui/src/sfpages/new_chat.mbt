@@ -107,109 +107,6 @@ fn take_asked(what : String) -> Bool {
   true
 }
 
-///|
-/// Where a new chat runs (the mobile pickStation), in node `n` (its panel's body): the workspace's stations as `v` said
-/// them as it opened, each its mark beside its name, the one it starts on checked, and what the stations' list says of
-/// it (station_facts.mbt: its agents at work, what is left of its machine, how this device reaches it, followed as it
-/// changes); picked, the core has it (`newChat.pick`) and the panel closes, showing what it showed till it is gone.
-fn station_rows_node(n : @view.View, src : Source, w : Workspace, v : Json?, close : () -> Unit) -> Unit {
-  let current = text(field(v, "station"), "station")
-  let is_auto = flag(v, "autoStation")
-  let pool = count(v, "autoPoolCount")
-  if pool > 0 && !flag(v, "presetStations") {
-    @sf.panel_content_row_node(
-      n,
-      fn() { @sf.t("web-main.newChat.autoStation") },
-      fn(_) {
-        @sfbase.pick_new(src, w.id, { "autoStation": Json::boolean(true) })
-        close()
-      },
-      fn(row) {
-        @sf.style_node(row, fn() { station_row.then(@sf.panel_row_in_node(row)) })
-        row.box(fn(m) {
-          @sf.style_node(m, fn() { station_row_mark_box }, in_row=true)
-          @sf.icon_node(m, "sparks", station_row_mark, By(fn() { @sf.theme().p.accent_text })) |> ignore
-        })
-        |> ignore
-        row.box(fn(col) {
-          @sf.style_node(col, fn() { station_row_words }, in_row=true)
-          col.min_width(Is(Some(0.0))) |> ignore
-          col.box(fn(head) {
-            @sf.style_node(head, fn() { station_row_head })
-            @sf.words_node(head, fn() { @sf.t("web-main.newChat.autoStation") }, fn() { station_row_name })
-            .grow(Is(1.0))
-            .shrink(Is(1.0))
-            .min_width(Is(Some(0.0)))
-            |> ignore
-            if is_auto {
-              @sf.icon_node(head, "check", new_mark, By(fn() { @sf.theme().p.accent })) |> ignore
-            }
-          })
-          |> ignore
-          @sf.words_node(col, fn() { @sf.t("web-main.newChat.autoStationHint", args=[("n", pool.to_string())]) }, fn() { new_status })
-          |> ignore
-        })
-        |> ignore
-      },
-    )
-  }
-  for s in items(v, "stations") {
-    let st = Some(s)
-    let here = !is_auto && text(st, "station") == current
-    @sf.action_box_node(
-      n,
-      fn() { text(st, "name") },
-      fn(_) {
-        @sfbase.pick_new(src, w.id, { "station": Json::string(text(st, "id")) })
-        close()
-      },
-      check=fn() { if here { On } else { Off } },
-      fn(row) {
-        // (its words on the panel's words' line wherever it is drawn: @sf.panel_row_in_node; its ground under a mouse, as
-        // panel_row_in's `hovered`)
-        @sf.style_node(row, fn() { station_row.then(@sf.panel_row_in_node(row)) })
-        @sf.hover_ground_node(row, lit=Some(fn() { @sf.hovered_in_node(row) || row.focus_shown() }))
-        @sf.rippled_node(row, fn() {
-          @sfbase.pick_new(src, w.id, { "station": Json::string(text(st, "id")) })
-          close()
-        }, @sf.row_corner, fn() { text(st, "name") })
-        row.box(fn(m) {
-        @sf.style_node(m, fn() { station_row_mark_box }, in_row=true)
-        if @sf.has_station_mark(text(st, "emoji"), text(st, "icon")) {
-          @sf.station_mark_node(m, fn() { text(st, "emoji") }, fn() { text(st, "icon") }, station_row_mark, fn() {
-            @sf.theme().p.text
-          }, fn() { 0 })
-        } else {
-          @sf.icon_node(m, "server", station_row_mark, By(fn() { @sf.theme().p.text })) |> ignore
-        }
-      })
-      |> ignore
-      row.box(fn(col) {
-        @sf.style_node(col, fn() { station_row_words }, in_row=true)
-        // (giving way to its mark beside it where its name is long, as the old one's grow did: its name cut short)
-        col.min_width(Is(Some(0.0))) |> ignore
-        col.box(fn(head) {
-          @sf.style_node(head, fn() { station_row_head })
-          // (as long as there is room, what follows it at the line's end: station_row_name's w=grow, a node's own)
-          @sf.words_node(head, fn() { text(st, "name") }, fn() { station_row_name })
-          .grow(Is(1.0))
-          .shrink(Is(1.0))
-          .min_width(Is(Some(0.0)))
-          |> ignore
-          station_state_node(head, fn() { st })
-          if here {
-            @sf.icon_node(head, "check", new_mark, By(fn() { @sf.theme().p.accent })) |> ignore
-          }
-        })
-        |> ignore
-        station_figures_node(col, src, fn() { st })
-      })
-      |> ignore
-    })
-    |> ignore
-  }
-}
-
 // ── wide: the web's desktop page ──────────────────────────────────────────
 
 ///|
@@ -400,11 +297,8 @@ let new_mark : Double = 14.0
 let new_chevron : Double = 12.0
 
 ///|
-/// A glass choice's corner (a capsule 30 high), a station's mark in the station's pick.
+/// A glass choice's corner (a capsule 30 high).
 let glass_chooser_corner : Double = 15.0
-
-///|
-let station_row_mark : Double = 22.0
 
 ///|
 /// The heading narrow (h2: 6 over it).
@@ -465,29 +359,6 @@ let new_drop_station_name : Int = triple_drop_effort + 1
 /// A control in the composer's row (Chooser: 28 high, 8 in, its parts 6 apart, the hover's ground).
 // kept across runs: a value (no field of it changes)
 let new_capsule_in_row : @ui.Style = @ui.css("row h=S7 px=S2 gap=S1_5 align=ACenter radius=Lg hovered{bg=Hover}")
-
-///|
-/// A station's row in its pick (PickRow): its mark, its name over what it is, a check; 12 by 8 in.
-// kept across runs: a value (no field of it changes)
-let station_row : @ui.Style = @ui.css("row w=Full px=S2 py=S3 gap=S3 align=AStart radius=Lg")
-
-///|
-/// Its mark beside its name's line (as high as it: L6), in its middle.
-// kept across runs: a value (no field of it changes)
-let station_row_mark_box : @ui.Style = @ui.css("h=S6 align=ACenter justify=JCenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let station_row_words : @ui.Style = @ui.style(w=@sf.grow)
-
-///|
-/// Its name's line: its name, as long as there is room, then how it is and its check.
-// kept across runs: a value (no field of it changes)
-let station_row_head : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let station_row_name : @ui.TextStyle = @ui.text_style(size=Body, leading=L6, color=Fg, wrap=false, w=@sf.grow)
 
 ///|
 /// A page of a picture and a title alone (mNewNone): 30 in, 10 apart.
