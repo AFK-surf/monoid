@@ -4,8 +4,10 @@ import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join, sep } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "node:test";
 import { Effect, Exit, Scope, type Clock } from "effect";
 import { TestClock } from "effect/testing";
@@ -15,13 +17,14 @@ import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { claudeProject } from "../src/read/transcript.ts";
 import type { NormalizedBackupConfig, NormalizedS3Target } from "../src/replica/backup-config.ts";
 import { Copies } from "../src/replica/copies.ts";
+import { PeerPlace, serve } from "../src/replica/peers.ts";
 import { FolderPlace, level } from "../src/replica/places.ts";
 import { moved, takeBackSoon } from "../src/replica/restore.ts";
 import { ProgramRunner, exportThread } from "../src/replica/runner.ts";
 import { S3Place } from "../src/replica/s3.ts";
 import { Store } from "../src/store/store.ts";
 import { HOME, dataDir } from "./replica-fakes.ts";
-import { Exporter, nothingTold } from "./reference/replica-export.ts";
+import { CHUNK_GC_GRACE_MS, Exporter, nothingTold } from "./reference/replica-export.ts";
 import { decodeBatch } from "./reference/replica-format.ts";
 import { takeBack } from "./reference/replica-restore.ts";
 import { InlineRunner } from "./reference/replica-work.ts";
@@ -339,10 +342,13 @@ test("TS reference: transcript discovery whitelist, 4 KiB chunk dedup, and orpha
   assert.equal(trRecs2[0].chunks[0], prefix0, "chunk 0 hash 100% reused");
   assert.equal(trRecs2[0].chunks[1], prefix1, "chunk 1 hash 100% reused");
   assert.notEqual(trRecs2[0].chunks[2], oldTail, "tail chunk updated");
-  assert.ok(!existsSync(join(replica, "chunks", oldTail)), "orphan tail chunk GC'd from disk");
   assert.equal(head2.transcriptFiles?.[oldTail], undefined, "orphan tail chunk removed from head.transcriptFiles");
+  assert.ok(existsSync(join(replica, "chunks", oldTail)), "orphan tail chunk retained on disk during grace period");
+  now += CHUNK_GC_GRACE_MS;
+  exporter.pass({ ...nothingTold(), transcripts: true });
+  assert.ok(!existsSync(join(replica, "chunks", oldTail)), "orphan tail chunk GC'd from disk after grace period");
 
-  // Delete codex session -> its transcript chunk is GC'd
+  // Delete codex session -> its transcript chunk is retained during grace period, then GC'd
   const codexRec = trRecs.find((r) => r.tr === s.codexTrPath)!;
   const codexChunk = codexRec.chunks[0] as string;
   assert.ok(existsSync(join(replica, "chunks", codexChunk)));
@@ -351,8 +357,11 @@ test("TS reference: transcript discovery whitelist, 4 KiB chunk dedup, and orpha
   const p3 = exporter.pass({ ...nothingTold(), removedSessions: [{ key: "chat:codex", ws: null }], transcripts: true });
   assert.equal(p3.wrote, 1);
   const head3 = p3.heads[HOME]!;
-  assert.ok(!existsSync(join(replica, "chunks", codexChunk)), "deleted session transcript chunk GC'd");
   assert.equal(head3.transcriptFiles?.[codexChunk], undefined);
+  assert.ok(existsSync(join(replica, "chunks", codexChunk)), "deleted session transcript chunk retained during grace period");
+  now += CHUNK_GC_GRACE_MS;
+  exporter.pass({ ...nothingTold(), transcripts: true });
+  assert.ok(!existsSync(join(replica, "chunks", codexChunk)), "deleted session transcript chunk GC'd after grace period");
 });
 
 test("E2E (MoonBit reader + Mock S3 + PeerPlace): chunk dedup, includeTranscripts: false, and carriedTo restore", { skip: skipMb }, async () => {
@@ -710,10 +719,15 @@ test("incremental transcript pass budget (files & bytes) and safe tr_del / GC (T
   assert.deepEqual(dels4, [deletedPath], "complete pass emits tr_del for deleted file");
   const chunksAfter = new Set(Object.keys(head4.transcriptFiles ?? {}));
   assert.equal(chunksAfter.size, 4, "deleted file chunk removed from head.transcriptFiles");
-  for (const ch of chunksBefore) {
-    if (!chunksAfter.has(ch)) {
-      assert.ok(!existsSync(join(tsReplica, "chunks", ch)), "orphan chunk GC'd from disk");
-    }
+  const orphaned = [...chunksBefore].filter((ch) => !chunksAfter.has(ch));
+  assert.equal(orphaned.length, 1);
+  for (const ch of orphaned) {
+    assert.ok(existsSync(join(tsReplica, "chunks", ch)), "orphan chunk retained on disk during grace period");
+  }
+  now += CHUNK_GC_GRACE_MS;
+  exporter.pass({ ...nothingTold(), transcripts: true });
+  for (const ch of orphaned) {
+    assert.ok(!existsSync(join(tsReplica, "chunks", ch)), "orphan chunk GC'd from disk after grace period");
   }
 
   // 2. Single file larger than transcriptPassBytes must still make progress in one pass (no infinite loop)
@@ -911,3 +925,251 @@ test("Copies pass failure strictly respects exponential backoff even when told()
   assert.ok(seenSessions.includes("s2"));
   assert.ok(seenSessions.includes("s3"));
 });
+
+async function makeMbExportHelper(db: string, replica: string, data: string, origin: string, chunkBytes = 4096) {
+  const proc = new MbProcess(binary!, [
+    "--builder",
+    "replica-export",
+    "--db",
+    db,
+    "--replica",
+    replica,
+    "--data-dir",
+    data,
+    "--origin",
+    origin,
+    "--sep",
+    sep,
+    "--chunk-bytes",
+    String(chunkBytes),
+  ]);
+  closing.push(() => proc.terminate().then(() => {}));
+  const waiting = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+  let next = 0;
+  proc.on("message", (m: any) => {
+    const w = waiting.get(m.id);
+    waiting.delete(m.id);
+    if (m.error !== undefined) w?.reject(new Error(m.error));
+    else w?.resolve(m.answer);
+  });
+  proc.on("exit", () => {
+    for (const w of waiting.values()) w.reject(new Error("replica-export ended"));
+    waiting.clear();
+  });
+  const ask = (m: Record<string, unknown>, now: number) =>
+    new Promise<any>((resolve, reject) => {
+      const id = ++next;
+      waiting.set(id, { resolve, reject });
+      proc.postMessage({ ...m, id, now });
+    });
+  return {
+    places: (now: number) => ask({ type: "places", places: { home: HOME, workspaces: [{ workspace: HOME, name: "src" }] } }, now),
+    pass: (told: ReturnType<typeof nothingTold>, now: number) => ask({ type: "pass", told }, now),
+    sources: (hashes: string[], now: number) => ask({ type: "sources", hashes }, now) as Promise<Record<string, string>>,
+    close: (now: number) => ask({ type: "close" }, now),
+  };
+}
+
+async function runLongSyncGraceRegression(mode: "ts" | "mb") {
+  const s = makeTranscriptStation();
+  closing.push(async () => s.store.close());
+  const replica = join(s.data, "replica");
+  const originId = sid("a");
+  const peerId = sid("b");
+  let now = 1_700_000_000_000;
+
+  let passFn: (told: ReturnType<typeof nothingTold>) => Promise<any>;
+  let sourcesFn: (hashes: string[]) => Promise<Map<string, string>>;
+  if (mode === "ts") {
+    const exporter = new Exporter({
+      db: s.db,
+      replica,
+      dataDir: s.data,
+      origin: originId,
+      now: () => now,
+      chunkBytes: 4096,
+    });
+    closing.push(async () => exporter.close());
+    exporter.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
+    passFn = async (told) => exporter.pass(told);
+    sourcesFn = async (hashes) => {
+      const m = new Map<string, string>();
+      for (const h of hashes) {
+        const src = exporter.sourceOf(h);
+        if (src !== null) m.set(h, src);
+      }
+      return m;
+    };
+  } else {
+    const mb = await makeMbExportHelper(s.db, replica, s.data, originId, 4096);
+    await mb.places(now);
+    passFn = (told) => mb.pass(told, now);
+    sourcesFn = async (hashes) => new Map(Object.entries(await mb.sources(hashes, now)));
+  }
+
+  const p1 = await passFn(nothingTold());
+  const head1 = p1.heads[HOME]!;
+  const genDir = join(replica, "own", HOME, head1.gen);
+  const trRecs1 = head1.batches.flatMap((b: string) =>
+    [...decodeBatch(readFileSync(join(genDir, "log", b))).lines].map((l) => JSON.parse(l)).filter((r) => "tr" in r),
+  );
+  const claudeRec1 = trRecs1.find((r: any) => r.tr === s.claudeTrPath)!;
+  const oldTail = claudeRec1.chunks[2] as string;
+  assert.ok(existsSync(join(replica, "chunks", oldTail)));
+
+  // Set up a PeerPlace whose putFile pauses on `oldTail` before `stat(source)` runs.
+  const peerDir = dataDir(`tr-grace-peer-${mode}`);
+  const peerFolder = new FolderPlace(join(peerDir, "replicas"));
+  const peerHandler = serve({ place: peerFolder, inWorkspace: () => true, hello: () => [] });
+  let hitOldTail!: () => void;
+  const oldTailReached = new Promise<void>((r) => {
+    hitOldTail = r;
+  });
+  let releasePutFile!: () => void;
+  const putFileGate = new Promise<void>((r) => {
+    releasePutFile = r;
+  });
+  class PausingPeerPlace extends PeerPlace {
+    override async putFile(ws: string, origin: string, hash: string, source: string | Buffer): Promise<void> {
+      if (hash === oldTail) {
+        hitOldTail();
+        await putFileGate;
+      }
+      return super.putFile(ws, origin, hash, source);
+    }
+  }
+  const peerPlace = new PausingPeerPlace(peerId, async (_to, req) => peerHandler(originId, req, HOME));
+
+  // Start `level()` for head1; it pauses right before PeerPlace.putFile stats `oldTail`.
+  const levelPromise = level(peerPlace, HOME, {
+    head: head1,
+    batch: (name) => readFile(join(genDir, "log", name)),
+    sources: sourcesFn,
+  });
+  await oldTailReached;
+
+  // Simulate 4 rounds of 30s transcript updates (~120s+, spanning > STALE_HEADS_MOST=2) while putFile is in flight.
+  const evictedTails: string[] = [oldTail];
+  let content = s.claudeInitial;
+  let prevTail = oldTail;
+  for (let round = 1; round <= 4; round++) {
+    now += 30_000;
+    content += JSON.stringify({ role: "assistant", text: `turn-append-${round}` }) + "\n";
+    writeFileSync(s.claudeTrPath, content);
+    utimesSync(s.claudeTrPath, new Date(now), new Date(now));
+    const pr = await passFn({ ...nothingTold(), transcripts: true });
+    const hr = pr.heads[HOME]!;
+    const lastBatch = hr.batches[hr.batches.length - 1]!;
+    const recs = [...decodeBatch(readFileSync(join(genDir, "log", lastBatch))).lines]
+      .map((l) => JSON.parse(l))
+      .filter((r) => "tr" in r && r.tr === s.claudeTrPath);
+    assert.equal(recs.length, 1);
+    const nextTail = recs[0].chunks[2] as string;
+    assert.notEqual(nextTail, prevTail, `round ${round} produced a new tail chunk`);
+    if (round < 4) evictedTails.push(nextTail);
+    prevTail = nextTail;
+  }
+  assert.equal(evictedTails.length, 4);
+  for (const ch of evictedTails) {
+    assert.ok(existsSync(join(replica, "chunks", ch)), `evicted chunk ${ch} stays on disk during grace window`);
+  }
+
+  // Release putFile -> level() succeeds on the first try with zero ENOENT!
+  releasePutFile();
+  const levelled = await levelPromise;
+  assert.equal(levelled.behind, false);
+  assert.equal(levelled.missing, 0);
+  const held = await peerFolder.held(HOME, originId);
+  assert.ok(held.files.includes(oldTail), "PeerPlace received oldTail cleanly with zero ENOENT");
+
+  // Advance past CHUNK_GC_GRACE_MS and run a pass -> all 4 evicted tail chunks are GC'd from disk, live tail kept.
+  now += CHUNK_GC_GRACE_MS;
+  await passFn({ ...nothingTold(), transcripts: true });
+  for (const ch of evictedTails) {
+    assert.ok(!existsSync(join(replica, "chunks", ch)), `evicted chunk ${ch} GC'd after grace period`);
+  }
+  assert.ok(existsSync(join(replica, "chunks", prevTail)), "current live tail chunk remains on disk");
+}
+
+async function runReReferencedChunkRegression(mode: "ts" | "mb") {
+  const s = makeTranscriptStation();
+  closing.push(async () => s.store.close());
+  const replica = join(s.data, "replica");
+  const originId = sid("a");
+  let now = 1_700_000_000_000;
+
+  let passFn: (told: ReturnType<typeof nothingTold>) => Promise<any>;
+  if (mode === "ts") {
+    const exporter = new Exporter({
+      db: s.db,
+      replica,
+      dataDir: s.data,
+      origin: originId,
+      now: () => now,
+      chunkBytes: 4096,
+    });
+    closing.push(async () => exporter.close());
+    exporter.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
+    passFn = async (told) => exporter.pass(told);
+  } else {
+    const mb = await makeMbExportHelper(s.db, replica, s.data, originId, 4096);
+    await mb.places(now);
+    passFn = (told) => mb.pass(told, now);
+  }
+
+  const p1 = await passFn(nothingTold());
+  const head1 = p1.heads[HOME]!;
+  const genDir = join(replica, "own", HOME, head1.gen);
+  const trRecs1 = head1.batches.flatMap((b: string) =>
+    [...decodeBatch(readFileSync(join(genDir, "log", b))).lines].map((l) => JSON.parse(l)).filter((r) => "tr" in r),
+  );
+  const chunkC = trRecs1.find((r: any) => r.tr === s.claudeTrPath)!.chunks[2] as string;
+  assert.ok(existsSync(join(replica, "chunks", chunkC)));
+
+  const readGcPending = () => {
+    const db = new DatabaseSync(join(replica, "export.db"), { readOnly: true });
+    try {
+      return (db.prepare("SELECT chunk_hash FROM transcript_chunk_gc ORDER BY chunk_hash").all() as { chunk_hash: string }[]).map((r) => r.chunk_hash);
+    } finally {
+      db.close();
+    }
+  };
+
+  // At t0: evict chunk C -> recorded in transcript_chunk_gc, still on disk.
+  const t0 = now + 60_000;
+  now = t0;
+  writeFileSync(s.claudeTrPath, s.claudeInitial + JSON.stringify({ role: "assistant", text: "temp-append" }) + "\n");
+  utimesSync(s.claudeTrPath, new Date(now), new Date(now));
+  const p2 = await passFn({ ...nothingTold(), transcripts: true });
+  assert.equal(p2.heads[HOME]!.transcriptFiles?.[chunkC], undefined);
+  assert.ok(existsSync(join(replica, "chunks", chunkC)), "chunk C retained on disk at t0");
+  assert.ok(readGcPending().includes(chunkC), "chunk C recorded in transcript_chunk_gc");
+
+  // At t0 + 300_000 (within grace period): restore content so chunk C is re-referenced.
+  now = t0 + 300_000;
+  writeFileSync(s.claudeTrPath, s.claudeInitial);
+  utimesSync(s.claudeTrPath, new Date(now), new Date(now));
+  const p3 = await passFn({ ...nothingTold(), transcripts: true });
+  assert.notEqual(p3.heads[HOME]!.transcriptFiles?.[chunkC], undefined, "chunk C re-referenced in head.transcriptFiles");
+  assert.ok(existsSync(join(replica, "chunks", chunkC)), "chunk C still on disk at t0 + 300s");
+  assert.ok(!readGcPending().includes(chunkC), "chunk C cleared from transcript_chunk_gc on re-reference");
+
+  // At t0 + 1_000_000 (past original grace deadline): chunk C must NOT be deleted and transcript_chunk_gc has no residue.
+  now = t0 + 1_000_000;
+  const p4 = await passFn({ ...nothingTold(), transcripts: true });
+  assert.notEqual(p4.heads[HOME]!.transcriptFiles?.[chunkC], undefined);
+  assert.ok(existsSync(join(replica, "chunks", chunkC)), "re-referenced chunk C survives past original grace deadline");
+  assert.ok(!readGcPending().includes(chunkC), "no transcript_chunk_gc residue for chunk C");
+}
+
+test("TS reference + PeerPlace: long sync across 4 rounds of 30s transcript updates hits zero ENOENT", () =>
+  runLongSyncGraceRegression("ts"));
+
+test("MoonBit reader + PeerPlace: long sync across 4 rounds of 30s transcript updates hits zero ENOENT", { skip: skipMb }, () =>
+  runLongSyncGraceRegression("mb"));
+
+test("TS reference: chunk re-referenced within grace period is not deleted and clears transcript_chunk_gc", () =>
+  runReReferencedChunkRegression("ts"));
+
+test("MoonBit reader: chunk re-referenced within grace period is not deleted and clears transcript_chunk_gc", { skip: skipMb }, () =>
+  runReReferencedChunkRegression("mb"));

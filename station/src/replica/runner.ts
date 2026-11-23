@@ -32,6 +32,7 @@ export type RunnerOptions = {
   chunkBytes?: number;
   transcriptPassFiles?: number;
   transcriptPassBytes?: number;
+  chunkGcGraceMs?: number;
 };
 
 /// What the work runs in: the MoonBit program's process, or a test's own, asked and answering a message each,
@@ -51,6 +52,7 @@ export function exportThread(o: RunnerOptions): Thread {
   if (o.chunkBytes !== undefined) args.push("--chunk-bytes", String(o.chunkBytes));
   if (o.transcriptPassFiles !== undefined) args.push("--transcript-pass-files", String(o.transcriptPassFiles));
   if (o.transcriptPassBytes !== undefined) args.push("--transcript-pass-bytes", String(o.transcriptPassBytes));
+  if (o.chunkGcGraceMs !== undefined) args.push("--chunk-gc-grace-ms", String(o.chunkGcGraceMs));
   return new MbProcess(readerBinary(), args);
 }
 

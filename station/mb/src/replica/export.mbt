@@ -31,6 +31,12 @@ pub let transcript_pass_files : Int = default_transcript_pass_files
 pub let transcript_pass_bytes : Int = default_transcript_pass_bytes
 
 ///|
+let default_chunk_gc_grace_ms : Double = 600000.0
+
+///|
+pub let chunk_gc_grace_ms : Double = default_chunk_gc_grace_ms
+
+///|
 let state_schema : String =
   #|CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL) WITHOUT ROWID;
   #|CREATE TABLE IF NOT EXISTS digests (ws TEXT NOT NULL, k TEXT NOT NULL, d TEXT NOT NULL, PRIMARY KEY (ws, k)) WITHOUT ROWID;
@@ -42,6 +48,7 @@ let state_schema : String =
   #|CREATE TABLE IF NOT EXISTS transcript_files (ws TEXT NOT NULL, path TEXT NOT NULL, room TEXT, size INTEGER NOT NULL, mtime INTEGER NOT NULL, mode INTEGER NOT NULL, chunks_json TEXT NOT NULL, PRIMARY KEY (ws, path)) WITHOUT ROWID;
   #|CREATE TABLE IF NOT EXISTS transcript_chunks (plain_hash TEXT PRIMARY KEY, chunk_hash TEXT NOT NULL, comp_size INTEGER NOT NULL) WITHOUT ROWID;
   #|CREATE INDEX IF NOT EXISTS transcript_chunks_hash ON transcript_chunks (chunk_hash);
+  #|CREATE TABLE IF NOT EXISTS transcript_chunk_gc (chunk_hash TEXT PRIMARY KEY, gone_at INTEGER NOT NULL) WITHOUT ROWID;
 
 ///|
 let small_tables : Array[String] = [
@@ -109,6 +116,7 @@ pub struct Exporter {
   priv chunk_bytes : Int
   priv transcript_pass_files : Int
   priv transcript_pass_bytes : Int
+  priv chunk_gc_grace_ms : Double
   priv fold : Bool
   priv now : () -> Double
   priv mut places : Places
@@ -132,6 +140,7 @@ pub fn Exporter::new(
   chunk_bytes? : Int = chunk_plain_bytes,
   transcript_pass_files? : Int = transcript_pass_files,
   transcript_pass_bytes? : Int = transcript_pass_bytes,
+  chunk_gc_grace_ms? : Double = chunk_gc_grace_ms,
   fold? : Bool = true,
 ) -> Exporter raise {
   let files = { host, sep }
@@ -152,6 +161,7 @@ pub fn Exporter::new(
     chunk_bytes: if chunk_bytes > 0 { chunk_bytes } else { chunk_plain_bytes },
     transcript_pass_files: if transcript_pass_files > 0 { transcript_pass_files } else { default_transcript_pass_files },
     transcript_pass_bytes: if transcript_pass_bytes > 0 { transcript_pass_bytes } else { default_transcript_pass_bytes },
+    chunk_gc_grace_ms: if chunk_gc_grace_ms >= 0.0 { chunk_gc_grace_ms } else { default_chunk_gc_grace_ms },
     fold,
     now,
     places: { home: None, workspaces: [] },
@@ -199,7 +209,7 @@ fn Exporter::set_meta(self : Exporter, k : String, v : String) -> Unit raise {
 ///|
 /// Everything exported is forgotten: the next pass writes it all again, in new generations.
 fn Exporter::forget(self : Exporter) -> Unit raise {
-  self.state.exec("DELETE FROM meta WHERE k <> 'after'; DELETE FROM digests; DELETE FROM threads; DELETE FROM sent; DELETE FROM entering; DELETE FROM transcript_files;")
+  self.state.exec("DELETE FROM meta WHERE k <> 'after'; DELETE FROM digests; DELETE FROM threads; DELETE FROM sent; DELETE FROM entering; DELETE FROM transcript_files; DELETE FROM transcript_chunk_gc;")
   self.known = false
   self.transcripts_pending = false
 }
@@ -1417,6 +1427,7 @@ fn Exporter::transcript_files_map(self : Exporter, ws : String) -> Array[(String
 
 ///|
 fn Exporter::gc_transcript_chunks(self : Exporter) -> Unit raise {
+  let now = (self.now)()
   let chunks_dir = self.files.join([self.replica, "chunks"])
   let live : Set[String] = Set([])
   for row in self.state.all("SELECT chunks_json FROM transcript_files", []) {
@@ -1425,20 +1436,62 @@ fn Exporter::gc_transcript_chunks(self : Exporter) -> Unit raise {
       live.add(ch)
     }
   }
+  let pending : Map[String, Double] = Map([])
+  for row in self.state.all("SELECT chunk_hash, gone_at FROM transcript_chunk_gc", []) {
+    pending[field_text(row, "chunk_hash")] = field_num(row, "gone_at")
+  }
+  for ch in pending.keys().collect() {
+    if live.contains(ch) {
+      ignore(self.state.run("DELETE FROM transcript_chunk_gc WHERE chunk_hash = ?", [s(ch)]))
+    }
+  }
+  let kept_on_disk : Set[String] = Set([])
   match self.files.names(chunks_dir) {
     Some(names) =>
       for name in names {
-        if !live.contains(name) {
+        if live.contains(name) {
+          continue
+        }
+        if self.chunk_gc_grace_ms <= 0.0 {
           self.files.remove(self.files.join([chunks_dir, name])) catch {
             _ => ()
           }
+          if pending.contains(name) {
+            ignore(self.state.run("DELETE FROM transcript_chunk_gc WHERE chunk_hash = ?", [s(name)]))
+          }
+          continue
+        }
+        match pending.get(name) {
+          None => {
+            ignore(
+              self.state.run(
+                "INSERT OR REPLACE INTO transcript_chunk_gc (chunk_hash, gone_at) VALUES (?, ?)",
+                [s(name), Json::number(now)],
+              ),
+            )
+            kept_on_disk.add(name)
+          }
+          Some(gone_at) =>
+            if now - gone_at >= self.chunk_gc_grace_ms {
+              self.files.remove(self.files.join([chunks_dir, name])) catch {
+                _ => ()
+              }
+              ignore(self.state.run("DELETE FROM transcript_chunk_gc WHERE chunk_hash = ?", [s(name)]))
+            } else {
+              kept_on_disk.add(name)
+            }
         }
       }
     None => ()
   }
+  for ch in pending.keys().collect() {
+    if !live.contains(ch) && !kept_on_disk.contains(ch) {
+      ignore(self.state.run("DELETE FROM transcript_chunk_gc WHERE chunk_hash = ?", [s(ch)]))
+    }
+  }
   for row in self.state.all("SELECT plain_hash, chunk_hash FROM transcript_chunks", []) {
     let ch = field_text(row, "chunk_hash")
-    if !live.contains(ch) {
+    if !live.contains(ch) && !kept_on_disk.contains(ch) {
       ignore(self.state.run("DELETE FROM transcript_chunks WHERE plain_hash = ?", [s(field_text(row, "plain_hash"))]))
     }
   }
