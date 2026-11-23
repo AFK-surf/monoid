@@ -275,6 +275,19 @@ static UIImage *nav_letter(NSString *title, CGFloat size) {
 }
 @end
 
+// The action's wash inside its tab's platter (MBTabs washAction), told when it leaves the window with a platter UIKit
+// let go of (the tabs made again as the bar's places change make the platters anew): left there, the action showed
+// its white glyph on untinted glass until something else laid the tabs out.
+@interface MBActionWash : UIView
+@property(nonatomic, copy) void (^gone)(void);
+@end
+@implementation MBActionWash
+- (void)didMoveToWindow {
+  [super didMoveToWindow];
+  if (!self.window && self.superview && self.gone) self.gone();
+}
+@end
+
 API_AVAILABLE(ios(18.0))
 @interface MBTabs : UITabBarController <UITabBarControllerDelegate>
 @property(nonatomic, copy) NSString *spec;
@@ -283,7 +296,7 @@ API_AVAILABLE(ios(18.0))
 // (iOS 27: the accent the action's glass is tinted with, and its tinted UIGlassEffect view inside the platter)
 @property(nonatomic, strong) UIColor *actionInk;
 @property(nonatomic, strong) UIColor *actionWashInk;
-@property(nonatomic, strong) UIView *actionWash;
+@property(nonatomic, strong) MBActionWash *actionWash;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, UIButton *> *floatingButtons;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *floatingKeys;
 @property(nonatomic) BOOL shown;
@@ -446,9 +459,9 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
 }
 // iOS 27's prominent tab, the action's, on tinted Liquid Glass matching a prominent bar button item: UITab has no API
 // for its platter's glass colour, and a plain 60% backgroundColor view inside `_UITabBarItemPlatterView` looked washed
-// out. A capsule UIVisualEffectView with UIGlassEffectStyleRegular + tintColor inserted at index 0 inside the platter
-// renders system-tinted glass with specular rim and refraction under the white glyph, and moves, presses and turns
-// with the platter (in the vertical column and across the foot alike).
+// out. A capsule UIVisualEffectView with UIGlassEffectStyleRegular + tintColor, in a wash inserted at index 0 inside the
+// platter, renders system-tinted glass with specular rim and refraction under the white glyph, and moves, presses and
+// turns with the platter (in the vertical column and across the foot alike).
 - (void)washAction {
   if (!self.actionInk || !self.action.length || self.tabBarHidden) {
     [self.actionWash removeFromSuperview];
@@ -458,47 +471,51 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   CGRect r = x ? [x frameInView:self.view] : CGRectNull;
   UIView *p = CGRectIsNull(r) || CGRectIsEmpty(r) ? nil : nav_platter(self.view, self.view, r);
   if (!p) return;
+  MBActionWash *w = self.actionWash;
+  if (!w) {
+    w = [MBActionWash new];
+    w.userInteractionEnabled = NO;
+    w.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    __weak MBTabs *weakSelf = self;
+    // (its platter let go of: into the one made in its place, once UIKit has laid it out)
+    w.gone = ^{ dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf washAction]; }); };
+    self.actionWash = w;
+    self.actionWashInk = nil;
+  }
+  BOOL glass = NO;
 #ifdef __IPHONE_26_0
   if (@available(iOS 26.0, *)) {
-    UIVisualEffectView *w = [self.actionWash isKindOfClass:UIVisualEffectView.class] ? (UIVisualEffectView *)self.actionWash : nil;
-    if (!w) {
-      [self.actionWash removeFromSuperview];
-      w = [UIVisualEffectView new];
-      w.userInteractionEnabled = NO;
-      w.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-      w.cornerConfiguration = [UICornerConfiguration capsuleConfiguration];
-      self.actionWash = w;
+    glass = YES;
+    UIVisualEffectView *g = [w.subviews.firstObject isKindOfClass:UIVisualEffectView.class] ? (UIVisualEffectView *)w.subviews.firstObject : nil;
+    if (!g) {
+      g = [UIVisualEffectView new];
+      g.userInteractionEnabled = NO;
+      g.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+      g.cornerConfiguration = [UICornerConfiguration capsuleConfiguration];
+      g.frame = w.bounds;
+      [w addSubview:g];
       self.actionWashInk = nil;
     }
     if (![self.actionWashInk isEqual:self.actionInk]) {
       UIGlassEffect *e = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
       e.tintColor = self.actionInk;
       e.interactive = YES;
-      w.effect = e;
+      g.effect = e;
       self.actionWashInk = self.actionInk;
     }
-    if (w.superview == p) {
-      if (!CGRectEqualToRect(w.frame, p.bounds)) w.frame = p.bounds;
-      return;
-    }
-    [w removeFromSuperview];
-    w.frame = p.bounds;
-    [p insertSubview:w atIndex:0];
-    return;
   }
 #endif
-  if (!self.actionWash) {
-    self.actionWash = [UIView new];
-    self.actionWash.userInteractionEnabled = NO;
-    self.actionWash.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+  if (!glass) {
     // (round as the glass is: a continuous curve as wide as half its side is no circle, it bulges at four points)
-    self.actionWash.layer.cornerCurve = kCACornerCurveCircular;
+    w.layer.cornerCurve = kCACornerCurveCircular;
+    // (the glass seen through it, the page's words bent under it: not a disc of paint)
+    w.backgroundColor = [self.actionInk colorWithAlphaComponent:0.6];
+    w.layer.cornerRadius = MIN(p.bounds.size.width, p.bounds.size.height) / 2;
   }
-  UIView *w = self.actionWash;
-  // (the glass seen through it, the page's words bent under it: not a disc of paint)
-  w.backgroundColor = [self.actionInk colorWithAlphaComponent:0.6];
-  w.layer.cornerRadius = MIN(p.bounds.size.width, p.bounds.size.height) / 2;
-  if (w.superview == p) return;
+  if (w.superview == p) {
+    if (!CGRectEqualToRect(w.frame, p.bounds)) w.frame = p.bounds;
+    return;
+  }
   [w removeFromSuperview];
   w.frame = p.bounds;
   [p insertSubview:w atIndex:0];
