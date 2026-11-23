@@ -989,6 +989,14 @@ test "quota_ok_should_recheck covers all non-codex subscriptions (agy, claude, c
 }
 
 ///|
-test "agy direct quota User-Agent carries the CLI product segment" {
+test "agy direct quota User-Agent carries the CLI product segment and skips production on daily failure" {
   assert_eq(agy_user_agent, "antigravity/cli/1.5.15")
+  let daily = agy_cloud_code_url
+  let prod = agy_production_url
+  let weekly = quota_window("每周 · Gemini", 32.0, None, Some(week_minutes), scope="gemini")
+  assert_false(should_fallback_gemini_weekly(None, [], daily, prod))
+  assert_false(should_fallback_gemini_weekly(Some(Null), [], daily, prod))
+  assert_true(should_fallback_gemini_weekly(Some(jobj([])), [], daily, prod))
+  assert_false(should_fallback_gemini_weekly(Some(jobj([])), [weekly], daily, prod))
+  assert_false(should_fallback_gemini_weekly(Some(jobj([])), [], daily, daily))
 }

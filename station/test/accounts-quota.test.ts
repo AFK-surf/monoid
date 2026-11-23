@@ -173,14 +173,19 @@ describe("allowances and renewing", { concurrency: true }, () => {
     }
 
     // Supplementing a missing Gemini weekly window queries daily before production so the active daily pool's real
-    // usage wins over production's separate pool, falling back to production only when daily also omits the window.
+    // usage wins over production's separate pool, falling back to production only when daily answered cleanly and
+    // omitted the window. A failed daily summary request must not fall back to production's untouched 0% pool.
+    let dailySummaryStatus = 200;
     let dailyWeekly = true;
     const prodReset = "2030-01-21T08:00:00Z";
+    const splitGeminiReset = "2030-01-15T08:00:00Z";
+    const splitThirdPartyReset = "2030-01-15T08:15:00Z";
     const dailyApi = await provider((req) => {
       if (req.url.endsWith(":loadCodeAssist")) {
         return { status: 200, body: { paidTier: { id: "g1-ultra-tier" }, cloudaicompanionProject: "aicode-consumers" } };
       }
       if (req.url.endsWith(":retrieveUserQuotaSummary")) {
+        if (dailySummaryStatus !== 200) return { status: dailySummaryStatus, body: { error: { message: "internal" } } };
         const includeGemini = cliUserAgent.test(String(req.headers["user-agent"] ?? ""));
         return {
           status: 200,
@@ -191,6 +196,17 @@ describe("allowances and renewing", { concurrency: true }, () => {
                 : []),
               { displayName: "Claude and GPT models", buckets: [{ bucketId: "3p-weekly", window: "weekly", remainingFraction: 0.6 }] },
             ],
+          },
+        };
+      }
+      if (req.url.endsWith(":fetchAvailableModels")) {
+        return {
+          status: 200,
+          body: {
+            models: {
+              "gemini-4-hydrogen-sonar": { quotaInfo: { remainingFraction: 0.92, resetTime: splitGeminiReset } },
+              "claude-opus-5-5-high": { quotaInfo: { remainingFraction: 0.9, resetTime: splitThirdPartyReset } },
+            },
           },
         };
       }
@@ -220,6 +236,25 @@ describe("allowances and renewing", { concurrency: true }, () => {
       assert.deepEqual(fromDaily.windows[0], { label: "每周 · Gemini", usedPercent: 32, resetsAt: Date.parse(weeklyReset), minutes: 10080, scope: "gemini" });
       assert.equal(prodApi.asked.length, 0, "production is not queried when daily returns Gemini weekly");
 
+      // Daily summary fails (500): do not query production or fabricate a 0% Gemini weekly window.
+      dailySummaryStatus = 500;
+      const dailyFailed = await checkQuota(profile, partialEnv, undefined, splitUrls, "zh");
+      assert.deepEqual(dailyFailed.windows, q.windows.slice(1));
+      assert.equal(prodApi.asked.length, 0, "production is not queried when daily summary fails");
+
+      // Direct location-ineligible fallback with daily summary returning 500: do not query production either.
+      const splitLocationErr = "Eligibility check failed: Your current account is not eligible for Antigravity, because it is not currently available in your location.";
+      const directDailyFailed = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: splitLocationErr }, undefined, splitUrls, "zh");
+      assert.equal(directDailyFailed.state, "ok");
+      assert.equal(directDailyFailed.windows.some((w) => w.scope === "gemini" && w.minutes === 10080), false);
+      assert.deepEqual(directDailyFailed.windows, [
+        { label: "5 小时 · Gemini", usedPercent: 8, resetsAt: Date.parse(splitGeminiReset), minutes: 300, scope: "gemini" },
+        { label: "5 小时 · Claude / GPT", usedPercent: 10, resetsAt: Date.parse(splitThirdPartyReset), minutes: 300, scope: "3p" },
+      ]);
+      assert.equal(prodApi.asked.length, 0, "direct fallback does not query production when daily summary fails");
+
+      // Daily answers 200 cleanly but omits Gemini weekly: fall back to production on both paths.
+      dailySummaryStatus = 200;
       dailyWeekly = false;
       const fromProd = await checkQuota(profile, partialEnv, undefined, splitUrls, "zh");
       assert.deepEqual(fromProd.windows[0], { label: "每周 · Gemini", usedPercent: 0, resetsAt: Date.parse(prodReset), minutes: 10080, scope: "gemini" });
@@ -227,6 +262,16 @@ describe("allowances and renewing", { concurrency: true }, () => {
         prodApi.asked.map(({ url, body, headers }) => [url, body, headers["user-agent"]]),
         [["/v1internal:retrieveUserQuotaSummary", { project: "aicode-consumers" }, "antigravity/cli/1.5.15"]],
       );
+
+      const directFromProd = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: splitLocationErr }, undefined, splitUrls, "zh");
+      assert.deepEqual(directFromProd.windows.find((w) => w.scope === "gemini" && w.minutes === 10080), {
+        label: "每周 · Gemini",
+        usedPercent: 0,
+        resetsAt: Date.parse(prodReset),
+        minutes: 10080,
+        scope: "gemini",
+      });
+      assert.equal(prodApi.asked.length, 2);
     } finally {
       await dailyApi.close();
       await prodApi.close();

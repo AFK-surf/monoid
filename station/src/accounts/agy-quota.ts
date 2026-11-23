@@ -280,7 +280,8 @@ async function agyDirectQuota(home: string, urls: Urls, lang: Lang): Promise<Pro
   const { windows, scoped } = summary !== null ? agyAllowance(summary) : { windows: [], scoped: [] };
   const extra = agyModelWindows(models).filter((w) => !windows.some((reported) => reported.scope === w.scope && reported.minutes === w.minutes));
   const production = agyProductionBase(urls);
-  if (base !== production && !windows.some(isGeminiWeekly)) {
+  // Only fall back to production when daily answered cleanly and omitted the weekly window.
+  if (isObject(summary) && base !== production && !windows.some(isGeminiWeekly)) {
     const weekly = await agyGeminiWeekly(production, token, payload);
     if (weekly !== undefined) windows.unshift(weekly);
   }
@@ -406,10 +407,14 @@ export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: L
       const production = agyProductionBase(urls);
       const project = await agyQuotaProject(home, daily);
       if (project !== null) {
-        const weekly =
-          (await agyGeminiWeekly(daily, project.token, project.payload)) ??
-          (daily !== production ? await agyGeminiWeekly(production, project.token, project.payload) : undefined);
-        if (weekly !== undefined) windows.unshift(weekly);
+        // Only fall back to production when daily answered cleanly and omitted the weekly window.
+        const summary = await agyPost(daily, AGY_QUOTA_SUMMARY, project.token, project.payload);
+        if (isObject(summary)) {
+          const weekly =
+            agyWindows(summary).find(isGeminiWeekly) ??
+            (daily !== production ? await agyGeminiWeekly(production, project.token, project.payload) : undefined);
+          if (weekly !== undefined) windows.unshift(weekly);
+        }
       }
     }
     // A company's account paying as it goes (a Google Cloud project with no subscription) has no windows to show.
