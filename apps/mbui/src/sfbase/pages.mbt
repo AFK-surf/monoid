@@ -1590,6 +1590,7 @@ pub fn reset() -> Unit {
   switch_reset()
   app.picked.set("")
   @ui.set_motion_chosen(None)
+  @ui.set_glass_frost(0.0)
   @ui.set_haptics(true)
   awake_reset()
   board_reset()

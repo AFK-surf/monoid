@@ -80,6 +80,22 @@ let told_bars : Ref[Bool?] = Ref(None)
 let told_dark : Ref[Bool?] = Ref(None)
 
 ///|
+fn parse_frost_pct(s : String) -> Int? {
+  if s == "" || s.length() > 3 {
+    return None
+  }
+  let mut n = 0
+  for i in 0..<s.length() {
+    let c = s[i].to_int()
+    if c < 48 || c > 57 {
+      return None
+    }
+    n = n * 10 + (c - 48)
+  }
+  if n >= 0 && n <= 100 { Some(n) } else { None }
+}
+
+///|
 /// What the prefs say of how the app looks and moves (`prefs`, as read), with the system dark or not (`system_dark`):
 /// motion, haptics, the experimental switches, light or dark and the accent, told as the frame (appearance) and the
 /// app's tree tell them, before any page of nodes is made and laid out in what they were before; whether dark.
@@ -90,6 +106,13 @@ pub fn appearance_from_prefs(prefs : Json?, system_dark : Bool) -> Bool {
     "full" => Some(false)
     _ => None
   })
+  // liquid glass frost as this device is set (the prefs' `glassFrost`: 0..100), else 0 (default clear)
+  let frost_s = text(prefs, "glassFrost")
+  let frost_v = match parse_frost_pct(frost_s) {
+    Some(n) => n.to_double() / 100.0
+    None => 0.0
+  }
+  @ui.set_glass_frost(frost_v)
   // haptics as this device is set (the prefs' `haptics`: off), else on
   @ui.set_haptics(text(prefs, "haptics") != "off")
   // the experimental switches as chosen here (the prefs' `features`)

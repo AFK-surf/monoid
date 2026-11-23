@@ -272,6 +272,8 @@ pub fn gif_frame_count(Bytes) -> Int32
 
 pub fn gif_frames(Bytes) -> GifFrames?
 
+pub fn glass_frost() -> Double
+
 pub fn glass_light_angle() -> Double
 
 pub fn glyph_cells(String, @view.WordsLook, Double, mono? : Bool) -> Array[(Double, Double)]
@@ -730,6 +732,8 @@ pub fn sd_corner(Double, Double, Double, Double, Double, Double, band? : Double)
 pub fn set_badge(Int32) -> Unit
 
 pub fn set_font_scale(Double?) -> Unit
+
+pub fn set_glass_frost(Double) -> Unit
 
 pub fn set_glass_light_angle(Double) -> Unit
 

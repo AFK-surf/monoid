@@ -149,6 +149,7 @@ fn window_kept_ui_0() -> Array[WindowKept] {
     kept_ref(tree_inset_said, fn() { @signals.signal(None, same=fn(a, b) { a == b }) }),
     kept_ref(glass_forced_said, fn() { @signals.signal(-1, same=fn(a, b) { a == b }) }),
     kept_ref(glass_light_angle_said, fn() { @signals.signal(0.0, same=fn(a, b) { a == b }) }),
+    kept_ref(glass_frost_said, fn() { @signals.signal(0.0, same=fn(a, b) { a == b }) }),
     kept_ref(inset_said, inset_said_new),
     kept_ref(zoomed_said, zoomed_said_new),
     kept_ref(snap_said, snap_said_new),
@@ -334,6 +335,8 @@ fn window_kept_ui_3() -> Array[WindowKept] {
   run_start: -1,
   run_len: 0,
   solid: false,
+  frost: 0.0,
+  contrast: false,
   forced: -1,
   in_group: 0,
   ink_x: 0.0,
@@ -852,6 +855,8 @@ fn GlassPaint::window_put(self : GlassPaint, o : GlassPaint) -> Unit {
   self.run_start = o.run_start
   self.run_len = o.run_len
   self.solid = o.solid
+  self.frost = o.frost
+  self.contrast = o.contrast
   self.forced = o.forced
   self.in_group = o.in_group
   self.ink_x = o.ink_x

@@ -14,7 +14,7 @@ import { ofAddress } from "./workspace.ts";
 import { equal, isObject } from "./util.ts";
 import { isBuildStale, ownBuiltAt, setOwnBuild, setOwnBuiltAt, STALE_BUILD_MS } from "./station/oldest.ts";
 
-const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "terminalZoom", "motion", "haptics", "dht", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "cpuDial", "sendKey", "moveTo", "experimental", "reports"];
+const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "terminalZoom", "motion", "glassFrost", "haptics", "dht", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "cpuDial", "sendKey", "moveTo", "experimental", "reports"];
 const MAPS = ["listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo", "experimental"];
 const TABS_KEPT = 200;
 /// At most this many jobs kept as looked at in one workspace's bell.
@@ -288,6 +288,7 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
   }
   if ("badge" in prefs && !["decisions", "attention", "all"].includes(prefs.badge as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "badge" }));
   if ("motion" in prefs && prefs.motion !== "reduce" && prefs.motion !== "full") throw CoreError.invalid(t("core-misc.params.invalid", { error: "motion" }));
+  if ("glassFrost" in prefs && !(typeof prefs.glassFrost === "string" && /^(0|[1-9][0-9]?|100)$/.test(prefs.glassFrost))) throw CoreError.invalid(t("core-misc.params.invalid", { error: "glassFrost" }));
   if ("accent" in prefs && !(ACCENTS.includes(prefs.accent as string) || customHue(prefs.accent) !== null)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "accent" }));
   if ("haptics" in prefs && prefs.haptics !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "haptics" }));
   if ("dht" in prefs && prefs.dht !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "dht" }));

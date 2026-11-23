@@ -275,6 +275,8 @@ priv struct ViewBlock {
   glass_break_gap : Double
   shares : Bool
   solid : Bool
+  glass_frost : Double
+  glass_contrast : Bool
   /// the pixels a point it was made for (its picture's curves cut for them: made again as they change, View::picture)
   /// and the horizontal layout origin (`ux - glyphs_carried[0]`) its subpixel glyph keys were chosen at
   scale : Double
@@ -2590,7 +2592,10 @@ fn Ctx::view_drawn(
     // (made as glass was drawn then: solid or not; a picture or glyphs for the pixels it is drawn at now; its edge where
     // it was; with a halo or per-glyph look, made at this horizontal pixel phase; with plain glyphs, its glyph slots
     // re-phased in place when `origin_x` moves them to another quarter-pixel phase, the block not made again)
-    Some(b) if (c.glass is None || b.solid == glass_paint.solid) &&
+    Some(b) if (c.glass is None ||
+      (b.solid == glass_paint.solid &&
+        b.glass_frost == glass_paint.frost &&
+        b.glass_contrast == glass_paint.contrast)) &&
       (c.picture is None || b.scale == self.scale) &&
       (b.glyphs.is_empty() ||
         (b.scale == self.scale &&
@@ -3110,6 +3115,8 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
   // (its glass under its ground, its capture told as it is composed (Ctx::view_blit); its solid ground where glass is
   // drawn solid)
   let solid = glass_paint.solid
+  let glass_frost = glass_paint.frost
+  let glass_contrast = glass_paint.contrast
   let mut glass_at = -1
   let mut glass_layer = 0
   let mut glass_merge = 0.0
@@ -3575,6 +3582,8 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     glass_break_gap,
     shares: c.glass.map_or(false, fn(g) { g.shares_capture }),
     solid,
+    glass_frost,
+    glass_contrast,
     scale: self.scale,
     ux: glyph_origin_x.val - glyphs_carried[0],
     drawn_mid: inst_middle(inst),

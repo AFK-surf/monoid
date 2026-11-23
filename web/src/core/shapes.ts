@@ -1854,6 +1854,8 @@ export interface PrefsView {
 	 * follow the system's setting.
 	 */
 	motion?: string;
+	/** Liquid glass frost level on this device, 0 to 100 (100 draws solid surfaces); none means 0 (default clear). */
+	glassFrost?: string;
 	/**
 	 * Haptics on this device: `off`, or none for on (a long press taken, a card answered, what is copied, a
 	 * chat open in front coming to need the viewer).

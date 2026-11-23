@@ -50,6 +50,8 @@ priv struct GlassPaint {
   mut run_start : Int
   mut run_len : Int
   mut solid : Bool
+  mut frost : Double
+  mut contrast : Bool
   mut forced : Int
   mut in_group : Int
   // text in adaptive liquid glass: its centre and half its size (0: none)
@@ -72,6 +74,8 @@ let glass_paint : GlassPaint = {
   run_start: -1,
   run_len: 0,
   solid: false,
+  frost: 0.0,
+  contrast: false,
   forced: -1,
   in_group: 0,
   ink_x: 0.0,
@@ -93,6 +97,11 @@ let glass_forced_said : Ref[@signals.Signal[Int]] = Ref(@signals.signal(-1, same
 let glass_light_angle_said : Ref[@signals.Signal[Double]] = Ref(@signals.signal(0.0, same=fn(a, b) { a == b }))
 
 ///|
+/// Global glass frost level in `[0.0, 1.0]` (`0.0`: default clear, `1.0`: pure solid surfaces). Per-window kept
+/// (`window_kept.mbt`), reset by `reset_glass`.
+let glass_frost_said : Ref[@signals.Signal[Double]] = Ref(@signals.signal(0.0, same=fn(a, b) { a == b }))
+
+///|
 fn reset_glass() -> Unit {
   glass_paint.run = 0
   glass_paint.frost_run = 0
@@ -104,12 +113,27 @@ fn reset_glass() -> Unit {
   glass_paint.run_start = -1
   glass_paint.run_len = 0
   glass_paint.solid = false
+  glass_paint.frost = 0.0
+  glass_paint.contrast = false
   glass_paint.forced = -1
   @signals.untracked(fn() { glass_forced_said.val.set(-1) })
   @signals.untracked(fn() { glass_light_angle_said.val.set(0.0) })
+  @signals.untracked(fn() { glass_frost_said.val.set(0.0) })
   glass_paint.in_group = 0
   glass_paint.ink_r = 0.0
   glass_paint.ink_line = false
+}
+
+///|
+/// Set the global glass frost level in `[0.0, 1.0]` (`0.0`: default clear, `>= 0.995`: solid surfaces).
+pub fn set_glass_frost(frost : Double) -> Unit {
+  glass_frost_said.val.set(dclamp(frost, 0.0, 1.0))
+}
+
+///|
+/// Read the current global glass frost level in `[0.0, 1.0]`.
+pub fn glass_frost() -> Double {
+  glass_frost_said.val.get()
 }
 
 ///|
@@ -138,12 +162,15 @@ pub fn set_glass_solid(solid : Bool?) -> Unit {
 }
 
 ///|
-/// Whether glass is drawn solid in this frame, followed: as the app set it (set_glass_solid), else as the system says.
+/// Whether glass is drawn solid in this frame, followed: as the app set it (set_glass_solid), else solid when global
+/// frost is at 100%, else as the system says.
 pub fn Ctx::glass_solid(self : Ctx) -> Bool {
   ignore(self)
   let f = glass_forced_said.val.get()
   if f >= 0 {
     f == 1
+  } else if glass_frost_said.val.get() >= 0.995 {
+    true
   } else {
     glass_solid_said.now()
   }
@@ -165,7 +192,60 @@ fn Ctx::glass_frame(self : Ctx) -> Unit {
   glass_paint.in_group = 0
   glass_paint.ink_r = 0.0
   glass_paint.ink_line = false
+  glass_paint.frost = glass_frost_said.val.get()
+  glass_paint.contrast = more_contrast()
   glass_paint.solid = self.glass_solid()
+}
+
+///|
+/// Apply global frost and system increase-contrast modulation to a glass surface.
+/// Pure clear optical magnifying lenses (`liquid && tint alpha == 0 && zoom > 1`) and progressive scroll edges
+/// (`!liquid && progressive`) are exempted so drag loupes and scroll fades stay optically clean.
+fn effective_glass(gl : Glass, frost : Double, contrast : Bool) -> Glass {
+  if frost <= 0.0001 && !contrast {
+    return gl
+  }
+  if gl.liquid && (gl.tint & 0xFFL) == 0L && gl.zoom > 1.0001 {
+    return gl
+  }
+  if !gl.liquid && gl.progressive {
+    return gl
+  }
+  let f = dclamp(frost + (if contrast { 0.22 } else { 0.0 }), 0.0, 0.95)
+  let tr = ((gl.tint >> 24) & 0xFFL).to_int().to_double()
+  let tg = ((gl.tint >> 16) & 0xFFL).to_int().to_double()
+  let tb = ((gl.tint >> 8) & 0xFFL).to_int().to_double()
+  let ta = (gl.tint & 0xFFL).to_int().to_double() / 255.0
+  let sr = ((gl.solid >> 24) & 0xFFL).to_int().to_double()
+  let sg = ((gl.solid >> 16) & 0xFFL).to_int().to_double()
+  let sb = ((gl.solid >> 8) & 0xFFL).to_int().to_double()
+  let mix = f * 0.5
+  let r = dclamp((tr + (sr - tr) * mix).round(), 0.0, 255.0).to_int().to_int64()
+  let g = dclamp((tg + (sg - tg) * mix).round(), 0.0, 255.0).to_int().to_int64()
+  let b = dclamp((tb + (sb - tb) * mix).round(), 0.0, 255.0).to_int().to_int64()
+  let a = dclamp(((ta + (0.94 - ta) * f) * 255.0).round(), 0.0, 255.0).to_int().to_int64()
+  let tint = (r << 24) | (g << 16) | (b << 8) | a
+  let blur = if gl.blur < 14.0 {
+    gl.blur + (14.0 - gl.blur) * (f * 0.5)
+  } else {
+    gl.blur
+  }
+  let refraction = if gl.liquid {
+    gl.refraction * (1.0 - 0.55 * f)
+  } else {
+    gl.refraction
+  }
+  let rim = if contrast && gl.liquid {
+    dmin(1.0, gl.rim * 1.25 + 0.12)
+  } else {
+    gl.rim
+  }
+  let rim_edge = if contrast && !gl.liquid {
+    dmin(1.0, gl.rim_edge + 0.15)
+  } else {
+    gl.rim_edge
+  }
+  { ..gl, tint, blur, refraction, rim, rim_edge }
 }
 
 ///|
@@ -203,6 +283,7 @@ fn Ctx::glass_inst(
   gl : Glass,
   alpha : Double,
 ) -> Unit {
+  let gl = effective_glass(gl, glass_paint.frost, glass_paint.contrast)
   let kind = if gl.liquid { 6.0 } else { 5.0 }
   let blur_slot = if !gl.liquid {
     if gl.contained { -gl.blur } else { gl.blur }
