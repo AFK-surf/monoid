@@ -1536,3 +1536,129 @@ test("an agent operating a browser tab joins ScreenHub, yields passive viewers w
   leaveAlice();
   hold.close();
 });
+
+test("remote browser screencast caps default/smooth bounds, opens up hd/qhd/original, and preserves phone fit", async () => {
+  for (const [options, expected] of [
+    [{ maxWidth: 2560, maxHeight: 1800, codecs: ["jpeg"] as ("jpeg")[] }, { maxWidth: 1280, maxHeight: 900, quality: 82 }],
+    [{ maxWidth: 2560, maxHeight: 1800, codecs: ["jpeg"] as ("jpeg")[], quality: "smooth" as const }, { maxWidth: 960, maxHeight: 675, quality: 70 }],
+    [{ maxWidth: 2560, maxHeight: 1440, codecs: ["jpeg"] as ("jpeg")[], quality: "hd" as const }, { maxWidth: 2560, maxHeight: 1440, quality: 82 }],
+    [{ maxWidth: 2560, maxHeight: 1440, codecs: ["jpeg"] as ("jpeg")[], quality: "qhd" as const }, { maxWidth: 2560, maxHeight: 1440, quality: 82 }],
+    [{ maxWidth: 2560, maxHeight: 1440, codecs: ["jpeg"] as ("jpeg")[], quality: "original" as const }, { maxWidth: 2560, maxHeight: 1440, quality: 82 }],
+    [{ maxWidth: 2560, maxHeight: 1800, codecs: ["jpeg"] as ("jpeg")[], fit: { width: 390, height: 844, scale: 3 } }, { maxWidth: 780, maxHeight: 1688, quality: 82 }],
+    [{ maxWidth: 2560, maxHeight: 1800, codecs: ["jpeg"] as ("jpeg")[], fit: { width: 390, height: 844, scale: 3 }, quality: "smooth" as const }, { maxWidth: 780, maxHeight: 1688, quality: 70 }],
+  ] as const) {
+    const cdp = new FakeCdp();
+    const v = new TabView({ cdp, session: "S", targetId: "T", now: () => 0 });
+    await v.start(options, { width: 1280, height: 900 });
+    const cast = cdp.of("Page.startScreencast")[0]!.params;
+    assert.deepEqual({ maxWidth: cast.maxWidth, maxHeight: cast.maxHeight, quality: cast.quality }, expected, JSON.stringify(options));
+    v.close();
+  }
+});
+
+test("TabView.rate degrades JPEG quality and bounds with hysteresis and cooldown, and recovers on good links", async () => {
+  const cdp = new FakeCdp();
+  let now = 10_000;
+  const v = new TabView({ cdp, session: "S", targetId: "T", now: () => now });
+  await v.start({ maxWidth: 2560, maxHeight: 1800, codecs: ["jpeg"] }, { width: 1280, height: 900 });
+  const casts = () => cdp.of("Page.startScreencast").map((c) => ({ q: c.params.quality, w: c.params.maxWidth, h: c.params.maxHeight }));
+  assert.deepEqual(casts(), [{ q: 82, w: 1280, h: 900 }]);
+
+  // Healthy rate: stays at tier 0, no recast.
+  v.rate(1_500_000);
+  assert.equal(casts().length, 1);
+
+  // Drop into tier 1: immediately lowers JPEG quality to 60 at base bounds.
+  v.rate(800_000);
+  assert.deepEqual(casts().at(-1), { q: 60, w: 1280, h: 900 });
+
+  // Inside 2000ms cooldown: no jitter even if rate drops sharply.
+  now += 1_500;
+  v.rate(300_000);
+  assert.equal(casts().length, 2);
+
+  // After 2000ms cooldown: drops to tier 2 (q=45, 960x675).
+  now += 500;
+  v.rate(300_000);
+  assert.deepEqual(casts().at(-1), { q: 45, w: 960, h: 675 });
+
+  // Hysteresis band [500k, 650k): stays in tier 2 without recasting.
+  now += 2_500;
+  v.rate(600_000);
+  assert.equal(casts().length, 3);
+
+  // Hysteresis band [1M, 1.25M) from tier 2: steps up to tier 1, does not jump to tier 0.
+  v.rate(1_100_000);
+  assert.deepEqual(casts().at(-1), { q: 60, w: 1280, h: 900 });
+
+  // Hysteresis band [500k, 650k) from tier 1: stays in tier 1 without recasting.
+  now += 2_500;
+  v.rate(600_000);
+  assert.equal(casts().length, 4);
+
+  // Full recovery >= 1.25M: restores baseQuality and baseBounds.
+  v.rate(1_500_000);
+  assert.deepEqual(casts().at(-1), { q: 82, w: 1280, h: 900 });
+
+  // Closed view ignores rate updates.
+  v.close();
+  now += 5_000;
+  v.rate(300_000);
+  assert.equal(casts().length, 5);
+});
+
+test("TabView.rate respects original, peek, and qhd constraints", async () => {
+  for (const options of [
+    { maxWidth: 2560, maxHeight: 1440, codecs: ["jpeg"] as ("jpeg")[], quality: "original" as const },
+    { maxWidth: 480, maxHeight: 270, codecs: ["jpeg"] as ("jpeg")[], peek: true },
+  ]) {
+    const cdp = new FakeCdp();
+    const v = new TabView({ cdp, session: "S", targetId: "T", now: () => 5_000 });
+    await v.start(options, { width: 1280, height: 900 });
+    v.rate(300_000);
+    assert.equal(cdp.of("Page.startScreencast").length, 1, JSON.stringify(options));
+    v.close();
+  }
+
+  // qhd lowers JPEG quality to 45 on severe congestion but preserves full requested bounds.
+  const cdp = new FakeCdp();
+  const v = new TabView({ cdp, session: "S", targetId: "T", now: () => 5_000 });
+  await v.start({ maxWidth: 2560, maxHeight: 1440, codecs: ["jpeg"], quality: "qhd" }, { width: 1280, height: 900 });
+  v.rate(300_000);
+  const last = cdp.of("Page.startScreencast").at(-1)!.params;
+  assert.deepEqual({ q: last.quality, w: last.maxWidth, h: last.maxHeight }, { q: 45, w: 2560, h: 1440 });
+  v.close();
+});
+
+test("TabView applies deferred cooldown rate changes on next() without another rate() call", async () => {
+  const cdp = new FakeCdp();
+  let now = 10_000;
+  const v = new TabView({ cdp, session: "S", targetId: "T", now: () => now });
+  await v.start({ maxWidth: 2560, maxHeight: 1800, codecs: ["jpeg"] }, { width: 1280, height: 900 });
+  const casts = () => cdp.of("Page.startScreencast").map((c) => ({ q: c.params.quality, w: c.params.maxWidth, h: c.params.maxHeight }));
+
+  // Drop to tier 1 immediately, then hit MIN_RATE (300_000) during cooldown -> deferred.
+  v.rate(800_000);
+  assert.deepEqual(casts().at(-1), { q: 60, w: 1280, h: 900 });
+  now += 500;
+  v.rate(300_000);
+  assert.equal(casts().length, 2);
+
+  // Cooldown expires; no new rate() call arrives, next() flushes pending downgrade to tier 2.
+  now += 1_500;
+  cdp.emit("Page.screencastFrame", { data: b64(jpeg(960, 675, 1)), sessionId: 1, metadata: { deviceWidth: 1280, deviceHeight: 900, timestamp: 1 } }, "S");
+  await v.next();
+  assert.deepEqual(casts().at(-1), { q: 45, w: 960, h: 675 });
+
+  // Now hit JPEG_RATE_CEILING (4_000_000) during cooldown -> deferred.
+  now += 500;
+  v.rate(4_000_000);
+  assert.equal(casts().length, 3);
+
+  // Cooldown expires; next() flushes pending recovery to tier 0 without another rate() call.
+  now += 1_500;
+  const pendingFrame = v.next();
+  assert.deepEqual(casts().at(-1), { q: 82, w: 1280, h: 900 });
+  v.close();
+  await pendingFrame;
+});

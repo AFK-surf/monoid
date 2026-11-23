@@ -3147,3 +3147,98 @@ test("a helper's view watches the virtual microphone where it has one, and sends
   assert.equal(heard.length, 3);
   view.close();
 });
+
+test("answerScreen forwards quality to source.open and drives Pacer rate on JPEG views without triggering Sharpener keyframes", async () => {
+  class JpegRateView extends FakeView {
+    rates: number[] = [];
+    #queued = 0;
+    #wait: (() => void) | null = null;
+    push() {
+      this.#queued++;
+      const w = this.#wait;
+      this.#wait = null;
+      w?.();
+    }
+    override async next(): Promise<Frame | null> {
+      while (this.#queued === 0 && !this.closed) {
+        await new Promise<void>((r) => (this.#wait = r));
+      }
+      if (this.closed) return null;
+      this.#queued--;
+      const f = await super.next();
+      return f
+        ? {
+            ...f,
+            ...(f.config ? { config: { codec: "jpeg" as const, width: 1280, height: 900 } } : {}),
+            data: new Uint8Array(60_000),
+          }
+        : null;
+    }
+    override close() {
+      super.close();
+      const w = this.#wait;
+      this.#wait = null;
+      w?.();
+    }
+    rate(bits: number) {
+      this.rates.push(bits);
+    }
+  }
+  const hub = new ScreenHub();
+  const source = new FakeSource();
+  source.make = () => new JpegRateView();
+  hub.add(source);
+  const time = testClock();
+  const v = await open(hub, member, { maxWidth: 2560, maxHeight: 1800, codecs: ["jpeg"], control: true, quality: "smooth" }, undefined, time.clock);
+  assert.equal(source.opened[0]!.quality, "smooth", "quality forwarded to source.open");
+  const view = source.views[0] as JpegRateView;
+
+  // Frame 1: establish RTT = 10ms.
+  view.push();
+  const f1 = await until(v.frames, KIND.video);
+  await time.adjust(10);
+  await v.stream.write(frame(KIND.ack, ts8(Number(f1.readBigUInt64BE(1)))));
+  await settle();
+
+  // Congest: send frame 2 & 3, let them queue past MEASURED_MS + HOLD_MS while frame 4 triggers pacer.may().
+  view.push();
+  const f2 = await until(v.frames, KIND.video);
+  await time.adjust(600);
+  await settle();
+  // Frame 3 triggers pacer.may() -> false (f2 waited 600ms > 10 + 30ms), setting #since/#held.
+  view.push();
+  await settle();
+  await time.adjust(250);
+  await settle();
+  // Late ack for f2 -> #queuing lowers rate below START_RATE.
+  await v.stream.write(frame(KIND.ack, ts8(Number(f2.readBigUInt64BE(1)))));
+  await settle();
+  const f3 = await until(v.frames, KIND.video);
+  await time.adjust(10);
+  await v.stream.write(frame(KIND.ack, ts8(Number(f3.readBigUInt64BE(1)))));
+  await settle();
+  assert.ok(view.rates.length >= 2 && view.rates.at(-1)! < view.rates[0]!, `expected congestion drop from ${view.rates[0]}, got ${view.rates}`);
+  const lowest = Math.min(...view.rates);
+
+  // Calm period > UP_AFTER_MS (1000ms) with no frames in flight, then prompt acks to climb back toward JPEG_RATE_CEILING.
+  await time.adjust(1_100);
+  await settle();
+  for (let i = 0; i < 8; i++) {
+    view.push();
+    const f = await until(v.frames, KIND.video);
+    await time.adjust(10);
+    await v.stream.write(frame(KIND.ack, ts8(Number(f.readBigUInt64BE(1)))));
+    await settle();
+    await time.adjust(550);
+    await settle();
+  }
+  assert.ok(view.rates.at(-1)! > lowest, `expected rate recovery above ${lowest}, got ${view.rates}`);
+  assert.ok(Math.max(...view.rates) <= 4_000_000, `rate stays within JPEG_RATE_CEILING: ${view.rates}`);
+
+  // Still screen wait must never trigger Sharpener keyframe() on JPEG views.
+  await time.adjust(2_000);
+  await settle();
+  assert.equal(view.keyframes, 0, "Sharpener must not call keyframe() on JPEG views");
+  await v.stream.finish();
+  await v.served;
+});

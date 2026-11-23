@@ -9,6 +9,10 @@
 pub let address_most : Int = 2048
 
 ///|
+/// Ceiling bit rate for JPEG views that support dynamic rate degradation (e.g. Chrome screencast).
+let jpeg_rate_ceiling : Double = 4_000_000.0
+
+///|
 /// Words in a language by their key (`tr(lang, key, args)`).
 pub type Tr = (String, String, Json) -> String
 
@@ -431,6 +435,9 @@ pub async fn answer_screen(
   if field(ask, "chroma444") is Some(True) {
     options.push(("chroma", jstr("444")))
   }
+  if field(ask, "quality") is Some(q) {
+    options.push(("quality", q))
+  }
   let view = (source.open)(jobj(options)) catch {
     ScreenRefused(status, key, args, access) => {
       let shown = access_shown(access, lang, tr)
@@ -626,6 +633,7 @@ priv struct ViewSession {
   mut rate : Double?
   mut still_wait : Bool
   mut size : (Double, Double)?
+  mut jpeg : Bool
   mut region : Region?
 }
 
@@ -745,6 +753,7 @@ fn ViewSession::new(
     rate: None,
     still_wait: false,
     size: None,
+    jpeg: false,
     region: None,
   }
 }
@@ -972,8 +981,8 @@ fn with_fields(v : Json, fields : Array[(String, Json)]) -> Json {
 /// up since. `key`: the frame was a key frame.
 fn ViewSession::still(self : ViewSession, key : Bool) -> Unit {
   let rate = match self.view.rate {
-    Some(_) => Some(self.rate.unwrap_or(self.start_rate))
-    None => None
+    Some(_) if !self.jpeg => Some(self.rate.unwrap_or(self.start_rate))
+    _ => None
   }
   self.sharpen.sent((self.now)(), rate, key~)
   if self.still_wait {
@@ -1135,6 +1144,7 @@ async fn ViewSession::pump(self : ViewSession) -> Unit {
       return self.stop(Some((self.tr)(self.lang, "station.screen.captureEnded", jobj([("said", jstr(words))]))))
     }
     if f.config is Some(c) {
+      self.jpeg = c.codec == "jpeg"
       if c.codec != "jpeg" {
         self.pacer.set_ceiling(
           if self.peek {
@@ -1144,6 +1154,8 @@ async fn ViewSession::pump(self : ViewSession) -> Unit {
           },
         )
         self.size = Some((c.width, c.height))
+      } else if !self.peek && self.view.rate is Some(_) {
+        self.pacer.set_ceiling(jpeg_rate_ceiling)
       }
       ignore(self.send(kind_config, config_bytes(c)))
     }
@@ -1157,7 +1169,7 @@ async fn ViewSession::pump(self : ViewSession) -> Unit {
     self.still(f.key)
     // (a screen that keeps changing: its pictures as sharp as the rate now once it went up well past its key frame's;
     // never while frames wait in front of the link)
-    if !self.closed && self.view.rate is Some(_) && !self.pacer.backlogged() && self.sharpen.due_moving((self.now)(), self.rate) {
+    if !self.closed && !self.jpeg && self.view.rate is Some(_) && !self.pacer.backlogged() && self.sharpen.due_moving((self.now)(), self.rate) {
       (self.view.keyframe)()
     }
   }

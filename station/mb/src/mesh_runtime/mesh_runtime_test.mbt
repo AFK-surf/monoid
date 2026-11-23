@@ -943,3 +943,191 @@ test "a viewer's volume: read again, or set to a level; nothing else" {
     assert_eq(@mesh_runtime.parse_volume(bad), None)
   }
 }
+
+///|
+test "answer_screen forwards quality and drives Pacer rate on JPEG views without triggering Sharpener keyframes" {
+  let rt = @effect.Runtime::new()
+  let opened_quality : Ref[String?] = Ref(None)
+  let rates : Array[Double] = []
+  let keyframes = Ref(0)
+  let frame_seq = Ref(0)
+  let closed = Ref(false)
+  let frame_q : @effect.Queue[Bool] = @effect.Queue::unbounded()
+  let in_q : @effect.Queue[Bytes?] = @effect.Queue::unbounded()
+  let out_q : @effect.Queue[Bytes] = @effect.Queue::unbounded()
+  let stop_d : @effect.Deferred[Int?] = @effect.Deferred::new()
+  let stream : @door.Stream = {
+    read: async fn() -> Bytes? { in_q.take() },
+    write: b => ignore(out_q.try_offer(b)),
+    finish: () => (),
+    stopped: async fn() -> Int? { stop_d.wait() catch { _ => None } },
+    reset: _ => (),
+    media_datagrams: None,
+  }
+  let view : @mesh_runtime.ScreenViewPort = {
+    next: async fn() -> @mesh_runtime.ScreenFrame? {
+      if !frame_q.take() || closed.val {
+        return None
+      }
+      frame_seq.val += 1
+      let n = frame_seq.val
+      let cfg : @mesh_runtime.FrameConfig? = if n == 1 {
+        Some({ codec: "jpeg", width: 1280.0, height: 900.0, description: None, region: None })
+      } else {
+        None
+      }
+      Some({ config: cfg, key: true, ts: (n * 1000).to_double(), data: Bytes::make(60_000, b'\x01') })
+    },
+    next_audio: None,
+    keyframe: () => keyframes.val += 1,
+    input: async fn(_) { () },
+    rate: Some(bps => rates.push(bps)),
+    bounds: None,
+    regions: None,
+    video: None,
+    why: None,
+    close: () => {
+      closed.val = true
+      ignore(frame_q.try_offer(false))
+    },
+    set_clipboard: None,
+    watch_clipboard: None,
+    watch_cursor: None,
+    cursor_image: None,
+    watch_turn: None,
+    watch_windows: None,
+    window: None,
+    reveal: None,
+    watch_login: None,
+    fill: None,
+    watch_passkey: None,
+    passkey: None,
+    watch_child: None,
+    set_clipboard_marked: None,
+    watch_clipboard_marked: None,
+    watch_pointer_lock: None,
+    watch_mic: None,
+    feed_mic: None,
+  }
+  let source : @mesh_runtime.ScreenSourcePort = {
+    kind: "browser",
+    title: () => "Tab",
+    open: async fn(opts) {
+      opened_quality.val = match opts {
+        Object(m) =>
+          match m.get("quality") {
+            Some(String(q)) => Some(q)
+            _ => None
+          }
+        _ => None
+      }
+      view
+    },
+    access: None,
+    clipboard: None,
+    reveal: false,
+    peek: true,
+    open_url: false,
+    user_tab: false,
+    sleeping: None,
+    site: None,
+    address: None,
+    scale: None,
+    set_scale: None,
+    volume: None,
+    set_volume: None,
+    resolution: None,
+    set_resolution: None,
+  }
+  let hub : @mesh_runtime.ScreenHubPort = {
+    get: id => if id == "browser:t1" { Some(source) } else { None },
+    drive: (_, _, _, _) => (true, []),
+    join: (_, _) => () => (),
+    watch: _ => () => (),
+    when_stopping: _ => () => (),
+  }
+  let send_ack = (ts : Int64) => {
+    let payload = @buffer.Buffer(size_hint=8)
+    payload.write_uint64_be(ts.reinterpret_as_uint64())
+    ignore(in_q.try_offer(Some(@mesh_runtime.frame(@mesh_runtime.kind_ack, payload.to_bytes()))))
+  }
+  ignore(
+    rt.fork(async fn() {
+      @mesh_runtime.answer_screen(
+        hub,
+        stream,
+        b"",
+        o([
+          ("method", "POST"),
+          ("path", "/admin/api/screens/browser%3At1/view"),
+          ("headers", o([])),
+          (
+            "screen",
+            o([
+              ("maxWidth", Json::number(2560.0)),
+              ("maxHeight", Json::number(1800.0)),
+              ("codecs", Json::array([Json::string("jpeg")])),
+              ("control", Json::boolean(true)),
+              ("quality", Json::string("smooth")),
+            ]),
+          ),
+        ]),
+        o([("role", "member"), ("device", "d1"), ("name", "Alice")]),
+        () => true,
+        rt,
+        (_, k, _) => k,
+        (_, _, _, _) => (),
+      )
+    }),
+  )
+  // Frame 1: sent at t=0, acked at t=10ms (RTT=10ms).
+  ignore(frame_q.try_offer(true))
+  ignore(rt.run_ready())
+  assert_eq(opened_quality.val, Some("smooth"))
+  rt.advance(10)
+  send_ack(1000L)
+  ignore(rt.run_ready())
+  // Congest: send frame 2 at t=10, hold 600ms, push frame 3 at t=610 to trigger pacer.may() hold, then ack f2 late at t=860.
+  ignore(frame_q.try_offer(true))
+  ignore(rt.run_ready())
+  rt.advance(600)
+  ignore(frame_q.try_offer(true))
+  ignore(rt.run_ready())
+  rt.advance(250)
+  send_ack(2000L)
+  ignore(rt.run_ready())
+  rt.advance(10)
+  send_ack(3000L)
+  ignore(rt.run_ready())
+  if !(rates.length() >= 2 && rates.last().unwrap_or(0.0) < rates[0]) {
+    fail("expected congestion drop, got rates=\{rates}, frame_seq=\{frame_seq.val}")
+  }
+  let mut lowest = @double.infinity
+  for r in rates {
+    if r < lowest {
+      lowest = r
+    }
+  }
+  // Calm period > UP_AFTER_MS (1000ms) with no frames in flight, then prompt acks to climb back toward JPEG_RATE_CEILING.
+  rt.advance(1_100)
+  let mut next_ts = 4000L
+  for _ in 0..<8 {
+    ignore(frame_q.try_offer(true))
+    ignore(rt.run_ready())
+    rt.advance(10)
+    send_ack(next_ts)
+    ignore(rt.run_ready())
+    next_ts += 1000L
+    rt.advance(550)
+  }
+  assert_true(rates.last().unwrap_or(0.0) > lowest)
+  for r in rates {
+    assert_true(r <= 4_000_000.0)
+  }
+  // Still wait must not trigger Sharpener keyframe().
+  rt.advance(2_000)
+  assert_eq(keyframes.val, 0)
+  ignore(in_q.try_offer(None))
+  ignore(stop_d.succeed(None))
+  rt.advance(50)
+}

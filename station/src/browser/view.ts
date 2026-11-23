@@ -24,11 +24,62 @@ export function viewportOf(m: any): { width: number; height: number } | null {
   return width > 0 && height > 0 ? { width, height } : null;
 }
 
+/// Default (auto quality) screencast bounds cap: 1:1 with Chrome's 1280×900 CSS viewport instead of 2x Retina.
+export const DEFAULT_MAX_WIDTH = 1280;
+export const DEFAULT_MAX_HEIGHT = 900;
+/// Smooth quality & severe weak-network degradation screencast bounds cap.
+export const SMOOTH_MAX_WIDTH = 960;
+export const SMOOTH_MAX_HEIGHT = 675;
 /// JPEG quality of the cast frames: 82, as at 70 small text's edges rang (their colours bled round the strokes).
-const QUALITY = 82;
+export const QUALITY = 82;
+export const SMOOTH_QUALITY = 70;
+export const CONSTRAINED_QUALITY = 60;
+export const SEVERE_QUALITY = 45;
+/// Hysteresis thresholds (bits/s) and cooldown for Pacer-driven JPEG quality/bounds degradation.
+export const TIER1_DOWN_BPS = 1_000_000;
+export const TIER1_UP_BPS = 1_250_000;
+export const TIER2_DOWN_BPS = 500_000;
+export const TIER2_UP_BPS = 650_000;
+export const RECAST_COOLDOWN_MS = 2_000;
 /// The most pixels a CSS pixel is drawn with for a phone it is laid out for (`fit`): sharp on any phone, and frames a
 /// third the size of a 3× phone's own.
 const FIT_SCALE_MOST = 2;
+
+/// Initial screencast bounds and JPEG quality for a browser view.
+export function screencastBase(options: Pick<ViewOptions, "maxWidth" | "maxHeight" | "peek" | "fit" | "quality">): { bounds: { maxWidth: number; maxHeight: number }; quality: number } {
+  if (!options.peek && options.fit) {
+    const scale = Math.min(options.fit.scale, FIT_SCALE_MOST);
+    return {
+      bounds: { maxWidth: options.fit.width * scale, maxHeight: options.fit.height * scale },
+      quality: options.quality === "smooth" ? SMOOTH_QUALITY : QUALITY,
+    };
+  }
+  if (options.quality === "smooth") {
+    return {
+      bounds: { maxWidth: Math.min(options.maxWidth, SMOOTH_MAX_WIDTH), maxHeight: Math.min(options.maxHeight, SMOOTH_MAX_HEIGHT) },
+      quality: SMOOTH_QUALITY,
+    };
+  }
+  if (options.quality === undefined) {
+    return {
+      bounds: { maxWidth: Math.min(options.maxWidth, DEFAULT_MAX_WIDTH), maxHeight: Math.min(options.maxHeight, DEFAULT_MAX_HEIGHT) },
+      quality: QUALITY,
+    };
+  }
+  return {
+    bounds: { maxWidth: options.maxWidth, maxHeight: options.maxHeight },
+    quality: QUALITY,
+  };
+}
+
+/// Target degradation tier (0 normal, 1 constrained, 2 severe) with hysteresis.
+export function screencastTier(current: 0 | 1 | 2, bps: number): 0 | 1 | 2 {
+  if (bps < TIER2_DOWN_BPS) return 2;
+  if (bps < TIER2_UP_BPS) return current === 2 ? 2 : 1;
+  if (bps < TIER1_DOWN_BPS) return 1;
+  if (bps < TIER1_UP_BPS) return current === 0 ? 0 : 1;
+  return 0;
+}
 /// At most this many frames are held unacknowledged (as Chrome sends at most).
 const HELD = 2;
 /// A press this soon after the last, this near it and of the same button, adds to its click count (a double click).
@@ -508,6 +559,14 @@ export class TabView implements ScreenView {
   #fitted = false;
   /// Whether the driving viewer's host signs arbitrary-site passkeys (`ViewOptions.passkeys !== false`).
   #devicePasskeys = true;
+  /// Dynamic screencast degradation state, driven by Pacer via `rate(bps)`.
+  #started = false;
+  #quality: ViewOptions["quality"];
+  #baseBounds = { maxWidth: DEFAULT_MAX_WIDTH, maxHeight: DEFAULT_MAX_HEIGHT };
+  #baseQuality = QUALITY;
+  #tier: 0 | 1 | 2 = 0;
+  #lastRecast = -Infinity;
+  #pendingBps: number | null = null;
   /// The tab's virtual microphone (mic.ts) while its driver watches it.
   #mic: BrowserMicController | null = null;
 
@@ -528,17 +587,20 @@ export class TabView implements ScreenView {
   async start(options: ViewOptions, viewport?: { width: number; height: number }) {
     if (viewport) this.#viewport = viewport;
     this.#peek = options.peek === true;
+    this.#quality = options.quality;
     this.#devicePasskeys = options.passkeys !== false;
     const { cdp, session } = this.#p;
     await cdp.send("Page.enable", {}, session);
     const fit = options.fit && !this.#peek ? options.fit : undefined;
-    let bounds = { maxWidth: options.maxWidth, maxHeight: options.maxHeight };
+    const base = screencastBase(options);
+    this.#baseBounds = base.bounds;
+    this.#baseQuality = base.quality;
+    this.#tier = 0;
     if (fit) {
       const scale = Math.min(fit.scale, FIT_SCALE_MOST);
       await cdp.send("Emulation.setDeviceMetricsOverride", { width: fit.width, height: fit.height, deviceScaleFactor: scale, mobile: true }, session);
       this.#viewport = { width: fit.width, height: fit.height };
       this.#fitted = true;
-      bounds = { maxWidth: fit.width * scale, maxHeight: fit.height * scale };
     } else if (!viewport) {
       const v = viewportOf(await cdp.send("Page.getLayoutMetrics", {}, session).catch(() => null));
       // The tab's size is its viewport's: told now, not only when a frame says another.
@@ -549,13 +611,46 @@ export class TabView implements ScreenView {
     }
     await cdp.send(
       "Page.startScreencast",
-      { format: "jpeg", quality: QUALITY, maxWidth: Math.max(1, Math.round(bounds.maxWidth)), maxHeight: Math.max(1, Math.round(bounds.maxHeight)), everyNthFrame: 1 },
+      { format: "jpeg", quality: base.quality, maxWidth: Math.max(1, Math.round(base.bounds.maxWidth)), maxHeight: Math.max(1, Math.round(base.bounds.maxHeight)), everyNthFrame: 1 },
       session,
     );
+    this.#started = true;
+    this.#lastRecast = -Infinity;
+    this.#pendingBps = null;
+  }
+
+  rate(bps: number) {
+    if (this.#ended || !this.#started || this.#peek || this.#quality === "original" || !Number.isFinite(bps)) return;
+    const target = screencastTier(this.#tier, bps);
+    if (target === this.#tier) {
+      this.#pendingBps = null;
+      return;
+    }
+    const now = this.#p.now();
+    if (now - this.#lastRecast < RECAST_COOLDOWN_MS) {
+      this.#pendingBps = bps;
+      return;
+    }
+    this.#tier = target;
+    this.#lastRecast = now;
+    this.#pendingBps = null;
+    const quality = target === 0 ? this.#baseQuality : target === 1 ? Math.min(this.#baseQuality, CONSTRAINED_QUALITY) : SEVERE_QUALITY;
+    const bounds =
+      target === 2 && !this.#fitted && this.#quality !== "qhd"
+        ? { maxWidth: Math.min(this.#baseBounds.maxWidth, SMOOTH_MAX_WIDTH), maxHeight: Math.min(this.#baseBounds.maxHeight, SMOOTH_MAX_HEIGHT) }
+        : this.#baseBounds;
+    void this.#p.cdp
+      .send(
+        "Page.startScreencast",
+        { format: "jpeg", quality, maxWidth: Math.max(1, Math.round(bounds.maxWidth)), maxHeight: Math.max(1, Math.round(bounds.maxHeight)), everyNthFrame: 1 },
+        this.#p.session,
+      )
+      .catch(() => {});
   }
 
   next(): Promise<Frame | null> {
     if (this.#ended) return Promise.resolve(null);
+    if (this.#pendingBps !== null) this.rate(this.#pendingBps);
     // The frames given before were taken: Chrome may cast the next ones.
     for (const ack of this.#delivered.splice(0)) this.#ack(ack);
     if (this.#keyframe && this.#last) return Promise.resolve(this.#again());
@@ -914,6 +1009,7 @@ export class TabView implements ScreenView {
     const { session } = this.#p;
     if (e.method === "Page.screencastFrame" && e.sessionId === session) {
       if (this.#ended) return;
+      if (this.#pendingBps !== null) this.rate(this.#pendingBps);
       const data = Buffer.from(String(e.params.data ?? ""), "base64");
       this.#received.push({ ack: e.params.sessionId, data, meta: e.params.metadata ?? {} });
       while (this.#received.length > HELD) this.#ack(this.#received.shift()!.ack);

@@ -71,7 +71,7 @@ export function gamepadReleased(index: number): Gamepad {
 /// `chroma: "444"`: the viewer asked its pictures sharp to the pixel (画质 原画 with text sharp): a source that encodes
 /// full-chroma video (this Mac's desktop, HEVC Main 4:4:4 where the encoder has it) does; the others as without it.
 /// `agent`: opened for an agent's computer-use tool (never uses Windows' privileged screen service).
-export type ViewOptions = { maxWidth: number; maxHeight: number; codecs: Codec[]; peek?: boolean; agent?: boolean; bitrate?: number; fps?: number; fit?: ViewFit; audio?: boolean; opus?: boolean; gamut?: "p3"; passkeys?: boolean; chroma?: "444" };
+export type ViewOptions = { maxWidth: number; maxHeight: number; codecs: Codec[]; peek?: boolean; agent?: boolean; bitrate?: number; fps?: number; fit?: ViewFit; audio?: boolean; opus?: boolean; gamut?: "p3"; passkeys?: boolean; chroma?: "444"; quality?: "smooth" | "hd" | "qhd" | "original" };
 export type ViewFit = { width: number; height: number; scale: number };
 
 /// The codec a source that makes `own` (best first) sends a view: the first of them the view takes; for a preview

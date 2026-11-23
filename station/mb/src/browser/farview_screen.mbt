@@ -719,7 +719,7 @@ pub fn FarviewView::bounds(self : FarviewView, max_width : Double, max_height : 
   if self.peek {
     return
   }
-  let size = size_for({ codecs: ["jpeg"], max_width, max_height, peek: false, fit: None, passkeys: None })
+  let size = size_for({ codecs: ["jpeg"], max_width, max_height, peek: false, fit: None, passkeys: None, quality: None })
   if size.0 == self.size_.0 && size.1 == self.size_.1 && size.2 == self.size_.2 {
     return
   }
@@ -752,6 +752,7 @@ pub fn FarviewView::as_view(self : FarviewView) -> ScreenView {
     watch_passkey: _ => () => (),
     passkey: async fn(_) { () },
     bounds: (w, h) => self.bounds(w, h),
+    rate: None,
     video: () => jo([("capture", js("Farview"))]),
     viewport: () => (self.size_.0, self.size_.1),
     watch_child: _ => () => (),

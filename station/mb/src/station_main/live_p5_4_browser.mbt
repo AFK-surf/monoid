@@ -256,6 +256,7 @@ fn p54_browser_source(s : @browser.ScreenSource) -> @screens.ScreenSource {
       peek: o.peek,
       fit: o.fit.map(f => (f.width, f.height, f.scale)),
       passkeys: o.passkeys,
+      quality: o.quality,
     })
     let next = async fn() -> @screens.Frame? {
       match (v.next)() {
@@ -279,6 +280,7 @@ fn p54_browser_source(s : @browser.ScreenSource) -> @screens.ScreenSource {
     let base = @screens.ScreenView::bare(next, v.keyframe, async fn(i) { (v.input)(i.to_j()) }, v.close)
     {
       ..base,
+      rate: v.rate,
       bounds: Some((w, h, _) => (v.bounds)(w, h)),
       set_clipboard: Some(async fn(clip, paste) {
         match clip {

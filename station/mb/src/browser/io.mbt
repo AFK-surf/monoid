@@ -117,6 +117,7 @@ pub(all) struct ViewOptions {
   /// The viewer's phone: its width, height and scale.
   fit : (Double, Double, Double)?
   passkeys : Bool?
+  quality : String?
 }
 
 ///|
@@ -136,6 +137,7 @@ pub fn ViewOptions::of_j(v : J) -> ViewOptions {
       Some(Bool(b)) => Some(b)
       _ => None
     },
+    quality: str_of(at(Some(v), "quality")),
   }
 }
 
@@ -171,6 +173,7 @@ pub(all) struct ScreenView {
   watch_passkey : ((J) -> Unit) -> () -> Unit
   passkey : async (J) -> Unit
   bounds : (Double, Double) -> Unit
+  rate : ((Double) -> Unit)?
   video : () -> J
   viewport : () -> (Double, Double)
   /// A tab its page opened, by its screen's id, until the returned function.

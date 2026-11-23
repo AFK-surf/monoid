@@ -826,3 +826,230 @@ test "a sign-in's passkeys go into a chat's Farview profile and come out with it
     }
   }
 }
+
+///|
+fn fake_tab_cdp() -> (Cdp, Array[(String, J)], Ref[Bool]) {
+  let sent : Array[(String, J)] = []
+  let closed_ref = Ref(false)
+  let done : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let cdp : Cdp = {
+    post: (method, params, _) => {
+      sent.push((method, params))
+      Later::resolved(Obj([]))
+    },
+    on: _ => () => (),
+    closed: async fn() { done.wait() catch { _ => () } },
+    close: () => {
+      closed_ref.val = true
+      ignore(done.succeed(()))
+    },
+  }
+  (cdp, sent, closed_ref)
+}
+
+///|
+fn screencast_calls(sent : Array[(String, J)]) -> Array[(Int, Int, Int)] {
+  let out = []
+  for item in sent {
+    if item.0 == "Page.startScreencast" {
+      let p = Some(item.1)
+      out.push((js_num(at(p, "quality")).to_int(), js_num(at(p, "maxWidth")).to_int(), js_num(at(p, "maxHeight")).to_int()))
+    }
+  }
+  out
+}
+
+///|
+test "remote browser screencast caps default/smooth bounds, opens up hd/qhd/original, and preserves phone fit" {
+  let cases : Array[(ViewOptions, (Int, Int, Int))] = [
+    ({ codecs: ["jpeg"], max_width: 2560.0, max_height: 1800.0, peek: false, fit: None, passkeys: None, quality: None }, (82, 1280, 900)),
+    ({ codecs: ["jpeg"], max_width: 2560.0, max_height: 1800.0, peek: false, fit: None, passkeys: None, quality: Some("smooth") }, (70, 960, 675)),
+    ({ codecs: ["jpeg"], max_width: 2560.0, max_height: 1440.0, peek: false, fit: None, passkeys: None, quality: Some("hd") }, (82, 2560, 1440)),
+    ({ codecs: ["jpeg"], max_width: 2560.0, max_height: 1440.0, peek: false, fit: None, passkeys: None, quality: Some("qhd") }, (82, 2560, 1440)),
+    ({ codecs: ["jpeg"], max_width: 2560.0, max_height: 1440.0, peek: false, fit: None, passkeys: None, quality: Some("original") }, (82, 2560, 1440)),
+    ({ codecs: ["jpeg"], max_width: 2560.0, max_height: 1800.0, peek: false, fit: Some((390.0, 844.0, 3.0)), passkeys: None, quality: None }, (82, 780, 1688)),
+    ({ codecs: ["jpeg"], max_width: 2560.0, max_height: 1800.0, peek: false, fit: Some((390.0, 844.0, 3.0)), passkeys: None, quality: Some("smooth") }, (70, 780, 1688)),
+  ]
+  for pair in cases {
+    let (opts, expected) = pair
+    let rt = @effect.Runtime::new()
+    let (cdp, sent, _) = fake_tab_cdp()
+    let v = TabView::new({
+      cdp,
+      session: "S",
+      target_id: "T",
+      now: () => 0.0,
+      sized: None,
+      used: None,
+      ended: None,
+      own_passkey: None,
+      uuid: () => "u1",
+      clock: vclock(rt),
+    })
+    ignore(rt.fork(async fn() { v.start(opts, viewport=(1280.0, 900.0)) }))
+    rt.advance(10)
+    assert_eq(screencast_calls(sent), [expected])
+    v.close()
+  }
+}
+
+///|
+test "TabView::rate degrades JPEG quality and bounds with hysteresis and cooldown, and respects original/peek/qhd/close" {
+  let rt = @effect.Runtime::new()
+  let now = Ref(10_000.0)
+  let (cdp, sent, _) = fake_tab_cdp()
+  let v = TabView::new({
+    cdp,
+    session: "S",
+    target_id: "T",
+    now: () => now.val,
+    sized: None,
+    used: None,
+    ended: None,
+    own_passkey: None,
+    uuid: () => "u1",
+    clock: vclock(rt),
+  })
+  ignore(
+    rt.fork(async fn() {
+      v.start(
+        { codecs: ["jpeg"], max_width: 2560.0, max_height: 1800.0, peek: false, fit: None, passkeys: None, quality: None },
+        viewport=(1280.0, 900.0),
+      )
+    }),
+  )
+  rt.advance(10)
+  let view = v.as_view()
+  assert_true(view.rate is Some(_))
+  let set_rate = view.rate.unwrap()
+  assert_eq(screencast_calls(sent), [(82, 1280, 900)])
+  set_rate(1_500_000.0)
+  assert_eq(screencast_calls(sent).length(), 1)
+  set_rate(800_000.0)
+  assert_eq(screencast_calls(sent), [(82, 1280, 900), (60, 1280, 900)])
+  now.val += 1_500.0
+  set_rate(300_000.0)
+  assert_eq(screencast_calls(sent).length(), 2)
+  now.val += 500.0
+  set_rate(300_000.0)
+  assert_eq(screencast_calls(sent), [(82, 1280, 900), (60, 1280, 900), (45, 960, 675)])
+  now.val += 2_500.0
+  set_rate(600_000.0)
+  assert_eq(screencast_calls(sent).length(), 3)
+  set_rate(1_100_000.0)
+  assert_eq(screencast_calls(sent).last(), Some((60, 1280, 900)))
+  now.val += 2_500.0
+  set_rate(600_000.0)
+  assert_eq(screencast_calls(sent).length(), 4)
+  set_rate(1_500_000.0)
+  assert_eq(screencast_calls(sent).last(), Some((82, 1280, 900)))
+  v.close()
+  now.val += 5_000.0
+  set_rate(300_000.0)
+  assert_eq(screencast_calls(sent).length(), 5)
+
+  // original and peek never degrade; qhd lowers quality to 45 without shrinking bounds.
+  for opts in [
+    ({ codecs: ["jpeg"], max_width: 2560.0, max_height: 1440.0, peek: false, fit: None, passkeys: None, quality: Some("original") } : ViewOptions),
+    ({ codecs: ["jpeg"], max_width: 480.0, max_height: 270.0, peek: true, fit: None, passkeys: None, quality: None } : ViewOptions),
+  ] {
+    let rt2 = @effect.Runtime::new()
+    let (cdp2, sent2, _) = fake_tab_cdp()
+    let v2 = TabView::new({
+      cdp: cdp2,
+      session: "S",
+      target_id: "T",
+      now: () => 5_000.0,
+      sized: None,
+      used: None,
+      ended: None,
+      own_passkey: None,
+      uuid: () => "u2",
+      clock: vclock(rt2),
+    })
+    ignore(rt2.fork(async fn() { v2.start(opts, viewport=(1280.0, 900.0)) }))
+    rt2.advance(10)
+    v2.rate(300_000.0)
+    assert_eq(screencast_calls(sent2).length(), 1)
+    v2.close()
+  }
+
+  let rt3 = @effect.Runtime::new()
+  let (cdp3, sent3, _) = fake_tab_cdp()
+  let v3 = TabView::new({
+    cdp: cdp3,
+    session: "S",
+    target_id: "T",
+    now: () => 5_000.0,
+    sized: None,
+    used: None,
+    ended: None,
+    own_passkey: None,
+    uuid: () => "u3",
+    clock: vclock(rt3),
+  })
+  ignore(
+    rt3.fork(async fn() {
+      v3.start(
+        { codecs: ["jpeg"], max_width: 2560.0, max_height: 1440.0, peek: false, fit: None, passkeys: None, quality: Some("qhd") },
+        viewport=(1280.0, 900.0),
+      )
+    }),
+  )
+  rt3.advance(10)
+  v3.rate(300_000.0)
+  assert_eq(screencast_calls(sent3), [(82, 2560, 1440), (45, 2560, 1440)])
+  v3.close()
+}
+
+///|
+test "TabView applies deferred cooldown rate changes on next() without another rate() call" {
+  let rt = @effect.Runtime::new()
+  let now = Ref(10_000.0)
+  let (cdp, sent, _) = fake_tab_cdp()
+  let v = TabView::new({
+    cdp,
+    session: "S",
+    target_id: "T",
+    now: () => now.val,
+    sized: None,
+    used: None,
+    ended: None,
+    own_passkey: None,
+    uuid: () => "u4",
+    clock: vclock(rt),
+  })
+  ignore(
+    rt.fork(async fn() {
+      v.start(
+        { codecs: ["jpeg"], max_width: 2560.0, max_height: 1800.0, peek: false, fit: None, passkeys: None, quality: None },
+        viewport=(1280.0, 900.0),
+      )
+    }),
+  )
+  rt.advance(10)
+  // Drop to tier 1 immediately, then hit MIN_RATE (300_000) during cooldown -> deferred.
+  v.rate(800_000.0)
+  assert_eq(screencast_calls(sent), [(82, 1280, 900), (60, 1280, 900)])
+  now.val += 500.0
+  v.rate(300_000.0)
+  assert_eq(screencast_calls(sent).length(), 2)
+
+  // Cooldown expires; next() flushes pending downgrade to tier 2 without another rate() call.
+  now.val += 1_500.0
+  ignore(rt.fork(async fn() { ignore(v.next()) }))
+  rt.advance(10)
+  assert_eq(screencast_calls(sent).last(), Some((45, 960, 675)))
+
+  // Hit JPEG_RATE_CEILING (4_000_000) during cooldown -> deferred.
+  now.val += 500.0
+  v.rate(4_000_000.0)
+  assert_eq(screencast_calls(sent).length(), 3)
+
+  // Cooldown expires; next() flushes pending recovery to tier 0 without another rate() call.
+  now.val += 1_500.0
+  ignore(rt.fork(async fn() { ignore(v.next()) }))
+  rt.advance(10)
+  assert_eq(screencast_calls(sent).last(), Some((82, 1280, 900)))
+  v.close()
+}

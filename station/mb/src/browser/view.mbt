@@ -35,12 +35,99 @@ pub fn viewport_of(m : J?) -> (Double, Double)? {
 }
 
 ///|
+/// Default (auto quality) screencast bounds cap: 1:1 with Chrome's 1280×900 CSS viewport instead of 2x Retina.
+let default_max_width : Double = 1280.0
+
+///|
+let default_max_height : Double = 900.0
+
+///|
+/// Smooth quality & severe weak-network degradation screencast bounds cap.
+let smooth_max_width : Double = 960.0
+
+///|
+let smooth_max_height : Double = 675.0
+
+///|
 /// JPEG quality of the cast frames: 82, as at 70 small text's edges rang (their colours bled round the strokes).
 let quality : Int = 82
 
 ///|
+let smooth_quality : Int = 70
+
+///|
+let constrained_quality : Int = 60
+
+///|
+let severe_quality : Int = 45
+
+///|
+/// Hysteresis thresholds (bits/s) and cooldown for Pacer-driven JPEG quality/bounds degradation.
+let tier1_down_bps : Double = 1_000_000.0
+
+///|
+let tier1_up_bps : Double = 1_250_000.0
+
+///|
+let tier2_down_bps : Double = 500_000.0
+
+///|
+let tier2_up_bps : Double = 650_000.0
+
+///|
+let recast_cooldown_ms : Double = 2_000.0
+
+///|
 /// The most pixels a CSS pixel is drawn with for a phone it is laid out for (`fit`).
 let fit_scale_most : Double = 2.0
+
+///|
+fn dmin(a : Double, b : Double) -> Double {
+  if a < b { a } else { b }
+}
+
+///|
+/// Initial screencast bounds and JPEG quality for a browser view.
+fn screencast_base(options : ViewOptions) -> ((Double, Double), Int) {
+  if !options.peek {
+    if options.fit is Some((w, h, s)) {
+      let scale = dmin(s, fit_scale_most)
+      let q = if options.quality == Some("smooth") { smooth_quality } else { quality }
+      return ((w * scale, h * scale), q)
+    }
+  }
+  match options.quality {
+    Some("smooth") => ((dmin(options.max_width, smooth_max_width), dmin(options.max_height, smooth_max_height)), smooth_quality)
+    None => ((dmin(options.max_width, default_max_width), dmin(options.max_height, default_max_height)), quality)
+    Some(_) => ((options.max_width, options.max_height), quality)
+  }
+}
+
+///|
+/// Target degradation tier (0 normal, 1 constrained, 2 severe) with hysteresis.
+fn screencast_tier(current : Int, bps : Double) -> Int {
+  if bps < tier2_down_bps {
+    2
+  } else if bps < tier2_up_bps {
+    if current == 2 { 2 } else { 1 }
+  } else if bps < tier1_down_bps {
+    1
+  } else if bps < tier1_up_bps {
+    if current == 0 { 0 } else { 1 }
+  } else {
+    0
+  }
+}
+
+///|
+fn cast_most(d : Double) -> J {
+  let r = js_round(d)
+  if r.is_nan() || r > 1.0 {
+    jn(r)
+  } else {
+    jn(1.0)
+  }
+}
 
 ///|
 /// At most this many frames are held unacknowledged (as Chrome sends at most).
@@ -506,6 +593,13 @@ pub struct TabView {
   priv mut peek : Bool
   priv mut fitted : Bool
   priv mut device_passkeys : Bool
+  priv mut started : Bool
+  priv mut quality_ : String?
+  priv mut base_bounds : (Double, Double)
+  priv mut base_quality : Int
+  priv mut tier : Int
+  priv mut last_recast : Double
+  priv mut pending_bps : Double?
   priv mut heard_ids : Int
 }
 
@@ -532,6 +626,13 @@ pub fn TabView::new(p : ViewParts) -> TabView {
     peek: false,
     fitted: false,
     device_passkeys: true,
+    started: false,
+    quality_: None,
+    base_bounds: (default_max_width, default_max_height),
+    base_quality: quality,
+    tier: 0,
+    last_recast: -@double.infinity,
+    pending_bps: None,
     heard_ids: 0,
   }
   v.unlisten = (p.cdp.on)(e => v.heard(e))
@@ -557,15 +658,19 @@ pub async fn TabView::start(self : TabView, options : ViewOptions, viewport? : (
     None => ()
   }
   self.peek = options.peek
+  self.quality_ = options.quality
   self.device_passkeys = options.passkeys != Some(false)
   let cdp = self.p.cdp
   let session = self.p.session
   ignore(cdp.send("Page.enable", Obj([]), Some(session)))
   let fit = if self.peek { None } else { options.fit }
-  let mut bounds = (options.max_width, options.max_height)
+  let (base_bounds, base_quality) = screencast_base(options)
+  self.base_bounds = base_bounds
+  self.base_quality = base_quality
+  self.tier = 0
   match fit {
     Some((w, h, s)) => {
-      let scale = if s < fit_scale_most { s } else { fit_scale_most }
+      let scale = dmin(s, fit_scale_most)
       ignore(
         cdp.send(
           "Emulation.setDeviceMetricsOverride",
@@ -575,7 +680,6 @@ pub async fn TabView::start(self : TabView, options : ViewOptions, viewport? : (
       )
       self.viewport_ = (w, h)
       self.fitted = true
-      bounds = (w * scale, h * scale)
     }
     None =>
       if viewport is None {
@@ -593,26 +697,65 @@ pub async fn TabView::start(self : TabView, options : ViewOptions, viewport? : (
         }
       }
   }
-  let most = (d : Double) => {
-    let r = js_round(d)
-    if r.is_nan() || r > 1.0 {
-      jn(r)
-    } else {
-      jn(1.0)
-    }
-  }
   ignore(
     cdp.send(
       "Page.startScreencast",
       jo([
         ("format", js("jpeg")),
-        ("quality", ji(quality)),
-        ("maxWidth", most(bounds.0)),
-        ("maxHeight", most(bounds.1)),
+        ("quality", ji(base_quality)),
+        ("maxWidth", cast_most(base_bounds.0)),
+        ("maxHeight", cast_most(base_bounds.1)),
         ("everyNthFrame", ji(1)),
       ]),
       Some(session),
     ),
+  )
+  self.started = true
+  self.last_recast = -@double.infinity
+  self.pending_bps = None
+}
+
+///|
+/// Adjusts JPEG quality and screencast bounds dynamically according to Pacer's link rate estimate.
+pub fn TabView::rate(self : TabView, bps : Double) -> Unit {
+  if self.ended || !self.started || self.peek || self.quality_ == Some("original") || !bps.is_finite() {
+    return
+  }
+  let target = screencast_tier(self.tier, bps)
+  if target == self.tier {
+    self.pending_bps = None
+    return
+  }
+  let now = (self.p.now)()
+  if now - self.last_recast < recast_cooldown_ms {
+    self.pending_bps = Some(bps)
+    return
+  }
+  self.tier = target
+  self.last_recast = now
+  self.pending_bps = None
+  let q = if target == 0 {
+    self.base_quality
+  } else if target == 1 {
+    if self.base_quality < constrained_quality { self.base_quality } else { constrained_quality }
+  } else {
+    severe_quality
+  }
+  let bounds = if target == 2 && !self.fitted && self.quality_ != Some("qhd") && self.quality_ != Some("original") {
+    (dmin(self.base_bounds.0, smooth_max_width), dmin(self.base_bounds.1, smooth_max_height))
+  } else {
+    self.base_bounds
+  }
+  self.p.cdp.tell(
+    "Page.startScreencast",
+    jo([
+      ("format", js("jpeg")),
+      ("quality", ji(q)),
+      ("maxWidth", cast_most(bounds.0)),
+      ("maxHeight", cast_most(bounds.1)),
+      ("everyNthFrame", ji(1)),
+    ]),
+    Some(self.p.session),
   )
 }
 
@@ -620,6 +763,9 @@ pub async fn TabView::start(self : TabView, options : ViewOptions, viewport? : (
 pub async fn TabView::next(self : TabView) -> Frame? {
   if self.ended {
     return None
+  }
+  if self.pending_bps is Some(bps) {
+    self.rate(bps)
   }
   // The frames given before were taken: Chrome may cast the next ones.
   let acks = self.delivered
@@ -1225,6 +1371,9 @@ fn TabView::heard(self : TabView, e : CdpEvent) -> Unit {
     if self.ended {
       return
     }
+    if self.pending_bps is Some(bps) {
+      self.rate(bps)
+    }
     let data = @base64.decode_lossy(match at(p, "data") {
       None | Some(Null) => ""
       d => js_str(d)
@@ -1346,6 +1495,7 @@ pub fn TabView::as_view(self : TabView) -> ScreenView {
     watch_passkey: f => self.watch_passkey(f),
     passkey: async fn(a) { self.passkey(a) },
     bounds: (_, _) => (),
+    rate: Some(r => self.rate(r)),
     video: () => self.video(),
     viewport: () => self.viewport(),
     watch_child: f => match self.watch_child_ {

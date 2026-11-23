@@ -813,6 +813,7 @@ pub(all) struct ScreenView {
   watch_passkey : ((@jsjson.JValue) -> Unit) -> () -> Unit
   passkey : async (@jsjson.JValue) -> Unit
   bounds : (Double, Double) -> Unit
+  rate : ((Double) -> Unit)?
   video : () -> @jsjson.JValue
   viewport : () -> (Double, Double)
   watch_child : ((String) -> Unit) -> () -> Unit
@@ -902,6 +903,7 @@ pub fn TabView::keyframe(Self) -> Unit
 pub fn TabView::new(ViewParts) -> Self
 pub async fn TabView::next(Self) -> Frame?
 pub async fn TabView::passkey(Self, @jsjson.JValue) -> Unit
+pub fn TabView::rate(Self, Double) -> Unit
 pub async fn TabView::set_clipboard(Self, Clip, Bool) -> Unit
 pub fn TabView::set_watch_child(Self, ((String) -> Unit) -> () -> Unit) -> Unit
 pub async fn TabView::start(Self, ViewOptions, viewport? : (Double, Double)) -> Unit
@@ -1006,6 +1008,7 @@ pub(all) struct ViewOptions {
   peek : Bool
   fit : (Double, Double, Double)?
   passkeys : Bool?
+  quality : String?
 }
 pub fn ViewOptions::of_j(@jsjson.JValue) -> Self
 

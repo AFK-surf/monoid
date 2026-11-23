@@ -34,6 +34,9 @@ import { type Fps, FrameLatency, LOSS_EVERY_MS, LinkLoss, Pacer, QUALITIES, type
 import { writeLine } from "./serve.ts";
 
 export const SCREEN_TYPE = "application/x-stillfail-screen";
+/// Ceiling bit rate for JPEG views that support dynamic rate degradation (e.g. Chrome screencast), allowing Pacer to
+/// climb back up after congestion clears.
+export const JPEG_RATE_CEILING = 4_000_000;
 /// The header of a view's reply that says its frames go as datagrams, with the client's token.
 export const DGRAM_HEADER = "x-screen-dgram";
 export const KIND = { config: 1, video: 2, state: 3, clipboard: 4, audioConfig: 5, audio: 6, cursor: 7, cursorImage: 8, privateClipboard: 9, input: 16, ack: 17, keyframe: 18, setClipboard: 19, look: 20, sound: 21, micOn: 22, mic: 23 } as const;
@@ -350,7 +353,7 @@ export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer
   const noPasskeys = ask.passkeys === false || (ask.passkeys === undefined && (ask.app === "ios" || ask.app === "android" || ask.app === "web"));
   let view: ScreenView;
   try {
-    view = await source.open({ maxWidth: ask.maxWidth, maxHeight: ask.maxHeight, codecs: ask.codecs, ...(ask.audio ? { audio: true, ...(ask.opus ? { opus: true } : {}) } : {}), bitrate: initialRate, ...(ask.fps ? { fps: ask.fps } : {}), ...(ask.peek ? { peek: true } : {}), ...(ask.fit && driven.control ? { fit: ask.fit } : {}), ...(ask.gamut ? { gamut: ask.gamut } : {}), ...(driven.control && noPasskeys ? { passkeys: false } : {}), ...(ask.chroma444 ? { chroma: "444" as const } : {}) });
+    view = await source.open({ maxWidth: ask.maxWidth, maxHeight: ask.maxHeight, codecs: ask.codecs, ...(ask.audio ? { audio: true, ...(ask.opus ? { opus: true } : {}) } : {}), bitrate: initialRate, ...(ask.fps ? { fps: ask.fps } : {}), ...(ask.peek ? { peek: true } : {}), ...(ask.fit && driven.control ? { fit: ask.fit } : {}), ...(ask.gamut ? { gamut: ask.gamut } : {}), ...(driven.control && noPasskeys ? { passkeys: false } : {}), ...(ask.chroma444 ? { chroma: "444" as const } : {}), ...(ask.quality ? { quality: ask.quality } : {}) });
   } catch (error) {
     if (error instanceof ScreenRefused) {
       // What is missing says it all, and where it is granted.
@@ -485,6 +488,8 @@ class ViewSession {
   readonly #conn: Pick<Connection, "paths"> | undefined;
   /// The picture's size, as its latest config said (H.264, H.265: what the bounds go by).
   #size: { width: number; height: number } | null = null;
+  /// Whether the latest frame config is JPEG (no Sharpener keyframe resend).
+  #jpeg = false;
   /// The bounds the view opened with (the whole screen's), and the part of the screen the client looks at now (null:
   /// the whole).
   readonly #own: { maxWidth: number; maxHeight: number };
@@ -532,7 +537,7 @@ class ViewSession {
   /// source sends its picture again as a key frame at the rate it is asked now (a source with a rate of its own: a
   /// video's, not JPEG's). One wait at a time, gone on from the last frame. `key`: the frame was a key frame.
   #still(key = false) {
-    this.#sharpen.sent(this.#now(), this.view.rate ? (this.#rate ?? this.#startRate) : null, key);
+    this.#sharpen.sent(this.#now(), this.view.rate && !this.#jpeg ? (this.#rate ?? this.#startRate) : null, key);
     if (this.#stillWait) return;
     this.#stillWait = true;
     const wait = (ms: number) =>
@@ -881,10 +886,13 @@ class ViewSession {
         return this.#stop(tr(this.#lang, "station.screen.captureEnded", { said: why || tr(this.#lang, "station.screen.captureEndedUnsaid") }));
       }
       if (next.config) {
+        this.#jpeg = next.config.codec === "jpeg";
         if (next.config.codec !== "jpeg") {
           // A preview (a card, two pictures a second) no higher than the source's own.
           this.pacer.ceiling(this.peek ? ownRate(next.config.width, next.config.height) : rateCeiling(next.config.width, next.config.height, this.quality, this.fps));
           this.#size = { width: next.config.width, height: next.config.height };
+        } else if (!this.peek && this.view.rate) {
+          this.pacer.ceiling(JPEG_RATE_CEILING);
         }
         void this.#send(KIND.config, configPayload(next.config));
       }
@@ -903,7 +911,7 @@ class ViewSession {
       this.#still(next.key);
       // A screen that keeps changing: its pictures as sharp as the rate now once it went up well past its key frame's;
       // never while frames wait in front of the link (a key frame then holds them back longer still).
-      if (!this.#closed && this.view.rate && !this.pacer.backlogged() && this.#sharpen.dueMoving(this.#now(), this.#rate)) this.view.keyframe();
+      if (!this.#closed && !this.#jpeg && this.view.rate && !this.pacer.backlogged() && this.#sharpen.dueMoving(this.#now(), this.#rate)) this.view.keyframe();
     }
   }
 
