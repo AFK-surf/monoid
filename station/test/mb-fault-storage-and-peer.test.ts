@@ -325,8 +325,9 @@ test("cold storage: a workspace and its transcript packed and given back byte fo
     await pack();
     assert.ok(statSync(archive).size < 100_000, `the archive is compressed: ${statSync(archive).size} bytes`);
 
-    // ── a cut archive, then a broken one: refused as an error, the archive and what came meanwhile kept, the session
-    // still archived, the station serving ──
+    // ── a cut archive, then a broken one: unarchiving returns 200 immediately while background restore refuses the
+    // broken archive, logs the failure, keeps the archive and what came meanwhile, leaves the room cold, and keeps
+    // the station serving ──
     const good = readFileSync(archive);
     writeFileSync(join(workspace, "sent-while-archived.txt"), "a file sent while it was archived\n");
     for (const [what, spoil] of [
@@ -335,14 +336,15 @@ test("cold storage: a workspace and its transcript packed and given back byte fo
     ] as const) {
       spoil();
       const spoiled = readFileSync(archive);
-      const refused = await within(`unarchiving with the archive ${what} answered`, 20_000, () => http(a.door, path, { method: "DELETE" }), () => a.err().slice(-3000));
-      assert.ok(refused.status >= 400, `${what}: ${refused.status} ${refused.body}`);
-      assert.ok(String(refused.json?.error ?? refused.body).length > 0, `${what}: said why`);
+      const beforeErrLen = a.err().length;
+      const unarchived = await within(`unarchiving with the archive ${what} answered`, 20_000, () => http(a.door, path, { method: "DELETE" }), () => a.err().slice(-3000));
+      assert.equal(unarchived.status, 200, `${what}: ${unarchived.status} ${unarchived.body}`);
+      await within(`background restore failure logged for ${what}`, 20_000, () => a.err().slice(beforeErrLen).includes("an archived session's files not restored in background"), () => a.err().slice(-3000));
       assert.deepEqual(readFileSync(archive), spoiled, `${what}: the archive left as it was`);
       assert.equal(readFileSync(join(workspace, "sent-while-archived.txt"), "utf8"), "a file sent while it was archived\n", `${what}: what came meanwhile kept`);
       assert.equal(existsSync(join(workspace, "project")), false, `${what}: nothing restored short`);
       assert.ok(existsSync(join(room, "cold")), `${what}: still cold`);
-      assert.notEqual(row<{ archived_at: number | null }>(data, "SELECT archived_at FROM sessions WHERE key = ?", key)?.archived_at ?? null, null, `${what}: still archived`);
+      assert.equal(row<{ archived_at: number | null }>(data, "SELECT archived_at FROM sessions WHERE key = ?", key)?.archived_at ?? null, null, `${what}: unarchived immediately in store`);
       assert.equal(a.child.exitCode, null, `${what}: the station runs: ${a.err().slice(-3000)}`);
       assert.equal((await http(a.door, "/admin-api/overview")).status, 200, `${what}: the station serves`);
     }

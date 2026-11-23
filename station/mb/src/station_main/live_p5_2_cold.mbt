@@ -8,13 +8,17 @@
 let packing_pids : Map[String, Int] = Map([])
 
 ///|
+/// Workspace directories whose cancellation arrived during the async `spawn` window before `packing_pids` was populated.
+let cancelled_packs : Set[String] = Set::new()
+
+///|
 fn p52_cancel_pack(dir : String) -> Unit {
   match packing_pids.get(dir) {
     Some(pid) => {
       packing_pids.remove(dir)
       ignore(kill(pid, "SIGKILL"))
     }
-    None => ()
+    None => cancelled_packs.add(dir)
   }
 }
 
@@ -40,24 +44,41 @@ async fn p52_one_ask(
   track_dir? : String,
 ) -> Json {
   let proc = spawn(bus.host, program, args, stdin_piped=true, stdout=Piped, stderr=Ignored) catch {
-    SysError(why) => raise @session_storage.failed(why)
+    SysError(why) => {
+      if track_dir is Some(dir) {
+        cancelled_packs.remove(dir)
+      }
+      raise @session_storage.failed(why)
+    }
   }
   if track_dir is Some(dir) {
+    if cancelled_packs.contains(dir) {
+      cancelled_packs.remove(dir)
+      ignore(kill(proc.pid, "SIGKILL"))
+      ignore(proc.finished() catch { _ => (None, None, b"", b"") })
+      raise @session_storage.failed("workspace packing aborted")
+    }
     packing_pids[dir] = proc.pid
   }
   ignore(proc.write(@utf8.encode(ask.stringify() + "\n")))
   proc.end_input()
   let (_, _, out, _) = proc.finished() catch {
     e => {
-      if track_dir is Some(dir) && packing_pids.get(dir) == Some(proc.pid) {
-        packing_pids.remove(dir)
+      if track_dir is Some(dir) {
+        if packing_pids.get(dir) == Some(proc.pid) {
+          packing_pids.remove(dir)
+        }
+        cancelled_packs.remove(dir)
       }
       ignore(kill(proc.pid, "SIGKILL"))
       raise e
     }
   }
-  if track_dir is Some(dir) && packing_pids.get(dir) == Some(proc.pid) {
-    packing_pids.remove(dir)
+  if track_dir is Some(dir) {
+    if packing_pids.get(dir) == Some(proc.pid) {
+      packing_pids.remove(dir)
+    }
+    cancelled_packs.remove(dir)
   }
   let text = @utf8.decode_lossy(out)
   let line = match text.find("\n") {

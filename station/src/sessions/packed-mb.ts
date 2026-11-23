@@ -42,6 +42,8 @@ export function runPackedOnce<A = Json>(
       { background: options?.background },
     );
     let settled = false;
+    let aborted = false;
+    let exited = false;
     const done = (f: () => void) => {
       if (settled) return;
       settled = true;
@@ -52,13 +54,16 @@ export function runPackedOnce<A = Json>(
       p.ref(false);
       p.kill();
     };
-    const stop = () => done(() => {
+    const stop = () => {
+      if (settled || aborted) return;
+      aborted = true;
       finishChild();
-      reject(new PackAborted("workspace packing aborted"));
-    });
+      // Wait for the child process to exit before rejecting so file handles (e.g. `.writing` on Windows) are released.
+      if (exited) done(() => reject(new PackAborted("workspace packing aborted")));
+    };
     signal?.addEventListener("abort", stop, { once: true });
     p.on("message", (answer: Json) => {
-      if (answer?.id !== 1) return;
+      if (answer?.id !== 1 || aborted) return;
       done(() => {
         finishChild();
         if (typeof answer.error === "string") reject(new Error(answer.error));
@@ -68,12 +73,20 @@ export function runPackedOnce<A = Json>(
     let failure: Error | null = null;
     p.on("error", (error: Error) => {
       failure = error;
+      if (aborted) return;
       done(() => {
         finishChild();
         reject(error);
       });
     });
-    p.on("exit", (code: number) => done(() => reject(failure ?? new Error(`the archive's program stopped (exit ${code})`))));
+    p.on("exit", (code: number) => {
+      exited = true;
+      if (aborted) {
+        done(() => reject(new PackAborted("workspace packing aborted")));
+        return;
+      }
+      done(() => reject(failure ?? new Error(`the archive's program stopped (exit ${code})`)));
+    });
     try {
       p.postMessage({ ...args, id: 1, op });
     } catch (error) {

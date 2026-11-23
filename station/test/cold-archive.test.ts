@@ -579,8 +579,14 @@ test("aborting packWorkspaceIf via AbortSignal cancels isolated workspace.pack, 
   mkdirSync(ws, { recursive: true });
   const worktree = join(ws, "project");
   git(repo, ["worktree", "add", "--detach", worktree]);
-  // Write enough incompressible-ish data so abort hits cleanly or pre-aborted signal works deterministically.
-  write(join(ws, "data.bin"), Buffer.alloc(512 * 1024, 0x55));
+  // Write 16 MiB of incompressible pseudo-random bytes so the isolated `--builder packed` child is observed mid-flight.
+  const blob = Buffer.allocUnsafe(16 << 20);
+  let seed = 0x12345678;
+  for (let i = 0; i < blob.length; i += 4) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    blob.writeUInt32LE(seed, i);
+  }
+  write(join(ws, "data.bin"), blob);
   const gitdir = readFileSync(join(worktree, ".git"), "utf8").trim().slice("gitdir: ".length);
 
   // Pre-aborted signal returns immediately with no side effects.
@@ -592,14 +598,23 @@ test("aborting packWorkspaceIf via AbortSignal cancels isolated workspace.pack, 
   assert.ok(!existsSync(join(gitdir, "locked")));
   assert.ok(existsSync(join(ws, "data.bin")));
 
-  // Mid-flight abort kills the isolated workspace.pack process, unlocks worktree, removes .writing, keeps originals.
+  // Mid-flight abort: wait until `workspace.tar.zst.writing` is created by the running child, then abort.
   const ac = new AbortController();
+  const writingPath = join(room, "workspace.tar.zst.writing");
   const packing = packWorkspaceIf(room, () => true, { signal: ac.signal });
-  // Wait for worktree lock file to appear or abort immediately on next turn.
+  let sawWriting = false;
+  for (let i = 0; i < 500; i++) {
+    if (existsSync(writingPath)) {
+      sawWriting = true;
+      break;
+    }
+    await new Promise((res) => setTimeout(res, 5));
+  }
+  assert.ok(sawWriting, "expected workspace.tar.zst.writing to appear while child process is packing");
   ac.abort();
   await packing;
   assert.ok(!existsSync(workspaceArchive(room)), "aborted pack must not produce workspace.tar.zst");
-  assert.ok(!existsSync(join(room, "workspace.tar.zst.writing")), ".writing temp removed");
+  assert.ok(!existsSync(writingPath), ".writing temp removed after child exits");
   assert.ok(!existsSync(join(gitdir, "locked")), "worktree unlocked after abort");
   assert.ok(!existsSync(join(room, "workspace-locks.json")), "workspace-locks.json removed after abort");
   assert.ok(existsSync(join(ws, "data.bin")), "original workspace files intact");
