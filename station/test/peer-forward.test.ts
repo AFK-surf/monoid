@@ -382,22 +382,24 @@ async function hasV6(): Promise<boolean> {
 test("the station there reaches a service listening on 127.0.0.1 alone, or on [::1] alone", async (t) => {
   const v6 = await hasV6();
   const s = await stations();
-  const servers: Server[] = [];
   try {
     for (const host of v6 ? ["127.0.0.1", "::1"] : ["127.0.0.1"]) {
       const server = createServer((socket) => (socket.on("error", () => {}), socket.end(`hello from ${host}`)));
-      servers.push(server);
-      const port = await listen(server, host);
-      const opened = await s.forwards.open("chat-1", "Studio", port);
-      // Something listens on that port here (at either address): the forward is elsewhere.
-      assert.notEqual(opened.local, `127.0.0.1:${port}`);
-      const client = await dial(Number(opened.local.split(":")[1]));
-      client.end();
-      assert.equal((await readAll(client)).toString(), `hello from ${host}`);
+      try {
+        const port = await listen(server, host);
+        const opened = await s.forwards.open("chat-1", "Studio", port);
+        // Something listens on that port here (at either address): the forward is elsewhere.
+        assert.notEqual(opened.local, `127.0.0.1:${port}`);
+        const client = await dial(Number(opened.local.split(":")[1]));
+        client.end();
+        assert.equal((await readAll(client)).toString(), `hello from ${host}`);
+      } finally {
+        s.forwards.closeSession("chat-1");
+        await new Promise<void>((r) => server.close(() => r()));
+      }
     }
     if (!v6) t.diagnostic("no IPv6 loopback here: [::1] alone not tried");
   } finally {
-    for (const server of servers) server.close();
     await s.close();
   }
 });
