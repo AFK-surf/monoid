@@ -439,8 +439,8 @@ fn chats_pane_node(
         "search" => {
           let tucked = @signals.computed(fn(_) { search_tucked(read().0) })
           let reveal = match frame.at {
-            Whole =>
-              fn() {
+            Whole => {
+              let revealed = @signals.computed(fn(_) {
                 if !tucked.get() {
                   1.0
                 } else {
@@ -455,7 +455,9 @@ fn chats_pane_node(
                     (emerged - 0.5) / 22.0
                   }
                 }
-              }
+              })
+              fn() { revealed.get() }
+            }
             Side | Tape => fn() { 1.0 }
           }
           let field = search_field_node(line, frame.at, reveal~)

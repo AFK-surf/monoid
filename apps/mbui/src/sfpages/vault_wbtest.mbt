@@ -183,6 +183,9 @@ test "secrets left in plain text from before security mode: how many, 加密 enc
   // (its row pressed: 加密 where it says what it does, the last words with 加密 in them as the title says it too)
   let (x, y) = t.find_last("加密").unwrap()
   t.tap(x, y)
+  // (leaving row rests with its frozen "2 条密钥尚未加密" text while closing, never flashing "0 条密钥尚未加密")
+  assert_true(t.find("0 条密钥尚未加密") is None)
+  t.run_for(@ui.move_most_ms)
   assert_true(t.find("2 条密钥尚未加密") is None)
 }
 

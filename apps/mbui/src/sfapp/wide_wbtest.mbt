@@ -781,12 +781,13 @@ test "wide: a new chat's composer stays where it is as another station is picked
     t.click(Button, label=from)
     t.run_for(@motion.presence_in_ms)
     t.click(Button, label=to)
-    t.run_for(@motion.presence_in_ms)
+    t.run_for(@ui.move_most_ms)
   }
   // Maple: no session of its own; what is wrong for now and what it waits for in its place
   pick("Willow", "Maple")
   assert_true(t.find("Maple 上还没有选好要用的模型") is Some(_))
   assert_true(t.find("Opus 5.5 的额度已用完，发出的消息会等它恢复") is Some(_))
+  assert_true(t.find("继续 Maple 终端中的会话") is None)
   assert_true(t.find(offer) is None)
   assert_at((bx, by), { let (x, y, _, _) = composer_glass(t); (x, y) })
   // Willow again: as it was

@@ -207,9 +207,11 @@ fn tree_sel_at(x : Double, y : Double, finger? : Bool = false) -> SelTarget? {
 /// Whether a mouse at (x, y) is over a paragraph of the window's tree that can be picked (tree_sel_at's, where a press
 /// there picks), found by where each is drawn and cut alone, none laid out for it: what the pointer's shape is over
 /// (view_over_words), worked out as often as the pointer moves.
-fn tree_words_under(x : Double, y : Double) -> Bool {
+fn tree_words_under(x : Double, y : Double, laid? : Bool = true) -> Bool {
   guard pointing() is Mouse && view_app.val is Some(tree) else { return false }
-  tree.laid_as_now()
+  if laid {
+    tree.laid_as_now()
+  }
   let found = Ref(false)
   tree.each_drawn_scaled(fn(c, cx, cy, a, s) {
     if found.val || c.runs.is_empty() || a <= 0.0 || !tree.allows(c.id) {

@@ -6637,29 +6637,20 @@ fn view_point_said(kind : Int, x : Double, y : Double) -> Unit {
 ///|
 /// What a pointer's event left the pointer over, told as the event is taken: the tree brought to its moment (the moment
 /// of the event being taken: no other).
-fn view_pointed() -> Unit {
+fn view_pointed(bring? : Bool = true) -> Unit {
   match view_app.val {
     Some(tree) => {
-      tree.bring_to(view_moment())
+      if bring {
+        tree.bring_to(view_moment())
+      }
       // (over words of the tree's picked with the pointer, a press held nowhere: the pointer's shape over them,
       // view_cursor_tell)
       view_over_words.val = match (view_point.val, view_held.val) {
-        (Some((x, y)), None) => tree_words_under(x, y)
+        (Some((x, y)), None) => tree_words_under(x, y, laid=bring)
         _ => false
       }
       view_point_tell(tree)
     }
-    None => ()
-  }
-}
-
-///|
-/// `view_pointed` deferred until the enclosing event batch commits whole (`Tree::after_event`), so
-/// `tree.bring_to` / `tree_words_under` never pull property bindings and lay out / place the tree
-/// mid-batch before structural watches (`View::reacts`, `View::each`, `View::show`, `View::pick`) flush.
-fn view_pointed_after() -> Unit {
-  match view_app.val {
-    Some(tree) => tree.after_event(view_pointed)
     None => ()
   }
 }
