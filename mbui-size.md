@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a1d43e42e](https://github.com/AFK-surf/monoid/commit/a1d43e42e0ca2d45b906edc8695fe33f2b0d738f) perf(station): parse the config once for the hub a | 2.72 | 3.66 | 14.85 | 37.01 | 56.58 | 32.42 | 65.77 | 100.21 | 120.4 |
 | [325eea565](https://github.com/AFK-surf/monoid/commit/325eea565468095b067c87ce37a38a628efb2db7) feat(mbui): redesign new-chat station picker with  | 2.72 | 3.66 | 14.85 | 37.01 | 56.58 | 32.42 | 65.77 | 100.21 | 120.4 |
 | [fa41b1983](https://github.com/AFK-surf/monoid/commit/fa41b1983e6993fdb82c88effe193b665b1a0607) fix(station): skip oversize workspace compression, | 2.72 | 3.66 | 14.85 | 37.01 | 56.58 | 32.42 | 65.77 | 100.21 | 120.4 |
 | [2df6efdf7](https://github.com/AFK-surf/monoid/commit/2df6efdf7362439ed5b62f306459e51d1bd28a50) feat(ui): adopt liquid glass on service marks, ter | 2.72 | 3.66 | 14.85 | 37.01 | 56.58 | 32.42 | 65.77 | 100.21 | 120.4 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [62d0ee807](https://github.com/AFK-surf/monoid/commit/62d0ee80739d6256b3cabb8aee4c3cd1c6a2c2b0) fix(station): handle ENOENT races during replica l | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.53 | 126.63 |
 | [cfe9b1739](https://github.com/AFK-surf/monoid/commit/cfe9b17397e8a6986472d8b28e361497c06a94e1) fix(ci): refresh station-slice.sh weights and sort | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.53 | 126.63 |
 | [90b2506a3](https://github.com/AFK-surf/monoid/commit/90b2506a3adf95a64f48056797df9058cf4a2166) feat(core,station): follow only open chats' live e | 2.72 | 3.66 | 14.83 | 36.96 | 56.5 | 32.38 | 65.71 | 99.53 | 126.63 |
-| [ad2fcd4e1](https://github.com/AFK-surf/monoid/commit/ad2fcd4e12a21f8631a7517709682220b1683971) fix(ci): prewarm monoid core.hbc and overlap setup | 2.72 | 3.66 | 14.83 | 36.95 | 56.5 | 32.37 | 65.71 | 99.8 | 126.71 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a1d43e42e](https://github.com/AFK-surf/monoid/commit/a1d43e42e0ca2d45b906edc8695fe33f2b0d738f) perf(station): parse the config once for the hub a | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.41 |
 | [325eea565](https://github.com/AFK-surf/monoid/commit/325eea565468095b067c87ce37a38a628efb2db7) feat(mbui): redesign new-chat station picker with  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.12 |
 | [fa41b1983](https://github.com/AFK-surf/monoid/commit/fa41b1983e6993fdb82c88effe193b665b1a0607) fix(station): skip oversize workspace compression, | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.36 |
 | [2df6efdf7](https://github.com/AFK-surf/monoid/commit/2df6efdf7362439ed5b62f306459e51d1bd28a50) feat(ui): adopt liquid glass on service marks, ter | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.2 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [62d0ee807](https://github.com/AFK-surf/monoid/commit/62d0ee80739d6256b3cabb8aee4c3cd1c6a2c2b0) fix(station): handle ENOENT races during replica l | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.41 |
 | [cfe9b1739](https://github.com/AFK-surf/monoid/commit/cfe9b17397e8a6986472d8b28e361497c06a94e1) fix(ci): refresh station-slice.sh weights and sort | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.72 |
 | [90b2506a3](https://github.com/AFK-surf/monoid/commit/90b2506a3adf95a64f48056797df9058cf4a2166) feat(core,station): follow only open chats' live e | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 55.15 |
-| [ad2fcd4e1](https://github.com/AFK-surf/monoid/commit/ad2fcd4e12a21f8631a7517709682220b1683971) fix(ci): prewarm monoid core.hbc and overlap setup | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.78 | 4.82 | 54.9 |
