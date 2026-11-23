@@ -2418,13 +2418,25 @@ jobs:
       - name: The core's packages
         if: steps.hbc.outputs.kept != 'true'
         run: (cd client/core-ts && pnpm install --frozen-lockfile --prefer-offline --reporter=append-only > "$RUNNER_TEMP/packages.log" 2>&1) || { cat "$RUNNER_TEMP/packages.log"; exit 1; }
-      # (beside the build: kept, a copy; else made on the cores cl leaves)
+      # (beside the build: kept, a copy; else made on the cores cl leaves. Main 45097325791 waited 25 s for the build
+      # after this step, then made monoid's core (no PostHog) again for ~35 s at the job's end: monoid's is made here
+      # first, into HBC_CACHE, while the build runs, and still.fail's last, as out/core/core.hbc is what `win.sh put`
+      # takes. The installer's program is compiled beside them: it writes only out/setup-bare.)
       - name: The core's bytecode (Hermes) and the installer's own program
         run: |
-          export STILLFAIL_POSTHOG=${POSTHOG_FILE:-} MBUI_BUILD=$(git rev-list --count HEAD)
+          export MBUI_BUILD=$(git rev-list --count HEAD)
+          bash apps/mbui/scripts/win.sh setup-bare > "$RUNNER_TEMP/setup-bare.log" 2>&1 &
+          setup_bare=$!
+          if [ "${{ vars.MONOID_CI }}" = on ] && [ -n "${POSTHOG_FILE:-}" ] && [ "${{ steps.hbc.outputs.kept }}" != true ]; then
+            (unset STILLFAIL_POSTHOG; bash apps/mbui/scripts/win.sh core)
+          fi
+          export STILLFAIL_POSTHOG=${POSTHOG_FILE:-}
           bash apps/mbui/scripts/win.sh core
           [ ! -d .ci/hbc ] || echo "HBC_CACHE: $(ls .ci/hbc | wc -l) files, $(du -sm .ci/hbc | cut -f1) MB"
-          bash apps/mbui/scripts/win.sh setup-bare
+          setup_rc=0
+          wait "$setup_bare" || setup_rc=$?
+          cat "$RUNNER_TEMP/setup-bare.log"
+          exit "$setup_rc"
       # (the build waited for till what follows it still fits before the job's end (JOB_END): the core put beside it,
       # the installer packed, signed and its raw form zstd'd, its files put, 35 s; release.sh stopped by its own limit,
       # 25 s before the job's end, so the caches are saved after it: its files' put, the artifact and the caches ~18 s.
