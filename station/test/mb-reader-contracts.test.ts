@@ -62,6 +62,19 @@ const compared = (snippet: string) => new Set([...snippet.matchAll(/\bf === "([^
 /// Whether `name` is a method of the station's store.
 const storeHas = (storeText: string, name: string) => new RegExp(`^\\s+(?:async\\s+)?${name}\\s*[(<]`, "m").test(storeText);
 
+/// The methods a runtime's session has: AgentSession's (station/src/agents/runtime.ts) and those of every class whose
+/// name ends in `Session` there, by their heads at a member's indent. A driver's (`…Driver`) are not a session's.
+function sessionMethods(agents: string): Set<string> {
+  const out = new Set<string>();
+  const bodies = [...agents.matchAll(/^export interface AgentSession \{\n[\s\S]*?\n\}\n|^(?:export )?(?:abstract )?class \w*Session\b(?:<[^\n]*?>)?(?: extends [^\n{]*?)?(?: implements [^\n{]*?)? \{\n[\s\S]*?\n\}\n/gm)].map((m) => m[0]);
+  assert.ok(bodies.some((b) => b.startsWith("export interface AgentSession")), "station/src/agents/ has no AgentSession");
+  assert.ok(bodies.length >= 4, `the runtimes' session classes read: ${bodies.length}`);
+  for (const b of bodies) {
+    for (const m of b.matchAll(/^ {2}(?:(?:public|protected|private|override|abstract|async|static)\s+)*([A-Za-z_]\w*)\??\s*[(<]/gm)) if (m[1] !== "constructor") out.add(m[1]!);
+  }
+  return out;
+}
+
 const ACTOR_FILES = ["reader/actor_base.mbt", "reader/actor_run.mbt"];
 
 function actorSources(): Sources {
@@ -94,9 +107,10 @@ function actorWrong(s: Sources): string[] {
   const depsStart = actorTs.indexOf("export type SessionDeps =");
   assert.ok(depsStart >= 0, "actor.ts has no SessionDeps");
   const depsText = `${actorTs.slice(depsStart)}\n${mbActor}`;
-  // (the default of the agent block calls the runtime session's method of that name: one a driver declares, a method's
-  // head at a class's or an interface's indent, never MbActor's own `asked` or `told`)
-  const sessionMethod = (name: string) => new RegExp(`^ {2}(?:async\\s+)?${name}\\??\\s*\\(`, "m").test(s["src/agents"]!);
+  // (the default of the agent block calls the runtime session's method of that name: one of AgentSession's, or of a
+  // session class of a runtime's, never a driver's (`adopt`) nor MbActor's own `asked` or `told`)
+  const methods = sessionMethods(s["src/agents"]!);
+  const sessionMethod = (name: string) => methods.has(name);
   const storeText = `${mbActor}\n${actorTs}\n${s["src/store"]}`;
 
   const wrong: string[] = [];
@@ -151,6 +165,16 @@ test("the actors' matcher fails an agent_do that only MbActor's own method would
   assert.match(run, /self\.agent_do\(([^,]+), ([^,]+), "holding"/);
   const asked = actorWrong({ ...s, "reader/actor_run.mbt": run.replace(/self\.agent_do\(([^,]+), ([^,]+), "holding"/, 'self.agent_do($1, $2, "asked"') });
   assert.ok(asked.some((w) => w.includes('calls agent "asked"')), asked.join("\n"));
+});
+
+test("the actors' matcher fails an agent_do that only a driver's method would answer", () => {
+  const s = actorSources();
+  assert.match(s["src/agents"]!, /^ {2}(?:async\s+)?adopt\s*\(/m, "a driver's adopt, as read");
+  const run = s["reader/actor_run.mbt"]!;
+  const abort = /self\.agent_do\(([^,]+), ([^,]+), "abort"/;
+  assert.match(run, abort);
+  const adopt = actorWrong({ ...s, "reader/actor_run.mbt": run.replace(abort, 'self.agent_do($1, $2, "adopt"') });
+  assert.ok(adopt.some((w) => w.includes('calls agent "adopt"')), adopt.join("\n"));
 });
 
 // ── #jobs, #live and #remote ──

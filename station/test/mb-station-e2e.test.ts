@@ -8,10 +8,10 @@
 // that names no directory with a Node in it.
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { type AddressInfo, createServer, type Server } from "node:net";
-import { request } from "node:http";
+import { createServer as httpServer, request } from "node:http";
 import os, { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -90,6 +90,67 @@ const ok = async (op: string, a: Record<string, unknown> = {}) => {
 };
 
 // ── the commands ──
+
+/// A control plane of the test's (cloud/provider.ts's paths): each enroll and join answered as `answer` says, what was
+/// asked of it kept.
+async function plane(answer: (path: string, body: any) => { status: number; body: unknown }) {
+  const asked: { path: string; body: any }[] = [];
+  const server = httpServer((req, res) => {
+    let text = "";
+    req.on("data", (d) => (text += d));
+    req.on("end", () => {
+      const body = JSON.parse(text);
+      asked.push({ path: req.url!, body });
+      const a = answer(req.url!, body);
+      res.writeHead(a.status, { "content-type": "application/json" }).end(JSON.stringify(a.body));
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  after(() => server.close());
+  return { origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, asked };
+}
+
+/// Whether `signature` is the station's (its id, the Ed25519 key's public half) over `message`.
+function signedBy(id: string, message: string, signature: string): boolean {
+  const key = createPublicKey({ key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(id, "hex")]), format: "der", type: "spki" });
+  return verify(null, Buffer.from(message), key, Buffer.from(signature, "hex"));
+}
+
+/// The program run to its end without holding this process (the control plane of the test's answers meanwhile).
+function runSoon(args: string[]): Promise<{ code: number | null; out: string; err: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(binary!, args, { env: noNode(), stdio: ["ignore", "pipe", "pipe"] });
+    children.push(child);
+    let out = "";
+    let err = "";
+    child.stdout!.on("data", (d) => (out += d));
+    child.stderr!.on("data", (d) => (err += d));
+    child.on("close", (code) => resolve({ code, out, err }));
+  });
+}
+
+test("enroll and --join: the proof the plane is asked for is the station's own Ed25519 signature, and its place is written", { skip }, async () => {
+  const p = await plane((path, body) => {
+    if (path.endsWith("/join")) return { status: 200, body: { workspace: `w-${body.token}`, workspace_name: `团队 ${body.token}`, name: "mac" } };
+    return { status: 200, body: { workspace: "w1", workspace_name: "团队", name: "mac", relay_url: "", relay_urls: [], grant_keys: null } };
+  });
+  const data = fresh("enroll");
+  const id = run(["id", "--data", data]).out.trim();
+  assert.match(id, /^[0-9a-f]{64}$/);
+  const said = await runSoon(["enroll", `${p.origin}/`, "t1", "--data", data]);
+  assert.equal(said.code, 0, said.err);
+  const asked = p.asked.at(-1)!;
+  assert.equal(asked.path, "/v1/stations/enroll");
+  assert.ok(signedBy(id, `stillfail-station-enroll-v1:${p.origin}:t1:${id}`, asked.body.signature), "its proof is the station's");
+  assert.ok(!signedBy(id, `stillfail-station-enroll-v1:${p.origin}:t2:${id}`, asked.body.signature), "over its own token alone");
+  const place = JSON.parse(readFileSync(join(data, "mesh", "cloud.json"), "utf8"));
+  assert.deepEqual([place.station, place.workspace, place.origin], [id, "w1", p.origin]);
+  const joined = await runSoon(["enroll", p.origin, "t2", "--join", "--data", data]);
+  assert.equal(joined.code, 0, joined.err);
+  const join_ = p.asked.at(-1)!;
+  assert.equal(join_.path, "/v1/stations/join");
+  assert.ok(signedBy(id, `stillfail-station-enroll-v1:${p.origin}:t2:${id}`, join_.body.signature), "its join's proof is the station's");
+});
 
 test("the parts' registry (parts.mbt): tools offered, what is carried over and taken up, door places, cards, streams", { skip }, async () => {
   assert.deepEqual(await ok("parts"), {

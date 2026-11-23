@@ -605,7 +605,7 @@ if [ $full = 1 ]; then
   if part ts && touches "$ts_cloud"; then remembered "tests: cloud" "cloud client/i18n shared/lock.ts shared/log-keep.ts shared/rules-runtime.ts client/core-ts/src/lock-form.ts rules/js" after cloud sh -c 'cd cloud && pnpm test'; fi
   # The station: it and its tests run whenever it, one of its native parts or the words it says changed (station_paths:
   # scripts/plan.sh reads it from this line for CI's check-station).
-  station_paths='^station/|^shared/|^vendor/|^client/i18n/|^client/core-ts/src/features\.ts$|^client/shell/|^libs/mesh-transport/|^libs/ui/src/effect/|^libs/base/(src/|moon\.mod$)|^rules/(js|src)/|^pion/rules/js/|^rules/moon\.mod$|^scripts/native\.ts$|^scripts/station-slice\.sh$'
+  station_paths='^station/|^shared/|^vendor/|^client/i18n/|^client/core-ts/src/features\.ts$|^client/shell/|^libs/mesh-transport/|^libs/ui/src/effect/|^libs/base/(src/|moon\.mod$)|^rules/(js|src)/|^pion/rules/js/|^rules/moon\.mod$|^scripts/native\.ts$|^scripts/station-slice\.sh$|^scripts/check\.sh$'
   # Its tests' native parts, prebuilt (mesh addon, runner, the reader in MoonBit, and for darwin-arm64 and linux-x64
   # the Rust station's archive command, the launcher, which runs the whole station in mb-live-station.test.ts, and the
   # tests' MoonBit program with every package's harness, reader-harness: the mb-*.test.ts files').
