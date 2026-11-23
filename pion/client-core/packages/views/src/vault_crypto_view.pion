@@ -773,6 +773,7 @@ pub struct VaultApprovalRequest {
   pub mut decision_note : Option[String]
 }
 
+#verify
 fn scope_rank_vc(s : String) -> Int {
   if s == "once" {
     0
@@ -786,6 +787,7 @@ fn scope_rank_vc(s : String) -> Int {
 }
 
 /// Whether granting `grant_scope` is permitted under item/vault `lasts` cap (`vault/crypto.ts allows`).
+#verify
 pub fn vault_allows_scope(lasts : Option[String], grant_scope : String) -> Bool {
   let sr = scope_rank_vc(grant_scope)
   if sr < 0 {

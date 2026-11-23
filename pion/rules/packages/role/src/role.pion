@@ -24,6 +24,7 @@ pub enum Admission {
   NoMember
 }
 
+#verify
 pub fn rank(r : Role) -> Int {
   match r {
     Role::Viewer => 0
@@ -33,6 +34,7 @@ pub fn rank(r : Role) -> Int {
   }
 }
 
+#verify
 pub fn lower(a : Role, b : Role) -> Role {
   if rank(a) <= rank(b) {
     a
@@ -41,6 +43,7 @@ pub fn lower(a : Role, b : Role) -> Role {
   }
 }
 
+#verify
 pub fn may(who : Role, c : Change) -> Bool {
   let managing = rank(who) >= 2
   let owning = rank(who) == 3
@@ -54,6 +57,7 @@ pub fn may(who : Role, c : Change) -> Bool {
   }
 }
 
+#verify
 pub fn own_device(by_them : Bool, kept : Bool, who : Role, had_own : Bool) -> Bool {
   if by_them {
     true
@@ -66,6 +70,7 @@ pub fn own_device(by_them : Bool, kept : Bool, who : Role, had_own : Bool) -> Bo
   }
 }
 
+#verify
 pub fn one_if(b : Bool) -> Int {
   if b {
     1
@@ -74,6 +79,7 @@ pub fn one_if(b : Bool) -> Int {
   }
 }
 
+#verify
 pub fn keeps_owner(owners : Int, was : Bool, becomes : Bool) -> Bool {
   if becomes {
     true
@@ -84,10 +90,12 @@ pub fn keeps_owner(owners : Int, was : Bool, becomes : Bool) -> Bool {
   }
 }
 
+#verify
 pub fn takes_effect(own : Bool) -> Bool {
   own
 }
 
+#verify
 pub fn replaces(own_found : Bool, holds : Bool, live : Bool, member : Bool) -> Bool {
   if own_found {
     false
@@ -100,6 +108,7 @@ pub fn replaces(own_found : Bool, holds : Bool, live : Bool, member : Bool) -> B
   }
 }
 
+#verify
 pub fn admission(found : Bool, theirs : Bool, live : Bool, member : Bool) -> Admission {
   if !found {
     Admission::Unknown
@@ -114,6 +123,7 @@ pub fn admission(found : Bool, theirs : Bool, live : Bool, member : Bool) -> Adm
   }
 }
 
+#verify
 pub fn device_signs(app : Bool, holds : Bool, own : Bool, member : Bool) -> Bool {
   if !app {
     false
@@ -126,6 +136,7 @@ pub fn device_signs(app : Bool, holds : Bool, own : Bool, member : Bool) -> Bool
   }
 }
 
+#verify
 pub fn signed_by(found : Bool, whose : Bool) -> Bool {
   if found {
     whose
@@ -134,6 +145,7 @@ pub fn signed_by(found : Bool, whose : Bool) -> Bool {
   }
 }
 
+#verify
 pub fn cert_device_ok(own : Bool, ever : Bool) -> Bool {
   if own {
     true
@@ -142,6 +154,7 @@ pub fn cert_device_ok(own : Bool, ever : Bool) -> Bool {
   }
 }
 
+#verify
 pub fn cert_key_ok(current : Bool, ever : Bool, had : Bool) -> Bool {
   if current {
     true
@@ -152,6 +165,7 @@ pub fn cert_key_ok(current : Bool, ever : Bool, had : Bool) -> Bool {
   }
 }
 
+#verify
 pub fn key_ok(seen : Bool, member : Bool) -> Bool {
   if seen {
     false
@@ -160,6 +174,7 @@ pub fn key_ok(seen : Bool, member : Bool) -> Bool {
   }
 }
 
+#verify
 pub fn binds(mine : Bool, own : Bool) -> Bool {
   if !mine {
     false
@@ -168,6 +183,7 @@ pub fn binds(mine : Bool, own : Bool) -> Bool {
   }
 }
 
+#verify
 pub fn person_changes(held : Bool, lone : Bool) -> Bool {
   if !held {
     false
@@ -176,6 +192,7 @@ pub fn person_changes(held : Bool, lone : Bool) -> Bool {
   }
 }
 
+#verify
 pub fn person_admits(pinned : Bool, proved : Bool, held : Bool) -> Bool {
   if !pinned {
     false

@@ -1,5 +1,6 @@
 ///| Version ordering and expiry rules (`rules/src/history/history.mbt`).
 
+#verify
 pub fn follows(copy : Bool, held : Int64, next : Int64) -> Bool {
   if copy {
     next > held
@@ -8,6 +9,7 @@ pub fn follows(copy : Bool, held : Int64, next : Int64) -> Bool {
   }
 }
 
+#verify
 pub fn epoch_ok(gone : Bool, prev : Int64, next : Int64) -> Bool {
   if next < prev {
     false
@@ -18,10 +20,12 @@ pub fn epoch_ok(gone : Bool, prev : Int64, next : Int64) -> Bool {
   }
 }
 
+#verify
 pub fn deletion_ok(was : Bool, now : Bool) -> Bool {
   !was || now
 }
 
+#verify
 pub fn item_epoch_ok(deleted : Bool, copy : Bool, epoch : Int64, vault : Int64) -> Bool {
   if epoch > vault {
     false
@@ -32,10 +36,12 @@ pub fn item_epoch_ok(deleted : Bool, copy : Bool, epoch : Int64, vault : Int64) 
   }
 }
 
+#verify
 pub fn unexpired(lasts : Bool, exp : Int64, now : Int64) -> Bool {
   !lasts || exp > now
 }
 
+#verify
 pub fn supersedes(
   seq_a : Int64,
   deleted_a : Bool,
@@ -62,6 +68,7 @@ pub fn supersedes(
   }
 }
 
+#verify
 pub fn item_open(was : Bool) -> Bool {
   !was
 }
