@@ -166,20 +166,20 @@ function readerSaw(l: Layout): string[] {
   return readFileSync(l.readerLog, "utf8").trimEnd().split("\n");
 }
 
-test("a release with no admin CLI runs the reader with --data", { skip: skipUnix }, async (t) => {
+test("a release with no admin CLI runs the reader, told --data before the person's arguments", { skip: skipUnix }, async (t) => {
   const l = layout(t, { reader: true, node: true });
   const r = await run(join(l.app, "bin", "stillfail"), ["admin", ...args], envFor(l, { FAKE_EXIT: "4" }));
   assert.equal(r.code, 4, r.stderr);
   assert.equal(r.stdout, "");
   assert.equal(r.stderr, "reader ran\n");
-  assert.deepEqual(readerSaw(l), ["reader", "cmd=stillfail", `data=${l.data}`, "arg=admin", ...args.map((a) => `arg=${a}`), "arg=--data", `arg=${l.data}`]);
+  assert.deepEqual(readerSaw(l), ["reader", "cmd=stillfail", `data=${l.data}`, "arg=admin", "arg=--data", `arg=${l.data}`, ...args.map((a) => `arg=${a}`)]);
 });
 
 test("a release with admin-cli.js but no Node anywhere runs the reader", { skip: skipUnix }, async (t) => {
   const l = layout(t, { js: true, reader: true });
   const r = await run(join(l.app, "bin", "stillfail"), ["admin", "whoami"], envFor(l));
   assert.equal(r.code, 0, r.stderr);
-  assert.deepEqual(readerSaw(l), ["reader", "cmd=stillfail", `data=${l.data}`, "arg=admin", "arg=whoami", "arg=--data", `arg=${l.data}`]);
+  assert.deepEqual(readerSaw(l), ["reader", "cmd=stillfail", `data=${l.data}`, "arg=admin", "arg=--data", `arg=${l.data}`, "arg=whoami"]);
 });
 
 test("STILLFAIL_ADMIN_ENGINE=moonbit runs the reader where Node and admin-cli.js are there", { skip: skipUnix }, async (t) => {
@@ -187,7 +187,7 @@ test("STILLFAIL_ADMIN_ENGINE=moonbit runs the reader where Node and admin-cli.js
   const r = await run(join(l.app, "bin", "stillfail"), ["admin", ...args], envFor(l, { STILLFAIL_ADMIN_ENGINE: "moonbit", FAKE_EXIT: "5" }));
   assert.equal(r.code, 5, r.stderr);
   assert.equal(r.stdout, "");
-  assert.deepEqual(readerSaw(l), ["reader", "cmd=stillfail", `data=${l.data}`, "arg=admin", ...args.map((a) => `arg=${a}`), "arg=--data", `arg=${l.data}`]);
+  assert.deepEqual(readerSaw(l), ["reader", "cmd=stillfail", `data=${l.data}`, "arg=admin", "arg=--data", `arg=${l.data}`, ...args.map((a) => `arg=${a}`)]);
 });
 
 test("STILLFAIL_MB_READER names the reader the fallback runs", { skip: skipUnix }, async (t) => {
@@ -287,7 +287,97 @@ test("bin/stillfail admin is bin/admin-cli.ts run directly, against a local clou
   assert.ok(calls.includes("GET /v1/admin/me Bearer sfa_wrong"), calls.join("\n"));
 });
 
-// Windows' command: run where PowerShell is (with the same layouts), and read for the same order everywhere.
+test("STILLFAIL_CMD the caller gave is kept, to admin-cli and to the reader", { skip: skipUnix }, async (t) => {
+  const l = layout(t, { js: true, reader: true, node: true });
+  const byNode = await run(join(l.app, "bin", "stillfail"), ["admin", "whoami"], envFor(l, { STILLFAIL_CMD: "monoid" }));
+  assert.equal(byNode.code, 0, byNode.stderr);
+  assert.equal(parseReport(byNode.stdout).cmd, "monoid");
+  const byReader = await run(join(l.app, "bin", "stillfail"), ["admin", "whoami"], envFor(l, { STILLFAIL_CMD: "monoid", STILLFAIL_ADMIN_ENGINE: "moonbit" }));
+  assert.equal(byReader.code, 0, byReader.stderr);
+  assert.equal(readerSaw(l)[1], "cmd=monoid");
+});
+
+test("a STILLFAIL_NODE that is not there gives way to the release's Node before the PATH's", { skip: skipUnix }, async (t) => {
+  const l = layout(t, { js: true, reader: true, node: true });
+  // A node on the PATH that must not run.
+  writeFileSync(join(l.tools, "node"), "#!/bin/sh\necho path-node\nexit 9\n");
+  chmodSync(join(l.tools, "node"), 0o755);
+  const r = await run(join(l.app, "bin", "stillfail"), ["admin", "whoami"], envFor(l, { STILLFAIL_NODE: join(l.base, "no-node") }));
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(parseReport(r.stdout).who, "admin-cli.js");
+  // STILLFAIL_NODE a directory: not a Node either.
+  const dir = await run(join(l.app, "bin", "stillfail"), ["admin", "whoami"], envFor(l, { STILLFAIL_NODE: l.base }));
+  assert.equal(dir.code, 0, dir.stderr);
+  assert.equal(parseReport(dir.stdout).who, "admin-cli.js");
+  assert.equal(existsSync(l.readerLog), false, "the reader did not run");
+});
+
+// --data, as the reader's port takes it (station/mb/src/station_main/admin_cli.mbt): the data directory whose
+// mesh/cloud.json names the cloud, over STILLFAIL_DATA; the last one given counts.
+test("admin-cli takes --data, the last one given, over STILLFAIL_DATA; --data with no value exits 2", { skip: skipUnix }, async (t) => {
+  const seen: string[] = [];
+  const server = (name: string) => {
+    const s = createServer((req: IncomingMessage, res: ServerResponse) => {
+      seen.push(`${name} ${req.url}`);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ email: `${name}@example.test` }));
+    });
+    return new Promise<string>((resolve) => s.listen(0, "127.0.0.1", () => {
+      t.after(() => s.close());
+      resolve(`http://127.0.0.1:${(s.address() as { port: number }).port}`);
+    }));
+  };
+  const base = mkdtempSync(join(tmpdir(), "sf-admin-cli-data-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const dataWith = async (name: string) => {
+    const dir = join(base, `${name} data`);
+    mkdirSync(join(dir, "mesh"), { recursive: true });
+    writeFileSync(join(dir, "mesh", "cloud.json"), JSON.stringify({ origin: await server(name) }));
+    return dir;
+  };
+  const [envData, first, last] = [await dataWith("env"), await dataWith("first"), await dataWith("last")];
+  const env = { PATH: [dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter), HOME: base, STILLFAIL_NODE: process.execPath, STILLFAIL_MB_READER: join(base, "no-reader"), STILLFAIL_DATA: envData, STILLFAIL_ADMIN_KEY: "sfa_k" };
+  const cli = join(root, "bin", "admin-cli.ts");
+  const byEnv = await run(process.execPath, [cli, "whoami"], env);
+  assert.equal(byEnv.code, 0, byEnv.stderr);
+  assert.match(byEnv.stdout, /env@example\.test/);
+  const byFlag = await run(process.execPath, [cli, "--data", first, "whoami"], env);
+  assert.equal(byFlag.code, 0, byFlag.stderr);
+  assert.match(byFlag.stdout, /first@example\.test/);
+  const lastWins = await run(process.execPath, [cli, "--data", first, "whoami", "--data", last], env);
+  assert.equal(lastWins.code, 0, lastWins.stderr);
+  assert.match(lastWins.stdout, /last@example\.test/);
+  const noValue = await run(process.execPath, [cli, "whoami", "--data"], env);
+  assert.deepEqual(noValue, { code: 2, stdout: "", stderr: "--data requires a value\n" });
+  // Through the command: the person's --data over the data it was given.
+  const viaCommand = await run(join(root, "bin", "stillfail"), ["admin", "--data", last, "whoami"], env);
+  assert.equal(viaCommand.code, 0, viaCommand.stderr);
+  assert.match(viaCommand.stdout, /last@example\.test/);
+  assert.deepEqual(seen, ["env /v1/admin/me", "first /v1/admin/me", "last /v1/admin/me", "last /v1/admin/me"]);
+});
+
+test("admin-cli run through a link to it runs, as it does by its own path", { skip: skipUnix }, async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "sf-admin-cli-link-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const link = join(base, "admin-cli.ts");
+  symlinkSync(join(root, "bin", "admin-cli.ts"), link);
+  const env = { PATH: [dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter), HOME: base };
+  const linked = await run(process.execPath, [link, "--help"], env);
+  const direct = await run(process.execPath, [join(root, "bin", "admin-cli.ts"), "--help"], env);
+  assert.equal(linked.code, 0, linked.stderr);
+  assert.match(linked.stdout, /^Usage: stillfail admin/);
+  assert.deepEqual(linked, direct);
+  // A clone whose bin/admin-cli.ts is a link, run by the command.
+  const app = join(base, "app");
+  mkdirSync(join(app, "bin"), { recursive: true });
+  copyFileSync(join(root, "bin", "stillfail"), join(app, "bin", "stillfail"));
+  chmodSync(join(app, "bin", "stillfail"), 0o755);
+  symlinkSync(join(root, "bin", "admin-cli.ts"), join(app, "bin", "admin-cli.ts"));
+  const viaCommand = await run(join(app, "bin", "stillfail"), ["admin", "--help"], { ...env, STILLFAIL_NODE: process.execPath, STILLFAIL_DATA: base });
+  assert.deepEqual(viaCommand, direct);
+});
+
+// Windows' command, read for the same order everywhere, and run under every PowerShell there (CI's ui-windows).
 function adminBlock(): string {
   const ps1 = readFileSync(join(root, "bin", "stillfail.ps1"), "utf8");
   const start = ps1.indexOf("{ $a[0] -eq 'admin' } {");
@@ -303,36 +393,74 @@ test("bin/stillfail.ps1's admin branch takes Node's admin CLI before the reader,
     assert.ok(i >= 0, `the admin branch says ${s}`);
     return i;
   };
-  const engine = at("$engine = if ($env:STILLFAIL_ADMIN_ENGINE)");
-  const refuse = at("if ($engine -notin '', 'node', 'moonbit')");
-  const nodeOnly = at("if ($engine -ne 'moonbit') {");
+  const cmd = at("if (-not $env:STILLFAIL_CMD) { $env:STILLFAIL_CMD = ");
+  const rest = at("$rest = @(if ($a.Count -gt 1)");
+  const refuse = at("if ($engine -cnotin '', 'node', 'moonbit')");
+  const native = at("$ErrorActionPreference = 'Continue'");
+  const nodeOnly = at("if ($engine -cne 'moonbit') {");
+  const nodeOrder = at("@($env:STILLFAIL_NODE, (Join-Path $here 'node\\node.exe'))");
+  const byPath = at("Get-Command node");
   const built = at("Join-Path $here 'station\\admin-cli.js'");
   const src = at("Join-Path $here 'bin\\admin-cli.ts'");
-  const byNode = at("& $node $entry @rest");
-  const nodeAsked = at("if ($engine -eq 'node')");
-  const byReader = at("& $reader admin @rest --data $data");
-  assert.ok(engine < refuse && refuse < nodeOnly && nodeOnly < built && built < src && src < byNode && byNode < nodeAsked && nodeAsked < byReader);
-  assert.equal(block.split("& $reader admin").length, 2, "the reader is called in one place, after Node's");
-  assert.equal(block.split("& $node ").length, 2, "Node is called in one place");
-  assert.ok(at("$env:STILLFAIL_DATA = $data") < byNode && at("$env:STILLFAIL_CMD = ") < byNode, "admin-cli is told the data and the command");
-  assert.doesNotMatch(block.slice(byNode, block.indexOf("\n", byNode)), /--data/, "admin-cli takes no --data");
-  assert.match(block.slice(byNode), /^& \$node \$entry @rest\r?\n\s+exit \$LASTEXITCODE/, "admin-cli's exit code is the command's");
+  const byNode = at("RunNative $node (@($entry) + $rest)");
+  const nodeAsked = at("if ($engine -ceq 'node')");
+  const byReader = at("RunNative $reader (@('admin', '--data', $data) + $rest)");
+  assert.ok(cmd < rest && rest < refuse && refuse < native && native < nodeOnly && nodeOnly < nodeOrder && nodeOrder < byPath && byPath < built && built < src && src < byNode && byNode < nodeAsked && nodeAsked < byReader);
+  assert.equal(block.split("RunNative ").length, 3, "Node and the reader are each called in one place");
+  assert.doesNotMatch(block, /-(notin|ne|eq) '(node|moonbit)'/, "the engine is matched by case, as bin/stillfail does");
 });
 
-test("bin/stillfail.ps1 admin under PowerShell", { skip: process.platform === "win32" ? false : "PowerShell's paths (station\\admin-cli.js) are Windows'" }, async (t) => {
+const powershells = process.platform === "win32" ? ["powershell.exe", "pwsh.exe"] : [];
+
+test("bin/stillfail.ps1 admin under each PowerShell", { skip: process.platform === "win32" ? false : "PowerShell's paths (station\\admin-cli.js) are Windows'" }, async (t) => {
   const base = mkdtempSync(join(tmpdir(), "sf-admin-wrapper-ps-"));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const app = join(base, "app");
   mkdirSync(join(app, "bin"), { recursive: true });
   mkdirSync(join(app, "station"), { recursive: true });
   copyFileSync(join(root, "bin", "stillfail.ps1"), join(app, "bin", "stillfail.ps1"));
-  writeFileSync(join(app, "station", "admin-cli.js"), reportJs("admin-cli.js"));
-  // A "reader" that would leave a mark: it must not run.
-  writeFileSync(join(app, "station", "stillfail-reader.exe"), "");
+  const adminJs = join(app, "station", "admin-cli.js");
+  writeFileSync(adminJs, reportJs("admin-cli.js"));
+  // The reader: a .cmd that runs Node on what reports what it was given.
+  writeFileSync(join(base, "reader.js"), reportJs("reader"));
+  const reader = join(base, "reader.cmd");
+  writeFileSync(reader, `@"${process.execPath}" "${join(base, "reader.js")}" %*\r\n@exit /b %ERRORLEVEL%\r\n`);
   const data = join(base, "data dir");
   mkdirSync(data);
-  const env = { ...process.env, STILLFAIL_DATA: data, STILLFAIL_NODE: process.execPath } as Record<string, string>;
-  const r = await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", join(app, "bin", "stillfail.ps1"), "admin", "whoami", "--json"], { ...env, FAKE_EXIT: "3" });
-  assert.equal(r.code, 3, r.stderr);
-  assert.deepEqual(parseReport(r.stdout), { who: "admin-cli.js", args: ["whoami", "--json"], cmd: "stillfail", data });
+  // (Windows' own variables kept, cmd.exe's among them; none of the station's)
+  const env: Record<string, string> = Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined && !/^STILLFAIL_|^FAKE_/i.test(e[0])));
+  Object.assign(env, { STILLFAIL_DATA: data, STILLFAIL_NODE: process.execPath, STILLFAIL_MB_READER: reader });
+  let ran = 0;
+  for (const ps of powershells) {
+    const probe = await run(ps, ["-NoProfile", "-Command", "exit 0"], env).catch(() => null);
+    if (!probe || probe.code !== 0) {
+      assert.notEqual(ps, "powershell.exe", "Windows PowerShell is on every Windows");
+      continue;
+    }
+    ran++;
+    const admin = (argv: string[], more: Record<string, string> = {}) =>
+      run(ps, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", join(app, "bin", "stillfail.ps1"), "admin", ...argv], { ...env, ...more });
+    for (const argv of [[], ["whoami"], ["--help"], ["whoami", "--json", "a b"]]) {
+      const r = await admin(argv);
+      assert.equal(r.code, 0, `${ps} ${argv.join(" ")}: ${r.stderr}`);
+      assert.deepEqual(parseReport(r.stdout), { who: "admin-cli.js", args: argv, cmd: "stillfail", data }, `${ps} ${argv.join(" ")}`);
+    }
+    const kept = await admin(["whoami"], { STILLFAIL_CMD: "monoid" });
+    assert.equal(parseReport(kept.stdout).cmd, "monoid", ps);
+    const failed = await admin(["whoami"], { FAKE_EXIT: "3" });
+    assert.equal(failed.code, 3, `${ps}: ${failed.stderr}`);
+    assert.equal(failed.stderr.trim(), "to stderr from admin-cli.js", ps);
+    const moonbit = await admin(["whoami"], { STILLFAIL_ADMIN_ENGINE: "moonbit", FAKE_EXIT: "4" });
+    assert.equal(moonbit.code, 4, `${ps}: ${moonbit.stderr}`);
+    assert.deepEqual(parseReport(moonbit.stdout), { who: "reader", args: ["admin", "--data", data, "whoami"], cmd: "stillfail", data }, ps);
+    const cased = await admin(["whoami"], { STILLFAIL_ADMIN_ENGINE: "MoonBit" });
+    assert.equal(cased.code, 2, ps);
+    assert.equal(cased.stderr.trim(), "stillfail admin: STILLFAIL_ADMIN_ENGINE must be node or moonbit, not MoonBit", ps);
+    rmSync(adminJs);
+    const fallback = await admin(["whoami"]);
+    assert.equal(fallback.code, 0, `${ps}: ${fallback.stderr}`);
+    assert.equal(parseReport(fallback.stdout).who, "reader", ps);
+    writeFileSync(adminJs, reportJs("admin-cli.js"));
+  }
+  assert.ok(ran > 0, "a PowerShell ran");
 });
