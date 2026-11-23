@@ -1633,6 +1633,9 @@ export function vaultReady(inner: Inner): void {
 /// This app's box key's public half: the one kept, else made now (its private half in the secure storage, written
 /// without asking the person) and kept. One at a time in this core (`boxInit`).
 export function ensureBoxKey(inner: Inner): Effect.Effect<string, CoreError> {
+  // A typed failure, not a defect: `pairBoxCerts` is wrapped in `Effect.orElseSucceed` whenever `appKeys` is true,
+  // including on hosts without `secureSet` (a `NodeHost` without a sealer).
+  if (!able(inner)) return fail("vault_unavailable", t("core-misc.vault.unavailable"));
   const m = mem(inner);
   return m.boxInit.withPermits(1)(Effect.gen(function* () {
     const had = yield* Effect.orElseSucceed(inner.host.storageGet(BOX_PUB), () => null);
