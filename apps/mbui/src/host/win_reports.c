@@ -845,6 +845,15 @@ static int sf_win_wd_on_probe(sf_win_wd_state *st, int active, int timed_out, ui
   return 0;
 }
 
+static int32_t sf_win_crash_mask_for_kind(const char *kind) {
+  if (!kind) return 0;
+  if (strcmp(kind, "crash") == 0) return 1;
+  if (strcmp(kind, "watchdog_hang") == 0) return 2;
+  if (strcmp(kind, "memory_runaway") == 0) return 4;
+  if (strcmp(kind, "hang") == 0) return 8;
+  return 0;
+}
+
 #ifndef SF_REPORTS_PURE
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -888,6 +897,7 @@ static volatile LONG sf_flush_crashes = 0;
 
 static volatile LONG sf_monitor_installed = 0;
 static volatile LONG sf_in_crash = 0;
+static volatile LONG sf_crash_pending_read = 0;
 static DWORD sf_main_tid = 0;
 static WCHAR sf_crashes_dir[MAX_PATH];
 static LPTOP_LEVEL_EXCEPTION_FILTER sf_prev_exception_filter = NULL;
@@ -1185,6 +1195,51 @@ static int sf_win_post_batch(const char *body) {
   if (c) WinHttpCloseHandle(c);
   WinHttpCloseHandle(s);
   return ok;
+}
+
+// Read-only scan of pending crash/watchdog files for crash_pending bitmask (returned at most once per process).
+static int32_t sf_win_pending_crash_mask(void) {
+  if (!sf_win_has_key() || !sf_win_reporting() || !sf_crashes_dir[0]) return 0;
+  if (InterlockedExchange(&sf_crash_pending_read, 1) != 0) return 0;
+  WCHAR pattern[MAX_PATH];
+  if (swprintf(pattern, MAX_PATH, L"%ls\\*.json", sf_crashes_dir) < 0) return 0;
+  WIN32_FIND_DATAW fd;
+  HANDLE h = FindFirstFileW(pattern, &fd);
+  if (h == INVALID_HANDLE_VALUE) return 0;
+  int32_t mask = 0;
+  int scanned = 0;
+  do {
+    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+    if (scanned >= SF_WIN_MAX_KEPT) break;
+    WCHAR fpath[MAX_PATH];
+    if (swprintf(fpath, MAX_PATH, L"%ls\\%ls", sf_crashes_dir, fd.cFileName) < 0) continue;
+    HANDLE f = CreateFileW(fpath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) continue;
+    LARGE_INTEGER sz;
+    char *raw = NULL;
+    if (GetFileSizeEx(f, &sz) && sz.QuadPart > 0 && sz.QuadPart < 64 * 1024) {
+      raw = (char *)malloc((size_t)sz.QuadPart + 1);
+      if (raw) {
+        DWORD got = 0;
+        if (ReadFile(f, raw, (DWORD)sz.QuadPart, &got, NULL)) raw[got] = '\0';
+        else {
+          free(raw);
+          raw = NULL;
+        }
+      }
+    }
+    CloseHandle(f);
+    if (!raw) continue;
+    sf_win_crash_rec rec;
+    if (sf_win_parse_crash_json(raw, &rec)) {
+      mask |= sf_win_crash_mask_for_kind(rec.kind);
+      scanned++;
+    }
+    free(raw);
+  } while (FindNextFileW(h, &fd));
+  FindClose(h);
+  return mask;
 }
 
 static void sf_win_flush_crashes(void) {
@@ -1584,6 +1639,10 @@ int32_t mb_stillfail_tell(moonbit_string_t what_, moonbit_string_t a_, moonbit_s
       free(json);
     }
     return 0;
+  }
+  if (strcmp(what, "crash_pending") == 0) {
+    free(what);
+    return sf_win_pending_crash_mask();
   }
   free(what);
   return 0;
