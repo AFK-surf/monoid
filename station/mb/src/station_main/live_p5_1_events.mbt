@@ -390,7 +390,8 @@ fn P51::events_live(self : P51) -> EventsLive {
 let p51_events_handed : Ref[@effect.Deferred[Unit]?] = Ref(None)
 
 ///|
-/// Waits, as the process ends, for its events to be handed over: a read under way when it stopped ends first.
+/// Waits, as the process ends, for its events to be handed over: a read under way when it stopped ends first. Then
+/// its readers end (3 s at most), so none outlives the process.
 pub async fn live_p5_1_handed() -> Unit {
   if p51_events_handed.val is Some(d) {
     ignore(@effect.timeout(5_000, async fn() { d.wait() })) // timer: a deadline to the process's end
@@ -398,6 +399,10 @@ pub async fn live_p5_1_handed() -> Unit {
       Some({ readers: Some(r), .. }) => r.close()
       _ => ()
     }
+  }
+  match p51_live.val {
+    Some({ readers: Some(r), .. }) => r.ended(3_000)
+    _ => ()
   }
   match p51_live.val {
     Some({ mesh: Some({ served: Some(s), .. }), .. }) => s.wait_closed()

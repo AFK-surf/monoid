@@ -597,6 +597,27 @@ fn Readers::close(self : Readers) -> Unit {
   }
 }
 
+///|
+/// Waits, `ms` at most, until the readers `close` stopped have ended: the station's process does not end while a
+/// reader of its own still runs (its tests' files fail on a process left after them).
+async fn Readers::ended(self : Readers, ms : Int) -> Unit {
+  let procs : Array[MbProc] = []
+  for line in [self.moved, self.pages, self.log] {
+    for s in line.slots {
+      procs.push(s.proc)
+    }
+  }
+  ignore(
+    @effect.timeout(ms, async fn() { // timer: a deadline to the readers' end
+      for p in procs {
+        if !p.gone {
+          p.ended.wait()
+        }
+      }
+    }),
+  )
+}
+
 // ── old state prepared by its builders, as a read asks ──
 
 ///|
