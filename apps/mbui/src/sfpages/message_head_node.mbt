@@ -59,7 +59,7 @@ fn message_agent_of(here : MessageNodeHere, agent : String) -> String {
 
 ///|
 /// An agent's picture (agent_avatar's) in `v`: its model's `maker` (its `runtime`'s where none is said; still.fail's
-/// mark without either) on the neutral ground, 18 round, one piece in bones; `corner` (slack | feishu; "" none), that
+/// mark without either) on the neutral ground, 18 round, one piece in bones; `corner` (a Place's surface; "" none), that
 /// place's mark on its corner, where a place is said at all (None: an agent's own message, which never has one: no node
 /// held for it); `bare`, its mark alone with no ground under it (an agent at work's, its ring round it). Each as it
 /// changes. Its node (what its agent's card is over: message_agent_card_node).
@@ -100,15 +100,15 @@ fn agent_avatar_node(
 
 ///|
 /// A place's mark on the corner of the picture `v` holds (place_corner's): over it, 14 round, 6 past its right and
-/// foot, on the list's ground with a line round it; Feishu's for feishu, Slack's for any other, none for "".
+/// foot, on the list's ground with a line round it; its platform's (`@sf.place_mark_name`'s) for `surface`, none for "".
 fn place_corner_node(v : @view.View, surface : () -> String) -> Unit {
   v.box(fn(o) {
     o.over(Is(true)) |> ignore
     @sf.style_node(o, fn() { place_corner_room })
     o.show(fn() { surface() != "" }, fn(k) {
       @sf.style_node(k, fn() { place_corner_mark })
-      k.pick(fn() { if surface() == "feishu" { "feishu" } else { "slack" } }, fn(d, name) {
-        @sf.drawable_node(d, name, place_corner_side) |> ignore
+      k.pick(fn() { @sf.place_mark_name(surface(), @sf.theme().dark) }, fn(d, name) {
+        @sf.place_mark_node(d, name, place_corner_side) |> ignore
       })
     })
   })

@@ -118,6 +118,8 @@ pub async fn cc(w : World, thread : J, who : String, email : String, said : Stri
         let surface = str_of(at(target, "surface")).unwrap_or("")
         let place = if starts(surface, "feishu:") {
           "Feishu"
+        } else if starts(surface, "comma:") {
+          "Comma"
         } else if starts(surface, "group:") {
           "group"
         } else {

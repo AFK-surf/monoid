@@ -287,9 +287,18 @@ export function plainText(text: string): string {
 export const splitWhitespace = titles.splitWhitespace;
 
 
-/// Where a Slack or Feishu thread is, in words: #channel, 私信, the Feishu group; null for a still.fail chat.
+/// Where a Slack, Feishu, Comma or group thread is, in words (titles.ts placeName); null for a still.fail chat.
 export function placeName(surface: string, channel: string, channelName: string): string | null {
   return titles.placeName(surface, channel, channelName, { directMessage: tr(current(), "core-views.direct_message"), feishu: tr(current(), "core-logic.format.thread.feishu") });
+}
+
+/// The platform of a thread that is not a still.fail chat, by its surface (`feishu:…`, `comma:…`, `group:…`, else
+/// Slack's) or a Feishu chat's id: a Place's `surface`, the mark the app draws it with.
+export function placeKind(surface: string, channel: string): "feishu" | "comma" | "group" | "slack" {
+  if (surface.startsWith("feishu:") || isFeishuChat(channel)) return "feishu";
+  if (surface.startsWith("comma:")) return "comma";
+  if (surface.startsWith("group:")) return "group";
+  return "slack";
 }
 
 /// What a chat is called, as its station calls it (read/views.ts titleOf): the name people gave it, else the one its
@@ -368,6 +377,10 @@ export function place(threads: unknown[], address: string, offsetMin: number, wo
     const connect = surface?.startsWith("feishu:") ? workspaces.get(surface) : undefined;
     return { name: n, surface: "feishu", session, url: feishuChatUrl(connect?.url ?? feishuApplink(null), channel) };
   }
+  // A Comma Task is in no channel (`TASK`) and opens in no Slack: Comma by name (placeName's) and mark (originOf's rule).
+  if (surface?.startsWith("comma:")) return { name: n, surface: "comma", session };
+  // A group connect's conversation: by its name, no #, Group's mark.
+  if (surface?.startsWith("group:")) return { name: str(get(thread, "channelName")) || tr(current(), "core-views.group"), surface: "group", session };
   const teamId = surface?.startsWith("slack:") ? surface.slice(6) : null;
   const team = teamId !== null ? workspaces.get(teamId) : undefined;
   const teamName = team && team.name !== "" ? team.name : null;

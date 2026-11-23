@@ -289,7 +289,7 @@ export const COMMON_SHAPES: Record<string, Shape> = {
   ], { doc: "A range of a text, `from` to `to` (UTF-16 units)." }),
   Place: struct([
     ["name", "String", { said: true, doc: "A still.fail chat's title, or a Slack thread's workspace and channel (`Cue#ops`)." }],
-    ["surface", "String", { doc: "chat (the station's own) | slack | feishu" }],
+    ["surface", "String", { doc: "chat (the station's own) | slack | feishu | comma | group" }],
     ["session", opt("String")],
     ["url", opt("String"), { doc: "A Slack thread's link in Slack, while a connect is signed in to its workspace; a Feishu chat's in Feishu." }],
     ["app", opt("String"), { doc: "A Slack thread's link into Slack's app (slack://), at the message when it is one of the thread's: it opens\nwithout a browser's page first. Present once the station knows the thread's workspace." }],

@@ -90,7 +90,7 @@ pub(all) struct Choice {
 /// What marks a choice (its `mark`), said as what it is, so that a sheet of the old frame and a panel of the window's
 /// tree each draw it their own way (choice_mark, choice_mark_node): a station's (`OfStation`: its emoji and its icon,
 /// station_icon's, this machine's or a station's where it has none (`here`), in `ink` as it is now), or a picture of
-/// the app's by name in its own colours (`Drawn`: a maker's, Slack's).
+/// the app's by name (`Drawn`: a maker's, Slack's; in its own colours, Comma's one colour in the page's ink).
 pub(all) enum ChoiceMark {
   OfStation(String, String, Bool, () -> Int64)
   Drawn(String)
@@ -110,7 +110,7 @@ pub fn choice_mark_node(parent : @view.View, m : ChoiceMark, size : Double, loc~
         } else {
           icon_node(b, if here { "monitor" } else { "server" }, size, By(ink)) |> ignore
         }
-      Drawn(name) => drawable_node(b, name, size) |> ignore
+      Drawn(name) => place_mark_node(b, name, size) |> ignore
     }
   })
   |> ignore

@@ -259,9 +259,7 @@ fn sent_elsewhere_body(v : @view.View, src : Source, here : MessageNodeHere, key
           })
           |> ignore
         } else {
-          let pic = agent_avatar_node(a, fn() { s().by.maker }, fn() { s().by.runtime }, corner=Some(fn() {
-            if surface() == "feishu" { "feishu" } else { "slack" }
-          }))
+          let pic = agent_avatar_node(a, fn() { s().by.maker }, fn() { s().by.runtime }, corner=Some(surface))
           // (one of the chat's agents': its card over its picture, as the old row's agent_avatar has it)
           message_agent_card_node(pic, src, here, agent, pointed=true)
         }

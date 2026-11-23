@@ -29,6 +29,9 @@ final class Reports {
             case "signed_in":
                 Crashes.report(app, a);
                 return 0;
+            // bitmask of pending crash/ANR/MemoryRunaway diagnostics from the previous run (once per process)
+            case "crash_pending":
+                return Crashes.pendingCrashMask(app);
             // the core failed, its reason (Crashes.coreFailed: StillFailCore.onFailed's)
             case "core_failed":
                 Crashes.coreFailed(app, a);

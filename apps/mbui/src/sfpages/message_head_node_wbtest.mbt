@@ -96,6 +96,7 @@ fn head_cases() -> Array[(String, Elsewhere)] {
     ("failed", head_said(failed=true)),
     ("received", head_said(received=true)),
     ("feishu", head_said(surface="feishu", url="")),
+    ("comma", head_said(surface="comma", url="")),
     ("own", head_said(surface="chat", url="", maker=false)),
   ]
 }

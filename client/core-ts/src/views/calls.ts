@@ -17,6 +17,7 @@ import * as refs from "../refs.ts";
 import type { SpanContext } from "../trace.ts";
 import { StationAddr } from "../station/addr.ts";
 import { MOVED } from "../station/requests.ts";
+import type { SendTraceHandle } from "../station/send-trace.ts";
 import { arr as arrU, get as getU, hex } from "../util.ts";
 import { PENDING_PREFIX, sentAs } from "./local.ts";
 import type { Views } from "./views.ts";
@@ -61,6 +62,39 @@ export class ViewCalls {
   readonly #deliveries = new Map<string, Deferred.Deferred<unknown, CoreError>>();
   readonly #tails = new Map<string, Deferred.Deferred<unknown, CoreError>>();
   readonly #writes = new Map<string, Deferred.Deferred<unknown, CoreError>>();
+  readonly #pendingTraces = new Map<string, { trace: SendTraceHandle; queueKey: string }>();
+
+  #sessionFor(station: string, thread: number): string | null {
+    const row = this.#inner.data.chatOfThread(station, thread);
+    const id = get(row, "id");
+    if (typeof id === "string" && id !== "") return id;
+    const raw = this.#views.threadOf(station, thread);
+    const first = arr(get(raw, "sessions")).map((m) => get(m, "session")).find((s) => typeof s === "string" && s !== "");
+    return typeof first === "string" ? first : null;
+  }
+
+  #takeTrace(id: string): SendTraceHandle | null {
+    const item = this.#pendingTraces.get(id);
+    if (item === undefined) return null;
+    this.#pendingTraces.delete(id);
+    return item.trace;
+  }
+
+  #failPendingTraces(queueKey: string): void {
+    for (const [id, item] of [...this.#pendingTraces]) {
+      if (item.queueKey !== queueKey) continue;
+      this.#pendingTraces.delete(id);
+      item.trace.failed();
+    }
+  }
+
+  #movePendingTraces(fromQueueKey: string, toQueueKey: string, nextStation: string): void {
+    for (const item of this.#pendingTraces.values()) {
+      if (item.queueKey !== fromQueueKey) continue;
+      item.queueKey = toQueueKey;
+      item.trace.bindStation(nextStation);
+    }
+  }
 
   constructor(inner: Inner, views: Views) {
     this.#inner = inner;
@@ -131,7 +165,7 @@ export class ViewCalls {
 
   /// Posts an outgoing message into a chat: it leaves the outbox as the chat's entries reach it; a failure leaves it
   /// there as `failed`.
-  deliver(station: string, thread: number, id: string, ctx: SpanContext | null, retry = false): Effect.Effect<unknown, CoreError> {
+  deliver(station: string, thread: number, id: string, ctx: SpanContext | null, retry = false, trace: SendTraceHandle | null = null): Effect.Effect<unknown, CoreError> {
     return Effect.suspend(() => {
       const chat = `${station}:${thread}`;
       const key = `${chat}:${id}`;
@@ -141,7 +175,7 @@ export class ViewCalls {
       const done = Deferred.makeUnsafe<unknown, CoreError>();
       this.#deliveries.set(key, done);
       this.#tails.set(chat, done);
-      return Effect.andThen(before ? Effect.ignore(Deferred.await(before)) : Effect.void, this.#deliver(station, thread, id, ctx, retry)).pipe(
+      return Effect.andThen(before ? Effect.ignore(Deferred.await(before)) : Effect.void, this.#deliver(station, thread, id, ctx, retry, trace)).pipe(
         Effect.onExit((exit) => Effect.sync(() => {
           Deferred.doneUnsafe(done, exit);
           this.#deliveries.delete(key);
@@ -151,10 +185,13 @@ export class ViewCalls {
     });
   }
 
-  #deliver(station: string, thread: number, id: string, ctx: SpanContext | null, retry: boolean): Effect.Effect<unknown, CoreError> {
+  #deliver(station: string, thread: number, id: string, ctx: SpanContext | null, retry: boolean, trace: SendTraceHandle | null): Effect.Effect<unknown, CoreError> {
     return Effect.gen({ self: this }, function* () {
       let entry = this.#local.outboxGet(station, thread, id);
-      if (entry === undefined) return yield* Effect.fail(CoreError.invalid(t("core-misc.call.no_outbox")));
+      if (entry === undefined) {
+        trace?.failed();
+        return yield* Effect.fail(CoreError.invalid(t("core-misc.call.no_outbox")));
+      }
       let restoring = false;
       const result = yield* Effect.result(Effect.gen({ self: this }, function* () {
         if (entry.uploads?.length) {
@@ -186,26 +223,40 @@ export class ViewCalls {
       const now = this.#local.outboxGet(station, thread, id) === undefined ? this.#inner.data.chatNow(station, { thread }) : null;
       const there = now !== null && now.thread !== null && this.#local.outboxGet(now.station, now.thread, id) !== undefined ? now : null;
       if (result._tag === "Success") {
-        if (result.success === null) return null;
+        if (result.success === null) {
+          trace?.failed();
+          return null;
+        }
         if (there !== null) {
           this.#views.outboxSent(there.station, there.thread!, id, result.success);
+          trace?.bindStation(there.station);
+          trace?.bindThread(there.thread!);
+          trace?.acked(this.#sessionFor(there.station, there.thread!));
           return { seq: result.success };
         }
         this.#views.outboxSent(station, thread, id, result.success);
+        trace?.acked(this.#sessionFor(station, thread));
         return { seq: result.success };
       }
-      if (there !== null) return yield* this.deliver(there.station, there.thread!, id, ctx, retry);
+      if (there !== null) {
+        trace?.bindStation(there.station);
+        trace?.bindThread(there.thread!);
+        return yield* this.deliver(there.station, there.thread!, id, ctx, retry, trace);
+      }
       if (result.failure.code === MOVED) {
         const moved = this.#inner.data.chatNow(station, { thread });
         if (moved !== null && moved.thread !== null) {
           this.#local.moved(station, moved.session, thread, moved.station, moved.thread);
-          return yield* this.deliver(moved.station, moved.thread, id, ctx, retry);
+          trace?.bindStation(moved.station);
+          trace?.bindThread(moved.thread);
+          return yield* this.deliver(moved.station, moved.thread, id, ctx, retry, trace);
         }
       }
       // A 400 is the station refusing the message as it is (a file it does not have: one that went up to another
       // station): sent again, it would be refused again.
       // Not reached (no answer at all): sent again once its station is (`stationBack`).
       this.#local.outboxState(station, thread, id, result.failure.message, !restoring && result.failure.status === 400, result.failure.status === undefined && unreachedCode(result.failure));
+      trace?.failed();
       return yield* Effect.fail(result.failure);
     });
   }
@@ -227,6 +278,7 @@ export class ViewCalls {
     // Its station down as it was asked for: asked once it is reached again (`stationBack`).
     if (!this.#inner.stations.reachable(station)) {
       this.#local.pendingFailed(key, t("core-misc.call.waitingStation"), true);
+      this.#failPendingTraces(`p:${key}`);
       return;
     }
     this.#inner.runner.fork(
@@ -247,6 +299,7 @@ export class ViewCalls {
           // The station may have made the chat before its connection went away. It recognizes this request by its
           // client key, so the first message can continue to that same chat when the station comes back.
           this.#local.pendingFailed(key, made.failure.message, made.failure.status === undefined && unreachedCode(made.failure));
+          this.#failPendingTraces(`p:${key}`);
           return;
         }
         const [session, thread, answer] = made.success;
@@ -254,7 +307,12 @@ export class ViewCalls {
         yield* Effect.all(
           [
             this.#inner.stations.afterWrite(station, { kind: "session", key: null }, answer),
-            Effect.forEach(sends, ([id]) => Effect.ignore(this.deliver(station, thread, id, null), { log: "Unhandled", message: "message delivered" }), { discard: true }),
+            Effect.forEach(sends, ([id]) => {
+              const trace = this.#takeTrace(id);
+              trace?.bindSession(session);
+              trace?.bindThread(thread);
+              return Effect.ignore(this.deliver(station, thread, id, null, false, trace), { log: "Unhandled", message: "message delivered" });
+            }, { discard: true }),
           ],
           { concurrency: "unbounded", discard: true },
         );
@@ -280,13 +338,19 @@ export class ViewCalls {
           // Its agent's chat went to another station (views/moved.ts): what waited for it is asked for there.
           const now = made.failure.code === MOVED ? this.#inner.data.chatNow(station, { session: key }) : null;
           if (now !== null) {
+            this.#movePendingTraces(`f:${station}\u0000${key}`, `f:${now.station}\u0000${key}`, now.station);
             if (this.#local.firstTry(now.station, key)) this.makeFirst(now.station, key);
             return;
           }
           this.#local.firstFailed(station, key, made.failure.message);
+          this.#failPendingTraces(`f:${station}\u0000${key}`);
           return;
         }
-        for (const [id] of this.#local.firstMade(station, key, made.success)) yield* Effect.ignore(this.deliver(station, made.success, id, null), { log: "Unhandled", message: "message delivered" });
+        for (const [id] of this.#local.firstMade(station, key, made.success)) {
+          const trace = this.#takeTrace(id);
+          trace?.bindThread(made.success);
+          yield* Effect.ignore(this.deliver(station, made.success, id, null, false, trace), { log: "Unhandled", message: "message delivered" });
+        }
       }),
     );
   }
@@ -327,14 +391,15 @@ export class ViewCalls {
     const inner = this.#inner;
     const local = this.#local;
     const views = this.#views;
-    const send = (station: string, thread: number, message: J, ctx: SpanContext | null) => {
+    const send = (station: string, thread: number, message: J, ctx: SpanContext | null, session?: string | null) => {
       // Copied to the chat's Slack and Feishu threads ticked (`chat.cc`).
       const ccTo = views.ccTo(station, thread);
       if (ccTo.length > 0) message.cc = ccTo;
       const restore = this.#restoreTarget(station, thread);
       if (restore !== null) message.restore = restore;
       const id = views.outboxAdd(station, thread, message);
-      return this.deliver(station, thread, id, ctx);
+      const trace = inner.sendTrace.start(station, { thread, session: session ?? this.#sessionFor(station, thread) });
+      return this.deliver(station, thread, id, ctx, false, trace);
     };
     handlers.chatSend = (_inner, call, _p, _at, ctx) => {
       const c = call as Of<"chatSend">;
@@ -373,18 +438,22 @@ export class ViewCalls {
         const restore = this.#restoreTarget(c.station, null, c.session);
         if (restore !== null) message.restore = restore;
         const pending = local.pendingThread(c.station, c.session);
-        if (typeof pending === "number") return send(c.station, pending, message, ctx);
+        if (typeof pending === "number") return send(c.station, pending, message, ctx, c.session);
         if (pending === null) {
           const failed = local.pendingFailedNow(c.session);
           const id = local.pendingQueue(c.session, message);
           if (id === null) return Effect.fail(CoreError.invalid(t("core-misc.call.no_chat")));
+          const trace = inner.sendTrace.start(c.station, { session: c.session, onEnd: () => { this.#pendingTraces.delete(id); } });
+          if (trace !== null) this.#pendingTraces.set(id, { trace, queueKey: `p:${c.session}` });
           if (failed) this.makeChat(c.session);
           return Effect.succeed({ id });
         }
         if (c.session.startsWith(PENDING_PREFIX)) return Effect.fail(CoreError.invalid(t("core-misc.call.no_chat")));
         const bound = local.firstWaits(c.station, c.session) ? null : views.boundThread(c.station, c.session);
-        if (bound !== null) return send(c.station, bound, message, ctx);
+        if (bound !== null) return send(c.station, bound, message, ctx, c.session);
         const [id, ask] = local.firstQueue(c.station, c.session, message);
+        const trace = inner.sendTrace.start(c.station, { session: c.session, onEnd: () => { this.#pendingTraces.delete(id); } });
+        if (trace !== null) this.#pendingTraces.set(id, { trace, queueKey: `f:${c.station}\u0000${c.session}` });
         if (ask) this.makeFirst(c.station, c.session);
         return Effect.succeed({ id });
       });
@@ -437,9 +506,13 @@ export class ViewCalls {
       return Effect.suspend((): Effect.Effect<unknown, CoreError> => {
         const pending = local.pendingThread(c.station, c.session);
         if (typeof pending === "number") return handlers.chatDiscard!(inner, { kind: "chatDiscard", station: c.station, thread: pending, id: c.id }, progress, at, ctx);
-        else if (pending === null) local.pendingDiscard(c.session, c.id);
-        else if (local.firstWaits(c.station, c.session)) local.firstDiscard(c.station, c.session, c.id);
-        else return Effect.fail(CoreError.invalid(t("core-misc.call.no_chat")));
+        else if (pending === null) {
+          local.pendingDiscard(c.session, c.id);
+          this.#takeTrace(c.id)?.failed();
+        } else if (local.firstWaits(c.station, c.session)) {
+          local.firstDiscard(c.station, c.session, c.id);
+          this.#takeTrace(c.id)?.failed();
+        } else return Effect.fail(CoreError.invalid(t("core-misc.call.no_chat")));
         return Effect.succeed(null);
       });
     };

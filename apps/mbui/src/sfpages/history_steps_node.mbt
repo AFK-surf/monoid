@@ -1668,15 +1668,6 @@ fn place_node(v : @view.View, station : String, place : Json?) -> Unit {
 }
 
 ///|
-fn place_mark_name(surface : String, dark : Bool) -> String {
-  match surface {
-    "chat" | "ember" | "stillfail" => if dark { "stillfail_mark_dark" } else { "stillfail_mark" }
-    "feishu" => "feishu"
-    _ => "slack"
-  }
-}
-
-///|
 fn place_live_node(v : @view.View, station : String, place : () -> Json?, link : Bool) -> Unit {
   let surface_sig = @signals.computed(fn(_) { text(place(), "surface") }, same=fn(a, b) { a == b })
   let name_sig = @signals.computed(fn(_) { text(place(), "name") }, same=fn(a, b) { a == b })
@@ -1698,10 +1689,10 @@ fn place_live_node(v : @view.View, station : String, place : () -> Json?, link :
       })
     }
     p.pick(
-      fn() { place_mark_name(surface_sig.get(), @sf.theme().dark) },
+      fn() { @sf.place_mark_name(surface_sig.get(), @sf.theme().dark) },
       fn(d, name) {
         @sf.style_node(d, fn() { h_place_mark })
-        @sf.drawable_node(d, name, 12.0) |> ignore
+        @sf.place_mark_node(d, name, 12.0) |> ignore
       },
     )
     @sf.words_node(p, fn() { name_sig.get() }, fn() { words }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore

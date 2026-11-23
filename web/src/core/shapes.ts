@@ -2485,7 +2485,7 @@ export interface MessageDecision {
 export interface Place {
 	/** A still.fail chat's title, or a Slack thread's workspace and channel (`Cue#ops`). */
 	name: string;
-	/** chat (the station's own) | slack | feishu */
+	/** chat (the station's own) | slack | feishu | comma | group */
 	surface: string;
 	session?: string;
 	/** A Slack thread's link in Slack, while a connect is signed in to its workspace; a Feishu chat's in Feishu. */

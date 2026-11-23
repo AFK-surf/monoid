@@ -64,6 +64,10 @@ final class Crashes {
     private static final String ACCOUNT = "crashes.account";
     /** Whether usage statistics and error reports go out from this device: yes until turned off; this device's only. */
     private static final String REPORTING = "telemetry";
+    /** Persisted marker set when MemoryWatch detects a MemoryRunaway, cleared when reported via crash_pending. */
+    private static final String MEMORY_RUNAWAY_PENDING = "crashes.memory_runaway_pending";
+    /** Ensures pendingCrashMask returns non-zero at most once per process. */
+    private static final java.util.concurrent.atomic.AtomicBoolean crashPendingRead = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     private static SharedPreferences prefs(Context context) {
         return context.getSharedPreferences("stillfail", Context.MODE_PRIVATE);
@@ -203,7 +207,66 @@ final class Crashes {
 
     /** The native heap past MemoryWatch's limit, with what was under way then (MemoryWatch.java). */
     static void memoryRunaway(Context context, String value, JSONObject facts) {
+        if (hasKey() && reporting(context)) {
+            prefs(context).edit().putBoolean(MEMORY_RUNAWAY_PENDING, true).apply();
+        }
         handled(context, "MemoryRunaway", value, "memory_runaway", facts);
+    }
+
+    /**
+     * Returns a bitmask of pending crash/ANR/MemoryRunaway diagnostics from the previous run (once per process,
+     * read-only so {@link #report} still delivers full PostHog events):
+     * bit 0 (1) = crash / native crash, bit 1 (2) = ANR / watchdog hang, bit 2 (4) = MemoryRunaway / OOM kill.
+     */
+    static int pendingCrashMask(Context context) {
+        if (!hasKey() || !reporting(context)) return 0;
+        if (!crashPendingRead.compareAndSet(false, true)) return 0;
+        int mask = 0;
+        SharedPreferences p = prefs(context);
+        if (p.getBoolean(MEMORY_RUNAWAY_PENDING, false)) {
+            mask |= 4;
+            p.edit().remove(MEMORY_RUNAWAY_PENDING).apply();
+        }
+        long since = p.getLong(SINCE, System.currentTimeMillis() - LOOK_BACK);
+        File dir = new File(context.getFilesDir(), DIR);
+        File[] files = dir.listFiles();
+        if (files != null) {
+            for (File f : files) {
+                String n = f.getName();
+                if (!n.endsWith(".json")) continue;
+                try {
+                    long at = Long.parseLong(n.substring(0, n.length() - 5));
+                    if (at > since) {
+                        mask |= 1;
+                        break;
+                    }
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        try {
+            ActivityManager am = context.getSystemService(ActivityManager.class);
+            if (am != null) {
+                List<ApplicationExitInfo> exits = am.getHistoricalProcessExitReasons(context.getPackageName(), 0, 0);
+                for (ApplicationExitInfo exit : exits) {
+                    if (exit.getTimestamp() <= since) continue;
+                    int r = exit.getReason();
+                    if (r == ApplicationExitInfo.REASON_CRASH || r == ApplicationExitInfo.REASON_CRASH_NATIVE) {
+                        mask |= 1;
+                    } else if (r == ApplicationExitInfo.REASON_ANR) {
+                        mask |= 2;
+                    } else if (killedInSight(exit)) {
+                        if (r == ApplicationExitInfo.REASON_LOW_MEMORY || r == ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE) {
+                            mask |= 4;
+                        } else {
+                            mask |= 1;
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return mask;
     }
 
     /** What the window thread found (mbui's src/ui/journal.mbt): a hang, or what the app did while shown, sent at once as
