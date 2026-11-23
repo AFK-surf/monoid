@@ -871,6 +871,8 @@ async fn search_program(host : @host.Host, db_path : String, data : String, sep 
 
 ///|
 fn main {
+  // Clear harness delegation guard so child processes spawned by `--sessions` never inherit it.
+  ignore(@host.env_unset("STILLFAIL_HARNESS_DELEGATED"))
   // Retired whole-station commands (`run`, `status`, `admin`, ...) and hook/bridge scripts: hand off to Node.
   let argv = @host.args()
   if is_station_shim(argv) {

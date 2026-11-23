@@ -108,6 +108,8 @@ echo "$$" > "$lock/pid"
     "$ROOT/libs/ui/src/effect" "$ROOT/libs/ui/src/halt"
   )
   [ -d "$ROOT/libs/ui/tools/mbc" ] && gen_inputs+=("$ROOT/libs/ui/tools/mbc")
+  [ -f "$ROOT/libs/ui/tools/moon.mod" ] && gen_inputs+=("$ROOT/libs/ui/tools/moon.mod")
+  [ -f "$ROOT/libs/ui/tools/moon.work" ] && gen_inputs+=("$ROOT/libs/ui/tools/moon.work")
   if [ "$pkg" = reader ]; then
     for p in "${READER_SRC_PKGS[@]}" cprep; do
       [ -d "$D/src/$p" ] && gen_inputs+=("$D/src/$p")

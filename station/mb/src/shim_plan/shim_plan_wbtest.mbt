@@ -38,6 +38,19 @@ test "app_candidates preserves symlinked argv0 before canonical exe path" {
     Some("/cache/store/stillfail-reader"),
   )
   assert_eq(with_flag, ["/explicit/app", "/release/app", "/cache"])
+
+  // Relative invocation without leading `./` preserves symlinked `<app>` as `.`
+  assert_eq(app_from_path("station/stillfail-reader"), Some("."))
+  assert_eq(app_from_path("station\\stillfail-reader.exe"), Some("."))
+  assert_eq(app_from_path("./station/stillfail-reader"), Some("."))
+  assert_eq(app_from_path("app/station/stillfail-reader"), Some("app"))
+  assert_eq(app_from_path("stillfail-reader"), None)
+  let rel = app_candidates(
+    ["admin", "--help"],
+    Some("station/stillfail-reader"),
+    Some("/cache/store/stillfail-reader"),
+  )
+  assert_eq(rel, [".", "/cache"])
 }
 
 ///|

@@ -9,6 +9,9 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <wchar.h>
+#ifndef PROC_THREAD_ATTRIBUTE_JOB_LIST
+#define PROC_THREAD_ATTRIBUTE_JOB_LIST ((SIZE_T)0x0002000D)
+#endif
 #else
 #include <errno.h>
 #include <limits.h>
@@ -124,6 +127,19 @@ int32_t sfh_env_set(moonbit_bytes_t name, moonbit_bytes_t val) {
   return ok ? 1 : 0;
 #else
   return setenv(k, v, 1) == 0 ? 1 : 0;
+#endif
+}
+
+/// Unsets environment variable `name` (NUL-terminated UTF-8). Returns 1 on success, 0 on failure.
+int32_t sfh_env_unset(moonbit_bytes_t name) {
+  const char *k = (const char *)name;
+#ifdef _WIN32
+  wchar_t *wk = utf8_to_wide(k);
+  int ok = wk != NULL && SetEnvironmentVariableW(wk, NULL) != 0;
+  free(wk);
+  return ok ? 1 : 0;
+#else
+  return unsetenv(k) == 0 ? 1 : 0;
 #endif
 }
 
@@ -315,26 +331,27 @@ moonbit_bytes_t sfh_find_in_path(moonbit_bytes_t name) {
   for (;;) {
     const char *sep = strchr(cur, ':');
     size_t dir_len = sep != NULL ? (size_t)(sep - cur) : strlen(cur);
-    if (dir_len > 0) {
-      size_t need = dir_len + 1 + cmd_len + 1;
-      char *cand = (char *)malloc(need);
-      if (cand == NULL) return moonbit_make_bytes(0, 0);
-      memcpy(cand, cur, dir_len);
-      if (cand[dir_len - 1] == '/') {
-        memcpy(cand + dir_len, cmd, cmd_len + 1);
-      } else {
-        cand[dir_len] = '/';
-        memcpy(cand + dir_len + 1, cmd, cmd_len + 1);
-      }
-      struct stat st;
-      int ok = stat(cand, &st) == 0 && S_ISREG(st.st_mode) && access(cand, X_OK) == 0;
-      if (ok) {
-        moonbit_bytes_t out = bytes_from_cstr(cand);
-        free(cand);
-        return out;
-      }
-      free(cand);
+    // POSIX: an empty segment in a non-empty PATH (e.g. "/a:", ":/b", "/a::/b") means ".".
+    const char *dir = dir_len > 0 ? cur : ".";
+    size_t dlen = dir_len > 0 ? dir_len : 1;
+    size_t need = dlen + 1 + cmd_len + 1;
+    char *cand = (char *)malloc(need);
+    if (cand == NULL) return moonbit_make_bytes(0, 0);
+    memcpy(cand, dir, dlen);
+    if (cand[dlen - 1] == '/') {
+      memcpy(cand + dlen, cmd, cmd_len + 1);
+    } else {
+      cand[dlen] = '/';
+      memcpy(cand + dlen + 1, cmd, cmd_len + 1);
     }
+    struct stat st;
+    int ok = stat(cand, &st) == 0 && S_ISREG(st.st_mode) && access(cand, X_OK) == 0;
+    if (ok) {
+      moonbit_bytes_t out = bytes_from_cstr(cand);
+      free(cand);
+      return out;
+    }
+    free(cand);
     if (sep == NULL) break;
     cur = sep + 1;
   }
@@ -476,37 +493,49 @@ int32_t sfh_exec_replace(moonbit_bytes_t program, moonbit_bytes_t argv_nul) {
     return 127;
   }
 
-  STARTUPINFOW si;
-  PROCESS_INFORMATION pi;
-  ZeroMemory(&si, sizeof(si));
-  si.cb = sizeof(si);
-  ZeroMemory(&pi, sizeof(pi));
-  if (!CreateProcessW(wprog, cmd.data, NULL, NULL, TRUE, CREATE_SUSPENDED, NULL, NULL, &si, &pi)) {
-    DWORD err = GetLastError();
-    fprintf(stderr, "stillfail-reader: CreateProcessW(%s) failed (error %lu)\n", prog, (unsigned long)err);
+  SIZE_T attr_size = 0;
+  InitializeProcThreadAttributeList(NULL, 1, 0, &attr_size);
+  if (attr_size == 0) {
+    fprintf(stderr, "stillfail-reader: InitializeProcThreadAttributeList sizing failed (error %lu)\n", (unsigned long)GetLastError());
     CloseHandle(job);
     free(cmd.data);
     free(wprog);
     return 127;
   }
-  free(cmd.data);
-  free(wprog);
-
-  if (!AssignProcessToJobObject(job, pi.hProcess)) {
-    DWORD err = GetLastError();
-    fprintf(stderr, "stillfail-reader: AssignProcessToJobObject failed (error %lu)\n", (unsigned long)err);
-    TerminateProcess(pi.hProcess, 1);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+  LPPROC_THREAD_ATTRIBUTE_LIST attr_list = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attr_size);
+  if (attr_list == NULL || !InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_size)) {
+    fprintf(stderr, "stillfail-reader: InitializeProcThreadAttributeList failed (error %lu)\n", (unsigned long)GetLastError());
+    free(attr_list);
     CloseHandle(job);
+    free(cmd.data);
+    free(wprog);
     return 127;
   }
-  if (ResumeThread(pi.hThread) == (DWORD)-1) {
-    DWORD err = GetLastError();
-    fprintf(stderr, "stillfail-reader: ResumeThread failed (error %lu)\n", (unsigned long)err);
-    TerminateProcess(pi.hProcess, 1);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+  if (!UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, &job, sizeof(HANDLE), NULL, NULL)) {
+    fprintf(stderr, "stillfail-reader: UpdateProcThreadAttribute(JOB_LIST) failed (error %lu)\n", (unsigned long)GetLastError());
+    DeleteProcThreadAttributeList(attr_list);
+    free(attr_list);
+    CloseHandle(job);
+    free(cmd.data);
+    free(wprog);
+    return 127;
+  }
+
+  STARTUPINFOEXW siex;
+  PROCESS_INFORMATION pi;
+  ZeroMemory(&siex, sizeof(siex));
+  siex.StartupInfo.cb = sizeof(siex);
+  siex.lpAttributeList = attr_list;
+  ZeroMemory(&pi, sizeof(pi));
+  BOOL created = CreateProcessW(
+      wprog, cmd.data, NULL, NULL, TRUE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL, &siex.StartupInfo, &pi);
+  DWORD create_err = created ? 0 : GetLastError();
+  DeleteProcThreadAttributeList(attr_list);
+  free(attr_list);
+  free(cmd.data);
+  free(wprog);
+  if (!created) {
+    fprintf(stderr, "stillfail-reader: CreateProcessW(%s) failed (error %lu)\n", prog, (unsigned long)create_err);
     CloseHandle(job);
     return 127;
   }

@@ -51,29 +51,50 @@ function parseNativeStubs(moonPkgText: string): string[] {
   return out;
 }
 
-function collectTransitiveGraph(): { stationPkgs: Set<string>; externalImports: Set<string>; nativeStubs: Set<string> } {
+function workspacePkgFile(dep: string): string | null {
+  if (dep.startsWith("station/")) return join(mbSrc, dep.slice("station/".length), "moon.pkg");
+  if (dep.startsWith("base/")) return join(root, "libs", "base", "src", dep.slice("base/".length), "moon.pkg");
+  if (dep.startsWith("ui/")) return join(root, "libs", "ui", "src", dep.slice("ui/".length), "moon.pkg");
+  if (dep.startsWith("stillfail/rules/")) return join(root, "rules", "src", dep.slice("stillfail/rules/".length), "moon.pkg");
+  return null;
+}
+
+function collectTransitiveGraph(
+  overrides?: ReadonlyMap<string, string>,
+): { stationPkgs: Set<string>; externalImports: Set<string>; nativeStubs: Set<string> } {
   const stationPkgs = new Set<string>(["reader"]);
   const externalImports = new Set<string>();
   const nativeStubs = new Set<string>();
-  const queue = ["reader"];
+  const visited = new Set<string>(["station/reader"]);
+  const queue = ["station/reader"];
   while (queue.length > 0) {
-    const pkg = queue.shift()!;
-    const pkgFile = join(mbSrc, pkg, "moon.pkg");
-    assert.ok(existsSync(pkgFile), `missing moon.pkg for station/${pkg}`);
-    const text = readFileSync(pkgFile, "utf8");
+    const depName = queue.shift()!;
+    let text: string;
+    if (overrides?.has(depName)) {
+      text = overrides.get(depName)!;
+    } else {
+      const pkgFile = workspacePkgFile(depName);
+      if (pkgFile === null) continue;
+      assert.ok(existsSync(pkgFile), `missing moon.pkg for ${depName} (${pkgFile})`);
+      text = readFileSync(pkgFile, "utf8");
+    }
     for (const dep of parseProdImports(text)) {
+      if (dep.startsWith("moonbitlang/")) continue;
       if (dep.startsWith("station/")) {
-        const sub = dep.slice("station/".length);
-        if (!stationPkgs.has(sub)) {
-          stationPkgs.add(sub);
-          queue.push(sub);
-        }
-      } else if (!dep.startsWith("moonbitlang/")) {
+        stationPkgs.add(dep.slice("station/".length));
+      } else {
         externalImports.add(dep);
       }
+      if (!visited.has(dep)) {
+        visited.add(dep);
+        queue.push(dep);
+      }
     }
-    for (const stub of parseNativeStubs(text)) {
-      nativeStubs.add(posix.normalize(posix.join(pkg, stub)));
+    if (depName.startsWith("station/")) {
+      const sub = depName.slice("station/".length);
+      for (const stub of parseNativeStubs(text)) {
+        nativeStubs.add(posix.normalize(posix.join(sub, stub)));
+      }
     }
   }
   return { stationPkgs, externalImports, nativeStubs };
@@ -122,12 +143,14 @@ test("reader transitive dependencies never include station_main or frozen whole-
   assert.ok(stationPkgs.has("reader") && stationPkgs.has("host") && stationPkgs.has("sql") && stationPkgs.has("readops") && stationPkgs.has("shim_plan"));
 });
 
-test("reader external workspace imports stay within whitelist (base/*, ui/effect, ui/halt) and negative cases fail", () => {
+test("reader external workspace imports stay within whitelist (base/*, ui/effect, ui/halt) across full transitive closure and negative cases fail", () => {
   const { externalImports } = collectTransitiveGraph();
   assert.deepEqual(disallowedExternalImports(externalImports), []);
-  // Negative assertions: adding ui/signals or stillfail/rules/lock must be rejected.
+  // Negative assertions: direct or transitive external drift (e.g. ui/effect -> ui/signals) must be rejected.
   assert.deepEqual(disallowedExternalImports([...externalImports, "ui/signals"]), ["ui/signals"]);
   assert.deepEqual(disallowedExternalImports([...externalImports, "stillfail/rules/lock"]), ["stillfail/rules/lock"]);
+  const drifted = collectTransitiveGraph(new Map([["ui/effect", 'import { "ui/signals" }']]));
+  assert.deepEqual(disallowedExternalImports(drifted.externalImports), ["ui/signals"]);
   // Commented-out and test-only imports are ignored by parser.
   const sample = `
     // "stillfail/rules/lock"
@@ -168,9 +191,13 @@ test("scripts/native.ts READER_PKGS/READER_COMMON_INPUTS and station/mb/build.sh
   const common = parseNativeArray("READER_COMMON_INPUTS");
   assert.ok(common.includes("libs/ui/tools/mbc"), "READER_COMMON_INPUTS must include libs/ui/tools/mbc");
   assert.ok(common.includes("libs/ui/scripts/mbc"), "READER_COMMON_INPUTS must include libs/ui/scripts/mbc");
+  assert.ok(common.includes("libs/ui/tools/moon.mod"), "READER_COMMON_INPUTS must include libs/ui/tools/moon.mod");
+  assert.ok(common.includes("libs/ui/tools/moon.work"), "READER_COMMON_INPUTS must include libs/ui/tools/moon.work");
   const buildSh = readFileSync(join(root, "station", "mb", "build.sh"), "utf8");
   assert.match(buildSh, /libs\/ui\/tools\/mbc/, "build.sh gen_inputs must include libs/ui/tools/mbc");
   assert.match(buildSh, /libs\/ui\/scripts\/mbc/, "build.sh gen_inputs must include libs/ui/scripts/mbc");
+  assert.match(buildSh, /libs\/ui\/tools\/moon\.mod/, "build.sh gen_inputs must include libs/ui/tools/moon.mod");
+  assert.match(buildSh, /libs\/ui\/tools\/moon\.work/, "build.sh gen_inputs must include libs/ui/tools/moon.work");
 });
 
 test("station/mb/build.sh READER_C_STUBS covers all C files and moon.pkg native-stub entries in reader's closure", () => {

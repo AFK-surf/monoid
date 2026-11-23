@@ -264,6 +264,7 @@ test("Unix: symlinked <app>/station/stillfail-reader resolves bundled node & mai
   mkdirSync(join(app, "node", "bin"), { recursive: true });
   symlinkSync(process.execPath, join(app, "node", "bin", "node"));
   writeFileSync(join(app, "station", "main.js"), reportScript("symlink-main.js"));
+  writeFileSync(join(app, "station", "admin-cli.js"), reportScript("symlink-admin.js"));
   const linkBin = join(app, "station", "stillfail-reader");
   symlinkSync(cacheBin, linkBin);
 
@@ -274,6 +275,23 @@ test("Unix: symlinked <app>/station/stillfail-reader resolves bundled node & mai
   assert.equal(out.who, "symlink-main.js");
   assert.equal(out.pid, r.pid);
   assert.deepEqual(out.argv, ["status", "--data", "/tmp/d"]);
+
+  // Relative invocation without leading `./` (e.g. `station/stillfail-reader admin --help`) also preserves symlink <app>
+  const rRel = await runWithPid("station/stillfail-reader", ["admin", "--help"], baseEnv(), app);
+  assert.equal(rRel.code, 0, rRel.stderr);
+  const outRel = JSON.parse(rRel.stdout.trim());
+  assert.equal(outRel.who, "symlink-admin.js");
+  assert.equal(outRel.pid, rRel.pid);
+  assert.deepEqual(outRel.argv, ["--help"]);
+
+  // POSIX PATH semantics on Unix: trailing empty segment in non-empty PATH searches CWD (`.`)
+  const pathApp = makeApp(t, { mainJs: true });
+  const cwdBin = join(pathApp.base, "cwd-node");
+  mkdirSync(cwdBin, { recursive: true });
+  symlinkSync(process.execPath, join(cwdBin, "node"));
+  const rPosix = await runWithPid(pathApp.bin, ["status"], baseEnv({ PATH: "/nonexistent-stillfail-dir:" }), cwdBin);
+  assert.equal(rPosix.code, 0, rPosix.stderr);
+  assert.equal(JSON.parse(rPosix.stdout.trim()).who, "main.js");
 });
 
 test("Unix: stillfail-reader-harness refuses self-delegation and wrapper delegation loops instead of recursing forever", { skip: skipUnix || (harness === null ? "stillfail-reader-harness is not built here" : false) }, (t) => {
@@ -365,7 +383,6 @@ setInterval(() => {}, 1000);
   assert.equal(pidAlive(nodePid), false, `direct Node child (pid ${nodePid}) survived shim force-kill`);
 
   // Detached grandchild must survive via JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
-  await new Promise((r) => setTimeout(r, 400));
   assert.equal(pidAlive(grandPid), true, `detached grandchild (pid ${grandPid}) died when shim was force-killed`);
 
   // Terminate the detached grandchild and wait for Windows to release the executable handle before t.after rmSync runs.

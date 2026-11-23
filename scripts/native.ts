@@ -165,6 +165,7 @@ const READER_COMMON_INPUTS = [
   "libs/base/src", "libs/base/moon.mod",
   "libs/ui/src/effect", "libs/ui/src/halt", "libs/ui/moon.mod",
   "libs/ui/scripts/mbc", "libs/ui/scripts/mbc-stub.sh", "libs/ui/tools/mbc",
+  "libs/ui/tools/moon.mod", "libs/ui/tools/moon.work",
   ":(exclude,glob)**/*_test.mbt", ":(exclude,glob)**/*_wbtest.mbt", ":(exclude,glob)**/pkg.generated.mbti",
 ];
 /// Shipped `stillfail-reader`: only its transitive packages, `cprep`, and common MoonBit workspace files.

@@ -93,9 +93,22 @@ pub fn parent_dir(p : String) -> String? {
 
 ///|
 /// Infers `<app>` from `stillfail-reader`'s path (`<app>/station/stillfail-reader` -> `<app>`).
+/// For a single-segment relative invocation such as `station/stillfail-reader` (no leading `./`),
+/// the parent of `station` is `.` without dereferencing symlinks.
 pub fn app_from_path(p : String) -> String? {
   guard parent_dir(p) is Some(station_dir) else { return None }
-  parent_dir(station_dir)
+  match parent_dir(station_dir) {
+    Some(app) => Some(app)
+    None =>
+      if station_dir != "" &&
+        station_dir != "." &&
+        station_dir != ".." &&
+        !station_dir.has_suffix(":") {
+        Some(".")
+      } else {
+        None
+      }
+  }
 }
 
 ///|

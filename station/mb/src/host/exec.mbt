@@ -12,6 +12,10 @@ extern "C" fn env_get_ffi(name : Bytes) -> Bytes = "sfh_env_get"
 extern "C" fn env_set_ffi(name : Bytes, val : Bytes) -> Int = "sfh_env_set"
 
 ///|
+#borrow(name)
+extern "C" fn env_unset_ffi(name : Bytes) -> Int = "sfh_env_unset"
+
+///|
 extern "C" fn exe_path_ffi() -> Bytes = "sfh_exe_path"
 
 ///|
@@ -55,6 +59,12 @@ pub fn env_get(name : String) -> String? {
 /// Sets environment variable `name` to `val`.
 pub fn env_set(name : String, val : String) -> Bool {
   env_set_ffi(cstr(name), cstr(val)) != 0
+}
+
+///|
+/// Unsets environment variable `name`.
+pub fn env_unset(name : String) -> Bool {
+  env_unset_ffi(cstr(name)) != 0
 }
 
 ///|
