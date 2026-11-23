@@ -24,6 +24,14 @@ test "LineReader splits LF, CRLF, chunks, and trailing flush" {
   }
 }
 
+test "LineReader enforces max_bytes cap and recovers after newline" {
+  let r = LineReader::new(max_bytes=8)
+  let l1 = r.push("1234567890\nok\n".to_bytes())
+  expect(l1.length() == 1, "oversized line dropped, next line kept")
+  expect(l1[0] == "ok", "recovered line")
+  expect(!r.had_overflow(), "overflow flag cleared after newline")
+}
+
 test "split_nul_args splits NUL-separated UTF-8 argv" {
   let raw = Bytes::new(14)
   // "prog\0--ver\0ok\0"
@@ -50,7 +58,7 @@ test "split_nul_args splits NUL-separated UTF-8 argv" {
   expect(args[2] == "ok", "arg2")
 }
 
-test "decode_event parses stdin data, eof, and shell done frames" {
+test "decode_event parses stdin data, eof, shell done, and rejects malformed lengths" {
   // EOF frame: kind=2, id=0
   let eof = Bytes::new(9)
   eof[0] = 2 as Byte
@@ -77,12 +85,10 @@ test "decode_event parses stdin data, eof, and shell done frames" {
   let done = Bytes::new(9 + 8 + 8 + 2 + 1 + 2)
   done[0] = 3 as Byte
   done[1] = 7 as Byte
-  // err_len = 0 (bytes 9..17)
-  // json_len = 2 (bytes 17..25)
   done[17] = 2 as Byte
-  done[25] = 123 as Byte // '{'
-  done[26] = 125 as Byte // '}'
-  done[27] = 1 as Byte // has_bytes
+  done[25] = 123 as Byte
+  done[26] = 125 as Byte
+  done[27] = 1 as Byte
   done[28] = 9 as Byte
   done[29] = 8 as Byte
   match decode_event(done) {
@@ -100,5 +106,16 @@ test "decode_event parses stdin data, eof, and shell done frames" {
       }
     }
     _ => panic("expected ShellDone")
+  }
+
+  // Malformed ShellDone frame with negative err_len (-1 in two's complement)
+  let bad = Bytes::new(32)
+  bad[0] = 3 as Byte
+  for i in 9..<17 {
+    bad[i] = 255 as Byte
+  }
+  match decode_event(bad) {
+    None => ()
+    Some(_) => panic("expected None for negative err_len")
   }
 }

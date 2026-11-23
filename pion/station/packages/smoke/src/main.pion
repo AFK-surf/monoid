@@ -1,9 +1,11 @@
 // Minimal Pion station smoke binary (`stillfail-pion`) verifying:
-//   --version                prints version, target arch, and pinned pion SHA
+//   --version                prints version, target arch, and pinned/override pion SHA
 //   --smoke-stdio            mb-reader line JSON + binary tail framing, cancel, clean EOF
-//   --smoke-sqlite <path>    direct sqlite3_* WAL table, int64/blob, PASSIVE/TRUNCATE ckpt, 0 fd leak
-//   --smoke-shell [dir]      real libstillfail_shell.a start, sync + async ops, clean stop
-//   --smoke-rc-soak [iters]  RC soak over Map/closure/String/Bytes with staged RSS curve
+//   --smoke-sqlite <path>    direct sqlite3_* WAL, UTF-8/NUL/int64/blob, checkpoint, UAF guards, 0 fd leak
+//   --smoke-shell [dir]      real libstillfail_shell.a start, crypto.random + storage.set/get bytes, clean stop
+//   --smoke-rc-soak [iters]  acyclic-graph RC soak over Map/closure/String/Bytes with warmup & RSS bound
+//                            (note: Pion RC does not auto-collect strong reference cycles; long-lived
+//                             station workers must break cycles via owner IDs or explicit close())
 
 import "base_codec"
 import "host_shim"
@@ -39,6 +41,22 @@ fn parse_positive_int(s : String, fallback : Int) -> Int {
   if acc <= 0 { fallback } else { acc }
 }
 
+fn bytes_equal(a : Bytes, b : Bytes) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn is_hex_digit(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70)
+}
+
 fn run_version(world : World) -> Unit {
   io_println(world, host_shim::build_info())
 }
@@ -58,7 +76,7 @@ fn run_smoke_stdio() -> Unit {
         match reader.flush() {
           Some(last) => {
             if last.length() > 0 {
-              running = handle_stdio_line(last, cancelled)
+              let _ = handle_stdio_line(last, cancelled)
             }
           }
           None => ()
@@ -92,8 +110,7 @@ fn handle_stdio_line(line : String, cancelled : Map[Int, Bool]) -> Bool {
           ("error", base_codec::json_str("invalid json: " + err)),
         ]),
       )
-      let _ = host_shim::write_stdout_line(msg)
-      return true
+      return host_shim::write_stdout_line(msg)
     }
   }
   let id = json_int_field(parsed, "id", 0)
@@ -121,8 +138,7 @@ fn handle_stdio_line(line : String, cancelled : Map[Int, Bool]) -> Bool {
         ("cancelled", base_codec::json_int(target)),
       ]),
     )
-    let _ = host_shim::write_stdout_line(msg)
-    return true
+    return host_shim::write_stdout_line(msg)
   }
 
   match cancelled.get(id) {
@@ -134,8 +150,7 @@ fn handle_stdio_line(line : String, cancelled : Map[Int, Bool]) -> Bool {
           ("cancelled", base_codec::json_bool(true)),
         ]),
       )
-      let _ = host_shim::write_stdout_line(msg)
-      return true
+      return host_shim::write_stdout_line(msg)
     }
     _ => ()
   }
@@ -149,26 +164,24 @@ fn handle_stdio_line(line : String, cancelled : Map[Int, Bool]) -> Bool {
         ("text", base_codec::json_str(text)),
       ]),
     )
-    let _ = host_shim::write_stdout_line(msg)
-    return true
+    return host_shim::write_stdout_line(msg)
   }
 
   if op == "binary" {
     let size = json_int_field(parsed, "size", 0)
-    let fill = json_int_field(parsed, "byte", 65) & 0xFF
+    let fill = json_int_field(parsed, "byte", 0) & 0xFF
     let n = if size < 0 { 0 } else { size }
     let body = Bytes::new(n)
     for i in 0..<n {
       body[i] = ((fill + i) & 0xFF) as Byte
     }
-    let _ = host_shim::write_stdout_frame(
+    return host_shim::write_stdout_frame(
       [
         ("id", base_codec::json_int(id)),
         ("ok", base_codec::json_bool(true)),
       ],
       body,
     )
-    return true
   }
 
   let msg = base_codec::json_stringify(
@@ -178,31 +191,66 @@ fn handle_stdio_line(line : String, cancelled : Map[Int, Bool]) -> Bool {
       ("error", base_codec::json_str("unknown op: " + op)),
     ]),
   )
-  let _ = host_shim::write_stdout_line(msg)
-  true
+  host_shim::write_stdout_line(msg)
 }
 
 fn run_smoke_sqlite(world : World, db_path : String) -> Unit {
   let fd_before = host_shim::open_fd_count()
-  let flags = sqlite_ffi::OPEN_READWRITE | sqlite_ffi::OPEN_CREATE | sqlite_ffi::OPEN_FULLMUTEX
-  let db = match sqlite_ffi::Db::open(db_path, flags, busy_timeout_ms=5000) {
+  let db = match sqlite_ffi::Db::open(db_path, sqlite_ffi::default_rw_flags(), busy_timeout_ms=5000) {
     Ok(d) => d
     Err(e) => panic("sqlite open failed (" + e.code.to_string() + "): " + e.message)
   }
 
-  match db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;") {
-    Ok(_) => ()
-    Err(e) => panic("sqlite WAL pragma failed: " + e.message)
+  // Verify PRAGMA journal_mode=WAL actually returns "wal".
+  let wal_stmt = match db.prepare("PRAGMA journal_mode=WAL") {
+    Ok(s) => s
+    Err(e) => panic("sqlite prepare WAL pragma failed: " + e.message)
   }
-  match db.exec("CREATE TABLE IF NOT EXISTS kv (id INTEGER PRIMARY KEY, big INTEGER NOT NULL, label TEXT NOT NULL, payload BLOB NOT NULL); DELETE FROM kv;") {
+  if wal_stmt.step() != sqlite_ffi::SQLITE_ROW {
+    let _ = wal_stmt.finalize()
+    panic("sqlite PRAGMA journal_mode=WAL returned no row")
+  }
+  let journal_mode = wal_stmt.column_text(0)
+  let _ = wal_stmt.finalize()
+  if journal_mode != "wal" {
+    panic("expected journal_mode=wal, got: " + journal_mode)
+  }
+
+  match db.exec("PRAGMA synchronous=NORMAL;") {
+    Ok(_) => ()
+    Err(e) => panic("sqlite synchronous pragma failed: " + e.message)
+  }
+  match db.exec("CREATE TABLE IF NOT EXISTS kv (id INTEGER PRIMARY KEY, big INTEGER NOT NULL, label TEXT NOT NULL, nul_text TEXT NOT NULL, payload BLOB NOT NULL); DELETE FROM kv;") {
     Ok(_) => ()
     Err(e) => panic("sqlite schema failed: " + e.message)
   }
 
-  // Test 64-bit integer beyond IEEE-754 2^53-1 (9007199254740993 = (1 << 53) + 1)
-  // and binary BLOB with embedded NUL bytes.
+  // Verify prepare error preserves real SQLite error code (SQLITE_ERROR=1 on syntax error).
+  match db.prepare("SELECT * FROM nonexistent_table_xyz") {
+    Ok(s) => {
+      let _ = s.finalize()
+      panic("expected prepare error on nonexistent table")
+    }
+    Err(e) => {
+      if e.code == sqlite_ffi::SQLITE_OK || e.message.length() == 0 {
+        panic("expected real sqlite error code and message")
+      }
+    }
+  }
+
+  // Test 64-bit integer beyond IEEE-754 2^53-1 (9007199254740993 = (1 << 53) + 1),
+  // multi-byte UTF-8 (Chinese + emoji), text with embedded NUL, and binary BLOB with NULs.
   let big_val : Int64 = (1.to_int64() << 53.to_int64()) + 1.to_int64()
-  let label_val = "pion-station-wal-utf8"
+  let label_val = "你好Pion🚀"
+  let nul_text_val = Bytes::new(7)
+  nul_text_val[0] = 97 as Byte
+  nul_text_val[1] = 98 as Byte
+  nul_text_val[2] = 99 as Byte
+  nul_text_val[3] = 0 as Byte
+  nul_text_val[4] = 100 as Byte
+  nul_text_val[5] = 101 as Byte
+  nul_text_val[6] = 102 as Byte
+
   let blob_val = Bytes::new(8)
   blob_val[0] = 0 as Byte
   blob_val[1] = 1 as Byte
@@ -213,25 +261,49 @@ fn run_smoke_sqlite(world : World, db_path : String) -> Unit {
   blob_val[6] = 127 as Byte
   blob_val[7] = 128 as Byte
 
-  let ins = match db.prepare("INSERT INTO kv (id, big, label, payload) VALUES (?1, ?2, ?3, ?4)") {
+  let ins = match db.prepare("INSERT INTO kv (id, big, label, nul_text, payload) VALUES (?1, ?2, ?3, ?4, ?5)") {
     Ok(s) => s
     Err(e) => panic("sqlite prepare insert failed: " + e.message)
   }
   let _ = ins.bind_int64(1, 1.to_int64())
   let _ = ins.bind_int64(2, big_val)
   let _ = ins.bind_text(3, label_val)
-  let _ = ins.bind_blob(4, blob_val)
+  let _ = ins.bind_text_bytes(4, nul_text_val)
+  let _ = ins.bind_blob(5, blob_val)
   let ins_rc = ins.step()
+  if ins_rc != sqlite_ffi::SQLITE_DONE {
+    let _ = ins.finalize()
+    panic("sqlite insert #1 failed: step=" + ins_rc.to_string())
+  }
+  // Verify Stmt::reset preserves bindings (only re-bind PK id=2; cols 2..5 stay bound).
+  if ins.reset() != sqlite_ffi::SQLITE_OK {
+    let _ = ins.finalize()
+    panic("sqlite reset failed")
+  }
+  let _ = ins.bind_int64(1, 2.to_int64())
+  if ins.step() != sqlite_ffi::SQLITE_DONE {
+    let _ = ins.finalize()
+    panic("sqlite insert #2 after reset failed (bindings not preserved)")
+  }
+  let _ = ins.clear_bindings()
   let fin_ins = ins.finalize()
-  if ins_rc != sqlite_ffi::SQLITE_DONE || fin_ins != sqlite_ffi::SQLITE_OK {
-    panic("sqlite insert failed: step=" + ins_rc.to_string() + " fin=" + fin_ins.to_string())
+  if fin_ins != sqlite_ffi::SQLITE_OK {
+    panic("sqlite insert finalize failed: " + fin_ins.to_string())
   }
 
-  let sel = match db.prepare("SELECT big, label, payload FROM kv WHERE id = ?1") {
+  // Adversarial UAF checks on finalized statement handle: must return SQLITE_MISUSE safely.
+  if ins.finalize() != sqlite_ffi::SQLITE_MISUSE {
+    panic("expected SQLITE_MISUSE on double finalize")
+  }
+  if ins.step() != sqlite_ffi::SQLITE_MISUSE {
+    panic("expected SQLITE_MISUSE on step after finalize")
+  }
+
+  let sel = match db.prepare("SELECT big, label, nul_text, payload FROM kv WHERE id = ?1") {
     Ok(s) => s
     Err(e) => panic("sqlite prepare select failed: " + e.message)
   }
-  let _ = sel.bind_int64(1, 1.to_int64())
+  let _ = sel.bind_int64(1, 2.to_int64())
   let sel_rc = sel.step()
   if sel_rc != sqlite_ffi::SQLITE_ROW {
     let _ = sel.finalize()
@@ -239,7 +311,8 @@ fn run_smoke_sqlite(world : World, db_path : String) -> Unit {
   }
   let got_big = sel.column_int64(0)
   let got_label = sel.column_text(1)
-  let got_blob = sel.column_blob(2)
+  let got_nul_text = sel.column_text_bytes(2)
+  let got_blob = sel.column_blob(3)
   let fin_sel = sel.finalize()
   if fin_sel != sqlite_ffi::SQLITE_OK {
     panic("sqlite select finalize failed: " + fin_sel.to_string())
@@ -249,31 +322,51 @@ fn run_smoke_sqlite(world : World, db_path : String) -> Unit {
     panic("sqlite int64 mismatch: got=" + got_big.to_string() + " want=" + big_val.to_string())
   }
   if got_label != label_val {
-    panic("sqlite text mismatch: got=" + got_label)
+    panic("sqlite utf8 text mismatch: got=" + got_label)
   }
-  if got_blob.length() != blob_val.length() {
-    panic("sqlite blob length mismatch: got=" + got_blob.length().to_string())
+  if !bytes_equal(got_nul_text, nul_text_val) {
+    panic("sqlite embedded-NUL text mismatch: len=" + got_nul_text.length().to_string())
   }
-  for i in 0..<blob_val.length() {
-    if got_blob[i] != blob_val[i] {
-      panic("sqlite blob byte mismatch at index " + i.to_string())
-    }
+  if !bytes_equal(got_blob, blob_val) {
+    panic("sqlite blob mismatch: len=" + got_blob.length().to_string())
   }
 
+  // Verify PASSIVE and hard TRUNCATE checkpoints on "main".
   let ckpt_passive = db.wal_checkpoint(sqlite_ffi::CKPT_PASSIVE)
-  let ckpt_truncate = db.wal_checkpoint(sqlite_ffi::CKPT_TRUNCATE)
-  if ckpt_passive.rc != sqlite_ffi::SQLITE_OK || ckpt_truncate.rc != sqlite_ffi::SQLITE_OK {
+  if ckpt_passive.rc != sqlite_ffi::SQLITE_OK || ckpt_passive.log_frames < 0 {
     panic(
-      "sqlite wal_checkpoint failed: passive=" +
+      "sqlite passive checkpoint failed: rc=" +
       ckpt_passive.rc.to_string() +
-      " truncate=" +
-      ckpt_truncate.rc.to_string(),
+      " log=" +
+      ckpt_passive.log_frames.to_string(),
+    )
+  }
+  let ckpt_truncate = db.wal_checkpoint_hard(sqlite_ffi::CKPT_TRUNCATE, temp_busy_ms=1000)
+  if ckpt_truncate.rc != sqlite_ffi::SQLITE_OK || ckpt_truncate.log_frames != 0 {
+    panic(
+      "sqlite truncate checkpoint failed: rc=" +
+      ckpt_truncate.rc.to_string() +
+      " log=" +
+      ckpt_truncate.log_frames.to_string(),
     )
   }
 
   let close_rc = db.close()
   if close_rc != sqlite_ffi::SQLITE_OK {
     panic("sqlite close failed: rc=" + close_rc.to_string())
+  }
+
+  // Adversarial UAF checks on closed db handle: must return SQLITE_MISUSE safely.
+  if db.close() != sqlite_ffi::SQLITE_MISUSE {
+    panic("expected SQLITE_MISUSE on double close")
+  }
+  match db.exec("SELECT 1") {
+    Ok(_) => panic("expected error on exec after close")
+    Err(e) => {
+      if e.code != sqlite_ffi::SQLITE_MISUSE {
+        panic("expected SQLITE_MISUSE on exec after close, got " + e.code.to_string())
+      }
+    }
   }
 
   let fd_after = host_shim::open_fd_count()
@@ -289,10 +382,14 @@ fn run_smoke_sqlite(world : World, db_path : String) -> Unit {
   let summary = base_codec::json_stringify(
     base_codec::json_obj([
       ("ok", base_codec::json_bool(true)),
+      ("journal_mode", base_codec::json_str(journal_mode)),
       ("int64", base_codec::json_int64(got_big)),
+      ("utf8_bytes", base_codec::json_int(got_label.to_bytes().length())),
+      ("nul_text_len", base_codec::json_int(got_nul_text.length())),
       ("blob_len", base_codec::json_int(got_blob.length())),
-      ("ckpt_passive_rc", base_codec::json_int(ckpt_passive.rc)),
-      ("ckpt_truncate_rc", base_codec::json_int(ckpt_truncate.rc)),
+      ("ckpt_passive_log", base_codec::json_int(ckpt_passive.log_frames)),
+      ("ckpt_truncate_log", base_codec::json_int(ckpt_truncate.log_frames)),
+      ("uaf_guards", base_codec::json_bool(true)),
       ("fd_before", base_codec::json_int(fd_before)),
       ("fd_after", base_codec::json_int(fd_after)),
     ]),
@@ -308,7 +405,7 @@ fn run_smoke_shell(world : World, dir : String) -> Unit {
     panic("expected shell_active() == true after start")
   }
 
-  // 1. Sync shell call: crypto.random
+  // 1. Sync shell call: crypto.random -> assert exact 16 bytes (32 hex chars) and non-zero.
   let sync_raw = host_shim::shell_sync("crypto.random", "{\"bytes\":16}")
   if sync_raw.length() == 0 {
     host_shim::stop()
@@ -328,9 +425,31 @@ fn run_smoke_shell(world : World, dir : String) -> Unit {
     }
     None => ()
   }
+  let rand_hex = json_str_field(sync_parsed, "value", "")
+  let rand_bytes = rand_hex.to_bytes()
+  if rand_bytes.length() != 32 {
+    host_shim::stop()
+    panic("crypto.random expected 32 hex chars (16 bytes), got len=" + rand_bytes.length().to_string())
+  }
+  let mut any_nonzero = false
+  for i in 0..<rand_bytes.length() {
+    let c = rand_bytes[i].to_int()
+    if !is_hex_digit(c) {
+      host_shim::stop()
+      panic("crypto.random returned non-hex byte")
+    }
+    if c != 48 {
+      any_nonzero = true
+    }
+  }
+  if !any_nonzero {
+    host_shim::stop()
+    panic("crypto.random returned all zeros")
+  }
 
-  // 2. Async shell round-trip: storage.set -> storage.get
-  host_shim::shell_call(1.to_int64(), "storage.set", "{\"key\":\"smoke\",\"value\":\"pion-ok\"}", None)
+  // 2. Async shell round-trip: storage.set with real binary payload -> storage.get byte-exact match.
+  let want_payload = "pion-station-shell-ok".to_bytes()
+  host_shim::shell_call(1.to_int64(), "storage.set", "{\"key\":\"smoke\"}", Some(want_payload))
   let mut got_set = false
   let t0 = host_shim::now_ms()
   while !got_set && host_shim::now_ms() - t0 < 5000.to_int64() {
@@ -353,9 +472,9 @@ fn run_smoke_shell(world : World, dir : String) -> Unit {
   }
 
   host_shim::shell_call(2.to_int64(), "storage.get", "{\"key\":\"smoke\"}", None)
-  let mut got_val = ""
+  let mut got_bytes : Option[Bytes] = None
   let t1 = host_shim::now_ms()
-  while got_val.length() == 0 && host_shim::now_ms() - t1 < 5000.to_int64() {
+  while host_shim::now_ms() - t1 < 5000.to_int64() {
     match host_shim::wait(200.to_int64()) {
       Some(host_shim::HostEvent::ShellDone(done)) => {
         if done.id == 2.to_int64() {
@@ -363,15 +482,29 @@ fn run_smoke_shell(world : World, dir : String) -> Unit {
             host_shim::stop()
             panic("storage.get failed: " + done.error)
           }
-          got_val = done.json
+          got_bytes = done.bytes
+          break
         }
       }
       _ => ()
     }
   }
-  if got_val.length() == 0 {
-    host_shim::stop()
-    panic("storage.get timed out")
+  match got_bytes {
+    Some(actual) => {
+      if !bytes_equal(actual, want_payload) {
+        host_shim::stop()
+        panic(
+          "storage.get payload mismatch: got len=" +
+          actual.length().to_string() +
+          " want len=" +
+          want_payload.length().to_string(),
+        )
+      }
+    }
+    None => {
+      host_shim::stop()
+      panic("storage.get returned no bytes")
+    }
   }
 
   host_shim::stop()
@@ -382,8 +515,8 @@ fn run_smoke_shell(world : World, dir : String) -> Unit {
   let summary = base_codec::json_stringify(
     base_codec::json_obj([
       ("ok", base_codec::json_bool(true)),
-      ("sync_len", base_codec::json_int(sync_raw.length())),
-      ("storage_get", base_codec::json_str(got_val)),
+      ("random_hex_len", base_codec::json_int(rand_bytes.length())),
+      ("storage_bytes_verified", base_codec::json_int(want_payload.length())),
     ]),
   )
   io_println(world, summary)
@@ -412,26 +545,44 @@ fn soak_one_step(i : Int) -> Int {
   closure(i & 7)
 }
 
+fn must_rss_bytes() -> Int64 {
+  let rss = host_shim::rss_bytes()
+  if rss <= 0.to_int64() {
+    panic("rss_bytes sampling failed: got " + rss.to_string())
+  }
+  rss
+}
+
 fn run_smoke_rc_soak(world : World, total_iters : Int) -> Unit {
+  // Warmup pass to stabilize allocator arenas before taking baseline RSS.
+  let warmup = if total_iters / 5 > 5000 { 5000 } else { total_iters / 5 }
+  let mut checksum : Int64 = 0.to_int64()
+  for w in 0..<warmup {
+    checksum = checksum + soak_one_step(w).to_int64()
+  }
+
   let stages = 5
   let step = if total_iters / stages > 0 { total_iters / stages } else { 1 }
-  let rss0 = host_shim::rss_bytes()
+  let rss_baseline = must_rss_bytes()
   io_println(
     world,
-    "stage=0/" +
+    "scope=acyclic-graph warmup=" +
+    warmup.to_string() +
+    " stage=0/" +
     stages.to_string() +
     " iter=0 rss_bytes=" +
-    rss0.to_string() +
+    rss_baseline.to_string() +
     " rss_kib=" +
-    (rss0 / 1024.to_int64()).to_string(),
+    (rss_baseline / 1024.to_int64()).to_string(),
   )
 
-  let mut checksum : Int64 = 0.to_int64()
+  let mut rss_final = rss_baseline
   let mut stage = 1
   for i in 1..<(total_iters + 1) {
-    checksum = checksum + soak_one_step(i).to_int64()
+    checksum = checksum + soak_one_step(i + warmup).to_int64()
     if i == stage * step || i == total_iters {
-      let rss = host_shim::rss_bytes()
+      let rss = must_rss_bytes()
+      rss_final = rss
       io_println(
         world,
         "stage=" +
@@ -448,9 +599,27 @@ fn run_smoke_rc_soak(world : World, total_iters : Int) -> Unit {
       stage = stage + 1
     }
   }
+
+  let delta = rss_final - rss_baseline
+  let max_growth : Int64 = (2 * 1024 * 1024).to_int64()
+  if delta > max_growth {
+    panic(
+      "rc_soak RSS growth exceeded 2 MiB budget: baseline=" +
+      rss_baseline.to_string() +
+      " final=" +
+      rss_final.to_string() +
+      " delta=" +
+      delta.to_string(),
+    )
+  }
   io_println(
     world,
-    "rc_soak ok iters=" + total_iters.to_string() + " checksum=" + checksum.to_string(),
+    "rc_soak ok scope=acyclic-graph iters=" +
+    total_iters.to_string() +
+    " delta_bytes=" +
+    delta.to_string() +
+    " checksum=" +
+    checksum.to_string(),
   )
 }
 

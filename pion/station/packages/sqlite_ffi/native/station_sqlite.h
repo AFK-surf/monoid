@@ -9,6 +9,8 @@ extern "C" {
 
 // Direct C11 bridge over the `sqlite3_*` symbols exported by `libstillfail_shell.a`
 // (bundled rusqlite), avoiding JSON serialization on hot SQLite paths.
+// Handles are generation-checked indices into private C tables (never raw pointers)
+// so double-close, double-finalize, and post-close calls fail safely without UAF.
 
 int64_t stq_open(const char *path, int32_t flags, int32_t busy_timeout_ms);
 int32_t stq_close(int64_t db);
@@ -18,8 +20,14 @@ int32_t stq_exec(int64_t db, const char *sql);
 int32_t stq_changes(int64_t db);
 int32_t stq_autocommit(int64_t db);
 int32_t stq_wal_checkpoint(int64_t db, int32_t mode, int32_t *out_log, int32_t *out_ckpt);
+int32_t stq_wal_checkpoint_hard(
+    int64_t db,
+    int32_t mode,
+    int32_t temp_busy_ms,
+    int32_t *out_log,
+    int32_t *out_ckpt);
 
-int64_t stq_prepare(int64_t db, const char *sql, int32_t sql_len);
+int64_t stq_prepare(int64_t db, const char *sql, int32_t sql_len, int32_t *out_rc);
 int32_t stq_finalize(int64_t stmt);
 int32_t stq_reset(int64_t stmt);
 int32_t stq_clear_bindings(int64_t stmt);

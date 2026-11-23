@@ -101,16 +101,23 @@ pub fn decode_event(frame : Bytes) -> Option[HostEvent] {
     if payload_len < 17 {
       return None
     }
-    let err_len = read_u64_le(frame, 9).to_int()
-    let err_start = 17
-    let json_len_off = err_start + err_len
-    if json_len_off + 9 > frame.length() {
+    let err_len64 = read_u64_le(frame, 9)
+    let avail = (frame.length() - 17).to_int64()
+    if err_len64 < 0.to_int64() || err_len64 > avail - 9.to_int64() {
       return None
     }
-    let json_len = read_u64_le(frame, json_len_off).to_int()
+    let err_len = err_len64.to_int()
+    let err_start = 17
+    let json_len_off = err_start + err_len
+    let json_len64 = read_u64_le(frame, json_len_off)
+    let after_json_len = (frame.length() - (json_len_off + 8)).to_int64()
+    if json_len64 < 0.to_int64() || json_len64 > after_json_len - 1.to_int64() {
+      return None
+    }
+    let json_len = json_len64.to_int()
     let json_start = json_len_off + 8
     let has_off = json_start + json_len
-    if has_off >= frame.length() {
+    if has_off < 0 || has_off >= frame.length() {
       return None
     }
     let has_bytes = frame[has_off].to_int() != 0
@@ -313,13 +320,22 @@ pub fn build_info() -> String {
   bytes_to_str(raw)
 }
 
-/// Incremental `\n`-delimited line splitter for stdin chunks (matching `mb-reader` protocol).
+pub let MAX_LINE_BYTES : Int = 16777216
+
+/// Incremental `\n`-delimited line splitter for stdin chunks (matching `mb-reader` protocol),
+/// bounded to `max_bytes` per line to prevent unbounded memory growth on unterminated input.
 pub struct LineReader {
   mut carry : Array[Byte]
+  pub max_bytes : Int
+  mut overflowed : Bool
 }
 
-pub fn LineReader::new() -> LineReader {
-  LineReader::{ carry: [] }
+pub fn LineReader::new(max_bytes : Int = MAX_LINE_BYTES) -> LineReader {
+  LineReader::{ carry: [], max_bytes: max_bytes, overflowed: false }
+}
+
+pub fn LineReader::had_overflow(self : LineReader) -> Bool {
+  self.overflowed
 }
 
 pub fn LineReader::push(self : LineReader, chunk : Bytes) -> Array[String] {
@@ -327,24 +343,39 @@ pub fn LineReader::push(self : LineReader, chunk : Bytes) -> Array[String] {
   for i in 0..<chunk.length() {
     let b = chunk[i]
     if b.to_int() == 10 {
-      let sb = StringBuilder::new()
-      let mut end = self.carry.length()
-      if end > 0 && self.carry[end - 1].to_int() == 13 {
-        end = end - 1
+      if self.overflowed {
+        self.carry = []
+        self.overflowed = false
+      } else {
+        let sb = StringBuilder::new()
+        let mut end = self.carry.length()
+        if end > 0 && self.carry[end - 1].to_int() == 13 {
+          end = end - 1
+        }
+        for j in 0..<end {
+          sb.write_byte(self.carry[j])
+        }
+        self.carry = []
+        lines.push(sb.to_string())
       }
-      for j in 0..<end {
-        sb.write_byte(self.carry[j])
+    } else if !self.overflowed {
+      if self.carry.length() >= self.max_bytes {
+        self.carry = []
+        self.overflowed = true
+      } else {
+        self.carry.push(b)
       }
-      self.carry = []
-      lines.push(sb.to_string())
-    } else {
-      self.carry.push(b)
     }
   }
   lines
 }
 
 pub fn LineReader::flush(self : LineReader) -> Option[String] {
+  if self.overflowed {
+    self.carry = []
+    self.overflowed = false
+    return None
+  }
   if self.carry.length() == 0 {
     return None
   }

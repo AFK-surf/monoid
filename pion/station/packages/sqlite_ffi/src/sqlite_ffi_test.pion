@@ -1,0 +1,25 @@
+fn expect(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+test "SQLite open flags and result constants match C ABI" {
+  expect(SQLITE_OK == 0, "SQLITE_OK")
+  expect(SQLITE_MISUSE == 21, "SQLITE_MISUSE")
+  expect(SQLITE_ROW == 100, "SQLITE_ROW")
+  expect(SQLITE_DONE == 101, "SQLITE_DONE")
+  let rw = default_rw_flags()
+  expect((rw & OPEN_READWRITE) != 0, "OPEN_READWRITE")
+  expect((rw & OPEN_CREATE) != 0, "OPEN_CREATE")
+  expect((rw & OPEN_FULLMUTEX) != 0, "OPEN_FULLMUTEX")
+}
+
+test "WAL checkpoint modes are validated" {
+  expect(is_valid_checkpoint_mode(CKPT_PASSIVE), "PASSIVE")
+  expect(is_valid_checkpoint_mode(CKPT_FULL), "FULL")
+  expect(is_valid_checkpoint_mode(CKPT_RESTART), "RESTART")
+  expect(is_valid_checkpoint_mode(CKPT_TRUNCATE), "TRUNCATE")
+  expect(!is_valid_checkpoint_mode(-1), "negative mode")
+  expect(!is_valid_checkpoint_mode(4), "out-of-range mode")
+}

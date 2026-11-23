@@ -1,4 +1,4 @@
-// Standalone C11 unit & concurrency stress test for station_host.c.
+// Standalone C11 unit & adversarial concurrency test for station_host.c.
 // Verified under plain -Wall -Wextra -Werror, -fsanitize=address,undefined, and -fsanitize=thread.
 
 #if !defined(_WIN32) && !defined(__APPLE__)
@@ -14,9 +14,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
-// Stub Rust shell ABI for testing host_shim in isolation.
 typedef void (*sf_complete)(
     void *ctx,
     uint64_t id,
@@ -33,25 +33,55 @@ typedef struct stub_shell {
     void *ctx;
 } stub_shell_t;
 
-static stub_shell_t g_stub_shell;
+typedef struct async_req {
+    sf_complete complete;
+    void *ctx;
+    uint64_t id;
+    int is_fail;
+    uint8_t *json;
+    size_t json_len;
+    uint8_t *bytes;
+    size_t bytes_len;
+    uint8_t has_bytes;
+} async_req_t;
+
+static pthread_mutex_t g_stub_mu = PTHREAD_MUTEX_INITIALIZER;
 static sf_complete g_last_complete = NULL;
 static void *g_last_ctx = NULL;
 static atomic_int g_stop_count = 0;
+
+static void *async_complete_worker(void *arg) {
+    async_req_t *r = (async_req_t *)arg;
+    if (r->is_fail) {
+        static const char msg[] = "boom";
+        r->complete(r->ctx, r->id, NULL, 0, (const uint8_t *)msg, sizeof(msg) - 1, NULL, 0, 0);
+    } else {
+        r->complete(r->ctx, r->id, r->json, r->json_len, NULL, 0, r->bytes, r->bytes_len, r->has_bytes);
+    }
+    free(r->json);
+    free(r->bytes);
+    free(r);
+    return NULL;
+}
 
 void *sf_shell_start(const char *data_dir, sf_complete complete, void *ctx) {
     if (data_dir == NULL || strcmp(data_dir, "FAIL") == 0) {
         return NULL;
     }
-    g_stub_shell.complete = complete;
-    g_stub_shell.ctx = ctx;
+    stub_shell_t *sh = (stub_shell_t *)malloc(sizeof(*sh));
+    assert(sh != NULL);
+    sh->complete = complete;
+    sh->ctx = ctx;
+    pthread_mutex_lock(&g_stub_mu);
     g_last_complete = complete;
     g_last_ctx = ctx;
-    return &g_stub_shell;
+    pthread_mutex_unlock(&g_stub_mu);
+    return sh;
 }
 
 void sf_shell_stop(void *shell) {
-    (void)shell;
     atomic_fetch_add(&g_stop_count, 1);
+    free(shell);
 }
 
 void sf_shell_call(
@@ -64,12 +94,29 @@ void sf_shell_call(
     size_t bytes_len,
     uint8_t has_bytes) {
     const stub_shell_t *sh = (const stub_shell_t *)shell;
-    if (strcmp(op, "echo") == 0) {
-        sh->complete(sh->ctx, id, json, json_len, NULL, 0, bytes, bytes_len, has_bytes);
-    } else if (strcmp(op, "fail") == 0) {
-        static const char msg[] = "boom";
-        sh->complete(sh->ctx, id, NULL, 0, (const uint8_t *)msg, sizeof(msg) - 1, NULL, 0, 0);
+    async_req_t *r = (async_req_t *)calloc(1, sizeof(*r));
+    assert(r != NULL);
+    r->complete = sh->complete;
+    r->ctx = sh->ctx;
+    r->id = id;
+    r->is_fail = (strcmp(op, "fail") == 0);
+    r->json_len = json_len;
+    if (json_len > 0 && json != NULL) {
+        r->json = (uint8_t *)malloc(json_len);
+        assert(r->json != NULL);
+        memcpy(r->json, json, json_len);
     }
+    r->bytes_len = bytes_len;
+    r->has_bytes = has_bytes;
+    if (has_bytes && bytes_len > 0 && bytes != NULL) {
+        r->bytes = (uint8_t *)malloc(bytes_len);
+        assert(r->bytes != NULL);
+        memcpy(r->bytes, bytes, bytes_len);
+    }
+    // Deliver completion on a real foreign thread to exercise TSan concurrency with sth_stop().
+    pthread_t t;
+    assert(pthread_create(&t, NULL, async_complete_worker, r) == 0);
+    pthread_detach(t);
 }
 
 uint8_t *sf_shell_call_sync(
@@ -103,8 +150,29 @@ static uint64_t read_u64_le(const uint8_t *p) {
     return v;
 }
 
+static int contains_bytes(const uint8_t *hay, size_t hay_len, const char *needle) {
+    size_t nlen = strlen(needle);
+    if (nlen == 0 || hay == NULL || hay_len < nlen) {
+        return 0;
+    }
+    for (size_t i = 0; i + nlen <= hay_len; i++) {
+        if (memcmp(hay + i, needle, nlen) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void sleep_ms(int ms) {
+    struct timespec ts;
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+    nanosleep(&ts, NULL);
+}
+
 typedef struct bp_args {
-    atomic_int pushed;
+    atomic_int pushed_chunks;
+    atomic_int finished;
     size_t chunk_size;
     int chunks;
 } bp_args_t;
@@ -116,23 +184,34 @@ static void *stdin_producer(void *arg) {
     memset(buf, 0x41, a->chunk_size);
     for (int i = 0; i < a->chunks; i++) {
         sth_push_stdin_chunk(buf, a->chunk_size);
-        atomic_fetch_add(&a->pushed, 1);
+        atomic_fetch_add(&a->pushed_chunks, 1);
     }
     sth_push_stdin_eof();
+    atomic_store(&a->finished, 1);
     free(buf);
     return NULL;
 }
 
-static void test_stdin_backpressure(void) {
-    // Set small backpressure limit (8 KiB) to verify producer blocks until consumer drains.
-    sth_set_stdin_limit_for_test(8192);
+static void test_stdin_backpressure_strict_cap(void) {
+    // Use an oversized chunk (12 KiB) against an 8 KiB cap to prove slicing keeps peak <= cap
+    // and producer truly blocks until consumer drains.
+    const size_t limit = 8192;
+    sth_set_stdin_limit_for_test(limit);
+
     bp_args_t args;
-    atomic_init(&args.pushed, 0);
-    args.chunk_size = 4096;
-    args.chunks = 8;
+    atomic_init(&args.pushed_chunks, 0);
+    atomic_init(&args.finished, 0);
+    args.chunk_size = 12288; // larger than limit!
+    args.chunks = 4;
 
     pthread_t prod;
     assert(pthread_create(&prod, NULL, stdin_producer, &args) == 0);
+
+    // Wait briefly so producer fills the queue and blocks on backpressure.
+    sleep_ms(30);
+    assert(atomic_load(&args.finished) == 0);
+    assert(atomic_load(&args.pushed_chunks) < args.chunks);
+    assert(sth_stdin_queued_peak_for_test() <= limit);
 
     size_t total = 0;
     int saw_eof = 0;
@@ -148,32 +227,59 @@ static void test_stdin_backpressure(void) {
         sth_free(ev);
     }
     pthread_join(prod, NULL);
+    assert(atomic_load(&args.finished) == 1);
     assert(total == args.chunk_size * (size_t)args.chunks);
-    assert(atomic_load(&args.pushed) == args.chunks);
+    assert(sth_stdin_queued_peak_for_test() <= limit);
     sth_set_stdin_limit_for_test(STH_STDIN_MOST);
 }
 
-static void test_shell_lifecycle_and_stale_gen(void) {
+static void test_sth_stop_preserves_stdin_and_eof(void) {
+    assert(sth_start("/tmp/fake-shell-preserve", 0) == 1);
+    const char line[] = "{\"id\":7,\"op\":\"echo\"}\n";
+    sth_push_stdin_chunk((const uint8_t *)line, sizeof(line) - 1);
+    sth_push_stdin_eof();
+
+    // Stopping shell MUST NOT drop queued stdin data or EOF.
+    sth_stop();
+    assert(sth_shell_active() == 0);
+
+    int64_t n1 = 0;
+    uint8_t *ev1 = (uint8_t *)sth_wait(1000, &n1);
+    assert(ev1 != NULL && n1 == (int64_t)(9 + sizeof(line) - 1));
+    assert(ev1[0] == STH_EV_STDIN_DATA);
+    assert(memcmp(ev1 + 9, line, sizeof(line) - 1) == 0);
+    sth_free(ev1);
+
+    int64_t n2 = 0;
+    uint8_t *ev2 = (uint8_t *)sth_wait(1000, &n2);
+    assert(ev2 != NULL && n2 == 9);
+    assert(ev2[0] == STH_EV_STDIN_EOF);
+    sth_free(ev2);
+}
+
+static void test_shell_lifecycle_and_foreign_thread_race(void) {
     assert(sth_start("FAIL", 0) == 0);
     assert(sth_shell_active() == 0);
 
     assert(sth_start("/tmp/fake-shell", 0) == 1);
     assert(sth_shell_active() == 1);
+    pthread_mutex_lock(&g_stub_mu);
     sf_complete old_complete = g_last_complete;
     void *old_ctx = g_last_ctx;
+    pthread_mutex_unlock(&g_stub_mu);
 
-    // Sync call
+    // Sync call (length-bounded check, never calling strstr on non-NUL-terminated buffer).
     int64_t slen = 0;
-    char *sres = (char *)sth_shell_sync("ping", (const uint8_t *)"{}", 2, &slen);
+    uint8_t *sres = (uint8_t *)sth_shell_sync("ping", (const uint8_t *)"{}", 2, &slen);
     assert(sres != NULL && slen > 0);
-    assert(strstr(sres, "\"ping\"") != NULL);
+    assert(contains_bytes(sres, (size_t)slen, "\"ping\""));
     sth_free(sres);
 
-    // Async call with binary payload
+    // Async call completed by a real foreign thread.
     const uint8_t payload[4] = { 1, 2, 3, 4 };
     sth_shell_call(42, "echo", (const uint8_t *)"{\"ok\":true}", 11, payload, 4, 1);
     int64_t elen = 0;
-    uint8_t *ev = (uint8_t *)sth_wait(1000, &elen);
+    uint8_t *ev = (uint8_t *)sth_wait(2000, &elen);
     assert(ev != NULL && elen > 9);
     assert(ev[0] == STH_EV_SHELL_DONE);
     assert(read_u64_le(ev + 1) == 42);
@@ -196,7 +302,17 @@ static void test_shell_lifecycle_and_stale_gen(void) {
     void *stale = sth_wait(0, &stale_len);
     assert(stale == NULL && stale_len == 0);
 
+    // Stress concurrent foreign-thread completions racing with sth_stop() under TSan.
+    for (int round = 0; round < 16; round++) {
+        for (int k = 0; k < 4; k++) {
+            sth_shell_call((int64_t)(round * 10 + k), "echo", (const uint8_t *)"{}", 2, NULL, 0, 0);
+        }
+        sth_stop();
+        assert(sth_start("/tmp/fake-shell-race", 0) == 1);
+    }
     sth_stop();
+    // Allow detached stub threads from the final round to finish cleanly before exit.
+    sleep_ms(30);
 }
 
 static void *sys_worker(void *arg) {
@@ -247,15 +363,16 @@ static void test_process_utils(void) {
     sth_free(args);
 
     int64_t blen = 0;
-    char *info = (char *)sth_build_info(&blen);
+    uint8_t *info = (uint8_t *)sth_build_info(&blen);
     assert(info != NULL && blen > 0);
-    assert(strncmp(info, "stillfail-pion ", 15) == 0);
+    assert(contains_bytes(info, (size_t)blen, "stillfail-pion "));
     sth_free(info);
 }
 
 int main(void) {
-    test_stdin_backpressure();
-    test_shell_lifecycle_and_stale_gen();
+    test_stdin_backpressure_strict_cap();
+    test_sth_stop_preserves_stdin_and_eof();
+    test_shell_lifecycle_and_foreign_thread_race();
     test_mt_sys_queue();
     test_process_utils();
     printf("host_shim_test: ALL PASSED\n");

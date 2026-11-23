@@ -6,11 +6,6 @@ on:
       - "pion/station/**"
       - "pion/base/**"
       - ".github/workflows/pion-station.yml"
-  pull_request:
-    paths:
-      - "pion/station/**"
-      - "pion/base/**"
-      - ".github/workflows/pion-station.yml"
   workflow_dispatch:
 
 concurrency:
@@ -27,6 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Cache Zig 0.16.0
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pion-station-zig/0.16.0
+          key: pion-station-zig-linux-x64-0.16.0
+
       - name: Validate toolchain pin and scripts
         run: |
           sha="$(sed -n 's/[[:space:]]*#.*$//; /^[[:space:]]*$/d; p; q' pion/station/TOOLCHAIN | tr -d '[:space:]')"
@@ -34,7 +35,7 @@ jobs:
           sh -n pion/station/scripts/ensure-pionc.sh
           bash -n pion/station/scripts/build.sh
 
-      - name: C shims strict compile, ASan/UBSan, and TSan
+      - name: C shims strict compile, ASan/UBSan, TSan, and win32-x64 cross-compile
         run: |
           cc -std=c11 -O2 -Wall -Wextra -Werror -fsyntax-only \
             pion/station/packages/sqlite_ffi/native/station_sqlite.c
@@ -57,6 +58,23 @@ jobs:
             -lpthread -o "$RUNNER_TEMP/host_shim_test_tsan"
           "$RUNNER_TEMP/host_shim_test_tsan"
 
+          # Verify _WIN32 compilation path on every CI run with pinned Zig 0.16.0.
+          zbase="$HOME/.cache/pion-station-zig/0.16.0"
+          zbin="$zbase/zig-x86_64-linux-0.16.0/zig"
+          if [ ! -x "$zbin" ]; then
+            mkdir -p "$zbase"
+            tmp="$RUNNER_TEMP/zig.tar.xz"
+            curl -fsSL --retry 5 --retry-all-errors --speed-limit 1024 --speed-time 20 \
+              -o "$tmp" https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+            echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  $tmp" | sha256sum -c --quiet
+            tar -xf "$tmp" -C "$zbase"
+            rm -f "$tmp"
+          fi
+          "$zbin" cc -target x86_64-windows-gnu -std=c11 -O2 -Wall -Wextra -Werror -c \
+            pion/station/packages/host_shim/native/station_host.c -o "$RUNNER_TEMP/station_host_win.o"
+          "$zbin" cc -target x86_64-windows-gnu -std=c11 -O2 -Wall -Wextra -Werror -c \
+            pion/station/packages/sqlite_ffi/native/station_sqlite.c -o "$RUNNER_TEMP/station_sqlite_win.o"
+
   verify-linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -67,25 +85,21 @@ jobs:
 
       - uses: ./.github/actions/node
 
-      - name: Check access to AFK-surf/pion
-        id: access
+      - name: Verify access to AFK-surf/pion (fail loudly on missing PION_TOKEN)
         env:
           PION_DEPLOY_KEY: ${{ secrets.PION_DEPLOY_KEY }}
           PION_TOKEN: ${{ secrets.PION_TOKEN }}
         run: |
           if [ -n "${PION_DEPLOY_KEY:-}" ] || [ -n "${PION_TOKEN:-}" ]; then
-            echo "can_fetch=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code https://github.com/AFK-surf/pion.git HEAD >/dev/null 2>&1; then
-            echo "can_fetch=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::AFK-surf/pion is private and neither PION_TOKEN nor PION_DEPLOY_KEY is configured in repository secrets; skipping pionc bootstrap and smoke steps."
-            echo "can_fetch=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          echo "::error::AFK-surf/pion is private and neither PION_TOKEN nor PION_DEPLOY_KEY is configured in AFK-surf/monoid repository secrets. Configure a read-only PION_TOKEN (covering AFK-surf/pion and AFK-surf/pion-packages) so pion-station CI runs real pionc checks instead of skipping."
+          exit 1
 
       - name: Cache pinned Pion toolchain
-        if: steps.access.outputs.can_fetch == 'true'
         id: pion-cache
         uses: actions/cache@v4
         with:
@@ -93,14 +107,12 @@ jobs:
           key: pion-station-toolchain-linux-x64-v1-${{ hashFiles('pion/station/TOOLCHAIN') }}
 
       - name: Cache Zig 0.16.0
-        if: steps.access.outputs.can_fetch == 'true'
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-station-zig/0.16.0
           key: pion-station-zig-linux-x64-0.16.0
 
       - name: Cache Zig compilation artifacts
-        if: steps.access.outputs.can_fetch == 'true'
         id: zig-cache
         uses: actions/cache/restore@v4
         with:
@@ -109,7 +121,6 @@ jobs:
           restore-keys: pion-station-zig-cache-linux-x64-0.16.0-
 
       - name: Configure git credentials for private AFK-surf/pion-packages
-        if: steps.access.outputs.can_fetch == 'true'
         env:
           PION_TOKEN: ${{ secrets.PION_TOKEN }}
         run: |
@@ -119,7 +130,6 @@ jobs:
           fi
 
       - name: Ensure pinned pionc toolchain
-        if: steps.access.outputs.can_fetch == 'true'
         env:
           PION_DEPLOY_KEY: ${{ secrets.PION_DEPLOY_KEY }}
           PION_TOKEN: ${{ secrets.PION_TOKEN }}
@@ -133,66 +143,74 @@ jobs:
           "$PIONC" --version
 
       - name: Pion fmt, check, and unit tests
-        if: steps.access.outputs.can_fetch == 'true'
         run: |
           pionc fmt --check pion/station
           pionc check --json pion/station
           pionc test --json pion/station
 
       - name: Build linux-x64 with real libstillfail_shell.a and run smoke suite
-        if: steps.access.outputs.can_fetch == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           BIN="$RUNNER_TEMP/stillfail-pion-linux-x64"
           bash pion/station/scripts/build.sh linux-x64 "$BIN"
           ls -lh "$BIN"
           ldd "$BIN"
-          max_glibc="$(objdump -T "$BIN" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -n 1 || true)"
+
+          # Strictly verify max GLIBC symbol version <= 2.28 (never swallow objdump errors).
+          objdump_out="$(objdump -T "$BIN")"
+          max_glibc="$(printf '%s\n' "$objdump_out" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -Vu | tail -n 1 || true)"
           echo "max_glibc=${max_glibc:-none}"
-          if [ -n "$max_glibc" ]; then
-            ver="${max_glibc#GLIBC_}"
-            top="$(printf '%s\n2.28\n' "$ver" | sort -V | tail -n 1)"
-            if [ "$top" != "2.28" ]; then
-              echo "FAIL: binary requires $max_glibc (> GLIBC_2.28)" >&2
-              exit 1
-            fi
+          test -n "$max_glibc"
+          ver="${max_glibc#GLIBC_}"
+          top="$(printf '%s\n2.28\n' "$ver" | sort -V | tail -n 1)"
+          if [ "$top" != "2.28" ]; then
+            echo "FAIL: binary requires $max_glibc (> GLIBC_2.28)" >&2
+            exit 1
           fi
 
           "$BIN" --version
 
+          # Streaming stdio test: pure EOF clean exit (no quit), binary tail containing \0 and \n.
           node -e '
-            const { spawnSync } = require("node:child_process");
-            const input = [
-              JSON.stringify({ id: 1, op: "echo", text: "hello-pion" }),
-              JSON.stringify({ id: 2, op: "binary", size: 16, byte: 65 }),
-              JSON.stringify({ id: 3, op: "cancel", target: 4 }),
-              JSON.stringify({ id: 4, op: "echo", text: "should-cancel" }),
-              JSON.stringify({ id: 5, op: "quit" }),
-            ].join("\n") + "\n";
-            const res = spawnSync(process.argv[1], ["--smoke-stdio"], { input });
-            if (res.status !== 0) { console.error(res.stderr.toString()); process.exit(1); }
-            const out = res.stdout;
-            let at = 0;
-            const frames = [];
-            while (at < out.length) {
-              const nl = out.indexOf(10, at);
-              if (nl < 0) break;
-              const obj = JSON.parse(out.subarray(at, nl).toString("utf8"));
-              at = nl + 1;
-              if (typeof obj.bytes === "number") {
-                obj.body = out.subarray(at, at + obj.bytes);
-                at += obj.bytes;
+            const { spawn } = require("node:child_process");
+            const child = spawn(process.argv[1], ["--smoke-stdio"], { stdio: ["pipe", "pipe", "pipe"] });
+            const chunks = [];
+            let stderr = "";
+            child.stdout.on("data", (d) => chunks.push(d));
+            child.stderr.on("data", (d) => { stderr += d.toString("utf8"); });
+            child.on("close", (code) => {
+              if (code !== 0) { console.error("stdio exit", code, stderr); process.exit(1); }
+              const out = Buffer.concat(chunks);
+              let at = 0;
+              const frames = [];
+              while (at < out.length) {
+                const nl = out.indexOf(10, at);
+                if (nl < 0) break;
+                const obj = JSON.parse(out.subarray(at, nl).toString("utf8"));
+                at = nl + 1;
+                if (typeof obj.bytes === "number") {
+                  obj.body = out.subarray(at, at + obj.bytes);
+                  at += obj.bytes;
+                }
+                frames.push(obj);
               }
-              frames.push(obj);
-            }
-            if (frames.length !== 5) throw new Error("expected 5 frames, got " + frames.length);
-            if (frames[0].text !== "hello-pion") throw new Error("echo mismatch");
-            if (frames[1].body.length !== 16 || frames[1].body[0] !== 65 || frames[1].body[15] !== 80) throw new Error("binary tail mismatch");
-            if (frames[2].cancelled !== 4) throw new Error("cancel ack mismatch");
-            if (frames[3].cancelled !== true) throw new Error("cancelled req mismatch");
-            if (frames[4].bye !== true) throw new Error("quit mismatch");
-            console.log("smoke-stdio ok:", frames.length, "frames");
+              if (at !== out.length) throw new Error("unparsed trailing bytes");
+              if (frames.length !== 4) throw new Error("expected 4 frames, got " + frames.length);
+              if (frames[0].text !== "hello-pion") throw new Error("echo mismatch");
+              if (frames[1].body.length !== 32 || frames[1].body[0] !== 0 || frames[1].body[10] !== 10 || frames[1].body[31] !== 31) {
+                throw new Error("binary tail with NUL and LF mismatch");
+              }
+              if (frames[2].cancelled !== 4) throw new Error("cancel ack mismatch");
+              if (frames[3].cancelled !== true) throw new Error("cancelled req mismatch");
+              console.log("smoke-stdio ok (pure EOF):", frames.length, "frames");
+            });
+            child.stdin.write(JSON.stringify({ id: 1, op: "echo", text: "hello-pion" }) + "\n");
+            child.stdin.write(JSON.stringify({ id: 2, op: "binary", size: 32, byte: 0 }) + "\n");
+            child.stdin.write(JSON.stringify({ id: 3, op: "cancel", target: 4 }) + "\n");
+            child.stdin.write(JSON.stringify({ id: 4, op: "echo", text: "should-cancel" }) + "\n");
+            child.stdin.end();
           ' "$BIN"
 
           "$BIN" --smoke-sqlite "$RUNNER_TEMP/smoke.db"
@@ -200,7 +218,7 @@ jobs:
           "$BIN" --smoke-rc-soak 50000
 
       - name: Save Zig cache
-        if: always() && steps.access.outputs.can_fetch == 'true' && steps.zig-cache.outputs.cache-hit != 'true'
+        if: always() && steps.zig-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         continue-on-error: true
         with:

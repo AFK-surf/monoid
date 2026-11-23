@@ -23,7 +23,8 @@ extern "C" {
 // Returns 1 on success, 0 on failure.
 int32_t sth_start(const char *shell_dir, int32_t start_stdin);
 
-// Stop owned Rust shell (waiting for in-flight calls, dropping late answers) and wake blocked waiters.
+// Stop owned Rust shell (waiting for in-flight calls, dropping only STH_EV_SHELL_DONE events and
+// preserving queued STH_EV_STDIN_DATA / STH_EV_STDIN_EOF / STH_EV_SYS events).
 void sth_stop(void);
 
 // Returns 1 if a shell handle is active, 0 otherwise.
@@ -40,6 +41,7 @@ void sth_push_sys_bounded(uint64_t id, const uint8_t *data, size_t len);
 
 // Test hooks for exercising stdin backpressure without mutating fd 0.
 void sth_set_stdin_limit_for_test(size_t limit_bytes);
+size_t sth_stdin_queued_peak_for_test(void);
 void sth_push_stdin_chunk(const uint8_t *data, size_t len);
 void sth_push_stdin_eof(void);
 
