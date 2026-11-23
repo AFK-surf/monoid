@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [68fb3c249](https://github.com/AFK-surf/monoid/commit/68fb3c2497c138f1f8790687be24c2387b487cf3) test(mbui): hold a history group's steps at their  | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.39 | 121.54 |
 | [6eb1558df](https://github.com/AFK-surf/monoid/commit/6eb1558df72482940a2d8e16fe6292a29b78c145) fix(ui): grow start-indented content from its star | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.39 | 121.54 |
 | [9d9b96358](https://github.com/AFK-surf/monoid/commit/9d9b96358c94ecc736a542e2ed99e9a85e1f846e) refactor(ui,mbui): clean dead controls APIs and un | 2.74 | 3.69 | 14.95 | 37.14 | 56.95 | 32.52 | 66.07 | 100.6 | 114.59 |
 | [db2b6cdf5](https://github.com/AFK-surf/monoid/commit/db2b6cdf503a0fb378b372704da3c95cdf18c266) fix(pion-client-core): enforce lock genesis pinnin | 2.74 | 3.69 | 14.95 | 37.14 | 56.95 | 32.52 | 66.07 | 100.48 | 127.55 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [62801b760](https://github.com/AFK-surf/monoid/commit/62801b76096c861e6fe7b463fc0463b5a43079af) feat(headless): add reorder/transfer, tree, and me | 2.73 | 3.68 | 14.91 | 37.09 | 56.8 | 32.48 | 65.96 | 100.44 | 128.5 |
 | [a09f1aec1](https://github.com/AFK-surf/monoid/commit/a09f1aec17d98631174f16e4fa75a21cf6256adc) feat(mbui): apply Liquid Glass surface to narrow o | 2.73 | 3.68 | 14.91 | 37.08 | 56.8 | 32.48 | 65.96 | 100.42 | 137.83 |
 | [3c0c201f1](https://github.com/AFK-surf/monoid/commit/3c0c201f15d8d3d3b95f40c342a78df488e34932) revert(pion-app): revert #8307 off-track sf_ui imp | 2.73 | 3.68 | 14.91 | 37.08 | 56.8 | 32.48 | 65.96 | 100.42 | 137.83 |
-| [21a57831d](https://github.com/AFK-surf/monoid/commit/21a57831d4729563cfc2cc9930d433fdb581e2a4) perf(ui,mbui): reduce side-panel slide frame cost  | 2.73 | 3.68 | 14.91 | 37.08 | 56.8 | 32.48 | 65.96 | 100.42 | 137.83 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [68fb3c249](https://github.com/AFK-surf/monoid/commit/68fb3c2497c138f1f8790687be24c2387b487cf3) test(mbui): hold a history group's steps at their  | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.23 |
 | [6eb1558df](https://github.com/AFK-surf/monoid/commit/6eb1558df72482940a2d8e16fe6292a29b78c145) fix(ui): grow start-indented content from its star | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.07 |
 | [9d9b96358](https://github.com/AFK-surf/monoid/commit/9d9b96358c94ecc736a542e2ed99e9a85e1f846e) refactor(ui,mbui): clean dead controls APIs and un | 0.55 | 0.72 | 2.8 | 3.81 | 6.9 | 2.04 | 5.68 | 57.31 |
 | [db2b6cdf5](https://github.com/AFK-surf/monoid/commit/db2b6cdf503a0fb378b372704da3c95cdf18c266) fix(pion-client-core): enforce lock genesis pinnin | 0.55 | 0.72 | 2.8 | 3.81 | 6.9 | 2.04 | 5.68 | 57.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [62801b760](https://github.com/AFK-surf/monoid/commit/62801b76096c861e6fe7b463fc0463b5a43079af) feat(headless): add reorder/transfer, tree, and me | 0.49 | 0.64 | 2.45 | 3.52 | 5.84 | 1.8 | 4.85 | 55.28 |
 | [a09f1aec1](https://github.com/AFK-surf/monoid/commit/a09f1aec17d98631174f16e4fa75a21cf6256adc) feat(mbui): apply Liquid Glass surface to narrow o | 0.49 | 0.64 | 2.45 | 3.52 | 5.84 | 1.8 | 4.85 | 55.31 |
 | [3c0c201f1](https://github.com/AFK-surf/monoid/commit/3c0c201f15d8d3d3b95f40c342a78df488e34932) revert(pion-app): revert #8307 off-track sf_ui imp | 0.49 | 0.64 | 2.45 | 3.51 | 5.83 | 1.8 | 4.85 | 55.23 |
-| [21a57831d](https://github.com/AFK-surf/monoid/commit/21a57831d4729563cfc2cc9930d433fdb581e2a4) perf(ui,mbui): reduce side-panel slide frame cost  | 0.49 | 0.64 | 2.45 | 3.51 | 5.83 | 1.8 | 4.85 | 55.2 |
