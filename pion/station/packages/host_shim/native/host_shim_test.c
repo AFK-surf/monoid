@@ -1,4 +1,5 @@
 // Standalone C11 unit & adversarial concurrency test for station_host.c.
+// Deterministic synchronization only (zero sleeps).
 // Verified under plain -Wall -Wextra -Werror, -fsanitize=address,undefined, and -fsanitize=thread.
 
 #if !defined(_WIN32) && !defined(__APPLE__)
@@ -14,7 +15,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 
 typedef void (*sf_complete)(
@@ -46,9 +46,19 @@ typedef struct async_req {
 } async_req_t;
 
 static pthread_mutex_t g_stub_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_stub_done = PTHREAD_COND_INITIALIZER;
+static int g_stub_inflight = 0;
 static sf_complete g_last_complete = NULL;
 static void *g_last_ctx = NULL;
 static atomic_int g_stop_count = 0;
+
+static void stub_wait_all_workers_done(void) {
+    pthread_mutex_lock(&g_stub_mu);
+    while (g_stub_inflight > 0) {
+        pthread_cond_wait(&g_stub_done, &g_stub_mu);
+    }
+    pthread_mutex_unlock(&g_stub_mu);
+}
 
 static void *async_complete_worker(void *arg) {
     async_req_t *r = (async_req_t *)arg;
@@ -61,6 +71,13 @@ static void *async_complete_worker(void *arg) {
     free(r->json);
     free(r->bytes);
     free(r);
+
+    pthread_mutex_lock(&g_stub_mu);
+    g_stub_inflight -= 1;
+    if (g_stub_inflight == 0) {
+        pthread_cond_broadcast(&g_stub_done);
+    }
+    pthread_mutex_unlock(&g_stub_mu);
     return NULL;
 }
 
@@ -113,6 +130,11 @@ void sf_shell_call(
         assert(r->bytes != NULL);
         memcpy(r->bytes, bytes, bytes_len);
     }
+
+    pthread_mutex_lock(&g_stub_mu);
+    g_stub_inflight += 1;
+    pthread_mutex_unlock(&g_stub_mu);
+
     // Deliver completion on a real foreign thread to exercise TSan concurrency with sth_stop().
     pthread_t t;
     assert(pthread_create(&t, NULL, async_complete_worker, r) == 0);
@@ -163,13 +185,6 @@ static int contains_bytes(const uint8_t *hay, size_t hay_len, const char *needle
     return 0;
 }
 
-static void sleep_ms(int ms) {
-    struct timespec ts;
-    ts.tv_sec = ms / 1000;
-    ts.tv_nsec = (long)(ms % 1000) * 1000000L;
-    nanosleep(&ts, NULL);
-}
-
 typedef struct bp_args {
     atomic_int pushed_chunks;
     atomic_int finished;
@@ -194,21 +209,21 @@ static void *stdin_producer(void *arg) {
 
 static void test_stdin_backpressure_strict_cap(void) {
     // Use an oversized chunk (12 KiB) against an 8 KiB cap to prove slicing keeps peak <= cap
-    // and producer truly blocks until consumer drains.
+    // and producer deterministically blocks in cond_wait until consumer drains.
     const size_t limit = 8192;
     sth_set_stdin_limit_for_test(limit);
 
     bp_args_t args;
     atomic_init(&args.pushed_chunks, 0);
     atomic_init(&args.finished, 0);
-    args.chunk_size = 12288; // larger than limit!
+    args.chunk_size = 12288; // larger than limit
     args.chunks = 4;
 
     pthread_t prod;
     assert(pthread_create(&prod, NULL, stdin_producer, &args) == 0);
 
-    // Wait briefly so producer fills the queue and blocks on backpressure.
-    sleep_ms(30);
+    // Deterministic condvar wait: guarantees producer is actually blocked on backpressure.
+    sth_wait_for_stdin_blocked_for_test();
     assert(atomic_load(&args.finished) == 0);
     assert(atomic_load(&args.pushed_chunks) < args.chunks);
     assert(sth_stdin_queued_peak_for_test() <= limit);
@@ -255,6 +270,25 @@ static void test_sth_stop_preserves_stdin_and_eof(void) {
     assert(ev2 != NULL && n2 == 9);
     assert(ev2[0] == STH_EV_STDIN_EOF);
     sth_free(ev2);
+}
+
+static void *stop_after_waiter_blocks(void *arg) {
+    (void)arg;
+    sth_wait_for_queue_waiter_for_test();
+    sth_stop();
+    return NULL;
+}
+
+static void test_sth_stop_wakes_indefinite_wait_on_empty_queue(void) {
+    assert(sth_start("/tmp/fake-shell-wake", 0) == 1);
+    pthread_t stopper;
+    assert(pthread_create(&stopper, NULL, stop_after_waiter_blocks, NULL) == 0);
+
+    int64_t len = -1;
+    void *ev = sth_wait(-1, &len);
+    assert(ev == NULL && len == 0);
+
+    pthread_join(stopper, NULL);
 }
 
 static void test_shell_lifecycle_and_foreign_thread_race(void) {
@@ -311,8 +345,8 @@ static void test_shell_lifecycle_and_foreign_thread_race(void) {
         assert(sth_start("/tmp/fake-shell-race", 0) == 1);
     }
     sth_stop();
-    // Allow detached stub threads from the final round to finish cleanly before exit.
-    sleep_ms(30);
+    // Deterministically wait for every foreign completion worker to exit (zero sleeps).
+    stub_wait_all_workers_done();
 }
 
 static void *sys_worker(void *arg) {
@@ -372,6 +406,7 @@ static void test_process_utils(void) {
 int main(void) {
     test_stdin_backpressure_strict_cap();
     test_sth_stop_preserves_stdin_and_eof();
+    test_sth_stop_wakes_indefinite_wait_on_empty_queue();
     test_shell_lifecycle_and_foreign_thread_race();
     test_mt_sys_queue();
     test_process_utils();

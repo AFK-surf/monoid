@@ -36,6 +36,7 @@ extern "C" fn stq_column_blob(stmt : Int64, index : Int, out_len : Ptr) -> Ptr
 extern "C" fn stq_free(ptr : Ptr) -> Unit
 
 pub let SQLITE_OK : Int = 0
+pub let SQLITE_BUSY : Int = 5
 pub let SQLITE_MISUSE : Int = 21
 pub let SQLITE_ROW : Int = 100
 pub let SQLITE_DONE : Int = 101

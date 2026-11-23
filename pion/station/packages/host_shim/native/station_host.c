@@ -106,6 +106,7 @@ static sth_lock_t g_lock = STH_LOCK_INIT;
 static sth_cond_t g_stdin_cond = STH_COND_INIT;
 static sth_cond_t g_sys_cond = STH_COND_INIT;
 static sth_cond_t g_inflight_cond = STH_COND_INIT;
+static sth_cond_t g_test_waiter_cond = STH_COND_INIT;
 
 // On non-Apple POSIX, initialize `g_queue_cond` strictly once with CLOCK_MONOTONIC
 // (never double-initialized with PTHREAD_COND_INITIALIZER + pthread_cond_init).
@@ -129,14 +130,17 @@ static sth_event_t *g_head = NULL;
 static sth_event_t *g_tail = NULL;
 static size_t g_stdin_queued = 0;
 static size_t g_stdin_peak = 0;
+static size_t g_stdin_waiters = 0;
 static size_t g_stdin_limit = STH_STDIN_MOST;
 static size_t g_sys_queued = 0;
 static size_t g_sys_waiters = 0;
+static size_t g_queue_waiters = 0;
 
 static void *g_shell = NULL;
 static int g_stopping = 0;
 static int g_in_flight = 0;
 static uintptr_t g_gen = 0;
+static uint64_t g_stop_gen = 0;
 static int g_stdin_started = 0;
 
 static void put_u64_le(uint8_t *at, uint64_t v) {
@@ -262,6 +266,24 @@ size_t sth_stdin_queued_peak_for_test(void) {
     return p;
 }
 
+void sth_wait_for_stdin_blocked_for_test(void) {
+    ensure_queue_init();
+    sth_lock(&g_lock);
+    while (g_stdin_waiters == 0) {
+        sth_cond_wait(&g_test_waiter_cond, &g_lock);
+    }
+    sth_unlock(&g_lock);
+}
+
+void sth_wait_for_queue_waiter_for_test(void) {
+    ensure_queue_init();
+    sth_lock(&g_lock);
+    while (g_queue_waiters == 0) {
+        sth_cond_wait(&g_test_waiter_cond, &g_lock);
+    }
+    sth_unlock(&g_lock);
+}
+
 // Enqueues `data[0..len)` in slices so `g_stdin_queued` strictly never exceeds `g_stdin_limit`.
 void sth_push_stdin_chunk(const uint8_t *data, size_t len) {
     if (len == 0 || data == NULL) {
@@ -272,7 +294,10 @@ void sth_push_stdin_chunk(const uint8_t *data, size_t len) {
     while (off < len) {
         sth_lock(&g_lock);
         while (g_stdin_queued >= g_stdin_limit) {
+            g_stdin_waiters += 1;
+            sth_broadcast(&g_test_waiter_cond);
             sth_cond_wait(&g_stdin_cond, &g_lock);
+            g_stdin_waiters -= 1;
         }
         size_t room = g_stdin_limit - g_stdin_queued;
         size_t rem = len - off;
@@ -415,6 +440,7 @@ static void stop_shell_held(void) {
     sth_lock(&g_lock);
     g_stopping = 1;
     (void)next_gen_locked();
+    g_stop_gen += 1;
     sth_event_t *dropped = drop_shell_events_locked();
     sth_broadcast(&g_queue_cond);
     while (g_in_flight > 0) {
@@ -443,6 +469,7 @@ int32_t sth_start(const char *shell_dir, int32_t start_stdin) {
     signal(SIGPIPE, SIG_IGN);
 #endif
     sth_lock(&g_life);
+    int started_shell_now = 0;
     if (shell_dir != NULL && shell_dir[0] != '\0') {
         sth_lock(&g_lock);
         int had = g_shell != NULL;
@@ -464,6 +491,7 @@ int32_t sth_start(const char *shell_dir, int32_t start_stdin) {
         sth_lock(&g_lock);
         g_shell = started;
         sth_unlock(&g_lock);
+        started_shell_now = 1;
     }
 
     if (start_stdin) {
@@ -474,27 +502,30 @@ int32_t sth_start(const char *shell_dir, int32_t start_stdin) {
         }
         sth_unlock(&g_lock);
         if (need_stdin) {
+            int thread_ok = 0;
 #ifdef _WIN32
             HANDLE t = CreateThread(NULL, 0, read_stdin_thread, NULL, 0, NULL);
-            if (t == NULL) {
-                sth_lock(&g_lock);
-                g_stdin_started = 0;
-                sth_unlock(&g_lock);
-                sth_unlock(&g_life);
-                return 0;
+            if (t != NULL) {
+                CloseHandle(t);
+                thread_ok = 1;
             }
-            CloseHandle(t);
 #else
             pthread_t t;
-            if (pthread_create(&t, NULL, read_stdin_thread, NULL) != 0) {
+            if (pthread_create(&t, NULL, read_stdin_thread, NULL) == 0) {
+                pthread_detach(t);
+                thread_ok = 1;
+            }
+#endif
+            if (!thread_ok) {
                 sth_lock(&g_lock);
                 g_stdin_started = 0;
                 sth_unlock(&g_lock);
+                if (started_shell_now) {
+                    stop_shell_held();
+                }
                 sth_unlock(&g_life);
                 return 0;
             }
-            pthread_detach(t);
-#endif
         }
     }
     sth_unlock(&g_life);
@@ -518,16 +549,19 @@ int32_t sth_shell_active(void) {
 void *sth_wait(int64_t ms, int64_t *out_len) {
     ensure_queue_init();
     sth_lock(&g_lock);
+    uint64_t stop_gen = g_stop_gen;
     if (g_head == NULL && ms != 0) {
+        g_queue_waiters += 1;
+        sth_broadcast(&g_test_waiter_cond);
 #ifdef _WIN32
         if (ms < 0) {
-            while (g_head == NULL) {
+            while (g_head == NULL && g_stop_gen == stop_gen) {
                 SleepConditionVariableSRW(&g_queue_cond, &g_lock, INFINITE, 0);
             }
         } else {
             int64_t capped = ms > 86400000LL ? 86400000LL : ms;
             int64_t deadline = sth_now_ms() + capped;
-            while (g_head == NULL) {
+            while (g_head == NULL && g_stop_gen == stop_gen) {
                 int64_t left = deadline - sth_now_ms();
                 if (left <= 0) {
                     break;
@@ -539,13 +573,13 @@ void *sth_wait(int64_t ms, int64_t *out_len) {
         }
 #elif defined(__APPLE__)
         if (ms < 0) {
-            while (g_head == NULL) {
+            while (g_head == NULL && g_stop_gen == stop_gen) {
                 pthread_cond_wait(&g_queue_cond, &g_lock);
             }
         } else {
             int64_t capped = ms > 86400000LL ? 86400000LL : ms;
             int64_t deadline = sth_now_ms() + capped;
-            while (g_head == NULL) {
+            while (g_head == NULL && g_stop_gen == stop_gen) {
                 int64_t left = deadline - sth_now_ms();
                 if (left <= 0) {
                     break;
@@ -560,7 +594,7 @@ void *sth_wait(int64_t ms, int64_t *out_len) {
         }
 #else
         if (ms < 0) {
-            while (g_head == NULL) {
+            while (g_head == NULL && g_stop_gen == stop_gen) {
                 pthread_cond_wait(&g_queue_cond, &g_lock);
             }
         } else {
@@ -573,14 +607,17 @@ void *sth_wait(int64_t ms, int64_t *out_len) {
                 at.tv_sec += 1;
                 at.tv_nsec -= 1000000000L;
             }
-            while (g_head == NULL) {
+            while (g_head == NULL && g_stop_gen == stop_gen) {
                 if (pthread_cond_timedwait(&g_queue_cond, &g_lock, &at) != 0) {
                     break;
                 }
             }
         }
 #endif
+        g_queue_waiters -= 1;
     }
+    // Always prioritize delivering any retained event (e.g., stdin/EOF); only return NULL
+    // when the queue is actually empty (timed out or woken by sth_stop()).
     sth_event_t *e = g_head;
     if (e != NULL) {
         g_head = e->next;

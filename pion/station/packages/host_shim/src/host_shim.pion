@@ -322,8 +322,14 @@ pub fn build_info() -> String {
 
 pub let MAX_LINE_BYTES : Int = 16777216
 
+pub enum LineItem {
+  Line(String)
+  TooLong(Int)
+}
+
 /// Incremental `\n`-delimited line splitter for stdin chunks (matching `mb-reader` protocol),
-/// bounded to `max_bytes` per line to prevent unbounded memory growth on unterminated input.
+/// bounded to `max_bytes` per line. Emits `LineItem::TooLong(max_bytes)` explicitly instead of
+/// silently dropping oversized lines.
 pub struct LineReader {
   mut carry : Array[Byte]
   pub max_bytes : Int
@@ -338,14 +344,15 @@ pub fn LineReader::had_overflow(self : LineReader) -> Bool {
   self.overflowed
 }
 
-pub fn LineReader::push(self : LineReader, chunk : Bytes) -> Array[String] {
-  let lines : Array[String] = []
+pub fn LineReader::push(self : LineReader, chunk : Bytes) -> Array[LineItem] {
+  let items : Array[LineItem] = []
   for i in 0..<chunk.length() {
     let b = chunk[i]
     if b.to_int() == 10 {
       if self.overflowed {
         self.carry = []
         self.overflowed = false
+        items.push(LineItem::TooLong(self.max_bytes))
       } else {
         let sb = StringBuilder::new()
         let mut end = self.carry.length()
@@ -356,7 +363,7 @@ pub fn LineReader::push(self : LineReader, chunk : Bytes) -> Array[String] {
           sb.write_byte(self.carry[j])
         }
         self.carry = []
-        lines.push(sb.to_string())
+        items.push(LineItem::Line(sb.to_string()))
       }
     } else if !self.overflowed {
       if self.carry.length() >= self.max_bytes {
@@ -367,14 +374,14 @@ pub fn LineReader::push(self : LineReader, chunk : Bytes) -> Array[String] {
       }
     }
   }
-  lines
+  items
 }
 
-pub fn LineReader::flush(self : LineReader) -> Option[String] {
+pub fn LineReader::flush(self : LineReader) -> Option[LineItem] {
   if self.overflowed {
     self.carry = []
     self.overflowed = false
-    return None
+    return Some(LineItem::TooLong(self.max_bytes))
   }
   if self.carry.length() == 0 {
     return None
@@ -388,5 +395,5 @@ pub fn LineReader::flush(self : LineReader) -> Option[String] {
     sb.write_byte(self.carry[j])
   }
   self.carry = []
-  Some(sb.to_string())
+  Some(LineItem::Line(sb.to_string()))
 }

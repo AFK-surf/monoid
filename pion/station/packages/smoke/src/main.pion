@@ -61,6 +61,7 @@ fn run_version(world : World) -> Unit {
   io_println(world, host_shim::build_info())
 }
 
+// Return codes for stdio line handling: 0 = continue, 1 = clean quit, -1 = stdout write failed.
 fn run_smoke_stdio() -> Unit {
   if !host_shim::start("", true) {
     host_shim::exit_process(1)
@@ -68,15 +69,16 @@ fn run_smoke_stdio() -> Unit {
   let reader = host_shim::LineReader::new()
   let cancelled : Map[Int, Bool] = Map::new()
   let mut running = true
+  let mut write_failed = false
 
   while running {
     match host_shim::wait(5000.to_int64()) {
       None => ()
       Some(host_shim::HostEvent::StdinEof) => {
         match reader.flush() {
-          Some(last) => {
-            if last.length() > 0 {
-              let _ = handle_stdio_line(last, cancelled)
+          Some(item) => {
+            if handle_stdio_item(item, cancelled) < 0 {
+              write_failed = true
             }
           }
           None => ()
@@ -84,23 +86,49 @@ fn run_smoke_stdio() -> Unit {
         running = false
       }
       Some(host_shim::HostEvent::StdinData(chunk)) => {
-        let lines = reader.push(chunk)
-        for i in 0..<lines.length() {
+        let items = reader.push(chunk)
+        for i in 0..<items.length() {
           if !running {
             break
           }
-          let line = lines[i]
-          if line.length() > 0 {
-            running = handle_stdio_line(line, cancelled)
+          let rc = handle_stdio_item(items[i], cancelled)
+          if rc < 0 {
+            write_failed = true
+            running = false
+          } else if rc > 0 {
+            running = false
           }
         }
       }
       Some(_) => ()
     }
   }
+  if write_failed {
+    host_shim::exit_process(1)
+  }
 }
 
-fn handle_stdio_line(line : String, cancelled : Map[Int, Bool]) -> Bool {
+fn handle_stdio_item(item : host_shim::LineItem, cancelled : Map[Int, Bool]) -> Int {
+  match item {
+    host_shim::LineItem::TooLong(cap) => {
+      let msg = base_codec::json_stringify(
+        base_codec::json_obj([
+          ("ok", base_codec::json_bool(false)),
+          ("error", base_codec::json_str("line exceeds max_bytes: " + cap.to_string())),
+        ]),
+      )
+      if host_shim::write_stdout_line(msg) { 0 } else { -1 }
+    }
+    host_shim::LineItem::Line(line) => {
+      if line.length() == 0 {
+        return 0
+      }
+      handle_stdio_line(line, cancelled)
+    }
+  }
+}
+
+fn handle_stdio_line(line : String, cancelled : Map[Int, Bool]) -> Int {
   let parsed = match base_codec::json_parse(line) {
     base_codec::JsonParseResult::Ok(j) => j
     base_codec::JsonParseResult::Err(err) => {
@@ -110,7 +138,7 @@ fn handle_stdio_line(line : String, cancelled : Map[Int, Bool]) -> Bool {
           ("error", base_codec::json_str("invalid json: " + err)),
         ]),
       )
-      return host_shim::write_stdout_line(msg)
+      return if host_shim::write_stdout_line(msg) { 0 } else { -1 }
     }
   }
   let id = json_int_field(parsed, "id", 0)
@@ -124,8 +152,7 @@ fn handle_stdio_line(line : String, cancelled : Map[Int, Bool]) -> Bool {
         ("bye", base_codec::json_bool(true)),
       ]),
     )
-    let _ = host_shim::write_stdout_line(msg)
-    return false
+    return if host_shim::write_stdout_line(msg) { 1 } else { -1 }
   }
 
   if op == "cancel" {
@@ -138,7 +165,7 @@ fn handle_stdio_line(line : String, cancelled : Map[Int, Bool]) -> Bool {
         ("cancelled", base_codec::json_int(target)),
       ]),
     )
-    return host_shim::write_stdout_line(msg)
+    return if host_shim::write_stdout_line(msg) { 0 } else { -1 }
   }
 
   match cancelled.get(id) {
@@ -150,7 +177,7 @@ fn handle_stdio_line(line : String, cancelled : Map[Int, Bool]) -> Bool {
           ("cancelled", base_codec::json_bool(true)),
         ]),
       )
-      return host_shim::write_stdout_line(msg)
+      return if host_shim::write_stdout_line(msg) { 0 } else { -1 }
     }
     _ => ()
   }
@@ -164,7 +191,7 @@ fn handle_stdio_line(line : String, cancelled : Map[Int, Bool]) -> Bool {
         ("text", base_codec::json_str(text)),
       ]),
     )
-    return host_shim::write_stdout_line(msg)
+    return if host_shim::write_stdout_line(msg) { 0 } else { -1 }
   }
 
   if op == "binary" {
@@ -175,13 +202,14 @@ fn handle_stdio_line(line : String, cancelled : Map[Int, Bool]) -> Bool {
     for i in 0..<n {
       body[i] = ((fill + i) & 0xFF) as Byte
     }
-    return host_shim::write_stdout_frame(
+    let ok = host_shim::write_stdout_frame(
       [
         ("id", base_codec::json_int(id)),
         ("ok", base_codec::json_bool(true)),
       ],
       body,
     )
+    return if ok { 0 } else { -1 }
   }
 
   let msg = base_codec::json_stringify(
@@ -191,7 +219,18 @@ fn handle_stdio_line(line : String, cancelled : Map[Int, Bool]) -> Bool {
       ("error", base_codec::json_str("unknown op: " + op)),
     ]),
   )
-  host_shim::write_stdout_line(msg)
+  if host_shim::write_stdout_line(msg) { 0 } else { -1 }
+}
+
+fn read_pragma_int(db : sqlite_ffi::Db, sql : String) -> Int {
+  let s = match db.prepare(sql) {
+    Ok(st) => st
+    Err(e) => panic("pragma prepare failed: " + e.message)
+  }
+  let rc = s.step()
+  let result_val = if rc == sqlite_ffi::SQLITE_ROW { s.column_int64(0).to_int() } else { -1 }
+  let _ = s.finalize()
+  result_val
 }
 
 fn run_smoke_sqlite(world : World, db_path : String) -> Unit {
@@ -331,7 +370,7 @@ fn run_smoke_sqlite(world : World, db_path : String) -> Unit {
     panic("sqlite blob mismatch: len=" + got_blob.length().to_string())
   }
 
-  // Verify PASSIVE and hard TRUNCATE checkpoints on "main".
+  // Verify PASSIVE checkpoint, BUSY hard-checkpoint live busy_timeout restoration, and TRUNCATE checkpoint.
   let ckpt_passive = db.wal_checkpoint(sqlite_ffi::CKPT_PASSIVE)
   if ckpt_passive.rc != sqlite_ffi::SQLITE_OK || ckpt_passive.log_frames < 0 {
     panic(
@@ -341,6 +380,53 @@ fn run_smoke_sqlite(world : World, db_path : String) -> Unit {
       ckpt_passive.log_frames.to_string(),
     )
   }
+
+  // Change busy_timeout via PRAGMA to 275 ms and hold a read tx on a second connection so
+  // TRUNCATE checkpoint returns SQLITE_BUSY, verifying live busy_timeout=275 is preserved.
+  match db.exec("PRAGMA busy_timeout = 275;") {
+    Ok(_) => ()
+    Err(e) => panic("sqlite set busy_timeout failed: " + e.message)
+  }
+  let db2 = match sqlite_ffi::Db::open(db_path, sqlite_ffi::OPEN_READONLY | sqlite_ffi::OPEN_FULLMUTEX, busy_timeout_ms=100) {
+    Ok(d) => d
+    Err(e) => panic("sqlite open reader conn failed: " + e.message)
+  }
+  match db2.exec("BEGIN;") {
+    Ok(_) => ()
+    Err(e) => panic("sqlite reader BEGIN failed: " + e.message)
+  }
+  let r_stmt = match db2.prepare("SELECT id FROM kv LIMIT 1") {
+    Ok(s) => s
+    Err(e) => panic("sqlite reader prepare failed: " + e.message)
+  }
+  let _ = r_stmt.step()
+  let _ = r_stmt.finalize()
+
+  // Write a new WAL frame while db2 holds a read mark.
+  match db.exec("INSERT INTO kv (id, big, label, nul_text, payload) VALUES (3, 7, 'busy', 'ok', X'01');") {
+    Ok(_) => ()
+    Err(e) => panic("sqlite insert while reader active failed: " + e.message)
+  }
+  let ckpt_busy = db.wal_checkpoint_hard(sqlite_ffi::CKPT_TRUNCATE, temp_busy_ms=50)
+  if ckpt_busy.rc != sqlite_ffi::SQLITE_BUSY {
+    let _ = db2.exec("COMMIT;")
+    let _ = db2.close()
+    panic("expected SQLITE_BUSY during active reader checkpoint, got rc=" + ckpt_busy.rc.to_string())
+  }
+  let bt_after_busy = read_pragma_int(db, "PRAGMA busy_timeout")
+  if bt_after_busy != 275 {
+    let _ = db2.exec("COMMIT;")
+    let _ = db2.close()
+    panic("busy_timeout not restored after BUSY checkpoint: got " + bt_after_busy.to_string())
+  }
+
+  // Release reader tx & close db2; TRUNCATE checkpoint must now succeed with log_frames == 0.
+  let _ = db2.exec("COMMIT;")
+  let close_db2 = db2.close()
+  if close_db2 != sqlite_ffi::SQLITE_OK {
+    panic("sqlite reader close failed: rc=" + close_db2.to_string())
+  }
+
   let ckpt_truncate = db.wal_checkpoint_hard(sqlite_ffi::CKPT_TRUNCATE, temp_busy_ms=1000)
   if ckpt_truncate.rc != sqlite_ffi::SQLITE_OK || ckpt_truncate.log_frames != 0 {
     panic(
@@ -349,6 +435,10 @@ fn run_smoke_sqlite(world : World, db_path : String) -> Unit {
       " log=" +
       ckpt_truncate.log_frames.to_string(),
     )
+  }
+  let bt_after_ok = read_pragma_int(db, "PRAGMA busy_timeout")
+  if bt_after_ok != 275 {
+    panic("busy_timeout not restored after OK checkpoint: got " + bt_after_ok.to_string())
   }
 
   let close_rc = db.close()
@@ -397,12 +487,12 @@ fn run_smoke_sqlite(world : World, db_path : String) -> Unit {
   io_println(world, summary)
 }
 
-fn run_smoke_shell(world : World, dir : String) -> Unit {
+fn run_smoke_shell_round(dir : String, round : Int) -> (Int, Int) {
   if !host_shim::start(dir, false) {
-    panic("shell start failed for dir: " + dir)
+    panic("shell start failed on round " + round.to_string() + " for dir: " + dir)
   }
   if !host_shim::shell_active() {
-    panic("expected shell_active() == true after start")
+    panic("expected shell_active() == true after start on round " + round.to_string())
   }
 
   // 1. Sync shell call: crypto.random -> assert exact 16 bytes (32 hex chars) and non-zero.
@@ -448,14 +538,16 @@ fn run_smoke_shell(world : World, dir : String) -> Unit {
   }
 
   // 2. Async shell round-trip: storage.set with real binary payload -> storage.get byte-exact match.
-  let want_payload = "pion-station-shell-ok".to_bytes()
-  host_shim::shell_call(1.to_int64(), "storage.set", "{\"key\":\"smoke\"}", Some(want_payload))
+  let want_payload = ("pion-station-shell-r" + round.to_string()).to_bytes()
+  let set_id = (round * 10 + 1).to_int64()
+  let get_id = (round * 10 + 2).to_int64()
+  host_shim::shell_call(set_id, "storage.set", "{\"key\":\"smoke\"}", Some(want_payload))
   let mut got_set = false
   let t0 = host_shim::now_ms()
   while !got_set && host_shim::now_ms() - t0 < 5000.to_int64() {
     match host_shim::wait(200.to_int64()) {
       Some(host_shim::HostEvent::ShellDone(done)) => {
-        if done.id == 1.to_int64() {
+        if done.id == set_id {
           if done.error.length() > 0 {
             host_shim::stop()
             panic("storage.set failed: " + done.error)
@@ -471,13 +563,13 @@ fn run_smoke_shell(world : World, dir : String) -> Unit {
     panic("storage.set timed out")
   }
 
-  host_shim::shell_call(2.to_int64(), "storage.get", "{\"key\":\"smoke\"}", None)
+  host_shim::shell_call(get_id, "storage.get", "{\"key\":\"smoke\"}", None)
   let mut got_bytes : Option[Bytes] = None
   let t1 = host_shim::now_ms()
   while host_shim::now_ms() - t1 < 5000.to_int64() {
     match host_shim::wait(200.to_int64()) {
       Some(host_shim::HostEvent::ShellDone(done)) => {
-        if done.id == 2.to_int64() {
+        if done.id == get_id {
           if done.error.length() > 0 {
             host_shim::stop()
             panic("storage.get failed: " + done.error)
@@ -511,12 +603,52 @@ fn run_smoke_shell(world : World, dir : String) -> Unit {
   if host_shim::shell_active() {
     panic("expected shell_active() == false after stop")
   }
+  (rand_bytes.length(), want_payload.length())
+}
+
+fn wait_fd_settle(target : Int, max_wait_ms : Int) -> Int {
+  let mut cur = host_shim::open_fd_count()
+  if cur < 0 || target < 0 {
+    return cur
+  }
+  let mut waited = 0
+  while cur > target && waited < max_wait_ms {
+    let _ = host_shim::wait(10.to_int64())
+    waited = waited + 10
+    cur = host_shim::open_fd_count()
+  }
+  cur
+}
+
+fn run_smoke_shell(world : World, dir : String) -> Unit {
+  // sf_shell_stop() calls tokio::runtime::Runtime::shutdown_background(), so
+  // worker threads tear down kqueue/epoll/pipe fds asynchronously. Wait briefly
+  // for background runtime teardown to settle before checking for per-round leaks.
+  let fd_before = host_shim::open_fd_count()
+  let (rlen1, blen1) = run_smoke_shell_round(dir, 1)
+  let fd_after_r1 = wait_fd_settle(fd_before, 500)
+  let (rlen2, blen2) = run_smoke_shell_round(dir, 2)
+  let fd_after_r2 = wait_fd_settle(fd_after_r1, 500)
+  if fd_after_r1 >= 0 && fd_after_r2 > fd_after_r1 {
+    panic(
+      "shell start/stop fd leak detected across rounds: before=" +
+      fd_before.to_string() +
+      " r1=" +
+      fd_after_r1.to_string() +
+      " r2=" +
+      fd_after_r2.to_string(),
+    )
+  }
 
   let summary = base_codec::json_stringify(
     base_codec::json_obj([
       ("ok", base_codec::json_bool(true)),
-      ("random_hex_len", base_codec::json_int(rand_bytes.length())),
-      ("storage_bytes_verified", base_codec::json_int(want_payload.length())),
+      ("rounds", base_codec::json_int(2)),
+      ("random_hex_len", base_codec::json_int(if rlen1 == rlen2 { rlen2 } else { 0 })),
+      ("storage_bytes_verified", base_codec::json_int(if blen1 == blen2 { blen2 } else { 0 })),
+      ("fd_before", base_codec::json_int(fd_before)),
+      ("fd_after_r1", base_codec::json_int(fd_after_r1)),
+      ("fd_after_r2", base_codec::json_int(fd_after_r2)),
     ]),
   )
   io_println(world, summary)

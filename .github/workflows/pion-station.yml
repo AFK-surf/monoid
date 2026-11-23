@@ -85,18 +85,18 @@ jobs:
 
       - uses: ./.github/actions/node
 
-      - name: Verify access to AFK-surf/pion (fail loudly on missing PION_TOKEN)
+      - name: Verify access to AFK-surf/pion and AFK-surf/pion-packages (fail loudly on missing PION_TOKEN)
         env:
-          PION_DEPLOY_KEY: ${{ secrets.PION_DEPLOY_KEY }}
           PION_TOKEN: ${{ secrets.PION_TOKEN }}
         run: |
-          if [ -n "${PION_DEPLOY_KEY:-}" ] || [ -n "${PION_TOKEN:-}" ]; then
+          if [ -n "${PION_TOKEN:-}" ]; then
             exit 0
           fi
-          if GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code https://github.com/AFK-surf/pion.git HEAD >/dev/null 2>&1; then
+          if GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code https://github.com/AFK-surf/pion.git HEAD >/dev/null 2>&1 && \
+             GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code https://github.com/AFK-surf/pion-packages.git HEAD >/dev/null 2>&1; then
             exit 0
           fi
-          echo "::error::AFK-surf/pion is private and neither PION_TOKEN nor PION_DEPLOY_KEY is configured in AFK-surf/monoid repository secrets. Configure a read-only PION_TOKEN (covering AFK-surf/pion and AFK-surf/pion-packages) so pion-station CI runs real pionc checks instead of skipping."
+          echo "::error::AFK-surf/pion or AFK-surf/pion-packages is private and PION_TOKEN is not configured in AFK-surf/monoid repository secrets. Configure a read-only PION_TOKEN covering both repos so pion-station CI runs real pionc checks instead of skipping."
           exit 1
 
       - name: Cache pinned Pion toolchain
@@ -131,7 +131,6 @@ jobs:
 
       - name: Ensure pinned pionc toolchain
         env:
-          PION_DEPLOY_KEY: ${{ secrets.PION_DEPLOY_KEY }}
           PION_TOKEN: ${{ secrets.PION_TOKEN }}
         run: |
           sh pion/station/scripts/ensure-pionc.sh --print-env > "$RUNNER_TEMP/pion.env"
@@ -172,45 +171,68 @@ jobs:
 
           "$BIN" --version
 
-          # Streaming stdio test: pure EOF clean exit (no quit), binary tail containing \0 and \n.
+          # Streaming chunk-by-chunk stdio test: pure EOF exit, binary tail with \0 and \n followed by next frame.
           node -e '
             const { spawn } = require("node:child_process");
             const child = spawn(process.argv[1], ["--smoke-stdio"], { stdio: ["pipe", "pipe", "pipe"] });
-            const chunks = [];
+            let buf = Buffer.alloc(0);
+            let pendingHead = null;
+            const frames = [];
+            const waiters = [];
             let stderr = "";
-            child.stdout.on("data", (d) => chunks.push(d));
-            child.stderr.on("data", (d) => { stderr += d.toString("utf8"); });
-            child.on("close", (code) => {
-              if (code !== 0) { console.error("stdio exit", code, stderr); process.exit(1); }
-              const out = Buffer.concat(chunks);
-              let at = 0;
-              const frames = [];
-              while (at < out.length) {
-                const nl = out.indexOf(10, at);
-                if (nl < 0) break;
-                const obj = JSON.parse(out.subarray(at, nl).toString("utf8"));
-                at = nl + 1;
-                if (typeof obj.bytes === "number") {
-                  obj.body = out.subarray(at, at + obj.bytes);
-                  at += obj.bytes;
+            const nextFrame = () => frames.length ? Promise.resolve(frames.shift()) : new Promise((r) => waiters.push(r));
+            const emit = (f) => { const w = waiters.shift(); if (w) w(f); else frames.push(f); };
+            child.stdout.on("data", (d) => {
+              buf = Buffer.concat([buf, d]);
+              while (buf.length > 0) {
+                if (pendingHead !== null) {
+                  if (buf.length < pendingHead.bytes) break;
+                  const body = buf.subarray(0, pendingHead.bytes);
+                  buf = buf.subarray(pendingHead.bytes);
+                  const h = pendingHead;
+                  pendingHead = null;
+                  emit({ ...h, body });
+                  continue;
                 }
-                frames.push(obj);
+                const nl = buf.indexOf(10);
+                if (nl < 0) break;
+                const obj = JSON.parse(buf.subarray(0, nl).toString("utf8"));
+                buf = buf.subarray(nl + 1);
+                if (typeof obj.bytes === "number") {
+                  pendingHead = obj;
+                } else {
+                  emit(obj);
+                }
               }
-              if (at !== out.length) throw new Error("unparsed trailing bytes");
-              if (frames.length !== 4) throw new Error("expected 4 frames, got " + frames.length);
-              if (frames[0].text !== "hello-pion") throw new Error("echo mismatch");
-              if (frames[1].body.length !== 32 || frames[1].body[0] !== 0 || frames[1].body[10] !== 10 || frames[1].body[31] !== 31) {
+            });
+            child.stderr.on("data", (d) => { stderr += d.toString("utf8"); });
+            const closed = new Promise((resolve) => child.on("close", resolve));
+            (async () => {
+              child.stdin.write(JSON.stringify({ id: 1, op: "echo", text: "hello-pion" }) + "\n");
+              const f1 = await nextFrame();
+              if (f1.text !== "hello-pion") throw new Error("echo mismatch");
+
+              child.stdin.write(JSON.stringify({ id: 2, op: "binary", size: 32, byte: 0 }) + "\n");
+              const f2 = await nextFrame();
+              if (f2.body.length !== 32 || f2.body[0] !== 0 || f2.body[10] !== 10 || f2.body[31] !== 31) {
                 throw new Error("binary tail with NUL and LF mismatch");
               }
-              if (frames[2].cancelled !== 4) throw new Error("cancel ack mismatch");
-              if (frames[3].cancelled !== true) throw new Error("cancelled req mismatch");
-              console.log("smoke-stdio ok (pure EOF):", frames.length, "frames");
-            });
-            child.stdin.write(JSON.stringify({ id: 1, op: "echo", text: "hello-pion" }) + "\n");
-            child.stdin.write(JSON.stringify({ id: 2, op: "binary", size: 32, byte: 0 }) + "\n");
-            child.stdin.write(JSON.stringify({ id: 3, op: "cancel", target: 4 }) + "\n");
-            child.stdin.write(JSON.stringify({ id: 4, op: "echo", text: "should-cancel" }) + "\n");
-            child.stdin.end();
+
+              child.stdin.write(JSON.stringify({ id: 3, op: "cancel", target: 4 }) + "\n");
+              const f3 = await nextFrame();
+              if (f3.cancelled !== 4) throw new Error("cancel ack mismatch");
+
+              child.stdin.write(JSON.stringify({ id: 4, op: "echo", text: "should-cancel" }) + "\n");
+              const f4 = await nextFrame();
+              if (f4.cancelled !== true) throw new Error("cancelled req mismatch");
+
+              child.stdin.end();
+              const code = await closed;
+              if (code !== 0 || buf.length !== 0 || pendingHead !== null) {
+                throw new Error("bad EOF exit: code=" + code + " rem=" + buf.length + " stderr=" + stderr);
+              }
+              console.log("smoke-stdio ok (streaming + pure EOF): 4 frames");
+            })().catch((e) => { console.error(e); child.kill(); process.exit(1); });
           ' "$BIN"
 
           "$BIN" --smoke-sqlite "$RUNNER_TEMP/smoke.db"

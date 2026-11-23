@@ -7,16 +7,22 @@ fn expect(cond : Bool, msg : String) -> Unit {
 test "LineReader splits LF, CRLF, chunks, and trailing flush" {
   let r = LineReader::new()
   let l1 = r.push("{\"id\":1}\n{\"id\":".to_bytes())
-  expect(l1.length() == 1, "expected 1 line")
-  expect(l1[0] == "{\"id\":1}", "expected first line")
+  expect(l1.length() == 1, "expected 1 item")
+  match l1[0] {
+    LineItem::Line(s) => expect(s == "{\"id\":1}", "expected first line")
+    LineItem::TooLong(_) => panic("unexpected TooLong")
+  }
 
   let l2 = r.push("2}\r\npartial".to_bytes())
-  expect(l2.length() == 1, "expected 1 crlf line")
-  expect(l2[0] == "{\"id\":2}", "expected second line")
+  expect(l2.length() == 1, "expected 1 crlf item")
+  match l2[0] {
+    LineItem::Line(s) => expect(s == "{\"id\":2}", "expected second line")
+    LineItem::TooLong(_) => panic("unexpected TooLong")
+  }
 
   match r.flush() {
-    Some(s) => expect(s == "partial", "expected partial tail")
-    None => panic("expected trailing partial line")
+    Some(LineItem::Line(s)) => expect(s == "partial", "expected partial tail")
+    _ => panic("expected trailing partial line")
   }
   match r.flush() {
     None => ()
@@ -24,11 +30,18 @@ test "LineReader splits LF, CRLF, chunks, and trailing flush" {
   }
 }
 
-test "LineReader enforces max_bytes cap and recovers after newline" {
+test "LineReader emits explicit TooLong error and recovers after newline" {
   let r = LineReader::new(max_bytes=8)
   let l1 = r.push("1234567890\nok\n".to_bytes())
-  expect(l1.length() == 1, "oversized line dropped, next line kept")
-  expect(l1[0] == "ok", "recovered line")
+  expect(l1.length() == 2, "expected TooLong followed by recovered line")
+  match l1[0] {
+    LineItem::TooLong(cap) => expect(cap == 8, "reported cap")
+    LineItem::Line(_) => panic("expected TooLong for oversized line")
+  }
+  match l1[1] {
+    LineItem::Line(s) => expect(s == "ok", "recovered line")
+    LineItem::TooLong(_) => panic("unexpected TooLong on ok line")
+  }
   expect(!r.had_overflow(), "overflow flag cleared after newline")
 }
 

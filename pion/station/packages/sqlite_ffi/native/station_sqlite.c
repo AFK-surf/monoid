@@ -266,22 +266,35 @@ int32_t stq_wal_checkpoint(int64_t db_h, int32_t mode, int32_t *out_log, int32_t
     return (int32_t)rc;
 }
 
+static int query_busy_timeout_ms(sqlite3 *db, int fallback_ms) {
+    sqlite3_stmt *stmt = NULL;
+    int val = fallback_ms;
+    if (sqlite3_prepare_v2(db, "PRAGMA busy_timeout", -1, &stmt, NULL) == 0 && stmt != NULL) {
+        if (sqlite3_step(stmt) == 100) { // SQLITE_ROW
+            val = (int)sqlite3_column_int64(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+    return val;
+}
+
 int32_t stq_wal_checkpoint_hard(
     int64_t db_h,
     int32_t mode,
     int32_t temp_busy_ms,
     int32_t *out_log,
     int32_t *out_ckpt) {
-    int32_t prev_busy = 0;
-    sqlite3 *db = lookup_db(db_h, &prev_busy);
+    int32_t open_busy = 0;
+    sqlite3 *db = lookup_db(db_h, &open_busy);
     if (db == NULL) {
         return STQ_SQLITE_MISUSE;
     }
+    int prev_busy = query_busy_timeout_ms(db, (int)open_busy);
     sqlite3_busy_timeout(db, (int)(temp_busy_ms > 0 ? temp_busy_ms : 1000));
     int log_frames = -1;
     int ckpt_frames = -1;
     int rc = sqlite3_wal_checkpoint_v2(db, "main", (int)mode, &log_frames, &ckpt_frames);
-    sqlite3_busy_timeout(db, (int)prev_busy);
+    sqlite3_busy_timeout(db, prev_busy);
     if (out_log != NULL) {
         *out_log = (int32_t)log_frames;
     }
