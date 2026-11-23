@@ -1254,7 +1254,8 @@ fn pointer_event_now(
   }
   // (what the pointer is over, the tree brought to the event's moment for it: once a batch of moves, at its last, what
   // the samples before it did laid out with it, touches.mbt)
-  let pointed = fn() { if !more { view_pointed(bring=batched) } }
+  let moved = kind == 1 || kind == 5 || kind == 16
+  let pointed = fn() { if !more { view_pointed(bring=moved) } }
   // (where a mouse points, said before the event is taken; what it is over told once it is: view_host.mbt)
   view_point_said(kind, x, y)
   // (what the tree made once routes elsewhere than to the old view (a press on a node of its own, one outside the old
@@ -1279,9 +1280,7 @@ fn pointer_event_now(
       view_old_moved(x, y)
       // (what the old view found under the pointer as it moved, by its own targets, told it again as the tree finds it
       // there: nothing of its where something of the tree's is pointed at over it, View::points)
-      if !more {
-        view_pointed(bring=false)
-      }
+      pointed()
     }
   }
   // (a finger or button down, wherever it went (a node of the tree's, the old view): a press of its own from here, a

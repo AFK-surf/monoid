@@ -544,7 +544,7 @@ fn share_parts_node(v : @view.View, src : Source, scope : String, look : ShareLo
   // (once a chat is picked, what it shows kept as it was while it sinks away: what the core says of it after, the chat
   // it went to now its last, not followed; once said, never back to reading)
   let last : Ref[Json?] = Ref(None)
-  let value = fn() {
+  let value_cell = @signals.computed(fn(_) {
     if share_in.opening.get() is Some(_) || !share_in.raised.get() {
       return last.val
     }
@@ -556,7 +556,8 @@ fn share_parts_node(v : @view.View, src : Source, scope : String, look : ShareLo
       }
       None => last.val
     }
-  }
+  })
+  let value = fn() { value_cell.get() }
   let rows = fn() { items(value(), "items") }
   shared_head_node(v, Some(fn() { text(value(), "site") }), look)
   // 发到, and at its end 搜索 (取消 while searching)
