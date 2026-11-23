@@ -27,8 +27,6 @@
 # files came at 2, and check-station (0) and (3) neared their 5 minutes (p90 271 and 254 s, the others 212-222, main's
 # 34 runs of 2026-11-22). The list is dealt longest first whatever its order (the awk below sorts it), so a file added
 # at its end is dealt in its place; dealt by these, the six slices hold within a few seconds of each other.
-# STILLFAIL_SKIP_FROZEN_MB=1 (scripts/check.sh, for a change that leaves the frozen station_main alone) leaves out its
-# three files before they are dealt: mb-twin-station, mb-station-e2e and mb-station-contracts.
 # Run in station/.
 s=${1:-0/1}
 i=${s%/*} n=${s#*/}
@@ -67,7 +65,7 @@ long="$long test/chat-handover-steps.test.ts:50 test/lock-moved-model.test.ts:50
 long="$long test/mb-live-jobs-ops-parity.test.ts:49 test/chat-handover-moves.test.ts:48 test/hub.test.ts:45"
 long="$long test/mb-live-p5-1.test.ts:41 test/move-plan-bounded.test.ts:40 test/mb-replica.test.ts:39"
 long="$long test/mb-legacy.test.ts:38 test/mb-live-adb-rig-drivers-parity.test.ts:37 test/hub-tools.test.ts:36"
-long="$long test/store.test.ts:36 test/mb-twin-station.test.ts:35 test/mb-live-comma-replica-parity.test.ts:33"
+long="$long test/store.test.ts:36 test/mb-live-comma-replica-parity.test.ts:33"
 long="$long test/mb-live-p5-2.test.ts:33 test/comma-surface-scope.test.ts:32 test/mb-dirsync.test.ts:32"
 long="$long test/lock-roster.test.ts:31 test/chat-handover-told.test.ts:28 test/mb-live-p5-3.test.ts:27"
 long="$long test/legacy-decision-session-store.test.ts:26 test/agy.test.ts:25"
@@ -125,8 +123,7 @@ long="$long test/cc.test.ts:5 test/farview.test.ts:5 test/hub-parts.test.ts:5 te
 long="$long test/mb-reader-open-jobs.test.ts:5 test/mb-search-history.test.ts:5 test/multi-workspace-agents.test.ts:5"
 long="$long test/pending-existence.test.ts:5 test/repo-rules-hook.test.ts:5 test/usage-chat-backfill.test.ts:5"
 long="$long test/usage-compact-write.test.ts:5 test/usage-retire.test.ts:5 test/usage-timing-bounded.test.ts:5"
-frozen='^test/mb-(twin-station|station-e2e|station-contracts)\.test\.ts$'
-ls test/*.test.ts | if [ "${STILLFAIL_SKIP_FROZEN_MB:-}" = 1 ]; then grep -Ev "$frozen"; else cat; fi | awk -v i="$i" -v n="$n" -v long="$long" '
+ls test/*.test.ts | awk -v i="$i" -v n="$n" -v long="$long" '
   function put(f, c,   g, b) { b = 0; for (g = 1; g < n; g++) if (load[g] < load[b]) b = g; load[b] += c; if (b == i) print f }
   BEGIN { k = split(long, l, " ") }
   { have[$0] = 1; all[NR] = $0 }

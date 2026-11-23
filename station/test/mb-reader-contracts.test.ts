@@ -2,11 +2,12 @@
 // as they are. Each call is matched to the branch of Node's shell that really receives it:
 //
 // - a session actor's (actor_base.mbt, actor_run.mbt): its `node.*` RPCs to the cases of mb-actor.ts `asked()` past
-//   its `agent` block, its bare `"t"` to the `f === "t"` there, its `agent_do` calls to the `agent` block's cases (or a
-//   runtime session's method), its `deps` to SessionDeps, its `store` calls to the store, its tells to `told()`;
+//   its `agent` block, its bare `"t"` to the `f === "t"` there, its `agent_do` calls to the `agent` block's cases or a
+//   method a runtime's session declares (station/src/agents/, never mb-actor.ts's own), its `deps` to SessionDeps, its
+//   `store` calls to the store, its tells to `told()`;
 // - `#jobs` (jobs.mbt), `#live` (live.mbt) and `#remote` (remote*.mbt): what they ask through `jnode`/`jstore`,
-//   `lnode` and `rnode`/`rstore`, and what they tell, to station/src/jobs/jobs.ts, station/src/sessions/live.ts and
-//   station/src/jobs/remote.ts.
+//   `lnode` and `rnode`/`rstore` (each helper's prefix read from its source), and what they tell, to
+//   station/src/jobs/jobs.ts, station/src/sessions/live.ts and station/src/jobs/remote.ts.
 //
 // This is the reader ↔ Node contract every release runs on (station/AGENTS.md); the frozen whole station in MoonBit
 // (station_main) is held apart, by mb-station-contracts.test.ts. Each matcher is also run on a source changed to break
@@ -93,7 +94,9 @@ function actorWrong(s: Sources): string[] {
   const depsStart = actorTs.indexOf("export type SessionDeps =");
   assert.ok(depsStart >= 0, "actor.ts has no SessionDeps");
   const depsText = `${actorTs.slice(depsStart)}\n${mbActor}`;
-  const agentsText = `${mbActor}\n${s["src/agents"]}`;
+  // (the default of the agent block calls the runtime session's method of that name: one a driver declares, a method's
+  // head at a class's or an interface's indent, never MbActor's own `asked` or `told`)
+  const sessionMethod = (name: string) => new RegExp(`^ {2}(?:async\\s+)?${name}\\??\\s*\\(`, "m").test(s["src/agents"]!);
   const storeText = `${mbActor}\n${actorTs}\n${s["src/store"]}`;
 
   const wrong: string[] = [];
@@ -118,7 +121,7 @@ function actorWrong(s: Sources): string[] {
   assert.ok(agents.size >= 10, `reader agent calls read: ${agents.size}`);
   for (const [name, where] of agents) {
     // (the agent block's own case, or its default: a method of the runtime session)
-    if (!agentCases.has(name) && !new RegExp(`\\b${name}\\??\\s*\\(`).test(agentsText)) wrong.push(`${where} calls agent "${name}", answered neither by mb-actor.ts asked()'s agent block nor a runtime session's method`);
+    if (!agentCases.has(name) && !sessionMethod(name)) wrong.push(`${where} calls agent "${name}", answered neither by mb-actor.ts asked()'s agent block nor a runtime session's method`);
   }
   const stores = literals(s, ACTOR_FILES, /\bself\.store\(\s*[^,]+,\s*"([^"]+)"/g);
   assert.ok(stores.size >= 20, `reader store calls read: ${stores.size}`);
@@ -142,6 +145,14 @@ test("the actors' matcher fails a node.* RPC only the agent block answers, and a
   assert.ok(noT.some((w) => w.includes('asks "t"')), noT.join("\n"));
 });
 
+test("the actors' matcher fails an agent_do that only MbActor's own method would answer", () => {
+  const s = actorSources();
+  const run = s["reader/actor_run.mbt"]!;
+  assert.match(run, /self\.agent_do\(([^,]+), ([^,]+), "holding"/);
+  const asked = actorWrong({ ...s, "reader/actor_run.mbt": run.replace(/self\.agent_do\(([^,]+), ([^,]+), "holding"/, 'self.agent_do($1, $2, "asked"') });
+  assert.ok(asked.some((w) => w.includes('calls agent "asked"')), asked.join("\n"));
+});
+
 // ── #jobs, #live and #remote ──
 
 const PSEUDO_FILES = () => readdirSync(reader).filter((n) => /^(jobs|live|remote.*)\.mbt$/.test(n)).map((n) => `reader/${n}`);
@@ -158,10 +169,21 @@ function pseudoSources(): Sources {
 
 /// Each pseudo-actor: its key in the program, its helpers' names, and where Node receives what it asks and tells.
 const PSEUDO = [
-  { key: "jobs_key", node: "jnode", prefix: "node.", store: "jstore", ts: "src/jobs/jobs.ts", asked: "  private async asked(f: string", told: "  private told(f: string" },
-  { key: "live_key", node: "lnode", prefix: "", store: null, ts: "src/sessions/live.ts", asked: "  async #asked(f: string", told: "  #tellOf(f: string" },
-  { key: "remote_key", node: "rnode", prefix: "node.", store: "rstore", ts: "src/jobs/remote.ts", asked: "  private async asked(f: string", told: "  private told(f: string" },
+  { key: "jobs_key", node: "jnode", store: "jstore", ts: "src/jobs/jobs.ts", asked: "  private async asked(f: string", told: "  private told(f: string" },
+  { key: "live_key", node: "lnode", store: null, ts: "src/sessions/live.ts", asked: "  async #asked(f: string", told: "  #tellOf(f: string" },
+  { key: "remote_key", node: "rnode", store: "rstore", ts: "src/jobs/remote.ts", asked: "  private async asked(f: string", told: "  private told(f: string" },
 ] as const;
+
+/// What a helper (`Actors::jnode` and the like) puts before the name it is given, as its source says: `self.rpc(<key>,
+/// "node." + f, …)` says "node.", `self.rpc(<key>, f, …)` nothing.
+function prefixOf(s: Sources, files: string[], helper: string, key: string): string {
+  const re = new RegExp(`fn Actors::${helper}\\([^)]*\\)[^{]*\\{\\s*self\\.rpc\\(\\s*${key},\\s*(?:"([^"]*)"\\s*\\+\\s*)?f,`);
+  for (const f of files) {
+    const m = re.exec(s[f]!);
+    if (m) return m[1] ?? "";
+  }
+  assert.fail(`no Actors::${helper} that asks self.rpc(${key}, … f, …) in reader/`);
+}
 
 /// What `#jobs`, `#live` and `#remote` ask or tell that Node does not receive.
 function pseudoWrong(s: Sources): string[] {
@@ -173,10 +195,13 @@ function pseudoWrong(s: Sources): string[] {
     const told = method(ts, p.told);
     const askedNames = new Set([...casesAt(asked, 6), ...compared(asked)]);
     const toldNames = new Set([...casesAt(told, 6), ...compared(told)]);
+    const prefix = prefixOf(s, files, p.node, p.key);
     const asks = literals(s, files, new RegExp(`\\b${p.node}\\(\\s*"([^"]+)"`, "g"));
     assert.ok(asks.size >= 3, `${p.key}'s asks read: ${asks.size}`);
-    for (const [name, where] of asks) if (!askedNames.has(p.prefix + name)) wrong.push(`${where} asks ${p.key} "${p.prefix}${name}", which ${p.ts} asked() does not answer`);
+    for (const [name, where] of asks) if (!askedNames.has(prefix + name)) wrong.push(`${where} asks ${p.key} "${prefix}${name}" (Actors::${p.node}), which ${p.ts} asked() does not answer`);
     if (p.store !== null) {
+      const storePrefix = prefixOf(s, files, p.store, p.key);
+      if (storePrefix !== "store.") wrong.push(`Actors::${p.store} asks ${p.key} "${storePrefix}…", which ${p.ts} asked() does not hand to the store`);
       assert.match(asked, /f\.startsWith\("store\."\)/, `${p.ts} asked() hands store.* to the store no more`);
       for (const [name, where] of literals(s, files, new RegExp(`\\b${p.store}\\(\\s*"([^"]+)"`, "g"))) {
         if (!storeHas(s["src/store"]!, name)) wrong.push(`${where} asks ${p.key} "store.${name}", no method of station/src/store/`);
@@ -201,4 +226,13 @@ test("the pseudo-actors' matcher fails a node.endGroup that jobs.ts no longer ha
   assert.match(jobs, branch);
   const wrong = pseudoWrong({ ...s, "src/jobs/jobs.ts": jobs.replace(branch, "") });
   assert.ok(wrong.some((w) => w.includes('"node.endGroup"') && w.includes("src/jobs/jobs.ts")), wrong.join("\n"));
+});
+
+test("the pseudo-actors' matcher fails a jnode whose prefix is no longer node.", () => {
+  const s = pseudoSources();
+  const jobs = s["reader/jobs.mbt"]!;
+  const node = 'self.rpc(jobs_key, "node." + f, args)';
+  assert.ok(jobs.includes(node), "jobs.mbt's jnode as read");
+  const wrong = pseudoWrong({ ...s, "reader/jobs.mbt": jobs.replace(node, 'self.rpc(jobs_key, "store." + f, args)') });
+  assert.ok(wrong.some((w) => w.includes('"store.') && w.includes("Actors::jnode")), wrong.join("\n"));
 });

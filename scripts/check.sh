@@ -631,12 +631,7 @@ if [ $full = 1 ]; then
     # Node --test sorts its file arguments; run-files preserves the slice's longest-first order.
     # (STILLFAIL_NODE_TEST_JOBS: that many files at a time rather than Node's own count)
     # shellcheck disable=SC2016 # the command's own variables, expanded by its shell
-    # The frozen whole station in MoonBit (station/AGENTS.md): the three files that run station_main against the
-    # TypeScript or check it in itself are left out (STILLFAIL_SKIP_FROZEN_MB) unless it, they or the slicing changed,
-    # or on `all`. A station/src/ change alone does not run them; the reader's tests run on every change.
-    frozen_mb=""
-    if [ "$mode" != all ] && ! touches '^station/mb/|^station/test/mb-(twin-station|station-e2e|station-contracts)\.test\.ts$|^scripts/(station-slice\.sh|check\.sh)$'; then frozen_mb=1; fi
-    remembered "tests: station${slice:+ $slice}${frozen_mb:+ (frozen MoonBit station left out)}" "station shared client/i18n client/shell libs/mesh-transport vendor rules/js pion/rules/js rules/src rules/moon.mod libs/base/src libs/base/moon.mod libs/ui/src/effect scripts/native.ts scripts/station-slice.sh" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" STILLFAIL_SKIP_FROZEN_MB="$frozen_mb" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node ./test/run-files.mjs $files'
+    remembered "tests: station${slice:+ $slice}" "station shared client/i18n client/shell libs/mesh-transport vendor rules/js pion/rules/js rules/src rules/moon.mod libs/base/src libs/base/moon.mod libs/ui/src/effect scripts/native.ts scripts/station-slice.sh" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node ./test/run-files.mjs $files'
   fi
   # The usage stream exercises the real station reader and the client together. Keep it out of either side's own
   # typecheck and prepare both sides before checking and running it, including on a fresh checkout.
