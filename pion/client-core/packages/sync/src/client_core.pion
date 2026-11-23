@@ -24,6 +24,9 @@ pub struct ClientCore {
   pub events : StationEvents
   pub local_outbox : LocalOutbox
   pub sync : SyncScheduler
+  extra_events : Map[String, StationEvents]
+  extra_sync : Map[String, SyncScheduler]
+  mut live : Bool
   pub router : protocol::Slice1Router
   pub mut rows_memo : views::RowsMemo
   pub mut viewer_marks : views::ViewerMarks
@@ -44,6 +47,7 @@ pub struct ClientCore {
   mut lock_root : Option[String]
   mut lock_kept_entries : Array[form::Json]
   mut lock_kept_aside : Array[form::Json]
+  mut person_lock_entries : Array[base_codec::Json]
   mut lock_seen : Option[base_codec::Json]
   mut lock_corrupt : Bool
   mut lock_effective : Option[views::EffectiveLockState]
@@ -80,6 +84,9 @@ pub fn ClientCore::new(
     events: events,
     local_outbox: local_outbox,
     sync: sync,
+    extra_events: Map::new(),
+    extra_sync: Map::new(),
+    live: false,
     router: router,
     rows_memo: views::RowsMemo::new(),
     viewer_marks: views::ViewerMarks::new(""),
@@ -100,6 +107,7 @@ pub fn ClientCore::new(
     lock_root: None,
     lock_kept_entries: [],
     lock_kept_aside: [],
+    person_lock_entries: [],
     lock_seen: None,
     lock_corrupt: false,
     lock_effective: None,
@@ -114,6 +122,41 @@ pub fn ClientCore::new(
   router.set_topic_evaluator(fn(id : Int64, topic : protocol::Topic) -> Option[protocol::CoreEvent] {
     core.evaluate_view_topic(id, topic)
   })
+  core.wire_station_hooks(station, events, sync)
+  core.restore_lock_state()
+  core
+}
+
+fn core_offline_transport() -> StationTransport {
+  StationTransport::{
+    request_k: fn(
+      _m : String,
+      _p : String,
+      _h : Array[(String, String)],
+      _b : Bytes,
+      k : (effect::Exit[HttpReply]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Failed(effect::EffectError::Custom("offline")))
+    },
+    stream_k: fn(
+      _p : String,
+      _h : Array[(String, String)],
+      _on_chunk : (Bytes) -> Unit,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Failed(effect::EffectError::Custom("offline")))
+    },
+  }
+}
+
+fn ClientCore::wire_station_hooks(
+  self : ClientCore,
+  station : String,
+  events : StationEvents,
+  sync : SyncScheduler,
+) -> Unit {
+  let rt = self.rt
+  let local_outbox = self.local_outbox
   events.set_hooks(
     fn(b : sql::Burst, th : Int, n : Int, ck : String) -> Unit {
       local_outbox.reconcile_entry_in_burst(b, th, n, ck, station=Some(station))
@@ -133,10 +176,10 @@ pub fn ClientCore::new(
           k(effect::Exit::Succeeded(()))
         })
       })
-      local_outbox.flush_offline(rt)
+      local_outbox.flush_station_offline(rt, station)
     },
     fn(lock_payload : base_codec::Json) -> Unit {
-      core.handle_lock_event(lock_payload)
+      self.handle_lock_event(lock_payload)
     },
   )
   events.set_missed_hook(fn() -> Unit {
@@ -163,26 +206,26 @@ pub fn ClientCore::new(
     scoped_sessions : Array[String],
     scoped_threads : Array[Int],
   ) -> Unit {
-    core.sync_viewer_marks_from_payload(station, payload, is_whole, affected, scoped_sessions, scoped_threads)
+    self.sync_viewer_marks_from_payload(station, payload, is_whole, affected, scoped_sessions, scoped_threads)
   })
   events.set_marks_dirty_hook(fn(ev_name : String, payload : base_codec::Json) -> Unit {
     let scoped_sessions : Array[String] = []
     let scoped_threads : Array[Int] = []
     if ev_name == "chat-mark" {
       match (j_opt_u64(payload, "thread"), j_opt_u64(payload, "read")) {
-        (Some(th), Some(r)) => core.viewer_marks.set_read(station, th.to_int(), r.to_int())
+        (Some(th), Some(r)) => self.viewer_marks.set_read(station, th.to_int(), r.to_int())
         _ => ()
       }
       match j_opt_str(payload, "session") {
         Some(sess) => {
           if base_codec::json_get(payload, "pinned").is_some() {
-            core.viewer_marks.set_pin(station, sess, j_opt_int64(payload, "pinned"))
+            self.viewer_marks.set_pin(station, sess, j_opt_int64(payload, "pinned"))
           }
         }
         None => ()
       }
       match (j_opt_u64(payload, "thread"), j_opt_bool(payload, "quoted")) {
-        (Some(th), Some(q)) => core.viewer_marks.set_quoted(station, th.to_int(), q)
+        (Some(th), Some(q)) => self.viewer_marks.set_quoted(station, th.to_int(), q)
         _ => ()
       }
     }
@@ -190,7 +233,7 @@ pub fn ClientCore::new(
       Some(sess) => {
         if sess.length() > 0 {
           scoped_sessions.push(sess)
-          core.mark_row_dirty(station, sess)
+          self.mark_row_dirty(station, sess)
         }
       }
       None => ()
@@ -199,7 +242,7 @@ pub fn ClientCore::new(
       Some(th) => {
         let tid = th.to_int()
         scoped_threads.push(tid)
-        core.mark_thread_rows_dirty(station, tid)
+        self.mark_thread_rows_dirty(station, tid)
       }
       None => ()
     }
@@ -221,8 +264,6 @@ pub fn ClientCore::new(
       })
     })
   })
-  core.restore_lock_state()
-  core
 }
 
 fn ClientCore::mark_row_dirty(self : ClientCore, station : String, chat_id : String) -> Unit {
@@ -444,22 +485,68 @@ fn ClientCore::sync_viewer_marks_from_payload(
   }
 }
 
-/// Attach a station-specific `StationTransport` to `local_outbox` and automatically flush
-/// any queued or transiently `unreached` backlog targeting that station.
+/// Attach a station-specific `StationTransport` to `local_outbox`, `StationEvents`, and `SyncScheduler`,
+/// restarting SSE + sync on the new transport (supporting both the default station and extra stations)
+/// and automatically flushing any queued or transiently `unreached` backlog targeting that station.
 pub fn ClientCore::attach_station_transport(
   self : ClientCore,
   station : String,
   transport : StationTransport,
 ) -> Unit {
   self.local_outbox.register_station_transport(station, transport)
+  if station == self.station {
+    self.sync.set_transport(transport)
+    self.events.set_transport(transport, rt=Some(self.rt))
+    if self.live && !self.events.is_running() {
+      self.events.start(self.rt)
+    }
+  } else {
+    match (self.extra_events.get(station), self.extra_sync.get(station)) {
+      (Some(ev), Some(sy)) => {
+        sy.set_transport(transport)
+        ev.set_transport(transport, rt=Some(self.rt))
+        if self.live && !ev.is_running() {
+          ev.start(self.rt)
+        }
+      }
+      _ => {
+        let ev = StationEvents::new(self.workspace, station, self.db, self.outbox, transport)
+        ev.viewer_email = self.events.viewer_email
+        ev.viewer_selves = self.events.viewer_selves
+        let sy = SyncScheduler::new(self.workspace, station, ev, transport)
+        self.wire_station_hooks(station, ev, sy)
+        self.extra_events.set(station, ev)
+        self.extra_sync.set(station, sy)
+        if self.live {
+          ev.start(self.rt)
+        }
+      }
+    }
+  }
   if self.local_outbox.has_unreached_for_station(station) {
     self.local_outbox.flush_station_offline(self.rt, station)
   }
 }
 
-/// Detach a station-specific `StationTransport` from `local_outbox` when that station disconnects.
+/// Detach a station-specific `StationTransport` from `local_outbox`, stop its SSE `/events` stream,
+/// and revert it to offline transport (removing extra stations from `extra_events`/`extra_sync`).
 pub fn ClientCore::detach_station_transport(self : ClientCore, station : String) -> Unit {
   self.local_outbox.unregister_station_transport(station)
+  if station == self.station {
+    self.events.stop()
+    let off = core_offline_transport()
+    self.events.set_transport(off)
+    self.sync.set_transport(off)
+  } else {
+    match self.extra_events.get(station) {
+      Some(ev) => {
+        ev.stop()
+        self.extra_events.remove(station)
+      }
+      None => ()
+    }
+    self.extra_sync.remove(station)
+  }
 }
 
 /// Register a station-specific `StationTransport` for multi-station routing.
@@ -476,15 +563,31 @@ pub fn ClientCore::unregister_station_transport(self : ClientCore, station : Str
   self.detach_station_transport(station)
 }
 
-/// Start live SSE `/events` consumption (never polls).
+/// Start live SSE `/events` consumption on the default station and all attached extra stations (never polls).
 pub fn ClientCore::start(self : ClientCore) -> Unit {
+  self.live = true
   self.events.start(self.rt)
+  let ks = self.extra_events.keys()
+  for i in 0..<ks.length() {
+    match self.extra_events.get(ks[i]) {
+      Some(ev) => ev.start(self.rt)
+      None => ()
+    }
+  }
 }
 
-/// Stop live SSE `/events` consumption and mark outbox offline.
+/// Stop live SSE `/events` consumption across all stations and mark outbox offline.
 pub fn ClientCore::stop(self : ClientCore) -> Unit {
+  self.live = false
   self.local_outbox.set_online(false)
   self.events.stop()
+  let ks = self.extra_events.keys()
+  for i in 0..<ks.length() {
+    match self.extra_events.get(ks[i]) {
+      Some(ev) => ev.stop()
+      None => ()
+    }
+  }
 }
 
 /// Explicitly set online/offline state (used on network drop / recovery).
@@ -662,6 +765,18 @@ pub fn ClientCore::set_viewer(
     self.events.set_viewer_email(email)
     if sub.length() > 0 {
       self.events.set_viewer_selves([sub])
+    }
+    let eks = self.extra_events.keys()
+    for i in 0..<eks.length() {
+      match self.extra_events.get(eks[i]) {
+        Some(ev) => {
+          ev.set_viewer_email(email)
+          if sub.length() > 0 {
+            ev.set_viewer_selves([sub])
+          }
+        }
+        None => ()
+      }
     }
     let prev = self.viewer_marks
     self.viewer_marks = views::ViewerMarks::{
@@ -1588,6 +1703,42 @@ pub fn ClientCore::lock_kept_entries(self : ClientCore) -> Array[form::Json] {
 
 pub fn ClientCore::lock_kept_aside(self : ClientCore) -> Array[form::Json] {
   self.lock_kept_aside
+}
+
+/// Validate and store the viewer's personal lock chain (`personal-lock-<hex(sub)>`) via `lock::fold_person`.
+/// Rejects malformed or cryptographically invalid chains without overwriting existing state.
+pub fn ClientCore::load_person_lock_json(
+  self : ClientCore,
+  raw : base_codec::Json,
+  sub : String,
+) -> Bool {
+  if sub.length() == 0 {
+    return false
+  }
+  match raw {
+    base_codec::Json::Arr(xs) => {
+      if xs.length() == 0 {
+        return false
+      }
+      let form_entries : Array[form::Json] = []
+      for i in 0..<xs.length() {
+        form_entries.push(codec_to_form(xs[i]))
+      }
+      match lock::fold_person(form_entries, sub, native_lock_crypto()) {
+        Ok(_) => {
+          self.person_lock_entries = xs
+          true
+        }
+        Err(_) => false
+      }
+    }
+    _ => false
+  }
+}
+
+/// Return the validated personal lock chain entries kept for `hello.lock.person`.
+pub fn ClientCore::person_lock_kept_entries(self : ClientCore) -> Array[base_codec::Json] {
+  self.person_lock_entries
 }
 
 /// Verify and apply a workspace lock chain natively via `pion/rules` (0 JSON boundary),

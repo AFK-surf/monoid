@@ -15,7 +15,25 @@
 extern int32_t bsh_start(const char *dir_cstr);
 extern void bsh_stop(void);
 extern void bsh_attach(void *started, void (*woke)(void *), void *ctx);
+typedef void (*bsh_say_fn)(
+    void *ctx,
+    const uint8_t *json,
+    size_t json_len,
+    const uint8_t *bytes,
+    size_t bytes_len);
+typedef uint8_t (*bsh_media_fn)(
+    void *ctx,
+    uint64_t call,
+    uint8_t kind,
+    uint8_t key,
+    uint64_t seq,
+    uint64_t ts,
+    const uint8_t *bytes,
+    size_t bytes_len);
+
 extern void bsh_on_wake(void (*woke)(void *), void *ctx);
+extern void bsh_on_say(bsh_say_fn say, void *ctx);
+extern void bsh_on_media(bsh_media_fn media, void *ctx);
 extern int32_t bsh_attached(void);
 extern int32_t bsh_deliver(
     uint64_t id,
@@ -61,8 +79,15 @@ typedef struct mock_shell {
     uint64_t magic;
     sf_complete cb;
     void *ctx;
+    bsh_say_fn say_cb;
+    void *say_ctx;
+    bsh_media_fn media_cb;
+    void *media_ctx;
     atomic_int inside;
 } mock_shell_t;
+
+static pthread_mutex_t g_mock_last_lock = PTHREAD_MUTEX_INITIALIZER;
+static mock_shell_t *g_last_mock_shell = NULL;
 
 static atomic_int g_started = 0;
 static atomic_int g_stopped = 0;
@@ -96,11 +121,31 @@ void *sf_shell_start(const char *data_dir, sf_complete complete, void *ctx) {
     m->ctx = ctx;
     atomic_init(&m->inside, 0);
     atomic_fetch_add(&g_started, 1);
+    pthread_mutex_lock(&g_mock_last_lock);
+    g_last_mock_shell = m;
+    pthread_mutex_unlock(&g_mock_last_lock);
     return m;
+}
+
+void sf_shell_set_say(const void *shell, bsh_say_fn say, void *ctx) {
+    mock_shell_t *m = live(shell);
+    m->say_cb = say;
+    m->say_ctx = ctx;
+}
+
+void sf_shell_set_media(const void *shell, bsh_media_fn media, void *ctx) {
+    mock_shell_t *m = live(shell);
+    m->media_cb = media;
+    m->media_ctx = ctx;
 }
 
 void sf_shell_stop(void *shell) {
     mock_shell_t *m = live(shell);
+    pthread_mutex_lock(&g_mock_last_lock);
+    if (g_last_mock_shell == m) {
+        g_last_mock_shell = NULL;
+    }
+    pthread_mutex_unlock(&g_mock_last_lock);
     if (atomic_load(&m->inside) != 0) {
         fprintf(stderr, "shell_abi_test: sf_shell_stop with %d call(s) in flight\n", atomic_load(&m->inside));
         abort();
@@ -334,6 +379,122 @@ static void test_timed_wait(void) {
     int64_t len = -1;
     CHECK(bsh_wait(30, &len) == NULL && len == 0);
     CHECK(bsh_now() - t0 >= 30);
+    bsh_stop();
+}
+
+// W26b P2: `bsh_wait(INT64_MAX)` must clamp cleanly without signed overflow under UBSan.
+static atomic_int g_max_wait_done = 0;
+static atomic_int g_max_wait_ok = 0;
+
+static void *wait_max_thread(void *arg) {
+    (void)arg;
+    int64_t len = -1;
+    void *got = bsh_wait(INT64_MAX, &len);
+    atomic_store(&g_max_wait_ok, got == NULL && len == 0);
+    atomic_store(&g_max_wait_done, 1);
+    return NULL;
+}
+
+static void test_wait_max_no_overflow(void) {
+    CHECK(bsh_start("/tmp/shell_pion_abi_test") == 1);
+    atomic_store(&g_max_wait_done, 0);
+    atomic_store(&g_max_wait_ok, 0);
+    pthread_t t;
+    CHECK(pthread_create(&t, NULL, wait_max_thread, NULL) == 0);
+    while (!atomic_load(&g_max_wait_done)) {
+        bsh_stop();
+        sched_yield();
+    }
+    CHECK(pthread_join(t, NULL) == 0);
+    CHECK(atomic_load(&g_max_wait_ok));
+}
+
+// Pure-C `bsh_on_say` / `bsh_on_media` cross-thread delivery, stale-gen filtering, and safe unregistration.
+typedef struct media_say_ctx {
+    atomic_int says;
+    atomic_int medias;
+} media_say_ctx_t;
+
+static void test_say_cb(
+    void *ctx,
+    const uint8_t *json,
+    size_t json_len,
+    const uint8_t *bytes,
+    size_t bytes_len) {
+    media_say_ctx_t *m = (media_say_ctx_t *)ctx;
+    CHECK(json != NULL && json_len == 11 && memcmp(json, "{\"say\":123}", 11) == 0);
+    CHECK(bytes != NULL && bytes_len == 3 && memcmp(bytes, "RAW", 3) == 0);
+    atomic_fetch_add(&m->says, 1);
+}
+
+static uint8_t test_media_cb(
+    void *ctx,
+    uint64_t call,
+    uint8_t kind,
+    uint8_t key,
+    uint64_t seq,
+    uint64_t ts,
+    const uint8_t *bytes,
+    size_t bytes_len) {
+    media_say_ctx_t *m = (media_say_ctx_t *)ctx;
+    CHECK(call == 7 && kind == 2 && key == 1 && seq > 0 && ts == 900);
+    CHECK(bytes != NULL && bytes_len == 4 && memcmp(bytes, "AV1!", 4) == 0);
+    atomic_fetch_add(&m->medias, 1);
+    return 1;
+}
+
+typedef struct media_emitter_args {
+    bsh_say_fn say_trampoline;
+    void *say_gen;
+    bsh_media_fn media_trampoline;
+    void *media_gen;
+    int rounds;
+} media_emitter_args_t;
+
+static void *emit_media_and_say_worker(void *arg) {
+    media_emitter_args_t *a = (media_emitter_args_t *)arg;
+    for (int i = 1; i <= a->rounds; i++) {
+        a->say_trampoline(a->say_gen, (const uint8_t *)"{\"say\":123}", 11, (const uint8_t *)"RAW", 3);
+        (void)a->media_trampoline(a->media_gen, 7, 2, 1, (uint64_t)i, 900, (const uint8_t *)"AV1!", 4);
+    }
+    return NULL;
+}
+
+static void test_say_and_media_across_restarts(void) {
+    CHECK(bsh_start("/tmp/shell_pion_abi_test") == 1);
+    media_say_ctx_t *ctx = (media_say_ctx_t *)calloc(1, sizeof(*ctx));
+    CHECK(ctx != NULL);
+    bsh_on_say(test_say_cb, ctx);
+    bsh_on_media(test_media_cb, ctx);
+
+    pthread_mutex_lock(&g_mock_last_lock);
+    mock_shell_t *m = g_last_mock_shell;
+    CHECK(m != NULL && m->say_cb != NULL && m->media_cb != NULL);
+    media_emitter_args_t args = {m->say_cb, m->say_ctx, m->media_cb, m->media_ctx, 200};
+    pthread_mutex_unlock(&g_mock_last_lock);
+
+    pthread_t w1, w2;
+    CHECK(pthread_create(&w1, NULL, emit_media_and_say_worker, &args) == 0);
+    CHECK(pthread_create(&w2, NULL, emit_media_and_say_worker, &args) == 0);
+    CHECK(pthread_join(w1, NULL) == 0);
+    CHECK(pthread_join(w2, NULL) == 0);
+    CHECK(atomic_load(&ctx->says) == 400);
+    CHECK(atomic_load(&ctx->medias) == 400);
+
+    // Stop shell and verify stale-generation callbacks from old shell are dropped (return 0 / no-op).
+    bsh_stop();
+    CHECK(bsh_start("/tmp/shell_pion_abi_test") == 1);
+    bsh_on_say(test_say_cb, ctx);
+    bsh_on_media(test_media_cb, ctx);
+    args.say_trampoline(args.say_gen, (const uint8_t *)"{\"say\":123}", 11, (const uint8_t *)"RAW", 3);
+    CHECK(args.media_trampoline(args.media_gen, 7, 2, 1, 999, 900, (const uint8_t *)"AV1!", 4) == 0);
+    CHECK(atomic_load(&ctx->says) == 400);
+    CHECK(atomic_load(&ctx->medias) == 400);
+
+    // Unregistering waits for any in-flight callback so freeing ctx immediately is ASan/TSAN-safe.
+    bsh_on_media(NULL, NULL);
+    bsh_on_say(NULL, NULL);
+    free(ctx);
     bsh_stop();
 }
 
@@ -632,6 +793,8 @@ int main(void) {
     test_restart_drops_late_answers();
     test_stop_wakes_waiters();
     test_timed_wait();
+    test_wait_max_no_overflow();
+    test_say_and_media_across_restarts();
     test_wake_unregister();
     test_screen_ops_across_restarts();
     printf("shell_abi_test: OK\n");

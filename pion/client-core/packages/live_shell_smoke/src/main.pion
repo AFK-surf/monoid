@@ -406,5 +406,44 @@ fn main(world : World) -> Unit {
     expected_sha +
     ") + storage.set/get + zstd.compress/unpack + crypto.random",
   )
-  io_println(world, "[live_shell_smoke] ALL 4 LIVE RUST SHELL CHECKS PASSED")
+
+  // ── Test 5: 3 consecutive `stop -> start` shell restarts + SQLite EXCLUSIVE lock reopen ──
+  // Proves zero `SQLITE_BUSY`, zero leaked DB connections, and clean shell lifecycle across restarts.
+  for round in 1..<4 {
+    shell_native::stop()
+    if shell_native::is_attached() {
+      panic("expected shell_native::is_attached() == false after stop (round " + round.to_string() + ")")
+    }
+    let sh_r = match shell_native::open(rt, base_dir) {
+      Ok(s) => s
+      Err(e) => panic("shell_native::open failed on restart round " + round.to_string() + ": " + e)
+    }
+    let acct_r = must_sql(store::open_account_db(sh_r, "acct-live"), "open_account_db restart round " + round.to_string())
+    let lock_rows = must_sql(acct_r.db.all("PRAGMA locking_mode = EXCLUSIVE"), "PRAGMA locking_mode = EXCLUSIVE round " + round.to_string())
+    if lock_rows.length() == 0 || sql::col_text(lock_rows[0], 0) != "exclusive" {
+      panic("expected PRAGMA locking_mode = EXCLUSIVE to return exclusive on round " + round.to_string())
+    }
+    let key_r = "restart-round-" + round.to_string()
+    let val_r = "{\"ok\":" + round.to_string() + "}"
+    let _ = must_sql(acct_r.db.exec("BEGIN IMMEDIATE"), "BEGIN IMMEDIATE round " + round.to_string())
+    let _ = must_sql(
+      store::put_workspace_pref(acct_r.db, "ws-live", key_r, val_r),
+      "EXCLUSIVE write round " + round.to_string(),
+    )
+    let _ = must_sql(acct_r.db.exec("COMMIT"), "COMMIT round " + round.to_string())
+    let got_r = must_sql(
+      store::get_workspace_pref(acct_r.db, "ws-live", key_r),
+      "read back round " + round.to_string(),
+    )
+    match got_r {
+      Some(v) => if v != val_r {
+        panic("EXCLUSIVE read-back mismatch on round " + round.to_string())
+      }
+      None => panic("EXCLUSIVE read-back missing on round " + round.to_string())
+    }
+    acct_r.db.close()
+  }
+  shell_native::stop()
+  io_println(world, "[live_shell_smoke] PASS 5: 3 consecutive stop->start shell restarts + SQLite EXCLUSIVE reopen (0 SQLITE_BUSY)")
+  io_println(world, "[live_shell_smoke] ALL 5 LIVE RUST SHELL CHECKS PASSED")
 }

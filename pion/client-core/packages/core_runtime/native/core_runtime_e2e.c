@@ -114,6 +114,16 @@ static int media_cb(
     return 1;
 }
 
+static void *foreign_screen_thread(void *arg) {
+    (void)arg;
+    // Direct pure-C `bsh_screen_ack` / `bsh_screen_input` into `sf_shell_screen_*` from a foreign thread:
+    // no tapped stream for call 12 -> returns 0 cleanly without touching the Pion heap.
+    assert(mb_core_screen_ack(12.0, 999.0) == 0);
+    static const uint8_t sc_in[] = "{\"type\":\"click\",\"x\":10}";
+    assert(mb_core_screen_input(12.0, sc_in, sizeof(sc_in) - 1) == 0);
+    return NULL;
+}
+
 int main(void) {
     memset(&g_ctx, 0, sizeof(g_ctx));
     pthread_mutex_init(&g_ctx.mu, NULL);
@@ -179,6 +189,16 @@ int main(void) {
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #9 chat.send -> %s\n", m->json);
     assert(strstr(m->json, "\"queued\":true") != NULL && strstr(m->json, "ck-e2e-1") != NULL);
+
+    // Verify `rt.now()` persisted real Unix epoch milliseconds (> 1700000000000) into outbox `createdAt` (never monotonic uptime)!
+    send_json("{\"id\":19,\"subscribe\":{\"topic\":\"chat\",\"station\":\"st-local\",\"thread\":42},\"keyed\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #19 subscribe chat (outbox epoch check) -> %s\n", m->json);
+    const char *ca = strstr(m->json, "\"createdAt\":");
+    assert(ca != NULL);
+    long long created_at_ms = strtoll(ca + 12, NULL, 10);
+    assert(created_at_ms > 1700000000000LL);
+    send_json("{\"id\":19,\"unsubscribe\":true}");
 
     send_json("{\"id\":10,\"call\":\"chat.rename\",\"params\":{\"thread\":42,\"title\":\"Renamed from C host\"}}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
@@ -278,9 +298,9 @@ int main(void) {
     printf("[core_runtime_e2e] #30 echo.bytes -> %s (blen=%zu)\n", m->json, m->blen);
     assert(m->bytes != NULL && m->blen == 4 && memcmp(m->bytes, "PION", 4) == 0);
 
-    assert(mb_core_screen_ack(12.0, 999.0) == 1);
-    static const uint8_t sc_in[] = "{\"type\":\"click\",\"x\":10}";
-    assert(mb_core_screen_input(12.0, sc_in, sizeof(sc_in) - 1) == 1);
+    pthread_t screen_th;
+    assert(pthread_create(&screen_th, NULL, foreign_screen_thread, NULL) == 0);
+    assert(pthread_join(screen_th, NULL) == 0);
     assert(mb_core_deliver_media(7, 2, 1, 88, 555, (const uint8_t *)"AV1!", 4) == 1);
     assert(g_ctx.last_media_seq == 88);
 

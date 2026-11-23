@@ -4,6 +4,7 @@
 import "base_codec"
 import "crypto"
 import "effect"
+import "form"
 import "mesh"
 import "outbox"
 import "shell"
@@ -16,6 +17,7 @@ struct MockCloudDb {
   workspaces : Map[String, String]
   station_docs : Map[String, String]
   entries : Map[String, String]
+  chats : Map[String, String]
 }
 
 fn MockCloudDb::new() -> MockCloudDb {
@@ -24,6 +26,7 @@ fn MockCloudDb::new() -> MockCloudDb {
     workspaces: Map::new(),
     station_docs: Map::new(),
     entries: Map::new(),
+    chats: Map::new(),
   }
 }
 
@@ -66,6 +69,11 @@ fn MockCloudDb::handle_sql(self : MockCloudDb, op : String, args : base_codec::J
     } else if sql_text.contains("INTO entry") && params.length() >= 4 {
       match (params[0], params[3]) {
         (base_codec::Json::Str(st), base_codec::Json::Str(raw)) => self.entries.set(st + ":" + base_codec::json_stringify(params[1]) + ":" + base_codec::json_stringify(params[2]), raw)
+        _ => ()
+      }
+    } else if sql_text.contains("INTO chat") && params.length() >= 2 {
+      match (params[0], params[1]) {
+        (base_codec::Json::Str(st), base_codec::Json::Str(cid)) => self.chats.set(st + ":" + cid, base_codec::json_stringify(params[params.length() - 1]))
         _ => ()
       }
     }
@@ -984,4 +992,776 @@ test "P0-6: MeshStationTransport close_k during pending connect_k closes link on
   debug_assert(conn_close_count >= 1, "link closed on handshake completion after close_k")
   debug_assert(ctrl.link().is_none(), "ctrl.link() must remain None after close_k race")
   debug_assert(connect_outcome != "succeeded" && connect_outcome.length() > 0, "connect_k did not succeed after close_k")
+}
+
+test "W27a: MeshStationTransport fetches dynamic entries per handshake, always emits label, and enforces CARRY_BYTES budget" {
+  let rt = effect::Runtime::new()
+  let storage : Map[String, Bytes] = Map::new()
+  let mut local_ep_id = ""
+  let mut next_conn_id = 20
+  let mut next_stream_id = 30
+  let mut ctrl_stream_id = 0
+  let mut ctrl_wrote = false
+  let mut ctrl_pending_read : Option[Int64] = None
+  let captured_hellos : Array[String] = []
+  let peer_id = "22223333444455556666777788889999aaaabbbbccccddddeeeeffff11112222"
+  let holder : Array[shell::Shell] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, bytes : Option[Bytes]) -> Unit {
+      let s = holder[0]
+      if op == "storage.get" {
+        s.answer(id, base_codec::json_obj([]), bytes=storage.get(j_str(args, "key")))
+        return
+      }
+      if op == "storage.set" {
+        match bytes { Some(b) => storage.set(j_str(args, "key"), b); None => () }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "iroh.bind" {
+        let seed = match bytes { Some(b) => b; None => Bytes::new(32) }
+        local_ep_id = crypto::sha256_hex(seed)
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(13))]))
+        return
+      }
+      if op == "iroh.connect" {
+        let cid = next_conn_id
+        next_conn_id += 1
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(cid))]))
+        return
+      }
+      if op == "conn.closed" {
+        return
+      }
+      if op == "conn.openBi" {
+        ctrl_stream_id = next_stream_id
+        next_stream_id += 1
+        ctrl_wrote = false
+        ctrl_pending_read = None
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(ctrl_stream_id))]))
+        return
+      }
+      if op == "istream.write" {
+        if j_int(args, "id") == ctrl_stream_id {
+          let payload = match bytes { Some(b) => bytes_to_str(b); None => "" }
+          captured_hellos.push(payload)
+          ctrl_wrote = true
+          s.answer(id, base_codec::json_obj([]))
+          match ctrl_pending_read {
+            Some(rid) => {
+              ctrl_pending_read = None
+              s.answer(rid, base_codec::json_obj([]), bytes=Some("{\"ok\":true,\"station\":{\"id\":\"st-dyn\"}}\n".to_bytes()))
+            }
+            None => ()
+          }
+          return
+        }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "istream.read" {
+        if j_int(args, "id") == ctrl_stream_id {
+          if ctrl_wrote {
+            s.answer(id, base_codec::json_obj([]), bytes=Some("{\"ok\":true,\"station\":{\"id\":\"st-dyn\"}}\n".to_bytes()))
+          } else {
+            ctrl_pending_read = Some(id)
+          }
+          return
+        }
+        s.answer(id, base_codec::json_obj([]), bytes=None)
+        return
+      }
+      s.answer(id, base_codec::json_obj([]))
+    },
+    fn(op : String, _args : base_codec::Json) -> shell::AskResult {
+      if op == "iroh.endpointId" { return shell::AskResult::Ok(base_codec::json_str(local_ep_id)) }
+      if op == "iroh.relayStatus" { return shell::AskResult::Ok(base_codec::json_arr([])) }
+      if op == "conn.closeReason" { return shell::AskResult::Ok(base_codec::json_null()) }
+      if op == "conn.paths" { return shell::AskResult::Ok(base_codec::json_arr([])) }
+      if op == "conn.stats" { return shell::AskResult::Ok(base_codec::json_obj([])) }
+      if op == "ed25519.sign" { return shell::AskResult::Err(shell::ShellError::{ message: "pure pion" }) }
+      shell::AskResult::Ok(base_codec::json_null())
+    },
+    fn(n : Int) -> Bytes {
+      let out = Bytes::new(n)
+      for i in 0..<n { out[i] = ((0x55 + i * 3) & 0xFF) as Byte }
+      out
+    },
+  )
+  holder.push(sh)
+
+  let mut round = 0
+  let big_pad = StringBuilder::new()
+  for _ in 0..<7000 {
+    big_pad.write_string("x")
+  }
+  let pad_str = big_pad.to_string()
+
+  let cfg = MeshStationConfig::new(
+    "ws-dyn",
+    peer_id,
+    ["https://relay.still.fail/"],
+    fn(_dev : String, _fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
+      ck(effect::Exit::Succeeded("cred-dyn"))
+    },
+    device_label="",
+    get_lock_carry=Some(fn() -> MeshLockCarry {
+      round += 1
+      if round == 1 {
+        MeshLockCarry::new(
+          entries=[base_codec::json_obj([("seq", base_codec::json_int(1))])],
+          person=Some(base_codec::json_arr([base_codec::json_obj([("pseq", base_codec::json_int(10))])])),
+        )
+      } else {
+        // Round 2: entries updated to seq 2 AND entries+person exceed CARRY_BYTES (12 KiB) -> keep entries, drop person!
+        MeshLockCarry::new(
+          entries=[base_codec::json_obj([("seq", base_codec::json_int(2)), ("pad", base_codec::json_str(pad_str))])],
+          person=Some(base_codec::json_arr([base_codec::json_obj([("pseq", base_codec::json_int(20)), ("pad", base_codec::json_str(pad_str))])])),
+        )
+      }
+    }),
+  )
+  let (ctrl, _) = shell_mesh_transport(sh, cfg)
+
+  // Handshake #1
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.connect_k(fn(_ : effect::Exit[mesh::Link]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  debug_assert(captured_hellos.length() == 1, "handshake #1 sent")
+  let h1 = match base_codec::json_parse(captured_hellos[0]) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => panic("bad h1: " + e)
+  }
+  let l1 = match base_codec::json_get(h1, "lock") { Some(v) => v; None => panic("missing lock in h1") }
+  debug_assert(base_codec::json_get(l1, "label").is_some() && j_str(l1, "label") == "", "empty label always emitted")
+  debug_assert(base_codec::json_stringify(l1).contains("\"seq\":1"), "handshake #1 carried seq 1")
+  debug_assert(base_codec::json_get(l1, "person").is_some(), "handshake #1 carried person when within CARRY_BYTES")
+
+  // Drop link and reconnect -> Handshake #2 must fetch updated entries dynamically!
+  ctrl.drop_link()
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.connect_k(fn(_ : effect::Exit[mesh::Link]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  debug_assert(captured_hellos.length() == 2, "handshake #2 sent")
+  let h2 = match base_codec::json_parse(captured_hellos[1]) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => panic("bad h2: " + e)
+  }
+  let l2 = match base_codec::json_get(h2, "lock") { Some(v) => v; None => panic("missing lock in h2") }
+  debug_assert(base_codec::json_stringify(l2).contains("\"seq\":2"), "handshake #2 dynamically fetched updated seq 2")
+  debug_assert(base_codec::json_get(l2, "person").is_none(), "CARRY_BYTES budget drops person when entries+person > 12288 while keeping entries")
+
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+}
+
+test "W27a: moved workspace station refuses hello missing lock.person with lock_unconfirmed and admits hello carrying lock.person" {
+  let rt = effect::Runtime::new()
+  let storage : Map[String, Bytes] = Map::new()
+  let mut local_ep_id = ""
+  let mut next_conn_id = 40
+  let mut next_stream_id = 50
+  let mut ctrl_stream_id = 0
+  let mut ctrl_last_reply = ""
+  let mut ctrl_pending_read : Option[Int64] = None
+  let peer_id = "3333444455556666777788889999aaaabbbbccccddddeeeeffff000011112222"
+  let holder : Array[shell::Shell] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, bytes : Option[Bytes]) -> Unit {
+      let s = holder[0]
+      if op == "storage.get" {
+        s.answer(id, base_codec::json_obj([]), bytes=storage.get(j_str(args, "key")))
+        return
+      }
+      if op == "storage.set" {
+        match bytes { Some(b) => storage.set(j_str(args, "key"), b); None => () }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "iroh.bind" {
+        let seed = match bytes { Some(b) => b; None => Bytes::new(32) }
+        local_ep_id = crypto::sha256_hex(seed)
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(14))]))
+        return
+      }
+      if op == "iroh.connect" {
+        let cid = next_conn_id
+        next_conn_id += 1
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(cid))]))
+        return
+      }
+      if op == "conn.closed" {
+        return
+      }
+      if op == "conn.openBi" {
+        ctrl_stream_id = next_stream_id
+        next_stream_id += 1
+        ctrl_last_reply = ""
+        ctrl_pending_read = None
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(ctrl_stream_id))]))
+        return
+      }
+      if op == "istream.write" {
+        if j_int(args, "id") == ctrl_stream_id {
+          let payload = match bytes { Some(b) => bytes_to_str(b); None => "" }
+          // Simulated moved-workspace Station (`serve.ts:709-739`): require non-empty `lock.person` array!
+          let has_person = match base_codec::json_parse(payload) {
+            base_codec::JsonParseResult::Ok(hj) => match base_codec::json_get(hj, "lock") {
+              Some(lj) => match base_codec::json_get(lj, "person") {
+                Some(base_codec::Json::Arr(xs)) => xs.length() > 0
+                _ => false
+              }
+              None => false
+            }
+            base_codec::JsonParseResult::Err(_) => false
+          }
+          ctrl_last_reply = if has_person {
+            "{\"ok\":true,\"station\":{\"id\":\"st-moved\"}}\n"
+          } else {
+            "{\"ok\":false,\"code\":\"lock_unconfirmed\",\"error\":\"personal lock chain required for moved workspace\"}\n"
+          }
+          s.answer(id, base_codec::json_obj([]))
+          match ctrl_pending_read {
+            Some(rid) => {
+              ctrl_pending_read = None
+              s.answer(rid, base_codec::json_obj([]), bytes=Some(ctrl_last_reply.to_bytes()))
+            }
+            None => ()
+          }
+          return
+        }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "istream.read" {
+        if j_int(args, "id") == ctrl_stream_id {
+          if ctrl_last_reply.length() > 0 {
+            s.answer(id, base_codec::json_obj([]), bytes=Some(ctrl_last_reply.to_bytes()))
+          } else {
+            ctrl_pending_read = Some(id)
+          }
+          return
+        }
+        s.answer(id, base_codec::json_obj([]), bytes=None)
+        return
+      }
+      s.answer(id, base_codec::json_obj([]))
+    },
+    fn(op : String, _args : base_codec::Json) -> shell::AskResult {
+      if op == "iroh.endpointId" { return shell::AskResult::Ok(base_codec::json_str(local_ep_id)) }
+      if op == "iroh.relayStatus" { return shell::AskResult::Ok(base_codec::json_arr([])) }
+      if op == "conn.closeReason" { return shell::AskResult::Ok(base_codec::json_null()) }
+      if op == "conn.paths" { return shell::AskResult::Ok(base_codec::json_arr([])) }
+      if op == "conn.stats" { return shell::AskResult::Ok(base_codec::json_obj([])) }
+      if op == "ed25519.sign" { return shell::AskResult::Err(shell::ShellError::{ message: "pure pion" }) }
+      shell::AskResult::Ok(base_codec::json_null())
+    },
+    fn(n : Int) -> Bytes {
+      let out = Bytes::new(n)
+      for i in 0..<n { out[i] = ((0x66 + i * 7) & 0xFF) as Byte }
+      out
+    },
+  )
+  holder.push(sh)
+
+  let mut supply_person = false
+  let cfg = MeshStationConfig::new(
+    "ws-moved",
+    peer_id,
+    ["https://relay.still.fail/"],
+    fn(_dev : String, _fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
+      ck(effect::Exit::Succeeded("cred-moved"))
+    },
+    get_lock_carry=Some(fn() -> MeshLockCarry {
+      if supply_person {
+        MeshLockCarry::new(
+          entries=[],
+          person=Some(base_codec::json_arr([
+            base_codec::json_obj([
+              ("seq", base_codec::json_int(0)),
+              ("genesis", base_codec::json_str("person-root-1")),
+            ]),
+          ])),
+        )
+      } else {
+        MeshLockCarry::new()
+      }
+    }),
+  )
+  let (ctrl, _) = shell_mesh_transport(sh, cfg)
+
+  // Attempt #1 without `person`: station refuses with `lock_unconfirmed`!
+  let mut attempt1_ok = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.connect_k(fn(ex : effect::Exit[mesh::Link]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => { attempt1_ok = true }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(!attempt1_ok && ctrl.is_lock_unconfirmed(), "missing lock.person must be rejected with lock_unconfirmed")
+
+  // Attempt #2 with `person` chain supplied dynamically: station admits!
+  supply_person = true
+  ctrl.drop_link()
+  let mut attempt2_ok = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.connect_k(fn(ex : effect::Exit[mesh::Link]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => { attempt2_ok = true }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(attempt2_ok && !ctrl.is_lock_unconfirmed(), "hello carrying lock.person must be admitted by moved workspace station")
+  match ctrl.admission() {
+    Some(adm) => match adm.station_id {
+      Some(sid) => debug_assert(sid == "st-moved", "admitted by st-moved")
+      None => debug_assert(false, "expected station_id")
+    }
+    None => debug_assert(false, "expected admission")
+  }
+
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+}
+
+test "W27a-P0: ClientCore constructed with offline_transport routes SSE chat-shared, GET /lock, and GET /chats?marks=1&own=1 over attached MeshStationTransport and stops on detach" {
+  let rt = effect::Runtime::new()
+  let mock_db = MockCloudDb::new()
+  let storage : Map[String, Bytes] = Map::new()
+  let mut local_ep_id = ""
+  let mut next_stream_id = 100
+  let mut ctrl_stream_id = 0
+  let mut ctrl_wrote = false
+  let mut ctrl_pending_read : Option[Int64] = None
+  let stream_req_buf : Map[Int, String] = Map::new()
+  let stream_read_step : Map[Int, Int] = Map::new()
+  let stream_resp : Map[Int, String] = Map::new()
+  let mut sse_stream_id = 0
+  let mut sse_pending_read : Option[Int64] = None
+  let mut saw_sse_reset = false
+  let mut mesh_get_events_count = 0
+  let mut mesh_get_chats_count = 0
+  let mut mesh_get_lock_count = 0
+  let mut mesh_get_marks_count = 0
+  let peer_id = "444455556666777788889999aaaabbbbccccddddeeeeffff0000111122223333"
+
+  let holder : Array[shell::Shell] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, bytes : Option[Bytes]) -> Unit {
+      let s = holder[0]
+      if op == "storage.get" {
+        s.answer(id, base_codec::json_obj([]), bytes=storage.get(j_str(args, "key")))
+        return
+      }
+      if op == "storage.set" {
+        match bytes { Some(b) => storage.set(j_str(args, "key"), b); None => () }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "iroh.bind" {
+        let seed = match bytes { Some(b) => b; None => Bytes::new(32) }
+        local_ep_id = crypto::sha256_hex(seed)
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(15))]))
+        return
+      }
+      if op == "iroh.connect" {
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(25))]))
+        return
+      }
+      if op == "conn.closed" {
+        return
+      }
+      if op == "conn.openBi" {
+        let sid = next_stream_id
+        next_stream_id += 1
+        if ctrl_stream_id == 0 {
+          ctrl_stream_id = sid
+        }
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(sid))]))
+        return
+      }
+      if op == "istream.write" {
+        let sid = j_int(args, "id")
+        let payload = match bytes { Some(b) => bytes_to_str(b); None => "" }
+        if sid == ctrl_stream_id {
+          ctrl_wrote = true
+          s.answer(id, base_codec::json_obj([]))
+          match ctrl_pending_read {
+            Some(rid) => {
+              ctrl_pending_read = None
+              s.answer(rid, base_codec::json_obj([]), bytes=Some("{\"ok\":true,\"station\":{\"id\":\"st-prod-1\",\"name\":\"Prod Station\"}}\n".to_bytes()))
+            }
+            None => ()
+          }
+          return
+        }
+        let prev = match stream_req_buf.get(sid) { Some(p) => p; None => "" }
+        let full = prev + payload
+        stream_req_buf.set(sid, full)
+        if full.contains("\"/events") {
+          sse_stream_id = sid
+          mesh_get_events_count += 1
+          let sse_body = "{\"status\":200,\"headers\":{\"content-type\":\"text/event-stream\"}}\n" +
+          "id: ev-1\nevent: chat-shared\ndata: {\"id\":\"c-mesh-1\",\"station\":\"st-prod-1\",\"thread\":11,\"title\":\"From Mesh SSE\",\"lastActive\":1700000001000}\n\n" +
+          "id: ev-2\nevent: chat-mark\ndata: {\"session\":\"c-mesh-1\",\"thread\":11,\"read\":3}\n\n"
+          stream_resp.set(sid, sse_body)
+        } else if full.contains("\"/lock\"") {
+          mesh_get_lock_count += 1
+          stream_resp.set(sid, "{\"status\":404,\"headers\":{}}\n{\"error\":\"no_lock\"}")
+        } else if full.contains("/chats?marks=1&own=1") {
+          mesh_get_marks_count += 1
+          stream_resp.set(sid, "{\"status\":200,\"headers\":{}}\n{\"chats\":[]}")
+        } else if full.contains("\"/chats") {
+          mesh_get_chats_count += 1
+          stream_resp.set(sid, "{\"status\":200,\"headers\":{}}\n{\"chats\":[],\"entries\":[]}")
+        }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "istream.reset" {
+        if j_int(args, "id") == sse_stream_id {
+          saw_sse_reset = true
+        }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "istream.read" {
+        let sid = j_int(args, "id")
+        if sid == ctrl_stream_id {
+          if ctrl_wrote {
+            s.answer(id, base_codec::json_obj([]), bytes=Some("{\"ok\":true,\"station\":{\"id\":\"st-prod-1\",\"name\":\"Prod Station\"}}\n".to_bytes()))
+          } else {
+            ctrl_pending_read = Some(id)
+          }
+          return
+        }
+        let step = match stream_read_step.get(sid) { Some(n) => n; None => 0 }
+        if sid == sse_stream_id {
+          if step == 0 {
+            stream_read_step.set(sid, 1)
+            let body = match stream_resp.get(sid) { Some(b) => b; None => "" }
+            s.answer(id, base_codec::json_obj([]), bytes=Some(body.to_bytes()))
+          } else {
+            sse_pending_read = Some(id)
+          }
+          return
+        }
+        if step == 0 {
+          stream_read_step.set(sid, 1)
+          let body = match stream_resp.get(sid) { Some(b) => b; None => "{\"status\":200,\"headers\":{}}\n{}" }
+          s.answer(id, base_codec::json_obj([]), bytes=Some(body.to_bytes()))
+        } else {
+          s.answer(id, base_codec::json_obj([]), bytes=None)
+        }
+        return
+      }
+      s.answer(id, base_codec::json_obj([]))
+    },
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if op == "iroh.endpointId" { return shell::AskResult::Ok(base_codec::json_str(local_ep_id)) }
+      if op == "iroh.relayStatus" { return shell::AskResult::Ok(base_codec::json_arr([])) }
+      if op == "conn.closeReason" { return shell::AskResult::Ok(base_codec::json_null()) }
+      if op == "conn.paths" { return shell::AskResult::Ok(base_codec::json_arr([])) }
+      if op == "conn.stats" { return shell::AskResult::Ok(base_codec::json_obj([])) }
+      if op == "ed25519.sign" { return shell::AskResult::Err(shell::ShellError::{ message: "pure pion" }) }
+      mock_db.handle_sql(op, args)
+    },
+    fn(n : Int) -> Bytes {
+      let out = Bytes::new(n)
+      for i in 0..<n { out[i] = ((0x77 + i * 5) & 0xFF) as Byte }
+      out
+    },
+  )
+  holder.push(sh)
+
+  let db = match sql::Sql::open(sh, "p0-mesh-attach-test") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.to_string())
+  }
+  // Construct ClientCore with offline_transport (production cold-start path)!
+  let core = ClientCore::new("ws-prod", "ws-prod/st-prod-1", rt, db, core_offline_transport(), fn() -> Unit {})
+  let cfg = MeshStationConfig::new(
+    "ws-prod",
+    peer_id,
+    ["https://relay.still.fail/"],
+    fn(_dev : String, _fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
+      ck(effect::Exit::Succeeded("cred-p0-live"))
+    },
+  )
+  let (ctrl, tr) = shell_mesh_transport(sh, cfg)
+
+  // Attach MeshStationTransport and start live sync!
+  core.attach_station_transport("ws-prod/st-prod-1", tr)
+  core.start()
+  let _ = rt.run_ready()
+
+  // 1. SSE chat-shared arrived over mesh link and persisted into SQLite `chat` table!
+  debug_assert(mesh_get_events_count == 1, "GET /events opened over mesh link")
+  debug_assert(mock_db.chats.get("ws-prod/st-prod-1:c-mesh-1").is_some(), "SSE chat-shared ingested into SQLite over mesh link")
+  // 2. Initial GET /chats, GET /lock, and chat-mark-triggered GET /chats?marks=1&own=1 all went over mesh link!
+  debug_assert(mesh_get_chats_count >= 1, "GET /chats snapshot went over mesh link")
+  debug_assert(mesh_get_lock_count >= 1, "GET /lock went over mesh link")
+  debug_assert(mesh_get_marks_count >= 1, "GET /chats?marks=1&own=1 went over mesh link")
+
+  // 3. Detach transport -> SSE stream cancelled (`istream.reset`), state Disconnected, zero further mesh requests!
+  let events_before = mesh_get_events_count
+  let lock_before = mesh_get_lock_count
+  let marks_before = mesh_get_marks_count
+  core.detach_station_transport("ws-prod/st-prod-1")
+  let _ = rt.run_ready()
+  debug_assert(saw_sse_reset, "detach_station_transport cancels active mesh SSE stream")
+  debug_assert(!core.events.is_running(), "events fiber stopped after detach")
+  rt.advance(5000)
+  let _ = rt.run_ready()
+  debug_assert(
+    mesh_get_events_count == events_before && mesh_get_lock_count == lock_before && mesh_get_marks_count == marks_before,
+    "no further mesh requests after detach_station_transport",
+  )
+
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  let _ = sse_pending_read
+}
+
+test "W27a-P1: ClientCore loads personal-lock-<hex(sub)>, rejects corrupt chains, and mesh_lock_carry_for_core automatically carries hello.lock.person" {
+  let rt = effect::Runtime::new()
+  let mock_db = MockCloudDb::new()
+  let storage : Map[String, Bytes] = Map::new()
+  let mut local_ep_id = ""
+  let mut ctrl_stream_id = 0
+  let mut ctrl_last_reply = ""
+  let mut ctrl_pending_read : Option[Int64] = None
+  let peer_id = "55556666777788889999aaaabbbbccccddddeeeeffff00001111222233334444"
+  let sub = "u-alice"
+
+  // Verify storage key parity with `client/core-ts/src/personal-lock.ts:41` (`keptAs(sub)`).
+  debug_assert(person_lock_storage_key(sub) == "personal-lock-752d616c696365", "person_lock_storage_key matches TS keptAs(sub)")
+
+  // Sign a real Ed25519 genesis entry for `person:u-alice` that passes `lock::fold_person`!
+  let seed = Bytes::new(32)
+  for i in 0..<32 {
+    seed[i] = ((0xA1 + i) & 0xFF) as Byte
+  }
+  let (pub_bytes, _) = mesh::ed25519_sign(seed, Bytes::new(0))
+  let key_id = "ed25519:" + base_codec::hex_encode(pub_bytes)
+  let dev_base_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  let unsigned_codec = base_codec::json_obj([
+    ("v", base_codec::json_int(1)),
+    ("ws", base_codec::json_str("person:" + sub)),
+    ("seq", base_codec::json_int(0)),
+    ("prev", base_codec::json_null()),
+    ("at", base_codec::json_int(1700000000)),
+    ("kind", base_codec::json_str("genesis")),
+    (
+      "body",
+      base_codec::json_obj([
+        ("sub", base_codec::json_str(sub)),
+        (
+          "device",
+          base_codec::json_obj([
+            ("key", base_codec::json_str(key_id)),
+            ("id", base_codec::json_str(dev_base_hex)),
+            ("label", base_codec::json_str("Alice Mac")),
+          ]),
+        ),
+      ]),
+    ),
+  ])
+  let canonical_text = match form::entry_text(codec_to_form(unsigned_codec)) {
+    Ok(t) => t
+    Err(e) => panic("entry_text failed: " + e)
+  }
+  let entry_hash = crypto::sha256_hex(canonical_text.to_bytes())
+  let to_sign = match lock_signed_bytes(entry_hash) {
+    Some(b) => b
+    None => panic("bad entry_hash")
+  }
+  let (_, sig_bytes) = mesh::ed25519_sign(seed, to_sign)
+  let signed_entry = base_codec::json_obj([
+    ("v", base_codec::json_int(1)),
+    ("ws", base_codec::json_str("person:" + sub)),
+    ("seq", base_codec::json_int(0)),
+    ("prev", base_codec::json_null()),
+    ("at", base_codec::json_int(1700000000)),
+    ("kind", base_codec::json_str("genesis")),
+    (
+      "body",
+      base_codec::json_obj([
+        ("sub", base_codec::json_str(sub)),
+        (
+          "device",
+          base_codec::json_obj([
+            ("key", base_codec::json_str(key_id)),
+            ("id", base_codec::json_str(dev_base_hex)),
+            ("label", base_codec::json_str("Alice Mac")),
+          ]),
+        ),
+      ]),
+    ),
+    (
+      "sig",
+      base_codec::json_obj([
+        ("alg", base_codec::json_str("Ed25519")),
+        ("key", base_codec::json_str(key_id)),
+        ("sig", base_codec::json_str(base_codec::hex_encode(sig_bytes))),
+      ]),
+    ),
+  ])
+  let valid_chain = base_codec::json_arr([signed_entry])
+
+  let holder : Array[shell::Shell] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, bytes : Option[Bytes]) -> Unit {
+      let s = holder[0]
+      if op == "storage.get" {
+        s.answer(id, base_codec::json_obj([]), bytes=storage.get(j_str(args, "key")))
+        return
+      }
+      if op == "storage.set" {
+        match bytes { Some(b) => storage.set(j_str(args, "key"), b); None => () }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "iroh.bind" {
+        let bseed = match bytes { Some(b) => b; None => Bytes::new(32) }
+        local_ep_id = crypto::sha256_hex(bseed)
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(16))]))
+        return
+      }
+      if op == "iroh.connect" {
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(26))]))
+        return
+      }
+      if op == "conn.closed" {
+        return
+      }
+      if op == "conn.openBi" {
+        ctrl_stream_id = 60
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(60))]))
+        return
+      }
+      if op == "istream.write" {
+        if j_int(args, "id") == ctrl_stream_id {
+          let payload = match bytes { Some(b) => bytes_to_str(b); None => "" }
+          let has_valid_person = match base_codec::json_parse(payload) {
+            base_codec::JsonParseResult::Ok(hj) => match base_codec::json_get(hj, "lock") {
+              Some(lj) => match base_codec::json_get(lj, "person") {
+                Some(base_codec::Json::Arr(xs)) => xs.length() == 1 && base_codec::json_stringify(xs[0]).contains("person:" + sub)
+                _ => false
+              }
+              None => false
+            }
+            base_codec::JsonParseResult::Err(_) => false
+          }
+          ctrl_last_reply = if has_valid_person {
+            "{\"ok\":true,\"station\":{\"id\":\"st-moved-prod\"}}\n"
+          } else {
+            "{\"ok\":false,\"code\":\"lock_unconfirmed\",\"error\":\"missing personal lock\"}\n"
+          }
+          s.answer(id, base_codec::json_obj([]))
+          match ctrl_pending_read {
+            Some(rid) => {
+              ctrl_pending_read = None
+              s.answer(rid, base_codec::json_obj([]), bytes=Some(ctrl_last_reply.to_bytes()))
+            }
+            None => ()
+          }
+          return
+        }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "istream.read" {
+        if j_int(args, "id") == ctrl_stream_id {
+          if ctrl_last_reply.length() > 0 {
+            s.answer(id, base_codec::json_obj([]), bytes=Some(ctrl_last_reply.to_bytes()))
+          } else {
+            ctrl_pending_read = Some(id)
+          }
+          return
+        }
+        s.answer(id, base_codec::json_obj([]), bytes=None)
+        return
+      }
+      s.answer(id, base_codec::json_obj([]))
+    },
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if op == "iroh.endpointId" { return shell::AskResult::Ok(base_codec::json_str(local_ep_id)) }
+      if op == "iroh.relayStatus" { return shell::AskResult::Ok(base_codec::json_arr([])) }
+      if op == "conn.closeReason" { return shell::AskResult::Ok(base_codec::json_null()) }
+      if op == "conn.paths" { return shell::AskResult::Ok(base_codec::json_arr([])) }
+      if op == "conn.stats" { return shell::AskResult::Ok(base_codec::json_obj([])) }
+      if op == "ed25519.sign" { return shell::AskResult::Err(shell::ShellError::{ message: "pure pion" }) }
+      mock_db.handle_sql(op, args)
+    },
+    fn(n : Int) -> Bytes {
+      let out = Bytes::new(n)
+      for i in 0..<n { out[i] = ((0x88 + i * 3) & 0xFF) as Byte }
+      out
+    },
+  )
+  holder.push(sh)
+
+  let db = match sql::Sql::open(sh, "p1-person-lock-test") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.to_string())
+  }
+  let core = ClientCore::new("ws-moved-prod", "ws-moved-prod/st-moved-prod", rt, db, core_offline_transport(), fn() -> Unit {})
+
+  // Reject corrupt / unsigned personal lock data!
+  let corrupt = base_codec::json_arr([base_codec::json_obj([("ws", base_codec::json_str("person:" + sub))])])
+  debug_assert(!core.load_person_lock_json(corrupt, sub), "corrupt personal lock chain must be rejected")
+  debug_assert(core.person_lock_kept_entries().length() == 0, "corrupt load leaves kept entries empty")
+
+  // Load valid signed personal lock chain into ClientCore!
+  debug_assert(core.load_person_lock_json(valid_chain, sub), "valid Ed25519 personal lock chain accepted")
+  debug_assert(core.person_lock_kept_entries().length() == 1, "kept 1 personal lock entry")
+
+  // Do NOT pass `person` manually: `mesh_lock_carry_for_core(core)` must populate `hello.lock.person` automatically!
+  let cfg = MeshStationConfig::new(
+    "ws-moved-prod",
+    peer_id,
+    ["https://relay.still.fail/"],
+    fn(_dev : String, _fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
+      ck(effect::Exit::Succeeded("cred-moved-prod"))
+    },
+    get_lock_carry=Some(fn() -> MeshLockCarry { mesh_lock_carry_for_core(core) }),
+  )
+  let (ctrl, _) = shell_mesh_transport(sh, cfg)
+  let mut admitted = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.connect_k(fn(ex : effect::Exit[mesh::Link]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => { admitted = true }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(admitted && !ctrl.is_lock_unconfirmed(), "moved workspace station automatically admitted hello.lock.person from ClientCore")
+
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
 }

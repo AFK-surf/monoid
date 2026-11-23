@@ -213,7 +213,14 @@ static void *handle_client_thread(void *arg) {
     }
 
     if (strncmp(buf, "GET /events", 11) == 0) {
-        atomic_fetch_add(&g_srv.got_events, 1);
+        int ev_attempt = atomic_fetch_add(&g_srv.got_events, 1) + 1;
+        if (ev_attempt == 1) {
+            // Fail the first SSE attempt with 503 so `StationEvents` exercises native timer-driven
+            // reconnect (`pion_core_runtime_on_wake` -> `core_pion.c` monotonic timer, zero polling)!
+            send_http_json(fd, 503, "Service Unavailable", "{\"error\":\"retry\"}");
+            close(fd);
+            return NULL;
+        }
         static const char sse_head[] =
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/event-stream\r\n"
@@ -387,11 +394,11 @@ int main(void) {
     assert(strstr(m_auth, "\"state\":\"") != NULL);
     assert(strstr(m_auth, "verifier") == NULL);
 
-    // 3. Real Rust `stream.open` + `stream.read` -> live `/events` SSE stream
+    // 3. Real Rust `stream.open` + `stream.read` -> first /events returns 503 -> native timer reconnects -> live `/events` SSE stream
     send_json("{\"id\":2,\"call\":\"station.connect\",\"params\":{}}");
     char *m_conn = wait_for_matching_msg(&g_host, "\"event\":\"connection\"", "\"state\":\"connected\"", 10);
-    printf("[live_net_e2e] #2 station.connect SSE -> %s\n", m_conn);
-    assert(atomic_load(&g_srv.got_events) >= 1);
+    printf("[live_net_e2e] #2 station.connect SSE (after timer reconnect) -> %s\n", m_conn);
+    assert(atomic_load(&g_srv.got_events) >= 2);
 
     // 4. Real online `chat.send` -> HTTP POST -> live SSE `event: thread` -> `OutboxResolved` + real ChatView keyed `delta`
     send_json("{\"id\":3,\"call\":\"chat.send\",\"params\":{\"thread\":42,\"clientKey\":\"ck-live-net-1\",\"author\":\"alice\",\"text\":\"hello over real rust shell\"}}");

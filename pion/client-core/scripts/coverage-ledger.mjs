@@ -202,7 +202,7 @@ function scanPionRouting(repoRoot) {
   const runtimeCalls = extractCallDispatchNames(runtimeSendBody);
 
   // Internal/test-only helpers are never product calls.
-  const internalOnlyCalls = new Set(["echo.bytes", "__shell.pump"]);
+  const internalOnlyCalls = new Set(["echo.bytes"]);
 
   // Symmetric shadowing rule with `handle_runtime_subscribe`:
   // Any call intercepted by `pion_core_runtime_send` is classified as `stub` (never live `real`),

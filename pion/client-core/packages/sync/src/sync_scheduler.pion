@@ -11,7 +11,7 @@ pub struct SyncScheduler {
   pub station : String
   pub lane : effect::Scheduler
   pub events : StationEvents
-  pub transport : StationTransport
+  pub mut transport : StationTransport
   mut focused_thread : Option[Int]
   mut idle_preempted_count : Int
   mut completed_order : Array[String]
@@ -47,6 +47,11 @@ pub fn SyncScheduler::idle_preemptions(self : SyncScheduler) -> Int {
 
 pub fn SyncScheduler::completed_tasks(self : SyncScheduler) -> Array[String] {
   self.completed_order
+}
+
+/// Swap the underlying `StationTransport` for all scheduled sync reads (`GET /chats`, `GET /lock`, etc.).
+pub fn SyncScheduler::set_transport(self : SyncScheduler, transport : StationTransport) -> Unit {
+  self.transport = transport
 }
 
 /// Raise priority for the currently focused chat/thread (`client.focus`),

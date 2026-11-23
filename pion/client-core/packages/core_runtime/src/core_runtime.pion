@@ -43,6 +43,7 @@ struct RuntimeSession {
   kept_vals : Map[String, base_codec::Json]
   kept_order : Array[String]
   md_stores : Map[String, store::MdStore]
+  mesh_transports : Map[String, sync::MeshStationTransport]
   mut cloud : Option[sync::CloudSync]
   mut origin : String
   mut live_sync_enabled : Bool
@@ -51,9 +52,6 @@ struct RuntimeSession {
   mut notify_asked : Bool
   mut notify_on : Bool
   mut notify_permission : String
-  mut last_ack_call : Double
-  mut last_ack_ts : Double
-  mut screen_inputs : Int
 }
 
 let g_session : Array[Option[RuntimeSession]] = [None]
@@ -242,8 +240,17 @@ fn emit_topic_refresh(
   }
 }
 
-fn drain_and_emit(sess : RuntimeSession) -> Unit {
-  let _ = sess.sh.turn()
+fn is_loopback_http_url(url : String) -> Bool {
+  url.starts_with("http://127.0.0.1:") ||
+  url.starts_with("http://127.0.0.1/") ||
+  url.starts_with("http://localhost:") ||
+  url.starts_with("http://localhost/") ||
+  url.starts_with("http://[::1]:") ||
+  url.starts_with("http://[::1]/")
+}
+
+fn drain_and_emit(sess : RuntimeSession) -> Option[Int64] {
+  let next_due = sess.sh.turn()
   if sess.live_sync_enabled {
     let evs = sess.core.drain_frame()
     let mut refresh_chat = false
@@ -326,6 +333,26 @@ fn drain_and_emit(sess : RuntimeSession) -> Unit {
       emit_topic_refresh(sess, "vaults")
     }
     flush_session_md_stores(sess)
+  }
+  next_due
+}
+
+/// Native event-driven wake callback registered via `mb_core_register_wake`:
+/// non-blockingly drains `shell_native` completions, advances `effect::Runtime` ready fibers/timers,
+/// emits live `FrameOutbox` deltas, and returns the relative delay in ms until the next timer (`-1` if none).
+pub extern "C" fn pion_core_runtime_on_wake() -> Int64 {
+  match g_session[0] {
+    None => (-1).to_int64()
+    Some(sess) => {
+      let next_due = drain_and_emit(sess)
+      match next_due {
+        None => (-1).to_int64()
+        Some(due_ms) => {
+          let rem = due_ms - sess.sh.rt.now()
+          if rem <= 0.to_int64() { 0.to_int64() } else { rem }
+        }
+      }
+    }
   }
 }
 
@@ -1140,6 +1167,9 @@ pub extern "C" fn pion_core_runtime_start(
     emit_fatal("missing data_dir")
     return 0
   }
+  // Keep `effect::Runtime` on Unix wall-clock ms (`pion_core_wall_now_ms`) because `ClientCore` / `CloudSync`
+  // use `rt.now()` as Unix epoch ms (`exp`, `createdAt`, day bucketing); `core_pion.c` sleeps on `CLOCK_MONOTONIC`
+  // using the relative delay returned by `pion_core_runtime_on_wake()`.
   let rt = effect::Runtime::live(fn() -> Int64 { pion_core_wall_now_ms() })
   let sh = match shell_native::open(rt, dir) {
     Ok(s) => s
@@ -1287,7 +1317,10 @@ pub extern "C" fn pion_core_runtime_start(
       sql::SqlResult::Err(_) => ()
     }
   }
-  let transport = if origin.length() > 0 {
+  // Only loopback test HTTP station URLs (`http://127.0.0.1:...`) use `shell_http_transport`.
+  // Production `cloud_origin` (e.g. `https://app.still.fail`) is NEVER used as a station HTTP URL;
+  // production stations connect over `MeshStationTransport` (`shell_mesh_transport` + `attach_station_transport`).
+  let transport = if is_loopback_http_url(origin) {
     sync::shell_http_transport(sh, origin)
   } else {
     offline_transport()
@@ -1304,6 +1337,12 @@ pub extern "C" fn pion_core_runtime_start(
   if accounts.length() > 0 {
     let a0 = accounts[0]
     core.set_viewer(a0.email, sub=a0.sub, role="owner")
+    match read_storage_json(sh, sync::person_lock_storage_key(a0.sub)) {
+      Some(pjson) => {
+        let _ = core.load_person_lock_json(pjson, a0.sub)
+      }
+      None => ()
+    }
     for i in 0..<accounts.length() {
       let ai = accounts[i]
       core.auth_store.register_account(views::StoredAccount::{
@@ -1328,6 +1367,7 @@ pub extern "C" fn pion_core_runtime_start(
     kept_vals: Map::new(),
     kept_order: [],
     md_stores: Map::new(),
+    mesh_transports: Map::new(),
     cloud: cloud_opt,
     origin: origin,
     live_sync_enabled: false,
@@ -1336,9 +1376,6 @@ pub extern "C" fn pion_core_runtime_start(
     notify_asked: false,
     notify_on: true,
     notify_permission: "unknown",
-    last_ack_call: 0.0,
-    last_ack_ts: 0.0,
-    screen_inputs: 0,
   }
   g_session[0] = Some(sess)
   1
@@ -1821,7 +1858,7 @@ pub extern "C" fn pion_core_runtime_send(
               }
               let (out_j, out_b) = protocol::encode_core_event(out_ev)
               emit_wire(out_j, payload=out_b)
-              drain_and_emit(sess)
+              let _ = drain_and_emit(sess)
               flush_session_md_stores(sess)
               return
             }
@@ -1845,17 +1882,13 @@ pub extern "C" fn pion_core_runtime_send(
                   None => ()
                 }
               }
-              drain_and_emit(sess)
+              let _ = drain_and_emit(sess)
               return
             }
             None => ()
           }
         }
         protocol::CoreRequest::Call(id, call_name, params, _) => {
-          if call_name == "__shell.pump" {
-            drain_and_emit(sess)
-            return
-          }
           if call_name == "client.device" {
             match opt_str_param(params, "app") {
               Some(a) => sess.device_app = a
@@ -1867,7 +1900,7 @@ pub extern "C" fn pion_core_runtime_send(
             }
             let (out_j, out_b) = protocol::encode_core_event(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
             emit_wire(out_j, payload=out_b)
-            drain_and_emit(sess)
+            let _ = drain_and_emit(sess)
             return
           }
           if call_name == "notify.permission" {
@@ -1877,7 +1910,7 @@ pub extern "C" fn pion_core_runtime_send(
             }
             let (out_j, out_b) = protocol::encode_core_event(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
             emit_wire(out_j, payload=out_b)
-            drain_and_emit(sess)
+            let _ = drain_and_emit(sess)
             return
           }
           if call_name == "notify.set" {
@@ -1891,13 +1924,13 @@ pub extern "C" fn pion_core_runtime_send(
             }
             let (out_j, out_b) = protocol::encode_core_event(protocol::CoreEvent::Ok(id, build_notify_view(sess), None))
             emit_wire(out_j, payload=out_b)
-            drain_and_emit(sess)
+            let _ = drain_and_emit(sess)
             return
           }
           if call_name == "prefs.get" {
             let (out_j, out_b) = protocol::encode_core_event(protocol::CoreEvent::Ok(id, build_prefs_view(sess), None))
             emit_wire(out_j, payload=out_b)
-            drain_and_emit(sess)
+            let _ = drain_and_emit(sess)
             return
           }
           if call_name == "prefs.set" {
@@ -1933,7 +1966,7 @@ pub extern "C" fn pion_core_runtime_send(
                 let err_ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: msg })
                 let (out_j, out_b) = protocol::encode_core_event(err_ev)
                 emit_wire(out_j, payload=out_b)
-                drain_and_emit(sess)
+                let _ = drain_and_emit(sess)
                 return
               }
               Ok(next_prefs) => {
@@ -1942,7 +1975,7 @@ pub extern "C" fn pion_core_runtime_send(
                     let err_ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "storage_error", message: msg })
                     let (out_j, out_b) = protocol::encode_core_event(err_ev)
                     emit_wire(out_j, payload=out_b)
-                    drain_and_emit(sess)
+                    let _ = drain_and_emit(sess)
                     return
                   }
                   Ok(_) => ()
@@ -1962,29 +1995,130 @@ pub extern "C" fn pion_core_runtime_send(
                 emit_topic_refresh(sess, "prefs")
                 emit_topic_refresh(sess, "chats")
                 emit_topic_refresh(sess, "workspaceMarks")
-                drain_and_emit(sess)
+                let _ = drain_and_emit(sess)
                 return
               }
             }
           }
           if call_name == "cloud.sync" {
             handle_cloud_sync_call(sess, id, params)
-            drain_and_emit(sess)
+            let _ = drain_and_emit(sess)
             return
           }
           if call_name == "station.connect" {
+            let target_st = match opt_str_param(params, "station") {
+              Some(s) => if s.length() > 0 { s } else { sess.core.station }
+              None => sess.core.station
+            }
+            let target_ws = match opt_str_param(params, "workspace") {
+              Some(w) => if w.length() > 0 { w } else { sess.core.workspace }
+              None => sess.core.workspace
+            }
+            let peer_opt = match opt_str_param(params, "peerId") {
+              Some(p) => if p.length() > 0 { Some(p) } else { None }
+              None => match opt_str_param(params, "endpointId") {
+                Some(p) => if p.length() > 0 { Some(p) } else { None }
+                None => None
+              }
+            }
+            let mut mode = "offline"
+            match peer_opt {
+              Some(peer_id) => {
+                let relays : Array[String] = []
+                match base_codec::json_get(params, "relays") {
+                  Some(base_codec::Json::Arr(xs)) => {
+                    for i in 0..<xs.length() {
+                      match xs[i] {
+                        base_codec::Json::Str(r) => if r.length() > 0 { relays.push(r) }
+                        _ => ()
+                      }
+                    }
+                  }
+                  _ => ()
+                }
+                let static_cred = match opt_str_param(params, "credential") {
+                  Some(c) => c
+                  None => ""
+                }
+                let cloud_ref = sess.cloud
+                let get_cred = fn(dev_id : String, _fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
+                  if static_cred.length() > 0 {
+                    ck(effect::Exit::Succeeded(static_cred))
+                    return
+                  }
+                  match cloud_ref {
+                    Some(cs) => cs.fetch_member_credential_k(target_ws, dev_id, pion_core_wall_now_ms() / 1000.to_int64(), fn(ex : effect::Exit[sync::MemberCredential]) -> Unit {
+                      match ex {
+                        effect::Exit::Succeeded(mc) => ck(effect::Exit::Succeeded(mc.credential))
+                        effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
+                      }
+                    })
+                    None => ck(effect::Exit::Failed(effect::EffectError::Custom("missing cloud client for credential")))
+                  }
+                }
+                let core_ref = sess.core
+                let cfg = sync::MeshStationConfig::new(
+                  target_ws,
+                  peer_id,
+                  relays,
+                  get_cred,
+                  get_lock_carry=Some(fn() -> sync::MeshLockCarry {
+                    sync::mesh_lock_carry_for_core(core_ref)
+                  }),
+                )
+                match sess.mesh_transports.get(target_st) {
+                  Some(old_ctrl) => {
+                    sess.core.detach_station_transport(target_st)
+                    old_ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
+                  }
+                  None => ()
+                }
+                let (ctrl, tr) = sync::shell_mesh_transport(sess.sh, cfg)
+                sess.mesh_transports.set(target_st, ctrl)
+                sess.core.attach_station_transport(target_st, tr)
+                mode = "mesh"
+              }
+              None => {
+                if is_loopback_http_url(sess.origin) {
+                  mode = "loopback_http"
+                }
+              }
+            }
             if !sess.live_sync_enabled {
               sess.live_sync_enabled = true
               sess.core.start()
             }
             let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
               ("connecting", base_codec::json_bool(true)),
-              ("station", base_codec::json_str(sess.core.station)),
-              ("origin", base_codec::json_str(sess.origin)),
+              ("station", base_codec::json_str(target_st)),
+              ("transport", base_codec::json_str(mode)),
             ]), None)
             let (out_j, out_b) = protocol::encode_core_event(ok_ev)
             emit_wire(out_j, payload=out_b)
-            drain_and_emit(sess)
+            let _ = drain_and_emit(sess)
+            return
+          }
+          if call_name == "station.disconnect" {
+            let target_st = match opt_str_param(params, "station") {
+              Some(s) => if s.length() > 0 { s } else { sess.core.station }
+              None => sess.core.station
+            }
+            match sess.mesh_transports.get(target_st) {
+              Some(ctrl) => {
+                sess.core.detach_station_transport(target_st)
+                sess.mesh_transports.remove(target_st)
+                ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
+              }
+              None => ()
+            }
+            let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
+              ("disconnected", base_codec::json_bool(true)),
+              ("station", base_codec::json_str(target_st)),
+            ]), None)
+            let (out_j, out_b) = protocol::encode_core_event(ok_ev)
+            emit_wire(out_j, payload=out_b)
+            let _ = drain_and_emit(sess)
             return
           }
         }
@@ -2030,7 +2164,7 @@ pub extern "C" fn pion_core_runtime_send(
         }
         None => ()
       }
-      drain_and_emit(sess)
+      let _ = drain_and_emit(sess)
       match refresh_info {
         Some((tname, ck)) => {
           emit_topic_refresh(sess, tname, changed_keys=ck)
@@ -2044,46 +2178,33 @@ pub extern "C" fn pion_core_runtime_send(
   }
 }
 
-/// Stop the Pion `ClientCore`, `CloudSync`, and close its SQLite database handle cleanly.
+/// Stop the Pion `ClientCore`, `CloudSync`, all `MeshStationTransport` instances,
+/// close SQLite, and stop the native Rust shell handle cleanly.
 pub extern "C" fn pion_core_runtime_stop() -> Unit {
   match g_session[0] {
     Some(sess) => {
       sess.live_sync_enabled = false
+      let mkeys = sess.mesh_transports.keys()
+      for i in 0..<mkeys.length() {
+        let st = mkeys[i]
+        match sess.mesh_transports.get(st) {
+          Some(ctrl) => {
+            sess.core.detach_station_transport(st)
+            ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
+          }
+          None => ()
+        }
+      }
+      sess.mesh_transports.clear()
       match sess.cloud {
         Some(cs) => cs.stop()
         None => ()
       }
       sess.core.stop()
       sess.db.close()
+      shell_native::stop()
       g_session[0] = None
     }
     None => ()
-  }
-}
-
-/// Handle `mb_core_screen_ack(call, ts)` forwarded from `core_pion.c`.
-pub extern "C" fn pion_core_runtime_screen_ack(call : Double, ts : Double) -> Int {
-  match g_session[0] {
-    Some(sess) => {
-      sess.last_ack_call = call
-      sess.last_ack_ts = ts
-      1
-    }
-    None => 0
-  }
-}
-
-/// Handle `mb_core_screen_input(call, json, len)` forwarded from `core_pion.c`.
-pub extern "C" fn pion_core_runtime_screen_input(call : Double, json : Ptr, len : Int64) -> Int {
-  let _ = call
-  match g_session[0] {
-    Some(sess) => {
-      if ptr_is_null(json) || len <= 0.to_int64() {
-        return 0
-      }
-      sess.screen_inputs += 1
-      1
-    }
-    None => 0
   }
 }

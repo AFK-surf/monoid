@@ -680,7 +680,7 @@ pub struct StationEvents {
   pub station : String
   pub db : sql::Sql
   pub outbox : outbox::FrameOutbox[CoreEvent]
-  pub transport : StationTransport
+  pub mut transport : StationTransport
   pub mut viewer_email : String
   pub mut viewer_selves : Array[String]
   mut last_event_id : Option[String]
@@ -2905,6 +2905,32 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
       effect::Exit::Failed(_) => self.schedule_reconnect_k(rt, k)
     }
   })
+}
+
+/// Whether the `/events` stream fiber is currently active.
+pub fn StationEvents::is_running(self : StationEvents) -> Bool {
+  self.stream_fiber.is_some()
+}
+
+/// Swap the underlying `StationTransport`. If the `/events` stream is currently running,
+/// cleanly stops the old stream fiber and restarts on the new transport (when `rt` is given).
+pub fn StationEvents::set_transport(
+  self : StationEvents,
+  transport : StationTransport,
+  rt : Option[effect::Runtime] = None,
+) -> Unit {
+  let was_running = self.stream_fiber.is_some()
+  if was_running {
+    self.stop()
+  }
+  self.transport = transport
+  self.attempts = 0
+  if was_running {
+    match rt {
+      Some(r) => self.start(r)
+      None => ()
+    }
+  }
 }
 
 /// Start consuming `GET /events` on a scoped fiber of `rt`.

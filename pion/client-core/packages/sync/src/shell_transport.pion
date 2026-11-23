@@ -199,9 +199,55 @@ pub fn station_mesh_addresses_key() -> String {
   "station-addresses"
 }
 
-/// Build the device's endpoint lock claim (`client/core-ts/src/lock.ts:58-72` `claimBy`),
+/// Byte budget for carrying `entries` + `person` in a station hello (`client/core-ts/src/lock.ts:25` `CARRY_BYTES`).
+pub fn carry_bytes_limit() -> Int {
+  12 * 1024
+}
+
+/// Dynamic lock carry payload fetched fresh on each handshake (`client/core-ts/src/sync/cloud.ts:624-631`).
+pub struct MeshLockCarry {
+  pub entries : Array[base_codec::Json]
+  pub person : Option[base_codec::Json]
+}
+
+pub fn MeshLockCarry::new(
+  entries : Array[base_codec::Json] = [],
+  person : Option[base_codec::Json] = None,
+) -> MeshLockCarry {
+  MeshLockCarry::{ entries: entries, person: person }
+}
+
+/// Storage key for a person's own lock chain (`client/core-ts/src/personal-lock.ts:41` `keptAs(sub)`).
+pub fn person_lock_storage_key(sub : String) -> String {
+  "personal-lock-" + base_codec::hex_encode(sub.to_bytes())
+}
+
+/// Build a fresh `MeshLockCarry` from `ClientCore`'s kept lock entries and personal lock chain.
+/// When `person` is `None` and `core` has a validated personal lock chain loaded, populates `person` automatically.
+pub fn mesh_lock_carry_for_core(core : ClientCore, person : Option[base_codec::Json] = None) -> MeshLockCarry {
+  let kept = core.lock_kept_entries()
+  let entries : Array[base_codec::Json] = []
+  for i in 0..<kept.length() {
+    entries.push(form_to_codec(kept[i]))
+  }
+  let person_opt = match person {
+    Some(p) => Some(p)
+    None => {
+      let pchain = core.person_lock_kept_entries()
+      if pchain.length() > 0 {
+        Some(base_codec::json_arr(pchain))
+      } else {
+        None
+      }
+    }
+  }
+  MeshLockCarry::{ entries: entries, person: person_opt }
+}
+
+/// Build the device's endpoint lock claim (`client/core-ts/src/lock.ts:58-72` `claimBy` + `cloud.ts:624-631`),
 /// signed with the mesh's Ed25519 device base key (`Mesh::sign`) over
 /// `stillfail-lock-endpoint/1\0<workspace>\0<endpoint>`.
+/// Always includes `label` (even when empty) and applies `CARRY_BYTES` budget trimming to `entries` and `person`.
 pub fn build_lock_claim(
   m : mesh::Mesh,
   workspace : String,
@@ -209,6 +255,7 @@ pub fn build_lock_claim(
   kind : String = "",
   label : String = "",
   entries : Array[base_codec::Json] = [],
+  person : Option[base_codec::Json] = None,
 ) -> base_codec::Json {
   let msg = endpoint_signed_bytes(workspace, endpoint)
   let (pk, sig) = m.sign(msg)
@@ -219,11 +266,31 @@ pub fn build_lock_claim(
   if kind.length() > 0 {
     fields.push(("kind", base_codec::json_str(kind)))
   }
-  if label.length() > 0 {
-    fields.push(("label", base_codec::json_str(label)))
-  }
+  fields.push(("label", base_codec::json_str(label)))
+  let mut entries_bytes = 0
   if entries.length() > 0 {
-    fields.push(("entries", base_codec::json_arr(entries)))
+    let ej = base_codec::json_arr(entries)
+    let elen = base_codec::json_stringify(ej).length()
+    if elen <= carry_bytes_limit() {
+      fields.push(("entries", ej))
+      entries_bytes = elen
+    }
+  }
+  match person {
+    Some(pj) => {
+      let non_empty = match pj {
+        base_codec::Json::Arr(xs) => xs.length() > 0
+        base_codec::Json::Null => false
+        _ => true
+      }
+      if non_empty {
+        let plen = base_codec::json_stringify(pj).length()
+        if plen <= carry_bytes_limit() && entries_bytes + plen <= carry_bytes_limit() {
+          fields.push(("person", pj))
+        }
+      }
+    }
+    None => ()
   }
   base_codec::json_obj(fields)
 }
@@ -337,6 +404,7 @@ pub struct MeshStationConfig {
   pub device_kind : String
   pub device_label : String
   pub lock_entries : Array[base_codec::Json]
+  pub get_lock_carry : Option[() -> MeshLockCarry]
   pub link_scope : String
   pub theirs : Option[Array[String]]
   pub off : Option[Array[String]]
@@ -353,6 +421,7 @@ pub fn MeshStationConfig::new(
   device_kind : String = "app",
   device_label : String = "",
   lock_entries : Array[base_codec::Json] = [],
+  get_lock_carry : Option[() -> MeshLockCarry] = None,
   link_scope : String = "",
   theirs : Option[Array[String]] = None,
   off : Option[Array[String]] = None,
@@ -366,6 +435,7 @@ pub fn MeshStationConfig::new(
     device_kind: device_kind,
     device_label: device_label,
     lock_entries: lock_entries,
+    get_lock_carry: get_lock_carry,
     link_scope: link_scope,
     theirs: theirs,
     off: off,
@@ -558,7 +628,8 @@ pub fn MeshStationTransport::connect_k(
             let ws = self.config.workspace
             let dev_kind = self.config.device_kind
             let dev_label = self.config.device_label
-            let lock_entries = self.config.lock_entries
+            let fallback_entries = self.config.lock_entries
+            let get_carry = self.config.get_lock_carry
             let get_cred = self.config.get_credential_k
             let cred_source = fn(device_id : String, fresh : Bool, ck : (effect::Exit[mesh::Presented]) -> Unit) -> Unit {
               get_cred(device_id, fresh, fn(cex : effect::Exit[String]) -> Unit {
@@ -566,13 +637,18 @@ pub fn MeshStationTransport::connect_k(
                   effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
                   effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
                   effect::Exit::Succeeded(cred) => {
+                    let carry = match get_carry {
+                      Some(fetch_carry) => fetch_carry()
+                      None => MeshLockCarry::{ entries: fallback_entries, person: None }
+                    }
                     let claim = build_lock_claim(
                       m,
                       ws,
                       device_id,
                       kind=dev_kind,
                       label=dev_label,
-                      entries=lock_entries,
+                      entries=carry.entries,
+                      person=carry.person,
                     )
                     ck(effect::Exit::Succeeded(mesh::Presented::new(cred, also=[("lock", claim)])))
                   }

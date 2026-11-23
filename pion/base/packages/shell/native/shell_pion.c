@@ -28,8 +28,26 @@ typedef void (*sf_complete)(
     size_t bytes_len,
     uint8_t has_bytes);
 
+typedef void (*sf_say)(
+    void *ctx,
+    const uint8_t *json,
+    size_t json_len,
+    const uint8_t *bytes,
+    size_t bytes_len);
+typedef uint8_t (*sf_media)(
+    void *ctx,
+    uint64_t call,
+    uint8_t kind,
+    uint8_t key,
+    uint64_t seq,
+    uint64_t ts,
+    const uint8_t *bytes,
+    size_t bytes_len);
+
 extern void *sf_shell_start(const char *data_dir, sf_complete complete, void *ctx);
 extern void sf_shell_stop(void *shell);
+extern void sf_shell_set_say(const void *shell, sf_say say, void *ctx);
+extern void sf_shell_set_media(const void *shell, sf_media media, void *ctx);
 extern void sf_shell_call(
     const void *shell,
     uint64_t id,
@@ -86,6 +104,38 @@ static uint64_t g_wake_reg = 0;
 static int g_wake_current = 0;
 static int g_wake_stale = 0;
 static _Thread_local int t_in_wake = 0;
+
+typedef void (*bsh_say_fn)(
+    void *ctx,
+    const uint8_t *json,
+    size_t json_len,
+    const uint8_t *bytes,
+    size_t bytes_len);
+typedef uint8_t (*bsh_media_fn)(
+    void *ctx,
+    uint64_t call,
+    uint8_t kind,
+    uint8_t key,
+    uint64_t seq,
+    uint64_t ts,
+    const uint8_t *bytes,
+    size_t bytes_len);
+
+static pthread_cond_t g_say_done = PTHREAD_COND_INITIALIZER;
+static bsh_say_fn g_on_say = NULL;
+static void *g_say_ctx = NULL;
+static uint64_t g_say_reg = 0;
+static int g_say_current = 0;
+static int g_say_stale = 0;
+static _Thread_local int t_in_say = 0;
+
+static pthread_cond_t g_media_done = PTHREAD_COND_INITIALIZER;
+static bsh_media_fn g_on_media = NULL;
+static void *g_media_ctx = NULL;
+static uint64_t g_media_reg = 0;
+static int g_media_current = 0;
+static int g_media_stale = 0;
+static _Thread_local int t_in_media = 0;
 
 static void bsh_came_init(void) {
 #ifdef __APPLE__
@@ -286,21 +336,143 @@ static void bsh_free_answers(bsh_answer_t *left) {
     }
 }
 
-// Calling `bsh_stop`, `bsh_start` or `bsh_attach` from a wake callback would wait for that callback itself.
+// Calling `bsh_stop`, `bsh_start` or `bsh_attach` from a wake/say/media callback would wait for itself.
 static void bsh_refuse_in_wake(const char *what) {
-    if (t_in_wake) {
-        fprintf(stderr, "shell_pion: %s called from a wake callback\n", what);
+    if (t_in_wake || t_in_say || t_in_media) {
+        fprintf(stderr, "shell_pion: %s called from a shell callback\n", what);
         abort();
     }
 }
 
+// Under `g_lock`: replace the say callback; calls of the old one become stale.
+static void bsh_set_say_locked(bsh_say_fn say, void *ctx) {
+    g_on_say = say;
+    g_say_ctx = ctx;
+    g_say_reg += 1;
+    g_say_stale += g_say_current;
+    g_say_current = 0;
+}
+
+static void bsh_wait_stale_says_locked(void) {
+    if (t_in_say) {
+        return;
+    }
+    while (g_say_stale > 0) {
+        pthread_cond_wait(&g_say_done, &g_lock);
+    }
+}
+
+// Under `g_lock`: replace the media callback; calls of the old one become stale.
+static void bsh_set_media_locked(bsh_media_fn media, void *ctx) {
+    g_on_media = media;
+    g_media_ctx = ctx;
+    g_media_reg += 1;
+    g_media_stale += g_media_current;
+    g_media_current = 0;
+}
+
+static void bsh_wait_stale_medias_locked(void) {
+    if (t_in_media) {
+        return;
+    }
+    while (g_media_stale > 0) {
+        pthread_cond_wait(&g_media_done, &g_lock);
+    }
+}
+
+static void bsh_say_trampoline(
+    void *ctx,
+    const uint8_t *json,
+    size_t json_len,
+    const uint8_t *bytes,
+    size_t bytes_len) {
+    uintptr_t gen = (uintptr_t)ctx;
+    if (gen == 0) {
+        return;
+    }
+    pthread_mutex_lock(&g_lock);
+    if (g_stopping || g_shell == NULL || !g_shell_owned || gen != g_gen || g_on_say == NULL) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
+    bsh_say_fn cb = g_on_say;
+    void *cb_ctx = g_say_ctx;
+    uint64_t reg = g_say_reg;
+    g_in_flight += 1;
+    g_say_current += 1;
+    pthread_mutex_unlock(&g_lock);
+
+    int outer = t_in_say;
+    t_in_say = 1;
+    cb(cb_ctx, json, json_len, bytes, bytes_len);
+    t_in_say = outer;
+
+    pthread_mutex_lock(&g_lock);
+    if (reg == g_say_reg) {
+        g_say_current -= 1;
+    } else {
+        g_say_stale -= 1;
+        if (g_say_stale == 0) {
+            pthread_cond_broadcast(&g_say_done);
+        }
+    }
+    bsh_left_locked();
+    pthread_mutex_unlock(&g_lock);
+}
+
+static uint8_t bsh_media_trampoline(
+    void *ctx,
+    uint64_t call,
+    uint8_t kind,
+    uint8_t key,
+    uint64_t seq,
+    uint64_t ts,
+    const uint8_t *bytes,
+    size_t bytes_len) {
+    uintptr_t gen = (uintptr_t)ctx;
+    if (gen == 0) {
+        return 0;
+    }
+    pthread_mutex_lock(&g_lock);
+    if (g_stopping || g_shell == NULL || !g_shell_owned || gen != g_gen || g_on_media == NULL) {
+        pthread_mutex_unlock(&g_lock);
+        return 0;
+    }
+    bsh_media_fn cb = g_on_media;
+    void *cb_ctx = g_media_ctx;
+    uint64_t reg = g_media_reg;
+    g_in_flight += 1;
+    g_media_current += 1;
+    pthread_mutex_unlock(&g_lock);
+
+    int outer = t_in_media;
+    t_in_media = 1;
+    uint8_t taken = cb(cb_ctx, call, kind, key, seq, ts, bytes, bytes_len);
+    t_in_media = outer;
+
+    pthread_mutex_lock(&g_lock);
+    if (reg == g_media_reg) {
+        g_media_current -= 1;
+    } else {
+        g_media_stale -= 1;
+        if (g_media_stale == 0) {
+            pthread_cond_broadcast(&g_media_done);
+        }
+    }
+    bsh_left_locked();
+    pthread_mutex_unlock(&g_lock);
+    return taken;
+}
+
 // Under `g_life`. Detach the current shell: wake blocked `bsh_wait` callers (they return NULL), wait for
-// in-flight users, drop queued answers and the wake callback, then stop an owned shell outside `g_lock`.
+// in-flight users, drop queued answers and the wake/say/media callbacks, then stop an owned shell outside `g_lock`.
 static void bsh_stop_held(void) {
     pthread_mutex_lock(&g_lock);
     g_stopping = 1;
     (void)bsh_next_gen_locked();
     bsh_set_wake_locked(NULL, NULL);
+    bsh_set_say_locked(NULL, NULL);
+    bsh_set_media_locked(NULL, NULL);
     bsh_free_answers(bsh_take_queue_locked());
     while (g_in_flight > 0) {
         pthread_cond_wait(&g_in_flight_done, &g_lock);
@@ -349,13 +521,20 @@ int32_t bsh_start(const char *dir_cstr) {
     struct stat was;
     int made = stat(cdir, &was) != 0;
     void *started = sf_shell_start(cdir, bsh_completed, (void *)gen);
-    if (started != NULL && made) {
-        (void)chmod(cdir, 0700);
+    if (started != NULL) {
+        if (made) {
+            (void)chmod(cdir, 0700);
+        }
+        sf_shell_set_say(started, bsh_say_trampoline, (void *)gen);
+        sf_shell_set_media(started, bsh_media_trampoline, (void *)gen);
     }
     pthread_mutex_lock(&g_lock);
     g_shell = started;
     g_shell_owned = started != NULL;
+    // Double-clear any not-started answers enqueued while `sf_shell_start` was running.
+    bsh_answer_t *stray = bsh_take_queue_locked();
     pthread_mutex_unlock(&g_lock);
+    bsh_free_answers(stray);
     pthread_mutex_unlock(&g_life);
     return started != NULL ? 1 : 0;
 }
@@ -400,6 +579,24 @@ void bsh_on_wake(void (*woke)(void *), void *ctx) {
     if (has) {
         bsh_wake_run(woke, ctx, reg);
     }
+}
+
+// Register a pure-C direct `say` callback invoked from shell threads (`sf_shell_set_say`), replacing the
+// previous one. On return no call of a replaced callback runs (unless called from inside one).
+void bsh_on_say(bsh_say_fn say, void *ctx) {
+    pthread_mutex_lock(&g_lock);
+    bsh_set_say_locked(say, ctx);
+    bsh_wait_stale_says_locked();
+    pthread_mutex_unlock(&g_lock);
+}
+
+// Register a pure-C direct `media` callback invoked from shell threads (`sf_shell_set_media`), replacing the
+// previous one. On return no call of a replaced callback runs (unless called from inside one).
+void bsh_on_media(bsh_media_fn media, void *ctx) {
+    pthread_mutex_lock(&g_lock);
+    bsh_set_media_locked(media, ctx);
+    bsh_wait_stale_medias_locked();
+    pthread_mutex_unlock(&g_lock);
 }
 
 // Returns 1 if a shell handle is started or attached, else 0.
