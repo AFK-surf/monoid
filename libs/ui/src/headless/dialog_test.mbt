@@ -193,7 +193,7 @@ test "return_focus: closed, the focus goes to the node it names, not to what ope
 }
 
 ///|
-test "nested Dialog + Popover on unified overlay stack: 1st Escape closes Popover alone, 2nd closes Dialog; clicking Dialog ground closes Popover alone" {
+test "nested Dialog + Popover on unified overlay stack: 1st Escape closes Popover alone, 2nd closes Dialog; clicking Dialog ground or outside both closes Popover alone" {
   let dlg_open = @signals.signal(false)
   let pop_open = @signals.signal(false)
   let dlg_closes = Ref(0)
@@ -219,27 +219,28 @@ test "nested Dialog + Popover on unified overlay stack: 1st Escape closes Popove
           .ground(Is(c_rest))
           |> ignore
           pop.trigger(v, fn() { "内层筛选" }, fn(b, _) { size(b) }) |> ignore
-          v.show(fn() { pop_open.get() }, leave=dialog_leave_ms, fn(ps) {
-            pop.content(ps, fn() { "内层浮层" }, fn(pv) {
-              pv
-              .over(Is(true))
-              .offset(Is((0.0, 44.0)))
-              .width(Is(Some(140.0)))
-              .height(Is(Some(80.0)))
-              .ground(Is(c_rest))
-              |> ignore
-              @headless.button(pv, fn() { "浮层项" }, fn(_) {  }, fn(b, _) { size(b) }) |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
         },
       )
       |> ignore
     })
     |> ignore
+    // Mount Popover as a sibling layer on root (as Popover::layer does in apps)
+    root.show(fn() { pop_open.get() }, leave=dialog_leave_ms, fn(ps) {
+      pop.content(ps, fn() { "内层浮层" }, fn(pv) {
+        pv
+        .over(Is(true))
+        .offset(Is((140.0, 80.0)))
+        .width(Is(Some(140.0)))
+        .height(Is(Some(80.0)))
+        .ground(Is(c_rest))
+        |> ignore
+        @headless.button(pv, fn() { "浮层项" }, fn(_) {  }, fn(b, _) { size(b) }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
   })
-  // Open Dialog, then open Popover inside Dialog
+  // Open Dialog, then open Popover
   t.click(Button, label="打开弹窗")
   t.click(Button, label="内层筛选")
   assert_eq((dlg_open.get(), pop_open.get()), (true, true))
@@ -256,8 +257,13 @@ test "nested Dialog + Popover on unified overlay stack: 1st Escape closes Popove
   let (dx, dy, dw, dh) = t.get(Dialog, label="外层弹窗").rect
   t.tap(dx + dw - 10.0, dy + dh - 10.0)
   let after_ground = (pop_open.get(), dlg_open.get(), dlg_closes.val)
+  t.run_for(dialog_leave_ms)
+  // Reopen Popover, then click OUTSIDE BOTH Dialog and Popover -> closes Popover ONLY (no double-close!)
+  t.click(Button, label="内层筛选")
+  t.tap(10.0, 200.0)
+  let after_outside = (pop_open.get(), dlg_open.get(), dlg_closes.val)
   assert_eq(
-    (after_esc1, after_esc2, after_ground),
-    ((false, true, 0), (false, false, 1), (false, true, 1)),
+    (after_esc1, after_esc2, after_ground, after_outside),
+    ((false, true, 0), (false, false, 1), (false, true, 1), (false, true, 1)),
   )
 }
