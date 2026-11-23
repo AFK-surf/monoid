@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [834d58ac2](https://github.com/AFK-surf/monoid/commit/834d58ac27bab783e181bd7fca86a500f6881e6b) feat(client,mbui): mirror native crash/hang teleme | 2.72 | 3.66 | 14.82 | 36.96 | 56.49 | 32.39 | 65.71 | 100.14 | 122.51 |
 | [cc6c1ec4a](https://github.com/AFK-surf/monoid/commit/cc6c1ec4a9797a862376fe967c72f53cb2414241) fix(mbui): update edge_node.mbt audit filter path  | 2.71 | 3.66 | 14.82 | 36.95 | 56.48 | 32.38 | 65.69 | 100.17 | 127.86 |
 | [15e4bd88f](https://github.com/AFK-surf/monoid/commit/15e4bd88f4e1d5d313e9187ee46950e1f1e6dfad) refactor(ui): merge libs/mbui and libs/sf-ui into  | 2.71 | 3.66 | 14.82 | 36.95 | 56.48 | 32.38 | 65.69 | 100.27 | 120.76 |
 | [1f8abdffe](https://github.com/AFK-surf/monoid/commit/1f8abdffeaa46dc430ba0d87683d3809ebb4d56d) feat(station): add OTLP business trace spans acros | 2.71 | 3.66 | 14.82 | 36.95 | 56.48 | 32.38 | 65.69 | 100.24 | 121.17 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0c7cb25d4](https://github.com/AFK-surf/monoid/commit/0c7cb25d40707b594be15d68df81e6525a45c6ed) fix(sf-ui): adapt window keys glass over dark back | 2.7 | 3.64 | 14.75 | 36.84 | 56.19 | 32.27 | 65.46 | 99.04 | 129.98 |
 | [c65cbf33e](https://github.com/AFK-surf/monoid/commit/c65cbf33ee3de127d64ec400103b7228ed25d7c7) feat(mbui): show only Web services in chat bar, li | 2.7 | 3.64 | 14.75 | 36.84 | 56.19 | 32.27 | 65.46 | 99.01 | 129.05 |
 | [4564d7804](https://github.com/AFK-surf/monoid/commit/4564d7804083ceec2e3b30c7603fee7b14c2efcc) feat(ios): bring pushed messages onto the device i | 2.7 | 3.64 | 14.75 | 36.84 | 56.19 | 32.27 | 65.46 | 99.01 | 129.05 |
-| [dd5869c8c](https://github.com/AFK-surf/monoid/commit/dd5869c8cb9ceb4ff62cc17ec883ee02ffb12ed9) fix(sf-ui): in-container submenu slide, pill morph | 2.7 | 3.64 | 14.75 | 36.84 | 56.19 | 32.27 | 65.46 | 99.16 | 123.14 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [834d58ac2](https://github.com/AFK-surf/monoid/commit/834d58ac27bab783e181bd7fca86a500f6881e6b) feat(client,mbui): mirror native crash/hang teleme | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.26 |
 | [cc6c1ec4a](https://github.com/AFK-surf/monoid/commit/cc6c1ec4a9797a862376fe967c72f53cb2414241) fix(mbui): update edge_node.mbt audit filter path  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.46 |
 | [15e4bd88f](https://github.com/AFK-surf/monoid/commit/15e4bd88f4e1d5d313e9187ee46950e1f1e6dfad) refactor(ui): merge libs/mbui and libs/sf-ui into  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.08 |
 | [1f8abdffe](https://github.com/AFK-surf/monoid/commit/1f8abdffeaa46dc430ba0d87683d3809ebb4d56d) feat(station): add OTLP business trace spans acros | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.82 | 55.26 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0c7cb25d4](https://github.com/AFK-surf/monoid/commit/0c7cb25d40707b594be15d68df81e6525a45c6ed) fix(sf-ui): adapt window keys glass over dark back | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.61 |
 | [c65cbf33e](https://github.com/AFK-surf/monoid/commit/c65cbf33ee3de127d64ec400103b7228ed25d7c7) feat(mbui): show only Web services in chat bar, li | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.61 |
 | [4564d7804](https://github.com/AFK-surf/monoid/commit/4564d7804083ceec2e3b30c7603fee7b14c2efcc) feat(ios): bring pushed messages onto the device i | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.76 |
-| [dd5869c8c](https://github.com/AFK-surf/monoid/commit/dd5869c8cb9ceb4ff62cc17ec883ee02ffb12ed9) fix(sf-ui): in-container submenu slide, pill morph | 0.48 | 0.63 | 2.44 | 3.49 | 5.8 | 1.78 | 4.82 | 54.85 |
