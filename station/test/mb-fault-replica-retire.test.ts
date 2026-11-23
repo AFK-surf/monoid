@@ -531,6 +531,8 @@ test("a station's retirement previewed as what it holds, its start refused while
   writeFileSync(join(ws1, "run.sh"), "#!/bin/sh\necho moved\n");
   chmodSync(join(ws1, "run.sh"), 0o755);
   const room1 = treeOf(ws1);
+  // (a new session is written no instructions file: give the second room a file of its own to carry)
+  writeFileSync(join(storeL.getSession(l2.key)!.workspace, "plan.md"), "# plan\n");
   const room2 = treeOf(storeL.getSession(l2.key)!.workspace);
   const t1 = await chat(taker.door, storeT, "tk", "the taker's own chat", both);
   const takerOwn = await texts(taker.door, t1.thread);
