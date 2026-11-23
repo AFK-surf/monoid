@@ -484,7 +484,7 @@ fn Ctx::focus_on_press(self : Ctx, target : Int) -> Unit {
     return
   }
   // (a field on Android takes it as the finger lifts where it came down: a tap, app.mbt editor_tap)
-  let tap_later = h_feel() == 2 && self.editors.contains(target)
+  let tap_later = field_touch_feel() && self.editors.contains(target)
   // A finger using another control can keep writing in the field; a mouse press and a tap in another field still
   // move focus as that control asks.
   let field_keeps = pointing() is Finger && self.editors.contains(self.focus) && !self.editors.contains(target)

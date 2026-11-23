@@ -296,6 +296,8 @@ fn mark_note_node(
     b.box(fn(f) {
       @sf.style_node(f, fn() { mark_note_field }, in_row=true)
       f.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+      // (round its words the field's to a press too: a tap its caret and its menu to paste, a long press its 粘贴)
+      @ui.field_backdrop(f, m.note)
       @ui.field(
         f,
         m.note,
@@ -321,6 +323,7 @@ fn mark_note_node(
           p.tell()
         },
       )
+      .grow(Is(1.0))
       |> ignore
     })
     |> ignore

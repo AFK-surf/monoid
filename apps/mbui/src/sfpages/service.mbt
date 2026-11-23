@@ -467,6 +467,8 @@ fn custom_size(v : @view.View, p : ServicePage, key : String) -> Unit {
     let field = fn(parent : @view.View, f : @ui.Field, hint : String) {
       parent.box(fn(b) {
         @sf.style_node(b, fn() { custom_field.then(@ui.style(w=r().field_w, h=r().field_h)) })
+        // (round its words the field's to a press too: a tap its caret and its menu to paste, a long press its 粘贴)
+        @ui.field_backdrop(b, f)
         fields.push(@ui.field(
           b,
           f,
@@ -490,7 +492,7 @@ fn custom_size(v : @view.View, p : ServicePage, key : String) -> Unit {
             commit(b.cause_at())
             f.let_go()
           },
-        ))
+        ).grow(Is(1.0)))
       })
       |> ignore
     }

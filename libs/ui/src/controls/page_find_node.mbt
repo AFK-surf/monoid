@@ -71,6 +71,9 @@ pub fn page_find_node(
     frame(b)
     match field {
       Some(f) => {
+        // (its ground round the field (its ends, round its keys) the field's to a press: a tap there its tap, a long
+        // press its 粘贴)
+        @ui.field_backdrop(b, f)
         // (⇧Enter: the one before, as it comes, before the field takes it as its Enter; Escape: the find let go)
         b
         .key_context("Find")

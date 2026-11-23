@@ -2061,6 +2061,8 @@ fn draft_panel(src : Source, own : BoardOwn, id : String, from : @view.View, sta
       let words_at = fn() { @sf.panel_title_at_node(p) }
       p.box(fn(fb) {
       fb.padding(By(fn() { (words_at(), 0.0, words_at(), 0.0) })) |> ignore
+      // (round its words the field's to a press too: a tap its caret and its menu to paste, a long press its 粘贴)
+      @ui.field_backdrop(fb, field)
       let typed = @ui.field(
         fb,
         field,
@@ -2078,7 +2080,7 @@ fn draft_panel(src : Source, own : BoardOwn, id : String, from : @view.View, sta
           (pal.text, pal.subtle, pal.accent)
         },
       )
-      typed.min_height(Is(Some(32.0))) |> ignore
+      typed.min_height(Is(Some(32.0))).width_share(Is(1.0)) |> ignore
       // (the keys in it as the panel opens, however it is shown: the panel's layer gives them)
       @sf.panel_opens_in_node(typed)
       })
