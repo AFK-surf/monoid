@@ -254,28 +254,45 @@ test "an agent's message with a card in its words' place draws none of its words
 
 
 ///|
-/// A plan of a message held out of a chat's list (chat_body_node's held keys), its moments said; what it flies from and
-/// its pictures none.
-fn ag_held_plan() -> AgentOutPlan {
-  { came: 0.0, folds: true, float_at: 170.0, float_ms: 440.0, spit_end: 990.0, from: fn() { (0.0, 0.0, 0.0, 0.0) }, face_at: Ref(None), av: Ref(None), has_face: true }
-}
-
-///|
 test "a chat's list's held keys: an answer held out (its slices with it), the line it ends kept under the row it stood under, or at the end where that is gone; nothing held, the keys as given" {
+  let keep_policy : @motion.StagePolicy = {
+    lane: Content,
+    during_barrier: Keep,
+    rekey_on_prev_change: false,
+    hold_as_anchor: true,
+    live_removable: true,
+  }
+  let keep_item : @motion.StageIngestItem = { policy: keep_policy, starts_barrier_until: None, custom_hold: None }
   let ks = ["m:1", "m:2", "m:3", "act:a"]
-  let held : Map[String, AgentOutPlan] = Map([])
-  let lingering : Map[String, (ChatBodyRow, String?)] = Map([])
-  assert_true(physical_equal(chat_keys_held(ks, held, lingering), ks), msg="nothing held: the keys as given")
-  held["m:3"] = ag_held_plan()
-  assert_eq(chat_keys_held(ks, held, lingering), ["m:1", "m:2", "act:a"])
-  // (its turn said over: the line gone from the core's rows, kept under the row it stood under)
-  let row : ChatBodyRow = { entry: Entry::Newer, gap: NoGap, slices: 1 }
-  lingering["act:a"] = (row, chat_key_before(ks, "act:a", fn(k) { held.contains(k) }))
-  assert_eq(lingering.get("act:a").map(fn(l) { l.1 }), Some(Some("m:2")))
-  assert_eq(chat_keys_held(["m:1", "m:2", "m:3", "o:x"], held, lingering), ["m:1", "m:2", "act:a", "o:x"])
-  assert_eq(chat_keys_held(["m:1", "m:3"], held, { "act:a": (row, Some("gone")) }), ["m:1", "act:a"])
-  // (still in the core's rows: as they have it)
-  assert_eq(chat_keys_held(ks, held, lingering), ["m:1", "m:2", "act:a"])
+  let st = @motion.ListStage::new()
+  // nothing held: the keys as given (physical_equal)
+  let r0 = st.ingest(ks, 0.0, true, fn(_) { keep_item })
+  assert_true(physical_equal(r0.visible, ks), msg="nothing held: the keys as given")
+
+  // answer m:3 arrives and is held out with linger act:a anchored under m:2
+  let st2 = @motion.ListStage::new()
+  let _ = st2.ingest(["m:1", "m:2", "act:a"], 0.0, true, fn(_) { keep_item })
+  let r1 = st2.ingest(ks, 10.0, true, fn(k) {
+    if k == "m:3" {
+      {
+        policy: keep_policy,
+        starts_barrier_until: None,
+        custom_hold: Some({ release_at: 170.0, has_custom_plan: true, linger_key: Some("act:a") }),
+      }
+    } else {
+      keep_item
+    }
+  })
+  assert_eq(r1.visible, ["m:1", "m:2", "act:a"])
+  // its turn said over: the line gone from the core's rows, kept under the row it stood under (m:2)
+  let r2 = st2.ingest(["m:1", "m:2", "m:3", "o:x"], 20.0, true, fn(_) { keep_item })
+  assert_eq(r2.visible, ["m:1", "m:2", "act:a", "o:x"])
+  // anchor row m:2 gone: lingering line falls back to the end
+  let r3 = st2.ingest(["m:1", "m:3"], 30.0, true, fn(_) { keep_item })
+  assert_eq(r3.visible, ["m:1", "act:a"])
+  // still in the core's rows: as they have it (no duplicate)
+  let r4 = st2.ingest(ks, 40.0, true, fn(_) { keep_item })
+  assert_eq(r4.visible, ["m:1", "m:2", "act:a"])
 }
 
 ///|

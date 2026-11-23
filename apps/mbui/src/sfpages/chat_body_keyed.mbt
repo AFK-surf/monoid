@@ -230,24 +230,28 @@ fn chat_body_ends(
   }
   if !v.newer {
     // (where it stood gone in the frame words are sent from here and not offline, as chat_body_rows has it)
-    if still.is_empty() || v.offline {
-      match v.state {
-        Some((words, lead, rest)) => put(under, Entry::State(words, lead, rest), lone())
-        None => ()
+    let online_send = !still.is_empty() && !v.offline
+    let put_tail = fn(e : Entry) {
+      if !(online_send && chat_entry_policy(e).hide_on_online_send) {
+        put(under, e, lone())
       }
+    }
+    match v.state {
+      Some((words, lead, rest)) => put_tail(Entry::State(words, lead, rest))
+      None => ()
     }
     for a in chat_working_kept(v, turns) {
-      put(under, Entry::Working(a), lone())
+      put_tail(Entry::Working(a))
     }
-    if (still.is_empty() || v.offline) && !v.archived {
+    if !v.archived {
       match v.cache_cold {
         Some((session, status, detail, afresh)) =>
-          put(under, Entry::CacheCold(session, status, detail, afresh), lone())
+          put_tail(Entry::CacheCold(session, status, detail, afresh))
         None => ()
       }
     }
-    if v.archived && (still.is_empty() || v.offline) {
-      put(under, Entry::Archived, lone())
+    if v.archived {
+      put_tail(Entry::Archived)
     }
   }
   for a in answered {
