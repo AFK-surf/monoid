@@ -1,0 +1,700 @@
+// Search, Chat Search, Settings, Station Updates, and Archive projections
+// (`search`, `chatSearch`, `settings`, `stationUpdates`, `archive`).
+//
+// Strictly matches `client/core-ts/src/views/{search,settings,station-updates,archive}.ts`:
+// - Local SQLite indexed `chat` (`chat_recent` / PK `(station, archived, id)`) and `said`
+//   message search; NEVER full-table scans `chat`.
+// - Reuses `station_on` (`brief.online && !brief.updating`) for offline/updating notes.
+// - `archive` returns ONLY `archived = 1` chats sorted by recent activity descending.
+
+import "base_codec"
+import "sql"
+import "store"
+
+let stale_build_ms_ssv : Int64 = (7 * 86400 * 1000).to_int64()
+
+fn lower_ascii_ssv(s : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32) as Byte)
+    } else {
+      sb.write_byte(c as Byte)
+    }
+  }
+  sb.to_string()
+}
+
+fn split_words_ssv(q : String) -> Array[String] {
+  let out : Array[String] = []
+  let sb = StringBuilder::new()
+  let mut has = false
+  for i in 0..<q.length() {
+    let c = q.code_unit_at(i)
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      if has {
+        out.push(lower_ascii_ssv(sb.to_string()))
+        sb.reset()
+        has = false
+      }
+    } else {
+      sb.write_byte(c as Byte)
+      has = true
+    }
+  }
+  if has {
+    out.push(lower_ascii_ssv(sb.to_string()))
+  }
+  out
+}
+
+fn contains_all_words_ssv(text : String, words : Array[String]) -> Bool {
+  if words.length() == 0 {
+    return true
+  }
+  let low = lower_ascii_ssv(text)
+  for i in 0..<words.length() {
+    if !low.contains(words[i]) {
+      return false
+    }
+  }
+  true
+}
+
+fn join_names_ssv(names : Array[String], sep : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<names.length() {
+    if i > 0 {
+      sb.write_string(sep)
+    }
+    sb.write_string(names[i])
+  }
+  sb.to_string()
+}
+
+/// Station availability rule (`station_on`): online and not currently updating.
+pub fn station_on(b : StationBrief) -> Bool {
+  b.online && !b.updating
+}
+
+fn station_offline_note_ssv(briefs : Array[StationBrief]) -> Option[String] {
+  let offline : Array[String] = []
+  let updating : Array[String] = []
+  for i in 0..<briefs.length() {
+    let b = briefs[i]
+    if b.updating {
+      updating.push(b.name)
+    } else if !station_on(b) {
+      offline.push(b.name)
+    }
+  }
+  let parts : Array[String] = []
+  if offline.length() > 0 {
+    parts.push("离线站点未参与搜索：" + join_names_ssv(offline, "、"))
+  }
+  if updating.length() > 0 {
+    parts.push("更新中：" + join_names_ssv(updating, "、"))
+  }
+  if parts.length() == 0 {
+    None
+  } else {
+    Some(join_names_ssv(parts, " · "))
+  }
+}
+
+/// Project `search` topic (`search.ts`): indexed local chat + message (`said`) + stations + members.
+pub fn project_search(
+  db : sql::Sql,
+  ws_scope : String,
+  briefs : Array[StationBrief],
+  query : String,
+  kind : Option[String] = None,
+  limit : Int = 20,
+) -> sql::SqlResult[base_codec::Json] {
+  let words = split_words_ssv(query)
+  let words_j : Array[base_codec::Json] = []
+  for i in 0..<words.length() {
+    words_j.push(base_codec::json_str(words[i]))
+  }
+  let stations : Array[String] = []
+  let station_name_map : Map[String, String] = Map::new()
+  for i in 0..<briefs.length() {
+    stations.push(briefs[i].address)
+    station_name_map.set(briefs[i].address, briefs[i].name)
+  }
+  let wants_chat = match kind {
+    None => true
+    Some("chat") => true
+    _ => false
+  }
+  let wants_msg = match kind {
+    None => true
+    Some("message") => true
+    _ => false
+  }
+  let wants_station = match kind {
+    None => true
+    Some("station") => true
+    _ => false
+  }
+  let wants_member = match kind {
+    None => true
+    Some("member") => true
+    _ => false
+  }
+
+  let items_out : Array[base_codec::Json] = []
+  let mut chats_more = false
+  if wants_chat && stations.length() > 0 {
+    match store::search_chats(db, stations, query, limit=limit + 1) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(hits) => {
+        if hits.length() > limit {
+          chats_more = true
+        }
+        let n = if hits.length() < limit { hits.length() } else { limit }
+        for i in 0..<n {
+          let h = hits[i]
+          let doc = parse_json_or_null(h.json)
+          let title = match j_opt_str(doc, "title") {
+            Some(t) => t
+            None => h.id
+          }
+          let sname = match station_name_map.get(h.station) {
+            Some(nm) => nm
+            None => h.station
+          }
+          let th_j = match h.thread {
+            Some(t) => base_codec::json_int(t)
+            None => base_codec::json_null()
+          }
+          items_out.push(base_codec::json_obj([
+            ("station", base_codec::json_str(h.station)),
+            ("stationName", base_codec::json_str(sname)),
+            ("id", base_codec::json_str(h.id)),
+            ("thread", th_j),
+            ("title", base_codec::json_str(title)),
+            ("lastActiveAt", base_codec::json_int64(h.last_active)),
+            ("archived", base_codec::json_bool(h.archived != 0)),
+          ]))
+        }
+      }
+    }
+  }
+
+  let messages_out : Array[base_codec::Json] = []
+  let mut messages_more = false
+  if wants_msg && words.length() > 0 {
+    let station_set : Map[String, Bool] = Map::new()
+    for i in 0..<stations.length() {
+      station_set.set(stations[i], true)
+    }
+    match store::search_messages(db, query, limit=limit + 1) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(mhits) => {
+        for i in 0..<mhits.length() {
+          let m = mhits[i]
+          if stations.length() > 0 && station_set.get(m.station).is_none() {
+            continue
+          }
+          if messages_out.length() >= limit {
+            messages_more = true
+            break
+          }
+          let at_j = match m.at {
+            Some(ts) => base_codec::json_int64(ts)
+            None => base_codec::json_null()
+          }
+          messages_out.push(base_codec::json_obj([
+            ("station", base_codec::json_str(m.station)),
+            ("thread", base_codec::json_int(m.thread)),
+            ("seq", base_codec::json_int(m.seq)),
+            ("n", base_codec::json_int(m.n)),
+            ("at", at_j),
+            ("text", base_codec::json_str(m.text)),
+          ]))
+        }
+      }
+    }
+  }
+
+  let groups_out : Array[base_codec::Json] = []
+  if wants_station && words.length() > 0 {
+    let st_items : Array[base_codec::Json] = []
+    for i in 0..<briefs.length() {
+      let b = briefs[i]
+      if contains_all_words_ssv(b.name, words) || contains_all_words_ssv(b.id, words) {
+        st_items.push(base_codec::json_obj([
+          ("kind", base_codec::json_str("station")),
+          ("key", base_codec::json_str(b.address)),
+          ("station", base_codec::json_str(b.address)),
+          ("stationName", base_codec::json_str(b.name)),
+          ("title", base_codec::json_str(b.name)),
+          ("online", base_codec::json_bool(station_on(b))),
+          ("text", base_codec::json_str(if station_on(b) { "" } else { "离线" })),
+        ]))
+      }
+    }
+    if st_items.length() > 0 {
+      groups_out.push(base_codec::json_obj([
+        ("kind", base_codec::json_str("station")),
+        ("title", base_codec::json_str("站点")),
+        ("items", base_codec::json_arr(st_items)),
+        ("more", base_codec::json_bool(false)),
+      ]))
+    }
+  }
+
+  if wants_member && words.length() > 0 && ws_scope.length() > 0 {
+    match store::get_workspace(db, ws_scope) {
+      sql::SqlResult::Ok(Some(ws_row)) => {
+        let ws_j = parse_json_or_null(ws_row.json)
+        let members = j_arr(ws_j, "members")
+        let mem_items : Array[base_codec::Json] = []
+        for i in 0..<members.length() {
+          let m = members[i]
+          let email = j_str(m, "email")
+          let name = match j_opt_str(m, "name") {
+            Some(nm) => nm
+            None => email
+          }
+          if email.length() > 0 && contains_all_words_ssv(name + " " + email, words) {
+            mem_items.push(base_codec::json_obj([
+              ("kind", base_codec::json_str("member")),
+              ("key", base_codec::json_str("member:" + email)),
+              ("title", base_codec::json_str(name)),
+              ("email", base_codec::json_str(email)),
+            ]))
+          }
+        }
+        if mem_items.length() > 0 {
+          groups_out.push(base_codec::json_obj([
+            ("kind", base_codec::json_str("member")),
+            ("title", base_codec::json_str("成员")),
+            ("items", base_codec::json_arr(mem_items)),
+            ("more", base_codec::json_bool(false)),
+          ]))
+        }
+      }
+      _ => ()
+    }
+  }
+
+  let out : Array[(String, base_codec::Json)] = [
+    ("query", base_codec::json_str(query)),
+    ("words", base_codec::json_arr(words_j)),
+    ("items", base_codec::json_arr(items_out)),
+    ("chatsMore", base_codec::json_bool(chats_more)),
+    ("messages", base_codec::json_arr(messages_out)),
+    ("messagesMore", base_codec::json_bool(messages_more)),
+    ("groups", base_codec::json_arr(groups_out)),
+  ]
+  push_opt_str(out, "note", station_offline_note_ssv(briefs))
+  sql::SqlResult::Ok(base_codec::json_obj(out))
+}
+
+/// Project `chatSearch` topic: scoped chat & message search over local SQLite.
+pub fn project_chat_search(
+  db : sql::Sql,
+  ws_scope : String,
+  briefs : Array[StationBrief],
+  query : String,
+  limit : Int = 20,
+) -> sql::SqlResult[base_codec::Json] {
+  project_search(db, ws_scope, briefs, query, limit=limit)
+}
+
+/// Project `settings` topic (`settings.ts` + `workspace_pref`):
+/// combines automatic decisions summary, archive review hints, and persisted workspace preferences.
+pub fn project_settings(
+  db : sql::Sql,
+  ws_scope : String,
+) -> sql::SqlResult[base_codec::Json] {
+  let st_rows = match store::list_stations(db, kind="overview") {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rs) => rs
+  }
+  let prefs = match store::list_workspace_prefs(db, ws_scope) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(ps) => ps
+  }
+  let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
+  let mut decisions_on = 0
+  let review_on : Array[String] = []
+  let review_off : Array[String] = []
+  for i in 0..<st_rows.length() {
+    let r = st_rows[i]
+    if prefix.length() > 0 && !r.address.starts_with(prefix) {
+      continue
+    }
+    let doc = parse_json_or_null(r.json)
+    let online = match base_codec::json_get(doc, "online") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => true
+    }
+    let sname = match j_opt_str(doc, "name") {
+      Some(nm) => nm
+      None => r.address
+    }
+    let ov = match base_codec::json_get(doc, "overview") {
+      Some(o) => o
+      None => doc
+    }
+    let ad = match base_codec::json_get(ov, "automaticDecisions") {
+      Some(x) => x
+      None => base_codec::json_null()
+    }
+    let ad_settings = match base_codec::json_get(ad, "settings") {
+      Some(x) => x
+      None => base_codec::json_null()
+    }
+    let comp = match base_codec::json_get(ad_settings, "completion") {
+      Some(x) => x
+      None => base_codec::json_null()
+    }
+    if j_bool(comp, "enabled") {
+      decisions_on += 1
+    }
+    if online {
+      let arch = match base_codec::json_get(ad_settings, "archiveReview") {
+        Some(x) => x
+        None => base_codec::json_null()
+      }
+      if j_bool(arch, "enabled") {
+        review_on.push(sname)
+      } else {
+        review_off.push(sname)
+      }
+    }
+  }
+  let decisions_text = if decisions_on > 0 {
+    decisions_on.to_string() + " 台站点已开启"
+  } else {
+    "未开启"
+  }
+  let (hint_no_review, hint_review_text) = if (review_on.length() == 0 && review_off.length() == 0) || review_off.length() == 0 {
+    (false, "")
+  } else if review_on.length() == 0 {
+    (true, "当前没有站点开启归档评审")
+  } else {
+    (false, "已开启：" + join_names_ssv(review_on, "、") + "；未开启：" + join_names_ssv(review_off, "、"))
+  }
+  let pref_fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<prefs.length() {
+    pref_fields.push((prefs[i].key, parse_json_or_null(prefs[i].json)))
+  }
+  sql::SqlResult::Ok(base_codec::json_obj([
+    ("workspace", base_codec::json_str(ws_scope)),
+    ("decisionsOn", base_codec::json_int(decisions_on)),
+    ("decisionsText", base_codec::json_str(decisions_text)),
+    ("hintNoReview", base_codec::json_bool(hint_no_review)),
+    ("hintReviewText", base_codec::json_str(hint_review_text)),
+    ("settings", base_codec::json_obj(pref_fields)),
+  ]))
+}
+
+/// Project `stationUpdates` topic (`station-updates.ts`):
+/// lists stations waiting for a person to update them (omitting auto-updated unless stale >7d,
+/// omitting offline unless currently updating, omitting dismissed non-stale releases).
+pub fn project_station_updates(
+  db : sql::Sql,
+  ws_scope : String,
+  now_ms : Int64,
+) -> sql::SqlResult[base_codec::Json] {
+  let st_rows = match store::list_stations(db, kind="overview") {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rs) => rs
+  }
+  let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
+  let items : Array[base_codec::Json] = []
+  let mut offered = 0
+  let mut going = 0
+  let mut any_stale = false
+
+  for i in 0..<st_rows.length() {
+    let r = st_rows[i]
+    if prefix.length() > 0 && !r.address.starts_with(prefix) {
+      continue
+    }
+    let doc = parse_json_or_null(r.json)
+    let sname = match j_opt_str(doc, "name") {
+      Some(nm) => nm
+      None => r.address
+    }
+    let online = match base_codec::json_get(doc, "online") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => true
+    }
+    let sw = match base_codec::json_get(doc, "software") {
+      Some(s) => s
+      None =>
+      match base_codec::json_get(doc, "overview") {
+        Some(ov) =>
+        match base_codec::json_get(ov, "software") {
+          Some(s) => s
+          None => base_codec::json_null()
+        }
+        None => base_codec::json_null()
+      }
+    }
+    if !j_bool(sw, "updatable") {
+      continue
+    }
+    let stale = match j_opt_int64(sw, "builtAt") {
+      Some(bt) => bt > 0.to_int64() && now_ms > bt && (now_ms - bt) >= stale_build_ms_ssv
+      None => false
+    }
+    if j_bool(sw, "auto") && !stale {
+      continue
+    }
+    let raw_state = j_str(sw, "state")
+    let state = if raw_state == "updating" {
+      "updating"
+    } else if raw_state == "failed" {
+      "failed"
+    } else if j_bool(sw, "newer") || stale {
+      "offered"
+    } else {
+      ""
+    }
+    if state.length() == 0 || (!online && state != "updating") {
+      continue
+    }
+    let channel = j_str(sw, "channel")
+    let latest = j_str(sw, "latest")
+    let dismissed = j_opt_str(doc, "dismissedUpdate")
+    if state == "offered" && !stale {
+      match dismissed {
+        Some(d) => if d == channel + ":" + latest { continue }
+        None => ()
+      }
+    }
+    let from_v = j_opt_str(sw, "version")
+    let to_v = j_opt_str(sw, "latest")
+    let version_text = match from_v {
+      Some(fv) =>
+      match to_v {
+        Some(tv) => if fv != tv { fv + " → " + tv } else { tv }
+        None => fv
+      }
+      None =>
+      match to_v {
+        Some(tv) => tv
+        None => ""
+      }
+    }
+    let detail : Option[String] = if state == "failed" {
+      Some(match j_opt_str(sw, "message") { Some(m) => m; None => "更新失败" })
+    } else if state == "updating" {
+      Some(match j_opt_str(sw, "progress") { Some(p) => p; None => "正在更新…" })
+    } else if stale {
+      Some("构建已超过 7 天，建议尽快更新")
+    } else {
+      None
+    }
+    if state == "updating" {
+      going += 1
+    } else {
+      offered += 1
+      if stale {
+        any_stale = true
+      }
+    }
+    let row : Array[(String, base_codec::Json)] = [
+      ("station", base_codec::json_str(r.address)),
+      ("name", base_codec::json_str(sname)),
+      ("state", base_codec::json_str(state)),
+      ("versionText", base_codec::json_str(version_text)),
+      ("canUpdate", base_codec::json_bool(online && state != "updating")),
+    ]
+    push_opt_str(row, "detail", detail)
+    if stale {
+      row.push(("stale", base_codec::json_bool(true)))
+    }
+    if state == "updating" {
+      push_opt_int(row, "percent", j_opt_int(sw, "percent"))
+    }
+    items.push(base_codec::json_obj(row))
+  }
+
+  let label_text = if offered > 0 {
+    if any_stale {
+      offered.to_string() + " 台站点版本过旧需更新"
+    } else {
+      offered.to_string() + " 台站点有新版本"
+    }
+  } else if going > 0 {
+    going.to_string() + " 台站点正在更新"
+  } else {
+    ""
+  }
+  sql::SqlResult::Ok(base_codec::json_obj([
+    ("items", base_codec::json_arr(items)),
+    ("offered", base_codec::json_int(offered)),
+    ("labelText", base_codec::json_str(label_text)),
+    ("titleText", base_codec::json_str("站点更新")),
+  ]))
+}
+
+struct ArchiveRowSsv {
+  station : String
+  station_name : String
+  id : String
+  thread : Option[Int]
+  title : String
+  last_text : String
+  at : Int64
+  how : String
+}
+
+/// Project `archive` topic (`archive.ts`):
+/// reads ONLY `archived = 1` rows via PK `(station, archived, id)` index (never full-table scans),
+/// sorted by recent activity (`at` / `last_active`) descending, bucketed by day.
+pub fn project_archive(
+  db : sql::Sql,
+  ws_scope : String,
+  briefs : Array[StationBrief],
+  now_ms : Int64,
+  query : String = "",
+  limit : Int = 50,
+  tz_offset_ms : Int64 = 0.to_int64(),
+) -> sql::SqlResult[base_codec::Json] {
+  let words = split_words_ssv(query)
+  let collected : Array[ArchiveRowSsv] = []
+  let mut online_count = 0
+
+  for i in 0..<briefs.length() {
+    let b = briefs[i]
+    if station_on(b) {
+      online_count += 1
+    }
+    // Uses PRIMARY KEY (station, archived, id) prefix index — never full-table scans `chat`!
+    let sql_q = "SELECT station, archived, id, thread, last_active, json FROM chat WHERE station = ? AND archived = 1 ORDER BY last_active DESC LIMIT ?"
+    let cap = if limit > 0 { limit * 2 } else { 200 }
+    match db.all(sql_q, params=[base_codec::json_str(b.address), base_codec::json_int(cap)]) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(rows) => {
+        for r_i in 0..<rows.length() {
+          let row = rows[r_i]
+          let cid = sql::col_text(row, 2)
+          let th = match sql::col_opt_int64(row, 3) {
+            Some(v) => Some(v.to_int())
+            None => None
+          }
+          let last_act = sql::col_int64(row, 4)
+          let doc = parse_json_or_null(sql::col_text(row, 5))
+          let title = match j_opt_str(doc, "title") {
+            Some(t) => t
+            None => cid
+          }
+          let last_text = match base_codec::json_get(doc, "last") {
+            Some(l) => j_str(l, "text")
+            None => ""
+          }
+          let arch_obj = match base_codec::json_get(doc, "archived") {
+            Some(a) => a
+            None => base_codec::json_null()
+          }
+          let arch_at = match j_opt_int64(arch_obj, "at") {
+            Some(t) => t
+            None => last_act
+          }
+          let how = if j_str(arch_obj, "by") == "auto" { "自动归档" } else { "手动归档" }
+          if words.length() > 0 && !contains_all_words_ssv(title + " " + last_text, words) {
+            continue
+          }
+          collected.push(ArchiveRowSsv::{
+            station: b.address,
+            station_name: b.name,
+            id: cid,
+            thread: th,
+            title: title,
+            last_text: last_text,
+            at: arch_at,
+            how: how,
+          })
+        }
+      }
+    }
+  }
+
+  // Sort strictly by `at` descending, then `id` ascending.
+  for i in 1..<collected.length() {
+    let cur = collected[i]
+    let mut j = i - 1
+    while j >= 0 && collected[j].at < cur.at {
+      collected[j + 1] = collected[j]
+      j -= 1
+    }
+    collected[j + 1] = cur
+  }
+
+  let total = collected.length()
+  let shown_n = if limit > 0 && limit < total { limit } else { total }
+  let today_day = local_day_index(now_ms, tz_offset_ms)
+  let day_labels : Array[String] = []
+  let day_buckets : Map[String, Array[base_codec::Json]] = Map::new()
+  let flat_items : Array[base_codec::Json] = []
+
+  for i in 0..<shown_n {
+    let r = collected[i]
+    let days_ago = today_day - local_day_index(r.at, tz_offset_ms)
+    let label = day_bucket_label(days_ago)
+    let th_j = match r.thread {
+      Some(t) => base_codec::json_int(t)
+      None => base_codec::json_null()
+    }
+    let item = base_codec::json_obj([
+      ("station", base_codec::json_str(r.station)),
+      ("stationName", base_codec::json_str(r.station_name)),
+      ("id", base_codec::json_str(r.id)),
+      ("thread", th_j),
+      ("title", base_codec::json_str(r.title)),
+      ("last", base_codec::json_str(r.last_text)),
+      ("at", base_codec::json_int64(r.at)),
+      ("how", base_codec::json_str(r.how)),
+      ("archived", base_codec::json_bool(true)),
+    ])
+    flat_items.push(item)
+    match day_buckets.get(label) {
+      Some(xs) => xs.push(item)
+      None => {
+        day_labels.push(label)
+        day_buckets.set(label, [item])
+      }
+    }
+  }
+
+  let days_out : Array[base_codec::Json] = []
+  for i in 0..<day_labels.length() {
+    let lbl = day_labels[i]
+    match day_buckets.get(lbl) {
+      Some(xs) =>
+      days_out.push(base_codec::json_obj([
+        ("label", base_codec::json_str(lbl)),
+        ("items", base_codec::json_arr(xs)),
+      ]))
+      None => ()
+    }
+  }
+
+  let note : Option[String] = if online_count == 0 && briefs.length() > 0 {
+    Some("当前没有在线站点")
+  } else if total == 0 {
+    Some(if words.length() > 0 { "没有匹配的已归档对话" } else { "暂无已归档对话" })
+  } else {
+    None
+  }
+
+  let out : Array[(String, base_codec::Json)] = [
+    ("workspace", base_codec::json_str(ws_scope)),
+    ("days", base_codec::json_arr(days_out)),
+    ("items", base_codec::json_arr(flat_items)),
+    ("errors", base_codec::json_arr([])),
+    ("total", base_codec::json_int(total)),
+    ("more", base_codec::json_bool(shown_n < total)),
+  ]
+  push_opt_str(out, "note", note)
+  sql::SqlResult::Ok(base_codec::json_obj(out))
+}

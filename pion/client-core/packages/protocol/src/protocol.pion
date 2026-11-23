@@ -69,7 +69,103 @@ pub fn parse_topic(raw : base_codec::Json) -> Option[Topic] {
     None => return None
   }
   let params : Array[(String, base_codec::Json)] = []
-  if name == "accounts" || name == "workspaces" || name == "prefs" || name == "doing" {
+  if name == "accounts" || name == "workspaces" || name == "prefs" || name == "doing" || name == "downloads" {
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "presets" || name == "otherPresets" || name == "stars" || name == "boardDrafts" || name == "vaultApprovals" {
+    match opt_str_field(raw, "workspace") {
+      Some(ws) => params.push(("workspace", base_codec::json_str(ws)))
+      None =>
+      match opt_str_field(raw, "scope") {
+        Some(sc) => params.push(("workspace", base_codec::json_str(sc)))
+        None => ()
+      }
+    }
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "models" || name == "profiles" || name == "profilesOverview" || name == "stationUpdates" || name == "fleet" || name == "agentRates" || name == "longJobs" {
+    match opt_str_field(raw, "scope") {
+      Some(sc) => params.push(("scope", base_codec::json_str(sc)))
+      None =>
+      match opt_str_field(raw, "workspace") {
+        Some(ws) => params.push(("scope", base_codec::json_str(ws)))
+        None => ()
+      }
+    }
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "usage" {
+    match opt_str_field(raw, "scope") {
+      Some(sc) => params.push(("scope", base_codec::json_str(sc)))
+      None =>
+      match opt_str_field(raw, "workspace") {
+        Some(ws) => params.push(("scope", base_codec::json_str(ws)))
+        None => ()
+      }
+    }
+    match opt_nonneg_int64(raw, "days") {
+      Some(d) => params.push(("days", base_codec::json_int64(d)))
+      None => ()
+    }
+    match opt_str_field(raw, "split") {
+      Some(sp) => params.push(("split", base_codec::json_str(sp)))
+      None => ()
+    }
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "archive" {
+    match opt_str_field(raw, "scope") {
+      Some(sc) => params.push(("scope", base_codec::json_str(sc)))
+      None =>
+      match opt_str_field(raw, "workspace") {
+        Some(ws) => params.push(("scope", base_codec::json_str(ws)))
+        None => ()
+      }
+    }
+    match opt_str_field(raw, "query") {
+      Some(q) => params.push(("query", base_codec::json_str(q)))
+      None =>
+      match opt_str_field(raw, "q") {
+        Some(q) => params.push(("query", base_codec::json_str(q)))
+        None => ()
+      }
+    }
+    match opt_nonneg_int64(raw, "limit") {
+      Some(l) => params.push(("limit", base_codec::json_int64(l)))
+      None => ()
+    }
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "railCard" {
+    match opt_str_field(raw, "scope") {
+      Some(sc) => params.push(("scope", base_codec::json_str(sc)))
+      None =>
+      match opt_str_field(raw, "workspace") {
+        Some(ws) => params.push(("scope", base_codec::json_str(ws)))
+        None => ()
+      }
+    }
+    let place = match opt_str_field(raw, "place") {
+      Some(p) => p
+      None => "chats"
+    }
+    params.push(("place", base_codec::json_str(place)))
+    return Some(Topic::{ name: name, params: params })
+  }
+  if name == "chatJobs" {
+    let station = match opt_str_field(raw, "station") {
+      Some(s) => s
+      None => return None
+    }
+    params.push(("station", base_codec::json_str(station)))
+    match opt_nonneg_int64(raw, "thread") {
+      Some(th) => params.push(("thread", base_codec::json_int64(th)))
+      None => params.push(("thread", base_codec::json_null()))
+    }
+    match opt_bool_field(raw, "summary") {
+      Some(true) => params.push(("summary", base_codec::json_bool(true)))
+      _ => ()
+    }
     return Some(Topic::{ name: name, params: params })
   }
   if name == "chats" {

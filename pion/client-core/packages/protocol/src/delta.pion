@@ -78,6 +78,75 @@ pub fn spec_for_topic(topic_name : String) -> Option[KeyedSpec] {
     let msg_hit = KeyedSpec::{ key: ["station", "thread", "seq"], item: None, fields: [] }
     return Some(spec_fields([("items", chat_rows), ("messages", msg_hit)]))
   }
+  if topic_name == "presets" || topic_name == "otherPresets" {
+    return Some(spec_fields([("presets", spec_items("id"))]))
+  }
+  if topic_name == "boardDrafts" {
+    return Some(spec_fields([("drafts", spec_items("id"))]))
+  }
+  if topic_name == "downloads" {
+    return Some(spec_fields([("downloads", spec_items("id"))]))
+  }
+  if topic_name == "vaultApprovals" {
+    return Some(spec_fields([
+      ("pending", spec_items("id")),
+      ("decided", spec_items("id")),
+    ]))
+  }
+  if topic_name == "profiles" {
+    return Some(spec_fields([("items", spec_items("key"))]))
+  }
+  if topic_name == "profilesOverview" {
+    return Some(spec_fields([("pools", spec_items("title"))]))
+  }
+  if topic_name == "models" {
+    return Some(spec_fields([("models", spec_items("id"))]))
+  }
+  if topic_name == "archive" {
+    let day_spec = KeyedSpec::{
+      key: ["label"],
+      item: Some(spec_fields([("items", chat_rows)])),
+      fields: [],
+    }
+    return Some(spec_fields([("items", chat_rows), ("days", day_spec)]))
+  }
+  if topic_name == "fleet" {
+    return Some(spec_fields([
+      ("spent", spec_items("key")),
+      ("daily", spec_items("day")),
+    ]))
+  }
+  if topic_name == "usage" {
+    let list_spec = KeyedSpec::{
+      key: ["key"],
+      item: Some(spec_fields([("items", spec_items("key"))])),
+      fields: [],
+    }
+    return Some(spec_fields([
+      ("daily", spec_items("day")),
+      ("lists", list_spec),
+    ]))
+  }
+  if topic_name == "agentRates" {
+    return Some(spec_fields([("rows", spec_items("key"))]))
+  }
+  if topic_name == "stationUpdates" {
+    return Some(spec_fields([("items", spec_items("station"))]))
+  }
+  if topic_name == "chatJobs" {
+    return Some(spec_fields([("jobs", spec_items("id"))]))
+  }
+  if topic_name == "longJobs" {
+    let group_spec = KeyedSpec::{
+      key: ["key"],
+      item: Some(spec_fields([("jobs", spec_items("id"))])),
+      fields: [],
+    }
+    return Some(spec_fields([
+      ("groups", group_spec),
+      ("otherGroups", group_spec),
+    ]))
+  }
   None
 }
 

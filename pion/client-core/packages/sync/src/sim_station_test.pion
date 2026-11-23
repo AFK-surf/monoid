@@ -293,6 +293,29 @@ fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Jso
       ]))
       None => ()
     }
+  } else if stmt.contains("archived = 1") {
+    let st = p_str(p, 0)
+    let lim = p_int(p, 1)
+    for i in 0..<self.chat_order.length() {
+      if rows.length() >= lim {
+        break
+      }
+      match self.chats.get(self.chat_order[i]) {
+        Some(c) =>
+        if c.station == st && c.archived == 1 {
+          let th_j = match c.thread { Some(t) => base_codec::json_int(t); None => base_codec::json_null() }
+          rows.push(base_codec::json_arr([
+            base_codec::json_str(c.station),
+            base_codec::json_int(c.archived),
+            base_codec::json_str(c.id),
+            th_j,
+            base_codec::json_int64(c.last_active),
+            base_codec::json_str(c.json),
+          ]))
+        }
+        None => ()
+      }
+    }
   } else if stmt == sql_thread_upsert() {
     self.threads.set(p_str(p, 0) + ":" + p_int(p, 1).to_string(), p_str(p, 10))
     changed = 1
@@ -2006,5 +2029,191 @@ test "E2E 12: ClientCore wired to packages/views projects chats, chat, workspace
   debug_assert(d_confirmed.length() == 1, "chat delta for SSE confirmation")
   let (d_cf_json, _) = protocol::encode_core_event(d_confirmed[0])
   debug_assert(d_cf_json.length() <= 4096 && d_cf_json.contains("\"delta\"") && d_cf_json.contains("hello views") && d_cf_json.contains("\"drop\""), "SSE chat delta <= 4KB and drops reconciled outbox item")
+  core.stop()
+}
+
+test "E2E 13: Batch 2 & Batch 3 wiring in ClientCore (auth.begin, accounts, presets, downloads, profiles, models, search, archive, fleet, usage)" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "acct-b2b3") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => {
+      debug_assert(false, "sql open failed")
+      return
+    }
+  }
+  let station = SimStation::new(rt)
+  station.snapshot_json = base_codec::json_obj([
+    (
+      "chats",
+      base_codec::json_arr([
+        base_codec::json_obj([
+          ("id", base_codec::json_str("c-live-1")),
+          ("archived", base_codec::json_int(0)),
+          ("title", base_codec::json_str("Active Sprint")),
+          ("thread", base_codec::json_int(20)),
+          ("lastActive", base_codec::json_int64(5000.to_int64())),
+        ]),
+        base_codec::json_obj([
+          ("id", base_codec::json_str("c-arch-1")),
+          ("archived", base_codec::json_int(1)),
+          ("title", base_codec::json_str("Archived Sprint")),
+          ("thread", base_codec::json_int(21)),
+          ("lastActive", base_codec::json_int64(3000.to_int64())),
+        ]),
+      ]),
+    ),
+  ])
+  let core = ClientCore::new("ws-b3", "ws-b3/st1", rt, db, station.transport(), fn() -> Unit {})
+  core.set_cloud_origin("https://app.still.fail")
+  core.set_viewer("alice@still.fail", sub="u-alice", role="owner", device_id="dev-1")
+
+  let _ = store::upsert_station_doc(
+    db,
+    "ws-b3/st1",
+    "overview",
+    "{\"id\":\"st1\",\"name\":\"Studio\",\"online\":true,\"profiles\":[{\"id\":\"p1\",\"name\":\"Claude\",\"email\":\"alice@still.fail\",\"runtime\":\"claude\",\"runtimes\":[\"claude\"],\"models\":[\"claude-opus-5-5\"],\"enabled\":true,\"access\":{\"kind\":\"subscription\",\"token\":\"DO_NOT_LEAK\",\"apiKey\":\"sk-leak\"}}]}",
+    confirmed=Some(1000.to_int64()),
+  )
+  let _ = store::upsert_station_doc(
+    db,
+    "ws-b3/st1",
+    "usage",
+    "{\"rows\":[{\"day\":\"2026-11-23\",\"person\":\"alice@still.fail\",\"chat\":\"c-live-1\",\"profile\":\"p1\",\"model\":\"claude-opus-5-5\",\"cost\":4.25,\"calls\":3,\"input\":10000,\"cacheRead\":5000,\"cacheWrite\":0,\"output\":2000}]}",
+    confirmed=Some(1000.to_int64()),
+  )
+  core.other_presets_held.push(views::PresetRecord::live(
+    "pr-bob",
+    "u-bob",
+    1,
+    1000.to_int64(),
+    1000.to_int64(),
+    "bob@still.fail",
+    "ws-b3/st1",
+    "Bob Preset",
+  ))
+  core.stars_held.push(views::StarEntry::{ key: "claude-opus-5-5", on: true, rev: 1, at: 100.to_int64() })
+  core.vault_approvals.enqueue(views::VaultApprovalRequest::{
+    id: "vr-1",
+    ws: "ws-b3",
+    vault_id: "v1",
+    item_id: "item-1",
+    item_name: "Stripe Test Key",
+    kind: views::VaultRequestKind::SecretUse,
+    mode: "env",
+    reason: "run tests",
+    hosts: ["api.stripe.com"],
+    max_scope: "hour",
+    at_ms: 1000.to_int64(),
+    status: views::VaultRequestStatus::Pending,
+    granted_scope: None,
+    decided_at_ms: None,
+    decision_note: None,
+  })
+
+  core.start()
+  rt.advance(30)
+
+  // 1. auth.begin -> valid URL, S256 challenge, ZERO verifier leakage!
+  let auth_state = match core.handle_wire("{\"id\":2,\"call\":\"auth.begin\",\"params\":{\"redirect_uri\":\"stillfail://auth/callback\",\"return_to\":\"/\"}}") {
+    Some((txt, _)) => {
+      debug_assert(txt.contains("https://app.still.fail/v1/auth/google/start?state="), "auth.begin url")
+      debug_assert(txt.contains("code_challenge_method=S256"), "auth.begin PKCE S256")
+      debug_assert(!txt.contains("verifier"), "auth.begin must NEVER leak verifier")
+      match base_codec::json_parse(txt) {
+        base_codec::JsonParseResult::Ok(j) =>
+        match base_codec::json_get(j, "ok") {
+          Some(ok_j) =>
+          match base_codec::json_get(ok_j, "state") {
+            Some(base_codec::Json::Str(s)) => s
+            _ => ""
+          }
+          None => ""
+        }
+        _ => ""
+      }
+    }
+    None => ""
+  }
+  debug_assert(auth_state.length() > 0, "auth.begin returned state")
+
+  // 2. auth.complete registers account without leaking tokens -> accounts subscription reflects it
+  let complete_req = "{\"id\":3,\"call\":\"auth.complete\",\"params\":{\"state\":\"" + auth_state + "\",\"code\":\"oauth-code-1\",\"sub\":\"u-alice\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"access\":\"ACCESS_SECRET\",\"refresh\":\"REFRESH_SECRET\"}}"
+  match core.handle_wire(complete_req) {
+    Some((txt, _)) => debug_assert(txt.contains("\"ok\":true") && !txt.contains("ACCESS_SECRET") && !txt.contains("REFRESH_SECRET"), "auth.complete strips tokens")
+    None => debug_assert(false, "expected auth.complete reply")
+  }
+  match core.handle_wire("{\"id\":201,\"subscribe\":{\"topic\":\"accounts\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("alice@still.fail") && !txt.contains("ACCESS_SECRET"), "accounts topic strips tokens")
+    None => debug_assert(false, "expected accounts")
+  }
+
+  // 3. presets + preset.copy -> keyed delta <= 4 KB
+  match core.handle_wire("{\"id\":202,\"subscribe\":{\"topic\":\"presets\",\"workspace\":\"ws-b3\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"presets\":[]"), "initially 0 own presets")
+    None => debug_assert(false, "expected presets")
+  }
+  match core.handle_wire("{\"id\":4,\"call\":\"preset.copy\",\"params\":{\"id\":\"pr-bob\",\"newId\":\"pr-mine-1\",\"name\":\"My Copy\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("pr-mine-1") && txt.contains("\"editable\":true"), "preset.copy")
+    None => debug_assert(false, "expected preset.copy")
+  }
+  let p_deltas = core.refresh_topic("presets")
+  debug_assert(p_deltas.length() == 1, "presets delta emitted")
+  let (pd_json, _) = protocol::encode_core_event(p_deltas[0])
+  debug_assert(pd_json.length() <= 4096 && pd_json.contains("\"put\"") && pd_json.contains("pr-mine-1"), "presets keyed delta <= 4KB")
+
+  // 4. downloads + download.join / download.leave
+  match core.handle_wire("{\"id\":203,\"subscribe\":{\"topic\":\"downloads\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"downloads\":[]"), "initial downloads")
+    None => debug_assert(false, "expected downloads")
+  }
+  match core.handle_wire("{\"id\":5,\"call\":\"download.join\",\"params\":{\"reader\":\"r1\",\"fileKey\":\"f1\",\"version\":\"v1\",\"start\":0,\"end\":1024,\"name\":\"report.pdf\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"readerId\":\"r1\"") && txt.contains("\"newRequests\""), "download.join")
+    None => debug_assert(false, "expected download.join")
+  }
+  let dl_deltas = core.refresh_topic("downloads")
+  debug_assert(dl_deltas.length() == 1, "downloads delta emitted")
+  let (dl_json, _) = protocol::encode_core_event(dl_deltas[0])
+  debug_assert(dl_json.length() <= 4096 && dl_json.contains("report.pdf"), "downloads keyed delta <= 4KB")
+  match core.handle_wire("{\"id\":6,\"call\":\"download.leave\",\"params\":{\"reader\":\"r1\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"cancelledReqIds\""), "download.leave")
+    None => debug_assert(false, "expected download.leave")
+  }
+
+  // 5. vaultApprovals + vault.approve
+  match core.handle_wire("{\"id\":204,\"subscribe\":{\"topic\":\"vaultApprovals\",\"workspace\":\"ws-b3\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("Stripe Test Key") && txt.contains("\"plainMode\":false"), "vaultApprovals")
+    None => debug_assert(false, "expected vaultApprovals")
+  }
+  match core.handle_wire("{\"id\":7,\"call\":\"vault.approve\",\"params\":{\"request\":\"vr-1\",\"scope\":\"once\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"status\":\"granted\""), "vault.approve")
+    None => debug_assert(false, "expected vault.approve")
+  }
+
+  // 6. Batch 3 topics: profiles, models, search, archive, fleet, usage
+  match core.handle_wire("{\"id\":205,\"subscribe\":{\"topic\":\"profiles\",\"scope\":\"ws-b3\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("alice@still.fail") && !txt.contains("DO_NOT_LEAK") && !txt.contains("sk-leak"), "profiles strips secrets")
+    None => debug_assert(false, "expected profiles")
+  }
+  match core.handle_wire("{\"id\":206,\"subscribe\":{\"topic\":\"models\",\"scope\":\"ws-b3\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("claude-opus-5-5") && txt.contains("\"starred\":true"), "models with starred")
+    None => debug_assert(false, "expected models")
+  }
+  match core.handle_wire("{\"id\":207,\"subscribe\":{\"topic\":\"search\",\"scope\":\"ws-b3\",\"query\":\"Active\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("Active Sprint"), "search topic")
+    None => debug_assert(false, "expected search")
+  }
+  match core.handle_wire("{\"id\":208,\"subscribe\":{\"topic\":\"archive\",\"scope\":\"ws-b3\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("Archived Sprint") && !txt.contains("Active Sprint"), "archive topic only returns archived=1")
+    None => debug_assert(false, "expected archive")
+  }
+  match core.handle_wire("{\"id\":209,\"subscribe\":{\"topic\":\"fleet\",\"scope\":\"ws-b3\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"devices\":1") && txt.contains("$4.25"), "fleet topic")
+    None => debug_assert(false, "expected fleet")
+  }
+  match core.handle_wire("{\"id\":210,\"subscribe\":{\"topic\":\"usage\",\"scope\":\"ws-b3\",\"days\":7},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("$4.25") && txt.contains("\"empty\":false"), "usage topic")
+    None => debug_assert(false, "expected usage")
+  }
   core.stop()
 }

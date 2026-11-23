@@ -377,6 +377,16 @@ int main(void) {
     char *m_vaults_sub = wait_for_matching_msg(&g_host, "\"id\":15", "\"vaults\"", 10);
     printf("[live_net_e2e] #15 subscribe vaults -> %s\n", m_vaults_sub);
 
+    // 2b. Test `auth.begin` wire parity with `apps/mbui/core/smoke.m`: valid HTTP/HTTPS url, S256 challenge, NO verifier leak!
+    send_json("{\"id\":20,\"call\":\"auth.begin\",\"params\":{\"redirect_uri\":\"stillfail://auth/callback\",\"return_to\":\"/\"}}");
+    char *m_auth = wait_for_matching_msg(&g_host, "\"id\":20", "\"url\":\"http", 10);
+    printf("[live_net_e2e] #20 auth.begin -> %s\n", m_auth);
+    assert(strstr(m_auth, "/v1/auth/google/start?state=") != NULL);
+    assert(strstr(m_auth, "code_challenge_method=S256") != NULL);
+    assert(strstr(m_auth, "redirect_uri=stillfail://auth/callback") != NULL);
+    assert(strstr(m_auth, "\"state\":\"") != NULL);
+    assert(strstr(m_auth, "verifier") == NULL);
+
     // 3. Real Rust `stream.open` + `stream.read` -> live `/events` SSE stream
     send_json("{\"id\":2,\"call\":\"station.connect\",\"params\":{}}");
     char *m_conn = wait_for_matching_msg(&g_host, "\"event\":\"connection\"", "\"state\":\"connected\"", 10);

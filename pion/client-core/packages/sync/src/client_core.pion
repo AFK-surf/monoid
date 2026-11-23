@@ -3,6 +3,7 @@
 // 2. Thin JSON `packages/protocol` wire adapter compatible with `apps/mbui/src/host/core_api.h`.
 
 import "base_codec"
+import "crypto"
 import "effect"
 import "form"
 import "lock"
@@ -26,6 +27,17 @@ pub struct ClientCore {
   pub rows_memo : views::RowsMemo
   pub mut viewer_marks : views::ViewerMarks
   pub lock_pending : views::LockPendingQueue
+  pub auth_store : views::AccountStore
+  pub login_flow : views::LoginFlowMachine
+  pub vault_approvals : views::VaultApprovalQueue
+  pub file_reads : views::SharedFileReads
+  pub mut cloud_origin : String
+  pub presets_held : Array[views::PresetRecord]
+  pub other_presets_held : Array[views::PresetRecord]
+  pub stars_held : Array[views::StarEntry]
+  pub board_drafts_held : Array[views::BoardDraftRecord]
+  pub downloads_held : Array[views::DownloadEntry]
+  mut auth_seq : Int
   mut lock_state : Option[lock::LockState]
   mut lock_root : Option[String]
   mut lock_effective : Option[views::EffectiveLockState]
@@ -66,6 +78,17 @@ pub fn ClientCore::new(
     rows_memo: views::RowsMemo::new(),
     viewer_marks: views::ViewerMarks::new(""),
     lock_pending: views::LockPendingQueue::new(),
+    auth_store: views::AccountStore::new(),
+    login_flow: views::LoginFlowMachine::new(),
+    vault_approvals: views::VaultApprovalQueue::new(),
+    file_reads: views::SharedFileReads::new(),
+    cloud_origin: "https://app.still.fail",
+    presets_held: [],
+    other_presets_held: [],
+    stars_held: [],
+    board_drafts_held: [],
+    downloads_held: [],
+    auth_seq: 0,
     lock_state: None,
     lock_root: None,
     lock_effective: None,
@@ -348,6 +371,33 @@ pub fn ClientCore::current_safe_mode_view(self : ClientCore) -> views::SafeModeV
   views::project_safe_mode(self.lock_effective, inp)
 }
 
+/// Configure the cloud origin used by `auth.begin` (e.g. `"https://app.still.fail"`).
+pub fn ClientCore::set_cloud_origin(self : ClientCore, origin : String) -> Unit {
+  if origin.length() > 0 {
+    self.cloud_origin = origin
+  }
+}
+
+fn ClientCore::open_jobs_json_list(self : ClientCore) -> Array[base_codec::Json] {
+  let open_list = self.events.open_jobs()
+  let out : Array[base_codec::Json] = []
+  for i in 0..<open_list.length() {
+    let j = open_list[i]
+    let fields : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(j.id)),
+      ("station", base_codec::json_str(self.station)),
+      ("state", base_codec::json_str(if j.open { "running" } else { "exited" })),
+      ("startedAt", base_codec::json_int64(0.to_int64())),
+    ]
+    match j.chat {
+      Some(c) => fields.push(("chat", base_codec::json_str(c)))
+      None => ()
+    }
+    out.push(base_codec::json_obj(fields))
+  }
+  out
+}
+
 /// Evaluate subscription topics through `packages/views` projections so `Slice1Router`
 /// delivers `shapes/`-conforming payloads and ≤ 4 KB keyed deltas.
 fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protocol::Topic) -> Option[protocol::CoreEvent] {
@@ -427,6 +477,9 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
     }
   }
   if topic.name == "accounts" {
+    if self.auth_store.accounts.length() > 0 {
+      return Some(protocol::CoreEvent::Value(id, views::project_accounts_topic(self.auth_store), None))
+    }
     match views::project_accounts(self.db) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
@@ -443,6 +496,246 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
     }
     let sm = self.current_safe_mode_view()
     match views::project_vaults(self.db, ws, sm, self.lock_available, self.vaults_set_up) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  // ── Batch 2 view topics ──
+  if topic.name == "presets" {
+    return Some(protocol::CoreEvent::Value(id, views::project_own_presets(self.presets_held, self.viewer_sub), None))
+  }
+  if topic.name == "otherPresets" {
+    return Some(protocol::CoreEvent::Value(
+      id,
+      views::project_other_presets([self.other_presets_held], self.presets_held, self.viewer_sub, false),
+      None,
+    ))
+  }
+  if topic.name == "stars" {
+    let keys = views::starred_keys(self.stars_held)
+    let arr : Array[base_codec::Json] = []
+    for i in 0..<keys.length() {
+      arr.push(base_codec::json_str(keys[i]))
+    }
+    return Some(protocol::CoreEvent::Value(id, base_codec::json_obj([("starred", base_codec::json_arr(arr))]), None))
+  }
+  if topic.name == "boardDrafts" {
+    return Some(protocol::CoreEvent::Value(id, views::project_board_drafts(self.board_drafts_held, self.viewer_sub), None))
+  }
+  if topic.name == "downloads" {
+    return Some(protocol::CoreEvent::Value(id, views::project_downloads(self.downloads_held), None))
+  }
+  if topic.name == "vaultApprovals" {
+    let ws = match topic.param("workspace") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    return Some(protocol::CoreEvent::Value(id, views::project_vault_approvals(self.vault_approvals, ws), None))
+  }
+  // ── Batch 3 view topics ──
+  if topic.name == "models" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    match views::project_models(self.db, ws_scope, self.stars_held) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "profiles" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    match views::project_profiles(self.db, ws_scope) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "profilesOverview" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    match views::project_profiles_overview(self.db, ws_scope, self.rt.now()) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "search" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    let q = match topic.param("query") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let lim = match topic.param("limit") {
+      Some(base_codec::Json::Num(n, _)) => n.to_int()
+      _ => 20
+    }
+    let briefs = self.station_briefs_for_scope(ws_scope)
+    match views::project_search(self.db, ws_scope, briefs, q, limit=lim) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "chatSearch" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    let q = match topic.param("query") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let lim = match topic.param("limit") {
+      Some(base_codec::Json::Num(n, _)) => n.to_int()
+      _ => 20
+    }
+    let briefs = self.station_briefs_for_scope(ws_scope)
+    match views::project_chat_search(self.db, ws_scope, briefs, q, limit=lim) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "settings" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    match views::project_settings(self.db, ws_scope) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "stationUpdates" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    match views::project_station_updates(self.db, ws_scope, self.rt.now()) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "archive" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    let q = match topic.param("query") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let lim = match topic.param("limit") {
+      Some(base_codec::Json::Num(n, _)) => n.to_int()
+      _ => 50
+    }
+    let briefs = self.station_briefs_for_scope(ws_scope)
+    match views::project_archive(self.db, ws_scope, briefs, self.rt.now(), query=q, limit=lim) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "fleet" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    let briefs = self.station_briefs_for_scope(ws_scope)
+    match views::project_fleet(
+      self.db,
+      ws_scope,
+      briefs,
+      self.rt.now(),
+      running_chats=self.running_session_count(),
+      open_jobs=self.open_jobs_json_list(),
+    ) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "usage" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    let days = match topic.param("days") {
+      Some(base_codec::Json::Num(n, _)) => n.to_int()
+      _ => 7
+    }
+    let split = match topic.param("split") {
+      Some(base_codec::Json::Str(s)) => Some(s)
+      _ => None
+    }
+    let briefs = self.station_briefs_for_scope(ws_scope)
+    match views::project_usage(self.db, ws_scope, briefs, self.rt.now(), days_asked=days, split=split) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "agentRates" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    let briefs = self.station_briefs_for_scope(ws_scope)
+    match views::project_agent_rates(self.db, ws_scope, briefs) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "railCard" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    let place = match topic.param("place") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => "chats"
+    }
+    let briefs = self.station_briefs_for_scope(ws_scope)
+    match views::project_rail_card(
+      self.db,
+      ws_scope,
+      place,
+      briefs,
+      self.running_session_count(),
+      self.viewer_marks,
+      self.rt.now(),
+    ) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "chatJobs" {
+    let st = match topic.param("station") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { self.station }
+      _ => self.station
+    }
+    let th = match topic.param("thread") {
+      Some(base_codec::Json::Num(n, _)) => n.to_int()
+      _ => return Some(protocol::CoreEvent::Waiting(id))
+    }
+    let summary = match topic.param("summary") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    match views::project_chat_jobs(self.db, st, th, self.open_jobs_json_list(), self.rt.now(), summary=summary) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "longJobs" {
+    let ws_scope = match topic.param("scope") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    let briefs = self.station_briefs_for_scope(ws_scope)
+    match views::project_long_jobs(self.db, ws_scope, briefs, self.open_jobs_json_list(), self.rt.now()) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -782,6 +1075,293 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           ]))
         }
         return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("jobs", base_codec::json_arr(items))]), None))
+      }
+      // ── Batch 2 calls: auth / vault / preset / download ──
+      if call_name == "auth.begin" {
+        self.auth_seq += 1
+        let redirect_uri = match proto_str(params, "redirect_uri") {
+          Some(s) => s
+          None =>
+          match proto_str(params, "redirectUri") {
+            Some(s) => s
+            None => "stillfail://auth/callback"
+          }
+        }
+        let return_to = match proto_str(params, "return_to") {
+          Some(s) => s
+          None =>
+          match proto_str(params, "returnTo") {
+            Some(s) => s
+            None => "/"
+          }
+        }
+        let origin = match proto_str(params, "cloud_origin") {
+          Some(s) => if s.length() > 0 { s } else { self.cloud_origin }
+          None =>
+          match proto_str(params, "origin") {
+            Some(s) => if s.length() > 0 { s } else { self.cloud_origin }
+            None => self.cloud_origin
+          }
+        }
+        let device_name = match proto_str(params, "device_name") {
+          Some(s) => s
+          None =>
+          match proto_str(params, "name") {
+            Some(s) => s
+            None => "still.fail"
+          }
+        }
+        let seed_str = self.workspace + ":" + self.station + ":" + self.auth_seq.to_string() + ":" + self.rt.now().to_string() + ":" + redirect_uri
+        let entropy_hex = base_codec::hex_encode(self.db.shell.random(32))
+        let state_tok = crypto::sha256_hex(("state:" + entropy_hex + ":" + seed_str).to_bytes()).slice(0, 32)
+        let verifier = base_codec::base64url_encode(crypto::sha256(("pkce:" + entropy_hex + ":" + seed_str).to_bytes()))
+        let url = self.login_flow.begin_oauth(origin, state_tok, verifier, redirect_uri, return_to, device_name)
+        // NEVER expose PKCE `verifier`!
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+          ("url", base_codec::json_str(url)),
+          ("state", base_codec::json_str(state_tok)),
+        ]), None))
+      }
+      if call_name == "auth.complete" {
+        let cb_state = match proto_str(params, "state") {
+          Some(s) => s
+          None => ""
+        }
+        let code = proto_str(params, "code")
+        let err_opt = proto_str(params, "error")
+        let outcome = self.login_flow.complete_oauth_callback(cb_state, code, err_opt)
+        if !outcome.ok {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{
+            code: outcome.error_code,
+            message: outcome.recovery_hint,
+          }))
+        }
+        let sub = match proto_str(params, "sub") { Some(s) => s; None => "" }
+        let email = match proto_str(params, "email") { Some(s) => s; None => "" }
+        if sub.length() > 0 && email.length() > 0 {
+          let name = match proto_str(params, "name") { Some(s) => s; None => email }
+          let picture = match proto_str(params, "picture") { Some(s) => s; None => "" }
+          let access = match proto_str(params, "access") { Some(s) => s; None => "" }
+          let refresh = match proto_str(params, "refresh") { Some(s) => s; None => "" }
+          let exp = match base_codec::json_get(params, "accessExpires") {
+            Some(base_codec::Json::Num(n, _)) => n.to_int64()
+            _ => (self.rt.now() / 1000.to_int64()) + 3600.to_int64()
+          }
+          self.auth_store.register_account(views::StoredAccount::{
+            sub: sub,
+            email: email,
+            name: name,
+            picture: picture,
+            access: access,
+            refresh: refresh,
+            access_expires: exp,
+          })
+          self.set_viewer(email, sub=sub)
+          self.login_flow.mark_completed(sub, outcome.return_to)
+          // Persist UI-safe accounts summary to account_doc (zero tokens).
+          let _ = store::put_account_doc(self.db, "accounts", base_codec::json_stringify(views::project_accounts_topic(self.auth_store)))
+        }
+        // NEVER expose `verifier`, `access`, or `refresh`!
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+          ("ok", base_codec::json_bool(true)),
+          ("returnTo", base_codec::json_str(outcome.return_to)),
+          ("state", self.login_flow.to_json()),
+        ]), None))
+      }
+      if call_name == "auth.cancel" {
+        self.login_flow.cancel()
+        return Some(protocol::CoreEvent::Ok(id, self.login_flow.to_json(), None))
+      }
+      if call_name == "vault.approve" {
+        let req_id = match proto_str(params, "request") {
+          Some(s) => s
+          None =>
+          match proto_str(params, "id") {
+            Some(s) => s
+            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing request" }))
+          }
+        }
+        let grant_scope = match proto_str(params, "scope") {
+          Some(s) => s
+          None => "once"
+        }
+        match self.vault_approvals.approve(req_id, grant_scope, self.rt.now()) {
+          Ok(_) => return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+            ("id", base_codec::json_str(req_id)),
+            ("status", base_codec::json_str("granted")),
+            ("scope", base_codec::json_str(grant_scope)),
+          ]), None))
+          Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "vault_error", message: msg }))
+        }
+      }
+      if call_name == "vault.deny" {
+        let req_id = match proto_str(params, "request") {
+          Some(s) => s
+          None =>
+          match proto_str(params, "id") {
+            Some(s) => s
+            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing request" }))
+          }
+        }
+        let note = match proto_str(params, "note") {
+          Some(s) => Some(s)
+          None => proto_str(params, "reason")
+        }
+        match self.vault_approvals.deny(req_id, self.rt.now(), note=note) {
+          Ok(_) => return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+            ("id", base_codec::json_str(req_id)),
+            ("status", base_codec::json_str("denied")),
+          ]), None))
+          Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "vault_error", message: msg }))
+        }
+      }
+      if call_name == "vault.withdraw" {
+        let req_id = match proto_str(params, "request") {
+          Some(s) => s
+          None =>
+          match proto_str(params, "id") {
+            Some(s) => s
+            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing request" }))
+          }
+        }
+        let ok = self.vault_approvals.withdraw(req_id)
+        if ok {
+          return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+            ("id", base_codec::json_str(req_id)),
+            ("status", base_codec::json_str("withdrawn")),
+          ]), None))
+        }
+        return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "not_found", message: "pending request not found" }))
+      }
+      if call_name == "preset.copy" {
+        let src_id = match proto_str(params, "id") {
+          Some(s) => s
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing id" }))
+        }
+        let mut found : Option[views::PresetRecord] = None
+        for i in 0..<self.other_presets_held.length() {
+          if self.other_presets_held[i].id == src_id {
+            found = Some(self.other_presets_held[i])
+            break
+          }
+        }
+        if found.is_none() {
+          for i in 0..<self.presets_held.length() {
+            if self.presets_held[i].id == src_id {
+              found = Some(self.presets_held[i])
+              break
+            }
+          }
+        }
+        match found {
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "not_found", message: "preset not found" }))
+          Some(src) => {
+            let new_id = match proto_str(params, "newId") {
+              Some(s) => s
+              None => src.id + "-copy-" + self.rt.now().to_string()
+            }
+            let new_name = proto_str(params, "name")
+            let copied = views::copy_preset(
+              src,
+              new_id,
+              self.viewer_sub,
+              self.viewer_marks.me,
+              self.station,
+              self.rt.now(),
+              new_name=new_name,
+            )
+            self.presets_held.push(copied)
+            return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+              ("id", base_codec::json_str(copied.id)),
+              ("name", base_codec::json_str(copied.name)),
+              ("mine", base_codec::json_bool(true)),
+              ("editable", base_codec::json_bool(true)),
+            ]), None))
+          }
+        }
+      }
+      if call_name == "download.join" {
+        let reader_id = match proto_str(params, "reader") {
+          Some(s) => s
+          None =>
+          match proto_str(params, "readerId") {
+            Some(s) => s
+            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing reader" }))
+          }
+        }
+        let file_key = match proto_str(params, "fileKey") {
+          Some(s) => s
+          None =>
+          match proto_str(params, "file") {
+            Some(s) => s
+            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing fileKey" }))
+          }
+        }
+        let version = match proto_str(params, "version") {
+          Some(s) => s
+          None => "v1"
+        }
+        let start = match proto_int(params, "start") { Some(n) => n.to_int64(); None => 0.to_int64() }
+        let end = match proto_int(params, "end") { Some(n) => n.to_int64(); None => 0.to_int64() }
+        let plan = self.file_reads.join_reader(reader_id, file_key, version, start, end)
+        let dname = match proto_str(params, "name") { Some(s) => s; None => file_key }
+        let dsize = match proto_int(params, "size") { Some(n) => n.to_int64(); None => end }
+        let mut exists = false
+        for i in 0..<self.downloads_held.length() {
+          if self.downloads_held[i].id == reader_id {
+            exists = true
+            break
+          }
+        }
+        if !exists {
+          self.downloads_held.push(views::DownloadEntry::{
+            id: reader_id,
+            station: self.station,
+            name: dname,
+            size: dsize,
+            loaded: 0.to_int64(),
+            state: "going",
+            error: None,
+            started_at: self.rt.now(),
+          })
+        }
+        let new_reqs_j : Array[base_codec::Json] = []
+        for i in 0..<plan.new_requests.length() {
+          let nr = plan.new_requests[i]
+          new_reqs_j.push(base_codec::json_obj([
+            ("reqId", base_codec::json_int(nr.req_id)),
+            ("start", base_codec::json_int64(nr.start)),
+            ("end", base_codec::json_int64(nr.end)),
+          ]))
+        }
+        let att_j : Array[base_codec::Json] = []
+        for i in 0..<plan.attached_req_ids.length() {
+          att_j.push(base_codec::json_int(plan.attached_req_ids[i]))
+        }
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+          ("readerId", base_codec::json_str(plan.reader_id)),
+          ("newRequests", base_codec::json_arr(new_reqs_j)),
+          ("attachedReqIds", base_codec::json_arr(att_j)),
+        ]), None))
+      }
+      if call_name == "download.leave" {
+        let reader_id = match proto_str(params, "reader") {
+          Some(s) => s
+          None =>
+          match proto_str(params, "readerId") {
+            Some(s) => s
+            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing reader" }))
+          }
+        }
+        let cancelled = self.file_reads.leave_reader(reader_id)
+        let canc_j : Array[base_codec::Json] = []
+        for i in 0..<cancelled.length() {
+          canc_j.push(base_codec::json_int(cancelled[i]))
+        }
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+          ("readerId", base_codec::json_str(reader_id)),
+          ("cancelledReqIds", base_codec::json_arr(canc_j)),
+        ]), None))
       }
       self.router.handle(req)
     }

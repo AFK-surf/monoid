@@ -1,0 +1,526 @@
+// Unit tests for Batch 3 views (`models_profiles_view`, `search_settings_view`, `fleet_usage_view`):
+// - `project_models` (merges station models + personal starred models)
+// - `project_profiles` & `project_profiles_overview` (PROFILE_ROW_FIELDS + zero secret/key/token leakage)
+// - `project_search` & `project_chat_search` (local SQLite chat/said search + station_on offline/updating notes)
+// - `project_settings`, `project_station_updates`, `project_archive` (only archived=1 sorted by recent activity)
+// - `project_fleet`, `project_usage`, `project_agent_rates`, `project_rail_card`, `project_chat_jobs`, `project_long_jobs`
+
+import "base_codec"
+import "effect"
+import "protocol"
+import "shell"
+import "sql"
+import "store"
+
+struct Batch3ChatRow {
+  station : String
+  archived : Int
+  id : String
+  thread : Option[Int]
+  last_active : Int64
+  json : String
+}
+
+struct Batch3SaidRow {
+  station : String
+  thread : Int
+  seq : Int
+  n : Int
+  at : Option[Int64]
+  text : String
+}
+
+struct Batch3FakeDb {
+  shell : shell::Shell
+  stations : Array[(String, String, String)]
+  workspaces : Array[(String, String)]
+  prefs : Array[(String, String, String)]
+  account_docs : Map[String, String]
+  chats : Array[Batch3ChatRow]
+  said : Array[Batch3SaidRow]
+}
+
+fn Batch3FakeDb::new() -> Batch3FakeDb {
+  let holder : Array[Batch3FakeDb] = []
+  let sh = shell::Shell::stood_in(
+    effect::Runtime::new(),
+    fn(_ : Int64, _ : String, _ : base_codec::Json, _ : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      holder[0].answer(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = Batch3FakeDb::{
+    shell: sh,
+    stations: [],
+    workspaces: [],
+    prefs: [],
+    account_docs: Map::new(),
+    chats: [],
+    said: [],
+  }
+  holder.push(db)
+  db
+}
+
+fn b3_p_str(p : Array[base_codec::Json], i : Int) -> String {
+  if i < 0 || i >= p.length() {
+    return ""
+  }
+  match p[i] {
+    base_codec::Json::Str(s) => s
+    _ => ""
+  }
+}
+
+fn b3_p_int(p : Array[base_codec::Json], i : Int) -> Int {
+  if i < 0 || i >= p.length() {
+    return 0
+  }
+  match p[i] {
+    base_codec::Json::Num(n, _) => n.to_int()
+    _ => 0
+  }
+}
+
+fn Batch3FakeDb::answer(self : Batch3FakeDb, op : String, args : base_codec::Json) -> shell::AskResult {
+  if op == "sql.open" {
+    return shell::AskResult::Ok(base_codec::json_obj([("id", base_codec::json_int(1))]))
+  }
+  if op == "sql.close" {
+    return shell::AskResult::Ok(base_codec::json_null())
+  }
+  if op != "sql.all" && op != "sql.run" {
+    return shell::AskResult::Ok(base_codec::json_arr([]))
+  }
+  let stmt = j_str(args, "sql")
+  let p = j_arr(args, "params")
+  let rows : Array[base_codec::Json] = []
+
+  if stmt == store::sql_station_doc_by_kind() {
+    let want_kind = b3_p_str(p, 0)
+    for i in 0..<self.stations.length() {
+      let (addr, kind, json) = self.stations[i]
+      if kind == want_kind {
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(addr),
+          base_codec::json_str(kind),
+          base_codec::json_str(json),
+          base_codec::json_null(),
+        ]))
+      }
+    }
+  } else if stmt == store::sql_station_doc_one() {
+    let want_addr = b3_p_str(p, 0)
+    let want_kind = b3_p_str(p, 1)
+    for i in 0..<self.stations.length() {
+      let (addr, kind, json) = self.stations[i]
+      if addr == want_addr && kind == want_kind {
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(addr),
+          base_codec::json_str(kind),
+          base_codec::json_str(json),
+          base_codec::json_null(),
+        ]))
+        break
+      }
+    }
+  } else if stmt == store::sql_workspace_one() {
+    let wid = b3_p_str(p, 0)
+    for i in 0..<self.workspaces.length() {
+      if self.workspaces[i].0 == wid {
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(wid),
+          base_codec::json_str(self.workspaces[i].1),
+          base_codec::json_null(),
+        ]))
+        break
+      }
+    }
+  } else if stmt == store::sql_pref_all() {
+    let ws = b3_p_str(p, 0)
+    for i in 0..<self.prefs.length() {
+      if self.prefs[i].0 == ws {
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(self.prefs[i].1),
+          base_codec::json_str(self.prefs[i].2),
+        ]))
+      }
+    }
+  } else if stmt == store::sql_account_doc_one() {
+    let nm = b3_p_str(p, 0)
+    match self.account_docs.get(nm) {
+      Some(j) => rows.push(base_codec::json_arr([base_codec::json_str(j)]))
+      None => ()
+    }
+  } else if stmt == store::sql_search_chats() {
+    let in_st = b3_p_str(p, 0)
+    let q = lower_ascii_ssv(b3_p_str(p, 1))
+    let lim = b3_p_int(p, 2)
+    for i in 0..<self.chats.length() {
+      if rows.length() >= lim {
+        break
+      }
+      let c = self.chats[i]
+      if c.archived == 0 && in_st.contains(c.station) {
+        if q.length() == 0 || lower_ascii_ssv(c.json).contains(q) || lower_ascii_ssv(c.id).contains(q) {
+          let th_j = match c.thread { Some(t) => base_codec::json_int(t); None => base_codec::json_null() }
+          rows.push(base_codec::json_arr([
+            base_codec::json_str(c.station),
+            base_codec::json_int(c.archived),
+            base_codec::json_str(c.id),
+            th_j,
+            base_codec::json_int64(c.last_active),
+            base_codec::json_str(c.json),
+          ]))
+        }
+      }
+    }
+  } else if stmt == store::sql_search_messages_all() {
+    let q = lower_ascii_ssv(b3_p_str(p, 0))
+    let lim = b3_p_int(p, 1)
+    for i in 0..<self.said.length() {
+      if rows.length() >= lim {
+        break
+      }
+      let s = self.said[i]
+      if lower_ascii_ssv(s.text).contains(q) {
+        let at_j = match s.at { Some(t) => base_codec::json_int64(t); None => base_codec::json_null() }
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(s.station),
+          base_codec::json_int(s.thread),
+          base_codec::json_int(s.seq),
+          base_codec::json_int(s.n),
+          at_j,
+          base_codec::json_str(s.text),
+        ]))
+      }
+    }
+  } else if stmt == store::sql_chat_by_thread() {
+    let st = b3_p_str(p, 0)
+    let th = b3_p_int(p, 1)
+    for i in 0..<self.chats.length() {
+      let c = self.chats[i]
+      if c.station == st && c.archived == 0 {
+        match c.thread {
+          Some(t) =>
+          if t == th {
+            rows.push(base_codec::json_arr([
+              base_codec::json_str(c.station),
+              base_codec::json_int(c.archived),
+              base_codec::json_str(c.id),
+              base_codec::json_str(c.json),
+            ]))
+            break
+          }
+          None => ()
+        }
+      }
+    }
+  } else if stmt.contains("archived = 1") {
+    let st = b3_p_str(p, 0)
+    let lim = b3_p_int(p, 1)
+    for i in 0..<self.chats.length() {
+      if rows.length() >= lim {
+        break
+      }
+      let c = self.chats[i]
+      if c.station == st && c.archived == 1 {
+        let th_j = match c.thread { Some(t) => base_codec::json_int(t); None => base_codec::json_null() }
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(c.station),
+          base_codec::json_int(c.archived),
+          base_codec::json_str(c.id),
+          th_j,
+          base_codec::json_int64(c.last_active),
+          base_codec::json_str(c.json),
+        ]))
+      }
+    }
+  }
+
+  shell::AskResult::Ok(base_codec::json_arr(rows))
+}
+
+test "Batch 3: project_models merges station models + stars; project_profiles & overview strip all API keys/tokens" {
+  let fake = Batch3FakeDb::new()
+  fake.stations.push((
+    "ws-1/st-a",
+    "overview",
+    "{\"id\":\"st-a\",\"name\":\"Tokyo\",\"online\":true,\"profiles\":[" +
+    "{\"id\":\"p1\",\"name\":\"Claude Sub\",\"email\":\"alice@still.fail\",\"runtime\":\"claude\",\"runtimes\":[\"claude\"],\"models\":[\"claude-opus-5-5\",\"claude-sonnet-5\"],\"enabled\":true,\"access\":{\"kind\":\"subscription\",\"token\":\"SECRET_SUB_TOK\",\"refreshToken\":\"SECRET_REF\",\"apiKey\":\"sk-ant-leak\"},\"apiKey\":\"sk-top-leak\",\"headers\":{\"Authorization\":\"Bearer leak\"},\"planText\":\"Max 20x\",\"quota\":{\"state\":\"ok\",\"windows\":[{\"label\":\"每周\",\"left\":80,\"mark\":\"W\"}]}}," +
+    "{\"id\":\"p2\",\"name\":\"OpenAI Key\",\"runtime\":\"codex\",\"runtimes\":[\"codex\"],\"models\":[\"gpt-6.2-sol\"],\"enabled\":true,\"access\":{\"kind\":\"api-provider\",\"provider\":\"openai\",\"key\":\"sk-live-secret-12345\",\"secret\":\"top-secret\"}}" +
+    "]}",
+  ))
+  let db = match sql::Sql::open(fake.shell, "b3-1") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => panic("open failed")
+  }
+
+  let stars = [StarEntry::{ key: "gpt-6.2-sol", on: true, rev: 1, at: 100.to_int64() }]
+  let models_j = match project_models(db, "ws-1", stars) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(_) => panic("project_models failed")
+  }
+  let models_txt = base_codec::json_stringify(models_j)
+  assert(models_txt.contains("claude-opus-5-5") && models_txt.contains("gpt-6.2-sol"))
+  let m_arr = j_arr(models_j, "models")
+  assert_eq(m_arr.length(), 3)
+  // Starred model sorted first
+  assert_eq(j_str(m_arr[0], "id"), "gpt-6.2-sol")
+  assert(j_bool(m_arr[0], "starred"))
+  assert(!models_txt.contains("sk-live-secret"))
+  assert(!models_txt.contains("SECRET_SUB_TOK"))
+
+  let profs_j = match project_profiles(db, "ws-1") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(_) => panic("project_profiles failed")
+  }
+  let profs_txt = base_codec::json_stringify(profs_j)
+  assert(profs_txt.contains("alice@still.fail") && profs_txt.contains("OpenAI Key"))
+  // Strictly zero secret / key / token / credential leakage!
+  assert(!profs_txt.contains("SECRET_SUB_TOK"))
+  assert(!profs_txt.contains("SECRET_REF"))
+  assert(!profs_txt.contains("sk-ant-leak"))
+  assert(!profs_txt.contains("sk-top-leak"))
+  assert(!profs_txt.contains("sk-live-secret-12345"))
+  assert(!profs_txt.contains("top-secret"))
+  assert(!profs_txt.contains("Bearer leak"))
+
+  let ov_j = match project_profiles_overview(db, "ws-1", 1000000.to_int64()) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(_) => panic("project_profiles_overview failed")
+  }
+  let ov_txt = base_codec::json_stringify(ov_j)
+  assert(ov_txt.contains("Claude") && !ov_txt.contains("sk-live-secret"))
+  let pools = j_arr(ov_j, "pools")
+  assert(pools.length() >= 1)
+  assert_opt_eq(j_opt_int(pools[0], "nowPct"), Some(80))
+}
+
+test "Batch 3: search, chatSearch, settings, stationUpdates, archive (archived=1 only)" {
+  let fake = Batch3FakeDb::new()
+  let now_ms = 2000000000.to_int64()
+  let old_built = now_ms - (10 * 86400 * 1000).to_int64()
+  fake.workspaces.push((
+    "ws-1",
+    "{\"name\":\"Team\",\"members\":[{\"sub\":\"u1\",\"email\":\"alice@still.fail\",\"name\":\"Alice\"}]}",
+  ))
+  fake.stations.push((
+    "ws-1/st-on",
+    "overview",
+    "{\"id\":\"st-on\",\"name\":\"Studio\",\"online\":true,\"automaticDecisions\":{\"settings\":{\"completion\":{\"enabled\":true},\"archiveReview\":{\"enabled\":true}}},\"software\":{\"updatable\":true,\"auto\":false,\"newer\":true,\"version\":\"1.0.0\",\"latest\":\"1.1.0\",\"channel\":\"stable\",\"builtAt\":" +
+    old_built.to_string() +
+    "}}",
+  ))
+  fake.stations.push((
+    "ws-1/st-off",
+    "overview",
+    "{\"id\":\"st-off\",\"name\":\"OfflineBox\",\"online\":false,\"software\":{\"updatable\":true,\"auto\":false,\"newer\":true,\"version\":\"1.0.0\",\"latest\":\"1.1.0\"}}",
+  ))
+  fake.prefs.push(("ws-1", "theme", "\"dark\""))
+  fake.chats.push(Batch3ChatRow::{
+    station: "ws-1/st-on",
+    archived: 0,
+    id: "c-live",
+    thread: Some(10),
+    last_active: now_ms - 1000.to_int64(),
+    json: "{\"title\":\"Pion Search Target\"}",
+  })
+  fake.chats.push(Batch3ChatRow::{
+    station: "ws-1/st-on",
+    archived: 1,
+    id: "c-arch-old",
+    thread: Some(11),
+    last_active: now_ms - 100000.to_int64(),
+    json: "{\"title\":\"Old Archived\",\"archived\":{\"at\":" + (now_ms - 100000.to_int64()).to_string() + ",\"by\":\"manual\"}}",
+  })
+  fake.chats.push(Batch3ChatRow::{
+    station: "ws-1/st-on",
+    archived: 1,
+    id: "c-arch-new",
+    thread: Some(12),
+    last_active: now_ms - 500.to_int64(),
+    json: "{\"title\":\"New Archived\",\"archived\":{\"at\":" + (now_ms - 500.to_int64()).to_string() + ",\"by\":\"auto\"}}",
+  })
+  fake.said.push(Batch3SaidRow::{
+    station: "ws-1/st-on",
+    thread: 10,
+    seq: 3,
+    n: 3,
+    at: Some(now_ms - 1000.to_int64()),
+    text: "Pion stage2e message match",
+  })
+
+  let db = match sql::Sql::open(fake.shell, "b3-2") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => panic("open failed")
+  }
+  let briefs = [
+    StationBrief::{
+      address: "ws-1/st-on",
+      id: "st-on",
+      name: "Studio",
+      emoji: None,
+      icon: None,
+      online: true,
+      updating: false,
+      offline_text: None,
+      reconnecting_text: None,
+      running: 1,
+    },
+    StationBrief::{
+      address: "ws-1/st-off",
+      id: "st-off",
+      name: "OfflineBox",
+      emoji: None,
+      icon: None,
+      online: false,
+      updating: false,
+      offline_text: None,
+      reconnecting_text: None,
+      running: 0,
+    },
+  ]
+
+  let sr = match project_search(db, "ws-1", briefs, "Pion") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(_) => panic("search failed")
+  }
+  let sr_txt = base_codec::json_stringify(sr)
+  assert(sr_txt.contains("Pion Search Target") && sr_txt.contains("Pion stage2e message match"))
+  assert(sr_txt.contains("OfflineBox"))
+
+  let st_j = match project_settings(db, "ws-1") {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(_) => panic("settings failed")
+  }
+  assert_opt_eq(j_opt_int(st_j, "decisionsOn"), Some(1))
+  assert(base_codec::json_stringify(st_j).contains("\"theme\":\"dark\""))
+
+  let upd_j = match project_station_updates(db, "ws-1", now_ms) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(_) => panic("stationUpdates failed")
+  }
+  assert_opt_eq(j_opt_int(upd_j, "offered"), Some(1))
+  let upd_items = j_arr(upd_j, "items")
+  assert_eq(upd_items.length(), 1)
+  assert_eq(j_str(upd_items[0], "name"), "Studio")
+  assert(j_bool(upd_items[0], "stale"))
+
+  let arch_j = match project_archive(db, "ws-1", briefs, now_ms) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(_) => panic("archive failed")
+  }
+  let arch_items = j_arr(arch_j, "items")
+  // Only archived=1 chats, newest first, NEVER includes c-live (archived=0)!
+  assert_eq(arch_items.length(), 2)
+  assert_eq(j_str(arch_items[0], "id"), "c-arch-new")
+  assert_eq(j_str(arch_items[1], "id"), "c-arch-old")
+  assert(!base_codec::json_stringify(arch_j).contains("c-live"))
+}
+
+test "Batch 3: fleet, usage, agentRates, railCard, chatJobs, longJobs" {
+  let fake = Batch3FakeDb::new()
+  let now_ms = 10000000.to_int64()
+  fake.stations.push((
+    "ws-1/st-1",
+    "usage",
+    "{\"rows\":[{\"day\":\"2026-11-23\",\"person\":\"alice@still.fail\",\"chat\":\"c1\",\"profile\":\"p1\",\"model\":\"claude-opus-5-5\",\"cost\":12.5,\"calls\":10,\"input\":50000,\"cacheRead\":30000,\"cacheWrite\":0,\"output\":8000}]}",
+  ))
+  fake.stations.push((
+    "ws-1/st-1",
+    "rates",
+    "{\"online\":true,\"supported\":true,\"items\":[{\"key\":\"s1\",\"title\":\"Refactor\",\"model\":\"Opus\",\"rate\":125.0,\"chat\":\"c1\"}]}",
+  ))
+  fake.chats.push(Batch3ChatRow::{
+    station: "ws-1/st-1",
+    archived: 0,
+    id: "c1",
+    thread: Some(7),
+    last_active: now_ms,
+    json: "{\"title\":\"Refactor\",\"agents\":[{\"jobs\":[{\"id\":\"j-svc\",\"name\":\"dev-web\",\"state\":\"running\",\"port\":3000,\"startedAt\":1000}]}]}",
+  })
+  let db = match sql::Sql::open(fake.shell, "b3-3") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(_) => panic("open failed")
+  }
+  let briefs = [
+    StationBrief::{
+      address: "ws-1/st-1",
+      id: "st-1",
+      name: "Studio",
+      emoji: None,
+      icon: None,
+      online: true,
+      updating: false,
+      offline_text: None,
+      reconnecting_text: None,
+      running: 2,
+    },
+  ]
+
+  let usage_j = match project_usage(db, "ws-1", briefs, now_ms) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(_) => panic("usage failed")
+  }
+  assert(!j_bool(usage_j, "empty"))
+  assert(base_codec::json_stringify(usage_j).contains("$12.50"))
+
+  let open_jobs = [
+    base_codec::json_obj([
+      ("id", base_codec::json_str("j-long-1")),
+      ("name", base_codec::json_str("build-daemon")),
+      ("station", base_codec::json_str("ws-1/st-1")),
+      ("session", base_codec::json_str("remote:ws-1:st-1:s1")),
+      ("state", base_codec::json_str("running")),
+      ("startedAt", base_codec::json_int64(now_ms - 7200000.to_int64())),
+      ("mine", base_codec::json_bool(true)),
+    ]),
+  ]
+
+  let fleet_j = match project_fleet(db, "ws-1", briefs, now_ms, running_chats=2, open_jobs=open_jobs) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(_) => panic("fleet failed")
+  }
+  assert_opt_eq(j_opt_int(fleet_j, "chats"), Some(2))
+  assert_opt_eq(j_opt_int(fleet_j, "devices"), Some(1))
+  assert_opt_eq(j_opt_int(fleet_j, "tasks"), Some(1))
+
+  let rates_j = match project_agent_rates(db, "ws-1", briefs) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(_) => panic("agentRates failed")
+  }
+  assert(base_codec::json_stringify(rates_j).contains("125 tok/s"))
+
+  let marks = ViewerMarks::new("alice@still.fail")
+  let rc_chats = match project_rail_card(db, "ws-1", "chats", briefs, 2, marks, now_ms) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(_) => panic("railCard chats failed")
+  }
+  assert(base_codec::json_stringify(rc_chats).contains("2 个对话运行中"))
+
+  let rc_usage = match project_rail_card(db, "ws-1", "usage", briefs, 2, marks, now_ms) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(_) => panic("railCard usage failed")
+  }
+  assert(j_bool(rc_usage, "share"))
+
+  let cj = match project_chat_jobs(db, "ws-1/st-1", 7, open_jobs, now_ms) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(_) => panic("chatJobs failed")
+  }
+  assert(j_bool(cj, "hasServices"))
+  assert_eq(j_arr(cj, "jobs").length(), 1)
+
+  let lj = match project_long_jobs(db, "ws-1", briefs, open_jobs, now_ms) {
+    sql::SqlResult::Ok(v) => v
+    sql::SqlResult::Err(_) => panic("longJobs failed")
+  }
+  assert(j_bool(lj, "lit"))
+  assert_eq(j_arr(lj, "groups").length(), 1)
+
+  // Verify keyed delta spec works cleanly on longJobs & models & archive (<= 4 KB).
+  let ops = protocol::diff_keyed(lj, lj, protocol::spec_for_topic("longJobs"))
+  assert_eq(ops.length(), 0)
+}

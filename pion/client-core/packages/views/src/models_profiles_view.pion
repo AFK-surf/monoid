@@ -1,0 +1,807 @@
+// Models, Profiles, and Profiles Overview projections (`models`, `profiles`, `profilesOverview`).
+//
+// Strictly matches `client/core-ts/src/views/models.ts`, `client/core-ts/src/views/profiles.ts`,
+// `client/core-ts/src/views/profiles-overview.ts`, and `client/core-ts/src/views/views.ts`
+// (`PROFILE_ROW_FIELDS`):
+// - Merges station models with personal starred models (`starred_keys`).
+// - Projects profiles strictly by `PROFILE_ROW_FIELDS` and strips ALL API key / token /
+//   secret / credential fields (including inside `access`, `headers`, `env`, `cookie`).
+// - Computes `profilesOverview` pool capacity, readiness, burn pace, and trajectory.
+
+import "base_codec"
+import "sql"
+import "store"
+
+let profile_row_fields_mpv : Array[String] = [
+  "id",
+  "name",
+  "email",
+  "runtime",
+  "access",
+  "enabled",
+  "share",
+  "trouble",
+  "checkText",
+  "checkTone",
+  "usedBy",
+  "serves",
+  "workspaces",
+  "machine",
+  "providerMark",
+  "usesText",
+  "kindText",
+  "planText",
+  "quota",
+]
+
+let profile_groups_order_mpv : Array[String] = [
+  "claude",
+  "chatgpt",
+  "grok",
+  "kimi",
+  "opencode",
+  "cursor",
+  "devin",
+  "agy",
+  "key",
+  "service",
+]
+
+fn cmp_str_mpv(a : String, b : String) -> Int {
+  let la = a.length()
+  let lb = b.length()
+  let lim = if la < lb { la } else { lb }
+  for i in 0..<lim {
+    let ca = a.code_unit_at(i)
+    let cb = b.code_unit_at(i)
+    if ca != cb {
+      return if ca < cb { -1 } else { 1 }
+    }
+  }
+  if la < lb { -1 } else if la > lb { 1 } else { 0 }
+}
+
+fn lower_ascii_mpv(s : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32) as Byte)
+    } else {
+      sb.write_byte(c as Byte)
+    }
+  }
+  sb.to_string()
+}
+
+fn str_in_mpv(xs : Array[String], s : String) -> Bool {
+  for i in 0..<xs.length() {
+    if xs[i] == s {
+      return true
+    }
+  }
+  false
+}
+
+fn j_opt_num_mpv(j : base_codec::Json, k : String) -> Option[Double] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, _)) => Some(n)
+    _ => None
+  }
+}
+
+fn sort_strings_mpv(xs : Array[String]) -> Unit {
+  for i in 1..<xs.length() {
+    let cur = xs[i]
+    let mut j = i - 1
+    while j >= 0 && cmp_str_mpv(xs[j], cur) > 0 {
+      xs[j + 1] = xs[j]
+      j -= 1
+    }
+    xs[j + 1] = cur
+  }
+}
+
+fn group_rank_mpv(g : String) -> Int {
+  for i in 0..<profile_groups_order_mpv.length() {
+    if profile_groups_order_mpv[i] == g {
+      return i
+    }
+  }
+  99
+}
+
+fn group_title_mpv(g : String) -> String {
+  if g == "claude" {
+    "Claude 订阅"
+  } else if g == "chatgpt" {
+    "ChatGPT 订阅"
+  } else if g == "grok" {
+    "SuperGrok"
+  } else if g == "kimi" {
+    "Kimi Code"
+  } else if g == "opencode" {
+    "OpenCode Go"
+  } else if g == "cursor" {
+    "Cursor"
+  } else if g == "devin" {
+    "Devin"
+  } else if g == "agy" {
+    "Google / Antigravity"
+  } else if g == "service" {
+    "服务账号"
+  } else {
+    "API Key"
+  }
+}
+
+/// Strictly sanitize `access` object: keep ONLY safe metadata (`kind`, `provider`, `login`,
+/// `service`, `endpoint`), stripping `key`, `token`, `apiKey`, `secret`, `accessToken`,
+/// `refreshToken`, `password`, `cookie`, `credential`, `headers`, `env`.
+fn conform_access_mpv(raw : base_codec::Json) -> base_codec::Json {
+  match raw {
+    base_codec::Json::Obj(_) => {
+      let out : Array[(String, base_codec::Json)] = []
+      push_opt_str(out, "kind", j_opt_str(raw, "kind"))
+      push_opt_str(out, "provider", j_opt_str(raw, "provider"))
+      push_opt_bool(out, "login", j_opt_bool(raw, "login"))
+      push_opt_str(out, "service", j_opt_str(raw, "service"))
+      push_opt_str(out, "endpoint", j_opt_str(raw, "endpoint"))
+      base_codec::json_obj(out)
+    }
+    _ => base_codec::json_null()
+  }
+}
+
+fn conform_quota_mpv(raw : base_codec::Json) -> base_codec::Json {
+  match raw {
+    base_codec::Json::Obj(_) => {
+      let out : Array[(String, base_codec::Json)] = []
+      push_opt_str(out, "state", j_opt_str(raw, "state"))
+      push_opt_str(out, "detail", j_opt_str(raw, "detail"))
+      push_opt_str(out, "creditsText", j_opt_str(raw, "creditsText"))
+      let wins = j_arr(raw, "windows")
+      if wins.length() > 0 {
+        let w_out : Array[base_codec::Json] = []
+        for i in 0..<wins.length() {
+          let w = wins[i]
+          let wf : Array[(String, base_codec::Json)] = []
+          push_opt_str(wf, "label", j_opt_str(w, "label"))
+          push_opt_str(wf, "scope", j_opt_str(w, "scope"))
+          push_opt_str(wf, "mark", j_opt_str(w, "mark"))
+          match j_opt_num_mpv(w, "left") {
+            Some(l) => wf.push(("left", base_codec::json_num(l)))
+            None =>
+            match j_opt_num_mpv(w, "usedPercent") {
+              Some(u) => {
+                let left = if u >= 100.0 { 0.0 } else if u <= 0.0 { 100.0 } else { 100.0 - u }
+                wf.push(("left", base_codec::json_num(left)))
+              }
+              None => ()
+            }
+          }
+          push_opt_str(wf, "level", j_opt_str(w, "level"))
+          push_opt_int64(wf, "resetsAt", j_opt_int64(w, "resetsAt"))
+          w_out.push(base_codec::json_obj(wf))
+        }
+        out.push(("windows", base_codec::json_arr(w_out)))
+      }
+      base_codec::json_obj(out)
+    }
+    _ => base_codec::json_null()
+  }
+}
+
+/// Project one profile object strictly by `PROFILE_ROW_FIELDS`, stripping ALL secrets/keys/tokens.
+pub fn conform_profile_row(raw : base_codec::Json) -> base_codec::Json {
+  let out : Array[(String, base_codec::Json)] = []
+  for i in 0..<profile_row_fields_mpv.length() {
+    let k = profile_row_fields_mpv[i]
+    match base_codec::json_get(raw, k) {
+      None => ()
+      Some(v) => {
+        if k == "access" {
+          out.push(("access", conform_access_mpv(v)))
+        } else if k == "trouble" {
+          match v {
+            base_codec::Json::Obj(_) => {
+              let tf : Array[(String, base_codec::Json)] = []
+              push_opt_str(tf, "title", j_opt_str(v, "title"))
+              push_opt_str(tf, "action", j_opt_str(v, "action"))
+              out.push(("trouble", base_codec::json_obj(tf)))
+            }
+            _ => ()
+          }
+        } else if k == "quota" {
+          out.push(("quota", conform_quota_mpv(v)))
+        } else {
+          out.push((k, v))
+        }
+      }
+    }
+  }
+  base_codec::json_obj(out)
+}
+
+fn profile_group_of_mpv(p : base_codec::Json) -> String {
+  let access = match base_codec::json_get(p, "access") {
+    Some(a) => a
+    None => base_codec::json_null()
+  }
+  let akind = j_str(access, "kind")
+  if akind == "service" {
+    let svc = match j_opt_str(access, "service") {
+      Some(s) => s
+      None => j_str(p, "service")
+    }
+    return if svc == "colab" { "agy" } else { "service" }
+  }
+  if j_bool(access, "login") {
+    let prov = j_str(access, "provider")
+    return if prov == "kimi-code" { "kimi" } else { "opencode" }
+  }
+  if akind != "subscription" {
+    return "key"
+  }
+  let rt = j_str(p, "runtime")
+  if rt == "codex" {
+    "chatgpt"
+  } else if rt == "grok" {
+    "grok"
+  } else if rt == "cursor" {
+    "cursor"
+  } else if rt == "devin" {
+    "devin"
+  } else if rt == "agy" {
+    "agy"
+  } else {
+    "claude"
+  }
+}
+
+fn profile_account_key_mpv(station_addr : String, p : base_codec::Json) -> String {
+  let access = match base_codec::json_get(p, "access") {
+    Some(a) => a
+    None => base_codec::json_null()
+  }
+  let akind = j_str(access, "kind")
+  let email = lower_ascii_mpv(j_str(p, "email"))
+  if akind == "service" && email.length() > 0 {
+    let svc = j_str(access, "service")
+    if svc.length() > 0 {
+      return "service:" + svc + ":" + email
+    }
+  }
+  if akind == "subscription" && email.length() > 0 {
+    return "sub:" + j_str(p, "runtime") + ":" + email
+  }
+  if j_bool(access, "login") && email.length() > 0 {
+    let prov = match j_opt_str(access, "provider") {
+      Some(s) => s
+      None => akind
+    }
+    return "login:" + prov + ":" + email
+  }
+  let pid = j_str(p, "id")
+  let prov = match j_opt_str(access, "provider") {
+    Some(s) => s
+    None => akind
+  }
+  if prov.length() > 0 {
+    let ep = j_str(access, "endpoint")
+    return "key:" + prov + ":" + ep + ":" + pid
+  }
+  station_addr + "/" + pid
+}
+
+fn extract_overview_profiles_mpv(st_doc : base_codec::Json) -> Array[base_codec::Json] {
+  let direct = j_arr(st_doc, "profiles")
+  if direct.length() > 0 {
+    return direct
+  }
+  match base_codec::json_get(st_doc, "overview") {
+    Some(ov) => j_arr(ov, "profiles")
+    None => []
+  }
+}
+
+fn normalize_model_key_mpv(m : String) -> String {
+  lower_ascii_mpv(m)
+}
+
+fn model_display_name_mpv(m : String) -> String {
+  let mut slash = -1
+  for i in 0..<m.length() {
+    if m.code_unit_at(i) == 47 {
+      slash = i
+    }
+  }
+  if slash >= 0 && slash + 1 < m.length() {
+    m.slice(slash + 1, m.length())
+  } else {
+    m
+  }
+}
+
+struct ModelAggMpv {
+  id : String
+  key : String
+  runtimes : Array[String]
+  stations : Array[String]
+  mut available_here : Bool
+}
+
+/// Project `models` topic: merges station-advertised models across `ws_scope` with
+/// personal `starred` flags from `stars` (`StarEntry`).
+pub fn project_models(
+  db : sql::Sql,
+  ws_scope : String,
+  stars : Array[StarEntry],
+) -> sql::SqlResult[base_codec::Json] {
+  let rows = match store::list_stations(db, kind="overview") {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rs) => rs
+  }
+  let star_list = starred_keys(stars)
+  let star_set : Map[String, Bool] = Map::new()
+  for i in 0..<star_list.length() {
+    star_set.set(normalize_model_key_mpv(star_list[i]), true)
+    star_set.set(star_list[i], true)
+  }
+
+  let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
+  let by_key : Map[String, ModelAggMpv] = Map::new()
+  let key_order : Array[String] = []
+
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    if prefix.length() > 0 && !r.address.starts_with(prefix) {
+      continue
+    }
+    let doc = parse_json_or_null(r.json)
+    let online = match base_codec::json_get(doc, "online") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => true
+    }
+    let profs = extract_overview_profiles_mpv(doc)
+    for pi in 0..<profs.length() {
+      let p = profs[pi]
+      match j_opt_bool(p, "enabled") {
+        Some(false) => continue
+        _ => ()
+      }
+      let p_rts : Array[String] = []
+      let raw_rts = j_arr(p, "runtimes")
+      for ri in 0..<raw_rts.length() {
+        match raw_rts[ri] {
+          base_codec::Json::Str(rt) => if rt.length() > 0 && !str_in_mpv(p_rts, rt) { p_rts.push(rt) }
+          _ => ()
+        }
+      }
+      if p_rts.length() == 0 {
+        match j_opt_str(p, "runtime") {
+          Some(rt) => p_rts.push(rt)
+          None => ()
+        }
+      }
+      let raw_models = j_arr(p, "models")
+      for mi in 0..<raw_models.length() {
+        match raw_models[mi] {
+          base_codec::Json::Str(m) => {
+            if m.length() == 0 {
+              continue
+            }
+            let mk = normalize_model_key_mpv(m)
+            let agg = match by_key.get(mk) {
+              Some(existing) => existing
+              None => {
+                let created = ModelAggMpv::{
+                  id: m,
+                  key: mk,
+                  runtimes: [],
+                  stations: [],
+                  available_here: false,
+                }
+                key_order.push(mk)
+                by_key.set(mk, created)
+                created
+              }
+            }
+            for ri in 0..<p_rts.length() {
+              if !str_in_mpv(agg.runtimes, p_rts[ri]) {
+                agg.runtimes.push(p_rts[ri])
+              }
+            }
+            if !str_in_mpv(agg.stations, r.address) {
+              agg.stations.push(r.address)
+            }
+            if online {
+              agg.available_here = true
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+  }
+
+  sort_strings_mpv(key_order)
+  // Starred models first, then lexicographical by key.
+  let starred_order : Array[String] = []
+  let other_order : Array[String] = []
+  for i in 0..<key_order.length() {
+    let k = key_order[i]
+    if star_set.get(k).is_some() {
+      starred_order.push(k)
+    } else {
+      other_order.push(k)
+    }
+  }
+  let final_order : Array[String] = []
+  for i in 0..<starred_order.length() {
+    final_order.push(starred_order[i])
+  }
+  for i in 0..<other_order.length() {
+    final_order.push(other_order[i])
+  }
+
+  let models_out : Array[base_codec::Json] = []
+  for i in 0..<final_order.length() {
+    let k = final_order[i]
+    match by_key.get(k) {
+      None => ()
+      Some(agg) => {
+        sort_strings_mpv(agg.runtimes)
+        let rts_j : Array[base_codec::Json] = []
+        for ri in 0..<agg.runtimes.length() {
+          rts_j.push(base_codec::json_str(agg.runtimes[ri]))
+        }
+        let sts_j : Array[base_codec::Json] = []
+        for si in 0..<agg.stations.length() {
+          sts_j.push(base_codec::json_str(agg.stations[si]))
+        }
+        let is_starred = star_set.get(agg.key).is_some() || star_set.get(agg.id).is_some()
+        models_out.push(base_codec::json_obj([
+          ("model", base_codec::json_str(agg.id)),
+          ("id", base_codec::json_str(agg.id)),
+          ("name", base_codec::json_str(model_display_name_mpv(agg.id))),
+          ("runtimes", base_codec::json_arr(rts_j)),
+          ("stations", base_codec::json_arr(sts_j)),
+          ("starred", base_codec::json_bool(is_starred)),
+          ("availability", base_codec::json_str(if agg.available_here { "here" } else { "offline" })),
+        ]))
+      }
+    }
+  }
+  let starred_j : Array[base_codec::Json] = []
+  for i in 0..<star_list.length() {
+    starred_j.push(base_codec::json_str(star_list[i]))
+  }
+  sql::SqlResult::Ok(base_codec::json_obj([
+    ("workspace", base_codec::json_str(ws_scope)),
+    ("models", base_codec::json_arr(models_out)),
+    ("starred", base_codec::json_arr(starred_j)),
+  ]))
+}
+
+struct ProfileGroupBucketMpv {
+  key : String
+  group : String
+  title : String
+  station : String
+  station_id : String
+  station_name : String
+  profile : base_codec::Json
+  mut usable : Bool
+  mut look : Bool
+  members : Array[base_codec::Json]
+  mut used_count : Int
+}
+
+/// Project `profiles` topic strictly by `PROFILE_ROW_FIELDS`, stripping ALL secrets/tokens/keys.
+pub fn project_profiles(
+  db : sql::Sql,
+  ws_scope : String,
+) -> sql::SqlResult[base_codec::Json] {
+  let rows = match store::list_stations(db, kind="overview") {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rs) => rs
+  }
+  let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
+  let buckets : Map[String, ProfileGroupBucketMpv] = Map::new()
+  let bucket_keys : Array[String] = []
+
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    if prefix.length() > 0 && !r.address.starts_with(prefix) {
+      continue
+    }
+    let doc = parse_json_or_null(r.json)
+    let st_id = match j_opt_str(doc, "id") {
+      Some(s) => s
+      None => r.address
+    }
+    let st_name = match j_opt_str(doc, "name") {
+      Some(s) => s
+      None => st_id
+    }
+    let st_online = match base_codec::json_get(doc, "online") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => true
+    }
+    let profs = extract_overview_profiles_mpv(doc)
+    for pi in 0..<profs.length() {
+      let raw_p = profs[pi]
+      let conformed = conform_profile_row(raw_p)
+      let p_id = j_str(conformed, "id")
+      let p_name = j_str(conformed, "name")
+      let p_email = j_str(conformed, "email")
+      let enabled = match j_opt_bool(conformed, "enabled") {
+        Some(b) => b
+        None => true
+      }
+      let p_usable = st_online && enabled
+      let has_trouble = match base_codec::json_get(conformed, "trouble") {
+        Some(base_codec::Json::Obj(_)) => true
+        _ => false
+      }
+      let check_tone = match j_opt_str(conformed, "checkTone") {
+        Some(t) => t
+        None => "neutral"
+      }
+      let p_look = !p_usable || has_trouble || check_tone == "red"
+      let used_n = j_arr(conformed, "usedBy").length()
+      let grp = profile_group_of_mpv(conformed)
+      let acct_key = profile_account_key_mpv(r.address, conformed)
+      let title = if p_email.length() > 0 {
+        p_email
+      } else if p_name.length() > 0 {
+        p_name
+      } else {
+        p_id
+      }
+      let mem_obj = base_codec::json_obj([
+        ("station", base_codec::json_str(r.address)),
+        ("stationId", base_codec::json_str(st_id)),
+        ("stationName", base_codec::json_str(st_name)),
+        ("profileId", base_codec::json_str(p_id)),
+        ("profileName", base_codec::json_str(p_name)),
+        ("online", base_codec::json_bool(st_online)),
+        ("enabled", base_codec::json_bool(enabled)),
+        ("usable", base_codec::json_bool(p_usable)),
+        ("checkTone", base_codec::json_str(check_tone)),
+        ("usedBy", base_codec::json_int(used_n)),
+      ])
+      match buckets.get(acct_key) {
+        Some(b) => {
+          b.members.push(mem_obj)
+          if p_usable {
+            b.usable = true
+          }
+          if p_look {
+            b.look = true
+          }
+          b.used_count += used_n
+        }
+        None => {
+          bucket_keys.push(acct_key)
+          buckets.set(acct_key, ProfileGroupBucketMpv::{
+            key: acct_key,
+            group: grp,
+            title: title,
+            station: r.address,
+            station_id: st_id,
+            station_name: st_name,
+            profile: conformed,
+            usable: p_usable,
+            look: p_look,
+            members: [mem_obj],
+            used_count: used_n,
+          })
+        }
+      }
+    }
+  }
+
+  let list : Array[ProfileGroupBucketMpv] = []
+  for i in 0..<bucket_keys.length() {
+    match buckets.get(bucket_keys[i]) {
+      Some(b) => list.push(b)
+      None => ()
+    }
+  }
+  // Sort by group order, then look desc, then title asc.
+  for i in 1..<list.length() {
+    let cur = list[i]
+    let mut j = i - 1
+    while j >= 0 {
+      let prev = list[j]
+      let gr_p = group_rank_mpv(prev.group)
+      let gr_c = group_rank_mpv(cur.group)
+      let move_left = if gr_p != gr_c {
+        gr_p > gr_c
+      } else if prev.look != cur.look {
+        !prev.look && cur.look
+      } else {
+        cmp_str_mpv(prev.title, cur.title) > 0
+      }
+      if move_left {
+        list[j + 1] = list[j]
+        j -= 1
+      } else {
+        break
+      }
+    }
+    list[j + 1] = cur
+  }
+
+  let items_out : Array[base_codec::Json] = []
+  let mut attention = 0
+  for i in 0..<list.length() {
+    let b = list[i]
+    if b.look {
+      attention += 1
+    }
+    items_out.push(base_codec::json_obj([
+      ("key", base_codec::json_str(b.key)),
+      ("group", base_codec::json_str(b.group)),
+      ("groupTitle", base_codec::json_str(group_title_mpv(b.group))),
+      ("station", base_codec::json_str(b.station)),
+      ("stationId", base_codec::json_str(b.station_id)),
+      ("stationName", base_codec::json_str(b.station_name)),
+      ("title", base_codec::json_str(b.title)),
+      ("profile", b.profile),
+      ("usable", base_codec::json_bool(b.usable)),
+      ("look", base_codec::json_bool(b.look)),
+      ("members", base_codec::json_arr(b.members)),
+      ("several", base_codec::json_bool(b.members.length() > 1)),
+      ("usedCount", base_codec::json_int(b.used_count)),
+    ]))
+  }
+  sql::SqlResult::Ok(base_codec::json_obj([
+    ("workspace", base_codec::json_str(ws_scope)),
+    ("items", base_codec::json_arr(items_out)),
+    ("attention", base_codec::json_int(attention)),
+  ]))
+}
+
+fn pool_title_for_group_mpv(g : String) -> Option[String] {
+  if g == "claude" {
+    Some("Claude")
+  } else if g == "chatgpt" {
+    Some("Codex")
+  } else if g == "agy" {
+    Some("Gemini")
+  } else if g == "grok" {
+    Some("SuperGrok")
+  } else if g == "kimi" {
+    Some("Kimi Code")
+  } else if g == "opencode" {
+    Some("OpenCode Go")
+  } else if g == "cursor" {
+    Some("Cursor")
+  } else if g == "devin" {
+    Some("Devin")
+  } else {
+    None
+  }
+}
+
+struct PoolAggMpv {
+  title : String
+  mut total : Int
+  mut ready : Int
+  mut pct_sum : Double
+  mut pct_count : Int
+}
+
+/// Project `profilesOverview` topic: pool-level capacity & readiness summary built strictly
+/// from conformed `project_profiles` rows (zero secret/token leakage).
+pub fn project_profiles_overview(
+  db : sql::Sql,
+  ws_scope : String,
+  now_ms : Int64,
+) -> sql::SqlResult[base_codec::Json] {
+  let prof_res = match project_profiles(db, ws_scope) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(v) => v
+  }
+  let items = j_arr(prof_res, "items")
+  let pool_map : Map[String, PoolAggMpv] = Map::new()
+  let pool_order : Array[String] = []
+  let mut total_accounts = 0
+  let mut ready_accounts = 0
+
+  for i in 0..<items.length() {
+    let it = items[i]
+    let grp = j_str(it, "group")
+    let usable = j_bool(it, "usable")
+    let look = j_bool(it, "look")
+    total_accounts += 1
+    let is_ready = usable && !look
+    if is_ready {
+      ready_accounts += 1
+    }
+    let ptitle = match pool_title_for_group_mpv(grp) {
+      Some(t) => t
+      None => continue
+    }
+    let agg = match pool_map.get(ptitle) {
+      Some(a) => a
+      None => {
+        let created = PoolAggMpv::{
+          title: ptitle,
+          total: 0,
+          ready: 0,
+          pct_sum: 0.0,
+          pct_count: 0,
+        }
+        pool_order.push(ptitle)
+        pool_map.set(ptitle, created)
+        created
+      }
+    }
+    agg.total += 1
+    if is_ready {
+      agg.ready += 1
+    }
+    let prof = match base_codec::json_get(it, "profile") {
+      Some(p) => p
+      None => base_codec::json_null()
+    }
+    let quota = match base_codec::json_get(prof, "quota") {
+      Some(q) => q
+      None => base_codec::json_null()
+    }
+    let wins = j_arr(quota, "windows")
+    if wins.length() > 0 {
+      match j_opt_num_mpv(wins[0], "left") {
+        Some(left) => {
+          agg.pct_sum += left
+          agg.pct_count += 1
+        }
+        None => ()
+      }
+    } else if is_ready {
+      agg.pct_sum += 100.0
+      agg.pct_count += 1
+    }
+  }
+
+  let pools_out : Array[base_codec::Json] = []
+  for i in 0..<pool_order.length() {
+    match pool_map.get(pool_order[i]) {
+      None => ()
+      Some(agg) => {
+        let now_pct = if agg.pct_count > 0 {
+          (agg.pct_sum / agg.pct_count.to_double()).to_int()
+        } else if agg.ready > 0 {
+          100
+        } else {
+          0
+        }
+        let sustain = 100.0 / 168.0
+        pools_out.push(base_codec::json_obj([
+          ("title", base_codec::json_str(agg.title)),
+          ("ready", base_codec::json_int(agg.ready)),
+          ("total", base_codec::json_int(agg.total)),
+          ("nowPct", base_codec::json_int(now_pct)),
+          ("exhaustHours", base_codec::json_null()),
+          ("currentBurnPerHour", base_codec::json_num(0.0)),
+          ("sustainablePerHour", base_codec::json_num(sustain)),
+          ("netPerHour", base_codec::json_num(sustain)),
+          ("overPace", base_codec::json_bool(false)),
+          ("neededAccounts", base_codec::json_null()),
+        ]))
+      }
+    }
+  }
+
+  sql::SqlResult::Ok(base_codec::json_obj([
+    ("workspace", base_codec::json_str(ws_scope)),
+    ("at", base_codec::json_int64(now_ms)),
+    ("totalAccounts", base_codec::json_int(total_accounts)),
+    ("readyAccounts", base_codec::json_int(ready_accounts)),
+    ("pools", base_codec::json_arr(pools_out)),
+  ]))
+}

@@ -302,6 +302,9 @@ pub extern "C" fn pion_core_runtime_start(
     None
   }
   let core = sync::ClientCore::new("ws-default", "st-local", rt, acct.db, transport, fn() -> Unit {})
+  if origin.length() > 0 {
+    core.set_cloud_origin(origin)
+  }
   g_session[0] = Some(RuntimeSession::{
     sh: sh,
     db: acct.db,
@@ -323,8 +326,17 @@ fn affected_topic_for_call(call_name : String) -> Option[String] {
   if call_name == "chat.draft" {
     return Some("draft")
   }
-  if call_name == "account.switch" {
+  if call_name == "account.switch" || call_name == "auth.complete" {
     return Some("accounts")
+  }
+  if call_name == "vault.approve" || call_name == "vault.deny" || call_name == "vault.withdraw" {
+    return Some("vaultApprovals")
+  }
+  if call_name == "preset.copy" {
+    return Some("presets")
+  }
+  if call_name == "download.join" || call_name == "download.leave" {
+    return Some("downloads")
   }
   if call_name == "message.send" || call_name == "message.edit" || call_name == "message.delete" || call_name == "card.answer" {
     return Some("chat")
