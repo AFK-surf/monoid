@@ -3,11 +3,10 @@
 //
 // Invariants:
 // - Default engine is always `"mb"`.
-// - Environment variable override (`readerModeEnvKey(mode)`, i.e. prefix `"STILLFAIL"` + `"_READER_"` +
-//   `<UPPER_SNAKE_MODE>`) overrides `config.json`'s `readers[mode]`.
-// - Only pure read-only, side-effect-free modes (e.g. `footprint`, `data`) may run in `"shadow"` mode.
-//   Stateful, database-writing, filesystem-mutating, or socket-binding modes MUST reject `"shadow"`
-//   and fall back safely to `"mb"` so two engines never mutate the same store or state concurrently.
+// - Environment variable `STILLFAIL_READER_<UPPER_SNAKE_MODE>` overrides `config.json`'s `readers[mode]`.
+// - Only strictly read-only, side-effect-free modes (currently only `footprint`) may run in `"shadow"` mode.
+//   Stateful, database-writing, cache-writing, filesystem-mutating, or socket-binding modes MUST reject
+//   `"shadow"` and fall back safely to `"mb"` so two engines never mutate the same store or state concurrently.
 // - Requesting `"pion"` (or an allowed `"shadow"`) when no Pion binary is available falls back safely
 //   to `"mb"` with a structured reason for logging.
 
@@ -24,6 +23,11 @@ export type ReaderModeMeta = {
 /**
  * Explicit registry of every `stillfail-reader` execution mode (`--data`, `--serve`, `--sessions`,
  * and `--builder <kind>`), declaring whether dual-run `shadow` mode is permitted.
+ *
+ * Only `footprint` is currently certified pure read-only / side-effect-free (`allowShadow: true`).
+ * All other modes (`data` runs WAL checkpoints & writes timeline marks cache; `search`, `live-locator`,
+ * `usage-check` attach SQLite / shell state; builders & servers mutate DB/FS/sockets) forbid `shadow`
+ * until individually proven read-only and isolated.
  */
 export const READER_MODES = {
   // Pure read-only / no-side-effect modes (shadow allowed)
@@ -32,28 +36,28 @@ export const READER_MODES = {
     sideEffect: "read-only",
     note: "Read-only disk footprint walk (--builder footprint)",
   },
+
+  // Stateful / DB-attaching / cache-writing / FS-mutating / network-binding modes (shadow strictly forbidden)
   data: {
-    allowShadow: true,
-    sideEffect: "read-only",
-    note: "Read-only query pool process (--data)",
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Query pool process with WAL checkpoints and timeline marks cache writes (--data)",
   },
   search: {
-    allowShadow: true,
-    sideEffect: "read-only",
-    note: "Read-only transcript and history search (--builder search)",
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Transcript and history search with SQLite attach and shared hints (--builder search)",
   },
   "live-locator": {
-    allowShadow: true,
-    sideEffect: "read-only",
-    note: "Read-only live transcript locator (--builder live-locator)",
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Live transcript locator with SQLite attach (--builder live-locator)",
   },
   "usage-check": {
-    allowShadow: true,
-    sideEffect: "read-only",
-    note: "Read-only historical usage coverage check (--builder usage-check)",
+    allowShadow: false,
+    sideEffect: "write-db",
+    note: "Historical usage coverage checker with SQLite attach (--builder usage-check)",
   },
-
-  // Stateful / DB-writing / FS-mutating / network-binding modes (shadow strictly forbidden)
   serve: {
     allowShadow: false,
     sideEffect: "network",
@@ -261,13 +265,11 @@ export type ReaderSelection = {
   readonly detail?: string;
 };
 
-// Constructed from segments because Node-only reader routing has no counterpart in `station/mb/`
-// (`station/test/mb-station-contracts.test.ts` scans `station/src/` for literal env tokens).
-const READER_ENV_PREFIX = ["STILLFAIL", "READER"].join("_");
+export const READER_ENV_PREFIX = "STILLFAIL_READER_";
 
 /** Compute the canonical environment variable name for a reader mode. */
-export function readerModeEnvKey(mode: ReaderMode): string {
-  return `${READER_ENV_PREFIX}_${mode.replaceAll("-", "_").toUpperCase()}`;
+export function readerModeEnvKey(mode: ReaderMode): `STILLFAIL_READER_${string}` {
+  return `${READER_ENV_PREFIX}${mode.replaceAll("-", "_").toUpperCase()}`;
 }
 
 /** Type guard for known reader modes. */
@@ -275,9 +277,32 @@ export function isReaderMode(value: string): value is ReaderMode {
   return Object.hasOwn(READER_MODES, value);
 }
 
+/** Safely format an arbitrary config/env value for diagnostics without calling `toString()` on untrusted objects. */
+function formatRawValue(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  if (
+    typeof raw === "number" ||
+    typeof raw === "boolean" ||
+    typeof raw === "bigint" ||
+    raw === null ||
+    raw === undefined
+  ) {
+    return `${raw}`;
+  }
+  if (typeof raw === "symbol") {
+    return raw.description !== undefined ? `Symbol(${raw.description})` : "Symbol()";
+  }
+  try {
+    const json = JSON.stringify(raw);
+    return json !== undefined ? json : "[unserializable]";
+  } catch {
+    return "[unserializable]";
+  }
+}
+
 function parseEngineValue(raw: unknown): { engine: ReaderEngine | null; rawText: string } {
   if (typeof raw !== "string") {
-    return { engine: null, rawText: String(raw) };
+    return { engine: null, rawText: formatRawValue(raw) };
   }
   const normalized = raw.trim().toLowerCase();
   if (normalized === "mb" || normalized === "pion" || normalized === "shadow") {
@@ -290,7 +315,7 @@ function parseEngineValue(raw: unknown): { engine: ReaderEngine | null; rawText:
  * Resolve which engine (`"mb"`, `"pion"`, or `"shadow"`) should execute `mode`.
  *
  * Precedence:
- * 1. Environment variable `readerModeEnvKey(mode)` (non-empty trimmed string)
+ * 1. Environment variable `STILLFAIL_READER_<UPPER_SNAKE_MODE>` (non-empty trimmed string)
  * 2. `config.readers[mode]`
  * 3. Default `"mb"`
  *

@@ -201,19 +201,25 @@ type Ask = { finding: boolean; strict: boolean; stopAfter?: number };
 /// system but a path gone fails it (else what cannot be read is passed over). `signal` ends the process at once and
 /// fails the measure with its reason. There is no walk in TypeScript to fall back to: the one it replaced is
 /// station/test/footprint-reference.ts, which station/test/mb-footprint.test.ts holds the program to.
+const warnedReaderFallbacks = new Set<string>();
+
 function measure(path: string, ask: Ask, budget: MeasureBudget, signal?: AbortSignal): Promise<Measured> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(signal.reason);
     const selection = resolveReaderEngine("footprint", { hasPionBinary: false });
     if (selection.fallback) {
-      log.warn("footprint", "reader engine fallback", {
-        mode: selection.mode,
-        engine: selection.engine,
-        requested: selection.requested,
-        source: selection.source,
-        reason: selection.reason,
-        detail: selection.detail,
-      });
+      const dedupKey = `${selection.mode}:${selection.source}:${selection.reason ?? "unknown"}`;
+      if (!warnedReaderFallbacks.has(dedupKey)) {
+        warnedReaderFallbacks.add(dedupKey);
+        log.warn("footprint", "reader engine fallback", {
+          mode: selection.mode,
+          engine: selection.engine,
+          requested: selection.requested,
+          source: selection.source,
+          reason: selection.reason,
+          detail: selection.detail,
+        });
+      }
     }
     const binary = readerBinary();
     const p = new MbProcess(binary, ["--builder", "footprint", "--sep", sep], { background: true });

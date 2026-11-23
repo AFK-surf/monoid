@@ -1,46 +1,53 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   isReaderMode,
   READER_MODES,
   type ReaderMode,
   readerModeEnvKey,
   resolveReaderEngine,
-} from "../../src/read/reader-select.ts";
+} from "../src/read/reader-select.ts";
 
-const READ_ONLY_MODES: readonly ReaderMode[] = [
-  "footprint",
-  "data",
-  "search",
-  "live-locator",
-  "usage-check",
-];
+const MAIN_MBT_PATH = fileURLToPath(new URL("../mb/src/reader/main.mbt", import.meta.url));
 
-const SIDE_EFFECT_MODES: readonly ReaderMode[] = [
-  "serve",
-  "sessions",
-  "memory",
-  "packed",
-  "replica-export",
-  "replica-restore",
-  "replica-carry",
-  "vault-uses",
-  "usage-counter",
-  "usage-retire",
-  "session-backfill",
-  "session-counts",
-  "session-list",
-  "forward",
-  "mesh",
-];
+/** Extract every `--builder <name>` plus top-level `--data`/`--serve`/`--sessions` mode from `main.mbt`. */
+function modesInMainMbt(): string[] {
+  const src = readFileSync(MAIN_MBT_PATH, "utf8");
+  const mainStart = src.indexOf("\nfn main {");
+  assert.ok(mainStart >= 0, "fn main { found in station/mb/src/reader/main.mbt");
+  const mainBody = src.slice(mainStart);
+  const modes = new Set<string>(["data", "serve", "sessions"]);
+  for (const match of mainBody.matchAll(/\(\s*Some\("([a-z0-9-]+)"\)\s*,/g)) {
+    modes.add(match[1]!);
+  }
+  return [...modes].sort();
+}
 
-test("READER_MODES metadata invariants: envKey formula and allowShadow iff read-only", () => {
-  const entries = Object.entries(READER_MODES) as [ReaderMode, (typeof READER_MODES)[ReaderMode]][];
-  assert.ok(entries.length >= 20, "all reader/builder modes are registered");
+test("READER_MODES strictly matches all modes in station/mb/src/reader/main.mbt and allows shadow ONLY for footprint", () => {
+  const registered = Object.keys(READER_MODES).sort();
+  const fromMainMbt = modesInMainMbt();
+  assert.deepEqual(
+    registered,
+    fromMainMbt,
+    "READER_MODES must match every --builder and top-level mode in station/mb/src/reader/main.mbt",
+  );
+
+  const shadowAllowed = (Object.entries(READER_MODES) as [ReaderMode, (typeof READER_MODES)[ReaderMode]][])
+    .filter(([, meta]) => meta.allowShadow)
+    .map(([mode]) => mode)
+    .sort();
+  assert.deepEqual(
+    shadowAllowed,
+    ["footprint"],
+    "only footprint is currently certified pure read-only and permitted to run in shadow mode",
+  );
+
   assert.equal(readerModeEnvKey("footprint"), "STILLFAIL_READER_FOOTPRINT");
   assert.equal(readerModeEnvKey("replica-export"), "STILLFAIL_READER_REPLICA_EXPORT");
   assert.equal(readerModeEnvKey("live-locator"), "STILLFAIL_READER_LIVE_LOCATOR");
-  for (const [mode, meta] of entries) {
+  for (const [mode, meta] of Object.entries(READER_MODES) as [ReaderMode, (typeof READER_MODES)[ReaderMode]][]) {
     assert.equal(isReaderMode(mode), true);
     assert.match(readerModeEnvKey(mode), /^STILLFAIL_READER_[A-Z0-9_]+$/);
     assert.equal(
@@ -69,21 +76,25 @@ test("defaults to mb for every mode regardless of hasPionBinary", () => {
   }
 });
 
-test("config.readers selects mb, pion, and shadow (for read-only modes)", () => {
-  for (const mode of READ_ONLY_MODES) {
-    assert.deepEqual(
-      resolveReaderEngine(mode, { config: { readers: { [mode]: "mb" } }, env: {}, hasPionBinary: true }),
-      { mode, engine: "mb", requested: "mb", rawRequested: "mb", source: "config", fallback: false },
-    );
-    assert.deepEqual(
-      resolveReaderEngine(mode, { config: { readers: { [mode]: "pion" } }, env: {}, hasPionBinary: true }),
-      { mode, engine: "pion", requested: "pion", rawRequested: "pion", source: "config", fallback: false },
-    );
-    assert.deepEqual(
-      resolveReaderEngine(mode, { config: { readers: { [mode]: "shadow" } }, env: {}, hasPionBinary: true }),
-      { mode, engine: "shadow", requested: "shadow", rawRequested: "shadow", source: "config", fallback: false },
-    );
-  }
+test("config.readers selects mb, pion, and shadow (for footprint)", () => {
+  assert.deepEqual(
+    resolveReaderEngine("footprint", { config: { readers: { footprint: "mb" } }, env: {}, hasPionBinary: true }),
+    { mode: "footprint", engine: "mb", requested: "mb", rawRequested: "mb", source: "config", fallback: false },
+  );
+  assert.deepEqual(
+    resolveReaderEngine("footprint", { config: { readers: { footprint: "pion" } }, env: {}, hasPionBinary: true }),
+    { mode: "footprint", engine: "pion", requested: "pion", rawRequested: "pion", source: "config", fallback: false },
+  );
+  assert.deepEqual(
+    resolveReaderEngine("footprint", { config: { readers: { footprint: "shadow" } }, env: {}, hasPionBinary: true }),
+    { mode: "footprint", engine: "shadow", requested: "shadow", rawRequested: "shadow", source: "config", fallback: false },
+  );
+
+  // Non-footprint modes can select pion directly when binary is available.
+  assert.deepEqual(
+    resolveReaderEngine("data", { config: { readers: { data: "pion" } }, env: {}, hasPionBinary: true }),
+    { mode: "data", engine: "pion", requested: "pion", rawRequested: "pion", source: "config", fallback: false },
+  );
 
   // Empty or null config values fall back to default cleanly.
   assert.equal(
@@ -97,7 +108,6 @@ test("config.readers selects mb, pion, and shadow (for read-only modes)", () => 
 });
 
 test("environment variable STILLFAIL_READER_<UPPER_SNAKE_MODE> overrides config", () => {
-  // Rollback via env when config asks for pion
   const rollback = resolveReaderEngine("footprint", {
     config: { readers: { footprint: "pion" } },
     env: { STILLFAIL_READER_FOOTPRINT: "mb" },
@@ -112,7 +122,6 @@ test("environment variable STILLFAIL_READER_<UPPER_SNAKE_MODE> overrides config"
     fallback: false,
   });
 
-  // Upgrade via env when config asks for mb (hyphenated mode -> UPPER_SNAKE)
   const upgrade = resolveReaderEngine("replica-export", {
     config: { readers: { "replica-export": "mb" } },
     env: { STILLFAIL_READER_REPLICA_EXPORT: "pion" },
@@ -127,7 +136,6 @@ test("environment variable STILLFAIL_READER_<UPPER_SNAKE_MODE> overrides config"
     fallback: false,
   });
 
-  // Whitespace-only env is ignored and config takes effect
   const blankEnv = resolveReaderEngine("footprint", {
     config: { readers: { footprint: "shadow" } },
     env: { STILLFAIL_READER_FOOTPRINT: "  \t  " },
@@ -138,8 +146,8 @@ test("environment variable STILLFAIL_READER_<UPPER_SNAKE_MODE> overrides config"
 });
 
 test("case-insensitivity and whitespace trimming", () => {
-  const fromEnv = resolveReaderEngine("data", {
-    env: { STILLFAIL_READER_DATA: "  ShAdOw \n" },
+  const fromEnv = resolveReaderEngine("footprint", {
+    env: { STILLFAIL_READER_FOOTPRINT: "  ShAdOw \n" },
     hasPionBinary: true,
   });
   assert.equal(fromEnv.engine, "shadow");
@@ -156,8 +164,23 @@ test("case-insensitivity and whitespace trimming", () => {
   assert.equal(fromConfig.fallback, false);
 });
 
-test("invalid values in config or env fall back safely to mb with structured reason", () => {
-  for (const bad of ["rust", "moonbit", "dual", 42, true, { engine: "pion" }]) {
+test("invalid values (including untrusted objects with null toString or circular refs) fall back safely without throwing", () => {
+  const circular: Record<string, unknown> = {};
+  circular.self = circular;
+  const nullProto = Object.create(null) as Record<string, unknown>;
+  nullProto.engine = "pion";
+
+  for (const bad of [
+    "rust",
+    "moonbit",
+    "dual",
+    42,
+    true,
+    { engine: "pion" },
+    { toString: null },
+    nullProto,
+    circular,
+  ]) {
     const sel = resolveReaderEngine("footprint", {
       config: { readers: { footprint: bad } },
       env: {},
@@ -168,6 +191,7 @@ test("invalid values in config or env fall back safely to mb with structured rea
     assert.equal(sel.source, "config");
     assert.equal(sel.fallback, true);
     assert.equal(sel.reason, "invalid-value");
+    assert.equal(typeof sel.rawRequested, "string");
     assert.ok(sel.detail && sel.detail.includes("footprint"));
   }
 
@@ -184,8 +208,11 @@ test("invalid values in config or env fall back safely to mb with structured rea
   assert.equal(badEnv.rawRequested, "typo");
 });
 
-test("all stateful / write modes strictly forbid shadow and fall back to mb", () => {
-  for (const mode of SIDE_EFFECT_MODES) {
+test("every non-footprint mode strictly forbids shadow and falls back to mb", () => {
+  const nonFootprint = (Object.keys(READER_MODES) as ReaderMode[]).filter((m) => m !== "footprint");
+  assert.ok(nonFootprint.length >= 30);
+
+  for (const mode of nonFootprint) {
     assert.equal(READER_MODES[mode].allowShadow, false, `${mode} must forbid shadow`);
     for (const hasPionBinary of [true, false]) {
       const viaConfig = resolveReaderEngine(mode, {
@@ -227,8 +254,8 @@ test("missing Pion binary safely falls back to mb for pion and allowed shadow re
   assert.equal(pionReq.reason, "pion-binary-missing");
   assert.ok(pionReq.detail && pionReq.detail.includes("Pion binary is unavailable"));
 
-  const shadowReq = resolveReaderEngine("data", {
-    env: { STILLFAIL_READER_DATA: "shadow" },
+  const shadowReq = resolveReaderEngine("footprint", {
+    env: { STILLFAIL_READER_FOOTPRINT: "shadow" },
     hasPionBinary: false,
   });
   assert.equal(shadowReq.engine, "mb");
@@ -237,7 +264,6 @@ test("missing Pion binary safely falls back to mb for pion and allowed shadow re
   assert.equal(shadowReq.fallback, true);
   assert.equal(shadowReq.reason, "pion-binary-missing");
 
-  // Explicit mb request with hasPionBinary: false is not a fallback.
   const mbReq = resolveReaderEngine("footprint", {
     config: { readers: { footprint: "mb" } },
     env: {},

@@ -9,10 +9,12 @@ import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlin
 import { tmpdir } from "node:os";
 import { join, normalize, sep } from "node:path";
 import { after, test } from "node:test";
-import { platform } from "../../src/platform/index.ts";
-import { mbReaderBinary, Said } from "../../src/read/mb-reader.ts";
-import { MEASURE_ROOM, MEASURE_UP_TO, type MeasureBudget, type Room } from "../../src/sessions/footprint.ts";
-import { measureRoomReference, measuredReference, measuredUpToReference } from "../footprint-reference.ts";
+import { platform } from "../src/platform/index.ts";
+import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { MEASURE_ROOM, MEASURE_UP_TO, type MeasureBudget, type Room } from "../src/sessions/footprint.ts";
+import { measureRoomReference, measuredReference, measuredUpToReference } from "./footprint-reference.ts";
+
+const CHILD_TIMEOUT_MS = 15_000;
 
 function resolveCandidateBinary(): string {
   const injected = process.env.STILLFAIL_READER_CANDIDATE?.trim();
@@ -49,6 +51,65 @@ function writeSized(filePath: string, bytes: number): void {
   writeFileSync(filePath, Buffer.alloc(bytes, 0x41));
 }
 
+/**
+ * Strict JSON-line + optional `{ bytes }` body frame parser for contract tests.
+ * Unlike production `Said`, this never swallows malformed lines and asserts zero trailing garbage at EOF.
+ */
+class StrictFrameParser {
+  #buf: Buffer = Buffer.alloc(0);
+  #pendingHead: Record<string, unknown> | null = null;
+  #wantedBytes = 0;
+  readonly messages: unknown[] = [];
+
+  push(chunk: Buffer): void {
+    this.#buf = this.#buf.length === 0 ? chunk : Buffer.concat([this.#buf, chunk]);
+    while (this.#buf.length > 0) {
+      if (this.#pendingHead !== null) {
+        if (this.#buf.length < this.#wantedBytes) return;
+        const body = this.#buf.subarray(0, this.#wantedBytes);
+        this.#buf = this.#buf.subarray(this.#wantedBytes);
+        const head = this.#pendingHead;
+        this.#pendingHead = null;
+        this.#wantedBytes = 0;
+        this.messages.push({ ...head, body });
+        continue;
+      }
+      const nl = this.#buf.indexOf(10);
+      if (nl < 0) return;
+      const line = this.#buf.subarray(0, nl).toString("utf8");
+      this.#buf = this.#buf.subarray(nl + 1);
+      assert.notEqual(line, "", "unexpected empty line on stdout");
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch (err) {
+        assert.fail(`stdout emitted non-JSON line: ${JSON.stringify(line)} (${(err as Error).message})`);
+      }
+      const wanted = (parsed as { bytes?: unknown } | null)?.bytes;
+      if (typeof wanted === "number" && Number.isInteger(wanted) && wanted >= 0) {
+        const { bytes: _, ...rest } = parsed as Record<string, unknown>;
+        this.#pendingHead = rest;
+        this.#wantedBytes = wanted;
+        if (wanted === 0) {
+          this.#pendingHead = null;
+          this.messages.push({ ...rest, body: Buffer.alloc(0) });
+        }
+        continue;
+      }
+      this.messages.push(parsed);
+    }
+  }
+
+  assertCleanEof(): void {
+    assert.equal(this.#pendingHead, null, `truncated framed body at EOF (wanted ${this.#wantedBytes} bytes)`);
+    assert.equal(
+      this.#buf.length,
+      0,
+      `trailing non-terminated bytes on stdout at EOF: ${JSON.stringify(this.#buf.toString("utf8"))}`,
+    );
+  }
+}
+
 type FootprintRawResponse = {
   size?: number;
   complete?: boolean;
@@ -67,6 +128,11 @@ type RawInvocation = {
   signal: NodeJS.Signals | null;
 };
 
+/**
+ * Invoke `--builder footprint` matching production lifecycle (`sessions/footprint.ts`):
+ * writes one JSON line and KEEPS `stdin` OPEN so the binary must respond and exit on its own
+ * without waiting for stdin EOF.
+ */
 async function invokeFootprintRaw(rawLine: string): Promise<RawInvocation> {
   return await new Promise<RawInvocation>((resolve, reject) => {
     const child = spawn(CANDIDATE, ["--builder", "footprint", "--sep", sep], {
@@ -75,17 +141,41 @@ async function invokeFootprintRaw(rawLine: string): Promise<RawInvocation> {
     });
     const pid = child.pid;
     assert.ok(typeof pid === "number" && pid > 0, "expected a real child process pid");
-    const messages: unknown[] = [];
+    const parser = new StrictFrameParser();
     let stderr = "";
-    const said = new Said((msg) => messages.push(msg));
-    child.stdout!.on("data", (chunk: Buffer) => said.push(chunk));
+    let parseError: Error | null = null;
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`footprint process ${pid} timed out after ${CHILD_TIMEOUT_MS}ms (stderr: ${stderr})`));
+    }, CHILD_TIMEOUT_MS);
+
+    child.stdout!.on("data", (chunk: Buffer) => {
+      if (parseError !== null) return;
+      try {
+        parser.push(chunk);
+      } catch (err) {
+        parseError = err as Error;
+        child.kill("SIGKILL");
+      }
+    });
     child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
     child.stdin!.on("error", () => {});
-    child.on("error", reject);
-    child.on("close", (exitCode, signal) => {
-      resolve({ pid, messages, stderr, exitCode, signal });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
     });
-    child.stdin!.end(rawLine);
+    child.on("close", (exitCode, signal) => {
+      clearTimeout(timer);
+      if (parseError !== null) return reject(parseError);
+      try {
+        parser.assertCleanEof();
+      } catch (err) {
+        return reject(err);
+      }
+      resolve({ pid, messages: parser.messages, stderr, exitCode, signal });
+    });
+    // Keep stdin open (production behavior): do NOT call stdin.end().
+    child.stdin!.write(rawLine);
   });
 }
 
@@ -203,7 +293,6 @@ test("hard links to the same inode are deduplicated and counted once", async () 
   assert.deepEqual(gotRoom, refRoom);
   const singleDiskBytes = await candidateMeasured(join(root, "primary/blob.bin"));
   assert.ok(singleDiskBytes >= payloadBytes, `single file disk bytes ${singleDiskBytes} >= ${payloadBytes}`);
-  // Four hard links to the same 128 KiB file must not multiply its footprint.
   assert.ok(
     gotRoom.bytes < singleDiskBytes * 2,
     `expected deduplicated bytes (${gotRoom.bytes}) < 2x single file (${singleDiskBytes * 2})`,
@@ -228,7 +317,7 @@ test("symlinks (dangling, directory, circular) are not followed and never loop",
   assert.ok(gotRoom.bytes < 256 * 1024, `external symlink target must not be counted (got ${gotRoom.bytes})`);
 });
 
-test("budget limits (maxEntries, stopAfter, depth > 32) match TS oracle", async () => {
+test("budget limits (maxEntries, stopAfter, depth > 32, maxDurationMs: 0) match TS oracle", async () => {
   const root = freshDir();
   for (let i = 0; i < 12; i++) writeSized(join(root, `dir-${i}/file.bin`), 8192);
   writeSized(join(root, "app/node_modules/a/b.js"), 16384);
@@ -261,129 +350,165 @@ test("budget limits (maxEntries, stopAfter, depth > 32) match TS oracle", async 
   assert.deepEqual(deepGot, deepRef);
   assert.equal(deepGot.complete, false);
   assert.equal(deepGot.reason, "depth");
+
+  // Deterministic duration truncation with maxDurationMs: 0 on a sufficiently large tree
+  const durationRoot = freshDir();
+  for (let d = 0; d < 20; d++) {
+    for (let f = 0; f < 100; f++) {
+      writeSized(join(durationRoot, `d${d}`, `f${f}`), 16);
+    }
+  }
+  const durationRoom = await candidateMeasureRoom(durationRoot, { maxDurationMs: 0 });
+  assert.equal(durationRoom.complete, false);
+  assert.equal(durationRoom.reason, "duration");
 });
 
-test("unreadable subdirectory (chmod 0o000): strict fails with EACCES, non-strict skips and cleans up", async () => {
+test("unreadable subdirectory (chmod 0o000): strict fails with EACCES, non-strict skips and cleans up", async (t) => {
+  if (platform.os === "windows" || process.getuid?.() === 0) {
+    t.skip("requires non-root POSIX permissions");
+    return;
+  }
   const root = freshDir();
   writeSized(join(root, "visible/a.txt"), 4096);
   const locked = join(root, "locked");
   writeSized(join(locked, "secret.txt"), 16384);
 
-  const canEnforcePerms = platform.os !== "windows" && process.getuid?.() !== 0;
-  if (canEnforcePerms) {
-    chmodSync(locked, 0o000);
-  }
+  chmodSync(locked, 0o000);
   try {
-    if (canEnforcePerms) {
-      const catchErr = (p: Promise<unknown>) =>
-        p.then(
-          () => null,
-          (e: NodeJS.ErrnoException) => ({ code: e.code, message: e.message }),
-        );
-      const [gotErr, refErr] = [
-        await catchErr(candidateMeasuredUpTo(root, Number.MAX_SAFE_INTEGER, MEASURE_UP_TO, true)),
-        await catchErr(measuredUpToReference(root, Number.MAX_SAFE_INTEGER)),
-      ];
-      assert.deepEqual(gotErr, refErr);
-      assert.equal(gotErr?.code, "EACCES");
-    }
+    const catchErr = (p: Promise<unknown>) =>
+      p.then(
+        () => null,
+        (e: NodeJS.ErrnoException) => ({ code: e.code, message: e.message }),
+      );
+    const [gotErr, refErr] = [
+      await catchErr(candidateMeasuredUpTo(root, Number.MAX_SAFE_INTEGER, MEASURE_UP_TO, true)),
+      await catchErr(measuredUpToReference(root, Number.MAX_SAFE_INTEGER)),
+    ];
+    assert.deepEqual(gotErr, refErr);
+    assert.equal(gotErr?.code, "EACCES");
 
     assert.equal(await candidateMeasured(root), await measuredReference(root));
     assert.deepEqual(await candidateMeasureRoom(root), await measureRoomReference(root));
   } finally {
-    if (canEnforcePerms) {
-      chmodSync(locked, 0o755);
-    }
+    chmodSync(locked, 0o755);
   }
 });
 
-test("cancellation and termination: stdin EOF and SIGTERM exit cleanly with zero zombies", async () => {
-  // 1) Closing stdin immediately without a request exits cleanly with code 0.
-  const eofExit = await new Promise<{ pid: number; code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+test("cancellation and termination: stdin EOF and SIGTERM exit cleanly with no response and zero zombies", async () => {
+  // 1) Closing stdin immediately without a request exits cleanly with code 0 and no output.
+  const eofExit = await new Promise<{ pid: number; code: number | null; signal: NodeJS.Signals | null; stdout: string }>((resolve, reject) => {
     const child = spawn(CANDIDATE, ["--builder", "footprint", "--sep", sep], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
     const pid = child.pid!;
     assert.ok(pid > 0);
-    child.on("error", reject);
-    child.on("close", (code, signal) => resolve({ pid, code, signal }));
+    let stdout = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`footprint EOF test timed out for pid ${pid}`));
+    }, CHILD_TIMEOUT_MS);
+    child.stdout!.on("data", (c: Buffer) => { stdout += c.toString("utf8"); });
+    child.stderr!.resume();
+    child.on("error", (err) => { clearTimeout(timer); reject(err); });
+    child.on("close", (code, signal) => { clearTimeout(timer); resolve({ pid, code, signal, stdout }); });
     child.stdin!.end();
   });
   assert.equal(eofExit.code, 0);
   assert.equal(eofExit.signal, null);
+  assert.equal(eofExit.stdout, "");
   assertProcessGone(eofExit.pid);
 
-  // 2) SIGTERM while waiting for stdin terminates promptly with no zombie.
-  const sigtermIdle = await new Promise<{ pid: number; code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+  // 2) SIGTERM while waiting for stdin terminates with SIGTERM, emits no response, and leaves zero zombies.
+  const sigtermIdle = await new Promise<{ pid: number; code: number | null; signal: NodeJS.Signals | null; stdout: string }>((resolve, reject) => {
     const child = spawn(CANDIDATE, ["--builder", "footprint", "--sep", sep], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
     const pid = child.pid!;
     assert.ok(pid > 0);
-    child.on("error", reject);
-    child.on("close", (code, signal) => resolve({ pid, code, signal }));
-    child.kill("SIGTERM");
+    let stdout = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`footprint idle SIGTERM test timed out for pid ${pid}`));
+    }, CHILD_TIMEOUT_MS);
+    child.stdout!.on("data", (c: Buffer) => { stdout += c.toString("utf8"); });
+    child.stderr!.resume();
+    child.on("error", (err) => { clearTimeout(timer); reject(err); });
+    child.on("close", (code, signal) => { clearTimeout(timer); resolve({ pid, code, signal, stdout }); });
+    child.once("spawn", () => {
+      child.kill("SIGTERM");
+    });
   });
-  assert.ok(sigtermIdle.signal === "SIGTERM" || sigtermIdle.code !== 0);
+  assert.equal(sigtermIdle.stdout, "");
+  assert.equal(sigtermIdle.signal, "SIGTERM");
   assertProcessGone(sigtermIdle.pid);
 
-  // 3) SIGTERM during an active walk terminates promptly with no zombie.
+  // 3) SIGTERM during an active walk over a large tree terminates with SIGTERM and no completed response.
   const bigTree = freshDir();
-  for (let d = 0; d < 10; d++) {
-    for (let f = 0; f < 50; f++) {
+  for (let d = 0; d < 30; d++) {
+    for (let f = 0; f < 100; f++) {
       writeSized(join(bigTree, `d${d}`, `f${f}`), 16);
     }
   }
-  const sigtermActive = await new Promise<{ pid: number; code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+  const sigtermActive = await new Promise<{ pid: number; code: number | null; signal: NodeJS.Signals | null; stdout: string }>((resolve, reject) => {
     const child = spawn(CANDIDATE, ["--builder", "footprint", "--sep", sep], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
     const pid = child.pid!;
     assert.ok(pid > 0);
+    let stdout = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`footprint active SIGTERM test timed out for pid ${pid}`));
+    }, CHILD_TIMEOUT_MS);
+    child.stdout!.on("data", (c: Buffer) => { stdout += c.toString("utf8"); });
+    child.stderr!.resume();
     child.stdin!.on("error", () => {});
-    child.on("error", reject);
-    child.on("close", (code, signal) => resolve({ pid, code, signal }));
-    child.stdin!.write(`${JSON.stringify({ path: bigTree, base: normalize(bigTree), finding: true, strict: false })}\n`);
-    child.kill("SIGTERM");
+    child.on("error", (err) => { clearTimeout(timer); reject(err); });
+    child.on("close", (code, signal) => { clearTimeout(timer); resolve({ pid, code, signal, stdout }); });
+    child.once("spawn", () => {
+      child.stdin!.write(`${JSON.stringify({ path: bigTree, base: normalize(bigTree), finding: true, strict: false })}\n`);
+      child.kill("SIGTERM");
+    });
   });
-  assert.ok(sigtermActive.signal === "SIGTERM" || sigtermActive.code !== null);
+  assert.equal(sigtermActive.stdout, "", "cancelled walk must not emit a completed JSON response");
+  assert.equal(sigtermActive.signal, "SIGTERM");
   assertProcessGone(sigtermActive.pid);
 });
 
 test("invalid CLI arguments, malformed JSON requests, and missing paths follow error contract", async () => {
-  // Missing path: both strict and non-strict return zero size, complete: true.
   const missing = join(freshDir(), "does-not-exist");
   assert.deepEqual(await candidateMeasureRoom(missing), { bytes: 0, rebuild: [], complete: true });
   assert.deepEqual(await candidateMeasuredUpTo(missing, 1024, MEASURE_UP_TO, true), { bytes: 0, complete: true });
 
-  // Malformed JSON line
   const badJson = await invokeFootprintRaw("{not valid json\n");
   assert.equal(badJson.exitCode, 0);
   assert.deepEqual(badJson.messages, [{ error: "not JSON", code: "EINVAL" }]);
 
-  // Non-object JSON
   const nonObject = await invokeFootprintRaw("[1,2,3]\n");
   assert.equal(nonObject.exitCode, 0);
   assert.deepEqual(nonObject.messages, [{ error: "not an object", code: "EINVAL" }]);
 
-  // Missing required `path` field
   const noPath = await invokeFootprintRaw('{"finding":true}\n');
   assert.equal(noPath.exitCode, 0);
   assert.deepEqual(noPath.messages, [{ error: "path is required", code: "EINVAL" }]);
 
-  // Invalid CLI arguments exit with code 2 and usage message on stderr.
   const badCli = await new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
     const child = spawn(CANDIDATE, ["--builder", "no-such-builder-xyz"], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
     let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("bad CLI args test timed out"));
+    }, CHILD_TIMEOUT_MS);
+    child.stdout!.resume();
     child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
-    child.on("error", reject);
-    child.on("close", (code) => resolve({ code, stderr }));
+    child.on("error", (err) => { clearTimeout(timer); reject(err); });
+    child.on("close", (code) => { clearTimeout(timer); resolve({ code, stderr }); });
     child.stdin!.end();
   });
   assert.equal(badCli.code, 2);
