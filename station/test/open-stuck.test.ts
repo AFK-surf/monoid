@@ -239,3 +239,63 @@ for (const how of ["the app", "-stop"] as const) {
     }
   });
 }
+
+test("a message that waited on a warm whose runtime never opened fails once with it, not again for as long; the next message runs both", async () => {
+  const { time, r, stuck, m, key, first } = await idleSession();
+  try {
+    stuck.hold();
+    const warmed = r.hub.warm(key).catch(() => undefined);
+    await stuck.started;
+    // (said while the warm opens: its kick waits behind it)
+    await r.accept(reply(m, "9999.1", "hello"));
+    await time.adjust(120_000);
+    await settle();
+    await warmed;
+    assert.equal(r.chat.texts().filter((t) => t === TIMED_OUT).length, 1, "said once");
+    assert.equal(stuck.asked, 1, "the kick behind the warm did not wait on another opening");
+    assert.equal(r.session(key).running, false);
+    stuck.release();
+    await settle();
+    assert.ok(r.claude.last().disposed, "the late process ended");
+    await r.accept(reply(m, "9999.2", "world"));
+    await settle();
+    const now = r.claude.last();
+    assert.ok(!now.disposed);
+    assert.equal(now.sessionId, first.sessionId);
+    const prompt = now.prompts.at(-1)!;
+    assert.ok(prompt.includes("world"), prompt);
+    assert.ok(prompt.includes("hello"), `what waited on the warm is handed too: ${prompt}`);
+    assert.equal(r.chat.texts().filter((t) => t === TIMED_OUT).length, 1);
+  } finally {
+    stuck.release();
+    await r.close();
+  }
+});
+
+test("a warm whose runtime never opens, with nothing waiting on it, says nothing; the next message runs", async () => {
+  const { time, r, stuck, m, key, first } = await idleSession();
+  try {
+    stuck.hold();
+    const warmed = r.hub.warm(key).catch(() => undefined);
+    await stuck.started;
+    const before = r.chat.texts().length;
+    await time.adjust(120_000);
+    await settle();
+    await warmed;
+    assert.deepEqual(r.chat.texts().slice(before), [], "nothing said of a warm nobody waited on");
+    assert.equal(stuck.asked, 1);
+    stuck.release();
+    await settle();
+    assert.ok(r.claude.last().disposed, "the late process ended");
+    await r.accept(reply(m, "9999.2", "world"));
+    await settle();
+    const now = r.claude.last();
+    assert.ok(!now.disposed);
+    assert.equal(now.sessionId, first.sessionId);
+    assert.ok(now.prompts.at(-1)!.includes("world"), now.prompts.at(-1));
+    assert.equal(stuck.asked, 1, "opened at once, not held");
+  } finally {
+    stuck.release();
+    await r.close();
+  }
+});

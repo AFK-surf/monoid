@@ -259,9 +259,21 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
           return
         }
         self.log(a, "info", "warming session process")
-        // (its start given up by a stop, a suspension or a close: nothing to warm)
         ignore(self.ensure_agent(a)) catch {
-          e => if open_abort_reason(e) is Some(_) { return } else { raise e }
+          // (its start given up by a stop, a suspension or a close: nothing to warm)
+          e if open_abort_reason(e) is Some(_) => return
+          // (its runtime never opened: what came meanwhile waited the whole time on it, so it fails as a start
+          // on those messages would, said once, and the kick queued behind this warm (`before_failures`) does not wait
+          // as long again on the same messages; a message after it starts anew)
+          // (any other failure, or one with nothing waiting: the turn that comes next opens it again, with its own
+          // retries on another login, capacity queue and notice)
+          e => {
+            if e is Asked(j) && j.value("openTimeout") is Some(True) && self.warm_waited_on(a, e) {
+              raise e
+            }
+            self.log(a, "warn", "warming session process failed", fields={ "error": jstr(Asked::message(e)), "runtime": jstr(a.runtime) })
+            return
+          }
         }
         self.idle_now(a)
         self.notify_store(a)
@@ -1576,6 +1588,39 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
 }
 
 ///|
+/// After a warm's opening timed out (`e`): whether messages were waiting on it. Those count as a failed start
+/// (`start_failures`, `failed_handed`), said once as `start_turn` says one.
+async fn Actors::warm_waited_on(self : Actors, a : Actor, e : Error) -> Bool raise {
+  if self.interrupted(a) || self.held(a) || self.archived(a) || !self.has_pending(a) {
+    return false
+  }
+  guard self.pending_and_format(a, false) is Some(d) else { return false }
+  let hkey = handed_ids(d.pending)
+  if hkey == "" {
+    return false
+  }
+  a.start_failures += 1
+  a.failed_handed = hkey
+  self.mirror(a)
+  self.notify_store(a)
+  let said = "⚠️ " + self.failed_words(a, "cannotStartWords", e)
+  let cannot_start = "⚠️ " + self.t(a, "station.notice.cannotStart")
+  async fn missing_said() -> String raise {
+    "⚠️ " + self.t(a, "station.notice.runtimeMissing", args={ "name": self.rpc(a.key, "node.words", [jstr("runtimeLabel"), jstr(a.runtime)]) })
+  }
+  // (as `start_turn` says a failed start: once until a person speaks)
+  let dup = match self.said_last(a) {
+    Some(l) if l == said => true
+    Some(l) if l.has_prefix(cannot_start) => l != missing_said()
+    _ => false
+  }
+  if !dup {
+    self.notice(a, said)
+  }
+  true
+}
+
+///|
 async fn Actors::work_for(self : Actors, a : Actor, messages : Array[Json]) -> Unit raise {
   for m in messages {
     if str_of(m.value("surface")) == Some("stillfail") {
@@ -2118,8 +2163,14 @@ async fn Actors::rpc_open(self : Actors, a : Actor, args : Array[Json]) -> Json 
   match answer {
     { "error": err, .. } => {
       if err.value("openTimeout") is Some(True) {
+        // (Node may have moved it to another runtime while opening (`takeAcross`), which no answer says now: as its
+        // row says)
+        let row = self.store(a, "getSession", [jstr(a.key)]) catch { _ => Json::null() }
+        if str_of(row.value("runtime")) is Some(rt) && rt != "" {
+          a.runtime = rt
+        }
         self.log(a, "warn", "agent startup timed out", fields={ "ms": jnum(open_timeout_ms) })
-        raise Asked({ "message": jstr(self.t(a, "station.notice.openTimedOut")), "said": Json::boolean(true) })
+        raise Asked({ "message": jstr(self.t(a, "station.notice.openTimedOut")), "said": Json::boolean(true), "openTimeout": Json::boolean(true) })
       }
       raise Asked(err)
     }
