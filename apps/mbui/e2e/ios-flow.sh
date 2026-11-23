@@ -22,6 +22,7 @@ export SIMCTL_CHILD_MBUI_SHOT_DIR=$OUT
 export SIMCTL_CHILD_MBUI_DRIVE_B64=$(base64 < $SCRIPT | tr -d '\n')
 export SIMCTL_CHILD_MBUI_PICK_FILES="$FILES/e2e-photo.jpg|$FILES/e2e-data.bin"
 export SIMCTL_CHILD_MBUI_CALL_LOG=1 SIMCTL_CHILD_MBUI_MOTION_LOG=1 SIMCTL_CHILD_MBUI_IME_LOG=1
+export SIMCTL_CHILD_MBUI_LOCALE=zh-CN
 while IFS= read -r kv; do [ -n "$kv" ] && export "SIMCTL_CHILD_$kv"; done < <(sed -n 's/^#env //p' $SCRIPT)
 RAW=$LOG.raw
 : > $RAW
