@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [03be8a1bb](https://github.com/AFK-surf/monoid/commit/03be8a1bb0b100130890aed6b3a8436b69d3b95a) fix(ui): count Windows dropped frames from DWM syn | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 101.07 | 132.14 |
 | [c37b4165c](https://github.com/AFK-surf/monoid/commit/c37b4165c270850041448958f0030387fd4b7bf7) fix(ui): show composer words in the text loupe and | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 100.83 | 127.46 |
 | [b45e9603f](https://github.com/AFK-surf/monoid/commit/b45e9603f6c253d97a5cc5e8961df091ad741cea) fix(station): add explicit string type to enum-onl | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 100.44 | 132.06 |
 | [dfcde34c0](https://github.com/AFK-surf/monoid/commit/dfcde34c089d4df139ef20f962ff5fa96f34e632) test(pion): add L1/L2 TS-vs-Pion differential pari | 2.73 | 3.68 | 14.91 | 37.09 | 56.82 | 32.48 | 65.97 | 100.44 | 132.06 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cdbb71b9f](https://github.com/AFK-surf/monoid/commit/cdbb71b9f8bca652c3fb932f99ba8f8661142d5b) fix(core): guard ensureBoxKey on able(inner) when  | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.4 | 117.69 |
 | [f4342853d](https://github.com/AFK-surf/monoid/commit/f4342853d40855e4a1a6239128d2bad362eb447a) fix(mbui): keep the iOS 27 action tab's accent was | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.34 | 126.46 |
 | [283b75d55](https://github.com/AFK-surf/monoid/commit/283b75d55ec1fd956b32de7f7b80d2868883d467) feat(mesh): a switch for the DHT, on by default (# | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.76 | 100.34 | 126.46 |
-| [ce60a1ea9](https://github.com/AFK-surf/monoid/commit/ce60a1ea96cdc634e515fb6e0a755ed70a14ca5d) feat(ui,mbui): tint Windows window controls with t | 2.72 | 3.66 | 14.84 | 37 | 56.56 | 32.41 | 65.74 | 100.29 | 124.88 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [03be8a1bb](https://github.com/AFK-surf/monoid/commit/03be8a1bb0b100130890aed6b3a8436b69d3b95a) fix(ui): count Windows dropped frames from DWM syn | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.87 | 56.02 |
 | [c37b4165c](https://github.com/AFK-surf/monoid/commit/c37b4165c270850041448958f0030387fd4b7bf7) fix(ui): show composer words in the text loupe and | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.87 | 55.64 |
 | [b45e9603f](https://github.com/AFK-surf/monoid/commit/b45e9603f6c253d97a5cc5e8961df091ad741cea) fix(station): add explicit string type to enum-onl | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.85 | 55.2 |
 | [dfcde34c0](https://github.com/AFK-surf/monoid/commit/dfcde34c089d4df139ef20f962ff5fa96f34e632) test(pion): add L1/L2 TS-vs-Pion differential pari | 0.49 | 0.64 | 2.46 | 3.52 | 5.85 | 1.8 | 4.85 | 55.07 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cdbb71b9f](https://github.com/AFK-surf/monoid/commit/cdbb71b9f8bca652c3fb932f99ba8f8661142d5b) fix(core): guard ensureBoxKey on able(inner) when  | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.35 |
 | [f4342853d](https://github.com/AFK-surf/monoid/commit/f4342853d40855e4a1a6239128d2bad362eb447a) fix(mbui): keep the iOS 27 action tab's accent was | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.07 |
 | [283b75d55](https://github.com/AFK-surf/monoid/commit/283b75d55ec1fd956b32de7f7b80d2868883d467) feat(mesh): a switch for the DHT, on by default (# | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.23 |
-| [ce60a1ea9](https://github.com/AFK-surf/monoid/commit/ce60a1ea96cdc634e515fb6e0a755ed70a14ca5d) feat(ui,mbui): tint Windows window controls with t | 0.48 | 0.63 | 2.44 | 3.5 | 5.8 | 1.79 | 4.83 | 55.15 |
