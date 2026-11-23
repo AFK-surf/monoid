@@ -459,9 +459,10 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     const base = validKeyHex(input.base) && typeof input.proof === "string" && (await verifyKeySignature(input.base, input.proof, `stillfail-lock-endpoint/1\0${ws}\0${input.device}`)) ? input.base : undefined;
     if (input.base !== undefined && base === undefined) return reply({ error: "invalid_proof" }, 400);
     return directory(async () => {
-      const role = await dir.memberRole(sub, ws);
+      // (one call of the Directory, not two: every ask of every device waits its turn there)
+      const said = { base, kind: input.kind === "app" || input.kind === "web" ? input.kind : undefined, label: typeof input.label === "string" ? input.label.slice(0, 120) : undefined };
+      const { role, ...told } = await dir.credentialDevice(sub, ws, input.device as string, said);
       const signed = await signCredential(env, { sub, email: claims.email, name: claims.name ?? "", ws, role, device: input.device as string, sid: claims.sid });
-      const told = await dir.recordDevice(sub, ws, input.device as string, { base, kind: input.kind === "app" || input.kind === "web" ? input.kind : undefined, label: typeof input.label === "string" ? input.label.slice(0, 120) : undefined });
       return { ...signed, ...told };
     });
   }

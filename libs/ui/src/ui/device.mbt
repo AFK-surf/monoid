@@ -144,6 +144,8 @@ priv struct FakeDevice {
   mut key_catch : Bool
   /// the input method's action the app last said (@hostapi.ime_action)
   mut ime_action : Int
+  /// how many times the app has let its input method's composition go (@hostapi.ime_let_go)
+  mut ime_let_go : Int
   reads : Array[FakeClipRead]
   held : Array[Clipboard]
   /// the app's native calls (native.mbt), their answers given before a call (by its name), and the answers given by
@@ -166,6 +168,7 @@ fn FakeDevice::new(copy_shown : Bool) -> FakeDevice {
     ime_inset: 0.0,
     key_catch: false,
     ime_action: 0,
+    ime_let_go: 0,
     reads: [],
     held: [],
     natives: [],
@@ -455,6 +458,11 @@ let text_float_unit : Double = 64.0
 ///|
 fn h_ime_action(kind : Int) -> Unit {
   @hostapi.ime_action(kind)
+}
+
+///|
+fn h_ime_let_go() -> Unit {
+  @hostapi.ime_let_go()
 }
 
 ///|
@@ -810,4 +818,11 @@ fn catcher_text(c : Ctx, kind : Int, s : String, a : Int, b : Int) -> Bool {
 /// focus).
 pub fn Tester::ime_action(self : Tester) -> Int {
   self.fake.dev.ime_action
+}
+
+///|
+/// How many times the app has told its host the input method's composition was let go by the field
+/// (@hostapi.ime_let_go).
+pub fn Tester::ime_let_go(self : Tester) -> Int {
+  self.fake.dev.ime_let_go
 }

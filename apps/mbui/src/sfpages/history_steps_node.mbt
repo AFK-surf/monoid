@@ -1679,9 +1679,10 @@ fn place_live_node(v : @view.View, station : String, place : () -> Json?, link :
       @sf.presses_node(p, fn() {
         let pl = @signals.untracked(place)
         let url = text(pl, "url")
+        let app_url = text(pl, "app")
         let session = text(pl, "session")
-        if url != "" {
-          @sfbase.open_slack(text(pl, "app"), url) |> ignore
+        if url != "" || app_url != "" {
+          @sfbase.open_slack(app_url, url) |> ignore
         } else if session != "" {
           @sfbase.history_push()
           app.nav.push(Chat({ station, session, title: text(pl, "name"), station_name: "" }))

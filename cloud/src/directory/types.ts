@@ -127,7 +127,7 @@ export const FAMILIES: Record<string, string> = {
   tellAll: "broadcast", tellStations: "broadcast", modelsMade: "broadcast", tellAdmins: "broadcast", alarm: "broadcast",
 };
 for (const name of ["workspace", "createWorkspace", "updateWorkspace", "deleteWorkspace", "invite", "previewInvitation", "acceptInvitation", "acceptById", "declineById", "revokeInvitation",
-  "feedbackOf", "memberFeedbackReply", "setRole", "removeMember", "addMembers", "mailFailed", "removeAdded", "setRelays", "setWay", "manages", "createEnrollment", "createRigEnrollment", "updateStation", "setStationMode", "removeStation", "memberRole", "recordDevice", "devices",
+  "feedbackOf", "memberFeedbackReply", "setRole", "removeMember", "addMembers", "mailFailed", "removeAdded", "setRelays", "setWay", "manages", "createEnrollment", "createRigEnrollment", "updateStation", "setStationMode", "removeStation", "memberRole", "recordDevice", "credentialDevice", "devices",
   "lock", "appendLock", "clearLock", "requestLock", "lockRequests", "dropLockRequest", "provisionKeys", "createProvisionKey", "revokeProvisionKey"]) FAMILIES[name] = "workspaces";
 for (const name of ["adminUsers", "setMayCreate", "adminPending", "setPending", "removePending", "setBlocked", "setBeta", "adminDeleteWorkspace", "adminCreateWorkspace", "adminSetLimits",
   "adminEnrollment", "adminWorkspaces", "inviteCodes", "createInviteCode", "revokeInviteCode", "adminFeedback", "setFeedbackStatus", "replyToFeedback", "adminLoad", "noteOperator", "isAdminAccount",

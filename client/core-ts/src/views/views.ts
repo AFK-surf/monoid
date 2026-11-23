@@ -277,7 +277,7 @@ function keptBetween(was: J[], made: (J | null)[], listed: J[], make: (raw: J) =
 const unmade = new WeakMap<object, () => J>();
 /// What a chat's whole row (`chatRow`, views.ts #chatRow `whole` and #rowMenu) says that its list's row is made without:
 /// what is read only as the row is pressed, held, swiped or pointed at (the rest of the two is one: views.test.ts).
-const WHOLE_ONLY = ["watch", "swipeAsk", "decision", "mayShare", "mayPublish", "slackUrl", "slackApp", "feishuUrl"];
+const WHOLE_ONLY = ["watch", "swipeAsk", "decision", "mayShare", "mayPublish", "slackUrl", "slackApp", "feishuUrl", "commaUrl", "commaApp"];
 /// What a chat list's row holds (#listRow) besides what its shape declares (schema.ts LISTED_CHAT), each for what reads it
 /// in the core (`store.value`, a row as made): nothing else of its record is copied into it, nor worked out for it.
 /// (A search's, the `@` menu's and a share's chats are a list's rows sent as ChatItem: `search`, `chatSearch`, `shareIn`,
@@ -3258,11 +3258,14 @@ export class Views implements Owner {
     const c = id === null ? undefined : connects.find((x) => str(get(x, "id")) === id);
     if (c !== undefined && isObject(raw.origin)) {
       const o = raw.origin as J;
-      const surface = str(get(c, "kind")) === "feishu" ? `feishu:${id}` : "slack";
-      const where = this.#whereIn(station, [{ connect: c }], surface, str(o.channel) ?? "", str(o.channelName) ?? "", str(o.threadTs) ?? "", connects);
+      const kind = str(get(c, "kind"));
+      const surface = kind === "feishu" ? `feishu:${id}` : kind === "comma" ? `comma:${id}` : "slack";
+      const where = this.#whereIn(station, [{ connect: c }], surface, str(o.channel) ?? "", str(o.channelName) ?? "", str(o.threadTs) ?? "", connects, get(o, "links"));
       if (where.slackUrl !== null) out.slackUrl = where.slackUrl;
       if (where.slackApp !== null) out.slackApp = where.slackApp;
       if (where.feishuUrl !== null) out.feishuUrl = where.feishuUrl;
+      if (where.commaUrl !== null) out.commaUrl = where.commaUrl;
+      if (where.commaApp !== null) out.commaApp = where.commaApp;
     }
     return out;
   }
@@ -4065,7 +4068,7 @@ export class Views implements Owner {
     if (Array.isArray(thread.people)) thread.people = people;
     if (thread.creator !== undefined) thread.creator = present.person(thread.creator, viewer, members_);
     const strOf = (v: J, k: string) => str(get(v, k)) ?? "";
-    const { place, slackUrl, slackApp, feishuUrl } = this.#whereIn(station, agents, strOf(thread, "surface"), strOf(thread, "channel"), strOf(thread, "channelName"), strOf(thread, "threadTs"));
+    const { place, slackUrl, slackApp, feishuUrl, commaUrl, commaApp } = this.#whereIn(station, agents, strOf(thread, "surface"), strOf(thread, "channel"), strOf(thread, "channelName"), strOf(thread, "threadTs"), undefined, get(thread, "links"));
     // (a Slack thread's agents with no chat of their own here are listed by their session alone, its row's thread null)
     let found = this.#row(station, { thread: id });
     for (const key of found === null ? members(thread) : []) {
@@ -4096,6 +4099,8 @@ export class Views implements Owner {
       slackUrl,
       ...(slackApp !== null ? { slackApp } : {}),
       ...(feishuUrl !== null ? { feishuUrl } : {}),
+      ...(commaUrl !== null ? { commaUrl } : {}),
+      ...(commaApp !== null ? { commaApp } : {}),
       title,
       people,
       agents: answeredAt(agents, messages, outbox),
@@ -4868,7 +4873,7 @@ export class Views implements Owner {
   /// Where a Slack or Feishu thread is, in words (placeName), and its link in Slack (while one of `agents`' Slack
   /// connects is signed in; `slackApp` into Slack's app) or in Feishu: none of them for a still.fail chat.
   /// (`connects`: its station's, where they were read; else its overview's)
-  #whereIn(station: string, agents: J[], surface: string, channel: string, channelName: string, threadTs: string, connects?: J[]): { place: string | null; slackUrl: string | null; slackApp: string | null; feishuUrl: string | null } {
+  #whereIn(station: string, agents: J[], surface: string, channel: string, channelName: string, threadTs: string, connects?: J[], rawLinks?: unknown): { place: string | null; slackUrl: string | null; slackApp: string | null; feishuUrl: string | null; commaUrl: string | null; commaApp: string | null } {
     const strOf = (v: J, k: string) => str(get(v, k)) ?? "";
     const feishu = surface.startsWith("feishu:") || format.isFeishuChat(channel);
     // (a Comma Task is in no channel, and opens in no Slack: originOf's rule)
@@ -4878,6 +4883,7 @@ export class Views implements Owner {
     // A Feishu chat opens in Feishu (Lark's own app for its connect's).
     const feishuConnect = (connects ?? arr(get(this.#chatOverview(station), "connects"))).find((c) => `feishu:${strOf(c, "id")}` === surface);
     const feishuUrl = feishu ? format.feishuChatUrl(format.feishuApplink(str(get(get(feishuConnect, "feishu"), "domain"))), channel) : null;
+    const commaLink = comma ? format.commaLinks(rawLinks) : { url: null, app: null };
     let workspaceUrl: string | null = null;
     let team = "";
     for (const a of agents) {
@@ -4893,7 +4899,7 @@ export class Views implements Owner {
     }
     const slackUrl = slack && workspaceUrl !== null ? `${workspaceUrl}archives/${channel}/p${threadTs.replaceAll(".", "")}` : null;
     const slackApp = slackUrl !== null && team !== "" ? format.slackAppUrl(team, channel, threadTs, threadTs) : null;
-    return { place, slackUrl, slackApp, feishuUrl };
+    return { place, slackUrl, slackApp, feishuUrl, commaUrl: commaLink.url, commaApp: commaLink.app };
   }
 
   /// The page of an item whose agent has no chat yet.
@@ -4956,13 +4962,15 @@ export class Views implements Owner {
     const strOf = (v: J, k: string) => str(get(v, k)) ?? "";
     const primaryConnect = agents.find((a) => isObject(a.connect))?.connect;
     const surface = isObject(origin) && isObject(primaryConnect) ? `${strOf(primaryConnect, "kind")}:${strOf(primaryConnect, "id")}` : "";
-    const where = isObject(origin) ? this.#whereIn(station, agents, surface, strOf(origin, "channel"), strOf(origin, "channelName"), strOf(origin, "threadTs")) : null;
+    const where = isObject(origin) ? this.#whereIn(station, agents, surface, strOf(origin, "channel"), strOf(origin, "channelName"), strOf(origin, "threadTs"), undefined, get(origin, "links")) : null;
     return {
       ok: {
         me: this.me(ofAddress(station)),
         thread: null,
         ...(where !== null && where.place !== null ? { place: where.place, slackUrl: where.slackUrl, ...(where.slackApp !== null ? { slackApp: where.slackApp } : {}) } : {}),
         ...(where !== null && where.feishuUrl !== null ? { feishuUrl: where.feishuUrl } : {}),
+        ...(where !== null && where.commaUrl !== null ? { commaUrl: where.commaUrl } : {}),
+        ...(where !== null && where.commaApp !== null ? { commaApp: where.commaApp } : {}),
         ...(noChat ? { noChat: true } : {}),
         title: row !== undefined && row.title !== undefined ? row.title : t("core-views.new_chat"),
         people: [],

@@ -1093,6 +1093,9 @@ async fn Actors::budget(self : Actors, now : Double, budget : Double) -> Double 
 }
 
 ///|
+let expire_batch_size : Int = 500
+
+///|
 /// Tasks long over let go of (remote.ts `expire`): incoming/<task> whose job ended TASKS_KEPT_MS ago (or the store no
 /// longer has, and unchanged as long), and outgoing/<id>.json told its end (`delivered`) and unchanged as long. How
 /// many.
@@ -1105,35 +1108,59 @@ async fn Actors::expire(self : Actors, now : Double) -> Int raise {
     }
   }
   let incoming = self.rjoin([self.remote.root, "incoming"])
-  for name in self.readdir_names(incoming) {
+  let names = self.readdir_names(incoming)
+  let mut offset = 0
+  while offset < names.length() {
     if self.remote.stopped {
       return gone
     }
-    let id = "remote_\{name}"
-    if up.contains(id) {
-      continue
-    }
-    let job = self.rstore("getJob", [jstr(id)])
-    let dir = self.rjoin([incoming, name])
-    let mut at = now
-    if job is Null {
-      let record = self.lstat(self.rjoin([dir, "task.json"])) catch { _ => None }
-      let st = match record {
-        Some(st) => Some(st)
-        None => self.lstat(dir) catch { _ => None }
-      }
-      if st is Some(st) {
-        at = num_of(Some(field_of(st, "mtimeMs"))).unwrap_or(now)
-      }
+    let end = if offset + expire_batch_size < names.length() {
+      offset + expire_batch_size
     } else {
-      guard text_of(job, "state") != "running" && num_of(Some(field_of(job, "endedAt"))) is Some(ended) else { continue }
-      at = ended
+      names.length()
     }
-    if now - at < tasks_kept_ms {
+    let chunk : Array[(String, String)] = []
+    let chunk_ids : Array[Json] = []
+    for i in offset..<end {
+      let name = names[i]
+      let id = "remote_\{name}"
+      if !up.contains(id) {
+        chunk.push((name, id))
+        chunk_ids.push(jstr(id))
+      }
+    }
+    offset = end
+    if chunk.length() == 0 {
       continue
     }
-    self.remove(dir, recursive=true) catch { _ => () }
-    gone += 1
+    let ends = self.rstore("jobsEnds", [Json::array(chunk_ids)])
+    for item in chunk {
+      if self.remote.stopped {
+        return gone
+      }
+      let (name, id) = item
+      let job = field_of(ends, id)
+      let dir = self.rjoin([incoming, name])
+      let mut at = now
+      if job is Null {
+        let record = self.lstat(self.rjoin([dir, "task.json"])) catch { _ => None }
+        let st = match record {
+          Some(st) => Some(st)
+          None => self.lstat(dir) catch { _ => None }
+        }
+        if st is Some(st) {
+          at = num_of(Some(field_of(st, "mtimeMs"))).unwrap_or(now)
+        }
+      } else {
+        guard text_of(job, "state") != "running" && num_of(Some(field_of(job, "endedAt"))) is Some(ended) else { continue }
+        at = ended
+      }
+      if now - at < tasks_kept_ms {
+        continue
+      }
+      self.remove(dir, recursive=true) catch { _ => () }
+      gone += 1
+    }
   }
   let outgoing = self.rjoin([self.remote.root, "outgoing"])
   for name in self.readdir_names(outgoing) {

@@ -882,6 +882,9 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
       },
       thread_at: async fn(surface, ch, ts) { (self.connect_threads_store().thread_at)(surface, ch, ts) },
       leave_thread: async fn(thread, key) { ignore(self.hub("store.leaveThread", [Json::number(thread), Json::string(key)])) },
+      set_thread_links: Some(async fn(thread, links) {
+        try { bus.store.set_thread_links(Json::number(thread), of_jv(links)) } catch { _ => () }
+      }),
       handler: async fn(event) {
         ignore(self.hub("hub.receive", [Json::string(jv_text(event, "connect").unwrap_or("")), of_jv(event)]))
       },

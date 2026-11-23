@@ -34,7 +34,7 @@ import type { Handler, InboundFile, ModelChoice, Person, ThreadRef } from "../se
 import { sessionKey } from "../sessions/hub.ts";
 import type { Attachment, Store } from "../store/store.ts";
 import { type CommaStats, type IndexRow, type RevIndex, IndexSync, heldFrom, probePage, statsWire, taskWire } from "./stats.ts";
-import { type CommaTasks, type Start, type Task, TASK_CHANNEL } from "./tasks.ts";
+import { type CommaTasks, type Start, type Task, type TaskLinks, TASK_CHANNEL, validTaskLinks } from "./tasks.ts";
 
 type Json = any;
 
@@ -758,7 +758,12 @@ export class CommaSurface extends ConnectedSurface {
     if (params?.replace === true) throw new Error(tr(this.lang, "station.comma.oneModel"));
     const start: Start = { requester: text(s, "requester"), title: text(s, "title") || null, runtime: text(s, "runtime") || null, model: text(s, "model") || null };
     this.choice(start);
-    const t = had !== null && had.left !== true ? had : this.tasks.invited(this.id, task, start, count(params?.answered) ?? 0);
+    const links = validTaskLinks(params?.links);
+    const t = had !== null && had.left !== true ? had : this.tasks.invited(this.id, task, start, count(params?.answered) ?? 0, links);
+    if (links !== null) {
+      this.tasks.setLinks(this.id, task, links);
+      this.syncThreadLinks(t.threadTs, links);
+    }
     log.info("comma", "a Comma Task for an agent here", { connect: this.id, task, session: this.session(t) });
     return { session: this.session(t), thread: `${TASK_CHANNEL}/${t.threadTs}` };
   }
@@ -769,6 +774,8 @@ export class CommaSurface extends ConnectedSurface {
     const t = this.tasks.get(this.id, task);
     if (t === null) return { unknown: true, gone: true };
     if (t.left === true) return { gone: true };
+    const links = validTaskLinks(params?.links);
+    if (links !== null) this.tasks.setLinks(this.id, task, links);
     const answered = Math.max(t.answered, count(params?.answered) ?? 0);
     const session = this.session(t);
     const messages = (Array.isArray(params?.messages) ? (params.messages as TaskMessage[]) : []).filter((m) => count(m?.seq) !== null).sort((a, b) => a.seq - b.seq);
@@ -793,8 +800,15 @@ export class CommaSurface extends ConnectedSurface {
       first = false;
       for (const f of files) this.shared.delete(f.id);
     }
+    const effective = links ?? t.links ?? null;
+    if (effective !== null) this.syncThreadLinks(t.threadTs, effective);
     this.tasks.given(this.id, task, count(params?.through), count(params?.answered));
     return { through: count(params?.through) };
+  }
+
+  private syncThreadLinks(threadTs: string, links: TaskLinks): void {
+    const thread = this.store.threadAt(this.surface(), TASK_CHANNEL, threadTs);
+    if (thread !== null) this.store.setThreadLinks(thread.id, links);
   }
 
   /// Who said a Message, by their id here (a person's Comma id; an agent's, its Router, `agent:<id>`), as Comma says.

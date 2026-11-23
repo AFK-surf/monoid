@@ -33,6 +33,10 @@ pub fn checks_counted(@json.Json?) -> @json.Json?
 
 pub let chunk : Int32
 
+pub let collect_batch_size : Int32
+
+pub let collect_yield_every : Int32
+
 pub let default_limit : Double
 
 pub fn describe_answer(String, String, String, @json.Json?, @json.Json?) -> @json.Json
@@ -382,7 +386,7 @@ pub struct JobsHost {
 }
 pub async fn JobsHost::cap_log(Self, String) -> Bool
 pub async fn JobsHost::clear_files(Self, Array[(String, String)]) -> Array[String]
-pub async fn JobsHost::collect(Self, Double, Array[String], (String) -> @json.Json?) -> Array[String]
+pub async fn JobsHost::collect(Self, Double, Array[String], (String) -> @json.Json?, jobs_of? : ((Array[String]) -> Map[String, @json.Json]?)?) -> Array[String]
 pub async fn JobsHost::end_group(Self, Int32, Int32) -> Unit
 pub fn JobsHost::exit_file(Self, String) -> String
 pub fn JobsHost::follow(Self, String, Int32, Double) -> Unit

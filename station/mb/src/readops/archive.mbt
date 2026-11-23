@@ -117,6 +117,29 @@ fn session_json(r : Map[String, Json]) -> Json {
 
 ///|
 /// rows.ts `toThread`.
+fn parsed_thread_links(v : Json) -> Json? {
+  match v {
+    String(s) if s != "" =>
+      match (try { Some(@json.parse(s)) } catch { _ => None }) {
+        Some(Object(m)) => {
+          let out : Map[String, Json] = Map([])
+          match m.get("web") {
+            Some(String(w)) if w != "" => out["web"] = Json::string(w)
+            _ => ()
+          }
+          match m.get("app") {
+            Some(String(a)) if a != "" => out["app"] = Json::string(a)
+            _ => ()
+          }
+          if out.is_empty() { None } else { Some(Json::object(out)) }
+        }
+        _ => None
+      }
+    _ => None
+  }
+}
+
+///|
 fn thread_json(r : Map[String, Json]) -> Json {
   let out : Map[String, Json] = Map([])
   for pair in [
@@ -125,6 +148,14 @@ fn thread_json(r : Map[String, Json]) -> Json {
     ("shownAt", "shown_at"),
   ] {
     put_col(out, pair.0, col(r, pair.1))
+  }
+  match col(r, "links") {
+    Some(v) =>
+      match parsed_thread_links(v) {
+        Some(l) => out["links"] = l
+        None => ()
+      }
+    None => ()
   }
   Json::object(out)
 }

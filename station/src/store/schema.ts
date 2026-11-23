@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS threads (
   auto_title TEXT,
   auto_title_n INTEGER,
   auto_title_changes INTEGER NOT NULL DEFAULT 0,
+  links TEXT,
   UNIQUE (surface, channel, thread_ts)
 );
 CREATE TABLE IF NOT EXISTS thread_sessions (
@@ -727,6 +728,11 @@ export function addAutoTitleColumns(db: DatabaseSync): void {
   for (const [column, kind] of [["auto_title", "TEXT"], ["auto_title_n", "INTEGER"], ["auto_title_changes", "INTEGER NOT NULL DEFAULT 0"]]) {
     if (!has(db, "threads", column!)) db.exec(`ALTER TABLE threads ADD COLUMN ${column} ${kind}`);
   }
+}
+
+/// add_thread_links_column: external links for a thread (e.g. Comma Task web/app links in threads.links).
+export function addThreadLinksColumn(db: DatabaseSync): void {
+  if (!has(db, "threads", "links")) db.exec("ALTER TABLE threads ADD COLUMN links TEXT");
 }
 
 /// add_watch_column: the column watching jobs came with (jobs.watch).

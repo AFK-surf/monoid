@@ -75,3 +75,6 @@ fn dv_haptic(kind : Int) = "mbhost" "mb_host_haptic"
 ///|
 fn dv_ime_action(kind : Int) = "mbhost" "mb_host_ime_action"
 
+///|
+fn dv_ime_let_go() = "mbhost" "mb_host_ime_let_go"
+

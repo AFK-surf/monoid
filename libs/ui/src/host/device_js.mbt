@@ -72,3 +72,8 @@ extern "js" fn dv_haptic(kind : Int) -> Unit =
 ///|
 extern "js" fn dv_ime_action(kind : Int) -> Unit =
   #|(k) => globalThis.__mbhost && globalThis.__mbhost.imeAction && globalThis.__mbhost.imeAction(k)
+
+///|
+/// (a browser's textarea given new words lets its composition go by itself: host.js's setIme)
+extern "js" fn dv_ime_let_go() -> Unit =
+  #|() => globalThis.__mbhost && globalThis.__mbhost.imeLetGo && globalThis.__mbhost.imeLetGo()

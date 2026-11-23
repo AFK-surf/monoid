@@ -244,6 +244,9 @@ struct EditorState {
   mut pasted : String?
   /// the host's copy of its words holds what it did not take (a long paste kept from it: text_set): told it again
   mut retell : Bool
+  /// what the input method was composing let go by the field itself (its words sent or set, ime_let_go_owed): its
+  /// host told so before the field's words are told it again
+  mut let_go : Bool
   mut limit : Int
   /// Enter sends (the words go to `submitted`, none too, and stay in it); else it is a new line
   mut enter_sends : Bool

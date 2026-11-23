@@ -465,6 +465,8 @@ fn chat_menu_items(
           slack_url=item.slack_url,
           slack_app=item.slack_app,
           feishu_url=item.feishu_url,
+          comma_url=item.comma_url,
+          comma_app=item.comma_app,
         )
     },
   )
@@ -915,12 +917,14 @@ pub fn chat_extra_items(src : Source, r : ChatRef, chat : Json?) -> Array[@sf.Me
     slack_url=text(chat, "slackUrl"),
     slack_app=text(chat, "slackApp"),
     feishu_url=text(chat, "feishuUrl"),
+    comma_url=text(chat, "commaUrl"),
+    comma_app=text(chat, "commaApp"),
   )
 }
 
 ///|
 /// What is done with chat `r` (its `thread`) beyond the list's own, in a row's menu and its page's "…" alike: 分享给其他
-/// workspace, 分享图片, 在 Slack 打开 or 在飞书打开, each where the viewer may.
+/// workspace, 分享图片, 在 Slack 打开, 在飞书打开 or 在 Comma 打开, each where the viewer may.
 fn share_items(
   src : Source,
   r : ChatRef,
@@ -930,6 +934,8 @@ fn share_items(
   slack_url~ : String,
   slack_app~ : String,
   feishu_url~ : String,
+  comma_url~ : String,
+  comma_app~ : String,
 ) -> Array[@sf.MenuItem?] {
   let items : Array[@sf.MenuItem?] = []
   if may_share {
@@ -966,6 +972,17 @@ fn share_items(
       Some(
         @sf.menu_item_of(@sf.t("web-pages.chat.openInFeishu"), icon="external", fn() {
           if !@ui.open_url(feishu_url) {
+            @sfbase.toast_later(@sf.t("android-chat.link.failed"))
+          }
+        }),
+      ),
+    )
+  }
+  if comma_url != "" || comma_app != "" {
+    items.push(
+      Some(
+        @sf.menu_item_of(@sf.t("web-pages.chat.openInComma"), icon="external", fn() {
+          if !@sfbase.open_slack(comma_app, comma_url) {
             @sfbase.toast_later(@sf.t("android-chat.link.failed"))
           }
         }),

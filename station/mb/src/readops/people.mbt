@@ -305,13 +305,18 @@ fn slack_connect_of(sessions : Array[Map[String, Json]]) -> String? {
 /// views.ts `origin`: where a Slack thread is.
 fn Known::origin(self : Known, thread : Map[String, Json], sessions : Array[Map[String, Json]]) -> Json raise {
   let connect = slack_connect_of(sessions)
-  {
+  let out : Map[String, Json] = {
     "teamName": match connect { Some(c) => self.team_name(c); None => Json::null() },
     "channel": field(thread, "channel"),
     "channelName": self.channel(connect, field(thread, "channel")),
     "threadTs": field(thread, "thread_ts"),
     "surface": field(thread, "surface"),
   }
+  match parsed_thread_links(field(thread, "links")) {
+    Some(l) => out["links"] = l
+    None => ()
+  }
+  Json::object(out)
 }
 
 ///|

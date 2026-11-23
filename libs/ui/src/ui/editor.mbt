@@ -106,6 +106,16 @@ fn EditorState::delete_selection(self : EditorState) -> Bool {
 }
 
 ///|
+/// What it was composing let go by the field itself (its words set in place of what it held): none left, and its host
+/// told so before its words are told it again (@hostapi.ime_let_go), where the input method was composing.
+fn EditorState::ime_let_go_owed(self : EditorState) -> Unit {
+  if self.marked != "" {
+    self.marked = ""
+    self.let_go = true
+  }
+}
+
+///|
 fn EditorState::insert(self : EditorState, s : String) -> Unit {
   self.delete_selection() |> ignore
   self.put_words(sub(self.text, 0, self.caret) + s + sub(self.text, self.caret, self.text.length()))
@@ -981,7 +991,7 @@ pub fn Ctx::editor(
   // words a screen reader put in it (Action::SetText): in place of all it held, as though typed
   match self.text_asked(id) {
     Some(t) => {
-      st.marked = ""
+      st.ime_let_go_owed()
       st.anchor = 0
       st.caret = st.text.length()
       st.text_input(0, t, 0, 0, self.clock)
@@ -1848,9 +1858,13 @@ fn Ctx::sync_ime(self : Ctx) -> Unit {
           let (x, y, w, h) = st.drawn_box(x, y, 2.0, tl.line_h)
           let (a, b) = st.sel()
           let sig = "\{x.to_int()},\{y.to_int()},\{w},\{h},\{a},\{b},\{st.text.length()},\{stable_hash(st.text)}"
-          if sig != self.ime_sig || st.retell {
+          if sig != self.ime_sig || st.retell || st.let_go {
             self.ime_sig = sig
             st.retell = false
+            if st.let_go {
+              st.let_go = false
+              h_ime_let_go()
+            }
             h_set_ime(true, x, y, w, h, st.text, a, b)
           }
         }
@@ -1930,6 +1944,7 @@ fn EditorState::fresh(text : String, now : Double) -> EditorState {
     followed: (-1, -1, -1),
     pasted: None,
     retell: false,
+    let_go: false,
     limit: 0,
     enter_sends: true,
     command_sends: false,
@@ -2092,7 +2107,7 @@ pub fn Field::set(self : Field, text : String, caret? : Int) -> Unit {
   if st.text != text {
     st.forget_edits()
   }
-  st.marked = ""
+  st.ime_let_go_owed()
   st.put_words(text)
   st.caret = at
   st.anchor = at
@@ -2169,6 +2184,9 @@ pub fn Field::take(self : Field) -> String {
   // (one edit: what was composed put in and all of it taken, told once as it is left)
   @signals.start_batch()
   if st.marked.length() > 0 {
+    // (the input method still composing it: told it is let go, or it goes on composing into words gone and puts its
+    // result in after them, a dictation's sentence back in the field it was sent from)
+    st.let_go = true
     // (when: its blinking starts again as it is next built)
     st.text_input(2, "", 0, 0, 0.0)
     st.blink_again = true
@@ -2189,7 +2207,7 @@ fn Ctx::put_editor_text(self : Ctx, key : String, text : String) -> Unit {
       if st.text != text {
         st.forget_edits()
       }
-      st.marked = ""
+      st.ime_let_go_owed()
       st.put_words(text)
       st.caret = text.length()
       st.anchor = st.caret

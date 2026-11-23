@@ -700,14 +700,25 @@ async fn P53Jobs::upkeep(self : P53Jobs, now : Double) -> (Int, Array[String]) {
     }
   }
   let ids = up.map(j => jtext_or_empty(j, "id"))
-  let collected = self.machine.collect(now, ids, id => {
-    let j = self.get(id)
-    if j is Null {
-      None
-    } else {
-      Some(j)
-    }
-  })
+  let collected = self.machine.collect(
+    now,
+    ids,
+    id => {
+      let j = self.get(id)
+      if j is Null {
+        None
+      } else {
+        Some(j)
+      }
+    },
+    jobs_of=Some(batch => {
+      let res = self.store().jobs_ends(batch.map(jstr)) catch { _ => return None }
+      match res {
+        Object(m) => Some(m)
+        _ => None
+      }
+    }),
+  )
   (capped, collected)
 }
 

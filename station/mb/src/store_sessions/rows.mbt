@@ -132,10 +132,32 @@ fn to_session(r : Map[String, Json]) -> Json {
   Json::object(o)
 }
 
+fn parse_thread_links_j(v : Json) -> Json? {
+  match v {
+    String(s) if s != "" =>
+      match (try { Some(@json.parse(s)) } catch { _ => None }) {
+        Some(Object(m)) => {
+          let out : Map[String, Json] = Map([])
+          match m.get("web") {
+            Some(String(w)) if w != "" => out["web"] = Json::string(w)
+            _ => ()
+          }
+          match m.get("app") {
+            Some(String(a)) if a != "" => out["app"] = Json::string(a)
+            _ => ()
+          }
+          if out.is_empty() { None } else { Some(Json::object(out)) }
+        }
+        _ => None
+      }
+    _ => None
+  }
+}
+
 ///|
 /// rows.ts `toThread`.
 fn to_thread(r : Map[String, Json]) -> Json {
-  {
+  let out : Map[String, Json] = {
     "id": col(r, "id"),
     "surface": col(r, "surface"),
     "channel": col(r, "channel"),
@@ -149,6 +171,11 @@ fn to_thread(r : Map[String, Json]) -> Json {
     "hiddenBy": col(r, "hidden_by"),
     "shownAt": col(r, "shown_at"),
   }
+  match parse_thread_links_j(col(r, "links")) {
+    Some(l) => out["links"] = l
+    None => ()
+  }
+  Json::object(out)
 }
 
 ///|

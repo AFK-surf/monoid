@@ -427,6 +427,17 @@ void mb_host_ime_action(int32_t kind) {
   ime_sync();
 }
 
+// What the input method was composing let go by the field itself (@hostapi.ime_let_go: its words sent or set): the
+// system's composition cancelled, so that it does not go on in words that are gone.
+void mb_host_ime_let_go(void) {
+  if (!ws->marked_len) return;
+  ws->marked_len = 0;
+  HIMC imc = ImmGetContext(ws->h);
+  if (!imc) return;
+  ImmNotifyIME(imc, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
+  ImmReleaseContext(ws->h, imc);
+}
+
 static void ime_place(void) {
   if (!ws->ime_active) return;
   int x = (int)lround(ws->caret[0] * ws->scale), y = (int)lround(ws->caret[1] * ws->scale);
@@ -1781,15 +1792,30 @@ void mb_host_hold_words(moonbit_string_t channel, moonbit_string_t title, moonbi
   (void)body;
 }
 
+static int mb_win_has_url_protocol(const WCHAR *scheme) {
+  HKEY k = NULL;
+  if (RegOpenKeyExW(HKEY_CLASSES_ROOT, scheme, 0, KEY_READ, &k) != ERROR_SUCCESS) return 0;
+  int ok = RegQueryValueExW(k, L"URL Protocol", NULL, NULL, NULL, NULL) == ERROR_SUCCESS;
+  RegCloseKey(k);
+  return ok;
+}
+
 // A URL handed to the system (@hostapi.open_url): ShellExecute, the default browser or the app that takes it; only
-// http, https and mailto (nothing ShellExecute would run as a program).
+// http, https, mailto, or a registered desktop app deep link (nothing ShellExecute would run as a program).
 int32_t mb_host_open_url(moonbit_string_t s) {
   int n = Moonbit_array_length(s);
   WCHAR *w = (WCHAR *)malloc(((size_t)n + 1) * sizeof(WCHAR));
   memcpy(w, s, (size_t)n * sizeof(WCHAR));
   w[n] = 0;
+  int allowed = _wcsnicmp(w, L"http://", 7) == 0 || _wcsnicmp(w, L"https://", 8) == 0 || _wcsnicmp(w, L"mailto:", 7) == 0;
+  if (!allowed) {
+    if (_wcsnicmp(w, L"comma://", 8) == 0) allowed = mb_win_has_url_protocol(L"comma");
+    else if (_wcsnicmp(w, L"comma-staging://", 16) == 0) allowed = mb_win_has_url_protocol(L"comma-staging");
+    else if (_wcsnicmp(w, L"comma-dev://", 12) == 0) allowed = mb_win_has_url_protocol(L"comma-dev");
+    else if (_wcsnicmp(w, L"slack://", 8) == 0) allowed = mb_win_has_url_protocol(L"slack");
+  }
   int ok = 0;
-  if (_wcsnicmp(w, L"http://", 7) == 0 || _wcsnicmp(w, L"https://", 8) == 0 || _wcsnicmp(w, L"mailto:", 7) == 0) {
+  if (allowed) {
     mb_host_log(s);
     ok = (INT_PTR)ShellExecuteW(NULL, L"open", w, NULL, NULL, SW_SHOWNORMAL) > 32;
   }

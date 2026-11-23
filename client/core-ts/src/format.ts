@@ -361,6 +361,20 @@ export function slackAppUrl(team: string, channel: string, ts: string, threadTs:
 /// A Slack team's id (`T…`, an Enterprise Grid's `E…`), told apart from a connect's own id.
 const SLACK_TEAM = /^[TE][A-Z0-9]{6,}$/;
 
+const MAX_COMMA_LINK = 2048;
+const COMMA_WEB_LINK = /^https:\/\/[A-Za-z0-9._-]+(?::\d{1,5})?(?:[/?#][^\s\u0000-\u001f]*)?$/;
+const COMMA_APP_LINK = /^comma(?:-[a-z0-9-]+)?:\/\/task\/?\?[^\s#\u0000-\u001f]+$/;
+
+/// Validates `links` of a Comma Task thread (`web`: https page, `app`: `comma*://task?…`).
+export function commaLinks(raw: unknown): { url: string | null; app: string | null } {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return { url: null, app: null };
+  const w = str(get(raw, "web"));
+  const a = str(get(raw, "app"));
+  const url = typeof w === "string" && w.length <= MAX_COMMA_LINK && COMMA_WEB_LINK.test(w) ? w : null;
+  const app = typeof a === "string" && a.length <= MAX_COMMA_LINK && COMMA_APP_LINK.test(a) ? a : null;
+  return { url, app };
+}
+
 /// A thread a history entry came from or went to: its name, where it is, and the way there (`app`: into Slack's app,
 /// at `message` when it is one of the thread's, else at its root).
 export function place(threads: unknown[], address: string, offsetMin: number, workspaces: Map<string, SlackWorkspace>, message: string | null = null): unknown {
@@ -377,8 +391,12 @@ export function place(threads: unknown[], address: string, offsetMin: number, wo
     const connect = surface?.startsWith("feishu:") ? workspaces.get(surface) : undefined;
     return { name: n, surface: "feishu", session, url: feishuChatUrl(connect?.url ?? feishuApplink(null), channel) };
   }
-  // A Comma Task is in no channel (`TASK`) and opens in no Slack: Comma by name (placeName's) and mark (originOf's rule).
-  if (surface?.startsWith("comma:")) return { name: n, surface: "comma", session };
+  // A Comma Task is in no channel (`TASK`) and opens in no Slack: Comma by name (placeName's) and mark (originOf's rule),
+  // with validated web/app links when Comma gave them.
+  if (surface?.startsWith("comma:")) {
+    const { url, app } = commaLinks(get(thread, "links"));
+    return { name: n, surface: "comma", session, ...(url !== null ? { url } : {}), ...(app !== null ? { app } : {}) };
+  }
   // A group connect's conversation: by its name, no #, Group's mark.
   if (surface?.startsWith("group:")) return { name: str(get(thread, "channelName")) || tr(current(), "core-views.group"), surface: "group", session };
   const teamId = surface?.startsWith("slack:") ? surface.slice(6) : null;

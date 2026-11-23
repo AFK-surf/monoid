@@ -48,3 +48,6 @@ extern "C" fn dv_haptic(kind : Int) -> Unit = "mb_host_haptic"
 
 ///|
 extern "C" fn dv_ime_action(kind : Int) -> Unit = "mb_host_ime_action"
+
+///|
+extern "C" fn dv_ime_let_go() -> Unit = "mb_host_ime_let_go"

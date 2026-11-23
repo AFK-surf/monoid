@@ -30,29 +30,40 @@
 # Run in station/.
 s=${1:-0/1}
 i=${s%/*} n=${s#*/}
-# (rules-fork at no less than 168, what CI made of its model's workers; mb-fault-replica-retire at no less than 210:
-# two MoonBit stations over iroh three times, a 48 MiB hand-over cut by a kill, 180-208 s on CI's Linux runners
-# (#7780's 44757732573: 208), and at 125 check-station (1) ran past its 5 minutes twice, #7797's 44760635957)
-long="test/mb-fault-replica-retire.test.ts:210 test/memory-sync-random.test.ts:168 test/rules-fork.test.ts:168"
-long="$long test/lock-roster4.test.ts:124 test/lock-fork-choice.test.ts:113 test/mb-reader-usage-page.test.ts:94"
-long="$long test/move-accounts.test.ts:91 test/replica-retire.test.ts:91 test/lock-moved-model.test.ts:89"
-long="$long test/mb-fault-adb-device-connects.test.ts:81 test/mb-fault-runtimes-and-lend.test.ts:80"
-long="$long test/mb-fault-move-and-connects.test.ts:79 test/hub.test.ts:78 test/mb-fault-agents-and-pack.test.ts:73"
+# (rules-fork at 310, mb-fault-replica-retire 260, memory-sync-random 200, mb-fault-runtimes-and-lend 150, lock-roster4
+# 55, lock-fork-choice 55, lock-moved-model 50 and hub 45: the 2026-11-23 seconds above were a 16-core pvg-office-2's,
+# where the four workers of each lock model had cores of their own, while a CI runner's 4 vCPUs share them with the
+# slice's other files. Dealt at those seconds with rules-fork and replica-retire left at their old floors (168, 210: 18%
+# and 23% of slices of 901), check-station (2) averaged 254 s over seven runs (45102424156, 45116462484, 45117959512,
+# 45120290937, 45121410965, 45121909055, 45122235646), 298 on main's 45116462484 and cut at its 5 minutes at 310 and 311
+# (45121909055, 45122235646), and (0) 220 (up to 275), where (3) with lock-roster4 and lock-moved-model averaged 165 and
+# (4) with lock-fork-choice and hub 173: those runs' means at some 5.2 a second gave rules-fork 450 and replica-retire
+# 350, and dealt so (#8253's 45123508084) their slices took 144 and 129 s where memory-sync-random's took 207 and
+# mb-fault-runtimes-and-lend's 235 (264 s the job), so those four are set from that run. Before that: rules-fork at no
+# less than what CI made of its model's workers; mb-fault-replica-retire two MoonBit stations over iroh three times, a
+# 48 MiB hand-over cut by a kill, 180-208 s on CI's Linux runners (#7780's 44757732573: 208))
+long="test/rules-fork.test.ts:310 test/mb-fault-replica-retire.test.ts:260 test/memory-sync-random.test.ts:200"
+long="$long test/mb-fault-runtimes-and-lend.test.ts:150 test/mb-reader-usage-page.test.ts:94"
+long="$long test/move-accounts.test.ts:91 test/replica-retire.test.ts:91 test/mb-fault-adb-device-connects.test.ts:81"
+long="$long test/mb-fault-move-and-connects.test.ts:79 test/mb-fault-agents-and-pack.test.ts:73"
 long="$long test/replica-heap-bounded.test.ts:62 test/chat-handover-back.test.ts:59 test/chat-handover.test.ts:55"
-long="$long test/mb-reader-timeline.test.ts:51 test/chat-handover-steps.test.ts:50 test/mb-live-jobs-ops-parity.test.ts:49"
-long="$long test/chat-handover-moves.test.ts:48 test/mb-live-p5-1.test.ts:41 test/move-plan-bounded.test.ts:40"
-long="$long test/mb-replica.test.ts:39 test/mb-legacy.test.ts:38 test/mb-live-adb-rig-drivers-parity.test.ts:37"
-long="$long test/hub-tools.test.ts:36 test/store.test.ts:36 test/mb-twin-station.test.ts:35"
-long="$long test/mb-live-comma-replica-parity.test.ts:33 test/mb-live-p5-2.test.ts:33 test/comma-surface-scope.test.ts:32"
-long="$long test/mb-dirsync.test.ts:32 test/lock-roster.test.ts:31 test/chat-handover-told.test.ts:28"
-long="$long test/mb-live-p5-3.test.ts:27 test/legacy-decision-session-store.test.ts:26 test/agy.test.ts:25"
+long="$long test/lock-fork-choice.test.ts:55 test/lock-roster4.test.ts:55 test/mb-reader-timeline.test.ts:51"
+long="$long test/chat-handover-steps.test.ts:50 test/lock-moved-model.test.ts:50"
+long="$long test/mb-live-jobs-ops-parity.test.ts:49 test/chat-handover-moves.test.ts:48 test/hub.test.ts:45"
+long="$long test/mb-live-p5-1.test.ts:41 test/move-plan-bounded.test.ts:40 test/mb-replica.test.ts:39"
+long="$long test/mb-legacy.test.ts:38 test/mb-live-adb-rig-drivers-parity.test.ts:37 test/hub-tools.test.ts:36"
+long="$long test/store.test.ts:36 test/mb-twin-station.test.ts:35 test/mb-live-comma-replica-parity.test.ts:33"
+long="$long test/mb-live-p5-2.test.ts:33 test/comma-surface-scope.test.ts:32 test/mb-dirsync.test.ts:32"
+long="$long test/lock-roster.test.ts:31 test/chat-handover-told.test.ts:28 test/mb-live-p5-3.test.ts:27"
+long="$long test/legacy-decision-session-store.test.ts:26 test/agy.test.ts:25"
 long="$long test/mb-live-mesh-remote-parity.test.ts:24 test/replica-stations.test.ts:23 test/hub-routes.test.ts:22"
 long="$long test/lock-world-2.test.ts:22 test/mb-fault-storage-and-peer.test.ts:22 test/mb-station-e2e.test.ts:22"
 long="$long test/comma-router-once.test.ts:21 test/mb-upkeep-state-and-foreign-worktrees.test.ts:21"
-long="$long test/workspace-connects.test.ts:21 test/mb-fault-vault-concurrency.test.ts:20 test/mb-usage-counter.test.ts:20"
-long="$long test/reclaim-storage.test.ts:20 test/mb-fault-lifecycle.test.ts:19 test/mb-live-sessions-parity.test.ts:19"
-long="$long test/subagent-hook.test.ts:19 test/updates.test.ts:19 test/lock-world-1.test.ts:18 test/usage-15m.test.ts:18"
-long="$long test/dirsync.test.ts:17 test/handover-bounded.test.ts:17 test/lock-world-3.test.ts:17"
+long="$long test/workspace-connects.test.ts:21 test/mb-fault-vault-concurrency.test.ts:20"
+long="$long test/mb-usage-counter.test.ts:20 test/reclaim-storage.test.ts:20 test/mb-fault-lifecycle.test.ts:19"
+long="$long test/mb-live-sessions-parity.test.ts:19 test/subagent-hook.test.ts:19 test/updates.test.ts:19"
+long="$long test/lock-world-1.test.ts:18 test/usage-15m.test.ts:18 test/dirsync.test.ts:17"
+long="$long test/handover-bounded.test.ts:17 test/lock-world-3.test.ts:17"
 long="$long test/mb-live-share-group-ops-parity.test.ts:17 test/mb-live-station.test.ts:17 test/codex.test.ts:16"
 long="$long test/legacy-said-write-bounded.test.ts:16 test/mb-fault-connects-mesh.test.ts:16 test/move-sizes.test.ts:16"
 long="$long test/accounts-routes.test.ts:15 test/json-startup.test.ts:15 test/mb-live-accounts-handover.test.ts:15"
@@ -60,23 +71,23 @@ long="$long test/remote.test.ts:15 test/usage-counter.test.ts:15 test/chat-hando
 long="$long test/cold-hub.test.ts:14 test/mb-live-vault-proxy-parity.test.ts:14 test/thumbs.test.ts:14"
 long="$long test/autoarchive-last-bounded.test.ts:13 test/legacy-people-since-store.test.ts:13"
 long="$long test/mb-fault-lock-and-mesh.test.ts:13 test/mb-packed.test.ts:13 test/mb-replica-carry.test.ts:13"
-long="$long test/sending-pack.test.ts:13 test/state-question-reader.test.ts:13 test/chat-list-home-interleaved.test.ts:12"
-long="$long test/legacy-decision-session-dropped.test.ts:12 test/mb-fault-browser-share-rig.test.ts:12"
-long="$long test/reclaim-rebuildable-orphans.test.ts:12 test/relay.test.ts:12 test/cold-compat.test.ts:11"
-long="$long test/context.test.ts:11 test/hub-e2e.test.ts:11 test/jobs.test.ts:11"
-long="$long test/mb-fault-net-and-backpressure.test.ts:11 test/mb-live-connects-admin-parity.test.ts:11"
-long="$long test/mb-live-drive-screens-browser-parity.test.ts:11 test/mb-live-hooks-parity.test.ts:11"
-long="$long test/mb-recent-chat.test.ts:11 test/messages-page-legacy-letters.test.ts:11 test/rules-lock.test.ts:11"
-long="$long test/transcripts.test.ts:11 test/chat-handover-flush.test.ts:10 test/chat-list-scope-visibility.test.ts:10"
-long="$long test/hermes.test.ts:10 test/mb-live-p5-4.test.ts:10 test/mb-session-backfill.test.ts:10"
-long="$long test/pending-delivery-reader.test.ts:10 test/repo-branch-cleanup.test.ts:10"
-long="$long test/runtime-io-main-thread.test.ts:10 test/slack-stop.test.ts:10 test/storage-classes.test.ts:10"
-long="$long test/autoarchive-unread-bounded.test.ts:9 test/card-outbox-scan.test.ts:9 test/comma-stats.test.ts:9"
-long="$long test/jobs-logs.test.ts:9 test/legacy-said-store.test.ts:9 test/logins.test.ts:9 test/mb-footprint.test.ts:9"
-long="$long test/mb-live-devices-rigs-cards.test.ts:9 test/mb-live-vault-devices-parity.test.ts:9"
-long="$long test/mb-repo-branch-cleanup.test.ts:9 test/mb-search.test.ts:9 test/mb-upstream-corpora.test.ts:9"
-long="$long test/screens.test.ts:9 test/search-scope-lifecycle.test.ts:9 test/signed.test.ts:9"
-long="$long test/state-default-card-reader.test.ts:9 test/usage-compact-source.test.ts:9"
+long="$long test/sending-pack.test.ts:13 test/state-question-reader.test.ts:13"
+long="$long test/chat-list-home-interleaved.test.ts:12 test/legacy-decision-session-dropped.test.ts:12"
+long="$long test/mb-fault-browser-share-rig.test.ts:12 test/reclaim-rebuildable-orphans.test.ts:12"
+long="$long test/relay.test.ts:12 test/cold-compat.test.ts:11 test/context.test.ts:11 test/hub-e2e.test.ts:11"
+long="$long test/jobs.test.ts:11 test/mb-fault-net-and-backpressure.test.ts:11"
+long="$long test/mb-live-connects-admin-parity.test.ts:11 test/mb-live-drive-screens-browser-parity.test.ts:11"
+long="$long test/mb-live-hooks-parity.test.ts:11 test/mb-recent-chat.test.ts:11"
+long="$long test/messages-page-legacy-letters.test.ts:11 test/rules-lock.test.ts:11 test/transcripts.test.ts:11"
+long="$long test/chat-handover-flush.test.ts:10 test/chat-list-scope-visibility.test.ts:10 test/hermes.test.ts:10"
+long="$long test/mb-live-p5-4.test.ts:10 test/mb-session-backfill.test.ts:10 test/pending-delivery-reader.test.ts:10"
+long="$long test/repo-branch-cleanup.test.ts:10 test/runtime-io-main-thread.test.ts:10 test/slack-stop.test.ts:10"
+long="$long test/storage-classes.test.ts:10 test/autoarchive-unread-bounded.test.ts:9 test/card-outbox-scan.test.ts:9"
+long="$long test/comma-stats.test.ts:9 test/jobs-logs.test.ts:9 test/legacy-said-store.test.ts:9 test/logins.test.ts:9"
+long="$long test/mb-footprint.test.ts:9 test/mb-live-devices-rigs-cards.test.ts:9"
+long="$long test/mb-live-vault-devices-parity.test.ts:9 test/mb-repo-branch-cleanup.test.ts:9 test/mb-search.test.ts:9"
+long="$long test/mb-upstream-corpora.test.ts:9 test/screens.test.ts:9 test/search-scope-lifecycle.test.ts:9"
+long="$long test/signed.test.ts:9 test/state-default-card-reader.test.ts:9 test/usage-compact-source.test.ts:9"
 long="$long test/card-answers-window.test.ts:8 test/chat-configure.test.ts:8 test/chat-list-index-reader.test.ts:8"
 long="$long test/comma-adaptive-page.test.ts:8 test/delete-marks-bounded.test.ts:8 test/feishu.test.ts:8"
 long="$long test/group-connect.test.ts:8 test/legacy-closed-index-store.test.ts:8 test/mb-reader-shared-chats.test.ts:8"

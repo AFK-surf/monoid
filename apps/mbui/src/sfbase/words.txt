@@ -1957,6 +1957,7 @@ web-pages.chat.info.started
 web-pages.chat.info.unknown
 web-pages.chat.jobs
 web-pages.chat.lastActive
+web-pages.chat.openInComma
 web-pages.chat.openInFeishu
 web-pages.chat.openInSlack
 web-pages.chat.openPanel

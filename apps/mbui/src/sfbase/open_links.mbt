@@ -491,7 +491,8 @@ pub fn links_reset() -> Unit {
 /// iOS's and Android's hosts answer before the system knows, Windows' and Linux's open web links only, and a
 /// browser's tab would ask about a slack:// link. False when nothing took it.
 pub fn open_slack(app : String, web : String) -> Bool {
-  if app != "" && @ui.platform() == 0 && @ui.open_url(app) {
+  let p = @ui.platform()
+  if app != "" && (p == 0 || p == 1 || p == 2 || p == 3) && @ui.open_url(app) {
     return true
   }
   web != "" && @ui.open_url(web)

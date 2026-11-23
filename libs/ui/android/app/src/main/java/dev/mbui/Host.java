@@ -311,6 +311,8 @@ final class Host {
     static int imeSent;
     static volatile int imeTaken;
     private static int imeTakenSeen;
+    /** The field let go of what the input method was composing (Device.imeLetGo), told with its words next (setIme). */
+    static boolean imeLetGo;
 
     static void setIme(boolean active, double x, double y, double w, double h,
                        String text, int a, int b) {
@@ -318,6 +320,8 @@ final class Host {
         // the input method's edits MoonBit had taken when it said this: said before it took them all, it is not its
         // own change but what it had before them (the field's state here is newer)
         final int taken = imeTaken;
+        final boolean letGo = imeLetGo;
+        imeLetGo = false;
         if (!active && !was) {
             imeText = text;
             selStart = a;
@@ -325,7 +329,7 @@ final class Host {
             imeTakenSeen = taken;
             return;
         }
-        if (active == was && lifts == liftsSeen && taken == imeTakenSeen
+        if (!letGo && active == was && lifts == liftsSeen && taken == imeTakenSeen
                 && a == selStart && b == selEnd && java.util.Objects.equals(text, imeText)) {
             return;
         }
@@ -362,10 +366,10 @@ final class Host {
                     showOwedIme();
                 }
                 MBView.MBInput in = view.input;
-                if (in == null || taken != imeSent || !in.took(text, a, b)) return;
-                // MoonBit changed the field itself: its words cleared (sent) as a TextView's set anew, the input
-                // method started over; else told where the selection is now
-                if (cleared) {
+                if (in == null || taken != imeSent || !in.took(text, a, b, letGo)) return;
+                // MoonBit changed the field itself: its words cleared (sent) or what was composed let go as a
+                // TextView's set anew, the input method started over; else told where the selection is now
+                if (cleared || letGo) {
                     imm.restartInput(view);
                 } else {
                     if (imeLog()) log("ime: updateSelection " + a + "," + b + " (the app's)");

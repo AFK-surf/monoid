@@ -14,7 +14,45 @@ export const TASK_CHANNEL = "TASK";
 /// How a Task was started, as task.invite said: who asked (a Comma user's id), and what it asked to run.
 export type Start = { requester: string; title: string | null; runtime: string | null; model: string | null };
 
-export type Task = { task: string; threadTs: string; start: Start; fetched: number; answered: number; left?: true };
+/// Validated links to open a Task in Comma (`web`: https page, `app`: `comma*://task?...`).
+export type TaskLinks = { web?: string; app?: string };
+
+export type Task = { task: string; threadTs: string; start: Start; fetched: number; answered: number; left?: true; links?: TaskLinks };
+
+const MAX_LINK_LENGTH = 2048;
+const COMMA_SCHEME = /^comma(?:-[a-z0-9-]+)?:$/;
+
+/// Validates `links` given by Comma on `task.invite` / `task.put`: `web` must be `https://…`, `app` must be
+/// `comma*://task?…`. Rejects any other scheme or malformed URL.
+export function validTaskLinks(raw: unknown): TaskLinks | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const out: TaskLinks = {};
+  if (typeof r.web === "string" && r.web.length > 0 && r.web.length <= MAX_LINK_LENGTH) {
+    try {
+      const u = new URL(r.web);
+      if (u.protocol === "https:" && u.hostname !== "") out.web = r.web;
+    } catch {}
+  }
+  if (typeof r.app === "string" && r.app.length > 0 && r.app.length <= MAX_LINK_LENGTH) {
+    try {
+      const u = new URL(r.app);
+      if (
+        COMMA_SCHEME.test(u.protocol) &&
+        u.hostname === "task" &&
+        u.username === "" &&
+        u.password === "" &&
+        u.port === "" &&
+        u.hash === "" &&
+        (u.pathname === "" || u.pathname === "/") &&
+        u.search.length > 1
+      ) {
+        out.app = r.app;
+      }
+    } catch {}
+  }
+  return out.web !== undefined || out.app !== undefined ? out : null;
+}
 
 type Kept = Record<string, Record<string, Task>>;
 
@@ -69,13 +107,26 @@ export class CommaTasks {
 
   /// The station takes part in `task` (again, with an invite made again: what it answered through is kept as the most
   /// said).
-  invited(connect: string, task: string, start: Start, answered: number): Task {
+  invited(connect: string, task: string, start: Start, answered: number, links?: TaskLinks | null): Task {
     const at = (this.kept[connect] ??= {});
     const had = at[task];
-    const t: Task = { task, threadTs: had?.threadTs ?? threadTsOf(task), start, fetched: had?.fetched ?? 0, answered: Math.max(had?.answered ?? 0, answered) };
+    const keptLinks = links ?? had?.links;
+    const t: Task = {
+      task, threadTs: had?.threadTs ?? threadTsOf(task), start, fetched: had?.fetched ?? 0,
+      answered: Math.max(had?.answered ?? 0, answered), ...(keptLinks ? { links: keptLinks } : {}),
+    };
     at[task] = t;
     this.save();
     return t;
+  }
+
+  /// Records validated links for a Task; no-op when unchanged.
+  setLinks(connect: string, task: string, links: TaskLinks): void {
+    const t = this.kept[connect]?.[task];
+    if (!t) return;
+    if (t.links?.web === links.web && t.links?.app === links.app) return;
+    t.links = links;
+    this.save();
   }
 
   /// Comma gave the Task through `through`, and said its session answered it through `answered`.

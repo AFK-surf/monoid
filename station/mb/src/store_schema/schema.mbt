@@ -116,6 +116,7 @@ pub let schema : String =
   $|  auto_title TEXT,
   $|  auto_title_n INTEGER,
   $|  auto_title_changes INTEGER NOT NULL DEFAULT 0,
+  $|  links TEXT,
   $|  UNIQUE (surface, channel, thread_ts)
   $|);
   $|CREATE TABLE IF NOT EXISTS thread_sessions (
@@ -907,6 +908,14 @@ fn add_auto_title_columns(db : @sql.Db) -> Unit raise {
     if !has(db, "threads", name) {
       db.exec("ALTER TABLE threads ADD COLUMN \{name} \{kind}")
     }
+  }
+}
+
+///|
+/// add_thread_links_column: external links stored on a thread (threads.links).
+fn add_thread_links_column(db : @sql.Db) -> Unit raise {
+  if !has(db, "threads", "links") {
+    db.exec("ALTER TABLE threads ADD COLUMN links TEXT")
   }
 }
 

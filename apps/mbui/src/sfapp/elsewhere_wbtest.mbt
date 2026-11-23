@@ -108,3 +108,23 @@ test "its time pressed says when it was, and pressed again how long ago" {
   guard t.find("3 分钟前") is Some((_, by)) else { fail("not how long ago: \{Repr(t.words().map(fn(w) { w.0 }))}") }
   assert_true((by - y).abs() < 4.0, msg="\{Repr((y, by))}")
 }
+
+///|
+test "a Comma Task named after 发送到 pressed opens its app link on macOS/iOS/Android/Windows" {
+  let web = "https://app.comma.surf/#/tasks/wsp_1/grp1_2/cnv_3"
+  let app = "comma://task?workspace=wsp_1&group=grp1_2&task=cnv_3"
+  let said : Json = {
+    "key": "e10",
+    "text": "安装包签名已经核对完了",
+    "place": { "name": "Comma", "surface": "comma", "url": web, "app": app },
+    "failed": false,
+    "received": false,
+    "by": @sffixture.by_agent("anthropic", "claude", "s-c1"),
+  }
+  let t = elsewhere_chat(said)
+  t.run_for(@ui.move_most_ms)
+  guard t.find("Comma") is Some(_) else { fail("no Comma place: \{Repr(t.words().map(fn(w) { w.0 }))}") }
+  t.tap_text("Comma")
+  t.draw()
+  assert_true(t.opened().contains(app), msg="\{Repr(t.opened())}")
+}

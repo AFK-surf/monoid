@@ -97,7 +97,10 @@ import { get, isObject, sha256 } from "./util.ts";
 export const CREDENTIAL_KEY = "credential";
 export const CREDENTIAL_FOR_S = 24 * 60 * 60;
 export const CREDENTIAL_OTHERS = "others";
-export const CREDENTIAL_OTHERS_KEPT = 8;
+/// How many of the device's other endpoints' credentials are kept: one for every way a workspace is reached (each relay,
+/// `lan`, `tailnet`, each fence), so none pushes out another's and sends it to the cloud again on its next dial (production
+/// 2026-11-23: 16 of them on 8 kept, 112 asks refused for too many in 25 minutes).
+export const CREDENTIAL_OTHERS_KEPT = 32;
 /// Where this device's push registration is kept.
 export const PUSH_KEY = "push";
 

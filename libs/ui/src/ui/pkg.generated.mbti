@@ -3168,6 +3168,7 @@ pub fn Tester::ime(Self) -> (Bool, String, Int32, Int32)
 pub fn Tester::ime_action(Self) -> Int32
 pub fn Tester::ime_delete(Self, Int32, Int32) -> Unit
 pub fn Tester::ime_finish(Self) -> Unit
+pub fn Tester::ime_let_go(Self) -> Int32
 pub fn Tester::ime_rect(Self) -> (Double, Double, Double, Double)
 pub fn Tester::ime_state(Self, String, Int32, Int32, ca? : Int32, cb? : Int32) -> Unit
 pub fn Tester::ime_trackpad(Self, Int32, Int32, Int32, Int32) -> Unit

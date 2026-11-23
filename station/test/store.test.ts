@@ -2352,3 +2352,27 @@ test("a session's starter: whom its chat was started for, before anyone wrote in
   session(store, "nobody");
   assert.equal(store.starter("nobody"), null);
 });
+
+test("jobsEnds returns state and endedAt in one indexed query for existing ids", () => {
+  const store = memory();
+  const plan = (store.db.prepare(
+    "EXPLAIN QUERY PLAN SELECT id, state, ended_at FROM jobs WHERE id IN (SELECT value FROM json_each(?1))",
+  ).all('["j1"]') as { detail: string }[]).map((r) => r.detail).join(" | ");
+  assert.match(plan, /SEARCH jobs USING INDEX sqlite_autoindex_jobs_1 \(id=\?\)/);
+  assert.doesNotMatch(plan, /SCAN jobs\b/);
+
+  assert.deepEqual(store.jobsEnds([]), {});
+  const row = (id: string, state: string, endedAt: number | null) => ({
+    id, sessionKey: "s1", name: id, command: "true", cwd: "/tmp", port: null, token: `t-${id}`,
+    state, pgid: null, exitCode: state === "running" ? null : 0, startedAt: 1000, endedAt,
+    restarts: 0, log: `/tmp/${id}.log`, watch: false,
+  });
+  store.insertJob(row("run1", "running", null));
+  store.insertJob(row("done1", "exited", 2500));
+  store.insertJob(row("fail1", "failed", 3000));
+  assert.deepEqual(store.jobsEnds(["run1", "done1", "missing", "fail1"]), {
+    run1: { state: "running", endedAt: null },
+    done1: { state: "exited", endedAt: 2500 },
+    fail1: { state: "failed", endedAt: 3000 },
+  });
+});
