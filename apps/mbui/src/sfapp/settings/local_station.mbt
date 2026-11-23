@@ -103,7 +103,7 @@ fn local_joinable_item(core : Core, here : Here) -> Json? {
   items(joinable, "items")
   .iter()
   .find_first(fn(j) {
-    text(Some(j), "id") == st || (ws_id != "" && text(Some(j), "station") == ws_id + "/" + st)
+    !flag(Some(j), "rig") && (text(Some(j), "id") == st || (ws_id != "" && text(Some(j), "station") == ws_id + "/" + st))
   })
 }
 

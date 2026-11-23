@@ -1629,9 +1629,11 @@ web-pages.settings.relays.lead
 web-pages.settings.relays.remove
 web-pages.settings.relays.title
 web-pages.settings.stations.existingLead
+web-pages.settings.stations.existingLeadTasks
 web-pages.settings.stations.existingNone
 web-pages.settings.stations.firstExisting
 web-pages.settings.stations.joinAction
+web-pages.settings.stations.joinTasksOnlyNote
 web-pages.settings.stations.joinedRow
 web-pages.settings.stations.kindExisting
 web-pages.settings.stations.kindNew

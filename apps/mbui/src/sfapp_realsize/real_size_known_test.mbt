@@ -383,7 +383,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-profile-move": (583, 400, 64),
   "phone settings-profile-move-key": (355, 252, 30),
   "phone settings-stations-add": (791, 576, 115),
-  "phone settings-stations-existing": (805, 582, 116),
+  // Raised once, 2026-11-23: settings-stations-existing now renders the full/tasks mode segmented control below the list and rig row icons.
+  "phone settings-stations-existing": (850, 618, 128),
   "phone settings-stations-command": (753, 542, 109),
   "phone settings-first-station": (699, 501, 105),
   "phone settings-adb": (376, 266, 31),

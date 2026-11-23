@@ -14,7 +14,7 @@ import type { Host } from "./host.ts";
 import { t } from "./i18n.ts";
 import { shortCode } from "./lock.ts";
 import type { PersonalLock } from "./personal-lock.ts";
-import { type AddBody, type Device, type DeviceBody, type FullBody, type GrantBody, type RevokeBody, type SettingsBody, type Signed, type Timeout, TIMEOUT_DEFAULT, latest, signedBytes, timeoutRefusal } from "./rig-form.ts";
+import { type AddBody, type Device, type DeviceBody, type FullBody, type GrantBody, type JoinBody, type RevokeBody, type SettingsBody, type Signed, type Timeout, TIMEOUT_DEFAULT, latest, signedBytes, timeoutRefusal } from "./rig-form.ts";
 import { StationAddr } from "./station/addr.ts";
 import type { Store } from "./store.ts";
 import { get } from "./util.ts";
@@ -273,6 +273,24 @@ export class Rigs {
       const body: SettingsBody = { v: 1, sub, ws: workspace, rig, seq, open, at: now, device };
       const signed: Signed<SettingsBody> = yield* this.#signRig(workspace, sub, "settings", body, t("core-misc.device.reason.settings", { name: str(dev?.name) }));
       return yield* this.#viaStation(workspace, (at) => env.call(at, "POST", `/rigs/${rig}/settings`, { signed, chain: env.personal().entries(sub) }));
+    });
+  }
+
+  /// The hash of `sub`'s own lock, which a rig of theirs pins (begun here if none yet): for `views/memberships.ts`
+  /// when a full station joins another workspace in tasks-only mode.
+  person(sub: string, workspace?: string): Effect.Effect<string, CoreError> {
+    return this.#person(sub, workspace);
+  }
+
+  /// A rig of this person's added to another workspace (tasks-only): signed with a key on their own lock (rig-form.ts
+  /// `JoinBody`) and carried to the rig by a station of `sourceWorkspace`.
+  join(sourceWorkspace: string, rig: string, targetWorkspace: string, token: string, lock: string | null): Effect.Effect<unknown, CoreError> {
+    return Effect.gen({ self: this }, function* () {
+      const env = this.#env;
+      const { sub, name } = yield* this.#mine(sourceWorkspace, rig);
+      const body: JoinBody = { v: 1, sub, ws: targetWorkspace, rig, token, ...(lock !== null ? { lock } : {}), at: this.#now() };
+      const signed: Signed<JoinBody> = yield* this.#signRig(sourceWorkspace, sub, "join", body, t("core-misc.rig.reason.join", { name }));
+      return yield* this.#viaStation(sourceWorkspace, (at) => env.call(at, "POST", `/rigs/${rig}/join`, { signed, chain: env.personal().entries(sub) }));
     });
   }
 

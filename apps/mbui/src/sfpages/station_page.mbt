@@ -121,8 +121,8 @@ fn station_menu_items(core : Core, here : Here, s : Json?) -> Array[@sf.MenuItem
   }
   // made one that only runs tasks by who added it or a workspace owner or admin, whose rig it then is (`mine`: the
   // core says, false for a plain member's view of a station another added; asked first, with how many chats it holds
-  // go out of sight): its own station asked, so only while it is up; one of another workspace's stays whole
-  if flag(s, "mine") && flag(s, "online") && !flag(s, "joined") {
+  // go out of sight): its own station asked, so only while it is up (a joined workspace can switch to tasks-only too)
+  if flag(s, "mine") && flag(s, "online") {
     items.push(
       // (not again while it is under way: the station and the cloud asked once)
       Some(@sf.menu_item_of(@sf.t("web-pages.rigs.toTasks"), icon="boxes", disabled=is_doing(core, ["rig.setMode"], [("station", text(s, "id"))]), fn() {

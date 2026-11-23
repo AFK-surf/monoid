@@ -231,29 +231,62 @@ test "添加 station: a station of another workspace, the first open one picked,
       if n == "station.join" { Some(Ok({ "joined": { "name": "客厅的 mini" } })) } else { None }
     })
     t.run_for(@ui.move_most_ms)
-    for w in ["将你在其他 workspace 管理的 station 也添加到这里", "家里的 mini", "个人 · 在线", "实验机", "实验室已开启安全模式，此 workspace 未开启", "添加到此 workspace", "取消"] {
+    for w in ["将你在其他 workspace 管理的 station 也添加到这里", "完整", "只执行任务", "家里的 mini", "个人 · 在线", "build-box", "个人 · 只执行任务 · 在线", "实验机", "实验室已开启安全模式，此 workspace 未开启", "添加到此 workspace", "取消"] {
       assert_true(sa_drawn(t, w), msg="\{at}: \{w}")
     }
-    for w in ["完整", "名称", "生成命令"] {
+    for w in ["名称", "生成命令"] {
       assert_false(sa_drawn(t, w), msg="\{at}: \{w} on this side")
     }
     assert_true(t.get(Button, label="家里的 mini").selected == Some(true), msg=at)
     assert_true(t.get(Button, label="实验机").disabled, msg=at)
-    assert_true(sa_at(t, "家里的 mini", at).1 < sa_at(t, "实验机", at).1, msg="\{at}: in the order they came")
+    assert_true(sa_at(t, "家里的 mini", at).1 < sa_at(t, "build-box", at).1, msg="\{at}: in the order they came")
+    assert_true(sa_at(t, "build-box", at).1 < sa_at(t, "实验机", at).1, msg="\{at}: in the order they came")
     t.click(Button, label="添加到此 workspace")
     t.run_for(@ui.move_most_ms)
     let joins = calls.filter(fn(m) { m.name == "station.join" })
     assert_eq(joins.length(), 1, msg=at)
     assert_eq(text(Some(joins[0].params), "station"), "ws2/st9", msg=at)
     assert_eq(text(Some(joins[0].params), "workspace"), "ws1", msg=at)
-    // kept where it was, as the station calls it, said joined; none open is left to join
+    assert_eq(text(Some(joins[0].params), "mode"), "full", msg=at)
+    // kept where it was, as the station calls it, said joined; next open item (build-box, rig) is now picked
     assert_true(sa_drawn(t, "客厅的 mini"), msg=at)
     assert_true(sa_drawn(t, "已加入此 workspace"), msg=at)
-    assert_true(sa_at(t, "客厅的 mini", at).1 < sa_at(t, "实验机", at).1, msg="\{at}: where it was")
-    assert_true(t.get(Button, label="添加到此 workspace").disabled, msg=at)
+    assert_true(sa_at(t, "客厅的 mini", at).1 < sa_at(t, "build-box", at).1, msg="\{at}: where it was")
+    // build-box is a rig: mode toggle hides under the list and tasks-only footer note shows (top lead stays stable)
+    assert_false(sa_drawn(t, "完整"), msg="\{at}: rig hides full mode choice")
+    assert_true(sa_drawn(t, "将你在其他 workspace 管理的 station 也添加到这里"), msg=at)
+    assert_true(sa_drawn(t, "该 station 将以只执行任务模式加入，不运行 agent，也不保存此 workspace 的对话；哪些对话能用由你批准。"), msg=at)
     assert_true(sa_drawn(t, "完成") && !sa_drawn(t, "取消"), msg=at)
-    sa_leaving(t, at, fn() raise { t.click(Button, label="完成") }, seen=["将你在其他 workspace 管理的 station 也添加到这里", "客厅的 mini", "已加入此 workspace", "完成"], unseen=["取消"])
+    // join build-box too -> sends mode=tasks, then none open left
+    t.click(Button, label="添加到此 workspace")
+    t.run_for(@ui.move_most_ms)
+    let joins2 = calls.filter(fn(m) { m.name == "station.join" })
+    assert_eq(joins2.length(), 2, msg=at)
+    assert_eq(text(Some(joins2[1].params), "station"), "ws2/r1", msg=at)
+    assert_eq(text(Some(joins2[1].params), "mode"), "tasks", msg=at)
+    assert_true(t.get(Button, label="添加到此 workspace").disabled, msg=at)
+    sa_leaving(t, at, fn() raise { t.click(Button, label="完成") }, seen=["客厅的 mini", "已加入此 workspace", "完成"], unseen=["取消"])
   }
+}
+
+///|
+test "添加 station: joining an existing full station in tasks-only mode sends mode=tasks and shows tasks-only note" {
+  let calls : Array[Made] = []
+  let t = sa_open(calls, platform=0, wide=true, mode="settings-stations-existing", answer=fn(n, _) {
+    if n == "station.join" { Some(Ok({ "joined": { "name": "家里的 mini" } })) } else { None }
+  })
+  t.run_for(@ui.move_most_ms)
+  // mode selector is below the list so toggling/selecting rows never shifts the list
+  assert_true(sa_at(t, "实验机", "wide").1 < sa_at(t, "只执行任务", "wide").1)
+  t.click(Radio, label="只执行任务")
+  t.run_for(@ui.move_most_ms)
+  assert_true(sa_drawn(t, "该 station 将以只执行任务模式加入，不运行 agent，也不保存此 workspace 的对话；哪些对话能用由你批准。"))
+  t.click(Button, label="添加到此 workspace")
+  t.run_for(@ui.move_most_ms)
+  let joins = calls.filter(fn(m) { m.name == "station.join" })
+  assert_eq(joins.length(), 1)
+  assert_eq(text(Some(joins[0].params), "station"), "ws2/st9")
+  assert_eq(text(Some(joins[0].params), "mode"), "tasks")
 }
 
 ///|

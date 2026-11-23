@@ -512,6 +512,8 @@ export const STATION_SHAPES: Record<string, Shape> = {
     ["online", "bool"],
     ["line", "String", { said: true, doc: "Its home workspace and whether it is up, in a line: Acme · 在线; with `needsLock`, why it cannot be added." }],
     ["needsLock", "bool", { default: true, doc: "Its home is in security mode and this workspace is not: it joins only one in it too, so it is shown\nbut not to be picked." }],
+    ["rig", "bool", { default: true, doc: "Whether this entry is a tasks-only station (rig) in its source workspace (joins via signed rig.join as tasks-only)." }],
+    ["canFull", "bool", { default: true, doc: "Whether the viewer can add this station to the target workspace as a full station (false for non-managers or rig sources)." }],
   ], { doc: "A station that could be added to a workspace." }),
   MembershipsView: struct([
     ["manages", "bool", { doc: "The viewer is an owner or admin of its home workspace (the one the page is in): only they see this." }],
@@ -528,6 +530,7 @@ export const STATION_SHAPES: Record<string, Shape> = {
     ["stationName", "String", { said: true, doc: "What the station is called there." }],
     ["home", "bool", { doc: "Its home workspace, whose owners and admins manage the machine." }],
     ["here", "bool", { doc: "The workspace the page is in." }],
+    ["mode", opt("String"), { doc: "full | tasks (omitted by older stations, treated as full)." }],
     ["line", "String", { doc: "What it is to the station, in a line: 主 workspace, or 加入的 workspace." }],
   ], { doc: "A workspace a station is in." }),
   StationWay: struct([

@@ -13,6 +13,7 @@ import type { Entry } from "../src/lock.ts";
 import { shortCode } from "../src/lock.ts";
 import { PersonalLock } from "../src/personal-lock.ts";
 import { Rigs, parseRig } from "../src/rigs.ts";
+import { wellFormed } from "../src/rig-form.ts";
 import { Devices, parseDevice } from "../src/devices.ts";
 import { Runner } from "../src/runtime.ts";
 import { StationAddr } from "../src/station/addr.ts";
@@ -447,5 +448,31 @@ test("devices: a whole station's added there; a rig's signed by its person and t
     await rig?.close();
     w.runner.shutdown();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("rigs.join signs a well-formed JoinBody and forwards it through a station of the source workspace; rigs.person returns the personal lock root", async () => {
+  const w = world();
+  try {
+    const root = await w.run(w.rigs.person(SUB, WS));
+    assert.equal(root, w.personal.root(SUB));
+    const lockHash = "cc".repeat(32);
+    await w.run(w.rigs.join(WS, RIG, "ws2", "enroll-tok-9", lockHash));
+    const sent = w.asked.find((a) => a.path === `/rigs/${RIG}/join`);
+    assert.ok(sent !== undefined);
+    assert.equal(sent!.method, "POST");
+    assert.equal(wellFormed("join", sent!.body.signed), true);
+    assert.equal(sent!.body.signed.body.ws, "ws2");
+    assert.equal(sent!.body.signed.body.rig, RIG);
+    assert.equal(sent!.body.signed.body.token, "enroll-tok-9");
+    assert.equal(sent!.body.signed.body.lock, lockHash);
+    // Rejects another user's rig.
+    const notMine = await w.runner.run(Effect.result(w.rigs.join(WS, "bb".repeat(32), "ws2", "tok", null)));
+    assert.ok(Result.isFailure(notMine) && notMine.failure.code === "rig_not_owner");
+    // Rejects malformed join body (empty token or bad lock).
+    assert.equal(wellFormed("join", { ...sent!.body.signed, body: { ...sent!.body.signed.body, token: "" } }), false);
+    assert.equal(wellFormed("join", { ...sent!.body.signed, body: { ...sent!.body.signed.body, lock: "not-hex" } }), false);
+  } finally {
+    w.runner.shutdown();
   }
 });

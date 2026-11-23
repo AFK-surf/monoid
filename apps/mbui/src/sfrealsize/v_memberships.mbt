@@ -5,6 +5,6 @@ fn init {
   let asked =
     #|{"topic":"memberships","station":"ws/maple"}
   let value =
-    #|{"manages":true,"loading":false,"canJoin":true,"workspaces":[{"workspace":"ws","name":"Acme","stationName":"Maple","home":true,"here":true,"line":"主 workspace"}]}
+    #|{"manages":true,"loading":false,"canJoin":true,"workspaces":[{"workspace":"ws","name":"Acme","stationName":"Maple","home":true,"here":true,"mode":"full","line":"主 workspace"}]}
   put(asked, value)
 }

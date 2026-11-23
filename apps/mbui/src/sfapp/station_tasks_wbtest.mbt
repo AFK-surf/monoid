@@ -201,3 +201,59 @@ test "the workspace's first station made one that only runs tasks: its page stay
   assert_eq(calls.filter(fn(m) { m.name == "rig.setMode" }).length(), 1)
   assert_eq(maples(), 1, msg="Maple's page not taken for it")
 }
+
+///|
+test "Station settings page shows Workspace section with mixed-mode tasks-only line" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="settings-station-env")
+  @settings.fixture_page("settings-station-env") |> ignore
+  app.nav.replace(Setting(@settings.Route::Station("ws1/st1")))
+  t.run_for(@ui.move_most_ms)
+  t.wheel(700.0, 400.0, 2500.0)
+  t.run_for(@ui.move_most_ms)
+  t.wheel(700.0, 400.0, 2500.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("Workspace") is Some(_))
+  assert_true(t.find("此 station 属于以下 workspace；完整加入的 workspace 管理员可管理它，只执行任务的 workspace 仅按授权运行任务") is Some(_))
+  assert_true(t.find("星火工作室") is Some(_))
+  assert_true(t.find("主 workspace") is Some(_))
+  assert_true(t.find("个人") is Some(_))
+  assert_true(t.find("加入的 workspace · 只执行任务") is Some(_))
+  assert_eq(t.audit().filter(fn(f) { !f.contains("edge_node.mbt") }), [])
+}
+
+///|
+test "a joined full station offers 改为只执行任务 in its ⋯ menu when mine and online" {
+  new_run()
+  let calls : Array[Made] = []
+  let base = fixture("settings-stations-tasks")
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let tp = base.topic(name, params).get().snapshot()
+      if name == "station" {
+        match tp.value {
+          Some(Object(m)) => {
+            let m2 = m.copy()
+            m2["joined"] = Json::boolean(true)
+            m2["home"] = Json::string("个人")
+            { ..tp, value: Some(Json::object(m2)) }
+          }
+          _ => tp
+        }
+      } else {
+        tp
+      }
+    },
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      (base.call)(name, params, done)
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0)
+  app.nav.replace(Setting(@settings.Route::Station("ws1/st1")))
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="更多")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("改为只执行任务") is Some(_))
+}

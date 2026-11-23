@@ -54,7 +54,7 @@ export type Call =
   | { kind: "chatChange"; op: ops.Request; thread: number | null; session: string; title: string | null; pinned: boolean | null; keep: boolean | null; hidden: boolean | null; muted: boolean | null }
   | { kind: "widgetState"; op: ops.Request; key: string; path: string; state: unknown | undefined }
   | { kind: "chatXshare"; station: string; workspace: string | null; session: string; thread: number | null; to: string[]; write: boolean }
-  | { kind: "stationJoin"; workspace: string; station: string; name: string | null }
+  | { kind: "stationJoin"; workspace: string; station: string; name: string | null; mode?: "full" | "tasks" }
   | { kind: "chatSend"; station: string; thread: number; text: string; attachments: unknown; uploads?: { id: string; name: string; size: number; width?: number; height?: number }[]; quotes: unknown; client: string | null }
   | { kind: "chatCreate"; station: string; ask: Record<string, unknown>; key?: string }
   | { kind: "shareIn"; scope: string; source: string; title: string | null; target: { station: string; id?: string }; key: string | null }
@@ -878,8 +878,13 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
         ["workspace", S, "req"],
         ["station", S, "req"],
         ["name", S, "opt"],
+        ["mode", S, "opt"],
       ]);
-      return { kind: "stationJoin", workspace: p.workspace as string, station: p.station as string, name: p.name as string | null };
+      const mode = p.mode as string | null;
+      if (mode !== null && mode !== "full" && mode !== "tasks") {
+        throw CoreError.invalid(t("core-misc.params.invalid", { error: `mode: ${mode}` }));
+      }
+      return { kind: "stationJoin", workspace: p.workspace as string, station: p.station as string, name: p.name as string | null, mode: mode ?? "full" };
     }
     case "chat.ref": {
       const p = read(params, [

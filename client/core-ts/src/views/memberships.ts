@@ -56,6 +56,12 @@ function stationsOf(inner: Inner, workspace: string): J[] | null {
   return isObject(v) && Array.isArray(v.stations) ? v.stations : null;
 }
 
+/// A workspace's rigs as the cloud lists them there (held), or null while it is not read.
+function rigsOf(inner: Inner, workspace: string): J[] | null {
+  const v = inner.data.shared({ topic: "workspace", workspace });
+  return isObject(v) ? arr(v.rigs) : null;
+}
+
 /// The name of a station's home workspace, when it is one of the viewer's: the one listing it but not as joined. None
 /// where the station's home is this workspace, or one the viewer is not in.
 export function homeName(inner: Inner, workspace: string, id: string): string | null {
@@ -70,17 +76,40 @@ export function homeName(inner: Inner, workspace: string, id: string): string | 
 /// The `joinable` topic.
 export function joinable(inner: Inner, workspace: string): J {
   const all = places(inner);
-  const here = new Set((stationsOf(inner, workspace) ?? []).map((s) => get(s, "id")));
-  const theirs = all.filter((p) => p.id !== workspace && manager(p.role));
+  const hereRole = all.find((p) => p.id === workspace)?.role ?? null;
+  const isManagerHere = manager(hereRole);
+  const canAddTasksHere = isManagerHere || hereRole === "member";
+  if (!canAddTasksHere) return { offered: false, loading: false, items: [] };
+
+  const here = new Set([
+    ...(stationsOf(inner, workspace) ?? []),
+    ...(rigsOf(inner, workspace) ?? []),
+  ].map((s) => get(s, "id")));
+  const others = all.filter((p) => p.id !== workspace);
   let loading = stationsOf(inner, workspace) === null;
-  // A station whose home is in security mode joins only workspaces in it too: listed, not to be picked, saying so.
+  // A station in any workspace with security mode joins only workspaces in it too: listed, not to be picked, saying so.
   // (each by the lock this device holds there, the cloud's word only where it holds none: views/lock.ts `safeMode`)
   const locked = safeMode(inner, workspace);
+  const lockedElsewhere = (id: string): string | null => {
+    if (locked) return null;
+    for (const q of others) {
+      if (!safeMode(inner, q.id)) continue;
+      const inStations = stationsOf(inner, q.id)?.some((s) => get(s, "id") === id) === true;
+      const inRigs = rigsOf(inner, q.id)?.some((r) => get(r, "id") === id) === true;
+      if (inStations || inRigs) return q.name;
+    }
+    return null;
+  };
+
+  let hasSource = false;
   const items: J[] = [];
   const seen = new Set<string>();
-  for (const p of theirs) {
+
+  // First collect full stations from other workspaces the viewer manages.
+  for (const p of others) {
+    if (!manager(p.role)) continue;
+    hasSource = true;
     const stations = stationsOf(inner, p.id);
-    const needsLock = !locked && safeMode(inner, p.id);
     if (stations === null) {
       loading = true;
       continue;
@@ -92,6 +121,8 @@ export function joinable(inner: Inner, workspace: string): J {
       // As its link finds it, as every list of stations says it: still.fail cloud lists no `online` of its own.
       inner.stations.seen.read(`${p.id}/${id}`, "link");
       const online = !down(inner.stations.link(`${p.id}/${id}`)?.state ?? { state: "offline" });
+      const lockedWsName = lockedElsewhere(id);
+      const needsLock = lockedWsName !== null;
       items.push({
         station: `${p.id}/${id}`,
         id,
@@ -102,12 +133,64 @@ export function joinable(inner: Inner, workspace: string): J {
         workspaceName: p.name,
         ...markOf(p, "workspace"),
         online,
-        line: needsLock ? t("core-views.joinable.needsLock", { workspace: p.name }) : `${p.name} · ${online ? t("core-views.joinable.online") : t("core-views.joinable.offline")}`,
+        rig: false,
+        canFull: isManagerHere,
+        line: needsLock ? t("core-views.joinable.needsLock", { workspace: lockedWsName }) : `${p.name} · ${online ? t("core-views.joinable.online") : t("core-views.joinable.offline")}`,
         ...(needsLock ? { needsLock: true } : {}),
       });
     }
   }
-  return { offered: theirs.length > 0, loading, items };
+
+  // Then collect tasks-only stations (rigs) owned by the viewer in any other workspace (no manager role required there).
+  for (const p of others) {
+    if (p.role === "viewer") continue;
+    const rigs = rigsOf(inner, p.id);
+    if (rigs === null) continue;
+    const owner = inner.workspaces.owner(p.id);
+    if (owner === null) continue;
+    const rigViews = arr(inner.rigs?.value(p.id)?.rigs);
+    for (const r of rigs) {
+      if (get(r, "owner") !== owner) continue;
+      hasSource = true;
+      const id = str(get(r, "id"));
+      if (id === null || here.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      const rv = rigViews.find((x) => get(x, "id") === id);
+      let online: boolean;
+      if (rv !== undefined && typeof rv.reached === "boolean") {
+        online = rv.reached;
+      } else {
+        const ps = stationsOf(inner, p.id) ?? [];
+        online = ps.some((st) => {
+          const sid = str(get(st, "id"));
+          if (sid === null) return false;
+          inner.stations.seen.read(`${p.id}/${sid}`, "link");
+          return !down(inner.stations.link(`${p.id}/${sid}`)?.state ?? { state: "offline" });
+        });
+      }
+      const lockedWsName = lockedElsewhere(id);
+      const needsLock = lockedWsName !== null;
+      items.push({
+        station: `${p.id}/${id}`,
+        id,
+        name: str(get(r, "name")) ?? id,
+        ...(str(get(r, "emoji")) ? { emoji: get(r, "emoji") } : {}),
+        ...(str(get(r, "icon")) ? { icon: get(r, "icon") } : {}),
+        workspace: p.id,
+        workspaceName: p.name,
+        ...markOf(p, "workspace"),
+        online,
+        rig: true,
+        canFull: false,
+        line: needsLock
+          ? t("core-views.joinable.needsLock", { workspace: lockedWsName })
+          : `${p.name} · ${t("web-pages.rigs.mode.tasks")} · ${online ? t("core-views.joinable.online") : t("core-views.joinable.offline")}`,
+        ...(needsLock ? { needsLock: true } : {}),
+      });
+    }
+  }
+
+  return { offered: hasSource && canAddTasksHere, loading, items };
 }
 
 /// Whether the viewer manages the station at `address`: an owner or admin of the workspace it is addressed in, its home
@@ -135,7 +218,12 @@ export function memberships(inner: Inner, address: string): J {
     const workspace = str(get(w, "workspace"));
     if (workspace === null) return [];
     const home = get(w, "home") === true;
-    const line = t(home ? "core-views.memberships.home" : "core-views.memberships.joined");
+    const mode = str(get(w, "mode")) === "tasks" ? "tasks" : "full";
+    const line = t(
+      home
+        ? mode === "tasks" ? "core-views.memberships.homeTasks" : "core-views.memberships.home"
+        : mode === "tasks" ? "core-views.memberships.joinedTasks" : "core-views.memberships.joined",
+    );
     return [{
       workspace,
       name: all.find((p) => p.id === workspace)?.name ?? str(get(w, "workspaceName")) ?? workspace,
@@ -143,6 +231,7 @@ export function memberships(inner: Inner, address: string): J {
       stationName: str(get(w, "name")) ?? "",
       home,
       here: workspace === here,
+      mode,
       line,
     }];
   });
@@ -187,18 +276,57 @@ function joinError(e: CoreError): CoreError {
   if (m.includes("workspace is locked")) return as("core-misc.join.lockedStation");
   if (m.includes("too_many_stations")) return as("core-misc.join.tooMany");
   if (m.includes("enrollment_not_found")) return as("core-misc.join.expired");
+  if (m.includes("rig_enrollment")) return as("core-misc.join.rigEnrollment");
+  if (m.includes("station_enrollment")) return as("core-misc.join.stationEnrollment");
   return e.status === undefined ? e : as("core-misc.join.failed", { error: m });
 }
 
 /// `station.join`: an enrollment made in the workspace, as the account that reaches it; the station told to join with it,
-/// over the link of its home workspace; then the workspaces read again, so the station is listed in the one it joined.
+/// over the link of its home workspace (or via signed `rig.join` when the source is a rig); then the workspaces read
+/// again, so the station is listed in the one it joined.
 function join(inner: Inner, c: Of, ctx: J): Effect.Effect<unknown, CoreError> {
   return Effect.gen(function* () {
     const addr = yield* Effect.try({ try: () => StationAddr.parse(c.station), catch: (e) => e as CoreError });
     if (addr.workspace === c.workspace) return yield* Effect.fail(CoreError.invalid(t("core-misc.join.same")));
     const sub = inner.workspaces.owner(c.workspace);
     if (sub === null) return yield* Effect.fail(new CoreError("not_found", t("core-misc.account.no_access"), 404));
-    const name = c.name ?? inner.cloudSync.nameOf(c.station) ?? addr.station;
+    const sourceInStations = stationsOf(inner, addr.workspace)?.some((s) => get(s, "id") === addr.station) === true;
+    const sourceInRigs = rigsOf(inner, addr.workspace)?.some((r) => get(r, "id") === addr.station) === true;
+    const sourceIsRig = sourceInRigs && !sourceInStations;
+    const mode: "full" | "tasks" = sourceIsRig ? "tasks" : (c.mode === "tasks" ? "tasks" : "full");
+    const rigName = sourceIsRig ? str(rigsOf(inner, addr.workspace)?.find((r) => get(r, "id") === addr.station)?.name) : null;
+    const name = c.name ?? inner.cloudSync.nameOf(c.station) ?? rigName ?? addr.station;
+
+    if (sourceIsRig) {
+      // An existing rig joins another workspace in tasks-only mode via a signed rig.join relayed by a source station.
+      const made = yield* enrolled(inner, sub, c.workspace, yield* inner.provider.request(sub, "POST", `/v1/workspaces/${encode(c.workspace)}/rigs/enrollments`, { name }, ctx));
+      const token = str(get(made, "token"));
+      if (token === null) return yield* Effect.fail(new CoreError("invalid", t("core-misc.join.noToken")));
+      const lock = str(get(made, "lock"));
+      const answer = yield* Effect.mapError(inner.rigs.join(addr.workspace, addr.station, c.workspace, token, lock), joinError);
+      yield* inner.cloudSync.refreshAll();
+      const joined = get(answer, "joined") ?? (str(get(answer, "workspace")) !== null
+        ? { workspace: get(answer, "workspace"), workspaceName: get(answer, "workspace_name") ?? get(answer, "workspaceName"), name: get(answer, "name") ?? name }
+        : null);
+      return { joined };
+    }
+
+    if (mode === "tasks") {
+      // A full station joins another workspace in tasks-only mode (mixed mode).
+      const person = yield* inner.rigs.person(sub, c.workspace);
+      const made = yield* enrolled(inner, sub, c.workspace, yield* inner.provider.request(sub, "POST", `/v1/workspaces/${encode(c.workspace)}/rigs/enrollments`, { name }, ctx));
+      const token = str(get(made, "token"));
+      if (token === null) return yield* Effect.fail(new CoreError("invalid", t("core-misc.join.noToken")));
+      const lock = str(get(made, "lock"));
+      const body = lock === null ? { token, rig: true, person } : { token, lock, rig: true, person };
+      const answer = yield* Effect.mapError(inner.stations.requests.call(addr, "POST", "/workspaces/join", body, { ctx }), joinError);
+      inner.data.put(RECORD, c.station, { workspaces: arr(get(answer, "workspaces")), canJoin: get(answer, "canJoin") === true });
+      invalidate(inner, c.station);
+      yield* inner.cloudSync.refreshAll();
+      readSoon(inner, c.station);
+      return { joined: get(answer, "joined") ?? null };
+    }
+
     // A locked workspace's enrollment names its lock's head as this device has it: the station pins that lock there.
     const made = yield* enrolled(inner, sub, c.workspace, yield* inner.provider.request(sub, "POST", `/v1/workspaces/${encode(c.workspace)}/enrollments`, { name }, ctx));
     const token = str(get(made, "token"));

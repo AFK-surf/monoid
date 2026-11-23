@@ -116,9 +116,9 @@ test("the stations to add are those of a workspace the viewer manages (their hom
     offered: true,
     loading: false,
     items: [
-      { station: "wa/a1", id: "a1", name: "A1", workspace: "wa", workspaceName: "甲", online: true, line: "甲 · 在线", needsLock: false },
-      { station: "wa/a2", id: "a2", name: "A2", workspace: "wa", workspaceName: "甲", online: true, line: "甲 · 在线", needsLock: false },
-      { station: "wb/b1", id: "b1", name: "B1", workspace: "wb", workspaceName: "乙", online: false, line: "乙 · 离线", needsLock: false },
+      { station: "wa/a1", id: "a1", name: "A1", workspace: "wa", workspaceName: "甲", online: true, rig: false, canFull: true, line: "甲 · 在线", needsLock: false },
+      { station: "wa/a2", id: "a2", name: "A2", workspace: "wa", workspaceName: "甲", online: true, rig: false, canFull: true, line: "甲 · 在线", needsLock: false },
+      { station: "wb/b1", id: "b1", name: "B1", workspace: "wb", workspaceName: "乙", online: false, rig: false, canFull: true, line: "乙 · 离线", needsLock: false },
     ],
   });
   // In W's list, the one W joined says so, and where it is from.
@@ -185,8 +185,8 @@ test("a_station_joins_with_an_enrollment_of_the_workspace_over_its_home_link", a
     loading: false,
     canJoin: true,
     workspaces: [
-      { workspace: "wa", name: "甲", stationName: "A1", home: true, here: true, line: "主 workspace" },
-      { workspace: "ws", name: "W", stationName: "A1", home: false, here: false, line: "加入的 workspace" },
+      { workspace: "wa", name: "甲", stationName: "A1", home: true, here: true, mode: "full", line: "主 workspace" },
+      { workspace: "ws", name: "W", stationName: "A1", home: false, here: false, mode: "full", line: "加入的 workspace" },
     ],
   });
 
@@ -200,6 +200,8 @@ test("a_station_that_cannot_join_says_why_in_words", async () => {
     // A cloud from before them: the station says so.
     [[409, { error: "still.fail cannot add a station to more than one workspace yet; nothing changed" }], "cloud 尚不支持一台 station 加入多个 workspace，未做任何更改"],
     [[409, { error: "still.fail answered 409: {\"error\":\"locked_workspace\"}" }], "此 station 所在的 workspace 已开启安全模式，只能加入同样开启安全模式的 workspace"],
+    [[409, { error: "still.fail answered 409: {\"error\":\"rig_enrollment\"}" }], "此登记码仅适用于只执行任务的 station，请重试"],
+    [[409, { error: "still.fail answered 409: {\"error\":\"station_enrollment\"}" }], "此登记码仅适用于完整 station，请重试"],
     [[409, { error: "something else" }], "无法加入：something else"],
   ];
   for (const [said, words] of cases) {
@@ -282,4 +284,162 @@ test("a_new_chat_on_a_joined_station_none_of_whose_profiles_is_open_here_says_wh
   assert.equal(n.blocked, "shared");
   assert.equal(n.problem, "studio 属于 甲，其 Profile 尚未对此 workspace 开放：在 Profile 页开启「同时用于 W」");
   core.close();
+});
+
+test("joinable includes own rigs from non-manager workspaces, excludes rigs already here, enforces cross-ws safe mode, and respects target role", async () => {
+  const RIG_OWN = "aa".repeat(32);
+  const RIG_OTHER = "bb".repeat(32);
+  const RIG_HERE = "cc".repeat(32);
+  const s = await started(base(), 0, (host) => {
+    const wire = new Wire(host);
+    wire.up.add("wa/a1");
+    wire.up.add("wc/c1");
+    return wire;
+  }, ({ host }) => {
+    const fetch = host.fetch.bind(host);
+    host.fetch = (req: HttpRequest) => {
+      const path = req.url.replace(ORIGIN, "");
+      if (path === "/v1/me") {
+        return Effect.succeed(jsonResponse(200, {
+          workspaces: [
+            { id: "ws", name: "W", role: "member" },
+            { id: "wa", name: "甲", role: "owner" },
+            { id: "wc", name: "丙", role: "member" },
+            { id: "wb", name: "乙", role: "admin" },
+            { id: "wv", name: "丁", role: "viewer" },
+          ],
+          invitations: [],
+          relay_url: null,
+        }));
+      }
+      if (path === "/v1/workspaces/ws") return Effect.succeed(jsonResponse(200, { id: "ws", stations: [{ id: "st", name: "studio", online: true, last_seen: null }], rigs: [{ id: RIG_HERE, name: "AlreadyHere", owner: "s1" }] }));
+      if (path === "/v1/workspaces/wa") return Effect.succeed(jsonResponse(200, { id: "wa", stations: [{ id: "a1", name: "A1", last_seen: null }], rigs: [{ id: RIG_HERE, name: "AlreadyHere", owner: "s1" }] }));
+      if (path === "/v1/workspaces/wc") return Effect.succeed(jsonResponse(200, { id: "wc", stations: [{ id: "c1", name: "C1", last_seen: null }], rigs: [{ id: RIG_OWN, name: "BuildBox", owner: "s1" }, { id: RIG_OTHER, name: "Theirs", owner: "someone-else" }] }));
+      if (path === "/v1/workspaces/wb") return Effect.succeed(jsonResponse(200, { id: "wb", locked: true, stations: [], rigs: [{ id: RIG_OWN, name: "BuildBox", owner: "s1" }] }));
+      if (path === "/v1/workspaces/wv") return Effect.succeed(jsonResponse(200, { id: "wv", stations: [] }));
+      return fetch(req);
+    };
+  });
+  await s.host.time.pass(500);
+  const ui = s.core.connect();
+  const values = new Map<number, unknown>();
+  subscribe(s.core, ui, 1, { topic: "joinable", workspace: "ws" });
+  subscribe(s.core, ui, 2, { topic: "joinable", workspace: "wv" });
+  await s.host.settle();
+  apply(s.host, values);
+  // In W (role=member): offered is true, a1 has canFull=false, RIG_OWN is listed with rig=true and needsLock=true (because wb is locked!), RIG_HERE & RIG_OTHER excluded.
+  const wsJoinable = v(values, 1) as J;
+  assert.equal(wsJoinable.offered, true);
+  assert.deepEqual(wsJoinable.items.map((x: J) => [x.station, x.rig, x.canFull, x.needsLock, x.line]), [
+    ["wa/a1", false, false, false, "甲 · 在线"],
+    [`wc/${RIG_OWN}`, true, false, true, "乙 已开启安全模式，需在此 workspace 也开启安全模式后才能添加"],
+  ]);
+  // Viewer cannot add any station.
+  assert.deepEqual(v(values, 2), { offered: false, loading: false, items: [] });
+  s.core.close();
+});
+
+test("station.join supports mixed mode (full station joining as tasks-only) and rig.join (existing rig joining another workspace)", async () => {
+  const RIG = "aa".repeat(32);
+  let wire: Wire | null = null;
+  const made: { path: string; body: J }[] = [];
+  const s = await started(base(), 0, (host) => {
+    wire = new Wire(host);
+    wire.up.add("wa/a1");
+    wire.up.add("wc/c1");
+    return wire;
+  }, ({ host }) => {
+    host.appKeys = true;
+    const fetch = host.fetch.bind(host);
+    host.fetch = (req: HttpRequest) => {
+      const path = req.url.replace(ORIGIN, "");
+      if (path === "/v1/me") {
+        return Effect.succeed(jsonResponse(200, {
+          workspaces: [
+            { id: "ws", name: "W", role: "admin" },
+            { id: "wa", name: "甲", role: "owner" },
+            { id: "wc", name: "丙", role: "member" },
+          ],
+          invitations: [],
+          relay_url: null,
+        }));
+      }
+      if (path === "/v1/workspaces/ws") return Effect.succeed(jsonResponse(200, { id: "ws", stations: [{ id: "st", name: "studio", online: true, last_seen: null }] }));
+      if (path === "/v1/workspaces/wa") return Effect.succeed(jsonResponse(200, { id: "wa", stations: [{ id: "a1", name: "A1", last_seen: null }] }));
+      if (path === "/v1/workspaces/wc") return Effect.succeed(jsonResponse(200, { id: "wc", stations: [{ id: "c1", name: "C1", last_seen: null }], rigs: [{ id: RIG, name: "BuildBox", owner: "s1" }] }));
+      if (req.method === "POST" && path === "/v1/workspaces/ws/rigs/enrollments") {
+        made.push({ path, body: JSON.parse(new TextDecoder().decode(req.body!)) });
+        return Effect.succeed(jsonResponse(200, { token: `rig-tok-${made.length}`, expires_at: 1, install: "", command: "" }));
+      }
+      return fetch(req);
+    };
+  });
+  // Stub personal lock as already approved on this device.
+  const real = s.core.inner.adb.personal();
+  const mine: Record<string, unknown> = {
+    refresh: () => Effect.void,
+    standing: () => "member",
+    root: () => "11".repeat(32),
+    signRig: (_sub: string, _kind: string, body: unknown) => Effect.succeed({ body, sig: { key: "ed25519:k", sig: "sig" } }),
+    entries: () => [],
+  };
+  const personal = new Proxy(real, {
+    get: (to, key) => (typeof key === "string" && key in mine ? mine[key] : typeof (to as J)[key] === "function" ? (to as J)[key].bind(to) : (to as J)[key]),
+  });
+  s.core.inner.adb.personal = () => personal;
+  await s.host.time.pass(500);
+
+  const MIXED = [
+    { workspace: "wa", workspaceName: "甲", name: "A1", home: true, mode: "full" },
+    { workspace: "ws", workspaceName: "W", name: "A1", home: false, mode: "tasks" },
+  ];
+  wire!.table["wa/a1 POST /workspaces/join"] = { joined: { workspace: "ws", workspaceName: "W", name: "A1", mode: "tasks" }, workspaces: MIXED, canJoin: true };
+  wire!.table["wa/a1 GET /workspaces"] = { workspaces: MIXED, canJoin: true };
+  wire!.table[`wc/c1 POST /rigs/${RIG}/join`] = { ok: true, workspace: "ws", workspace_name: "W", name: "BuildBox" };
+
+  const ui = s.core.connect();
+  const values = new Map<number, unknown>();
+
+  // 1) Full station wa/a1 joins ws in tasks-only mode.
+  call(s.core, ui, 1, "station.join", { workspace: "ws", station: "wa/a1", mode: "tasks" });
+  await s.host.settle();
+  const r1 = answerOf(s.host, values, 1);
+  assert.deepEqual(r1.ok, { joined: { workspace: "ws", workspaceName: "W", name: "A1", mode: "tasks" } });
+  assert.deepEqual(made[0], { path: "/v1/workspaces/ws/rigs/enrollments", body: { name: "A1" } });
+  assert.deepEqual(wire!.asked.find((a) => a.path === "/workspaces/join"), {
+    station: "wa/a1",
+    method: "POST",
+    path: "/workspaces/join",
+    body: { token: "rig-tok-1", rig: true, person: "11".repeat(32) },
+  });
+
+  // Verify memberships topic renders mixed mode line.
+  subscribe(s.core, ui, 2, { topic: "memberships", station: "wa/a1" });
+  await s.host.settle();
+  apply(s.host, values);
+  assert.deepEqual((v(values, 2) as J).workspaces.map((w: J) => [w.workspace, w.mode, w.line]), [
+    ["wa", "full", "主 workspace"],
+    ["ws", "tasks", "加入的 workspace · 只执行任务"],
+  ]);
+
+  // 2) Existing rig wc/RIG joins ws (forced tasks-only even if mode: "full" is requested).
+  call(s.core, ui, 3, "station.join", { workspace: "ws", station: `wc/${RIG}`, mode: "full" });
+  await s.host.settle();
+  const r3 = answerOf(s.host, values, 3);
+  assert.deepEqual(r3.ok, { joined: { workspace: "ws", workspaceName: "W", name: "BuildBox" } });
+  assert.deepEqual(made[1], { path: "/v1/workspaces/ws/rigs/enrollments", body: { name: "BuildBox" } });
+  const rigJoinAsk = wire!.asked.find((a) => a.path === `/rigs/${RIG}/join`);
+  assert.ok(rigJoinAsk !== undefined);
+  assert.equal(rigJoinAsk!.station, "wc/c1");
+  assert.equal(rigJoinAsk!.body.signed.body.ws, "ws");
+  assert.equal(rigJoinAsk!.body.signed.body.rig, RIG);
+  assert.equal(rigJoinAsk!.body.signed.body.token, "rig-tok-2");
+
+  // 3) Invalid mode is rejected.
+  call(s.core, ui, 4, "station.join", { workspace: "ws", station: "wa/a1", mode: "bogus" });
+  await s.host.settle();
+  const r4 = answerOf(s.host, values, 4);
+  assert.ok("error" in r4);
+
+  s.core.close();
 });

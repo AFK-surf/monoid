@@ -432,6 +432,9 @@ fn station_settings_keys(s : Json?, manager : Bool) -> Array[String] {
   if has_env || has_search || field(o, "diagnostics") is Some(Object(_)) || field(o, "elevation") is Some(Object(_)) || field(o, "screenService") is Some(Object(_)) || field(o, "autoChats") is Some(Object(_)) {
     out.push("system")
   }
+  if manager {
+    out.push("workspaces")
+  }
   if online && items(field(o, "copies"), "offers").length() > 0 {
     out.push("copies")
   }
@@ -2138,7 +2141,10 @@ fn station_workspaces_node(b : @view.View, core : Core, address : String) -> Uni
   let m = fn() { station_part_read(core, address, station_memberships_ask(address)).value }
   let ws = fn() { items(m(), "workspaces") }
   b.show(fn() { flag(m(), "manages") && ws().length() >= 2 }, fn(p) {
-    st_section_node(p, fn() { "Workspace" }, count=fn() { ws().length() }, note=fn() { @sf.t("web-pages.stations.workspacesLead") }, fn(sec) {
+    let has_tasks = fn() { ws().iter().any(fn(w) { text(Some(w), "mode") == "tasks" }) }
+    st_section_node(p, fn() { "Workspace" }, count=fn() { ws().length() }, note=fn() {
+      @sf.t(if has_tasks() { "web-pages.stations.workspacesLeadMixed" } else { "web-pages.stations.workspacesLead" })
+    }, fn(sec) {
       @sf.group_node(sec, fn(g) {
         g.each(fn() { ws().mapi(fn(i, w) { (i, w) }) }, fn(x) { x.0 }, fn(row, x) {
           let wv = fn() { Some(x.get().1) }

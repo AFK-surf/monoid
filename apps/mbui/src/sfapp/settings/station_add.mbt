@@ -131,8 +131,8 @@ fn open_add_station(
 }
 
 ///|
-/// What the adding offers now: the joinable stations to show (joinable_rows), whether another workspace's are offered
-/// (to its managers, while there is one), whether that side is the one chosen, and whether a command is made.
+/// What the adding offers now: the joinable stations to show (joinable_rows), whether another workspace's are offered,
+/// whether that side is the one chosen, and whether a command is made.
 priv struct AddingNow {
   rows : () -> Array[Json]
   offered : () -> Bool
@@ -140,17 +140,23 @@ priv struct AddingNow {
 }
 
 ///|
-fn adding_now(core : Core, here : Here, manager : Bool) -> AddingNow {
+fn adding_now(core : Core, here : Here) -> AddingNow {
   let joinable = fn() { (core.topic)("joinable", { "workspace": str(here.workspace) }).get().value }
   let rows = fn() { joinable_rows(joinable()) }
-  let offered = fn() { manager && flag(joinable(), "offered") && rows().length() > 0 }
+  let offered = fn() { flag(joinable(), "offered") && rows().length() > 0 }
   { rows, offered, joining: fn() { offered() && adding.existing.get() && adding.made.get() is None } }
 }
 
 ///|
+/// Whether a joinable station item supports joining in full mode (not a rig and `canFull` not false).
+fn joinable_can_full(s : Json) -> Bool {
+  !flag(Some(s), "rig") && (field(Some(s), "canFull") is None || flag(Some(s), "canFull"))
+}
+
+///|
 /// 添加 station's body in node `v`: the kind's choice at its top while one of another workspace's is offered, the
-/// mode's (its managers', for a new machine), then the side chosen: those of another workspace, or this machine (where
-/// it can be added here), what a station is and the steps.
+/// mode's (its managers', for a new machine or a full joinable station), then the side chosen: those of another
+/// workspace, or this machine (where it can be added here), what a station is and the steps.
 fn add_station_body(
   v : @view.View,
   core : Core,
@@ -159,7 +165,7 @@ fn add_station_body(
   here_addable : Bool,
   close : () -> Unit,
 ) -> Unit {
-  let now = adding_now(core, here, manager)
+  let now = adding_now(core, here)
   // (the order the joinable ones came in, kept as the core lists another: those joined from here stay where they were)
   v.reacts(
     fn() { items((core.topic)("joinable", { "workspace": str(here.workspace) }).get().value, "items").map(fn(s) { text(Some(s), "station") }) },
@@ -184,7 +190,7 @@ fn add_station_body(
   })
   // what the new machine will be, its managers' to choose (a member's is one that only runs tasks)
   if manager {
-    v.show(fn() { !made() && !((now.offered)() && adding.existing.get()) }, fn(b) {
+    v.show(fn() { !made() && !(now.joining)() }, fn(b) {
       @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(add_mode_room) })
       add_choice_node(
         b,
@@ -202,7 +208,7 @@ fn add_station_body(
   }
   v.pick(now.joining, fn(b, joining) {
     if joining {
-      join_existing_node(b, core, here, now.rows)
+      join_existing_node(b, core, here, manager, now.rows)
     } else {
       // this machine, where it has none: added here, no command to run (before a command is made)
       if here_addable {
@@ -263,7 +269,7 @@ let add_note_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w=Fu
 /// 添加 station's foot in node `v`: joining one of another workspace, 取消 (完成 once one is joined) and 添加到此
 /// workspace; a new machine's, its step's (add_station_buttons').
 fn add_station_foot(v : @view.View, core : Core, here : Here, manager : Bool, close : () -> Unit) -> Unit {
-  let now = adding_now(core, here, manager)
+  let now = adding_now(core, here)
   let step = fn() { add_step(core, here) }
   // 取消 (joining, 完成 once one is joined), but where the machine has joined
   @sf.foot_place_node(v, fn() { (now.joining)() || step() != 1 }, fn(p) {
@@ -283,7 +289,7 @@ fn add_station_foot(v : @view.View, core : Core, here : Here, manager : Bool, cl
     @sf.button_node(
       p,
       fn() { tr("web-pages.settings.stations.joinAction") },
-      fn() { join_station(core, here, @signals.untracked(chosen).0) },
+      fn() { join_station(core, here, manager, @signals.untracked(chosen).0) },
       tone=Primary,
       busy=fn() { chosen().1 },
       disabled=fn() { chosen().0 is None },
@@ -328,7 +334,7 @@ pub fn first_station_steps_node(v : @view.View, core : Core, here : Here) -> Uni
     adding_reset([], false)
   }
   let here_addable = local_station_addable_in(here.workspace, [])
-  let now = adding_now(core, here, true)
+  let now = adding_now(core, here)
   v.box(fn(col) {
     @sf.style_node(col, fn() { first_steps_column })
     if here_addable {
@@ -390,11 +396,23 @@ fn took_it(s : Json) -> Bool {
 /// node `v`: what that shares of the machine said under the list, why it was refused in red; joined, it stays in its
 /// place, said so, and the next one open is picked. In the sheet's column, its rows reaching out across its sides
 /// (@sf.sheet_column_node).
-fn join_existing_node(v : @view.View, core : Core, here : Here, rows : () -> Array[Json]) -> Unit {
+fn join_existing_node(v : @view.View, core : Core, here : Here, manager : Bool, rows : () -> Array[Json]) -> Unit {
+  let chosen_can_full = fn() {
+    match join_chosen(core, here, rows()).0 {
+      Some(s) => joinable_can_full(s)
+      None => false
+    }
+  }
+  let join_as_tasks = fn() { !manager || adding.tasks.get() || !chosen_can_full() }
   @sf.sheet_column_node(v, fn(col) {
     col.box(fn(l) {
       @sf.style_node(l, fn() { add_kind_room })
-      @sf.words_node(l, fn() { tr("web-pages.settings.stations.existingLead") }, fn() { add_note_words }) |> ignore
+      @sf.words_node(
+        l,
+        fn() { tr(if !manager { "web-pages.settings.stations.existingLeadTasks" } else { "web-pages.settings.stations.existingLead" }) },
+        fn() { add_note_words },
+      )
+      |> ignore
     })
     |> ignore
     col.each(rows, fn(s) { text(Some(s), "station") }, fn(r, s) {
@@ -404,6 +422,7 @@ fn join_existing_node(v : @view.View, core : Core, here : Here, rows : () -> Arr
         let took = fn() { took_it(s.get()) }
         let st = fn() { Some(s.get()) }
         let marked = @sf.has_station_mark(text(Some(s.untracked()), "emoji"), text(Some(s.untracked()), "icon"))
+        let is_rig = flag(Some(s.untracked()), "rig")
         @sf.choice_row_node(
           row,
           fn() { text(st(), "name") },
@@ -418,6 +437,8 @@ fn join_existing_node(v : @view.View, core : Core, here : Here, rows : () -> Arr
           note=fn() { if took() { tr("web-pages.settings.stations.joinedRow") } else { text(st(), "line") } },
           lead?=if marked {
             Some(fn(m) { station_mark_node_of(m, st, 15.0) })
+          } else if is_rig {
+            Some(fn(m) { @sf.icon_node(m, "boxes", 15.0, By(fn() { @sf.theme().p.muted })) |> ignore })
           } else {
             None
           },
@@ -426,9 +447,31 @@ fn join_existing_node(v : @view.View, core : Core, here : Here, rows : () -> Arr
       })
       |> ignore
     })
+    if manager {
+      col.show(chosen_can_full, fn(b) {
+        @sf.style_node(b, fn() { join_mode_room })
+        add_choice_node(
+          b,
+          fn() { [tr("web-pages.rigs.add.kind.full"), tr("web-pages.rigs.add.kind.tasks")] },
+          fn() { if adding.tasks.get() { 1 } else { 0 } },
+          fn(i) {
+            if (i == 1) != adding.tasks.untracked() {
+              adding.error.set("")
+              adding.here_error.set("")
+            }
+            adding.tasks.set(i == 1)
+          },
+        )
+      })
+    }
     col.box(fn(f) {
       @sf.style_node(f, fn() { join_foot_room })
-      @sf.words_node(f, fn() { tr("web-pages.settings.stations.softIsolation") }, fn() { join_soft_words }) |> ignore
+      @sf.words_node(
+        f,
+        fn() { tr(if join_as_tasks() { "web-pages.settings.stations.joinTasksOnlyNote" } else { "web-pages.settings.stations.softIsolation" }) },
+        fn() { join_soft_words },
+      )
+      |> ignore
       f.show(fn() { adding.error.get() != "" }, fn(e) {
         @sf.words_node(e, fn() { adding.error.get() }, fn() { add_error_words }) |> ignore
       })
@@ -436,6 +479,11 @@ fn join_existing_node(v : @view.View, core : Core, here : Here, rows : () -> Arr
     |> ignore
   })
 }
+
+///|
+/// The mode's choice under the joinable list: 10 over it (join_foot_room puts 10 under it).
+// kept across runs: a value (no field of it changes)
+let join_mode_room : @ui.Style = @ui.css("w=Full pt=S2_5")
 
 ///|
 /// What a station shares of its machine, under the joinable ones: 10 over it, its error 10 under it.
@@ -460,12 +508,13 @@ fn station_mark_node_of(m : @view.View, s : () -> Json?, size : Double) -> Unit 
 
 ///|
 /// The one picked joined (`station.join`): kept where it was, as the station calls it; why not, said under the list.
-fn join_station(core : Core, here : Here, chosen : Json?) -> Unit {
+fn join_station(core : Core, here : Here, manager : Bool, chosen : Json?) -> Unit {
   guard chosen is Some(s) else { return }
   adding.error.set("")
   adding.here_error.set("")
   let station = text(Some(s), "station")
-  (core.call)("station.join", obj([("station", str(station)), ("workspace", str(here.workspace))]), fn(r) {
+  let mode = if !manager || !joinable_can_full(s) || adding.tasks.untracked() { "tasks" } else { "full" }
+  (core.call)("station.join", obj([("station", str(station)), ("workspace", str(here.workspace)), ("mode", str(mode))]), fn(r) {
     match r {
       Ok(v) => {
         // as it is called here, when the station says

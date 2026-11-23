@@ -3671,8 +3671,9 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           (
             "items",
             [
-              obj([("station", str("ws2/st9")), ("id", str("st9")), ("name", str("家里的 mini")), ("icon", str("glyph:mini:green")), ("workspace", str("ws2")), ("workspaceName", str("个人")), ("online", Json::boolean(true)), ("line", str("个人 · 在线"))]),
-              obj([("station", str("ws3/st7")), ("id", str("st7")), ("name", str("实验机")), ("workspace", str("ws3")), ("workspaceName", str("实验室")), ("online", Json::boolean(false)), ("line", str("实验室已开启安全模式，此 workspace 未开启")), ("needsLock", Json::boolean(true))]),
+              obj([("station", str("ws2/st9")), ("id", str("st9")), ("name", str("家里的 mini")), ("icon", str("glyph:mini:green")), ("workspace", str("ws2")), ("workspaceName", str("个人")), ("online", Json::boolean(true)), ("rig", Json::boolean(false)), ("canFull", Json::boolean(true)), ("line", str("个人 · 在线"))]),
+              obj([("station", str("ws2/r1")), ("id", str("r1")), ("name", str("build-box")), ("workspace", str("ws2")), ("workspaceName", str("个人")), ("online", Json::boolean(true)), ("rig", Json::boolean(true)), ("canFull", Json::boolean(false)), ("line", str("个人 · 只执行任务 · 在线"))]),
+              obj([("station", str("ws3/st7")), ("id", str("st7")), ("name", str("实验机")), ("workspace", str("ws3")), ("workspaceName", str("实验室")), ("online", Json::boolean(false)), ("rig", Json::boolean(false)), ("canFull", Json::boolean(true)), ("line", str("实验室已开启安全模式，此 workspace 未开启")), ("needsLock", Json::boolean(true))]),
             ],
           ),
         ]),
@@ -3686,8 +3687,8 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           (
             "workspaces",
             [
-              obj([("id", str("ws1")), ("workspace", str("ws1")), ("home", Json::boolean(true)), ("name", str("星火工作室")), ("line", str("主 workspace"))]),
-              obj([("id", str("ws2")), ("workspace", str("ws2")), ("home", Json::boolean(false)), ("name", str("个人")), ("line", str("~/项目/个人"))]),
+              obj([("id", str("ws1")), ("workspace", str("ws1")), ("home", Json::boolean(true)), ("name", str("星火工作室")), ("mode", str("full")), ("line", str("主 workspace"))]),
+              obj([("id", str("ws2")), ("workspace", str("ws2")), ("home", Json::boolean(false)), ("name", str("个人")), ("mode", str("tasks")), ("line", str("加入的 workspace · 只执行任务"))]),
             ],
           ),
         ]),

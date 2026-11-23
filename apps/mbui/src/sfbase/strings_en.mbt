@@ -2842,6 +2842,7 @@ let en : Map[String, String] = {
   "web-pages.stations.total": "{total} total",
   "web-pages.stations.uses": "{name} uses",
   "web-pages.stations.workspacesLead": "This station belongs to these workspaces; the admins of each have the same rights over it",
+  "web-pages.stations.workspacesLeadMixed": "This station belongs to these workspaces; admins of full workspaces manage it, while tasks-only workspaces only run approved tasks",
   "web-pages.vault.hide": "Hide",
   "web-pages.vault.title": "Secrets",
   "web-pages.workspace.addAccount": "Add account",
