@@ -96,36 +96,53 @@ static const char *FS =
     "flat in vec4 v_rc; flat in vec4 v_rs; flat in vec4 v_rr; flat in vec4 v_oclip; flat in vec4 v_orc; flat in vec4 v_ors;\n"
     "in vec4 v_ramp;\n"
     "uniform float u_scale;\n"
+    "#if MB_HAS(1) || MB_HAS(3) || MB_HAS(7)\n"
     "uniform sampler2D u_atlas;\n"
     "uniform sampler2D u_catlas;\n"
+    "#endif\n"
+    "#if MB_HAS(4) || MB_HAS(9)\n"
     "uniform sampler2D u_img;\n"
+    "#endif\n"
     "// glass (src/ui/glass.mbt): the blurred copy under it and where a point is in it (uv = p * u_map.xy + u_map.zw, kept\n"
     "// in u_uvc), a liquid group's shapes and corners, how many\n"
+    "#if MB_HAS_BACKDROP\n"
     "uniform highp sampler2D u_bd;\n"
     "uniform vec4 u_map;\n"
     "uniform vec4 u_uvc;\n"
+    "#endif\n"
     "// a liquid group's bounds (as the vertex shader has them)\n"
+    "#if ONE_KIND < 0 || ONE_KIND == 6\n"
     "uniform vec4 u_gb;\n"
     "uniform vec4 u_shape[8];\n"
     "uniform vec4 u_rad[8];\n"
     "uniform int u_n;\n"
+    "#endif\n"
+    "#if MB_HAS_LIQUID\n"
     "uniform vec2 u_glight;\n"
+    "#endif\n"
+    "#if MB_HAS_ADAPTIVE\n"
     "uniform highp sampler2D u_ad;\n"
     "uniform vec4 u_ad_box[16];\n"
     "uniform int u_ad_n;\n"
+    "#endif\n"
     "// the pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), 2040 fours\n"
     "// (136 instances) a row\n"
+    "#if MB_HAS(11)\n"
     "uniform highp sampler2D u_segs;\n"
+    "#endif\n"
     "out vec4 o;\n"
     "#define float2 vec2\n"
     "#define float4 vec4\n"
     MB_CORNER_SL
+    "#if MB_HAS(5) || MB_HAS_LIQUID || MB_HAS(8)\n"
     "float sd_rr(vec2 p, vec4 r, vec4 rad) {\n"
     "  vec2 hs = r.zw * 0.5;\n"
     "  return mb_sd_box(p - r.xy - hs, hs, mb_corner_of(p - r.xy - hs, rad), 1e9);\n"
     "}\n"
+    "#endif\n"
     "// a notch cut into the top edge (scene.mbt 21-23): a circle about the top's middle (pad.y below it, pad.z its radius),\n"
     "// met by the edge through fillets (pad.w): the rounded intersection with what is outside the circle\n"
+    "#if MB_HAS(0) || MB_HAS(5)\n"
     "float notch_cut(float d, vec2 p, vec4 r, vec4 pad) {\n"
     "  if (pad.z <= 0.0) return d;\n"
     "  float b = pad.z - length(p - vec2(r.x + r.z * 0.5, r.y + pad.y));\n"
@@ -133,6 +150,8 @@ static const char *FS =
     "  vec2 u = max(vec2(f + d, f + b), 0.0);\n"
     "  return min(-f, max(d, b)) + length(u);\n"
     "}\n"
+    "#endif\n"
+    "#if ONE_KIND < 0 || ONE_KIND == 6\n"
     "float smin_k(float a, float b, float k) {\n"
     "  if (k <= 0.0) return min(a, b);\n"
     "  float h = max(k - abs(a - b), 0.0) / k;\n"
@@ -146,15 +165,21 @@ static const char *FS =
     "  }\n"
     "  return d;\n"
     "}\n"
+    "#endif\n"
     "// Integral of linear ramp from 0 to w (contourOffset = 0, width w in device px)\n"
+    "#if MB_HAS_LIQUID\n"
     "float mb_contour_int(float t, float w) {\n"
     "  float u = clamp(t, 0.0, w);\n"
     "  return u - u * u / (2.0 * w);\n"
     "}\n"
+    "#endif\n"
+    "#if MB_HAS(5) || MB_HAS_LIQUID || MB_HAS_ADAPTIVE\n"
     "vec3 backdrop(vec2 p) {\n"
     "  return texture(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw)).rgb;\n"
     "}\n"
     "float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }\n"
+    "#endif\n"
+    "#if MB_HAS_ADAPTIVE\n"
     "float mb_backdrop_luma_rect(vec2 c, vec2 h) {\n"
     "  float sum = 0.0;\n"
     "  float mx1 = -1.0, mx2 = -1.0;\n"
@@ -203,6 +228,8 @@ static const char *FS =
     "  float bgL = mb_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));\n"
     "  return is_dark_glass ? smoothstep(0.35, 0.85, bgL) : (1.0 - smoothstep(0.30, 0.42, bgL));\n"
     "}\n"
+    "#endif\n"
+    "#if MB_HAS(7) || MB_HAS(10) || MB_HAS(11)\n"
     "vec3 mb_adaptive_ink(vec3 rgb, float darkT) {\n"
     "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
     "  if (ch <= 0.08) {\n"
@@ -215,6 +242,7 @@ static const char *FS =
     "  }\n"
     "  return rgb;\n"
     "}\n"
+    "#endif\n"
     "// how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth\n"
     "// each is), its edge covered as a box's own (0.5 - d * scale), so what it cuts meets the ground of the box that cuts it\n"
     "float clip_cover(vec2 p, vec4 c, vec4 r, vec4 s, float scale) {\n"
@@ -224,9 +252,13 @@ static const char *FS =
     "// what it shows at p, as if uncut\n"
     "void shade(vec2 p, float fade_r) {\n"
     "  int kind = ONE_KIND == 13 ? 6 : (ONE_KIND >= 0 ? ONE_KIND : int(v_p.y + 0.5));\n"
+    "#if MB_HAS(9)\n"
     "  // where a native view shows: its picture (NativeViews.Picture), the part of it c2 says, cut to its corners\n"
     "  if (kind == 9) { vec2 hh = v_rect.zw * 0.5; float rr = min(mb_corner_of(p - v_rect.xy - hh, v_rr), min(hh.x, hh.y)); vec2 q = abs(p - v_rect.xy - hh) - hh + rr; float a = clamp(0.5 - (length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rr) * u_scale, 0.0, 1.0); if (a <= 0.0) discard; vec2 uv = v_c2.xy + clamp((p - v_rect.xy) / v_rect.zw, 0.0, 1.0) * v_c2.zw; if (uv.y < 0.0 || uv.y > 1.0) discard; o = texture(u_img, uv) * a; return; }\n"
+    "#endif\n"
+    "#if ONE_KIND != 9\n"
     "  vec4 col = v_color;\n"
+    "#if MB_HAS(11)\n"
     "  if (kind == 11) {\n"
     "    // a band of a shape (src/ui/shape.mbt): c2.y of its pieces from c2.x; p.x half its stroke's width (0: a fill,\n"
     "    // c2.z 1 by the even-odd rule)\n"
@@ -245,6 +277,8 @@ static const char *FS =
     "    o = vec4(col.rgb, 1.0) * col.a * a;\n"
     "    return;\n"
     "  }\n"
+    "#endif\n"
+    "#if MB_HAS(10)\n"
     "  if (kind == 10) {\n"
     "    // a piece of a line (scene.mbt): from c2.xy to c2.zw (shares of its rect), p.x half its width, its ends round\n"
     "    vec2 a = v_rect.xy + v_c2.xy * v_rect.zw, ab = v_rect.xy + v_c2.zw * v_rect.zw - a;\n"
@@ -254,6 +288,8 @@ static const char *FS =
     "    o = vec4(col.rgb, 1.0) * col.a * clamp(0.5 - d * u_scale, 0.0, 1.0);\n"
     "    return;\n"
     "  }\n"
+    "#endif\n"
+    "#if MB_HAS(1) || MB_HAS(3) || MB_HAS(7)\n"
     "  if (kind == 1 || kind == 3 || kind == 7) {\n"
     "    // within its own cell (c2: where in the atlas, in texels; a colour glyph's 16384 across past its place in theirs),\n"
     "    // however its rect is stretched or turned: a sample past the cell's edge texels would blend in what lies beside\n"
@@ -271,6 +307,7 @@ static const char *FS =
     "    vec2 uv = clamp(at + tex, at + 0.5, at + v_c2.zw - 0.5);\n"
     "    vec4 t = colour ? textureLod(u_catlas, uv / vec2(textureSize(u_catlas, 0)), 0.0)\n"
     "                    : vec4(textureLod(u_atlas, uv / vec2(textureSize(u_atlas, 0)), 0.0).r);\n"
+    "#if MB_HAS(7)\n"
     "    if (kind == 7) {\n"
     "      // inked by how light what is under its glass is, looked at round the glass's middle\n"
     "      float darkT = ad_sample(v_pad.yz, v_pad.w * 0.5, false);\n"
@@ -278,9 +315,12 @@ static const char *FS =
     "      o = vec4(ink, 1.0) * (t.a * col.a);\n"
     "      return;\n"
     "    }\n"
+    "#endif\n"
     "    o = kind == 1 ? vec4(col.rgb, 1.0) * (t.a * col.a) : t * col.a;\n"
     "    return;\n"
     "  }\n"
+    "#endif\n"
+    "#if MB_HAS_LIQUID\n"
     "  if (kind == 6) {\n"
     "    // Copyright 2025, Tim Lehmann for whynotmake.it. Adapted from flutter_liquid_glass\n"
     "    // liquid_glass_final_render_core.glsl, Apache-2.0.\n"
@@ -557,6 +597,8 @@ static const char *FS =
     "    o = vec4(result * visA, clamp(visA + extA, 0.0, 1.0));\n"
     "    return;\n"
     "  }\n"
+    "#endif\n"
+    "#if MB_HAS(8)\n"
     "  if (kind == 8) {\n"
     "    vec4 s_rr = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? v_rr : vec4(v_p.x);\n"
     "    float d = sd_rr(p, v_rect, s_rr);\n"
@@ -591,6 +633,8 @@ static const char *FS =
     "    o = fg * (materialAlpha * col.a);\n"
     "    return;\n"
     "  }\n"
+    "#endif\n"
+    "#if MB_HAS_BOX\n"
     "  vec2 hs = v_rect.zw * 0.5;\n"
     "  vec2 c = v_rect.xy + hs;\n"
     "  // worked out as near the curve as its cover, its edge or its blur reaches\n"
@@ -598,7 +642,10 @@ static const char *FS =
     "  // (its corner by p: v_rr, each its own)\n"
     "  float rad = mb_corner_of(p - c, v_rr);\n"
     "  float d = mb_sd_box(p - c, hs, rad, band);\n"
+    "#if MB_HAS(0) || MB_HAS(5)\n"
     "  if (kind == 0 || kind == 5) d = notch_cut(d, p, v_rect, v_pad);\n"
+    "#endif\n"
+    "#if MB_HAS(4)\n"
     "  if (kind == 4) {\n"
     "    vec2 uv = v_c2.xy + clamp((p - v_rect.xy) / v_rect.zw, 0.0, 1.0) * v_c2.zw;\n"
     "    vec4 pic = texture(u_img, clamp(uv, 0.0, 1.0));\n"
@@ -620,6 +667,8 @@ static const char *FS =
     "    o = pic * (col.a * edge);\n"
     "    return;\n"
     "  }\n"
+    "#endif\n"
+    "#if MB_HAS(2)\n"
     "  if (kind == 2) {\n"
     "    // as Core Animation's: the shape blurred, sigma its radius (corner.sl mb_shadow)\n"
     "    float a = mb_shadow(p - c, hs, rad, max(v_p.w, 0.25));\n"
@@ -632,7 +681,11 @@ static const char *FS =
     "    o = vec4(col.rgb, 1.0) * col.a * a;\n"
     "    return;\n"
     "  }\n"
+    "#endif\n"
+    "#if MB_HAS(0) || MB_HAS(5)\n"
     "  float a = clamp(0.5 - d * u_scale, 0.0, 1.0);\n"
+    "#endif\n"
+    "#if MB_HAS(5)\n"
     "  if (kind == 5) {\n"
     "    // frosted: the blurred copy, saturated, the tint over it; the rim (a hairline inside the edge, the top left lit,\n"
     "    // the foot and right less), 0.5 wide\n"
@@ -660,6 +713,8 @@ static const char *FS =
     "    o = vec4(g3, 1.0) * (a * v_c2.w * edge_a);\n"
     "    return;\n"
     "  }\n"
+    "#endif\n"
+    "#if MB_HAS(0)\n"
     "  vec4 fill = vec4(col.rgb, 1.0) * col.a;\n"
     "  if (v_p.z > 0.0) {\n"
     "    float inner = clamp(0.5 - (d + v_p.z) * u_scale, 0.0, 1.0);\n"
@@ -667,6 +722,9 @@ static const char *FS =
     "    fill = mix(bc, fill, inner);\n"
     "  }\n"
     "  o = fill * a;\n"
+    "#endif\n"
+    "#endif\n"
+    "#endif\n"
     "}\n"
     "// cut to its clip: a rect's, hard; a rounded one's, covered as edges are\n"
     "void main() {\n"
@@ -682,15 +740,20 @@ static const char *FS =
     "    if (cover <= 0.0) discard;\n"
     "  }\n"
     "  // and faded out towards a cut, each pixel by where it is (scene.mbt 52-59)\n"
-    "  int kind = ONE_KIND >= 0 ? ONE_KIND : int(v_p.y + 0.5);\n"
-    "  bool prog_glass = (kind == 5 && v_pad.z < -0.5);\n"
     "  vec4 ramp = clamp(v_ramp, 0.0, 1.0);\n"
     "  float fade_r = ramp.x * ramp.y * ramp.z * ramp.w;\n"
     "  if (fade_r <= 0.0) discard;\n"
+    "#if MB_HAS(5)\n"
+    "  int kind = ONE_KIND >= 0 ? ONE_KIND : int(v_p.y + 0.5);\n"
+    "  bool prog_glass = (kind == 5 && v_pad.z < -0.5);\n"
     "  if (!prog_glass) {\n"
     "    cover *= fade_r;\n"
     "    if (cover <= 0.0) discard;\n"
     "  }\n"
+    "#else\n"
+    "  cover *= fade_r;\n"
+    "  if (cover <= 0.0) discard;\n"
+    "#endif\n"
     "  shade(p, fade_r);\n"
     "  o *= cover;\n"
     "}\n";
@@ -923,6 +986,7 @@ static const char *AD_FS =
     "}\n";
 
 static GLuint vao, vbo, atlas, catlas, post, ad_prog;
+static GLuint vs_main, vs_post;
 // a ground's flat middle (bands.h mb_pieces), and where its window's size goes
 static GLuint prog_flat;
 static GLint uf_vp;
@@ -931,14 +995,14 @@ static GLint adu_bd, adu_prev, adu_map, adu_uvc, adu_box, adu_param;
 
 // The kinds drawn by a program of their own: the shader with its kind fixed (ONE_KIND), so each is compiled to its
 // kind's branch alone and a pixel of it is shaded with the registers that branch needs, not the most any kind's does
-// (as Metal's: apple_render.m kind_pipe says what it saved there), what it draws the same to the byte. Rounded rects,
-// glyphs, shadows, colour glyphs, images, lines, shapes' bands; what else there is (glass, a native view's picture)
-// the program for any kind (progs[MB_KINDS]) draws. Each program's uniforms set as it is first used after they
-// change (prog_gen); prog_now the one in use.
+// (as Metal's: apple_render.m kind_pipe says what it saved there), what it draws the same to the byte. Every drawable
+// kind (0..11 and 13) has its own specialized program compiled on first use; progs[MB_KINDS] (ONE_KIND=-1) is only
+// compiled if an unknown kind is requested. Each program's uniforms set as it is first used after they change
+// (prog_gen); prog_now the one in use.
 #define MB_KIND_LIQUID_SINGLE 13
 #define MB_KINDS 14
 static int has_own_prog(int kind) {
-  return (kind >= 0 && kind <= 8) || kind == 10 || kind == 11 || kind == MB_KIND_LIQUID_SINGLE;
+  return (kind >= 0 && kind <= 11) || kind == MB_KIND_LIQUID_SINGLE;
 }
 typedef struct {
   GLuint p;
@@ -985,10 +1049,26 @@ static GLuint compile(GLenum type, const char *src) {
   return s;
 }
 
+static void ensure_vs_main(void) {
+  if (!vs_main) vs_main = compile(GL_VERTEX_SHADER, VS);
+}
+
+static void ensure_vs_post(void) {
+  if (!vs_post) vs_post = compile(GL_VERTEX_SHADER, PVS);
+}
+
 // The program that draws only instances of `kind` (-1 any) with the vertex shader `vs`, its textures' units set.
 static kprog make_prog(GLuint vs, int kind) {
-  char head[48];
-  snprintf(head, sizeof head, "#version 300 es\n#define ONE_KIND %d\n", kind);
+  char head[1024];
+  snprintf(head, sizeof head,
+           "#version 300 es\n"
+           "#define ONE_KIND %d\n"
+           "#define MB_HAS(K) (ONE_KIND < 0 || ONE_KIND == (K))\n"
+           "#define MB_HAS_LIQUID (ONE_KIND < 0 || ONE_KIND == 6 || ONE_KIND == 13)\n"
+           "#define MB_HAS_ADAPTIVE (ONE_KIND < 0 || ONE_KIND == 6 || ONE_KIND == 13 || ONE_KIND == 7 || ONE_KIND == 10 || ONE_KIND == 11)\n"
+           "#define MB_HAS_BACKDROP (ONE_KIND < 0 || ONE_KIND == 5 || ONE_KIND == 6 || ONE_KIND == 13 || ONE_KIND == 8 || MB_HAS_ADAPTIVE)\n"
+           "#define MB_HAS_BOX (ONE_KIND < 0 || ONE_KIND == 0 || ONE_KIND == 2 || ONE_KIND == 4 || ONE_KIND == 5)\n",
+           kind);
   const char *srcs[2] = {head, FS + strlen("#version 300 es\n")};
   GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
   glShaderSource(fs, 2, srcs, NULL);
@@ -1028,27 +1108,27 @@ static kprog make_prog(GLuint vs, int kind) {
   return k;
 }
 
-// The programs, the instances' buffer and the glyphs' atlases made in the context now current (a new one has none of
-// the old: the host makes again what else it had in it).
-static void gl_setup(void) {
-  GLuint vs = compile(GL_VERTEX_SHADER, VS);
-  for (int k = 0; k <= MB_KINDS; k++)
-    progs[k] = k == MB_KINDS || has_own_prog(k) ? make_prog(vs, k == MB_KINDS ? -1 : k) : (kprog){0};
-  prog_gen++;
+static void ensure_prog_flat(void) {
+  if (prog_flat) return;
+  ensure_vs_main();
+  GLuint fs = compile(GL_FRAGMENT_SHADER, FS_FLAT);
   prog_flat = glCreateProgram();
-  glAttachShader(prog_flat, vs);
-  glAttachShader(prog_flat, compile(GL_FRAGMENT_SHADER, FS_FLAT));
+  glAttachShader(prog_flat, vs_main);
+  glAttachShader(prog_flat, fs);
   glLinkProgram(prog_flat);
+  glDeleteShader(fs);
   uf_vp = glGetUniformLocation(prog_flat, "u_vp");
-  glDeleteShader(vs);
-  segs_tex = 0;
-  segs_rows = 0;
-  segs_had_n = 0;
-  GLuint pvs = compile(GL_VERTEX_SHADER, PVS);
+}
+
+static void ensure_post(void) {
+  if (post) return;
+  ensure_vs_post();
+  GLuint fs = compile(GL_FRAGMENT_SHADER, PFS);
   post = glCreateProgram();
-  glAttachShader(post, pvs);
-  glAttachShader(post, compile(GL_FRAGMENT_SHADER, PFS));
+  glAttachShader(post, vs_post);
+  glAttachShader(post, fs);
   glLinkProgram(post);
+  glDeleteShader(fs);
   pu_src = glGetUniformLocation(post, "u_src");
   pu_lv1 = glGetUniformLocation(post, "u_lv1");
   pu_lv2 = glGetUniformLocation(post, "u_lv2");
@@ -1056,17 +1136,39 @@ static void gl_setup(void) {
   pu_a = glGetUniformLocation(post, "u_a");
   pu_b = glGetUniformLocation(post, "u_b");
   pu_c = glGetUniformLocation(post, "u_c");
+}
+
+static void ensure_ad_prog(void) {
+  if (ad_prog) return;
+  ensure_vs_post();
+  GLuint fs = compile(GL_FRAGMENT_SHADER, AD_FS);
   ad_prog = glCreateProgram();
-  glAttachShader(ad_prog, pvs);
-  glAttachShader(ad_prog, compile(GL_FRAGMENT_SHADER, AD_FS));
+  glAttachShader(ad_prog, vs_post);
+  glAttachShader(ad_prog, fs);
   glLinkProgram(ad_prog);
-  glDeleteShader(pvs);
+  glDeleteShader(fs);
   adu_bd = glGetUniformLocation(ad_prog, "u_bd");
   adu_prev = glGetUniformLocation(ad_prog, "u_prev");
   adu_map = glGetUniformLocation(ad_prog, "u_map");
   adu_uvc = glGetUniformLocation(ad_prog, "u_uvc");
   adu_box = glGetUniformLocation(ad_prog, "u_box");
   adu_param = glGetUniformLocation(ad_prog, "u_param");
+}
+
+// The instances' buffer and the glyphs' atlases made in the context now current; programs are compiled on first use
+// (a new context has none of the old: handles are cleared here, as glass_lost and canvas_lost do).
+static void gl_setup(void) {
+  vs_main = vs_post = 0;
+  memset(progs, 0, sizeof progs);
+  prog_flat = 0;
+  uf_vp = -1;
+  post = 0;
+  ad_prog = 0;
+  prog_now = 0;
+  prog_gen++;
+  segs_tex = 0;
+  segs_rows = 0;
+  segs_had_n = 0;
   glass_lost();
   canvas_lost();
   glGenVertexArrays(1, &vao);
@@ -1507,6 +1609,7 @@ static void blur(const Grab *m) {
   }
 #endif
   glBlitFramebuffer(m->px0, m->pb0, m->px0 + w, m->pb0 + h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+  ensure_post();
   glUseProgram(post);
   unbind_post_extra();
   int lw[4], lh[4];
@@ -1884,7 +1987,9 @@ typedef struct {
 } gl_ad_batch;
 
 static void ad_run_updates_batch(const gl_ad_batch *items, int n_upd, double dt) {
-  if (n_upd <= 0 || !ad_prog) return;
+  if (n_upd <= 0) return;
+  ensure_ad_prog();
+  if (!ad_prog) return;
   ensure_ad_tex();
   int cur = ad_cur, nxt = 1 - cur;
   uint32_t batch_mask = 0;
@@ -1957,7 +2062,9 @@ static void ad_rb_finish(uint64_t serial) {
 }
 
 static void ad_run_updates(const gl_ad_pend *pend, int n_upd, double dt) {
-  if (n_upd <= 0 || !bd_tex || !ad_prog) return;
+  if (n_upd <= 0 || !bd_tex) return;
+  ensure_ad_prog();
+  if (!ad_prog) return;
   gl_ad_batch items[MB_ADAPTIVE_MAX];
   for (int i = 0; i < n_upd; i++) {
     items[i].p = pend[i];
@@ -2475,9 +2582,16 @@ static int capture(const float *f, int32_t start, int32_t end, int32_t count, in
   return shows;
 }
 
-// The program that draws instances of `kind` (-1 any) used, its uniforms set if they changed since it was last.
+// The program that draws instances of `kind` (-1 any) used, compiled on first use, its uniforms set if they changed
+// since it was last.
 static void use_prog(int kind) {
-  kprog *k = &progs[kind >= 0 && has_own_prog(kind) ? kind : MB_KINDS];
+  int idx = kind >= 0 && has_own_prog(kind) ? kind : MB_KINDS;
+  kprog *k = &progs[idx];
+  if (!k->p) {
+    ensure_vs_main();
+    *k = make_prog(vs_main, idx == MB_KINDS ? -1 : idx);
+    k->gen = prog_gen - 1;
+  }
   prog_now = k->p;
   glUseProgram(k->p);
   if (k->gen == prog_gen) return;
@@ -2526,7 +2640,7 @@ static void main_state(void) {
   glBindTexture(GL_TEXTURE_2D, bd_tex ? bd_tex : atlas);
   // (the programs' uniforms as they are now: each set again as it is next used)
   prog_gen++;
-  use_prog(-1);
+  prog_now = 0;
 }
 
 // The pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn) into segs_tex.
@@ -2848,8 +2962,13 @@ static void draw_banded(int32_t start, int32_t end, int32_t count) {
     glEnable(GL_SCISSOR_TEST);
     for (int k = 0; k < n; k++) {
       if (k == 0 || st[k].flat != st[k - 1].flat) {
-        glUseProgram(st[k].flat ? prog_flat : prog_now);
-        if (st[k].flat) glUniform2f(uf_vp, (float)cur_w, (float)cur_h);
+        if (st[k].flat) {
+          ensure_prog_flat();
+          glUseProgram(prog_flat);
+          glUniform2f(uf_vp, (float)cur_w, (float)cur_h);
+        } else {
+          glUseProgram(prog_now);
+        }
       }
       glScissor(st[k].x0, top - st[k].y1, st[k].x1 - st[k].x0, st[k].y1 - st[k].y0);
       draw_run(i, 1);
@@ -3038,20 +3157,11 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
     return;
   }
   size_t n = (size_t)count * MB_INST;
-  // the frame's ground after its instances: a rect over all the window, opaque (clear over another app), a part drawn
-  // again first
-  float *gr = fbuf + n;
-  memset(gr, 0, MB_INST * sizeof(float));
-  gr[0] = -16.0f; gr[1] = -16.0f; gr[2] = (float)cur_w + 32.0f; gr[3] = (float)cur_h + 32.0f;
-  if (!over_other) {
-    gr[8] = (float)r; gr[9] = (float)g; gr[10] = (float)b; gr[11] = 1.0f;
-  }
-  gr[16] = -1e9f; gr[17] = -1e9f; gr[18] = 1e9f; gr[19] = 1e9f;
   // Upload shape segments and the instance VBO once per frame, shared across all dirty-rect passes.
   segs_upload(count);
   glBindVertexArray(vao);
   glBindBuffer(GL_ARRAY_BUFFER, vbo);
-  glBufferData(GL_ARRAY_BUFFER, (n + MB_INST) * sizeof(float), fbuf, GL_STREAM_DRAW);
+  if (n > 0) glBufferData(GL_ARRAY_BUFFER, n * sizeof(float), fbuf, GL_STREAM_DRAW);
   unsigned frame_clock = slots_clock;
   int top = vy0 + vhp;
   float sx = cur_w > 0.0 ? (float)fb_w / (float)cur_w : (float)cur_scale;
@@ -3068,11 +3178,9 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
     ad_fill_uniforms();
     main_state();
     if (cut_on) {
-      for (int i = 0; i < MB_INST / 4; i++)
-        glVertexAttribPointer(i, 4, GL_FLOAT, GL_FALSE, MB_INST * 4, (void *)(intptr_t)(count * MB_INST * 4 + i * 16));
-      glDisable(GL_BLEND);
-      glDrawArraysInstanced(GL_TRIANGLES, 0, 6, 1);
-      glEnable(GL_BLEND);
+      if (over_other) glClearColor(0, 0, 0, 0);
+      else glClearColor((float)r, (float)g, (float)b, 1);
+      glClear(GL_COLOR_BUFFER_BIT);
     }
     int rx0 = cut_on ? cut[0] : 0;
     int rx1 = cut_on ? cut[0] + cut[2] : fb_w;
@@ -3173,6 +3281,7 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
         float sp = blur_pt * sc_f;
         if (sp > 0.25f) {
           glDisable(GL_BLEND);
+          ensure_post();
           glUseProgram(post);
           unbind_post_extra();
           post_pass(&lens_lv[0], pw, ph, &lens_lv[1], pw, ph, 2, sp, 1.0f, 0.0f);

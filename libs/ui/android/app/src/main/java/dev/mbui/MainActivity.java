@@ -24,8 +24,6 @@ public class MainActivity extends Activity {
         super.onCreate(saved);
         // this build's code in memory before the drawing thread comes to it (a build just installed has none of it)
         ReadAhead.start(this);
-        // the GPU's driver and the codecs' list ready before the drawing thread's first frames ask for them
-        WarmUp.start();
         Host.log("activity onCreate " + (saved != null ? "(restored)" : ""));
         Host.activity = this;
         // a phone upright only (Host.upright), but while the app turns it for a film
@@ -74,6 +72,8 @@ public class MainActivity extends Activity {
                 }
             }
         }
+        // WarmUp touches Streams.h264Here() (triggering Streams.<clinit>), so start it after intent env vars are applied.
+        WarmUp.start();
         Host.openLogFile(this);
         // MBUI_CLIPBOARD (MBUI_CLIPBOARD_REPEAT times): put on the clipboard as the app starts, for pasting in scripted
         // runs (adb can type but not copy)
