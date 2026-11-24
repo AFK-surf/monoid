@@ -20,7 +20,7 @@ import {
   type BoxCert, type BrowseAnswer, type Grant, type Item, type Request, type Vault,
   TAG, boxPublic, encryptWith, grantContext, itemContext, keyContext, openSeal, sealWith, sign, signedOk,
 } from "../src/vault/crypto.ts";
-import { BOX_PUB, askAnswers, browseCandidates, readStation, vaultsView } from "../src/views/vault.ts";
+import { BOX_PUB, askAnswers, boxKeyKnown, browseCandidates, readStation, vaultsView } from "../src/views/vault.ts";
 import { call, subscribe } from "./helpers.ts";
 import { base, started, stationReplies, status } from "./station-fixture.ts";
 
@@ -782,3 +782,34 @@ test("FB-51: the box key the screen lock taken off ended, read in one workspace:
     r.core.close();
   }
 });
+
+for (const kept of [false, true]) {
+  test(`this device's box key not read yet${kept ? "" : ", none kept from a run before"}, set up in the source workspace only: a cross-workspace use and a browse are shown and answered as keyed, and approved`, async () => {
+    const r = await multiWsRig();
+    try {
+      const a = await r.ask("vault.setup", { workspace: "ws" });
+      const it = await r.ask("vault.putItem", { workspace: "ws", vault: a.made, plain: { kind: "token", name: "A", fields: { value: "a" }, domains: [], notes: "" }, listing: { name: "gh", kind: "token", modes: ["proxy"], hosts: ["api.github.com"], lasts: "hour" } });
+      const kp = fill(22);
+      r.stB.keepers.set("rc", kp);
+      r.stB.requests.push({ id: "rc", ws: "wsB", vault: a.made, item: it.id, session: "s1", chat: "CHAT/1.0", mode: "proxy", hosts: ["api.github.com"], reason: "x", owner: "me@x.com", box: boxPublic(kp), at: 1006, status: "pending", cross: { workspace: "ws", workspaceName: "W", vaultName: "P" } } as any);
+      r.stB.requests.push({ id: "rb", ws: "wsB", vault: "", item: "", session: "s1", chat: "CHAT/1.0", mode: "browse", reason: "l", owner: "me@x.com", box: "", at: 1005, status: "pending", browse: {} } as any);
+      await Effect.runPromise(readStation(r.core.inner, "wsB/stB"));
+      const pub = new TextDecoder().decode(r.host.storage.get(BOX_PUB)!);
+      // (as at a start: the box key not read this run, and what an earlier run read kept or not)
+      const unread = () => {
+        boxKeyKnown(r.core.inner, undefined as never);
+        r.core.inner.data.put("keys", "box", kept ? pub : undefined);
+      };
+      unread();
+      const answers = () => askAnswers(r.core.inner, "wsB", [{ request: "rc", save: false, crossWs: "ws" }, { request: "rb", save: false, browse: true }]).map((x) => x.answer);
+      assert.deepEqual(answers(), ["approve", "approve"]);
+      assert.deepEqual((vaultsView(r.core.inner, "wsB") as any).requests.map((x: any) => [x.id, x.noKey ?? false]), [["rb", false], ["rc", false]]);
+      unread();
+      assert.ok((await r.ask("vault.approve", { workspace: "wsB", request: "rb" })) !== undefined);
+      unread();
+      assert.equal((await r.ask("vault.approve", { workspace: "wsB", request: "rc", scope: "once" })).request, "rc");
+    } finally {
+      r.core.close();
+    }
+  });
+}

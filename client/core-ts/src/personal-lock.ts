@@ -6,7 +6,7 @@
 // The key is sealed so that each use asks the person (`user: true`: biometrics or the screen lock). Web pages have none:
 // their code is the cloud's.
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { Effect, Schedule, Semaphore } from "effect";
+import { Deferred, Effect, Schedule, Semaphore } from "effect";
 // @ts-ignore: the MoonBit build's JS, untyped
 import * as rules from "../../../rules/js/rules.js";
 import { CoreError, asCoreError } from "./error.ts";
@@ -286,6 +286,7 @@ export class PersonalLock {
   readonly #aside = new Map<string, Entry[]>();
   readonly #seen = new Map<string, Entry[]>();
   readonly #loaded = new Set<string>();
+  readonly #loads = new Map<string, Deferred.Deferred<void>>();
   /// The roots of the chains this device left behind as it began anew, each person's: the stations may keep one still
   /// (they refused this device then, so the new chain reached only the cloud), and it is no lock begun elsewhere.
   readonly #left = new Map<string, Set<string>>();
@@ -328,6 +329,18 @@ export class PersonalLock {
   /// (`refresh`, in a fork of its own at start): till then `standing` says none, not what is kept.
   loaded(sub: string): boolean {
     return this.#loaded.has(sub);
+  }
+
+  /// Done once `loaded(sub)`: what a press waits on rather than go by a lock that names none of the person's devices
+  /// yet (no network waited on: `refresh` reads the device first, each read falling back to none).
+  whenLoaded(sub: string): Effect.Effect<void> {
+    if (this.#loaded.has(sub)) return Effect.void;
+    let d = this.#loads.get(sub);
+    if (d === undefined) {
+      d = Deferred.makeUnsafe<void>();
+      this.#loads.set(sub, d);
+    }
+    return Deferred.await(d);
   }
 
   /// The chain pinned here as read so far, its entries from the genesis (read only).
@@ -373,6 +386,11 @@ export class PersonalLock {
         const id = yield* Effect.orElseSucceed(env.host.storageGet(KEY_ID), () => null);
         if (id !== null) this.#myKey = fromUtf8(id);
         this.#loaded.add(sub);
+        const waiting = this.#loads.get(sub);
+        if (waiting !== undefined) {
+          this.#loads.delete(sub);
+          Deferred.doneUnsafe(waiting, Effect.void);
+        }
         env.changed();
       }
       const bound = (this.#pinned.get(sub)?.length ?? 0) > 0 ? within : undefined;

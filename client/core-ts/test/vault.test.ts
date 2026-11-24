@@ -2594,7 +2594,8 @@ async function ownRig(o: { begun: boolean }) {
   await r.core.inner.runner.run(Effect.ignore(r.core.inner.adb.personal().refresh("s1")));
   await r.host.time.pass(500, 10);
   r.take();
-  return { ...r, station: st };
+  // (the same object: `restart` gives it the core started anew)
+  return Object.assign(r, { station: st });
 }
 
 test("no safe mode: the vault is the person's own, encrypted; 开启 begins their own lock with this device on it, the vault in one press, and what a station kept unencrypted from before moved into it and deleted there", async () => {
@@ -4227,17 +4228,22 @@ for (const what of ["pinned", "key"]) {
     r.push("vault-request", req);
     await r.host.time.pass(500);
     r.take();
-    const letGo = heldAtStart(r, what === "pinned" ? `personal-lock-${hex(utf8("s1"))}` : "personal-signer-id");
+    // (read 1.5 s into the start, by the core's clock)
+    const key = what === "pinned" ? `personal-lock-${hex(utf8("s1"))}` : "personal-signer-id";
+    const get = r.host.storageGet.bind(r.host);
+    r.host.storageGet = (k) => (k === key ? Effect.flatMap(Effect.sleep("1500 millis"), () => get(k)) : get(k));
     await r.restart();
     const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
     const answers = () => askAnswers(r.core.inner, "ws", [{ request: "r_use", save: false }, { request: "r_x", save: true }]);
     assert.equal(vaults(), undefined, "no value yet: the page waits");
     assert.deepEqual(answers(), [{ answer: "approve", lasts: "hour" }, { answer: "approve" }]);
-    letGo();
-    await r.host.time.pass(1500, 10);
+    // 允许 pressed meanwhile: it waits for the lock as read from the device, and goes through by it.
+    assert.equal(r.core.inner.adb.personal().loaded("s1"), false);
+    assert.equal((await r.ask("vault.approve", { request: "r_use", scope: "once" })).request, "r_use");
+    r.host.storageGet = get;
+    await r.host.time.pass(500, 10);
     r.take();
-    assert.deepEqual([vaults().setUp, vaults().canSign, vaults().vaults.map((v: any) => v.keyed), vaults().requests.map((x: any) => x.noKey ?? false)], [true, true, [true], [false]]);
-    assert.deepEqual(answers(), [{ answer: "approve", lasts: "hour" }, { answer: "approve" }]);
+    assert.deepEqual([vaults().setUp, vaults().canSign, vaults().vaults.map((v: any) => v.keyed)], [true, true, [true]]);
     r.core.close();
   });
 }
