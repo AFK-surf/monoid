@@ -13,6 +13,7 @@ priv enum WideItem {
   WideTop
   WideHead
   WideLead
+  WideStickyHead
   WideBlock(String)
 }
 
@@ -35,115 +36,173 @@ fn wide_page_node(
   about : () -> String,
   tips : TipLayer,
   head : ((@view.View) -> Unit)?,
+  sticky_head : ((@view.View) -> Unit)?,
   near_foot : (Double, () -> Bool, () -> Unit)?,
   reused : ((String) -> Int?)?,
   make_reused : ((@view.View, Int, () -> String) -> Unit)?,
   loc~ : SourceLoc,
 ) -> Unit {
-  // (its blocks as last read, and whether their last change put another set in their place: pg_blocks_read)
-  let was : Ref[Set[String]] = Ref(Set([]))
-  let other = Ref(false)
-  let items = fn() -> Array[WideItem] {
-    let f = frame()
-    let out = []
-    if f.top > 0.0 {
-      out.push(WideTop)
-    }
-    if head is Some(_) || !f.named {
-      out.push(WideHead)
-    } else if lead() != "" {
-      out.push(WideLead)
-    }
-    for k in pg_blocks_read(was, other, blocks()) {
-      out.push(WideBlock(k))
-    }
-    out
-  }
-  v.box(made_for=loc, fn(sc) {
-    sc.grow(Is(1.0)) |> ignore
-    // (only the block coming to be first or ceasing to be so lays out its top room again, not every block as blocks() grows)
-    let is_first = sc.selected(fn() { blocks().get(0) })
-    // (a block of the page's come or gone by data makes its way, the list's (View::comes); what the frame keeps over it
-    // (a status bar's room, its head as the frame's bar names it or not) there and gone at once, as the window and the
-    // frame are no cause of a way)
-    sc.scrolls_window(
-      scroll,
-      items,
-      bar=@ui.tree_scroll_bar(),
-      est=pg_block_est,
-      comes=fn(k) { !other.val && k is WideBlock(_) },
-      goes=fn(k) { !other.val && k is WideBlock(_) },
-      near_foot?,
-      // (80 under the last, then the frame's room: the list's end_room, no block of it, so blocks told after the page
-      // shows come in under its top, never over a block of room alone in it, the page at its end)
-      end_room=fn() { desk_foot_h + frame().foot },
-      // (a block of a kind `reused` gives put by as it no more shows and taken by the next of its kind, in its lane as
-      // `block` makes one (below), the first's room over it following which key it shows now)
-      reused?=reused.map(fn(r) {
-        fn(item) {
-          match item {
-            WideBlock(k) => r(k)
-            _ => None
-          }
+  let build = fn(host : @view.View, pinned : () -> Bool) {
+    // (its blocks as last read, and whether their last change put another set in their place: pg_blocks_read)
+    let was : Ref[Set[String]] = Ref(Set([]))
+    let other = Ref(false)
+    let items = fn() -> Array[WideItem] {
+      let f = frame()
+      let out = []
+      if !pinned() {
+        if f.top > 0.0 {
+          out.push(WideTop)
         }
-      }),
-      make_reused?=make_reused.map(fn(m) {
-        fn(s, item) {
-          let kind = s.reused_kind().unwrap_or(0)
-          let key = fn() {
-            match item() {
-              WideBlock(k) => k
-              _ => ""
+        if head is Some(_) || !f.named {
+          out.push(WideHead)
+        } else if lead() != "" {
+          out.push(WideLead)
+        }
+        if sticky_head is Some(_) {
+          out.push(WideStickyHead)
+        }
+      }
+      for k in pg_blocks_read(was, other, blocks()) {
+        out.push(WideBlock(k))
+      }
+      out
+    }
+    match sticky_head {
+      Some(sh) =>
+        host.show(at_once=true, pinned, fn(pin) {
+          pin.ground(By(fn() { theme().p.bg })) |> ignore
+          pin.show(at_once=true, fn() { frame().top > 0.0 }, fn(top) {
+            top.height(By(fn() { Some(frame().top) })) |> ignore
+          })
+          pin.show(at_once=true, fn() { head is Some(_) || !frame().named }, fn(h) {
+            match head {
+              Some(hf) => lane_node(h, fn(col) { own_head_lane_node(col, hf, on_back, frame) })
+              None => lane_node(h, fn(col) { wide_head_node(col, title, on_back, frame, lead, actions, about, tips) })
+            }
+          })
+          pin.show(at_once=true, fn() { head is None && frame().named && lead() != "" }, fn(ld) {
+            lane_node(ld, fn(col) {
+              col.padding(Is((head_in(col), 0.0, head_in(col), desk_head_foot))) |> ignore
+              words_node(col, lead, fn() { desk_muted }) |> ignore
+            })
+          })
+          lane_node(pin, fn(col) {
+            col.box(fn(room) {
+              room.padding(Is((desk_column_in, 0.0, desk_column_in, 10.0))) |> ignore
+              sh(room)
+            })
+            |> ignore
+          })
+          pin.box(fn(sep) {
+            sep.height(Is(Some(1.0))).ground(By(fn() { theme().p.line })) |> ignore
+          })
+          |> ignore
+        })
+      None => ()
+    }
+    host.box(made_for=loc, fn(sc) {
+      sc.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      // (only the block coming to be first or ceasing to be so lays out its top room again, not every block as blocks() grows)
+      let is_first = sc.selected(fn() { blocks().get(0) })
+      // (a block of the page's come or gone by data makes its way, the list's (View::comes); what the frame keeps over it
+      // (a status bar's room, its head as the frame's bar names it or not) there and gone at once, as the window and the
+      // frame are no cause of a way)
+      sc.scrolls_window(
+        scroll,
+        items,
+        bar=@ui.tree_scroll_bar(),
+        est=pg_block_est,
+        comes=fn(k) { !other.val && k is WideBlock(_) },
+        goes=fn(k) { !other.val && k is WideBlock(_) },
+        near_foot?,
+        // (80 under the last, then the frame's room: the list's end_room, no block of it, so blocks told after the page
+        // shows come in under its top, never over a block of room alone in it, the page at its end)
+        end_room=fn() { desk_foot_h + frame().foot },
+        // (a block of a kind `reused` gives put by as it no more shows and taken by the next of its kind, in its lane as
+        // `block` makes one (below), the first's room over it following which key it shows now)
+        reused?=reused.map(fn(r) {
+          fn(item) {
+            match item {
+              WideBlock(k) => r(k)
+              _ => None
             }
           }
-          lane_node(s, fn(col) {
-            col.box(fn(room) {
-              room
-              .padding(By(fn() {
-                (desk_column_in, if is_first(key()) { desk_first_top } else { 0.0 }, desk_column_in, 0.0)
-              }))
+        }),
+        make_reused?=make_reused.map(fn(m) {
+          fn(s, item) {
+            let kind = s.reused_kind().unwrap_or(0)
+            let key = fn() {
+              match item() {
+                WideBlock(k) => k
+                _ => ""
+              }
+            }
+            lane_node(s, fn(col) {
+              col.box(fn(room) {
+                room
+                .padding(By(fn() {
+                  (desk_column_in, if is_first(key()) { desk_first_top } else { 0.0 }, desk_column_in, 0.0)
+                }))
+                |> ignore
+                m(room, kind, key)
+              })
               |> ignore
-              m(room, kind, key)
             })
-            |> ignore
-          })
-        }
-      }),
-      fn(s, item) {
-      match item {
-        // the room the frame keeps over it (a status bar's)
-        WideTop => s.height(By(fn() { Some(frame().top) })) |> ignore
-        WideHead =>
-          match head {
-            // (a head of its own as far down as a title's head stands, back over it where the frame says it goes;
-            // under the frame's bar that names it, as far under it as what follows a head: wide_page's, barred_page's)
-            Some(h) => lane_node(s, fn(col) { own_head_lane_node(col, h, on_back, frame) })
-            None => lane_node(s, fn(col) { wide_head_node(col, title, on_back, frame, lead, actions, about, tips) })
           }
-        // what it is for under the frame's bar that names it (barred_page's: desk_barred_lead, 16 in, 12 under)
-        WideLead =>
-          lane_node(s, fn(col) {
-            col.padding(Is((head_in(col), 0.0, head_in(col), desk_head_foot))) |> ignore
-            words_node(col, lead, fn() { desk_muted }) |> ignore
-          })
-        // what it holds, at the column's edges, the first 28 under the head (its own 12 and these 16)
-        WideBlock(k) =>
-          lane_node(s, fn(col) {
-            col.box(fn(room) {
-              room
-              .padding(By(fn() {
-                (desk_column_in, if is_first(k) { desk_first_top } else { 0.0 }, desk_column_in, 0.0)
-              }))
-              |> ignore
-              block(room, k)
+        }),
+        fn(s, item) {
+        match item {
+          // the room the frame keeps over it (a status bar's)
+          WideTop => s.height(By(fn() { Some(frame().top) })) |> ignore
+          WideHead =>
+            match head {
+              // (a head of its own as far down as a title's head stands, back over it where the frame says it goes;
+              // under the frame's bar that names it, as far under it as what follows a head: wide_page's, barred_page's)
+              Some(h) => lane_node(s, fn(col) { own_head_lane_node(col, h, on_back, frame) })
+              None => lane_node(s, fn(col) { wide_head_node(col, title, on_back, frame, lead, actions, about, tips) })
+            }
+          // what it is for under the frame's bar that names it (barred_page's: desk_barred_lead, 16 in, 12 under)
+          WideLead =>
+            lane_node(s, fn(col) {
+              col.padding(Is((head_in(col), 0.0, head_in(col), desk_head_foot))) |> ignore
+              words_node(col, lead, fn() { desk_muted }) |> ignore
             })
-            |> ignore
-          })
-      }
+          WideStickyHead =>
+            match sticky_head {
+              Some(sh) =>
+                lane_node(s, fn(col) {
+                  col.box(fn(room) {
+                    room.padding(Is((desk_column_in, 0.0, desk_column_in, 10.0))) |> ignore
+                    sh(room)
+                  })
+                  |> ignore
+                })
+              None => ()
+            }
+          // what it holds, at the column's edges, the first 28 under the head (its own 12 and these 16)
+          WideBlock(k) =>
+            lane_node(s, fn(col) {
+              col.box(fn(room) {
+                room
+                .padding(By(fn() {
+                  (desk_column_in, if is_first(k) { desk_first_top } else { 0.0 }, desk_column_in, 0.0)
+                }))
+                |> ignore
+                block(room, k)
+              })
+              |> ignore
+            })
+        }
+      })
+      |> ignore
     })
     |> ignore
-  })
-  |> ignore
+  }
+  if sticky_head is Some(_) {
+    build(v, fn() { v.window_h() >= 560.0 })
+  } else {
+    build(v, fn() { false })
+  }
 }
 
 ///|

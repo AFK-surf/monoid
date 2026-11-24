@@ -343,6 +343,7 @@ priv enum PageItem {
   Title
   Head
   Lead
+  StickyHead
   Block(String)
 }
 
@@ -380,6 +381,7 @@ pub fn page_node(
   scroll? : @view.Scroll,
   tips? : TipLayer,
   head? : (@view.View) -> Unit,
+  sticky_head? : (@view.View) -> Unit,
   near_foot? : (Double, () -> Bool, () -> Unit),
   small? : () -> String = fn() { "" },
   back_as? : () -> String = fn() { "" },
@@ -426,9 +428,9 @@ pub fn page_node(
     }
     match l {
       Narrow =>
-        narrow_page_node(p, title, blocks, block, on_back, frame, lead, actions, scroll, head, near_foot, small, reused, make_reused)
+        narrow_page_node(p, title, blocks, block, on_back, frame, lead, actions, scroll, head, sticky_head, near_foot, small, reused, make_reused)
       Wide =>
-        wide_page_node(p, title, blocks, block, on_back, frame, lead, actions, scroll, about, tips, head, near_foot, reused, make_reused)
+        wide_page_node(p, title, blocks, block, on_back, frame, lead, actions, scroll, about, tips, head, sticky_head, near_foot, reused, make_reused)
     }
   })
   // (its own layer only where it has what is for by a mark to say: nothing over a page that has none)
@@ -548,6 +550,7 @@ fn narrow_page_node(
   actions : ((@view.View) -> Unit)?,
   scroll : @view.Scroll,
   head : ((@view.View) -> Unit)?,
+  sticky_head : ((@view.View) -> Unit)?,
   near_foot : (Double, () -> Bool, () -> Unit)?,
   small : () -> String,
   reused : ((String) -> Int?)?,
@@ -593,6 +596,9 @@ fn narrow_page_node(
     }
     if lead() != "" {
       out.push(Lead)
+    }
+    if sticky_head is Some(_) {
+      out.push(StickyHead)
     }
     for k in pg_blocks_read(was, other, blocks()) {
       out.push(Block(k))
@@ -738,6 +744,18 @@ fn narrow_page_node(
               })
               |> ignore
             })
+          StickyHead =>
+            match sticky_head {
+              Some(sh) =>
+                page_block(s, fn(room) {
+                  room.box(fn(b) {
+                    b.padding(Is((0.0, 0.0, 0.0, 12.0))) |> ignore
+                    sh(b)
+                  })
+                  |> ignore
+                })
+              None => ()
+            }
           // what it holds, each block in the page's room (as tall as its slot, on a host's pixels whole pixels tall,
           // for what grows in it to reach the next: a card's pieces, card_piece_node)
           Block(k) => {

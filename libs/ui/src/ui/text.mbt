@@ -670,6 +670,66 @@ fn clear_shapes() -> Unit {
 }
 
 ///|
+/// Surgically evict shape, metric, and mark caches referencing preview/try `face` without incrementing
+/// `words_shaped_in` or evicting unrelated global window text caches.
+fn forget_words_for_face(face : Int) -> Unit {
+  let kept : Array[FontShapes] = []
+  let mut shaped = 0
+  for f in text_cache.fonts {
+    if @hostapi.face_of_style(f.style) == face || f.cjk_slot == face {
+      for _, s in f.map {
+        s.lay = None
+      }
+      f.map.clear()
+    } else {
+      shaped = shaped + f.map.length()
+      kept.push(f)
+    }
+  }
+  text_cache.fonts.clear()
+  for f in kept {
+    text_cache.fonts.push(f)
+  }
+  text_cache.shaped = shaped
+  let gone_metrics : Array[Int64] = []
+  for k, _ in text_cache.metrics {
+    if @hostapi.face_of_style((k & 8191L).to_int()) == face {
+      gone_metrics.push(k)
+    }
+  }
+  for k in gone_metrics {
+    text_cache.metrics.remove(k)
+  }
+  let gone_marks : Array[Int] = []
+  for k, _ in marks_narrow {
+    if @hostapi.face_of_style(k >> 12) == face {
+      gone_marks.push(k)
+    }
+  }
+  for k in gone_marks {
+    marks_narrow.remove(k)
+  }
+  let gone_stops : Array[Int] = []
+  for k, _ in spaced_stops_left {
+    if (k >> 12) == face {
+      gone_stops.push(k)
+    }
+  }
+  for k in gone_stops {
+    spaced_stops_left.remove(k)
+  }
+  presented.forget()
+  let g = h_atlas_generation()
+  if g != text_cache.generation {
+    glyphs_forget()
+    halos_forget()
+    atlas_said.val = Some(g)
+    text_cache.generation = g
+  }
+  view_words_rescaled()
+}
+
+///|
 /// Whether `text` has a digit in it: words with none are shaped the same with their digits all one width
 /// (@hostapi.style_tabular) as without, in the same font, their glyphs the same (shape asks it of the host only where
 /// it changes something, the glyphs of the rest kept once).

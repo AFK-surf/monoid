@@ -62,7 +62,11 @@ pub fn face_add(face : Int, path : String, weight? : Int = 0) -> Bool {
   let ok = h_face_add(face, path, weight)
   if ok {
     faces_given[face] = true
-    words_forgotten()
+    if face >= @hostapi.face_try {
+      forget_words_for_face(face)
+    } else {
+      words_forgotten()
+    }
   }
   ok
 }
@@ -76,7 +80,11 @@ pub fn face_add_bytes(face : Int, data : Bytes, weight? : Int = 0) -> Bool {
   let ok = h_face_add_bytes(face, data, weight)
   if ok {
     faces_given[face] = true
-    words_forgotten()
+    if face >= @hostapi.face_try {
+      forget_words_for_face(face)
+    } else {
+      words_forgotten()
+    }
   }
   ok
 }
@@ -91,7 +99,11 @@ pub fn face_add_family(face : Int, family : String) -> Bool {
   let ok = h_face_add_family(face, family)
   if ok {
     faces_given[face] = true
-    words_forgotten()
+    if face >= @hostapi.face_try {
+      forget_words_for_face(face)
+    } else {
+      words_forgotten()
+    }
   }
   ok
 }
@@ -131,6 +143,14 @@ pub fn local_font_info_signal() -> String {
   }
   local_font_info_asked.val = true
   @signals.untracked(fn() { h_local_font_info() })
+}
+
+///|
+/// Whether the host is asynchronously scanning local font metadata in the background (`local_font_info_signal() == ""`
+/// on a host with async info). Callers should show a loading indicator instead of blocking the UI thread with
+/// synchronous `local_font_families()`.
+pub fn local_font_info_loading() -> Bool {
+  can_list_local_fonts() && @hostapi.has_async_local_font_info() && local_font_info_signal() == ""
 }
 
 ///|
@@ -209,7 +229,11 @@ pub fn face_set_ligatures(face : Int, on : Bool) -> Unit {
   if faces_no_lig[face] != no_lig {
     faces_no_lig[face] = no_lig
     h_face_set_ligatures(face, on)
-    words_forgotten()
+    if face >= @hostapi.face_try {
+      forget_words_for_face(face)
+    } else {
+      words_forgotten()
+    }
   }
 }
 
@@ -240,7 +264,11 @@ pub fn face_clear(face : Int) -> Unit {
   faces_no_lig[face] = false
   if faces_given[face] {
     faces_given[face] = false
-    words_forgotten()
+    if face >= @hostapi.face_try {
+      forget_words_for_face(face)
+    } else {
+      words_forgotten()
+    }
   }
 }
 
@@ -331,7 +359,7 @@ fn text_needs_words_style() -> Bool {
 /// What words in a paragraph said to be `words` (what people wrote) and in `face` (0: none named) add to each run's
 /// style: the face named where it is given; what people wrote marked so where a face or text CJK override is set for it.
 fn faces_style(words : Bool, face : Int) -> Int {
-  (if face_given(face) { @hostapi.style_face(face) } else { 0 }) |
+  (if face == @hostapi.face_sys_default || face_given(face) { @hostapi.style_face(face) } else { 0 }) |
   (if words && text_needs_words_style() { @hostapi.style_words } else { 0 })
 }
 

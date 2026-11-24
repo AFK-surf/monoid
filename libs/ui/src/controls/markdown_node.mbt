@@ -857,11 +857,7 @@ fn md_block_node(
           md_inlines_runs(md, cell, 0, block_ink=Some(if head { web().muted } else { theme().p.text }))
         },
         line_share=md.line,
-        prose_scale=Some(fn() { (md.typography)().prose_scale }),
-        code_scale=Some(fn() { (md.typography)().code_scale }),
-        line_scale=Some(fn() { (md.typography)().line_scale }),
-        text_cjk=Some(fn() { (md.typography)().text_cjk }),
-        code_cjk=Some(fn() { (md.typography)().code_cjk }),
+        typography=Some(md.typography),
         link_cards=md.link_cards,
         on_link_shown=md.on_link_shown,
       )

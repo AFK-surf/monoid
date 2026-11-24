@@ -724,6 +724,11 @@ impl @hostapi.Host for FakeHost with local_font_info(self) {
 }
 
 ///|
+impl @hostapi.Host for FakeHost with has_async_local_font_info(self) {
+  self.live is Some(_) || self.local_fonts == ""
+}
+
+///|
 /// Its glyphs' generation (each ask counted: Tester's): a live host's, else its own.
 impl @hostapi.Host for FakeHost with atlas_generation(self) {
   self.generation_asks += 1

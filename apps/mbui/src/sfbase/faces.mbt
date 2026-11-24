@@ -582,7 +582,7 @@ fn face_failed(id : String) -> String {
 /// is here (asked for the first time).
 fn face_preview(src : Source, id : String, index : Int, variable : Bool) -> Int {
   let host_face = preview_faces_from + index
-  if host_face >= @hostapi.faces_most {
+  if host_face >= @hostapi.face_sys_default {
     return 0
   }
   match previews.get(id) {

@@ -462,7 +462,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-lock-prompt-role": (1033, 676, 90),
   "phone settings-add-people": (711, 482, 80),
   "phone settings-workspace-mark": (855, 588, 71),
-  "phone settings-local-fonts": (642, 469, 131),
+  // (2026-11-24: font settings v4 sticky preview + 5-zone conversation order + equal-width 2x2 style cards & 3x2 matrix)
+  "phone settings-local-fonts": (544, 704, 172),
   "phone settings-policy": (474, 298, 47),
   "phone settings-policy-text": (520, 339, 52),
   "phone settings-policy-option": (525, 339, 51),
@@ -493,8 +494,9 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   // (raised once, 2026-11-23: each card's network line says where its station's traffic leaves, 出口 …)
   "phone place-stations-devices": (499, 377, 86),
   "phone settings-station-devices": (572, 399, 68),
-  "phone settings-fonts": (642, 469, 131),
-  "phone settings-fonts-code": (615, 448, 114),
+  // (2026-11-24: font settings v4 sticky preview + 5-zone conversation order + equal-width 2x2 style cards & 3x2 matrix)
+  "phone settings-fonts": (544, 704, 172),
+  "phone settings-fonts-code": (544, 704, 172),
   "phone settings-decisions": (369, 261, 33),
   "phone settings-completion": (376, 245, 32),
   "phone settings-bars": (505, 343, 61),
@@ -887,7 +889,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-lock-prompt-role": (666, 516, 83),
   "wide settings-add-people": (869, 653, 125),
   "wide settings-workspace-mark": (998, 747, 116),
-  "wide settings-local-fonts": (732, 577, 144),
+  // (2026-11-24: font settings v4 sticky preview + 5-zone conversation order + equal-width 4-col style cards & 3x2 matrix)
+  "wide settings-local-fonts": (760, 1017, 350),
   "wide settings-policy": (580, 455, 73),
   "wide settings-policy-text": (626, 496, 79),
   "wide settings-policy-option": (631, 496, 78),
@@ -916,8 +919,9 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-stations-devices": (826, 636, 122),
   "wide place-stations-devices": (1026, 816, 149),
   "wide settings-station-devices": (791, 608, 107),
-  "wide settings-fonts": (732, 577, 144),
-  "wide settings-fonts-code": (711, 561, 138),
+  // (2026-11-24: font settings v4 sticky preview + 5-zone conversation order + equal-width 4-col style cards & 3x2 matrix)
+  "wide settings-fonts": (760, 1017, 350),
+  "wide settings-fonts-code": (739, 985, 336),
   "wide settings-decisions": (490, 390, 50),
   "wide settings-completion": (710, 539, 78),
   "wide settings-bars": (626, 514, 85),

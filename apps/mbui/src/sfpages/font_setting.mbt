@@ -1,8 +1,4 @@
-// 字体, one setting for every frame:
-// curated font pairings (presets), a live mixed-script preview card (`tallest`-locked against hover jitter),
-// purpose (界面 / 正文 / 代码) × script (西文与数字 / 中文与标点) dual-layer selection with smart local font filtering,
-// and a collapsible optical-tuning & reading-typography section. Every change writes through `prefs.set` (`fonts` and
-// `typography`) with zero global glyph cache invalidation during hover or slider drag.
+// 字体 settings core state, FontPageCtx, face picker rows, and smart local font panel.
 
 ///|
 fn font_setting_reset() -> Unit {
@@ -16,15 +12,20 @@ fn font_setting_reset() -> Unit {
   cjk_scale_drag.set(None)
   text_size_drag.set(None)
   code_scale_drag.set(None)
+  fonts_undo_snap.set(None)
 }
 
 ///|
-/// The face pointed at in the faces' rows, tried in the chat before it is chosen ("" none; "\u{1}" the slot's default /
-/// followUi; "\u{2}" textCjk explicit "none"; `local:<family>` one of this machine's).
+/// The face pointed at in the faces' rows, tried in the preview card before it is chosen ("" none; "\u{1}" the slot's
+/// default / followUi; "\u{2}" textCjk explicit "none"; `local:<family>` one of this machine's).
 let fonts_trying : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
 
 ///|
-/// Whether the collapsible "光学微调与阅读排版" section is expanded (collapsed by default).
+/// Index into `font_presets` currently hovered (-1 = none).
+let preset_trying : @signals.Signal[Int] = @signals.signal(-1, same=fn(a, b) { a == b })
+
+///|
+/// Whether the collapsible "排版与字号细节" section is expanded (collapsed by default).
 pub let advanced_open : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
 
 ///|
@@ -43,6 +44,10 @@ let text_size_drag : @signals.Signal[Double?] = @signals.signal(None, same=fn(a,
 let code_scale_drag : @signals.Signal[Double?] = @signals.signal(None, same=fn(a, b) { a == b })
 
 ///|
+/// Snapshot `(old_fonts, old_typography)` saved before "全部恢复默认" for one-click "撤销".
+let fonts_undo_snap : @signals.Signal[(Json?, Json?)?] = @signals.signal(None)
+
+///|
 priv struct FontPreset {
   key : String
   ui : String?
@@ -56,15 +61,7 @@ priv struct FontPreset {
 ///|
 // kept across runs: static table of curated pairings (all 7 published font IDs only)
 let font_presets : Array[FontPreset] = [
-  {
-    key: "default",
-    ui: None,
-    ui_cjk: None,
-    text: None,
-    text_cjk: None,
-    code: None,
-    code_cjk: None,
-  },
+  { key: "default", ui: None, ui_cjk: None, text: None, text_cjk: None, code: None, code_cjk: None },
   {
     key: "sans",
     ui: Some("inter"),
@@ -190,446 +187,440 @@ fn font_cjk_weight_key(place : String) -> String {
 }
 
 ///|
-/// Collapsible V4 "排版与字号细节" section (collapsed by default; expanded by `settings-fonts-advanced` fixture).
-/// Wide uses a high-density 2-column layout (~250-280pt tall); Narrow degrades cleanly to a single column.
-fn font_advanced_node(
-  parent : @view.View,
-  core : Core,
-  is_wide : Bool,
-  place : () -> String,
-  faces_view : () -> Json?,
-  chosen_of : (String) -> String,
-  typo : () -> Json?,
-  ui_face : () -> Int,
-  text_face : () -> Int?,
-  code_face : () -> Int?,
-  cjk_host_face : (String) -> Int,
-) -> Unit {
+fn font_typo_custom_count(typo : Json?) -> Int {
+  let mut n = 0
+  if font_typo_num(typo, "textSize", 100.0).round().to_int() != 100 {
+    n = n + 1
+  }
+  if font_typo_num(typo, "codeScale", 100.0).round().to_int() != 100 {
+    n = n + 1
+  }
+  let lh = text(typo, "lineHeight")
+  if lh != "" && lh != "normal" {
+    n = n + 1
+  }
+  if !font_typo_bool(typo, "cjkAutoSpace", true) {
+    n = n + 1
+  }
+  if !font_typo_bool(typo, "codeLigatures", true) {
+    n = n + 1
+  }
+  for k in ["uiCjkScale", "textCjkScale", "codeCjkScale"] {
+    if font_typo_num(typo, k, 100.0).round().to_int() != 100 {
+      n = n + 1
+    }
+  }
+  for k in ["uiCjkWeight", "textCjkWeight", "codeCjkWeight"] {
+    if font_typo_num(typo, k, 0.0).round().to_int() != 0 {
+      n = n + 1
+    }
+  }
+  n
+}
+
+///|
+/// Flat context for the fonts settings page so every section uses top-level functions instead of nested closures.
+priv struct FontPageCtx {
+  core : Core
+}
+
+///|
+fn FontPageCtx::prefs(self : FontPageCtx) -> Json? {
+  (self.core.topic)("prefs", Map([])).get().value
+}
+
+///|
+fn FontPageCtx::chosen_of(self : FontPageCtx, slot : String) -> String {
+  text(field(self.prefs(), "fonts"), slot)
+}
+
+///|
+fn FontPageCtx::faces_view(self : FontPageCtx) -> Json? {
+  field(self.prefs(), "faces")
+}
+
+///|
+fn FontPageCtx::typo(self : FontPageCtx) -> Json? {
+  field(self.prefs(), "typography")
+}
+
+///|
+fn FontPageCtx::all(self : FontPageCtx) -> Array[Json] {
+  items(self.faces_view(), "list")
+}
+
+///|
+fn FontPageCtx::files_state(self : FontPageCtx) -> Json? {
+  (self.core.topic)("fonts", Map([])).get().value
+}
+
+///|
+fn FontPageCtx::place(self : FontPageCtx) -> String {
+  ignore(self)
+  @settings.font_places[@settings.fonts_at.get()]
+}
+
+///|
+fn FontPageCtx::script(self : FontPageCtx) -> Int {
+  ignore(self)
+  @settings.fonts_script_at.get()
+}
+
+///|
+fn FontPageCtx::active_slot(self : FontPageCtx) -> String {
+  if self.script() == 1 {
+    font_cjk_slot_of(self.place())
+  } else {
+    self.place()
+  }
+}
+
+///|
+fn FontPageCtx::shown_in(self : FontPageCtx, id : String) -> Int {
+  let mut face = 0
+  for i, f in self.all() {
+    if text(Some(f), "id") == id {
+      face = (self.core.face_preview)(id, i, items(Some(f), "files").iter().any(fn(x) { number(Some(x), "weight") == 0.0 }))
+    }
+  }
+  face
+}
+
+///|
+fn FontPageCtx::name_of_id(self : FontPageCtx, id : String) -> String {
+  if id == "" {
+    return @sf.t("web-pages.appearance.fonts.default")
+  }
+  if id.has_prefix(local_prefix) {
+    return id.unsafe_substring(start=local_prefix.length(), end=id.length())
+  }
+  for f in self.all() {
+    if text(Some(f), "id") == id {
+      return text(Some(f), "name")
+    }
+  }
+  id
+}
+
+///|
+fn FontPageCtx::own_of(self : FontPageCtx, p : String) -> Int {
+  if p == "code" {
+    (self.core.own_code_face)()
+  } else {
+    0
+  }
+}
+
+///|
+fn FontPageCtx::as_chosen(self : FontPageCtx, p : String) -> Int {
+  let id = self.chosen_of(p)
+  if id == "" || (self.core.face_here)(id) {
+    0
+  } else {
+    self.shown_in(id)
+  }
+}
+
+///|
+fn FontPageCtx::cjk_host_face(self : FontPageCtx, id : String) -> Int {
+  if id == "" || id == "none" {
+    return 0
+  }
+  if @sfbase.faces_in[4] == id && @ui.face_given(@hostapi.face_ui_cjk) {
+    return @hostapi.face_ui_cjk
+  }
+  if @sfbase.faces_in[5] == id && @ui.face_given(@hostapi.face_text_cjk) {
+    return @hostapi.face_text_cjk
+  }
+  if @sfbase.faces_in[6] == id && @ui.face_given(@hostapi.face_code_cjk) {
+    return @hostapi.face_code_cjk
+  }
+  if id.has_prefix(local_prefix) {
+    return local_tried(id.unsafe_substring(start=local_prefix.length(), end=id.length()))
+  }
+  self.shown_in(id)
+}
+
+///|
+/// Host face representing the real default for `role` during hover preview (bypasses any custom `face_ui` like Menlo).
+fn FontPageCtx::default_preview_face(self : FontPageCtx, role : String, is_wide : Bool) -> Int {
+  match role {
+    "code" => (self.core.own_code_face)()
+    "ui" =>
+      if is_wide {
+        match self.shown_in("inter") {
+          0 => @hostapi.face_sys_default
+          f => f
+        }
+      } else {
+        @hostapi.face_sys_default
+      }
+    _ => @hostapi.face_sys_default
+  }
+}
+
+///|
+fn FontPageCtx::preview_face_opt(self : FontPageCtx, id : String?, role : String, is_wide : Bool) -> Int {
+  match id {
+    Some(s) if s != "" =>
+      match self.shown_in(s) {
+        0 => self.default_preview_face(role, is_wide)
+        f => f
+      }
+    _ => self.default_preview_face(role, is_wide)
+  }
+}
+
+///|
+fn FontPageCtx::try_primary_face(self : FontPageCtx, is_wide : Bool) -> Int? {
+  if self.script() != 0 {
+    return None
+  }
+  match fonts_trying.get() {
+    "" => None
+    "\u{1}" =>
+      if self.place() == "text" {
+        Some(self.as_chosen("ui"))
+      } else {
+        Some(self.default_preview_face(self.place(), is_wide))
+      }
+    id if id.has_prefix(local_prefix) =>
+      match local_tried(id.unsafe_substring(start=local_prefix.length(), end=id.length())) {
+        0 => None
+        f => Some(f)
+      }
+    id =>
+      match self.shown_in(id) {
+        0 => None
+        f => Some(f)
+      }
+  }
+}
+
+///|
+fn FontPageCtx::ui_face(self : FontPageCtx, is_wide : Bool) -> Int {
+  let pi = preset_trying.get()
+  if pi >= 0 && pi < font_presets.length() {
+    return self.preview_face_opt(font_presets[pi].ui, "ui", is_wide)
+  }
+  match (self.place(), self.try_primary_face(is_wide)) {
+    ("ui", Some(f)) => f
+    _ => self.as_chosen("ui")
+  }
+}
+
+///|
+fn FontPageCtx::text_face(self : FontPageCtx, is_wide : Bool) -> Int? {
+  let pi = preset_trying.get()
+  if pi >= 0 && pi < font_presets.length() {
+    let pr = font_presets[pi]
+    let id = match pr.text {
+      Some(s) => Some(s)
+      None => pr.ui
+    }
+    return Some(self.preview_face_opt(id, if pr.text is Some(_) { "text" } else { "ui" }, is_wide))
+  }
+  match (self.place(), self.try_primary_face(is_wide)) {
+    ("text", Some(f)) => Some(f)
+    ("ui", Some(f)) if self.chosen_of("text") == "" => Some(f)
+    _ => {
+      let face = if self.chosen_of("text") == "" { self.ui_face(is_wide) } else { self.as_chosen("text") }
+      if face == 0 { None } else { Some(face) }
+    }
+  }
+}
+
+///|
+fn FontPageCtx::code_face(self : FontPageCtx, is_wide : Bool) -> Int? {
+  let pi = preset_trying.get()
+  if pi >= 0 && pi < font_presets.length() {
+    return Some(self.preview_face_opt(font_presets[pi].code, "code", is_wide))
+  }
+  match (self.place(), self.try_primary_face(is_wide)) {
+    ("code", Some(f)) => Some(f)
+    _ => {
+      let face = self.as_chosen("code")
+      if face == 0 { None } else { Some(face) }
+    }
+  }
+}
+
+///|
+fn FontPageCtx::live_cjk_scale(self : FontPageCtx, p : String) -> Double {
+  let key = font_cjk_scale_key(p)
+  match cjk_scale_drag.get() {
+    Some((k, pct)) if k == key => pct / 100.0
+    Some((k, pct)) if p == "text" &&
+      k == "uiCjkScale" &&
+      self.chosen_of("textCjk") == "" &&
+      text(self.faces_view(), "uiCjk") != "" &&
+      !font_typo_bool(self.typo(), "textCjkScaleOwn", false) => pct / 100.0
+    _ => font_typo_num(self.typo(), key, 100.0) / 100.0
+  }
+}
+
+///|
+fn FontPageCtx::live_cjk_weight(self : FontPageCtx, p : String) -> Int {
+  font_typo_num(self.typo(), font_cjk_weight_key(p), 0.0).round().to_int()
+}
+
+///|
+fn FontPageCtx::cjk_override_for(self : FontPageCtx, role : String) -> @view.CjkOverride? {
+  let pi = preset_trying.get()
+  if pi >= 0 && pi < font_presets.length() {
+    let pr = font_presets[pi]
+    let cjk_id = match role {
+      "ui" => pr.ui_cjk
+      "text" =>
+        match pr.text_cjk {
+          Some(s) => Some(s)
+          None => pr.ui_cjk
+        }
+      _ => pr.code_cjk
+    }
+    return match cjk_id {
+      Some(id) if id != "" => Some({ face: self.cjk_host_face(id), scale: 1.0, weight_off: 0 })
+      _ => Some({ face: 0, scale: 1.0, weight_off: 0 })
+    }
+  }
+  let scale = self.live_cjk_scale(role)
+  let weight_off = self.live_cjk_weight(role)
+  let tried = if self.script() == 1 { fonts_trying.get() } else { "" }
+  let trying_this = tried != "" && (
+    self.place() == role || (self.place() == "ui" && role == "text" && self.chosen_of("textCjk") == "")
+  )
+  if trying_this {
+    if tried == "\u{2}" {
+      return Some({ face: 0, scale: 1.0, weight_off: 0 })
+    }
+    if tried == "\u{1}" {
+      if role == "text" && self.place() == "text" {
+        return Some({ face: self.cjk_host_face(text(self.faces_view(), "uiCjk")), scale, weight_off })
+      }
+      return Some({ face: 0, scale: 1.0, weight_off: 0 })
+    }
+    let f = if tried.has_prefix(local_prefix) {
+      local_tried(tried.unsafe_substring(start=local_prefix.length(), end=tried.length()))
+    } else {
+      self.cjk_host_face(tried)
+    }
+    return if f > 0 { Some({ face: f, scale, weight_off }) } else { None }
+  }
+  let active_id = text(self.faces_view(), font_cjk_slot_of(role))
+  if active_id != "" {
+    let f = self.cjk_host_face(active_id)
+    if f > 0 {
+      return Some({ face: f, scale, weight_off })
+    }
+  }
+  None
+}
+
+///|
+fn FontPageCtx::preview_prose_scale(self : FontPageCtx) -> Double {
+  match text_size_drag.get() {
+    Some(pct) => pct / 100.0
+    None => font_typo_num(self.typo(), "textSize", 100.0) / 100.0
+  }
+}
+
+///|
+fn FontPageCtx::preview_code_scale(self : FontPageCtx) -> Double {
+  match code_scale_drag.get() {
+    Some(pct) => pct / 100.0
+    None => font_typo_num(self.typo(), "codeScale", 100.0) / 100.0
+  }
+}
+
+///|
+fn FontPageCtx::preview_line_scale(self : FontPageCtx) -> Double {
+  match text(self.typo(), "lineHeight") {
+    "compact" => 0.92
+    "relaxed" => 1.14
+    _ => 1.0
+  }
+}
+
+///|
+fn FontPageCtx::any_customized(self : FontPageCtx) -> Bool {
+  !font_preset_matches(font_presets[0], fn(s) { self.chosen_of(s) }) || font_typo_custom_count(self.typo()) > 0
+}
+
+///|
+fn FontPageCtx::reset_all(self : FontPageCtx) -> Unit {
+  let p = @signals.untracked(fn() { self.prefs() })
+  fonts_undo_snap.set(Some((field(p, "fonts"), field(p, "typography"))))
+  @settings.set_fonts_preset(self.core, preset_patch(font_presets[0]), reset_cjk_optics=true)
+  @settings.set_typography(self.core, Json::null())
+}
+
+///|
+fn FontPageCtx::undo_reset(self : FontPageCtx) -> Unit {
+  match fonts_undo_snap.untracked() {
+    Some((old_fonts, old_typo)) => {
+      fonts_undo_snap.set(None)
+      let patch : Map[String, Json] = Map([])
+      patch["fonts"] = match old_fonts {
+        Some(f) => f
+        None => Json::null()
+      }
+      patch["typography"] = match old_typo {
+        Some(t) => t
+        None => Json::null()
+      }
+      (self.core.call)("prefs.set", Json::object(patch), fn(_) { () })
+    }
+    None => ()
+  }
+}
+
+///|
+fn clear_fonts_undo() -> Unit {
+  if fonts_undo_snap.untracked() is Some(_) {
+    fonts_undo_snap.set(None)
+  }
+}
+
+///|
+fn open_advanced_if_fixture(_parent : @view.View) -> Unit {
   if fx_advanced_up.val {
     fx_advanced_up.val = false
     advanced_open.set(true)
   }
-  let custom_count = fn() -> Int { font_typo_custom_count(typo()) }
-  let summary = fn() -> String {
-    let n = custom_count()
-    if n == 0 {
-      @sf.t("web-pages.appearance.fonts.default")
-    } else {
-      @sf.t("web-pages.appearance.fonts.advanced.summaryCustom", args=[("n", n.to_string())])
-    }
-  }
-  let active_primary_face = fn() -> Int {
-    match place() {
-      "text" => text_face().unwrap_or(0)
-      "code" => code_face().unwrap_or(0)
-      _ => ui_face()
-    }
-  }
-  let active_cjk_preview = fn() -> @view.CjkOverride? {
-    let p = place()
-    let id = text(faces_view(), font_cjk_slot_of(p))
-    if id == "" {
-      return None
-    }
-    let f = cjk_host_face(id)
-    if f <= 0 {
-      return None
-    }
-    let k = font_cjk_scale_key(p)
-    let scale = match cjk_scale_drag.get() {
-      Some((dk, pct)) if dk == k => pct / 100.0
-      _ => font_typo_num(typo(), k, 100.0) / 100.0
-    }
-    let weight_off = font_typo_num(typo(), font_cjk_weight_key(p), 0.0).round().to_int()
-    Some({ face: f, scale, weight_off })
-  }
-  let two_col = fn(host : @view.View, left : (@view.View) -> Unit, right : (@view.View) -> Unit) {
-    host.box(fn(pair) {
-      @sf.style_node(pair, fn() { if is_wide { fp_v4_two_col_wide } else { fp_v4_two_col_narrow } })
-      pair.box(fn(l) {
-        if is_wide {
-          l.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-        }
-        left(l)
-      })
-      |> ignore
-      pair.box(fn(r) {
-        if is_wide {
-          r.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-        }
-        right(r)
-      })
-      |> ignore
-    })
-    |> ignore
-  }
-  let compact_switch = fn(
-    host : @view.View,
-    label : () -> String,
-    sample : (@view.View) -> Unit,
-    on : () -> Bool,
-    turn : (Bool) -> Unit,
-  ) {
-    host.box(fn(row) {
-      @sf.style_node(row, fn() { fp_v4_compact_sw_row })
-      row.box(fn(left) {
-        @sf.style_node(left, fn() { fp_v4_compact_sw_left })
-        left.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).wraps(Is(Some(4.0))) |> ignore
-        @sf.words_node(left, label, fn() { fp_adv_row_label_inline }) |> ignore
-        sample(left)
-      })
-      |> ignore
-      row.box(fn(sw) {
-        sw.shrink(Is(0.0)) |> ignore
-        @sf.switch_node(sw, on, turn, label, small=true)
-      })
-      |> ignore
-    })
-    |> ignore
-  }
-  @sf.group_node(parent, fn(g) {
-    @sf.action_box_node(
-      g,
-      fn() { @sf.t("web-pages.appearance.fonts.advanced.title") },
-      fn(_) { @view.transition(fn() { advanced_open.set(!advanced_open.untracked()) }) },
-      fn(head) {
-        let hot = fn() { @sf.lit_node(head) }
-        @sf.style_node(head, fn() { if hot() { fp_adv_head_hot } else { fp_adv_head } })
-        head.box(fn(left) {
-          left.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-          @sf.words_node(left, fn() { @sf.t("web-pages.appearance.fonts.advanced.title") }, fn() { fp_adv_title }) |> ignore
-        })
-        |> ignore
-        head.box(fn(right) {
-          @sf.style_node(right, fn() { fp_adv_right })
-          @sf.on_baseline(right, Title, Meta, weight=500, own_weight=400).shrink(Is(0.0)) |> ignore
-          @sf.words_node(right, summary, fn() { fp_adv_summary }) |> ignore
-          @sf.icon_node(right, "", 14.0, By(fn() { @sf.theme().p.subtle }), name_now=fn() {
-            if advanced_open.get() { "chevron-down" } else { "chevron-right" }
-          })
-          |> ignore
-        })
-        |> ignore
-      },
-    )
-    |> ignore
-    g.show(fn() { advanced_open.get() }, fn(inner) {
-      @sf.style_node(inner, fn() { fp_adv_body })
-      // --- Group 1: Reading & code layout (2-col on Wide, stacked on Narrow) ---
-      inner.box(fn(read_sec) {
-        @sf.style_node(read_sec, fn() { fp_adv_group })
-        @sf.words_node(read_sec, fn() { @sf.t("web-pages.appearance.fonts.advanced.readingGroup") }, fn() { fp_adv_group_title })
-        |> ignore
-        // Row 1: textSize (left) | codeScale (right)
-        two_col(
-          read_sec,
-          fn(l) {
-            font_visual_slider_row_node(
-              l,
-              fn() { @sf.t("web-pages.appearance.fonts.advanced.textSize") },
-              "A",
-              "A",
-              fn() { text_size_drag.get().unwrap_or(font_typo_num(typo(), "textSize", 100.0)) },
-              fn(v) { text_size_drag.set(Some(v)) },
-              fn(v) {
-                text_size_drag.set(None)
-                @settings.set_typography(core, Json::object({ "textSize": ToJson::to_json(v.round().to_int()) }))
-              },
-              min=85.0,
-              max=130.0,
-              step=5.0,
-            )
-          },
-          fn(r) {
-            font_visual_slider_row_node(
-              r,
-              fn() { @sf.t("web-pages.appearance.fonts.advanced.codeScale") },
-              "</>",
-              "</>",
-              fn() { code_scale_drag.get().unwrap_or(font_typo_num(typo(), "codeScale", 100.0)) },
-              fn(v) { code_scale_drag.set(Some(v)) },
-              fn(v) {
-                code_scale_drag.set(None)
-                @settings.set_typography(core, Json::object({ "codeScale": ToJson::to_json(v.round().to_int()) }))
-              },
-              min=85.0,
-              max=110.0,
-              step=5.0,
-            )
-          },
-        )
-        // Row 2: cjkAutoSpace (left) | codeLigatures (right; hidden on Web platform 4)
-        let autospace_on = fn() { font_typo_bool(typo(), "cjkAutoSpace", true) }
-        let render_autospace = fn(host : @view.View) {
-          compact_switch(
-            host,
-            fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkAutoSpace") },
-            fn(e) { font_autospace_pills_node(e, autospace_on) },
-            autospace_on,
-            fn(on) { @settings.set_typography(core, Json::object({ "cjkAutoSpace": ToJson::to_json(on) })) },
-          )
-        }
-        if @ui.platform() != 4 {
-          two_col(
-            read_sec,
-            render_autospace,
-            fn(r) {
-              compact_switch(
-                r,
-                fn() { @sf.t("web-pages.appearance.fonts.advanced.codeLigatures") },
-                fn(e) { font_ligature_sample_node(e, code_face) },
-                fn() { font_typo_bool(typo(), "codeLigatures", true) },
-                fn(on) { @settings.set_typography(core, Json::object({ "codeLigatures": ToJson::to_json(on) })) },
-              )
-            },
-          )
-        } else {
-          render_autospace(read_sec)
-        }
-        // Row 3: compact inline line-height strip (~36pt tall on Wide)
-        font_line_height_cards_node(
-          read_sec,
-          is_wide,
-          fn() { @sf.t("web-pages.appearance.fonts.advanced.lineHeight") },
-          fn() { text(typo(), "lineHeight") },
-          fn(v) { @settings.set_typography(core, Json::object({ "lineHeight": ToJson::to_json(v) })) },
-        )
-      })
-      |> ignore
-      inner.box(fn(sep) { @sf.style_node(sep, fn() { @sf.rule_line }) }) |> ignore
-      // --- Group 2: CJK-Latin ratio (header with live `Aa 字体` pill + 2-col scale & weight) ---
-      inner.box(fn(cjk_sec) {
-        @sf.style_node(cjk_sec, fn() { fp_adv_group })
-        let text_overridden = fn() {
-          place() == "text" &&
-          chosen_of("textCjk") == "" &&
-          text(faces_view(), "uiCjk") != "" &&
-          (
-            font_typo_bool(typo(), "textCjkScaleOwn", false) ||
-            font_typo_bool(typo(), "textCjkWeightOwn", false)
-          )
-        }
-        cjk_sec.box(fn(head) {
-          @sf.style_node(head, fn() { fp_v4_ratio_head })
-          head.box(fn(tw) {
-            tw.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-            @sf.words_node(
-              tw,
-              fn() {
-                @sf.t(
-                  "web-pages.appearance.fonts.advanced.cjkRatioTitle",
-                  args=[("place", @sf.t("web-pages.appearance.fonts." + place()))],
-                )
-              },
-              fn() { fp_adv_group_title },
-            )
-            |> ignore
-          })
-          |> ignore
-          head.box(fn(rh) {
-            @sf.style_node(rh, fn() { fp_v4_ratio_right })
-            rh.shrink(Is(0.0)) |> ignore
-            font_cjk_ratio_badge_node(rh, active_primary_face, active_cjk_preview)
-            rh.show(at_once=true, text_overridden, fn(rb) {
-              @sf.button_node(
-                rb,
-                fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkResetFollow") },
-                fn() {
-                  @settings.set_typography(
-                    core,
-                    Json::object({ "textCjkScale": Json::null(), "textCjkWeight": Json::null() }),
-                  )
-                },
-              )
-              |> ignore
-            })
-          })
-          |> ignore
-        })
-        |> ignore
-        let has_cjk = fn() { text(faces_view(), font_cjk_slot_of(place())) != "" }
-        cjk_sec.pick(has_cjk, fn(p, active) {
-          if !active {
-            @sf.words_node(p, fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkHint") }, fn() { fp_adv_hint }) |> ignore
-          } else {
-            let scale_key = fn() { font_cjk_scale_key(place()) }
-            let weight_key = fn() { font_cjk_weight_key(place()) }
-            let cjk_scale_val = fn() -> Double {
-              let k = scale_key()
-              match cjk_scale_drag.get() {
-                Some((dk, v)) if dk == k => v
-                _ => font_typo_num(typo(), k, 100.0)
-              }
-            }
-            let weight_index = fn() -> Int {
-              let w = font_typo_num(typo(), weight_key(), 0.0).round().to_int()
-              if w < 0 { 0 } else if w > 0 { 2 } else { 1 }
-            }
-            two_col(
-              p,
-              fn(l) {
-                font_visual_slider_row_node(
-                  l,
-                  fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkScale") },
-                  "字",
-                  "字",
-                  cjk_scale_val,
-                  fn(v) { cjk_scale_drag.set(Some((@signals.untracked(scale_key), v))) },
-                  fn(v) {
-                    let k = @signals.untracked(scale_key)
-                    cjk_scale_drag.set(None)
-                    let n = v.round().to_int()
-                    let m : Map[String, Json] = Map([])
-                    m[k] = ToJson::to_json(n)
-                    @settings.set_typography(core, Json::object(m))
-                  },
-                  min=85.0,
-                  max=115.0,
-                  step=5.0,
-                )
-              },
-              fn(r) {
-                font_seg_row_node(
-                  r,
-                  fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkWeight") },
-                  fn() {
-                    [
-                      @sf.t("web-pages.appearance.fonts.advanced.weightLight"),
-                      @sf.t("web-pages.appearance.fonts.advanced.weightAuto"),
-                      @sf.t("web-pages.appearance.fonts.advanced.weightBold"),
-                    ]
-                  },
-                  weight_index,
-                  fn(idx) {
-                    let w = if idx == 0 { -100 } else if idx == 2 { 100 } else { 0 }
-                    let m : Map[String, Json] = Map([])
-                    m[@signals.untracked(weight_key)] = ToJson::to_json(w)
-                    @settings.set_typography(core, Json::object(m))
-                  },
-                )
-              },
-            )
-          }
-        })
-        cjk_sec.show(at_once=true, fn() { custom_count() > 0 }, fn(bar) {
-          @sf.style_node(bar, fn() { fp_adv_action_row })
-          @sf.button_node(
-            bar,
-            fn() { @sf.t("web-pages.appearance.fonts.advanced.reset") },
-            fn() { @settings.set_typography(core, Json::null()) },
-          )
-          |> ignore
-        })
-      })
-      |> ignore
-    })
-  })
-}
-
-///|
-fn font_seg_row_node(
-  parent : @view.View,
-  label : () -> String,
-  options : () -> Array[String],
-  chosen : () -> Int,
-  choose : (Int) -> Unit,
-) -> Unit {
-  parent.box(fn(row) {
-    @sf.style_node(row, fn() { fp_control_row })
-    row.wraps(Is(Some(8.0))) |> ignore
-    row.box(fn(l) {
-      l.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      @sf.words_node(l, label, fn() { fp_adv_row_label }) |> ignore
-    })
-    |> ignore
-    @sf.seg_node(row, options, chosen, choose, said=@signals.untracked(label)) |> ignore
-  })
-  |> ignore
 }
 
 ///|
 /// 字体's faces of `slot` (`place` + `is_cjk`) in `rows`.
-fn face_rows_node(
-  rows : @view.View,
-  core : Core,
-  slot : String,
-  place : String,
-  is_cjk : Bool,
-  all : () -> Array[Json],
-  own : () -> Int,
-  shown_in : (String) -> Int,
-  files_state : () -> Json?,
-  chosen_of : (String) -> String,
-  name_of_id : (String) -> String,
-) -> Unit {
+fn face_rows_node(rows : @view.View, ctx : FontPageCtx, slot : String, place : String, is_cjk : Bool) -> Unit {
   let sample_key = font_slot_sample_key(place, is_cjk)
   let glyph = fn() { font_slot_glyph(place, is_cjk) }
-  let chosen = fn() { chosen_of(slot) }
+  let chosen = fn() { ctx.chosen_of(slot) }
+  let own = fn() { ctx.own_of(place) }
   if is_cjk {
     if place == "text" {
-      let ui_cjk_name = fn() { name_of_id(chosen_of("uiCjk")) }
       let follow_note = fn() {
-        @sf.t("web-pages.appearance.fonts.cjkFollowUi", args=[("name", ui_cjk_name())])
+        @sf.t("web-pages.appearance.fonts.cjkFollowUi", args=[("name", ctx.name_of_id(ctx.chosen_of("uiCjk")))])
       }
-      face_row_node(
-        rows,
-        core,
-        slot,
-        "",
-        fn() { @sf.t("web-pages.appearance.fonts.followUi") },
-        fn() { 0 },
-        fn() { chosen() == "" },
-        fn() { ("", false) },
-        glyph~,
-        note_text=follow_note,
-      )
-      face_row_node(
-        rows,
-        core,
-        slot,
-        "none",
-        fn() { @sf.t("web-pages.appearance.fonts.cjkNone") },
-        fn() { 0 },
-        fn() { chosen() == "none" },
-        fn() { ("", false) },
-        glyph~,
-        tried_key="\u{2}",
-        sample_key~,
-      )
+      face_row_node(rows, ctx.core, slot, "", fn() { @sf.t("web-pages.appearance.fonts.followUi") }, fn() { 0 }, fn() { chosen() == "" }, fn() { ("", false) }, glyph~, note_text=follow_note)
+      face_row_node(rows, ctx.core, slot, "none", fn() { @sf.t("web-pages.appearance.fonts.cjkNone") }, fn() { 0 }, fn() { chosen() == "none" }, fn() { ("", false) }, glyph~, tried_key="\u{2}", sample_key~)
     } else {
-      face_row_node(
-        rows,
-        core,
-        slot,
-        "",
-        fn() { @sf.t("web-pages.appearance.fonts.default") },
-        fn() { 0 },
-        fn() { chosen() == "" },
-        fn() { ("", false) },
-        glyph~,
-        sample_key~,
-      )
+      face_row_node(rows, ctx.core, slot, "", fn() { @sf.t("web-pages.appearance.fonts.default") }, fn() { 0 }, fn() { chosen() == "" }, fn() { ("", false) }, glyph~, sample_key~)
     }
   } else {
     let none = if place == "text" { "web-pages.appearance.fonts.followUi" } else { "web-pages.appearance.fonts.default" }
-    face_row_node(rows, core, slot, "", fn() { @sf.t(none) }, own, fn() { chosen() == "" }, fn() { ("", false) }, glyph~, sample_key~)
+    face_row_node(rows, ctx.core, slot, "", fn() { @sf.t(none) }, own, fn() { chosen() == "" }, fn() { ("", false) }, glyph~, sample_key~)
   }
-  // Catalog entries filtered by script & place:
-  // - Latin mode: mono == (place == "code")
-  // - CJK mode: hasCjk == true (on code, mono CJK faces like Maple Mono sorted first)
   let by_id = rows.keyed_by(
     fn() {
       if is_cjk {
-        let cjk_all = all().filter(fn(f) { flag(Some(f), "hasCjk") })
+        let cjk_all = ctx.all().filter(fn(f) { flag(Some(f), "hasCjk") })
         if place == "code" {
-          let monos = cjk_all.filter(fn(f) { flag(Some(f), "mono") })
-          let rest = cjk_all.filter(fn(f) { !flag(Some(f), "mono") })
-          monos + rest
+          cjk_all.filter(fn(f) { flag(Some(f), "mono") }) + cjk_all.filter(fn(f) { !flag(Some(f), "mono") })
         } else {
           cjk_all.filter(fn(f) { !flag(Some(f), "mono") })
         }
       } else {
-        all().filter(fn(f) { flag(Some(f), "mono") == (place == "code") })
+        ctx.all().filter(fn(f) { flag(Some(f), "mono") == (place == "code") })
       }
     },
     fn(f) { text(Some(f), "id") },
@@ -641,10 +632,10 @@ fn face_rows_node(
       let id = id.untracked()
       let fv = fn() { by_id.get(id) }
       let status = fn() {
-        let st = files_state()
+        let st = ctx.files_state()
         let fetching = field(field(st, "fetching"), id)
         let failed = text(field(st, "failed"), id)
-        let damaged = (core.face_failed)(id)
+        let damaged = (ctx.core.face_failed)(id)
         match fetching {
           Some(Number(p, ..)) =>
             (@sf.t("android-settings.fonts.downloading", args=[("percent", (p * 100.0).to_int().to_string())]), false)
@@ -653,32 +644,28 @@ fn face_rows_node(
               (@sf.t("android-settings.fonts.failed", args=[("error", failed)]), true)
             } else if damaged != "" {
               (@sf.t("android-settings.fonts.failed", args=[("error", damaged)]), true)
-            } else if (core.face_here)(id) || items(st, "kept").contains(ToJson::to_json(id)) {
+            } else if (ctx.core.face_here)(id) || items(st, "kept").contains(ToJson::to_json(id)) {
               ("", false)
             } else {
               (face_size(number(fv(), "bytes")), false)
             }
         }
       }
-      // not shown in itself (its preview not here): in the place's own
       let face = fn() {
-        match shown_in(id) {
+        match ctx.shown_in(id) {
           0 => own()
           x => x
         }
       }
-      face_row_node(r, core, slot, id, fn() { text(fv(), "name") }, face, fn() { chosen() == id }, status, glyph~, sample_key~)
+      face_row_node(r, ctx.core, slot, id, fn() { text(fv(), "name") }, face, fn() { chosen() == id }, status, glyph~, sample_key~)
     },
   )
-  // a face of this machine's own, where the host lists them (keyboard and mouse's)
   rows.show(fn() { @ui.can_list_local_fonts() }, fn(l) {
-    local_face_row_node(l, core, slot, place, is_cjk, chosen, glyph, sample_key)
+    local_face_row_node(l, ctx.core, slot, place, is_cjk, chosen, glyph, sample_key)
   })
 }
 
 ///|
-/// A face of the slot in `parent`: 32×32 glyph badge + name + context-specific sample line drawn in itself (`face()`),
-/// status & check at its end; pointed at, tried in the preview card; pressed, persisted via `set_font`.
 fn face_row_node(
   parent : @view.View,
   core : Core,
@@ -704,7 +691,10 @@ fn face_row_node(
       name,
       face,
       on,
-      press=fn() { @settings.set_font(core, slot, if id == "" { None } else { Some(id) }) },
+      press=fn() {
+        clear_fonts_undo()
+        @settings.set_font(core, slot, if id == "" { None } else { Some(id) })
+      },
       glyph~,
       sample_key~,
       status~,
@@ -715,8 +705,6 @@ fn face_row_node(
 }
 
 ///|
-/// Node `r` pointed at (the hand on it: @sf.lit_in_node) tried in the chat as `tried`, as the hand comes on it; as it
-/// goes off it, none tried, unless another came on meanwhile.
 fn fonts_tried_by(r : @view.View, tried : String) -> Unit {
   r.reacts(fn() { @sf.lit_in_node(r) }, fn(lit) {
     if lit {
@@ -734,7 +722,6 @@ fn fonts_tried_by(r : @view.View, tried : String) -> Unit {
 }
 
 ///|
-/// A face's row in `parent` (choice_row_node's, with a sample or custom note under its label).
 fn face_choice_node(
   parent : @view.View,
   name : () -> String,
@@ -764,14 +751,9 @@ fn face_choice_node(
     trail=fn(e) {
       e.show(fn() { status().0 != "" }, fn(room) {
         @sf.style_node(room, fn() { face_status_room })
-        // (whole at its line's end: the name before it gives way, cut on its line)
         room.shrink(Is(0.0)) |> ignore
         @sf.words_node(room, fn() { status().0 }, fn() {
-          if status().1 {
-            face_status_words.then(@sf.bad)
-          } else {
-            face_status_words
-          }
+          if status().1 { face_status_words.then(@sf.bad) } else { face_status_words }
         })
         |> ignore
       })
@@ -782,8 +764,6 @@ fn face_choice_node(
 }
 
 ///|
-/// Words `words()` of `style` in `parent`, set in host face `face()` (0: as the paragraph's own are); `person()`:
-/// whether they are a person's words; `cjk`: optional local CJK companion override (zero global cache invalidation).
 fn face_in_node(
   parent : @view.View,
   words : () -> String,
@@ -838,7 +818,6 @@ fn face_in_node(
 }
 
 ///|
-/// 本机字体 in `parent`: opens the smart local font filter panel beside the row.
 fn local_face_row_node(
   parent : @view.View,
   core : Core,
@@ -851,11 +830,7 @@ fn local_face_row_node(
 ) -> Unit {
   let picked = fn() {
     let c = chosen()
-    if c.has_prefix(local_prefix) {
-      c.unsafe_substring(start=local_prefix.length(), end=c.length())
-    } else {
-      ""
-    }
+    if c.has_prefix(local_prefix) { c.unsafe_substring(start=local_prefix.length(), end=c.length()) } else { "" }
   }
   let slot_host_face = match slot {
     "ui" => @hostapi.face_ui
@@ -925,7 +900,12 @@ priv struct LocalFontEntry {
 }
 
 ///|
-fn local_font_entries() -> (Array[LocalFontEntry], Bool) {
+/// Returns `(entries, has_meta, loading)`. Never falls back to synchronous `local_font_families()` while a real desktop
+/// host is scanning `local_font_info()` in the background.
+fn local_font_entries() -> (Array[LocalFontEntry], Bool, Bool) {
+  if @ui.local_font_info_loading() {
+    return ([], false, true)
+  }
   let info_str = @ui.local_font_info_signal()
   if info_str != "" {
     let parsed = @json.parse(info_str) catch { _ => Json::null() }
@@ -938,30 +918,19 @@ fn local_font_entries() -> (Array[LocalFontEntry], Bool) {
             continue
           }
           let loc = text(Some(item), "localized")
-          out.push({
-            name,
-            localized: if loc == "" { name } else { loc },
-            mono: flag(Some(item), "mono"),
-            cjk: flag(Some(item), "cjk"),
-          })
+          out.push({ name, localized: if loc == "" { name } else { loc }, mono: flag(Some(item), "mono"), cjk: flag(Some(item), "cjk") })
         }
         if out.length() > 0 {
-          return (out, true)
+          return (out, true, false)
         }
       }
       _ => ()
     }
   }
-  (
-    local_families().map(fn(f) { { name: f, localized: f, mono: false, cjk: false } }),
-    false,
-  )
+  (local_families().map(fn(f) { { name: f, localized: f, mono: false, cjk: false } }), false, false)
 }
 
 ///|
-/// Smart local font filter panel: non-blocking metadata via `@ui.local_font_info_signal()` with smooth fallback to
-/// `local_font_families()`, 3 filter pills (全部 / 仅中文 / 仅等宽) smartly defaulted by active slot, and localized +
-/// English family search.
 fn local_faces_node(
   v : @view.View,
   core : Core,
@@ -972,7 +941,6 @@ fn local_faces_node(
   close : () -> Unit,
 ) -> Unit {
   let find_field = @ui.Field::new()
-  // Smart default filter: CJK tab -> 仅中文 (1), code Latin -> 仅等宽 (2), else 全部 (0).
   let default_filter = if is_cjk { 1 } else if place == "code" { 2 } else { 0 }
   let filter_at : @signals.Signal[Int] = @signals.signal(default_filter, same=fn(a, b) { a == b })
   v.box(fn(f) {
@@ -1011,30 +979,24 @@ fn local_faces_node(
   })
   let shown = fn() {
     let find = find_field.text().trim(chars=" ").to_lower()
-    let (all_entries, has_meta) = entries.get()
+    let (all_entries, has_meta, _) = entries.get()
     let mode = if has_meta { filter_at.get() } else { 0 }
     let found = all_entries.filter(fn(e) {
-      let ok_kind = match mode {
+      let ok = match mode {
         1 => e.cjk
         2 => e.mono
         _ => true
       }
-      if !ok_kind {
-        return false
-      }
-      find == "" || e.name.to_lower().contains(find) || e.localized.to_lower().contains(find)
+      ok && (find == "" || e.name.to_lower().contains(find) || e.localized.to_lower().contains(find))
     })
-    if found.length() > local_most {
-      found[:local_most].to_owned()
-    } else {
-      found
-    }
+    if found.length() > local_most { found[:local_most].to_owned() } else { found }
   }
-  v.pick(fn() { shown().length() == 0 }, fn(p, none) {
-    if none {
+  v.pick(fn() { if entries.get().2 { 0 } else if shown().length() == 0 { 1 } else { 2 } }, fn(p, state) {
+    if state != 2 {
+      let key = if state == 0 { "web-pages.appearance.fonts.loadingLocal" } else { "web-pages.appearance.fonts.noMatch" }
       p.box(fn(n) {
         @sf.style_node(n, fn() { local_note_box })
-        @sf.words_node(n, fn() { @sf.t("web-pages.appearance.fonts.noMatch") }, fn() { local_note }) |> ignore
+        @sf.words_node(n, fn() { @sf.t(key) }, fn() { local_note }) |> ignore
       })
       |> ignore
     } else {
@@ -1046,6 +1008,7 @@ fn local_faces_node(
             let f = entry.name
             fonts_tried_by(row, local_prefix + f)
             @sf.action_box_node(row, fn() { entry.localized }, fn(_) {
+              clear_fonts_undo()
               @settings.set_font(core, slot, Some(local_prefix + f))
               close()
             }, fn(b) {
@@ -1079,120 +1042,6 @@ fn local_faces_node(
 pub let fp_sample_code : String = "```ts\nform.onsubmit = (e) => {\n  e.preventDefault(); // 表单 0O 1lI !==\n};\n```"
 
 ///|
-// kept across runs: a value (no field of it changes)
-let fp_preset_title : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=Fg, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_preset_title_on : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=AccentText, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_preset_size : @ui.TextStyle = @ui.text_style(size=Meta, color=Subtle, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_adv_head : @ui.Style = @ui.css("row w=Full px=S4 py=S3 gap=S2 radius=Xl2 align=AStart")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_adv_head_hot : @ui.Style = fp_adv_head.then(@ui.css("bg=Hover"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_adv_title : @ui.TextStyle = @ui.text_style(size=Title, weight=Medium, color=Fg, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_adv_right : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_adv_summary : @ui.TextStyle = @ui.text_style(size=Meta, color=Subtle, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_adv_body : @ui.Style = @ui.css("w=Full px=S4 pb=S4 gap=S4")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_adv_group : @ui.Style = @ui.css("w=Full gap=S3")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_adv_group_title : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Muted, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_adv_hint : @ui.TextStyle = @ui.text_style(size=Meta, color=Subtle, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_adv_row_label : @ui.TextStyle = @ui.text_style(size=Body, color=Fg, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_adv_row_label_inline : @ui.TextStyle = @ui.text_style(size=Body, color=Fg, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_adv_row_value : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Muted, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_slider_col : @ui.Style = @ui.css("w=Full gap=S1")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_slider_head : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_control_row : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_adv_action_row : @ui.Style = @ui.css("row w=Full justify=JEnd pt=S1 pb=S1 pr=S1")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_mine_room : @ui.Style = @ui.css("row w=Full justify=JEnd")
-
-///|
-/// What their bubble leaves at the row's start, a share of the row (percent).
-let fp_mine_clear_share : Double = 22.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_who_line : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_who_words : @ui.TextStyle = @ui.text_style(size=Body, weight=Semibold, color=AccentText)
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_time_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Subtle)
-
-///|
-// kept across runs: a value (no field of it changes)
-let face_name_words : @ui.TextStyle = @ui.text_style(size=Title, color=Fg, w=Full, max_lines=1)
-
-///|
-// kept across runs: a value (no field of it changes)
-let face_sample_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w=Full, max_lines=1)
-
-///|
-/// How a face stands, at its row's end: 140 wide at most, the small's subtle on one line.
-// kept across runs: a value (no field of it changes)
-let face_status_room : @ui.Style = @ui.style(max_w=@sf.face_status_most)
-
-///|
-// kept across runs: a value (no field of it changes)
-let face_status_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Subtle, wrap=false)
-
-///|
-/// What a face of this machine's own is said as in the prefs' `fonts` (client/core-ts/src/fonts.ts LOCAL).
 let local_prefix : String = "local:"
 
 ///|
@@ -1200,33 +1049,24 @@ let local_prefix : String = "local:"
 let local_try_given : Ref[String] = Ref("")
 
 ///|
-/// Whether 本机字体's list is open (said by its row, and as it closes).
 // kept across runs: said by the row and the list; font_setting_reset puts it back
-pub let local_open : @signals.Signal[Bool] = @signals.signal(false)
+pub let local_open : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
 
 ///|
-/// 本机字体's list put up by a fixture's mode (MBUI_FIXTURE=settings-local-fonts), as its row is made.
 // kept across runs: said by the fixture, taken by the row; font_setting_reset puts it back
 pub let fx_local_up : Ref[Bool] = Ref(false)
 
 ///|
-/// The host face family `family` of this machine's is tried in (slot `@sfbase.local_try_face`, isolated from
-/// `share_face`); 0 where the host has none of it.
 fn local_tried(family : String) -> Int {
   let slot = @sfbase.local_try_face
   if local_try_given.val != family {
     @ui.face_clear(slot)
     local_try_given.val = if @ui.face_add_family(slot, family) { family } else { "" }
   }
-  if local_try_given.val == family {
-    slot
-  } else {
-    0
-  }
+  if local_try_given.val == family { slot } else { 0 }
 }
 
 ///|
-/// The families installed here (the host's: @ui.local_font_families), in its order.
 fn local_families() -> Array[String] {
   let parsed = @json.parse(@ui.local_font_families()) catch { _ => Json::null() }
   match parsed {
@@ -1236,52 +1076,6 @@ fn local_families() -> Array[String] {
 }
 
 ///|
-let font_check : Double = 14.0
-
-///|
-let local_panel_w : Double = 300.0
-
-///|
-let local_list_most : Double = 320.0
-
-///|
-let local_most : Int = 400
-
-///|
-// kept across runs: a value (no field of it changes)
-let local_search : @ui.Style = @ui.css("w=Full pb=S1_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let local_filter_row : @ui.Style = @ui.css("row w=Full pb=S1_5 gap=S1_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let local_row : @ui.Style = @ui.css("row w=Full px=S2_5 gap=S2 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let local_row_hot : @ui.Style = local_row.then(@ui.css("bg=Hover"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let local_name : @ui.TextStyle = @ui.text_style(size=Body, leading=L7, color=Fg, wrap=false, w=Full, max_lines=1)
-
-///|
-// kept across runs: a value (no field of it changes)
-let local_sub_name : @ui.TextStyle = @ui.text_style(size=Meta, color=Subtle, wrap=false, w=Full, max_lines=1)
-
-///|
-// kept across runs: a value (no field of it changes)
-let local_note_box : @ui.Style = @ui.css("w=Full px=S2_5 py=S2")
-
-///|
-// kept across runs: a value (no field of it changes)
-let local_note : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, w=Full)
-
-///|
-/// A face's size to fetch, in thousands as the fonts' own pages say it (kB, MB, GB: Android's
-/// Formatter.formatShortFileSize), no decimals from 10 up, one below.
 fn face_size(bytes : Double) -> String {
   let mut v = bytes
   let mut unit = "B"

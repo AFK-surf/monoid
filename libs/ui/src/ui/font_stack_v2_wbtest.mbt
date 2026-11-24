@@ -393,3 +393,42 @@ test "font_v2: web_lines=true Rich 115% CJK fits final line without clipping; 10
   let rich_115 = layout_rich(make_rich(20.0), 200.0)
   assert_true(rich_115.h >= 20.0 + ca + cd)
 }
+
+///|
+test "font_v2: web_lines=true Rich prose without CJK + inline code 115% CJK preserves final-line height" {
+  let t = Tester::new(fn(c) { c.text("x") |> ignore })
+  ignore(t)
+  set_web_lines(true)
+  assert_true(face_add(@hostapi.face_code_cjk, "/fonts/code-cjk.ttf"))
+  let make_mixed = fn(code_cjk_ov : @view.CjkOverride?) -> Rich {
+    {
+      runs: [@text.span("x"), @text.span("中文", code=true)],
+      size: 20.0,
+      weight: 400,
+      color: 0xFFFFFFFFL,
+      line: 20.0,
+      trim: false,
+      wrap: true,
+      link_color: 0L,
+      pressed_bg: 0L,
+      code_color: 0L,
+      code_bg: 0L,
+      code_scale: 1.0,
+      spacing: 0.0,
+      base: 0,
+      select: false,
+      max_lines: 0,
+      faces: 0,
+      shaped_in: words_shaped_in.untracked(),
+      cjk_override: None,
+      code_cjk_override: code_cjk_ov,
+    }
+  }
+  // 100% inline-code CJK has zero height regression vs no override
+  let base_lay = layout_rich(make_mixed(None), 200.0)
+  let ov100 = layout_rich(make_mixed(Some({ face: @hostapi.face_code_cjk, scale: 1.0, weight_off: 0 })), 200.0)
+  assert_eq(ov100.h, base_lay.h)
+  // 115% inline-code CJK on a line whose prose has extra=0 must include run_extra so h >= 23.0 (no 1pt clipping)
+  let ov115 = layout_rich(make_mixed(Some({ face: @hostapi.face_code_cjk, scale: 1.15, weight_off: 0 })), 200.0)
+  assert_true(ov115.h >= 23.0, msg="ov115.h=\{ov115.h} base=\{base_lay.h}")
+}

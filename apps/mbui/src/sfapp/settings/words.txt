@@ -1314,7 +1314,9 @@ web-pages.appearance.fonts.local
 web-pages.appearance.fonts.localFilter.all
 web-pages.appearance.fonts.localFilter.cjk
 web-pages.appearance.fonts.localFilter.mono
+web-pages.appearance.fonts.loadingLocal
 web-pages.appearance.fonts.matrix.codeSub
+web-pages.appearance.fonts.matrix.slotLabel
 web-pages.appearance.fonts.matrix.textSub
 web-pages.appearance.fonts.matrix.title
 web-pages.appearance.fonts.matrix.uiSub
@@ -1348,6 +1350,7 @@ web-pages.appearance.fonts.searchLocal
 web-pages.appearance.fonts.text
 web-pages.appearance.fonts.title
 web-pages.appearance.fonts.ui
+web-pages.appearance.fonts.undoReset
 web-pages.appearance.glass.clear
 web-pages.appearance.glass.description
 web-pages.appearance.glass.solid

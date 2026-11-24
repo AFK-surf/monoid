@@ -232,11 +232,7 @@ fn md_table_body_node(
   tracks_kept? : @view.TracksKept,
   cell_runs? : (Array[MdInline], Bool) -> Array[@ui.Run] = table_cell_runs,
   line_share? : () -> Double,
-  prose_scale? : (() -> Double)? = None,
-  code_scale? : (() -> Double)? = None,
-  line_scale? : (() -> Double)? = None,
-  text_cjk? : (() -> @view.CjkOverride?)? = None,
-  code_cjk? : (() -> @view.CjkOverride?)? = None,
+  typography? : (() -> MdTypography)? = None,
   link_cards? : (TipLayer, (LinkOf) -> LinkCard?)? = None,
   on_link_shown? : ((@view.View, Array[(String, String, Int)]) -> Unit)? = None,
   loc~ : SourceLoc,
@@ -288,39 +284,29 @@ fn md_table_body_node(
             match cell_images.bind(fn(f) { f(cell) }) {
               // (a cell of images as wide as their row: Md::table's)
               Some(images) => Wide(cell_images_node_width(images))
-              None =>
+              None => {
+                let ty = match typography {
+                  Some(f) => f()
+                  None => md_typography_default
+                }
                 Said(
                   cell_runs(cell, r == 0),
                   table_words_look_line(
                     r == 0,
-                    match prose_scale {
-                      Some(f) => f()
-                      None => 1.0
-                    },
+                    ty.prose_scale,
                     match line_share {
                       Some(f) => f()
                       None => 0.0
                     },
-                    line_scale=match line_scale {
-                      Some(f) => f()
-                      None => 1.0
-                    },
+                    line_scale=ty.line_scale,
                   ),
                   table_runs_look(
-                    code_scale=match code_scale {
-                      Some(f) => f()
-                      None => 1.0
-                    },
-                    cjk=match text_cjk {
-                      Some(f) => f()
-                      None => None
-                    },
-                    code_cjk=match code_cjk {
-                      Some(f) => f()
-                      None => None
-                    },
+                    code_scale=ty.code_scale,
+                    cjk=ty.text_cjk,
+                    code_cjk=ty.code_cjk,
                   ),
                 )
+              }
             }
           })
         })
@@ -390,11 +376,7 @@ fn md_table_body_node(
               rows_by?,
               cell_runs~,
               line_share?,
-              prose_scale~,
-              code_scale~,
-              line_scale~,
-              text_cjk~,
-              code_cjk~,
+              typography~,
               link_cards~,
               on_link_shown~,
             )
@@ -460,11 +442,7 @@ fn md_table_body_node(
           rows_by?,
           cell_runs~,
           line_share?,
-          prose_scale~,
-          code_scale~,
-          line_scale~,
-          text_cjk~,
-          code_cjk~,
+          typography~,
           link_cards~,
           on_link_shown~,
         )
@@ -535,11 +513,7 @@ fn table_frame_node(
   rows_by? : () -> (Int, Int)?,
   cell_runs? : (Array[MdInline], Bool) -> Array[@ui.Run] = table_cell_runs,
   line_share? : () -> Double,
-  prose_scale? : (() -> Double)? = None,
-  code_scale? : (() -> Double)? = None,
-  line_scale? : (() -> Double)? = None,
-  text_cjk? : (() -> @view.CjkOverride?)? = None,
-  code_cjk? : (() -> @view.CjkOverride?)? = None,
+  typography? : (() -> MdTypography)? = None,
   link_cards? : (TipLayer, (LinkOf) -> LinkCard?)? = None,
   on_link_shown? : ((@view.View, Array[(String, String, Int)]) -> Unit)? = None,
   loc~ : SourceLoc,
@@ -622,39 +596,26 @@ fn table_frame_node(
               let runs_now = @signals.computed(fn(_) { cell_runs(words(), head) })
               let runs = fn() { runs_now.get() }
               let look = fn() {
-                let ps = match prose_scale {
+                let ty = match typography {
                   Some(f) => f()
-                  None => 1.0
-                }
-                let ls = match line_scale {
-                  Some(f) => f()
-                  None => 1.0
+                  None => md_typography_default
                 }
                 table_words_look_line(
                   head,
-                  scale() * ps,
+                  scale() * ty.prose_scale,
                   match line_share {
                     Some(f) => f()
                     None => 0.0
                   },
-                  line_scale=ls,
+                  line_scale=ty.line_scale,
                 )
               }
               let runs_look_now = fn() {
-                table_runs_look(
-                  code_scale=match code_scale {
-                    Some(f) => f()
-                    None => 1.0
-                  },
-                  cjk=match text_cjk {
-                    Some(f) => f()
-                    None => None
-                  },
-                  code_cjk=match code_cjk {
-                    Some(f) => f()
-                    None => None
-                  },
-                )
+                let ty = match typography {
+                  Some(f) => f()
+                  None => md_typography_default
+                }
+                table_runs_look(code_scale=ty.code_scale, cjk=ty.text_cjk, code_cjk=ty.code_cjk)
               }
               let w = cell.box(fn(w) {
                 // (its pieces first: saying them says the words' look and ink plain, what follows says them)
@@ -668,7 +629,7 @@ fn table_frame_node(
                   })
                   |> ignore
                 } else {
-                  if scale_by is None && prose_scale is None && line_scale is None {
+                  if scale_by is None && typography is None {
                     w.words_look(Is(look())) |> ignore
                   } else {
                     w.words_look(By(look)) |> ignore

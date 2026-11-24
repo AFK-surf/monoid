@@ -182,8 +182,28 @@ test "an SVG picture with Chinese in its text: 思源黑体 had from the core fo
 }
 
 ///|
-/// Find the center of an exact font picker row button by its semantic label (never collides with style card subtitles).
+/// Find the center of an exact font picker row button by its semantic label, scrolling it into view if off-screen.
 fn picker_row_center(t : @ui.Tester, name : String) -> (Double, Double) raise {
+  for _ in 0..<10 {
+    match t.query(Button, label=name) {
+      Some(s) => {
+        let cx = s.rect.0 + s.rect.2 / 2.0
+        let cy = s.rect.1 + s.rect.3 / 2.0
+        let min_y = if cx > 420.0 { 470.0 } else { 100.0 }
+        if cy >= min_y && cy <= 740.0 {
+          return (cx, cy)
+        }
+        let delta = if cy > 740.0 { 260.0 } else { -260.0 }
+        t.wheel(cx, 480.0, delta)
+        t.run_for(@ui.move_most_ms)
+      }
+      None => {
+        t.wheel(200.0, 480.0, 260.0)
+        t.wheel(700.0, 480.0, 260.0)
+        t.run_for(@ui.move_most_ms)
+      }
+    }
+  }
   guard t.query(Button, label=name) is Some(s) else { fail("no picker row: " + name) }
   (s.rect.0 + s.rect.2 / 2.0, s.rect.1 + s.rect.3 / 2.0)
 }
@@ -205,11 +225,11 @@ fn tap_place(t : @ui.Tester, place : String) -> Unit raise {
 /// Tap a script slot button in the 3-role pairing matrix (`role_idx`: 0=ui, 1=text, 2=code; `is_cjk`: false=primary, true=cjk).
 fn tap_matrix_slot(t : @ui.Tester, role_idx : Int, is_cjk : Bool) -> Unit {
   let prefix = if is_cjk {
-    "中文 · "
+    "中文 "
   } else if role_idx == 2 {
-    "等宽 · "
+    "等宽 "
   } else {
-    "西文 · "
+    "西文 "
   }
   let matches = t.semantics().filter(fn(s) { s.role is Button && s.label.has_prefix(prefix) })
   let idx = if is_cjk { role_idx } else if role_idx == 2 { 0 } else { role_idx }
@@ -228,13 +248,11 @@ fn preview_width(t : @ui.Tester, words : String) -> Double raise {
 ///|
 test "pointing at an interface or text face tries it on the whole message, keeping inline code in its own face" {
   for place in ["界面", "正文"] {
-    let t = settings_tester("fonts")
+    let t = wide_fonts_tester()
     if place == "正文" {
       tap_place(t, place)
       t.draw()
     }
-    t.wheel(200.0, 620.0, 520.0)
-    t.run_for(@ui.move_most_ms)
     // Distinguish the preview face without making the chat wrap and move the row out from under the pointer.
     t.face_wider(preview_faces_from + 2, 0.01)
     t.draw()
@@ -261,10 +279,9 @@ test "pointing at an interface or text face tries it on the whole message, keepi
 
 ///|
 test "pointing at a code face tries it on inline code and the code block, keeping prose in its own face" {
-  let t = settings_tester("fonts")
+  let t = wide_fonts_tester()
   tap_place(t, "代码")
-  t.wheel(200.0, 620.0, 520.0)
-  t.run_for(@ui.move_most_ms)
+  t.draw()
   t.face_wider(preview_faces_from + 5, 0.3)
   t.draw()
   let text_before = preview_width(t, "Safari 和 Chrome 都试过了。")
@@ -285,11 +302,18 @@ test "pointing at a code face tries it on inline code and the code block, keepin
 }
 
 ///|
-test "pointing at 跟随界面 previews the interface face even when a different text face is chosen" {
-  let t = settings_tester("fonts")
-  t.ui_face_wider(0.05)
-  t.wheel(200.0, 620.0, 520.0)
+/// Open 外观 › 字体 in a desktop wide window (`1280×800`, where `sticky_head` pins the live preview above the picker).
+fn wide_fonts_tester() -> @ui.Tester {
+  let t = wide_tester([])
+  app.nav.replace(Setting(@settings.Route::Fonts))
   t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+test "pointing at 跟随界面 previews the interface face even when a different text face is chosen" {
+  let t = wide_fonts_tester()
+  t.ui_face_wider(0.05)
   tap_picker_row(t, "思源黑体")
   t.draw()
   tap_place(t, "正文")
@@ -315,10 +339,8 @@ test "pointing at 跟随界面 previews the interface face even when a different
 
 ///|
 test "pointing at an interface face leaves a separately chosen text face alone" {
-  let t = settings_tester("fonts")
+  let t = wide_fonts_tester()
   tap_place(t, "正文")
-  t.wheel(200.0, 620.0, 520.0)
-  t.run_for(@ui.move_most_ms)
   tap_picker_row(t, "霞鹜文楷")
   t.draw()
   tap_place(t, "界面")
@@ -336,9 +358,7 @@ test "pointing at an interface face leaves a separately chosen text face alone" 
 
 ///|
 test "a face pointed at tried in the chat above them: the chat held at its tallest while the pointer is on the faces, nothing under it shaking" {
-  let t = settings_tester("fonts")
-  t.wheel(200.0, 620.0, 520.0)
-  t.run_for(@ui.move_most_ms)
+  let t = wide_fonts_tester()
   // 思源黑体 set wide enough that their message wraps once more in it, 思源宋体 a little
   t.face_wider(preview_faces_from + 1, 0.6)
   t.face_wider(preview_faces_from + 2, 0.3)
@@ -395,19 +415,20 @@ test "curated presets: hover triggers 0 fetches; click overwrites all 6 slots, r
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1200.0, h=820.0, platform=0)
   app.nav.replace(Setting(@settings.Route::Fonts))
   t.run_for(@ui.move_most_ms)
-  // Hovering a style card must never trigger fonts.fetch; repeated hover/leave triggers 0 words_forgotten
+  // Hovering a style card must never trigger fonts.fetch; cold-start first hover + repeated hover/leave trigger 0 words_forgotten
   let (px, py) = t.find("现代无衬线").unwrap()
   let before_hover = fetched.val
+  let before_forgotten = @ui.words_forgotten_count()
   t.move_to(px + 4.0, py + 4.0)
   t.draw()
   t.draw()
   assert_eq(fetched.val, before_hover)
-  let forgotten_after_first = @ui.words_forgotten_count()
+  assert_eq(@ui.words_forgotten_count(), before_forgotten)
   t.move_to(px, 4.0)
   t.draw()
   t.move_to(px + 4.0, py + 4.0)
   t.draw()
-  assert_eq(@ui.words_forgotten_count(), forgotten_after_first)
+  assert_eq(@ui.words_forgotten_count(), before_forgotten)
   // Clicking "现代无衬线" applies all 6 slots (clearing codeCjk), resets CJK optics, and preserves textSize/lineHeight/cjkAutoSpace
   t.tap(px + 4.0, py + 4.0)
   t.run_for(@ui.move_most_ms)
@@ -433,12 +454,10 @@ test "curated presets: hover triggers 0 fetches; click overwrites all 6 slots, r
 
 ///|
 test "script switch: CJK slots, textCjk='none' breaks uiCjk inheritance, restoring followUi reconnects" {
-  let t = settings_tester("fonts")
-  // Switch to 界面 · 中文 via pairing matrix and pick 思源宋体
+  let t = wide_fonts_tester()
+  // Switch to 界面 中文 via pairing matrix and pick 思源宋体
   tap_matrix_slot(t, 0, true)
   t.draw()
-  t.wheel(200.0, 620.0, 520.0)
-  t.run_for(@ui.move_most_ms)
   assert_true(t.query(Button, label="思源宋体") is Some(_))
   assert_true(t.query(Button, label="Inter") is None)
   tap_picker_row(t, "思源宋体")
@@ -447,6 +466,7 @@ test "script switch: CJK slots, textCjk='none' breaks uiCjk inheritance, restori
   // Switch to 正文 (still on 中文): should show 跟随界面 with 当前：思源宋体 and 不单独指定（随西文）
   tap_place(t, "正文")
   t.draw()
+  let _ = picker_row_center(t, "跟随界面")
   assert_true(t.find("当前：思源宋体") is Some(_))
   assert_true(t.query(Button, label="不单独指定（随西文）") is Some(_))
   // Pick 不单独指定（随西文） -> textCjk="none"
@@ -462,11 +482,9 @@ test "script switch: CJK slots, textCjk='none' breaks uiCjk inheritance, restori
 
 ///|
 test "hovering CJK row previews locally with 0 words_forgotten and never pollutes inline code" {
-  let t = settings_tester("fonts")
+  let t = wide_fonts_tester()
   tap_matrix_slot(t, 1, true)
   t.draw()
-  t.wheel(200.0, 620.0, 520.0)
-  t.run_for(@ui.move_most_ms)
   // Give 思源宋体's preview slot extra width so CJK text widens when hovered
   t.face_wider(preview_faces_from + 2, 0.05)
   t.draw()
@@ -501,10 +519,7 @@ test "local font panel: smart filter pills (仅中文 / 仅等宽 / 全部) and 
   // Switch to 界面 · 中文 so smart default filter is 仅中文
   tap_matrix_slot(t, 0, true)
   t.draw()
-  t.wheel(900.0, 520.0, 520.0)
-  t.run_for(@ui.move_most_ms)
-  guard t.query(Button, label="本机字体") is Some(s) else { fail("no 本机字体") }
-  t.tap(s.rect.0 + s.rect.2 / 2.0, s.rect.1 + s.rect.3 / 2.0)
+  tap_picker_row(t, "本机字体")
   t.run_for(@ui.move_most_ms)
   // Smart default 仅中文 shows 苹方-简 and hides Helvetica
   assert_true(t.find("苹方-简") is Some(_))
@@ -560,9 +575,14 @@ test "collapsible advanced typography section: expand, toggle autospace & ligatu
   t.draw()
   assert_false(@ui.cjk_autospace())
   // Reset to defaults restores lineHeight and cjkAutoSpace
-  t.wheel(900.0, 520.0, 450.0)
-  t.run_for(@ui.move_most_ms)
-  let resets = t.words().filter(fn(w) { w.0 == "恢复默认" && w.5 > 0.5 })
+  for _ in 0..<6 {
+    if t.words().any(fn(w) { w.0 == "恢复默认排版" && w.5 > 0.5 }) {
+      break
+    }
+    t.wheel(700.0, 520.0, 400.0)
+    t.run_for(@ui.move_most_ms)
+  }
+  let resets = t.words().filter(fn(w) { w.0 == "恢复默认排版" && w.5 > 0.5 })
   assert_true(resets.length() > 0)
   let r_btn = resets[resets.length() - 1]
   t.tap(r_btn.1 + r_btn.3 / 2.0, r_btn.2 + r_btn.4 / 2.0)
@@ -613,7 +633,7 @@ test "chat typography scaling: enlarging textSize preserves at-foot state, exact
   let ver0 = typography_version()
   let forgotten0 = @ui.words_forgotten_count()
   // (a) Verify unique foot message "第 2999 条" is visible at foot before scaling
-  assert_true(t.find("第 2999 条") is Some(_))
+  let (_, fy_before) = t.find("第 2999 条").unwrap()
   // Scale prose to 130% + relaxed line height via prefs.set
   (src.call)("prefs.set", { "typography": { "textSize": 130, "lineHeight": "relaxed" } }, fn(_) {  })
   t.run_for(@ui.move_most_ms)
@@ -622,10 +642,17 @@ test "chat typography scaling: enlarging textSize preserves at-foot state, exact
   assert_true(typography_version() > ver0)
   // Scaling typography does not trigger global glyph cache invalidation
   assert_eq(@ui.words_forgotten_count(), forgotten0)
-  // At-foot state preserved: unique foot message "第 2999 条" stays in viewport near the bottom
+  // At-foot state preserved: last message stays pinned at the foot (its top rises slightly as its multi-line body grows at 130% + relaxed)
   let foot_after = t.find("第 2999 条")
-  assert_true(foot_after is Some((_, fy)) && fy >= 80.0 && fy <= 760.0)
-  // (b) Scroll up into history (past long_reply), pick a FULL unique numbered message (e.g. "第 NNNN 条" / "第 NNNN 步"), scale typography, verify same unique message stays in viewport with bounded delta
+  let fy_str = match foot_after {
+    Some((_, fy)) => "\{fy}"
+    None => "none"
+  }
+  assert_true(
+    foot_after is Some((_, fy)) && fy >= 300.0 && fy <= 760.0 && fy <= fy_before + 20.0,
+    msg="foot_after=\{fy_str} before=\{fy_before}",
+  )
+  // (b) Scroll up into history (past long_reply), pick a FULL unique numbered message (e.g. "第 NNNN 条" / "第 NNNN 步"), scale typography, verify same unique message stays anchored within <= 40pt
   t.wheel(700.0, 360.0, -1400.0)
   t.run_for(@ui.move_most_ms)
   let mut full_anchor = ""
@@ -651,7 +678,7 @@ test "chat typography scaling: enlarging textSize preserves at-foot state, exact
     None => "none"
   }
   assert_true(
-    anchor_after is Some((_, y)) && y >= 0.0 && y <= 800.0 && (y - before_y).abs() < 260.0,
+    anchor_after is Some((_, y)) && y >= 0.0 && y <= 800.0 && (y - before_y).abs() <= 40.0,
     msg="full_anchor=\{full_anchor} before_y=\{before_y} after_y=\{after_y_str}",
   )
   // (c) Verify composer accepts Chinese IME composition (preedit) and commit cleanly at enlarged scale
@@ -665,4 +692,128 @@ test "chat typography scaling: enlarging textSize preserves at-foot state, exact
   t.type_text("中文排版测试")
   t.frame()
   assert_eq(t.semantics().filter(fn(s) { s.role is TextField })[0].value, "中文排版测试")
+}
+
+///|
+test "local hover triggers 0 words_forgotten; hovering Classic Default after local Menlo bypasses Menlo" {
+  let t = wide_tester([])
+  t.host_says_finger(Some(false))
+  t.set_local_fonts("[\"Menlo\",\"Helvetica Neue\",\"PingFang SC\"]")
+  app.nav.replace(Setting(@settings.Route::Fonts))
+  t.run_for(@ui.move_most_ms)
+  t.ui_face_wider(0.35)
+  t.draw()
+  // Open local font panel and hover two consecutive families -> 0 global words_forgotten
+  tap_picker_row(t, "本机字体")
+  t.run_for(@ui.move_most_ms)
+  let forgotten0 = @ui.words_forgotten_count()
+  let (mx, my) = t.find("Menlo").unwrap()
+  t.move_to(mx, my)
+  t.draw()
+  let (hx, hy) = t.find("Helvetica Neue").unwrap()
+  t.move_to(hx, hy)
+  t.draw()
+  assert_eq(@ui.words_forgotten_count(), forgotten0)
+  // Apply local Menlo to ui
+  t.tap(mx, my)
+  t.run_for(@ui.move_most_ms)
+  let w_menlo = preview_width(t, "Claude")
+  // Scroll back up to style cards and hover Classic Default -> preview must NOT stay on Menlo width
+  for _ in 0..<6 {
+    t.wheel(700.0, 520.0, -300.0)
+    t.run_for(@ui.move_most_ms)
+  }
+  let (cx, cy) = t.find("经典默认").unwrap()
+  t.move_to(cx + 4.0, cy + 4.0)
+  t.draw()
+  t.draw()
+  let w_hover_default = preview_width(t, "Claude")
+  assert_true(w_hover_default < w_menlo - 1.0, msg="hover=\{w_hover_default} menlo=\{w_menlo}")
+  // Clicking Classic Default matches hovered preview
+  t.tap(cx + 4.0, cy + 4.0)
+  t.run_for(@ui.move_most_ms)
+  let w_applied_default = preview_width(t, "Claude")
+  assert_true((w_hover_default - w_applied_default).abs() < 4.0, msg="hover=\{w_hover_default} applied=\{w_applied_default}")
+}
+
+///|
+test "short viewport 390x300 scrolls to and selects style cards and font rows; reset all + undo restores" {
+  new_run()
+  let src = fixture("settings")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=300.0, platform=0)
+  app.nav.replace(Setting(@settings.Route::Fonts))
+  t.run_for(@ui.move_most_ms)
+  // Scroll down past the non-sticky preview card to reach style cards
+  for _ in 0..<8 {
+    match t.find("现代无衬线") {
+      Some((_, y)) if y >= 72.0 && y <= 260.0 => break
+      _ => {
+        t.wheel(195.0, 150.0, 120.0)
+        t.run_for(@ui.move_most_ms)
+      }
+    }
+  }
+  let (sx, sy) = t.find("现代无衬线").unwrap()
+  assert_true(sy >= 0.0 && sy <= 300.0)
+  t.tap(sx + 4.0, sy + 4.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(text(field(src.topic("prefs", {}).get().value, "fonts"), "ui"), "inter")
+  // Scroll further to font picker and select 思源黑体 (by semantic Button label so we don't hit style card subtitles)
+  for _ in 0..<12 {
+    match t.query(Button, label="思源黑体") {
+      Some(s) if s.rect.1 + s.rect.3 / 2.0 >= 72.0 && s.rect.1 + s.rect.3 / 2.0 <= 260.0 => break
+      _ => {
+        t.wheel(195.0, 150.0, 140.0)
+        t.run_for(@ui.move_most_ms)
+      }
+    }
+  }
+  guard t.query(Button, label="思源黑体") is Some(fb) else { fail("no 思源黑体 picker button") }
+  let fy = fb.rect.1 + fb.rect.3 / 2.0
+  assert_true(fy >= 0.0 && fy <= 300.0)
+  t.tap(fb.rect.0 + fb.rect.2 / 2.0, fy)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(text(field(src.topic("prefs", {}).get().value, "fonts"), "ui"), "noto-sans-sc")
+  // Scroll back to top, click 全部恢复默认, then 撤销 restores noto-sans-sc
+  for _ in 0..<12 {
+    t.wheel(195.0, 150.0, -240.0)
+    t.run_for(@ui.move_most_ms)
+  }
+  t.click(Button, label="全部恢复默认")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(text(field(src.topic("prefs", {}).get().value, "fonts"), "ui"), "")
+  t.click(Button, label="撤销")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(text(field(src.topic("prefs", {}).get().value, "fonts"), "ui"), "noto-sans-sc")
+}
+
+///|
+test "cross-breakpoint resize 1280 -> 390 -> 1280 preserves slot selection and reopens local panel cleanly" {
+  new_run()
+  let src = fixture("settings")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=820.0, platform=0)
+  t.set_local_fonts("[\"Menlo\",\"PingFang SC\"]")
+  app.nav.replace(Setting(@settings.Route::Fonts))
+  t.run_for(@ui.move_most_ms)
+  @settings.fonts_at.set(1)
+  @settings.fonts_script_at.set(1)
+  t.draw()
+  t.wheel(700.0, 520.0, 420.0)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="本机字体")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfpages.local_open.untracked())
+  t.resize(390.0, 820.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@settings.fonts_at.untracked(), 1)
+  assert_eq(@settings.fonts_script_at.untracked(), 1)
+  t.resize(1280.0, 820.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@settings.fonts_at.untracked(), 1)
+  assert_eq(@settings.fonts_script_at.untracked(), 1)
+  t.wheel(700.0, 520.0, 420.0)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="本机字体")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfpages.local_open.untracked())
 }

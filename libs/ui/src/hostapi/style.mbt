@@ -58,6 +58,16 @@ pub let face_text_cjk : Int = 5
 pub let face_code_cjk : Int = 6
 
 ///|
+/// First face slot reserved for local/preview/try faces (7..30). Changes to slots `>= face_try` only invalidate
+/// shape/metric cache entries referencing that slot, never triggering a global `words_forgotten()`.
+pub let face_try : Int = 7
+
+///|
+/// Reserved sentinel face slot that is never registered in the app. Hosts resolve unregistered explicit slots to OS
+/// system font `0`, allowing live previews of "System Default" to bypass any custom face registered on `face_ui`.
+pub let face_sys_default : Int = 31
+
+///|
 /// How many faces a host keeps (1 to faces_most - 1).
 pub let faces_most : Int = 32
 

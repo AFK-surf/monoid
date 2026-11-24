@@ -153,6 +153,7 @@ pub struct RichLayout {
   /// and with its share of the line's leading
   run_lasc : Array[Double]
   run_ldesc : Array[Double]
+  run_extra : Array[Double]
   /// Inline drawings scaled once when laid out, never rescaled for each painted frame.
   drawings : Array[InlineDrawing?]
   starts : Array[Int]
@@ -417,6 +418,7 @@ priv struct RichPrep {
   run_d : Array[Double]
   run_lasc : Array[Double]
   run_ldesc : Array[Double]
+  run_extra : Array[Double]
   drawings : Array[InlineDrawing?]
   starts : Array[Int]
   lens : Array[Int]
@@ -603,6 +605,7 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
   let run_d = []
   let run_lasc = []
   let run_ldesc = []
+  let run_extra = []
   let drawings = []
   let starts = []
   let lens = []
@@ -630,13 +633,14 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
       None => false
     }
     let (a, d) = line_metrics(size, weight, run_cjk, style~, cjk_override=ov)
-    let (l, lasc, _) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=run_cjk && run_cjk_enlarged)
+    let (l, lasc, rx) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=run_cjk && run_cjk_enlarged)
     run_start.push(off)
     run_size.push(size)
     run_a.push(a)
     run_d.push(d)
     run_lasc.push(lasc)
     run_ldesc.push(l - lasc)
+    run_extra.push(rx)
     run_c0.push(starts.length())
     let n = s.starts.length()
     let (room, after) = r.run_room(run, size)
@@ -687,6 +691,7 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
         run_d.push((d.height - d.baseline) * size)
         run_lasc.push(dmax(base_asc, d.baseline * size))
         run_ldesc.push(dmax(base_desc, (d.height - d.baseline) * size))
+        run_extra.push(0.0)
         run_c0.push(starts.length())
         starts.push(off)
         lens.push(run.text.length())
@@ -796,7 +801,7 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
               None => false
             }
             let (a, d) = line_metrics(size, weight, rrun_cjk, style~, cjk_override=batch_ov)
-            let (l, lasc, _) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=rrun_cjk && batch_cjk_enlarged)
+            let (l, lasc, rx) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=rrun_cjk && batch_cjk_enlarged)
             drawings.push(None)
             run_start.push(off + local_start[j])
             run_size.push(size)
@@ -804,6 +809,7 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
             run_d.push(d)
             run_lasc.push(lasc)
             run_ldesc.push(l - lasc)
+            run_extra.push(rx)
             run_c0.push(starts.length())
             for c in batch_c0[j]..<batch_c1[j] {
               starts.push(s.starts[c] + off)
@@ -861,6 +867,7 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
     run_d,
     run_lasc,
     run_ldesc,
+    run_extra,
     drawings,
     starts,
     lens,
@@ -903,7 +910,7 @@ fn rich_prep_one(
     None => false
   }
   let (a, d) = line_metrics(size, weight, run_cjk, style~, cjk_override=ov)
-  let (l, lasc, _) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=run_cjk && run_cjk_enlarged)
+  let (l, lasc, rx) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=run_cjk && run_cjk_enlarged)
   let n = s.starts.length()
   let (room, after) = r.run_room(run, size)
   let (adv, pre) = if room == 0.0 && after == 0.0 {
@@ -928,6 +935,7 @@ fn rich_prep_one(
     run_d: [d],
     run_lasc: [lasc],
     run_ldesc: [l - lasc],
+    run_extra: [rx],
     drawings: [None],
     starts: s.starts,
     lens: s.lens,
@@ -957,6 +965,7 @@ fn rich_lines(r : Rich, p : RichPrep, max_w : Double) -> RichLayout {
   let run_d = p.run_d
   let run_lasc = p.run_lasc
   let run_ldesc = p.run_ldesc
+  let run_extra = p.run_extra
   let drawings = p.drawings
   let starts = p.starts
   let lens = p.lens
@@ -1005,6 +1014,7 @@ fn rich_lines(r : Rich, p : RichPrep, max_w : Double) -> RichLayout {
     run_d,
     run_lasc,
     run_ldesc,
+    run_extra,
     drawings,
     starts,
     lens,
@@ -1101,20 +1111,26 @@ fn rich_lines(r : Rich, p : RichPrep, max_w : Double) -> RichLayout {
   }
   // each line as high as its tallest run needs, its baseline shared
   let mut y = 0.0
+  let mut last_extra = extra
+  let last_line = line_start.length() - 1
   for l in 0..<line_start.length() {
     let mut asc = base_asc
     let mut desc = base_desc
+    let is_last = l == last_line
     for c in line_start[l]..<line_end[l] {
       let k = run_of[c]
       asc = dmax(asc, run_lasc[k])
       desc = dmax(desc, run_ldesc[k])
+      if is_last {
+        last_extra = dmax(last_extra, run_extra[k])
+      }
     }
     lay.line_y.push(y)
     lay.line_h.push(asc + desc)
     lay.line_base.push(asc)
     y = y + asc + desc
   }
-  { ..lay, w: w_max, h: y + extra }
+  { ..lay, w: w_max, h: y + last_extra }
 }
 
 ///|

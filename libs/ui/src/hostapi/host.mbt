@@ -304,6 +304,7 @@ pub(open) trait Host {
   face_set_ligatures(Self, Int, Bool) -> Unit = _
   set_host_autospace(Self, Bool) -> Unit = _
   local_font_info(Self) -> String = _
+  has_async_local_font_info(Self) -> Bool = _
 }
 
 ///|
@@ -671,6 +672,11 @@ impl Host with set_host_autospace(_, _) {
 ///|
 impl Host with local_font_info(_) {
   ""
+}
+
+///|
+impl Host with has_async_local_font_info(_) {
+  true
 }
 
 ///|
@@ -2231,6 +2237,13 @@ pub fn set_host_autospace(on : Bool) -> Unit {
 /// or still scanning in the background.
 pub fn local_font_info() -> String {
   current.val.local_font_info()
+}
+
+///|
+/// Whether the host scans `local_font_info()` asynchronously in the background (true on real desktop hosts; false on
+/// test hosts that only populate `local_font_families()`).
+pub fn has_async_local_font_info() -> Bool {
+  current.val.has_async_local_font_info()
 }
 
 ///|
