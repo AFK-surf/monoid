@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b784641b7](https://github.com/AFK-surf/monoid/commit/b784641b76e03e54a96b5d4e27743a662030ad07) fix(ui): bound post-layout re-entry passes in Tree | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.7 | 66.57 | 100.47 | 130.05 |
 | [15372e7f5](https://github.com/AFK-surf/monoid/commit/15372e7f5a4ec23f99bca1d0bac0b2920cf58958) feat(station): restore a hand-archived platform th | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.7 | 66.57 | 100.47 | 132.16 |
 | [ab0bba783](https://github.com/AFK-surf/monoid/commit/ab0bba7835eb64a94cb65870b45a89eabee784fc) feat(pion-station): add Pion memory worker, mb/pio | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.7 | 66.57 | 100.47 | 132.16 |
 | [4efe50b6b](https://github.com/AFK-surf/monoid/commit/4efe50b6b75751b3fae0a3150dfb4ed06af0f7d9) ci(preview): keep the iOS device's engine by its i | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.68 | 66.54 | 100.47 | 132.16 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9a29a9fd0](https://github.com/AFK-surf/monoid/commit/9a29a9fd057e6c16844aef7a764f2e68e6ca88a0) fix(ui): isolate selection scopes and improve tabl | 2.75 | 3.7 | 14.97 | 37.17 | 57.06 | 32.53 | 66.11 | 100.68 | 128.12 |
 | [e683562a0](https://github.com/AFK-surf/monoid/commit/e683562a0c7e088714c49ed04dbb48204f8626c2) fix(cloud): keep hints and repeat openings off the | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.68 | 123.09 |
 | [3971c9513](https://github.com/AFK-surf/monoid/commit/3971c951323986b7ec7f063e25ef32defab56794) test(e2e): emit requesting status frame in fake cl | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.68 | 123.09 |
-| [da1df4b8a](https://github.com/AFK-surf/monoid/commit/da1df4b8a3582f9373b19c5dfa89b72b5d449812) fix(station): never block on a CACHEDIR.TAG that i | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.68 | 123.09 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b784641b7](https://github.com/AFK-surf/monoid/commit/b784641b76e03e54a96b5d4e27743a662030ad07) fix(ui): bound post-layout re-entry passes in Tree | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.43 |
 | [15372e7f5](https://github.com/AFK-surf/monoid/commit/15372e7f5a4ec23f99bca1d0bac0b2920cf58958) feat(station): restore a hand-archived platform th | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.33 |
 | [ab0bba783](https://github.com/AFK-surf/monoid/commit/ab0bba7835eb64a94cb65870b45a89eabee784fc) feat(pion-station): add Pion memory worker, mb/pio | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.48 |
 | [4efe50b6b](https://github.com/AFK-surf/monoid/commit/4efe50b6b75751b3fae0a3150dfb4ed06af0f7d9) ci(preview): keep the iOS device's engine by its i | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.48 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9a29a9fd0](https://github.com/AFK-surf/monoid/commit/9a29a9fd057e6c16844aef7a764f2e68e6ca88a0) fix(ui): isolate selection scopes and improve tabl | 0.55 | 0.72 | 2.82 | 3.83 | 6.99 | 2.07 | 5.74 | 57.51 |
 | [e683562a0](https://github.com/AFK-surf/monoid/commit/e683562a0c7e088714c49ed04dbb48204f8626c2) fix(cloud): keep hints and repeat openings off the | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.71 |
 | [3971c9513](https://github.com/AFK-surf/monoid/commit/3971c951323986b7ec7f063e25ef32defab56794) test(e2e): emit requesting status frame in fake cl | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.28 |
-| [da1df4b8a](https://github.com/AFK-surf/monoid/commit/da1df4b8a3582f9373b19c5dfa89b72b5d449812) fix(station): never block on a CACHEDIR.TAG that i | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.18 |
