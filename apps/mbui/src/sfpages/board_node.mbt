@@ -1507,7 +1507,17 @@ fn board_files_node(
                 v
                 .width(Is(Some(@sf.waiting_tile_side)))
                 .height(Is(Some(@sf.waiting_tile_side)))
-                .image(By(fn() { Some((picture(), "", image_px_most.to_int())) }))
+                .image(
+                  By(fn() {
+                    let k = picture()
+                    let cap = if !is_video() && tile_start_crop(k) is Some(_) {
+                      image_px_most.to_int()
+                    } else {
+                      (@sf.waiting_tile_side * v.pixel_scale()).ceil().to_int()
+                    }
+                    Some((k, "", cap))
+                  }),
+                )
                 .image_for(Is((@sf.waiting_tile_side, @sf.waiting_tile_side)))
                 .image_in(
                   By(fn() {

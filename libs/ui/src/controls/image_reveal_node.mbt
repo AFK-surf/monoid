@@ -54,17 +54,39 @@ pub fn image_reveal_node(
     // message's file said again with its size the same: value_kept)
     let kept = value_kept(b, fn() {
       let (w, h) = (w(), h())
-      let target = match decoded_for {
-        Some(size) => size()
-        None => (0.0, 0.0)
+      let (target, px) = match decoded_for {
+        Some(size) => {
+          let (tw, th) = size()
+          ((tw, th), reveal_px(tw, th, b.pixel_scale()))
+        }
+        None => {
+          let scale = b.pixel_scale()
+          let px = if cover && w > 0.0 && h > 0.0 {
+            match @ui.image_natural(key()) {
+              Some((ow, oh)) if ow > 0.0 && oh > 0.0 => {
+                let full = dmax(ow, oh) * dmax(w / ow, h / oh)
+                if full > dmax(w, h) * 1.5 {
+                  reveal_px(full, full, scale)
+                } else {
+                  reveal_px(w, h, scale)
+                }
+              }
+              _ => reveal_px(w, h, scale)
+            }
+          } else {
+            reveal_px(w, h, scale)
+          }
+          ((0.0, 0.0), px)
+        }
       }
-      (w, h, likeness(), start_crop(), target)
+      (w, h, likeness(), start_crop(), target, px)
     })
     let w = fn() { kept().0 }
     let h = fn() { kept().1 }
     let likeness = fn() { kept().2 }
     let start_crop = fn() { kept().3 }
     let target = fn() { kept().4 }
+    let px = fn() { kept().5 }
     // (its size as it is made, said again as it comes to another: watched, nothing bound to it at rest)
     let (w0, h0) = @signals.untracked(fn() { (w(), h()) })
     b.width(Is(Some(w0))).height(Is(Some(h0))).clips(Is(true)) |> ignore
@@ -72,7 +94,7 @@ pub fn image_reveal_node(
     // (read only: its picture's node, made from the first, has its decode asked by what draws it as it comes to it, in
     // sight or outside its clip; one made and let go of before anything drew it, a page's list's block in one layout,
     // has nothing decoded)
-    let ready = fn() { key() != "" && b.image_ready(key(), reveal_px_most) }
+    let ready = fn() { key() != "" && b.image_ready(key(), px()) }
     let phase = @signals.signal(Waiting)
     let way = @motion.NodeWay::new(0.0)
     // (the end of the way of the picture being brushed in, called off when it is given another)
@@ -97,7 +119,7 @@ pub fn image_reveal_node(
       i.sets_together(
         fn() {
           (
-            if key() == "" { None } else { Some((key(), "", reveal_px_most.to_int())) },
+            if key() == "" { None } else { Some((key(), "", px().to_int())) },
             if start_crop() { Some((0.0, 0.0)) } else { None },
           )
         },
@@ -264,6 +286,12 @@ fn reveal_wait_strip(
     style_node(l, fn() { if likeness() == "" { reveal_ground } else { reveal_clear } })
   })
   |> ignore
+}
+
+///|
+/// How many pixels a message's picture `w` by `h` is decoded to on its longer side, at `scale` (reveal_px's).
+fn reveal_px(w : Double, h : Double, scale : Double) -> Double {
+  dmin(dmax(w, h) * scale, reveal_px_most)
 }
 
 ///|

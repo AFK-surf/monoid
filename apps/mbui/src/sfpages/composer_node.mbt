@@ -2954,27 +2954,32 @@ fn waiting_tile_of(
       p
       .sets_together(
         fn() {
-          (
-            key(),
-            @ui.tree_theme().color(if video() { @sf.video_ground } else { Neutral }),
-          )
+          let k = key()
+          let v = video()
+          let crop = if v { None } else { tile_start_crop(k) }
+          let cap = if crop is Some(_) {
+            image_px_most.to_int()
+          } else {
+            (@sf.waiting_tile_side * p.pixel_scale()).ceil().to_int()
+          }
+          (k, @ui.tree_theme().color(if v { @sf.video_ground } else { Neutral }), crop, cap)
         },
         fn(state) {
-          let (k, ground) = state
+          let (k, ground, crop, cap) = state
           match k {
-            "" | "!" => p.ground(Is(ground)).image(Is(None)).image_in(Is(None)) |> ignore
+            "" | "!" => p.ground(Is(ground)).image(Is(None)).image_in(Is(None)).image_covers_at(Is(None)) |> ignore
             _ =>
               p
               .ground(Is(0L))
-              .image(Is(Some((k, "", image_px_most.to_int()))))
+              .image(Is(Some((k, "", cap))))
               .image_in(Is(Some(((0.0, 0.0, @sf.waiting_tile_side, @sf.waiting_tile_side), ground))))
+              .image_covers_at(Is(crop))
               |> ignore
           }
         },
       )
       .image_for(Is((@sf.waiting_tile_side, @sf.waiting_tile_side)))
       .image_covers(Is(true))
-      .image_covers_at(By(fn() { if video() { None } else { tile_start_crop(key()) } }))
       |> ignore
     },
     going,
