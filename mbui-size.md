@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [61be50e9d](https://github.com/AFK-surf/monoid/commit/61be50e9d4645f0e1d96e747240527f41b1bca82) fix(station): make the station's memory limits fro | 2.8 | 3.76 | 15.25 | 37.49 | 58.04 | 32.81 | 66.92 | 100.89 | 132.16 |
 | [00b25b9e0](https://github.com/AFK-surf/monoid/commit/00b25b9e0b73cd1450440413390d6065ddac3272) feat(pion-station): migrate vault-uses SQLite buil | 2.8 | 3.76 | 15.25 | 37.49 | 58.04 | 32.81 | 66.92 | 100.89 | 132.16 |
 | [fe220a848](https://github.com/AFK-surf/monoid/commit/fe220a8482864df7977422f47192751d9253b0a9) fix(core,station): keep waiting writes in SQLite a | 2.8 | 3.76 | 15.23 | 37.47 | 57.96 | 32.81 | 66.87 | 100.91 | 130.93 |
 | [56d4ffcb5](https://github.com/AFK-surf/monoid/commit/56d4ffcb54e7c88a08ec6c8e2ce8973da252bad4) docs(releases): 0.1.11211 stable notes (#8518) | 2.8 | 3.76 | 15.23 | 37.47 | 57.96 | 32.81 | 66.87 | 100.91 | 130.93 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2d8645beb](https://github.com/AFK-surf/monoid/commit/2d8645beb6916175cbb7e43b09d3085d2e8ef566) feat(ui): add transparent/borderless child windows | 2.78 | 3.74 | 15.16 | 37.37 | 57.7 | 32.72 | 66.65 | 100.62 | 127.5 |
 | [6d4fc31f6](https://github.com/AFK-surf/monoid/commit/6d4fc31f68db2092d7962d29f6ae0e2f15510012) fix(mbui): keep the history header model picker in | 2.78 | 3.74 | 15.16 | 37.37 | 57.7 | 32.71 | 66.62 | 100.6 | 127.13 |
 | [434f6f625](https://github.com/AFK-surf/monoid/commit/434f6f62557761a0b68c98b0376b26b10666eec3) fix(ui,mbui): P0 Regular Liquid Glass optics fix a | 2.78 | 3.74 | 15.16 | 37.37 | 57.7 | 32.71 | 66.62 | 100.6 | 127.13 |
-| [294d9460f](https://github.com/AFK-surf/monoid/commit/294d9460f6ff2ac0888058581e24c0a38904beb7) fix(mbui): tidy Poke's pill and popover, and say w | 2.78 | 3.74 | 15.16 | 37.36 | 57.7 | 32.71 | 66.62 | 100.6 | 114.04 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [61be50e9d](https://github.com/AFK-surf/monoid/commit/61be50e9d4645f0e1d96e747240527f41b1bca82) fix(station): make the station's memory limits fro | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.21 |
 | [00b25b9e0](https://github.com/AFK-surf/monoid/commit/00b25b9e0b73cd1450440413390d6065ddac3272) feat(pion-station): migrate vault-uses SQLite buil | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.28 |
 | [fe220a848](https://github.com/AFK-surf/monoid/commit/fe220a8482864df7977422f47192751d9253b0a9) fix(core,station): keep waiting writes in SQLite a | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.51 |
 | [56d4ffcb5](https://github.com/AFK-surf/monoid/commit/56d4ffcb54e7c88a08ec6c8e2ce8973da252bad4) docs(releases): 0.1.11211 stable notes (#8518) | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.54 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2d8645beb](https://github.com/AFK-surf/monoid/commit/2d8645beb6916175cbb7e43b09d3085d2e8ef566) feat(ui): add transparent/borderless child windows | 0.56 | 0.73 | 2.84 | 3.85 | 7.05 | 2.09 | 5.81 | 57.41 |
 | [6d4fc31f6](https://github.com/AFK-surf/monoid/commit/6d4fc31f68db2092d7962d29f6ae0e2f15510012) fix(mbui): keep the history header model picker in | 0.56 | 0.73 | 2.84 | 3.85 | 7.05 | 2.09 | 5.81 | 57.66 |
 | [434f6f625](https://github.com/AFK-surf/monoid/commit/434f6f62557761a0b68c98b0376b26b10666eec3) fix(ui,mbui): P0 Regular Liquid Glass optics fix a | 0.56 | 0.73 | 2.84 | 3.85 | 7.05 | 2.08 | 5.79 | 57.46 |
-| [294d9460f](https://github.com/AFK-surf/monoid/commit/294d9460f6ff2ac0888058581e24c0a38904beb7) fix(mbui): tidy Poke's pill and popover, and say w | 0.56 | 0.73 | 2.84 | 3.85 | 7.04 | 2.08 | 5.79 | 57.48 |
