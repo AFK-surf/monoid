@@ -193,3 +193,33 @@ test "大屏, 戳一下 kept on the words picked: they stay lit, its answer a no
   assert_eq(@sfbase.intent_notes_for("ws1/st1:s-c1").length(), 0, msg="taken off")
   assert_true(t.words().filter(fn(w) { w.0.contains("轻量模型结合当前对话上下文") }).is_empty(), msg="the note gone")
 }
+
+///|
+test "大屏, two 戳一下 on words of one message: each a note of its own, one under the other beside it" {
+  new_run()
+  @sf.presenters_reset()
+  let src = fixture("chat")
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0, corners_held=false)
+  t.check_looks(false)
+  t.run_for(@ui.move_most_ms)
+  exp_set(t, src, ["selectionIntent"], true)
+  let poke = fn(words : String) raise {
+    let (px, py, pw, ph) = quote_nodes_words(t, words)
+    t.drag(px + 1.0, py + ph / 2.0, px + pw - 1.0, py + ph / 2.0)
+    t.run_for(@ui.move_most_ms)
+    t.click(Button, label="戳一下")
+    t.run_for(@ui.move_most_ms)
+  }
+  poke("高度先按 90 估")
+  poke("深色模式我一起看")
+  let notes = @sfbase.intent_notes_for("ws1/st1:s-c1")
+  assert_eq(notes.map(fn(n) { n.selection }), ["高度先按 90 估", "深色模式我一起看"])
+  assert_eq(notes[0].row, notes[1].row, msg="both of one message")
+  // (each passage on its ground, as a quote's flash lights one: two grounds drawn)
+  let ground = @sf.alpha(@sf.theme().p.accent, @sfbase.picked_alpha)
+  assert_eq(t.drawn_rects().filter(fn(r) { r.4 == ground }).length(), 2, msg="both lit")
+  let answers = t.words().filter(fn(w) { w.0.contains("轻量模型结合当前对话上下文") })
+  assert_eq(answers.length(), 2, msg="two cards")
+  assert_true(answers[0].2 != answers[1].2, msg="one under the other")
+}
