@@ -542,7 +542,9 @@ fn md_pick_bar_node(stage : @view.View, vw : Viewer) -> Unit {
       }
       b.owns(end.owns_while(gone)) |> ignore
       end.on_reused(gone)
-      @ui.keeps_picked(b).beside(p.ends_in, side=Top, offset=md_pick_bar_over, piece=@ui.picked_end_piece(p)) |> ignore
+      @ui.keeps_picked(b)
+      .beside(p.ends_in, side=Top, offset=md_pick_bar_over, piece=@ui.picked_end_piece(p), while_seen=true)
+      |> ignore
       @sf.pick_bar_node(b, items) |> ignore
     })
     |> ignore

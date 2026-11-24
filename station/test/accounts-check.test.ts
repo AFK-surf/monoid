@@ -75,6 +75,31 @@ test("a key is tried where its provider says whether it works", async () => {
   await gateway.close();
 });
 
+test("a Command Code key is tried at its chat completions, its model list answering any key", async () => {
+  let probeStatus = 400;
+  const cc = await provider((asked) => {
+    if (asked.url === "/provider/v1/models") return { status: 200, body: { data: [{ id: "gpt-6" }, { id: "claude-opus-5-5" }] } };
+    if (asked.url === "/provider/v1/chat/completions") {
+      if (asked.headers.authorization !== "Bearer good") return { status: 401, body: { error: "no" } };
+      return { status: probeStatus, body: { error: "messages required" } };
+    }
+    return { status: 404, body: {} };
+  });
+  const urls = { ...URLS, commandCode: `${cc.base}/provider/v1` };
+  const via = { provider: "command-code" };
+  const bad = await checkProfile({ ...base, kind: "api-provider", key: "bad", via, urls });
+  assert.deepEqual([bad.state, bad.detail], ["failed", "Command Code 拒绝了这个 key（401）"]);
+  assert.ok(!cc.asked.some((a) => a.url === "/provider/v1/models"), "the list not read for a refused key");
+  const probe = cc.asked.at(-1)!;
+  assert.deepEqual([probe.method, probe.headers["content-type"], probe.body], ["POST", "application/json", {}]);
+  const good = await checkProfile({ ...base, kind: "api-provider", key: "good", via, urls });
+  assert.deepEqual([good.state, good.models], ["ok", ["claude-opus-5-5", "gpt-6"]]);
+  probeStatus = 500;
+  const down = await checkProfile({ ...base, kind: "api-provider", key: "good", via, urls });
+  assert.deepEqual([down.state, down.models], ["unknown", null]);
+  await cc.close();
+});
+
 test("a subscription is checked by its runtime's own status command, in the profile's home", async () => {
   const m = machine({
     claude: `${sameAs("CLAUDE_CONFIG_DIR", "profile")} || exit 3; echo '{"loggedIn":true,"email":"a@x.com","subscriptionType":"max"}'`,

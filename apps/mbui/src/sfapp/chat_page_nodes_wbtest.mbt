@@ -2422,7 +2422,7 @@ test "小屏, a chat's composer: the bottom bar's liquid glass and outside shado
     guard composer_glass_drawn(t) is Some((_, blur, bezel, refraction, drawn_shadow)) else {
       fail("\{name}: no composer's glass at rest")
     }
-    assert_eq((blur, bezel, refraction, drawn_shadow), (1.1, 20.0, 28.0, want_shadow), msg="\{name}: at rest")
+    assert_eq((blur, bezel, refraction, drawn_shadow), (2.2, 20.0, 28.0, want_shadow), msg="\{name}: at rest")
     // composer-top floating glass capsule on 小屏 also casts glass_control_shadow() with shadow_outside=true
     let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
     let top_capsule_shadows = t

@@ -77,3 +77,66 @@ test "选中文本自动推测意图: off by default; when enabled, finger selec
   t.run_for(@ui.move_most_ms)
   assert_eq(@sfbase.pinned_intents_for("ws1/st1:s-c1").length(), 0)
 }
+
+///|
+/// 戳一下 asked of `src` whose `chat.selectionIntent` fails with `message`: the words picked, 戳一下 pressed.
+fn intent_failed_tester(message : String, calls : Array[String]) -> @ui.Tester raise {
+  new_run()
+  let src = fixture("chat")
+  let orig_call = src.call
+  let src : Source = {
+    ..src,
+    call: fn(name, params, cb) {
+      if name == "chat.selectionIntent" {
+        calls.push(name)
+        cb(Err({ "message": Json::string(message) }))
+      } else {
+        orig_call(name, params, cb)
+      }
+    },
+  }
+  open_fixture_over("chat", src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  exp_set(t, src, ["selectionIntent"], true)
+  for _ in 0..<12 {
+    match t.run_rects("高度先按 90 估") {
+      [(_, py, _, _), ..] if py > 180.0 && py < 680.0 => break
+      _ => {
+        t.wheel(195.0, 400.0, -200.0)
+        t.run_for(@ui.move_most_ms)
+      }
+    }
+  }
+  guard t.run_rects("高度先按 90 估") is [(px, py, _, ph), ..] else { fail("message words not drawn") }
+  t.press_at(px + 6.0, py + ph / 2.0)
+  t.run_for(@ui.long_press_ms)
+  t.release(px + 6.0, py + ph / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="戳一下")
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+test "戳一下 failed: says so in words, 重试 in the foot in place of 复制 and 固定, the raw error under it" {
+  let calls : Array[String] = []
+  let t = intent_failed_tester("timeout", calls)
+  assert_true(t.find("没能拿到回复") is Some(_))
+  assert_true(t.find("timeout") is Some(_))
+  assert_true(t.query(Button, label="复制") is None)
+  assert_true(t.query(Button, label="固定") is None)
+  t.click(Button, label="重试")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(calls.length(), 2)
+}
+
+///|
+test "戳一下 on a station that predates it: says to update the station, no raw route, nothing to retry" {
+  let calls : Array[String] = []
+  let t = intent_failed_tester("no route POST /threads/1/selection-intent", calls)
+  assert_true(t.find("这台 station 还不支持「戳一下」") is Some(_))
+  assert_true(t.find("no route") is None)
+  assert_true(t.query(Button, label="重试") is None)
+  assert_true(t.query(Button, label="复制") is None)
+}

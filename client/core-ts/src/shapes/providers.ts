@@ -218,6 +218,26 @@ export const SOURCES: Source[] = [
   "legacy": "opencode-go"
  },
  {
+  "id": "command-code",
+  "name": "Command Code",
+  "group": "gateways",
+  "mark": "command-code",
+  "chat": "https://api.commandcode.ai/provider/v1",
+  "responses": "https://api.commandcode.ai/provider/v1",
+  "anthropic": "https://api.commandcode.ai/provider",
+  "auth": "bearer"
+ },
+ {
+  "id": "open-design",
+  "name": "Open Design",
+  "group": "gateways",
+  "mark": "open-design",
+  "chat": "https://amr-link.open-design.ai/v1",
+  "responses": "https://amr-link.open-design.ai/v1",
+  "anthropic": "https://amr-link.open-design.ai",
+  "auth": "bearer"
+ },
+ {
   "id": "cloudflare-ai-gateway",
   "name": "Cloudflare AI Gateway",
   "group": "gateways",

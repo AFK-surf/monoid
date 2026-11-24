@@ -2080,6 +2080,8 @@ web-pages.experimental.board.title
 web-pages.experimental.board.description
 web-pages.experimental.selectionIntent.title
 web-pages.experimental.selectionIntent.description
+web-pages.experimental.cmdQuote.title
+web-pages.experimental.cmdQuote.description
 core-views.move.why.offline
 core-views.move.why.stable
 android-misc.bar.place.remote

@@ -205,7 +205,7 @@ fn effective_glass(gl : Glass, frost : Double, contrast : Bool) -> Glass {
   if frost <= 0.0001 && !contrast {
     return gl
   }
-  if gl.liquid && (gl.tint & 0xFFL) == 0L && gl.zoom > 1.0001 {
+  if gl.liquid && (gl.tint & 0xFFL) == 0L && (gl.zoom > 1.0001 || (gl.blur <= 0.0 && gl.droplet_role > 0 && !contrast)) {
     return gl
   }
   if !gl.liquid && gl.progressive {
@@ -287,6 +287,9 @@ fn Ctx::glass_inst(
   let kind = if gl.liquid { 6.0 } else { 5.0 }
   let blur_slot = if !gl.liquid {
     if gl.contained { -gl.blur } else { gl.blur }
+  } else if gl.blur <= 0.0 && gl.droplet_role > 0 {
+    let zd = if gl.zoom > 1.0001 { dmin(gl.zoom, 3.0) - 1.0 } else { 0.0 }
+    -(16.0 * gl.droplet_role.to_double()) - zd
   } else if gl.blur <= 0.0 && gl.zoom > 1.0001 {
     -(dmin(gl.zoom, 3.0) - 1.0)
   } else {

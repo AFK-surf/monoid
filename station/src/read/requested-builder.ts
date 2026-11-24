@@ -2,16 +2,17 @@ import { setMaxListeners } from "node:events";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { REQUEST_BACKFILL_PAUSE_MS, giveBackfill, releaseStoppedBackfill, takeBackfill } from "../store/backfill.ts";
-import { MbProcess } from "./mb-reader.ts";
+import { type BackfillOptions, MbProcess } from "./mb-reader.ts";
 
-/// A builder in MoonBit (read/mb-reader.ts): its program and arguments. It knows nothing of the backfill permit, which
+/// A builder in MoonBit or Pion (read/mb-reader.ts): its program (resolved on each spawn when given as a getter)
+/// and arguments. It knows nothing of the backfill permit, which
 /// the builder here takes for it around each batch it asks, and gives back when the batch is answered; or (`lazy`) it
 /// asks for the permit itself when it is about to write: a line `{"take": true}` answered `{"permit": …}`,
 /// `{"give": true}` when it is done with it before its answer. Each is told of what is let go (`cancel`). One that
 /// answers `{"fallback": true}` (a store whose schema the station's writer must repair first: the merged view, as an
 /// older station dropped an index under it) has `repair` called, and the batch asked again (after a pause where the
 /// repair found the database busy: `repair` waits for no lock).
-export type MbBuilder = { binary: string; args: string[]; lazy?: boolean; repair?: () => void };
+export type MbBuilder = { binary: string | (() => string); args: string[]; lazy?: boolean; repair?: () => void };
 /// What stands for a MoonBit builder in the permit: never a thread's.
 let nextOwner = 0x40000000;
 
@@ -20,7 +21,7 @@ const IDLE_MS = 5_000;
 
 /// Requested old state alone; readers share progress, each slice gives other work a turn, and abandoned work stops.
 export class RequestedBuilder<K extends number | string> {
-  readonly #options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer };
+  readonly #options: BackfillOptions;
   readonly #timers: Fibers;
   readonly #field: "thread" | "session" | "scope";
   readonly #message: ((item: K, cancel: boolean) => Record<string, unknown>) | undefined;
@@ -38,7 +39,7 @@ export class RequestedBuilder<K extends number | string> {
   #idle: (() => void) | null = null;
   #retryMs = 250;
 
-  constructor(options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer }, mb: MbBuilder,
+  constructor(options: BackfillOptions, mb: MbBuilder,
     field: "thread" | "session" | "scope", name: string, message?: (item: K, cancel: boolean) => Record<string, unknown>) {
     this.#options = options; this.#mb = mb; this.#field = field; this.#timers = new Fibers(name);
     this.#message = message;
@@ -169,7 +170,16 @@ export class RequestedBuilder<K extends number | string> {
       return;
     }
     if (this.#worker === null) {
-      const mb = new MbProcess(this.#mb.binary, this.#mb.args);
+      let mb: MbProcess;
+      try {
+        const binary = typeof this.#mb.binary === "function" ? this.#mb.binary() : this.#mb.binary;
+        mb = new MbProcess(binary, this.#mb.args);
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        log.warn("readers", "an old-state builder could not start", { error: err.message });
+        for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
+        return;
+      }
       const owner = this.#owner = nextOwner++;
       this.#worker = mb;
       mb.on("message", (result: { done: boolean; error?: string }) => { if (this.#worker === mb) this.#answeredMb(mb, result); });

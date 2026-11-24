@@ -217,6 +217,12 @@ test("deepseek_harness_is_named_thinks_at_its_own_levels_and_runs_on_any_endpoin
   };
   // Pi runs wherever DeepSeek Harness does (a station offers either only where it lists it).
   assert.deepEqual(runs("opencode-go"), ["claude", "codex", "dsh", "pi"]);
+  for (const id of ["command-code", "open-design"]) {
+    const source = providers.find(id)!;
+    assert.deepEqual([source.group, source.mark, source.auth, source.sessionHeader], ["gateways", id, "bearer", undefined]);
+    assert.deepEqual(runs(id), ["claude", "codex", "dsh", "pi"]);
+    assert.equal(providers.uses(providers.endpoints(source, null, null)!, id).decision, true, "chat completions: the automatic decisions too");
+  }
   assert.deepEqual(runs("anthropic"), ["claude", "dsh", "pi"]);
   assert.deepEqual(runs("openai"), ["codex", "dsh", "pi"]);
   assert.deepEqual(runs("deepseek"), ["dsh", "pi"]);

@@ -4,7 +4,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkConfig } from "../src/accounts/check.ts";
 import { needsKey, runtimesOf } from "../src/accounts/profiles.ts";
-import { accessEnv, billedPerUse, codexOverrides, OPENCODE, profileEnv, profileRuntimes, vertexAccount, vertexKeyFile } from "../src/agents/profiles.ts";
+import { accessEnv, billedPerUse, codexOverrides, dshRoute, OPENCODE, piRoute, profileEnv, profileRuntimes, vertexAccount, vertexKeyFile } from "../src/agents/profiles.ts";
+import { groupOf } from "../src/agents/providers.ts";
+import type { Profile } from "../src/agents/runtime.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { ConfigFile } from "../src/ops/config.ts";
 import { temp } from "./accounts-fakes.ts";
@@ -116,6 +118,30 @@ test("a provider is set up for each runtime from where it speaks", () => {
   assert.equal(codexOverrides("api-provider", undefined, { provider: "groq" }).length, 2);
   assert.equal(accessEnv("codex", "api-provider", "", undefined, { provider: "custom", endpoint: "http://localhost:4000/v1", protocol: "responses" }).STILLFAIL_API_KEY, "none");
   assert.ok(!needsKey("api-provider", "custom") && needsKey("api-provider", "groq") && needsKey("opencode-go", undefined));
+});
+
+test("Command Code and Open Design are gateways reached with a bearer key on all three protocols", () => {
+  for (const [id, name, root] of [
+    ["command-code", "Command Code", "https://api.commandcode.ai/provider"],
+    ["open-design", "Open Design", "https://amr-link.open-design.ai"],
+  ] as const) {
+    assert.equal(groupOf(id), "gateways");
+    const via = { provider: id };
+    const claude = accessEnv("claude", "api-provider", "k", undefined, via);
+    assert.deepEqual([claude.ANTHROPIC_BASE_URL, claude.ANTHROPIC_AUTH_TOKEN, claude.ANTHROPIC_API_KEY, claude.ANTHROPIC_CUSTOM_HEADERS], [root, "k", "", undefined]);
+    assert.deepEqual(accessEnv("codex", "api-provider", "k", undefined, via), { STILLFAIL_API_KEY: "k" });
+    assert.deepEqual(accessEnv("dsh", "api-provider", "k", undefined, via), { STILLFAIL_DSH_KEY: "k" });
+    assert.deepEqual(accessEnv("pi", "api-provider", "k", undefined, via), { STILLFAIL_PI_KEY: "k" });
+    const codex = Object.fromEntries(codexOverrides("api-provider", "m", via));
+    assert.deepEqual(
+      [codex.model_provider, codex.model, codex["model_providers.api.name"], codex["model_providers.api.base_url"], codex["model_providers.api.wire_api"], codex["model_providers.api.env_http_headers"]],
+      ['"api"', '"m"', JSON.stringify(name), JSON.stringify(`${root}/v1`), '"responses"', undefined],
+    );
+    const profile: Profile = { id, runtime: "claude", home: `homes/${id}`, access: { kind: "api-provider", provider: id, key: "k" } };
+    assert.deepEqual(dshRoute(profile), { kind: "pi", name, api: "openai-completions", baseURL: `${root}/v1` });
+    assert.deepEqual(piRoute(profile), { name, api: "openai-completions", baseURL: `${root}/v1` });
+    assert.deepEqual(profileRuntimes(profile), ["claude", "codex", "dsh", "pi"]);
+  }
 });
 
 test("opencode go sets up each runtime its own way", () => {

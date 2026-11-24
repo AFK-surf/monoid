@@ -100,8 +100,8 @@ test "player_node audio controls use theme-adaptive Floating liquid glass" {
     for dark in [false, true] {
       let t = player_glass_tester(narrow, "audio", dark, false)
       let blurs = liquid_blurs(t)
-      // Floating liquid glass uses blur = 1.1 (distinct from ViewerDark's 4.0).
-      assert_true(blurs.iter().any(fn(b) { (b - 1.1).abs() < 0.01 }), msg="narrow=\{narrow} dark=\{dark} audio blurs=\{Repr(blurs)}")
+      // Floating liquid glass uses blur = 2.2 (distinct from ViewerDark's 4.0).
+      assert_true(blurs.iter().any(fn(b) { (b - 2.2).abs() < 0.01 }), msg="narrow=\{narrow} dark=\{dark} audio blurs=\{Repr(blurs)}")
       assert_true(has_outside_shadow(t), msg="narrow=\{narrow} dark=\{dark} audio outside shadow")
     }
   }

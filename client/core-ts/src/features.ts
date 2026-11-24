@@ -25,6 +25,7 @@ export const FEATURES = {
   farviewNative: { stage: "experimental", betaOnly: true },
   board: { stage: "experimental" },
   selectionIntent: { stage: "experimental" },
+  cmdQuote: { stage: "experimental" },
   terminal: { stage: "beta", station: true },
 } as const satisfies Record<string, FeatureSpec>;
 

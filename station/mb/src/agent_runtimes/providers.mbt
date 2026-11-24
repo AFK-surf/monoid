@@ -78,6 +78,20 @@ pub let sources : Array[Source] = [
     auth="apiKey",
     session_header=true,
   ),
+  source(
+    "command-code",
+    "Command Code",
+    anthropic="https://api.commandcode.ai/provider",
+    chat="https://api.commandcode.ai/provider/v1",
+    responses="https://api.commandcode.ai/provider/v1",
+  ),
+  source(
+    "open-design",
+    "Open Design",
+    anthropic="https://amr-link.open-design.ai",
+    chat="https://amr-link.open-design.ai/v1",
+    responses="https://amr-link.open-design.ai/v1",
+  ),
   source("cloudflare-ai-gateway", "Cloudflare AI Gateway", endpoint_required=true, protocols=all_protocols, auth="both"),
   source("azure-openai", "Azure OpenAI", endpoint_required=true, protocols=["responses"]),
   source("groq", "Groq", chat="https://api.groq.com/openai/v1"),
@@ -115,7 +129,7 @@ pub fn legacy(id : String) -> String? {
 ///|
 /// `groupOf`: labs, gateways, hosted, local.
 pub fn group_of(id : String) -> String {
-  if ["openrouter", "vercel-ai-gateway", "opencode", "opencode-go", "cloudflare-ai-gateway"].contains(id) {
+  if ["openrouter", "vercel-ai-gateway", "opencode", "opencode-go", "command-code", "open-design", "cloudflare-ai-gateway"].contains(id) {
     return "gateways"
   }
   if [

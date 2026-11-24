@@ -112,6 +112,8 @@ export type Urls = {
   agyQuota?: string;
   /// Google AI Code production endpoint override for tests; falls back to `agyQuota`, then production.
   agyQuotaProduction?: string;
+  /// Command Code's API (its key tried at chat completions: checkApi); its real one when not given.
+  commandCode?: string;
 };
 
 export const URLS: Urls = {
@@ -298,7 +300,7 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
       if (vertexAccount(o.key) === null) return check("failed", t("station.profile.vertexKeyInvalid"), null);
       return check("unknown", t("station.profile.vertexUnchecked"), null);
     }
-    const done = await checkApi(source, at, o.key, lang);
+    const done = await checkApi(source, at, o.key, lang, urls);
     return o.login === true && done.state === "failed" ? check("login", t("station.profile.kimiSignedOut"), null) : done;
   }
   if (o.kind === "subscription" && o.runtime === "claude") {
@@ -534,7 +536,7 @@ export const opencodeSession = (): [string, string] => ["x-opencode-session", ra
 
 /// A provider's key, asked by its model list: a refusal (401/403) is a key that does not work; a provider with no list
 /// is not held against it, its key is only unchecked.
-async function checkApi(source: Source, at: Endpoints, key: string, lang: Lang): Promise<ProfileCheck> {
+async function checkApi(source: Source, at: Endpoints, key: string, lang: Lang, urls: Urls): Promise<ProfileCheck> {
   const t = (k: string, args?: Record<string, unknown>) => tr(lang, k, args);
   // A decision-only provider has no model list and nothing to name: its key is tried by the decision probe.
   if (at.decision !== undefined && at.chat === undefined && at.responses === undefined && at.anthropic === undefined) {
@@ -550,7 +552,20 @@ async function checkApi(source: Source, at: Endpoints, key: string, lang: Lang):
     const [name, value] = opencodeSession();
     headers[name] = value;
   }
-  const response = await get(`${base}/models`, headers);
+  // Command Code lists its models to anyone, a key wrong or none: its chat completions refuse a key first (401) and an
+  // empty body after (400, nothing billed), so a key is tried there before the list is read (checked 2026-11-24).
+  const listAt = source.id === "command-code" ? (urls.commandCode ?? base) : base;
+  if (source.id === "command-code") {
+    const probe = await profileFetch(`${listAt}/chat/completions`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: "{}",
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (probe.status === 401 || probe.status === 403) return check("failed", t("station.profile.keyRefused", { provider: source.name, status: probe.status }), null);
+    if (probe.status >= 500) return check("unknown", t("station.profile.noModelList", { provider: source.name }), null);
+  }
+  const response = await get(`${listAt}/models`, headers);
   if (response.status === 401 || response.status === 403) return check("failed", t("station.profile.keyRefused", { provider: source.name, status: response.status }), null);
   if (!response.ok) return check("unknown", t("station.profile.noModelList", { provider: source.name }), null);
   // A `:batch` entry (OpenRouter's) is served by the provider's Batch API alone, results within a day: refused on the

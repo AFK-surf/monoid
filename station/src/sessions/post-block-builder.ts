@@ -1,4 +1,5 @@
-import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
+import { MbBackfill, resolveReaderSelection } from "../read/mb-reader.ts";
+import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { setMaxListeners } from "node:events";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
@@ -16,6 +17,7 @@ export class PostBlockBuilder {
   readonly #store: Store;
   readonly #previous: Promise<void>;
   readonly #binary: string | undefined;
+  readonly #readers: (() => ReaderSelectConfig) | undefined;
   readonly #timers = new Fibers("post block index");
   readonly #waiting = new Map<number, Set<Waiter>>();
   #worker: MbBackfill | null = null;
@@ -27,10 +29,11 @@ export class PostBlockBuilder {
   #idle: (() => void) | null = null;
   #retryMs = 250;
 
-  constructor(store: Store, previous: Promise<void>, binary?: string) {
+  constructor(store: Store, previous: Promise<void>, binary?: string, readers?: () => ReaderSelectConfig) {
     this.#store = store;
     this.#previous = previous;
     this.#binary = binary;
+    this.#readers = readers;
   }
 
   ready(messages: readonly { thread: number; n: number }[], signal?: AbortSignal): Promise<void> {
@@ -146,7 +149,8 @@ export class PostBlockBuilder {
       // (by the MoonBit builder, station/mb's src/posts: `MbBackfill`)
       let worker: MbBackfill;
       try {
-        worker = new MbBackfill(this.#binary ?? readerBinary(), ["--builder", "post-blocks", "--db", path], this.#store.backfillPriority, REQUEST_BACKFILL_PAUSE_MS);
+        const bin = resolveReaderSelection("post-blocks", { binary: this.#binary, config: this.#readers, logAt: "readers" }).primaryBinary;
+        worker = new MbBackfill(bin, ["--builder", "post-blocks", "--db", path], this.#store.backfillPriority, REQUEST_BACKFILL_PAUSE_MS);
       }
       catch (error) { this.#answer({ done: false, error: (error as Error).message }); return; }
       const owner = worker.threadId;

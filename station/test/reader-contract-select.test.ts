@@ -44,6 +44,16 @@ test("READER_MODES strictly matches all modes in station/mb/src/reader/main.mbt 
     "only footprint is currently certified pure read-only and permitted to run in shadow mode",
   );
 
+  const pionImplemented = (Object.entries(READER_MODES) as [ReaderMode, (typeof READER_MODES)[ReaderMode]][])
+    .filter(([, meta]) => meta.pionImplemented)
+    .map(([mode]) => mode)
+    .sort();
+  assert.deepEqual(
+    pionImplemented,
+    ["footprint", "memory", "packed"],
+    "only footprint, memory, and packed are currently enabled in Pion",
+  );
+
   assert.equal(readerModeEnvKey("footprint"), "STILLFAIL_READER_FOOTPRINT");
   assert.equal(readerModeEnvKey("replica-export"), "STILLFAIL_READER_REPLICA_EXPORT");
   assert.equal(readerModeEnvKey("live-locator"), "STILLFAIL_READER_LIVE_LOCATOR");
@@ -90,11 +100,23 @@ test("config.readers selects mb, pion, and shadow (for footprint)", () => {
     { mode: "footprint", engine: "shadow", requested: "shadow", rawRequested: "shadow", source: "config", fallback: false },
   );
 
-  // Non-footprint modes can select pion directly when binary is available.
+  // Implemented non-footprint modes can select pion directly when binary is available.
   assert.deepEqual(
-    resolveReaderEngine("data", { config: { readers: { data: "pion" } }, env: {}, hasPionBinary: true }),
-    { mode: "data", engine: "pion", requested: "pion", rawRequested: "pion", source: "config", fallback: false },
+    resolveReaderEngine("packed", { config: { readers: { packed: "pion" } }, env: {}, hasPionBinary: true }),
+    { mode: "packed", engine: "pion", requested: "pion", rawRequested: "pion", source: "config", fallback: false },
   );
+  assert.deepEqual(
+    resolveReaderEngine("memory", { config: { readers: { memory: "pion" } }, env: {}, hasPionBinary: true }),
+    { mode: "memory", engine: "pion", requested: "pion", rawRequested: "pion", source: "config", fallback: false },
+  );
+
+  // Unimplemented modes safely fall back to mb with reason "pion-mode-unimplemented".
+  const unimpl = resolveReaderEngine("data", { config: { readers: { data: "pion" } }, env: {}, hasPionBinary: true });
+  assert.equal(unimpl.engine, "mb");
+  assert.equal(unimpl.requested, "pion");
+  assert.equal(unimpl.source, "config");
+  assert.equal(unimpl.fallback, true);
+  assert.equal(unimpl.reason, "pion-mode-unimplemented");
 
   // Empty or null config values fall back to default cleanly.
   assert.equal(
@@ -122,19 +144,30 @@ test("environment variable STILLFAIL_READER_<UPPER_SNAKE_MODE> overrides config"
     fallback: false,
   });
 
-  const upgrade = resolveReaderEngine("replica-export", {
-    config: { readers: { "replica-export": "mb" } },
-    env: { STILLFAIL_READER_REPLICA_EXPORT: "pion" },
+  const upgrade = resolveReaderEngine("packed", {
+    config: { readers: { packed: "mb" } },
+    env: { STILLFAIL_READER_PACKED: "pion" },
     hasPionBinary: true,
   });
   assert.deepEqual(upgrade, {
-    mode: "replica-export",
+    mode: "packed",
     engine: "pion",
     requested: "pion",
     rawRequested: "pion",
     source: "env",
     fallback: false,
   });
+
+  const unimplEnv = resolveReaderEngine("replica-export", {
+    config: { readers: { "replica-export": "mb" } },
+    env: { STILLFAIL_READER_REPLICA_EXPORT: "pion" },
+    hasPionBinary: true,
+  });
+  assert.equal(unimplEnv.engine, "mb");
+  assert.equal(unimplEnv.requested, "pion");
+  assert.equal(unimplEnv.source, "env");
+  assert.equal(unimplEnv.fallback, true);
+  assert.equal(unimplEnv.reason, "pion-mode-unimplemented");
 
   const blankEnv = resolveReaderEngine("footprint", {
     config: { readers: { footprint: "shadow" } },
@@ -312,4 +345,21 @@ test("STILLFAIL_READER_ENGINE acts as global env fallback below config.readers a
   assert.equal(blockedShadow.engine, "mb");
   assert.equal(blockedShadow.fallback, true);
   assert.equal(blockedShadow.reason, "shadow-forbidden");
+});
+
+test("every mode with pionImplemented: true is explicitly wired to resolveReaderSelection (exact allowlist guard)", () => {
+  // Modes whose spawn sites are wired through resolveReaderSelection AND backed by Pion implementations.
+  // Adding a mode here requires wiring its actual spawn site and updating the capability gate.
+  const WIRED_PION_MODES = new Set<ReaderMode>(["footprint", "memory", "packed"]);
+  const enabled = (Object.entries(READER_MODES) as [ReaderMode, (typeof READER_MODES)[ReaderMode]][])
+    .filter(([, meta]) => meta.pionImplemented)
+    .map(([mode]) => mode)
+    .sort();
+  for (const mode of enabled) {
+    assert.ok(
+      WIRED_PION_MODES.has(mode),
+      `mode "${mode}" has pionImplemented: true in READER_MODES but is not in WIRED_PION_MODES`,
+    );
+  }
+  assert.deepEqual(enabled, [...WIRED_PION_MODES].sort());
 });

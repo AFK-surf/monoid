@@ -5,6 +5,10 @@
 // those a mode puts a sheet or panel up on counted again that day, once the workspace was held as a device holds it (a
 // chat asked `compact`, the sheet or panel reading the real values too).
 
+// Raised once, 2026-11-24: adding a profile shows two gateways more (Command Code and Open Design, after OpenRouter in
+// 中转站), a phone's settings-new-profile and settings-new-profile-stations making, laying out and measuring their two
+// rows (a mark and a name each), nothing else changed.
+
 // Lowered, 2026-11-22: the stations' list gives its page a block each station (sfpages stations_list.mbt), so the
 // page's list makes only the cards in sight and near it as it opens, not every station's at once: a phone's
 // place-stations and every settings-stations screen, and the wide settings-stations screens, made, laid out and measured
@@ -337,7 +341,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone screen-trackpad-command": (804, 532, 62),
   "phone settings-home": (984, 635, 78),
   "phone settings-appearance": (514, 359, 51),
-  "phone settings-experimental": (408, 286, 35),
+  "phone settings-experimental": (444, 314, 41),
   "phone settings-me": (472, 329, 47),
   "phone settings-me-reading": (497, 346, 51),
   "phone settings-workspace": (605, 402, 66),
@@ -416,9 +420,9 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-profile-signin": (660, 451, 77),
   "phone settings-profile-key": (355, 252, 30),
   "phone settings-profile-copy": (355, 252, 30),
-  "phone settings-new-profile": (488, 346, 42),
+  "phone settings-new-profile": (540, 380, 43),
   "phone settings-new-profile-key": (414, 289, 38),
-  "phone settings-new-profile-stations": (488, 346, 42),
+  "phone settings-new-profile-stations": (540, 380, 43),
   "phone settings-connects": (698, 471, 80),
   "phone settings-connect": (610, 436, 126),
   "phone settings-connect-menu": (610, 436, 126),

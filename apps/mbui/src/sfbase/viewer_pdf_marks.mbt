@@ -824,7 +824,9 @@ fn pdf_page_marks_node(
         guard !items.is_empty() else { return }
         holds.box(fn(bar) {
           bar
-          .beside(o.id(), side=Top, offset=8.0, piece=fn(w, h) { Some((x0 * w, y0 * h, (x1 - x0) * w, (y1 - y0) * h)) })
+          .beside(o.id(), side=Top, offset=8.0, while_seen=true, piece=fn(w, h) {
+            Some((x0 * w, y0 * h, (x1 - x0) * w, (y1 - y0) * h))
+          })
           |> ignore
           @sf.pick_bar_node(bar, items) |> ignore
         })

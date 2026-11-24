@@ -28,19 +28,24 @@ fn chat_finger_picked(v : @view.View, rows : ChatBodyList) -> (@ui.WordsPicked, 
 }
 
 ///|
+fn chat_message_of(rows : ChatBodyList, key : String) -> Message? {
+  match rows.read().get(key) {
+    Some({ entry: Said(m), .. }) if m.ts != "" => Some(m)
+    // (one of the viewer's not the chat's yet, on its way or failed: theirs, of no message, as the old rows quote it)
+    Some({ entry: Out(o), .. }) => Some(outgoing_said(o))
+    // (one said in Slack or Feishu, the chat's only words where it has been nowhere else: whose there, of no message)
+    Some({ entry: Sent(s), .. }) => Some(elsewhere_said(s))
+    _ => None
+  }
+}
+
+///|
 /// The message of chat `rows` whose words what is picked lies wholly within (in `v`'s selection scope, with no stray
 /// unowned paragraphs), once let go, with the mouse or a finger (one the viewer sent not yet the chat's too:
 /// outgoing_said; one said in Slack or Feishu: elsewhere_said): what is picked and the message; none otherwise.
 fn chat_picked_message(v : @view.View, rows : ChatBodyList) -> (@ui.WordsPicked, Message)? {
   guard @ui.picked_now_in(v) is Some(p) && p.of.length() == 1 && p.strays == 0 else { return None }
-  match rows.read().get(p.of[0]) {
-    Some({ entry: Said(m), .. }) if m.ts != "" => Some((p, m))
-    // (one of the viewer's not the chat's yet, on its way or failed: theirs, of no message, as the old rows quote it)
-    Some({ entry: Out(o), .. }) => Some((p, outgoing_said(o)))
-    // (one said in Slack or Feishu, the chat's only words where it has been nowhere else: whose there, of no message)
-    Some({ entry: Sent(s), .. }) => Some((p, elsewhere_said(s)))
-    _ => None
-  }
+  chat_message_of(rows, p.of[0]).map(fn(m) { (p, m) })
 }
 
 ///|
@@ -60,10 +65,8 @@ fn chat_quote_take(v : @view.View, src : Source, draft : String, rows : ChatBody
 }
 
 ///|
-/// What `p` says is picked, of message `m`, quoted into draft `draft` as chat_quote_take quotes it, and let go: as it
-/// was when what quotes it was made (the bar over a finger's pick), not found again as it is pressed.
-fn chat_quote_of(src : Source, draft : String, p : @ui.WordsPicked, m : Message, whole? : Bool = false) -> Unit {
-  let text = chat_picked_words(p, m, whole).trim(chars=" \n\t").to_owned()
+fn chat_quote_text(src : Source, draft : String, raw : String, m : Message) -> Unit {
+  let text = raw.trim(chars=" \n\t").to_owned()
   if text != "" {
     let author = if m.mine { @sf.t("web-main.chat.you") } else { m.by.name }
     let role = if !m.mine && m.author_kind == "agent" { "agent" } else { "person" }
@@ -74,6 +77,13 @@ fn chat_quote_of(src : Source, draft : String, p : @ui.WordsPicked, m : Message,
       "role": Json::string(role),
     })
   }
+}
+
+///|
+/// What `p` says is picked, of message `m`, quoted into draft `draft` as chat_quote_take quotes it, and let go: as it
+/// was when what quotes it was made (the bar over a finger's pick), not found again as it is pressed.
+fn chat_quote_of(src : Source, draft : String, p : @ui.WordsPicked, m : Message, whole? : Bool = false) -> Unit {
+  chat_quote_text(src, draft, chat_picked_words(p, m, whole), m)
   @ui.picked_let_go()
 }
 
@@ -151,6 +161,30 @@ fn chat_quote_node(
   place : @view.ListPlace[String],
 ) -> Unit {
   let draft = r.station + ":" + r.session
+  // (实验性功能 › 按住 ⌘ 点击引用文本: holding ⌘ highlights and underlines the hovered sentence; clicking quotes it)
+  @ui.words_cmd_pick(
+    v,
+    fn() { @sfbase.cmd_quote_feature.get() },
+    fn() { @sf.theme().p.accent },
+    fn(of, text) {
+      match @signals.untracked(fn() { chat_message_of(rows, of) }) {
+        Some(m) => {
+          let trimmed = text.trim(chars=" \n\t").to_owned()
+          // (avoid duplicate quotes from accidental rapid double Cmd+click on the same sentence)
+          let dup = @signals.untracked(fn() {
+            @sfbase.writing(src, draft).quotes.get().iter().any(fn(q) {
+              @sfbase.text(Some(q), "ts") == m.ts && @sfbase.text(Some(q), "text") == trimmed
+            })
+          })
+          if !dup {
+            chat_quote_text(src, draft, trimmed, m)
+          }
+          @ui.picked_let_go()
+        }
+        None => ()
+      }
+    },
+  )
   // (a pick whose words' block was put by as the list moved on: let go of it and its bar or pill)
   place.on_sight(fn(_) {
     match chat_picked_message(v, rows) {
@@ -170,7 +204,9 @@ fn chat_quote_node(
   let alled : Ref[Int] = Ref(-1)
   // (in the layer over all of the window (@sf.window_tips), as a tip is: over the rows round what is picked, whose own
   // presses it covers while it shows; made there as a finger first picks, where there is one, living with the list;
-  // else over the list itself)
+  // else over the list itself. Drawn only while where the pick ends is seen in the list, under its bar and over its
+  // composer (View::beside's `while_seen`): its words scrolled out of sight, along or across, none over what is round
+  // the list, back as they are; the bar and the pill alike)
   let bar_in = fn(at : @view.View) {
     at.pick(fn() { chat_finger_picked(v, rows).map(fn(q) { q.0 }) }, fn(holds, picked) {
       guard picked is Some(p) && @signals.untracked(fn() { chat_finger_picked(v, rows) }) is Some((_, m)) else { return }
@@ -253,7 +289,7 @@ fn chat_quote_node(
         // (taken for another message's words: View::scrolls_window's `reused`)
         end.on_reused(gone)
         @ui.keeps_picked(b)
-        .beside(p.ends_in, side=Top, offset=chat_pick_bar_over, piece=@ui.picked_end_piece(p))
+        .beside(p.ends_in, side=Top, offset=chat_pick_bar_over, piece=@ui.picked_end_piece(p), while_seen=true)
         |> ignore
         @sf.pick_bar_node(b, items) |> ignore
       })
@@ -292,7 +328,7 @@ fn chat_quote_node(
             end.on_reused(gone)
             @sf.style_node(b, fn() { chat_quote_pill })
             @sf.glass_capsule_node(@ui.keeps_picked(b), interactive=true)
-            .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p))
+            .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p), while_seen=true)
             |> ignore
             @sf.hover_ground_node(b)
             @sf.icon_node(b, if p.ends_at_start { "quote-open" } else { "quote" }, chat_quote_icon, By(fn() { @sf.theme().p.text }))
@@ -308,7 +344,7 @@ fn chat_quote_node(
             end.on_reused(gone)
             @sf.style_node(pill, fn() { chat_quote_bar })
             @sf.glass_capsule_node(@ui.keeps_picked(pill), interactive=true)
-            .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p))
+            .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p), while_seen=true)
             |> ignore
             @sf.action_box_node(pill, fn() { @sf.t("web-main.chat.quote") }, fn(_) { chat_quote_take(v, src, draft, rows) }, fn(b) {
               @sf.style_node(b, fn() { chat_quote_part })
@@ -322,11 +358,16 @@ fn chat_quote_node(
             @sf.action_box_node(
               pill,
               fn() { @sf.t("web-main.chat.inferIntent") },
-              fn(_) { chat_intent_take(v, src, r, here, draft, rows, @sf.Anchor::Node(end)) },
+              // (beside the pill where it was pressed, as a menu opens from its key: the pill goes as the words are let
+              // go, so where it was is taken now)
+              fn(at) {
+                let (x, y, w, h) = at.placed_window_now()
+                chat_intent_take(v, src, r, here, draft, rows, At(x, y, w, h))
+              },
               fn(b) {
                 @sf.style_node(b, fn() { chat_quote_part })
                 @sf.hover_ground_node(b)
-                @sf.icon_node(b, "poke", chat_quote_icon, By(fn() { @sf.theme().p.accent_text })) |> ignore
+                @sf.icon_node(b, "poke", chat_quote_icon, By(fn() { @sf.theme().p.text })) |> ignore
                 @sf.words_node(b, fn() { @sf.t("web-main.chat.inferIntent") }, fn() { chat_quote_words }) |> ignore
               },
             )
@@ -387,7 +428,8 @@ let chat_quote_part : @ui.Style = @ui.style(
 
 ///|
 // kept across runs: a value (no field of it changes)
-let chat_quote_sep : @ui.Style = @ui.css("w=SPx h=S3 bg=Line")
+/// (the one faint hairline down between a capsule's segments, as the finger's pick bar has: @sf.rule_down)
+let chat_quote_sep : @ui.Style = @sf.rule_down.then(@ui.css("h=S3"))
 
 ///|
 let chat_quote_icon : Double = 12.0

@@ -24,6 +24,7 @@ pub fn liquid_lens_overlay_node(
   overhang_x? : Double = 0.0,
   overhang_y? : Double = 0.0,
   active? : () -> Bool = fn() { false },
+  droplet_role? : Int = 4,
   loc~ : SourceLoc,
 ) -> Unit {
   let mounted : @signals.Signal[Bool] = @signals.signal(false)
@@ -49,7 +50,7 @@ pub fn liquid_lens_overlay_node(
           Some(f) => f()
           None => clear
         }
-        Some(liquid_tab_lens_glass(p, solid=sol))
+        Some(liquid_tab_lens_glass(p, solid=sol, droplet_role~))
       } else {
         None
       }

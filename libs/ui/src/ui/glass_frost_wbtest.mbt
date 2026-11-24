@@ -108,3 +108,99 @@ test "glass_frost: ViewBlock invalidates on frost and contrast changes, and fros
   set_glass_frost(0.0)
   t.set_increase_contrast(false)
 }
+
+///|
+test "droplet_role: slot 7 packing survives at_strength while slot 21 scales linearly, public clear stays 0.0" {
+  let roles : Array[(Int, Double, Double)] = [
+    (1, -16.0, 3.0),
+    (2, -32.0, 9.0),
+    (3, -48.0, 9.0),
+    (4, -64.0, 9.0),
+  ]
+  for entry in roles {
+    let (role, exp_slot7, base_refr) = entry
+    let base = Glass::liquid(blur=0.0, tint=0xFFFFFF00L, refraction=base_refr, droplet_role=role)
+    for s in [0.5, 0.8, 1.0] {
+      let scaled = base.at_strength(s)
+      assert_eq(scaled.droplet_role, role)
+      let t = Tester::tree(w=200.0, h=120.0, fn(root) {
+        root.box(fn(b) {
+          b.width(Is(Some(80.0))).height(Is(Some(40.0))).glass(Is(Some(scaled))) |> ignore
+        }) |> ignore
+      })
+      t.draw()
+      let c = the_ctx.val
+      let mut found = false
+      for i in 0..<c.ninst {
+        let b = i * inst_size
+        if c.inst[b + 5] == 6.0 {
+          assert_true((c.inst[b + 7] - exp_slot7).abs() < 0.001, msg="role=\{role} s=\{s} slot7=\{c.inst[b + 7]}")
+          assert_true((c.inst[b + 21] - base_refr * s).abs() < 0.01, msg="role=\{role} s=\{s} refr=\{c.inst[b + 21]}")
+          found = true
+          break
+        }
+      }
+      assert_true(found, msg="expected kind 6 for role=\{role} s=\{s}")
+    }
+  }
+  // Public Glass::liquid(blur=0, tint=0xFFFFFF00, refraction=9.0) must emit slot 7 == 0.0 (default path)
+  let pub_gl = Glass::liquid(blur=0.0, tint=0xFFFFFF00L, refraction=9.0)
+  let t_pub = Tester::tree(w=200.0, h=120.0, fn(root) {
+    root.box(fn(b) {
+      b.width(Is(Some(80.0))).height(Is(Some(40.0))).glass(Is(Some(pub_gl))) |> ignore
+    }) |> ignore
+  })
+  t_pub.draw()
+  let c = the_ctx.val
+  let mut found_pub = false
+  for i in 0..<c.ninst {
+    let b = i * inst_size
+    if c.inst[b + 5] == 6.0 {
+      assert_true(c.inst[b + 7].abs() < 0.001, msg="public clear must keep slot7=0.0, got \{c.inst[b + 7]}")
+      found_pub = true
+      break
+    }
+  }
+  assert_true(found_pub)
+}
+
+///|
+test "droplet_role: continuous frost exempts switch lens (slot7=-32), contrast frosts, glass_solid degrades to solid" {
+  let sw_gl = Glass::liquid(blur=0.0, tint=0xFFFFFF00L, solid=0xFFFFFFFFL, refraction=9.0, rim=1.0, bezel=9.0, droplet_role=2)
+  let t = Tester::tree(w=200.0, h=120.0, fn(root) {
+    root.box(fn(b) {
+      b.width(Is(Some(60.0))).height(Is(Some(38.0))).glass(Is(Some(sw_gl))) |> ignore
+    }) |> ignore
+  })
+  let find_glass = fn() -> (Double, Double)? {
+    let c = the_ctx.val
+    for i in 0..<c.ninst {
+      let b = i * inst_size
+      if c.inst[b + 5] == 6.0 {
+        return Some((c.inst[b + 7], c.inst[b + 11]))
+      }
+    }
+    None
+  }
+  for fr in [0.00009, 0.00011, 0.5, 0.00009] {
+    set_glass_frost(fr)
+    t.set_increase_contrast(false)
+    t.draw()
+    guard find_glass() is Some((slot7, alpha)) else { fail("expected switch glass at frost=\{fr}") }
+    assert_true((slot7 - -32.0).abs() < 0.001, msg="frost=\{fr} must keep slot7=-32.0, got \{slot7}")
+    assert_true(alpha < 0.001, msg="frost=\{fr} must keep clear alpha=0, got \{alpha}")
+  }
+  // Increase Contrast disables crystal droplet mode -> positive blur & tint alpha
+  t.set_increase_contrast(true)
+  t.draw()
+  guard find_glass() is Some((slot7_c, alpha_c)) else { fail("expected frosted glass under contrast=true") }
+  assert_true(slot7_c > 0.5, msg="contrast=true should yield positive blur, got \{slot7_c}")
+  assert_true(alpha_c > 0.15, msg="contrast=true should raise tint alpha, got \{alpha_c}")
+  // Reduce Transparency (glass_solid=true) -> opaque solid, zero kind 6 glass instances
+  set_glass_solid(Some(true))
+  t.draw()
+  assert_true(find_glass() is None, msg="glass_solid=true must emit zero glass instances")
+  set_glass_solid(None)
+  set_glass_frost(0.0)
+  t.set_increase_contrast(false)
+}

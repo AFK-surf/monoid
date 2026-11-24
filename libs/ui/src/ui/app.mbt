@@ -2357,7 +2357,11 @@ fn on_key(code : Int, mods : Int) -> Unit {
   // Code 0 is the host's modifier change, not a key for a field or shortcut. Ordinary keys also carry their
   // modifiers, so a key received after focus returns corrects the state before it is acted on.
   if modifiers_said.val.untracked() != mods {
-    view_event(fn() { modifiers_said.val.set(mods) }, what="modifiers")
+    view_event(fn() {
+      modifiers_said.val.set(mods)
+      cmd_hover_update(mods=Some(mods))
+      view_cursor_tell()
+    }, what="modifiers")
     h_request_frame()
   }
   if code == 0 { return }
@@ -2421,9 +2425,16 @@ fn on_key_now(code : Int, mods : Int) -> Unit {
   took_input("key", h_now(), [code.to_double(), mods.to_double()], typed~)
   typed_event(typed)
   key_in(code, mods)
-  // (Escape to the topmost layer it dismisses, at its moment: overlay.mbt)
+  // (Escape to the topmost layer it dismisses, at its moment: overlay.mbt; with none up that takes it, nor anything of
+  // the tree's (view_key), words of the tree's picked with the pointer let go, and what stands by them (a quote's
+  // pill), as a browser's selection is by Escape)
   if code == key_escape {
-    g().layer_keys_now()
+    let c = g()
+    let layered = c.last_layers.iter().any(fn(l) { c.layer_takes(l) && (l.modal || l.escape) })
+    c.layer_keys_now()
+    if !layered && mods == 0 && tree_picking() {
+      select_none()
+    }
   }
 }
 

@@ -12,40 +12,17 @@
 import { tmpdir } from "node:os";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, pionBinary, readerBinary } from "../read/mb-reader.ts";
-import { resolveReaderEngine } from "../read/reader-select.ts";
+import { MbProcess, resolveReaderSelection } from "../read/mb-reader.ts";
+import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
 /// How long a program with nothing asked of it is kept.
 export const IDLE_MS = 60_000;
 
-const warnedReaderFallbacks = new Set<string>();
-
 /// Resolve the binary for `--builder packed` (`mb` by default; `pion` via `STILLFAIL_READER_PACKED` /
-/// `STILLFAIL_READER_ENGINE`; `shadow` is forbidden by `READER_MODES.packed.allowShadow === false`).
-/// Probes engine intent before calling `pionBinary()` so default `mb` does zero main-thread `statSync`.
-function resolvePackedBinary(explicit?: string | null): string {
-  if (explicit != null) return explicit;
-  const probe = resolveReaderEngine("packed", { hasPionBinary: true });
-  const pionBin = probe.engine === "mb" ? null : pionBinary();
-  const selection = probe.engine === "mb"
-    ? probe
-    : resolveReaderEngine("packed", { hasPionBinary: pionBin !== null });
-  if (selection.fallback) {
-    const dedupKey = `${selection.mode}:${selection.source}:${selection.reason ?? "unknown"}`;
-    if (!warnedReaderFallbacks.has(dedupKey)) {
-      warnedReaderFallbacks.add(dedupKey);
-      log.warn("archive", "reader engine fallback", {
-        mode: selection.mode,
-        engine: selection.engine,
-        requested: selection.requested,
-        source: selection.source,
-        reason: selection.reason,
-        detail: selection.detail,
-      });
-    }
-  }
-  if (selection.engine === "pion" && pionBin !== null) return pionBin;
-  return readerBinary();
+/// `config.json` `readers.packed` / `STILLFAIL_READER_ENGINE`; `shadow` is forbidden by
+/// `READER_MODES.packed.allowShadow === false`).
+function resolvePackedBinary(explicit?: string | null, readers?: () => ReaderSelectConfig): string {
+  return resolveReaderSelection("packed", { binary: explicit, config: readers, logAt: "archive" }).primaryBinary;
 }
 
 type Json = any;
@@ -62,13 +39,13 @@ export class PackAborted extends Error {}
 export function runPackedOnce<A = Json>(
   op: string,
   args: Record<string, unknown>,
-  options?: { binary?: string; shellDir?: string; background?: boolean; signal?: AbortSignal },
+  options?: { binary?: string; shellDir?: string; background?: boolean; signal?: AbortSignal; readers?: () => ReaderSelectConfig },
 ): Promise<A> {
   const signal = options?.signal;
   if (signal?.aborted) return Promise.reject(new PackAborted("workspace packing aborted"));
   return new Promise((resolve, reject) => {
     const p = new MbProcess(
-      resolvePackedBinary(options?.binary),
+      resolvePackedBinary(options?.binary, options?.readers),
       ["--builder", "packed", "--shell-dir", options?.shellDir ?? tmpdir()],
       { background: options?.background },
     );
@@ -134,6 +111,7 @@ export class PackedProgram {
   readonly #binary: string | null;
   readonly #shellDir: string;
   readonly #after: (ms: number, f: () => void) => () => void;
+  #readers: (() => ReaderSelectConfig) | undefined;
   #process: MbProcess | null = null;
   #termination: Promise<number> | null = null;
   #next = 0;
@@ -145,11 +123,12 @@ export class PackedProgram {
 
   /// `shellDir`: where the program's shell would keep its own files (it asks for none: the system's temporary
   /// directory by default). `binary`: the program (readerBinary's where none is given). `after`: the timer of IDLE_MS
-  /// (a test's own; else the wall's).
-  constructor(options: { binary?: string; shellDir?: string; after?: (ms: number, f: () => void) => () => void } = {}) {
+  /// (a test's own; else the wall's). `readers`: live `config.json` `readers` snapshot getter read on each spawn.
+  constructor(options: { binary?: string; shellDir?: string; after?: (ms: number, f: () => void) => () => void; readers?: () => ReaderSelectConfig } = {}) {
     this.#binary = options.binary ?? null;
     this.#shellDir = options.shellDir ?? tmpdir();
     this.#after = options.after ?? wall.after;
+    this.#readers = options.readers;
   }
 
   /// Whether a program runs now.
@@ -176,7 +155,7 @@ export class PackedProgram {
 
   #start(): MbProcess {
     if (this.#process !== null) return this.#process;
-    const child = new MbProcess(resolvePackedBinary(this.#binary), ["--builder", "packed", "--shell-dir", this.#shellDir]);
+    const child = new MbProcess(resolvePackedBinary(this.#binary, this.#readers), ["--builder", "packed", "--shell-dir", this.#shellDir]);
     this.started++;
     this.#process = child;
     child.on("message", (answer: Json) => {

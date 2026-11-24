@@ -176,6 +176,28 @@ test("the_picker_has_cues_groups_in_its_order_and_only_what_the_station_takes", 
   assert.deepEqual([openai.hasKey, openai.hasPlan], [false, true]);
 });
 
+test("command_code_and_open_design_are_gateways_with_a_key_that_run_every_key_runtime", () => {
+  const { s, flows, topic } = flow();
+  flows.change(topic, 1, "open", {});
+  s.set(overview, { ok: { apiProviders: [{ id: "openrouter" }, { id: "command-code" }, { id: "open-design" }, { id: "cloudflare-ai-gateway" }], updates: [{ id: "station" }, { id: "dsh" }, { id: "pi", name: "Pi", installed: true }] } });
+  const view = flows.value(topic);
+  assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
+  const gateways = view.groups.find((g: J) => g.id === "gateways").providers;
+  assert.deepEqual(gateways.map((p: J) => p.id), ["openrouter", "opencode-go", "command-code", "open-design", "cloudflare-ai-gateway"]);
+  for (const [id, name, key] of [["command-code", "Command Code", "cc-1"], ["open-design", "Open Design", "od-1"]]) {
+    const tile = gateways.find((p: J) => p.id === id);
+    assert.deepEqual([tile.name, tile.mark, tile.usesText], [name, id, "Claude Code · Codex · DeepSeek Harness · Pi · 自动决策"]);
+    flows.change(topic, 1, "edit", { provider: id });
+    let form = flows.value(topic);
+    assert.deepEqual([form.step, form.title, form.usesLine, form.canSubmit], ["connect", `连接 ${name}`, "添加后可用于：Claude Code · Codex · DeepSeek Harness · Pi · 自动决策", false]);
+    flows.change(topic, 1, "edit", { key: ` ${key} ` });
+    form = flows.value(topic);
+    assert.equal(form.canSubmit, true);
+    assert.deepEqual(flows.begin(topic, 1), { access: { kind: "api-provider", key, provider: id } });
+    flows.finish(topic, 1, null);
+  }
+});
+
 test("a_vendor_with_a_plan_and_a_key_asks_which_and_one_with_a_key_goes_straight_to_the_form", () => {
   const { s, flows, topic } = flow();
   flows.change(topic, 1, "open", {});

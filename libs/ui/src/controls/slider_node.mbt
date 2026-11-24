@@ -51,8 +51,8 @@ pub fn value_slider_node(
         step~,
         disabled~,
         track_h=@glass.slider_track_h,
-        thumb_w_px=@glass.thumb_w,
-        thumb_h_px=@glass.thumb_h,
+        thumb_w_px=@glass.slider_thumb_w,
+        thumb_h_px=@glass.slider_thumb_h,
         track_color=fn() { theme().p.line_strong },
         fill_color=fn() { theme().p.accent },
         value_text=fn(x) { format(x.round().to_int()) },
@@ -64,7 +64,7 @@ pub fn value_slider_node(
       let hold = fn(n : @view.View) { dclamp(dd.pressed(n), 0.0, 1.0) }
       let active = fn(n : @view.View) { !disabled() && (dd.pressing() || dd.pressed(n) > 0.001) }
       let thumb_x = fn(n : @view.View) {
-        let span_px = dmax(0.0, room.width() - @glass.thumb_w)
+        let span_px = dmax(0.0, room.width() - @glass.slider_thumb_w)
         dclamp(dd.progress(n), 0.0, 1.0) * span_px
       }
       let bubble_in = fn(o : @view.View) {
@@ -88,7 +88,7 @@ pub fn value_slider_node(
             .over(Is(true))
             .points(Is(false))
             .offset(Is((0.0, 0.0)))
-            .width(Is(Some(@glass.thumb_w)))
+            .width(Is(Some(@glass.slider_thumb_w)))
             .height(Is(Some(vslider_h)))
             .moved_by(fn(_w, _h, _at) { (thumb_x(a), 0.0) }, fn(_w, _h) { 0.0 })
             |> ignore
@@ -116,7 +116,7 @@ pub fn value_slider_node(
             .points(Is(false))
             .scale(By(fn() { dmin(1.0, slider_bubble_scale_from + (1.0 - slider_bubble_scale_from) * hold(o)) }), about=At(0.5, 1.0))
             .moved_by(
-              fn(w, h, _at) { (thumb_x(o) + @glass.thumb_w / 2.0 - w / 2.0, -h) },
+              fn(w, h, _at) { (thumb_x(o) + @glass.slider_thumb_w / 2.0 - w / 2.0, -h) },
               fn(_w, _h) { 0.0 },
             )
             |> ignore

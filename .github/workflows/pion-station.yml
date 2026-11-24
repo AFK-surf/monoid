@@ -20,8 +20,11 @@ on:
       - "station/src/ops/paths.ts"
       - "station/src/read/archive-mark-builder.ts"
       - "station/src/read/mb-reader.ts"
+      - "station/src/read/pool.ts"
       - "station/src/read/reader-select.ts"
       - "station/src/read/requested-builder.ts"
+      - "station/src/rig/main.ts"
+      - "station/src/services.ts"
       - "station/src/store/archive-mark-index.ts"
       - "station/test/footprint-reference.ts"
       - "station/test/mb-archive-marks.test.ts"
@@ -32,6 +35,7 @@ on:
       - "station/test/reader-contract-packed.test.ts"
       - "station/test/footprint-mounts.ts"
       - "station/test/reader-contract-select.test.ts"
+      - "station/test/reader-config-select.test.ts"
       - "station/test/footprint-pion-switch.test.ts"
       - "station/test/reader-contract-memory.test.ts"
       - "station/test/mb-memory-merge.test.ts"
@@ -296,6 +300,7 @@ jobs:
 
           # Black-box 0-diff contract gate for `--builder footprint` & `--builder memory`.
           pnpm --dir station install --frozen-lockfile --prefer-offline
+          node --test station/test/reader-contract-select.test.ts station/test/reader-config-select.test.ts
           STILLFAIL_READER_CANDIDATE="$BIN" node --test station/test/reader-contract-footprint.test.ts
           STILLFAIL_MB_READER="$BIN" node --test station/test/mb-footprint.test.ts
           # (a branch's reader, where it is built here: by the zig above, -O0 in units of 8 MB, as natives on GitHub's runners)

@@ -66,6 +66,7 @@ import { profileFetch } from "../ops/agent-env.ts";
 import { workspaceAgentHomePath } from "../sessions/agent-home.ts";
 import { SKIPPED } from "./memory.ts";
 import { MemoryProgram, MemoryProgramStopped } from "./memory-mb.ts";
+import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { allowedIn } from "../sessions/config.ts";
 import { type Lang, Said, stationLang, tr } from "../ops/i18n.ts";
 
@@ -154,6 +155,8 @@ export type SharingDeps = {
   codexTokenUrl?: string;
   /// Tests: the MoonBit program that reads and writes the skills' files (readerBinary's where none is given).
   binary?: string;
+  /// Live `config.json` `readers` snapshot getter for `--builder memory`.
+  readers?: () => ReaderSelectConfig;
   /// Service profile adapters for non-agent-runtime accounts (`access.kind === "service"`).
   services?: ServiceRegistry;
 };
@@ -368,7 +371,10 @@ export class Sharing {
   constructor(deps: SharingDeps) {
     this.deps = deps;
     this.time = new Fibers("share", deps.clock);
-    this.program = new MemoryProgram(this.root, deps.binary === undefined ? {} : { binary: deps.binary });
+    this.program = new MemoryProgram(this.root, {
+      ...(deps.binary === undefined ? {} : { binary: deps.binary }),
+      ...(deps.readers === undefined ? {} : { readers: deps.readers }),
+    });
     this.readState();
   }
 

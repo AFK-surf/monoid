@@ -5427,7 +5427,14 @@ fn fx_profile_flow(hermes? : Bool = false, colab? : Bool = false) -> Json {
   }
   let groups : Array[Json] = [
     obj([("id", str("labs")), ("title", str("模型厂商")), ("providers", Json::array(labs_providers))]),
-    obj([("id", str("gateways")), ("title", str("中转站")), ("providers", [provider("openrouter", "OpenRouter", "gateways", "", "openrouter")])]),
+    obj([("id", str("gateways")), ("title", str("中转站")), (
+      "providers",
+      [
+        provider("openrouter", "OpenRouter", "gateways", "", "openrouter"),
+        provider("command-code", "Command Code", "gateways", "", "command-code"),
+        provider("open-design", "Open Design", "gateways", "", "open-design"),
+      ],
+    )]),
   ]
   if hermes {
     groups.push(obj([

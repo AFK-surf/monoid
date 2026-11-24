@@ -35,7 +35,7 @@ import { sweepRunners } from "../agents/runner.ts";
 import type { Control } from "../ops/launcher.ts";
 import { log } from "../ops/log.ts";
 import { mcpPortFile, ownData, portsToTry, rememberedMcpPort } from "../ops/files.ts";
-import { AdminHost, ControlPlane, Events, Grants, HelperFolders, Key, Own, Parts, Paths, Peers, Previous, Readers, RigSide, ScreenRegistry, StationConfig, Store, Up, AgentsSide, MeshSide } from "../services.ts";
+import { AdminHost, ControlPlane, Events, Grants, HelperFolders, Key, Own, Parts, Paths, Peers, Previous, ReaderConfig, Readers, RigSide, ScreenRegistry, StationConfig, StationPacked, Store, Up, AgentsSide, MeshSide } from "../services.ts";
 import { claudeCredentialsFile, codexAuthFile } from "../agents/machine-logins.ts";
 import { permissionsView } from "../api/routes/permissions.ts";
 import { Net, measure } from "../jobs/load.ts";
@@ -227,6 +227,8 @@ export const AgentsLive = (control: Control) =>
       );
       const run = join(data, "run");
       const config = yield* StationConfig;
+      const readerConfig = yield* ReaderConfig;
+      const packed = yield* StationPacked;
       // An edit is taken only if it checks out as config.rs `parse_config` would have it.
       config.check = checkConfig;
       // What it starts for its agents runs with the variables set in it (ops/agent-env.ts).
@@ -295,7 +297,7 @@ export const AgentsLive = (control: Control) =>
       let connectHeld = async (_ws: string | null, _kind: string, _own: unknown): Promise<string | null> => null;
       const connectKinds = new Map<string, ConnectKind>();
       const along: Along[] = [];
-      const cold = new ColdRooms(() => hub);
+      const cold = new ColdRooms(() => hub, { readers: readerConfig, packed });
       // What the deployment adds to every session's instructions (STILLFAIL_SITE_INSTRUCTIONS), read once, as it starts.
       const siteInstructions = yield* Effect.promise(() => readSiteInstructions());
       if (siteInstructions !== "") log.info("agents", "the deployment's instructions are told to every session", { path: process.env.STILLFAIL_SITE_INSTRUCTIONS, chars: siteInstructions.length });
@@ -355,12 +357,12 @@ export const AgentsLive = (control: Control) =>
         (builder) => Effect.promise(() => builder.close()),
       );
       const sessionCounts = yield* Effect.acquireRelease(
-        Effect.sync(() => buildSessionCounts(store, previous)),
+        Effect.sync(() => buildSessionCounts(store, previous, undefined, readerConfig)),
         (builder) => Effect.promise(() => builder.close()),
       );
       hub.waitForSessionCounts = () => sessionCounts.ready;
       const postBlocks = yield* Effect.acquireRelease(
-        Effect.sync(() => new PostBlockBuilder(store, previous)),
+        Effect.sync(() => new PostBlockBuilder(store, previous, undefined, readerConfig)),
         (builder) => Effect.promise(() => builder.close()),
       );
       hub.preparePostsAfter = (messages, signal) => postBlocks.ready(messages, signal);
@@ -387,7 +389,7 @@ export const AgentsLive = (control: Control) =>
       });
       const meshBus = yield* Peers;
       const rigSide = yield* RigSide;
-      const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus, acceptAutoChats: () => config.raw()?.acceptAutoChats === true, traces: () => meshSide.traces ?? null });
+      const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus, acceptAutoChats: () => config.raw()?.acceptAutoChats === true, traces: () => meshSide.traces ?? null, readers: readerConfig });
       // Its sandboxes (config.json's `sandboxes` + default Colab sandboxes when Colab profiles exist): wired once `accounts` is created below.
       // Measure only working chats, and only station-owned workspaces. A chat's remote workspaces are measured on the
       // machines that hold them; an offline or older station supplies no reading until it can answer.
@@ -485,7 +487,7 @@ export const AgentsLive = (control: Control) =>
           case READ:
             return forPeer(hub, peer, request, ws);
           case FILE:
-            return fileForPeer(hub, request, ws);
+            return fileForPeer(hub, request, ws, packed);
           case PUT:
             return putForPeer(hub, peer, request, ws);
           case CREATE:
@@ -690,6 +692,7 @@ export const AgentsLive = (control: Control) =>
         quotaReset: (id) => accounts.sharedQuotaReset(id),
         profileGone: (id) => hub.profileGone(id),
         itself: (station) => meshBus.cameHere(station),
+        readers: readerConfig,
       });
       remote.setShares((peer, request, workspace) => sharing!.handle(peer, request, workspace));
       sharing.start();
@@ -700,6 +703,7 @@ export const AgentsLive = (control: Control) =>
         data, cloud,
         ask: (station, workspace, request) => remote.ask(station, { workspace, ...request }),
         agentHome: () => settings().agentHome,
+        readers: readerConfig,
       });
       remote.setMemory((peer, request, workspace) => memorySync.handle(peer, request, workspace));
       // (its program, idle, let go when the station is short of memory)
@@ -729,7 +733,7 @@ export const AgentsLive = (control: Control) =>
       // The program that puts transcripts and workspaces away (sessions/packed-mb.ts), when one was made: let go under the
       // machine's pressure while nothing is asked of it, and ended with the agents (an ask under way failed, as at a
       // handover: the next process does it again).
-      readers.onTrim(() => peekPackedProgram()?.trimIdle() ?? 0);
+      readers.onTrim(() => packed.trimIdle() + (peekPackedProgram()?.trimIdle() ?? 0));
       yield* Effect.addFinalizer(() => Effect.promise(() => peekPackedProgram()?.close() ?? Promise.resolve()));
       // Not asked of them before the process before has handed over: what it carries says where each reading stands.
       hub.live.handover = previous;

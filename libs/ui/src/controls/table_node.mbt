@@ -2,7 +2,7 @@
 // wide as table_widths shares the room it is laid out in, its head and its rows each a row of cells (the head's words
 // muted, smaller, medium; the rest the words' own), ruled between them; wider than its room, it scrolls across
 // (Scroll::across), `bleed` past its room either side, its bar under the room alone. Its table as the core read the
-// Markdown (blocks_of: core_blocks), each cell's words in pieces as the message's (runs_of: bold, italic, code, struck
+// Markdown (blocks_of: core_blocks), each cell's words in pieces as the message's (runs_of: bold, muted emphasis, code, struck
 // through, links pressed where they lead: runs_links). As what it is told changes, each cell's words told anew, nothing
 // made again but cells and rows come or gone. Its picture (the copy key's) its own frame's, made as nodes
 // apart and taken whole (take_picture).
@@ -147,9 +147,10 @@ fn table_of(text : String, tree : Json?) -> MdTable? {
 ///|
 /// A cell's words as pieces the tree draws (View::words_runs: each its own way, as a message's: runs_of, a chat's
 /// mention in the accent's ink), its links among them.
-fn table_cell_runs(cell : Array[MdInline]) -> Array[@ui.Run] {
+fn table_cell_runs(cell : Array[MdInline], head : Bool) -> Array[@ui.Run] {
   let runs = []
-  runs_of(cell, runs, false, false, false, "", theme().p.accent_text, {}, false)
+  let ink = if head { web().muted } else { theme().p.text }
+  runs_of(cell, runs, false, false, false, "", theme().p.accent_text, emph_ink_for(ink), {}, false)
   runs
 }
 
@@ -225,7 +226,7 @@ fn md_table_body_node(
   rows_by? : () -> (Int, Int)?,
   across? : @view.Scroll = @view.Scroll::across(),
   tracks_kept? : @view.TracksKept,
-  cell_runs? : (Array[MdInline]) -> Array[@ui.Run] = table_cell_runs,
+  cell_runs? : (Array[MdInline], Bool) -> Array[@ui.Run] = table_cell_runs,
   line_share? : () -> Double,
   link_cards? : (TipLayer, (LinkOf) -> LinkCard?)? = None,
   on_link_shown? : ((@view.View, Array[(String, String, Int)]) -> Unit)? = None,
@@ -278,7 +279,7 @@ fn md_table_body_node(
             match cell_images.bind(fn(f) { f(cell) }) {
               // (a cell of images as wide as their row: Md::table's)
               Some(images) => Wide(cell_images_node_width(images))
-              None => Said(cell_runs(cell), table_words_look(r == 0, 1.0), table_runs_look())
+              None => Said(cell_runs(cell, r == 0), table_words_look(r == 0, 1.0), table_runs_look())
             }
           })
         })
@@ -474,7 +475,7 @@ fn table_frame_node(
   cell_images? : (Array[MdInline]) -> Array[(Double, (@view.View, () -> Double) -> Unit)]?,
   rows? : (Int, Int)? = None,
   rows_by? : () -> (Int, Int)?,
-  cell_runs? : (Array[MdInline]) -> Array[@ui.Run] = table_cell_runs,
+  cell_runs? : (Array[MdInline], Bool) -> Array[@ui.Run] = table_cell_runs,
   line_share? : () -> Double,
   link_cards? : (TipLayer, (LinkOf) -> LinkCard?)? = None,
   on_link_shown? : ((@view.View, Array[(String, String, Int)]) -> Unit)? = None,
@@ -555,7 +556,7 @@ fn table_frame_node(
             // words_links_node)
             let words_box = fn(cell : @view.View) {
               // (its pieces worked out once as its words change, what draws them and what presses their links reading that)
-              let runs_now = @signals.computed(fn(_) { cell_runs(words()) })
+              let runs_now = @signals.computed(fn(_) { cell_runs(words(), head) })
               let runs = fn() { runs_now.get() }
               let look = fn() {
                 table_words_look_line(head, scale(), match line_share {

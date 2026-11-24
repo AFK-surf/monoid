@@ -646,3 +646,104 @@ test "beside: an overlay whose shown anchor gives no piece on its first frame is
   let kept = t.drawn_of(ids["b"]).unwrap()
   assert_eq((kept.x, kept.y), (110.0, 76.0), msg="stays at last placed position after anchor hides")
 }
+
+///|
+test "beside while seen (`while_seen`): by the end of a pick in a column that scrolls (a caret's piece of a row), over all else of the window; the row scrolled out of what the column shows, drawn nowhere, never over what is round the column; scrolled back, beside it again" {
+  let scroll = @view.Scroll::new()
+  let ids : Map[String, @view.NodeId] = Map([])
+  let t = @view.Tree::new(
+    fn(root) {
+      // (a bar over the column, 100 high, the column 100 high under it, its ten rows 40 high: the second the anchor)
+      root.box(fn(bar) { bar.width(Is(Some(400.0))).height(Is(Some(100.0))) |> ignore }) |> ignore
+      root.box(fn(col) {
+        col
+        .width(Is(Some(400.0)))
+        .height(Is(Some(100.0)))
+        .scrolls(scroll, fn(held) {
+          for i in 0..<10 {
+            held.box(fn(r) {
+              if i == 1 {
+                ids["a"] = r.id()
+              }
+              r.width(Is(Some(400.0))).height(Is(Some(40.0))) |> ignore
+            })
+            |> ignore
+          }
+        })
+        |> ignore
+      })
+      |> ignore
+      root.box(fn(b) {
+        ids["b"] = b.id()
+        b
+        .over(Is(true))
+        .width(Is(Some(60.0)))
+        .height(Is(Some(26.0)))
+        .beside(ids["a"], side=Top, offset=8.0, piece=fn(_, _) { Some((100.0, 10.0, 0.0, 20.0)) }, while_seen=true)
+        |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  t.frame(400.0, 300.0) |> ignore
+  let at = fn() { t.drawn_of(ids["b"]).map(fn(d) { (d.x, d.y) }) }
+  assert_eq(at(), Some((70.0, 116.0)), msg="over the end, the row seen")
+  // (scrolled on 120: the row 20 over the column's top, under the bar)
+  t.event(10.0, fn() { scroll.put(120.0) })
+  t.frame(400.0, 300.0) |> ignore
+  assert_eq(at(), None, msg="its row scrolled out of sight: drawn nowhere, not over the bar")
+  // (scrolled back: beside it again)
+  t.event(20.0, fn() { scroll.put(0.0) })
+  t.frame(400.0, 300.0) |> ignore
+  assert_eq(at(), Some((70.0, 116.0)), msg="scrolled back: over the end again")
+}
+
+///|
+test "beside while seen (`while_seen`): placed, then its anchor laid out nowhere or no piece of it there: drawn nowhere, not where it last went; back, beside it again" {
+  let hidden = @signals.signal(false, same=fn(a, b) { a == b })
+  let ay = @signals.signal(100.0, same=fn(a, b) { a == b })
+  let piece_now = Ref(true)
+  let ids : Map[String, @view.NodeId] = Map([])
+  let t = @view.Tree::new(
+    fn(root) {
+      root.box(fn(a) {
+        ids["a"] = a.id()
+        a
+        .over(Is(true))
+        .width(Is(Some(40.0)))
+        .height(Is(Some(20.0)))
+        .offset(By(fn() { (120.0, ay.get()) }))
+        .laid_nowhere(By(fn() { hidden.get() }))
+        |> ignore
+      })
+      |> ignore
+      root.box(fn(b) {
+        ids["b"] = b.id()
+        b
+        .width(Is(Some(60.0)))
+        .height(Is(Some(26.0)))
+        .beside(ids["a"], side=Top, offset=8.0, while_seen=true, piece=fn(_, _) {
+          if piece_now.val { Some((10.0, 0.0, 20.0, 20.0)) } else { None }
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  t.frame(400.0, 300.0) |> ignore
+  let at = fn() { t.drawn_of(ids["b"]).map(fn(d) { (d.x, d.y) }) }
+  assert_eq(at(), Some((110.0, 66.0)), msg="placed beside the piece")
+  t.event(10.0, fn() { hidden.set(true) })
+  t.frame(400.0, 300.0) |> ignore
+  assert_eq(at(), None, msg="its anchor laid out nowhere: drawn nowhere, not where it last went")
+  t.event(20.0, fn() { hidden.set(false) })
+  t.frame(400.0, 300.0) |> ignore
+  assert_eq(at(), Some((110.0, 66.0)), msg="its anchor back: beside it again")
+  // (its words said again without the piece: placed again as it moves, none there)
+  piece_now.val = false
+  t.event(30.0, fn() { ay.set(110.0) })
+  t.frame(400.0, 300.0) |> ignore
+  assert_eq(at(), None, msg="no piece of its anchor now: drawn nowhere, not where it last went")
+}

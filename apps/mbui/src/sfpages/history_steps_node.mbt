@@ -5418,12 +5418,20 @@ pub fn history_attention_node(
   red : @ui.TextStyle,
 ) -> Unit {
   let notes = fn() { items(a(), "attention") }
+  let cut = @ui.style_cut(amber) || @ui.style_cut(red)
   parent.each(fn() { Array::makei(notes().length(), fn(i) { i }) }, fn(i) { i }, fn(c, i) {
-    c.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
     let k = i.untracked()
     let n = fn() { notes().get(k) }
     let q = fn() { field(n(), "quota") }
-    c.pick(fn() { q() is Some(Object(_)) }, fn(x, quota) {
+    let is_quota = fn() { q() is Some(Object(_)) }
+    if cut {
+      c.row(Is(true)) |> ignore
+    }
+    c
+    .shrink(By(fn() { if is_quota() { 0.0 } else { 1.0 } }))
+    .min_width(By(fn() { if is_quota() { None } else { Some(0.0) } }))
+    |> ignore
+    c.pick(is_quota, fn(x, quota) {
       if quota {
         @sf.fill_chip_node(
           x,
@@ -5442,11 +5450,15 @@ pub fn history_attention_node(
         )
         |> ignore
       } else {
+        if cut {
+          x.row(Is(true)) |> ignore
+        }
         x.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-        @sf.words_node(x, fn() { text(n(), "text") }, fn() { if text(n(), "kind") == "disk" { amber } else { red } })
-        .shrink(Is(1.0))
-        .min_width(Is(Some(0.0)))
-        |> ignore
+        let w = @sf.words_node(x, fn() { text(n(), "text") }, fn() { if text(n(), "kind") == "disk" { amber } else { red } })
+        if !cut {
+          w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        }
+        @sf.tip_node(tips, w, fn() { text(n(), "text") }, repeats=true) |> ignore
       }
     })
   })

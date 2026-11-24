@@ -11,6 +11,8 @@ pub(all) struct Run {
   /// 0: the paragraph's
   weight : Int
   italic : Bool
+  /// semantic emphasis (copied as `<em>` in HTML without slanting drawn glyphs)
+  emph : Bool
   /// the paragraph's look for code: the code face at its code_scale, in its
   /// code_color on its code_bg
   code : Bool
@@ -66,6 +68,7 @@ pub fn span(
   weight? : Int = 0,
   bold? : Bool = false,
   italic? : Bool = false,
+  emph? : Bool = false,
   code? : Bool = false,
   mono? : Bool = false,
   serif? : Bool = false,
@@ -83,6 +86,7 @@ pub fn span(
     text,
     weight: if bold && weight == 0 { 700 } else { weight },
     italic,
+    emph,
     code,
     mono,
     serif,

@@ -21,11 +21,13 @@ import { type Mesh, loadMesh, withRelays } from "./mesh/native.ts";
 import { withFront } from "./mesh/front.ts";
 import { verifyWith } from "../../shared/lock.ts";
 import { Readers as ReaderPool } from "./read/pool.ts";
+import type { ReaderSelectConfig } from "./read/reader-select.ts";
 import { repairMergedEditLookup } from "./store/schema.ts";
 import { makeStore } from "./read/store.ts";
 import { apiOf, entryViews, spokenIn } from "./read/views.ts";
 import { KnownNames } from "./read/slack-known.ts";
 import type { AgentsParts } from "./sessions/agents.ts";
+import { PackedProgram } from "./sessions/packed-mb.ts";
 import type { Rig } from "./rig/module.ts";
 import { platform } from "./platform/index.ts";
 import { ScreenHub } from "./screens/hub.ts";
@@ -118,6 +120,7 @@ export class Readers extends Context.Service<Readers, ReaderPool>()("stillfail/R
       const { data } = yield* Paths;
       const store = yield* Store;
       const previous = yield* Previous;
+      const readerConfig = yield* ReaderConfig;
       yield* Effect.acquireRelease(
         Effect.sync(() => {
           const builder = buildLegacyEntryLookups(store, previous.exited);
@@ -133,7 +136,7 @@ export class Readers extends Context.Service<Readers, ReaderPool>()("stillfail/R
       return yield* Effect.acquireRelease(Effect.sync(() => {
         // The usage checker (`startUsageIndex`, reader `--builder usage-check`) only says whether the statistics are
         // complete, filling nothing: it is started by the read that finds them not yet (pool.ts `usageRead`), not here.
-        const pool = new ReaderPool(data, undefined, undefined, undefined, { previousGone: previous.exited, priority: store.backfillPriority });
+        const pool = new ReaderPool(data, undefined, undefined, undefined, { previousGone: previous.exited, priority: store.backfillPriority, readers: readerConfig });
         // (the merged view a builder leaves to the writer, repaired on the station's one write connection, which waits
         // for no lock meanwhile: one held elsewhere is SQLITE_BUSY, and the builder asks again after a pause)
         pool.repairEdits = () => {
@@ -335,6 +338,53 @@ export class StationConfig extends Context.Service<StationConfig, ConfigFile>()(
   );
 }
 
+/// Live in-memory snapshot of `config.json`'s `readers` map, initialized once from the watched `ConfigFile`
+/// and updated via `config.listen(...)` (zero per-request `readFileSync`/`config.raw()`, zero module globals).
+export function makeReaderConfigSnapshot(config: ConfigFile): { get: () => ReaderSelectConfig; stop: () => void } {
+  const extract = (raw: any): ReaderSelectConfig => {
+    const readers = raw?.readers;
+    if (readers !== null && readers !== undefined && typeof readers === "object" && !Array.isArray(readers)) {
+      return { readers: { ...readers } };
+    }
+    return undefined;
+  };
+  let snapshot: ReaderSelectConfig = extract(config.raw());
+  const stop = config.listen((raw) => {
+    snapshot = extract(raw);
+  });
+  return { get: () => snapshot, stop };
+}
+
+/// Live in-memory getter of `config.json`'s `readers` engine overrides for every reader/builder spawn.
+export class ReaderConfig extends Context.Service<ReaderConfig, () => ReaderSelectConfig>()("stillfail/ReaderConfig") {
+  static readonly layer = Layer.effect(
+    ReaderConfig,
+    Effect.gen(function* () {
+      const config = yield* StationConfig;
+      const snap = yield* Effect.acquireRelease(
+        Effect.sync(() => makeReaderConfigSnapshot(config)),
+        (s) => Effect.sync(() => s.stop()),
+      );
+      return snap.get;
+    }),
+  );
+}
+
+/// Station-scoped `--builder packed` program bound to this station's `ReaderConfig` snapshot (isolated per station,
+/// never overwriting the config-free module singleton `packedProgram()`).
+export class StationPacked extends Context.Service<StationPacked, PackedProgram>()("stillfail/Packed") {
+  static readonly layer = Layer.effect(
+    StationPacked,
+    Effect.gen(function* () {
+      const readerConfig = yield* ReaderConfig;
+      return yield* Effect.acquireRelease(
+        Effect.sync(() => new PackedProgram({ readers: readerConfig })),
+        (program) => Effect.promise(() => program.close()),
+      );
+    }),
+  );
+}
+
 /// What is the station's own on this machine (ops/own.ts): its data and config, and what its parts add as they are made.
 export class Own extends Context.Service<Own, OwnPaths>()("stillfail/Own") {
   static readonly layer = Layer.effect(
@@ -468,10 +518,12 @@ export class AdminApi extends Context.Service<AdminApi, Admin>()("stillfail/Admi
     Effect.gen(function* () {
       const side = yield* AgentsSide;
       const config = yield* StationConfig;
+      const readerConfig = yield* ReaderConfig;
+      const packed = yield* StationPacked;
       const paths = yield* Paths;
       return new Admin(yield* Readers, {
         store: yield* Store, events: yield* Events, host: yield* AdminHost, agents: () => side.current ?? undefined, screens: yield* ScreenRegistry, helper: yield* Helper, grants: yield* Grants,
-        drive: yield* StationDrive, parts: yield* Parts, config, data: paths.data, cloud: (yield* ControlPlane).state,
+        drive: yield* StationDrive, parts: yield* Parts, config, readerConfig, packed, data: paths.data, cloud: (yield* ControlPlane).state,
         ...(paths.restartFront ? { restartFront: paths.restartFront } : {}),
       });
     }),

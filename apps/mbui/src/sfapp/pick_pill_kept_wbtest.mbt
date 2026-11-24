@@ -402,3 +402,36 @@ test "大屏, light and dark: 引用 over words a mouse picked is one layer of l
   @ui.set_glass_solid(None)
   @sf.set_dark(None)
 }
+
+///|
+test "大屏, words a mouse picked in a message, the list then scrolled on till they are out of what it shows (its block still built): no 引用 anywhere, not over the composer or the bars; scrolled back, 引用 over them again" {
+  let calls : Array[Made] = []
+  let t = pick_list_tester(calls)
+  t.check_looks(false)
+  let (bx, by, bw, bh) = words_rect(t, "表 18")
+  mouse_dragged(t, bx + 1.0, by + bh / 2.0, bx + bw - 1.0, by + bh / 2.0)
+  assert_true(t.ctx().selected_text() != "")
+  guard pill_over(t, by) is Some(_) else { fail("no 引用 over the words picked") }
+  let pills = fn() { t.words().filter(fn(w) { w.0 == "引用" }).length() }
+  // (the list scrolled toward its top, its last message carried down past the window's foot)
+  let mut turned = 0
+  while turned < 12 {
+    t.wheel(900.0, 400.0, -150.0)
+    t.run_for(@ui.move_most_ms)
+    turned = turned + 1
+    if words_rect(t, "表 18").1 > 820.0 {
+      break
+    }
+  }
+  assert_true(words_rect(t, "表 18").1 > 820.0, msg="the words carried out of sight")
+  assert_true(t.ctx().selected_text() != "", msg="what was picked kept as the list scrolls")
+  assert_eq(pills(), 0, msg="引用 drawn with the words it stands for out of sight")
+  // (scrolled back as far: 引用 over them again)
+  for _ in 0..<turned {
+    t.wheel(900.0, 400.0, 150.0)
+    t.run_for(@ui.move_most_ms)
+  }
+  let (_, by2, _, _) = words_rect(t, "表 18")
+  assert_true(by2 < 800.0, msg="the words back in sight: \{by2}")
+  assert_true(pill_over(t, by2) is Some(_), msg="引用 over the words again")
+}

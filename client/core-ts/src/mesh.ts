@@ -819,10 +819,28 @@ export class Link {
     return [Math.max(stats.rxBytes - wasRx, 0), Math.max(stats.txBytes - wasTx, 0)];
   }
 
-  /// Whether the station answers on it within PROBE_MS: the credential presented again.
-  answers(): Effect.Effect<boolean> {
-    const exchange = Effect.map(Effect.result(this.controlled((c) => c.exchange(this.credential))), (r) => r._tag === "Success");
-    return Effect.raceFirst(exchange, Effect.as(Effect.sleep(PROBE_MS), false));
+  /// Whether the station answers on it within PROBE_MS: the credential presented again, by a fiber of `runner`'s that
+  /// nothing cuts short, in its turn on the control stream behind whatever exchange is out on it (a ping). Its time run
+  /// out (or this let go of) before its turn came, nothing is sent; run out with its line sent, its answer is still read
+  /// as it comes and counted (`controlAnswers`). So the control stream is never left with a line sent and its answer
+  /// unread: the next exchange would read this one's answer for its own.
+  answers(runner: Runner): Effect.Effect<boolean> {
+    return Effect.suspend(() => {
+      let probing = true;
+      const done = Deferred.makeUnsafe<boolean>();
+      runner.fork(
+        Effect.flatMap(
+          Effect.result(this.controlled((c) => Effect.suspend(() => (probing ? Effect.as(c.exchange(this.credential), true) : Effect.succeed(false))))),
+          (r) => Effect.sync(() => Deferred.doneUnsafe(done, Effect.succeed(r._tag === "Success" && r.success))),
+        ),
+      );
+      return Effect.ensuring(
+        Effect.raceFirst(Deferred.await(done), Effect.as(Effect.sleep(PROBE_MS), false)), // timer: a deadline on the answer
+        Effect.sync(() => {
+          probing = false;
+        }),
+      );
+    });
   }
 
   controlAnswers(): number {
@@ -3348,10 +3366,8 @@ export class Mesh {
       this.#checking.add(addr);
       const last = this.#live(addr).find((w) => w.link === link)?.answeredMs ?? null;
       const wait = last === null ? WOKEN_ANSWER_MAX_MS : Math.min(WOKEN_ANSWER_MAX_MS, Math.max(WOKEN_ANSWER_MIN_MS, 2 * last));
-      // (its own fiber: a control exchange let go halfway would leave the link's control stream out of step)
-      const asked = this.#env.runner.fork(link.answers());
       const answered = yield* Effect.ensuring(
-        Effect.raceFirst(Fiber.join(asked), Effect.as(Effect.sleep(wait), false)), // timer: a deadline on the answer
+        Effect.raceFirst(link.answers(this.#env.runner), Effect.as(Effect.sleep(wait), false)), // timer: a deadline on the answer
         Effect.sync(() => this.#checking.delete(addr)),
       );
       if (answered || this.#closed || !this.#isCurrent(addr, link) || this.#racing.has(addr)) return;
@@ -3380,18 +3396,23 @@ export class Mesh {
   /// A link suspect against a new one opened beside it at once: whichever answers first. On a missed ping (`heard`), if
   /// the new link opens while the old one is still open and probing, hold switching for at most RACE_GRACE_MS so path
   /// rescue on the old connection can finish its control-stream round trip without dropping open streams.
+  /// No new link opened, the old one is kept if it answered on its control stream since the race began (`answered`),
+  /// whatever began the race: its probe's time run out, it answered as the new dial was still waiting (the side run,
+  /// seed 2067651005: a relay back between PROBE_MS and CONNECT_TIMEOUT_MS after a network change, a ping waiting on
+  /// it answered, and the read then on it was cut as the old link was let go for the dial's failure).
   #race(addr: string, old: Link, heard = false): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       const before = old.controlAnswers();
-      const recovered = () => heard && old.usable() && old.controlAnswers() > before;
+      const answered = () => old.usable() && old.controlAnswers() > before;
+      const recovered = () => heard && answered();
       const span = this.#env.tracer.span("mesh.race", Kind.Internal);
       span.own("station", endpointId(addr));
       const fresh = Effect.result(this.#dialAll(addr, this.#endpoint, old.credentials, false, span.context));
       // (the core's, not this race's: a link it opens after the race is over is still had, to be let go)
       const freshFiber = this.#env.runner.fork(fresh);
-      const probeFiber = yield* Effect.forkChild(old.answers());
+      const probeFiber = yield* Effect.forkChild(old.answers(this.#env.runner));
       const first = yield* Effect.raceFirst(
-        Effect.map(Fiber.join(probeFiber), (answered) => ({ probe: answered }) as const),
+        Effect.map(Fiber.join(probeFiber), (ok) => ({ probe: ok }) as const),
         Effect.map(Fiber.join(freshFiber), (opened) => ({ fresh: opened }) as const),
       );
       let won: "old" | "neither" | "cancelled" | Link;
@@ -3399,7 +3420,7 @@ export class Mesh {
         if (first.probe) won = "old";
         else {
           const opened = yield* Fiber.join(freshFiber);
-          if (recovered()) {
+          if (opened._tag === "Success" ? recovered() : answered()) {
             if (opened._tag === "Success") opened.success.close();
             won = "old";
           } else won = opened._tag === "Success" ? opened.success : "neither";
@@ -3440,14 +3461,14 @@ export class Mesh {
           } else if (settled === "candidate_closed" || !candidate.usable()) {
             candidate.close();
             const ok = yield* Fiber.join(probeFiber);
-            won = ok || recovered() ? "old" : "neither";
+            won = ok || answered() ? "old" : "neither";
           } else {
             won = candidate;
           }
         }
       } else {
         const ok = yield* Fiber.join(probeFiber);
-        won = ok || recovered() ? "old" : "neither";
+        won = ok || answered() ? "old" : "neither";
       }
       // The new one, opened or still opening, is let go (by a fiber of the core's: one of this race's would be ended with
       // it, and a link opened already left open).

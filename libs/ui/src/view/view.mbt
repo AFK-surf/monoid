@@ -4650,6 +4650,14 @@ fn Tree::bound_marked(self : Tree, at : Int, phase : Phase) -> Unit {
 }
 
 ///|
+/// Mark a single live node dirty for paint so its cached block and ride repaint on the next frame.
+pub fn Tree::repaint_node(self : Tree, id : NodeId) -> Unit {
+  if self.alive_id(id) {
+    self.look_marked_at(id.at)
+  }
+}
+
+///|
 /// Its width (points; None: as its content and its holder make it).
 #callsite(autofill(loc))
 pub fn View::width(self : View, w : Live[Double?], loc~ : SourceLoc) -> View {

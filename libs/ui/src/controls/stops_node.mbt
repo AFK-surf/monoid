@@ -61,7 +61,7 @@ pub fn stops_node(
   let high = @signals.untracked(button_height)
   let thumb_h = dmax(20.0, high - 2.0 * pad)
   let init_v = dmax(0.0, @signals.untracked(fn() { shown.get() }).to_double())
-  let dd = @glass.DampedDrag::new(init_v, lo=0.0, hi=last, held_scale=@glass.thumb_held_scale)
+  let dd = @glass.DampedDrag::new(init_v, lo=0.0, hi=last, held_scale=@glass.slider_thumb_held_scale)
   parent.box(made_for=loc, fn(wrap) {
     style_node(wrap, fn() { stops_track.then(@ui.style(h=Fixed(button_height()))) }, in_row=true)
     wrap.ground(Is(0L)).lines_up(Is(Some(Middle))) |> ignore

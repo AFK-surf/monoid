@@ -311,6 +311,19 @@ describe("the accounts routes", { concurrency: true }, () => {
     assert.equal(profileEnv(zen, "claude").ANTHROPIC_BASE_URL, "https://opencode.ai/zen");
     assert.equal(profileEnv(zen, "claude").ANTHROPIC_CUSTOM_HEADERS, "x-opencode-session: {route}");
     assert.equal(profileEnv(zen, "codex").STILLFAIL_API_KEY, "oc-key-1");
+    for (const [id, name, root] of [
+      ["command-code", "Command Code", "https://api.commandcode.ai/provider"],
+      ["open-design", "Open Design", "https://amr-link.open-design.ai"],
+    ] as const) {
+      const [made, said] = await t.call("POST", "/profiles", { access: { kind: "api-provider", provider: id, key: `${id}-key-1` } });
+      assert.equal(made, 200, JSON.stringify(said));
+      const gateway = t.profile(id)!;
+      assert.deepEqual([(gateway.access as any).provider, gateway.runtimes, gateway.name], [id, ["claude", "codex", "dsh", "pi"], name]);
+      assert.equal(profileEnv(gateway, "claude").ANTHROPIC_BASE_URL, root);
+      assert.equal(profileEnv(gateway, "claude").ANTHROPIC_AUTH_TOKEN, `${id}-key-1`);
+      assert.equal(profileEnv(gateway, "claude").ANTHROPIC_CUSTOM_HEADERS, undefined);
+      assert.equal(profileEnv(gateway, "codex").STILLFAIL_API_KEY, `${id}-key-1`);
+    }
     // A second key on the same provider is a profile of its own.
     assert.equal((await t.call("POST", "/profiles", { access: { kind: "api-provider", provider: "groq", key: "gsk-other" } }))[0], 200);
     assert.equal(t.accounts.profiles().filter((p) => (p.access as any)?.provider === "groq").length, 2);
@@ -330,7 +343,7 @@ describe("the accounts routes", { concurrency: true }, () => {
     const view = t.view("groq")!;
     assert.deepEqual([view.access.kind, view.access.provider, view.access.key.includes("123456")], ["env", "groq", false]);
     const listed = t.accounts.apiProviders().map((p) => p.id);
-    assert.ok(listed.includes("deepseek") && listed.includes("opencode") && !listed.includes("anthropic") && !listed.includes("opencode-go"));
+    assert.ok(listed.includes("deepseek") && listed.includes("opencode") && listed.includes("command-code") && listed.includes("open-design") && !listed.includes("anthropic") && !listed.includes("opencode-go"));
     // Its address can be changed, its key kept; it can be deleted.
     assert.equal((await t.call("PUT", "/profiles/custom", { access: { kind: "api-provider", endpoint: "http://127.0.0.1:5000/v1" } }))[0], 200);
     assert.equal((t.profile("custom")!.access as any).endpoint, "http://127.0.0.1:5000/v1");

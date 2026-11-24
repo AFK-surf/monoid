@@ -74,7 +74,7 @@ async function file(tools: Tools, r: Request, key: string, name: string, thumb: 
   if ("archived" in found) {
     const { room, path, relative } = found.archived;
     // Restored meanwhile: it is back in its upload directory.
-    const bytes = await withLock(room, async () => (await readFile(path).catch(() => null)) ?? workspaceFile(room, relative));
+    const bytes = await withLock(room, async () => (await readFile(path).catch(() => null)) ?? workspaceFile(room, relative, { program: tools.packed }));
     return bytes === null ? error(404, "station.files.notFound") : answered(found.contentType, bytes);
   }
   const made = thumb === "1" ? thumbnail : thumb === "2" ? preview : null;
@@ -92,7 +92,7 @@ async function onDisk(tools: Tools, r: Request, key: string, name: string): Prom
   const { room, path, relative } = found.archived;
   const back = await withLock(room, async () => {
     if (await access(path).then(() => true, () => false)) return true;
-    const bytes = await workspaceFile(room, relative);
+    const bytes = await workspaceFile(room, relative, { program: tools.packed });
     if (bytes === null) return false;
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, bytes);
