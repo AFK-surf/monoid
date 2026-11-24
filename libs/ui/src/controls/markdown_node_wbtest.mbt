@@ -611,7 +611,23 @@ test "md_task_node: 1x/1.3x baseline alignment, radius md_task_side/3, light/dar
     assert_true((todo_mid - todo_word_mid).abs() <= 3.0, msg="scale=\{scale}: todo box mid \{todo_mid} vs word mid \{todo_word_mid}")
   }
   t.set_font_scale(1.0)
-  // Light and dark mode stroke tick (upto=1.0, zero animation).
+  // Light and dark mode stroke tick (upto=1.0, zero animation) with WCAG >= 3.0 contrast.
+  let srgb_lin = fn(c : Double) -> Double {
+    if c <= 0.04045 { c / 12.92 } else { @dmath.pow((c + 0.055) / 1.055, 2.4) }
+  }
+  let luminance = fn(argb : Int64) -> Double {
+    let r = ((argb >> 24) & 0xFFL).to_double() / 255.0
+    let g = ((argb >> 16) & 0xFFL).to_double() / 255.0
+    let b = ((argb >> 8) & 0xFFL).to_double() / 255.0
+    0.2126 * srgb_lin(r) + 0.7152 * srgb_lin(g) + 0.0722 * srgb_lin(b)
+  }
+  let contrast_ratio = fn(a : Int64, b : Int64) -> Double {
+    let la = luminance(a)
+    let lb = luminance(b)
+    let hi = dmax(la, lb)
+    let lo = dmin(la, lb)
+    (hi + 0.05) / (lo + 0.05)
+  }
   for dark in [false, true] {
     set_dark(Some(dark))
     t.draw()
@@ -622,8 +638,14 @@ test "md_task_node: 1x/1.3x baseline alignment, radius md_task_side/3, light/dar
     let line = tick_nodes[0].lines[0]
     assert_eq(line.upto, 1.0, msg="dark=\{dark}: static stroke tick upto=1.0")
     assert_eq(line.points.length(), check_tick_points.length(), msg="dark=\{dark}: tick uses check_tick_points")
-    let expected_ink = if dark { alpha(theme().p.text, 0.9) } else { 0xFFFFFFFFL }
-    assert_eq(line.color, expected_ink, msg="dark=\{dark}: tick color")
+    let done_boxes = @ui.view_tree().unwrap().drawn().filter(fn(d) {
+      d.w == md_task_side && d.h == md_task_side && (d.radius - md_task_side / 3.0).abs() <= 0.01 && d.edge.0 == 0.0
+    })
+    assert_eq(done_boxes.length(), 1, msg="dark=\{dark}: expected 1 filled done task box")
+    let bg_fill = over(theme().p.canvas, done_boxes[0].ground)
+    let fg_tick = over(bg_fill, line.color)
+    let ratio = contrast_ratio(fg_tick, bg_fill)
+    assert_true(ratio >= 3.0, msg="dark=\{dark}: tick contrast \{ratio} < 3.0 (fg=\{fg_tick}, bg=\{bg_fill})")
   }
   set_dark(None)
   t.draw()

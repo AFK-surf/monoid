@@ -1345,7 +1345,7 @@ fn md_bullet_node(
 #callsite(autofill(loc))
 fn md_task_node(t : @view.View, done : () -> Bool, line : () -> Double, loc~ : SourceLoc) -> Unit {
   let faint = fn() { if theme().dark { 0xA0A0A066L } else { 0x7676764DL } }
-  let filled = fn() { if theme().dark { 0xA0A0A066L } else { 0x76767699L } }
+  let filled = fn() { if theme().dark { 0xA0A0A066L } else { 0x6E6E6EE6L } }
   let tick_k = md_task_side / check_side
   let tick_pts = check_tick_points.map(fn(p) { (p.0 * tick_k, p.1 * tick_k) })
   let tick_w = check_tick_w * tick_k
