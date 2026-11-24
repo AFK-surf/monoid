@@ -20,7 +20,7 @@
 // A batch is read inside one read transaction: what it says is the database at one moment.
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { zstdCompressSync } from "node:zlib";
 import { runtimeKind } from "../../src/agents/runtime.ts";
@@ -1119,18 +1119,30 @@ export class Exporter {
               if (!isMissingError(e)) continue;
             }
             if (existsOnDisk) {
-              const parent = dirname(row.path);
-              let parentUnreadable = parentUnreadableCache.get(parent);
-              if (parentUnreadable === undefined) {
-                parentUnreadable = false;
-                try {
-                  this.#readdirEntries(parent);
-                } catch (e) {
-                  if (!isMissingError(e)) parentUnreadable = true;
+              const dataRoot = resolve(this.#o.dataDir);
+              let cur = resolve(dirname(row.path));
+              let ancestorUnreadable = false;
+              while (cur === dataRoot || cur.startsWith(dataRoot + sep)) {
+                let bad = parentUnreadableCache.get(cur);
+                if (bad === undefined) {
+                  bad = false;
+                  try {
+                    this.#readdirEntries(cur);
+                  } catch (e) {
+                    if (!isMissingError(e)) bad = true;
+                  }
+                  parentUnreadableCache.set(cur, bad);
                 }
-                parentUnreadableCache.set(parent, parentUnreadable);
+                if (bad) {
+                  ancestorUnreadable = true;
+                  break;
+                }
+                if (cur === dataRoot) break;
+                const next = dirname(cur);
+                if (next === cur) break;
+                cur = next;
               }
-              if (parentUnreadable) continue;
+              if (ancestorUnreadable) continue;
             }
           }
           if (doneDeletes >= maxDeletes) {

@@ -1178,4 +1178,78 @@ test("D71: S3Client.deleteObjects batches >1000 keys with Content-MD5/SigV4, han
   );
   assert.equal(knownOmit.files.has(hOmit), true, "omitted key stays in known.files for retry");
   s3.omitDeleteKeys.clear();
+
+  // 8. R2 fix: same-gen S3Place syncs includeTranscripts:true then switches to includeTranscripts:false
+  //    -> current-gen transcript deleted via DeleteObjects, chat attachment kept, older-gen exclusive transcript kept!
+  const originToggle = sid("c");
+  const genOld = "5000-11111111";
+  const genCur = "6000-22222222";
+  const hChat = sid("d");
+  const hCurTr = sid("e");
+  const hOldOnlyTr = sid("f");
+  const placeToggle = new S3Place(target);
+  await placeToggle.putFile(HOME, originToggle, hOldOnlyTr, Buffer.from("old-gen-exclusive-transcript"));
+  const headOld = {
+    ...head,
+    origin: originToggle,
+    gen: genOld,
+    to: 1,
+    made: 5000,
+    files: {},
+    transcriptFiles: { [hOldOnlyTr]: 28 },
+  };
+  await placeToggle.put(HOME, originToggle, genOld, "head", "head.json", Buffer.from(JSON.stringify(headOld)));
+
+  const headCur = {
+    ...head,
+    origin: originToggle,
+    gen: genCur,
+    to: 1,
+    made: 6000,
+    files: { [hChat]: 4 },
+    transcriptFiles: { [hCurTr]: 18 },
+  };
+  const toggleTmp = dataDir();
+  const chatPath = join(toggleTmp, "chat-attach.bin");
+  const curTrPath = join(toggleTmp, "cur-tr.bin");
+  writeFileSync(chatPath, Buffer.from("chat"));
+  writeFileSync(curTrPath, Buffer.from("current-transcript"));
+  const toggleSources = new Map<string, string>([
+    [hChat, chatPath],
+    [hCurTr, curTrPath],
+  ]);
+
+  // First sync with includeTranscripts: true
+  const placeToggleLive = new S3Place(target);
+  const knownToggle1 = await level(
+    placeToggleLive,
+    HOME,
+    { head: headCur, batch: async () => Buffer.alloc(0), sources: async () => toggleSources },
+    null,
+    { includeTranscripts: true },
+  );
+  assert.equal(knownToggle1.behind, false);
+  const chatKey = `${target.prefix}/${placeToggleLive.wsTag(HOME)}/${placeToggleLive.originTag(originToggle)}/files/${placeToggleLive.fileTag(hChat)}.enc`;
+  const curTrKey = `${target.prefix}/${placeToggleLive.wsTag(HOME)}/${placeToggleLive.originTag(originToggle)}/files/${placeToggleLive.fileTag(hCurTr)}.enc`;
+  const oldOnlyTrKey = `${target.prefix}/${placeToggleLive.wsTag(HOME)}/${placeToggleLive.originTag(originToggle)}/files/${placeToggleLive.fileTag(hOldOnlyTr)}.enc`;
+  assert.equal(s3.objects.has(chatKey), true, "chat attachment uploaded");
+  assert.equal(s3.objects.has(curTrKey), true, "current-gen transcript uploaded");
+  assert.equal(s3.objects.has(oldOnlyTrKey), true, "older-gen exclusive transcript present");
+
+  // Switch same gen to includeTranscripts: false -> curTr deleted via DeleteObjects, chat + oldOnlyTr preserved
+  s3.batchDeletes.length = 0;
+  s3.singleDeletes.length = 0;
+  const knownToggle2 = await level(
+    placeToggleLive,
+    HOME,
+    { head: { ...headCur, to: 2, made: 6001 }, batch: async () => Buffer.alloc(0), sources: async () => toggleSources },
+    knownToggle1.known,
+    { includeTranscripts: false },
+  );
+  assert.equal(knownToggle2.behind, false);
+  assert.equal(s3.objects.has(curTrKey), false, "includeTranscripts:false MUST delete current-gen transcript from S3");
+  assert.equal(s3.objects.has(chatKey), true, "chat attachment MUST be preserved");
+  assert.equal(s3.objects.has(oldOnlyTrKey), true, "older-gen exclusive transcript MUST remain protected");
+  assert.ok(s3.batchDeletes.some((batch) => batch.includes(curTrKey)), "current-gen transcript deleted via DeleteObjects");
+  assert.equal(s3.singleDeletes.length, 0);
 });

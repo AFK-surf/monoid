@@ -1662,16 +1662,31 @@ async fn Exporter::export_transcripts(
           match self.lstat_checked(old_path) {
             Err(_) => continue
             Ok(Some(_)) => {
-              let parent = self.files.dir_of(old_path)
-              let parent_unreadable = match parent_unreadable_cache.get(parent) {
-                Some(b) => b
-                None => {
-                  let bad = self.listing_checked(parent) is Err(_)
-                  parent_unreadable_cache[parent] = bad
-                  bad
+              let mut cur = self.files.dir_of(old_path)
+              let mut ancestor_unreadable = false
+              while cur != "" && (cur == self.data_dir || self.files.under_of(self.data_dir, cur) is Some(_)) {
+                let bad = match parent_unreadable_cache.get(cur) {
+                  Some(b) => b
+                  None => {
+                    let err = self.listing_checked(cur) is Err(_)
+                    parent_unreadable_cache[cur] = err
+                    err
+                  }
                 }
+                if bad {
+                  ancestor_unreadable = true
+                  break
+                }
+                if cur == self.data_dir {
+                  break
+                }
+                let next = self.files.dir_of(cur)
+                if next == "" || next == cur {
+                  break
+                }
+                cur = next
               }
-              if parent_unreadable {
+              if ancestor_unreadable {
                 continue
               }
             }

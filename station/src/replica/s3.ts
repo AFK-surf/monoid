@@ -434,8 +434,8 @@ export class S3Place implements Place {
   readonly #orphanFileTags = new Map<string, Set<string>>();
   /// Per `${ws}\n${origin}` set of `gen`s whose `head/<gen>.enc` failed verification in `held()`.
   readonly #unverifiedGens = new Map<string, Set<string>>();
-  /// Per `${ws}\n${origin}` -> `gen` -> referenced `fileTag`s (built in `held()`, updated in `put("head")`).
-  readonly #genRefTags = new Map<string, Map<string, Set<string>>>();
+  /// Per `${ws}\n${origin}` -> `gen` -> referenced `files` and `transcriptFiles` hash maps (0-HMAC reference, built in `held()`, updated in `put("head")`).
+  readonly #genRefHashes = new Map<string, Map<string, { files: Record<string, number>; transcriptFiles?: Record<string, number> }>>();
 
   constructor(target: NormalizedS3Target, opts: S3ClientOptions = {}) {
     this.target = target;
@@ -535,32 +535,29 @@ export class S3Place implements Place {
       if (headMap.get(gen) === null) unverified.add(gen);
     }
     const allHeadsVerified = unverified.size === 0;
-    const byGen = new Map<string, Set<string>>();
+    const byGen = new Map<string, { files: Record<string, number>; transcriptFiles?: Record<string, number> }>();
     for (const gen of allGens) {
       const head = headMap.get(gen) ?? null;
       const batches = (batchesByGen.get(gen) ?? []).sort();
       gens.push({ gen, head, batches });
       if (head !== null) {
-        const genTags = new Set<string>();
         for (const h of Object.keys(head.files)) {
           const tag = this.fileTag(h);
-          genTags.add(tag);
           referencedTags.add(tag);
           if (fileTags.has(tag)) presentHashes.add(h);
         }
         for (const h of Object.keys(head.transcriptFiles ?? {})) {
           const tag = this.fileTag(h);
-          genTags.add(tag);
           referencedTags.add(tag);
           if (fileTags.has(tag)) presentHashes.add(h);
         }
-        byGen.set(gen, genTags);
+        byGen.set(gen, { files: head.files, transcriptFiles: head.transcriptFiles });
       }
     }
     const scopeKey = `${ws}\n${origin}`;
     if (unverified.size > 0) this.#unverifiedGens.set(scopeKey, unverified);
     else this.#unverifiedGens.delete(scopeKey);
-    this.#genRefTags.set(scopeKey, byGen);
+    this.#genRefHashes.set(scopeKey, byGen);
     if (allHeadsVerified) {
       const orphans = new Set<string>();
       for (const tag of fileTags) {
@@ -582,7 +579,12 @@ export class S3Place implements Place {
       const enc = sfb1Seal(this.#key, { ws, origin, logicalPath: `log/${gen}/${name}` }, bytes);
       await this.client.putObject(this.#batchKey(ws, origin, gen, name), enc);
     } else {
-      const parsed = asHead(JSON.parse(bytes.toString("utf8")));
+      let parsed: Head | null = null;
+      try {
+        parsed = asHead(JSON.parse(bytes.toString("utf8")));
+      } catch {
+        parsed = null;
+      }
       const ot = this.originTag(origin);
       const enc = sfb1Seal(this.#key, { ws, origin: ot, logicalPath: `head/${gen}` }, bytes);
       await this.client.putObject(this.#headKey(ws, origin, gen), enc);
@@ -593,15 +595,21 @@ export class S3Place implements Place {
         if (unverified.size === 0) this.#unverifiedGens.delete(scopeKey);
       }
       if (parsed !== null) {
-        const refTags = new Set<string>();
-        for (const h of Object.keys(parsed.files)) refTags.add(this.fileTag(h));
-        for (const h of Object.keys(parsed.transcriptFiles ?? {})) refTags.add(this.fileTag(h));
-        let byGen = this.#genRefTags.get(scopeKey);
-        if (byGen === undefined) this.#genRefTags.set(scopeKey, (byGen = new Map()));
-        byGen.set(gen, refTags);
+        let byGen = this.#genRefHashes.get(scopeKey);
+        if (byGen === undefined) this.#genRefHashes.set(scopeKey, (byGen = new Map()));
+        byGen.set(gen, { files: parsed.files, transcriptFiles: parsed.transcriptFiles });
         const orphans = this.#orphanFileTags.get(scopeKey);
-        if (orphans !== undefined) {
-          for (const tag of refTags) orphans.delete(tag);
+        if (orphans !== undefined && orphans.size > 0) {
+          for (const h of Object.keys(parsed.files)) {
+            orphans.delete(this.fileTag(h));
+            if (orphans.size === 0) break;
+          }
+          if (orphans.size > 0 && parsed.transcriptFiles !== undefined) {
+            for (const h of Object.keys(parsed.transcriptFiles)) {
+              orphans.delete(this.fileTag(h));
+              if (orphans.size === 0) break;
+            }
+          }
           if (orphans.size === 0) this.#orphanFileTags.delete(scopeKey);
         }
       }
@@ -624,11 +632,12 @@ export class S3Place implements Place {
     const scopeKey = `${ws}\n${origin}`;
     const unverified = this.#unverifiedGens.get(scopeKey);
     const allVerified = unverified === undefined || unverified.size === 0;
-    const byGen = this.#genRefTags.get(scopeKey);
-    const isReferencedByAnyGen = (tag: string): boolean => {
+    const byGen = this.#genRefHashes.get(scopeKey);
+    const isProtectedHash = (hash: string): boolean => {
       if (byGen === undefined) return false;
-      for (const genTags of byGen.values()) {
-        if (genTags.has(tag)) return true;
+      for (const [otherGen, refs] of byGen) {
+        if (Object.hasOwn(refs.files, hash)) return true;
+        if (otherGen !== gen && refs.transcriptFiles !== undefined && Object.hasOwn(refs.transcriptFiles, hash)) return true;
       }
       return false;
     };
@@ -640,8 +649,8 @@ export class S3Place implements Place {
     if (allVerified) {
       for (const f of files) {
         if (!HASH.test(f)) continue;
+        if (isProtectedHash(f)) continue;
         const tag = this.fileTag(f);
-        if (isReferencedByAnyGen(tag)) continue;
         const k = this.#fileKey(ws, origin, f);
         keys.push(k);
         fileKeyToTag.set(k, tag);
