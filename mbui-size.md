@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8660d4d6f](https://github.com/AFK-surf/monoid/commit/8660d4d6f8c63b55bcd94b1c14760f36d8d76c0e) feat(pion): port --builder usage-counter to Pion ( | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
 | [cfc4a28c5](https://github.com/AFK-surf/monoid/commit/cfc4a28c5c3dc7c697a6c338ff059a0ea6bfac04) docs(releases): pin stable notes to 0.1.11220 (#85 | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
 | [f2d09f531](https://github.com/AFK-surf/monoid/commit/f2d09f53181fc0f13ac58128f085f998925b0aea) perf(ui): fix Windows prewarm eviction race, add c | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
 | [669ee5d70](https://github.com/AFK-surf/monoid/commit/669ee5d70e138679346606f9ce1ded16d7c3ef18) feat(stations): show a station with no mark by its | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.96 | 121.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [03c64d375](https://github.com/AFK-surf/monoid/commit/03c64d375a40de178f160b4ce6c6e70df185be9e) feat(mbui): add multicolor accent option that pick | 2.8 | 3.76 | 15.23 | 37.46 | 57.96 | 32.79 | 66.84 | 100.86 | 120.3 |
 | [41601bf57](https://github.com/AFK-surf/monoid/commit/41601bf576e9798f57b9853ef390bd4b52aa9953) fix(ui): space stop slider ends evenly and keep th | 2.79 | 3.76 | 15.22 | 37.41 | 57.82 | 32.79 | 66.84 | 100.86 | 132.14 |
 | [40408f70c](https://github.com/AFK-surf/monoid/commit/40408f70c1100971cbaf09c07c102a987c6c8dfb) feat(pion-station): add Wave 5 foundation primitiv | 2.79 | 3.76 | 15.22 | 37.41 | 57.82 | 32.79 | 66.84 | 100.86 | 132.14 |
-| [87f4dd70f](https://github.com/AFK-surf/monoid/commit/87f4dd70f451134171d9301ac3bff6f1655cd13d) fix(ui,mbui): fix quote card motion and particle s | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.73 | 132.14 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8660d4d6f](https://github.com/AFK-surf/monoid/commit/8660d4d6f8c63b55bcd94b1c14760f36d8d76c0e) feat(pion): port --builder usage-counter to Pion ( | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.69 |
 | [cfc4a28c5](https://github.com/AFK-surf/monoid/commit/cfc4a28c5c3dc7c697a6c338ff059a0ea6bfac04) docs(releases): pin stable notes to 0.1.11220 (#85 | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.51 |
 | [f2d09f531](https://github.com/AFK-surf/monoid/commit/f2d09f53181fc0f13ac58128f085f998925b0aea) perf(ui): fix Windows prewarm eviction race, add c | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.74 |
 | [669ee5d70](https://github.com/AFK-surf/monoid/commit/669ee5d70e138679346606f9ce1ded16d7c3ef18) feat(stations): show a station with no mark by its | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.62 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [03c64d375](https://github.com/AFK-surf/monoid/commit/03c64d375a40de178f160b4ce6c6e70df185be9e) feat(mbui): add multicolor accent option that pick | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.31 |
 | [41601bf57](https://github.com/AFK-surf/monoid/commit/41601bf576e9798f57b9853ef390bd4b52aa9953) fix(ui): space stop slider ends evenly and keep th | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.21 |
 | [40408f70c](https://github.com/AFK-surf/monoid/commit/40408f70c1100971cbaf09c07c102a987c6c8dfb) feat(pion-station): add Wave 5 foundation primitiv | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.1 | 5.84 | 57.38 |
-| [87f4dd70f](https://github.com/AFK-surf/monoid/commit/87f4dd70f451134171d9301ac3bff6f1655cd13d) fix(ui,mbui): fix quote card motion and particle s | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.44 |
