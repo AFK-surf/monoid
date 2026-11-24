@@ -130,6 +130,15 @@ fn as_head(v : js_json::JValue) -> Option[js_json::JValue] {
     }
     Some(_) => return None
   }
+  match jval_get(v, "transcriptManifest") {
+    None => ()
+    Some(js_json::JValue::Str(u)) => {
+      if !hash_ok(js_json::sanitize_str(u)) {
+        return None
+      }
+    }
+    Some(_) => return None
+  }
   match jval_get(v, "runs") {
     Some(js_json::JValue::Arr(_)) => ()
     _ => return None

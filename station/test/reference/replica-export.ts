@@ -133,7 +133,7 @@ export function readHead(dir: string): Head | null {
   }
 }
 
-export type HeadCheck = { kind: "fresh" } | { kind: "use"; head: Head } | { kind: "rebuildLegacy" };
+export type HeadCheck = { kind: "fresh" } | { kind: "use"; head: Head; needSaveState: boolean } | { kind: "rebuildLegacy" };
 
 export function readHeadChecked(
   dir: string,
@@ -207,17 +207,23 @@ export function readHeadChecked(
       if (h.to === committed.to && committed.batches.length > 0) {
         throw new Error(`mismatched ${path} for generation ${gen ?? ""}`);
       }
-      let hasConflictBatch = false;
+      let onDisk: string[] | null = null;
       try {
-        hasConflictBatch = readdirSync(logDir).some((nm) => {
+        onDisk = readdirSync(logDir);
+      } catch (re) {
+        if (!isMissingError(re)) throw new Error(`cannot read ${logDir}`);
+      }
+      if (onDisk !== null) {
+        const hasOldBatch = onDisk.some((nm) => {
           const sp = batchSpan(nm);
           return sp !== null && sp.to <= (h.to as number);
         });
-      } catch (re) {
-        hasConflictBatch = !isMissingError(re);
+        if (hasOldBatch) {
+          if (h.to > committed.to) return { kind: "rebuildLegacy" };
+          throw new Error(`corrupted ${path}: non-contiguous batches`);
+        }
       }
-      if (hasConflictBatch) throw new Error(`corrupted ${path}: non-contiguous batches`);
-      return { kind: "use", head: parsed as Head };
+      return { kind: "use", head: parsed as Head, needSaveState: false };
     }
     const expectedFirstFrom =
       committed.batches.length > 0 ? (batchSpan(committed.batches[0]!)?.from ?? 1) : committed.to + 1;
@@ -226,23 +232,30 @@ export function readHeadChecked(
     if (h.to === committed.to && (batchNames.length !== committed.batches.length || batchNames.some((b, i) => b !== committed.batches[i]))) {
       throw new Error(`mismatched ${path} for generation ${gen ?? ""}`);
     }
-    return { kind: "use", head: parsed as Head };
+    return { kind: "use", head: parsed as Head, needSaveState: false };
   }
+  const named = new Set(batchNames);
   let onDisk: string[] | null = null;
   try {
     onDisk = readdirSync(logDir);
   } catch (re) {
     if (!isMissingError(re)) throw new Error(`cannot read ${logDir}`);
   }
-  if (onDisk !== null) {
-    const named = new Set(batchNames);
-    for (const nm of onDisk) {
-      if (batchSpan(nm) !== null && !named.has(nm)) {
-        return { kind: "rebuildLegacy" };
-      }
+  if (onDisk === null) {
+    if (batchNames.length > 0) return { kind: "rebuildLegacy" };
+    return { kind: "use", head: parsed as Head, needSaveState: true };
+  }
+  const diskBatches = new Set<string>();
+  for (const nm of onDisk) {
+    if (batchSpan(nm) !== null) {
+      if (!named.has(nm)) return { kind: "rebuildLegacy" };
+      diskBatches.add(nm);
     }
   }
-  return { kind: "use", head: parsed as Head };
+  for (const b of batchNames) {
+    if (!diskBatches.has(b)) return { kind: "rebuildLegacy" };
+  }
+  return { kind: "use", head: parsed as Head, needSaveState: true };
 }
 
 const STATE = `
@@ -539,6 +552,9 @@ export class Exporter {
       if (check.kind === "rebuildLegacy") {
         rebuildLegacy = true;
         break;
+      }
+      if (check.kind === "use" && check.needSaveState) {
+        this.#saveCommittedHeadState(ws, check.head);
       }
       const head: Head = check.kind === "use" ? check.head : freshHead(ws, gen);
       outs.set(ws, { head, lines: [], bytes: 0, files: {}, gone: false, messages: 0 });

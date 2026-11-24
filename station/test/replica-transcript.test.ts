@@ -2338,11 +2338,10 @@ test("D75: MoonBit exporter parses head.json again only when its size or mtime c
   utimesSync(headPath, later, later);
   assert.equal((await quiet()).name, "srcXY", "a changed size reads the file again");
 
-  // Gone: the head starts again from nothing rather than from the one kept.
+  // Gone: a removed head.json is not answered from memory; the exporter detects
+  // the missing head.json on disk for the existing generation and fails fast.
   rmSync(headPath);
-  const fresh = await quiet();
-  assert.equal(fresh.to, 0, "a removed head.json is not answered from memory");
-  assert.deepEqual(fresh.batches, []);
+  await assert.rejects(quiet, /missing .*head\.json for existing generation/, "a removed head.json is not answered from memory");
 
   // A new generation never answers the old one's head.
   await mb.newGenerations(now, now);

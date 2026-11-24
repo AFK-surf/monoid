@@ -389,7 +389,7 @@ fn Exporter::save_committed_head_state(self : Exporter, ws : String, head : JVal
 ///|
 priv enum HeadCheck {
   Fresh
-  Use(JValue)
+  Use(JValue, Bool)
   RebuildLegacy
 }
 
@@ -398,145 +398,192 @@ fn Exporter::read_head_checked(self : Exporter, ws : String, gen : String, dir :
   let path = self.files.join([dir, "head.json"])
   let log_dir = self.files.join([dir, "log"])
   let committed = self.read_committed_head_state(ws, gen)
-  match self.files.read(path) {
-    None => {
-      if self.files.exists(path) || self.files.lstat(path) is Some(_) {
-        fail("cannot read \{path}")
+  let meta_opt = self.files.meta(path)
+  let mut cached_head : JValue? = None
+  match meta_opt {
+    Some((size, mtime)) =>
+      if self.head_cache.get(dir) is Some((c_size, c_mtime, cached)) && c_size == size && c_mtime == mtime {
+        if denied_ffi(c_path(path), 0) == 1 {
+          self.head_cache.remove(dir)
+          fail("cannot read \{path}")
+        }
+        cached_head = Some(cached)
       }
-      let has_log = match self.files.names(log_dir) {
-        Some(names) => names.length() > 0
-        None => self.files.exists(log_dir) || self.files.lstat(log_dir) is Some(_)
-      }
-      if has_log || committed is Some(_) || self.has_ws_progress(ws) {
-        fail("missing \{path} for existing generation \{gen}")
-      }
-      Fresh
-    }
-    Some(t) =>
-      match (@jsjson.parse(t) catch { e => fail("corrupted \{path}: \{e}") }) {
-        Obj(_) as v => {
-          if text_of(get(v, "gen")) != Some(gen) ||
-            text_of(get(v, "workspace")) != Some(ws) ||
-            text_of(get(v, "origin")) != Some(self.origin) {
-            fail("corrupted \{path}: head identity mismatch")
+    None => self.head_cache.remove(dir)
+  }
+  let v = match cached_head {
+    Some(ch) => ch
+    None =>
+      match self.files.read(path) {
+        None => {
+          self.head_cache.remove(dir)
+          if self.files.exists(path) || self.files.lstat(path) is Some(_) {
+            fail("cannot read \{path}")
           }
-          let head_to_d = match get(v, "to") {
-            Some(Num(d)) => {
-              if d != d || d - d != 0.0 || d < 0.0 || @math.floor(d) != d {
-                fail("corrupted \{path}: invalid to")
+          let has_log = match self.files.names(log_dir) {
+            Some(names) => names.length() > 0
+            None => self.files.exists(log_dir) || self.files.lstat(log_dir) is Some(_)
+          }
+          if has_log || committed is Some(_) || self.has_ws_progress(ws) {
+            fail("missing \{path} for existing generation \{gen}")
+          }
+          return Fresh
+        }
+        Some(t) =>
+          match (@jsjson.parse(t) catch { e => { self.head_cache.remove(dir); fail("corrupted \{path}: \{e}") } }) {
+            Obj(_) as obj => {
+              match meta_opt {
+                Some((size, mtime)) => self.head_cache[dir] = (size, mtime, obj)
+                None => ()
               }
-              d
+              obj
             }
-            _ => fail("corrupted \{path}: missing to")
+            _ => {
+              self.head_cache.remove(dir)
+              fail("corrupted \{path}: expected JSON object")
+            }
           }
-          let head_to = head_to_d.to_int64()
-          match get(v, "batches") {
-            Some(Arr(bs)) => {
-              let batch_names : Array[String] = []
-              let mut first_from = 0L
-              let mut prev_from = 0L
-              let mut prev_to = 0L
-              for i, item in bs {
-                match text_of(Some(item)) {
-                  Some(name) =>
-                    match batch_span(name) {
-                      Some((from, to)) => {
-                        if from <= 0L || from > to {
-                          fail("corrupted \{path}: non-contiguous batches")
-                        }
-                        if i == 0 {
-                          first_from = from
-                        } else {
-                          if from < prev_from || from > prev_to + 1L || to < prev_to {
-                            fail("corrupted \{path}: non-contiguous batches")
-                          }
-                        }
-                        prev_from = from
-                        prev_to = to
-                        batch_names.push(name)
-                      }
-                      None => fail("corrupted \{path}: invalid batch name")
-                    }
-                  None => fail("corrupted \{path}: invalid batch entry")
-                }
-              }
-              if batch_names.length() > 0 && prev_to != head_to {
+      }
+  }
+  if text_of(get(v, "gen")) != Some(gen) ||
+    text_of(get(v, "workspace")) != Some(ws) ||
+    text_of(get(v, "origin")) != Some(self.origin) {
+    fail("corrupted \{path}: head identity mismatch")
+  }
+  let head_to_d = match get(v, "to") {
+    Some(Num(d)) => {
+      if d != d || d - d != 0.0 || d < 0.0 || @math.floor(d) != d {
+        fail("corrupted \{path}: invalid to")
+      }
+      d
+    }
+    _ => fail("corrupted \{path}: missing to")
+  }
+  let head_to = head_to_d.to_int64()
+  let bs = match get(v, "batches") {
+    Some(Arr(arr)) => arr
+    _ => fail("corrupted \{path}: missing batches array")
+  }
+  let batch_names : Array[String] = []
+  let mut first_from = 0L
+  let mut prev_from = 0L
+  let mut prev_to = 0L
+  for i, item in bs {
+    match text_of(Some(item)) {
+      Some(name) =>
+        match batch_span(name) {
+          Some((from, to)) => {
+            if from <= 0L || from > to {
+              fail("corrupted \{path}: non-contiguous batches")
+            }
+            if i == 0 {
+              first_from = from
+            } else {
+              if from < prev_from || from > prev_to + 1L || to < prev_to {
                 fail("corrupted \{path}: non-contiguous batches")
               }
-              match committed {
-                Some((c_to, c_batches)) => {
-                  if batch_names.length() == 0 {
-                    if head_to < c_to {
-                      fail("stale \{path} for generation \{gen}")
-                    }
-                    if head_to == c_to && c_batches.length() > 0 {
-                      fail("mismatched \{path} for generation \{gen}")
-                    }
-                    let has_conflict_batch = match self.files.names(log_dir) {
-                      Some(names) => {
-                        let mut found = false
-                        for nm in names {
-                          match batch_span(nm) {
-                            Some((_, b_to)) =>
-                              if b_to <= head_to {
-                                found = true
-                                break
-                              }
-                            None => ()
-                          }
-                        }
-                        found
-                      }
-                      None => self.files.exists(log_dir) || self.files.lstat(log_dir) is Some(_)
-                    }
-                    if has_conflict_batch {
-                      fail("corrupted \{path}: non-contiguous batches")
-                    }
-                    return Use(v)
+            }
+            prev_from = from
+            prev_to = to
+            batch_names.push(name)
+          }
+          None => fail("corrupted \{path}: invalid batch name")
+        }
+      None => fail("corrupted \{path}: invalid batch entry")
+    }
+  }
+  if batch_names.length() > 0 && prev_to != head_to {
+    fail("corrupted \{path}: non-contiguous batches")
+  }
+  match committed {
+    Some((c_to, c_batches)) => {
+      if batch_names.length() == 0 {
+        if head_to < c_to {
+          fail("stale \{path} for generation \{gen}")
+        }
+        if head_to == c_to && c_batches.length() > 0 {
+          fail("mismatched \{path} for generation \{gen}")
+        }
+        match self.files.names(log_dir) {
+          None =>
+            if self.files.exists(log_dir) || self.files.lstat(log_dir) is Some(_) {
+              fail("cannot read \{log_dir}")
+            }
+          Some(names) => {
+            let mut has_old_batch = false
+            for nm in names {
+              match batch_span(nm) {
+                Some((_, b_to)) =>
+                  if b_to <= head_to {
+                    has_old_batch = true
+                    break
                   }
-                  let expected_first_from : Int64 = if c_batches.length() > 0 {
-                    match batch_span(c_batches[0]) {
-                      Some((cf, _)) => cf
-                      None => 1L
-                    }
-                  } else {
-                    c_to + 1L
-                  }
-                  if first_from != expected_first_from {
-                    fail("corrupted \{path}: non-contiguous batches")
-                  }
-                  if head_to < c_to {
-                    fail("stale \{path} for generation \{gen}")
-                  }
-                  if head_to == c_to && batch_names != c_batches {
-                    fail("mismatched \{path} for generation \{gen}")
-                  }
-                  Use(v)
-                }
-                None =>
-                  match self.files.names(log_dir) {
-                    Some(names) => {
-                      for nm in names {
-                        if batch_span(nm) is Some(_) && !batch_names.contains(nm) {
-                          return RebuildLegacy
-                        }
-                      }
-                      Use(v)
-                    }
-                    None => {
-                      if self.files.exists(log_dir) || self.files.lstat(log_dir) is Some(_) {
-                        fail("cannot read \{log_dir}")
-                      }
-                      Use(v)
-                    }
-                  }
+                None => ()
               }
             }
-            _ => fail("corrupted \{path}: missing batches array")
+            if has_old_batch {
+              if head_to > c_to {
+                return RebuildLegacy
+              }
+              fail("corrupted \{path}: non-contiguous batches")
+            }
           }
         }
-        _ => fail("corrupted \{path}: expected JSON object")
+        return Use(v, false)
       }
+      let expected_first_from : Int64 = if c_batches.length() > 0 {
+        match batch_span(c_batches[0]) {
+          Some((cf, _)) => cf
+          None => 1L
+        }
+      } else {
+        c_to + 1L
+      }
+      if first_from != expected_first_from {
+        fail("corrupted \{path}: non-contiguous batches")
+      }
+      if head_to < c_to {
+        fail("stale \{path} for generation \{gen}")
+      }
+      if head_to == c_to && batch_names != c_batches {
+        fail("mismatched \{path} for generation \{gen}")
+      }
+      Use(v, false)
+    }
+    None => {
+      let named : Set[String] = Set([])
+      for b in batch_names {
+        named.add(b)
+      }
+      match self.files.names(log_dir) {
+        None => {
+          if self.files.exists(log_dir) || self.files.lstat(log_dir) is Some(_) {
+            fail("cannot read \{log_dir}")
+          }
+          if batch_names.length() > 0 {
+            return RebuildLegacy
+          }
+          Use(v, true)
+        }
+        Some(names) => {
+          let disk_batches : Set[String] = Set([])
+          for nm in names {
+            if batch_span(nm) is Some(_) {
+              if !named.contains(nm) {
+                return RebuildLegacy
+              }
+              disk_batches.add(nm)
+            }
+          }
+          for b in batch_names {
+            if !disk_batches.contains(b) {
+              return RebuildLegacy
+            }
+          }
+          Use(v, true)
+        }
+      }
+    }
   }
 }
 
@@ -681,7 +728,12 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
         rebuild_legacy = true
         break
       }
-      Use(head) => outs[ws] = { head, lines: [], bytes: 0, files: [], file_at: Map([]), gone: false, messages: 0.0 }
+      Use(head, need_save_state) => {
+        if need_save_state {
+          self.save_committed_head_state(ws, head)
+        }
+        outs[ws] = { head, lines: [], bytes: 0, files: [], file_at: Map([]), gone: false, messages: 0.0 }
+      }
       Fresh => outs[ws] = { head: fresh_head(ws, gen, w.1), lines: [], bytes: 0, files: [], file_at: Map([]), gone: false, messages: 0.0 }
     }
   }

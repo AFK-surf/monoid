@@ -1352,3 +1352,185 @@ test("whole-fold-to-empty followed by export.db rollback retries cleanly in same
     }
   }
 });
+
+test("whole-fold empty head written but old batch unlink failed rebuilds cleanly into new generation (MB + Pion)", async (t) => {
+  const bins = resolveDualBinaries(t);
+  if (!bins) return;
+
+  for (const [label, bin] of [
+    ["mb", bins.mb],
+    ["pion", bins.pion],
+  ] as const) {
+    const made = station();
+    cleanupDirs.push(made.data);
+    const rep = join(made.data, `replica-empty-unlink-eacces-${label}`);
+    const exp1 = new ExportClient(bin, made.db, rep, made.data);
+    await exp1.ask({ type: "places", places: PLACES });
+    const p1 = await exp1.ask({ type: "pass", told: nothingTold() });
+    const gen1 = p1.heads[HOME].gen as string;
+    const to1 = p1.heads[HOME].to as number;
+    const gen1Dir = join(rep, "own", HOME, gen1);
+    const log1Dir = join(gen1Dir, "log");
+
+    // Delete all HOME sessions and make log/ read-only: write_batch isn't needed for empty whole-fold,
+    // write_head writes (to=N > to1, batches=[]), and then unlinking old batch b1 fails with EACCES,
+    // rolling export.db back to committed (to1, [b1]) while disk has empty head + old batch in log/.
+    const homeSessions = made.store.db.prepare("SELECT key FROM sessions WHERE ws = ? OR ws IS NULL OR ws = ''").all(HOME) as { key: string }[];
+    const toldDel = nothingTold();
+    const unsubDel = made.store.subscribe((c) => void tell(toldDel, c));
+    for (const s of homeSessions) made.store.deleteSession(s.key);
+    unsubDel();
+
+    // First write_batch needs log/ writable, so let's test the exact post-write_head unlink failure state:
+    // use a SQLite trigger to fail right after write_head? No — chmod 0555 on log/ directly causes unlink to fail
+    // after fold_gen writes empty head if we only block log/ during unlink, OR if we simulate the exact disk state
+    // produced by unlink EACCES (head.json = {to: to1 + 1, batches: []}, log/ still holds b1, export.db at to1).
+    // Even better: chmod 0555 log/ fails before write_batch if a batch is written first; here let's verify
+    // the exact state where write_head wrote (to=to1+1, batches=[]) and old batch remained in log/.
+    const savedBatches = readdirSync(log1Dir).sort();
+    assert.ok(savedBatches.length >= 1);
+    const head1 = JSON.parse(readFileSync(join(gen1Dir, "head.json"), "utf8")) as Record<string, unknown>;
+    await exp1.close();
+    writeFileSync(join(gen1Dir, "head.json"), JSON.stringify({ ...head1, to: to1 + 1, batches: [] }, null, 1));
+
+    // Restart, add a new session, and run pass: must RebuildLegacy into gen2 and preserve old log1Dir untouched!
+    const thNew = chat(made.store, made.data, "chat:after-unlink-fail", HOME, 1);
+    made.store.insertMessage({ thread: thNew, ts: "ul.1", authorKind: "person", author: "p@x", text: "recovered-after-unlink-eacces" });
+
+    const exp2 = new ExportClient(bin, made.db, rep, made.data);
+    exp2.now = NOW + 5000;
+    await exp2.ask({ type: "places", places: PLACES });
+    const p2 = await exp2.ask({ type: "pass", told: nothingTold() });
+    const gen2 = p2.heads[HOME].gen as string;
+    assert.notEqual(gen2, gen1, `${label}: must rebuild into a new generation when empty head > committed has old batches in log/`);
+    assert.deepEqual(readdirSync(log1Dir).sort(), savedBatches, `${label}: old gen log/ must stay untouched`);
+
+    const hashes = [...Object.keys(p2.heads[HOME].files ?? {}), ...Object.keys(p2.heads[HOME].transcriptFiles ?? {})];
+    const sources = await exp2.ask({ type: "sources", hashes });
+    await exp2.close();
+
+    const dest = tempDir(`w6b-unlink-dest-${label}-`);
+    const destDb = join(dest, "stillfail.db");
+    Store.open(destDb).close();
+    stageRestoreCopy(rep, made.data, HOME, gen2, dest, sources);
+    await takeBackSoon(dest, destDb, NOW + 9000, bin);
+    const entries = dumpTableRows(destDb, "entries");
+    assert.ok(
+      entries.some((e) => JSON.stringify(e).includes("recovered-after-unlink-eacces")),
+      `${label}: recovered-after-unlink-eacces restored from new generation`,
+    );
+  }
+});
+
+test("legacy upgrade with missing referenced batch file rebuilds into new generation and restores all sessions (MB + Pion)", async (t) => {
+  const bins = resolveDualBinaries(t);
+  if (!bins) return;
+
+  for (const [label, bin] of [
+    ["mb", bins.mb],
+    ["pion", bins.pion],
+  ] as const) {
+    const made = station();
+    cleanupDirs.push(made.data);
+    const thA = made.store.db.prepare("SELECT id FROM threads ORDER BY id LIMIT 1").get() as { id: number };
+    made.store.insertMessage({ thread: thA.id, ts: "lm.u1", authorKind: "person", author: "p@x", text: "legacy-miss-unchanged" });
+    const thX = chat(made.store, made.data, "chat:x", HOME, 1);
+    made.store.insertMessage({ thread: thX, ts: "lm.x1", authorKind: "person", author: "p@x", text: "legacy-miss-x" });
+
+    const rep = join(made.data, `replica-legacy-missing-batch-${label}`);
+    const exp1 = new ExportClient(bin, made.db, rep, made.data);
+    await exp1.ask({ type: "places", places: PLACES });
+    const p1 = await exp1.ask({ type: "pass", told: nothingTold() });
+    const gen1 = p1.heads[HOME].gen as string;
+    const log1Dir = join(rep, "own", HOME, gen1, "log");
+
+    const told2 = nothingTold();
+    const unsub2 = made.store.subscribe((c) => void tell(told2, c));
+    const thAdded = chat(made.store, made.data, "chat:added", HOME, 1);
+    made.store.insertMessage({ thread: thAdded, ts: "lm.a1", authorKind: "person", author: "p@x", text: "legacy-miss-added" });
+    unsub2();
+    const p2 = await exp1.ask({ type: "pass", told: told2 });
+    assert.ok(p2.wrote >= 1);
+    await exp1.close();
+
+    // Delete head_state:* (legacy DB) and remove 1 of the 2 batches referenced by head.json.
+    const stDb = new DatabaseSync(join(rep, "export.db"));
+    try {
+      stDb.exec("DELETE FROM meta WHERE k LIKE 'head_state:%'");
+    } finally {
+      stDb.close();
+    }
+    const batches = readdirSync(log1Dir).sort();
+    assert.ok(batches.length >= 2);
+    rmSync(join(log1Dir, batches[0]!));
+    const remainingOld = readdirSync(log1Dir).sort();
+
+    const exp2 = new ExportClient(bin, made.db, rep, made.data);
+    exp2.now = NOW + 5000;
+    await exp2.ask({ type: "places", places: PLACES });
+    const p3 = await exp2.ask({ type: "pass", told: nothingTold() });
+    const gen2 = p3.heads[HOME].gen as string;
+    assert.notEqual(gen2, gen1, `${label}: missing referenced batch must trigger RebuildLegacy into new gen`);
+    assert.deepEqual(readdirSync(log1Dir).sort(), remainingOld, `${label}: old gen dir must stay untouched`);
+
+    const hashes = [...Object.keys(p3.heads[HOME].files ?? {}), ...Object.keys(p3.heads[HOME].transcriptFiles ?? {})];
+    const sources = await exp2.ask({ type: "sources", hashes });
+    await exp2.close();
+
+    const dest = tempDir(`w6b-legacy-miss-dest-${label}-`);
+    const destDb = join(dest, "stillfail.db");
+    Store.open(destDb).close();
+    stageRestoreCopy(rep, made.data, HOME, gen2, dest, sources);
+    await takeBackSoon(dest, destDb, NOW + 9000, bin);
+    const keys = dumpTableRows(destDb, "sessions").map((s) => s.key);
+    assert.ok(keys.includes("chat:a"), `${label}: chat:a restored`);
+    assert.ok(keys.includes("chat:x"), `${label}: chat:x restored`);
+    assert.ok(keys.includes("chat:added"), `${label}: chat:added restored`);
+  }
+});
+
+test("healthy legacy upgrade persists head_state:<ws> immediately even on idle wrote=0 pass (MB + Pion)", async (t) => {
+  const bins = resolveDualBinaries(t);
+  if (!bins) return;
+
+  for (const [label, bin] of [
+    ["mb", bins.mb],
+    ["pion", bins.pion],
+  ] as const) {
+    const made = station();
+    cleanupDirs.push(made.data);
+    const rep = join(made.data, `replica-legacy-idle-${label}`);
+    const exp1 = new ExportClient(bin, made.db, rep, made.data);
+    await exp1.ask({ type: "places", places: PLACES });
+    const p1 = await exp1.ask({ type: "pass", told: nothingTold() });
+    const gen = p1.heads[HOME].gen as string;
+    await exp1.close();
+
+    // Remove head_state:* to simulate healthy legacy DB.
+    const st1 = new DatabaseSync(join(rep, "export.db"));
+    try {
+      st1.exec("DELETE FROM meta WHERE k LIKE 'head_state:%'");
+    } finally {
+      st1.close();
+    }
+
+    // Reopen and run an idle pass (wrote === 0).
+    const exp2 = new ExportClient(bin, made.db, rep, made.data);
+    await exp2.ask({ type: "places", places: PLACES });
+    const p2 = await exp2.ask({ type: "pass", told: nothingTold() });
+    assert.equal(p2.wrote, 0, `${label}: idle pass must have wrote === 0`);
+    assert.equal(p2.heads[HOME].gen, gen, `${label}: healthy legacy upgrade must stay on same gen`);
+    await exp2.close();
+
+    const st2 = new DatabaseSync(join(rep, "export.db"), { readOnly: true });
+    try {
+      const row = st2.prepare("SELECT v FROM meta WHERE k = ?").get(`head_state:${HOME}`) as { v: string } | undefined;
+      assert.ok(row !== undefined, `${label}: head_state:${HOME} must be persisted immediately after idle pass`);
+      const parsed = JSON.parse(row.v) as { gen: string; to: number; batches: string[] };
+      assert.equal(parsed.gen, gen);
+      assert.equal(parsed.to, p1.heads[HOME].to);
+    } finally {
+      st2.close();
+    }
+  }
+});
