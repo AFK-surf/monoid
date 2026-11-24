@@ -2784,13 +2784,19 @@ export class Store {
     });
   }
 
+  /// What message n says since its latest edit; null for one never edited. Its edits all come after it.
+  editedText(thread: number, n: number): string | null {
+    const r = this.#one("SELECT text FROM entries WHERE thread = ?1 AND target = ?2 AND n > ?2 AND kind = 'edit' ORDER BY n DESC LIMIT 1", thread, n);
+    return r === undefined ? null : r.text;
+  }
+
   /// Brings in what message n was recorded without (its files, the message it quotes): an edit entry, as a platform's.
   completeMessage(thread: number, n: number, text: string, attachments: Attachment[]): void {
     this.#with((changes) => {
       const row = this.#one("SELECT * FROM entries WHERE thread = ? AND n = ? AND kind = 'message'", thread, n);
       if (row === undefined) return;
       const message = toEntry(row);
-      if (message.text === text && attachments.length === 0) return;
+      if ((this.editedText(thread, n) ?? message.text) === text && attachments.length === 0) return;
       this.#append(
         {
           agentIdentity: undefined, thread, n: 0, kind: "edit", target: n, ts: null,

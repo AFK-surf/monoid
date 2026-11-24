@@ -162,6 +162,39 @@ test("a mention of another bot that the archived one's connect saw first brings 
   await r.close();
 });
 
+test("a mention recorded without its files and edited on its platform before they come keeps the edit, its files and quote added", async () => {
+  for (const quoted of [undefined, "5.5"]) {
+    const r = new Rig();
+    const { m } = await archivedThread(r);
+    r.gptChat.shared.set("F1", "content");
+    (r.gptChat as ChatSurface).quoted = async () => ({ ts: "5.5", user: "U2", text: "the quoted words", fromBot: false });
+    const call = reply(m, "9999.1", "<@UGPT> look at this", { files: [note("F1")], ...(quoted !== undefined ? { quoted } : {}) });
+    await r.accept(call);
+    await r.hub.receive("cl", { type: "changed", channel: "C1", threadTs: m.threadTs, ts: "9999.1", text: "<@UGPT> look at THAT instead" });
+    await r.accept({ ...call, addressed: true }, "gpt");
+    await settle();
+    const entry = r.store.messageAt(r.thread("C1", m.threadTs).id, "9999.1")!;
+    assert.equal(entry.text, `${quoted !== undefined ? "> the quoted words\n\n" : ""}<@UGPT> look at THAT instead`);
+    assert.deepEqual(entry.attachments.map((a) => a.name), ["F1.txt"]);
+    assert.deepEqual([heard(r.codex, "THAT instead"), heard(r.codex, "look at this"), heard(r.codex, "F1.txt")], [1, 0, 1]);
+    await r.close();
+  }
+});
+
+test("a message's latest edit is found by an index, the edits after it alone", async () => {
+  const r = new Rig();
+  const { m } = await archivedThread(r);
+  const thread = r.thread("C1", m.threadTs).id;
+  const n = r.store.messageNumberAt(thread, m.ts)!;
+  assert.equal(r.store.editedText(thread, n), null);
+  for (const text of ["first edit", "second edit"]) r.store.editMessage("slack:T1", "C1", m.threadTs, m.ts, text);
+  assert.equal(r.store.editedText(thread, n), "second edit");
+  const plan = r.store.db.prepare("EXPLAIN QUERY PLAN SELECT text FROM entries WHERE thread = ?1 AND target = ?2 AND n > ?2 AND kind = 'edit' ORDER BY n DESC LIMIT 1").all(thread, n).map((row) => String(row.detail)).join("\n");
+  assert.match(plan, /SEARCH entries USING INDEX entries_edits \(thread=\? AND target=\? AND n>\?\)/);
+  assert.doesNotMatch(plan, /TEMP B-TREE/);
+  await r.close();
+});
+
 test("a thread hidden by hand whose agent is still shown: what is said is recorded alone, and a mention shows it again", async () => {
   const r = new Rig();
   const m = say("<@UBOT> look at the build");

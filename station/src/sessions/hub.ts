@@ -1068,9 +1068,11 @@ export class Hub {
     const at = this.store.messageNumberAt(thread.id, message.ts);
     // Recorded with its files only named, and now one it mentions is there (another bot's connect saw it first).
     const late = wanted && at !== null && this.unfetched.has(`${thread.id}:${at}`);
-    let said: { text: string; attachments: Attachment[] } = { text: message.text, attachments: [] };
+    // Edited on its platform since (an edit of the thread waits its turn, `receive`), it reads as edited.
+    const words = late ? (this.store.editedText(thread.id, at) ?? message.text) : message.text;
+    let said: { text: string; attachments: Attachment[] } = { text: words, attachments: [] };
     if (into === null) said.text = [message.text, ...(message.files ?? []).map((f) => tr(stationLang(), "station.slack.fileNotFetched", { name: f.name, error: tr(stationLang(), "station.slack.fileWhileArchived") }))].filter((t) => t !== "").join("\n\n");
-    else if (at === null || late) said = await this.fetched(chat, into, message.text, message.files);
+    else if (at === null || late) said = await this.fetched(chat, into, words, message.files);
     if (into !== null && wanted && (at === null || late)) said = await this.withQuoted(chat, thread.id, here, into, message, said);
     const [n, fresh] = this.store.insertMessage({ thread: thread.id, ts: message.ts, authorKind: "person", author: message.user, ...said });
     if (late) {
@@ -1085,7 +1087,7 @@ export class Hub {
     const everyone = restored || (fresh && (wanted || !threadHiddenByHand));
     const targets = everyone ? this.store.threadSessions(thread.id).map((m) => m.session) : wanted ? [key] : [];
     // Its own words, never the quote's: a quoted `-stop` is no command.
-    this.deliver(thread.id, n, targets, message.text);
+    this.deliver(thread.id, n, targets, words);
   }
 
   /// The messages recorded with what they carry (files, a quote) left out, no one there to read it, as `thread:n` (the newest;
