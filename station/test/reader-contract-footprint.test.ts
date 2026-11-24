@@ -511,9 +511,7 @@ test("a path or a base with a NUL in it is refused EINVAL, never measured as the
       assert.equal(inv.exitCode, 0, `footprint exited with ${inv.exitCode} (stderr: ${inv.stderr})`);
       assert.equal(inv.messages.length, 1);
       const [said] = inv.messages as FootprintRawResponse[];
-      assert.equal(said!.code, "EINVAL", JSON.stringify(said));
-      assert.equal(typeof said!.error, "string");
-      assert.equal(said!.size, undefined);
+      assert.deepEqual(said, { error: "path must not contain NUL bytes", code: "EINVAL" });
     }
   }
 });

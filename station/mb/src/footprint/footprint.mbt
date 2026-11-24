@@ -453,7 +453,7 @@ pub fn answer(line : String, sep : String) -> Json {
   let base = text("base").unwrap_or(path)
   // (a C string ends at its first NUL: such a path would be measured as another, shorter one)
   if path.contains("\u{0}") || base.contains("\u{0}") {
-    return { "error": Json::string("EINVAL: invalid argument"), "code": Json::string("EINVAL") }
+    return { "error": Json::string("path must not contain NUL bytes"), "code": Json::string("EINVAL") }
   }
   let finding = yes("finding")
   let ms = number("maxDurationMs").unwrap_or(60000.0)
