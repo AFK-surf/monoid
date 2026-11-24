@@ -126,14 +126,15 @@ static void utf8_free(utf8_text *t) {
 
 // ---- faces given (mb_host_face_add, style.mbt): fontconfig's application fonts, by the family their files make ----
 
-#define MB_FACES 16
+#define MB_FACES 32
 static struct {
   char family[128];
   int has;
+  int no_lig;
 } faces[MB_FACES];
 
 static int face_id(int style) {
-  int f = (style >> 8) & 15;
+  int f = (style >> 8) & 31;
   if (f > 0) return faces[f].has ? f : 0;
   if (style & 2) return faces[3].has ? 3 : 0;
   if ((style & 16) && faces[2].has) return 2;
@@ -222,10 +223,22 @@ int32_t mb_host_face_add_bytes(int32_t f, moonbit_bytes_t data, int32_t weight) 
 }
 
 void mb_host_face_clear(int32_t f) {
-  if (f <= 0 || f >= MB_FACES || !faces[f].has) return;
+  if (f <= 0 || f >= MB_FACES) return;
+  faces[f].no_lig = 0;
+  if (!faces[f].has) return;
   faces[f].has = 0;
   faces_changed();
 }
+
+void mb_host_face_set_ligatures(int32_t f, int32_t on) {
+  if (f <= 0 || f >= MB_FACES) return;
+  int no_lig = on ? 0 : 1;
+  if (faces[f].no_lig == no_lig) return;
+  faces[f].no_lig = no_lig;
+  faces_changed();
+}
+
+void mb_host_set_host_autospace(int32_t on) { (void)on; }
 
 static int family_installed(const char *name) {
   init();
@@ -282,6 +295,71 @@ moonbit_string_t mb_host_local_font_families(void) {
   return s;
 }
 
+static char *local_font_info_cache;
+
+static void json_append_escaped(GString *out, const char *str) {
+  g_string_append_c(out, '"');
+  for (const char *c = str; *c; c++) {
+    if (*c == '"' || *c == '\\') g_string_append_c(out, '\\');
+    g_string_append_c(out, (unsigned char)*c < 0x20 ? ' ' : *c);
+  }
+  g_string_append_c(out, '"');
+}
+
+// Cached metadata for locally installed font families (name, localized, mono, serif, cjk).
+moonbit_string_t mb_host_local_font_info(void) {
+  init();
+  if (!local_font_info_cache) {
+    PangoFontFamily **fams = NULL;
+    int n = 0;
+    pango_font_map_list_families(fontmap, &fams, &n);
+    GString *out = g_string_new("[");
+    for (int i = 0; i < n; i++) {
+      const char *name = pango_font_family_get_name(fams[i]);
+      if (!name || !*name) continue;
+      int mono = pango_font_family_is_monospace(fams[i]) ? 1 : 0;
+      int serif = (strstr(name, "Serif") || strstr(name, "serif") || strstr(name, "Song") || strstr(name, "Ming") ||
+                   strstr(name, "Mincho") || strstr(name, "Georgia") || strstr(name, "Times"))
+                      ? 1
+                      : 0;
+      int cjk = 0;
+      FcPattern *pat = FcPatternBuild(NULL, FC_FAMILY, FcTypeString, name, NULL);
+      FcObjectSet *os = FcObjectSetBuild(FC_LANG, NULL);
+      FcFontSet *fs = FcFontList(NULL, pat, os);
+      if (fs && fs->nfont > 0) {
+        FcLangSet *ls = NULL;
+        if (FcPatternGetLangSet(fs->fonts[0], FC_LANG, 0, &ls) == FcResultMatch && ls) {
+          if (FcLangSetHasLang(ls, (const FcChar8 *)"zh-cn") != FcLangDifferentLang ||
+              FcLangSetHasLang(ls, (const FcChar8 *)"zh-tw") != FcLangDifferentLang ||
+              FcLangSetHasLang(ls, (const FcChar8 *)"ja") != FcLangDifferentLang ||
+              FcLangSetHasLang(ls, (const FcChar8 *)"ko") != FcLangDifferentLang) {
+            cjk = 1;
+          }
+        }
+      }
+      if (fs) FcFontSetDestroy(fs);
+      FcObjectSetDestroy(os);
+      FcPatternDestroy(pat);
+      if (out->len > 1) g_string_append_c(out, ',');
+      g_string_append(out, "{\"name\":");
+      json_append_escaped(out, name);
+      g_string_append(out, ",\"localized\":");
+      json_append_escaped(out, name);
+      g_string_append_printf(out, ",\"mono\":%s,\"serif\":%s,\"cjk\":%s}",
+                             mono ? "true" : "false", serif ? "true" : "false", cjk ? "true" : "false");
+    }
+    g_string_append_c(out, ']');
+    g_free(fams);
+    local_font_info_cache = g_string_free(out, FALSE);
+  }
+  glong len = 0;
+  gunichar2 *u = g_utf8_to_utf16(local_font_info_cache, -1, NULL, &len, NULL);
+  moonbit_string_t s = moonbit_make_string_raw((int32_t)len);
+  if (len) memcpy(s, u, (size_t)len * 2);
+  g_free(u);
+  return s;
+}
+
 // ---- a style's font and layouts ----
 
 static PangoFontDescription *desc_for(double size, int weight, int style) {
@@ -302,10 +380,13 @@ static PangoLayout *make_layout(const char *s, int n, double size, int weight, i
   PangoFontDescription *d = desc_for(size, weight, style);
   pango_layout_set_font_description(l, d);
   pango_font_description_free(d);
-  if (style & (8 | 32 | 64)) {
+  int face = face_id(style);
+  int no_lig = face > 0 && faces[face].no_lig;
+  if ((style & (8 | 32 | 64)) || no_lig) {
     PangoAttrList *a = pango_attr_list_new();
-    char f[48] = "";
-    if (style & 8) strcat(f, "liga=0,clig=0,");
+    char f[64] = "";
+    if (no_lig) strcat(f, "calt=0,liga=0,clig=0,");
+    else if (style & 8) strcat(f, "liga=0,clig=0,");
     if (style & 32) strcat(f, "tnum=1,");
     if (style & 64) strcat(f, "pwid=1,");
     f[strlen(f) - 1] = 0;

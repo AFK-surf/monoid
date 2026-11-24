@@ -57,6 +57,9 @@ priv struct Rich {
   faces : Int
   // the faces as they were given when it was built (faces.mbt words_shaped_in): laid out again once they change
   shaped_in : Int
+  // optional local CJK companion overrides for preview cards (zero global cache invalidation)
+  cjk_override : @view.CjkOverride?
+  code_cjk_override : @view.CjkOverride?
 }
 
 ///|
@@ -196,9 +199,20 @@ fn Rich::run_style(self : Rich, run : Run) -> Int {
   let faces = match run.face {
     None => self.faces
     Some(face) =>
-      (self.faces & (@hostapi.style_face(15) | @hostapi.style_words).lnot()) | faces_style(false, face)
+      (self.faces & (@hostapi.style_face_bits | @hostapi.style_words).lnot()) | faces_style(false, face)
   }
   run_style(run) | faces
+}
+
+///|
+/// Local CJK companion override for `run` with resolved `style`: code/mono runs take `code_cjk_override`,
+/// prose runs take `cjk_override`, preventing prose preview hovers from leaking into inline code.
+fn Rich::run_cjk_override(self : Rich, run : Run, style : Int) -> @view.CjkOverride? {
+  if run.code || (style & @hostapi.style_mono) != 0 {
+    self.code_cjk_override
+  } else {
+    self.cjk_override
+  }
 }
 
 ///|
@@ -475,6 +489,22 @@ fn rich_key(r : Rich) -> Int64 {
   h = mix(h, r.spacing.reinterpret_as_int64())
   h = mix(h, r.faces.to_int64())
   h = mix(h, r.shaped_in.to_int64())
+  match r.cjk_override {
+    Some(ov) => {
+      h = mix(h, ov.face.to_int64() + 1L)
+      h = mix(h, (ov.scale * 100.0).round().to_int().to_int64())
+      h = mix(h, ov.weight_off.to_int64())
+    }
+    None => h = mix(h, 0L)
+  }
+  match r.code_cjk_override {
+    Some(ov) => {
+      h = mix(h, ov.face.to_int64() + 1L)
+      h = mix(h, (ov.scale * 100.0).round().to_int().to_int64())
+      h = mix(h, ov.weight_off.to_int64())
+    }
+    None => h = mix(h, 0L)
+  }
   for run in r.runs {
     h = mix(h, stable_hash(run.text))
     h = mix(h, run.weight.to_int64())
@@ -514,6 +544,7 @@ fn rich_spaced_run(r : Rich, run : Run, style : Int) -> Bool {
   r.run_bg(run) == 0L &&
   (style & @hostapi.style_mono) == 0 &&
   @hostapi.face_of_style(style) != @hostapi.face_code &&
+  cjk_autospace_on.val &&
   spaced_now() != @hostapi.words_spaced_none
 }
 
@@ -544,7 +575,10 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
   // Chinese in it: measured by the CJK font's too (taller), as Android measures a line by the fonts it draws in (as a
   // browser, by the first font's alone: line_metrics)
   let cjk = r.runs.iter().any(fn(run) { words_cjk(run.text) })
-  let (a0, d0) = line_metrics(r.size, r.weight, cjk)
+  let all_code_or_mono = r.runs.length() > 0 && r.runs.iter().all(fn(run) { run.code || run.mono })
+  let base_cjk_ov = if all_code_or_mono { r.code_cjk_override } else { r.cjk_override }
+  let base_style = if effective_cjk(r.faces, base_cjk_ov) is Some(_) { r.faces } else { 0 }
+  let (a0, d0) = line_metrics(r.size, r.weight, cjk, style=base_style, cjk_override=base_cjk_ov)
   let lh = if r.line > 0.0 { r.line } else { own0 }
   let px = whole_pixel_lines(r.size, r.weight)
   let (pitch0, base_asc, extra) = set_line(lh, a0, d0, sc, px, trim=r.trim)
@@ -583,8 +617,9 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
     drawings.push(None)
     let weight = r.run_weight(run)
     let style = r.run_style(run)
-    let s = shape(run.text, size, weight, style~, spacing=r.spacing)
-    let (a, d) = line_metrics(size, weight, words_cjk(run.text), style~)
+    let ov = r.run_cjk_override(run, style)
+    let s = shape(run.text, size, weight, style~, spacing=r.spacing, cjk_override=ov)
+    let (a, d) = line_metrics(size, weight, words_cjk(run.text), style~, cjk_override=ov)
     let (l, lasc, _) = set_line(lh * size / r.size, a, d, sc, px)
     run_start.push(off)
     run_size.push(size)
@@ -708,7 +743,8 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
           local_end[j] = loff
         }
         let chunk = chunk_sb.to_string()
-        let s = shape(chunk, size, weight, style~, spacing=r.spacing)
+        let batch_ov = r.run_cjk_override(run, style)
+        let s = shape(chunk, size, weight, style~, spacing=r.spacing, cjk_override=batch_ov)
         let batch_c0 = Array::make(count, 0)
         let batch_c1 = Array::make(count, 0)
         let m = s.starts.length()
@@ -744,7 +780,7 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
           for j in 0..<count {
             let rk = k + j
             let rrun = r.runs[rk]
-            let (a, d) = line_metrics(size, weight, words_cjk(rrun.text), style~)
+            let (a, d) = line_metrics(size, weight, words_cjk(rrun.text), style~, cjk_override=batch_ov)
             let (l, lasc, _) = set_line(lh * size / r.size, a, d, sc, px)
             drawings.push(None)
             run_start.push(off + local_start[j])
@@ -844,8 +880,9 @@ fn rich_prep_one(
   let size = r.run_size(run)
   let weight = r.run_weight(run)
   let style = r.run_style(run)
-  let s = shape(run.text, size, weight, style~, spacing=r.spacing)
-  let (a, d) = line_metrics(size, weight, words_cjk(run.text), style~)
+  let ov = r.run_cjk_override(run, style)
+  let s = shape(run.text, size, weight, style~, spacing=r.spacing, cjk_override=ov)
+  let (a, d) = line_metrics(size, weight, words_cjk(run.text), style~, cjk_override=ov)
   let (l, lasc, _) = set_line(lh * size / r.size, a, d, sc, px)
   let n = s.starts.length()
   let (room, after) = r.run_room(run, size)
@@ -1433,6 +1470,8 @@ pub fn Ctx::rich(
       }
     ),
     shaped_in: words_shaped_in.get(),
+    cjk_override: None,
+    code_cjk_override: None,
   })
   // each link told with its words and its id, once the paragraph is there
   match on_link_shown {

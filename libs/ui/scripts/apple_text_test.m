@@ -26,6 +26,7 @@ CTFontRef mb_platform_font(double size, int weight, int mono) {
 void mb_atlas_upload(int color, int x, int y, int w, int h, const void *px) {
   (void)color, (void)x, (void)y, (void)w, (void)h, (void)px;
 }
+void mb_host_request_frame(void) {}
 int mb_render_snapshot(const char *path) {
   (void)path;
   return 0;

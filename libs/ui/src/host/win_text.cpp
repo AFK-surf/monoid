@@ -240,7 +240,7 @@ static void init(void) {
 
 // The faces given (mb_host_face_add, style.mbt): each its files, made into a collection of their own (DirectWrite's
 // font set from the files: a variable file's named weights in it), and the family the files make.
-#define MB_FACES 16
+#define MB_FACES 32
 static struct {
   WCHAR **paths;  // a file's path, or NULL: its bytes (data, sizes)
   void **data;
@@ -249,6 +249,7 @@ static struct {
   IDWriteFontCollection1 *fc;
   WCHAR family[128];
   bool system;  // a family installed here (mb_host_face_add_family): the system's collection, no files of its own
+  bool no_lig;  // programming/contextual ligatures disabled on this slot
 } faces[MB_FACES];
 // fonts given as bytes: DirectWrite's in-memory loader (it keeps a copy of each)
 static IDWriteInMemoryFontFileLoader *mem_loader;
@@ -258,7 +259,7 @@ static IDWriteInMemoryFontFileLoader *mem_loader;
 static bool face_has(int f) { return faces[f].fc || faces[f].system; }
 
 static int face_id(int style) {
-  int f = (style >> 8) & 15;
+  int f = (style >> 8) & 31;
   if (f > 0) return face_has(f) ? f : 0;
   if (style & 2) return face_has(3) ? 3 : 0;
   if ((style & 16) && face_has(2)) return 2;
@@ -351,7 +352,9 @@ extern "C" int32_t mb_host_face_add_bytes(int32_t f, moonbit_bytes_t data, int32
 }
 
 extern "C" void mb_host_face_clear(int32_t f) {
-  if (f <= 0 || f >= MB_FACES || !face_has(f)) return;
+  if (f <= 0 || f >= MB_FACES) return;
+  faces[f].no_lig = false;
+  if (!face_has(f)) return;
   for (int i = 0; i < faces[f].n; i++) {
     free(faces[f].paths[i]);
     free(faces[f].data[i]);
@@ -362,6 +365,16 @@ extern "C" void mb_host_face_clear(int32_t f) {
   faces[f].system = false;
   faces_changed();
 }
+
+extern "C" void mb_host_face_set_ligatures(int32_t f, int32_t on) {
+  if (f <= 0 || f >= MB_FACES) return;
+  bool no_lig = !on;
+  if (faces[f].no_lig == no_lig) return;
+  faces[f].no_lig = no_lig;
+  faces_changed();
+}
+
+extern "C" void mb_host_set_host_autospace(int32_t on) { (void)on; }
 
 // Face `f` set in the family installed here named `family`: the system's collection, by its name.
 extern "C" int32_t mb_host_face_add_family(int32_t f, moonbit_string_t family) {
@@ -457,6 +470,107 @@ extern "C" moonbit_string_t mb_host_local_font_families(void) {
   return s;
 }
 
+static WCHAR *local_font_info_cache;
+static size_t local_font_info_cache_len;
+
+static void wbuf_append(WCHAR **buf, size_t *n, size_t *cap, const WCHAR *s, size_t len) {
+  if (*n + len + 4 >= *cap) {
+    *cap = (*n + len + 4) * 2;
+    *buf = (WCHAR *)realloc(*buf, sizeof(WCHAR) * (*cap));
+  }
+  memcpy(*buf + *n, s, sizeof(WCHAR) * len);
+  *n += len;
+}
+
+static void wbuf_append_json_str(WCHAR **buf, size_t *n, size_t *cap, const WCHAR *s) {
+  size_t len = wcslen(s);
+  if (*n + 2 * len + 4 >= *cap) {
+    *cap = (*n + 2 * len + 4) * 2;
+    *buf = (WCHAR *)realloc(*buf, sizeof(WCHAR) * (*cap));
+  }
+  (*buf)[(*n)++] = L'"';
+  for (size_t k = 0; k < len; k++) {
+    if (s[k] == L'"' || s[k] == L'\\') (*buf)[(*n)++] = L'\\';
+    (*buf)[(*n)++] = s[k] < 0x20 ? L' ' : s[k];
+  }
+  (*buf)[(*n)++] = L'"';
+}
+
+extern "C" moonbit_string_t mb_host_local_font_info(void) {
+  init();
+  if (!local_font_info_cache) {
+    IDWriteFontCollection *fc = NULL;
+    if (FAILED(dw->GetSystemFontCollection(&fc, FALSE))) return moonbit_make_string_raw(0);
+    if (!GetUserDefaultLocaleName(names_locale, LOCALE_NAME_MAX_LENGTH)) names_locale[0] = 0;
+    UINT32 count = fc->GetFontFamilyCount();
+    size_t cap = 4096, n = 0;
+    WCHAR *out = (WCHAR *)malloc(sizeof(WCHAR) * cap);
+    out[n++] = L'[';
+    for (UINT32 i = 0; i < count; i++) {
+      IDWriteFontFamily *fam = NULL;
+      IDWriteLocalizedStrings *names = NULL;
+      WCHAR en_name[256] = {0}, loc_name[256] = {0};
+      bool mono = false, serif = false, cjk = false;
+      if (SUCCEEDED(fc->GetFontFamily(i, &fam)) && SUCCEEDED(fam->GetFamilyNames(&names))) {
+        UINT32 at = 0;
+        BOOL there = FALSE;
+        names->FindLocaleName(L"en-us", &at, &there);
+        if (!there) at = 0;
+        UINT32 len = 0;
+        if (SUCCEEDED(names->GetStringLength(at, &len)) && len < 255) names->GetString(at, en_name, 256);
+        at = 0;
+        there = FALSE;
+        if (names_locale[0]) names->FindLocaleName(names_locale, &at, &there);
+        if (!there) at = 0;
+        len = 0;
+        if (SUCCEEDED(names->GetStringLength(at, &len)) && len < 255) names->GetString(at, loc_name, 256);
+        IDWriteFont *font = NULL;
+        if (SUCCEEDED(fam->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                                DWRITE_FONT_STYLE_NORMAL, &font)) && font) {
+          IDWriteFont1 *font1 = NULL;
+          if (SUCCEEDED(font->QueryInterface(__uuidof(IDWriteFont1), (void **)&font1)) && font1) {
+            mono = font1->IsMonospacedFont() != FALSE;
+            DWRITE_PANOSE panose;
+            font1->GetPanose(&panose);
+            if (panose.familyKind == DWRITE_PANOSE_FAMILY_TEXT_DISPLAY &&
+                panose.text.serifStyle >= DWRITE_PANOSE_SERIF_STYLE_COVE &&
+                panose.text.serifStyle <= DWRITE_PANOSE_SERIF_STYLE_TRIANGLE) {
+              serif = true;
+            }
+            font1->Release();
+          }
+          BOOL has_han = FALSE;
+          if (SUCCEEDED(font->HasCharacter(0x4E2D, &has_han)) && has_han) cjk = true;
+          font->Release();
+        }
+      }
+      if (names) names->Release();
+      if (fam) fam->Release();
+      if (!en_name[0] && loc_name[0]) wcscpy_s(en_name, 256, loc_name);
+      if (!loc_name[0] && en_name[0]) wcscpy_s(loc_name, 256, en_name);
+      if (!en_name[0]) continue;
+      if (n > 1) out[n++] = L',';
+      wbuf_append(&out, &n, &cap, L"{\"name\":", 8);
+      wbuf_append_json_str(&out, &n, &cap, en_name);
+      wbuf_append(&out, &n, &cap, L",\"localized\":", 13);
+      wbuf_append_json_str(&out, &n, &cap, loc_name);
+      const WCHAR *tail_m = mono ? L",\"mono\":true" : L",\"mono\":false";
+      wbuf_append(&out, &n, &cap, tail_m, wcslen(tail_m));
+      const WCHAR *tail_s = serif ? L",\"serif\":true" : L",\"serif\":false";
+      wbuf_append(&out, &n, &cap, tail_s, wcslen(tail_s));
+      const WCHAR *tail_c = cjk ? L",\"cjk\":true}" : L",\"cjk\":false}";
+      wbuf_append(&out, &n, &cap, tail_c, wcslen(tail_c));
+    }
+    fc->Release();
+    out[n++] = L']';
+    local_font_info_cache = out;
+    local_font_info_cache_len = n;
+  }
+  moonbit_string_t s = moonbit_make_string_raw((int32_t)local_font_info_cache_len);
+  memcpy(s, local_font_info_cache, sizeof(WCHAR) * local_font_info_cache_len);
+  return s;
+}
+
 static const WCHAR *segoe_family_for_size(double size) {
   if (has_segoe_var_small && size < 10.5) return L"Segoe UI Variable Small";
   if (has_segoe_var_display && size >= 20.0) return L"Segoe UI Variable Display";
@@ -464,10 +578,11 @@ static const WCHAR *segoe_family_for_size(double size) {
 }
 
 static IDWriteTextFormat *format_for(double size, int weight, int style) {
-  for (int i = 0; i < n_formats; i++)
-    if (formats[i].size == size && formats[i].weight == weight && formats[i].style == style) return formats[i].f;
-  IDWriteTextFormat *f = NULL;
   int face = face_id(style);
+  int fkey = (face << 8) | (style & 7);
+  for (int i = 0; i < n_formats; i++)
+    if (formats[i].size == size && formats[i].weight == weight && formats[i].style == fkey) return formats[i].f;
+  IDWriteTextFormat *f = NULL;
   const WCHAR *fam = face ? (faces[face].system && wcscmp(faces[face].family, L"Segoe UI Variable Text") == 0
                                  ? segoe_family_for_size(size)
                                  : faces[face].family)
@@ -488,7 +603,7 @@ static IDWriteTextFormat *format_for(double size, int weight, int style) {
   }
   formats[n_formats].size = size;
   formats[n_formats].weight = weight;
-  formats[n_formats].style = style;
+  formats[n_formats].style = fkey;
   formats[n_formats++].f = f;
   return f;
 }
@@ -497,18 +612,24 @@ static IDWriteTextFormat *format_for(double size, int weight, int style) {
 // digits all one width (style.mbt style_tabular): tnum; style & 64: a CJK face's marks narrow among Latin letters
 // (style.mbt style_proportional): pwid; the app's words and what people wrote (faces 1 and 2) with the web's
 // alternates, as the Apple hosts set them (apple_text.m face_font: cv11 and ss01, Inter's single-storey a and its open
-// digits; a face without them is as it is). One typography for each of the ways they go together.
-static IDWriteTypography *typographies[16];
+// digits; a face without them is as it is); k & 16: per-face ligatures disabled (calt, liga, clig off).
+static IDWriteTypography *typographies[32];
 
 // the typography of a style's features (NULL: none, the font's own)
 static IDWriteTypography *typography_for(int style) {
   int face = face_id(style);
-  int k = ((style & 8) ? 1 : 0) | ((style & 32) ? 2 : 0) | ((style & 64) ? 4 : 0) | (face == 1 || face == 2 ? 8 : 0);
+  int k = ((style & 8) ? 1 : 0) | ((style & 32) ? 2 : 0) | ((style & 64) ? 4 : 0) |
+          (face == 1 || face == 2 ? 8 : 0) | ((face > 0 && faces[face].no_lig) ? 16 : 0);
   if (!k) return NULL;
   if (!typographies[k]) {
     IDWriteTypography *t = NULL;
     dw->CreateTypography(&t);
     if (k & 1) {
+      t->AddFontFeature({DWRITE_FONT_FEATURE_TAG_STANDARD_LIGATURES, 0});
+      t->AddFontFeature({DWRITE_FONT_FEATURE_TAG_CONTEXTUAL_LIGATURES, 0});
+    }
+    if (k & 16) {
+      t->AddFontFeature({DWRITE_FONT_FEATURE_TAG_CONTEXTUAL_ALTERNATES, 0});
       t->AddFontFeature({DWRITE_FONT_FEATURE_TAG_STANDARD_LIGATURES, 0});
       t->AddFontFeature({DWRITE_FONT_FEATURE_TAG_CONTEXTUAL_LIGATURES, 0});
     }

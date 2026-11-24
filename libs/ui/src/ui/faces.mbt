@@ -4,9 +4,52 @@
 // in it.
 
 ///|
-/// Which faces are given, 1 to 15 (index 0 unused): only a face given changes a style (style_words is set only with
-/// a face for it, so what people wrote stays in the app's words' style, the same text records, until one is).
+/// Three-state CJK companion configuration for a face slot.
+/// Only `face_text` may hold `Inherit(scale_override, weight_override)`; all other slots use `ExplicitNone` or
+/// `Companion(cjk_slot, scale, weight_off)`.
+#derive(Eq, Debug)
+pub(all) enum CjkSlotState {
+  Inherit(Double?, Int?)
+  ExplicitNone
+  Companion(Int, Double, Int)
+}
+
+///|
+/// Which faces are given, 1 to faces_most - 1 (index 0 unused): only a face given changes a style (style_words is set
+/// only with a face or text CJK override for it, so what people wrote stays in the app's words' style until one is).
+// kept across runs: put back as a run begins (faces_reset)
 let faces_given : FixedArray[Bool] = FixedArray::make(@hostapi.faces_most, false)
+
+///|
+/// Per-slot CJK companion state, indexed by face slot (1 to faces_most - 1).
+// kept across runs: put back as a run begins (faces_reset)
+let face_cjk : FixedArray[CjkSlotState] = FixedArray::makei(@hostapi.faces_most, fn(i) {
+  if i == @hostapi.face_text {
+    Inherit(None, None)
+  } else {
+    ExplicitNone
+  }
+})
+
+///|
+/// Whether ligatures are disabled per face slot.
+// kept across runs: put back as a run begins (faces_reset)
+let faces_no_lig : FixedArray[Bool] = FixedArray::make(@hostapi.faces_most, false)
+
+///|
+/// Whether CJK/Latin auto-spacing is enabled (controls MoonBit spacing and host autospace toggle).
+// kept across runs: put back as a run begins (faces_reset)
+let cjk_autospace_on : Ref[Bool] = Ref(true)
+
+///|
+/// Reactive cache of `local_font_info()`, updated at frame start when background scan completes.
+// kept across runs: put back as a run begins (faces_reset)
+let local_font_info_sig : @signals.Signal[String] = @signals.signal("")
+
+///|
+/// Whether `local_font_info()` has been requested in this run (so frame start polls for background completion).
+// kept across runs: put back as a run begins (faces_reset)
+let local_font_info_asked : Ref[Bool] = Ref(false)
 
 ///|
 /// A font file (at `path`) made part of face `face` (@hostapi.face_ui, face_text, face_code, or 4 to 15 for words that
@@ -61,12 +104,138 @@ pub fn local_font_families() -> String {
 }
 
 ///|
+/// Metadata for locally installed font families as a JSON array (@hostapi.local_font_info); "" if unavailable or still
+/// scanning in the background.
+pub fn local_font_info() -> String {
+  local_font_info_asked.val = true
+  let info = h_local_font_info()
+  if info != "" && info != local_font_info_sig.untracked() {
+    local_font_info_sig.set(info)
+  }
+  info
+}
+
+///|
+/// Reactive signal reading `local_font_info()`. Triggers a background scan if not yet started and automatically
+/// updates when the host finishes scanning and requests a frame.
+pub fn local_font_info_signal() -> String {
+  let cur = local_font_info_sig.get()
+  if cur != "" {
+    return cur
+  }
+  local_font_info_asked.val = true
+  let info = h_local_font_info()
+  if info != "" {
+    local_font_info_sig.set(info)
+  }
+  info
+}
+
+///|
+/// Called at frame start (`text_arrive`) to propagate completed background `local_font_info()` scans into the reactive
+/// signal without requiring user input or mouse movement.
+fn local_font_info_arrive() -> Unit {
+  if !local_font_info_asked.val || local_font_info_sig.untracked() != "" {
+    return
+  }
+  let info = h_local_font_info()
+  if info != "" {
+    local_font_info_sig.set(info)
+  }
+}
+
+///|
+/// Assign a CJK companion face slot (`cjk_face`) with optical `scale` (default 1.0) and `weight_off` (default 0)
+/// to primary slot `slot`.
+pub fn face_set_cjk(
+  slot : Int,
+  cjk_face : Int,
+  scale? : Double = 1.0,
+  weight_off? : Int = 0,
+) -> Unit {
+  if slot <= 0 || slot >= @hostapi.faces_most || cjk_face <= 0 || cjk_face >= @hostapi.faces_most {
+    return
+  }
+  let next = Companion(cjk_face, scale, weight_off)
+  if face_cjk[slot] != next {
+    face_cjk[slot] = next
+    words_forgotten()
+  }
+}
+
+///|
+/// Explicitly disable any CJK companion for slot `slot` (breaks `face_text` inheritance from `face_ui`).
+pub fn face_set_cjk_none(slot : Int) -> Unit {
+  if slot <= 0 || slot >= @hostapi.faces_most {
+    return
+  }
+  if face_cjk[slot] != ExplicitNone {
+    face_cjk[slot] = ExplicitNone
+    words_forgotten()
+  }
+}
+
+///|
+/// Set slot `slot` (intended for `face_text`) to inherit `face_ui`'s CJK companion, optionally overriding relative
+/// `scale_override` and/or `weight_override`.
+pub fn face_set_cjk_inherit(
+  slot : Int,
+  scale_override? : Double,
+  weight_override? : Int,
+) -> Unit {
+  if slot <= 0 || slot >= @hostapi.faces_most {
+    return
+  }
+  let next : CjkSlotState = if slot == @hostapi.face_text {
+    Inherit(scale_override, weight_override)
+  } else {
+    ExplicitNone
+  }
+  if face_cjk[slot] != next {
+    face_cjk[slot] = next
+    words_forgotten()
+  }
+}
+
+///|
+/// Enable or disable programming / contextual ligatures on face slot `face`.
+pub fn face_set_ligatures(face : Int, on : Bool) -> Unit {
+  if face <= 0 || face >= @hostapi.faces_most {
+    return
+  }
+  let no_lig = !on
+  if faces_no_lig[face] != no_lig {
+    faces_no_lig[face] = no_lig
+    h_face_set_ligatures(face, on)
+    words_forgotten()
+  }
+}
+
+///|
+/// Enable or disable CJK/Latin automatic spacing across both host shapers (Core Text) and MoonBit spacing.
+pub fn set_cjk_autospace(on : Bool) -> Unit {
+  if cjk_autospace_on.val != on {
+    cjk_autospace_on.val = on
+    h_set_host_autospace(on)
+    spaced_said.val = None
+    words_forgotten()
+  }
+}
+
+///|
+/// Whether CJK/Latin automatic spacing is currently enabled.
+pub fn cjk_autospace() -> Bool {
+  cjk_autospace_on.val
+}
+
+///|
 /// Face `face` given up: its words in the system's face again.
 pub fn face_clear(face : Int) -> Unit {
   if face <= 0 || face >= @hostapi.faces_most {
     return
   }
   h_face_clear(face)
+  faces_no_lig[face] = false
   if faces_given[face] {
     faces_given[face] = false
     words_forgotten()
@@ -80,11 +249,88 @@ pub fn face_given(face : Int) -> Bool {
 }
 
 ///|
+/// Resolve a slot's CJK companion `(cjk_slot, scale, weight_off)` if active and its companion face is given.
+fn resolve_slot_cjk(slot : Int) -> (Int, Double, Int)? {
+  if slot <= 0 || slot >= @hostapi.faces_most {
+    return None
+  }
+  match face_cjk[slot] {
+    ExplicitNone => None
+    Companion(cjk_slot, scale, weight_off) =>
+      if face_given(cjk_slot) {
+        Some((cjk_slot, scale, weight_off))
+      } else {
+        None
+      }
+    Inherit(scale_ov, weight_ov) =>
+      match face_cjk[@hostapi.face_ui] {
+        Companion(cjk_slot, ui_scale, ui_weight_off) if face_given(cjk_slot) =>
+          Some((cjk_slot, scale_ov.unwrap_or(ui_scale), weight_ov.unwrap_or(ui_weight_off)))
+        _ => None
+      }
+  }
+}
+
+///|
+/// Effective CJK companion `(cjk_slot, scale, weight_off)` for `style` and optional local preview `cjk_override`.
+/// Strictly mirrors the 5-platform `face_id` precedence:
+/// 1. local preview override (`Some(ov)`),
+/// 2. explicit `style_face > 0` (no companion if that face is not given),
+/// 3. `style_mono` -> `face_code`,
+/// 4. `style_words` -> `face_text` (with `Inherit` falling back to `face_ui`),
+/// 5. `style_serif` -> `None` (protects reader Songti),
+/// 6. default -> `face_ui`.
+fn effective_cjk(style : Int, cjk_override : @view.CjkOverride?) -> (Int, Double, Int)? {
+  match cjk_override {
+    Some(ov) =>
+      return if ov.face > 0 && face_given(ov.face) {
+        Some((ov.face, ov.scale, ov.weight_off))
+      } else {
+        None
+      }
+    None => ()
+  }
+  let f = @hostapi.face_of_style(style)
+  if f > 0 {
+    return if face_given(f) { resolve_slot_cjk(f) } else { None }
+  }
+  if (style & @hostapi.style_mono) != 0 {
+    return resolve_slot_cjk(@hostapi.face_code)
+  }
+  if (style & @hostapi.style_words) != 0 {
+    return resolve_slot_cjk(@hostapi.face_text)
+  }
+  if (style & @hostapi.style_serif) != 0 {
+    return None
+  }
+  resolve_slot_cjk(@hostapi.face_ui)
+}
+
+///|
+/// Whether `face_text` needs `style_words` set on prose runs: true when `face_text` has its own primary face,
+/// or its CJK state is not a plain unmodified inheritance of `face_ui`.
+fn text_needs_words_style() -> Bool {
+  if face_given(@hostapi.face_text) {
+    return true
+  }
+  match face_cjk[@hostapi.face_text] {
+    Inherit(None, None) => false
+    Inherit(scale_ov, weight_ov) =>
+      match face_cjk[@hostapi.face_ui] {
+        Companion(_, ui_scale, ui_weight_off) =>
+          scale_ov.unwrap_or(ui_scale) != ui_scale || weight_ov.unwrap_or(ui_weight_off) != ui_weight_off
+        _ => scale_ov is Some(_) || weight_ov is Some(_)
+      }
+    _ => true
+  }
+}
+
+///|
 /// What words in a paragraph said to be `words` (what people wrote) and in `face` (0: none named) add to each run's
-/// style: the face named where it is given; what people wrote marked so where a face is given for it.
+/// style: the face named where it is given; what people wrote marked so where a face or text CJK override is set for it.
 fn faces_style(words : Bool, face : Int) -> Int {
   (if face_given(face) { @hostapi.style_face(face) } else { 0 }) |
-  (if words && face_given(@hostapi.face_text) { @hostapi.style_words } else { 0 })
+  (if words && text_needs_words_style() { @hostapi.style_words } else { 0 })
 }
 
 ///|
@@ -118,8 +364,13 @@ fn words_forgotten() -> Unit {
 fn faces_reset() -> Unit {
   words_shaped_in.set(0)
   faces_env_read.val = false
+  cjk_autospace_on.val = true
+  local_font_info_sig.set("")
+  local_font_info_asked.val = false
   for i in 0..<faces_given.length() {
     faces_given[i] = false
+    faces_no_lig[i] = false
+    face_cjk[i] = if i == @hostapi.face_text { Inherit(None, None) } else { ExplicitNone }
   }
 }
 

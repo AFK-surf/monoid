@@ -300,6 +300,9 @@ pub(open) trait Host {
   pointer_delta(Self, FixedArray[Double]) -> Unit = _
   gamepads(Self, FixedArray[Double]) -> Int = _
   glyphs_ahead_able(Self) -> Bool = _
+  face_set_ligatures(Self, Int, Bool) -> Unit = _
+  set_host_autospace(Self, Bool) -> Unit = _
+  local_font_info(Self) -> String = _
 }
 
 ///|
@@ -646,6 +649,21 @@ impl Host with face_add_family(_, _, _) {
 
 ///|
 impl Host with local_font_families(_) {
+  ""
+}
+
+///|
+impl Host with face_set_ligatures(_, _, _) {
+  ()
+}
+
+///|
+impl Host with set_host_autospace(_, _) {
+  ()
+}
+
+///|
+impl Host with local_font_info(_) {
   ""
 }
 
@@ -2181,6 +2199,25 @@ pub fn face_add_bytes(face : Int, data : Bytes, weight : Int) -> Bool {
 /// Face `face` given up: what was in it is in the system's face again.
 pub fn face_clear(face : Int) -> Unit {
   current.val.face_clear(face)
+}
+
+///|
+/// Whether programming / contextual ligatures (calt, liga, clig) are enabled for face `face`.
+pub fn face_set_ligatures(face : Int, on : Bool) -> Unit {
+  current.val.face_set_ligatures(face, on)
+}
+
+///|
+/// Whether the host's own CJK/Latin autospace is enabled (e.g. Core Text on macOS/iOS; env MBUI_AUTOSPACE takes priority).
+pub fn set_host_autospace(on : Bool) -> Unit {
+  current.val.set_host_autospace(on)
+}
+
+///|
+/// Metadata for locally installed font families as a JSON array (name, localized, mono, serif, cjk); "" if unavailable
+/// or still scanning in the background.
+pub fn local_font_info() -> String {
+  current.val.local_font_info()
 }
 
 ///|

@@ -63,6 +63,7 @@ pub fn markdown_node(
   tracks_of? : (Int) -> @view.TracksKept? = fn(_) { None },
   text_face? : () -> Int? = fn() { None },
   code_face? : () -> Int? = fn() { None },
+  code_scale? : () -> Double = fn() { 1.0 },
   serif? : () -> Bool = fn() { false },
   nodes? : () -> Array[Json],
   loc~ : SourceLoc,
@@ -122,6 +123,7 @@ pub fn markdown_node(
       tracks_of,
       text_face,
       code_face,
+      code_scale,
       serif,
     }
     // (where its nodes are told (`nodes`: a reader's block of a book the core read, its own nodes of the whole
@@ -357,6 +359,7 @@ priv struct MdNode {
   /// face, Some(0) the app's face for that kind)
   text_face : () -> Int?
   code_face : () -> Int?
+  code_scale : () -> Double
   /// its words in the serif face (a reader's layout: code stays in the code face), as it is now
   serif : () -> Bool
 }
@@ -749,7 +752,7 @@ fn md_block_node(
           Some(CodeBlock(_, _, colours)) => colours
           _ => None
         }
-      }, face=md.code_face)
+      }, face=md.code_face, scale=md.code_scale)
     }
     // (drawn another way, as its language says: a chart, its code as it changes; another language's made again)
     8 => {
@@ -999,7 +1002,11 @@ fn md_words_node(
     // (how they are set, all from the theme and their size: one binding for the three)
     w
     .words_runs(By(runs))
-    .sets_together(fn() { (look(), table_runs_look(), (md.ink)()) }, fn(s) {
+    .sets_together(fn() {
+      let cs = (md.code_scale)()
+      let rl = table_runs_look()
+      (look(), if cs == 1.0 { rl } else { { ..rl, code_scale: rl.code_scale * cs } }, (md.ink)())
+    }, fn(s) {
       w.words_look(Is(s.0)).runs_look(Is(s.1)).ink(Is(s.2)) |> ignore
     })
     |> ignore
@@ -1377,6 +1384,7 @@ pub fn code_block_node(
   lang : () -> String,
   colours : () -> String?,
   face? : () -> Int? = fn() { None },
+  scale? : () -> Double = fn() { 1.0 },
   command? : Bool = false,
   keys_always? : Bool = false,
   loc~ : SourceLoc,
@@ -1416,17 +1424,20 @@ pub fn code_block_node(
         _ => runs
       }
     }
-    let look : @view.WordsLook = {
-      size: theme().t.caption,
-      weight: 400,
-      line: if over { code_line_wide } else { 18.0 },
-      wrap,
-      tracking: @view.letters_own,
-      balance: false,
-      max_lines: 0,
+    let look = fn() -> @view.WordsLook {
+      let sc = scale()
+      {
+        size: theme().t.caption * sc,
+        weight: 400,
+        line: (if over { code_line_wide } else { 18.0 }) * sc,
+        wrap,
+        tracking: @view.letters_own,
+        balance: false,
+        max_lines: 0,
+      }
     }
     // (each of its lines a line of its own, scrolled across or wrapped: code_block's `breaks`)
-    w.words_runs(By(runs), look~).words_breaks(Is(true)).ink(By(fn() { theme().p.text })) |> ignore
+    w.words_runs(By(runs)).words_look(By(look)).words_breaks(Is(true)).ink(By(fn() { theme().p.text })) |> ignore
     // (copied as the block of code it is: @ui.picked_html)
     @ui.words_shaped(w, fn() { @ui.WordsShape::Code(p.id()) }) |> ignore
   }

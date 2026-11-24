@@ -695,6 +695,30 @@ impl @hostapi.Host for FakeHost with local_font_families(self) {
 }
 
 ///|
+impl @hostapi.Host for FakeHost with face_set_ligatures(self, face, on) {
+  self.face_ligatures[face] = on
+  if self.live is Some(l) {
+    l.host.face_set_ligatures(face, on)
+  }
+}
+
+///|
+impl @hostapi.Host for FakeHost with set_host_autospace(self, on) {
+  self.host_autospace = on
+  if self.live is Some(l) {
+    l.host.set_host_autospace(on)
+  }
+}
+
+///|
+impl @hostapi.Host for FakeHost with local_font_info(self) {
+  if self.live is Some(l) {
+    return l.host.local_font_info()
+  }
+  self.local_fonts_info
+}
+
+///|
 /// Its glyphs' generation (each ask counted: Tester's): a live host's, else its own.
 impl @hostapi.Host for FakeHost with atlas_generation(self) {
   self.generation_asks += 1
