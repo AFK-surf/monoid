@@ -882,6 +882,24 @@ test "a Devin profile's models panel asks Fusion pairs on demand, switches lead 
   assert_true(!calls[1].1.stringify().contains(existing_uid), msg="profile.put drops \{existing_uid}: \{calls[1].1.stringify()}")
   assert_true(calls[2].1.stringify().contains("\"liked\":false"), msg="pick.like clears \{existing_uid}: \{calls[2].1.stringify()}")
   // Switching lead model chip to `GPT-6 Sol` and checking a sidekick saves it and stars it.
+  // First verify Lead group is a single RadioGroup supporting arrow keys and sticky selection.
+  assert_true(t.query(RadioGroup, label=@sf.t("web-pages.profiles.fusionLead")) is Some(_))
+  assert_eq(t.get(Radio, label="Opus 5.5").check, Some(@view.Check::On))
+  // Re-pressing already-selected lead keeps it selected.
+  t.click(Radio, label="Opus 5.5")
+  t.frame()
+  assert_eq(t.get(Radio, label="Opus 5.5").check, Some(@view.Check::On))
+  // Focusing Lead radio and pressing Right arrow moves to `GPT-6 Sol`, Left arrow moves back.
+  t.act(Radio, Focus, label="Opus 5.5")
+  t.frame()
+  t.key(@ui.key_code_right)
+  t.frame()
+  assert_eq(t.get(Radio, label="GPT-6 Sol").check, Some(@view.Check::On))
+  assert_eq(t.focused().map(fn(s) { s.label }), Some("GPT-6 Sol"))
+  t.key(@ui.key_code_left)
+  t.frame()
+  assert_eq(t.get(Radio, label="Opus 5.5").check, Some(@view.Check::On))
+  // Click `GPT-6 Sol` and check/uncheck a sidekick Checkbox chip.
   t.click(Radio, label="GPT-6 Sol")
   t.frame()
   assert_true(t.query(Checkbox, label="SWE-2 · 中") is Some(_))

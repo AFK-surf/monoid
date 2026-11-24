@@ -1345,6 +1345,10 @@ fn md_bullet_node(
 #callsite(autofill(loc))
 fn md_task_node(t : @view.View, done : () -> Bool, line : () -> Double, loc~ : SourceLoc) -> Unit {
   let faint = fn() { if theme().dark { 0xA0A0A066L } else { 0x7676764DL } }
+  let filled = fn() { if theme().dark { 0xA0A0A066L } else { 0x76767699L } }
+  let tick_k = md_task_side / check_side
+  let tick_pts = check_tick_points.map(fn(p) { (p.0 * tick_k, p.1 * tick_k) })
+  let tick_w = check_tick_w * tick_k
   t
   .row(Is(true))
   .width(By(fn() {
@@ -1361,16 +1365,22 @@ fn md_task_node(t : @view.View, done : () -> Bool, line : () -> Double, loc~ : S
     .row(Is(true))
     .width(Is(Some(md_task_side)))
     .height(Is(Some(md_task_side)))
-    .radius(Is(2.0))
+    .radius(Is(md_task_side / 3.0))
     .lies_along(Is(Middle))
     .lines_up(Is(Some(Middle)))
-    .ground(By(fn() { if done() { faint() } else { alpha(theme().p.canvas, 0.6) } }))
-    .edge(By(fn() { if done() { (0.0, faint()) } else { (1.0, faint()) } }))
+    .ground(By(fn() { if done() { filled() } else { alpha(theme().p.canvas, 0.6) } }))
+    .edge(By(fn() { if done() { (0.0, filled()) } else { (1.0, faint()) } }))
     .says(By(fn() { Some(@view.said(Checkbox, check=if done() { On } else { Off })) }))
     .presses(Is(false))
     |> ignore
-    b.show(done, fn(c) {
-      icon_node(c, "check", md_task_check, By(fn() { if theme().dark { alpha(theme().p.text, 0.7) } else { 0xFFFFFFFFL } }))
+    b.show(done, at_once=true, fn(c) {
+      c
+      .width(Is(Some(md_task_side)))
+      .height(Is(Some(md_task_side)))
+      .lines(By(fn() {
+        let ink = if theme().dark { alpha(theme().p.text, 0.9) } else { 0xFFFFFFFFL }
+        [@paint.line(tick_pts, width=tick_w, color=ink, upto=1.0)]
+      }))
       |> ignore
     })
   })
@@ -1653,11 +1663,8 @@ let md_quote_in : Double = 10.0
 let md_rule_h : Double = 1.0
 
 ///|
-/// A task's box (13) and its tick (11).
+/// A task's box side (13pt, radius md_task_side / 3.0).
 let md_task_side : Double = 13.0
-
-///|
-let md_task_check : Double = 11.0
 
 ///|
 /// Words of `size` on one line, in 400, on lines `line` high (0: the theme's line for that size as they are drawn, the
