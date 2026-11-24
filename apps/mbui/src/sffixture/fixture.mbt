@@ -1169,6 +1169,27 @@ fn with_subchats_done_only(v : Json?) -> Json? {
 }
 
 ///|
+/// One led parent whose title is longer than a fixed crumb (chat-lineage-long).
+fn with_lineage_long(v : Json?) -> Json? {
+  match v {
+    Some(Object(m)) => {
+      let m = m.copy()
+      let parent : Json = {
+        "station": "ws1/st1",
+        "session": "s-c4",
+        "title": "优化液态玻璃对标原生 iOS 27",
+        "text": "由「优化液态玻璃对标原生 iOS 27」创建",
+        "led": true,
+      }
+      m["opener"] = parent
+      m["openers"] = [parent]
+      Some(Json::object(m))
+    }
+    other => other
+  }
+}
+
+///|
 /// 3-level led ancestor chain plus 2 led sub-chats (chat-lineage): exercises multi-level breadcrumb + sub-chats entry.
 fn with_lineage(v : Json?) -> Json? {
   match v {
@@ -1898,6 +1919,8 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
       fixture_with_tabs(f, params, with_subchats_one_note(value))
     "chat" if f.mode.has_prefix("chat-subchats") && params.get("session") is Some(String("s-c1")) =>
       fixture_with_tabs(f, params, with_subchats(value))
+    "chat" if f.mode == "chat-lineage-long" && params.get("session") is Some(String("s-c1")) =>
+      fixture_with_tabs(f, params, with_lineage_long(value))
     "chat" if f.mode == "chat-lineage" && params.get("session") is Some(String("s-c1")) =>
       fixture_with_tabs(f, params, with_lineage(value))
     "chat" if f.mode.has_prefix("chat-opened") && params.get("session") is Some(String("s-c1")) =>

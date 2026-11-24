@@ -333,6 +333,34 @@ test "small: chat-lineage breadcrumb navigates and chat-subchats-pop sheet exclu
 }
 
 ///|
+test "small: a lone parent crumb shows its whole title while the row has room, cut only where it runs out" {
+  let calls : Array[Made] = []
+  let t = decide_core(calls, "chat-lineage-long")
+  t.draw()
+  let title = "优化液态玻璃对标原生 iOS 27"
+  // (the glyphs drawn inside the crumb: its title's 15 letters whole, fewer and an ellipsis when cut)
+  let glyphs_in = fn(r : (Double, Double, Double, Double)) {
+    t
+    .glyph_clips()
+    .filter(fn(g) {
+      let ((x0, y0, x1, y1), _) = g
+      let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+      cx >= r.0 && cx <= r.0 + r.2 && cy >= r.1 && cy <= r.1 + r.3
+    })
+    .length()
+  }
+  guard t.query(Link, label=title) is Some(crumb) else { fail("expected the parent crumb") }
+  assert_eq(glyphs_in(crumb.rect), 15)
+  assert_eq(t.audit(), [])
+  t.resize(200.0, 844.0)
+  t.run_for(@ui.move_most_ms)
+  guard t.query(Link, label=title) is Some(crumb) else { fail("expected the parent crumb at 200") }
+  assert_true(crumb.rect.0 + crumb.rect.2 <= 200.0 + 0.5, msg="crumb inside the window at 200: \{Repr(crumb.rect)}")
+  let cut = glyphs_in(crumb.rect)
+  assert_true(cut > 0 && cut < 15, msg="cut where the row runs out at 200: \{cut} glyphs")
+}
+
+///|
 test "small: composer-top capsules give way inside the window" {
   let calls : Array[Made] = []
   let t = decide_core(calls, "chat-subchats-jobs")
