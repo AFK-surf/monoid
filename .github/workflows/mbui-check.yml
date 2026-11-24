@@ -728,10 +728,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1/4, 2/4, 3/4, 4/4, contrast]
+        group: [1/4, 2/4, 3/4, 4/4]
         fps: [""]
+        # Release branches use the light app test binary. Split each group with APP_PART to keep its runs within five minutes.
+        part: ${{ fromJSON(startsWith(github.ref, 'refs/heads/release/') && '["1/2", "2/2"]' || '[""]') }}
         # The Chinese odd-window sweep exceeded the job limit in run 44236112180.
         include:
+          - { group: contrast, fps: "" }
           - { group: corners, fps: "", part: 1/2 }
           - { group: corners, fps: "", part: 2/2 }
     env: &app-env
