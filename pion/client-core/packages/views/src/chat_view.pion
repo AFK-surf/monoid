@@ -629,7 +629,7 @@ pub fn project_chat(
     ]
     if author_kind == "agent" && text.length() > 0 {
       let md_k = store::md_key(text)
-      let md_val = match md_store.get(md_k) {
+      let md_val = match md_store.get(md_k, now_ms) {
         Some(cached_json) => match base_codec::json_parse(cached_json) {
           base_codec::JsonParseResult::Ok(j) => j
           base_codec::JsonParseResult::Err(_) => {
