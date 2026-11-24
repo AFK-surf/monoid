@@ -799,9 +799,13 @@ test("10. R1: FolderPlace warm-cache fail-closed (without forget) + drop() readd
   const filesDir = join(place.dir(HOME, origin), "files");
   writeFileSync(join(filesDir, leafHash), "corrupted-after-cache-warm");
 
-  // Trigger non-strict #headMeta via an older head put (must NOT poison #headFiles with incomplete entry)
+  // Strict #headMeta in put("head") re-verifies warm-cached manifest heads and fails closed on corrupted leaf
   const olderHead = makeHead({ origin, gen, batches: [batch], to: 1, made: 1000 });
-  await place.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(olderHead)));
+  await assert.rejects(
+    () => place.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(olderHead))),
+    /hash mismatch/,
+    "warm-cached FolderPlace.put('head') re-verifies existing manifest head and rejects on leaf corruption",
+  );
 
   // Now drop() on the SAME warm-cached `place` MUST re-verify the manifest, throw, and preserve ALL files!
   await assert.rejects(
@@ -1342,8 +1346,11 @@ test("19. R2: same-to conflicting full heads do not overwrite destination + dual
   const toHeldAfter = await toA.held(HOME, origin);
   assert.deepEqual(toHeldAfter.gens[0]!.head!.transcriptFiles, { [cTheirs]: 6 }, "destination full head was NOT overwritten");
 
-  // Also direct FolderPlace.put('head') with same-to full head must NOT overwrite existing full head
-  await toA.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(headMine)));
+  // Also direct FolderPlace.put('head') with conflicting same-to full head must reject (/head conflict:/) and preserve existing full head
+  await assert.rejects(
+    () => toA.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(headMine))),
+    /head conflict:/,
+  );
   assert.deepEqual((await toA.held(HOME, origin)).gens[0]!.head!.transcriptFiles, { [cTheirs]: 6 });
 
   // 19b. Dual-field source head (transcriptManifest + extra inline-only transcriptFiles) -> handOver emits inline union!
@@ -1832,4 +1839,120 @@ test("26. R6: FolderPlace.put('head') fails closed on stat/readAll/corrupt exist
   const afterConflict = (await dstPlace.held(HOME, origin)).gens[0]!.head!;
   assert.equal(afterConflict.partial, true, "destination partial head preserved");
   assert.deepEqual(afterConflict.transcriptFiles, { [cCommon]: 2, [cUniquePartial]: 2 }, "cUniquePartial preserved on disk");
+});
+
+test("27. R7: warm-cached FolderPlace.put('head') re-verifies existing manifest root/leaf AND level() rejects same-to full conflict while succeeding idempotently on superset", async () => {
+  const origin = sid("a");
+  const gen = "100-aaaaaaaa";
+  const batch = "0000000001-0000000001-11111111.ndjson.zst";
+  const cCommon = hex64("11", "1");
+  const cDstOnly = hex64("22", "2");
+  const cSrcOnly = hex64("33", "3");
+
+  // 27a. Same warm-cached FolderPlace instance: tamper manifest leaf, then tamper manifest root (leaving head.json mtime & size intact)
+  //      -> put('head') with higher to=3 inline head MUST reject both times and preserve original head.json bytes!
+  const rootA = dataDir("d72a-r7-warm-manifest");
+  const warmPlace = new FolderPlace(rootA);
+  const enc = encodeTranscriptManifest({ [cCommon]: 2 });
+  await warmPlace.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await warmPlace.putFile(HOME, origin, cCommon, Buffer.from("cm"));
+  await warmPlace.putFile(HOME, origin, enc.rootHash, enc.rootBytes);
+  for (const [lh, { bytes }] of enc.leaves) {
+    await warmPlace.putFile(HOME, origin, lh, bytes);
+  }
+  const origManifestHead = makeHead({ origin, gen, batches: [batch], transcriptManifest: enc.rootHash, to: 2, made: 2000 });
+  const origHeadBytes = Buffer.from(JSON.stringify(origManifestHead));
+  await warmPlace.put(HOME, origin, gen, "head", "head.json", origHeadBytes);
+
+  const headPath = join(warmPlace.dir(HOME, origin), gen, "head.json");
+  const filesDir = join(warmPlace.dir(HOME, origin), "files");
+  const leafHash = [...enc.leaves.keys()][0]!;
+  const origLeafBytes = enc.leaves.get(leafHash)!.bytes;
+  const higherHead = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cCommon]: 2 }, to: 3, made: 3000 });
+  const higherHeadBytes = Buffer.from(JSON.stringify(higherHead));
+
+  // Tamper leaf on disk (head.json mtime/size unchanged) -> warm-cached put('head') MUST reject!
+  writeFileSync(join(filesDir, leafHash), "tampered-leaf-bytes");
+  await assert.rejects(
+    () => warmPlace.put(HOME, origin, gen, "head", "head.json", higherHeadBytes),
+    /hash mismatch/,
+    "warm-cached put('head') must re-verify manifest leaf and reject corruption",
+  );
+  assert.deepEqual(readFileSync(headPath), origHeadBytes, "head.json preserved after leaf tamper");
+
+  // Restore leaf, tamper root on disk (head.json mtime/size unchanged) -> warm-cached put('head') MUST reject!
+  writeFileSync(join(filesDir, leafHash), origLeafBytes);
+  writeFileSync(join(filesDir, enc.rootHash), "tampered-root-bytes");
+  await assert.rejects(
+    () => warmPlace.put(HOME, origin, gen, "head", "head.json", higherHeadBytes),
+    /hash mismatch/,
+    "warm-cached put('head') must re-verify manifest root and reject corruption",
+  );
+  assert.deepEqual(readFileSync(headPath), origHeadBytes, "head.json preserved after root tamper");
+
+  // 27b. level() hitting same-to full conflict rejects (/head conflict:/) with BOTH known=null and pre-populated Known,
+  //      never advances known.made or clears unverifiedGens, and preserves destination full head;
+  //      control case where destination full head covers source succeeds idempotently!
+  const rootB = dataDir("d72a-r7-level-full-conflict");
+  const dstPlace = new FolderPlace(rootB);
+  await dstPlace.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await dstPlace.putFile(HOME, origin, cCommon, Buffer.from("cm"));
+  await dstPlace.putFile(HOME, origin, cDstOnly, Buffer.from("do"));
+  const dstFull = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cCommon]: 2, [cDstOnly]: 2 }, to: 2, made: 2000 });
+  await dstPlace.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(dstFull)));
+
+  const srcChunkPath = join(rootB, "src-only-chunk");
+  writeFileSync(srcChunkPath, "so");
+  const ownHead = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cCommon]: 2, [cSrcOnly]: 2 }, to: 2, made: 2001 });
+  const own: Own = {
+    head: ownHead,
+    batch: async () => Buffer.from("b"),
+    sources: async (hashes) => new Map(hashes.filter((h) => h === cSrcOnly).map((h) => [h, srcChunkPath])),
+  };
+
+  // (i) known = null (level reads held() -> sees made=2000 != 2001 -> calls put('head') -> rejects with head conflict!)
+  await assert.rejects(() => level(dstPlace, HOME, own, null), /head conflict:/);
+  const afterNullKnown = (await dstPlace.held(HOME, origin)).gens[0]!.head!;
+  assert.equal(afterNullKnown.made, 2000);
+  assert.deepEqual(afterNullKnown.transcriptFiles, { [cCommon]: 2, [cDstOnly]: 2 });
+
+  // (ii) pre-populated Known with made=2000 and unverifiedGens={gen}
+  const known: Known = {
+    gen,
+    batches: new Set([batch]),
+    files: new Set([cCommon, cDstOnly]),
+    others: new Set(),
+    hasUnverifiedHead: true,
+    unverifiedGens: new Set([gen]),
+    to: 2,
+    made: 2000,
+  };
+  await assert.rejects(() => level(dstPlace, HOME, own, known), /head conflict:/);
+  assert.equal(known.made, 2000, "known.made must NOT advance on same-to full conflict");
+  assert.equal(known.hasUnverifiedHead, true, "known.hasUnverifiedHead must NOT clear on same-to full conflict");
+  assert.ok(known.unverifiedGens?.has(gen), "known.unverifiedGens must NOT clear on same-to full conflict");
+  const afterKnownConflict = (await dstPlace.held(HOME, origin)).gens[0]!.head!;
+  assert.equal(afterKnownConflict.made, 2000);
+  assert.deepEqual(afterKnownConflict.transcriptFiles, { [cCommon]: 2, [cDstOnly]: 2 });
+
+  // (iii) Control case: destination full head holds superset { cCommon, cSrcOnly, cDstOnly } -> level() succeeds idempotently!
+  const rootC = dataDir("d72a-r7-level-full-superset");
+  const dstSuperset = new FolderPlace(rootC);
+  await dstSuperset.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await dstSuperset.putFile(HOME, origin, cCommon, Buffer.from("cm"));
+  await dstSuperset.putFile(HOME, origin, cSrcOnly, Buffer.from("so"));
+  await dstSuperset.putFile(HOME, origin, cDstOnly, Buffer.from("do"));
+  const dstSupersetHead = makeHead({
+    origin,
+    gen,
+    batches: [batch],
+    transcriptFiles: { [cCommon]: 2, [cSrcOnly]: 2, [cDstOnly]: 2 },
+    to: 2,
+    made: 2000,
+  });
+  await dstSuperset.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(dstSupersetHead)));
+  const okRes = await level(dstSuperset, HOME, own, null);
+  assert.equal(okRes.behind, false, "superset same-to full head succeeds idempotently in level()");
+  // Disk head stays untouched (never overwritten by subset incoming head)
+  assert.deepEqual((await dstSuperset.held(HOME, origin)).gens[0]!.head!.transcriptFiles, { [cCommon]: 2, [cSrcOnly]: 2, [cDstOnly]: 2 });
 });

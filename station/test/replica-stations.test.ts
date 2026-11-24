@@ -1313,14 +1313,15 @@ test("FolderPlace handles corrupted head.json in drop, enforces LRU cap on #head
 
   // 3. forget(ws, origin) and forget(ws) clear cache so subsequent put/drop re-reads disk cleanly.
   const origin8Head = join(place.dir(HOME, origins[8]!), gen, "head.json");
+  const origin8Payload = Buffer.from(JSON.stringify({ ...makeHead(HOME, gen, 1, { [id("8")]: 1 }), origin: origins[8]! }));
   headReads.clear();
   place.forget(HOME, origins[8]!);
-  await place.put(HOME, origins[8]!, gen, "head", "head.json", Buffer.from(JSON.stringify({ ...makeHead(HOME, gen, 1, {}), origin: origins[8]! })));
+  await place.put(HOME, origins[8]!, gen, "head", "head.json", origin8Payload);
   assert.equal(headReads.get(origin8Head), 1, "forget(ws, origin) evicted cache entry");
 
   headReads.clear();
   place.forget(HOME);
-  await place.put(HOME, origins[8]!, gen, "head", "head.json", Buffer.from(JSON.stringify({ ...makeHead(HOME, gen, 1, {}), origin: origins[8]! })));
+  await place.put(HOME, origins[8]!, gen, "head", "head.json", origin8Payload);
   assert.equal(headReads.get(origin8Head), 1, "forget(ws) evicted cache entry");
 });
 

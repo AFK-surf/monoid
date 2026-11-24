@@ -62,7 +62,7 @@ const MAX_META_ENTRIES = 512;
 const MAX_FILES_ENTRIES = 8;
 const MAX_CACHED_FILE_HASHES = 500_000;
 
-type HeadMeta = { mtimeMs: number; size: number; to: number; partial: boolean; batches: string[] };
+type HeadMeta = { mtimeMs: number; size: number; to: number; partial: boolean; batches: string[]; manifestRoot?: string };
 type HeadFilesEntry = {
   mtimeMs: number;
   size: number;
@@ -162,7 +162,14 @@ export class FolderPlace implements Place {
     manifestRefs?: Set<string>,
     cacheFiles = true,
   ): { meta: HeadMeta; files: HeadFilesEntry | null } {
-    const meta: HeadMeta = { mtimeMs: st.mtimeMs, size: st.size, to: head.to, partial: head.partial === true, batches: [...head.batches] };
+    const meta: HeadMeta = {
+      mtimeMs: st.mtimeMs,
+      size: st.size,
+      to: head.to,
+      partial: head.partial === true,
+      batches: [...head.batches],
+      ...(head.transcriptManifest !== undefined ? { manifestRoot: head.transcriptManifest } : {}),
+    };
     this.#setMeta(key, meta);
     if (!cacheFiles) {
       this.#deleteFiles(key);
@@ -289,14 +296,59 @@ export class FolderPlace implements Place {
     return parsed;
   }
 
-  async #headMeta(ws: string, origin: string, gen: string, strict = false): Promise<HeadMeta | null> {
+  async #headMetaStrict(ws: string, origin: string, gen: string): Promise<{ meta: HeadMeta; head?: Head } | null> {
     const key = `${ws}\n${origin}\n${gen}`;
     const path = join(this.dir(ws, origin), gen, "head.json");
     let st: Stat;
     try {
       st = await this.fs.stat(path);
     } catch (e) {
-      if (strict && !isMissingFsError(e)) throw e;
+      if (!isMissingFsError(e)) throw e;
+      this.#meta.delete(key);
+      this.#deleteFiles(key);
+      return null;
+    }
+    const cached = this.#meta.get(key);
+    if (cached !== undefined && cached.mtimeMs === st.mtimeMs && cached.size === st.size && cached.manifestRoot === undefined) {
+      this.#meta.delete(key);
+      this.#meta.set(key, cached);
+      return { meta: cached };
+    }
+    let head: Head;
+    try {
+      head = await this.#readHeadStrict(path, ws, origin, gen);
+    } catch (e) {
+      this.#meta.delete(key);
+      this.#deleteFiles(key);
+      throw e;
+    }
+    let manifestRefs: Set<string> | undefined;
+    if (head.transcriptManifest !== undefined) {
+      try {
+        const resolved = await this.#resolveHeadManifest(ws, origin, head);
+        if (resolved === null) {
+          this.#meta.delete(key);
+          this.#deleteFiles(key);
+          throw new Error(`transcript manifest root ${head.transcriptManifest} could not be resolved`);
+        }
+        manifestRefs = manifestAllRefs(resolved);
+      } catch (e) {
+        this.#meta.delete(key);
+        this.#deleteFiles(key);
+        throw e;
+      }
+    }
+    return { meta: this.#cacheHead(key, st, head, manifestRefs, true).meta, head };
+  }
+
+  async #headMeta(ws: string, origin: string, gen: string, strict = false): Promise<HeadMeta | null> {
+    if (strict) return (await this.#headMetaStrict(ws, origin, gen))?.meta ?? null;
+    const key = `${ws}\n${origin}\n${gen}`;
+    const path = join(this.dir(ws, origin), gen, "head.json");
+    let st: Stat;
+    try {
+      st = await this.fs.stat(path);
+    } catch {
       this.#meta.delete(key);
       this.#deleteFiles(key);
       return null;
@@ -307,31 +359,20 @@ export class FolderPlace implements Place {
       this.#meta.set(key, cached);
       return cached;
     }
-    let head: Head | null;
-    if (strict) {
-      try {
-        head = await this.#readHeadStrict(path, ws, origin, gen);
-      } catch (e) {
-        this.#meta.delete(key);
-        this.#deleteFiles(key);
-        throw e;
-      }
-    } else {
-      head = await this.#head(path);
-      if (head === null) {
-        this.#meta.delete(key);
-        this.#deleteFiles(key);
-        return null;
-      }
+    const head = await this.#head(path);
+    if (head === null) {
+      this.#meta.delete(key);
+      this.#deleteFiles(key);
+      return null;
     }
     let manifestRefs: Set<string> | undefined;
     let cacheFiles = true;
     if (head.transcriptManifest !== undefined) {
       try {
         const resolved = await this.#resolveHeadManifest(ws, origin, head);
-        if (resolved !== null) manifestRefs = manifestAllRefs(resolved);
-      } catch (e) {
-        if (strict) throw e;
+        if (resolved === null) cacheFiles = false;
+        else manifestRefs = manifestAllRefs(resolved);
+      } catch {
         cacheFiles = false;
       }
     }
@@ -445,11 +486,12 @@ export class FolderPlace implements Place {
         throw new Error("partial head must not reference transcriptManifest");
       }
       await this.#withLock(ws, origin, async () => {
-        // A head never goes back: one older than what is held is not taken, and an existing full head at the
-        // same or higher `to` is never overwritten (neither by a partial head nor by another conflicting full head).
+        // A head never goes back: one strictly older than what is held is ignored; same-to heads are checked
+        // symmetrically below after validating incoming batches/manifest so conflicts throw explicitly.
         // Strict mode: only ENOENT returns null; stat/readAll I/O errors, corrupted JSON, or corrupt manifests abort.
-        const was = await this.#headMeta(ws, origin, gen, true);
-        if (was !== null && (was.to > head.to || (!was.partial && was.to >= head.to))) return;
+        const wasInfo = await this.#headMetaStrict(ws, origin, gen);
+        const was = wasInfo?.meta ?? null;
+        if (was !== null && was.to > head.to) return;
         for (const b of head.batches) if (!(await this.#exists(join(dir, "log", b)))) throw new Error(`batch ${b} is not here yet`);
         let resolvedIncoming: ResolvedManifest | undefined;
         let manifestRefs: Set<string> | undefined;
@@ -465,24 +507,19 @@ export class FolderPlace implements Place {
           resolvedIncoming = resolved;
           manifestRefs = manifestAllRefs(resolved);
         }
-        if (was !== null && was.partial && was.to === head.to) {
-          // Under #withLock, verify the incoming head strictly covers the live on-disk same-to partial head
-          // so a concurrent partial update between handOver's held() and put("head") can never be clobbered,
-          // and throw an explicit conflict error so level() never mistakes a refused write for a synced head.
-          const existing = await this.#readHeadStrict(join(dir, "head.json"), ws, origin, gen);
-          if (!sameBatches(head.batches, existing.batches) || !sameFileMap(head.files, existing.files)) {
-            throw new Error("head conflict: incoming head does not cover existing same-to partial head");
-          }
+        if (was !== null && was.to === head.to) {
+          // Under #withLock, reuse the head already read on cache miss (avoiding redundant readAll) or read strictly.
+          const existing = wasInfo?.head ?? await this.#readHeadStrict(join(dir, "head.json"), ws, origin, gen);
           let existingTf: Record<string, number>;
           if (existing.transcriptManifest !== undefined) {
             let resolvedExisting: ResolvedManifest | null;
             try {
               resolvedExisting = await this.#resolveHeadManifest(ws, origin, existing);
             } catch {
-              throw new Error("head conflict: existing same-to partial head manifest unreadable");
+              throw new Error("head conflict: existing same-to head manifest unreadable");
             }
             if (resolvedExisting === null) {
-              throw new Error("head conflict: existing same-to partial head manifest unreadable");
+              throw new Error("head conflict: existing same-to head manifest unreadable");
             }
             existingTf = { ...(existing.transcriptFiles ?? {}), ...resolvedExisting.files };
           } else {
@@ -491,7 +528,16 @@ export class FolderPlace implements Place {
           const incomingTf = resolvedIncoming !== undefined
             ? { ...(head.transcriptFiles ?? {}), ...resolvedIncoming.files }
             : (head.transcriptFiles ?? {});
-          if (!isSubsetFileMap(existingTf, incomingTf)) {
+          const sameCore = sameBatches(head.batches, existing.batches) && sameFileMap(head.files, existing.files);
+          if (!was.partial) {
+            // Existing full head at same `to`: never overwrite disk. Succeed idempotently ONLY if existing
+            // already covers incoming (replay, made-only bump, or subset partial); throw on conflict.
+            if (sameCore && isSubsetFileMap(incomingTf, existingTf)) return;
+            throw new Error("head conflict: existing same-to full head does not cover incoming head");
+          }
+          // Existing partial head at same `to`: only allow upgrade/replacement when incoming strictly covers
+          // existing (`incomingTf ⊇ existingTf`); throw explicit conflict otherwise.
+          if (!sameCore || !isSubsetFileMap(existingTf, incomingTf)) {
             throw new Error("head conflict: incoming head does not cover existing same-to partial head");
           }
         }
