@@ -1308,49 +1308,55 @@ fn chat_body_node(
   // core's row of the viewer's own said after it: told as a fault (on a device a ui_fault report, chat_sent_unseen_said),
   // saying which step lost it, never its words)
   let sent_watched : Set[String] = Set([])
+  // (those sent since the last look, each with the newest message there as it was sent: looked at as the hold each
+  // sending sets again ends)
+  let sent_looked_for : Array[(String, Double)] = []
+  let (sent_told, sent_holding) = v.holds_for(chat_sent_unseen_ms, later=true)
   v.reacts(fn() { sending().map(fn(l) { ("o:" + l.row.id, l.newest) }) }, fn(sent) {
     for s in sent {
-      let (k, newest) = s
-      guard !sent_watched.contains(k) else { continue }
-      sent_watched.add(k)
-      v.at_moment(
-        v.cause_at() + chat_sent_unseen_ms,
-        fn() {
-          let (listed_has, row_has, staged_has, held, sending_has) = @signals.untracked(fn() {
-            let lk = (listed.keys)()
-            let found = if lk.contains(k) {
-              Some(k)
-            } else {
-              let mut i = lk.length() - 1
-              let mut f : String? = None
-              while i >= 0 && i >= lk.length() - chat_sent_unseen_looked {
-                match (listed.row)(lk[i]) {
-                  Some({ entry: Said(m), .. }) if m.mine && !m.system && m.seq > newest => {
-                    f = Some(lk[i])
-                    break
-                  }
-                  _ => ()
-                }
-                i = i - 1
-              }
-              f
-            }
-            let at = found.unwrap_or(k)
-            (
-              found is Some(_),
-              (listed.row)(at) is Some(_),
-              keys.get().contains(at),
-              stage.held_plan(at) is Some(_),
-              sending().iter().any(fn(l) { "o:" + l.row.id == k }),
-            )
-          })
-          guard !(listed_has && row_has && staged_has) else { return }
-          @view.fault(chat_sent_unseen_said(listed_has, row_has, staged_has, held, sending_has))
-        },
-        later=true,
-      )
-      |> ignore
+      guard !sent_watched.contains(s.0) else { continue }
+      sent_watched.add(s.0)
+      sent_looked_for.push(s)
+      sent_told()
     }
+  })
+  v.reacts(fn() { sent_holding() }, at_start=false, fn(holding) {
+    guard !holding else { return }
+    for s in sent_looked_for {
+      let (k, newest) = s
+      let (listed_has, row_has, staged_has, held, sending_has) = @signals.untracked(fn() {
+        let lk = (listed.keys)()
+        let found = if lk.contains(k) {
+          Some(k)
+        } else {
+          let mut i = lk.length() - 1
+          let mut f : String? = None
+          while i >= 0 && i >= lk.length() - chat_sent_unseen_looked {
+            match (listed.row)(lk[i]) {
+              Some({ entry: Said(m), .. }) if m.mine && !m.system && m.seq > newest => {
+                f = Some(lk[i])
+                break
+              }
+              _ => ()
+            }
+            i = i - 1
+          }
+          f
+        }
+        let at = found.unwrap_or(k)
+        (
+          found is Some(_),
+          (listed.row)(at) is Some(_),
+          keys.get().contains(at),
+          stage.held_plan(at) is Some(_),
+          sending().iter().any(fn(l) { "o:" + l.row.id == k }),
+        )
+      })
+      if !(listed_has && row_has && staged_has) {
+        @view.fault(chat_sent_unseen_said(listed_has, row_has, staged_has, held, sending_has))
+      }
+    }
+    sent_looked_for.clear()
   })
   let (list_keys_index, clear_list_keys_index) = chat_keys_index_cache()
   let rest_sight : Ref[() -> Unit] = Ref(fn() {  })
