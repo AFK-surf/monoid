@@ -122,11 +122,11 @@ fn is_said_req(obj : base_codec::Json) -> Bool {
   json_has_key(obj, "thread") || json_has_key(obj, "cancel")
 }
 
-test "Permit handles mode-request deferral, malformed/empty/foreign rejection, lone-surrogate permit, EOF draining, and repeat take" {
+test "Permit handles mode-request deferral, malformed/empty/foreign/lone-surrogate rejection, valid-surrogate permit, EOF draining, and repeat take" {
   // 1. Mode requests (including null-valued mode key) deferred FIFO while waiting for permit;
-  //    permit object with lone surrogate in an unrelated field still parses and grants.
+  //    permit object with a valid surrogate pair in an unrelated field parses and grants.
   let io1 = MockIo::{
-    lines: ["{\"session\":\"B\"}", "{\"session\":null}", "{\"permit\":true,\"note\":\"\\uD800\"}", "{\"session\":\"C\"}"],
+    lines: ["{\"session\":\"B\"}", "{\"session\":null}", "{\"permit\":true,\"note\":\"\\uD83D\\uDE80\"}", "{\"session\":\"C\"}"],
     idx: 0,
     out: [],
   }
@@ -166,9 +166,17 @@ test "Permit handles mode-request deferral, malformed/empty/foreign rejection, l
     None => panic("expected C")
   }
 
-  // 2. Empty line, malformed JSON, non-object JSON, foreign object {"foo":1}, and bad permit value
-  //    each consume once and immediately reject without hanging or replaying.
-  let bad_replies = ["", "{bad", "123", "null", "{\"foo\":1}", "{\"permit\":\"bad\"}"]
+  // 2. Empty line, malformed JSON, non-object JSON, foreign object {"foo":1}, lone surrogate in permit
+  //    object, and bad permit value each consume once and immediately reject without hanging or replaying.
+  let bad_replies = [
+    "",
+    "{bad",
+    "123",
+    "null",
+    "{\"foo\":1}",
+    "{\"permit\":true,\"note\":\"\\uD800\"}",
+    "{\"permit\":\"bad\"}",
+  ]
   for i in 0..<bad_replies.length() {
     let io2 = MockIo::{
       lines: [bad_replies[i], "{\"thread\":42}"],

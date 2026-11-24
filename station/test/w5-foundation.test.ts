@@ -213,10 +213,12 @@ test("Permit interleaving boundaries (10 cases) against real MB stillfail-reader
     }
   }
 
-  // Case 3: empty line "", malformed JSON "{bad", foreign object {"foo":1}, and {"permit":"bad"}
-  //         while stdin stays open -> each consumes once and immediately rejects without hanging,
-  //         followed by a valid request answered cleanly with no extra error frame.
-  for (const badReply of ["", "{bad", '{"foo":1}', '{"permit":"bad"}']) {
+  // Case 3: empty line "", malformed JSON "{bad", foreign object {"foo":1}, {"permit":"bad"},
+  //         and lone-surrogate permit {"permit":true,"note":"\uD800"} while stdin stays open ->
+  //         each consumes once and immediately rejects without hanging, followed by a valid request answered cleanly.
+  //         Also verify 3-way fresh-scan guard creation: plain {"permit":true} -> guard=1,
+  //         lone surrogate {"permit":true,"note":"\uD800"} -> guard=0, valid pair {"permit":true,"note":"\uD83D\uDE80"} -> guard=1.
+  for (const badReply of ["", "{bad", '{"foo":1}', '{"permit":"bad"}', '{"permit":true,"note":"\\uD800"}']) {
     const { path, store } = seedTurnCountsDb(dir, `case3-${badReply.replace(/[^a-z0-9]/gi, "_")}`);
     const proc = new RawLineProc(realMb, ["--builder", "turn-counts", "--db", path]);
     try {
@@ -231,6 +233,26 @@ test("Permit interleaving boundaries (10 cases) against real MB stillfail-reader
         `case3(${JSON.stringify(badReply)}): rejected immediately and next ask answered cleanly`,
       );
       assert.equal(guardCount(store.db, "A"), 1, `case3(${JSON.stringify(badReply)}): guard untouched`);
+      const exit = await proc.finish();
+      assert.equal(exit.code, 0);
+    } finally {
+      await proc.kill();
+      store.close();
+    }
+  }
+  for (const [label, reply, wantGuards] of [
+    ["plain", '{"permit":true}', 1],
+    ["lone-surrogate", '{"permit":true,"note":"\\uD800"}', 0],
+    ["valid-surrogate-pair", '{"permit":true,"note":"\\uD83D\\uDE80"}', 1],
+  ] as const) {
+    const { path, store } = seedTurnCountsDb(dir, `case3-surrogate-${label}`);
+    const proc = new RawLineProc(realMb, ["--builder", "turn-counts", "--db", path]);
+    try {
+      proc.writeRaw('{"session":"A"}\n');
+      assert.deepStrictEqual(await proc.nextJson(), { take: true });
+      proc.writeRaw(`${reply}\n`);
+      assert.deepStrictEqual(await proc.nextJson(), { done: false });
+      assert.equal(guardCount(store.db, "A"), wantGuards, `case3(${label}): expected guard count ${wantGuards}`);
       const exit = await proc.finish();
       assert.equal(exit.code, 0);
     } finally {
@@ -524,7 +546,7 @@ function extractPionStringExprs(source: string): PionStringExpr[] {
   return exprs;
 }
 
-type SqlTok = { kind: "word"; upper: string } | { kind: "semi" } | { kind: "other" };
+type SqlTok = { kind: "word"; upper: string } | { kind: "ident" } | { kind: "str" } | { kind: "semi" } | { kind: "other" };
 
 function tokenizeSql(sql: string): SqlTok[] {
   const out: SqlTok[] = [];
@@ -544,7 +566,20 @@ function tokenizeSql(sql: string): SqlTok[] {
       i += 2;
       continue;
     }
-    if (ch === "'" || ch === '"') {
+    if (ch === "'") {
+      i++;
+      while (i < n) {
+        if (sql[i] === "'") {
+          i++;
+          if (sql[i] === "'") { i++; continue; }
+          break;
+        }
+        i++;
+      }
+      out.push({ kind: "str" });
+      continue;
+    }
+    if (ch === '"' || ch === "`") {
       const q = ch;
       i++;
       while (i < n) {
@@ -555,7 +590,14 @@ function tokenizeSql(sql: string): SqlTok[] {
         }
         i++;
       }
-      out.push({ kind: "other" });
+      out.push({ kind: "ident" });
+      continue;
+    }
+    if (ch === "[") {
+      i++;
+      while (i < n && sql[i] !== "]") i++;
+      if (i < n) i++;
+      out.push({ kind: "ident" });
       continue;
     }
     if (ch === ";") { out.push({ kind: "semi" }); i++; continue; }
@@ -618,9 +660,16 @@ function findRawTxControlViolations(filename: string, source: string): string[] 
         continue;
       }
       if (!forbiddenHeads.has(tok.upper)) continue;
-      // SQLite `SAVEPOINT <name>` / `RELEASE [SAVEPOINT] <name>` always take a savepoint identifier;
-      // ignore standalone non-SQL literals like Cargo's `"release"` directory name.
-      if ((tok.upper === "RELEASE" || tok.upper === "SAVEPOINT") && tokens[t + 1]?.kind !== "word") continue;
+      // SQLite `SAVEPOINT <name>` / `RELEASE [SAVEPOINT] <name>` accept bare, quoted (`"`, `` ` ``, `[...]`),
+      // or single-quoted identifiers; ignore standalone non-SQL literals like Cargo's `"release"` directory name.
+      if (
+        (tok.upper === "RELEASE" || tok.upper === "SAVEPOINT") &&
+        tokens[t + 1]?.kind !== "word" &&
+        tokens[t + 1]?.kind !== "ident" &&
+        tokens[t + 1]?.kind !== "str"
+      ) {
+        continue;
+      }
       violations.push(`${filename}:${expr.line}: forbidden raw transaction SQL "${tok.upper}" in literal ${JSON.stringify(expr.value)}`);
     }
   }
@@ -673,24 +722,59 @@ function stripRunSmokeSqlite(source: string): string {
   assert.fail("unterminated run_smoke_sqlite function");
 }
 
-test("recursive zero-exception static SQLite transaction guard across ALL SQLite-linked pion/station/packages/**/*.pion", () => {
-  const pkgsDir = resolve(fileURLToPath(new URL("../../pion/station/packages", import.meta.url)));
-  assert.ok(existsSync(pkgsDir), `expected ${pkgsDir} to exist`);
-  const allFiles = collectPionSources(pkgsDir);
-  // Automatically include every package whose pion.toml depends on `sql_db` or `sqlite_ffi`
-  // (plus `sql_db` itself), so any future SQLite builder package is guarded without hardcoding names.
-  const sqlPackages = new Set<string>();
+function collectSqlPackages(pkgsDir: string, allFiles: string[]): Set<string> {
+  const depsByPkg = new Map<string, string[]>();
   for (const entry of readdirSync(pkgsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const manifestPath = join(pkgsDir, entry.name, "pion.toml");
     if (!existsSync(manifestPath)) continue;
     const manifest = readFileSync(manifestPath, "utf8");
-    if (entry.name === "sql_db" || /^\s*(sql_db|sqlite_ffi)\s*=/m.test(manifest)) {
-      sqlPackages.add(entry.name);
+    const deps: string[] = [];
+    let inDeps = false;
+    for (const rawLine of manifest.split("\n")) {
+      const line = rawLine.replace(/#.*$/, "").trim();
+      if (!line) continue;
+      if (line.startsWith("[")) {
+        inDeps = line === "[dependencies]";
+        continue;
+      }
+      if (inDeps) {
+        const m = /^([A-Za-z0-9_-]+)\s*=/.exec(line);
+        if (m) deps.push(m[1]!);
+      }
+    }
+    depsByPkg.set(entry.name, deps);
+  }
+  const sqlPackages = new Set<string>(["sql_db", "sqlite_ffi"]);
+  // Also seed any package that directly declares or references sqlite3_*/stq_* FFI symbols.
+  for (const rel of allFiles) {
+    const pkg = rel.split("/")[0]!;
+    if (sqlPackages.has(pkg)) continue;
+    const src = readFileSync(join(pkgsDir, rel), "utf8");
+    if (/\b(?:sqlite3_|stq_)\w+\b/.test(src)) sqlPackages.add(pkg);
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [pkg, deps] of depsByPkg) {
+      if (sqlPackages.has(pkg)) continue;
+      if (deps.some((d) => sqlPackages.has(d))) {
+        sqlPackages.add(pkg);
+        changed = true;
+      }
     }
   }
+  return sqlPackages;
+}
+
+test("recursive zero-exception static SQLite transaction guard across ALL SQLite-linked pion/station/packages/**/*.pion", () => {
+  const pkgsDir = resolve(fileURLToPath(new URL("../../pion/station/packages", import.meta.url)));
+  assert.ok(existsSync(pkgsDir), `expected ${pkgsDir} to exist`);
+  const allFiles = collectPionSources(pkgsDir);
+  const sqlPackages = collectSqlPackages(pkgsDir, allFiles);
   const checkedFiles = allFiles.filter((rel) => sqlPackages.has(rel.split("/")[0]!));
   assert.ok(checkedFiles.includes("sql_db/src/sql_db.pion"), "must discover sql_db.pion");
+  assert.ok(checkedFiles.includes("sqlite_ffi/src/sqlite_ffi.pion"), "must discover sqlite_ffi.pion");
   assert.ok(checkedFiles.includes("builders_core/src/builder_loop.pion"), "must discover builder_loop.pion");
   assert.ok(checkedFiles.includes("builders_stateful/src/page_letters.pion"), "must discover page_letters.pion");
   assert.ok(checkedFiles.includes("smoke/src/main.pion"), "must discover smoke/src/main.pion");
@@ -704,6 +788,20 @@ test("recursive zero-exception static SQLite transaction guard across ALL SQLite
       [],
       `${rel} must contain zero raw transaction SQL (only sql_db.pion and run_smoke_sqlite are exempted)`,
     );
+  }
+
+  // Verify quoted SQLite identifiers after SAVEPOINT/RELEASE are detected while standalone directory "release" is allowed.
+  assert.deepStrictEqual(findRawTxControlViolations("dir-name.pion", 'let d = "release"'), []);
+  for (const quotedStmt of [
+    'let _ = db.exec("SAVEPOINT [sp]")',
+    'let _ = db.exec("RELEASE [sp]")',
+    'let _ = db.exec("SAVEPOINT \\"sp\\"")',
+    'let _ = db.exec("RELEASE `sp`")',
+    "let _ = db.exec(\"SAVEPOINT 'sp'\")",
+    "let _ = db.exec(\"RELEASE 'sp'\")",
+  ]) {
+    const hits = findRawTxControlViolations("quoted-sp.pion", quotedStmt);
+    assert.equal(hits.length, 1, `quoted identifier savepoint mutation ${quotedStmt} must be detected`);
   }
 
   // In-closure real-file mutation checks: inject directly inside real business function/closure bodies.

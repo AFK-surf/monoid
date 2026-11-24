@@ -416,10 +416,7 @@ pub fn Permit::take_with(
           self.holding = false
           return false
         }
-        let reply = match sql_db::parse_json(line) {
-          base_codec::JsonParseResult::Ok(j) => j
-          base_codec::JsonParseResult::Err(_) => base_codec::json_null()
-        }
+        let reply = parse_ask_line(line)
         match reply {
           base_codec::Json::Obj(_) => {
             match json_get_last(reply, "permit") {
