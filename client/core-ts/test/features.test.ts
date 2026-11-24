@@ -70,7 +70,7 @@ test("the_graduated_chat_page_switch_is_no_feature", () => {
   // 试用新对话页 graduated: neither its older prefs field nor its switch turns anything on
   assert.deepEqual(experimentalOf({ chatPage: "nodes" }), {});
   assert.deepEqual(experimentalOf({ chatPage: "nodes", experimental: { chatPage: true, board: true } }), { board: true });
-  assert.deepEqual(Object.keys(FEATURES), ["farviewNative", "board", "terminal"]);
+  assert.deepEqual(Object.keys(FEATURES), ["farviewNative", "board", "selectionIntent", "terminal"]);
   assert.deepEqual(stationFeatureIds(), ["terminal"]);
 });
 
@@ -87,7 +87,7 @@ test("the_switches_are_kept_on_the_device_and_shown_with_the_prefs", async () =>
   assert.equal(v(values, 1).features.board, false);
   // a station's own are its overview's to say, never the prefs'
   assert.equal("terminal" in v(values, 1).features, false);
-  assert.deepEqual(v(values, 1).experimentalItems.map((i: J) => i.id), test ? ["farviewNative", "board"] : ["board"]);
+  assert.deepEqual(v(values, 1).experimentalItems.map((i: J) => i.id), test ? ["farviewNative", "board", "selectionIntent"] : ["board", "selectionIntent"]);
 
   assert.ok((await ask(host, core, ui, 2, "prefs.set", { experimental: { board: true, farviewNative: true } })).ok !== undefined);
   apply(host, values);

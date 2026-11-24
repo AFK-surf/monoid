@@ -2078,6 +2078,8 @@ web-pages.experimental.farviewNative.title
 web-pages.experimental.farviewNative.description
 web-pages.experimental.board.title
 web-pages.experimental.board.description
+web-pages.experimental.selectionIntent.title
+web-pages.experimental.selectionIntent.description
 core-views.move.why.offline
 core-views.move.why.stable
 android-misc.bar.place.remote

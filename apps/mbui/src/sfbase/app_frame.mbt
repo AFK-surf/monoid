@@ -38,6 +38,11 @@ pub fn features_from_prefs(prefs : Json?) -> Unit {
       (board_listed.val)()
     }
   }
+  let si = @settings.feature_from(prefs, "selectionIntent")
+  if si != selection_intent_told.val {
+    selection_intent_told.val = si
+    selection_intent_feature.set(si)
+  }
 }
 
 ///|
@@ -46,6 +51,9 @@ let farview_told : Ref[Bool] = Ref(false)
 
 ///|
 let board_told : Ref[Bool] = Ref(false)
+
+///|
+let selection_intent_told : Ref[Bool] = Ref(false)
 
 ///|
 /// Light or dark, as this device is set (the prefs' `appearance`), or as the system is (@hostapi.system_dark)
@@ -420,6 +428,7 @@ fn app_frame_reset() -> Unit {
   told_dark.val = None
   farview_told.val = false
   board_told.val = false
+  selection_intent_told.val = false
   attention.told = false
   attention.visible = false
   attention.focused = false
