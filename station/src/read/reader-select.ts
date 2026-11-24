@@ -133,7 +133,7 @@ export const READER_MODES = {
   },
   "archive-last": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Archive last-message index builder (--builder archive-last)",
   },
@@ -235,7 +235,7 @@ export const READER_MODES = {
   },
   "page-letters": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Old page letters builder (--builder page-letters)",
   },
