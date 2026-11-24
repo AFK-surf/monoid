@@ -90,7 +90,7 @@ pub(all) struct SliderLook {
   focus_shown : (() -> Bool)?
   focus_color : (() -> Int64)?
   lens_enabled : Bool
-  center_mark : Bool
+  held_mark : ((@view.View) -> Unit)?
   disabled : () -> Bool
 }
 
@@ -114,7 +114,7 @@ pub fn SliderLook::new(
   focus_shown? : (() -> Bool)? = None,
   focus_color? : (() -> Int64)? = None,
   lens_enabled? : Bool = true,
-  center_mark? : Bool = false,
+  held_mark? : ((@view.View) -> Unit)? = None,
   disabled? : () -> Bool = fn() { false },
 ) -> SliderLook {
   {
@@ -135,7 +135,7 @@ pub fn SliderLook::new(
     focus_shown,
     focus_color,
     lens_enabled,
-    center_mark,
+    held_mark,
     disabled,
   }
 }
@@ -417,38 +417,26 @@ fn liquid_slider_look_core(
           .ground_drawn(By(fn() { thumb_shape(gl) }))
           |> ignore
         })
-        if look.center_mark {
-          let mark_w = 2.5
-          let mark_h = 16.0
-          thumb.show(fn() { lens_mounted.get() }, at_once=true, fn(m) {
-            m
-            .over(Is(true))
-            .points(Is(false))
-            .width(Is(Some(mark_w)))
-            .height(Is(Some(mark_h)))
-            .radius(Is(mark_w / 2.0))
-            .ground(Is(white))
-            .edge(Is((0.75, 0x00000055L)))
-            .shadow(By(fn() {
-              if lens(m) > 0.001 {
-                (2.0, 0.0, 0x00000033L)
-              } else {
-                (0.0, 0.0, 0L)
-              }
-            }))
-            .alpha(By(fn() { clamp(lens(m), 0.0, 1.0) }))
-            .ground_drawn(By(fn() {
-              let cur_tw = eff_tw()
-              {
-                dx: thumb_x(cur_tw, progress(m)) + cur_tw / 2.0 - mark_w / 2.0,
-                dy: (look.thumb_h - mark_h) / 2.0,
-                dw: 0.0,
-                dh: 0.0,
-                corners: None,
-              }
-            }))
-            |> ignore
-          })
+        match look.held_mark {
+          Some(draw_mark) =>
+            thumb.show(fn() { lens_mounted.get() }, at_once=true, fn(m) {
+              m
+              .over(Is(true))
+              .points(Is(false))
+              .width(By(fn() { Some(eff_tw()) }))
+              .height(Is(Some(look.thumb_h)))
+              .row(Is(true))
+              .lines_up(Is(Some(Middle)))
+              .lies_along(Is(Middle))
+              .shift(By(fn() {
+                let cur_tw = eff_tw()
+                (if cur_tw > 0.0 { thumb_x(cur_tw, progress(m)) / cur_tw } else { 0.0 }, 0.0)
+              }))
+              .alpha(By(fn() { clamp(lens(m), 0.0, 1.0) }))
+              |> ignore
+              draw_mark(m)
+            })
+          None => ()
         }
       }
       match in_thumb {

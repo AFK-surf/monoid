@@ -184,3 +184,41 @@ test "hue_slider_node: held droplet at 0 and 355 ends inside scrolled container 
     t.run_for(hue_settle_ms)
   }
 }
+
+///|
+test "hue_slider_node: held_mark capsule fills with live custom_tone color in light and dark themes" {
+  for dark in [false, true] {
+    let chosen = @signals.signal("custom:210")
+    let t = w2_case(w=600.0, fn(root) {
+      set_dark(Some(dark))
+      accent_pick_node(
+        root,
+        fn() { ["橙色", "蓝色", "青色", "紫色", "粉色"] },
+        fn() { "五彩色" },
+        fn() { "自定义" },
+        fn() { "色相" },
+        fn() { chosen.get() },
+        fn(k) { chosen.set(k) },
+      )
+    })
+    t.run_for(@ui.move_most_ms)
+    let sl = t.get(Slider, label="色相").rect
+    let cy = sl.1 + sl.3 / 2.0
+    let target_x = sl.0 + hue_thumb_room / 2.0 + (sl.2 - hue_thumb_room) * (210.0 / custom_hue_most)
+    t.press_at(target_x, cy)
+    t.run_for(hue_hold_ms)
+    let cur_h = custom_hue(chosen.untracked()).unwrap_or(210)
+    let tone = custom_tone(cur_h)
+    let expected_col = if dark { tone.dark } else { tone.light }
+    let marks = t.drawn_rects().filter(fn(r) {
+      (r.4 & 0xFFFFFF00L) == (expected_col & 0xFFFFFF00L) &&
+      (r.4 & 0xFFL) >= 0xE0L &&
+      (r.2 - 5.0).abs() < 0.2 &&
+      (r.3 - 16.0).abs() < 0.2
+    })
+    assert_eq(marks.length(), 1, msg="dark=\{dark}: expected 1 live-colored 5x16 held_mark capsule (hue=\{cur_h})")
+    t.release(target_x, cy)
+    t.run_for(hue_settle_ms)
+  }
+  set_dark(None)
+}

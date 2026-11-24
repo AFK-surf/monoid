@@ -250,7 +250,27 @@ fn hue_slider_node(
         focus_shown=Some(fn() { sl.focus_shown() }),
         focus_color=Some(fn() { @ui.tree_theme().focus }),
         lens_enabled=true,
-        center_mark=true,
+        held_mark=Some(fn(m) {
+          m.box(fn(bar) {
+            bar
+            .width(Is(Some(5.0)))
+            .height(Is(Some(16.0)))
+            .radius(Is(2.5))
+            .ground(By(fn() {
+              let h = (dd.progress(bar) * custom_hue_most).round().to_int()
+              let a = custom_tone(h)
+              if theme().dark {
+                a.dark
+              } else {
+                a.light
+              }
+            }))
+            .edge(Is((1.0, 0xFFFFFFFFL)))
+            .shadow(Is((2.0, 0.0, 0x00000044L)))
+            |> ignore
+          })
+          |> ignore
+        }),
       )
       s.box(fn(slot) {
         slot.height(Is(Some(@glass.slider_thumb_h))) |> ignore

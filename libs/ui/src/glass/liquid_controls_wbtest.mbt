@@ -317,9 +317,10 @@ test "liquid_slider_look: flush=true fill right edge aligns with droplet center 
 }
 
 ///|
-test "liquid_slider_look: center_mark=true draws centered indicator only while held with laid == 0" {
+test "liquid_slider_look: held_mark renders caller-supplied centered mark only while held with laid == 0" {
   let dd = DampedDrag::new(0.4, lo=0.0, hi=1.0, held_scale=slider_thumb_held_scale)
   let w = 216.0
+  let mark_col = 0x11AA88FFL
   let t = glass_case(false, false, fn(page) {
     page.box(fn(host) {
       dd.attach(host)
@@ -334,56 +335,69 @@ test "liquid_slider_look: center_mark=true draws centered indicator only while h
         track_color=fn() { 0x00000022L },
         fill_color=None,
         lens_enabled=true,
-        center_mark=true,
+        held_mark=Some(fn(m) {
+          m.box(fn(bar) {
+            bar.width(Is(Some(5.0))).height(Is(Some(16.0))).radius(Is(2.5)).ground(Is(mark_col)) |> ignore
+          })
+          |> ignore
+        }),
       )
       liquid_slider_look(host, fn(n) { dd.progress(n) }, fn(n) { dd.pressed(n) }, look, velocity=fn(n) { dd.velocity(n) })
     })
     |> ignore
   })
   let find_marks = fn() {
-    t.drawn_rects().filter(fn(r) { r.4 == white && (r.2 - 2.5).abs() < 0.2 && (r.3 - 16.0).abs() < 0.2 })
+    t.drawn_rects().filter(fn(r) { r.4 == mark_col && (r.2 - 5.0).abs() < 0.2 && (r.3 - 16.0).abs() < 0.2 })
   }
   t.run_for(glass_springs_out)
-  assert_eq(find_marks().length(), 0, msg="center_mark must not draw at rest")
+  assert_eq(find_marks().length(), 0, msg="held_mark must not draw at rest")
   t.by_hand(fn() { dd.press() })
   t.run_for(glass_ctrl_hold_ms)
   let marks_held = find_marks()
-  assert_eq(marks_held.length(), 1, msg="center_mark must draw 1 indicator while held")
+  assert_eq(marks_held.length(), 1, msg="held_mark must draw 1 indicator while held")
   let cx0 = marks_held[0].0 + marks_held[0].2 / 2.0
   let exp0 = 24.0 + slider_travel_at(w, slider_thumb_w / 2.0, 0.4)
-  assert_true((cx0 - exp0).abs() < 0.5, msg="center_mark center at 0.4: \{cx0} vs \{exp0}")
-  // Drag while held: laid == 0 and indicator follows middle_at
+  assert_true((cx0 - exp0).abs() < 0.5, msg="held_mark center at 0.4: \{cx0} vs \{exp0}")
+  // Drag while held: laid == 0 and indicator follows droplet center
   t.tree_frames_from_now()
   t.by_hand(fn() { dd.update_value(0.75) })
   t.run_for(glass_ctrl_drag_ms)
   for f in t.tree_frames() {
-    assert_eq(f.laid, 0, msg="center_mark drag must not relayout: \{Repr(f)}")
+    assert_eq(f.laid, 0, msg="held_mark drag must not relayout: \{Repr(f)}")
   }
   let marks_moved = find_marks()
-  assert_eq(marks_moved.length(), 1, msg="center_mark must remain visible while dragging")
+  assert_eq(marks_moved.length(), 1, msg="held_mark must remain visible while dragging")
   let cx1 = marks_moved[0].0 + marks_moved[0].2 / 2.0
   let exp1 = 24.0 + slider_travel_at(w, slider_thumb_w / 2.0, 0.75)
-  assert_true((cx1 - exp1).abs() < 1.5, msg="center_mark center at 0.75: \{cx1} vs \{exp1}")
+  assert_true((cx1 - exp1).abs() < 1.5, msg="held_mark center at 0.75: \{cx1} vs \{exp1}")
   // Release: laid == 0 and indicator disappears when settled
   t.tree_frames_from_now()
   t.by_hand(fn() { dd.release() })
   t.run_for(glass_springs_out)
   for f in t.tree_frames() {
-    assert_eq(f.laid, 0, msg="center_mark release must not relayout: \{Repr(f)}")
+    assert_eq(f.laid, 0, msg="held_mark release must not relayout: \{Repr(f)}")
   }
-  assert_eq(find_marks().length(), 0, msg="center_mark must disappear once settled")
+  assert_eq(find_marks().length(), 0, msg="held_mark must disappear once settled")
   set_dark(None)
 }
 
 ///|
-test "liquid_slider_look: default non-flush center_mark aligns strictly with droplet center at 0.0 and 1.0" {
+test "liquid_slider_look: default non-flush held_mark aligns strictly with droplet center at 0.0 and 1.0" {
   let dd = DampedDrag::new(0.0, lo=0.0, hi=1.0, held_scale=slider_thumb_held_scale)
   let w = 216.0
+  let mark_col = 0x11AA88FFL
   let t = glass_case(false, false, fn(page) {
     page.box(fn(host) {
       dd.attach(host)
       host.width(Is(Some(w))).height(Is(Some(slider_thumb_h))) |> ignore
-      let look = SliderLook::new(center_mark=true)
+      let look = SliderLook::new(
+        held_mark=Some(fn(m) {
+          m.box(fn(bar) {
+            bar.width(Is(Some(5.0))).height(Is(Some(16.0))).radius(Is(2.5)).ground(Is(mark_col)) |> ignore
+          })
+          |> ignore
+        }),
+      )
       liquid_slider_look(host, fn(n) { dd.progress(n) }, fn(n) { dd.pressed(n) }, look, velocity=fn(n) { dd.velocity(n) })
     })
     |> ignore
@@ -395,13 +409,13 @@ test "liquid_slider_look: default non-flush center_mark aligns strictly with dro
       dd.press()
     })
     t.run_for(glass_ctrl_hold_ms)
-    let marks = t.drawn_rects().filter(fn(r) { r.4 == white && (r.2 - 2.5).abs() < 0.2 && (r.3 - 16.0).abs() < 0.2 })
+    let marks = t.drawn_rects().filter(fn(r) { r.4 == mark_col && (r.2 - 5.0).abs() < 0.2 && (r.3 - 16.0).abs() < 0.2 })
     let glass = t.drawn_glass()
-    assert_eq(marks.length(), 1, msg="expected 1 center_mark at \{at}")
+    assert_eq(marks.length(), 1, msg="expected 1 held_mark at \{at}")
     assert_eq(glass.length(), 1, msg="expected 1 droplet glass at \{at}")
     let mark_cx = marks[0].0 + marks[0].2 / 2.0
     let glass_cx = glass[0].0 + glass[0].2 / 2.0
-    assert_true((mark_cx - glass_cx).abs() <= 0.1, msg="non-flush center_mark at \{at}: mark=\{mark_cx} vs glass=\{glass_cx}")
+    assert_true((mark_cx - glass_cx).abs() <= 0.1, msg="non-flush held_mark at \{at}: mark=\{mark_cx} vs glass=\{glass_cx}")
     t.by_hand(fn() { dd.release() })
     t.run_for(glass_springs_out)
   }
