@@ -109,7 +109,7 @@ export const READER_MODES = {
   },
   "vault-uses": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Vault use-index writes (--builder vault-uses)",
   },

@@ -74,10 +74,11 @@ test("READER_MODES strictly matches all modes in station/mb/src/reader/main.mbt 
       "turn-counts",
       "usage-check",
       "usage-retire",
+      "vault-uses",
       "widget-sources",
       "workspace-up-jobs",
     ],
-    "only the implemented baseline + builders_core + builders_index + builders_stateful + builders_requested modes are currently enabled in Pion",
+    "only the implemented baseline + builders_core + builders_index + builders_stateful + builders_recent + builders_vault + builders_requested modes are currently enabled in Pion",
   );
 
   assert.equal(readerModeEnvKey("footprint"), "STILLFAIL_READER_FOOTPRINT");
@@ -400,6 +401,7 @@ test("every mode with pionImplemented: true is explicitly wired to resolveReader
     "turn-counts",
     "usage-check",
     "usage-retire",
+    "vault-uses",
     "widget-sources",
     "workspace-up-jobs",
   ]);
