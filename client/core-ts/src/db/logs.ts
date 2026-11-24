@@ -289,7 +289,7 @@ export class LogsStore {
     // new item, one let go from the cache) read alone.
     if (missing.length === 0) return out;
     if (missing.length <= LOG_READ_ALONE) {
-      const rows = this.#env.sql.all(`SELECT ${col}, json FROM ${table} WHERE station = ? AND ${key} = ? AND ${col} IN (${missing.map(() => "?").join(", ")})`, [station, logId(table, id), ...missing]);
+      const rows = this.#env.sql.all(`SELECT t.${col}, t.json FROM json_each(?) AS k CROSS JOIN ${table} AS t WHERE t.station = ? AND t.${key} = ? AND t.${col} = k.value`, [JSON.stringify(missing), station, logId(table, id)]);
       work.logRows += rows.length;
       const read = new Map(rows.map((r) => [r[0] as number, this.#logItem(table, station, id, r[0] as number, r[1])]));
       // (in order of number, as the range reads: those read alone put in their places)
@@ -345,7 +345,7 @@ export class LogsStore {
     }
     for (let i = 0; i < missing.length; i += PEOPLE_READ_AT_ONCE) {
       const some = missing.slice(i, i + PEOPLE_READ_AT_ONCE);
-      const rows = this.#env.sql.all(`SELECT n, json FROM entry WHERE station = ? AND thread = ? AND n IN (${some.map(() => "?").join(", ")})`, [station, thread, ...some]);
+      const rows = this.#env.sql.all("SELECT e.n, e.json FROM json_each(?) AS k CROSS JOIN entry AS e WHERE e.station = ? AND e.thread = ? AND e.n = k.value", [JSON.stringify(some), station, thread]);
       work.logRows += rows.length;
       for (const r of rows) held.set(r[0] as number, this.#logItem("entry", station, id, r[0] as number, r[1]));
     }

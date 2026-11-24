@@ -23,6 +23,8 @@ type J = any;
 const CLOUD_HOSTS = ["app.still.fail", "app.youdid.wtf", "ember.3720.org"];
 const MONOID_HOSTS = ["app.monoid.build", "app.monoid.zone"];
 const PICTURES = 256;
+/// In-memory byte cap for `#pictures` so decoded image caches stay bounded without thrashing on clear-all.
+const PICTURES_MEM_BYTES = 16 * 1024 * 1024;
 /// A picture that could not be fetched is not asked for again for this long: a Google account's, where Google cannot be
 /// reached, waited 15 s each time it was drawn, about half of a phone's.
 export const PICTURE_RETRY_MS = 10 * 60_000;
@@ -48,7 +50,8 @@ export class Asks {
   readonly #brings: Brings;
   /// The newest release of each feed as read (when, the release, its deltas), shared by every build asking.
   readonly #releases = new Map<string, [number, J, Deltas | null]>();
-  readonly #pictures = new Map<string, Picture>();
+  readonly #pictures = new Map<string, { deferred: Picture; bytes: number; settled: boolean }>();
+  #pictureBytes = 0;
   /// Pictures that could not be fetched: when, and why.
   readonly #pictureFailed = new Map<string, [number, CoreError]>();
   /// What is kept on the device, read once.
@@ -161,12 +164,15 @@ export class Asks {
       if (!(url.startsWith("https://") || url.startsWith("http://"))) return yield* Effect.fail(CoreError.invalid(t("core-misc.ask.bad_picture_url")));
       const failed = this.#pictureFailed.get(url);
       if (failed !== undefined && this.#host.nowMs() - failed[0] < PICTURE_RETRY_MS) return yield* this.#standIn(url, failed[1]);
-      let picture = this.#pictures.get(url);
-      if (!picture) {
+      let entry = this.#pictures.get(url);
+      if (entry) {
+        this.#pictures.delete(url);
+        this.#pictures.set(url, entry);
+      } else {
         const made = Deferred.makeUnsafe<[string, Uint8Array], CoreError>();
-        if (this.#pictures.size >= PICTURES) this.#pictures.clear();
-        this.#pictures.set(url, made);
-        picture = made;
+        entry = { deferred: made, bytes: 0, settled: false };
+        this.#pictures.set(url, entry);
+        this.#trimPictures(url);
         const fetched = yield* Effect.result(
           Effect.flatMap(this.#keptPicture(pictureName(url)), (kept) =>
             kept !== null
@@ -177,18 +183,39 @@ export class Asks {
                 ),
           ),
         );
+        if (fetched._tag === "Success") {
+          entry.settled = true;
+          entry.bytes = fetched.success[1].byteLength;
+          if (this.#pictures.get(url) === entry) {
+            this.#pictureBytes += entry.bytes;
+            this.#trimPictures(url);
+          }
+        }
         Deferred.doneUnsafe(made, fetched._tag === "Success" ? Effect.succeed(fetched.success) : Effect.fail(fetched.failure));
       }
-      const got = yield* Effect.result(Deferred.await(picture));
+      const got = yield* Effect.result(Deferred.await(entry.deferred));
       if (got._tag === "Failure") {
-        if (this.#pictures.get(url) === picture) this.#pictures.delete(url);
-        if (this.#pictureFailed.size >= PICTURES) this.#pictureFailed.clear();
+        if (this.#pictures.get(url) === entry) {
+          this.#pictures.delete(url);
+          this.#pictureBytes -= entry.bytes;
+        }
+        if (this.#pictureFailed.size >= PICTURES) this.#pictureFailed.delete(this.#pictureFailed.keys().next().value!);
         this.#pictureFailed.set(url, [this.#host.nowMs(), got.failure]);
         return yield* this.#standIn(url, got.failure);
       }
       this.#pictureFailed.delete(url);
       return got.success;
     });
+  }
+
+  #trimPictures(keepUrl: string): void {
+    if (this.#pictures.size <= PICTURES && this.#pictureBytes <= PICTURES_MEM_BYTES) return;
+    for (const [k, v] of this.#pictures) {
+      if (this.#pictures.size <= PICTURES && this.#pictureBytes <= PICTURES_MEM_BYTES) break;
+      if (k === keepUrl || !v.settled) continue;
+      this.#pictures.delete(k);
+      this.#pictureBytes -= v.bytes;
+    }
   }
 
   /// A picture by its address as the device holds it, never waiting on the network: kept (or what stands in for it),

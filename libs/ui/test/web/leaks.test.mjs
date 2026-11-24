@@ -293,3 +293,51 @@ test('a window beside the page closed: every GL object of its context deleted, t
   assert.ok(b.said.includes('lost'), 'its context lost');
   assert.ok(b.popups[0].closed, 'the popup closed');
 });
+
+test('stale glass slots are reclaimed individually after 180 frames even while other glass stays visible', () => {
+  const b = browser();
+  b.run();
+  const INST = 60;
+  const presentTwo = (withSecond) => {
+    const n = withSecond ? 3 : 2;
+    const buf = new Float64Array(INST * n);
+    buf.set([0, 0, 400, 300], 0);
+    buf.set([-1e9, -1e9, 1e9, 1e9], 16);
+    // Persistent glass #1
+    buf.set([10, 10, 100, 40], INST);
+    buf[INST + 5] = 5; buf[INST + 7] = 6;
+    buf.set([-1e9, -1e9, 1e9, 1e9], INST + 16);
+    buf[INST + 20] = -1;
+    if (withSecond) {
+      // Transient modal glass #2
+      buf.set([150, 100, 120, 60], INST * 2);
+      buf[INST * 2 + 5] = 5; buf[INST * 2 + 7] = 6;
+      buf.set([-1e9, -1e9, 1e9, 1e9], INST * 2 + 16);
+      buf[INST * 2 + 20] = -2;
+    }
+    b.H.present(buf, n, 0.1, 0.2, 0.3);
+  };
+  const fbsDeleted = () => b.said.filter((x) => Array.isArray(x) && x[1] === 'Framebuffer').length;
+  presentTwo(true);
+  const before = fbsDeleted();
+  for (let i = 1; i < 180; i++) presentTwo(false);
+  assert.equal(fbsDeleted(), before, 'transient slot kept for 179 frames');
+  presentTwo(false);
+  assert.equal(fbsDeleted(), before + 1, 'transient glass slot reclaimed at 180th frame while persistent glass remains');
+});
+
+test('ghostty-vt.wasm is fetched lazily on first termOpen, not during startup', async () => {
+  const fetched = [];
+  const b = browser();
+  b.win.WebAssembly = { instantiate: async () => null };
+  b.win.URL = class { constructor(p) { this.href = String(p); } };
+  b.win.fetch = async (u) => { fetched.push(String(u.href || u)); return { ok: false, headers: { get: () => '' } }; };
+  await task();
+  b.run();
+  assert.equal(fetched.length, 0, 'no ghostty-vt.wasm fetch on startup');
+  const id = b.H.termOpen(80, 24);
+  assert.ok(id > 0, 'lazy termOpen returns a handle while Wasm loads');
+  assert.equal(fetched.length, 1, 'ghostty-vt.wasm fetched lazily on first termOpen');
+  assert.ok(fetched[0].includes('ghostty-vt.wasm'));
+  b.H.termClose(id);
+});

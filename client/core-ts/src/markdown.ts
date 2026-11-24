@@ -163,7 +163,7 @@ function remember(text: string, md: Md, cost: number): void {
 }
 
 /// Bound the trees as well as their source: a short formula may have many placed glyphs.
-const KEPT_CHARS = 4_000_000;
+const KEPT_CHARS = 2_000_000;
 const kept = new Map<string, { md: Md; cost: number }>();
 let keptChars = 0;
 

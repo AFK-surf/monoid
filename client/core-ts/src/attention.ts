@@ -139,6 +139,7 @@ export class Attention implements Owner {
     attend.inView = (shown) => {
       store.inView(shown);
       if (shown) core.views.checkMoments();
+      else core.data.shrinkMemory();
     };
     core.stations.also.push({
       read: () => Effect.void,

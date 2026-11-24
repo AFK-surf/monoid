@@ -3,3 +3,8 @@
 fn math_glyphs() -> Bytes {
   math_glyphs_gz
 }
+
+///|
+fn math_glyphs_drop() -> Unit {
+  ()
+}

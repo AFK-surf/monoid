@@ -189,4 +189,26 @@ test("job_logs_kept_are_the_latest_opened_at_most", () => {
   assert.equal(logs.length, LOGS_KEPT);
   assert.ok(logs.includes(logKey(`j${LOGS_KEPT + 4}`, 300)));
   assert.ok(!logs.includes(logKey("j0", 300)));
+  // In-memory map is bounded to the same limit so evicted logs/previews do not accumulate in RAM.
+  const inMem = [...m.keys()].filter((key) => key.startsWith("jobLog\n"));
+  assert.equal(inMem.length, LOGS_KEPT);
+  assert.ok(inMem.includes(logKey(`j${LOGS_KEPT + 4}`, 300)));
+  assert.ok(!inMem.includes(logKey("j0", 300)));
+});
+
+test("memory_evicts_oldest_bounded_entries_without_dropping_pending_writes", () => {
+  const { k, pass } = keeper();
+  const m = new Memory(k, [["linkPreview\n", 2]]);
+  m.set("linkPreview\na", { icon: "a1" });
+  // Second write within KEEP_MS queues a delayed write (#due)
+  m.set("linkPreview\na", { icon: "a2" });
+  m.set("linkPreview\nb", { icon: "b1" });
+  m.set("linkPreview\nc", { icon: "c1" });
+  // 'a' is pending write so 'b' is evicted instead of losing 'a's queued write.
+  assert.deepEqual([...m.keys()].sort(), ["linkPreview\na", "linkPreview\nc"]);
+  pass(KEEP_MS);
+  assert.deepEqual(k.read("linkPreview\na"), { icon: "a2" });
+  m.set("linkPreview\nd", { icon: "d1" });
+  assert.equal([...m.keys()].length, 2);
+  assert.ok(!m.fresh("linkPreview\nc") || !m.fresh("linkPreview\na"));
 });

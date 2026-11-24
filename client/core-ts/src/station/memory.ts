@@ -48,9 +48,18 @@ export class Memory {
     if (!this.#values.has(key) && this.#keeper !== null && !this.#looked.has(key)) {
       this.#looked.add(key);
       const kept = this.#keeper.read(key);
-      if (kept !== undefined) this.#values.set(key, kept);
+      if (kept !== undefined) {
+        this.#values.set(key, kept);
+        this.#boundMemory(key);
+      }
+      return kept;
     }
-    return this.#values.get(key);
+    const v = this.#values.get(key);
+    if (v !== undefined && this.#boundedRule(key) !== undefined) {
+      this.#values.delete(key);
+      this.#values.set(key, v);
+    }
+    return v;
   }
 
   has(key: string): boolean {
@@ -69,19 +78,23 @@ export class Memory {
 
   /// What the station says now: held, and kept.
   set(key: string, value: unknown): void {
+    this.#values.delete(key);
     this.#values.set(key, value);
     this.#looked.add(key);
     this.#fresh.add(key);
     this.#held.delete(key);
     this.#keep(key);
+    this.#boundMemory(key);
   }
 
   /// What the station says now, live only while it is watched: held in memory alone.
   hold(key: string, value: unknown): void {
+    this.#values.delete(key);
     this.#values.set(key, value);
     this.#looked.add(key);
     this.#fresh.add(key);
     this.#held.add(key);
+    this.#boundMemory(key);
   }
 
   delete(key: string): void {
@@ -91,7 +104,33 @@ export class Memory {
     this.#fresh.delete(key);
     this.#held.delete(key);
     this.#due.delete(key);
+    this.#written.delete(key);
     if (kept) this.#keeper?.write(key, undefined);
+  }
+
+  #boundedRule(key: string): readonly [string, number] | undefined {
+    for (const rule of this.#bounded) if (key.startsWith(rule[0])) return rule;
+    return undefined;
+  }
+
+  /// Evicts the oldest in-memory entries of `key`'s bounded prefix past its limit (preserving entries still queued to write).
+  #boundMemory(key: string): void {
+    const rule = this.#boundedRule(key);
+    if (rule === undefined) return;
+    const [prefix, most] = rule;
+    let count = 0;
+    for (const k of this.#values.keys()) if (k.startsWith(prefix)) count++;
+    if (count <= most) return;
+    for (const k of this.#values.keys()) {
+      if (count <= most) break;
+      if (k === key || !k.startsWith(prefix) || this.#due.has(k)) continue;
+      this.#values.delete(k);
+      this.#looked.delete(k);
+      this.#fresh.delete(k);
+      this.#held.delete(k);
+      this.#written.delete(k);
+      count--;
+    }
   }
 
   #keep(key: string): void {
@@ -113,7 +152,9 @@ export class Memory {
     const first = !this.#written.has(key);
     this.#written.set(key, keeper.now());
     keeper.write(key, this.#values.get(key));
-    if (!first) return;
-    for (const [prefix, most] of this.#bounded) if (key.startsWith(prefix)) keeper.bound(prefix, most);
+    if (first) {
+      for (const [prefix, most] of this.#bounded) if (key.startsWith(prefix)) keeper.bound(prefix, most);
+    }
+    this.#boundMemory(key);
   }
 }

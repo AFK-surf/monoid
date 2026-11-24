@@ -33,7 +33,7 @@
   function makeGlassSlots() {
     return Array.from({ length: GLASS_SLOTS }, () => ({
       bt: null, bfb: null, bw: 0, bh: 0, bf: 0,
-      under: null, underN: 0, whole: 0, picked: 0, grab: null, key: null, valid: false, used: 0,
+      under: null, underN: 0, whole: 0, picked: 0, h1: 0, h2: 0, grab: null, key: null, valid: false, used: 0, lastFrame: 0,
     }));
   }
   let canvas, gl, vs, vsAd, prog, progs = new Array(MB_PROGS).fill(null), progFlat, ufVp, progGen = 0, progNow = null, post, vao, instBuf, atlasTex, ta;
@@ -2149,8 +2149,11 @@
   // and kept in an LRU slot (GLASS_SLOTS) so frames with unchanged content under the glass reuse the blur with zero passes.
   let lv = null, lvW = 0, lvH = 0, bdTex = null;
   let lensLv = null, lensW = 0, lensH = 0, lensOx = 0, lensOy = 0, lensVpW = 0, lensVpH = 0;
-  let glassSlots = makeGlassSlots(), glassSlotsClock = 0;
-  let underNow = new Float32Array(INST * 256), underNowN = 0, underWhole = 0, underPicked = 0;
+  let glassSlots = makeGlassSlots(), glassSlotsClock = 0, glassFrameSeq = 0;
+  let underNow = new Float32Array(INST * 256), underNowU32 = new Uint32Array(underNow.buffer);
+  let underNowN = 0, underWhole = 0, underPicked = 0, underH1 = 0, underH2 = 0;
+  const grabShape = new Float32Array(32), grabRad = new Float32Array(32), grabEdge = new Float32Array(36);
+  const blurProg = new Float32Array(36);
   const gmap = new Float32Array(4), guvc = new Float32Array(4), ggb = new Float32Array(4);
   const gshape = new Float32Array(32), grad = new Float32Array(32);
   let gn = 0;
@@ -2366,6 +2369,7 @@
     }
     adSettling = settling;
     if (settling) scheduleAdRaf(winActive);
+    else if (lastF32) lastF32 = null;
   }
   function slotsInvalidate() {
     for (let i = 0; i < GLASS_SLOTS; i++) glassSlots[i].valid = false;
@@ -2379,9 +2383,10 @@
     lensLv = null; lensW = 0; lensH = 0;
     for (let i = 0; i < GLASS_SLOTS; i++) {
       const s = glassSlots[i];
-      s.bt = null; s.bfb = null; s.bw = 0; s.bh = 0; s.bf = 0; s.valid = false;
+      s.bt = null; s.bfb = null; s.bw = 0; s.bh = 0; s.bf = 0; s.valid = false; s.h1 = 0; s.h2 = 0; s.lastFrame = 0;
     }
     adTex = [null, null]; adFb = [null, null]; adCur = 0;
+    lastF32 = null;
     glassForget();
   }
   function glassFree() {
@@ -2401,8 +2406,23 @@
     glassLost();
   }
   function glassIdleTick() {
-    if (glassDrawn) glassIdle = 0;
-    else if (glassIdle < GLASS_IDLE && ++glassIdle === GLASS_IDLE && (lv || glassSlots.some((s) => s.bt))) glassFree();
+    glassFrameSeq++;
+    if (glassDrawn) {
+      glassIdle = 0;
+      // Reclaim individual stale glass slots unused for GLASS_IDLE frames even while other glass chrome stays visible.
+      if (gl) {
+        for (let i = 0; i < GLASS_SLOTS; i++) {
+          const s = glassSlots[i];
+          if (s.bt && glassFrameSeq - s.lastFrame >= GLASS_IDLE) {
+            gl.deleteFramebuffer(s.bfb); gl.deleteTexture(s.bt);
+            s.bt = null; s.bfb = null; s.bw = 0; s.bh = 0; s.bf = 0;
+            s.under = null; s.underN = 0; s.valid = false; s.h1 = 0; s.h2 = 0; s.lastFrame = 0;
+          }
+        }
+      }
+    } else if (glassIdle < GLASS_IDLE && ++glassIdle === GLASS_IDLE && (lv || glassSlots.some((s) => s.bt))) {
+      glassFree();
+    }
     glassDrawn = false;
   }
   // every open window's glass and partial-redraw canvas given back (the page hidden), the one in place as it was after
@@ -2417,6 +2437,11 @@
         cv = null; cvOk = false;
       });
     }
+    if (underNow.length > INST * 1024) {
+      underNow = new Float32Array(INST * 256);
+      underNowU32 = new Uint32Array(underNow.buffer);
+    }
+    if (f32.length > INST * 8192) f32 = new Float32Array(INST * 4096);
   }
   document.addEventListener('visibilitychange', () => { if (document.hidden) trimRender(); });
   function ensureLevels(w, h) {
@@ -2518,7 +2543,8 @@
     let margin = isContained ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * (1 + Math.abs(f32[a + 22])) + Math.max(f32[a + 23], 0) : 0) + 2;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     let mN = 0;
-    const mShape = new Float32Array(32), mRad = new Float32Array(32);
+    grabShape.fill(0); grabRad.fill(0);
+    const mShape = grabShape, mRad = grabRad;
     for (let i = start; i < end; i++) {
       const b = i * INST;
       let bx0 = Math.max(f32[b], f32[b + 16]), by0 = Math.max(f32[b + 1], f32[b + 17]);
@@ -2570,7 +2596,7 @@
       [24, 25, 26, 27, 44, 45, 46, 47].some((i) => f32[a + i] > 0));
     let edge = null;
     if (contained) {
-      edge = new Float32Array(36);
+      edge = grabEdge;
       edge.set([px0 / sc, (Hh - pb0) / sc, 1 / sc, -1 / sc], 0);
       edge.set([f32[a], f32[a + 1], f32[a] + f32[a + 2], f32[a + 1] + f32[a + 3]], 4);
       for (let i = 0; i < 4; i++) {
@@ -2700,7 +2726,8 @@
         prevVar = Math.max(haveVar, targetPx * targetPx);
       }
       const sc = dpr;
-      const prog = new Float32Array(36);
+      const prog = blurProg;
+      prog.fill(0);
       prog[0] = m.px0 / sc; prog[1] = (m.top - m.pb0) / sc;
       prog[2] = 1 / sc; prog[3] = -1 / sc;
       for (let i = 0; i < 4; i++) { prog[4 + i] = m.fade[i]; prog[8 + i] = m.fadex[i]; }
@@ -2770,7 +2797,10 @@
       if (sees && reaches(i, run, g)) whole = i + 1;
     }
     const maxNeed = (start + (count - pieces)) * INST;
-    if (underNow.length < maxNeed) underNow = new Float32Array(Math.max(maxNeed, underNow.length * 2));
+    if (underNow.length < maxNeed) {
+      underNow = new Float32Array(Math.max(maxNeed, underNow.length * 2));
+      underNowU32 = new Uint32Array(underNow.buffer);
+    }
     for (let i = 0; i < whole; i++) if (unstableUnder(i)) return false;
     let off = whole * INST;
     if (off > 0) underNow.set(f32.subarray(0, off), 0);
@@ -2787,9 +2817,18 @@
       underNow.set(f32.subarray(pieces * INST, count * INST), off);
       off += pLen;
     }
+    let h1 = 2166136261 | 0, h2 = 16777619 | 0;
+    for (let j = 0; j < off; j++) {
+      let v = underNowU32[j];
+      if (v === 0x80000000) v = 0;
+      h1 = Math.imul(h1 ^ v, 16777619);
+      h2 = Math.imul(h2 ^ (v + j), 2246822519);
+    }
     underNowN = off;
     underWhole = whole;
     underPicked = picked;
+    underH1 = h1;
+    underH2 = h2;
     return true;
   }
 
@@ -2812,7 +2851,7 @@
   function slotSame(m, key) {
     for (let i = 0; i < GLASS_SLOTS; i++) {
       const s = glassSlots[i];
-      if (!s.valid || s.underN !== underNowN || s.whole !== underWhole || s.picked !== underPicked) continue;
+      if (!s.valid || s.underN !== underNowN || s.whole !== underWhole || s.picked !== underPicked || s.h1 !== underH1 || s.h2 !== underH2) continue;
       let eq = true;
       for (let j = 0; j < 6; j++) if (s.key[j] !== key[j]) { eq = false; break; }
       if (!eq || !grabSame(s.grab, m)) continue;
@@ -2858,16 +2897,26 @@
 
   function slotShow(m, s) {
     s.used = ++glassSlotsClock;
+    s.lastFrame = glassFrameSeq + 1;
     showBlur(m, s.bt, s.bw, s.bh);
   }
 
   function slotKeep(s, m, key) {
-    if (!s.under || s.under.length < underNowN) s.under = new Float32Array(Math.max(underNowN, INST));
+    if (!s.under || s.under.length < underNowN || s.under.length > Math.max(underNowN * 4, INST * 64)) {
+      s.under = new Float32Array(Math.max(underNowN, INST));
+    }
     if (underNowN > 0) s.under.set(underNow.subarray(0, underNowN), 0);
     s.underN = underNowN;
     s.whole = underWhole;
     s.picked = underPicked;
-    s.grab = m;
+    s.h1 = underH1;
+    s.h2 = underH2;
+    s.grab = {
+      ...m,
+      shape: m.n > 0 ? m.shape.slice(0, m.n * 4) : m.shape.slice(0, 0),
+      rad: m.n > 0 ? m.rad.slice(0, m.n * 4) : m.rad.slice(0, 0),
+      edge: m.edge ? m.edge.slice() : null,
+    };
     s.key = key;
     s.valid = true;
   }
@@ -3350,10 +3399,13 @@
     f32[len + 8] = r; f32[len + 9] = g; f32[len + 10] = b; f32[len + 11] = 1;
     f32[len + 16] = -1e9; f32[len + 17] = -1e9; f32[len + 18] = 1e9; f32[len + 19] = 1e9;
     lastN = n; lastR = r; lastG = g; lastB = b;
-    const need = len + INST;
-    if (!lastF32 || lastF32.length < need) lastF32 = new Float32Array(need);
-    lastF32.set(f32.subarray(0, need), 0);
     presentCached(false);
+    // Only snapshot f32 when adaptive glass settling needs cached replay frames.
+    if (adSettling) {
+      const need = len + INST;
+      if (!lastF32 || lastF32.length < need) lastF32 = new Float32Array(need);
+      lastF32.set(f32.subarray(0, need), 0);
+    }
   };
 
   // The frame's `n` instances (in f32, its ground after them) and its shapes' pieces into the GPU's buffer and texture:
@@ -4064,9 +4116,11 @@
   // as premultiplied textures.
   const images = new Map();
   let nextImage = 0;
-  async function decodeImage(id, blob, maxPx) {
+  async function decodeImage(id, srcData, maxPx) {
     const im = images.get(id);
+    const isBytes = ArrayBuffer.isView(srcData);
     try {
+      const blob = isBytes ? new Blob([srcData]) : srcData;
       let bmp = await createImageBitmap(blob);
       const ow = bmp.width, oh = bmp.height;
       const k = Math.min(1, maxPx / Math.max(ow, oh));
@@ -4091,7 +4145,13 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      Object.assign(im, { state: 1, tex, w: bmp.width, h: bmp.height, ow, oh, blob, maxPx });
+      // For bytes passed from MoonBit, retain the immutable Uint8Array reference instead of duplicating it in a Blob.
+      Object.assign(im, {
+        state: 1, tex, w: bmp.width, h: bmp.height, ow, oh,
+        bytes: isBytes ? srcData : null,
+        blob: isBytes ? null : srcData,
+        maxPx,
+      });
       bmp.close();
     } catch (e) {
       if (!images.has(id)) return;
@@ -4117,7 +4177,7 @@
   H.imageLoadBytes = (bytes, maxPx) => {
     const id = ++nextImage;
     images.set(id, { state: 0 });
-    decodeImage(id, new Blob([bytes]), maxPx);
+    decodeImage(id, bytes, maxPx);
     return id;
   };
   H.imageInfo = (id, out) => {
@@ -4152,6 +4212,7 @@
     const im = images.get(id);
     if (im && im.tex) mainGl().deleteTexture(im.tex);
     images.delete(id);
+    told.delete(OUTSIDE_IMAGE + ':' + id);
     slotsForget(id);
   };
 
@@ -5369,7 +5430,7 @@
       if (im.state !== 1) continue;
       Object.assign(im, { state: 0, tex: null });
       told.delete(OUTSIDE_IMAGE + ':' + id);
-      decodeImage(id, im.blob, im.maxPx);
+      decodeImage(id, im.bytes || im.blob, im.maxPx);
     }
     contextLoser = null;
     contextAnew = true;
@@ -5387,7 +5448,8 @@
   };
 
   // ---- terminals (src/hostapi/terminal.mbt, ghostty-vt.wasm) ----
-  let vt = null, vtScratch = 0, vtWideLsb = 42;
+  const WEB_TERM_SCROLLBACK = 4 * 1024 * 1024;
+  let vt = null, vtScratch = 0, vtWideLsb = 42, vtLoad = null, vtFailed = false;
   const terms = new Map();
   let nextTermId = 1;
   const utf8Dec = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
@@ -5397,43 +5459,110 @@
     for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
     return decodeURIComponent(escape(s));
   };
-  const termAsked = (globalThis.__mbrender || typeof WebAssembly === 'undefined' || typeof fetch === 'undefined' || typeof URL === 'undefined')
-    ? null
-    : (() => {
-        try {
-          const u = new URL('ghostty-vt.wasm', hostScriptSrc);
-          const q = new URL(hostScriptSrc, location.href).search;
-          if (q) u.search = q;
-          return fetch(u)
-            .then((r) => (r.ok && !(r.headers.get('content-type') || '').includes('text/html') ? r.arrayBuffer() : null))
-            .then((b) => {
-              if (!b || b.byteLength < 8) return null;
-              const hdr = new Uint8Array(b, 0, 4);
-              if (hdr[0] !== 0 || hdr[1] !== 0x61 || hdr[2] !== 0x73 || hdr[3] !== 0x6d) return null;
-              return WebAssembly.instantiate(b, {});
-            })
-            .then((res) => {
-              if (!res) return;
-              const x = res.instance.exports;
-              const s = x.ghostty_alloc(0, 4096);
-              if (!s) return;
-              vt = x;
-              vtScratch = s;
-              try {
-                const p = x.ghostty_type_json();
-                const m = new Uint8Array(x.memory.buffer);
-                let e = p;
-                while (m[e] !== 0) e++;
-                const tj = JSON.parse(utf8Decode(m.subarray(p, e)));
-                const lsb = tj?.types?.GhosttyCell?.bits?.wide?.lsb;
-                if (typeof lsb === 'number') vtWideLsb = lsb;
-              } catch (_) {}
-            })
-            .catch(() => {});
-        } catch (_) {
-          return null;
-        }
-      })();
+  function vtInitHandle(t) {
+    if (!vt || t.term) return !!t.term;
+    const c = t.cols > 0 ? t.cols : 1;
+    const r = t.rows > 0 ? t.rows : 1;
+    if (vt.ghostty_terminal_new(0, vtScratch, c, r) !== 0) return false;
+    const term = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    if (vt.ghostty_render_state_new(0, vtScratch) !== 0) {
+      vt.ghostty_terminal_free(term);
+      return false;
+    }
+    const render = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    if (vt.ghostty_render_state_row_iterator_new(0, vtScratch) !== 0) {
+      vt.ghostty_render_state_free(render);
+      vt.ghostty_terminal_free(term);
+      return false;
+    }
+    const rowIt = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    if (vt.ghostty_render_state_row_cells_new(0, vtScratch) !== 0) {
+      vt.ghostty_render_state_row_iterator_free(rowIt);
+      vt.ghostty_render_state_free(render);
+      vt.ghostty_terminal_free(term);
+      return false;
+    }
+    const cells = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    new DataView(vt.memory.buffer).setUint32(vtScratch, WEB_TERM_SCROLLBACK, true);
+    vt.ghostty_terminal_set(term, 28, vtScratch);
+    let mouse = 0, mouseEv = 0;
+    if (vt.ghostty_mouse_encoder_new(0, vtScratch) === 0) {
+      mouse = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+      new Uint8Array(vt.memory.buffer)[vtScratch] = 1;
+      vt.ghostty_mouse_encoder_set(mouse, 5, vtScratch);
+    }
+    if (vt.ghostty_mouse_event_new(0, vtScratch) === 0) {
+      mouseEv = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    }
+    t.term = term; t.render = render; t.rowIt = rowIt; t.cells = cells;
+    t.mouse = mouse; t.mouseEv = mouseEv;
+    if (t.pendingResize) {
+      const [rc, rr, cw, ch] = t.pendingResize;
+      t.pendingResize = null;
+      vt.ghostty_terminal_resize(t.term, rc, rr, cw, ch);
+    }
+    if (t.pendingWrites && t.pendingWrites.length) {
+      const writes = t.pendingWrites;
+      t.pendingWrites = null;
+      for (const chunk of writes) vtWriteRaw(t, chunk);
+    }
+    if (t.pendingScrolls && t.pendingScrolls.length) {
+      const scrolls = t.pendingScrolls;
+      t.pendingScrolls = null;
+      for (const [k, v] of scrolls) vtScrollRaw(t, k, v);
+    }
+    return true;
+  }
+  // Load ghostty-vt.wasm lazily on first terminal open so non-terminal tabs pay zero fetch/WASM memory cost.
+  function ensureVt() {
+    if (vt || vtFailed) return vtLoad;
+    if (globalThis.__mbrender || typeof WebAssembly === 'undefined' || typeof fetch === 'undefined' || typeof URL === 'undefined') {
+      vtFailed = true;
+      return null;
+    }
+    if (!vtLoad) {
+      try {
+        const u = new URL('ghostty-vt.wasm', hostScriptSrc);
+        const q = new URL(hostScriptSrc, location.href).search;
+        if (q) u.search = q;
+        vtLoad = fetch(u)
+          .then((r) => (r.ok && !(r.headers.get('content-type') || '').includes('text/html') ? r.arrayBuffer() : null))
+          .then((b) => {
+            if (!b || b.byteLength < 8) return null;
+            const hdr = new Uint8Array(b, 0, 4);
+            if (hdr[0] !== 0 || hdr[1] !== 0x61 || hdr[2] !== 0x73 || hdr[3] !== 0x6d) return null;
+            return WebAssembly.instantiate(b, {});
+          })
+          .then((res) => {
+            if (!res) { vtFailed = true; return; }
+            const x = res.instance.exports;
+            const s = x.ghostty_alloc(0, 4096);
+            if (!s) { vtFailed = true; return; }
+            vt = x;
+            vtScratch = s;
+            try {
+              const p = x.ghostty_type_json();
+              const m = new Uint8Array(x.memory.buffer);
+              let e = p;
+              while (m[e] !== 0) e++;
+              const tj = JSON.parse(utf8Decode(m.subarray(p, e)));
+              const lsb = tj?.types?.GhosttyCell?.bits?.wide?.lsb;
+              if (typeof lsb === 'number') vtWideLsb = lsb;
+            } catch (_) {}
+            let woke = false;
+            for (const t of terms.values()) {
+              if (!t.term && vtInitHandle(t)) woke = true;
+            }
+            if (woke) H.requestFrame();
+          })
+          .catch(() => { vtFailed = true; });
+      } catch (_) {
+        vtFailed = true;
+        return null;
+      }
+    }
+    return vtLoad;
+  }
 
   function vtModes(t) {
     const dv = new DataView(vt.memory.buffer);
@@ -5459,54 +5588,7 @@
     return m;
   }
 
-  H.termOpen = (cols, rows) => {
-    if (!vt) return 0;
-    const c = cols > 0 ? cols : 1;
-    const r = rows > 0 ? rows : 1;
-    if (vt.ghostty_terminal_new(0, vtScratch, c, r) !== 0) return 0;
-    const term = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
-    if (vt.ghostty_render_state_new(0, vtScratch) !== 0) {
-      vt.ghostty_terminal_free(term);
-      return 0;
-    }
-    const render = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
-    if (vt.ghostty_render_state_row_iterator_new(0, vtScratch) !== 0) {
-      vt.ghostty_render_state_free(render);
-      vt.ghostty_terminal_free(term);
-      return 0;
-    }
-    const rowIt = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
-    if (vt.ghostty_render_state_row_cells_new(0, vtScratch) !== 0) {
-      vt.ghostty_render_state_row_iterator_free(rowIt);
-      vt.ghostty_render_state_free(render);
-      vt.ghostty_terminal_free(term);
-      return 0;
-    }
-    const cells = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
-    new DataView(vt.memory.buffer).setUint32(vtScratch, 16 * 1024 * 1024, true);
-    vt.ghostty_terminal_set(term, 28, vtScratch);
-    let mouse = 0, mouseEv = 0;
-    if (vt.ghostty_mouse_encoder_new(0, vtScratch) === 0) {
-      mouse = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
-      new Uint8Array(vt.memory.buffer)[vtScratch] = 1;
-      vt.ghostty_mouse_encoder_set(mouse, 5, vtScratch);
-    }
-    if (vt.ghostty_mouse_event_new(0, vtScratch) === 0) {
-      mouseEv = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
-    }
-    const id = nextTermId++;
-    terms.set(id, {
-      term, render, rowIt, cells, mouse, mouseEv,
-      dragActive: false, dragX0: 0, dragY0: 0, dragScreenX0: 0, dragScreenY0: 0,
-      mouseSynced: false, mouseButtons: 0,
-      buf: new Uint8Array(8192),
-    });
-    return id;
-  };
-
-  H.termWrite = (id, data) => {
-    const t = terms.get(id);
-    if (!t || !vt || !data || !data.length) return;
+  function vtWriteRaw(t, data) {
     const n = data.length;
     if (n <= 2816) {
       new Uint8Array(vt.memory.buffer).set(data, vtScratch + 1280);
@@ -5519,23 +5601,76 @@
       vt.ghostty_free(0, p, n);
     }
     t.mouseSynced = false;
+  }
+
+  function vtScrollRaw(t, kind, value) {
+    const svAt = vtScratch + 88;
+    const dv = new DataView(vt.memory.buffer);
+    new Uint8Array(vt.memory.buffer).fill(0, svAt, svAt + 24);
+    if (kind === 0) {
+      dv.setInt32(svAt, 2, true);
+      dv.setInt32(svAt + 8, value | 0, true);
+    } else if (kind === 1) {
+      dv.setInt32(svAt, 0, true);
+    } else if (kind === 2) {
+      dv.setInt32(svAt, 1, true);
+    } else if (kind === 3) {
+      dv.setInt32(svAt, 3, true);
+      dv.setUint32(svAt + 8, value > 0 ? value >>> 0 : 0, true);
+    } else {
+      return;
+    }
+    vt.ghostty_terminal_scroll_viewport(t.term, svAt);
+  }
+
+  H.termOpen = (cols, rows) => {
+    const c = cols > 0 ? cols : 1;
+    const r = rows > 0 ? rows : 1;
+    if (!vt && !ensureVt()) return 0;
+    const id = nextTermId++;
+    const t = {
+      term: 0, render: 0, rowIt: 0, cells: 0, mouse: 0, mouseEv: 0,
+      cols: c, rows: r, pendingResize: null, pendingWrites: null, pendingScrolls: null,
+      dragActive: false, dragX0: 0, dragY0: 0, dragScreenX0: 0, dragScreenY0: 0,
+      mouseSynced: false, mouseButtons: 0,
+      buf: new Uint8Array(8192),
+    };
+    if (vt && !vtInitHandle(t)) return 0;
+    terms.set(id, t);
+    return id;
+  };
+
+  H.termWrite = (id, data) => {
+    const t = terms.get(id);
+    if (!t || !data || !data.length) return;
+    if (!vt || !t.term) {
+      if (!t.pendingWrites) t.pendingWrites = [];
+      t.pendingWrites.push(new Uint8Array(data));
+      return;
+    }
+    vtWriteRaw(t, data);
   };
 
   H.termResize = (id, cols, rows, cw, ch) => {
     const t = terms.get(id);
-    if (!t || !vt) return;
-    vt.ghostty_terminal_resize(t.term, cols > 0 ? cols : 1, rows > 0 ? rows : 1, cw > 0 ? cw : 8, ch > 0 ? ch : 16);
+    if (!t) return;
+    const c = cols > 0 ? cols : 1, r = rows > 0 ? rows : 1, w = cw > 0 ? cw : 8, h = ch > 0 ? ch : 16;
+    if (!vt || !t.term) {
+      t.cols = c; t.rows = r; t.pendingResize = [c, r, w, h];
+      return;
+    }
+    vt.ghostty_terminal_resize(t.term, c, r, w, h);
     t.mouseSynced = false;
   };
 
   H.termModes = (id) => {
     const t = terms.get(id);
-    return t && vt ? vtModes(t) : 0;
+    return t && t.term && vt ? vtModes(t) : 0;
   };
 
   H.termFrame = (id, flags) => {
     const t = terms.get(id);
-    if (!t || !vt || vt.ghostty_render_state_update(t.render, t.term) !== 0) return new Uint8Array(0);
+    if (!t || !t.term || !vt || vt.ghostty_render_state_update(t.render, t.term) !== 0) return new Uint8Array(0);
     let dv = new DataView(vt.memory.buffer);
     let m8 = new Uint8Array(vt.memory.buffer);
     if (flags & 1) {
@@ -5746,29 +5881,18 @@
 
   H.termScroll = (id, kind, value) => {
     const t = terms.get(id);
-    if (!t || !vt) return;
-    const svAt = vtScratch + 88;
-    const dv = new DataView(vt.memory.buffer);
-    new Uint8Array(vt.memory.buffer).fill(0, svAt, svAt + 24);
-    if (kind === 0) {
-      dv.setInt32(svAt, 2, true);
-      dv.setInt32(svAt + 8, value | 0, true);
-    } else if (kind === 1) {
-      dv.setInt32(svAt, 0, true);
-    } else if (kind === 2) {
-      dv.setInt32(svAt, 1, true);
-    } else if (kind === 3) {
-      dv.setInt32(svAt, 3, true);
-      dv.setUint32(svAt + 8, value > 0 ? value >>> 0 : 0, true);
-    } else {
+    if (!t) return;
+    if (!vt || !t.term) {
+      if (!t.pendingScrolls) t.pendingScrolls = [];
+      t.pendingScrolls.push([kind, value]);
       return;
     }
-    vt.ghostty_terminal_scroll_viewport(t.term, svAt);
+    vtScrollRaw(t, kind, value);
   };
 
   H.termSelect = (id, kind, x0, y0, x1, y1) => {
     const t = terms.get(id);
-    if (!t || !vt) return 0;
+    if (!t || !t.term || !vt) return 0;
     const selAt = vtScratch + 112;
     if (kind === 0) {
       t.dragActive = false;
@@ -5883,7 +6007,7 @@
 
   H.termText = (id, sel) => {
     const t = terms.get(id);
-    if (!t || !vt) return '';
+    if (!t || !t.term || !vt) return '';
     const selAt = vtScratch + 112;
     if (sel !== 0 && vt.ghostty_terminal_get(t.term, 31, selAt) !== 0) return '';
     // Use formatter for selections if compiled into Wasm; for sel===0 (current viewport) or prebuilt wasm32 without
@@ -5913,7 +6037,7 @@
 
   H.termMouse = (id, action, button, mods, x, y, w, h, cw, ch) => {
     const t = terms.get(id);
-    if (!t || !vt || !t.mouse || !t.mouseEv) return new Uint8Array(0);
+    if (!t || !t.term || !vt || !t.mouse || !t.mouseEv) return new Uint8Array(0);
     if (action !== 2 || !t.mouseSynced) {
       vt.ghostty_mouse_encoder_set_from_terminal(t.mouse, t.term);
       t.mouseSynced = true;
@@ -5955,14 +6079,15 @@
 
   H.termClose = (id) => {
     const t = terms.get(id);
-    if (!t || !vt) return;
+    if (!t) return;
+    terms.delete(id);
+    if (!vt || !t.term) return;
     if (t.mouseEv) vt.ghostty_mouse_event_free(t.mouseEv);
     if (t.mouse) vt.ghostty_mouse_encoder_free(t.mouse);
     vt.ghostty_render_state_row_cells_free(t.cells);
     vt.ghostty_render_state_row_iterator_free(t.rowIt);
     vt.ghostty_render_state_free(t.render);
     vt.ghostty_terminal_free(t.term);
-    terms.delete(id);
   };
 
   H.run = (title, frame, pointer, wheel, key, text) => {
@@ -5989,8 +6114,8 @@
     cb = { frame, pointer, wheel, key: (code, mods) => { modifiersSaid = mods; key(code, mods); }, text };
     window.__mb = cb;
     resize();
-    // (the app's first frame once the host knows what it decodes and whether its terminal Wasm is beside it)
-    (termAsked ? Promise.all([h264Asked, termAsked]) : h264Asked).then(() => {
+    // (the app's first frame once the host knows what it decodes; terminal Wasm loads lazily on first termOpen)
+    h264Asked.then(() => {
       known = true;
       H.requestFrame();
     });

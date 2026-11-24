@@ -380,6 +380,11 @@ export class Data {
 
   // ── the databases ──
 
+  /// Releases idle SQLite page-cache memory across open account databases.
+  shrinkMemory(): void {
+    for (const db of this.#dbs.values()) db.shrinkMemory();
+  }
+
   /// Opens the signed-in accounts' databases (and reads the device's values): what the first view is answered from.
   open(subs: string[]): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {

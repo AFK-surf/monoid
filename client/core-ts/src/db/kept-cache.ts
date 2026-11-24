@@ -216,7 +216,7 @@ export class KeptCacheStore {
     try {
       for (let i = 0; i < unique.length; i += MD_MANY) {
         const some = unique.slice(i, i + MD_MANY);
-        const rows = this.#env.sql.all(`SELECT key, used, json FROM md_kept WHERE station = ? AND key IN (${some.map(() => "?").join(", ")})`, [station, ...some]);
+        const rows = this.#env.sql.all("SELECT m.key, m.used, m.json FROM json_each(?) AS k CROSS JOIN md_kept AS m WHERE m.station = ? AND m.key = k.value", [JSON.stringify(some), station]);
         for (const r of rows) out.set(String(r[0]), { used: Number(r[1]), json: String(r[2]) });
       }
     } catch {

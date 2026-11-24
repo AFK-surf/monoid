@@ -1249,7 +1249,12 @@ export class Views implements Owner {
     if (view.topic === "chats") this.#windows.delete(windowKey(view));
     // (nor the chat: its page tells its first window again before it asks it again)
     if (view.topic === "chat") this.#chatWindows.delete(chatWindowKey(String(view.station), u64(view.thread), str(view.session) ?? null));
-    if (view.topic === "chat") for (const k of [...this.#steadied.keys()]) if (k.startsWith(`shown\u0001${String(view.station)}\u0001`)) this.#steadied.delete(k);
+    if (view.topic === "chat" || view.topic === "chatOutline") {
+      const st = String(view.station);
+      for (const k of [...this.#steadied.keys()]) {
+        if (k.startsWith(`shown\u0001${st}\u0001`) || k.startsWith(`outline\u0001${st}\u0001`) || k.startsWith(`outlineRows\u0001${st}\u0001`)) this.#steadied.delete(k);
+      }
+    }
     for (const w of live?.watches.values() ?? []) w.drop();
   }
 
@@ -2558,7 +2563,13 @@ export class Views implements Owner {
     // The rows each station's records made last time (`keptBetween`), and which of them changed since.
     const listKey = `${scope}\u0001${mine}\u0001${watching}\u0001${visibility}\u0001${windowed}`;
     let keptLists = this.#chatsKept.get(listKey);
-    if (!keptLists) this.#chatsKept.set(listKey, (keptLists = new Map()));
+    if (keptLists) {
+      this.#chatsKept.delete(listKey);
+      this.#chatsKept.set(listKey, keptLists);
+    } else {
+      this.#chatsKept.set(listKey, (keptLists = new Map()));
+      while (this.#chatsKept.size > CHATS_MADE_KEPT) this.#chatsKept.delete(this.#chatsKept.keys().next().value!);
+    }
     let whole = false;
     const gone: J[] = [];
     const come: J[] = [];
@@ -3638,7 +3649,9 @@ export class Views implements Owner {
         const j = items.indexOf(row);
         if (j < 0) {
           days = this.#days(rows);
+          this.#daysKept.delete(key);
           this.#daysKept.set(key, { rows, days, today, offset });
+          while (this.#daysKept.size > 16) this.#daysKept.delete(this.#daysKept.keys().next().value!);
           return days;
         }
         const left = items.filter((_, k) => k !== j);
@@ -3663,7 +3676,9 @@ export class Views implements Owner {
         days[i] = { ...days[i], items: put, at: at(put[0]) };
       }
     } else days = this.#days(rows);
+    this.#daysKept.delete(key);
     this.#daysKept.set(key, { rows, days, today, offset });
+    while (this.#daysKept.size > 16) this.#daysKept.delete(this.#daysKept.keys().next().value!);
     return days;
   }
 
@@ -4446,8 +4461,14 @@ export class Views implements Owner {
   /// `value` as it was for `key` the last time, when it is equal to it: what is made of it can be kept by its identity.
   #steady<T>(key: string, value: T): T {
     const was = this.#steadied.get(key) as T | undefined;
-    if (was !== undefined && equal(was, value)) return was;
+    if (was !== undefined && equal(was, value)) {
+      this.#steadied.delete(key);
+      this.#steadied.set(key, was);
+      return was;
+    }
+    this.#steadied.delete(key);
     this.#steadied.set(key, value);
+    while (this.#steadied.size > 64) this.#steadied.delete(this.#steadied.keys().next().value!);
     return value;
   }
 

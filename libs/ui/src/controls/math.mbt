@@ -14,6 +14,7 @@ fn math_glyph_table() -> Bytes? {
       match @zip.gunzip(math_glyphs()) {
         Some(t) => {
           math_outlines.val = Some(t)
+          math_glyphs_drop()
           Some(t)
         }
         None => None

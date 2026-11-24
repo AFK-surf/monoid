@@ -375,6 +375,16 @@ export class AccountDb {
     }
   }
 
+  /// Releases idle SQLite page-cache memory (best effort; called when the UI leaves view).
+  shrinkMemory(): void {
+    if (this.#closed || this.#inTx) return;
+    try {
+      this.sql.exec("PRAGMA shrink_memory");
+    } catch {
+      // Ignore on custom/mock Sql adapters that do not implement shrink_memory.
+    }
+  }
+
   /// One step of giving unused pages back to the device (schema.ts `giveBackRoomStep`). Returns true while more steps
   /// remain, including when a write transaction is open so the writer commits before vacuum runs.
   giveBackRoomStep(pages?: number, minFree?: number): boolean {

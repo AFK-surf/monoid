@@ -52,7 +52,10 @@ function webSqlError(e: unknown): SqlError {
   return err;
 }
 
-/// An account's database in SQLite's WASM build: statements prepared once and kept.
+/// Most prepared statements kept per database (LRU; oldest finalized when exceeded).
+const MAX_STATEMENTS = 256;
+
+/// An account's database in SQLite's WASM build: statements prepared once and kept (LRU-bounded).
 export class WasmSql implements Sql {
   readonly #db: WasmDb;
   readonly #statements = new Map<string, WasmStmt>();
@@ -65,14 +68,23 @@ export class WasmSql implements Sql {
   /// A statement prepared (reading the schema, so a damaged file fails here first): fails as SqlError.
   #prepare(sql: string): WasmStmt {
     let s = this.#statements.get(sql);
-    if (!s) {
-      try {
-        s = this.#db.prepare(sql);
-      } catch (e) {
-        throw webSqlError(e);
-      }
+    if (s) {
+      this.#statements.delete(sql);
       this.#statements.set(sql, s);
+      return s;
     }
+    try {
+      s = this.#db.prepare(sql);
+    } catch (e) {
+      throw webSqlError(e);
+    }
+    while (this.#statements.size >= MAX_STATEMENTS) {
+      const oldestKey = this.#statements.keys().next().value as string;
+      const oldest = this.#statements.get(oldestKey)!;
+      this.#statements.delete(oldestKey);
+      oldest.finalize();
+    }
+    this.#statements.set(sql, s);
     return s;
   }
 
@@ -366,7 +378,8 @@ export class WebHost implements Host {
         await sqlite.reserve(2);
         const db = sqlite.open(`/${name}.sqlite3`);
         // One worker holds the pool's files (worker.ts): the lock is ours alone; no WAL (no shared memory here).
-        db.exec("PRAGMA locking_mode = EXCLUSIVE; PRAGMA journal_mode = TRUNCATE; PRAGMA synchronous = NORMAL;");
+        // Cap page cache to 4 MiB so WASM linear memory stays bounded.
+        db.exec("PRAGMA locking_mode = EXCLUSIVE; PRAGMA journal_mode = TRUNCATE; PRAGMA synchronous = NORMAL; PRAGMA cache_size = -4096;");
         const sql = new WasmSql(db);
         this.#open.get(name)?.close();
         this.#open.set(name, sql);

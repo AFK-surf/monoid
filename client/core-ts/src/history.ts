@@ -60,8 +60,8 @@ function worded(e: J): J {
 // `presentHistoryUncached` makes the same with nothing kept, what this is held to (history.test.ts).
 
 /// How many inputs, and how many of their characters, `argsOf` keeps.
-const ARGS_KEPT = 4096;
-const ARGS_KEPT_CHARS = 4_000_000;
+const ARGS_KEPT = 2048;
+const ARGS_KEPT_CHARS = 2_000_000;
 const argsKept = new Map<string, Record<string, J> | null>();
 let argsKeptChars = 0;
 /// Off while `presentHistoryUncached` makes a history: nothing kept is read or kept then.
