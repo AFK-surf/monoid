@@ -241,6 +241,12 @@ export class Exporter {
   /// Whether a transcript scan was deferred or truncated by budget and must continue in the next pass.
   #transcriptsPending = false;
   readonly #tfCache = new Map<string, Record<string, number>>();
+  /// Where a transcript sweep cut short by the pass budget goes on, by workspace: the first path it did not get to.
+  readonly #transcriptCursor = new Map<string, string>();
+  /// Workspaces whose paths this sweep has gone through to the end; only their `tr_del`s may be left.
+  readonly #transcriptScanDone = new Set<string>();
+  /// Workspaces this sweep is done with, `tr_del`s too.
+  readonly #transcriptWsDone = new Set<string>();
   readonly #manifestCache = new Map<string, { rootHash: string; leafHashes: string[] }>();
   #manifestLive = new Set<string>();
   readonly #manifestSupersededAt = new Map<string, number>();
@@ -308,10 +314,17 @@ export class Exporter {
     this.#state.exec("DELETE FROM meta WHERE k <> 'after'; DELETE FROM digests; DELETE FROM threads; DELETE FROM sent; DELETE FROM entering; DELETE FROM transcript_files; DELETE FROM transcript_chunk_gc;");
     this.#known = false;
     this.#transcriptsPending = false;
+    this.#forgetSweep();
     this.#tfCache.clear();
     this.#manifestCache.clear();
     this.#manifestLive.clear();
     this.#manifestSupersededAt.clear();
+  }
+
+  #forgetSweep(): void {
+    this.#transcriptCursor.clear();
+    this.#transcriptScanDone.clear();
+    this.#transcriptWsDone.clear();
   }
 
   setPlaces(places: Places): void {
@@ -375,6 +388,7 @@ export class Exporter {
       this.#state.exec("ROLLBACK");
       this.#tfCache.clear();
       this.#manifestCache.clear();
+      this.#forgetSweep();
       throw e;
     }
   }
@@ -1165,14 +1179,27 @@ export class Exporter {
     let truncated = false;
     const parentUnreadableCache = new Map<string, boolean>();
     const ancestorLstatCache = new Map<string, "dir" | "other" | "err">();
-    for (const [ws, foundMap] of byWs) {
+    const byCodeUnits = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+    for (const ws of [...byWs.keys()].sort(byCodeUnits)) {
       if (truncated) break;
+      if (this.#transcriptWsDone.has(ws)) continue;
+      const foundMap = byWs.get(ws)!;
       const unreadableDirs = unreadableDirsByWs.get(ws)!;
       const unreadablePaths = unreadablePathsByWs.get(ws)!;
-      const paths = [...foundMap.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      const paths = [...foundMap.keys()].sort(byCodeUnits);
+      const existingByPath = new Map<string, { room: string | null; size: number; mtime: number }>();
+      for (const row of this.#state.prepare("SELECT path, room, size, mtime FROM transcript_files WHERE ws = ?").all(ws) as { path: string; room: string | null; size: number; mtime: number }[]) {
+        existingByPath.set(row.path, { room: row.room, size: row.size, mtime: row.mtime });
+      }
       const active = new Set<string>();
       let wsTruncated = false;
+      const scanDone = this.#transcriptScanDone.has(ws);
+      const cursor = this.#transcriptCursor.get(ws);
       for (const path of paths) {
+        if (scanDone || (cursor !== undefined && path < cursor)) {
+          active.add(path);
+          continue;
+        }
         let st;
         try {
           st = this.#lstatPath(path);
@@ -1185,7 +1212,7 @@ export class Exporter {
         const size = Number(st.size);
         const mtime = Number(st.mtimeNs / 1_000_000n);
         const mode = Number(st.mode) & 0o777;
-        const existing = this.#state.prepare("SELECT room, size, mtime FROM transcript_files WHERE ws = ? AND path = ?").get(ws, path) as { room: string | null; size: number; mtime: number } | undefined;
+        const existing = existingByPath.get(path);
         if (existing !== undefined && existing.size === size && existing.mtime === mtime && existing.room === room) {
           active.add(path);
           continue;
@@ -1193,6 +1220,7 @@ export class Exporter {
         if (doneFiles > 0 && (doneFiles >= maxFiles || doneBytes >= maxBytes)) {
           truncated = true;
           wsTruncated = true;
+          this.#transcriptCursor.set(ws, path);
           break;
         }
         const chunks: string[] = [];
@@ -1243,13 +1271,31 @@ export class Exporter {
         doneFiles++;
         doneBytes += readBytes;
       }
-      if (!wsTruncated) {
+      const oldPaths = [...existingByPath.keys()].sort(byCodeUnits);
+      if (wsTruncated) {
         let deletedInWs = false;
-        for (const row of this.#state.prepare("SELECT path FROM transcript_files WHERE ws = ? ORDER BY path").all(ws) as { path: string }[]) {
-          if (active.has(row.path) || unreadablePaths.has(row.path) || pathUnderAnyDir(row.path, unreadableDirs)) continue;
-          if (!isPrunedBrainPath(this.#o.dataDir, row.path)) {
+        for (const oldPath of oldPaths) {
+          if (active.has(oldPath) || !isPrunedBrainPath(this.#o.dataDir, oldPath)) continue;
+          if (doneDeletes >= maxDeletes) break;
+          this.#state.prepare("DELETE FROM transcript_files WHERE ws = ? AND path = ?").run(ws, oldPath);
+          deletedInWs = true;
+          say(ws, { tr_del: oldPath });
+          doneDeletes++;
+        }
+        if (deletedInWs) {
+          this.#tfCache.delete(ws);
+          this.#manifestCache.delete(ws);
+        }
+      } else {
+        this.#transcriptCursor.delete(ws);
+        this.#transcriptScanDone.add(ws);
+        let deletedInWs = false;
+        let deletesCut = false;
+        for (const oldPath of oldPaths) {
+          if (active.has(oldPath) || unreadablePaths.has(oldPath) || pathUnderAnyDir(oldPath, unreadableDirs)) continue;
+          if (!isPrunedBrainPath(this.#o.dataDir, oldPath)) {
             const dataRoot = resolve(this.#o.dataDir);
-            const rel = relative(dataRoot, resolve(row.path));
+            const rel = relative(dataRoot, resolve(oldPath));
             if (rel !== "" && !rel.startsWith("..")) {
               const parts = rel.split(sep);
               const ancestors: string[] = [];
@@ -1282,7 +1328,7 @@ export class Exporter {
               if (allRealDirs) {
                 let existsOnDisk = false;
                 try {
-                  this.#lstatPath(row.path);
+                  this.#lstatPath(oldPath);
                   existsOnDisk = true;
                 } catch (e) {
                   if (!isMissingError(e)) continue;
@@ -1312,19 +1358,22 @@ export class Exporter {
           }
           if (doneDeletes >= maxDeletes) {
             truncated = true;
+            deletesCut = true;
             break;
           }
-          this.#state.prepare("DELETE FROM transcript_files WHERE ws = ? AND path = ?").run(ws, row.path);
+          this.#state.prepare("DELETE FROM transcript_files WHERE ws = ? AND path = ?").run(ws, oldPath);
           deletedInWs = true;
-          say(ws, { tr_del: row.path });
+          say(ws, { tr_del: oldPath });
           doneDeletes++;
         }
         if (deletedInWs) {
           this.#tfCache.delete(ws);
           this.#manifestCache.delete(ws);
         }
+        if (!deletesCut) this.#transcriptWsDone.add(ws);
       }
     }
+    if (!truncated) this.#forgetSweep();
     return truncated;
   }
 
