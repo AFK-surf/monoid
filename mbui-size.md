@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [61c98f1de](https://github.com/AFK-surf/monoid/commit/61c98f1de8298a5b6a8e940f35f96778d6bc9b60) feat(providers): add Command Code and Open Design  | 2.78 | 3.74 | 15.15 | 37.35 | 57.65 | 32.7 | 66.59 | 100.57 | 125.67 |
 | [eb460cf48](https://github.com/AFK-surf/monoid/commit/eb460cf482d57905c0b02b24c1b39bb375ac96fd) fix(ui,mbui): hide the quote pill while its words  | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.7 | 66.59 | 100.57 | 129.4 |
 | [51e982cfb](https://github.com/AFK-surf/monoid/commit/51e982cfbcd8bd0824e7861b8c89e3a74881f9e5) fix(station): leave a thread whose chat's station  | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.7 | 66.57 | 100.6 | 122.68 |
 | [b784641b7](https://github.com/AFK-surf/monoid/commit/b784641b76e03e54a96b5d4e27743a662030ad07) fix(ui): bound post-layout re-entry passes in Tree | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.7 | 66.57 | 100.47 | 130.05 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6f91e40d4](https://github.com/AFK-surf/monoid/commit/6f91e40d40284f76d819a6d1135b4f47cf2d09cd) feat(mbui,core-ts): add pull-down search to sub-ch | 2.75 | 3.7 | 14.99 | 37.19 | 57.12 | 32.54 | 66.16 | 100.42 | 120.6 |
 | [f1eaf852b](https://github.com/AFK-surf/monoid/commit/f1eaf852b6cd86ee55e472cb617558a078504507) fix(ui): isolate per-window D3D11 vertex buffers a | 2.75 | 3.7 | 14.97 | 37.17 | 57.06 | 32.54 | 66.16 | 100.42 | 108.37 |
 | [ad527d4f4](https://github.com/AFK-surf/monoid/commit/ad527d4f4ef9047d0475e16afb5b7f28c8d43442) fix(ui): allocate exact CF_UNICODETEXT buffer size | 2.75 | 3.7 | 14.97 | 37.17 | 57.06 | 32.54 | 66.16 | 100.42 | 108.37 |
-| [9a29a9fd0](https://github.com/AFK-surf/monoid/commit/9a29a9fd057e6c16844aef7a764f2e68e6ca88a0) fix(ui): isolate selection scopes and improve tabl | 2.75 | 3.7 | 14.97 | 37.17 | 57.06 | 32.53 | 66.11 | 100.68 | 128.12 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [61c98f1de](https://github.com/AFK-surf/monoid/commit/61c98f1de8298a5b6a8e940f35f96778d6bc9b60) feat(providers): add Command Code and Open Design  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.46 |
 | [eb460cf48](https://github.com/AFK-surf/monoid/commit/eb460cf482d57905c0b02b24c1b39bb375ac96fd) fix(ui,mbui): hide the quote pill while its words  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.41 |
 | [51e982cfb](https://github.com/AFK-surf/monoid/commit/51e982cfbcd8bd0824e7861b8c89e3a74881f9e5) fix(station): leave a thread whose chat's station  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.43 |
 | [b784641b7](https://github.com/AFK-surf/monoid/commit/b784641b76e03e54a96b5d4e27743a662030ad07) fix(ui): bound post-layout re-entry passes in Tree | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.43 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6f91e40d4](https://github.com/AFK-surf/monoid/commit/6f91e40d40284f76d819a6d1135b4f47cf2d09cd) feat(mbui,core-ts): add pull-down search to sub-ch | 0.55 | 0.72 | 2.82 | 3.83 | 7 | 2.07 | 5.74 | 57.38 |
 | [f1eaf852b](https://github.com/AFK-surf/monoid/commit/f1eaf852b6cd86ee55e472cb617558a078504507) fix(ui): isolate per-window D3D11 vertex buffers a | 0.55 | 0.72 | 2.82 | 3.83 | 7 | 2.07 | 5.74 | 57.56 |
 | [ad527d4f4](https://github.com/AFK-surf/monoid/commit/ad527d4f4ef9047d0475e16afb5b7f28c8d43442) fix(ui): allocate exact CF_UNICODETEXT buffer size | 0.55 | 0.72 | 2.82 | 3.83 | 6.99 | 2.07 | 5.74 | 57.38 |
-| [9a29a9fd0](https://github.com/AFK-surf/monoid/commit/9a29a9fd057e6c16844aef7a764f2e68e6ca88a0) fix(ui): isolate selection scopes and improve tabl | 0.55 | 0.72 | 2.82 | 3.83 | 6.99 | 2.07 | 5.74 | 57.51 |
