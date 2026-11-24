@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a2ec761dc](https://github.com/AFK-surf/monoid/commit/a2ec761dc24fcd05963eb01ad28c753c8e5fe511) feat(mbui): pick words and add notes in the PDF vi | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.73 | 130.61 |
 | [cc802ae52](https://github.com/AFK-surf/monoid/commit/cc802ae5243195f5594d7d999e45fbbf3c87cebd) test(station): wait for turn messages and snapshot | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.73 | 130.61 |
 | [522969f64](https://github.com/AFK-surf/monoid/commit/522969f64b9d23e6e84b57c359c80bdb06753976) perf(web,core-ts,ui): bound caches, fix statement/ | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.73 | 130.61 |
 | [d698a546d](https://github.com/AFK-surf/monoid/commit/d698a546dedaf9e5ec935630cc7fd1b91b404a6e) test(station): add black-box packed and memory rea | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.98 | 129.73 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0137c6212](https://github.com/AFK-surf/monoid/commit/0137c6212710357ba77f919d775790e0ac96785e) perf(station): read the sessions waiting for a per | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [e8c5ae383](https://github.com/AFK-surf/monoid/commit/e8c5ae383aeb2bea5739328cde431f1b566a997c) ci(station): run the station's tests in seven slic | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [fab977045](https://github.com/AFK-surf/monoid/commit/fab977045e7869d0f1cbfa5296a51294edbdc119) fix(ui): space a long pick's search off its first  | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
-| [90e217a8e](https://github.com/AFK-surf/monoid/commit/90e217a8e273ca102c9676f1c3372b4291ae3dd1) fix(station): a new session on the MoonBit station | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.58 | 121.18 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a2ec761dc](https://github.com/AFK-surf/monoid/commit/a2ec761dc24fcd05963eb01ad28c753c8e5fe511) feat(mbui): pick words and add notes in the PDF vi | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.46 |
 | [cc802ae52](https://github.com/AFK-surf/monoid/commit/cc802ae5243195f5594d7d999e45fbbf3c87cebd) test(station): wait for turn messages and snapshot | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.43 |
 | [522969f64](https://github.com/AFK-surf/monoid/commit/522969f64b9d23e6e84b57c359c80bdb06753976) perf(web,core-ts,ui): bound caches, fix statement/ | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.44 |
 | [d698a546d](https://github.com/AFK-surf/monoid/commit/d698a546dedaf9e5ec935630cc7fd1b91b404a6e) test(station): add black-box packed and memory rea | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.51 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0137c6212](https://github.com/AFK-surf/monoid/commit/0137c6212710357ba77f919d775790e0ac96785e) perf(station): read the sessions waiting for a per | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.51 |
 | [e8c5ae383](https://github.com/AFK-surf/monoid/commit/e8c5ae383aeb2bea5739328cde431f1b566a997c) ci(station): run the station's tests in seven slic | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.3 |
 | [fab977045](https://github.com/AFK-surf/monoid/commit/fab977045e7869d0f1cbfa5296a51294edbdc119) fix(ui): space a long pick's search off its first  | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.3 |
-| [90e217a8e](https://github.com/AFK-surf/monoid/commit/90e217a8e273ca102c9676f1c3372b4291ae3dd1) fix(station): a new session on the MoonBit station | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.54 |
