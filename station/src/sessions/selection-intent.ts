@@ -40,12 +40,12 @@ const MAX_SELECTION_CHARS = 4_000;
 const MAX_MESSAGE_CHARS = 1_200;
 const MAX_REPLY_CHARS = 8_192;
 
-const SMALL_MODEL_HINTS = ["haiku", "flash", "mini", "nano", "lite"] as const;
+const SMALL_MODEL_HINTS = ["haiku", "luna", "hydrogen", "flash", "mini", "nano", "lite"] as const;
 
 type Candidate = {
   row: SessionRow;
   profile: RunOn;
-  runtime: "claude" | "codex" | "api";
+  runtime: "claude" | "codex" | "agy" | "api";
   model: string | undefined;
   completion: TitleCompletion | null;
 };
@@ -54,17 +54,41 @@ function chars(text: string, max: number): string {
   return [...text].slice(0, max).join("");
 }
 
+function modelPool(profile: RunOn, checkedModels?: string[] | null): string[] {
+  return [...(checkedModels ?? []), ...profile.models, ...(profile.model ? [profile.model] : [])];
+}
+
 /// Picks a haiku-tier model on a Claude-capable profile when one is known, else Claude's built-in `haiku` alias.
 export function pickHaikuModel(profile: RunOn, checkedModels?: string[] | null): string {
-  const pool = [...(checkedModels ?? []), ...profile.models, ...(profile.model ? [profile.model] : [])];
+  const pool = modelPool(profile, checkedModels);
   const explicit = pool.find((m) => m.toLowerCase().includes("haiku"));
   if (explicit) return profile.spelling(explicit) ?? explicit;
   return profile.spelling("haiku") ?? "haiku";
 }
 
+/// Picks a luna/mini-tier model on a Codex-capable profile when one is known.
+export function pickCodexSmallModel(profile: RunOn, checkedModels?: string[] | null): string | undefined {
+  const pool = modelPool(profile, checkedModels);
+  for (const hint of ["luna", "mini", "nano"] as const) {
+    const match = pool.find((m) => m.toLowerCase().includes(hint));
+    if (match) return profile.spelling(match) ?? match;
+  }
+  return undefined;
+}
+
+/// Picks a hydrogen/flash/lite-tier model on an AGY-capable profile when one is known.
+export function pickAgySmallModel(profile: RunOn, checkedModels?: string[] | null): string | undefined {
+  const pool = modelPool(profile, checkedModels);
+  for (const hint of ["hydrogen", "flash", "lite"] as const) {
+    const match = pool.find((m) => m.toLowerCase().includes(hint));
+    if (match) return profile.spelling(match) ?? match;
+  }
+  return undefined;
+}
+
 /// Picks the smallest fast model on a keyed completion profile when its model list names one.
 function pickSmallCompletionModel(profile: RunOn, fallback: string | null, checkedModels?: string[] | null): string | null {
-  const pool = [...(checkedModels ?? []), ...profile.models, ...(profile.model ? [profile.model] : [])];
+  const pool = modelPool(profile, checkedModels);
   for (const hint of SMALL_MODEL_HINTS) {
     const match = pool.find((m) => m.toLowerCase().includes(hint));
     if (match) return match;
@@ -72,16 +96,30 @@ function pickSmallCompletionModel(profile: RunOn, fallback: string | null, check
   return fallback;
 }
 
+type PreferTier = "claude-haiku" | "codex-luna" | "agy-hydrogen" | "api-small" | "fallback";
+
 function candidateFor(
   hub: Hub,
   row: SessionRow,
   profile: RunOn,
   checkedModels: string[] | null | undefined,
-  prefer: "claude-haiku" | "api-small" | "fallback",
+  prefer: PreferTier,
 ): Candidate | null {
   if (prefer === "claude-haiku") {
     if (!profile.runtimes.includes("claude") || !hub.drivers.has("claude")) return null;
     return { row, profile, runtime: "claude", model: pickHaikuModel(profile, checkedModels), completion: null };
+  }
+  if (prefer === "codex-luna") {
+    if (!profile.runtimes.includes("codex") || !hub.drivers.has("codex")) return null;
+    const small = pickCodexSmallModel(profile, checkedModels);
+    if (!small) return null;
+    return { row, profile, runtime: "codex", model: small, completion: null };
+  }
+  if (prefer === "agy-hydrogen") {
+    if (!profile.runtimes.includes("agy") || !hub.drivers.has("agy")) return null;
+    const small = pickAgySmallModel(profile, checkedModels);
+    if (!small) return null;
+    return { row, profile, runtime: "agy", model: small, completion: null };
   }
   if (prefer === "api-small") {
     const small = pickSmallCompletionModel(profile, row.model, checkedModels);
@@ -95,61 +133,64 @@ function candidateFor(
     return { row, profile, runtime: "claude", model: pickHaikuModel(profile, checkedModels), completion: null };
   }
   if (row.runtime === "codex" && profile.runtimes.includes("codex") && hub.drivers.has("codex")) {
-    const small = pickSmallCompletionModel(profile, row.model, checkedModels);
-    const model = small ? (profile.spelling(small) ?? small) : undefined;
+    const small = pickCodexSmallModel(profile, checkedModels);
+    const model = small ?? (row.model ? (profile.spelling(row.model) ?? row.model) : undefined);
     return { row, profile, runtime: "codex", model, completion: null };
+  }
+  if (row.runtime === "agy" && profile.runtimes.includes("agy") && hub.drivers.has("agy")) {
+    const small = pickAgySmallModel(profile, checkedModels);
+    const model = small ?? (row.model ? (profile.spelling(row.model) ?? row.model) : undefined);
+    return { row, profile, runtime: "agy", model, completion: null };
   }
   if (profile.runtimes.includes("claude") && hub.drivers.has("claude")) {
     return { row, profile, runtime: "claude", model: pickHaikuModel(profile, checkedModels), completion: null };
   }
   if (profile.runtimes.includes("codex") && hub.drivers.has("codex")) {
-    const model = row.model ? (profile.spelling(row.model) ?? row.model) : undefined;
+    const model = pickCodexSmallModel(profile, checkedModels) ?? (row.model ? (profile.spelling(row.model) ?? row.model) : undefined);
     return { row, profile, runtime: "codex", model, completion: null };
+  }
+  if (profile.runtimes.includes("agy") && hub.drivers.has("agy")) {
+    const model = pickAgySmallModel(profile, checkedModels) ?? (row.model ? (profile.spelling(row.model) ?? row.model) : undefined);
+    return { row, profile, runtime: "agy", model, completion: null };
   }
   return null;
 }
 
 /// Chooses the fastest lightweight model available for this chat:
-/// 1. Claude (haiku) on a member session's profile,
-/// 2. Claude (haiku) on any usable enabled profile on this station allowed for the session,
-/// 3. Direct keyed chat-completions with a small model (haiku/flash/mini/nano/lite),
-/// 4. Fallback to a member session's own text-only runtime (codex/claude).
+/// 1. Small tier across member profiles first, then other usable profiles on this station:
+///    Claude (haiku), Codex (luna/mini), AGY (hydrogen/flash/lite), keyed API (small models).
+/// 2. Fallback to any text-only runtime (member profile first, then usable station profiles).
 function pickCandidate(hub: Hub, members: SessionRow[]): Candidate | null {
   const active = members.filter((s) => s.archivedAt === null);
   if (active.length === 0) return null;
 
   const memberProfiles: { row: SessionRow; profile: RunOn; models?: string[] | null }[] = [];
+  const seen = new Set<string>();
   for (const row of active) {
     const profile = hub.accounts.profile(row.profile);
     if (!profile || !hub.accounts.allows(row.key, profile)) continue;
     const health = hub.accounts.healthOf(profile.id);
     memberProfiles.push({ row, profile, models: health.check?.models });
-  }
-
-  for (const item of memberProfiles) {
-    const c = candidateFor(hub, item.row, item.profile, item.models, "claude-haiku");
-    if (c) return c;
+    seen.add(profile.id);
   }
 
   const anchor = active[0]!;
+  const stationProfiles: { row: SessionRow; profile: RunOn; models?: string[] | null }[] = [];
   for (const raw of hub.config().profiles) {
-    if (raw.enabled === false) continue;
+    if (raw.enabled === false || seen.has(raw.id)) continue;
     const profile = hub.accounts.profile(raw.id);
     if (!profile || !hub.accounts.allows(anchor.key, profile)) continue;
     const health = hub.accounts.healthOf(profile.id);
     if (!usable(health)) continue;
-    const c = candidateFor(hub, anchor, profile, health.check?.models, "claude-haiku");
-    if (c) return c;
+    stationProfiles.push({ row: anchor, profile, models: health.check?.models });
   }
 
-  for (const item of memberProfiles) {
-    const c = candidateFor(hub, item.row, item.profile, item.models, "api-small");
-    if (c) return c;
-  }
-
-  for (const item of memberProfiles) {
-    const c = candidateFor(hub, item.row, item.profile, item.models, "fallback");
-    if (c) return c;
+  const allProfiles = [...memberProfiles, ...stationProfiles];
+  for (const tier of ["claude-haiku", "codex-luna", "agy-hydrogen", "api-small", "fallback"] as const) {
+    for (const item of allProfiles) {
+      const c = candidateFor(hub, item.row, item.profile, item.models, tier);
+      if (c) return c;
+    }
   }
 
   return null;

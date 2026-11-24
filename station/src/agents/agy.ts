@@ -393,7 +393,7 @@ export function agyEnv(options: OpenOptions): Record<string, string> {
   if (platform.hasKeychain) Object.assign(env, AGY_FILE_TOKENS);
   env.AGY_CLI_DISABLE_AUTO_UPDATE = "1";
   env.STILLFAIL_PEER_HTTP = peerHttpBase(options.mcpUrl);
-  if (options.instructions === "") env.STILLFAIL_REPO_RULES = "0";
+  if (options.instructions === "" || options.textOnly) env.STILLFAIL_REPO_RULES = "0";
   return env;
 }
 

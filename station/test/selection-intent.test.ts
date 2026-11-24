@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { inferSelectionIntent, IntentError, parseIntentAnswer } from "../src/sessions/selection-intent.ts";
 import { newMessage } from "../src/store/store.ts";
-import { Rig, settle } from "./hub-fakes.ts";
+import { FakeDriver, Rig, settle } from "./hub-fakes.ts";
 
 test("parseIntentAnswer reads plain JSON, fenced JSON, and falls back to plain text", () => {
   assert.deepEqual(
@@ -129,6 +129,75 @@ test("inferSelectionIntent uses a keyed chat-completions provider when no Claude
     }
   } finally {
     await new Promise<void>((resolve, reject) => server.close((e) => (e ? reject(e) : resolve())));
+  }
+});
+
+test("inferSelectionIntent falls back to Codex luna when no Claude profile is available", async () => {
+  const r = new Rig();
+  try {
+    r.edit((raw) => {
+      for (const p of raw.profiles) {
+        if (p.runtime === "claude") p.enabled = false;
+        if (p.runtime === "codex") p.models = ["gpt-6", "gpt-6-luna"];
+      }
+    });
+    const [key, thread] = await newSession(r.hub, { runtime: "codex", createdBy: "a@x" });
+    r.store.insertMessage(newMessage(thread.id, "1.1", "agent", "agent", "WAL mode enabled"));
+
+    const pending = inferSelectionIntent(r.hub, thread.id, [r.session(key)], {
+      selection: "WAL mode",
+      lang: "zh",
+    });
+    await settle();
+    const helper = r.codex.last();
+    assert.equal(helper.options.textOnly, true);
+    assert.equal(helper.options.model, "gpt-6-luna");
+    helper.says("SQLite 的预写日志模式，允许读写并发。");
+    helper.complete();
+
+    const result = await pending;
+    assert.equal(result.reply, "SQLite 的预写日志模式，允许读写并发。");
+    assert.equal(result.model, "gpt-6-luna");
+    assert.equal(helper.disposed, true);
+  } finally {
+    await r.close();
+  }
+});
+
+test("inferSelectionIntent falls back to AGY hydrogen when no Claude or Codex profile is available", async () => {
+  const r = new Rig();
+  try {
+    const agy = new FakeDriver("agy");
+    r.hub.drivers.set("agy", agy);
+    r.edit((raw) => {
+      for (const p of raw.profiles) p.enabled = false;
+      raw.profiles.push({
+        id: "ag",
+        runtime: "agy",
+        home: "homes/ag",
+        models: ["gemini-4-neon", "gemini-4-hydrogen"],
+      });
+    });
+    const [key, thread] = await newSession(r.hub, { runtime: "agy", profile: "ag", createdBy: "a@x" });
+    r.store.insertMessage(newMessage(thread.id, "1.1", "agent", "agent", "BEGIN IMMEDIATE avoids lock upgrade deadlock"));
+
+    const pending = inferSelectionIntent(r.hub, thread.id, [r.session(key)], {
+      selection: "BEGIN IMMEDIATE",
+      lang: "zh",
+    });
+    await settle();
+    const helper = agy.last();
+    assert.equal(helper.options.textOnly, true);
+    assert.equal(helper.options.model, "gemini-4-hydrogen");
+    helper.says("事务开始时就获取写锁，避免中途升级锁导致死锁。");
+    helper.complete();
+
+    const result = await pending;
+    assert.equal(result.reply, "事务开始时就获取写锁，避免中途升级锁导致死锁。");
+    assert.equal(result.model, "gemini-4-hydrogen");
+    assert.equal(helper.disposed, true);
+  } finally {
+    await r.close();
   }
 });
 
