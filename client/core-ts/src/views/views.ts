@@ -343,7 +343,7 @@ export function profileRowKey(): string {
 /// station's decorated profile: what a station's rows keep of each (#profileRowsMade).
 const PROFILE_ROW_FIELDS = [
   "id", "name", "email", "runtime", "access", "enabled", "share", "trouble", "checkText", "checkTone", "usedBy", "serves", "workspaces", "machine",
-  "providerMark", "usesText", "kindText", "planText", "quota",
+  "providerMark", "usesText", "kindText", "planText", "quota", "shareable",
 ] as const;
 /// Of an allowance, what a row draws (RowQuota), its windows' `resetsAt` beside (what its refills are said of at read).
 const ROW_QUOTA_FIELDS = ["state", "detail", "creditsText", "windows"] as const;
@@ -368,7 +368,7 @@ function profileRowsOf(shown: J): J {
     }
     return row;
   });
-  return { profiles, sharing: get(shown, "sharing") ?? null, mesh: isObject(get(shown, "mesh")) ? { reached: get(shown, "mesh").reached ?? null } : null };
+  return { profiles, sharing: get(shown, "sharing") ?? null, shareAllowAuto: get(shown, "shareAllowAuto") === true, mesh: isObject(get(shown, "mesh")) ? { reached: get(shown, "mesh").reached ?? null } : null };
 }
 
 /// What a window of a kept row says as it goes out: its refills in words, made of its `resetsAt` and now alone (present.ts
@@ -2085,7 +2085,7 @@ export class Views implements Owner {
         const stations0 = this.#stationsOr(view.scope as string);
         if (stations0 === undefined || !Array.isArray(stations0)) return stations0 as Value | undefined;
         const key = profileRowKey();
-        const listed = workspaceProfiles(stations0.map((s) => ({ station: s.address, id: s.id, name: s.name, online: s.online, joined: s.joined, overview: this.#profileRowsOfStation(s.address, key) })));
+        const listed = workspaceProfiles(stations0.map((s) => ({ station: s.address, id: s.id, name: s.name, online: s.online, joined: s.joined, acceptAutoChats: this.#stationShownOf(s.address).acceptAutoChats.get(), overview: this.#profileRowsOfStation(s.address, key) })));
         const now = this.#core.host.nowMs();
         this.#againIn(HOUR / 4 - (now % (HOUR / 4)));
         const stations = new Map(stations0.map((s) => [s.address, s.online]));
@@ -3695,6 +3695,7 @@ export class Views implements Owner {
       name: s.name,
       online: s.online,
       joined: s.joined,
+      acceptAutoChats: this.#stationShownOf(s.address).acceptAutoChats.get(),
       overview: this.#stationShownOf(s.address).profile.get(),
     })));
     // What the Profile place lists beside them: each up station's own logins it could take as a profile (it read them of
@@ -3715,7 +3716,7 @@ export class Views implements Owner {
     const stations = this.#stationsOr(scope);
     if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
     const key = profileRowKey();
-    const ins = stations.map((s) => ({ station: s.address, id: s.id, name: s.name, online: s.online, joined: s.joined, overview: this.#profileRowsOfStation(s.address, key) }));
+    const ins = stations.map((s) => ({ station: s.address, id: s.id, name: s.name, online: s.online, joined: s.joined, acceptAutoChats: this.#stationShownOf(s.address).acceptAutoChats.get(), overview: this.#profileRowsOfStation(s.address, key) }));
     const listed = workspaceProfiles(ins);
     const c = this.#clock();
     const items = arr(listed.items).map((e) => {

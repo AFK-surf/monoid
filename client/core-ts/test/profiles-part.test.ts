@@ -28,7 +28,8 @@ function madeOfWholes(t: Awaited<ReturnType<typeof held>>["t"], scope: string, c
     const shaped = o === undefined ? null : conformTy("Overview", present.decorate({ topic: "overview", station: s.address }, structuredClone(o), c));
     whole.set(s.address, shaped !== null && "ok" in shaped ? shaped.ok : null);
   }
-  const listed = workspaceProfiles(stations.map((s) => ({ station: s.address, id: s.id, name: s.name, online: s.online, joined: s.joined, overview: whole.get(s.address) })));
+  // (whether each is on the workspace's whitelist: its overview's `autoChats`, as its row says it)
+  const listed = workspaceProfiles(stations.map((s) => ({ station: s.address, id: s.id, name: s.name, online: s.online, joined: s.joined, acceptAutoChats: whole.get(s.address)?.autoChats?.enabled === true, overview: whole.get(s.address) })));
   const machineLogins = stations.flatMap((s) => {
     const logins = s.online ? ((whole.get(s.address)?.machineLogins ?? []) as J[]).filter((l) => l?.offered === true) : [];
     return logins.length > 0 ? [{ station: s.address, stationName: s.name, logins }] : [];
