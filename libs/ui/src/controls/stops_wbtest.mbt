@@ -279,12 +279,17 @@ test "stops: every stop as far from the next, the first and last too, the thumb 
     // (meeting the track's start at the first stop and its end at the last, a stop's middle its own)
     if i == 0 {
       assert_true((tx - x).abs() < 0.5, msg="first stop's thumb at \{tx}, the track at \{x}")
-      // (no fill at the first stop: the track alone, as high as it is)
-      let bars = t.drawn_rects().filter(fn(r) { r.3 == 10.0 && r.2 > 0.0 })
+      // (no fill at the first stop: the track alone, as high as it is, its round end under the thumb's)
+      let bars = t.drawn_rects().filter(fn(r) { r.3 == 10.0 && r.2 > 0.0 && (r.4 & 0xFFL) > 0L })
       assert_eq(bars.length(), 1, msg="\{Repr(bars)}")
+      assert_true(bars[0].0 >= tx + 5.0, msg="track from \{bars[0].0}, the thumb from \{tx}")
     }
     if i == labels.length() - 1 {
       assert_true((tx + tw - x - w).abs() < 0.5, msg="last stop's thumb to \{tx + tw}, the track to \{x + w}")
+      let track = t.drawn_rects().filter(fn(r) { r.3 == 10.0 && r.2 > w / 2.0 })
+      assert_true(track.iter().all(fn(r) { r.0 + r.2 <= tx + tw - 5.0 }), msg="\{Repr(track)} past the thumb to \{tx + tw}")
+      // (the fill on under the thumb: no track seen between the two)
+      assert_true(track.iter().any(fn(r) { (r.4 & 0xFFL) > 0L && r.0 + r.2 >= tx + 5.0 && r.0 + r.2 < x + w - 7.0 }), msg="\{Repr(track)} with the thumb from \{tx}")
     }
     assert_true((tx + tw / 2.0 - middles[i]).abs() < 0.5, msg="stop \{i}: thumb \{Repr(th)}, its name at \{middles[i]}")
   }

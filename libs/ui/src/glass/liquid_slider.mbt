@@ -323,12 +323,16 @@ pub fn liquid_slider_node(
           }
         }
         let thumb_x = fn(tw : Double, progress : Double) { slider_thumb_x_for(w(), tw, progress, eff_flush) }
+        // (a flush thumb meets the track's ends at the first and last stop: the track's round ends drawn in from them by
+        // as much as their own round and a point, so they stay under the thumb's round ends, never peeking past its rim)
+        let ends = if eff_flush { track_h / 2.0 + 1.0 } else { 0.0 }
+        let along = fn() { dmax(0.0, w() - 2.0 * ends) }
         inner.box(fn(track) {
           track
           .over(Is(true))
-          .width(By(fn() { Some(w()) }))
+          .width(By(fn() { Some(along()) }))
           .height(Is(Some(track_h)))
-          .offset(Is((0.0, (thumb_h_px - track_h) / 2.0)))
+          .offset(Is((ends, (thumb_h_px - track_h) / 2.0)))
           .radius(Is(track_h / 2.0))
           .ground(By(fn() {
             match track_color {
@@ -348,12 +352,24 @@ pub fn liquid_slider_node(
           |> ignore
         })
         |> ignore
+        // (how far along the track the fill goes: a flush thumb's under the thumb, from where it starts at the first stop
+        // (none) to its middle at the last, so no fill shows at the first stop and no track between the fill and the
+        // thumb at the last)
+        let filled = fn(n : @view.View) {
+          let at = clamp(dd.progress(n), 0.0, 1.0)
+          if eff_flush {
+            dmax(0.0, middle_at(at) - eff_tw() / 2.0 * (1.0 - at) - ends)
+          } else {
+            middle_at(at)
+          }
+        }
         inner.box(fn(fill) {
           fill
           .over(Is(true))
-          .width(By(fn() { Some(w()) }))
+          .width(By(fn() { Some(along()) }))
           .height(Is(Some(track_h)))
-          .offset(Is((0.0, (thumb_h_px - track_h) / 2.0)))
+          .offset(Is((ends, (thumb_h_px - track_h) / 2.0)))
+          .alpha(By(fn() { if filled(fill) < 0.5 { 0.0 } else { 1.0 } }))
           .radius(Is(track_h / 2.0))
           .ground(By(fn() {
             match fill_color {
@@ -362,18 +378,13 @@ pub fn liquid_slider_node(
             }
           }))
           .ground_drawn(By(fn() {
-            // (a flush thumb's fill up to where the thumb starts, none under it: none at all at the first stop, where
-            // the thumb meets the track's start, and none seen through its lens while it is held)
-            let at = clamp(dd.progress(fill), 0.0, 1.0)
-            let shown = if eff_flush { middle_at(at) - eff_tw() / 2.0 } else { middle_at(at) }
+            let shown = filled(fill)
             let dh = track_held_grow * dmax(0.0, dd.pressed(fill))
-            if shown < 0.5 {
-              { ..@view.ground_as_laid, dw: -w(), dh: -track_h }
-            } else if dh.abs() < 0.001 {
-              { ..@view.ground_as_laid, dw: shown - w() }
+            if dh.abs() < 0.001 {
+              { ..@view.ground_as_laid, dw: shown - along() }
             } else {
               let rr = (track_h + dh) / 2.0
-              { dx: 0.0, dy: -dh / 2.0, dw: shown - w(), dh, corners: Some((rr, rr, rr, rr)) }
+              { dx: 0.0, dy: -dh / 2.0, dw: shown - along(), dh, corners: Some((rr, rr, rr, rr)) }
             }
           }))
           |> ignore
