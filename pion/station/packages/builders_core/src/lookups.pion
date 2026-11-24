@@ -259,7 +259,7 @@ fn lookup_step(
     Ok(false) => ()
     Err(e) => return Err(e)
   }
-  let t = sql_db::int64_to_json(thread)
+  let t = base_codec::json_num(thread.to_double())
   db.tx_err(
     fn(tx_db : sql_db::Db) -> Result[Bool, StepError] {
       match lookup_has_native(tx_db, l) {
@@ -416,7 +416,7 @@ pub fn closed_cards_dispatch(
 ) -> Result[Option[Bool], StepError] {
   match json_get_last(ask, "thread") {
     Some(base_codec::Json::Num(thread, _)) => {
-      match closed_cards_step(db, thread.to_int64(), limit=64) {
+      match closed_cards_step(db, double_to_i64_saturating(thread), limit=64) {
         Ok(done) => Ok(Some(done))
         Err(e) => Err(e)
       }
@@ -432,7 +432,7 @@ pub fn people_since_dispatch(
 ) -> Result[Option[Bool], StepError] {
   match json_get_last(ask, "thread") {
     Some(base_codec::Json::Num(thread, _)) => {
-      match people_since_step(db, thread.to_int64(), limit=64) {
+      match people_since_step(db, double_to_i64_saturating(thread), limit=64) {
         Ok(done) => Ok(Some(done))
         Err(e) => Err(e)
       }

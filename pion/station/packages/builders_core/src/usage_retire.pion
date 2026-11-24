@@ -40,104 +40,117 @@ fn join_strings(items : Array[String], sep : String) -> String {
 }
 
 fn double_floor(x : Double) -> Double {
+  if sql_db::is_nan_or_inf(x) || x >= 4503599627370496.0 || x <= -4503599627370496.0 {
+    return x
+  }
   let i = x.to_int64()
   let d = i.to_double()
   if x < d { d - 1.0 } else { d }
 }
 
 fn double_ceil(x : Double) -> Double {
+  if sql_db::is_nan_or_inf(x) || x >= 4503599627370496.0 || x <= -4503599627370496.0 {
+    return x
+  }
   let i = x.to_int64()
   let d = i.to_double()
   if x > d { d + 1.0 } else { d }
 }
 
 /// One bounded delete of a retired table, by its primary key; the table dropped once empty.
+/// Executed atomically inside a single `db.tx_err(...)` transaction so no concurrent write
+/// can land between an empty DELETE and DROP TABLE.
 pub fn usage_retire_drop_step(db : sql_db::Db, batch : Int = 256) -> Result[Bool, StepError] {
-  match db.first(
-    "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND " + USAGE_RETIRED_TRIGGERS + " LIMIT 1",
-    [],
-  ) {
-    Ok(Some(_)) => return Ok(true)
-    Ok(None) => ()
-    Err(e) => return Err(StepError::Sql(e))
-  }
-  let table = match db.first(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND " +
-    USAGE_RETIRED_TABLES +
-    " ORDER BY name LIMIT 1",
-    [],
-  ) {
-    Ok(Some(row)) => {
-      match sql_db::row_val(row, "name") {
-        base_codec::Json::Str(t) => t
-        _ => return Ok(true)
+  db.tx_err(
+    fn(tx_db : sql_db::Db) -> Result[Bool, StepError] {
+      match tx_db.first(
+        "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND " + USAGE_RETIRED_TRIGGERS + " LIMIT 1",
+        [],
+      ) {
+        Ok(Some(_)) => return Ok(true)
+        Ok(None) => ()
+        Err(e) => return Err(StepError::Sql(e))
       }
-    }
-    Ok(None) => return Ok(true)
-    Err(e) => return Err(StepError::Sql(e))
-  }
-  let qtable = quote_sql_ident(table)
-  let columns = match db.all("PRAGMA table_info(" + qtable + ")", []) {
-    Ok(c) => c
-    Err(e) => return Err(StepError::Sql(e))
-  }
-  let keyed : Array[(Double, String)] = []
-  for i in 0..<columns.length() {
-    let col = columns[i]
-    match sql_db::row_val(col, "pk") {
-      base_codec::Json::Num(p, _) => {
-        if p > 0.0 {
-          let col_name = match sql_db::row_val(col, "name") {
-            base_codec::Json::Str(n) => quote_sql_ident(n)
-            _ => "rowid"
+      let table = match tx_db.first(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND " +
+        USAGE_RETIRED_TABLES +
+        " ORDER BY name LIMIT 1",
+        [],
+      ) {
+        Ok(Some(row)) => {
+          match sql_db::row_val(row, "name") {
+            base_codec::Json::Str(t) => t
+            _ => return Ok(true)
           }
-          keyed.push((p, col_name))
+        }
+        Ok(None) => return Ok(true)
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      let qtable = quote_sql_ident(table)
+      let columns = match tx_db.all("PRAGMA table_info(" + qtable + ")", []) {
+        Ok(c) => c
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      let keyed : Array[(Double, String)] = []
+      for i in 0..<columns.length() {
+        let col = columns[i]
+        match sql_db::row_val(col, "pk") {
+          base_codec::Json::Num(p, _) => {
+            if p > 0.0 {
+              let col_name = match sql_db::row_val(col, "name") {
+                base_codec::Json::Str(n) => quote_sql_ident(n)
+                _ => "rowid"
+              }
+              keyed.push((p, col_name))
+            }
+          }
+          _ => ()
         }
       }
-      _ => ()
-    }
-  }
-  // Stable insertion sort by pk ascending (matching MB `keyed.sort_by(pa.compare(pb))`).
-  for i in 1..<keyed.length() {
-    let cur = keyed[i]
-    let mut j = i - 1
-    while j >= 0 && keyed[j].0 > cur.0 {
-      keyed[j + 1] = keyed[j]
-      j = j - 1
-    }
-    keyed[j + 1] = cur
-  }
-  let keys : Array[String] = []
-  for i in 0..<keyed.length() {
-    keys.push(keyed[i].1)
-  }
-  if keys.length() == 0 {
-    keys.push("rowid")
-  }
-  let key_list = join_strings(keys, ", ")
-  let tuple = if keys.length() == 1 { keys[0] } else { "(" + key_list + ")" }
-  let removed = match db.run(
-    "DELETE FROM " +
-    qtable +
-    " WHERE " +
-    tuple +
-    " IN (SELECT " +
-    key_list +
-    " FROM " +
-    qtable +
-    " LIMIT ?)",
-    [base_codec::json_int(batch)],
-  ) {
-    Ok(n) => n
-    Err(e) => return Err(StepError::Sql(e))
-  }
-  if removed == 0 {
-    match db.exec("DROP TABLE IF EXISTS " + qtable) {
-      Ok(_) => ()
-      Err(e) => return Err(StepError::Sql(e))
-    }
-  }
-  Ok(false)
+      // Stable insertion sort by pk ascending (matching MB `keyed.sort_by(pa.compare(pb))`).
+      for i in 1..<keyed.length() {
+        let cur = keyed[i]
+        let mut j = i - 1
+        while j >= 0 && keyed[j].0 > cur.0 {
+          keyed[j + 1] = keyed[j]
+          j = j - 1
+        }
+        keyed[j + 1] = cur
+      }
+      let keys : Array[String] = []
+      for i in 0..<keyed.length() {
+        keys.push(keyed[i].1)
+      }
+      if keys.length() == 0 {
+        keys.push("rowid")
+      }
+      let key_list = join_strings(keys, ", ")
+      let tuple = if keys.length() == 1 { keys[0] } else { "(" + key_list + ")" }
+      let removed = match tx_db.run(
+        "DELETE FROM " +
+        qtable +
+        " WHERE " +
+        tuple +
+        " IN (SELECT " +
+        key_list +
+        " FROM " +
+        qtable +
+        " LIMIT ?)",
+        [base_codec::json_int(batch)],
+      ) {
+        Ok(n) => n
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      if removed == 0 {
+        match tx_db.exec("DROP TABLE IF EXISTS " + qtable) {
+          Ok(_) => ()
+          Err(e) => return Err(StepError::Sql(e))
+        }
+      }
+      Ok(false)
+    },
+    fn(e : sql_db::SqlError) -> StepError { StepError::Sql(e) },
+  )
 }
 
 /// One batch of at least `batch` calls from before the quarters, or those left, and whole quarters,

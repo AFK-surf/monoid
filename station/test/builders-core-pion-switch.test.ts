@@ -10,6 +10,7 @@
 // 3. When an older `stillfail-pion` binary on disk omits `modes:` from `--version`, all 10 SQLite
 //    modes safely fall back to MoonBit without hanging or looping and log `pion-binary-unsupported-mode`.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -150,6 +151,8 @@ function makeSeed(dir: string, label: string, setup: (store: Store) => void): st
 
 function buildFixtures(dir: string): Fixture[] {
   const allJson = (db: DatabaseSync, sql: string) => JSON.stringify(db.prepare(sql).all());
+  const masterJson = (db: DatabaseSync) =>
+    allJson(db, "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name");
 
   // 1. archive-marks
   const archiveMarksSeed = makeSeed(dir, "archive-marks", (store) => {
@@ -241,7 +244,7 @@ function buildFixtures(dir: string): Fixture[] {
     stopUsageIndexes(store.db);
   });
 
-  // 7. widget-sources
+  // 7. widget-sources (includes malformed attachments so `widget_source_invalid` is populated)
   let widgetThread = 0;
   const widgetSourcesSeed = makeSeed(dir, "widget-sources", (store) => {
     const db = store.db;
@@ -249,7 +252,10 @@ function buildFixtures(dir: string): Fixture[] {
     const put = db.prepare("INSERT INTO entries(thread, n, kind, author_kind, author, at, attachments, letter) VALUES (?, ?, 'message', 'agent', 'a', ?, ?, NULL)");
     const files = (n: number) => JSON.stringify([{ path: `/w/${n}.html`, name: `${n}.html` }]);
     db.exec("BEGIN");
-    for (let n = 1; n <= 160; n++) put.run(widgetThread, n, n, n % 8 === 0 ? files(n) : "[]");
+    for (let n = 1; n <= 160; n++) {
+      const att = n % 8 === 0 ? files(n) : n % 37 === 0 ? "not json" : n % 41 === 0 ? '["{bad"]' : "[]";
+      put.run(widgetThread, n, n, att);
+    }
     db.exec("COMMIT");
     const objs = db.prepare("SELECT type,name FROM sqlite_master WHERE name LIKE 'widget_source_%' AND type IN ('trigger','table')").all() as { type: string; name: string }[];
     for (const type of ["trigger", "table"] as const) {
@@ -302,6 +308,7 @@ function buildFixtures(dir: string): Fixture[] {
         const db = new DatabaseSync(dbPath);
         try {
           return JSON.stringify([
+            masterJson(db),
             allJson(db, "SELECT kind, version, last_rowid, end_rowid, complete FROM archive_mark_meta ORDER BY kind"),
             allJson(db, "SELECT session, position FROM archive_pin_rows ORDER BY session, position"),
             allJson(db, "SELECT thread, position FROM archive_keep_rows ORDER BY thread, position"),
@@ -320,6 +327,7 @@ function buildFixtures(dir: string): Fixture[] {
         const db = new DatabaseSync(dbPath);
         try {
           return JSON.stringify([
+            masterJson(db),
             allJson(db, "SELECT id, version, last_rowid, end_rowid, complete FROM session_binding_meta"),
             allJson(db, "SELECT session, binding_rowid, connect FROM session_binding_rows ORDER BY session, binding_rowid"),
           ]);
@@ -344,8 +352,10 @@ function buildFixtures(dir: string): Fixture[] {
         const db = new DatabaseSync(dbPath);
         try {
           return JSON.stringify([
+            masterJson(db),
             allJson(db, "SELECT version, last_rowid, end_rowid, complete FROM session_count_meta"),
             allJson(db, "SELECT session, connect, ws FROM session_count_seen ORDER BY session"),
+            allJson(db, "SELECT kind, ws, connect, n FROM session_count_groups ORDER BY kind, ws, connect"),
             allJson(db, "SELECT kind, ws, n FROM session_count_totals ORDER BY kind, ws"),
           ]);
         } finally { db.close(); }
@@ -377,6 +387,7 @@ function buildFixtures(dir: string): Fixture[] {
         const db = new DatabaseSync(dbPath);
         try {
           return JSON.stringify([
+            masterJson(db),
             allJson(db, "SELECT ask, session, save FROM signin_save_lookup ORDER BY ask"),
             allJson(db, "SELECT session, status, row, done FROM signin_save_progress ORDER BY session"),
           ]);
@@ -400,6 +411,7 @@ function buildFixtures(dir: string): Fixture[] {
         const db = new DatabaseSync(dbPath);
         try {
           return JSON.stringify([
+            masterJson(db),
             allJson(db, "SELECT thread, author, bucket FROM post_blocks ORDER BY thread, author, bucket"),
             allJson(db, "SELECT thread, cursor, complete FROM post_blocks_coverage ORDER BY thread"),
           ]);
@@ -421,11 +433,12 @@ function buildFixtures(dir: string): Fixture[] {
       snapshot: (dbPath) => {
         const db = new DatabaseSync(dbPath);
         try {
+          const usageTables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'usage%' AND name <> 'usage_counter' ORDER BY name").all() as { name: string }[]).map((r) => r.name);
+          const usageRows = usageTables.map((name) => [name, (db.prepare(`SELECT * FROM "${name}"`).all() as object[]).map((r) => JSON.stringify(r)).sort()]);
           return JSON.stringify([
-            allJson(db, "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'usage%' AND name <> 'usage_counter' ORDER BY name"),
-            allJson(db, "SELECT since FROM usage_15m_meta"),
-            allJson(db, "SELECT COUNT(*) AS n FROM usage WHERE rollup_counted = 0"),
-            allJson(db, "SELECT SUM(calls) AS calls, SUM(input) AS input FROM usage_15m"),
+            masterJson(db),
+            usageTables,
+            usageRows,
           ]);
         } finally { db.close(); }
       },
@@ -440,8 +453,12 @@ function buildFixtures(dir: string): Fixture[] {
       snapshot: (dbPath) => {
         const db = new DatabaseSync(dbPath);
         try {
+          const invalidCount = (db.prepare("SELECT COUNT(*) AS n FROM widget_source_invalid").get() as { n: number }).n;
+          assert.ok(invalidCount > 0, `expected non-empty widget_source_invalid, got ${invalidCount}`);
           return JSON.stringify([
+            masterJson(db),
             allJson(db, "SELECT thread, n, slot, path, at, name FROM widget_source_rows ORDER BY thread, n, slot"),
+            allJson(db, "SELECT thread, n FROM widget_source_invalid ORDER BY thread, n"),
             allJson(db, "SELECT thread, last_n, end_n, complete FROM widget_source_scopes ORDER BY thread"),
           ]);
         } finally { db.close(); }
@@ -458,6 +475,7 @@ function buildFixtures(dir: string): Fixture[] {
         const db = new DatabaseSync(dbPath);
         try {
           return JSON.stringify([
+            masterJson(db),
             allJson(db, "SELECT thread, n FROM card_posts ORDER BY thread, n"),
             allJson(db, "SELECT thread, last_n, end_n, phase FROM card_post_scopes ORDER BY thread"),
           ]);
@@ -475,7 +493,8 @@ function buildFixtures(dir: string): Fixture[] {
         const db = new DatabaseSync(dbPath);
         try {
           return JSON.stringify([
-            allJson(db, "SELECT thread, n, at FROM legacy_closed_cards ORDER BY thread, n"),
+            masterJson(db),
+            allJson(db, "SELECT source_rowid, thread, n, at FROM legacy_closed_cards ORDER BY thread, n"),
             allJson(db, "SELECT thread, last_n, end_n, complete FROM legacy_closed_scopes ORDER BY thread"),
           ]);
         } finally { db.close(); }
@@ -492,7 +511,8 @@ function buildFixtures(dir: string): Fixture[] {
         const db = new DatabaseSync(dbPath);
         try {
           return JSON.stringify([
-            allJson(db, "SELECT thread, n, at, ts FROM legacy_people_time_rows ORDER BY thread, n"),
+            masterJson(db),
+            allJson(db, "SELECT source_rowid, thread, n, at, ts FROM legacy_people_time_rows ORDER BY thread, n"),
             allJson(db, "SELECT thread, last_n, end_n, complete FROM legacy_people_time_scopes ORDER BY thread"),
           ]);
         } finally { db.close(); }
@@ -631,5 +651,175 @@ test("all 10 builders_core modes: real MB default, real Pion switch (env + confi
     assert.equal(unsupportedWarns.length, CORE_MODES.length, `expected 1 deduped fallback warn per mode, got ${unsupportedWarns.length}`);
   } finally {
     hearLines(null);
+  }
+});
+
+const MB_FAIL_PREFIX = /^\S+:\d+:\d+-\d+:\d+@\S+ FAILED: /;
+
+function normalizeErr(res: Record<string, unknown>): Record<string, unknown> {
+  if (typeof res.error === "string") {
+    return { ...res, error: res.error.replace(MB_FAIL_PREFIX, "") };
+  }
+  return res;
+}
+
+async function runBuilderLines(
+  binary: string,
+  mode: ReaderMode,
+  dbPath: string,
+  lines: readonly string[],
+): Promise<Record<string, unknown>[]> {
+  return new Promise((resolveRun, rejectRun) => {
+    const child = spawn(binary, ["--builder", mode, "--db", dbPath], {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout!.on("data", (c: Buffer) => { stdout += c.toString("utf8"); });
+    child.stderr!.on("data", (c: Buffer) => { stderr += c.toString("utf8"); });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      rejectRun(new Error(`builder ${mode} timed out; stderr=${stderr}`));
+    }, 30_000);
+    child.on("error", (err) => { clearTimeout(timer); rejectRun(err); });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      if (signal !== null || code !== 0) {
+        rejectRun(new Error(`builder ${mode} exited code=${code} signal=${signal}; stderr=${stderr}`));
+        return;
+      }
+      try {
+        const out = stdout.split("\n").filter((l) => l.length > 0).map((l) => normalizeErr(JSON.parse(l) as Record<string, unknown>));
+        resolveRun(out);
+      } catch (err) {
+        rejectRun(err);
+      }
+    });
+    for (const line of lines) child.stdin!.write(`${line}\n`);
+    child.stdin!.end();
+  });
+}
+
+test("dual-engine 0-diff regressions: usage-retire large finite float, post-blocks Int64 saturation, and 9-mode dispatch boundaries", async (t) => {
+  const realMb = mbReaderBinary();
+  const explicitPion = process.env.STILLFAIL_PION_READER?.trim();
+  const realPion = pionBinary();
+
+  if (realMb === null) {
+    if (process.env.CI) assert.fail("stillfail-reader binary is required in CI");
+    t.skip("stillfail-reader not built here");
+    return;
+  }
+  if (explicitPion) {
+    assert.ok(realPion !== null, `STILLFAIL_PION_READER is set (${explicitPion}) but resolved to null`);
+  } else if (realPion === null) {
+    t.skip("STILLFAIL_PION_READER / built stillfail-pion binary not present in this environment");
+    return;
+  }
+
+  const dir = freshDir("builders-core-reg-");
+
+  // 1. Astra P1: usage-retire large finite REAL (`since=2e30`, `at=1e30`, `rollup_counted=0`).
+  {
+    const seed = makeSeed(dir, "usage-large-float", (store) => {
+      const of: UsageFor = { turn: null, person: "p", thread: null, profile: "cc" };
+      const call: UsageCall = {
+        id: "big-1", at: 1_000_000, model: "m", subagent: false, fast: false,
+        input: 10, cacheRead: 0, cacheWrite: 0, cacheWriteLong: 0, output: 1, calls: 1, context: 100, window: 1000,
+      };
+      store.insertSession({ key: "big", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w/big", token: "big", ws: "W", createdAt: 0, lastActiveAt: 0 });
+      store.recordUsage("/big", { session: "big", offset: 1, model: "m" }, "claude", [[call, of]]);
+      store.db.exec(`
+        UPDATE usage SET at = 1e30, rollup_counted = 0 WHERE id = 'big-1';
+        UPDATE usage_15m_meta SET since = 2e30 WHERE id = 1;
+      `);
+    });
+    const mbDb = join(dir, "usage-large-mb.db");
+    const pionDb = join(dir, "usage-large-pion.db");
+    copyFileSync(seed, mbDb);
+    copyFileSync(seed, pionDb);
+
+    // Step 1: must return {done:false}, set since=1e30, rollup_counted=1; Step 2: {done:true}, since=null.
+    const mbStep1 = await runBuilderLines(realMb, "usage-retire", mbDb, ["{}"]);
+    const pionStep1 = await runBuilderLines(realPion!, "usage-retire", pionDb, ["{}"]);
+    assert.deepStrictEqual(pionStep1, [{ done: false }]);
+    assert.deepStrictEqual(pionStep1, mbStep1, "usage-retire large float batch 1 response");
+
+    for (const [label, p] of [["mb", mbDb], ["pion", pionDb]] as const) {
+      const db = new DatabaseSync(p);
+      try {
+        const meta = db.prepare("SELECT since FROM usage_15m_meta WHERE id = 1").get() as { since: number | null };
+        const row = db.prepare("SELECT rollup_counted FROM usage WHERE id = 'big-1'").get() as { rollup_counted: number };
+        assert.equal(meta.since, 1e30, `${label}: since after batch 1 must be 1e30`);
+        assert.equal(row.rollup_counted, 1, `${label}: rollup_counted after batch 1 must be 1`);
+      } finally { db.close(); }
+    }
+
+    const mbStep2 = await runBuilderLines(realMb, "usage-retire", mbDb, ["{}"]);
+    const pionStep2 = await runBuilderLines(realPion!, "usage-retire", pionDb, ["{}"]);
+    assert.deepStrictEqual(pionStep2, [{ done: true }]);
+    assert.deepStrictEqual(pionStep2, mbStep2, "usage-retire large float batch 2 response");
+  }
+
+  // 2. Astra P2-1: post-blocks Int64 upper-bound saturation & no-repr binding (`9223372036854775808` and `1e400`).
+  {
+    const seed = makeSeed(dir, "post-blocks-sat", (store) => {
+      const db = store.db;
+      db.exec("UPDATE post_blocks_meta SET fresh = 0");
+      db.prepare("INSERT INTO entries(thread,n,kind,author_kind,author,text,at) VALUES (?,1,'message','agent','a0','t',1)")
+        .run(9223372036854775807n);
+      db.exec("DELETE FROM post_blocks; DELETE FROM post_blocks_coverage;");
+    });
+    const mbDb = join(dir, "pb-sat-mb.db");
+    const pionDb = join(dir, "pb-sat-pion.db");
+    copyFileSync(seed, mbDb);
+    copyFileSync(seed, pionDb);
+
+    const asks = [
+      '{"thread":9223372036854775808,"after":1}',
+      '{"thread":1e400,"after":1}',
+    ];
+    const mbRes = await runBuilderLines(realMb, "post-blocks", mbDb, asks);
+    const pionRes = await runBuilderLines(realPion!, "post-blocks", pionDb, asks);
+    assert.deepStrictEqual(pionRes, mbRes, "post-blocks saturated thread responses must match MB 0-diff");
+
+    const snap = (p: string) => {
+      const db = new DatabaseSync(p);
+      try {
+        const blocks = db.prepare("SELECT * FROM post_blocks ORDER BY thread, author, bucket").all();
+        const cov = db.prepare("SELECT typeof(thread) AS ty, CAST(thread AS TEXT) AS thread, cursor, complete FROM post_blocks_coverage ORDER BY thread").all();
+        assert.equal(blocks.length, 0, "saturated 2^63/1e400 thread must not match INT64_MAX entry");
+        return JSON.stringify({ blocks, cov });
+      } finally { db.close(); }
+    };
+    assert.equal(snap(pionDb), snap(mbDb), "post-blocks saturated thread DB state must match MB 0-diff");
+  }
+
+  // 3. Opus P2-1: Table-driven 9-mode dispatch protocol boundaries (dual-engine 0-diff).
+  {
+    const protoFixtures = buildFixtures(dir);
+    const byMode = new Map(protoFixtures.map((f) => [f.mode, f]));
+    const cases: readonly { mode: ReaderMode; asks: readonly string[] }[] = [
+      { mode: "session-bindings", asks: ['{"scope":"other"}', '{"scope":"all","scope":"other"}'] },
+      { mode: "session-counts", asks: ["{bad json", "123"] },
+      { mode: "signin-save", asks: ["{}", "123"] },
+      { mode: "post-blocks", asks: ['{"thread":1}', '{"thread":"1","after":1}'] },
+      { mode: "usage-retire", asks: ['{"drop":1}', '{"drop":true,"drop":false}'] },
+      { mode: "widget-sources", asks: ['{"thread":"1"}', "{}"] },
+      { mode: "card-posts", asks: ['{"thread":"1"}', "{}"] },
+      { mode: "closed-cards", asks: ['{"thread":"1"}', "{}"] },
+      { mode: "people-since", asks: ['{"thread":"1"}', "{}"] },
+    ];
+    for (const c of cases) {
+      const f = byMode.get(c.mode)!;
+      const mbDb = join(dir, `proto-${c.mode}-mb.db`);
+      const pionDb = join(dir, `proto-${c.mode}-pion.db`);
+      copyFileSync(f.seedPath, mbDb);
+      copyFileSync(f.seedPath, pionDb);
+      const mbOut = await runBuilderLines(realMb, c.mode, mbDb, c.asks);
+      const pionOut = await runBuilderLines(realPion!, c.mode, pionDb, c.asks);
+      assert.deepStrictEqual(pionOut, mbOut, `${c.mode} protocol boundary responses must match MB 0-diff`);
+    }
   }
 });

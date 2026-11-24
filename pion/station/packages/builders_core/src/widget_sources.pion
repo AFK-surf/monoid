@@ -127,7 +127,7 @@ pub fn widget_sources_step(
   if limit < 1 || limit > 128 {
     return Err(StepError::App("widget source batch must be between 1 and 128"))
   }
-  let t = sql_db::int64_to_json(thread)
+  let t = base_codec::json_num(thread.to_double())
   match widget_check(db) {
     Ok(_) => ()
     Err(e) => return Err(e)
@@ -259,7 +259,7 @@ pub fn widget_sources_dispatch(
 ) -> Result[Option[Bool], StepError] {
   match json_get_last(ask, "thread") {
     Some(base_codec::Json::Num(thread, _)) => {
-      match widget_sources_step(db, thread.to_int64(), limit=128) {
+      match widget_sources_step(db, double_to_i64_saturating(thread), limit=128) {
         Ok(done) => Ok(Some(done))
         Err(e) => Err(e)
       }
