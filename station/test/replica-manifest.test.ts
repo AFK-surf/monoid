@@ -1628,3 +1628,68 @@ test("24. R3: PeerPlace/serve restore aborts on FolderPlace.pathOf EACCES/EIO in
     "PeerPlace/serve restore must abort on EACCES instead of treating it as 'not kept here' missing chunk",
   );
 });
+
+test("25. R4: same-to partial <-> full bidirectional superset check rejects conflicting refs and upgrades clean subsets", async () => {
+  const origin = sid("a");
+  const gen = "100-aaaaaaaa";
+  const batch = "0000000001-0000000001-11111111.ndjson.zst";
+  const cCommon = hex64("11", "1");
+  const cUniquePartial = hex64("22", "2");
+  const cUniqueFull = hex64("33", "3");
+
+  // 25a. Source partial (has cUniquePartial) -> destination full (lacks cUniquePartial): MUST return false & preserve source!
+  const fromPartial = new FolderPlace(dataDir("d72a-r4-p2f-from"));
+  const toFull = new FolderPlace(dataDir("d72a-r4-p2f-to"));
+  await fromPartial.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await fromPartial.putFile(HOME, origin, cUniquePartial, Buffer.from("up"));
+  const srcPartialHead = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cUniquePartial]: 2 }, partial: true, to: 2, made: 2000 });
+  await fromPartial.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(srcPartialHead)));
+
+  await toFull.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await toFull.putFile(HOME, origin, cUniqueFull, Buffer.from("uf"));
+  const dstFullHead = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cUniqueFull]: 2 }, to: 2, made: 2001 });
+  await toFull.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(dstFullHead)));
+
+  const mineP = await fromPartial.heldStrict(HOME, origin);
+  const theirsF = await toFull.held(HOME, origin);
+  assert.equal(holdsAll(mineP, theirsF), false, "holdsAll rejects same-to partial -> full when full lacks partial unique chunk");
+  assert.equal(await holdsAllLogical(mineP, theirsF), false, "holdsAllLogical rejects same-to partial -> full when full lacks partial unique chunk");
+  assert.equal(await handOver(fromPartial, toFull, HOME, origin), false, "handOver returns false and preserves source partial");
+
+  // 25b. Source full (has cCommon, cUniqueFull) -> destination partial (has cUniquePartial not in source full):
+  //      MUST NOT call to.put('head'), preserves destination partial head, and returns false!
+  const fromFull = new FolderPlace(dataDir("d72a-r4-f2p-from"));
+  const toPartial = new FolderPlace(dataDir("d72a-r4-f2p-to"));
+  await fromFull.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await fromFull.putFile(HOME, origin, cCommon, Buffer.from("cm"));
+  await fromFull.putFile(HOME, origin, cUniqueFull, Buffer.from("uf"));
+  const srcFullHead = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cCommon]: 2, [cUniqueFull]: 2 }, to: 2, made: 2001 });
+  await fromFull.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(srcFullHead)));
+
+  await toPartial.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await toPartial.putFile(HOME, origin, cUniquePartial, Buffer.from("up"));
+  const dstPartialConflict = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cUniquePartial]: 2 }, partial: true, to: 2, made: 2000 });
+  await toPartial.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(dstPartialConflict)));
+
+  let headPutCalls = 0;
+  const origPut = toPartial.put.bind(toPartial);
+  toPartial.put = async (ws, orig, g, kind, name, bytes) => {
+    if (kind === "head") headPutCalls++;
+    return origPut(ws, orig, g, kind, name, bytes);
+  };
+  assert.equal(await handOver(fromFull, toPartial, HOME, origin), false, "handOver refuses overwriting conflicting same-to partial head");
+  assert.equal(headPutCalls, 0, "must NOT call to.put('head') when source full does not cover destination partial");
+  assert.deepEqual((await toPartial.held(HOME, origin)).gens[0]!.head!.transcriptFiles, { [cUniquePartial]: 2 }, "destination partial head preserved intact");
+
+  // 25c. Clean subset destination partial (only cCommon) -> source full (cCommon + cUniqueFull): upgrades cleanly to full!
+  const toPartialSubset = new FolderPlace(dataDir("d72a-r4-f2p-ok"));
+  await toPartialSubset.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await toPartialSubset.putFile(HOME, origin, cCommon, Buffer.from("cm"));
+  const dstPartialSubset = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cCommon]: 2 }, partial: true, to: 2, made: 2000 });
+  await toPartialSubset.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(dstPartialSubset)));
+
+  assert.equal(await handOver(fromFull, toPartialSubset, HOME, origin), true, "clean subset partial upgrades to full");
+  const upgraded = (await toPartialSubset.held(HOME, origin)).gens[0]!.head!;
+  assert.equal(upgraded.partial, undefined, "upgraded head is full");
+  assert.deepEqual(upgraded.transcriptFiles, { [cCommon]: 2, [cUniqueFull]: 2 });
+});

@@ -1004,20 +1004,44 @@ export async function handOver(from: FolderPlace, to: Place, ws: string, origin:
     }
     // 2. Decide whether to put head independently from batch upload:
     //    NEVER call `to.put("head")` when `to` already holds a full head at `t.head.to >= g.head.to`
-    //    (prevents overwriting a conflicting same-to full head on older peers).
+    //    (prevents overwriting a conflicting same-to full head on older peers); and when upgrading a
+    //    same-to partial head to full, only overwrite when `g.head` strictly covers `t.head` (`mineTf ⊇ theirsTf`).
     const theirsFull = t?.head != null && t.head.partial !== true;
     const mineFull = g.head.partial !== true;
-    const shouldPutHead =
-      t?.head == null ||
-      t.head.to < g.head.to ||
-      (t.head.to === g.head.to && !theirsFull && mineFull);
+    let resolvedMineTf: Record<string, number> | undefined;
+    const getMineTf = async (): Promise<Record<string, number>> => {
+      if (resolvedMineTf !== undefined) return resolvedMineTf;
+      if (g.head!.transcriptManifest !== undefined) {
+        const resolved = await loadTranscriptManifest(g.head!.transcriptManifest, readMine);
+        resolvedMineTf = { ...(g.head!.transcriptFiles ?? {}), ...resolved.files };
+      } else {
+        resolvedMineTf = g.head!.transcriptFiles ?? {};
+      }
+      return resolvedMineTf;
+    };
+    let shouldPutHead = t?.head == null || t.head.to < g.head.to;
+    if (!shouldPutHead && t?.head != null && t.head.to === g.head.to && !theirsFull && mineFull) {
+      if (sameBatches(g.head.batches, t.head.batches) && sameFileMap(g.head.files, t.head.files)) {
+        shouldPutHead = await (async () => {
+          const mineTf = await getMineTf();
+          let theirsTf: Record<string, number>;
+          if (t.head!.transcriptManifest !== undefined) {
+            if (readTheirs === undefined) return false;
+            const resolvedTheirs = await loadTranscriptManifest(t.head!.transcriptManifest, readTheirs);
+            theirsTf = { ...(t.head!.transcriptFiles ?? {}), ...resolvedTheirs.files };
+          } else {
+            theirsTf = t.head!.transcriptFiles ?? {};
+          }
+          return isSubsetFileMap(theirsTf, mineTf);
+        })().catch(() => false);
+      }
+    }
     if (!shouldPutHead) continue;
     // D72a invariant: outgoing wire `put("head")` always sends inline `transcriptFiles` (never `transcriptManifest`),
     // taking the union of inline `transcriptFiles` and `transcriptManifest` for dual-field source heads.
     let wireHead: Head = g.head;
     if (g.head.transcriptManifest !== undefined) {
-      const resolved = await loadTranscriptManifest(g.head.transcriptManifest, readMine);
-      const tf = { ...(g.head.transcriptFiles ?? {}), ...resolved.files };
+      const tf = await getMineTf();
       const { transcriptManifest: _, ...rest } = g.head;
       let hasTf = false;
       for (const _ in tf) {
@@ -1044,12 +1068,10 @@ export function holdsAll(mine: Held, theirs: Held): boolean {
     if (t.head.to < g.head.to) return false;
     if (t.head.to > g.head.to) return true;
     if (!sameBatches(g.head.batches, t.head.batches) || !sameFileMap(g.head.files, t.head.files)) return false;
-    if (g.head.partial !== true || t.head.partial === true) {
-      if (g.head.transcriptManifest !== undefined || t.head.transcriptManifest !== undefined) {
-        return g.head.transcriptManifest !== undefined && g.head.transcriptManifest === t.head.transcriptManifest;
-      }
-      if (!isSubsetFileMap(g.head.transcriptFiles, t.head.transcriptFiles)) return false;
+    if (g.head.transcriptManifest !== undefined || t.head.transcriptManifest !== undefined) {
+      return g.head.transcriptManifest !== undefined && g.head.transcriptManifest === t.head.transcriptManifest;
     }
+    if (!isSubsetFileMap(g.head.transcriptFiles, t.head.transcriptFiles)) return false;
     return true;
   });
 }
@@ -1102,21 +1124,19 @@ export async function holdsAllLogical(
     }
     if (t.head.to === g.head.to) {
       if (!sameBatches(g.head.batches, t.head.batches) || !sameFileMap(g.head.files, t.head.files)) return false;
-      if (g.head.partial !== true || t.head.partial === true) {
-        let theirsTf: Record<string, number>;
-        if (t.head.transcriptManifest !== undefined) {
-          if (opts.readTheirs === undefined) return false;
-          try {
-            const resolvedTheirs = await loadTranscriptManifest(t.head.transcriptManifest, opts.readTheirs);
-            theirsTf = { ...(t.head.transcriptFiles ?? {}), ...resolvedTheirs.files };
-          } catch {
-            return false;
-          }
-        } else {
-          theirsTf = t.head.transcriptFiles ?? {};
+      let theirsTf: Record<string, number>;
+      if (t.head.transcriptManifest !== undefined) {
+        if (opts.readTheirs === undefined) return false;
+        try {
+          const resolvedTheirs = await loadTranscriptManifest(t.head.transcriptManifest, opts.readTheirs);
+          theirsTf = { ...(t.head.transcriptFiles ?? {}), ...resolvedTheirs.files };
+        } catch {
+          return false;
         }
-        if (!isSubsetFileMap(mineTf, theirsTf)) return false;
+      } else {
+        theirsTf = t.head.transcriptFiles ?? {};
       }
+      if (!isSubsetFileMap(mineTf, theirsTf)) return false;
     }
   }
   for (const f of mine.files) {
