@@ -60,8 +60,9 @@ fn signin_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core
 }
 
 ///|
-/// The card (signin_card's, as nodes) in `v`: its title and the agent's reason, and at its foot what is answered now
-/// (signin_foot_node) where it is the viewer's and a core is there; else whose it is, where the card says.
+/// The card (signin_card's, as nodes) in `v`: its title and the agent's reason, a top-right × to cancel while it is
+/// open and the viewer's (`signin.deny`), and at its foot what is answered now (signin_foot_node) where it is the
+/// viewer's and a core is there; else whose it is, where the card says.
 fn signin_card_node(
   v : @view.View,
   here : MessageNodeHere,
@@ -70,10 +71,47 @@ fn signin_card_node(
   card : () -> Card?,
 ) -> Unit {
   @sf.ask_card_node(v, fn(k) {
-    @sf.ask_words_node(k, fn() { @sf.t("android-misc.signin.title", args=[("site", ask().site)]) }, fn() { ask().reason })
-    |> ignore
     let answers = fn() { core is Some(_) && mine_to_node(here, card().map(fn(c) { c.assignee }).unwrap_or("")) }
     let who = fn() { card().bind(fn(c) { c.assignee_text }).unwrap_or("") }
+    let can_cancel = fn() { answers() && ask().status != "done" }
+    k.box(fn(what) {
+      @sf.style_node(what, fn() { @sf.ask_what })
+      what.box(fn(head) {
+        @sf.style_node(head, fn() { signin_head })
+        head.box(fn(t) {
+          @sf.style_node(t, fn() { signin_head_words }, in_row=true)
+          t
+          .words_runs(
+            By(fn() {
+              [@ui.span(@sf.t("android-misc.signin.title", args=[("site", ask().site)]), weight=600, color=@sf.theme().p.text)]
+            }),
+          )
+          .words_look(By(fn() { @ui.style_words(@sf.ask_title) }))
+          .ink(By(fn() { @ui.style_ink(@sf.ask_title) }))
+          |> ignore
+        })
+        |> ignore
+        head.show(can_cancel, fn(s) {
+          match core {
+            Some(core) => {
+              let id = fn() { ask().id }
+              let busy = fn() { signin_steps.get(id()).unwrap_or("") == "denying" }
+              let disabled = fn() {
+                let st = signin_steps.get(id()).unwrap_or("")
+                st == "denying" || st == "sending"
+              }
+              signin_cancel_node(s, here.tips, busy, disabled, fn() {
+                signin_deny(core, here.station, @signals.untracked(ask))
+              })
+            }
+            None => ()
+          }
+        })
+      })
+      |> ignore
+      what.show(fn() { ask().reason != "" }, fn(n) { @sf.words_node(n, fn() { ask().reason }, fn() { @sf.ask_note }) |> ignore })
+    })
+    |> ignore
     k.show(fn() { answers() || who() != "" }, fn(s) {
       s.pick(answers, fn(p, yes) {
         match (yes, core) {
@@ -204,6 +242,9 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
   // (a code's field: what is typed in it sent by Enter or 继续, then emptied)
   let field = @ui.Field::new()
   let send = fn(words : String) {
+    if @signals.untracked(fn() { step() == "sending" || step() == "denying" }) {
+      return
+    }
     let code = words.trim(chars=" ").to_owned()
     if code != "" {
       field.set("")
@@ -240,22 +281,37 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
             tone : @sf.Tone,
             busy : () -> Bool,
             disabled : () -> Bool,
-          ) -> (@view.View) -> Unit {
-            fn(at) { @sf.button_node(at, label, press, tone~, busy~, disabled~, card_words=true) |> ignore }
+          ) -> (@view.View, Bool) -> Unit {
+            fn(at, across) { @sf.button_node(at, label, press, tone~, busy~, disabled~, across~, card_words=!across) |> ignore }
           }
           let never = fn() { false }
           let sending = fn() { step() == "sending" }
+          let denying = fn() { step() == "denying" }
+          let busy_end = fn() { sending() || denying() }
           let keep_chooser = fn(at : @view.View) {
             let keep = fn() { signin_keep.get(id()).unwrap_or(true) }
             let words = fn(k : Bool) { @sf.t(if k { "android-misc.signin.keep" } else { "android-misc.signin.keepNot" }) }
-            @sf.chooser_button_node(
+            @sf.foot_chooser_node(
               at,
               fn() { words(keep()) },
               fn() { [("keep", words(true)), ("not", words(false))] },
               fn() { if keep() { "keep" } else { "not" } },
               fn(k) { signin_keep[now().id] = k == "keep" },
+              disabled=busy_end,
+            )
+            |> ignore
+          }
+          let keep_over_chooser = fn(at : @view.View) {
+            let keep = fn() { signin_keep.get(id()).unwrap_or(true) }
+            let words = fn(k : Bool) { @sf.t(if k { "android-misc.signin.keep" } else { "android-misc.signin.keepNot" }) }
+            @sf.capsule_chooser_node(
+              at,
+              fn() { words(keep()) },
+              fn() { [("keep", words(true)), ("not", words(false))] },
+              fn() { if keep() { "keep" } else { "not" } },
+              fn(k) { signin_keep[now().id] = k == "keep" },
+              disabled=busy_end,
               side=Top,
-              card_words=true,
             )
             |> ignore
           }
@@ -285,14 +341,14 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
                   fn() { send(field.text()) },
                   Primary,
                   sending,
-                  fn() { field.text().trim(chars=" ").to_owned() == "" || sending() },
+                  fn() { field.text().trim(chars=" ").to_owned() == "" || busy_end() },
                 ),
-                button(fn() { @sf.t("android-misc.signin.openScreen") }, screen, Ghost, never, never),
+                button(fn() { @sf.t("android-misc.signin.openScreen") }, screen, Plain, never, denying),
               ]
             Person =>
               [
-                button(fn() { @sf.t("android-misc.signin.openScreen") }, screen, Primary, never, never),
-                button(fn() { @sf.t("android-misc.signin.doneSelf") }, fn() { signin_self(core, station, now(), true) }, Ghost, never, never),
+                button(fn() { @sf.t("android-misc.signin.openScreen") }, screen, Primary, never, denying),
+                button(fn() { @sf.t("android-misc.signin.doneSelf") }, fn() { signin_self(core, station, now(), true) }, Plain, never, denying),
               ]
             Choosing =>
               [
@@ -302,11 +358,10 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
                     signin_stop(now().id)
                     signin_self(core, station, now(), false)
                   },
-                  Ghost,
+                  Plain,
                   never,
-                  sending,
+                  busy_end,
                 ),
-                keep_chooser,
               ]
             Asking(manager) => {
               let asking = fn() {
@@ -315,14 +370,14 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
                   _ => false
                 }
               }
-              let parts = if manager {
+              if manager {
                 [
                   button(
                     fn() { @sf.t(if @hostapi.passwords() { "android-misc.signin.withOp" } else { "android-misc.signin.withAuto" }) },
                     fn() { signin_start(core, station, now()) },
                     Primary,
                     asking,
-                    asking,
+                    fn() { asking() || denying() },
                   ),
                   // (while 1Password is asked too: it is let go of then)
                   button(
@@ -331,25 +386,90 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
                       signin_stop(now().id)
                       signin_self(core, station, now(), false)
                     },
-                    Ghost,
+                    Plain,
                     never,
-                    sending,
+                    busy_end,
                   ),
                 ]
               } else {
-                [button(fn() { @sf.t("android-misc.signin.onScreen") }, fn() { signin_self(core, station, now(), false) }, Primary, never, never)]
+                [button(fn() { @sf.t("android-misc.signin.onScreen") }, fn() { signin_self(core, station, now(), false) }, Primary, never, denying)]
               }
-              parts.push(keep_chooser)
-              parts
             }
           }
-          // (each line over the one before it, the first at the foot: the old ask_buttons')
-          @sf.ask_buttons_node(col, fn(f) {
-            for part in parts {
-              part(f)
-            }
-          })
-          |> ignore
+          let has_keep = match kind {
+            Choosing | Asking(_) => true
+            _ => false
+          }
+          if !has_keep {
+            // (each line over the one before it, the first at the foot: the old ask_buttons')
+            @sf.ask_buttons_node(col, fn(f) {
+              for part in parts {
+                part(f, false)
+              }
+            })
+            |> ignore
+          } else {
+            // (the first that has the room whole: keep_chooser across from the buttons at the card's end corner,
+            // concentric with it as phone_ask_node and vault_ask_node do; else on its own line over the buttons, with
+            // two pills filling the bottom width cleanly across both foot corners, or stacked when even tighter)
+            col.box(fn(r) {
+              r.width_share(Is(1.0)).row(Is(true)).one_of(Is(true)) |> ignore
+              r.box(fn(f) {
+                @sf.style_node(f, fn() { @sf.ask_foot_chosen_end() }, in_row=true)
+                f.wraps(By(fn() { Some(@sf.ask_foot_lines()) }), reverse=true) |> ignore
+                f.box(fn(g) {
+                  @sf.style_node(g, fn() { @sf.ask_foot })
+                  for part in parts {
+                    part(g, false)
+                  }
+                })
+                |> ignore
+                keep_chooser(f)
+              })
+              |> ignore
+              if parts.length() == 2 {
+                r.box(fn(w) {
+                  w.width_share(Is(1.0)) |> ignore
+                  w.box(fn(o) {
+                    @sf.style_node(o, fn() { signin_over_keep_plain })
+                    keep_over_chooser(o)
+                  })
+                  |> ignore
+                  w.box(fn(f) {
+                    @sf.style_node(f, fn() { @sf.ask_foot.then(@sf.foot_reach(@sf.button_height())).then(signin_foot_fill) })
+                    f.box(fn(cell) {
+                      cell.grow(Is(1.0)) |> ignore
+                      (parts[0])(cell, true)
+                    })
+                    |> ignore
+                    f.box(fn(cell) {
+                      cell.grow(Is(1.0)) |> ignore
+                      (parts[1])(cell, true)
+                    })
+                    |> ignore
+                  })
+                  |> ignore
+                })
+                |> ignore
+              }
+              r.box(fn(w) {
+                w.width_share(Is(1.0)) |> ignore
+                w.box(fn(o) {
+                  @sf.style_node(o, fn() { signin_over_keep_plain })
+                  keep_over_chooser(o)
+                })
+                |> ignore
+                @sf.ask_buttons_node(w, fn(f) {
+                  for part in parts {
+                    part(f, false)
+                  }
+                })
+                |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
+          }
         })
         |> ignore
       })
@@ -357,6 +477,70 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
   })
   |> ignore
 }
+
+///|
+/// A sign-in card's header: its title beside the top-right cancel ×.
+// kept across runs: a value (no field of it changes)
+let signin_head : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
+
+///|
+/// The title inside the sign-in card's header row.
+// kept across runs: a value (no field of it changes)
+let signin_head_words : @ui.Style = @ui.style(w=@sf.grow)
+
+///|
+/// Top-right cancel × (28×28, concentric with the card's corner at 12px from top and right, matching foot_chooser_node's
+/// 12px right inset at the bottom-right corner).
+let signin_cancel_side : Double = 28.0
+
+///|
+let signin_cancel_off : Double = @ui.capsule_in(@sf.card_corner, signin_cancel_side) - @sf.card_pad
+
+///|
+// kept across runs: a value (no field of it changes)
+let signin_cancel_style : @ui.Style = @ui.css("w=S7 h=S7 radius=Full align=ACenter justify=JCenter hovered{bg=Hover}").then(
+  @ui.style(mt=@sf.room_of(signin_cancel_off), mr=@sf.room_of(signin_cancel_off)),
+)
+
+///|
+// kept across runs: a value (no field of it changes)
+let signin_cancel_lit : @ui.Style = signin_cancel_style.then(@ui.css("bg=Hover"))
+
+///|
+/// Cancel × in the card's top-right corner, spinning while `signin.deny` is in flight.
+fn signin_cancel_node(
+  h : @view.View,
+  tips : @sf.TipLayer,
+  busy : () -> Bool,
+  disabled : () -> Bool,
+  press : () -> Unit,
+) -> Unit {
+  let label = fn() { @sf.t("android-misc.signin.cancel") }
+  let box = @sf.action_box_node(h, label, fn(_) { press() }, disabled~, fn(b) {
+    @sf.style_node(b, fn() { if @sf.lit_node(b) && !disabled() { signin_cancel_lit } else { signin_cancel_style } }, in_row=true)
+    b.pick(busy, fn(m, spins) {
+      if spins {
+        @sf.spinner_node(m, size=14.0) |> ignore
+      } else {
+        @sf.icon_node(m, "close", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+      }
+    })
+  })
+  @sf.tip_node(tips, box, label) |> ignore
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let signin_foot_fill : @ui.Style = @ui.css("w=Full")
+
+///|
+/// The keep chooser above the buttons on a narrow card: its label aligned directly with the card's title (offset left by
+/// chooser_x = 8px so its words start at card_pad).
+let signin_over_keep_off : Double = -8.0
+
+///|
+// kept across runs: a value (no field of it changes)
+let signin_over_keep_plain : @ui.Style = @ui.css("row mb=S2").then(@ui.style(ml=@sf.room_of(signin_over_keep_off)))
 
 ///|
 /// A sign-in's foot: what is on it 14 apart (a card's), across the card.

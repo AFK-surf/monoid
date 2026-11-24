@@ -141,6 +141,7 @@ fn signin_cases() -> Array[SignInCase] {
     { name: "not kept", post: signin_post_with(more={ "status": s("done"), "keep": Json::boolean(false) }), host: NoManager, presses: [], fails: false },
     { name: "done", post: signin_post_with(more={ "status": s("done"), "keep": Json::boolean(true) }), host: NoManager, presses: [], fails: false },
     { name: "denied", post: signin_post_with(more={ "status": s("denied") }), host: NoManager, presses: [], fails: false },
+    { name: "withdrawn", post: signin_post_with(more={ "status": s("withdrawn") }), host: NoManager, presses: [], fails: false },
     { name: "expired", post: signin_post_with(more={ "status": s("expired") }), host: NoManager, presses: [], fails: false },
     { name: "ended", post: signin_post_with(more={ "status": s("ended") }), host: NoManager, presses: [], fails: false },
   ]
@@ -205,8 +206,8 @@ fn signin_act_new(
   m : Message,
   h : SignInHost,
   w : Double,
-  act : (@ui.Tester) -> Unit,
-) -> (Array[String], @ui.Tester) {
+  act : (@ui.Tester) -> Unit raise,
+) -> (Array[String], @ui.Tester) raise {
   let now : Array[(String, Json)] = []
   let t = card_new(w, card_src("chat-signin", calls=now), fn() { m }, begun=signin_host(h))
   t.run_for(@ui.move_most_ms)
@@ -222,11 +223,18 @@ fn signin_press(t : @ui.Tester, words : String) -> Unit {
 }
 
 ///|
+/// The card's top-right cancel × pressed, then its moment.
+fn signin_press_cancel(t : @ui.Tester) -> Unit raise {
+  t.click(Button, label="取消登录")
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
 test "a sign-in on its card, made once as nodes: on screen, signin.self; 1Password's login picked, its account and password sent with signin.fill, kept or not as chosen; the autofill's login as it comes; a code typed, by 继续 and by Enter; the person's step said done; signed in, kept by vault.approve once" {
   let none = signin_post_with()
   let op = OnePassword(signin_two_logins, false, false)
   let s = fn(v : String) { Json::string(v) }
-  let cases : Array[(String, Message, SignInHost, (@ui.Tester) -> Unit, String)] = [
+  let cases : Array[(String, Message, SignInHost, (@ui.Tester) -> Unit raise, String)] = [
     ("on screen", none, NoManager, fn(t) { signin_press(t, "在画面中登录") }, "signin.self"),
     ("1Password, the second login", none, op, fn(t) {
       signin_press(t, "用 1Password 登录")
@@ -268,6 +276,28 @@ test "a sign-in on its card, made once as nodes: on screen, signin.self; 1Passwo
     ("the person's step", signin_post_with(more={ "status": s("person"), "why": s("blocked") }), NoManager, fn(t) {
       signin_press(t, "我已登录")
     }, "signin.self"),
+    ("cancel from asking (no manager)", none, NoManager, fn(t) raise { signin_press_cancel(t) }, "signin.deny"),
+    ("cancel from asking (1Password)", none, op, fn(t) raise { signin_press_cancel(t) }, "signin.deny"),
+    ("cancel while 1Password slow", none, OnePassword(signin_two_logins, true, false), fn(t) raise {
+      signin_press(t, "用 1Password 登录")
+      signin_press_cancel(t)
+    }, "signin.deny"),
+    ("cancel from choosing", none, op, fn(t) raise {
+      signin_press(t, "用 1Password 登录")
+      signin_press_cancel(t)
+    }, "signin.deny"),
+    ("cancel while filling", signin_post_with(more={ "status": s("filling") }), NoManager, fn(t) raise {
+      signin_press_cancel(t)
+    }, "signin.deny"),
+    ("cancel from code", signin_post_with(more={ "status": s("code") }), NoManager, fn(t) raise {
+      signin_press_cancel(t)
+    }, "signin.deny"),
+    ("cancel from person", signin_post_with(more={ "status": s("person"), "why": s("blocked") }), NoManager, fn(t) raise {
+      signin_press_cancel(t)
+    }, "signin.deny"),
+    ("cancel from left", signin_post_with(more={ "status": s("left") }), NoManager, fn(t) raise {
+      signin_press_cancel(t)
+    }, "signin.deny"),
     ("saving", signin_post_with(more={ "status": s("done"), "keep": Json::boolean(true), "save": s("r-save") }), NoManager, fn(t) {
       t.run_for(@ui.move_most_ms)
     }, "vault.approve"),
@@ -449,4 +479,54 @@ test "sign-in card reads username, password and inline TOTP from one op item get
   assert_eq(text(login, "password"), "s3cret")
   assert_eq(text(login, "code"), "246810")
   @ui.fake_op.val = None
+}
+
+///|
+test "cancelling a sign-in card stops 1Password, disables buttons while in flight, recovers on error, and settles on denied or withdrawn" {
+  @sf.presenters_reset()
+  let calls : Array[(String, Json)] = []
+  let fail_deny = Ref(true)
+  let base = card_src("chat-signin", calls~)
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      (base.call)(name, params, done)
+      if name == "signin.deny" && fail_deny.val {
+        done(Err(Json::string("the sign-in is done already")))
+      }
+    },
+  }
+  let m = @signals.signal(signin_post_with())
+  let t = card_new(760.0, src, fn() { m.get() }, begun=signin_host(OnePassword(signin_two_logins, true, false)))
+  t.run_for(@ui.move_most_ms)
+  // Start 1Password (pending), then cancel: op is stopped, error recovers button state
+  signin_press(t, "用 1Password 登录")
+  assert_true(card_has(t, "正在问 1Password…"))
+  t.click(Button, label="取消登录")
+  t.run_for(@ui.move_most_ms)
+  assert_false(card_has(t, "正在问 1Password…"))
+  assert_eq(calls.filter(fn(c) { c.0 == "signin.deny" }).length(), 1)
+  assert_false(t.get(Button, label="取消登录").disabled)
+  assert_false(t.get(Button, label="用 1Password 登录").disabled)
+  // Next cancel stays in flight: buttons disable until the station settles the card
+  fail_deny.val = false
+  t.click(Button, label="取消登录")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(calls.filter(fn(c) { c.0 == "signin.deny" }).length(), 2)
+  assert_true(t.get(Button, label="取消登录").disabled)
+  assert_true(t.get(Button, label="用 1Password 登录").disabled)
+  assert_true(t.get(Button, label="在画面中登录").disabled)
+  // Settled as denied: card collapses to outcome line
+  m.set(signin_post_with(more={ "status": Json::string("denied") }))
+  t.run_for(@ui.move_most_ms)
+  assert_true(card_has(t, "已取消登录 github.com"))
+  card_audit(t, "denied outcome", 0)
+  // Settled as withdrawn by agent: card collapses to withdrawn outcome line
+  let m2 = @signals.signal(signin_post_with())
+  let t2 = card_new(760.0, card_src("chat-signin"), fn() { m2.get() }, begun=signin_host(NoManager))
+  t2.run_for(@ui.move_most_ms)
+  m2.set(signin_post_with(more={ "status": Json::string("withdrawn") }))
+  t2.run_for(@ui.move_most_ms)
+  assert_true(card_has(t2, "agent 已撤回登录 github.com"))
+  card_audit(t2, "withdrawn outcome", 0)
 }

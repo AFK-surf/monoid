@@ -561,6 +561,8 @@ android-misc.signin.withAuto
 android-misc.signin.onScreen
 android-misc.signin.openScreen
 android-misc.signin.doneSelf
+android-misc.signin.cancel
+android-misc.signin.cancelWhat
 android-misc.signin.keep
 android-misc.signin.keepNot
 android-misc.signin.filling
@@ -582,6 +584,7 @@ android-misc.signin.outcome.done
 android-misc.signin.outcome.kept
 android-misc.signin.outcome.notKept
 android-misc.signin.outcome.denied
+android-misc.signin.outcome.withdrawn
 android-misc.signin.outcome.expired
 android-misc.signin.outcome.ended
 android-misc.screen.passkey.offer
