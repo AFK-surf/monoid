@@ -5,8 +5,9 @@
 // is compressed by and the zstd frame's bytes aside); a copy taken back by it makes the same database, files and
 // outcome as one taken back by reference/replica-restore.ts, from either's copy.
 import assert from "node:assert/strict";
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
+import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
@@ -454,4 +455,91 @@ test("a copy taken back by the MoonBit program makes what restore.ts makes, from
   // nothing waiting: nothing said
   assert.equal(await takeBackSoon(pending[1]!.to, join(pending[1]!.to, "stillfail.db"), 9, binary!), null);
   made.store.close();
+});
+
+// A level of a first copy asks where every file a place lacks is (246k transcript chunks on a real station): each hash
+// looked at once, the files table read once, each candidate stat'ed in the program (it took 25 minutes of a core, the
+// answer's keys searched one by one and each candidate asked of the shell).
+test("the MoonBit export says where 50,000 files are, as the TypeScript did, in well under two seconds", { skip }, async (t) => {
+  const data = dataDir("sources");
+  const db = join(data, "stillfail.db");
+  const store = Store.open(db, join(data, "archive"));
+  const replica = join(data, "replica-mb");
+  const mb = new MbExport(db, replica, data, {});
+  await mb.ask({ type: "places", places });
+  const chunks = join(replica, "chunks");
+  const uploads = join(data, "uploads");
+  mkdirSync(chunks, { recursive: true });
+  mkdirSync(uploads, { recursive: true });
+  mkdirSync(join(data, "a-dir"));
+  const hash = (i: number) => i.toString(16).padStart(64, "0");
+  const rows: [string, string][] = [];
+  const expected: Record<string, string> = {};
+  const hashes: string[] = [];
+  for (let i = 0; i < 50_000; i++) {
+    const h = hash(i);
+    hashes.push(h);
+    const kind = i % 10;
+    const file = join(uploads, h);
+    const chunk = join(chunks, h);
+    if (kind <= 2) {
+      // an attachment
+      writeFileSync(file, "a");
+      rows.push([file, h]);
+      expected[h] = file;
+    } else if (kind <= 5) {
+      // a transcript's chunk
+      writeFileSync(chunk, "c");
+      expected[h] = chunk;
+    } else if (kind === 6) {
+      // both: the attachment first; its first path gone, a link to a file next
+      writeFileSync(file, "a");
+      writeFileSync(chunk, "c");
+      const link = join(uploads, `${h}.link`);
+      symlinkSync(file, link);
+      rows.push([join(uploads, `${h}.gone`), h], [link, h]);
+      expected[h] = link;
+    } else if (kind === 7) {
+      // a link to a folder and one to nothing: not files, the chunk is
+      const toDir = join(uploads, `${h}.dir`);
+      const dangling = join(uploads, `${h}.dangling`);
+      symlinkSync(join(data, "a-dir"), toDir);
+      symlinkSync(join(data, "nowhere", h), dangling);
+      writeFileSync(chunk, "c");
+      rows.push([toDir, h], [dangling, h]);
+      expected[h] = chunk;
+    } else if (kind === 8) {
+      // in the table, its file gone and no chunk
+      rows.push([join(uploads, `${h}.gone`), h]);
+    }
+    // (9: nowhere)
+  }
+  const st = new DatabaseSync(join(replica, "export.db"));
+  st.exec("BEGIN");
+  const put = st.prepare("INSERT INTO files (path, size, mtime, hash) VALUES (?, 1, 0, ?)");
+  for (const [path, h] of rows) put.run(path, h);
+  st.exec("COMMIT");
+  st.close();
+  // what the TypeScript said (reference/replica-export.ts sourceOf): statSync, links followed, the table's order
+  const pathsOf = new Map<string, string[]>();
+  for (const [path, h] of rows) pathsOf.set(h, [...(pathsOf.get(h) ?? []), path]);
+  for (const h of hashes) {
+    const of = (pathsOf.get(h) ?? []).sort();
+    const found = [...of, join(chunks, h)].find((p) => { try { return statSync(p).isFile(); } catch { return false; } });
+    assert.equal(found, expected[h], `${h}: the fixture`);
+  }
+  // each asked twice: said once
+  const asked = [...hashes, ...hashes.filter((_, i) => i % 7 === 0)];
+  const start = performance.now();
+  const answer = await mb.ask({ type: "sources", hashes: asked });
+  const took = performance.now() - start;
+  t.diagnostic(`sources of ${asked.length} hashes: ${Math.round(took)} ms`);
+  assert.deepEqual(Object.keys(answer), hashes.filter((h) => expected[h] !== undefined), "each found once, in the order asked");
+  assert.deepEqual(answer, expected);
+  assert.ok(took < 2_000, `50,000 hashes took ${Math.round(took)} ms`);
+  // a few, asked one by one of the table
+  const few = [hash(0), hash(3), hash(6), hash(7), hash(8), hash(9), hash(6), "f".repeat(64)];
+  assert.deepEqual(await mb.ask({ type: "sources", hashes: few }), Object.fromEntries(few.flatMap((h) => (expected[h] === undefined ? [] : [[h, expected[h]]]))));
+  await mb.ask({ type: "close" });
+  store.close();
 });
