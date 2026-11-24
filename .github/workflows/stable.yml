@@ -13,6 +13,11 @@ concurrency:
 permissions:
   contents: read
   actions: read
+env:
+  # Farview's client, for a release whose apps/mbui still pulls it (apps/mbui/scripts/farview.sh in its checkout: a
+  # private repository, read by its deploy key). Stable runs this file from main against an older release's checkout;
+  # remove once no release before #8534 is published.
+  FARVIEW_DEPLOY_KEY: ${{ secrets.FARVIEW_DEPLOY_KEY }}
 jobs:
   plan:
     if: github.repository_owner == 'AFK-surf' && github.ref == 'refs/heads/main'
