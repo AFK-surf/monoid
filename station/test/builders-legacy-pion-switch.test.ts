@@ -579,30 +579,41 @@ test("all 6 production session-backfill TS spawn sites spawn real stillfail-pion
       }
     }
 
-    // Site 6: buildLegacySaid (store/legacy-said-builder.ts) — also test config.readers selection
-    {
-      clearSpawns(mbLog);
-      clearSpawns(pionLog);
-      const sub = join(dir, "site6");
-      mkdirSync(sub, { recursive: true });
-      const store = Store.open(join(sub, "stillfail.db"), join(sub, "archive"));
-      try {
-        const th = store.openThread("ember", "CHAT", "ls-1", null, null).id;
-        store.db.prepare("INSERT INTO entries(thread,n,kind,author_kind,author,text,at,ts) VALUES(?,1,'message','agent','a','hi',1,'ts1')").run(th);
-        installLegacySaid(store.db);
-        const cfg: () => ReaderSelectConfig = () => ({ readers: { "session-backfill": "pion" } });
-        const handle = buildLegacySaid(store, Promise.resolve(), undefined, cfg);
+    // Site 6: buildLegacySaid (store/legacy-said-builder.ts) — verify injected `cfg` alone switches to Pion
+    // with both STILLFAIL_READER_SESSION_BACKFILL and STILLFAIL_READER_ENGINE cleared.
+    await withEnv(
+      {
+        STILLFAIL_MB_READER: mbWrap,
+        STILLFAIL_PION_READER: pionWrap,
+        STILLFAIL_READER_ENGINE: undefined,
+        [readerModeEnvKey("session-backfill")]: undefined,
+      },
+      async () => {
+        const supportedCfg = await probePionSupportedModes(pionWrap);
+        assert.ok(supportedCfg !== null && supportedCfg.has("session-backfill"));
+        clearSpawns(mbLog);
+        clearSpawns(pionLog);
+        const sub = join(dir, "site6");
+        mkdirSync(sub, { recursive: true });
+        const store = Store.open(join(sub, "stillfail.db"), join(sub, "archive"));
         try {
-          assert.equal(await handle.ready, true, "site6: legacy said ready");
+          const th = store.openThread("ember", "CHAT", "ls-1", null, null).id;
+          store.db.prepare("INSERT INTO entries(thread,n,kind,author_kind,author,text,at,ts) VALUES(?,1,'message','agent','a','hi',1,'ts1')").run(th);
+          installLegacySaid(store.db);
+          const cfg: () => ReaderSelectConfig = () => ({ readers: { "session-backfill": "pion" } });
+          const handle = buildLegacySaid(store, Promise.resolve(), undefined, cfg);
+          try {
+            assert.equal(await handle.ready, true, "site6: legacy said ready");
+          } finally {
+            await handle.close();
+          }
+          assert.equal(readSpawns(mbLog).length, 0, "site6: cfg-only switch must not spawn MB");
+          assert.ok(readSpawns(pionLog).some((l) => l.includes("--builder session-backfill")), "site6: cfg-only switch must spawn Pion");
         } finally {
-          await handle.close();
+          store.close();
         }
-        assert.equal(readSpawns(mbLog).length, 0, "site6: no MB spawn");
-        assert.ok(readSpawns(pionLog).some((l) => l.includes("--builder session-backfill")), "site6: spawned Pion");
-      } finally {
-        store.close();
-      }
-    }
+      },
+    );
   });
 });
 
@@ -642,10 +653,12 @@ function seedAll19KindsDb(path: string, archiveDir: string): void {
       if (i % 7 === 0) {
         db.prepare("INSERT INTO turns(id,session_key,kind,started_at,ended_at,outcome,declared,wait_seconds) VALUES (?,?,'user',?,?,'completed','waiting',60)").run(`t-${i}`, key, i, i + 1);
       }
-      if (i < 15) {
+      // Leave i < 3 (the conversation-backfill merge pair + lone session) without chat_shares so
+      // `settle_conversation_in_tx` genuinely merges `bot2` into `slack:C99:1700000.1` and joins `homeTh`.
+      if (i >= 3 && i < 18) {
         db.prepare("INSERT INTO chat_shares(session, shared, by, at) VALUES (?, ?, 'me', ?)").run(
           key,
-          i === 14 ? JSON.stringify([{ workspace: "W1", used: 9007199254740991 }]) : JSON.stringify([{ workspace: `W${i % 2}`, used: 5000 + i }]),
+          i === 17 ? JSON.stringify([{ workspace: "W1", used: 9007199254740991 }]) : JSON.stringify([{ workspace: `W${i % 2}`, used: 5000 + i }]),
           5000 + i,
         );
       }
@@ -814,6 +827,23 @@ test("all 19 session-backfill kinds + unknown/default/empty lines match MB 0-dif
   const mbTs = readThreadSessions(mbPath);
   const pionTs = readThreadSessions(pionPath);
   assert.equal(pionTs.length, mbTs.length, "thread_sessions row count must match");
+  // Explicitly verify that conversation-backfill genuinely merged `bot2:C99:1700000.1` into the
+  // anchor's home thread (`connect = 'chat'`) in BOTH DBs and populated `joined_at` in wall range.
+  const mbHomeBot2 = mbTs.filter((r) => r.session === "bot2:C99:1700000.1" && r.connect === "chat");
+  const pionHomeBot2 = pionTs.filter((r) => r.session === "bot2:C99:1700000.1" && r.connect === "chat");
+  assert.equal(mbHomeBot2.length, 1, "MB must insert unique home thread_sessions row for merged bot2");
+  assert.equal(pionHomeBot2.length, 1, "Pion must insert unique home thread_sessions row for merged bot2");
+  assert.equal(pionHomeBot2[0]!.thread, mbHomeBot2[0]!.thread, "merged bot2 home thread id must match");
+  assert.ok(
+    pionHomeBot2[0]!.joined_at >= tBefore - 1000 && pionHomeBot2[0]!.joined_at <= tAfter + 1000,
+    `Pion joined_at ${pionHomeBot2[0]!.joined_at} must fall in wall window [${tBefore - 1000}, ${tAfter + 1000}]`,
+  );
+  // Note: MB `main.mbt:1060` passes `@host.now()` (CLOCK_MONOTONIC ms), whereas Pion passes
+  // `host_shim::wall_ms()` (UTC epoch ms, matching TS `conversations.ts`); verify MB wrote a positive timestamp.
+  assert.ok(
+    Number.isSafeInteger(mbHomeBot2[0]!.joined_at) && mbHomeBot2[0]!.joined_at > 0,
+    `MB joined_at ${mbHomeBot2[0]!.joined_at} must be a positive integer timestamp`,
+  );
   for (let i = 0; i < mbTs.length; i++) {
     const m = mbTs[i]!;
     const p = pionTs[i]!;
@@ -821,11 +851,70 @@ test("all 19 session-backfill kinds + unknown/default/empty lines match MB 0-dif
     assert.equal(p.session, m.session);
     assert.equal(p.connect, m.connect);
     assert.equal(p.left_at, m.left_at);
-    if (p.session === "bot2:C99:1700000.1" && p.connect === "chat") {
-      assert.ok(p.joined_at >= tBefore - 1000 && p.joined_at <= tAfter + 1000, `Pion joined_at ${p.joined_at} in wall range [${tBefore}, ${tAfter}]`);
-      assert.ok(m.joined_at >= tBefore - 1000 && m.joined_at <= tAfter + 1000, `MB joined_at ${m.joined_at} in wall range`);
-    } else {
+    if (!(p.session === "bot2:C99:1700000.1" && p.connect === "chat")) {
       assert.equal(p.joined_at, m.joined_at);
+    }
+  }
+});
+
+// ── Test 3b: chat-share lone UTF-16 surrogate escape whole-document rejection dual-engine 0-diff ──
+
+test("chat-share lone UTF-16 surrogate escapes match MB 0-diff (0 targets on lone surrogate, W1 on control)", async (t) => {
+  const bins = resolveBinaries(t);
+  if (!bins) return;
+
+  const dir = freshDir("chat-share-surrogate-");
+  const seedPath = join(dir, "seed.db");
+  const store = Store.open(seedPath, join(dir, "seed-archive"));
+  try {
+    const ins = store.db.prepare("INSERT INTO chat_shares(session, shared, by, at) VALUES (?, ?, 'me', ?)");
+    // 1. Lone surrogate in note + valid workspace "W1" -> MB @json.parse rejects whole doc -> 0 targets.
+    ins.run("s-note-lone", '[{"note":"\\uD800","workspace":"W1"}]', 5000);
+    // 2. Lone surrogate in workspace itself -> MB @json.parse rejects whole doc -> 0 targets.
+    ins.run("s-ws-lone", '[{"workspace":"\\uD800"}]', 5000);
+    // 3. Normal control row -> both engines write target "W1".
+    ins.run("s-control", '[{"workspace":"W1","used":5000}]', 5000);
+    store.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  } finally {
+    store.close();
+  }
+
+  const mbPath = join(dir, "mb.db");
+  const pionPath = join(dir, "pion.db");
+  copyFileSync(seedPath, mbPath);
+  copyFileSync(seedPath, pionPath);
+
+  const mbProc = new BuilderProc(bins.realMb, "session-backfill", mbPath);
+  const pionProc = new BuilderProc(bins.realPion, "session-backfill", pionPath);
+  try {
+    const [mbR, pionR] = await Promise.all([
+      mbProc.ask('{"kind":"chat-share"}'),
+      pionProc.ask('{"kind":"chat-share"}'),
+    ]);
+    assert.deepStrictEqual(pionR, mbR, "chat-share reply 0-diff");
+    assert.equal(pionR.done, true);
+  } finally {
+    await Promise.all([mbProc.end(), pionProc.end()]);
+  }
+
+  assert.equal(snapshotAllTables(pionPath), snapshotAllTables(mbPath), "chat-share lone surrogate tables 0-diff");
+  for (const [label, p] of [["mb", mbPath], ["pion", pionPath]] as const) {
+    const db = new DatabaseSync(p);
+    try {
+      const targets = (
+        db.prepare("SELECT session, ordinal, workspace, used FROM chat_share_targets ORDER BY session, ordinal").all() as Record<string, unknown>[]
+      ).map((r) => ({ ...r }));
+      assert.deepStrictEqual(
+        targets,
+        [{ session: "s-control", ordinal: 0, workspace: "W1", used: 5000 }],
+        `${label}: only control row may emit target W1; lone-surrogate rows must emit 0 targets`,
+      );
+      const uncertain = (
+        db.prepare("SELECT session FROM chat_share_uncertain ORDER BY session").all() as Record<string, unknown>[]
+      ).map((r) => ({ ...r }));
+      assert.deepStrictEqual(uncertain, [], `${label}: lone-surrogate JSON parse fallback is empty targets, not uncertain`);
+    } finally {
+      db.close();
     }
   }
 });

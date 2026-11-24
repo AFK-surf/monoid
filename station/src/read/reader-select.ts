@@ -241,7 +241,7 @@ export const READER_MODES = {
   },
   "recent-chat": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Recent chat preparation builder (--builder recent-chat)",
   },

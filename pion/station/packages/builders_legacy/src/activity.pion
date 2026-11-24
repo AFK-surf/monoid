@@ -855,10 +855,15 @@ pub fn share_install(db : sql_db::Db) -> Result[Unit, builders_core::StepError] 
 }
 
 /// Parse saved share JSON into `(workspace, used)` pairs; `None` means uncertain.
-/// Enforces 16384 UTF-16 code-unit limit and `is_safe_integer(u) && is_safe_integer(u + IDLE_MS)`.
+/// Enforces 16384 UTF-16 code-unit limit, matches MB `@json.parse` whole-document rejection of
+/// lone UTF-16 surrogate escapes (`has_lone_surrogate` -> empty targets), and checks
+/// `is_safe_integer(u) && is_safe_integer(u + IDLE_MS)`.
 pub fn parse_share_values(shared : String, at_opt : Option[Double]) -> Option[Array[(String, Double)]] {
   if js_json::utf16_len(shared) > 16384 {
     return None
+  }
+  if builders_core::has_lone_surrogate(shared) {
+    return Some([])
   }
   let parsed = match js_json::parse(shared) {
     Ok(v) => v

@@ -89,6 +89,8 @@ fn is_some_str(a : Option[String]) -> Bool {
   }
 }
 
+/// Compare `(created_at, key)` for earliest-member selection; tie-breaks by lexicographical
+/// key order matching TS source-of-truth `station/src/store/conversations.ts:52-55`.
 pub fn conv_cmp_earliest(a_at : Double, a_key : String, b_at : Double, b_key : String) -> Int {
   if a_at != b_at {
     if a_at < b_at { -1 } else { 1 }

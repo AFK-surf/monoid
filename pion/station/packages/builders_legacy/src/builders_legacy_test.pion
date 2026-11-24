@@ -128,6 +128,20 @@ test "share_values enforces 16384 UTF-16 code-unit limit and safe integer bounds
     Some(vals) => expect(vals.length() == 1, "exact MAX_SAFE_INTEGER - idle_ms accepted")
     None => panic("exact MAX_SAFE_INTEGER - idle_ms should be accepted")
   }
+  // Lone UTF-16 surrogate escapes reject the whole JSON document as empty targets (matching MB @json.parse).
+  match parse_share_values("[{\"note\":\"\\uD800\",\"workspace\":\"W1\"}]", Some(1000.0)) {
+    Some(vals) => expect(vals.length() == 0, "lone surrogate in note must yield 0 targets")
+    None => panic("lone surrogate in note must return Some([]), not uncertain")
+  }
+  match parse_share_values("[{\"workspace\":\"\\uD800\"}]", Some(1000.0)) {
+    Some(vals) => expect(vals.length() == 0, "lone surrogate in workspace must yield 0 targets")
+    None => panic("lone surrogate in workspace must return Some([]), not uncertain")
+  }
+  // Overflow number 1e400 -> Infinity -> not safe integer -> None (uncertain).
+  match parse_share_values("[{\"workspace\":\"W1\",\"used\":1e400}]", Some(1000.0)) {
+    None => ()
+    Some(_) => panic("1e400 overflow must return None (uncertain)")
+  }
 }
 
 test "all 19 session-backfill kinds classify accurately, unknown string returns None, non-string/missing defaults to activity" {
@@ -162,7 +176,7 @@ test "all 19 session-backfill kinds classify accurately, unknown string returns 
   }
 }
 
-test "split_session_thread and conv_cmp_earliest match conversations.mbt" {
+test "split_session_thread and conv_cmp_earliest (lexicographical tie-break per TS conversations.ts)" {
   match split_session_thread("slack:C123:1700.1") {
     Some((ch, ts)) => expect(ch == "C123" && ts == "1700.1", "basic split")
     None => panic("expected Some")
@@ -176,6 +190,7 @@ test "split_session_thread and conv_cmp_earliest match conversations.mbt" {
     None => panic("expected Some for leading colon")
   }
   expect(conv_cmp_earliest(100.0, "b", 200.0, "a") < 0, "earlier timestamp wins")
-  expect(conv_cmp_earliest(100.0, "a", 100.0, "b") < 0, "tie breaks by key")
+  expect(conv_cmp_earliest(100.0, "a", 100.0, "b") < 0, "tie breaks lexicographically by key")
+  expect(conv_cmp_earliest(100.0, "b", 100.0, "aa") > 0, "lexicographical tie-break: 'b' > 'aa' per TS conversations.ts")
   expect(conv_cmp_earliest(100.0, "a", 100.0, "a") == 0, "equal")
 }
