@@ -27,6 +27,7 @@ jobs:
       version: ${{ steps.plan.outputs.version }}
       web: ${{ steps.plan.outputs.web }}
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, fetch-tags: true, filter: "blob:none" }
       - uses: ./.github/actions/setup
@@ -271,6 +272,7 @@ jobs:
     environment: production
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - uses: actions/download-artifact@v4
@@ -293,6 +295,7 @@ jobs:
     environment: production
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - uses: actions/download-artifact@v4
@@ -339,6 +342,7 @@ jobs:
     environment: production
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - uses: actions/download-artifact@v4
@@ -359,6 +363,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { ref: '${{ needs.plan.outputs.sha }}' }
       - uses: ./.github/actions/setup
@@ -374,6 +379,7 @@ jobs:
     environment: production
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { ref: '${{ needs.plan.outputs.sha }}', fetch-depth: 0, filter: "blob:none" }
       - uses: ./.github/actions/setup
@@ -454,6 +460,8 @@ jobs:
         reader:linux-x64 launcher:linux-x64 mesh:linux-x64 runner:linux-x64 screen-linux:linux-x64 launcher:win32-x64
         mesh:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
     steps: &station-natives-linux-steps
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { ref: '${{ needs.plan.outputs.sha }}' }
       # (the pinned Node: ci-1's from setup-linux, before anything runs node)
@@ -636,6 +644,7 @@ jobs:
       PLATFORM: ${{ matrix.platform }}
       HANDED: ${{ needs.station.outputs.hand }}
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with:
           sparse-checkout: |
@@ -674,6 +683,7 @@ jobs:
     env:
       HANDED: ${{ needs.station.outputs.hand }}
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with:
           sparse-checkout: |

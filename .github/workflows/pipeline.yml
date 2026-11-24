@@ -503,6 +503,8 @@ jobs:
     permissions:
       contents: write # the release native-artifacts' assets
     steps:
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-linux
       - uses: ./.github/actions/mbui-moonbit
@@ -969,6 +971,7 @@ jobs:
     environment: production
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/node
       - name: Copy what the store lacks from the release
@@ -1273,6 +1276,7 @@ jobs:
           fi
           echo "img=$img" >> "$GITHUB_OUTPUT"
           echo "img=$img (image=${ImageVersion:-own}, cc=$(${cc_bin:-clang} --version 2>/dev/null | head -1))"
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/mbui-moonbit
       - uses: actions/cache/restore@v4
@@ -1323,6 +1327,7 @@ jobs:
           fi
           echo "img=$img" >> "$GITHUB_OUTPUT"
           echo "img=$img (image=${ImageVersion:-own}, cc=$(${cc_bin:-clang} --version 2>/dev/null | head -1))"
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/mbui-moonbit
       - uses: actions/cache/restore@v4
@@ -1359,6 +1364,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/natives
@@ -1422,6 +1428,7 @@ jobs:
       # A run attempted again goes through only where what failed in the attempts before was GitHub's or the network's
       # (a runner that never came, a checkout, a 504), never a check that failed or ran its time out: those are found and
       # fixed in a new commit, never rerun green (the root AGENTS.md; scripts/gate-rerun-check.mjs says what is which).
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - if: fromJSON(github.run_attempt) > 1
         uses: actions/checkout@v5
         with:
@@ -1443,6 +1450,7 @@ jobs:
     environment: production
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - name: Deploy api
@@ -1476,6 +1484,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/mbui-moonbit
@@ -1496,6 +1505,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/mbui-moonbit
@@ -1513,6 +1523,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 } # the web app's build number (__BUILD__, build.json) is the commits in the history
       - uses: ./.github/actions/setup
@@ -1553,6 +1564,7 @@ jobs:
     environment: production
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - name: Deploy api to monoid
@@ -1592,6 +1604,7 @@ jobs:
           # (its site's stable one with the stable release, stable.yml; its test channel's, monoid.zone, here)
           parts=$(printf '%s\n' ${{ needs.plan.outputs.parts }} | { grep -vE '^(site|status)$' || true; } | tr '\n' ' ')
           echo "parts=$parts" >> "$GITHUB_OUTPUT"
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - if: steps.parts.outputs.parts != ''
         uses: actions/checkout@v5
         with: { fetch-depth: 0 }
@@ -1628,6 +1641,7 @@ jobs:
     environment: production
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - uses: actions/download-artifact@v4
@@ -1647,6 +1661,7 @@ jobs:
     environment: production
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - uses: actions/download-artifact@v4
@@ -1812,6 +1827,7 @@ jobs:
     environment: production
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - uses: actions/download-artifact@v4
@@ -2607,6 +2623,7 @@ jobs:
     environment: production
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - uses: actions/download-artifact@v4
@@ -2651,6 +2668,8 @@ jobs:
     # (what it runs alone: scripts/release-deltas.ts and its delta.ts, release-put.sh through Cloudflare's API, javac
     # on Delta.java and JZlib for Android's; no packages, no pnpm)
     steps: &deltas-steps
+      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - if: runner.environment != 'self-hosted'
         uses: actions/checkout@v5
         with:
@@ -2758,6 +2777,7 @@ jobs:
       contents: read
       id-token: write # the clouds believe it as it tells them a release is out (scripts/release-told.sh)
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" } # the changelog's entries are numbered by the commits up to them
       # (Node alone: release-put.sh and changelog-put.sh go through Cloudflare's API with CLOUDFLARE_API_TOKEN, no packages)
@@ -2820,6 +2840,7 @@ jobs:
     timeout-minutes: 5
     continue-on-error: true
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with:
           sparse-checkout: |
@@ -2860,6 +2881,7 @@ jobs:
     environment: production
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" } # each entry's version is the commits up to it
       # (Node alone: changelog-put.sh puts through Cloudflare's API with CLOUDFLARE_API_TOKEN, no packages)
@@ -2912,6 +2934,7 @@ jobs:
       contents: read
       actions: read
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { sparse-checkout: "scripts/ci-time.ts\n.node-version\n.github/actions/node", sparse-checkout-cone-mode: false }
       - uses: ./.github/actions/node
