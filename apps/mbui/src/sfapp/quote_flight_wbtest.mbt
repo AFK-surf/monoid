@@ -470,7 +470,7 @@ test "小屏: quote card enters near full width without overlapping bottom contr
   t.run_for(@ui.move_most_ms)
   tap_send(t)
   t.run_for(@sfbase.sent_out_hold_ms)
-  t.type_text("马上继续打字")
+  t.type_text("先上屏")
   t.draw()
   assert_true(mf_caret(t, fx, fw) is Some(_), msg="immediate typing after quote send kept caret hidden")
 }
