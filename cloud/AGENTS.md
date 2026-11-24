@@ -28,6 +28,9 @@
   (in order, again until it gets there); whatever keeps someone's access is awaited before the answer. A hint to
   read again that a reconnect or the next one makes up for (a release out, the console's minute) is sent once,
   outside the outbox: every write there holds each answer of the Directory behind the storage's output gate.
+  For the same gate what is only read by the day is held in memory and written together, at most every ten
+  minutes by the cron's minute and at once by what reads it: the calls counted (`keepCounts`, `hits`) and the devices
+  that asked for credentials (`src/directory/locks.ts` `flushDevices`, `devices`), so a credential writes nothing.
   `DIRECTORY_SOCKETS=primary` puts the sockets back on the Directory, the way back while nothing else depends on the
   objects. Whether a station is up is not the cloud's to say: devices find out over the mesh.
 - A member's credential is a JWT the cloud signs (Ed25519, 30 days, bound to the device's key); stations check it

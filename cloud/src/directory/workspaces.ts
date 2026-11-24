@@ -528,7 +528,7 @@ export class DirectoryWorkspaces {
       for (const table of ["members", "invitations", "added", "added_mails", "added_mail_retries", "station_members", "enrollments", "lock_entries", "lock_aside", "devices", "lock_requests", "provision_keys", "told"]) this.#db.run(`DELETE FROM ${table} WHERE workspace = ?`, id);
       this.#db.run("DELETE FROM workspaces WHERE id = ?", id);
     });
-    this.#host.resetDevicesSeen(id);
+    this.#host.resetDevicesSeen({ workspace: id });
     this.#host.tell(told, LIST, { type: "workspace", id });
     this.#host.adminChanged("workspaces", "users");
     // Its stations leave it; those in no other workspace are let go as before.

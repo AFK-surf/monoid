@@ -36,11 +36,12 @@ export class DirectoryAdmin {
   /**
    * Tells the operator's connected devices `event` (their console reads it again): its accounts, found by their email.
    * The cron's, every minute: what this object counted of its requests is kept then too, at most every
-   * KEEP_COUNTS_INTERVAL (keepCounts). A hint to read again, so not kept in the outbox: one that misses a device is
+   * KEEP_COUNTS_INTERVAL (keepCounts), and the devices that asked for credentials as often (flushDevices). A hint to read again, so not kept in the outbox: one that misses a device is
    * followed by the next minute's (tellEphemeral).
    */
   tellAdmins(event: AccountEvent): void {
     this.keepCounts(false);
+    this.#host.flushDevices(false);
     this.#host.tellEphemeral(this.adminSubs(), event);
   }
 
@@ -94,6 +95,7 @@ export class DirectoryAdmin {
 
   /** Every table but what is of this object's own sockets and counts (MOVE_SKIPPED), row by row. */
   moveExport(): Record<string, Row[]> {
+    this.#host.flushDevices(true);
     const tables = this.#db.rows("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite_%'").map((r) => r.name as string);
     return Object.fromEntries(tables.filter((t) => !MOVE_SKIPPED.has(t)).map((t) => [t, this.#db.rows(`SELECT * FROM "${t}"`)]));
   }

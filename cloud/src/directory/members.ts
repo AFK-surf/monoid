@@ -292,8 +292,7 @@ export class DirectoryMembers {
       }
       this.#db.run("DELETE FROM users WHERE sub = ?", sub);
     });
-    // (rare: what recordDevice remembers of everyone goes rather than kept apart by account)
-    this.#host.resetDevicesSeen();
+    this.#host.resetDevicesSeen({ sub });
     this.#host.tell([sub], LIST);
     this.#host.adminChanged("users", "workspaces", "feedback");
     await this.#host.delivered();

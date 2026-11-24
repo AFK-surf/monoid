@@ -10,6 +10,11 @@ const DEVICE_SEEN_WINDOW = 3600;
 /** How many devices `recordDevice` remembers before it forgets them all. */
 const DEVICES_SEEN_CAP = 10_000;
 type DeviceSeen = { base: string | null; kind: string | null; label: string | null; seen: number };
+/** How often the cron's minute writes the devices `recordDevice` holds (flushDevices), in seconds, as keepCounts does. */
+const KEEP_DEVICES_INTERVAL = 600;
+/** How many devices `recordDevice` holds unwritten before it writes them at once. */
+const PENDING_DEVICES_CAP = 500;
+type PendingDevice = { workspace: string; sub: string; device: string; base: string | null; kind: string | null; label: string | null; firstSeen: number; lastSeen: number };
 
 // ── the workspace lock (lock.ts): kept and carried, not trusted ─────────────────────────
 
@@ -24,6 +29,16 @@ export class DirectoryLocks {
    * object behind the storage's output gate, a burst of them waiting seconds on each other's (2026-11-24).
    */
   #devicesSeen = new Map<string, DeviceSeen>();
+  /**
+   * What `recordDevice` has to write to `devices` and has not yet (by the same key as #devicesSeen): written together,
+   * in one transaction, by flushDevices, so that a credential writes nothing. A burst of a person's endpoints asking
+   * at once (each relay its own device) still waited seconds behind the output gate, one write each (2026-11-24). An
+   * object restarted loses at most KEEP_DEVICES_INTERVAL of them, as keepCounts loses its counts: `last_seen` is only
+   * read by the day, and a device asks again within the hour.
+   */
+  #pendingDevices = new Map<string, PendingDevice>();
+  /** When flushDevices last wrote (null: not since this object started, or since a move). */
+  #lastDevicesKeptAt: number | null = null;
 
   constructor(db: DirectoryDb, host: DirectoryHost, lockSeen: Set<string>) {
     this.#db = db;
@@ -192,25 +207,50 @@ export class DirectoryLocks {
     this.#host.changed(workspace, false);
   }
 
-  /** A device asked for a credential: kept for the owner to check when the lock is turned on. The relays it is told
-   * with the credential. */
+  /** A device asked for a credential: kept for the owner to check when the lock is turned on, written later
+   * (flushDevices). The relays it is told with the credential. */
   recordDevice(sub: string, workspace: string, device: string, said: { base?: string; kind?: string; label?: string }): ReturnType<typeof relays> {
     const now = nowSeconds();
     const key = `${workspace}\n${sub}\n${device}`;
-    const prev = this.#devicesSeen.get(key) ?? this.#deviceKept(workspace, sub, device);
+    const pending = this.#pendingDevices.get(key);
+    // (what waits to be written is read before what is kept: #devicesSeen may have forgotten it)
+    const prev = this.#devicesSeen.get(key) ?? (pending ? { base: pending.base, kind: pending.kind, label: pending.label, seen: pending.lastSeen } : this.#deviceKept(workspace, sub, device));
     const next = { base: said.base ?? prev?.base ?? null, kind: said.kind ?? prev?.kind ?? null, label: said.label ?? prev?.label ?? null };
     const same = prev !== undefined && prev.base === next.base && prev.kind === next.kind && prev.label === next.label;
     if (same && now >= prev.seen && now - prev.seen < DEVICE_SEEN_WINDOW) {
       this.#noteDeviceSeen(key, prev);
     } else {
-      this.#db.run(
-        `INSERT INTO devices (workspace, sub, device, base, kind, label, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT (workspace, sub, device) DO UPDATE SET base = COALESCE(excluded.base, base), kind = COALESCE(excluded.kind, kind), label = COALESCE(excluded.label, label), last_seen = excluded.last_seen`,
-        workspace, sub, device, said.base ?? null, said.kind ?? null, said.label ?? null, now, now,
-      );
+      this.#pendingDevices.set(key, { workspace, sub, device, ...next, firstSeen: pending?.firstSeen ?? now, lastSeen: now });
       this.#noteDeviceSeen(key, { ...next, seen: now });
+      if (this.#pendingDevices.size >= PENDING_DEVICES_CAP) this.flushDevices(true);
     }
     return relays(this.#db.relays(this.#host.meshRelays()), true);
+  }
+
+  /**
+   * The devices `recordDevice` holds written, in one transaction: by what reads them (`devices`, a move's export,
+   * `force`), and by the cron's minute (tellAdmins) once KEEP_DEVICES_INTERVAL passed. Forgotten only once written.
+   */
+  flushDevices(force = false): void {
+    if (this.#pendingDevices.size === 0) return;
+    const now = nowSeconds();
+    if (!force && this.#lastDevicesKeptAt !== null && now >= this.#lastDevicesKeptAt && now - this.#lastDevicesKeptAt < KEEP_DEVICES_INTERVAL) return;
+    this.#db.ctx.storage.transactionSync(() => {
+      for (const d of this.#pendingDevices.values()) {
+        this.#db.run(
+          `INSERT INTO devices (workspace, sub, device, base, kind, label, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (workspace, sub, device) DO UPDATE SET base = COALESCE(excluded.base, base), kind = COALESCE(excluded.kind, kind), label = COALESCE(excluded.label, label), last_seen = excluded.last_seen`,
+          d.workspace, d.sub, d.device, d.base, d.kind, d.label, d.firstSeen, d.lastSeen,
+        );
+      }
+    });
+    this.#pendingDevices.clear();
+    this.#lastDevicesKeptAt = now;
+  }
+
+  /** How many devices wait to be written (the tests'). */
+  pendingDevicesCount(): number {
+    return this.#pendingDevices.size;
   }
 
   /** What `devices` keeps of a device, as `recordDevice` remembers it. */
@@ -225,17 +265,26 @@ export class DirectoryLocks {
     this.#devicesSeen.set(key, seen);
   }
 
-  /** What `recordDevice` remembers forgotten, of one workspace (gone) or all (`devices` replaced by a move). */
-  resetDevicesSeen(workspace?: string): void {
-    if (workspace === undefined) return this.#devicesSeen.clear();
-    const prefix = `${workspace}\n`;
-    for (const key of this.#devicesSeen.keys()) if (key.startsWith(prefix)) this.#devicesSeen.delete(key);
+  /**
+   * What `recordDevice` remembers and holds unwritten forgotten: of one workspace (gone), of one account (deleted), or
+   * all (`devices` replaced by a move), so nothing written later brings back a row taken out.
+   */
+  resetDevicesSeen(of?: { workspace: string } | { sub: string }): void {
+    if (of === undefined) {
+      this.#devicesSeen.clear();
+      this.#pendingDevices.clear();
+      this.#lastDevicesKeptAt = null;
+      return;
+    }
+    const gone = "workspace" in of ? (key: string) => key.startsWith(`${of.workspace}\n`) : (key: string) => key.split("\n")[1] === of.sub;
+    for (const map of [this.#devicesSeen, this.#pendingDevices]) for (const key of map.keys()) if (gone(key)) map.delete(key);
   }
 
   /** The devices that asked for credentials in the workspace in the last 31 days: its owners and admins see everyone's
    * (what turning the lock on lists, when each was last used), a member their own. */
   devices(sub: string, workspace: string): { devices: DeviceView[] } {
     const manages = MANAGERS.includes(this.#db.role(sub, workspace));
+    this.flushDevices(true);
     const devices = this.#db.rows(
       `SELECT d.sub, COALESCE(u.email, '') AS email, d.device, d.base, d.kind, d.label, d.first_seen, d.last_seen FROM devices d LEFT JOIN users u ON u.sub = d.sub
         WHERE d.workspace = ? AND d.last_seen >= ? AND d.sub IN (SELECT sub FROM members WHERE workspace = ?) AND (? OR d.sub = ?) ORDER BY d.sub, d.last_seen DESC`,

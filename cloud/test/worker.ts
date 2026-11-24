@@ -138,6 +138,23 @@ export class Directory extends ProductionDirectory {
   keptCalls(): Record<string, number> {
     return Object.fromEntries(this.ctx.storage.sql.exec("SELECT family, SUM(n) AS n FROM hits GROUP BY family").toArray().map((r) => [r.family as string, r.n as number]));
   }
+  /** A device's row as `devices` keeps it (null: none written). */
+  storedDeviceRow(workspace: string, sub: string, device: string): { base: string | null; kind: string | null; label: string | null; first_seen: number; last_seen: number } | null {
+    const row = this.ctx.storage.sql.exec("SELECT base, kind, label, first_seen, last_seen FROM devices WHERE workspace = ? AND sub = ? AND device = ?", workspace, sub, device).toArray()[0];
+    return (row as { base: string | null; kind: string | null; label: string | null; first_seen: number; last_seen: number } | undefined) ?? null;
+  }
+  /** How many rows `devices` keeps, in all. */
+  storedDevices(): number {
+    return this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM devices").one().n as number;
+  }
+  /** How many devices `recordDevice` holds unwritten. */
+  pendingDevices(): number {
+    return this.pendingDevicesCount();
+  }
+  /** The devices `recordDevice` holds written now (`force`), or as the cron's minute would. */
+  flushDevicesNow(force = true): void {
+    this.flushDevices(force);
+  }
   /** When an account or a station was last seen, and a station's version. */
   seenOf(kind: "account" | "station", id: string): { last_seen: number | null; version?: string | null } | null {
     const query = kind === "account" ? "SELECT last_seen FROM users WHERE sub = ?" : "SELECT last_seen, version FROM stations WHERE id = ?";

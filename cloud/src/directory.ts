@@ -107,7 +107,8 @@ export class Directory extends DurableObject<Env> {
       lockAfter: (workspace, after) => this.#locks.lockAfter(workspace, after),
       appendLockInternal: (workspace, raw, fork) => this.#locks.appendLockInternal(workspace, raw, fork),
       resetFixesMarked: () => this.#feedback.resetFixesMarked(),
-      resetDevicesSeen: (workspace) => this.#locks.resetDevicesSeen(workspace),
+      resetDevicesSeen: (of) => this.#locks.resetDevicesSeen(of),
+      flushDevices: (force) => this.#locks.flushDevices(force),
     };
     this.#locks = new DirectoryLocks(this.#db, host, this.lockSeen);
     this.#relays = new DirectoryRelays(this.#db, host, this.#meshEvents);
@@ -146,6 +147,16 @@ export class Directory extends DurableObject<Env> {
   /** Every delivery under way has got there or failed (the tests' barrier, instead of waiting a while). */
   protected settled(): Promise<void> {
     return this.#sockets.settled();
+  }
+
+  /** How many devices `recordDevice` holds unwritten (DirectoryLocks.flushDevices). */
+  protected pendingDevicesCount(): number {
+    return this.#locks.pendingDevicesCount();
+  }
+
+  /** The devices `recordDevice` holds written (at once unless `force` is false: then as the cron's minute does). */
+  protected flushDevices(force = true): void {
+    this.#locks.flushDevices(force);
   }
 
   /** Drops station sockets silent at `now`; says whether any station is still connected. */

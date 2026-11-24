@@ -199,6 +199,112 @@ test("a device asking again within the hour, saying nothing new, is not written 
   }
 });
 
+test("a credential writes nothing: the devices are written together by the cron's minute, by what reads them, and forgotten with what is taken out", async () => {
+  // (2026-11-24: a person's endpoints asking together, each relay its own device, each wrote its row, and every answer
+  // of the Directory waited seconds behind the output gate)
+  const h = await harness();
+  try {
+    const aliceTokens = await h.login("alice");
+    const bobTokens = await h.login("bob");
+    const carolTokens = await h.login("carol");
+    let alice = h.as(aliceTokens);
+    let bob = h.as(bobTokens);
+    let carol = h.as(carolTokens);
+    const ws = (await (await alice("POST", "/v1/workspaces", { name: "Home" })).json() as any).id as string;
+    await alice("POST", `/v1/workspaces/${ws}/invitations`, { role: "member", email: "bob@example.test" });
+    const invitation = ((await (await bob("GET", "/v1/me")).json()) as any).invitations[0];
+    assert.equal((await bob("POST", `/v1/invitations/${invitation.id}/accept`)).status, 200);
+    const dir = await h.object("DIRECTORY", "primary");
+    const post = async (path: string, value: unknown) => (await h.fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(value) })).json() as Promise<any>;
+    /** The clock put forward, the access credentials made again for it; the time now. */
+    const later = async (seconds: number) => {
+      const { now } = await post("/__test/later", { seconds });
+      const fresh = async (t: typeof aliceTokens) => h.as({ ...t, access_token: (await post("/__test/access", { sub: t.subject, sid: t.session_id, seconds: 300 })).token });
+      [alice, bob, carol] = await Promise.all([fresh(aliceTokens), fresh(bobTokens), fresh(carolTokens)]);
+      return now as number;
+    };
+    const ask = async (as: typeof alice, workspace: string, device: string, said: Record<string, string> = {}) => assert.equal((await as("POST", `/v1/workspaces/${workspace}/credential`, { device, ...said })).status, 200);
+    /** A device's row as kept (null: none), its fields taken out of what the object's call answers. */
+    const row = async (workspace: string, sub: string, device: string) => {
+      const r = await dir.storedDeviceRow(workspace, sub, device);
+      return r === null ? null : { base: r.base, kind: r.kind, label: r.label, first_seen: r.first_seen, last_seen: r.last_seen };
+    };
+    const bobSub = bobTokens.subject as string;
+    const aliceSub = aliceTokens.subject as string;
+
+    // A burst of bob's endpoints, and one of them saying more after: nothing written, all of it held.
+    const start = await later(0);
+    const [a, b, c, d, e] = (await Promise.all([key(), key(), key(), key(), key()])).map((k) => k.id);
+    await Promise.all([a, b, c].map((device) => ask(bob, ws, device!)));
+    await ask(bob, ws, a!, { label: "Mac" });
+    await ask(bob, ws, a!, { kind: "app" });
+    for (const device of [a, b, c]) assert.equal(await row(ws, bobSub, device!), null, "a credential writes no row");
+    assert.equal(await dir.storedDevices(), 0);
+    assert.equal(await dir.pendingDevices(), 3);
+
+    // The cron's minute writes them, what each said kept together; ten minutes on, not before, the next.
+    await dir.tellAdmins({ type: "relays" });
+    assert.equal(await dir.pendingDevices(), 0);
+    assert.deepEqual(await row(ws, bobSub, a!), { base: null, kind: "app", label: "Mac", first_seen: start, last_seen: start });
+    assert.equal(await dir.storedDevices(), 3);
+    const seenAt = await later(60);
+    await ask(bob, ws, d!);
+    await dir.tellAdmins({ type: "relays" });
+    assert.equal(await row(ws, bobSub, d!), null, "a minute on: not written");
+    await later(539);
+    await dir.tellAdmins({ type: "relays" });
+    assert.equal(await row(ws, bobSub, d!), null, "still within ten minutes");
+    await later(1);
+    await dir.tellAdmins({ type: "relays" });
+    assert.deepEqual(await row(ws, bobSub, d!), { base: null, kind: null, label: null, first_seen: seenAt, last_seen: seenAt });
+
+    // What reads them writes them at once: the devices a member is shown (not someone outside, refused first), a move's export.
+    const renamed = await later(60);
+    await ask(bob, ws, a!, { label: "MacBook" });
+    assert.equal((await carol("GET", `/v1/workspaces/${ws}/devices`)).status, 404);
+    assert.equal(await dir.pendingDevices(), 1, "a refused read writes nothing");
+    const bobs = ((await (await bob("GET", `/v1/workspaces/${ws}/devices`)).json()) as any).devices;
+    assert.deepEqual(bobs.filter((x: any) => x.device === a).map((x: any) => [x.kind, x.label, x.first_seen, x.last_seen]), [["app", "MacBook", start, renamed]]);
+    assert.equal(await dir.pendingDevices(), 0);
+    await ask(bob, ws, e!);
+    const exported = (await dir.moveExport()).devices as { device: string }[];
+    assert.ok(exported.some((x) => x.device === e), "the export has what was held");
+    assert.equal(await dir.pendingDevices(), 0);
+
+    // A workspace gone, or an account deleted, takes what is held of it: nothing written of it after.
+    const other = (await (await alice("POST", "/v1/workspaces", { name: "Other" })).json() as any).id as string;
+    await ask(alice, other, a!);
+    await ask(alice, ws, b!);
+    assert.equal(await dir.pendingDevices(), 2);
+    assert.equal((await alice("DELETE", `/v1/workspaces/${other}`)).status, 200);
+    assert.equal(await dir.pendingDevices(), 1, "the workspace's held device gone, the other kept");
+    await later(600);
+    await ask(bob, ws, c!, { label: "Phone" });
+    assert.equal(await dir.pendingDevices(), 2);
+    assert.equal((await bob("DELETE", "/v1/me")).status, 200);
+    assert.equal(await dir.pendingDevices(), 1, "the account's held device gone, alice's kept");
+    await dir.tellAdmins({ type: "relays" });
+    await dir.flushDevicesNow();
+    assert.equal(await row(other, aliceSub, a!), null, "no row of the workspace gone");
+    assert.equal(await row(ws, bobSub, c!), null, "no row of the account deleted");
+    assert.notEqual(await row(ws, aliceSub, b!), null);
+
+    // A move's import forgets what is held, and the minute after it writes at once.
+    const f = (await key()).id;
+    await ask(alice, ws, f);
+    assert.equal(await dir.pendingDevices(), 1);
+    await dir.moveImport({});
+    assert.equal(await dir.pendingDevices(), 0);
+    assert.equal(await row(ws, aliceSub, f), null);
+    await later(1);
+    await ask(alice, ws, (await key()).id);
+    await dir.tellAdmins({ type: "relays" });
+    assert.equal(await dir.pendingDevices(), 0, "written at once after a move, not ten minutes after the last");
+  } finally {
+    await h.close();
+  }
+});
+
 test("devices that asked for credentials, for the owner to check; devices waiting to be confirmed", async () => {
   const h = await harness();
   try {
