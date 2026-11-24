@@ -338,10 +338,10 @@ final class SimulatorView: ScreenView {
       guard await injector.sendOrientation(orientation: orientation) else { return }
       KnownTurns.shared[udid] = turned
       let cover = coverShown
-      background {
-        await self.settleTurn(cover: cover)
+      background { [weak self] in
+        await self?.settleTurn(cover: cover)
         // (a device under load is seconds behind the turn it was told of)
-        await self.lookTurn(cover: cover, waits: Array(repeating: 1, count: 12))
+        await self?.lookTurn(cover: cover, waits: Array(repeating: 1, count: 12))
       }
     case "paste":
       guard let text = op["text"] as? String, !text.isEmpty else { return }
@@ -444,7 +444,7 @@ final class SimulatorView: ScreenView {
       }
     }
     // (not waited for: the next press would wait for all of it, seconds, behind it)
-    background { await self.lookTurn(cover: cover) }
+    background { [weak self] in await self?.lookTurn(cover: cover) }
   }
 
   /// A device told to turn draws its UI going round inside its framebuffer, a turned picture of which would go round inside the
@@ -454,6 +454,8 @@ final class SimulatorView: ScreenView {
     let panel = cover == false ? "primary-1" : "primary"
     let was = turnNow()
     setHeld(true)
+    // (let go of however it ends: a view stopped meanwhile too)
+    defer { setHeld(false) }
     var now = was
     for _ in 0..<15 where now == was {
       try? await Task.sleep(for: .milliseconds(100))
@@ -565,6 +567,7 @@ final class SimulatorView: ScreenView {
   /// What `file` writes to its stdout until it closes it; nil when it cannot be run or has not closed it within `timeout`
   /// seconds, then ended (a child it left holding the stdout keeps no one waiting either: nothing more is read of it).
   static func runOutput(_ file: String, _ arguments: [String], timeout: TimeInterval = 8) async -> String? {
+    guard !Task.isCancelled else { return nil }
     let process = Process()
     process.executableURL = URL(fileURLWithPath: file)
     process.arguments = arguments
@@ -572,33 +575,40 @@ final class SimulatorView: ScreenView {
     process.standardOutput = out
     process.standardError = FileHandle.nullDevice
     let reading = out.fileHandleForReading
-    return await withCheckedContinuation { done in
-      let once = Once()
-      let finish = { (said: String?) in if once.take() { done.resume(returning: said) } }
-      var data = Data()
-      reading.readabilityHandler = { handle in
-        let chunk = handle.availableData
-        guard chunk.isEmpty else { return data.append(chunk) }
-        handle.readabilityHandler = nil
-        finish(String(decoding: data, as: UTF8.self))
+    let waited = Waited()
+    // Given up on (its time is up, or the task asking was cancelled: a view stopped): nil, and the process ended.
+    let giveUp = {
+      guard waited.finish(nil) else { return }
+      // (not closed here: a read under way would find it closed; the pipe closes as it is let go of)
+      reading.readabilityHandler = nil
+      guard process.isRunning else { return }
+      process.terminate()
+      DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
+        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
       }
-      do {
-        try process.run()
-      } catch {
-        reading.readabilityHandler = nil
-        return finish(nil)
-      }
-      DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-        guard once.take() else { return }
-        done.resume(returning: nil)
-        // (not closed here: a read under way would find it closed; the pipe closes as it is let go of)
-        reading.readabilityHandler = nil
-        guard process.isRunning else { return }
-        process.terminate()
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
-          if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-        }
-      }
+    }
+    let timer = DispatchWorkItem(block: giveUp)
+    var data = Data()
+    reading.readabilityHandler = { handle in
+      let chunk = handle.availableData
+      guard chunk.isEmpty else { return data.append(chunk) }
+      handle.readabilityHandler = nil
+      // (its process and pipe not held on to until the timer's time)
+      timer.cancel()
+      _ = waited.finish(String(decoding: data, as: UTF8.self))
+    }
+    do {
+      try process.run()
+    } catch {
+      reading.readabilityHandler = nil
+      return nil
+    }
+    DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timer)
+    return await withTaskCancellationHandler {
+      await withCheckedContinuation { waited.attach($0) }
+    } onCancel: {
+      timer.cancel()
+      giveUp()
     }
   }
 
@@ -636,6 +646,39 @@ final class SimulatorView: ScreenView {
         done.resume(returning: false)
       }
     }
+  }
+}
+
+/// What `runOutput` returns, said once by whichever comes first (its output, its time up, its task cancelled), before or after
+/// it is waited on.
+private final class Waited: @unchecked Sendable {
+  private let lock = NSLock()
+  private var waiting: CheckedContinuation<String?, Never>?
+  private var said: String??
+
+  func attach(_ continuation: CheckedContinuation<String?, Never>) {
+    lock.lock()
+    guard let said else {
+      waiting = continuation
+      return lock.unlock()
+    }
+    lock.unlock()
+    continuation.resume(returning: said)
+  }
+
+  /// Whether this was the first.
+  func finish(_ value: String?) -> Bool {
+    lock.lock()
+    guard said == nil else {
+      lock.unlock()
+      return false
+    }
+    said = .some(value)
+    let continuation = waiting
+    waiting = nil
+    lock.unlock()
+    continuation?.resume(returning: value)
+    return true
   }
 }
 
