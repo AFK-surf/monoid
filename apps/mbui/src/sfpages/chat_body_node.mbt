@@ -2200,7 +2200,7 @@ fn chat_body_row(
     }
     let note_room = fn() { intent_note_room(notes_of, (here.width)()) }
     p.padding(By(fn() { (0.0, 0.0, note_room(), 0.0) })) |> ignore
-    intent_notes_node(p, src, notes_of, fn() { if slice() > 0 { "" } else { whole_key() } }, note_room, top)
+    intent_notes_node(p, src, notes_of, fn() { if slice() > 0 { "" } else { whole_key() } }, note_room, top, stick_top?)
     let m0 = match @signals.untracked(entry) {
       Said(m) => m
       _ => chat_body_none
