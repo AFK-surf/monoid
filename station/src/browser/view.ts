@@ -591,6 +591,8 @@ export class TabView implements ScreenView {
   #devicePasskeys = true;
   /// Active H.264 encoder when `!peek && codecs.includes("h264")` and an encoder backend is available; null -> JPEG.
   #encoder: BrowserVideoEncoder | null = null;
+  /// Whether the client accepts JPEG fallback if the H.264 encoder closes unexpectedly mid-stream.
+  #allowJpeg = true;
   /// Gentle JPEG fallback rate adaptation state (only used when `#encoder === null`).
   #started = false;
   #quality: ViewOptions["quality"];
@@ -656,7 +658,8 @@ export class TabView implements ScreenView {
         factory: this.#p.createEncoder,
       });
     }
-    if (this.#encoder === null && !options.codecs.includes("jpeg")) {
+    this.#allowJpeg = options.codecs.includes("jpeg");
+    if (this.#encoder === null && !this.#allowJpeg) {
       throw new Error("A tab of the station's browser needs H.264 or JPEG, and no H.264 encoder is available.");
     }
     const base = screencastBase(options, this.#encoder !== null);
@@ -719,19 +722,29 @@ export class TabView implements ScreenView {
     }
   }
 
-  next(): Promise<Frame | null> {
-    if (this.#ended) return Promise.resolve(null);
-    if (this.#encoder !== null) return this.#encoder.next();
+  async next(): Promise<Frame | null> {
+    if (this.#ended) return null;
+    if (this.#encoder !== null) {
+      const frame = await this.#encoder.next();
+      if (frame !== null || this.#ended || !this.#allowJpeg) return frame;
+      // Encoder died unexpectedly mid-stream while CDP screencast is still alive: fall back to JPEG seamlessly.
+      this.#encoder = null;
+      this.#config = null;
+      if (this.#last) {
+        this.#keyframe = true;
+        return this.#again();
+      }
+    }
     if (this.#keyframe && this.#last) {
       this.#clearThrottleTimer();
-      return Promise.resolve(this.#again());
+      return this.#again();
     }
     if (this.#received.length > 0) {
       const elapsed = this.#p.now() - this.#lastJpegDeliveredAt;
       if (this.#jpegMinIntervalMs <= 0 || elapsed >= this.#jpegMinIntervalMs) {
         this.#clearThrottleTimer();
         const frame = this.#take();
-        if (frame) return Promise.resolve(frame);
+        if (frame) return frame;
       } else {
         return new Promise((resolve) => {
           this.#waiter = resolve;
@@ -1110,6 +1123,8 @@ export class TabView implements ScreenView {
       if (this.#encoder !== null) {
         const stamp = typeof meta.timestamp === "number" ? Math.round(meta.timestamp * 1e6) : this.#p.now() * 1000;
         this.#ts = Math.max(this.#ts + 1, stamp);
+        const size = jpegSize(data) ?? this.#viewport;
+        this.#last = { data, config: { codec: "jpeg", width: Math.max(1, size.width), height: Math.max(1, size.height) } };
         this.#encoder.pushJpeg(data, this.#ts);
         return;
       }

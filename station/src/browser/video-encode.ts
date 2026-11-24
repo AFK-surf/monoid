@@ -583,7 +583,13 @@ export function setFfmpegProbeForTest(probe: (() => Promise<boolean>) | null): v
 export function ffmpegAvailable(): Promise<boolean> {
   if (ffmpegProbeOverride !== null) return ffmpegProbeOverride();
   ffmpegProbeCache ??= new Promise<boolean>((resolve) => {
-    execFile("ffmpeg", ["-version"], { timeout: 3_000 }, (err) => resolve(!err));
+    // Verify ffmpeg actually has libx264 AND supports -fps_mode (FFmpeg >= 5.1) so older/LGPL builds fall back to JPEG cleanly.
+    execFile("ffmpeg", ["-hide_banner", "-encoders"], { timeout: 3_000, maxBuffer: 2 * 1024 * 1024 }, (err, stdout) => {
+      if (err || !/\blibx264\b/.test(String(stdout))) return resolve(false);
+      execFile("ffmpeg", ["-hide_banner", "-h"], { timeout: 3_000, maxBuffer: 2 * 1024 * 1024 }, (hErr, hOut) => {
+        resolve(!hErr && /-fps_mode\b/.test(String(hOut)));
+      });
+    });
   });
   return ffmpegProbeCache;
 }
@@ -783,14 +789,18 @@ export class FfmpegVideoEncoder implements BrowserVideoEncoder {
     });
 
     child.once("error", () => {
-      if (this.#child === child) this.#child = null;
+      if (this.#child === child) {
+        this.#child = null;
+        if (!this.#emittedForChild) this.close();
+      }
     });
-    child.once("exit", () => {
+    child.once("exit", (code) => {
       if (this.#child === child) {
         this.#stopFlushTimer();
         this.#stopPrimeTimer();
         for (const au of parser.flush()) this.#emitAu(au);
         this.#child = null;
+        if (!this.#emittedForChild && code !== 0) this.close();
       }
     });
   }
