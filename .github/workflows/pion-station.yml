@@ -82,7 +82,10 @@ on:
       - "station/src/store/usage-retire.ts"
       - "station/src/store/widget-sources.ts"
       - "station/src/usage/module.ts"
+      - "station/src/vault/member-index.ts"
       - "station/src/vault/module.ts"
+      - "station/src/vault/pending-index.ts"
+      - "station/src/vault/rebox-index.ts"
       - "station/src/vault/secrets.ts"
       - "station/src/vault/signin-save-builder.ts"
       - "station/src/vault/signin-save-index.ts"
@@ -613,10 +616,8 @@ jobs:
             station/test/mb-said.test.ts
 
           STILLFAIL_MB_READER="$BIN_PION" node --test \
-            station/test/mb-vault-uses.test.ts
-
-          STILLFAIL_READER_VAULT_USES=pion STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
-            node --test station/test/vault-use-ambiguity.test.ts
+            station/test/mb-vault-uses.test.ts \
+            station/test/vault-use-ambiguity.test.ts
 
           STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
             node --test station/test/builders-vault-pion-switch.test.ts

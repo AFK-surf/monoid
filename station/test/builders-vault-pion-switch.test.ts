@@ -24,6 +24,7 @@ import {
   pionBinary,
   probePionSupportedModes,
   resetReaderSelectionStateForTest,
+  resolveReaderSelection,
 } from "../src/read/mb-reader.ts";
 import { readerModeEnvKey, type ReaderSelectConfig } from "../src/read/reader-select.ts";
 import { initializeVaultMembers } from "../src/vault/member-index.ts";
@@ -37,7 +38,6 @@ import {
 } from "../src/vault/use-index.ts";
 
 const ASK_TIMEOUT_MS = 30_000;
-const MB_FAIL_PREFIX = /^\S+:\d+:\d+-\d+:\d+@\S+ FAILED: /;
 
 const tempDirs: string[] = [];
 after(() => {
@@ -109,13 +109,6 @@ async function withEnv<T>(overrides: Record<string, string | undefined>, fn: () 
     }
     resetReaderSelectionStateForTest();
   }
-}
-
-function normalizeErr(res: Record<string, unknown>): Record<string, unknown> {
-  if (typeof res.error === "string") {
-    return { ...res, error: res.error.replace(MB_FAIL_PREFIX, "") };
-  }
-  return res;
 }
 
 function resolveBinaries(t: { skip: (msg: string) => void }): { realMb: string; realPion: string } | null {
@@ -200,7 +193,7 @@ class VaultProc {
       this.#carry = this.#carry.subarray(nl + 1);
       let parsed: Record<string, unknown>;
       try {
-        parsed = normalizeErr(JSON.parse(line) as Record<string, unknown>);
+        parsed = JSON.parse(line) as Record<string, unknown>;
       } catch {
         return this.#fail(`stdout emitted non-JSON line: ${JSON.stringify(line.slice(0, 200))}`);
       }
@@ -411,11 +404,22 @@ test("builders_vault: file-backed UseIndex hot-switches MB <-> Pion after idle r
 
   let modeCfg: ReaderSelectConfig = { readers: { "vault-uses": "mb" } };
   let idleCallback: (() => void) | null = null;
+  let idleWaiter: PromiseWithResolvers<() => void> | null = null;
   const fakeAfter = (_ms: number, f: () => void) => {
     idleCallback = f;
+    if (idleWaiter !== null) {
+      const w = idleWaiter;
+      idleWaiter = null;
+      w.resolve(f);
+    }
     return () => {
       if (idleCallback === f) idleCallback = null;
     };
+  };
+  const awaitIdle = (): Promise<() => void> => {
+    if (idleCallback !== null) return Promise.resolve(idleCallback);
+    if (idleWaiter === null) idleWaiter = Promise.withResolvers<() => void>();
+    return idleWaiter.promise;
   };
 
   await withEnv(
@@ -440,11 +444,8 @@ test("builders_vault: file-backed UseIndex hot-switches MB <-> Pion after idle r
         assert.equal(pageMb.length, 5);
         await index.preparePending("w", true, true);
 
-        // Wait until background work (uses + rebox) settles and idle timer is armed.
-        const deadline = Date.now() + 15_000;
-        while (idleCallback === null && Date.now() < deadline) {
-          await new Promise((r) => setTimeout(r, 20));
-        }
+        // Wait deterministically (no sleep/polling) until background work (uses + rebox) settles and arms idle timer.
+        await awaitIdle();
         assert.notEqual(idleCallback, null, "UseIndex must become idle once background uses + rebox complete");
         assert.ok(readSpawns(mbLog).some((l) => l.includes("--builder vault-uses")), "MB binary must have been spawned");
         assert.equal(
@@ -463,7 +464,7 @@ test("builders_vault: file-backed UseIndex hot-switches MB <-> Pion after idle r
           1,
         );
 
-        // 2. Release idle worker (via trimIdle / idle callback), tamper DB done flags back to 0 to prove
+        // 2. Release idle worker (via trimIdle), tamper DB done flags back to 0 to prove
         //    `#known` prevents rescanning completed background batches on the new engine!
         const trimmed1 = index.trimIdle();
         assert.equal(trimmed1, 1, "trimIdle must release idle MB worker");
@@ -476,12 +477,19 @@ test("builders_vault: file-backed UseIndex hot-switches MB <-> Pion after idle r
         clearSpawns(mbLog);
         clearSpawns(pionLog);
         modeCfg = { readers: { "vault-uses": "pion" } };
+        assert.equal(
+          resolveReaderSelection("vault-uses", { config: () => modeCfg }).engine,
+          "pion",
+          "config.readers['vault-uses']='pion' must resolve to pion after capability probe",
+        );
         const pagePion = await index.read("w", "v", null, 5);
         assert.deepEqual(pagePion, pageMb, "Pion page after hot-switch must match MB page");
+        // Wait until the newly spawned Pion MbUseReader settles to idle before asserting #known prevented rescanning.
+        await awaitIdle();
         assert.ok(readSpawns(pionLog).some((l) => l.includes("--builder vault-uses")), "Pion binary must have been spawned");
         assert.equal(readSpawns(mbLog).length, 0, "MB must NOT spawn while config selects pion");
 
-        // Verify #known prevented rescanning uses & rebox (the tampered 0 flags stayed 0!).
+        // Verify #known prevented rescanning uses & rebox (the tampered 0 flags stayed 0 even after Pion went idle!).
         assert.equal(
           (db.prepare("SELECT done FROM vault_use_backfill_all WHERE id = 1").get() as { done: number }).done,
           0,
@@ -502,12 +510,43 @@ test("builders_vault: file-backed UseIndex hot-switches MB <-> Pion after idle r
         clearSpawns(pionLog);
         modeCfg = { readers: { "vault-uses": "mb" } };
         const pageBackMb = await index.read("w", "\ud800", null, 10);
+        await awaitIdle();
         assert.equal(pageBackMb.length, 1);
         assert.equal((JSON.parse(pageBackMb[0]!) as { item: string }).item, "e07");
         assert.ok(readSpawns(mbLog).some((l) => l.includes("--builder vault-uses")), "MB must spawn after switching back");
         assert.equal(readSpawns(pionLog).length, 0, "Pion must NOT spawn after switching back to mb");
       } finally {
         await index.close();
+      }
+    },
+  );
+
+  // 4b. Pre-warmed STILLFAIL_READER_VAULT_USES=pion env switch spawns real Pion binary (never MB).
+  await withEnv(
+    {
+      STILLFAIL_MB_READER: mbWrap,
+      STILLFAIL_PION_READER: pionWrap,
+      [readerModeEnvKey("vault-uses")]: "pion",
+    },
+    async () => {
+      clearSpawns(mbLog);
+      clearSpawns(pionLog);
+      const supported = await probePionSupportedModes(pionWrap);
+      assert.ok(supported?.has("vault-uses"));
+      assert.equal(
+        resolveReaderSelection("vault-uses").engine,
+        "pion",
+        "STILLFAIL_READER_VAULT_USES=pion must resolve to engine='pion' after probe",
+      );
+      const envIndex = new UseIndex(db, { after: fakeAfter });
+      try {
+        const pageEnv = await envIndex.read("w", "\ud800", null, 10);
+        assert.equal(pageEnv.length, 1);
+        assert.equal((JSON.parse(pageEnv[0]!) as { item: string }).item, "e07");
+        assert.ok(readSpawns(pionLog).some((l) => l.includes("--builder vault-uses")), "env switch must spawn Pion");
+        assert.equal(readSpawns(mbLog).length, 0, "env switch must NOT spawn MB");
+      } finally {
+        await envIndex.close();
       }
     },
   );
@@ -645,10 +684,17 @@ test("builders_vault: dual-process 0-diff parity on UTF-16LE BLOBs, JS numbers, 
       assert.deepStrictEqual(pRes, mRes);
     }
 
-    // 7. Request-line error parity: malformed JSON (UTF-16 error offset), invalid UTF-8 bytes (WHATWG lossy U+FFFD),
+    // 7. Request-line error parity (raw byte-for-byte comparison, zero prefix stripping):
+    //    malformed JSON (exact UTF-16 error offset), invalid UTF-8 bytes (WHATWG lossy U+FFFD),
     //    unknown op, and corrupted DB body JSON (`JSON.parse: ` prefix).
+    {
+      const badLine = Buffer.from('{"op":"🚀",bad}', "utf8"); // emoji = 2 UTF-16 code units -> offset 11
+      const [mRes, pRes] = await Promise.all([mbProc.askRaw(badLine), pionProc.askRaw(badLine)]);
+      assert.deepStrictEqual(Object.keys(pRes), ["error"], "unreadable request error must have no id");
+      assert.strictEqual(pRes.error, "unreadable request: unexpected input at 11");
+      assert.deepStrictEqual(pRes, mRes, "unreadable request error must match MB byte-for-byte");
+    }
     for (const rawReq of [
-      Buffer.from('{"op":"🚀",bad}', "utf8"), // emoji = 2 UTF-16 code units -> exact UTF-16 offset
       Buffer.concat([Buffer.from('{"op":"ready","q":{"id":1,"ws":"w","vault":"'), Buffer.from([0xff, 0xfe]), Buffer.from('","owner":null,"limit":5}}')]),
       Buffer.from('{"op":"no-such-op"}', "utf8"),
     ]) {
@@ -656,7 +702,7 @@ test("builders_vault: dual-process 0-diff parity on UTF-16LE BLOBs, JS numbers, 
       assert.deepStrictEqual(pRes, mRes, `raw request parity: ${rawReq.toString("hex")}`);
     }
 
-    // Corrupted body marked dirty in vault_use_ambiguous_v2 -> both return {"error": "JSON.parse: ..."} with NO id.
+    // Corrupted body marked dirty in vault_use_ambiguous_v2 -> both return exact {"error": "JSON.parse: unexpected input at 14"} with NO id.
     for (const db of [mbDb, pionDb]) {
       db.exec("DROP TRIGGER IF EXISTS vault_use_lookup_add");
       db.prepare("INSERT INTO vault_requests VALUES ('w', 'bad-json', 's', 'granted', '{\"vault\":\"🚀\",oops}')").run();
@@ -668,7 +714,7 @@ test("builders_vault: dual-process 0-diff parity on UTF-16LE BLOBs, JS numbers, 
         pionProc.ask({ op: "prepare", q: { id: 99, ws: "w", vault: "v", owner: null, limit: 5 } }),
       ]);
       assert.deepStrictEqual(Object.keys(pRes), ["error"], "JSON.parse error must have no id");
-      assert.match(String(pRes.error), /^JSON\.parse: unexpected input at \d+$/);
+      assert.strictEqual(pRes.error, "JSON.parse: unexpected input at 14");
       assert.deepStrictEqual(pRes, mRes, "JSON.parse error must match MB byte-for-byte");
     }
 
@@ -748,51 +794,214 @@ test("builders_vault: SQLITE_BUSY returns {busy:true} (no id) and ordinary SQL e
   }
 });
 
-// ── Static SQLite lexical transaction guard on builders_vault (including closure-body mutation detection) ──
+// ── Static SQLite lexical transaction guard on builders_vault (`+`-folding + quoted identifiers) ──
 
-function findRawTxViolations(filename: string, source: string): string[] {
-  const violations: string[] = [];
-  const forbidden = new Set(["BEGIN", "COMMIT", "END", "SAVEPOINT", "RELEASE", "ROLLBACK"]);
+type PionStringExpr = { line: number; value: string };
+
+function extractPionStringExprs(source: string): PionStringExpr[] {
+  const exprs: PionStringExpr[] = [];
   const n = source.length;
   let i = 0;
   let line = 1;
-  while (i < n) {
-    const ch = source[i]!;
-    if (ch === "\n") { line++; i++; continue; }
-    if (ch === "/" && source[i + 1] === "/") {
-      i += 2;
-      while (i < n && source[i] !== "\n") i++;
-      continue;
+
+  const skipWsAndComments = () => {
+    while (i < n) {
+      const ch = source[i]!;
+      if (ch === " " || ch === "\t" || ch === "\r") { i++; continue; }
+      if (ch === "\n") { line++; i++; continue; }
+      if (ch === "/" && source[i + 1] === "/") {
+        i += 2;
+        while (i < n && source[i] !== "\n") i++;
+        continue;
+      }
+      if (ch === "/" && source[i + 1] === "*") {
+        i += 2;
+        while (i + 1 < n && !(source[i] === "*" && source[i + 1] === "/")) {
+          if (source[i] === "\n") line++;
+          i++;
+        }
+        i += 2;
+        continue;
+      }
+      break;
     }
-    if (ch === '"') {
-      const startLine = line;
-      i++;
-      let lit = "";
-      while (i < n) {
-        const c = source[i]!;
-        if (c === '"') { i++; break; }
-        if (c === "\\") { i += 2; continue; }
-        if (c === "\n") line++;
-        lit += c;
+  };
+
+  const readStringLiteral = (): string => {
+    i++; // opening '"'
+    let out = "";
+    while (i < n) {
+      const ch = source[i]!;
+      if (ch === '"') { i++; return out; }
+      if (ch === "\\") {
+        i++;
+        if (i >= n) return out;
+        const esc = source[i++]!;
+        if (esc === "n") out += "\n";
+        else if (esc === "r") out += "\r";
+        else if (esc === "t") out += "\t";
+        else if (esc === '"') out += '"';
+        else if (esc === "\\") out += "\\";
+        else out += esc;
+      } else {
+        if (ch === "\n") line++;
+        out += ch;
         i++;
       }
-      // Split by SQL statement terminator ';' and check first SQL keyword of each statement.
-      for (const stmt of lit.split(";")) {
-        const m = /^\s*([A-Za-z_]+)/.exec(stmt);
-        if (!m) continue;
-        const head = m[1]!.toUpperCase();
-        if (forbidden.has(head)) {
-          violations.push(`${filename}:${startLine}: forbidden raw tx SQL "${head}" in ${JSON.stringify(lit)}`);
+    }
+    return out;
+  };
+
+  while (i < n) {
+    skipWsAndComments();
+    if (i >= n) break;
+    if (source[i] === '"') {
+      const startLine = line;
+      let combined = readStringLiteral();
+      for (;;) {
+        const savedI = i;
+        const savedLine = line;
+        skipWsAndComments();
+        if (source[i] === "+") {
+          i++;
+          skipWsAndComments();
+          if (source[i] === '"') {
+            combined += readStringLiteral();
+            continue;
+          }
+          if (i < n && /[A-Za-z_(]/.test(source[i]!)) {
+            let depth = 0;
+            while (i < n) {
+              const ch = source[i]!;
+              if (ch === "(" || ch === "[" || ch === "{") { depth++; i++; continue; }
+              if (ch === ")" || ch === "]" || ch === "}") {
+                if (depth === 0) break;
+                depth--;
+                i++;
+                continue;
+              }
+              if (depth === 0 && (ch === "+" || ch === "," || ch === ";" || ch === "\n")) break;
+              if (ch === '"') { readStringLiteral(); continue; }
+              i++;
+            }
+            combined += " __expr__ ";
+            continue;
+          }
         }
+        i = savedI;
+        line = savedLine;
+        break;
       }
+      exprs.push({ line: startLine, value: combined });
       continue;
     }
     i++;
   }
+  return exprs;
+}
+
+type SqlTok = { kind: "word"; upper: string } | { kind: "ident" } | { kind: "str" } | { kind: "semi" } | { kind: "other" };
+
+function tokenizeSql(sql: string): SqlTok[] {
+  const out: SqlTok[] = [];
+  let i = sql.startsWith("\uFEFF") ? 1 : 0;
+  const n = sql.length;
+  while (i < n) {
+    const ch = sql[i]!;
+    if (ch === " " || ch === "\t" || ch === "\r" || ch === "\n") { i++; continue; }
+    if (ch === "-" && sql[i + 1] === "-") {
+      i += 2;
+      while (i < n && sql[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && sql[i + 1] === "*") {
+      i += 2;
+      while (i + 1 < n && !(sql[i] === "*" && sql[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    if (ch === "'") {
+      i++;
+      while (i < n) {
+        if (sql[i] === "'") {
+          i++;
+          if (sql[i] === "'") { i++; continue; }
+          break;
+        }
+        i++;
+      }
+      out.push({ kind: "str" });
+      continue;
+    }
+    if (ch === '"' || ch === "`") {
+      const q = ch;
+      i++;
+      while (i < n) {
+        if (sql[i] === q) {
+          i++;
+          if (sql[i] === q) { i++; continue; }
+          break;
+        }
+        i++;
+      }
+      out.push({ kind: "ident" });
+      continue;
+    }
+    if (ch === "[") {
+      i++;
+      while (i < n && sql[i] !== "]") i++;
+      if (i < n) i++;
+      out.push({ kind: "ident" });
+      continue;
+    }
+    if (ch === ";") { out.push({ kind: "semi" }); i++; continue; }
+    if (/[A-Za-z_]/.test(ch)) {
+      const start = i;
+      while (i < n && /[A-Za-z0-9_$]/.test(sql[i]!)) i++;
+      out.push({ kind: "word", upper: sql.slice(start, i).toUpperCase() });
+      continue;
+    }
+    out.push({ kind: "other" });
+    i++;
+  }
+  return out;
+}
+
+type TxViolation = { file: string; line: number; keyword: string };
+
+function findRawTxViolations(filename: string, source: string): TxViolation[] {
+  const violations: TxViolation[] = [];
+  const forbidden = new Set(["BEGIN", "COMMIT", "END", "SAVEPOINT", "RELEASE", "ROLLBACK"]);
+  for (const expr of extractPionStringExprs(source)) {
+    const tokens = tokenizeSql(expr.value);
+    let atStmtStart = true;
+    for (let t = 0; t < tokens.length; t++) {
+      const tok = tokens[t]!;
+      if (tok.kind === "semi") { atStmtStart = true; continue; }
+      if (!atStmtStart) continue;
+      atStmtStart = false;
+      if (tok.kind !== "word" || !forbidden.has(tok.upper)) continue;
+      if (
+        (tok.upper === "RELEASE" || tok.upper === "SAVEPOINT") &&
+        tokens[t + 1]?.kind !== "word" &&
+        tokens[t + 1]?.kind !== "ident" &&
+        tokens[t + 1]?.kind !== "str"
+      ) {
+        continue;
+      }
+      violations.push({ file: filename, line: expr.line, keyword: tok.upper });
+    }
+  }
   return violations;
 }
 
-test("builders_vault: static SQLite transaction guard has 0 violations and catches closure-body mutations", () => {
+function lineOfNeedle(source: string, needle: string): number {
+  const idx = source.indexOf(needle);
+  assert.ok(idx >= 0, `expected anchor ${JSON.stringify(needle)} in source`);
+  return source.slice(0, idx).split("\n").length;
+}
+
+test("builders_vault: static SQLite transaction guard (+-folding + quoted identifiers) has 0 violations and catches real closure-body mutations", () => {
   const srcDir = resolve(fileURLToPath(new URL("../../pion/station/packages/builders_vault/src", import.meta.url)));
   const files = readdirSync(srcDir)
     .filter((f) => f.endsWith(".pion") && !f.endsWith("_test.pion"))
@@ -808,19 +1017,33 @@ test("builders_vault: static SQLite transaction guard has 0 violations and catch
     );
   }
 
-  // Closure-body mutation checks on real `steps.pion` and `pending.pion` sources.
+  // Real closure-body mutation checks (exact anchor lines inside `tx_bool(db, fn(tx_db ...))` and `savepoint_swallow_err`):
   const stepsSrc = readFileSync(join(srcDir, "steps.pion"), "utf8");
   const pendingSrc = readFileSync(join(srcDir, "pending.pion"), "utf8");
-  assert.ok(
-    findRawTxViolations("steps.pion", stepsSrc.replace("return Ok(true)", 'let _ = tx_db.exec("COMMIT"); return Ok(true)')).length > 0,
-    "must detect COMMIT injected inside tx_err closure in steps.pion",
+
+  const stepsTxAnchor = 'let audit = match tx_db.first(\n      "SELECT after_id, done FROM vault_use_ambiguous_audit_v2 WHERE ws = ?",';
+  const stepsTxLine = lineOfNeedle(stepsSrc, stepsTxAnchor);
+  assert.deepStrictEqual(
+    findRawTxViolations("steps.pion", stepsSrc.replace(stepsTxAnchor, `let _ = tx_db.exec("COM" + "MIT")\n    ${stepsTxAnchor}`)),
+    [{ file: "steps.pion", line: stepsTxLine, keyword: "COMMIT" }],
+    "must detect +-folded COMMIT injected inside tx_err closure in steps.pion at exact line",
   );
-  assert.ok(
-    findRawTxViolations("steps.pion", stepsSrc.replace("return Ok(None)", 'let _ = sp_db.exec("RELEASE vault_use_page"); return Ok(None)')).length > 0,
-    "must detect RELEASE injected inside savepoint_swallow_err closure in steps.pion",
+
+  const stepsSpAnchor = "let state = match use_state(sp_db, q.ws) {";
+  const stepsSpLine = lineOfNeedle(stepsSrc, stepsSpAnchor);
+  assert.deepStrictEqual(
+    findRawTxViolations("steps.pion", stepsSrc.replace(stepsSpAnchor, `let _ = sp_db.exec("RELEASE [vault_use_page]")\n      ${stepsSpAnchor}`)),
+    [{ file: "steps.pion", line: stepsSpLine, keyword: "RELEASE" }],
+    "must detect quoted RELEASE injected inside savepoint_swallow_err closure in steps.pion at exact line",
   );
-  assert.ok(
-    findRawTxViolations("pending.pion", pendingSrc.replace("return Ok(true)", 'let _ = tx_db.exec("ROLLBACK"); return Ok(true)')).length > 0,
-    "must detect ROLLBACK injected inside tx_err closure in pending.pion",
+
+  // Anchor directly inside `backfill_pending_audit`'s `tx_bool(db, fn(tx_db : sql_db::Db) ...)` write closure (~line 179).
+  const pendingTxAnchor = 'let audit = match tx_db.first("SELECT after_id, done FROM " + progress + " WHERE ws = ?", [ws]) {';
+  const pendingTxLine = lineOfNeedle(pendingSrc, pendingTxAnchor);
+  assert.ok(pendingTxLine > 170, `pending.pion tx closure anchor must be inside backfill_pending_audit (>170), got ${pendingTxLine}`);
+  assert.deepStrictEqual(
+    findRawTxViolations("pending.pion", pendingSrc.replace(pendingTxAnchor, `let _ = tx_db.exec("ROLL" + "BACK")\n    ${pendingTxAnchor}`)),
+    [{ file: "pending.pion", line: pendingTxLine, keyword: "ROLLBACK" }],
+    "must detect +-folded ROLLBACK injected inside tx_err closure in pending.pion at exact line",
   );
 });
