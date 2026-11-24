@@ -255,6 +255,7 @@
   "station.retire.askGone": "这张卡片的请求已经不在了：请让 agent 重新发起",
   "station.retire.off": "迁走聊天并移出暂时关闭：这个功能正在修复，修好后再开放",
   "station.connect.stationAway": "这个对话所在的 station（{station}）现在连不上，你的消息没送到。等它上线后再发一次。",
+  "station.connect.stationGone": "这个对话所在的 station（{station}）已不在这个工作区，我已退出这个 thread，之后的消息不再转交。@ 我即可在这里重新开始（之前的对话不会带过来）。",
   "station.connect.ownerEmail": "所属用户必须是邮箱地址",
   "station.connect.ownerWho": "只有 workspace 的 owner、管理员或当前所属用户可以更改所属用户",
   "station.connect.stationManagersOnly": "只有工作区管理员可以更改连接的运行 station",

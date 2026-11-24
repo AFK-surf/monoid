@@ -220,6 +220,13 @@ export class WorkspaceConnects {
   private inWorkspace(ws: string, station: string): boolean {
     return this.d.stations(ws).some((p) => p?.id === station);
   }
+  /// Station `station` is not in `ws`'s roster any more (removed): never while the roster is not known yet.
+  private gone(ws: string, station: string): boolean {
+    const roster = this.d.stations(ws);
+    return roster.length > 0 && !roster.some((p) => p?.id === station);
+  }
+  /// Threads (`connect\0channel\0threadTs`) told their chat's station is away, until an event gets there again.
+  private readonly awayTold = new Set<string>();
   private isTasksOnly(ws: string, station: string): boolean {
     const p = this.d.stations(ws).find((x) => x?.id === station);
     return p?.mode === "tasks" || (p?.rig !== undefined && p?.rig !== null);
@@ -523,12 +530,26 @@ export class WorkspaceConnects {
     const thread = threadOfEvent(event);
     return this.inTurn(`${id}\0${thread.channel}\0${thread.threadTs}`, async () => {
       const there = this.d.store.connectThreadStation(id, thread.channel, thread.threadTs);
-      if (there !== null) {
+      const key = `${id}\0${thread.channel}\0${thread.threadTs}`;
+      // (its station is no longer one of the workspace's: the thread is left, said once; what mentions the bot, this
+      // message too, starts a new conversation as in any thread it is not in)
+      if (there !== null && this.gone(ws, there)) {
+        this.d.store.dropConnectThreadStation(id, thread.channel, thread.threadTs);
+        this.awayTold.delete(key);
+        log.warn("connects", "a chat's station left the workspace; its thread is left", { connect: id, station: there });
+        if (event.type === "message") {
+          await this.own(id)?.post(thread, markNotice(`⚠️ ${tr(stationLang(), "station.connect.stationGone", { station: this.nameOf(ws, there) })}`), []).catch(() => {});
+        }
+        if (event.type !== "message" || !event.message.addressed) return;
+      } else if (there !== null) {
         try {
           await this.forward(there, id, ws, event);
+          this.awayTold.delete(key);
         } catch (e) {
           log.warn("connects", "an event of a chat on another station did not get there", { connect: id, station: there, error: (e as Error).message });
-          if (event.type === "message") {
+          // (said once while it stays away, and again to each message that mentions the bot)
+          if (event.type === "message" && (!this.awayTold.has(key) || event.message.addressed)) {
+            this.awayTold.add(key);
             await this.own(id)?.post(thread, markNotice(`⚠️ ${tr(stationLang(), "station.connect.stationAway", { station: this.nameOf(ws, there) })}`), []).catch(() => {});
           }
         }

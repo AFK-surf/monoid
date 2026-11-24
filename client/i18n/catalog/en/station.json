@@ -258,6 +258,7 @@
   "station.retire.askGone": "This card's request is gone: ask the agent to ask again",
   "station.retire.off": "Move chats away and remove is switched off for now: it is being fixed, and opens again once it is",
   "station.connect.stationAway": "The station this chat runs on ({station}) can't be reached right now, so your message didn't get to it. Try again once it's back online.",
+  "station.connect.stationGone": "The station this chat ran on ({station}) is no longer in this workspace, so I left this thread and won't pass on its messages. @ me to start over here (the earlier conversation doesn't come along).",
   "station.connect.ownerEmail": "The owner must be an email address",
   "station.connect.ownerWho": "Only workspace owners, admins or the current owner can change the owner",
   "station.connect.stationManagersOnly": "Only a workspace owner or admin can change which station a connect runs on",

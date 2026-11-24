@@ -271,6 +271,61 @@ test("a message for a chat on a station that is off is not lost silently: the th
   await close();
 });
 
+test("a chat's station that stays off: the thread is told once, and again only when the bot is mentioned; once it answers again, told anew", async () => {
+  const { h, s, close } = workspace();
+  h.rig.raw.connects.find((c: Json) => c.id === "cl").station = S;
+  const first = message({ text: "<@UBOT> go" });
+  await h.connects.receive("cl", { type: "message", message: first });
+  await settle();
+  s.up = false;
+  const told = () => h.rig.chat.texts().filter((t) => t.includes("desktop")).length;
+  await h.connects.receive("cl", { type: "message", message: reply(first, "1702.1", "still there?", { addressed: false }) });
+  await h.connects.receive("cl", { type: "message", message: reply(first, "1702.2", "hello?", { addressed: false }) });
+  await h.connects.receive("cl", { type: "message", message: reply(first, "1702.3", "anyone?", { addressed: false }) });
+  assert.equal(told(), 1, "once while it stays off");
+  await h.connects.receive("cl", { type: "message", message: reply(first, "1702.4", "<@UBOT> there?", { addressed: true }) });
+  assert.equal(told(), 2, "a mention is told again");
+  s.up = true;
+  await h.connects.receive("cl", { type: "message", message: reply(first, "1702.5", "back", { addressed: false }) });
+  await settle();
+  s.up = false;
+  await h.connects.receive("cl", { type: "message", message: reply(first, "1702.6", "gone again?", { addressed: false }) });
+  assert.equal(told(), 3, "off again after it answered: told anew");
+  assert.equal(h.rig.store.connectThreadStation("cl", first.channel, first.threadTs), S, "still its chat's station");
+  await close();
+});
+
+test("a chat's station removed from the workspace: its thread is left with one notice, what follows unmentioned is not answered, and a mention starts a new conversation", async () => {
+  const { h, s, close } = workspace();
+  h.rig.raw.connects.find((c: Json) => c.id === "cl").station = S;
+  const first = message({ text: "<@UBOT> go" });
+  await h.connects.receive("cl", { type: "message", message: first });
+  await settle();
+  // S removed: off, and no longer on the roster; the connect starts new conversations here again.
+  s.up = false;
+  delete h.rig.raw.connects.find((c: Json) => c.id === "cl").station;
+  const at = roster.findIndex((p) => p.id === S);
+  const [removed] = roster.splice(at, 1);
+  try {
+    const before = h.rig.chat.texts().length;
+    await h.connects.receive("cl", { type: "message", message: reply(first, "1703.1", "still there?", { addressed: false }) });
+    await settle();
+    assert.equal(h.rig.chat.texts().length, before + 1, "one notice");
+    assert.match(h.rig.chat.lastText(), /no longer in this workspace|已不在这个工作区/);
+    assert.equal(h.rig.store.connectThreadStation("cl", first.channel, first.threadTs), null, "the thread is left");
+    await h.connects.receive("cl", { type: "message", message: reply(first, "1703.2", "hello?", { addressed: false }) });
+    await settle();
+    assert.equal(h.rig.chat.texts().length, before + 1, "nothing more is said to what does not mention the bot");
+    assert.equal(h.rig.store.getSession(sessionKey("cl", first.channel, first.threadTs)), null, "and no chat begins here");
+    await h.connects.receive("cl", { type: "message", message: reply(first, "1703.3", "<@UBOT> start over", { addressed: true }) });
+    await settle();
+    assert.ok(h.rig.store.getSession(sessionKey("cl", first.channel, first.threadTs)), "a mention starts it here");
+  } finally {
+    roster.splice(at, 0, removed!);
+  }
+  await close();
+});
+
 test("a connect moved to another station runs there, under the id the workspace knows it by; the chats here go on through it", async () => {
   const { h, s, close } = workspace();
   const here = message({ text: "<@UBOT> hi" });
