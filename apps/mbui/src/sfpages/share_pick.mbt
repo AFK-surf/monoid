@@ -21,7 +21,7 @@ priv struct SharePick {
 /// A station on the workspace's whitelist as its item says it: it takes automatically assigned chats and does not
 /// only run tasks (the core's `onWhitelist`, the station's `autoAllow`).
 fn share_on_whitelist(x : Json) -> Bool {
-  flag(Some(x), "acceptAutoChats") && !flag(Some(x), "tasksOnly")
+  flag(Some(x), "acceptAutoChats") && !flag(Some(x), "tasksOnly") && text(Some(x), "mode") != "tasks"
 }
 
 ///|

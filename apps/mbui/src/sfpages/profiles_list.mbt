@@ -92,10 +92,13 @@ pub fn profiles_list_node(
     if only == "" {
       rows_now.get()
     } else {
-      let listed = items(profiles().value, "items")
-      rows_now.get().map(fn(p) { pl_batch_row(only, p, listed) })
+      // (a station's own: whether it shares, as its overview says it; whether it is up, as its row says it)
+      let o = field(@settings.station_of(core, here(), only), "overview")
+      rows_now.get().map(fn(p) { profiles_batch_row(only, p, o, one()) })
     }
   }, same=jsons_same)
+  // (a workspace come into view: no 多选 begun in another)
+  v.reacts(fn() { here().workspace }, fn(_) { batch.stop() }, at_start=false)
   let batch_rows = fn() { batch_rows_now.get() }
   let batch_offered = fn() { profiles_batch_offered(core, here, fn() { rows_now.get() }) }
   let batch_stations = fn() {
@@ -326,35 +329,6 @@ pub fn profiles_list_node(
   )
   // (多选's bar at the page's foot, over the frame's room there)
   profiles_batch_foot_node(v, core, batch, batch_rows, batch_stations, foot=fn() { frame().foot }, page=true, width?)
-}
-
-///|
-/// A station's own profile `p` (station `only`'s) as 多选 takes it: the workspace's list's row of it (`listed`), that
-/// row's station this one and its profile `p`; else, not one this list can take there (a copy of another station's, or
-/// an account signed in on several), with why.
-fn pl_batch_row(only : String, p : Json, listed : Array[Json]) -> Json {
-  let id = text(Some(p), "id")
-  match listed.iter().find_first(fn(e) { text(Some(e), "station") == only && text(field(Some(e), "profile"), "id") == id }) {
-    Some(e) => {
-      let out = match e {
-        Object(m) => m.copy()
-        _ => Map([])
-      }
-      out["key"] = str(id)
-      Json::object(out)
-    }
-    None => {
-      let why = if text(field(Some(p), "share"), "role") == "user" { "borrowed" } else { "several" }
-      Json::object({
-        "key": str(id),
-        "station": str(only),
-        "profile": p,
-        "title": str(text(Some(p), "name")),
-        "canBatchShare": Json::boolean(false),
-        "batchShareWhy": str(why),
-      })
-    }
-  }
 }
 
 ///|
@@ -1139,6 +1113,7 @@ pub fn profiles_page_node(
   let tabs_thumb = @sf.SegThumb::new(v, fn() { if overview.get() { 1 } else { 0 } })
   // (the list's 多选, its bar's to begin: over as 概览 is shown)
   let batch = ProfilesBatch::new()
+  v.reacts(fn() { overview.get() }, fn(shown) { if shown { batch.stop() } }, at_start=false)
   // (hoisted to the page container so kept panes update the top bar reactively when waking without re-calling bar_actions;
   // overview.get() short-circuits profilesOverview while on 账号)
   match bar_actions {

@@ -1665,7 +1665,7 @@ test "多选 shares several accounts and sets their stations at once, and stops 
     let at = "\{w} platform \{platform}"
     let asked : Array[Json] = []
     let t = setting_tester(Profiles(""), w, platform~, h=1400.0, over=fn(base) {
-      let s = with_share_auto(base)
+      let s = with_titled(with_share_auto(base), "cc", "lin@claude.example")
       { ..s, call: fn(name, params, done) {
         if name == "profile.share" {
           asked.push(params)
@@ -1678,6 +1678,8 @@ test "多选 shares several accounts and sets their stations at once, and stops 
     t.click(Button, label="多选")
     t.run_for(@ui.move_most_ms)
     assert_true(t.find("已选 0 项") is Some(_), msg=at)
+    // (each row named as it was out of 多选: its profile's name, not the account's title)
+    assert_true(t.find("Claude 主账号") is Some(_) && t.find("lin@claude.example") is None, msg="\{at}: a row keeps its name")
     assert_true(t.get(Button, label="分享与 station").disabled, msg="\{at}: nothing picked")
     assert_true(t.get(Button, label="停止分享").disabled, msg=at)
     // a key and the shared subscription: 分享与 station
@@ -1721,5 +1723,71 @@ test "多选 shares several accounts and sets their stations at once, and stops 
     assert_eq(asked.length(), 3, msg=at)
     assert_eq(field(Some(asked[2]), "on"), Some(Json::boolean(false)), msg=at)
     assert_eq(text(Some(asked[2]), "id"), "cc", msg=at)
+  }
+}
+
+///|
+/// The fixture's `profiles` rows with the account of profile `id` titled `title` (an account's email, not its profile's
+/// name), and that row made one 多选 cannot take on the workspace's list (signed in on several stations), as the core
+/// says it of one: `several`.
+fn with_titled(s : Source, id : String, title : String, several? : Bool = false) -> Source {
+  fn shaped(v : Json, id : String, title : String, several : Bool) -> Json {
+    match v {
+      Object(o) => {
+        let p = o.copy()
+        for k, x in o {
+          p[k] = shaped(x, id, title, several)
+        }
+        if o.contains("canBatchShare") && text(field(Some(v), "profile"), "id") == id {
+          p["title"] = Json::string(title)
+          if several {
+            p["canBatchShare"] = Json::boolean(false)
+            p["batchShareWhy"] = Json::string("several")
+          }
+        }
+        Json::object(p)
+      }
+      Array(a) => Json::array(a.map(fn(x) { shaped(x, id, title, several) }))
+      _ => v
+    }
+  }
+  {
+    ..s,
+    topic_read: fn(name, params) {
+      let v = s.topic(name, params).get().snapshot()
+      match v.value {
+        Some(x) if name == "profiles" => { ..v, value: Some(shaped(x, id, title, several)) }
+        _ => v
+      }
+    },
+  }
+}
+
+///|
+test "多选 is over as 概览 is shown, and a station's own page takes its account though the workspace's list cannot (signed in on several)" {
+  for case in page_cases {
+    let (w, platform) = case
+    let at = "\{w} platform \{platform}"
+    let t = setting_tester(Profiles(""), w, platform~, h=1400.0, over=fn(base) { with_share_auto(base) })
+    t.click(Button, label="多选")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("已选 0 项") is Some(_), msg=at)
+    // (概览 shown, as its tab says it once its pools are read: the page's own signal, then back to 账号)
+    @settings.profiles_narrow_overview.set(true)
+    t.run_for(@ui.move_most_ms)
+    @settings.profiles_narrow_overview.set(false)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("已选 0 项") is None, msg="\{at}: 多选 over with 概览")
+    // a station's own page: its own profile, whatever the workspace's list says of the account
+    let one = setting_tester(Profiles("ws1/st1"), w, platform~, h=1400.0, over=fn(base) {
+      with_titled(with_share_auto(base), "cc", "Claude 主账号", several=true)
+    })
+    one.click(Button, label="多选")
+    one.run_for(@ui.move_most_ms)
+    one.tap_text("Claude 主账号")
+    one.run_for(@ui.move_most_ms)
+    assert_true(one.find("已选 1 项") is Some(_), msg="\{at}: this station's own, taken here")
+    assert_true(one.find("多台 station 独立登录，请点进分别设置") is None, msg=at)
+    assert_eq(one.audit(), [], msg="\{at}: " + one.audit().join("; "))
   }
 }

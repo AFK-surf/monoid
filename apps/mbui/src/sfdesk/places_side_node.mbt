@@ -338,7 +338,7 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
         // (while 多选 is on, its box to tick in its place: pressed, picked, never its page)
         line.pick(fn() { batch.on.get() }, fn(x, picking) {
           if picking {
-            @sfpages.profiles_batch_row_node(x, batch, data)
+            @sfpages.profiles_batch_side_row_node(x, list_at, batch, data, more)
           } else {
             profile_side_row_node(x, src, w, tips, list_at, data, more, lit, widest, quota_room_w)
           }

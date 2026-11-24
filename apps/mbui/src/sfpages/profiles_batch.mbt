@@ -94,6 +94,56 @@ pub fn profiles_batch_row(address : String, p : Json, o : Json?, s : Json?) -> J
 }
 
 ///|
+/// An account's name as its row says it out of 多选 (pl_account_row_node's, profile_side_row_node's): its profile's
+/// name, else the account's title, so that its name stays as 多选 begins.
+fn profiles_batch_name(e : Json?) -> String {
+  match text(field(e, "profile"), "name") {
+    "" => text(e, "title")
+    n => n
+  }
+}
+
+///|
+/// An account's row of the profiles' sidebar while 多选 is on, in `line` (profiles_side_node's, as its rows are:
+/// nav_item_node's, `list_at`, `more`): its vendor's mark, its box and its name, its plan after it, and where it
+/// cannot be taken why, faint; pressed, picked or not (never its page).
+pub fn profiles_batch_side_row_node(line : @view.View, list_at : @sf.ListAt, batch : ProfilesBatch, ev : () -> Json?, more : () -> Bool) -> Unit {
+  let key = fn() { text(ev(), "key") }
+  let can = fn() { flag(ev(), "canBatchShare") }
+  let name = fn() { profiles_batch_name(ev()) }
+  let plan = fn() { text(field(ev(), "profile"), "planText") }
+  let why = fn() { if can() { "" } else { profiles_batch_why(ev()) } }
+  let p = fn() { field(ev(), "profile") }
+  @sf.nav_item_node(
+    line,
+    list_at,
+    fn() { false },
+    name,
+    fn(_) {
+      let k = @signals.untracked(key)
+      if @signals.untracked(can) && !batch.busy.get() {
+        batch.chosen.set(k, !batch.picked(k))
+      }
+    },
+    fn(m) {
+      @sfbase.provider_mark_node(m, fn() { (text(p(), "runtime"), text(field(p(), "access"), "kind"), text(p(), "providerMark")) }, @sf.nav_mark_side)
+    },
+    // (its box before its name on its first line, past the row's round corner: a box where its mark stands would sit
+    // in that corner, off its curve)
+    fn(t) {
+      t.box(fn(c) {
+        c.margin(Is((0.0, 0.0, pb_box_gap, 0.0))) |> ignore
+        @sf.check_mark_node(c, fn() { can() && batch.picked(key()) }, dimmed=fn() { !can() })
+      })
+      |> ignore
+      @sf.nav_title_node(t, name, away=fn() { !can() }, after=fn(a) { @sf.row_tag_node(a, plan) }, after_shown=fn() { plan() != "" })
+    },
+    lines=fn(ls) { ls.show(fn() { why() != "" }, fn(k) { @sf.list_row_line_node(k, fn(r) { @sf.nav_meta_node(r, why) }) }) },
+    more~,
+  )
+}
+
+///|
 /// An account's row while 多选 is on, in `r`: its box ticked as it is picked, its vendor's mark, its name, and where it
 /// cannot be taken why, dimmed and not to be ticked; pressed anywhere, picked or not (never its page).
 pub fn profiles_batch_row_node(r : @view.View, batch : ProfilesBatch, ev : () -> Json?) -> Unit {
@@ -105,12 +155,7 @@ pub fn profiles_batch_row_node(r : @view.View, batch : ProfilesBatch, ev : () ->
     // (the whole row its press, its box the mark at its start: a choice's row, as a list's picks are)
     @sf.choice_row_node(
       d,
-      fn() {
-        match text(ev(), "title") {
-          "" => text(p(), "name")
-          t => t
-        }
-      },
+      fn() { profiles_batch_name(ev()) },
       fn() { false },
       lead=fn(l) { @sf.check_mark_node(l, fn() { can() && batch.picked(key()) }, dimmed=fn() { !can() }) },
       press=fn() {
@@ -272,3 +317,7 @@ let pb_head : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
 ///|
 /// The room above and below the bar's card (card_foot_gap's).
 let pb_gap : Double = 8.0
+
+///|
+/// The room between a sidebar row's box and its name (a list row's mark's gap to its words, list_row_marked's S2).
+let pb_box_gap : Double = 8.0
