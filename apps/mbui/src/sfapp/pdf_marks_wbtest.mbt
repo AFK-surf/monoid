@@ -24,8 +24,8 @@ fn pdf_marks_file() -> Bytes {
 
 ///|
 /// The preview of a PDF whose words are the file above's, and where its first page is drawn.
-fn pdf_marks_tester(platform? : Int = 0) -> (@ui.Tester, Viewer, Double, Double, Double, Double) {
-  let t = preview_tester("pdf", platform~)
+fn pdf_marks_tester(platform? : Int = 0, w? : Double = 390.0) -> (@ui.Tester, Viewer, Double, Double, Double, Double) {
+  let t = preview_tester("pdf", platform~, w~)
   let v = viewer.get().unwrap()
   v.pdf_marks.doc = @pdftext.Doc::open(pdf_marks_file())
   v.pdf_marks.read = true
@@ -98,8 +98,8 @@ test "a note kept on the page goes into the draft with its words, its file and i
   assert_true(ky > y + 100.0 / 800.0 * h + 40.0 && ky + kh <= wh, msg="the note's card at the foot: \{ky} in \{wh}")
   t.tap(kx + kw / 2.0, ky + kh / 2.0)
   assert_eq(v.pdf_marks.marks[0].comment, "这里改一下")
-  assert_true(t.find("发送 1 条标注") is Some(_), msg="what sends the notes")
-  t.tap_text("发送 1 条标注")
+  assert_true(t.find("1 条标注") is Some(_) && t.find("发送") is Some(_), msg="what lists and sends the notes")
+  t.tap_text("发送")
   assert_eq(v.pdf_marks.marks.length(), 0, msg="sent")
   t.run_for(@ui.move_most_ms)
   t.draw()
@@ -127,7 +127,7 @@ test "a finger that moves scrolls the pages; one held picks the word under it" {
   assert_true(second[1] < y + h, msg="it scrolled")
   let held_y = second[1] + 100.0 / 800.0 * second[3]
   t.touch(0, px, held_y)
-  t.run_for(@ui.long_press_ms + 20.0)
+  t.run_for(@ui.long_press_ms + tap_hold_extra_ms)
   t.touch(2, px, held_y)
   t.draw()
   match v.pdf_marks.picked.get() {
@@ -135,3 +135,93 @@ test "a finger that moves scrolls the pages; one held picks the word under it" {
     None => fail("held at \{Repr((px, held_y))} on a page at \{Repr(t.drawn_images().map(fn(i) { (i[0], i[1], i[2], i[3]) }))}: nothing picked")
   }
 }
+
+///|
+/// A note made on the first page's words, from a drag to 完成 (its words written first where `said`).
+fn pdf_note_made(t : @ui.Tester, x : Double, y : Double, w : Double, h : Double, said? : String = "") -> Unit raise {
+  t.drag(x + 100.5 / 600.0 * w, y + 100.0 / 800.0 * h, x + 199.5 / 600.0 * w, y + 100.0 / 800.0 * h)
+  t.tap_text("批注")
+  if said != "" {
+    t.type_text(said)
+  }
+  let (kx, ky, kw, kh) = t.get(Button, label="完成").rect
+  t.tap(kx + kw / 2.0, ky + kh / 2.0)
+}
+
+///|
+test "wide: the notes stand at the pages' side; a card opens its note, its bin takes it off" {
+  let (t, v, x, y, w, h) = pdf_marks_tester(w=1280.0)
+  pdf_note_made(t, x, y, w, h, said="改短一点")
+  t.draw()
+  assert_true(t.find("1 条标注") is Some(_), msg="the column's head")
+  assert_true(t.find("first page") is Some(_) && t.find("改短一点") is Some(_), msg="the card: its words and its note")
+  // (the pages narrowed for the column, clear of it)
+  let page = t.drawn_images()[0]
+  assert_true(page[0] + page[2] <= 1280.0 - @sfbase.doc_notes_side_w, msg="the page clear of the column: \{Repr(page)}")
+  // (no bar at the foot: the column has the keys)
+  assert_true(t.find("发送 1 条标注") is Some(_))
+  t.tap_text("改短一点")
+  assert_eq(v.pdf_marks.writing.get(), v.pdf_marks.marks[0].id, msg="the card opened its note")
+  assert_eq(v.pdf_marks.note.text(), "改短一点")
+  let (kx, ky, kw, kh) = t.get(Button, label="完成").rect
+  t.tap(kx + kw / 2.0, ky + kh / 2.0)
+  let bins = t.all(Button, label="删除批注")
+  assert_true(bins.length() >= 1, msg="the card's bin")
+  let (bx, by, bw, bh) = bins[0].rect
+  t.tap(bx + bw / 2.0, by + bh / 2.0)
+  assert_eq(v.pdf_marks.marks.length(), 0, msg="taken off")
+  t.draw()
+  assert_true(t.find("1 条标注") is None, msg="the column gone with the last note")
+}
+
+///|
+test "narrow: a count at the foot opens the notes in a sheet; a row opens its note on the page" {
+  let (t, v, x, y, w, h) = pdf_marks_tester(platform=2)
+  // (a finger: held on the words, slid along them)
+  let (px, py) = (x + 100.5 / 600.0 * w, y + 100.0 / 800.0 * h)
+  t.touch(0, px, py)
+  t.run_for(@ui.long_press_ms + tap_hold_extra_ms)
+  t.hold_move(x + 150.5 / 600.0 * w, py)
+  t.hold_move(x + 199.5 / 600.0 * w, py)
+  t.touch(2, x + 199.5 / 600.0 * w, py)
+  t.draw()
+  assert_eq(v.pdf_marks.picked.get(), Some(Words(0, 0, 0, 10)), msg="held and slid: the words")
+  t.tap_text("批注")
+  t.type_text("这里")
+  let (kx, ky, kw, kh) = t.get(Button, label="完成").rect
+  t.tap(kx + kw / 2.0, ky + kh / 2.0)
+  t.draw()
+  // (the foot: the count and 发送, no column at this width)
+  assert_true(t.find("1 条标注") is Some(_) && t.find("发送") is Some(_), msg="the foot's count and 发送")
+  t.tap_text("1 条标注")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("第 1 页") is Some(_) && t.find("这里") is Some(_), msg="the sheet's row")
+  t.tap_text("这里")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(v.pdf_marks.writing.get(), v.pdf_marks.marks[0].id, msg="the row opened its note")
+  // (the sheet gone, its note's field still takes what is typed)
+  t.type_text("，短些")
+  assert_eq(v.pdf_marks.note.text(), "这里，短些", msg="written on as the sheet went")
+}
+
+///|
+test "a finger held off the words frames an area as it slides" {
+  let (t, v, x, y, w, h) = pdf_marks_tester(platform=2)
+  let (px, py) = (x + 0.3 * w, y + 0.5 * h)
+  t.touch(0, px, py)
+  t.run_for(@ui.long_press_ms + tap_hold_extra_ms)
+  t.hold_move(x + 0.5 * w, y + 0.55 * h)
+  t.hold_move(x + 0.7 * w, y + 0.6 * h)
+  t.touch(2, x + 0.7 * w, y + 0.6 * h)
+  t.draw()
+  match v.pdf_marks.picked.get() {
+    Some(Area(0, x0, y0, x1, y1)) =>
+      assert_true((x0 - 0.3).abs() < 0.02 && (y0 - 0.5).abs() < 0.02 && (x1 - 0.7).abs() < 0.02 && (y1 - 0.6).abs() < 0.02)
+    other => fail("picked \{Repr(other)}")
+  }
+  assert_true(t.find("批注") is Some(_), msg="its bar")
+}
+
+///|
+/// A little longer than a long press, for a hold to be taken.
+let tap_hold_extra_ms : Double = 20.0

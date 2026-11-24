@@ -202,8 +202,15 @@ fn pdf_stage_node(parent : @view.View, vw : Viewer, width : () -> Double) -> Uni
     return
   }
   let small = fn() { width() <= @sf.viewer_small_w }
+  // (the notes at the side where the stage is wide enough: the pages narrowed and moved over for them)
+  let m = vw.pdf_marks
+  let side = fn() {
+    m.told.get() |> ignore
+    doc_notes_side(width(), m.marks.length())
+  }
+  let side_room = fn() { if side() { doc_notes_side_room } else { 0.0 } }
   let page_w = fn() {
-    let w = width()
+    let w = width() - side_room()
     if small() {
       w - 2.0 * pdf_small_in
     } else {
@@ -216,6 +223,8 @@ fn pdf_stage_node(parent : @view.View, vw : Viewer, width : () -> Double) -> Uni
     let (pw, ph) = pdf.sizes[i]
     if pw > 0.0 { page_w() * ph / pw } else { page_w() * pdf_page_share }
   }
+  let place : @view.ListPlace[Int] = @view.ListPlace::new()
+  m.locate = fn(page, v) { place.bring(page, offset=v * tall_of(page) - pdf_locate_room) }
   parent.scrolls_window(
     @view.Scroll::list(),
     fn() { keys },
@@ -224,6 +233,7 @@ fn pdf_stage_node(parent : @view.View, vw : Viewer, width : () -> Double) -> Uni
       let tall = fn() { if pw > 0.0 { page_w() * ph / pw } else { page_w() * pdf_page_share } }
       row
       .lines_up(Is(Some(Middle)))
+      .padding(By(fn() { (0.0, 0.0, side_room(), 0.0) }))
       .height(By(fn() { Some(tall() + (if i < pdf.pages - 1 { gap() } else { 0.0 })) }))
       |> ignore
       row.box(fn(page) {
@@ -247,6 +257,7 @@ fn pdf_stage_node(parent : @view.View, vw : Viewer, width : () -> Double) -> Uni
       |> ignore
     },
     est=pdf_est,
+    place~,
     slop=@ui.touch_slop(),
     bar=@ui.tree_scroll_bar(),
     head=fn(h) {
@@ -269,7 +280,14 @@ fn pdf_stage_node(parent : @view.View, vw : Viewer, width : () -> Double) -> Uni
     },
   )
   |> ignore
-  pdf_marks_bar_node(parent, vw)
+  pdf_marks_bar_node(parent, vw, side)
+  doc_notes_side_node(
+    parent,
+    vw.pdf_doc_notes(),
+    side,
+    fn() { if small() { page_small_top } else { desk_page_top } },
+    fn() { if vw.beside { gap() } else { stage_foot_room(width()) + desk_pdf_foot } },
+  )
   // (⌘C copies what is picked; Esc lets it go, then closes the note being written)
   parent
   .on_key(fn(k) { vw.pdf_key(k.code, k.mods) })
@@ -279,6 +297,10 @@ fn pdf_stage_node(parent : @view.View, vw : Viewer, width : () -> Double) -> Uni
 ///|
 /// A PDF's page of no size said, as tall for as wide (A4's).
 let pdf_page_share : Double = 1.294
+
+///|
+/// How far under the stage's top a note opened from the list is brought.
+let pdf_locate_room : Double = 120.0
 
 ///|
 /// How tall a PDF's page is guessed at before it is laid out.

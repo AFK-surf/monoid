@@ -43,6 +43,8 @@ pub(all) struct PdfMarks {
   mut area_from : (Int, Double, Double)?
   /// a finger's hold picked the word it began on
   mut held : Bool
+  /// brings page `page` into sight, `v` (a fraction of it) down it near the stage's top: the stage's, said as it is made
+  mut locate : (Int, Double) -> Unit
 }
 
 ///|
@@ -60,6 +62,7 @@ fn PdfMarks::new() -> PdfMarks {
     words_from: None,
     area_from: None,
     held: false,
+    locate: fn(_, _) {  },
   }
 }
 
@@ -356,6 +359,85 @@ fn Viewer::pdf_key(self : Viewer, code : Int, mods : Int) -> Bool {
 }
 
 ///|
+/// Note `id` opened: brought into sight on its page and opened to be written, what was said of it in the field.
+fn Viewer::pdf_note_open(self : Viewer, id : Int) -> Unit {
+  let m = self.pdf_marks
+  guard m.marks.search_by(fn(x) { x.id == id }) is Some(k) else { return }
+  let x = m.marks[k]
+  m.let_go()
+  let (page, v) = match x.what {
+    Words(pa, _, _, _) =>
+      match pdf_rects_of(m.doc, x.what, pa).get(0) {
+        Some((_, y0, _, _)) => (pa, y0)
+        None => (pa, 0.0)
+      }
+    Area(j, _, y0, _, _) => (j, y0)
+  }
+  (m.locate)(page, v)
+  m.note.set(x.comment)
+  m.writing.set(id)
+  m.told.set(m.told.untracked() + 1)
+  m.note.focus()
+}
+
+///|
+/// Note `id` taken off the page.
+fn Viewer::pdf_note_drop(self : Viewer, id : Int) -> Unit {
+  let m = self.pdf_marks
+  if m.writing.untracked() == id {
+    self.pdf_note_removed()
+    return
+  }
+  match m.marks.search_by(fn(x) { x.id == id }) {
+    Some(k) => m.marks.remove(k) |> ignore
+    None => ()
+  }
+  m.told.set(m.told.untracked() + 1)
+}
+
+///|
+/// Where `what` is, as a list of notes says it: its page, or its pages.
+fn pdf_place_label(what : PdfPicked) -> String {
+  match what {
+    Words(pa, _, pb, _) if pa != pb =>
+      pv_fill("android-chat.pdf.note.pages", [("from", "\{pa + 1}"), ("to", "\{pb + 1}")])
+    Words(pa, _, _, _) => pv_fill("android-chat.pdf.note.page", [("page", "\{pa + 1}")])
+    Area(j, _, _, _, _) => pv_fill("android-chat.pdf.note.page", [("page", "\{j + 1}")])
+  }
+}
+
+///|
+/// What a note is of, as a list says it: its words, or that it is an area (and the words in it).
+fn pdf_excerpt(x : PdfMark) -> String {
+  match x.what {
+    Area(_, _, _, _, _) =>
+      if x.text == "" {
+        pv("android-chat.pdf.note.area")
+      } else {
+        pv("android-chat.pdf.note.area") + " · " + x.text
+      }
+    _ => x.text
+  }
+}
+
+///|
+/// This PDF's notes as the viewer lists them (doc_notes_node.mbt).
+fn Viewer::pdf_doc_notes(self : Viewer) -> DocNotes {
+  let m = self.pdf_marks
+  {
+    notes: fn() {
+      m.told.get() |> ignore
+      m.marks.map(fn(x) { { id: x.id, place: pdf_place_label(x.what), excerpt: pdf_excerpt(x), comment: x.comment } })
+    },
+    current: fn() { m.writing.get() },
+    open: fn(id) { self.pdf_note_open(id) },
+    remove: fn(id) { self.pdf_note_drop(id) },
+    send: fn() { self.pdf_marks_sent() },
+    clear: fn() { self.pdf_marks_cleared() },
+  }
+}
+
+///|
 /// Boxes in `b` over a page `page_w()` wide and `tall()` high, each at `rects()`'s place, in `color`.
 fn pdf_rects_node(
   b : @view.View,
@@ -411,6 +493,24 @@ fn pdf_page_marks_node(
         out
       },
       fn() { @sf.alpha(0xF5C518FFL, 0.38) },
+      page_w,
+      tall,
+    )
+  })
+  |> ignore
+  // (the note open (written, or opened from the list) a step stronger over its own)
+  page.box(fn(b) {
+    pdf_rects_node(
+      b,
+      fn() {
+        m.told.get() |> ignore
+        let id = m.writing.get()
+        match m.marks.search_by(fn(x) { x.id == id }) {
+          Some(k) => pdf_rects_of(m.doc, m.marks[k].what, i)
+          None => []
+        }
+      },
+      fn() { @sf.alpha(0xF5A30FFFL, 0.36) },
       page_w,
       tall,
     )
@@ -535,22 +635,28 @@ fn pdf_page_marks_node(
         @ui.long_press_ms,
         fn(d) {
           let (j, u, v) = spot(d.ox, d.oy)
-          match vw.pdf_doc() {
-            Some(doc) if doc.page(j).readable() =>
-              match doc.page(j).nearest(u, v) {
-                Some(k) => {
-                  let (a, e) = doc.page(j).word_at(k)
-                  m.words_from = Some((j, a))
-                  m.area_from = None
-                  m.held = true
-                  m.settled.set(false)
-                  m.picked.set(pdf_span(j, a, j, e))
-                  @ui.haptic(KeyboardTap)
-                }
-                None => ()
-              }
-            _ => ()
+          // (held on words: the word under it, the finger sliding on picking on from it; held off them (a figure, a
+          // scanned page): an area from there, the finger sliding on framing it)
+          let word = match vw.pdf_doc() {
+            Some(doc) if doc.page(j).readable() && doc.page(j).near(u, v, pdf_words_reach) =>
+              doc.page(j).nearest(u, v).map(fn(k) { (k, doc.page(j).word_at(k)) })
+            _ => None
           }
+          m.held = true
+          m.settled.set(false)
+          match word {
+            Some((_, (a, e))) => {
+              m.words_from = Some((j, a))
+              m.area_from = None
+              m.picked.set(pdf_span(j, a, j, e))
+            }
+            None => {
+              m.words_from = None
+              m.area_from = Some((j, u, v))
+              m.picked.set(None)
+            }
+          }
+          @ui.haptic(KeyboardTap)
         },
       ),
       drag=fn(d) {
@@ -641,6 +747,10 @@ fn pdf_page_marks_node(
 }
 
 ///|
+/// The note card's corner: its round keys' (18) and the 6 round them.
+let pdf_note_corner : Double = 24.0
+
+///|
 /// How wide the card a note is written in is.
 let pdf_note_w : Double = 320.0
 
@@ -654,7 +764,7 @@ fn pdf_share(v : Double) -> Double {
 /// buttons): all of them into the chat's draft, or off the pages; while one is written, its card there in their place,
 /// as a picture's note is written at its viewer's foot (note_box_node), never over the words round it. Where the viewer
 /// has no chat to put them in, none are made.
-fn pdf_marks_bar_node(parent : @view.View, vw : Viewer) -> Unit {
+fn pdf_marks_bar_node(parent : @view.View, vw : Viewer, side : () -> Bool) -> Unit {
   let m = vw.pdf_marks
   let any = fn() {
     m.told.get() |> ignore
@@ -669,9 +779,12 @@ fn pdf_marks_bar_node(parent : @view.View, vw : Viewer) -> Unit {
       r.pick(
         fn() {
           m.told.get() |> ignore
-          // (-1: the bar, with as many notes as it says; else the note being written)
+          // (the note being written; else, where the notes stand at the side, nothing more here (-2); else the bar,
+          // with as many notes as it says (-1))
           if m.writing.get() >= 0 {
             (m.writing.get(), 0)
+          } else if side() {
+            (-2, 0)
           } else {
             (-1, m.marks.length())
           }
@@ -679,16 +792,17 @@ fn pdf_marks_bar_node(parent : @view.View, vw : Viewer) -> Unit {
         fn(holds, now) {
           if now.0 >= 0 {
             pdf_note_card_node(holds, vw)
-          } else {
+          } else if now.0 == -1 {
+            // (N 条标注 opens them in a sheet, to read, open, take off; 发送 puts them all in the draft)
             @sf.pick_bar_node(holds, [
               {
-                label: pv("android-chat.pdf.marks.clear"),
-                icon: "trash",
+                label: pv_fill("android-chat.pdf.notes.count", [("n", "\{now.1}")]),
+                icon: "list",
                 mark: false,
-                press: fn() { vw.pdf_marks_cleared() },
+                press: fn() { doc_notes_sheet(vw.pdf_doc_notes()) },
               },
               {
-                label: pv_fill("android-chat.pdf.marks.send", [("n", "\{now.1}")]),
+                label: pv("android-chat.pdf.notes.send"),
                 icon: "send",
                 mark: false,
                 press: fn() { vw.pdf_marks_sent() },
@@ -709,19 +823,32 @@ fn pdf_marks_bar_node(parent : @view.View, vw : Viewer) -> Unit {
 fn pdf_note_card_node(holds : @view.View, vw : Viewer) -> Unit {
   let m = vw.pdf_marks
   holds.box(fn(card) {
-    @sf.glass_capsule_node(card, radius=Some(note_box_corner), sharing=false, solid=fn() { @sf.panel_ground() })
+    @sf.glass_capsule_node(card, radius=Some(pdf_note_corner), sharing=false, solid=fn() { @sf.panel_ground() })
     .max_width(Is(Some(pdf_note_w)))
     .width(Is(Some(pdf_note_w)))
     .shrink(Is(1.0))
-    .padding(Is((6.0, 6.0, 6.0, 6.0)))
-    .row(Is(true))
-    .lines_up(Is(Some(End)))
-    .gap(Is(4.0))
+    .padding(Is((6.0, 10.0, 6.0, 6.0)))
+    .gap(Is(2.0))
     |> ignore
     card
     .edge(By(fn() { if card.glass_solid() { (@sf.control_edge_w, @sf.theme().p.line) } else { (0.0, 0L) } }))
     .shadow(By(fn() { @sf.glass_control_shadow() }))
     |> ignore
+    // (what it is said of, a line, over the field)
+    card.box(fn(t) {
+      t.padding(Is((10.0, 0.0, 10.0, 0.0))) |> ignore
+      doc_note_line(t, fn() {
+        m.told.get() |> ignore
+        let id = m.writing.get()
+        match m.marks.search_by(fn(x) { x.id == id }) {
+          Some(k) => pdf_place_label(m.marks[k].what) + " · " + pdf_excerpt(m.marks[k])
+          None => ""
+        }
+      }, 12.0, 400, 1, fn() { @sf.theme().p.muted })
+    })
+    |> ignore
+    card.box(fn(card) {
+    card.row(Is(true)).lines_up(Is(Some(End))).gap(Is(4.0)) |> ignore
     note_key_node(card, "trash", 17.0, 0L, @sf.theme().p.muted, pv("android-chat.annotate.remove"), fn() {
       vw.pdf_note_removed()
     })
@@ -754,6 +881,8 @@ fn pdf_note_card_node(holds : @view.View, vw : Viewer) -> Unit {
     note_key_node(card, "check", 18.0, @sf.theme().p.text, @sf.theme().p.bg, pv("android-chat.annotate.done"), fn() {
       vw.pdf_note_done()
     })
+    })
+    |> ignore
   })
   |> ignore
 }
