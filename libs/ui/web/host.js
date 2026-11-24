@@ -4440,9 +4440,12 @@
   const CLOCK_WINDOW_MS = 5000;
   const JITTER_WINDOW_MS = 2000;
   const JITTER_QUANTILE = 0.95;
-  const MAX_HOLD_MS = 100;
-  const HOLD_DECAY = 0.05;
+  const MAX_HOLD_MS = 60;
+  const HOLD_DECAY = 0.04;
   const CLOCK_JUMP_MS = 500;
+  const SILENCE_MS = 200;
+  const OVERRUN_DUE = 10;
+  const OVERRUN_STAY_MS = 180;
   const streams = new Map();
   let nextStream = 0;
   // (a VideoDecoder that takes no H.264, as Chromium's own build has: asked once as the page loads, the app's first
@@ -4464,11 +4467,13 @@
   }
   function observeArrival(s, ts, arrivedMs) {
     const offset = arrivedMs - ts / 1000;
+    let immediate = arrivedMs - s.lastArrivalMs >= SILENCE_MS;
     const last = s.samples.length ? s.samples[s.samples.length - 1] : null;
     if (last && Math.abs(offset - last.offset) > CLOCK_JUMP_MS) {
       s.samples = [];
       s.lows = [];
       s.holdMs = 0;
+      immediate = true;
     }
     const previous = s.samples.length ? s.samples[s.samples.length - 1].time : arrivedMs;
     const sample = { time: arrivedMs, offset, late: 0 };
@@ -4488,9 +4493,11 @@
     recent.sort((a, b) => a - b);
     const target = Math.min(MAX_HOLD_MS, recent[Math.floor(JITTER_QUANTILE * (recent.length - 1))]);
     s.holdMs = target >= s.holdMs ? target : Math.max(target, s.holdMs - (arrivedMs - previous) * HOLD_DECAY);
-    return base;
+    s.lastArrivalMs = arrivedMs;
+    return { base, immediate };
   }
   function isDue(s, item, now) {
+    if (item.immediate) return true;
     return item.ts / 1000 + item.base + s.holdMs <= now + 1e-6;
   }
   function dueCount(s, now) {
@@ -4504,7 +4511,7 @@
   }
   function presenterPhase(due, draws, backlogMs, sinceCatchUpMs, headOverstayMs) {
     if (due <= 2) return 'idle';
-    if (due > 12 || headOverstayMs > 200) return 'overrun';
+    if (due > OVERRUN_DUE || headOverstayMs > OVERRUN_STAY_MS) return 'overrun';
     if (due - draws <= 2) return 'idle';
     return backlogMs < 500 || sinceCatchUpMs < 250 ? 'backlog' : 'catchUp';
   }
@@ -4569,6 +4576,7 @@
     s.samples = [];
     s.lows = [];
     s.holdMs = 0;
+    s.lastArrivalMs = -Infinity;
     s.arrivals.clear();
     for (const f of s.paced) f.frame.close();
     s.paced = [];
@@ -4598,6 +4606,7 @@
             h: frame.displayHeight,
             arrived: meta ? meta.arrived : now,
             base: meta ? meta.base : now - ts / 1000,
+            immediate: meta ? meta.immediate : false,
           });
         },
         error: (e) => {
@@ -4633,7 +4642,7 @@
   H.streamOpen = () => {
     const id = ++nextStream;
     streams.set(id, { id, events: [], decoded: [], inside: [], paced: [], arrivals: new Map(), samples: [], lows: [],
-      holdMs: 0, backlogSince: null, lastCatchUp: -Infinity, paceRaf: 0, drawnThisFrame: false, gen: 0, needKey: true,
+      holdMs: 0, lastArrivalMs: -Infinity, backlogSince: null, lastCatchUp: -Infinity, paceRaf: 0, drawnThisFrame: false, gen: 0, needKey: true,
       decoder: null, config: null, tex: null, shown: null, closed: false, jpegs: Promise.resolve() });
     return id;
   };
@@ -4656,8 +4665,8 @@
     if (!s.decoder || (s.needKey && !key)) return say(s, 'd ' + num(ts));
     s.needKey = false;
     const arrived = performance.now();
-    const base = observeArrival(s, ts, arrived);
-    s.arrivals.set(ts, { arrived, base });
+    const obs = observeArrival(s, ts, arrived);
+    s.arrivals.set(ts, { arrived, base: obs.base, immediate: obs.immediate });
     try {
       s.inside.push(ts);
       s.decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: ts, data: new Uint8Array(data) }));

@@ -189,6 +189,8 @@ void mb_views_draw_under(uint8_t *out, int w, int h, double scale);
 int mb_stream_layers_here(void);
 void mb_stream_attach(int sid, void *content);
 void mb_stream_placed(int sid, double w, double h, double scale);
+void mb_stream_route_acks(int (*ack)(double route, double ts));
+void mb_stream_route_acks_wait(int (*ack)(double route, double ts, uint32_t wait_us));
 
 // text (win_text.cpp)
 // rasterize at this many pixels per point; a change starts a new atlas

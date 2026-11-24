@@ -2681,6 +2681,7 @@ static mb_route routes[MB_ROUTES];
 static uint64_t routes_used;
 static pthread_mutex_t routes_lock = PTHREAD_MUTEX_INITIALIZER;
 static int (*route_ack)(double route, double ts);
+static int (*route_ack_wait)(double route, double ts, uint32_t wait_us);
 
 // (under routes_lock) route's entry; made where `make` (in a free one, else one routing nothing used least lately)
 static mb_route *route_at(uint64_t route, int make) {
@@ -2714,6 +2715,7 @@ static void unroute(int32_t sid, int what) {
 }
 
 void mb_stream_route_acks(int (*ack)(double route, double ts)) { route_ack = ack; }
+void mb_stream_route_acks_wait(int (*ack)(double route, double ts, uint32_t wait_us)) { route_ack_wait = ack; }
 
 // (Streams' decoder thread) whether route's frames still go to stream sid, and frame ts of route acknowledged
 JNIEXPORT jboolean JNICALL Java_dev_mbui_Streams_routed(JNIEnv *env, jclass c, jlong route, jint sid) {
@@ -2725,7 +2727,8 @@ JNIEXPORT jboolean JNICALL Java_dev_mbui_Streams_routed(JNIEnv *env, jclass c, j
 }
 
 JNIEXPORT void JNICALL Java_dev_mbui_Streams_routeAck(JNIEnv *env, jclass c, jlong route, jdouble ts) {
-  if (route_ack) route_ack((double)route, ts);
+  if (route_ack_wait) route_ack_wait((double)route, ts, 0);
+  else if (route_ack) route_ack((double)route, ts);
 }
 
 // An engine's thread this attached to the VM is detached as it ends (a thread that ends attached aborts the process).
