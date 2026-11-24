@@ -1083,10 +1083,14 @@ test("D71: S3Client.deleteObjects batches >1000 keys with Content-MD5/SigV4, han
   assert.equal(s3.batchDeletes.length, 1, "orphans reclaimed via DeleteObjects batch");
   assert.equal(s3.singleDeletes.length, 0);
 
-  // 4. R1 fix: crash-recovery orphan + local missing > 0 -> new head references pre-uploaded H; pruneOrphans MUST NOT delete H!
+  // 4. R1/R2 fix: crash-recovery orphan + local missing > 0 -> new head references pre-uploaded H while an unrelated
+  //    true orphan ALSO exists: pruneOrphans MUST NOT delete H, AND MUST still clean up the unrelated true orphan!
   const hPreUploaded = sid("6");
+  const hTrueOrphanWithMissing = sid("a");
   const preKey = `${target.prefix}/${place.wsTag(HOME)}/${place.originTag(origin)}/files/${place.fileTag(hPreUploaded)}.enc`;
+  const trueOrphanKey = `${target.prefix}/${place.wsTag(HOME)}/${place.originTag(origin)}/files/${place.fileTag(hTrueOrphanWithMissing)}.enc`;
   await place.putFile(HOME, origin, hPreUploaded, Buffer.from("only-copy-on-s3"));
+  await place.putFile(HOME, origin, hTrueOrphanWithMissing, Buffer.from("unrelated-true-orphan"));
   const headWithPre = { ...head, to: 2, made: 2000, files: { [hLive]: 4, [hPreUploaded]: 15 } };
   const placeMissing = new S3Place(target);
   const resMissing = await level(placeMissing, HOME, {
@@ -1097,6 +1101,7 @@ test("D71: S3Client.deleteObjects batches >1000 keys with Content-MD5/SigV4, han
   assert.equal(resMissing.behind, false);
   assert.equal(resMissing.missing, 1);
   assert.equal(s3.objects.has(preKey), true, "pre-uploaded file referenced by new head MUST NOT be pruned when local source is missing");
+  assert.equal(s3.objects.has(trueOrphanKey), false, "unrelated true orphan MUST still be cleaned up even when missing > 0");
 
   // 5. R1 fix: pruneOrphans AccessDenied -> level() succeeds (best-effort) and keeps orphan for retry
   const hOrphanDenied = sid("7");

@@ -434,8 +434,10 @@ export class S3Place implements Place {
   readonly #orphanFileTags = new Map<string, Set<string>>();
   /// Per `${ws}\n${origin}` set of `gen`s whose `head/<gen>.enc` failed verification in `held()`.
   readonly #unverifiedGens = new Map<string, Set<string>>();
-  /// Per `${ws}\n${origin}` -> `gen` -> referenced `files` and `transcriptFiles` hash maps (0-HMAC reference, built in `held()`, updated in `put("head")`).
+  /// Per `${ws}\n${origin}` -> `gen` -> referenced `files` and (for older gens) `transcriptFiles` hash maps (0-HMAC reference).
   readonly #genRefHashes = new Map<string, Map<string, { files: Record<string, number>; transcriptFiles?: Record<string, number> }>>();
+  /// Last head reconciled against `#orphanFileTags` per `${ws}\n${origin}` (present ONLY while orphans are non-empty, for O(delta) incremental checks).
+  readonly #lastOrphanHead = new Map<string, Head>();
 
   constructor(target: NormalizedS3Target, opts: S3ClientOptions = {}) {
     this.target = target;
@@ -563,27 +565,66 @@ export class S3Place implements Place {
       for (const tag of fileTags) {
         if (!referencedTags.has(tag)) orphans.add(tag);
       }
-      if (orphans.size > 0) this.#orphanFileTags.set(scopeKey, orphans);
-      else this.#orphanFileTags.delete(scopeKey);
+      if (orphans.size > 0) {
+        this.#orphanFileTags.set(scopeKey, orphans);
+        const single = headMap.size === 1 ? ([...headMap.values()][0] ?? null) : null;
+        if (single !== null) this.#lastOrphanHead.set(scopeKey, single);
+        else this.#lastOrphanHead.delete(scopeKey);
+      } else {
+        this.#orphanFileTags.delete(scopeKey);
+        this.#lastOrphanHead.delete(scopeKey);
+      }
     } else {
       this.#orphanFileTags.delete(scopeKey);
+      this.#lastOrphanHead.delete(scopeKey);
     }
     gens.sort((a, b) => genMade(a.gen) - genMade(b.gen) || (a.gen < b.gen ? -1 : 1));
     return { gens, files: [...presentHashes] };
   }
 
-  async put(ws: string, origin: string, gen: string, kind: "batch" | "head", name: string, bytes: Buffer): Promise<void> {
+  #reconcileOrphans(scopeKey: string, head: Head): void {
+    const orphans = this.#orphanFileTags.get(scopeKey);
+    if (orphans === undefined || orphans.size === 0) {
+      this.#lastOrphanHead.delete(scopeKey);
+      return;
+    }
+    const prev = this.#lastOrphanHead.get(scopeKey);
+    const incremental = prev !== undefined && prev.gen === head.gen;
+    for (const h of Object.keys(head.files)) {
+      if (incremental && Object.hasOwn(prev.files, h)) continue;
+      orphans.delete(this.fileTag(h));
+      if (orphans.size === 0) break;
+    }
+    if (orphans.size > 0 && head.transcriptFiles !== undefined) {
+      const prevTf = incremental ? prev.transcriptFiles : undefined;
+      for (const h of Object.keys(head.transcriptFiles)) {
+        if (prevTf !== undefined && Object.hasOwn(prevTf, h)) continue;
+        orphans.delete(this.fileTag(h));
+        if (orphans.size === 0) break;
+      }
+    }
+    if (orphans.size === 0) {
+      this.#orphanFileTags.delete(scopeKey);
+      this.#lastOrphanHead.delete(scopeKey);
+    } else {
+      this.#lastOrphanHead.set(scopeKey, head);
+    }
+  }
+
+  async put(ws: string, origin: string, gen: string, kind: "batch" | "head", name: string, bytes: Buffer, head?: Head): Promise<void> {
     if (!WORKSPACE.test(ws) || !STATION.test(origin) || !GEN.test(gen)) throw new Error("not a copy's name");
     if (kind === "batch") {
       if (!BATCH.test(name)) throw new Error("not a batch's name");
       const enc = sfb1Seal(this.#key, { ws, origin, logicalPath: `log/${gen}/${name}` }, bytes);
       await this.client.putObject(this.#batchKey(ws, origin, gen, name), enc);
     } else {
-      let parsed: Head | null = null;
-      try {
-        parsed = asHead(JSON.parse(bytes.toString("utf8")));
-      } catch {
-        parsed = null;
+      let parsed: Head | null = head ?? null;
+      if (parsed === null) {
+        try {
+          parsed = asHead(JSON.parse(bytes.toString("utf8")));
+        } catch {
+          parsed = null;
+        }
       }
       const ot = this.originTag(origin);
       const enc = sfb1Seal(this.#key, { ws, origin: ot, logicalPath: `head/${gen}` }, bytes);
@@ -597,21 +638,9 @@ export class S3Place implements Place {
       if (parsed !== null) {
         let byGen = this.#genRefHashes.get(scopeKey);
         if (byGen === undefined) this.#genRefHashes.set(scopeKey, (byGen = new Map()));
-        byGen.set(gen, { files: parsed.files, transcriptFiles: parsed.transcriptFiles });
-        const orphans = this.#orphanFileTags.get(scopeKey);
-        if (orphans !== undefined && orphans.size > 0) {
-          for (const h of Object.keys(parsed.files)) {
-            orphans.delete(this.fileTag(h));
-            if (orphans.size === 0) break;
-          }
-          if (orphans.size > 0 && parsed.transcriptFiles !== undefined) {
-            for (const h of Object.keys(parsed.transcriptFiles)) {
-              orphans.delete(this.fileTag(h));
-              if (orphans.size === 0) break;
-            }
-          }
-          if (orphans.size === 0) this.#orphanFileTags.delete(scopeKey);
-        }
+        // Current gen only needs `files` protected in `drop()` (never retains 246k `transcriptFiles` in memory).
+        byGen.set(gen, { files: parsed.files });
+        this.#reconcileOrphans(scopeKey, parsed);
       }
     }
   }
@@ -685,11 +714,15 @@ export class S3Place implements Place {
     }
   }
 
-  async pruneOrphans(ws: string, origin: string): Promise<void> {
+  async pruneOrphans(ws: string, origin: string, liveHead?: Head): Promise<void> {
     if (!WORKSPACE.test(ws) || !STATION.test(origin)) throw new Error("not a copy's name");
     const scopeKey = `${ws}\n${origin}`;
+    if (liveHead !== undefined) this.#reconcileOrphans(scopeKey, liveHead);
     const orphans = this.#orphanFileTags.get(scopeKey);
-    if (orphans === undefined || orphans.size === 0) return;
+    if (orphans === undefined || orphans.size === 0) {
+      this.#lastOrphanHead.delete(scopeKey);
+      return;
+    }
     const wt = this.wsTag(ws);
     const ot = this.originTag(origin);
     const keys: string[] = [];
@@ -720,7 +753,10 @@ export class S3Place implements Place {
         realErrors.push(err);
       }
     }
-    if (orphans.size === 0) this.#orphanFileTags.delete(scopeKey);
+    if (orphans.size === 0) {
+      this.#orphanFileTags.delete(scopeKey);
+      this.#lastOrphanHead.delete(scopeKey);
+    }
     if (realErrors.length > 0) {
       const sample = realErrors[0]!;
       throw new Error(`S3 pruneOrphans failed for ${realErrors.length} key(s): ${sample.key} (${sample.code}: ${sample.message})`);

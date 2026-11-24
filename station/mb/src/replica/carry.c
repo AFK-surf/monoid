@@ -228,3 +228,26 @@ int sfc_dir_missing(moonbit_bytes_t path) {
   return (errno == ENOENT || errno == ENOTDIR) ? 1 : 0;
 #endif
 }
+
+/// Lightweight check whether directory `path` can be opened for listing (without reading/sorting entries):
+/// returns 1 if readable OR confirmed missing/not-a-dir (ENOENT / ENOTDIR), 0 if unreadable (EACCES / EIO / other).
+int sfc_dir_readable(moonbit_bytes_t path) {
+#ifdef _WIN32
+  wchar_t *w = wide((const char *)path);
+  if (w == NULL) return 0;
+  HANDLE h = CreateFileW(w, FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+  DWORD e = h == INVALID_HANDLE_VALUE ? GetLastError() : 0;
+  if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+  free(w);
+  if (h != INVALID_HANDLE_VALUE) return 1;
+  return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND || e == ERROR_INVALID_NAME || e == ERROR_DIRECTORY) ? 1 : 0;
+#else
+  DIR *d = opendir((const char *)path);
+  if (d != NULL) {
+    closedir(d);
+    return 1;
+  }
+  return (errno == ENOENT || errno == ENOTDIR) ? 1 : 0;
+#endif
+}

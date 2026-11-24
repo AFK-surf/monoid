@@ -19,7 +19,7 @@
 //   and there no more): a `gone` record.
 // A batch is read inside one read transaction: what it says is the database at one moment.
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { zstdCompressSync } from "node:zlib";
@@ -53,7 +53,7 @@ function isPrunedBrainRel(relParts: readonly string[]): boolean {
 function isPrunedBrainPath(dataDir: string, p: string): boolean {
   const rel = relative(dataDir, p);
   if (rel === "" || rel.startsWith("..")) return false;
-  const parts = rel.split(/[\\/]/);
+  const parts = rel.split(sep);
   if (
     parts.length < 8 ||
     parts[0] !== "homes" ||
@@ -223,6 +223,7 @@ export type ExporterOptions = {
     readdirError?: (path: string) => NodeJS.ErrnoException | null;
     lstatError?: (path: string) => NodeJS.ErrnoException | null;
     readShort?: (path: string, offset: number) => boolean;
+    otherKind?: (path: string) => boolean;
   };
 };
 
@@ -872,6 +873,19 @@ export class Exporter {
     return readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)); // sync: in the export's own thread (worker.ts)
   }
 
+  #dirUnreadableChecked(dir: string): boolean {
+    this.#o.testFaults?.onReaddir?.(dir);
+    const faultErr = this.#o.testFaults?.readdirError?.(dir);
+    if (faultErr) return !isMissingError(faultErr);
+    try {
+      const d = opendirSync(dir); // sync: in the export's own thread (worker.ts)
+      d.closeSync();
+      return false;
+    } catch (e) {
+      return !isMissingError(e);
+    }
+  }
+
   #walkTranscriptDir(
     dir: string,
     add: (path: string) => void,
@@ -887,13 +901,19 @@ export class Exporter {
     }
     for (const e of entries) {
       const p = join(dir, e.name);
-      if (e.isDirectory()) this.#walkTranscriptDir(p, add, onError, onUnreadablePath);
-      else if (e.isFile()) add(p);
-      else if (!e.isSymbolicLink()) {
+      const forceOther = this.#o.testFaults?.otherKind?.(p) === true;
+      if (!forceOther && e.isDirectory()) this.#walkTranscriptDir(p, add, onError, onUnreadablePath);
+      else if (!forceOther && e.isFile()) add(p);
+      else if (forceOther || !e.isSymbolicLink()) {
         try {
-          this.#lstatPath(p);
+          const st = this.#lstatPath(p);
+          if (st.isFile()) add(p);
+          else if (st.isDirectory()) this.#walkTranscriptDir(p, add, onError, onUnreadablePath);
         } catch (err) {
-          if (!isMissingError(err)) onUnreadablePath(p);
+          if (!isMissingError(err)) {
+            onUnreadablePath(p);
+            onError(p);
+          }
         }
       }
     }
@@ -917,17 +937,26 @@ export class Exporter {
     }
     for (const e of entries) {
       const p = join(dir, e.name);
-      if (e.isDirectory()) {
+      const forceOther = this.#o.testFaults?.otherKind?.(p) === true;
+      if (!forceOther && e.isDirectory()) {
         const nextRel = [...relParts, e.name];
         if (isPrunedBrainRel(nextRel)) continue;
         this.#walkBrainDir(brainRoot, p, nextRel, add, onError, onUnreadablePath);
-      } else if (e.isFile()) {
+      } else if (!forceOther && e.isFile()) {
         add(p);
-      } else if (!e.isSymbolicLink()) {
+      } else if (forceOther || !e.isSymbolicLink()) {
         try {
-          this.#lstatPath(p);
+          const st = this.#lstatPath(p);
+          if (st.isFile()) add(p);
+          else if (st.isDirectory()) {
+            const nextRel = [...relParts, e.name];
+            if (!isPrunedBrainRel(nextRel)) this.#walkBrainDir(brainRoot, p, nextRel, add, onError, onUnreadablePath);
+          }
         } catch (err) {
-          if (!isMissingError(err)) onUnreadablePath(p);
+          if (!isMissingError(err)) {
+            onUnreadablePath(p);
+            onError(p);
+          }
         }
       }
     }
@@ -1029,6 +1058,7 @@ export class Exporter {
     let doneDeletes = 0;
     let truncated = false;
     const parentUnreadableCache = new Map<string, boolean>();
+    const ancestorLstatCache = new Map<string, "dir" | "other" | "err">();
     for (const [ws, foundMap] of byWs) {
       if (truncated) break;
       const unreadableDirs = unreadableDirsByWs.get(ws)!;
@@ -1111,38 +1141,66 @@ export class Exporter {
         for (const row of this.#state.prepare("SELECT path FROM transcript_files WHERE ws = ? ORDER BY path").all(ws) as { path: string }[]) {
           if (active.has(row.path) || unreadablePaths.has(row.path) || pathUnderAnyDir(row.path, unreadableDirs)) continue;
           if (!isPrunedBrainPath(this.#o.dataDir, row.path)) {
-            let existsOnDisk = false;
-            try {
-              this.#lstatPath(row.path);
-              existsOnDisk = true;
-            } catch (e) {
-              if (!isMissingError(e)) continue;
-            }
-            if (existsOnDisk) {
-              const dataRoot = resolve(this.#o.dataDir);
-              let cur = resolve(dirname(row.path));
-              let ancestorUnreadable = false;
-              while (cur === dataRoot || cur.startsWith(dataRoot + sep)) {
-                let bad = parentUnreadableCache.get(cur);
-                if (bad === undefined) {
-                  bad = false;
+            const dataRoot = resolve(this.#o.dataDir);
+            const rel = relative(dataRoot, resolve(row.path));
+            if (rel !== "" && !rel.startsWith("..")) {
+              const parts = rel.split(sep);
+              const ancestors: string[] = [];
+              let cur = dataRoot;
+              let keep = false;
+              let allRealDirs = true;
+              for (let i = 0; i + 1 < parts.length; i++) {
+                cur = join(cur, parts[i]!);
+                let kind = ancestorLstatCache.get(cur);
+                if (kind === undefined) {
                   try {
-                    this.#readdirEntries(cur);
+                    const st = this.#lstatPath(cur);
+                    kind = st.isDirectory() ? "dir" : "other";
                   } catch (e) {
-                    if (!isMissingError(e)) bad = true;
+                    kind = isMissingError(e) ? "other" : "err";
                   }
-                  parentUnreadableCache.set(cur, bad);
+                  ancestorLstatCache.set(cur, kind);
                 }
-                if (bad) {
-                  ancestorUnreadable = true;
+                if (kind === "err") {
+                  keep = true;
                   break;
                 }
-                if (cur === dataRoot) break;
-                const next = dirname(cur);
-                if (next === cur) break;
-                cur = next;
+                if (kind !== "dir") {
+                  allRealDirs = false;
+                  break;
+                }
+                ancestors.push(cur);
               }
-              if (ancestorUnreadable) continue;
+              if (keep) continue;
+              if (allRealDirs) {
+                let existsOnDisk = false;
+                try {
+                  this.#lstatPath(row.path);
+                  existsOnDisk = true;
+                } catch (e) {
+                  if (!isMissingError(e)) continue;
+                }
+                if (existsOnDisk) {
+                  const checkDir = (d: string): boolean => {
+                    let bad = parentUnreadableCache.get(d);
+                    if (bad === undefined) {
+                      bad = this.#dirUnreadableChecked(d);
+                      parentUnreadableCache.set(d, bad);
+                    }
+                    return bad;
+                  };
+                  let ancestorUnreadable = checkDir(dataRoot);
+                  if (!ancestorUnreadable) {
+                    for (const a of ancestors) {
+                      if (checkDir(a)) {
+                        ancestorUnreadable = true;
+                        break;
+                      }
+                    }
+                  }
+                  if (ancestorUnreadable) continue;
+                }
+              }
             }
           }
           if (doneDeletes >= maxDeletes) {

@@ -926,7 +926,12 @@ export class Copies {
       const span = traces?.startRoot() ?? null;
       try {
         const place = this.#s3Place(target);
-        const opts = { includeTranscripts: target.includeTranscripts };
+        const opts = {
+          includeTranscripts: target.includeTranscripts,
+          onPruneError: (err: unknown) => {
+            log.warn("copies", "S3 orphan cleanup failed", { ws, target: target.id, error: err instanceof Error ? err.message : String(err) });
+          },
+        };
         let { head: syncedHead, done } = await levelNewest(
           head,
           (cur) => this.#newestHead(ws, cur),

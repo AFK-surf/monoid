@@ -1590,8 +1590,10 @@ test("D71: unreadable directory / lstat / discovery-parent / fresh & mid short-r
   type FaultSpec = {
     lstat_err?: string[];
     readdir_err?: string[];
+    forbid_readdir?: string[];
     read_short?: string[];
     read_short_after_first?: string[];
+    other_kind?: string[];
   };
 
   const runDeterministicSuite = async (mode: "ts" | "mb") => {
@@ -1608,10 +1610,14 @@ test("D71: unreadable directory / lstat / discovery-parent / fresh & mid short-r
         now: () => now,
         chunkBytes: 16,
         testFaults: {
+          onReaddir: (d) => {
+            if (activeFaults.forbid_readdir?.includes(d)) throw new Error(`BUG: descended into forbidden directory ${d}`);
+          },
           lstatError: (p) => (activeFaults.lstat_err?.includes(p) ? mkErr("EIO") : null),
           readdirError: (d) => (activeFaults.readdir_err?.includes(d) ? mkErr("EACCES") : null),
           readShort: (p, offset) =>
             Boolean(activeFaults.read_short?.includes(p) || (offset > 0 && activeFaults.read_short_after_first?.includes(p))),
+          otherKind: (p) => Boolean(activeFaults.other_kind?.includes(p)),
         },
       });
       closing.push(async () => exporter?.close());
@@ -1720,6 +1726,60 @@ test("D71: unreadable directory / lstat / discovery-parent / fresh & mid short-r
     const pRecover = await pass({ ...nothingTold(), transcripts: true });
     assert.equal(pRecover.wrote, 1);
     assert.notDeepEqual(readStatePaths(replica).find((r) => r.path === taskPath), prevTaskRow);
+
+    // (h) R2: `other` dirent kind -> lstat dispatch exports file & dir, enforces brain pruning, protects lstat_err
+    now += 10_000;
+    const otherFile = join(s.brain, "other-file.md");
+    const otherDir = join(s.brain, "other-dir");
+    const otherInside = join(otherDir, "inside.md");
+    const otherBad = join(s.brain, "other-bad.md");
+    const scratchDir = join(s.brain, "scratch");
+    mkdirSync(otherDir, { recursive: true });
+    writeFileSync(otherBad, "other-bad-keep\n");
+    await pass({ ...nothingTold(), transcripts: true });
+    assert.ok(readStatePaths(replica).some((r) => r.path === otherBad));
+
+    now += 10_000;
+    writeFileSync(otherFile, "other-file-content\n");
+    writeFileSync(otherInside, "other-dir-inside-content\n");
+    await setFaults({
+      other_kind: [otherFile, otherDir, otherBad, scratchDir],
+      lstat_err: [otherBad],
+      forbid_readdir: [scratchDir],
+    });
+    const pOther = await pass({ ...nothingTold(), transcripts: true });
+    assert.equal(pOther.wrote, 1);
+    const afterOther = readStatePaths(replica);
+    assert.ok(afterOther.some((r) => r.path === otherFile), `${mode}: other-kind file exported via lstat dispatch`);
+    assert.ok(afterOther.some((r) => r.path === otherInside), `${mode}: other-kind dir recursed via lstat dispatch`);
+    assert.ok(afterOther.some((r) => r.path === otherBad), `${mode}: other-kind lstat_err preserved without tr_del`);
+    await setFaults({});
+    rmSync(otherFile);
+    rmSync(otherDir, { recursive: true, force: true });
+    rmSync(otherBad);
+    now += 10_000;
+    await pass({ ...nothingTold(), transcripts: true });
+
+    // (i) R2: previously backed-up dir replaced with symlink to external dir -> emits tr_del and NEVER follows/probes external target
+    now += 10_000;
+    const swapDir = join(s.brain, "swapdir");
+    const swapFile = join(swapDir, "a.txt");
+    mkdirSync(swapDir, { recursive: true });
+    writeFileSync(swapFile, "real-dir-content\n");
+    await pass({ ...nothingTold(), transcripts: true });
+    assert.ok(readStatePaths(replica).some((r) => r.path === swapFile));
+
+    now += 10_000;
+    rmSync(swapDir, { recursive: true, force: true });
+    const extTarget = dataDir(`d71-swap-ext-${mode}`);
+    writeFileSync(join(extTarget, "a.txt"), "external-secret\n");
+    symlinkSync(extTarget, swapDir);
+    await setFaults({ readdir_err: [extTarget, swapDir], forbid_readdir: [extTarget, swapDir] });
+    const pSwap = await pass({ ...nothingTold(), transcripts: true });
+    assert.equal(pSwap.wrote, 1);
+    assert.ok(!readStatePaths(replica).some((r) => r.path === swapFile), `${mode}: dir replaced by symlink emits tr_del without following target`);
+    await setFaults({});
+    rmSync(swapDir, { force: true });
   };
 
   await runDeterministicSuite("ts");
@@ -1727,27 +1787,85 @@ test("D71: unreadable directory / lstat / discovery-parent / fresh & mid short-r
     await runDeterministicSuite("mb");
   }
 
-  // Real OS EACCES check on non-root systems (Linux CI / pvg-office-1)
-  if (binary !== null && typeof process.getuid === "function" && process.getuid() !== 0) {
-    const replicaOs = join(s.data, "replica-faults-os-mb");
-    const mb = await makeMbExportHelper(s.db, replicaOs, s.data, originId, 16);
-    await mb.places(now);
-    await mb.pass(nothingTold(), now);
+  // Real OS EACCES check on non-root systems (Linux CI / pvg-office-1), including Finder discovery-stage chmod 0o111!
+  if (typeof process.getuid === "function" && process.getuid() !== 0) {
+    // Dedicated Claude session whose transcript is discovered via Finder scanning `transcripts/claude/` (cwd != slug)
+    const finderClaudeId = "cc-finder-0111";
+    const finderSlugDir = join(s.data, "transcripts", "claude", "-other-project-slug");
+    const finderProjectsDir = join(s.data, "transcripts", "claude");
+    mkdirSync(finderSlugDir, { recursive: true });
+    const finderTrPath = join(finderSlugDir, `${finderClaudeId}.jsonl`);
+    writeFileSync(finderTrPath, '{"role":"user","text":"finder-0111-keep"}\n');
+    const finderRoom = join(s.data, "sessions", "chat", "chat:claude-finder", "workspace");
+    mkdirSync(finderRoom, { recursive: true });
+    s.store.insertSession({
+      key: "chat:claude-finder",
+      connect: "chat",
+      runtime: "claude",
+      profile: "cc",
+      workspace: finderRoom,
+      token: "tok-cc-finder",
+      createdAt: 3,
+      lastActiveAt: 3,
+      ws: null,
+    });
+    s.store.setRuntimeSessionId("chat:claude-finder", finderClaudeId);
+    const tFinder = s.store.openThread("chat", "C", "ts-cc-finder", "Claude Finder", "p@x").id;
+    s.store.joinThread(tFinder, "chat:claude-finder", "chat");
+
+    // Verify Finder discovery-stage chmod 0o111 (execute-only, not readable) protects finderTrPath in BOTH TS and MB!
+    const replicaOsTs = join(s.data, "replica-faults-os-ts");
+    const expOsTs = new Exporter({
+      db: s.db,
+      replica: replicaOsTs,
+      dataDir: s.data,
+      origin: originId,
+      now: () => now,
+      chunkBytes: 16,
+    });
+    closing.push(async () => expOsTs.close());
+    expOsTs.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
+    expOsTs.pass(nothingTold());
+    assert.ok(readStatePaths(replicaOsTs).some((r) => r.path === finderTrPath), "TS baseline has Finder-discovered Claude transcript");
+
+    const replicaOsMb = join(s.data, "replica-faults-os-mb");
+    const mb = binary !== null ? await makeMbExportHelper(s.db, replicaOsMb, s.data, originId, 16) : null;
+    if (mb !== null) {
+      await mb.places(now);
+      await mb.pass(nothingTold(), now);
+      assert.ok(readStatePaths(replicaOsMb).some((r) => r.path === finderTrPath), "MB baseline has Finder-discovered Claude transcript");
+    }
+
     const convDir = join(s.cli, "conversations");
     const dbPath = join(convDir, `${s.agyId}.db`);
     try {
-      chmodSync(notesDir, 0o000);
+      // chmod 0o111 on `transcripts/claude` (Finder's scan dir!): lstat on <slug> and <id>.jsonl SUCCEEDS,
+      // Finder's readdir FAILS, so ONLY ancestor dir readability check saves finderTrPath from tr_del!
+      chmodSync(finderProjectsDir, 0o111);
       now += 10_000;
-      assert.equal((await mb.pass({ ...nothingTold(), transcripts: true }, now)).wrote, 0);
-      assert.ok(readStatePaths(replicaOs).some((r) => r.path === notesFile));
-      chmodSync(notesDir, 0o755);
+      assert.equal(expOsTs.pass({ ...nothingTold(), transcripts: true }).wrote, 0, "TS: chmod 0o111 on Finder projects dir preserves transcript");
+      assert.ok(readStatePaths(replicaOsTs).some((r) => r.path === finderTrPath));
+      if (mb !== null) {
+        assert.equal((await mb.pass({ ...nothingTold(), transcripts: true }, now)).wrote, 0, "MB: chmod 0o111 on Finder projects dir preserves transcript");
+        assert.ok(readStatePaths(replicaOsMb).some((r) => r.path === finderTrPath));
+      }
+      chmodSync(finderProjectsDir, 0o755);
 
-      chmodSync(convDir, 0o000);
-      now += 10_000;
-      assert.equal((await mb.pass({ ...nothingTold(), transcripts: true }, now)).wrote, 0);
-      assert.ok(readStatePaths(replicaOs).some((r) => r.path === dbPath));
-      chmodSync(convDir, 0o755);
+      if (mb !== null) {
+        chmodSync(notesDir, 0o000);
+        now += 10_000;
+        assert.equal((await mb.pass({ ...nothingTold(), transcripts: true }, now)).wrote, 0);
+        assert.ok(readStatePaths(replicaOsMb).some((r) => r.path === notesFile));
+        chmodSync(notesDir, 0o755);
+
+        chmodSync(convDir, 0o000);
+        now += 10_000;
+        assert.equal((await mb.pass({ ...nothingTold(), transcripts: true }, now)).wrote, 0);
+        assert.ok(readStatePaths(replicaOsMb).some((r) => r.path === dbPath));
+        chmodSync(convDir, 0o755);
+      }
     } finally {
+      try { chmodSync(finderProjectsDir, 0o755); } catch {}
       try { chmodSync(notesDir, 0o755); } catch {}
       try { chmodSync(convDir, 0o755); } catch {}
     }

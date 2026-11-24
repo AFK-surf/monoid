@@ -117,6 +117,7 @@ pub struct TestFaults {
   forbid_readdir : Set[String]
   read_short : Set[String]
   read_short_after_first : Set[String]
+  other_kind : Set[String]
 }
 
 ///|
@@ -135,6 +136,7 @@ pub fn TestFaults::from_jvalue(v : JValue) -> TestFaults? {
     forbid_readdir: set_of("forbid_readdir"),
     read_short: set_of("read_short"),
     read_short_after_first: set_of("read_short_after_first"),
+    other_kind: set_of("other_kind"),
   })
 }
 
@@ -1245,6 +1247,10 @@ extern "C" fn missing_ffi(path : Bytes, follow : Int) -> Int = "sfc_missing"
 extern "C" fn dir_missing_ffi(path : Bytes) -> Int = "sfc_dir_missing"
 
 ///|
+#borrow(path)
+extern "C" fn dir_readable_ffi(path : Bytes) -> Int = "sfc_dir_readable"
+
+///|
 fn Files::is_missing(self : Files, path : String, follow? : Bool = true) -> Bool {
   ignore(self)
   missing_ffi(c_path(path), if follow { 1 } else { 0 }) == 1
@@ -1254,6 +1260,19 @@ fn Files::is_missing(self : Files, path : String, follow? : Bool = true) -> Bool
 fn Files::is_dir_missing(self : Files, path : String) -> Bool {
   ignore(self)
   dir_missing_ffi(c_path(path)) == 1
+}
+
+///|
+fn Exporter::dir_unreadable_checked(self : Exporter, dir : String) -> Bool raise {
+  if self.test_faults is Some(f) {
+    if f.forbid_readdir.contains(dir) {
+      fail("BUG: descended into pruned directory \{dir}")
+    }
+    if f.readdir_err.contains(dir) {
+      return true
+    }
+  }
+  dir_readable_ffi(c_path(dir)) == 0
 }
 
 ///|
@@ -1328,7 +1347,24 @@ fn Exporter::listing_checked(self : Exporter, dir : String) -> Result[Array[(Str
     }
   }
   match self.files.listing(dir) {
-    Some(entries) => Ok(Some(entries))
+    Some(entries) =>
+      match self.test_faults {
+        Some(f) if !f.other_kind.is_empty() =>
+          Ok(
+            Some(
+              entries.map(e => {
+                let (name, kind) = e
+                let path = self.files.join([dir, name])
+                if f.other_kind.contains(path) {
+                  (name, "other")
+                } else {
+                  (name, kind)
+                }
+              }),
+            ),
+          )
+        _ => Ok(Some(entries))
+      }
     None => if self.files.is_dir_missing(dir) { Ok(None) } else { Err(()) }
   }
 }
@@ -1357,8 +1393,14 @@ fn Exporter::walk_transcript_dir(
     } else if kind == "file" {
       add(path)
     } else if kind == "other" {
-      if self.lstat_checked(path) is Err(_) {
-        on_unreadable_path(path)
+      match self.lstat_checked(path) {
+        Ok(Some(("file", _, _, _))) => add(path)
+        Ok(Some(("dir", _, _, _))) => self.walk_transcript_dir(path, add, on_error~, on_unreadable_path~)
+        Ok(_) => ()
+        Err(_) => {
+          on_unreadable_path(path)
+          on_error(path)
+        }
       }
     }
   }
@@ -1399,8 +1441,19 @@ fn Exporter::walk_brain_dir(
     } else if kind == "file" {
       add(path)
     } else if kind == "other" {
-      if self.lstat_checked(path) is Err(_) {
-        on_unreadable_path(path)
+      match self.lstat_checked(path) {
+        Ok(Some(("file", _, _, _))) => add(path)
+        Ok(Some(("dir", _, _, _))) => {
+          let next_rel = rel_parts + [name]
+          if !is_pruned_brain_rel(next_rel) {
+            self.walk_brain_dir(brain_root, path, next_rel, add, on_error, on_unreadable_path)
+          }
+        }
+        Ok(_) => ()
+        Err(_) => {
+          on_unreadable_path(path)
+          on_error(path)
+        }
       }
     }
   }
@@ -1515,6 +1568,7 @@ async fn Exporter::export_transcripts(
   let mut done_deletes = 0
   let mut truncated = false
   let parent_unreadable_cache : Map[String, Bool] = Map([])
+  let ancestor_lstat_cache : Map[String, String] = Map([])
   for ws, found_map in by_ws {
     if truncated {
       break
@@ -1659,38 +1713,73 @@ async fn Exporter::export_transcripts(
           continue
         }
         if !self.files.is_pruned_brain_path(self.data_dir, old_path) {
-          match self.lstat_checked(old_path) {
-            Err(_) => continue
-            Ok(Some(_)) => {
-              let mut cur = self.files.dir_of(old_path)
-              let mut ancestor_unreadable = false
-              while cur != "" && (cur == self.data_dir || self.files.under_of(self.data_dir, cur) is Some(_)) {
-                let bad = match parent_unreadable_cache.get(cur) {
-                  Some(b) => b
+          match self.files.under_of(self.data_dir, old_path) {
+            Some(rel) if rel != "" => {
+              let parts : Array[String] = rel.split(self.files.sep).map(x => x.to_string()).collect()
+              let ancestors : Array[String] = []
+              let mut cur = self.data_dir
+              let mut keep = false
+              let mut all_real_dirs = true
+              for i = 0; i + 1 < parts.length(); i = i + 1 {
+                cur = self.files.join([cur, parts[i]])
+                let kind = match ancestor_lstat_cache.get(cur) {
+                  Some(k) => k
                   None => {
-                    let err = self.listing_checked(cur) is Err(_)
-                    parent_unreadable_cache[cur] = err
-                    err
+                    let k = match self.lstat_checked(cur) {
+                      Err(_) => "err"
+                      Ok(Some(("dir", _, _, _))) => "dir"
+                      Ok(_) => "other"
+                    }
+                    ancestor_lstat_cache[cur] = k
+                    k
                   }
                 }
-                if bad {
-                  ancestor_unreadable = true
+                if kind == "err" {
+                  keep = true
+                  break
+                } else if kind != "dir" {
+                  all_real_dirs = false
                   break
                 }
-                if cur == self.data_dir {
-                  break
-                }
-                let next = self.files.dir_of(cur)
-                if next == "" || next == cur {
-                  break
-                }
-                cur = next
+                ancestors.push(cur)
               }
-              if ancestor_unreadable {
+              if keep {
                 continue
               }
+              if all_real_dirs {
+                match self.lstat_checked(old_path) {
+                  Err(_) => continue
+                  Ok(None) => ()
+                  Ok(Some(_)) => {
+                    let mut ancestor_unreadable = false
+                    let check_dir = (d : String) => {
+                      match parent_unreadable_cache.get(d) {
+                        Some(b) => b
+                        None => {
+                          let bad = self.dir_unreadable_checked(d)
+                          parent_unreadable_cache[d] = bad
+                          bad
+                        }
+                      }
+                    }
+                    if check_dir(self.data_dir) {
+                      ancestor_unreadable = true
+                    } else {
+                      for a in ancestors {
+                        if check_dir(a) {
+                          ancestor_unreadable = true
+                          break
+                        }
+                      }
+                    }
+                    if ancestor_unreadable {
+                      continue
+                    }
+                  }
+                }
+              }
             }
-            Ok(None) => ()
+            _ => ()
           }
         }
         if done_deletes >= self.transcript_pass_deletes {
