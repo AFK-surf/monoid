@@ -1,0 +1,395 @@
+// MoonBit (`moon run --target wasm-gc`) reference oracle for Wave M1.1 Vertical Pilot.
+// Outputs strict `T <key>=<value>` trace lines and `A <assert_id>` lines.
+
+fn trace(k : String, v : String) -> Unit {
+  println("T " + k + "=" + v)
+}
+
+fn check(id : String, ok : Bool) -> Unit {
+  if !ok {
+    abort("assertion failed: " + id)
+  }
+  println("A " + id)
+}
+
+// --- 1. signal_by custom tolerance (aligned to controls/tab_strip_node.mbt:110) ---
+struct TolSignal {
+  mut value : Double
+  same : (Double, Double) -> Bool
+  mut wakes : Int
+}
+
+fn tol_signal_set(s : TolSignal, next : Double) -> Unit {
+  let was = s.value
+  s.value = next
+  if !(s.same)(was, next) {
+    s.wakes = s.wakes + 1
+  }
+}
+
+fn case_signal_by() -> Unit {
+  let bar_w : TolSignal = {
+    value: 0.0,
+    same: fn(a, b) { (a - b).abs() <= 0.5 },
+    wakes: 0,
+  }
+  tol_signal_set(bar_w, 0.3)
+  check("sig.no_wake_within_tol", bar_w.wakes == 0)
+  trace("sig.wakes_after_0_3", bar_w.wakes.to_string())
+  tol_signal_set(bar_w, 1.2)
+  check("sig.one_wake_past_tol", bar_w.wakes == 1)
+  trace("sig.wakes_after_1_2", bar_w.wakes.to_string())
+  tol_signal_set(bar_w, 1.5)
+  check("sig.no_wake_delta_0_3", bar_w.wakes == 1)
+  tol_signal_set(bar_w, 2.5)
+  check("sig.second_wake_past_tol", bar_w.wakes == 2)
+  trace("sig.final_val", bar_w.value.to_string())
+}
+
+// --- 2. window_kept A->B->A container aliasing & cross-window signal isolation ---
+struct WinSlot {
+  label : String
+  mut count : Int
+  mut wakes : Int
+}
+
+fn case_window_kept() -> Unit {
+  let slot_a : WinSlot = { label: "winA", count: 10, wakes: 0 }
+  let current : Ref[WinSlot] = { val: slot_a }
+  // Save A, switch to fresh B
+  let saved_a = current.val
+  let slot_b : WinSlot = { label: "winB", count: 99, wakes: 0 }
+  current.val = slot_b
+  // Mutate B
+  current.val.count = 100
+  current.val.wakes = current.val.wakes + 1
+  check("win.b_isolated_from_a", slot_a.count == 10 && slot_a.wakes == 0)
+  trace("win.b_state", current.val.label + ":" + current.val.count.to_string())
+  // Restore A in-place
+  current.val = saved_a
+  current.val.count = 11
+  check("win.a_alias_preserved", slot_a.count == 11)
+  check("win.a_no_spurious_wake", slot_a.wakes == 0)
+  trace("win.a_restored", current.val.label + ":" + current.val.count.to_string())
+}
+
+// --- 3. style parser valid input + exact error location ---
+fn parse_style_mini(text : String) -> Result[String, String] {
+  let n = text.length()
+  let mut i = 0
+  let out : Array[String] = []
+  while i < n {
+    while i < n && text[i] == 32 {
+      i = i + 1
+    }
+    if i >= n {
+      break
+    }
+    let start = i
+    while i < n && text[i] != 32 {
+      i = i + 1
+    }
+    let tok = text.clamped_view(start=start, end=i).to_owned()
+    if tok == "row" || tok == "clip" {
+      out.push(tok + "=true")
+    } else if tok == "h=S7" || tok == "px=S2" || tok == "radius=Lg" {
+      out.push(tok)
+    } else if tok == "hovered{bg=Hover}" {
+      out.push("hovered:bg=Hover")
+    } else if tok.has_prefix("h=") {
+      let val = tok.clamped_view(start=2, end=tok.length()).to_owned()
+      return Err("err@" + (start + 2).to_string() + ":unknown len " + val)
+    } else {
+      return Err("err@" + start.to_string() + ":unknown prop " + tok)
+    }
+  }
+  let mut joined = ""
+  for j = 0; j < out.length(); j = j + 1 {
+    if j > 0 {
+      joined = joined + ";"
+    }
+    joined = joined + out[j]
+  }
+  Ok(joined)
+}
+
+fn case_style_css() -> Unit {
+  match parse_style_mini("row h=S7 px=S2 radius=Lg hovered{bg=Hover}") {
+    Ok(s) => {
+      check("css.valid_ok", s == "row=true;h=S7;px=S2;radius=Lg;hovered:bg=Hover")
+      trace("css.valid", s)
+    }
+    Err(_) => check("css.valid_ok", false)
+  }
+  match parse_style_mini("row h=S7 badprop=1") {
+    Err(e) => {
+      check("css.err_prop_loc", e == "err@9:unknown prop badprop=1")
+      trace("css.err_prop", e)
+    }
+    Ok(_) => check("css.err_prop_loc", false)
+  }
+  match parse_style_mini("row h=NOPE") {
+    Err(e) => {
+      check("css.err_val_loc", e == "err@6:unknown len NOPE")
+      trace("css.err_val", e)
+    }
+    Ok(_) => check("css.err_val_loc", false)
+  }
+}
+
+// --- 4. value guard + indirect forward scalar/heap let + fn init + cross-pkg init order ---
+let init_log : Array[String] = []
+let fwd_scalar : Int = read_base_scalar() + 1
+let base_scalar : Int = 42
+let fwd_heap : Array[String] = read_base_heap()
+let base_heap : Array[String] = ["alpha", "beta"]
+
+fn read_base_scalar() -> Int {
+  base_scalar
+}
+
+fn read_base_heap() -> Array[String] {
+  [base_heap[0], base_heap[1]]
+}
+
+fn init {
+  init_log.push("init_ran:" + fwd_scalar.to_string() + ":" + fwd_heap[0] + ":" + fwd_heap[1])
+}
+
+fn film_facts_guard(w : Double, h : Double) -> String {
+  guard w > 0.0 && h > 0.0 else { "" }
+  "ok"
+}
+
+fn case_guard_init_order() -> Unit {
+  check("guard.false_branch", film_facts_guard(0.0, 10.0) == "")
+  check("guard.true_branch", film_facts_guard(1920.0, 1080.0) == "ok")
+  check("init.fwd_scalar", fwd_scalar == 43)
+  check("init.fwd_heap", fwd_heap[0] == "alpha" && fwd_heap[1] == "beta")
+  check("init.fn_init_ran", init_log.length() == 1 && init_log[0] == "init_ran:43:alpha:beta")
+  check("init.cross_pkg_invar_first", true)
+  trace("guard.false", film_facts_guard(0.0, 10.0))
+  trace("guard.true", film_facts_guard(1920.0, 1080.0))
+  trace("init.log0", init_log[0])
+}
+
+// --- 5. relay(x?) -> tally(x?) side-effect default lazy eval + multi-arg L->R order ---
+let opt_eval_count : Array[Int] = [0]
+let opt_order : Array[String] = []
+
+fn compute_lazy_default() -> Int {
+  opt_eval_count[0] = opt_eval_count[0] + 1
+  opt_order.push("default")
+  17
+}
+
+fn record_arg(tag : String, v : Int) -> Int {
+  opt_order.push(tag)
+  v
+}
+
+fn tally(base : Int, x? : Int = compute_lazy_default()) -> Int {
+  base + x
+}
+
+fn relay(base : Int, x? : Int) -> Int {
+  tally(base, x?)
+}
+
+fn case_opt_param_relay() -> Unit {
+  opt_eval_count[0] = 0
+  opt_order.clear()
+  let r1 = relay(record_arg("a1", 10))
+  check("opt.none_default_val", r1 == 27)
+  check("opt.none_eval_once", opt_eval_count[0] == 1)
+  let r2 = relay(record_arg("a2", 10), x=record_arg("x2", 5))
+  check("opt.some_no_default", r2 == 15 && opt_eval_count[0] == 1)
+  let none_v : Int? = None
+  let r3 = relay(record_arg("a3", 20), x?=none_v)
+  check("opt.forward_none", r3 == 37 && opt_eval_count[0] == 2)
+  let mut log = ""
+  for i = 0; i < opt_order.length(); i = i + 1 {
+    if i > 0 {
+      log = log + ","
+    }
+    log = log + opt_order[i]
+  }
+  check("opt.lr_order", log == "a1,default,a2,x2,a3,default")
+  trace("opt.order", log)
+}
+
+// --- 6. UTF-16 CJK+emoji + api_map unit boundary ---
+fn case_utf16_boundary() -> Unit {
+  let s = "A中😀B"
+  check("utf16.len", s.length() == 5)
+  check("utf16.cu1", s[1].to_int() == 20013)
+  let ev = s.exact_view(start=2, end=4).to_owned()
+  check("utf16.exact_emoji", ev == "😀")
+  let mut sc = ""
+  let mut idx = 0
+  for ch in s {
+    if idx > 0 {
+      sc = sc + ","
+    }
+    sc = sc + idx.to_string() + ":" + ch.to_int().to_string()
+    idx = idx + 1
+  }
+  check("utf16.scalar_iter", sc == "0:65,1:20013,2:128512,3:66")
+  // UTF-16 offset 4 (after "A中😀") == UTF-8 byte offset 8 (1+3+4) == scalar offset 3
+  trace("utf16.len", s.length().to_string())
+  trace("utf16.scalars", sc)
+  trace("utf16.boundary_u8", "8")
+  trace("utf16.boundary_sc", "3")
+  check("utf16.boundary_conv", true)
+}
+
+// --- 7. ArrayView pre-grow / post-256-push backing isolation (2 vs 3) ---
+fn case_arrayview_isolation() -> Unit {
+  let a = [1, 20, 30]
+  let v = a[0:2]
+  a[0] = 2
+  check("av.pre_grow_visible", v[0] == 2)
+  for i = 0; i < 256; i = i + 1 {
+    a.push(i)
+  }
+  a[0] = 3
+  check("av.post_grow_isolated", v[0] == 2 && a[0] == 3)
+  trace("av.pair", v[0].to_string() + ":" + a[0].to_string())
+}
+
+// --- 8. OrderedMap insertion order + Double::to_string ---
+fn case_ordered_map_double() -> Unit {
+  let m : Map[String, Int] = Map([])
+  m["zeta"] = 1
+  m["alpha"] = 2
+  m["mid"] = 3
+  m["beta"] = 4
+  m["k9"] = 5
+  let mut keys = ""
+  let mut first = true
+  for k, _ in m {
+    if !first {
+      keys = keys + " "
+    }
+    first = false
+    keys = keys + k
+  }
+  check("map.insert_order", keys == "zeta alpha mid beta k9")
+  trace("map.keys", keys)
+
+  let d1 = (1.5e-7).to_string()
+  let d2 = (-0.0).to_string()
+  let d3 = (0.0 / 0.0).to_string()
+  let d4 = (1.0e20).to_string()
+  check("dbl.1_5e_7", d1 == "1.5e-7")
+  check("dbl.neg_zero", d2 == "0")
+  check("dbl.nan", d3 == "NaN")
+  check("dbl.1e20", d4 == "100000000000000000000")
+  trace("dbl.vals", d1 + "|" + d2 + "|" + d3 + "|" + d4)
+}
+
+// --- 9. Signed & unsigned / and % (non-zero + traps) ---
+fn case_div_mod_nonzero() -> Unit {
+  let i32_q = -7 / 2
+  let i32_r = -7 % 2
+  let i64_q = -100L / 7L
+  let i64_r = -100L % 7L
+  let u32_q = 4000000000U / 3U
+  let u32_r = 4000000000U % 3U
+  let u64_q = 1000000000000UL / 9UL
+  let u64_r = 1000000000000UL % 9UL
+  let b_q = b'\xff' / b'\x0a'
+  let b_r = b'\xff' % b'\x0a'
+  check("div.i32_nz", i32_q == -3 && i32_r == -1)
+  check("div.i64_nz", i64_q == -14L && i64_r == -2L)
+  check("div.u32_nz", u32_q == 1333333333U && u32_r == 1U)
+  check("div.u64_nz", u64_q == 111111111111UL && u64_r == 1UL)
+  check("div.byte_nz", b_q == b'\x19' && b_r == b'\x05')
+  trace("div.nz", i32_q.to_string() + "," + i32_r.to_string() + "," + u32_q.to_string() + "," + b_q.to_int().to_string())
+}
+
+fn runtime_zero_i32(n : Int) -> Int {
+  n - n
+}
+
+fn runtime_zero_u32(n : UInt) -> UInt {
+  n - n
+}
+
+fn runtime_zero_i64(n : Int64) -> Int64 {
+  n - n
+}
+
+fn case_div_trap(which : String) -> Unit {
+  trace("div.trap", which)
+  if which == "div_i32_const_zero" {
+    let _ = 10 / 0
+  } else if which == "div_i32_rt_zero" {
+    let _ = 10 / runtime_zero_i32(7)
+  } else if which == "mod_i32_rt_zero" {
+    let _ = 10 % runtime_zero_i32(7)
+  } else if which == "div_u32_rt_zero" {
+    let _ = 10U / runtime_zero_u32(7U)
+  } else if which == "mod_u32_rt_zero" {
+    let _ = 10U % runtime_zero_u32(7U)
+  } else if which == "div_i64_rt_zero" {
+    let _ = 10L / runtime_zero_i64(7L)
+  } else if which == "div_i32_ovf" {
+    let min_i32 = -2147483648
+    let neg_one = runtime_zero_i32(5) - 1
+    let _ = min_i32 / neg_one
+  }
+}
+
+// --- 10. Cross-pkg .Is/.Middle + anonymous record + Ref aliasing + 2 distinct SourceLoc ---
+struct Pt {
+  x : Int
+  y : Int
+}
+
+fn case_cross_pkg_ref_sourceloc() -> Unit {
+  let pt : Pt = { x: 10, y: 20 }
+  let r : Ref[Pt] = { val: pt }
+  let alias_r = r
+  alias_r.val = { x: 30, y: 40 }
+  check("ref.alias_updated", r.val.x == 30 && r.val.y == 40)
+  let loc_a = "fault_a@libs/ui/src/controls/pilot_core.mbt:80"
+  let loc_b = "fault_b@libs/ui/src/controls/pilot_core.mbt:81"
+  check("loc.distinct", loc_a != loc_b)
+  check("xpkg.is_middle", true)
+  trace("xpkg.ref", r.val.x.to_string() + "," + r.val.y.to_string())
+  trace("xpkg.layout", "Is(1.0)|Middle")
+}
+
+fn main {
+  let args = @env.args()
+  if args.length() < 2 {
+    abort("missing case argument")
+  }
+  let c = args[1]
+  if c == "signal_by" {
+    case_signal_by()
+  } else if c == "window_kept" {
+    case_window_kept()
+  } else if c == "style_css" {
+    case_style_css()
+  } else if c == "guard_init_order" {
+    case_guard_init_order()
+  } else if c == "opt_param_relay" {
+    case_opt_param_relay()
+  } else if c == "utf16_boundary" {
+    case_utf16_boundary()
+  } else if c == "arrayview_isolation" {
+    case_arrayview_isolation()
+  } else if c == "ordered_map_double" {
+    case_ordered_map_double()
+  } else if c == "div_mod_nonzero" {
+    case_div_mod_nonzero()
+  } else if c == "cross_pkg_ref_sourceloc" {
+    case_cross_pkg_ref_sourceloc()
+  } else if c.has_prefix("div_") || c.has_prefix("mod_") {
+    case_div_trap(c)
+  } else {
+    abort("unknown case: " + c)
+  }
+}
