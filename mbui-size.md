@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b3364e6c3](https://github.com/AFK-surf/monoid/commit/b3364e6c3162f69451876e18c4ee681d045e534c) fix(e2e): retry station_task start on transient ri | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
 | [491053e63](https://github.com/AFK-surf/monoid/commit/491053e63b5024c26d17b28f5aafe9819f86b70e) fix(station): rename Search.#spawnSync to #spawnLo | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
 | [703ffa70e](https://github.com/AFK-surf/monoid/commit/703ffa70ebaa461b341792f5bdb6141461613d4b) refactor(ui): replace hostapi.Host trait with clos | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.98 | 121.83 |
 | [bdab53e32](https://github.com/AFK-surf/monoid/commit/bdab53e32df499e4b266b389ddae0f6d02e0eed6) fix(ui): preserve 1.00x vertical text scale inside | 2.51 | 3.4 | 14.04 | 37.51 | 58.07 | 31.94 | 64.49 | 100.78 | 121.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a2a1f41bb](https://github.com/AFK-surf/monoid/commit/a2a1f41bbfbe96aeaae1c00b3105c63aa098f029) feat(station,core,mbui): let a shared profile foll | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.84 | 132.14 |
 | [b55239583](https://github.com/AFK-surf/monoid/commit/b55239583372d921e62424d996c323e7e1b3c557) perf(ui,mbui): fix touch-move batching and elimina | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.84 | 132.14 |
 | [79d825178](https://github.com/AFK-surf/monoid/commit/79d82517845e64708bf4e75dce2f23d4893f2670) fix(mbui): use Meta text size in Poke popover and  | 2.78 | 3.75 | 15.19 | 37.41 | 57.81 | 32.76 | 66.75 | 100.78 | 125.87 |
-| [49c56a044](https://github.com/AFK-surf/monoid/commit/49c56a04493e35db7f2da2b4b906537df25bda7e) fix(station): share one ssh connection per Colab V | 2.78 | 3.75 | 15.19 | 37.41 | 57.81 | 32.76 | 66.75 | 100.78 | 125.87 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b3364e6c3](https://github.com/AFK-surf/monoid/commit/b3364e6c3162f69451876e18c4ee681d045e534c) fix(e2e): retry station_task start on transient ri | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.62 |
 | [491053e63](https://github.com/AFK-surf/monoid/commit/491053e63b5024c26d17b28f5aafe9819f86b70e) fix(station): rename Search.#spawnSync to #spawnLo | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.51 |
 | [703ffa70e](https://github.com/AFK-surf/monoid/commit/703ffa70ebaa461b341792f5bdb6141461613d4b) refactor(ui): replace hostapi.Host trait with clos | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.59 |
 | [bdab53e32](https://github.com/AFK-surf/monoid/commit/bdab53e32df499e4b266b389ddae0f6d02e0eed6) fix(ui): preserve 1.00x vertical text scale inside | 0.56 | 0.73 | 2.85 | 3.87 | 7.08 | 2.1 | 5.86 | 57.61 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a2a1f41bb](https://github.com/AFK-surf/monoid/commit/a2a1f41bbfbe96aeaae1c00b3105c63aa098f029) feat(station,core,mbui): let a shared profile foll | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.87 |
 | [b55239583](https://github.com/AFK-surf/monoid/commit/b55239583372d921e62424d996c323e7e1b3c557) perf(ui,mbui): fix touch-move batching and elimina | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.53 |
 | [79d825178](https://github.com/AFK-surf/monoid/commit/79d82517845e64708bf4e75dce2f23d4893f2670) fix(mbui): use Meta text size in Poke popover and  | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.54 |
-| [49c56a044](https://github.com/AFK-surf/monoid/commit/49c56a04493e35db7f2da2b4b906537df25bda7e) fix(station): share one ssh connection per Colab V | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 65.41 |
