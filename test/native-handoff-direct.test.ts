@@ -9,7 +9,7 @@ import type { TLSSocket } from "node:tls";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const script = fileURLToPath(new URL("../scripts/native-handoff.mjs", import.meta.url));
 
@@ -62,10 +62,11 @@ test("the handoff reaches the releases Worker at CI's DNS addresses in turn, the
   const port = (front.address() as { port: number }).port;
 
   // CI's DNS server: every query answered with `answers`, each an A record.
-  let answers = ["127.0.0.1", "127.0.0.1"];
+  let answers = ["127.0.0.1", "127.0.0.1"], silent = false;
   const queries: string[] = [];
   const dns = createSocket("udp4");
   dns.on("message", (msg, peer) => {
+    if (silent) return;
     const labels: string[] = [];
     for (let at = 12; msg[at];) {
       const size = msg[at]!;
@@ -131,6 +132,18 @@ test("the handoff reaches the releases Worker at CI's DNS addresses in turn, the
     assert.match(stderr, /resolving app\.still\.fail at invalid failed .*; by the usual route/);
   });
 
+  await t.test("a DNS server that never answers is given up on, the lookup cancelled, and the usual route taken", async () => {
+    silent = true;
+    try {
+      const { out, stderr } = await child(`${usual}
+        const get = await fetchHandoff("${worker}/releases/ci-natives/key", { redirect: "error" }, { dnsMs: 150 });
+        console.log(JSON.stringify({ text: await get.text(), usual }));`, env);
+      assert.deepEqual(out, { text: "usual route", usual: [[`${worker}/releases/ci-natives/key`, "error"]] });
+      assert.match(stderr, /resolving app\.still\.fail at 127\.0\.0\.1:\d+ failed \(no answer from 127\.0\.0\.1:\d+ in 150 ms\); by the usual route/);
+      assert.doesNotMatch(stderr, /Unhandled|ECANCELLED/);
+    } finally { silent = false; }
+  });
+
   await t.test("a redirect is refused, neither followed nor tried by another route", async () => {
     refuse = 0; connections = 0;
     const { out } = await child(`${usual}
@@ -166,8 +179,9 @@ test("the handoff runs copied out alone, as next-mac-cache.yml runs it, and impo
     const usage = spawnSync(process.execPath, [copy], { encoding: "utf8", env });
     assert.notEqual(usage.status, 0);
     assert.match(usage.stderr, /Usage: native-handoff\.mjs put DIR MANIFEST \| get DIR COMMIT/);
+    // (an argument after -e is process.argv[1]: no such file is not this one)
     const imported = spawnSync(process.execPath, ["--input-type=module", "-e",
-      `const m = await import(${JSON.stringify(new URL(`file://${copy}`).href)}); console.log(typeof m.fetchHandoff);`], { encoding: "utf8", env });
+      `const m = await import(${JSON.stringify(pathToFileURL(copy).href)}); console.log(typeof m.fetchHandoff);`, "not-a-file"], { encoding: "utf8", env });
     assert.equal(imported.status, 0, imported.stderr);
     assert.equal(imported.stdout.trim(), "function");
   } finally { rmSync(dir, { recursive: true, force: true }); }

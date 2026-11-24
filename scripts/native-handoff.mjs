@@ -25,17 +25,26 @@ function directDns(url) {
   return dns && url.protocol === "https:" && url.hostname === "app.still.fail" ? dns : "";
 }
 
-/** Up to two IPv4 addresses of `host` from `dns`, given up after `ms`. */
-async function directAddresses(dns, host, ms) {
+/** Up to two IPv4 addresses of `host` from `dns`, given up after `ms` or when `signal` aborts. */
+async function directAddresses(dns, host, ms, signal) {
+  signal?.throwIfAborted();
   const resolver = new Resolver({ timeout: 2000, tries: 2 });
   resolver.setServers([dns]);
-  let timer;
-  const deadline = new Promise((_, fail) => {
+  // (cancelled, the lookup rejects after the race is decided: handled here, not left to end the process)
+  const lookup = resolver.resolve4(host);
+  lookup.catch(() => {});
+  let timer, stop;
+  const given = new Promise((_, fail) => {
     timer = setTimeout(() => { resolver.cancel(); fail(new Error("no answer from " + dns + " in " + ms + " ms")); }, ms);
+    stop = () => { resolver.cancel(); fail(signal.reason); };
+    signal?.addEventListener("abort", stop, { once: true });
   });
   try {
-    return (await Promise.race([resolver.resolve4(host), deadline])).slice(0, 2);
-  } finally { clearTimeout(timer); }
+    return (await Promise.race([lookup, given])).slice(0, 2);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", stop);
+  }
 }
 
 /** One request to `address` with the URL's own Host and TLS name; any HTTP answer but a redirect is the Response. */
@@ -84,15 +93,16 @@ function directRequest(url, address, init, routeMs, idleMs) {
  * that fails is said and the next tried. Redirects are refused, as fetch's redirect: "error".
  */
 export async function fetchHandoff(at, init = {}, options = {}) {
-  const { dnsMs = 5_000, routeMs = 25_000, idleMs = 15_000, usualMs = 30_000 } = options;
+  const { dnsMs = 5_000, routeMs = 35_000, idleMs = 15_000, usualMs = 30_000 } = options;
   const url = new URL(at), dns = directDns(url);
   if (!dns) return fetch(at, init);
   const method = init.method ?? "GET";
   let addresses = [];
   try {
-    addresses = await directAddresses(dns, url.hostname, dnsMs);
+    addresses = await directAddresses(dns, url.hostname, dnsMs, init.signal ?? undefined);
     if (!addresses.length) log("no IPv4 address of " + url.hostname + " from " + dns + "; by the usual route");
   } catch (error) {
+    if (init.signal?.aborted) throw error;
     log("resolving " + url.hostname + " at " + dns + " failed (" + reason(error) + "); by the usual route");
   }
   for (const address of addresses) {
@@ -193,8 +203,14 @@ async function restore(dir, sha) {
   }
 }
 
-// Run as a program (also copied alone, next-mac-cache.yml), not when a test imports fetchHandoff.
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+/** Whether this file is the program run (also copied alone, next-mac-cache.yml), not imported by a test. */
+function isMain() {
+  try {
+    return Boolean(process.argv[1]) && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch { return false; }
+}
+
+if (isMain()) {
   const [op, dir, arg] = process.argv.slice(2);
   if (op === "put") await put(dir, arg);
   else if (op === "get") await restore(dir, arg);
