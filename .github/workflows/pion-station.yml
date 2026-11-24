@@ -184,6 +184,43 @@ jobs:
       # (the footprint tests mount a tmpfs in a user namespace, which Ubuntu 24.04's AppArmor keeps from a user's)
       - run: sudo -n sysctl -qw kernel.apparmor_restrict_unprivileged_userns=0 || true
 
+      # (the footprint switch test runs this commit's MoonBit reader too: on a branch that changes station/mb it is not
+      # in the release, only its pipeline's run artifact, so it is built here as natives builds a branch's)
+      - name: Whether this commit's MoonBit reader is prebuilt
+        id: reader
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          missing="$(node scripts/native.ts missing reader:linux-x64)"
+          echo "missing=$([ -n "$missing" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - if: steps.reader.outputs.missing == 'true'
+        uses: ./.github/actions/mbui-moonbit
+        with: { tools: 'mbc', farview: 'false' }
+      - name: Zig 0.16.0 for the reader (UBSan off at -O0, as natives)
+        if: steps.reader.outputs.missing == 'true'
+        run: |
+          zbase="$HOME/.cache/pion-station-zig/0.16.0"
+          d="$zbase/zig-x86_64-linux-0.16.0"
+          if [ ! -x "$d/zig" ]; then
+            mkdir -p "$zbase"
+            t="$RUNNER_TEMP/zig.tar.xz"
+            curl -fsSL --retry 5 --retry-all-errors --speed-limit 1024 --speed-time 20 -o "$t" https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+            echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  $t" | sha256sum -c --quiet
+            tar -xf "$t" -C "$zbase"
+            rm -f "$t"
+          fi
+          [ "$("$d/zig" version)" = 0.16.0 ]
+          mkdir -p "$RUNNER_TEMP/zig-bin"
+          printf '#!/bin/sh\nif [ "${1:-}" = cc ]; then shift; exec "%s/zig" cc -fno-sanitize=undefined "$@"; fi\nexec "%s/zig" "$@"\n' "$d" "$d" > "$RUNNER_TEMP/zig-bin/zig"
+          chmod +x "$RUNNER_TEMP/zig-bin/zig"
+      # (the reader's units natives compiled for this branch, where it ran before this job)
+      - if: steps.reader.outputs.missing == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/stillfail-reader-mbc
+          key: mbui-reader-linux-branch-v2-${{ github.sha }}
+          restore-keys: mbui-reader-linux-branch-v2-
+
       - name: Build linux-x64 with real libstillfail_shell.a and run smoke suite
         env:
           GH_TOKEN: ${{ github.token }}
@@ -216,7 +253,8 @@ jobs:
           pnpm --dir station install --frozen-lockfile --prefer-offline
           STILLFAIL_READER_CANDIDATE="$BIN" node --test station/test/reader-contract-footprint.test.ts
           STILLFAIL_MB_READER="$BIN" node --test station/test/mb-footprint.test.ts
-          node scripts/native.ts run reader -- env STILLFAIL_PION_READER="$BIN" node --test station/test/footprint-pion-switch.test.ts
+          # (a branch's reader, where it is built here: by the zig above, -O0 in units of 8 MB, as natives on GitHub's runners)
+          PATH="$RUNNER_TEMP/zig-bin:$PATH" MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0 node scripts/native.ts run reader -- env STILLFAIL_PION_READER="$BIN" node --test station/test/footprint-pion-switch.test.ts
 
       - name: Save Zig cache
         if: always() && steps.zig-cache.outputs.cache-hit != 'true'
