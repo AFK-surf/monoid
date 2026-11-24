@@ -8,7 +8,10 @@
 // web's muted; code blocks on the code ground, 12 round, their language and
 // a copy button on a row of their own above the code (a finger has no
 // hover); inline code in the code face at 0.9 in its own colour, no box;
-// links in blue (a web address alone in code is one too); rules. A link to
+// emphasis (*…*) upright in muted ink rather than slanted (primary text ink
+// inside muted blocks, unchanged inside semantic-ink notices; inline code and
+// links keep their own colour upright); links in blue (a web address alone in
+// code is one too); rules. A link to
 // another chat is a reference to it: `@` a little
 // lighter, then its words, in the accent. With `files`, a message's files
 // its text names (the core's `placed`) are drawn where it names them: a
@@ -255,7 +258,7 @@ let path_scheme : String = "stillfail-path:"
 /// A file's chip in words: its path as the core shortened it, and the line it points at, in the
 /// code face at .88 of the words, on a quiet ground 6 round and 6 either side; the words' own colour, its link a file's
 /// (path_link).
-fn file_chip_run(path : String, line : Int?, shown : String) -> @ui.Run {
+fn file_chip_run(path : String, line : Int?, shown : String, emph? : Bool = false) -> @ui.Run {
   let words = (if shown != "" { shown } else { path }) +
     (match line {
       Some(n) => ":" + n.to_string()
@@ -264,6 +267,7 @@ fn file_chip_run(path : String, line : Int?, shown : String) -> @ui.Run {
   let t = theme()
   @ui.span(
     words,
+    emph~,
     mono=true,
     scale=file_chip_scale,
     color=t.p.text,
@@ -447,24 +451,57 @@ fn is_web_address(s : String) -> Bool {
 }
 
 ///|
-/// Inlines as runs, the styles they are within carried down.
+/// The ink emphasis (`*…*`) takes inside a block drawn in `block_ink`: muted on
+/// body prose (`0L` or `text`), flipped to primary `text` inside muted blocks
+/// (quotes, table headers, secondary history steps matching `muted`/`subtle`),
+/// and `0L` (inheriting the block's colour; `emph` still copies as `<em>`) for
+/// custom semantic inks such as red error notices.
+fn emph_ink_for(block_ink : Int64) -> Int64 {
+  let p = theme().p
+  if block_ink == 0L || block_ink == p.text || block_ink == web().text {
+    p.muted
+  } else if block_ink == p.muted || block_ink == web().muted || block_ink == p.subtle || block_ink == web().subtle {
+    p.text
+  } else {
+    0L
+  }
+}
+
+///|
+/// Inlines as runs, the styles they are within carried down. Emphasis (`*…*`)
+/// draws upright in `emph_ink` (never slanted) while keeping `emph=true` so
+/// copied HTML preserves `<em>`; inline code and links keep their own colours
+/// upright.
 fn runs_of(
   xs : Array[MdInline],
   out : Array[@ui.Run],
   bold : Bool,
-  italic : Bool,
+  emph : Bool,
   strike : Bool,
   link : String,
   accent : Int64,
+  emph_ink : Int64,
   titles : Map[String, String],
   paths : Bool,
 ) -> Unit {
+  let emph_color = if emph && link == "" { emph_ink } else { 0L }
   for x in xs {
     match x {
-      Text(s) => out.push(@ui.span(s, bold~, italic~, strike~, link~))
+      Text(s) => out.push(@ui.span(s, bold~, emph~, strike~, link~, color=emph_color))
       Formula(s, d) => {
         let drawing = math_inline(d)
-        out.push(@ui.span(s, drawing~, code=drawing is None, bold~, italic~, strike~, link~))
+        out.push(
+          @ui.span(
+            s,
+            drawing~,
+            code=drawing is None,
+            bold~,
+            emph~,
+            strike~,
+            link~,
+            color=if drawing is Some(_) { emph_color } else { 0L },
+          ),
+        )
       }
       Code(s) =>
         out.push(
@@ -472,18 +509,18 @@ fn runs_of(
             s,
             code=true,
             bold~,
-            italic~,
+            emph~,
             strike~,
             link=if link == "" && is_web_address(s) { s } else { link },
           ),
         )
       // a file named by its path, in an agent's words and not within a link: its chip (Peeks.tsx FileRef), its card
       // over it (the message's on_link_shown); else its words as code
-      FileRef(_, path, line, shown) if paths && link == "" => out.push(file_chip_run(path, line, shown))
-      FileRef(s, _, _, _) => out.push(@ui.span(s, code=true, bold~, italic~, strike~, link~))
-      Emph(c) => runs_of(c, out, bold, true, strike, link, accent, titles, paths)
-      Strong(c) => runs_of(c, out, true, italic, strike, link, accent, titles, paths)
-      Strike(c) => runs_of(c, out, bold, italic, true, link, accent, titles, paths)
+      FileRef(_, path, line, shown) if paths && link == "" => out.push(file_chip_run(path, line, shown, emph~))
+      FileRef(s, _, _, _) => out.push(@ui.span(s, code=true, bold~, emph~, strike~, link~))
+      Emph(c) => runs_of(c, out, bold, true, strike, link, accent, emph_ink, titles, paths)
+      Strong(c) => runs_of(c, out, true, emph, strike, link, accent, emph_ink, titles, paths)
+      Strike(c) => runs_of(c, out, bold, emph, true, link, accent, emph_ink, titles, paths)
       Link(href, c, to) if link == "" && to.chat => {
         // a reference to another chat: `@` and its title (a bare link's as the message says it), in the accent's
         // ink (the `@` not lighter: at 70% it was 2.5 to 1)
@@ -492,19 +529,19 @@ fn runs_of(
           Some(title) if to.bare => title
           _ => words
         }
-        out.push(@ui.span("@", bold~, italic~, strike~, link=href, color=accent))
-        out.push(@ui.span(shown, bold~, italic~, strike~, link=href, color=accent))
+        out.push(@ui.span("@", bold~, emph~, strike~, link=href, color=accent))
+        out.push(@ui.span(shown, bold~, emph~, strike~, link=href, color=accent))
       }
       // a bare link to a screen or a station's 共享调试: its title, leading where it does
       Link(href, _, to) if link == "" && titles.get(href) is Some(title) && to.bare =>
-        out.push(@ui.span(title, bold~, italic~, strike~, link=href))
-      Link(href, c, _) => runs_of(c, out, bold, italic, strike, href, accent, titles, paths)
+        out.push(@ui.span(title, bold~, emph~, strike~, link=href))
+      Link(href, c, _) => runs_of(c, out, bold, emph, strike, href, accent, emph_ink, titles, paths)
       Image(src, alt) => {
         // its file's name, as read
         let words = if alt != "" { alt } else { file_name_of(src) }
-        out.push(@ui.span(words, bold~, italic~, strike~, link=src))
+        out.push(@ui.span(words, bold~, emph~, strike~, link=src))
       }
-      HardBreak => out.push(@ui.span("\n", bold~, italic~, strike~, link~))
+      HardBreak => out.push(@ui.span("\n", bold~, emph~, strike~, link~))
     }
   }
 }

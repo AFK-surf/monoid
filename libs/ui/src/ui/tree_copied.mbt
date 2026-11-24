@@ -126,7 +126,7 @@ fn copied_pieces(p : CopiedPart) -> (String, Bool) {
         opens.write_string("<strong>")
         closes.push("</strong>")
       }
-      if r.italic {
+      if r.italic || r.emph {
         opens.write_string("<em>")
         closes.push("</em>")
       }
