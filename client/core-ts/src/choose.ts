@@ -24,7 +24,7 @@ import { type PresetRecord, type Stars, isGone } from "./preset-records.ts";
 import { type Who, fromBefore, heldOf, starredKeys, starsHeld } from "./presets-kept.ts";
 import { work } from "./work.ts";
 import { ofAddress } from "./workspace.ts";
-import { lessBusy, type Busy } from "../../../shared/station-busy.ts";
+import { full, weight, type Busy } from "../../../shared/station-busy.ts";
 
 // deno-lint-ignore no-explicit-any
 type J = any;
@@ -515,6 +515,9 @@ export class Choose implements Owner {
   readonly #next = new Map<string, { key: string; tui?: boolean }>();
   /// Most recently used station id per workspace in automatic assignment mode, used to break ties so consecutive chats spread.
   readonly #autoRecent = new Map<string, string>();
+  /// The station automatic assignment last showed per workspace: kept while another is not a whole step less busy, so a
+  /// CPU sample crossing a quarter (every 10 s) does not swap the station, and with it the model, under the person.
+  readonly #autoShown = new Map<string, string>();
 
   /// The preference on this device. A chat or preset with a model keeps its own choice.
   setDefaultTui(on: boolean): void {
@@ -647,9 +650,19 @@ export class Choose implements Owner {
     const list = pool.filter(runs);
     if (list.length === 0) return undefined;
     const recent = this.#autoRecent.get(scope);
+    const shown = this.#autoShown.get(scope);
+    // Full ones last (shared/station-busy.ts), then by weight, the one shown ahead by a step and a half unless just used.
+    const rank = new Map<J, [number, number]>();
+    for (const s of list) {
+      const b = busyOf(s);
+      const f = full(b);
+      rank.set(s, [f ? 1 : 0, weight(b) - (!f && s.id === shown && s.id !== recent ? 1.5 : 0)]);
+    }
     const sorted = [...list].sort((a, b) => {
-      const by = lessBusy(busyOf(a), busyOf(b));
-      if (by !== 0) return by;
+      const [fa, wa] = rank.get(a)!;
+      const [fb, wb] = rank.get(b)!;
+      if (fa !== fb) return fa - fb;
+      if (wa !== wb) return wa - wb;
       if (recent !== undefined) {
         const aRecent = a.id === recent ? 1 : 0;
         const bRecent = b.id === recent ? 1 : 0;
@@ -657,6 +670,7 @@ export class Choose implements Owner {
       }
       return 0;
     });
+    if (typeof sorted[0].id === "string") this.#autoShown.set(scope, sorted[0].id);
     return sorted[0];
   }
 
