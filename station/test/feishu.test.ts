@@ -307,6 +307,53 @@ test("surface: a direct chat's threads: each message outside a thread begins one
   }
 });
 
+test("surface: thread mode: an @ quoting a message from the chat begins a thread of its own, answered under the reply, not the quoted message", async () => {
+  const r = await surfaceRig({ threadMode: true });
+  try {
+    r.fake.message({ id: "om_old", text: "旧讨论" });
+    // Quoting from the chat itself: Feishu gives the quoted message as parent and root, and no thread.
+    r.fake.message({ id: "om_q", text: "这是什么意思", at: true, parent: "om_old" });
+    // Quoting a message that is a thread's first message, from the chat (not inside that thread): still the chat's.
+    r.fake.message({ id: "om_q2", text: "这个呢", at: true, parent: "om_t", root: "om_t" });
+    // A reply inside a thread (it quotes, and has the thread): that thread's.
+    r.fake.message({ id: "om_in", text: "接着说", at: true, parent: "om_q", thread: "omt_q", root: "om_q" });
+    await r.fake.until("heard", () => r.events.length === 4);
+    assert.deepEqual(r.events.map((e) => (e.type === "message" ? [e.message.threadTs, e.message.quoted ?? null] : null)), [
+      ["om_old", null],
+      ["om_q", "om_old"],
+      ["om_q2", "om_t"],
+      ["om_q", "om_q"],
+    ]);
+    await r.surface.post({ channel: "oc_g", threadTs: "om_q" }, "答案", []);
+    assert.equal(r.fake.calls("POST", "/open-apis/im/v1/messages/om_q/reply").length, 1);
+    assert.equal(r.fake.calls("POST", "/open-apis/im/v1/messages/om_q/reply")[0]!.body.reply_in_thread, true);
+    assert.equal(r.fake.calls("POST", "/open-apis/im/v1/messages/om_old/reply").length, 0);
+    assert.equal(r.fake.calls("POST", "/open-apis/im/v1/messages").length, 0);
+  } finally {
+    await r.close();
+  }
+});
+
+test("surface: a direct chat's threads: a message quoting one from the chat begins a thread of its own; a reply in a thread goes on there", async () => {
+  const r = await surfaceRig({ directThreads: true });
+  try {
+    r.fake.message({ id: "om_a", chat: "oc_dm", text: "看看", p2p: true });
+    r.fake.message({ id: "om_q", chat: "oc_dm", text: "这条呢", p2p: true, parent: "om_a" });
+    r.fake.message({ id: "om_c", chat: "oc_dm", text: "接着说", p2p: true, parent: "om_a", thread: "omt_1", root: "om_a" });
+    await r.fake.until("heard", () => r.events.length === 3);
+    assert.deepEqual(r.events.map((e) => (e.type === "message" ? [e.message.threadTs, e.message.quoted ?? null] : null)), [
+      ["om_a", null],
+      ["om_q", "om_a"],
+      ["om_a", "om_a"],
+    ]);
+    await r.surface.post({ channel: "oc_dm", threadTs: "om_q" }, "答案", []);
+    assert.equal(r.fake.calls("POST", "/open-apis/im/v1/messages/om_q/reply").length, 1);
+    assert.equal(r.fake.calls("POST", "/open-apis/im/v1/messages/om_a/reply").length, 0);
+  } finally {
+    await r.close();
+  }
+});
+
 test("surface: without its threads a direct chat is one conversation, answered in the chat", async () => {
   const r = await surfaceRig({ threadMode: true });
   try {
