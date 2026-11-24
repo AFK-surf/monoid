@@ -1356,9 +1356,11 @@ final class Streams {
         private final JitterPace pace = new JitterPace();
         private final ArrayDeque<PacedImage> pacedImages = new ArrayDeque<>();
         private boolean pacedVsyncPending;
-        private final Choreographer.FrameCallback pacedVsync = frameTimeNanos -> {
+        private final Choreographer.FrameCallback pacedVsync = this::onChoreographerFrame;
+
+        private void onChoreographerFrame(long frameTimeNanos) {
             handler.post(this::onPacedVsync);
-        };
+        }
 
         private void schedulePacedVsync() {
             if (pacedVsyncPending) return;
