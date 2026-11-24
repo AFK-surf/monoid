@@ -132,6 +132,8 @@ export function readHead(dir: string): Head | null {
   }
 }
 
+export type HeadCheck = { kind: "fresh" } | { kind: "use"; head: Head } | { kind: "rebuildLegacy" };
+
 export function readHeadChecked(
   dir: string,
   ws?: string,
@@ -139,7 +141,7 @@ export function readHeadChecked(
   origin?: string,
   hasProgress = false,
   committed?: { to: number; batches: string[] } | null,
-): Head | null {
+): HeadCheck {
   const path = headFile(dir);
   const logDir = join(dir, "log");
   let text: string;
@@ -156,7 +158,7 @@ export function readHeadChecked(
       if (hasBatches || committed != null || hasProgress) {
         throw new Error(`missing ${path} for existing generation ${gen ?? ""}`);
       }
-      return null;
+      return { kind: "fresh" };
     }
     throw e;
   }
@@ -174,13 +176,8 @@ export function readHeadChecked(
   if (!Array.isArray(h.batches)) {
     throw new Error(`corrupted ${path}: missing batches array`);
   }
-  const expectedFirstFrom =
-    committed == null
-      ? 1
-      : committed.batches.length > 0
-        ? (batchSpan(committed.batches[0]!)?.from ?? 1)
-        : committed.to + 1;
   const batchNames: string[] = [];
+  let firstFrom = 0;
   let prevFrom = 0;
   let prevTo = 0;
   for (let i = 0; i < h.batches.length; i++) {
@@ -190,7 +187,7 @@ export function readHeadChecked(
     if (span === null) throw new Error(`corrupted ${path}: invalid batch name`);
     if (span.from <= 0 || span.from > span.to) throw new Error(`corrupted ${path}: non-contiguous batches`);
     if (i === 0) {
-      if (span.from !== expectedFirstFrom) throw new Error(`corrupted ${path}: non-contiguous batches`);
+      firstFrom = span.from;
     } else {
       if (span.from < prevFrom || span.from > prevTo + 1 || span.to < prevTo) {
         throw new Error(`corrupted ${path}: non-contiguous batches`);
@@ -200,26 +197,51 @@ export function readHeadChecked(
     prevTo = span.to;
     batchNames.push(b);
   }
-  if (batchNames.length === 0) {
-    const committedEmpty = committed != null && committed.to === h.to && committed.batches.length === 0;
-    if (h.to !== 0 && !committedEmpty) throw new Error(`corrupted ${path}: non-contiguous batches`);
-    let hasLogBatch = false;
-    try {
-      hasLogBatch = readdirSync(logDir).some((nm) => batchSpan(nm) !== null);
-    } catch (re) {
-      hasLogBatch = !isMissingError(re);
-    }
-    if (hasLogBatch) throw new Error(`corrupted ${path}: non-contiguous batches`);
-  } else if (prevTo !== h.to) {
+  if (batchNames.length > 0 && prevTo !== h.to) {
     throw new Error(`corrupted ${path}: non-contiguous batches`);
   }
   if (committed != null) {
+    if (batchNames.length === 0) {
+      if (h.to < committed.to) throw new Error(`stale ${path} for generation ${gen ?? ""}`);
+      if (h.to === committed.to && committed.batches.length > 0) {
+        throw new Error(`mismatched ${path} for generation ${gen ?? ""}`);
+      }
+      let hasConflictBatch = false;
+      try {
+        hasConflictBatch = readdirSync(logDir).some((nm) => {
+          const sp = batchSpan(nm);
+          return sp !== null && sp.to <= (h.to as number);
+        });
+      } catch (re) {
+        hasConflictBatch = !isMissingError(re);
+      }
+      if (hasConflictBatch) throw new Error(`corrupted ${path}: non-contiguous batches`);
+      return { kind: "use", head: parsed as Head };
+    }
+    const expectedFirstFrom =
+      committed.batches.length > 0 ? (batchSpan(committed.batches[0]!)?.from ?? 1) : committed.to + 1;
+    if (firstFrom !== expectedFirstFrom) throw new Error(`corrupted ${path}: non-contiguous batches`);
     if (h.to < committed.to) throw new Error(`stale ${path} for generation ${gen ?? ""}`);
     if (h.to === committed.to && (batchNames.length !== committed.batches.length || batchNames.some((b, i) => b !== committed.batches[i]))) {
       throw new Error(`mismatched ${path} for generation ${gen ?? ""}`);
     }
+    return { kind: "use", head: parsed as Head };
   }
-  return parsed as Head;
+  let onDisk: string[] | null = null;
+  try {
+    onDisk = readdirSync(logDir);
+  } catch (re) {
+    if (!isMissingError(re)) throw new Error(`cannot read ${logDir}`);
+  }
+  if (onDisk !== null) {
+    const named = new Set(batchNames);
+    for (const nm of onDisk) {
+      if (batchSpan(nm) !== null && !named.has(nm)) {
+        return { kind: "rebuildLegacy" };
+      }
+    }
+  }
+  return { kind: "use", head: parsed as Head };
 }
 
 const STATE = `
@@ -493,15 +515,33 @@ export class Exporter {
     const names = new Map(workspaces.map((w) => [w.workspace, w.name]));
     const wsOfSession = (ws: unknown) => (typeof ws === "string" && ws !== "" ? ws : home);
     // Brought up to date before anything is read: a generation begun now has nothing of before, and is read whole.
+    const freshHead = (ws: string, gen: string): Head => ({
+      v: VERSION, origin: this.#o.origin, workspace: ws, gen, name: names.get(ws) ?? "", dataDir: this.#o.dataDir, made: 0, to: 0,
+      batches: [], files: {}, chats: 0, messages: 0, bytes: 0, runs: [],
+    });
     const outs = new Map<string, Out>();
+    let rebuildLegacy = false;
     for (const ws of names.keys()) {
       const gen = this.#genOf(ws);
       const dir = genDir(this.#root(), ws, gen);
-      const head: Head = readHeadChecked(dir, ws, gen, this.#o.origin, this.#hasWsProgress(ws), this.#readCommittedHeadState(ws, gen)) ?? {
-        v: VERSION, origin: this.#o.origin, workspace: ws, gen, name: names.get(ws) ?? "", dataDir: this.#o.dataDir, made: 0, to: 0,
-        batches: [], files: {}, chats: 0, messages: 0, bytes: 0, runs: [],
-      };
+      const check = readHeadChecked(dir, ws, gen, this.#o.origin, this.#hasWsProgress(ws), this.#readCommittedHeadState(ws, gen));
+      if (check.kind === "rebuildLegacy") {
+        rebuildLegacy = true;
+        break;
+      }
+      const head: Head = check.kind === "use" ? check.head : freshHead(ws, gen);
       outs.set(ws, { head, lines: [], bytes: 0, files: {}, gone: false, messages: 0 });
+    }
+    if (rebuildLegacy) {
+      const oldAfter = Number(this.#meta("after") ?? 0);
+      const nextAfter = Math.max(Number.isFinite(oldAfter) ? oldAfter : 0, this.#o.now());
+      this.#forget();
+      this.#setMeta("after", String(nextAfter));
+      outs.clear();
+      for (const ws of names.keys()) {
+        const gen = this.#genOf(ws);
+        outs.set(ws, { head: freshHead(ws, gen), lines: [], bytes: 0, files: {}, gone: false, messages: 0 });
+      }
     }
     if (this.#meta("entries") === null) {
       // (a generation begun: everything again, from the start)

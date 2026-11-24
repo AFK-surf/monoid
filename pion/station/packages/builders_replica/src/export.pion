@@ -530,12 +530,18 @@ fn str_arrays_eq(a : Array[String], b : Array[String]) -> Bool {
   true
 }
 
+enum HeadCheck {
+  Fresh
+  Use(js_json::JValue)
+  RebuildLegacy
+}
+
 fn Exporter::read_head_checked(
   self : Exporter,
   ws : String,
   gen : String,
   dir : String,
-) -> Result[Option[js_json::JValue], String] {
+) -> Result[HeadCheck, String] {
   let path = self.files.join([dir, "head.json"])
   let log_dir = self.files.join([dir, "log"])
   let committed = match self.read_committed_head_state(ws, gen) {
@@ -561,7 +567,7 @@ fn Exporter::read_head_checked(
       }
       match self.has_ws_progress(ws) {
         Ok(true) => Err("missing " + path + " for existing generation " + gen)
-        Ok(false) => Ok(None)
+        Ok(false) => Ok(HeadCheck::Fresh)
         Err(e) => Err(e)
       }
     }
@@ -584,22 +590,10 @@ fn Exporter::read_head_checked(
             _ => return Err("corrupted " + path + ": missing to")
           }
           let head_to = head_to_d.to_int64()
-          let expected_first_from : Int64 = match committed {
-            Some((c_to, c_bs)) => {
-              if c_bs.length() > 0 {
-                match batch_span(c_bs[0]) {
-                  Some((cf, _)) => cf
-                  None => 1.to_int64()
-                }
-              } else {
-                c_to + 1.to_int64()
-              }
-            }
-            None => 1.to_int64()
-          }
           match jval_get(h, "batches") {
             Some(js_json::JValue::Arr(bs)) => {
               let batch_names : Array[String] = []
+              let mut first_from : Int64 = 0.to_int64()
               let mut prev_from : Int64 = 0.to_int64()
               let mut prev_to : Int64 = 0.to_int64()
               for i in 0..<bs.length() {
@@ -611,9 +605,7 @@ fn Exporter::read_head_checked(
                           return Err("corrupted " + path + ": non-contiguous batches")
                         }
                         if i == 0 {
-                          if from != expected_first_from {
-                            return Err("corrupted " + path + ": non-contiguous batches")
-                          }
+                          first_from = from
                         } else {
                           if from < prev_from || from > prev_to + 1.to_int64() || to < prev_to {
                             return Err("corrupted " + path + ": non-contiguous batches")
@@ -629,48 +621,84 @@ fn Exporter::read_head_checked(
                   None => return Err("corrupted " + path + ": invalid batch entry")
                 }
               }
-              if batch_names.length() == 0 {
-                let committed_empty = match committed {
-                  Some((c_to, c_bs)) => c_to == head_to && c_bs.length() == 0
-                  None => false
-                }
-                if head_to != 0.to_int64() && !committed_empty {
-                  return Err("corrupted " + path + ": non-contiguous batches")
-                }
-                let has_log_batch = match self.files.names(log_dir) {
-                  Some(names) => {
-                    let mut found_batch = false
-                    for i in 0..<names.length() {
-                      match batch_span(names[i]) {
-                        Some(_) => {
-                          found_batch = true
-                          break
-                        }
-                        None => ()
-                      }
-                    }
-                    found_batch
-                  }
-                  None => !c_missing(log_dir, false)
-                }
-                if has_log_batch {
-                  return Err("corrupted " + path + ": non-contiguous batches")
-                }
-              } else if prev_to != head_to {
+              if batch_names.length() > 0 && prev_to != head_to {
                 return Err("corrupted " + path + ": non-contiguous batches")
               }
               match committed {
                 Some((c_to, c_batches)) => {
+                  if batch_names.length() == 0 {
+                    if head_to < c_to {
+                      return Err("stale " + path + " for generation " + gen)
+                    }
+                    if head_to == c_to && c_batches.length() > 0 {
+                      return Err("mismatched " + path + " for generation " + gen)
+                    }
+                    let has_conflict_batch = match self.files.names(log_dir) {
+                      Some(names) => {
+                        let mut found = false
+                        for i in 0..<names.length() {
+                          match batch_span(names[i]) {
+                            Some((_, b_to)) => {
+                              if b_to <= head_to {
+                                found = true
+                                break
+                              }
+                            }
+                            None => ()
+                          }
+                        }
+                        found
+                      }
+                      None => !c_missing(log_dir, false)
+                    }
+                    if has_conflict_batch {
+                      return Err("corrupted " + path + ": non-contiguous batches")
+                    }
+                    return Ok(HeadCheck::Use(h))
+                  }
+                  let expected_first_from : Int64 = if c_batches.length() > 0 {
+                    match batch_span(c_batches[0]) {
+                      Some((cf, _)) => cf
+                      None => 1.to_int64()
+                    }
+                  } else {
+                    c_to + 1.to_int64()
+                  }
+                  if first_from != expected_first_from {
+                    return Err("corrupted " + path + ": non-contiguous batches")
+                  }
                   if head_to < c_to {
                     return Err("stale " + path + " for generation " + gen)
                   }
                   if head_to == c_to && !str_arrays_eq(batch_names, c_batches) {
                     return Err("mismatched " + path + " for generation " + gen)
                   }
+                  Ok(HeadCheck::Use(h))
                 }
-                None => ()
+                None => {
+                  match self.files.names(log_dir) {
+                    Some(names) => {
+                      for i in 0..<names.length() {
+                        match batch_span(names[i]) {
+                          Some(_) => {
+                            if !arr_contains_str(batch_names, names[i]) {
+                              return Ok(HeadCheck::RebuildLegacy)
+                            }
+                          }
+                          None => ()
+                        }
+                      }
+                      Ok(HeadCheck::Use(h))
+                    }
+                    None => {
+                      if !c_missing(log_dir, false) {
+                        return Err("cannot read " + log_dir)
+                      }
+                      Ok(HeadCheck::Use(h))
+                    }
+                  }
+                }
               }
-              Ok(Some(h))
             }
             _ => Err("corrupted " + path + ": missing batches array")
           }
@@ -808,8 +836,33 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
       None => home
     }
   }
-  let outs : Map[String, Out] = Map::new()
-  let out_keys : Array[String] = []
+  let fresh_head = fn(ws : String, gen : String, w_name : js_json::JValue) -> js_json::JValue {
+    jval_obj([
+      ("v", jval_num(REPLICA_VERSION.to_double())),
+      ("origin", jval_str(self.origin)),
+      ("workspace", jval_str(ws)),
+      ("gen", jval_str(gen)),
+      (
+        "name",
+        match w_name {
+          js_json::JValue::Null => jval_str("")
+          v => v
+        },
+      ),
+      ("dataDir", jval_str(self.data_dir)),
+      ("made", jval_num(0.0)),
+      ("to", jval_num(0.0)),
+      ("batches", jval_arr([])),
+      ("files", jval_obj([])),
+      ("chats", jval_num(0.0)),
+      ("messages", jval_num(0.0)),
+      ("bytes", jval_num(0.0)),
+      ("runs", jval_arr([])),
+    ])
+  }
+  let mut outs : Map[String, Out] = Map::new()
+  let mut out_keys : Array[String] = []
+  let mut rebuild_legacy = false
   for i in 0..<names.length() {
     let (ws, w_name) = names[i]
     let gen = match self.gen_of(ws) {
@@ -817,38 +870,60 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
       Err(e) => return Err(e)
     }
     let dir = self.gen_dir(ws, gen)
-    let head = match self.read_head_checked(ws, gen, dir) {
-      Ok(Some(h)) => h
+    match self.read_head_checked(ws, gen, dir) {
       Err(e) => return Err(e)
-      Ok(None) =>
-      jval_obj([
-        ("v", jval_num(REPLICA_VERSION.to_double())),
-        ("origin", jval_str(self.origin)),
-        ("workspace", jval_str(ws)),
-        ("gen", jval_str(gen)),
-        (
-          "name",
-          match w_name {
-            js_json::JValue::Null => jval_str("")
-            v => v
-          },
-        ),
-        ("dataDir", jval_str(self.data_dir)),
-        ("made", jval_num(0.0)),
-        ("to", jval_num(0.0)),
-        ("batches", jval_arr([])),
-        ("files", jval_obj([])),
-        ("chats", jval_num(0.0)),
-        ("messages", jval_num(0.0)),
-        ("bytes", jval_num(0.0)),
-        ("runs", jval_arr([])),
-      ])
+      Ok(HeadCheck::RebuildLegacy) => {
+        rebuild_legacy = true
+        break
+      }
+      Ok(HeadCheck::Use(head)) => {
+        match outs.get(ws) {
+          Some(_) => ()
+          None => out_keys.push(ws)
+        }
+        outs.set(ws, Out::{ head: head, lines: [], bytes: 0, files: [], file_at: Map::new(), gone: false, messages: 0.0 })
+      }
+      Ok(HeadCheck::Fresh) => {
+        let head = fresh_head(ws, gen, w_name)
+        match outs.get(ws) {
+          Some(_) => ()
+          None => out_keys.push(ws)
+        }
+        outs.set(ws, Out::{ head: head, lines: [], bytes: 0, files: [], file_at: Map::new(), gone: false, messages: 0.0 })
+      }
     }
-    match outs.get(ws) {
-      Some(_) => ()
-      None => out_keys.push(ws)
+  }
+  if rebuild_legacy {
+    let old_after = match self.meta("after") {
+      Ok(Some(a)) => parse_double_or(a, 0.0)
+      Ok(None) => 0.0
+      Err(e) => return Err(e)
     }
-    outs.set(ws, Out::{ head: head, lines: [], bytes: 0, files: [], file_at: Map::new(), gone: false, messages: 0.0 })
+    let now = (self.now)()
+    let next_after = if old_after > now { old_after } else { now }
+    match self.forget() {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
+    match self.set_meta("after", js_json::stringify(jval_num(next_after))) {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
+    outs = Map::new()
+    out_keys = []
+    for i in 0..<names.length() {
+      let (ws, w_name) = names[i]
+      let gen = match self.gen_of(ws) {
+        Ok(g) => g
+        Err(e) => return Err(e)
+      }
+      let head = fresh_head(ws, gen, w_name)
+      match outs.get(ws) {
+        Some(_) => ()
+        None => out_keys.push(ws)
+      }
+      outs.set(ws, Out::{ head: head, lines: [], bytes: 0, files: [], file_at: Map::new(), gone: false, messages: 0.0 })
+    }
   }
   let entries_meta = match self.meta("entries") {
     Ok(v) => v
