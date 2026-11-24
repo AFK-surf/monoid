@@ -337,9 +337,9 @@ export function lockSeen(inner: Inner): Marks {
 
 /// This device's signing key as known now (loaded, or made as it is put forward): what shows whether it signs told
 /// (the lock's, and the vault's, whose page waits on it).
-export function signerKnown(inner: Inner, id: string | null): void {
+export function signerKnown(inner: Inner, id: string | null, read = true): void {
   signers.set(inner, id);
-  if (inner.data.record(KEYS_SHOWN, "signer") !== id) inner.data.put(KEYS_SHOWN, "signer", id);
+  if (read && inner.data.record(KEYS_SHOWN, "signer") !== id) inner.data.put(KEYS_SHOWN, "signer", id);
   lockSeen(inner).touch("self");
   inner.views?.vaultChanged(null);
   if (id !== null) vaultReady(inner);
@@ -703,7 +703,8 @@ export function install(inner: Inner): void {
   const loaded = Deferred.makeUnsafe<void>();
   signerLoads.set(inner, loaded);
   inner.runner.fork(Effect.ensuring(
-    Effect.map(Effect.orElseSucceed(Signer.load(inner.host), () => null), (s) => signerKnown(inner, s?.id ?? null)),
+    // (one that could not be read is none this run, not kept as none for the next: `signerShown`)
+    Effect.map(Effect.result(Signer.load(inner.host)), (r) => (r._tag === "Success" ? signerKnown(inner, r.success?.id ?? null) : signerKnown(inner, null, false))),
     Effect.sync(() => { Deferred.doneUnsafe(loaded, Effect.void); }),
   ));
   // The workspace view says how far the cloud's lock goes and how many wait: read again when that changes.

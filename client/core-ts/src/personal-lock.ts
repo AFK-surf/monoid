@@ -324,6 +324,12 @@ export class PersonalLock {
     this.#env = env;
   }
 
+  /// Whether what the device keeps of `sub`'s lock (the chain pinned, this device's key) has been read this run
+  /// (`refresh`, in a fork of its own at start): till then `standing` says none, not what is kept.
+  loaded(sub: string): boolean {
+    return this.#loaded.has(sub);
+  }
+
   /// The chain pinned here as read so far, its entries from the genesis (read only).
   pinnedOf(sub: string): readonly Entry[] {
     return this.#pinned.get(sub) ?? [];
