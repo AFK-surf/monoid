@@ -45,6 +45,19 @@ test("a_web_call_in_history_says_how_many_pages_it_opens", () => {
   assert.equal(row.call, text, "the original references remain available in the expanded call");
 });
 
+test("a_chat_a_call_names_by_its_link_is_said_by_its_title", () => {
+  const link = "https://app.still.fail/o/ws/st/chat%3Ac-90f6";
+  const text = JSON.stringify({ chat: `@${link}`, limit: 15 });
+  const timeline = [
+    { kind: "tool_call", tool: "mcp__stillfail__session_history", callId: "h1", text },
+    { kind: "tool_result", callId: "h1", ok: true, text: "entries" },
+  ];
+  const said = (c: Context) => presentHistory({ timeline }, c).items[0].body.content.rows[0].content.said;
+  assert.equal(said({ ...cx([], [], []), chatTitle: (l) => (l === link ? "安卓启动超时" : undefined) }), "读取执行历史 安卓启动超时");
+  assert.equal(said(cx([], [], [])), "读取执行历史", "a chat not listed yet: its link is not said in its place");
+  assert.equal(said({ ...cx([], [], []), chatTitle: (l) => (l === link ? "安卓启动超时" : undefined) }), "读取执行历史 安卓启动超时", "said by its title once listed");
+});
+
 test("a_slack_place_is_named_with_its_workspace_and_links_to_its_thread", () => {
   const threads = [{ surface: "slack:T1", channel: "C1", threadTs: "1.000200", channelName: "ops", sessions: [{ session: "s1" }] }];
   const c = cx(threads, [], []);

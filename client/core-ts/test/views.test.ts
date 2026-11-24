@@ -4606,3 +4606,17 @@ test("a terminal reminds the opener even where two members have the same name", 
   assert.deepEqual(result.ids, ["ws/st/terminal:mine"]);
   assert.equal(result.otherCount, 2);
 });
+
+test("a_chat_link_an_agent_names_is_titled_as_its_stations_list_has_it", () => {
+  const t = setup();
+  const r = row("c-90f6", t.host.nowMs());
+  r.session = "chat:c-90f6";
+  r.title = "安卓启动超时";
+  t.set(rows("ws/st"), [r, { ...row("c-untitled", t.host.nowMs()), title: null }]);
+  // As the agents' chat tools take it: still.fail's link, its key the chat's session; or its page.
+  assert.equal(t.views.chatTitleOfLink("https://app.still.fail/o/ws/st/chat%3Ac-90f6"), "安卓启动超时");
+  assert.equal(t.views.chatTitleOfLink("https://app.still.fail/w/ws/s/st/chats/c-90f6"), "安卓启动超时");
+  assert.equal(t.views.chatTitleOfLink("https://app.still.fail/o/ws/st/c-untitled"), words("core-views.new_chat"));
+  assert.equal(t.views.chatTitleOfLink("https://app.still.fail/o/ws/st/chat%3Ac-none"), undefined);
+  assert.equal(t.views.chatTitleOfLink("https://example.com/a"), undefined);
+});

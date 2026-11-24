@@ -2,6 +2,7 @@
 // topic's value into `activity`: `{ now: { key, text } }`.
 import { t } from "./i18n.ts";
 import { cleanCommand, cleanPath, closeCut as close, isOpaqueId, summaryCommand } from "./tool-step.ts";
+import { chatOfLink } from "./refLinks.ts";
 import { get } from "./util.ts";
 
 /// A tool's name without its MCP prefix or ACP "Run " prefix.
@@ -203,12 +204,13 @@ function cutShort(json: string): Record<string, J> | null {
 const firstLine = (s: string) => (s.split(/\r?\n/).find((l) => l.trim() !== "") ?? "").trim();
 
 /// What a call's words need beyond its input: the workspace's stations' names by id, what the tasks prepared on
-/// them earlier in the transcript run, by `<station>/<key>` (tasksOf), and the sub-agents or chats named earlier in the
-/// transcript or workspace, by id (agentsOf).
+/// them earlier in the transcript run, by `<station>/<key>` (tasksOf), the sub-agents or chats named earlier in the
+/// transcript or workspace, by id (agentsOf), and the title of a chat a link names, as the device's lists have it.
 export type Known = {
   stations?: ReadonlyMap<string, string>;
   tasks?: ReadonlyMap<string, string>;
   agents?: ReadonlyMap<string, string>;
+  chatTitle?: (link: string) => string | undefined;
 };
 
 /// The line of a command that says what it does: not `exec 2>&1`, `set -e`, a comment or a shebang.
@@ -217,9 +219,17 @@ function commandLine(command: string): string {
   return summaryCommand(lines.join("\n"));
 }
 
-function shortChatRef(raw: string, agents?: ReadonlyMap<string, string>): string {
-  const s = raw.trim();
+/// A chat a call names (its link, `@`-marked or not, its key or its address) as its title; "" where none is known: a
+/// link or a key is never shown in its place.
+function shortChatRef(raw: string, known: Known): string {
+  const s = raw.trim().replace(/^@/, "").replace(/^<(.*)>$/, "$1");
   if (!s) return "";
+  const agents = known.agents;
+  const linked = /^https?:\/\//.test(s) ? chatOfLink(s) : null;
+  if (linked !== null) {
+    const id = linked.id.replace(/^chat:/, "");
+    return agents?.get(linked.id) ?? agents?.get(id) ?? known.chatTitle?.(s) ?? "";
+  }
   const urlPart = s.includes("/chats/") ? (s.split("/chats/").pop() ?? s) : s;
   let decoded = urlPart;
   try {
@@ -227,9 +237,9 @@ function shortChatRef(raw: string, agents?: ReadonlyMap<string, string>): string
   } catch {
     decoded = urlPart;
   }
-  const named = agents?.get(s) ?? agents?.get(urlPart) ?? agents?.get(decoded);
+  const named = agents?.get(s) ?? agents?.get(urlPart) ?? agents?.get(decoded) ?? (s.includes("/chats/") ? known.chatTitle?.(s) : undefined);
   if (named) return named;
-  if (isOpaqueId(decoded) || isOpaqueId(s)) return "";
+  if (isOpaqueId(decoded) || isOpaqueId(s) || /^https?:\/\//.test(s)) return "";
   return decoded.length > 28 ? `${decoded.slice(0, 24)}…` : decoded;
 }
 
@@ -353,7 +363,7 @@ export function told(tool: string, input: string, known: Known = {}): string | n
     return null;
   }
   if (name === "chat_read" || name === "chat_history" || name === "session_history" || name === "session_send" || name === "chat_archive" || name === "chat_leave") {
-    const ref = shortChatRef(typeof a.chat === "string" ? a.chat : typeof a.to === "string" ? a.to : "", known.agents);
+    const ref = shortChatRef(typeof a.chat === "string" ? a.chat : typeof a.to === "string" ? a.to : "", known);
     if (name === "chat_history") return ref ? `读取对话历史 ${ref}` : "读取对话历史";
     if (name === "chat_read") return ref ? `读取对话 ${ref}` : "读取对话";
     if (name === "session_history") return ref ? `读取执行历史 ${ref}` : "读取执行历史";

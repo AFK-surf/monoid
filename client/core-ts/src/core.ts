@@ -9,6 +9,7 @@ import * as commands from "./commands.ts";
 import { findGo } from "./chat-find.ts";
 import { mentionView, relayView } from "./relay-pick.ts";
 import { wordsAnswer } from "./words.ts";
+import { copiedRef } from "./refLinks.ts";
 import { toolCall, toolResult, type ToolPart } from "./tool-step.ts";
 import * as fonts from "./fonts.ts";
 import { MermaidAbsent, mermaidChart, provideMermaid } from "./mermaid.ts";
@@ -462,6 +463,14 @@ export class Core {
       };
       handlers.historyTool = (_i, call) => {
         const c = call as Extract<Call, { kind: "historyTool" }>;
+        // A chat the call names by its link (chat_read, session_history, session_send) shown by its title, linking to
+        // it, where the device's lists know it: the link alone reads as an address, not as which chat.
+        const titled = (r: { key: string; value: string; form: "short" | "long" | "json"; prose?: true }) => {
+          if (r.key !== "chat" && r.key !== "to") return r;
+          const link = r.value.trim().replace(/^@/, "");
+          const title = /^https?:\/\//.test(link) ? inner.views?.chatTitleOfLink(link) : undefined;
+          return title === undefined ? r : { key: r.key, value: copiedRef(title, link).plain, form: "long" as const };
+        };
         // Markdown read here for the clients that draw its tree (markdown.ts), as everywhere else.
         const withMd = (parts: ToolPart[]) =>
           parts.map((part) => {
@@ -469,7 +478,7 @@ export class Core {
             if (part.kind === "fields") {
               return {
                 ...part,
-                rows: part.rows.map((r) => (r.form === "long" ? { ...r, md: markdown(r.value) } : r)),
+                rows: part.rows.map(titled).map((r) => (r.form === "long" ? { ...r, md: markdown(r.value) } : r)),
               };
             }
             return part;

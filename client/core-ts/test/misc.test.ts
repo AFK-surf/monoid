@@ -123,6 +123,23 @@ test("it_says_the_call_it_runs_or_its_reply_or_where_the_turn_stands", () => {
   assert.equal(epochMs("1970-01-02T00:00:01.500Z"), 86_401_500);
 });
 
+test("a_chat_a_call_names_by_its_link_is_said_by_its_title_never_its_link", () => {
+  // As agents give it: their chat tools take a chat's link, sometimes marked `@`.
+  const link = "https://app.example/o/01WS/021f71b0713034920b2879b925aaaf3f6e177668046da38347495a3fe573904b/chat%3Ac-90f61c4e4bcf74b3a5a92d93864aa1b6";
+  const titles = new Map([[link, "安卓启动超时"]]);
+  const chatTitle = (l: string) => titles.get(l);
+  const call = (name: string, input: J) => told(`mcp__stillfail__${name}`, JSON.stringify(input), { chatTitle });
+  assert.equal(call("session_history", { chat: `@${link}`, limit: 15 }), "读取执行历史 安卓启动超时");
+  assert.equal(call("chat_read", { chat: link }), "读取对话 安卓启动超时");
+  assert.equal(call("session_send", { to: link, message: "hi" }), "向 安卓启动超时 发送消息");
+  // A chat the device does not list yet: its link is not shown in its place.
+  assert.equal(told("mcp__stillfail__session_history", JSON.stringify({ chat: `@${link}` })), "读取执行历史");
+  assert.equal(told("mcp__stillfail__chat_read", JSON.stringify({ chat: "https://app.example/w/01WS/s/st/chats/c-1" })), "读取对话");
+  // One named by a sub-agent's chat earlier in the transcript, by its key.
+  const agents = new Map([["c-90f61c4e4bcf74b3a5a92d93864aa1b6", "迁移子任务"]]);
+  assert.equal(told("mcp__stillfail__chat_read", JSON.stringify({ chat: link }), { agents }), "读取对话 迁移子任务");
+});
+
 test("the_name_is_the_channels", () => {
   assert.equal(name(), "still.fail");
   setTestChannel(true);

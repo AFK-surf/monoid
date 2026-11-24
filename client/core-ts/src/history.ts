@@ -33,6 +33,9 @@ export type Context = {
   now?: number;
   /// The workspace's stations' names by id, for the calls that work on one (station_task); absent: none known.
   stations?: ReadonlyMap<string, string>;
+  /// The title of a chat a link names, as the device's lists have it (views.ts `chatTitleOfLink`), for the calls that
+  /// name one (chat_read, session_history, session_send); absent: none known.
+  chatTitle?: (link: string) => string | undefined;
   /// Where the trees of its Markdown are kept on the device (markdown.ts); absent: read here only.
   md?: MdStore;
   /// Its latest turn has not ended: a waiting state it said may still be taken back.
@@ -172,12 +175,13 @@ function sigOf(cx: Context): Sig {
 }
 
 /// What an item shown was made of: its context, the entries and steps it read (`deps`), the trees of Markdown it was
-/// given (`md`) and the tasks' and agents' names it looked up (`names`), each to be the same to take it again.
+/// given (`md`) and the tasks' and agents' names and the chats' titles it looked up (`names`), each to be the same to
+/// take it again.
 type Shown = {
   sig: Sig;
   deps: unknown[];
   md: [string, unknown][];
-  names: [0 | 1, string, string | undefined][];
+  names: [0 | 1 | 2, string, string | undefined][];
   out: J;
   final: J;
   turn: { at: number | null; time: string | null } | null;
@@ -192,18 +196,24 @@ const pages: Page[] = [];
 /// How much of a history was made afresh (items, not taken again): what history.test.ts holds the keeping to.
 export const historyMade = { items: 0 };
 
+/// Whether the chats an item named by their links are titled as they were: the device's lists are not its history's.
+function titlesSame(made: Shown, chatTitle: Context["chatTitle"]): boolean {
+  for (const [which, link, title] of made.names) if (which === 2 && chatTitle?.(link) !== title) return false;
+  return true;
+}
+
 function mdSame(made: Shown, store: MdStore | undefined): boolean {
   for (const [text, md] of made.md) if (markdown(text, store) !== md) return false;
   return true;
 }
 
-function pageOf(held: J[], from: number, sig: Sig, day: number | null, store: MdStore | undefined): Page | null {
+function pageOf(held: J[], from: number, sig: Sig, day: number | null, store: MdStore | undefined, chatTitle: Context["chatTitle"]): Page | null {
   for (let p = 0; p < pages.length; p++) {
     const page = pages[p];
     if (page.from !== from || page.sig !== sig || page.day !== day || page.held.length !== held.length) continue;
     let all = true;
     for (let i = 0; i < held.length && all; i++) all = page.held[i] === held[i];
-    if (!all || !page.made.every((m) => mdSame(m, store))) continue;
+    if (!all || !page.made.every((m) => mdSame(m, store) && titlesSame(m, chatTitle))) continue;
     if (p > 0) pages.unshift(...pages.splice(p, 1));
     return page;
   }
@@ -776,7 +786,7 @@ function made(live: J, cx: Context, keep: boolean): J {
   const day = cx.now !== undefined ? format.localDay(cx.now, cx.offsetMin) : null;
   // The same entries in the same context: the items it showed, as they were (its steps in flight, its phase or its
   // usage are what changed).
-  let page = sig !== null ? pageOf(held, from, sig, day, cx.md) : null;
+  let page = sig !== null ? pageOf(held, from, sig, day, cx.md, cx.chatTitle) : null;
   if (page === null) {
     page = itemsOf(held, from, cx, sig, day);
     if (sig !== null) {
@@ -842,7 +852,7 @@ function itemsOf(held: J[], from: number, cx: Context, sig: Sig | null, day: num
 
   const items: [Item, number, number][] = [];
   const { steps, stepAt } = pair(timeline);
-  const known: Known = { stations: cx.stations, tasks: tasksOf(timeline), agents: agentsOf(timeline, cx.threads) };
+  const known: Known = { stations: cx.stations, tasks: tasksOf(timeline), agents: agentsOf(timeline, cx.threads), ...(cx.chatTitle ? { chatTitle: cx.chatTitle } : {}) };
   let grouping = false;
   let groupSteps = 0;
   let groupPhase: "explore" | "act" | null = null;
@@ -1089,12 +1099,12 @@ function itemsOf(held: J[], from: number, cx: Context, sig: Sig | null, day: num
     return true;
   };
   const namesSame = (m: Shown) => {
-    for (const [which, key, name] of m.names) if ((which === 0 ? known.tasks : known.agents)?.get(key) !== name) return false;
+    for (const [which, key, name] of m.names) if ((which === 2 ? known.chatTitle?.(key) : (which === 0 ? known.tasks : known.agents)?.get(key)) !== name) return false;
     return true;
   };
 
   const place = (address: string | null, message: string | null = null) => (address === null ? null : format.place(cx.threads, address, cx.offsetMin, cx.workspaces, message));
-  const render = (item: Item, first: number, last: number, md: [string, unknown][], names: [0 | 1, string, string | undefined][]): J => {
+  const render = (item: Item, first: number, last: number, md: [string, unknown][], names: [0 | 1 | 2, string, string | undefined][]): J => {
     // Each tree of Markdown given and each name looked up, to know that the item made of them stands.
     const mdOf = (text: string) => {
       const tree = markdown(text, cx.md);
@@ -1111,6 +1121,14 @@ function itemsOf(held: J[], from: number, cx: Context, sig: Sig | null, day: num
               return name;
             },
           } as unknown as ReadonlyMap<string, string>);
+    // Looked up even where none are known, so that an item made before its chat was listed is made again once it is.
+    const lookedTitle = {
+      chatTitle: (link: string) => {
+        const title = known.chatTitle?.(link);
+        names.push([2, link, title]);
+        return title;
+      },
+    };
     let v: J;
     switch (item.kind) {
       case "received": {
@@ -1233,7 +1251,7 @@ function itemsOf(held: J[], from: number, cx: Context, sig: Sig | null, day: num
         }
         break;
       case "group":
-        v = group(timeline, steps, item.rows, base, { stations: known.stations, tasks: looked(0, known.tasks), agents: looked(1, known.agents) }, mdOf);
+        v = group(timeline, steps, item.rows, base, { stations: known.stations, tasks: looked(0, known.tasks), agents: looked(1, known.agents), ...lookedTitle }, mdOf);
         break;
     }
     const kind = v.kind ?? null;
@@ -1252,7 +1270,7 @@ function itemsOf(held: J[], from: number, cx: Context, sig: Sig | null, day: num
     if (kept !== undefined && kept.sig === sig && sameDeps(kept.deps, deps) && namesSame(kept) && mdSame(kept, cx.md)) return kept;
     if (sig !== null) historyMade.items++;
     const md: [string, unknown][] = [];
-    const names: [0 | 1, string, string | undefined][] = [];
+    const names: [0 | 1 | 2, string, string | undefined][] = [];
     const out = render(item, first, last, md, names);
     const m: Shown = { sig: sig!, deps, md, names, out, final: out, turn: null };
     if (keyed) shownKept.set(head, m);

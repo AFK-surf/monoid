@@ -29,7 +29,7 @@ import { topicKey, type Topic } from "../protocol.ts";
 import * as refs from "../refs.ts";
 import { computed, Marks, untracked, type Derived } from "../reactive.ts";
 import { Moments } from "../clock.ts";
-import { chatsLinked, personWords } from "../refLinks.ts";
+import { chatOfLink, chatsLinked, personWords } from "../refLinks.ts";
 import { timed } from "../spent.ts";
 import type { Value, Watch } from "../store.ts";
 import { arr as arrU, deepFreeze, equal, get as getU, isObject, shaped, shapedAs, sharedValue } from "../util.ts";
@@ -1787,6 +1787,16 @@ export class Views implements Owner {
       const thread = u64(found.thread ?? null);
       return [{ href: c.href, title: found.title || t("core-views.new_chat"), ...(thread !== null ? { thread } : {}), ...(found.archived ? { archived: true, note: t("core-views.search.archived") } : {}) }];
     });
+  }
+
+  /// The title of the chat `link` names (a still.fail link or a chat's page, as an agent's chat tools take it), as its
+  /// station's lists have it (data.ts chatLinked: its row's columns alone); undefined for one no list has. A chat named
+  /// but never titled is 新对话, as its row says it.
+  chatTitleOfLink(link: string): string | undefined {
+    const of = chatOfLink(link);
+    if (of === null) return undefined;
+    const found = this.#core.data.chatLinked(this.stationNow(of.station), of.id);
+    return found === undefined ? undefined : found.title || t("core-views.new_chat");
   }
 
   /// The links to chats `text`, said in a chat on `station`, has (chatsLinked), found once while it is among the last
@@ -5158,6 +5168,7 @@ export class Views implements Owner {
         offsetMin: this.#core.host.utcOffsetMin(now),
         now,
         stations: this.stationNames(ofAddress(station)),
+        chatTitle: (link) => this.chatTitleOfLink(link),
         turnOpen: isObject(get(session, "lastTurn")) && typeof get(get(session, "lastTurn"), "endedAt") !== "number",
         ...(md !== undefined ? { md } : {}),
       }),
