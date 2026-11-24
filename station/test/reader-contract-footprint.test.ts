@@ -502,6 +502,22 @@ test("cancellation and termination: pre-aborted AbortSignal, stdin EOF, and idle
   assertProcessGone(sigtermIdle.pid);
 });
 
+test("a path or a base with a NUL in it is refused EINVAL, never measured as the path before the NUL", async () => {
+  const root = freshDir();
+  writeSized(join(root, "node_modules/pkg/index.js"), 16_384);
+  for (const ask of [{ path: `${root}\0${sep}none` }, { path: root, base: `${root}\0x` }]) {
+    for (const finding of [true, false]) {
+      const inv = await invokeFootprintRaw(`${JSON.stringify({ ...ask, finding, strict: !finding })}\n`);
+      assert.equal(inv.exitCode, 0, `footprint exited with ${inv.exitCode} (stderr: ${inv.stderr})`);
+      assert.equal(inv.messages.length, 1);
+      const [said] = inv.messages as FootprintRawResponse[];
+      assert.equal(said!.code, "EINVAL", JSON.stringify(said));
+      assert.equal(typeof said!.error, "string");
+      assert.equal(said!.size, undefined);
+    }
+  }
+});
+
 test("invalid CLI arguments, malformed JSON requests, and missing paths follow error contract", async () => {
   const missing = join(freshDir(), "does-not-exist");
   assert.deepEqual(await candidateMeasureRoom(missing), { bytes: 0, rebuild: [], complete: true });

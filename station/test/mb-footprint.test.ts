@@ -3,9 +3,13 @@
 // the same bytes, the same rebuildable directories and sizes in the same order, cut short at the same place and for
 // the same reason, stopped past a limit at the same count, failing on the same errors.
 import assert from "node:assert/strict";
-import { chmodSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fsp from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { platform } from "../src/platform/index.ts";
@@ -151,6 +155,69 @@ test("no deeper than 32 below a root, each found directory's walk its own", { sk
   const { program, reference } = await roomOfBoth(root);
   assert.deepEqual(program, reference);
   assert.equal(program.rebuild.length, 1);
+});
+
+// (no mount is made here: the walk's lstat says these directories and all in them are of another device)
+test("another file system mounted in a room, whatever its name, is counted as itself, never looked into nor found", async () => {
+  const root = fresh();
+  write(join(root, "web/node_modules/y.js"), 3_000);
+  const mounts = ["mnt", "app/node_modules", "uploads", ".git"].map((m) => join(root, m));
+  for (const m of mounts) {
+    write(join(m, "node_modules/x.js"), 20_000);
+    write(join(m, "a/b/c"), 9_000);
+  }
+  const plain = await measureRoomReference(root);
+  const inside = (await Promise.all(mounts.map(async (m) => await measuredReference(m) - Number(lstatSync(m, { bigint: true }).blocks) * 512))).reduce((a, b) => a + b, 0);
+  const lstat = fsp.lstat;
+  const mounted = (p: string) => mounts.some((m) => p === m || p.startsWith(m + sep));
+  fsp.lstat = (async (p: string, o?: { bigint?: boolean }) => {
+    const s = await lstat(p, o as { bigint: true });
+    return mounted(String(p)) ? Object.assign(Object.create(Object.getPrototypeOf(s)), s, { dev: s.dev + 1n }) : s;
+  }) as typeof fsp.lstat;
+  syncBuiltinESMExports();
+  try {
+    const room = await measureRoomReference(root);
+    assert.deepEqual(room.rebuild.map(([p]) => p.slice(root.length + 1)), [join("web", "node_modules")]);
+    assert.equal(room.bytes, plain.bytes - inside);
+    assert.equal(room.complete, true);
+  } finally {
+    fsp.lstat = lstat;
+    syncBuiltinESMExports();
+  }
+});
+
+const userns = platform.os === "linux" && spawnSync("unshare", ["-rm", "true"]).status === 0 ? false : "mounting a file system in a user namespace (unshare -rm, Linux)";
+
+test("the program as the walk: a file system really mounted in a room, whatever its name, counted as itself, never looked into nor found", { skip: skip || userns }, () => {
+  const root = fresh();
+  write(join(root, "web/node_modules/y.js"), 3_000);
+  const mounts = ["mnt", "app/node_modules", "uploads", ".git"];
+  for (const m of mounts) mkdirSync(join(root, m), { recursive: true });
+  // (in a mount namespace of its own: a tmpfs on each, filled there, then both measures)
+  const url = (p: string) => JSON.stringify(new URL(p, import.meta.url).href);
+  const code = `const { measureRoom } = await import(${url("../src/sessions/footprint.ts")});
+    const { measureRoomReference } = await import(${url("./footprint-reference.ts")});
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const root = process.env.FOOTPRINT_ROOT;
+    for (const m of ${JSON.stringify(mounts)}) {
+      mkdirSync(join(root, m, "node_modules/a/b"), { recursive: true });
+      writeFileSync(join(root, m, "node_modules/x.js"), Buffer.alloc(20000, 7));
+      writeFileSync(join(root, m, "node_modules/a/b/c"), Buffer.alloc(9000, 7));
+    }
+    writeFileSync(process.env.FOOTPRINT_OUT, JSON.stringify({ program: await measureRoom(root), reference: await measureRoomReference(root) }));`;
+  const out = join(fresh(), "measured.json");
+  const mount = mounts.map((m) => `mount -t tmpfs tmpfs "$FOOTPRINT_ROOT/${m}"`).join(" && ");
+  const ran = spawnSync("unshare", ["-rm", "sh", "-c", `${mount} && exec "$0" --import ./test/setup-env.mjs --input-type=module -e "$1"`, process.execPath, code], {
+    cwd: fileURLToPath(new URL("..", import.meta.url)), env: { ...process.env, FOOTPRINT_ROOT: root, FOOTPRINT_OUT: out }, encoding: "utf8",
+  });
+  assert.equal(ran.status, 0, ran.stderr);
+  const { program, reference } = JSON.parse(readFileSync(out, "utf8"));
+  assert.deepEqual(program, reference);
+  assert.deepEqual(program.rebuild.map(([p]: [string]) => p.slice(root.length + 1)), ["web/node_modules"]);
+  // (what is in the mounts, 4 × 29 000 bytes, not counted)
+  assert.ok(program.bytes < 60_000, `${program.bytes}`);
+  assert.equal(program.complete, true);
 });
 
 const unreadable = platform.os === "windows" || process.getuid?.() === 0 ? "a directory this user cannot read (not on Windows, nor as root)" : false;
