@@ -68,7 +68,7 @@ pub fn doc_notes_list_node(v : @view.View, of : DocNotes, opened : () -> Unit) -
         .shrink(Is(1.0))
         .radius(Is(@sf.row_corner))
         .padding(Is((10.0, 8.0, 6.0, 8.0)))
-        .gap(Is(3.0))
+        .gap(Is(4.0))
         .ground(By(fn() { if (of.current)() == n.get().id { @sf.alpha(0xF5C518FFL, 0.22) } else { 0L } }))
         |> ignore
         @sf.hover_ground_node(b)
