@@ -172,6 +172,10 @@ class RawLineProc {
     });
   }
 
+  get pid(): number | undefined {
+    return this.#child.pid;
+  }
+
   get stderr(): string {
     return this.#stderr;
   }
@@ -583,6 +587,34 @@ test("builders_requested: real MB default, real Pion switch (env + config.reader
   }
 });
 
+function assertGuardToken(
+  engine: "mb" | "pion",
+  token: string,
+  expectedPid: number | undefined,
+  startMs: number,
+  endMs: number,
+  label: string,
+): { ts: number; seq: number } {
+  const m = /^(\d+)-(\d+)-(\d+)$/.exec(token);
+  assert.ok(m !== null, `${label}: expected <ts>-<seq>-<pid>, got ${JSON.stringify(token)}`);
+  const ts = Number(m[1]);
+  const seq = Number(m[2]);
+  const pid = Number(m[3]);
+  if (engine === "pion") {
+    // Pion uses host_shim::wall_ms() (Unix epoch ms).
+    assert.ok(
+      ts >= startMs - 2000 && ts <= endMs + 2000,
+      `${label}: wall_ms=${ts} outside [${startMs - 2000}, ${endMs + 2000}]`,
+    );
+  } else {
+    // MoonBit main.mbt uses @host.now() (monotonic ms).
+    assert.ok(Number.isSafeInteger(ts) && ts > 0, `${label}: monotonic ts=${ts} must be positive integer`);
+  }
+  assert.ok(seq >= 1, `${label}: seq=${seq} must be >= 1`);
+  assert.equal(pid, expectedPid, `${label}: token pid must equal child proc.pid`);
+  return { ts, seq };
+}
+
 // ── Test 2: Permit cancel(A)+ask(B) interleaving & cross-token delete safety (MB vs Pion 0-diff) ──
 
 test("turn-counts & said: Permit cancel(A)+ask(B) same-chunk interleaving and cross-token delete safety (MB vs Pion 0-diff)", async (t) => {
@@ -590,15 +622,58 @@ test("turn-counts & said: Permit cancel(A)+ask(B) same-chunk interleaving and cr
   if (!bins) return;
   const dir = freshDir("permit-interleave-");
 
-  // 2a. turn-counts: same-chunk cancel(A)+ask(B) with late grant, late deny, and cross-token protection.
+  // 2a. turn-counts: same-chunk cancel(A)+ask(B) with late grant, late deny, monotonic guard token, and cross-token protection.
   const turnsSeed = makeTurnCountsSeed(dir, "interleave");
   for (const [label, bin] of [
     ["mb", bins.realMb],
     ["pion", bins.realPion],
   ] as const) {
-    // Late grant
+    // Late grant + monotonic guard token (<wall_ms>-<seq>-<pid>) verification
     {
       const dbPath = join(dir, `tc-grant-${label}.db`);
+      copyFileSync(turnsSeed, dbPath);
+      const db = new DatabaseSync(dbPath);
+      const proc = new RawLineProc(bin, ["--builder", "turn-counts", "--db", dbPath]);
+      try {
+        const t0 = Date.now();
+        proc.writeRaw('{"session":"A"}\n');
+        assert.deepStrictEqual(await proc.nextJson(), { take: true });
+        proc.writeRaw('{"permit":true}\n');
+        assert.deepStrictEqual(await proc.nextJson(), { done: false });
+        const t1 = Date.now();
+        const tokA = (db.prepare("SELECT token FROM session_turns_guard WHERE session='A'").get() as { token: string }).token;
+        const gA = assertGuardToken(label, tokA, proc.pid, t0, t1, `${label}: turn-counts tokA`);
+
+        // Same chunk: cancel(A) + ask(B) + empty line
+        const t2 = Date.now();
+        proc.writeRaw('\n{"session":"A","cancel":true}\n{"session":"B"}\n');
+        assert.deepStrictEqual(await proc.nextJson(), { take: true }, `${label}: cancel(A) asks permit`);
+        proc.writeRaw('{"permit":true}\n');
+        assert.deepStrictEqual(await proc.nextJson(), { give: true }, `${label}: cancel(A) gives permit`);
+        assert.equal(
+          (db.prepare("SELECT count(*) AS n FROM session_turns_guard WHERE session='A'").get() as { n: number }).n,
+          0,
+          `${label}: A guard deleted`,
+        );
+        // Deferred B now asks permit and receives a strictly increasing seq in the same process
+        assert.deepStrictEqual(await proc.nextJson(), { take: true }, `${label}: deferred B asks permit`);
+        proc.writeRaw('{"permit":true}\n');
+        assert.deepStrictEqual(await proc.nextJson(), { done: false }, `${label}: deferred B step 1`);
+        const t3 = Date.now();
+        const tokB = (db.prepare("SELECT token FROM session_turns_guard WHERE session='B'").get() as { token: string }).token;
+        const gB = assertGuardToken(label, tokB, proc.pid, t2, t3, `${label}: turn-counts tokB`);
+        assert.ok(gB.seq > gA.seq, `${label}: turn-counts guard seq must strictly increase (${gA.seq} -> ${gB.seq})`);
+        if (label === "mb") assert.ok(gB.ts >= gA.ts, `${label}: monotonic ts must not go backwards`);
+        assert.equal((await proc.finish()).code, 0);
+      } finally {
+        await proc.kill();
+        db.close();
+      }
+    }
+
+    // Late deny: cancel(A)+ask(empty) in same chunk with {"permit":false} -> guard NOT deleted, NO {"give":true}, deferred empty answered.
+    {
+      const dbPath = join(dir, `tc-deny-${label}.db`);
       copyFileSync(turnsSeed, dbPath);
       const db = new DatabaseSync(dbPath);
       const proc = new RawLineProc(bin, ["--builder", "turn-counts", "--db", dbPath]);
@@ -612,20 +687,16 @@ test("turn-counts & said: Permit cancel(A)+ask(B) same-chunk interleaving and cr
           1,
         );
 
-        // Same chunk: cancel(A) + ask(B) + empty line
-        proc.writeRaw('\n{"session":"A","cancel":true}\n{"session":"B"}\n');
-        assert.deepStrictEqual(await proc.nextJson(), { take: true }, `${label}: cancel(A) asks permit`);
-        proc.writeRaw('{"permit":true}\n');
-        assert.deepStrictEqual(await proc.nextJson(), { give: true }, `${label}: cancel(A) gives permit`);
+        proc.writeRaw('{"session":"A","cancel":true}\n{"session":"empty"}\n');
+        assert.deepStrictEqual(await proc.nextJson(), { take: true }, `${label}: late-deny cancel(A) asks permit`);
+        proc.writeRaw('{"permit":false}\n');
+        // No {"give":true}; deferred empty session needs no write and answers immediately.
+        assert.deepStrictEqual(await proc.nextJson(), { done: true }, `${label}: late-deny deferred empty answered without give`);
         assert.equal(
           (db.prepare("SELECT count(*) AS n FROM session_turns_guard WHERE session='A'").get() as { n: number }).n,
-          0,
-          `${label}: A guard deleted`,
+          1,
+          `${label}: late-deny must NOT delete A guard`,
         );
-        // Deferred B now asks permit
-        assert.deepStrictEqual(await proc.nextJson(), { take: true }, `${label}: deferred B asks permit`);
-        proc.writeRaw('{"permit":true}\n');
-        assert.deepStrictEqual(await proc.nextJson(), { done: false }, `${label}: deferred B step 1`);
         assert.equal((await proc.finish()).code, 0);
       } finally {
         await proc.kill();
@@ -640,12 +711,14 @@ test("turn-counts & said: Permit cancel(A)+ask(B) same-chunk interleaving and cr
       const db = new DatabaseSync(dbPath);
       const proc = new RawLineProc(bin, ["--builder", "turn-counts", "--db", dbPath]);
       try {
+        const t0 = Date.now();
         proc.writeRaw('{"session":"A"}\n');
         assert.deepStrictEqual(await proc.nextJson(), { take: true });
         proc.writeRaw('{"permit":true}\n');
         assert.deepStrictEqual(await proc.nextJson(), { done: false });
+        const t1 = Date.now();
         const origTok = (db.prepare("SELECT token FROM session_turns_guard WHERE session='A'").get() as { token: string }).token;
-        assert.match(origTok, /^\d+-\d+-\d+$/, `${label}: guard token format <wall_ms>-<seq>-<pid>`);
+        assertGuardToken(label, origTok, proc.pid, t0, t1, `${label}: turn-counts origTok`);
 
         db.prepare("UPDATE session_turns_guard SET token='foreign-token' WHERE session='A'").run();
         proc.writeRaw('{"session":"A","cancel":true}\n');
@@ -662,7 +735,7 @@ test("turn-counts & said: Permit cancel(A)+ask(B) same-chunk interleaving and cr
     }
   }
 
-  // 2b. said: same-chunk cancel(long)+ask(short), cross-token protection, and ready=1 guard preservation.
+  // 2b. said: positive same-token ready=0 delete, ready=1 preservation, monotonic guard token, and cross-token protection.
   const saidSeed = makeSaidSeed(dir, "interleave");
   for (const [label, bin] of [
     ["mb", bins.realMb],
@@ -673,16 +746,41 @@ test("turn-counts & said: Permit cancel(A)+ask(B) same-chunk interleaving and cr
     const db = new DatabaseSync(dbPath);
     const proc = new RawLineProc(bin, ["--builder", "said", "--db", dbPath]);
     try {
+      // Positive delete case: same token + ready=0 MUST delete said_state_guard row on cancel.
+      const t0 = Date.now();
       proc.writeRaw(`${JSON.stringify({ thread: saidSeed.longThread })}\n`);
       assert.deepStrictEqual(await proc.nextJson(), { take: true });
       proc.writeRaw('{"permit":true}\n');
       assert.deepStrictEqual(await proc.nextJson(), { done: false });
+      const t1 = Date.now();
+      const tok1 = (
+        db.prepare("SELECT token FROM said_state_guard WHERE thread=?").get(saidSeed.longThread) as { token: string }
+      ).token;
+      const g1 = assertGuardToken(label, tok1, proc.pid, t0, t1, `${label}: said tok1`);
+
+      proc.writeRaw(`${JSON.stringify({ thread: saidSeed.longThread, cancel: true })}\n`);
+      assert.deepStrictEqual(await proc.nextJson(), { take: true });
+      proc.writeRaw('{"permit":true}\n');
+      assert.deepStrictEqual(await proc.nextJson(), { give: true });
+      const deletedRow = db.prepare("SELECT token FROM said_state_guard WHERE thread=?").get(saidSeed.longThread) as
+        | { token: string }
+        | undefined;
+      assert.equal(deletedRow, undefined, `${label}: same-token ready=0 cancel MUST delete said_state_guard row`);
+
+      // Re-start scan on longThread -> seq strictly increases; mark ready=1 -> cancel must NOT delete ready=1 guard.
+      const t2 = Date.now();
+      proc.writeRaw(`${JSON.stringify({ thread: saidSeed.longThread })}\n`);
+      assert.deepStrictEqual(await proc.nextJson(), { take: true });
+      proc.writeRaw('{"permit":true}\n');
+      assert.deepStrictEqual(await proc.nextJson(), { done: false });
+      const t3 = Date.now();
       const origTok = (
         db.prepare("SELECT token FROM said_state_guard WHERE thread=?").get(saidSeed.longThread) as { token: string }
       ).token;
-      assert.match(origTok, /^\d+-\d+-\d+$/, `${label}: said guard token format`);
+      const g2 = assertGuardToken(label, origTok, proc.pid, t2, t3, `${label}: said tok2`);
+      assert.ok(g2.seq > g1.seq, `${label}: said guard seq must strictly increase (${g1.seq} -> ${g2.seq})`);
+      if (label === "mb") assert.ok(g2.ts >= g1.ts, `${label}: monotonic ts must not go backwards`);
 
-      // Mark ready=1 -> cancel must NOT delete ready=1 guard even with matching token
       db.prepare("UPDATE said_state_guard SET ready=1 WHERE thread=?").run(saidSeed.longThread);
       proc.writeRaw(`${JSON.stringify({ thread: saidSeed.longThread, cancel: true })}\n${JSON.stringify({ thread: saidSeed.shortThread })}\n`);
       assert.deepStrictEqual(await proc.nextJson(), { take: true });
@@ -717,46 +815,129 @@ test("turn-counts & said: Permit cancel(A)+ask(B) same-chunk interleaving and cr
   }
 });
 
-// ── Test 3: cc-index latest priority, independent cancel, existing=false, and invalid request parity ──
+// ── Test 3: cc-index latest priority, observable lane cancel isolation, existing=false, and invalid request parity ──
 
-test("cc-index: latest priority over name, latest ignores cancel, independent cc/names cancel, and error messages (MB vs Pion 0-diff)", async (t) => {
+test("cc-index: latest priority over name, latest ignores cancel, independent observable cc/names cancel, and error messages (MB vs Pion 0-diff)", async (t) => {
   const bins = resolveBinaries(t);
   if (!bins) return;
   const dir = freshDir("cc-parity-");
   const seed = makeCcSeed(dir, "parity");
-  const mbDb = join(dir, "cc-mb.db");
-  const pionDb = join(dir, "cc-pion.db");
-  copyFileSync(seed, mbDb);
-  copyFileSync(seed, pionDb);
 
-  const mbProc = new RawLineProc(bins.realMb, ["--builder", "cc-index", "--db", mbDb]);
-  const pionProc = new RawLineProc(bins.realPion, ["--builder", "cc-index", "--db", pionDb]);
-  try {
-    const asks = [
-      "", // empty line skipped silently
-      '{"session":null}', // invalid request
-      "{bad-json", // invalid request
-      '{"session":"ghost-session"}', // plain cc step uses existing=false -> tracks ghost-session
-      '{"session":"long"}',
-      '{"session":"long","cancel":true}', // cancels cc lane
-      '{"session":"long","name":true}',
-      '{"session":"long","name":true,"cancel":true}', // cancels names lane
-      '{"session":"long","name":true,"latest":true,"cancel":true}', // latest ignores cancel
-      '{"session":"long","name":true,"latest":true}', // latest takes priority over name
-    ];
-    for (const raw of asks) {
-      mbProc.writeRaw(`${raw}\n`);
-      pionProc.writeRaw(`${raw}\n`);
-      if (raw === "" || raw.includes('"cancel":true')) continue;
-      const [m, p] = await Promise.all([mbProc.nextJson(), pionProc.nextJson()]);
-      assert.deepStrictEqual(p, m, `cc-index mismatch on ask ${raw}`);
+  // 3a. Protocol & error parity + ghost-session existing=false + latest priority over name
+  {
+    const mbDb = join(dir, "cc-mb.db");
+    const pionDb = join(dir, "cc-pion.db");
+    copyFileSync(seed, mbDb);
+    copyFileSync(seed, pionDb);
+
+    const mbProc = new RawLineProc(bins.realMb, ["--builder", "cc-index", "--db", mbDb]);
+    const pionProc = new RawLineProc(bins.realPion, ["--builder", "cc-index", "--db", pionDb]);
+    try {
+      const asks = [
+        "", // empty line skipped silently
+        '{"session":null}', // invalid request
+        "{bad-json", // invalid request
+        '{"session":"ghost-session"}', // plain cc step uses existing=false -> tracks ghost-session
+        '{"session":"long"}',
+        '{"session":"long","cancel":true}', // cancels cc lane
+        '{"session":"long","name":true}',
+        '{"session":"long","name":true,"cancel":true}', // cancels names lane
+        '{"session":"long","name":true,"latest":true,"cancel":true}', // latest ignores cancel
+        '{"session":"long","name":true,"latest":true}', // latest takes priority over name
+      ];
+      for (const raw of asks) {
+        mbProc.writeRaw(`${raw}\n`);
+        pionProc.writeRaw(`${raw}\n`);
+        if (raw === "" || raw.includes('"cancel":true')) continue;
+        const [m, p] = await Promise.all([mbProc.nextJson(), pionProc.nextJson()]);
+        assert.deepStrictEqual(p, m, `cc-index mismatch on ask ${raw}`);
+      }
+      assert.equal(snapshotCc(pionDb), snapshotCc(mbDb), "cc-index tables 0-diff");
+      assert.equal((await mbProc.finish()).code, 0);
+      assert.equal((await pionProc.finish()).code, 0);
+    } finally {
+      await Promise.all([mbProc.kill(), pionProc.kill()]);
     }
-    // Verify ghost-session was tracked in cc_sessions in both
-    assert.equal(snapshotCc(pionDb), snapshotCc(mbDb), "cc-index tables 0-diff");
-    assert.equal((await mbProc.finish()).code, 0);
-    assert.equal((await pionProc.finish()).code, 0);
-  } finally {
-    await Promise.all([mbProc.kill(), pionProc.kill()]);
+  }
+
+  // 3b. Observable turn-cursor rotation & cancel isolation across MB and Pion:
+  //     After 1 scan step on "long", turn cursor is 1 (dispatch). Seed a pending cc_order_dispatch row so
+  //     BOTH lane 0 (scan) and lane 1 (dispatch) are runnable:
+  //     - Cancelling `names` or `latest` leaves `cc`'s turn at 1 -> next `{"session":"long"}` runs dispatch (scan_after unchanged, dispatch consumed).
+  //     - Cancelling `cc` resets `cc`'s turn to 0 -> next `{"session":"long"}` runs scan (scan_after advances, dispatch untouched).
+  for (const scenario of ["other-lanes-isolated", "cc-cancel-resets-turn"] as const) {
+    const mbDb = join(dir, `cc-obs-${scenario}-mb.db`);
+    const pionDb = join(dir, `cc-obs-${scenario}-pion.db`);
+    copyFileSync(seed, mbDb);
+    copyFileSync(seed, pionDb);
+
+    const mbProc = new RawLineProc(bins.realMb, ["--builder", "cc-index", "--db", mbDb]);
+    const pionProc = new RawLineProc(bins.realPion, ["--builder", "cc-index", "--db", pionDb]);
+    try {
+      // Step 1: lane 0 (scan_step) runs, advancing cc.turns["long"] -> 1.
+      mbProc.writeRaw('{"session":"long"}\n');
+      pionProc.writeRaw('{"session":"long"}\n');
+      const [m1, p1] = await Promise.all([mbProc.nextJson(), pionProc.nextJson()]);
+      assert.deepStrictEqual(p1, m1);
+      assert.deepStrictEqual(p1, { done: false });
+
+      // Seed a pending dispatch row for a scanned thread in both DBs.
+      const scanAfterBefore: number[] = [];
+      for (const dbPath of [mbDb, pionDb]) {
+        const db = new DatabaseSync(dbPath);
+        try {
+          const row = db.prepare("SELECT scan_after FROM cc_sessions WHERE session='long'").get() as { scan_after: number };
+          scanAfterBefore.push(row.scan_after);
+          const th = (db.prepare("SELECT thread FROM cc_session_rows WHERE session='long' ORDER BY thread LIMIT 1").get() as { thread: number }).thread;
+          db.prepare("INSERT OR REPLACE INTO cc_order_dispatch(thread, after_session, through_session) VALUES (?, NULL, 'long')").run(th);
+        } finally {
+          db.close();
+        }
+      }
+      assert.equal(scanAfterBefore[0], scanAfterBefore[1]);
+
+      if (scenario === "other-lanes-isolated") {
+        // Cancel names and latest; neither may disturb cc's turn cursor (which stays at 1 = dispatch).
+        mbProc.writeRaw('{"session":"long","name":true,"cancel":true}\n{"session":"long","latest":true,"cancel":true}\n');
+        pionProc.writeRaw('{"session":"long","name":true,"cancel":true}\n{"session":"long","latest":true,"cancel":true}\n');
+      } else {
+        // Cancel cc itself -> resets cc.turns["long"] to 0 (scan).
+        mbProc.writeRaw('{"session":"long","cancel":true}\n');
+        pionProc.writeRaw('{"session":"long","cancel":true}\n');
+      }
+
+      // Step 2: observe which lane ran via SQLite state!
+      mbProc.writeRaw('{"session":"long"}\n');
+      pionProc.writeRaw('{"session":"long"}\n');
+      const [m2, p2] = await Promise.all([mbProc.nextJson(), pionProc.nextJson()]);
+      assert.deepStrictEqual(p2, m2);
+      assert.deepStrictEqual(p2, { done: false });
+
+      for (const [eng, dbPath] of [
+        ["mb", mbDb],
+        ["pion", pionDb],
+      ] as const) {
+        const db = new DatabaseSync(dbPath);
+        try {
+          const after = (db.prepare("SELECT scan_after FROM cc_sessions WHERE session='long'").get() as { scan_after: number }).scan_after;
+          const dispatchLeft = (db.prepare("SELECT count(*) AS n FROM cc_order_dispatch").get() as { n: number }).n;
+          if (scenario === "other-lanes-isolated") {
+            assert.equal(after, scanAfterBefore[0], `${eng}: names/latest cancel must NOT reset cc turn (scan_after stays)`);
+            assert.equal(dispatchLeft, 0, `${eng}: cc turn=1 must run dispatch_step`);
+          } else {
+            assert.ok(after > scanAfterBefore[0]!, `${eng}: cc cancel must reset turn to 0 (scan_after advances)`);
+            assert.equal(dispatchLeft, 1, `${eng}: cc turn=0 must leave dispatch untouched`);
+          }
+        } finally {
+          db.close();
+        }
+      }
+      assert.equal(snapshotCc(pionDb), snapshotCc(mbDb), `${scenario}: MB vs Pion 0-diff`);
+      assert.equal((await mbProc.finish()).code, 0);
+      assert.equal((await pionProc.finish()).code, 0);
+    } finally {
+      await Promise.all([mbProc.kill(), pionProc.kill()]);
+    }
   }
 });
 
@@ -875,30 +1056,248 @@ test("builders_requested: invalid request error messages match MB 0-diff across 
   }
 });
 
-// ── Test 6: Static SQLite lexical transaction guard + real closure-body mutation detection ──
+// ── Test 6: Static SQLite lexical transaction guard (+ folding & quoted savepoints) + real closure-body mutation detection ──
+
+type PionStringExpr = { line: number; value: string };
+
+function extractPionStringExprs(source: string): PionStringExpr[] {
+  const exprs: PionStringExpr[] = [];
+  const n = source.length;
+  let i = 0;
+  let line = 1;
+
+  const skipWsAndComments = () => {
+    while (i < n) {
+      const ch = source[i]!;
+      if (ch === " " || ch === "\t" || ch === "\r") { i++; continue; }
+      if (ch === "\n") { line++; i++; continue; }
+      if (ch === "/" && source[i + 1] === "/") {
+        i += 2;
+        while (i < n && source[i] !== "\n") i++;
+        continue;
+      }
+      if (ch === "/" && source[i + 1] === "*") {
+        i += 2;
+        while (i + 1 < n && !(source[i] === "*" && source[i + 1] === "/")) {
+          if (source[i] === "\n") line++;
+          i++;
+        }
+        i += 2;
+        continue;
+      }
+      break;
+    }
+  };
+
+  const readStringLiteral = (): string => {
+    i++; // opening '"'
+    let out = "";
+    while (i < n) {
+      const ch = source[i]!;
+      if (ch === '"') { i++; return out; }
+      if (ch === "\\") {
+        i++;
+        if (i >= n) return out;
+        const esc = source[i++]!;
+        if (esc === "n") out += "\n";
+        else if (esc === "r") out += "\r";
+        else if (esc === "t") out += "\t";
+        else if (esc === '"') out += '"';
+        else if (esc === "\\") out += "\\";
+        else if (esc === "u" && source[i] === "{") {
+          const close = source.indexOf("}", i + 1);
+          if (close > i + 1) {
+            const cp = parseInt(source.slice(i + 1, close), 16);
+            if (!Number.isNaN(cp)) out += String.fromCodePoint(cp);
+            i = close + 1;
+          }
+        } else out += esc;
+      } else {
+        if (ch === "\n") line++;
+        out += ch;
+        i++;
+      }
+    }
+    return out;
+  };
+
+  while (i < n) {
+    skipWsAndComments();
+    if (i >= n) break;
+    if (source[i] === '"') {
+      const startLine = line;
+      let combined = readStringLiteral();
+      for (;;) {
+        const savedI = i;
+        const savedLine = line;
+        skipWsAndComments();
+        if (source[i] === "+") {
+          i++;
+          skipWsAndComments();
+          if (source[i] === '"') {
+            combined += readStringLiteral();
+            continue;
+          }
+          if (i < n && /[A-Za-z_(]/.test(source[i]!)) {
+            let depth = 0;
+            while (i < n) {
+              const ch = source[i]!;
+              if (ch === "(" || ch === "[" || ch === "{") { depth++; i++; continue; }
+              if (ch === ")" || ch === "]" || ch === "}") {
+                if (depth === 0) break;
+                depth--;
+                i++;
+                continue;
+              }
+              if (depth === 0 && (ch === "+" || ch === "," || ch === ";" || ch === "\n")) break;
+              if (ch === '"') { readStringLiteral(); continue; }
+              i++;
+            }
+            combined += " __expr__ ";
+            continue;
+          }
+        }
+        i = savedI;
+        line = savedLine;
+        break;
+      }
+      exprs.push({ line: startLine, value: combined });
+      continue;
+    }
+    i++;
+  }
+  return exprs;
+}
+
+type SqlTok = { kind: "word"; upper: string } | { kind: "ident" } | { kind: "str" } | { kind: "semi" } | { kind: "other" };
+
+function tokenizeSql(sql: string): SqlTok[] {
+  const out: SqlTok[] = [];
+  let i = sql.startsWith("\uFEFF") ? 1 : 0;
+  const n = sql.length;
+  while (i < n) {
+    const ch = sql[i]!;
+    if (ch === " " || ch === "\t" || ch === "\r" || ch === "\n") { i++; continue; }
+    if (ch === "-" && sql[i + 1] === "-") {
+      i += 2;
+      while (i < n && sql[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && sql[i + 1] === "*") {
+      i += 2;
+      while (i + 1 < n && !(sql[i] === "*" && sql[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    if (ch === "'") {
+      i++;
+      while (i < n) {
+        if (sql[i] === "'") {
+          i++;
+          if (sql[i] === "'") { i++; continue; }
+          break;
+        }
+        i++;
+      }
+      out.push({ kind: "str" });
+      continue;
+    }
+    if (ch === '"' || ch === "`") {
+      const q = ch;
+      i++;
+      while (i < n) {
+        if (sql[i] === q) {
+          i++;
+          if (sql[i] === q) { i++; continue; }
+          break;
+        }
+        i++;
+      }
+      out.push({ kind: "ident" });
+      continue;
+    }
+    if (ch === "[") {
+      i++;
+      while (i < n && sql[i] !== "]") i++;
+      if (i < n) i++;
+      out.push({ kind: "ident" });
+      continue;
+    }
+    if (ch === ";") { out.push({ kind: "semi" }); i++; continue; }
+    if (/[A-Za-z_]/.test(ch)) {
+      const start = i;
+      while (i < n && /[A-Za-z0-9_$]/.test(sql[i]!)) i++;
+      out.push({ kind: "word", upper: sql.slice(start, i).toUpperCase() });
+      continue;
+    }
+    out.push({ kind: "other" });
+    i++;
+  }
+  return out;
+}
 
 function findRawTxViolations(filename: string, source: string): string[] {
   const violations: string[] = [];
-  const forbidden = new Set(["BEGIN", "COMMIT", "END", "SAVEPOINT", "RELEASE", "ROLLBACK"]);
-  const strRe = /"(?:\\.|[^"\\])*"/g;
-  const lines = source.split("\n");
-  for (let idx = 0; idx < lines.length; idx++) {
-    const line = lines[idx]!;
-    const stripped = line.replace(/\/\/.*$/, "");
-    for (const m of stripped.matchAll(strRe)) {
-      const lit = m[0].slice(1, -1);
-      const upper = lit.trim().toUpperCase();
-      for (const kw of forbidden) {
-        if (new RegExp(`(?:^|;)\\s*${kw}\\b`).test(upper)) {
-          violations.push(`${filename}:${idx + 1}: forbidden raw tx SQL "${kw}" in ${m[0]}`);
-        }
+  const forbiddenHeads = new Set(["BEGIN", "COMMIT", "END", "SAVEPOINT", "RELEASE", "ROLLBACK"]);
+  for (const expr of extractPionStringExprs(source)) {
+    const tokens = tokenizeSql(expr.value);
+    let atStmtStart = true;
+    let inTriggerHeader = false;
+    let inTriggerBody = false;
+    let atTriggerStmtStart = false;
+    for (let t = 0; t < tokens.length; t++) {
+      const tok = tokens[t]!;
+      if (inTriggerBody) {
+        if (tok.kind === "semi") atTriggerStmtStart = true;
+        else if (atTriggerStmtStart && tok.kind === "word" && tok.upper === "END") {
+          inTriggerBody = false;
+          atTriggerStmtStart = false;
+          atStmtStart = false;
+        } else atTriggerStmtStart = false;
+        continue;
       }
+      if (inTriggerHeader) {
+        if (tok.kind === "word" && tok.upper === "BEGIN") {
+          inTriggerHeader = false;
+          inTriggerBody = true;
+          atTriggerStmtStart = true;
+        } else if (tok.kind === "semi") {
+          inTriggerHeader = false;
+          atStmtStart = true;
+        }
+        continue;
+      }
+      if (tok.kind === "semi") { atStmtStart = true; continue; }
+      if (!atStmtStart) continue;
+      atStmtStart = false;
+      if (tok.kind !== "word") continue;
+      if (tok.upper === "CREATE") {
+        const t1 = tokens[t + 1];
+        const t2 = tokens[t + 2];
+        if (
+          (t1?.kind === "word" && t1.upper === "TRIGGER") ||
+          (t1?.kind === "word" && (t1.upper === "TEMP" || t1.upper === "TEMPORARY") && t2?.kind === "word" && t2.upper === "TRIGGER")
+        ) {
+          inTriggerHeader = true;
+        }
+        continue;
+      }
+      if (!forbiddenHeads.has(tok.upper)) continue;
+      if (
+        (tok.upper === "RELEASE" || tok.upper === "SAVEPOINT") &&
+        tokens[t + 1]?.kind !== "word" &&
+        tokens[t + 1]?.kind !== "ident" &&
+        tokens[t + 1]?.kind !== "str"
+      ) {
+        continue;
+      }
+      violations.push(`${filename}:${expr.line}: forbidden raw transaction SQL "${tok.upper}" in literal ${JSON.stringify(expr.value)}`);
     }
   }
   return violations;
 }
 
-test("builders_requested static SQLite transaction guard: 0 violations and catches real closure-body mutations", () => {
+test("builders_requested static SQLite transaction guard: 0 violations and catches real closure-body mutations at exact line", () => {
   const srcDir = resolve(fileURLToPath(new URL("../../pion/station/packages/builders_requested/src", import.meta.url)));
   const files = readdirSync(srcDir)
     .filter((f) => f.endsWith(".pion") && !f.endsWith("_test.pion"))
@@ -914,19 +1313,29 @@ test("builders_requested static SQLite transaction guard: 0 violations and catch
     );
   }
 
-  // Real in-memory closure-body mutations must be detected on all 4 files.
-  const mutations: Array<{ file: string; needle: string; inject: string }> = [
-    { file: "turn_counts.pion", needle: "fn(tx : sql_db::Db)", inject: 'let _ = tx.exec("COMMIT")' },
-    { file: "said.pion", needle: "fn(sp : sql_db::Db)", inject: 'let _ = sp.exec("RELEASE said_scan")' },
-    { file: "cc_index.pion", needle: "fn(tx : sql_db::Db)", inject: 'let _ = tx.exec("BEGIN IMMEDIATE")' },
-    { file: "usage_check.pion", needle: "pub fn usage_complete(", inject: 'let _ = db.exec("SAVEPOINT bad_sp")' },
+  // Real in-memory mutations injected INSIDE the function/closure body (after opening `{`) must be
+  // detected at the exact injected line number, covering COMMIT, BEGIN IMMEDIATE, "ROLL" + "BACK",
+  // and quoted SAVEPOINT / RELEASE identifiers.
+  const mutations: Array<{ file: string; needle: string; inject: string; wantKw: string }> = [
+    { file: "turn_counts.pion", needle: "fn(tx : sql_db::Db)", inject: 'let _ = tx.exec("COMMIT")', wantKw: "COMMIT" },
+    { file: "said.pion", needle: "fn(sp : sql_db::Db)", inject: 'let _ = sp.exec("RELEASE [said_scan]")', wantKw: "RELEASE" },
+    { file: "cc_index.pion", needle: "fn(tx : sql_db::Db)", inject: 'let _ = tx.exec("BEGIN IMMEDIATE")', wantKw: "BEGIN" },
+    { file: "cc_index.pion", needle: "pub fn cc_latest_step(", inject: 'let _ = db.exec("ROLL" + "BACK")', wantKw: "ROLLBACK" },
+    { file: "usage_check.pion", needle: "pub fn usage_complete(", inject: 'let _ = db.exec("SAVEPOINT \\"bad_sp\\"")', wantKw: "SAVEPOINT" },
   ];
   for (const mut of mutations) {
     const src = readFileSync(join(srcDir, mut.file), "utf8");
     const pos = src.indexOf(mut.needle);
     assert.ok(pos >= 0, `expected ${mut.needle} in ${mut.file}`);
-    const mutated = src.slice(0, pos) + mut.inject + "\n" + src.slice(pos);
+    const openBrace = src.indexOf("{", pos);
+    assert.ok(openBrace >= 0, `expected opening '{' after ${mut.needle} in ${mut.file}`);
+    const insertAt = openBrace + 1;
+    const expectedLine = src.slice(0, insertAt).split("\n").length + 1;
+    const mutated = src.slice(0, insertAt) + "\n  " + mut.inject + "\n" + src.slice(insertAt);
     const hits = findRawTxViolations(mut.file, mutated);
-    assert.ok(hits.length > 0, `expected static guard to catch injected raw tx SQL in ${mut.file}`);
+    assert.ok(
+      hits.some((h) => h.startsWith(`${mut.file}:${expectedLine}:`) && h.includes(`"${mut.wantKw}"`)),
+      `expected guard to catch ${mut.wantKw} at ${mut.file}:${expectedLine}, got ${JSON.stringify(hits)}`,
+    );
   }
 });
