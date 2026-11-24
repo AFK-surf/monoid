@@ -675,6 +675,7 @@ async fn replica_export(host : @host.Host, db : String, replica : String, data_d
     None => @replica.chunk_gc_grace_ms
   }
   let fold = !@host.args().contains("--no-fold")
+  let compact_heads = @host.args().contains("--compact-heads")
   let test_faults = match flag("--test-faults") {
     Some(raw) => @replica.TestFaults::from_json(raw)
     None => None
@@ -694,6 +695,7 @@ async fn replica_export(host : @host.Host, db : String, replica : String, data_d
     transcript_pass_deletes~,
     chunk_gc_grace_ms~,
     fold~,
+    compact_heads~,
     test_faults~,
   ) catch {
     e => {

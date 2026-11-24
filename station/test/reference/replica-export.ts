@@ -218,6 +218,8 @@ export type ExporterOptions = {
   chunkGcGraceMs?: number;
   /// False: batches left as they were written, never folded (a test's, to restore a generation from them as written).
   fold?: boolean;
+  /// True: emit compact `transcriptManifest` heads in IPC `pass()` results (TS runner enables via `--compact-heads`; default false for MoonBit compatibility).
+  compactHeads?: boolean;
   /// Optional test-only hooks to inject deterministic filesystem faults (works even when running as root).
   testFaults?: {
     onReaddir?: (dir: string) => void;
@@ -240,6 +242,8 @@ export class Exporter {
   #transcriptsPending = false;
   readonly #tfCache = new Map<string, Record<string, number>>();
   readonly #manifestCache = new Map<string, { rootHash: string; leafHashes: string[] }>();
+  #manifestLive = new Set<string>();
+  readonly #manifestSupersededAt = new Map<string, number>();
   #closed = false;
   /// This run of the exporter: a generation's head lists the runs that wrote it (a copy that holds a run this station's
   /// own does not know was written by one rolled back).
@@ -306,6 +310,8 @@ export class Exporter {
     this.#transcriptsPending = false;
     this.#tfCache.clear();
     this.#manifestCache.clear();
+    this.#manifestLive.clear();
+    this.#manifestSupersededAt.clear();
   }
 
   setPlaces(places: Places): void {
@@ -686,11 +692,13 @@ export class Exporter {
         this.#write(ws, out);
         wrote++;
       }
-      heads[ws] = this.#compactHead(ws, out.head);
+      heads[ws] = this.#o.compactHeads === true ? this.#compactHead(ws, out.head) : out.head;
+    }
+    if (this.#o.compactHeads === true) {
+      this.#gcManifests(outs);
     }
     if (scanTranscripts && !this.#transcriptsPending) {
       this.#gcTranscriptChunks();
-      this.#gcManifests(outs);
     }
     return { heads, more, wrote, read: this.#read };
   }
@@ -1441,19 +1449,41 @@ export class Exporter {
         }
       }
     }
+    for (const h of live) this.#manifestSupersededAt.delete(h);
+    for (const prev of this.#manifestLive) {
+      if (!live.has(prev) && !this.#manifestSupersededAt.has(prev)) {
+        this.#manifestSupersededAt.set(prev, now);
+      }
+    }
+    this.#manifestLive = live;
+    const onDisk = new Set<string>();
     try {
       for (const name of readdirSync(manifestsDir)) { // sync: in the export's own thread (worker.ts)
+        onDisk.add(name);
         if (live.has(name)) continue;
         const p = join(manifestsDir, name);
-        try {
-          const st = statSync(p, { bigint: true }); // sync: in the export's own thread (worker.ts)
-          const mtimeMs = Number(st.mtimeNs / 1_000_000n);
-          if (now - mtimeMs >= MANIFEST_GC_GRACE_MS) {
+        const supersededAt = this.#manifestSupersededAt.get(name);
+        let expired = false;
+        if (supersededAt !== undefined) {
+          expired = now - supersededAt >= MANIFEST_GC_GRACE_MS;
+        } else {
+          try {
+            const st = statSync(p, { bigint: true }); // sync: in the export's own thread (worker.ts)
+            const mtimeMs = Number(st.mtimeNs / 1_000_000n);
+            expired = now - mtimeMs >= MANIFEST_GC_GRACE_MS;
+          } catch {}
+        }
+        if (expired) {
+          try {
             rmSync(p, { force: true }); // sync: in the export's own thread (worker.ts)
-          }
-        } catch {}
+          } catch {}
+          this.#manifestSupersededAt.delete(name);
+        }
       }
     } catch {}
+    for (const k of [...this.#manifestSupersededAt.keys()]) {
+      if (!onDisk.has(k)) this.#manifestSupersededAt.delete(k);
+    }
   }
 
   /// The batches of a generation of this station's, by name (what is in its log directory).

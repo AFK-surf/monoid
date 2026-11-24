@@ -10,7 +10,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { join, sep } from "node:path";
 import { after, test } from "node:test";
 import { zstdCompressSync } from "node:zlib";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
+import { direct } from "../src/drive/fs.ts";
 import { Copies, tell } from "../src/replica/copies.ts";
 import { type Head, VERSION, asHead } from "../src/replica/format.ts";
 import {
@@ -22,6 +23,7 @@ import {
   loadTranscriptManifest,
   parseLeafManifest,
   parseRootManifest,
+  readStreamBounded,
 } from "../src/replica/manifest.ts";
 import { FolderPlace, type Held, type Known, type Own, type Place, handOver, holdsAll, holdsAllLogical, level } from "../src/replica/places.ts";
 import { ProgramRunner, exportThread } from "../src/replica/runner.ts";
@@ -211,7 +213,7 @@ test("1. Canonical manifest codec, empty set, MoonBit/TS parity, compact IPC vs 
   const tsReplica = join(s.data, "replica-ts");
   const mbReplica = join(s.data, "replica-mb");
   const now = 1_700_000_000_000;
-  const exp = new Exporter({ db: s.db, replica: tsReplica, dataDir: s.data, origin: sid("a"), now: () => now, chunkBytes: 1024 });
+  const exp = new Exporter({ db: s.db, replica: tsReplica, dataDir: s.data, origin: sid("a"), now: () => now, chunkBytes: 1024, compactHeads: true });
   closing.push(() => exp.close());
   exp.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
   const tsPass = exp.pass(nothingTold());
@@ -271,7 +273,7 @@ test("2. Adversarial manifest validation: sha256, version, extra keys, duplicate
   assert.throws(() => parseRootManifest(badV, sha256(badV)), /version/);
   // Extra top-level key
   const extraKey = Buffer.from('{"v":1,"buckets":{},"extra":1}', "utf8");
-  assert.throws(() => parseRootManifest(extraKey, sha256(extraKey)), /only keys/);
+  assert.throws(() => parseRootManifest(extraKey, sha256(extraKey)), /only keys|too many keys/);
   // Duplicate JSON key (plain and \u0076 escape)
   const dupTop = Buffer.from('{"v":1,"\\u0076":1,"buckets":{}}', "utf8");
   assert.throws(() => parseRootManifest(dupTop, sha256(dupTop)), /duplicate JSON key/);
@@ -507,7 +509,7 @@ test("7. restore with transcriptManifest: normal restore, missing single chunk (
   const s = makeTranscriptStation("d72a-restore");
   const replica = join(s.data, "replica");
   const origin = sid("a");
-  const exp = new Exporter({ db: s.db, replica, dataDir: s.data, origin, now: () => 1_700_000_000_000, chunkBytes: 1024 });
+  const exp = new Exporter({ db: s.db, replica, dataDir: s.data, origin, now: () => 1_700_000_000_000, chunkBytes: 1024, compactHeads: true });
   closing.push(() => exp.close());
   exp.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
   const p = exp.pass(nothingTold());
@@ -630,11 +632,11 @@ test("7. restore with transcriptManifest: normal restore, missing single chunk (
   assert.equal(directOutcome.reason, "error");
 });
 
-test("8. <replica>/manifests/ 10-minute mtime grace GC keeps live and recent manifests and removes stale unreferenced ones", () => {
+test("8. <replica>/manifests/ 10-minute superseded-time grace GC keeps live and recently superseded manifests and removes expired ones", () => {
   const s = makeTranscriptStation("d72a-gc");
   const replica = join(s.data, "replica");
   let now = 1_700_000_000_000;
-  const exp = new Exporter({ db: s.db, replica, dataDir: s.data, origin: sid("a"), now: () => now, chunkBytes: 1024 });
+  const exp = new Exporter({ db: s.db, replica, dataDir: s.data, origin: sid("a"), now: () => now, chunkBytes: 1024, compactHeads: true });
   closing.push(() => exp.close());
   exp.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
 
@@ -642,27 +644,31 @@ test("8. <replica>/manifests/ 10-minute mtime grace GC keeps live and recent man
   const oldRoot = p1.heads[HOME]!.transcriptManifest!;
   assert.ok(existsSync(join(replica, "manifests", oldRoot)));
 
-  // Modify transcript so a new manifest root is written; oldRoot becomes unreferenced
-  now += 60_000;
+  // Advance 20 minutes while oldRoot is STILL live (mtime is now 20 min old, > 10 min grace).
+  now += 2 * MANIFEST_GC_GRACE_MS;
+  const twentyMinAgo = new Date(now - 2 * MANIFEST_GC_GRACE_MS);
+  utimesSync(join(replica, "manifests", oldRoot), twentyMinAgo, twentyMinAgo);
+
+  // Modify transcript so a new manifest root is written; oldRoot leaves live set AT THIS MOMENT (`now`).
   writeFileSync(s.trPath, "updated-content-" + "x".repeat(2000));
   utimesSync(s.trPath, new Date(now), new Date(now));
   const p2 = exp.pass({ ...nothingTold(), transcripts: true });
   const newRoot = p2.heads[HOME]!.transcriptManifest!;
   assert.notEqual(newRoot, oldRoot);
+  // Even though oldRoot's mtime is 20 min old, it was JUST superseded -> MUST be kept for 10 min from supersession!
+  assert.ok(existsSync(join(replica, "manifests", oldRoot)), "reused old-mtime manifest kept immediately after supersession");
 
-  // Set oldRoot mtime to 5 minutes ago (< 10 min grace) -> MUST be kept
-  const fiveMinAgo = new Date(now - 5 * 60_000);
-  utimesSync(join(replica, "manifests", oldRoot), fiveMinAgo, fiveMinAgo);
+  // 9 minutes after supersession (< 10 min grace) -> STILL kept!
+  now += MANIFEST_GC_GRACE_MS - 60_000;
   exp.pass({ ...nothingTold(), transcripts: true });
-  assert.ok(existsSync(join(replica, "manifests", oldRoot)), "unreferenced manifest kept within 10-min mtime grace");
+  assert.ok(existsSync(join(replica, "manifests", oldRoot)), "unreferenced manifest kept within 10-min superseded grace");
   assert.ok(existsSync(join(replica, "manifests", newRoot)), "live manifest kept");
 
-  // Set oldRoot mtime to >= 10 minutes ago -> MUST be removed, while live newRoot (even with old mtime) MUST stay!
-  const elevenMinAgo = new Date(now - MANIFEST_GC_GRACE_MS - 60_000);
-  utimesSync(join(replica, "manifests", oldRoot), elevenMinAgo, elevenMinAgo);
-  utimesSync(join(replica, "manifests", newRoot), elevenMinAgo, elevenMinAgo);
+  // 10+ minutes after supersession -> removed, while live newRoot (even with old mtime) MUST stay!
+  now += 60_000;
+  utimesSync(join(replica, "manifests", newRoot), twentyMinAgo, twentyMinAgo);
   exp.pass({ ...nothingTold(), transcripts: true });
-  assert.ok(!existsSync(join(replica, "manifests", oldRoot)), "stale unreferenced manifest GC'd past 10-min grace");
+  assert.ok(!existsSync(join(replica, "manifests", oldRoot)), "superseded manifest GC'd past 10-min grace");
   assert.ok(existsSync(join(replica, "manifests", newRoot)), "live manifest NEVER GC'd regardless of mtime");
 });
 
@@ -762,4 +768,492 @@ test("9. Known manifest cache hit skips loadTranscriptFiles on unchanged transcr
   assert.equal(storedFiles.has(att1), true, "live chat attachment att1 kept");
   assert.equal(storedFiles.has(c1), true, "live transcript c1 kept");
   assert.equal(storedFiles.has(c2), true, "live transcript c2 kept");
+});
+
+test("10. R1: FolderPlace warm-cache fail-closed (without forget) + drop() readdir EACCES/EIO rejection", async () => {
+  const root = dataDir("d72a-r1-warm-cache");
+  const place = new FolderPlace(root);
+  const origin = sid("a");
+  const gen = "100-aaaaaaaa";
+  const batch = "0000000001-0000000001-11111111.ndjson.zst";
+  const c1 = hex64("11", "1");
+  const c2 = hex64("22", "2");
+  const orphan = hex64("99", "9");
+  const enc = encodeTranscriptManifest({ [c1]: 10, [c2]: 20 });
+
+  await place.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await place.putFile(HOME, origin, c1, Buffer.from("c1"));
+  await place.putFile(HOME, origin, c2, Buffer.from("c2"));
+  await place.putFile(HOME, origin, orphan, Buffer.from("orphan"));
+  await place.putFile(HOME, origin, enc.rootHash, enc.rootBytes);
+  for (const [lh, { bytes }] of enc.leaves) {
+    await place.putFile(HOME, origin, lh, bytes);
+  }
+  const head = makeHead({ origin, gen, batches: [batch], transcriptManifest: enc.rootHash, to: 2, made: 2000 });
+  // Put valid head -> warms both #meta and #headFiles caches inside `place`!
+  await place.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(head)));
+
+  // Corrupt one leaf on disk WITHOUT touching head.json and WITHOUT creating a new FolderPlace (warm cache!)
+  const leafHash = [...enc.leaves.keys()][0]!;
+  const filesDir = join(place.dir(HOME, origin), "files");
+  writeFileSync(join(filesDir, leafHash), "corrupted-after-cache-warm");
+
+  // Trigger non-strict #headMeta via an older head put (must NOT poison #headFiles with incomplete entry)
+  const olderHead = makeHead({ origin, gen, batches: [batch], to: 1, made: 1000 });
+  await place.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(olderHead)));
+
+  // Now drop() on the SAME warm-cached `place` MUST re-verify the manifest, throw, and preserve ALL files!
+  await assert.rejects(
+    () => place.drop(HOME, origin, gen, [], [orphan, c1, c2]),
+    /hash mismatch/,
+    "warm-cached FolderPlace.drop() must still fail-closed on post-write leaf corruption",
+  );
+  assert.ok(existsSync(join(filesDir, orphan)));
+  assert.ok(existsSync(join(filesDir, c1)));
+  assert.ok(existsSync(join(filesDir, c2)));
+
+  // Restore leaf so manifest is valid again, then test readdir EACCES / EIO in drop() via wrapped Fs
+  writeFileSync(join(filesDir, leafHash), enc.leaves.get(leafHash)!.bytes);
+  for (const errCode of ["EACCES", "EIO"] as const) {
+    const faultyFs = {
+      ...direct,
+      names: async (dir: string) => {
+        if (dir === place.dir(HOME, origin)) {
+          throw Object.assign(new Error(`${errCode}: simulated readdir failure`), { code: errCode });
+        }
+        return direct.names(dir);
+      },
+    };
+    const faultyPlace = new FolderPlace(root, faultyFs);
+    await assert.rejects(
+      () => faultyPlace.drop(HOME, origin, gen, [], [orphan, c1]),
+      new RegExp(errCode),
+      `FolderPlace.drop() must throw on readdir ${errCode} instead of treating as 0 live gens`,
+    );
+    assert.ok(existsSync(join(filesDir, orphan)));
+    assert.ok(existsSync(join(filesDir, c1)));
+  }
+});
+
+test("11. R1: manifests/ GC runs under backlog (transcripts_pending=true) keeping manifest count bounded", () => {
+  const s = makeTranscriptStation("d72a-r1-backlog-gc");
+  const replica = join(s.data, "replica");
+  let now = 1_700_000_000_000;
+  // Create 5 additional codex sessions + transcript files so transcriptPassFiles=1 yields backlog across passes
+  const trDir = join(s.data, "transcripts", "codex", "2026", "11", "25");
+  for (let i = 1; i <= 5; i++) {
+    const key = `chat:tr-extra-${i}`;
+    const room = join(s.data, "sessions", "chat", key, "workspace");
+    mkdirSync(room, { recursive: true });
+    s.store.insertSession({
+      key,
+      connect: "chat",
+      runtime: "codex",
+      profile: "cx",
+      workspace: room,
+      token: `tok-${i}`,
+      createdAt: 1,
+      lastActiveAt: 1,
+      ws: null,
+    });
+    s.store.setRuntimeSessionId(key, `codex-extra-00${i}`);
+    const p = join(trDir, `rollout-2026-11-25-codex-extra-00${i}.jsonl`);
+    writeFileSync(p, `{"i":${i},"pad":"${String(i).repeat(1200)}"}\n`);
+    utimesSync(p, new Date(now), new Date(now));
+  }
+  const exp = new Exporter({
+    db: s.db,
+    replica,
+    dataDir: s.data,
+    origin: sid("a"),
+    now: () => now,
+    chunkBytes: 1024,
+    transcriptPassFiles: 1,
+    compactHeads: true,
+  });
+  closing.push(() => exp.close());
+  exp.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
+
+  const manifestsDir = join(replica, "manifests");
+  let sawPending = false;
+  let maxManifestFiles = 0;
+  for (let step = 0; step < 8; step++) {
+    now += MANIFEST_GC_GRACE_MS + 1000;
+    const p = exp.pass({ ...nothingTold(), transcripts: true });
+    if (p.more) sawPending = true;
+    if (existsSync(manifestsDir)) {
+      const count = readdirSync(manifestsDir).length;
+      if (count > maxManifestFiles) maxManifestFiles = count;
+    }
+    if (!p.more && step >= 4) break;
+  }
+  assert.equal(sawPending, true, "test setup actually exercised transcripts_pending=true backlog");
+  // Because each pass advances past grace period and GC runs even when transcripts_pending=true,
+  // manifests/ only keeps current live + 1 just-superseded generation (never unbounded accumulation).
+  const finalCount = readdirSync(manifestsDir).length;
+  assert.ok(finalCount <= maxManifestFiles && finalCount < 20, `manifests/ stayed bounded during backlog (final=${finalCount}, max=${maxManifestFiles})`);
+});
+
+test("12. R1: Exporter default compact_heads=false returns inline transcriptFiles (frozen MoonBit replica_coord compatibility)", async () => {
+  const s = makeTranscriptStation("d72a-r1-default-inline");
+  const tsReplica = join(s.data, "replica-ts");
+  const now = 1_700_000_000_000;
+  const exp = new Exporter({ db: s.db, replica: tsReplica, dataDir: s.data, origin: sid("a"), now: () => now, chunkBytes: 1024 });
+  closing.push(() => exp.close());
+  exp.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
+  const p = exp.pass(nothingTold());
+  const head = p.heads[HOME]!;
+  assert.equal(head.transcriptManifest, undefined, "default TS Exporter must NOT emit transcriptManifest");
+  assert.ok(head.transcriptFiles !== undefined && Object.keys(head.transcriptFiles).length > 0, "default TS Exporter emits inline transcriptFiles");
+
+  if (binary !== null) {
+    const mbReplica = join(s.data, "replica-mb");
+    const defaultExportThread = () =>
+      new MbProcess(binary, [
+        "--builder", "replica-export",
+        "--db", s.db,
+        "--replica", mbReplica,
+        "--data-dir", s.data,
+        "--origin", sid("a"),
+        "--sep", sep,
+        "--chunk-bytes", "1024",
+      ]);
+    const runner = new ProgramRunner({ db: s.db, replica: mbReplica, dataDir: s.data, origin: sid("a"), chunkBytes: 1024 }, defaultExportThread);
+    closing.push(() => runner.close());
+    await runner.places({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
+    const mbPass = await runner.pass(nothingTold());
+    const mbHead = mbPass.heads[HOME]!;
+    assert.equal(mbHead.transcriptManifest, undefined, "default MB replica-export without --compact-heads must NOT emit transcriptManifest");
+    assert.ok(mbHead.transcriptFiles !== undefined && Object.keys(mbHead.transcriptFiles).length > 0, "default MB replica-export emits inline transcriptFiles");
+  }
+});
+
+test("13. R1: S3Place.put('head') verifies manifest before remote write, dual-field drop() union protection, and self-heal resumes GC", async () => {
+  const mock = new MiniS3Server();
+  await mock.start();
+  closing.push(() => mock.stop());
+  const target: NormalizedS3Target = {
+    ...mock.target("22".repeat(32), true),
+    id: "t1",
+    prefix: "r1",
+  };
+  const s3 = new S3Place(target);
+  const origin = sid("a");
+  const gen = "100-aaaaaaaa";
+  const batch = "0000000001-0000000001-11111111.ndjson.zst";
+  const c1 = hex64("11", "1");
+  const inlineExtra = hex64("22", "2");
+  const orphan = hex64("99", "9");
+  const enc = encodeTranscriptManifest({ [c1]: 10 });
+
+  await s3.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await s3.putFile(HOME, origin, c1, Buffer.from("c1"));
+  await s3.putFile(HOME, origin, inlineExtra, Buffer.from("inline-extra"));
+  await s3.putFile(HOME, origin, orphan, Buffer.from("orphan"));
+  await s3.putFile(HOME, origin, enc.rootHash, enc.rootBytes);
+  for (const [lh, { bytes }] of enc.leaves) await s3.putFile(HOME, origin, lh, bytes);
+
+  // 13a. Put valid head1 (dual-field: transcriptManifest + inline transcriptFiles with inlineExtra)
+  const head1 = makeHead({
+    origin,
+    gen,
+    batches: [batch],
+    transcriptManifest: enc.rootHash,
+    transcriptFiles: { [c1]: 10, [inlineExtra]: 12 },
+    to: 1,
+    made: 1000,
+  });
+  await s3.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(head1)), head1);
+
+  // 13b. Attempt to put head2 with missing/corrupt transcriptManifest -> MUST reject BEFORE overwriting remote head1!
+  const missingManifestRoot = hex64("de", "a");
+  const head2Bad = makeHead({ origin, gen, batches: [batch], transcriptManifest: missingManifestRoot, to: 2, made: 2000 });
+  await assert.rejects(
+    () => s3.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(head2Bad)), head2Bad),
+    /missing/,
+    "S3Place.put('head') must reject invalid manifest before overwriting remote head",
+  );
+  const heldAfterBad = await s3.held(HOME, origin);
+  assert.equal(heldAfterBad.gens[0]!.head!.to, 1, "remote head1 was NOT overwritten by failed put('head')");
+  assert.equal(heldAfterBad.hasUnverifiedHead, undefined);
+
+  // 13c. Dual-field drop() protects inline-only chunk `inlineExtra` AND manifest chunk `c1`, while deleting `orphan`
+  await s3.drop(HOME, origin, gen, [], [c1, inlineExtra, orphan]);
+  const wt = s3.wsTag(HOME);
+  const ot = s3.originTag(origin);
+  assert.ok(mock.objects.has(`r1/${wt}/${ot}/files/${s3.fileTag(c1)}.enc`), "manifest chunk protected");
+  assert.ok(mock.objects.has(`r1/${wt}/${ot}/files/${s3.fileTag(inlineExtra)}.enc`), "dual-field inline-only chunk protected");
+  assert.ok(!mock.objects.has(`r1/${wt}/${ot}/files/${s3.fileTag(orphan)}.enc`), "orphan chunk deleted");
+
+  // 13d. Self-heal: corrupt current gen's head on S3 + add an orphan -> held() reports unverifiedGens=[gen],
+  // then level() rewrites verified wireHead for `gen`, clears hasUnverifiedHead, and deletes the orphan!
+  const orphan2 = hex64("88", "8");
+  await s3.putFile(HOME, origin, orphan2, Buffer.from("orphan2"));
+  mock.objects.set(`r1/${wt}/${ot}/head/${gen}.enc`, Buffer.from("corrupted-head-bytes"));
+  const unverifiedHeld = await s3.held(HOME, origin);
+  assert.equal(unverifiedHeld.hasUnverifiedHead, true);
+  assert.deepEqual(unverifiedHeld.unverifiedGens, [gen]);
+
+  const ownHead = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [c1]: 10 }, to: 2, made: 2000 });
+  const own: Own = {
+    head: ownHead,
+    batch: async () => Buffer.from("b"),
+    sources: async () => new Map(),
+  };
+  const levelled = await level(s3, HOME, own, null);
+  assert.equal(levelled.behind, false);
+  assert.equal(levelled.known.hasUnverifiedHead, false, "self-healed own gen clears hasUnverifiedHead");
+  assert.ok(!mock.objects.has(`r1/${wt}/${ot}/files/${s3.fileTag(orphan2)}.enc`), "orphan reclaimed after own gen self-healed");
+});
+
+test("14. R1: handOver and holdsAll/holdsAllLogical verify actual on-disk Holding.batches and emit inline wire head", async () => {
+  const fromPlace = new FolderPlace(dataDir("d72a-r1-ho-from"));
+  const toPlace = new FolderPlace(dataDir("d72a-r1-ho-to"));
+  const origin = sid("a");
+  const gen = "100-aaaaaaaa";
+  const b1 = "0000000001-0000000001-11111111.ndjson.zst";
+  const b2 = "0000000002-0000000002-22222222.ndjson.zst";
+  const c1 = hex64("11", "1");
+  const enc = encodeTranscriptManifest({ [c1]: 10 });
+
+  await fromPlace.put(HOME, origin, gen, "batch", b1, Buffer.from("b1"));
+  await fromPlace.put(HOME, origin, gen, "batch", b2, Buffer.from("b2"));
+  await fromPlace.putFile(HOME, origin, c1, Buffer.from("c1"));
+  await fromPlace.putFile(HOME, origin, enc.rootHash, enc.rootBytes);
+  for (const [lh, { bytes }] of enc.leaves) await fromPlace.putFile(HOME, origin, lh, bytes);
+  const fromHead = makeHead({ origin, gen, batches: [b1, b2], transcriptManifest: enc.rootHash, to: 2, made: 2000 });
+  await fromPlace.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(fromHead)));
+
+  // Seed toPlace with b1 + full head declaring [b1, b2], but DELETE b2 from disk!
+  await toPlace.put(HOME, origin, gen, "batch", b1, Buffer.from("b1"));
+  await toPlace.put(HOME, origin, gen, "batch", b2, Buffer.from("b2"));
+  await toPlace.putFile(HOME, origin, c1, Buffer.from("c1"));
+  const toHeadInline = makeHead({ origin, gen, batches: [b1, b2], transcriptFiles: { [c1]: 10 }, to: 2, made: 2000 });
+  await toPlace.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(toHeadInline)));
+  rmSync(join(toPlace.dir(HOME, origin), gen, "log", b2));
+
+  const mineHeld = await fromPlace.held(HOME, origin);
+  const theirsHeldMissingBatch = await toPlace.held(HOME, origin);
+  assert.equal(holdsAll(mineHeld, theirsHeldMissingBatch), false, "holdsAll rejects missing on-disk batch");
+  assert.equal(
+    await holdsAllLogical(mineHeld, theirsHeldMissingBatch, {
+      readMine: (h, max) => fromPlace.readBounded(HOME, origin, null, h, max),
+    }),
+    false,
+    "holdsAllLogical rejects missing on-disk batch even when head.json matches",
+  );
+
+  // handOver MUST detect missing b2, re-upload b2, and send inline wire head (no transcriptManifest on wire)!
+  const wireHeads: Head[] = [];
+  const origPut = toPlace.put.bind(toPlace);
+  toPlace.put = async (ws, orig, g, kind, name, bytes) => {
+    if (kind === "head") wireHeads.push(JSON.parse(bytes.toString("utf8")) as Head);
+    return origPut(ws, orig, g, kind, name, bytes);
+  };
+  const ok = await handOver(fromPlace, toPlace, HOME, origin);
+  assert.equal(ok, true);
+  assert.ok(existsSync(join(toPlace.dir(HOME, origin), gen, "log", b2)), "handOver restored missing batch file b2");
+  assert.equal(wireHeads.length, 1);
+  assert.equal(wireHeads[0]!.transcriptManifest, undefined, "handOver wire head must be inline in D72a");
+  assert.deepEqual(wireHeads[0]!.transcriptFiles, { [c1]: 10 });
+});
+
+test("15. R1: streaming byte cap aborts early + parse-time entry cap + strict integer / -0 rejection", async () => {
+  // 15a. readStreamBounded aborts async generator immediately once maxBytes exceeded (never buffers full stream)
+  let chunksYielded = 0;
+  async function* oversizedStream(): AsyncIterable<Buffer> {
+    for (let i = 0; i < 100; i++) {
+      chunksYielded++;
+      yield Buffer.alloc(1024, 0x41);
+    }
+  }
+  await assert.rejects(
+    () => readStreamBounded(oversizedStream(), 2048),
+    /exceeds max bytes/,
+  );
+  assert.equal(chunksYielded, 3, "stream aborted immediately on the 3rd chunk (3072 > 2048), never buffered 100 chunks");
+
+  // 15b. Strict integer syntax rejection (-0, 1e0, 1.0, 01, > MAX_SAFE_INTEGER) + MAX_SAFE_INTEGER acceptance
+  const h1 = hex64("0a", "1");
+  const h2 = hex64("0a", "2");
+  for (const bad of ["-0", "1e0", "1E2", "1.0", "01", "9007199254740992", "99999999999999999999"]) {
+    const raw = Buffer.from(`{"v":1,"files":{"${h1}":${bad}}}`, "utf8");
+    const hash = createHash("sha256").update(raw).digest("hex");
+    assert.throws(() => parseLeafManifest(raw, hash, "0a"), `must reject non-strict integer ${bad}`);
+  }
+  const maxSafeRaw = Buffer.from(`{"v":1,"files":{"${h1}":9007199254740991}}`, "utf8");
+  const maxSafeHash = createHash("sha256").update(maxSafeRaw).digest("hex");
+  assert.equal(parseLeafManifest(maxSafeRaw, maxSafeHash, "0a").files[h1], 9007199254740991);
+
+  // 15c. Parse-time entry cap rejects during StrictJsonParser when remainingEntries is exceeded
+  const twoEntries = Buffer.from(`{"v":1,"files":{"${h1}":1,"${h2}":2}}`, "utf8");
+  const twoHash = createHash("sha256").update(twoEntries).digest("hex");
+  assert.throws(
+    () => parseLeafManifest(twoEntries, twoHash, "0a", { bytes: 0, entries: MANIFEST_MAX_ENTRIES - 1 }),
+    /exceeds max entries/,
+  );
+});
+
+test("16. R1: local restore when a transcript chunk disappears between held() and stream() still restores chat and records missing", async () => {
+  const s = makeTranscriptStation("d72a-r1-vanish");
+  const replica = join(s.data, "replica");
+  const origin = sid("a");
+  const exp = new Exporter({ db: s.db, replica, dataDir: s.data, origin, now: () => 1_700_000_000_000, chunkBytes: 1024, compactHeads: true });
+  closing.push(() => exp.close());
+  exp.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
+  const p = exp.pass(nothingTold());
+  const compactHead = p.heads[HOME]!;
+  const tf = await loadLocalTranscriptFiles(replica, compactHead);
+  const enc = encodeTranscriptManifest(tf);
+  const genDirPath = join(replica, "own", HOME, compactHead.gen);
+
+  const targetData = dataDir("d72a-r1-vanish-dst");
+  const clock = testClock();
+  Store.open(join(targetData, "stillfail.db"), join(targetData, "archive"), clock.clock).close();
+  const fibers = new Fibers("vanish-restore");
+  closing.push(() => fibers.close());
+  const runner = new InlineRunner({ db: join(targetData, "stillfail.db"), replica: join(targetData, "replica"), dataDir: targetData, origin: sid("b"), now: () => 1 });
+  closing.push(() => runner.close());
+  const copies = new Copies({
+    data: targetData,
+    here: () => sid("b"),
+    places: () => ({ home: HOME, workspaces: [{ workspace: HOME, name: "dst" }] }),
+    roster: () => [{ id: sid("b"), name: "dst" }],
+    ask: async () => { throw new Error("unused"); },
+    runner,
+    fibers,
+    restart: async () => null,
+    changed: () => {},
+  });
+  closing.push(() => copies.close());
+
+  for (const b of compactHead.batches) {
+    await copies.kept.put(HOME, origin, compactHead.gen, "batch", b, readFileSync(join(genDirPath, "log", b)));
+  }
+  for (const h of Object.keys(compactHead.files)) {
+    await copies.kept.putFile(HOME, origin, h, exp.sourceOf(h)!);
+  }
+  const tfHashes = Object.keys(tf);
+  for (const h of tfHashes) {
+    await copies.kept.putFile(HOME, origin, h, exp.sourceOf(h)!);
+  }
+  await copies.kept.putFile(HOME, origin, enc.rootHash, enc.rootBytes);
+  for (const [lh, { bytes }] of enc.leaves) await copies.kept.putFile(HOME, origin, lh, bytes);
+  await copies.kept.put(HOME, origin, compactHead.gen, "head", "head.json", Buffer.from(JSON.stringify(compactHead)));
+
+  // Delete one transcript chunk AFTER held() lists it, right before stream() reads it!
+  const vanishedChunk = tfHashes[0]!;
+  const origHeld = copies.kept.held.bind(copies.kept);
+  copies.kept.held = async (ws, orig) => {
+    const res = await origHeld(ws, orig);
+    rmSync(join(copies.kept.dir(ws, orig), "files", vanishedChunk), { force: true });
+    return res;
+  };
+
+  await copies.placesChanged();
+  await copies.settle();
+  await copies.restore(HOME, origin, compactHead.gen, { station: sid("b") });
+  takeBack(targetData, join(targetData, "stillfail.db"), 20);
+  const outcome = JSON.parse(readFileSync(join(targetData, "replica", "restored.json"), "utf8"));
+  assert.equal(outcome.error, null, "vanished transcript chunk must not fail chat restore");
+  assert.ok(outcome.missing >= 1, "vanished transcript chunk recorded in missing");
+  const restoredDb = Store.open(join(targetData, "stillfail.db"), join(targetData, "archive"), clock.clock);
+  assert.ok(restoredDb.getSession("chat:tr") !== null, "chat session restored intact");
+  const restoredAtt = join(targetData, s.att.path.slice(s.data.length + 1));
+  assert.equal(readFileSync(restoredAtt, "utf8"), "attachment-bytes", "chat attachment restored intact");
+  restoredDb.close();
+});
+
+test("17. R1: mid-flight configChanged() switching includeTranscripts does not write back stale Known", async () => {
+  const s = makeTranscriptStation("d72a-r1-config-race");
+  const mock = new MiniS3Server();
+  await mock.start();
+  closing.push(() => mock.stop());
+  const origin = sid("a");
+  const fibers = new Fibers("config-race");
+  closing.push(() => fibers.close());
+  const runner = new InlineRunner({ db: s.db, replica: join(s.data, "replica"), dataDir: s.data, origin, now: () => 1_700_000_000_000, chunkBytes: 1024 });
+  closing.push(() => runner.close());
+
+  let includeTranscripts = false;
+  let releaseFirstHead: (() => void) | null = null;
+  const firstHeadPaused = new Promise<void>((resolve) => {
+    // Hook mock S3 PUT of head/*.enc to pause the first sync mid-flight
+    const origPut = mock.objects.set.bind(mock.objects);
+    let pausedOnce = false;
+    mock.objects.set = (k: string, v: Buffer) => {
+      if (!pausedOnce && k.includes("/head/")) {
+        pausedOnce = true;
+        resolve();
+      }
+      return origPut(k, v);
+    };
+  });
+
+  // Gate on fetch for the first head PUT so the sync stays genuinely in-flight while configChanged() runs!
+  const origFetch = globalThis.fetch;
+  let headPutGate: Promise<void> | null = new Promise<void>((r) => { releaseFirstHead = r; });
+  let firstHeadStartedResolve!: () => void;
+  const firstHeadStarted = new Promise<void>((r) => { firstHeadStartedResolve = r; });
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (init?.method === "PUT" && url.includes("/head/") && headPutGate !== null) {
+      const gate = headPutGate;
+      headPutGate = null;
+      firstHeadStartedResolve();
+      await gate;
+    }
+    return origFetch(input, init);
+  }) as typeof fetch;
+  closing.push(() => {
+    globalThis.fetch = origFetch;
+  });
+
+  const makeTarget = (): NormalizedS3Target => ({
+    ...mock.target("33".repeat(32), includeTranscripts),
+    id: "s3-race",
+    name: "race",
+    prefix: "race",
+  });
+
+  const copies = new Copies({
+    data: s.data,
+    here: () => origin,
+    places: () => ({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] }),
+    roster: () => [{ id: origin, name: "src" }],
+    ask: async () => { throw new Error("unused"); },
+    runner,
+    fibers,
+    restart: async () => null,
+    changed: () => {},
+    backup: () => ({ mode: "manual", stations: [], acceptOthers: true, s3: [makeTarget()] }),
+  });
+  closing.push(() => copies.close());
+
+  await copies.placesChanged();
+  await copies.settleExport();
+  // Trigger first sync with includeTranscripts=false
+  copies.configChanged();
+  await firstHeadStarted;
+
+  // Mid-flight: flip includeTranscripts=true and call configChanged()!
+  includeTranscripts = true;
+  copies.configChanged();
+  // Release the in-flight first sync
+  releaseFirstHead!();
+  await firstHeadPaused;
+
+  // Wait for Copies to finish both the in-flight sync and the automatic re-sync under includeTranscripts=true
+  const s3Verify = new S3Place(makeTarget());
+  let uploadedTranscripts = false;
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+    const held = await s3Verify.held(HOME, origin);
+    const h = held.gens[0]?.head;
+    if (h !== null && h !== undefined && Object.keys(h.transcriptFiles ?? {}).length > 0 && held.files.length >= Object.keys(h.transcriptFiles!).length) {
+      uploadedTranscripts = true;
+      break;
+    }
+  }
+  assert.equal(uploadedTranscripts, true, "after mid-flight includeTranscripts=true toggle, Copies re-synced and uploaded transcripts without keeping stale Known");
 });

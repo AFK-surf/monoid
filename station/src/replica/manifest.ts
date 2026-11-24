@@ -10,7 +10,7 @@
 //   - "files" keys are 64-char lowercase hex in ascending order, each starting with its bucket prefix.
 //   - Values are non-negative safe integers (`compSize`).
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { open, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { type Head, asHead, isHex64 } from "./format.ts";
 
@@ -19,6 +19,9 @@ export const MANIFEST_MAX_BYTES = 64 * 1024 * 1024;
 export const MANIFEST_MAX_ENTRIES = 500_000;
 export const MANIFEST_MAX_BUCKETS = 256;
 export const MANIFEST_GC_GRACE_MS = 10 * 60 * 1000;
+
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const BOUNDED_READ_CHUNK = 64 * 1024;
 
 export type EncodedManifest = {
   rootHash: string;
@@ -70,14 +73,19 @@ function isNonNegSafeInt(v: unknown): v is number {
 
 const utf8Fatal = new TextDecoder("utf-8", { fatal: true });
 
-/// Strict RFC 8259 JSON parser that rejects duplicate object keys (even via `\uXXXX` escapes),
-/// `-0`, trailing tokens, and excessive nesting.
+/// Strict RFC 8259 JSON parser for manifests that rejects duplicate object keys (even via `\uXXXX` escapes),
+/// non-integer / negative / `-0` / scientific / out-of-safe-range numbers, trailing tokens, excessive nesting,
+/// and enforces entry count caps during parsing before materializing oversized objects.
 class StrictJsonParser {
   readonly #s: string;
+  readonly #maxDepth1Entries: number;
+  readonly #depth1LimitError: string;
   #at = 0;
 
-  constructor(s: string) {
+  constructor(s: string, maxDepth1Entries: number, depth1LimitError: string) {
     this.#s = s;
+    this.#maxDepth1Entries = maxDepth1Entries;
+    this.#depth1LimitError = depth1LimitError;
   }
 
   parse(): unknown {
@@ -99,13 +107,16 @@ class StrictJsonParser {
   }
 
   #value(depth: number): unknown {
-    if (depth > 8) throw new Error("manifest JSON nesting too deep");
+    if (depth > 2) throw new Error("manifest JSON nesting too deep");
     this.#skip();
     if (this.#at >= this.#s.length) throw new Error("unexpected end of JSON");
     const c = this.#s.charCodeAt(this.#at);
-    if (c === 0x7b) return this.#object(depth);
+    if (c === 0x7b) {
+      if (depth >= 2) throw new Error("manifest JSON nesting too deep");
+      return this.#object(depth);
+    }
     if (c === 0x22) return this.#string();
-    if (c === 0x2d || (c >= 0x30 && c <= 0x39)) return this.#number();
+    if (c >= 0x30 && c <= 0x39) return this.#number();
     throw new Error(`unexpected token in manifest JSON at ${this.#at}`);
   }
 
@@ -117,6 +128,7 @@ class StrictJsonParser {
       this.#at++;
       return out;
     }
+    let count = 0;
     for (;;) {
       this.#skip();
       if (this.#at >= this.#s.length || this.#s.charCodeAt(this.#at) !== 0x22) {
@@ -124,6 +136,13 @@ class StrictJsonParser {
       }
       const key = this.#string();
       if (Object.hasOwn(out, key)) throw new Error(`duplicate JSON key: ${key}`);
+      count++;
+      if (depth === 0 && count > 2) {
+        throw new Error("manifest JSON top-level object has too many keys");
+      }
+      if (depth === 1 && count > this.#maxDepth1Entries) {
+        throw new Error(this.#depth1LimitError);
+      }
       this.#skip();
       if (this.#at >= this.#s.length || this.#s.charCodeAt(this.#at) !== 0x3a) {
         throw new Error(`expected ':' at ${this.#at}`);
@@ -169,42 +188,47 @@ class StrictJsonParser {
     throw new Error("unterminated JSON string");
   }
 
+  /// Accepts only strict non-negative decimal integers (`0` or `[1-9][0-9]*`) within `[0, Number.MAX_SAFE_INTEGER]`.
   #number(): number {
     const s = this.#s;
     const n = s.length;
     const start = this.#at;
-    if (s.charCodeAt(this.#at) === 0x2d) this.#at++;
-    if (this.#at >= n) throw new Error(`invalid number at ${start}`);
-    if (s.charCodeAt(this.#at) === 0x30) {
+    const first = s.charCodeAt(this.#at);
+    if (first === 0x30) {
       this.#at++;
-    } else if (s.charCodeAt(this.#at) >= 0x31 && s.charCodeAt(this.#at) <= 0x39) {
-      while (this.#at < n && s.charCodeAt(this.#at) >= 0x30 && s.charCodeAt(this.#at) <= 0x39) this.#at++;
-    } else {
-      throw new Error(`invalid number at ${start}`);
+      if (this.#at < n) {
+        const next = s.charCodeAt(this.#at);
+        if ((next >= 0x30 && next <= 0x39) || next === 0x2e || next === 0x65 || next === 0x45) {
+          throw new Error(`invalid integer in manifest at ${start}`);
+        }
+      }
+      return 0;
     }
-    if (this.#at < n && s.charCodeAt(this.#at) === 0x2e) {
-      this.#at++;
-      const fracStart = this.#at;
+    if (first >= 0x31 && first <= 0x39) {
       while (this.#at < n && s.charCodeAt(this.#at) >= 0x30 && s.charCodeAt(this.#at) <= 0x39) this.#at++;
-      if (this.#at === fracStart) throw new Error(`invalid fraction at ${start}`);
+      if (this.#at < n) {
+        const next = s.charCodeAt(this.#at);
+        if (next === 0x2e || next === 0x65 || next === 0x45) {
+          throw new Error(`invalid integer in manifest at ${start}`);
+        }
+      }
+      const raw = s.slice(start, this.#at);
+      if (raw.length > 16) throw new Error(`integer out of safe range: ${raw}`);
+      const bi = BigInt(raw);
+      if (bi > MAX_SAFE_BIGINT) throw new Error(`integer out of safe range: ${raw}`);
+      return Number(bi);
     }
-    if (this.#at < n && (s.charCodeAt(this.#at) === 0x65 || s.charCodeAt(this.#at) === 0x45)) {
-      this.#at++;
-      if (this.#at < n && (s.charCodeAt(this.#at) === 0x2b || s.charCodeAt(this.#at) === 0x2d)) this.#at++;
-      const expStart = this.#at;
-      while (this.#at < n && s.charCodeAt(this.#at) >= 0x30 && s.charCodeAt(this.#at) <= 0x39) this.#at++;
-      if (this.#at === expStart) throw new Error(`invalid exponent at ${start}`);
-    }
-    const raw = s.slice(start, this.#at);
-    const val = Number(raw);
-    if (!Number.isFinite(val) || Object.is(val, -0)) throw new Error(`invalid number: ${raw}`);
-    return val;
+    throw new Error(`invalid integer in manifest at ${start}`);
   }
 }
 
-function parseStrictJsonObject(bytes: Uint8Array): Record<string, unknown> {
+function parseStrictJsonObject(
+  bytes: Uint8Array,
+  maxDepth1Entries: number,
+  depth1LimitError: string,
+): Record<string, unknown> {
   const text = utf8Fatal.decode(bytes);
-  const parsed = new StrictJsonParser(text).parse();
+  const parsed = new StrictJsonParser(text, maxDepth1Entries, depth1LimitError).parse();
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("manifest JSON must be an object");
   }
@@ -277,7 +301,7 @@ export function parseRootManifest(bytes: Uint8Array, expectedHash: string, budge
   if (actual !== expectedHash) {
     throw new Error(`manifest root hash mismatch: expected ${expectedHash}, got ${actual}`);
   }
-  const obj = parseStrictJsonObject(bytes);
+  const obj = parseStrictJsonObject(bytes, MANIFEST_MAX_BUCKETS, `manifest root exceeds max buckets (${MANIFEST_MAX_BUCKETS})`);
   const topKeys = Object.keys(obj);
   if (topKeys.length !== 2 || !Object.hasOwn(obj, "v") || !Object.hasOwn(obj, "buckets")) {
     throw new Error("manifest root must have only keys 'v' and 'buckets'");
@@ -323,7 +347,12 @@ export function parseLeafManifest(
   if (actual !== expectedHash) {
     throw new Error(`manifest leaf hash mismatch: expected ${expectedHash}, got ${actual}`);
   }
-  const obj = parseStrictJsonObject(bytes);
+  const remainingEntries = Math.max(0, MANIFEST_MAX_ENTRIES - (budget?.entries ?? 0));
+  const obj = parseStrictJsonObject(
+    bytes,
+    remainingEntries,
+    `transcript manifest exceeds max entries (${MANIFEST_MAX_ENTRIES})`,
+  );
   const topKeys = Object.keys(obj);
   if (topKeys.length !== 2 || !Object.hasOwn(obj, "v") || !Object.hasOwn(obj, "files")) {
     throw new Error("manifest leaf must have only keys 'v' and 'files'");
@@ -355,13 +384,69 @@ export function parseLeafManifest(
   return { v: 1, files };
 }
 
+/// Reads a local file strictly up to `maxBytes` (checking `stat.size` first, then reading at most `maxBytes + 1` bytes).
+/// Returns `null` on `ENOENT`/`ENOTDIR`; throws immediately if the file exceeds `maxBytes`.
+export async function readFileBounded(path: string, maxBytes: number): Promise<Buffer | null> {
+  let st;
+  try {
+    st = await stat(path);
+  } catch (e) {
+    if (isMissingErr(e)) return null;
+    throw e;
+  }
+  if (st.size > maxBytes) {
+    throw new Error(`transcript manifest exceeds max bytes (${MANIFEST_MAX_BYTES})`);
+  }
+  let fh;
+  try {
+    fh = await open(path, "r");
+  } catch (e) {
+    if (isMissingErr(e)) return null;
+    throw e;
+  }
+  try {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const limit = maxBytes + 1;
+    while (total < limit) {
+      const want = Math.min(BOUNDED_READ_CHUNK, limit - total);
+      const buf = Buffer.allocUnsafe(want);
+      const { bytesRead } = await fh.read(buf, 0, want, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > maxBytes) {
+        throw new Error(`transcript manifest exceeds max bytes (${MANIFEST_MAX_BYTES})`);
+      }
+      chunks.push(bytesRead === want ? buf : buf.subarray(0, bytesRead));
+    }
+    return chunks.length === 0 ? Buffer.alloc(0) : chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total);
+  } finally {
+    await fh.close();
+  }
+}
+
+/// Reads an async byte stream up to `maxBytes`, aborting the stream and throwing immediately if exceeded.
+export async function readStreamBounded(stream: AsyncIterable<Buffer>, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of stream) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      throw new Error(`transcript manifest exceeds max bytes (${MANIFEST_MAX_BYTES})`);
+    }
+    chunks.push(chunk);
+  }
+  return chunks.length === 0 ? Buffer.alloc(0) : chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total);
+}
+
 /// Loads and strictly verifies a full 2-level manifest (root + all bucket leaves).
+/// Passes the remaining byte budget `maxBytes` to `readObject` so callers enforce hard byte limits before buffering.
 export async function loadTranscriptManifest(
   rootHash: string,
-  readObject: (hash: string) => Promise<Uint8Array | null>,
+  readObject: (hash: string, maxBytes: number) => Promise<Uint8Array | null>,
 ): Promise<ResolvedManifest> {
   const budget: ManifestBudget = { bytes: 0, entries: 0 };
-  const rootBytes = await readObject(rootHash);
+  const rootBytes = await readObject(rootHash, MANIFEST_MAX_BYTES);
   if (rootBytes === null) throw new Error(`transcript manifest root ${rootHash} is missing`);
   const root = parseRootManifest(rootBytes, rootHash, budget);
   const files: Record<string, number> = {};
@@ -370,7 +455,11 @@ export async function loadTranscriptManifest(
   for (const bucket of bucketKeys) {
     const leafHash = root.buckets[bucket]!;
     leafHashes.push(leafHash);
-    const leafBytes = await readObject(leafHash);
+    const remaining = MANIFEST_MAX_BYTES - budget.bytes;
+    if (remaining <= 0) {
+      throw new Error(`transcript manifest exceeds max bytes (${MANIFEST_MAX_BYTES})`);
+    }
+    const leafBytes = await readObject(leafHash, remaining);
     if (leafBytes === null) throw new Error(`transcript manifest leaf ${leafHash} (bucket ${bucket}) is missing`);
     const leaf = parseLeafManifest(leafBytes, leafHash, bucket, budget);
     for (const [h, sz] of Object.entries(leaf.files)) {
@@ -402,16 +491,13 @@ export async function loadLocalTranscriptFiles(replicaDir: string, head: Head): 
   const manifestsDir = join(replicaDir, "manifests");
   let missingLocal = false;
   try {
-    const resolved = await loadTranscriptManifest(head.transcriptManifest, async (hash) => {
-      try {
-        return await readFile(join(manifestsDir, hash));
-      } catch (e) {
-        if (isMissingErr(e)) {
-          missingLocal = true;
-          return null;
-        }
-        throw e;
+    const resolved = await loadTranscriptManifest(head.transcriptManifest, async (hash, maxBytes) => {
+      const buf = await readFileBounded(join(manifestsDir, hash), maxBytes);
+      if (buf === null) {
+        missingLocal = true;
+        return null;
       }
+      return buf;
     });
     return resolved.files;
   } catch (err) {

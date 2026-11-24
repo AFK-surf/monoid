@@ -12,7 +12,7 @@ import type { Fibers } from "../ops/fibers.ts";
 import type { StoreChange } from "../store/rows.ts";
 import { type Places, type Told, nothingTold } from "./export.ts";
 import { GEN, type Head, STATION, WORKSPACE, genMade } from "./format.ts";
-import { loadLocalTranscriptFiles, loadTranscriptManifest } from "./manifest.ts";
+import { loadLocalTranscriptFiles, loadTranscriptManifest, readStreamBounded } from "./manifest.ts";
 import { FolderPlace, type Held, type Known, type Levelled, type Place, handOver, holdsAllLogical, level } from "./places.ts";
 import { type Ask, COPIES, MOST, PeerPlace, keepers, ranked, serve } from "./peers.ts";
 import { Refused } from "../mesh/bus.ts";
@@ -258,6 +258,8 @@ export class Copies {
   #told: Told = nothingTold();
   #gathering: (() => void) | null = null;
   #transcriptGathering: (() => void) | null = null;
+  #configSeq = 0;
+  readonly #manifestMemo = new Map<string, Promise<Record<string, number>>>();
   #retrying: (() => void) | null = null;
   #wantTranscripts = false;
   #passing: Promise<void> | null = null;
@@ -541,6 +543,7 @@ export class Copies {
   /// targets, re-announces `acceptCopies` to peers, hands over kept copies if `acceptOthers` turned false, and scans
   /// S3 for restorable backups if this station is empty.
   configChanged(): void {
+    this.#configSeq++;
     const cfg = this.#backup();
     const s3ById = new Map(cfg.s3.map((t) => [t.id, t]));
     for (const [id, entry] of [...this.#s3Places.entries()]) {
@@ -759,6 +762,7 @@ export class Copies {
     const keeping = k;
     const wasError = k.error;
     const prevReason = k.reason;
+    const startConfigSeq = this.#configSeq;
     // (the chats there before the transcripts: said as they are, while those go on)
     const onPartial = (to: number, lacking: number) => {
       keeping.to = to;
@@ -798,8 +802,14 @@ export class Copies {
           done = await level(place, ws, this.#own(next), null, { onPartial });
           if (done.behind) throw new Error("that station keeps more of this station's than it has");
         }
-        keeping.known = done.known;
-        keeping.head = headSaid(syncedHead);
+        if (this.#configSeq === startConfigSeq) {
+          keeping.known = done.known;
+          keeping.head = headSaid(syncedHead);
+        } else {
+          keeping.known = null;
+          keeping.head = null;
+          keeping.asked = true;
+        }
         keeping.reason = null;
         keeping.to = done.to;
         keeping.missing = done.missing;
@@ -923,6 +933,7 @@ export class Copies {
     const keeping = k;
     const wasError = k.error;
     const prevReason = k.reason;
+    const startConfigSeq = this.#configSeq;
     const run = (async () => {
       const traces = this.#d.traces?.() ?? null;
       const span = traces?.startRoot() ?? null;
@@ -961,8 +972,14 @@ export class Copies {
           done = await level(place, ws, this.#own(next), null, opts);
           if (done.behind) throw new Error("that S3 target keeps more of this station's than it has");
         }
-        keeping.known = done.known;
-        keeping.head = headSaid(syncedHead);
+        if (this.#configSeq === startConfigSeq) {
+          keeping.known = done.known;
+          keeping.head = headSaid(syncedHead);
+        } else {
+          keeping.known = null;
+          keeping.head = null;
+          keeping.asked = true;
+        }
         keeping.reason = null;
         keeping.to = done.to;
         keeping.missing = done.missing;
@@ -1044,6 +1061,30 @@ export class Copies {
     } while (this.#again);
   }
 
+  #loadLocalTranscriptFilesMemo(replicaDir: string, head: Head): Promise<Record<string, number>> {
+    if (head.transcriptManifest === undefined) {
+      return Promise.resolve(head.transcriptFiles ?? {});
+    }
+    const key = `${replicaDir}\n${head.gen}\n${head.transcriptManifest}`;
+    const existing = this.#manifestMemo.get(key);
+    if (existing !== undefined) {
+      this.#manifestMemo.delete(key);
+      this.#manifestMemo.set(key, existing);
+      return existing;
+    }
+    const p = loadLocalTranscriptFiles(replicaDir, head).catch((err) => {
+      if (this.#manifestMemo.get(key) === p) this.#manifestMemo.delete(key);
+      throw err;
+    });
+    while (this.#manifestMemo.size >= 2) {
+      const oldest = this.#manifestMemo.keys().next().value;
+      if (oldest === undefined) break;
+      this.#manifestMemo.delete(oldest);
+    }
+    this.#manifestMemo.set(key, p);
+    return p;
+  }
+
   #own(head: Head) {
     const replicaDir = join(this.#d.data, "replica");
     const dir = join(replicaDir, "own", head.workspace, head.gen);
@@ -1051,7 +1092,7 @@ export class Copies {
       head,
       batch: (name: string) => readFile(join(dir, "log", name)),
       sources: async (hashes: string[]) => new Map(Object.entries(await this.#d.runner.sources(hashes))),
-      loadTranscriptFiles: () => loadLocalTranscriptFiles(replicaDir, head),
+      loadTranscriptFiles: () => this.#loadLocalTranscriptFilesMemo(replicaDir, head),
     };
   }
 
@@ -1499,16 +1540,21 @@ export class Copies {
     let transcriptMap: Record<string, number> | undefined;
     if (head.transcriptManifest !== undefined) {
       const manifestBlobs = new Map<string, Buffer>();
-      const readManifestBlob = async (hash: string): Promise<Buffer | null> => {
+      const readManifestBlob = async (hash: string, maxBytes: number): Promise<Buffer | null> => {
+        let s: AsyncIterable<Buffer>;
         try {
-          const chunks: Buffer[] = [];
-          for await (const piece of await stream(null, hash)) chunks.push(piece);
-          const buf = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks);
-          manifestBlobs.set(hash, buf);
-          return buf;
-        } catch {
-          return null;
+          s = await stream(null, hash);
+        } catch (e) {
+          const missing =
+            isEnoent(e) ||
+            (e instanceof S3HttpError && e.status === 404) ||
+            (e instanceof Refused && /not kept here/i.test(e.message));
+          if (missing) return null;
+          throw e;
         }
+        const buf = await readStreamBounded(s, maxBytes);
+        manifestBlobs.set(hash, buf);
+        return buf;
       };
       const resolved = await loadTranscriptManifest(head.transcriptManifest, readManifestBlob);
       transcriptMap = resolved.files;

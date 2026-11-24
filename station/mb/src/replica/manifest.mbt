@@ -45,7 +45,7 @@ fn hex2_ok(s : String) -> Bool {
 
 ///|
 fn non_neg_safe_int(v : Double) -> Bool {
-  v >= 0.0 && v == @math.floor(v) && v <= 9007199254740991.0
+  !(v == 0.0 && 1.0 / v < 0.0) && v >= 0.0 && v == @math.floor(v) && v <= 9007199254740991.0
 }
 
 ///|
@@ -152,10 +152,13 @@ pub fn encode_transcript_manifest(entries : Array[(String, Double)]) -> EncodedM
 }
 
 ///|
-/// Strict JSON parser for manifests that rejects duplicate keys, `-0`, extra tokens, and invalid escapes.
+/// Strict JSON parser for manifests that rejects duplicate keys, `-0`, non-integer / scientific / out-of-safe-range numbers,
+/// extra tokens, invalid escapes, and enforces depth-1 entry limits during parsing before materializing oversized objects.
 priv struct StrictManifestParser {
   text : String
   mut at : Int
+  max_depth1_entries : Int
+  depth1_limit_msg : String
 }
 
 ///|
@@ -264,57 +267,52 @@ fn StrictManifestParser::string(self : StrictManifestParser) -> String raise {
 }
 
 ///|
+/// Accepts only strict non-negative decimal integers (`0` or `[1-9][0-9]*`) within `[0, 9007199254740991]`.
 fn StrictManifestParser::number(self : StrictManifestParser) -> Double raise {
   let start = self.at
-  if self.peek() == 0x2d {
+  let first = self.peek()
+  if first == 0x30 {
+    self.at += 1
+    let next = self.peek()
+    if (next >= 0x30 && next <= 0x39) || next is (0x2e | 0x65 | 0x45) {
+      fail("invalid integer in manifest at \{start}")
+    }
+    return 0.0
+  }
+  if first < 0x31 || first > 0x39 {
+    fail("invalid integer in manifest at \{start}")
+  }
+  let mut acc : Int64 = 0L
+  let max_safe : Int64 = 9007199254740991L
+  while true {
+    let c = self.peek()
+    if c < 0x30 || c > 0x39 {
+      break
+    }
+    let d = (c - 0x30).to_int64()
+    if acc > (max_safe - d) / 10L {
+      fail("integer out of safe range in manifest at \{start}")
+    }
+    acc = acc * 10L + d
     self.at += 1
   }
-  let digits = () => {
-    let from = self.at
-    while self.peek() >= 0x30 && self.peek() <= 0x39 {
-      self.at += 1
-    }
-    self.at > from
+  if self.peek() is (0x2e | 0x65 | 0x45) {
+    fail("invalid integer in manifest at \{start}")
   }
-  if self.peek() == 0x30 {
-    self.at += 1
-  } else if !digits() {
-    fail("invalid number at \{start}")
-  }
-  if self.peek() == 0x2e {
-    self.at += 1
-    if !digits() {
-      fail("invalid fraction at \{start}")
-    }
-  }
-  if self.peek() is (0x65 | 0x45) {
-    self.at += 1
-    if self.peek() is (0x2b | 0x2d) {
-      self.at += 1
-    }
-    if !digits() {
-      fail("invalid exponent at \{start}")
-    }
-  }
-  let raw = self.text.view(start_offset=start, end_offset=self.at).to_string()
-  if raw.has_prefix("-") {
-    fail("negative number in manifest: \{raw}")
-  }
-  let parsed = @jsjson.parse(raw) catch { _ => fail("invalid number: \{raw}") }
-  match parsed {
-    Num(d) => d
-    _ => fail("invalid number: \{raw}")
-  }
+  acc.to_double()
 }
 
 ///|
 fn StrictManifestParser::value(self : StrictManifestParser, depth : Int) -> MVal raise {
-  if depth > 8 {
+  if depth > 2 {
     fail("manifest JSON nesting too deep")
   }
   self.skip()
   let c = self.peek()
   if c == 0x7b {
+    if depth >= 2 {
+      fail("manifest JSON nesting too deep")
+    }
     self.at += 1
     let entries : Array[(String, MVal)] = []
     let seen : Set[String] = Set([])
@@ -323,6 +321,7 @@ fn StrictManifestParser::value(self : StrictManifestParser, depth : Int) -> MVal
       self.at += 1
       return MObj(entries)
     }
+    let mut count = 0
     while true {
       self.skip()
       let key = self.string()
@@ -330,6 +329,13 @@ fn StrictManifestParser::value(self : StrictManifestParser, depth : Int) -> MVal
         fail("duplicate JSON key: \{key}")
       }
       seen.add(key)
+      count += 1
+      if depth == 0 && count > 2 {
+        fail("manifest JSON top-level object has too many keys")
+      }
+      if depth == 1 && count > self.max_depth1_entries {
+        fail(self.depth1_limit_msg)
+      }
       self.skip()
       if self.peek() != 0x3a {
         fail("expected ':' at \{self.at}")
@@ -352,7 +358,7 @@ fn StrictManifestParser::value(self : StrictManifestParser, depth : Int) -> MVal
     MObj(entries)
   } else if c == 0x22 {
     MStr(self.string())
-  } else if c == 0x2d || (c >= 0x30 && c <= 0x39) {
+  } else if c >= 0x30 && c <= 0x39 {
     MNum(self.number())
   } else {
     fail("unexpected token in manifest JSON at \{self.at}")
@@ -360,9 +366,13 @@ fn StrictManifestParser::value(self : StrictManifestParser, depth : Int) -> MVal
 }
 
 ///|
-fn parse_strict_manifest_obj(bytes : Bytes) -> Array[(String, MVal)] raise {
+fn parse_strict_manifest_obj(
+  bytes : Bytes,
+  max_depth1_entries : Int,
+  depth1_limit_msg : String,
+) -> Array[(String, MVal)] raise {
   let text = @utf8.decode(bytes[:]) catch { _ => fail("invalid UTF-8 in manifest") }
-  let p : StrictManifestParser = { text, at: 0 }
+  let p : StrictManifestParser = { text, at: 0, max_depth1_entries, depth1_limit_msg }
   let v = p.value(0)
   p.skip()
   if p.at != p.text.length() {
@@ -389,7 +399,11 @@ pub fn parse_root_manifest(bytes : Bytes, expected_hash : String, budget_bytes :
   if actual != expected_hash {
     fail("manifest root hash mismatch: expected \{expected_hash}, got \{actual}")
   }
-  let entries = parse_strict_manifest_obj(bytes)
+  let entries = parse_strict_manifest_obj(
+    bytes,
+    manifest_max_buckets,
+    "manifest root exceeds max buckets (\{manifest_max_buckets})",
+  )
   if entries.length() != 2 {
     fail("manifest root must have only keys 'v' and 'buckets'")
   }
@@ -453,7 +467,16 @@ pub fn parse_leaf_manifest(
   if actual != expected_hash {
     fail("manifest leaf hash mismatch: expected \{expected_hash}, got \{actual}")
   }
-  let entries = parse_strict_manifest_obj(bytes)
+  let remaining_entries = if manifest_max_entries > budget_entries.val {
+    manifest_max_entries - budget_entries.val
+  } else {
+    0
+  }
+  let entries = parse_strict_manifest_obj(
+    bytes,
+    remaining_entries,
+    "transcript manifest exceeds max entries (\{manifest_max_entries})",
+  )
   if entries.length() != 2 {
     fail("manifest leaf must have only keys 'v' and 'files'")
   }

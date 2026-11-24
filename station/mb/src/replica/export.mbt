@@ -166,12 +166,15 @@ pub struct Exporter {
   priv transcript_pass_deletes : Int
   priv chunk_gc_grace_ms : Double
   priv fold : Bool
+  priv compact_heads : Bool
   priv now : () -> Double
   priv mut places : Places
   priv mut known : Bool
   priv mut transcripts_pending : Bool
   priv tf_cache : Map[String, Array[(String, JValue)]]
   priv manifest_cache : Map[String, (String, Array[String])]
+  priv mut manifest_live : Set[String]
+  priv manifest_superseded_at : Map[String, Double]
   priv mut test_faults : TestFaults?
   /// This run of the exporter.
   run : String
@@ -194,6 +197,7 @@ pub fn Exporter::new(
   transcript_pass_deletes? : Int = transcript_pass_deletes,
   chunk_gc_grace_ms? : Double = chunk_gc_grace_ms,
   fold? : Bool = true,
+  compact_heads? : Bool = false,
   test_faults? : TestFaults? = None,
 ) -> Exporter raise {
   let files = { host, sep }
@@ -217,12 +221,15 @@ pub fn Exporter::new(
     transcript_pass_deletes: if transcript_pass_deletes > 0 { transcript_pass_deletes } else { default_transcript_pass_deletes },
     chunk_gc_grace_ms: if chunk_gc_grace_ms >= 0.0 { chunk_gc_grace_ms } else { default_chunk_gc_grace_ms },
     fold,
+    compact_heads,
     now,
     places: { home: None, workspaces: [] },
     known: false,
     transcripts_pending: false,
     tf_cache: Map([]),
     manifest_cache: Map([]),
+    manifest_live: Set([]),
+    manifest_superseded_at: Map([]),
     test_faults,
     run: files.random(4),
     read: 0,
@@ -276,6 +283,8 @@ fn Exporter::forget(self : Exporter) -> Unit raise {
   self.transcripts_pending = false
   self.tf_cache.clear()
   self.manifest_cache.clear()
+  self.manifest_live = Set([])
+  self.manifest_superseded_at.clear()
 }
 
 ///|
@@ -912,11 +921,13 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
       self.write(w.0, out)
       wrote += 1
     }
-    heads.push((w.0, self.compact_head(w.0, out.head)))
+    heads.push((w.0, if self.compact_heads { self.compact_head(w.0, out.head) } else { out.head }))
+  }
+  if self.compact_heads {
+    self.gc_manifests(outs)
   }
   if scan_transcripts && !self.transcripts_pending {
     self.gc_transcript_chunks()
-    self.gc_manifests(outs)
   }
   Obj([
     ("heads", Obj(heads)),
@@ -2016,7 +2027,8 @@ async fn Exporter::compact_head(self : Exporter, ws : String, head : JValue) -> 
 }
 
 ///|
-/// Reclaims unreferenced manifest files under `<replica>/manifests/` after a 10-minute mtime grace period,
+/// Reclaims unreferenced manifest files under `<replica>/manifests/` after a 10-minute grace period
+/// measured from when a manifest hash leaves the live set (falling back to mtime for cross-process leftovers),
 /// always preserving root + leaf hashes referenced by current `own` heads.
 fn Exporter::gc_manifests(self : Exporter, outs : Map[String, Out]) -> Unit raise {
   let now = (self.now)()
@@ -2044,23 +2056,48 @@ fn Exporter::gc_manifests(self : Exporter, outs : Map[String, Out]) -> Unit rais
         }
     }
   }
+  for h in live {
+    self.manifest_superseded_at.remove(h)
+  }
+  for prev in self.manifest_live {
+    if !live.contains(prev) && !self.manifest_superseded_at.contains(prev) {
+      self.manifest_superseded_at[prev] = now
+    }
+  }
+  self.manifest_live = live
+  let on_disk : Set[String] = Set([])
   match self.files.names(manifests_dir) {
     Some(names) =>
       for name in names {
+        on_disk.add(name)
         if live.contains(name) {
           continue
         }
         let p = self.files.join([manifests_dir, name])
-        match self.files.meta(p) {
-          Some((_, mtime_ms)) =>
-            if now - mtime_ms >= manifest_gc_grace_ms {
-              self.files.remove(p) catch {
-                _ => ()
-              }
+        let expired = match self.manifest_superseded_at.get(name) {
+          Some(superseded_at) => now - superseded_at >= manifest_gc_grace_ms
+          None =>
+            match self.files.meta(p) {
+              Some((_, mtime_ms)) => now - mtime_ms >= manifest_gc_grace_ms
+              None => false
             }
-          None => ()
+        }
+        if expired {
+          self.files.remove(p) catch {
+            _ => ()
+          }
+          self.manifest_superseded_at.remove(name)
         }
       }
     None => ()
+  }
+  let stale_keys : Array[String] = []
+  for k, _ in self.manifest_superseded_at {
+    if !on_disk.contains(k) {
+      stale_keys.push(k)
+    }
+  }
+  for k in stale_keys {
+    self.manifest_superseded_at.remove(k)
   }
 }

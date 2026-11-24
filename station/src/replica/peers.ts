@@ -49,6 +49,7 @@ export class PeerPlace implements Place {
       gens: Array.isArray(held?.gens) ? held.gens : [],
       files: Array.isArray(held?.files) ? held.files : [],
       ...(held?.hasUnverifiedHead === true ? { hasUnverifiedHead: true } : {}),
+      ...(Array.isArray(held?.unverifiedGens) ? { unverifiedGens: held.unverifiedGens } : {}),
     };
   }
 

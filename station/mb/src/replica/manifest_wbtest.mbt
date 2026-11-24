@@ -135,8 +135,8 @@ test "parse_root_manifest & parse_leaf_manifest: adversarial inputs rejected" {
     }),
   )
 
-  // 7. Invalid compSize (negative, -0, fractional)
-  for bad_sz in ["-1", "-0", "1.5"] {
+  // 7. Invalid compSize (negative, -0, fractional, scientific, > MAX_SAFE_INTEGER, leading zero)
+  for bad_sz in ["-1", "-0", "1.5", "1.0", "1e0", "1E2", "01", "9007199254740992", "99999999999999999999"] {
     let raw = @utf8.encode("{\"v\":1,\"files\":{\"" + h_0a + "\":" + bad_sz + "}}")
     let rh = @hash.sha256_hex(raw[:])
     assert_true(
@@ -149,7 +149,23 @@ test "parse_root_manifest & parse_leaf_manifest: adversarial inputs rejected" {
     )
   }
 
-  // 8. Budget bombs: byte cap (>64 MiB) & entry cap (>500,000)
+  // 7b. Encoder rejects -0.0 (parity with TS) and accepts 0.0 and MAX_SAFE_INTEGER
+  let neg_zero = -0.0
+  assert_true(
+    (try {
+      ignore(encode_transcript_manifest([(h_0a, neg_zero)]))
+      false
+    } catch {
+      _ => true
+    }),
+  )
+  let max_safe_enc = encode_transcript_manifest([(h_0a, 9007199254740991.0)])
+  let max_safe_leaf = max_safe_enc.leaves[0]
+  let max_safe_parsed = parse_leaf_manifest(max_safe_leaf.2, max_safe_leaf.1, max_safe_leaf.0, Ref(0), Ref(0))
+  assert_eq(max_safe_parsed.length(), 1)
+  assert_eq(max_safe_parsed[0].1, 9007199254740991.0)
+
+  // 8. Budget bombs: byte cap (>64 MiB) & entry cap (>500,000, enforced during JSON parse)
   assert_true(
     (try {
       ignore(parse_leaf_manifest(leaf_ok, leaf_ok_hash, "0a", Ref(manifest_max_bytes), Ref(0)))
@@ -161,6 +177,18 @@ test "parse_root_manifest & parse_leaf_manifest: adversarial inputs rejected" {
   assert_true(
     (try {
       ignore(parse_leaf_manifest(leaf_ok, leaf_ok_hash, "0a", Ref(0), Ref(manifest_max_entries)))
+      false
+    } catch {
+      _ => true
+    }),
+  )
+  // 2 entries when only 1 entry remains in budget -> rejected during parse
+  let h_0a_2 = make_hex("0a", '2')
+  let two_entries = @utf8.encode("{\"v\":1,\"files\":{\"" + h_0a + "\":1,\"" + h_0a_2 + "\":2}}")
+  let two_entries_h = @hash.sha256_hex(two_entries[:])
+  assert_true(
+    (try {
+      ignore(parse_leaf_manifest(two_entries, two_entries_h, "0a", Ref(0), Ref(manifest_max_entries - 1)))
       false
     } catch {
       _ => true

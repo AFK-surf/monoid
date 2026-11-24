@@ -12,11 +12,11 @@ import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { type Fs, type Stat, direct } from "../drive/fs.ts";
 import { BATCH, GEN, HASH, STATION, WORKSPACE, type Head, asHead, genMade } from "./format.ts";
-import { type ResolvedManifest, loadTranscriptManifest, manifestAllRefs } from "./manifest.ts";
+import { MANIFEST_MAX_BYTES, type ResolvedManifest, loadTranscriptManifest, manifestAllRefs, readStreamBounded } from "./manifest.ts";
 
 /// What a place holds of one station's copies in a workspace: each generation (its head, its batches) and the files.
 export type Holding = { gen: string; head: Head | null; batches: string[] };
-export type Held = { gens: Holding[]; files: string[]; hasUnverifiedHead?: boolean };
+export type Held = { gens: Holding[]; files: string[]; hasUnverifiedHead?: boolean; unverifiedGens?: string[] };
 export const nothingHeld = (): Held => ({ gens: [], files: [] });
 
 export const DROP_FILES_PAGE = 2000;
@@ -68,6 +68,7 @@ type HeadFilesEntry = {
   size: number;
   files: Record<string, number>;
   transcriptFiles?: Record<string, number>;
+  manifestRoot?: string;
   manifestRefs?: Set<string>;
   count: number;
 };
@@ -154,14 +155,25 @@ export class FolderPlace implements Place {
     this.#cachedHashes += entry.count;
   }
 
-  #cacheHead(key: string, st: Stat, head: Head, manifestRefs?: Set<string>): { meta: HeadMeta; files: HeadFilesEntry } {
+  #cacheHead(
+    key: string,
+    st: Stat,
+    head: Head,
+    manifestRefs?: Set<string>,
+    cacheFiles = true,
+  ): { meta: HeadMeta; files: HeadFilesEntry | null } {
     const meta: HeadMeta = { mtimeMs: st.mtimeMs, size: st.size, to: head.to, partial: head.partial === true, batches: [...head.batches] };
     this.#setMeta(key, meta);
+    if (!cacheFiles) {
+      this.#deleteFiles(key);
+      return { meta, files: null };
+    }
     const files: HeadFilesEntry = {
       mtimeMs: st.mtimeMs,
       size: st.size,
       files: head.files,
       ...(head.transcriptFiles !== undefined ? { transcriptFiles: head.transcriptFiles } : {}),
+      ...(head.transcriptManifest !== undefined ? { manifestRoot: head.transcriptManifest } : {}),
       ...(manifestRefs !== undefined ? { manifestRefs } : {}),
       count: countHeadFiles(head, manifestRefs),
     };
@@ -169,19 +181,47 @@ export class FolderPlace implements Place {
     return { meta, files };
   }
 
-  async #readManifestObject(ws: string, origin: string, hash: string): Promise<Buffer | null> {
-    const path = join(this.dir(ws, origin), "files", hash);
+  async #readBoundedPath(path: string, maxBytes: number): Promise<Buffer | null> {
+    let st: Stat;
     try {
-      return await this.fs.readAll(path);
+      st = await this.fs.stat(path);
     } catch (e) {
       if (isMissingFsError(e)) return null;
       throw e;
     }
+    if (st.size > maxBytes) {
+      throw new Error(`transcript manifest exceeds max bytes (${MANIFEST_MAX_BYTES})`);
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const limit = maxBytes + 1;
+    while (total < limit) {
+      const want = Math.min(PIECE, limit - total);
+      let res;
+      try {
+        res = await this.fs.read(path, total, want);
+      } catch (e) {
+        if (isMissingFsError(e)) return null;
+        throw e;
+      }
+      if (res.bytes.length === 0) break;
+      total += res.bytes.length;
+      if (total > maxBytes) {
+        throw new Error(`transcript manifest exceeds max bytes (${MANIFEST_MAX_BYTES})`);
+      }
+      chunks.push(res.bytes);
+      if (total >= res.size) break;
+    }
+    return chunks.length === 0 ? Buffer.alloc(0) : chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total);
+  }
+
+  async #readManifestObject(ws: string, origin: string, hash: string, maxBytes: number): Promise<Buffer | null> {
+    return this.#readBoundedPath(join(this.dir(ws, origin), "files", hash), maxBytes);
   }
 
   async #resolveHeadManifest(ws: string, origin: string, head: Head): Promise<ResolvedManifest | null> {
     if (head.transcriptManifest === undefined) return null;
-    return loadTranscriptManifest(head.transcriptManifest, (h) => this.#readManifestObject(ws, origin, h));
+    return loadTranscriptManifest(head.transcriptManifest, (h, maxBytes) => this.#readManifestObject(ws, origin, h, maxBytes));
   }
 
   dir(ws: string, origin: string): string {
@@ -194,6 +234,15 @@ export class FolderPlace implements Place {
 
   #list(dir: string): Promise<string[]> {
     return this.fs.names(dir).catch(() => [] as string[]);
+  }
+
+  async #listStrict(dir: string): Promise<string[]> {
+    try {
+      return await this.fs.names(dir);
+    } catch (e) {
+      if (isMissingFsError(e)) return [];
+      throw e;
+    }
   }
 
   /// Written beside and renamed into place, synced: whole or not at all.
@@ -252,15 +301,17 @@ export class FolderPlace implements Place {
       return null;
     }
     let manifestRefs: Set<string> | undefined;
+    let cacheFiles = true;
     if (head.transcriptManifest !== undefined) {
       try {
         const resolved = await this.#resolveHeadManifest(ws, origin, head);
         if (resolved !== null) manifestRefs = manifestAllRefs(resolved);
       } catch (e) {
         if (strict) throw e;
+        cacheFiles = false;
       }
     }
-    return this.#cacheHead(key, st, head, manifestRefs).meta;
+    return this.#cacheHead(key, st, head, manifestRefs, cacheFiles).meta;
   }
 
   async #headFilesOfStrict(ws: string, origin: string, gen: string): Promise<HeadFilesEntry | null> {
@@ -276,7 +327,7 @@ export class FolderPlace implements Place {
       return null;
     }
     const cached = this.#headFiles.get(key);
-    if (cached !== undefined && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+    if (cached !== undefined && cached.mtimeMs === st.mtimeMs && cached.size === st.size && cached.manifestRoot === undefined) {
       this.#headFiles.delete(key);
       this.#headFiles.set(key, cached);
       return cached;
@@ -289,10 +340,15 @@ export class FolderPlace implements Place {
     }
     let manifestRefs: Set<string> | undefined;
     if (head.transcriptManifest !== undefined) {
-      const resolved = await this.#resolveHeadManifest(ws, origin, head);
-      if (resolved !== null) manifestRefs = manifestAllRefs(resolved);
+      try {
+        const resolved = await this.#resolveHeadManifest(ws, origin, head);
+        if (resolved !== null) manifestRefs = manifestAllRefs(resolved);
+      } catch (e) {
+        this.#deleteFiles(key);
+        throw e;
+      }
     }
-    return this.#cacheHead(key, st, head, manifestRefs).files;
+    return this.#cacheHead(key, st, head, manifestRefs, true).files!;
   }
 
   async held(ws: string, origin: string): Promise<Held> {
@@ -371,7 +427,7 @@ export class FolderPlace implements Place {
       // (a file stays while any generation held names it; fail-closed if any head or manifest is corrupted)
       const liveGens = new Set<string>();
       const entries: HeadFilesEntry[] = [];
-      for (const g of await this.#list(dir)) {
+      for (const g of await this.#listStrict(dir)) {
         if (!GEN.test(g)) continue;
         liveGens.add(g);
         const e = await this.#headFilesOfStrict(ws, origin, g);
@@ -413,10 +469,16 @@ export class FolderPlace implements Place {
     return path === null ? null : this.fs.readAll(path);
   }
 
+  /// A batch, a head or a file held here, bounded to `maxBytes`; null where it is not.
+  async readBounded(ws: string, origin: string, gen: string | null, name: string, maxBytes: number): Promise<Buffer | null> {
+    const path = await this.pathOf(ws, origin, gen, name);
+    return path === null ? null : this.#readBoundedPath(path, maxBytes);
+  }
+
   /// A batch, a head or a file held here, a piece at a time.
   async *stream(ws: string, origin: string, gen: string | null, name: string): AsyncIterable<Buffer> {
     const path = await this.pathOf(ws, origin, gen, name);
-    if (path === null) throw new Error(`${name} is not there`);
+    if (path === null) throw Object.assign(new Error(`ENOENT: ${name} is not there`), { code: "ENOENT" });
     for (let at = 0; ; ) {
       const { bytes, size } = await this.fs.read(path, at, PIECE);
       if (bytes.length > 0) yield bytes;
@@ -475,6 +537,7 @@ export type Known = {
   files: Set<string>;
   others: Set<string>;
   hasUnverifiedHead?: boolean;
+  unverifiedGens?: Set<string>;
   to: number;
   made: number;
   /// Confirmed manifest cache keyed by `(gen, strategy, rootHash)` to avoid re-expanding unchanged manifests.
@@ -551,11 +614,14 @@ export async function level(
     if (behind(own.head, held)) return { behind: true };
     const holding = held.gens.find((g) => g.gen === own.head.gen);
     const others = new Set<string>();
-    let hasUnverifiedHead = held.hasUnverifiedHead === true;
+    const unverifiedGens = new Set<string>(held.unverifiedGens ?? []);
+    let hasUnverifiedHead = held.hasUnverifiedHead === true || unverifiedGens.size > 0;
+    const readPlace = placeObjectReader(place, ws, origin);
     for (const g of held.gens) {
       if (g.gen === own.head.gen) continue;
       if (g.head === null) {
         hasUnverifiedHead = true;
+        unverifiedGens.add(g.gen);
         continue;
       }
       for (const h in g.head.files) if (Object.hasOwn(g.head.files, h)) others.add(h);
@@ -563,7 +629,20 @@ export async function level(
         for (const h in g.head.transcriptFiles) if (Object.hasOwn(g.head.transcriptFiles, h)) others.add(h);
       }
       if (g.head.transcriptManifest !== undefined) {
-        others.add(g.head.transcriptManifest);
+        if (readPlace !== undefined) {
+          try {
+            const resolved = await loadTranscriptManifest(g.head.transcriptManifest, readPlace);
+            for (const h of manifestAllRefs(resolved)) others.add(h);
+          } catch {
+            others.add(g.head.transcriptManifest);
+            hasUnverifiedHead = true;
+            unverifiedGens.add(g.gen);
+          }
+        } else {
+          others.add(g.head.transcriptManifest);
+          hasUnverifiedHead = true;
+          unverifiedGens.add(g.gen);
+        }
       }
     }
     k = {
@@ -572,6 +651,7 @@ export async function level(
       files: new Set(held.files),
       others,
       ...(hasUnverifiedHead ? { hasUnverifiedHead: true } : {}),
+      ...(unverifiedGens.size > 0 ? { unverifiedGens } : {}),
       to: holding?.head?.to ?? -1,
       made: holding?.head?.partial === true ? -1 : (holding?.head?.made ?? -1),
     };
@@ -681,10 +761,18 @@ export async function level(
     const { transcriptManifest: _, ...rest } = own.head;
     wireHead = resolvedTf !== undefined && tfCount > 0 ? { ...rest, transcriptFiles: resolvedTf } : rest;
   }
-  if (k.to !== own.head.to || k.made !== own.head.made) {
+  const selfUnverified = k.unverifiedGens?.has(own.head.gen) === true;
+  if (k.to !== own.head.to || k.made !== own.head.made || selfUnverified) {
     await place.put(ws, origin, own.head.gen, "head", "head.json", Buffer.from(JSON.stringify(wireHead, null, 1)), wireHead);
     k.to = own.head.to;
     k.made = own.head.made;
+    if (k.unverifiedGens !== undefined) {
+      k.unverifiedGens.delete(own.head.gen);
+      if (k.unverifiedGens.size === 0) {
+        k.unverifiedGens = undefined;
+        k.hasUnverifiedHead = false;
+      }
+    }
   }
   if (own.head.transcriptManifest !== undefined && resolvedTf !== undefined) {
     k.manifest = {
@@ -756,26 +844,42 @@ function sameFileMap(a: Record<string, number> | undefined, b: Record<string, nu
   return countA === countB;
 }
 
-type ReadPlaceObject = (hash: string) => Promise<Uint8Array | null>;
-
-async function readStreamBytes(stream: AsyncIterable<Buffer>): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const c of stream) chunks.push(c);
-  return chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks);
+function hasAllBatches(present: readonly string[], needed: readonly string[]): boolean {
+  if (needed.length === 0) return true;
+  const set = new Set(present);
+  for (const b of needed) if (!set.has(b)) return false;
+  return true;
 }
+
+function isSubsetFileMap(sub: Record<string, number> | undefined, sup: Record<string, number> | undefined): boolean {
+  if (sub === undefined) return true;
+  for (const k in sub) {
+    if (!Object.hasOwn(sub, k)) continue;
+    if (sup === undefined || !Object.hasOwn(sup, k) || sup[k] !== sub[k]) return false;
+  }
+  return true;
+}
+
+type ReadPlaceObject = (hash: string, maxBytes: number) => Promise<Uint8Array | null>;
 
 function placeObjectReader(place: Place, ws: string, origin: string): ReadPlaceObject | undefined {
   if (place instanceof FolderPlace) {
-    return (hash) => place.read(ws, origin, null, hash);
+    return (hash, maxBytes) => place.readBounded(ws, origin, null, hash, maxBytes);
   }
   const maybeRead = (place as { read?: (ws: string, origin: string, gen: string | null, name: string) => Promise<AsyncIterable<Buffer>> }).read;
   if (typeof maybeRead === "function") {
-    return async (hash) => {
+    return async (hash, maxBytes) => {
+      let stream: AsyncIterable<Buffer>;
       try {
-        return await readStreamBytes(await maybeRead.call(place, ws, origin, null, hash));
-      } catch {
-        return null;
+        stream = await maybeRead.call(place, ws, origin, null, hash);
+      } catch (e) {
+        const status = (e as { status?: unknown } | null)?.status;
+        if (isMissingFsError(e) || status === 404 || (e instanceof Error && /not kept here|not found|enoent/i.test(e.message))) {
+          return null;
+        }
+        throw e;
       }
+      return readStreamBounded(stream, maxBytes);
     };
   }
   return undefined;
@@ -806,7 +910,7 @@ export async function headsLogicallyEqual(
 export async function handOver(from: FolderPlace, to: Place, ws: string, origin: string): Promise<boolean> {
   const mine = await from.held(ws, origin);
   const theirs = await to.held(ws, origin);
-  const readMine: ReadPlaceObject = (hash) => from.read(ws, origin, null, hash);
+  const readMine: ReadPlaceObject = (hash, maxBytes) => from.readBounded(ws, origin, null, hash, maxBytes);
   const readTheirs = placeObjectReader(to, ws, origin);
   const files = new Set(theirs.files);
   for (const hash of mine.files) {
@@ -817,13 +921,53 @@ export async function handOver(from: FolderPlace, to: Place, ws: string, origin:
   for (const g of mine.gens) {
     if (g.head === null) continue;
     const t = theirs.gens.find((x) => x.gen === g.gen);
-    if (t?.head != null) {
+    const theirsBatchesOk = t !== undefined &&
+      hasAllBatches(t.batches, g.head.batches) &&
+      (t.head === null || hasAllBatches(t.batches, t.head.batches));
+    let resolvedMineTf: Record<string, number> | undefined;
+    const getMineTf = async (): Promise<Record<string, number>> => {
+      if (resolvedMineTf !== undefined) return resolvedMineTf;
+      if (g.head!.transcriptManifest !== undefined) {
+        resolvedMineTf = (await loadTranscriptManifest(g.head!.transcriptManifest, readMine)).files;
+      } else {
+        resolvedMineTf = g.head!.transcriptFiles ?? {};
+      }
+      return resolvedMineTf;
+    };
+    const getTheirsTf = async (th: Head): Promise<Record<string, number> | null> => {
+      if (th.transcriptManifest !== undefined) {
+        if (readTheirs === undefined) return null;
+        return (await loadTranscriptManifest(th.transcriptManifest, readTheirs)).files;
+      }
+      return th.transcriptFiles ?? {};
+    };
+    if (t?.head != null && theirsBatchesOk) {
       const theirsFull = t.head.partial !== true;
       const mineFull = g.head.partial !== true;
-      if (theirsFull && t.head.to > g.head.to) continue;
+      if (theirsFull && t.head.to > g.head.to) {
+        const theirsManifestOk = t.head.transcriptManifest === undefined ||
+          (readTheirs !== undefined && await loadTranscriptManifest(t.head.transcriptManifest, readTheirs).then(() => true, () => false));
+        if (theirsManifestOk) continue;
+      }
       if (t.head.to === g.head.to && (!mineFull || theirsFull)) {
-        const same = await headsLogicallyEqual(g.head, t.head, readMine, readTheirs).catch(() => false);
-        if (same || (!mineFull && theirsFull)) continue;
+        if (!mineFull && theirsFull) {
+          const theirsManifestOk = t.head.transcriptManifest === undefined ||
+            (readTheirs !== undefined && await loadTranscriptManifest(t.head.transcriptManifest, readTheirs).then(() => true, () => false));
+          if (theirsManifestOk) continue;
+        } else if (sameBatches(g.head.batches, t.head.batches) && sameFileMap(g.head.files, t.head.files)) {
+          if (!mineFull && !theirsFull) {
+            continue;
+          }
+          const supOk = await (async () => {
+            const mineTf = await getMineTf();
+            const theirsTf = await getTheirsTf(t.head!);
+            if (theirsTf === null) {
+              return g.head!.transcriptManifest !== undefined && g.head!.transcriptManifest === t.head!.transcriptManifest;
+            }
+            return isSubsetFileMap(mineTf, theirsTf);
+          })().catch(() => false);
+          if (supOk) continue;
+        }
       }
     }
     const has = new Set(t?.batches ?? []);
@@ -832,7 +976,19 @@ export async function handOver(from: FolderPlace, to: Place, ws: string, origin:
       const bytes = await from.read(ws, origin, g.gen, b);
       if (bytes !== null) await to.put(ws, origin, g.gen, "batch", b, bytes);
     }
-    await to.put(ws, origin, g.gen, "head", "head.json", Buffer.from(JSON.stringify(g.head, null, 1)), g.head);
+    // D72a invariant: outgoing wire `put("head")` always sends inline `transcriptFiles` (never `transcriptManifest`).
+    let wireHead: Head = g.head;
+    if (g.head.transcriptManifest !== undefined) {
+      const tf = await getMineTf();
+      const { transcriptManifest: _, ...rest } = g.head;
+      let hasTf = false;
+      for (const _ in tf) {
+        hasTf = true;
+        break;
+      }
+      wireHead = hasTf ? { ...rest, transcriptFiles: tf } : rest;
+    }
+    await to.put(ws, origin, g.gen, "head", "head.json", Buffer.from(JSON.stringify(wireHead, null, 1)), wireHead);
   }
   return holdsAllLogical(mine, await to.held(ws, origin), { readMine, readTheirs });
 }
@@ -845,6 +1001,7 @@ export function holdsAll(mine: Held, theirs: Held): boolean {
     if (g.head === null) return true;
     const t = theirs.gens.find((x) => x.gen === g.gen);
     if (t?.head == null) return false;
+    if (!hasAllBatches(t.batches, g.head.batches) || !hasAllBatches(t.batches, t.head.batches)) return false;
     if (g.head.partial !== true && t.head.partial === true) return false;
     if (t.head.to < g.head.to) return false;
     if (t.head.to > g.head.to) return true;
@@ -853,14 +1010,15 @@ export function holdsAll(mine: Held, theirs: Held): boolean {
       if (g.head.transcriptManifest !== undefined || t.head.transcriptManifest !== undefined) {
         return g.head.transcriptManifest !== undefined && g.head.transcriptManifest === t.head.transcriptManifest;
       }
-      if (!sameFileMap(g.head.transcriptFiles, t.head.transcriptFiles)) return false;
+      if (!isSubsetFileMap(g.head.transcriptFiles, t.head.transcriptFiles)) return false;
     }
     return true;
   });
 }
 
-/// Async logical check whether `theirs` holds as much as `mine`: strictly distinguishes `partial` vs full heads and
-/// compares expanded transcript maps so inline `transcriptFiles` and `transcriptManifest` representations are equivalent.
+/// Async logical check whether `theirs` holds as much as `mine`: strictly distinguishes `partial` vs full heads,
+/// verifies actual on-disk batch files in `Holding.batches`, and compares expanded transcript maps so inline
+/// `transcriptFiles` and `transcriptManifest` representations are equivalent.
 export async function holdsAllLogical(
   mine: Held,
   theirs: Held,
@@ -872,6 +1030,7 @@ export async function holdsAllLogical(
     if (g.head === null) continue;
     const t = theirs.gens.find((x) => x.gen === g.gen);
     if (t?.head == null) return false;
+    if (!hasAllBatches(t.batches, g.head.batches) || !hasAllBatches(t.batches, t.head.batches)) return false;
     if (g.head.partial !== true && t.head.partial === true) return false;
     if (t.head.to < g.head.to) return false;
     let mineTf: Record<string, number>;
@@ -889,6 +1048,16 @@ export async function holdsAllLogical(
     } else {
       mineTf = g.head.transcriptFiles ?? {};
     }
+    if (t.head.to > g.head.to) {
+      if (t.head.transcriptManifest !== undefined && opts.readTheirs !== undefined) {
+        try {
+          await loadTranscriptManifest(t.head.transcriptManifest, opts.readTheirs);
+        } catch {
+          return false;
+        }
+      }
+      continue;
+    }
     if (t.head.to === g.head.to) {
       if (!sameBatches(g.head.batches, t.head.batches) || !sameFileMap(g.head.files, t.head.files)) return false;
       if (g.head.partial !== true) {
@@ -903,7 +1072,7 @@ export async function holdsAllLogical(
         } else {
           theirsTf = t.head.transcriptFiles ?? {};
         }
-        if (!sameFileMap(mineTf, theirsTf)) return false;
+        if (!isSubsetFileMap(mineTf, theirsTf)) return false;
       }
     }
   }

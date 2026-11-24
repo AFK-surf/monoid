@@ -4,9 +4,19 @@ import { createHash, createHmac } from "node:crypto";
 import { open } from "node:fs/promises";
 import { wall } from "../ops/fibers.ts";
 import type { NormalizedS3Target } from "./backup-config.ts";
-import { parseEncryptionKey, sfb1Open, sfb1OpenStream, sfb1Seal, sfb1SealStream } from "./crypto.ts";
+import {
+  FRAME_PLAIN_MAX,
+  SFB1_FRAME_HEADER_LEN,
+  SFB1_HEADER_LEN,
+  SFB1_TAG_LEN,
+  parseEncryptionKey,
+  sfb1Open,
+  sfb1OpenStream,
+  sfb1Seal,
+  sfb1SealStream,
+} from "./crypto.ts";
 import { BATCH, GEN, HASH, STATION, WORKSPACE, type Head, asHead, genMade } from "./format.ts";
-import { loadTranscriptManifest, manifestAllRefs } from "./manifest.ts";
+import { MANIFEST_MAX_BYTES, loadTranscriptManifest, manifestAllRefs } from "./manifest.ts";
 import type { Held, Holding, Place } from "./places.ts";
 
 export const MULTIPART_THRESHOLD = 16 * 1024 * 1024;
@@ -235,13 +245,49 @@ export class S3Client {
     return keys;
   }
 
-  async getObject(key: string): Promise<Buffer> {
+  async getObject(key: string, maxBytes?: number): Promise<Buffer> {
     const res = await this.#fetch("GET", key, {}, Buffer.alloc(0));
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new S3HttpError(res.status, `S3 GET ${key} failed (${res.status}): ${extractXmlTag(text, "Message") ?? text.slice(0, 200)}`);
     }
-    return Buffer.from(await res.arrayBuffer());
+    if (maxBytes === undefined) {
+      return Buffer.from(await res.arrayBuffer());
+    }
+    const cl = res.headers.get("content-length");
+    if (cl !== null && cl !== "") {
+      const n = Number(cl);
+      if (Number.isFinite(n) && n > maxBytes) {
+        await res.body?.cancel().catch(() => {});
+        throw new Error(`transcript manifest exceeds max bytes (${MANIFEST_MAX_BYTES})`);
+      }
+    }
+    if (res.body !== null) {
+      const reader = res.body.getReader();
+      const chunks: Buffer[] = [];
+      let total = 0;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value === undefined || value.byteLength === 0) continue;
+          total += value.byteLength;
+          if (total > maxBytes) {
+            await reader.cancel().catch(() => {});
+            throw new Error(`transcript manifest exceeds max bytes (${MANIFEST_MAX_BYTES})`);
+          }
+          chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      return chunks.length === 0 ? Buffer.alloc(0) : chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total);
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > maxBytes) {
+      throw new Error(`transcript manifest exceeds max bytes (${MANIFEST_MAX_BYTES})`);
+    }
+    return buf;
   }
 
   async getObjectStream(key: string): Promise<AsyncIterable<Buffer>> {
@@ -474,10 +520,16 @@ export class S3Place implements Place {
     return this.#prefixed(`${this.wsTag(ws)}/${this.originTag(origin)}/files/${this.fileTag(hash)}.enc`);
   }
 
-  async #readManifestObject(ws: string, origin: string, hash: string): Promise<Buffer | null> {
+  async #readManifestObject(ws: string, origin: string, hash: string, maxBytes: number): Promise<Buffer | null> {
+    const frames = Math.max(1, Math.ceil(maxBytes / FRAME_PLAIN_MAX) + 1);
+    const maxEncoded = maxBytes + SFB1_HEADER_LEN + frames * (SFB1_FRAME_HEADER_LEN + SFB1_TAG_LEN);
     try {
-      const enc = await this.client.getObject(this.#fileKey(ws, origin, hash));
-      return sfb1Open(this.#key, { ws, origin, logicalPath: `files/${hash}` }, enc);
+      const enc = await this.client.getObject(this.#fileKey(ws, origin, hash), maxEncoded);
+      const plain = sfb1Open(this.#key, { ws, origin, logicalPath: `files/${hash}` }, enc);
+      if (plain.length > maxBytes) {
+        throw new Error(`transcript manifest exceeds max bytes (${MANIFEST_MAX_BYTES})`);
+      }
+      return plain;
     } catch (e) {
       if (e instanceof S3HttpError && e.status === 404) return null;
       throw e;
@@ -554,8 +606,14 @@ export class S3Place implements Place {
         }
         if (head.transcriptManifest !== undefined) {
           try {
-            const resolved = await loadTranscriptManifest(head.transcriptManifest, (h) => this.#readManifestObject(ws, origin, h));
-            manifestRefsByGen.set(gen, manifestAllRefs(resolved));
+            const resolved = await loadTranscriptManifest(head.transcriptManifest, (h, maxBytes) => this.#readManifestObject(ws, origin, h, maxBytes));
+            const refs = manifestAllRefs(resolved);
+            if (head.transcriptFiles !== undefined) {
+              for (const h in head.transcriptFiles) {
+                if (Object.hasOwn(head.transcriptFiles, h)) refs.add(h);
+              }
+            }
+            manifestRefsByGen.set(gen, refs);
           } catch {
             unverified.add(gen);
           }
@@ -617,7 +675,11 @@ export class S3Place implements Place {
       this.#lastOrphanHead.delete(scopeKey);
     }
     gens.sort((a, b) => genMade(a.gen) - genMade(b.gen) || (a.gen < b.gen ? -1 : 1));
-    return { gens, files: [...presentHashes], ...(unverified.size > 0 ? { hasUnverifiedHead: true } : {}) };
+    return {
+      gens,
+      files: [...presentHashes],
+      ...(unverified.size > 0 ? { hasUnverifiedHead: true, unverifiedGens: [...unverified] } : {}),
+    };
   }
 
   #reconcileOrphans(scopeKey: string, head: Head, manifestRefs?: Set<string>): void {
@@ -674,39 +736,67 @@ export class S3Place implements Place {
           parsed = null;
         }
       }
+      let manifestRefs: Set<string> | undefined;
+      if (parsed !== null && parsed.transcriptManifest !== undefined) {
+        // Verify the full 2-level manifest BEFORE overwriting the remote head object so a broken manifest
+        // can never clobber a previously valid head/<gen>.enc.
+        const resolved = await loadTranscriptManifest(parsed.transcriptManifest, (h, maxBytes) => this.#readManifestObject(ws, origin, h, maxBytes));
+        manifestRefs = manifestAllRefs(resolved);
+        // Dual-field head (transcriptManifest + inline transcriptFiles): union inline keys into manifestRefs
+        // so current-gen inline-only chunks are never deleted by drop().
+        if (parsed.transcriptFiles !== undefined) {
+          for (const h in parsed.transcriptFiles) {
+            if (Object.hasOwn(parsed.transcriptFiles, h)) manifestRefs.add(h);
+          }
+        }
+      }
       const ot = this.originTag(origin);
       const enc = sfb1Seal(this.#key, { ws, origin: ot, logicalPath: `head/${gen}` }, bytes);
       await this.client.putObject(this.#headKey(ws, origin, gen), enc);
       const scopeKey = `${ws}\n${origin}`;
-      let manifestRefs: Set<string> | undefined;
-      let manifestOk = true;
-      if (parsed !== null && parsed.transcriptManifest !== undefined) {
-        try {
-          const resolved = await loadTranscriptManifest(parsed.transcriptManifest, (h) => this.#readManifestObject(ws, origin, h));
-          manifestRefs = manifestAllRefs(resolved);
-        } catch {
-          manifestOk = false;
-        }
-      }
-      if (!manifestOk) {
-        let unverified = this.#unverifiedGens.get(scopeKey);
-        if (unverified === undefined) this.#unverifiedGens.set(scopeKey, (unverified = new Set()));
-        unverified.add(gen);
-        this.#orphanFileTags.delete(scopeKey);
-        this.#lastOrphanHead.delete(scopeKey);
-      } else {
-        const unverified = this.#unverifiedGens.get(scopeKey);
-        if (unverified !== undefined) {
-          unverified.delete(gen);
-          if (unverified.size === 0) this.#unverifiedGens.delete(scopeKey);
-        }
+      const unverified = this.#unverifiedGens.get(scopeKey);
+      const wasUnverified = unverified !== undefined && unverified.size > 0;
+      if (unverified !== undefined) {
+        unverified.delete(gen);
+        if (unverified.size === 0) this.#unverifiedGens.delete(scopeKey);
       }
       if (parsed !== null) {
         let byGen = this.#genRefHashes.get(scopeKey);
         if (byGen === undefined) this.#genRefHashes.set(scopeKey, (byGen = new Map()));
-        // Current gen only needs `files` (and verified `manifestRefs`) protected in `drop()` (never retains 246k inline `transcriptFiles`).
+        // Current gen only needs `files` (and verified `manifestRefs`, which already unions any dual-field `transcriptFiles`)
+        // protected in `drop()` (never retains 246k inline `transcriptFiles` on inline-only heads).
         byGen.set(gen, { files: parsed.files, ...(manifestRefs !== undefined ? { manifestRefs } : {}) });
-        if (manifestOk) this.#reconcileOrphans(scopeKey, parsed, manifestRefs);
+        if (wasUnverified && !this.#unverifiedGens.has(scopeKey)) {
+          // Last unverified gen just self-healed: rebuild orphan set from presentFileTags minus all verified gen refs
+          // so pruneOrphans() can resume reclamation immediately without waiting for another held() roundtrip.
+          const present = this.#presentFileTags.get(scopeKey);
+          if (present !== undefined && present.size > 0) {
+            const referenced = new Set<string>();
+            for (const refs of byGen.values()) {
+              for (const h in refs.files) if (Object.hasOwn(refs.files, h)) referenced.add(this.fileTag(h));
+              if (refs.transcriptFiles !== undefined) {
+                for (const h in refs.transcriptFiles) if (Object.hasOwn(refs.transcriptFiles, h)) referenced.add(this.fileTag(h));
+              }
+              if (refs.manifestRefs !== undefined) {
+                for (const h of refs.manifestRefs) referenced.add(this.fileTag(h));
+              }
+            }
+            if (parsed.transcriptFiles !== undefined) {
+              for (const h in parsed.transcriptFiles) if (Object.hasOwn(parsed.transcriptFiles, h)) referenced.add(this.fileTag(h));
+            }
+            const orphans = new Set<string>();
+            for (const tag of present) if (!referenced.has(tag)) orphans.add(tag);
+            if (orphans.size > 0) {
+              this.#orphanFileTags.set(scopeKey, orphans);
+              this.#lastOrphanHead.set(scopeKey, parsed);
+            } else {
+              this.#orphanFileTags.delete(scopeKey);
+              this.#lastOrphanHead.delete(scopeKey);
+            }
+          }
+        } else {
+          this.#reconcileOrphans(scopeKey, parsed, manifestRefs);
+        }
       }
     }
   }
@@ -790,7 +880,7 @@ export class S3Place implements Place {
       let manifestRefs: Set<string> | undefined;
       if (liveHead.transcriptManifest !== undefined) {
         try {
-          const resolved = await loadTranscriptManifest(liveHead.transcriptManifest, (h) => this.#readManifestObject(ws, origin, h));
+          const resolved = await loadTranscriptManifest(liveHead.transcriptManifest, (h, maxBytes) => this.#readManifestObject(ws, origin, h, maxBytes));
           manifestRefs = manifestAllRefs(resolved);
         } catch {
           let u = this.#unverifiedGens.get(scopeKey);

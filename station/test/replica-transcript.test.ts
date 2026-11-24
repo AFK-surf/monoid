@@ -319,8 +319,8 @@ test("TS reference: transcript discovery whitelist, 4 KiB chunk dedup, and orpha
   const p1 = exporter.pass(nothingTold());
   assert.equal(p1.wrote, 1);
   const head1 = p1.heads[HOME]!;
-  assert.equal(head1.transcriptFiles, undefined, "compact IPC head omits inline transcriptFiles");
-  assert.ok(head1.transcriptManifest !== undefined, "compact IPC head carries transcriptManifest");
+  assert.ok(head1.transcriptFiles !== undefined, "default Exporter returns inline transcriptFiles for MoonBit compatibility");
+  assert.equal(head1.transcriptManifest, undefined);
   const head1Tf = await loadLocalTranscriptFiles(replica, head1);
   assert.ok(Object.keys(head1Tf).length > 0);
 
