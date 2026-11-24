@@ -49,7 +49,7 @@ export const READER_MODES = {
   },
   search: {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "read-with-side-effects",
     note: "Transcript and history search: attaches SQLite/shell_dir and shares transcript hints (--builder search)",
   },

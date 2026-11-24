@@ -14,6 +14,7 @@ import "builders_legacy"
 import "builders_recent"
 import "builders_replica"
 import "builders_requested"
+import "builders_search"
 import "builders_stateful"
 import "builders_usage"
 import "builders_vault"
@@ -108,6 +109,7 @@ fn advertised_modes() -> Array[String] {
     "replica-restore",
     "replica-carry",
     "usage-counter",
+    "search",
   ]
 }
 
@@ -1091,6 +1093,17 @@ fn main(world : World) -> Unit {
   } else if cmd == "--smoke-rc-soak" {
     let iters = if argv.length() >= 3 { parse_positive_int(argv[2], 50000) } else { 50000 }
     run_smoke_rc_soak(world, iters)
+  } else if cmd == "--smoke-history-marks" {
+    match (flag_value(argv, "--data"), flag_value(argv, "--path"), flag_value(argv, "--runtime")) {
+      (Some(data_dir), Some(tpath), Some(rt)) => {
+        let sep = match flag_value(argv, "--sep") {
+          Some(s) => s
+          None => "/"
+        }
+        host_shim::exit_process(builders_search::run_smoke_history_marks(data_dir, tpath, rt, sep))
+      }
+      _ => usage_exit()
+    }
   } else {
     match flag_value(argv, "--builder") {
       Some("footprint") => {
@@ -1311,6 +1324,18 @@ fn main(world : World) -> Unit {
             host_shim::exit_process(builders_usage::run_usage_counter(db_path, sep))
           }
           None => usage_exit()
+        }
+      }
+      Some("search") => {
+        match (flag_value(argv, "--db"), flag_value(argv, "--data")) {
+          (Some(db_path), Some(data_dir)) => {
+            let sep = match flag_value(argv, "--sep") {
+              Some(s) => s
+              None => "/"
+            }
+            host_shim::exit_process(builders_search::run_search(db_path, data_dir, sep))
+          }
+          _ => usage_exit()
         }
       }
       _ => usage_exit()

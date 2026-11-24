@@ -11,6 +11,7 @@ js_json = { workspace = true }
 builders_core = { workspace = true }
 builders_index = { workspace = true }
 builders_requested = { workspace = true }
+builders_search = { workspace = true }
 builders_stateful = { workspace = true }
 builders_legacy = { workspace = true }
 builders_recent = { workspace = true }
