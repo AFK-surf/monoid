@@ -1949,6 +1949,34 @@ jobs:
           restore-keys: |
             shell-apple-target-darwin-arm64-${{ hashFiles('client/Cargo.lock') }}-
             shell-apple-target-darwin-arm64-
+      # (the core's engine, core.sh's libmbui_core.a, and libghostty-vt darwin-arm64: compiled and downloaded again on
+      # every fresh runner, 14-36 s of the prebuild before moon's build started. Keyed by all the engine is made of, its
+      # sources and the headers they include, core.sh, the compiler, the macOS it is for and Hermes, and by ghostty-vt's
+      # own key; only that exact key is taken, never an older engine. Saved by main alone, below)
+      - name: The Mac core's native parts' key
+        id: apple-native-key
+        run: |
+          set -o pipefail
+          # (its first line, cut here: a pipe into head could end clang++ on a closed pipe, and pipefail the step)
+          cc=$(xcrun --sdk macosx clang++ --version)
+          cc=${cc%%$'\n'*}
+          ghostty=$(node scripts/native.ts key ghostty-vt darwin-arm64)
+          sources=$(shasum -a 256 apps/mbui/src/host/apple_core.mm apps/mbui/engine/ready_queue.h \
+            apps/mbui/src/host/apple_collate.h apps/mbui/src/host/electron_sealed.h apps/mbui/src/host/core_api.h \
+            apps/mbui/src/host/listen_api.h libs/ui/src/host/listen_api.h apps/mbui/scripts/core.sh)
+          key=$(printf '%s\n' 'macos 12.0' "$cc" '${{ steps.hermes.outputs.key }}' "$sources" "$ghostty" | shasum -a 256 | cut -c1-16)
+          echo "key=mbui-mac-apple-native-$key" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: apple-native
+        with:
+          path: |
+            apps/mbui/out/core/aarch64-apple-darwin/libmbui_core.a
+            ~/Library/Caches/stillfail-native/ghostty-vt
+          key: ${{ steps.apple-native-key.outputs.key }}
+      # (newer than every source, which moon-mtimes.sh dates 2000-2008, and than core.sh, as engine() asks; the app is
+      # linked again by what its native parts are, not their mtimes: mac.sh's $exe.native-libs)
+      - if: steps.apple-native.outputs.cache-hit == 'true'
+        run: touch apps/mbui/out/core/aarch64-apple-darwin/libmbui_core.a
       - uses: ./.github/actions/mbui-moonbit
         with: { tools: 'mbc chk pack' }
       # The next build is kept on main's ref too. Take its Moon build first; unlike the content-addressed units,
@@ -2146,6 +2174,14 @@ jobs:
         with:
           path: apps/mbui/out/core-target*/native/shell-apple
           key: shell-apple-target-darwin-arm64-${{ hashFiles('client/Cargo.lock') }}-${{ github.sha }}
+      # (main's, when it compiled the engine here: a build that went through, the app handed over above)
+      - if: github.ref == 'refs/heads/main' && steps.apple-native.outputs.cache-hit != 'true' && hashFiles('apps/mbui/out/core/aarch64-apple-darwin/libmbui_core.a') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            apps/mbui/out/core/aarch64-apple-darwin/libmbui_core.a
+            ~/Library/Caches/stillfail-native/ghostty-vt
+          key: ${{ steps.apple-native-key.outputs.key }}
       # (a cut build's log and its compilers stopped on main and a branch alike; a branch's store saved only of a build
       # that went through: a job that needs longer is made faster, never finished over several pushes, .github/AGENTS.md;
       # main's cut keeps what it compiled, as above)

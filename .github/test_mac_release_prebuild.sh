@@ -89,7 +89,8 @@ read -r ready < "$RUNNER_TEMP/core-signal"
 [ -f "$RUNNER_TEMP/core-finished" ] && [ ! -e "$RUNNER_TEMP/app-built" ]
 bash "$script" ready
 bash "$script" packages
-bash "$script" wait
+bash "$script" wait > "$root/order.out"
+grep -Eq '^Mac prebuild: apple-native in [0-9]+ s$' "$root/order.out" || { echo "the core native parts' time was not said" >&2; exit 1; }
 [ -f "$RUNNER_TEMP/app-built" ]
 [ -f "$RUNNER_TEMP/bytecode-built" ] || { echo 'core bytecode was not prepared before packaging' >&2; exit 1; }
 [ -f "$RUNNER_TEMP/mac-prebuild/built" ] || { echo 'a whole build did not say built (MBUI_BUILT)' >&2; exit 1; }
