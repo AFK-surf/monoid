@@ -133,6 +133,35 @@ fn font_preset_matches(p : FontPreset, chosen_of : (String) -> String) -> Bool {
 }
 
 ///|
+fn preset_needed_bytes(
+  p : FontPreset,
+  all : Array[Json],
+  kept : Array[Json],
+  face_here : (String) -> Bool,
+) -> Double {
+  let ids : Array[String] = []
+  for opt in [p.ui, p.ui_cjk, p.text, p.text_cjk, p.code, p.code_cjk] {
+    match opt {
+      Some(id) if id != "" && !ids.contains(id) => ids.push(id)
+      _ => ()
+    }
+  }
+  let mut total = 0.0
+  for id in ids {
+    if face_here(id) || kept.contains(ToJson::to_json(id)) {
+      continue
+    }
+    for entry in all {
+      if text(Some(entry), "id") == id {
+        total = total + number(Some(entry), "bytes")
+        break
+      }
+    }
+  }
+  total
+}
+
+///|
 fn font_typo_num(typo : Json?, key : String, fallback : Double) -> Double {
   match field(typo, key) {
     Some(Number(n, ..)) => n
@@ -339,40 +368,6 @@ fn FontPageCtx::role_summary(self : FontPageCtx, role_key : String) -> (String, 
     return (self.name_of_id(lat), false)
   }
   (self.name_of_id(lat) + " + " + self.name_of_id(cjk), false)
-}
-
-///|
-/// Real Latin preview face for a curated style card's `Aa 字` specimen (0 fetches, bypasses custom `face_ui`).
-fn FontPageCtx::preset_sample_latin(self : FontPageCtx, p : FontPreset) -> Int {
-  let id = match p.text {
-    Some(s) => Some(s)
-    None => p.ui
-  }
-  match id {
-    Some(s) if s != "" =>
-      match self.shown_in(s) {
-        0 => @hostapi.face_sys_default
-        f => f
-      }
-    _ => @hostapi.face_sys_default
-  }
-}
-
-///|
-/// Real CJK preview face slot for a curated style card's `字` glyph (shows true Sans / Serif / Kai strokes directly).
-fn FontPageCtx::preset_sample_cjk_face(self : FontPageCtx, p : FontPreset) -> Int {
-  let id = match p.text_cjk {
-    Some(s) => Some(s)
-    None => p.ui_cjk
-  }
-  match id {
-    Some(s) if s != "" =>
-      match self.cjk_host_face(s) {
-        0 => @hostapi.face_sys_default
-        f => f
-      }
-    _ => @hostapi.face_sys_default
-  }
 }
 
 ///|
@@ -756,7 +751,12 @@ fn face_rows_node(rows : @view.View, ctx : FontPageCtx, slot : String, place : S
           x => x
         }
       }
-      face_row_node(r, ctx.core, slot, id, fn() { text(fv(), "name") }, face, fn() { chosen() == id }, status, sample_key~)
+      let row_sample_key = if !is_cjk && place != "code" && flag(fv(), "hasCjk") {
+        "web-pages.appearance.fonts.sampleRow"
+      } else {
+        sample_key
+      }
+      face_row_node(r, ctx.core, slot, id, fn() { text(fv(), "name") }, face, fn() { chosen() == id }, status, sample_key=row_sample_key)
     },
   )
 }

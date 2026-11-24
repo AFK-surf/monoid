@@ -538,10 +538,9 @@ test "local font panel: smart filter pills (仅中文 / 仅等宽 / 全部) and 
   )
   app.nav.replace(Setting(@settings.Route::Fonts))
   t.run_for(@ui.move_most_ms)
-  // Switch to 界面 中文 so smart default filter is 仅中文; both source tabs must be visible
+  // Switch to 界面 中文 so smart default filter is 仅中文; 本机字体 link is visible in curated view
   tap_matrix_slot(t, 0, true)
   t.draw()
-  assert_true(t.find("精选字体") is Some(_))
   assert_true(t.find("本机字体") is Some(_))
   t.tap_text("本机字体")
   t.run_for(@ui.move_most_ms)
@@ -949,13 +948,53 @@ test "Web platform (platform=4) hides 代码连字 switch; codeScale max=110% an
   assert_true(t.find("中西文自动留白") is Some(_))
   assert_true(t.find("代码连字") is None)
   assert_true(t.query(Switch, label="代码连字") is None)
-  // Verify slider max bounds by tapping the right edge of 代码相对字号 and 中文相对大小 sliders
+  // Verify slider max bounds by dragging 代码相对字号 and 中文相对大小 thumbs to the right end
   guard t.query(Slider, label="代码相对字号") is Some(cs) else { fail("no 代码相对字号 slider") }
-  t.tap(cs.rect.0 + cs.rect.2 - 2.0, cs.rect.1 + cs.rect.3 / 2.0)
+  let cs_cy = cs.rect.1 + cs.rect.3 / 2.0
+  let cs_x0 = cs.rect.0 + cs.rect.2 * 0.6
+  let cs_x1 = cs.rect.0 + cs.rect.2 - 2.0
+  t.press_at(cs_x0, cs_cy)
+  t.run_for(@ui.move_most_ms)
+  t.move_to(cs_x1, cs_cy)
+  t.run_for(@ui.move_most_ms)
+  t.release(cs_x1, cs_cy)
   t.run_for(@ui.move_most_ms)
   assert_eq(number(field(src.topic("prefs", {}).get().value, "typography"), "codeScale").round().to_int(), 110)
   guard t.query(Slider, label="中文相对大小") is Some(cks) else { fail("no 中文相对大小 slider") }
-  t.tap(cks.rect.0 + cks.rect.2 - 2.0, cks.rect.1 + cks.rect.3 / 2.0)
+  let cks_cy = cks.rect.1 + cks.rect.3 / 2.0
+  let cks_x0 = cks.rect.0 + cks.rect.2 * 0.5
+  let cks_x1 = cks.rect.0 + cks.rect.2 - 2.0
+  t.press_at(cks_x0, cks_cy)
+  t.run_for(@ui.move_most_ms)
+  t.move_to(cks_x1, cks_cy)
+  t.run_for(@ui.move_most_ms)
+  t.release(cks_x1, cks_cy)
   t.run_for(@ui.move_most_ms)
   assert_eq(number(field(src.topic("prefs", {}).get().value, "typography"), "uiCjkScale").round().to_int(), 115)
+}
+
+///|
+test "390pt narrow role row with long local font names keeps role title visible and within viewport" {
+  new_run()
+  let src = fixture("settings")
+  (src.call)(
+    "prefs.set",
+    {
+      "fonts": { "ui": "local:Hiragino Maru Gothic ProN", "uiCjk": "local:Hiragino Kaku Gothic StdN" },
+      "typography": { "textSize": 130 },
+    },
+    fn(_) {  },
+  )
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  app.nav.replace(Setting(@settings.Route::Fonts))
+  t.run_for(@ui.move_most_ms)
+  // Preset cards show needed download sizes in subtitle
+  assert_true(t.find("44 MB") is Some(_))
+  assert_true(t.find("55 MB") is Some(_))
+  // Role row button & title stay intact and within 390pt width despite long combined local family names
+  t.wheel(195.0, 500.0, 260.0)
+  t.run_for(@ui.move_most_ms)
+  guard t.query(Button, label="界面 · 标题与按钮") is Some(row) else { fail("no 界面 row") }
+  assert_true(row.rect.0 >= 0.0 && row.rect.0 + row.rect.2 <= 390.5)
+  assert_true(t.find("标题与按钮") is Some(_))
 }

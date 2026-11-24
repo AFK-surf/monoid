@@ -1,12 +1,14 @@
-// V6 human-first, native still.fail font settings page built on `@sf.page_node`:
+// V7 clean, effortless native still.fail font settings page built on `@sf.page_node`:
 // - Zero `look_node` / `page-look` branching (pure flex-wrap responsive layout)
 // - Calm sticky live chat preview (zero debug banners; clicking 界面/正文/代码 opens that role directly)
-// - 4 visual style cards with REAL Sans / Serif / Kai `Aa 字` preview specimens (0 network fetches)
-// - Front-and-center native Reading Comfort card (`@sf.group_node`: 正文阅读字号 slider + 正文行距 choice)
-// - Native 3-row 字体搭配 settings card (界面 / 正文 / 代码) with human-readable summaries that expands
-//   in-place ONLY for the tapped row (one clean `[ 西文 | 中文 ]` + reactive `[ 精选字体 | 本机字体 ]` bar)
-// - Quiet collapsible advanced typography drawer (`@sf.group_node`: codeScale 85..110%, autospace, non-Web
-//   codeLigatures, cjkScale 85..115%, cjkWeight).
+// - Compact 4-option style strip (title rendered in real preview font when loaded + download size in subtitle;
+//   zero fake identical `Aa 字` banners)
+// - Front-and-center native Reading Comfort card (`@sf.group_node`: 正文行距 + full-width flexible 正文阅读字号)
+// - Native 3-row 字体搭配 settings card (`界面 / 正文 / 代码`) with clean ellipsized summaries (safe at 390pt × 1.3×);
+//   tapping a row expands in-place with AT MOST ONE segmented bar visible at a time (`[西文 | 中文]` + `本机字体 ›` in
+//   curated mode; `‹ 精选字体` + search + `[全部 | 仅中文 | 仅等宽]` in local mode)
+// - Quiet collapsible advanced typography drawer (`@sf.group_node` with explicit `[界面 | 正文 | 代码]` scope picker
+//   for CJK ratio, exact core-ts slider caps 110%/115%, and non-Web codeLigatures).
 
 ///|
 fn font_slot_sample_key(place : String, is_cjk : Bool) -> String {
@@ -29,13 +31,17 @@ fn font_role_sub_key(role_key : String) -> String {
 }
 
 ///|
-/// Reactive capability check for local font browsing: re-evaluates automatically when async `local_font_info` arrives.
+/// Capability check for local font browsing: short-circuits on hosts without local fonts (e.g. Web) so
+/// `local_font_info_signal()` is never armed on Web.
 fn can_show_local_fonts() -> Bool {
-  let info = @ui.local_font_info_signal()
   let _ = local_open.get()
   let _ = @settings.fonts_at.get()
   let _ = @settings.fonts_script_at.get()
-  @ui.can_list_local_fonts() || info != ""
+  if !@ui.can_list_local_fonts() {
+    return false
+  }
+  let _ = @ui.local_font_info_signal()
+  true
 }
 
 ///|
@@ -131,7 +137,7 @@ fn fonts_header_actions_node(row : @view.View, ctx : FontPageCtx) -> Unit {
 }
 
 ///|
-/// Calm, realistic sticky live chat preview (zero debug text; `p=S2` + `radius=10.0` exact concentric with `Xl2=18`).
+/// Calm, realistic sticky live chat preview (`p=S2` + `radius=10.0` exact concentric with `Xl2=18`).
 fn font_preview_v6_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
   let ui_face = fn() { ctx.ui_face() }
   let text_face = fn() { ctx.text_face() }
@@ -223,7 +229,7 @@ fn font_preview_v6_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
 }
 
 ///|
-/// 4 curated style cards with REAL Sans / Serif / Kai `Aa 字` preview specimens (4-col wide, auto 2x2 narrow).
+/// Compact 4-option curated style strip (4-col wide, auto 2x2 narrow; shows needed download size in subtitle).
 fn font_presets_strip_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
   parent.box(fn(sec) {
     @sf.style_node(sec, fn() { fp_v6_presets_sec })
@@ -234,7 +240,11 @@ fn font_presets_strip_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
       for i, preset in font_presets {
         let on = fn() { font_preset_matches(preset, fn(s) { ctx.chosen_of(s) }) }
         let title = fn() { @sf.t("web-pages.appearance.fonts.preset." + preset.key) }
-        let sub = fn() { @sf.t("web-pages.appearance.fonts.preset." + preset.key + "Sub") }
+        let sub_with_size = fn() {
+          let base = @sf.t("web-pages.appearance.fonts.preset." + preset.key + "Sub")
+          let bytes = preset_needed_bytes(preset, ctx.all(), items(ctx.files_state(), "kept"), ctx.core.face_here)
+          if bytes > 0.0 { base + " · " + face_size(bytes) } else { base }
+        }
         row.box(fn(slot) {
           slot.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(148.0))).min_width(Is(Some(142.0))) |> ignore
           slot.reacts(fn() { @sf.lit_in_node(slot) }, fn(lit) {
@@ -253,29 +263,12 @@ fn font_presets_strip_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
             })) |> ignore
             card.box(fn(top) {
               @sf.style_node(top, fn() { fp_v6_preset_top })
-              top.box(fn(w) {
-                w
-                .words_runs(By(fn() {
-                  let lat = ctx.preset_sample_latin(preset)
-                  let cjk = ctx.preset_sample_cjk_face(preset)
-                  [
-                    @ui.span("Aa ", face=if lat == 0 { None } else { Some(lat) }),
-                    @ui.span("字", face=if cjk == 0 { None } else { Some(cjk) }),
-                  ]
-                }))
-                .words_look(By(fn() { @ui.style_words(fp_v6_specimen_words) }))
-                .ink(By(fn() { @ui.style_ink(fp_v6_specimen_words) }))
-                |> ignore
-              }) |> ignore
+              @sf.words_node(top, title, fn() { if on() { fp_v6_preset_title_on } else { fp_v6_preset_title } }) |> ignore
               top.show(at_once=true, on, fn(chk) {
                 @sf.icon_node(chk, "check", 14.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
               })
             }) |> ignore
-            card.box(fn(meta) {
-              @sf.style_node(meta, fn() { fp_v6_preset_meta })
-              @sf.words_node(meta, title, fn() { if on() { fp_v6_preset_title_on } else { fp_v6_preset_title } }) |> ignore
-              @sf.words_node(meta, sub, fn() { fp_v6_preset_sub }) |> ignore
-            }) |> ignore
+            @sf.words_node(card, sub_with_size, fn() { fp_v6_preset_sub }) |> ignore
           }) |> ignore
         }) |> ignore
       }
@@ -284,7 +277,7 @@ fn font_presets_strip_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
 }
 
 ///|
-/// Native inline slider control for `@sf.setting_node` rows (matches `appearance.mbt`'s glass slider).
+/// Native flexible slider control for `@sf.setting_node` rows (full width on narrow phones, compact 240pt cap wide).
 fn fp_setting_slider_ctrl(
   r : @view.View,
   label : () -> String,
@@ -297,7 +290,7 @@ fn fp_setting_slider_ctrl(
 ) -> Unit {
   r.box(fn(row) {
     @sf.style_node(row, fn() { fp_v6_slider_row })
-    row.width(Is(Some(220.0))).shrink(Is(0.0)) |> ignore
+    row.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(200.0))).max_width(Is(Some(280.0))) |> ignore
     @sf.value_slider_node(
       row,
       label,
@@ -311,7 +304,7 @@ fn fp_setting_slider_ctrl(
     ).grow(Is(1.0)) |> ignore
     row.box(fn(val_box) {
       @sf.style_node(val_box, fn() { fp_v6_val_box })
-      val_box.shrink(Is(0.0)).min_width(Is(Some(44.0))) |> ignore
+      val_box.shrink(Is(0.0)).width(Is(Some(48.0))) |> ignore
       @sf.words_node(val_box, fn() { "\{value().round().to_int()}%" }, fn() { fp_v6_row_val }) |> ignore
     }) |> ignore
   }) |> ignore
@@ -362,10 +355,10 @@ fn font_reading_bar_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
             5.0,
             fn(x) { text_size_drag.set(Some(x)) },
             fn(x) {
-              text_size_drag.set(None)
               let m : Map[String, Json] = Map([])
               m["textSize"] = ToJson::to_json(x.round().to_int())
               set_typo(m)
+              text_size_drag.set(None)
             },
           )
         },
@@ -375,18 +368,59 @@ fn font_reading_bar_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
 }
 
 ///|
-/// Native `[ 精选字体 | 本机字体 ]` segmented switch placed directly on a `.show()` slot (zero structure-box).
-fn font_source_seg_node(slot : @view.View) -> Unit {
+/// Subtle right-side action link to enter local machine fonts from curated view (zero competing second pill bar).
+fn font_local_entry_btn(slot : @view.View) -> Unit {
   slot.shrink(Is(0.0)) |> ignore
-  @sf.segmented_node(
-    slot,
-    fn() { [@sf.t("web-pages.appearance.fonts.curated"), @sf.t("web-pages.appearance.fonts.local")] },
-    fn() { if local_open.get() { 1 } else { 0 } },
-    fn(i) {
-      fonts_trying.set("")
-      local_open.set(i == 1)
-    },
-  )
+  @sf.action_box_node(slot, fn() { @sf.t("web-pages.appearance.fonts.local") }, fn(_) {
+    fonts_trying.set("")
+    local_open.set(true)
+  }, fn(btn) {
+    @sf.style_node(btn, fn() { if @sf.lit_node(btn) { fp_v6_link_hot } else { fp_v6_link } })
+    @sf.words_node(btn, fn() { @sf.t("web-pages.appearance.fonts.local") }, fn() { fp_v6_link_words }) |> ignore
+    @sf.icon_node(btn, "chevron-right", 13.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
+  }) |> ignore
+}
+
+///|
+/// Single-row toolbar for an expanded role drawer:
+/// - Curated mode: `[ 西文 | 中文 ]` segmented pill on left + clean `本机字体 ›` link on right
+/// - Local mode: `‹ 精选字体` back link on left + `本机字体` label on right (never stacks 2+ segmented bars!)
+fn font_drawer_toolbar_node(bar : @view.View, role_key : String) -> Unit {
+  @sf.style_node(bar, fn() { fp_v6_drawer_bar })
+  bar.pick(fn() { local_open.get() && can_show_local_fonts() }, fn(slot, is_local) {
+    @sf.style_node(slot, fn() { fp_v6_drawer_bar_inner })
+    slot.wraps(Is(Some(6.0))) |> ignore
+    if is_local {
+      @sf.action_box_node(slot, fn() { @sf.t("web-pages.appearance.fonts.curated") }, fn(_) {
+        fonts_trying.set("")
+        local_open.set(false)
+      }, fn(btn) {
+        @sf.style_node(btn, fn() { if @sf.lit_node(btn) { fp_v6_link_hot } else { fp_v6_link } })
+        @sf.icon_node(btn, "chevron-left", 13.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
+        @sf.words_node(btn, fn() { @sf.t("web-pages.appearance.fonts.curated") }, fn() { fp_v6_link_words }) |> ignore
+      }) |> ignore
+      @sf.words_node(slot, fn() { @sf.t("web-pages.appearance.fonts.local") }, fn() { fp_v6_sec_heading }) |> ignore
+    } else {
+      slot.box(fn(left) {
+        left.shrink(Is(0.0)) |> ignore
+        @sf.segmented_node(
+          left,
+          fn() {
+            [
+              @sf.t(if role_key == "code" { "web-pages.appearance.fonts.scriptShort.mono" } else { "web-pages.appearance.fonts.scriptShort.latin" }),
+              @sf.t("web-pages.appearance.fonts.scriptShort.cjk"),
+            ]
+          },
+          fn() { @settings.fonts_script_at.get() },
+          fn(i) {
+            fonts_trying.set("")
+            @settings.fonts_script_at.set(i)
+          },
+        )
+      }) |> ignore
+      slot.show(at_once=true, can_show_local_fonts, fn(src) { font_local_entry_btn(src) })
+    }
+  })
 }
 
 ///|
@@ -402,28 +436,7 @@ fn font_role_drawer_node(
   panel.reacts(fn() { panel.pointed_in() }, fn(on) { over_faces.set(on) })
   panel.owns(fn() { over_faces.set(false) }) |> ignore
   fp_divider_node(panel)
-  panel.box(fn(bar) {
-    @sf.style_node(bar, fn() { fp_v6_drawer_bar })
-    bar.wraps(Is(Some(6.0))) |> ignore
-    bar.box(fn(left) {
-      left.shrink(Is(0.0)) |> ignore
-      @sf.segmented_node(
-        left,
-        fn() {
-          [
-            @sf.t(if role_key == "code" { "web-pages.appearance.fonts.scriptShort.mono" } else { "web-pages.appearance.fonts.scriptShort.latin" }),
-            @sf.t("web-pages.appearance.fonts.scriptShort.cjk"),
-          ]
-        },
-        fn() { @settings.fonts_script_at.get() },
-        fn(i) {
-          fonts_trying.set("")
-          @settings.fonts_script_at.set(i)
-        },
-      )
-    }) |> ignore
-    bar.show(at_once=true, can_show_local_fonts, fn(src) { font_source_seg_node(src) })
-  }) |> ignore
+  panel.box(fn(bar) { font_drawer_toolbar_node(bar, role_key) }) |> ignore
   fp_divider_node(panel)
   panel.box(fn(list_host) {
     @sf.style_node(list_host, fn() { fp_v6_drawer_list })
@@ -439,7 +452,7 @@ fn font_role_drawer_node(
 }
 
 ///|
-/// Clean 3-row native settings card (`界面 / 正文 / 代码`) matching `appearance.mbt`; only the tapped row expands.
+/// Clean 3-row native settings card (`界面 / 正文 / 代码`); long summaries ellipsize safely at 390pt × 1.3×.
 fn font_roles_card_node(parent : @view.View, ctx : FontPageCtx, over_faces : @signals.Signal[Bool]) -> Unit {
   let roles = ["ui", "text", "code"]
   parent.box(fn(sec) {
@@ -474,19 +487,25 @@ fn font_roles_card_node(parent : @view.View, ctx : FontPageCtx, over_faces : @si
               hdr.min_height(Is(Some(52.0))) |> ignore
               hdr.box(fn(left) {
                 @sf.style_node(left, fn() { fp_v6_role_left })
-                left.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                left.shrink(Is(0.0)) |> ignore
                 @sf.words_node(left, fn() { @sf.t("web-pages.appearance.fonts." + role_key) }, fn() { fp_v6_role_title }) |> ignore
                 @sf.words_node(left, fn() { @sf.t(font_role_sub_key(role_key)) }, fn() { fp_v6_role_sub }) |> ignore
               }) |> ignore
               hdr.box(fn(right) {
                 @sf.style_node(right, fn() { fp_v6_role_right })
-                right.shrink(Is(0.0)) |> ignore
-                @sf.words_node(right, fn() { ctx.role_summary(role_key).0 }, fn() {
-                  if ctx.role_summary(role_key).1 { fp_v6_role_val_busy } else { fp_v6_role_val }
+                right.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                right.box(fn(val_wrap) {
+                  val_wrap.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                  @sf.words_node(val_wrap, fn() { ctx.role_summary(role_key).0 }, fn() {
+                    if ctx.role_summary(role_key).1 { fp_v6_role_val_busy } else { fp_v6_role_val }
+                  }) |> ignore
                 }) |> ignore
-                right.pick(open, fn(ic, is_open) {
-                  @sf.icon_node(ic, if is_open { "chevron-down" } else { "chevron-right" }, 14.0, By(fn() { @sf.theme().p.subtle })) |> ignore
-                })
+                right.box(fn(ic_wrap) {
+                  ic_wrap.shrink(Is(0.0)) |> ignore
+                  ic_wrap.pick(open, fn(ic, is_open) {
+                    @sf.icon_node(ic, if is_open { "chevron-down" } else { "chevron-right" }, 14.0, By(fn() { @sf.theme().p.subtle })) |> ignore
+                  })
+                }) |> ignore
               }) |> ignore
             },
           ) |> ignore
@@ -508,7 +527,7 @@ fn fp_divider_node(parent : @view.View) -> Unit {
 }
 
 ///|
-/// Native `@sf.group_node` card for collapsible advanced typography (zero structure-box, 100% concentric).
+/// Native `@sf.group_node` card for collapsible advanced typography (explicit `[界面 | 正文 | 代码]` CJK scope).
 fn font_advanced_card_node(slot : @view.View, ctx : FontPageCtx) -> Unit {
   let set_typo = fn(m : Map[String, Json]) { clear_fonts_undo(); @settings.set_typography(ctx.core, Json::object(m)) }
   let w_vals = [-100, 0, 100]
@@ -528,10 +547,10 @@ fn font_advanced_card_node(slot : @view.View, ctx : FontPageCtx) -> Unit {
           5.0,
           fn(x) { code_scale_drag.set(Some(x)) },
           fn(x) {
-            code_scale_drag.set(None)
             let m : Map[String, Json] = Map([])
             m["codeScale"] = ToJson::to_json(x.round().to_int())
             set_typo(m)
+            code_scale_drag.set(None)
           },
         )
       },
@@ -565,8 +584,25 @@ fn font_advanced_card_node(slot : @view.View, ctx : FontPageCtx) -> Unit {
         note=fn() { @sf.t("web-pages.appearance.fonts.advanced.codeLigaturesNote") },
       )
     }
-    // 4. CJK relative weight (placed before CJK slider so segmented pill never sits in the group's bottom corners)
+    // 4. Explicit role scope selector for CJK optical tuning (no hidden coupling!)
     let p = fn() { ctx.place() }
+    @sf.setting_choice_node(
+      g,
+      fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkGroup", args=[("place", @sf.t("web-pages.appearance.fonts." + p()))]) },
+      fn() {
+        [
+          @sf.t("web-pages.appearance.fonts.ui"),
+          @sf.t("web-pages.appearance.fonts.text"),
+          @sf.t("web-pages.appearance.fonts.code"),
+        ]
+      },
+      fn() { @settings.fonts_at.get() },
+      fn(i) {
+        fonts_trying.set("")
+        @settings.fonts_at.set(i)
+      },
+    )
+    // 5. CJK relative weight (placed before CJK slider so segmented pill never sits in the group's bottom corners)
     @sf.setting_choice_node(
       g,
       fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkWeight") },
@@ -587,7 +623,7 @@ fn font_advanced_card_node(slot : @view.View, ctx : FontPageCtx) -> Unit {
         set_typo(m)
       },
     )
-    // 5. CJK relative size (exact core-ts cap 85..115%)
+    // 6. CJK relative size (exact core-ts cap 85..115%)
     let cjk_v = fn() {
       let key = font_cjk_scale_key(p())
       match cjk_scale_drag.get() {
@@ -598,7 +634,6 @@ fn font_advanced_card_node(slot : @view.View, ctx : FontPageCtx) -> Unit {
     @sf.setting_node(
       g,
       fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkScale") },
-      note=fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkRatioTitle", args=[("place", @sf.t("web-pages.appearance.fonts." + p()))]) },
       fn(r) {
         fp_setting_slider_ctrl(
           r,
@@ -609,15 +644,15 @@ fn font_advanced_card_node(slot : @view.View, ctx : FontPageCtx) -> Unit {
           5.0,
           fn(v) { cjk_scale_drag.set(Some((font_cjk_scale_key(p()), v))) },
           fn(v) {
-            cjk_scale_drag.set(None)
             let m : Map[String, Json] = Map([])
             m[font_cjk_scale_key(p())] = ToJson::to_json(v.round().to_int())
             set_typo(m)
+            cjk_scale_drag.set(None)
           },
         )
       },
     )
-    // 6. Optional reset-follow-UI row when textCjk inherits uiCjk with custom optics override
+    // 7. Optional reset-follow-UI row when textCjk inherits uiCjk with custom optics override
     g.show(at_once=true, fn() {
       p() == "text" && ctx.chosen_of("textCjk") == "" &&
       (font_typo_bool(ctx.typo(), "textCjkScaleOwn", false) || font_typo_bool(ctx.typo(), "textCjkWeightOwn", false))
@@ -694,6 +729,18 @@ let fp_v6_undo_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, 
 
 ///|
 // kept across runs: a value
+let fp_v6_link : @ui.Style = @ui.css("row px=S2 py=S1 gap=S0_5 radius=Md align=ACenter justify=JCenter")
+
+///|
+// kept across runs: a value
+let fp_v6_link_hot : @ui.Style = fp_v6_link.then(@ui.css("bg=Hover"))
+
+///|
+// kept across runs: a value
+let fp_v6_link_words : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=AccentText, wrap=false)
+
+///|
+// kept across runs: a value
 let fp_v6_preview_card : @ui.Style = @ui.css("w=Full p=S2 gap=S1_5 radius=Xl2 bg=Card")
 
 ///|
@@ -742,7 +789,7 @@ let fp_v6_presets_sec : @ui.Style = @ui.css("w=Full gap=S1_5 pb=S3")
 
 ///|
 // kept across runs: a value
-let fp_v6_adv_sec : @ui.Style = @ui.css("w=Full gap=S1_5 pt=S0_5")
+let fp_v6_adv_sec : @ui.Style = @ui.css("w=Full gap=S1_5 pt=S0_5 pb=S2")
 
 ///|
 // kept across runs: a value
@@ -754,27 +801,19 @@ let fp_v6_preset_row : @ui.Style = @ui.css("row w=Full gap=S2 align=AStretch")
 
 ///|
 // kept across runs: a value
-let fp_v6_preset : @ui.Style = @ui.css("w=Full px=S3 py=S2_5 gap=S1_5 radius=Xl2 bg=Card")
+let fp_v6_preset : @ui.Style = @ui.css("w=Full px=S3 py=S2 gap=S0_5 radius=Xl2 bg=Card")
 
 ///|
 // kept across runs: a value
-let fp_v6_preset_hot : @ui.Style = @ui.css("w=Full px=S3 py=S2_5 gap=S1_5 radius=Xl2 bg=Hover")
+let fp_v6_preset_hot : @ui.Style = @ui.css("w=Full px=S3 py=S2 gap=S0_5 radius=Xl2 bg=Hover")
 
 ///|
 // kept across runs: a value
-let fp_v6_preset_on : @ui.Style = @ui.css("w=Full px=S3 py=S2_5 gap=S1_5 radius=Xl2 bg=AccentBg")
+let fp_v6_preset_on : @ui.Style = @ui.css("w=Full px=S3 py=S2 gap=S0_5 radius=Xl2 bg=AccentBg")
 
 ///|
 // kept across runs: a value
 let fp_v6_preset_top : @ui.Style = @ui.css("row w=Full justify=JBetween align=ACenter gap=S1")
-
-///|
-// kept across runs: a value
-let fp_v6_specimen_words : @ui.TextStyle = @ui.text_style(size=Title, weight=Medium, color=Fg, wrap=false)
-
-///|
-// kept across runs: a value
-let fp_v6_preset_meta : @ui.Style = @ui.css("w=Full gap=S0_5")
 
 ///|
 // kept across runs: a value
@@ -826,19 +865,19 @@ let fp_v6_role_title : @ui.TextStyle = @ui.text_style(size=Body, weight=Medium, 
 
 ///|
 // kept across runs: a value
-let fp_v6_role_sub : @ui.TextStyle = @ui.text_style(size=Meta, color=Subtle, w=Full, max_lines=1)
+let fp_v6_role_sub : @ui.TextStyle = @ui.text_style(size=Meta, color=Subtle, max_lines=1)
 
 ///|
 // kept across runs: a value
-let fp_v6_role_right : @ui.Style = @ui.css("row gap=S2 align=ACenter")
+let fp_v6_role_right : @ui.Style = @ui.css("row gap=S1_5 justify=JEnd align=ACenter")
 
 ///|
 // kept across runs: a value
-let fp_v6_role_val : @ui.TextStyle = @ui.text_style(size=Ui, color=Muted, wrap=false)
+let fp_v6_role_val : @ui.TextStyle = @ui.text_style(size=Ui, color=Muted, max_lines=1)
 
 ///|
 // kept across runs: a value
-let fp_v6_role_val_busy : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=AccentText, wrap=false)
+let fp_v6_role_val_busy : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=AccentText, max_lines=1)
 
 ///|
 // kept across runs: a value
@@ -846,7 +885,11 @@ let fp_v6_drawer : @ui.Style = @ui.css("w=Full bg=Surface")
 
 ///|
 // kept across runs: a value
-let fp_v6_drawer_bar : @ui.Style = @ui.css("row w=Full px=S3 py=S2 justify=JBetween align=ACenter gap=S2")
+let fp_v6_drawer_bar : @ui.Style = @ui.css("w=Full px=S3 py=S2")
+
+///|
+// kept across runs: a value
+let fp_v6_drawer_bar_inner : @ui.Style = @ui.css("row w=Full justify=JBetween align=ACenter gap=S2")
 
 ///|
 // kept across runs: a value
