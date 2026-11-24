@@ -93,6 +93,7 @@ on:
       - "station/test/builders-core-pion-switch.test.ts"
       - "station/test/builders-index-pion-switch.test.ts"
       - "station/test/builders-stateful-pion-switch.test.ts"
+      - "station/test/builders-vault-pion-switch.test.ts"
       - "station/test/footprint-mounts.ts"
       - "station/test/footprint-pion-switch.test.ts"
       - "station/test/footprint-reference.ts"
@@ -116,6 +117,7 @@ on:
       - "station/test/mb-signin-save.test.ts"
       - "station/test/mb-turn-counts.test.ts"
       - "station/test/mb-usage-retire.test.ts"
+      - "station/test/mb-vault-uses.test.ts"
       - "station/test/mb-widget-sources.test.ts"
       - "station/test/memory-pion-switch.test.ts"
       - "station/test/memory-program.ts"
@@ -126,6 +128,7 @@ on:
       - "station/test/reader-contract-memory.test.ts"
       - "station/test/reader-contract-packed.test.ts"
       - "station/test/reader-contract-select.test.ts"
+      - "station/test/vault-use-ambiguity.test.ts"
       - "station/test/w5-foundation.test.ts"
       - "station/test/reference/backfill/archive-last.ts"
       - "station/test/reference/backfill/archive-mark-index.ts"
@@ -595,7 +598,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
 
-      - name: Run Wave 5 foundation gates and MB Permit regression suite
+      - name: Run Wave 5 foundation, vault-uses, and MB Permit regression suites
         run: |
           set -euo pipefail
           BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
@@ -608,6 +611,15 @@ jobs:
           STILLFAIL_MB_READER="$BIN_MB" node --test \
             station/test/mb-turn-counts.test.ts \
             station/test/mb-said.test.ts
+
+          STILLFAIL_MB_READER="$BIN_PION" node --test \
+            station/test/mb-vault-uses.test.ts
+
+          STILLFAIL_READER_VAULT_USES=pion STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
+            node --test station/test/vault-use-ambiguity.test.ts
+
+          STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
+            node --test station/test/builders-vault-pion-switch.test.ts
 
   verify-linux:
     runs-on: ubuntu-24.04
