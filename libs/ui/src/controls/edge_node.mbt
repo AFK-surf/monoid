@@ -103,7 +103,7 @@ pub fn edge_node(
       // (a finger's hold taken: the edge its own from now, felt so (LongPress, as Ctx::drag_on's hold had it); a
       // mouse's needs no hold, nothing felt)
       hold=(@ui.long_press_ms, fn(_) { if @ui.pointing() is Finger { @ui.haptic(LongPress) } }),
-      held_first=fn(_) { @ui.pointing() is Finger },
+      held_first=drags_once_held,
       tap=pressed,
       drag=fn(d) {
         match d.kind {
@@ -193,3 +193,10 @@ pub fn EdgePull::shown_on(self : EdgePull, n : @view.View) -> (Double, Double, D
 ///|
 /// How far aside an edge's line is ever drawn (points): past it the hand going on gives nothing more.
 let edge_pull_most : Double = 6.0
+
+///|
+/// For View::gesture's `held_first`: a finger drags only once it has held (moved before that, it scrolls what is under
+/// it), a mouse from the press.
+pub fn drags_once_held(_d : @view.Drag) -> Bool {
+  @ui.pointing() is Finger
+}

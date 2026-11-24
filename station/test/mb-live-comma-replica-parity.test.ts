@@ -1150,6 +1150,10 @@ test(
       writeFileSync(join(wsA, "uploads", "evidence.txt"), "replica attachment bytes");
 
       // ── Part 3A: Replica export on station A -> kept copy on station B over real iroh mesh -> restore into fresh station C ──
+      // Station A's first export pass can land between `open_thread_of` and `join_thread`, so a head with `chats: 1` may
+      // name a batch of the thread alone. Wait for a head that also counts turn 1's two messages (written after
+      // `join_thread`), and take it with the batches it names at once: station B keeps rewriting `head.json` and folding
+      // batches while the copy is read.
       const keptGenDir = await given(
         "station A replica exported and replicated to station B",
         () => {
@@ -1157,17 +1161,27 @@ test(
           if (!existsSync(base)) return null;
           for (const g of readdirSync(base)) {
             const headPath = join(base, g, "head.json");
-            if (existsSync(headPath)) {
-              const head = JSON.parse(readFileSync(headPath, "utf8"));
-              if (head.chats >= 1) return { dir: join(base, g), head, gen: g };
+            if (!existsSync(headPath)) continue;
+            const headRaw = readFileSync(headPath, "utf8");
+            const head = JSON.parse(headRaw);
+            if (!(head.chats >= 1 && head.messages >= 2 && Array.isArray(head.batches) && head.batches.length >= 1)) continue;
+            const batchBytes = new Map<string, Buffer>();
+            for (const b of head.batches as string[]) {
+              try {
+                batchBytes.set(b, readFileSync(join(base, g, "log", b)));
+              } catch (e) {
+                if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+                throw e;
+              }
             }
+            return { head, headRaw, batchBytes, gen: g };
           }
           return null;
         },
         () => `A=${stA.err().slice(-1500)} B=${stB.err().slice(-1500)}`,
         45_000,
       );
-      assert.ok(keptGenDir.head.chats >= 1, JSON.stringify(keptGenDir.head));
+      assert.ok(keptGenDir.head.chats >= 1 && keptGenDir.head.messages >= 2, keptGenDir.headRaw);
 
       // Verify `--builder replica-restore` restores station A's kept copy into a fresh station C cleanly!
       const dataC = fresh("restoreC");
@@ -1175,13 +1189,8 @@ test(
       const restoreGenDir = join(restoreCopyDir, keptGenDir.gen);
       mkdirSync(join(restoreGenDir, "log"), { recursive: true });
       mkdirSync(join(restoreCopyDir, "files"), { recursive: true });
-      writeFileSync(join(restoreGenDir, "head.json"), readFileSync(join(keptGenDir.dir, "head.json")));
-      const keptLogDir = join(keptGenDir.dir, "log");
-      if (existsSync(keptLogDir)) {
-        for (const f of readdirSync(keptLogDir)) {
-          writeFileSync(join(restoreGenDir, "log", f), readFileSync(join(keptLogDir, f)));
-        }
-      }
+      writeFileSync(join(restoreGenDir, "head.json"), keptGenDir.headRaw);
+      for (const [b, bytes] of keptGenDir.batchBytes) writeFileSync(join(restoreGenDir, "log", b), bytes);
       const keptFilesDir = join(stBInfo.data, "replicas", "w1", stAInfo.id, "files");
       if (existsSync(keptFilesDir)) {
         for (const f of readdirSync(keptFilesDir)) {

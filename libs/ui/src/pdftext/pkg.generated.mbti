@@ -1,0 +1,38 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "ui/pdftext"
+
+// Values
+
+// Errors
+
+// Types and methods
+pub struct Doc {
+  // private fields
+}
+pub fn Doc::open(Bytes) -> Self?
+pub fn Doc::page(Self, Int32) -> PageText
+pub fn Doc::pages(Self) -> Int32
+
+pub struct Glyph {
+  text : String
+  x0 : Double
+  y0 : Double
+  x1 : Double
+  y1 : Double
+  line : Int32
+}
+
+pub struct PageText {
+  glyphs : Array[Glyph]
+  right : Double
+}
+pub fn PageText::near(Self, Double, Double, Double) -> Bool
+pub fn PageText::nearest(Self, Double, Double) -> Int32?
+pub fn PageText::readable(Self) -> Bool
+pub fn PageText::rects(Self, Int32, Int32) -> Array[(Double, Double, Double, Double)]
+pub fn PageText::word_at(Self, Int32) -> (Int32, Int32)
+pub fn PageText::words(Self, Int32, Int32) -> String
+
+// Type aliases
+
+// Traits

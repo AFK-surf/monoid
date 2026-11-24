@@ -254,7 +254,7 @@ export function quotesOf(given: unknown): Quote[] {
     const o = q !== null && typeof q === "object" && !Array.isArray(q) ? (q as Record<string, unknown>) : {};
     const quote: Quote = { author: field(o, "author", "消息", 100), text: field(o, "text", "", 4000), comment: field(o, "comment", "", 4000) };
     if (typeof o.ts === "string" && /^[0-9]+\.[0-9]+$/.test(o.ts)) quote.ts = o.ts;
-    if (typeof o.role === "string" && ["agent", "person", "page", "image"].includes(o.role)) quote.role = o.role;
+    if (typeof o.role === "string" && ["agent", "person", "page", "image", "pdf"].includes(o.role)) quote.role = o.role;
     if (typeof o.file === "string" && o.file !== "") quote.file = chars(o.file, 200);
     if (quote.text.trim() !== "") out.push(quote);
   }

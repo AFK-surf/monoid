@@ -2,9 +2,10 @@
 import { execFile } from "node:child_process";
 import { access, constants, lstat, open, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, normalize, sep } from "node:path";
+import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { fileName, samePath, segments, within } from "../ops/paths.ts";
-import { MbProcess, readerBinary } from "../read/mb-reader.ts";
+import { MbProcess, pionBinary, readerBinary } from "../read/mb-reader.ts";
 import { resolveReaderEngine } from "../read/reader-select.ts";
 
 /// Path::starts_with: `path` is `dir` or under it.
@@ -197,60 +198,315 @@ type Measured = { bytes: number; complete: boolean; reason?: string; rebuild?: [
 type Ask = { finding: boolean; strict: boolean; stopAfter?: number };
 
 const warnedReaderFallbacks = new Set<string>();
+const pendingShadows = new Set<Promise<void>>();
+let shadowInFlight = false;
+let activeShadowDeadline: (() => void) | null = null;
+let lastShadowPid: number | null = null;
+const SHADOW_HARD_TIMEOUT_PAD_MS = 5_000;
 
-/// The size of `path` and everything under it, on its file system, by the MoonBit program (`--builder footprint`,
-/// station/mb src/footprint), one process a measure under the system's background priority, so none of the walk's
-/// entries are the station's thread's or its heap's: links not followed (a link counted as itself), another file
-/// system mounted in it not gone into, at most 32 deep, each file once however many names it has, within `budget`
-/// (the walks of what it finds sharing it). With `finding`, directories that can be made again are listed (each
-/// counted whole, not looked into further for more); never in a `.git` or `uploads`. `strict`: an error of the file
-/// system but a path gone fails it (else what cannot be read is passed over). `signal` ends the process at once and
-/// fails the measure with its reason. There is no walk in TypeScript to fall back to: the one it replaced is
-/// station/test/footprint-reference.ts, which station/test/mb-footprint.test.ts holds the program to.
-function measure(path: string, ask: Ask, budget: MeasureBudget, signal?: AbortSignal): Promise<Measured> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(signal.reason);
-    const selection = resolveReaderEngine("footprint", { hasPionBinary: false });
-    if (selection.fallback) {
-      const dedupKey = `${selection.mode}:${selection.source}:${selection.reason ?? "unknown"}`;
-      if (!warnedReaderFallbacks.has(dedupKey)) {
-        warnedReaderFallbacks.add(dedupKey);
-        log.warn("footprint", "reader engine fallback", {
-          mode: selection.mode,
-          engine: selection.engine,
-          requested: selection.requested,
-          source: selection.source,
-          reason: selection.reason,
-          detail: selection.detail,
-        });
-      }
+/// Synchronously report whether a background `shadow` run currently holds the single-flight slot (tests only).
+export function isShadowInFlightForTest(): boolean {
+  return shadowInFlight;
+}
+
+/// Return the OS pid of the most recently spawned shadow child process (tests only).
+export function lastShadowPidForTest(): number | null {
+  return lastShadowPid;
+}
+
+/// Immediately fire the active background `shadow` run's host hard-timeout callback (tests only).
+/// Returns `true` if an in-flight shadow deadline was triggered, `false` otherwise.
+export function triggerShadowDeadlineForTest(): boolean {
+  if (activeShadowDeadline === null) return false;
+  activeShadowDeadline();
+  return true;
+}
+
+function parseMeasureMessage(raw: unknown): { ok: true; value: Measured } | { ok: false; error: Error } {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, error: new Error("the measure's program returned a malformed response") };
+  }
+  const m = raw as Record<string, unknown>;
+  if (typeof m.error === "string") {
+    return {
+      ok: false,
+      error: Object.assign(new Error(m.error), typeof m.code === "string" ? { code: m.code } : {}),
+    };
+  }
+  if (typeof m.size !== "number" || !Number.isFinite(m.size) || typeof m.complete !== "boolean") {
+    return { ok: false, error: new Error("the measure's program returned a malformed response") };
+  }
+  const value: Measured = { bytes: m.size, complete: m.complete };
+  if (typeof m.reason === "string") value.reason = m.reason;
+  if (m.enough === true) value.enough = true;
+  if (m.rebuild !== undefined) {
+    if (!Array.isArray(m.rebuild)) {
+      return { ok: false, error: new Error("the measure's program returned a malformed rebuild list") };
     }
-    const binary = readerBinary();
-    const p = new MbProcess(binary, ["--builder", "footprint", "--sep", sep], { background: true });
+    const rebuild: [string, number][] = [];
+    for (const item of m.rebuild) {
+      if (!Array.isArray(item) || item.length !== 2 || typeof item[0] !== "string" || typeof item[1] !== "number" || !Number.isFinite(item[1])) {
+        return { ok: false, error: new Error("the measure's program returned a malformed rebuild list") };
+      }
+      rebuild.push([item[0], item[1]]);
+    }
+    value.rebuild = rebuild;
+  }
+  return { ok: true, value };
+}
+
+function spawnMeasureBinary(
+  binary: string,
+  path: string,
+  ask: Ask,
+  budget: MeasureBudget,
+  signal?: AbortSignal,
+): { result: Promise<Measured>; closed: Promise<void>; kill: () => void } {
+  if (signal?.aborted) {
+    return {
+      result: Promise.reject(signal.reason),
+      closed: Promise.resolve(),
+      kill: () => {},
+    };
+  }
+  const p = new MbProcess(binary, ["--builder", "footprint", "--sep", sep], { background: true });
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>((r) => { resolveClosed = r; });
+
+  const result = new Promise<Measured>((resolve, reject) => {
     let settled = false;
-    const done = (f: () => void) => {
+    let exited = false;
+    const settle = (f: () => void) => {
       if (settled) return;
       settled = true;
-      signal?.removeEventListener("abort", stop);
       f();
     };
-    const stop = () => done(() => {
+    const stop = () => {
       p.kill();
-      reject(signal!.reason);
-    });
+      settle(() => reject(signal!.reason));
+    };
+    const markClosed = () => {
+      if (exited) return;
+      exited = true;
+      // Keep the abort -> kill listener armed until the child actually exits/closes,
+      // so an abort after a lingering child emitted its first frame still kills it immediately.
+      signal?.removeEventListener("abort", stop);
+      resolveClosed();
+    };
     signal?.addEventListener("abort", stop, { once: true });
     // (its bytes said `size`: a line that says `bytes` has a body after it, read/mb-reader.ts `Said`)
-    p.on("message", ({ size, ...m }: Omit<Measured, "bytes"> & { size: number; error?: string; code?: string }) => done(() => {
-      if (m.error === undefined) return resolve({ ...m, bytes: size });
-      reject(Object.assign(new Error(m.error), { code: m.code }));
+    p.on("message", (raw: unknown) => settle(() => {
+      const parsed = parseMeasureMessage(raw);
+      if (parsed.ok) resolve(parsed.value);
+      else reject(parsed.error);
     }));
-    p.on("error", (e: Error) => done(() => reject(e)));
-    p.on("exit", (code: number) => done(() => reject(new Error(`the measure's program ended saying nothing (${code})`))));
+    p.on("error", (e: Error) => {
+      settle(() => reject(e));
+      markClosed();
+    });
+    p.on("exit", (code: number) => {
+      settle(() => reject(new Error(`the measure's program ended saying nothing (${code})`)));
+      markClosed();
+    });
     p.postMessage({
       path, base: normalize(path), ...ask,
       maxEntries: budget.maxEntries ?? MEASURE_ROOM.maxEntries, maxDurationMs: Math.max(0, budget.maxDurationMs ?? MEASURE_ROOM.maxDurationMs),
     });
   });
+
+  return { result, closed, kill: () => p.kill() };
+}
+
+type ShadowSnapshot =
+  | { ok: true; bytes: number; complete: boolean; reason?: string; rebuild?: [string, number][]; enough?: true }
+  | { ok: false; error: string; code?: string };
+
+function snapshotOf(res: PromiseSettledResult<Measured>): ShadowSnapshot {
+  if (res.status === "fulfilled") {
+    const v = res.value;
+    return {
+      ok: true,
+      bytes: v.bytes,
+      complete: v.complete,
+      ...(v.reason !== undefined ? { reason: v.reason } : {}),
+      ...(v.rebuild !== undefined ? { rebuild: v.rebuild } : {}),
+      ...(v.enough !== undefined ? { enough: v.enough } : {}),
+    };
+  }
+  const err = res.reason as NodeJS.ErrnoException | undefined;
+  return {
+    ok: false,
+    error: err instanceof Error ? err.message : String(res.reason),
+    ...(typeof err?.code === "string" ? { code: err.code } : {}),
+  };
+}
+
+function summarizeSnapshotForLog(snap: ShadowSnapshot): Record<string, unknown> {
+  if (!snap.ok) return snap;
+  const { rebuild, ...rest } = snap;
+  if (rebuild === undefined) return rest;
+  return {
+    ...rest,
+    rebuildSummary: { count: rebuild.length, head: rebuild.slice(0, 5) },
+  };
+}
+
+function diffSnapshots(primary: ShadowSnapshot, shadow: ShadowSnapshot): string[] {
+  const diffs: string[] = [];
+  if (primary.ok !== shadow.ok) {
+    diffs.push(`status:${primary.ok ? "ok" : "err"}!=${shadow.ok ? "ok" : "err"}`);
+    return diffs;
+  }
+  if (!primary.ok && !shadow.ok) {
+    if (primary.code !== shadow.code) diffs.push(`code:${primary.code ?? ""}!=${shadow.code ?? ""}`);
+    if (primary.error !== shadow.error) diffs.push(`error:${primary.error}!=${shadow.error}`);
+    return diffs;
+  }
+  if (primary.ok && shadow.ok) {
+    if (primary.bytes !== shadow.bytes) diffs.push(`bytes:${primary.bytes}!=${shadow.bytes}`);
+    if (primary.complete !== shadow.complete) diffs.push(`complete:${primary.complete}!=${shadow.complete}`);
+    if (primary.reason !== shadow.reason) diffs.push(`reason:${primary.reason ?? ""}!=${shadow.reason ?? ""}`);
+    if (primary.enough !== shadow.enough) diffs.push(`enough:${primary.enough ?? false}!=${shadow.enough ?? false}`);
+    const pRebuild = JSON.stringify(primary.rebuild ?? null);
+    const sRebuild = JSON.stringify(shadow.rebuild ?? null);
+    if (pRebuild !== sRebuild) {
+      diffs.push(`rebuild:mismatch(primary=${primary.rebuild?.length ?? 0},shadow=${shadow.rebuild?.length ?? 0})`);
+    }
+  }
+  return diffs;
+}
+
+async function runShadowComparison(
+  pionBin: string,
+  path: string,
+  ask: Ask,
+  budget: MeasureBudget,
+  callerSignal: AbortSignal | undefined,
+  pRes: PromiseSettledResult<Measured>,
+): Promise<void> {
+  const shadowAc = new AbortController();
+  const forwardAbort = () => shadowAc.abort(callerSignal!.reason);
+  if (callerSignal?.aborted) return;
+  callerSignal?.addEventListener("abort", forwardAbort, { once: true });
+
+  const hardTimeoutMs = Math.max(0, budget.maxDurationMs ?? MEASURE_ROOM.maxDurationMs) + SHADOW_HARD_TIMEOUT_PAD_MS;
+  const spawned = spawnMeasureBinary(pionBin, path, ask, budget, shadowAc.signal);
+  lastShadowPid = MbProcess.live().at(-1)?.pid ?? null;
+  // Prevent unhandledRejection if shadow rejects before we await it.
+  spawned.result.catch(() => {});
+
+  let timedOut = false;
+  const onDeadline = () => {
+    if (timedOut) return;
+    timedOut = true;
+    shadowAc.abort(new Error(`shadow footprint timed out after ${hardTimeoutMs}ms`));
+    spawned.kill();
+  };
+  activeShadowDeadline = onDeadline;
+  const stopTimer = wall.after(hardTimeoutMs, onDeadline); // timer: timeout/deadline for shadow footprint process
+
+  try {
+    const [sRes] = await Promise.allSettled([spawned.result]);
+    // Always wait for the shadow child process to actually exit/close before releasing the single-flight slot,
+    // even if it emitted a JSON line and then lingered without exiting (killed on abort or hard timeout).
+    await spawned.closed;
+    if (callerSignal?.aborted) return;
+    if (timedOut) {
+      log.warn("footprint", "reader shadow timed out", {
+        path,
+        finding: ask.finding,
+        strict: ask.strict,
+        timeoutMs: hardTimeoutMs,
+      });
+      return;
+    }
+    const pSnap = snapshotOf(pRes);
+    const sSnap = snapshotOf(sRes);
+    // Skip diff noise when either side truncated on wall-clock duration budget.
+    if ((pSnap.ok && pSnap.reason === "duration") || (sSnap.ok && sSnap.reason === "duration")) return;
+    const diffs = diffSnapshots(pSnap, sSnap);
+    if (diffs.length > 0) {
+      log.warn("footprint", "reader shadow diff", {
+        path,
+        finding: ask.finding,
+        strict: ask.strict,
+        diffs,
+        primary: summarizeSnapshotForLog(pSnap),
+        shadow: summarizeSnapshotForLog(sSnap),
+      });
+    }
+  } finally {
+    if (activeShadowDeadline === onDeadline) activeShadowDeadline = null;
+    stopTimer();
+    callerSignal?.removeEventListener("abort", forwardAbort);
+  }
+}
+
+/// Drain any in-flight background `shadow` comparisons until their child processes have exited (for deterministic tests).
+export async function waitForShadowMeasures(): Promise<void> {
+  while (pendingShadows.size > 0) {
+    await Promise.all([...pendingShadows]);
+  }
+}
+
+/// The size of `path` and everything under it, on its file system, by `--builder footprint` (`mb` MoonBit by default,
+/// or `pion` / `shadow` via environment variables `STILLFAIL_READER_FOOTPRINT` / `STILLFAIL_READER_ENGINE`; wiring
+/// `config.readers` is deferred to unified station reader config), one process a measure under the system's background
+/// priority, so none of the walk's entries are the station's thread's or its heap's: links not followed (a link counted
+/// as itself), another file system mounted in it not gone into, at most 32 deep, each file once however many names it
+/// has, within `budget` (the walks of what it finds sharing it). With `finding`, directories that can be made again are
+/// listed (each counted whole, not looked into further for more); never in a `.git` or `uploads`. `strict`: an error of
+/// the file system but a path gone fails it (else what cannot be read is passed over). `signal` ends the process at
+/// once and fails the measure with its reason. There is no walk in TypeScript to fall back to: the one it replaced is
+/// station/test/footprint-reference.ts, which station/test/mb-footprint.test.ts holds the program to.
+function measure(path: string, ask: Ask, budget: MeasureBudget, signal?: AbortSignal): Promise<Measured> {
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  // Probe engine intent first without touching disk (`pionBinary()`) so default `mb` does zero main-thread statSync.
+  const probe = resolveReaderEngine("footprint", { hasPionBinary: true });
+  const pionBin = probe.engine === "mb" ? null : pionBinary();
+  const selection = probe.engine === "mb"
+    ? probe
+    : resolveReaderEngine("footprint", { hasPionBinary: pionBin !== null });
+  if (selection.fallback) {
+    const dedupKey = `${selection.mode}:${selection.source}:${selection.reason ?? "unknown"}`;
+    if (!warnedReaderFallbacks.has(dedupKey)) {
+      warnedReaderFallbacks.add(dedupKey);
+      log.warn("footprint", "reader engine fallback", {
+        mode: selection.mode,
+        engine: selection.engine,
+        requested: selection.requested,
+        source: selection.source,
+        reason: selection.reason,
+        detail: selection.detail,
+      });
+    }
+  }
+  if (selection.engine === "pion" && pionBin !== null) {
+    return spawnMeasureBinary(pionBin, path, ask, budget, signal).result;
+  }
+  const primary = spawnMeasureBinary(readerBinary(), path, ask, budget, signal).result;
+  if (selection.engine !== "shadow" || pionBin === null) {
+    return primary;
+  }
+  // Single-flight serial shadow: return `primary` immediately without waiting, and start shadow only after
+  // `primary` finishes (so it never slows its own primary; a queued subsequent primary may overlap with at most
+  // one in-flight shadow because shadow itself is strictly capped at 1 concurrent process).
+  const track = primary.then(
+    (value): PromiseSettledResult<Measured> => ({ status: "fulfilled", value }),
+    (reason): PromiseSettledResult<Measured> => ({ status: "rejected", reason }),
+  ).then(async (pRes) => {
+    if (signal?.aborted || shadowInFlight) return;
+    shadowInFlight = true;
+    try {
+      await runShadowComparison(pionBin, path, ask, budget, signal, pRes);
+    } finally {
+      shadowInFlight = false;
+    }
+  }).catch(() => {}).finally(() => {
+    pendingShadows.delete(track);
+  });
+  pendingShadows.add(track);
+  return primary;
 }
 
 /// Measures one chat's directory again (after something in it was cleaned).

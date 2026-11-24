@@ -49,8 +49,9 @@ int32_t sth_wait_for_queue_waiter_for_test(int64_t timeout_ms);
 void sth_push_stdin_chunk(const uint8_t *data, size_t len);
 void sth_push_stdin_eof(void);
 
-// Write all `len` bytes to stdout (handles EINTR and short writes). Returns 1 on success, 0 on error.
+// Write all `len` bytes to stdout or stderr (handles EINTR and short writes). Returns 1 on success, 0 on error.
 int32_t sth_write_stdout(const uint8_t *data, int64_t len);
+int32_t sth_write_stderr(const uint8_t *data, int64_t len);
 
 // Async & sync calls into Rust `libstillfail_shell.a`.
 void sth_shell_call(

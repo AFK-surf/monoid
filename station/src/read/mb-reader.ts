@@ -5,8 +5,8 @@
 // in TypeScript to fall back to: those it replaced are the tests' only (test/reference-worker.ts, test/workers/).
 import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync } from "node:fs";
-import { sep } from "node:path";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { wall } from "../ops/fibers.ts";
@@ -48,6 +48,46 @@ export function readerBinary(): string {
   const binary = mbReaderBinary();
   if (binary === null) throw new Error("the station's MoonBit program (stillfail-reader) is not built here (station/mb/build.sh, or STILLFAIL_MB_READER)");
   return binary;
+}
+
+function isExecutableFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) return false; // sync: startup/explicit binary resolution, cached on success
+    if (platform.os !== "windows") accessSync(path, constants.X_OK); // sync: startup/explicit binary resolution, cached on success
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const foundPionBinary = new Map<string, string | null>();
+/// The Pion reader/builder binary (`stillfail-pion`):
+/// 1. Explicit `STILLFAIL_PION_READER` env override (resolved via `path.resolve`; if set and non-empty,
+///    only that path is accepted and its lookup result — found or missing — is cached by resolved path)
+/// 2. Bundled beside `stillfail-reader` (`stillfail-pion` / `stillfail-pion.exe`)
+/// 3. Checkout dev build (`pion/station/_build/stillfail-pion-<host>`)
+export function pionBinary(): string | null {
+  const explicitRaw = process.env.STILLFAIL_PION_READER?.trim();
+  if (explicitRaw !== undefined && explicitRaw !== "") {
+    const resolved = resolve(explicitRaw);
+    const cacheKey = `explicit:${resolved}`;
+    if (foundPionBinary.has(cacheKey)) return foundPionBinary.get(cacheKey)!;
+    const ok = isExecutableFile(resolved) ? resolved : null;
+    foundPionBinary.set(cacheKey, ok);
+    return ok;
+  }
+  const had = foundPionBinary.get("");
+  if (had !== undefined && had !== null) return had;
+  const hostBuild = import.meta.url.endsWith(".ts") && platform.buildOs !== null
+    ? fileURLToPath(new URL(`../../../pion/station/_build/${platform.exe(`stillfail-pion-${platform.buildOs}-${process.arch}`)}`, import.meta.url))
+    : undefined;
+  const candidates = [
+    fileURLToPath(new URL(`./${platform.exe("stillfail-pion")}`, import.meta.url)),
+    hostBuild,
+  ];
+  const found = candidates.find((p) => p !== undefined && p !== "" && isExecutableFile(p)) ?? null;
+  if (found !== null) foundPionBinary.set("", found);
+  return found;
 }
 
 /// What the pool asks of a reader: the program's process, or what a test gives in its place (test/reference.ts).

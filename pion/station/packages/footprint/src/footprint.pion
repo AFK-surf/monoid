@@ -1,0 +1,850 @@
+// Disk footprint worker (`--builder footprint`) in pure Pion over thin C11 FFI (`native/footprint_fs.c`).
+// Mirrors station/mb/src/footprint/footprint.mbt and station/src/sessions/footprint.ts semantics:
+// - Does not follow symlinks (counts symlink's own blocks), stays on root's filesystem (`dev`)
+// - Max depth 32 below each walk root, deduplicates hard links (nlink > 1) by (dev, ino)
+// - Shared entry & monotonic-time budget across main walk and sub-walks (rebuildable, .git, uploads)
+// - Full rebuildable rules (named, Elixir, MoonBit up to 8 levels within checkout, Xcode DerivedData,
+//   Cargo CACHEDIR.TAG with non-blocking regular-file-only head read)
+// - Acyclic data structures with periodic BFS queue compaction to keep RSS bounded
+
+import "base_codec"
+
+extern "C" fn sfp_lstat(path : Ptr, out5 : Ptr) -> Int
+extern "C" fn sfp_readdir(path : Ptr, out_len : Ptr, out_err : Ptr) -> Ptr
+extern "C" fn sfp_exists(path : Ptr) -> Int
+extern "C" fn sfp_is_dir(path : Ptr) -> Int
+extern "C" fn sfp_head(path : Ptr, most : Int, out_len : Ptr, out_err : Ptr) -> Ptr
+extern "C" fn sfp_now_ms() -> Int64
+extern "C" fn sfp_is_windows() -> Int
+extern "C" fn sfp_free(ptr : Ptr) -> Unit
+
+let MANIFEST_UP : Int = 8
+let HEAD_BYTES : Int = 512
+let MAX_DEPTH : Int = 32
+let KIND_DIR : Int64 = 2.to_int64()
+let CARGO_SIG : String = "Signature: 8a477f597d28d172789f06886806bc55"
+let CARGO_LINE : String = "# This file is a cache directory tag created by cargo."
+
+pub fn default_sep() -> String {
+  if sfp_is_windows() != 0 { "\\" } else { "/" }
+}
+
+pub fn error_of(code : Int) -> (String, String) {
+  if code == 1 {
+    ("ENOENT", "no such file or directory")
+  } else if code == 2 {
+    ("EACCES", "permission denied")
+  } else if code == 3 {
+    ("EPERM", "operation not permitted")
+  } else if code == 4 {
+    ("ENOTDIR", "not a directory")
+  } else if code == 5 {
+    ("ELOOP", "too many symbolic links encountered")
+  } else if code == 6 {
+    ("ENAMETOOLONG", "name too long")
+  } else {
+    ("EIO", "i/o error")
+  }
+}
+
+fn write_fffd(sb : StringBuilder) -> Unit {
+  sb.write_byte(0xEF as Byte)
+  sb.write_byte(0xBF as Byte)
+  sb.write_byte(0xBD as Byte)
+}
+
+fn is_utf8_cont(b : Int) -> Bool {
+  (b & 0xC0) == 0x80
+}
+
+/// WHATWG / MoonBit `@utf8.decode_lossy` UTF-8 decoder (maximal subpart of ill-formed subsequence -> U+FFFD).
+pub fn decode_utf8_lossy(b : Bytes, start : Int, end : Int) -> String {
+  let sb = StringBuilder::new()
+  let mut i = start
+  while i < end {
+    let b0 = b[i].to_int() & 0xFF
+    if b0 < 0x80 {
+      sb.write_byte(b0 as Byte)
+      i = i + 1
+    } else if b0 >= 0xC2 && b0 <= 0xDF {
+      if i + 1 < end {
+        let b1 = b[i + 1].to_int() & 0xFF
+        if is_utf8_cont(b1) {
+          sb.write_byte(b0 as Byte)
+          sb.write_byte(b1 as Byte)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd(sb)
+      i = i + 1
+    } else if b0 >= 0xE0 && b0 <= 0xEF {
+      let lo1 = if b0 == 0xE0 { 0xA0 } else { 0x80 }
+      let hi1 = if b0 == 0xED { 0x9F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = b[i + 1].to_int() & 0xFF
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end {
+            let b2 = b[i + 2].to_int() & 0xFF
+            if is_utf8_cont(b2) {
+              sb.write_byte(b0 as Byte)
+              sb.write_byte(b1 as Byte)
+              sb.write_byte(b2 as Byte)
+              i = i + 3
+              continue
+            }
+          }
+          write_fffd(sb)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd(sb)
+      i = i + 1
+    } else if b0 >= 0xF0 && b0 <= 0xF4 {
+      let lo1 = if b0 == 0xF0 { 0x90 } else { 0x80 }
+      let hi1 = if b0 == 0xF4 { 0x8F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = b[i + 1].to_int() & 0xFF
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end {
+            let b2 = b[i + 2].to_int() & 0xFF
+            if is_utf8_cont(b2) {
+              if i + 3 < end {
+                let b3 = b[i + 3].to_int() & 0xFF
+                if is_utf8_cont(b3) {
+                  sb.write_byte(b0 as Byte)
+                  sb.write_byte(b1 as Byte)
+                  sb.write_byte(b2 as Byte)
+                  sb.write_byte(b3 as Byte)
+                  i = i + 4
+                  continue
+                }
+              }
+              write_fffd(sb)
+              i = i + 3
+              continue
+            }
+          }
+          write_fffd(sb)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd(sb)
+      i = i + 1
+    } else {
+      write_fffd(sb)
+      i = i + 1
+    }
+  }
+  sb.to_string()
+}
+
+fn bytes_to_str(b : Bytes) -> String {
+  decode_utf8_lossy(b, 0, b.length())
+}
+
+fn bytes_slice_to_str(b : Bytes, start : Int, end : Int) -> String {
+  decode_utf8_lossy(b, start, end)
+}
+
+fn has_nul_byte(s : String) -> Bool {
+  let b = s.to_bytes()
+  for i in 0..<b.length() {
+    if b[i].to_int() == 0 {
+      return true
+    }
+  }
+  false
+}
+
+fn is_sep_byte(sep : String, b : Int) -> Bool {
+  if sep == "\\" {
+    b == 92 || b == 47
+  } else {
+    let sb = sep.to_bytes()
+    sb.length() == 1 && b == sb[0].to_int()
+  }
+}
+
+fn ends_with_sep(sep : String, s : String) -> Bool {
+  let b = s.to_bytes()
+  if b.length() == 0 {
+    return false
+  }
+  is_sep_byte(sep, b[b.length() - 1].to_int())
+}
+
+pub fn join_path(sep : String, base : String, name : String) -> String {
+  if base == "." {
+    name
+  } else if ends_with_sep(sep, base) {
+    base + name
+  } else {
+    base + sep + name
+  }
+}
+
+/// Node's dirname of `p`, matching footprint.mbt `Measure::up`.
+pub fn path_up(sep : String, p : String) -> String {
+  let b = p.to_bytes()
+  let mut end = b.length()
+  while end > 1 && is_sep_byte(sep, b[end - 1].to_int()) {
+    end = end - 1
+  }
+  let mut i = end - 1
+  while i >= 0 && !is_sep_byte(sep, b[i].to_int()) {
+    i = i - 1
+  }
+  if i < 0 {
+    if sep == "\\" && end >= 2 && b[1].to_int() == 58 {
+      return p
+    }
+    return "."
+  }
+  let mut cut = i
+  while cut > 0 && is_sep_byte(sep, b[cut - 1].to_int()) {
+    cut = cut - 1
+  }
+  if cut == 0 {
+    return sep
+  }
+  let head = bytes_slice_to_str(b, 0, cut)
+  if sep == "\\" && cut == 2 && b[1].to_int() == 58 {
+    head + sep
+  } else {
+    head
+  }
+}
+
+/// Check whether CACHEDIR.TAG text contains both exact Cargo lines (splitting on `\r?\n`).
+pub fn cargo_said(text : String) -> Bool {
+  let b = text.to_bytes()
+  let n = b.length()
+  let mut has_sig = false
+  let mut has_line = false
+  let mut start = 0
+  for i in 0..<(n + 1) {
+    let at_end = i == n
+    if at_end || b[i].to_int() == 10 {
+      let mut end = i
+      if !at_end && end > start && b[end - 1].to_int() == 13 {
+        end = end - 1
+      }
+      let line = bytes_slice_to_str(b, start, end)
+      if line == CARGO_SIG {
+        has_sig = true
+      }
+      if line == CARGO_LINE {
+        has_line = true
+      }
+      if has_sig && has_line {
+        return true
+      }
+      start = i + 1
+    }
+  }
+  false
+}
+
+enum Visit {
+  Go
+  Skip
+  Stop
+}
+
+enum WalkOutcome {
+  Ok
+  Enough(Int64)
+  Failed(String, String)
+}
+
+struct Pending {
+  path : String
+  base : String
+  depth : Int
+  dev : Int64
+}
+
+pub struct StatInfo {
+  pub code : Int
+  pub kind : Int64
+  pub dev : Int64
+  pub ino : Int64
+  pub nlink : Int64
+  pub blocks : Int64
+}
+
+pub struct FsOps {
+  pub lstat : (String) -> StatInfo
+  pub readdir : (String) -> (Bytes, Int)
+  pub exists : (String) -> Bool
+  pub is_dir : (String) -> Bool
+  pub head : (String, Int) -> (Bytes, Int)
+  pub now_ms : () -> Int64
+}
+
+struct Measure {
+  sep : String
+  most : Option[Double]
+  until : Int64
+  stop_after : Option[Double]
+  strict : Bool
+  seen : Map[String, Bool]
+  mut total : Int64
+  mut bytes : Int64
+  mut visited : Int64
+  mut cut : Option[String]
+  found : Option[Array[(String, Int64)]]
+  ops : FsOps
+}
+
+fn Measure::lstat_raw(self : Measure, path : String) -> StatInfo {
+  let f = self.ops.lstat
+  f(path)
+}
+
+fn Measure::exists_raw(self : Measure, path : String) -> Bool {
+  let f = self.ops.exists
+  f(path)
+}
+
+fn Measure::is_dir_raw(self : Measure, path : String) -> Bool {
+  let f = self.ops.is_dir
+  f(path)
+}
+
+fn Measure::readdir_raw(self : Measure, path : String) -> (Bytes, Int) {
+  let f = self.ops.readdir
+  f(path)
+}
+
+fn Measure::head_raw(self : Measure, path : String, most : Int) -> (Bytes, Int) {
+  let f = self.ops.head
+  f(path, most)
+}
+
+fn Measure::now_ms(self : Measure) -> Int64 {
+  let f = self.ops.now_ms
+  f()
+}
+
+fn Measure::short(self : Measure, why : String) -> Unit {
+  match self.cut {
+    None => self.cut = Some(why)
+    Some(_) => ()
+  }
+}
+
+fn Measure::failed(self : Measure, code : Int, op : String, path : String) -> WalkOutcome {
+  if !self.strict || code == 1 {
+    return WalkOutcome::Ok
+  }
+  let (name, words) = error_of(code)
+  WalkOutcome::Failed(name, name + ": " + words + ", " + op + " '" + path + "'")
+}
+
+fn Measure::count(self : Measure, st : StatInfo) -> Result[Int64, Int64] {
+  if st.nlink > 1.to_int64() {
+    let key = st.dev.to_string() + ":" + st.ino.to_string()
+    match self.seen.get(key) {
+      Some(true) => return Ok(0.to_int64())
+      _ => self.seen.set(key, true)
+    }
+  }
+  let bytes = st.blocks * 512.to_int64()
+  self.total = self.total + bytes
+  match self.stop_after {
+    Some(most) => {
+      if self.total.to_double() > most {
+        return Err(self.total)
+      }
+    }
+    None => ()
+  }
+  Ok(bytes)
+}
+
+fn Measure::moon_above(self : Measure, from : String) -> Bool {
+  let manifests = ["moon.mod.json", "moon.mod", "moon.work", "moon.pkg.json", "moon.pkg"]
+  let mut found = false
+  let mut p = from
+  for _ in 0..<MANIFEST_UP {
+    for j in 0..<manifests.length() {
+      if !self.exists_raw(join_path(self.sep, p, manifests[j])) {
+        continue
+      }
+      if p == from {
+        return true
+      }
+      found = true
+    }
+    if self.exists_raw(join_path(self.sep, p, ".git")) {
+      return found
+    }
+    let next = path_up(self.sep, p)
+    if next == p {
+      break
+    }
+    p = next
+  }
+  false
+}
+
+fn Measure::rebuildable(self : Measure, parent : String, name : String, path : String) -> Bool {
+  if name == "node_modules" || name == ".next" || name == ".turbo" || name == "__pycache__" {
+    return true
+  } else if name == "target" {
+    if self.exists_raw(join_path(self.sep, parent, "Cargo.toml")) {
+      return true
+    }
+  } else if name == ".gradle" {
+    if self.exists_raw(join_path(self.sep, parent, "settings.gradle")) ||
+    self.exists_raw(join_path(self.sep, parent, "settings.gradle.kts")) ||
+    self.exists_raw(join_path(self.sep, parent, "build.gradle")) ||
+    self.exists_raw(join_path(self.sep, parent, "build.gradle.kts")) {
+      return true
+    }
+  } else if name == "build" {
+    if self.exists_raw(join_path(self.sep, parent, "build.gradle")) ||
+    self.exists_raw(join_path(self.sep, parent, "build.gradle.kts")) {
+      return true
+    }
+  } else if name == "_build" {
+    if self.exists_raw(join_path(self.sep, parent, "mix.exs")) || self.moon_above(parent) {
+      return true
+    }
+  } else if name == "deps" {
+    if self.exists_raw(join_path(self.sep, parent, "mix.exs")) {
+      return true
+    }
+  } else if name == ".mooncakes" {
+    if self.exists_raw(join_path(self.sep, parent, "moon.mod.json")) ||
+    self.exists_raw(join_path(self.sep, parent, "moon.mod")) ||
+    self.exists_raw(join_path(self.sep, parent, "moon.work")) {
+      return true
+    }
+  }
+
+  let build_dir = join_path(self.sep, path, "Build")
+  if self.is_dir_raw(join_path(self.sep, build_dir, "Products")) &&
+  self.is_dir_raw(join_path(self.sep, build_dir, "Intermediates.noindex")) {
+    return true
+  }
+
+  let (head_bytes, head_err) = self.head_raw(join_path(self.sep, path, "CACHEDIR.TAG"), HEAD_BYTES)
+  if head_err != 0 || !cargo_said(bytes_to_str(head_bytes)) {
+    return false
+  }
+  if self.exists_raw(join_path(self.sep, path, ".rustc_info.json")) {
+    return true
+  }
+  let profiles = ["debug", "release"]
+  let owns = ["deps", ".fingerprint"]
+  for pi in 0..<profiles.length() {
+    let pdir = join_path(self.sep, path, profiles[pi])
+    for oi in 0..<owns.length() {
+      if self.is_dir_raw(join_path(self.sep, pdir, owns[oi])) {
+        return true
+      }
+    }
+  }
+  false
+}
+
+/// Whether a directory entry is eligible for `.git`/`uploads`/rebuildable classification & sub-walk.
+/// Cross-filesystem mount points (`same_dev == false`) are counted as themselves only and never entered.
+pub fn should_classify_dir(finding : Bool, depth : Int, dir : Bool, same_dev : Bool) -> Bool {
+  finding && depth > 0 && dir && same_dev
+}
+
+fn Measure::visit(
+  self : Measure,
+  path : String,
+  parent : String,
+  name : String,
+  depth : Int,
+  st : StatInfo,
+  same_dev : Bool,
+  finding : Bool,
+) -> (Visit, WalkOutcome) {
+  self.visited = self.visited + 1.to_int64()
+  match self.most {
+    Some(limit) => {
+      if self.visited.to_double() > limit {
+        self.short("entries")
+        return (Visit::Stop, WalkOutcome::Ok)
+      }
+    }
+    None => ()
+  }
+  let dir = st.kind == KIND_DIR
+  if should_classify_dir(finding, depth, dir, same_dev) {
+    if name == ".git" || name == "uploads" {
+      match self.walk(path, path, false) {
+        WalkOutcome::Ok => ()
+        other => return (Visit::Stop, other)
+      }
+      let next_v = match self.cut {
+        Some(_) => Visit::Stop
+        None => Visit::Skip
+      }
+      return (next_v, WalkOutcome::Ok)
+    }
+    if self.rebuildable(parent, name, path) {
+      let before = self.bytes
+      match self.walk(path, path, false) {
+        WalkOutcome::Ok => ()
+        other => return (Visit::Stop, other)
+      }
+      match self.found {
+        Some(found) => found.push((path, self.bytes - before))
+        None => ()
+      }
+      let next_v = match self.cut {
+        Some(_) => Visit::Stop
+        None => Visit::Skip
+      }
+      return (next_v, WalkOutcome::Ok)
+    }
+  }
+  match self.count(st) {
+    Ok(b) => {
+      self.bytes = self.bytes + b
+      (Visit::Go, WalkOutcome::Ok)
+    }
+    Err(total) => (Visit::Stop, WalkOutcome::Enough(total))
+  }
+}
+
+fn Measure::walk(self : Measure, root : String, base : String, finding : Bool) -> WalkOutcome {
+  let started = self.now_ms()
+  let until = if self.until > started { self.until } else { started }
+  if self.now_ms() > until {
+    self.short("duration")
+    return WalkOutcome::Ok
+  }
+  let root_st = self.lstat_raw(root)
+  if root_st.code != 0 {
+    return self.failed(root_st.code, "lstat", root)
+  }
+  let root_dir = root_st.kind == KIND_DIR
+  let root_dev = root_st.dev
+  let (root_visit, root_out) = self.visit(root, "", "", 0, root_st, true, finding)
+  match root_out {
+    WalkOutcome::Ok => ()
+    other => return other
+  }
+  match root_visit {
+    Visit::Stop => return WalkOutcome::Ok
+    Visit::Skip => return WalkOutcome::Ok
+    Visit::Go => {
+      if !root_dir {
+        return WalkOutcome::Ok
+      }
+    }
+  }
+
+  let mut queue : Array[Pending] = [Pending::{ path: root, base: base, depth: 0, dev: root_dev }]
+  let mut head = 0
+  let mut deeper = false
+
+  while head < queue.length() {
+    let at = queue[head]
+    head = head + 1
+    // Compact consumed prefix periodically so visited directory paths are released promptly.
+    if head >= 4096 && head * 2 >= queue.length() {
+      let next_q : Array[Pending] = []
+      for qi in head..<queue.length() {
+        next_q.push(queue[qi])
+      }
+      queue = next_q
+      head = 0
+    }
+    if self.now_ms() > until {
+      self.short("duration")
+      return WalkOutcome::Ok
+    }
+    let (listed, list_err) = self.readdir_raw(at.path)
+    if list_err != 0 {
+      match self.failed(list_err, "scandir", at.path) {
+        WalkOutcome::Ok => continue
+        other => return other
+      }
+    }
+    let mut start = 0
+    for i in 0..<listed.length() {
+      if listed[i].to_int() != 0 {
+        continue
+      }
+      let name = bytes_slice_to_str(listed, start, i)
+      start = i + 1
+      if self.now_ms() > until {
+        self.short("duration")
+        return WalkOutcome::Ok
+      }
+      let child_path = join_path(self.sep, at.base, name)
+      let depth = at.depth + 1
+      let st = self.lstat_raw(child_path)
+      if st.code != 0 {
+        match self.failed(st.code, "lstat", child_path) {
+          WalkOutcome::Ok => continue
+          other => return other
+        }
+      }
+      let dir = st.kind == KIND_DIR
+      let same_dev = st.dev == at.dev
+      let (v, out) = self.visit(child_path, at.base, name, depth, st, same_dev, finding)
+      match out {
+        WalkOutcome::Ok => ()
+        other => return other
+      }
+      match v {
+        Visit::Stop => return WalkOutcome::Ok
+        Visit::Skip => continue
+        Visit::Go => {
+          if !dir {
+            continue
+          }
+        }
+      }
+      // Another filesystem mounted inside this tree: counted, not traversed into.
+      if !same_dev {
+        continue
+      }
+      if depth >= MAX_DEPTH {
+        deeper = true
+        continue
+      }
+      queue.push(Pending::{ path: child_path, base: child_path, depth: depth, dev: at.dev })
+    }
+  }
+  if deeper {
+    self.short("depth")
+  }
+  WalkOutcome::Ok
+}
+
+pub struct ParsedAsk {
+  pub path : String
+  pub base : String
+  pub finding : Bool
+  pub strict : Bool
+  pub stop_after : Option[Double]
+  pub max_entries : Option[Double]
+  pub max_duration_ms : Double
+}
+
+pub enum ParseAskResult {
+  Ok(ParsedAsk)
+  Err(String, String)
+}
+
+pub fn parse_ask(line : String) -> ParseAskResult {
+  let ask = match base_codec::json_parse(line) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return ParseAskResult::Err("not JSON", "EINVAL")
+  }
+  let fields = match ask {
+    base_codec::Json::Obj(fs) => fs
+    _ => return ParseAskResult::Err("not an object", "EINVAL")
+  }
+  let path = match base_codec::json_obj_get(fields, "path") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return ParseAskResult::Err("path is required", "EINVAL")
+  }
+  let base = match base_codec::json_obj_get(fields, "base") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => path
+  }
+  if has_nul_byte(path) || has_nul_byte(base) {
+    return ParseAskResult::Err("path must not contain NUL bytes", "EINVAL")
+  }
+  let finding = match base_codec::json_obj_get(fields, "finding") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+  let strict = match base_codec::json_obj_get(fields, "strict") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+  let stop_after = match base_codec::json_obj_get(fields, "stopAfter") {
+    Some(base_codec::Json::Num(n, _)) => Some(n)
+    _ => None
+  }
+  let max_entries = match base_codec::json_obj_get(fields, "maxEntries") {
+    Some(base_codec::Json::Num(n, _)) => Some(n)
+    _ => None
+  }
+  let max_duration_ms = match base_codec::json_obj_get(fields, "maxDurationMs") {
+    Some(base_codec::Json::Num(n, _)) => n
+    _ => 60000.0
+  }
+  ParseAskResult::Ok(ParsedAsk::{
+    path: path,
+    base: base,
+    finding: finding,
+    strict: strict,
+    stop_after: stop_after,
+    max_entries: max_entries,
+    max_duration_ms: max_duration_ms,
+  })
+}
+
+pub fn error_json(message : String, code : String) -> base_codec::Json {
+  base_codec::json_obj([
+    ("error", base_codec::json_str(message)),
+    ("code", base_codec::json_str(code)),
+  ])
+}
+
+/// Run one footprint measure using injected filesystem operations (used by both production FFI and unit tests).
+pub fn answer_with_ops(line : String, sep : String, ops : FsOps) -> base_codec::Json {
+  let req = match parse_ask(line) {
+    ParseAskResult::Ok(r) => r
+    ParseAskResult::Err(msg, code) => return error_json(msg, code)
+  }
+  let duration_ms : Int64 = if req.max_duration_ms > 0.0 {
+    req.max_duration_ms.to_int64()
+  } else {
+    0.to_int64()
+  }
+  let now_fn = ops.now_ms
+  let found : Option[Array[(String, Int64)]] = if req.finding { Some([]) } else { None }
+  let measure = Measure::{
+    sep: sep,
+    most: req.max_entries,
+    until: now_fn() + duration_ms,
+    stop_after: req.stop_after,
+    strict: req.strict,
+    seen: Map::new(),
+    total: 0.to_int64(),
+    bytes: 0.to_int64(),
+    visited: 0.to_int64(),
+    cut: None,
+    found: found,
+    ops: ops,
+  }
+
+  let outcome = measure.walk(req.path, req.base, req.finding)
+
+  match outcome {
+    WalkOutcome::Enough(bytes) => {
+      return base_codec::json_obj([
+        ("size", base_codec::json_int64(bytes)),
+        ("complete", base_codec::json_bool(false)),
+        ("enough", base_codec::json_bool(true)),
+      ])
+    }
+    WalkOutcome::Failed(code, msg) => return error_json(msg, code)
+    WalkOutcome::Ok => ()
+  }
+
+  let is_complete = match measure.cut {
+    None => true
+    Some(_) => false
+  }
+  let out : Array[(String, base_codec::Json)] = [
+    ("size", base_codec::json_int64(measure.bytes)),
+    ("complete", base_codec::json_bool(is_complete)),
+  ]
+  match measure.cut {
+    Some(why) => out.push(("reason", base_codec::json_str(why)))
+    None => ()
+  }
+  match measure.found {
+    Some(items) => {
+      let arr : Array[base_codec::Json] = []
+      for i in 0..<items.length() {
+        let (p, sz) = items[i]
+        arr.push(base_codec::json_arr([base_codec::json_str(p), base_codec::json_int64(sz)]))
+      }
+      out.push(("rebuild", base_codec::json_arr(arr)))
+    }
+    None => ()
+  }
+  base_codec::json_obj(out)
+}
+
+/// Answer one JSON request line for `--builder footprint`, returning a JSON value matching
+/// `station/mb/src/footprint/footprint.mbt`'s `answer(line, sep)`.
+pub fn answer(line : String, sep : String) -> base_codec::Json {
+  let stat_buf = ptr_alloc(40.to_int64())
+  let len_buf = ptr_alloc(8.to_int64())
+  let err_buf = ptr_alloc(4.to_int64())
+  let ops = FsOps::{
+    lstat: fn(path : String) -> StatInfo {
+      let rc = sfp_lstat(path.as_cstr(), stat_buf)
+      let _ = path.length()
+      if rc != 0 {
+        return StatInfo::{
+          code: rc,
+          kind: 0.to_int64(),
+          dev: 0.to_int64(),
+          ino: 0.to_int64(),
+          nlink: 0.to_int64(),
+          blocks: 0.to_int64(),
+        }
+      }
+      StatInfo::{
+        code: 0,
+        kind: ptr_read_i64(stat_buf, 0.to_int64()),
+        dev: ptr_read_i64(stat_buf, 8.to_int64()),
+        ino: ptr_read_i64(stat_buf, 16.to_int64()),
+        nlink: ptr_read_i64(stat_buf, 24.to_int64()),
+        blocks: ptr_read_i64(stat_buf, 32.to_int64()),
+      }
+    },
+    readdir: fn(path : String) -> (Bytes, Int) {
+      ptr_write_i64(len_buf, 0.to_int64(), 0.to_int64())
+      ptr_write_i32(err_buf, 0.to_int64(), 0)
+      let p = sfp_readdir(path.as_cstr(), len_buf, err_buf)
+      let _ = path.length()
+      let n = ptr_read_i64(len_buf, 0.to_int64())
+      let err = ptr_read_i32(err_buf, 0.to_int64())
+      if ptr_is_null(p) || n <= 0.to_int64() {
+        if !ptr_is_null(p) {
+          sfp_free(p)
+        }
+        return (Bytes::new(0), err)
+      }
+      let out = bytes_from_ptr(p, n.to_int())
+      sfp_free(p)
+      (out, err)
+    },
+    exists: fn(path : String) -> Bool {
+      let rc = sfp_exists(path.as_cstr())
+      let _ = path.length()
+      rc != 0
+    },
+    is_dir: fn(path : String) -> Bool {
+      let rc = sfp_is_dir(path.as_cstr())
+      let _ = path.length()
+      rc != 0
+    },
+    head: fn(path : String, most : Int) -> (Bytes, Int) {
+      ptr_write_i64(len_buf, 0.to_int64(), 0.to_int64())
+      ptr_write_i32(err_buf, 0.to_int64(), 0)
+      let p = sfp_head(path.as_cstr(), most, len_buf, err_buf)
+      let _ = path.length()
+      let n = ptr_read_i64(len_buf, 0.to_int64())
+      let err = ptr_read_i32(err_buf, 0.to_int64())
+      if ptr_is_null(p) || n <= 0.to_int64() {
+        if !ptr_is_null(p) {
+          sfp_free(p)
+        }
+        return (Bytes::new(0), err)
+      }
+      let out = bytes_from_ptr(p, n.to_int())
+      sfp_free(p)
+      (out, err)
+    },
+    now_ms: fn() -> Int64 { sfp_now_ms() },
+  }
+  let res = answer_with_ops(line, sep, ops)
+  sfp_free(stat_buf)
+  sfp_free(len_buf)
+  sfp_free(err_buf)
+  res
+}

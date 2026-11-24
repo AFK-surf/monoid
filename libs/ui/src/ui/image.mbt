@@ -717,16 +717,24 @@ fn Ctx::moving_key(self : Ctx, src : String, bw : Double, bh : Double, fit : Fit
       let px = if px <= 0.0 { 256.0 } else { px }
       let length = m.ends[m.ends.length() - 1]
       let want = moving_frame(m, self.loop_at(length, m.ends) / length)
+      let next = (want + 1) % m.keys.length()
       // (made as it is painted: what it makes is bytes in image_data, read by nothing built; their being here said as
       // a decode's being done is, image_done, while a frame is painted)
       m.make(want)
-      m.make((want + 1) % m.keys.length())
+      m.make(next)
+      if m.streaming {
+        m.frame_used[want] = self.frame_no
+        m.frame_used[next] = self.frame_no
+      }
       let ready = Array::makei(m.keys.length(), fn(i) { m.made[i] && self.image_ready(m.keys[i], px) })
       let mut k = want
       while k > 0 && !ready[k] {
         k = k - 1
       }
       if ready[k] {
+        if m.streaming {
+          m.frame_used[k] = self.frame_no
+        }
         m.keys[k]
       } else {
         src

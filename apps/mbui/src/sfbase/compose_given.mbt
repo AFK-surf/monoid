@@ -9,7 +9,7 @@
 /// Something put into a draft from outside its composer: files the system's picker answered (Picked), files shared
 /// into the app (Shared), a message's file quoted (Quoted: whose, the message's ts, its role, the file as the core
 /// gives it), words a visualization asked to send (Followed), a marked picture with its quotes (Marked: its name, its
-/// bytes, each quote's title, what and comment, "page" or "image"), a 文件 row (Dropped).
+/// bytes, each quote's title, what and comment, "page", "image" or "pdf": a PDF's words, no picture of its own), a 文件 row (Dropped).
 pub(all) enum Given {
   Picked(Array[@hostapi.Picked])
   Shared(Array[@hostapi.Picked])

@@ -8,6 +8,8 @@ pub fn gunzip(Bytes) -> Bytes?
 
 pub fn inflate(Bytes, start? : Int32, size? : Int32) -> Bytes?
 
+pub fn inflate_most(Bytes, Int32, start? : Int32) -> Bytes?
+
 pub fn sha256(Bytes) -> String
 
 // Errors

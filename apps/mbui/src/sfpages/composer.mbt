@@ -247,6 +247,16 @@ fn given_into(src : Source, station : String, w : Writing, no_files : Bool, g : 
       writing_text(src, w, said)
       w.field.focus()
     }
+    // (a PDF's words and notes: quotes alone, its file already the chat's)
+    Marked(_, _, quotes, "pdf") =>
+      for q in quotes {
+        writing_quote(src, w, {
+          "author": Json::string(q.0),
+          "text": Json::string(q.1),
+          "comment": Json::string(q.2),
+          "role": Json::string("pdf"),
+        })
+      }
     Marked(name, bytes, quotes, kind) =>
       if !no_files {
         if kind != "page" {

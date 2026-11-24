@@ -266,6 +266,7 @@ export type ReaderSelection = {
 };
 
 export const READER_ENV_PREFIX = "STILLFAIL_READER_";
+export const READER_ENGINE_ENV = "STILLFAIL_READER_ENGINE";
 
 /** Compute the canonical environment variable name for a reader mode. */
 export function readerModeEnvKey(mode: ReaderMode): `STILLFAIL_READER_${string}` {
@@ -315,9 +316,10 @@ function parseEngineValue(raw: unknown): { engine: ReaderEngine | null; rawText:
  * Resolve which engine (`"mb"`, `"pion"`, or `"shadow"`) should execute `mode`.
  *
  * Precedence:
- * 1. Environment variable `STILLFAIL_READER_<UPPER_SNAKE_MODE>` (non-empty trimmed string)
+ * 1. Per-mode environment variable `STILLFAIL_READER_<UPPER_SNAKE_MODE>` (non-empty trimmed string)
  * 2. `config.readers[mode]`
- * 3. Default `"mb"`
+ * 3. Global environment variable `STILLFAIL_READER_ENGINE` (non-empty trimmed string)
+ * 4. Default `"mb"`
  *
  * Safety gates:
  * - Invalid values fall back to `"mb"` (`reason: "invalid-value"`).
@@ -334,6 +336,7 @@ export function resolveReaderEngine(
   const env = opts.env ?? process.env;
   const envKey = readerModeEnvKey(mode);
   const rawEnv = env[envKey];
+  const rawGlobalEnv = env[READER_ENGINE_ENV];
 
   let source: ReaderSelectSource = "default";
   let rawInput: unknown = undefined;
@@ -349,6 +352,10 @@ export function resolveReaderEngine(
         source = "config";
         rawInput = configured;
       }
+    }
+    if (source === "default" && typeof rawGlobalEnv === "string" && rawGlobalEnv.trim() !== "") {
+      source = "env";
+      rawInput = rawGlobalEnv;
     }
   }
 

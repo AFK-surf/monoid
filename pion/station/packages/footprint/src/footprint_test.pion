@@ -1,0 +1,255 @@
+fn expect(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+test "join_path matches POSIX and Windows separator semantics" {
+  expect(join_path("/", ".", "foo") == "foo", "dot base")
+  expect(join_path("/", "/", "foo") == "/foo", "root slash")
+  expect(join_path("/", "/a/b", "c") == "/a/b/c", "normal unix")
+  expect(join_path("/", "/a/b/", "c") == "/a/b/c", "trailing slash")
+  expect(join_path("\\", "C:\\", "foo") == "C:\\foo", "win root")
+  expect(join_path("\\", "C:\\a", "b") == "C:\\a\\b", "win normal")
+  expect(join_path("\\", "C:/a/", "b") == "C:/a/b", "win forward trailing")
+}
+
+test "path_up matches Node dirname and footprint.mbt Measure::up" {
+  expect(path_up("/", "/") == "/", "unix root")
+  expect(path_up("/", "///") == "/", "unix multi slash")
+  expect(path_up("/", "/a") == "/", "unix top child")
+  expect(path_up("/", "/a/") == "/", "unix top child trailing")
+  expect(path_up("/", "/a/b/c") == "/a/b", "unix nested")
+  expect(path_up("/", "/a//b/") == "/a", "unix collapsed")
+  expect(path_up("/", "a") == ".", "unix bare")
+  expect(path_up("/", ".") == ".", "unix dot")
+  expect(path_up("\\", "C:\\") == "C:\\", "win drive root")
+  expect(path_up("\\", "C:\\a") == "C:\\", "win top child")
+  expect(path_up("\\", "C:\\a\\b") == "C:\\a", "win nested")
+  expect(path_up("\\", "C:") == "C:", "win bare drive")
+  expect(path_up("\\", "a") == ".", "win bare")
+}
+
+test "cargo_said requires both exact Cargo CACHEDIR.TAG lines with LF or CRLF" {
+  let lf = "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by cargo.\n"
+  let crlf = "Signature: 8a477f597d28d172789f06886806bc55\r\n# This file is a cache directory tag created by cargo.\r\n# extra\r\n"
+  let no_trailing = "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by cargo."
+  let wrong_line = "Signature: 8a477f597d28d172789f06886806bc55\n# made by something else\n"
+  let substring_only = "Signature: 8a477f597d28d172789f06886806bc55 extra\n# This file is a cache directory tag created by cargo.\n"
+  expect(cargo_said(lf), "lf")
+  expect(cargo_said(crlf), "crlf")
+  expect(cargo_said(no_trailing), "no trailing newline")
+  expect(!cargo_said(wrong_line), "wrong second line")
+  expect(!cargo_said(substring_only), "substring must not match")
+}
+
+test "parse_ask validates JSON errors and optional fields" {
+  match parse_ask("{not valid json") {
+    ParseAskResult::Err(msg, code) => {
+      expect(msg == "not JSON", "bad json msg")
+      expect(code == "EINVAL", "bad json code")
+    }
+    ParseAskResult::Ok(_) => panic("expected parse error")
+  }
+  match parse_ask("[1,2,3]") {
+    ParseAskResult::Err(msg, code) => {
+      expect(msg == "not an object", "non-object msg")
+      expect(code == "EINVAL", "non-object code")
+    }
+    ParseAskResult::Ok(_) => panic("expected non-object error")
+  }
+  match parse_ask("{\"finding\":true}") {
+    ParseAskResult::Err(msg, code) => {
+      expect(msg == "path is required", "missing path msg")
+      expect(code == "EINVAL", "missing path code")
+    }
+    ParseAskResult::Ok(_) => panic("expected missing path error")
+  }
+  match parse_ask("{\"path\":\"/tmp/x\",\"finding\":true,\"strict\":true,\"stopAfter\":1024,\"maxEntries\":50,\"maxDurationMs\":0}") {
+    ParseAskResult::Ok(req) => {
+      expect(req.path == "/tmp/x", "path")
+      expect(req.base == "/tmp/x", "default base")
+      expect(req.finding, "finding")
+      expect(req.strict, "strict")
+      expect(req.max_duration_ms == 0.0, "maxDurationMs")
+      match req.stop_after {
+        Some(v) => expect(v == 1024.0, "stopAfter")
+        None => panic("expected stopAfter")
+      }
+      match req.max_entries {
+        Some(v) => expect(v == 50.0, "maxEntries")
+        None => panic("expected maxEntries")
+      }
+    }
+    ParseAskResult::Err(msg, _) => panic("unexpected err: " + msg)
+  }
+}
+
+test "error_of maps all POSIX/Windows codes to Node errno names" {
+  let (c1, m1) = error_of(1)
+  expect(c1 == "ENOENT" && m1 == "no such file or directory", "ENOENT")
+  let (c2, m2) = error_of(2)
+  expect(c2 == "EACCES" && m2 == "permission denied", "EACCES")
+  let (c3, m3) = error_of(3)
+  expect(c3 == "EPERM" && m3 == "operation not permitted", "EPERM")
+  let (c4, m4) = error_of(4)
+  expect(c4 == "ENOTDIR" && m4 == "not a directory", "ENOTDIR")
+  let (c5, m5) = error_of(5)
+  expect(c5 == "ELOOP" && m5 == "too many symbolic links encountered", "ELOOP")
+  let (c6, m6) = error_of(6)
+  expect(c6 == "ENAMETOOLONG" && m6 == "name too long", "ENAMETOOLONG")
+  let (c7, m7) = error_of(7)
+  expect(c7 == "EIO" && m7 == "i/o error", "EIO")
+}
+
+test "decode_utf8_lossy replaces invalid UTF-8 sequences with U+FFFD and preserves valid UTF-8" {
+  // "f\xff\xfe" -> "f\uFFFD\uFFFD"
+  let bad = Bytes::new(3)
+  bad[0] = 0x66 as Byte
+  bad[1] = 0xFF as Byte
+  bad[2] = 0xFE as Byte
+  let decoded = decode_utf8_lossy(bad, 0, 3)
+  expect(decoded == "f\u{FFFD}\u{FFFD}", "invalid bytes -> U+FFFD")
+
+  // Truncated 3-byte sequence [0xE4, 0xB8] followed by 'a' -> "\uFFFDa" (WHATWG maximal subpart)
+  let trunc = Bytes::new(3)
+  trunc[0] = 0xE4 as Byte
+  trunc[1] = 0xB8 as Byte
+  trunc[2] = 0x61 as Byte
+  expect(decode_utf8_lossy(trunc, 0, 3) == "\u{FFFD}a", "truncated 3-byte maximal subpart")
+
+  // Valid UTF-8 Chinese + emoji
+  let valid = "中文目录🚀".to_bytes()
+  expect(decode_utf8_lossy(valid, 0, valid.length()) == "中文目录🚀", "valid utf8 roundtrip")
+}
+
+test "parse_ask rejects embedded NUL bytes in path or base" {
+  match parse_ask("{\"path\":\"/tmp/a\\u0000b\"}") {
+    ParseAskResult::Err(_, code) => expect(code == "EINVAL", "nul path EINVAL")
+    ParseAskResult::Ok(_) => panic("expected EINVAL for embedded NUL in path")
+  }
+  match parse_ask("{\"path\":\"/tmp/ok\",\"base\":\"/tmp/b\\u0000c\"}") {
+    ParseAskResult::Err(_, code) => expect(code == "EINVAL", "nul base EINVAL")
+    ParseAskResult::Ok(_) => panic("expected EINVAL for embedded NUL in base")
+  }
+}
+
+fn pack_nul_names(names : Array[String]) -> Bytes {
+  let total_bytes : Array[Byte] = []
+  for i in 0..<names.length() {
+    let b = names[i].to_bytes()
+    for j in 0..<b.length() {
+      total_bytes.push(b[j])
+    }
+    total_bytes.push(0 as Byte)
+  }
+  let out = Bytes::new(total_bytes.length())
+  for i in 0..<total_bytes.length() {
+    out[i] = total_bytes[i]
+  }
+  out
+}
+
+test "production walk/visit counts cross-device mount points (including node_modules, uploads, .git) as themselves and never classifies or descends into them" {
+  // Build a virtual filesystem table with root dev=1 and cross-device mount points dev=2
+  // named "other_fs", "node_modules", "uploads", ".git", plus a same-dev "local_pkg/node_modules".
+  let stats : Map[String, StatInfo] = Map::new()
+  let dirs : Map[String, Array[String]] = Map::new()
+
+  let add_dir = fn(p : String, dev : Int64, ino : Int64, blocks : Int64, children : Array[String]) -> Unit {
+    stats.set(
+      p,
+      StatInfo::{
+        code: 0,
+        kind: 2.to_int64(),
+        dev: dev,
+        ino: ino,
+        nlink: 1.to_int64(),
+        blocks: blocks,
+      },
+    )
+    dirs.set(p, children)
+  }
+  let add_file = fn(p : String, dev : Int64, ino : Int64, blocks : Int64) -> Unit {
+    stats.set(
+      p,
+      StatInfo::{
+        code: 0,
+        kind: 1.to_int64(),
+        dev: dev,
+        ino: ino,
+        nlink: 1.to_int64(),
+        blocks: blocks,
+      },
+    )
+  }
+
+  add_dir("/root", 1.to_int64(), 1.to_int64(), 8.to_int64(), [".git", "local_pkg", "node_modules", "other_fs", "uploads"])
+  // Cross-device mounts (dev=2): each contains a large 200-block file that MUST NOT be counted.
+  add_dir("/root/.git", 2.to_int64(), 10.to_int64(), 8.to_int64(), ["pack"])
+  add_file("/root/.git/pack", 2.to_int64(), 11.to_int64(), 200.to_int64())
+  add_dir("/root/node_modules", 2.to_int64(), 20.to_int64(), 8.to_int64(), ["dep.js"])
+  add_file("/root/node_modules/dep.js", 2.to_int64(), 21.to_int64(), 200.to_int64())
+  add_dir("/root/other_fs", 2.to_int64(), 30.to_int64(), 8.to_int64(), ["secret.bin"])
+  add_file("/root/other_fs/secret.bin", 2.to_int64(), 31.to_int64(), 200.to_int64())
+  add_dir("/root/uploads", 2.to_int64(), 40.to_int64(), 8.to_int64(), ["big.png"])
+  add_file("/root/uploads/big.png", 2.to_int64(), 41.to_int64(), 200.to_int64())
+  // Same-device package (dev=1): MUST be classified as rebuildable and counted whole.
+  add_dir("/root/local_pkg", 1.to_int64(), 50.to_int64(), 8.to_int64(), ["node_modules"])
+  add_dir("/root/local_pkg/node_modules", 1.to_int64(), 51.to_int64(), 8.to_int64(), ["a.js"])
+  add_file("/root/local_pkg/node_modules/a.js", 1.to_int64(), 52.to_int64(), 16.to_int64())
+
+  let ops = FsOps::{
+    lstat: fn(p : String) -> StatInfo {
+      match stats.get(p) {
+        Some(st) => st
+        None => StatInfo::{
+          code: 1,
+          kind: 0.to_int64(),
+          dev: 0.to_int64(),
+          ino: 0.to_int64(),
+          nlink: 0.to_int64(),
+          blocks: 0.to_int64(),
+        }
+      }
+    },
+    readdir: fn(p : String) -> (Bytes, Int) {
+      match dirs.get(p) {
+        Some(names) => (pack_nul_names(names), 0)
+        None => (Bytes::new(0), 1)
+      }
+    },
+    exists: fn(p : String) -> Bool {
+      match stats.get(p) {
+        Some(_) => true
+        None => false
+      }
+    },
+    is_dir: fn(p : String) -> Bool {
+      match stats.get(p) {
+        Some(st) => st.kind == 2.to_int64()
+        None => false
+      }
+    },
+    head: fn(_p : String, _most : Int) -> (Bytes, Int) { (Bytes::new(0), 1) },
+    now_ms: fn() -> Int64 { 1000.to_int64() },
+  }
+
+  let res = answer_with_ops("{\"path\":\"/root\",\"finding\":true,\"strict\":true,\"maxEntries\":1000,\"maxDurationMs\":60000}", "/", ops)
+  let s = base_codec::json_stringify(res)
+  // Expected blocks: root(8) + 4 cross-dev mounts(32) + local_pkg(8) + local_pkg/node_modules(8) + a.js(16) = 72 blocks = 36864 bytes.
+  // Expected rebuild: ONLY [["/root/local_pkg/node_modules", 12288]] (8+16 = 24 blocks = 12288 bytes).
+  expect(
+    s == "{\"size\":36864,\"complete\":true,\"rebuild\":[[\"/root/local_pkg/node_modules\",12288]]}",
+    "unexpected cross-dev production walk result: " + s,
+  )
+
+  // Verify entry budget: root(1) + 5 children(5) + local_pkg/node_modules(1) + sub-walk root(1) + a.js(1) = 9 visits.
+  // With maxEntries=8, it must truncate on entries before finishing a.js.
+  let cut = answer_with_ops("{\"path\":\"/root\",\"finding\":true,\"strict\":true,\"maxEntries\":8,\"maxDurationMs\":60000}", "/", ops)
+  let cut_s = base_codec::json_stringify(cut)
+  expect(
+    cut_s == "{\"size\":28672,\"complete\":false,\"reason\":\"entries\",\"rebuild\":[[\"/root/local_pkg/node_modules\",4096]]}",
+    "unexpected cross-dev entry-budget result: " + cut_s,
+  )
+}

@@ -305,6 +305,19 @@ test("a_kept_drafts_quotes_take_the_files_they_name_as_their_pictures", async ()
   t.core.close();
 });
 
+test("a_notes_mark_in_a_file_is_kept_with_the_draft_on_the_device_and_comes_back_with_it", async () => {
+  const t = await setup();
+  await t.watch(1, "ws/st:k");
+  const mark = "pdf:uploads/a.pdf|a.pdf|2400\nw:0,0,0,10";
+  await t.ask("quote", { key: "ws/st:k", id: "q1", quote: { author: "a.pdf 第 1 页", text: "first page", role: "pdf", mark }, focus: false });
+  assert.deepEqual(v(t.values, 1).quotes.map((q: J) => [q.role, q.mark]), [["pdf", mark]]);
+  await t.host.time.pass(SOON_MS + 50);
+  await t.host.settle();
+  const kept = t.host.rows(dbName("s1"), "SELECT json FROM draft ORDER BY station, chat").map(([json]) => JSON.parse(json as string));
+  assert.deepEqual(kept.map((d: J) => d.quotes.map((q: J) => q.mark)), [[mark]]);
+  t.core.close();
+});
+
 test("taken_to_send_it_empties_and_comes_back_when_it_could_not_go_unless_something_new_was_written", async () => {
   const t = await setup();
   await t.watch(1, "ws/st:k");

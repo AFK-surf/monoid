@@ -174,6 +174,14 @@ fn fixed() -> (Huff, Huff) {
 priv struct Out {
   mut buf : FixedArray[Byte]
   mut len : Int
+  // the most bytes it may come to (0: no limit), for what a file from elsewhere says it holds
+  most : Int
+}
+
+///|
+/// Whether `k` more bytes would take it past what it may come to.
+fn Out::past_most(self : Out, k : Int) -> Bool {
+  self.most > 0 && self.len + k > self.most
 }
 
 ///|
@@ -255,6 +263,9 @@ fn codes(b : Bits, out : Out, lencode : Huff, distcode : Huff) -> Bool {
       return false
     }
     if sym < 256 {
+      if out.past_most(1) {
+        return false
+      }
       out.room(1)
       out.buf[out.len] = sym.to_byte()
       out.len += 1
@@ -271,7 +282,7 @@ fn codes(b : Bits, out : Out, lencode : Huff, distcode : Huff) -> Bool {
         return false
       }
       let dist = dist_base[d] + b.take(dist_extra[d])
-      if dist > out.len {
+      if dist > out.len || out.past_most(len) {
         return false
       }
       out.room(len)
@@ -295,10 +306,16 @@ pub fn inflate(data : Bytes, start? : Int = 0, size? : Int = 0) -> Bytes? {
 }
 
 ///|
+/// As inflate, for bytes from elsewhere: None too where they would come to more than `most` bytes.
+pub fn inflate_most(data : Bytes, most : Int, start? : Int = 0) -> Bytes? {
+  inflate_at(data, start, 0, most~).map(fn(r) { r.0 })
+}
+
+///|
 /// As inflate, and where the deflated bytes ended (the first byte after them).
-fn inflate_at(data : Bytes, start : Int, size : Int) -> (Bytes, Int)? {
+fn inflate_at(data : Bytes, start : Int, size : Int, most? : Int = 0) -> (Bytes, Int)? {
   let b : Bits = { data, at: start, buf: 0, n: 0, over: 0 }
-  let out : Out = { buf: FixedArray::make(if size > 0 { size } else { 1024 }, b'\x00'), len: 0 }
+  let out : Out = { buf: FixedArray::make(if size > 0 { size } else { 1024 }, b'\x00'), len: 0, most }
   while true {
     let last = b.take(1)
     let kind = b.take(2)
@@ -309,6 +326,9 @@ fn inflate_at(data : Bytes, start : Int, size : Int) -> (Bytes, Int)? {
         let len = b.take(16)
         let nlen = b.take(16)
         if (len ^ nlen) != 0xFFFF {
+          return None
+        }
+        if out.past_most(len) {
           return None
         }
         out.room(len)

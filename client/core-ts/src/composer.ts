@@ -29,7 +29,9 @@ type J = any;
 
 /// A passage quoted, with what is said about it; `id` names it while it is written. Its picture, if it has one, is the
 /// file that says it goes with it (`ComposerFile.quote`).
-export type ComposerQuote = { id: string; author: string; text: string; comment: string; ts?: string; role?: string };
+/// `mark`: where in a file shown in the preview a note of it is (its viewer's own words, read back only by it: a PDF's
+/// page and words or area), kept with the draft so the file opened again shows its notes; never sent.
+export type ComposerQuote = { id: string; author: string; text: string; comment: string; ts?: string; role?: string; mark?: string };
 
 /// A file in what is written: going up (`sent` of `size`), up (`done`, as the station keeps it) or failed (`error`);
 /// a new chat's waiting (`waits`) to go up with its message, to the station the message goes to (`take`). `pasted`:
@@ -49,6 +51,7 @@ const linkWords = (link: ComposerLink) => (link.title ? `${link.title}\n${link.u
 const quoteOf = (q: J, id: string): ComposerQuote => ({
   id, author: String(q.author ?? ""), text: String(q.text ?? ""), comment: typeof q.comment === "string" ? q.comment : "",
   ...(typeof q.ts === "string" && q.ts ? { ts: q.ts } : {}), ...(typeof q.role === "string" && q.role ? { role: q.role } : {}),
+  ...(typeof q.mark === "string" && q.mark && q.mark.length <= 2000 ? { mark: q.mark } : {}),
 });
 
 /// A quote as a message has it: its picture named by the name its file goes as (`file`), among the message's files.
@@ -899,7 +902,7 @@ export class Composers {
     return {
       text: [taken.text.trim(), ...links.map(linkWords), ...paths.map((f) => pathWords(f.ref!))].filter((w) => w !== "").join("\n"),
       attachments: upOnce(sent),
-      quotes: taken.quotes.map((q) => sentQuote({ ...q, comment: q.comment.trim() }, sent)),
+      quotes: taken.quotes.map(({ mark: _, ...q }) => sentQuote({ ...q, comment: q.comment.trim() }, sent)),
       uploads: sent.filter((f) => !f.done && !f.error).map(({ id, name, size }) => ({ id, name, size })),
       version,
     };

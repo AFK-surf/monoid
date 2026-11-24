@@ -24,11 +24,21 @@ pub(all) struct GifFrames {
 let gif_least_ms : Double = 100.0
 
 ///|
-/// The most pixels a GIF that moves has in its frames together (frames × width × height): ≈64 MB as RGBA, which each
+/// The most pixels a GIF that moves keeps all of its frames for (frames × width × height): ≈64 MB as RGBA, which each
 /// frame is held as twice once it is made, here (a PNG of it, png_of, stored, not compressed) and again by the host it
 /// is handed to (its decode, and on Android the PNG's bytes, kept to decode again). 132 frames of 360 × 734 took a
-/// phone's whole Java heap.
+/// phone's whole Java heap. Past this, a GIF whose single frame fits gif_streaming_frame_most streams instead: only its
+/// first frame and the frames wanted this frame (drawn, wanted and next) are kept at a time (trim_gif_frames).
 let gif_moving_most : Int = 16_000_000
+
+///|
+/// gif_moving_most, but where a test says less.
+let gif_moving_budget : Ref[Int] = Ref(gif_moving_most)
+
+///|
+/// The most pixels a single frame of a streaming GIF may have (width × height): ≈16 MB as RGBA, so keeping at most
+/// four frames at a time stays within the frame budget. A GIF over both gif_moving_most and this is shown still.
+let gif_streaming_frame_most : Int = 4_000_000
 
 ///|
 /// Whether `data` is a GIF (its signature).
@@ -516,6 +526,10 @@ priv struct GifCycle {
   mut last_used : Int
   /// the bytes of each frame made (its PNG's), 0 where it is not: those past the first counted in gif_expanded_bytes
   frame_bytes : FixedArray[Int]
+  /// whether its frames together pass gif_moving_budget: only frame 0 and the frames used this frame are kept
+  streaming : Bool
+  /// the frame of the window each frame was last drawn, wanted or pre-decoded in (used when streaming)
+  frame_used : FixedArray[Int]
 }
 
 ///|
@@ -542,6 +556,7 @@ fn moving_reset() -> Unit {
   moving_images.clear()
   gif_expanded_bytes.val = 0
   gif_frames_budget.val = gif_frames_budget_most
+  gif_moving_budget.val = gif_moving_most
 }
 
 ///|
@@ -569,6 +584,7 @@ fn GifCycle::unmake(self : GifCycle, k : Int) -> Unit {
     gif_expanded_bytes.val = gif_expanded_bytes.val - self.frame_bytes[k]
   }
   self.frame_bytes[k] = 0
+  self.frame_used[k] = -1
 }
 
 ///|
@@ -585,10 +601,23 @@ fn moving_forget(key : String) -> Unit {
 }
 
 ///|
-/// The frames made past their first of the GIFs that move held to gif_frames_budget: of those not drawn in frame
-/// `frame_no`, the one drawn longest ago first, all of its frames past its first let go of and its decoder with them
-/// (made again from its bytes as one is wanted again: GifCycle::make).
+/// The frames made past their first of the GIFs that move held to gif_frames_budget: for each streaming GIF, every
+/// frame past its first not used in `frame_no` is let go of (and its decoder once it is not drawn); then, if past
+/// gif_frames_budget, of those not drawn in `frame_no`, the one drawn longest ago first, all of its frames past its
+/// first let go of and its decoder with them (made again from its bytes as one is wanted again: GifCycle::make).
 fn trim_gif_frames(frame_no : Int) -> Unit {
+  for _, m in moving_images {
+    if m.streaming {
+      for k in 1..<m.keys.length() {
+        if m.made[k] && m.frame_used[k] < frame_no {
+          m.unmake(k)
+        }
+      }
+      if m.last_used < frame_no {
+        m.decoder = None
+      }
+    }
+  }
   guard gif_expanded_bytes.val > gif_frames_budget.val else { return }
   let all : Array[GifCycle] = []
   for _, m in moving_images {
@@ -610,14 +639,20 @@ fn trim_gif_frames(frame_no : Int) -> Unit {
 
 ///|
 /// `data` handed over as `key` when it is a GIF of more than one frame: its frames each a picture of its own, its first
-/// made now and under `key` too (what a still shows), the rest as each is first wanted (GifCycle::make); false when it
-/// is not one, or its frames are more than gif_moving_most (none decoded), handed over as it is.
+/// made now and under `key` too (what a still shows), the rest as each is first wanted (GifCycle::make); past
+/// gif_moving_budget it streams (keeping only its first frame and the frames used in the current frame) as long as a
+/// single frame fits gif_streaming_frame_most. False when it is not a moving GIF or exceeds both caps, handed over as
+/// it is.
 fn add_gif(key : String, data : Bytes) -> Bool {
   guard gif_screen(data) is Some((w, h, start)) else { return false }
   let delays = gif_delays(data, start)
   let count = delays.length()
-  // (count × w × h > gif_moving_most, said so that it is never past an Int)
-  if count < 2 || count > gif_moving_most / (w * h) {
+  if count < 2 {
+    return false
+  }
+  // (count × w × h > gif_moving_budget, said so that it is never past an Int)
+  let streaming = count > gif_moving_budget.val / (w * h)
+  if streaming && w > gif_streaming_frame_most / h {
     return false
   }
   let keys = []
@@ -640,6 +675,8 @@ fn add_gif(key : String, data : Bytes) -> Bool {
     start,
     last_used: -1,
     frame_bytes: FixedArray::make(count, 0),
+    streaming,
+    frame_used: FixedArray::make(count, -1),
   }
   moving_images[key] = m
   m.make(0)

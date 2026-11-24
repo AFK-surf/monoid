@@ -8,6 +8,7 @@ extern "C" fn sth_stop() -> Unit
 extern "C" fn sth_shell_active() -> Int
 extern "C" fn sth_wait(ms : Int64, out_len : Ptr) -> Ptr
 extern "C" fn sth_write_stdout(data : Ptr, len : Int64) -> Int
+extern "C" fn sth_write_stderr(data : Ptr, len : Int64) -> Int
 extern "C" fn sth_shell_call(
   id : Int64,
   op : Ptr,
@@ -173,6 +174,19 @@ pub fn write_stdout(data : Bytes) -> Bool {
 
 pub fn write_stdout_line(line : String) -> Bool {
   write_stdout((line + "\n").to_bytes())
+}
+
+pub fn write_stderr(data : Bytes) -> Bool {
+  if data.length() == 0 {
+    return true
+  }
+  let ok = sth_write_stderr(bytes_data_ptr(data), data.length().to_int64())
+  let _ = data.length()
+  ok != 0
+}
+
+pub fn write_stderr_line(line : String) -> Bool {
+  write_stderr((line + "\n").to_bytes())
 }
 
 /// Write a `mb-reader` framed JSON header followed by exact raw binary tail bytes.

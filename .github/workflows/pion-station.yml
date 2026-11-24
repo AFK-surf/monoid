@@ -5,6 +5,15 @@ on:
     paths:
       - "pion/station/**"
       - "pion/base/**"
+      - "station/mb/src/footprint/**"
+      - "station/src/sessions/footprint.ts"
+      - "station/src/read/mb-reader.ts"
+      - "station/src/read/reader-select.ts"
+      - "station/test/footprint-reference.ts"
+      - "station/test/mb-footprint.test.ts"
+      - "station/test/reader-contract-footprint.test.ts"
+      - "station/test/reader-contract-select.test.ts"
+      - "station/test/footprint-pion-switch.test.ts"
       - ".github/workflows/pion-station.yml"
   workflow_dispatch:
 
@@ -61,6 +70,24 @@ jobs:
             -lpthread -o "$RUNNER_TEMP/host_shim_test_tsan"
           "$RUNNER_TEMP/host_shim_test_tsan"
 
+          cc -std=c11 -O2 -Wall -Wextra -Werror -DNDEBUG \
+            pion/station/packages/footprint/native/footprint_fs.c \
+            pion/station/packages/footprint/native/footprint_fs_test.c \
+            -o "$RUNNER_TEMP/footprint_fs_test"
+          "$RUNNER_TEMP/footprint_fs_test"
+
+          cc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+            pion/station/packages/footprint/native/footprint_fs.c \
+            pion/station/packages/footprint/native/footprint_fs_test.c \
+            -o "$RUNNER_TEMP/footprint_fs_test_asan"
+          "$RUNNER_TEMP/footprint_fs_test_asan"
+
+          cc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=thread -fno-omit-frame-pointer \
+            pion/station/packages/footprint/native/footprint_fs.c \
+            pion/station/packages/footprint/native/footprint_fs_test.c \
+            -o "$RUNNER_TEMP/footprint_fs_test_tsan"
+          "$RUNNER_TEMP/footprint_fs_test_tsan"
+
           # Verify _WIN32 compilation path on every CI run with pinned Zig 0.16.0.
           zbase="$HOME/.cache/pion-station-zig/0.16.0"
           zbin="$zbase/zig-x86_64-linux-0.16.0/zig"
@@ -77,6 +104,8 @@ jobs:
             pion/station/packages/host_shim/native/station_host.c -o "$RUNNER_TEMP/station_host_win.o"
           "$zbin" cc -target x86_64-windows-gnu -std=c11 -O2 -Wall -Wextra -Werror -c \
             pion/station/packages/sqlite_ffi/native/station_sqlite.c -o "$RUNNER_TEMP/station_sqlite_win.o"
+          "$zbin" cc -target x86_64-windows-gnu -std=c11 -O2 -Wall -Wextra -Werror -c \
+            pion/station/packages/footprint/native/footprint_fs.c -o "$RUNNER_TEMP/footprint_fs_win.o"
 
   verify-linux:
     runs-on: ubuntu-24.04
@@ -86,7 +115,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: ./.github/actions/node
+      - uses: ./.github/actions/setup
 
       - name: Verify access to AFK-surf/pion and AFK-surf/pion-packages (fail loudly on missing PION_TOKEN)
         env:
@@ -178,6 +207,12 @@ jobs:
           "$BIN" --smoke-sqlite "$RUNNER_TEMP/smoke.db"
           "$BIN" --smoke-shell "$RUNNER_TEMP/shell-dir"
           "$BIN" --smoke-rc-soak 50000
+
+          # Black-box 0-diff contract gate for `--builder footprint`, including real dual-engine MB+Pion shadow.
+          pnpm --dir station install --frozen-lockfile --prefer-offline
+          STILLFAIL_READER_CANDIDATE="$BIN" node --test station/test/reader-contract-footprint.test.ts
+          STILLFAIL_MB_READER="$BIN" node --test station/test/mb-footprint.test.ts
+          node scripts/native.ts run reader -- env STILLFAIL_PION_READER="$BIN" node --test station/test/footprint-pion-switch.test.ts
 
       - name: Save Zig cache
         if: always() && steps.zig-cache.outputs.cache-hit != 'true'
