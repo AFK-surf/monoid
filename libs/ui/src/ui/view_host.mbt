@@ -4810,9 +4810,13 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
       false
     }
     // (a column under it gliding on by itself (flung, going back from past an end): the press catches it and presses
-    // nothing, view_caught)
+    // nothing, view_caught; words of the tree's a mouse picked let go all the same, as by any press that does not keep
+    // them (keeps_picked), their pill with them)
     (0, _) if button != 2 && view_caught(tree, x, y, at) => {
       tree_field_menu_dismiss_if_outside(tree, x, y)
+      if tree_picking() && !picked.finger && !tree_keeps_picked_at(tree, x, y) {
+        select_none()
+      }
       true
     }
     // (words of the tree's a finger picked stand over the page: a press anywhere else that does not keep them

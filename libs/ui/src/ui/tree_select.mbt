@@ -73,7 +73,9 @@ fn tree_scope_live(scope_id : @view.NodeId) -> Bool {
 
 ///|
 /// If the current tree selection belongs to a scope that was destroyed or hidden (`shown_nowhere`), stop any active
-/// drag and drop `picked_now` while keeping the released selection snapshot for ⌘C copy until a press elsewhere.
+/// drag and drop `picked_now` while keeping the released selection snapshot for ⌘C copy until a press elsewhere. The
+/// scope alive, the words what is picked ends in (`ends_in`) let go of or shown nowhere (a step folded away, what holds
+/// them put by): `picked_now` worked out again the same way, so none stands beside words that show nowhere.
 fn sync_picked_scope_live() -> Unit {
   match picked.layer {
     TreeScope(_, scope_id) if !tree_scope_live(scope_id) => {
@@ -85,6 +87,11 @@ fn sync_picked_scope_live() -> Unit {
         picked_now_tell()
       }
     }
+    TreeScope(_, _) =>
+      match picked_now_said.val.untracked() {
+        Some(p) if !tree_scope_live(p.ends_in) => picked_now_tell()
+        _ => ()
+      }
     _ => ()
   }
 }

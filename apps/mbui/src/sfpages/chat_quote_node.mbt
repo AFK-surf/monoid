@@ -170,7 +170,9 @@ fn chat_quote_node(
   let alled : Ref[Int] = Ref(-1)
   // (in the layer over all of the window (@sf.window_tips), as a tip is: over the rows round what is picked, whose own
   // presses it covers while it shows; made there as a finger first picks, where there is one, living with the list;
-  // else over the list itself)
+  // else over the list itself. Drawn only while where the pick ends is seen in the list, under its bar and over its
+  // composer (View::beside's `while_seen`): its words scrolled out of sight, along or across, none over what is round
+  // the list, back as they are; the bar and the pill alike)
   let bar_in = fn(at : @view.View) {
     at.pick(fn() { chat_finger_picked(v, rows).map(fn(q) { q.0 }) }, fn(holds, picked) {
       guard picked is Some(p) && @signals.untracked(fn() { chat_finger_picked(v, rows) }) is Some((_, m)) else { return }
@@ -253,7 +255,7 @@ fn chat_quote_node(
         // (taken for another message's words: View::scrolls_window's `reused`)
         end.on_reused(gone)
         @ui.keeps_picked(b)
-        .beside(p.ends_in, side=Top, offset=chat_pick_bar_over, piece=@ui.picked_end_piece(p))
+        .beside(p.ends_in, side=Top, offset=chat_pick_bar_over, piece=@ui.picked_end_piece(p), while_seen=true)
         |> ignore
         @sf.pick_bar_node(b, items) |> ignore
       })
@@ -292,7 +294,7 @@ fn chat_quote_node(
             end.on_reused(gone)
             @sf.style_node(b, fn() { chat_quote_pill })
             @sf.glass_capsule_node(@ui.keeps_picked(b), interactive=true)
-            .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p))
+            .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p), while_seen=true)
             |> ignore
             @sf.hover_ground_node(b)
             @sf.icon_node(b, if p.ends_at_start { "quote-open" } else { "quote" }, chat_quote_icon, By(fn() { @sf.theme().p.text }))
@@ -308,7 +310,7 @@ fn chat_quote_node(
             end.on_reused(gone)
             @sf.style_node(pill, fn() { chat_quote_bar })
             @sf.glass_capsule_node(@ui.keeps_picked(pill), interactive=true)
-            .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p))
+            .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p), while_seen=true)
             |> ignore
             @sf.action_box_node(pill, fn() { @sf.t("web-main.chat.quote") }, fn(_) { chat_quote_take(v, src, draft, rows) }, fn(b) {
               @sf.style_node(b, fn() { chat_quote_part })

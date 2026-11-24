@@ -2421,9 +2421,16 @@ fn on_key_now(code : Int, mods : Int) -> Unit {
   took_input("key", h_now(), [code.to_double(), mods.to_double()], typed~)
   typed_event(typed)
   key_in(code, mods)
-  // (Escape to the topmost layer it dismisses, at its moment: overlay.mbt)
+  // (Escape to the topmost layer it dismisses, at its moment: overlay.mbt; with none up that takes it, nor anything of
+  // the tree's (view_key), words of the tree's picked with the pointer let go, and what stands by them (a quote's
+  // pill), as a browser's selection is by Escape)
   if code == key_escape {
-    g().layer_keys_now()
+    let c = g()
+    let layered = c.last_layers.iter().any(fn(l) { c.layer_takes(l) && (l.modal || l.escape) })
+    c.layer_keys_now()
+    if !layered && mods == 0 && tree_picking() {
+      select_none()
+    }
   }
 }
 

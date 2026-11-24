@@ -169,6 +169,8 @@ pub(all) struct Beside {
   host : NodeId?
   /// whether to flip to the opposite side when `side` does not have room (default true)
   flip : Bool
+  /// drawn only while where it goes beside is seen (View::beside's `while_seen`)
+  while_seen : Bool
 }
 
 ///|
@@ -207,7 +209,14 @@ pub(all) enum BesideWidth {
 /// (where its own has not the room, as ever), never back for its own having the room again: grown or shrunk, only its
 /// edge away from its anchor moves while it stays (above it, its top; below it, its foot). Where the side it is on
 /// comes to have not the room (it grew, the window was made smaller), placed as one placed afresh (its own side,
-/// flipped where it has not the room there).
+/// flipped where it has not the room there). `while_seen`: drawn only while where it goes beside (all of its anchor,
+/// or its `piece`) is seen in the window, as what holds the anchor cuts it (a column that scrolls it, a row scrolling
+/// across: Tree::seen_bounds) less what covers that column's top or is pinned over its foot (Tree::stays_bounds: the
+/// bar it runs under, its composer); out of sight, or its anchor gone, put by, drawn nowhere or no piece of it there,
+/// laid out nowhere (none of it drawn, pressed or read out), never where it last went beside it, and beside it again
+/// as that is seen again. What stands for a pick by where it ends (a quote's pill: @ui's picked_end_piece), which a
+/// layer over all of the window holds, is never left over what is round what scrolls its words; leaving, where it last
+/// went, as ever, unless it was out of sight then.
 pub fn View::beside(
   self : View,
   anchor : NodeId,
@@ -222,6 +231,7 @@ pub fn View::beside(
   holds_side? : Bool = false,
   host? : NodeId,
   flip? : Bool = true,
+  while_seen? : Bool = false,
 ) -> View {
   guard self.live() is Some(n) else { return self }
   n.beside_piece = piece
@@ -239,7 +249,20 @@ pub fn View::beside(
     }
     None => self.tree.beside_widths.remove(self.at)
   }
-  n.beside = Some({ anchor, side, along, offset, padding, at_pointer, width, along_offset, holds_side, host, flip })
+  n.beside = Some({
+    anchor,
+    side,
+    along,
+    offset,
+    padding,
+    at_pointer,
+    width,
+    along_offset,
+    holds_side,
+    host,
+    flip,
+    while_seen,
+  })
   if !self.tree.besides_at.contains(self.at) {
     self.tree.besides_at.push(self.at)
   }
@@ -548,7 +571,20 @@ fn Tree::besides_placed(self : Tree) -> Unit {
     // (0, 0) in its holder where its anchor is drawn but gives no place beside it yet (`hides`: no piece of it, not
     // in the window's terms); where its anchor is gone, put by or drawn nowhere (a page parked, a button the system
     // draws in its own bar), where it is laid out, as before)
+    // (said to be drawn only while where it goes beside is seen (View::beside's `while_seen`): beside nothing seen, laid
+    // out nowhere, never where it last went; leaving, where it last went as ever, unless it was out of sight already)
+    let while_seen = n.beside is Some(b) && b.while_seen
+    let unseen = fn() {
+      if self.held_from_root(at) {
+        set_unplaced(at, true)
+      }
+      state[at] = 2
+      true
+    }
     let stay = fn(hides : Bool) {
+      if while_seen && (n.beside_unplaced || !self.leaving_at(at)) {
+        return unseen()
+      }
       match n.beside_last {
         Some((lx, ly, px, py)) => {
           set_unplaced(at, false)
@@ -656,6 +692,17 @@ fn Tree::besides_placed(self : Tree) -> Unit {
           Some((x, y, w, h)) => (ax + x * ascale, ay + y * ascale, w * ascale, h * ascale)
           None => return stay(true)
         }
+    }
+    // (said to go beside it only while that is seen: none of it within what the column or row that holds it shows,
+    // less what covers its top or is pinned over its foot, nor within the window, laid out nowhere till it is again)
+    if b.while_seen {
+      let (sx0, sy0, sx1, sy1) = self.stays_bounds(b.anchor.at)
+      let (x0, y0) = (dmax(sx0, 0.0), dmax(sy0, 0.0))
+      let (x1, y1) = (dmin(sx1, self.last_w), dmin(sy1, self.last_h))
+      // (a piece no wide, a pick's end: seen where it lies on or between the edges across, its line in sight down)
+      if ax + aw < x0 || ax > x1 || ay + ah <= y0 || ay >= y1 {
+        return unseen()
+      }
     }
     let (px, py) = self.pointer_xy
     // (the pointer gone off it: by the point of it the pointer was last at, as the anchor is now, never jumping to all of
