@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [79d825178](https://github.com/AFK-surf/monoid/commit/79d82517845e64708bf4e75dce2f23d4893f2670) fix(mbui): use Meta text size in Poke popover and  | 2.78 | 3.75 | 15.19 | 37.41 | 57.81 | 32.76 | 66.75 | 100.78 | 125.87 |
 | [49c56a044](https://github.com/AFK-surf/monoid/commit/49c56a04493e35db7f2da2b4b906537df25bda7e) fix(station): share one ssh connection per Colab V | 2.78 | 3.75 | 15.19 | 37.41 | 57.81 | 32.76 | 66.75 | 100.78 | 125.87 |
 | [f0fb92750](https://github.com/AFK-surf/monoid/commit/f0fb92750e75a8625aa4da34e206fee16f6c96db) feat(ui): v8 liquid glass optics, parabolic Light  | 2.78 | 3.75 | 15.19 | 37.41 | 57.81 | 32.76 | 66.75 | 100.78 | 125.87 |
 | [d40b1fee6](https://github.com/AFK-surf/monoid/commit/d40b1fee6657d2b51f62954d6daab0e7f44312a8) fix(station): start a new Feishu thread for a quot | 2.78 | 3.75 | 15.19 | 37.41 | 57.81 | 32.76 | 66.74 | 100.68 | 123.04 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c2e84024c](https://github.com/AFK-surf/monoid/commit/c2e84024ce63b1aed5ad3ecefe4d34425b8dc73f) feat(chat): add experimental Poke selection reply  | 2.77 | 3.74 | 15.13 | 37.33 | 57.58 | 32.66 | 66.47 | 100.93 | 123.45 |
 | [c4f5373cd](https://github.com/AFK-surf/monoid/commit/c4f5373cd81bd5a2e72f893ede3f1d41c08856a4) perf(mbc): add content-addressed core_obj fast pat | 2.77 | 3.73 | 15.11 | 37.31 | 57.5 | 32.66 | 66.47 | 100.93 | 121.52 |
 | [9dac38d35](https://github.com/AFK-surf/monoid/commit/9dac38d35b3e1576e055c7c393fa40fb314caf99) feat(pion-station): add Pion packed worker, mb/pio | 2.77 | 3.73 | 15.11 | 37.31 | 57.5 | 32.66 | 66.47 | 100.93 | 121.52 |
-| [d82f3621c](https://github.com/AFK-surf/monoid/commit/d82f3621c6416dcccdc1dd097e5abdb89885061f) ci(desktop-build): keep the Mac core's engine and  | 2.77 | 3.73 | 15.11 | 37.31 | 57.5 | 32.66 | 66.47 | 100.93 | 121.52 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [79d825178](https://github.com/AFK-surf/monoid/commit/79d82517845e64708bf4e75dce2f23d4893f2670) fix(mbui): use Meta text size in Poke popover and  | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.54 |
 | [49c56a044](https://github.com/AFK-surf/monoid/commit/49c56a04493e35db7f2da2b4b906537df25bda7e) fix(station): share one ssh connection per Colab V | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 65.41 |
 | [f0fb92750](https://github.com/AFK-surf/monoid/commit/f0fb92750e75a8625aa4da34e206fee16f6c96db) feat(ui): v8 liquid glass optics, parabolic Light  | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.71 |
 | [d40b1fee6](https://github.com/AFK-surf/monoid/commit/d40b1fee6657d2b51f62954d6daab0e7f44312a8) fix(station): start a new Feishu thread for a quot | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.53 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c2e84024c](https://github.com/AFK-surf/monoid/commit/c2e84024ce63b1aed5ad3ecefe4d34425b8dc73f) feat(chat): add experimental Poke selection reply  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.36 |
 | [c4f5373cd](https://github.com/AFK-surf/monoid/commit/c4f5373cd81bd5a2e72f893ede3f1d41c08856a4) perf(mbc): add content-addressed core_obj fast pat | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.33 |
 | [9dac38d35](https://github.com/AFK-surf/monoid/commit/9dac38d35b3e1576e055c7c393fa40fb314caf99) feat(pion-station): add Pion packed worker, mb/pio | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.33 |
-| [d82f3621c](https://github.com/AFK-surf/monoid/commit/d82f3621c6416dcccdc1dd097e5abdb89885061f) ci(desktop-build): keep the Mac core's engine and  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.59 |
