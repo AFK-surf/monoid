@@ -220,13 +220,37 @@ moon_inc_key=$({
   done
 } | shasum | awk '{print $1}')
 moon_inc="$MBC_STORE/moon-include-$moon_inc_key"
-if [ ! -f "$moon_inc/moonbit.h" ]; then
+# CI's cache step deletes files older than 3 days (find -type f -mtime +3) and once left this directory empty in the
+# Actions cache. mv onto an existing directory moves the new one inside it, so natives-harness found no moonbit.h in
+# any of its 177 units (main 45350580866). Every header must be in place; a directory missing moonbit.h is moved
+# aside first, and a header still missing (a sibling deleted, a concurrent build) is renamed in from the copy.
+inc_ok=1
+for f in "$moon_home"/include/*.h; do
+  [ -f "$moon_inc/${f##*/}" ] || { inc_ok=0; break; }
+done
+if [ "$inc_ok" = 0 ]; then
   tmp_inc="$moon_inc.tmp.$$"
   rm -rf "$tmp_inc"
   mkdir -p "$tmp_inc"
   cp "$moon_home"/include/*.h "$tmp_inc/"
-  mv "$tmp_inc" "$moon_inc" 2>/dev/null || rm -rf "$tmp_inc"
+  if [ -e "$moon_inc" ] && [ ! -f "$moon_inc/moonbit.h" ]; then
+    old_inc="$moon_inc.stale.$$"
+    mv "$moon_inc" "$old_inc" 2>/dev/null || rm -rf "$moon_inc"
+    rm -rf "$old_inc"
+  fi
+  [ -e "$moon_inc" ] || mv "$tmp_inc" "$moon_inc" 2>/dev/null || true
+  # (another build may have made the directory between the test and mv: mv then put the copy inside it)
+  rm -rf "${moon_inc:?}/${tmp_inc##*/}"
+  mkdir -p "$moon_inc"
+  for f in "$tmp_inc"/*.h; do
+    [ -f "$f" ] || continue
+    [ -f "$moon_inc/${f##*/}" ] || mv -f "$f" "$moon_inc/${f##*/}"
+  done
+  rm -rf "$tmp_inc"
 fi
+# mbc keys its units by content, not by the headers' times: refresh them so a MoonBit version used for over 3 days
+# keeps its headers past CI's cleanup.
+touch "$moon_inc" "$moon_inc"/*.h 2>/dev/null || true
 # MOONBIT_CYCLE_COLLECT_AT (runtime.c's alone: no header reads it, so it stays out of cflags and mbc's units keep their
 # keys) is how many 256-root chunks the cycle buffer holds before an allocation walks every object reachable from them.
 # At the runtime's 64 (16,384 roots) the station's live graph (the bus, its slices, the store's maps) refilled it within
