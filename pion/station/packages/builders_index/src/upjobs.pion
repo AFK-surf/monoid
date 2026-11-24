@@ -346,6 +346,23 @@ let JOB_NAME_FIRST_VERSION : Int = 1
 
 let BATCH_BEST : String = "(SELECT rowid FROM thread_sessions WHERE rowid IN (SELECT member FROM job_name_first_batch) ORDER BY joined_at,rowid LIMIT 1)"
 
+/// Saturating Double -> Int64 conversion matching MoonBit `Double::to_int64()`:
+/// NaN -> 0, >= 2^63 -> INT64_MAX, <= -2^63 -> INT64_MIN.
+pub fn double_to_i64_sat(d : Double) -> Int64 {
+  if d != d {
+    return 0.to_int64()
+  }
+  let max64 = (0x7FFFFFFF.to_int64() << 32.to_int64()) | (0xFFFF.to_int64() << 16.to_int64()) | 0xFFFF.to_int64()
+  let min64 = -max64 - 1.to_int64()
+  if d >= 9223372036854775808.0 {
+    return max64
+  }
+  if d <= -9223372036854775808.0 {
+    return min64
+  }
+  d.to_int64()
+}
+
 /// One batch of `thread`'s members for `owner`'s job's name (`jobNameFirstStep`); whether it is prepared then.
 pub fn job_name_first_step(
   db : sql_db::Db,
@@ -383,7 +400,7 @@ pub fn job_name_first_step(
         )
       }
       let o = base_codec::json_str(owner)
-      let t = sql_db::int64_to_json(thread)
+      let t = base_codec::json_num(thread.to_double())
       let _ = match tx_db.run(
         "INSERT OR IGNORE INTO job_name_first(owner,thread,through_session) SELECT ?1,?2,(SELECT session FROM thread_sessions WHERE thread=?2 ORDER BY session DESC LIMIT 1) WHERE EXISTS (SELECT 1 FROM session_up_job_rows WHERE session=?1 LIMIT 1)",
         [o, t],
@@ -481,7 +498,7 @@ pub fn session_up_jobs_dispatch(
     Some(base_codec::Json::Str(session)) => {
       match builders_core::json_get_last(ask, "first") {
         Some(base_codec::Json::Num(thread, _)) => {
-          match job_name_first_step(db, session, thread.to_int64(), limit=64) {
+          match job_name_first_step(db, session, double_to_i64_sat(thread), limit=64) {
             Ok(done) => Ok(Some(done))
             Err(e) => Err(e)
           }

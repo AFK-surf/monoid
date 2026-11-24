@@ -547,6 +547,49 @@ test("all 6 production index/job builder classes switch cleanly between real MB 
     assert.ok(pionSpawns.some((l) => l.startsWith("pion\t--builder\tsession-up-jobs\t")), `expected pion spawn via config.readers, got ${JSON.stringify(pionSpawns)}`);
     assert.ok(!pionSpawns.some((l) => l.startsWith("mb\t")));
     assert.equal(snapshotJobNameFirst(pionDb), snapshotJobNameFirst(mbDb), "JobNameFirstBuilder MB vs Pion 0-diff");
+
+    // 2b. restart=1 with a newly joined earlier member -> both engines re-scan and converge 0-diff.
+    for (const dbPath of [mbDb, pionDb]) {
+      const db = new DatabaseSync(dbPath);
+      try {
+        db.prepare("INSERT INTO thread_sessions(thread, session, connect, joined_at) VALUES (?, 'aaa-earliest', 'ember', 1)").run(thread);
+        db.exec("UPDATE job_name_first SET restart = 1, ready = 0 WHERE owner = 'long'");
+      } finally {
+        db.close();
+      }
+    }
+    await withEnv(baseEnv, async () => {
+      const b = new JobNameFirstBuilder(mbDb, {});
+      try { await b.ready([key]); } finally { await b.close(); }
+    });
+    await withEnv({ ...baseEnv, STILLFAIL_READER_SESSION_UP_JOBS: "pion" }, async () => {
+      const b = new JobNameFirstBuilder(pionDb, {});
+      try { await b.ready([key]); } finally { await b.close(); }
+    });
+    assert.equal(snapshotJobNameFirst(pionDb), snapshotJobNameFirst(mbDb), "JobNameFirstBuilder restart=1 MB vs Pion 0-diff");
+    {
+      const db = new DatabaseSync(pionDb);
+      try {
+        const row = db.prepare("SELECT restart, ready FROM job_name_first WHERE owner = 'long'").get() as { restart: number; ready: number };
+        assert.deepEqual({ ...row }, { restart: 0, ready: 1 });
+      } finally {
+        db.close();
+      }
+    }
+
+    // 2c. Existing owner asked for a different thread (`same = 0`) -> completes immediately without overwriting row.
+    const otherKey = JSON.stringify(["long", thread + 999]);
+    const beforeSame0 = snapshotJobNameFirst(pionDb);
+    await withEnv(baseEnv, async () => {
+      const b = new JobNameFirstBuilder(mbDb, {});
+      try { await b.ready([otherKey]); } finally { await b.close(); }
+    });
+    await withEnv({ ...baseEnv, STILLFAIL_READER_SESSION_UP_JOBS: "pion" }, async () => {
+      const b = new JobNameFirstBuilder(pionDb, {});
+      try { await b.ready([otherKey]); } finally { await b.close(); }
+    });
+    assert.equal(snapshotJobNameFirst(pionDb), beforeSame0, "same=0 must leave existing job_name_first row unchanged");
+    assert.equal(snapshotJobNameFirst(pionDb), snapshotJobNameFirst(mbDb), "JobNameFirstBuilder same=0 MB vs Pion 0-diff");
   }
 
   // 3. WorkspaceUpJobsBuilder: default mb vs STILLFAIL_READER_WORKSPACE_UP_JOBS=pion
@@ -731,6 +774,7 @@ test("search-scope: per-batch stateful turn rotation and mid-run process kill+re
 
   try {
     let steps = 0;
+    let finalDone = false;
     for (let i = 0; i < 300; i++) {
       const [mbRes, pionRes] = await Promise.all([
         mbProc.ask({ scope: "all" }),
@@ -741,6 +785,7 @@ test("search-scope: per-batch stateful turn rotation and mid-run process kill+re
       assert.deepStrictEqual(pionRes, mbRes, `step ${i} response parity`);
       assert.equal(snapshotSearchScope(pionPath), snapshotSearchScope(mbPath), `step ${i} DB state 0-diff`);
       steps++;
+      finalDone = mbRes.done;
 
       mutate(mbPath, i);
       mutate(pionPath, i);
@@ -757,14 +802,98 @@ test("search-scope: per-batch stateful turn rotation and mid-run process kill+re
     }
     assert.ok(restarted, "must have exercised mid-run kill+restart before completion");
     assert.ok(steps > 10, `expected >10 batches, got ${steps}`);
+    assert.equal(finalDone, true, "search-scope must converge to done=true");
+    for (const [label, dbPath] of [["mb", mbPath], ["pion", pionPath]] as const) {
+      const db = new DatabaseSync(dbPath);
+      try {
+        const meta = db.prepare("SELECT threads_done, members_done FROM search_scope_meta WHERE id = 1").get() as {
+          threads_done: number;
+          members_done: number;
+        };
+        assert.deepEqual({ ...meta }, { threads_done: 1, members_done: 1 }, `${label}: scan completion flags must both be 1`);
+        for (const dirtyTable of ["search_scope_sessions_dirty", "search_scope_members_dirty", "search_scope_threads_dirty"]) {
+          const cnt = (db.prepare(`SELECT COUNT(*) AS n FROM ${dirtyTable}`).get() as { n: number }).n;
+          assert.equal(cnt, 0, `${label}: ${dirtyTable} must be empty after convergence`);
+        }
+      } finally {
+        db.close();
+      }
+    }
   } finally {
     await Promise.all([mbProc.close().catch(() => {}), pionProc.close().catch(() => {})]);
   }
 });
 
-// ── Test 3: session-list short-circuit `step && audit` check ──
+// ── Test 2b: job_name_first_step Int64 upper-bound saturation & REAL binding parity with MB ──
 
-test("session-list: scope='search' short-circuits audit until session_list_step finishes", { skip: skipPosix }, async (t) => {
+test("session-up-jobs job_name_first: Int64 upper-bound & overflow numbers (INT64_MAX, 2^63, 1e400) match real MB typeof(thread) and best", { skip: skipPosix }, async (t) => {
+  const bins = resolveRealBinaries();
+  if ("skip" in bins) {
+    t.skip(bins.skip);
+    return;
+  }
+
+  const dir = freshDir("job-name-first-int64-");
+  const rawFirstCases = ["9223372036854775807", "9223372036854775808", "1e400"];
+
+  for (const rawNum of rawFirstCases) {
+    const seedPath = join(dir, `seed-${rawNum}.db`);
+    const store = Store.open(seedPath, join(dir, `arch-${rawNum}`));
+    try {
+      const db = store.db;
+      db.prepare("INSERT INTO jobs(id, token, session_key, state, port, name, command, cwd, started_at, log) VALUES ('j1', 'j1', 'long', 'running', NULL, '', '', '', 1, '')").run();
+      while (!sessionUpJobsStep(db, "long").done);
+      // Seed a thread_sessions row with rowid/thread = INT64_MAX so INTEGER vs REAL binding is distinguishable on `best`.
+      db.exec("INSERT INTO thread_sessions(thread, session, connect, joined_at) VALUES (9223372036854775807, 'm1', 'ember', 1)");
+      db.exec("DELETE FROM job_name_first");
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    } finally {
+      store.close();
+    }
+
+    const mbPath = join(dir, `mb-${rawNum}.db`);
+    const pionPath = join(dir, `pion-${rawNum}.db`);
+    copyFileSync(seedPath, mbPath);
+    copyFileSync(seedPath, pionPath);
+
+    const askRaw = async (bin: string, dbPath: string): Promise<{ done: boolean; error?: string }> => {
+      const child = spawn(bin, ["--builder", "session-up-jobs", "--db", dbPath], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+      const out = await new Promise<string>((resolveOut, rejectOut) => {
+        let buf = "";
+        child.stdout!.on("data", (c: Buffer) => {
+          buf += c.toString("utf8");
+          const nl = buf.indexOf("\n");
+          if (nl >= 0) resolveOut(buf.slice(0, nl));
+        });
+        child.once("error", rejectOut);
+        child.stdin!.write(`{"session":"long","first":${rawNum}}\n`);
+      });
+      child.stdin!.end();
+      await new Promise<void>((done) => child.once("close", () => done()));
+      return JSON.parse(out) as { done: boolean; error?: string };
+    };
+
+    const mbRes = await askRaw(bins.mbBin, mbPath);
+    const pionRes = await askRaw(bins.pionBin, pionPath);
+    assert.deepStrictEqual(pionRes, mbRes, `raw first=${rawNum}: response parity`);
+
+    const inspect = (dbPath: string) => {
+      const db = new DatabaseSync(dbPath);
+      try {
+        return db.prepare("SELECT owner, typeof(thread) AS thread_type, CAST(thread AS TEXT) AS thread_text, best, ready FROM job_name_first ORDER BY owner").all();
+      } finally {
+        db.close();
+      }
+    };
+    const mbRow = inspect(mbPath);
+    const pionRow = inspect(pionPath);
+    assert.deepStrictEqual(pionRow, mbRow, `raw first=${rawNum}: typeof(thread), thread, and best must match MB 0-diff`);
+  }
+});
+
+// ── Test 3: session-list short-circuit `step && audit` discriminating check ──
+
+test("session-list: scope='search' short-circuits audit until session_list_step finishes (discriminating trigger test)", { skip: skipPosix }, async (t) => {
   const bins = resolveRealBinaries();
   if ("skip" in bins) {
     t.skip(bins.skip);
@@ -772,27 +901,76 @@ test("session-list: scope='search' short-circuits audit until session_list_step 
   }
 
   const dir = freshDir("session-list-shortcircuit-");
-  const seed = createSessionListSeed(dir);
-  const pionPath = join(dir, "pion.db");
-  copyFileSync(seed, pionPath);
-
-  const proc = new LineProc(bins.pionBin, ["--builder", "session-list", "--db", pionPath]);
+  const seedPath = join(dir, "seed-257.db");
+  const store = Store.open(seedPath, join(dir, "archive-257"));
   try {
-    // First batch on 600 sessions (limit=256) must return done=false and NOT create search_job_session_audit.
-    const first = await proc.ask({ scope: "search" });
-    assert.deepStrictEqual(first, { done: false });
-    const db = new DatabaseSync(pionPath);
-    try {
-      const auditExists = db.prepare("SELECT 1 FROM sqlite_master WHERE name='search_job_session_audit'").get();
-      assert.equal(auditExists, undefined, "audit table must NOT be created while session_list_step returns false");
-    } finally {
-      db.close();
+    const db = store.db;
+    for (const row of db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'session_list_%'").all() as { name: string }[]) {
+      db.exec(`DROP TRIGGER ${row.name}`);
     }
+    db.exec("DROP TABLE session_list_rows; DROP TABLE session_list_replaced; DROP TABLE session_list_meta");
+    db.exec("BEGIN");
+    for (let i = 0; i < 257; i++) {
+      store.insertSession({
+        key: `s-${i}`,
+        connect: "ember",
+        runtime: "claude",
+        profile: "cc",
+        workspace: "/work",
+        token: `tok-${i}`,
+        createdAt: i,
+        lastActiveAt: i,
+        ws: "ws-0",
+      } as Parameters<Store["insertSession"]>[0]);
+    }
+    db.exec("COMMIT");
+    installSessionListIndex(db);
+    // Delete session_list_meta immediately after the first partial batch (`complete = 0`).
+    // If `scope: "search"` failed to short-circuit and invoked `audit(db)` on request 1,
+    // `audit(db)` would fail on request 1 instead of request 2.
+    db.exec("CREATE TRIGGER drop_meta_after_first_batch AFTER UPDATE OF last_rowid ON session_list_meta WHEN NEW.complete = 0 BEGIN DELETE FROM session_list_meta; END;");
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  } finally {
+    store.close();
+  }
+
+  const mbPath = join(dir, "mb.db");
+  const pionPath = join(dir, "pion.db");
+  copyFileSync(seedPath, mbPath);
+  copyFileSync(seedPath, pionPath);
+
+  const mbProc = new LineProc(bins.mbBin, ["--builder", "session-list", "--db", mbPath]);
+  const pionProc = new LineProc(bins.pionBin, ["--builder", "session-list", "--db", pionPath]);
+  const mbPrefix = /^\S+:\d+:\d+-\d+:\d+@\S+ FAILED: /;
+  try {
+    // Request 1: writes 256 rows and returns { done: false } with NO error on both MB and Pion.
+    const [mb1, pion1] = await Promise.all([mbProc.ask({ scope: "search" }), pionProc.ask({ scope: "search" })]);
+    assert.deepStrictEqual(mb1, { done: false });
+    assert.deepStrictEqual(pion1, { done: false });
+    for (const [label, dbPath] of [["mb", mbPath], ["pion", pionPath]] as const) {
+      const db = new DatabaseSync(dbPath);
+      try {
+        const rowCnt = (db.prepare("SELECT COUNT(*) AS n FROM session_list_rows").get() as { n: number }).n;
+        assert.equal(rowCnt, 256, `${label}: first batch must write exactly 256 rows`);
+        const auditExists = db.prepare("SELECT 1 FROM sqlite_master WHERE name='search_job_session_audit'").get();
+        assert.equal(auditExists, undefined, `${label}: audit table must NOT be created while session_list_step returns false`);
+      } finally {
+        db.close();
+      }
+    }
+
+    // Request 2: NOW sees missing marker error on both MB and Pion.
+    const [mb2, pion2] = await Promise.all([mbProc.ask({ scope: "search" }), pionProc.ask({ scope: "search" })]);
+    assert.equal(mb2.done, false);
+    assert.equal(pion2.done, false);
+    assert.equal(pion2.error, mb2.error?.replace(mbPrefix, ""));
+    assert.equal(pion2.error, "session list index version marker is missing");
+
     // Invalid request returns exact protocol error.
-    const bad = await proc.ask({ scope: "nope" });
+    const bad = await pionProc.ask({ scope: "nope" });
     assert.deepStrictEqual(bad, { done: false, error: "invalid session list preparation request" });
   } finally {
-    await proc.close();
+    await Promise.all([mbProc.close(), pionProc.close()]);
   }
 });
 
@@ -885,6 +1063,13 @@ function tokenizeSql(sql: string): SqlTok[] {
   return tokens;
 }
 
+/// Expression-scoped SQLite lexical static guard for `pion/station/packages/builders_index/src/*.pion`:
+/// - Never leaks `inTriggerHeader`/`inTriggerBody` across statements, array elements, or functions:
+///   trigger state only spans `+`-concatenated literals within the same expression (reset on `,`/`;`/`}`/`]`
+///   or any newline whose previous line did not end with `+`).
+/// - Inside a trigger body, an interpolated helper call (`+ helper(...) +`) is treated as completing a SQL
+///   statement so the matching `" END;"` closes `inTriggerBody`, while any subsequent `BEGIN`/`COMMIT`/`END`/
+///   `SAVEPOINT`/`RELEASE`/`ROLLBACK` outside the trigger body is immediately flagged.
 function findRawTxControlViolations(filename: string, source: string): string[] {
   const violations: string[] = [];
   const forbiddenHeads = new Set(["BEGIN", "COMMIT", "END", "SAVEPOINT", "RELEASE", "ROLLBACK"]);
@@ -892,15 +1077,67 @@ function findRawTxControlViolations(filename: string, source: string): string[] 
   let inTriggerHeader = false;
   let inTriggerBody = false;
   let atTriggerStmtStart = false;
+  let triggerParenDepth = 0;
+  let prevLineEndedWithPlus = false;
+  let parenDepth = 0;
+
+  const resetTrigger = () => {
+    inTriggerHeader = false;
+    inTriggerBody = false;
+    atTriggerStmtStart = false;
+  };
+
+  const scanGap = (gap: string) => {
+    let sawTriggerBoundary = false;
+    let sawTriggerPlus = false;
+    for (let i = 0; i < gap.length; i++) {
+      const ch = gap[i]!;
+      if (ch === "(") {
+        parenDepth++;
+      } else if (ch === ")") {
+        if ((inTriggerHeader || inTriggerBody) && parenDepth <= triggerParenDepth) sawTriggerBoundary = true;
+        parenDepth = Math.max(0, parenDepth - 1);
+      } else if ((inTriggerHeader || inTriggerBody) && parenDepth <= triggerParenDepth) {
+        if (ch === ";" || ch === "}" || ch === "]" || ch === ",") sawTriggerBoundary = true;
+        else if (ch === "+") sawTriggerPlus = true;
+      }
+    }
+    if (sawTriggerBoundary) resetTrigger();
+    else if (inTriggerBody && sawTriggerPlus) atTriggerStmtStart = true;
+  };
 
   for (let idx = 0; idx < lines.length; idx++) {
     const line = lines[idx]!;
-    if (line.trim().startsWith("//")) continue;
+    const trimmed = line.trim();
+    if (trimmed.startsWith("//")) continue;
+    if (!prevLineEndedWithPlus && parenDepth <= triggerParenDepth) resetTrigger();
+
+    // Scan string literals on this line along with the non-string code gaps between them.
     const litRe = /"((?:\\.|[^"\\])*)"/g;
+    let lastEnd = 0;
     let m: RegExpExecArray | null;
     while ((m = litRe.exec(line)) !== null) {
+      const gap = line.slice(lastEnd, m.index);
+      lastEnd = m.index + m[0].length;
+      scanGap(gap);
+
       const literal = m[1]!;
       const tokens = tokenizeSql(unescapePionString(literal));
+      // Only treat literals at the trigger's own paren depth as part of the outer trigger DDL.
+      if ((inTriggerHeader || inTriggerBody) && parenDepth > triggerParenDepth) {
+        // Still check nested call string arguments with fresh non-trigger state so injected tx SQL in args is caught.
+        let argStmtStart = true;
+        for (let t = 0; t < tokens.length; t++) {
+          const tok = tokens[t]!;
+          if (tok.kind === "semi") { argStmtStart = true; continue; }
+          if (!argStmtStart) continue;
+          argStmtStart = false;
+          if (tok.kind === "word" && forbiddenHeads.has(tok.upper)) {
+            violations.push(`${filename}:${idx + 1}: forbidden raw transaction SQL "${tok.upper}" in literal "${literal}"`);
+          }
+        }
+        continue;
+      }
       let atStmtStart = true;
 
       for (let t = 0; t < tokens.length; t++) {
@@ -944,6 +1181,7 @@ function findRawTxControlViolations(filename: string, source: string): string[] 
             (t1?.kind === "word" && (t1.upper === "TEMP" || t1.upper === "TEMPORARY") && t2?.kind === "word" && t2.upper === "TRIGGER")
           ) {
             inTriggerHeader = true;
+            triggerParenDepth = parenDepth;
           }
           continue;
         }
@@ -958,11 +1196,15 @@ function findRawTxControlViolations(filename: string, source: string): string[] 
         }
       }
     }
+    const tail = line.slice(lastEnd);
+    scanGap(tail);
+    prevLineEndedWithPlus = tail.trimEnd().endsWith("+");
+    if (!prevLineEndedWithPlus && parenDepth <= triggerParenDepth) resetTrigger();
   }
   return violations;
 }
 
-test("builders_index static guard: rejects raw transaction SQL and passes on all builders_index business files", () => {
+test("builders_index static guard: rejects raw transaction SQL (including injected COMMIT in real outflow.pion & searchscope.pion) and passes on clean files", () => {
   assert.ok(findRawTxControlViolations("x.pion", 'db.exec("BEGIN IMMEDIATE")').length > 0);
   assert.ok(findRawTxControlViolations("x.pion", 'db.exec("COMMIT")').length > 0);
   assert.ok(findRawTxControlViolations("x.pion", 'db.exec("END")').length > 0);
@@ -986,4 +1228,24 @@ test("builders_index static guard: rejects raw transaction SQL and passes on all
     violations.push(...findRawTxControlViolations(file, readFileSync(join(srcDir, file), "utf8")));
   }
   assert.deepStrictEqual(violations, [], `raw transaction SQL found in builders_index:\n${violations.join("\n")}`);
+
+  // Non-vacuous injection proof on real `outflow.pion` and `searchscope.pion`:
+  // injecting `tx_db.exec("COMMIT")` inside `outflow_step` / `search_scope_step` MUST be caught.
+  const outflowSrc = readFileSync(join(srcDir, "outflow.pion"), "utf8");
+  const outflowMutated = outflowSrc.replace("pub fn outflow_step(", 'fn _injected(tx_db : sql_db::Db) -> Unit { let _ = tx_db.exec("COMMIT") }\npub fn outflow_step(');
+  assert.notEqual(outflowMutated, outflowSrc);
+  const outflowHits = findRawTxControlViolations("outflow.pion", outflowMutated);
+  assert.ok(
+    outflowHits.some((v) => v.includes('forbidden raw transaction SQL "COMMIT"')),
+    `expected guard to catch injected COMMIT in real outflow.pion, got: ${JSON.stringify(outflowHits)}`,
+  );
+
+  const searchSrc = readFileSync(join(srcDir, "searchscope.pion"), "utf8");
+  const searchMutated = searchSrc.replace("pub fn search_scope_step(", 'fn _injected(tx_db : sql_db::Db) -> Unit { let _ = tx_db.exec("COMMIT") }\npub fn search_scope_step(');
+  assert.notEqual(searchMutated, searchSrc);
+  const searchHits = findRawTxControlViolations("searchscope.pion", searchMutated);
+  assert.ok(
+    searchHits.some((v) => v.includes('forbidden raw transaction SQL "COMMIT"')),
+    `expected guard to catch injected COMMIT in real searchscope.pion, got: ${JSON.stringify(searchHits)}`,
+  );
 });
