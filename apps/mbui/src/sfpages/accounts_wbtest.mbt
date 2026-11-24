@@ -1798,9 +1798,12 @@ test "profiles_batch_foot_node (page=true): liquid glass card with outside shado
     for case in [(900.0, 0), (390.0, 2)] {
       let (w, platform) = case
       let at = "dark=\{dark} w=\{w} platform=\{platform}"
+      let t = setting_tester(Profiles(""), w, platform~, h=640.0, over=fn(base) { with_share_auto(base) })
+      // Set dark after setting_tester (Tester::new calls reset_globals) and assert theme().dark actually matches
       @sf.set_dark(Some(dark))
       @ui.set_glass_solid(None)
-      let t = setting_tester(Profiles(""), w, platform~, h=640.0, over=fn(base) { with_share_auto(base) })
+      t.draw()
+      assert_eq(@sf.theme().dark, dark, msg="\{at}: theme().dark must match")
       t.click(Button, label="多选")
       t.run_for(@ui.move_most_ms)
       assert_true(t.find("已选 0 项") is Some(_), msg=at)
@@ -1825,31 +1828,54 @@ test "profiles_batch_foot_node (page=true): liquid glass card with outside shado
         stop_btn.rect.1 + stop_btn.rect.3 <= g.1 + g.3 - 4.0,
         msg="\{at}: buttons inside card g=\{Repr(g)} share=\{Repr(share_btn.rect)} stop=\{Repr(stop_btn.rect)}",
       )
-      // On narrow 320pt, verify reverse-wrap keeps primary button on the bottom row
+      // On narrow 320pt at 1.3x font scale: reverse-wrap strictly puts primary button on the lower row,
+      // and scrolling in that same narrow wrapped state must bring the true last row ("使用此账号") completely above bar_top
       if w <= 390.0 {
         t.resize(320.0, 640.0)
+        t.set_font_scale(1.3)
         t.run_for(@ui.move_most_ms)
         let s2 = t.get(Button, label="分享与 station")
         let st2 = t.get(Button, label="停止分享")
-        assert_true(s2.rect.1 >= st2.rect.1, msg="\{at}: reverse-wrap keeps primary at bottom row: share=\{Repr(s2.rect)} stop=\{Repr(st2.rect)}")
-        assert_eq(t.corner_faults(), [], msg="\{at}: 320pt corner faults")
+        assert_true(
+          s2.rect.1 > st2.rect.1 + 1.0,
+          msg="\{at}: reverse-wrap must put primary strictly on lower row: share=\{Repr(s2.rect)} stop=\{Repr(st2.rect)}",
+        )
+        assert_eq(t.corner_faults(), [], msg="\{at}: 320pt 1.3x corner faults")
+        for _ in 0..<12 {
+          t.wheel(160.0, 200.0, 200.0)
+        }
+        t.run_for(@ui.move_most_ms)
+        let narrow_bar_top = t.drawn_glass().filter(fn(gl) { gl.1 + gl.3 > 400.0 && gl.2 > 200.0 })[0].1
+        guard t.query(Button, label="使用此账号") is Some(last_btn) else {
+          fail("\{at}: narrow wrapped last row (使用此账号) not found after scrolling")
+        }
+        assert_true(
+          last_btn.rect.1 + last_btn.rect.3 <= narrow_bar_top,
+          msg="\{at}: narrow wrapped last row bottom \{last_btn.rect.1 + last_btn.rect.3} must be <= bar_top \{narrow_bar_top}",
+        )
+        t.set_font_scale(1.0)
         t.resize(w, 640.0)
         t.run_for(@ui.move_most_ms)
-      }
-      // Scroll list down to verify last row can scroll clear above the floating batch bar
-      for _ in 0..<8 {
-        t.wheel(w / 2.0, 200.0, 200.0)
-      }
-      t.run_for(@ui.move_most_ms)
-      let bar_top = t.drawn_glass().filter(fn(gl) { gl.1 + gl.3 > 450.0 && gl.2 > 200.0 })[0].1
-      match t.find("备用 key") {
-        Some((_, ry)) => assert_true(ry < bar_top, msg="\{at}: last row scrollable clear of bar (ry=\{ry}, bar_top=\{bar_top})")
-        None => ()
+      } else {
+        // Wide: scroll down and strictly assert the true last row ("使用此账号") clears bar_top
+        for _ in 0..<12 {
+          t.wheel(w / 2.0, 200.0, 200.0)
+        }
+        t.run_for(@ui.move_most_ms)
+        let wide_bar_top = t.drawn_glass().filter(fn(gl) { gl.1 + gl.3 > 450.0 && gl.2 > 200.0 })[0].1
+        guard t.query(Button, label="使用此账号") is Some(last_btn) else {
+          fail("\{at}: wide last row (使用此账号) not found after scrolling")
+        }
+        assert_true(
+          last_btn.rect.1 + last_btn.rect.3 <= wide_bar_top,
+          msg="\{at}: wide last row bottom \{last_btn.rect.1 + last_btn.rect.3} must be <= bar_top \{wide_bar_top}",
+        )
       }
       // MBUI_GLASS=solid fallback: 0 glass + 1pt border
       @ui.set_glass_solid(Some(true))
       t.draw()
       t.run_for(@ui.move_most_ms)
+      assert_eq(@sf.theme().dark, dark, msg="\{at}: solid theme().dark must match")
       let solid_glass = t.drawn_glass().filter(fn(gl) { gl.1 + gl.3 > 450.0 && gl.2 > 200.0 })
       let solid_edges = t
         .boxes_held()

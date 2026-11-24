@@ -322,7 +322,7 @@ fn chat_quote_node(
         }
         let actions : Array[@sf.PickBarAction] = [
           @sf.pick_bar_action(
-            @sf.t("web-main.chat.quote"),
+            fn() { @sf.t("web-main.chat.quote") },
             icon=if p.ends_at_start { "quote-open" } else { "quote" },
             fn(_) { chat_quote_take(v, src, draft, rows) },
           ),
@@ -330,7 +330,7 @@ fn chat_quote_node(
         if with_intent {
           actions.push(
             @sf.pick_bar_action(
-              @sf.t("web-main.chat.inferIntent"),
+              fn() { @sf.t("web-main.chat.inferIntent") },
               icon="poke",
               // (beside the pill where it was pressed, as a menu opens from its key: the pill goes as the words are let
               // go, so where it was is taken now)

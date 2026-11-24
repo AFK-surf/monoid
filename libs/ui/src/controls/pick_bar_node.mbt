@@ -110,11 +110,11 @@ fn pick_bar_button(
 }
 
 ///|
-/// One action in a compact desktop selection bar (`pick_bar_desk_node`): its label (shown and read out),
-/// optional 12pt icon (`""` for none), and activation callback receiving the button's window rectangle
-/// `(x, y, w, h)` synchronously at activation time.
+/// One action in a compact desktop selection bar (`pick_bar_desk_node`): its reactive label (shown and read out,
+/// staying live across language/word-table switches), optional 12pt icon (`""` for none), and activation callback
+/// receiving the button's window rectangle `(x, y, w, h)` synchronously at activation time.
 pub struct PickBarAction {
-  label : String
+  label : () -> String
   icon : String
   press_at : ((Double, Double, Double, Double)) -> Unit
 }
@@ -122,7 +122,7 @@ pub struct PickBarAction {
 ///|
 /// Builds a `PickBarAction` for `pick_bar_desk_node`.
 pub fn pick_bar_action(
-  label : String,
+  label : () -> String,
   icon? : String = "",
   press_at : ((Double, Double, Double, Double)) -> Unit,
 ) -> PickBarAction {
@@ -176,7 +176,7 @@ fn pick_bar_desk_button(
   @headless.button(
     made_for=loc,
     parent,
-    fn() { act.label },
+    act.label,
     fn(v) { (act.press_at)(v.placed_window_now()) },
     fn(v, b) {
       style_node(v, fn() { pick_bar_desk_button_look })
@@ -185,7 +185,7 @@ fn pick_bar_desk_button(
       if act.icon != "" {
         icon_node(v, act.icon, pick_bar_desk_icon, By(fn() { theme().p.text })) |> ignore
       }
-      words_node(v, fn() { act.label }, fn() { pick_bar_desk_words }) |> ignore
+      words_node(v, act.label, fn() { pick_bar_desk_words }) |> ignore
       @glass.bind_pill_press(v)
       let rippled = press_look(loc~, v, Is(pick_bar_desk_round), fn() { false }, pointer=false)
       v.gesture(

@@ -280,9 +280,14 @@ test "wide: doc_notes_side_node uses single-layer liquid panel glass with outsid
   let long_comment = "这段设计说明里的接口约束需要补充错误码与边界条件说明，同时确认多端降级行为保持一致"
   for dark in [false, true] {
     let at = "dark=\{dark}"
-    @sf.set_dark(Some(dark))
-    @ui.set_glass_solid(None)
     let (t, _, x, y, w, h) = pdf_marks_tester(w=1280.0)
+    // Switch theme via prefs.set + Tester host dark mode so full-app view(c, src) applies it on draw
+    let src = preview_src.val.unwrap()
+    (src.call)("prefs.set", { "appearance": Json::string(if dark { "dark" } else { "light" }) }, @sfbase.answer_unread)
+    t.set_dark(dark)
+    @ui.set_glass_solid(None)
+    t.draw()
+    assert_eq(@sf.theme().dark, dark, msg="\{at}: theme().dark must match")
     pdf_note_made(t, x, y, w, h, said=long_comment)
     t.run_for(@ui.move_most_ms)
     // Side panel lies on the right (`x >= 1280 - doc_notes_side_w - 24`)
@@ -302,6 +307,7 @@ test "wide: doc_notes_side_node uses single-layer liquid panel glass with outsid
     @ui.set_glass_solid(Some(true))
     t.draw()
     t.run_for(@ui.move_most_ms)
+    assert_eq(@sf.theme().dark, dark, msg="\{at}: solid theme().dark must match")
     let solid_glass = t.drawn_glass().filter(fn(g) { g.0 >= side_x_min && (g.2 - @sfbase.doc_notes_side_w).abs() < 2.0 })
     let solid_edges = t
       .boxes_held()
@@ -311,10 +317,14 @@ test "wide: doc_notes_side_node uses single-layer liquid panel glass with outsid
     @ui.set_glass_solid(None)
   }
 
-  // Short window + long notes + 1.3x font scale + keyboard focus on top/bottom buttons
-  @sf.set_dark(Some(false))
-  @ui.set_glass_solid(None)
+  // Short window + long notes + 1.3x font scale + keyboard focus on top ("删除批注") & bottom ("回到输入框发送") buttons
   let (t, _, x, y, w, h) = pdf_marks_tester(w=1280.0)
+  let src = preview_src.val.unwrap()
+  (src.call)("prefs.set", { "appearance": Json::string("light") }, @sfbase.answer_unread)
+  t.set_dark(false)
+  @ui.set_glass_solid(None)
+  t.draw()
+  assert_eq(@sf.theme().dark, false)
   pdf_note_made(t, x, y, w, h, said=long_comment)
   t.set_font_scale(1.3)
   t.resize(1280.0, 420.0)
@@ -325,12 +335,31 @@ test "wide: doc_notes_side_node uses single-layer liquid panel glass with outsid
   assert_true(clear_btn.rect.1 >= 0.0 && clear_btn.rect.1 + clear_btn.rect.3 <= 420.0, msg="clear btn visible in short window")
   assert_true(send_btn.rect.1 >= 0.0 && send_btn.rect.1 + send_btn.rect.3 <= 420.0, msg="send btn visible in short window")
   assert_true(del_btn.rect.1 >= 0.0 && del_btn.rect.1 + del_btn.rect.3 <= 420.0, msg="top delete btn visible in short window")
-  // Tab through controls to verify keyboard focus ring does not trigger corner faults
-  for _ in 0..<8 {
-    t.key(@ui.key_tab)
-    t.draw()
+  // Step with t.tab() until top "删除批注" and bottom "回到输入框发送" each receive focus, verifying live frame visibility & 0 faults
+  let mut hit_top = false
+  let mut hit_bottom = false
+  for _ in 0..<24 {
+    t.tab()
+    match t.focused() {
+      Some(s) if s.label == "删除批注" => {
+        hit_top = true
+        assert_true(s.rect.1 >= 0.0 && s.rect.1 + s.rect.3 <= 420.0, msg="focused top btn in [0,420]: \{Repr(s.rect)}")
+        assert_eq(t.corner_faults().filter(fn(f) { f.contains("doc_notes_node") }), [], msg="focused top btn corner faults")
+        assert_eq(t.focus_visible_faults().filter(fn(f) { f.contains("doc_notes_node") }), [], msg="focused top btn focus visible")
+      }
+      Some(s) if s.label == "回到输入框发送" => {
+        hit_bottom = true
+        assert_true(s.rect.1 >= 0.0 && s.rect.1 + s.rect.3 <= 420.0, msg="focused bottom btn in [0,420]: \{Repr(s.rect)}")
+        assert_eq(t.corner_faults().filter(fn(f) { f.contains("doc_notes_node") }), [], msg="focused bottom btn corner faults")
+        assert_eq(t.focus_visible_faults().filter(fn(f) { f.contains("doc_notes_node") }), [], msg="focused bottom btn focus visible")
+      }
+      _ => ()
+    }
+    if hit_top && hit_bottom {
+      break
+    }
   }
-  assert_eq(t.corner_faults().filter(fn(f) { f.contains("doc_notes_node") }), [], msg="short window + 1.3x + focus corner faults")
+  assert_true(hit_top, msg="Tab reached top 删除批注 button; last focused=\{t.focus_said()}")
+  assert_true(hit_bottom, msg="Tab reached bottom 回到输入框发送 button; last focused=\{t.focus_said()}")
   @ui.set_glass_solid(None)
-  @sf.set_dark(None)
 }

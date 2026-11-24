@@ -317,6 +317,7 @@ test "pick_bar_desk_node: 26pt floating liquid glass capsule, hairline divider f
       presenters_reset()
       let got_rects : Array[(String, (Double, Double, Double, Double))] = []
       let bar_ref : Ref[@view.View?] = Ref(None)
+      let english : @signals.Signal[Bool] = @signals.signal(false)
       let t = @ui.Tester::new(fn(_c) {  }, w=500.0, h=300.0, dark~, platform=0)
       set_dark(Some(dark))
       @ui.set_glass_solid(None)
@@ -326,10 +327,16 @@ test "pick_bar_desk_node: 26pt floating liquid glass capsule, hairline divider f
             page.grow(Is(1.0)).padding(Is((48.0, 48.0, 48.0, 48.0))).lines_up(Is(Some(Start))).ground(By(fn() { theme().p.bg }))
             |> ignore
             let actions : Array[PickBarAction] = [
-              pick_bar_action("引用", icon="quote", fn(r) { got_rects.push(("引用", r)) }),
+              pick_bar_action(fn() { if english.get() { "Quote" } else { "引用" } }, icon="quote", fn(r) {
+                got_rects.push(("引用", r))
+              }),
             ]
             if count == 2 {
-              actions.push(pick_bar_action("戳一下", icon="poke", fn(r) { got_rects.push(("戳一下", r)) }))
+              actions.push(
+                pick_bar_action(fn() { if english.get() { "Poke" } else { "戳一下" } }, icon="poke", fn(r) {
+                  got_rects.push(("戳一下", r))
+                }),
+              )
             }
             bar_ref.val = Some(pick_bar_desk_node(page, actions))
           })
@@ -339,6 +346,7 @@ test "pick_bar_desk_node: 26pt floating liquid glass capsule, hairline divider f
       )
       t.draw()
       t.run_for(@ui.move_most_ms)
+      assert_eq(theme().dark, dark, msg="\{at}: theme().dark")
       let bar = bar_ref.val.unwrap()
       let has_host = bar.lent(floating_host_lent).map(fn(h) { h.id() == bar.id() }).unwrap_or(false)
       let glass = t.drawn_glass()
@@ -349,6 +357,17 @@ test "pick_bar_desk_node: 26pt floating liquid glass capsule, hairline divider f
       let seps = t.drawn_rects().filter(fn(r) { (r.2 - rule_w).abs() < 0.1 && (r.3 - 12.0).abs() < 0.5 })
       assert_eq((at, seps.length()), (at, if count == 2 { 1 } else { 0 }))
       assert_eq((at, t.audit()), (at, []))
+
+      // Reactive label update: switching language/word table updates visible words and a11y names in place
+      english.set(true)
+      t.draw()
+      assert_true(t.find("Quote") is Some(_) && t.query(Button, label="Quote") is Some(_), msg="\{at}: updated to Quote")
+      if count == 2 {
+        assert_true(t.find("Poke") is Some(_) && t.query(Button, label="Poke") is Some(_), msg="\{at}: updated to Poke")
+      }
+      english.set(false)
+      t.draw()
+      assert_true(t.find("引用") is Some(_) && t.query(Button, label="引用") is Some(_), msg="\{at}: restored 引用")
 
       // Click triggers press_at with synchronous button rect
       let btn = t.get(Button, label=if count == 2 { "戳一下" } else { "引用" })
@@ -375,9 +394,9 @@ test "pick_bar_desk_node: 26pt floating liquid glass capsule, hairline divider f
           root.box(fn(page) {
             page.grow(Is(1.0)).padding(Is((48.0, 48.0, 48.0, 48.0))).lines_up(Is(Some(Start))).ground(By(fn() { theme().p.bg }))
             |> ignore
-            let actions : Array[PickBarAction] = [pick_bar_action("引用", icon="quote", fn(_) {  })]
+            let actions : Array[PickBarAction] = [pick_bar_action(fn() { "引用" }, icon="quote", fn(_) {  })]
             if count == 2 {
-              actions.push(pick_bar_action("戳一下", icon="poke", fn(_) {  }))
+              actions.push(pick_bar_action(fn() { "戳一下" }, icon="poke", fn(_) {  }))
             }
             pick_bar_desk_node(page, actions) |> ignore
           })
