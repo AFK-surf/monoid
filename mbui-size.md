@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4071ef70c](https://github.com/AFK-surf/monoid/commit/4071ef70c97c2aad6409fac6519c3bf6350e9774) feat(pion-station): migrate stateful archive-last  | 2.78 | 3.75 | 15.19 | 37.4 | 57.81 | 32.75 | 66.74 | 100.68 | 125.07 |
 | [d9a7748e3](https://github.com/AFK-surf/monoid/commit/d9a7748e3cf7f12fdc33b338bd86f763d53f8d53) fix(screens): bound simulator view startup and enu | 2.78 | 3.75 | 15.19 | 37.4 | 57.81 | 32.75 | 66.74 | 100.68 | 125.07 |
 | [e5dc78307](https://github.com/AFK-surf/monoid/commit/e5dc78307cf13887651506576fa3d4636e9ccdb5) feat(pion-station): migrate 5 index/job SQLite bui | 2.78 | 3.75 | 15.19 | 37.4 | 57.81 | 32.75 | 66.74 | 100.68 | 125.07 |
 | [27e3294c7](https://github.com/AFK-surf/monoid/commit/27e3294c7cef7cf98d25c71e2a078da32203f508) fix(ui,station): keep long and wide image previews | 2.78 | 3.75 | 15.19 | 37.4 | 57.81 | 32.75 | 66.74 | 100.68 | 125.07 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bc4226870](https://github.com/AFK-surf/monoid/commit/bc42268704fc17d0fa3fad77b4d0a0135168a560) ci: bound TCP SYN retries before checkout on remai | 2.77 | 3.73 | 15.1 | 37.3 | 57.47 | 32.66 | 66.45 | 100.57 | 130.25 |
 | [da14e2943](https://github.com/AFK-surf/monoid/commit/da14e294301d815157916953b428544855a5567a) feat(pion-station): add Pion footprint worker, mb/ | 2.77 | 3.73 | 15.1 | 37.3 | 57.47 | 32.66 | 66.45 | 100.57 | 130.25 |
 | [4b508f967](https://github.com/AFK-surf/monoid/commit/4b508f967010aaeb7105382480ee6f35f2282a1b) test(station): assert exponential backoff floor in | 2.77 | 3.73 | 15.1 | 37.3 | 57.47 | 32.58 | 66.24 | 100.27 | 131.27 |
-| [5afb197a2](https://github.com/AFK-surf/monoid/commit/5afb197a21308a8ccc71402e96c54edf9bbfba72) fix(mbui): stream animated GIFs past the 16M pixel | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.27 | 121.74 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4071ef70c](https://github.com/AFK-surf/monoid/commit/4071ef70c97c2aad6409fac6519c3bf6350e9774) feat(pion-station): migrate stateful archive-last  | 0.56 | 0.73 | 2.85 | 3.85 | 7.08 | 2.09 | 5.84 | 57.53 |
 | [d9a7748e3](https://github.com/AFK-surf/monoid/commit/d9a7748e3cf7f12fdc33b338bd86f763d53f8d53) fix(screens): bound simulator view startup and enu | 0.56 | 0.73 | 2.85 | 3.85 | 7.08 | 2.09 | 5.84 | 57.57 |
 | [e5dc78307](https://github.com/AFK-surf/monoid/commit/e5dc78307cf13887651506576fa3d4636e9ccdb5) feat(pion-station): migrate 5 index/job SQLite bui | 0.56 | 0.73 | 2.85 | 3.85 | 7.08 | 2.09 | 5.84 | 57.46 |
 | [27e3294c7](https://github.com/AFK-surf/monoid/commit/27e3294c7cef7cf98d25c71e2a078da32203f508) fix(ui,station): keep long and wide image previews | 0.56 | 0.73 | 2.85 | 3.85 | 7.08 | 2.09 | 5.84 | 57.57 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bc4226870](https://github.com/AFK-surf/monoid/commit/bc42268704fc17d0fa3fad77b4d0a0135168a560) ci: bound TCP SYN retries before checkout on remai | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.62 |
 | [da14e2943](https://github.com/AFK-surf/monoid/commit/da14e294301d815157916953b428544855a5567a) feat(pion-station): add Pion footprint worker, mb/ | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.46 |
 | [4b508f967](https://github.com/AFK-surf/monoid/commit/4b508f967010aaeb7105382480ee6f35f2282a1b) test(station): assert exponential backoff floor in | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.41 |
-| [5afb197a2](https://github.com/AFK-surf/monoid/commit/5afb197a21308a8ccc71402e96c54edf9bbfba72) fix(mbui): stream animated GIFs past the 16M pixel | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.23 |
