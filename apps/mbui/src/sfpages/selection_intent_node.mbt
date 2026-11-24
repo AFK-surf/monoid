@@ -133,6 +133,10 @@ fn pinned_intent_card(parent : @view.View, p : @sfbase.PinnedIntent) -> Unit {
   parent.box(fn(card) {
     @sf.style_node(card, fn() { intent_pin_card })
     @sf.glass_capsule_node(card, radius=Some(@sf.card_corner), panel=true) |> ignore
+    // (its head's last key in its top right corner, concentric with the card's: as far in from the top and the right
+    // as the card's corner is round past the key's)
+    let corner_in = @sf.card_corner - intent_pin_btn / 2.0
+    card.padding(Is((intent_pin_side_in, corner_in, corner_in, intent_pin_side_in))) |> ignore
     card.box(fn(head) {
       @sf.style_node(head, fn() { intent_pin_head })
       @sf.icon_node(head, "pin", intent_pin_icon, By(fn() { @sf.theme().p.accent_text })) |> ignore
@@ -213,7 +217,11 @@ let intent_pins_stack : @ui.Style = @ui.css("gap=S2_5 align=AEnd")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let intent_pin_card : @ui.Style = @ui.style(w=Fixed(@sf.panel_w), px=S4, py=S3_5, gap=S2, radius=Xl)
+let intent_pin_card : @ui.Style = @ui.style(w=Fixed(@sf.panel_w), gap=S2, radius=Xl)
+
+///|
+/// How far a pinned answer's words are in from its card's left and foot.
+let intent_pin_side_in : Double = 16.0
 
 ///|
 // kept across runs: a value (no field of it changes)
